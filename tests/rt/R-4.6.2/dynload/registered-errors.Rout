@@ -1,0 +1,6 @@
+[1] "NULL value passed for DllInfo"
+[1] "R_ExternalPtrTag: argument of type REALSXP is not an external pointer"
+[1] "R_ExternalPtrTag: argument of type NILSXP is not an external pointer"
+[1] "1 argument passed to .Internal(getLoadedDLLs) which requires 0"
+[1] "No DLL currently loaded with name or path ‘nosuchdll’"
+[1] "must specify DLL via a “DLLInfo” object. See getLoadedDLLs()"

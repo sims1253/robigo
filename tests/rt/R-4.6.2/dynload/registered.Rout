@@ -1,0 +1,45 @@
+[1] "DLLInfoList"
+[1] "base"
+[1] "DLLInfo"
+[1] "name"          "path"          "dynamicLookup" "handle"       
+[5] "info"          "forceSymbols" 
+[1] "base"
+[1] "base"
+[1] FALSE
+[1] TRUE
+[1] "DLLHandle"
+[1] "externalptr"
+[1] "DLLInfoReference"
+[1] "externalptr"
+[1] "DLLRegisteredRoutines"
+[1] ".C"        ".Call"     ".Fortran"  ".External"
+       .C     .Call  .Fortran .External 
+        0         3         7         0 
+                 .C               .Call            .Fortran           .External 
+"NativeRoutineList" "NativeRoutineList" "NativeRoutineList" "NativeRoutineList" 
+[1] "R_addTaskCallback"      "R_getTaskCallbackNames" "R_removeTaskCallback"  
+[1] "dqrcf"  "dqrdc2" "dqrqty" "dqrqy"  "dqrrsd" "dqrxb"  "dtrco" 
+[1] "CallRoutine"      "NativeSymbolInfo"
+[1] "name"          "address"       "dll"           "numParameters"
+[1] "R_addTaskCallback"
+[1] 4
+[1] "RegisteredNativeSymbol"
+[1] "externalptr"
+[1] "DLLInfo"
+[1] "base"
+     R_addTaskCallback R_getTaskCallbackNames   R_removeTaskCallback 
+                     4                      0                      1 
+ dqrcf dqrdc2 dqrqty  dqrqy dqrrsd  dqrxb  dtrco 
+     8      9      7      7      7      7      6 
+           dqrcf           dqrdc2           dqrqty            dqrqy 
+"FortranRoutine" "FortranRoutine" "FortranRoutine" "FortranRoutine" 
+          dqrrsd            dqrxb            dtrco 
+"FortranRoutine" "FortranRoutine" "FortranRoutine" 
+[1] "R_addTaskCallback"
+[1] "dqrxb"
+[1] TRUE
+[1] 6
+[1] "kept"
+[1] "kept"
+NULL
+[1] "after gc"
