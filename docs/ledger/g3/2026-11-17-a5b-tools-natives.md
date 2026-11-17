@@ -15,8 +15,9 @@
   - `Defn.h` includes R.h and robigo's Rinternals.h, then robigo-rtcore's
     `Defn.h` (the contexts and gp masks) with `#include_next`.
   - The natives' include path: the internal headers, the C API's,
-    robigo-rtcore's, `robigo_layout.h`, then the tarball's
-    `src/include`. All 13 of tools' C files compile against it.
+    robigo-rtcore's, `robigo_layout.h`, the tarball's `src/include`, then
+    the tree's `include/` (`Rmath.h`). All 13 of tools' C files compile
+    against it, and nothing comes from an installed R.
 - **Per-isolate C globals** (`robigo_capi.h`, `capi.rs`, `capi.c`'s
   layout table):
   - the symbols `R_SrcfileSymbol` and `R_SrcrefSymbol`;
@@ -88,9 +89,20 @@
   - The tree's stamp also hashes the headers and the compiler.
   - The rt job runs the script before its conformance steps
     (`scripts/rt-ci.py`, with a test).
-  - **Narrower than the note:** `$R_HOME/include` is not installed yet. The
-    natives are built against the checkout's headers, and installing them
-    for packages (`R_INCLUDE_DIR`) waits for L4's `R CMD INSTALL`.
+  - `include/Rmath.h` is made as GNU R's `src/include/Makefile` makes
+    it. The tarball has only `Rmath.h0.in`, and config.status fills its
+    `@PACKAGE_VERSION@` and `@RMATH_HAVE_WORKING_LOG1P@`. robigo's result
+    is byte-identical to the oracle image's installed `Rmath.h`.
+    `gramRd.c` includes it. #828's first CI run failed without it: the
+    rt container's R keeps its headers off the compiler's path, while a
+    workstation's `/usr/include/Rmath.h` had hidden the gap. In the CI
+    image, with every installed R file deleted, the script builds the tree.
+    tools' objects then use only the checkout's, the tarball's and the
+    tree's headers, and libc's.
+  - **Narrower than the note:** `$R_HOME/include` holds only `Rmath.h`.
+    The other natives are built against the checkout's headers, and
+    installing them for packages (`R_INCLUDE_DIR`) waits for L4's
+    `R CMD INSTALL`.
 - **Oracle cases, recorded on GNU R 4.6.2:**
   - `tests/rt/dynload/tools-parse-rd.R`:
     - dyn.loads the tree's tools.so;
