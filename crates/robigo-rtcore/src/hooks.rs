@@ -88,7 +88,7 @@ pub type EvalArgsFn = for<'s, 'a, 'b> fn(&mut Cx, Scope<'s>, Root<'a>, Root<'b>)
 /// Signal a warning with message `msg` reported against `call` (None:
 /// GNU R's `R_NilValue`, no call). `Err` when a handler or
 /// `options(warn = 2)` turned it into an exit.
-pub type WarningFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &str) -> RResult<()>;
+pub type WarningFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &[u8]) -> RResult<()>;
 
 /// Signal an error with message `msg` reported against `call` (None:
 /// GNU R's `R_NilValue`, no call): GNU R's `errorcall`. The handlers run
@@ -96,7 +96,7 @@ pub type WarningFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &str) -> RResult<()>;
 /// handler by a jump to its frame), then the default handling reports it
 /// and jumps to the top level; the token returned stands for the exit
 /// that leaves (that jump, a restart a handler invoked, ...).
-pub type ErrorFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &str) -> RError;
+pub type ErrorFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &[u8]) -> RError;
 
 /// A classed error condition as GNU R's `R_makeErrorCondition` makes it
 /// (errors.c:R_vmakeErrorCondition): the list `(message, call, fields...)`
@@ -106,9 +106,10 @@ pub type ErrorFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &str) -> RError;
 pub struct ErrorCond<'a> {
     pub class: &'static str,
     pub subclass: Option<&'static str>,
-    /// The message, verbatim (the hook cuts it at a NUL and at `BUFSIZE`,
-    /// as `Rvsnprintf_mbcs` into `emsg_buf` does).
-    pub msg: &'a str,
+    /// The message in the native encoding's bytes, verbatim (the hook cuts
+    /// it at a NUL and at `BUFSIZE`, as `Rvsnprintf_mbcs` into `emsg_buf`
+    /// does).
+    pub msg: &'a [u8],
     /// The fields after `message` and `call`, in order
     /// (`R_setConditionField`).
     pub fields: &'a [(&'static str, Root<'a>)],
@@ -142,6 +143,10 @@ pub type DeparseFn = for<'g> fn(&'g Cx, Ref<'g>, i32) -> Result<Vec<u8>, String>
 /// `EncodeString(s, 0, 0, Rprt_adj_none)` of the bytes of a string in
 /// encoding `enc` (which may hold NULs): how an error message shows it.
 pub type EncodeStringFn = fn(&Cx, &[u8], crate::Encoding) -> Vec<u8>;
+
+/// `R_FindSymbol(name, "", NULL) != NULL`: whether an object loaded with
+/// `dyn.load` (or the base one) has the native symbol `name`.
+pub type FindSymbolFn = fn(&Cx, &[u8]) -> bool;
 
 /// What an internal generic asks the dispatcher: a static descriptor
 /// (builtins name theirs in a `const`), passed by reference so that the
@@ -214,6 +219,9 @@ pub struct Hooks {
     pub exit_value: ExitValueFn,
     pub deparse: DeparseFn,
     pub encode_string: EncodeStringFn,
+    /// `R_FindSymbol`'s lookup (rtapi's table of loaded objects). Defaults
+    /// to none found: with no table, nothing is loaded.
+    pub has_native_symbol: FindSymbolFn,
 }
 
 impl Default for Hooks {
@@ -222,7 +230,7 @@ impl Default for Hooks {
         Hooks {
             eval: no_eval,
             eval_bytecode: no_eval,
-            force_and_call: |cx, _, _, _, _| Err(not_yet(cx, "'eval'")),
+            force_and_call: |cx, _, _, _, _| Err(not_yet(cx, "'forceAndCall'")),
             apply: no_apply,
             dispatch: no_dispatch,
             force: no_force,
@@ -241,6 +249,7 @@ impl Default for Hooks {
             // (before `rt` installs EncodeString: NULs escaped, the rest as
             // it is)
             encode_string: |_, b, _| b.iter().flat_map(|&c| if c == 0 { b"\\0".to_vec() } else { vec![c] }).collect(),
+            has_native_symbol: |_, _| false,
         }
     }
 }
@@ -272,7 +281,7 @@ fn no_force(cx: &mut Cx, _: Root<'_>, _: Out<'_>) -> RResult<()> {
     Err(not_yet(cx, "forcing a promise"))
 }
 
-fn collect(cx: &mut Cx, call: Option<Root<'_>>, msg: &str) -> RResult<()> {
+fn collect(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RResult<()> {
     cx.collect_warning(call, msg)
 }
 
@@ -300,6 +309,13 @@ impl Cx {
     /// Install `rt`'s hooks (replacing the whole table).
     pub fn install_hooks(&mut self, hooks: Hooks) {
         self.iso().hooks.set(hooks);
+    }
+
+    /// `R_FindSymbol(name, "", NULL) != NULL` through the hook
+    /// ([`Hooks::has_native_symbol`]).
+    #[inline]
+    pub fn has_native_symbol(&self, name: &[u8]) -> bool {
+        (self.iso().hooks.get().has_native_symbol)(self, name)
     }
 
     /// The installed hooks (to wrap or restore one).
@@ -398,6 +414,13 @@ impl Cx {
     /// GNU R's `warningcall(call, msg)`: through the warning hook.
     #[inline]
     pub fn warning_call(&mut self, call: Option<Root<'_>>, msg: &str) -> RResult<()> {
+        (self.iso().hooks.get().warning)(self, call, msg.as_bytes())
+    }
+
+    /// [`Cx::warning_call`] of a message in the native encoding's bytes
+    /// ([`Cx::error_call_bytes`]).
+    #[inline]
+    pub fn warning_call_bytes(&mut self, call: Option<Root<'_>>, msg: &[u8]) -> RResult<()> {
         (self.iso().hooks.get().warning)(self, call, msg)
     }
 
@@ -421,14 +444,13 @@ impl Cx {
     /// [`Cx::nwarnings`]. The message's allocation is retried after a
     /// collection, and a refusal is the error GNU R's `mkChar` raises.
     // R: errors.c:vwarningcall_dflt
-    pub fn collect_warning(&mut self, call: Option<Root<'_>>, msg: &str) -> RResult<()> {
+    pub fn collect_warning(&mut self, call: Option<Root<'_>>, msg: &[u8]) -> RResult<()> {
         if self.iso().warnings_len() >= self.nwarnings() {
             return Ok(());
         }
         // a C string's message ends at a NUL
-        let msg = &msg[..msg.find('\0').unwrap_or(msg.len())];
-        let m =
-            self.retry_alloc(|cx| cx.mk_char(msg.as_bytes(), crate::Encoding::Native).map(|m| m.as_ref().sexp()))?;
+        let msg = msg.split(|&b| b == 0).next().unwrap_or_default();
+        let m = self.retry_alloc(|cx| cx.mk_char(msg, crate::Encoding::Native).map(|m| m.as_ref().sexp()))?;
         let iso = self.iso();
         let call = call.map_or(iso.nil, |c| c.bind(self).sexp());
         iso.check_owns(call);

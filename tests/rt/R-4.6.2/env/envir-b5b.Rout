@@ -1,0 +1,48 @@
+[1] TRUE
+[1] 42
+[1] TRUE
+[1] TRUE
+Error in `parent.env<-`(`*tmp*`, value = 1) : 'parent' is not an environment 
+Error in pe(1, e) : argument is not an environment 
+Error in pe(NULL, e) : use of NULL environment is defunct 
+Error in `parent.env<-`(`*tmp*`, value = NULL) : use of NULL environment is defunct 
+Error in pe(emptyenv(), e) : can not set parent of the empty environment 
+[1] TRUE
+Error in pe(baseenv(), "a") : 'parent' is not an environment 
+Error in pe(imp, e) : can not set the parent environment of package imports 
+[1] TRUE
+[1] TRUE
+[1] FALSE
+[1] FALSE
+Error in environmentIsLocked(1) : not an environment 
+Error in environmentIsLocked(NULL) : use of NULL environment is defunct 
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] FALSE
+[1] TRUE
+[1] 2
+[1] TRUE
+[1] TRUE
+Error in pos.to.env(0) : invalid 'pos' argument 
+Error in pos.to.env(-2) : invalid 'pos' argument 
+Error in pos.to.env(NA) : invalid 'pos' argument 
+Error in pos.to.env(integer(0)) : invalid 'pos' argument 
+Error in pos.to.env(1000) : invalid 'pos' argument 
+[1] 2
+Error in pos.to.env(y = 1) : supplied argument name 'y' does not match 'x' 
+[1] TRUE
+[1]  0  0  1 NA
+[1]  1 -1 -1
+integer(0)
+integer(0)
+[1] 0
+Error in cnv(list(1), list(1L)) : invalid 'x' argument 
+Error in cnv(list(1L), list("a")) : invalid 'y' argument 
+Error in cnv(1, list(1L)) : VECTOR_ELT() can only be applied to a 'list', not a 'double' 
+Error in cnv(quote(x), list(1L)) : invalid 'x' argument 
+Error in cnv(list(1L), 1L) : VECTOR_ELT() can only be applied to a 'list', not a 'integer' 
+integer(0)
+[1] TRUE
+[1]  TRUE  TRUE FALSE

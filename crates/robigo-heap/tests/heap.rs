@@ -1794,10 +1794,14 @@ fn layout_is_compact() {
     }
 }
 
+/// An immortal node's fields are traced once stored into. (Symbols take no
+/// stores: their values and INTERNALs are rtcore's per-isolate tables.)
 #[test]
-fn symbol_values_are_traced() {
+fn immortal_node_fields_are_traced() {
     let mut c = core();
-    let s = c.install(b"some_symbol").unwrap();
+    let nil = c.nil();
+    let s = node(&mut c, nil, nil);
+    unsafe { c.make_immortal(s) };
     let v = c.alloc_vector(REALSXP, 3).unwrap();
     let addr = v.addr();
     unsafe { s.set_cdr(v) };
@@ -2271,8 +2275,10 @@ fn nodes_have_a_traced_fourth_word() {
 fn the_store_barrier_logs_immortals_once() {
     let mut c = core();
     c.set_torture(false);
-    let s = c.install(b"barrier_symbol").unwrap();
+    let nil = c.nil();
+    let s = node(&mut c, nil, nil);
     unsafe {
+        c.make_immortal(s);
         assert!(s.has_flag(flags::BARRIER), "an immortal waits for its first store");
     }
     let big = c.alloc_vector(VECSXP, 100_000).unwrap();
@@ -2509,10 +2515,12 @@ fn a_move_forwards_every_edge() {
         let ch = c.mk_char(w.as_bytes(), 0).unwrap();
         unsafe { strs.set_elt(i, ch) };
     }
-    // an immortal object's field: a symbol's value
+    // an immortal object's field
+    let imm = node(&mut c, nil, nil);
+    unsafe { c.make_immortal(imm) };
     let sym = c.install(b"moved_value").unwrap();
     let sv = int_vec(&mut c, &[42]);
-    unsafe { sym.set_cdr(sv) };
+    unsafe { imm.set_cdr(sv) };
     // the precious set alone keeps `p`: a weak reference on it shows
     // whether it stays alive (it would be finalized after a stale entry)
     let p = int_vec(&mut c, &[7]);
@@ -2551,7 +2559,7 @@ fn a_move_forwards_every_edge() {
             assert_eq!(elt(strs, i).char_bytes(), w.as_bytes());
             assert_eq!(c.mk_char(w.as_bytes(), 0).unwrap(), elt(strs, i), "the cache finds the moved string");
         }
-        assert_eq!(ints(sym.cdr()), &[42], "the symbol's value followed");
+        assert_eq!(ints(imm.cdr()), &[42], "the immortal's field followed");
         assert_eq!(c.pop_finalizable(), None, "the precious object and the live key stayed alive");
         assert_eq!(ints(elt(wp, 0)), &[7]);
         assert_eq!(elt(w, 0), key);

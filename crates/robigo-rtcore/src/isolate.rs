@@ -619,9 +619,8 @@ impl Cx {
             "robigo: ROBIGO_RETRY_TORTURE needs robigo-rtcore built with its retry-torture feature \
              (cargo build --release -p robigo-rtapi --features robigo-rtcore/retry-torture)"
         );
-        let fail_at = std::env::var("ROBIGO_FAIL_ALLOC_AT").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
         assert!(
-            !on || fail_at == 0,
+            !on || !self.fail_alloc_set(),
             "robigo: ROBIGO_RETRY_TORTURE and ROBIGO_FAIL_ALLOC_AT both use E9's knob: set one"
         );
         self.iso().retry_torture.set(on);
@@ -982,6 +981,8 @@ impl OwnedIsolate {
     }
 
     pub fn with_options(opts: Options) -> OwnedIsolate {
+        // a new symbol's bits come from its name (H5): before any install
+        robigo_heap::set_symbol_bits(crate::sym::symbol_bits);
         // The heap's allocation never collects (H2), and no C segment is open
         // until a native call opens one, so no Rust frame is ever scanned
         // (docs/g3.md §3).

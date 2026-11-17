@@ -52,7 +52,7 @@ impl Cx {
             WalkError::OnlyPositive => {
                 // R: context.c:R_sysparent
                 let call = self.toplevel_context().call().sexp();
-                self.error_call_sexp(call, "only positive values of 'n' are allowed")
+                self.error_call_sexp(call, b"only positive values of 'n' are allowed")
             }
             WalkError::InvalidArgument(a) => self.error(&format!("invalid '{a}' argument")),
             WalkError::InvalidValue(a) => self.error(&format!("invalid '{a}' value")),
