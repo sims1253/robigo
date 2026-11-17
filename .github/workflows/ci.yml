@@ -196,10 +196,12 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    # Measured (docs/ledger/g3/2026-11-17-rt-job-capacity.md): since H8 the
-    # slowest hosted runners take ~20 min, ~9 of them the release tests; 30
-    # keeps 1.5x that. A step that adds minutes moves this number with data.
-    timeout-minutes: 30
+    # Measured (docs/ledger/g3/2026-11-17-rt-job-capacity.md and
+    # 2026-11-17-retry-torture-ci.md): the slowest hosted runners take ~20 min
+    # with a case per CPU, ~9 of them the release tests, and the retry-torture
+    # step (rt-ci.py's last: its feature rebuild and run) adds ~4; 40 keeps
+    # 1.6x the ~24. A step that adds minutes moves this number with data.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup

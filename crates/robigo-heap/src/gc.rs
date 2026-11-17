@@ -1223,13 +1223,58 @@ impl Core {
     /// A node (cons cell shape): LISTSXP, LANGSXP, CLOSXP, ENVSXP, ...
     /// Never collects.
     ///
+    /// One out-of-line body, compiled in this crate only: its machine code
+    /// cannot change with what else a calling crate allocates (LLVM gave
+    /// each crate's copy of an `#[inline]` one a shape of its own, from the
+    /// set of types that crate passed). The body is the fast path, with no
+    /// call, so it saves no registers; every other case goes to
+    /// [`Core::alloc_node_slow`].
+    ///
     /// # Safety
     /// `car`, `cdr` and `tag` must be live objects of this heap: they are
     /// reference counted here and traced by every later collection. Only
     /// for EXTPTRSXP, BUILTINSXP and SPECIALSXP may `car` be any word.
-    #[inline]
+    #[inline(never)]
     pub unsafe fn alloc_node(&mut self, t: u8, car: Sexp, cdr: Sexp, tag: Sexp) -> Result<Sexp, NeedGc> {
+        // `alloc_object`, without the calls: a trigger due, or no slot in
+        // the class's current block, takes the slow path
+        let size = node::size(t).max(GRANULE);
+        if self.sizes.over_trigger(0) {
+            // SAFETY: the caller's contract.
+            return unsafe { self.alloc_node_slow(t, car, cdr, tag) };
+        }
+        let Some(p) = self.heap.alloc_fast(size) else {
+            // SAFETY: the caller's contract.
+            return unsafe { self.alloc_node_slow(t, car, cdr, tag) };
+        };
+        // SAFETY: `p` is fresh, with at least 16 bytes.
+        let x = unsafe { self.init_header(p.as_ptr(), t) };
+        self.count(size, 0);
+        // SAFETY: the caller's contract; `x` is a fresh node.
+        unsafe { self.init_node(x, t, car, cdr, tag) };
+        Ok(x)
+    }
+
+    /// [`Core::alloc_node`] when its fast path has no slot or a collection
+    /// trigger is reached.
+    ///
+    /// # Safety
+    /// As for [`Core::alloc_node`].
+    #[cold]
+    #[inline(never)]
+    unsafe fn alloc_node_slow(&mut self, t: u8, car: Sexp, cdr: Sexp, tag: Sexp) -> Result<Sexp, NeedGc> {
         let x = self.alloc_object(t, 1, node::size(t), 0)?;
+        // SAFETY: the caller's contract; `x` is a fresh node.
+        unsafe { self.init_node(x, t, car, cdr, tag) };
+        Ok(x)
+    }
+
+    /// A fresh node's fields, and its children's counts.
+    ///
+    /// # Safety
+    /// `x` is a fresh node of type `t`; as for [`Core::alloc_node`].
+    #[inline(always)]
+    unsafe fn init_node(&self, x: Sexp, t: u8, car: Sexp, cdr: Sexp, tag: Sexp) {
         // read before the field stores, which the compiler cannot tell from
         // a store to `self.nil`: one load, shared with the header's
         let nil = self.nil;
@@ -1258,7 +1303,6 @@ impl Core {
                 tag.incref();
             }
         }
-        Ok(x)
     }
 
     /// A vector as GNU R's allocVector: STRSXP filled with
@@ -1640,6 +1684,17 @@ impl Core {
         }
         let c = if printname.is_null() { self.mk_char(name, 0)? } else { printname };
         let s = self.new_symbol(c)?;
+        // the bits its name gives it, before anything sees it: nothing
+        // writes a symbol after it is made (H5: symbols are shared)
+        if let Some(bits) = SYMBOL_BITS.get() {
+            let (f, g) = bits(name);
+            // SAFETY: `s` is fresh and not yet published; flags other than
+            // IMMORTAL and BARRIER, and gp bits, are the caller's to set.
+            unsafe {
+                s.set_flags_raw(s.flags() | f);
+                s.set_gp(s.gp() | g);
+            }
+        }
         // SAFETY: `c` is live (nothing collected since it was made or
         // passed), and a CHARSXP has no children. The immortal symbol is
         // not traced, so its name must be immortal too. HASHASH and
@@ -1925,6 +1980,12 @@ impl Core {
     /// under test starts (`robigo-rt`: after base is loaded).
     pub fn arm_fail_alloc(&mut self) {
         self.fail_alloc_at(self.fail_at);
+    }
+
+    /// E9's knob's `n` (`ROBIGO_FAIL_ALLOC_AT`, or what
+    /// [`Core::fail_alloc_at`] set last; 0: off), armed or not yet.
+    pub fn fail_at(&self) -> u64 {
+        self.fail_at
     }
 
     /// [`Core::arm_fail_alloc`] with `n` in place of the environment's
@@ -2903,6 +2964,24 @@ impl Visitor for Mark<'_> {
         // them: each is null or live.
         unsafe { self.0.mark_obj(*edge) }
     }
+}
+
+/// The bits a new symbol is made with, from its name: (header flags, gp).
+/// The runtime registers its rule once per process ([`set_symbol_bits`]).
+pub type SymbolBits = fn(&[u8]) -> (u8, u16);
+
+static SYMBOL_BITS: std::sync::OnceLock<SymbolBits> = std::sync::OnceLock::new();
+
+/// Register the rule that gives a new symbol its name's bits (GNU R's
+/// `DDVAL` in `mkSYMSXP`, `SPECIAL_SYMBOL` in `InitNames`,
+/// `DISABLE_REFCNT(R_LastvalueSymbol)`): every heap's `install` applies it
+/// before the symbol is used, so nothing writes a symbol after it is made
+/// (H5: symbols become process-shared and immutable). The first rule
+/// registered stays; the runtime is the one caller. (Function pointers
+/// cannot be compared to check that a later call gives the same rule: one
+/// function may have several addresses.)
+pub fn set_symbol_bits(bits: SymbolBits) {
+    SYMBOL_BITS.get_or_init(|| bits);
 }
 
 /// SEXPTYPE names for the statistics (Rinternals.h).
