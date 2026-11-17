@@ -24,8 +24,14 @@ every case in every collector step room to slow down unnoticed.
 
 - **The runner** (`crates/robigo-conformance`): `ROBIGO_CONF_TIMEOUTS=CASE=SECS,...`
   gives the named cases a longer timeout than `ROBIGO_CONF_TIMEOUT`.
-  - A run refuses an entry that names no file, so a renamed or deleted
-    case cannot leave a stale override behind.
+  - An entry names a case by its id: its path from the repository root,
+    the form the ratchet markers and the case list use. The runner looks
+    the timeout up by that id.
+  - A run refuses an entry that is not the id of one of the column's
+    enabled cases, whether or not the filter selects that case. So a
+    renamed or deleted case cannot leave a stale override behind. And a
+    path spelled another way (`./tests/r/...`) cannot pass the check yet
+    never apply.
   - The value is parsed strictly: a malformed pair, a non-number or a case
     named twice is an error.
 - **`scripts/rt-ci.py`:** `GC_MOVE_SLOW`, marked `INTERIM(H8)`, maps
@@ -53,10 +59,18 @@ it, as H8 decides.
   - It took 506 s on the desktop, which other agents were also using (load
     about 10 on 24 threads).
   - That is 84% of the old 600 s limit, for this one case alone.
-- **A stale entry:** `ROBIGO_CONF_TIMEOUTS=tests/r/nope.R=10` stops the run
-  before any case starts: "ROBIGO_CONF_TIMEOUTS names tests/r/nope.R, which
-  is no case".
+- **A wrong name:** a run with
+  `ROBIGO_CONF_TIMEOUTS=./tests/r/memory/finalizers-self-ref-envs.R=1200` stops
+  before any case starts: "ROBIGO_CONF_TIMEOUTS names
+  ./tests/r/memory/finalizers-self-ref-envs.R, which is no case's id". The
+  step's own entry is accepted.
 - **The tests:**
-  - `cargo test -p robigo-conformance`: 4 library tests and 18 runner tests
+  - `cargo test -p robigo-conformance`: 4 library tests and 19 runner tests
     pass. The library tests include the new parser test.
+  - The runner test `a_case_timeout_applies_to_the_case_its_id_names` runs a
+    case with a binary that takes a second, under a 300 ms timeout. The case
+    times out without the override and passes with it.
+    - An entry for a case the filter leaves out is accepted.
+    - `./`, `//`, a `.Rout` file and a missing case are each refused.
+    - Against the first version's file check, the test fails.
   - `scripts/test-rt-ci.py` passes, with its new test.

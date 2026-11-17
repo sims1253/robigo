@@ -1,6 +1,7 @@
 //! The runner on fixture trees, with fake binaries in place of a runtime:
-//! `cat` (a case passes when its recorded stdout is its own source) and a
-//! stub that fails everything the way today's `robigo-rt` does.
+//! `cat` (a case passes when its recorded stdout is its own source), a
+//! stub that fails everything the way today's `robigo-rt` does, and a
+//! `cat` that takes a second.
 
 use robigo_conformance::{
     Column, OLD, Options, RT, enabled, expected_base, load_ratchet, r_version, run, scripts, sha256_hex,
@@ -11,8 +12,8 @@ use std::sync::OnceLock;
 
 /// The fake binaries, written once before any test spawns one: a binary
 /// written while another thread forks can fail to exec ("text file busy").
-fn fakes() -> &'static (PathBuf, PathBuf) {
-    static FAKES: OnceLock<(PathBuf, PathBuf)> = OnceLock::new();
+fn fakes() -> &'static (PathBuf, PathBuf, PathBuf) {
+    static FAKES: OnceLock<(PathBuf, PathBuf, PathBuf)> = OnceLock::new();
     FAKES.get_or_init(|| {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("robigo-conformance-fakes-{}", std::process::id()));
@@ -25,7 +26,8 @@ fn fakes() -> &'static (PathBuf, PathBuf) {
         };
         let cat = write("cat", "#!/bin/sh\nexec cat \"$1\"\n");
         let stub = write("stub", "#!/bin/sh\necho 'robigo-rt: the G3 runtime is not implemented yet' >&2\nexit 1\n");
-        (cat, stub)
+        let slow = write("slow", "#!/bin/sh\nsleep 1\nexec cat \"$1\"\n");
+        (cat, stub, slow)
     })
 }
 
@@ -35,6 +37,10 @@ fn cat() -> PathBuf {
 
 fn stub() -> PathBuf {
     fakes().1.clone()
+}
+
+fn slow() -> PathBuf {
+    fakes().2.clone()
 }
 
 struct Fixture(PathBuf);
@@ -276,6 +282,34 @@ fn an_empty_ratchet_is_an_error_in_every_column() {
     let f = rt_tree("empty-ratchet-rt");
     let err = run(f.root(), &RT, &opts(&RT, cat())).unwrap_err();
     assert!(err.contains("requires nothing"), "{err}");
+}
+
+/// `ROBIGO_CONF_TIMEOUTS` gives the case it names its own timeout. It names
+/// the case by its id, as `check` looks it up: any other name, even a path
+/// to the same file, is refused, since it would never apply.
+#[test]
+fn a_case_timeout_applies_to_the_case_its_id_names() {
+    let f = rt_tree("case-timeouts");
+    let mut o = opts(&RT, slow());
+    o.filter = Some("tests/rt/smoke".into());
+    o.timeout = std::time::Duration::from_millis(300);
+    let r = run(f.root(), &RT, &o).unwrap();
+    assert!(!r.outcomes[0].passed() && r.outcomes[0].diff.contains("timed out"), "{}", r.outcomes[0].diff);
+
+    o.case_timeouts.insert("tests/rt/smoke/one.R".into(), std::time::Duration::from_secs(30));
+    // a case the filter leaves out may be named too: the step's table stays valid in a filtered run
+    o.case_timeouts.insert("tests/r/basics/b.R".into(), std::time::Duration::from_secs(30));
+    let r = run(f.root(), &RT, &o).unwrap();
+    assert_eq!(ids(&r), ["tests/rt/smoke/one.R"]);
+    assert!(r.outcomes[0].passed(), "{}", r.outcomes[0].diff);
+
+    for name in ["./tests/rt/smoke/one.R", "tests//rt/smoke/one.R", "tests/rt/smoke/one.Rout", "tests/rt/smoke/gone.R"]
+    {
+        o.case_timeouts.clear();
+        o.case_timeouts.insert(name.into(), std::time::Duration::from_secs(30));
+        let err = run(f.root(), &RT, &o).expect_err(name);
+        assert!(err.contains(&format!("ROBIGO_CONF_TIMEOUTS names {name}, which is no case's id")), "{err}");
+    }
 }
 
 /// A filter must name a case of the column's suites; one that names only

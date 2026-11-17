@@ -719,6 +719,13 @@ fn boot_record(column: &Column, o: &Options) -> String {
     format!("    (what {} does not run of base, which this case may need:)\n{}", column.runtime, lines.concat())
 }
 
+/// A case's id: its path from the repository root, with `/` between
+/// components (`tests/r/a/b.R`). Markers, results, the filter's report and
+/// `ROBIGO_CONF_TIMEOUTS` name cases by it.
+fn case_id(root: &Path, script: &Path) -> String {
+    script.strip_prefix(root).unwrap().display().to_string()
+}
+
 fn check(
     root: &Path,
     column: &Column,
@@ -727,7 +734,7 @@ fn check(
     o: &Options,
     record: &std::sync::OnceLock<String>,
 ) -> Outcome {
-    let id = script.strip_prefix(root).unwrap().display().to_string();
+    let id = case_id(root, script);
     let base = expected_base(root, suite, script, &o.version);
     let exp = match read_recording(&base, script, &o.version) {
         Ok(r) => r,
@@ -795,29 +802,27 @@ pub fn run(root: &Path, column: &Column, o: &Options) -> Result<Report, String> 
         ));
     }
     let filtered = |p: &Path| o.filter.as_ref().is_none_or(|f| p.display().to_string().contains(f.as_str()));
-    // a longer timeout for a case that is gone would hide nothing, and stay
-    if let Some(gone) = o.case_timeouts.keys().find(|c| !root.join(c).is_file()) {
-        return Err(format!("ROBIGO_CONF_TIMEOUTS names {gone}, which is no case"));
-    }
 
     // (suite, script) to run. The ratchet selects a `Marked` suite's cases
     // in every run, but only a gated run checks or extends it.
     let mut jobs = Vec::new();
     let mut listed: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
     let mut any_match = false;
+    // every case's id, selected or not: what ROBIGO_CONF_TIMEOUTS may name
+    let mut ids = BTreeSet::new();
     for suite in column.suites {
         let marks = load_ratchet(root, column, suite.dir)?;
         let run_all = suite.cases == Cases::All || o.sweep;
         let before = jobs.len();
         for p in scripts(&root.join(suite.dir), &o.features) {
-            if !filtered(&p) {
-                continue;
+            let id = case_id(root, &p);
+            if filtered(&p) {
+                any_match = true;
+                if run_all || marks.contains(&id) {
+                    jobs.push((suite.dir, p));
+                }
             }
-            any_match = true;
-            let id = p.strip_prefix(root).unwrap().display().to_string();
-            if run_all || marks.contains(&id) {
-                jobs.push((suite.dir, p));
-            }
+            ids.insert(id);
         }
         // A version without recordings: the reason says more than "not
         // recorded" for every case would.
@@ -831,6 +836,15 @@ pub fn run(root: &Path, column: &Column, o: &Options) -> Result<Report, String> 
         if gated {
             listed.insert(suite.dir, marks);
         }
+    }
+    // `check` looks a case's timeout up by its id, so any other name, even
+    // a path to the same file, would never apply, and would stay
+    if let Some(name) = o.case_timeouts.keys().find(|c| !ids.contains(c.as_str())) {
+        return Err(format!(
+            "ROBIGO_CONF_TIMEOUTS names {name}, which is no case's id (a path from the repository root, \
+             as tests/r/a/b.R, of an enabled case in {})",
+            suite_dirs(column)
+        ));
     }
     if !any_match {
         return Err(format!("no enabled conformance scripts in {} match {:?}", suite_dirs(column), o.filter));
@@ -1082,9 +1096,6 @@ mod boot_record_tests {
     use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
 
-    /// A binary that hangs at startup: the probe is killed at the case
-    /// timeout and says so, rather than wedging the run.
-    #[cfg(unix)]
     #[test]
     fn case_timeouts_parse_and_refuse_what_is_malformed() {
         let t = parse_case_timeouts("tests/r/a.R=1200, tests/rt/b.R=30").unwrap();
@@ -1096,6 +1107,9 @@ mod boot_record_tests {
         assert!(parse_case_timeouts("tests/r/a.R=1,tests/r/a.R=2").unwrap_err().contains("twice"));
     }
 
+    /// A binary that hangs at startup: the probe is killed at the case
+    /// timeout and says so, rather than wedging the run.
+    #[cfg(unix)]
     #[test]
     fn a_probe_that_hangs_is_killed_at_the_case_timeout() {
         use std::os::unix::fs::PermissionsExt;
