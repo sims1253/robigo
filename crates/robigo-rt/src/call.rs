@@ -651,6 +651,12 @@ pub(crate) fn run_builtin(
     let Kind::Builtin(f, _) = def.kind else {
         unreachable!("robigo: a special called as a builtin");
     };
+    if def.internal() && def.arity >= 0 && args.len() != def.arity as usize && !OWN_ARITY_CHECK.contains(&def.name) {
+        // the internal's own checkArity(op, args), first thing it does:
+        // here once for every row with a fixed arity in names.c, so that no
+        // builtin reads past its arguments
+        return Err(internal_arity_error(cx, def, args.len()));
+    }
     materialize_args(cx, def, args)?;
     let flag = def.print();
     // a builtin may change what an argument expression evaluates to or
@@ -664,6 +670,25 @@ pub(crate) fn run_builtin(
         cx.set_visible(flag != 1);
     }
     cx.safepoint(Safepoint::Return)
+}
+
+/// The `.Internal`s with a fixed arity in names.c whose C does not start
+/// with `checkArity`: their own messages (`nchar`'s "which requires 3 to
+/// 4", `gettext`'s, `identical`'s), another error first (`recordGraphics`,
+/// `munmap_file`) or extra arguments ignored (`internalsID`,
+/// `mem.maxNSize`, `mem.maxVSize`). Found by calling every fixed-arity
+/// `.Internal` of GNU R 4.6.2 with one argument too many.
+const OWN_ARITY_CHECK: &[&str] =
+    &["gettext", "identical", "internalsID", "mem.maxNSize", "mem.maxVSize", "munmap_file", "nchar", "recordGraphics"];
+
+/// `checkArity(op, args)`'s error for an `.Internal` (`error()`, against
+/// the context).
+// R: util.c:Rf_checkArityCall
+#[cold]
+fn internal_arity_error(cx: &mut Cx, def: &prims::PrimDef, n: usize) -> robigo_rtcore::RError {
+    let what = if n == 1 { "argument" } else { "arguments" };
+    let msg = format!("{n} {what} passed to .Internal({}) which requires {}", def.name, def.arity);
+    cx.error(&msg)
 }
 
 /// Append `CONS_NR(value, R_NilValue)` with tag `tag` to the list
