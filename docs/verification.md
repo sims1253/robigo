@@ -688,7 +688,10 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    `docs/ledger/g3/2026-11-17-retry-torture.md`). Every pull
    request but a docs-only one runs it, and with it **base-subset**:
    `scripts/base-subset.sh --check` inside the GNU R 4.6.2 oracle image
-   (robigo-rt's checked-in base subset is what this tree traces); the modes of `docs/g3.md` §16 add
+   (robigo-rt's checked-in base subset is what this tree traces: its
+   names, kinds and defining files; which scripts reach each name is the
+   job's artifact `base-subset-reached-by`, kept out of the file so that a
+   new case changes it only where it reaches a new name); the modes of `docs/g3.md` §16 add
    steps here.
 3. **build:** release build, base-package natives, the binary the heavy
    jobs use; the ratchet markers, the parse-corpus ratchet and the builtin
