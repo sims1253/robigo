@@ -136,6 +136,19 @@ def pin_report_hits(path):
     return [x for x in lines if not any(f" routine={r} " in x for r in EXPECTED_PIN_ROUTINES)]
 
 
+# INTERIM(H8): the cases that need longer than the slow modes' 600 s in the
+# moving collector's gctorture step only, and how long they get. There every
+# collection moves the whole live heap; H8's generational torture collects
+# the young objects alone, and then this table goes
+# (docs/ledger/g3/2026-11-17-gc-move-timeout.md). The cases still run: only
+# their timeout differs.
+GC_MOVE_SLOW = {
+    # 2.4M collections of a ~5k-object live heap: ~470 s here, ~536 s for
+    # main's whole step on CI, so 600 s fails on a slow runner
+    "tests/r/memory/finalizers-self-ref-envs.R": 1200,
+}
+
+
 def steps(crates):
     """(title, extra environment, command) for each step of the job."""
     pkgs = [x for c in crates for x in ("-p", c)]
@@ -145,6 +158,7 @@ def steps(crates):
     # (a case under a collector mode runs many times longer than the
     # runner's default 20 s allow)
     slow = {"ROBIGO_CONF_TIMEOUT": "600"}
+    gc_move_slow = ",".join(f"{c}={secs}" for c, secs in sorted(GC_MOVE_SLOW.items()))
     return [
         ("release tests", {}, [*test, *pkgs, *skip]),
         ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {}, conformance),
@@ -176,7 +190,7 @@ def steps(crates):
         ("ROBIGO_GC_MOVE (move every movable object at every collection), with gctorture",
          {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1"}, [*test, *pkgs, *skip]),
         ("conformance under ROBIGO_GC_MOVE with gctorture (E3)",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **slow}, conformance),
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **slow, "ROBIGO_CONF_TIMEOUTS": gc_move_slow}, conformance),
         # D5's frame recycling (docs/g3.md §16): every frame that would be recycled
         # is poisoned and held back instead, so a frame that escaped without
         # its ESCAPED bit panics where it is used next

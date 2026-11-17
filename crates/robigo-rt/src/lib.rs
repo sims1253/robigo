@@ -71,7 +71,9 @@ pub mod prims;
 pub mod print;
 pub mod reader;
 pub mod repl;
+pub mod search;
 pub mod serialize;
+pub mod source;
 mod specials;
 pub mod vm;
 

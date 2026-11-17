@@ -1,0 +1,13 @@
+[1] "cannot write to this connection"
+expression(one, two)
+expression(three)
+[1] "'Rf_translateChar0' must be called on a CHARSXP, but got 'NULL'"
+a-b-|
+[1] "invalid 'useBytes' argument"
+[1] "invalid 'useBytes' argument"
+[1] "invalid 'useBytes' argument"
+a
+[1] "'con' is not a connection"
+[1] "invalid 'sep' argument"
+[1] "invalid 'text' argument"
+[1] TRUE
