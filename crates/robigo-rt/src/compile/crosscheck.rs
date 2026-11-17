@@ -8,10 +8,11 @@
 //! first difference is reported, classed as a gap the plan expects (a
 //! divergence of the from-source port to fix later) or not.
 //!
+//! A closure's [`Finding`] is its [`Verdict`] and its line of the report.
 //! The report goes to the file `ROBIGO_BC_CROSSCHECK_REPORT` names (one
-//! line per closure compared, `same:` for one that does not differ), else
-//! to stderr: `scripts/rt-ci.py` runs
-//! the conformance suite with both set and fails on an unexpected line.
+//! line per closure, `same:` for one that does not differ), else to
+//! stderr: `scripts/rt-ci.py` runs the conformance suite with both set and
+//! fails on an unexpected line, and base.rdb's test counts the verdicts.
 
 #![allow(unsafe_code)]
 
@@ -21,6 +22,39 @@ use robigo_heap::Sexp;
 use robigo_rtcore::Cx;
 use std::collections::HashMap;
 use std::io::Write as _;
+
+/// What the crosscheck of a closure found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// The two codes are the same.
+    Same,
+    /// The first difference is of a class the plan expects.
+    Expected,
+    /// The first difference is of no expected class.
+    Unexpected,
+    /// The from-source compiler leaves the closure uncompiled, or its
+    /// compile would force a binding.
+    Skipped,
+    /// The translation cannot follow the byte code.
+    Untranslated,
+}
+
+/// A closure's verdict and its line of the report.
+pub struct Finding {
+    pub verdict: Verdict,
+    pub line: String,
+}
+
+impl Finding {
+    pub fn new(verdict: Verdict, line: String) -> Finding {
+        Finding { verdict, line }
+    }
+
+    /// The line, to the report.
+    pub fn report(&self) {
+        report(&self.line);
+    }
+}
 
 /// Whether `ROBIGO_BC_CROSSCHECK` is set (read once).
 pub fn enabled() -> bool {
@@ -147,9 +181,49 @@ fn reachable(ins: &[Ins], returns: impl Fn(usize) -> bool) -> Vec<bool> {
     live
 }
 
-/// `b`'s instructions normalized: unreachable ones dropped, a jump to a
-/// `Ret` (or a `Return`) read as the `Ret` itself, a jump to the next
-/// instruction dropped.
+/// Where control at `k` leaves the code, if it does without doing more
+/// than jump, drop (the instructions the normal form drops) and set the
+/// visibility: the register the `Ret` (or `Return`) it reaches returns,
+/// read through the `Move`s on the way, and the visibility it leaves (the
+/// `Ret`'s, else the last `SetVis`'s: 1 visible, 2 invisible, 0 as it
+/// was), and the instructions on the way.
+fn exit(ins: &[Ins], k: usize) -> Option<(u16, u16, Vec<usize>)> {
+    let (mut j, mut moves, mut vis, mut path) = (k, Vec::new(), 0u16, Vec::new());
+    for _ in 0..=ins.len() {
+        let i = ins.get(j)?;
+        path.push(j);
+        match i.op {
+            Op::Ret | Op::Return => {
+                let mut r = i.b;
+                for &(a, src) in moves.iter().rev() {
+                    if a == r {
+                        r = src;
+                    }
+                }
+                let g = if i.op == Op::Ret { i.g } else { 0 };
+                return Some((r, if g != 0 { g } else { vis }, path));
+            }
+            Op::Jmp => j = i.target(),
+            Op::Nop | Op::Clear | Op::ClearRange => j += 1,
+            Op::Move => {
+                moves.push((i.a, i.b));
+                j += 1;
+            }
+            Op::SetVis => {
+                vis = if i.g != 0 { 1 } else { 2 };
+                j += 1;
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// `b`'s instructions normalized: unreachable ones dropped, a way out of
+/// the code (a `Ret`, a jump or a `SetVis` that leads to one,
+/// [`exit`]) read as a `Ret` of the value it returns with the visibility
+/// it leaves, a `Return` as one that keeps the visibility, a jump to the
+/// next instruction dropped.
 fn normalize(b: &Built) -> Vec<Norm> {
     // where a chain of jumps from `k` lands
     let land = |mut k: usize| {
@@ -161,13 +235,35 @@ fn normalize(b: &Built) -> Vec<Norm> {
         }
         k
     };
-    // a jump to a `Ret` returns its register
-    let ret = |k: usize| match b.ins.get(land(k)) {
-        Some(r) if r.op == Op::Ret => Some(r.b),
-        _ => None,
-    };
+    // a jump that leaves the code
+    let ret = |k: usize| exit(&b.ins, k).map(|(r, vis, _)| (r, vis));
     let live = reachable(&b.ins, |k| ret(k).is_some());
     let mut keep: Vec<bool> = b.ins.iter().zip(&live).map(|(i, &l)| l && !dropped(i)).collect();
+    // the instructions a jump lands on (one that leaves the code lands
+    // nowhere: it is read as the way out)
+    let mut targets = std::collections::HashSet::new();
+    for (k, i) in b.ins.iter().enumerate() {
+        if live[k] && kinds(i.op).1 && !(i.op == Op::Jmp && ret(k).is_some()) {
+            targets.insert(i.target());
+        }
+    }
+    // a `SetVis` on its way out is read as the `Ret`: the instructions it
+    // falls through to on the way are its, but for one a jump lands on
+    let mut vis_exit = vec![None; b.ins.len()];
+    for (k, i) in b.ins.iter().enumerate() {
+        if live[k]
+            && i.op == Op::SetVis
+            && let Some((r, vis, path)) = exit(&b.ins, k)
+        {
+            vis_exit[k] = Some((r, vis));
+            for (n, &j) in path.iter().enumerate().skip(1) {
+                if j != k + n || targets.contains(&j) {
+                    break;
+                }
+                keep[j] = false;
+            }
+        }
+    }
     // the normal position of each instruction (a dropped one's: the next's)
     let positions = |keep: &[bool]| {
         let mut at = Vec::with_capacity(keep.len() + 1);
@@ -191,7 +287,9 @@ fn normalize(b: &Built) -> Vec<Norm> {
     let mut defs: HashMap<u16, u32> = HashMap::new();
     let mut ndefs = 0u32;
     let read = |defs: &HashMap<u16, u32>, r: u16| defs.get(&r).copied().unwrap_or(1 << 20 | r as u32);
-    let mut out = Vec::new();
+    let mut out: Vec<Norm> = Vec::new();
+    // the instruction the last normalized one was made of
+    let mut last: Option<usize> = None;
     for (k, i) in b.ins.iter().enumerate() {
         if i.op == Op::Move && live[k] {
             // the value forwarded
@@ -202,21 +300,38 @@ fn normalize(b: &Built) -> Vec<Norm> {
         if !keep[k] {
             continue;
         }
-        // a return of a value: `Ret`, `Return`, a jump to a `Ret`
+        // a way out: the value returned, the visibility left
         let r = match i.op {
-            Op::Ret | Op::Return => Some(i.b),
+            Op::Ret => Some((i.b, i.g)),
+            Op::Return => Some((i.b, 0)),
             Op::Jmp => ret(k),
+            Op::SetVis => vis_exit[k],
             _ => None,
         };
-        if let Some(r) = r {
+        if let Some((r, mut vis)) = r {
+            // the instruction before, when only it falls through to the
+            // way out (no jump lands between): its F_VIS is the way out's
+            // visibility, unless a SetVis or the Ret sets it
+            if let Some(p) = last
+                && !(p + 1..=k).any(|j| targets.contains(&j))
+                && let Some(prev) = out.last_mut()
+                && prev.op != Op::Ret
+                && prev.fl & crate::ir::F_VIS != 0
+            {
+                prev.fl &= !crate::ir::F_VIS;
+                if vis == 0 {
+                    vis = 1;
+                }
+            }
             out.push(Norm {
                 op: Op::Ret,
                 fl: 0,
                 regs: vec![read(&defs, r)],
-                imm: Vec::new(),
+                imm: vec![vis],
                 consts: Vec::new(),
                 target: None,
             });
+            last = Some(k);
             continue;
         }
         let (ks, jumps) = kinds(i.op);
@@ -285,6 +400,7 @@ fn normalize(b: &Built) -> Vec<Norm> {
             }
         }
         out.push(v);
+        last = Some(k);
     }
     out
 }
@@ -317,21 +433,22 @@ fn same(cx: &Cx, a: &Norm, b: &Norm, targets: bool) -> bool {
 
 /// A difference's class, if the plan expects it: a known gap of the
 /// from-source port (V2) the translation does not share.
-fn expected(t: Option<&Norm>, s: Option<&Norm>, s_next: Option<&Norm>) -> Option<&'static str> {
+fn expected(cx: &Cx, nt: &[Norm], ns: &[Norm], k: usize) -> Option<&'static str> {
+    let (t, s) = (nt.get(k), ns.get(k));
     let op = |n: Option<&Norm>| n.map(|n| n.op);
-    // (the two the same but for the port's F_VIS)
-    let vis_only = matches!((t, s), (Some(x), Some(y)) if x.op == y.op
-        && x.regs == y.regs
-        && x.imm == y.imm
-        && x.consts.len() == y.consts.len()
-        && (x.fl ^ y.fl) == crate::ir::F_VIS);
+    fn before(n: &[Norm], k: usize) -> Option<&Norm> {
+        k.checked_sub(1).and_then(|j| n.get(j))
+    }
     match (op(t), op(s)) {
-        // a constant cmp.R folds (constantFold: `:`, a negated literal)
-        // that the port computes
-        (Some(Op::LdConst), Some(Op::LdConst))
-            if matches!(op(s_next), Some(Op::LdConst | Op::CallBuiltin | Op::Arith | Op::Arith1)) =>
+        // `return(x)`'s operand: cmp.R compiles it outside the tail
+        // (make.nonTailCallContext), so a value missing there (a switch's
+        // or an `if`'s) is LDNULL, visible at the RETURN; the port compiles
+        // it in the tail, the NULL invisible (step 5d ports cmp.R's). The
+        // same NULL just loaded, returned visible and invisible.
+        (Some(Op::Ret), Some(Op::Ret))
+            if t.zip(s).is_some_and(|(x, y)| return_null(cx, x, y, before(nt, k), before(ns, k))) =>
         {
-            Some("a constant cmp.R folds (constantFold)")
+            Some("return()'s operand outside the tail (cmp.R: a missing value visible), the port's in it")
         }
         // a nested function: the port compiles its source at once, the
         // translation translates its byte code when it is first called
@@ -354,30 +471,54 @@ fn expected(t: Option<&Norm>, s: Option<&Norm>, s_next: Option<&Norm>) -> Option
         // `%%` and `%/%`: bcEval has no opcode for them, so cmp.R calls the
         // builtin (cmpBuiltin, CALLBUILTIN); the port's Arith computes
         // do_arith's MODOP and IDIVOP, the same value and conditions
-        (Some(Op::CallBuiltin), Some(Op::Arith))
-            if s.is_some_and(|s| {
-                s.imm.first().is_some_and(|&g| {
-                    g == robigo_rtbuiltins::kernel::arith::MODOP as u16
-                        || g == robigo_rtbuiltins::kernel::arith::IDIVOP as u16
-                })
-            }) =>
-        {
+        (Some(Op::CallBuiltin), Some(Op::Arith)) if t.zip(s).is_some_and(|(t, s)| modulus_call(cx, t, s)) => {
             Some("`%%` or `%/%`: cmp.R's CALLBUILTIN, the port's Arith")
         }
-        // a tail return's shape: GNU R's code returns from each branch (a
-        // tail switch's alternatives, `return(if ...)`), the port jumps to
-        // one return, the branch's visibility set where its value is made
-        (Some(Op::Ret), Some(Op::Jmp | Op::SetVis)) => Some("a tail return's shape (one return a branch jumps to)"),
-        // the same value, made visible where it is loaded (the port's
-        // F_VIS) or at the return it reaches (GNU R's RETURN)
-        _ if vis_only => Some("a tail return's shape (one return a branch jumps to)"),
         _ => None,
     }
 }
 
+/// Whether the translation's way out `t` returns visible and the port's
+/// `s` invisible the NULL that the instruction before each (the same one)
+/// loads.
+fn return_null(cx: &Cx, t: &Norm, s: &Norm, t_before: Option<&Norm>, s_before: Option<&Norm>) -> bool {
+    let null_load = |n: Option<&Norm>| {
+        n.is_some_and(|n| n.op == Op::LdConst && n.fl == 0 && n.consts == [cx.nil().sexp()] && n.regs == t.regs)
+    };
+    t.regs == s.regs && t.imm == [1] && s.imm == [2] && null_load(t_before) && null_load(s_before)
+}
+
+/// Whether the translation's `t` calls the builtin `%%` (or `%/%`) where
+/// the port's `s` computes it (`Arith` with MODOP, IDIVOP): the same
+/// primitive (the port's fallback), the same call and flags, the same
+/// two operands, the same value defined.
+fn modulus_call(cx: &Cx, t: &Norm, s: &Norm) -> bool {
+    use robigo_rtbuiltins::kernel::arith::{IDIVOP, MODOP};
+    let name = match s.imm.as_slice() {
+        [g] if *g == MODOP as u16 => "%%",
+        [g] if *g == IDIVOP as u16 => "%/%",
+        _ => return false,
+    };
+    // (CallBuiltin: two arguments and no `g`, the call, the builtin;
+    // Arith: the call, the builtin)
+    let ([e, f], [se, sf]) = (t.consts.as_slice(), s.consts.as_slice()) else { return false };
+    // SAFETY: the pool's live constant.
+    let prim = unsafe { robigo_rtcore::Ref::from_sexp(*f, cx) };
+    t.imm == [2, 0]
+        && t.fl == s.fl
+        && t.regs == s.regs
+        && f == sf
+        && crate::prims::prim_name(cx, prim) == Some(name)
+        && {
+            // SAFETY: the pools' live constants.
+            let (x, y) = unsafe { (robigo_rtcore::Ref::from_sexp(*e, cx), robigo_rtcore::Ref::from_sexp(*se, cx)) };
+            robigo_rtbuiltins::identical::compute_identical(cx, x, y, 0).unwrap_or(false)
+        }
+}
+
 /// Compare the translation `t` of closure `what`'s byte code with the
-/// from-source code `s`, and report the first difference.
-pub fn compare(cx: &Cx, what: &str, t: &Built, s: &Built) {
+/// from-source code `s`: the first difference, classed, or none.
+pub fn compare(cx: &Cx, what: &str, t: &Built, s: &Built) -> Finding {
     let (nt, ns) = (normalize(t), normalize(s));
     let n = nt.len().max(ns.len());
     // the first difference of what the instructions do; then of where
@@ -390,8 +531,7 @@ pub fn compare(cx: &Cx, what: &str, t: &Built, s: &Built) {
     };
     let Some(k) = differs(false).or_else(|| differs(true)) else {
         // (every closure compared has its line: the report says how many)
-        report(&format!("same: {what}"));
-        return;
+        return Finding::new(Verdict::Same, format!("same: {what}"));
     };
     // (a symbol constant by its name, a loaded constant deparsed, for
     // triage)
@@ -434,17 +574,20 @@ pub fn compare(cx: &Cx, what: &str, t: &Built, s: &Built) {
         // SAFETY: GetVar's symbol constant, of the pool.
         && x.consts.first().is_some_and(|&sym| unsafe { robigo_rtcore::Ref::from_sexp(sym, cx) }
             .as_sym().is_some_and(|s| s.name().bytes() == b"...")));
-    let class = match expected(a, b, ns.get(k + 1)) {
-        _ if dots => "expected ('...' as a value (cmpSym's DOTSERR; the port reads it))".to_owned(),
-        Some(c) => format!("expected ({c})"),
-        None => "unexpected".to_owned(),
+    let (verdict, class) = match expected(cx, &nt, &ns, k) {
+        _ if dots => {
+            (Verdict::Expected, "expected ('...' as a value (cmpSym's DOTSERR; the port reads it))".to_owned())
+        }
+        Some(c) => (Verdict::Expected, format!("expected ({c})")),
+        None => (Verdict::Unexpected, "unexpected".to_owned()),
     };
-    report(&format!("{class}: {what}: at {k}: translated {}; from source {}", show(a), show(b)));
+    let mut line = format!("{class}: {what}: at {k}: translated {}; from source {}", show(a), show(b));
     if std::env::var_os("ROBIGO_BC_CROSSCHECK_DUMP").is_some() {
         for (j, (x, y)) in (0..n).map(|j| (nt.get(j), ns.get(j))).enumerate() {
-            report(&format!("    {j}: {} | {}", show(x), show(y)));
+            line.push_str(&format!("\n    {j}: {} | {}", show(x), show(y)));
         }
     }
+    Finding::new(verdict, line)
 }
 
 /// A line of the report.

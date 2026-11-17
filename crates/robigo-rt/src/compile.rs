@@ -36,6 +36,8 @@ use std::collections::HashMap;
 
 mod bctrans;
 mod crosscheck;
+#[doc(hidden)]
+pub use crosscheck::Verdict;
 
 /// Run one compile attempt under `&Cx` until it succeeds: a refused
 /// allocation collects and compiles again (the same request refused twice
@@ -184,14 +186,17 @@ unsafe fn source_body(cx: &Cx, f: Sexp) -> Sexp {
 /// `browser()`, a compiler error).
 // R: cmp.R:cmpfun, make.functionContext, funEnv
 pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> RResult<Option<Sexp>> {
-    attempt(cx, |cx| {
+    // (the crosscheck's finding of the last attempt: an attempt a fold
+    // retries compared code without the fold's value)
+    let mut check = None;
+    let code = attempt(cx, |cx| {
         let f = op.bind(cx).sexp();
         // SAFETY: a rooted closure (and cache entry); nothing collects in
         // this interval.
         unsafe {
             if f.cdr().typ() == BCODESXP {
                 if crosscheck::enabled() {
-                    crosscheck_closure(cx, f, installed)?;
+                    check = Some(crosscheck_closure(cx, f, installed)?);
                 }
                 // V3: GNU R's byte code, translated
                 return translate_code(cx, f.cdr(), Some(f.car()));
@@ -209,7 +214,11 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
             index_arg_codes(cx, code, &c.arg_codes);
             Ok(code)
         }
-    })
+    });
+    if let Some(c) = check {
+        c.report();
+    }
+    code
 }
 
 /// `ROBIGO_BC_CROSSCHECK`: closure `f`'s byte code translated and its
@@ -218,13 +227,13 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
 /// from-source compile keeps its argument code on the source's expressions,
 /// the translation its own on the promises' byte code (`MAKEPROM`'s
 /// BCODESXPs), so neither replaces the other's. A compile that would force
-/// a lazy binding, or that cmp.R declines, is skipped (reported).
-/// `installed`: base's installed byte code (provenance, as for
-/// [`compile_closure_bc`]).
+/// a lazy binding, or that cmp.R declines, is skipped. `installed`: base's
+/// installed byte code (provenance, as for [`compile_closure_bc`]).
 ///
 /// # Safety
 /// `f` is a live closure whose body is a BCODESXP; nothing collects.
-unsafe fn crosscheck_closure(cx: &Cx, f: Sexp, installed: bool) -> Result<(), Need> {
+unsafe fn crosscheck_closure(cx: &Cx, f: Sexp, installed: bool) -> Result<crosscheck::Finding, Need> {
+    use crosscheck::{Finding, Verdict};
     // SAFETY: the caller's contract.
     unsafe {
         let (formals, bc) = (f.car(), f.cdr());
@@ -249,16 +258,16 @@ unsafe fn crosscheck_closure(cx: &Cx, f: Sexp, installed: bool) -> Result<(), Ne
         let source = match source {
             Ok(Some(b)) => b,
             Ok(None) | Err(Need::Fail) => {
-                crosscheck::report(&format!("skipped: {what}: the from-source compiler leaves it uncompiled"));
-                return Ok(());
+                let line = format!("skipped: {what}: the from-source compiler leaves it uncompiled");
+                return Ok(Finding::new(Verdict::Skipped, line));
             }
             Err(Need::Force(p)) => {
                 // (the promise's code, for triage)
                 let code = crate::deparse::deparse1line(cx, Ref::from_sexp(p.cdr(), cx), false, 0)
                     .map(|d| String::from_utf8_lossy(&d).chars().take(60).collect::<String>())
                     .unwrap_or_default();
-                crosscheck::report(&format!("skipped: {what}: the from-source compile would force a binding ({code})"));
-                return Ok(());
+                let line = format!("skipped: {what}: the from-source compile would force a binding ({code})");
+                return Ok(Finding::new(Verdict::Skipped, line));
             }
             Err(e) => return Err(e),
         };
@@ -270,16 +279,15 @@ unsafe fn crosscheck_closure(cx: &Cx, f: Sexp, installed: bool) -> Result<(), Ne
                 i.b = r;
                 c.emit(i);
                 let t = c.finish();
-                crosscheck::compare(cx, &what, &t, &source);
+                Ok(crosscheck::compare(cx, &what, &t, &source))
             }
             Err(Need::Fail) => {
                 let why =
                     c.bc_untranslated.take().unwrap_or_else(|| "byte code the translation cannot follow".to_owned());
-                crosscheck::report(&format!("untranslated: {what}: {why}"));
+                Ok(Finding::new(Verdict::Untranslated, format!("untranslated: {what}: {why}")))
             }
-            Err(e) => return Err(e),
+            Err(e) => Err(e),
         }
-        Ok(())
     }
 }
 
@@ -345,26 +353,31 @@ pub fn translation_gaps(cx: &mut Cx, f: Root<'_>) -> RResult<Vec<String>> {
 
 /// For the base.rdb crosscheck test: under `ROBIGO_BC_CROSSCHECK`, closure
 /// `f`'s byte code (base's installed code) compared with what the
-/// from-source compiler makes of its source ([`crosscheck`]), reported.
-/// The session has base loaded with every binding forced, as GNU R's
-/// build had when it compiled base (makebasedb.R), so the compile decides
-/// on base's definitions as cmp.R did. Nothing otherwise.
+/// from-source compiler makes of its source ([`crosscheck`]), reported,
+/// and the verdict. The session has base loaded with every binding
+/// forced, as GNU R's build had when it compiled base (makebasedb.R), so
+/// the compile decides on base's definitions as cmp.R did. None for a
+/// closure without byte code, or without the variable.
 #[doc(hidden)]
-pub fn crosscheck_installed(cx: &mut Cx, f: Root<'_>) -> RResult<()> {
+pub fn crosscheck_installed(cx: &mut Cx, f: Root<'_>) -> RResult<Option<crosscheck::Verdict>> {
     if !crosscheck::enabled() {
-        return Ok(());
+        return Ok(None);
     }
+    let mut check = None;
     attempt(cx, |cx| {
         // SAFETY: a rooted closure; nothing collects in this interval.
         unsafe {
             let f = f.bind(cx).sexp();
             if f.cdr().typ() == BCODESXP {
-                crosscheck_closure(cx, f, true)?;
+                check = Some(crosscheck_closure(cx, f, true)?);
             }
         }
         Ok(cx.nil().sexp())
     })?;
-    Ok(())
+    Ok(check.map(|c| {
+        c.report();
+        c.verdict
+    }))
 }
 
 /// The code of the byte code `bc` evaluated as itself (`eval(bc, rho)`,

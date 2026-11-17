@@ -387,7 +387,9 @@ fn oracle_base_closures_translate() {
 /// V3's crosscheck on base's installed code (`ROBIGO_BC_CROSSCHECK`, CI's
 /// rdb step; docs/ledger/g3/2026-11-17-v3-bcodesxp-ir.md): every closure of
 /// base.rdb compared with what the from-source compiler makes of its
-/// source ([`robigo_rt::compile::crosscheck_installed`]), reported. The
+/// source ([`robigo_rt::compile::crosscheck_installed`]), reported. No
+/// closure may differ unexpectedly, and at least [`CROSSCHECK_COMPARED`]
+/// are compared (a setup that skipped them would pass empty). The
 /// session has base loaded with every binding forced: GNU R compiled
 /// base's installed code with all of base defined (makebasedb.R), so the
 /// compile decides on base's definitions as cmp.R did (a simple
@@ -395,6 +397,8 @@ fn oracle_base_closures_translate() {
 /// evaluate yet stays a promise, and the compile that needs it is skipped.
 /// (The translation test keeps its session without base: there a missing
 /// primitive is a gap it counts, not a stub that hides it.)
+const CROSSCHECK_COMPARED: usize = 1100;
+
 #[test]
 fn oracle_base_closures_crosscheck() {
     let Some(lib) = std::env::var_os("ROBIGO_ORACLE_LIBRARY") else {
@@ -427,6 +431,7 @@ fn oracle_base_closures_crosscheck() {
     robigo_rt::define_builtin(cx, "..getNamespace", get_namespace, 1, 2);
     let mut closures = 0usize;
     let mut failures = Vec::new();
+    let mut verdicts: std::collections::BTreeMap<String, usize> = Default::default();
     cx.scope(|cx, s| {
         let records = rdx_records(cx, "base", &rdx, rdb.len());
         let o = s.out(cx);
@@ -450,15 +455,21 @@ fn oracle_base_closures_crosscheck() {
                     return;
                 }
                 closures += 1;
-                if let Err(e) = robigo_rt::compile::crosscheck_installed(cx, v) {
-                    failures.push(format!("{name}: {}", common::message(cx, e)));
+                match robigo_rt::compile::crosscheck_installed(cx, v) {
+                    Ok(Some(c)) => *verdicts.entry(format!("{c:?}")).or_default() += 1,
+                    Ok(None) => *verdicts.entry("no byte code".to_owned()).or_default() += 1,
+                    Err(e) => failures.push(format!("{name}: {}", common::message(cx, e))),
                 }
             });
         }
     });
-    eprintln!("base.rdb crosscheck: {closures} closures, {} failure(s)", failures.len());
+    let n = |v: &str| verdicts.get(v).copied().unwrap_or(0);
+    eprintln!("base.rdb crosscheck: {closures} closures, {} failure(s); {verdicts:?}", failures.len());
     assert!(closures > 1000, "{closures} closures");
     assert!(failures.is_empty(), "{failures:#?}");
+    assert_eq!(n("Unexpected"), 0, "unexpected differences (the report has them): {verdicts:?}");
+    let compared = n("Same") + n("Expected");
+    assert!(compared >= CROSSCHECK_COMPARED, "{compared} compared, fewer than {CROSSCHECK_COMPARED}: {verdicts:?}");
 }
 
 /// Evaluate every expression of `src` in the global environment, each
