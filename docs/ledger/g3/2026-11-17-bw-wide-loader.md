@@ -242,13 +242,26 @@
     | `loadNamespace` | 179 |
     | `cbind` and `[<-` with matrix subscripts | 137 each |
 
-  - The markers belong to RC's ratchet, `tests/corpora/fastr/passing-rt/`,
-    which is not on main yet. They are added with `--update` once it is.
+  - RC's ratchet, `tests/corpora/fastr/passing-rt/`, came with main's
+    merge (#755). The 2,884 new passes are ratcheted there. L5 must keep
+    them, as it must keep BW's other markers.
 - The bar (condition (c)): `tests/rt/base/wide-names.R` prints the count
   and the sorted names of `ls(baseenv(), all.names = TRUE)`, and matches
   GNU R 4.6.2's 1,407 byte for byte.
 - Proof:
-  - `scripts/rt-ci.py` passes every step at `2b336662`:
+  - On the branch merged with main `c4a60e89` (`36e2f273`):
+    - `scripts/rt-ci.py` passes every step: conformance 406/410, with the
+      four failing on main too; `ROBIGO_NO_INPLACE` 402/405;
+      `ROBIGO_MATERIALIZE` 406/410; gctorture and `ROBIGO_GC_MOVE` with
+      gctorture 405/409; quarantine and the small vector limit 406/410;
+      stress, overshoot, the pin report and injected failures pass;
+    - `scripts/base-subset.sh --check` passes;
+    - Miri passes on `robigo-rtcore`; `scripts/lint.sh` and
+      `cargo fmt --check` are clean;
+    - the gate reports 0 failures (above);
+    - the fastr corpus: 21,696 of 31,374 pass, with no regression. The
+      2,884 new passes are ratcheted in `tests/corpora/fastr/passing-rt/`.
+  - `scripts/rt-ci.py` passed every step at `2b336662`, before the merge:
     - release tests;
     - conformance: 405/409. The four that fail, fail on main too:
       `args/binding-types` and three `assign/link-walk-*` cases that need
