@@ -35,12 +35,10 @@ print(parse(con, n = 1))
 print(inherits(tryCatch(parse(con), error = function(e) e), "error"))
 print(parse(con))
 close(con)
-# the lexer has read one character past a symbol when it reports it
-writeLines(c("y y;42", "1 <;8", "x[;9"), path)
+# the lexer has read one character past a symbol when it reports it (but
+# not past a number's final L or i)
+writeLines(c("y y;42", "1 <;8", "x[;9", "y 1L;", "4", "y 2i;", "5"), path)
 con <- file(path, "r")
-for (i in 1:3) {
-    print(inherits(tryCatch(parse(con, n = 1), error = function(e) e), "error"))
-    print(parse(con, n = 1))
-}
+for (i in 1:13) print(tryCatch(parse(con, n = 1), error = function(e) "error"))
 close(con)
 print(file.remove(path))

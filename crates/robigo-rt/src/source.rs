@@ -156,6 +156,12 @@ fn read_ahead(src: &[u8], start: usize, end: usize) -> usize {
     }
     let extends = match tok {
         b"<" | b"-" | b"->" | b">" | b"!" | b"=" | b":" | b"::" | b"&" | b"|" | b"[" | b"*" => true,
+        // NumericValue keeps a final L or i without reading on
+        _ if (first.is_ascii_digit() || (first == b'.' && tok.get(1).is_some_and(u8::is_ascii_digit)))
+            && matches!(last, b'L' | b'i') =>
+        {
+            false
+        }
         // SymbolValue and NumericValue read until a character that is not
         // the token's (a quoted string or symbol, a %op% end on their own)
         _ => {

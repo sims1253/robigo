@@ -21,10 +21,17 @@ expression(s <- 4)
 expression(42)
 [1] TRUE
 expression(7)
-[1] TRUE
+[1] "error"
 expression(42)
-[1] TRUE
+[1] "error"
 expression(8)
-[1] TRUE
+[1] "error"
 expression(9)
+[1] "error"
+[1] "error"
+expression(4)
+[1] "error"
+[1] "error"
+expression(5)
+expression()
 [1] TRUE
