@@ -343,7 +343,7 @@ pub unsafe fn call_builtin_regs(
     // SAFETY: `n` object slots from `base` (and `n` name slots after them),
     // rooted by the activation for the call.
     let args = unsafe {
-        let p = act.slot(base);
+        let p = act.window(base, if names { 2 * n } else { n });
         Args::from_raw(p, names.then(|| p.add(n)), n as u32, any_alt)
     };
     // the arguments hold no links while the builtin runs

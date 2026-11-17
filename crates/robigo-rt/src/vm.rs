@@ -110,6 +110,21 @@ impl Act {
         unsafe { self.base.add(r as usize) }
     }
 
+    /// The first slot of the `len` registers from `base`, a call's argument
+    /// window. It may be empty: `base` is then at most `nregs`, the slot one
+    /// past the last register, which nothing reads or writes.
+    #[inline(always)]
+    pub(crate) fn window(&self, base: Reg, len: usize) -> NonNull<Slot> {
+        debug_assert!(
+            u32::from(base) as usize + len <= self.nregs as usize,
+            "robigo: VM registers {base}..+{len} past the activation's {}",
+            self.nregs
+        );
+        // SAFETY: `base + len <= nregs` (the invariant), so the window is in
+        // the activation's frame or, when empty, one past its end.
+        unsafe { self.base.add(base as usize) }
+    }
+
     #[inline(always)]
     pub fn get(&self, r: Reg) -> Slot {
         // SAFETY: a live slot of this activation.
@@ -1405,7 +1420,7 @@ fn dflt_subset(
     // SAFETY: `n` object slots from `base` (and `n` name slots after them),
     // rooted by the activation for the call.
     let args = unsafe {
-        let p = act.slot(base);
+        let p = act.window(base, if names { 2 * n } else { n });
         robigo_rtcore::Args::from_raw(p, names.then(|| p.add(n)), n as u32, any_alt)
     };
     // the expression bcEval is at, for error() and warning()
