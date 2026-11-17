@@ -1,0 +1,60 @@
+Warning message:
+In gsub("a", "b", "aa", fixed = TRUE, ignore.case = TRUE) :
+  argument 'ignore.case = TRUE' will be ignored
+Warning message:
+In gsub("a", "b", "aa", fixed = TRUE, perl = TRUE) :
+  argument 'perl = TRUE' will be ignored
+Warning message:
+In gsub(c("a", "b"), "x", "ab") :
+  argument 'pattern' has length > 1 and only the first element will be used
+Warning message:
+In gsub("a", c("x", "y"), "ab") :
+  argument 'replacement' has length > 1 and only the first element will be used
+Error in gsub(character(0), "x", "a") : invalid 'pattern' argument
+Error in gsub("a", character(0), "a") : invalid 'replacement' argument
+Error in sub("[", "x", "a") : 
+  invalid regular expression '[', reason 'Missing ']''
+In addition: Warning message:
+In sub("[", "x", "a") : TRE pattern compilation error 'Missing ']''
+Error in sub("a{2,1}", "x", "a") : 
+  invalid regular expression 'a{2,1}', reason 'Invalid contents of {}'
+In addition: Warning message:
+In sub("a{2,1}", "x", "a") :
+  TRE pattern compilation error 'Invalid contents of {}'
+Error in gsub("\\", "x", "a") : 
+  invalid regular expression '\', reason 'Trailing backslash'
+In addition: Warning message:
+In gsub("\\", "x", "a") :
+  TRE pattern compilation error 'Trailing backslash'
+Error in gsub("(", "x", "a", perl = TRUE) : 
+  invalid regular expression '('
+In addition: Warning message:
+In gsub("(", "x", "a", perl = TRUE) :
+  PCRE pattern compilation error
+	'missing closing parenthesis'
+	at ''
+Error in gsub("", "x", "a", fixed = TRUE) : zero-length pattern
+Error in gsub("a", "x", "\xff") : input string 1 is invalid
+In addition: Warning message:
+In gsub("a", "x", "\xff") : unable to translate '<ff>' to a wide string
+Error in gsub("a", "x", c("ok", "\xffa")) : input string 2 is invalid
+In addition: Warning message:
+In gsub("a", "x", c("ok", "\xffa")) :
+  unable to translate '<ff>a' to a wide string
+Error in gsub("a", "x", c("ok", "\xffa"), perl = TRUE) : 
+  input string 2 is invalid UTF-8
+Error in gsub("a", "x", c("ok", "\xffa"), fixed = TRUE) : 
+  input string 2 is invalid in this locale
+Error in gsub("\xff", "x", "a") : 'pattern' is invalid
+In addition: Warning message:
+In gsub("\xff", "x", "a") : unable to translate '<ff>' to a wide string
+Error in gsub("a", "\xff", "a") : 'replacement' is invalid
+In addition: Warning message:
+In gsub("a", "\xff", "a") : unable to translate '<ff>' to a wide string
+Error in gsub("a", "\xff", "éa") : 'replacement' is invalid
+In addition: Warning message:
+In gsub("a", "\xff", "éa") : unable to translate '<ff>' to a wide string
+Error in gsub("a", "\xff", "éa", perl = TRUE) : 
+  'replacement' is invalid UTF-8
+Error in gsub("\xff", "x", "éa", fixed = TRUE) : 
+  'pattern' is invalid UTF-8

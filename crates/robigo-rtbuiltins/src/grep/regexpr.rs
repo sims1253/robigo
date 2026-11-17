@@ -270,7 +270,8 @@ fn regexpr(cx: &Cx, p0: Char<'_>, xs: &[Char<'_>], o: Opts, rep: &mut Report) ->
         }
     };
     let names = match &m {
-        Matcher::Perl(re) => Some(re.capture_names()),
+        // (`if (perl_opt && capture_count)`: no groups, no capture attributes)
+        Matcher::Perl(re) => Some(re.capture_names()).filter(|v| !v.is_empty()),
         _ => None,
     };
     let cc = names.as_ref().map_or(0, |v| v.len());

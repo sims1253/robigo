@@ -1,0 +1,126 @@
+[1] 1
+attr(,"match.length")
+[1] 1
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+[1] 1
+attr(,"match.length")
+[1] 1
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+[[1]]
+[1] 1 2
+attr(,"match.length")
+[1] 1 1
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+
+[1] 1
+attr(,"match.length")
+[1] 1
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+[[1]]
+[1] 1
+attr(,"match.length")
+[1] 1
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+
+[1] 1
+attr(,"match.length")
+[1] 1
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+[[1]]
+[1] 1
+attr(,"match.length")
+[1] 1
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+
+[1] 1
+attr(,"match.length")
+[1] 0
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+[[1]]
+[1] 1
+attr(,"match.length")
+[1] 0
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+
+[1] -1
+attr(,"match.length")
+[1] -1
+[1] -1 -1
+attr(,"match.length")
+[1] -1 -1
+[1] -1 -1
+attr(,"match.length")
+[1] -1 -1
+[1] -1 -1
+attr(,"match.length")
+[1] -1 -1
+[1] -1  2
+attr(,"match.length")
+[1] -1  1
+attr(,"index.type")
+[1] "bytes"
+attr(,"useBytes")
+[1] TRUE
+[[1]]
+[1] -1
+attr(,"match.length")
+[1] -1
+attr(,"index.type")
+[1] "bytes"
+attr(,"useBytes")
+[1] TRUE
+
+[[2]]
+[1] 2
+attr(,"match.length")
+[1] 1
+attr(,"index.type")
+[1] "bytes"
+attr(,"useBytes")
+[1] TRUE
+
+[[1]]
+[1] 1
+attr(,"match.length")
+[1] 1
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+
+[[1]]
+[1] 1
+attr(,"match.length")
+[1] 1
+attr(,"index.type")
+[1] "chars"
+attr(,"useBytes")
+[1] TRUE
+
