@@ -10,7 +10,7 @@
 use robigo_rtcore::types::*;
 use robigo_rtcore::{
     BindingValue, Char, Cx, EnvRef, Lgl, Lookup, NeedGc, Options, Out, OwnedIsolate, RResult, Ref, Root, Scalar, Scope,
-    Sexp, SlotInit, SuperAssignCache, View,
+    Sexp, SlotInit, View,
 };
 use std::collections::HashMap;
 
@@ -564,12 +564,13 @@ fn frame_is_a_snapshot_and_set_frame_an_error() {
 
 // ---- `<<-` -------------------------------------------------------------------
 
-/// `<<-`'s memo: from a frame, through a frame whose shape lacks the
-/// symbol, to the shape slot that binds it. A second frame of the same
-/// shapes hits the memo; an overflow binding on the way, or a different
-/// shape, misses it and `setVar`'s walk decides.
+/// `<<-` over slot frames, `setVar(sym, value, ENCLOS(rho))`: from a
+/// frame, through a frame whose shape lacks the symbol, to the shape slot
+/// that binds it. Another chain of the same shapes binds its own; an
+/// overflow binding on the way takes the write; with no binding anywhere
+/// the symbol is defined in the global environment.
 #[test]
-fn super_assignment_memo_hits_and_misses() {
+fn super_assignment_walks_slot_frames() {
     let mut iso = iso();
     let cx = iso.cx();
     cx.scope(|cx, s| {
@@ -588,37 +589,31 @@ fn super_assignment_memo_hits_and_misses() {
         let mid = mk(cx, mid_shape, outer);
         let inner = mk(cx, inner_shape, mid);
         let bal = sym(cx, s, "bal");
-        let mut cache = SuperAssignCache::default();
         for i in 1..=3 {
             let v = num(cx, s, i as f64);
-            // `bal <<- i` in a frame enclosed by `inner`
-            let here = mk(cx, inner_shape, inner);
-            cx.set_var_super(bal, v, here, &mut cache).unwrap();
-            assert!(cache.is_filled(), "the path is remembered");
+            // `bal <<- i` in a frame enclosed by `inner`: setVar from `inner`
+            cx.set_var(bal, v, inner).unwrap();
             assert_eq!(real(get_in(cx, s, "bal", outer).bind(cx)), i as f64);
         }
-        // another chain of the same shapes hits it
+        // another chain of the same shapes binds its own
         let outer2 = mk(cx, outer_shape, g);
         assign(cx, "bal", 0.0, outer2).unwrap();
         let mid2 = mk(cx, mid_shape, outer2);
         let inner2 = mk(cx, inner_shape, mid2);
-        let here2 = mk(cx, inner_shape, inner2);
         let v = num(cx, s, 10.0);
-        cx.set_var_super(bal, v, here2, &mut cache).unwrap();
+        cx.set_var(bal, v, inner2).unwrap();
         assert_eq!(real(get_in(cx, s, "bal", outer2).bind(cx)), 10.0);
         assert_eq!(real(get_in(cx, s, "bal", outer).bind(cx)), 3.0, "the other chain is untouched");
         // an overflow binding on the way takes it
         assign(cx, "bal", -1.0, mid2).unwrap();
         let v = num(cx, s, 11.0);
-        cx.set_var_super(bal, v, here2, &mut cache).unwrap();
+        cx.set_var(bal, v, inner2).unwrap();
         assert_eq!(real(get_in(cx, s, "bal", mid2).bind(cx)), 11.0);
         assert_eq!(real(get_in(cx, s, "bal", outer2).bind(cx)), 10.0);
         // no binding anywhere: defined in the global environment
         let nobody = sym(cx, s, "nobody_q");
-        let mut c2 = SuperAssignCache::default();
         let v = num(cx, s, 1.0);
-        cx.set_var_super(nobody, v, here2, &mut c2).unwrap();
-        assert!(!c2.is_filled());
+        cx.set_var(nobody, v, inner2).unwrap();
         assert_eq!(real(get_in(cx, s, "nobody_q", g).bind(cx)), 1.0);
     });
 }
@@ -810,8 +805,8 @@ fn slot_frames_keep_their_objects_alive() {
 /// and read of a shape slot in a four-slot closure frame), `define` (a
 /// value replaced there), `scalar` (an unboxed store there), `new` (a
 /// closure frame of three slots, two arguments), `fun` (`findFun3` through
-/// three closure frames to a base function), `super` (`<<-` two frames up
-/// through its memo).
+/// three closure frames to a base function), `super` (`<<-` two frames up:
+/// `setVar` from the enclosure).
 #[test]
 #[ignore]
 fn frame_op_cost() {
@@ -850,7 +845,6 @@ fn frame_op_cost() {
         let mut acc = 0usize;
         cx.scope(|cx, t| {
             let r = t.out(cx).root();
-            let mut memo = SuperAssignCache::default();
             for _ in 0..n {
                 match op.as_str() {
                     "local" => {
@@ -871,7 +865,7 @@ fn frame_op_cost() {
                         let o = r.reset(cx);
                         cx.find_fun3(bf, c3, None, o).unwrap();
                     }
-                    "super" => cx.set_var_super(c, one, c3, &mut memo).unwrap(),
+                    "super" => cx.set_var(c, one, c2).unwrap(),
                     _ => {}
                 }
             }

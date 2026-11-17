@@ -1,0 +1,3 @@
+Error in k_switch_empty(1) : empty alternative in numeric switch
+Calls: print -> k_switch_empty
+Execution halted

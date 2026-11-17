@@ -152,8 +152,16 @@ fn run(dir: &Path, args: &[&str], stdin: Option<&str>) -> (Vec<u8>, Vec<u8>, i32
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().expect("run robigo-rt");
     let input = stdin.map(|f| std::fs::read(dir.join(f)).unwrap()).unwrap_or_default();
-    child.stdin.take().unwrap().write_all(&input).unwrap();
+    // from a thread, so a large input cannot block against a full stdout
+    // pipe; a program that exits before reading all of it (an error, q())
+    // leaves the rest unread, as GNU R does, and the transcript is the judge
+    let mut pipe = child.stdin.take().unwrap();
+    let writer = std::thread::spawn(move || match pipe.write_all(&input) {
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        r => r,
+    });
     let o = child.wait_with_output().unwrap();
+    writer.join().unwrap().expect("write robigo-rt's stdin");
     // ROBIGO_GC_STATS' report (the heap's, when the isolate is dropped)
     let err: Vec<u8> = o
         .stderr

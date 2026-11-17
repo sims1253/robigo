@@ -1,0 +1,29 @@
+{
+ "meta": {
+  "cycles": true,
+  "gnur": null,
+  "robigo": "~/.cache/x1-bins/robigo-rt-main-66c1a0b1",
+  "robigo_env": {
+   "ROBIGO_COMPILE": "1"
+  },
+  "robigo_identity": {
+   "build_id": "ecef309e733a12d1551a3ba6ac0eb81c2ec488b0",
+   "checkout": "nightly-2026-11-16-243-g773c461d",
+   "mtime": "2026-11-17T02:33:34Z",
+   "path": "~/.cache/x1-bins/robigo-rt-main-66c1a0b1",
+   "sha256": "2030382ebf051d76b69f87be6a78106d9d92c0f53f1d0043ce580dbd0c7b6c8c",
+   "stale": null
+  },
+  "rows": "benchmarks/rt/calls-rows.toml",
+  "valgrind": "~/.cache/rr-tools/bin/valgrind"
+ },
+ "rows": {
+  "binarytrees": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 40,
+   "robigo_est_cycles": 3620030.9,
+   "robigo_instr": 3481600.15
+  }
+ }
+}

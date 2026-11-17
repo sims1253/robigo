@@ -309,3 +309,87 @@ fn oracle_databases_round_trip() {
     eprintln!("{report}");
     assert!(!failed, "{report}");
 }
+
+/// V3's bar: every closure of GNU R 4.6.2's base.rdb (base's installed
+/// byte code) translates into the IR, with the functions it makes, each
+/// translation through the verifier ([`robigo_rt::compile::translation_gaps`]).
+/// A translation that stops at a primitive robigo-rt does not have yet
+/// ("... robigo-rt lacks", `log`) is counted by its reason: a gap of
+/// robigo-rt's the translation waits on. Any other stop fails: code the
+/// translation cannot follow, an opcode it does not know, the verifier's
+/// refusal. The data and the variable are the round trip's.
+#[test]
+fn oracle_base_closures_translate() {
+    let Some(lib) = std::env::var_os("ROBIGO_ORACLE_LIBRARY") else {
+        eprintln!("ROBIGO_ORACLE_LIBRARY is not set: skipped (scripts/rt-rdb-roundtrip.sh sets it)");
+        return;
+    };
+    let dir = std::path::PathBuf::from(lib).join("base").join("R");
+    let read = |ext: &str| {
+        let f = dir.join(format!("base.{ext}"));
+        std::fs::read(&f).unwrap_or_else(|e| panic!("{}: {e}", f.display()))
+    };
+    let (rdb, rdx) = (read("rdb"), read("rdx"));
+    let mut session = common::Session::jit();
+    session.val(".Internal(options(show.error.messages = FALSE))");
+    let cx = session.cx();
+    cx.set_locale(Locale { utf8: false, collate_c: true });
+    robigo_rt::define_builtin(cx, "rdb_in_hook", in_hook, 1, 1);
+    robigo_rt::define_builtin(cx, "..getNamespace", get_namespace, 1, 2);
+    let (mut closures, mut whole) = (0usize, 0usize);
+    let mut waits: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut failures = Vec::new();
+    cx.scope(|cx, s| {
+        let records = rdx_records(cx, "base", &rdx, rdb.len());
+        let o = s.out(cx);
+        let hin = o.root();
+        let ex = s.out(cx);
+        let exr = ex.root();
+        robigo_rt::lower::parse(cx, "rdb_in_hook", ex).expect("parsing the hook's name");
+        let e = s.root(cx, exr.bind(cx).as_vector::<Ref<'_>>().expect("parse() gives an expression").get(0));
+        let g = s.root(cx, cx.global_env());
+        robigo_rt::eval(cx, e, g, o).expect("the hook");
+        for (name, off, len) in &records {
+            let data = inflate_record(&format!("base.rdb: {name}"), &rdb[*off..off + len]);
+            cx.scope(|cx, s| {
+                let o = s.out(cx);
+                let v = o.root();
+                if let Err(e) = unserialize_bytes(cx, data, Some(hin), o) {
+                    failures.push(format!("{name}: unserialize: {}", common::message(cx, e)));
+                    return;
+                }
+                if !matches!(v.bind(cx).view(), View::Closure(_)) {
+                    return;
+                }
+                closures += 1;
+                match robigo_rt::compile::translation_gaps(cx, v) {
+                    Ok(g) if g.is_empty() => whole += 1,
+                    Ok(g) => {
+                        for why in g {
+                            if why.contains("robigo-rt lacks") || why.contains("calling log") {
+                                *waits.entry(why).or_default() += 1;
+                            } else {
+                                failures.push(format!("{name}: {why}"));
+                            }
+                        }
+                    }
+                    Err(e) => failures.push(format!("{name}: {}", common::message(cx, e))),
+                }
+            });
+        }
+    });
+    let mut report = format!(
+        "base.rdb: {closures} closures, {whole} translated whole; {} stop(s) waiting on robigo-rt, {} failure(s)\n",
+        waits.values().sum::<usize>(),
+        failures.len()
+    );
+    for (why, n) in &waits {
+        report.push_str(&format!("  waits ({n}): {why}\n"));
+    }
+    for m in &failures {
+        report.push_str(&format!("  fails: {m}\n"));
+    }
+    eprintln!("{report}");
+    assert!(closures > 1000, "{report}");
+    assert!(failures.is_empty(), "{report}");
+}

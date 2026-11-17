@@ -21,8 +21,14 @@
 //!   `&Cx` interval: that is what the borrow checker proves.
 //! - **Minting.** A `Ref<'g>` is made only from a root, [`Args`], a
 //!   [`Global`], a field of an object so reached, or a fresh allocation,
-//!   within one `&'g Cx` interval. During it the object is live, does not
-//!   move and its fields do not change.
+//!   within one `&'g Cx` interval. During it nothing collects or moves,
+//!   so the object stays live at one address, and no payload that a view
+//!   or slice borrows changes. Other words may: under `&Cx`, dropping early
+//!   argument values ([`Cx::note_effect`], [`Cx::note_write`]) clears
+//!   delayed slots, the code-source marks write header bits
+//!   ([`Cx::mark_code_source`], [`Cx::note_code_write`]), and
+//!   [`Cx::set_srcref`] sets the context's srcref. An object a cleared word
+//!   held stays live until the next collection, which needs `&mut Cx`.
 //! - **Roots** are value-stack slots of a generative [`Scope`]
 //!   ([`Cx::scope`]): they survive `&mut Cx` calls, die when the scope's
 //!   closure returns, errs or panics, and cannot be named after it. Only
@@ -257,8 +263,8 @@ pub use context::{
 };
 pub use edit::UniqueList;
 pub use env::{
-    ArgLoc, ArgSlot, ArgValue, Binding, BindingType, BindingValue, HashProfile, Lookup, RawArg, RawBinding,
-    SUPER_ASSIGN_HOPS, Scalar, SetVarTarget, SlotInit, SuperAssignCache,
+    ArgLoc, ArgSlot, ArgValue, Binding, BindingType, BindingValue, HashProfile, Lookup, RawArg, RawBinding, Scalar,
+    SetVarTarget, SlotInit,
 };
 pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
 pub use frames::{Frame, WalkError};

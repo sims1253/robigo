@@ -115,12 +115,27 @@ fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, promise: b
         // SAFETY: `e` is a rooted symbol.
         SYMSXP => unsafe { symbol_value(cx, e.bind(cx).sexp(), rho, out) },
         PROMSXP => force(cx, e, out),
-        // bcEval(e, rho). INTERIM(V3): the source expression is evaluated,
-        // as bcEval's fallback does (`eval(bytecodeExpr(body), rho)`); V3
-        // runs the translated byte code
+        // bcEval(e, rho): the translated byte code (V3), its code kept on
+        // the BCODESXP; byte code disabled, or of a version bcEval does not
+        // run, evaluates its source expression (bcEval's fallback)
+        // R: eval.c:eval (BCODESXP), bcEval
         BCODESXP => cx.scope(|cx, s| {
-            let src = s.root(cx, robigo_rtbuiltins::bytecode::expr(cx, e.bind(cx)));
-            eval(cx, src, rho, out)
+            let st = prims::state(cx);
+            let source = st.forced == Some(Profile::Eval)
+                || st.jit.get().disable_bytecode
+                || !robigo_rtbuiltins::bytecode::version_ok(e.bind(cx));
+            if source {
+                let src = s.root(cx, robigo_rtbuiltins::bytecode::expr(cx, e.bind(cx)));
+                return eval(cx, src, rho, out);
+            }
+            let code = crate::compile::bytecode_code(cx, e)?;
+            // SAFETY: a fresh or cached code object.
+            let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
+            let slot = out_slot(&out);
+            // (the code object's entry nests the level `eval` raised)
+            cx.set_eval_depth(depthsave);
+            // SAFETY: rooted code and environment; an empty out slot.
+            unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false, false) }.map(drop)
         }),
         DOTSXP => Err(cx.error("'...' used in an incorrect context")),
         _ => {
