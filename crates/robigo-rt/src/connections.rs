@@ -127,9 +127,6 @@ pub struct Conn {
     /// reads `con->PushBack` as GNU R lays it out ([`Conn::sync_push_back`]).
     push_back: Vec<CString>,
     push_back_ptrs: Vec<*mut c_char>,
-    /// The warnings `R_ExpandFileName` gave in the last open (the callback
-    /// has no `Cx`): the open's caller gives it first ([`run_open`]).
-    expand_warning: Vec<String>,
     /// `set_iconv` would have set up `inconv` or `outconv` (an `encoding`
     /// robigo does not re-encode from yet): reads and writes refuse.
     reencode: bool,
@@ -235,15 +232,18 @@ impl Conn {
         self.sync_push_back();
     }
 
-    /// `R_ExpandFileName`'s warnings from the last open, the wrapped
-    /// connection's first (it opens first).
-    fn take_expand_warnings(&mut self) -> Vec<String> {
-        let mut w = Vec::new();
-        if let Imp::Gzcon(g) = &mut self.imp {
-            w.extend(g.inner.take_expand_warnings());
+    /// The warnings `R_ExpandFileName` gives in this connection's open
+    /// (`file_open`'s and `gzfile_open`'s, before they open anything; a
+    /// `gzcon`'s when it opens the wrapped connection). The callback has
+    /// no `Cx` to give them, so the open's caller gives them first
+    /// ([`run_open`]).
+    fn open_warnings(&self) -> Vec<String> {
+        match &self.imp {
+            Imp::File(_) if !self.description.is_empty() => expand_file_name(&self.description).1,
+            Imp::Gz(_) => expand_file_name(&self.description).1,
+            Imp::Gzcon(g) if !g.inner.isopen() => g.inner.open_warnings(),
+            _ => Vec::new(),
         }
-        w.append(&mut self.expand_warning);
-        w
     }
 }
 
@@ -329,7 +329,6 @@ impl Conn {
             imp,
             push_back: Vec::new(),
             push_back_ptrs: Vec::new(),
-            expand_warning: Vec::new(),
             reencode: false,
         };
         c.c.class = c.class_c.as_ptr().cast_mut();
@@ -496,8 +495,7 @@ fn file_open(c: &mut Conn) -> OpenResult {
     if c.description.is_empty() {
         return Err("robigo: 'file(\"\")' (an anonymous file) is not implemented yet".into());
     }
-    let (name, w) = expand_file_name(&c.description);
-    c.expand_warning = w;
+    let name = expand_file_name(&c.description).0;
     if name == b"stdin" {
         return Err("robigo: 'file(\"stdin\")' is not implemented yet".into());
     }
@@ -584,8 +582,7 @@ fn comp_type_from_file(name: &[u8]) -> u8 {
 
 // R: connections.c:gzfile_open
 fn gzfile_open(c: &mut Conn) -> OpenResult {
-    let (name, w) = expand_file_name(&c.description);
-    c.expand_warning = w;
+    let name = expand_file_name(&c.description).0;
     let shown = String::from_utf8_lossy(&name).into_owned();
     if is_dir(&name) {
         return Err(format!("cannot open file '{shown}': it is a directory"));
@@ -1471,18 +1468,15 @@ pub fn write_all(cx: &mut Cx, n: i32, buf: &[u8], msg: &str) -> RResult<()> {
     r.map_err(|m| cx.error(&m))
 }
 
-/// Run an open `f` on connection `n`, then give the warnings
-/// `R_ExpandFileName` gave in it (GNU R gives them inside the open, so
-/// before the open's own warning, which is the caller's).
+/// Run an open `f` on connection `n`, after the warnings `R_ExpandFileName`
+/// gives in it (GNU R gives them inside the open, before it opens the file,
+/// so before the open's own warning, which is the caller's).
 fn run_open(cx: &mut Cx, n: i32, f: impl FnOnce(&mut Conn) -> OpenResult) -> RResult<OpenResult> {
-    let (r, ws) = with_conn(cx, n, |c| {
-        let r = f(c);
-        (r, c.take_expand_warnings())
-    })?;
+    let ws = with_conn(cx, n, |c| c.open_warnings())?;
     for w in ws {
         cx.warning(&w)?;
     }
-    Ok(r)
+    with_conn(cx, n, f)
 }
 
 /// `con->open(con)` with `mode` in place for the call (serialize's
@@ -1552,18 +1546,22 @@ fn con_destroy(cx: &mut Cx, i: usize) -> RResult<i32> {
 /// error after the open's warning.
 // R: connections.c:checked_open
 fn checked_open(cx: &mut Cx, ncon: usize) -> RResult<()> {
-    let (r, ws) = with_conn(cx, ncon as i32, |c| {
-        let r = open_conn(c);
-        (r, c.take_expand_warnings())
-    })?;
     // the open's warnings are given while the connection exists; one that
-    // becomes an error destroys it (the context's cend, PR#18491)
+    // becomes an error destroys it (the context's cend, PR#18491), before
+    // the file is opened when it is R_ExpandFileName's
+    let ws = with_conn(cx, ncon as i32, |c| c.open_warnings())?;
     let mut warned = Ok(());
-    for w in ws.iter().chain(r.as_ref().err()) {
+    for w in &ws {
         warned = cx.warning(w);
         if warned.is_err() {
             break;
         }
+    }
+    let r = if warned.is_ok() { with_conn(cx, ncon as i32, open_conn)? } else { Ok(()) };
+    if warned.is_ok()
+        && let Err(w) = &r
+    {
+        warned = cx.warning(w);
     }
     if warned.is_err() || r.is_err() {
         con_destroy(cx, ncon)?;
@@ -1898,13 +1896,11 @@ pub fn do_gzcon(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
     con.set_encname(&encname);
     publish(cx, icon as usize, con, "gzcon", out)?;
     if inner_open {
-        let (r, ws) = with_conn(cx, icon, |c| {
-            let r = gzcon_open(c);
-            (r, c.take_expand_warnings())
-        })?;
+        let ws = with_conn(cx, icon, |c| c.open_warnings())?;
         for w in ws {
             cx.warning(&w)?;
         }
+        let r = with_conn(cx, icon, gzcon_open)?;
         if let Err((w, true)) = r {
             cx.warning(&w)?;
         }
