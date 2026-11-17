@@ -474,7 +474,33 @@ fn base_fetch(cx: &mut Cx, call: Root<'_>, _: Root<'_>, _: Root<'_>, out: Out<'_
     cx.scope(|cx, s| {
         let sym = cx.install_rooted(s, w.name.as_bytes())?;
         let base = s.root(cx, cx.base_env());
-        match &w.def {
+        let o = s.out(cx);
+        let promise = o.root();
+        cx.find_var_in_frame3(base, sym, true, o)?;
+        let r = fetch_steps(cx, w, sym, base, res);
+        // a step failed after one rebound the name: the fetch's promise again,
+        // so the name raises again when touched (as a lazy-load promise whose
+        // fetch failed), not an intermediate value
+        if r.is_err() && is_fetch(cx, promise.bind(cx).sexp()) {
+            let o = s.out(cx);
+            let now = o.root();
+            cx.find_var_in_frame3(base, sym, true, o)?;
+            if now.bind(cx).sexp() != promise.bind(cx).sexp() {
+                cx.define_var(sym, promise, base)?;
+            }
+        }
+        r
+    })
+}
+
+/// [`base_fetch`]'s steps for `w`, its value into `res`. A name defined in
+/// more than one step (`seq` definitions, forms after its definition) is
+/// rebound along the way, the later steps reading it: bound to its final
+/// value at the end, which its promise keeps too.
+fn fetch_steps(cx: &mut Cx, w: &WideName, sym: Root<'_>, base: Root<'_>, res: Root<'_>) -> RResult<()> {
+    let wide = Wide::get();
+    cx.scope(|cx, s| {
+        let rebinds = match &w.def {
             Def::Assign(defs) => {
                 for (k, &(form, depth)) in defs.iter().enumerate() {
                     let o = res.reset(cx);
@@ -490,6 +516,7 @@ fn base_fetch(cx: &mut Cx, call: Root<'_>, _: Root<'_>, _: Root<'_>, out: Out<'_
                         cx.define_var(sym, res, base)?;
                     }
                 }
+                defs.len() > 1
             }
             Def::Block(form) => {
                 let o = s.out(cx);
@@ -500,6 +527,7 @@ fn base_fetch(cx: &mut Cx, call: Root<'_>, _: Root<'_>, _: Root<'_>, out: Out<'_
                     let m = format!("robigo: base's {} did not bind '{}'", form.src, w.name);
                     return Err(cx.error(&m));
                 }
+                false
             }
             Def::Unrun(form) => {
                 let lib = crate::prims::state(cx).base_src.borrow().clone().unwrap_or_default();
@@ -511,14 +539,14 @@ fn base_fetch(cx: &mut Cx, call: Root<'_>, _: Root<'_>, _: Root<'_>, out: Out<'_
                 );
                 return Err(cx.error(&m));
             }
-        }
-        if !w.after.is_empty() {
-            // the forms that follow read the name: bound to its value first
+        };
+        if rebinds || !w.after.is_empty() {
+            // the final value; the forms that follow read the name
             cx.define_var(sym, res, base)?;
-            for &form in &w.after {
-                let o = s.out(cx);
-                eval_form(cx, form, o, |e| Some(e))?;
-            }
+        }
+        for &form in &w.after {
+            let o = s.out(cx);
+            eval_form(cx, form, o, |e| Some(e))?;
         }
         Ok(())
     })

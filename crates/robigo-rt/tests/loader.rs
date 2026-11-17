@@ -245,3 +245,19 @@ fn r_parse_vector_warns_for_what_it_reads() {
     assert_eq!(parse("1.1L; )", -1), (ParseStatus::Error, 1));
     assert_eq!(parse("1.1L; f(2.5L,", -1), (ParseStatus::Incomplete, 2));
 }
+
+/// INTERIM(L5): a name defined in several steps (`.Library.site`'s three
+/// definitions in the profile, each reading the one before) reads the
+/// same every time: its final value, or, while a step fails (robigo-rt has
+/// no `strsplit` yet), the same error, its fetch's promise bound again
+/// rather than the value of an earlier step.
+#[test]
+fn a_name_defined_in_steps_reads_the_same_every_time() {
+    let (mut iso, _) = session();
+    let cx = iso.cx();
+    let src = "f <- function() tryCatch(.Library.site, error = function(e) conditionMessage(e))\n\
+               a <- f()\nb <- f()\nc <- f()\ncat(identical(a, b), identical(b, c), '\\n')\n";
+    let (out, err, ok) = run(cx, src);
+    assert!(ok, "{err}");
+    assert_eq!(out, "TRUE TRUE \n", "{err}");
+}
