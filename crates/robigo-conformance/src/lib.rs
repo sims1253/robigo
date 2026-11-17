@@ -277,6 +277,11 @@ pub struct Column {
     /// A single-list ratchet still read beside the markers (repository
     /// relative), while branches migrate (`scripts/ratchet.py migrate`).
     pub legacy_list: Option<&'static str>,
+    /// An environment variable under which the binary prints, on stderr
+    /// at startup, the forms of base it does not run: that record goes
+    /// with each failing case, which may fail for one of them
+    /// (INTERIM(L5): robigo-rt's wide base, `crates/robigo-rt/src/base.rs`).
+    pub boot_record: Option<&'static str>,
 }
 
 /// The old runtime, `robigo`: `tests/r` against GNU R 4.5.0.
@@ -287,6 +292,7 @@ pub const OLD: Column = Column {
     suites: &[Suite { dir: "tests/r", cases: Cases::All }],
     corpus: "conformance",
     legacy_list: Some("tests/r/passing.txt"),
+    boot_record: None,
 };
 
 /// G3's runtime, `robigo-rt`: its own cases in `tests/rt`, and the cases
@@ -298,6 +304,7 @@ pub const RT: Column = Column {
     suites: &[Suite { dir: "tests/rt", cases: Cases::All }, Suite { dir: "tests/r", cases: Cases::Marked }],
     corpus: "conformance-rt",
     legacy_list: None,
+    boot_record: Some("ROBIGO_BOOT_VERBOSE"),
 };
 
 /// The feature requirements a `.requires` sidecar may name:
@@ -650,7 +657,26 @@ fn first_diff(expected: &str, got: &str, runtime: &str) -> String {
     String::new()
 }
 
-fn check(root: &Path, column: &Column, suite: &str, script: &Path, o: &Options) -> Outcome {
+/// The binary's record of what of base it does not run
+/// ([`Column::boot_record`]), as lines of a failing case's report: empty
+/// when the column has none or the binary prints none.
+fn boot_record(column: &Column, o: &Options) -> String {
+    let Some(var) = column.boot_record else { return String::new() };
+    let dir = std::env::temp_dir().join(format!("robigo-conf-boot-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("create {}: {e}", dir.display()));
+    let script = dir.join("empty.R");
+    std::fs::write(&script, "invisible(NULL)\n").unwrap_or_else(|e| panic!("write {}: {e}", script.display()));
+    let got = command(&o.bin, &script).env(var, "1").output();
+    let _ = std::fs::remove_dir_all(&dir);
+    let got = got.unwrap_or_else(|e| panic!("spawn {}: {e}", o.bin.display()));
+    let lines: Vec<String> = String::from_utf8_lossy(&got.stderr).lines().map(|l| format!("    {l}\n")).collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!("    (what {} does not run of base, which this case may need:)\n{}", column.runtime, lines.concat())
+}
+
+fn check(root: &Path, column: &Column, suite: &str, script: &Path, o: &Options, record: &str) -> Outcome {
     let id = script.strip_prefix(root).unwrap().display().to_string();
     let base = expected_base(root, suite, script, &o.version);
     let exp = match read_recording(&base, script, &o.version) {
@@ -684,6 +710,9 @@ fn check(root: &Path, column: &Column, suite: &str, script: &Path, o: &Options) 
     }
     if !status_ok {
         diff.push_str(&format!("    exit status {} (GNU R {})\n", status, exp.status));
+    }
+    if !(stdout_ok && stderr_ok && status_ok) {
+        diff.push_str(record);
     }
     Outcome { id, unrecorded: None, stdout_ok, stderr_ok, status_ok, diff }
 }
@@ -751,6 +780,7 @@ pub fn run(root: &Path, column: &Column, o: &Options) -> Result<Report, String> 
         return Err(format!("no enabled conformance scripts in {} match {:?}", suite_dirs(column), o.filter));
     }
 
+    let record = boot_record(column, o);
     let queue = std::sync::Mutex::new(jobs);
     let results = std::sync::Mutex::new(Vec::new());
     std::thread::scope(|s| {
@@ -759,7 +789,7 @@ pub fn run(root: &Path, column: &Column, o: &Options) -> Result<Report, String> 
                 loop {
                     let next = queue.lock().unwrap().pop();
                     let Some((suite, p)) = next else { break };
-                    let r = check(root, column, suite, &p, o);
+                    let r = check(root, column, suite, &p, o, &record);
                     results.lock().unwrap().push(r);
                 }
             });
