@@ -32,6 +32,11 @@ fn rt_bin() -> PathBuf {
 
 #[test]
 fn rt_conformance() {
+    // robigo-rt ignores an inherited R_HOME (GNU R's, the CI image's
+    // /usr/lib/R) with GNU R's warning on stdout, which every compared
+    // output would carry: its cases run without one
+    // SAFETY: the first thing the test does, before it starts any thread.
+    unsafe { std::env::remove_var("R_HOME") };
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
     // the package C of tests/rt/capi, built for robigo-rt (the cases load it
     // from RT_CAPI_LIBS; scripts/regen-expected.sh builds GNU R's), in a
