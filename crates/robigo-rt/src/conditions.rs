@@ -1455,6 +1455,31 @@ pub fn do_add_cond_hands(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root
     })
 }
 
+/// `.Internal(.addGlobHands(classes, handlers, parentenv, target,
+/// calling))` (`globalCallingHandlers`): with no handlers established
+/// below the top level, the global handlers made anew from these (as
+/// `.addCondHands` makes entries, on an empty stack), and every record
+/// down to the top level given them.
+// R: errors.c:do_addGlobHands
+pub fn do_add_glob_hands(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    check_arity(cx, call, args, ".addGlobHands", 5)?;
+    // check for handlers on the stack before proceeding (PR1826)
+    if !cx.handlers_only_global() {
+        return Err(cx.error("should not be called with handlers on the stack"));
+    }
+    cx.scope(|cx, s| {
+        let nil = s.root(cx, cx.nil());
+        cx.set_handler_stack(nil);
+        let o = s.out(cx);
+        do_add_cond_hands(cx, call, args, env, o)?;
+        let stack = s.root(cx, cx.handler_stack());
+        cx.set_global_handlers(stack);
+        Ok(())
+    })?;
+    out.set(cx, cx.nil());
+    Ok(())
+}
+
 /// `.Internal(.resetCondHands(stack))`.
 // R: errors.c:do_resetCondHands
 pub fn do_reset_cond_hands(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {

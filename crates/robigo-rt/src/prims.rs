@@ -156,6 +156,8 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("stop", crate::conditions::do_stop, Inline::None, 11, 2),
     builtin("warning", crate::conditions::do_warning, Inline::None, 111, 4),
     builtin(".addCondHands", crate::conditions::do_add_cond_hands, Inline::None, 111, 5),
+    // names.c: {".addGlobHands", do_addGlobHands, 0, 111, 5, ...}
+    builtin(".addGlobHands", crate::conditions::do_add_glob_hands, Inline::None, 111, 5),
     builtin(".resetCondHands", crate::conditions::do_reset_cond_hands, Inline::None, 111, 1),
     builtin(".signalCondition", crate::conditions::do_signal_condition, Inline::None, 11, 3),
     builtin(".dfltStop", crate::conditions::do_dflt_stop, Inline::None, 11, 2),

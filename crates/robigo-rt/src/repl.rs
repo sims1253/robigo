@@ -207,7 +207,7 @@ fn eval_statement(cx: &mut Cx, expr: &robigo_syntax::Expr<'_>, savestack: i32) -
         let o = s.out(cx);
         let or = o.root();
         let done = cx
-            .toplevel(g, base, |cx| {
+            .repl_toplevel(g, base, |cx| {
                 cx.set_visible(false);
                 // under PROTECT(thisExpr), then PROTECT(value) for the print
                 // (robigo_rtcore's ppacct)
@@ -292,7 +292,8 @@ fn call_if_closure(cx: &mut Cx, name: &[u8], from: Root<'_>, rho: Root<'_>) -> b
         let g = s.root(cx, cx.global_env());
         let base = s.root(cx, cx.base_env());
         let o = s.out(cx);
-        cx.toplevel(g, base, |cx| crate::eval(cx, callr, rho, o)).expect("robigo: an exit that passed the top level")
+        cx.repl_toplevel(g, base, |cx| crate::eval(cx, callr, rho, o))
+            .expect("robigo: an exit that passed the top level")
     })
 }
 
