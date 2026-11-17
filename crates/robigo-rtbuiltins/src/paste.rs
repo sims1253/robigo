@@ -159,6 +159,112 @@ pub fn do_paste<const CODE: u8>(
     })
 }
 
+/// `.Internal(file.path(list(...), fsep))`: the arguments' elements
+/// joined by `fsep`, recycled to the longest; character(0) if any is empty.
+/// Each piece is in UTF-8 in a UTF-8 locale (or when one is marked), else
+/// native; "bytes" strings are an error.
+// R: paste.c:do_filepath
+pub fn do_filepath(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("file.path", true).check_arity(cx, call, args)?;
+    let x = args.root(0);
+    if !matches!(x.bind(cx).sexptype(), VECSXP | EXPRSXP) {
+        return Err(cx.error("invalid first argument"));
+    }
+    let nx = x.bind(cx).len().unwrap_or(0);
+    let empty = |cx: &mut Cx, out: Out<'_>| cx.build(out, |cx| Ok(cx.alloc_vector::<Char<'_>>(0)?.finish().into()));
+    if nx == 0 {
+        return empty(cx, out);
+    }
+    let sep = args.root(1);
+    let sep_ok = sep.bind(cx).as_vector::<Char<'_>>().is_some_and(|v| !v.is_empty() && v.get(0) != cx.na_string());
+    if !sep_ok {
+        return Err(cx.error("invalid separator"));
+    }
+    cx.scope(|cx, s| {
+        // the arguments as strings: an object through as.character(), a
+        // symbol its name, anything else coerceVector(xj, STRSXP)
+        let mut elts: Vec<Option<Root<'_>>> = Vec::with_capacity(nx);
+        let mut maxlen = 0usize;
+        for j in 0..nx {
+            let (is_str, is_obj) = {
+                let xj = elt(cx, x, j);
+                (xj.sexptype() == STRSXP, xj.is_object())
+            };
+            let len = if is_str {
+                elts.push(None);
+                elt(cx, x, j).len().unwrap_or(0)
+            } else if is_obj {
+                let xj = s.root(cx, elt(cx, x, j));
+                let r = as_character(cx, s, xj, env)?;
+                if r.bind(cx).sexptype() != STRSXP {
+                    return Err(non_string(cx, "file.path"));
+                }
+                elts.push(Some(r));
+                r.bind(cx).len().unwrap_or(0)
+            } else {
+                let n = match Strings::of(cx, elt(cx, x, j)).map(|v| v.len()) {
+                    Ok(n) => n,
+                    Err(e @ (Uncoercible::Type(_) | Uncoercible::Env | Uncoercible::Deparse(_))) => {
+                        return Err(cx.error(&e.message()));
+                    }
+                    Err(Uncoercible::NotYet(what)) => return Err(not_yet(cx, Some(call), what)),
+                };
+                elts.push(None);
+                n
+            };
+            if len == 0 {
+                return empty(cx, out);
+            }
+            maxlen = maxlen.max(len);
+        }
+        let loc = cx.locale();
+        let utf8_locale = loc.utf8;
+        // the pieces' bytes, element by element; whether element i is UTF-8
+        let mut joined: Vec<(Vec<u8>, bool)> = Vec::with_capacity(maxlen);
+        let bytes_found = {
+            let cx = &*cx;
+            let sv: Vec<Strings<'_>> = (0..nx)
+                .map(|j| {
+                    let e = elts[j].map_or_else(|| elt(cx, x, j), |r| r.bind(cx));
+                    Strings::of(cx, e).expect("robigo: checked before")
+                })
+                .collect();
+            let bytes_found = sv.iter().any(|v| (0..v.len()).any(|i| v.get(i).is_some_and(|t| t.enc() == Enc::Bytes)));
+            let csep = first(cx, sep).bytes().to_vec();
+            for i in (0..maxlen).take_while(|_| !bytes_found) {
+                // (latin1locale is not modelled)
+                let use_utf8 = utf8_locale
+                    || sv.iter().any(|v| {
+                        let t = v.get_or_na(i % v.len());
+                        matches!(t.enc(), Enc::Utf8 | Enc::Latin1)
+                    });
+                let mut buf = Vec::new();
+                for (j, v) in sv.iter().enumerate() {
+                    let t = v.get_or_na(i % v.len());
+                    // trCharUTF8 / translateCharFP ("bytes" was refused)
+                    let piece = if use_utf8 { to_utf8(t, loc) } else { to_native(t, loc) };
+                    buf.extend_from_slice(&piece.expect("robigo: no bytes string"));
+                    if j != nx - 1 {
+                        buf.extend_from_slice(&csep);
+                    }
+                }
+                joined.push((buf, use_utf8));
+            }
+            bytes_found
+        };
+        if bytes_found {
+            return Err(cx.error("strings with \"bytes\" encoding are not allowed"));
+        }
+        cx.build(out, |cx| {
+            let mut ans = cx.alloc_vector::<Char<'_>>(maxlen)?;
+            for (i, (b, u)) in joined.iter().enumerate() {
+                ans.set(i, cx.mk_char(b, if *u { Encoding::Utf8 } else { Encoding::Native })?);
+            }
+            Ok(ans.finish().into())
+        })
+    })
+}
+
 /// GNU R's `zero_return`: `""` when collapsing, else `character(0)`.
 fn zero(cx: &mut Cx, collapse: bool, out: Out<'_>) -> RResult<()> {
     cx.build(out, |cx| {

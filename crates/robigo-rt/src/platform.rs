@@ -192,3 +192,66 @@ pub fn do_sysgetpid(
     crate::prims::check_arity(cx, call, args.len(), "Sys.getpid", 0, true)?;
     cx.build_scalar(out, std::process::id() as i32)
 }
+
+/// `.Internal(R.home())`: `R_HomeDir()`, the environment variable
+/// `R_HOME` (GNU R's front end sets it).
+// R: platform.c:do_Rhome, sysutils.c:R_HomeDir
+pub fn do_rhome(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: robigo_rtcore::Root<'_>,
+    out: robigo_rtcore::Out<'_>,
+) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "R.home", 0, true)?;
+    let Some(home) = std::env::var_os("R_HOME") else {
+        return Err(cx.error("unable to determine R home location"));
+    };
+    let b = std::os::unix::ffi::OsStrExt::as_bytes(home.as_os_str()).to_vec();
+    cx.build(out, |cx| cx.mk_string(&b, Encoding::Native))
+}
+
+/// `.Internal(dir.exists(paths))`: whether each path names a directory
+/// (`stat`, so a link to one counts); NA and an untranslatable name are
+/// FALSE.
+// R: platform.c:do_direxists
+pub fn do_direxists(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: robigo_rtcore::Root<'_>,
+    out: robigo_rtcore::Out<'_>,
+) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "dir.exists", 1, true)?;
+    let names: Option<Vec<Option<Vec<u8>>>> = match args.get(cx, 0).view() {
+        robigo_rtcore::View::Str(v) => Some(
+            (0..v.len())
+                .map(|i| {
+                    let c = v.get(i);
+                    // translateCharFP2: None where it cannot translate
+                    (c != cx.na_string())
+                        .then(|| {
+                            robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(c), cx.locale())
+                                .ok()
+                                .map(|b| b.into_owned())
+                        })
+                        .flatten()
+                })
+                .collect(),
+        ),
+        _ => None,
+    };
+    let Some(names) = names else { return Err(cx.error("invalid filename argument")) };
+    let ans: Vec<robigo_rtcore::Lgl> = names
+        .iter()
+        .map(|n| {
+            let is_dir = n.as_ref().is_some_and(|b| {
+                let p = crate::connections::expand_file_name(b);
+                std::fs::metadata(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&p))
+                    .is_ok_and(|m| m.is_dir())
+            });
+            robigo_rtcore::Lgl(is_dir as i32)
+        })
+        .collect();
+    cx.build(out, |cx| Ok(cx.alloc_copy(&ans)?.finish().into()))
+}

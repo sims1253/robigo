@@ -8,7 +8,7 @@
 use crate::{
     apply, arith, array, attrib, bind, builtin, bytecode, character, coerce, complex, context, cum, envir, errors,
     grep, identical, is, logic, math, options, paste, relop, seq, sort, sprintf, subset, summary, sysutils, unique,
-    util,
+    util, version,
 };
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
@@ -503,6 +503,9 @@ pub static BUILTINS: &[Builtin] = &[
     row("sprintf", sprintf::do_sprintf, 1, 11, -1, FUNCALL, Pure),
     op!("startsWith", 0, character::do_starts_with, 11, 2, FUNCALL, Pure),
     op!("endsWith", 1, character::do_starts_with, 11, 2, FUNCALL, Pure),
+    // version.c, paste.c's file.path
+    row("Version", version::do_version, 0, 11, 0, FUNCALL, Pure),
+    row("file.path", paste::do_filepath, 0, 11, 2, FUNCALL, Pure),
     // util.c
     row("Encoding", util::do_encoding, 0, 11, 1, FUNCALL, Pure),
     row("setEncoding", util::do_setencoding, 0, 11, 2, FUNCALL, Pure),

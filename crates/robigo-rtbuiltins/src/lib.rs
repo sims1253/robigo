@@ -64,5 +64,6 @@ pub mod sysutils;
 pub mod text;
 pub mod unique;
 pub mod util;
+pub mod version;
 
 pub use registry::{BUILTINS, Builtin, BuiltinFn, Effect, PpInfo, PpKind, Prec, Visibility};
