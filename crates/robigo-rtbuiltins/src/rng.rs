@@ -227,21 +227,22 @@ pub fn get_rng_state(cx: &mut Cx) -> RResult<()> {
 pub fn put_rng_state(cx: &mut Cx) -> RResult<()> {
     // (RNG_kind, N01_kind and Sample_kind are always valid here: the
     // "Internal .Random.seed is corrupt" warning cannot happen)
-    let (kinds, words) = with_rng(cx, |r| {
-        let kinds = r.kind as i32 + 100 * r.n01_kind as i32 + 10000 * r.sample_kind as i32;
-        let words: Vec<i32> = r.seed[..r.kind.n_seed()].iter().map(|&w| w as i32).collect();
-        (kinds, words)
-    });
+    let (kinds, len_seed) =
+        with_rng(cx, |r| (r.kind as i32 + 100 * r.n01_kind as i32 + 10000 * r.sample_kind as i32, r.kind.n_seed()));
+    // copy_seeds_out: the seed words as they are after the lookup (an
+    // active binding's getter may have moved the generator)
+    let words = |cx: &mut Cx| -> Vec<i32> { with_rng(cx, |r| r.seed[..len_seed].iter().map(|&w| w as i32).collect()) };
     cx.scope(|cx, s| {
         let sym = seeds_sym(cx, s);
         let g = s.root(cx, cx.global_env());
         let seeds = s.capture(cx, |cx, o| cx.find_var_in_frame3(g, sym, true, o))?;
+        let words = words(cx);
         let v = seeds.bind(cx);
         let reuse = v.sexptype() == INTSXP
             && !v.maybe_shared()
             && !crate::attrib::has_attrib(v)
             && !v.is_altrep()
-            && v.len() == Some(words.len() + 1);
+            && v.len() == Some(len_seed + 1);
         if reuse {
             // it is safe to reuse the existing .Random.seed vector
             let mut u = cx.owned_mut::<i32>(seeds)?;
@@ -253,7 +254,7 @@ pub fn put_rng_state(cx: &mut Cx) -> RResult<()> {
         // need to allocate a fresh .Random.seed vector
         let fresh = s.capture(cx, |cx, o| {
             cx.build(o, |cx| {
-                let mut v = cx.alloc_vector::<i32>(words.len() + 1)?;
+                let mut v = cx.alloc_vector::<i32>(len_seed + 1)?;
                 let p = v.as_mut_slice();
                 p[0] = kinds;
                 p[1..].copy_from_slice(&words);
