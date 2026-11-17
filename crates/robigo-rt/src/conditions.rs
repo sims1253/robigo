@@ -939,9 +939,10 @@ fn save_traceback(cx: &mut Cx) -> RResult<()> {
             }
             Ok(l)
         })?;
+        // SET_SYMVALUE: past base's locks
         let sy = sym(cx, s, b".Traceback")?;
-        let base = s.root(cx, cx.base_env());
-        cx.define_var(sy, l, base)
+        cx.set_symvalue(sy, l);
+        Ok(())
     })
 }
 
@@ -1377,9 +1378,10 @@ fn save_last_warning(cx: &mut Cx) -> RResult<()> {
             l.set_attrib(attrs);
             Ok(l.finish().into())
         })?;
+        // SET_SYMVALUE: past base's locks
         let sy = sym(cx, s, b"last.warning")?;
-        let base = s.root(cx, cx.base_env());
-        cx.define_var(sy, v, base)
+        cx.set_symvalue(sy, v);
+        Ok(())
     })
 }
 
