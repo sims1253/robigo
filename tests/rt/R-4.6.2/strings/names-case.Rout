@@ -1,0 +1,54 @@
+ [1] "a.b"          "X1x"          "X.1"          "._"           "a_b"         
+ [6] "X"            "NA."          "if."          "TRUE."        "..."         
+[11] "..1"          "."            "X_x"          "a.b.c"        "x.y"         
+[16] "NA_integer_." "function."    "Inf."        
+[1] "é.x"   "日本"  "αβ"    "x."    "٣a"    "a٣"    "é"     "X.uro" "ǅ"    
+[1] "a.b"
+[1] "a"   "a.2" "a.1"
+[1] "X1" "X2" "X3"
+character(0)
+[1] "unknown" "unknown"
+[1] "non-character names"
+[1] "invalid 'allow_' value"
+[1] "invalid multibyte string at '<ff>'"
+[1] "invalid multibyte string 1"
+[1] "invalid multibyte string at '<ff>'"
+[1] "invalid multibyte string at '<e2><82>'"
+[1] "a"   "a.1" "a.2"
+[1] "a"   "a.2" "a.1"
+[1] "a"   "a.1" "a.2"
+[1] "b"   "a"   "a.1" "b.1" "a.2"
+[1] NA     "NA.1" "NA"  
+[1] "a"   "a_1"
+[1] "a"    "aNA1"
+[1] "é"   "é.1"
+[1] "é"   "é.1" "é.2"
+[1] "UTF-8"   "unknown"
+character(0)
+[1] "a"
+[1] ""   ".1" ".2"
+[1] "'names' must be a character vector"
+[1] "'sep' must be a character string"
+[1] "'sep' must be a character string"
+[1] "ABC"     NA        "ÄÉŸßΣΣΣ" "Ǆ"       "ﬃ"       "I"      
+[1] "àéî" "σασ" "i"   "ǆ"   "abc"
+[1] "1" "2" "3"
+[1] "AB"
+[1] "ab"
+  a   b 
+"X" "Y" 
+     [,1] [,2]
+[1,] "A"  "C" 
+[2,] "B"  "D" 
+$class
+[1] "foo"
+
+$k
+[1] 1
+
+[1] "unknown" "UTF-8"   "unknown"
+[1] "É" "É"
+[1] "invalid multibyte string 1"
+[1] "invalid multibyte string 2"
+[1] "non-character argument"
+character(0)

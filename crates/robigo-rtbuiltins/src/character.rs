@@ -545,3 +545,349 @@ pub fn do_encode_string(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<
         Ok(ans.finish().into())
     })
 }
+
+/// `translateChar(s)` of a string or `NA_STRING` ("NA"), or GNU R's error
+/// for a "bytes" one.
+fn native_bytes(cx: &mut Cx, c: Char<'_>) -> RResult<Vec<u8>> {
+    match to_native(crate::coerce::text(c), cx.locale()) {
+        Ok(b) => Ok(b.into_owned()),
+        Err(_) => Err(cx.error("translating strings with \"bytes\" encoding is not allowed")),
+    }
+}
+
+/// `iswctype(wc, class)` in the C library's locale (`isalpha` and the like
+/// of a byte in a single-byte locale: ASCII only, the C locale's).
+#[inline]
+fn isw(class: robigo_text::tre::Class, wc: u32, loc: robigo_text::Locale) -> bool {
+    class.contains(wc, loc)
+}
+
+/// glibc's `mbrtowc(&wc, s + i, n, ps)` in a UTF-8 locale: the length of
+/// the character and the character; 0 at the end, negative for an invalid
+/// sequence or one longer than `n` bytes.
+fn mbrtowc_n(s: &[u8], i: usize, n: usize) -> (isize, i32) {
+    if i >= s.len() {
+        return (0, 0);
+    }
+    if n == 0 {
+        return (-2, 0);
+    }
+    let (used, wc) = robigo_text::mbrtowc_utf8(s, i);
+    if used > 0 && used as usize > n { (-2, 0) } else { (used as isize, wc) }
+}
+
+/// `Mbrtowc(&wc, s + i, n, &mb_st)`: `mbrtowc`, or GNU R's error with the
+/// rest of the string written out, each byte that does not start a
+/// character (within the bytes left of `n`) as `<xx>`.
+// R: util.c:Mbrtowc
+fn r_mbrtowc(cx: &mut Cx, s: &[u8], i: usize, n: usize) -> RResult<(usize, i32)> {
+    let (used, wc) = mbrtowc_n(s, i, n);
+    if used >= 0 {
+        return Ok((used as usize, wc));
+    }
+    let (mut p, mut n, mut used) = (i, n, used);
+    let mut err = Vec::new();
+    while p < s.len() {
+        // don't do the first to keep ps state straight
+        if p > i {
+            used = mbrtowc_n(s, p, n).0;
+        }
+        if used == 0 {
+            break;
+        } else if used > 0 {
+            err.extend_from_slice(&s[p..p + used as usize]);
+            p += used as usize;
+            n -= used as usize;
+        } else {
+            err.extend_from_slice(format!("<{:02x}>", s[p]).as_bytes());
+            p += 1;
+            n = n.wrapping_sub(1);
+        }
+    }
+    Err(cx.error(&format!("invalid multibyte string at '{}'", String::from_utf8_lossy(&err))))
+}
+
+/// `wcrtomb(s, wc, ps)` in a UTF-8 locale (and R's `Rwcrtomb32`): `wc` in
+/// UTF-8, in the original up-to-six-byte forms; nothing for 0.
+// R: util.c:Rwcrtomb32
+fn wcrtomb_utf8(wc: u32, out: &mut Vec<u8>) {
+    const TABLE1: [u32; 6] = [0x7f, 0x7ff, 0xffff, 0x1fffff, 0x3ffffff, 0x7fffffff];
+    const TABLE2: [u8; 6] = [0, 0xc0, 0xe0, 0xf0, 0xf8, 0xfc];
+    let mut cvalue = wc;
+    if cvalue == 0 {
+        return;
+    }
+    let i = TABLE1.iter().position(|&t| cvalue <= t).unwrap_or(TABLE1.len()).min(5);
+    let mut buf = [0u8; 6];
+    for j in (1..=i).rev() {
+        buf[j] = 0x80 | (cvalue & 0x3f) as u8;
+        cvalue >>= 6;
+    }
+    buf[0] = TABLE2[i] | cvalue as u8;
+    out.extend_from_slice(&buf[..=i]);
+}
+
+/// gram.y's reserved words (`keywords[]`, but `...`).
+const RESERVED: [&[u8]; 19] = [
+    b"NULL",
+    b"NA",
+    b"TRUE",
+    b"FALSE",
+    b"Inf",
+    b"NaN",
+    b"NA_integer_",
+    b"NA_real_",
+    b"NA_character_",
+    b"NA_complex_",
+    b"function",
+    b"while",
+    b"repeat",
+    b"for",
+    b"if",
+    b"in",
+    b"else",
+    b"next",
+    b"break",
+];
+
+/// `isValidName(name)`: whether the native string `name` is a syntactic
+/// name (a letter, or a dot not followed by a digit, then letters, digits,
+/// dots and underscores, by the C library's classes) and not a reserved
+/// word. An invalid multibyte string before the first character that
+/// disqualifies it is `Mbrtowc`'s error.
+// R: gram.y:isValidName
+pub fn is_valid_name(cx: &mut Cx, name: &[u8]) -> RResult<bool> {
+    use robigo_text::tre::Class;
+    let loc = crate::text::ctype(cx.locale());
+    if loc.mbcs() {
+        let mut n = name.len();
+        let (used, wc) = r_mbrtowc(cx, name, 0, n)?;
+        let mut p = used;
+        n -= used;
+        if used == 0 {
+            return Ok(false);
+        }
+        if wc != b'.' as i32 && !isw(Class::Alpha, wc as u32, loc) {
+            return Ok(false);
+        }
+        // we don't care about other than ASCII digits
+        if wc == b'.' as i32 && name.get(p).is_some_and(u8::is_ascii_digit) {
+            return Ok(false);
+        }
+        loop {
+            let (used, wc) = r_mbrtowc(cx, name, p, n)?;
+            if used == 0 {
+                break;
+            }
+            if !(isw(Class::Alnum, wc as u32, loc) || wc == b'.' as i32 || wc == b'_' as i32) {
+                break;
+            }
+            p += used;
+            n -= used;
+        }
+        if p != name.len() {
+            return Ok(false);
+        }
+    } else {
+        let c = name.first().copied().unwrap_or(0);
+        if c != b'.' && !isw(Class::Alpha, c as u32, loc) {
+            return Ok(false);
+        }
+        if c == b'.' && name.get(1).is_some_and(u8::is_ascii_digit) {
+            return Ok(false);
+        }
+        if !name[1..].iter().all(|&c| isw(Class::Alnum, c as u32, loc) || c == b'.' || c == b'_') {
+            return Ok(false);
+        }
+    }
+    Ok(name == b"..." || !RESERVED.contains(&name))
+}
+
+/// `.Internal(make.names(names, allow_))`: each string made a syntactic
+/// name: "X" before one that starts with neither a letter nor a dot (or
+/// with a dot and a digit), every character but letters, digits, dots
+/// (and with `allow_`, underscores) replaced by a dot, and a dot after a
+/// reserved word.
+// R: character.c:do_makenames
+pub fn do_make_names(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    use robigo_text::tre::Class;
+    crate::row!("make.names", true).check_arity(cx, call, args)?;
+    let n = match args.get(cx, 0).view() {
+        robigo_rtcore::View::Str(v) => v.len(),
+        _ => return Err(cx.error("non-character names")),
+    };
+    let allow = as_logical(cx, args.get(cx, 1));
+    if allow == NA_INTEGER {
+        return Err(cx.error("invalid 'allow_' value"));
+    }
+    let allow = allow != 0;
+    let loc = crate::text::ctype(cx.locale());
+    let mut names: Vec<Vec<u8>> = Vec::with_capacity(n);
+    for i in 0..n {
+        let c = args.get(cx, 0).as_vector::<Char<'_>>().unwrap().get(i);
+        let this = native_bytes(cx, c)?;
+        // need to prefix names not beginning with alpha or ., as well as .
+        // followed by a number
+        let need_prefix = if loc.mbcs() && !this.is_empty() {
+            let (used, wc) = r_mbrtowc(cx, &this, 0, 6)?;
+            if wc == b'.' as i32 {
+                this.len() > used && {
+                    let (_, wc) = r_mbrtowc(cx, &this, used, 6)?;
+                    isw(Class::Digit, wc as u32, loc)
+                }
+            } else {
+                !isw(Class::Alpha, wc as u32, loc)
+            }
+        } else if this.first() == Some(&b'.') {
+            this.get(1).is_some_and(u8::is_ascii_digit)
+        } else {
+            !isw(Class::Alpha, this.first().copied().unwrap_or(0) as u32, loc)
+        };
+        let mut tmp = Vec::with_capacity(this.len() + 2);
+        if need_prefix {
+            tmp.push(b'X');
+        }
+        tmp.extend_from_slice(&this);
+        let keep = |wc: u32| wc == b'.' as u32 || (allow && wc == b'_' as u32) || isw(Class::Alnum, wc, loc);
+        if loc.mbcs() {
+            // this cannot lengthen the string
+            let Some(wstr) = mbstowcs(&tmp) else {
+                return Err(cx.error(&format!("invalid multibyte string {}", i + 1)));
+            };
+            tmp.clear();
+            for wc in wstr {
+                wcrtomb_utf8(if keep(wc) { wc } else { b'.' as u32 }, &mut tmp);
+            }
+        } else {
+            for b in tmp.iter_mut() {
+                if !keep(*b as u32) {
+                    *b = b'.';
+                }
+            }
+        }
+        // do we have a reserved word? If so the name is invalid
+        if !is_valid_name(cx, &tmp)? {
+            tmp.push(b'.');
+        }
+        names.push(tmp);
+    }
+    cx.build(out, |cx| {
+        let mut ans = cx.alloc_vector::<Char<'_>>(n)?;
+        for (i, s) in names.iter().enumerate() {
+            ans.set(i, cx.mk_char(s, Encoding::Native)?);
+        }
+        Ok(ans.finish().into())
+    })
+}
+
+/// One string of `tolower`/`toupper`: what the C library's `towlower` or
+/// `towupper` makes of each character.
+enum Cased {
+    Na,
+    Text(Vec<u8>, Encoding),
+}
+
+/// `.Internal(tolower(x))` (CODE 0) and `.Internal(toupper(x))` (CODE 1):
+/// each string with its characters mapped by the C library's `towlower`
+/// or `towupper`; a UTF-8 (or latin1, in a locale that is not latin1)
+/// string comes back UTF-8, another native; the attributes are kept.
+// R: character.c:do_tolower
+pub fn do_tolower<const CODE: i32>(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: Args<'_>,
+    _env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    use robigo_text::tre::{towlower, towupper};
+    let row = if CODE == 1 { crate::row!("toupper", true) } else { crate::row!("tolower", true) };
+    row.check_arity(cx, call, args)?;
+    let x = args.root(0);
+    let n = match x.bind(cx).view() {
+        // coercion is done in wrapper
+        robigo_rtcore::View::Str(v) => v.len(),
+        _ => return Err(cx.error("non-character argument")),
+    };
+    let rloc = cx.locale();
+    let loc = crate::text::ctype(rloc);
+    let map = |wc: u32| if CODE == 1 { towupper(wc, loc) } else { towlower(wc, loc) };
+    // IS_UTF8, or IS_LATIN1 in a locale that is not latin1 (none here is)
+    let use_utf8 = (0..n).any(|i| {
+        let e = x.bind(cx).as_vector::<Char<'_>>().unwrap().get(i).enc();
+        matches!(e, Encoding::Utf8 | Encoding::Latin1)
+    });
+    let mut ys: Vec<Cased> = Vec::with_capacity(n);
+    for i in 0..n {
+        let c = x.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
+        if c == cx.na_string() {
+            ys.push(Cased::Na);
+            continue;
+        }
+        if !(loc.mbcs() || use_utf8) {
+            let mut xi = native_bytes(cx, c)?;
+            for b in xi.iter_mut() {
+                *b = map(*b as u32) as u8;
+            }
+            ys.push(Cased::Text(xi, Encoding::Native));
+            continue;
+        }
+        let enc = c.enc();
+        if use_utf8 && matches!(enc, Encoding::Utf8 | Encoding::Latin1) {
+            // (latin1 by translateCharUTF8, in case it is really in CP1252)
+            let xi = match crate::text::to_utf8(crate::coerce::text(c), rloc) {
+                Ok(b) => b.into_owned(),
+                Err(_) => return Err(cx.error("translating strings with \"bytes\" encoding is not allowed")),
+            };
+            // utf8towcs: R's own decoder
+            let mut cbuf = Vec::with_capacity(xi.len());
+            let mut t = 0;
+            loop {
+                let (m, wc) = robigo_text::utf8toucs(&xi, t);
+                if m < 0 {
+                    let s = String::from_utf8_lossy(&xi).into_owned();
+                    return Err(cx.error(&format!("invalid input '{s}' in 'utf8towcs'")));
+                }
+                if m == 0 {
+                    break;
+                }
+                if robigo_text::is_high_surrogate(wc) {
+                    return Err(not_yet(cx, None, "tolower/toupper of a UTF-8 string with a surrogate"));
+                }
+                wcrtomb_utf8(map(wc as u32), &mut cbuf);
+                t += m as usize;
+            }
+            ys.push(Cased::Text(cbuf, Encoding::Utf8));
+        } else {
+            let xi = native_bytes(cx, c)?;
+            if !loc.mbcs() && !xi.is_ascii() {
+                return Err(not_yet(cx, None, "tolower/toupper of a native non-ASCII string in a single-byte locale"));
+            }
+            let Some(wc) = mbstowcs(&xi) else {
+                return Err(cx.error(&format!("invalid multibyte string {}", i + 1)));
+            };
+            let mut cbuf = Vec::with_capacity(xi.len());
+            for w in wc {
+                wcrtomb_utf8(map(w), &mut cbuf);
+            }
+            // markKnown(cbuf, el): the string was native
+            ys.push(Cased::Text(cbuf, Encoding::Native));
+        }
+    }
+    cx.build(out, |cx| {
+        let mut y = cx.alloc_vector::<Char<'_>>(n)?;
+        for (i, s) in ys.iter().enumerate() {
+            y.set(
+                i,
+                match s {
+                    Cased::Na => cx.na_string(),
+                    Cased::Text(b, e) => cx.mk_char(b, *e)?,
+                },
+            );
+        }
+        // SHALLOW_DUPLICATE_ATTRIB(y, x): this copies the class, if any
+        let mut a = Attrs::new();
+        a.copy_all(x.bind(cx));
+        a.apply(cx, &mut y)?;
+        Ok(y.finish().into())
+    })
+}

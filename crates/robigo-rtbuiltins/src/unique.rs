@@ -1403,3 +1403,129 @@ pub fn do_matchcall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
         })
     })
 }
+
+/// A string as `duplicated2`'s table tells strings apart: by its CHARSXP
+/// (`NA_STRING` apart from "NA"), which the cache makes one per bytes and
+/// mark.
+///
+/// GNU R's `duplicated2` skips `duplicatedInit`, so its table hashes
+/// strings by address (`cshash`) even where `Seql` would equate two
+/// CHARSXPs (the same text marked UTF-8 and native, say): such a pair is
+/// found only when its probe sequences happen to meet, which depends on
+/// the addresses. robigo takes the outcome when they do not.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum CharKey {
+    Na,
+    Char(Vec<u8>, u8),
+}
+
+// R: unique.c:duplicated2, cshash, sequal
+fn char_key(cx: &Cx, c: Char<'_>) -> CharKey {
+    if c == cx.na_string() {
+        return CharKey::Na;
+    }
+    let mark = match c.enc() {
+        _ if c.is_ascii() => 0,
+        Encoding::Native => 0,
+        Encoding::Utf8 => 1,
+        Encoding::Latin1 => 2,
+        Encoding::Bytes => 3,
+    };
+    CharKey::Char(c.bytes().to_vec(), mark)
+}
+
+/// `.Internal(make.unique(names, sep))`: each string equal to an earlier
+/// one gets `sep` and the first count from 1 that makes it new; the counts
+/// tried go on from the last one used for the same first occurrence.
+// R: unique.c:do_makeunique
+pub fn do_make_unique(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("make.unique", true).check_arity(cx, call, args)?;
+    let names = args.root(0);
+    let n = match names.bind(cx).view() {
+        View::Str(v) => v.len(),
+        _ => return Err(cx.error("'names' must be a character vector")),
+    };
+    let sep = args.get(cx, 1);
+    let sep = match sep.as_vector::<Char<'_>>() {
+        Some(v) if sep.sexptype() == STRSXP && v.len() == 1 => v.get(0),
+        _ => return Err(cx.error("'sep' must be a character string")),
+    };
+    if names.bind(cx).is_package_altrep() {
+        return Err(not_yet(cx, Some(call), "make.unique() of a package ALTREP vector"));
+    }
+    let loc = cx.locale();
+    let bytes_error = |cx: &mut Cx| cx.error("translating strings with \"bytes\" encoding is not allowed");
+    let Ok(csep) = crate::text::to_native(crate::coerce::text(sep), loc).map(Cow::into_owned) else {
+        return Err(bytes_error(cx));
+    };
+    // translateChar of each name (its error for a "bytes" one), and its
+    // CHARSXP
+    let mut native: Vec<Vec<u8>> = Vec::with_capacity(n);
+    let mut keys: Vec<CharKey> = Vec::with_capacity(n);
+    for i in 0..n {
+        let c = names.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
+        let Ok(t) = crate::text::to_native(crate::coerce::text(c), loc).map(Cow::into_owned) else {
+            return Err(bytes_error(cx));
+        };
+        native.push(t);
+        keys.push(char_key(cx, c));
+    }
+    // the new names: (index, native bytes)
+    let mut renamed: Vec<(usize, Vec<u8>)> = Vec::new();
+    if n > 1 {
+        use std::collections::HashMap;
+        use std::collections::hash_map::Entry;
+        // duplicated2(names): each name's first occurrence; the table holds
+        // the first occurrences, then each new name
+        let mut first: HashMap<CharKey, usize> = HashMap::with_capacity(n);
+        let mut dup = vec![0usize; n];
+        for (i, k) in keys.iter().enumerate() {
+            match first.entry(k.clone()) {
+                Entry::Occupied(e) => dup[i] = *e.get() + 1,
+                Entry::Vacant(e) => {
+                    e.insert(i);
+                }
+            }
+        }
+        let mut cnts = vec![1usize; n];
+        // mkChar(buf): a native string
+        let key = |b: &[u8]| CharKey::Char(b.to_vec(), 0);
+        // allocVector(STRSXP, 1): ""
+        let mut newx: Vec<u8> = Vec::new();
+        for i in 1..n {
+            // first cannot be a duplicate
+            let dp = dup[i];
+            if dp == 0 {
+                continue;
+            }
+            // try appending 1, 2, 3, ..., n-1 until it is not already in use
+            let mut cnt = cnts[dp - 1];
+            while cnt < n {
+                newx.clear();
+                newx.extend_from_slice(&native[i]);
+                newx.extend_from_slice(&csep);
+                newx.extend_from_slice(cnt.to_string().as_bytes());
+                if !first.contains_key(&key(&newx)) {
+                    break;
+                }
+                cnt += 1;
+            }
+            // insert it
+            first.entry(key(&newx)).or_insert(i);
+            renamed.push((i, newx.clone()));
+            // cache the first unused cnt value
+            cnts[dp - 1] = cnt + 1;
+        }
+    }
+    cx.build(out, |cx| {
+        let src = names.bind(cx).as_vector::<Char<'_>>().unwrap();
+        let mut ans = cx.alloc_vector::<Char<'_>>(n)?;
+        for i in 0..n {
+            ans.set(i, src.get(i));
+        }
+        for (i, b) in &renamed {
+            ans.set(*i, cx.mk_char(b, Encoding::Native)?);
+        }
+        Ok(ans.finish().into())
+    })
+}
