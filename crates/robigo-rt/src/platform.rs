@@ -257,3 +257,248 @@ pub fn do_direxists(
     }
     cx.build(out, |cx| Ok(cx.alloc_copy(&ans)?.finish().into()))
 }
+
+/// `R_PATH_MAX`: `PATH_MAX` on Linux.
+const R_PATH_MAX: usize = 4096;
+
+/// `translateCharFP2(s)` of element `i` of a character vector: `None` for NA
+/// and, after its warning, for a name iconv cannot translate; a "bytes"
+/// name is its error.
+// R: sysutils.c:translateCharFP2
+fn translate_fp2(cx: &mut Cx, x: robigo_rtcore::Root<'_>, i: usize) -> RResult<Option<Vec<u8>>> {
+    let loc = robigo_rtbuiltins::text::ctype(cx.locale());
+    let (tr, na) = {
+        let c = x.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
+        let tr = robigo_text::translate_char2(robigo_rtbuiltins::coerce::text(c), loc).map(|b| b.into_owned());
+        (tr, c == cx.na_string())
+    };
+    if na {
+        return Ok(None);
+    }
+    match tr {
+        Ok(b) => Ok(Some(b)),
+        Err(robigo_text::Untranslatable::Bytes) => {
+            Err(cx.error("translating strings with \"bytes\" encoding is not allowed"))
+        }
+        Err(robigo_text::Untranslatable::Failed(m)) => {
+            cx.warning(&format!("unable to translate '{m}' to native encoding"))?;
+            Ok(None)
+        }
+    }
+}
+
+/// `stat(path) == 0`.
+fn stat_ok(path: &[u8]) -> bool {
+    std::fs::metadata(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(path)).is_ok()
+}
+
+/// `R_IsDirPath(path)`: `stat` says a directory (a link to one counts).
+// R: connections.c:R_IsDirPath
+fn is_dir_path(path: &[u8]) -> bool {
+    std::fs::metadata(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(path)).is_ok_and(|m| m.is_dir())
+}
+
+/// `.Internal(file.exists(file))`: whether each file exists (`stat` of its
+/// expanded name). NA is FALSE, and so is a name iconv cannot translate
+/// (after the warning) or one longer than `R_PATH_MAX`.
+// R: platform.c:do_fileexists, R_FileExists
+pub fn do_fileexists(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: robigo_rtcore::Root<'_>,
+    out: robigo_rtcore::Out<'_>,
+) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "file.exists", 1, true)?;
+    let file = args.root(0);
+    let n = match file.bind(cx).view() {
+        robigo_rtcore::View::Str(v) => v.len(),
+        _ => return Err(cx.error("invalid 'file' argument")),
+    };
+    let mut ans = Vec::with_capacity(n);
+    for i in 0..n {
+        // (R_CheckUserInterrupt every 16: robigo-rt's interrupts are S3x's)
+        let ok = match translate_fp2(cx, file, i)? {
+            // documented to report FALSE for paths too long after expansion
+            Some(p) if p.len() <= R_PATH_MAX => stat_ok(&crate::connections::expand_file_name(&p)),
+            _ => false,
+        };
+        ans.push(robigo_rtcore::Lgl(ok as i32));
+    }
+    cx.build(out, |cx| Ok(cx.alloc_copy(&ans)?.finish().into()))
+}
+
+/// What `list_files` reads: the walk's options and the pattern.
+struct ListFiles<'a> {
+    allfiles: bool,
+    recursive: bool,
+    idirs: bool,
+    allowdots: bool,
+    reg: Option<&'a robigo_text::tre::Regex>,
+    utf8: bool,
+}
+
+impl ListFiles<'_> {
+    /// `tre_regexec(reg, name, 0, NULL, 0) == 0` (no pattern matches all).
+    fn matches(&self, name: &[u8]) -> bool {
+        match self.reg {
+            None => true,
+            Some(r) => {
+                let mut m = [];
+                let hit = if self.utf8 { r.exec_mbs(name, &mut m, 0) } else { r.exec_bytes(name, &mut m, 0) };
+                matches!(hit, Ok(true))
+            }
+        }
+    }
+
+    /// `list_files(pb, offset, len, ...)`: the entries of the directory
+    /// `pb[..len]` (which ends in a separator), with `.` and `..` as
+    /// `readdir` gives them (their order does not matter: the result is
+    /// sorted); a match is added as `pb[offset..]`. `warnings` collects
+    /// path_buffer_append's "over-long path".
+    fn list(&self, pb: &mut Vec<u8>, offset: usize, len: usize, ans: &mut Vec<Vec<u8>>, warnings: &mut usize) {
+        let dir = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&pb[..len]).to_owned();
+        let Ok(rd) = std::fs::read_dir(&dir) else { return };
+        let mut names: Vec<Vec<u8>> = vec![b".".to_vec(), b"..".to_vec()];
+        names.extend(
+            rd.filter_map(|e| e.ok())
+                .map(|e| std::os::unix::ffi::OsStrExt::as_bytes(e.file_name().as_os_str()).to_vec()),
+        );
+        for name in names {
+            // R_HiddenFile: a name starting with "."
+            if !(self.allfiles || name.first() != Some(&b'.')) {
+                continue;
+            }
+            // path_buffer_append
+            pb.truncate(len);
+            pb.extend_from_slice(&name);
+            if pb.len() + 1 > R_PATH_MAX {
+                *warnings += 1;
+            }
+            let not_dot = name != b"." && name != b"..";
+            if self.recursive && is_dir_path(pb) {
+                if not_dot {
+                    if self.idirs && self.matches(&name) {
+                        ans.push(pb[offset..].to_vec());
+                    }
+                    // the terminator becomes a separator
+                    pb.push(b'/');
+                    let newlen = pb.len();
+                    self.list(pb, offset, newlen, ans, warnings);
+                }
+                continue;
+            }
+            if (not_dot || self.allowdots) && self.matches(&name) {
+                ans.push(pb[offset..].to_vec());
+            }
+        }
+    }
+}
+
+/// `.Internal(list.files(path, pattern, all.files, full.names, recursive,
+/// ignore.case, include.dirs, no.., fixed))`: the names in the directories
+/// `path` (matching `pattern`, a TRE extended regex), sorted.
+// R: platform.c:do_listfiles, search_setup, list_files
+pub fn do_listfiles(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: robigo_rtcore::Root<'_>,
+    out: robigo_rtcore::Out<'_>,
+) -> RResult<()> {
+    use robigo_rtbuiltins::util::{as_bool2, as_logical};
+    use robigo_rtcore::View;
+    use robigo_rtcore::types::{NILSXP, STRSXP};
+    const NA_LOGICAL: i32 = i32::MIN;
+    crate::prims::check_arity(cx, call, args.len(), "list.files", 9, true)?;
+    let d = args.root(0);
+    let nd = match d.bind(cx).view() {
+        View::Str(v) => v.len(),
+        _ => return Err(cx.error("invalid 'path' argument")),
+    };
+    let p = args.get(cx, 1);
+    let pattern = match p.view() {
+        View::Str(v) => !v.is_empty() && v.get(0) != cx.na_string(),
+        _ => false,
+    };
+    if !pattern && p.sexptype() != NILSXP && !(p.sexptype() == STRSXP && p.len() == Some(0)) {
+        return Err(cx.error("invalid 'pattern' argument"));
+    }
+    let allfiles = as_bool2(cx, call, args.root(2))?;
+    let fullnames = as_logical(cx, args.get(cx, 3));
+    if fullnames == NA_LOGICAL {
+        return Err(cx.error("invalid 'full.names' argument"));
+    }
+    let recursive = as_bool2(cx, call, args.root(4))?;
+    let igcase = as_logical(cx, args.get(cx, 5));
+    if igcase == NA_LOGICAL {
+        return Err(cx.error("invalid 'ignore.case' argument"));
+    }
+    let idirs = as_bool2(cx, call, args.root(6))?;
+    let nodots = as_logical(cx, args.get(cx, 7));
+    if nodots == NA_LOGICAL {
+        return Err(cx.error("invalid 'no..' argument"));
+    }
+    // (GNU R checks `nodots` again here, not `fixed`: an NA `fixed` is
+    // read as true)
+    let fixed = as_logical(cx, args.get(cx, 8));
+    let mut flags = robigo_text::tre::REG_EXTENDED;
+    if igcase != 0 {
+        flags |= robigo_text::tre::REG_ICASE;
+    }
+    if fixed != 0 {
+        flags |= robigo_text::tre::REG_LITERAL;
+    }
+    let loc = cx.locale();
+    let tloc = robigo_rtbuiltins::text::ctype(loc);
+    let reg = if pattern {
+        // tre_regcomp(translateChar(pattern)): the multibyte pattern read as
+        // wide characters in the locale
+        let pat = {
+            let c = args.get(cx, 1).as_vector::<Char<'_>>().unwrap().get(0);
+            robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(c), loc).map(|b| b.into_owned())
+        };
+        let Ok(pat) = pat else {
+            return Err(cx.error("translating strings with \"bytes\" encoding is not allowed"));
+        };
+        let wide: Option<Vec<i32>> = if loc.utf8 {
+            std::str::from_utf8(&pat).ok().map(|s| s.chars().map(|c| c as i32).collect())
+        } else {
+            Some(pat.iter().map(|&b| b as i32).collect())
+        };
+        match wide.map(|w| robigo_text::tre::Regex::new(&w, flags, tloc)) {
+            Some(Ok(r)) => Some(r),
+            _ => return Err(cx.error("invalid 'pattern' regular expression")),
+        }
+    } else {
+        None
+    };
+    let lf = ListFiles { allfiles, recursive, idirs, allowdots: nodots == 0, reg: reg.as_ref(), utf8: loc.utf8 };
+    let mut ans: Vec<Vec<u8>> = Vec::new();
+    let mut warnings = 0;
+    for i in 0..nd {
+        // search_setup: the expanded path, opened, then a separator
+        let Some(path) = translate_fp2(cx, d, i)? else { continue };
+        let mut pb = crate::connections::expand_file_name(&path);
+        if std::fs::read_dir(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&pb)).is_err() {
+            continue;
+        }
+        pb.push(b'/');
+        let len = pb.len();
+        lf.list(&mut pb, if fullnames != 0 { 0 } else { len }, len, &mut ans, &mut warnings);
+    }
+    for _ in 0..warnings {
+        cx.warning("over-long path")?;
+    }
+    if let Err(e) = robigo_rtbuiltins::sort::ssort_native(&mut ans, loc) {
+        let d = e.diag(Some(call));
+        return Err(cx.raise(d));
+    }
+    cx.build(out, |cx| {
+        let mut v = cx.alloc_vector::<Char<'_>>(ans.len())?;
+        for (i, a) in ans.iter().enumerate() {
+            v.set(i, cx.mk_char(a, Encoding::Native)?);
+        }
+        Ok(v.finish().into())
+    })
+}

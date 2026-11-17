@@ -1,0 +1,12 @@
+[1] TRUE TRUE TRUE TRUE
+[1] FALSE FALSE FALSE FALSE
+logical(0)
+[1] TRUE
+[1] FALSE
+[1] TRUE
+[1] "invalid 'file' argument"
+[1] "invalid 'file' argument"
+[1] "0 arguments passed to .Internal(file.exists) which requires 1"
+[1] "translating strings with \"bytes\" encoding is not allowed"
+[1] "unable to translate '<81>' to native encoding"
+[1] FALSE
