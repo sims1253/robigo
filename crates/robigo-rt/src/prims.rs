@@ -297,14 +297,7 @@ pub(crate) fn arity_message(n: usize, name: &str, arity: usize, internal: bool) 
 /// the context's call; a primitive's is `errorcall`'s, against its own
 /// `call`.
 // R: util.c:Rf_checkArityCall
-pub(crate) fn check_arity(
-    cx: &mut Cx,
-    call: Root<'_>,
-    n: usize,
-    name: &str,
-    arity: usize,
-    internal: bool,
-) -> RResult<()> {
+pub fn check_arity(cx: &mut Cx, call: Root<'_>, n: usize, name: &str, arity: usize, internal: bool) -> RResult<()> {
     if n == arity {
         return Ok(());
     }
