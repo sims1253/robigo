@@ -20,7 +20,9 @@ SEXP rt_r_alloc_fill(SEXP sn)
     for (int i = 0; i < n; i++)
         p[i] = (unsigned char) (i * 7 + 1);
     SEXP ans = PROTECT(allocVector(RAWSXP, n));
-    memcpy(RAW(ans), p, (size_t) n);
+    /* R_alloc(0, 1) is NULL, and memcpy's source must be valid even for 0 */
+    if (n > 0)
+        memcpy(RAW(ans), p, (size_t) n);
     UNPROTECT(1);
     return ans;
 }

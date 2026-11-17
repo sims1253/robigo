@@ -9,6 +9,12 @@
 //! locale, which robigo never sets (the isolate's locale is its own,
 //! `Locale`); the password lookups read the password database; the message
 //! directory is asked of libintl's binding table for a domain no one binds.
+//!
+//! Like the rest of robigo-rt (version.rs's `platform()`), this module is for
+//! Linux with glibc, the one C library robigo-rt builds and is tested on (the
+//! macOS lanes build robigo-cli only): `bindtextdomain` is glibc's libc's
+//! (on macOS it is libintl's) and `__ctype_get_mb_cur_max` is what glibc's
+//! `MB_CUR_MAX` expands to. A port to another C library starts here.
 
 #![allow(unsafe_code)]
 
