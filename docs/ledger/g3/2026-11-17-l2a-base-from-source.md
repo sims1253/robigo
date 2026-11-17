@@ -63,6 +63,14 @@
   `nsInfo.rds` it parses the NAMESPACE file, as GNU R's own build
   bootstraps tools (a missing `package.rds` only warns). It waits on
   B5a's file builtins.
+- Known divergence: `R_IsNamespaceEnv` reads `.__NAMESPACE__.` and its
+  `spec` with `R_findVarInFrame`, which calls an active binding's
+  function. robigo-rt's namespace predicates (`ns.rs`, as `dispatch.rs`'s
+  already did) run no R code: the serializer's walk, the compiler and S3
+  dispatch call them where none may run. So an environment whose
+  `.__NAMESPACE__.` is an active binding is not a namespace here. Neither
+  GNU R nor any package makes one. A later package can make them read as
+  GNU R does.
 - Not yet, each an error saying so: source references
   (`keep.source = TRUE`), the parse errors GNU R raises as `parseError`
   conditions, parsing from the console, `parse(n = )` on an open
