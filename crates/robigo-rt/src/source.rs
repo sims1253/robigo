@@ -83,9 +83,11 @@ pub fn do_parse(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
             }
             // R_ParseConn over the connection: opened in its own mode if it
             // was not open, closed again after
-            // with n, R_ParseConn reads no further than the n-th expression:
-            // what this read takes past it is given back (a file's)
+            // with n, R_ParseConn reads no further than the n-th expression,
+            // and a syntax error no further than its token: what this read
+            // takes past that is given back (a file's)
             let partial = wasopen && num != i32::MIN && num >= 0;
+            let give_back = wasopen && crate::connections::is_file(cx, ifile)?;
             if partial && !crate::connections::is_file(cx, ifile)? {
                 return Err(
                     cx.error("robigo: parse(n = ) from an open connection that is not a file is not implemented yet")
@@ -105,11 +107,12 @@ pub fn do_parse(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
                     src.push(b'\n');
                 }
                 let num = if num == i32::MIN { -1 } else { num };
-                let end = parse_text(cx, &src, known_utf8, num, &srcname, out)?;
-                if partial && end < read && !crate::connections::unread(cx, ifile, read - end)? {
-                    return Err(cx.error("robigo: parse(n = ) could not leave the rest of the connection unread"));
+                let mut end = read;
+                let r = parse_text(cx, &src, known_utf8, num, &srcname, &mut end, out);
+                if give_back && end < read && !crate::connections::unread(cx, ifile, read - end)? {
+                    return Err(cx.error("robigo: parse() could not leave the rest of the connection unread"));
                 }
-                Ok(())
+                r
             })();
             if !wasopen {
                 crate::connections::close_only(cx, ifile)?;
@@ -135,14 +138,23 @@ pub fn do_parse(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
             }
         }
         let known = if all_known { utf8 } else { known_utf8 };
-        parse_text(cx, &src, known, num, &srcname, out).map(|_| ())
+        parse_text(cx, &src, known, num, &srcname, &mut 0, out)
     })
 }
 
-/// `R_ParseVector`'s parse of `src` with `parseError`'s messages.
+/// `R_ParseVector`'s parse of `src` with `parseError`'s messages;
+/// `consumed` is set to the end of what R_Parse reads: the n-th
+/// expression's terminator, the offending token, or all of `src`.
 // R: gram.y:R_Parse, source.c:parseError
-/// The end of what was consumed (the last expression's terminator).
-fn parse_text(cx: &mut Cx, src: &[u8], known_utf8: bool, num: i32, srcname: &str, out: Out<'_>) -> RResult<usize> {
+fn parse_text(
+    cx: &mut Cx,
+    src: &[u8],
+    known_utf8: bool,
+    num: i32,
+    srcname: &str,
+    consumed: &mut usize,
+    out: Out<'_>,
+) -> RResult<()> {
     let text = robigo_syntax::lexable(src);
     let source = robigo_syntax::Source::new(&text, src).known_to_be_utf8(known_utf8);
     let arena = robigo_syntax::Arena::new();
@@ -164,6 +176,9 @@ fn parse_text(cx: &mut Cx, src: &[u8], known_utf8: bool, num: i32, srcname: &str
     let (exprs, end) = match parsed {
         Ok(r) => r,
         Err(e) => {
+            if !e.incomplete {
+                *consumed = e.end.max(e.offset);
+            }
             signal(cx, if e.incomplete { usize::MAX } else { e.offset })?;
             return Err(match e.style {
                 robigo_syntax::ErrorStyle::Grammar => cx.error(&robigo_syntax::format_parse_error(source, srcname, &e)),
@@ -175,7 +190,7 @@ fn parse_text(cx: &mut Cx, src: &[u8], known_utf8: bool, num: i32, srcname: &str
         }
     };
     // the lexer's warnings up to the last expression's terminator
+    *consumed = if num < 0 { src.len() } else { end };
     signal(cx, if num < 0 { usize::MAX } else { end.saturating_sub(1) })?;
-    crate::reader::lower_all(cx, &exprs, out)?;
-    Ok(end)
+    crate::reader::lower_all(cx, &exprs, out)
 }

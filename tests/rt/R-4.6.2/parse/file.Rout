@@ -18,3 +18,7 @@ expression(p <- 1, q <- 2)
 expression(r <- 3)
 expression(s <- 4)
 [1] TRUE
+expression(42)
+[1] TRUE
+expression(7)
+[1] TRUE

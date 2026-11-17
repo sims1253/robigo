@@ -26,4 +26,13 @@ print(parse(con, n = 2))
 print(parse(con, n = 1))
 print(parse(con))
 close(con)
+# a syntax error stops the read at its token: an open connection keeps
+# the rest
+writeLines(c("1 + )", "42", "y y", "7"), path)
+con <- file(path, "r")
+print(inherits(tryCatch(parse(con, n = 1), error = function(e) e), "error"))
+print(parse(con, n = 1))
+print(inherits(tryCatch(parse(con), error = function(e) e), "error"))
+print(parse(con))
+close(con)
 print(file.remove(path))
