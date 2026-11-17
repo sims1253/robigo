@@ -75,7 +75,7 @@ fn kinds(op: Op) -> ([K; 6], bool) {
         Op::ForStep => ([R, X, C, C, X, X], true),
         Op::ForDone => ([R, X, X, X, X, X], false),
         Op::SetVis => ([X, X, X, X, X, I], false),
-        Op::ErrorCall => ([X, X, X, C, C, I], false),
+        Op::ErrorCall => ([X, X, C0, C, C, I], false),
         Op::SpecialFn => ([W, X, C, C, X, X], false),
         Op::ComplexAssign => ([W, R, X, C, X, I], false),
         Op::BaseGuard => ([X, X, X, C, X, X], true),

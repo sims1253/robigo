@@ -182,7 +182,7 @@ fn check(b: &Built) -> Result<(), Malformed> {
             Op::ForDone | Op::Clear | Op::PpSave => reg(i.a),
             Op::ClearRange => i.a <= i.b && i.b as usize <= nregs,
             Op::Move => reg(i.a) && reg(i.b),
-            Op::ErrorCall => k(i.e) && k(i.f),
+            Op::ErrorCall => k(i.e) && k(i.f) && (i.c == 0 || k(i.c)),
             Op::SpecialFn => reg(i.a) && k(i.e) && k(i.c),
             Op::ComplexAssign | Op::BcAssign => reg(i.a) && reg(i.b) && k(i.e),
             Op::BaseGuard | Op::TopLoop => reg(i.a) && k(i.e) && tgt(i.target()),

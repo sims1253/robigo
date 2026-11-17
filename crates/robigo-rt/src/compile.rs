@@ -829,6 +829,20 @@ impl<'g> Comp<'g> {
         self.emit(i);
     }
 
+    /// The expression bcEval is at for the `.Internal` call just emitted
+    /// (its wrapper's call, constant `k`): an [`Op::Internal`]'s `g`, or
+    /// the `c` of the [`Op::ErrorCall`] of a count its checkArity refuses.
+    pub(crate) fn set_internal_site(&mut self, k: u16) {
+        let at = self.ins.len() - 1;
+        match self.ins[at].op {
+            Op::ErrorCall => self.ins[at].c = k,
+            op => {
+                debug_assert_eq!(op, Op::Internal);
+                self.ins[at].g = k;
+            }
+        }
+    }
+
     /// An error GNU R raises when the special `call` runs (`errorcall` if
     /// `with_call`, `error` otherwise): known at compile time, raised in
     /// order at run time.
@@ -1160,9 +1174,8 @@ impl<'g> Comp<'g> {
                     self.builtin_args_call(Op::Internal, internal, inner, inner.cdr(), dst, d, tail)?;
                     // the expression bcEval is at: the wrapper's call
                     // (cmpSimpleInternal sets no location of its own)
-                    let at = self.ins.len() - 1;
-                    debug_assert_eq!(self.ins[at].op, Op::Internal);
-                    self.ins[at].g = self.k(e);
+                    let ke = self.k(e);
+                    self.set_internal_site(ke);
                 }
                 Handler::Local(ee) => self.call(ee, dst, d, tail)?,
                 Handler::Builtin(prim) => self.builtin_args_call(Op::CallBuiltin, prim, e, args, dst, d, tail)?,
@@ -2585,9 +2598,8 @@ impl<'g> Comp<'g> {
                         // the expression bcEval is at: the `.Internal` call
                         // (a closure wrapper's: error() reports the
                         // function's call)
-                        let at = self.ins.len() - 1;
-                        debug_assert_eq!(self.ins[at].op, Op::Internal);
-                        self.ins[at].g = self.k(e);
+                        let ke = self.k(e);
+                        self.set_internal_site(ke);
                     }
                     if site_save != 0 && internal.typ() == BUILTINSXP {
                         // do_internal's own check_stack_balance, its save

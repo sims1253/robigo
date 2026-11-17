@@ -1367,8 +1367,13 @@ impl<'g> Comp<'g> {
                 if let Some(e) = unsafe { t.expr_at(self.cx, i.at) }
                     && e != call
                 {
-                    let at = self.ins.len() - 1;
-                    self.ins[at].g = self.k(e);
+                    let ke = self.k(e);
+                    if internal {
+                        self.set_internal_site(ke);
+                    } else {
+                        let at = self.ins.len() - 1;
+                        self.ins[at].g = ke;
+                    }
                 }
                 self.push_at(t, f.dst, starts);
             }
