@@ -29,10 +29,10 @@
   `.Internal(as.function.default)` (and the 19 `.GenericArgsEnv`
   definitions after it), `.Internal(body)`; the profile's `R.Version`,
   `file.path`, `dir.exists`, `Sys.getlocale` (B5a), `sub`, `strsplit` (RX),
-  `options(keep.source, scipen, max.print)`. Nothing robigo-rt binds is
-  missing from GNU R's `ls(baseenv(), all.names = TRUE)` (1,317 against
-  1,407); the 90 names
-  it lacks are those builtins, the profile's names and the failures'.
+  `options(keep.source, scipen, max.print)`. Every name robigo-rt then
+  binds in base is one of GNU R's `ls(baseenv(), all.names = TRUE)`
+  (1,317 of 1,407); the 90 it lacks are those builtins, the profile's
+  names and the failures'.
 - `loadNamespace` from source needs no `Meta/` files: without
   `nsInfo.rds` it parses the NAMESPACE file, as GNU R's own build
   bootstraps tools (a missing `package.rds` only warns). It waits on
