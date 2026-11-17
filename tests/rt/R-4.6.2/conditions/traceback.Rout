@@ -1,0 +1,27 @@
+4: stop("boom: ", x)
+3: f(y)
+2: g("deep")
+1: h()
+[[1]]
+[1] "stop(\"boom: \", x)"
+
+[[2]]
+[1] "f(y)"
+
+[[3]]
+[1] "g(\"deep\")"
+
+[[4]]
+[1] "h()"
+
+1: traceback(1)
+[[1]]
+[1] "traceback(1)"
+
+[1] 4
+NULL
+4: stop("boom: ", x)
+3: f(y)
+2: g("deep")
+1: h()
+[1] 4
