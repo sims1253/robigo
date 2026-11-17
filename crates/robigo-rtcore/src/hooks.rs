@@ -120,6 +120,11 @@ pub struct ErrorCond<'a> {
 /// [`ErrorFn`]'s does.
 pub type ErrorCondFn = for<'a, 'b> fn(&mut Cx, Option<Root<'a>>, &ErrorCond<'b>) -> RError;
 
+/// Take a user interrupt (`onintr`): signal the `interrupt` condition,
+/// then jump to the top level; `Ok` when a handler invoked the `resume`
+/// restart and evaluation goes on.
+pub type InterruptFn = fn(&mut Cx) -> RResult<()>;
+
 /// GNU R's `R_FixupExitingHandlerResult(R_ReturnedValue)`: called with the
 /// value an exit carries when it stops at a record to run its `on.exit`
 /// code, before the code runs.
@@ -200,6 +205,7 @@ pub struct Hooks {
     pub warning: WarningFn,
     pub error: ErrorFn,
     pub error_condition: ErrorCondFn,
+    pub interrupt: InterruptFn,
     pub exit_value: ExitValueFn,
     pub deparse: DeparseFn,
     pub encode_string: EncodeStringFn,
@@ -223,6 +229,8 @@ impl Default for Hooks {
             error: |cx, call, msg| cx.record_error_call(call, msg),
             // (no condition system: the message, as `errorcall`'s default)
             error_condition: |cx, call, c| cx.record_error_call(call, c.msg),
+            // (no condition system: straight to the top level)
+            interrupt: |cx| Err(cx.interrupt_exit()),
             exit_value: |_, _| {},
             deparse: |_, _, _| Err("robigo: 'deparse' is not implemented yet (no evaluator is registered)".to_owned()),
             // (before `rt` installs EncodeString: NULs escaped, the rest as

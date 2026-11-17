@@ -50,6 +50,14 @@ entry! {
         Err(cx.continue_unwind(cont))
     }
 
+    /// `R_CheckUserInterrupt()`: a pending user interrupt taken (the
+    /// condition's handlers, then the jump to the top level), unless
+    /// interrupts are suspended.
+    // R: errors.c:R_CheckUserInterrupt
+    [0] fn R_CheckUserInterrupt() -> () => |cx, _s| {
+        cx.check_user_interrupt()
+    }
+
     /// `R_MakeUnwindCont()`.
     // R: context.c:R_MakeUnwindCont
     [0] fn R_MakeUnwindCont() -> Sexp => |cx, s| {
