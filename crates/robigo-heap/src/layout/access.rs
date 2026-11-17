@@ -507,6 +507,7 @@ impl Sexp {
     #[inline(always)]
     pub unsafe fn tag(self) -> Sexp {
         // A symbol has no TAG: INTERNAL is per isolate (rtcore's `SymCell`).
+        // SAFETY: the caller's contract (a live object).
         debug_assert!(!unsafe { self.is_symbol() }, "robigo: the TAG of a symbol");
         // SAFETY: the caller's contract puts a field at `node::OFF_TAG`.
         unsafe { self.sexp_at(node::OFF_TAG) }
@@ -610,6 +611,7 @@ impl Sexp {
     /// object (not an EXTPTRSXP, BUILTINSXP or SPECIALSXP).
     #[inline(always)]
     pub unsafe fn set_car(self, v: Sexp) {
+        // SAFETY: the caller's contract (a live object).
         debug_assert!(!unsafe { self.is_symbol() }, "robigo: a store into a symbol");
         // SAFETY: the caller's contract puts a traced field at `node::OFF_CAR`.
         unsafe { self.store(self.field(node::OFF_CAR), v) }
@@ -620,6 +622,7 @@ impl Sexp {
     /// As for [`Sexp::store`]; `self` has node fields.
     #[inline(always)]
     pub unsafe fn set_cdr(self, v: Sexp) {
+        // SAFETY: the caller's contract (a live object).
         debug_assert!(!unsafe { self.is_symbol() }, "robigo: a store into a symbol");
         // SAFETY: the caller's contract puts a traced field at `node::OFF_CDR`.
         unsafe { self.store(self.field(node::OFF_CDR), v) }
@@ -630,6 +633,7 @@ impl Sexp {
     /// As for [`Sexp::store`]; `self` has node fields.
     #[inline(always)]
     pub unsafe fn set_tag(self, v: Sexp) {
+        // SAFETY: the caller's contract (a live object).
         debug_assert!(!unsafe { self.is_symbol() }, "robigo: a store into a symbol");
         // SAFETY: the caller's contract puts a traced field at `node::OFF_TAG`.
         unsafe { self.store(self.field(node::OFF_TAG), v) }

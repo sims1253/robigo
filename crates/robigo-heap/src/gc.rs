@@ -2926,14 +2926,12 @@ static SYMBOL_BITS: std::sync::OnceLock<SymbolBits> = std::sync::OnceLock::new()
 /// `DDVAL` in `mkSYMSXP`, `SPECIAL_SYMBOL` in `InitNames`,
 /// `DISABLE_REFCNT(R_LastvalueSymbol)`): every heap's `install` applies it
 /// before the symbol is used, so nothing writes a symbol after it is made
-/// (H5: symbols become process-shared and immutable). Once per process;
-/// later calls must give the same rule.
-///
-/// # Panics
-/// If another rule was registered.
+/// (H5: symbols become process-shared and immutable). The first rule
+/// registered stays; the runtime is the one caller. (Function pointers
+/// cannot be compared to check that a later call gives the same rule: one
+/// function may have several addresses.)
 pub fn set_symbol_bits(bits: SymbolBits) {
-    let first = *SYMBOL_BITS.get_or_init(|| bits);
-    assert!(std::ptr::fn_addr_eq(first, bits), "robigo: a second rule for new symbols' bits");
+    SYMBOL_BITS.get_or_init(|| bits);
 }
 
 /// SEXPTYPE names for the statistics (Rinternals.h).
