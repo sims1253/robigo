@@ -566,6 +566,9 @@ struct Stdio {
     f: std::fs::File,
     buf: Vec<u8>,
     cap: usize,
+    /// The buffer is allocated: a fresh stream has none, so its first
+    /// write overflows (allocating it) before anything is buffered.
+    started: bool,
 }
 
 fn stdio(f: std::fs::File) -> Stdio {
@@ -573,7 +576,7 @@ fn stdio(f: std::fs::File) -> Stdio {
     const BUFSIZ: usize = 8192;
     let blk = f.metadata().map(|m| m.blksize() as usize).unwrap_or(0);
     let cap = if blk > 0 && blk < BUFSIZ { blk } else { BUFSIZ };
-    Stdio { f, buf: Vec::with_capacity(cap), cap }
+    Stdio { f, buf: Vec::with_capacity(cap), cap, started: false }
 }
 
 impl Stdio {
@@ -598,13 +601,22 @@ impl Stdio {
     /// directly and buffer the rest.
     // R: glibc libio/fileops.c:_IO_new_file_xsputn
     fn fwrite(&mut self, mut data: &[u8]) -> bool {
-        let k = (self.cap - self.buf.len()).min(data.len());
+        if data.is_empty() {
+            return true;
+        }
+        // the space left (none before the buffer exists)
+        let space = if self.started { self.cap - self.buf.len() } else { 0 };
+        let k = space.min(data.len());
         self.buf.extend_from_slice(&data[..k]);
         data = &data[k..];
         if data.is_empty() {
             return true;
         }
-        if !self.flush() {
+        // _IO_OVERFLOW(f, EOF): a fresh stream allocates its buffer (nothing
+        // to write); otherwise the buffer is flushed
+        if !self.started {
+            self.started = true;
+        } else if !self.flush() {
             return false;
         }
         let whole = data.len() - if self.cap >= 128 { data.len() % self.cap } else { 0 };

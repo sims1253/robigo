@@ -38,6 +38,10 @@ if (file.exists("/dev/full")) {
     r <- suppressWarnings(.Internal(file.append("/dev/full", rep(file.path(d, "five.txt"), 1000))))
     which(!r)
 } else 683L
+# a fresh stream's first write of a whole block goes straight to the file
+b <- file.path(d, "block4096.txt")
+if (file.exists("/dev/full")) .Internal(file.append("/dev/full", b)) else FALSE
+if (file.exists("/dev/full")) .Internal(file.append("/dev/full", c(file.path(d, "five.txt"), b))) else c(TRUE, TRUE)
 .Internal(file.create(s[1], FALSE))
 fi(s[1])$size
 w <- withCallingHandlers(.Internal(file.create(file.path(d, "nosuchdir/x"), TRUE)),

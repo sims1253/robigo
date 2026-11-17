@@ -41,6 +41,8 @@ Error: invalid 'file2' argument
 [1] TRUE
 [1] TRUE TRUE
 [1] 683
+[1] FALSE
+[1]  TRUE FALSE
 [1] TRUE
 [1] 0
 <d>/nosuchdir/x', reason 'No such file or directory' 
