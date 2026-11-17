@@ -2656,7 +2656,10 @@ impl Cx {
     }
 
     /// `env`'s version box (module docs), made if it has none yet, written
-    /// to `out`. A memo holds the box and [`Cx::box_version`] of it.
+    /// to `out`. A memo holds the box and [`Cx::box_version`] of it. This is
+    /// the only writer of an environment's box, and it never replaces one:
+    /// an environment keeps the box it is given for good
+    /// ([`Cx::env_version`] relies on it).
     pub fn env_version_box(&mut self, env: Root<'_>, out: Out<'_>) -> RResult<()> {
         let r = expect_env(env.bind(self));
         let iso = self.iso();
@@ -2671,6 +2674,7 @@ impl Cx {
             // SAFETY: fresh, nothing collected since; `r` rooted. The box
             // starts at version 0.
             unsafe {
+                debug_assert!(r.aux() == self.iso().nil, "robigo: an environment's version box replaced");
                 *(b.std_data() as *mut i32) = 0;
                 r.set_aux(b);
             }
@@ -2689,8 +2693,9 @@ impl Cx {
     }
 
     /// The version `env`'s box holds now, None while it has none. An
-    /// environment keeps the box it is given for good, so a memo that
-    /// holds the environment may keep the version without the box.
+    /// environment never replaces its box ([`Cx::env_version_box`] is the
+    /// only writer, and gives a box once), so a memo that holds the
+    /// environment may keep the version without the box.
     #[inline]
     pub fn env_version(&self, env: Ref<'_>) -> Option<u32> {
         let r = expect_env(env);
@@ -2699,6 +2704,7 @@ impl Cx {
         // element, or R_NilValue.
         unsafe {
             let b = r.aux();
+            debug_assert!(b == nil || (b.typ() == INTSXP && b.std_len() == 1), "robigo: not a version box");
             (b != nil).then(|| *(b.std_data() as *const u32))
         }
     }

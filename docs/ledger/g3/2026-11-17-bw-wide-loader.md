@@ -183,14 +183,56 @@
   holds, and the recording assumes no collection before exit. Under
   rt-ci's gctorture conformance (E3) the environment is collected during
   the script, so the finalizer's warning comes before `.Last`'s. The
-  tests/rt cases register on `.BaseNamespaceEnv` for that reason. The new `tests/rt` passes:
+  tests/rt cases register on `.BaseNamespaceEnv` for that reason. The new
+  `tests/rt` passes:
   - `assign/link-walk-evalq`, `assign/link-walk-sapply`;
-  - this entry's four cases: `base/wide-names`, `base/wide-defs`,
-    `s3/method-table`, `env/dollar-env`.
+  - this entry's five cases: `base/wide-names`, `base/wide-defs`,
+    `s3/method-table`, `env/dollar-env`, `strings/strrep`.
   Conformance on rt is 405/409. The 4 that fail, fail on main too:
   `args/binding-types`, and `assign/link-walk-{eval-call,mapply,reduce}`,
   which need `.Internal(mapply)` and the like.
+- The fastr corpus on rt, with A1's tooling (`scripts/corpus.py run fastr
+  --runtime rt`, from `g3/rc-rt-corpora` at `61ce3eec`, against its
+  `passing-rt/` of 18,812 cases at main `fb429442`):
+  - The first BW binary passed 21,689 of 31,374, with one of the ratcheted
+    cases regressed: `TestBuiltin_xtfrm/08d2277539823dcd`. It passed on
+    main by accident. M1's loader did not bind `xtfrm.numeric_version`,
+    so `xtfrm.default` printed GNU R's `[1] 1`. BW binds the method, and it
+    reaches `.Internal(strrep)`, which robigo-rt lacked.
+  - This entry ports `do_strrep` (character.c) and adds
+    `tests/rt/strings/strrep.R`, recorded on 4.6.2.
+  - TODO(final run).
 - The bar (condition (c)): `tests/rt/base/wide-names.R` prints the count
   and the sorted names of `ls(baseenv(), all.names = TRUE)`, and matches
   GNU R 4.6.2's 1,407 byte for byte.
-- Proof: TODO (rt-ci, Miri on robigo-rtcore, lint, Sol).
+- Proof:
+  - `scripts/rt-ci.py` passes every step at `985cbc0a`:
+    - release tests;
+    - conformance: 404/408. The four that fail, fail on main too:
+      `args/binding-types` and three `assign/link-walk-*` cases that need
+      `.Internal(mapply)` and the like;
+    - the observation modes: `ROBIGO_NO_INPLACE` 400/403 and
+      `ROBIGO_MATERIALIZE` 404/408, without the cases their `.requires`
+      exclude;
+    - gctorture with the GC stats check: 403/407;
+    - `ROBIGO_GC_MOVE` with gctorture: 403/407;
+    - frame quarantine: 404/408;
+    - the pin report;
+    - the stress script (3 runs per profile, none missed);
+    - overshoot (424 programs, none over its bound);
+    - the small vector limit: 404/408;
+    - injected allocation failures (400 points, no difference).
+    The first run failed at gctorture's conformance on `cli/exit-warnings`
+    (above), which is not ratcheted now.
+  - Miri passes on `robigo-rtcore` (CI's scope, nightly-2026-11-02). That
+    includes `tests/env.rs`'s version-box test, which now checks
+    `env_version` before the box exists and after every change.
+  - Debug builds pass the tests of `robigo-rt`, `robigo-rtbuiltins` and
+    `robigo-conformance`, `robigo-rt`'s loader test among them. It checks
+    that every name is bound lazily, `license`'s chain depth, the blocks,
+    `.Library.site`'s three definitions, `.AutoloadEnv`'s record and
+    `.ArgsEnv`'s 88 forms, and that every closure of M1's bound is in the
+    wide base and forces to a function.
+  - `scripts/base-subset.sh --check` passes. `base-subset.txt` was
+    regenerated, because the new rt cases joined its inputs.
+    `base-bound.txt` is unchanged.
