@@ -41,8 +41,12 @@ pub(crate) struct Shared {
 }
 
 // SAFETY: the objects are written only by `make`, before `SHARED` publishes
-// them (`OnceLock` orders those writes before every read), and never again:
-// every writer skips immortal objects or refuses shared ones.
+// them (`OnceLock` orders those writes before every read), and never again.
+// Every writer of a published object skips immortal ones (reference counts,
+// `SEEN_BY_C`, `MARK_NOT_MUTABLE`, marking, moving), refuses shared ones
+// (the barrier's slow path; rtcore's `set_object_bit` and `set_s4_bit`,
+// which also leave an unchanged bit unwritten), or never reaches them
+// (`install` does not mark the shared "" as a PRINTNAME).
 unsafe impl Sync for Shared {}
 // SAFETY: as for `Sync`: the pointers are to memory no thread frees.
 unsafe impl Send for Shared {}
@@ -178,7 +182,14 @@ unsafe fn symbol(s: Sexp, nil: Sexp, name: Sexp, value: Sexp, id: u32) {
 /// What a heap counts for the shared objects when it is made, as if it had
 /// allocated them (`Core::alloc_object`'s count): their bytes and their
 /// vector cells.
-pub(crate) fn counts() -> [(usize, usize); OBJECTS] {
+/// Each is (type, length, bytes, vector cells).
+pub(crate) fn counts() -> [(u8, usize, usize, usize); OBJECTS] {
     let n = node::size(NILSXP).max(GRANULE);
-    [(n, 0), (charsxp_bytes(2), vec_cells(CHARSXP, 2)), (charsxp_bytes(0), vec_cells(CHARSXP, 0)), (n, 0), (n, 0)]
+    [
+        (NILSXP, 1, n, 0),
+        (CHARSXP, 2, charsxp_bytes(2), vec_cells(CHARSXP, 2)),
+        (CHARSXP, 0, charsxp_bytes(0), vec_cells(CHARSXP, 0)),
+        (SYMSXP, 1, n, 0),
+        (SYMSXP, 1, n, 0),
+    ]
 }

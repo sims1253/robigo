@@ -3210,6 +3210,13 @@ fn the_constants_are_shared_by_every_heap() {
     gc(&mut b, &mut ());
     assert_eq!(words(&a), before, "a collection writes no constant");
     assert_eq!(a.heap_sizes().nodes_in_use, 5 + 1, "the constants and the one live vector");
+    // a symbol named "" takes the shared "" as its PRINTNAME, unmarked
+    let blank =
+        |c: &Core| unsafe { std::array::from_fn::<u64, 4, _>(|i| *(c.blank_string().as_ptr() as *const u64).add(i)) };
+    let name = blank(&a);
+    let s = a.install(b"").unwrap();
+    assert_eq!(blank(&a), name, "install(\"\") writes no constant");
+    assert_eq!(a.install(b"").unwrap(), s);
 }
 
 /// A store into a shared constant is refused before anything is written.

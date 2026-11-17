@@ -847,11 +847,11 @@ impl Core {
         // not yet in this table.
         unsafe { c.chars.insert(sh.blank_string) };
         c.immortal_chars += 1;
-        for (bytes, cells) in crate::shared::counts() {
+        for (t, n, bytes, cells) in crate::shared::counts() {
             if c.sizes.over_trigger(cells) {
                 // (InitMemory's triggers are not set yet: this polls as the
                 // allocations it stands for did)
-                c.poll_slow(NILSXP, 1, bytes, cells).expect(CONSTANTS);
+                c.poll_slow(t, n, bytes, cells).expect(CONSTANTS);
             }
             c.count(bytes, cells);
         }
@@ -1664,9 +1664,13 @@ impl Core {
         // them); the cache's lookups ignore HASHASH (`chars::ENC_MASK`).
         unsafe {
             self.make_immortal(c);
-            // R: names.c:install (SET_HASHVALUE, SET_HASHASH on the PRINTNAME)
-            c.set_truelen(s.sym_hash() as isize);
-            c.set_gp(c.gp() | crate::gp::charsxp::HASHASH);
+            // R: names.c:install (SET_HASHVALUE, SET_HASHASH on the PRINTNAME).
+            // Not on the shared "" (a symbol named "" GNU R never installs),
+            // which no isolate writes.
+            if !crate::shared::is_shared(c) {
+                c.set_truelen(s.sym_hash() as isize);
+                c.set_gp(c.gp() | crate::gp::charsxp::HASHASH);
+            }
         }
         self.syms.insert(name.into(), s);
         Ok(s)

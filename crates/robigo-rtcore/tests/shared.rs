@@ -32,11 +32,20 @@ fn isolates_on_two_threads_share_the_constants() {
                 start.wait();
                 let mut iso = OwnedIsolate::new();
                 let seen = constants(&mut iso);
-                // and a second look after this isolate has allocated
+                // and a second look after this isolate has allocated, set
+                // NULL's bits to what they are, and installed "" (none of
+                // which writes a constant: Miri sees any race between the
+                // two threads)
                 let cx = iso.cx();
                 for i in 0..64 {
                     let _ = cx.mk_char(format!("s{i}").as_bytes(), Encoding::Native).unwrap();
                 }
+                cx.scope(|cx, s| {
+                    let nil = s.root(cx, cx.nil());
+                    cx.set_object_bit(nil, false);
+                    cx.set_s4_bit(nil, false);
+                });
+                let _ = cx.install(b"").unwrap();
                 assert_eq!(constants(&mut iso), seen);
                 seen
             })
@@ -47,4 +56,17 @@ fn isolates_on_two_threads_share_the_constants() {
     assert_eq!(seen[0][2], seen[0][5], "mkChar(\"\") is R_BlankString");
     let mut here = OwnedIsolate::new();
     assert_eq!(constants(&mut here), seen[0], "and in an isolate made after them");
+}
+
+/// Changing a bit of a shared constant is refused: it would change in every
+/// isolate at once.
+#[test]
+#[should_panic(expected = "a write into a shared immutable object")]
+fn setting_nulls_object_bit_is_refused() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    cx.scope(|cx, s| {
+        let nil = s.root(cx, cx.nil());
+        cx.set_object_bit(nil, true);
+    });
 }
