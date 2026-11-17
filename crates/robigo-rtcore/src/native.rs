@@ -202,7 +202,9 @@ impl Cx {
     pub unsafe fn call_native6(&mut self, f: *const c_void, a: [usize; 6], objects: u8, ret: Ret6) -> RResult<Native6> {
         for (i, &w) in a.iter().enumerate() {
             if objects & (1 << i) != 0 {
-                self.hand_to_c(Sexp(w as *mut u8));
+                // SAFETY: the caller's contract: the words `objects` marks
+                // are live objects of this isolate.
+                unsafe { self.hand_to_c(Sexp::from_ptr(w as *mut u8)) };
             }
         }
         let init = Init::plain(self, ctxt::CCODE, rflags::LANDING | rflags::HIDDEN);
@@ -392,7 +394,7 @@ impl Cx {
                 // fun returned)
                 // SAFETY: `cont` is a live continuation (checked above) and
                 // `out` the object fun returned.
-                unsafe { cont_x.set_car(Sexp(out as *mut u8)) };
+                unsafe { cont_x.set_car(Sexp::from_ptr(out as *mut u8)) };
                 Ok(false)
             } else {
                 match cx.arrive(c, RError::new()) {
@@ -468,7 +470,7 @@ impl Cx {
             // R: context.c:R_ExecWithCleanup (PROTECT(result = fun(data)))
             // SAFETY: the caller's contract: fun returned a live object, and
             // nothing collected since.
-            out.set(cx, unsafe { Ref::from_sexp(Sexp(res as *mut u8), cx) });
+            out.set(cx, unsafe { Ref::from_sexp(Sexp::from_ptr(res as *mut u8), cx) });
             let a = [cleandata as usize, 0, 0, 0, 0, 0];
             // SAFETY: the caller's contract for cleanfun.
             if let Err(e) = unsafe { cx.native6_hidden(cleanfun as *const c_void, a) } {

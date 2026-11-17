@@ -1193,8 +1193,10 @@ fn partial_warnings(
 ) -> RResult<()> {
     for &(a, f) in partial {
         // (tags are symbols: immortal)
-        let tag = crate::eval::sym_name(cx, acts[a as usize].tag);
-        let formal = crate::eval::sym_name(cx, ftags[f as usize]);
+        // SAFETY: the tags are symbols: immortal.
+        let tag = unsafe { crate::eval::sym_name(cx, acts[a as usize].tag) };
+        // SAFETY: the tags are symbols: immortal.
+        let formal = unsafe { crate::eval::sym_name(cx, ftags[f as usize]) };
         let msg = format!("partial argument match of '{tag}' to '{formal}'");
         cx.warning_call(Some(call), &msg)?;
     }
@@ -1562,7 +1564,8 @@ fn apply_with<const GENERIC: bool>(
         // this call ends)
         let outer_wasted = (early > 0).then(|| cx.take_early_wasted());
         if early > 0 {
-            cx.set_early_frame(newrho.bind(cx).sexp(), early);
+            // SAFETY: the new frame, rooted, with `early` early values.
+            unsafe { cx.set_early_frame(newrho.bind(cx).sexp(), early) };
         }
         let end_early = |cx: &mut Cx| {
             if let Some(outer) = outer_wasted {
@@ -1735,8 +1738,11 @@ fn match_error(
 /// call's record of dropped values (`outer`) is given back.
 #[inline(always)]
 fn end_early_call(cx: &mut Cx, f: Sexp, outer: (Sexp, u32), site: Option<(u16, &Act)>, stamp: u64) {
-    cx.end_early_frame(f);
-    let wasted = cx.early_wasted(f);
+    // SAFETY: (this module's calls) `f` is the ending call's frame, rooted
+    // by it, and `outer` the record its start took.
+    unsafe { cx.end_early_frame(f) };
+    // SAFETY: as above.
+    let wasted = unsafe { cx.early_wasted(f) };
     if wasted != 0
         && let Some((site, a)) = site
     {
@@ -1752,7 +1758,8 @@ fn end_early_call(cx: &mut Cx, f: Sexp, outer: (Sexp, u32), site: Option<(u16, &
             }
         }
     }
-    cx.restore_early_wasted(outer);
+    // SAFETY: as above.
+    unsafe { cx.restore_early_wasted(outer) };
 }
 
 /// The delayed arguments of compiled code (`inits`) whose values the call
@@ -2087,7 +2094,11 @@ fn generic_promargs(cx: &mut Cx, _id: ContextId, data: usize, out: Out<'_>) -> R
 /// The VM's closure call: the closure in register `rf` called by `call`
 /// (a constant of the running code) from the activation's environment,
 /// with call site `site`'s plan; the value into register `dst`.
-pub fn call_closure(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: u16) -> RResult<()> {
+///
+/// # Safety
+/// `call` is a live call of `cx`'s isolate (a constant of `act`'s code, or
+/// rooted).
+pub unsafe fn call_closure(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: u16) -> RResult<()> {
     cx.scope(|cx, s| {
         // SAFETY: a constant of the rooted code.
         let callr = s.root(cx, unsafe { Ref::from_sexp(call, cx) });

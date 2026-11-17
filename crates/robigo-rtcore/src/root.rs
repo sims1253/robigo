@@ -106,7 +106,8 @@ impl<'s> Scope<'s> {
         let iso = self.open(cx);
         let x = v.into().sexp();
         iso.check_owns(x);
-        Root { slot: iso.stack().push(Slot::object(x)), _s: PhantomData }
+        // SAFETY: a `Ref`'s object, of this isolate (checked).
+        Root { slot: iso.stack().push(unsafe { Slot::object(x) }), _s: PhantomData }
     }
 
     /// `n` empty slots in this scope, the first returned: the registers of a
@@ -165,7 +166,8 @@ impl<'s> Scope<'s> {
         for &v in values {
             iso.check_owns(v.sexp());
             any_alt |= v.is_package_altrep();
-            let p = iso.stack().push(Slot::object(v.sexp()));
+            // SAFETY: a `Ref`'s object, of this isolate (checked).
+            let p = iso.stack().push(unsafe { Slot::object(v.sexp()) });
             base.get_or_insert(p);
         }
         let base = base.unwrap_or_else(|| iso.stack().top());
@@ -175,7 +177,9 @@ impl<'s> Scope<'s> {
             for &s in ns {
                 let x = s.map_or(iso.nil, |s| s.as_ref().sexp());
                 iso.check_owns(x);
-                iso.stack().push(Slot::object(x));
+                // SAFETY: a symbol's `Ref` or R_NilValue, of this isolate
+                // (checked).
+                iso.stack().push(unsafe { Slot::object(x) });
             }
             first
         });

@@ -210,10 +210,14 @@ entry! {
 
 /// `R_altrep_inherits(x, class)`: `x` is an ALTREP object of `class`.
 // R: altrep.c:R_altrep_inherits
+///
+/// # Safety
+/// C's contract: `x` is a live object of the calling isolate; `class` is
+/// only compared (by address), so any word will do.
 #[unsafe(no_mangle)]
-pub extern "C" fn R_altrep_inherits(x: Sexp, class: Sexp) -> c_int {
-    // SAFETY: C's contract: a live object; an ALTREP object's TAG is its
-    // class.
+pub unsafe extern "C" fn R_altrep_inherits(x: Sexp, class: Sexp) -> c_int {
+    // SAFETY: the caller's contract: a live object; an ALTREP object's TAG
+    // is its class.
     unsafe { (x.is_altrep() && x.tag() == class) as c_int }
 }
 
@@ -231,10 +235,16 @@ unsafe fn set_method(class: Sexp, off: usize, fun: *const c_void) {
 macro_rules! setters {
     ($($name:ident => $ty:ident . $($field:ident).+;)*) => {$(
         // R: altrep.c:DEFINE_METHOD_SETTER
+        ///
+        /// # Safety
+        /// C's contract: `class` is a class object of a type whose method
+        /// table has this entry (GNU R casts the table the same way), and
+        /// `fun` is null or a function of the entry's signature, which
+        /// ALTREP dispatch calls as one (GNU R's dispatch skips a null
+        /// method).
         #[unsafe(no_mangle)]
-        pub extern "C" fn $name(class: Sexp, fun: *const c_void) {
-            // SAFETY: C's contract: a class of a type whose table has the
-            // entry (GNU R casts the table the same way).
+        pub unsafe extern "C" fn $name(class: Sexp, fun: *const c_void) {
+            // SAFETY: the caller's contract.
             unsafe { set_method(class, offset_of!($ty, $($field).+), fun) }
         }
     )*};

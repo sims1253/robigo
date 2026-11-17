@@ -21,7 +21,11 @@ use robigo_rtcore::{Args, Cx, Left, Out, RResult, Ref, Root, Slot, ctxt};
 
 /// `findFun3(sym, rho, call)` into register `a`: the lookup that may run
 /// code (a promise forced) and GNU R's errors.
-pub fn find_fun(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp) -> RResult<()> {
+///
+/// # Safety
+/// `sym` is a live symbol and `call` a live call of `cx`'s isolate
+/// (constants of `act`'s code, or rooted).
+pub unsafe fn find_fun(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp) -> RResult<()> {
     // R: eval.c:eval, "This picks the correct/better error expression for
     // replacement calls running in the AST interpreter."
     let g = cx.global_context();
@@ -39,8 +43,12 @@ pub fn find_fun(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp) -> RResul
 /// (`eval`'s LANGSXP case after the function is found, or bcEval's `CALL`
 /// when `bc`); a closure's arguments are bound with call site `site`'s
 /// match plan.
+///
+/// # Safety
+/// `call` is a live call of `cx`'s isolate (a constant of `act`'s code, or
+/// rooted).
 // R: eval.c:eval, eval.c:bcEval CALL
-pub fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: u16, bc: bool) -> RResult<()> {
+pub unsafe fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: u16, bc: bool) -> RResult<()> {
     let fun = act.obj(rf);
     // SAFETY: a register's object is live.
     match unsafe { fun.typ() } {
@@ -57,10 +65,13 @@ pub fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: u16, bc
             {
                 return Ok(());
             }
-            args::call_closure(cx, act, dst, rf, call, site)
+            // SAFETY: the caller's contract: `fun` and `call` are live.
+            unsafe { args::call_closure(cx, act, dst, rf, call, site) }
         }
-        BUILTINSXP if bc => call_builtin_list(cx, act, dst, fun, call, bc),
-        SPECIALSXP if bc => call_special(cx, act, dst, fun, call),
+        // SAFETY: the caller's contract: `fun` and `call` are live.
+        BUILTINSXP if bc => unsafe { call_builtin_list(cx, act, dst, fun, call, bc) },
+        // SAFETY: the caller's contract: `fun` and `call` are live.
+        SPECIALSXP if bc => unsafe { call_special(cx, act, dst, fun, call) },
         BUILTINSXP | SPECIALSXP => {
             // eval's check_stack_balance (bcEval's CALL checks nothing):
             // `save` after PROTECT(op), the primitive's entry one more
@@ -70,9 +81,11 @@ pub fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: u16, bc
             let save = cx.pp_save(-1);
             // SAFETY: as above.
             if unsafe { fun.typ() } == BUILTINSXP {
-                call_builtin_list(cx, act, dst, fun, call, bc)?;
+                // SAFETY: the caller's contract: `fun` and `call` are live.
+                unsafe { call_builtin_list(cx, act, dst, fun, call, bc) }?;
             } else {
-                call_special(cx, act, dst, fun, call)?;
+                // SAFETY: the caller's contract: `fun` and `call` are live.
+                unsafe { call_special(cx, act, dst, fun, call) }?;
             }
             cx.check_stack_balance(name.as_bytes(), save);
             Ok(())
@@ -287,7 +300,11 @@ pub fn apply_hook(
 /// A builtin `fun` (or a builtin `.Internal`) called with the `n` evaluated
 /// arguments in registers `base..` (their names after them if `names`),
 /// for `call`: GNU R's `eval` BUILTINSXP case after `evalList`.
-pub fn call_builtin_regs(
+///
+/// # Safety
+/// `fun` is a live BUILTINSXP and `call` a live call of `cx`'s isolate
+/// (constants of `act`'s code, or rooted).
+pub unsafe fn call_builtin_regs(
     cx: &mut Cx,
     act: &Act,
     dst: Reg,
@@ -354,8 +371,12 @@ fn invoke_builtin(cx: &mut Cx, act: &Act, dst: Reg, args: Args<'_>, regs: (Reg, 
 /// unevaluated, with the activation's environment. GNU R's `do_internal`
 /// for a SPECIALSXP: `R_Visible` on, then `PRIMFUN(INTERNAL(fun))(s, ...,
 /// args, env)`.
+///
+/// # Safety
+/// `fun` is a live SPECIALSXP and `call` a live call of `cx`'s isolate
+/// (constants of `act`'s code, or rooted).
 // R: names.c:do_internal
-pub fn call_special_internal(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
+pub unsafe fn call_special_internal(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
     // SAFETY: a live primitive of this isolate.
     let name = unsafe { prims::def(cx, fun) }.name;
     let save = cx.pp_save(0);
@@ -401,7 +422,11 @@ fn call_special_args(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp, in
 /// A builtin called with its arguments evaluated at run time, for the
 /// call in register-free form ([`builtin_evallist`]; `bc`: by compiled
 /// code).
-pub fn call_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp, bc: bool) -> RResult<()> {
+///
+/// # Safety
+/// `fun` is a live BUILTINSXP and `call` a live call of `cx`'s isolate
+/// (constants of `act`'s code, or rooted).
+pub unsafe fn call_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp, bc: bool) -> RResult<()> {
     cx.scope(|cx, s| {
         // SAFETY: constants of the rooted code (or a register's function).
         let (callr, funr) = unsafe { (s.root(cx, Ref::from_sexp(call, cx)), s.root(cx, Ref::from_sexp(fun, cx))) };
@@ -652,7 +677,11 @@ fn append(cx: &mut Cx, head: Root<'_>, tail: Root<'_>, value: Root<'_>, tag: Sex
 /// A special reached through a value (`(if)(TRUE, 1)`, `f <- quote;
 /// f(x)`, `` `[`(x, 1) ``): applied to its call in the activation's
 /// environment.
-pub(crate) fn call_special(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
+///
+/// # Safety
+/// `fun` is a live SPECIALSXP and `call` a live call of `cx`'s isolate
+/// (constants of `act`'s code, or rooted).
+pub(crate) unsafe fn call_special(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
     cx.scope(|cx, s| {
         // SAFETY: a constant of the rooted code, and a register's function.
         let (callr, funr) = unsafe { (s.root(cx, Ref::from_sexp(call, cx)), s.root(cx, Ref::from_sexp(fun, cx))) };

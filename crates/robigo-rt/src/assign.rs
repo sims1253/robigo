@@ -212,7 +212,8 @@ pub(crate) fn ensure_local<'s>(
         let en = enclos(cx, s, rho);
         eval(cx, sym, en, vl)?;
         if vr.bind(cx) == cx.unbound() {
-            let msg = format!("object '{}' not found", crate::eval::sym_name(cx, sym.bind(cx).sexp()));
+            // SAFETY: a rooted symbol.
+            let msg = format!("object '{}' not found", unsafe { crate::eval::sym_name(cx, sym.bind(cx).sexp()) });
             return Err(cx.error(&msg));
         }
         dup(cx, s, vr)?;
@@ -343,10 +344,14 @@ fn set_tempvarloc(cx: &mut Cx, s: Scope<'_>, tmploc: Root<'_>, v: Root<'_>) -> R
 /// `applydefine(call, op, args, rho)` for the assignment `call` (`code`:
 /// do_set's, 1 `<-`, 2 `<<-`, 3 `=`), the right-hand side's value in
 /// register `rhs`: the value assigned is in register `dst`, invisible.
+///
+/// # Safety
+/// `call` is the live assignment call (a constant of `act`'s code, or
+/// rooted).
 // R: eval.c:applydefine
 // (never inlined into the VM loop: its body would shape the loop's code)
 #[inline(never)]
-pub fn applydefine(cx: &mut Cx, act: &Act, dst: Reg, rhs: Reg, call: Sexp, code: u16) -> RResult<()> {
+pub unsafe fn applydefine(cx: &mut Cx, act: &Act, dst: Reg, rhs: Reg, call: Sexp, code: u16) -> RResult<()> {
     cx.scope(|cx, s| {
         // SAFETY: a constant of the rooted code; a register's value.
         let callr = s.root(cx, unsafe { Ref::from_sexp(call, cx) });

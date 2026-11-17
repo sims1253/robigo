@@ -164,7 +164,7 @@ pub unsafe fn compile_closure(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
 /// None when cmp.R returns the closure uncompiled (it may call
 /// `browser()`, a compiler error).
 // R: cmp.R:cmpfun, make.functionContext, funEnv
-pub fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> RResult<Option<Sexp>> {
+pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> RResult<Option<Sexp>> {
     attempt(cx, |cx| {
         let f = op.bind(cx).sexp();
         // SAFETY: a rooted closure (and cache entry); nothing collects in
@@ -231,18 +231,14 @@ pub fn compile_top_loop(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RResult<O
 /// evaluated one level below the code object's base, as the special's own
 /// `eval` calls nest. Always the `Eval` profile: GNU R calls the special,
 /// which evaluates its arguments by `eval` (bcEval's `CALLSPECIAL` too).
-///
 /// `call` is read through its root on every attempt.
-pub fn compile_special(cx: &mut Cx, call: robigo_rtcore::Root<'_>, off: usize) -> RResult<Sexp> {
-    compile_special_with(cx, call, None, off)
-}
-
-/// [`compile_special`] with the special's arguments `args` (a pairlist)
-/// in place of the call's: `applyMethod`'s `PRIMFUN(op)(call, op, args,
-/// rho)` of a special method, `call` for its messages and its dispatch,
-/// `args` the method's promises (each forced as `eval` forces it).
+///
+/// With `args` (a pairlist), they stand in place of the call's:
+/// `applyMethod`'s `PRIMFUN(op)(call, op, args, rho)` of a special method,
+/// `call` for its messages and its dispatch, `args` the method's promises
+/// (each forced as `eval` forces it).
 // R: objects.c:applyMethod (SPECIALSXP)
-pub fn compile_special_with(
+pub(crate) fn compile_special_with(
     cx: &mut Cx,
     call: robigo_rtcore::Root<'_>,
     args: Option<robigo_rtcore::Root<'_>>,
@@ -465,12 +461,12 @@ impl<'g> Comp<'g> {
 
     /// The pool index of `x` (one entry per object).
     fn k(&mut self, x: Sexp) -> u16 {
-        if let Some(&i) = self.pool.get(&(x.0 as usize)) {
+        if let Some(&i) = self.pool.get(&(x.as_ptr() as usize)) {
             return i;
         }
         let i = u16::try_from(FIRST_CONST + self.consts.len()).expect("robigo: too many constants in one code object");
         self.consts.push(x);
-        self.pool.insert(x.0 as usize, i);
+        self.pool.insert(x.as_ptr() as usize, i);
         i
     }
 
@@ -483,7 +479,7 @@ impl<'g> Comp<'g> {
         if self.profile != Profile::Bc {
             return self.k(x);
         }
-        if let Some(&i) = self.pool.get(&(x.0 as usize)) {
+        if let Some(&i) = self.pool.get(&(x.as_ptr() as usize)) {
             return i;
         }
         let cx = self.cx;
@@ -784,7 +780,7 @@ impl<'g> Comp<'g> {
         if unsafe { f.typ() } != SYMSXP {
             return None;
         }
-        let off = *self.st.by_sym.get(&(f.0 as usize))?;
+        let off = *self.st.by_sym.get(&(f.as_ptr() as usize))?;
         match self.st.defs[off].kind {
             Kind::Special(s) => Some(Known::Special(s, off)),
             Kind::Builtin(_, Inline::None) => None,
@@ -969,7 +965,7 @@ impl<'g> Comp<'g> {
         let dots = st.syms.dots;
         // the primitives the VM inlines: cmp.R's handlers of the language
         // functions, `cmpSpecial`'s and `cmpBuiltin`'s for the others
-        let off = st.by_sym.get(&(f.0 as usize)).copied().filter(|&o| !st.defs[o].internal());
+        let off = st.by_sym.get(&(f.as_ptr() as usize)).copied().filter(|&o| !st.defs[o].internal());
         if let Some(off) = off {
             match st.defs[off].kind {
                 Kind::Special(s) => return Ok(Some(Handler::Known(Known::Special(s, off)))),

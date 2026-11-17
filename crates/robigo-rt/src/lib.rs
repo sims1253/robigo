@@ -120,7 +120,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     let cond = conditions::CondState::new(cx);
     let defs = prims::base_defs();
     let (objs, names) = prims::make_prims(cx, &defs, 0);
-    let by_sym = names.iter().enumerate().map(|(i, s)| (s.0 as usize, i)).collect();
+    let by_sym = names.iter().enumerate().map(|(i, s)| (s.as_ptr() as usize, i)).collect();
     cx.set_ext(prims::RtState {
         forced,
         jit: jit::Config::from_env(),
@@ -241,9 +241,9 @@ pub fn define_builtins(cx: &mut Cx, defs: &[prims::PrimDef]) {
         // the compiler's lookup is by symbol: an `.Internal` never hides a
         // primitive of the same name
         if defs[i].internal() {
-            st.by_sym.entry(n.0 as usize).or_insert(first + i);
+            st.by_sym.entry(n.as_ptr() as usize).or_insert(first + i);
         } else {
-            st.by_sym.insert(n.0 as usize, first + i);
+            st.by_sym.insert(n.as_ptr() as usize, first + i);
         }
     }
     st.names.extend(names);

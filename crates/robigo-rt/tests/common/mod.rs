@@ -357,7 +357,7 @@ fn length(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out
 /// `addr(x)` (a test stand-in for `.Internal(inspect(x))`'s address): the
 /// object's address as a double.
 fn addr(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    let a = args.get(cx, 0).sexp().0 as usize as f64;
+    let a = args.get(cx, 0).sexp().as_ptr() as usize as f64;
     cx.build(out, |cx| Ok(cx.alloc_with(1, |_| a)?.finish().into()))
 }
 
