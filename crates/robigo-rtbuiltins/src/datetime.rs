@@ -401,7 +401,7 @@ impl Strptime<'_> {
                         break;
                     }
                 }
-                if val < $from || val > $to {
+                if !($from..=$to).contains(&val) {
                     fail!();
                 }
                 val
