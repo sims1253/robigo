@@ -125,6 +125,29 @@ fn cases(long_src: &[u8]) -> Vec<Case> {
             b"",
             2,
         ),
+        // no FILE and no -e: stdin, not a terminal here, is the console
+        // (`R --vanilla --no-echo < script`, as GNU R's own build runs R)
+        (
+            "stdin-no-echo",
+            vec!["--vanilla", "--no-echo"],
+            Some("echo.R"),
+            b"[1] 3\n[1] 1\n[1] \"a\"\n[1] 3\n".to_vec(),
+            b"",
+            0,
+        ),
+        ("stdin-quiet", vec!["--vanilla", "--quiet"], Some("stdin.R"), b"> 1 + 1\n[1] 2\n> \n".to_vec(), b"", 0),
+        // --no-echo is SA_NOSAVE too
+        ("stdin-no-echo-save", vec!["--no-echo"], Some("stdin.R"), b"[1] 2\n".to_vec(), b"", 0),
+        // stdin needs the save action named, a FILE implies it
+        (
+            "stdin-no-save",
+            vec!["--quiet"],
+            Some("stdin.R"),
+            Vec::new(),
+            b"Fatal error: you must specify '--save', '--no-save' or '--vanilla'\n",
+            2,
+        ),
+        ("f-implies-no-save", vec!["--quiet", "-f", "stdin.R"], None, b"> 1 + 1\n[1] 2\n> \n".to_vec(), b"", 0),
         (
             "rscript-missing",
             vec!["nope.R"],
@@ -200,7 +223,7 @@ fn the_command_line_and_transcript_are_gnu_rs() {
     assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
 
-/// R's start-up greeting (`PrintGreeting`, `-f` without `--quiet`) is not
+/// R's start-up greeting (`PrintGreeting`, R without `--quiet`) is not
 /// ported: robigo-rt says so rather than printing another.
 #[test]
 fn the_greeting_is_refused() {
@@ -212,6 +235,6 @@ fn the_greeting_is_refused() {
     assert_eq!((out, status), (Vec::new(), 2));
     assert_eq!(
         String::from_utf8_lossy(&err),
-        "robigo-rt: R's start-up greeting (-f without --quiet) is not implemented yet\n"
+        "robigo-rt: R's start-up greeting (R without --quiet) is not implemented yet\n"
     );
 }
