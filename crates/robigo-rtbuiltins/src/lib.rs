@@ -40,6 +40,7 @@ pub mod coerce;
 pub mod complex;
 pub mod context;
 pub mod cum;
+pub mod datetime;
 pub mod envir;
 pub mod errors;
 pub mod grep;

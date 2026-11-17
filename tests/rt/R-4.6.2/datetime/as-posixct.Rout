@@ -1,0 +1,33 @@
+         a          b          c 
+         0         -1 1709210096 
+[1] "POSIXct" "POSIXt" 
+         a          b          c 
+         0         -1 1709210096 
+attr(,"tzone")
+[1] "GMT"
+$names
+[1] "a" "b" "c"
+
+$class
+[1] "POSIXct" "POSIXt" 
+
+$tzone
+[1] "GMT"
+
+   a    b    c 
+ Inf -Inf   NA 
+         a          b          c 
+        NA   34300741 1701434042 
+[1] 946686600
+[1] "a valid \"POSIXlt\" object is a list of at least 9 elements"
+[1] "a valid \"POSIXlt\" object is a list of at least 9 elements"
+[1] "a valid \"POSIXlt\" object has element 3 with name 'hours' which should be 'hour'"
+[1] "a valid \"POSIXlt\" object has a numeric element mday"
+[1] "zero-length component [[2]] in non-empty \"POSIXlt\" structure"
+[1] "invalid 'attr(x, \"tzone\")'"
+[1] "attr(x, \"tzone\") should have length 1 or 3"
+         a          b          c 
+         0         -1 1709210096 
+[1] "invalid 'tz' value"
+[1] -1200798848 -1200798848  3094168447
+[1] -6.776811e+16 -6.776804e+16 -6.776804e+16
