@@ -1,0 +1,2 @@
+Warning message:
+In RNGkind(sample.kind = "Rounding") : non-uniform 'Rounding' sampler used
