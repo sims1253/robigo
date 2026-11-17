@@ -247,7 +247,14 @@ where the strings were allocated. To test it,
   rows follow its layout too. Across the same paddings they move by at
   most 0.14% (e7-unique 0.11%, e7-match 0.14%). This was measured on the
   desktop with a release build of main `fb429442` and valgrind 3.27.1
-  (`layout-rt.json`).
+  (`layout-rt.json`; sha256 `237f49bbcaff34b859b1ee92645bc80ee1d4c9ff6e2129008a20ca90d487f95a`,
+  GNU build ID `410ea73950da65f1e0cf41df2e18c3ea18402032`).
+- **Correction (2026-11-17):** an earlier version labeled this run "main
+  `2ae1e075`". That binary was a stale build from about main `c9e820e9`,
+  because `cargo build -p robigo-rt` builds only the library and
+  `-p robigo-rtapi` builds the binary. The run was repeated on the binary
+  above: e7-match moves by 0.14%, not 0.13%. The conclusion came from
+  comparing paddings on one binary, so it holds.
 
 Both rows' bars compare robigo-rt with today's robigo, so no bar moves.
 A bar against GNU R on a hashing row would carry GNU R's noise.
