@@ -1,0 +1,31 @@
+[1] 2
+[1] 1
+[1] 4
+integer(0)
+integer(0)
+[1] 1
+[1] 1
+[1] 3
+integer(0)
+[1] 1
+[1] 3
+[1] 3
+[1] 2
+[1] 1
+b 
+2 
+b 
+2 
+y 
+2 
+z 
+2 
+[1] 2
+[1] 2
+[1] 3
+[1] 2
+[1] 2
+[1] 2
+[1] 1
+[1] "0 arguments passed to .Internal(which.min) which requires 1"
+[1] "2 arguments passed to .Internal(which.max) which requires 1"
