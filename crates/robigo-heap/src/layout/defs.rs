@@ -60,14 +60,22 @@ pub mod header {
 }
 
 /// A standard (not ALTREP) vector of any type but CHARSXP: the header,
-/// LENGTH, TRUELENGTH, then the payload (or EXTDATA's words, [`super::extdata`]).
+/// LENGTH, then the payload (or EXTDATA's words, [`super::extdata`]). D8's
+/// h24: a 24-byte vector header, with no TRUELENGTH word.
+///
+/// GNU R's TRUELENGTH (the growable capacity, a hash table's fill count;
+/// docs/g3.md §8: every variant keeps storage for it) is the last word of
+/// the allocation, on the vectors allocated with it
+/// ([`super::extra::vector::TL_WORD`], [`vector_bytes_tl`]): growable
+/// vectors and hash tables, which GNU R's C makes knowing they need one.
+/// The allocation's end is its size class's (`heap::alloc_end`), so a
+/// growable vector's word stays where it is while LENGTH moves below its
+/// capacity. Every other vector's TRUELENGTH is 0, which `SET_TRUELENGTH`
+/// may write and nothing else.
 pub mod vector {
     pub const OFF_LEN: usize = super::header::SIZE;
-    /// GNU R's TRUELENGTH: the growable capacity, a hash table's fill
-    /// count (docs/g3.md §8: every variant keeps storage for it).
-    pub const OFF_TRUELEN: usize = OFF_LEN + super::WORD;
     /// The payload: the vector header's size.
-    pub const OFF_DATA: usize = OFF_TRUELEN + super::WORD;
+    pub const OFF_DATA: usize = OFF_LEN + super::WORD;
 }
 
 /// A CHARSXP: its hash where attributes go (it has none), LENGTH,
@@ -274,6 +282,17 @@ pub const fn data_off(t: u8) -> usize {
 #[inline]
 pub fn vector_bytes(t: u8, n: usize) -> Option<usize> {
     Some(n.checked_mul(elt_size(t))?.checked_add(data_off(t) + GRANULE - 1)? / GRANULE * GRANULE)
+}
+
+/// [`vector_bytes`] with a TRUELENGTH word after the payload
+/// ([`vector`], [`extra::vector::TL_WORD`]): for a CHARSXP, which has one
+/// in its header, the same.
+#[inline]
+pub fn vector_bytes_tl(t: u8, n: usize) -> Option<usize> {
+    if t == CHARSXP {
+        return vector_bytes(t, n);
+    }
+    Some(n.checked_mul(elt_size(t))?.checked_add(data_off(t) + WORD + GRANULE - 1)? / GRANULE * GRANULE)
 }
 
 /// The bytes a CHARSXP of `n` bytes is allocated with (with its NUL).
@@ -587,15 +606,19 @@ pub mod extra {
         const _: () = assert!(super::super::disjoint(&[super::TYPE_BLIND as u64, CALL_LIVE as u64, ESCAPED as u64]));
     }
 
-    /// A vector. Free: 0, 2, 3, 5, 6, 8-12, 14, 15.
+    /// A vector. Free: 2, 3, 5, 6, 8-12, 14, 15.
     pub mod vector {
+        /// The allocation ends with a TRUELENGTH word ([`super::super::vector`]):
+        /// set when the vector is made, never changed (`Sexp::set_extra`
+        /// keeps it). Not on a CHARSXP, whose word is in its header.
+        pub const TL_WORD: u16 = 1 << 0;
         /// GNU R's RTRACE (`sxpinfo.trace`): `tracemem` is on.
         pub const TRACE: u16 = 1 << 1;
-        const _: () = assert!(super::super::disjoint(&[super::TYPE_BLIND as u64, TRACE as u64]));
+        const _: () = assert!(super::super::disjoint(&[super::TYPE_BLIND as u64, TL_WORD as u64, TRACE as u64]));
     }
 
     /// A code object (robigo-rt's `code.rs`: a VECSXP), which has the
-    /// vector bits too. Free: 0, 2, 3, 5, 6, 9-12, 14, 15.
+    /// vector bits too. Free: 2, 3, 5, 6, 9-12, 14, 15.
     pub mod code {
         /// The code object holds weak cache words (inline caches that
         /// name an object without keeping it alive: docs/g3.md §6.1, the
@@ -605,6 +628,7 @@ pub mod extra {
         pub const WEAK_CACHE: u16 = 1 << 8;
         const _: () = assert!(super::super::disjoint(&[
             super::TYPE_BLIND as u64,
+            super::vector::TL_WORD as u64,
             super::vector::TRACE as u64,
             WEAK_CACHE as u64
         ]));
@@ -624,7 +648,6 @@ pub const TABLE: &[(&str, u64)] = &[
     ("HDR_OFF_ATTRIB", header::OFF_ATTRIB as u64),
     ("HDR_SIZE", header::SIZE as u64),
     ("VEC_OFF_LEN", vector::OFF_LEN as u64),
-    ("VEC_OFF_TRUELEN", vector::OFF_TRUELEN as u64),
     ("VEC_OFF_DATA", vector::OFF_DATA as u64),
     ("CHAR_OFF_HASH", charsxp::OFF_HASH as u64),
     ("CHAR_OFF_LEN", charsxp::OFF_LEN as u64),
@@ -681,7 +704,6 @@ pub struct HeaderView {
 pub struct VectorView {
     pub header: HeaderView,
     pub length: isize,
-    pub truelength: isize,
 }
 
 /// A node's words.
@@ -704,7 +726,6 @@ const _: () = {
     assert!(offset_of!(HeaderView, attrib) == header::OFF_ATTRIB);
     assert!(size_of::<HeaderView>() == header::SIZE);
     assert!(offset_of!(VectorView, length) == vector::OFF_LEN);
-    assert!(offset_of!(VectorView, truelength) == vector::OFF_TRUELEN);
     assert!(size_of::<VectorView>() == vector::OFF_DATA);
     assert!(offset_of!(NodeView, car) == node::OFF_CAR);
     assert!(offset_of!(NodeView, cdr) == node::OFF_CDR);

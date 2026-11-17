@@ -145,7 +145,8 @@ fn alloc_rooted_refuses_with_gnu_rs_message() {
 /// A list `[a, a]` with a `names` attribute (made through the raw layer:
 /// the attribute API is B2's), OBJECT set and a true length.
 fn named_list<'g>(cx: &'g Cx, a: Ref<'g>) -> Ref<'g> {
-    let mut l = cx.alloc_vector::<Ref<'_>>(2).unwrap();
+    // with a TRUELENGTH word (D8's h24), which `duplicate` copies
+    let mut l = cx.alloc_vector_tl::<Ref<'_>>(2).unwrap();
     l.set(0, a);
     l.set(1, a);
     let l = l.finish().as_ref();

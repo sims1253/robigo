@@ -72,7 +72,9 @@ _Static_assert(sizeof robigo_rtapi_layout / sizeof robigo_rtapi_layout[0] == ROB
  * where C's own types put the fields (robigo-heap asserts the same of its
  * #[repr(C)] views). */
 struct rb_header { unsigned char type, flags; unsigned short gp, refcnt, extra; SEXP attrib; };
-struct rb_vector { struct rb_header h; R_xlen_t length, truelength; };
+/* D8's h24: no TRUELENGTH word in the header (robigo_heap::layout::vector);
+   C reaches TRUELENGTH only through GNU R's own C, not through this API */
+struct rb_vector { struct rb_header h; R_xlen_t length; };
 struct rb_node { struct rb_header h; SEXP car, cdr, tag; };
 _Static_assert(offsetof(struct rb_header, flags) == ROBIGO_HDR_OFF_FLAGS, "flags");
 _Static_assert(offsetof(struct rb_header, gp) == ROBIGO_HDR_OFF_GP, "gp");
@@ -81,8 +83,7 @@ _Static_assert(offsetof(struct rb_header, extra) == ROBIGO_HDR_OFF_EXTRA, "extra
 _Static_assert(offsetof(struct rb_header, attrib) == ROBIGO_HDR_OFF_ATTRIB, "ATTRIB");
 _Static_assert(sizeof(struct rb_header) == ROBIGO_HDR_SIZE, "the header");
 _Static_assert(offsetof(struct rb_vector, length) == ROBIGO_VEC_OFF_LEN, "LENGTH");
-_Static_assert(offsetof(struct rb_vector, truelength) == ROBIGO_VEC_OFF_TRUELEN, "TRUELENGTH");
-_Static_assert(sizeof(struct rb_vector) <= ROBIGO_VEC_OFF_DATA, "the payload follows the lengths");
+_Static_assert(sizeof(struct rb_vector) <= ROBIGO_VEC_OFF_DATA, "the payload follows the length");
 _Static_assert(offsetof(struct rb_node, car) == ROBIGO_NODE_OFF_CAR, "CAR");
 _Static_assert(offsetof(struct rb_node, cdr) == ROBIGO_NODE_OFF_CDR, "CDR");
 _Static_assert(offsetof(struct rb_node, tag) == ROBIGO_NODE_OFF_TAG, "TAG");

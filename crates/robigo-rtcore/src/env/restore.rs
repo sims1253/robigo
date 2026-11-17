@@ -106,7 +106,7 @@ impl Cx {
     /// count recounted.
     fn restore_hashed(&mut self, env: Root<'_>, frame: Root<'_>, table: Root<'_>) -> RResult<()> {
         let iso = self.iso();
-        let (e, f, t) = (env.bind(self).sexp(), frame.bind(self).sexp(), table.bind(self).sexp());
+        let (f, t) = (frame.bind(self).sexp(), table.bind(self).sexp());
         let nil = iso.nil;
         // SAFETY: `t` is rooted and live; its header is read.
         let is_table = unsafe { t.typ() == VECSXP && !t.is_altrep() && t.std_len() > 0 };
@@ -127,23 +127,63 @@ impl Cx {
                 count += 1;
             }
         }
+        // SAFETY: `f` is rooted and live.
+        if f != nil && unsafe { binding_cells(f, nil) }.is_none() {
+            return Err(env_error(self, "robigo: an environment's serialized frame is not a frame"));
+        }
+        // the checked table, or a fresh copy of it, which nothing below
+        // collects before it is stored
+        let t = self.table_with_tl(table)?;
+        let (e, f) = (env.bind(self).sexp(), frame.bind(self).sexp());
         // GNU R stores FRAME as read (R_NilValue for a hashed environment
         // GNU R wrote)
         if f != nil {
-            // SAFETY: `f` is rooted and live.
-            if unsafe { binding_cells(f, nil) }.is_none() {
-                return Err(env_error(self, "robigo: an environment's serialized frame is not a frame"));
-            }
             // SAFETY: rooted, live objects; the store goes through the barrier.
             unsafe { env::set_frame(e, f) };
         }
-        // SAFETY: as above; `t` is a checked table of binding chains, so the
-        // lookups read it as one.
+        // SAFETY: `e` rooted, `t` a checked table of binding chains (or its
+        // copy), so the lookups read it as one; it has a TRUELENGTH word.
         unsafe {
             env::set_hashtab(e, t);
             t.set_truelen(count);
         }
         Ok(())
+    }
+
+    /// `table` (a rooted VECSXP of chains, as the stream made it) with a
+    /// TRUELENGTH word for `HASHPRI` (D8's h24, robigo_heap::layout::vector):
+    /// itself if it has one, else a copy, its chains counted once more as
+    /// `SET_VECTOR_ELT` counts them. Nothing else reaches a table the
+    /// reader made, so the copy stands in for it.
+    fn table_with_tl(&mut self, table: Root<'_>) -> RResult<Sexp> {
+        let t = table.bind(self).sexp();
+        // SAFETY: a rooted VECSXP in standard storage: its header and length.
+        let (has, n) = unsafe { (t.extra() & robigo_heap::extra::vector::TL_WORD != 0, hashtab::size(t)) };
+        if has {
+            return Ok(t);
+        }
+        let copy = {
+            let iso = self.iso();
+            // SAFETY: as in `Cx::alloc_rooted`: a collection may run here,
+            // with the isolate's roots (`table` among them), under `&mut Cx`.
+            unsafe { iso.core().alloc_rooted_tl(VECSXP, n, iso.roots_mut()) }
+        };
+        let copy = match copy {
+            Ok(c) => c,
+            Err(e) => return Err(self.error_call(None, &e.message())),
+        };
+        let t = table.bind(self).sexp();
+        // SAFETY: `t` is rooted and live, with `n` elements, each a live
+        // chain; `copy` is fresh with room for `n` (young: no barrier).
+        unsafe {
+            let d = copy.std_data() as *mut Sexp;
+            for i in 0..n {
+                let c = hashtab::chain_at(t, i);
+                c.incref();
+                *d.add(i) = c;
+            }
+        }
+        Ok(copy)
     }
 
     /// [`Cx::restore_env`] of an unhashed shell: each cell of FRAME bound,

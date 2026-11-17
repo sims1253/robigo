@@ -25,15 +25,15 @@ mod tests {
     use super::*;
     use crate::types::*;
 
-    /// Today's layout (X3's cell h32-n48): the numbers docs/g3.md §8 and
-    /// the measured variants start from. A variant changes these with the
+    /// X3's cell h24-n48: D8's 24-byte vector header (a CHARSXP keeps its
+    /// 32), with today's nodes. A variant changes these with the
     /// definitions.
     #[test]
-    fn the_layout_is_h32_n48() {
-        assert_eq!((header::SIZE, vector::OFF_LEN, vector::OFF_TRUELEN, vector::OFF_DATA), (16, 16, 24, 32));
-        assert_eq!((charsxp::OFF_HASH, charsxp::OFF_DATA), (8, 32));
+    fn the_layout_is_h24_n48() {
+        assert_eq!((header::SIZE, vector::OFF_LEN, vector::OFF_DATA), (16, 16, 24));
+        assert_eq!((charsxp::OFF_HASH, charsxp::OFF_TRUELEN, charsxp::OFF_DATA), (8, 24, 32));
         assert_eq!((node::OFF_CAR, node::OFF_CDR, node::OFF_TAG, node::OFF_AUX, node::SIZE), (16, 24, 32, 40, 48));
-        assert_eq!((extdata::OFF_PTR, extdata::OFF_OWNER, extdata::OFF_RELEASE, extdata::SIZE), (32, 40, 48, 56));
+        assert_eq!((extdata::OFF_PTR, extdata::OFF_OWNER, extdata::OFF_RELEASE, extdata::SIZE), (24, 32, 40, 48));
         assert_eq!((slots::OFF_CALLER, slots::OFF_META, slots::OFF_SLOTS, slots::SLOT_SIZE), (48, 56, 64, 32));
         assert_eq!(GRANULE, 16);
         for t in [NILSXP, SYMSXP, LISTSXP, CLOSXP, ENVSXP, PROMSXP, LANGSXP, DOTSXP, EXTPTRSXP, BCODESXP, OBJSXP] {
@@ -58,6 +58,12 @@ mod tests {
         assert_eq!(data_off(CHARSXP), charsxp::OFF_DATA);
         assert_eq!(data_off(REALSXP), vector::OFF_DATA);
         assert_eq!(slots::frame_bytes(0), slots::OFF_SLOTS);
+        // a scalar is 32 bytes (h32: 48), 48 with a TRUELENGTH word; an
+        // empty vector's word fits in its granule
+        assert_eq!((vector_bytes(REALSXP, 1), vector_bytes_tl(REALSXP, 1)), (Some(32), Some(48)));
+        assert_eq!((vector_bytes(RAWSXP, 0), vector_bytes_tl(RAWSXP, 0)), (Some(32), Some(32)));
+        assert_eq!(vector_bytes_tl(CHARSXP, 5), vector_bytes(CHARSXP, 5));
+        assert_eq!(vector_bytes_tl(REALSXP, usize::MAX / 8), None);
     }
 
     /// The no-overlap check rejects a map whose bits overlap.
@@ -101,9 +107,15 @@ mod tests {
             x.set_tag_raw(crate::Sexp(std::ptr::without_provenance_mut(32)));
             assert_eq!(((*v).car as usize, (*v).tag as usize), (16, 32));
             let vv = p as *const VectorView;
+            *(p as *mut u64) = header::first_word(INTSXP);
             x.set_std_len(7);
+            assert_eq!(((*vv).header.typ, (*vv).length), (INTSXP, 7));
+            // a vector without the word: its TRUELENGTH is 0, which it keeps
+            x.set_truelen(0);
+            assert_eq!(x.truelen(), 0);
+            *(p as *mut u64) = header::first_word(CHARSXP);
             x.set_truelen(9);
-            assert_eq!(((*vv).length, (*vv).truelength), (7, 9));
+            assert_eq!((x.truelen(), *(p.add(charsxp::OFF_TRUELEN) as *const isize)), (9, 9));
         }
     }
 

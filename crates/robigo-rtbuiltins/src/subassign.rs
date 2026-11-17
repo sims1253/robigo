@@ -76,11 +76,14 @@ fn get_names<'g>(x: Ref<'g>) -> Option<Ref<'g>> {
 /// to `cap`, growable at length `newlen` when `cap` exceeds it.
 fn enlarged<'g>(cx: &'g Cx, x: Ref<'g>, newlen: usize, cap: usize, a: &Attrs<'g>) -> Result<Ref<'g>, NeedGc> {
     let len = x.len().unwrap_or(0);
+    // a growable result keeps its capacity in a TRUELENGTH word
+    let growable = newlen < cap;
     macro_rules! plain {
         ($v:expr, $na:expr) => {{
             let xs = $v.as_slice().unwrap();
-            let mut r = cx.alloc_with(cap, |i| if i < len { xs[i] } else { $na })?;
-            if newlen < cap {
+            let fill = |i| if i < len { xs[i] } else { $na };
+            let mut r = if growable { cx.alloc_with_tl(cap, fill)? } else { cx.alloc_with(cap, fill)? };
+            if growable {
                 r.set_growable(newlen);
             }
             a.apply(cx, &mut r)?;
@@ -95,12 +98,12 @@ fn enlarged<'g>(cx: &'g Cx, x: Ref<'g>, newlen: usize, cap: usize, a: &Attrs<'g>
         View::Raw(v) => plain!(v, 0u8),
         View::Str(v) => {
             let xs = v.as_slice().unwrap();
-            let mut r = cx.alloc_vector::<Char<'g>>(cap)?;
+            let mut r = if growable { cx.alloc_vector_tl::<Char<'g>>(cap)? } else { cx.alloc_vector::<Char<'g>>(cap)? };
             let na = cx.na_string();
             for i in 0..cap {
                 r.set(i, if i < len { xs[i] } else { na });
             }
-            if newlen < cap {
+            if growable {
                 r.set_growable(newlen);
             }
             a.apply(cx, &mut r)?;
@@ -108,12 +111,16 @@ fn enlarged<'g>(cx: &'g Cx, x: Ref<'g>, newlen: usize, cap: usize, a: &Attrs<'g>
         }
         View::List(v) | View::Expr(v) => {
             let xs = v.as_slice().unwrap();
-            let mut r =
-                if x.sexptype() == EXPRSXP { cx.alloc_expression(cap)? } else { cx.alloc_vector::<Ref<'g>>(cap)? };
+            let mut r = match (x.sexptype() == EXPRSXP, growable) {
+                (true, false) => cx.alloc_expression(cap)?,
+                (true, true) => cx.alloc_expression_tl(cap)?,
+                (false, false) => cx.alloc_vector::<Ref<'g>>(cap)?,
+                (false, true) => cx.alloc_vector_tl::<Ref<'g>>(cap)?,
+            };
             for (i, &e) in xs.iter().enumerate() {
                 r.set(i, e);
             }
-            if newlen < cap {
+            if growable {
                 r.set_growable(newlen);
             }
             a.apply(cx, &mut r)?;

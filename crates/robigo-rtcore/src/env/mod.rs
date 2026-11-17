@@ -147,13 +147,13 @@ impl EnvState {
             let empty = core.alloc_node(ENVSXP, nil, nil, nil).expect(INIT);
             let base = core.alloc_node(ENVSXP, nil, empty, nil).expect(INIT);
             let global = core.alloc_node(ENVSXP, nil, base, nil).expect(INIT);
-            let t = core.alloc_vector(VECSXP, hashtab::new_size(0)).expect(INIT);
+            let t = core.alloc_vector_tl(VECSXP, hashtab::new_size(0)).expect(INIT);
             env::set_hashtab(global, t);
             global.set_gp(global.gp() | GLOBAL_FRAME);
             let base_ns = core.alloc_node(ENVSXP, nil, global, nil).expect(INIT);
             // the registry's enclosure is R_NilValue, as GNU R makes it
             let ns_registry = core.alloc_node(ENVSXP, nil, nil, nil).expect(INIT);
-            let t = core.alloc_vector(VECSXP, hashtab::new_size(0)).expect(INIT);
+            let t = core.alloc_vector_tl(VECSXP, hashtab::new_size(0)).expect(INIT);
             env::set_hashtab(ns_registry, t);
             // defineVar(R_BaseSymbol, R_BaseNamespace, R_NamespaceRegistry)
             let i = hashtab::index(base_sym, t);
@@ -1213,7 +1213,7 @@ impl Cx {
         unsafe {
             let e = if hash {
                 let e = iso.core().alloc_node(ENVSXP, nil, enclos.sexp(), nil)?;
-                let t = iso.core().alloc_vector(VECSXP, hashtab::new_size(size))?;
+                let t = iso.core().alloc_vector_tl(VECSXP, hashtab::new_size(size))?;
                 env::set_hashtab(e, t);
                 e
             } else {
@@ -1745,7 +1745,7 @@ impl Cx {
             // SAFETY: a rooted hashed environment.
             let n = unsafe { hashtab::grown_size(hashtab::size(env::hashtab(rho.bind(cx).sexp()))) };
             // SAFETY: one call into the core.
-            unsafe { cx.iso().core() }.alloc_vector(VECSXP, n)
+            unsafe { cx.iso().core() }.alloc_vector_tl(VECSXP, n)
         })?;
         let iso = self.iso();
         let r = rho.bind(self).sexp();

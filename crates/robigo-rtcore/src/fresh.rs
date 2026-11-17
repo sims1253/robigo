@@ -100,6 +100,44 @@ impl Cx {
         unsafe { self.iso().core() }.alloc_vector(t, n)
     }
 
+    // -- with a TRUELENGTH word (D8's h24: robigo_heap::layout::vector),
+    // for what GNU R gives a TRUELENGTH: a growable vector
+    // ([`FreshVec::set_growable`]) or a hash table
+
+    /// [`Cx::alloc_vector`] with a TRUELENGTH word.
+    pub fn alloc_vector_tl<'g, T: Elt<'g>>(&'g self, n: usize) -> Result<FreshVec<'g, T>, NeedGc> {
+        let x = self.alloc_raw_tl(T::SEXPTYPE, n)?;
+        // SAFETY: fresh, of this heap, of `T`'s type and length `n`.
+        Ok(unsafe { FreshVec::from_fresh(x, n, self) })
+    }
+
+    /// [`Cx::alloc_with`] with a TRUELENGTH word.
+    pub fn alloc_with_tl<'g, T: Plain>(
+        &'g self,
+        n: usize,
+        mut f: impl FnMut(usize) -> T,
+    ) -> Result<FreshVec<'g, T>, NeedGc> {
+        let x = self.alloc_raw_tl(T::SEXPTYPE, n)?;
+        // SAFETY: a fresh vector with room for `n` elements of `T`.
+        let d = unsafe { x.std_data() } as *mut T;
+        for i in 0..n {
+            // SAFETY: `i < n`: inside the payload, written without reading.
+            unsafe { d.add(i).write(f(i)) };
+        }
+        Ok(FreshVec { x, n, cx: self, _t: PhantomData })
+    }
+
+    /// [`Cx::alloc_expression`] with a TRUELENGTH word.
+    pub fn alloc_expression_tl<'g>(&'g self, n: usize) -> Result<FreshVec<'g, Ref<'g>>, NeedGc> {
+        let x = self.alloc_raw_tl(EXPRSXP, n)?;
+        Ok(FreshVec { x, n, cx: self, _t: PhantomData })
+    }
+
+    fn alloc_raw_tl(&self, t: u8, n: usize) -> Result<Sexp, NeedGc> {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.alloc_vector_tl(t, n)
+    }
+
     /// GNU R's `CONS`: a pairlist node.
     pub fn cons<'g>(&'g self, car: Ref<'g>, cdr: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
         self.node(LISTSXP, car, cdr)
@@ -378,7 +416,10 @@ impl<'g, T> FreshVec<'g, T> {
     /// [`Cx::grow_in_place`] later exposes. A list's or character vector's
     /// elements past `len` must be immortal (R_NilValue, `NA_STRING`): the
     /// collector does not trace them. Panics if `len` exceeds the capacity,
-    /// or (debug builds) on a mortal element past it.
+    /// if the vector has no TRUELENGTH word (make it with
+    /// [`Cx::alloc_vector_tl`], [`Cx::alloc_with_tl`] or
+    /// [`Cx::alloc_expression_tl`]), or (debug builds) on a mortal element
+    /// past it.
     pub fn set_growable(&mut self, len: usize) {
         assert!(len <= self.n, "robigo: a growable length {len} past the capacity {}", self.n);
         // SAFETY: a fresh vector of `n` elements: a pointer vector's are

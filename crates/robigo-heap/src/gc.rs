@@ -63,8 +63,12 @@ fn not_a_vector_type(t: u8) -> ! {
 
 /// A vector's allocation: its bytes (header included, rounded to 16) and
 /// GNU R's count of its data in VECRECs, or None past the address space.
-fn vector_size(t: u8, n: usize) -> Option<(usize, usize)> {
-    Some((crate::layout::vector_bytes(t, n)?, vec_cells(t, n)))
+/// With `TL`, room for a TRUELENGTH word at the end (D8's h24:
+/// `layout::vector`), which GNU R's count does not see.
+#[inline(always)]
+fn vector_size<const TL: bool>(t: u8, n: usize) -> Option<(usize, usize)> {
+    let bytes = if TL { crate::layout::vector_bytes_tl(t, n)? } else { crate::layout::vector_bytes(t, n)? };
+    Some((bytes, vec_cells(t, n)))
 }
 
 /// The VECRECs of a request too large to compute exactly: for GNU R's
@@ -84,7 +88,7 @@ fn request_cells(req: NeedGc) -> Result<usize, AllocError> {
     }
     // (a CHARSXP's cells count its NUL: vec_cells adds it; a saturated
     // length is past the address space)
-    vector_size(t, n)
+    vector_size::<false>(t, n)
         .filter(|_| n as u64 != NeedGc::LENGTH)
         .map(|(_, cells)| cells)
         .ok_or(AllocError::CannotAllocate { vecrecs: vecrecs_saturating(t, n) })
@@ -875,7 +879,7 @@ impl Core {
                 self.immortal_chars += 1;
             }
             let b = self.heap.block_of(x.0);
-            if (*b).magic == 0x524f4249474f4241 {
+            if (*b).magic == crate::heap::BLOCK_MAGIC {
                 (*b).immortals += 1;
             }
             // large objects: the sweeper keeps them by the flag
@@ -1268,37 +1272,53 @@ impl Core {
             // small atomic vectors: no overflow check, no fill
             let x = self.alloc_object(t, n, granule_round(data_off(t) + n * esz), vec_cells(t, n))?;
             // SAFETY: at least the vector header was requested, and a fresh
-            // vector of a type with elements has its length fields there.
-            unsafe {
-                x.set_std_len(n as isize);
-                x.set_truelen(0);
-            }
+            // vector of a type with elements has its length word there (and
+            // no TRUELENGTH word: it reads 0).
+            unsafe { x.set_std_len(n as isize) };
             return Ok(x);
         }
-        self.alloc_vector_slow(t, n)
+        self.alloc_vector_slow::<false>(t, n)
     }
 
-    fn alloc_vector_slow(&mut self, t: u8, n: usize) -> Result<Sexp, NeedGc> {
+    /// [`Core::alloc_vector`] with a TRUELENGTH word, 0 (D8's h24,
+    /// `layout::vector`): for what GNU R gives a TRUELENGTH, a growable
+    /// vector or a hash table. Never collects.
+    ///
+    /// # Panics
+    /// If `t` is not a vector type, or is CHARSXP (whose word is in its
+    /// header: `mk_char`).
+    pub fn alloc_vector_tl(&mut self, t: u8, n: usize) -> Result<Sexp, NeedGc> {
+        assert!(t != CHARSXP, "robigo: a CHARSXP has its TRUELENGTH word");
+        self.alloc_vector_slow::<true>(t, n)
+    }
+
+    fn alloc_vector_slow<const TL: bool>(&mut self, t: u8, n: usize) -> Result<Sexp, NeedGc> {
         if crate::elt_size(t) == 0 {
             not_a_vector_type(t);
         }
-        let (bytes, cells) = vector_size(t, n).ok_or(NeedGc::new(t, n))?;
+        let (bytes, cells) = vector_size::<TL>(t, n).ok_or(NeedGc::new(t, n))?;
         let x = self.alloc_sized(t, n, bytes, cells)?;
-        // SAFETY: fresh, of `bytes` bytes for `n` elements of `t`.
-        unsafe { self.init_vector(x, t, n) };
+        // SAFETY: fresh, of `bytes` bytes for `n` elements of `t`, with the
+        // word when `TL`.
+        unsafe { self.init_vector::<TL>(x, t, n) };
         Ok(x)
     }
 
-    /// Set a fresh vector's lengths and fill what GNU R fills.
+    /// Set a fresh vector's length, its TRUELENGTH word when it has one, and
+    /// fill what GNU R fills.
     ///
     /// # Safety
-    /// `x` must be fresh, of type `t`, with room for `n` elements.
-    unsafe fn init_vector(&self, x: Sexp, t: u8, n: usize) {
+    /// `x` must be fresh, of type `t`, with room for `n` elements, and for
+    /// the word at its allocation's end when `TL`.
+    unsafe fn init_vector<const TL: bool>(&self, x: Sexp, t: u8, n: usize) {
         // SAFETY: the caller's contract, and for the filled types the
         // element size is a pointer's, so the `n` writes stay in the payload.
         unsafe {
             x.set_std_len(n as isize);
-            x.set_truelen(0);
+            if TL {
+                x.set_extra_raw(crate::extra::vector::TL_WORD);
+                x.set_truelen(0);
+            }
             let d = x.0.add(data_off(t)) as *mut Sexp;
             match t {
                 STRSXP => {
@@ -1353,7 +1373,6 @@ impl Core {
         unsafe {
             x.set_flags(flags::EXTDATA);
             x.set_std_len(n as isize);
-            x.set_truelen(0);
             *(x.0.add(extdata::OFF_PTR) as *mut *mut u8) = data;
             *(x.0.add(extdata::OFF_OWNER) as *mut usize) = owner;
             *(x.0.add(extdata::OFF_RELEASE) as *mut Option<ReleaseFn>) = release;
@@ -1393,10 +1412,41 @@ impl Core {
         n: usize,
         roots: &mut R,
     ) -> Result<Sexp, AllocError> {
+        // SAFETY: the caller's contract.
+        unsafe { self.alloc_rooted_as::<false, R>(t, n, roots) }
+    }
+
+    /// [`Core::alloc_rooted`] with a TRUELENGTH word, 0 ([`Core::alloc_vector_tl`]).
+    ///
+    /// # Safety
+    /// As for [`Core::alloc_rooted`].
+    ///
+    /// # Panics
+    /// If `t` is not a vector type, or is CHARSXP.
+    pub unsafe fn alloc_rooted_tl<R: Trace + ?Sized>(
+        &mut self,
+        t: u8,
+        n: usize,
+        roots: &mut R,
+    ) -> Result<Sexp, AllocError> {
+        assert!(t != CHARSXP, "robigo: a CHARSXP has its TRUELENGTH word");
+        // SAFETY: the caller's contract.
+        unsafe { self.alloc_rooted_as::<true, R>(t, n, roots) }
+    }
+
+    /// # Safety
+    /// As for [`Core::alloc_rooted`].
+    #[inline(always)]
+    unsafe fn alloc_rooted_as<const TL: bool, R: Trace + ?Sized>(
+        &mut self,
+        t: u8,
+        n: usize,
+        roots: &mut R,
+    ) -> Result<Sexp, AllocError> {
         if crate::elt_size(t) == 0 {
             not_a_vector_type(t);
         }
-        let Some((bytes, cells)) = vector_size(t, n) else {
+        let Some((bytes, cells)) = vector_size::<TL>(t, n) else {
             return Err(AllocError::CannotAllocate { vecrecs: vecrecs_saturating(t, n) });
         };
         if self.stats_mode != StatsMode::Off {
@@ -1423,10 +1473,10 @@ impl Core {
             return Err(AllocError::CannotAllocate { vecrecs: cells });
         };
         // SAFETY: `p` is fresh, of `bytes` (at least 16) bytes for `n`
-        // elements of `t`.
+        // elements of `t`, with the word when `TL`.
         let x = unsafe {
             let x = self.init_header(p, t);
-            self.init_vector(x, t, n);
+            self.init_vector::<TL>(x, t, n);
             x
         };
         self.count(bytes, cells);
@@ -2018,7 +2068,7 @@ impl Core {
             // marks live beside the objects (the block's mark bitmap, a
             // large chunk's header word): marking never writes an object
             let b = (p.0 as usize & !(BLOCK - 1)) as *mut Block;
-            if (*b).magic == 0x524f4249474f4241 {
+            if (*b).magic == crate::heap::BLOCK_MAGIC {
                 let g = (p.0 as usize - Block::data_ptr(b) as usize) / GRANULE;
                 let w = (*b).marks.as_mut_ptr().add(g >> 6);
                 let bit = 1u64 << (g & 63);
@@ -2048,7 +2098,7 @@ impl Core {
                 return true;
             }
             let b = (p.0 as usize & !(BLOCK - 1)) as *mut Block;
-            if (*b).magic == 0x524f4249474f4241 {
+            if (*b).magic == crate::heap::BLOCK_MAGIC {
                 let g = (p.0 as usize - Block::data_ptr(b) as usize) / GRANULE;
                 (*b).marks[g >> 6] & (1u64 << (g & 63)) != 0
             } else {

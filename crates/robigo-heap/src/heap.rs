@@ -126,6 +126,38 @@ pub const REMEMBERED_OFF: usize = 48;
 /// own): the slow path finds it through the block header.
 pub struct Remembered(pub std::cell::UnsafeCell<Vec<crate::Sexp>>);
 
+/// Where a large chunk's header keeps the chunk's end (the `freelist`
+/// word, which a large chunk does not use): [`alloc_end`] reads it.
+const LARGE_END_OFF: usize = 24;
+const _: () = assert!(std::mem::offset_of!(Block, freelist) == LARGE_END_OFF);
+
+/// The end of the allocation that holds object `p`: its slot's end in a
+/// small block (the size class's, whatever was requested), its chunk's end
+/// for a large object. D8's h24 keeps a vector's TRUELENGTH word just below
+/// it (`layout::vector`), so it moves with neither the length nor the
+/// collector: the debug mover copies a slot or chunk whole into one of the
+/// same size.
+///
+/// # Safety
+/// `p` must be an object of a live heap.
+#[inline]
+pub unsafe fn alloc_end(p: *const u8) -> *mut u8 {
+    let b = (p as usize & !(BLOCK - 1)) as *const Block;
+    // SAFETY: the caller's contract: `p`'s block (or a large object's
+    // chunk, the same rounding) has a header; a small block has the magic
+    // word and its class, a large chunk neither and its end.
+    unsafe {
+        if (*b).magic == BLOCK_MAGIC {
+            p.add(SIZES[(*b).class as usize]) as *mut u8
+        } else {
+            *((b as usize + LARGE_END_OFF) as *const *mut u8)
+        }
+    }
+}
+
+/// The first word of every small block's header; a large chunk's is 0.
+pub const BLOCK_MAGIC: u64 = 0x524f4249474f4241;
+
 /// The remembered set of the heap that contains `p`.
 ///
 /// # Safety
@@ -275,7 +307,7 @@ impl Heap {
                     std::ptr::write(
                         b,
                         Block {
-                            magic: 0x524f4249474f4241,
+                            magic: BLOCK_MAGIC,
                             class: CLASS_NONE,
                             owner: OWNER_NONE,
                             sticky_listed: 0,
@@ -432,8 +464,8 @@ impl Heap {
     pub fn try_alloc_large(&mut self, size: usize) -> Option<*mut u8> {
         // object header + payload live after a pseudo block header area
         let total_payload = size.checked_add(DATA_OFF)?;
-        let (base, _) = self.try_new_chunk(true, total_payload)?;
-        let base = base as usize;
+        let (base, idx) = self.try_new_chunk(true, total_payload)?;
+        let (base, end) = (base as usize, self.chunks[idx].end);
         // a large chunk has no block header: clear the magic word so
         // per-block bookkeeping never mistakes it for one, and the object's
         // mark word (an epoch; epochs start at 1), as the allocator's memory
@@ -442,6 +474,7 @@ impl Heap {
         unsafe {
             *(base as *mut u64) = 0;
             *(base as *mut u64).add(1) = 0;
+            *((base + LARGE_END_OFF) as *mut usize) = end;
             *((base + REMEMBERED_OFF) as *mut *mut Remembered) = self.remembered;
         }
         Some((base + DATA_OFF) as *mut u8)
@@ -580,7 +613,7 @@ impl Heap {
         let b = self.block_of(p);
         // SAFETY: the caller's contract: `p` is in a small block.
         unsafe {
-            debug_assert_eq!((*b).magic, 0x524f4249474f4241, "immortal outside a small block");
+            debug_assert_eq!((*b).magic, BLOCK_MAGIC, "immortal outside a small block");
             (*b).immortals += 1;
         }
     }

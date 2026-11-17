@@ -62,15 +62,27 @@ impl Cx {
     // R: duplicate.c:DUPLICATE_ATOMIC_VECTOR, and duplicate1's STRSXP and
     // VECSXP/EXPRSXP arms (shallow: the elements themselves, counted)
     fn duplicate_vector(&mut self, x: Root<'_>, out: Out<'_>) -> RResult<()> {
-        let (t, n) = {
+        let (t, n, tl) = {
             let r = x.bind(self);
-            (r.sexptype(), r.len().expect("robigo: a standard vector has a length"))
+            let s = r.sexp();
+            // COPY_TRUELENGTH below: the copy needs a TRUELENGTH word (D8's
+            // h24) when the source has one and is not growable
+            // SAFETY: a live standard vector's header.
+            let tl =
+                unsafe { s.extra() & robigo_heap::extra::vector::TL_WORD != 0 && s.gp() & gp::vector::GROWABLE == 0 };
+            (r.sexptype(), r.len().expect("robigo: a standard vector has a length"), tl)
         };
         let copy = {
             let iso = self.iso();
             // SAFETY: as in `Cx::alloc_rooted`: a collection may run here, with
             // the isolate's roots (`x` among them), under `&mut Cx`.
-            unsafe { iso.core().alloc_rooted(t, n, iso.roots_mut()) }
+            unsafe {
+                if tl {
+                    iso.core().alloc_rooted_tl(t, n, iso.roots_mut())
+                } else {
+                    iso.core().alloc_rooted(t, n, iso.roots_mut())
+                }
+            }
         };
         let copy = match copy {
             Ok(c) => c,

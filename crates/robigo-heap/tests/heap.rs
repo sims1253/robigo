@@ -9,7 +9,7 @@ use robigo_heap::layout::{self, header, node, vector};
 use robigo_heap::types::*;
 use robigo_heap::{
     AllocError, Core, GC_DUE, HeapReport, LARGE, NeedGc, POISON_TYPE, PinReportTo, Safepoint, ScanSegment, Sexp,
-    StatsMode, Trace, Visitor, flags, gp,
+    StatsMode, Trace, Visitor, extra, flags, gp,
 };
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -376,7 +376,9 @@ fn vectors_are_initialized_like_gnu_r() {
         let ld = l.std_data() as *const Sexp;
         assert!((0..2).all(|i| *ld.add(i) == c.nil()));
         assert_eq!(r.std_len(), 1000);
-        assert_eq!(r.std_data() as usize % 16, 0);
+        // D8's h24: the payload follows a 24-byte header, 8-aligned, as
+        // GNU R's (+56 from its allocation) is
+        assert_eq!(r.std_data() as usize % 8, 0);
     }
 }
 
@@ -812,7 +814,7 @@ fn the_overshoot_runs_from_due_to_the_serving_collection() {
         c.alloc_vector(INTSXP, 1).unwrap();
     }
     assert!(!c.gc_due());
-    // the third makes one due: 48 bytes from here (header, length words,
+    // the third makes one due: 32 bytes from here (header, length word,
     // one int, rounded to 16), then 100 nodes of 48 bytes
     c.alloc_vector(INTSXP, 1).unwrap();
     assert!(c.gc_due());
@@ -822,8 +824,8 @@ fn the_overshoot_runs_from_due_to_the_serving_collection() {
     }
     c.set_torture(false);
     safepoint(&mut c, &mut ());
-    assert_eq!(c.stats.max_overshoot, 48 + 100 * 48);
-    assert_eq!(c.stats.total_overshoot, 48 + 100 * 48);
+    assert_eq!(c.stats.max_overshoot, 32 + 100 * 48);
+    assert_eq!(c.stats.total_overshoot, 32 + 100 * 48);
     assert_eq!(c.stats.overshoot_over_bound, 0);
     assert_eq!(robigo_heap::overshoot_bound(0), 32 << 20);
     assert_eq!(robigo_heap::overshoot_bound(1 << 30), (1 << 30) / 10);
@@ -902,7 +904,7 @@ fn statistics_count_allocations_by_type_and_collections_by_kind() {
         ),
         "{r}"
     );
-    assert!(r.contains("INTSXP 11 objects, 528 bytes"), "{r}");
+    assert!(r.contains("INTSXP 11 objects, 512 bytes"), "{r}");
     // the time line: two collections took some time, never more than all
     let time = r.lines().find(|l| l.starts_with("robigo gc: collection time ")).expect(&r);
     let n: Vec<u64> = time.split(' ').filter_map(|w| w.trim_end_matches(',').parse().ok()).collect();
@@ -1559,7 +1561,6 @@ fn alloc_shortened_with_end_pointer(c: &mut Core, growable: bool) -> usize {
         for i in 0..FILL {
             *(x.std_data() as *mut f64).add(i) = 1.5;
         }
-        x.set_truelen(FILL as isize);
         if growable {
             x.set_gp(x.gp() | gp::vector::GROWABLE);
         }
@@ -1599,7 +1600,6 @@ fn alloc_large_ending_at_its_chunk(c: &mut Core) -> usize {
     let x = c.alloc_vector(REALSXP, LARGE_FILL).unwrap();
     unsafe {
         *(x.std_data() as *mut f64).add(LARGE_FILL - 1) = 1.5;
-        x.set_truelen(LARGE_FILL as isize);
         x.set_std_len(2);
         x.std_data() as usize + LARGE_FILL * 8
     }
@@ -2452,6 +2452,44 @@ fn moving_core() -> Box<Core> {
     unsafe { c.set_gc_move(true) };
     c.set_torture(false);
     c
+}
+
+/// D8's h24: a vector made with a TRUELENGTH word keeps it at its
+/// allocation's end, small, medium and large, through a collection that
+/// moves it; one made without reads 0 and refuses any other value.
+#[test]
+fn a_truelength_word_ends_its_allocation_and_moves_with_it() {
+    const LENGTHS: [usize; 6] = [0, 1, 5, 100, 5000, 20_000];
+    let mut c = moving_core();
+    let mut roots = vec![];
+    for n in LENGTHS {
+        let x = c.alloc_vector_tl(REALSXP, n).unwrap();
+        unsafe {
+            assert_ne!(x.extra() & extra::vector::TL_WORD, 0);
+            assert_eq!((x.std_len(), x.truelen()), (n as isize, 0));
+            x.set_truelen(n as isize + 7);
+            for i in 0..n {
+                *(x.std_data() as *mut f64).add(i) = i as f64;
+            }
+        }
+        roots.push(x);
+    }
+    let before = roots.clone();
+    gc(&mut c, &mut roots);
+    assert!(roots.iter().zip(&before).all(|(a, b)| a != b), "the collection moved each");
+    for (&x, n) in roots.iter().zip(LENGTHS) {
+        unsafe {
+            assert_eq!(x.truelen(), n as isize + 7, "length {n}");
+            assert!((0..n).all(|i| *(x.std_data() as *const f64).add(i) == i as f64), "length {n}");
+        }
+    }
+    let y = c.alloc_vector(REALSXP, 3).unwrap();
+    unsafe {
+        assert_eq!(y.extra() & extra::vector::TL_WORD, 0);
+        y.set_truelen(0);
+        assert_eq!(y.truelen(), 0);
+    }
+    assert!(std::panic::catch_unwind(|| unsafe { y.set_truelen(3) }).is_err(), "no word to keep 3 in");
 }
 
 /// The element `i` of a VECSXP or STRSXP.

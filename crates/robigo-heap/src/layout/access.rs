@@ -220,10 +220,11 @@ impl Sexp {
     /// `self` must be live, and `v` must keep two kinds of bit as they are:
     /// [`extra::SEEN_BY_C`], which is sticky once set (a moving collection
     /// must never move what C may hold: [`Sexp::mark_seen_by_c`] sets it);
-    /// and a promise's `PROMISE_TAG`, which says whether the collector reads
+    /// a promise's `PROMISE_TAG`, which says whether the collector reads
     /// PRVALUE as an object ([`Sexp::set_promise_unboxed`] and
-    /// [`Sexp::set_promise_value`] change it with PRVALUE). Debug builds
-    /// check both.
+    /// [`Sexp::set_promise_value`] change it with PRVALUE); and a vector's
+    /// [`extra::vector::TL_WORD`], which says whether its allocation ends
+    /// with a TRUELENGTH word. Debug builds check all three.
     #[inline(always)]
     pub unsafe fn set_extra(self, v: u16) {
         // SAFETY: the `extra` word of a live, aligned object.
@@ -236,6 +237,10 @@ impl Sexp {
             debug_assert!(
                 self.typ() != PROMSXP || (old ^ v) & extra::promise::TAG_MASK == 0,
                 "robigo: set_extra changes a promise's tag (set_promise_unboxed, set_promise_value)"
+            );
+            debug_assert!(
+                !crate::is_vector_type(self.typ()) || (old ^ v) & extra::vector::TL_WORD == 0,
+                "robigo: set_extra changes a vector's TL_WORD (it describes the allocation)"
             );
             self.set_extra_raw(v)
         }
@@ -416,23 +421,61 @@ impl Sexp {
         // SAFETY: the caller's contract puts a length at `vector::OFF_LEN`.
         unsafe { *(self.word(vector::OFF_LEN) as *mut isize) = n }
     }
-    /// GNU R's TRUELENGTH.
+    /// GNU R's TRUELENGTH: a CHARSXP's header word, a vector's last word
+    /// when it was allocated with one ([`extra::vector::TL_WORD`]), else 0
+    /// (D8's h24, [`vector`]).
     ///
     /// # Safety
-    /// As for [`Sexp::std_len`]: the true length's word is `data2` or a node field otherwise.
+    /// As for [`Sexp::std_len`]: an ALTREP object or a node has no true
+    /// length, and an EXTDATA vector is never allocated with the word.
     #[inline(always)]
     pub unsafe fn truelen(self) -> isize {
-        // SAFETY: the caller's contract puts a true length at `vector::OFF_TRUELEN`.
-        unsafe { *(self.word(vector::OFF_TRUELEN) as *const isize) }
+        // SAFETY: the caller's contract: a standard vector, whose word is
+        // where its type and `extra` bit say.
+        unsafe {
+            if self.typ() == CHARSXP {
+                *(self.word(charsxp::OFF_TRUELEN) as *const isize)
+            } else if self.extra() & extra::vector::TL_WORD != 0 {
+                *self.tl_word()
+            } else {
+                0
+            }
+        }
     }
     /// GNU R's SET_TRUELENGTH.
     ///
     /// # Safety
-    /// As for [`Sexp::std_len`].
+    /// As for [`Sexp::truelen`].
+    ///
+    /// # Panics
+    /// On a vector allocated without the word (`Core::alloc_vector_tl` makes
+    /// one with it), unless `n` is 0: its TRUELENGTH stays what it reads.
     #[inline(always)]
     pub unsafe fn set_truelen(self, n: isize) {
-        // SAFETY: the caller's contract puts a true length at `vector::OFF_TRUELEN`.
-        unsafe { *(self.word(vector::OFF_TRUELEN) as *mut isize) = n }
+        // SAFETY: as for `truelen`.
+        unsafe {
+            if self.typ() == CHARSXP {
+                *(self.word(charsxp::OFF_TRUELEN) as *mut isize) = n
+            } else if self.extra() & extra::vector::TL_WORD != 0 {
+                *self.tl_word() = n
+            } else {
+                assert!(
+                    n == 0,
+                    "robigo: SET_TRUELENGTH({n}) on a vector allocated without a TRUELENGTH word (Core::alloc_vector_tl)"
+                );
+            }
+        }
+    }
+    /// The trailing TRUELENGTH word of a vector with
+    /// [`extra::vector::TL_WORD`]: its allocation's last word.
+    ///
+    /// # Safety
+    /// `self` must be a live vector allocated with the word.
+    #[inline(always)]
+    pub(crate) unsafe fn tl_word(self) -> *mut isize {
+        // SAFETY: the caller's contract: the allocation has room for the
+        // word at its end (`vector_bytes_tl`).
+        unsafe { (crate::heap::alloc_end(self.0) as *mut isize).sub(1) }
     }
     /// The payload of a non-ALTREP vector (inline, or EXTDATA's pointer).
     ///
