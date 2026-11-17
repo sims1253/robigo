@@ -125,75 +125,16 @@ fn save_special_hook(cx: &Cx, s: Sexp) -> Option<i32> {
     })
 }
 
-/// The value `R_findVarInFrame(rho, sym)` finds without running code, if
-/// `rho` binds the symbol named `name` to an object.
-fn frame_value(cx: &Cx, rho: Sexp, name: &[u8]) -> Option<Sexp> {
-    let sym = cx.find_symbol(name)?;
-    // SAFETY: a live environment.
-    let r = unsafe { Ref::from_sexp(rho, cx) };
-    let View::Env(e) = r.view() else { return None };
-    match cx.frame_binding(e, sym) {
-        robigo_rtcore::Lookup::Bound(b) => match b.get(cx) {
-            robigo_rtcore::BindingValue::Value(v) => Some(v.sexp()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
+// What a namespace or package environment is: robigo-rt's `ns`
+// (envir.c's R_IsNamespaceEnv, R_NamespaceEnvSpec, R_IsPackageEnv).
+use crate::ns::{is_namespace_env, is_package_env, name_attr, namespace_spec};
 
-/// `R_NamespaceEnvSpec(rho)`'s STRSXP, if `rho` is a namespace
-/// environment (`R_IsNamespaceEnv`) other than base's.
-// R: envir.c:R_IsNamespaceEnv, R_NamespaceEnvSpec
-fn namespace_spec(cx: &Cx, s: Sexp) -> Option<Sexp> {
-    // SAFETY: a live object.
-    if unsafe { s.typ() } != ENVSXP {
-        return None;
-    }
-    let info = frame_value(cx, s, b".__NAMESPACE__.")?;
-    // SAFETY: a live object.
-    if unsafe { info.typ() } != ENVSXP {
-        return None;
-    }
-    let spec = frame_value(cx, info, b"spec")?;
-    // SAFETY: a live object.
-    unsafe { (spec.typ() == STRSXP && spec.std_len() > 0).then_some(spec) }
-}
-
-fn is_namespace_env(cx: &Cx, s: Sexp) -> bool {
-    s == cx.base_namespace().sexp() || namespace_spec(cx, s).is_some()
-}
-
+/// `R_NamespaceEnvSpec(rho)` of a namespace other than base's.
+///
 /// # Safety
 /// `s` is a live namespace environment (not base's).
 unsafe fn namespace_env_spec(cx: &Cx, s: Sexp) -> Sexp {
     namespace_spec(cx, s).expect("robigo: not a namespace environment")
-}
-
-/// The `name` attribute of `s`, if it is a non-empty STRSXP.
-fn name_attr(cx: &Cx, s: Sexp) -> Option<Sexp> {
-    // SAFETY: a live object and its attribute list.
-    unsafe {
-        let name_sym = cx.find_symbol(b"name")?.as_ref().sexp();
-        let mut a = s.attrib_raw();
-        while a != cx.nil().sexp() {
-            if a.tag() == name_sym {
-                let v = a.car();
-                return (v.typ() == STRSXP && v.std_len() > 0).then_some(v);
-            }
-            a = a.cdr();
-        }
-        None
-    }
-}
-
-/// `R_IsPackageEnv(rho)`: its `name` attribute starts with "package:".
-// R: envir.c:R_IsPackageEnv
-fn is_package_env(cx: &Cx, s: Sexp) -> bool {
-    // SAFETY: live objects.
-    unsafe {
-        s.typ() == ENVSXP
-            && name_attr(cx, s).is_some_and(|n| (*(n.std_data() as *const Sexp)).char_bytes().starts_with(b"package:"))
-    }
 }
 
 /// `R_PackageEnvName(rho)`.

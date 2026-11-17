@@ -224,6 +224,7 @@ static RT_PRIMS: &[PrimDef] = &[
     // source.c, connections.c (L2)
     builtin("parse", crate::source::do_parse, Inline::None, 11, 6),
     builtin("stdin", crate::builtin::do_stdin, Inline::None, 11, 0),
+    builtin("writeLines", crate::connections::do_writelines, Inline::None, 111, 4),
     // envir.c's search path (L2)
     builtin("attach", crate::search::do_attach, Inline::None, 111, 3),
     builtin("detach", crate::search::do_detach, Inline::None, 111, 1),

@@ -1300,3 +1300,123 @@ pub fn do_sumconnection(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<
         Ok(ans.finish().into())
     })
 }
+
+/// `con->open(con)` in the connection's own mode: false and the warning on
+/// failure (do_parse's `if(!con->open(con)) error(...)`).
+pub fn open(cx: &mut Cx, n: i32) -> RResult<bool> {
+    let r = with_conn(cx, n, open_conn)?;
+    match r {
+        Ok(()) => Ok(true),
+        Err(w) => {
+            cx.warning(&w)?;
+            Ok(false)
+        }
+    }
+}
+
+/// Everything left to read on connection `n` (`Rconn_fgetc` to the end,
+/// as `R_ParseConn` reads it).
+pub fn read_to_end(cx: &mut Cx, n: i32) -> RResult<Vec<u8>> {
+    let r = with_conn(cx, n, |c| {
+        let mut all = Vec::new();
+        let mut buf = vec![0u8; 65536];
+        loop {
+            match conn_read(c, &mut buf) {
+                Ok(0) => return Ok(all),
+                Ok(k) => all.extend_from_slice(&buf[..k]),
+                Err(e) if e.kind() == std::io::ErrorKind::Other => return Err(e.to_string()),
+                Err(_) => return Err("error reading from connection".to_string()),
+            }
+        }
+    })?;
+    r.map_err(|m| cx.error(&m))
+}
+
+/// `writeLines(text, con, sep, useBytes)`: each string then `sep`, to the
+/// connection (opened in mode "wt" and closed again if it was not open);
+/// to the console for `stdout()` and `stderr()`.
+// R: connections.c:do_writelines
+pub fn do_writelines(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "writeLines", 4, true)?;
+    if args.get(cx, 0).sexptype() != STRSXP {
+        return Err(cx.error("invalid 'text' argument"));
+    }
+    let n = conn_number(cx, args.root(1))?;
+    with_conn(cx, n, |_| ())?;
+    if args.get(cx, 2).sexptype() != STRSXP {
+        return Err(cx.error("invalid 'sep' argument"));
+    }
+    let use_bytes = robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 3));
+    if use_bytes == NA_INTEGER {
+        return Err(cx.error("invalid 'useBytes' argument"));
+    }
+    // translateChar0 (CHAR for a "bytes" string) or CHAR
+    let bytes_of = |cx: &Cx, c: Char<'_>| -> Vec<u8> {
+        if c == cx.na_string() {
+            return b"NA".to_vec();
+        }
+        if use_bytes != 0 {
+            return c.bytes().to_vec();
+        }
+        robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(c), cx.locale())
+            .map(|b| b.into_owned())
+            .unwrap_or_else(|_| c.bytes().to_vec())
+    };
+    let wasopen = flags(cx, n)?.isopen;
+    if !wasopen && !open_with_mode(cx, n, "wt")? {
+        return Err(cx.error("cannot open the connection"));
+    }
+    let r = (|| {
+        if !flags(cx, n)?.canwrite {
+            return Err(cx.error("cannot write to this connection"));
+        }
+        let mut buf = Vec::new();
+        {
+            let sep = args.get(cx, 2).as_vector::<Char<'_>>().unwrap();
+            let sep = if sep.is_empty() { Vec::new() } else { bytes_of(cx, sep.get(0)) };
+            let text = args.get(cx, 0).as_vector::<Char<'_>>().unwrap();
+            for i in 0..text.len() {
+                buf.extend_from_slice(&bytes_of(cx, text.get(i)));
+                buf.extend_from_slice(&sep);
+            }
+        }
+        match n {
+            1 => {
+                cx.rprintf(&buf);
+                Ok(())
+            }
+            2 => {
+                cx.reprintf(&buf);
+                Ok(())
+            }
+            _ => write_all(cx, n, &buf, "error writing to connection"),
+        }
+    })();
+    if !wasopen {
+        let err = with_conn(cx, n, close_conn)?;
+        if let Some(e) = err {
+            cx.warning(&format!("Problem closing connection:  {e}"))?;
+        }
+    }
+    r?;
+    out.set(cx, cx.nil());
+    Ok(())
+}
+
+/// Give the last `k` bytes read from a file connection back, so the next
+/// read starts there (what `R_ParseConn` leaves unread when it stops after
+/// the `n`-th expression). False for any other connection.
+pub fn unread(cx: &mut Cx, n: i32, k: usize) -> RResult<bool> {
+    with_conn(cx, n, |c| match &mut c.imp {
+        Imp::File(f) => match f.fp.as_mut() {
+            Some(fp) if !f.last_was_write => fp.seek(SeekFrom::Current(-(k as i64))).is_ok(),
+            _ => false,
+        },
+        _ => false,
+    })
+}
+
+/// Whether connection `n` is a file connection.
+pub fn is_file(cx: &mut Cx, n: i32) -> RResult<bool> {
+    with_conn(cx, n, |c| matches!(c.imp, Imp::File(_)))
+}

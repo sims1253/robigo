@@ -12,8 +12,7 @@ use robigo_heap::Sexp;
 use robigo_heap::types::*;
 use robigo_rtcore::{Args, Char, Cx, Encoding, Out, RResult, Ref, Root, Scope, View};
 
-/// `ACTIVE_BINDING_MASK` (Defn.h).
-const ACTIVE_BINDING: u16 = 1 << 15;
+use robigo_heap::gp::cell::ACTIVE_BINDING;
 
 /// The binding cells `attach` hashes: a list's named elements in order
 /// (`VectorToPairList`, then `shallow_duplicate`); an environment's

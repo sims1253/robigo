@@ -5,8 +5,8 @@
 //! an environment, `keep.source = TRUE`), parsing from the console, and the
 //! parse errors GNU R raises as `parseError` conditions (gram.y's
 //! `raiseParseError`/`raiseLexError`: invalid escapes and the like); the
-//! grammar's errors (`unexpected ...`) are GNU R's messages. Reading a file
-//! connection needs L1's connections.
+//! grammar's errors (`unexpected ...`) are GNU R's messages; `n` on a
+//! connection that was already open (the rest would stay unread).
 
 use robigo_heap::types::*;
 use robigo_rtcore::{Args, Char, Cx, Out, RResult, Root, View};
@@ -28,9 +28,7 @@ pub fn do_parse(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
         return Err(cx.error("'file' must be a character string or connection"));
     }
     let ifile = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(0))?;
-    if !(0..3).contains(&ifile) {
-        return Err(cx.error("invalid connection"));
-    }
+    let wasopen = crate::connections::flags(cx, ifile)?.isopen;
     let num = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(1))?;
     if num == 0 {
         return cx.build(out, |cx| Ok(cx.alloc_expression(0)?.finish().into()));
@@ -78,12 +76,45 @@ pub fn do_parse(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
         if source.bind(cx).sexptype() == ENVSXP {
             return Err(cx.error("robigo: parse() with source references (keep.source = TRUE) is not implemented yet"));
         }
+        let srcname = parse_filename(cx, source);
         if tlen == 0 {
-            return Err(if ifile >= 3 {
-                cx.error("robigo: parse() from a connection is not implemented yet")
-            } else {
-                cx.error("robigo: parse() from the console is not implemented yet")
-            });
+            if ifile < 3 {
+                return Err(cx.error("robigo: parse() from the console is not implemented yet"));
+            }
+            // R_ParseConn over the connection: opened in its own mode if it
+            // was not open, closed again after
+            // with n, R_ParseConn reads no further than the n-th expression:
+            // what this read takes past it is given back (a file's)
+            let partial = wasopen && num != i32::MIN && num >= 0;
+            if partial && !crate::connections::is_file(cx, ifile)? {
+                return Err(
+                    cx.error("robigo: parse(n = ) from an open connection that is not a file is not implemented yet")
+                );
+            }
+            if !wasopen && !crate::connections::open(cx, ifile)? {
+                return Err(cx.error("cannot open the connection"));
+            }
+            let r = (|| {
+                if !crate::connections::flags(cx, ifile)?.canread {
+                    return Err(cx.error("cannot read from this connection"));
+                }
+                let mut src = crate::connections::read_to_end(cx, ifile)?;
+                let read = src.len();
+                // con_getc: a final newline for an incomplete last line
+                if !src.is_empty() && !src.ends_with(b"\n") {
+                    src.push(b'\n');
+                }
+                let num = if num == i32::MIN { -1 } else { num };
+                let end = parse_text(cx, &src, known_utf8, num, &srcname, out)?;
+                if partial && end < read && !crate::connections::unread(cx, ifile, read - end)? {
+                    return Err(cx.error("robigo: parse(n = ) could not leave the rest of the connection unread"));
+                }
+                Ok(())
+            })();
+            if !wasopen {
+                crate::connections::close_only(cx, ifile)?;
+            }
+            return r;
         }
         let num = if num == i32::MIN { -1 } else { num };
         // R_TextBufferInit: every element translated, followed by a newline
@@ -104,14 +135,14 @@ pub fn do_parse(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
             }
         }
         let known = if all_known { utf8 } else { known_utf8 };
-        let srcname = parse_filename(cx, source);
-        parse_text(cx, &src, known, num, &srcname, out)
+        parse_text(cx, &src, known, num, &srcname, out).map(|_| ())
     })
 }
 
 /// `R_ParseVector`'s parse of `src` with `parseError`'s messages.
 // R: gram.y:R_Parse, source.c:parseError
-fn parse_text(cx: &mut Cx, src: &[u8], known_utf8: bool, num: i32, srcname: &str, out: Out<'_>) -> RResult<()> {
+/// The end of what was consumed (the last expression's terminator).
+fn parse_text(cx: &mut Cx, src: &[u8], known_utf8: bool, num: i32, srcname: &str, out: Out<'_>) -> RResult<usize> {
     let text = robigo_syntax::lexable(src);
     let source = robigo_syntax::Source::new(&text, src).known_to_be_utf8(known_utf8);
     let arena = robigo_syntax::Arena::new();
@@ -145,5 +176,6 @@ fn parse_text(cx: &mut Cx, src: &[u8], known_utf8: bool, num: i32, srcname: &str
     };
     // the lexer's warnings up to the last expression's terminator
     signal(cx, if num < 0 { usize::MAX } else { end.saturating_sub(1) })?;
-    crate::reader::lower_all(cx, &exprs, out)
+    crate::reader::lower_all(cx, &exprs, out)?;
+    Ok(end)
 }

@@ -450,7 +450,7 @@ pub fn do_import_into_env(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
                     // SAFETY: a binding cell (a LISTSXP) of a rooted frame.
                     let (v, active) = unsafe {
                         let c = cell.bind(cx).sexp();
-                        (c.car(), c.gp() & (1 << 15) != 0)
+                        (c.car(), c.gp() & robigo_heap::gp::cell::ACTIVE_BINDING != 0)
                     };
                     // SAFETY: reachable from the cell.
                     found = Some((s.root(cx, unsafe { Ref::from_sexp(v, cx) }), active));
