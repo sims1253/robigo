@@ -1209,7 +1209,7 @@ fn mk_closure(cx: &mut Cx, act: &Act, a: Reg, kf: u16, kb: u16, kc: u16, install
         if kc != 0 {
             crate::jit::set_compiled(x, View::of(act.obj(R_CODE)).k(kc));
         } else if installed {
-            x.set_extra(x.extra() | robigo_heap::extra::BYTECODE);
+            x.set_extra(x.extra() | robigo_heap::extra::closure::BYTECODE);
         }
         act.set(a, Slot::object(x));
     }

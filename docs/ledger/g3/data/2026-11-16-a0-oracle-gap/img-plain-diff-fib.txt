@@ -1,0 +1,43 @@
+total: work 1,149,791,482  base 679,037,514  per unit 23,537,698
+ 5,957,289.2   25.3%  bcEval_loop
+ 2,006,640.0    8.5%  Rf_matchArgs_NR
+ 1,805,976.0    7.7%  setup_bcframe_call
+ 1,212,256.0    5.2%  GET_BINDING_CELL_CACHE
+ 1,203,840.0    5.1%  setup_bcframe_prom
+   994,972.2    4.2%  SETCAR
+   752,490.0    3.2%  Rf_begincontext
+   668,880.0    2.8%  finish_inline_closure_call
+   593,560.0    2.5%  finish_force_promise
+   585,272.5    2.5%  CONS_NR
+   585,270.0    2.5%  Rf_findFun3
+   576,909.0    2.5%  make_applyClosure_env
+   535,104.0    2.3%  Rf_NewEnvironment
+   535,072.0    2.3%  findVarLocInFrame.part.0
+   401,333.0    1.7%  Rf_findVarInFrame3
+   392,964.0    1.7%  CLOSURE_CALL_FRAME_ARGS
+   384,560.0    1.6%  Rf_mkPROMISE
+   342,813.0    1.5%  SET_ENCLOS
+   334,440.0    1.4%  Rf_endcontext
+   326,079.0    1.4%  R_CleanupEnvir.part.0
+   317,718.0    1.3%  findGlobalVarLoc
+   300,996.0    1.3%  SET_TAG
+   300,978.0    1.3%  R_findVarLocInFrame
+   284,272.0    1.2%  unpromiseArgs
+   275,880.8    1.2%  SET_PRENV
+   267,550.0    1.1%  Rf_matchArgs_RC
+   250,830.0    1.1%  DATAPTR
+   197,674.2    0.8%  R_gc_internal
+   150,498.0    0.6%  R_BCVersionOK
+   150,498.0    0.6%  __sigsetjmp
+
+| Cause | Instructions | Share | Largest function |
+|---|---:|---:|---|
+| Evaluation (eval.c: bcEval, eval, applyClosure, promises) | 12,332,274 | 52.4% | `bcEval_loop` |
+| Allocation and GC (memory.c) | 3,555,970 | 15.1% | `SETCAR` |
+| Environments and variable lookup (envir.c) | 2,382,840 | 10.1% | `Rf_findFun3` |
+| Argument matching (match.c) | 2,073,526 | 8.8% | `Rf_matchArgs_NR` |
+| Inlined header code (src/include: Rinlinedfuns.h, Defn.h, ...) | 1,629,007 | 6.9% | `bcEval_loop` |
+| Conditions and contexts (errors.c, context.c) | 1,229,384 | 5.2% | `Rf_begincontext` |
+| libc: memcpy, memset and the rest | 334,439 | 1.4% | `__sigsetjmp` |
+| 8 smaller causes | 257 | 0.0% | |
+| **Total** | **23,537,698** | 100% | |

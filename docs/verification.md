@@ -447,7 +447,11 @@ scripts/perf.py compare before.json after.json          # the gate
   instructions of a plain C version of the same work
   (`benchmarks/idioms.toml`), and `callgrind-diff.py --bench NAME --causes`
   splits a benchmark's instructions by cause (`benchmarks/causes.toml`).
-  See `docs/profiling.md`, "Floors and causes".
+  `callgrind-diff.py --gnur WORK.R BASE.R N --causes` profiles a GNU R
+  build instead (`RSCRIPT_BIN`, `R_HOME_DIR`), by GNU R's source file
+  (`benchmarks/causes-gnur.toml`), to compare two builds
+  (`docs/ledger/g3/2026-11-16-a0-oracle-gap.md`). `scripts/test-callgrind-diff.py`
+  tests both causes files. See `docs/profiling.md`, "Floors and causes".
 - G3's measurements (`docs/ledger/g3.md`): `idiom-vs-r.py --rows
   benchmarks/rt/calls-rows.toml [--cycles] [--json OUT] --robigo BIN
   [--robigo-env ROBIGO_JIT=0]` gives instructions (and estimated cycles)

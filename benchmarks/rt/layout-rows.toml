@@ -1,0 +1,131 @@
+# Layout probes for rows that hash strings (docs/ledger/g3/2026-11-16-a0-oracle-gap.md,
+# "The hashing rows"): e7-unique and e7-match of benchmarks/rt/calls-rows.toml,
+# each after 0, 1, 7, 50 or 333 unrelated strings are allocated, so the keys
+# land at other addresses. GNU R and robigo-rt hash a cached string by its
+# address (unique.c:205, cshash), so a count that moves across these rows moves
+# with the heap layout, not with the code. Run it like calls-rows.toml:
+#
+#     scripts/idiom-vs-r.py --rows benchmarks/rt/layout-rows.toml --robigo BIN --no-r --json OUT
+#     scripts/idiom-vs-r.py --rows benchmarks/rt/layout-rows.toml --no-robigo --json OUT
+#
+# X3 and D10 run it on each variant before they read a change on e7-unique or
+# e7-match as real. Add rows; do not edit one that a result cites.
+
+[[row]]
+name = "e7-unique-pad0"
+group = "layout"
+note = "e7-unique after 0 unrelated strings"
+setup = '''
+keys <- paste0("k", 1:1000)
+dup <- rep(keys[1:100], 10L)
+'''
+body = 'u <- unique(dup)'
+n = 200
+
+[[row]]
+name = "e7-match-pad0"
+group = "layout"
+note = "e7-match after 0 unrelated strings"
+setup = '''
+keys <- paste0("k", 1:1000)
+q <- keys[seq(1L, 1000L, by = 10L)]
+'''
+body = 'm <- match(q, keys)'
+n = 200
+
+[[row]]
+name = "e7-unique-pad1"
+group = "layout"
+note = "e7-unique after 1 unrelated strings"
+setup = '''
+pad <- paste0("pad", seq_len(1L))
+keys <- paste0("k", 1:1000)
+dup <- rep(keys[1:100], 10L)
+'''
+body = 'u <- unique(dup)'
+n = 200
+
+[[row]]
+name = "e7-match-pad1"
+group = "layout"
+note = "e7-match after 1 unrelated strings"
+setup = '''
+pad <- paste0("pad", seq_len(1L))
+keys <- paste0("k", 1:1000)
+q <- keys[seq(1L, 1000L, by = 10L)]
+'''
+body = 'm <- match(q, keys)'
+n = 200
+
+[[row]]
+name = "e7-unique-pad7"
+group = "layout"
+note = "e7-unique after 7 unrelated strings"
+setup = '''
+pad <- paste0("pad", seq_len(7L))
+keys <- paste0("k", 1:1000)
+dup <- rep(keys[1:100], 10L)
+'''
+body = 'u <- unique(dup)'
+n = 200
+
+[[row]]
+name = "e7-match-pad7"
+group = "layout"
+note = "e7-match after 7 unrelated strings"
+setup = '''
+pad <- paste0("pad", seq_len(7L))
+keys <- paste0("k", 1:1000)
+q <- keys[seq(1L, 1000L, by = 10L)]
+'''
+body = 'm <- match(q, keys)'
+n = 200
+
+[[row]]
+name = "e7-unique-pad50"
+group = "layout"
+note = "e7-unique after 50 unrelated strings"
+setup = '''
+pad <- paste0("pad", seq_len(50L))
+keys <- paste0("k", 1:1000)
+dup <- rep(keys[1:100], 10L)
+'''
+body = 'u <- unique(dup)'
+n = 200
+
+[[row]]
+name = "e7-match-pad50"
+group = "layout"
+note = "e7-match after 50 unrelated strings"
+setup = '''
+pad <- paste0("pad", seq_len(50L))
+keys <- paste0("k", 1:1000)
+q <- keys[seq(1L, 1000L, by = 10L)]
+'''
+body = 'm <- match(q, keys)'
+n = 200
+
+[[row]]
+name = "e7-unique-pad333"
+group = "layout"
+note = "e7-unique after 333 unrelated strings"
+setup = '''
+pad <- paste0("pad", seq_len(333L))
+keys <- paste0("k", 1:1000)
+dup <- rep(keys[1:100], 10L)
+'''
+body = 'u <- unique(dup)'
+n = 200
+
+[[row]]
+name = "e7-match-pad333"
+group = "layout"
+note = "e7-match after 333 unrelated strings"
+setup = '''
+pad <- paste0("pad", seq_len(333L))
+keys <- paste0("k", 1:1000)
+q <- keys[seq(1L, 1000L, by = 10L)]
+'''
+body = 'm <- match(q, keys)'
+n = 200
+

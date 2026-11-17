@@ -1,0 +1,84 @@
+{
+ "meta": {
+  "cycles": false,
+  "gnur": null,
+  "robigo": "robigo-rt (release, main fb429442)",
+  "robigo_env": {
+   "ROBIGO_COMPILE": "1"
+  },
+  "rows": "benchmarks/rt/layout-rows.toml",
+  "valgrind": "valgrind-3.27.1 (the desktop's)"
+ },
+ "rows": {
+  "e7-match-pad0": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": 99036.32
+  },
+  "e7-match-pad1": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": 98902.56
+  },
+  "e7-match-pad333": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": 98933.585
+  },
+  "e7-match-pad50": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": 98908.035
+  },
+  "e7-match-pad7": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": 98915.48
+  },
+  "e7-unique-pad0": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": 126474.915
+  },
+  "e7-unique-pad1": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": 126491.92
+  },
+  "e7-unique-pad333": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": 126353.26
+  },
+  "e7-unique-pad50": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": 126384.145
+  },
+  "e7-unique-pad7": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": 126384.95
+  }
+ }
+}

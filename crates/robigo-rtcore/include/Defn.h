@@ -11,13 +11,19 @@
  * is made and in the crate's tests). A record's cjmpbuf is the jump record
  * of the native entry that pushed it ("a trampoline's jump record is a
  * field of its CTXT_CCODE record"); robigo's extension (ROBIGO_CNTXT_EXT)
- * follows GNU R's fields. */
+ * follows GNU R's fields.
+ *
+ * The object layout: GNU R's sxpinfo.gp masks, from robigo_layout.h, the
+ * header robigo-heap's build writes from its layout module (the one owner
+ * of every offset and header bit). Their values are GNU R's, which the
+ * assertions below hold them to. */
 #ifndef ROBIGO_DEFN_H_
 #define ROBIGO_DEFN_H_
 
 #include <setjmp.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <robigo_layout.h>
 
 /* (Rinternals.h's, repeated: identical typedefs may repeat in C11) */
 typedef struct SEXPREC *SEXP;
@@ -145,6 +151,41 @@ enum {
     CTXT_BUILTIN  = 64, /* used in profiling */
     CTXT_UNWIND   = 128
 };
+
+/* sxpinfo.gp masks (GNU R 4.6.2's Defn.h; the line of each in a comment) */
+#define ASSIGNMENT_PENDING_MASK ROBIGO_GP_CELL_ASSIGNMENT_PENDING /* 320 */
+#define S4_OBJECT_MASK ((unsigned short) ROBIGO_GP_S4) /* 367 */
+#define NOJIT_MASK ((unsigned short) ROBIGO_GP_CLOSURE_NOJIT) /* 373 */
+#define MAYBEJIT_MASK ((unsigned short) ROBIGO_GP_CLOSURE_MAYBEJIT) /* 376 */
+#define GROWABLE_MASK ((unsigned short) ROBIGO_GP_VEC_GROWABLE) /* 382 */
+#define MISSING_MASK ROBIGO_GP_CELL_MISSING /* 456 */
+#define DDVAL_MASK ROBIGO_GP_SYM_DDVAL /* 526 */
+#define BYTES_MASK ROBIGO_GP_CHAR_BYTES /* 934 */
+#define LATIN1_MASK ROBIGO_GP_CHAR_LATIN1 /* 935 */
+#define UTF8_MASK ROBIGO_GP_CHAR_UTF8 /* 936 */
+#define CACHED_MASK ROBIGO_GP_CHAR_CACHED /* 938 */
+#define ASCII_MASK ROBIGO_GP_CHAR_ASCII /* 939 */
+#define HASHASH_MASK ROBIGO_GP_CHAR_HASHASH /* 940 */
+#define ACTIVE_BINDING_MASK ROBIGO_GP_CELL_ACTIVE_BINDING /* 1308 */
+#define BINDING_LOCK_MASK ROBIGO_GP_CELL_BINDING_LOCK /* 1309 */
+#define SPECIAL_BINDING_MASK (ACTIVE_BINDING_MASK | BINDING_LOCK_MASK) /* 1310 */
+#define SPECIAL_SYMBOL_MASK ROBIGO_GP_SYM_SPECIAL_SYMBOL /* 1331 */
+
+/* robigo's layout keeps GNU R's bits (C1x _Static_assert) */
+_Static_assert(ASSIGNMENT_PENDING_MASK == (1 << 11), "ASSIGNMENT_PENDING_MASK");
+_Static_assert(S4_OBJECT_MASK == (1 << 4), "S4_OBJECT_MASK");
+_Static_assert(NOJIT_MASK == (1 << 5) && MAYBEJIT_MASK == (1 << 6), "NOJIT_MASK, MAYBEJIT_MASK");
+_Static_assert(GROWABLE_MASK == (1 << 5), "GROWABLE_MASK");
+_Static_assert(MISSING_MASK == 15 && DDVAL_MASK == 1, "MISSING_MASK, DDVAL_MASK");
+_Static_assert(BYTES_MASK == (1 << 1) && LATIN1_MASK == (1 << 2) && UTF8_MASK == (1 << 3), "encoding masks");
+_Static_assert(CACHED_MASK == (1 << 5) && ASCII_MASK == (1 << 6) && HASHASH_MASK == 1, "CHARSXP masks");
+_Static_assert(ACTIVE_BINDING_MASK == (1 << 15) && BINDING_LOCK_MASK == (1 << 14), "binding masks");
+_Static_assert(ACTIVE_BINDING_MASK == ROBIGO_GP_SYM_ACTIVE_BINDING && BINDING_LOCK_MASK == ROBIGO_GP_SYM_BINDING_LOCK,
+               "the same bits (15 and 14) in symbols and bindings");
+_Static_assert(SPECIAL_SYMBOL_MASK == (1 << 12) && SPECIAL_SYMBOL_MASK == ROBIGO_GP_ENV_NO_SPECIAL_SYMBOLS,
+               "SPECIAL_SYMBOL_MASK");
+/* envir.c's own FRAME_LOCK_MASK and GLOBAL_FRAME_MASK */
+_Static_assert(ROBIGO_GP_ENV_FRAME_LOCK == (1 << 14) && ROBIGO_GP_ENV_GLOBAL_FRAME == (1 << 15), "ENVFLAGS");
 
 #define IS_RESTART_BIT_SET(flags) ((flags) & CTXT_RESTART)
 #define SET_RESTART_BIT_ON(flags) (flags |= CTXT_RESTART)

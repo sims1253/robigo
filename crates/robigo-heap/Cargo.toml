@@ -8,6 +8,9 @@ repository.workspace = true
 authors.workspace = true
 # Unpublished until G3 replaces the runtime (docs/g3.md §14).
 publish = false
+# robigo_layout.h for the C of the crates that depend on it (build.rs:
+# DEP_ROBIGO_HEAP_INCLUDE)
+links = "robigo_heap"
 keywords = ["r", "garbage-collection", "runtime"]
 categories = ["memory-management", "science"]
 

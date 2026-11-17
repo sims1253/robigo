@@ -29,9 +29,8 @@ use crate::root::{Out, Root};
 use robigo_heap::types::*;
 use robigo_heap::{Sexp, gp};
 
-/// GNU R's RTRACE (`sxpinfo.trace`): bit 1 of the header's `extra` word. On
-/// a vector, `tracemem` is on.
-const RTRACE: u16 = 1 << 1;
+/// GNU R's RTRACE (`sxpinfo.trace`) on a vector: `tracemem` is on.
+use robigo_heap::extra::vector::TRACE as RTRACE;
 
 impl Cx {
     /// GNU R's `shallow_duplicate(x)`, written to `out`: a new vector with
@@ -102,7 +101,7 @@ impl Cx {
                     std::ptr::copy_nonoverlapping(from.std_data(), copy.std_data(), n * robigo_heap::elt_size(t));
                 }
                 // R: duplicate.c:COPY_TRUELENGTH
-                if from.gp() & gp::GROWABLE == 0 {
+                if from.gp() & gp::vector::GROWABLE == 0 {
                     copy.set_truelen(from.truelen());
                 }
                 // duplicate1's common exit: OBJECT and S4 whenever the types
@@ -410,7 +409,7 @@ impl Cx {
                 if pos.bind(cx).as_cons().is_none() {
                     break;
                 }
-                cx.poll_alloc(LIST_CHUNK * robigo_heap::NODE_SIZE)?;
+                cx.poll_alloc(LIST_CHUNK * robigo_heap::layout::node::size(LISTSXP))?;
             }
             if let Some(out) = out.take() {
                 // an empty list copies to R_NilValue
@@ -463,10 +462,10 @@ unsafe fn copy_attrib_bits(to: Sexp, attrib: Sexp, from: Sexp) {
 
 /// GNU R's `NOJIT_MASK` and `MAYBEJIT_MASK` (Defn.h): a closure's JIT
 /// state, which `duplicate` copies.
-const JIT_BITS: u16 = (1 << 5) | (1 << 6);
+const JIT_BITS: u16 = gp::closure::NOJIT | gp::closure::MAYBEJIT;
 
 /// GNU R's `ASSIGNMENT_PENDING_MASK`: on a call, `MARK_ASSIGNMENT_CALL`.
-use crate::sym::ASSIGNMENT_PENDING as ASSIGNMENT_CALL;
+use robigo_heap::gp::call::ASSIGNMENT_CALL;
 
 /// The types `duplicate1` returns as they are.
 fn shared_by_duplicate(t: u8) -> bool {
@@ -542,8 +541,8 @@ impl Cx {
             // environment).
             unsafe {
                 to.set_gp((to.gp() & !JIT_BITS) | (from.gp() & JIT_BITS));
-                if from.extra() & robigo_heap::extra::BYTECODE != 0 {
-                    to.set_extra(to.extra() | robigo_heap::extra::BYTECODE);
+                if from.extra() & robigo_heap::extra::closure::BYTECODE != 0 {
+                    to.set_extra(to.extra() | robigo_heap::extra::closure::BYTECODE);
                     to.set_aux(from.aux());
                 }
             }
@@ -869,7 +868,7 @@ impl Cx {
         let v = r.sexp();
         // SAFETY: a rooted standard vector: its header and length words.
         unsafe {
-            if self.shared(r) || v.gp() & gp::GROWABLE == 0 || v.truelen() < newlen as isize {
+            if self.shared(r) || v.gp() & gp::vector::GROWABLE == 0 || v.truelen() < newlen as isize {
                 return false;
             }
             let len = v.std_len() as usize;

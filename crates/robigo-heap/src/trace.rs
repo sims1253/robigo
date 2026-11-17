@@ -107,8 +107,9 @@
 //! assert_eq!(n.0, 4);
 //! ```
 
+use crate::layout::{altrep, extptr, header, node, promise, sym};
 use crate::types::*;
-use crate::{OFF_AUX, Sexp, flags};
+use crate::{Sexp, flags};
 use std::cell::{Cell, RefCell, UnsafeCell};
 use std::collections::VecDeque;
 use std::marker::PhantomData;
@@ -294,7 +295,7 @@ impl Sexp {
         // SAFETY: the caller's contract: the map of `slots` describes the
         // object, and a slot's kind says which of its words are objects.
         unsafe {
-            for off in [OFF_OVERFLOW, crate::OFF_ENCLOS, OFF_SHAPE, OFF_VERSION, OFF_CALLER] {
+            for off in [OFF_OVERFLOW, OFF_ENCLOS, OFF_SHAPE, OFF_VERSION, OFF_CALLER] {
                 v.edge(self.edge_at(off));
             }
             let cap = *(self.0.add(OFF_META) as *const u64) as u32 as usize;
@@ -351,10 +352,10 @@ impl Sexp {
             if t == CHARSXP {
                 return;
             }
-            v.edge(self.edge_at(8));
+            v.edge(self.edge_at(header::OFF_ATTRIB));
             if self.flags() & flags::ALTREP != 0 {
                 // data1, data2, class, and the 4th word
-                for off in [16, 24, 32, OFF_AUX] {
+                for off in [altrep::OFF_DATA1, altrep::OFF_DATA2, altrep::OFF_CLASS, node::OFF_AUX] {
                     v.edge(self.edge_at(off));
                 }
                 return;
@@ -371,14 +372,17 @@ impl Sexp {
                 WEAKREFSXP => {}
                 // the car is an address
                 EXTPTRSXP => {
-                    for off in [24, 32, OFF_AUX] {
+                    for off in [extptr::OFF_PROT, extptr::OFF_TAG] {
                         v.edge(self.edge_at(off));
+                    }
+                    if node::has_aux(t) {
+                        v.edge(self.edge_at(node::OFF_AUX));
                     }
                 }
                 // PRINTNAME, SYMVALUE, INTERNAL; the 4th word is the
-                // symbol's id and hash (`OFF_SYMID`)
+                // symbol's id and hash (`layout::sym::OFF_ID`)
                 SYMSXP => {
-                    for off in [16, 24, 32] {
+                    for off in [sym::OFF_PRINTNAME, sym::OFF_VALUE, sym::OFF_INTERNAL] {
                         v.edge(self.edge_at(off));
                     }
                 }
@@ -389,14 +393,20 @@ impl Sexp {
                 // (GNU R's PROMISE_TAG, IMMEDIATE_PROMISE_VALUES): PRCODE,
                 // PRENV and the 4th word
                 PROMSXP if self.promise_tag() != 0 => {
-                    for off in [24, 32, OFF_AUX] {
+                    for off in [promise::OFF_CODE, promise::OFF_ENV] {
                         v.edge(self.edge_at(off));
                     }
+                    if node::has_aux(t) {
+                        v.edge(self.edge_at(node::OFF_AUX));
+                    }
                 }
-                // car, cdr, tag and the 4th word
+                // car, cdr, tag and the 4th word (of the types that have it)
                 LISTSXP | LANGSXP | DOTSXP | CLOSXP | ENVSXP | PROMSXP | BCODESXP | OBJSXP => {
-                    for off in [16, 24, 32, OFF_AUX] {
+                    for off in [node::OFF_CAR, node::OFF_CDR, node::OFF_TAG] {
                         v.edge(self.edge_at(off));
+                    }
+                    if node::has_aux(t) {
+                        v.edge(self.edge_at(node::OFF_AUX));
                     }
                 }
                 _ => {}
