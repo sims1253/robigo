@@ -25,6 +25,17 @@ all match. Cases in the ratchet that fail are regressions and make `run`
 exit with status 1. `--update` ratchets new passes (it never removes any).
 Results of the last run are written to .robigo/results/NAME.json.
 
+`run` and `show` take `--runtime robigo|rt` (default robigo). `rt` runs
+robigo-rt, G3's runtime (`--robigo`, else $ROBIGO_RT_BIN, else the target's
+release robigo-rt), against the recordings of its own pin (`rt` in
+scripts/oracle-versions), with its own ratchet, `passing-rt/`. It refuses,
+with the reason, the corpora robigo-rt cannot run yet: those in echo mode
+(it has no `-f` transcript front end) and those with a build step. Each
+failing case records the first thing it found missing (`blocked`: a
+primitive or `.Internal` stub, another "not implemented yet", or a function
+base does not bind), and the run prints them ranked by the cases each
+blocks.
+
 `--tier interp|vm|jit` runs every case in one execution tier (the AST
 interpreter, the bytecode VM without the JIT, or both; unset is `jit`).
 The VM and the JIT must not change behaviour, so a ratcheted case that
@@ -216,12 +227,17 @@ def cdir(name):
     return os.path.join(CORPORA, name)
 
 
-def passing_dir(name):
-    return os.path.join(cdir(name), "passing")
+def passing_dir(name, runtime="robigo"):
+    return os.path.join(cdir(name), RUNTIMES[runtime]["ratchet"])
 
 
 # Ratchet marker suffix: `passing/<case id>.pass`, one file per case.
 MARKER = ".pass"
+
+# The runtimes `run` and `show` compare with GNU R: today's robigo, held to
+# the gated version's recordings by `passing/`, and robigo-rt, G3's runtime,
+# held to the rt pin's by `passing-rt/` (docs/ledger/g3/2026-11-17-rc-rt-corpora.md).
+RUNTIMES = {"robigo": {"ratchet": "passing", "pin": "gated"}, "rt": {"ratchet": "passing-rt", "pin": "rt"}}
 
 
 def ensure_natives():
@@ -397,7 +413,7 @@ def host_dependent(conf):
     return set(conf.get("host_dependent", []))
 
 
-def load_passing(name):
+def load_passing(name, runtime="robigo"):
     """The ratchet: case ids that must keep passing.
 
     Each id is one empty marker file, `passing/<id>.pass` (an id with `/`
@@ -406,7 +422,7 @@ def load_passing(name):
     The old single `passing.txt` is still read while branches migrate
     (`scripts/ratchet.py migrate`); a marker that names no case is an
     error, where a dangling list entry used to be a silent no-op."""
-    d = passing_dir(name)
+    d = passing_dir(name, runtime)
     ids = set()
     if os.path.isdir(d):
         for root, _, files in os.walk(d):
@@ -416,7 +432,7 @@ def load_passing(name):
                     sys.exit(f"{p}: not a ratchet marker (markers are named <case>{MARKER})")
                 ids.add(os.path.relpath(p, d)[: -len(MARKER)].replace(os.sep, "/"))
     legacy = os.path.join(cdir(name), "passing.txt")
-    if os.path.exists(legacy):
+    if runtime == "robigo" and os.path.exists(legacy):
         print(f"note: {os.path.relpath(legacy, ROOT)} is deprecated; run scripts/ratchet.py migrate",
               file=sys.stderr)
         with open(legacy) as f:
@@ -428,9 +444,9 @@ def load_passing(name):
     return ids
 
 
-def add_passing(name, ids):
+def add_passing(name, ids, runtime="robigo"):
     """Add case ids to the ratchet as marker files; never removes any."""
-    d = passing_dir(name)
+    d = passing_dir(name, runtime)
     added = []
     for cid in sorted(ids):
         parts = cid.split("/")
@@ -443,6 +459,56 @@ def add_passing(name, ids):
         open(p, "w").close()
         added.append(cid)
     return added
+
+
+def robigo_rt_path(arg):
+    """robigo-rt: `--robigo`, else $ROBIGO_RT_BIN, else the release build in
+    cargo's target directory (as scripts/rt-overshoot.py finds it)."""
+    if arg:
+        return os.path.abspath(arg)
+    if os.environ.get("ROBIGO_RT_BIN"):
+        return os.environ["ROBIGO_RT_BIN"]
+    target = os.environ.get("CARGO_TARGET_DIR")
+    if not target:
+        try:
+            md = json.loads(subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps"], cwd=ROOT,
+                                           capture_output=True, check=True).stdout)
+            target = md["target_directory"]
+        except Exception:
+            target = os.path.join(ROOT, "target")
+    return os.path.join(target, "release", "robigo-rt")
+
+
+def rt_unsupported(name, conf):
+    """Why robigo-rt cannot run a corpus yet, or None."""
+    if conf.get("mode", "script") != "script":
+        return (f"{name} runs in {conf.get('mode')} mode (`R -f`, the echoed transcript), "
+                "and robigo-rt has no `-f` front end yet")
+    if conf.get("build"):
+        return f"{name} has a build step ({conf['build']}), which robigo-rt cannot run yet"
+    return None
+
+
+# What a failing robigo-rt case hit first: the stubs of crates/robigo-rt's
+# base.rs, any other "not implemented yet", and a function base does not
+# bind (robigo-rt binds only part of base until L5).
+BLOCKED = [
+    (re.compile(rb"robigo: the primitive '([^']+)' is not implemented yet"), "primitive {}"),
+    (re.compile(rb"robigo: \.Internal\(([^()\s]+)\(\)\) is not implemented yet"), ".Internal {}"),
+    (re.compile(rb"robigo: (.{1,120}?) is not implemented yet"), "not implemented: {}"),
+    (re.compile(rb'could not find function "([^"]+)"'), "unbound {}"),
+]
+
+
+def blocked(err):
+    """The first missing thing a case's stderr names, or None."""
+    hits = []
+    for i, (rx, label) in enumerate(BLOCKED):
+        m = rx.search(err)
+        if m:
+            # the earliest message; at one position, the most specific pattern
+            hits.append((m.start(), i, label.format(m.group(1).decode("utf-8", "replace"))))
+    return min(hits)[2] if hits else None
 
 
 def robigo_path(arg):
@@ -682,19 +748,41 @@ def net_fixture(name, fx, hosts_file="/etc/hosts"):
                 srv.server_close()
 
 
+def rt_sources():
+    """robigo-rt loads base from the pinned GNU R sources (scripts/r-src.sh).
+    Cases run with HOME set to their own directory, so the sources' path
+    goes through ROBIGO_RSRC, which robigo-rt reads before HOME."""
+    if not os.environ.get("ROBIGO_RSRC"):
+        p = subprocess.run([os.path.join(ROOT, "scripts", "r-src.sh")], capture_output=True, text=True)
+        if p.returncode:
+            sys.exit(f"robigo-rt needs GNU R's sources: scripts/r-src.sh failed:\n{p.stderr[-2000:]}")
+        os.environ["ROBIGO_RSRC"] = p.stdout.strip()
+
+
 def cmd_run(a):
     conf = corpus_conf(a.name, a.profile)
-    version = r_version(getattr(a, "r_version", None))
-    gated = version == GATED_R_VERSION
+    runtime = getattr(a, "runtime", None) or "robigo"
+    rt = runtime == "rt"
+    pinned = pins()[RUNTIMES[runtime]["pin"]]
+    version = r_version(getattr(a, "r_version", None) or (pinned if rt else None))
+    # the ratchet holds runs against its runtime's pin only
+    gated = version == pinned
+    if rt and (why := rt_unsupported(a.name, conf)):
+        sys.exit(f"--runtime rt: {why}")
+    if rt and a.tier:
+        sys.exit("--tier selects the old runtime's execution tiers; robigo-rt has none")
     if a.profile and a.update:
         sys.exit("profile runs cannot update the shared ratchet; activate the profile first")
     if a.tier and a.update:
         sys.exit("--tier runs cannot update the ratchet, which records default runs")
     if not gated and a.update:
-        sys.exit(f"the ratchet records runs against GNU R {GATED_R_VERSION}, not {version}")
-    robigo = robigo_path(a.robigo)
+        sys.exit(f"the {RUNTIMES[runtime]['ratchet']}/ ratchet records runs against GNU R {pinned}, not {version}")
+    robigo = robigo_rt_path(a.robigo) if rt else robigo_path(a.robigo)
     if not os.path.exists(robigo):
-        sys.exit(f"no robigo binary at {robigo}; run scripts/build.sh")
+        sys.exit(f"no {'robigo-rt' if rt else 'robigo'} binary at {robigo}; "
+                 + ("build it with cargo build --release -p robigo-rtapi (the package of the robigo-rt binary)" if rt else "run scripts/build.sh"))
+    if rt:
+        rt_sources()
     fx = fixture_preflight(a.name, conf) if getattr(a, "net_fixture", False) else None
     # the build step (capi: robigo CMD SHLIB) uses the binary under test
     os.environ["ROBIGO"] = os.path.abspath(robigo)
@@ -703,7 +791,7 @@ def cmd_run(a):
     # under test, which is gated on 4.5.0, whatever the recordings compared
     build_corpus(a.name, conf, GATED_R_VERSION)
     exp = load_expected(a.name, expected_file(conf, version))
-    vflag = "" if gated else f" --r-version {version}"
+    vflag = "" if version == GATED_R_VERSION else f" --r-version {version}"
     if not exp:
         sys.exit(f"{a.name} has no expected output for GNU R {version}; run: scripts/corpus.py record {a.name}{vflag}")
     skip = host_dependent(conf)
@@ -712,8 +800,8 @@ def cmd_run(a):
     if stale:
         sys.exit(f"{len(stale)} case(s) changed since recording (e.g. {stale[0]}); "
                  f"run: scripts/corpus.py record {a.name}{vflag}")
-    # A run against another version only reports: the ratchet is 4.5.0's.
-    passing = load_passing(a.name) if gated else set()
+    # A run against another version only reports: each ratchet holds its pin's.
+    passing = load_passing(a.name, runtime) if gated else set()
     control(a.name, exp, cases, passing)
     if a.filter:
         rx = re.compile(a.filter)
@@ -728,6 +816,8 @@ def cmd_run(a):
         o, e, s = run_case(a.name, conf, cid, src, "robigo", robigo, a.tier)
         kinds = classify(exp[cid], o, e, s)
         r = {"id": cid, "pass": not kinds, "differs": kinds, "secs": round(time.time() - t, 3)}
+        if rt and kinds and (b := blocked(e)):
+            r["blocked"] = b
         if kinds and a.keep_output:
             r["out"], r["err"], r["status"] = enc(o), enc(e), s
         return r
@@ -744,20 +834,32 @@ def cmd_run(a):
         "corpus": a.name, "profile": a.profile, "tier": a.tier, "cases": len(res), "pass": len(ok), "stdout": count("stdout"),
         "stderr": count("stderr"), "status": count("status"), "regressions": regressions, "new": new,
     }
+    if rt:
+        summary["runtime"] = "rt"
+        ranked = {}
+        for r in res:
+            if r.get("blocked"):
+                ranked[r["blocked"]] = ranked.get(r["blocked"], 0) + 1
+        summary["blocked"] = dict(sorted(ranked.items(), key=lambda kv: (-kv[1], kv[0])))
     if not gated:
         summary["r_version"] = version
         summary["new"] = new = []
-    out = os.path.join(STATE, "results", a.name + (f".{a.profile}" if a.profile else "") + (f".R-{version}" if not gated else "") + (f".{a.tier}" if a.tier else "") + (f".shard{a.shard.replace('/', 'of')}" if a.shard else "") + ".json")
+    out = os.path.join(STATE, "results", a.name + (".rt" if rt else "") + (f".{a.profile}" if a.profile else "") + (f".R-{version}" if not gated else "") + (f".{a.tier}" if a.tier else "") + (f".shard{a.shard.replace('/', 'of')}" if a.shard else "") + ".json")
     with open(out, "w") as f:
         json.dump({"summary": summary, "results": res}, f, indent=0)
-    label = a.name + (f" [{a.tier}]" if a.tier else "") + ("" if gated else f" against GNU R {version} (not ratcheted)")
+    label = (a.name + (" on robigo-rt" if rt else "") + (f" [{a.tier}]" if a.tier else "")
+             + ("" if gated else f" against GNU R {version} (not ratcheted)"))
     print(f"{label}: {len(ok)}/{len(res)} pass; stdout {summary['stdout']}, stderr {summary['stderr']}, "
           f"status {summary['status']} match; {len(new)} new, {len(regressions)} regressions")
     for cid in regressions[:50]:
         print(f"  REGRESSION {cid}")
+    if rt and summary["blocked"] and not a.quiet:
+        print("  most cases blocked by (the first missing thing each failing case hit):")
+        for what, n in list(summary["blocked"].items())[:25]:
+            print(f"  {n:7,}  {what}")
     if a.update and new:
-        added = add_passing(a.name, new)
-        print(f"ratcheted {len(added)} case(s) under tests/corpora/{a.name}/passing/")
+        added = add_passing(a.name, new, runtime)
+        print(f"ratcheted {len(added)} case(s) under tests/corpora/{a.name}/{RUNTIMES[runtime]['ratchet']}/")
     elif new and not a.quiet:
         print(f"  ({len(new)} new passes; --update records them)")
     return 1 if regressions else 0
@@ -765,14 +867,22 @@ def cmd_run(a):
 
 def cmd_show(a):
     conf = corpus_conf(a.name, a.profile)
-    version = r_version(getattr(a, "r_version", None))
+    rt = getattr(a, "runtime", None) == "rt"
+    version = r_version(getattr(a, "r_version", None) or (pins()["rt"] if rt else None))
+    if rt and (why := rt_unsupported(a.name, conf)):
+        sys.exit(f"--runtime rt: {why}")
+    if rt and a.tier:
+        sys.exit("--tier selects the old runtime's execution tiers; robigo-rt has none")
+    if rt:
+        rt_sources()
     cases = dict(load_cases(a.name))
     if a.id not in cases:
         sys.exit(f"no case {a.id}")
     src = cases[a.id]
     exp = load_expected(a.name, expected_file(conf, version)).get(a.id)
     print("== source\n" + src.decode("utf-8", "replace"))
-    o, e, s = run_case(a.name, conf, a.id, src, "robigo", robigo_path(a.robigo), a.tier)
+    o, e, s = run_case(a.name, conf, a.id, src, "robigo", robigo_rt_path(a.robigo) if rt else robigo_path(a.robigo),
+                       a.tier)
     if exp:
         for label, key, want, got in (("stdout", "out", dec(exp["out"]), o), ("stderr", "err", dec(exp["err"]), e)):
             if masked(want, exp.get("mask_" + key)) == masked(got, exp.get("mask_" + key)):
@@ -796,14 +906,21 @@ def cmd_score(a):
         exp = load_expected(name, expected_file(conf, GATED_R_VERSION))
         skip = host_dependent(conf)
         ids = {k for k, e in exp.items() if not e.get("unstable") and k not in skip}
-        rows.append((name, len(load_passing(name) & ids), len(ids), conf.get("description", "")))
+        # robigo-rt's column: its ratchet against its pin's recordings
+        rt_exp = load_expected(name, expected_file(conf, pins()["rt"]))
+        rt_ids = {k for k, e in rt_exp.items() if not e.get("unstable") and k not in skip}
+        rt = (len(load_passing(name, "rt") & rt_ids), len(rt_ids)) if rt_ids else None
+        rows.append((name, len(load_passing(name) & ids), len(ids), rt, conf.get("description", "")))
+    pct = lambda p, t: f"{100 * p / max(t, 1):.1f}%"
     if a.markdown:
-        print("| corpus | passing | cases | |\n|---|---|---|---|")
-        for n, p, t, d in rows:
-            print(f"| {n} | {p} | {t} | {100 * p / max(t, 1):.1f}% |")
+        print("| corpus | passing | cases | | robigo-rt | rt cases | |\n|---|---|---|---|---|---|---|")
+        for n, p, t, rt, d in rows:
+            rt_s = f"{rt[0]} | {rt[1]} | {pct(*rt)}" if rt else "not recorded | | "
+            print(f"| {n} | {p} | {t} | {pct(p, t)} | {rt_s} |")
     else:
-        for n, p, t, d in rows:
-            print(f"{n:16} {p:6}/{t:<6} {100 * p / max(t, 1):5.1f}%  {d}")
+        for n, p, t, rt, d in rows:
+            rt_s = f"rt {rt[0]:6}/{rt[1]:<6} {pct(*rt):>6}" if rt else f"rt {'not recorded':>21}"
+            print(f"{n:16} {p:6}/{t:<6} {pct(p, t):>6}  {rt_s}  {d}")
 
 
 def cmd_absorb(a):
@@ -816,17 +933,22 @@ def cmd_absorb(a):
             sys.exit(f"{fn}: profile results cannot update the shared ratchet; activate the profile first")
         if doc["summary"].get("tier"):
             sys.exit(f"{fn}: --tier results cannot update the ratchet, which records default runs")
-        if doc["summary"].get("r_version", GATED_R_VERSION) != GATED_R_VERSION:
-            sys.exit(f"{fn}: results against GNU R {doc['summary']['r_version']} cannot update the ratchet, "
-                     f"which records runs against {GATED_R_VERSION}")
-        by.setdefault(doc["summary"]["corpus"], set()).update(r["id"] for r in doc["results"] if r["pass"])
-    for name, ok in sorted(by.items()):
+        # each runtime's results go to its own ratchet, held to its own pin
+        runtime = doc["summary"].get("runtime", "robigo")
+        if runtime not in RUNTIMES:
+            sys.exit(f"{fn}: results of an unknown runtime {runtime!r}")
+        pinned = pins()[RUNTIMES[runtime]["pin"]]
+        if doc["summary"].get("r_version", pinned) != pinned:
+            sys.exit(f"{fn}: results against GNU R {doc['summary']['r_version']} cannot update the "
+                     f"{RUNTIMES[runtime]['ratchet']}/ ratchet, which records runs against {pinned}")
+        by.setdefault((doc["summary"]["corpus"], runtime), set()).update(r["id"] for r in doc["results"] if r["pass"])
+    for (name, runtime), ok in sorted(by.items()):
         conf = corpus_conf(name)
-        exp = load_expected(name, expected_file(conf, GATED_R_VERSION))
+        exp = load_expected(name, expected_file(conf, pins()[RUNTIMES[runtime]["pin"]]))
         ok = {i for i in ok if i in exp}
-        old = load_passing(name)
-        added = add_passing(name, ok - old)
-        print(f"{name}: {len(added)} new pass(es) added")
+        old = load_passing(name, runtime)
+        added = add_passing(name, ok - old, runtime)
+        print(f"{name}{' (rt)' if runtime == 'rt' else ''}: {len(added)} new pass(es) added")
 
 
 # --------------------------------------------------------------- import
@@ -946,7 +1068,10 @@ def main():
     p.add_argument("--keep-output", action="store_true", help="store robigo's output of failing cases")
     p.add_argument("--net-fixture", action="store_true",
                    help="serve the corpus's net_fixture on 127.0.0.1:80 for its hosts (root in a container: CI's)")
-    p.add_argument("--r-version", help="compare with this GNU R version's recordings (default $ROBIGO_R_VERSION, else 4.5.0)")
+    p.add_argument("--r-version", help="compare with this GNU R version's recordings (default $ROBIGO_R_VERSION, "
+                   "else 4.5.0; with --runtime rt, the rt pin)")
+    p.add_argument("--runtime", choices=sorted(RUNTIMES), default="robigo",
+                   help="robigo (today's, ratchet passing/) or rt (robigo-rt, ratchet passing-rt/)")
     p.add_argument("--quiet", action="store_true")
     p = sub.add_parser("show")
     p.add_argument("name")
@@ -954,7 +1079,9 @@ def main():
     p.add_argument("id")
     p.add_argument("--robigo")
     p.add_argument("--tier", choices=sorted(TIERS), help="execution tier to run the case in (default: robigo's)")
-    p.add_argument("--r-version", help="show this GNU R version's recording (default $ROBIGO_R_VERSION, else 4.5.0)")
+    p.add_argument("--r-version", help="show this GNU R version's recording (default $ROBIGO_R_VERSION, else 4.5.0; "
+                   "with --runtime rt, the rt pin)")
+    p.add_argument("--runtime", choices=sorted(RUNTIMES), default="robigo")
     p = sub.add_parser("score")
     p.add_argument("--markdown", action="store_true")
     p = sub.add_parser("absorb")

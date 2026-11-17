@@ -100,6 +100,12 @@ class Meter:
     def __init__(self, keep=None, robigo=None, robigo_env=(), cycles=False, need_robigo=True):
         self.valgrind = perf.valgrind_path()
         self.robigo = robigo_path(robigo) if need_robigo else None
+        # which binary this measures, in the report and the JSON (a stale
+        # build is warned about: perf.binary_identity)
+        self.robigo_identity = None
+        if self.robigo and os.path.exists(self.robigo):
+            self.robigo_identity = perf.binary_identity(self.robigo, perf.crate_of(self.robigo))
+            perf.report_identity("robigo", self.robigo_identity)
         self.robigo_env = {"ROBIGO_COMPILE": "1", **dict(kv.split("=", 1) for kv in robigo_env)}
         self.cycles = cycles
         self.r_bin = os.environ.get("RSCRIPT_BIN", "/usr/lib/R/bin/exec/R")
@@ -273,7 +279,7 @@ def cmd_rows(a, m):
                                                  "gnur_instr": g[0], "gnur_est_cycles": g[1]}
                                         for k, r, g in zip(ks, rs, gs)}
     if a.json:
-        meta = {"rows": a.rows, "robigo": m.robigo, "robigo_env": m.robigo_env,
+        meta = {"rows": a.rows, "robigo": m.robigo, "robigo_identity": m.robigo_identity, "robigo_env": m.robigo_env,
                 "gnur": None if a.no_r else m.r_bin, "valgrind": m.valgrind, "cycles": a.cycles,
                 "shifts": a.shifts}
         with open(a.json, "w") as f:
@@ -294,7 +300,8 @@ def cmd_allocs(a, m):
         out[d["name"]] = {"n": d["n"], "objects": objs, "bytes": nbytes,
                           "by_type": {t: {"objects": o, "bytes": b} for t, (o, b) in c.items()}}
     if a.json:
-        meta = {"rows": a.rows, "robigo": m.robigo, "robigo_env": m.robigo_env, "allocs": True}
+        meta = {"rows": a.rows, "robigo": m.robigo, "robigo_identity": m.robigo_identity, "robigo_env": m.robigo_env,
+                "allocs": True}
         with open(a.json, "w") as f:
             json.dump({"meta": meta, "rows": out}, f, indent=1, sort_keys=True)
             f.write("\n")
