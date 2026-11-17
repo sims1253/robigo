@@ -102,10 +102,11 @@ jobs:
         run: cargo fmt --check
       - name: Clippy
         run: scripts/lint.sh
-      - name: Corpus and oracle tooling
+      - name: Corpus, oracle and Sexp-check tooling
         run: |
           python3 scripts/test_corpus.py
           python3 scripts/test-oracle-diff.py
+          python3 scripts/test-check-sexp-safety.py
       - name: Target pruning
         run: python3 scripts/test-prune-target.py
 
