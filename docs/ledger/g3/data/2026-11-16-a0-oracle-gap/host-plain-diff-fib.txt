@@ -1,0 +1,44 @@
+total: work 1,117,874,446  base 663,396,502  per unit 22,723,897
+ 5,714,797.2   25.1%  bcEval_loop
+ 1,981,557.0    8.7%  Rf_matchArgs_NR
+ 1,805,976.0    7.9%  setup_bcframe_call
+ 1,162,040.0    5.1%  setup_bcframe_prom
+   978,169.0    4.3%  GET_BINDING_CELL_CACHE
+   928,083.0    4.1%  SETCAR
+   752,490.0    3.3%  Rf_begincontext
+   643,797.0    2.8%  finish_inline_closure_call
+   585,270.0    2.6%  Rf_findFun3
+   585,200.0    2.6%  finish_force_promise
+   568,548.0    2.5%  make_applyClosure_env
+   535,105.4    2.4%  CONS_NR
+   526,744.6    2.3%  Rf_NewEnvironment
+   451,467.0    2.0%  findVarLocInFrame.part.0
+   392,972.0    1.7%  Rf_findVarInFrame3
+   359,520.0    1.6%  CLOSURE_CALL_FRAME_ARGS
+   359,480.0    1.6%  Rf_mkPROMISE
+   334,449.5    1.5%  SET_ENCLOS
+   317,718.0    1.4%  R_CleanupEnvir.part.0
+   317,718.0    1.4%  Rf_endcontext
+   317,699.0    1.4%  R_findVarLocInFrame
+   309,357.0    1.4%  findGlobalVarLoc
+   284,274.4    1.3%  SET_TAG
+   284,272.0    1.3%  Rf_matchArgs_RC
+   267,548.0    1.2%  unpromiseArgs
+   259,160.8    1.1%  SET_PRENV
+   250,830.0    1.1%  DATAPTR
+   209,025.0    0.9%  __sigsetjmp
+   186,409.4    0.8%  R_gc_internal
+   150,498.0    0.7%  R_BCVersionOK
+
+| Cause | Instructions | Share | Largest function |
+|---|---:|---:|---|
+| Evaluation (eval.c: bcEval, eval, applyClosure, promises) | 11,813,963 | 52.0% | `bcEval_loop` |
+| Allocation and GC (memory.c) | 3,352,404 | 14.8% | `SETCAR` |
+| Environments and variable lookup (envir.c) | 2,315,956 | 10.2% | `Rf_findFun3` |
+| Argument matching (match.c) | 2,081,887 | 9.2% | `Rf_matchArgs_NR` |
+| Inlined header code (src/include: Rinlinedfuns.h, Defn.h, ...) | 1,578,847 | 6.9% | `bcEval_loop` |
+| Conditions and contexts (errors.c, context.c) | 1,195,977 | 5.3% | `Rf_begincontext` |
+| Dynamic linking (ld.so) | 209,025 | 0.9% | `__sigsetjmp` |
+| libc: memcpy, memset and the rest | 175,581 | 0.8% | `__memset_avx2_unaligned_erms` |
+| 7 smaller causes | 257 | 0.0% | |
+| **Total** | **22,723,897** | 100% | |

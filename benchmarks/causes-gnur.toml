@@ -1,0 +1,64 @@
+# Causes for scripts/callgrind-diff.py --gnur --causes: which part of GNU R
+# a callgrind cost line belongs to, by the C source file of src/main (and
+# nmath) it was compiled from, so that two GNU R builds can be compared
+# cause by cause (docs/ledger/g3/2026-11-16-a0-oracle-gap.md). Format and
+# order as in causes.toml: the first cause whose pattern matches takes the
+# line; what none matches is "Other".
+# The profiles show no PLT stubs of their own (callgrind's --skip-plt=yes,
+# the default), so no cause holds them.
+
+[[cause]]
+name = "Evaluation (eval.c: bcEval, eval, applyClosure, promises)"
+patterns = ['src/main/eval\.c:']
+
+[[cause]]
+name = "Environments and variable lookup (envir.c)"
+patterns = ['src/main/envir\.c:']
+
+[[cause]]
+name = "Argument matching (match.c)"
+patterns = ['src/main/match\.c:']
+
+[[cause]]
+name = "S3 dispatch (objects.c)"
+patterns = ['src/main/objects\.c:']
+
+[[cause]]
+name = "Allocation and GC (memory.c)"
+patterns = ['src/main/memory\.c:']
+
+[[cause]]
+name = "Attributes (attrib.c)"
+patterns = ['src/main/attrib\.c:']
+
+[[cause]]
+name = "Arithmetic, comparison and logic"
+patterns = ['src/main/(arithmetic|relop|logic|complex)\.c:', 'src/nmath/']
+
+[[cause]]
+name = "Conditions and contexts (errors.c, context.c)"
+patterns = ['src/main/(errors|context)\.c:']
+
+[[cause]]
+name = "Inlined header code (src/include: Rinlinedfuns.h, Defn.h, ...)"
+patterns = ['src/include/']
+
+[[cause]]
+name = "Other builtins (src/main)"
+patterns = ['src/main/[a-z0-9_]+\.c:']
+
+[[cause]]
+name = "libc: memcpy, memset and the rest"
+patterns = ['\[libc\.so\.6\]$']
+
+[[cause]]
+name = "libm"
+patterns = ['\[libm\.so\.6\]$']
+
+[[cause]]
+name = "Dynamic linking (ld.so)"
+patterns = ['\[ld-linux-x86-64\.so\.2\]$']
+
+[[cause]]
+name = "Other libR (no source line)"
+patterns = ['\[libR\.so\]$', '\[R\]$']

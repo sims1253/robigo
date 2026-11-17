@@ -139,8 +139,8 @@ impl Cx {
                 w.set_elt(0, key);
                 w.set_elt(1, value);
                 w.set_elt(2, fin);
-                let g = w.gp() & !gp::READY_TO_FINALIZE;
-                w.set_gp(if onexit { g | gp::FINALIZE_ON_EXIT } else { g & !gp::FINALIZE_ON_EXIT });
+                let g = w.gp() & !gp::weakref::READY_TO_FINALIZE;
+                w.set_gp(if onexit { g | gp::weakref::FINALIZE_ON_EXIT } else { g & !gp::weakref::FINALIZE_ON_EXIT });
                 iso.core().register_weak_ref(w);
             }
             Ok(w)
