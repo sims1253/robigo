@@ -74,8 +74,8 @@ pub mod repl;
 pub mod search;
 pub mod serialize;
 pub mod source;
-mod util;
 mod specials;
+mod util;
 pub mod vm;
 
 use robigo_rtcore::Cx;
