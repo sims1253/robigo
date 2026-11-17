@@ -97,37 +97,39 @@ robigo, so the noise moves no bar.
 
 ### Every bar, before and after
 
-The same robigo-rt binary (release, main `2ae1e075`) was measured on the
-desktop in the oracle image with `perf.py rt-bars --cycles`, once against
-the old committed GNU R numbers and once against the stock build's
-(`bars-before.md`, `bars-after.md`):
+The same robigo-rt binary was measured on the desktop in the oracle image
+with `perf.py rt-bars --cycles`, once against the old committed GNU R numbers
+and once against the stock build's (`bars-before.md`, `bars-after.md`). The
+binary is a release build of main `fb429442` (`cargo build --release --locked
+-p robigo-rtapi`): sha256 `237f49bbcaff34b859b1ee92645bc80ee1d4c9ff6e2129008a20ca90d487f95a`,
+GNU build ID `410ea73950da65f1e0cf41df2e18c3ea18402032`.
 
 | bar | max | robigo-rt | ratio before | ratio after | before | after |
 |---|---:|---:|---:|---:|---|---|
-| plain | 0.6x gnur | 1,922.1 | 0.400x | 0.450x | met | met |
+| plain | 0.6x gnur | 1,918.1 | 0.400x | 0.449x | met | met |
 | defaults | 0.6x gnur | 1,999.0 | 0.328x | 0.367x | met | met |
-| named | 0.6x gnur | 1,848.1 | 0.398x | 0.444x | met | met |
-| env-fn | 1.0x gnur | 2,592.6 | 0.677x | 0.765x | met | met |
+| named | 0.6x gnur | 1,844.1 | 0.398x | 0.443x | met | met |
+| env-fn | 1.0x gnur | 2,588.6 | 0.676x | 0.764x | met | met |
 | superassign | 1.0x gnur | 5,142.6 | 0.656x | 0.746x | met | met |
-| **s3** | 1.0x gnur | 19,053.6 | 0.992x | **1.095x** | met | **unmet, owed by P3** |
-| fib | 1.0x today | 10,723,872.1 | 1.272x | 1.272x | unmet (G8) | unmet (G8) |
-| binarytrees | 1.0x today | 3,485,419.1 | 0.842x | 0.842x | met | met |
-| e7-paste | 1.0x today | 96,176.8 | 1.930x | 1.930x | accepted to 2.0x | accepted to 2.0x |
-| e7-match | 1.0x today | 99,106.8 | 0.866x | 0.866x | met | met |
-| e7-unique | 1.0x today | 127,188.4 | 0.701x | 0.701x | met | met |
+| **s3** | 1.0x gnur | 19,048.5 | 0.991x | **1.094x** | met | **unmet, owed by P3** |
+| fib | 1.0x today | 10,723,194.2 | 1.272x | 1.272x | unmet (G8) | unmet (G8) |
+| binarytrees | 1.0x today | 3,481,838.8 | 0.841x | 0.841x | met | met |
+| e7-paste | 1.0x today | 96,174.9 | 1.930x | 1.930x | accepted to 2.0x | accepted to 2.0x |
+| e7-match | 1.0x today | 99,109.5 | 0.866x | 0.866x | met | met |
+| e7-unique | 1.0x today | 127,185.5 | 0.701x | 0.701x | met | met |
 
 | RSS bar | robigo-rt KiB | GNU R before | GNU R after | status |
 |---|---:|---:|---:|---|
-| `suite/binarytrees.R` (also ≤ today's 32,156) | 24,012 | 42,060 | 42,428 | met |
-| `rt/mem/listgrow.R` | 45,516 | 54,160 | 54,220 | met |
-| `rt/mem/churn.R` | 73,536 | 134,392 | 134,684 | met |
+| `suite/binarytrees.R` (also ≤ today's 32,156) | 23,712 | 42,060 | 42,428 | met |
+| `rt/mem/listgrow.R` | 45,616 | 54,160 | 54,220 | met |
+| `rt/mem/churn.R` | 73,900 | 134,392 | 134,684 | met |
 
-- **Only s3 flips.** It owes 9.5%: robigo-rt's 19,053.6 against the
+- **Only s3 flips.** It owes 9.4%: robigo-rt's 19,048.5 against the
   rival's 17,408.4.
 - **m0pad agrees:** A0's robigo-rt against the literal default built there
   (`rt-gnur-stock-m0pad.json`) reads 1.095x.
 - **Everything else holds:**
-  - the other E1 bars stay met, the closest being env-fn at 0.765x;
+  - the other E1 bars stay met, the closest being env-fn at 0.764x;
   - the RSS bars stay met;
   - E2's and E7's bars compare with today's robigo, so they do not move.
 - **The gate on CI** measures the rival per CPU signature on the gating
@@ -139,7 +141,7 @@ the old committed GNU R numbers and once against the stock build's
   s3 is now held to the 0.5% rule against main until P3 closes it.
 - **e7-paste** (1.930x against its 2.0x ceiling) compares with today's
   robigo and is unchanged.
-- **P3's debt** on s3 is about 9.5%, not the plan's "about 1.01x". A0's
+- **P3's debt** on s3 is about 9.4%, not the plan's "about 1.01x". A0's
   cause tables show where the rival got cheaper: eval.c, envir.c, match.c
   and objects.c each fell by 10% to 13.5%, the files the static build
   shrank most. They profile GNU R only, so they say nothing about where

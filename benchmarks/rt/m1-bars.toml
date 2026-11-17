@@ -105,7 +105,7 @@ max = 1.0
 [[bar]]
 # E1: S3. Met by S1's argument aliases against the oracle image's build
 # (0.976x, docs/ledger/g3/2026-11-16-s1-alias.md); unmet against the stock
-# rival (about 1.096x, F2 revised, docs/ledger/g3/2026-11-17-a0b-stock-rival.md)
+# rival (about 1.095x, F2 revised, docs/ledger/g3/2026-11-17-a0b-stock-rival.md)
 # and owed by P3, M3's bar-closing package. Until then the gate holds it to
 # the 0.5% rule against main, as fib.
 row = "s3"
