@@ -131,7 +131,8 @@ impl<'g> Ref<'g> {
     /// of robigo's own classes is not one ([`Ref::own_class`]).
     #[inline(always)]
     pub fn is_package_altrep(self) -> bool {
-        self.is_altrep() && not_own(self)
+        // SAFETY: live; `extra` is header state (OWN_ALTREP: own.rs's mark).
+        self.is_altrep() && unsafe { self.sexp().extra() } & OWN_ALTREP == 0
     }
 
     /// GNU R's REFCNT.
@@ -615,13 +616,6 @@ impl<'g, T: Elt<'g>> Vector<'g, T> {
 // The ALTREP arms of the hot accessors: inline, with no call, so that a
 // hot function that inlines an accessor keeps the register use and the
 // prologue it had without them (a call would make it save registers).
-
-/// [`Ref::is_package_altrep`] of an ALTREP object: not one of robigo's.
-#[cold]
-#[inline(never)]
-fn not_own(r: Ref<'_>) -> bool {
-    r.own_class().is_none()
-}
 
 /// The length of an instance of one of robigo's classes (a typed view is
 /// never a package class's).
