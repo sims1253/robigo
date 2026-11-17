@@ -1560,12 +1560,9 @@ impl Cx {
         debug_assert!(c.jumptarget().is_null() || c.conexit() == nil);
         if c.cloenv() != nil && c.conexit() != nil {
             let st = self.ctxs();
-            let s = c.conexit();
             let savevis = st.visible.get();
             let savecontext = st.exit_context.get();
             st.exit_context.set(c.ptr());
-            c.set_conexit(nil); // prevent recursion
-            c.set_jumptarget(null_mut()); // in case on.exit expr calls return()
             // (R_FixupExitingHandlerResult is S1's: its token does not
             // exist before S1 makes handler results.)
             let retval = c.return_value();
@@ -1573,7 +1570,15 @@ impl Cx {
                 // SAFETY: the record's returnValue is a live object.
                 unsafe { retval.incref() };
             }
-            self.run_conexit(c, s, eval)?;
+            self.scope(|cx, sc| {
+                // PROTECT(s): once `conexit` is cleared the record no longer
+                // traces the list
+                let s = sc.root(cx, cx.raw_ref(c.conexit()));
+                c.set_conexit(nil); // prevent recursion
+                c.set_jumptarget(null_mut()); // in case on.exit expr calls return()
+                let s = s.bind(cx).sexp();
+                cx.run_conexit(c, s, eval)
+            })?;
             // (re-read: a moving collection may have moved it)
             let retval = c.return_value();
             if !retval.is_null() {
@@ -1604,23 +1609,29 @@ impl Cx {
         self.park(c, e);
         if c.cloenv() != nil && c.conexit() != nil {
             let st = self.ctxs();
-            let s = c.conexit();
             let savevis = st.visible.get();
             let savecontext = st.exit_context.get();
             st.exit_context.set(c.ptr());
-            c.set_conexit(nil);
-            c.set_jumptarget(null_mut());
-            // R_FixupExitingHandlerResult(saveretval): the parked exit's
-            // value is GNU R's R_ReturnedValue
-            let v = c.parked().map_or(nil, |r| r.value);
-            if v != nil && !v.is_null() {
-                let fix = self.iso().hooks.get().exit_value;
-                self.scope(|cx, sc| {
+            let r = self.scope(|cx, sc| {
+                // PROTECT(s): once `conexit` is cleared the record no longer
+                // traces the list, and the fixup below may allocate
+                let s = sc.root(cx, cx.raw_ref(c.conexit()));
+                c.set_conexit(nil); // prevent recursion
+                c.set_jumptarget(null_mut()); // in case on.exit expr calls return()
+                // R_FixupExitingHandlerResult(saveretval): the parked exit's
+                // value is GNU R's R_ReturnedValue
+                let v = c.parked().map_or(nil, |r| r.value);
+                if v != nil && !v.is_null() {
+                    let fix = cx.iso().hooks.get().exit_value;
                     let v = sc.root(cx, cx.raw_ref(v));
                     fix(cx, v);
-                });
-            }
-            if let Err(e2) = self.run_conexit(c, s, eval) {
+                }
+                // (read through the root: a moving collection may have
+                // moved the list)
+                let s = s.bind(cx).sexp();
+                cx.run_conexit(c, s, eval)
+            });
+            if let Err(e2) = r {
                 // the code left by its own exit: the parked one is lost
                 // (R_ExitContext and R_Visible stay as the jump left them)
                 c.set_parked(None);

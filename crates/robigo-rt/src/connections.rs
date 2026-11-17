@@ -186,20 +186,66 @@ impl Conn {
 /// connection".
 type OpenResult = Result<(), String>;
 
-/// `R_ExpandFileName`: a leading `~` or `~/` is the home directory.
-// R: sys-unix.c:R_ExpandFileName_unix
-pub fn expand_file_name(name: &[u8]) -> Vec<u8> {
-    if name.first() != Some(&b'~') || !(name.len() == 1 || name[1] == b'/') {
-        return name.to_vec();
+/// `R_PATH_MAX`: `PATH_MAX` on Linux.
+pub(crate) const R_PATH_MAX: usize = 4096;
+
+/// `R_ExpandFileName_unix(s)`: a leading `~` or `~user` (up to the first
+/// `/`) is that home directory: `HOME` for `~` (the password entry when it
+/// is unset or empty), the password entry for `~user`. A name with no such
+/// directory is left as it is, and so is one whose expansion would not fit
+/// in `R_PATH_MAX`, with the text of GNU R's warning.
+// R: sys-unix.c:R_ExpandFileName_unix (no readline: robigo-rt's and
+// Rscript's case)
+pub fn expand_file_name_unix(s: &[u8]) -> (Vec<u8>, Option<String>) {
+    if s.first() != Some(&b'~') {
+        return (s.to_vec(), None);
     }
-    match std::env::var_os("HOME") {
-        Some(h) if !h.is_empty() => {
-            let mut v = std::os::unix::ffi::OsStrExt::as_bytes(h.as_os_str()).to_vec();
-            v.extend_from_slice(&name[1..]);
-            v
+    let slash = s[1..].iter().position(|&c| c == b'/').map(|k| k + 1);
+    let user = &s[1..slash.unwrap_or(s.len())];
+    let home: Option<Vec<u8>> = if user.is_empty() {
+        // follow readline (and not libedit) in preferring HOME
+        match std::env::var_os("HOME") {
+            Some(h) if !h.is_empty() => Some(std::os::unix::ffi::OsStrExt::as_bytes(h.as_os_str()).to_vec()),
+            _ => robigo_rtcore::clib::passwd_home(None),
         }
-        _ => name.to_vec(),
+    } else {
+        robigo_rtcore::clib::passwd_home(Some(user))
+    };
+    let Some(home) = home else { return (s.to_vec(), None) };
+    match slash {
+        // ~name
+        None => (home, None),
+        // ~name/path: "%s/%s" of the home and what follows the slash
+        Some(k) => {
+            let mut v = home;
+            v.push(b'/');
+            v.extend_from_slice(&s[k + 1..]);
+            if v.len() >= R_PATH_MAX {
+                let msg =
+                    format!("expanded path length {} would be too long for\n{}\n", v.len(), String::from_utf8_lossy(s));
+                return (s.to_vec(), Some(msg));
+            }
+            (v, None)
+        }
     }
+}
+
+/// `R_ExpandFileName(name)`, its warning given.
+pub fn r_expand_file_name(cx: &mut robigo_rtcore::Cx, name: &[u8]) -> robigo_rtcore::RResult<Vec<u8>> {
+    let (v, w) = expand_file_name_unix(name);
+    if let Some(w) = w {
+        cx.warning(&w)?;
+    }
+    Ok(v)
+}
+
+/// `R_ExpandFileName(name)` without its over-long expansion warning: for
+/// a connection's open callback, which has no `Cx`, and today also for
+/// `file()`'s and `gzfile()`'s sniffing of the file's type (connections,
+/// L's: docs/ledger/g3/2026-11-17-b5a-platform.md). Elsewhere,
+/// `r_expand_file_name`.
+pub fn expand_file_name(name: &[u8]) -> Vec<u8> {
+    expand_file_name_unix(name).0
 }
 
 fn path_of(name: &[u8]) -> std::path::PathBuf {
