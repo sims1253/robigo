@@ -306,8 +306,8 @@ impl<'g> Cenv<'g> {
                     // the import frame of the code's top environment, the
                     // first namespace frame
                     let top = self.chain.iter().find(|&&(_, t)| t == FType::Namespace).map(|&(e, _)| e);
-                    // SAFETY: live environments of the chain.
                     match top {
+                        // SAFETY: live environments of the chain.
                         Some(top) if is_ns(top) && unsafe { robigo_heap::env::enclos(top) } == env => {
                             // SAFETY: as above.
                             unsafe { find_home_ns(cx, sym, top, 0) }
