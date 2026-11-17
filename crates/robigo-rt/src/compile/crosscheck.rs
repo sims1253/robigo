@@ -310,10 +310,16 @@ fn normalize(b: &Built) -> Vec<Norm> {
     // code before left (a join only a jump reaches: `a && return(x)`'s);
     // elsewhere they are numbered in the code's order
     let mut landing: HashMap<usize, Vec<HashMap<u16, u32>>> = HashMap::new();
+    // (not where a back edge lands too: its values are the loop's)
+    let back: std::collections::HashSet<usize> = (0..b.ins.len())
+        .filter(|&k| live[k] && kinds(b.ins[k].op).1 && b.ins[k].target() <= k)
+        .map(|k| b.ins[k].target())
+        .collect();
     let mut fell = true;
     for (k, i) in b.ins.iter().enumerate() {
         if let Some(paths) = landing.remove(&k)
             && !fell
+            && !back.contains(&k)
             && paths.iter().all(|p| *p == paths[0])
         {
             defs = paths.into_iter().next().unwrap_or_default();
