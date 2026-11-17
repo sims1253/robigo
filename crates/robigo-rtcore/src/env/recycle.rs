@@ -42,7 +42,7 @@
 #![allow(unsafe_code)]
 
 use super::frame::layout::{self, CELL, OFF_CALLER, OFF_OVERFLOW, OFF_SHAPE, OFF_VERSION, SlotRef};
-use robigo_heap::extra::ESCAPED;
+use robigo_heap::extra::env::ESCAPED;
 use robigo_heap::{Sexp, Trace, Visitor, flags};
 use std::cell::UnsafeCell;
 

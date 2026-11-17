@@ -10,11 +10,14 @@ use std::ffi::{CStr, c_char, c_int};
 
 /// A C string from C, as text (GNU R's messages are bytes in the native
 /// encoding, UTF-8 under robigo's locales).
-pub(crate) fn text(p: *const c_char) -> String {
+///
+/// # Safety
+/// `p` is null or a NUL-terminated string that stays put during the call.
+pub(crate) unsafe fn text(p: *const c_char) -> String {
     if p.is_null() {
         return String::new();
     }
-    // SAFETY: C's contract: a NUL-terminated string.
+    // SAFETY: the caller's contract.
     String::from_utf8_lossy(unsafe { CStr::from_ptr(p) }.to_bytes()).into_owned()
 }
 
@@ -53,20 +56,26 @@ entry! {
     /// `CTXT_BUILTIN` record).
     // R: errors.c:error
     [1] fn robigo_rtapi_error(msg: *const c_char) -> () => |cx, _s| {
-        Err(cx.error(&text(msg)))
+        // SAFETY: C's contract: NUL-terminated strings, kept for the call.
+        let msg = unsafe { text(msg) };
+        Err(cx.error(&msg))
     }
 
     /// GNU R's `errorcall(call, ...)` of a message `Rf_errorcall` formatted.
     // R: errors.c:errorcall
     [2] fn robigo_rtapi_errorcall(call: Sexp, msg: *const c_char) -> () => |cx, _s| {
-        Err(errorcall(cx, call, &text(msg)))
+        // SAFETY: C's contract: NUL-terminated strings, kept for the call.
+        let msg = unsafe { text(msg) };
+        Err(errorcall(cx, call, &msg))
     }
 
     /// An accessor applied to the wrong type: memory.c's "%s() can only be
     /// applied to a '%s', not a '%s'".
     // R: memory.c:INTEGER (and its siblings)
     [3] fn robigo_rtapi_type_error(fun: *const c_char, what: *const c_char, x: Sexp) -> () => |cx, _s| {
-        let msg = format!("{}() can only be applied to a '{}', not a '{}'", text(fun), text(what), r_type_to_char(x.bind(cx)));
+        // SAFETY: C's contract: NUL-terminated strings, kept for the call.
+        let (fun, what) = unsafe { (text(fun), text(what)) };
+        let msg = format!("{fun}() can only be applied to a '{what}', not a '{}'", r_type_to_char(x.bind(cx)));
         Err(cx.error(&msg))
     }
 
@@ -74,14 +83,18 @@ entry! {
     /// %lld/%lld in %s".
     // R: memory.c:VECTOR_ELT
     [3] fn robigo_rtapi_index_error(fun: *const c_char, i: isize, n: isize) -> () => |cx, _s| {
-        Err(cx.error(&format!("attempt access index {i}/{n} in {}", text(fun))))
+        // SAFETY: C's contract: NUL-terminated strings, kept for the call.
+        let fun = unsafe { text(fun) };
+        Err(cx.error(&format!("attempt access index {i}/{n} in {fun}")))
     }
 
     /// A setter's index out of range: memory.c's "attempt to set index
     /// %lld/%lld in %s".
     // R: memory.c:SET_VECTOR_ELT
     [3] fn robigo_rtapi_set_index_error(fun: *const c_char, i: isize, n: isize) -> () => |cx, _s| {
-        Err(cx.error(&format!("attempt to set index {i}/{n} in {}", text(fun))))
+        // SAFETY: C's contract: NUL-terminated strings, kept for the call.
+        let fun = unsafe { text(fun) };
+        Err(cx.error(&format!("attempt to set index {i}/{n} in {fun}")))
     }
 
     /// `SET_STRING_ELT` of a value that is not a CHARSXP.
@@ -94,7 +107,9 @@ entry! {
     // R: memory.c:CHKEXTPTRSXP
     [2] fn robigo_rtapi_extptr_error(fun: *const c_char, x: Sexp) -> () => |cx, _s| {
         let t = robigo_rtbuiltins::util::type2char(x.bind(cx).sexptype());
-        Err(cx.error(&format!("{}: argument of type {t} is not an external pointer", text(fun))))
+        // SAFETY: C's contract: NUL-terminated strings, kept for the call.
+        let fun = unsafe { text(fun) };
+        Err(cx.error(&format!("{fun}: argument of type {t} is not an external pointer")))
     }
 
     /// `PROTECT` past `R_PPStackSize`: GNU R's `R_signal_protect_error`
@@ -123,20 +138,25 @@ entry! {
 
     /// A case of an accessor robigo does not have yet (AGENTS rule 6).
     [1] fn robigo_rtapi_not_yet(what: *const c_char) -> () => |cx, _s| {
-        Err(not_yet(cx, &text(what)))
+        // SAFETY: C's contract: NUL-terminated strings, kept for the call.
+        let what = unsafe { text(what) };
+        Err(not_yet(cx, &what))
     }
 
     /// GNU R's `warning()` of a message `Rf_warning` formatted: against the
     /// current context's call, as `error()`.
     // R: errors.c:warning
     [1] fn robigo_rtapi_warning(msg: *const c_char) -> () => |cx, _s| {
-        cx.warning(&text(msg))
+        // SAFETY: C's contract: NUL-terminated strings, kept for the call.
+        let msg = unsafe { text(msg) };
+        cx.warning(&msg)
     }
 
     /// GNU R's `warningcall(call, ...)`.
     // R: errors.c:warningcall
     [2] fn robigo_rtapi_warningcall(call: Sexp, msg: *const c_char) -> () => |cx, _s| {
-        let m = text(msg);
+        // SAFETY: C's contract: NUL-terminated strings, kept for the call.
+        let m = unsafe { text(msg) };
         if call.bind(cx).sexptype() == NILSXP { cx.warning_call(None, &m) } else { cx.warning_call(Some(call), &m) }
     }
 }
@@ -179,7 +199,7 @@ pub unsafe extern "C" fn robigo_rtapi_print(to_stderr: c_int, buf: *const c_char
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn robigo_rtapi_store(x: Sexp, slot: *mut Sexp, v: Sexp) {
     // SAFETY: the caller's contract: a live object's header.
-    if unsafe { x.extra() } & (robigo_heap::extra::AST_SOURCE | robigo_heap::extra::FORMALS_SOURCE) != 0 {
+    if unsafe { x.extra() } & (robigo_heap::extra::cell::AST_SOURCE | robigo_heap::extra::cell::FORMALS_SOURCE) != 0 {
         // (a null store marks nothing new: `x` stands in for it)
         let w = if v.is_null() { x } else { v };
         // SAFETY: called from C code of the thread's isolate, with `x` and

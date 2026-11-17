@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exact instruction costs of a workload, from two callgrind runs: by function and by cause.
 
-Usage: scripts/callgrind-diff.py WORK.R BASE.R [UNITS] [--incl] [--top N] [--causes]
+Usage: scripts/callgrind-diff.py WORK.R BASE.R [UNITS] [--incl] [--top N] [--causes] [--gnur]
        scripts/callgrind-diff.py --bench NAME [--top N] [--causes]
 
 Runs robigo under callgrind on WORK.R and BASE.R (which should differ only
@@ -19,6 +19,11 @@ guards and type checks, allocation and GC, attributes, JIT-generated code,
 builtins and numerics, ...): benchmarks/causes.toml maps callgrind's
 `file:function [object]` lines to causes, as data. Each row is a work item.
 
+--gnur profiles GNU R instead (RSCRIPT_BIN's `exec/R --vanilla --no-echo -f
+SCRIPT`, with R_HOME_DIR as its R_HOME, default /usr/lib/R), to compare
+two GNU R builds function by function; its --causes come from
+benchmarks/causes-gnur.toml, by GNU R's source file.
+
 Environment: ROBIGO (binary, default as scripts/perf.py chooses it),
 VALGRIND and CALLGRIND_ANNOTATE (default as scripts/perf.py chooses
 valgrind, and the callgrind_annotate beside it), ROBIGO_COMPILE (passed on).
@@ -33,6 +38,7 @@ import tomllib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CAUSES = os.path.join(os.path.dirname(HERE), "benchmarks", "causes.toml")
+CAUSES_GNUR = os.path.join(os.path.dirname(HERE), "benchmarks", "causes-gnur.toml")
 OTHER = "Other"
 SMALL = 0.001  # causes below this share of the total share one row
 sys.path.insert(0, HERE)
@@ -121,8 +127,13 @@ def cause_table(diff, total, units, causes):
 
 
 class Profiler:
-    def __init__(self, incl=False):
-        self.binary = robigo_path(None)
+    def __init__(self, incl=False, gnur=False):
+        self.gnur = gnur
+        if gnur:
+            self.binary = os.environ.get("RSCRIPT_BIN", "/usr/lib/R/bin/exec/R")
+            self.r_home = os.environ.get("R_HOME_DIR", "/usr/lib/R")
+        else:
+            self.binary = robigo_path(None)
         self.valgrind = perf.valgrind_path()
         beside = os.path.join(os.path.dirname(self.valgrind), "callgrind_annotate")
         self.annotate = os.environ.get("CALLGRIND_ANNOTATE") or (beside if os.path.exists(beside)
@@ -130,6 +141,10 @@ class Profiler:
         self.incl = incl
 
     def run(self, script, out, env, args=(), cwd=None):
+        if self.gnur:
+            # exec/R reads its script from -f and needs R_HOME and libR's directory
+            args = ["--vanilla", "--no-echo", "-f"]
+            env = dict(env, R_HOME=self.r_home, LD_LIBRARY_PATH=os.path.join(self.r_home, "lib"))
         p = subprocess.run([self.valgrind, "--tool=callgrind", f"--callgrind-out-file={out}", self.binary, *args,
                             script], env=env, cwd=cwd, capture_output=True, text=True, errors="replace")
         if p.returncode != 0:
@@ -169,13 +184,16 @@ def main():
     ap.add_argument("--incl", action="store_true")
     ap.add_argument("--top", type=int, default=40)
     ap.add_argument("--causes", action="store_true", help="also split the instructions by cause")
+    ap.add_argument("--gnur", action="store_true", help="profile GNU R (RSCRIPT_BIN, R_HOME_DIR) instead of robigo")
     a = ap.parse_args()
+    if a.gnur and a.bench:
+        ap.error("--gnur takes WORK.R and BASE.R")
     if not a.bench and not (a.work and a.base):
         ap.error("give WORK.R and BASE.R, or --bench NAME")
     if a.causes and a.incl:
         ap.error("--causes adds up exclusive costs; leave out --incl")
     with tempfile.TemporaryDirectory() as d:
-        (tw, w), (tb, b) = profiles(a, Profiler(a.incl), d)
+        (tw, w), (tb, b) = profiles(a, Profiler(a.incl, a.gnur), d)
     diff = tw - tb
     what = a.bench or "work"
     print(f"total: {what} {tw:,}  base {tb:,}  per unit {diff / a.units:,.0f}")
@@ -194,7 +212,7 @@ def main():
         if diff - listed:
             locs["(below callgrind_annotate's threshold)"] = diff - listed
         print()
-        print(cause_table(locs, diff, a.units, load_causes()))
+        print(cause_table(locs, diff, a.units, load_causes(CAUSES_GNUR if a.gnur else CAUSES)))
 
 
 if __name__ == "__main__":

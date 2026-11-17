@@ -51,7 +51,7 @@ impl<'g> Ref<'g> {
         let _ = cx;
         debug_assert!(!x.is_null());
         // SAFETY: the caller's contract: a live object is not null.
-        Ref { p: unsafe { NonNull::new_unchecked(x.0) }, _g: PhantomData }
+        Ref { p: unsafe { NonNull::new_unchecked(x.as_ptr()) }, _g: PhantomData }
     }
 
     /// A field of an object this `Ref` reaches: the same brand.
@@ -63,13 +63,14 @@ impl<'g> Ref<'g> {
     unsafe fn child(self, x: Sexp) -> Ref<'g> {
         // SAFETY: the caller's contract; the parent is reachable for 'g and
         // its fields do not change during 'g, so neither can the child.
-        Ref { p: unsafe { NonNull::new_unchecked(x.0) }, _g: PhantomData }
+        Ref { p: unsafe { NonNull::new_unchecked(x.as_ptr()) }, _g: PhantomData }
     }
 
     /// The raw object, for the raw layer. Using it is `unsafe` there.
     #[inline(always)]
     pub fn sexp(self) -> Sexp {
-        Sexp(self.p.as_ptr())
+        // SAFETY: a `Ref` holds a live object of its isolate for 'g.
+        unsafe { Sexp::from_ptr(self.p.as_ptr()) }
     }
 
     /// GNU R's TYPEOF.
@@ -156,7 +157,7 @@ impl<'g> Ref<'g> {
         robigo_heap::is_vector_type(t)
             && t != CHARSXP
             && !self.is_altrep()
-            && unsafe { self.sexp().gp() } & gp::GROWABLE != 0
+            && unsafe { self.sexp().gp() } & gp::vector::GROWABLE != 0
     }
 
     /// GNU R's XTRUELENGTH of a standard vector (0 when unset).
@@ -164,7 +165,7 @@ impl<'g> Ref<'g> {
     pub fn truelength(self) -> usize {
         let t = self.sexptype();
         assert!(robigo_heap::is_vector_type(t) && !self.is_altrep(), "robigo: TRUELENGTH of a non-vector");
-        // SAFETY: a live standard vector: +24 is its true length.
+        // SAFETY: a live standard vector, which has a true length.
         unsafe { self.sexp().truelen() }.max(0) as usize
     }
 
@@ -184,7 +185,7 @@ impl<'g> Ref<'g> {
     pub fn len(self) -> Option<usize> {
         let t = self.sexptype();
         if robigo_heap::is_vector_type(t) {
-            // SAFETY: a live vector; not ALTREP, so +16 is its length.
+            // SAFETY: a live vector; not ALTREP, so it has a length word.
             return (!self.is_altrep()).then(|| unsafe { self.sexp().std_len() } as usize);
         }
         match t {
@@ -446,7 +447,7 @@ impl<'g, T> Vector<'g, T> {
 
     #[inline(always)]
     pub fn len(self) -> usize {
-        // SAFETY: a live vector in standard storage: +16 is its length.
+        // SAFETY: a live vector in standard storage, which has a length word.
         unsafe { self.r.sexp().std_len() as usize }
     }
 
@@ -497,7 +498,7 @@ impl<'g> StdVec<'g> {
         if self.0.sexptype() == NILSXP {
             return 0;
         }
-        // SAFETY: a live vector in standard storage: +16 is its length.
+        // SAFETY: a live vector in standard storage, which has a length word.
         unsafe { self.0.sexp().std_len() as usize }
     }
 
@@ -542,9 +543,9 @@ impl Encoding {
     pub(crate) fn gp_bits(self) -> u16 {
         match self {
             Encoding::Native => 0,
-            Encoding::Utf8 => gp::UTF8,
-            Encoding::Latin1 => gp::LATIN1,
-            Encoding::Bytes => gp::BYTES,
+            Encoding::Utf8 => gp::charsxp::UTF8,
+            Encoding::Latin1 => gp::charsxp::LATIN1,
+            Encoding::Bytes => gp::charsxp::BYTES,
         }
     }
 }
@@ -566,11 +567,11 @@ impl<'g> Char<'g> {
     /// The declared encoding (GNU R's `getCharCE`).
     pub fn enc(self) -> Encoding {
         let g = self.gp();
-        if g & gp::UTF8 != 0 {
+        if g & gp::charsxp::UTF8 != 0 {
             Encoding::Utf8
-        } else if g & gp::LATIN1 != 0 {
+        } else if g & gp::charsxp::LATIN1 != 0 {
             Encoding::Latin1
-        } else if g & gp::BYTES != 0 {
+        } else if g & gp::charsxp::BYTES != 0 {
             Encoding::Bytes
         } else {
             Encoding::Native
@@ -580,7 +581,7 @@ impl<'g> Char<'g> {
     /// GNU R's IS_ASCII.
     #[inline(always)]
     pub fn is_ascii(self) -> bool {
-        self.gp() & gp::ASCII != 0
+        self.gp() & gp::charsxp::ASCII != 0
     }
 
     #[inline(always)]
@@ -754,7 +755,7 @@ impl<'g> ExtPtr<'g> {
     #[inline(always)]
     pub fn addr(self) -> *mut std::ffi::c_void {
         // SAFETY: a live EXTPTRSXP: its car is an untraced word.
-        unsafe { self.0.sexp().car().0.cast() }
+        unsafe { self.0.sexp().car().as_ptr().cast() }
     }
     /// GNU R's R_ExternalPtrProtected.
     #[inline(always)]

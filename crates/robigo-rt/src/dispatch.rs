@@ -454,7 +454,7 @@ fn shape_lacks(shape: Ref<'_>, wanted: impl Fn(Sexp) -> bool) -> bool {
 
 /// `ENCLOS(env)`.
 fn enclos<'g>(cx: &'g Cx, env: Ref<'g>) -> Ref<'g> {
-    // SAFETY: a live environment: ENCLOS is its +24 field.
+    // SAFETY: a live environment, which has ENCLOS (`layout::env`).
     unsafe { Ref::from_sexp(robigo_heap::env::enclos(env.sexp()), cx) }
 }
 
@@ -2874,7 +2874,7 @@ fn primitive_named<'g>(cx: &'g Cx, name: &str) -> Ref<'g> {
         return st.objs[off].bind(cx);
     }
     let Ok(sym) = cx.install(name.as_bytes()) else { return cx.nil() };
-    match st.by_sym.get(&(sym.as_ref().sexp().0 as usize)) {
+    match st.by_sym.get(&(sym.as_ref().sexp().as_ptr() as usize)) {
         Some(&off) => {
             st.cond.prim_names.borrow_mut().push((name.to_owned(), off));
             st.objs[off].bind(cx)

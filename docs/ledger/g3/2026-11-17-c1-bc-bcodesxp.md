@@ -137,78 +137,31 @@ is a real port. Loading the namespace surfaced these, each ported:
   now counts;
 - coerce.c's `as.function.default`;
 - `T` and `F`;
-- grep.c (INTERIM(RX), below);
+- grep.c (first an interim matcher; RX's #764 now, below);
 - `getRegisteredNamespace`, `isRegisteredNamespace` and `environmentName`;
 - `[[<-` on a call (cmp.R's `flattenPlace`), below;
 - `.GlobalEnv`;
 - `eval` of byte code.
 
-### grep.c (INTERIM(RX))
+### grep.c: RX's ports (#764) replaced the interim matcher
 
-`crates/robigo-rtbuiltins/src/grep.rs` (Q3 (a)):
-- **The entry points:** `do_grep` (`grep`, `grepl`) and `do_gsub`'s TRE
-  and fixed paths (`sub`, `gsub`) are ports. They cover:
-  - the argument checks, the warnings and errors (verbatim);
-  - the mode decision (`useBytes`, `use_WC`, `use_UTF8`, native);
-  - the translations: `wtransChar2` with its "unable to translate '%s' to
-    a wide string" warning (CP1252 for latin1, as glibc's iconv), and
-    `trCharUTF82`;
-  - NWARN;
-  - NA handling;
-  - `string_adj`;
-  - the empty-match advance and `REG_NOTBOL`;
-  - the result encodings (`mkBytesNew`, `markBytesOld` with their
-    `_R_REGEX_MARK_*` switches, `mkCharWLenASCII`, `markKnown`);
-  - `SHALLOW_DUPLICATE_ATTRIB`.
-
-  `fixed = TRUE` is exact.
-- **The matcher** stands where TRE runs. It knows only the part of the
-  ERE syntax whose meaning in TRE is plain:
-  - literals, and a backslash before punctuation;
-  - `.`, `^` and `$`;
-  - bracket expressions, read by TRE's rules: a backslash is literal,
-    ranges compare code points, and a `-` that two ranges share is an
-    error;
-  - `*`, `+` and `?`.
-
-  It finds the leftmost-longest match by simulating the NFA from each
-  start and keeping the longest end. A negated bracket is complemented
-  the way `tre_parse_bracket` does it, including its quirk:
-  `[^a-cb-e]` matches `d` and `e` (oracle-checked).
-- **Refused** with "robigo: … is not implemented yet (INTERIM(RX))":
-  - alternation, groups, back-references and intervals;
-  - character classes, equivalence classes and collating symbols;
-  - the escapes TRE gives a meaning (letters, digits, `\<`, `\>`);
-  - minimal repetition (`*?`), and repetition of an anchor;
-  - every ill-formed pattern: those are TRE's errors, so RX's;
-  - a negated bracket with two items that start at the same character
-    (qsort's order would decide);
-  - `ignore.case` and `perl = TRUE`;
-  - a latin1 string iconv cannot convert, in the C locale.
-
-RX replaces `ere` and keeps the callers. RX's ports are #764: `grep`,
-`grepl`, `sub`, `gsub`, `regexpr`, `gregexpr`, `regexec` and `strsplit`,
-on TRE, PCRE2 and grep.c's fixed path.
-- **The foreman's rule:** whichever of C1-BC and #764 merges second
-  removes this matcher in favour of RX's ports and keeps `grep.R`
-  passing. If #764 merges first, C1-BC rebases and drops the matcher.
-- `grep.R` gives its recording on RX's branch through line 93. The rest
-  needs `Encoding`, which this branch ports (`util.rs`).
-
-**The cases:**
-- `tests/rt/strings/grep.R` covers the subset's edges: anchors, bracket
-  ranges and TRE's negation, quantifiers on `.`, empty matches in `gsub`,
-  the replacement escapes, `fixed`, NA in every argument,
-  `invert`/`value` with names, attributes, encodings, unreadable strings,
-  and the argument checks.
-- A seeded random walk over the subset gave 6,500 cases, and all of them
-  matched the oracle: `sub` and `gsub` with each match marked, `grepl`,
-  and the result's encoding. The patterns are 0-4 atoms with quantifiers
-  and anchors. The strings are ASCII, then UTF-8, with `useBytes` and
-  `fixed = TRUE` variants. TRE's parallel matcher picks a match's end
-  through its tags (`tre-match-parallel.c:444-480`); the walk is the
-  evidence that this end is the longest for the subset. 300 of the cases
-  are `tests/rt/strings/grep-generated.R`.
+This branch carried an interim matcher (Q3 (a), INTERIM(RX)). It ported
+`do_grep` and `do_gsub`'s entry points around a leftmost-longest NFA for
+TRE's plain ERE subset, and refused everything else. RX's #764 merged
+first: TRE, PCRE2 and grep.c's fixed path for `grep`, `grepl`, `sub`,
+`gsub`, `regexpr`, `gregexpr`, `regexec` and `strsplit`. Under the
+foreman's rule the second to merge drops its matcher, so this branch
+removed `grep.rs` and its four registry rows and kept the cases.
+- `tests/rt/strings/grep.R` covers the edges: anchors, bracket ranges
+  and TRE's negation quirk (`[^a-cb-e]` matches `d`), quantifiers on
+  `.`, empty matches in `gsub`, the replacement escapes, `fixed`, NA in
+  every argument, `invert`/`value` with names, attributes, encodings,
+  strings the matcher's encoding cannot read, and the argument checks.
+- `tests/rt/strings/grep-generated.R`: 300 seeded random `sub`/`gsub`/
+  `grepl` cases over that subset, in ASCII and UTF-8, with `useBytes`
+  and `fixed` variants, each printing the result's encoding.
+- Both pass on RX's ports. They need `Encoding` and `setEncoding`, which
+  this branch ports (util.c, below).
 
 ### Other ports
 
@@ -273,7 +226,6 @@ C).
 |---|---|---|---|
 | INTERIM(V3) | a BCODESXP body or value runs its source expression, compiled by robigo's own decisions | `rt/compile.rs:163-176`, `rt/eval.rs:117` | V3 |
 | INTERIM(L2) | `loadNamespace("compiler")` builds the namespace from the pinned tarball's cmp.R; any other namespace is "not implemented yet"; `path` is the tarball's | `rt/ns.rs:5-11,206-226` | L2 |
-| INTERIM(RX) | the regex matcher's subset and refusals (above) | `bi/grep.rs:7-40` | RX (#764) |
 | INTERIM(L5) | `T` and `F` bound in base; `.ArgsEnv`/`.GenericArgsEnv` empty | `rt/base.rs:174-176,195` | BW (S1), then L5 |
 | INTERIM(BW) | rt-ci's "conformance under ROBIGO_GC_MOVE with gctorture (E3)" step allows 1200 s per case, up from 600 (below) | `scripts/rt-ci.py` | BW (S1) reverts it |
 
@@ -315,8 +267,6 @@ option 3, as INTERIM(BW)).
   as GNU R does. The cases print `deparse` instead.
 - `setEncoding` returns a new vector with `x`'s attributes, where GNU R
   writes `x` (or its duplicate). Only the identity differs.
-- The loader stubs table (`2026-11-16-m1-exit-evidence.md`) loses `grep`
-  and `sub`.
 
 ### perf-rt and the S3 methods table
 

@@ -1,0 +1,14 @@
+| row | group | GNU R instr |
+|---|---|---:|
+| plain | calls | 4,474 |
+| defaults | calls | 5,645 |
+| named | calls | 4,376 |
+| env-fn | calls | 3,619 |
+| superassign | calls | 7,485 |
+| s3 | calls | 18,518 |
+| trycatch | calls | 88,516 |
+| fib | suite | 22,723,897 |
+| binarytrees | suite | 3,571,974 |
+| e7-paste | e7 | 177,497 |
+| e7-match | e7 | 191,465 |
+| e7-unique | e7 | 151,330 |

@@ -1,0 +1,90 @@
+{
+ "meta": {
+  "gnur": null,
+  "robigo": "robigo-rt (release, main fb429442)",
+  "robigo_env": [],
+  "runs": 5
+ },
+ "results": {
+  "benchmarks/rt/mem/cappend.R": {
+   "gnur": null,
+   "robigo": {
+    "max_kib": 87660,
+    "median_kib": 87604,
+    "min_kib": 87436,
+    "out": "20000 200010000 \n"
+   },
+   "wrong": false
+  },
+  "benchmarks/rt/mem/churn.R": {
+   "gnur": null,
+   "robigo": {
+    "max_kib": 74048,
+    "median_kib": 73924,
+    "min_kib": 73844,
+    "out": "30150 \n"
+   },
+   "wrong": false
+  },
+  "benchmarks/rt/mem/growdbl.R": {
+   "gnur": null,
+   "robigo": {
+    "max_kib": 76924,
+    "median_kib": 76856,
+    "min_kib": 76768,
+    "out": "1000000 500000500000 \n"
+   },
+   "wrong": false
+  },
+  "benchmarks/rt/mem/henv.R": {
+   "gnur": null,
+   "robigo": {
+    "max_kib": 54380,
+    "median_kib": 54228,
+    "min_kib": 54032,
+    "out": "100000 \n"
+   },
+   "wrong": false
+  },
+  "benchmarks/rt/mem/listgrow.R": {
+   "gnur": null,
+   "robigo": {
+    "max_kib": 45552,
+    "median_kib": 45444,
+    "min_kib": 45312,
+    "out": "200000 400000 \n"
+   },
+   "wrong": false
+  },
+  "benchmarks/rt/mem/plist.R": {
+   "gnur": null,
+   "robigo": {
+    "max_kib": 66912,
+    "median_kib": 66828,
+    "min_kib": 66772,
+    "out": "100000 100000 \n"
+   },
+   "wrong": false
+  },
+  "benchmarks/rt/mem/scalars.R": {
+   "gnur": null,
+   "robigo": {
+    "max_kib": 74600,
+    "median_kib": 74424,
+    "min_kib": 74264,
+    "out": "1000000 1e+06 \n"
+   },
+   "wrong": false
+  },
+  "benchmarks/suite/binarytrees.R": {
+   "gnur": null,
+   "robigo": {
+    "max_kib": 26692,
+    "median_kib": 26692,
+    "min_kib": 26692,
+    "out": "129712 \n"
+   },
+   "wrong": false
+  }
+ }
+}

@@ -467,7 +467,8 @@ entry! {
         };
         // C keeps the block's address, wherever it likes: under
         // ROBIGO_GC_MOVE=1 the block must not move
-        cx.hand_to_c(x);
+        // SAFETY: the fresh raw vector, rooted.
+        unsafe { cx.hand_to_c(x) };
         // SAFETY: a fresh raw vector of this heap, with no attributes.
         unsafe {
             cx.push_vmax(x);
@@ -668,32 +669,45 @@ fn fresh_vector(cx: &Cx, t: u8, n: usize) -> Result<Ref<'_>, NeedGc> {
 
 /// `R_ReleaseObject(x)`: cannot collect (GNU R's `DeleteFromList` allocates
 /// nothing).
+///
+/// # Safety
+/// C code of the thread's isolate calls it, with an isolate current, and
+/// `x` is null or one of its objects that the caller preserved
+/// (`R_PreserveObject`): the release ends that preservation, not another
+/// owner's ([`robigo_heap::Core::release`]).
 // R: memory.c:R_ReleaseObject
 #[unsafe(no_mangle)]
-pub extern "C" fn R_ReleaseObject(x: Sexp) {
+pub unsafe extern "C" fn R_ReleaseObject(x: Sexp) {
     // SAFETY: called from C code of the thread's isolate; releasing does
     // not collect.
     unsafe { robigo_rtcore::enter_leaf_mut(|cx| cx.release_raw(x)) }
 }
 
 /// `vmaxget()`: R_alloc's stack top.
+///
+/// # Safety
+/// C code of the thread's isolate calls it, with an isolate current.
 // R: memory.c:vmaxget
 #[unsafe(no_mangle)]
-pub extern "C" fn vmaxget() -> *mut c_void {
+pub unsafe extern "C" fn vmaxget() -> *mut c_void {
     // SAFETY: called from C code of the thread's isolate.
-    unsafe { robigo_rtcore::enter_leaf(|cx| cx.vmax().0.cast()) }
+    unsafe { robigo_rtcore::enter_leaf(|cx| cx.vmax().as_ptr().cast()) }
 }
 
 /// `vmaxset(v)`: drop the R_alloc blocks made since `vmaxget()` returned
 /// `v`.
+///
+/// # Safety
+/// C code of the thread's isolate calls it, with an isolate current, and
+/// `v` is null or what `vmaxget()` returned in a frame still live.
 // R: memory.c:vmaxset
 #[unsafe(no_mangle)]
-pub extern "C" fn vmaxset(v: *const c_void) {
+pub unsafe extern "C" fn vmaxset(v: *const c_void) {
     // SAFETY: called from C code of the thread's isolate; `v` is what
     // vmaxget returned in a frame still live (C's contract), or null.
     unsafe {
         robigo_rtcore::enter_leaf_mut(|cx| {
-            let x = if v.is_null() { cx.nil().sexp() } else { Sexp(v.cast_mut().cast()) };
+            let x = if v.is_null() { cx.nil().sexp() } else { Sexp::from_ptr(v.cast_mut().cast()) };
             cx.set_vmax(x);
         })
     }

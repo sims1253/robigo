@@ -2,6 +2,7 @@
 """The rt-bars gate's decisions (scripts/perf.py rt_verdict, cmd_rt_bars),
 on synthetic numbers: no valgrind, no robigo-rt."""
 import importlib.util
+import hashlib
 import io
 import json
 import os
@@ -10,6 +11,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("perf", Path(__file__).with_name("perf.py"))
 perf = importlib.util.module_from_spec(spec)
@@ -219,6 +221,175 @@ class Pin(unittest.TestCase):
             names = {r["name"] for r in tomllib.load(f)["row"]}
         self.assertLessEqual(rows, names)
 
+
+    def test_committed_s3_is_unmet_and_still_held_to_main(self):
+        # F2 revised (docs/ledger/g3/2026-11-17-a0b-stock-rival.md): s3 is
+        # owed by P3, so 1.096x the stock rival does not fail the gate, but a
+        # slowdown against main still does, as for fib
+        import tomllib
+        with open(perf.RT_BARS, "rb") as f:
+            spec = tomllib.load(f)
+        s3 = next(b for b in spec["bar"] if b["row"] == "s3")
+        self.assertFalse(s3.get("met", True))
+        instr = {b["row"]: 0.9 * b["max"] * spec[b["against"]]["instr"][b["row"]] for b in spec["bar"]}
+        instr["s3"] = 1.096 * spec["gnur"]["instr"]["s3"]
+        rss = {r["program"]: min(spec[a]["rss"][r["program"]] for a in r["against"]) - 1 for r in spec["rss"]}
+        failures, _, table = perf.rt_verdict(spec, instr, rss)
+        self.assertEqual(failures, [])
+        self.assertEqual(dict((r, st) for r, *_, st in table)["s3"], "not met yet")
+        main = {"instr": dict(instr), "rss": dict(rss)}
+        failures, _, _ = perf.rt_verdict(spec, {**instr, "s3": instr["s3"] * 1.006}, rss, main)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("`s3`: +0.60% instructions against main", failures[0])
+
+
+ivr_spec = importlib.util.spec_from_file_location("idiom_vs_r", Path(__file__).with_name("idiom-vs-r.py"))
+ivr = importlib.util.module_from_spec(ivr_spec)
+ivr_spec.loader.exec_module(ivr)
+
+
+class AddressShifts(unittest.TestCase):
+    """The address-sensitive rows are measured as the median over heap
+    shifts (docs/ledger/g3/2026-11-17-address-rows.md): a real slowdown
+    still fails, one layout's count does not."""
+
+    SPEC = {"gnur": {"version": "4.6.2", "source": "test", "instr": {}, "rss": {}},
+            "today": {"source": "test", "instr": {"e7-match": 114413.0}, "rss": {}},
+            "bar": [{"row": "e7-match", "against": "today", "max": 1.0}], "rss": []}
+    # main's counts over k = 0, 300, 1000, 3000, 5000 (the foreman's range on main)
+    MAIN = [99000.0, 98900.0, 99276.0, 99100.0, 98950.0]
+
+    def verdict(self, new):
+        main = {"instr": {"e7-match": ivr.median(self.MAIN)}, "rss": {}}
+        return perf.rt_verdict(self.SPEC, {"e7-match": ivr.median(new)}, {}, main)[0]
+
+    def test_a_real_regression_on_every_shift_fails(self):
+        failures = self.verdict([v * 1.006 for v in self.MAIN])
+        self.assertEqual(len(failures), 1)
+        self.assertIn("`e7-match`: +0.60% instructions against main", failures[0])
+
+    def test_one_layout_moving_alone_does_not_fail(self):
+        # BW's case: the same code, one shift's keys landing elsewhere (+4.15%)
+        new = list(self.MAIN)
+        new[0] *= 1.0415
+        self.assertEqual(self.verdict(new), [])
+
+    def test_rows_measures_each_shift_of_a_marked_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = Path(tmp, "rows.toml")
+            rows.write_text('[[row]]\nname = "hashed"\ngroup = "e7"\naddress_sensitive = true\nsetup = "s <- 1"\n'
+                            'body = "x"\nn = 10\n[[row]]\nname = "plain"\ngroup = "calls"\nsetup = "s <- 1"\n'
+                            'body = "x"\nn = 10\n')
+            seen = []
+
+            class Fake:
+                robigo, robigo_identity, robigo_env, r_bin, valgrind = "rt", None, {}, "R", "valgrind"
+
+                def robigo_iter(self, setup, body, n, tag):
+                    seen.append(setup)
+                    return 1000.0 + 10 * setup.count("seq_len") * (len(seen) % 3)
+
+            out = Path(tmp, "out.json")
+            a = SimpleNamespace(rows=str(rows), filter=None, no_r=True, no_robigo=False, cycles=False,
+                                shifts=list(perf.ADDRESS_SHIFTS), json=str(out))
+            with redirect_stdout(io.StringIO()):
+                ivr.cmd_rows(a, Fake())
+            doc = json.loads(out.read_text())["rows"]
+            # the marked row ran once per shift, k = 0 as written; the other once
+            self.assertEqual(seen[0], "s <- 1")
+            self.assertEqual(seen[1], 'zz <- paste0("z", seq_len(300L))\ns <- 1')
+            self.assertEqual(len(seen), len(perf.ADDRESS_SHIFTS) + 1)
+            self.assertEqual(sorted(doc["hashed"]["shifts"]), sorted(str(k) for k in perf.ADDRESS_SHIFTS))
+            counts = [v["robigo_instr"] for v in doc["hashed"]["shifts"].values()]
+            self.assertEqual(doc["hashed"]["robigo_instr"], ivr.median(counts))
+            self.assertNotIn("shifts", doc["plain"])
+
+    def test_rt_instr_passes_the_shifts_and_collects_their_range(self):
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            out = cmd[cmd.index("--json") + 1]
+            Path(out).write_text(json.dumps({"rows": {"e7-match": {
+                "robigo_instr": 99000.0, "robigo_est_cycles": None,
+                "shifts": {str(k): {"robigo_instr": v} for k, v in zip(perf.ADDRESS_SHIFTS, self.MAIN)}}}}))
+            return SimpleNamespace(returncode=0, stderr="")
+        ranges = {}
+        with tempfile.TemporaryDirectory() as tmp, patch.object(perf.subprocess, "run", side_effect=fake_run):
+            instr = perf.rt_instr("rt", ["e7-match"], 1, tmp, "new", ranges=ranges)
+        self.assertEqual(instr, {"e7-match": 99000.0})
+        self.assertEqual(ranges, {"e7-match": (98900.0, 99276.0)})
+        cmd = calls[0]
+        self.assertEqual(cmd[cmd.index("--shifts") + 1], "0,300,1000,3000,5000")
+
+    def test_the_committed_rows_mark_exactly_the_hashing_rows(self):
+        import tomllib
+        with open(perf.RT_ROWS, "rb") as f:
+            marked = sorted(r["name"] for r in tomllib.load(f)["row"] if r.get("address_sensitive"))
+        self.assertEqual(marked, ["e7-match"])
+
+
+class BinaryIdentity(unittest.TestCase):
+    """Which binary a measurement measured (perf.binary_identity), and the
+    warning for a binary older than the sources it is built from."""
+
+    def test_the_robigo_rt_binary_is_built_from_its_crate_tree(self):
+        names = {os.path.basename(d) for d in perf.crate_dirs("robigo-rtapi")}
+        self.assertLessEqual({"robigo-rtapi", "robigo-rt", "robigo-rtcore", "robigo-heap"}, names)
+        # dev-dependencies and the old runtime are not part of the binary
+        self.assertNotIn("robigo-conformance", names)
+        self.assertNotIn("robigo-runtime", names)
+        self.assertEqual(perf.crate_of("dist/robigo-rt-main"), "robigo-rtapi")
+        self.assertEqual(perf.crate_of(".robigo/bin/robigo"), "robigo-cli")
+
+    def test_identity_names_the_file_and_flags_an_old_build(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = os.path.join(tmp, "robigo-rt")
+            Path(b).write_bytes(b"not an ELF file")
+            ident = perf.binary_identity(b)
+            self.assertEqual(ident["sha256"], hashlib.sha256(b"not an ELF file").hexdigest())
+            self.assertIsNone(ident["build_id"])
+            self.assertIsNone(ident["stale"])  # no crate given: nothing to compare with
+            # the crates' last commit, as git would report it (CI's oracle
+            # image has no git, so the history is given here)
+            history = {"log": "2000000000 abc1234\n", "status": "", "describe": "v1-2-gabc1234\n"}
+            with patch.object(perf, "git", side_effect=lambda args, root=perf.ROOT: history[args[0]]):
+                os.utime(b, (1000, 1000))  # older than that commit: stale
+                stale = perf.binary_identity(b, "robigo-rtapi")
+                self.assertEqual(stale["stale"]["source"], "commit abc1234")
+                self.assertEqual(stale["checkout"], "v1-2-gabc1234")
+                buf = io.StringIO()
+                perf.report_identity("robigo-rt", stale, out=buf)
+                self.assertIn("is not a build of this checkout's sources", buf.getvalue())
+                os.utime(b, (2000000001, 2000000001))  # newer: a build of this checkout
+                self.assertIsNone(perf.binary_identity(b, "robigo-rtapi")["stale"])
+
+    def test_without_git_nothing_is_stale_and_nothing_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = os.path.join(tmp, "robigo-rt")
+            Path(b).write_bytes(b"x")
+            os.utime(b, (1000, 1000))
+            with patch.object(perf.subprocess, "run", side_effect=FileNotFoundError("git")):
+                ident = perf.binary_identity(b, "robigo-rtapi")
+            self.assertIsNone(ident["stale"])
+            self.assertIsNone(ident["checkout"])
+            self.assertIsNone(ident["build_id"])
+
+    def test_uncommitted_edits_are_read_from_porcelain_z(self):
+        # a path with a space, a rename (its source follows and is skipped)
+        # and an untracked file, as `git status --porcelain -z` lists them
+        with tempfile.TemporaryDirectory() as root:
+            for name, t in (("a b.rs", 3000), ("new.rs", 2000), ("dir/x.rs", 4000)):
+                os.makedirs(os.path.dirname(os.path.join(root, name)) or root, exist_ok=True)
+                Path(root, name).write_text("x")
+                os.utime(os.path.join(root, name), (t, t))
+            out = " M a b.rs\0R  new.rs\0old.rs\0?? dir/x.rs\0"
+            with patch.object(perf, "git", side_effect=lambda args, r=None: "" if args[0] == "log" else out):
+                t, what = perf.newest_source([root], root)
+            self.assertEqual((t, what), (4000, "dir/x.rs (uncommitted)"))
+            out = " M a b.rs\0R  new.rs\0old.rs\0"
+            with patch.object(perf, "git", side_effect=lambda args, r=None: "" if args[0] == "log" else out):
+                self.assertEqual(perf.newest_source([root], root), (3000, "a b.rs (uncommitted)"))
 
 if __name__ == "__main__":
     unittest.main()

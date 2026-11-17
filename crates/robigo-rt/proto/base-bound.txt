@@ -10,7 +10,7 @@
 # The union of base-subset.txt (the trace) and the static bound (the free
 # variables of the same inputs that name base functions, transitively through
 # base closures), so that a branch GNU R did not take still finds its function.
-# 415 closures, 146 primitives, 226 internals, 9 variables.
+# 427 closures, 147 primitives, 239 internals, 10 variables.
 closure %in% match.R
 closure %||% utils.R
 closure ..getNamespace namespace.R
@@ -48,6 +48,7 @@ closure Encoding New-Internal.R
 closure Encoding<- New-Internal.R
 closure Filter funprog.R
 closure I dataframe.R
+closure Map funprog.R
 closure NCOL matrix.R
 closure NROW matrix.R
 closure NextMethod New-Internal.R
@@ -57,6 +58,7 @@ closure R_system_version version.R
 closure Sys.chmod files.R
 closure Sys.getenv getenv.R
 closure Sys.getlocale locales.R
+closure Sys.getpid getenv.R
 closure Sys.glob files.R
 closure Sys.setFileTime files.R
 closure Sys.setenv getenv.R
@@ -166,6 +168,7 @@ closure file.exists files.R
 closure file.info files.R
 closure file.mtime files.R
 closure file.path files.R
+closure file.remove files.R
 closure file.show files.R
 closure file.size files.R
 closure find.package library.R
@@ -196,6 +199,7 @@ closure geterrmessage New-Internal.R
 closure gettext stop.R
 closure gettextf stop.R
 closure getwd files.R
+closure gregexpr grep.R
 closure grep grep.R
 closure grepl grep.R
 closure grouping sort.R
@@ -207,6 +211,7 @@ closure identical identical.R
 closure identity funprog.R
 closure ifelse ifelse.R
 closure importIntoEnv namespace.R
+closure infoRDS serialize.R
 closure inherits New-Internal.R
 closure integer vector.R
 closure interaction interaction.R
@@ -308,6 +313,7 @@ closure print.factor factor.R
 closure print.restart conditions.R
 closure rank rank.R
 closure rapply lapply.R
+closure raw raw.R
 closure rawToChar raw.R
 closure rbind New-Internal.R
 closure read.dcf dcf.R
@@ -317,6 +323,7 @@ closure readLines connections.R
 closure readRDS serialize.R
 closure readline New-Internal.R
 closure reg.finalizer New-Internal.R
+closure regexec grep.R
 closure regexpr grep.R
 closure registerS3method namespace.R
 closure registerS3methods namespace.R
@@ -327,6 +334,7 @@ closure rev rev.R
 closure rev.default rev.R
 closure rle rle.R
 closure rm rm.R
+closure row matrix.R
 closure row.names dataframe.R
 closure row.names.default dataframe.R
 closure row.names<- dataframe.R
@@ -337,9 +345,11 @@ closure rownames<- matrix.R
 closure sQuote character.R
 closure sapply sapply.R
 closure save load.R
+closure saveRDS serialize.R
 closure search New-Internal.R
 closure seq seq.R
 closure seq.default seq.R
+closure serialize serialize.R
 closure setHook userhooks.R
 closure setNamespaceInfo namespace.R
 closure setdiff sets.R
@@ -378,6 +388,7 @@ closure substr character.R
 closure substr<- character.R
 closure substring character.R
 closure summary summary.R
+closure summary.connection connections.R
 closure summary.data.frame summary.R
 closure summary.default summary.R
 closure summary.factor summary.R
@@ -411,6 +422,7 @@ closure unlink files.R
 closure unlist unlist.R
 closure unloadNamespace namespace.R
 closure unname unname.R
+closure unserialize serialize.R
 closure validEnc raw.R
 closure vapply sapply.R
 closure vector vector.R
@@ -480,6 +492,7 @@ primitive as.integer
 primitive as.logical
 primitive as.numeric
 primitive as.raw
+primitive atan
 primitive attr
 primitive attr<-
 primitive attributes
@@ -585,6 +598,7 @@ internal R.home
 internal Sys.chmod
 internal Sys.getenv
 internal Sys.getlocale
+internal Sys.getpid
 internal Sys.glob
 internal Sys.setenv
 internal Sys.time
@@ -646,6 +660,7 @@ internal file.create
 internal file.exists
 internal file.info
 internal file.path
+internal file.remove
 internal file.show
 internal formals
 internal format
@@ -659,10 +674,12 @@ internal getOption
 internal getRegisteredNamespace
 internal getRegisteredRoutines
 internal getSymbolInfo
+internal getVarsFromFrame
 internal getconst
 internal geterrmessage
 internal gettext
 internal getwd
+internal gregexpr
 internal grep
 internal grepl
 internal growconst
@@ -684,6 +701,7 @@ internal islistfactor
 internal l10n_info
 internal lapply
 internal lazyLoadDBflush
+internal lazyLoadDBinsertValue
 internal lengths
 internal list.files
 internal list2env
@@ -737,16 +755,22 @@ internal readDCF
 internal readLines
 internal readline
 internal reg.finalizer
+internal regexec
 internal regexpr
 internal registerNamespace
 internal remove
 internal rep.int
 internal rep_len
+internal row
 internal rowSums
 internal save
 internal save.to.file
 internal saveToConn
 internal search
+internal serialize
+internal serializeInfoFromConn
+internal serializeToConn
+internal serializeb
 internal setEncoding
 internal setFileTime
 internal setS4Object
@@ -770,6 +794,7 @@ internal strtrim
 internal sub
 internal substr
 internal substr<-
+internal summary.connection
 internal sys.call
 internal sys.calls
 internal sys.frame
@@ -787,6 +812,7 @@ internal unique
 internal unlink
 internal unlist
 internal unregisterNamespace
+internal unserialize
 internal unserializeFromConn
 internal validEnc
 internal vapply
@@ -807,3 +833,4 @@ variable .__S3MethodsTable__. namespace.R
 variable .knownS3Generics zzz.R
 variable .userHooksEnv userhooks.R
 variable letters constants.R
+variable pi constants.R

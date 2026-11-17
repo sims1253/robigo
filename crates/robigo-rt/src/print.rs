@@ -256,7 +256,7 @@ pub fn print_value_rec(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()
             t.push(b'\n');
             cx.rprintf(&t);
         }
-        PROMSXP => cx.rprintf(format!("<promise: {}>\n", c_pointer(v.sexp().0 as usize)).as_bytes()),
+        PROMSXP => cx.rprintf(format!("<promise: {}>\n", c_pointer(v.sexp().as_ptr() as usize)).as_bytes()),
         DOTSXP => cx.rprintf(b"<...>\n"),
         VECSXP => {
             // handles attributes/slots
@@ -271,7 +271,7 @@ pub fn print_value_rec(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()
             };
             cx.rprintf(format!("<pointer: {}>\n", c_pointer(addr)).as_bytes());
         }
-        BCODESXP => cx.rprintf(format!("<bytecode: {}>\n", c_pointer(v.sexp().0 as usize)).as_bytes()),
+        BCODESXP => cx.rprintf(format!("<bytecode: {}>\n", c_pointer(v.sexp().as_ptr() as usize)).as_bytes()),
         WEAKREFSXP => cx.rprintf(b"<weak reference>\n"),
         t => {
             // UNIMPLEMENTED_TYPE("PrintValueRec", s)
@@ -376,7 +376,7 @@ fn print_closure(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
     };
     let (env, body) = clo(cx);
     if crate::jit::is_compiled(s.bind(cx)) {
-        cx.rprintf(format!("<bytecode: {}>\n", c_pointer(body.0 as usize)).as_bytes());
+        cx.rprintf(format!("<bytecode: {}>\n", c_pointer(body.as_ptr() as usize)).as_bytes());
     }
     if env != cx.global_env().sexp() {
         cx.scope(|cx, sc| {
@@ -425,7 +425,7 @@ pub fn encode_environment(cx: &mut Cx, x: Root<'_>) -> RResult<Vec<u8>> {
     if let Some(spec) = namespace_spec(cx, x)? {
         return Ok([b"<environment: namespace:" as &[u8], &spec, b">"].concat());
     }
-    Ok(format!("<environment: {}>", c_pointer(p.0 as usize)).into_bytes())
+    Ok(format!("<environment: {}>", c_pointer(p.as_ptr() as usize)).into_bytes())
 }
 
 /// `R_IsNamespaceEnv(rho)` and `R_NamespaceEnvSpec(rho)`'s first element:

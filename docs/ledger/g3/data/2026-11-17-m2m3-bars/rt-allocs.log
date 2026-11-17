@@ -1,0 +1,16 @@
+| row | group | objects | bytes | by type (objects) |
+|---|---|---:|---:|---|
+| scalars | layout | 2 | 104 | INTSXP 1, REALSXP 1 |
+| plist | layout | 101 | 5,544 | DOTSXP 22, ENVSXP 4, INTSXP 6, LANGSXP 1, LGLSXP 7, LISTSXP 30, PROMSXP 21, RAWSXP 3, STRSXP 3, VECSXP 4 |
+| henv | layout | 3 | 152 | INTSXP 2, STRSXP 1 |
+| evallist | envs | 14 | 1,000 | ENVSXP 4, INTSXP 1, LGLSXP 1, LISTSXP 5, REALSXP 1, STRSXP 1, VECSXP 1 |
+| l2e | envs | 19 | 1,416 | ENVSXP 5, INTSXP 4, LGLSXP 3, LISTSXP 5, STRSXP 1, VECSXP 1 |
+| nenv | envs | 7 | 1,000 | ENVSXP 5, INTSXP 1, STRSXP 1 |
+| grow-dbl | growth | 0.0007 | 178.028 | REALSXP 0.0007 |
+| grow-list | growth | 1.0007 | 226.028 | INTSXP 1, VECSXP 0.0007 |
+| d0-attr | d0 | 0 | 8 |  |
+| d0-attributes | d0 | 3 | 152 | LISTSXP 1, STRSXP 1, VECSXP 1 |
+| d0-names | d0 | 0 | 8 |  |
+| d0-unlist | d0 | 5 | 264 | INTSXP 2, LGLSXP 3 |
+| d0-paste | d0 | 9 | 440 | CHARSXP 1, DOTSXP 2, INTSXP 1, LISTSXP 2, PROMSXP 1, STRSXP 1, VECSXP 1 |
+| d0-paste0 | d0 | 9 | 440 | CHARSXP 1, DOTSXP 2, INTSXP 1, LISTSXP 2, PROMSXP 1, STRSXP 1, VECSXP 1 |

@@ -27,6 +27,8 @@ pub fn include_flags() -> Vec<String> {
     vec![
         format!("-I{}", r.join("crates/robigo-rtapi/include").display()),
         format!("-I{}", r.join("crates/robigo-rtcore/include").display()),
+        // robigo_layout.h, which robigo-heap's build writes (Defn.h reads it)
+        format!("-I{}", env!("ROBIGO_LAYOUT_INCLUDE")),
         format!("-I{}", rsrc().join("src/include").display()),
     ]
 }
@@ -45,11 +47,10 @@ pub fn support_so() -> &'static Path {
         const CC_ARGS: [&str; 4] = ["-fPIC", "-shared", "-O1", "-g"];
         let mut h = std::hash::DefaultHasher::new();
         let mut inputs = vec![src.clone()];
-        for dir in ["crates/robigo-rtapi/include", "crates/robigo-rtcore/include"] {
-            let mut files: Vec<PathBuf> = std::fs::read_dir(root().join(dir))
-                .expect("reading robigo's headers")
-                .map(|e| e.unwrap().path())
-                .collect();
+        let layout = PathBuf::from(env!("ROBIGO_LAYOUT_INCLUDE"));
+        for dir in [root().join("crates/robigo-rtapi/include"), root().join("crates/robigo-rtcore/include"), layout] {
+            let mut files: Vec<PathBuf> =
+                std::fs::read_dir(&dir).expect("reading robigo's headers").map(|e| e.unwrap().path()).collect();
             files.sort();
             inputs.extend(files);
         }

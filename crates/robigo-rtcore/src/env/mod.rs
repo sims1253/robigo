@@ -3,12 +3,12 @@
 //!
 //! # Representation
 //!
-//! An environment is a node-shaped ENVSXP: ENCLOS at +24 (the heap's one
-//! fixed field), and its frame words:
+//! An environment is a node-shaped ENVSXP: ENCLOS (the heap's one fixed
+//! field, `robigo_heap::layout::env`), and its frame words:
 //!
 //! - **hashed** (the global environment, namespaces, `new.env()`,
-//!   `R_NewHashedEnv`): GNU R's representation bit for bit. +16 FRAME is
-//!   R_NilValue, +32 HASHTAB a VECSXP of chains of binding cells whose
+//!   `R_NewHashedEnv`): GNU R's representation bit for bit. FRAME is
+//!   R_NilValue, HASHTAB a VECSXP of chains of binding cells whose
 //!   TRUELENGTH is `HASHPRI` (`hashtab.rs`). Listing order is GNU R's by
 //!   construction.
 //! - **unhashed** (closure frames, `new.env(hash = FALSE)`): a slot frame
@@ -21,7 +21,7 @@
 //! - **base** (`R_BaseEnv`, `R_BaseNamespace`): no frame; the bindings are
 //!   the symbols' per-isolate cells (`sym.rs`).
 //!
-//! +40 holds the frame's **version box** or R_NilValue: an INTSXP of one
+//! The 4th word (`layout::env::OFF_VERSION`) holds the frame's **version box** or R_NilValue: an INTSXP of one
 //! element, `fn_version`, made the first time something asks for it
 //! ([`Cx::env_version_box`]) and bumped from then on whenever a binding of
 //! the frame that holds or held a function-like value (a closure, builtin,
@@ -69,6 +69,7 @@ mod frame;
 mod hashtab;
 mod promise;
 pub(crate) mod recycle;
+mod restore;
 mod slotapi;
 
 pub use promise::{ArgLoc, BindingType};
@@ -89,13 +90,11 @@ use std::cell::{Cell, UnsafeCell};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 
-/// ENVFLAGS: the frame is locked (`FRAME_LOCK_MASK`).
-const FRAME_LOCK: u16 = 1 << 14;
-/// ENVFLAGS: a global frame (`GLOBAL_FRAME_MASK`): the global environment
-/// and attached frames, whose bindings the global cache may hold.
-const GLOBAL_FRAME: u16 = 1 << 15;
-/// ENVFLAGS: no special symbol was ever bound here (`NO_SPECIAL_SYMBOLS`).
-const NO_SPECIAL_SYMBOLS: u16 = SPECIAL_SYMBOL;
+/// ENVFLAGS: the frame is locked (`FRAME_LOCK_MASK`); a global frame
+/// (`GLOBAL_FRAME_MASK`): the global environment and attached frames, whose
+/// bindings the global cache may hold; no special symbol was ever bound here
+/// (`NO_SPECIAL_SYMBOLS`).
+use robigo_heap::gp::env::{FRAME_LOCK, GLOBAL_FRAME, NO_SPECIAL_SYMBOLS};
 
 /// The isolate's environments: the fixed ones, the symbol cells (base
 /// bindings and the global cache), the search epoch. A precise root (the
@@ -478,20 +477,20 @@ impl Loc {
     /// The location of the binding cell `c`.
     #[inline(always)]
     fn cell(c: Sexp) -> Loc {
-        Loc(NonNull::new(c.0).expect("robigo: a null binding cell"))
+        Loc(NonNull::new(c.as_ptr()).expect("robigo: a null binding cell"))
     }
 
     /// The location of `s`'s base binding.
     #[inline(always)]
     fn base(s: Sexp) -> Loc {
-        Loc(NonNull::new(s.0).expect("robigo: a null symbol"))
+        Loc(NonNull::new(s.as_ptr()).expect("robigo: a null symbol"))
     }
 
     /// The location of slot `s`. A cell-backed slot's location is its cell
     /// ([`Loc::of_slot`]).
     #[inline(always)]
     fn slot(s: SlotRef) -> Loc {
-        let p = NonNull::new(s.owner.0).expect("robigo: a null slot owner");
+        let p = NonNull::new(s.owner.as_ptr()).expect("robigo: a null slot owner");
         assert!(s.index < MAX_SLOTS && p.addr().get() & !ADDR_MASK == 0, "robigo: a slot location out of range");
         Loc(p.map_addr(|a| a | (s.index << INDEX_SHIFT) | SLOT_TAG))
     }
@@ -507,9 +506,30 @@ impl Loc {
         unsafe { if s.kind() == CELL { Loc::cell(s.val()) } else { Loc::slot(s) } }
     }
 
+    /// The location's word, for identity: a cell's (or a base binding's
+    /// symbol's) address, or a slot's owner's, tagged.
+    ///
+    /// # Safety
+    /// The result is compared or masked only: never read through, nor
+    /// stored or passed as an object (a slot location's word carries the
+    /// slot tag and index, so it is no object handle; [`Loc::object`] is
+    /// the handle of a location that is not a slot).
     #[inline(always)]
-    fn sexp(self) -> Sexp {
-        Sexp(self.0.as_ptr())
+    unsafe fn sexp(self) -> Sexp {
+        // SAFETY: the caller's contract: identity only.
+        unsafe { Sexp::from_word(self.0.as_ptr()) }
+    }
+
+    /// The object a location that is not a slot names: its cell, or a
+    /// base binding's symbol.
+    ///
+    /// # Safety
+    /// The location is not a slot location (`at` is not `FrameSlot`), and
+    /// its object is live.
+    #[inline(always)]
+    unsafe fn object(self) -> Sexp {
+        // SAFETY: the caller's contract: an untagged object address.
+        unsafe { Sexp::from_ptr(self.0.as_ptr()) }
     }
 
     /// Which kind of location this is.
@@ -520,11 +540,15 @@ impl Loc {
     unsafe fn at(self) -> At {
         let w = self.0.addr().get();
         if w & SLOT_TAG != 0 {
-            let owner = Sexp(self.0.as_ptr().map_addr(|a| a & ADDR_MASK & !SLOT_TAG));
+            // SAFETY: the caller's contract: a live slot location's word is
+            // its owner's address, tagged.
+            let owner = unsafe { Sexp::from_ptr(self.0.as_ptr().map_addr(|a| a & ADDR_MASK & !SLOT_TAG)) };
             return At::FrameSlot(SlotRef { owner, index: w >> INDEX_SHIFT });
         }
-        let x = self.sexp();
-        // SAFETY: the caller's contract.
+        // SAFETY: the caller's contract: a live location whose tag is clear
+        // names its object (a cell, or a base binding's symbol).
+        let x = unsafe { self.object() };
+        // SAFETY: as above.
         if unsafe { x.typ() } == SYMSXP { At::Base(x) } else { At::Cell(x) }
     }
 
@@ -879,9 +903,13 @@ impl<'g> Binding<'g> {
     /// The owner check of a binding read through `cx`.
     #[inline(always)]
     fn owned(self, cx: &Cx) {
-        let x = self.loc.sexp();
+        // SAFETY: masked below before anything reads through it.
+        let x = unsafe { self.loc.sexp() };
         // a slot location's word is its owner's address, tagged
-        let x = Sexp(x.0.map_addr(|a| a & ADDR_MASK & !SLOT_TAG));
+        // SAFETY: the location's word with the tag bits cleared: a live
+        // cell's (or symbol's) address, or a slot frame's (only its block
+        // header is read).
+        let x = unsafe { Sexp::from_ptr(x.as_ptr().map_addr(|a| a & ADDR_MASK & !SLOT_TAG)) };
         cx.iso().check_owns(x);
     }
 
@@ -953,7 +981,7 @@ impl<'g> Binding<'g> {
         unsafe {
             match self.loc.at() {
                 At::FrameSlot(_) => None,
-                _ => Some(Ref::from_sexp(self.loc.sexp(), cx)),
+                _ => Some(Ref::from_sexp(self.loc.object(), cx)),
             }
         }
     }
@@ -1084,7 +1112,7 @@ unsafe fn global_loc(iso: &Isolate, s: Sexp) -> Result<Option<Loc>, Special> {
         let c = iso.envs().cell(s).cache;
         if !c.is_null() {
             // the symbol (base) or a cell: a Loc is either
-            return Ok(Some(Loc(NonNull::new_unchecked(c.0))));
+            return Ok(Some(Loc(NonNull::new_unchecked(c.as_ptr()))));
         }
         global_walk(iso, s)
     }
@@ -1110,7 +1138,8 @@ unsafe fn global_walk(iso: &Isolate, s: Sexp) -> Result<Option<Loc>, Special> {
                 // holds objects): the walk finds it again.
                 if let Some(l) = loc_in_frame(iso, rho, s)? {
                     if !matches!(l.at(), At::FrameSlot(_)) {
-                        e.cell_mut(s, |c| c.cache = l.sexp());
+                        // (not a slot: the location's object, a live cell)
+                        e.cell_mut(s, |c| c.cache = l.object());
                     }
                     return Ok(Some(l));
                 }
@@ -1379,7 +1408,7 @@ impl Cx {
                             let p = c.alloc_node(PROMSXP, iso.unbound, s.aux(), env)?;
                             p.set_gp(s.prseen());
                             if s.has(layout::META_BYTECODE) {
-                                p.set_extra(p.extra() | robigo_heap::extra::BYTECODE);
+                                p.set_extra(p.extra() | robigo_heap::extra::promise::BYTECODE);
                             }
                             Ok(p)
                         }
@@ -1571,7 +1600,8 @@ impl Cx {
     pub fn define_var(&mut self, sym: Root<'_>, value: Root<'_>, rho: Root<'_>) -> RResult<()> {
         let s = expect_sym(sym.bind(self));
         let r = expect_env(rho.bind(self));
-        self.note_write(r);
+        // SAFETY: a rooted environment.
+        unsafe { self.note_write(r) };
         let iso = self.iso();
         iso.check_owns(s);
         iso.check_owns(r);
@@ -2944,7 +2974,8 @@ impl Cx {
         sym: Sexp,
         value: Scalar,
     ) -> bool {
-        self.note_write(rho);
+        // SAFETY: the caller's contract: `rho` is a live environment.
+        unsafe { self.note_write(rho) };
         let iso = self.iso();
         // SAFETY: the caller's contract; the store writes plain bits and
         // drops the old object's count, as `define_scalar` does.
@@ -3070,7 +3101,7 @@ impl Cx {
             if rho == e.global && !sym::is_special(sym) {
                 let c = e.cell(sym).cache;
                 if !c.is_null() {
-                    let l = Loc(NonNull::new_unchecked(c.0));
+                    let l = Loc(NonNull::new_unchecked(c.as_ptr()));
                     if l.bits(iso) & ACTIVE_BINDING == 0
                         && let Held::Obj(v) = l.held_cached(iso)
                         && matches!(v.typ(), CLOSXP | BUILTINSXP | SPECIALSXP)
@@ -3346,7 +3377,8 @@ mod loc_tests {
 
     /// A 16-byte aligned owner address below 2^48, never read.
     fn owner() -> Sexp {
-        Sexp(std::ptr::without_provenance_mut(0x7ff1_2345_6780))
+        // SAFETY: never read through: the tests encode and decode it only.
+        unsafe { Sexp::from_word(std::ptr::without_provenance_mut(0x7ff1_2345_6780)) }
     }
 
     /// Every slot index below [`MAX_SLOTS`] comes back from its location,

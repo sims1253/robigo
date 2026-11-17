@@ -112,7 +112,8 @@ fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, promise: b
     // one level deeper, no protection more (robigo_rtcore's ppacct)
     let r = cx.with_pp_excess(-1, |cx| match t {
         // (a symbol is immortal)
-        SYMSXP => symbol_value(cx, e.bind(cx).sexp(), rho, out),
+        // SAFETY: `e` is a rooted symbol.
+        SYMSXP => unsafe { symbol_value(cx, e.bind(cx).sexp(), rho, out) },
         PROMSXP => force(cx, e, out),
         // bcEval(e, rho). INTERIM(V3): the source expression is evaluated,
         // as bcEval's fallback does (`eval(bytecodeExpr(body), rho)`); V3
@@ -320,8 +321,12 @@ pub fn bc_tick_loop(cx: &mut Cx, i: usize) -> RResult<()> {
 /// The fast path of `eval(sym)` into register `a`: a bound value that is
 /// not a promise to force, `R_MissingArg` or an active binding. False when
 /// the slow path ([`get_var`]) must run.
+///
+/// # Safety
+/// `sym` is a live symbol and `shape` R_NilValue or a live frame shape of
+/// `cx`'s isolate.
 #[inline(always)]
-pub fn get_var_fast(cx: &Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, slot: u16, shape: Sexp) -> bool {
+pub unsafe fn get_var_fast(cx: &Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, slot: u16, shape: Sexp) -> bool {
     // SAFETY: an immortal symbol and the activation's rooted environment;
     // the value found is live until the next safepoint and stored at once.
     unsafe {
@@ -377,8 +382,11 @@ pub fn get_var_fast(cx: &Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, slot: u16,
 /// as R_MissingArg: bound to it, or to a promise not yet forced that
 /// `R_isMissing` finds missing; for a `..N` symbol, the element
 /// `ddfindVar` finds (whose errors it raises).
+///
+/// # Safety
+/// `sym` is a live symbol of `cx`'s isolate.
 // R: eval.c:getvar
-pub fn keepmiss_missing(cx: &mut Cx, sym: Sexp, rho: Root<'_>) -> RResult<bool> {
+pub unsafe fn keepmiss_missing(cx: &mut Cx, sym: Sexp, rho: Root<'_>) -> RResult<bool> {
     let missing = cx.missing_arg().sexp();
     let unforced = |cx: &Cx, v: Sexp| {
         // SAFETY: a live binding value.
@@ -415,9 +423,13 @@ pub fn keepmiss_missing(cx: &mut Cx, sym: Sexp, rho: Root<'_>) -> RResult<bool> 
 
 /// GETVAR_MISSOK (DDVAL_MISSOK for a `..N` symbol): [`get_var`], but a
 /// missing argument is R_MissingArg ([`keepmiss_missing`]).
+///
+/// # Safety
+/// `sym` is a live symbol of `cx`'s isolate.
 // R: eval.c:getvar
-pub fn get_var_missok(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp) -> RResult<()> {
-    if keepmiss_missing(cx, sym, act.root(crate::ir::R_ENV))? {
+pub unsafe fn get_var_missok(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp) -> RResult<()> {
+    // SAFETY: the caller's contract: a live symbol.
+    if unsafe { keepmiss_missing(cx, sym, act.root(crate::ir::R_ENV)) }? {
         let m = cx.missing_arg().sexp();
         // SAFETY: R_MissingArg is immortal.
         unsafe { act.set(a, Slot::object(m)) };
@@ -425,12 +437,16 @@ pub fn get_var_missok(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp) -> R
     }
     // SAFETY: a live symbol; gp is a header field.
     let dd = unsafe { sym.gp() } & robigo_rtcore::DDVAL != 0;
-    get_var(cx, act, a, sym, dd)
+    // SAFETY: the caller's contract: a live symbol.
+    unsafe { get_var(cx, act, a, sym, dd) }
 }
 
 /// `eval(sym, rho)` into register `a` (`..N` when `dd`), the slow path:
 /// active bindings, promises to force, GNU R's errors.
-pub fn get_var(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: bool) -> RResult<()> {
+///
+/// # Safety
+/// `sym` is a live symbol of `cx`'s isolate.
+pub unsafe fn get_var(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: bool) -> RResult<()> {
     if !dd && sym != prims::state(cx).syms.dots {
         // SAFETY: an immortal symbol and the rooted environment.
         match unsafe { cx.var_lookup_raw(sym, act.rho()) } {
@@ -460,14 +476,18 @@ pub fn get_var(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: bool) -
     if dd {
         dd_value(cx, sym, act.root(crate::ir::R_ENV), act.out(a))
     } else {
-        symbol_value(cx, sym, act.root(crate::ir::R_ENV), act.out(a))
+        // SAFETY: the caller's contract: a live symbol.
+        unsafe { symbol_value(cx, sym, act.root(crate::ir::R_ENV), act.out(a)) }
     }
 }
 
 /// `eval`'s SYMSXP case: `R_findVar`, then GNU R's errors, a promise
 /// forced.
+///
+/// # Safety
+/// `sym` is a live symbol of `cx`'s isolate.
 // R: eval.c:eval (SYMSXP)
-pub fn symbol_value(cx: &mut Cx, sym: Sexp, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub unsafe fn symbol_value(cx: &mut Cx, sym: Sexp, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
     let st = prims::state(cx);
     if sym == st.syms.dots {
         return Err(cx.error("'...' used in an incorrect context"));
@@ -505,14 +525,16 @@ fn finish_value(cx: &mut Cx, sym: Sexp, rho: Root<'_>, res: Root<'_>, s: robigo_
     }
     if v == cx.unbound().sexp() {
         // R: errorcall_cpy(getLexicalCall(rho), _("object '%s' not found"), EncodeChar(PRINTNAME(e)))
-        let name = sym_name(cx, sym);
+        // SAFETY: `finish_value`'s callers (this module) pass a live symbol.
+        let name = unsafe { sym_name(cx, sym) };
         let call = s.root(cx, cx.lexical_context(rho.bind(cx)).call());
         let msg = format!("object '{name}' not found");
         return Err(cx.error_call(Some(call), &msg));
     }
     if v == cx.missing_arg().sexp() {
         // R: R_MissingArgError(e, getLexicalCall(rho), "evalError")
-        let name = sym_name(cx, sym);
+        // SAFETY: `finish_value`'s callers (this module) pass a live symbol.
+        let name = unsafe { sym_name(cx, sym) };
         let call = s.root(cx, cx.lexical_context(rho.bind(cx)).call());
         let msg = if name.is_empty() {
             "argument is missing, with no default".to_owned()
@@ -532,7 +554,10 @@ fn finish_value(cx: &mut Cx, sym: Sexp, rho: Root<'_>, res: Root<'_>, s: robigo_
 
 /// A symbol's name (`CHAR(PRINTNAME(sym))`; GNU R's `EncodeChar`
 /// escaping is the text layer's).
-pub fn sym_name(cx: &Cx, sym: Sexp) -> String {
+///
+/// # Safety
+/// `sym` is a live symbol of `cx`'s isolate: its PRINTNAME is read.
+pub unsafe fn sym_name(cx: &Cx, sym: Sexp) -> String {
     // SAFETY: a live symbol.
     let s = unsafe { Ref::from_sexp(sym, cx) }.as_sym().unwrap();
     String::from_utf8_lossy(s.name().bytes()).into_owned()
@@ -552,7 +577,8 @@ fn dd_value(cx: &mut Cx, sym: Sexp, rho: Root<'_>, out: Out<'_>) -> RResult<()> 
 /// bound (a promise is not forced), or GNU R's errors.
 // R: envir.c:ddfindVar, ddfindInFrame
 fn dd_find(cx: &mut Cx, sym: Sexp, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
-    let name = sym_name(cx, sym);
+    // SAFETY: `dd_find`'s callers (this module) pass a live symbol.
+    let name = unsafe { sym_name(cx, sym) };
     let i = robigo_rtcore::dd_val(name.as_bytes());
     if i <= 0 {
         return Err(cx.error(&format!("indexing '...' with non-positive index {i}")));

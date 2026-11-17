@@ -1,0 +1,27 @@
+Warning message:
+In grepl("a", "aa", fixed = TRUE, ignore.case = TRUE) :
+  argument 'ignore.case = TRUE' will be ignored
+Warning message:
+In grepl("a", "aa", fixed = TRUE, perl = TRUE) :
+  argument 'perl = TRUE' will be ignored
+Warning message:
+In grepl(c("a", "b"), "ab") :
+  argument 'pattern' has length > 1 and only the first element will be used
+Error in grepl(character(0), "a") : invalid 'pattern' argument
+Error in grepl("[", "a") : 
+  invalid regular expression '[', reason 'Missing ']''
+In addition: Warning message:
+In grepl("[", "a") : TRE pattern compilation error 'Missing ']''
+Error in grepl("(", "a", perl = TRUE) : invalid regular expression '('
+In addition: Warning message:
+In grepl("(", "a", perl = TRUE) :
+  PCRE pattern compilation error
+	'missing closing parenthesis'
+	at ''
+Warning messages:
+1: In grepl("a", c("ok", "\xffa")) :
+  unable to translate '<ff>a' to a wide string
+2: In grepl("a", c("ok", "\xffa")) : input string 2 is invalid
+Warning message:
+In grepl("a", c("ok", "\xffa"), perl = TRUE) :
+  input string 2 is invalid UTF-8

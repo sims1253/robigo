@@ -1,0 +1,13 @@
+[1]  0 39
+[1] 39 40
+[1] TRUE
+NULL
+[1] TRUE
+[1] TRUE
+NULL
+NULL
+fetch hook env::1 
+fetch hook env::1 
+[1] TRUE
+[1] "vals" "path"
+[1] TRUE

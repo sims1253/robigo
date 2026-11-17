@@ -1,15 +1,16 @@
 //! The block allocator of the mark-region heap, from the memory bake-off
 //! (`experiments/memory/mm-heap`, `docs/ledger/memory.md`).
 //!
-//! 64 KiB, 64 KiB-aligned blocks; 16-byte granules; size classes (multiples
-//! of 16 up to 256, then multiples of 64 up to 2048); objects larger than
+//! 64 KiB, 64 KiB-aligned blocks; granules of `layout::GRANULE` (16) bytes;
+//! size classes (multiples of 16 up to 256, then multiples of 64 up to 2048); objects larger than
 //! 2048 bytes get a dedicated ("large") chunk. Free objects are linked
-//! through the word at `obj + 8` (so a freed object keeps a valid type byte
-//! at `obj + 0`, which the RC variant's stale-purple validation reads).
+//! through their link word (`layout::header::OFF_LINK`), so a freed object
+//! keeps a valid type byte, which the RC variant's stale-purple validation reads.
 //!
 //! The collector (marking, conservative scanning, sweeping) is in
 //! `gc.rs`.
 
+use crate::layout::{GRANULE, header};
 use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
 
 pub const BLOCK: usize = 65536;
@@ -17,7 +18,7 @@ pub const BLOCK: usize = 65536;
 /// bitmap (marks live here, not in object headers, so a collection in a
 /// forked child does not dirty the parent's object pages: docs/core.md §10).
 pub const DATA_OFF: usize = 1072;
-pub const BLOCK_GRANULES: u32 = ((BLOCK - DATA_OFF) / 16) as u32; // 4029
+pub const BLOCK_GRANULES: u32 = ((BLOCK - DATA_OFF) / GRANULE) as u32; // 4029
 pub const START_WORDS: usize = (BLOCK_GRANULES as usize).div_ceil(64); // 63
 pub const CHUNK_BLOCKS: usize = 16;
 pub const CHUNK_BYTES: usize = BLOCK * CHUNK_BLOCKS;
@@ -317,7 +318,7 @@ impl Heap {
 
     #[inline(always)]
     pub fn alloc(&mut self, size: usize) -> *mut u8 {
-        debug_assert!(size >= 16);
+        debug_assert!(size >= GRANULE);
         if size > MAX_MEDIUM {
             return self.alloc_large(size);
         }
@@ -334,16 +335,16 @@ impl Heap {
             let p = b.freelist;
             if !p.is_null() {
                 // SAFETY: free-list entries are free slots of this block,
-                // whose word at +8 contains the next link.
-                b.freelist = unsafe { *((p as *mut *mut u8).add(1)) };
-                b.start_set((p as usize - Block::data_ptr(cur) as usize) / 16);
+                // whose link word contains the next link.
+                b.freelist = unsafe { *(p.add(header::OFF_LINK) as *mut *mut u8) };
+                b.start_set((p as usize - Block::data_ptr(cur) as usize) / GRANULE);
                 b.live_objects += 1;
                 return p;
             }
-            let g = (SIZES[ci] / 16) as u32;
+            let g = (SIZES[ci] / GRANULE) as u32;
             if b.bump_next + g <= b.granules {
                 // SAFETY: bump_next < granules, so this is in the data area.
-                let p = unsafe { Block::data_ptr(cur).add(b.bump_next as usize * 16) };
+                let p = unsafe { Block::data_ptr(cur).add(b.bump_next as usize * GRANULE) };
                 b.start_set(b.bump_next as usize);
                 b.bump_next += g;
                 b.live_objects += 1;
@@ -361,7 +362,7 @@ impl Heap {
         // slots are reused for any request of the class, so a slot cut
         // to the request's size would be overrun by a larger request
         // (classes above 256 bytes span four 16-byte sizes)
-        let g = (SIZES[ci] / 16) as u32;
+        let g = (SIZES[ci] / GRANULE) as u32;
         loop {
             let cs = &mut self.classes[ci];
             let cur = cs.cur;
@@ -371,18 +372,18 @@ impl Heap {
                 if !b.freelist.is_null() {
                     let p = b.freelist;
                     // SAFETY: as in `alloc`.
-                    b.freelist = unsafe { *((p as *mut *mut u8).add(1)) }; // next at +8
+                    b.freelist = unsafe { *(p.add(header::OFF_LINK) as *mut *mut u8) };
                     // the sweeper rebuilds start bits from survivors only,
                     // so a slot recycled from the free list needs its bit
                     // back or the next sweep cannot see (nor free, nor
                     // resolve) the new object
-                    b.start_set((p as usize - Block::data_ptr(cur) as usize) / 16);
+                    b.start_set((p as usize - Block::data_ptr(cur) as usize) / GRANULE);
                     b.live_objects += 1;
                     return p;
                 }
                 if b.bump_next + g <= b.granules {
                     // SAFETY: as in `alloc`.
-                    let p = unsafe { Block::data_ptr(cur).add(b.bump_next as usize * 16) };
+                    let p = unsafe { Block::data_ptr(cur).add(b.bump_next as usize * GRANULE) };
                     b.start_set(b.bump_next as usize);
                     b.bump_next += g;
                     b.live_objects += 1;
@@ -460,9 +461,9 @@ impl Heap {
         // SAFETY: as above, and the slot at `p` is no longer an object, so
         // its link word is ours to write.
         unsafe {
-            *((p as *mut *mut u8).add(1)) = (*b).freelist;
+            *(p.add(header::OFF_LINK) as *mut *mut u8) = (*b).freelist;
             (*b).freelist = p;
-            (*b).start_clear((p as usize - Block::data_ptr(b) as usize) / 16);
+            (*b).start_clear((p as usize - Block::data_ptr(b) as usize) / GRANULE);
             (*b).live_objects -= 1;
             if (*b).owner == OWNER_NONE && self.classes[ci].cur != b {
                 (*b).owner = OWNER_LIST;
@@ -535,7 +536,7 @@ impl Heap {
             if w < data {
                 return None;
             }
-            let g = (w - data) / 16;
+            let g = (w - data) / GRANULE;
             if g >= (*b).granules as usize {
                 return None;
             }
@@ -545,7 +546,7 @@ impl Heap {
                 let m = (*b).starts[word] & if bit == 63 { u64::MAX } else { (1u64 << (bit + 1)) - 1 };
                 if m != 0 {
                     let start = word * 64 + (63 - m.leading_zeros()) as usize;
-                    let obj = data + start * 16;
+                    let obj = data + start * GRANULE;
                     // a word past the object's slot points into free space
                     if w >= obj + SIZES[(*b).class as usize] {
                         return None;
@@ -592,10 +593,12 @@ mod tests {
     /// Every pair of request sizes within a class: a slot carved for the
     /// first, freed and reused for the second, must not overrun its
     /// neighbours (the slot is the class size, not the request size).
+    // thousands of heaps: too slow under Miri, which runs `bitmap_tests`
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn slots_are_class_sized_for_every_request_pair() {
         for ci in 0..SIZES.len() {
-            let lo = if ci == 0 { 16 } else { SIZES[ci - 1] + 1 };
+            let lo = if ci == 0 { GRANULE } else { SIZES[ci - 1] + 1 };
             let hi = SIZES[ci];
             // three neighbours must fit one block
             if (BLOCK - DATA_OFF) / hi < 3 {
@@ -643,7 +646,7 @@ mod medium_tests {
     fn medium_classes_tile_blocks_and_index_correctly() {
         for ci in FIRST_MEDIUM..SIZES.len() {
             let c = SIZES[ci];
-            assert_eq!(c % 16, 0);
+            assert_eq!(c % GRANULE, 0);
             assert!(c > SIZES[ci - 1]);
             assert_eq!(class_index(c), ci);
             assert_eq!(class_index(SIZES[ci - 1] + 1), ci);
@@ -656,5 +659,62 @@ mod medium_tests {
         let b = h.alloc(8032);
         assert_eq!(a as usize & !(BLOCK - 1), b as usize & !(BLOCK - 1));
         assert_eq!(h.reserved, CHUNK_BYTES);
+    }
+}
+
+/// The block header's bitmaps and the size classes against the layout's
+/// granule, small enough for Miri (the CI job runs them there).
+#[cfg(test)]
+mod bitmap_tests {
+    use super::*;
+
+    /// The header holds a start and a mark bit per granule of the block's
+    /// data, and the data fills the block.
+    #[test]
+    fn the_bitmaps_cover_every_granule() {
+        assert!(START_WORDS * 64 >= BLOCK_GRANULES as usize);
+        assert_eq!(DATA_OFF + BLOCK_GRANULES as usize * GRANULE, BLOCK - (BLOCK - DATA_OFF) % GRANULE);
+        assert_eq!(DATA_OFF % GRANULE, 0);
+        for &c in &SIZES {
+            assert_eq!(c % GRANULE, 0, "class {c}");
+        }
+        // every request size maps to the smallest class that holds it
+        for size in (1..=MAX_SMALL).step_by(7).chain([GRANULE, 256, 257, MAX_SMALL]) {
+            let ci = class_index(size);
+            assert!(SIZES[ci] >= size && (ci == 0 || SIZES[ci - 1] < size), "size {size}");
+        }
+    }
+
+    /// A start bit per object: set by the allocation, found from any of
+    /// the object's bytes (the conservative resolver), cleared when the
+    /// slot is freed.
+    #[test]
+    fn start_bits_mark_objects_and_resolve_interior_words() {
+        let mut h = Heap::new();
+        let size = 3 * GRANULE;
+        let objs: Vec<*mut u8> = (0..70).map(|_| h.alloc(size)).collect();
+        let b = h.block_of(objs[0]);
+        for &p in &objs {
+            assert_eq!(h.block_of(p), b, "one block");
+            let g = (p as usize - Block::data_ptr(b) as usize) / GRANULE;
+            // SAFETY: `b` is the header of the block `p` is in.
+            unsafe {
+                assert!((*b).start_test(g));
+                assert!(!(*b).start_test(g + 1) && !(*b).start_test(g + 2), "interior granules");
+            }
+            for off in [0, 1, GRANULE, size - 1] {
+                assert_eq!(h.resolve(p as usize + off), Some(p), "offset {off}");
+            }
+        }
+        // the 65th object's start bit is in the second bitmap word
+        let p = objs[69];
+        // SAFETY: `p` is an object of `h` that nothing reads again.
+        unsafe { h.free_small(p) };
+        let g = (p as usize - Block::data_ptr(b) as usize) / GRANULE;
+        // SAFETY: as above.
+        unsafe { assert!(!(*b).start_test(g), "a free slot has no start bit") };
+        assert_eq!(h.resolve(p as usize + 8), None, "a free slot resolves to no object");
+        assert_eq!(h.resolve(objs[68] as usize + 8), Some(objs[68]), "its neighbour still does");
+        assert_eq!(h.resolve(Block::data_ptr(b) as usize - 8), None, "the header is no object");
     }
 }

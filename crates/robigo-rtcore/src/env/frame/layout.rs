@@ -25,7 +25,7 @@ pub(crate) unsafe fn is_slots(x: Sexp) -> bool {
 #[inline(always)]
 unsafe fn word(f: Sexp, off: usize) -> *mut u64 {
     // SAFETY: the caller's contract.
-    unsafe { f.0.add(off) as *mut u64 }
+    unsafe { f.as_ptr().add(off) as *mut u64 }
 }
 
 /// The number of slots in the object.
@@ -78,7 +78,7 @@ pub(crate) unsafe fn get(f: Sexp, off: usize) -> Sexp {
 #[inline(always)]
 pub(crate) unsafe fn set(f: Sexp, off: usize, v: Sexp) {
     // SAFETY: the caller's contract: a traced word of the object's body.
-    unsafe { f.store(f.0.add(off) as *mut Sexp, v) }
+    unsafe { f.store(f.as_ptr().add(off) as *mut Sexp, v) }
 }
 
 /// One slot: its owner (a frame or an overflow block) and index.
@@ -93,7 +93,7 @@ impl SlotRef {
     fn base(self) -> *mut u8 {
         // the address arithmetic stays inside the owner's allocation for
         // every index below its capacity (the callers' contract)
-        self.owner.0.wrapping_add(OFF_SLOTS + self.index * SLOT_SIZE)
+        self.owner.as_ptr().wrapping_add(OFF_SLOTS + self.index * SLOT_SIZE)
     }
 
     /// # Safety
@@ -118,8 +118,9 @@ impl SlotRef {
     /// As for [`SlotRef::key`].
     #[inline(always)]
     pub(crate) unsafe fn sym(self) -> Sexp {
-        // SAFETY: the caller's contract.
-        Sexp((unsafe { self.key() } & !KIND_MASK) as usize as *mut u8)
+        // SAFETY: the caller's contract; a keyed slot's key is its symbol's
+        // address with the kind bits.
+        unsafe { Sexp::from_ptr((self.key() & !KIND_MASK) as usize as *mut u8) }
     }
 
     /// Set the key: `sym` and `kind`. The words the new kind traces must be

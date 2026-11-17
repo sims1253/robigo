@@ -337,18 +337,93 @@ fn valid_utf8(b: &[u8]) -> bool {
 /// translation is needed (`p == CHAR(s)` in the C).
 // R: sysutils.c:translateChar, needsTranslation, translateToNative
 pub fn translate_char<'a>(s: Str<'a>, loc: Locale) -> Result<Cow<'a, [u8]>, TranslateError> {
+    to_native(s, loc).map(|(c, _)| c)
+}
+
+/// Why [`translate_char2`] or [`translate_char_utf8_2`] gave no string.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Untranslatable {
+    /// The string is marked "bytes": [`TranslateError`]'s error.
+    Bytes,
+    /// iconv could not convert it. R warns "unable to translate '%s' to
+    /// native encoding" (or "to UTF-8") with this text, and the caller
+    /// gets NULL.
+    Failed(String),
+}
+
+/// `translateCharFP2(s)`: `s` in the native encoding, or the text of R's
+/// warning when iconv could not convert all of it.
+// R: sysutils.c:translateCharFP2, translateToNative(mustWork = 2)
+pub fn translate_char2<'a>(s: Str<'a>, loc: Locale) -> Result<Cow<'a, [u8]>, Untranslatable> {
+    match to_native(s, loc) {
+        Err(TranslateError) => Err(Untranslatable::Bytes),
+        Ok((c, false)) => Ok(c),
+        // reEnc(cbuff, CE_UTF8, CE_NATIVE, 2) of a buffer already native:
+        // ASCII in the C locale, as it was in a UTF-8 one
+        Ok((c, true)) => Err(Untranslatable::Failed(err_buff(c.into_owned(), loc))),
+    }
+}
+
+/// `trCharUTF82(s)`: `s` in UTF-8, or the text of R's warning when iconv
+/// could not convert all of it.
+// R: sysutils.c:trCharUTF82, needsTranslationUTF8, translateToUTF8(mustWork = 2)
+pub fn translate_char_utf8_2<'a>(s: Str<'a>, loc: Locale) -> Result<Cow<'a, [u8]>, Untranslatable> {
+    let p = s.bytes();
+    let (out, failed) = match s.enc() {
+        _ if s.is_ascii() => return Ok(Cow::Borrowed(p)),
+        Enc::Utf8 => return Ok(Cow::Borrowed(p)),
+        Enc::Bytes => return Err(Untranslatable::Bytes),
+        Enc::Native if loc.utf8() => return Ok(Cow::Borrowed(p)),
+        // CP1252 to UTF-8
+        Enc::Latin1 => convert(p, false, Locale::Utf8),
+        // from the C locale's ASCII: every high byte fails
+        Enc::Native => convert(p, false, Locale::C),
+    };
+    if !failed {
+        return Ok(Cow::Owned(out));
+    }
+    // reEnc(cbuff, CE_UTF8, CE_NATIVE, 2): what the native encoding lacks
+    // as '.', byte by byte
+    let msg = if loc.utf8() { out } else { out.iter().map(|&b| if b < 0x80 { b } else { b'.' }).collect() };
+    Err(Untranslatable::Failed(err_buff(msg, loc)))
+}
+
+/// The text of a "unable to translate" message: truncated to 252 bytes
+/// and "..." beyond 255.
+// R: sysutils.c:translateToNative (err_buff)
+fn err_buff(mut msg: Vec<u8>, loc: Locale) -> String {
+    if msg.len() > 255 {
+        msg.truncate(252);
+        mbcs_truncate_to_valid(&mut msg, loc);
+        msg.extend_from_slice(b"...");
+    }
+    String::from_utf8_lossy(&msg).into_owned()
+}
+
+/// translateToNative: the string in the native encoding, and whether iconv
+/// failed on some of it.
+fn to_native<'a>(s: Str<'a>, loc: Locale) -> Result<(Cow<'a, [u8]>, bool), TranslateError> {
     let p = s.bytes();
     // (NA_STRING is never marked.)
     let from_utf8 = match s.enc() {
         // (a native string needs no scan: it is returned as it is)
-        Enc::Native => return Ok(Cow::Borrowed(p)),
-        _ if s.is_ascii() => return Ok(Cow::Borrowed(p)),
+        Enc::Native => return Ok((Cow::Borrowed(p), false)),
+        _ if s.is_ascii() => return Ok((Cow::Borrowed(p), false)),
         Enc::Bytes => return Err(TranslateError),
-        Enc::Utf8 if loc.utf8() => return Ok(Cow::Borrowed(p)),
+        Enc::Utf8 if loc.utf8() => return Ok((Cow::Borrowed(p), false)),
         Enc::Utf8 => true,
         Enc::Latin1 => false,
     };
+    let (out, failed) = convert(p, from_utf8, loc);
+    Ok((Cow::Owned(out), failed))
+}
+
+/// iconv from UTF-8 (`from_utf8`) or CP1252 (else; the C locale's ASCII
+/// when `to` is C) to `to`, continuing past what fails as
+/// translateToNative does.
+fn convert(p: &[u8], from_utf8: bool, to: Locale) -> (Vec<u8>, bool) {
     let mut out = Vec::with_capacity(p.len() + 8);
+    let mut failed = false;
     let mut i = 0;
     while i < p.len() {
         let b = p[i];
@@ -357,7 +432,7 @@ pub fn translate_char<'a>(s: Str<'a>, loc: Locale) -> Result<Cow<'a, [u8]>, Tran
             i += 1;
             continue;
         }
-        if !from_utf8 && loc.utf8() {
+        if !from_utf8 && to.utf8() {
             // CP1252 to UTF-8
             let u = if b < 0xA0 { CP1252_HIGH[(b - 0x80) as usize] } else { Some(b as u16) };
             if let Some(u) = u {
@@ -380,6 +455,7 @@ pub fn translate_char<'a>(s: Str<'a>, loc: Locale) -> Result<Cow<'a, [u8]>, Tran
                     // STANDARD_TO_LOOP_ERR_HANDLER), without an error
                     continue;
                 }
+                failed = true;
                 if ucs < 65536 {
                     out.extend_from_slice(format!("<U+{:04X}>", ucs as u16).as_bytes());
                 } else {
@@ -388,10 +464,124 @@ pub fn translate_char<'a>(s: Str<'a>, loc: Locale) -> Result<Cow<'a, [u8]>, Tran
                 continue;
             }
         }
+        failed = true;
         out.extend_from_slice(format!("<{b:02x}>").as_bytes());
         i += 1;
     }
-    Ok(Cow::Owned(out))
+    (out, failed)
+}
+
+/// Why [`wtrans_char2`] gave no wide string.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WideError {
+    /// The string is marked "bytes": [`TranslateError`]'s error.
+    Bytes,
+    /// iconv could not convert it. R warns "unable to translate '%s' to a
+    /// wide string" with this text (the string, bytes iconv rejected as
+    /// `<xx>`, truncated to 255 bytes) and the caller reports failure.
+    Invalid(String),
+}
+
+/// iconv's conversion of one character to UCS-4: `(width, wc)`, or `None`
+/// for EILSEQ/EINVAL. glibc's UTF-8 decoder takes the shortest forms of
+/// U+0000..U+10FFFF without surrogates (std's definition).
+fn iconv_char(p: &[u8], i: usize, from: Enc, loc: Locale) -> Option<(usize, i32)> {
+    let b = p[i];
+    if b < 0x80 {
+        return Some((1, b as i32));
+    }
+    match from {
+        Enc::Latin1 => {
+            // CP1252 (R's choice where iconv has it)
+            let u = if b < 0xA0 { CP1252_HIGH[(b - 0x80) as usize]? } else { b as u16 };
+            Some((1, u as i32))
+        }
+        Enc::Utf8 => {
+            let w = match b {
+                0xC2..=0xDF => 2,
+                0xE0..=0xEF => 3,
+                0xF0..=0xF4 => 4,
+                _ => return None,
+            };
+            let c = std::str::from_utf8(p.get(i..i + w)?).ok()?.chars().next()?;
+            Some((w, c as i32))
+        }
+        // the C locale's charset is ASCII
+        Enc::Native | Enc::Bytes => {
+            debug_assert!(!loc.utf8());
+            None
+        }
+    }
+}
+
+/// `wtransChar2(s)`: the string as wide characters (UCS-4).
+// R: sysutils.c:wtransChar2, wneedsTranslation, translateToWchar
+pub fn wtrans_char2(s: Str<'_>, loc: Locale) -> Result<Vec<i32>, WideError> {
+    let p = s.bytes();
+    let from = match s.enc() {
+        Enc::Bytes => return Err(WideError::Bytes),
+        _ if s.is_ascii() => return Ok(p.iter().map(|&b| b as i32).collect()),
+        Enc::Utf8 => Enc::Utf8,
+        Enc::Latin1 => Enc::Latin1,
+        Enc::Native if loc.utf8() => Enc::Utf8,
+        Enc::Native => Enc::Native,
+    };
+    let mut out = Vec::with_capacity(p.len());
+    let mut failed = false;
+    let mut i = 0;
+    while i < p.len() {
+        match iconv_char(p, i, from, loc) {
+            Some((w, wc)) => {
+                out.push(wc);
+                i += w;
+            }
+            None => {
+                failed = true;
+                out.extend(format!("<{:02x}>", p[i]).bytes().map(|b| b as i32));
+                i += 1;
+            }
+        }
+    }
+    if !failed {
+        return Ok(out);
+    }
+    // reEnc3(wide, native, subst = 2): what the native encoding lacks as
+    // <U+XXXX>
+    let mut msg = Vec::new();
+    for &wc in &out {
+        match char::from_u32(wc as u32) {
+            Some(c) if wc < 0x80 || loc.utf8() => {
+                let mut buf = [0u8; 4];
+                msg.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            }
+            _ if wc < 0x10000 => msg.extend_from_slice(format!("<U+{wc:04X}>").as_bytes()),
+            _ => msg.extend_from_slice(format!("<U+{wc:08X}>").as_bytes()),
+        }
+    }
+    Err(WideError::Invalid(err_buff(msg, loc)))
+}
+
+/// `mbcsTruncateToValid(s)`: drops an incomplete or invalid character at
+/// the end, and everything after the first invalid one.
+// R: util.c:mbcsTruncateToValid
+pub(crate) fn mbcs_truncate_to_valid(s: &mut Vec<u8>, loc: Locale) {
+    if !loc.mbcs() || s.is_empty() {
+        return;
+    }
+    let mut good = s.len() - 1;
+    while good > 0 && s[good] & 0xC0 == 0x80 {
+        good -= 1;
+    }
+    while good < s.len() {
+        let (n, _) = mbrtowc_utf8(&s[..], good);
+        // (the end of the buffer reads as the terminator here, which is
+        // mbrtowc's -2 for a cut-short character)
+        if n <= 0 {
+            s.truncate(good);
+            return;
+        }
+        good += n as usize;
+    }
 }
 
 #[cfg(test)]

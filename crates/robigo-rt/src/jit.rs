@@ -24,7 +24,7 @@
 //!
 //! A closure's `NOJIT` and `MAYBEJIT` are its gp bits 5 and 6 (GNU R's,
 //! which `duplicate` copies, duplicate.c:309-310). Whether GNU R holds its
-//! body as byte code is robigo's mark [`robigo_heap::extra::BYTECODE`] in
+//! body as byte code is robigo's mark [`robigo_heap::extra::closure::BYTECODE`] in
 //! the header (M1 makes no BCODESXP): set when the closure is compiled,
 //! copied by `duplicate` with the body (GNU R's copy shares the BCODESXP),
 //! cleared by `environment<-` (builtin.c:323-325, which keeps the two gp
@@ -116,10 +116,8 @@ pub fn do_compilepkgs(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_
     cx.build_scalar(out, robigo_rtcore::Lgl(old))
 }
 
-/// `NOJIT_MASK` (Defn.h:373).
-pub const NOJIT_MASK: u16 = 1 << 5;
-/// `MAYBEJIT_MASK` (Defn.h:376).
-pub const MAYBEJIT_MASK: u16 = 1 << 6;
+/// `NOJIT_MASK` (Defn.h:373) and `MAYBEJIT_MASK` (Defn.h:376).
+pub use robigo_heap::gp::closure::{MAYBEJIT as MAYBEJIT_MASK, NOJIT as NOJIT_MASK};
 
 // R: eval.c, the JIT strategies
 pub const STRATEGY_NO_SMALL: i32 = 0;
@@ -210,7 +208,7 @@ fn atoi(s: &[u8]) -> i32 {
 #[inline(always)]
 pub unsafe fn compiled(f: Sexp) -> bool {
     // SAFETY: the caller's contract.
-    unsafe { f.extra() & extra::BYTECODE != 0 }
+    unsafe { f.extra() & extra::closure::BYTECODE != 0 }
 }
 
 /// GNU R's JIT state of a closure, as `R_CheckJIT` reads it.
@@ -249,7 +247,7 @@ pub fn state(f: Ref<'_>) -> Option<State> {
 /// or a BCODESXP body (`bcClose`, cmp.R's `cmpfun`) not yet run.
 pub fn is_compiled(f: Ref<'_>) -> bool {
     // SAFETY: a `Ref` is live.
-    f.sexptype() == CLOSXP && (unsafe { compiled(f.sexp()) } || bytecode_body(f.sexp()))
+    f.sexptype() == CLOSXP && (unsafe { compiled(f.sexp()) } || bytecode_body(f))
 }
 
 /// Closure `f`'s BODY.
@@ -260,11 +258,10 @@ fn body_of(f: Ref<'_>) -> Ref<'_> {
     }
 }
 
-/// Whether closure `f`'s BODY is a BCODESXP.
+/// Whether `f` is a closure whose BODY is a BCODESXP.
 #[inline]
-pub fn bytecode_body(f: Sexp) -> bool {
-    // SAFETY: a live closure: its body is a live object.
-    unsafe { f.cdr().typ() == BCODESXP }
+pub fn bytecode_body(f: Ref<'_>) -> bool {
+    matches!(f.view(), robigo_rtcore::View::Closure(c) if c.body().sexptype() == BCODESXP)
 }
 
 /// Closure `f` is compiled, its code `code` (a `Bc` closure code object for
@@ -275,7 +272,7 @@ pub fn bytecode_body(f: Sexp) -> bool {
 pub unsafe fn set_compiled(f: Sexp, code: Sexp) {
     // SAFETY: the caller's contract; the 4th word is traced.
     unsafe {
-        f.set_extra(f.extra() | extra::BYTECODE);
+        f.set_extra(f.extra() | extra::closure::BYTECODE);
         f.set_aux(code);
     }
 }
@@ -289,7 +286,7 @@ pub unsafe fn decompile(cx: &Cx, f: Sexp) {
     // SAFETY: the caller's contract.
     unsafe {
         if compiled(f) {
-            f.set_extra(f.extra() & !extra::BYTECODE);
+            f.set_extra(f.extra() & !extra::closure::BYTECODE);
             f.set_aux(cx.nil().sexp());
         }
     }
@@ -297,7 +294,7 @@ pub unsafe fn decompile(cx: &Cx, f: Sexp) {
 
 /// The closures base's loader binds are installed byte code: compiled
 /// from their first call. Known by provenance, the function literal the
-/// loader binds carries [`extra::BYTECODE`] ([`mark_installed_literal`]);
+/// loader binds carries [`extra::cell::BYTECODE`] ([`mark_installed_literal`]);
 /// the closure its `function` makes is compiled.
 ///
 /// # Safety
@@ -305,7 +302,7 @@ pub unsafe fn decompile(cx: &Cx, f: Sexp) {
 #[inline(always)]
 pub unsafe fn installed_literal(call: Sexp) -> bool {
     // SAFETY: the caller's contract.
-    unsafe { call.extra() & extra::BYTECODE != 0 }
+    unsafe { call.extra() & extra::cell::BYTECODE != 0 }
 }
 
 /// Mark the loader's function literal `call` (a `function` call) as one
@@ -315,7 +312,7 @@ pub unsafe fn installed_literal(call: Sexp) -> bool {
 /// `call` is a live call, never seen by R code.
 pub unsafe fn mark_installed_literal(call: Sexp) {
     // SAFETY: the caller's contract.
-    unsafe { call.set_extra(call.extra() | extra::BYTECODE) }
+    unsafe { call.set_extra(call.extra() | extra::cell::BYTECODE) }
 }
 
 /// `R_CheckJIT(fun)`: true when the call about to run closure `f`'s body
@@ -423,7 +420,7 @@ pub fn closure_profile(cx: &mut Cx, op: Root<'_>) -> RResult<Profile> {
         if compiled(f) {
             return Ok(if cfg.disable_bytecode { Profile::Eval } else { Profile::Bc });
         }
-        if bytecode_body(f) {
+        if bytecode_body(op.bind(cx)) {
             // bcEval, or its fallback to the source (R_disable_bytecode, a
             // version mismatch)
             let bc = robigo_rtbuiltins::bytecode::version_ok(body_of(op.bind(cx)));
@@ -479,8 +476,7 @@ pub fn do_envirgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
                 let o = res.reset(cx);
                 cx.duplicate(x, o)?;
             }
-            let f = res.bind(cx).sexp();
-            if bytecode_body(f) {
+            if bytecode_body(res.bind(cx)) {
                 // "switch to interpreted version if compiled":
                 // SET_BODY(s, R_ClosureExpr(s))
                 let src = sc.root(cx, robigo_rtbuiltins::bytecode::expr(cx, body_of(res.bind(cx))));

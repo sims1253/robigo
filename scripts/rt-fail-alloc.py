@@ -28,7 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 COUNT = re.compile(r"^robigo gc: allocations since ROBIGO_FAIL_ALLOC_AT was armed (\d+)", re.M)
-DEFAULT = ["tests/rt/alloc/effects.R"]
+DEFAULT = ["tests/rt/alloc/effects.R", "tests/rt/serialize-closures/unserialize-e9.R"]
 
 
 def default_bin():
