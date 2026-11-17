@@ -1198,6 +1198,17 @@ impl Cx {
 
     // ---- lookups that run no code -----------------------------------------
 
+    /// Whether `rho`'s frame certainly binds nothing: a hashed frame whose
+    /// `HASHPRI` is 0 (it is at least the number of occupied chains). False
+    /// when it may bind something, and for every other kind of frame.
+    pub fn frame_surely_empty(&self, rho: EnvRef<'_>) -> bool {
+        let iso = self.iso();
+        iso.check_owns(rho.as_ref().sexp());
+        // SAFETY: a live environment of this isolate's heap (checked), read
+        // without running code.
+        unsafe { matches!(kind(iso, rho.as_ref().sexp()), Kind::Hashed(t) if hashtab::pri(t) == 0) }
+    }
+
     /// `findVarLocInFrame(rho, sym)`: `sym`'s binding in `rho`'s frame.
     pub fn frame_binding<'g>(&'g self, rho: EnvRef<'g>, sym: Sym<'g>) -> Lookup<'g> {
         let iso = self.iso();

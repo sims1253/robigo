@@ -582,6 +582,10 @@ fn find_fun_below(cx: &mut Cx, sym: Root<'_>, rho: Root<'_>, target: Root<'_>, o
 /// the search.
 struct Rec<'s> {
     top: (Root<'s>, u32),
+    /// The defining environment's box, when its binding of the S3 methods
+    /// table was a forced promise: a promise binding cannot change without
+    /// moving the box, and a forced promise's value never changes.
+    def_box: Option<(Root<'s>, u32)>,
     /// The S3 methods table (an environment) the search found in the
     /// defining environment, if any.
     table: Option<Root<'s>>,
@@ -616,7 +620,14 @@ fn lookup_from_top<'s>(
         let o = res.reset(cx);
         if fun_in_frame(cx, method, top, o)? {
             return Ok(ok
-                .then(|| Rec { top: b, table: None, table_box: None, chain: Vec::new(), found: Found::Top })
+                .then(|| Rec {
+                    top: b,
+                    def_box: None,
+                    table: None,
+                    table_box: None,
+                    chain: Vec::new(),
+                    found: Found::Top,
+                })
                 .filter(|r| still(cx, &[r.top])));
         }
         Some(b)
@@ -626,10 +637,15 @@ fn lookup_from_top<'s>(
     // We assume here that no one registered a non-function
     let tsym = s.root(cx, symref(cx, syms(cx).s3_table));
     let table = s.out(cx).root();
+    let def_box = version_box(cx, s, defrho)?;
     let o = table.reset(cx);
     find_var_in_frame(cx, defrho, tsym, o)?;
+    // (a forced promise's value is read without running code, as the memo
+    // reads it: base's lazy `.__S3MethodsTable__.`)
+    let forced = table.bind(cx).sexptype() == PROMSXP && forced_value(cx, table.bind(cx)).is_some();
+    let def_box = forced.then_some(def_box);
     if table.bind(cx).sexptype() == PROMSXP {
-        ok = false;
+        ok &= forced;
         let p = s.root(cx, table.bind(cx));
         let base = s.root(cx, cx.base_env());
         let o = table.reset(cx);
@@ -652,12 +668,15 @@ fn lookup_from_top<'s>(
             ok &= is_function(res.bind(cx));
             let rec = Rec {
                 top: top_box.unwrap_or(tb),
+                def_box,
                 table: table_env,
                 table_box: Some(tb),
                 chain: Vec::new(),
                 found: Found::Table,
             };
-            return Ok((ok && still(cx, &[rec.top, tb])).then_some(rec));
+            let mut seen = vec![rec.top, tb];
+            seen.extend(def_box);
+            return Ok((ok && still(cx, &seen)).then_some(rec));
         }
     }
     // findFunWithBaseEnvAfterGlobalEnv(method, next), each environment's
@@ -692,10 +711,11 @@ fn lookup_from_top<'s>(
     let Some(top) = top_box.filter(|_| ok) else { return Ok(None) };
     let mut seen = vec![top];
     seen.extend_from_slice(&chain);
+    seen.extend(def_box);
     if !still(cx, &seen) {
         return Ok(None);
     }
-    Ok(Some(Rec { top, table: table_env, table_box: None, chain, found }))
+    Ok(Some(Rec { top, def_box, table: table_env, table_box: None, chain, found }))
 }
 
 /// `env`'s version box and the version it holds now, rooted in `s`.
@@ -754,6 +774,8 @@ struct MethodEntry {
     top: Global,
     top_box: (Global, u32),
     def: Global,
+    /// [`Rec::def_box`]: while it holds, the table binding is as seen.
+    def_box: Option<(Global, u32)>,
     table: Option<Global>,
     table_box: Option<(Global, u32)>,
     chain: Vec<(Global, u32)>,
@@ -764,9 +786,10 @@ struct MethodEntry {
 
 impl MethodEntry {
     fn globals(self) -> impl Iterator<Item = Global> {
-        let MethodEntry { top, top_box, def, table, table_box, chain, value, .. } = self;
+        let MethodEntry { top, top_box, def, def_box, table, table_box, chain, value, .. } = self;
         [top, top_box.0, def]
             .into_iter()
+            .chain(def_box.map(|b| b.0))
             .chain(table)
             .chain(table_box.map(|b| b.0))
             .chain(chain.into_iter().map(|b| b.0))
@@ -792,8 +815,9 @@ fn same_search(cx: &Cx, e: &MethodEntry, method: SymId, top: Sexp, def: Sexp) ->
 
 /// The defining environment's S3 methods table as the memo compares it:
 /// Some(None) when unbound or not an environment, Some(Some(table)) an
-/// environment, None when it cannot tell without running code (a promise,
-/// an active binding, a frame robigo does not read).
+/// environment (a forced promise's value too), None when it cannot tell
+/// without running code (an unforced promise, an active binding, a frame
+/// robigo does not read).
 fn s3_table_now<'g>(cx: &'g Cx, def: Ref<'g>) -> Option<Option<Ref<'g>>> {
     let e = env_ref(def)?;
     let tsym = symref(cx, syms(cx).s3_table).as_sym()?;
@@ -802,12 +826,25 @@ fn s3_table_now<'g>(cx: &'g Cx, def: Ref<'g>) -> Option<Option<Ref<'g>>> {
         Lookup::Bound(b) => match b.get(cx) {
             robigo_rtcore::BindingValue::Value(v) => match v.sexptype() {
                 ENVSXP => Some(Some(v)),
-                PROMSXP => None,
+                PROMSXP => match forced_value(cx, v) {
+                    Some(t) if t.sexptype() == ENVSXP => Some(Some(t)),
+                    Some(_) => Some(None),
+                    None => None,
+                },
                 _ => Some(None),
             },
             _ => None,
         },
         Lookup::Special => None,
+    }
+}
+
+/// Promise `v`'s value when it is forced and boxed, which reading runs no
+/// code for; else None.
+fn forced_value<'g>(cx: &'g Cx, v: Ref<'g>) -> Option<Ref<'g>> {
+    match v.view() {
+        View::Promise(p) if !p.is_unboxed() && p.value().sexp() != cx.unbound().sexp() => Some(p.value()),
+        _ => None,
     }
 }
 
@@ -823,10 +860,16 @@ fn memo_get<'g>(cx: &'g Cx, method: Sym<'g>, top: Ref<'g>, def: Ref<'g>) -> Opti
         return None;
     }
     if e.found != Found::Top {
-        let table = s3_table_now(cx, def)?;
-        if table.map(|t| t.sexp()) != e.table.as_ref().map(|t| t.bind(cx).sexp()) {
-            return None;
-        }
+        let table = match &e.def_box {
+            Some(b) if held(b) => e.table.as_ref().map(|t| t.bind(cx)),
+            _ => {
+                let table = s3_table_now(cx, def)?;
+                if table.map(|t| t.sexp()) != e.table.as_ref().map(|t| t.bind(cx).sexp()) {
+                    return None;
+                }
+                table
+            }
+        };
         if e.found == Found::Table {
             if !held(e.table_box.as_ref()?) {
                 return None;
@@ -834,7 +877,8 @@ fn memo_get<'g>(cx: &'g Cx, method: Sym<'g>, top: Ref<'g>, def: Ref<'g>) -> Opti
         } else {
             // the method still not in the table (a binding of anything)
             if let Some(t) = table {
-                if !matches!(cx.frame_binding(env_ref(t)?, method), Lookup::Unbound) {
+                let t = env_ref(t)?;
+                if !cx.frame_surely_empty(t) && !matches!(cx.frame_binding(t, method), Lookup::Unbound) {
                     return None;
                 }
             }
@@ -857,6 +901,7 @@ fn memo_put(cx: &mut Cx, method: Root<'_>, top: Root<'_>, def: Root<'_>, rec: Re
         top: g(cx, top),
         top_box: (g(cx, rec.top.0), rec.top.1),
         def: g(cx, def),
+        def_box: rec.def_box.map(|(b, v)| (g(cx, b), v)),
         table: rec.table.map(|t| g(cx, t)),
         table_box: rec.table_box.map(|(b, v)| (g(cx, b), v)),
         chain: rec.chain.iter().map(|&(b, v)| (g(cx, b), v)).collect(),
