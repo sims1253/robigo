@@ -190,6 +190,12 @@ fn printing_a_package_altrep_vector_is_not_implemented_yet() {
             ("print(list(a = z))", "printing a package ALTREP vector is not implemented yet"),
             ("deparse(z)", "deparse of a package ALTREP vector is not implemented yet"),
             ("cat(z)", "cat() of a package ALTREP vector is not implemented yet"),
+            ("cat(\"x\", fill = 20, labels = z)", "cat() of a package ALTREP vector is not implemented yet"),
+            ("cat(\"x\", \"y\", sep = z)", "cat() of a package ALTREP vector is not implemented yet"),
+            (
+                ".Internal(encodeString(z, 0L, \"\", 0L, TRUE))",
+                "encodeString() of a package ALTREP vector is not implemented yet",
+            ),
             // as an attribute's value (names and dimnames go through the same
             // check, print_value_rec's and deparse2buff's attribute walk)
             ("x <- c(1, 2); attr(x, \"w\") <- z; print(x)", "printing a package ALTREP vector is not implemented yet"),

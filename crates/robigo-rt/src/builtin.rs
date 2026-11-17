@@ -269,6 +269,11 @@ pub fn do_cat(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: 
         0 => return Err(cx.error("cannot write to this connection")),
         _ => return Err(cx.error("invalid connection")),
     };
+    // a package class's elements are its C methods' (M5): `sep` and `labels`
+    // are read as standard storage
+    if args.get(cx, 2).is_package_altrep() || args.get(cx, 4).is_package_altrep() {
+        return Err(cx.error("robigo: cat() of a package ALTREP vector is not implemented yet"));
+    }
     let sepr = args.get(cx, 2);
     let Some(seps) = sepr.as_vector::<Char<'_>>() else {
         return Err(cx.error("invalid 'sep' specification"));
