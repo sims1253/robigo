@@ -228,13 +228,21 @@ fn encode(cx: &mut Cx, ipc: &[i32]) -> RResult<Option<Vec<i32>>> {
     Ok(Some(pc))
 }
 
+/// `R_bcEncode(bytes)`: the code a BCODESXP holds for `bytes` (None for
+/// empty code, GNU R's R_NilValue), with `R_bcEncode`'s errors.
+/// `unserialize` encodes a code vector before it reads the constants.
+// R: eval.c:R_bcEncode
+pub fn bc_encode(cx: &mut Cx, bytes: Root<'_>) -> RResult<Option<Vec<i32>>> {
+    let ipc = code_ints(cx, bytes)?;
+    encode(cx, &ipc)
+}
+
 /// `mkCode(bytes, consts)`: a BCODESXP holding `bytes` as `R_bcEncode`
 /// makes them, and `consts`, written to `out`. The object V3 translates and
 /// L1's `serialize` writes.
 // R: eval.c:do_mkcode, R_bcEncode
 pub fn mk_code(cx: &mut Cx, bytes: Root<'_>, consts: Root<'_>, out: Out<'_>) -> RResult<()> {
-    let ipc = code_ints(cx, bytes)?;
-    let code = encode(cx, &ipc)?;
+    let code = bc_encode(cx, bytes)?;
     cx.build(out, |cx| {
         let c = match &code {
             Some(pc) => cx.alloc_copy(pc)?.finish().into(),

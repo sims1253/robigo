@@ -29,8 +29,8 @@ Results of the last run are written to .robigo/results/NAME.json.
 robigo-rt, G3's runtime (`--robigo`, else $ROBIGO_RT_BIN, else the target's
 release robigo-rt), against the recordings of its own pin (`rt` in
 scripts/oracle-versions), with its own ratchet, `passing-rt/`. It refuses,
-with the reason, the corpora robigo-rt cannot run yet: those in echo mode
-(it has no `-f` transcript front end) and those with a build step. Each
+with the reason, the corpora robigo-rt cannot run yet: those with a build
+step. Each
 failing case records the first thing it found missing (`blocked`: a
 primitive or `.Internal` stub, another "not implemented yet", or a function
 base does not bind), and the run prints them ranked by the cases each
@@ -481,9 +481,6 @@ def robigo_rt_path(arg):
 
 def rt_unsupported(name, conf):
     """Why robigo-rt cannot run a corpus yet, or None."""
-    if conf.get("mode", "script") != "script":
-        return (f"{name} runs in {conf.get('mode')} mode (`R -f`, the echoed transcript), "
-                "and robigo-rt has no `-f` front end yet")
     if conf.get("build"):
         return f"{name} has a build step ({conf['build']}), which robigo-rt cannot run yet"
     return None

@@ -219,6 +219,10 @@ macro_rules! __entry_lo_reg {
     (5) => {
         "r9"
     };
+    // (the export's integer-register budget assert says why)
+    ($n:tt) => {
+        "no register"
+    };
 }
 
 /// Define C API exports with machine entries:
@@ -251,6 +255,15 @@ macro_rules! __entry_one {
         const _: () = assert!(
             0 $(+ (<$t as $crate::entry::CArg<'static>>::INT as usize))* == $n,
             concat!("robigo-rtapi: ", stringify!($name), "'s argument-count class is not ", stringify!($n))
+        );
+        // `lo` goes in the integer register after the arguments', and SysV
+        // passes six (rdi, rsi, rdx, rcx, r8, r9): at most five arguments
+        const _: () = assert!(
+            $n <= 5,
+            concat!(
+                "robigo-rtapi: ", stringify!($name), " has ", stringify!($n),
+                " integer-class arguments: the machine entry passes `lo` after them, in one of six registers"
+            )
         );
         // the stub hands `lo` over in a register: every argument and the
         // result fit one, and the SSE arguments the eight xmm registers
