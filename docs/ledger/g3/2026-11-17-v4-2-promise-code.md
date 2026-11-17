@@ -118,3 +118,18 @@ path is unchanged.
 ### Review
 
 - Sol round 1 (`01564e8c`): APPROVE, no findings.
+
+### Verification
+
+On main `f7378ac3` with #810 (`9987b86b`) merged, at `a3149e98`:
+
+- `scripts/rt-ci.py`: exit 0. Conformance 523/533: the 8 failing as on
+  main, plus `math/math1-compiled.R`, which #812 fixes. Every observation
+  mode, gctorture, the moving collector and fail-alloc pass (2800 runs,
+  0 differences). The crosscheck compared 127, 101 the same, 0 unexpected.
+- Miri, `cargo +nightly-2026-11-02 miri test -p robigo-rtcore` (rtcore
+  changed: `bytecode_expr`, the early-force hook, `frame_arg_raw`): 121
+  passed, 10 ignored, 0 failed.
+- `scripts/lint.sh`, `cargo fmt --check`: clean.
+- perf-rt: measured after #812 lands, on top of it (S1's and C1's
+  vm.rs order: whoever lands second re-measures).
