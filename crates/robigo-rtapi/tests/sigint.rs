@@ -43,7 +43,12 @@ fn run(name: &str, script: &str, markers: usize) -> (Vec<u8>, Vec<u8>, i32) {
     std::fs::write(&file, script).unwrap();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
     cmd.arg(&file).env("LANGUAGE", "en").env("LC_ALL", "C.UTF-8").env("TZ", "UTC");
-    cmd.env("R_DEFAULT_PACKAGES", "NULL").env_remove("ROBIGO_FAIL_ALLOC_AT");
+    cmd.env("R_DEFAULT_PACKAGES", "NULL").env_remove("ROBIGO_FAIL_ALLOC_AT").env_remove("ROBIGO_BOOT_VERBOSE");
+    // the pin report to stderr (`1`); to a file it stays, as rt-ci's check
+    // (the verification modes run these cases too, as cli.rs's)
+    if std::env::var_os("ROBIGO_GC_PIN_REPORT").is_some_and(|v| v == "1") {
+        cmd.env_remove("ROBIGO_GC_PIN_REPORT");
+    }
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null());
     // SAFETY: signal() is async-signal-safe, the one call in the child
     // between fork and exec.
@@ -102,7 +107,15 @@ fn run(name: &str, script: &str, markers: usize) -> (Vec<u8>, Vec<u8>, i32) {
         std::thread::sleep(Duration::from_millis(20));
     };
     reader.join().unwrap();
-    let err = err_reader.join().unwrap();
+    // ROBIGO_GC_STATS' report (the heap's, when the isolate is dropped)
+    let err: Vec<u8> = err_reader
+        .join()
+        .unwrap()
+        .split_inclusive(|&b| b == b'\n')
+        .filter(|l| !l.starts_with(b"robigo gc: "))
+        .flatten()
+        .copied()
+        .collect();
     let _ = std::fs::remove_dir_all(&dir);
     let out = out.lock().unwrap().clone();
     (out, err, status.code().unwrap_or(-1))
