@@ -38,6 +38,9 @@ pub fn do_paste<const CODE: u8>(
     if !matches!(x.bind(cx).sexptype(), VECSXP | EXPRSXP) {
         return Err(cx.error("invalid first argument"));
     }
+    // `list(...)`'s elements are read as the builtin's arguments are
+    // (`list` leaves one of robigo's compact sequences as it is)
+    cx.materialize_nested(x, Some(1))?;
     let Some(nx) = x.bind(cx).std_vector().map(|v| v.len()) else {
         return Err(not_yet(cx, Some(call), "paste() of a package ALTREP list"));
     };
@@ -170,6 +173,9 @@ pub fn do_filepath(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, o
     if !matches!(x.bind(cx).sexptype(), VECSXP | EXPRSXP) {
         return Err(cx.error("invalid first argument"));
     }
+    // `list(...)`'s elements are read as the builtin's arguments are
+    // (`list` leaves one of robigo's compact sequences as it is)
+    cx.materialize_nested(x, Some(1))?;
     let nx = x.bind(cx).len().unwrap_or(0);
     let empty = |cx: &mut Cx, out: Out<'_>| cx.build(out, |cx| Ok(cx.alloc_vector::<Char<'_>>(0)?.finish().into()));
     if nx == 0 {
