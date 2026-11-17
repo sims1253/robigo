@@ -120,6 +120,8 @@ pub struct Isolate {
     pub(crate) warn_partial_match_args: Cell<bool>,
     /// `ROBIGO_NO_INPLACE=1` (docs/g3.md §16): every in-place write copies.
     pub(crate) no_inplace: Cell<bool>,
+    /// `ROBIGO_RETRY_TORTURE=1` ([`Cx::retry_torture`]).
+    pub(crate) retry_torture: Cell<bool>,
     /// The code stamps and floors ([`Cx::next_code_stamp`]).
     pub(crate) code: CodeStamps,
     /// The C state `options()` sets for the error and warning reports.
@@ -568,6 +570,31 @@ impl Cx {
         self.iso().no_inplace.set(on);
     }
 
+    /// `ROBIGO_RETRY_TORTURE=1` (docs/g3.md §16, E9): the first allocation
+    /// of every [`Cx::build_with`] and [`Cx::retry_alloc`] call is refused
+    /// once, so each build's retry runs (a collection, then the attempt
+    /// again from the start). It catches what a refusal at that point
+    /// would: an object read outside the build and used inside it after
+    /// the collection (unrooted: freed; under `ROBIGO_GC_MOVE=1`: moved),
+    /// and an effect a retried attempt repeats.
+    ///
+    /// Each refusal is one E9's `ROBIGO_FAIL_ALLOC_AT=n` makes: the knob's,
+    /// refusing that allocation as a request past a limit is refused; so
+    /// the mode reaches no state the heap cannot. It makes many in one run,
+    /// as a run near a vector limit does, where `ROBIGO_FAIL_ALLOC_AT` makes
+    /// one. It shares the knob, so it is not combined with
+    /// `ROBIGO_FAIL_ALLOC_AT` (`robigo-rt` refuses both).
+    #[inline(always)]
+    pub fn retry_torture(&self) -> bool {
+        self.iso().retry_torture.get()
+    }
+
+    /// Turn [`Cx::retry_torture`] mode on or off (`robigo-rt` reads
+    /// `ROBIGO_RETRY_TORTURE`).
+    pub fn set_retry_torture(&mut self, on: bool) {
+        self.iso().retry_torture.set(on);
+    }
+
     /// GNU R's `MAYBE_SHARED(x)` where the answer decides whether `x` is
     /// written in place: always true under [`Cx::no_inplace`].
     #[inline(always)]
@@ -945,6 +972,7 @@ impl OwnedIsolate {
             locale: Cell::new(opts.locale),
             warn_partial_match_args: Cell::new(false),
             no_inplace: Cell::new(false),
+            retry_torture: Cell::new(false),
             code: CodeStamps::default(),
             report_options: ReportOptions::default(),
             console: std::cell::RefCell::new(crate::console::Console::std()),

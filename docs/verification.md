@@ -679,7 +679,10 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    and `scripts/rt-fail-alloc.py` (E9: `ROBIGO_FAIL_ALLOC_AT=n` refuses the
    script's `n`th allocation once; the output must not change; its scripts
    are `tests/rt/alloc/effects.R` and, for unserialize,
-   `tests/rt/serialize-closures/unserialize-e9.R`). Every pull
+   `tests/rt/serialize-closures/unserialize-e9.R`; `ROBIGO_RETRY_TORTURE=1`,
+   which refuses the first allocation of every `&Cx` build once, E9's
+   refusal at every build in one run, has no step yet:
+   `docs/ledger/g3/2026-11-17-retry-torture.md`). Every pull
    request but a docs-only one runs it, and with it **base-subset**:
    `scripts/base-subset.sh --check` inside the GNU R 4.6.2 oracle image
    (robigo-rt's checked-in base subset is what this tree traces); the modes of `docs/g3.md` §16 add

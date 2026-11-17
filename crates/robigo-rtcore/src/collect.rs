@@ -157,6 +157,13 @@ impl Cx {
         unsafe { self.iso().core() }.arm_fail_alloc()
     }
 
+    /// [`Cx::retry_torture`]'s step: E9's knob set to refuse the next
+    /// allocation once (`on`), or off.
+    pub(crate) fn refuse_next_alloc(&self, on: bool) {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.fail_alloc_at(on as u64)
+    }
+
     /// Whether gctorture is on (`gctorture()`'s result).
     pub fn gc_torture_on(&self) -> bool {
         // SAFETY: one read of the core.

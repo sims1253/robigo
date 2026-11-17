@@ -119,6 +119,16 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         Ok(other) => panic!("robigo: ROBIGO_NO_INPLACE={other:?} is neither \"0\" nor \"1\""),
     };
     cx.set_no_inplace(no_inplace);
+    let retry_torture = match std::env::var("ROBIGO_RETRY_TORTURE").as_deref() {
+        Ok("1") => true,
+        Ok("0") | Ok("") | Err(_) => false,
+        Ok(other) => panic!("robigo: ROBIGO_RETRY_TORTURE={other:?} is neither \"0\" nor \"1\""),
+    };
+    // both set E9's knob (Cx::retry_torture)
+    if retry_torture && std::env::var("ROBIGO_FAIL_ALLOC_AT").is_ok_and(|v| v.parse::<u64>().is_ok_and(|n| n > 0)) {
+        panic!("robigo: ROBIGO_RETRY_TORTURE and ROBIGO_FAIL_ALLOC_AT both use E9's knob: set one");
+    }
+    cx.set_retry_torture(retry_torture);
     let cond = conditions::CondState::new(cx);
     let defs = prims::base_defs();
     let (objs, names) = prims::make_prims(cx, &defs, 0);
