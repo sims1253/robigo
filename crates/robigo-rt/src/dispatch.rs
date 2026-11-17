@@ -2442,8 +2442,8 @@ pub fn do_nextmethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, 
                     return Err(cx.error("no method to invoke"));
                 }
                 if nextfun.bind(cx).sexptype() == CLOSXP {
-                    // SAFETY: an immortal symbol: INTERNAL is its tag.
-                    let internal = unsafe { t.bind(cx).sexp().tag() };
+                    // SAFETY: a live symbol.
+                    let internal = unsafe { cx.internal_raw(t.bind(cx).sexp()) };
                     if internal != cx.nil().sexp() {
                         let o = nextfun.reset(cx);
                         // SAFETY: a symbol's INTERNAL is an immortal primitive.

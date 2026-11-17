@@ -347,8 +347,14 @@ impl Sexp {
     /// `self` must be live.
     #[inline(always)]
     pub unsafe fn mark_seen_by_c(self) {
-        // SAFETY: the caller's contract.
-        unsafe { self.set_extra(self.extra() | extra::SEEN_BY_C) }
+        // SAFETY: the caller's contract. An immortal object never moves, so
+        // it needs no mark, and is not written (H5: shared objects are
+        // immutable).
+        unsafe {
+            if !self.has_flag(flags::IMMORTAL) {
+                self.set_extra(self.extra() | extra::SEEN_BY_C)
+            }
+        }
     }
     /// Whether the object was ever handed to C ([`extra::SEEN_BY_C`]).
     ///
@@ -500,6 +506,8 @@ impl Sexp {
     /// As for [`Sexp::car`]: on a vector the tag's word is payload.
     #[inline(always)]
     pub unsafe fn tag(self) -> Sexp {
+        // A symbol has no TAG: INTERNAL is per isolate (rtcore's `SymCell`).
+        debug_assert!(!unsafe { self.is_symbol() }, "robigo: the TAG of a symbol");
         // SAFETY: the caller's contract puts a field at `node::OFF_TAG`.
         unsafe { self.sexp_at(node::OFF_TAG) }
     }
@@ -585,6 +593,16 @@ impl Sexp {
         // SAFETY: the attribute slot of every non-CHARSXP header.
         unsafe { self.store(self.field(header::OFF_ATTRIB), v) }
     }
+    /// A symbol is immutable once installed (H5): the barriered node stores
+    /// never take one.
+    ///
+    /// # Safety
+    /// `self` is a live object.
+    #[inline(always)]
+    unsafe fn is_symbol(self) -> bool {
+        // SAFETY: the caller's contract.
+        unsafe { self.typ() == crate::types::SYMSXP }
+    }
     /// GNU R's SETCAR store (also SET_PRVALUE, SET_FORMALS, ALTREP data1).
     ///
     /// # Safety
@@ -592,6 +610,7 @@ impl Sexp {
     /// object (not an EXTPTRSXP, BUILTINSXP or SPECIALSXP).
     #[inline(always)]
     pub unsafe fn set_car(self, v: Sexp) {
+        debug_assert!(!unsafe { self.is_symbol() }, "robigo: a store into a symbol");
         // SAFETY: the caller's contract puts a traced field at `node::OFF_CAR`.
         unsafe { self.store(self.field(node::OFF_CAR), v) }
     }
@@ -601,6 +620,7 @@ impl Sexp {
     /// As for [`Sexp::store`]; `self` has node fields.
     #[inline(always)]
     pub unsafe fn set_cdr(self, v: Sexp) {
+        debug_assert!(!unsafe { self.is_symbol() }, "robigo: a store into a symbol");
         // SAFETY: the caller's contract puts a traced field at `node::OFF_CDR`.
         unsafe { self.store(self.field(node::OFF_CDR), v) }
     }
@@ -610,6 +630,7 @@ impl Sexp {
     /// As for [`Sexp::store`]; `self` has node fields.
     #[inline(always)]
     pub unsafe fn set_tag(self, v: Sexp) {
+        debug_assert!(!unsafe { self.is_symbol() }, "robigo: a store into a symbol");
         // SAFETY: the caller's contract puts a traced field at `node::OFF_TAG`.
         unsafe { self.store(self.field(node::OFF_TAG), v) }
     }

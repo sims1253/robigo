@@ -80,7 +80,7 @@ use crate::exit::{RError, RResult};
 use crate::handle::{EnvRef, Ref, Sym};
 use crate::isolate::{Cx, Isolate};
 use crate::root::{Out, Root};
-use crate::sym::{self, ACTIVE_BINDING, ASSIGNMENT_PENDING, BINDING_LOCK, SPECIAL_SYMBOL, SymCell, SymCells};
+use crate::sym::{self, ACTIVE_BINDING, ASSIGNMENT_PENDING, BINDING_LOCK, SymCell, SymCells};
 use frame::layout::{
     self, ACTIVE, ALIAS, CELL, DELAYED, FORCED, INT, LGL, META_ALIASED, META_LOCKED, META_ORIGIN_SELF, META_PENDING,
     REAL, SlotRef, UNBOUND, VALUE,
@@ -137,10 +137,10 @@ impl EnvState {
         let mut sym = |name: &str| core.install(name.as_bytes()).expect(INIT);
         let (class_sym, double_colon, base_sym, quote_sym) = (sym("class"), sym("::"), sym("base"), sym("quote"));
         let base_ns_env = sym(".BaseNamespaceEnv");
+        // installed here for GNU R's order (their SPECIAL_SYMBOL comes with
+        // them: `sym::symbol_bits`)
         for name in sym::SPEC_NAME {
-            let s = sym(name);
-            // SAFETY: an immortal symbol of this heap; gp is a header field.
-            unsafe { s.set_gp(s.gp() | SPECIAL_SYMBOL) };
+            sym(name);
         }
         // SAFETY: every object passed is a live object of this heap, and
         // nothing collects: allocation never does.
@@ -214,6 +214,24 @@ impl EnvState {
         unsafe { f((*self.cells.get()).get_mut(sym::id_of(s))) }
     }
 
+    /// `INTERNAL(s)`: null for none.
+    ///
+    /// # Safety
+    /// `s` is a live symbol.
+    unsafe fn internal(&self, s: Sexp) -> Sexp {
+        // SAFETY: as in `cell`.
+        unsafe { (*self.cells.get()).internal(sym::id_of(s)) }
+    }
+
+    /// `SET_INTERNAL(s, x)`.
+    ///
+    /// # Safety
+    /// `s` is a live symbol, `x` a live object of this isolate.
+    unsafe fn set_internal(&self, s: Sexp, x: Sexp) {
+        // SAFETY: as in `cell_mut`.
+        unsafe { (*self.cells.get()).set_internal(sym::id_of(s), x) }
+    }
+
     /// Every object this state roots directly ([`Cx::for_each_root`]): the
     /// fixed environments and symbols, then each symbol cell's value and
     /// cache entry.
@@ -243,6 +261,11 @@ impl EnvState {
                 }
             }
             i += 1;
+        }
+        // SAFETY: as in `cell`; the copy ends the read before `f` runs
+        let internals: Vec<Sexp> = unsafe { (*self.cells.get()).internals().collect() };
+        for x in internals {
+            f(x);
         }
         self.pending.for_each(f);
         self.residues.for_each(f);
@@ -1153,6 +1176,42 @@ unsafe fn global_walk(iso: &Isolate, s: Sexp) -> Result<Option<Loc>, Special> {
             rho = env::enclos(rho);
         }
         Ok(None)
+    }
+}
+
+impl Cx {
+    /// GNU R's `INTERNAL(sym)`: the `.Internal` function `sym` names,
+    /// R_NilValue for none. A per-isolate table by the symbol's id, not the
+    /// symbol's TAG: symbols become process-shared and immutable (H5,
+    /// docs/g3.md §5.3).
+    pub fn internal<'g>(&'g self, sym: Sym<'g>) -> Ref<'g> {
+        // SAFETY: a live symbol; a non-null entry is a live object of this
+        // isolate (the table roots it).
+        unsafe {
+            let x = self.iso().envs().internal(sym.as_ref().sexp());
+            if x.is_null() { self.nil() } else { Ref::from_sexp(x, self) }
+        }
+    }
+
+    /// `INTERNAL(sym)` for the compiler and the evaluator, which hold raw
+    /// objects: the isolate's `.Internal` function of that name, or
+    /// `R_NilValue`.
+    ///
+    /// # Safety
+    ///
+    /// `sym` must be a live symbol.
+    pub unsafe fn internal_raw(&self, sym: Sexp) -> Sexp {
+        // SAFETY: the caller's contract.
+        let x = unsafe { self.iso().envs().internal(sym) };
+        if x.is_null() { self.nil().sexp() } else { x }
+    }
+
+    /// GNU R's `SET_INTERNAL(sym, fun)` (the isolate's table, which roots
+    /// `fun`).
+    pub fn set_internal(&self, sym: Sym<'_>, fun: Ref<'_>) {
+        self.iso().check_owns(fun.sexp());
+        // SAFETY: a live symbol and a live object of this isolate.
+        unsafe { self.iso().envs().set_internal(sym.as_ref().sexp(), fun.sexp()) }
     }
 }
 

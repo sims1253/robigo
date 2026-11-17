@@ -589,9 +589,10 @@ pub(crate) fn make_prims(cx: &mut Cx, defs: &[PrimDef], first: usize) -> (Vec<Gl
         let sym = cx.install(d.name.as_bytes()).expect("robigo: no room for the primitives' symbols");
         let sym = sym.as_ref().sexp();
         if d.internal() {
-            // SAFETY: a live (immortal) symbol and a rooted primitive: the
-            // store is SET_INTERNAL's.
-            unsafe { sym.set_tag(g.bind(cx).sexp()) };
+            // SET_INTERNAL: the isolate's table (not the symbol, H5)
+            // SAFETY: an immortal symbol of this heap.
+            let s = unsafe { Ref::from_sexp(sym, cx) }.as_sym().expect("robigo: a symbol");
+            cx.set_internal(s, g.bind(cx));
         } else {
             cx.scope(|cx, s| {
                 // SAFETY: an immortal symbol of this heap.

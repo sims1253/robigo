@@ -295,14 +295,8 @@ impl Cx {
     /// empty name, `MAXIDSIZE`) are the caller's.
     pub fn install<'g>(&'g self, name: &[u8]) -> Result<Sym<'g>, NeedGc> {
         // SAFETY: one call into the core, which calls nothing of ours.
+        // (DDVAL, names.c:mkSYMSXP's, comes with a new symbol: `sym::symbol_bits`)
         let s = unsafe { self.iso().core() }.install(name)?;
-        // R: names.c:mkSYMSXP (`if (isDDName(name)) SET_DDVAL(ans, 1)`):
-        // set on every install of such a name (the bit never changes).
-        if is_dd_name(name) {
-            // SAFETY: a live symbol; gp is a header field no reader holds a
-            // view of.
-            unsafe { s.set_gp(s.gp() | DDVAL) };
-        }
         // SAFETY: symbols are immortal in their heap.
         Ok(unsafe { Ref::from_sexp(s, self) }.as_sym().unwrap())
     }
