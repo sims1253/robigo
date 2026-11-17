@@ -19,8 +19,13 @@
     These are `SPECIAL_SYMBOL` (names.c's `Spec_name`), `DDVAL` (`..N`,
     `mkSYMSXP`) and `NO_TRACKREFS` on `.Last.value`. Before, `Cx::install`,
     `EnvState::new` and `install_rsyms` set them after the install.
-  - `mark_seen_by_c` skips immortal objects: they never move, so they need
-    no mark, and a shared object will take no writes.
+  - `mark_seen_by_c` and C's `seen()` (api.c) skip immortal objects: they
+    never move, so they need no mark, and a shared object will take no
+    writes. The C layout header exports `ROBIGO_FLAG_IMMORTAL` for it.
+  - A base binding's `ASSIGNMENT_PENDING` (complex assignment, `raw.rs`)
+    is its `SymCell`'s bits, which the base store already read; before, the
+    setter wrote the symbol's gp, so the base store never saw the bit (its
+    old value's count was not decremented: not visible from R).
   - Debug builds assert that the barriered node stores (`set_car`,
     `set_cdr`, `set_tag`) never take a symbol and that nothing reads a
     symbol's TAG. robigo-heap's three tests that stored into a symbol's
@@ -30,6 +35,16 @@
 - Not in this step: the arena, shared PRINTNAMEs (the foreman's §4
   decision), the static immortal objects. F7a dropped the per-isolate
   TRUELENGTH table.
-- Verified: (pending)
-- Measured: (pending)
-- Review: (pending)
+- Verified: the debug tests of robigo-heap, -rtcore, -rt, -rtbuiltins and
+  -rtapi with the asserts on (they found the compiler's `.Internal`,
+  `simple_internal` and `NextMethod` readers); the full
+  `scripts/rt-ci.py` (every mode, 2,800 injected failures); Miri on
+  robigo-rtcore and the heap's layout and bitmap tests; `scripts/lint.sh`.
+- Measured (this box, release, `scripts/perf.py rt-bars --main`): main
+  `5f5f63f4f` (sha256 ed79841c…) against this branch merged into it
+  (c6aab95d…), each built in its own target from its own checkout: 0
+  failures, every row within ±0.05% instructions (fib +0.00%, the calls
+  rows −0.04% to +0.01%), peak RSS within ±1%.
+- Review: sol-loop, 2 rounds with gpt-6.1-sol on high, approved. Round 1
+  found C's `seen()` and the base binding's `ASSIGNMENT_PENDING` (both
+  fixed above).
