@@ -66,7 +66,7 @@ impl<'s> Loop<'s> {
         // `i`'s binding must see the write: GNU R's bare `INTEGER(ind)[0]`
         cx.owned_mut::<i32>(self.ind)?.as_mut_slice()[0] = (i + 1) as i32;
         // (under the builtin's own protections: robigo_rtcore's ppacct)
-        cx.with_pp_excess(self.pp, |cx| cx.force_and_call(self.fcall, self.rho, out))?;
+        cx.with_pp_excess(self.pp, |cx| cx.force_and_call(self.fcall, 1, self.rho, out))?;
         cx.scope(|cx, s| {
             let cur = s.capture(cx, |cx, o| cx.var_loc_value(self.loc, o))?;
             if cur.bind(cx) != self.ind.bind(cx) || cx.shared(self.ind.bind(cx)) {
@@ -408,4 +408,148 @@ pub fn do_islistfactor(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'
         islistfactor(x) == 1
     };
     cx.build_scalar(out, Lgl(ans as i32))
+}
+
+/// `.Internal(mapply(FUN, dots, MoreArgs))`: `FUN` called on the `i`-th
+/// elements of the lists in `dots`, recycled to the longest, and the
+/// arguments in `MoreArgs`; each call is `R_forceAndCall` of
+/// `FUN(dots[[1L]][[i]], dots[[2L]][[i]], ..., <MoreArgs>)` in the calling
+/// frame, its index constants written in place between calls.
+// R: mapply.c:do_mapply
+pub fn do_mapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("mapply", true).check_arity(cx, call, args)?;
+    cx.scope(|cx, s| {
+        let f = args.root(0);
+        let constant = args.root(2);
+        let varying = if args.get(cx, 1).sexptype() != VECSXP {
+            // (rarely, hence checking)
+            s.capture(cx, |cx, o| coerce::vector::coerce_vector(cx, args.root(1), VECSXP, o))?
+        } else {
+            args.root(1)
+        };
+        let m = varying.bind(cx).len().unwrap_or(0);
+        let mut lengths: Vec<i64> = Vec::with_capacity(m);
+        let (mut zero, mut longest) = (0, 0i64);
+        for i in 0..m {
+            let tmp1 = s.root(cx, varying.bind(cx).as_vector::<Ref<'_>>().unwrap().get(i));
+            let mut len = match crate::builtin::length_mut(cx, tmp1)? {
+                Some(n) => n as i64,
+                None => return Err(not_yet(cx, Some(call), "mapply() over an environment robigo cannot list")),
+            };
+            if tmp1.bind(cx).is_object() {
+                // possibly dispatch on length()
+                static LENGTH: robigo_rtcore::Generic = robigo_rtcore::Generic::builtin("length");
+                let r = cx.scope(|cx, s2| {
+                    let a = s2.args(cx, &[tmp1.bind(cx)], None);
+                    let o = s2.out(cx);
+                    let res = o.root();
+                    match cx.try_dispatch(&LENGTH, call, a, rho, o)? {
+                        robigo_rtcore::Dispatched::Done => {
+                            let v = res.bind(cx);
+                            Ok(Some(if v.sexptype() == REALSXP {
+                                // (R_xlen_t) REAL(ans)[0]
+                                v.as_vector::<f64>().unwrap().as_slice().unwrap().first().map_or(0, |&d| d as i64)
+                            } else {
+                                coerce::vector::as_integer_warn(cx, res)? as i64
+                            }))
+                        }
+                        robigo_rtcore::Dispatched::Default(_) => Ok(None),
+                    }
+                })?;
+                if let Some(n) = r {
+                    len = n;
+                }
+            }
+            lengths.push(len);
+            if len == 0 {
+                zero += 1;
+            }
+            longest = longest.max(len);
+            if zero > 0 && longest > 0 {
+                // warning(_("zero-length input leads to zero-length result"));
+                return cx.build(out, |cx| Ok(cx.alloc_vector::<Ref<'_>>(0)?.finish().into()));
+            }
+        }
+        let vnames = s.capture(cx, |cx, o| {
+            let v = attrib::names(varying.bind(cx)).unwrap_or(cx.nil());
+            o.set(cx, v);
+            Ok(())
+        })?;
+        let named = vnames.bind(cx) != cx.nil();
+        // build a call like f(dots[[1]][[4]], dots[[2]][[4]], dots[[3]][[4]], d=7)
+        let cv = constant.bind(cx);
+        let fcall = match cv.sexptype() {
+            NILSXP => s.root(cx, cx.nil()),
+            VECSXP | EXPRSXP => {
+                s.capture(cx, |cx, o| cx.build(o, |cx| coerce::vector::vector_to_pair_list(cx, constant.bind(cx))))?
+            }
+            // a pairlist passes the check but is not used: fcall stays
+            // R_NilValue
+            LISTSXP | LANGSXP | DOTSXP => s.root(cx, cx.nil()),
+            _ => return Err(cx.error("argument 'MoreArgs' of 'mapply' is not a list or pairlist")),
+        };
+        let real_indx = longest > i32::MAX as i64;
+        let dots = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"dots")?.into())))?;
+        let b2 = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"[[")?.into())))?;
+        let mut nindex: Vec<Root<'_>> = Vec::with_capacity(m);
+        for j in (0..m).rev() {
+            let mj = s.capture(cx, |cx, o| cx.build_scalar(o, (j + 1) as i32))?;
+            let nj = if real_indx {
+                s.capture(cx, |cx, o| cx.build_scalar(o, 0f64))?
+            } else {
+                s.capture(cx, |cx, o| cx.build_scalar(o, 0i32))?
+            };
+            nindex.push(nj);
+            let tag = if named && !vnames.bind(cx).as_vector::<Char<'_>>().unwrap().get(j).bytes().is_empty() {
+                Some(crate::envir::install_tr(cx, s, vnames, j)?)
+            } else {
+                None
+            };
+            let cell = s.capture(cx, |cx, o| {
+                cx.build(o, |cx| {
+                    let tmp1 = cx.lang3(b2.bind(cx), dots.bind(cx), mj.bind(cx))?;
+                    let tmp2 = cx.lang3(b2.bind(cx), tmp1, nj.bind(cx))?;
+                    match tag {
+                        Some(t) => cx.lcons_tagged(tmp2, fcall.bind(cx), t.bind(cx).as_sym().unwrap()),
+                        None => cx.lcons(tmp2, fcall.bind(cx)),
+                    }
+                })
+            })?;
+            fcall.replace_from(cx, cell);
+        }
+        nindex.reverse();
+        let fcall = s.capture(cx, |cx, o| cx.build(o, |cx| cx.lcons(f.bind(cx), fcall.bind(cx))))?;
+        let longest = longest as usize;
+        let ans = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_vector::<Ref<'_>>(longest)?.finish().into())))?;
+        let mut counters = vec![0i64; m];
+        for i in 0..longest {
+            for j in 0..m {
+                counters[j] += 1;
+                if counters[j] > lengths[j] {
+                    counters[j] = 1;
+                }
+                if real_indx {
+                    cx.set_plain_shared(nindex[j], 0, counters[j] as f64)?;
+                } else {
+                    cx.set_plain_shared(nindex[j], 0, counters[j] as i32)?;
+                }
+            }
+            cx.scope(|cx, t| {
+                // (under PROTECT(varyingArgs)?, vnames, mindex, nindex,
+                // fcall and ans: robigo_rtcore's ppacct)
+                let r = t.capture(cx, |cx, o| cx.with_pp_excess(5, |cx| cx.force_and_call(fcall, m as i32, rho, o)))?;
+                // lazy_duplicate of a referenced value: the value itself
+                // under reference counting
+                cx.owned_list(ans)?.set(i, r);
+                Ok(())
+            })?;
+        }
+        for j in 0..m {
+            if counters[j] != lengths[j] {
+                cx.warning("longer argument not a multiple of length of shorter")?;
+            }
+        }
+        out.set(cx, ans.bind(cx));
+        Ok(())
+    })
 }
