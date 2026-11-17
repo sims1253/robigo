@@ -9,7 +9,9 @@
 #   Rscript --vanilla scripts/bc-fixtures.R CASES.R OUT.R
 #
 # CASES.R defines `cases`: a list of list(name, fun, calls), `fun` a
-# function (compiled here), `calls` the R source of the calls to print.
+# function (compiled here), `calls` the R source of the calls to print; or
+# list(name, expr, calls), `expr` top-level code (compiler::compile) the
+# script binds to `name` as byte code.
 args <- commandArgs(trailingOnly = TRUE)
 stopifnot(length(args) == 2L)
 source(args[[1L]])
@@ -64,6 +66,13 @@ lines <- c(
   "mk <- function(code, consts) .Internal(mkCode(code, consts))",
   "")
 for (cs in cases) {
+  if (!is.null(cs$expr)) {
+    # top-level code (compiler::compile), which eval() runs
+    bc <- compiler::compile(cs$expr)
+    lines <- c(lines, sprintf("# %s", cs$name),
+               sprintf("%s <- %s", cs$name, code(.Internal(disassemble(bc)))), cs$calls, "")
+    next
+  }
   f <- compiler::cmpfun(cs$fun)
   bc <- .Internal(bodyCode(f))
   stopifnot(typeof(bc) == "bytecode")
