@@ -1,7 +1,7 @@
 ## 2026-11-17: L2a, base evaluated from source, namespaces, the search path, parse()
 
 - What: the first part of m2m3-plan L2 (split as L2a, foreman 2026-11-17;
-  the rest waits on B5a and C1-BC). Base: `main` at `6bfbf91f`.
+  the rest waits on B5a and C1-BC). Base: `main` at `908cb765`.
   - **Stage 0** (`ROBIGO_RT_BOOT=stage0`, beside M1's loader until L5):
     main.c's `R_ReplFile` of all of base's source (`library/base/R/base`)
     into the base namespace, then the system profile
@@ -50,15 +50,16 @@
     and does not read the binding again.
   - s3 is +0.33% in instructions against main.
 - **Stage 0 on this tree** (`ROBIGO_BOOT_VERBOSE=1`): 1,308 top-level
-  expressions, 39 fail, each on a builtin robigo-rt does not have yet:
-  base's `atan` (`pi`), `.Internal(strptime)` (`.leap.seconds`),
-  `.Internal(as.function.default)` (and the 19 `.GenericArgsEnv`
-  definitions after it), `.Internal(body)`; the profile's `R.Version`,
-  `file.path`, `dir.exists`, `Sys.getlocale` (B5a), `sub`, `strsplit` (RX),
-  `options(keep.source, scipen, max.print)`. Every name robigo-rt then
-  binds in base is one of GNU R's `ls(baseenv(), all.names = TRUE)`
-  (1,317 of 1,407); the 90 it lacks are those builtins, the profile's
-  names and the failures'.
+  expressions, 36 fail, each on something robigo-rt does not have yet:
+  - base: `.Internal(strptime)` (`.leap.seconds`),
+    `.Internal(as.function.default)` (and the 19 `.GenericArgsEnv`
+    definitions after it), `.Internal(body)`;
+  - the profile: `.Internal(Version)` (and the lines that read
+    `R.version`), `file.path`, `dir.exists`, `Sys.glob`, `Sys.getlocale`
+    (B5a), `options(keep.source, scipen, max.print)`.
+  - Every name robigo-rt then binds in base is one of GNU R's
+    `ls(baseenv(), all.names = TRUE)`: 1,319 of 1,407. The 88 it lacks
+    are those builtins, the profile's names and the failures'.
 - `loadNamespace` from source needs no `Meta/` files: without
   `nsInfo.rds` it parses the NAMESPACE file, as GNU R's own build
   bootstraps tools (a missing `package.rds` only warns). It waits on
