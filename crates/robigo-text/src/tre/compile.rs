@@ -645,7 +645,7 @@ fn expand_ast(
             // fails the compilation (`a{2 ~1}`, `a{0,2 ~1}` in GNU R
             // 4.6.2). Nothing between here and there fails otherwise.
             if iter.min > 1 || iter.max > 1 {
-                return Err(Status::Badbr.into());
+                return Err(Status::Badbr);
             }
             let mut set = **p;
             set[PARAM_DEPTH] = params_depth + 1;
