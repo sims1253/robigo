@@ -32,3 +32,6 @@ f(function(x) np(x, mustWork = TRUE), NA_character_)
 f(np, 1)
 f(np, s)
 tryCatch(.Internal(getwd(1)), error = function(e) conditionMessage(e))
+# ~user is that user's home directory
+d(c("~root/x", "~root", "~nosuchuserxyz/x"))
+b(c("~root/x", "~nosuchuserxyz"))

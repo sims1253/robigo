@@ -3,7 +3,6 @@
 //! (`translateCharFP`, or `translateCharFP2` where GNU R uses it) and, for
 //! `basename` and `dirname`, expanded (`R_ExpandFileName`).
 
-use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Char, Cx, Encoding, Out, RResult, Root, View};
 
 /// `R_PATH_MAX`: `PATH_MAX` on Linux.
@@ -44,7 +43,8 @@ fn expanded_names(cx: &mut Cx, s: Root<'_>) -> RResult<Vec<Option<Vec<u8>>>> {
             names.push(None);
             continue;
         }
-        let pp = crate::connections::expand_file_name(&translate_fp(cx, s, i)?);
+        let name = translate_fp(cx, s, i)?;
+        let pp = crate::connections::r_expand_file_name(cx, &name)?;
         if pp.len() > R_PATH_MAX - 1 {
             return Err(cx.error("path too long"));
         }
