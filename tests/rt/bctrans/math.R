@@ -127,3 +127,13 @@ k_lgl <- .Internal(bcClose(as.pairlist(alist(x = )),
  globalenv()))
 print(k_lgl(TRUE))
 
+# k_gamma_range
+k_gamma_range <- .Internal(bcClose(as.pairlist(alist(x = )),
+ mk(c(12L, 123L, 0L, 9L, 20L, 1L, 118L, 0L, 18L, 1L), list(quote(gamma(x)),
+  as.name("x"),
+  structure(c(NA, 0L, 0L, 0L, 1L, 1L, 0L, 0L, 0L, 0L), class = "expressionsIndex"))),
+ globalenv()))
+r <- withCallingHandlers(k_gamma_range(1e-310), warning = function(w) { print(conditionMessage(w)); print(conditionCall(w)); invokeRestart('muffleWarning') })
+print(r)
+print(k_gamma_range(1e-310))
+

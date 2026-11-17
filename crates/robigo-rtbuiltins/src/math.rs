@@ -160,34 +160,41 @@ fn math2(cx: &mut Cx, call: Root<'_>, sa: Root<'_>, sb: Root<'_>, f: fn(f64, f64
 // R: arithmetic.h:R_log
 /// bcEval's `math1funs` (eval.c): the function `MATH1`'s index names, the
 /// C library's (or nmath's) as the table has it, never `do_math1`'s
-/// wrappers, whose exact answers at `x == 0` drop `-0`.
+/// wrappers, whose exact answers at `x == 0` drop `-0`; and whether it is
+/// nmath's, which may queue a warning (`ML_WARNING`).
 // R: eval.c:math1funs
-pub const BC_MATH1: [(&str, fn(f64) -> f64); 24] = [
-    ("floor", f64::floor),
-    ("ceiling", f64::ceil),
-    ("sign", sign),
-    ("expm1", robigo_numerics::expm1),
-    ("log1p", robigo_numerics::log1p),
-    ("cos", f64::cos),
-    ("sin", f64::sin),
-    ("tan", f64::tan),
-    ("acos", f64::acos),
-    ("asin", f64::asin),
-    ("atan", f64::atan),
-    ("cosh", f64::cosh),
-    ("sinh", f64::sinh),
-    ("tanh", f64::tanh),
-    ("acosh", robigo_numerics::acosh),
-    ("asinh", robigo_numerics::asinh),
-    ("atanh", robigo_numerics::atanh),
-    ("lgamma", robigo_numerics::lgammafn),
-    ("gamma", robigo_numerics::gammafn),
-    ("digamma", robigo_numerics::digamma),
-    ("trigamma", robigo_numerics::trigamma),
-    ("cospi", robigo_numerics::cospi),
-    ("sinpi", robigo_numerics::sinpi),
-    ("tanpi", robigo_numerics::r_tanpi),
+pub const BC_MATH1: [(&str, fn(f64) -> f64, bool); 24] = [
+    ("floor", f64::floor, false),
+    ("ceiling", f64::ceil, false),
+    ("sign", sign, false),
+    ("expm1", robigo_numerics::expm1, false),
+    ("log1p", robigo_numerics::log1p, false),
+    ("cos", f64::cos, false),
+    ("sin", f64::sin, false),
+    ("tan", f64::tan, false),
+    ("acos", f64::acos, false),
+    ("asin", f64::asin, false),
+    ("atan", f64::atan, false),
+    ("cosh", f64::cosh, false),
+    ("sinh", f64::sinh, false),
+    ("tanh", f64::tanh, false),
+    ("acosh", robigo_numerics::acosh, false),
+    ("asinh", robigo_numerics::asinh, false),
+    ("atanh", robigo_numerics::atanh, false),
+    ("lgamma", robigo_numerics::lgammafn, true),
+    ("gamma", robigo_numerics::gammafn, true),
+    ("digamma", robigo_numerics::digamma, true),
+    ("trigamma", robigo_numerics::trigamma, true),
+    ("cospi", robigo_numerics::cospi, true),
+    ("sinpi", robigo_numerics::sinpi, true),
+    ("tanpi", robigo_numerics::r_tanpi, true),
 ];
+
+/// The warnings nmath queued since the last take (`MATHLIB_WARNING`'s
+/// messages, each ending in a newline).
+pub fn take_nmath_warnings() -> Vec<String> {
+    robigo_numerics::take_warnings()
+}
 
 /// `R_log(x)`, bcEval's `LOG` of one number.
 // R: arithmetic.c:R_log

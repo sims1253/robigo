@@ -20,5 +20,9 @@ cases <- list(
        calls = c("r <- withCallingHandlers(k_nan_warn(-1), warning = function(w) { print(conditionCall(w)); invokeRestart('muffleWarning') })",
                  "print(r)")),
   list(name = "k_lgl", fun = function(x) c(floor(x), log(x), sqrt(x)),
-       calls = "print(k_lgl(TRUE))")
+       calls = "print(k_lgl(TRUE))"),
+  # nmath's own warnings (ML_WARNING) on a number, not NaN: against the call
+  list(name = "k_gamma_range", fun = function(x) gamma(x),
+       calls = c("r <- withCallingHandlers(k_gamma_range(1e-310), warning = function(w) { print(conditionMessage(w)); print(conditionCall(w)); invokeRestart('muffleWarning') })",
+                 "print(r)", "print(k_gamma_range(1e-310))"))
 )

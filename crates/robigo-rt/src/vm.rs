@@ -766,12 +766,19 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 // SAFETY: registers of the running activation: their objects are live, rooted.
                 let (x, y) =
                     unsafe { (num(cx, act.get(i.b)), if i.c == 2 { num(cx, act.get(i.b + 1)) } else { None }) };
+                // nmath's functions queue their warnings (ML_WARNING): those
+                // of this number only
+                let nmath = robigo_rtbuiltins::math::BC_MATH1.get(i.g as usize).is_some_and(|e| e.2);
+                if nmath {
+                    robigo_rtbuiltins::math::take_nmath_warnings();
+                }
                 match math1_fast(i.g, x, y) {
                     Some((val, warn)) => {
-                        if warn {
+                        let queued = if nmath { robigo_rtbuiltins::math::take_nmath_warnings() } else { Vec::new() };
+                        if warn || !queued.is_empty() {
                             // SAFETY: a constant of the code.
                             let call = unsafe { v.k(i.e) };
-                            math1_warning(cx, act, call)?;
+                            math1_warnings(cx, act, call, &queued, warn)?;
                             reload!();
                         }
                         // SAFETY: an unboxed value.
@@ -1066,13 +1073,28 @@ fn math1_fast(kind: u16, x: Option<Num>, y: Option<Num>) -> Option<(f64, bool)> 
     }
 }
 
-/// [`Op::Math1`]'s "NaNs produced", against its call (bcEval's
-/// `warningcall(call, R_MSG_NA)`).
+/// [`Op::Math1`]'s warnings, in bcEval's order: nmath's (`queued`, raised
+/// by `MATHLIB_WARNING`'s `warning()` while the function ran, so against
+/// the expression bcEval is at, the call), then "NaNs produced" if `nan`,
+/// against the call (`warningcall(call, R_MSG_NA)`).
 #[inline(never)]
-fn math1_warning(cx: &mut Cx, act: &Act, call: Sexp) -> RResult<()> {
+fn math1_warnings(cx: &mut Cx, act: &Act, call: Sexp, queued: &[String], nan: bool) -> RResult<()> {
     // SAFETY: a constant of the rooted code.
     unsafe { act.scratch(R_SCRATCH, call) };
-    let r = cx.warning_call(Some(act.root(R_SCRATCH)), "NaNs produced");
+    let r = (|| {
+        for w in queued {
+            // SAFETY: the rooted call.
+            unsafe { cx.set_bc_expression(act.obj(R_SCRATCH)) };
+            let r = cx.warning(w.strip_suffix('\n').unwrap_or(w));
+            // SAFETY: R_NilValue.
+            unsafe { cx.set_bc_expression(cx.nil().sexp()) };
+            r?;
+        }
+        if nan {
+            cx.warning_call(Some(act.root(R_SCRATCH)), "NaNs produced")?;
+        }
+        Ok(())
+    })();
     act.clear(R_SCRATCH);
     r
 }

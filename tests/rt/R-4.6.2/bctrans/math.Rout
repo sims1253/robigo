@@ -27,3 +27,7 @@ gamma(0 * x)
 log(x, 2)
 [1] NaN NaN NaN
 [1] 1 0 1
+[1] "value out of range in 'gammafn'"
+k_gamma_range(9.99999999999997e-311)
+[1] Inf
+[1] Inf
