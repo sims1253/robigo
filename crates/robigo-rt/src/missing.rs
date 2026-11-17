@@ -9,17 +9,18 @@ use crate::prims;
 use crate::vm::Act;
 use robigo_heap::Sexp;
 use robigo_heap::types::*;
-use robigo_rtcore::{ArgValue, Cx, RResult, RawArg};
+use robigo_rtcore::{ArgValue, Cx, RResult, RawArg, bytecode_expr};
 
 /// `findRootPromise(p)`: the innermost promise of a chain of promises.
 ///
 /// # Safety
-/// `p` is live.
-unsafe fn root_promise(mut p: Sexp) -> Sexp {
-    // SAFETY: the caller's contract; PREXPR of a promise is its code.
+/// `p` is live; `nil` is R_NilValue.
+unsafe fn root_promise(mut p: Sexp, nil: Sexp) -> Sexp {
+    // SAFETY: the caller's contract; PREXPR of a promise is its code's
+    // expression (`bytecodeExpr`: byte code's first constant).
     unsafe {
         if p.typ() == PROMSXP {
-            while p.cdr().typ() == PROMSXP {
+            while bytecode_expr(p.cdr(), nil).typ() == PROMSXP {
                 p = p.cdr();
             }
         }
@@ -134,11 +135,12 @@ unsafe fn promise_missing(cx: &mut Cx, value: ArgValue, seen: &mut Vec<(usize, u
     unsafe {
         let (expr, env) = match value {
             ArgValue::Obj(p) if p.typ() == PROMSXP => {
-                let p = root_promise(p);
+                let p = root_promise(p, cx.nil().sexp());
                 // R_missing looks at any promise; R_isMissing at unforced
                 // ones only, which `R_isMissing(sym, R_NilValue)` (a forced
-                // promise's PRENV) also answers FALSE
-                (p.cdr(), p.tag())
+                // promise's PRENV) also answers FALSE; PREXPR, byte code's
+                // first constant for a promise of compiled code
+                (bytecode_expr(p.cdr(), cx.nil().sexp()), p.tag())
             }
             ArgValue::Delayed { expr, env } => (expr, env),
             ArgValue::Forced { expr } => (expr, cx.nil().sexp()),
@@ -184,7 +186,7 @@ unsafe fn is_missing(cx: &mut Cx, symbol: Sexp, rho: Sexp, seen: &mut Vec<(usize
         }
         let unforced = match b.value {
             ArgValue::Obj(p) => {
-                let p = root_promise(p);
+                let p = root_promise(p, cx.nil().sexp());
                 p.typ() == PROMSXP && p.car() == cx.unbound().sexp()
             }
             ArgValue::Delayed { .. } => true,

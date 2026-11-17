@@ -159,7 +159,9 @@ fn check(b: &Built) -> Result<(), Malformed> {
             Op::BrFalse => reg(i.b) && k(i.e) && tgt(i.target()),
             Op::Guard => (i.a == 0 || reg(i.a)) && k(i.e) && k(i.c) && tgt(i.target()),
             Op::GetFun => reg(i.a) && k(i.e) && k(i.c),
-            Op::Call => reg(i.a) && reg(i.b) && k(i.e) && (i.c < b.nsites || i.c == crate::ir::NO_SITE),
+            Op::Call => {
+                reg(i.a) && reg(i.b) && k(i.e) && (i.f == 0 || k(i.f)) && (i.c < b.nsites || i.c == crate::ir::NO_SITE)
+            }
             Op::CallBuiltin | Op::Internal => {
                 reg(i.a)
                     && k(i.e)

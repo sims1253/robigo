@@ -265,7 +265,7 @@ pub use context::{
 pub use edit::UniqueList;
 pub use env::{
     ArgLoc, ArgSlot, ArgValue, Binding, BindingType, BindingValue, HashProfile, Lookup, RawArg, RawBinding, Scalar,
-    SetVarTarget, SlotInit,
+    SetVarTarget, SlotInit, bytecode_expr,
 };
 pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
 pub use frames::{Frame, WalkError};

@@ -42,13 +42,24 @@ pub unsafe fn find_fun(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp) ->
 /// The generic call: the function in register `rf`, the call `call`
 /// (`eval`'s LANGSXP case after the function is found, or bcEval's `CALL`
 /// when `bc`); a closure's arguments are bound with call site `site`'s
-/// match plan.
+/// match plan. `codes`: a translated call's promise codes, by argument
+/// (`MAKEPROM`'s, [`args::arg_code`]), or R_NilValue.
 ///
 /// # Safety
 /// `call` is a live call of `cx`'s isolate (a constant of `act`'s code, or
-/// rooted).
+/// rooted); `codes` R_NilValue or a constant of `act`'s code.
 // R: eval.c:eval, eval.c:bcEval CALL
-pub unsafe fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: u16, bc: bool) -> RResult<()> {
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn call(
+    cx: &mut Cx,
+    act: &Act,
+    dst: Reg,
+    rf: Reg,
+    call: Sexp,
+    codes: Sexp,
+    site: u16,
+    bc: bool,
+) -> RResult<()> {
     let fun = act.obj(rf);
     // SAFETY: a register's object is live.
     match unsafe { fun.typ() } {
@@ -61,16 +72,16 @@ pub unsafe fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: 
                 // SAFETY: a register's live closure.
                 && unsafe { fun.extra() } & robigo_heap::extra::closure::NO_INLINE == 0
                 // SAFETY: the call is a constant of the caller's rooted code.
-                && unsafe { crate::inline::site(cx, act, dst, fun, call, site) }?
+                && unsafe { crate::inline::site(cx, act, dst, fun, call, codes, site) }?
             {
                 return Ok(());
             }
             // SAFETY: the caller's contract: `call` is live.
-            unsafe { args::call_closure(cx, act, dst, rf, call, site) }
+            unsafe { args::call_closure(cx, act, dst, rf, call, codes, site) }
         }
         // SAFETY: `fun` is register `rf`'s object, live while the activation
         // runs; `call` is live (the caller's contract).
-        BUILTINSXP if bc => unsafe { call_builtin_list(cx, act, dst, fun, call, bc) },
+        BUILTINSXP if bc => unsafe { call_builtin_list(cx, act, dst, fun, call, codes, bc) },
         // SAFETY: `fun` is register `rf`'s object, live while the activation
         // runs; `call` is live (the caller's contract).
         SPECIALSXP if bc => unsafe { call_special(cx, act, dst, fun, call) },
@@ -85,7 +96,7 @@ pub unsafe fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: 
             if unsafe { fun.typ() } == BUILTINSXP {
                 // SAFETY: `fun` is register `rf`'s object, live while the activation
                 // runs; `call` is live (the caller's contract).
-                unsafe { call_builtin_list(cx, act, dst, fun, call, bc) }?;
+                unsafe { call_builtin_list(cx, act, dst, fun, call, codes, bc) }?;
             } else {
                 // SAFETY: `fun` is register `rf`'s object, live while the activation
                 // runs; `call` is live (the caller's contract).
@@ -446,16 +457,27 @@ fn call_special_args(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp, in
 
 /// A builtin called with its arguments evaluated at run time, for the
 /// call in register-free form ([`builtin_evallist`]; `bc`: by compiled
-/// code).
+/// code, `codes` a translated call's promise codes or R_NilValue).
 ///
 /// # Safety
 /// `fun` is a live BUILTINSXP and `call` a live call of `cx`'s isolate
-/// (constants of `act`'s code, or rooted).
-pub unsafe fn call_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp, bc: bool) -> RResult<()> {
+/// (constants of `act`'s code, or rooted); `codes` R_NilValue or a
+/// constant of `act`'s code.
+pub unsafe fn call_builtin_list(
+    cx: &mut Cx,
+    act: &Act,
+    dst: Reg,
+    fun: Sexp,
+    call: Sexp,
+    codes: Sexp,
+    bc: bool,
+) -> RResult<()> {
     cx.scope(|cx, s| {
         // SAFETY: constants of the rooted code (or a register's function).
         let (callr, funr) = unsafe { (s.root(cx, Ref::from_sexp(call, cx)), s.root(cx, Ref::from_sexp(fun, cx))) };
-        builtin_evallist(cx, callr, funr, act.root(R_ENV), act.out(dst), bc)
+        // SAFETY: as above.
+        let codes = s.root(cx, unsafe { Ref::from_sexp(codes, cx) });
+        builtin_evallist(cx, callr, funr, act.root(R_ENV), act.out(dst), bc, Some(codes))
     })
 }
 
@@ -468,9 +490,10 @@ pub unsafe fn call_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, cal
 ///
 /// With `bc`, as compiled code's generic call of a builtin evaluates them
 /// (bcEval's `MAKEPROM`, `DOMISSING`, `DODOTS`, then `checkForMissings`):
-/// an argument call by its compiled code (`bcEval(code, rho)`), an empty
-/// argument R_MissingArg, reported ("argument %d is empty") only once all
-/// are evaluated.
+/// an argument call by its compiled code (`bcEval(code, rho)`: a
+/// translated call's own promise code from `codes`), an empty argument
+/// R_MissingArg, reported ("argument %d is empty") only once all are
+/// evaluated.
 // R: eval.c:evalList, eval.c:eval (BUILTINSXP), eval.c:bcEval MAKEPROM, checkForMissings, signalMissingArgError
 pub fn builtin_evallist(
     cx: &mut Cx,
@@ -479,6 +502,7 @@ pub fn builtin_evallist(
     rho: Root<'_>,
     out: Out<'_>,
     bc: bool,
+    codes: Option<Root<'_>>,
 ) -> RResult<()> {
     let missing = cx.missing_arg().sexp();
     let dots = prims::state(cx).syms.dots;
@@ -547,9 +571,17 @@ pub fn builtin_evallist(
                     let ar = s2.root(cx, unsafe { Ref::from_sexp(a, cx) });
                     let o = s2.out(cx);
                     let or = o.root();
+                    // SAFETY: the rooted codes (R_NilValue or a VECSXP).
+                    let code = codes.map_or(Sexp::NULL, |c| unsafe { args::arg_code(c.bind(cx).sexp(), n - 1) });
                     if a == missing {
                         // DOMISSING
                         o.set(cx, cx.missing_arg());
+                    } else if bc && !code.is_null() {
+                        // MAKEPROM's bcEval(code, rho): the argument's own
+                        // promise code
+                        // SAFETY: a constant of the rooted caller's code.
+                        let c = s2.root(cx, unsafe { Ref::from_sexp(code, cx) });
+                        crate::eval::eval_bytecode_inline(cx, c, rho, o)?;
                     } else if bc && ar.bind(cx).sexptype() == LANGSXP {
                         crate::eval::eval_bytecode_inline(cx, ar, rho, o)?;
                     } else if bc {

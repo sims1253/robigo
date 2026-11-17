@@ -155,7 +155,7 @@ pub fn force_and_call(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out: Out<'_>) 
             let fr = s.root(cx, unsafe { Ref::from_sexp(fun.unwrap(), cx) });
             cx.with_pp_excess(2, |cx| match t {
                 SPECIALSXP => apply_special(cx, call, fr, rho, out),
-                BUILTINSXP => builtin_evallist(cx, call, fr, rho, out, false),
+                BUILTINSXP => builtin_evallist(cx, call, fr, rho, out, false, None),
                 _ => {
                     let pargs = s.out(cx).root();
                     let o = pargs.reset(cx);
@@ -235,7 +235,7 @@ pub fn eval_call(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RR
                     if t == SPECIALSXP {
                         apply_special(cx, call, fr, rho, out)?;
                     } else {
-                        builtin_evallist(cx, call, fr, rho, out, false)?;
+                        builtin_evallist(cx, call, fr, rho, out, false, None)?;
                     }
                     cx.check_stack_balance(name.as_bytes(), save);
                     return Ok(());
@@ -248,7 +248,7 @@ pub fn eval_call(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RR
                         cx,
                         call,
                         fr,
-                        crate::args::Source::Site(crate::ir::NO_SITE),
+                        crate::args::Source::Site(crate::ir::NO_SITE, cx.nil().sexp()),
                         None,
                         rho,
                         None,

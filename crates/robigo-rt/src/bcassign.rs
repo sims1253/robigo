@@ -59,7 +59,10 @@ const S_WHAT: usize = 2;
 const S_VEXPR: usize = 3;
 const S_REPORT: usize = 4;
 const S_FINAL: usize = 5;
-const STEP_LEN: usize = 6;
+/// A translated step's promise codes (`MAKEPROM`'s BCODESXPs) by argument
+/// after the object (`args::arg_code`), or R_NilValue.
+const S_CODES: usize = 6;
+const STEP_LEN: usize = 7;
 
 /// A call of the function the step names (`GETFUN`, or `CHECKFUN` of an
 /// expression): `GETTER_CALL` / `SETTER_CALL`.
@@ -111,7 +114,8 @@ pub unsafe fn check_assign(cx: &Cx, place: Sexp) -> bool {
     }
 }
 
-/// A step of a plan.
+/// A step of a plan; `codes`, a translated step's promise codes by
+/// argument after the object (a VECSXP of BCODESXPs and R_NilValue).
 ///
 /// # Safety
 /// The objects are live, reachable from the source or immortal.
@@ -124,6 +128,7 @@ pub unsafe fn make_step(
     vexpr: Option<Sexp>,
     report: Sexp,
     fin: bool,
+    codes: Option<Sexp>,
 ) -> Result<Sexp, crate::cenv::Need> {
     let nil = cx.nil().sexp();
     // SAFETY: the caller's contract; a fresh vector, nothing collects.
@@ -139,6 +144,7 @@ pub unsafe fn make_step(
         s.set_elt(S_VEXPR, vexpr.unwrap_or(nil));
         s.set_elt(S_REPORT, report);
         s.set_elt(S_FINAL, f);
+        s.set_elt(S_CODES, codes.unwrap_or(nil));
         Ok(s)
     }
 }
@@ -372,7 +378,10 @@ fn getter<'s>(cx: &mut Cx, s: Scope<'s>, step: Root<'_>, lhs: Root<'_>, rho: Roo
             }
             cx.set_visible(true);
         }
-        _ => generic(cx, s, call, what, lhs, None, rho, out)?,
+        _ => {
+            let codes = s.root(cx, field(cx, step, S_CODES));
+            generic(cx, s, call, what, codes, lhs, None, rho, out)?
+        }
     }
     Ok(v)
 }
@@ -429,7 +438,10 @@ fn setter<'s>(
                 robigo_rtbuiltins::subassign::do_subassign_dflt(cx, call, args, rho, out)?;
             }
         }
-        _ => generic(cx, s, call, what, lhs, Some((vexpr, rhs)), rho, out)?,
+        _ => {
+            let codes = s.root(cx, field(cx, step, S_CODES));
+            generic(cx, s, call, what, codes, lhs, Some((vexpr, rhs)), rho, out)?
+        }
     }
     Ok(v)
 }
@@ -624,7 +636,8 @@ fn eval_arg(cx: &mut Cx, a: Root<'_>, rho: Root<'_>, missing_ok: bool, out: Out<
 /// A getter (`value` None) or setter call of the function the step names
 /// (`what`: a symbol, found by `findFun`, or an expression, evaluated and
 /// checked), on the object `lhs`: by the function's type, as
-/// `GETTER_CALL` / `SETTER_CALL` call it.
+/// `GETTER_CALL` / `SETTER_CALL` call it; `codes` the step's promise codes
+/// ([`S_CODES`]).
 // R: eval.c: GETFUN, CHECKFUN, GETTER_CALL, SETTER_CALL (bcEval)
 #[allow(clippy::too_many_arguments)]
 fn generic(
@@ -632,6 +645,7 @@ fn generic(
     s: Scope<'_>,
     call: Root<'_>,
     what: Root<'_>,
+    codes: Root<'_>,
     lhs: Root<'_>,
     value: Option<(Root<'_>, Root<'_>)>,
     rho: Root<'_>,
@@ -659,7 +673,7 @@ fn generic(
             let n = builtin_count(cx, &args, rho)?;
             let mut ev = Evaluated::new(cx, s, 1 + n + setter as usize);
             ev.next(cx.nil().sexp()).set(cx, lhs.bind(cx));
-            builtin_args(cx, &mut ev, &args, rho)?;
+            builtin_args(cx, &mut ev, &args, codes, rho)?;
             if let Some((_, rhs)) = value {
                 let vs = prims::state(cx).syms.value;
                 ev.next(vs).set(cx, rhs.bind(cx));
@@ -699,7 +713,7 @@ fn generic(
         _ => {
             // a promise list: `*tmp*` and a setter's value evaluated
             // promises (counted), the arguments as compiled code makes them
-            let list = closure_args(cx, s, call, setter, rho)?;
+            let list = closure_args(cx, s, call, codes, setter, rho)?;
             let first = mk_ev_promise(cx, s, tmpr, lhs)?;
             let o = s.out(cx);
             let full = o.root();
@@ -770,13 +784,20 @@ fn builtin_count(cx: &mut Cx, args: &[(Root<'_>, Sexp)], rho: Root<'_>) -> RResu
 }
 
 /// A builtin's arguments as compiled code makes them (`cmpCallArgs` for a
-/// builtin frame): a call or symbol evaluated now (`MAKEPROM`'s `bcEval`),
-/// a constant itself (marked not mutable), an empty argument R_MissingArg,
-/// `...` its elements evaluated (`DODOTS`).
+/// builtin frame): a call or symbol evaluated now (`MAKEPROM`'s `bcEval`:
+/// a translated step's own promise code from `codes`), a constant itself
+/// (marked not mutable), an empty argument R_MissingArg, `...` its
+/// elements evaluated (`DODOTS`).
 // R: eval.c: MAKEPROM, PUSHCONSTARG, DOMISSING, DODOTS (builtin frames)
-fn builtin_args(cx: &mut Cx, ev: &mut Evaluated<'_>, args: &[(Root<'_>, Sexp)], rho: Root<'_>) -> RResult<()> {
+fn builtin_args(
+    cx: &mut Cx,
+    ev: &mut Evaluated<'_>,
+    args: &[(Root<'_>, Sexp)],
+    codes: Root<'_>,
+    rho: Root<'_>,
+) -> RResult<()> {
     let dots = prims::state(cx).syms.dots;
-    for &(a, tag) in args {
+    for (j, &(a, tag)) in args.iter().enumerate() {
         if a.bind(cx).sexp() == dots {
             dots_values(cx, ev, rho)?;
             continue;
@@ -789,6 +810,16 @@ fn builtin_args(cx: &mut Cx, ev: &mut Evaluated<'_>, args: &[(Root<'_>, Sexp)], 
         }
         if a.bind(cx) == cx.missing_arg() {
             o.set(cx, cx.missing_arg());
+            continue;
+        }
+        // SAFETY: the rooted codes (R_NilValue or a VECSXP).
+        let code = unsafe { crate::args::arg_code(codes.bind(cx).sexp(), j) };
+        if !code.is_null() {
+            cx.scope(|cx, s| {
+                // SAFETY: a constant of the step, live with the plan.
+                let c = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
+                crate::eval::eval_bytecode_inline(cx, c, rho, o)
+            })?;
             continue;
         }
         eval_arg(cx, a, rho, false, o)?;
@@ -846,16 +877,24 @@ fn check_for_missings(cx: &mut Cx, ev: &Evaluated<'_>, call: Root<'_>) -> RResul
 }
 
 /// A closure's promise list as compiled code makes it (`cmpCallArgs`): a
-/// call or symbol a promise of byte code, a constant itself (marked not
-/// mutable), an empty argument R_MissingArg, `...` a promise of each
-/// element (`DODOTS`); tags kept.
+/// call or symbol a promise of byte code (a translated step's own promise
+/// code from `codes`), a constant itself (marked not mutable), an empty
+/// argument R_MissingArg, `...` a promise of each element (`DODOTS`); tags
+/// kept.
 // R: eval.c: MAKEPROM, PUSHCONSTARG, DOMISSING, DODOTS (closure frames)
-fn closure_args<'s>(cx: &mut Cx, s: Scope<'s>, call: Root<'_>, setter: bool, rho: Root<'_>) -> RResult<Root<'s>> {
+fn closure_args<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    call: Root<'_>,
+    codes: Root<'_>,
+    setter: bool,
+    rho: Root<'_>,
+) -> RResult<Root<'s>> {
     let args = args_of(cx, s, call, setter);
     let dots = prims::state(cx).syms.dots;
     let missing = cx.missing_arg().sexp();
     let mut items: Vec<(Root<'s>, Sexp)> = Vec::new();
-    for (a, tag) in args {
+    for (j, (a, tag)) in args.into_iter().enumerate() {
         let x = a.bind(cx).sexp();
         if x == dots {
             // SAFETY: an immortal symbol and a rooted environment.
@@ -889,7 +928,16 @@ fn closure_args<'s>(cx: &mut Cx, s: Scope<'s>, call: Root<'_>, setter: bool, rho
         // SAFETY: a live part of the call.
         match unsafe { x.typ() } {
             SYMSXP | LANGSXP => {
-                let p = promise(cx, s, a, rho, true)?;
+                // (a translated step's promise holds its own code)
+                // SAFETY: the rooted codes (R_NilValue or a VECSXP).
+                let code = unsafe { crate::args::arg_code(codes.bind(cx).sexp(), j) };
+                let e = if code.is_null() {
+                    a
+                } else {
+                    // SAFETY: a constant of the step, live with the plan.
+                    s.root(cx, unsafe { Ref::from_sexp(code, cx) })
+                };
+                let p = promise(cx, s, e, rho, true)?;
                 items.push((p, tag));
             }
             _ => {

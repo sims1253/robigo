@@ -350,7 +350,8 @@ trait Scope {
     fn read(&self, cx: &Cx, sym: Sexp, slot: u16, shape: Sexp) -> Option<Slot>;
 
     /// The value of the argument expression `e` (a symbol or a call of
-    /// compiled code), computed without running code, or None.
+    /// compiled code, or a translated call's promise code, its BCODESXP),
+    /// computed without running code, or None.
     fn eval(&self, cx: &Cx, e: Sexp) -> Option<Slot>;
 
     /// bcEval's `BASEGUARD` for the call `call` (its head a symbol) in
@@ -411,7 +412,13 @@ impl Scope for Real {
                 SYMSXP => symbol(cx, e, self.rho),
                 // (`early::run`'s reads, through this scope: early::run
                 // keeps its one caller)
-                LANGSXP => crate::code::cached(cx, e.aux(), Profile::Bc).and_then(|c| arg_value(cx, c, self)),
+                // (a translated call's promise code keeps its translation
+                // as a call keeps its code; bcEval runs its source when
+                // byte code is disabled)
+                BCODESXP if (*self.st).jit.get().disable_bytecode => None,
+                LANGSXP | BCODESXP => {
+                    crate::code::cached(cx, e.aux(), Profile::Bc).and_then(|c| arg_value(cx, c, self))
+                }
                 _ => None,
             }
         }
@@ -507,7 +514,10 @@ impl Scope for Frame<'_> {
         unsafe {
             match e.typ() {
                 SYMSXP => self.read(cx, e, 0, cx.nil().sexp()),
-                LANGSXP => crate::code::cached(cx, e.aux(), Profile::Bc).and_then(|c| arg_value(cx, c, self)),
+                BCODESXP if (*self.st).jit.get().disable_bytecode => None,
+                LANGSXP | BCODESXP => {
+                    crate::code::cached(cx, e.aux(), Profile::Bc).and_then(|c| arg_value(cx, c, self))
+                }
                 _ => None,
             }
         }
@@ -661,7 +671,8 @@ impl Saved {
 
 /// The VM's call `call` of the closure `f` (in a register of `act`, whose
 /// code is byte code: its constant arguments are values, its promises byte
-/// code, as the counts here assume), run inline into register `dst` when
+/// code, as the counts here assume; `codes` its arguments' promise codes,
+/// [`crate::args::arg_code`]), run inline into register `dst` when
 /// `f`'s code is a
 /// [`candidate`]: true when it ran. False with nothing changed otherwise
 /// (`f` is then marked [`extra::closure::NO_INLINE`] if its code can never run
@@ -672,7 +683,15 @@ impl Saved {
 /// # Safety
 /// `call` is a constant of `act`'s live code; `f` is live.
 #[inline(never)]
-pub(crate) unsafe fn site(cx: &mut Cx, act: &Act, dst: Reg, f: Sexp, call: Sexp, site: u16) -> RResult<bool> {
+pub(crate) unsafe fn site(
+    cx: &mut Cx,
+    act: &Act,
+    dst: Reg,
+    f: Sexp,
+    call: Sexp,
+    codes: Sexp,
+    site: u16,
+) -> RResult<bool> {
     // SAFETY: the caller's contract; the isolate's state outlives the call
     // (one fetch for the whole call: read through the pointer).
     unsafe {
@@ -692,7 +711,7 @@ pub(crate) unsafe fn site(cx: &mut Cx, act: &Act, dst: Reg, f: Sexp, call: Sexp,
         }
         let log: *const WriteLog = &(*st).inline_writes;
         debug_assert!((*log).is_empty(), "robigo: an inline run's writes outlived it");
-        let r = self::call(cx, code, f, call, act.rho(), st);
+        let r = self::call(cx, code, f, call, codes, act.rho(), st);
         match r {
             Ok(x) => {
                 // the run's `<<-` writes, in order, as `setVar` makes them;
@@ -1010,13 +1029,14 @@ unsafe fn call(
     code: Sexp,
     op: Sexp,
     call: Sexp,
+    codes: Sexp,
     rho: Sexp,
     st: *const crate::prims::RtState,
 ) -> Result<Slot, GiveUp> {
     let saved = Saved::of(cx);
     let caller = Real { rho, st, limit: cx.expressions() };
     // SAFETY: the caller's contract.
-    let r = unsafe { enter(cx, code, op, call, &caller, saved.depth, 0) };
+    let r = unsafe { enter(cx, code, op, call, codes, &caller, saved.depth, 0) };
     match r {
         Ok(x) => {
             // (the real call's exec restores the depth it began at)
@@ -1035,12 +1055,16 @@ unsafe fn call(
 /// depth checked, `bcEval`'s entry count.
 ///
 /// # Safety
-/// As for [`call`]; `caller` evaluates the call's argument expressions.
+/// As for [`call`]; `caller` evaluates the call's argument expressions
+/// (or their promise codes, `codes`: R_NilValue or a constant of the
+/// caller's code).
+#[allow(clippy::too_many_arguments)]
 unsafe fn enter(
     cx: &mut Cx,
     code: Sexp,
     op: Sexp,
     call: Sexp,
+    codes: Sexp,
     caller: &dyn Scope,
     at: i32,
     nest: u32,
@@ -1067,7 +1091,7 @@ unsafe fn enter(
             st: caller.st(),
             limit: caller.limit(),
         };
-        if !match_args(cx, &*fr.st, op, call, formals_of(code), &mut fr.args) {
+        if !match_args(cx, &*fr.st, op, call, codes, formals_of(code), &mut fr.args) {
             return Err(Unmatched);
         }
         if bc {
@@ -1092,12 +1116,14 @@ unsafe fn enter(
 /// many or too few arguments, an actual [`actual`] refuses.
 ///
 /// # Safety
-/// `op` and `call` are live.
+/// `op`, `call` and `codes` (R_NilValue or the call's promise codes) are
+/// live.
 unsafe fn match_args(
     cx: &Cx,
     st: &crate::prims::RtState,
     op: Sexp,
     call: Sexp,
+    codes: Sexp,
     n: usize,
     args: &mut [Arg; MAX_SLOTS],
 ) -> bool {
@@ -1109,12 +1135,12 @@ unsafe fn match_args(
         let mut k = 0;
         while el != nil {
             if el.tag() != nil {
-                return match_named(cx, st, op, call, n, args);
+                return match_named(cx, st, op, call, codes, n, args);
             }
             if k == n {
                 return false;
             }
-            let Some(a) = actual(cx, st, el.car()) else { return false };
+            let Some(a) = actual(cx, st, el.car(), crate::args::arg_code(codes, k)) else { return false };
             args[k] = a;
             k += 1;
             el = el.cdr();
@@ -1151,16 +1177,20 @@ unsafe fn default(cx: &Cx, d: Sexp) -> Option<Arg> {
     }
 }
 
-/// An actual's argument: a promise of a symbol or a call, or a constant's
-/// value; None for `...`, an empty argument, a getter call's `*tmp*`, or an
-/// expression a compiled call would not promise.
+/// An actual's argument: a promise of a symbol or a call (of its promise
+/// code `code`, a translated call's, when not null), or a constant's
+/// value; None for `...`, an empty argument, a getter call's `*tmp*`, or
+/// an expression a compiled call would not promise.
 ///
 /// # Safety
-/// `e` is live.
+/// `e` and `code` (unless null) are live.
 #[inline(always)]
-unsafe fn actual(cx: &Cx, st: &crate::prims::RtState, e: Sexp) -> Option<Arg> {
+unsafe fn actual(cx: &Cx, st: &crate::prims::RtState, e: Sexp, code: Sexp) -> Option<Arg> {
     if e == st.syms.dots || e == cx.missing_arg().sexp() || e == st.syms.tmpval {
         return None;
+    }
+    if !code.is_null() {
+        return Some(Arg::Expr(code));
     }
     // SAFETY: the caller's contract.
     unsafe {
@@ -1184,6 +1214,7 @@ unsafe fn match_named(
     st: &crate::prims::RtState,
     op: Sexp,
     call: Sexp,
+    codes: Sexp,
     n: usize,
     args: &mut [Arg; MAX_SLOTS],
 ) -> bool {
@@ -1194,9 +1225,11 @@ unsafe fn match_named(
         let mut positional = [Arg::Value(Slot::EMPTY); MAX_FORMALS];
         let mut npos = 0;
         let mut el = call.cdr();
+        let mut j = 0;
         while el != nil {
             let (e, tag) = (el.car(), el.tag());
-            let Some(arg) = actual(cx, st, e) else { return false };
+            let Some(arg) = actual(cx, st, e, crate::args::arg_code(codes, j)) else { return false };
+            j += 1;
             if tag != nil {
                 let mut f = op.car();
                 let mut k = 0;
@@ -1363,7 +1396,7 @@ unsafe fn body_loop<const FUSED: bool>(
                             // the force, at the reading point's depth
                             cx.set_eval_depth(fr.depth + i.d as i32);
                             // SAFETY: a live expression of the caller's code.
-                            if !early_force(cx, true, unsafe { e.typ() } == LANGSXP) {
+                            if !early_force(cx, true, unsafe { e.typ() }) {
                                 return None;
                             }
                             let x = fr.caller.eval(cx, e)?;
@@ -1460,7 +1493,8 @@ unsafe fn body_loop<const FUSED: bool>(
                         let code = inline_code(cx, &*fr.st, f)?;
                         // the call's evaluation point sets the depth the
                         // callee's entry counts from
-                        enter(cx, code, f, v.k(i.e), fr, fr.depth + i.d as i32, nest + 1).ok()?
+                        let codes = if i.f != 0 { v.k(i.f) } else { cx.nil().sexp() };
+                        enter(cx, code, f, v.k(i.e), codes, fr, fr.depth + i.d as i32, nest + 1).ok()?
                     }
                 }
             }
@@ -1821,8 +1855,11 @@ unsafe fn decode(v: &View) -> Vec<Fused> {
                     }
                 }
                 Op::GetFun if i.fl == 0 && v.profile == Profile::Bc => {
+                    // (a translated call's promise codes, `f`, take the
+                    // unfused `Call`)
                     if let Some(c) = next(1)
                         && c.op == Op::Call
+                        && c.f == 0
                         && clear(c)
                         && c.b == i.a
                         && c.a < MAX_REGS as u16
@@ -2070,7 +2107,9 @@ unsafe fn fused(
                         c
                     }
                 };
-                match enter(cx, code, f, v.k(s.e2), &*fr, fr.depth + s.d as i32, nest + 1) {
+                // (fused only without promise codes)
+                let nil = cx.nil().sexp();
+                match enter(cx, code, f, v.k(s.e2), nil, &*fr, fr.depth + s.d as i32, nest + 1) {
                     Ok(x) => {
                         regs[s.a as usize] = x;
                         Step::Next(s.tgt as usize)
@@ -2118,7 +2157,7 @@ unsafe fn slot_read(cx: &mut Cx, fr: &mut Frame<'_>, k: usize, sym: Sexp, d: u16
             // the force, at the reading point's depth
             cx.set_eval_depth(fr.depth + d as i32);
             // SAFETY: a live expression of the caller's code.
-            if !early_force(cx, true, unsafe { e.typ() } == LANGSXP) {
+            if !early_force(cx, true, unsafe { e.typ() }) {
                 return None;
             }
             let x = fr.caller.eval(cx, e)?;

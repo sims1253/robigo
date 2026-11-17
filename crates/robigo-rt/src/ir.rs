@@ -106,7 +106,11 @@ pub enum Op {
     /// The generic call: `a <- (b)(args of consts[e])` with the function
     /// in `b`, dispatched on its type at run time (closure: its arguments
     /// bound by `args::bind`, with call site `c`'s match plan; builtin: the
-    /// arguments evaluated; special: the call compiled).
+    /// arguments evaluated; special: the call compiled). A translated
+    /// call's `f` is its arguments' promise codes, `consts[f]` (a list of
+    /// `MAKEPROM`'s BCODESXPs by argument, R_NilValue for an argument that
+    /// has none; `args::arg_code`): each promise holds its own code, as
+    /// GNU R's PRCODE. 0: none (the from-source compiler's calls).
     Call,
     /// A builtin `consts[f]` called with the evaluated arguments in
     /// registers `b..b+c` (and their names after them with [`F_NAMES`]),
