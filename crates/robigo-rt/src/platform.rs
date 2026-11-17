@@ -370,13 +370,20 @@ impl ListFiles<'_> {
         }
     }
 
-    /// `list_files(pb, offset, len, ...)`: the entries of the directory
-    /// `pb[..len]` (which ends in a separator), with `.` and `..` as
-    /// `readdir` gives them (their order does not matter: the result is
-    /// sorted); a match is added as `pb[offset..]`.
-    fn list(&self, cx: &mut Cx, pb: &mut Vec<u8>, offset: usize, len: usize, ans: &mut Vec<Vec<u8>>) -> RResult<()> {
-        let dir = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&pb[..len]).to_owned();
-        let Ok(rd) = std::fs::read_dir(&dir) else { return Ok(()) };
+    /// `list_files(pb, offset, len, ..., dir)`: the entries of `dir`, the
+    /// directory `pb[..len]` names (it ends in a separator; `dir` was opened
+    /// before the separator was added, as GNU R opens it), with `.` and
+    /// `..` as `readdir` gives them (their order does not matter: the
+    /// result is sorted); a match is added as `pb[offset..]`.
+    fn list(
+        &self,
+        cx: &mut Cx,
+        pb: &mut Vec<u8>,
+        offset: usize,
+        len: usize,
+        ans: &mut Vec<Vec<u8>>,
+        rd: std::fs::ReadDir,
+    ) -> RResult<()> {
         let mut names: Vec<Vec<u8>> = vec![b".".to_vec(), b"..".to_vec()];
         names.extend(
             rd.filter_map(|e| e.ok())
@@ -399,10 +406,15 @@ impl ListFiles<'_> {
                     if self.idirs && self.matches(cx, &name)? {
                         ans.push(pb[offset..].to_vec());
                     }
-                    // the terminator becomes a separator
-                    pb.push(b'/');
-                    let newlen = pb.len();
-                    self.list(cx, pb, offset, newlen, ans)?;
+                    // R_opendir(pb->data), then the terminator becomes a
+                    // separator
+                    if let Ok(newdir) =
+                        std::fs::read_dir(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(pb))
+                    {
+                        pb.push(b'/');
+                        let newlen = pb.len();
+                        self.list(cx, pb, offset, newlen, ans, newdir)?;
+                    }
                 }
                 continue;
             }
@@ -498,12 +510,12 @@ pub fn do_listfiles(
         // search_setup: the expanded path, opened, then a separator
         let Some(path) = translate_fp2(cx, d, i)? else { continue };
         let mut pb = crate::connections::r_expand_file_name(cx, &path)?;
-        if std::fs::read_dir(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&pb)).is_err() {
+        let Ok(dir) = std::fs::read_dir(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&pb)) else {
             continue;
-        }
+        };
         pb.push(b'/');
         let len = pb.len();
-        lf.list(cx, &mut pb, if fullnames != 0 { 0 } else { len }, len, &mut ans)?;
+        lf.list(cx, &mut pb, if fullnames != 0 { 0 } else { len }, len, &mut ans, dir)?;
     }
     if let Err(e) = robigo_rtbuiltins::sort::ssort_native(&mut ans, loc) {
         let d = e.diag(Some(call));
