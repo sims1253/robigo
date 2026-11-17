@@ -680,7 +680,16 @@ impl Strptime<'_> {
                                 }
                                 let rest = &s[rp.min(s.len())..];
                                 let (sval, used) = if self.wide {
-                                    clib::wcstod_of(rest)
+                                    match clib::wcstod_of(rest) {
+                                        Some(r) => r,
+                                        None => {
+                                            return Err(StrptimeError(
+                                                "robigo: strptime()'s %OS without a C.UTF-8 locale in the C \
+                                                 library is not implemented yet"
+                                                    .to_owned(),
+                                            ));
+                                        }
+                                    }
                                 } else {
                                     // R_strtod, to read "Inf"
                                     let b: Vec<u8> = rest.iter().map(|&c| c as u8).collect();
@@ -913,7 +922,6 @@ pub fn do_strptime(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
             wday: NA_INTEGER,
             gmtoff: NA_INTEGER as i64,
             isdst: -1,
-            zone: None,
         };
         let mut psecs = 0.0f64;
         let mut offset = NA_INTEGER;
