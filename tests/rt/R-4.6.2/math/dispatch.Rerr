@@ -1,0 +1,8 @@
+Warning message:
+In get(.Generic)(unclass(x), ...) : NaNs produced
+Warning message:
+In log(n) : NaNs produced
+Warning message:
+NaNs produced 
+Warning message:
+NaNs produced 
