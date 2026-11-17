@@ -229,11 +229,19 @@ impl Cx {
     }
 
     /// GNU R's `ASSIGNMENT_PENDING(cell)` of a binding cell from
-    /// [`Cx::find_var_loc_in_frame`] (a symbol: a base binding).
+    /// [`Cx::find_var_loc_in_frame`] (a symbol: a base binding, whose bits
+    /// are the isolate's symbol table's).
     pub fn assignment_pending(&self, cell: crate::Ref<'_>) -> bool {
         assert!(matches!(cell.sexptype(), types::LISTSXP | types::SYMSXP), "robigo: not a binding cell");
-        // SAFETY: a live object; gp is a header field.
-        unsafe { cell.sexp().gp() & ASSIGNMENT_PENDING != 0 }
+        let x = cell.sexp();
+        // SAFETY: a live cell (gp is a header field) or a live symbol.
+        unsafe {
+            if cell.sexptype() == types::SYMSXP {
+                self.iso().envs().base_assignment_pending(x)
+            } else {
+                x.gp() & ASSIGNMENT_PENDING != 0
+            }
+        }
     }
 
     /// GNU R's `SET_ASSIGNMENT_PENDING(cell, on)` of a binding cell.
@@ -244,10 +252,15 @@ impl Cx {
             return;
         }
         let x = c.sexp();
-        // SAFETY: a rooted cell; the bit changes no body.
+        // SAFETY: a rooted cell (the bit changes no body) or a live symbol,
+        // which is never written (H5): its binding's bits are the table's.
         unsafe {
-            let g = x.gp();
-            x.set_gp(if on { g | ASSIGNMENT_PENDING } else { g & !ASSIGNMENT_PENDING });
+            if c.sexptype() == types::SYMSXP {
+                self.iso().envs().set_base_assignment_pending(x, on);
+            } else {
+                let g = x.gp();
+                x.set_gp(if on { g | ASSIGNMENT_PENDING } else { g & !ASSIGNMENT_PENDING });
+            }
         }
     }
 

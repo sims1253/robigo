@@ -214,6 +214,27 @@ impl EnvState {
         unsafe { f((*self.cells.get()).get_mut(sym::id_of(s))) }
     }
 
+    /// `ASSIGNMENT_PENDING` of `s`'s base binding (its cell's bits, which
+    /// the base store reads), not the symbol's gp.
+    ///
+    /// # Safety
+    /// `s` is a live symbol.
+    pub(crate) unsafe fn base_assignment_pending(&self, s: Sexp) -> bool {
+        // SAFETY: the caller's contract.
+        unsafe { self.cell(s).bits & ASSIGNMENT_PENDING != 0 }
+    }
+
+    /// `SET_ASSIGNMENT_PENDING` of `s`'s base binding.
+    ///
+    /// # Safety
+    /// `s` is a live symbol.
+    pub(crate) unsafe fn set_base_assignment_pending(&self, s: Sexp, on: bool) {
+        // SAFETY: the caller's contract.
+        unsafe {
+            self.cell_mut(s, |c| c.bits = if on { c.bits | ASSIGNMENT_PENDING } else { c.bits & !ASSIGNMENT_PENDING })
+        }
+    }
+
     /// `INTERNAL(s)`: null for none.
     ///
     /// # Safety
