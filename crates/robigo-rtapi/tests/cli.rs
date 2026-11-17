@@ -174,7 +174,12 @@ fn run(dir: &Path, args: &[&str], stdin: Option<&str>) -> (Vec<u8>, Vec<u8>, i32
 fn run_env(dir: &Path, args: &[&str], stdin: Option<&str>, env: &[(&str, &str)]) -> (Vec<u8>, Vec<u8>, i32) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
     cmd.args(args).current_dir(dir).env("LANGUAGE", "en").env("LC_ALL", "C.UTF-8").env("TZ", "UTC");
-    cmd.env("R_DEFAULT_PACKAGES", "NULL").env_remove("ROBIGO_FAIL_ALLOC_AT").env_remove("ROBIGO_BOOT_VERBOSE");
+    // (an inherited R_HOME, GNU R's, robigo-rt ignores with a warning on
+    // stdout)
+    cmd.env("R_DEFAULT_PACKAGES", "NULL")
+        .env_remove("R_HOME")
+        .env_remove("ROBIGO_FAIL_ALLOC_AT")
+        .env_remove("ROBIGO_BOOT_VERBOSE");
     // the pin report to stderr (`1`); to a file it stays, as rt-ci's check
     if std::env::var_os("ROBIGO_GC_PIN_REPORT").is_some_and(|v| v == "1") {
         cmd.env_remove("ROBIGO_GC_PIN_REPORT");

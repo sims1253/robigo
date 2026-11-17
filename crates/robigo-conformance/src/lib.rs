@@ -292,6 +292,10 @@ pub struct Column {
     /// with each failing case, which may fail for one of them
     /// (INTERIM(L5): robigo-rt's wide base, `crates/robigo-rt/src/base.rs`).
     pub boot_record: Option<&'static str>,
+    /// Environment variables each case's child runs without: robigo-rt
+    /// ignores an inherited `R_HOME` (GNU R's) with GNU R's warning on
+    /// stdout, which every compared output would carry.
+    pub env_remove: &'static [&'static str],
 }
 
 /// The old runtime, `robigo`: `tests/r` against GNU R 4.5.0.
@@ -303,6 +307,7 @@ pub const OLD: Column = Column {
     corpus: "conformance",
     legacy_list: Some("tests/r/passing.txt"),
     boot_record: None,
+    env_remove: &[],
 };
 
 /// G3's runtime, `robigo-rt`: its own cases in `tests/rt`, and the cases
@@ -315,6 +320,7 @@ pub const RT: Column = Column {
     corpus: "conformance-rt",
     legacy_list: None,
     boot_record: Some("ROBIGO_BOOT_VERBOSE"),
+    env_remove: &["R_HOME"],
 };
 
 /// The feature requirements a `.requires` sidecar may name:
@@ -645,8 +651,12 @@ impl Outcome {
     }
 }
 
-fn run_case(bin: &Path, script: &Path, timeout: Duration) -> (Vec<u8>, Vec<u8>, i32, bool) {
-    run_command(command(bin, script), bin, timeout)
+fn run_case(column: &Column, bin: &Path, script: &Path, timeout: Duration) -> (Vec<u8>, Vec<u8>, i32, bool) {
+    let mut cmd = command(bin, script);
+    for v in column.env_remove {
+        cmd.env_remove(v);
+    }
+    run_command(cmd, bin, timeout)
 }
 
 /// Run `cmd` (of the binary `bin`), killed after `timeout`: (stdout,
@@ -718,6 +728,9 @@ fn boot_record(column: &Column, o: &Options) -> String {
     let script = dir.join("empty.R");
     std::fs::write(&script, "invisible(NULL)\n").unwrap_or_else(|e| panic!("write {}: {e}", script.display()));
     let mut cmd = command(&o.bin, &script);
+    for v in column.env_remove {
+        cmd.env_remove(v);
+    }
     cmd.env(var, "1");
     let (_, err, _, timed_out) = run_command(cmd, &o.bin, o.timeout);
     let _ = std::fs::remove_dir_all(&dir);
@@ -760,7 +773,7 @@ fn check(
         }
     };
     let timeout = o.case_timeouts.get(&id).copied().unwrap_or(o.timeout);
-    let (out, err, status, timed_out) = run_case(&o.bin, script, timeout);
+    let (out, err, status, timed_out) = run_case(column, &o.bin, script, timeout);
     let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
     let mut diff = String::new();
     if timed_out {
