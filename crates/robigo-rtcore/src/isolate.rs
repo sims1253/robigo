@@ -390,13 +390,9 @@ impl Isolate {
         // the shared constants are every isolate's (H5): R_NilValue, the
         // commonest object checked, by its address, the others by their
         // heap id (no call, which would cost every caller registers). A
-        // symbol is the process's, but this isolate's only once it has
-        // installed it (it has a PRINTNAME for it here): a symbol only
-        // another isolate made is refused, as its objects are.
-        x == self.nil
-            || (h.is_shared()
-                // SAFETY: as above; one read of the core, of a live symbol.
-                && (unsafe { x.typ() } != robigo_heap::types::SYMSXP || unsafe { self.core().has_symbol(x) }))
+        // symbol is the process's: this isolate's PRINTNAME for one it has
+        // not installed is made when it is first read (`Core::printname`).
+        x == self.nil || h.is_shared()
     }
 
     /// Panics unless `x` (a live object) belongs to this isolate: an object

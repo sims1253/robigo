@@ -979,9 +979,9 @@ fn env_op_cost() {
 }
 
 /// A symbol is the process's (H5): B's install of a name is A's symbol, with
-/// one id, and every lookup through A's capability reads A's own tables, so
-/// A never sees B's objects. (Until H5 symbols were per heap, and a symbol
-/// of another isolate was refused.)
+/// one id, every lookup through A's capability reads A's own tables, so A
+/// never sees B's objects, and A's PRINTNAME of it is A's own. (Until H5
+/// symbols were per heap, and a symbol of another isolate was refused.)
 #[test]
 fn a_symbol_is_every_isolates() {
     let mut a = iso();
@@ -1001,19 +1001,15 @@ fn a_symbol_is_every_isolates() {
     assert_ne!(va, vb, "each isolate's own base namespace");
     assert_eq!(va, ca.base_namespace().sexp());
     assert_eq!(vb, cb.base_namespace().sexp());
-    // a symbol only B has made is not A's: A refuses it, as it refuses B's
-    // objects (A has no PRINTNAME for it)
+    // a symbol only B has made is A's too: A's lookups take it, and its
+    // PRINTNAME in A is A's own CHARSXP of the name, made at first use
     let only_b = cb.install(b"a_name_only_b_installed").unwrap();
-    let m = panic_message(|| ca.var_binding(only_b, g));
-    assert!(m.contains("another isolate"), "{m}");
-    let m = panic_message(|| ca.frame_binding(env_of(ca.base_env()), only_b));
-    assert!(m.contains("another isolate"), "{m}");
-    // once A installs the name, the same symbol is A's too
-    assert_eq!(ca.install(b"a_name_only_b_installed").unwrap().as_ref().sexp(), only_b.as_ref().sexp());
     assert!(matches!(ca.var_binding(only_b, g), Lookup::Unbound));
+    let pa = robigo_rtcore::Ref::from(only_b.name(ca)).sexp();
+    let pb = robigo_rtcore::Ref::from(only_b.name(cb)).sexp();
+    assert_ne!(pa, pb, "a PRINTNAME per isolate");
+    let in_a = ca.mk_char(b"a_name_only_b_installed", robigo_rtcore::Encoding::Native).unwrap();
+    assert_eq!(robigo_rtcore::Ref::from(in_a).sexp(), pa, "A's cache gives A's");
+    assert_eq!(ca.install(b"a_name_only_b_installed").unwrap().as_ref().sexp(), only_b.as_ref().sexp());
 }
 
-fn panic_message<R>(f: impl FnOnce() -> R) -> String {
-    let Err(p) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) else { panic!("expected a panic") };
-    p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_default()
-}

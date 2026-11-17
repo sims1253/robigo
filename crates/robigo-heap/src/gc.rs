@@ -957,36 +957,40 @@ impl Core {
         Ok(s)
     }
 
-    /// GNU R's `PRINTNAME(s)` in this heap: its own CHARSXP of the name.
+    /// GNU R's `PRINTNAME(s)` in this heap: its own CHARSXP of the name,
+    /// from its own cache. A symbol this heap meets for the first time (one
+    /// another isolate made: symbols are the process's) is installed here
+    /// first, as `install` of its name would. Never collects.
     ///
     /// # Panics
-    /// If `s` is not a symbol this heap installed or made (no isolate
-    /// holds another's symbol: every symbol it reaches came through its
-    /// `install`).
+    /// If that install is refused (a heap limit, or an injected failure).
     ///
     /// # Safety
     /// `s` must be a live SYMSXP.
     #[inline]
-    pub unsafe fn printname(&self, s: Sexp) -> Sexp {
+    pub unsafe fn printname(&mut self, s: Sexp) -> Sexp {
         // SAFETY: the caller's contract: its 4th word holds its id.
         let id = unsafe { s.sym_id() } as usize;
         match self.printnames.get(id) {
             Some(&c) if !c.is_null() => c,
-            _ => no_printname(),
+            // SAFETY: the caller's contract.
+            _ => unsafe { self.first_printname(s) },
         }
     }
 
-    /// Whether this heap installed or made symbol `s` (it has its
-    /// PRINTNAME): an isolate holds no other symbol, as it holds no object
-    /// of another isolate.
+    /// [`Core::printname`] of a symbol this heap has not installed.
     ///
     /// # Safety
     /// `s` must be a live SYMSXP.
-    #[inline]
-    pub unsafe fn has_symbol(&self, s: Sexp) -> bool {
-        // SAFETY: the caller's contract: its 4th word holds its id.
-        let id = unsafe { s.sym_id() } as usize;
-        self.printnames.get(id).is_some_and(|c| !c.is_null())
+    #[cold]
+    #[inline(never)]
+    unsafe fn first_printname(&mut self, s: Sexp) -> Sexp {
+        // SAFETY: the caller's contract; the arena's name lives as long as
+        // the process.
+        let name: Box<[u8]> = unsafe { s.sym_name_bytes() }.into();
+        let t = self.install_named(&name, Sexp::NULL).expect("robigo: no room for a PRINTNAME");
+        debug_assert_eq!(t, s, "robigo: one symbol per name");
+        self.printnames[unsafe { s.sym_id() } as usize]
     }
 
     /// # Safety
@@ -3274,12 +3278,6 @@ pub struct HeapReport {
     /// `R_MaxNSize` (nodes) and `R_MaxVSize` (bytes); None: unlimited.
     pub max_n_size: Option<usize>,
     pub max_v_size: Option<usize>,
-}
-
-#[cold]
-#[inline(never)]
-fn no_printname() -> ! {
-    panic!("robigo: the PRINTNAME of a symbol this heap never installed")
 }
 
 #[cfg(test)]
