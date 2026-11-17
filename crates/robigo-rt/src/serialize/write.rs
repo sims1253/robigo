@@ -113,6 +113,121 @@ pub(super) fn serialize(cx: &mut Cx, s: Root<'_>, out: OutStream, hook: Option<R
 }
 
 impl Writer<'_> {
+    /// `WriteBC(s)`: byte code, after the number of its language cells
+    /// that are reached more than once (`ScanForCircles`) plus one; those
+    /// are written once as `BCREPDEF` and then as `BCREPREF`.
+    ///
+    /// # Safety
+    /// `s` is a live BCODESXP reachable from the rooted object, and nothing
+    /// has collected since it was read.
+    // R: serialize.c:WriteBC
+    unsafe fn bc(&mut self, cx: &mut Cx, s: Sexp) -> W<()> {
+        // SAFETY: the caller's contract.
+        let mut reps = unsafe { scan_for_circles(cx, s) };
+        self.out.integer(reps.len() as i32 + 1);
+        let mut next = 0;
+        // SAFETY: the caller's contract.
+        unsafe { self.bc1(cx, s, &mut reps, &mut next) }
+    }
+
+    /// `WriteBC1(s)`: the code, decoded (`R_bcDecode`: robigo-rt keeps it
+    /// decoded, so a plain integer vector of the same ints, written as one
+    /// without allocating it), then the constants, byte code and language
+    /// cells among them in their own representation.
+    ///
+    /// # Safety
+    /// As for [`Writer::bc`].
+    // R: serialize.c:WriteBC1, eval.c:R_bcDecode
+    unsafe fn bc1(&mut self, cx: &mut Cx, s: Sexp, reps: &mut HashMap<usize, Option<i32>>, next: &mut i32) -> W<()> {
+        // SAFETY: the caller's contract: a live BCODESXP, its CAR the code
+        // (an INTSXP, or R_NilValue for empty code) and CDR the constants.
+        unsafe {
+            let code = s.car();
+            let ints: &[i32] = if code.typ() == INTSXP {
+                std::slice::from_raw_parts(code.std_data() as *const i32, code.std_len() as usize)
+            } else {
+                &[]
+            };
+            self.out.integer(pack_flags(INTSXP as i32, 0, false, false, false));
+            self.write_length(ints.len());
+            self.out.ints(ints);
+            let consts = s.cdr();
+            let n = if consts.typ() == VECSXP { consts.std_len() as usize } else { 0 };
+            self.out.integer(n as i32);
+            for i in 0..n {
+                let c = *(consts.std_data() as *const Sexp).add(i);
+                match c.typ() {
+                    BCODESXP => {
+                        self.out.integer(BCODESXP as i32);
+                        self.bc1(cx, c, reps, next)?;
+                    }
+                    LANGSXP | LISTSXP => self.bc_lang(cx, c, reps, next)?,
+                    t => {
+                        self.out.integer(t as i32);
+                        self.item(cx, c)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `WriteBCLang(s)`: a language or pairlist cell (its type, `ATTR...`
+    /// with attributes, then the attributes, TAG, and CAR and CDR the same
+    /// way), `BCREPDEF` the first time a shared one is written and
+    /// `BCREPREF` after; anything else a pad and the item.
+    ///
+    /// # Safety
+    /// As for [`Writer::bc`], `s` any object reachable from it.
+    // R: serialize.c:WriteBCLang
+    unsafe fn bc_lang(
+        &mut self,
+        cx: &mut Cx,
+        s: Sexp,
+        reps: &mut HashMap<usize, Option<i32>>,
+        next: &mut i32,
+    ) -> W<()> {
+        cx.check_c_stack()?;
+        // SAFETY: the caller's contract.
+        unsafe {
+            let t = s.typ();
+            if !matches!(t, LANGSXP | LISTSXP) {
+                self.out.integer(0);
+                return self.item(cx, s);
+            }
+            if let Some(r) = reps.get_mut(&s.addr()) {
+                match *r {
+                    None => {
+                        let i = *next;
+                        *next += 1;
+                        *r = Some(i);
+                        self.out.integer(BCREPDEF);
+                        self.out.integer(i);
+                    }
+                    Some(i) => {
+                        self.out.integer(BCREPREF);
+                        self.out.integer(i);
+                        return Ok(());
+                    }
+                }
+            }
+            let nil = cx.nil().sexp();
+            let attr = s.attrib_raw();
+            let ty = match (t, attr != nil) {
+                (LANGSXP, true) => ATTRLANGSXP,
+                (LISTSXP, true) => ATTRLISTSXP,
+                _ => t as i32,
+            };
+            self.out.integer(ty);
+            if attr != nil {
+                self.item(cx, attr)?;
+            }
+            self.item(cx, s.tag())?;
+            self.bc_lang(cx, s.car(), reps, next)?;
+            self.bc_lang(cx, s.cdr(), reps, next)
+        }
+    }
+
     // R: serialize.c:OutFormat, R_Serialize
     fn header(&mut self, cx: &mut Cx) -> W<()> {
         match self.out.fmt {
@@ -294,12 +409,19 @@ impl Writer<'_> {
                         _ => false,
                     };
                     let hasattr = t != CHARSXP && s.attrib_raw() != nil;
-                    if t == CLOSXP && crate::jit::compiled(s) {
+                    // a closure robigo-rt compiles itself where GNU R holds
+                    // its body as byte code: no BCODESXP of GNU R's to write
+                    // (one whose body is a BCODESXP, from bcClose or
+                    // unserialize, is written as it is)
+                    if t == CLOSXP && crate::jit::compiled(s) && s.cdr().typ() != BCODESXP {
                         return Err(cx
                             .error("robigo: serializing a byte-compiled closure is not implemented yet")
                             .into());
                     }
-                    if t == PROMSXP && s.extra() & robigo_heap::extra::promise::BYTECODE != 0 {
+                    if t == PROMSXP
+                        && s.extra() & robigo_heap::extra::promise::BYTECODE != 0
+                        && s.cdr().typ() != BCODESXP
+                    {
                         return Err(cx
                             .error("robigo: serializing a promise of byte code is not implemented yet")
                             .into());
@@ -375,9 +497,7 @@ impl Writer<'_> {
                                 self.item(cx, e)?;
                             }
                         }
-                        BCODESXP => {
-                            return Err(cx.error("robigo: serializing byte code is not implemented yet").into());
-                        }
+                        BCODESXP => self.bc(cx, s)?,
                         RAWSXP => {
                             let n = s.std_len() as usize;
                             self.write_length(n);
@@ -479,4 +599,45 @@ fn name_text(cx: &Cx, name: Sexp) -> Vec<u8> {
             .map(|b| b.into_owned())
             .unwrap_or_else(|_| c.bytes().to_vec())
     }
+}
+
+/// `ScanForCircles(s)`: the language and pairlist cells reached more than
+/// once from byte code `s` (through CAR and CDR, and the constants of byte
+/// code), each with no index yet. A cell is entered once and descended
+/// into the first time it is reached, so which cells are found does not
+/// depend on the order of the walk: an explicit stack walks long lists.
+///
+/// # Safety
+/// `s` is live, and nothing collects while the walk runs (it allocates
+/// nothing on the heap).
+// R: serialize.c:ScanForCircles, ScanForCircles1, AddCircleHash
+unsafe fn scan_for_circles(cx: &Cx, s: Sexp) -> HashMap<usize, Option<i32>> {
+    let _ = cx;
+    let mut seen: HashMap<usize, bool> = HashMap::new();
+    let mut stack = vec![s];
+    while let Some(x) = stack.pop() {
+        // SAFETY: the caller's contract: everything reached is live.
+        unsafe {
+            match x.typ() {
+                LANGSXP | LISTSXP => match seen.get_mut(&x.addr()) {
+                    Some(twice) => *twice = true,
+                    None => {
+                        seen.insert(x.addr(), false);
+                        stack.push(x.cdr());
+                        stack.push(x.car());
+                    }
+                },
+                BCODESXP => {
+                    let consts = x.cdr();
+                    if consts.typ() == VECSXP {
+                        for i in (0..consts.std_len() as usize).rev() {
+                            stack.push(*(consts.std_data() as *const Sexp).add(i));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    seen.into_iter().filter(|&(_, twice)| twice).map(|(a, _)| (a, None)).collect()
 }

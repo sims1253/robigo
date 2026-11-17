@@ -159,9 +159,11 @@ touch the same file. The corpora have the same two columns:
 pin's recordings into `tests/corpora/NAME/passing-rt/`, ranks what blocks
 its failing cases (the first stub, "not implemented yet" or unbound
 function each one hit), and refuses the corpora robigo-rt cannot run yet
-(echo mode, a build step). CI's `rt-corpora` job runs fastr that way on
-every rt pull request, a rotating quarter of it, and all of it on main
-(`docs/ledger/g3/2026-11-17-rc-rt-corpora.md`). One runner serves both (`crates/robigo-conformance`,
+(a build step). CI's `rt-corpora` job runs fastr that way on every rt
+pull request, a rotating quarter of it, and all of it on main
+(`docs/ledger/g3/2026-11-17-rc-rt-corpora.md`), and the four corpora in
+echo mode (`robigo-rt --quiet --no-save -f FILE`, R's transcript) whole
+(`docs/ledger/g3/2026-11-17-rc-echo-front-end.md`). One runner serves both (`crates/robigo-conformance`,
 columns `OLD` and `RT`); `robigo-cli`'s conformance test runs `OLD`,
 `robigo-rt`'s runs `RT`:
 

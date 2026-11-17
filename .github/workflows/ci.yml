@@ -1027,8 +1027,9 @@ jobs:
   # pin's recordings and the `passing-rt/` ratchets;
   # docs/ledger/g3/2026-11-17-rc-rt-corpora.md). A pull request runs a
   # quarter of fastr, the quarter rotating with its number, and a push to
-  # main runs all of it (about two minutes). Corpora in echo mode wait for
-  # robigo-rt's `-f` front end, and those with a build step for its natives.
+  # main runs all of it (about two minutes). The four corpora in echo mode
+  # (`-f FILE`'s transcript) run whole every time: they are small. Those
+  # with a build step wait for robigo-rt's natives.
   rt-corpora:
     needs: [select, perf-rt-build]
     if: ${{ needs.select.outputs.rt == 'true' }}
@@ -1062,6 +1063,15 @@ jobs:
           echo "RESULT_NAME=corpus-rt-fastr-${shard/\//of}" >> "$GITHUB_ENV"
           python3 scripts/corpus.py run fastr --runtime rt --shard "$shard" --robigo dist/robigo-rt \
             --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: the echo-mode corpora on robigo-rt
+        run: |
+          # every corpus runs; the step fails if any regressed
+          failed=0
+          for c in gnur-tests gnur-examples gnur-demos r-intro; do
+            python3 scripts/corpus.py run "$c" --runtime rt --robigo dist/robigo-rt --jobs "$(nproc)" \
+              | tee -a "$GITHUB_STEP_SUMMARY" || failed=1
+          done
+          exit "$failed"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
