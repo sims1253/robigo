@@ -855,8 +855,11 @@ impl Core {
         (c.nil, c.na_string, c.blank_string) = (sh.nil, sh.na_string, sh.blank_string);
         (c.unbound, c.missing_arg) = (sh.unbound, sh.missing_arg);
         // R_UnboundValue's and R_MissingArg's PRINTNAME, every heap's ""
-        c.set_printname(sh.unbound, sh.blank_string);
-        c.set_printname(sh.missing_arg, sh.blank_string);
+        // SAFETY: the shared symbols and the shared "".
+        unsafe {
+            c.set_printname(sh.unbound, sh.blank_string);
+            c.set_printname(sh.missing_arg, sh.blank_string);
+        }
         // SAFETY: a live CHARSXP that no collection frees (immortal), and
         // not yet in this table.
         unsafe { c.chars.insert(sh.blank_string) };
@@ -940,7 +943,8 @@ impl Core {
     pub fn new_marker_symbol(&mut self) -> Result<Sexp, NeedGc> {
         self.count_symbol()?;
         let s = crate::arena::new_marker();
-        self.set_printname(s, self.blank_string);
+        // SAFETY: a symbol just made.
+        unsafe { self.set_printname(s, self.blank_string) };
         Ok(s)
     }
 
@@ -950,9 +954,12 @@ impl Core {
     /// If `s` is not a symbol this heap installed or made (no isolate
     /// holds another's symbol: every symbol it reaches came through its
     /// `install`).
+    ///
+    /// # Safety
+    /// `s` must be a live SYMSXP.
     #[inline]
-    pub fn printname(&self, s: Sexp) -> Sexp {
-        // SAFETY: a symbol: its 4th word holds its id.
+    pub unsafe fn printname(&self, s: Sexp) -> Sexp {
+        // SAFETY: the caller's contract: its 4th word holds its id.
         let id = unsafe { s.sym_id() } as usize;
         match self.printnames.get(id) {
             Some(&c) if !c.is_null() => c,
@@ -963,15 +970,20 @@ impl Core {
     /// Whether this heap installed or made symbol `s` (it has its
     /// PRINTNAME): an isolate holds no other symbol, as it holds no object
     /// of another isolate.
+    ///
+    /// # Safety
+    /// `s` must be a live SYMSXP.
     #[inline]
-    pub fn has_symbol(&self, s: Sexp) -> bool {
-        // SAFETY: a symbol: its 4th word holds its id.
+    pub unsafe fn has_symbol(&self, s: Sexp) -> bool {
+        // SAFETY: the caller's contract: its 4th word holds its id.
         let id = unsafe { s.sym_id() } as usize;
         self.printnames.get(id).is_some_and(|c| !c.is_null())
     }
 
-    fn set_printname(&mut self, s: Sexp, c: Sexp) {
-        // SAFETY: a symbol.
+    /// # Safety
+    /// `s` is a live SYMSXP, `c` an immortal CHARSXP of this heap or shared.
+    unsafe fn set_printname(&mut self, s: Sexp, c: Sexp) {
+        // SAFETY: the caller's contract.
         let id = unsafe { s.sym_id() } as usize;
         if id >= self.printnames.len() {
             self.printnames.resize(id + 1, Sexp::NULL);
@@ -1705,7 +1717,8 @@ impl Core {
                 c.set_gp(c.gp() | crate::gp::charsxp::HASHASH);
             }
         }
-        self.set_printname(s, c);
+        // SAFETY: a symbol, and an immortal CHARSXP of this heap (or "").
+        unsafe { self.set_printname(s, c) };
         self.syms.insert(name.into(), s);
         Ok(s)
     }

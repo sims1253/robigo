@@ -1221,8 +1221,9 @@ impl Cx {
     ///
     /// `sym` must be a live symbol.
     pub unsafe fn printname_raw(&self, sym: Sexp) -> Sexp {
-        // SAFETY: one read of the core, which calls nothing of ours.
-        unsafe { self.iso().core() }.printname(sym)
+        // SAFETY: one read of the core, which calls nothing of ours; a live
+        // symbol (the caller's contract).
+        unsafe { self.iso().core().printname(sym) }
     }
 
     /// `INTERNAL(sym)` for the compiler and the evaluator, which hold raw

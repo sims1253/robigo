@@ -395,8 +395,8 @@ impl Isolate {
         // another isolate made is refused, as its objects are.
         x == self.nil
             || (h.is_shared()
-                // SAFETY: as above; one read of the core.
-                && (unsafe { x.typ() } != robigo_heap::types::SYMSXP || unsafe { self.core() }.has_symbol(x)))
+                // SAFETY: as above; one read of the core, of a live symbol.
+                && (unsafe { x.typ() } != robigo_heap::types::SYMSXP || unsafe { self.core().has_symbol(x) }))
     }
 
     /// Panics unless `x` (a live object) belongs to this isolate: an object
