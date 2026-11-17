@@ -15,15 +15,19 @@
 //! A warning that a handler turns into an exit ends the builtin there, as it
 //! would in GNU R: what phase 2 did after it is never seen.
 
+pub mod grep;
 pub mod strsplit;
+pub mod sub;
 
+pub use grep::do_grep;
 pub use strsplit::do_strsplit;
+pub use sub::do_gsub;
 
 use crate::coerce::text;
 use crate::text::ctype;
 use crate::util::not_yet;
 use robigo_rtcore::{Char, Cx, Encoding, Locale, RError, Root};
-use robigo_text::tre::{self, Regex};
+use robigo_text::tre::{self, Match, Regex};
 use robigo_text::{Untranslatable, WideError};
 use std::borrow::Cow;
 use std::sync::OnceLock;
@@ -349,18 +353,79 @@ pub(crate) fn pattern<'a>(
 
 // ---- TRE ------------------------------------------------------------------
 
-/// `reg_report(rc, &reg, pat)` for a compilation that failed, and the
-/// errors of TRE's asserts.
+/// `reg_report(rc, &reg, pat)` for a compilation that failed (`pat` is
+/// NULL where GNU R had no narrow pattern), and the errors of TRE's
+/// asserts.
 // R: grep.c:reg_report
-pub(crate) fn tre_fail(e: tre::Error, pat: &str, rep: &mut Report) -> Fail {
+pub(crate) fn tre_fail(e: tre::Error, pat: Option<&str>, rep: &mut Report) -> Fail {
     match e {
         tre::Error::Status(s) => {
             let errbuf = s.message();
-            rep.warn(format!("TRE pattern compilation error '{errbuf}'"));
-            Fail::Error(format!("invalid regular expression '{pat}', reason '{errbuf}'"))
+            match pat {
+                Some(pat) => {
+                    // PR#16600 - the regex may be so long that the TRE error
+                    // description is truncated out from the message, so give
+                    // also a warning
+                    rep.warn(format!("TRE pattern compilation error '{errbuf}'"));
+                    Fail::Error(format!("invalid regular expression '{pat}', reason '{errbuf}'"))
+                }
+                None => Fail::Error(format!("invalid regular expression, reason '{errbuf}'")),
+            }
         }
         e => exec_fail(e),
     }
+}
+
+/// A string as TRE matches it: bytes (`tre_regexecb`, `tre_regexec`) or
+/// wide characters (`tre_regwexec`).
+pub(crate) enum Text<'a> {
+    Bytes(Cow<'a, [u8]>),
+    Wide(Vec<i32>),
+}
+
+impl Text<'_> {
+    pub(crate) fn subj(&self) -> Subj<'_> {
+        match self {
+            Text::Bytes(b) => Subj::Bytes(b),
+            Text::Wide(w) => Subj::Wide(w),
+        }
+    }
+}
+
+/// A borrowed [`Text`].
+#[derive(Clone, Copy)]
+pub(crate) enum Subj<'a> {
+    Bytes(&'a [u8]),
+    Wide(&'a [i32]),
+}
+
+/// `tre_regexecb`/`tre_regwexec(re, s, nmatch, pm, eflags)`: whether it
+/// matched, `Err(status)` for a status GNU R reports (or ignores), and a
+/// [`Fail`] for an assert or what robigo's TRE does not have.
+pub(crate) fn tre_exec(
+    re: &Regex,
+    s: Subj<'_>,
+    pm: &mut [Match],
+    eflags: i32,
+) -> Result<Result<bool, tre::Status>, Fail> {
+    let r = match s {
+        Subj::Bytes(b) => re.exec_bytes(b, pm, eflags),
+        Subj::Wide(w) => re.exec_wide(w, pm, eflags),
+    };
+    match r {
+        Ok(m) => Ok(Ok(m)),
+        Err(tre::Error::Status(st)) => Ok(Err(st)),
+        Err(e) => Err(exec_fail(e)),
+    }
+}
+
+/// An input string for TRE's wide matching, or `None` after its warnings.
+pub(crate) fn wide_input(c: Char<'_>, i: usize, loc: Locale, rep: &mut Report) -> Option<Vec<i32>> {
+    let w = wtrans(c, loc, rep);
+    if w.is_none() {
+        rep.warn_capped(|| format!("input string {} is invalid", i + 1));
+    }
+    w
 }
 
 /// A matcher error other than a status: an `R_assert` (an error), or what
@@ -384,11 +449,113 @@ pub(crate) fn tre_comp_native(p: &[u8], cflags: i32, loc: Locale) -> Result<Rege
     Regex::new(&w, cflags, ctype(loc))
 }
 
+// ---- fixed ----------------------------------------------------------------
+
+/// `fgrep_one(pat, target, useBytes, use_UTF8, &next)`: where `pat` first
+/// occurs in `target`, in characters (bytes with `useBytes`, or in a
+/// single-byte locale without `use_UTF8`), and the byte after it.
+// R: grep.c:fgrep_one
+pub(crate) fn fgrep_one(
+    pat: &[u8],
+    target: &[u8],
+    use_bytes: bool,
+    use_utf8: bool,
+    loc: Locale,
+) -> Option<(usize, usize)> {
+    let plen = pat.len();
+    if plen == 0 {
+        return Some((0, 1));
+    }
+    let mbcs = loc.utf8;
+    if plen == 1 && (use_bytes || !(mbcs || use_utf8)) {
+        // a single byte is a common case
+        return target.iter().position(|&b| b == pat[0]).map(|i| (i, i + 1));
+    }
+    if !use_bytes && use_utf8 {
+        let ib = find(target, pat)?;
+        // count leading UTF-8 bytes
+        let i = target[..ib].iter().filter(|&&b| b & 0xc0 != 0x80).count();
+        Some((i, ib + plen))
+    } else if !use_bytes && mbcs {
+        // skip along by chars (the string is valid in the locale)
+        let (mut ib, mut i) = (0, 0);
+        while ib + plen <= target.len() {
+            if target[ib..].starts_with(pat) {
+                return Some((i, ib + plen));
+            }
+            ib += utf8clen(target[ib]);
+            i += 1;
+        }
+        None
+    } else {
+        find(target, pat).map(|i| (i, i + plen))
+    }
+}
+
+/// `fgrep_one_bytes(pat, patlen, target, len, useBytes, use_UTF8)`: where
+/// `pat` first occurs in `target`, in bytes.
+// R: grep.c:fgrep_one_bytes
+pub(crate) fn fgrep_one_bytes(
+    pat: &[u8],
+    target: &[u8],
+    use_bytes: bool,
+    use_utf8: bool,
+    loc: Locale,
+) -> Option<usize> {
+    let plen = pat.len();
+    if plen == 0 {
+        return Some(0);
+    }
+    let mbcs = loc.utf8;
+    // UTF-8 allows for byte-based search of valid pattern string inside
+    // valid target string, because lead and continuation bytes are taken
+    // from distinct ranges.
+    if plen == 1 && (use_bytes || use_utf8 || !mbcs) {
+        return target.iter().position(|&b| b == pat[0]);
+    }
+    if !use_utf8 && !use_bytes && mbcs {
+        // skip along by chars
+        let mut ib = 0;
+        while ib + plen <= target.len() {
+            if target[ib..].starts_with(pat) {
+                return Some(ib);
+            }
+            ib += utf8clen(target[ib]);
+        }
+        None
+    } else {
+        find(target, pat)
+    }
+}
+
+/// `strstr(hay, needle)`'s offset.
+pub(crate) fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    if needle.len() > hay.len() {
+        return None;
+    }
+    let first = needle[0];
+    let mut from = 0;
+    while let Some(k) = hay[from..=hay.len() - needle.len()].iter().position(|&b| b == first) {
+        let at = from + k;
+        if hay[at..].starts_with(needle) {
+            return Some(at);
+        }
+        from = at + 1;
+    }
+    None
+}
+
 // ---- PCRE -----------------------------------------------------------------
 
 /// A compiled PCRE2 pattern (`R_pcre2_prepare`).
 pub(crate) struct Pcre {
     re: pcre2::bytes::Regex,
+    /// Whether `PCRE2_NOTBOL` could change a match from an offset past 0:
+    /// only a lookbehind reaches back to a `^` at the subject's start.
+    notbol_matters: bool,
 }
 
 /// The PCRE2 JIT stack's maximum (`jit_stack_size`), and whether
@@ -472,7 +639,37 @@ impl Pcre {
                 )));
             }
         };
-        Ok(Pcre { re })
+        let notbol_matters =
+            pattern.contains(&b'^') && (find(pattern, b"(?<").is_some() || find(pattern, b"(*").is_some());
+        Ok(Pcre { re, notbol_matters })
+    }
+
+    /// An empty set of group offsets for [`Pcre::match_at`].
+    pub(crate) fn locations(&self) -> pcre2::bytes::CaptureLocations {
+        self.re.capture_locations()
+    }
+
+    /// `pcre2_match(re, subject, len, start, notbol ? PCRE2_NOTBOL : 0,
+    /// ...)`: whether it matched (the offsets in `locs`), `Err` a matching
+    /// error's message. The `pcre2` crate passes no options, so a pattern
+    /// that `PCRE2_NOTBOL` could change is not matched with it.
+    pub(crate) fn match_at(
+        &self,
+        locs: &mut pcre2::bytes::CaptureLocations,
+        subject: &[u8],
+        start: usize,
+        notbol: bool,
+    ) -> Result<Result<bool, String>, Fail> {
+        if notbol && self.notbol_matters {
+            return Err(Fail::NotYet("PCRE2_NOTBOL with a lookbehind and '^'".into()));
+        }
+        Ok(self.re.captures_read_at(locs, subject, start).map(|m| m.is_some()).map_err(|e| pcre_message(&e)))
+    }
+
+    /// `pcre2_match(re, subject, len, 0, 0, ...) >= 0`, `Err` a matching
+    /// error's message.
+    pub(crate) fn is_match(&self, subject: &[u8]) -> Result<bool, String> {
+        self.re.is_match(subject).map_err(|e| pcre_message(&e))
     }
 
     /// `pcre2_match(re, subject, len, start, 0, ...)`: the match's offsets,

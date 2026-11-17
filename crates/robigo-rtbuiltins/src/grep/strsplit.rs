@@ -1,8 +1,8 @@
 //! `.Internal(strsplit(x, split, fixed, perl, useBytes))`.
 
 use super::{
-    Elt, Fail, Pcre, Report, bytes_new, have, input, mark_bytes_old, mark_known, only_ascii, pattern, pcre_exec_error,
-    strings, tr_char, tre_comp_native, tre_fail, utf8clen, wide_utf8, wtrans,
+    Elt, Fail, Pcre, Report, Subj, bytes_new, have, input, mark_bytes_old, mark_known, only_ascii, pattern,
+    pcre_exec_error, strings, tr_char, tre_comp_native, tre_exec, tre_fail, utf8clen, wide_input, wide_utf8, wtrans,
 };
 use crate::attrib::{self, Attr, Attrs};
 use crate::util::as_bool2;
@@ -285,27 +285,11 @@ fn split_perl(
     Ok(())
 }
 
-/// The first match of `re` in `s`: `Ok(None)` for none (or a status the
-/// loop stops at), `Err` an error to raise. `espace` is the status
-/// REG_ESPACE.
-fn tre_first(re: &Regex, s: Subject<'_>) -> Result<Result<Option<Match>, tre::Status>, Fail> {
+/// The first match of `re` in `s`: `Ok(None)` for none, `Err` the status
+/// the loop stops at.
+fn tre_first(re: &Regex, s: Subj<'_>) -> Result<Result<Option<Match>, tre::Status>, Fail> {
     let mut pm = [Match::UNSET];
-    let r = match s {
-        Subject::Bytes(b) => re.exec_bytes(b, &mut pm, 0),
-        Subject::Wide(w) => re.exec_wide(w, &mut pm, 0),
-    };
-    match r {
-        Ok(true) => Ok(Ok(Some(pm[0]))),
-        Ok(false) => Ok(Ok(None)),
-        Err(tre::Error::Status(st)) => Ok(Err(st)),
-        Err(e) => Err(super::exec_fail(e)),
-    }
-}
-
-#[derive(Clone, Copy)]
-enum Subject<'a> {
-    Bytes(&'a [u8]),
-    Wide(&'a [i32]),
+    Ok(tre_exec(re, s, &mut pm, 0)?.map(|m| m.then_some(pm[0])))
 }
 
 /// ERE in wchar_t.
@@ -324,24 +308,21 @@ fn split_wide(
         return Err(Fail::Error(format!("'split' string {} is invalid", itok + 1)));
     };
     let re = Regex::new(&wsplit, tre::REG_EXTENDED, crate::text::ctype(m.loc))
-        .map_err(|e| tre_fail(e, &tr_char(this, m.loc), rep))?;
+        .map_err(|e| tre_fail(e, Some(&tr_char(this, m.loc)), rep))?;
     let ascii_split = this.is_ascii();
     for i in elts {
         let xi = xs[i];
         if xi == cx.na_string() {
             continue;
         }
-        let Some(wbuf) = wtrans(xi, m.loc, rep) else {
-            rep.warn_capped(|| format!("input string {} is invalid", i + 1));
-            continue;
-        };
+        let Some(wbuf) = wide_input(xi, i, m.loc, rep) else { continue };
         let maybe_ascii = ascii_split && xi.is_ascii();
         let mut t = Vec::new();
         let mut p = 0;
         while p < wbuf.len() {
             let rest = &wbuf[p..];
             // (do_strsplit ignores tre_regwexec's errors)
-            let Ok(Some(mt)) = tre_first(&re, Subject::Wide(rest))? else { break };
+            let Ok(Some(mt)) = tre_first(&re, Subj::Wide(rest))? else { break };
             let (so, eo) = (mt.so as usize, mt.eo as usize);
             if eo > 0 {
                 // Match was non-empty.
@@ -382,7 +363,7 @@ fn split_bytes(
     } else {
         tre_comp_native(&split, tre::REG_EXTENDED, m.loc)
     };
-    let re = compiled.map_err(|e| tre_fail(e, &String::from_utf8_lossy(&split), rep))?;
+    let re = compiled.map_err(|e| tre_fail(e, Some(&String::from_utf8_lossy(&split)), rep))?;
     for i in elts {
         let xi = xs[i];
         if xi == cx.na_string() {
@@ -394,7 +375,7 @@ fn split_bytes(
         let mut p = 0;
         while p < buf.len() {
             let rest = &buf[p..];
-            let mt = match tre_first(&re, Subject::Bytes(rest))? {
+            let mt = match tre_first(&re, Subj::Bytes(rest))? {
                 Ok(Some(mt)) => mt,
                 Ok(None) => break,
                 Err(st) => {

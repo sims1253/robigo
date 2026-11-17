@@ -10,7 +10,7 @@
 # The union of base-subset.txt (the trace) and the static bound (the free
 # variables of the same inputs that name base functions, transitively through
 # base closures), so that a branch GNU R did not take still finds its function.
-# 188 closures, 118 primitives, 100 internals, 2 variables.
+# 198 closures, 122 primitives, 107 internals, 3 variables.
 closure %in% match.R
 closure %||% utils.R
 closure .Date dates.R
@@ -19,6 +19,7 @@ closure .POSIXct datetime.R
 closure .deparseOpts New-Internal.R
 closure .difftime datetime.R
 closure .doSortWrap sort.R
+closure .format.zeros format.R
 closure .gt sort.R
 closure .gtn sort.R
 closure .handleSimpleError conditions.R
@@ -75,6 +76,7 @@ closure findRestart conditions.R
 closure force eval.R
 closure formals formals.R
 closure format format.R
+closure format.default format.R
 closure gc New-Internal.R
 closure gctorture New-Internal.R
 closure get get.R
@@ -83,7 +85,9 @@ closure geterrmessage New-Internal.R
 closure gettext stop.R
 closure gettextf stop.R
 closure grep grep.R
+closure grepl grep.R
 closure grouping sort.R
+closure gsub grep.R
 closure iconv New-Internal.R
 closure identical identical.R
 closure identity funprog.R
@@ -138,6 +142,7 @@ closure pipe connections.R
 closure pmatch match.R
 closure pmax pmax.R
 closure pmin pmax.R
+closure prettyNum format.R
 closure print print.R
 closure print.default print.R
 closure print.factor factor.R
@@ -149,6 +154,7 @@ closure reg.finalizer New-Internal.R
 closure regexpr grep.R
 closure rep.int rep.R
 closure rep_len rep.R
+closure rev rev.R
 closure rev.default rev.R
 closure rm rm.R
 closure rowSums colSums.R
@@ -172,8 +178,11 @@ closure stdout connections.R
 closure stop stop.R
 closure stopifnot stop.R
 closure storage.mode mode.R
+closure strrep character.R
+closure strsplit grep.R
 closure structure structure.R
 closure sub grep.R
+closure substr character.R
 closure substring character.R
 closure suppressWarnings conditions.R
 closure sys.call sys.R
@@ -181,6 +190,7 @@ closure sys.frame sys.R
 closure sys.function sys.R
 closure sys.nframe sys.R
 closure sys.parent sys.R
+closure try New-Internal.R
 closure tryCatch conditions.R
 closure tryInvokeRestart conditions.R
 closure typeof New-Internal.R
@@ -227,6 +237,7 @@ primitive <=
 primitive ==
 primitive >
 primitive >=
+primitive @
 primitive UseMethod
 primitive [
 primitive [<-
@@ -245,6 +256,7 @@ primitive as.integer
 primitive as.logical
 primitive as.numeric
 primitive as.raw
+primitive atan
 primitive attr
 primitive attr<-
 primitive attributes
@@ -270,6 +282,7 @@ primitive is.array
 primitive is.atomic
 primitive is.call
 primitive is.character
+primitive is.complex
 primitive is.double
 primitive is.environment
 primitive is.expression
@@ -309,6 +322,7 @@ primitive return
 primitive seq_along
 primitive seq_len
 primitive sqrt
+primitive storage.mode<-
 primitive substitute
 primitive sum
 primitive switch
@@ -344,6 +358,7 @@ internal environment
 internal eval
 internal exists
 internal formals
+internal format
 internal gc
 internal gctorture
 internal get
@@ -351,6 +366,8 @@ internal getOption
 internal geterrmessage
 internal gettext
 internal grep
+internal grepl
+internal gsub
 internal iconv
 internal identical
 internal inherits
@@ -382,6 +399,7 @@ internal pmatch
 internal pmax
 internal pmin
 internal print.default
+internal printDeferredWarnings
 internal psort
 internal qsort
 internal radixsort
@@ -394,6 +412,7 @@ internal remove
 internal rep.int
 internal rep_len
 internal rowSums
+internal seterrmessage
 internal sort
 internal sorted_fpass
 internal sprintf
@@ -401,6 +420,8 @@ internal startsWith
 internal stderr
 internal stdout
 internal stop
+internal strrep
+internal strsplit
 internal sub
 internal substr
 internal sys.call
@@ -419,3 +440,4 @@ internal which.max
 internal wrap_meta
 variable ..deparseOpts New-Internal.R
 variable letters constants.R
+variable pi constants.R
