@@ -31,7 +31,8 @@
 #   guard  common VM paths no bar's row reaches, held by the perf-rt gate to
 #          the 0.5% rule against main only (m1-bars.toml's [[guard]]): `[`
 #          and `[<-` of a double vector, and `[` of a matrix, by scalar
-#          indices (docs/ledger/g3/2026-11-17-perf-subset-guard.md).
+#          indices (docs/ledger/g3/2026-11-17-perf-subset-guard.md). Rows
+#          of other groups can be guards too: grow-dbl, scalars and d0-*.
 #   conditions
 #          the trycatch row split into its branches and neighbours, reported
 #          only (no bar cites them): what X9 (frames, argument matching), X7

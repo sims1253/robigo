@@ -104,7 +104,7 @@ class Guards(unittest.TestCase):
             "guard `x`: named twice",
         ])
 
-    def test_the_committed_guards_are_rows_of_the_guard_group(self):
+    def test_the_committed_guards(self):
         import tomllib
         with open(perf.RT_ROWS, "rb") as f:
             rows = {r["name"]: r for r in tomllib.load(f)["row"]}
@@ -112,8 +112,13 @@ class Guards(unittest.TestCase):
             bars = tomllib.load(f)
         self.assertEqual(perf.rt_guard_errors(bars, set(rows)), [])
         guards = [g["row"] for g in bars["guard"]]
-        self.assertEqual(guards, ["guard-subset-dbl", "guard-subassign-dbl", "guard-subset-matrix"])
-        self.assertEqual(sorted(guards), sorted(n for n, r in rows.items() if r["group"] == "guard"))
+        self.assertEqual(guards, [
+            "guard-subset-dbl", "guard-subassign-dbl", "guard-subset-matrix",
+            "grow-dbl", "scalars", "d0-attr", "d0-attributes", "d0-names",
+            "d0-unlist", "d0-paste", "d0-paste0",
+        ])
+        # every row of the guard group is one
+        self.assertLessEqual({n for n, r in rows.items() if r["group"] == "guard"}, set(guards))
 
 
 class AgainstMain(unittest.TestCase):
