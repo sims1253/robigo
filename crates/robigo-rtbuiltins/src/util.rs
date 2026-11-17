@@ -186,25 +186,47 @@ pub fn not_yet(cx: &mut Cx, call: Option<robigo_rtcore::Root<'_>>, what: &str) -
     cx.error_call(call, &format!("robigo: {what} is not implemented yet"))
 }
 
-/// GNU R's `asBool2(x, call)`: `asLogical2(x, checking = 1, call)`, NA an
-/// error ("NA in coercion to boolean"), an atomic vector of more than one
-/// element an error ("'length = %lld' in coercion to 'logical(1)'"), both
-/// against `call`. As in `asLogical2`, the length check is for atomic
-/// vectors only and a zero-length one is NA: a list, or `logical(0)`, is
-/// "NA in coercion to boolean".
-// R: coerce.c:asBool2, coerce.c:asLogical2
+/// GNU R's `asLogical2(x, checking = 1, call)`: [`as_logical`], and an
+/// atomic vector of more than one element an error ("'length = %lld' in
+/// coercion to 'logical(1)'") against `call` (None: R_NilValue). The length
+/// check is for atomic vectors only and a zero-length one is NA.
+// R: coerce.c:asLogical2
+pub fn as_logical_checked(
+    cx: &mut Cx,
+    call: Option<robigo_rtcore::Root<'_>>,
+    x: robigo_rtcore::Root<'_>,
+) -> robigo_rtcore::RResult<i32> {
+    let (v, n) = as_logical_n(cx, x.bind(cx));
+    if is_vector_atomic(x.bind(cx)) && n > 1 {
+        let msg = format!("'length = {n}' in coercion to 'logical(1)'");
+        return Err(cx.error_call(call, &msg));
+    }
+    Ok(v)
+}
+
+/// GNU R's `asBool2(x, call)`: [`as_logical_checked`] against `call`, NA an
+/// error ("NA in coercion to boolean") against `call` too. A list, or
+/// `logical(0)`, is "NA in coercion to boolean".
+// R: coerce.c:asBool2
 pub fn as_bool2(
     cx: &mut Cx,
     call: robigo_rtcore::Root<'_>,
     x: robigo_rtcore::Root<'_>,
 ) -> robigo_rtcore::RResult<bool> {
-    let (v, n) = as_logical_n(cx, x.bind(cx));
-    if is_vector_atomic(x.bind(cx)) && n > 1 {
-        let msg = format!("'length = {n}' in coercion to 'logical(1)'");
-        return Err(cx.error_call(Some(call), &msg));
-    }
+    let v = as_logical_checked(cx, Some(call), x)?;
     if v == logic::NA {
         return Err(cx.error_call(Some(call), "NA in coercion to boolean"));
+    }
+    Ok(v != 0)
+}
+
+/// GNU R's public `asBool(x)`, the C API's: as [`as_bool2`] with no call,
+/// except that NA is `error()`'s, reported against the context call.
+// R: coerce.c:asBool
+pub fn as_bool(cx: &mut Cx, x: robigo_rtcore::Root<'_>) -> robigo_rtcore::RResult<bool> {
+    let v = as_logical_checked(cx, None, x)?;
+    if v == logic::NA {
+        return Err(cx.error("NA in coercion to boolean"));
     }
     Ok(v != 0)
 }
