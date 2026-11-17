@@ -186,7 +186,14 @@ is a real port. Loading the namespace surfaced these, each ported:
   - `ignore.case` and `perl = TRUE`;
   - a latin1 string iconv cannot convert, in the C locale.
 
-RX replaces `ere` and keeps the callers.
+RX replaces `ere` and keeps the callers. RX's ports are #764: `grep`,
+`grepl`, `sub`, `gsub`, `regexpr`, `gregexpr`, `regexec` and `strsplit`,
+on TRE, PCRE2 and grep.c's fixed path.
+- **The foreman's rule:** whichever of C1-BC and #764 merges second
+  removes this matcher in favour of RX's ports and keeps `grep.R`
+  passing. If #764 merges first, C1-BC rebases and drops the matcher.
+- `grep.R` gives its recording on RX's branch through line 93. The rest
+  needs `Encoding`, which this branch ports (`util.rs`).
 
 **The cases:**
 - `tests/rt/strings/grep.R` covers the subset's edges: anchors, bracket
@@ -266,7 +273,7 @@ C).
 |---|---|---|---|
 | INTERIM(V3) | a BCODESXP body or value runs its source expression, compiled by robigo's own decisions | `rt/compile.rs:163-176`, `rt/eval.rs:117` | V3 |
 | INTERIM(L2) | `loadNamespace("compiler")` builds the namespace from the pinned tarball's cmp.R; any other namespace is "not implemented yet"; `path` is the tarball's | `rt/ns.rs:5-11,206-226` | L2 |
-| INTERIM(RX) | the regex matcher's subset and refusals (above) | `bi/grep.rs:7-40` | RX |
+| INTERIM(RX) | the regex matcher's subset and refusals (above) | `bi/grep.rs:7-40` | RX (#764) |
 | INTERIM(L5) | `T` and `F` bound in base; `.ArgsEnv`/`.GenericArgsEnv` empty | `rt/base.rs:174-176,195` | BW (S1), then L5 |
 | INTERIM(BW) | rt-ci's "conformance under ROBIGO_GC_MOVE with gctorture (E3)" step allows 1200 s per case, up from 600 (below) | `scripts/rt-ci.py` | BW (S1) reverts it |
 
@@ -310,6 +317,34 @@ option 3, as INTERIM(BW)).
   writes `x` (or its duplicate). Only the identity differs.
 - The loader stubs table (`2026-11-16-m1-exit-evidence.md`) loses `grep`
   and `sub`.
+
+### perf-rt and the S3 methods table
+
+Measured against main `fb429442`'s binary, on this machine (Ryzen 9 5900X).
+- **The first run:** s3 +31.0% instructions, e7-unique +4.0%.
+  - Base's `.__S3MethodsTable__.` is now bound, lazily as a promise, as
+    GNU R binds it.
+  - dispatch.rs's method-lookup memo declined every search whose table
+    binding was a promise, so each dispatch ran the full search.
+  - The fix on this branch: the memo reads a forced promise's value, skips
+    the lookup in a table that surely binds nothing (rtcore's
+    `Cx::frame_surely_empty`, HASHPRI 0), and checks the defining
+    environment's box instead of re-reading a forced-promise table binding.
+  - With it: s3 +0.18%, e7-unique −0.19%, every other row within ±0.1%.
+- **`tests/rt/s3/methods-table.R`** puts a method into base's table after
+  calls that missed it, then removes it. It matches the oracle; main
+  fails at once ("object '.__S3MethodsTable__.' not found").
+- **Peak RSS** fails the 2% gate: listgrow 45,188 → 47,764 KiB (+5.7%),
+  churn 73,684 → 75,832 KiB (+2.9%). This is the same startup heap growth.
+- **The foreman's decision:** wait for BW and rebase onto it. S1 measured
+  BW at 8,009 startup objects against main's 15,502. On the rebase:
+  - take BW's dispatch.rs, which fixes the same memo problem: a forced
+    promise read as its value, absent methods checked by the table's
+    version box, the table read once per dispatch, rtcore `Cx::env_version`;
+  - keep `frame_surely_empty` and the empty-table skip only if they still
+    help measurably on top of BW's;
+  - drop the INTERIM(BW) timeout bump if BW has not;
+  - re-measure RSS, the GC_MOVE step and every perf-rt row.
 
 ### Verification
 
