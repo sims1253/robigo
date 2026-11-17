@@ -68,11 +68,16 @@
   `tests/r/jit/native-closures` wait for that; the new cases keep their
   limits below it.
 - Cases, recorded on GNU R 4.6.2 and ratcheted:
-  - `tests/rt/conditions/missing-arg-error`: each subclass, the fields,
-    handlers by class, try()'s condition;
-  - `tests/rt/conditions/expression-depth`: the class, the 500 levels of
+  - `tests/rt/args/missing-arg-error`: each subclass, the fields,
+    handlers by class, try()'s condition. It is in `args`, not
+    `conditions`: `scripts/base-subset.sh` traces the `conditions` cases
+    with the JIT off, where `getvarError` is `evalError`;
+  - `tests/rt/context/expression-depth`: the class, the 500 levels of
     handler headroom, the limit put back after a jump, options() in a
-    handler, the range check, the uncaught report.
+    handler, the range check, the uncaught report. It is in `context`,
+    not `conditions`: `scripts/base-subset.sh` traces the `conditions`
+    cases, and its tracer's calls add evaluation depth, so the limits trip
+    at other points in the traced run.
   - `tests/rt/conditions/subscript-errors`: each class and its fields for
     `[[`, `[`, `[[<-` and `$<-`, by class.
 
