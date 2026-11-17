@@ -54,6 +54,14 @@ impl Cx {
         // SAFETY: immortal, of this isolate's heap.
         unsafe { Ref::from_sexp(self.iso().missing_arg, self) }
     }
+    /// `R_RestartToken`: a symbol named "" outside the symbol table, which
+    /// no R code can make; a function an internal restart jumps to returns
+    /// it.
+    #[inline(always)]
+    pub fn restart_token(&self) -> Ref<'_> {
+        // SAFETY: immortal, of this isolate's heap.
+        unsafe { Ref::from_sexp(self.iso().restart_token, self) }
+    }
 
     /// A vector of `n` elements, unpublished: plain data zeroed, CHARSXP
     /// elements `""`, list elements R_NilValue. Never collects.
@@ -224,6 +232,31 @@ impl Cx {
         let x = unsafe { iso.core().alloc_node(t, car.sexp(), cdr.sexp(), iso.nil) }?;
         // SAFETY: fresh, of this heap.
         Ok(unsafe { Ref::from_sexp(x, self) })
+    }
+
+    /// GNU R's `R_MakeExternalPtr(p, tag, prot)` for an address robigo
+    /// only compares, never dereferences (a context record's, a
+    /// connection's id): `addr` is the pointer's untraced word, `tag` and
+    /// `prot` its traced fields.
+    ///
+    /// Inline, so its allocation is compiled where it is called: a call
+    /// of the heap's `alloc_node` with `EXTPTRSXP` here made the copy
+    /// rtcore's `cons` and `lcons` share slower (s3 +0.3%).
+    // R: memory.c:R_MakeExternalPtr
+    #[inline]
+    pub fn extptr<'g>(&'g self, addr: usize, tag: Ref<'g>, prot: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
+        let iso = self.iso();
+        iso.check_owns(tag.sexp());
+        iso.check_owns(prot.sexp());
+        // SAFETY: as in `node`: `tag`, `prot` and nil are live objects of
+        // this heap through an allocation that does not collect. An
+        // EXTPTRSXP's car is an untraced word (EXTPTR_PTR), its cdr the
+        // protected value and its tag the tag (memory.c).
+        unsafe {
+            let x = iso.core().alloc_node(EXTPTRSXP, iso.nil, prot.sexp(), tag.sexp())?;
+            x.set_extptr_addr(addr as *mut u8);
+            Ok(Ref::from_sexp(x, self))
+        }
     }
 
     /// GNU R's `mkCharLenCE`: the cached CHARSXP for `bytes`, marked `enc`

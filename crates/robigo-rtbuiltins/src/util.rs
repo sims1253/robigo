@@ -7,6 +7,41 @@ use crate::kernel::logic;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Char, Cx, RError, Rcomplex, Ref};
 
+/// GNU R's `sexptype2char`: a type's C name ("REALSXP"), as memory.c's
+/// messages give it.
+// R: memory.c:sexptype2char
+pub fn sexptype2char(t: u8) -> &'static str {
+    match t {
+        NILSXP => "NILSXP",
+        SYMSXP => "SYMSXP",
+        LISTSXP => "LISTSXP",
+        CLOSXP => "CLOSXP",
+        ENVSXP => "ENVSXP",
+        PROMSXP => "PROMSXP",
+        LANGSXP => "LANGSXP",
+        SPECIALSXP => "SPECIALSXP",
+        BUILTINSXP => "BUILTINSXP",
+        CHARSXP => "CHARSXP",
+        LGLSXP => "LGLSXP",
+        INTSXP => "INTSXP",
+        REALSXP => "REALSXP",
+        CPLXSXP => "CPLXSXP",
+        STRSXP => "STRSXP",
+        DOTSXP => "DOTSXP",
+        ANYSXP => "ANYSXP",
+        VECSXP => "VECSXP",
+        EXPRSXP => "EXPRSXP",
+        BCODESXP => "BCODESXP",
+        EXTPTRSXP => "EXTPTRSXP",
+        WEAKREFSXP => "WEAKREFSXP",
+        OBJSXP => "OBJSXP",
+        RAWSXP => "RAWSXP",
+        30 => "NEWSXP",
+        31 => "FREESXP",
+        _ => "<unknown>",
+    }
+}
+
 /// GNU R's `type2char`: the first name `TypeTable` gives a type.
 // R: util.c:TypeTable, util.c:type2char
 pub fn type2char(t: u8) -> &'static str {

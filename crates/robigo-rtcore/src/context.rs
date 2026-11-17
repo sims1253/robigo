@@ -1964,6 +1964,44 @@ impl Cx {
         self.ctxs().handler_stack.set(x);
     }
 
+    /// `do_addGlobHands`' check: every record below the top level saved
+    /// the top level's handler stack, so no handlers are established
+    /// between them.
+    // R: errors.c:do_addGlobHands
+    pub fn handlers_only_global(&self) -> bool {
+        let st = self.ctxs();
+        let top = st.toplevel.get();
+        // SAFETY: R_ToplevelContext is always a live record of the chain.
+        let old = Rec(unsafe { NonNull::new_unchecked(top) }).handlerstack();
+        st.chain().take_while(|r| r.ptr() != top).all(|r| r.handlerstack() == old)
+    }
+
+    /// `do_addGlobHands`' update: `stack`, the global handlers, becomes the
+    /// handler stack every record below the top level saved, the top
+    /// level's and `R_HandlerStack`. Panics unless
+    /// [`Cx::handlers_only_global`].
+    // R: errors.c:do_addGlobHands
+    pub fn set_global_handlers(&mut self, stack: Root<'_>) {
+        let x = stack.bind(self).sexp();
+        self.iso().check_owns(x);
+        let st = self.ctxs();
+        let top = st.toplevel.get();
+        // SAFETY: as above.
+        let top_rec = Rec(unsafe { NonNull::new_unchecked(top) });
+        let old = top_rec.handlerstack();
+        // the whole chain checked before any record changes, so a failed
+        // assertion leaves it as it was
+        assert!(
+            st.chain().take_while(|r| r.ptr() != top).all(|r| r.handlerstack() == old),
+            "robigo: handlers on the stack (check handlers_only_global first)"
+        );
+        for r in st.chain().take_while(|r| r.ptr() != top) {
+            r.set_handlerstack(x);
+        }
+        top_rec.set_handlerstack(x);
+        st.handler_stack.set(x);
+    }
+
     pub fn restart_stack(&self) -> Ref<'_> {
         self.raw_ref(self.ctxs().restart_stack.get())
     }

@@ -118,7 +118,11 @@ pub struct Generic {
     /// The group for `DispatchGroup` (`"Ops"`, `"Math"`, `"Summary"`,
     /// `"Complex"`, `"matrixOps"`); None for `DispatchOrEval`.
     pub group: Option<&'static str>,
-    /// `DispatchOrEval`'s `dropmissing`.
+    /// `DispatchOrEval`'s `dropmissing`: drop `R_MissingArg` from the
+    /// arguments it evaluates. GNU R reads it only for unevaluated
+    /// arguments (a special's); `is.na` and `is.nan` set it as their
+    /// `DispatchOrEval` calls do, with evaluated arguments, where it has no
+    /// effect, so no dispatch here reads it.
     pub drop_missing: bool,
     /// `DispatchOrEval`'s `argsevald`: the window holds values (a
     /// builtin), not the call's argument expressions (a special).
@@ -227,19 +231,27 @@ fn no_force(cx: &mut Cx, _: Root<'_>, _: Out<'_>) -> RResult<()> {
 }
 
 fn collect(cx: &mut Cx, call: Option<Root<'_>>, msg: &str) -> RResult<()> {
-    cx.collect_warning(call, msg);
-    Ok(())
+    cx.collect_warning(call, msg)
 }
 
-/// GNU R's `R_nwarnings`: how many warnings the deferred list keeps.
+/// GNU R's `R_nwarnings` at startup, `options(nwarnings)`'s default: how
+/// many warnings the deferred list keeps.
 pub const MAX_WARNINGS: usize = 50;
 
-/// GNU R's `R_Warnings`: the deferred warnings, each a call and its
-/// message, in the order signalled. A precise root.
-#[derive(Default, Trace)]
+/// GNU R's `R_Warnings`: the deferred warnings, each (call, message), in
+/// the order signalled, at most `limit` of them (`R_nwarnings`). A precise
+/// root.
+#[derive(Trace)]
 pub(crate) struct Warnings {
-    calls: Vec<Sexp>,
-    msgs: Vec<Sexp>,
+    list: Vec<(Sexp, Sexp)>,
+    #[trace(skip = "a count: no object")]
+    limit: usize,
+}
+
+impl Default for Warnings {
+    fn default() -> Warnings {
+        Warnings { list: Vec::new(), limit: MAX_WARNINGS }
+    }
 }
 
 impl Cx {
@@ -362,20 +374,37 @@ impl Cx {
 
     /// Add a warning to the deferred list (GNU R's `vwarningcall_dflt` with
     /// `warn = 0`): its call and message, unless the list already holds
-    /// [`MAX_WARNINGS`]. A message that cannot be allocated is dropped with
-    /// its warning (GNU R would fail the allocation).
+    /// [`Cx::nwarnings`]. The message's allocation is retried after a
+    /// collection, and a refusal is the error GNU R's `mkChar` raises.
     // R: errors.c:vwarningcall_dflt
-    pub fn collect_warning(&mut self, call: Option<Root<'_>>, msg: &str) {
-        let iso = self.iso();
-        if iso.warnings_len() >= MAX_WARNINGS {
-            return;
+    pub fn collect_warning(&mut self, call: Option<Root<'_>>, msg: &str) -> RResult<()> {
+        if self.iso().warnings_len() >= self.nwarnings() {
+            return Ok(());
         }
         // a C string's message ends at a NUL
-        let msg = msg.split('\0').next().unwrap_or_default();
-        let Ok(m) = self.mk_char(msg.as_bytes(), crate::Encoding::Native) else { return };
+        let msg = &msg[..msg.find('\0').unwrap_or(msg.len())];
+        let m =
+            self.retry_alloc(|cx| cx.mk_char(msg.as_bytes(), crate::Encoding::Native).map(|m| m.as_ref().sexp()))?;
+        let iso = self.iso();
         let call = call.map_or(iso.nil, |c| c.bind(self).sexp());
         iso.check_owns(call);
-        iso.warnings_push(call, m.as_ref().sexp());
+        iso.warnings_push(call, m);
+        Ok(())
+    }
+
+    /// `R_nwarnings`: how many warnings the deferred list keeps.
+    pub fn nwarnings(&self) -> usize {
+        self.iso().warnings_limit()
+    }
+
+    /// `options(nwarnings = k)`: keep `k` warnings (at least 1) from now
+    /// on, the list emptied (`R_CollectWarnings = 0`, a reset).
+    // R: options.c:do_options ("nwarnings")
+    pub fn set_nwarnings(&mut self, k: usize) {
+        assert!(k >= 1, "robigo: options(nwarnings) checks for a positive value first");
+        let iso = self.iso();
+        iso.warnings_clear();
+        iso.warnings_set_limit(k);
     }
 
     /// The deferred warnings: (call, message) in the order signalled.
@@ -399,17 +428,21 @@ impl Cx {
 
 impl Warnings {
     pub(crate) fn len(&self) -> usize {
-        self.calls.len()
+        self.list.len()
     }
     pub(crate) fn push(&mut self, call: Sexp, msg: Sexp) {
-        self.calls.push(call);
-        self.msgs.push(msg);
+        self.list.push((call, msg));
     }
     pub(crate) fn at(&self, i: usize) -> (Sexp, Sexp) {
-        (self.calls[i], self.msgs[i])
+        self.list[i]
     }
     pub(crate) fn clear(&mut self) {
-        self.calls.clear();
-        self.msgs.clear();
+        self.list.clear();
+    }
+    pub(crate) fn limit(&self) -> usize {
+        self.limit
+    }
+    pub(crate) fn set_limit(&mut self, k: usize) {
+        self.limit = k;
     }
 }

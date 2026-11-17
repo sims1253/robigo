@@ -666,6 +666,33 @@ pub fn profile(cx: &Cx) -> Option<Profile> {
     prims::state(cx).forced
 }
 
+/// `.Internal(returnValue(default))`: the value the function whose
+/// `on.exit` code is running returns (`R_ExitContext`'s), marked not
+/// mutable; `default` when no exit is under way or it carries no value (an
+/// error, a jump through the function).
+// R: eval.c:do_returnValue
+pub fn do_return_value(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "returnValue", 1, true)?;
+    cx.scope(|cx, s| {
+        let v = cx.exit_context().and_then(|c| c.return_value());
+        match v {
+            Some(v) => {
+                let v = s.root(cx, v);
+                cx.mark_not_mutable(v);
+                out.set(cx, v.bind(cx));
+            }
+            None => out.set(cx, args.get(cx, 0)),
+        }
+        Ok(())
+    })
+}
+
 /// `.Internal(eval(expr, envir, enclos))`: `expr` (a call or symbol, or
 /// each element of an expression vector) evaluated in `envir` (an
 /// environment, a list or pairlist made into one under `enclos`, or a
@@ -798,13 +825,32 @@ pub fn do_eval(cx: &mut Cx, call: Root<'_>, args: robigo_rtcore::Args<'_>, rho: 
             let i = st.defs.iter().position(|d| d.internal() && d.name == "eval").expect("robigo: eval in the table");
             s.root(cx, st.objs[i].bind(cx))
         };
+        // (the record's args are evalList's list, whose cells count no
+        // references, CONS_NR: the expression's references stay its
+        // bindings', so a write into it while it runs is in place)
         let promargs = s.capture(cx, |cx, o| {
             cx.build(o, |cx| {
-                let mut l = cx.nil();
+                let nil = cx.nil().sexp();
+                let mut l = nil;
                 for i in (0..args.len()).rev() {
-                    l = cx.cons(args.get(cx, i), l)?;
+                    let v = args.get(cx, i).sexp();
+                    // SAFETY: the call's live values and the list made so
+                    // far; nothing collects in this interval
+                    l = unsafe {
+                        let c = cx.alloc_node_raw(LISTSXP, v, l, nil)?;
+                        // CONS_NR: the construction's counts undone, and
+                        // none later
+                        v.decref();
+                        if l != nil {
+                            l.decref();
+                        }
+                        c.set_flag(robigo_heap::flags::NO_TRACKREFS, true);
+                        c
+                    };
                 }
-                Ok(l)
+                // SAFETY: a live object of this isolate: the first cell made
+                // above, or with no arguments R_NilValue (immortal).
+                Ok(unsafe { Ref::from_sexp(l, cx) })
             })
         })?;
         let spec = FunctionContext {
