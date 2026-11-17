@@ -306,7 +306,9 @@ fn expected(t: Option<&Norm>, s: Option<&Norm>, s_next: Option<&Norm>) -> Option
         // can leave it from elsewhere (checkSkipLoopCntxt), a `for` loop's
         // step after its body; the port makes a context always, the step
         // first
-        (_, Some(Op::Loop)) | (Some(Op::Loop), _) => Some("a loop's shape (checkSkipLoopCntxt, cmpForBody)"),
+        (_, Some(Op::Loop | Op::ForStep)) | (Some(Op::Loop | Op::ForStep), _) => {
+            Some("a loop's shape (checkSkipLoopCntxt, cmpForBody)")
+        }
         // tryInline guards a base function whose handler then declines
         // (`sum(...)`: cmpBuiltin with `...`) and calls it; the port calls
         // it unguarded
