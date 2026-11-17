@@ -74,6 +74,7 @@ pub mod repl;
 pub mod search;
 pub mod serialize;
 pub mod source;
+mod util;
 mod specials;
 pub mod vm;
 
