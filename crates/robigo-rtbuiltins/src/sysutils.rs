@@ -1,4 +1,5 @@
-//! sysutils.c's `interactive()` and `.Internal(Sys.getenv(x, unset))`,
+//! sysutils.c's `interactive()`, `.Internal(Sys.getenv(x, unset))`,
+//! `.Internal(Sys.setenv(nm, values))` and `.Internal(Sys.unsetenv(nm))`,
 //! and platform.c's `.Internal(l10n_info())`.
 
 use crate::attrib::{Attr, Attrs};
@@ -67,6 +68,74 @@ pub fn do_getenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
         }
         Ok(ans.finish().into())
     })
+}
+
+/// `translateChar(STRING_ELT(x, i))`: element `i` of the character vector
+/// `x` in the native encoding (GNU R's error for one it cannot be).
+fn translated(cx: &mut Cx, x: Root<'_>, i: usize) -> RResult<Vec<u8>> {
+    let r = {
+        let ch = x.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
+        crate::text::to_native(crate::coerce::text(ch), cx.locale()).map(|b| b.into_owned())
+    };
+    r.map_err(|e| cx.error(&e.to_string()))
+}
+
+/// `.Internal(Sys.setenv(nm, values))`: set each variable `nm[i]` to
+/// `values[i]` in the process's environment (`setenv`, so every isolate
+/// sees it; see `clib::setenv`), each TRUE if it was set.
+// R: sysutils.c:do_setenv
+pub fn do_setenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("Sys.setenv", true).check_arity(cx, call, args)?;
+    let (nm, val) = (args.get(cx, 0), args.get(cx, 1));
+    if nm.sexptype() != STRSXP {
+        return Err(cx.error("wrong type for argument"));
+    }
+    if val.sexptype() != STRSXP {
+        return Err(cx.error("wrong type for argument"));
+    }
+    if nm.is_package_altrep() || val.is_package_altrep() {
+        return Err(crate::util::not_yet(cx, Some(call), "Sys.setenv() of a package ALTREP vector"));
+    }
+    if nm.len() != val.len() {
+        return Err(cx.error("'names' and 'val' are of different lengths"));
+    }
+    let n = val.len().unwrap();
+    let (nm, val) = (args.root(0), args.root(1));
+    // each set as it is translated, as GNU R's loop does (an error leaves
+    // the earlier ones set)
+    let mut ok = Vec::with_capacity(n);
+    for i in 0..n {
+        let name = translated(cx, nm, i)?;
+        let value = translated(cx, val, i)?;
+        ok.push(Lgl(robigo_rtcore::clib::setenv(&name, &value) as i32));
+    }
+    cx.build(out, |cx| Ok(cx.alloc_copy(&ok)?.finish().into()))
+}
+
+/// `.Internal(Sys.unsetenv(nm))`: remove each variable `nm[i]` from the
+/// process's environment (`unsetenv`), each TRUE if it is then unset.
+// R: sysutils.c:do_unsetenv
+pub fn do_unsetenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("Sys.unsetenv", true).check_arity(cx, call, args)?;
+    let x = args.get(cx, 0);
+    if x.sexptype() != STRSXP {
+        return Err(cx.error("wrong type for argument"));
+    }
+    if x.is_package_altrep() {
+        return Err(crate::util::not_yet(cx, Some(call), "Sys.unsetenv() of a package ALTREP vector"));
+    }
+    let n = x.len().unwrap();
+    let nm = args.root(0);
+    for i in 0..n {
+        let name = translated(cx, nm, i)?;
+        robigo_rtcore::clib::unsetenv(&name);
+    }
+    let mut ok = Vec::with_capacity(n);
+    for i in 0..n {
+        let name = translated(cx, nm, i)?;
+        ok.push(Lgl(!robigo_rtcore::clib::has_env(&name) as i32));
+    }
+    cx.build(out, |cx| Ok(cx.alloc_copy(&ok)?.finish().into()))
 }
 
 /// `.Internal(l10n_info())`: `MBCS`, `UTF-8`, `Latin-1` and `codeset`.

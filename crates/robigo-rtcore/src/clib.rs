@@ -9,6 +9,11 @@
 //! its own, `Locale`); the password lookups read the password database; the
 //! message directory is asked of libintl's binding table for a domain no
 //! one binds.
+//!
+//! The one exception is the process environment (`setenv`, `unsetenv`:
+//! sysutils.c's `Sys.setenv`, `Sys.unsetenv`), which is the process's, not an
+//! isolate's, in robigo as in GNU R. See [`setenv`] for how its readers
+//! on other threads are kept safe.
 
 #![allow(unsafe_code)]
 
@@ -149,6 +154,64 @@ pub fn passwd_home(user: Option<&[u8]>) -> Option<Vec<u8>> {
             return Some(std::ffi::CStr::from_ptr(pw.pw_dir).to_bytes().to_vec());
         }
     }
+}
+
+/// Whether `name` is one the C library's `setenv`/`unsetenv` accept: not
+/// empty and without `=` (else `EINVAL`), and, as a C string, without NUL
+/// (an R string has none).
+fn env_name_ok(name: &[u8]) -> bool {
+    !name.is_empty() && !name.contains(&b'=') && !name.contains(&0)
+}
+
+/// `setenv(name, value, 1) == 0`: set the process's environment variable
+/// `name` to `value`; false for a name `setenv` refuses (`EINVAL`).
+///
+/// The environment is process-wide: every isolate (each on its own
+/// thread) sees the change, as every part of a GNU R process does. Its
+/// readers are kept safe two ways:
+/// - robigo's own reads (`Sys.getenv`, startup options, R_HOME and the
+///   like) go through `std::env`, which holds the standard library's
+///   environment lock, as does this write ([`std::env::set_var`]); a read
+///   sees the old value or the new one, never a torn array;
+/// - C code on another thread that calls `getenv` itself (glibc's time
+///   zone code reading `TZ`, a package's C) is outside that lock. glibc
+///   (since commit 7a61e7f557a9, "stdlib: Make getenv thread-safe in more
+///   cases"; this machine has 2.44) never frees an environment array that
+///   `getenv` may be walking and publishes each new one with a single
+///   pointer store, so such a read also gets the old value or the new one.
+///   Code that walks `environ` by hand while another isolate sets a
+///   variable is not covered, by glibc or by robigo.
+pub fn setenv(name: &[u8], value: &[u8]) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    if !env_name_ok(name) || value.contains(&0) {
+        return false;
+    }
+    // SAFETY: the name and value are ones `set_var` accepts (checked
+    // above); concurrent readers are as described in this function's
+    // documentation: std's under the same lock, C's `getenv` by glibc's
+    // guarantee.
+    unsafe { std::env::set_var(std::ffi::OsStr::from_bytes(name), std::ffi::OsStr::from_bytes(value)) };
+    true
+}
+
+/// `unsetenv(name)`: remove the process's environment variable `name`; a
+/// name `unsetenv` refuses (`EINVAL`) changes nothing. Readers on other
+/// threads as for [`setenv`].
+pub fn unsetenv(name: &[u8]) {
+    use std::os::unix::ffi::OsStrExt;
+    if !env_name_ok(name) {
+        return;
+    }
+    // SAFETY: as for `setenv`: a name `remove_var` accepts, readers as
+    // documented there.
+    unsafe { std::env::remove_var(std::ffi::OsStr::from_bytes(name)) };
+}
+
+/// `getenv(name) != NULL`: whether the process's environment has `name`
+/// (read under std's environment lock).
+pub fn has_env(name: &[u8]) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    !name.contains(&0) && std::env::var_os(std::ffi::OsStr::from_bytes(name)).is_some()
 }
 
 unsafe extern "C" {

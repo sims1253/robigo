@@ -1,0 +1,29 @@
+[1] TRUE TRUE
+ROBIGO_T_A ROBIGO_T_B 
+     "two"      "3.5" 
+ROBIGO_T_C ROBIGO_T_D 
+      "NA"     "TRUE" 
+[1] ""
+[1]  TRUE FALSE FALSE
+[1] "f"
+[1] FALSE
+[1] "B=C"
+[1] TRUE TRUE TRUE TRUE
+ROBIGO_T_A ROBIGO_T_B 
+        NA         NA 
+logical(0)
+logical(0)
+[1] TRUE TRUE
+[1] TRUE
+[1] "café"
+[1] TRUE
+[1] NA
+[1] "all arguments must be named"
+[1] "wrong type for argument"
+[1] "wrong type for argument"
+[1] "'names' and 'val' are of different lengths"
+[1] "wrong type for argument"
+f(1, "a")
+[1] "translating strings with \"bytes\" encoding is not allowed"
+[1] "h"
+[1] "translating strings with \"bytes\" encoding is not allowed"
