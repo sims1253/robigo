@@ -655,7 +655,8 @@ impl<'g> State<'g> {
                 self.args2buff(clo.formals(), false, true)?;
                 self.print(b") ");
                 self.writeline();
-                self.deparse2buff(clo.body())?;
+                // BODY_EXPR(s): byte code's source
+                self.deparse2buff(robigo_rtbuiltins::bytecode::expr(self.cx, clo.body()))?;
                 self.opts = d_opts_in;
                 if attr >= AttrType::StrucAttr {
                     self.attr2(s, attr == AttrType::StrucAttr)?;

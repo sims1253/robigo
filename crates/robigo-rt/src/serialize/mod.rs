@@ -1,19 +1,23 @@
 //! serialize.c (L1): GNU R's serialization, its ascii, binary and xdr
 //! formats in versions 2 and 3 ([`stream`]), `WriteItem` ([`write`]) and
 //! `ReadItem` ([`read`]) with the reference table, the persistent-name
-//! hooks and ALTREP's serialized classes; and its builtins: `serialize`,
+//! hooks, byte code (`WriteBC`, `ReadBC`: the shared language cells as
+//! `BCREPDEF`/`BCREPREF`, L1b over C1-BC's BCODESXP) and ALTREP's
+//! serialized classes; and its builtins: `serialize`,
 //! `serializeb`, `unserialize`, `serializeToConn`, `unserializeFromConn`,
 //! `serializeInfoFromConn`, and the lazy-load database's
 //! `lazyLoadDBinsertValue`, `lazyLoadDBfetch`, `lazyLoadDBflush` and
 //! `getVarsFromFrame`.
 //!
-//! Not yet, and saying so when reached (AGENTS rule 6): byte code
-//! (`BCODESXP` and its `BCREPDEF`/`BCREPREF` representation are read and
-//! checked, and the object is C1-BC's; a closure GNU R holds as byte code
-//! cannot be written before it has one), the `R_compile_pkgs` compile on
-//! write, ALTREP classes (robigo-rt has no classes of its own yet, and a
-//! package class is robigo-rtapi's), bzip2 and xz compressed databases,
-//! and native encodings other than UTF-8, Latin-1 and ASCII.
+//! Not yet, and saying so when reached (AGENTS rule 6): a closure or
+//! promise robigo-rt compiles itself where GNU R holds byte code (there is
+//! no BCODESXP of GNU R's to write; one whose body is a BCODESXP is written
+//! as it is), the `R_compile_pkgs` compile on write, ALTREP classes
+//! (robigo-rt has no classes of its own yet: base's compact sequences are
+//! read as the standard vectors they expand to and written back so,
+//! [`take_compact_sequences_expanded`], and a package class is
+//! robigo-rtapi's), bzip2 and xz compressed databases, and native encodings
+//! other than UTF-8, Latin-1 and ASCII.
 
 #![allow(unsafe_code)]
 
@@ -125,75 +129,16 @@ fn save_special_hook(cx: &Cx, s: Sexp) -> Option<i32> {
     })
 }
 
-/// The value `R_findVarInFrame(rho, sym)` finds without running code, if
-/// `rho` binds the symbol named `name` to an object.
-fn frame_value(cx: &Cx, rho: Sexp, name: &[u8]) -> Option<Sexp> {
-    let sym = cx.find_symbol(name)?;
-    // SAFETY: a live environment.
-    let r = unsafe { Ref::from_sexp(rho, cx) };
-    let View::Env(e) = r.view() else { return None };
-    match cx.frame_binding(e, sym) {
-        robigo_rtcore::Lookup::Bound(b) => match b.get(cx) {
-            robigo_rtcore::BindingValue::Value(v) => Some(v.sexp()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
+// What a namespace or package environment is: robigo-rt's `ns`
+// (envir.c's R_IsNamespaceEnv, R_NamespaceEnvSpec, R_IsPackageEnv).
+use crate::ns::{is_namespace_env, is_package_env, name_attr, namespace_spec};
 
-/// `R_NamespaceEnvSpec(rho)`'s STRSXP, if `rho` is a namespace
-/// environment (`R_IsNamespaceEnv`) other than base's.
-// R: envir.c:R_IsNamespaceEnv, R_NamespaceEnvSpec
-fn namespace_spec(cx: &Cx, s: Sexp) -> Option<Sexp> {
-    // SAFETY: a live object.
-    if unsafe { s.typ() } != ENVSXP {
-        return None;
-    }
-    let info = frame_value(cx, s, b".__NAMESPACE__.")?;
-    // SAFETY: a live object.
-    if unsafe { info.typ() } != ENVSXP {
-        return None;
-    }
-    let spec = frame_value(cx, info, b"spec")?;
-    // SAFETY: a live object.
-    unsafe { (spec.typ() == STRSXP && spec.std_len() > 0).then_some(spec) }
-}
-
-fn is_namespace_env(cx: &Cx, s: Sexp) -> bool {
-    s == cx.base_namespace().sexp() || namespace_spec(cx, s).is_some()
-}
-
+/// `R_NamespaceEnvSpec(rho)` of a namespace other than base's.
+///
 /// # Safety
 /// `s` is a live namespace environment (not base's).
 unsafe fn namespace_env_spec(cx: &Cx, s: Sexp) -> Sexp {
     namespace_spec(cx, s).expect("robigo: not a namespace environment")
-}
-
-/// The `name` attribute of `s`, if it is a non-empty STRSXP.
-fn name_attr(cx: &Cx, s: Sexp) -> Option<Sexp> {
-    // SAFETY: a live object and its attribute list.
-    unsafe {
-        let name_sym = cx.find_symbol(b"name")?.as_ref().sexp();
-        let mut a = s.attrib_raw();
-        while a != cx.nil().sexp() {
-            if a.tag() == name_sym {
-                let v = a.car();
-                return (v.typ() == STRSXP && v.std_len() > 0).then_some(v);
-            }
-            a = a.cdr();
-        }
-        None
-    }
-}
-
-/// `R_IsPackageEnv(rho)`: its `name` attribute starts with "package:".
-// R: envir.c:R_IsPackageEnv
-fn is_package_env(cx: &Cx, s: Sexp) -> bool {
-    // SAFETY: live objects.
-    unsafe {
-        s.typ() == ENVSXP
-            && name_attr(cx, s).is_some_and(|n| (*(n.std_data() as *const Sexp)).char_bytes().starts_with(b"package:"))
-    }
 }
 
 /// `R_PackageEnvName(rho)`.
@@ -472,11 +417,14 @@ pub fn do_unserialize_from_conn<const CODE: i32>(
 
 // ---- lazy-load databases ------------------------------------------------------
 
-/// The `.rdb` files read whole (serialize.c's `names`/`ptr` cache: up to
-/// 100 files under 10 MB, kept until `lazyLoadDBflush`).
+/// serialize's state in the isolate: the `.rdb` files read whole
+/// (serialize.c's `names`/`ptr` cache: up to 100 files under 10 MB, kept
+/// until `lazyLoadDBflush`), and the count of compact sequences read
+/// expanded ([`take_compact_sequences_expanded`]).
 #[derive(Default)]
 pub struct RdbCache {
     files: std::cell::RefCell<Vec<Option<(Vec<u8>, Vec<u8>)>>>,
+    compact_expanded: std::cell::Cell<usize>,
 }
 
 const NC: usize = 100;
@@ -816,6 +764,21 @@ fn marked_encoding(levs: u16) -> Option<Encoding> {
 /// written to `out`.
 pub fn unserialize_bytes(cx: &mut Cx, data: Vec<u8>, hook: Option<Root<'_>>, out: Out<'_>) -> RResult<()> {
     read::unserialize(cx, InStream::memory(data), hook, out)
+}
+
+/// How many of base's compact sequences (`compact_intseq`,
+/// `compact_realseq`) `unserialize` read in `cx`'s isolate as the standard
+/// vectors they expand to since the last call. GNU R keeps them compact
+/// and writes them back as ALTREP; robigo-rt has no ALTREP classes of its
+/// own yet (AC's), so an object holding one serializes to other bytes.
+pub fn take_compact_sequences_expanded(cx: &Cx) -> usize {
+    rdb_cache(cx).compact_expanded.replace(0)
+}
+
+/// One more compact sequence read expanded.
+pub(crate) fn count_compact_expanded(cx: &Cx) {
+    let c = &rdb_cache(cx).compact_expanded;
+    c.set(c.get() + 1);
 }
 
 /// `R_Serialize` of `object` in `fmt` and `version` with `hook` as the

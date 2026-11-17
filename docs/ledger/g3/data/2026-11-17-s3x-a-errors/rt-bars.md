@@ -1,33 +1,33 @@
 ### robigo-rt's M1 bars (scripts/perf.py rt-bars)
 
 CPU: AMD Ryzen 9 5900X 12-Core Processor, signature 1be0f69f7d2b7252.
-robigo-rt: bins/s3x-a6: sha256 09cd558d3f867750, build ID ae223bd00fa98e39, modified 2026-11-17T08:01:48Z; checkout nightly-2026-11-16-368-g64c3e97f
-main: bins/main-a9c4: sha256 8c2f0fbd6119e361, build ID 23991091d8f19f20, modified 2026-11-17T06:05:35Z; checkout nightly-2026-11-16-368-g64c3e97f
+robigo-rt: bins/s3xa-m2: sha256 78c0a56ba03aa599, build ID 435a3fef908289a2, modified 2026-11-17T10:32:24Z; checkout nightly-2026-11-16-423-gc07d8c2a
+main: bins/main-4804: sha256 1c0278d67c8eca13, build ID 5cfed601c84831fc, modified 2026-11-17T10:39:56Z; checkout nightly-2026-11-16-423-gc07d8c2a
 Callgrind instructions per iteration; bars against docs/ledger/g3/2026-11-17-a0b-stock-rival.md (measured on another machine) and today's robigo.
 Against main: main's binary of the merge's base, on this runner.
 
 | row | instructions | main | change | against | ratio | bar | |
 |---|---:|---:|---:|---|---:|---:|---|
-| plain | 1,918.3 | 1,918.1 | +0.01% | gnur | 0.449x | 0.6x | ok |
-| defaults | 1,998.7 | 1,998.6 | +0.01% | gnur | 0.367x | 0.6x | ok |
-| named | 1,844.6 | 1,845.1 | -0.02% | gnur | 0.443x | 0.6x | ok |
-| env-fn | 1,942.8 | 1,942.6 | +0.01% | gnur | 0.573x | 1.0x | ok |
-| superassign | 4,910.5 | 4,910.6 | -0.00% | gnur | 0.712x | 1.0x | ok |
-| s3 | 18,775.1 | 18,776.1 | -0.01% | gnur | 1.079x | (1.0x) | not met yet |
-| fib | 10,723,075.8 | 10,723,131.7 | -0.00% | today | 1.272x | (1.0x) | not met yet |
-| binarytrees | 3,480,469.2 | 3,480,475.1 | -0.00% | today | 0.841x | 1.0x | ok |
-| e7-paste | 96,110.3 | 96,106.5 | +0.00% | today | 1.929x | (1.0x) | accepted up to 2.0x |
-| e7-match | 92,235.2 | 92,290.3 | -0.06% | today | 0.806x | 1.0x | ok |
-| e7-unique | 123,004.8 | 122,980.9 | +0.02% | today | 0.678x | 1.0x | ok |
+| plain | 1,918.3 | 1,918.2 | +0.01% | gnur | 0.449x | 0.6x | ok |
+| defaults | 1,999.0 | 1,998.9 | +0.00% | gnur | 0.367x | 0.6x | ok |
+| named | 1,843.7 | 1,843.9 | -0.01% | gnur | 0.443x | 0.6x | ok |
+| env-fn | 1,942.6 | 1,942.2 | +0.02% | gnur | 0.573x | 1.0x | ok |
+| superassign | 4,912.6 | 4,912.2 | +0.01% | gnur | 0.713x | 1.0x | ok |
+| s3 | 18,810.3 | 18,810.1 | +0.00% | gnur | 1.081x | (1.0x) | not met yet |
+| fib | 10,723,097.8 | 10,723,015.3 | +0.00% | today | 1.272x | (1.0x) | not met yet |
+| binarytrees | 3,480,484.5 | 3,480,459.6 | +0.00% | today | 0.841x | 1.0x | ok |
+| e7-paste | 96,133.3 | 96,107.4 | +0.03% | today | 1.930x | (1.0x) | accepted up to 2.0x |
+| e7-match | 92,282.6 | 92,199.5 | +0.09% | today | 0.807x | 1.0x | ok |
+| e7-unique | 123,018.5 | 123,019.6 | -0.00% | today | 0.678x | 1.0x | ok |
 
 Address-sensitive rows: the median over heap shifts k ∈ {0, 300, 1000, 3000, 5000} (k unrelated strings before the setup), with the range over them:
-- e7-match: 91,939.8–96,008.0; main 91,931.3–96,059.1
+- e7-match: 91,946.3–96,089.1; main 91,864.1–94,640.5
 
 | program | peak RSS KiB | main | bars |
 |---|---:|---:|---|
-| benchmarks/suite/binarytrees.R | 26,568 | 26,632 | ≤ today 32,156, gnur 42,428 |
-| benchmarks/rt/mem/listgrow.R | 46,040 | 45,940 | ≤ gnur 54,220 |
-| benchmarks/rt/mem/churn.R | 74,152 | 74,308 | ≤ gnur 134,684 |
+| benchmarks/suite/binarytrees.R | 26,568 | 26,584 | ≤ today 32,156, gnur 42,428 |
+| benchmarks/rt/mem/listgrow.R | 46,272 | 46,204 | ≤ gnur 54,220 |
+| benchmarks/rt/mem/churn.R | 74,392 | 74,304 | ≤ gnur 134,684 |
 
 (A bar in parentheses is not met yet: only regressions against main fail it, and an accepted regression's ceiling.)
 

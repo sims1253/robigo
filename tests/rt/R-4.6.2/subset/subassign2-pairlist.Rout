@@ -1,0 +1,25 @@
+f(z, y)
+f(z, y, 1)
+f(z, y, 1, n = 2)
+f(z, 1, n = 2)
+[1] "language"
+$a
+[1] 1
+
+$b
+[1] 3
+
+$c
+[1] "new"
+
+$b
+[1] 3
+
+$c
+[1] "new"
+
+[1] "pairlist"
+g(x, 2)
+g(2)
+[1] "internal error: index -1 from length 0"
+[1] "internal error: index -1 from length 0"

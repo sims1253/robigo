@@ -71,7 +71,9 @@ pub mod prims;
 pub mod print;
 pub mod reader;
 pub mod repl;
+pub mod search;
 pub mod serialize;
+pub mod source;
 mod specials;
 pub mod vm;
 
@@ -117,13 +119,21 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         Ok(other) => panic!("robigo: ROBIGO_NO_INPLACE={other:?} is neither \"0\" nor \"1\""),
     };
     cx.set_no_inplace(no_inplace);
+    let retry_torture = match std::env::var("ROBIGO_RETRY_TORTURE").as_deref() {
+        Ok("1") => true,
+        Ok("0") | Ok("") | Err(_) => false,
+        Ok(other) => panic!("robigo: ROBIGO_RETRY_TORTURE={other:?} is neither \"0\" nor \"1\""),
+    };
+    // (refused without its feature, and with ROBIGO_FAIL_ALLOC_AT)
+    cx.set_retry_torture(retry_torture);
     let cond = conditions::CondState::new(cx);
     let defs = prims::base_defs();
     let (objs, names) = prims::make_prims(cx, &defs, 0);
     let by_sym = names.iter().enumerate().map(|(i, s)| (s.as_ptr() as usize, i)).collect();
     cx.set_ext(prims::RtState {
         forced,
-        jit: jit::Config::from_env(),
+        jit: std::cell::Cell::new(jit::Config::from_env()),
+        compile_pkgs: std::cell::Cell::new(jit::compile_pkgs_from_env()),
         jit_cache: Default::default(),
         shipped: Default::default(),
         syms,
@@ -258,7 +268,8 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
     let shipped = st.shipped.borrow().iter().map(|g| g.as_ref().map(|g| cx.global(g.bind(cx)))).collect();
     prims::RtState {
         forced: st.forced,
-        jit: st.jit,
+        jit: st.jit.clone(),
+        compile_pkgs: st.compile_pkgs.clone(),
         jit_cache: std::cell::RefCell::new(st.jit_cache.borrow_mut().take()),
         shipped: std::cell::RefCell::new(shipped),
         syms: st.syms,

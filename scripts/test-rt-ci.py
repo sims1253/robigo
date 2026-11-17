@@ -42,7 +42,9 @@ class RtCi(unittest.TestCase):
         steps = rt.steps(["robigo-rt", "robigo-rtcore"])
         own = [(env, cmd) for _, env, cmd in steps if rt.CONFORMANCE in cmd and "--skip" not in cmd]
         # once plain, once under each observation mode, then only under a
-        # collector mode
+        # collector mode or the byte-code crosscheck (V3: every translated
+        # closure also compiled from source and compared, its report read by
+        # `main`; kept out of the plain run, which it would not leave plain)
         self.assertEqual(len([e for e, _ in own if not e]), 1)
         modes = [sorted(e) for e, _ in own if e and set(e) & {"ROBIGO_NO_INPLACE", "ROBIGO_MATERIALIZE"}]
         self.assertEqual(modes, [["ROBIGO_NO_INPLACE"], ["ROBIGO_MATERIALIZE"]])
@@ -50,7 +52,11 @@ class RtCi(unittest.TestCase):
             self.assertEqual(cmd[cmd.index("--test") + 1], "conformance")
             self.assertIn("--exact", cmd)
             if env:
-                self.assertTrue({"ROBIGO_GCTORTURE", "R_MAX_VSIZE", "ROBIGO_NO_INPLACE", "ROBIGO_MATERIALIZE", "ROBIGO_FRAME_QUARANTINE"} & set(env), env)
+                self.assertTrue({"ROBIGO_GCTORTURE", "R_MAX_VSIZE", "ROBIGO_NO_INPLACE", "ROBIGO_MATERIALIZE", "ROBIGO_FRAME_QUARANTINE",
+                                 "ROBIGO_BC_CROSSCHECK"} & set(env), env)
+            # a crosscheck step writes its report, which `main` reads
+            if "ROBIGO_BC_CROSSCHECK" in env:
+                self.assertIn("ROBIGO_BC_CROSSCHECK_REPORT", env)
         for title, _, cmd in steps:
             if cmd[0] == "cargo" and rt.CONFORMANCE not in cmd[-1:] and "--exact" not in cmd:
                 self.assertEqual(cmd[-2:], ["--skip", rt.CONFORMANCE], title)
@@ -58,6 +64,21 @@ class RtCi(unittest.TestCase):
         # would run nothing, and still pass.
         src = (HERE.parent / "crates/robigo-rtapi/tests/conformance.rs").read_text()
         self.assertIn(f"fn {rt.CONFORMANCE}()", src)
+
+    def test_slow_case_timeouts_are_the_moving_collector_steps_only(self):
+        # INTERIM(H8): exactly the GC_MOVE + gctorture conformance step gets
+        # the longer timeouts, and each case it names exists
+        steps = rt.steps(["robigo-rt"])
+        with_overrides = [title for title, env, _ in steps if "ROBIGO_CONF_TIMEOUTS" in env]
+        self.assertEqual(with_overrides, ["conformance under ROBIGO_GC_MOVE with gctorture (E3)"])
+        env = next(e for t, e, _ in steps if t == with_overrides[0])
+        self.assertEqual(env["ROBIGO_GC_MOVE"], "1")
+        self.assertEqual(env["ROBIGO_GCTORTURE"], "1")
+        named = dict(item.rsplit("=", 1) for item in env["ROBIGO_CONF_TIMEOUTS"].split(","))
+        self.assertEqual(set(named), set(rt.GC_MOVE_SLOW))
+        for case, secs in named.items():
+            self.assertTrue((HERE.parent / case).is_file(), case)
+            self.assertGreater(int(secs), int(env["ROBIGO_CONF_TIMEOUT"]), case)
 
     def test_the_pin_report_expects_only_the_probes(self):
         import tempfile
@@ -71,6 +92,37 @@ class RtCi(unittest.TestCase):
         finally:
             os.unlink(f.name)
         self.assertEqual(rt.pin_report_hits(f.name + ".missing"), [])
+
+    def test_the_crosscheck_report_passes_only_with_every_difference_classed(self):
+        import tempfile
+
+        def check(text):
+            with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+                f.write(text)
+            try:
+                return rt.bc_report_check(f.name)
+            finally:
+                os.unlink(f.name)
+
+        loop = "expected (a loop's shape (checkSkipLoopCntxt, cmpForBody))"
+        ok = (f"{loop}: for (v in x) v: at 2: translated Jmp regs [] imm [] consts 0 target Some(4); "
+              "from source Loop regs [] imm [] consts 0 target Some(6)\n"
+              "same: function(x) x + 1\n"
+              "skipped: f(x): the from-source compile would force a binding\n")
+        self.assertEqual(check(ok), ([], {loop: 1, "same": 1, "skipped": 1, "compared": 2}))
+        bad = ("unexpected: g(x): at 0: translated GetVar regs [0] imm [] consts 1 target None; "
+               "from source GetFun regs [0] imm [0] consts 2 target None")
+        self.assertEqual(check(ok + bad + "\n")[0], [bad])
+        # a malformed line, a kind matched only by its prefix, or nothing
+        # compared (only skipped closures, an empty or a missing report)
+        # fails rather than passing
+        self.assertEqual(len(check(ok + "garbage\n")[0]), 1)
+        self.assertEqual(len(check(ok + "sameness: h(x)\n")[0]), 1)
+        self.assertEqual(len(check(ok + "skipped (why): h(x)\n")[0]), 1)
+        self.assertEqual(check("skipped: f(x): the from-source compile would force a binding\n")[1]["compared"], 0)
+        self.assertEqual(len(check("skipped: f(x): the from-source compile would force a binding\n")[0]), 1)
+        self.assertEqual(len(check("")[0]), 1)
+        self.assertEqual(len(rt.bc_report_check("/nonexistent/robigo-bc-report.txt")[0]), 1)
 
     def test_this_workspace_holds_the_premise(self):
         m = rt.metadata()

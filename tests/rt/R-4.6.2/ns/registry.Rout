@@ -1,0 +1,36 @@
+[1] TRUE
+[1] TRUE
+[1] FALSE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] "object 'nonexistent_thing' not found"
+[1] TRUE
+[1] FALSE
+NULL
+[1] TRUE
+[1] "namespace already registered"
+[1] 1
+[1] 2
+[1] 42
+[1] "'hidden' is not an exported object from 'namespace:fakens'"
+[1] 3
+[1] 3
+[1] TRUE
+    name 
+"fakens" 
+[1] "fakens"
+[1] TRUE
+[1] TRUE
+[1] TRUE
+NULL
+[1] 1
+[1] 3
+[1] "length of import and export names must match"
+NULL
+[1] FALSE
+[1] "namespace not registered"
+[1] TRUE
+[1] 36
+NULL
+[1] 42

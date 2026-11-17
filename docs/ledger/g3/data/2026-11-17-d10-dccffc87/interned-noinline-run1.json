@@ -1,0 +1,64 @@
+{
+ "meta": {
+  "cycles": true,
+  "gnur": null,
+  "robigo": "~/.cache/x1-bins/robigo-rt-d10-interned-518f77c1",
+  "robigo_env": {
+   "ROBIGO_COMPILE": "1",
+   "ROBIGO_NO_INLINE": "1"
+  },
+  "rows": "benchmarks/rt/calls-rows.toml",
+  "valgrind": "~/.cache/rr-tools/bin/valgrind"
+ },
+ "rows": {
+  "d10-ascharacter": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4,
+   "robigo_est_cycles": 78970628.5,
+   "robigo_instr": 75301241.0
+  },
+  "d10-assign": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 1000,
+   "robigo_est_cycles": 22663.982,
+   "robigo_instr": 21111.092
+  },
+  "d10-paste-match": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 200,
+   "robigo_est_cycles": 301636.01,
+   "robigo_instr": 278150.96
+  },
+  "d10-sprintf": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 200,
+   "robigo_est_cycles": 413376.895,
+   "robigo_instr": 389073.095
+  },
+  "e7-match": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 200,
+   "robigo_est_cycles": 111508.675,
+   "robigo_instr": 99039.625
+  },
+  "e7-paste": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 200,
+   "robigo_est_cycles": 124723.32,
+   "robigo_instr": 96051.12
+  },
+  "e7-unique": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 200,
+   "robigo_est_cycles": 134760.595,
+   "robigo_instr": 126469.945
+  }
+ }
+}

@@ -1,0 +1,112 @@
+# D10 layout probe (reported only, decides nothing): e7-match and e7-unique with K live
+# 48-byte objects allocated before the setup, so that the strings land at other addresses.
+
+[[row]]
+name = "e7-match-pad0"
+group = "d10-layout"
+setup = '''
+pad <- lapply(seq_len(0L), function(i) c(i, 0.5))
+keys <- paste0("k", 1:1000)
+q <- keys[seq(1L, 1000L, by = 10L)]
+'''
+body = 'm <- match(q, keys)'
+n = 200
+
+[[row]]
+name = "e7-unique-pad0"
+group = "d10-layout"
+setup = '''
+pad <- lapply(seq_len(0L), function(i) c(i, 0.5))
+keys <- paste0("k", 1:1000)
+dup <- rep(keys[1:100], 10L)
+'''
+body = 'u <- unique(dup)'
+n = 200
+
+[[row]]
+name = "e7-match-pad3"
+group = "d10-layout"
+setup = '''
+pad <- lapply(seq_len(3L), function(i) c(i, 0.5))
+keys <- paste0("k", 1:1000)
+q <- keys[seq(1L, 1000L, by = 10L)]
+'''
+body = 'm <- match(q, keys)'
+n = 200
+
+[[row]]
+name = "e7-unique-pad3"
+group = "d10-layout"
+setup = '''
+pad <- lapply(seq_len(3L), function(i) c(i, 0.5))
+keys <- paste0("k", 1:1000)
+dup <- rep(keys[1:100], 10L)
+'''
+body = 'u <- unique(dup)'
+n = 200
+
+[[row]]
+name = "e7-match-pad17"
+group = "d10-layout"
+setup = '''
+pad <- lapply(seq_len(17L), function(i) c(i, 0.5))
+keys <- paste0("k", 1:1000)
+q <- keys[seq(1L, 1000L, by = 10L)]
+'''
+body = 'm <- match(q, keys)'
+n = 200
+
+[[row]]
+name = "e7-unique-pad17"
+group = "d10-layout"
+setup = '''
+pad <- lapply(seq_len(17L), function(i) c(i, 0.5))
+keys <- paste0("k", 1:1000)
+dup <- rep(keys[1:100], 10L)
+'''
+body = 'u <- unique(dup)'
+n = 200
+
+[[row]]
+name = "e7-match-pad64"
+group = "d10-layout"
+setup = '''
+pad <- lapply(seq_len(64L), function(i) c(i, 0.5))
+keys <- paste0("k", 1:1000)
+q <- keys[seq(1L, 1000L, by = 10L)]
+'''
+body = 'm <- match(q, keys)'
+n = 200
+
+[[row]]
+name = "e7-unique-pad64"
+group = "d10-layout"
+setup = '''
+pad <- lapply(seq_len(64L), function(i) c(i, 0.5))
+keys <- paste0("k", 1:1000)
+dup <- rep(keys[1:100], 10L)
+'''
+body = 'u <- unique(dup)'
+n = 200
+
+[[row]]
+name = "e7-match-pad251"
+group = "d10-layout"
+setup = '''
+pad <- lapply(seq_len(251L), function(i) c(i, 0.5))
+keys <- paste0("k", 1:1000)
+q <- keys[seq(1L, 1000L, by = 10L)]
+'''
+body = 'm <- match(q, keys)'
+n = 200
+
+[[row]]
+name = "e7-unique-pad251"
+group = "d10-layout"
+setup = '''
+pad <- lapply(seq_len(251L), function(i) c(i, 0.5))
+keys <- paste0("k", 1:1000)
+dup <- rep(keys[1:100], 10L)
+'''
+body = 'u <- unique(dup)'
+n = 200

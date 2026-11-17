@@ -159,9 +159,11 @@ touch the same file. The corpora have the same two columns:
 pin's recordings into `tests/corpora/NAME/passing-rt/`, ranks what blocks
 its failing cases (the first stub, "not implemented yet" or unbound
 function each one hit), and refuses the corpora robigo-rt cannot run yet
-(echo mode, a build step). CI's `rt-corpora` job runs fastr that way on
-every rt pull request, a rotating quarter of it, and all of it on main
-(`docs/ledger/g3/2026-11-17-rc-rt-corpora.md`). One runner serves both (`crates/robigo-conformance`,
+(a build step). CI's `rt-corpora` job runs fastr that way on every rt
+pull request, a rotating quarter of it, and all of it on main
+(`docs/ledger/g3/2026-11-17-rc-rt-corpora.md`), and the four corpora in
+echo mode (`robigo-rt --quiet --no-save -f FILE`, R's transcript) whole
+(`docs/ledger/g3/2026-11-17-rc-echo-front-end.md`). One runner serves both (`crates/robigo-conformance`,
 columns `OLD` and `RT`); `robigo-cli`'s conformance test runs `OLD`,
 `robigo-rt`'s runs `RT`:
 
@@ -679,7 +681,11 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    and `scripts/rt-fail-alloc.py` (E9: `ROBIGO_FAIL_ALLOC_AT=n` refuses the
    script's `n`th allocation once; the output must not change; its scripts
    are `tests/rt/alloc/effects.R` and, for unserialize,
-   `tests/rt/serialize-closures/unserialize-e9.R`). Every pull
+   `tests/rt/serialize-closures/unserialize-e9.R`; `ROBIGO_RETRY_TORTURE=1`,
+   which refuses the first allocation of every `&Cx` build once, E9's
+   refusal at every build in one run, in a build with robigo-rtcore's
+   `retry-torture` feature, has no step yet:
+   `docs/ledger/g3/2026-11-17-retry-torture.md`). Every pull
    request but a docs-only one runs it, and with it **base-subset**:
    `scripts/base-subset.sh --check` inside the GNU R 4.6.2 oracle image
    (robigo-rt's checked-in base subset is what this tree traces); the modes of `docs/g3.md` §16 add

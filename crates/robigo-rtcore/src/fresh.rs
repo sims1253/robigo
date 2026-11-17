@@ -118,6 +118,31 @@ impl Cx {
         self.node(LANGSXP, car, cdr)
     }
 
+    /// A closure of `formals`, `body` and `env`, with no code object yet
+    /// (the evaluator compiles one at its first call): GNU R's
+    /// `mkCLOSXP`'s node. The caller has made `mkCLOSXP`'s and its own
+    /// checks (a body that is not a function or `...`, a formal list).
+    pub fn closure<'g>(&'g self, formals: Ref<'g>, body: Ref<'g>, env: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
+        let iso = self.iso();
+        for x in [formals, body, env] {
+            iso.check_owns(x.sexp());
+        }
+        // SAFETY: live objects of this heap, kept live through the
+        // allocation, which does not collect.
+        let x = unsafe { iso.core().alloc_node(CLOSXP, formals.sexp(), body.sexp(), env.sexp()) }?;
+        // SAFETY: fresh, of this heap.
+        Ok(unsafe { Ref::from_sexp(x, self) })
+    }
+
+    /// A BCODESXP node holding `code` and `consts`, its expression
+    /// R_NilValue: GNU R's `CONS(code, consts)` and `SET_TYPEOF(...,
+    /// BCODESXP)`. `code` is the decoded INTSXP that
+    /// `robigo_rtbuiltins::bytecode::mk_code` has checked; anything else
+    /// makes an object the evaluator cannot run.
+    pub fn bytecode<'g>(&'g self, code: Ref<'g>, consts: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
+        self.node(BCODESXP, code, consts)
+    }
+
     /// One of GNU R's pre-installed symbols ([`crate::RSym`]): no
     /// allocation, no failure.
     #[inline(always)]

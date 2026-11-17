@@ -49,17 +49,28 @@ fn the_wide_base_binds_every_name_lazily_m1_s_bound_among_them() {
         assert!(w.find(c.name).is_some(), "{} of the bound is not in the wide base", c.name);
     }
     let cx = iso.cx();
+    // every binding is a promise until first use (GNU R's lazy load), all
+    // of them looked at before any is forced: forcing one can force
+    // another (a definition's following forms, as baseloader.R's S3
+    // registration forces .__S3MethodsTable__.)
     for c in &b.closures {
         cx.scope(|cx, s| {
             let sym = s.out(cx);
             let symr = sym.root();
             cx.build(sym, |cx| Ok(cx.install(c.name.as_bytes())?.as_ref())).unwrap();
             let base = s.root(cx, cx.base_env());
-            // the binding is a promise until first use (GNU R's lazy load)
             let v = s.out(cx);
             let vr = v.root();
             cx.find_var_in_frame3(base, symr, true, v).unwrap();
             assert_eq!(vr.bind(cx).sexptype(), PROMSXP, "{}", c.name);
+        });
+    }
+    for c in &b.closures {
+        cx.scope(|cx, s| {
+            let sym = s.out(cx);
+            let symr = sym.root();
+            cx.build(sym, |cx| Ok(cx.install(c.name.as_bytes())?.as_ref())).unwrap();
+            let base = s.root(cx, cx.base_env());
             // evaluating the symbol forces it
             let f = s.out(cx);
             let fr = f.root();

@@ -76,13 +76,190 @@ pub struct Built {
     pub ppk: Vec<i32>,
 }
 
-/// Allocate the code object of `b` for `source`, under `&Cx`; with
-/// `formals`, a closure's, with the frame shape of its formals and locals.
+/// Code that passed [`Verified::new`]'s checks: the only input [`build`]
+/// takes, so every code object the VM runs is well formed (#738).
+///
+/// Its invariant, which the VM's raw reads rely on: every register operand
+/// (and every register an instruction reads past one, its argument window,
+/// its names, `for`'s state) is below `nregs`, and `nregs` covers the
+/// fixed registers below [`R_FIRST`]; every constant operand indexes the
+/// pool; every jump target is an instruction, and the code cannot run off
+/// its end; a `Switch`'s jump tables are there, one `Jmp` each; a call
+/// site is below `nsites` (or [`crate::ir::NO_SITE`]); an `LdScalar`
+/// constant is a plain scalar.
+pub struct Verified(Built);
+
+/// Why [`Verified::new`] refused code: the instruction and the check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Malformed {
+    pub at: usize,
+    pub why: &'static str,
+}
+
+impl std::fmt::Display for Malformed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "robigo: malformed code at instruction {}: {}", self.at, self.why)
+    }
+}
+
+impl Verified {
+    /// Check `b` in one pass over its instructions (#738).
+    pub fn new(b: Built) -> Result<Verified, Malformed> {
+        check(&b)?;
+        Ok(Verified(b))
+    }
+
+    /// The checked code.
+    pub fn built(&self) -> &Built {
+        &self.0
+    }
+}
+
+/// [`Verified::new`]'s checks.
+fn check(b: &Built) -> Result<(), Malformed> {
+    use crate::ir::{NO_CONST, NO_REG, Op, R_FIRST, SPECIAL_INTERNAL};
+    let n = b.ins.len();
+    let nregs = b.nregs as usize;
+    let npool = FIRST_CONST + b.consts.len();
+    let bad = |at: usize, why: &'static str| Err(Malformed { at, why });
+    if nregs < R_FIRST as usize {
+        return bad(0, "fewer registers than the fixed ones");
+    }
+    if !b.ppk.is_empty() && b.ppk.len() != n {
+        return bad(0, "protect offsets that do not match the instructions");
+    }
+    match b.ins.last().map(|i| i.op) {
+        Some(Op::Ret | Op::Return | Op::LoopEnd | Op::Jmp | Op::BackJmp | Op::BreakJump | Op::ErrorCall) => {}
+        _ => return bad(n.saturating_sub(1), "the code can run off its end"),
+    }
+    let mut at = 0;
+    while at < n {
+        let i = &b.ins[at];
+        let reg = |r: u16| (r as usize) < nregs;
+        let regs = |r: u16, k: usize| r as usize + k <= nregs;
+        let k = |x: u16| (FIRST_CONST..npool).contains(&(x as usize));
+        let tgt = |t: usize| t < n;
+        let window = |r: u16, c: u16| regs(r, c as usize * if i.fl & crate::ir::F_NAMES != 0 { 2 } else { 1 });
+        // (F_CLR_C clears register c, wherever the op reads it)
+        if i.fl & crate::ir::F_CLR_C != 0 && !reg(i.c) {
+            return bad(at, "a cleared register out of range");
+        }
+        let ok = match i.op {
+            Op::Nop | Op::LoopEnd | Op::PpRestore | Op::SetVis | Op::BreakJump => true,
+            Op::LdConst | Op::GetVar | Op::GetDdVar | Op::GetVarMissOk | Op::Quote | Op::EvalConst => {
+                reg(i.a) && k(i.e)
+            }
+            Op::LdScalar => {
+                // SAFETY: the pool's constants are live (the builder's
+                // contract, as [`build`]'s).
+                reg(i.a) && k(i.e) && unsafe { plain_scalar(b.consts[i.e as usize - FIRST_CONST]) }
+            }
+            Op::SetVar | Op::SetVar2 => reg(i.a) && k(i.e),
+            Op::Jmp | Op::BackJmp => tgt(i.target()),
+            Op::BrFalse => reg(i.b) && k(i.e) && tgt(i.target()),
+            Op::Guard => (i.a == 0 || reg(i.a)) && k(i.e) && k(i.c) && tgt(i.target()),
+            Op::GetFun => reg(i.a) && k(i.e) && k(i.c),
+            Op::Call => reg(i.a) && reg(i.b) && k(i.e) && (i.c < b.nsites || i.c == crate::ir::NO_SITE),
+            Op::CallBuiltin | Op::Internal => {
+                reg(i.a)
+                    && k(i.e)
+                    && k(i.f)
+                    && (i.g == 0 || k(i.g))
+                    && (i.c == SPECIAL_INTERNAL || i.c == u16::MAX || window(i.b, i.c))
+            }
+            Op::Arith | Op::Relop | Op::Logic => reg(i.a) && reg(i.b) && reg(i.c) && regs(i.b, 2) && k(i.e) && k(i.f),
+            Op::Arith1 | Op::Not => reg(i.a) && reg(i.b) && k(i.e) && k(i.f),
+            Op::AndOr1 => reg(i.a) && reg(i.b) && k(i.e) && tgt(i.target()),
+            Op::AndOr2 => reg(i.a) && reg(i.b) && k(i.e),
+            Op::MkClosure => reg(i.a) && k(i.e) && k(i.f) && (i.c == 0 || k(i.c)),
+            Op::Missing => reg(i.a) && k(i.e) && k(i.f),
+            Op::Return | Op::Ret => reg(i.b),
+            Op::PpCheck => reg(i.b) && k(i.e),
+            // (the VM goes on after the region's end, its target)
+            Op::Loop => i.a as usize <= nregs && tgt(i.target() + 1),
+            Op::ForPrep => regs(i.a, crate::compile::FOR_STATE) && k(i.e) && k(i.c),
+            Op::ForStep => regs(i.a, crate::compile::FOR_STATE) && k(i.e) && k(i.c) && tgt(i.target()),
+            Op::ForDone | Op::Clear | Op::PpSave => reg(i.a),
+            Op::ClearRange => i.a <= i.b && i.b as usize <= nregs,
+            Op::Move => reg(i.a) && reg(i.b),
+            Op::ErrorCall => k(i.e) && k(i.f),
+            Op::SpecialFn => reg(i.a) && k(i.e) && k(i.c),
+            Op::ComplexAssign | Op::BcAssign => reg(i.a) && reg(i.b) && k(i.e),
+            Op::BaseGuard | Op::TopLoop => reg(i.a) && k(i.e) && tgt(i.target()),
+            Op::StartSubset => reg(i.a) && reg(i.b) && k(i.e) && tgt(i.target()),
+            Op::DfltSubset => reg(i.a) && k(i.e) && window(i.b, i.c),
+            Op::Dollar => reg(i.a) && reg(i.b) && k(i.e) && k(i.c),
+            Op::Resume => reg(i.a) && (i.b == NO_REG || reg(i.b)) && k(i.e) && tgt(i.target()),
+            Op::LoopResume => reg(i.a) && k(i.e) && (i.c == NO_CONST || (k(i.c) && k(i.b))) && tgt(i.target() + 1),
+            Op::Switch => {
+                if !(reg(i.b) && k(i.e) && k(i.c)) {
+                    false
+                } else {
+                    // the jump tables that follow: one per name, then `f`
+                    // numeric entries, each a Jmp
+                    let names = b.consts[i.c as usize - FIRST_CONST];
+                    // SAFETY: a live constant of the pool (as above).
+                    let nc = unsafe { if names.typ() == NILSXP { 0 } else { names.std_len() as usize } };
+                    let end = at + 1 + nc + i.f as usize;
+                    if end > n || !b.ins[at + 1..end].iter().all(|j| j.op == Op::Jmp) {
+                        return bad(at, "a switch without its jump tables");
+                    }
+                    true
+                }
+            }
+        };
+        if !ok {
+            return bad(at, "an operand out of range");
+        }
+        // a builtin's call and an inlined builtin's slow path pass the
+        // window's registers as the arguments, write the value after and
+        // then clear the window (`call_builtin_regs`): the value's register
+        // is outside it, and a binary operation's operands are its two
+        // registers
+        let w = i.fl & crate::ir::F_NAMES != 0;
+        let outside = |lo: u16, k: usize| !(lo as usize..lo as usize + k).contains(&(i.a as usize));
+        let apart = match i.op {
+            Op::Arith | Op::Relop | Op::Logic => i.c as usize == i.b as usize + 1 && outside(i.b, 2),
+            Op::Arith1 | Op::Not => outside(i.b, 1),
+            Op::DfltSubset => outside(i.b, i.c as usize * if w { 2 } else { 1 }),
+            Op::CallBuiltin | Op::Internal if i.c != SPECIAL_INTERNAL && i.c != u16::MAX => {
+                outside(i.b, i.c as usize * if w { 2 } else { 1 })
+            }
+            _ => true,
+        };
+        if !apart {
+            return bad(at, "a value register inside its operands' window");
+        }
+        at += 1;
+    }
+    Ok(())
+}
+
+/// A plain length-1 double, integer or logical with no attributes, its
+/// payload inline: what `LdScalar` reads.
+///
+/// # Safety
+/// `x` is live.
+pub(crate) unsafe fn plain_scalar(x: Sexp) -> bool {
+    // SAFETY: the caller's contract.
+    unsafe {
+        matches!(x.typ(), REALSXP | INTSXP | LGLSXP)
+            && !x.is_altrep()
+            && !x.has_flag(flags::EXTDATA)
+            && x.std_len() == 1
+            && x.attrib_raw().typ() == NILSXP
+    }
+}
+
+/// Allocate the code object of the verified code `v` for `source`, under
+/// `&Cx`; with `formals`, a closure's, with the frame shape of its formals
+/// and locals.
 ///
 /// # Safety
 /// `source`, `formals` and every constant are live objects of `cx`'s
 /// isolate, reachable from roots (or immortal) for this call.
-pub unsafe fn build(cx: &Cx, b: &Built, source: Sexp, formals: Option<Sexp>) -> Result<Sexp, NeedGc> {
+pub unsafe fn build(cx: &Cx, v: &Verified, source: Sexp, formals: Option<Sexp>) -> Result<Sexp, NeedGc> {
+    let b = &v.0;
     let nil = cx.nil().sexp();
     let shape = match formals {
         // SAFETY: the caller's contract: a live pairlist of formals.
@@ -581,5 +758,71 @@ pub unsafe fn plan_bytes(code: Sexp, site: u16) -> Option<*mut u8> {
             return None;
         }
         Some(plans.std_data().add(at))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::{Op, R_FIRST};
+
+    fn built(ins: Vec<Ins>, nregs: u16, nsites: u16) -> Built {
+        Built {
+            ins,
+            consts: Vec::new(),
+            nregs,
+            max_depth: 0,
+            profile: Profile::Bc,
+            locals: Vec::new(),
+            nsites,
+            ppk: Vec::new(),
+        }
+    }
+
+    fn ins(op: Op, a: u16, b: u16, c: u16) -> Ins {
+        let mut i = Ins::new(op);
+        i.a = a;
+        i.b = b;
+        i.c = c;
+        i
+    }
+
+    fn why(b: Built) -> Option<&'static str> {
+        Verified::new(b).err().map(|m| m.why)
+    }
+
+    #[test]
+    fn well_formed_code_passes() {
+        let r = R_FIRST;
+        let code = vec![ins(Op::Move, r, r + 1, 0), ins(Op::Ret, 0, r, 0)];
+        assert_eq!(why(built(code, r + 2, 0)), None);
+    }
+
+    #[test]
+    fn the_verifier_refuses_what_the_vm_would_misread() {
+        let r = R_FIRST;
+        let ret = ins(Op::Ret, 0, r, 0);
+        // the fixed registers, a register past the frame, a pool index past
+        // the pool, a call site past the sites, a jump past the code
+        assert!(why(built(vec![ret], r - 1, 0)).is_some());
+        assert!(why(built(vec![ins(Op::Move, r + 5, r, 0), ret], r + 1, 0)).is_some());
+        let mut ld = ins(Op::LdConst, r, 0, 0);
+        ld.e = FIRST_CONST as u16;
+        assert!(why(built(vec![ld, ret], r + 1, 0)).is_some());
+        assert!(why(built(vec![ins(Op::Call, r, r, 1), ret], r + 1, 1)).is_some());
+        let mut j = Ins::new(Op::Jmp);
+        j.set_target(7);
+        assert!(why(built(vec![j], r, 0)).is_some());
+        // a builtin's argument window past the frame, names doubling it
+        let mut cb = ins(Op::CallBuiltin, r, r, 2);
+        cb.fl = crate::ir::F_NAMES;
+        assert!(why(built(vec![cb, ret], r + 3, 0)).is_some());
+        // code that runs off its end
+        assert_eq!(why(built(vec![ins(Op::Move, r, r, 0)], r + 1, 0)), Some("the code can run off its end"));
+        // a loop region whose end is the last instruction: nothing to go on
+        // to
+        let mut lp = Ins::new(Op::Loop);
+        lp.set_target(1);
+        assert!(why(built(vec![lp, Ins::new(Op::LoopEnd)], r, 0)).is_some());
     }
 }

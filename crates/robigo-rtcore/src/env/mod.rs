@@ -64,6 +64,7 @@
 #![allow(unsafe_code)]
 
 mod alias;
+mod attach;
 mod chain;
 mod frame;
 mod hashtab;
@@ -73,7 +74,7 @@ mod restore;
 mod slotapi;
 
 pub use promise::{ArgLoc, BindingType};
-pub use slotapi::{SUPER_ASSIGN_HOPS, Scalar, SlotInit, SuperAssignCache};
+pub use slotapi::{Scalar, SlotInit};
 
 use crate::exit::{RError, RResult};
 use crate::handle::{EnvRef, Ref, Sym};
@@ -1843,11 +1844,20 @@ impl Cx {
 
     /// Where [`Cx::set_var`]`(sym, _, rho)` would write, found without
     /// writing: the binding of `sym` in the first frame from `rho` outwards
-    /// that has one, when that binding is neither locked nor active. None
-    /// when `set_var` would do anything else there: define `sym` in the
-    /// global environment, raise an error, or call an active binding's
-    /// function. A [`Cx::set_var_at`] of the target, with no binding written
-    /// in between, is that `set_var`.
+    /// that has one, when storing into it neither allocates on the R heap
+    /// nor runs code.
+    /// None when `set_var` would do anything else there:
+    /// - define `sym` in the global environment;
+    /// - raise an error (a locked binding);
+    /// - call an active binding's function;
+    /// - store into an argument slot that a method's alias reads, or an
+    ///   alias itself. That store makes the promise first
+    ///   (`store_unshared`), so it allocates and may collect.
+    ///
+    /// A [`Cx::set_var_at`] of the target, with no binding written in
+    /// between, is that `set_var`, and it neither allocates on the R heap nor
+    /// collects. (Rust-side tables, the residues and the remembered set, may
+    /// grow; that never collects.)
     ///
     /// # Safety
     /// `sym` is a live symbol and `rho` a live environment of this
@@ -1864,11 +1874,16 @@ impl Cx {
             while r != e.empty {
                 global |= r == e.global;
                 if let Some(l) = loc_in_frame(iso, r, sym).ok()? {
-                    return (l.bits(iso) & (BINDING_LOCK | ACTIVE_BINDING) == 0).then_some(SetVarTarget {
-                        loc: l,
-                        frame: r,
-                        global,
-                    });
+                    if l.bits(iso) & (BINDING_LOCK | ACTIVE_BINDING) != 0 {
+                        return None;
+                    }
+                    // (set_binding_value's store_unshared case: it allocates)
+                    if let At::FrameSlot(s) = l.at()
+                        && (s.has(META_ALIASED) || s.kind() == ALIAS)
+                    {
+                        return None;
+                    }
+                    return Some(SetVarTarget { loc: l, frame: r, global });
                 }
                 r = env::enclos(r);
             }
@@ -1876,11 +1891,21 @@ impl Cx {
         None
     }
 
-    /// [`Cx::set_var`] at a target [`Cx::set_var_target_raw`] found, with no
-    /// binding written since: the effect note, the global environment's
-    /// dirty mark if the walk reached it, then the store.
+    /// [`Cx::set_var`] at a target [`Cx::set_var_target_raw`] found: the
+    /// effect note, the global environment's dirty mark if the walk reached
+    /// it, then the store.
+    ///
+    /// The store neither allocates on the R heap nor collects: the target
+    /// excludes every
+    /// binding whose store would (see [`Cx::set_var_target_raw`]).
+    ///
+    /// # Safety
+    /// `t` came from [`Cx::set_var_target_raw`] of this isolate, and since
+    /// then nothing has collected (its location and frame are raw words that
+    /// no root keeps or a moving collection updates) and no binding has been
+    /// written (the walk would find another one).
     // R: envir.c:setVar
-    pub fn set_var_at(&mut self, t: SetVarTarget, value: Root<'_>) -> RResult<()> {
+    pub unsafe fn set_var_at(&mut self, t: SetVarTarget, value: Root<'_>) -> RResult<()> {
         self.note_effect();
         if t.global {
             self.iso().envs().dirty_image.set(true);

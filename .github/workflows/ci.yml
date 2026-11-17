@@ -238,10 +238,15 @@ jobs:
         with:
           name: rdb-oracle-lib
           path: .robigo/oracle-lib
-      - name: GNU R's lazy-load databases round-trip (rdb_roundtrip)
+      # with V3's test: every closure of base.rdb translated; its closures
+      # also compared with the from-source compiler's code, reported only
+      # (docs/ledger/g3/2026-11-17-v3-bcodesxp-ir.md)
+      - name: GNU R's lazy-load databases round-trip (rdb_roundtrip), base.rdb's closures translated
         run: |
-          ROBIGO_ORACLE_LIBRARY="$PWD/.robigo/oracle-lib" \
+          report="$RUNNER_TEMP/bc-crosscheck-base.txt"
+          ROBIGO_ORACLE_LIBRARY="$PWD/.robigo/oracle-lib" ROBIGO_BC_CROSSCHECK=1 ROBIGO_BC_CROSSCHECK_REPORT="$report" \
             cargo test --release --locked -p robigo-rt --test rdb_roundtrip -- --nocapture
+          if [ -f "$report" ]; then sed 's/: .*//' "$report" | sort | uniq -c; fi
 
   # robigo-rt's base subset (crates/robigo-rt/proto/base-subset.txt and
   # base-bound.txt) is what scripts/base-subset.sh traces from this tree's
@@ -1027,8 +1032,9 @@ jobs:
   # pin's recordings and the `passing-rt/` ratchets;
   # docs/ledger/g3/2026-11-17-rc-rt-corpora.md). A pull request runs a
   # quarter of fastr, the quarter rotating with its number, and a push to
-  # main runs all of it (about two minutes). Corpora in echo mode wait for
-  # robigo-rt's `-f` front end, and those with a build step for its natives.
+  # main runs all of it (about two minutes). The four corpora in echo mode
+  # (`-f FILE`'s transcript) run whole every time: they are small. Those
+  # with a build step wait for robigo-rt's natives.
   rt-corpora:
     needs: [select, perf-rt-build]
     if: ${{ needs.select.outputs.rt == 'true' }}
@@ -1062,6 +1068,15 @@ jobs:
           echo "RESULT_NAME=corpus-rt-fastr-${shard/\//of}" >> "$GITHUB_ENV"
           python3 scripts/corpus.py run fastr --runtime rt --shard "$shard" --robigo dist/robigo-rt \
             --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: the echo-mode corpora on robigo-rt
+        run: |
+          # every corpus runs; the step fails if any regressed
+          failed=0
+          for c in gnur-tests gnur-examples gnur-demos r-intro; do
+            python3 scripts/corpus.py run "$c" --runtime rt --robigo dist/robigo-rt --jobs "$(nproc)" \
+              | tee -a "$GITHUB_STEP_SUMMARY" || failed=1
+          done
+          exit "$failed"
       - uses: actions/upload-artifact@v7
         if: always()
         with:

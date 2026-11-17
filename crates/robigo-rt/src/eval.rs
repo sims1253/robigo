@@ -115,7 +115,28 @@ fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, promise: b
         // SAFETY: `e` is a rooted symbol.
         SYMSXP => unsafe { symbol_value(cx, e.bind(cx).sexp(), rho, out) },
         PROMSXP => force(cx, e, out),
-        BCODESXP => Err(cx.error("robigo: byte code (BCODESXP) is not implemented yet (M3)")),
+        // bcEval(e, rho): the translated byte code (V3), its code kept on
+        // the BCODESXP; byte code disabled, or of a version bcEval does not
+        // run, evaluates its source expression (bcEval's fallback)
+        // R: eval.c:eval (BCODESXP), bcEval
+        BCODESXP => cx.scope(|cx, s| {
+            let st = prims::state(cx);
+            let source = st.forced == Some(Profile::Eval)
+                || st.jit.get().disable_bytecode
+                || !robigo_rtbuiltins::bytecode::version_ok(e.bind(cx));
+            if source {
+                let src = s.root(cx, robigo_rtbuiltins::bytecode::expr(cx, e.bind(cx)));
+                return eval(cx, src, rho, out);
+            }
+            let code = crate::compile::bytecode_code(cx, e)?;
+            // SAFETY: a fresh or cached code object.
+            let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
+            let slot = out_slot(&out);
+            // (the code object's entry nests the level `eval` raised)
+            cx.set_eval_depth(depthsave);
+            // SAFETY: rooted code and environment; an empty out slot.
+            unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false, false) }.map(drop)
+        }),
         DOTSXP => Err(cx.error("'...' used in an incorrect context")),
         _ => {
             let msg = format!("unimplemented type '{}' in 'eval'\n", type_name(t));
@@ -816,7 +837,7 @@ pub fn do_eval(cx: &mut Cx, call: Root<'_>, args: robigo_rtcore::Args<'_>, rho: 
         if t == PROMSXP {
             return cx.with_pp_excess(1, |cx| eval(cx, expr, rho, out));
         }
-        if !matches!(t, LANGSXP | SYMSXP | EXPRSXP) {
+        if !matches!(t, LANGSXP | SYMSXP | EXPRSXP | BCODESXP) {
             out.set(cx, expr.bind(cx));
             return Ok(());
         }
@@ -827,13 +848,32 @@ pub fn do_eval(cx: &mut Cx, call: Root<'_>, args: robigo_rtcore::Args<'_>, rho: 
             let i = st.defs.iter().position(|d| d.internal() && d.name == "eval").expect("robigo: eval in the table");
             s.root(cx, st.objs[i].bind(cx))
         };
+        // (the record's args are evalList's list, whose cells count no
+        // references, CONS_NR: the expression's references stay its
+        // bindings', so a write into it while it runs is in place)
         let promargs = s.capture(cx, |cx, o| {
             cx.build(o, |cx| {
-                let mut l = cx.nil();
+                let nil = cx.nil().sexp();
+                let mut l = nil;
                 for i in (0..args.len()).rev() {
-                    l = cx.cons(args.get(cx, i), l)?;
+                    let v = args.get(cx, i).sexp();
+                    // SAFETY: the call's live values and the list made so
+                    // far; nothing collects in this interval
+                    l = unsafe {
+                        let c = cx.alloc_node_raw(LISTSXP, v, l, nil)?;
+                        // CONS_NR: the construction's counts undone, and
+                        // none later
+                        v.decref();
+                        if l != nil {
+                            l.decref();
+                        }
+                        c.set_flag(robigo_heap::flags::NO_TRACKREFS, true);
+                        c
+                    };
                 }
-                Ok(l)
+                // SAFETY: a live object of this isolate: the first cell made
+                // above, or with no arguments R_NilValue (immortal).
+                Ok(unsafe { Ref::from_sexp(l, cx) })
             })
         })?;
         let spec = FunctionContext {

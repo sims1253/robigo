@@ -126,6 +126,61 @@ pub fn do_envir(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
     Ok(())
 }
 
+/// `.Internal(body(fun))`: a closure's body expression (`BODY_EXPR`: byte
+/// code's source); for a primitive NULL, for anything else NULL with a
+/// warning.
+// R: builtin.c:do_body
+pub fn do_body(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("body", true).check_arity(cx, call, args)?;
+    let f = args.get(cx, 0);
+    match f.view() {
+        View::Closure(c) => {
+            let b = crate::bytecode::expr(cx, c.body());
+            out.set(cx, b);
+            Ok(())
+        }
+        View::Builtin(_) | View::Special(_) => cx.build(out, |cx| Ok(cx.nil())),
+        _ => {
+            cx.warning_call(Some(call), "argument is not a function")?;
+            cx.build(out, |cx| Ok(cx.nil()))
+        }
+    }
+}
+
+/// `.Internal(bodyCode(fun))`: a closure's BODY as it is (its byte code
+/// when compiled), else NULL.
+// R: builtin.c:do_bodyCode
+pub fn do_bodycode(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("bodyCode", true).check_arity(cx, call, args)?;
+    let f = args.get(cx, 0);
+    let r = match f.view() {
+        View::Closure(c) => c.body(),
+        _ => cx.nil(),
+    };
+    out.set(cx, r);
+    Ok(())
+}
+
+/// `.Internal(parent.env(env))`: an environment's enclosure.
+// R: builtin.c:do_parentenv
+pub fn do_parentenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("parent.env", true).check_arity(cx, call, args)?;
+    let e = args.get(cx, 0);
+    let ev = match e.view() {
+        View::Env(ev) => ev,
+        _ if e.sexptype() == OBJSXP && e.is_s4() => {
+            return Err(not_yet(cx, Some(call), "parent.env() of an S4 object's environment"));
+        }
+        _ => return Err(cx.error("argument is not an environment")),
+    };
+    if e.sexp() == cx.empty_env().sexp() {
+        return Err(cx.error("the empty environment has no parent"));
+    }
+    let p = ev.enclos();
+    out.set(cx, p);
+    Ok(())
+}
+
 /// `nargs()`: the number of arguments supplied to the call whose frame is
 /// the caller's environment.
 // R: util.c:do_nargs

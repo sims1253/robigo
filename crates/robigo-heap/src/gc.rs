@@ -336,6 +336,9 @@ pub struct GcStats {
     pub frees: u64,
     pub live_bytes: u64,
     pub live_objects: u64,
+    /// Wall time in collections, summed and the longest: from the start of
+    /// marking to the end of the sweep and the next trigger (the quarantine
+    /// a collection releases first is not counted).
     pub collect_total_ns: u64,
     pub collect_max_pause_ns: u64,
     /// Collections by where they were entered ([`Safepoint`] as index).
@@ -2208,14 +2211,11 @@ impl Core {
     unsafe extern "C" fn scan_segments(ctx: *mut c_void) {
         // SAFETY: `ctx` is as the caller promises. Each segment is mapped
         // stack of this thread (collect checked the thread, and a segment
-        // lies in frames that are suspended above this one) and word-aligned,
-        // and `resolve` only returns allocated objects. This is the one block
-        // in the crate whose reason lies outside Rust's rules: the loop reads
-        // other frames' memory, which can be uninitialized, or borrowed
-        // exclusively by a frame that is suspended here. A conservative scan
-        // needs those reads. It works because they are ordinary machine
-        // loads of integers compared to addresses, in a function only called
-        // through C, so nothing can be optimized from them.
+        // lies in frames that are suspended above this one), and the
+        // segment nodes are live (an export's frame holds each until it
+        // returns). The words of the segments, which can be uninitialized or
+        // borrowed exclusively by a suspended frame, are read by C
+        // (`scan_words`), never by Rust.
         unsafe {
             let c = &mut *(ctx as *mut Core);
             let marker = 0usize;
@@ -2233,41 +2233,56 @@ impl Core {
     }
 
     /// Mark what the words in `[from, to)` point at: a range of this
-    /// thread's stack, or a segment node's spilled registers.
+    /// thread's stack, or a segment node's spilled registers. C reads the
+    /// words (shim.c's `robigo_heap_scan_words`, #745): they can be
+    /// uninitialized or exclusively borrowed by a suspended frame, which
+    /// Rust may not read. Rust sees only the values in the heap's range.
     ///
     /// # Safety
-    /// As [`Core::scan_segments`]'s loop: `[from, to)` is readable memory of
-    /// this thread, read while marking.
+    /// `[from, to)` is readable memory of this thread, read while marking.
     unsafe fn scan_words(&mut self, from: usize, to: usize) {
-        // SAFETY: the caller's contract; see `scan_segments`.
+        let (min, max) = (self.heap.min_addr, self.heap.max_addr);
+        // SAFETY: the caller's contract; `scan_hit` gets this core back
+        // and is the only user of it during the call.
         unsafe {
-            let (min, max) = (self.heap.min_addr, self.heap.max_addr);
-            let mut w = (from + 7) & !7;
-            while w < to {
-                let v = *(w as *const usize);
-                // (`max` itself is no object's address, but it is one past
-                // the end of the highest chunk's last object)
-                if v >= min && v <= max {
-                    if v < max {
-                        if let Some(p) = self.heap.resolve(v) {
-                            self.mark_obj(Sexp(p));
-                            self.pin(Sexp(p));
-                        }
-                    }
-                    // a word on a granule boundary may be one past the end
-                    // of the previous object's data (a loop bound, p + n)
-                    if v & 15 == 0 && v > min {
-                        if let Some(p) = self.heap.resolve(v - 1) {
-                            if has_inline_data(Sexp(p)) {
-                                self.mark_obj(Sexp(p));
-                                self.pin(Sexp(p));
-                            }
-                        }
-                    }
-                }
-                w += 8;
+            crate::unwind::robigo_heap_scan_words(from, to, min, max, Self::scan_hit, self as *mut Core as *mut c_void)
+        }
+    }
+
+    /// `scan_words`' answer to a word `v` in the heap's address range: the
+    /// objects it may point at, marked and pinned.
+    ///
+    /// # Safety
+    /// `ctx` is the core `scan_words` passed, marking.
+    unsafe extern "C" fn scan_hit(ctx: *mut c_void, _at: usize, v: usize) {
+        // SAFETY: the caller's contract.
+        let c = unsafe { &mut *(ctx as *mut Core) };
+        for p in c.scan_candidates(v).into_iter().flatten() {
+            // SAFETY: `resolve` returns allocated objects of this heap.
+            unsafe {
+                c.mark_obj(Sexp(p));
+                c.pin(Sexp(p));
             }
         }
+    }
+
+    /// The objects a word `v` of the conservative scan keeps: the one it
+    /// points into, and the one it is one past the end of.
+    fn scan_candidates(&self, v: usize) -> [Option<*mut u8>; 2] {
+        let (min, max) = (self.heap.min_addr, self.heap.max_addr);
+        // (`max` itself is no object's address, but it is one past the end
+        // of the highest chunk's last object)
+        let a = if v < max { self.heap.resolve(v) } else { None };
+        // a word on a granule boundary may be one past the end of the
+        // previous object's data (a loop bound, p + n)
+        let b = if v.is_multiple_of(GRANULE) && v > min {
+            // SAFETY: `resolve` returns allocated objects, whose header
+            // `has_inline_data` reads.
+            self.heap.resolve(v - 1).filter(|&p| unsafe { has_inline_data(Sexp(p)) })
+        } else {
+            None
+        };
+        [a, b]
     }
 
     /// A full collection (`gc()`, `R_gc()`), whether or not one is due and
@@ -2764,7 +2779,8 @@ impl Core {
     }
 
     /// `ROBIGO_GC_STATS`'s report, printed to stderr when the core is
-    /// dropped: collections by safepoint kind, E4's overshoot, large `&Cx`
+    /// dropped: collections by safepoint kind, the time spent in them, E4's
+    /// overshoot, large `&Cx`
     /// requests made while a collection was due, allocations by SEXPTYPE.
     pub fn stats_report(&self) -> String {
         use std::fmt::Write;
@@ -2773,6 +2789,16 @@ impl Core {
         let kinds: Vec<String> =
             Safepoint::ALL.iter().map(|k| format!("{} {}", k.name(), st.collections_by_kind[*k as usize])).collect();
         let _ = writeln!(r, "robigo gc: collections {} ({})", st.collections, kinds.join(", "));
+        // D13's bar (ledger 2026-11-17-m2m3-bars.md): collection time per
+        // MiB the heap handed out, by its own count (`count`'s bytes, what
+        // triggers collections), including what came after the last one
+        let heap_bytes = st.bytes_allocated + self.alloc_since_gc as u64;
+        let per_mib = (st.collect_total_ns as u128 * (1 << 20)).checked_div(heap_bytes as u128).unwrap_or(0);
+        let _ = writeln!(
+            r,
+            "robigo gc: collection time {} ns, max pause {} ns, heap bytes allocated {heap_bytes}, {per_mib} ns per MiB",
+            st.collect_total_ns, st.collect_max_pause_ns
+        );
         let _ = writeln!(
             r,
             "robigo gc: overshoot max {} bytes (live {} bytes after it), total {} bytes, over max(32 MiB, 10% live) {}",

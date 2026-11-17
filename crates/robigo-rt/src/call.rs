@@ -94,6 +94,18 @@ pub unsafe fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: 
             cx.check_stack_balance(name.as_bytes(), save);
             Ok(())
         }
+        // byte code's function is a symbol's (GETFUN finds only functions)
+        // or a value CHECKFUN checks: its error() is reported against the
+        // expression bcEval is at, the call
+        // R: eval.c:bcEval CHECKFUN
+        _ if bc => {
+            // SAFETY: the caller's contract: a live call.
+            unsafe { cx.set_bc_expression(call) };
+            let e = cx.error("attempt to apply non-function");
+            // SAFETY: R_NilValue.
+            unsafe { cx.set_bc_expression(cx.nil().sexp()) };
+            Err(e)
+        }
         _ => Err(cx.error("attempt to apply non-function")),
     }
 }
@@ -172,7 +184,7 @@ pub fn closure_code(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
     // SAFETY: a rooted closure: its 4th word is R_NilValue or a code object.
     unsafe {
         if st.forced.is_none()
-            && !st.jit.disable_bytecode
+            && !st.jit.get().disable_bytecode
             && crate::jit::compiled(f)
             && crate::code::is_closure_code(cx, f.aux(), Profile::Bc, f.car())
         {
@@ -227,8 +239,17 @@ fn closure_code_slow(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
         // (a JIT-compiled closure whose code was not kept, or a forced
         // profile: an installed closure's code is made with it)
         if let Some(code) = compile::compile_closure_bc(cx, op, false)? {
-            // SAFETY: a rooted closure and its code: a traced word.
-            unsafe { op.bind(cx).sexp().set_aux(code) };
+            let f = op.bind(cx).sexp();
+            // SAFETY: a rooted closure and its code: a traced word. A
+            // BCODESXP body is byte code GNU R holds: marked so, the next
+            // call takes the common case
+            unsafe {
+                if crate::jit::bytecode_body(op.bind(cx)) {
+                    crate::jit::set_compiled(f, code);
+                } else {
+                    f.set_aux(code);
+                }
+            }
             return Ok(code);
         }
         // cmp.R leaves it uncompiled (an installed closure never is: that
@@ -334,7 +355,7 @@ pub unsafe fn call_builtin_regs(
     // SAFETY: `n` object slots from `base` (and `n` name slots after them),
     // rooted by the activation for the call.
     let args = unsafe {
-        let p = act.slot(base);
+        let p = act.window(base, if names { 2 * n } else { n });
         Args::from_raw(p, names.then(|| p.add(n)), n as u32, any_alt)
     };
     // the arguments hold no links while the builtin runs
@@ -361,10 +382,10 @@ fn invoke_builtin(cx: &mut Cx, act: &Act, dst: Reg, args: Args<'_>, regs: (Reg, 
     // while the builtin runs
     // R: eval.c:BUILTIN_CALL_FRAME_ARGS, eval.c:evalList
     // SAFETY: this running activation's registers.
-    unsafe { crate::links::skip_args(act.base, regs.0, regs.1) };
+    unsafe { crate::links::skip_args(act.base(), regs.0, regs.1) };
     let r = run_builtin(cx, &def, act.root(R_SCRATCH), args, act.root(R_ENV), act.out(dst));
     // SAFETY: as above.
-    unsafe { crate::links::unskip_args(act.base) };
+    unsafe { crate::links::unskip_args(act.base()) };
     act.clear(R_SCRATCH);
     act.clear(R_SCRATCH2);
     r
@@ -706,7 +727,12 @@ pub fn loop_region(cx: &mut Cx, act: &mut Act, start: usize, regs: Reg, nregs: R
             let base = s.root(cx, cx.base_env());
             // R: eval.c:do_for, begincontext(&cntxt, CTXT_LOOP, R_NilValue,
             // rho, R_BaseEnv, R_NilValue, R_NilValue)
-            let env = act.root(R_ENV);
+            // SAFETY: the activation's environment register, live for the
+            // whole activation, which outlives this call. Only `exec` writes
+            // R_ENV, before `run` starts (the compiler allocates from
+            // R_FIRST), so the root reads the environment throughout. It is
+            // not tied to `act`'s borrow, which `run` needs mutably.
+            let env = unsafe { Root::from_raw(act.slot(R_ENV)) };
             cx.with_context(ctxt::LOOP, nil, env, base, None, |cx, _id| vm::run(cx, act, start))
         });
         let landed = match r {

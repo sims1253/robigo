@@ -780,7 +780,8 @@ pub fn vector_index(
     for i in start..stop {
         let xv = x.bind(cx);
         let t = xv.sexptype();
-        if !matches!(t, VECSXP | EXPRSXP | NILSXP | LISTSXP) {
+        // isVectorList || isPairList (a call and `...` are pairlists too)
+        if !matches!(t, VECSXP | EXPRSXP | NILSXP | LISTSXP | LANGSXP | DOTSXP) {
             let msg = if i > 0 {
                 format!("recursive indexing failed at level {}\n", i + 1)
             } else {
@@ -812,7 +813,7 @@ pub fn vector_index(
                 let o = s.out(cx);
                 let d = o.root();
                 cx.shallow_duplicate(er, o)?;
-                if container.bind(cx).sexptype() == LISTSXP {
+                if matches!(container.bind(cx).sexptype(), LISTSXP | LANGSXP | DOTSXP) {
                     let mut c = container.bind(cx).as_cons().unwrap();
                     for _ in 0..offset {
                         c = c.cdr().as_cons().unwrap();
