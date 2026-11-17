@@ -639,6 +639,7 @@ fn invoke_builtin_root(
 /// builtin's return is (docs/g3.md §3 item 2). Every builtin call of the
 /// evaluator goes through here.
 // R: eval.c:eval (BUILTINSXP)
+#[inline(always)]
 pub(crate) fn run_builtin(
     cx: &mut Cx,
     def: &prims::PrimDef,

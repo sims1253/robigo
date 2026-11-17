@@ -1676,8 +1676,7 @@ fn for_step(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp, profile: Prof
             // one of robigo's classes, which only INTSXP and REALSXP have).
             unsafe {
                 match t {
-                    INTSXP if own => *(v.std_data() as *mut i32) = robigo_rtcore::altrep::own::intseq_elt(val, idx),
-                    REALSXP if own => *(v.std_data() as *mut f64) = robigo_rtcore::altrep::own::realseq_elt(val, idx),
+                    _ if own => own_loop_elt(v, val, idx),
                     LGLSXP | INTSXP => *(v.std_data() as *mut i32) = *(val.std_data() as *const i32).add(idx),
                     REALSXP => *(v.std_data() as *mut f64) = *(val.std_data() as *const f64).add(idx),
                     CPLXSXP => {
@@ -1704,6 +1703,27 @@ fn for_step(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp, profile: Prof
         }
     }
     Ok(true)
+}
+
+/// Element `idx` of one of robigo's compact sequences into the loop value
+/// `v` (INTEGER_ELT, REAL_ELT), out of line so that `for_step`'s other
+/// paths keep the VM loop's registers.
+///
+/// # Safety
+/// `v` is a length-1 vector of `val`'s type; `val` a live compact sequence
+/// longer than `idx`.
+#[inline(never)]
+unsafe fn own_loop_elt(v: Sexp, val: Sexp, idx: usize) {
+    // SAFETY: the caller's contract; only INTSXP and REALSXP have classes,
+    // and `v`, a loop value `alloc_vector_raw` made, keeps its payload
+    // inline.
+    unsafe {
+        if val.typ() == INTSXP {
+            *(v.inline_data() as *mut i32) = robigo_rtcore::altrep::own::intseq_elt(val, idx);
+        } else {
+            *(v.inline_data() as *mut f64) = robigo_rtcore::altrep::own::realseq_elt(val, idx);
+        }
+    }
 }
 
 /// `defineVar(sym, value, rho)` for the loop variable.

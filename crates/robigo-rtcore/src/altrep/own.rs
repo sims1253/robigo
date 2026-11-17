@@ -8,10 +8,13 @@
 //! class is a class object made here once per isolate: a RAWSXP that holds
 //! [`MAGIC`] and the class's number, its ATTRIB GNU R's
 //! `list3(class symbol, package symbol, base type)` so that `serialize`
-//! and `inspect` read it as GNU R's. A package class's object is a method
-//! table, far longer and starting with function pointers, so the content
-//! tells robigo's classes from a package's without a `Cx`
-//! ([`Ref::own_class`]); only this module makes such a RAWSXP.
+//! and `inspect` read it as GNU R's. An instance carries the header bit
+//! `extra::vector::OWN_ALTREP`, which only this module sets: the hot
+//! accessors tell robigo's classes from a package's with one more bit test
+//! and no call ([`Ref::own_class`]), and the base type names the class.
+//! The class object's content (a package class's object is a method table,
+//! far longer and starting with function pointers) is checked against it
+//! in debug builds.
 //!
 //! The methods are Rust and run no R code. The reads (length, element,
 //! region, sortedness, NA, sum) allocate nothing and are token-free on a
@@ -27,6 +30,7 @@
 
 use crate::{Cx, Global, Out, RResult, Ref, Root, View};
 use robigo_heap::Sexp;
+use robigo_heap::extra::vector::OWN_ALTREP;
 use robigo_heap::types::*;
 use std::cell::RefCell;
 
@@ -101,16 +105,31 @@ pub(crate) unsafe fn class_of_object(class: Sexp) -> Option<OwnClass> {
 ///
 /// # Safety
 /// `x` is live.
-#[inline]
+#[inline(always)]
 pub unsafe fn own_class(x: Sexp) -> Option<OwnClass> {
-    // SAFETY: the caller's contract; an ALTREP object's TAG is its class,
-    // a live object.
+    // SAFETY: the caller's contract: the header of a live object. The bit
+    // is set only by this module's makers, on an ALTREP node whose TAG is
+    // the class object of its base type's class.
     unsafe {
-        if !x.is_altrep() {
+        if !x.is_altrep() || x.extra() & OWN_ALTREP == 0 {
             return None;
         }
-        class_of_object(x.tag())
+        let c = if x.typ() == INTSXP { OwnClass::CompactIntseq } else { OwnClass::CompactRealseq };
+        debug_assert_eq!(class_of_object(x.tag()), Some(c), "robigo: an own ALTREP instance of another class");
+        Some(c)
     }
+}
+
+/// Mark the fresh ALTREP node `x` as an instance of one of robigo's classes
+/// ([`OWN_ALTREP`]).
+///
+/// # Safety
+/// `x` is a fresh ALTREP node of this module's making, its TAG the class
+/// object of the class its base type names.
+#[inline]
+unsafe fn mark_own(x: Sexp) {
+    // SAFETY: the caller's contract; `extra` is header state.
+    unsafe { x.set_extra(x.extra() | OWN_ALTREP) }
 }
 
 /// A compact sequence's info: length, first element, increment (`REAL0(info)`
@@ -121,10 +140,11 @@ pub unsafe fn own_class(x: Sexp) -> Option<OwnClass> {
 #[inline]
 pub(crate) unsafe fn compact_info(x: Sexp) -> (usize, f64, f64) {
     // SAFETY: the caller's contract: data1 is the info, a standard REALSXP
-    // of three made by `new_compact`.
+    // of three that `new_compact` or `coerce_compact` made with `alloc_copy`,
+    // its payload inline.
     unsafe {
         let info = x.car();
-        let p = info.std_data() as *const f64;
+        let p = info.inline_data() as *const f64;
         (*p as usize, *p.add(1), *p.add(2))
     }
 }
@@ -133,7 +153,7 @@ pub(crate) unsafe fn compact_info(x: Sexp) -> (usize, f64, f64) {
 ///
 /// # Safety
 /// `x` is a live instance of one of robigo's classes.
-#[inline]
+#[inline(always)]
 pub(crate) unsafe fn expanded(x: Sexp) -> Option<Sexp> {
     // SAFETY: the caller's contract: data2 is R_NilValue or a standard
     // vector of the base type, both live.
@@ -147,10 +167,12 @@ pub(crate) unsafe fn expanded(x: Sexp) -> Option<Sexp> {
 ///
 /// # Safety
 /// `x` is a live instance of one of robigo's classes.
-#[inline]
+#[inline(always)]
 pub(crate) unsafe fn own_len(x: Sexp) -> usize {
-    // SAFETY: the caller's contract; both classes are compact sequences.
-    unsafe { compact_info(x).0 }
+    // SAFETY: the caller's contract; both classes are compact sequences,
+    // whose info (inline, as `compact_info` says) has the length first, a
+    // whole number below 2^52 (R_XLEN_T_MAX), so it converts exactly.
+    unsafe { (*(x.car().inline_data() as *const f64)).to_int_unchecked::<usize>() }
 }
 
 /// Element `i` of a compact integer sequence (`compact_intseq_Elt`).
@@ -167,7 +189,7 @@ pub unsafe fn intseq_elt(x: Sexp, i: usize) -> i32 {
         // the info's first element and increment, as doubles: an integer
         // sequence's first element is an int and its increment 1 or -1, so
         // each converts exactly (`(int) (n1 + inc * i)`)
-        let p = x.car().std_data() as *const f64;
+        let p = x.car().inline_data() as *const f64;
         let (n1, inc): (i32, i32) = ((*p.add(1)).to_int_unchecked(), (*p.add(2)).to_int_unchecked());
         n1.wrapping_add(inc.wrapping_mul(i as i32))
     }
@@ -349,6 +371,7 @@ impl Cx {
             unsafe {
                 let x = cx.alloc_node_raw(t, info.sexp(), cx.nil().sexp(), class)?;
                 x.set_flag(robigo_heap::flags::ALTREP, true);
+                mark_own(x);
                 Ok(Ref::from_sexp(x, cx))
             }
         })?;
@@ -425,6 +448,7 @@ impl Cx {
         unsafe {
             let y = self.alloc_node_raw(REALSXP, info.sexp(), e.sexp(), class)?;
             y.set_flag(robigo_heap::flags::ALTREP, true);
+            mark_own(y);
             crate::env::chain::mark_not_mutable(y);
             Ok(Some(Ref::from_sexp(y, self)))
         }

@@ -587,15 +587,20 @@ pub mod extra {
         const _: () = assert!(super::super::disjoint(&[super::TYPE_BLIND as u64, CALL_LIVE as u64, ESCAPED as u64]));
     }
 
-    /// A vector. Free: 0, 2, 3, 5, 6, 8-12, 14, 15.
+    /// A vector. Free: 0, 3, 5, 6, 8-12, 14, 15.
     pub mod vector {
         /// GNU R's RTRACE (`sxpinfo.trace`): `tracemem` is on.
         pub const TRACE: u16 = 1 << 1;
-        const _: () = assert!(super::super::disjoint(&[super::TYPE_BLIND as u64, TRACE as u64]));
+        /// An ALTREP vector (`flags::ALTREP`) that is an instance of one of
+        /// robigo-rt's own classes (robigo-rtcore's `altrep::own`), set by
+        /// the one maker of such instances: the hot accessors tell it from
+        /// a package class's with this bit, without reading the class.
+        pub const OWN_ALTREP: u16 = 1 << 2;
+        const _: () = assert!(super::super::disjoint(&[super::TYPE_BLIND as u64, TRACE as u64, OWN_ALTREP as u64]));
     }
 
     /// A code object (robigo-rt's `code.rs`: a VECSXP), which has the
-    /// vector bits too. Free: 0, 2, 3, 5, 6, 9-12, 14, 15.
+    /// vector bits too. Free: 0, 3, 5, 6, 9-12, 14, 15.
     pub mod code {
         /// The code object holds weak cache words (inline caches that
         /// name an object without keeping it alive: docs/g3.md §6.1, the

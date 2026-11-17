@@ -541,8 +541,9 @@ impl<'g, T: Elt<'g>> Vector<'g, T> {
         s[i]
     }
 
-    /// [`Vector::get`] of an instance of one of robigo's classes.
-    #[cold]
+    /// [`Vector::get`] of an instance of one of robigo's classes (inline:
+    /// its only call is the bounds check's panic).
+    #[inline(always)]
     fn own_get(self, i: usize) -> T {
         let n = self.len();
         assert!(i < n, "robigo: element {i} of {n}");
@@ -578,20 +579,19 @@ impl<'g, T: Elt<'g>> Vector<'g, T> {
     }
 }
 
-// The ALTREP arms of the hot accessors, out of line so that the
-// standard-storage paths stay small enough to inline everywhere.
+// The ALTREP arms of the hot accessors: inline, with no call, so that a
+// hot function that inlines an accessor keeps the register use and the
+// prologue it had without them (a call would make it save registers).
 
 /// [`Ref::is_package_altrep`] of an ALTREP object: not one of robigo's.
-#[cold]
-#[inline(never)]
+#[inline(always)]
 fn not_own(r: Ref<'_>) -> bool {
     r.own_class().is_none()
 }
 
 /// [`Ref::len`] of an ALTREP vector: one of robigo's has a token-free
 /// length, a package class's needs its method.
-#[cold]
-#[inline(never)]
+#[inline(always)]
 fn alt_len(r: Ref<'_>) -> Option<usize> {
     // SAFETY: a live instance of one of robigo's classes.
     r.own_class().map(|_| unsafe { crate::altrep::own::own_len(r.sexp()) })
@@ -599,8 +599,7 @@ fn alt_len(r: Ref<'_>) -> Option<usize> {
 
 /// The length of an instance of one of robigo's classes (a typed view is
 /// never a package class's).
-#[cold]
-#[inline(never)]
+#[inline(always)]
 fn own_len(r: Ref<'_>) -> usize {
     // SAFETY: a live instance of one of robigo's classes.
     unsafe { crate::altrep::own::own_len(r.sexp()) }
@@ -608,8 +607,7 @@ fn own_len(r: Ref<'_>) -> usize {
 
 /// The expansion (data2) of an instance of one of robigo's classes, if it
 /// has one.
-#[cold]
-#[inline(never)]
+#[inline(always)]
 fn own_expansion(r: Ref<'_>) -> Option<Sexp> {
     // SAFETY: a live instance of one of robigo's classes: its data2 is its
     // expansion, a standard vector of the base type, or nil.
