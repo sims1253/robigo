@@ -15,8 +15,8 @@ section, or takes a `Ref<'_>`/`Root<'_>`. C exports are
 `pub unsafe extern "C" fn` (C sees the same symbol).
 
 A parameter counts when its type names `Sexp` outside a closure type (`impl
-Fn(Sexp)`, `&mut dyn FnMut(Sexp)`): a callback is handed objects by the
-callee, which vouches for them. Only fully public functions (`pub fn`,
+Fn(Sexp)`, `&mut dyn FnMut(Sexp)`, a bound `F: FnMut(Sexp)`): a callback is
+handed objects by the callee, which vouches for them. Only fully public functions (`pub fn`,
 `pub extern "C" fn`, and macro-generated `fn $name`) are checked: a
 crate-internal one is the crate's own to keep sound.
 """
@@ -29,7 +29,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CRATES = ["robigo-heap", "robigo-rtcore", "robigo-rt", "robigo-rtapi", "robigo-rtbuiltins"]
 
 FN = re.compile(r'\bpub\s+(?P<qual>(?:(?:const|async|unsafe|extern(?:\s+"C")?)\s+)*)fn\s+(?P<name>[\w$]+)')
-CLOSURE = re.compile(r"\b(?:impl|dyn)\s+Fn(?:Mut|Once)?\s*\(")
+CLOSURE = re.compile(r"\bFn(?:Mut|Once)?\s*\(")
 
 
 def uncomment(src):

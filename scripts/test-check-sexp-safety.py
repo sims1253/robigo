@@ -37,6 +37,9 @@ CASES = [
     ("/// a safe `pub fn f(x: Sexp)` is refused\npub fn g() {}", []),
     ("// pub fn f(x: Sexp) {}\npub fn g() {}", []),
     ("pub(super) fn f(x: Sexp) {}", []),
+    ("pub fn each<F: FnMut(Sexp)>(f: F) {}", []),
+    ("pub fn each<F>(f: F)\nwhere\n    F: Fn(&mut Sexp) -> bool,\n{}", []),
+    ("pub fn each<F: FnMut(Sexp)>(f: F, x: Sexp) {}", ["each"]),
 ]
 
 
