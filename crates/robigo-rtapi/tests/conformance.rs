@@ -44,17 +44,15 @@ fn rt_conformance() {
         .status()
         .unwrap_or_else(|e| panic!("running scripts/rt-capi-build.sh: {e}"));
     assert!(st.success(), "scripts/rt-capi-build.sh {}: {st}", libs.display());
-    // SAFETY: set before any other thread of this test binary runs (the one
-    // test here has not started its cases).
-    unsafe { std::env::set_var("RT_CAPI_LIBS", &libs) };
+    let mut o = conf::Options::from_env(&conf::RT, rt_bin()).unwrap_or_else(|e| panic!("{e}"));
+    o.env.push(("RT_CAPI_LIBS".into(), Some(libs.into())));
     // robigo-rt's R_HOME is its own tree, which its front end finds when the
     // environment names none (the checkout's, scripts/rt-home.sh). An
     // R_HOME inherited from an installed GNU R (the CI image's
     // /usr/lib/R) would have the cases load that R's library, its tools.so
-    // among them, built for GNU R's objects.
-    // SAFETY: as above.
-    unsafe { std::env::remove_var("R_HOME") };
-    let mut o = conf::Options::from_env(&conf::RT, rt_bin()).unwrap_or_else(|e| panic!("{e}"));
+    // among them, built for GNU R's objects. Each case's environment drops
+    // it; this process's is left alone.
+    o.env.push(("R_HOME".into(), None));
     // the cases that load tools' native code from the binary's R_HOME tree
     // run where scripts/rt-home.sh built it (CI's rt job does)
     if has_rt_home_tools(&o.bin) {
@@ -64,11 +62,13 @@ fn rt_conformance() {
 }
 
 /// Whether `bin`'s `R.home()` is the tree scripts/rt-home.sh made (its
-/// stamp, `.rt-home`) and has tools' native code. An installed GNU R's
+/// stamp, `.rt-home`) and has tools' native code, run as the cases are
+/// (with no inherited R_HOME). An installed GNU R's
 /// R_HOME (the test job's `R_HOME=/usr/lib/R`) has a tools.so too, but one
 /// built for GNU R's objects, which robigo-rt must not load.
 fn has_rt_home_tools(bin: &Path) -> bool {
     let out = std::process::Command::new(bin)
+        .env_remove("R_HOME")
         .args(["-e", "cat(all(file.exists(file.path(R.home(), c('.rt-home', 'library/tools/libs/tools.so')))))"])
         .output()
         .unwrap_or_else(|e| panic!("running {}: {e}", bin.display()));

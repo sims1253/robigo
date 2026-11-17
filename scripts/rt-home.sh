@@ -13,6 +13,13 @@
 #   library/PKG/DESCRIPTION   DESCRIPTION.in with @VERSION@ (config.status)
 #   library/PKG/NAMESPACE     the package's NAMESPACE
 #   library/PKG/R/PKG         mkR1/mkRbase's all.R, for compiler and tools
+#   share/                    share/Makefile.in's install-sources: R/*.R,
+#                             bibliographies/*.R, dictionaries/*.txt,
+#                             encodings/*, java/*, licenses/*, make/*.mk,
+#                             Rd/macros/*, sh/*.sh, texmf/bibtex/{bib,bst}/*,
+#                             texmf/tex/latex/* (no zoneinfo: the oracle's
+#                             configure uses the system's; install-sources2's
+#                             .rds files are made by R, L4's build)
 #   include/Rmath.h           src/include/Makefile's Rmath.h: config.status's
 #                             Rmath.h0 from Rmath.h0.in (@PACKAGE_VERSION@, and
 #                             @RMATH_HAVE_WORKING_LOG1P@ as configure finds it
@@ -73,6 +80,18 @@ for pkg in compiler tools; do
   cp "$lib/$pkg/NAMESPACE" "$tmp/library/$pkg/NAMESPACE"
   # shellcheck disable=SC2046
   (cd "$lib/$pkg" && LC_COLLATE=C cat $(LC_COLLATE=C ls R/*.R)) > "$tmp/library/$pkg/R/$pkg"
+done
+# R: share/Makefile.in install-sources (installdirs, then each glob in its order)
+for d in R bibliographies dictionaries encodings java licenses make Rd/macros sh \
+  texmf/bibtex/bib texmf/bibtex/bst texmf/tex/latex; do
+  mkdir -p "$tmp/share/$d"
+done
+for g in R/*.R bibliographies/*.R dictionaries/*.txt encodings/* java/* licenses/* make/*.mk \
+  Rd/macros/* sh/*.sh texmf/bibtex/bib/* texmf/bibtex/bst/* texmf/tex/latex/*; do
+  for f in "$src"/share/$g; do
+    [ -f "$f" ] || { echo "rt-home.sh: share/$g matches no file in the tarball" >&2; exit 1; }
+    cp -p "$f" "$tmp/share/${g%/*}/"
+  done
 done
 mkdir -p "$tmp/include"
 sed -e "s/@PACKAGE_VERSION@/$version/" -e "s/@RMATH_HAVE_WORKING_LOG1P@/# define HAVE_WORKING_LOG1P 1/" \
