@@ -64,11 +64,13 @@
 #![allow(unsafe_code)]
 
 mod alias;
+mod attach;
 mod chain;
 mod frame;
 mod hashtab;
 mod promise;
 pub(crate) mod recycle;
+mod restore;
 mod slotapi;
 
 pub use promise::{ArgLoc, BindingType};
@@ -476,20 +478,20 @@ impl Loc {
     /// The location of the binding cell `c`.
     #[inline(always)]
     fn cell(c: Sexp) -> Loc {
-        Loc(NonNull::new(c.0).expect("robigo: a null binding cell"))
+        Loc(NonNull::new(c.as_ptr()).expect("robigo: a null binding cell"))
     }
 
     /// The location of `s`'s base binding.
     #[inline(always)]
     fn base(s: Sexp) -> Loc {
-        Loc(NonNull::new(s.0).expect("robigo: a null symbol"))
+        Loc(NonNull::new(s.as_ptr()).expect("robigo: a null symbol"))
     }
 
     /// The location of slot `s`. A cell-backed slot's location is its cell
     /// ([`Loc::of_slot`]).
     #[inline(always)]
     fn slot(s: SlotRef) -> Loc {
-        let p = NonNull::new(s.owner.0).expect("robigo: a null slot owner");
+        let p = NonNull::new(s.owner.as_ptr()).expect("robigo: a null slot owner");
         assert!(s.index < MAX_SLOTS && p.addr().get() & !ADDR_MASK == 0, "robigo: a slot location out of range");
         Loc(p.map_addr(|a| a | (s.index << INDEX_SHIFT) | SLOT_TAG))
     }
@@ -505,9 +507,30 @@ impl Loc {
         unsafe { if s.kind() == CELL { Loc::cell(s.val()) } else { Loc::slot(s) } }
     }
 
+    /// The location's word, for identity: a cell's (or a base binding's
+    /// symbol's) address, or a slot's owner's, tagged.
+    ///
+    /// # Safety
+    /// The result is compared or masked only: never read through, nor
+    /// stored or passed as an object (a slot location's word carries the
+    /// slot tag and index, so it is no object handle; [`Loc::object`] is
+    /// the handle of a location that is not a slot).
     #[inline(always)]
-    fn sexp(self) -> Sexp {
-        Sexp(self.0.as_ptr())
+    unsafe fn sexp(self) -> Sexp {
+        // SAFETY: the caller's contract: identity only.
+        unsafe { Sexp::from_word(self.0.as_ptr()) }
+    }
+
+    /// The object a location that is not a slot names: its cell, or a
+    /// base binding's symbol.
+    ///
+    /// # Safety
+    /// The location is not a slot location (`at` is not `FrameSlot`), and
+    /// its object is live.
+    #[inline(always)]
+    unsafe fn object(self) -> Sexp {
+        // SAFETY: the caller's contract: an untagged object address.
+        unsafe { Sexp::from_ptr(self.0.as_ptr()) }
     }
 
     /// Which kind of location this is.
@@ -518,11 +541,15 @@ impl Loc {
     unsafe fn at(self) -> At {
         let w = self.0.addr().get();
         if w & SLOT_TAG != 0 {
-            let owner = Sexp(self.0.as_ptr().map_addr(|a| a & ADDR_MASK & !SLOT_TAG));
+            // SAFETY: the caller's contract: a live slot location's word is
+            // its owner's address, tagged.
+            let owner = unsafe { Sexp::from_ptr(self.0.as_ptr().map_addr(|a| a & ADDR_MASK & !SLOT_TAG)) };
             return At::FrameSlot(SlotRef { owner, index: w >> INDEX_SHIFT });
         }
-        let x = self.sexp();
-        // SAFETY: the caller's contract.
+        // SAFETY: the caller's contract: a live location whose tag is clear
+        // names its object (a cell, or a base binding's symbol).
+        let x = unsafe { self.object() };
+        // SAFETY: as above.
         if unsafe { x.typ() } == SYMSXP { At::Base(x) } else { At::Cell(x) }
     }
 
@@ -877,9 +904,13 @@ impl<'g> Binding<'g> {
     /// The owner check of a binding read through `cx`.
     #[inline(always)]
     fn owned(self, cx: &Cx) {
-        let x = self.loc.sexp();
+        // SAFETY: masked below before anything reads through it.
+        let x = unsafe { self.loc.sexp() };
         // a slot location's word is its owner's address, tagged
-        let x = Sexp(x.0.map_addr(|a| a & ADDR_MASK & !SLOT_TAG));
+        // SAFETY: the location's word with the tag bits cleared: a live
+        // cell's (or symbol's) address, or a slot frame's (only its block
+        // header is read).
+        let x = unsafe { Sexp::from_ptr(x.as_ptr().map_addr(|a| a & ADDR_MASK & !SLOT_TAG)) };
         cx.iso().check_owns(x);
     }
 
@@ -951,7 +982,7 @@ impl<'g> Binding<'g> {
         unsafe {
             match self.loc.at() {
                 At::FrameSlot(_) => None,
-                _ => Some(Ref::from_sexp(self.loc.sexp(), cx)),
+                _ => Some(Ref::from_sexp(self.loc.object(), cx)),
             }
         }
     }
@@ -1082,7 +1113,7 @@ unsafe fn global_loc(iso: &Isolate, s: Sexp) -> Result<Option<Loc>, Special> {
         let c = iso.envs().cell(s).cache;
         if !c.is_null() {
             // the symbol (base) or a cell: a Loc is either
-            return Ok(Some(Loc(NonNull::new_unchecked(c.0))));
+            return Ok(Some(Loc(NonNull::new_unchecked(c.as_ptr()))));
         }
         global_walk(iso, s)
     }
@@ -1108,7 +1139,8 @@ unsafe fn global_walk(iso: &Isolate, s: Sexp) -> Result<Option<Loc>, Special> {
                 // holds objects): the walk finds it again.
                 if let Some(l) = loc_in_frame(iso, rho, s)? {
                     if !matches!(l.at(), At::FrameSlot(_)) {
-                        e.cell_mut(s, |c| c.cache = l.sexp());
+                        // (not a slot: the location's object, a live cell)
+                        e.cell_mut(s, |c| c.cache = l.object());
                     }
                     return Ok(Some(l));
                 }
@@ -1558,7 +1590,8 @@ impl Cx {
     pub fn define_var(&mut self, sym: Root<'_>, value: Root<'_>, rho: Root<'_>) -> RResult<()> {
         let s = expect_sym(sym.bind(self));
         let r = expect_env(rho.bind(self));
-        self.note_write(r);
+        // SAFETY: a rooted environment.
+        unsafe { self.note_write(r) };
         let iso = self.iso();
         iso.check_owns(s);
         iso.check_owns(r);
@@ -2674,7 +2707,10 @@ impl Cx {
     }
 
     /// `env`'s version box (module docs), made if it has none yet, written
-    /// to `out`. A memo holds the box and [`Cx::box_version`] of it.
+    /// to `out`. A memo holds the box and [`Cx::box_version`] of it. This is
+    /// the only writer of an environment's box, and it never replaces one:
+    /// an environment keeps the box it is given for good
+    /// ([`Cx::env_version`] relies on it).
     pub fn env_version_box(&mut self, env: Root<'_>, out: Out<'_>) -> RResult<()> {
         let r = expect_env(env.bind(self));
         let iso = self.iso();
@@ -2689,6 +2725,7 @@ impl Cx {
             // SAFETY: fresh, nothing collected since; `r` rooted. The box
             // starts at version 0.
             unsafe {
+                debug_assert!(r.aux() == self.iso().nil, "robigo: an environment's version box replaced");
                 *(b.std_data() as *mut i32) = 0;
                 r.set_aux(b);
             }
@@ -2704,6 +2741,23 @@ impl Cx {
         assert!(b.sexptype() == INTSXP && b.len() == Some(1), "robigo: not a version box");
         // SAFETY: a live INTSXP of one element.
         unsafe { *(b.sexp().std_data() as *const u32) }
+    }
+
+    /// The version `env`'s box holds now, None while it has none. An
+    /// environment never replaces its box ([`Cx::env_version_box`] is the
+    /// only writer, and gives a box once), so a memo that holds the
+    /// environment may keep the version without the box.
+    #[inline]
+    pub fn env_version(&self, env: Ref<'_>) -> Option<u32> {
+        let r = expect_env(env);
+        let nil = self.iso().nil;
+        // SAFETY: a live environment: +40 is its box, an INTSXP of one
+        // element, or R_NilValue.
+        unsafe {
+            let b = r.aux();
+            debug_assert!(b == nil || (b.typ() == INTSXP && b.std_len() == 1), "robigo: not a version box");
+            (b != nil).then(|| *(b.std_data() as *const u32))
+        }
     }
 }
 
@@ -2951,7 +3005,8 @@ impl Cx {
         sym: Sexp,
         value: Scalar,
     ) -> bool {
-        self.note_write(rho);
+        // SAFETY: the caller's contract: `rho` is a live environment.
+        unsafe { self.note_write(rho) };
         let iso = self.iso();
         // SAFETY: the caller's contract; the store writes plain bits and
         // drops the old object's count, as `define_scalar` does.
@@ -3077,7 +3132,7 @@ impl Cx {
             if rho == e.global && !sym::is_special(sym) {
                 let c = e.cell(sym).cache;
                 if !c.is_null() {
-                    let l = Loc(NonNull::new_unchecked(c.0));
+                    let l = Loc(NonNull::new_unchecked(c.as_ptr()));
                     if l.bits(iso) & ACTIVE_BINDING == 0
                         && let Held::Obj(v) = l.held_cached(iso)
                         && matches!(v.typ(), CLOSXP | BUILTINSXP | SPECIALSXP)
@@ -3353,7 +3408,8 @@ mod loc_tests {
 
     /// A 16-byte aligned owner address below 2^48, never read.
     fn owner() -> Sexp {
-        Sexp(std::ptr::without_provenance_mut(0x7ff1_2345_6780))
+        // SAFETY: never read through: the tests encode and decode it only.
+        unsafe { Sexp::from_word(std::ptr::without_provenance_mut(0x7ff1_2345_6780)) }
     }
 
     /// Every slot index below [`MAX_SLOTS`] comes back from its location,

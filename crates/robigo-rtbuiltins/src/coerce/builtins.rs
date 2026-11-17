@@ -14,6 +14,55 @@ use robigo_rtcore::{
     Args, Built, Char, Cx, Diag, Dispatched, Encoding, FreshVec, Generic, Lgl, NeedGc, Out, RResult, Ref, Root, View,
 };
 
+/// `.Internal(as.function.default(x, envir))`: the closure whose formals
+/// are the list's elements but the last (tagged by its names), its body the
+/// last, in `envir`.
+// R: coerce.c:do_asfunction
+pub fn do_asfunction(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("as.function.default", true).check_arity(cx, call, args)?;
+    let (arglist, envir) = (args.root(0), args.root(1));
+    if !matches!(arglist.bind(cx).sexptype(), NILSXP | VECSXP) {
+        return Err(cx.error("list argument expected"));
+    }
+    match envir.bind(cx).sexptype() {
+        NILSXP => return Err(cx.error("use of NULL environment is defunct")),
+        ENVSXP => {}
+        _ => return Err(cx.error("invalid environment")),
+    }
+    let n = arglist.bind(cx).len().unwrap_or(0);
+    if n < 1 {
+        return Err(cx.error("argument must have length at least 1"));
+    }
+    cx.scope(|cx, s| {
+        // the formals: elements 1..n-1, tagged by their non-empty names
+        let formals = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| {
+                let l = arglist.bind(cx);
+                let v = l.as_vector::<Ref<'_>>().unwrap();
+                let names = attrib::names(l).and_then(|nm| nm.as_vector::<Char<'_>>());
+                let mut p = cx.nil();
+                for i in (0..n - 1).rev() {
+                    let tag = names.map(|nm| nm.get(i)).filter(|c| !c.bytes().is_empty());
+                    p = match tag {
+                        Some(t) => cx.cons_tagged(v.get(i), p, cx.install(crate::coerce::text(t).bytes())?)?,
+                        None => cx.cons(v.get(i), p)?,
+                    };
+                }
+                Ok(p)
+            })
+        })?;
+        crate::bytecode::check_formals(cx, formals, "as.function")?;
+        let body = s.root(cx, arglist.bind(cx).as_vector::<Ref<'_>>().unwrap().get(n - 1));
+        let ok = matches!(body.bind(cx).sexptype(), NILSXP | LISTSXP | LANGSXP | SYMSXP | EXPRSXP | BCODESXP)
+            || crate::attrib::is_vector(body.bind(cx));
+        if !ok {
+            return Err(cx.error("invalid body for function"));
+        }
+        // R: dstruct.c:mkCLOSXP
+        cx.build(out, |cx| cx.closure(formals.bind(cx), body.bind(cx), envir.bind(cx)))
+    })
+}
+
 /// `DispatchOrEval(call, op, generic, args, rho, &ans, dropmissing, 1)` for
 /// a builtin: a method runs only when the first argument is an object.
 pub fn dispatch_or_eval<'o>(

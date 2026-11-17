@@ -30,6 +30,11 @@
 //!   ROBIGO_CONF_TIMEOUT=secs    how long one case may run (default 20: a
 //!                               collector mode, gctorture or the moving
 //!                               collector, needs longer)
+//!   ROBIGO_CONF_TIMEOUTS=CASE=SECS,...
+//!                               a longer timeout for the named cases
+//!                               (repository-relative paths), each of which
+//!                               must exist: scripts/rt-ci.py's table of
+//!                               cases a collector mode makes too slow
 //!   ROBIGO_R_VERSION=4.6.2      compare with that GNU R version's
 //!                               recordings (default: the column's gated
 //!                               version); a run against another version
@@ -277,6 +282,11 @@ pub struct Column {
     /// A single-list ratchet still read beside the markers (repository
     /// relative), while branches migrate (`scripts/ratchet.py migrate`).
     pub legacy_list: Option<&'static str>,
+    /// An environment variable under which the binary prints, on stderr
+    /// at startup, the forms of base it does not run: that record goes
+    /// with each failing case, which may fail for one of them
+    /// (INTERIM(L5): robigo-rt's wide base, `crates/robigo-rt/src/base.rs`).
+    pub boot_record: Option<&'static str>,
 }
 
 /// The old runtime, `robigo`: `tests/r` against GNU R 4.5.0.
@@ -287,6 +297,7 @@ pub const OLD: Column = Column {
     suites: &[Suite { dir: "tests/r", cases: Cases::All }],
     corpus: "conformance",
     legacy_list: Some("tests/r/passing.txt"),
+    boot_record: None,
 };
 
 /// G3's runtime, `robigo-rt`: its own cases in `tests/rt`, and the cases
@@ -298,6 +309,7 @@ pub const RT: Column = Column {
     suites: &[Suite { dir: "tests/rt", cases: Cases::All }, Suite { dir: "tests/r", cases: Cases::Marked }],
     corpus: "conformance-rt",
     legacy_list: None,
+    boot_record: Some("ROBIGO_BOOT_VERBOSE"),
 };
 
 /// The feature requirements a `.requires` sidecar may name:
@@ -355,6 +367,24 @@ pub struct Options {
     pub jobs: usize,
     /// How long one case may run.
     pub timeout: Duration,
+    /// Cases that may run longer than `timeout` (`ROBIGO_CONF_TIMEOUTS`):
+    /// repository-relative path -> timeout.
+    pub case_timeouts: BTreeMap<String, Duration>,
+}
+
+/// `ROBIGO_CONF_TIMEOUTS`'s value: `CASE=SECS` pairs, comma-separated.
+pub fn parse_case_timeouts(v: &str) -> Result<BTreeMap<String, Duration>, String> {
+    let mut out = BTreeMap::new();
+    for item in v.split(',').filter(|i| !i.trim().is_empty()) {
+        let (case, secs) =
+            item.rsplit_once('=').ok_or_else(|| format!("ROBIGO_CONF_TIMEOUTS: {item:?} is not CASE=SECS"))?;
+        let secs: u64 =
+            secs.trim().parse().map_err(|_| format!("ROBIGO_CONF_TIMEOUTS: {secs:?} is not a number of seconds"))?;
+        if out.insert(case.trim().to_string(), Duration::from_secs(secs)).is_some() {
+            return Err(format!("ROBIGO_CONF_TIMEOUTS names {case:?} twice"));
+        }
+    }
+    Ok(out)
 }
 
 impl Options {
@@ -378,6 +408,10 @@ impl Options {
                 s.parse().map_err(|_| format!("ROBIGO_CONF_TIMEOUT={s:?} is not a number of seconds"))?,
             ),
         };
+        let case_timeouts = match std::env::var("ROBIGO_CONF_TIMEOUTS") {
+            Err(_) => BTreeMap::new(),
+            Ok(s) => parse_case_timeouts(&s)?,
+        };
         Ok(Options {
             bin,
             version: r_version(std::env::var_os("ROBIGO_R_VERSION").as_deref(), column)?,
@@ -389,6 +423,7 @@ impl Options {
             results: None,
             jobs: 2,
             timeout,
+            case_timeouts,
         })
     }
 }
@@ -595,7 +630,13 @@ impl Outcome {
 }
 
 fn run_case(bin: &Path, script: &Path, timeout: Duration) -> (Vec<u8>, Vec<u8>, i32, bool) {
-    let mut child = command(bin, script)
+    run_command(command(bin, script), bin, timeout)
+}
+
+/// Run `cmd` (of the binary `bin`), killed after `timeout`: (stdout,
+/// stderr, exit status, timed out).
+fn run_command(mut cmd: Command, bin: &Path, timeout: Duration) -> (Vec<u8>, Vec<u8>, i32, bool) {
+    let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -650,8 +691,50 @@ fn first_diff(expected: &str, got: &str, runtime: &str) -> String {
     String::new()
 }
 
-fn check(root: &Path, column: &Column, suite: &str, script: &Path, o: &Options) -> Outcome {
-    let id = script.strip_prefix(root).unwrap().display().to_string();
+/// The binary's record of what of base it does not run
+/// ([`Column::boot_record`]), as lines of a failing case's report: empty
+/// when the column has none or the binary prints none. The probe runs
+/// with a case's timeout, killed as a case is.
+fn boot_record(column: &Column, o: &Options) -> String {
+    let Some(var) = column.boot_record else { return String::new() };
+    let dir = std::env::temp_dir().join(format!("robigo-conf-boot-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("create {}: {e}", dir.display()));
+    let script = dir.join("empty.R");
+    std::fs::write(&script, "invisible(NULL)\n").unwrap_or_else(|e| panic!("write {}: {e}", script.display()));
+    let mut cmd = command(&o.bin, &script);
+    cmd.env(var, "1");
+    let (_, err, _, timed_out) = run_command(cmd, &o.bin, o.timeout);
+    let _ = std::fs::remove_dir_all(&dir);
+    if timed_out {
+        return format!(
+            "    ({}'s record of what it does not run of base: its probe timed out after {} s)\n",
+            column.runtime,
+            o.timeout.as_secs()
+        );
+    }
+    let lines: Vec<String> = String::from_utf8_lossy(&err).lines().map(|l| format!("    {l}\n")).collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!("    (what {} does not run of base, which this case may need:)\n{}", column.runtime, lines.concat())
+}
+
+/// A case's id: its path from the repository root, with `/` between
+/// components (`tests/r/a/b.R`). Markers, results, the filter's report and
+/// `ROBIGO_CONF_TIMEOUTS` name cases by it.
+fn case_id(root: &Path, script: &Path) -> String {
+    script.strip_prefix(root).unwrap().display().to_string()
+}
+
+fn check(
+    root: &Path,
+    column: &Column,
+    suite: &str,
+    script: &Path,
+    o: &Options,
+    record: &std::sync::OnceLock<String>,
+) -> Outcome {
+    let id = case_id(root, script);
     let base = expected_base(root, suite, script, &o.version);
     let exp = match read_recording(&base, script, &o.version) {
         Ok(r) => r,
@@ -660,7 +743,8 @@ fn check(root: &Path, column: &Column, suite: &str, script: &Path, o: &Options) 
             return Outcome { id, unrecorded: Some(why), stdout_ok: false, stderr_ok: false, status_ok: false, diff };
         }
     };
-    let (out, err, status, timed_out) = run_case(&o.bin, script, o.timeout);
+    let timeout = o.case_timeouts.get(&id).copied().unwrap_or(o.timeout);
+    let (out, err, status, timed_out) = run_case(&o.bin, script, timeout);
     let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
     let mut diff = String::new();
     if timed_out {
@@ -684,6 +768,10 @@ fn check(root: &Path, column: &Column, suite: &str, script: &Path, o: &Options) 
     }
     if !status_ok {
         diff.push_str(&format!("    exit status {} (GNU R {})\n", status, exp.status));
+    }
+    if !(stdout_ok && stderr_ok && status_ok) {
+        // probed once, by the first case that fails
+        diff.push_str(record.get_or_init(|| boot_record(column, o)));
     }
     Outcome { id, unrecorded: None, stdout_ok, stderr_ok, status_ok, diff }
 }
@@ -720,19 +808,21 @@ pub fn run(root: &Path, column: &Column, o: &Options) -> Result<Report, String> 
     let mut jobs = Vec::new();
     let mut listed: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
     let mut any_match = false;
+    // every case's id, selected or not: what ROBIGO_CONF_TIMEOUTS may name
+    let mut ids = BTreeSet::new();
     for suite in column.suites {
         let marks = load_ratchet(root, column, suite.dir)?;
         let run_all = suite.cases == Cases::All || o.sweep;
         let before = jobs.len();
         for p in scripts(&root.join(suite.dir), &o.features) {
-            if !filtered(&p) {
-                continue;
+            let id = case_id(root, &p);
+            if filtered(&p) {
+                any_match = true;
+                if run_all || marks.contains(&id) {
+                    jobs.push((suite.dir, p));
+                }
             }
-            any_match = true;
-            let id = p.strip_prefix(root).unwrap().display().to_string();
-            if run_all || marks.contains(&id) {
-                jobs.push((suite.dir, p));
-            }
+            ids.insert(id);
         }
         // A version without recordings: the reason says more than "not
         // recorded" for every case would.
@@ -747,10 +837,20 @@ pub fn run(root: &Path, column: &Column, o: &Options) -> Result<Report, String> 
             listed.insert(suite.dir, marks);
         }
     }
+    // `check` looks a case's timeout up by its id, so any other name, even
+    // a path to the same file, would never apply, and would stay
+    if let Some(name) = o.case_timeouts.keys().find(|c| !ids.contains(c.as_str())) {
+        return Err(format!(
+            "ROBIGO_CONF_TIMEOUTS names {name}, which is no case's id (a path from the repository root, \
+             as tests/r/a/b.R, of an enabled case in {})",
+            suite_dirs(column)
+        ));
+    }
     if !any_match {
         return Err(format!("no enabled conformance scripts in {} match {:?}", suite_dirs(column), o.filter));
     }
 
+    let record = std::sync::OnceLock::new();
     let queue = std::sync::Mutex::new(jobs);
     let results = std::sync::Mutex::new(Vec::new());
     std::thread::scope(|s| {
@@ -759,7 +859,7 @@ pub fn run(root: &Path, column: &Column, o: &Options) -> Result<Report, String> 
                 loop {
                     let next = queue.lock().unwrap().pop();
                     let Some((suite, p)) = next else { break };
-                    let r = check(root, column, suite, &p, o);
+                    let r = check(root, column, suite, &p, o, &record);
                     results.lock().unwrap().push(r);
                 }
             });
@@ -988,4 +1088,53 @@ pub fn sha256_hex(data: &[u8]) -> String {
         }
     }
     h.iter().map(|x| format!("{x:08x}")).collect()
+}
+
+#[cfg(test)]
+mod boot_record_tests {
+    use super::{Options, RT, boot_record, parse_case_timeouts};
+    use std::collections::BTreeMap;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn case_timeouts_parse_and_refuse_what_is_malformed() {
+        let t = parse_case_timeouts("tests/r/a.R=1200, tests/rt/b.R=30").unwrap();
+        assert_eq!(t.get("tests/r/a.R"), Some(&Duration::from_secs(1200)));
+        assert_eq!(t.get("tests/rt/b.R"), Some(&Duration::from_secs(30)));
+        assert!(parse_case_timeouts("").unwrap().is_empty());
+        assert!(parse_case_timeouts("tests/r/a.R").unwrap_err().contains("is not CASE=SECS"));
+        assert!(parse_case_timeouts("tests/r/a.R=soon").unwrap_err().contains("is not a number of seconds"));
+        assert!(parse_case_timeouts("tests/r/a.R=1,tests/r/a.R=2").unwrap_err().contains("twice"));
+    }
+
+    /// A binary that hangs at startup: the probe is killed at the case
+    /// timeout and says so, rather than wedging the run.
+    #[cfg(unix)]
+    #[test]
+    fn a_probe_that_hangs_is_killed_at_the_case_timeout() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("robigo-conf-hang-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("hangs");
+        std::fs::write(&bin, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let o = Options {
+            bin: bin.clone(),
+            version: RT.gated.to_string(),
+            filter: None,
+            diff: false,
+            update: false,
+            sweep: false,
+            features: Vec::new(),
+            results: None,
+            jobs: 1,
+            timeout: Duration::from_secs(1),
+            case_timeouts: BTreeMap::new(),
+        };
+        let t = Instant::now();
+        let r = boot_record(&RT, &o);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(t.elapsed() < Duration::from_secs(10), "the probe was not killed");
+        assert!(r.contains("its probe timed out after 1 s"), "{r}");
+    }
 }

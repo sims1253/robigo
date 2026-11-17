@@ -6,8 +6,9 @@
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
 use crate::{
-    apply, arith, array, attrib, bind, builtin, character, coerce, complex, context, cum, envir, errors, identical, is,
-    logic, math, options, paste, relop, seq, sort, sprintf, subset, summary, sysutils, unique,
+    apply, arith, array, attrib, bind, builtin, bytecode, character, coerce, complex, context, cum, envir, errors,
+    grep, identical, is, logic, math, options, paste, relop, seq, sort, sprintf, subset, summary, sysutils, unique,
+    util, version,
 };
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
@@ -235,6 +236,7 @@ const fn pp(kind: PpKind, prec: Prec, right_assoc: bool) -> PpInfo {
 }
 
 const FUNCALL: PpInfo = pp(PpKind::Funcall, Prec::Fn, false);
+const FUNCTION: PpInfo = pp(PpKind::Function, Prec::Fn, false);
 
 /// A row as names.c writes it, for a function that serves this one name.
 /// A function shared by several names (`do_arith`) is declared with
@@ -365,6 +367,7 @@ pub static BUILTINS: &[Builtin] = &[
     op!("pmin", 0, summary::do_pmin, 11, -1, FUNCALL, Pure),
     op!("pmax", 1, summary::do_pmin, 11, -1, FUNCALL, Pure),
     row("sqrt", math::do_sqrt, 3, 1, 1, FUNCALL, Pure),
+    row("atan", math::do_atan, 25, 1, 1, FUNCALL, Pure),
     row("abs", math::do_abs, 6, 1, 1, FUNCALL, Pure),
     // context.c
     op!("sys.parent", 1, context::do_sys, 11, -1, FUNCALL, Env),
@@ -385,6 +388,9 @@ pub static BUILTINS: &[Builtin] = &[
     row("length", builtin::do_length, 0, 1, 1, FUNCALL, Pure),
     row("environment", builtin::do_envir, 0, 11, 1, FUNCALL, Env),
     row("formals", builtin::do_formals, 0, 11, 1, FUNCALL, Pure),
+    row("body", builtin::do_body, 0, 11, 1, FUNCALL, Pure),
+    row("bodyCode", builtin::do_bodycode, 0, 11, 1, FUNCALL, Pure),
+    row("parent.env", builtin::do_parentenv, 0, 11, 1, FUNCALL, Pure),
     row("asCharacterFactor", coerce::vector::do_as_character_factor, 0, 11, 1, FUNCALL, Pure),
     op!("colSums", 0, array::do_colsum, 11, 4, FUNCALL, Pure),
     op!("colMeans", 1, array::do_colsum, 11, 4, FUNCALL, Pure),
@@ -442,6 +448,17 @@ pub static BUILTINS: &[Builtin] = &[
     row("anyNA", coerce::do_any_na, 0, 1, -1, FUNCALL, Pure),
     row("storage.mode<-", coerce::do_storage_mode, 0, 1, 2, FUNCALL, Pure),
     row("do.call", coerce::do_docall, 0, 211, 3, FUNCALL, Calls),
+    row("as.function.default", coerce::do_asfunction, 0, 11, 2, FUNCTION, Pure),
+    // eval.c: the byte-code compiler's internals
+    row("mkCode", bytecode::do_mkcode, 0, 11, 2, FUNCALL, Pure),
+    row("bcClose", bytecode::do_bcclose, 0, 11, 3, FUNCALL, Pure),
+    row("is.builtin.internal", bytecode::do_is_builtin_internal, 0, 11, 1, FUNCALL, Pure),
+    row("disassemble", bytecode::do_disassemble, 0, 11, 1, FUNCALL, Pure),
+    row("bcVersion", bytecode::do_bcversion, 0, 11, 0, FUNCALL, Pure),
+    row("growconst", bytecode::do_growconst, 0, 11, 1, FUNCALL, Pure),
+    // (writes its buffer in place, whoever else holds it)
+    row("putconst", bytecode::do_putconst, 0, 11, 3, FUNCALL, Env),
+    row("getconst", bytecode::do_getconst, 0, 11, 2, FUNCALL, Pure),
     // envir.c
     op!("get", 1, envir::do_get, 11, 4, FUNCALL, Env),
     op!("get0", 2, envir::do_get, 11, 5, FUNCALL, Env),
@@ -471,12 +488,27 @@ pub static BUILTINS: &[Builtin] = &[
     op!("paste", 0, paste::do_paste, 11, 4, FUNCALL, Pure),
     op!("paste0", 1, paste::do_paste, 11, 3, FUNCALL, Pure),
     row("nchar", character::do_nchar, 1, 11, 4, FUNCALL, Pure),
+    row("strsplit", grep::do_strsplit, 1, 11, 5, FUNCALL, Pure),
+    op!("grep", 0, grep::do_grep, 11, 8, FUNCALL, Pure),
+    op!("grepl", 1, grep::do_grep, 11, 8, FUNCALL, Pure),
+    op!("sub", 0, grep::do_gsub, 11, 7, FUNCALL, Pure),
+    op!("gsub", 1, grep::do_gsub, 11, 7, FUNCALL, Pure),
+    op!("regexpr", 0, grep::do_regexpr, 11, 6, FUNCALL, Pure),
+    op!("gregexpr", 1, grep::do_regexpr, 11, 6, FUNCALL, Pure),
+    row("regexec", grep::do_regexec, 1, 11, 5, FUNCALL, Pure),
     row("nzchar", character::do_nzchar, 1, 1, -1, FUNCALL, Pure),
     row("encodeString", character::do_encode_string, 1, 11, 5, FUNCALL, Pure),
     row("substr", character::do_substr, 1, 11, 3, FUNCALL, Pure),
+    row("strrep", character::do_strrep, 0, 11, 2, FUNCALL, Pure),
     row("sprintf", sprintf::do_sprintf, 1, 11, -1, FUNCALL, Pure),
     op!("startsWith", 0, character::do_starts_with, 11, 2, FUNCALL, Pure),
     op!("endsWith", 1, character::do_starts_with, 11, 2, FUNCALL, Pure),
+    // version.c, paste.c's file.path
+    row("Version", version::do_version, 0, 11, 0, FUNCALL, Pure),
+    row("file.path", paste::do_filepath, 0, 11, 2, FUNCALL, Pure),
+    // util.c
+    row("Encoding", util::do_encoding, 0, 11, 1, FUNCALL, Pure),
+    row("setEncoding", util::do_setencoding, 0, 11, 2, FUNCALL, Pure),
     // sort.c, radixsort.c, altclasses.c's wrap_meta
     row("sort", sort::do_sort, 1, 11, 2, FUNCALL, Pure),
     row("is.unsorted", sort::do_isunsorted, 0, 11, 3, FUNCALL, Pure),

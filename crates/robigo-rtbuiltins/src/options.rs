@@ -27,6 +27,8 @@ enum Init {
     Str(&'static [u8]),
     Int(i32),
     Lgl(i32),
+    /// `!R_NoEcho` ([`Cx::no_echo`]), as the start-up options left it.
+    Echo,
     /// `options(defaultPackages = ...)` from `R_DEFAULT_PACKAGES`.
     DefaultPackages,
     /// `Sys.getenv(name)` after the system Renviron's line
@@ -49,7 +51,8 @@ const INIT: &[(&str, Init)] = &[
     ("width", Init::Int(80)),
     ("deparse.cutoff", Init::Int(60)),
     ("digits", Init::Int(7)),
-    ("echo", Init::Lgl(0)),
+    // !R_NoEcho
+    ("echo", Init::Echo),
     ("quiet", Init::Lgl(1)),
     ("verbose", Init::Lgl(0)),
     ("check.bounds", Init::Lgl(0)),
@@ -190,6 +193,7 @@ pub fn init_options(cx: &mut Cx) -> RResult<()> {
                         Init::Papersize => cx.mk_string(&papersize(), Encoding::Native)?,
                         Init::Int(i) => cx.alloc_copy(&[*i])?.finish().into(),
                         Init::Lgl(i) => cx.alloc_copy(&[Lgl(*i)])?.finish().into(),
+                        Init::Echo => cx.alloc_copy(&[Lgl(!cx.no_echo() as i32)])?.finish().into(),
                         Init::DefaultPackages => {
                             let p = default_packages();
                             let mut v = cx.alloc_vector::<Char<'_>>(p.len())?;
@@ -342,7 +346,6 @@ const UNHONORED: &[&str] = &[
     "nwarnings",
     "max.print",
     "keep.source",
-    "echo",
     "verbose",
     "warnPartialMatchDollar",
     "warnPartialMatchAttr",
@@ -588,6 +591,11 @@ fn check_option<'s>(
             } else {
                 crate::util::as_bool2(cx, call, argi)? as i32
             };
+            if name == b"echo" {
+                // R_NoEcho = !k: the console reads it at each prompt (NA
+                // is true, so echoes)
+                cx.set_no_echo(k == 0);
+            }
             lgl(cx, s, k)?
         }
         b"warn" => {

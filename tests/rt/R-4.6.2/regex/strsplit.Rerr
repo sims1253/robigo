@@ -1,0 +1,3 @@
+Warning message:
+In strsplit("a b", " ", fixed = TRUE, perl = TRUE) :
+  argument 'perl = TRUE' will be ignored

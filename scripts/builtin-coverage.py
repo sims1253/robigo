@@ -32,6 +32,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import tomllib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 HERE = ROOT / "scripts"
@@ -57,18 +58,50 @@ def names():
     return rows
 
 
-# G3's crates (docs/g3.md §14.1) are not in the robigo binary this gate
-# measures; their refusals belong to robigo-rt's own coverage.
-G3_CRATES = {"robigo-heap", "robigo-heap-derive", "robigo-rt", "robigo-rtapi", "robigo-rtbuiltins",
-             "robigo-rtcore", "robigo-conformance"}
+def binary_crates(package="robigo-cli"):
+    """The crates the robigo binary is built from: `package` and the local
+    crates its [dependencies] reach through `path` (target-specific ones too;
+    `workspace = true` resolves through the root manifest), never
+    [dev-dependencies]. G3's crates (robigo-rt and the rest, docs/g3.md
+    §14.1) and what only they use (robigo-text) are not among them: their
+    refusals belong to robigo-rt's own coverage."""
+    with open(ROOT / "Cargo.toml", "rb") as f:
+        ws = tomllib.load(f).get("workspace", {})
+    ws_deps = ws.get("dependencies", {})
+    by_name = {}
+    for m in ws.get("members", []):
+        for d in ROOT.glob(m):
+            if (d / "Cargo.toml").is_file():
+                with open(d / "Cargo.toml", "rb") as f:
+                    by_name[tomllib.load(f).get("package", {}).get("name")] = d.resolve()
+    seen, todo = set(), [by_name[package]]
+    while todo:
+        d = todo.pop()
+        if d in seen:
+            continue
+        seen.add(d)
+        with open(d / "Cargo.toml", "rb") as f:
+            man = tomllib.load(f)
+        tables = [man.get("dependencies", {})] + [t.get("dependencies", {}) for t in man.get("target", {}).values()]
+        for table in tables:
+            for name, spec in table.items():
+                if not isinstance(spec, dict):
+                    continue
+                if spec.get("workspace"):
+                    if "path" in ws_deps.get(name, {}):
+                        todo.append((ROOT / ws_deps[name]["path"]).resolve())
+                elif "path" in spec:
+                    todo.append((d / spec["path"]).resolve())
+    return {d.name for d in seen}
 
 
 def gaps():
     """Every refusal message in the Rust sources of the robigo binary's crates, outside tests."""
     found = set()
+    crates = binary_crates()
     for p in sorted((ROOT / "crates").rglob("*.rs")):
         parts = p.relative_to(ROOT).parts
-        if "tests" in parts or parts[1] in G3_CRATES:
+        if "tests" in parts or parts[1] not in crates:
             continue
         for line in p.read_text(encoding="utf-8").splitlines():
             if "assert" in line or line.lstrip().startswith("//"):  # a test of the message, a doc comment
@@ -95,6 +128,8 @@ def control(have, rows, entries):
               for where, s in (("names-4.5.0.tsv", known), ("robigo --list-builtins", have)) if c not in s]
     if not any(k == "gap" for k, _ in entries):
         broken.append("no 'not implemented yet' message extracted from crates/")
+    if "robigo-runtime" not in binary_crates():
+        broken.append("robigo-runtime is not among the robigo binary's crates (Cargo.toml's path dependencies)")
     if broken:
         print("builtin-coverage: CONTROL FAILED (the extraction is broken, not the tree): " + "; ".join(broken))
         sys.exit(2)

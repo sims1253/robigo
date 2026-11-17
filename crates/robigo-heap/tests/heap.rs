@@ -128,7 +128,8 @@ static ALLOCATOR: DirtyChunks = DirtyChunks;
 /// the environment's pin diagnostics (the report's tests set their own).
 fn core() -> Box<Core> {
     let mut c = Core::new();
-    c.set_gc_move(false);
+    // SAFETY: stopping has no condition.
+    unsafe { c.set_gc_move(false) };
     // (and whose pin diagnostics are the test's own, not the environment's)
     c.set_pin_report(None);
     c.set_strong_dll(None);
@@ -194,7 +195,7 @@ unsafe extern "C" {
 }
 
 extern "C" fn routine_alloc() -> *mut c_void {
-    unsafe { (*ROUTINE_CORE.get()).alloc_vector(INTSXP, 1).unwrap().0 as *mut c_void }
+    unsafe { (*ROUTINE_CORE.get()).alloc_vector(INTSXP, 1).unwrap().as_ptr() as *mut c_void }
 }
 
 /// The stand-in for an export that collects (`R_gc`, an allocating one),
@@ -460,8 +461,7 @@ fn tagged_promises_keep_their_bits_and_their_edges() {
     // traced it would read a stale object
     let bits = (code.addr() as u64) ^ 0x10;
     unsafe {
-        p.set_promise_tag(REALSXP);
-        p.set_promise_bits(bits);
+        p.set_promise_unboxed(REALSXP, bits);
     }
     for i in 0..10_000 {
         int_vec(&mut c, &[i]);
@@ -500,9 +500,8 @@ fn a_tagged_promise_value_is_replaced_without_reading_its_bits() {
     let v = int_vec(&mut c, &[9]);
     unsafe {
         assert_eq!(code.refcnt(), 1, "PRCODE's count");
-        p.set_promise_tag(REALSXP);
         // the bits of an unboxed value that happen to be an address
-        p.set_promise_bits(code.addr() as u64);
+        p.set_promise_unboxed(REALSXP, code.addr() as u64);
         p.set_promise_value(v);
         assert_eq!(p.promise_tag(), 0);
         assert_eq!(p.car(), v);
@@ -868,7 +867,7 @@ fn a_large_request_while_due_panics_under_the_check() {
 }
 
 /// `ROBIGO_GC_STATS`: allocations by SEXPTYPE, collections by safepoint
-/// kind.
+/// kind, the time spent collecting.
 #[test]
 fn statistics_count_allocations_by_type_and_collections_by_kind() {
     let mut c = core();
@@ -904,6 +903,13 @@ fn statistics_count_allocations_by_type_and_collections_by_kind() {
         "{r}"
     );
     assert!(r.contains("INTSXP 11 objects, 528 bytes"), "{r}");
+    // the time line: two collections took some time, never more than all
+    let time = r.lines().find(|l| l.starts_with("robigo gc: collection time ")).expect(&r);
+    let n: Vec<u64> = time.split(' ').filter_map(|w| w.trim_end_matches(',').parse().ok()).collect();
+    let [total, max, heap, per_mib] = n[..] else { panic!("{time}") };
+    assert!(total > 0 && max > 0 && max <= total, "{time}");
+    assert!(heap >= 800_032, "{time}");
+    assert_eq!(per_mib, (total as u128 * (1 << 20) / heap as u128) as u64, "{time}");
     c.set_stats_mode(StatsMode::Off);
 }
 
@@ -1103,9 +1109,8 @@ fn each_type_traces_exactly_its_pointer_words() {
     for t in [REALSXP, INTSXP, LGLSXP] {
         let p = unsafe { c.alloc_node(PROMSXP, nil, nil, nil) }.unwrap();
         unsafe {
-            p.set_promise_tag(t);
             // bits that are no object: tracing them would crash, not differ
-            p.set_promise_bits(0x7FF0_0000_0000_07A2);
+            p.set_promise_unboxed(t, 0x7FF0_0000_0000_07A2);
             assert_eq!(p.promise_tag(), t);
         }
         let tagged = words(PROMSXP, &[layout::promise::OFF_CODE, layout::promise::OFF_ENV]);
@@ -1137,11 +1142,11 @@ fn each_type_traces_exactly_its_pointer_words() {
         for (i, &k) in kinds.iter().enumerate() {
             let s = OFF_SLOTS + i * SLOT_SIZE;
             unsafe {
-                *(f.0.add(s + SLOT_KEY) as *mut u64) = sym.addr() as u64 | k;
+                *(f.as_ptr().add(s + SLOT_KEY) as *mut u64) = sym.addr() as u64 | k;
                 // every word a valid edge, so that tracing the wrong one is
                 // seen as an extra offset, not a crash
-                *(f.0.add(s + SLOT_VAL) as *mut usize) = nil.addr();
-                *(f.0.add(s + SLOT_AUX) as *mut usize) = nil.addr();
+                *(f.as_ptr().add(s + SLOT_VAL) as *mut usize) = nil.addr();
+                *(f.as_ptr().add(s + SLOT_AUX) as *mut usize) = nil.addr();
             }
             if val_traced(k) {
                 want.push(s + SLOT_VAL);
@@ -1156,7 +1161,11 @@ fn each_type_traces_exactly_its_pointer_words() {
         assert_eq!(traced_offsets(e), frame_words, "empty slot frame");
     }
     // an external pointer's car is an address
-    let p = unsafe { c.alloc_node(EXTPTRSXP, Sexp(16 as *mut u8), nil, nil) }.unwrap();
+    // SAFETY: a fake address, only stored as an external pointer's car.
+    let addr = unsafe { Sexp::from_word(16 as *mut u8) };
+    // SAFETY: only for EXTPTRSXP may `car` be any word (`Core::alloc_node`):
+    // an external pointer's car is neither counted nor traced.
+    let p = unsafe { c.alloc_node(EXTPTRSXP, addr, nil, nil) }.unwrap();
     assert_eq!(traced_offsets(p), words(EXTPTRSXP, &[layout::extptr::OFF_PROT, layout::extptr::OFF_TAG]), "EXTPTRSXP");
     for (t, n) in [(STRSXP, 3), (VECSXP, 2), (EXPRSXP, 1), (STRSXP, 300)] {
         let x = c.alloc_vector(t, n).unwrap();
@@ -1668,6 +1677,42 @@ fn dead_chars_leave_the_cache() {
     unsafe { assert_eq!(a.char_bytes(), b"s123") };
 }
 
+/// `release` pairs with one `preserve` of its own object, the most recent:
+/// an object preserved twice stays a root until both end, and a release
+/// of another object, or of one never preserved, ends no other entry
+/// (`Core::release`'s contract relies on this pairing).
+#[test]
+fn release_ends_one_preservation_of_its_own_object() {
+    let mut c = core();
+    c.set_torture(false);
+    let a = c.alloc_vector(REALSXP, 4).unwrap();
+    let b = c.alloc_vector(REALSXP, 4).unwrap();
+    let never = c.alloc_vector(REALSXP, 4).unwrap();
+    let (aa, ba, na) = (a.addr(), b.addr(), never.addr());
+    // SAFETY: live objects of this heap, preserved by this test.
+    unsafe {
+        c.preserve(a);
+        c.preserve(b);
+        c.preserve(a);
+    }
+    // SAFETY: `never` is live and was never preserved: nothing happens.
+    unsafe { c.release(never) };
+    // SAFETY: one of the test's two preservations of `a`.
+    unsafe { c.release(a) };
+    gc(&mut c, &mut ());
+    assert_eq!(c.resolve(aa), Some(a), "a's other preservation keeps it");
+    assert_eq!(c.resolve(ba), Some(b), "b's entry is untouched");
+    assert_ne!(c.resolve(na), Some(never), "an object never preserved is collected");
+    // SAFETY: the test's last preservation of `a`, and its one of `b`.
+    unsafe {
+        c.release(a);
+        c.release(b);
+    }
+    gc(&mut c, &mut ());
+    assert_ne!(c.resolve(aa), Some(a), "both of a's preservations ended");
+    assert_ne!(c.resolve(ba), Some(b));
+}
+
 #[test]
 fn preserve_and_release() {
     let mut c = core();
@@ -1680,7 +1725,8 @@ fn preserve_and_release() {
         gc(&mut c, &mut ());
     }
     assert_eq!(c.resolve(addr), Some(x));
-    c.release(x);
+    // SAFETY: `x` is the object preserved above, still live.
+    unsafe { c.release(x) };
     gc(&mut c, &mut ());
     assert!(c.resolve(addr).is_none());
 }
@@ -1733,17 +1779,17 @@ fn layout_is_compact() {
     let nil = c.nil();
     let n = node(&mut c, v, nil);
     unsafe {
-        assert_eq!(*v.0.add(header::OFF_TYPE), INTSXP, "type");
-        assert_eq!(*(v.0.add(vector::OFF_LEN) as *const isize), 1, "length");
+        assert_eq!(*v.as_ptr().add(header::OFF_TYPE), INTSXP, "type");
+        assert_eq!(*(v.as_ptr().add(vector::OFF_LEN) as *const isize), 1, "length");
         assert_eq!(v.std_data() as usize - v.addr(), vector::OFF_DATA, "payload");
-        assert_eq!(*(n.0.add(node::OFF_CAR) as *const usize), v.addr(), "CAR");
-        assert_eq!(*(n.0.add(node::OFF_CDR) as *const usize), c.nil().addr(), "CDR");
-        assert_eq!(*(n.0.add(header::OFF_ATTRIB) as *const usize), c.nil().addr(), "ATTRIB");
+        assert_eq!(*(n.as_ptr().add(node::OFF_CAR) as *const usize), v.addr(), "CAR");
+        assert_eq!(*(n.as_ptr().add(node::OFF_CDR) as *const usize), c.nil().addr(), "CDR");
+        assert_eq!(*(n.as_ptr().add(header::OFF_ATTRIB) as *const usize), c.nil().addr(), "ATTRIB");
         n.set_gp(0xABCD);
-        assert_eq!(*(n.0.add(header::OFF_GP) as *const u16), 0xABCD, "gp");
+        assert_eq!(*(n.as_ptr().add(header::OFF_GP) as *const u16), 0xABCD, "gp");
         assert!(n.tracks_refs());
         let ch = c.mk_char(b"x", 0).unwrap();
-        let bytes = ch.0.add(layout::charsxp::OFF_DATA) as *const std::ffi::c_char;
+        let bytes = ch.as_ptr().add(layout::charsxp::OFF_DATA) as *const std::ffi::c_char;
         assert_eq!(std::ffi::CStr::from_ptr(bytes).to_bytes(), b"x");
     }
 }
@@ -2187,7 +2233,7 @@ fn nodes_have_a_traced_fourth_word() {
     let mut roots = vec![n];
     unsafe {
         assert_eq!(n.aux(), c.nil());
-        assert_eq!(*(n.0.add(node::OFF_AUX) as *const usize), c.nil().addr(), "aux");
+        assert_eq!(*(n.as_ptr().add(node::OFF_AUX) as *const usize), c.nil().addr(), "aux");
         assert_eq!(c.nil().aux(), c.nil(), "R_NilValue's 4th word is itself");
     }
     assert_eq!(layout::sym::OFF_ID, node::OFF_AUX, "a symbol's id and hash are its 4th word");
@@ -2207,7 +2253,7 @@ fn nodes_have_a_traced_fourth_word() {
     let e = unsafe { c.alloc_node(ENVSXP, nil, nil, nil) }.unwrap();
     unsafe {
         robigo_heap::env::set_enclos(e, parent);
-        assert_eq!(*(e.0.add(layout::env::OFF_ENCLOS) as *const usize), parent.addr(), "ENCLOS");
+        assert_eq!(*(e.as_ptr().add(layout::env::OFF_ENCLOS) as *const usize), parent.addr(), "ENCLOS");
         assert_eq!(robigo_heap::env::enclos(e), parent);
         assert_eq!(robigo_heap::env::frame(e), c.nil());
         assert_eq!(robigo_heap::env::hashtab(e), c.nil());
@@ -2402,7 +2448,8 @@ fn every_object_carries_its_heaps_id() {
 /// A heap whose every collection moves what it may (`ROBIGO_GC_MOVE=1`).
 fn moving_core() -> Box<Core> {
     let mut c = core();
-    c.set_gc_move(true);
+    // SAFETY: nothing has been handed to C yet.
+    unsafe { c.set_gc_move(true) };
     c.set_torture(false);
     c
 }
@@ -2428,7 +2475,11 @@ fn a_stale_sexp_in_a_rust_local_reads_poison() {
         assert_eq!(ints(roots[0]), &[1, 2, 3]);
         assert_eq!(stale.typ(), POISON_TYPE, "the stale local reads poison");
         assert_eq!(stale.flags(), 0, "no flag survives on the old copy");
-        assert_eq!(*(stale.0.add(vector::OFF_LEN) as *const u64), 0xDBDB_DBDB_DBDB_DBDB, "its length word is poison");
+        assert_eq!(
+            *(stale.as_ptr().add(vector::OFF_LEN) as *const u64),
+            0xDBDB_DBDB_DBDB_DBDB,
+            "its length word is poison"
+        );
     }
     assert!(c.stats.moved >= 1);
 }
@@ -2473,8 +2524,8 @@ fn a_move_forwards_every_edge() {
     let f = unsafe { c.alloc_slot_frame(1, nil) }.unwrap();
     let fv = int_vec(&mut c, &[9]);
     unsafe {
-        *(f.0.add(OFF_SLOTS + SLOT_KEY) as *mut u64) = sym.addr() as u64 | VALUE;
-        *(f.0.add(OFF_SLOTS + SLOT_VAL) as *mut Sexp) = fv;
+        *(f.as_ptr().add(OFF_SLOTS + SLOT_KEY) as *mut u64) = sym.addr() as u64 | VALUE;
+        *(f.as_ptr().add(OFF_SLOTS + SLOT_VAL) as *mut Sexp) = fv;
     }
     let mut roots = vec![list, strs, key, w, wp, f];
     let old = roots.clone();
@@ -2501,7 +2552,7 @@ fn a_move_forwards_every_edge() {
         assert_eq!(ints(elt(wp, 0)), &[7]);
         assert_eq!(elt(w, 0), key);
         assert_eq!(ints(elt(w, 1)), &[2]);
-        assert_eq!(ints(*(f.0.add(OFF_SLOTS + SLOT_VAL) as *const Sexp)), &[9]);
+        assert_eq!(ints(*(f.as_ptr().add(OFF_SLOTS + SLOT_VAL) as *const Sexp)), &[9]);
     }
     assert_eq!(c.weak_refs().len(), 2);
 }
@@ -2540,7 +2591,10 @@ fn objects_c_has_seen_or_pins_do_not_move() {
     // argument; the export roots the holder precisely
     collect_holding(&mut c, &[!pinned]);
     let holder = ROOTED_ARG.replace(Sexp::NULL);
-    let pinned = Sexp(!pinned as *mut u8);
+    // SAFETY: the pinned node's address (`c_objects` hands it inverted, so
+    // `!pinned` restores it): the pin kept it alive and in place, and it is
+    // a root below, so the reads through it are sound.
+    let pinned = unsafe { Sexp::from_ptr(!pinned as *mut u8) };
     unsafe {
         assert_eq!(elt(holder, 0).addr(), !seen, "an object C has seen stays");
         assert_ne!(elt(holder, 1).addr(), !free, "an object C has not seen moves");
@@ -2579,7 +2633,7 @@ fn a_large_object_moves_and_its_old_chunk_faults() {
     assert!(pid >= 0, "fork failed");
     if pid == 0 {
         unsafe {
-            std::ptr::read_volatile(stale.0);
+            std::ptr::read_volatile(stale.as_ptr());
             libc::_exit(0);
         }
     }
@@ -2648,7 +2702,8 @@ unsafe extern "C" fn count_forward_panic_release(_: usize) {
 
 /// A heap dropped in the middle of a moving collection (a panic unwound
 /// out of the roots' forwarding) runs an EXTDATA release once: the
-/// forwarding header leaves the old copy without flags.
+/// forwarding header leaves the old copy without flags. Until then the
+/// heap is poisoned: it refuses to collect again.
 #[test]
 fn a_panic_while_forwarding_releases_a_moved_extdata_once() {
     let mut c = moving_core();
@@ -2658,6 +2713,11 @@ fn a_panic_while_forwarding_releases_a_moved_extdata_once() {
     let mut roots = PanicOnForward { x, calls: 0 };
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gc(&mut c, &mut roots)));
     assert!(r.is_err(), "the forwarding pass panicked");
+    // the heap is poisoned: no collection runs on its forwarded objects
+    let again = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gc(&mut c, &mut ())));
+    let msg = again.expect_err("a poisoned heap refuses to collect");
+    let msg = msg.downcast_ref::<String>().map(String::as_str).or(msg.downcast_ref::<&str>().copied()).unwrap_or("");
+    assert!(msg.contains("left halfway by a panic"), "{msg}");
     drop(c);
     assert_eq!(FORWARD_PANIC_RELEASES.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
@@ -2737,7 +2797,11 @@ fn report_path(name: &str) -> std::path::PathBuf {
 fn run_probe(c: &mut Core, hidden_key: usize) {
     let p = probe();
     (p.hooks)(routine_collect);
-    (p.give)(Sexp(!hidden_key as *mut u8));
+    // SAFETY: the key's address (`finalizable_key` hands it inverted, so
+    // `!hidden_key` restores it). The probe keeps it in its own unscanned
+    // memory, where the pin scan compares it and pins the key; Rust never
+    // reads through it.
+    (p.give)(unsafe { Sexp::from_word(!hidden_key as *mut u8) });
     let core: *mut Core = c;
     unsafe { native_call(core, p.routine, &[]) };
     ROUTINE_CORE.set(std::ptr::null_mut());
@@ -2922,4 +2986,68 @@ fn the_fail_alloc_knob_refuses_one_allocation_once() {
         assert!(c.alloc_vector(INTSXP, 1).is_ok(), "only one allocation is refused");
     }
     c.fail_alloc_at(0);
+}
+
+/// The order contract of the weak reference list: kept oldest first (a
+/// registration is a push), and walked newest first wherever GNU R walks
+/// R_weak_refs, which it prepends to (memory.c:NewWeakRef): the finalizers
+/// a collection makes ready, and those that run at exit, come out of the
+/// queue newest first (memory.c:RunFinalizers, R_RunExitFinalizers).
+#[test]
+fn finalizers_come_out_newest_first_as_r_weak_refs_lists_them() {
+    let mut c = core();
+    let fin = c.alloc_vector(RAWSXP, 8).unwrap();
+    let live = c.alloc_vector(INTSXP, 1).unwrap();
+    let k: Vec<Sexp> = (0..3).map(|_| c.alloc_vector(INTSXP, 1).unwrap()).collect();
+    let w0 = weak(&mut c, k[0], fin);
+    let wl = weak(&mut c, live, fin);
+    let w1 = weak(&mut c, k[1], fin);
+    let w2 = weak(&mut c, k[2], fin);
+    assert_eq!(c.weak_refs(), &[w0, wl, w1, w2], "registration order, oldest first");
+    let mut roots = vec![live];
+    gc(&mut c, &mut roots);
+    assert_eq!(c.pending_finalizer_count(), 3);
+    for (w, which) in [(w2, "newest"), (w1, "middle"), (w0, "oldest")] {
+        assert_eq!(c.pop_finalizable(), Some(w), "the {which} dead key's reference");
+    }
+    assert!(c.pop_finalizable().is_none());
+    assert_eq!(c.weak_refs(), &[wl], "the live key's reference stays");
+    // at exit: every onexit reference, newest first; the others stay
+    let e: Vec<Sexp> = (0..3).map(|_| c.alloc_vector(INTSXP, 1).unwrap()).collect();
+    let x0 = weak(&mut c, e[0], fin);
+    let y = weak(&mut c, e[1], fin);
+    let x1 = weak(&mut c, e[2], fin);
+    unsafe {
+        for x in [x0, x1] {
+            x.set_gp(x.gp() | gp::weakref::FINALIZE_ON_EXIT);
+        }
+    }
+    c.queue_exit_finalizers();
+    assert_eq!(c.pop_finalizable(), Some(x1));
+    assert_eq!(c.pop_finalizable(), Some(x0));
+    assert!(c.pop_finalizable().is_none());
+    assert_eq!(c.weak_refs(), &[wl, y], "the others in their order");
+}
+
+/// The same contract with no collection (so Miri runs it): registrations
+/// kept oldest first, the exit queue taken newest first from its front.
+#[test]
+fn exit_finalizers_come_out_newest_first_without_a_collection() {
+    let mut c = core();
+    let fin = c.alloc_vector(RAWSXP, 8).unwrap();
+    let keys: Vec<Sexp> = (0..4).map(|_| c.alloc_vector(INTSXP, 1).unwrap()).collect();
+    let w: Vec<Sexp> = keys.iter().map(|&k| weak(&mut c, k, fin)).collect();
+    assert_eq!(c.weak_refs(), &w[..], "registration order, oldest first");
+    unsafe {
+        for &x in [w[0], w[2], w[3]].iter() {
+            x.set_gp(x.gp() | gp::weakref::FINALIZE_ON_EXIT);
+        }
+    }
+    c.queue_exit_finalizers();
+    assert_eq!(c.pending_finalizer_count(), 3);
+    for x in [w[3], w[2], w[0]] {
+        assert_eq!(c.pop_finalizable(), Some(x));
+    }
+    assert!(c.pop_finalizable().is_none());
+    assert_eq!(c.weak_refs(), &[w[1]]);
 }

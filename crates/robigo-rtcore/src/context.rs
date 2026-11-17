@@ -1067,7 +1067,7 @@ impl Cx {
                 conexit = init.nil;
                 cend = None;
                 cenddata = null_mut();
-                vmax = vstack.0.cast();
+                vmax = vstack.as_ptr().cast();
                 intsusp = st.intr_suspended.get() as c_int;
                 gcenabled = 1;
                 bcintactive = 0;
@@ -1137,7 +1137,9 @@ impl Cx {
     pub(crate) fn restore_c_state(&mut self, c: Rec) {
         let g = self.cglobals();
         g.pptop.set(c.cstacktop());
-        g.vstack.set(Sexp(c.vmax().cast()));
+        // SAFETY: the record's saved R_alloc stack top, R_VStack's word when
+        // it was pushed: an object of this isolate or R_NilValue.
+        g.vstack.set(unsafe { Sexp::from_ptr(c.vmax().cast()) });
         // SAFETY: `c` is on the chain, so the frame that pushed it is live,
         // and every segment its saved chain links belongs to a frame below
         // it, still live; the segments closed since are above the record's

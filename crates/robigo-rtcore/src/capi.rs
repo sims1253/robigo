@@ -432,11 +432,14 @@ impl Cx {
 
     /// Mark `x` as handed to C if the moving debug collector is on: it then
     /// never moves (C may keep its address where no collection looks).
+    ///
+    /// # Safety
+    /// `x` is null or a live object of this isolate: under the moving
+    /// collector its header is written.
     #[inline(always)]
-    pub fn hand_to_c(&self, x: Sexp) {
+    pub unsafe fn hand_to_c(&self, x: Sexp) {
         if self.marks_seen_by_c() && !x.is_null() {
-            // SAFETY: `x` is a live object (the callers pass objects from
-            // roots, arguments and results); the bit is sticky header state.
+            // SAFETY: the caller's contract; the bit is sticky header state.
             unsafe { x.mark_seen_by_c() }
         }
     }

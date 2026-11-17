@@ -24,6 +24,14 @@
 //! console loop, printing through [`print`], error and warning reports),
 //! which the `robigo-rt` binary runs.
 //!
+//! # Serialization and lazy-load databases (M3's L1)
+//!
+//! [`serialize`] is serialize.c: the formats, `WriteItem` and `ReadItem`,
+//! the persistent-name hooks, `saveRDS`/`readRDS`'s internals and the
+//! lazy-load database's (`lazyLoadDBfetch`, which base's databases are read
+//! through). [`connections`] is the part of connections.c they need: the
+//! isolate's connection table, `file`, `gzfile`, `gzcon` and `close`.
+//!
 //! The `robigo` binary does not depend on this crate (`scripts/rt-ci.py`
 //! checks it), which is why pull requests that touch only the runtime's
 //! crates run CI's `rt` slice.
@@ -41,6 +49,7 @@ pub mod cenv;
 pub mod code;
 pub mod compile;
 pub mod conditions;
+pub mod connections;
 pub mod deparse;
 pub mod dispatch;
 mod early;
@@ -62,6 +71,9 @@ pub mod prims;
 pub mod print;
 pub mod reader;
 pub mod repl;
+pub mod search;
+pub mod serialize;
+pub mod source;
 mod specials;
 pub mod vm;
 
@@ -110,10 +122,11 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     let cond = conditions::CondState::new(cx);
     let defs = prims::base_defs();
     let (objs, names) = prims::make_prims(cx, &defs, 0);
-    let by_sym = names.iter().enumerate().map(|(i, s)| (s.0 as usize, i)).collect();
+    let by_sym = names.iter().enumerate().map(|(i, s)| (s.as_ptr() as usize, i)).collect();
     cx.set_ext(prims::RtState {
         forced,
-        jit: jit::Config::from_env(),
+        jit: std::cell::Cell::new(jit::Config::from_env()),
+        compile_pkgs: std::cell::Cell::new(jit::compile_pkgs_from_env()),
         jit_cache: Default::default(),
         shipped: Default::default(),
         syms,
@@ -131,7 +144,11 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         links: Default::default(),
         assign_fns: Default::default(),
         folds: Default::default(),
+        base_src: Default::default(),
     });
+    // the connection table and the lazy-load databases' cache (L1)
+    cx.set_ext(connections::Connections::new());
+    cx.set_ext(serialize::RdbCache::default());
     // the evaluator, closure application and forcing behind the isolate's
     // hook table (B1's), for the code below `rt`: environments' active
     // bindings and `findFun`'s promises, the builtins' callbacks
@@ -228,9 +245,9 @@ pub fn define_builtins(cx: &mut Cx, defs: &[prims::PrimDef]) {
         // the compiler's lookup is by symbol: an `.Internal` never hides a
         // primitive of the same name
         if defs[i].internal() {
-            st.by_sym.entry(n.0 as usize).or_insert(first + i);
+            st.by_sym.entry(n.as_ptr() as usize).or_insert(first + i);
         } else {
-            st.by_sym.insert(n.0 as usize, first + i);
+            st.by_sym.insert(n.as_ptr() as usize, first + i);
         }
     }
     st.names.extend(names);
@@ -244,7 +261,8 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
     let shipped = st.shipped.borrow().iter().map(|g| g.as_ref().map(|g| cx.global(g.bind(cx)))).collect();
     prims::RtState {
         forced: st.forced,
-        jit: st.jit,
+        jit: st.jit.clone(),
+        compile_pkgs: st.compile_pkgs.clone(),
         jit_cache: std::cell::RefCell::new(st.jit_cache.borrow_mut().take()),
         shipped: std::cell::RefCell::new(shipped),
         syms: st.syms,
@@ -262,6 +280,7 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         links: st.links.clone(),
         assign_fns: st.assign_fns.clone(),
         folds: st.folds.copy(cx),
+        base_src: std::cell::RefCell::new(st.base_src.borrow().clone()),
     }
 }
 

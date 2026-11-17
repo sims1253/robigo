@@ -124,6 +124,8 @@ pub struct Isolate {
     pub(crate) code: CodeStamps,
     /// The C state `options()` sets for the error and warning reports.
     pub(crate) report_options: ReportOptions,
+    /// `R_NoEcho` ([`Cx::no_echo`]).
+    pub(crate) no_echo: Cell<bool>,
     /// Where `Rprintf` and `REprintf` write (`console.rs`); holds no object.
     pub(crate) console: std::cell::RefCell<crate::console::Console>,
     /// Every precise root the isolate holds: what a collection marks first
@@ -589,6 +591,21 @@ impl Cx {
         &self.iso().report_options
     }
 
+    /// GNU R's `R_NoEcho`: whether the console, when R is not interactive,
+    /// writes neither its prompt nor the lines it reads. The start-up
+    /// options set it (`--no-echo`; true for Rscript, this default, false
+    /// for `R -f FILE`), `options()`' initial `echo` is its negation, and
+    /// `options(echo = )` sets it from then on.
+    #[inline(always)]
+    pub fn no_echo(&self) -> bool {
+        self.iso().no_echo.get()
+    }
+
+    /// Set `R_NoEcho` ([`Cx::no_echo`]).
+    pub fn set_no_echo(&self, on: bool) {
+        self.iso().no_echo.set(on);
+    }
+
     /// A new stamp for a code object an evaluator made from R objects:
     /// never 0, never repeated in the isolate, increasing.
     #[inline]
@@ -947,6 +964,7 @@ impl OwnedIsolate {
             no_inplace: Cell::new(false),
             code: CodeStamps::default(),
             report_options: ReportOptions::default(),
+            no_echo: Cell::new(true),
             console: std::cell::RefCell::new(crate::console::Console::std()),
             roots: UnsafeCell::new(Roots {
                 stack: ValueStack::new(opts.value_stack_slots),

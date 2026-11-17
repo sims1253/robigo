@@ -1,0 +1,161 @@
+list(.Code, list(12L, GETVAR.OP, 2L, STARTSUBSET2_N.OP, 1L, 10L, 
+    LDCONST.OP, 3L, VECSUBSET2.OP, 1L, SETVAR.OP, 4L, POP.OP, 
+    LDCONST.OP, 6L, STARTASSIGN.OP, 2L, DOLLARGETS.OP, 8L, 9L, 
+    ENDASSIGN.OP, 2L, POP.OP, GETVAR.OP, 4L, SWITCH.OP, 11L, 
+    12L, 24L, 25L, LDNULL.OP, GOTO.OP, 41L, LDCONST.OP, 3L, GOTO.OP, 
+    41L, LDCONST.OP, 6L, GOTO.OP, 41L, SETVAR.OP, 13L, POP.OP, 
+    GOTO.OP, 49L, POP.OP, GOTO.OP, 44L, LDNULL.OP, POP.OP, LDFALSE.OP, 
+    BRIFNOT.OP, 18L, 60L, GOTO.OP, 51L, POP.OP, GOTO.OP, 51L, 
+    LDNULL.OP, POP.OP, GETFUN.OP, 20L, PUSHCONSTARG.OP, 3L, MAKEPROM.OP, 
+    22L, SETTAG.OP, 23L, CALL.OP, 21L, RETURN.OP), list({
+    y <- x[[1]]
+    x$a <- 2
+    z <- switch(y, a = 1, 2)
+    repeat break
+    while (FALSE) next
+    tryCatch(1, error = function(e) 2)
+}, x[[1]], x, 1, y, y <- x[[1]], 2, x$a <- 2, `$<-`(`*tmp*`, 
+    a, value = 2), a, `$<-`(x, a, value = 2), switch(y, a = 1, 
+    2), c("a", ""), z, z <- switch(y, a = 1, 2), break, repeat break, 
+    FALSE, while (FALSE) next, next, tryCatch, tryCatch(1, error = function(e) 2), 
+    list(.Code, list(12L, MAKECLOSURE.OP, 1L, RETURN.OP), list(
+        function(e) 2, list(as.pairlist(alist(e = )), <bytecode>, 
+            NULL), structure(c(NA, 0L, 0L, 0L), class = "expressionsIndex"))), 
+    error, c(33L, 37L), c(33L, 37L, 30L), structure(c(NA, 2L, 
+    2L, 1L, 1L, 1L, 3L, 3L, 1L, 1L, 5L, 5L, 5L, 6L, 6L, 7L, 7L, 
+    10L, 10L, 10L, 7L, 7L, 7L, 4L, 4L, 11L, 11L, 11L, 11L, 11L, 
+    11L, 11L, 11L, 3L, 3L, 11L, 11L, 6L, 6L, 11L, 11L, 14L, 14L, 
+    14L, 15L, 15L, 16L, 16L, 16L, 16L, 16L, 17L, 18L, 18L, 18L, 
+    19L, 19L, 18L, 18L, 18L, 18L, 18L, 21L, 21L, 21L, 21L, 21L, 
+    21L, 21L, 21L, 21L, 21L, 21L), class = "expressionsIndex")))
+list(.Code, list(12L, BASEGUARD.OP, 1L, 6L, CALLSPECIAL.OP, 1L, 
+    BRIFNOT.OP, 2L, 13L, LDNULL.OP, RETURN.OP, GOTO.OP, 14L, 
+    LDNULL.OP, POP.OP, BASEGUARD.OP, 5L, 20L, CALLSPECIAL.OP, 
+    5L, POP.OP, LDCONST.OP, 6L, STARTASSIGN.OP, 7L, STARTSUBASSIGN_N.OP, 
+    9L, 32L, LDCONST.OP, 11L, VECSUBASSIGN.OP, 9L, ENDASSIGN.OP, 
+    7L, POP.OP, LDCONST.OP, 12L, STARTASSIGN.OP, 7L, GETFUN.OP, 
+    14L, PUSHNULLARG.OP, GETTER_CALL.OP, 16L, SWAP.OP, STARTSUBASSIGN_N.OP, 
+    17L, 52L, LDCONST.OP, 19L, VECSUBASSIGN.OP, 17L, GETFUN.OP, 
+    20L, PUSHNULLARG.OP, SETTER_CALL.OP, 22L, 23L, ENDASSIGN.OP, 
+    7L, POP.OP, BASEGUARD.OP, 26L, 67L, GETVAR.OP, 7L, ISNULL.OP, 
+    AND1ST.OP, 25L, 86L, BASEGUARD.OP, 27L, 80L, GETBUILTIN.OP, 
+    28L, GETVAR.OP, 7L, PUSHARG.OP, CALLBUILTIN.OP, 27L, LDCONST.OP, 
+    11L, GT.OP, 29L, AND2ND.OP, 25L, OR1ST.OP, 24L, 92L, LDFALSE.OP, 
+    OR2ND.OP, 24L, RETURN.OP), list({
+    if (missing(x)) 
+        return(NULL)
+    on.exit(NULL)
+    x[1] <- 2L
+    names(x)[2] <- "b"
+    is.null(x) && length(x) > 1 || !TRUE
+}, missing(x), if (missing(x)) return(NULL), NULL, return(NULL), 
+    on.exit(NULL), 2L, x, x[1] <- 2L, `[<-`(`*tmp*`, 1, value = 2L), 
+    `[<-`(x, 1, value = 2L), 1, "b", names(x)[2] <- "b", names, 
+    names(x), names(`*tmp*`), `[<-`(`*tmp*`, 2, value = "b"), 
+    `[<-`(names(x), 2, value = "b"), 2, `names<-`, `names<-`(x, 
+        value = `*vtmp*`), `names<-`(`*tmp*`, value = `*vtmp*`), 
+    `*vtmp*`, is.null(x) && length(x) > 1 || !TRUE, is.null(x) && 
+        length(x) > 1, is.null(x), length(x), length, length(x) > 
+        1, !TRUE, structure(c(NA, 1L, 1L, 1L, 1L, 1L, 2L, 2L, 
+    2L, 3L, 4L, 2L, 2L, 2L, 2L, 5L, 5L, 5L, 5L, 5L, 5L, 6L, 6L, 
+    8L, 8L, 10L, 10L, 10L, 11L, 11L, 10L, 10L, 8L, 8L, 8L, 12L, 
+    12L, 13L, 13L, 15L, 15L, 15L, 15L, 15L, 15L, 18L, 18L, 18L, 
+    19L, 19L, 18L, 18L, 21L, 21L, 21L, 21L, 21L, 21L, 13L, 13L, 
+    13L, 26L, 26L, 26L, 7L, 7L, 26L, 25L, 25L, 25L, 27L, 27L, 
+    27L, 27L, 27L, 27L, 27L, 27L, 27L, 27L, 11L, 11L, 29L, 29L, 
+    25L, 25L, 24L, 24L, 24L, 30L, 24L, 24L, 24L), class = "expressionsIndex")))
+list(.Code, list(12L, GETBUILTIN.OP, 1L, GETVAR.OP, 3L, PUSHARG.OP, 
+    PUSHCONSTARG.OP, 4L, CALLBUILTIN.OP, 2L, SETVAR.OP, 5L, POP.OP, 
+    GETVAR.OP, 3L, UMINUS.OP, 7L, SETVAR.OP, 8L, POP.OP, GETVAR.OP, 
+    3L, LDCONST.OP, 10L, EXPT.OP, 11L, SETVAR.OP, 12L, POP.OP, 
+    BASEGUARD.OP, 14L, 36L, GETVAR.OP, 3L, SQRT.OP, 14L, SETVAR.OP, 
+    15L, POP.OP, BASEGUARD.OP, 17L, 46L, GETVAR.OP, 3L, EXP.OP, 
+    17L, SETVAR.OP, 18L, POP.OP, GETFUN.OP, 8L, MAKEPROM.OP, 
+    21L, PUSHCONSTARG.OP, 22L, CALL.OP, 20L, SETVAR.OP, 23L, 
+    POP.OP, BASEGUARD.OP, 25L, 67L, GETVAR.OP, 3L, SEQALONG.OP, 
+    25L, SETVAR.OP, 26L, POP.OP, GETFUN.OP, 28L, MAKEPROM.OP, 
+    30L, MAKEPROM.OP, 31L, PUSHCONSTARG.OP, 32L, CALL.OP, 29L, 
+    RETURN.OP), list({
+    b <- a%%2L
+    c <- -a
+    d <- a^2
+    e <- sqrt(a)
+    f <- exp(a)
+    g <- c(a, 1)
+    h <- seq_along(a)
+    vapply(a, function(i) i, 0)
+}, `%%`, a%%2L, a, 2L, b, b <- a%%2L, -a, c, c <- -a, 2, a^2, 
+    d, d <- a^2, sqrt(a), e, e <- sqrt(a), exp(a), f, f <- exp(a), 
+    c(a, 1), list(.Code, list(12L, GETVAR.OP, 0L, RETURN.OP), 
+        list(a, c(a, 1), structure(c(NA, 1L, 1L, 1L), class = "expressionsIndex"))), 
+    1, g, g <- c(a, 1), seq_along(a), h, h <- seq_along(a), vapply, 
+    vapply(a, function(i) i, 0), list(.Code, list(12L, GETVAR.OP, 
+        0L, RETURN.OP), list(a, vapply(a, function(i) i, 0), 
+        structure(c(NA, 1L, 1L, 1L), class = "expressionsIndex"))), 
+    list(.Code, list(12L, MAKECLOSURE.OP, 1L, RETURN.OP), list(
+        function(i) i, list(as.pairlist(alist(i = )), <bytecode>, 
+            NULL), structure(c(NA, 0L, 0L, 0L), class = "expressionsIndex"))), 
+    0, structure(c(NA, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 2L, 6L, 
+    6L, 6L, 3L, 3L, 7L, 7L, 9L, 9L, 9L, 3L, 3L, 10L, 10L, 11L, 
+    11L, 13L, 13L, 13L, 14L, 14L, 14L, 3L, 3L, 14L, 14L, 16L, 
+    16L, 16L, 17L, 17L, 17L, 3L, 3L, 17L, 17L, 19L, 19L, 19L, 
+    20L, 20L, 20L, 20L, 20L, 20L, 20L, 20L, 24L, 24L, 24L, 25L, 
+    25L, 25L, 3L, 3L, 25L, 25L, 27L, 27L, 27L, 29L, 29L, 29L, 
+    29L, 29L, 29L, 29L, 29L, 29L, 29L, 29L), class = "expressionsIndex")))
+list(.Code, list(12L, LDCONST.OP, 1L, STARTASSIGN.OP, 2L, STARTSUBASSIGN_N.OP, 
+    4L, 14L, GETVAR_MISSOK.OP, 6L, GETVAR_MISSOK.OP, 7L, MATSUBASSIGN.OP, 
+    4L, ENDASSIGN.OP, 2L, POP.OP, GETVAR.OP, 2L, STARTSUBSET2_N.OP, 
+    8L, 26L, GETVAR_MISSOK.OP, 7L, VECSUBSET2.OP, 8L, STARTASSIGN.OP, 
+    2L, STARTSUBASSIGN2_N.OP, 10L, 35L, GETVAR_MISSOK.OP, 6L, 
+    VECSUBASSIGN2.OP, 10L, ENDASSIGN.OP, 2L, POP.OP, GETVAR.OP, 
+    2L, STARTSUBSET_N.OP, 12L, 47L, GETVAR_MISSOK.OP, 6L, VECSUBSET.OP, 
+    12L, SETVAR.OP, 13L, POP.OP, LDCONST.OP, 15L, STARTASSIGN.OP, 
+    2L, GETFUN.OP, 17L, PUSHNULLARG.OP, PUSHCONSTARG.OP, 19L, 
+    SETTER_CALL.OP, 20L, 15L, ENDASSIGN.OP, 2L, POP.OP, GETVAR.OP, 
+    2L, RETURN.OP), list({
+    x[i, j] <- 0
+    x[[i]] <- x[[j]]
+    y <- x[i]
+    attr(x, "k") <- 1
+    x
+}, 0, x, x[i, j] <- 0, `[<-`(`*tmp*`, i, j, value = 0), `[<-`(x, 
+    i, j, value = 0), i, j, x[[j]], x[[i]] <- x[[j]], `[[<-`(`*tmp*`, 
+    i, value = x[[j]]), `[[<-`(x, i, value = x[[j]]), x[i], y, 
+    y <- x[i], 1, attr(x, "k") <- 1, `attr<-`, `attr<-`(x, "k", 
+        value = 1), "k", `attr<-`(`*tmp*`, "k", value = 1), structure(c(NA, 
+    1L, 1L, 3L, 3L, 5L, 5L, 5L, 6L, 6L, 7L, 7L, 5L, 5L, 3L, 3L, 
+    3L, 2L, 2L, 8L, 8L, 8L, 7L, 7L, 8L, 8L, 9L, 9L, 11L, 11L, 
+    11L, 6L, 6L, 11L, 11L, 9L, 9L, 9L, 2L, 2L, 12L, 12L, 12L, 
+    6L, 6L, 12L, 12L, 14L, 14L, 14L, 15L, 15L, 16L, 16L, 18L, 
+    18L, 18L, 18L, 18L, 18L, 18L, 18L, 16L, 16L, 16L, 2L, 2L, 
+    2L), class = "expressionsIndex")))
+list(.Code, list(12L, LDCONST.OP, 1L, SETVAR.OP, 2L, POP.OP, 
+    LDCONST.OP, 4L, SETVAR.OP, 5L, POP.OP, GETVAR.OP, 5L, GETVAR.OP, 
+    7L, LT.OP, 8L, BRIFNOT.OP, 9L, 62L, GETVAR.OP, 5L, LDCONST.OP, 
+    10L, ADD.OP, 11L, SETVAR.OP, 5L, POP.OP, GETBUILTIN.OP, 13L, 
+    GETVAR.OP, 5L, PUSHARG.OP, PUSHCONSTARG.OP, 15L, CALLBUILTIN.OP, 
+    14L, LDCONST.OP, 4L, EQ.OP, 16L, BRIFNOT.OP, 17L, 49L, GOTO.OP, 
+    11L, GOTO.OP, 50L, LDNULL.OP, POP.OP, GETVAR.OP, 2L, GETVAR.OP, 
+    5L, ADD.OP, 19L, SETVAR.OP, 2L, POP.OP, GOTO.OP, 11L, LDNULL.OP, 
+    POP.OP, GETVAR.OP, 2L, RETURN.OP), list({
+    s <- 0
+    i <- 0L
+    while (i < n) {
+        i <- i + 1L
+        if (i%%2L == 0L) 
+            next
+        s <- s + i
+    }
+    s
+}, 0, s, s <- 0, 0L, i, i <- 0L, n, i < n, while (i < n) {
+    i <- i + 1L
+    if (i%%2L == 0L) 
+        next
+    s <- s + i
+}, 1L, i + 1L, i <- i + 1L, `%%`, i%%2L, 2L, i%%2L == 0L, if (i%%2L == 
+    0L) next, next, s + i, s <- s + i, structure(c(NA, 1L, 1L, 
+3L, 3L, 3L, 4L, 4L, 6L, 6L, 6L, 5L, 5L, 7L, 7L, 8L, 8L, 9L, 9L, 
+9L, 5L, 5L, 10L, 10L, 11L, 11L, 12L, 12L, 12L, 14L, 14L, 14L, 
+14L, 14L, 14L, 14L, 14L, 14L, 4L, 4L, 16L, 16L, 17L, 17L, 17L, 
+18L, 18L, 17L, 17L, 17L, 17L, 2L, 2L, 5L, 5L, 19L, 19L, 20L, 
+20L, 9L, 9L, 9L, 9L, 9L, 2L, 2L, 2L), class = "expressionsIndex")))

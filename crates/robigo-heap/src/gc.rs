@@ -28,7 +28,7 @@ use crate::layout::{GRANULE, charsxp, charsxp_bytes, data_off, extdata, granule_
 use crate::trace::{Trace, Visitor};
 use crate::types::*;
 use crate::{Sexp, flags, gp, hash_bytes, is_vector_type};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::c_void;
 
 mod diag;
@@ -336,6 +336,9 @@ pub struct GcStats {
     pub frees: u64,
     pub live_bytes: u64,
     pub live_objects: u64,
+    /// Wall time in collections, summed and the longest: from the start of
+    /// marking to the end of the sweep and the next trigger (the quarantine
+    /// a collection releases first is not counted).
     pub collect_total_ns: u64,
     pub collect_max_pause_ns: u64,
     /// Collections by where they were entered ([`Safepoint`] as index).
@@ -420,6 +423,10 @@ pub struct Core {
     pub gc_inhibit: u32,
     /// a collection is running: a nested one panics
     collecting: bool,
+    /// a panic unwound out of a collection's marking or moving: objects may
+    /// be forwarded copies and marks half set, so no collection runs again
+    /// (the heap can only be dropped)
+    poisoned: bool,
     /// A collection is due: the poll-only path crossed the trigger, or
     /// gctorture's countdown ran out. Mirrored in the poll word's
     /// [`GC_DUE`]; cleared by the collection that serves it.
@@ -490,8 +497,9 @@ pub struct Core {
     diag: Option<Box<diag::Diag>>,
     /// weak references (WEAKREFSXP) not yet finalized
     weak_refs: Vec<Sexp>,
-    /// weak references whose key died, waiting for their finalizer
-    finalize_queue: Vec<Sexp>,
+    /// weak references whose key died, waiting for their finalizer, in
+    /// the order RunFinalizers runs them (taken from the front)
+    finalize_queue: VecDeque<Sexp>,
     /// release callbacks of objects found dead by the last sweep
     releases: Vec<(ReleaseFn, usize)>,
     /// The store barrier's log ([`Sexp::store`]): immortal objects
@@ -539,7 +547,7 @@ unsafe fn barrier_slow(x: Sexp) {
     // SAFETY: the caller's contract: `x` is live, so its header and its
     // block's header are readable, and the remembered set is not borrowed.
     unsafe {
-        x.set_flag(flags::BARRIER, false);
+        x.set_flag_raw(flags::BARRIER, false);
         // A CHARSXP has nothing to trace, and must not be: `trace` would
         // count it in `marked_chars` on top of `immortal_chars`, and with
         // the sum inflated `prune_chars` could skip a table with dead
@@ -772,6 +780,7 @@ impl Core {
             immortal_chars: 0,
             gc_inhibit: 0,
             collecting: false,
+            poisoned: false,
             #[cfg(test)]
             panic_at: tests::PanicAt::default(),
             due: false,
@@ -803,7 +812,7 @@ impl Core {
             quarantine: Vec::new(),
             diag: diag::Diag::from_env(),
             weak_refs: Vec::new(),
-            finalize_queue: Vec::new(),
+            finalize_queue: VecDeque::new(),
             releases: Vec::new(),
             remembered: Box::new(Remembered(Default::default())),
         });
@@ -861,7 +870,7 @@ impl Core {
                 return;
             }
             // the first store into it is logged (`barrier_slow`)
-            x.set_flag(flags::IMMORTAL | flags::BARRIER, true);
+            x.set_flag_raw(flags::IMMORTAL | flags::BARRIER, true);
             if x.typ() == CHARSXP && x.gp() & gp::charsxp::CACHED != 0 {
                 self.immortal_chars += 1;
             }
@@ -921,7 +930,9 @@ impl Core {
     ///
     /// # Safety
     /// `word` must stay valid, at this address, until the core is dropped
-    /// or another word replaces it.
+    /// or another word replaces it, and every access to it is atomic (the
+    /// embedder reads and changes its bits through `AtomicU32` only, as the
+    /// heap does).
     pub unsafe fn set_poll_word(&mut self, word: NonNull<AtomicU32>) {
         let due = self.poll_word().fetch_and(!GC_DUE, Ordering::Relaxed) & GC_DUE;
         self.poll = Some(word);
@@ -1313,8 +1324,10 @@ impl Core {
     /// Never collects.
     ///
     /// # Safety
-    /// `data` must point at `n` elements of type `t` and stay valid until
-    /// `release` runs. `release(owner)` runs at most once, in one of two
+    /// `data` must point at `n` elements of type `t`, aligned for them, and
+    /// stay valid until `release` runs: accessors and the collector read it
+    /// as `t`'s elements (a STRSXP's or VECSXP's as `Sexp`s, traced in
+    /// place). `release(owner)` runs at most once, in one of two
     /// places, and must be sound in both:
     /// - at a safe point, when the embedder runs the calls a sweep queued
     ///   ([`Core::take_releases`]): the heap is whole there, and what the
@@ -1600,8 +1613,9 @@ impl Core {
     /// `c` must be a live CHARSXP of this heap.
     #[inline]
     pub unsafe fn install_char(&mut self, c: Sexp) -> Result<Sexp, NeedGc> {
-        // SAFETY: `c` is live, this function's contract, and stays so:
-        // allocation does not collect, and the heap does not move objects.
+        // SAFETY: `c` is live, this function's contract, and stays so and
+        // in place: allocation does not collect, so nothing moves it while
+        // the bytes are read.
         let name = unsafe { c.char_bytes() };
         self.install_named(name, c)
     }
@@ -1664,8 +1678,21 @@ impl Core {
         self.precious.push(x);
     }
 
+    /// End the most recent [`Core::preserve`] of `x` (none: nothing happens).
+    /// Only addresses are compared; the hazard is which entry goes.
+    ///
+    /// # Safety
+    /// `x` is null or a live object of this heap, and the caller ends only a
+    /// preservation it owns: the `release` pairs with a [`Core::preserve`]
+    /// of the same object made by (or on behalf of) the caller. Then it
+    /// ends exactly the preservation meant. A live `x` the caller never
+    /// preserved still matches another owner's entry and removes it,
+    /// un-rooting an object that owner still uses, which the next
+    /// collection frees; a stale one (an object since moved or freed, its
+    /// address perhaps reused by another preserved object) can do the same,
+    /// or match nothing and leak the entry.
     #[inline]
-    pub fn release(&mut self, x: Sexp) {
+    pub unsafe fn release(&mut self, x: Sexp) {
         if let Some(k) = self.precious.iter().rposition(|&p| p == x) {
             self.precious.swap_remove(k);
         }
@@ -1678,8 +1705,11 @@ impl Core {
     /// `w` must be a live, fully initialized WEAKREFSXP of this heap: the
     /// collector keeps it and follows those fields on every collection.
     pub unsafe fn register_weak_ref(&mut self, w: Sexp) {
-        // R: memory.c:NewWeakRef prepends to R_weak_refs.
-        self.weak_refs.insert(0, w);
+        // R: memory.c:NewWeakRef prepends to R_weak_refs: the list is kept
+        // oldest first (a push, not an O(n) insert at the front), and walked
+        // newest first where its order shows ([`Core::classify_weak_refs`],
+        // [`Core::queue_exit_finalizers`])
+        self.weak_refs.push(w);
     }
 
     /// Number of references queued before a finalizer batch begins.
@@ -1692,23 +1722,25 @@ impl Core {
     /// order, then let the ordinary runner execute it.
     pub fn queue_exit_finalizers(&mut self) {
         let mut keep = Vec::with_capacity(self.weak_refs.len());
-        for w in std::mem::take(&mut self.weak_refs) {
+        // R_weak_refs' order, newest first
+        for w in std::mem::take(&mut self.weak_refs).into_iter().rev() {
             // SAFETY: every collection marks the objects in `weak_refs`.
             if unsafe { w.gp() } & gp::weakref::FINALIZE_ON_EXIT != 0 {
                 // SAFETY: as above.
                 unsafe { w.set_gp(w.gp() | gp::weakref::READY_TO_FINALIZE) };
-                self.finalize_queue.push(w);
+                self.finalize_queue.push_back(w);
             } else {
                 keep.push(w);
             }
         }
+        keep.reverse();
         self.weak_refs = keep;
     }
 
     /// The next weak reference whose key died, ready for its finalizer.
     /// It stays rooted until popped; the caller protects it while it runs.
     pub fn pop_finalizable(&mut self) -> Option<Sexp> {
-        if self.finalize_queue.is_empty() { None } else { Some(self.finalize_queue.remove(0)) }
+        self.finalize_queue.pop_front()
     }
 
     /// Release callbacks of external buffers the last
@@ -1752,7 +1784,9 @@ impl Core {
     ///
     /// Two words: the top, then the routine whose frames the segment holds
     /// (the native callee's entry point, for the pin report's attribution:
-    /// `diag.rs`). A native entry writes both and restores both.
+    /// `diag.rs`). A native entry writes both and restores both. The
+    /// address is good while the core neither moves nor is dropped: a
+    /// trampoline keeps it for as long as its routine runs.
     pub fn scan_top_slot(&mut self) -> *mut usize {
         (&raw mut self.open).cast()
     }
@@ -1914,7 +1948,7 @@ impl Core {
     }
 
     /// Weak references still waiting for their key to die (for
-    /// finalizers that run on exit).
+    /// finalizers that run on exit), oldest first: R_weak_refs reversed.
     pub fn weak_refs(&self) -> &[Sexp] {
         &self.weak_refs
     }
@@ -2117,15 +2151,17 @@ impl Core {
         unsafe {
             let refs = std::mem::take(&mut self.weak_refs);
             let mut keep = Vec::with_capacity(refs.len());
-            for w in refs {
+            // R_weak_refs' order, newest first
+            for w in refs.into_iter().rev() {
                 let key = Self::weak_field(w, 0);
                 if w.gp() & gp::weakref::READY_TO_FINALIZE != 0 || !self.is_marked(key) {
                     w.set_gp(w.gp() | gp::weakref::READY_TO_FINALIZE);
-                    self.finalize_queue.push(w);
+                    self.finalize_queue.push_back(w);
                 } else {
                     keep.push(w);
                 }
             }
+            keep.reverse();
             self.weak_refs = keep;
         }
     }
@@ -2241,11 +2277,17 @@ impl Core {
     /// every object the caller still needs is reachable from `roots`, the
     /// heap's own roots (the precious set, weak references, the store
     /// barrier's log) or a closed C segment: nothing else keeps one alive.
+    /// Tracing `roots` shows the same edges each time within one collection
+    /// (a moving one traces them twice: to mark, then to forward).
     ///
     /// # Panics
     /// If a C segment is open (C code runs, and the export that collects
     /// did not close its segment), if a collection is already running, or
-    /// if called from another thread.
+    /// if called from another thread, or if a panic earlier left the heap
+    /// poisoned. A panic while the objects are marked, moved and forwarded
+    /// (a `Trace` impl's, say) unwinds with the heap poisoned: objects may
+    /// be forwarded copies, so every later collection panics, and the heap
+    /// is only good to drop (which still runs every EXTDATA release once).
     // R: memory.c:R_gc -> R_gc_internal(0)
     pub unsafe fn collect<R: Trace + ?Sized>(&mut self, roots: &mut R) -> u64 {
         // SAFETY: the caller's contract.
@@ -2287,6 +2329,11 @@ impl Core {
         // contracts of `preserve`, `register_weak_ref` and the store
         // barrier); the caller vouches for `roots`.
         unsafe {
+            // a panic out of marking and moving leaves the heap halfway
+            // (forwarded objects, `collecting` set): poisoned until both
+            // end, so an unwinding panic leaves it set and the heap is
+            // never collected again
+            self.poisoned = true;
             self.mark_heap_roots();
             roots.trace(&mut Mark(self));
             self.mark_rest();
@@ -2296,6 +2343,7 @@ impl Core {
                 self.forward_heap();
                 self.retire(moved);
             }
+            self.poisoned = false;
             self.finish_collection(size_needed, kind, t0)
         }
     }
@@ -2312,6 +2360,10 @@ impl Core {
                 "robigo: a collection under Miri (the collector calls the heap's C shim): mark the test #[cfg(not(miri))]"
             );
         }
+        assert!(
+            !self.poisoned,
+            "robigo: this heap was left halfway by a panic during a collection's marking or moving: it can only be dropped"
+        );
         assert!(!self.collecting, "robigo: a collection inside a collection");
         assert!(
             self.open.top == 0,
@@ -2708,7 +2760,8 @@ impl Core {
     }
 
     /// `ROBIGO_GC_STATS`'s report, printed to stderr when the core is
-    /// dropped: collections by safepoint kind, E4's overshoot, large `&Cx`
+    /// dropped: collections by safepoint kind, the time spent in them, E4's
+    /// overshoot, large `&Cx`
     /// requests made while a collection was due, allocations by SEXPTYPE.
     pub fn stats_report(&self) -> String {
         use std::fmt::Write;
@@ -2717,6 +2770,16 @@ impl Core {
         let kinds: Vec<String> =
             Safepoint::ALL.iter().map(|k| format!("{} {}", k.name(), st.collections_by_kind[*k as usize])).collect();
         let _ = writeln!(r, "robigo gc: collections {} ({})", st.collections, kinds.join(", "));
+        // D13's bar (ledger 2026-11-17-m2m3-bars.md): collection time per
+        // MiB the heap handed out, by its own count (`count`'s bytes, what
+        // triggers collections), including what came after the last one
+        let heap_bytes = st.bytes_allocated + self.alloc_since_gc as u64;
+        let per_mib = (st.collect_total_ns as u128 * (1 << 20)).checked_div(heap_bytes as u128).unwrap_or(0);
+        let _ = writeln!(
+            r,
+            "robigo gc: collection time {} ns, max pause {} ns, heap bytes allocated {heap_bytes}, {per_mib} ns per MiB",
+            st.collect_total_ns, st.collect_max_pause_ns
+        );
         let _ = writeln!(
             r,
             "robigo gc: overshoot max {} bytes (live {} bytes after it), total {} bytes, over max(32 MiB, 10% live) {}",

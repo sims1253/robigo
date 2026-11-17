@@ -217,9 +217,14 @@ pub fn compute_identical(cx: &Cx, x: Ref<'_>, y: Ref<'_>, flags: u32) -> Result<
             if !compute_identical(cx, a.formals(), b.formals(), flags)? {
                 return Ok(false);
             }
-            // no BCODESXP bodies in robigo-rt (M1) and no srcrefs: BODY,
-            // BODY_EXPR and R_body_no_src are the same object
-            if !compute_identical(cx, a.body(), b.body(), flags)? {
+            // the source expressions, unless byte code is compared (robigo
+            // keeps no srcrefs: R_body_no_src is BODY_EXPR)
+            let (ba, bb) = if flags & IDENT_USE_BYTECODE == 0 {
+                (crate::bytecode::expr(cx, a.body()), crate::bytecode::expr(cx, b.body()))
+            } else {
+                (a.body(), b.body())
+            };
+            if !compute_identical(cx, ba, bb, flags)? {
                 return Ok(false);
             }
             flags & IDENT_USE_CLOENV == 0 || a.env() == b.env()
@@ -236,7 +241,11 @@ pub fn compute_identical(cx: &Cx, x: Ref<'_>, y: Ref<'_>, flags: u32) -> Result<
             }
         }
         (View::Promise(_), _) => return Err(NotYet("identical() of promises (substitute)")),
-        (View::Bytecode(_), _) => return Err(NotYet("identical() of byte code")),
+        (View::Bytecode(a), View::Bytecode(b)) => {
+            compute_identical(cx, a.code(), b.code(), flags)?
+                && compute_identical(cx, a.expr(), b.expr(), flags)?
+                && compute_identical(cx, a.consts(), b.consts(), flags)?
+        }
         (View::Obj(_), _) => true,
         // package ALTREP vectors: compared through their elements
         (View::Alt(_), _) | (_, View::Alt(_)) => return Err(NotYet("identical() of a package ALTREP vector")),

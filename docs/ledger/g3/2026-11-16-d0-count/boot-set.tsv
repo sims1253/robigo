@@ -1,0 +1,282 @@
+# name	cfun	file	tier	category	rt	paths
+<-	do_set	eval.c	stage 0	evaluator	rt	123
+function	do_function	eval.c	stage 0	evaluator	rt	123
+c	do_c	bind.c	stage 0	M1		123
+(	do_paren	eval.c	stage 0	evaluator	rt	12
+{	do_begin	eval.c	stage 0	evaluator	rt	123
+list	do_makelist	builtin.c	stage 0	kernel	rt	123
+atan	do_math1	arithmetic.c	stage 0	kernel		12
+*	do_arith	arithmetic.c	stage 0	M1		12
+if	do_if	eval.c	stage 0	evaluator	rt	123
+$	do_subset3	subset.c	stage 0	port	rt	123
+==	do_relop	relop.c	stage 0	M1		123
+.Internal	do_internal	names.c	stage 0	language	rt	123
+environment	do_envir	builtin.c	stage 0	M1		123
++	do_arith	arithmetic.c	stage 0	M1		12
+parent.frame	do_parentframe	context.c	stage 0	M1		123
+substitute	do_substitute	coerce.c	stage 0	language	rt	123
+||	do_logic2	logic.c	stage 0	language	rt	123
+is.list	do_is	coerce.c	stage 0	M1		123
+is.pairlist	do_is	coerce.c	stage 0	M1		123
+baseenv	do_baseenv	envir.c	stage 0	M1		123
+eval	do_eval	eval.c	stage 0	evaluator	rt	123
+quote	do_quote	coerce.c	stage 0	language	rt	123
+new.env	do_newenv	builtin.c	stage 0	M1		123
+-	do_arith	arithmetic.c	stage 0	M1		123
+paste	do_paste	paste.c	stage 0	M1		123
+is.character	do_is	coerce.c	stage 0	M1		123
+strptime	do_strptime	datetime.c	stage 0	port		12
+match	do_match	unique.c	stage 0	M1		123
+any	do_logic3	logic.c	stage 0	M1		123
+UseMethod	do_usemethod	objects.c	stage 0	evaluator	rt	123
+attr	do_attr	attrib.c	stage 0	M1		12
+&&	do_logic2	logic.c	stage 0	language	rt	123
+missing	do_missing	envir.c	stage 0	evaluator	rt	123
+as.POSIXct	do_asPOSIXct	datetime.c	stage 0	port		12
+class<-	R_do_set_class	coerce.c	stage 0	M1		123
+attr<-	do_attrgets	attrib.c	stage 0	M1		123
+is.function	do_is	coerce.c	stage 0	M1		123
+return	do_return	eval.c	stage 0	evaluator	rt	12
+is.vector	do_isvector	coerce.c	stage 0	M1		123
+!	do_logic	logic.c	stage 0	M1		123
+is.object	do_is	coerce.c	stage 0	M1		12
+lapply	do_lapply	apply.c	stage 0	M1		123
+[[	do_subset2	subset.c	stage 0	port	rt	123
+.subset2	do_subset2_dflt	subset.c	stage 0	M1		123
+inherits	do_inherits	objects.c	stage 0	M1		123
+unclass	do_unclass	objects.c	stage 0	M1		12
+unique	do_duplicated	unique.c	stage 0	M1		123
+length	do_length	array.c	stage 0	M1		123
+!=	do_relop	relop.c	stage 0	M1		123
+is.na	do_isna	coerce.c	stage 0	M1		123
+islistfactor	do_islistfactor	apply.c	stage 0	M1		123
+unlist	do_unlist	bind.c	stage 0	M1		123
+is.null	do_is	coerce.c	stage 0	M1		123
+names	do_names	attrib.c	stage 0	M1		123
+attributes	do_attributes	attrib.c	stage 0	M1		123
+attributes<-	do_attributesgets	attrib.c	stage 0	M1		123
+vector	do_makevector	builtin.c	stage 0	M1		123
+rep.int	do_rep_int	seq.c	stage 0	M1		123
+names<-	do_namesgets	attrib.c	stage 0	M1		123
+emptyenv	do_emptyenv	envir.c	stage 0	M1		12
+assign	do_assign	envir.c	stage 0	M1		123
+for	do_for	eval.c	stage 0	evaluator	rt	123
+is.expression	do_is	coerce.c	stage 0	M1		12
+formals	do_formals	builtin.c	stage 0	M1		123
+is.atomic	do_is	coerce.c	stage 0	M1		123
+as.function.default	do_asfunction	coerce.c	stage 0	port		12
+environment<-	do_envirgets	builtin.c	stage 0	port	rt	12
+matrix	do_matrix	array.c	stage 0	M1		123
+body	do_body	builtin.c	stage 0	port		12
+[	do_subset	subset.c	stage 0	port	rt	123
+:	do_colon	seq.c	stage 0	M1		123
+seq_along	do_seq_along	seq.c	stage 0	M1		123
+.subset	do_subset_dflt	subset.c	stage 0	M1		123
+[[<-	do_subassign2	subassign.c	stage 0	port	rt	123
+...length	do_dotsLength	envir.c	stage 0	M1		12
+seq_len	do_seq_len	seq.c	stage 0	M1		12
+...elt	do_dotsElt	envir.c	stage 0	M1		12
+identical	do_identical	identical.c	stage 0	M1		123
+is.logical	do_is	coerce.c	stage 0	M1		12
+anyNA	do_anyNA	coerce.c	stage 0	M1		12
+all	do_logic3	logic.c	stage 0	M1		123
+invisible	do_invisible	print.c	stage 0	port	rt	123
+paste0	do_paste	paste.c	stage 0	M1		123
+typeof	do_typeof	coerce.c	stage 0	M1		123
+as.vector	do_asvector	coerce.c	stage 0	M1		123
+as.environment	do_as_environment	envir.c	stage 0	M1		123
+globalenv	do_globalenv	envir.c	stage 0	M1		123
+attach	do_attach	envir.c	stage 0	evaluator		123
+exists	do_get	envir.c	stage 0	M1		123
+search	do_search	envir.c	stage 0	evaluator		123
+pos.to.env	do_pos2env	envir.c	stage 0	evaluator		123
+break	do_break	eval.c	stage 0	evaluator	rt	12
+.isMethodsDispatchOn	do_S4on	objects.c	stage 0	evaluator		123
+>	do_relop	relop.c	stage 0	M1		12
+Version	do_version	version.c	stage 0	port		123
+interactive	do_interactive	sysutils.c	stage 0	M1		123
+options	do_options	options.c	stage 0	M1		123
+as.character	do_asatomic	coerce.c	stage 0	M1		123
+Sys.getenv	do_getenv	sysutils.c	stage 0	M1		123
+as.integer	do_asatomic	coerce.c	stage 0	M1		123
+<=	do_relop	relop.c	stage 0	M1		123
+nzchar	do_nzchar	character.c	stage 0	M1		123
+sub	do_gsub	grep.c	stage 0	port		123
+NextMethod	do_nextmethod	objects.c	stage 0	evaluator	rt	123
+class	R_do_data_class	attrib.c	stage 0	M1		123
+Sys.info	do_sysinfo	unix/sys-unix.c	stage 0	port		123
+R.home	do_Rhome	platform.c	stage 0	port		123
+switch	do_switch	builtin.c	stage 0	language	rt	12
+file.path	do_filepath	paste.c	stage 0	port		123
+gsub	do_gsub	grep.c	stage 0	port		123
+sprintf	do_sprintf	sprintf.c	stage 0	M1		123
+path.expand	do_pathexpand	platform.c	stage 0	port		123
+normalizePath	do_normalizepath	util.c	stage 0	port		123
+strsplit	do_strsplit	grep.c	stage 0	port		123
+Sys.setenv	do_setenv	sysutils.c	stage 0	port		123
+mkUnbound	do_mkUnbound	envir.c	stage 0	evaluator		123
+makeActiveBinding	do_mkActiveBnd	envir.c	stage 0	M1		123
+<<-	do_set	eval.c	stage 0	evaluator	rt	123
+::	do_colon2	envir.c	stage 0	evaluator	rt	123
+dir.exists	do_direxists	platform.c	stage 0	port		123
+Sys.glob	do_glob	sysutils.c	stage 0	port		123
+file.exists	do_fileexists	platform.c	stage 0	port		123
+dirname	do_dirname	util.c	stage 0	port		123
+bindtextdomain	do_bindtextdomain	errors.c	stage 0	evaluator		123
+nchar	do_nchar	character.c	stage 0	M1		123
+Sys.getlocale	do_getlocale	platform.c	stage 0	port		123
+grep	do_grep	grep.c	stage 0	port		123
+grepl	do_grep	grep.c	stage 0	port		123
+getOption	do_getOption	options.c	stage 0	M1		123
+getRegisteredNamespace	do_getRegNS	envir.c	stage 0	evaluator		123
+sys.nframe	do_sys	context.c	stage 0	M1		123
+as.raw	do_asatomic	coerce.c	stage 0	M1		123
+while	do_while	eval.c	stage 0	evaluator	rt	12
+sys.frame	do_sys	context.c	stage 0	M1		123
+get0	do_get	envir.c	stage 0	M1		123
+basename	do_basename	util.c	stage 0	port		123
+gzfile	do_gzfile	connections.c	stage 0	port		123
+on.exit	do_onexit	builtin.c	stage 0	language	rt	123
+readDCF	do_readDCF	dcf.c	stage 0	port		12
+close	do_close	connections.c	stage 0	port		123
+file	do_url	connections.c	stage 0	port		123
+parse	do_parse	source.c	stage 0	port		123
+duplicated	do_duplicated	unique.c	stage 0	M1		12
+dim	do_dim	attrib.c	stage 0	M1		123
+prod	do_summary	summary.c	stage 0	M1		12
+dimnames	do_dimnames	attrib.c	stage 0	M1		12
+dimnames<-	do_dimnamesgets	attrib.c	stage 0	M1		12
+aperm	do_aperm	array.c	stage 0	port		12
+as.logical	do_asatomic	coerce.c	stage 0	M1		123
+asplit	do_asplit	array.c	stage 0	port		12
+rep	do_rep	seq.c	stage 0	M1		12
+sys.call	do_sys	context.c	stage 0	M1		12
+do.call	do_docall	coerce.c	stage 0	M1		12
+unserializeFromConn	do_unserializeFromConn	serialize.c	stage 0	port		123
+<	do_relop	relop.c	stage 0	M1		123
+nargs	do_nargs	util.c	stage 0	M1		123
+|	do_logic	logic.c	stage 0	M1		123
+[<-	do_subassign	subassign.c	stage 0	port	rt	12
+get	do_get	envir.c	stage 0	M1		123
+compareNumericVersion	do_compareNumericVersion	util.c	stage 0	port		123
+$<-	do_subassign3	subassign.c	stage 0	port	rt	12
+is.symbol	do_is	coerce.c	stage 0	M1		12
+isNamespaceEnv	do_isNSEnv	envir.c	stage 0	evaluator		123
+registerNamespace	do_regNS	envir.c	stage 0	evaluator		123
+.addCondHands	do_addCondHands	errors.c	stage 0	evaluator	rt	123
+list2env	do_list2env	envir.c	stage 0	M1		123
+makeLazy	do_makelazy	builtin.c	stage 0	port		123
+lazyLoadDBfetch	do_lazyLoadDBfetch	serialize.c	stage 0	port		123
+parent.env<-	do_parentenvgets	builtin.c	stage 0	port		123
+env2list	do_env2list	envir.c	stage 0	M1		12
+enableJIT	do_enablejit	eval.c	stage 0	evaluator		12
+environmentIsLocked	do_envIsLocked	envir.c	stage 0	evaluator		123
+vapply	do_vapply	apply.c	stage 0	M1		123
+lockEnvironment	do_lockEnv	envir.c	stage 0	M1		123
+parent.env	do_parentenv	builtin.c	stage 0	port		123
+sys.parent	do_sys	context.c	stage 0	M1		123
+sys.function	do_sys	context.c	stage 0	M1		123
+pmatch	do_pmatch	unique.c	stage 0	M1		123
+Sys.unsetenv	do_unsetenv	sysutils.c	stage 0	port		123
+:::	do_colon3	envir.c	stage 0	evaluator	rt	123
+getLoadedDLLs	do_getDllTable	Rdynload.c	-e 1	port		23
+which.max	do_first_min	summary.c	-e 1	port		23
+sum	do_summary	summary.c	-e 1	M1		123
+getRegisteredRoutines	do_getRegisteredRoutines	Rdynload.c	-e 1	port		23
+delayedAssign	do_delayed	builtin.c	-e 1	M1		123
+stdin	do_stdin	connections.c	build	port		2
+is.call	do_is	coerce.c	build	M1		12
+internalsID	do_internalsID	version.c	build	port		2
+max	do_summary	summary.c	build	M1		2
+cbind	do_bind	bind.c	build	port		2
+dim<-	do_dimgets	attrib.c	build	M1		2
+storage.mode<-	do_storage_mode	coerce.c	build	M1		2
+scan	do_scan	scan.c	build	port		2
+^	do_arith	arithmetic.c	build	M1		12
+deparse	do_deparse	deparse.c	build	port	rt	2
+...names	do_dotsNames	envir.c	build	M1		2
+shortRowNames	do_shortRowNames	attrib.c	build	M1		12
+abs	do_abs	arithmetic.c	build	M1		2
+make.names	do_makenames	character.c	build	port		2
+is.numeric	do_is	coerce.c	build	M1		2
+is.integer	do_is	coerce.c	build	M1		2
+rep_len	do_rep_len	seq.c	build	M1		2
+radixsort	do_radixsort	radixsort.c	build	M1		2
+make.unique	do_makeunique	unique.c	build	port		2
+copyDFattr	do_copyDFattr	attrib.c	build	M1		2
+oldClass<-	do_classgets	attrib.c	build	M1		2
+order	do_order	sort.c	build	M1		2
+is.matrix	do_is	coerce.c	build	M1		12
+anyDuplicated	do_duplicated	unique.c	build	M1		12
+oldClass	do_class	attrib.c	build	M1		12
+which	do_which	summary.c	build	M1		12
+&	do_logic	logic.c	build	M1		2
+levels<-	do_levelsgets	attrib.c	build	M1		2
+split	do_split	split.c	build	port		2
+lengths	do_lengths	array.c	build	M1		12
+=	do_set	eval.c	build	evaluator	rt	2
+seq.int	do_seq	seq.c	build	port		2
+rawToChar	do_rawToChar	raw.c	build	port		2
+rbind	do_bind	bind.c	build	port		2
+>=	do_relop	relop.c	build	M1		12
+isS4	do_is	coerce.c	build	M1		12
+readLines	do_readLines	connections.c	build	port		2
+tolower	do_tolower	character.c	build	port		2
+topenv	do_topenv	envir.c	build	evaluator		12
+dyn.load	do_dynload	Rdynload.c	build	port	rt	2
+.Call	do_dotcall	dotcode.c	build	port	rt	2
+match.call	do_matchcall	unique.c	build	M1		12
+.Primitive	do_primitive	names.c	build	port	rt	2
+remove	do_remove	envir.c	build	M1		2
+getwd	do_getwd	util.c	build	port		2
+Sys.time	do_systime	times.c	build	port		2
+.External2	do_External	dotcode.c	build	port		2
+as.double	do_asatomic	coerce.c	build	M1		2
+repeat	do_repeat	eval.c	build	evaluator	rt	2
+intToUtf8	do_intToUtf8	raw.c	build	port		2
+next	do_break	eval.c	build	evaluator	rt	2
+importIntoEnv	do_importIntoEnv	envir.c	build	evaluator		2
+iconv	do_iconv	sysutils.c	build	port		2
+ls	do_ls	envir.c	build	M1		12
+file.info	do_fileinfo	platform.c	build	port		12
+unregisterNamespace	do_unregNS	envir.c	build	evaluator		2
+isOpen	do_isopen	connections.c	build	port		2
+.External	do_External	dotcode.c	build	port		2
+pushBack	do_pushback	connections.c	build	port		2
+sorted_fpass	do_sorted_fpass	sort.c	build	M1		2
+system	do_system	unix/sys-unix.c	build	port		2
+startsWith	do_startsWith	character.c	build	M1		2
+is.environment	do_is	coerce.c	build	M1		12
+getVarsFromFrame	do_getVarsFromFrame	serialize.c	build	port		12
+lazyLoadDBinsertValue	do_lazyLoadDBinsertValue	serialize.c	build	port		12
+bcVersion	do_bcversion	eval.c	build	evaluator		12
+putconst	do_putconst	eval.c	build	evaluator		12
+growconst	do_growconst	eval.c	build	evaluator		12
+getconst	do_getconst	eval.c	build	evaluator		12
+mkCode	do_mkcode	eval.c	build	evaluator		12
+min	do_summary	summary.c	build	M1		12
+bcClose	do_bcclose	eval.c	build	evaluator		12
+as.call	do_ascall	coerce.c	build	M1		12
+is.builtin.internal	do_is_builtin_internal	eval.c	build	evaluator		12
+args	do_args	builtin.c	build	port		12
+serializeToConn	do_serializeToConn	serialize.c	build	port		12
+file.create	do_filecreate	platform.c	build	port		2
+file.append	do_fileappend	platform.c	build	port		2
+Sys.chmod	do_syschmod	platform.c	build	port		2
+log2	do_log1arg	arithmetic.c	build	kernel		1
+/	do_arith	arithmetic.c	build	M1		1
+substr	do_substr	character.c	build	M1		2
+readChar	do_readchar	connections.c	other steps	port		-
+loadFromConn2	do_loadFromConn2	saveload.c	other steps	port		-
+charToRaw	do_charToRaw	raw.c	other steps	port		-
+as.POSIXlt	do_asPOSIXlt	datetime.c	other steps	port		-
+format.POSIXlt	do_formatPOSIXlt	datetime.c	other steps	port		-
+strrep	do_strrep	character.c	other steps	port		-
+Encoding	do_encoding	util.c	other steps	port		-
+enc2utf8	do_enc2	util.c	other steps	port		-
+validEnc	do_validEnc	util.c	other steps	port		-
+cumsum	do_cum	cum.c	other steps	M1		-
+t.default	do_transpose	array.c	other steps	port		-
+col	do_rowscols	array.c	other steps	port		-
+length<-	do_lengthgets	builtin.c	other steps	M1		-
+writeLines	do_writelines	connections.c	other steps	port		-

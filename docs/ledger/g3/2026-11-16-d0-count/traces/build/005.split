@@ -1,0 +1,254 @@
+0	startup	do_internal		1
+1	startup	do_quote		1
+2	startup	do_baseenv		1
+3	startup	do_newenv		1
+4	startup	do_eval		1
+5	startup	do_begin		1
+6	startup	do_set	<-	1717
+7	startup	do_function		1
+8	startup	do_Rhome		1
+9	startup	do_makelist		1
+10	startup	do_subset3		1
+11	startup	do_paste	paste	3
+12	startup	do_if		1
+13	startup	do_is	is.character	1
+14	startup	do_logic	!	287
+15	startup	do_gzfile	gzfile	15
+16	startup	do_onexit		1
+17	startup	do_unserializeFromConn	unserializeFromConn	11
+18	startup	do_close		1
+19	startup	do_names		1
+20	startup	do_list2env		1
+21	startup	do_envir		1
+22	startup	do_makelazy		1
+23	startup	do_lazyLoadDBfetch		1
+24	startup	do_parentframe		1
+25	startup	do_substitute		1
+26	startup	do_logic2	||	2
+27	startup	do_is	is.list	2943
+28	startup	do_is	is.pairlist	1024
+29	startup	do_usemethod		1
+30	startup	do_getDllTable		1
+31	startup	do_is	is.function	205241
+32	startup	do_isvector		1
+33	startup	do_get	exists	5
+34	startup	do_subassign2		1
+35	startup	do_subset2		1
+36	startup	do_subset2_dflt		1
+37	startup	do_is	is.null	1565
+38	startup	do_parentenvgets		1
+39	startup	do_logic2	&&	1
+40	startup	do_typeof		1
+41	startup	do_vapply		1
+42	startup	do_logic3	any	162
+43	startup	do_first_min	which.max	4
+44	startup	do_summary	sum	71
+45	startup	do_inherits		1
+46	startup	do_getRegisteredRoutines		1
+47	startup	do_lapply		1
+48	startup	do_length		1
+49	startup	do_namesgets		1
+50	startup	R_do_set_class		1
+51	startup	do_for		1
+52	startup	do_c		1
+53	startup	do_paste	paste0	1
+54	startup	do_assign		1
+55	startup	do_colon		1
+56	startup	do_invisible		1
+57	startup	do_subset		1
+58	startup	do_subset_dflt		1
+59	startup	do_delayed		1
+60	startup	do_lockEnv		1
+61	startup	do_globalenv		1
+62	startup	do_attach		1
+63	startup	do_search		1
+64	startup	do_as_environment		1
+65	startup	do_pos2env		1
+66	startup	do_identical		1
+67	startup	do_S4on		1
+68	startup	do_match		1
+69	startup	do_version		1
+70	startup	do_isna		1
+71	startup	do_attributes		1
+72	startup	do_attributesgets		1
+73	startup	do_interactive		1
+74	startup	do_options		1
+75	startup	do_asatomic	as.character	600058
+76	startup	do_getenv		1
+77	startup	do_asatomic	as.integer	25867
+78	startup	do_relop	<=	1
+79	startup	do_nzchar		1
+80	startup	do_makevector		1
+81	startup	do_gsub	sub	1
+82	startup	do_nextmethod		1
+83	startup	R_do_data_class	class	29508
+84	startup	do_asvector		1
+85	startup	do_sysinfo		1
+86	startup	do_filepath		1
+87	startup	do_gsub	gsub	1
+88	startup	do_sprintf		1
+89	startup	do_pathexpand		1
+90	startup	do_normalizepath		1
+91	startup	do_strsplit		1
+92	startup	do_islistfactor		1
+93	startup	do_unlist		1
+94	startup	do_setenv		1
+95	startup	do_mkUnbound		1
+96	startup	do_mkActiveBnd		1
+97	startup	do_missing		1
+98	startup	do_set	<<-	5
+99	startup	do_colon2		1
+100	startup	do_relop	==	392
+101	startup	do_direxists		1
+102	startup	do_glob		1
+103	startup	do_duplicated	unique	6
+104	startup	do_fileexists		1
+105	startup	do_dirname		1
+106	startup	do_bindtextdomain		1
+107	startup	do_nchar		1
+108	startup	do_getlocale		1
+109	startup	do_grep	grep	1
+110	startup	do_grep	grepl	1
+111	startup	do_getOption		1
+112	script	do_is	is.logical	1
+113	script	do_fileinfo		1
+114	script	do_attrgets	attr<-	189
+115	script	do_getRegNS	getRegisteredNamespace	169
+116	script	do_addCondHands		1
+117	script	do_sys	sys.nframe	5
+118	script	do_asatomic	as.raw	7
+119	script	do_sys	sys.frame	63
+120	script	do_get	get0	5
+121	script	do_basename		1
+122	script	do_readDCF		1
+123	script	do_url	file	11
+124	script	do_parse		1
+125	script	do_is	is.atomic	10
+126	script	do_matrix		1
+127	script	do_duplicated	duplicated	3
+128	script	do_stdin		1
+129	script	do_is	is.call	12670
+130	script	do_asatomic	as.logical	1901
+131	script	do_dim		1
+132	script	do_summary	prod	6
+133	script	do_dimnames		1
+134	script	do_anyNA		1
+135	script	do_dimnamesgets		1
+136	script	do_aperm		1
+137	script	do_asplit		1
+138	script	do_rep		1
+139	script	do_sys	sys.call	31
+140	script	do_docall		1
+141	script	do_nargs		1
+142	script	do_rep_int		1
+143	script	do_logic	|	1
+144	script	do_logic3	all	1
+145	script	do_arith	-	917
+146	script	do_get	get	1
+147	script	do_compareNumericVersion		1
+148	script	do_relop	<	212
+149	script	do_internalsID		1
+150	script	do_isNSEnv		1
+151	script	do_regNS		1
+152	script	do_relop	>	3
+153	script	do_paren		1
+154	script	do_summary	max	8
+155	script	do_emptyenv		1
+156	script	do_subassign		1
+157	script	do_relop	!=	325
+158	script	do_envirgets		1
+159	script	do_subassign3		1
+160	script	do_bind	cbind	1
+161	script	do_dimgets		1
+162	script	do_storage_mode		1
+163	script	do_scan		1
+164	script	do_formals		1
+165	script	do_is	is.expression	12550
+166	script	do_pmatch		1
+167	script	do_deparse		1
+168	script	do_dotsNames		1
+169	script	do_shortRowNames		1
+170	script	do_abs		1
+171	script	do_makenames		1
+172	script	do_is	is.numeric	15
+173	script	do_sys	sys.parent	17
+174	script	do_sys	sys.function	16
+175	script	do_is	is.object	8
+176	script	do_rep_len		1
+177	script	do_radixsort		1
+178	script	do_makeunique		1
+179	script	do_copyDFattr		1
+180	script	do_classgets		1
+181	script	do_order		1
+182	script	do_is	is.matrix	23
+183	script	do_attr		1
+184	script	do_duplicated	anyDuplicated	1
+185	script	do_class		1
+186	script	do_which		1
+187	script	do_logic	&	1
+188	script	do_levelsgets		1
+189	script	do_split		1
+190	script	do_lengths		1
+191	script	do_set	=	1
+192	script	do_seq		1
+193	script	do_rawToChar		1
+194	script	do_substr		1
+195	script	do_bind	rbind	1
+196	script	do_dotsLength		1
+197	script	do_dotsElt		1
+198	script	do_is	isS4	8447
+199	script	do_readLines		1
+200	script	do_tolower	tolower	1
+201	script	do_topenv		1
+202	script	do_dynload		1
+203	script	do_dotcall		1
+204	script	do_matchcall		1
+205	script	do_primitive		1
+206	script	do_remove		1
+207	script	do_seq_along		1
+208	script	do_getwd		1
+209	script	do_systime		1
+210	script	do_External	.External2	156
+211	script	do_asatomic	as.double	156
+212	script	do_repeat		1
+213	script	do_break	break	26
+214	script	do_intToUtf8		1
+215	script	do_break	next	1
+216	script	do_unregNS		1
+217	script	do_importIntoEnv		1
+218	script	do_parentenv		1
+219	script	do_isopen		1
+220	script	do_External	.External	1
+221	script	do_pushback		1
+222	script	do_unclass		1
+223	script	do_sorted_fpass		1
+224	script	do_system		1
+225	script	do_startsWith	startsWith	908
+226	script	do_envIsLocked		1
+227	script	do_unsetenv		1
+228	script	do_is	is.environment	1082
+229	script	do_ls		1
+230	script	do_getVarsFromFrame		1
+231	script	do_lazyLoadDBinsertValue		1
+232	script	do_colon3		1
+233	script	do_seq_len		1
+234	script	do_env2list		1
+235	script	do_enablejit		1
+236	script	do_body		1
+237	script	do_bcversion		1
+238	script	do_putconst		1
+239	script	do_growconst		1
+240	script	do_getconst		1
+241	script	do_mkcode		1
+242	script	do_bcclose		1
+243	script	do_ascall		1
+244	script	do_is_builtin_internal		1
+245	script	do_summary	min	637
+246	script	do_arith	+	39
+247	script	do_arith	^	9
+248	script	do_arith	*	1
+249	script	do_args		1
+250	script	do_serializeToConn		1
+251	script	do_filecreate		1
+252	script	do_fileappend		1
+253	script	do_syschmod		1

@@ -51,7 +51,7 @@ impl<'g> Ref<'g> {
         let _ = cx;
         debug_assert!(!x.is_null());
         // SAFETY: the caller's contract: a live object is not null.
-        Ref { p: unsafe { NonNull::new_unchecked(x.0) }, _g: PhantomData }
+        Ref { p: unsafe { NonNull::new_unchecked(x.as_ptr()) }, _g: PhantomData }
     }
 
     /// A field of an object this `Ref` reaches: the same brand.
@@ -64,13 +64,14 @@ impl<'g> Ref<'g> {
         // SAFETY: the caller's contract; nothing collects or moves during
         // 'g, so the child, live now, stays live at this address for 'g even
         // if a `&Cx` write clears the field (the crate docs, "Minting").
-        Ref { p: unsafe { NonNull::new_unchecked(x.0) }, _g: PhantomData }
+        Ref { p: unsafe { NonNull::new_unchecked(x.as_ptr()) }, _g: PhantomData }
     }
 
     /// The raw object, for the raw layer. Using it is `unsafe` there.
     #[inline(always)]
     pub fn sexp(self) -> Sexp {
-        Sexp(self.p.as_ptr())
+        // SAFETY: a `Ref` holds a live object of its isolate for 'g.
+        unsafe { Sexp::from_ptr(self.p.as_ptr()) }
     }
 
     /// GNU R's TYPEOF.
@@ -234,7 +235,7 @@ impl<'g> Ref<'g> {
             SPECIALSXP => View::Special(self),
             EXTPTRSXP => View::ExtPtr(ExtPtr(self)),
             WEAKREFSXP => View::WeakRef(self),
-            BCODESXP => View::Bytecode(self),
+            BCODESXP => View::Bytecode(Bytecode(self)),
             _ => View::Obj(self),
         }
     }
@@ -298,6 +299,12 @@ impl<'g> Ref<'g> {
         (self.sexptype() == SYMSXP).then_some(Sym(self))
     }
 
+    /// The byte-code view, if this is a BCODESXP.
+    #[inline]
+    pub fn as_bytecode(self) -> Option<Bytecode<'g>> {
+        (self.sexptype() == BCODESXP).then_some(Bytecode(self))
+    }
+
     /// The node view of a pairlist, call or `...` list, if this is one.
     #[inline]
     pub fn as_cons(self) -> Option<Cons<'g>> {
@@ -331,7 +338,7 @@ pub enum View<'g> {
     Special(Ref<'g>),
     ExtPtr(ExtPtr<'g>),
     WeakRef(Ref<'g>),
-    Bytecode(Ref<'g>),
+    Bytecode(Bytecode<'g>),
     /// OBJSXP (S4 objects), and any type not listed.
     Obj(Ref<'g>),
 }
@@ -611,6 +618,15 @@ impl<'g> Sym<'g> {
         Char(unsafe { self.0.child(self.0.sexp().car()) })
     }
 
+    /// GNU R's INTERNAL: the `.Internal` function this symbol names
+    /// (R_NilValue for none), which the evaluator stores in the symbol's
+    /// TAG (`SET_INTERNAL`).
+    #[inline(always)]
+    pub fn internal(self) -> Ref<'g> {
+        // SAFETY: a live symbol: its tag is R_NilValue or a primitive.
+        unsafe { self.0.child(self.0.sexp().tag()) }
+    }
+
     #[inline(always)]
     pub fn as_ref(self) -> Ref<'g> {
         self.0
@@ -663,6 +679,24 @@ node_view!(
         cdr: cdr,
         /// GNU R's TAG.
         tag: tag
+    }
+);
+node_view!(
+    /// Byte code: GNU R's BCODESXP, `CONS(code, consts)` given that type
+    /// (`do_mkcode`). robigo keeps the code decoded, as `R_bcDecode` gives it
+    /// back: GNU R's threaded encoding is never observable (`inspect`
+    /// prints a BCODESXP's header alone; `disassemble` and `serialize`
+    /// decode it). Made by `robigo_rtbuiltins::bytecode::mk_code`, which
+    /// applies `R_bcEncode`'s checks.
+    Bytecode {
+        /// GNU R's BCODE_CODE: an INTSXP, the version and then each
+        /// opcode followed by its operands.
+        code: car,
+        /// BCODE_CONSTS: the constant pool (a list; cmp.R puts the source
+        /// expression first).
+        consts: cdr,
+        /// BCODE_EXPR (the TAG): R_NilValue unless a loader set it.
+        expr: tag
     }
 );
 node_view!(
@@ -722,7 +756,7 @@ impl<'g> ExtPtr<'g> {
     #[inline(always)]
     pub fn addr(self) -> *mut std::ffi::c_void {
         // SAFETY: a live EXTPTRSXP: its car is an untraced word.
-        unsafe { self.0.sexp().car().0.cast() }
+        unsafe { self.0.sexp().car().as_ptr().cast() }
     }
     /// GNU R's R_ExternalPtrProtected.
     #[inline(always)]

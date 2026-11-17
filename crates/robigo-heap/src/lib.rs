@@ -83,15 +83,39 @@ pub mod ce {
 ///
 /// A `Sexp` is a plain address and says nothing about what it points at, so
 /// every accessor that reads through it is `unsafe`. Their contracts share
-/// one word: a *live* object is one a [`Core`] allocated and has not swept.
+/// one word: a *live* object is one a [`Core`] allocated, has not swept,
+/// and still exists (dropping the `Core` frees every chunk unswept).
 /// Liveness is not a property of the `Sexp`: an object stays live only while
 /// the rooting rule (docs/core.md section 3) is met for it, so an unrooted one
-/// can be freed by anything that allocates. Every accessor reads or writes
+/// can be freed by anything that allocates.
+///
+/// A live object's *address* is stable only between collections: the
+/// moving debug collector (`ROBIGO_GC_MOVE=1`, [`Core::set_gc_move`]) moves
+/// every object it may at every collection and poisons the old copy. So a
+/// `Sexp` kept across a collection must be a root the collection forwards,
+/// and an address derived from an object (a payload pointer, a byte slice)
+/// lasts until the next collection, unless the object never moves: an
+/// immortal one, or one handed to C ([`extra::SEEN_BY_C`]). Every accessor reads or writes
 /// the fixed layout of [`layout`], and a store through one of
 /// the `_raw` setters is invisible to the reference counts and the barrier.
+///
+/// The field is private (#736): outside this crate a `Sexp` is made only by
+/// the heap, by [`Sexp::NULL`], or by the `unsafe` constructors, so safe
+/// code cannot name an object that was never one: [`Sexp::from_ptr`] for an
+/// object's address, [`Sexp::from_word`] for a word only compared or kept.
+/// No safe public function of the runtime crates (heap, rtcore, rt, rtapi,
+/// rtbuiltins) takes one either. `scripts/check-sexp-safety.py` (run by
+/// `scripts/lint.sh`) refuses a safe `pub fn`, `pub extern "C" fn`, macro
+/// `fn $name` or `pub trait` method whose parameters, generic bounds or
+/// `where` clause name `Sexp` outside a closure type; its `ALLOWED` list
+/// names the trait methods that take one by design (`Visitor::edge`). The
+/// check is textual, so it does not see a `Sexp` reached through another
+/// name: one inside another public type (a struct's field, a tuple), or a
+/// type alias. Such a type keeps its fields crate-private, or its readers
+/// are `unsafe`.
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct Sexp(pub *mut u8);
+pub struct Sexp(*mut u8);
 
 /// GNU R's `Rcomplex`.
 #[repr(C)]
@@ -113,6 +137,44 @@ pub fn is_vector_type(t: u8) -> bool {
 
 impl Sexp {
     pub const NULL: Sexp = Sexp(std::ptr::null_mut());
+
+    /// The handle of the object at `p`: a `SEXP` C handed back, the object
+    /// word of a value-stack slot, a code object's constant, a symbol's
+    /// address in a slot key. A word that is not an object's address is
+    /// [`Sexp::from_word`]'s.
+    ///
+    /// # Safety
+    /// `p` is null or the address of an object of some heap, whose
+    /// collections decide its liveness. The result may be read through
+    /// only while that object is live, and every read is held to the
+    /// contract of the accessor (or `unsafe fn`) it goes through, which may
+    /// ask for more: a [`Core`] method such as `preserve` or `release`
+    /// needs an object of its own heap. Making the handle reads nothing.
+    #[inline(always)]
+    pub const unsafe fn from_ptr(p: *mut u8) -> Sexp {
+        Sexp(p)
+    }
+    /// A `Sexp` of a word that need not be an object's address, for
+    /// identity only: a primitive's car (its table index), an external
+    /// pointer's car (its address), a tagged slot location, a test's fake.
+    /// (An object's address handed somewhere that reads it, even a test's
+    /// restored one, is [`Sexp::from_ptr`]'s.)
+    ///
+    /// # Safety
+    /// The result is never read through: not passed to an accessor, nor to
+    /// a function whose contract asks for an object. It is compared,
+    /// kept, or stored into a field that nothing traces or reads as an
+    /// object (a primitive's or an external pointer's car).
+    #[inline(always)]
+    pub const unsafe fn from_word(w: *mut u8) -> Sexp {
+        Sexp(w)
+    }
+    /// The object's address, as C has it (`SEXP`): reading it is safe, what
+    /// is done through it is the caller's to justify.
+    #[inline(always)]
+    pub const fn as_ptr(self) -> *mut u8 {
+        self.0
+    }
 
     #[inline(always)]
     pub fn is_null(self) -> bool {

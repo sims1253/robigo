@@ -185,9 +185,9 @@ class RtRuntimeTests(unittest.TestCase):
                     self.run_rt(update=True, r_version=corpus.GATED_R_VERSION)
 
     def test_rt_refuses_what_it_cannot_run_yet(self):
-        self.assertIn("echo mode", corpus.rt_unsupported("x", {"mode": "echo"}))
         self.assertIn("build step", corpus.rt_unsupported("x", {"build": "build.sh"}))
         self.assertIsNone(corpus.rt_unsupported("x", {"mode": "script"}))
+        self.assertIsNone(corpus.rt_unsupported("x", {"mode": "echo"}))
 
     def test_blocked_names_the_first_missing_thing(self):
         self.assertEqual(corpus.blocked(b"Error: robigo: the primitive 'sprintf' is not implemented yet\n"),

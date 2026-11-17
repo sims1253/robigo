@@ -1,0 +1,39 @@
+ [1] "platform"       "arch"           "os"             "system"        
+ [5] "status"         "major"          "minor"          "year"          
+ [9] "month"          "day"            "svn rev"        "language"      
+[13] "version.string" "nickname"      
+platform : x86_64-pc-linux-gnu 
+arch : x86_64 
+os : linux-gnu 
+system : x86_64, linux-gnu 
+status :  
+major : 4 
+minor : 6.2 
+year : 2026 
+month : 10 
+day : 29 
+svn rev : 90784 
+language : R 
+version.string : R version 4.6.2 (2026-10-29) 
+nickname : Diversified Portfolio 
+[1]  TRUE FALSE FALSE FALSE  TRUE
+logical(0)
+[1] "invalid filename argument"
+[1] "a/b"
+[1] "a\\c" "b\\c"
+character(0)
+character(0)
+[1] "1/x" "2/x"
+[1] "sym/x"
+[1] "u/w" "v/w"
+[1] "NA/x"
+[1] "aNA"
+[1] "é/x"
+[1] "UTF-8"
+[1] "invalid first argument"
+[1] "invalid separator"
+[1] "invalid separator"
+[1] "cannot coerce type 'builtin' to vector of type 'character'"
+[1] "translating strings with \"bytes\" encoding is not allowed"
+Warning: unable to translate 'a<81>' to native encoding 
+[1]  TRUE FALSE
