@@ -64,6 +64,10 @@ pub enum Inline {
     Logic(u8),
     /// `(`
     Paren,
+    /// bcEval's scalar math under `Bc` ([`crate::ir::Op::Math1`]'s kind):
+    /// cmp.R's `cmpMath1` (a `math1funs` index) and `sqrt`'s and `exp`'s
+    /// `cmpPrim1`.
+    Math1(u16),
 }
 
 /// A special that is a function over its call: GNU R's `do_*` of a
@@ -255,7 +259,12 @@ static RT_PRIMS: &[PrimDef] = &[
 
 /// How the VM runs B1's builtin `name` inline, if it does.
 fn inline_of(name: &str) -> Inline {
+    if let Some(i) = robigo_rtbuiltins::math::BC_MATH1.iter().position(|e| e.0 == name) {
+        return Inline::Math1(i as u16);
+    }
     match name {
+        "sqrt" => Inline::Math1(crate::ir::MATH_SQRT),
+        "exp" => Inline::Math1(crate::ir::MATH_EXP),
         "+" => Inline::Arith(PLUSOP),
         "-" => Inline::Arith(MINUSOP),
         "*" => Inline::Arith(TIMESOP),

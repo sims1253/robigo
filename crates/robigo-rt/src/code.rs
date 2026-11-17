@@ -190,7 +190,8 @@ fn check(b: &Built) -> Result<(), Malformed> {
             Op::DfltSubset => reg(i.a) && k(i.e) && window(i.b, i.c),
             Op::Dollar => reg(i.a) && reg(i.b) && k(i.e) && k(i.c),
             Op::Math1 => {
-                let kinds = i.g < crate::ir::MATH_SQRT || (crate::ir::MATH_SQRT..=crate::ir::MATH_LOGBASE).contains(&i.g);
+                let kinds =
+                    i.g < crate::ir::MATH_SQRT || (crate::ir::MATH_SQRT..=crate::ir::MATH_LOGBASE).contains(&i.g);
                 let n = if i.g == crate::ir::MATH_LOGBASE { 2 } else { 1 };
                 reg(i.a)
                     && k(i.e)

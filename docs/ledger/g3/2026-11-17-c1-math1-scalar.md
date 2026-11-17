@@ -1,4 +1,4 @@
-## 2026-11-17: bcEval's scalar paths for MATH1, SQRT, EXP, LOG, LOGBASE (draft)
+## 2026-11-17: bcEval's scalar paths for MATH1, SQRT, EXP, LOG, LOGBASE
 
 The foreman's correctness item, ahead of V4 step 3; held until #803 (AC1)
 merges, then measured on top of it. B's #802 (math1 functions, `log`)
@@ -51,3 +51,32 @@ against the calling function.
 5. Fixtures: #802's unratcheted cases, and `1 / sin(-0)`-style ones for
    each kind, the warnings' calls, integers, logicals and NAs, recorded on
    4.6.2.
+
+### What landed
+
+- `Op::Math1` (`ir.rs`), its VM arm and two helpers outside the loop
+  (`vm.rs`: `math1_fast`, the paths above on `num()`'s reading of a
+  register, bcStackScalar's; `math1_slow`, the builtin or
+  `call::call_fn_regs` with `do_log_builtin`), the verifier's rule (the
+  window, the kind, the value outside the window) and the crosscheck's
+  operand kinds.
+- `robigo_rtbuiltins::math::BC_MATH1`: eval.c's `math1funs`, the C
+  library's functions (libm's `expm1`, `log1p`, `acosh`, `asinh`, `atanh`
+  through robigo-numerics, Rust's own formulas rounding differently) and
+  nmath's; `bc_log`, `bc_logbase`.
+- The translation: `MATH1` (getMath1Fun's check that the table's name is
+  the call's function), `SQRT`, `EXP`, and now `LOG`, `LOGBASE` (V3 had
+  them untranslated).
+- The from-source compiler under `Bc`: `Inline::Math1` for the 24 table
+  names, `sqrt` and `exp` (one argument, no `...` or empty one), `log`'s
+  handler (one or two unnamed). Under `Eval` these stay the generic call
+  (`known()`): the AST's `do_math1` wraps the C functions.
+- Fixtures: `tests/rt/bctrans/math.R` (8 cases: `1 / sin(-0)`, the signed
+  zeros, integers, NAs, logicals and vectors through the builtin, the
+  NaN warnings' calls), recorded on 4.6.2; #802's `math1-compiled.R` and
+  `log-compiled.R` ratcheted. `log-missing-class.R` (the condition
+  classes of `log()`'s missing argument) is not this path; it stays B's.
+
+### Verification
+
+VERIFICATION (after #803 merges: main merged, measured on top of it)

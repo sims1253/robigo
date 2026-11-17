@@ -764,9 +764,8 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
             },
             Op::Math1 => {
                 // SAFETY: registers of the running activation: their objects are live, rooted.
-                let (x, y) = unsafe {
-                    (num(cx, act.get(i.b)), if i.c == 2 { num(cx, act.get(i.b + 1)) } else { None })
-                };
+                let (x, y) =
+                    unsafe { (num(cx, act.get(i.b)), if i.c == 2 { num(cx, act.get(i.b + 1)) } else { None }) };
                 match math1_fast(i.g, x, y) {
                     Some((val, warn)) => {
                         if warn {
