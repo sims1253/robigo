@@ -29,7 +29,8 @@ per iteration, N against 2N), and peak RSS (scripts/rss.py). It fails when
 a bar marked met breaks against the committed GNU R and today's-robigo
 numbers, when a regression the lead accepted passes its `ceiling`, or when a
 row is more than the threshold slower than with --main, main's binary of the
-merge's base, measured beside it on this machine.
+merge's base, measured beside it on this machine. Its guard rows have no bar:
+only main holds them (common VM paths no bar's row reaches).
 
 GNU R's side of the bars is measured on the machine that gates, not taken
 from another: `rt-gnur` measures GNU R's rows (instructions and estimated
@@ -789,6 +790,25 @@ def rt_acceptance_errors(bar):
     return errors
 
 
+def rt_guard_errors(spec, row_names):
+    """What is wrong with the bars file's guard rows: each is a row of
+    benchmarks/rt/calls-rows.toml (`row_names`), named once, and not also a
+    bar's row (a bar already holds its row to main). rt-bars refuses a bars
+    file with any."""
+    bars = {b["row"] for b in spec["bar"]}
+    errors, seen = [], set()
+    for g in spec.get("guard", []):
+        row = g["row"]
+        if row not in row_names:
+            errors.append(f"guard `{row}`: no row of that name in benchmarks/rt/calls-rows.toml")
+        if row in bars:
+            errors.append(f"guard `{row}`: a bar's row already, which holds it to main")
+        if row in seen:
+            errors.append(f"guard `{row}`: named twice")
+        seen.add(row)
+    return errors
+
+
 def rt_verdict(spec, instr, rss, main=None):
     """The rt-bars gate's findings: (failures, notes, table). `spec` is
     benchmarks/rt/m1-bars.toml; `instr` and `rss` this binary's numbers;
@@ -821,6 +841,16 @@ def rt_verdict(spec, instr, rss, main=None):
             failures.append(f"`{row}`: {pct(v, m):+.2f}% instructions against main ({m:,.1f} -> {v:,.1f})")
             status += ", SLOWER"
         table.append((row, v, m, against, ratio, cap, met, status))
+    # a guard row has no reference: only main holds it, to the same 0.5% rule
+    for g in spec.get("guard", []):
+        row = g["row"]
+        v = instr[row]
+        m = main["instr"][row] if main else None
+        status = "guard"
+        if m and pct(v, m) > THRESHOLD:
+            failures.append(f"`{row}`: {pct(v, m):+.2f}% instructions against main ({m:,.1f} -> {v:,.1f})")
+            status += ", SLOWER"
+        table.append((row, v, m, "main", None, None, True, status))
     for r in spec["rss"]:
         f = r["program"]
         for against in r["against"]:
@@ -843,6 +873,8 @@ def cmd_rt_bars(a):
               f"({spec['gnur']['source']}) and update them")
         return 1
     errors = [e for b in spec["bar"] for e in rt_acceptance_errors(b)]
+    with open(RT_ROWS, "rb") as f:
+        errors += rt_guard_errors(spec, {r["name"] for r in tomllib.load(f)["row"]})
     if errors:
         for e in errors:
             print(f"rt-bars: {os.path.relpath(a.bars, ROOT)}: {e}")
@@ -859,7 +891,7 @@ def cmd_rt_bars(a):
             return 1
         spec = rt_with_gnur(spec, doc)
         gnur_source = f"GNU R {doc['version']} measured on this CPU signature ({a.gnur})"
-    rows = [b["row"] for b in spec["bar"]]
+    rows = [b["row"] for b in spec["bar"]] + [g["row"] for g in spec.get("guard", [])]
     files = [r["program"] for r in spec["rss"]]
     work = tempfile.mkdtemp(prefix="rt-bars-")
 
@@ -910,6 +942,10 @@ def cmd_rt_bars(a):
         if a.cycles:
             mc = main["cycles"][row] if main else None
             cyc = f" {cycles[row]:,.1f} | {f'{pct(cycles[row], mc):+.2f}%' if mc else ''} |"
+        if cap is None:
+            # a guard row: main is its only reference
+            print(f"| {row} | {v:,.1f} | {main_s} | {change} | main | | guard | {status} |{cyc}")
+            continue
         print(f"| {row} | {v:,.1f} | {main_s} | {change} | {against} | {ratio:.3f}x | "
               f"{'' if met else '('}{cap}x{'' if met else ')'} | {status} |{cyc}")
     if ranges["new"]:
@@ -927,7 +963,7 @@ def cmd_rt_bars(a):
         refs = ", ".join(f"{ag} {spec[ag]['rss'][f]:,}" for ag in r["against"])
         print(f"| {f} | {rss[f]:,} | {f'{m:,}' if m else ''} | ≤ {refs} |")
     print("\n(A bar in parentheses is not met yet: only regressions against main fail it, and an accepted "
-          "regression's ceiling.)")
+          "regression's ceiling. A guard row has no bar: only regressions against main fail it.)")
     for n in notes:
         print(f"\nNOTE {n}")
     for x in failures:

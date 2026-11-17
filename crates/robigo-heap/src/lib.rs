@@ -42,6 +42,7 @@ mod gc;
 mod heap;
 mod heapsize;
 pub mod layout;
+mod shared;
 pub mod slots;
 mod trace;
 pub mod unwind;
