@@ -25,5 +25,9 @@
   per MiB is 20% worse. The line prints the total time and the bytes, so
   the per-program time can be compared too; which the bar means is the
   foreman's to settle before X3's runs.
-- Measured: see the PR (perf-rt against main, both built fresh, sha256
-  checked to differ).
+- Measured (this box, release, `scripts/perf.py rt-bars --main`): main
+  `908cb765` (sha256 001325ce…, build id 69e70762…) against `754413b2`
+  (49a89d42…, 11cddb43…), each built in its own target from its own
+  checkout: 0 failures, every row ±0.00%, peak RSS within ±0.3%.
+- Review: sol-loop, 1 round with gpt-6.1-sol on high, approved with no
+  findings.
