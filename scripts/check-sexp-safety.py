@@ -28,15 +28,19 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CRATES = ["robigo-heap", "robigo-rtcore", "robigo-rt", "robigo-rtapi", "robigo-rtbuiltins"]
 
-FN = re.compile(
-    r'(?m)^[ \t]*pub[ \t]+(?P<qual>(?:(?:const|async|unsafe|extern(?:[ \t]+"C")?)[ \t]+)*)fn[ \t]+(?P<name>[\w$]+)'
-)
+FN = re.compile(r'\bpub\s+(?P<qual>(?:(?:const|async|unsafe|extern(?:\s+"C")?)\s+)*)fn\s+(?P<name>[\w$]+)')
 CLOSURE = re.compile(r"\b(?:impl|dyn)\s+Fn(?:Mut|Once)?\s*\(")
 
 
+def uncomment(src):
+    """`src` with every `//` comment blanked (line numbers kept)."""
+    return re.sub(r"//[^\n]*", lambda m: " " * len(m.group(0)), src)
+
+
 def params(src, start):
-    """The text between the parameter list's parentheses, after `start`
-    (generics skipped), with comments removed."""
+    """What a signature after `start` says of its inputs: the generic
+    parameters and their bounds, the parameter list, and the `where`
+    clause (the return type is not an input)."""
     i = start
     depth = 0
     while src[i] != "(" or depth:
@@ -45,6 +49,7 @@ def params(src, start):
         elif src[i] == ">" and src[i - 1] != "-":
             depth -= 1
         i += 1
+    generics = src[start:i]
     depth = 0
     j = i
     while True:
@@ -56,8 +61,12 @@ def params(src, start):
             if depth == 0:
                 break
         j += 1
-    text = src[i + 1 : j]
-    return re.sub(r"//[^\n]*", "", text)
+    k = j + 1
+    while k < len(src) and src[k] not in "{;":
+        k += 1
+    tail = src[j + 1 : k]
+    where = tail[tail.index("where") :] if re.search(r"\bwhere\b", tail) else ""
+    return generics + " " + src[i + 1 : j] + " " + where
 
 
 def without_closures(text):
@@ -79,6 +88,7 @@ def without_closures(text):
 
 
 def hits(path, src):
+    src = uncomment(src)
     for m in FN.finditer(src):
         if "unsafe" in m.group("qual"):
             continue

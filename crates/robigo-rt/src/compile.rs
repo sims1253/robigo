@@ -164,7 +164,7 @@ pub unsafe fn compile_closure(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
 /// None when cmp.R returns the closure uncompiled (it may call
 /// `browser()`, a compiler error).
 // R: cmp.R:cmpfun, make.functionContext, funEnv
-pub fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> RResult<Option<Sexp>> {
+pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> RResult<Option<Sexp>> {
     attempt(cx, |cx| {
         let f = op.bind(cx).sexp();
         // SAFETY: a rooted closure (and cache entry); nothing collects in
@@ -233,7 +233,7 @@ pub fn compile_top_loop(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RResult<O
 /// which evaluates its arguments by `eval` (bcEval's `CALLSPECIAL` too).
 ///
 /// `call` is read through its root on every attempt.
-pub fn compile_special(cx: &mut Cx, call: robigo_rtcore::Root<'_>, off: usize) -> RResult<Sexp> {
+pub(crate) fn compile_special(cx: &mut Cx, call: robigo_rtcore::Root<'_>, off: usize) -> RResult<Sexp> {
     compile_special_with(cx, call, None, off)
 }
 
@@ -242,7 +242,7 @@ pub fn compile_special(cx: &mut Cx, call: robigo_rtcore::Root<'_>, off: usize) -
 /// rho)` of a special method, `call` for its messages and its dispatch,
 /// `args` the method's promises (each forced as `eval` forces it).
 // R: objects.c:applyMethod (SPECIALSXP)
-pub fn compile_special_with(
+pub(crate) fn compile_special_with(
     cx: &mut Cx,
     call: robigo_rtcore::Root<'_>,
     args: Option<robigo_rtcore::Root<'_>>,

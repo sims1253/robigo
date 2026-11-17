@@ -47,9 +47,9 @@ const HELPER: &[u8] = b"function(f, a, cl, h) {
 /// arguments with their tags (R_NilValue for none).
 #[derive(Clone, Debug)]
 pub struct FoldReq {
-    pub call: Sexp,
-    pub fun: Sexp,
-    pub args: Vec<(Sexp, Sexp)>,
+    pub(crate) call: Sexp,
+    pub(crate) fun: Sexp,
+    pub(crate) args: Vec<(Sexp, Sexp)>,
 }
 
 /// The isolate's folding state ([`prims::RtState::folds`]).
@@ -95,7 +95,7 @@ impl Folds {
     }
 
     /// Ask for the value of `r.call` before the next try.
-    pub fn request(&self, r: FoldReq) {
+    pub(crate) fn request(&self, r: FoldReq) {
         self.asked.set(self.asked.get() + 1);
         let mut p = self.pending.borrow_mut();
         if !p.iter().any(|q| q.call == r.call) {
@@ -140,7 +140,7 @@ impl Round {
     /// since): each call's value from now on, or that it does not fold.
     /// `R_Visible` is kept. An exit no handler of the fold takes (a
     /// restart, an interrupt) propagates.
-    pub fn resolve(&mut self, cx: &mut Cx, reqs: Vec<FoldReq>) -> RResult<()> {
+    pub(crate) fn resolve(&mut self, cx: &mut Cx, reqs: Vec<FoldReq>) -> RResult<()> {
         // SAFETY: the requests' objects are live: the try that found them
         // (in the source, a cached value) just ended and nothing has
         // allocated since. Rooting them allocates nothing.

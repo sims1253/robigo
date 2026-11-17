@@ -92,9 +92,9 @@ impl Slot {
     /// The object, if the slot holds one.
     #[inline(always)]
     pub fn as_object(self) -> Option<Sexp> {
-        // SAFETY: an object slot holds an object's word ([`Slot::object`]'s
-        // contract).
-        (self.tag == Tag::Object as u64).then_some(unsafe { Sexp::from_ptr(self.word) })
+        // SAFETY: (taken only for an object slot) an object slot holds an
+        // object's word ([`Slot::object`]'s contract).
+        (self.tag == Tag::Object as u64).then(|| unsafe { Sexp::from_ptr(self.word) })
     }
     /// A mark the evaluator leaves on its own slots: a word that is neither
     /// an object (nothing traces it) nor a value ([`Slot::tag`] names no

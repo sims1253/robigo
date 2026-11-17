@@ -29,6 +29,14 @@ CASES = [
     ("pub fn roots(&self, f: &mut dyn FnMut(&mut Sexp)) {}", []),
     ("pub fn f(&self, // a Sexp in a comment\n    n: usize) {}", []),
     ("pub fn f(&self, a: impl Fn(u8) -> Sexp, b: Sexp) {}", ["f"]),
+    ("impl Cx { pub fn f(x: Sexp) {} }", ["f"]),
+    ("pub\nfn f(x: Sexp) {}", ["f"]),
+    ("pub fn f<T: Into<Sexp>>(x: T) {}", ["f"]),
+    ("pub fn f<T>(x: T)\nwhere\n    T: Into<Sexp>,\n{}", ["f"]),
+    ("pub fn f(x: u8) -> Sexp\nwhere\n    u8: Copy,\n{ todo!() }", []),
+    ("/// a safe `pub fn f(x: Sexp)` is refused\npub fn g() {}", []),
+    ("// pub fn f(x: Sexp) {}\npub fn g() {}", []),
+    ("pub(super) fn f(x: Sexp) {}", []),
 ]
 
 

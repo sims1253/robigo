@@ -30,23 +30,23 @@ use std::ptr::NonNull;
 /// An activation of a code object.
 pub struct Act {
     /// The registers.
-    pub base: NonNull<Slot>,
+    pub(crate) base: NonNull<Slot>,
     /// Where the value goes: an empty object slot of the caller.
-    pub out: NonNull<Slot>,
+    pub(crate) out: NonNull<Slot>,
     /// `R_EvalDepth` when the activation began: an evaluation point of depth
     /// `d` runs at `depth + d`.
-    pub depth: i32,
+    pub(crate) depth: i32,
     /// The body of a closure call: `return` leaves it directly.
-    pub body: bool,
+    pub(crate) body: bool,
     /// The value may go to `out` unboxed: the body of a closure that
     /// compiled code called, whose register takes it (`args::apply`).
-    pub unboxed: bool,
+    pub(crate) unboxed: bool,
     /// The value went to `out` unboxed ([`exec`]'s result).
-    pub left_unboxed: bool,
+    pub(crate) left_unboxed: bool,
     /// `Eval` code: GNU R's evaluator protections at the root's `eval`
     /// minus `depth` (robigo_rtcore's ppacct): an instruction calling out
     /// sets the excess to this plus its offset ([`View::ppk`]).
-    pub e0: i32,
+    pub(crate) e0: i32,
 }
 
 /// How a run of instructions ended.
@@ -225,7 +225,7 @@ fn is_unboxed(s: Slot) -> bool {
 
 /// Box register `r` if it holds an unboxed scalar (the box is written back,
 /// so later reads see the one object); its object.
-pub fn boxed(cx: &mut Cx, act: &Act, r: Reg) -> RResult<Sexp> {
+pub(crate) fn boxed(cx: &mut Cx, act: &Act, r: Reg) -> RResult<Sexp> {
     let s = act.get(r);
     if let Some(x) = s.as_object() {
         return Ok(x);
@@ -237,7 +237,7 @@ pub fn boxed(cx: &mut Cx, act: &Act, r: Reg) -> RResult<Sexp> {
 }
 
 /// A new length-1 vector holding the unboxed `s`.
-pub fn box_slot(cx: &Cx, s: Slot) -> Result<Sexp, NeedGc> {
+pub(crate) fn box_slot(cx: &Cx, s: Slot) -> Result<Sexp, NeedGc> {
     Ok(match s.tag() {
         Tag::Real => cx.alloc_with(1, |_| s.as_real().unwrap())?.finish().as_ref().sexp(),
         Tag::Int => cx.alloc_with(1, |_| s.as_int().unwrap())?.finish().as_ref().sexp(),
@@ -250,7 +250,7 @@ pub fn box_slot(cx: &Cx, s: Slot) -> Result<Sexp, NeedGc> {
 /// A register's value as a scalar number, if it is one the kernels take
 /// (an unboxed scalar, or a plain length-1 vector without attributes).
 #[inline(always)]
-pub fn num(cx: &Cx, s: Slot) -> Option<Num> {
+pub(crate) fn num(cx: &Cx, s: Slot) -> Option<Num> {
     match s.tag() {
         Tag::Real => Some(Num::Real(s.as_real().unwrap())),
         Tag::Int => Some(Num::Int(s.as_int().unwrap())),
