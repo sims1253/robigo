@@ -134,6 +134,7 @@ pub(crate) fn install_hooks(cx: &mut Cx) {
     let mut h = cx.hooks();
     h.error = error_hook;
     h.error_condition = error_condition_hook;
+    h.interrupt = onintr_hook;
     h.warning = warning_hook;
     h.exit_value = fixup_exiting_handler_result;
     h.dispatch = crate::dispatch::dispatch_hook;
@@ -1946,4 +1947,94 @@ pub fn push_calling_error_handler<'s>(cx: &mut Cx, s: Scope<'s>, addr: Root<'_>)
     })?;
     cx.set_handler_stack(stack);
     Ok(old)
+}
+
+// ---- user interrupts ---------------------------------------------------------
+
+/// The isolate's interrupt hook, GNU R's `onintr()` (`onintrEx(TRUE)`): the
+/// `interrupt` condition signalled in a restart context that offers the
+/// internal restart `resume`; a handler that invokes it lets evaluation go
+/// on (`Ok`). Otherwise the console's newline, then the jump to the top
+/// level, which `options(error)` sees only while `options(interrupt)` is
+/// NULL ("as a transition").
+// R: errors.c:onintrEx
+pub fn onintr_hook(cx: &mut Cx) -> RResult<()> {
+    let resumed = cx.scope(|cx, s| {
+        let g = s.root(cx, cx.global_env());
+        let b = s.root(cx, cx.base_env());
+        cx.restart_context(g, b, |cx, c| {
+            add_internal_restart(cx, c, b"resume")?;
+            signal_interrupt(cx)
+        })
+    })?;
+    if resumed {
+        // R_ReturnedValue = R_NilValue; R_Visible = FALSE
+        cx.set_visible(false);
+        return Ok(());
+    }
+    let try_user_error = cx.scope(|cx, s| -> RResult<bool> {
+        let h = get_option1(cx, s, b"interrupt")?;
+        Ok(h.bind(cx).sexptype() == NILSXP)
+    })?;
+    cx.reprintf(b"\n");
+    Err(jump_to_top_ex(cx, true, try_user_error, true, true, false, None))
+}
+
+/// `signalInterrupt()`: the handlers for `interrupt` or `condition`,
+/// innermost first, each popped as it runs. A calling handler is called
+/// with a new interrupt condition in the global environment; an exiting
+/// one is a jump with it (no call). The stack is put back after them, then
+/// `options(interrupt)` is called.
+// R: errors.c:signalInterrupt, findInterruptHandler
+fn signal_interrupt(cx: &mut Cx) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let oldstack = s.root(cx, cx.handler_stack());
+        let g = s.root(cx, cx.global_env());
+        while let Some(list) = find_handler(cx, |c| c == b"interrupt" || c == b"condition") {
+            let list = s.root(cx, list);
+            let entry = s.root(cx, list.bind(cx).as_cons().unwrap().car());
+            pop_handlers_to(cx, list);
+            let cond = interrupt_condition(cx, s)?;
+            if !is_calling(entry.bind(cx)) {
+                return Err(goto_exiting_handler(cx, cond, None, entry));
+            }
+            let h = s.root(cx, entry_elt(entry.bind(cx), entry::HANDLER));
+            let o = s.out(cx);
+            let hcall = o.root();
+            cx.build(o, |cx| {
+                let a = cx.cons(cond.bind(cx), cx.nil())?;
+                cx.lcons(h.bind(cx), a)
+            })?;
+            eval_keep_vis(cx, hcall, g)?;
+        }
+        cx.set_handler_stack(oldstack);
+        let h = get_option1(cx, s, b"interrupt")?;
+        if h.bind(cx).sexptype() != NILSXP {
+            let o = s.out(cx);
+            let call = o.root();
+            cx.build(o, |cx| cx.lcons(h.bind(cx), cx.nil()))?;
+            eval_keep_vis(cx, call, g)?;
+        }
+        Ok(())
+    })
+}
+
+/// `getInterruptCondition()`: an empty list of class `c("interrupt",
+/// "condition")`.
+// R: errors.c:getInterruptCondition
+fn interrupt_condition<'s>(cx: &mut Cx, s: Scope<'s>) -> RResult<Root<'s>> {
+    let o = s.out(cx);
+    let r = o.root();
+    cx.build(o, |cx| {
+        let mut k = cx.alloc_vector::<Char<'_>>(2)?;
+        k.set(0, cx.mk_char(b"interrupt", Encoding::Native)?);
+        k.set(1, cx.mk_char(b"condition", Encoding::Native)?);
+        let k = k.finish();
+        let mut l = cx.alloc_vector::<Ref<'_>>(0)?;
+        let attrs = cx.cons_tagged(k.as_ref(), cx.nil(), cx.sym(RSym::Class))?;
+        l.set_attrib(attrs);
+        l.set_object(true);
+        Ok(l.finish().into())
+    })?;
+    Ok(r)
 }

@@ -250,7 +250,7 @@ exports! {
     (entry 2), true => R_ToplevelExec;
     (entry 4), true => robigo_rtapi_unwind_protect R_ExecWithCleanup;
     (entry 1), true => R_ContinueUnwind;
-    (entry 0), true => R_MakeUnwindCont;
+    (entry 0), true => R_MakeUnwindCont R_CheckUserInterrupt;
     // errors.c's C-level tryCatch (api.c's, over these)
     (entry 3), true => robigo_rtapi_try_catch;
     (entry 1), true => robigo_rtapi_push_error_handler robigo_rtapi_set_handler_stack;
