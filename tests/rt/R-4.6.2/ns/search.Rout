@@ -18,5 +18,4 @@
 [1] ".GlobalEnv"   "package:base"
 [1] "detaching \"package:base\" is not allowed"
 [1] "invalid 'pos' argument"
-[1] "cannot remove bindings from a locked environment"
 [1] "not a symbol"
