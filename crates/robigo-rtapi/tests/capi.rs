@@ -241,6 +241,17 @@ fn the_attribute_setters_read_a_package_altrep_length() {
         }
         for (src, want) in [
             // the case the print refusal could not reach before
+            (
+                "dn <- list(c(\"a\", \"b\")); names(dn) <- .Call(\"rt_altrep_str\", \"axis\"); \
+                 x <- 1:2; dim(x) <- 2L; dimnames(x) <- dn; print(x)",
+                "printing a package ALTREP vector is not implemented yet",
+            ),
+            (
+                "dn <- list(c(\"a\", \"b\"), NULL); names(dn) <- z; \
+                 m <- matrix(1:4, 2); dimnames(m) <- dn; print(m)",
+                "printing a package ALTREP vector is not implemented yet",
+            ),
+            ("x <- c(1, 2); attr(x, \"names\") <- pairlist(z)", "incompatible 'names' argument"),
             ("x <- c(1, 2); names(x) <- z; print(x)", "printing a package ALTREP vector is not implemented yet"),
             ("x <- c(1, 2); names(x) <- z; deparse(x)", "deparse of a package ALTREP vector is not implemented yet"),
             (
@@ -293,13 +304,20 @@ fn the_attribute_setters_call_the_length_method_as_gnu_r_does() {
             ("x <- 1; z <- .Call(\"rt_altrep_str\", c(\"a\", \"b\"))", "comment(x) <- z", 2),
             ("d <- list(1:2); z <- .Call(\"rt_altrep_int\", 5:6)", "attr(d, \"row.names\") <- z", 0),
             ("x <- 1:2; z <- .Call(\"rt_altrep_int\", 5:6)", "attr(x, \"tsp\") <- z", 1),
+            // isVectorizable stops at the first element longer than 1
+            ("x <- c(1, 2); z <- .Call(\"rt_altrep_str\", c(\"a\", \"b\"))", "attr(x, \"names\") <- pairlist(z, z)", 1),
         ] {
             s.val(setup);
-            s.val(".Call(\"rt_altrep_length_calls\")");
+            let v = if setup.starts_with("y <-") { "y" } else { "z" };
+            s.val(&format!(".Call(\"rt_altrep_length_calls\", {v})"));
             // (an error or not: GNU R's count is the same either way; NULL
             // last, so that describing the result reads no length)
             let _ = s.run(&format!("{assign}; NULL"));
-            assert_eq!(s.val(".Call(\"rt_altrep_length_calls\")"), int(calls), "{p:?} {setup}; {assign}");
+            assert_eq!(
+                s.val(&format!(".Call(\"rt_altrep_length_calls\", {v})")),
+                int(calls),
+                "{p:?} {setup}; {assign}"
+            );
         }
     }
 }

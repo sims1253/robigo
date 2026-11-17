@@ -164,13 +164,19 @@ pub fn namesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
         let o = s.out(cx);
         let v = o.root();
         if val.bind(cx).sexptype() == LISTSXP {
+            // isVectorizable: up to the first element that is not a vector
+            // of length at most 1 (LENGTH: a package class's Length method)
             let ok = {
-                let mut c = val.bind(cx).as_cons();
+                let cur = s.root(cx, val.bind(cx));
+                let e = s.root(cx, cx.nil());
                 let mut ok = true;
-                while let Some(cell) = c {
-                    let e = cell.car();
-                    ok &= is_vector(e) && xlength(e) <= 1;
-                    c = cell.cdr().as_cons();
+                while cur.bind(cx).as_cons().is_some() {
+                    e.replace_with(cx, |cx| Ok(cur.bind(cx).as_cons().unwrap().car()))?;
+                    if !is_vector(e.bind(cx)) || xlength_mut(cx, e)? > 1 {
+                        ok = false;
+                        break;
+                    }
+                    cur.replace_with(cx, |cx| Ok(cur.bind(cx).as_cons().unwrap().cdr()))?;
                 }
                 ok
             };
