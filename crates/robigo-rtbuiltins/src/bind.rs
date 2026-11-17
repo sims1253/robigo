@@ -640,6 +640,12 @@ fn bind_result<'g, 'r>(
 
 const C: Generic = Generic::builtin("c");
 
+/// Whether `c()`'s argument `i` is one of the options `c_Extract_opt`
+/// takes out (`recursive`, `use.names`, by exact name).
+fn is_c_option(cx: &Cx, args: Args<'_>, i: usize) -> bool {
+    matches!(args.name(cx, i).map(|s| s.name().bytes()), Some(b"recursive" | b"use.names"))
+}
+
 /// `c(...)`: its arguments combined, `recursive` and `use.names` taken out
 /// by exact name.
 // R: bind.c:do_c, do_c_dflt, c_Extract_opt
@@ -693,20 +699,17 @@ pub fn do_c(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out
         // through INTEGER, REAL, ... (the arguments themselves were
         // materialized at entry)
         if recurse {
-            for &i in &kept {
-                cx.materialize_nested(args.root(i), None)?;
+            for i in 0..args.len() {
+                if !is_c_option(cx, args, i) {
+                    cx.materialize_nested(args.root(i), None)?;
+                }
             }
         }
         cx.build_with(out, |cx| {
             // the arguments but those two
             let top: Vec<Item<'_>> = (0..args.len())
-                .filter_map(|i| {
-                    let name = args.name(cx, i).map(|s| s.name());
-                    match name.map(|c| c.bytes()) {
-                        Some(b"recursive" | b"use.names") => None,
-                        _ => Some(Item { value: args.get(cx, i), name }),
-                    }
-                })
+                .filter(|&i| !is_c_option(cx, args, i))
+                .map(|i| Item { value: args.get(cx, i), name: args.name(cx, i).map(|s| s.name()) })
                 .collect();
             let mut d = Bind::default();
             for it in &top {
