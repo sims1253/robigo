@@ -158,6 +158,122 @@ def command(runtime, robigo, file, instr):
     return ["Rscript", "--vanilla", file]
 
 
+def crate_dirs(crate, root=ROOT):
+    """The directories of `crate` and of every local crate it is built from,
+    through `path` dependencies in [dependencies] and [build-dependencies]
+    (target-specific ones too; `workspace = true` resolves through the root
+    manifest), never [dev-dependencies]."""
+    with open(os.path.join(root, "Cargo.toml"), "rb") as f:
+        ws = tomllib.load(f).get("workspace", {})
+    ws_deps = ws.get("dependencies", {})
+    by_name = {}
+    for m in ws.get("members", []):
+        for d in glob.glob(os.path.join(root, m)):
+            mf = os.path.join(d, "Cargo.toml")
+            if os.path.isfile(mf):
+                with open(mf, "rb") as f:
+                    by_name[tomllib.load(f).get("package", {}).get("name")] = os.path.normpath(d)
+    out, todo = [], [by_name[crate]]
+    while todo:
+        d = todo.pop()
+        if d in out:
+            continue
+        out.append(d)
+        with open(os.path.join(d, "Cargo.toml"), "rb") as f:
+            man = tomllib.load(f)
+        tables = [man.get("dependencies", {}), man.get("build-dependencies", {})]
+        for t in man.get("target", {}).values():
+            tables += [t.get("dependencies", {}), t.get("build-dependencies", {})]
+        for table in tables:
+            for name, spec in table.items():
+                if not isinstance(spec, dict):
+                    continue
+                if spec.get("workspace"):
+                    spec = ws_deps.get(name, {})
+                    if "path" in spec:
+                        todo.append(os.path.normpath(os.path.join(root, spec["path"])))
+                elif "path" in spec:
+                    todo.append(os.path.normpath(os.path.join(d, spec["path"])))
+    return sorted(out)
+
+
+def git(args, root=ROOT):
+    """`git ARGS` in `root`: its stdout, or None without git or a repository."""
+    try:
+        p = subprocess.run(["git", *args], cwd=root, capture_output=True, text=True)
+    except OSError:
+        return None
+    return p.stdout if p.returncode == 0 else None
+
+
+def newest_source(dirs, root=ROOT):
+    """(time, what) of the newest change to `dirs`: the last commit that
+    touched them, or an uncommitted edit (its file's mtime), whichever is
+    later. Commit times, not file mtimes, so that a fresh checkout of the
+    same commit does not look newer than a binary built from it."""
+    rel = [os.path.relpath(d, root) for d in dirs] + ["Cargo.lock"]
+    best = (0.0, None)
+    last = git(["log", "-1", "--format=%ct %h", "HEAD", "--", *rel], root)
+    if last and last.strip():
+        t, h = last.split()
+        best = (float(t), f"commit {h}")
+    for line in (git(["status", "--porcelain", "--", *rel], root) or "").splitlines():
+        f = os.path.join(root, line[3:].split(" -> ")[-1])
+        if os.path.isfile(f):
+            best = max(best, (os.path.getmtime(f), os.path.relpath(f, root) + " (uncommitted)"))
+    return best
+
+
+def build_id(path):
+    """The GNU build ID of an ELF binary (`readelf -n`), or None."""
+    try:
+        p = subprocess.run(["readelf", "-n", path], capture_output=True, text=True)
+    except OSError:
+        return None
+    m = re.search(r"Build ID: ([0-9a-f]+)", p.stdout)
+    return m.group(1) if m else None
+
+
+def binary_identity(path, crate=None, root=ROOT):
+    """What a measurement says about the binary it measured: its sha256, GNU
+    build ID and modification time, and this checkout's `git describe`. With
+    `crate` (the package that builds the binary: robigo-rtapi for robigo-rt,
+    robigo-cli for robigo), also the newest source of that crate's local
+    dependency tree when it is newer than the binary: then the binary is not
+    a build of this checkout (`cargo build -p robigo-rt` builds the library
+    only; the robigo-rt binary comes from -p robigo-rtapi). A copy made with
+    plain `cp` takes a new mtime and hides that: the sha256 and build ID in
+    the report are what identify it."""
+    with open(path, "rb") as f:
+        sha = hashlib.sha256(f.read()).hexdigest()
+    mtime = os.path.getmtime(path)
+    describe = git(["describe", "--always", "--dirty", "--tags"], root)
+    ident = {"path": path, "sha256": sha, "build_id": build_id(path),
+             "mtime": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(mtime)),
+             "checkout": describe.strip() if describe else None, "stale": None}
+    if crate:
+        newest, what = newest_source(crate_dirs(crate, root), root)
+        if what and newest > mtime:
+            ident["stale"] = {"source": what, "mtime": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(newest))}
+    return ident
+
+
+def crate_of(binary):
+    """The package that builds a robigo binary, by its file name."""
+    name = os.path.basename(binary)
+    return "robigo-rtapi" if name.startswith("robigo-rt") else "robigo-cli" if name.startswith("robigo") else None
+
+
+def report_identity(label, ident, out=sys.stderr):
+    """One header line per binary, and a warning for a stale one."""
+    print(f"{label}: {ident['path']}: sha256 {ident['sha256'][:16]}, build ID {(ident['build_id'] or 'none')[:16]}, "
+          f"modified {ident['mtime']}; checkout {ident['checkout']}", file=out)
+    if ident["stale"]:
+        print(f"warning: {label} {ident['path']} is older than {ident['stale']['source']} "
+              f"({ident['stale']['mtime']}) of the crates it is built from: it is not a build of "
+              f"this checkout's sources", file=out)
+
+
 def valgrind_path():
     """$VALGRIND, the private build if there is one, or the one on PATH."""
     private = os.path.expanduser("~/.cache/rr-tools/bin/valgrind")
@@ -726,6 +842,12 @@ def cmd_rt_bars(a):
         instr, cyc = got if a.cycles else (got, None)
         return instr, cyc, rt_rss(binary, files, a.runs, work, tag)
 
+    # which binaries these are: printed in the header and kept in the JSON.
+    # main's is another commit by design, so only robigo-rt is checked
+    # against this checkout's sources
+    idents = {"robigo-rt": binary_identity(a.robigo_rt, "robigo-rtapi")}
+    if a.main:
+        idents["main"] = binary_identity(a.main)
     instr, cycles, rss = measure(a.robigo_rt, "new")
     # main's binary is measured on this machine too: instruction counts differ
     # between CPUs (the C library's dispatch), so another machine's numbers
@@ -737,11 +859,14 @@ def cmd_rt_bars(a):
     out = a.out or os.path.join(STATE, "perf", "rt-bars.json")
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with open(out, "w") as f:
-        json.dump({"instr": instr, "rss": rss, "cycles": cycles, "main": main, "cpu": model, "cpu_signature": sig},
+        json.dump({"instr": instr, "rss": rss, "cycles": cycles, "main": main, "cpu": model, "cpu_signature": sig,
+                   "binaries": idents},
                   f, indent=1, sort_keys=True)
     failures, notes, table = rt_verdict(spec, instr, rss, main)
     print("### robigo-rt's M1 bars (scripts/perf.py rt-bars)\n")
     print(f"CPU: {model}, signature {sig}.")
+    for label, ident in idents.items():
+        report_identity(label, ident, out=sys.stdout)
     print(f"Callgrind instructions per iteration; bars against {gnur_source} and today's robigo.")
     against = "main's binary of the merge's base, on this runner" if main else "none (the bars only)"
     print(f"Against main: {against}.")

@@ -715,6 +715,15 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
       - **Estimated cycles** under a pinned cache model
         (`--LL=33554432,16,64`) are a report-only column. They never fail
         (`docs/ledger/g3/2026-11-16-cycles-study.md`).
+      - **The binaries:** `rt-bars`, `idiom-vs-r.py` and `rss.py` name every
+        binary they measure, in the report and the JSON: its sha256, GNU
+        build ID and modification time, and the checkout's `git describe`
+        (`perf.py`'s `binary_identity`). They warn when the binary is older
+        than the last commit to the crates it is built from, or than an
+        uncommitted edit to them. Then it is not a build of the checkout:
+        `cargo build -p robigo-rt` builds only the library, and the
+        robigo-rt binary comes from `-p robigo-rtapi`. A plain `cp` resets
+        the mtime, so for a copy the sha256 and build ID are the record.
     - It fails when a bar marked met in `benchmarks/rt/m1-bars.toml`
       breaks. The bars compare with GNU R as measured on the gating runner,
       and with today's robigo's committed numbers. The gate refuses to run

@@ -2,10 +2,12 @@
 """The rt-bars gate's decisions (scripts/perf.py rt_verdict, cmd_rt_bars),
 on synthetic numbers: no valgrind, no robigo-rt."""
 import importlib.util
+import hashlib
 import io
 import json
 import os
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -219,6 +221,41 @@ class Pin(unittest.TestCase):
             names = {r["name"] for r in tomllib.load(f)["row"]}
         self.assertLessEqual(rows, names)
 
+
+
+class BinaryIdentity(unittest.TestCase):
+    """Which binary a measurement measured (perf.binary_identity), and the
+    warning for a binary older than the sources it is built from."""
+
+    def test_the_robigo_rt_binary_is_built_from_its_crate_tree(self):
+        names = {os.path.basename(d) for d in perf.crate_dirs("robigo-rtapi")}
+        self.assertLessEqual({"robigo-rtapi", "robigo-rt", "robigo-rtcore", "robigo-heap"}, names)
+        # dev-dependencies and the old runtime are not part of the binary
+        self.assertNotIn("robigo-conformance", names)
+        self.assertNotIn("robigo-runtime", names)
+        self.assertEqual(perf.crate_of("dist/robigo-rt-main"), "robigo-rtapi")
+        self.assertEqual(perf.crate_of(".robigo/bin/robigo"), "robigo-cli")
+
+    def test_identity_names_the_file_and_flags_an_old_build(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = os.path.join(tmp, "robigo-rt")
+            Path(b).write_bytes(b"not an ELF file")
+            ident = perf.binary_identity(b)
+            self.assertEqual(ident["sha256"], hashlib.sha256(b"not an ELF file").hexdigest())
+            self.assertIsNone(ident["build_id"])
+            self.assertIsNone(ident["stale"])  # no crate given: nothing to compare with
+            # older than the last commit touching robigo-rt's crates: stale
+            os.utime(b, (1000, 1000))
+            stale = perf.binary_identity(b, "robigo-rtapi")["stale"]
+            self.assertIsNotNone(stale)
+            self.assertTrue(stale["source"].startswith("commit ") or stale["source"].endswith("(uncommitted)"))
+            buf = io.StringIO()
+            perf.report_identity("robigo-rt", perf.binary_identity(b, "robigo-rtapi"), out=buf)
+            self.assertIn("is not a build of this checkout's sources", buf.getvalue())
+            # newer than every change: a build of this checkout
+            future = time.time() + 3600
+            os.utime(b, (future, future))
+            self.assertIsNone(perf.binary_identity(b, "robigo-rtapi")["stale"])
 
 if __name__ == "__main__":
     unittest.main()
