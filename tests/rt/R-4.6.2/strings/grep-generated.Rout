@@ -1,0 +1,300 @@
+a	]\a	]\<>	]\<>	TRUE	unknown
+	\b-\	<>\b-\	<>\<>b<>-<>\<>	TRUE	unknown
+c	c.c.bcbb	<>.c.bcbb	<>.<>.b<>bb	TRUE	unknown
+^	d	<>d	<>d	TRUE	unknown
+[a-][ab]bx	\-bc	\-bc	\-bc	FALSE	unknown
+x+[a-][^bc]				FALSE	unknown
+[^a][^a-cb-e]*[^a]?				FALSE	unknown
+[\a]	cbdcdb]a	cbdcdb]<>	cbdcdb]<>	TRUE	unknown
+[^a]*		<>	<>	TRUE	unknown
+[^a][a-]+.*	b\.c.b\	b\.c.b\	b\.c.b\	FALSE	unknown
+[\a]*[^bc]*		<>	<>	TRUE	unknown
+[^a]*	bca	<>a	<>a<>	TRUE	unknown
+	]a--.--	<>]a--.--	<>]<>a<>-<>-<>.<>-<>-<>	TRUE	unknown
+[a-b]+[^bc]*a?	bba]cdcd	<>cdcd	<>cdcd	TRUE	unknown
+\.[^a]+a[ab]+	\bc\dc.]	\bc\dc.]	\bc\dc.]	FALSE	unknown
+a+[^a]	d]..	d]..	d]..	FALSE	unknown
+^	aacb-.	<>aacb-.	<>aacb-.	TRUE	unknown
+.[^bc][ab]	]\]\	]\]\	]\]\	FALSE	unknown
+.[^bc]	a-\]a	<>\]a	<><>a	TRUE	unknown
+b[ab]?xa?	bb.	bb.	bb.	FALSE	unknown
+^x*[\a]\.	b]d]\.	b]d]\.	b]d]\.	FALSE	unknown
+[^a-cb-e]+b	c.ca	c.ca	c.ca	FALSE	unknown
+a+[^a-cb-e]	\\b]	\\b]	\\b]	FALSE	unknown
+ca	\]	\]	\]	FALSE	unknown
+^a[ab][a-]*	..\	..\	..\	FALSE	unknown
+[^bc]+.?b	\	\	\	FALSE	unknown
+[^bc]\.a[a-b]*				FALSE	unknown
+^[]a]*[\a][a-b]*	---bbac	---bbac	---bbac	FALSE	unknown
+[\a][a-b]	b	b	b	FALSE	unknown
+\.	a	a	a	FALSE	unknown
+[\a]+[^a-cb-e]?[]a][^bc]*$	ddbcb\]]	ddbcb<>	ddbcb<>	TRUE	unknown
+a[\a][\a]?c	d-	d-	d-	FALSE	unknown
+[ab]\.a+[^a-cb-e]$	]cb].-b	]cb].-b	]cb].-b	FALSE	unknown
+cc+	ac\]	ac\]	ac\]	FALSE	unknown
+^	]	<>]	<>]	TRUE	unknown
+b[^a-cb-e]*[a-]?	a-ca.	a-ca.	a-ca.	FALSE	unknown
+[a-b]+[^a]*	]d-.da]	]d-.d<>	]d-.d<>	TRUE	unknown
+[^a]+[^bc][^bc][^a]+	-c..-a.	<>	<>	TRUE	unknown
+a?	cad]]a\-	<>cad]]a\-	<>c<>d<>]<>]<>\<>-<>	TRUE	unknown
+[^bc]\.*	bc	bc	bc	FALSE	unknown
+[]a]\.	b	b	b	FALSE	unknown
+[ab]\.[\a]$	dd.-\	dd.-\	dd.-\	FALSE	unknown
+	-b-c]bca	<>-b-c]bca	<>-<>b<>-<>c<>]<>b<>c<>a<>	TRUE	unknown
+\.+b	b\cc-	b\cc-	b\cc-	FALSE	unknown
+[^a]?[]a]+[a-b]?.?	abd]b-.	<>]b-.	<><>.	TRUE	unknown
+^x$	a	a	a	FALSE	unknown
+^[^a-cb-e]*[]a]?[ab][a-b]*	-a\	<>\	<>\	TRUE	unknown
+^.b	]a-d-	]a-d-	]a-d-	FALSE	unknown
+	...\	<>...\	<>.<>.<>.<>\<>	TRUE	unknown
+[ab]x[^a]	ca]dc.	ca]dc.	ca]dc.	FALSE	unknown
+[^a-cb-e][^a-cb-e].+[^bc]*				FALSE	unknown
+	]-aa]-c	<>]-aa]-c	<>]<>-<>a<>a<>]<>-<>c<>	TRUE	unknown
+[\a]$	b	b	b	FALSE	unknown
+^a*[^a]?[a-]*$		<>	<>	TRUE	unknown
+		<>	<>	TRUE	unknown
+$	b]d	b]d<>	b]d<>	TRUE	unknown
+a\.[ab]	cca]	cca]	cca]	FALSE	unknown
+[\a]x*	]dd\adca	]dd<>adca	]dd<><>dc<>	TRUE	unknown
+^.[\a]+.+\.$	dc	dc	dc	FALSE	unknown
+b+[\a]?b	bb]-	<>]-	<>]-	TRUE	unknown
+c[ab]+$	c]-	c]-	c]-	FALSE	unknown
+	ad]-a\cc	<>ad]-a\cc	<>a<>d<>]<>-<>a<>\<>c<>c<>	TRUE	unknown
+xa.	\	\	\	FALSE	unknown
+^[^a-cb-e][ab]?.?$	d.]]	d.]]	d.]]	FALSE	unknown
+c+[^bc]	\-	\-	\-	FALSE	unknown
+^[^bc][^a-cb-e][^bc]	\a\-.]	\a\-.]	\a\-.]	FALSE	unknown
+^	a]dd]da	<>a]dd]da	<>a]dd]da	TRUE	unknown
+\.a*[^bc]x$	b]d	b]d	b]d	FALSE	unknown
+[a-b]?ba?	]-add	]-add	]-add	FALSE	unknown
+[a-b]?x	\].d.	\].d.	\].d.	FALSE	unknown
+c+[\a]$	cd-ac	cd-ac	cd-ac	FALSE	unknown
+[\a][^bc]*	]-a	]-<>	]-<>	TRUE	unknown
+^[^a-cb-e]?	dab	<>ab	<>ab	TRUE	unknown
+[^a-cb-e][^a][a-b]?[^bc]	dd	dd	dd	FALSE	unknown
+	]	<>]	<>]<>	TRUE	unknown
+^[\a]*c$	.\\bd.c\	.\\bd.c\	.\\bd.c\	FALSE	unknown
+[]a][\a]?				FALSE	unknown
+^x[^bc]	.b	.b	.b	FALSE	unknown
+[ab][]a].				FALSE	unknown
+[]a].	-	-	-	FALSE	unknown
+[ab]?xa+[a-b]*	c.a]-\	c.a]-\	c.a]-\	FALSE	unknown
+b+$	]-\	]-\	]-\	FALSE	unknown
+[a-]x[^bc]				FALSE	unknown
+^[^a-cb-e][a-]+\.?a*$	c	c	c	FALSE	unknown
+x	bdd]c.--	bdd]c.--	bdd]c.--	FALSE	unknown
+^[a-b][a-b]+$				FALSE	unknown
+x?\.+a*c	d-b.c\-\	d-b<>\-\	d-b<>\-\	TRUE	unknown
+a[^a][\a]*				FALSE	unknown
+[^a-cb-e]?[^bc]*b[]a]?$	c.	c.	c.	FALSE	unknown
+[a-]a+[ab]	bd]]]-c	bd]]]-c	bd]]]-c	FALSE	unknown
+	d--	<>d--	<>d<>-<>-<>	TRUE	unknown
+.c[a-b][ab]$	c	c	c	FALSE	unknown
+$		<>	<>	TRUE	unknown
+	d	<>d	<>d<>	TRUE	unknown
+[a-b][a-]+				FALSE	unknown
+c*.[^a-cb-e]*\.?	bdcc	<>cc	<><>	TRUE	unknown
+a+[^a]	cca\\b.c	cc<>\b.c	cc<>\b.c	TRUE	unknown
+^.?[^a]b[^a]	\ab]c	\ab]c	\ab]c	FALSE	unknown
+$	ca..bb-	ca..bb-<>	ca..bb-<>	TRUE	unknown
+^.*		<>	<>	TRUE	unknown
+[ab][]a]*	]bc	]<>c	]<>c	TRUE	unknown
+c$	\\\c.\.]	\\\c.\.]	\\\c.\.]	FALSE	unknown
+b*[^a-cb-e]?[^bc]+[\a]	\.\	<>	<>	TRUE	unknown
+^	d	<>d	<>d	TRUE	unknown
+[]a]\.[^a-cb-e]a$	d-c	d-c	d-c	FALSE	unknown
+c?[ab]?[^a-cb-e]?a	ab	<>b	<>b	TRUE	unknown
+^[a-b][a-][a-b]+[\a]	bbb.d	bbb.d	bbb.d	FALSE	unknown
+a?	d..b.	<>d..b.	<>d<>.<>.<>b<>.<>	TRUE	unknown
+b	dabcbb	da<>cbb	da<>c<><>	TRUE	unknown
+x[\a][^bc][a-]	]adab\b\	]adab\b\	]adab\b\	FALSE	unknown
+^xa?.+c*	aaada	aaada	aaada	FALSE	unknown
+[a-]	ca-.acd	c<>-.acd	c<><>.<>cd	TRUE	unknown
+[\a]+[^bc][\a]+[\a]	c]\-	c]\-	c]\-	FALSE	unknown
+\.?b[^a-cb-e]+x*$	cbb.-cbb	cbb.-cbb	cbb.-cbb	FALSE	unknown
+[ab]b+x	\]..ab	\]..ab	\]..ab	FALSE	unknown
+[ab][]a]a?	a--	a--	a--	FALSE	unknown
+^a\.[a-]*[^a-cb-e]	cba	cba	cba	FALSE	unknown
+[^a-cb-e]?a?a[a-]?	\d-	\d-	\d-	FALSE	unknown
+c*	\-ccbc	<>\-ccbc	<>\<>-<>b<>	TRUE	unknown
+b?	.	<>.	<>.<>	TRUE	unknown
+^a[^bc]+[^a]*	-]	-]	-]	FALSE	unknown
+[a-]x*x[^a-cb-e]				FALSE	unknown
+		<>	<>	TRUE	unknown
+[^bc][^a-cb-e]	\]cb	<>cb	<>cb	TRUE	unknown
+c*[ab]+[^bc]*	cb	<>	<>	TRUE	unknown
+bc[ab]*.$	d-	d-	d-	FALSE	unknown
+[^bc][^a-cb-e]*	ac	<>c	<>c	TRUE	unknown
+	\	<>\	<>\<>	TRUE	unknown
+	adcdb-	<>adcdb-	<>a<>d<>c<>d<>b<>-<>	TRUE	unknown
+	\	<>\	<>\<>	TRUE	unknown
+[^bc]	-aa.c.]	<>aa.c.]	<><><><>c<><>	TRUE	unknown
+[^a]c?[]a]*	-]a-	<>-	<><>	TRUE	unknown
+.*b+	cad\d	cad\d	cad\d	FALSE	unknown
+	c-]\	<>c-]\	<>c<>-<>]<>\<>	TRUE	unknown
+[\a][^bc]	a.	<>	<>	TRUE	unknown
+[^a]+a[a-b][^a]?$	a-]a	a-]a	a-]a	FALSE	unknown
+[\a]*[a-b][ab]+				FALSE	unknown
+[\a]	-abbbc	-<>bbbc	-<>bbbc	TRUE	unknown
+[^a][^a]+	-.d]a\	<>a\	<>a\	TRUE	unknown
+	]bd..c.	<>]bd..c.	<>]<>b<>d<>.<>.<>c<>.<>	TRUE	unknown
+[a-][a-b]b$	a]	a]	a]	FALSE	unknown
+[ab]*[^a]+				FALSE	unknown
+\.+[a-b][^bc]+	.\\-.-.	.\\-.-.	.\\-.-.	FALSE	unknown
+[^a-cb-e]\.*[a-][^bc]+	c	c	c	FALSE	unknown
+\.?\..+.	a\]b.b	a\]b.b	a\]b.b	FALSE	unknown
+^[^bc]c[ab]?[\a]$	.\.b	.\.b	.\.b	FALSE	unknown
+^	cc]b	<>cc]b	<>cc]b	TRUE	unknown
+[a-b]+	ca	c<>	c<>	TRUE	unknown
+^bc[^a-cb-e]	-aa	-aa	-aa	FALSE	unknown
+[]a][]a]?[^bc]a	\d-c]	\d-c]	\d-c]	FALSE	unknown
+[a-]*[^bc]*	..]\ca	<>ca	<>c<>	TRUE	unknown
+[]a]xx	-ba\.b-.	-ba\.b-.	-ba\.b-.	FALSE	unknown
+^$	-\]daa	-\]daa	-\]daa	FALSE	unknown
+[^a][a-b]+$	c	c	c	FALSE	unknown
+[^bc]	]\.\\\d	<>\.\\\d	<><><><><><><>	TRUE	unknown
+\.?a?\.	a-	a-	a-	FALSE	unknown
+[\a]				FALSE	unknown
+\.+[a-b][a-b].*	]c-\	]c-\	]c-\	FALSE	unknown
+[^bc]				FALSE	unknown
+\.[^a]?x	c-aad	c-aad	c-aad	FALSE	unknown
+[^a]a?	.]	<>]	<><>	TRUE	unknown
+[\a]?	.\]dbc	<>.\]dbc	<>.<>]<>d<>b<>c<>	TRUE	unknown
+	\	<>\	<>\<>	TRUE	unknown
+	d	<>d	<>d<>	TRUE	unknown
+a?x[^a]+	dcc..b	dcc..b	dcc..b	FALSE	unknown
+^\.+[\a]	b	b	b	FALSE	unknown
+[a-b][ab]x*[\a]+	cd]	cd]	cd]	FALSE	unknown
+\.+[a-]?	c	c	c	FALSE	unknown
+[ab]b*[]a]?$	-b\	-b\	-b\	FALSE	unknown
+^cca+				FALSE	unknown
+[ab]	d]	d]	d]	FALSE	unknown
+x?[ab]?x*		<>	<>	TRUE	unknown
+x?[a-b]?		<>	<>	TRUE	unknown
+.[ab][^a-cb-e]	--]-].-d	--]-].-d	--]-].-d	FALSE	unknown
+a\.+\.	..	..	..	FALSE	unknown
+^a*[a-b]+[]a]*[^bc]	.c]\--	.c]\--	.c]\--	FALSE	unknown
+\.$	\d\\]dc	\d\\]dc	\d\\]dc	FALSE	unknown
+[^a-cb-e]?		<>	<>	TRUE	unknown
+	bd\.cd\-	<>bd\.cd\-	<>b<>d<>\<>.<>c<>d<>\<>-<>	TRUE	unknown
+^[a-]+x	d]caa	d]caa	d]caa	FALSE	unknown
+c?[ab]?c	.d	.d	.d	FALSE	unknown
+x[a-b][a-b]b				FALSE	unknown
+^		<>	<>	TRUE	unknown
+[^a-cb-e]?x?[ab]	-	-	-	FALSE	unknown
+^[^a].c+	-	-	-	FALSE	unknown
+$		<>	<>	TRUE	unknown
+[^a-cb-e]+xb+	b--ca-	b--ca-	b--ca-	FALSE	unknown
+[^bc]	-	<>	<>	TRUE	unknown
+^x[^a]?[ab]	c\.-	c\.-	c\.-	FALSE	unknown
+[a-][a-][a-b]+	c]d\	c]d\	c]d\	FALSE	unknown
+[a-]	ca]b-b\a	c<>]b-b\a	c<>]b<>b\<>	TRUE	unknown
+[^a-cb-e][^a]	c.-	c<>	c<>	TRUE	unknown
+a	a	<>	<>	TRUE	unknown
+^[a-]+$	\	\	\	FALSE	unknown
+^ccc+	]dbaac-.	]dbaac-.	]dbaac-.	FALSE	unknown
+[^bc][a-b][]a][\a]				FALSE	unknown
+^[a-b]\.*c$	d	d	d	FALSE	unknown
+c*c*[^bc]?	\\	<>\	<><>	TRUE	unknown
+[a-]?a*	.\b-b	<>.\b-b	<>.<>\<>b<>b<>	TRUE	unknown
+b*.\.*.	ca	<>	<>	TRUE	unknown
+^ü+[😀a]	😀a	😀a	😀a	FALSE	UTF-8
+.é+[à-ü]				FALSE	unknown
+é[😀a]?a?$	a	a	a	FALSE	unknown
+ü*[à-ü]\.	éa😀😀z	éa😀😀z	éa😀😀z	FALSE	UTF-8
+[^é]$				FALSE	unknown
+.+[😀a]?[à-ü]*	üé	<>	<>	TRUE	unknown
+.	z.	<>.	<><>	TRUE	unknown
+😀é?	.	.	.	FALSE	unknown
+a\.?	zü	zü	zü	FALSE	UTF-8
+[^a-z]?[^a-z]é*				FALSE	unknown
+[aé]?[😀a]+[aé]+	üé😀	üé😀	üé😀	FALSE	UTF-8
+[^a-z]	é..à.	<>..à.	<><><><><>	TRUE	unknown
+ü+	à	à	à	FALSE	UTF-8
+\.*[à-ü]*	é	<>	<>	TRUE	unknown
+ü	à😀é	à😀é	à😀é	FALSE	UTF-8
+[aé]ü+	éz	éz	éz	FALSE	UTF-8
+😀[^a-z]?[à-ü]+$	.aéaé	.aéaé	.aéaé	FALSE	UTF-8
+^ü[^é]?$	😀	😀	😀	FALSE	UTF-8
+^[^é]?	.ézü	<>ézü	<>ézü	TRUE	UTF-8
+^😀*[^a-z]	..ü	<>.ü	<>.ü	TRUE	UTF-8
+ü	àzé	àzé	àzé	FALSE	UTF-8
+a\.*ü?	zà	zà	zà	FALSE	UTF-8
+[aé]?$	é😀😀à😀ü	é😀😀à😀ü<>	é😀😀à😀ü<>	TRUE	UTF-8
+^.?.[à-ü]	aaàü.	<>ü.	<>ü.	TRUE	UTF-8
+.?[^é]+	üa	<>	<>	TRUE	unknown
+é	😀😀à	😀😀à	😀😀à	FALSE	UTF-8
+[^a-z]*$	a.àzà	a.àz<>	a.àz<>	TRUE	UTF-8
+[^a-z]				FALSE	unknown
+[à-ü]+[à-ü]ü$	.àzé	.àzé	.àzé	FALSE	UTF-8
+😀+[😀a]*ü?$	zza😀zé	zza😀zé	zza😀zé	FALSE	UTF-8
+.a*	😀üü😀.à	<>üü😀.à	<><><><><><>	TRUE	unknown
+a*	😀.à😀é😀	<>😀.à😀é😀	<>😀<>.<>à<>😀<>é<>😀<>	TRUE	UTF-8
+^\.?	😀	<>😀	<>😀	TRUE	UTF-8
+^ü				FALSE	unknown
+a*[😀a]?\.?	aééü	<>ééü	<>é<>é<>ü<>	TRUE	UTF-8
+é?$		<>	<>	TRUE	unknown
+[^é]?\.?	😀😀à	<>😀à	<><><>	TRUE	unknown
+\.\.*	à	à	à	FALSE	UTF-8
+ü+é+$	.	.	.	FALSE	unknown
+.*	z	<>	<>	TRUE	unknown
+[😀a]*ü*ü+	.éz	.éz	.éz	FALSE	UTF-8
+ü+	éüü	é<>	é<>	TRUE	UTF-8
+[^é]	a.ü😀😀	<>.ü😀😀	<><><><><>	TRUE	unknown
+\.é$	üa	üa	üa	FALSE	UTF-8
+[aé]	àü.é😀	àü.<>😀	àü.<>😀	TRUE	UTF-8
+😀+[^é][aé]$				FALSE	unknown
+a[aé]	àa	àa	àa	FALSE	UTF-8
+a*\.+	a	a	a	FALSE	unknown
+.ü*a	😀à	😀à	😀à	FALSE	UTF-8
+[aé]+$	àa	à<>	à<>	TRUE	UTF-8
+[^é]*.*ü*	.éüzzü	<>	<>	TRUE	unknown
+[^a-z]	üüa.😀é	<>�üa.😀é	<><><><>a<><><><><><><>	TRUE	unknown
+[^a-z]+.ü?$	à.àz	à.àz	à.àz	FALSE	UTF-8
+[aé][aé]?é	àüéé	àü<>	àü<>	TRUE	unknown
+\.+\.*ü	😀éa	😀éa	😀éa	FALSE	UTF-8
+é?.	.	.	.	FALSE	unknown
+[^é]\.*é	😀z	😀z	😀z	FALSE	UTF-8
+[😀a][😀a]\.+	😀	😀	😀	FALSE	UTF-8
+ü+[à-ü]?	.üa	.<>a	.<>a	TRUE	unknown
+[😀a]	😀üa	<>���üa	<><><><>ü<>	TRUE	unknown
+é+[^a-z]*[à-ü]$	à.	à.	à.	FALSE	UTF-8
+é	azü	azü	azü	FALSE	UTF-8
+\.+a*$	z	z	z	FALSE	unknown
+[😀a]?.?[😀a]*	é😀à	<>�😀à	<><><><>	TRUE	unknown
+[^a-z]*	üü	<>	<>	TRUE	unknown
+😀a*é$	üa	üa	üa	FALSE	UTF-8
+[^a-z][😀a]*[aé]$	a😀é	a😀<>	a😀<>	TRUE	unknown
+é[à-ü][à-ü]?	àü.zü.	àü.zü.	àü.zü.	FALSE	UTF-8
+😀	é	é	é	FALSE	UTF-8
+\.é*$	😀😀éaa	😀😀éaa	😀😀éaa	FALSE	UTF-8
+ü				FALSE	unknown
+aa[à-ü]	à.ü	à.ü	à.ü	FALSE	UTF-8
+ü	aaàz	aaàz	aaàz	FALSE	UTF-8
+[😀a]?[à-ü][aé]+	z😀.züz	z😀.züz	z😀.züz	FALSE	UTF-8
+^.*$		<>	<>	TRUE	unknown
+aé	éa.	éa.	éa.	FALSE	UTF-8
+.	üüà.àz	üüà<>àz	üüà<>àz	TRUE	UTF-8
+é	😀üé.z	😀ü<>.z	😀ü<>.z	TRUE	UTF-8
+z	àüa.z	àüa.<>	àüa.<>	TRUE	UTF-8
+a	😀é	😀é	😀é	FALSE	UTF-8
+z	ü😀zü😀	ü😀<>ü😀	ü😀<>ü😀	TRUE	UTF-8
+😀	à😀ü..	à<>ü..	à<>ü..	TRUE	UTF-8
+a	zà.à.ü	zà.à.ü	zà.à.ü	FALSE	UTF-8
+a	àà😀😀üü	àà😀😀üü	àà😀😀üü	FALSE	UTF-8
+😀	àaéza	àaéza	àaéza	FALSE	UTF-8
+😀				FALSE	unknown
+z	üüüü	üüüü	üüüü	FALSE	UTF-8
+é	àé😀ü	à<>😀ü	à<>😀ü	TRUE	UTF-8
+.	éà😀àü	éà😀àü	éà😀àü	FALSE	UTF-8
+é				FALSE	unknown
+aé	..	..	..	FALSE	unknown
+é				FALSE	unknown
+aé	zàüazà	zàüazà	zàüazà	FALSE	UTF-8
+éé	.😀éüz	.😀éüz	.😀éüz	FALSE	UTF-8
+z	..ü	..ü	..ü	FALSE	UTF-8
+éé				FALSE	unknown
+z	.àüàü	.àüàü	.àüàü	FALSE	UTF-8
+.				FALSE	unknown
+z	ü	ü	ü	FALSE	UTF-8
+aé	z.😀ézà	z.😀ézà	z.😀ézà	FALSE	UTF-8

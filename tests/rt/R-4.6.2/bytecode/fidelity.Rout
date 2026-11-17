@@ -1,0 +1,49 @@
+list(.Code, list(12L, GETVAR.OP, 1L, LDCONST.OP, 2L, ADD.OP, 
+    0L, RETURN.OP), list(x + 1L, x, 1L, structure(c(NA, 1L, 1L, 
+2L, 2L, 0L, 0L, 0L), class = "expressionsIndex")))
+list(.Code, list(12L, LDCONST.OP, 1L, SETVAR.OP, 2L, POP.OP, 
+    GETVAR.OP, 4L, GETVAR.OP, 5L, ADD.OP, 6L, GETVAR.OP, 2L, 
+    MUL.OP, 7L, LDCONST.OP, 8L, ADD.OP, 9L, RETURN.OP), list(
+    {
+        z <- 10L
+        (x + y) * z + 1L
+    }, 10L, z, z <- 10L, x, y, x + y, (x + y) * z, 1L, (x + y) * 
+        z + 1L, structure(c(NA, 1L, 1L, 3L, 3L, 3L, 4L, 4L, 5L, 
+    5L, 6L, 6L, 2L, 2L, 7L, 7L, 8L, 8L, 9L, 9L, 9L), class = "expressionsIndex")))
+list(.Code, list(12L, MAKECLOSURE.OP, 1L, SETVAR.OP, 3L, POP.OP, 
+    BASEGUARD.OP, 5L, 13L, GETVAR.OP, 6L, SEQLEN.OP, 5L, STARTFOR.OP, 
+    8L, 7L, 26L, GETFUN.OP, 3L, MAKEPROM.OP, 10L, CALL.OP, 9L, 
+    SETVAR.OP, 6L, POP.OP, STEPFOR.OP, 17L, ENDFOR.OP, POP.OP, 
+    GETVAR.OP, 6L, RETURN.OP), list({
+    g <- function(y) y + 1L
+    for (i in seq_len(x)) x <- g(x)
+    x
+}, list(as.pairlist(alist(y = )), <bytecode>, NULL), function(y) y + 
+    1L, g, g <- function(y) y + 1L, seq_len(x), x, i, for (i in seq_len(x)) x <- g(x), 
+    g(x), list(.Code, list(12L, GETVAR.OP, 0L, RETURN.OP), list(
+        x, g(x), structure(c(NA, 1L, 1L, 1L), class = "expressionsIndex"))), 
+    x <- g(x), structure(c(NA, 2L, 2L, 4L, 4L, 4L, 5L, 5L, 5L, 
+    6L, 6L, 5L, 5L, 8L, 8L, 8L, 8L, 9L, 9L, 9L, 9L, 9L, 9L, 11L, 
+    11L, 8L, 8L, 8L, 8L, 8L, 6L, 6L, 6L), class = "expressionsIndex")))
+list(.Code, list(12L, LDCONST.OP, 1L, SETVAR.OP, 2L, POP.OP, 
+    GETFUN.OP, 4L, MAKEPROM.OP, 6L, CALL.OP, 5L, RETURN.OP), 
+    list({
+        z <- 40L
+        f(z + 2L)
+    }, 40L, z, z <- 40L, f, f(z + 2L), list(.Code, list(12L, 
+        GETVAR.OP, 1L, LDCONST.OP, 2L, ADD.OP, 0L, RETURN.OP), 
+        list(z + 2L, z, 2L, structure(c(NA, 1L, 1L, 2L, 2L, 0L, 
+        0L, 0L), class = "expressionsIndex"))), structure(c(NA, 
+    1L, 1L, 3L, 3L, 3L, 5L, 5L, 5L, 5L, 5L, 5L, 5L), class = "expressionsIndex")))
+[1] 42
+list(.Code, list(12L, GETVAR.OP, 1L, GETVAR.OP, 1L, MUL.OP, 2L, 
+    GETVAR.OP, 3L, ADD.OP, 0L, RETURN.OP), list(a * a + b, a, 
+    a * a, b, structure(c(NA, 1L, 1L, 1L, 1L, 2L, 2L, 3L, 3L, 
+    0L, 0L, 0L), class = "expressionsIndex")))
+[1] 19
+[1] 26
+list(.Code, list(12L, MAKECLOSURE.OP, 1L, SETVAR.OP, 3L, INVISIBLE.OP, 
+    RETURN.OP), list(loaded_compiled <- function(x = 1L) x + 
+    42L, list(pairlist(x = 1L), <bytecode>, NULL), function(x = 1L) x + 
+    42L, loaded_compiled, structure(c(NA, 2L, 2L, 0L, 0L, 0L, 
+0L), class = "expressionsIndex")))
