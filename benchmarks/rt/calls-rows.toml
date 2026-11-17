@@ -22,6 +22,7 @@
 #          docs/ledger/g3/2026-11-16-bars-oracle-baseline.md); tryCatch joins E1 at M3.
 #   suite  fib and binarytrees from benchmarks/suite/ as N/2N loops (E2).
 #   e7     the string loops of E7 (paste, match, unique).
+#   d10    D10's string rows (docs/ledger/g3/2026-11-17-d10-bar.md).
 #   d2s    D2s's dynamic-definition microbench: a callee frame gains a name
 #          its closure's body does not define (docs/ledger/g3.md, D2s bar).
 #   layout, envs, growth, cold, d0
@@ -238,6 +239,40 @@ f <- function() { h(environment()); v }
 '''
 body = 's <- s + f()'
 n = 5000
+
+# --- D10 string rows (docs/ledger/g3/2026-11-17-d10-bar.md) ---------------------
+
+[[row]]
+name = "d10-sprintf"
+group = "d10"
+note = "sprintf of 100 strings with a changing integer: 100 new strings per iteration"
+setup = 'q <- 1:100'
+body = 'p <- sprintf("s%d_%d", q, i)'
+n = 200
+
+[[row]]
+name = "d10-paste-match"
+group = "d10"
+note = "the penalty case: paste results that exist already, then match (a pointer-identity use)"
+setup = 'keys <- paste0("k", 1:1000)'
+body = 'm <- match(paste0("k", (1:100 + i) %% 1000L + 1L), keys)'
+n = 200
+
+[[row]]
+name = "d10-ascharacter"
+group = "d10"
+note = "as.character(1:1e5): 100,000 strings per iteration, the same ones every time"
+setup = 'x <- 1:100000'
+body = 's <- as.character(x)'
+n = 4
+
+[[row]]
+name = "d10-assign"
+group = "d10"
+note = "assign(paste0(...)): a pasted name to a symbol, then a binding"
+setup = 'e <- new.env()'
+body = 'assign(paste0("v", i %% 100L), i, envir = e)'
+n = 1000
 
 # --- M2/M3 decision rows (docs/ledger/g3/2026-11-17-m2m3-bars.md) ---------------
 #

@@ -1,0 +1,32 @@
+{
+ "meta": {
+  "gnur": null,
+  "robigo": "~/.cache/x1-bins/robigo-rt-d10-uncached-dccffc87",
+  "robigo_env": [
+   "ROBIGO_NO_INLINE=1"
+  ],
+  "runs": 5
+ },
+ "results": {
+  "benchmarks/rt/mem/strings-dup.R": {
+   "gnur": null,
+   "robigo": {
+    "max_kib": 75164,
+    "median_kib": 74932,
+    "min_kib": 74828,
+    "out": "1000000 10 \n"
+   },
+   "wrong": false
+  },
+  "benchmarks/rt/mem/strings1e6.R": {
+   "gnur": null,
+   "robigo": {
+    "max_kib": 82200,
+    "median_kib": 82128,
+    "min_kib": 81968,
+    "out": "1000000 u1000000 \n"
+   },
+   "wrong": false
+  }
+ }
+}
