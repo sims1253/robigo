@@ -1,0 +1,84 @@
+{
+ "meta": {
+  "cycles": false,
+  "gnur": "/usr/lib/R/bin/exec/R",
+  "robigo": null,
+  "robigo_env": {
+   "ROBIGO_COMPILE": "1"
+  },
+  "rows": "benchmarks/rt/layout-rows.toml",
+  "valgrind": "valgrind"
+ },
+ "rows": {
+  "e7-match-pad0": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 205948.615,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "e7-match-pad1": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 206545.805,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "e7-match-pad333": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 206657.655,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "e7-match-pad50": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 208685.67,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "e7-match-pad7": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 205478.875,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "e7-unique-pad0": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 170397.17,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "e7-unique-pad1": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 171308.12,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "e7-unique-pad333": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 161943.245,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "e7-unique-pad50": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 161938.545,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "e7-unique-pad7": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 170845.285,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  }
+ }
+}

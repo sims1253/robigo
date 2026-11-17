@@ -143,7 +143,7 @@ unsafe fn fill_promise(iso: &Isolate, s: SlotRef, p: Sexp) {
                 p.set_tag(env);
                 p.set_gp(s.prseen());
                 if s.has(layout::META_BYTECODE) {
-                    p.set_extra(p.extra() | robigo_heap::extra::BYTECODE);
+                    p.set_extra(p.extra() | robigo_heap::extra::promise::BYTECODE);
                 }
             }
             FORCED => p.set_car(s.val()),

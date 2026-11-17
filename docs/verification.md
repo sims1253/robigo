@@ -154,7 +154,14 @@ scripts/corpus.py run gnur-tests --r-version 4.6.2
 **Ratchet columns.** `passing/` holds the old runtime against 4.5.0;
 `passing-rt/`, its sibling, holds `robigo-rt` against 4.6.2, one marker
 per case. A case can pass in either column or both, and the two never
-touch the same file. One runner serves both (`crates/robigo-conformance`,
+touch the same file. The corpora have the same two columns:
+`scripts/corpus.py run NAME --runtime rt` runs robigo-rt against the rt
+pin's recordings into `tests/corpora/NAME/passing-rt/`, ranks what blocks
+its failing cases (the first stub, "not implemented yet" or unbound
+function each one hit), and refuses the corpora robigo-rt cannot run yet
+(echo mode, a build step). CI's `rt-corpora` job runs fastr that way on
+every rt pull request, a rotating quarter of it, and all of it on main
+(`docs/ledger/g3/2026-11-17-rc-rt-corpora.md`). One runner serves both (`crates/robigo-conformance`,
 columns `OLD` and `RT`); `robigo-cli`'s conformance test runs `OLD`,
 `robigo-rt`'s runs `RT`:
 
@@ -216,6 +223,7 @@ output (`scripts/corpus.py`, manifest `tests/corpora/corpora.toml`):
 scripts/corpus.py run fastr --filter 'builtins/TestBuiltin_paste/'   # a slice
 scripts/corpus.py show fastr builtins/TestBuiltin_paste/0aefed6423ab410d
 scripts/corpus.py run gnur-tests --update   # also record new passes
+scripts/corpus.py run fastr --runtime rt     # robigo-rt against 4.6.2, ratchet passing-rt/
 scripts/corpus.py score
 scripts/triage.py gnur-demos                # first difference per failing case
 scripts/reduce.py --corpus gnur-demos --case ID   # shrink one (triage prints the command)
@@ -447,7 +455,11 @@ scripts/perf.py compare before.json after.json          # the gate
   instructions of a plain C version of the same work
   (`benchmarks/idioms.toml`), and `callgrind-diff.py --bench NAME --causes`
   splits a benchmark's instructions by cause (`benchmarks/causes.toml`).
-  See `docs/profiling.md`, "Floors and causes".
+  `callgrind-diff.py --gnur WORK.R BASE.R N --causes` profiles a GNU R
+  build instead (`RSCRIPT_BIN`, `R_HOME_DIR`), by GNU R's source file
+  (`benchmarks/causes-gnur.toml`), to compare two builds
+  (`docs/ledger/g3/2026-11-16-a0-oracle-gap.md`). `scripts/test-callgrind-diff.py`
+  tests both causes files. See `docs/profiling.md`, "Floors and causes".
 - G3's measurements (`docs/ledger/g3.md`): `idiom-vs-r.py --rows
   benchmarks/rt/calls-rows.toml [--cycles] [--json OUT] --robigo BIN
   [--robigo-env ROBIGO_JIT=0]` gives instructions (and estimated cycles)
@@ -715,6 +727,15 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
       - **Estimated cycles** under a pinned cache model
         (`--LL=33554432,16,64`) are a report-only column. They never fail
         (`docs/ledger/g3/2026-11-16-cycles-study.md`).
+      - **The binaries:** `rt-bars`, `idiom-vs-r.py` and `rss.py` name every
+        binary they measure, in the report and the JSON: its sha256, GNU
+        build ID and modification time, and the checkout's `git describe`
+        (`perf.py`'s `binary_identity`). They warn when the binary is older
+        than the last commit to the crates it is built from, or than an
+        uncommitted edit to them. Then it is not a build of the checkout:
+        `cargo build -p robigo-rt` builds only the library, and the
+        robigo-rt binary comes from `-p robigo-rtapi`. A plain `cp` resets
+        the mtime, so for a copy the sha256 and build ID are the record.
     - It fails when a bar marked met in `benchmarks/rt/m1-bars.toml`
       breaks. The bars compare with GNU R as measured on the gating runner,
       and with today's robigo's committed numbers. The gate refuses to run

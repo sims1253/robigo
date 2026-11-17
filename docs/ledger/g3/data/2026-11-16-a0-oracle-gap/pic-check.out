@@ -1,0 +1,16 @@
+== img-plain
+/opt/R/lib/R/lib/libR.so: instructions 550345, PLT calls 33085
+  Rf_eval                497 instructions,  22 PLT calls
+  bcEval_loop          16765 instructions, 510 PLT calls
+  Rf_findVarInFrame3     254 instructions,  10 PLT calls
+  Rf_begincontext         91 instructions,   1 PLT calls
+  Rf_topenv               56 instructions,   3 PLT calls
+  R_LookupMethod         292 instructions,  11 PLT calls
+== img-stock
+/opt/R/lib/R/bin/exec/R: instructions 529903, PLT calls 7412
+  Rf_eval                436 instructions,   2 PLT calls
+  bcEval_loop          15631 instructions,  42 PLT calls
+  Rf_findVarInFrame3     196 instructions,   2 PLT calls
+  Rf_begincontext         72 instructions,   0 PLT calls
+  Rf_topenv               47 instructions,   0 PLT calls
+  R_LookupMethod         249 instructions,   1 PLT calls

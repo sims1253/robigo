@@ -1,0 +1,12 @@
+| row | group | robigo instr |
+|---|---|---:|
+| e7-unique-pad0 | layout | 126,475 |
+| e7-match-pad0 | layout | 99,036 |
+| e7-unique-pad1 | layout | 126,492 |
+| e7-match-pad1 | layout | 98,903 |
+| e7-unique-pad7 | layout | 126,385 |
+| e7-match-pad7 | layout | 98,915 |
+| e7-unique-pad50 | layout | 126,384 |
+| e7-match-pad50 | layout | 98,908 |
+| e7-unique-pad333 | layout | 126,353 |
+| e7-match-pad333 | layout | 98,934 |

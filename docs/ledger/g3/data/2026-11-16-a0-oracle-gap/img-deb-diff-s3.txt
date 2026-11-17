@@ -1,0 +1,47 @@
+total: work 333,100,522  base 256,127,910  per unit 19,243
+     2,567.1   13.3%  R_gc_internal
+     1,107.0    5.8%  bcEval_loop
+       991.0    5.1%  Rf_findVarInFrame3
+       913.0    4.7%  SETCAR
+       858.0    4.5%  Rf_matchArgs_NR
+       671.8    3.5%  Rf_cons
+       660.0    3.4%  TryToReleasePages.part.0
+       487.1    2.5%  Rf_allocVector3
+       486.0    2.5%  Rf_eval
+       455.0    2.4%  R_LookupMethod
+       331.0    1.7%  bcEval
+       304.0    1.6%  SET_TAG
+       302.0    1.6%  Rf_getAttrib
+       274.0    1.4%  duplicate_list
+       273.2    1.4%  Rf_begincontext
+       253.0    1.3%  GetNewPage
+       253.0    1.3%  duplicate1
+       252.0    1.3%  findVarLocInFrame.part.0
+       249.0    1.3%  R_existsVarInFrame
+       247.0    1.3%  Rf_installS3Signature
+       246.0    1.3%  Rf_usemethod
+       243.0    1.3%  Rf_addMissingVarsToNewEnv
+       229.0    1.2%  R_Newhashpjw
+       220.0    1.1%  Rf_topenv
+       212.0    1.1%  R_CleanupEnvir.part.0
+       203.0    1.1%  GET_BINDING_CELL_CACHE
+       194.0    1.0%  dispatchMethod
+       185.5    1.0%  Rf_NewEnvironment
+       184.0    1.0%  Rf_install
+       180.6    0.9%  CONS_NR
+
+| Cause | Instructions | Share | Largest function |
+|---|---:|---:|---|
+| Allocation and GC (memory.c) | 6,995 | 36.4% | `R_gc_internal` |
+| Evaluation (eval.c: bcEval, eval, applyClosure, promises) | 3,290 | 17.1% | `bcEval_loop` |
+| Environments and variable lookup (envir.c) | 3,139 | 16.3% | `Rf_findVarInFrame3` |
+| Inlined header code (src/include: Rinlinedfuns.h, Defn.h, ...) | 1,410 | 7.3% | `R_gc_internal` |
+| Other builtins (src/main) | 1,111 | 5.8% | `Rf_installS3Signature` |
+| Argument matching (match.c) | 834 | 4.3% | `Rf_matchArgs_NR` |
+| S3 dispatch (objects.c) | 829 | 4.3% | `R_LookupMethod` |
+| Conditions and contexts (errors.c, context.c) | 585 | 3.0% | `Rf_begincontext` |
+| libc: memcpy, memset and the rest | 523 | 2.7% | `__strcmp_avx2` |
+| Attributes (attrib.c) | 498 | 2.6% | `Rf_getAttrib` |
+| Other | 29 | 0.1% | `Rf_matchArgs_NR` |
+| 4 smaller causes | 0 | 0.0% | |
+| **Total** | **19,243** | 100% | |
