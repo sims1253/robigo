@@ -101,37 +101,43 @@ PIN_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-pin-report-{os.g
 # closure whose code differs from the from-source compiler's)
 BC_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-bc-crosscheck-{os.getpid()}.txt")
 
-# the kinds of line the crosscheck writes (crates/robigo-rt/src/compile/crosscheck.rs)
-BC_KINDS = ("expected", "unexpected", "untranslated", "skipped")
+# the kinds of line the crosscheck writes (crates/robigo-rt/src/compile/crosscheck.rs),
+# each the line's first word, then ":" (or a class in parentheses, then ":")
+BC_KINDS = ("same", "expected", "unexpected", "untranslated", "skipped")
 
 
 def bc_report_check(path):
-    """The crosscheck report's errors and its classes' counts. An error is
-    an unexpected difference, an untranslated closure, a line of no kind
-    the crosscheck writes, or no report at all: the step compared nothing,
-    a broken setup, never a pass."""
+    """The crosscheck report's errors and its counts, each kind's (and each
+    expected class's) and "compared". An error is an unexpected difference,
+    an untranslated closure, a line of no kind the crosscheck writes, or
+    nothing compared: every closure compared has its line (same, expected
+    or unexpected), so a step that expects comparisons and has none, or no
+    report at all, is a broken setup, never a pass."""
     try:
         with open(path) as f:
             lines = [line.rstrip("\n") for line in f if line.strip()]
     except FileNotFoundError:
         lines = []
-    if not lines:
-        return [f"no crosscheck report at {path}"], {}
     errors = []
-    classes = {}
+    counts = {}
+    compared = 0
     for x in lines:
         if x.startswith("    "):
             # (ROBIGO_BC_CROSSCHECK_DUMP's instruction lines)
             continue
-        if not x.startswith(BC_KINDS) or ":" not in x:
+        head = x.split(":", 1)[0] if ":" in x else ""
+        kind = head.split(" ", 1)[0]
+        if kind not in BC_KINDS or (kind != "expected" and head != kind):
             errors.append(f"malformed: {x}")
             continue
-        if x.startswith(("unexpected", "untranslated")):
+        if kind in ("unexpected", "untranslated"):
             errors.append(x)
-        kind = x.split(":", 1)[0]
-        c = kind if x.startswith("expected") else kind.split(" ")[0]
-        classes[c] = classes.get(c, 0) + 1
-    return errors, classes
+        compared += kind in ("same", "expected", "unexpected")
+        counts[head] = counts.get(head, 0) + 1
+    if compared == 0:
+        errors.append(f"compared 0 closures: the crosscheck report {path} names none")
+    counts["compared"] = compared
+    return errors, counts
 
 
 # Experiment A's probes and the allocation-parity probe built on them

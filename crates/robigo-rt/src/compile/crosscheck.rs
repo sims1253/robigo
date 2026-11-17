@@ -9,7 +9,8 @@
 //! divergence of the from-source port to fix later) or not.
 //!
 //! The report goes to the file `ROBIGO_BC_CROSSCHECK_REPORT` names (one
-//! line per closure that differs), else to stderr: `scripts/rt-ci.py` runs
+//! line per closure compared, `same:` for one that does not differ), else
+//! to stderr: `scripts/rt-ci.py` runs
 //! the conformance suite with both set and fails on an unexpected line.
 
 #![allow(unsafe_code)]
@@ -335,6 +336,8 @@ pub fn compare(cx: &Cx, what: &str, t: &Built, s: &Built) {
         })
     };
     let Some(k) = differs(false).or_else(|| differs(true)) else {
+        // (every closure compared has its line: the report says how many)
+        report(&format!("same: {what}"));
         return;
     };
     let show = |x: Option<&Norm>| match x {
