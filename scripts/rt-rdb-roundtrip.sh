@@ -25,6 +25,7 @@ dir=${1:-.robigo/oracle-lib}
 mkdir -p "$dir"
 dir=$(cd "$dir" && pwd)
 # the data's maker, run by the oracle's sh with OUT the output directory
+# shellcheck disable=SC2016 # single quotes on purpose: the inner sh expands it
 make_data='
   for p in base compiler tools; do
     mkdir -p "$OUT/$p/R" && cp "$(R RHOME)/library/$p/R/$p.rdb" "$(R RHOME)/library/$p/R/$p.rdx" "$OUT/$p/R/"
@@ -49,7 +50,14 @@ make_data='
       }
       close(out); close(con)
     }"'
-if R --version 2> /dev/null | head -1 | grep -q '^R version 4\.6\.2 '; then
+# captured first: a pipeline into head or grep -q could end R with SIGPIPE,
+# which pipefail would report as a failure
+rv=$(R --version 2> /dev/null) || rv=
+case "${rv%%$'\n'*}" in
+  "R version 4.6.2 "*) local_r=1 ;;
+  *) local_r= ;;
+esac
+if [ -n "$local_r" ]; then
   OUT=$dir LC_ALL=C R_DEFAULT_PACKAGES=NULL sh -c "$make_data"
 else
   docker image inspect robigo-oracle:4.6.2 > /dev/null 2>&1 || {
