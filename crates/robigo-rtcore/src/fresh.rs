@@ -87,6 +87,27 @@ impl Cx {
         Ok(FreshVec { x, n, cx: self, _t: PhantomData })
     }
 
+    /// [`Cx::alloc_with`] for a fill that can fail: element `i` is `f(i)`
+    /// until `f` returns an error, which is returned instead of the vector
+    /// (the vector, partly written, is never published).
+    pub fn alloc_try_with<'g, T: Plain, E>(
+        &'g self,
+        n: usize,
+        mut f: impl FnMut(usize) -> Result<T, E>,
+    ) -> Result<Result<FreshVec<'g, T>, E>, NeedGc> {
+        let x = self.alloc_raw(T::SEXPTYPE, n)?;
+        // SAFETY: a fresh vector with room for `n` elements of `T`.
+        let d = unsafe { x.std_data() } as *mut T;
+        for i in 0..n {
+            match f(i) {
+                // SAFETY: `i < n`: inside the payload, written without reading.
+                Ok(v) => unsafe { d.add(i).write(v) },
+                Err(e) => return Ok(Err(e)),
+            }
+        }
+        Ok(Ok(FreshVec { x, n, cx: self, _t: PhantomData }))
+    }
+
     /// A vector of plain data with `xs`'s elements.
     pub fn alloc_copy<'g, T: Plain>(&'g self, xs: &[T]) -> Result<FreshVec<'g, T>, NeedGc> {
         let x = self.alloc_raw(T::SEXPTYPE, xs.len())?;

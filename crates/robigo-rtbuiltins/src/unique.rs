@@ -551,24 +551,8 @@ fn duplicated_flags<'g, K: Keys>(
     } else {
         // each flag written once, in order, as the vector is made (GNU R's
         // allocVector does not clear it either)
-        // (once the table is full the answer is discarded: no more lookups)
-        let mut full = false;
-        let ans = cx.alloc_with(n, |i| {
-            if full {
-                return Lgl(0);
-            }
-            match t.is_dup(x, i) {
-                Ok(d) => Lgl(d as i32),
-                Err(Full) => {
-                    full = true;
-                    Lgl(0)
-                }
-            }
-        })?;
-        if full {
-            return Err(Fail::Full);
-        }
-        ans
+        // (a full table ends the fill: no more lookups)
+        cx.alloc_try_with(n, |i| t.is_dup(x, i).map(|d| Lgl(d as i32)))?.map_err(|_| Fail::Full)?
     };
     let v = ans.as_mut_slice();
     if let Some(inc) = incomp {
