@@ -420,6 +420,10 @@ pub struct Core {
     pub gc_inhibit: u32,
     /// a collection is running: a nested one panics
     collecting: bool,
+    /// a panic unwound out of a collection's marking or moving: objects may
+    /// be forwarded copies and marks half set, so no collection runs again
+    /// (the heap can only be dropped)
+    poisoned: bool,
     /// A collection is due: the poll-only path crossed the trigger, or
     /// gctorture's countdown ran out. Mirrored in the poll word's
     /// [`GC_DUE`]; cleared by the collection that serves it.
@@ -539,7 +543,7 @@ unsafe fn barrier_slow(x: Sexp) {
     // SAFETY: the caller's contract: `x` is live, so its header and its
     // block's header are readable, and the remembered set is not borrowed.
     unsafe {
-        x.set_flag(flags::BARRIER, false);
+        x.set_flag_raw(flags::BARRIER, false);
         // A CHARSXP has nothing to trace, and must not be: `trace` would
         // count it in `marked_chars` on top of `immortal_chars`, and with
         // the sum inflated `prune_chars` could skip a table with dead
@@ -772,6 +776,7 @@ impl Core {
             immortal_chars: 0,
             gc_inhibit: 0,
             collecting: false,
+            poisoned: false,
             #[cfg(test)]
             panic_at: tests::PanicAt::default(),
             due: false,
@@ -861,7 +866,7 @@ impl Core {
                 return;
             }
             // the first store into it is logged (`barrier_slow`)
-            x.set_flag(flags::IMMORTAL | flags::BARRIER, true);
+            x.set_flag_raw(flags::IMMORTAL | flags::BARRIER, true);
             if x.typ() == CHARSXP && x.gp() & gp::charsxp::CACHED != 0 {
                 self.immortal_chars += 1;
             }
@@ -921,7 +926,9 @@ impl Core {
     ///
     /// # Safety
     /// `word` must stay valid, at this address, until the core is dropped
-    /// or another word replaces it.
+    /// or another word replaces it, and every access to it is atomic (the
+    /// embedder reads and changes its bits through `AtomicU32` only, as the
+    /// heap does).
     pub unsafe fn set_poll_word(&mut self, word: NonNull<AtomicU32>) {
         let due = self.poll_word().fetch_and(!GC_DUE, Ordering::Relaxed) & GC_DUE;
         self.poll = Some(word);
@@ -1313,8 +1320,10 @@ impl Core {
     /// Never collects.
     ///
     /// # Safety
-    /// `data` must point at `n` elements of type `t` and stay valid until
-    /// `release` runs. `release(owner)` runs at most once, in one of two
+    /// `data` must point at `n` elements of type `t`, aligned for them, and
+    /// stay valid until `release` runs: accessors and the collector read it
+    /// as `t`'s elements (a STRSXP's or VECSXP's as `Sexp`s, traced in
+    /// place). `release(owner)` runs at most once, in one of two
     /// places, and must be sound in both:
     /// - at a safe point, when the embedder runs the calls a sweep queued
     ///   ([`Core::take_releases`]): the heap is whole there, and what the
@@ -1600,8 +1609,9 @@ impl Core {
     /// `c` must be a live CHARSXP of this heap.
     #[inline]
     pub unsafe fn install_char(&mut self, c: Sexp) -> Result<Sexp, NeedGc> {
-        // SAFETY: `c` is live, this function's contract, and stays so:
-        // allocation does not collect, and the heap does not move objects.
+        // SAFETY: `c` is live, this function's contract, and stays so and
+        // in place: allocation does not collect, so nothing moves it while
+        // the bytes are read.
         let name = unsafe { c.char_bytes() };
         self.install_named(name, c)
     }
@@ -1765,7 +1775,9 @@ impl Core {
     ///
     /// Two words: the top, then the routine whose frames the segment holds
     /// (the native callee's entry point, for the pin report's attribution:
-    /// `diag.rs`). A native entry writes both and restores both.
+    /// `diag.rs`). A native entry writes both and restores both. The
+    /// address is good while the core neither moves nor is dropped: a
+    /// trampoline keeps it for as long as its routine runs.
     pub fn scan_top_slot(&mut self) -> *mut usize {
         (&raw mut self.open).cast()
     }
@@ -2254,11 +2266,17 @@ impl Core {
     /// every object the caller still needs is reachable from `roots`, the
     /// heap's own roots (the precious set, weak references, the store
     /// barrier's log) or a closed C segment: nothing else keeps one alive.
+    /// Tracing `roots` shows the same edges each time within one collection
+    /// (a moving one traces them twice: to mark, then to forward).
     ///
     /// # Panics
     /// If a C segment is open (C code runs, and the export that collects
     /// did not close its segment), if a collection is already running, or
-    /// if called from another thread.
+    /// if called from another thread, or if a panic earlier left the heap
+    /// poisoned. A panic while the objects are marked, moved and forwarded
+    /// (a `Trace` impl's, say) unwinds with the heap poisoned: objects may
+    /// be forwarded copies, so every later collection panics, and the heap
+    /// is only good to drop (which still runs every EXTDATA release once).
     // R: memory.c:R_gc -> R_gc_internal(0)
     pub unsafe fn collect<R: Trace + ?Sized>(&mut self, roots: &mut R) -> u64 {
         // SAFETY: the caller's contract.
@@ -2300,6 +2318,11 @@ impl Core {
         // contracts of `preserve`, `register_weak_ref` and the store
         // barrier); the caller vouches for `roots`.
         unsafe {
+            // a panic out of marking and moving leaves the heap halfway
+            // (forwarded objects, `collecting` set): poisoned until both
+            // end, so an unwinding panic leaves it set and the heap is
+            // never collected again
+            self.poisoned = true;
             self.mark_heap_roots();
             roots.trace(&mut Mark(self));
             self.mark_rest();
@@ -2309,6 +2332,7 @@ impl Core {
                 self.forward_heap();
                 self.retire(moved);
             }
+            self.poisoned = false;
             self.finish_collection(size_needed, kind, t0)
         }
     }
@@ -2325,6 +2349,10 @@ impl Core {
                 "robigo: a collection under Miri (the collector calls the heap's C shim): mark the test #[cfg(not(miri))]"
             );
         }
+        assert!(
+            !self.poisoned,
+            "robigo: this heap was left halfway by a panic during a collection's marking or moving: it can only be dropped"
+        );
         assert!(!self.collecting, "robigo: a collection inside a collection");
         assert!(
             self.open.top == 0,

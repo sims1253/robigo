@@ -128,7 +128,8 @@ static ALLOCATOR: DirtyChunks = DirtyChunks;
 /// the environment's pin diagnostics (the report's tests set their own).
 fn core() -> Box<Core> {
     let mut c = Core::new();
-    c.set_gc_move(false);
+    // SAFETY: stopping has no condition.
+    unsafe { c.set_gc_move(false) };
     // (and whose pin diagnostics are the test's own, not the environment's)
     c.set_pin_report(None);
     c.set_strong_dll(None);
@@ -460,8 +461,7 @@ fn tagged_promises_keep_their_bits_and_their_edges() {
     // traced it would read a stale object
     let bits = (code.addr() as u64) ^ 0x10;
     unsafe {
-        p.set_promise_tag(REALSXP);
-        p.set_promise_bits(bits);
+        p.set_promise_unboxed(REALSXP, bits);
     }
     for i in 0..10_000 {
         int_vec(&mut c, &[i]);
@@ -500,9 +500,8 @@ fn a_tagged_promise_value_is_replaced_without_reading_its_bits() {
     let v = int_vec(&mut c, &[9]);
     unsafe {
         assert_eq!(code.refcnt(), 1, "PRCODE's count");
-        p.set_promise_tag(REALSXP);
         // the bits of an unboxed value that happen to be an address
-        p.set_promise_bits(code.addr() as u64);
+        p.set_promise_unboxed(REALSXP, code.addr() as u64);
         p.set_promise_value(v);
         assert_eq!(p.promise_tag(), 0);
         assert_eq!(p.car(), v);
@@ -1103,9 +1102,8 @@ fn each_type_traces_exactly_its_pointer_words() {
     for t in [REALSXP, INTSXP, LGLSXP] {
         let p = unsafe { c.alloc_node(PROMSXP, nil, nil, nil) }.unwrap();
         unsafe {
-            p.set_promise_tag(t);
             // bits that are no object: tracing them would crash, not differ
-            p.set_promise_bits(0x7FF0_0000_0000_07A2);
+            p.set_promise_unboxed(t, 0x7FF0_0000_0000_07A2);
             assert_eq!(p.promise_tag(), t);
         }
         let tagged = words(PROMSXP, &[layout::promise::OFF_CODE, layout::promise::OFF_ENV]);
@@ -1670,6 +1668,42 @@ fn dead_chars_leave_the_cache() {
     // a fresh string gets a fresh object
     let a = c.mk_char(b"s123", 0).unwrap();
     unsafe { assert_eq!(a.char_bytes(), b"s123") };
+}
+
+/// `release` pairs with one `preserve` of its own object, the most recent:
+/// an object preserved twice stays a root until both end, and a release
+/// of another object, or of one never preserved, ends no other entry
+/// (`Core::release`'s contract relies on this pairing).
+#[test]
+fn release_ends_one_preservation_of_its_own_object() {
+    let mut c = core();
+    c.set_torture(false);
+    let a = c.alloc_vector(REALSXP, 4).unwrap();
+    let b = c.alloc_vector(REALSXP, 4).unwrap();
+    let never = c.alloc_vector(REALSXP, 4).unwrap();
+    let (aa, ba, na) = (a.addr(), b.addr(), never.addr());
+    // SAFETY: live objects of this heap, preserved by this test.
+    unsafe {
+        c.preserve(a);
+        c.preserve(b);
+        c.preserve(a);
+    }
+    // SAFETY: `never` is live and was never preserved: nothing happens.
+    unsafe { c.release(never) };
+    // SAFETY: one of the test's two preservations of `a`.
+    unsafe { c.release(a) };
+    gc(&mut c, &mut ());
+    assert_eq!(c.resolve(aa), Some(a), "a's other preservation keeps it");
+    assert_eq!(c.resolve(ba), Some(b), "b's entry is untouched");
+    assert_ne!(c.resolve(na), Some(never), "an object never preserved is collected");
+    // SAFETY: the test's last preservation of `a`, and its one of `b`.
+    unsafe {
+        c.release(a);
+        c.release(b);
+    }
+    gc(&mut c, &mut ());
+    assert_ne!(c.resolve(aa), Some(a), "both of a's preservations ended");
+    assert_ne!(c.resolve(ba), Some(b));
 }
 
 #[test]
@@ -2407,7 +2441,8 @@ fn every_object_carries_its_heaps_id() {
 /// A heap whose every collection moves what it may (`ROBIGO_GC_MOVE=1`).
 fn moving_core() -> Box<Core> {
     let mut c = core();
-    c.set_gc_move(true);
+    // SAFETY: nothing has been handed to C yet.
+    unsafe { c.set_gc_move(true) };
     c.set_torture(false);
     c
 }
@@ -2660,7 +2695,8 @@ unsafe extern "C" fn count_forward_panic_release(_: usize) {
 
 /// A heap dropped in the middle of a moving collection (a panic unwound
 /// out of the roots' forwarding) runs an EXTDATA release once: the
-/// forwarding header leaves the old copy without flags.
+/// forwarding header leaves the old copy without flags. Until then the
+/// heap is poisoned: it refuses to collect again.
 #[test]
 fn a_panic_while_forwarding_releases_a_moved_extdata_once() {
     let mut c = moving_core();
@@ -2670,6 +2706,11 @@ fn a_panic_while_forwarding_releases_a_moved_extdata_once() {
     let mut roots = PanicOnForward { x, calls: 0 };
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gc(&mut c, &mut roots)));
     assert!(r.is_err(), "the forwarding pass panicked");
+    // the heap is poisoned: no collection runs on its forwarded objects
+    let again = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gc(&mut c, &mut ())));
+    let msg = again.expect_err("a poisoned heap refuses to collect");
+    let msg = msg.downcast_ref::<String>().map(String::as_str).or(msg.downcast_ref::<&str>().copied()).unwrap_or("");
+    assert!(msg.contains("left halfway by a panic"), "{msg}");
     drop(c);
     assert_eq!(FORWARD_PANIC_RELEASES.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
