@@ -26,7 +26,10 @@
     forwarding; the CHARSXP cache's entries of moved strings are replaced in
     place (`CharTable::replace`); then the old copies are poisoned and freed.
   - The marking functions are generic over the policy (`const Y: bool`):
-    the shipped path is the `false` instance, today's code.
+    the shipped path is the `false` instance, today's code. Both instances
+    are wrapped in robigo-heap's own functions (`mark_heap_roots`,
+    `mark_heap_roots_young`, ...), and the young state is one boxed field
+    (`mover::Young`): the debug collector adds nothing to the core's layout.
   - `mark_young`'s fast path is `mark_obj`'s (null, immortal or marked
     returns; an old object is marked inline); only a young object or an old
     copy takes a call.
@@ -68,3 +71,23 @@
   marked in place, only young objects and old copies calling out) and an
   edge written only when it changed: 7.85G, 1.31x. Most of the rest is the
   sweep walking the blocks a moved young object left a dead copy in.
+- A perf lesson: the first build cost `s3` +0.89% instructions (18,840 to
+  19,008, with nothing in the shipped marking changed). Bisected over the
+  commits, then over the pieces: a third monomorphized instance of the
+  embedder's root walk (`Roots::trace::<MarkYoung>`, besides `Mark` and the
+  full mover's `Forward`) in robigo-rtcore's single codegen unit, which
+  moved LLVM's inlining there (`usemethod` and `dispatch_method` inlined
+  into `scope` closures). Both moving modes now walk the roots through one
+  `trace::<dyn Visitor>` instance: `s3` 18,848.
+- Measured (this box, release, `scripts/perf.py rt-bars --main`), main
+  `ca0aa238` against this branch `2372446f`, each built in its own target
+  from its own checkout, sha256 checked to differ: 0 failures, every row
+  within ±0.06% (`s3` -0.00%).
+- Verified: the rt crates' debug tests (53 binaries), and all of them
+  under `ROBIGO_GCTORTURE=1 ROBIGO_GC_MOVE=young:16` (before the last
+  refactors); the full `scripts/rt-ci.py` (every mode, the new `young:16`
+  step, 800 injected failures); `scripts/test-rt-ci.py`; Miri on
+  robigo-rtcore and the heap's layout and bitmap tests; `scripts/lint.sh`;
+  actionlint on the nightly.
+- Review: sol-loop, 2 rounds with gpt-6.1-sol on high, approved (no
+  findings in either).
