@@ -153,7 +153,8 @@ pub fn do_ngettext(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
 /// isolate; a domain with none reports the C library's default directory.
 pub struct TextDomains {
     bound: std::cell::RefCell<Vec<(Vec<u8>, Vec<u8>)>>,
-    default: Vec<u8>,
+    /// `None`: the C library answered NULL (`do_bindtextdomain`'s NULL).
+    default: Option<Vec<u8>>,
 }
 
 /// `BindDomain(R_Home)` at start-up: "R" and "R-base" bound to
@@ -234,10 +235,15 @@ pub fn do_bindtextdomain(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root
                     Some(e) => e.1 = dir.clone(),
                     None => b.push((domain, dir.clone())),
                 }
-                dir
+                Some(dir)
             }
-            None => b.iter().find(|(k, _)| *k == domain).map_or_else(|| t.default.clone(), |(_, v)| v.clone()),
+            None => b.iter().find(|(k, _)| *k == domain).map_or_else(|| t.default.clone(), |(_, v)| Some(v.clone())),
         }
+    };
+    // (the C call's NULL is R_NilValue)
+    let Some(res) = res else {
+        out.set(cx, cx.nil());
+        return Ok(());
     };
     cx.build(out, |cx| cx.mk_string(&res, Encoding::Native))
 }

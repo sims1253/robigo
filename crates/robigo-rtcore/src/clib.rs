@@ -3,9 +3,12 @@
 //! time (`time`, `localtime_r`, `gmtime_r`, which datetime.c calls on Linux),
 //! `wcstod` (Rstrptime.h's `%OS`), the password database's home
 //! directories (sys-unix.c's `R_ExpandFileName_unix`) and libintl's default
-//! message directory (errors.c's `bindtextdomain`). None of them changes the process: they
-//! read the environment's `TZ` and the C library's locale, which robigo never
-//! sets (the isolate's locale is its own, `Locale`).
+//! message directory (errors.c's `bindtextdomain`). None of them changes the
+//! process. The time and number functions read the environment's `TZ` and
+//! the C library's locale, which robigo never sets (the isolate's locale is
+//! its own, `Locale`); the password lookups read the password database; the
+//! message directory is asked of libintl's binding table for a domain no
+//! one binds.
 
 #![allow(unsafe_code)]
 
@@ -154,15 +157,16 @@ unsafe extern "C" {
 
 /// The C library's default directory of message catalogues
 /// (`_nl_default_dirname`): what `bindtextdomain(domain, NULL)` gives for a
-/// domain nothing has bound. Only asked, never set: robigo keeps its own
-/// bindings per isolate.
-pub fn default_textdomain_dir() -> Vec<u8> {
+/// domain nothing has bound (glibc: `LOCALEDIR`, e.g. "/usr/share/locale");
+/// `None` if the C library answers NULL. Only asked, never set: robigo
+/// keeps its own bindings per isolate.
+pub fn default_textdomain_dir() -> Option<Vec<u8>> {
     // a domain name no one else can have bound: the process's id and this
     // function's address
     let name = std::ffi::CString::new(format!(
         "robigo-unbound-{}-{:x}",
         std::process::id(),
-        default_textdomain_dir as fn() -> Vec<u8> as usize
+        default_textdomain_dir as fn() -> Option<Vec<u8>> as usize
     ))
     .unwrap();
     // SAFETY: with a NULL dirname, bindtextdomain only reads its table and
@@ -171,13 +175,21 @@ pub fn default_textdomain_dir() -> Vec<u8> {
     // could change it; the domain is NUL-terminated.
     unsafe {
         let p = bindtextdomain(name.as_ptr(), std::ptr::null());
-        if p.is_null() { Vec::new() } else { std::ffi::CStr::from_ptr(p).to_bytes().to_vec() }
+        (!p.is_null()).then(|| std::ffi::CStr::from_ptr(p).to_bytes().to_vec())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::wcstod_of;
+
+    // (the C library's message catalogue table is not Miri's)
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn the_default_message_directory_is_an_absolute_path() {
+        let d = super::default_textdomain_dir().expect("libintl answers for an unbound domain");
+        assert!(d.starts_with(b"/"), "{}", String::from_utf8_lossy(&d));
+    }
 
     fn w(s: &str) -> Vec<u32> {
         s.chars().map(|c| c as u32).collect()
