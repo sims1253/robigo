@@ -173,7 +173,7 @@ fn vector_subset(cx: &mut Cx, x: Root<'_>, s: Root<'_>, call: Root<'_>, out: Out
     // special matrix subscripting: a matrix with a column per extent
     if subscript::is_matrix_index(x.bind(cx), s.bind(cx)) {
         return cx.scope(|cx, sc| {
-            let m = sc.capture(cx, |cx, o| subscript::matrix_index(cx, x, s, Some(call), o))?;
+            let m = sc.capture(cx, |cx, o| subscript::matrix_index(cx, x, s, Some(call), Some(call), o))?;
             vector_subset_by(cx, x, m, call, out)
         });
     }

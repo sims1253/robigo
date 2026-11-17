@@ -18,7 +18,7 @@ use crate::attrib;
 use crate::text;
 use crate::util::type_to_char;
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Char, Cx, RError, RResult, Ref, Root, View};
+use robigo_rtcore::{Char, Cx, Out, RError, RResult, Ref, Root, View};
 use std::borrow::Cow;
 
 /// An NA position.
@@ -971,9 +971,19 @@ pub fn is_matrix_index(x: Ref<'_>, s: Ref<'_>) -> bool {
 /// vector subscript GNU R makes of it, into `out`: a character matrix
 /// matched against `dimnames(x)` (`strmat2intmat`), then a numeric one
 /// made positions in `x` unravelled (`mat2indsub`). Any other matrix (a
-/// logical one, a factor) is `s` itself.
-// R: subset.c:VectorSubset, subscript.c:strmat2intmat, mat2indsub
-pub fn matrix_index(cx: &mut Cx, x: Root<'_>, s: Root<'_>, call: Option<Root<'_>>, out: Out<'_>) -> RResult<()> {
+/// logical one, a factor) is `s` itself. The two report errors against
+/// `call` and `num_call` (`[` passes its call to both, `[<-` none to
+/// `mat2indsub`).
+// R: subset.c:VectorSubset, subassign.c:VectorAssign,
+// subscript.c:strmat2intmat, mat2indsub
+pub fn matrix_index(
+    cx: &mut Cx,
+    x: Root<'_>,
+    s: Root<'_>,
+    call: Option<Root<'_>>,
+    num_call: Option<Root<'_>>,
+    out: Out<'_>,
+) -> RResult<()> {
     cx.scope(|cx, sc| {
         let m = sc.root(cx, s.bind(cx));
         if m.bind(cx).sexptype() == STRSXP {
@@ -985,7 +995,7 @@ pub fn matrix_index(cx: &mut Cx, x: Root<'_>, s: Root<'_>, call: Option<Root<'_>
         let mv = m.bind(cx);
         let is_integer = mv.sexptype() == INTSXP && !attrib::inherits(mv, b"factor");
         if is_integer || mv.sexptype() == REALSXP {
-            mat2indsub(cx, m, x, call, out)
+            mat2indsub(cx, m, x, num_call, out)
         } else {
             out.set(cx, mv);
             Ok(())
