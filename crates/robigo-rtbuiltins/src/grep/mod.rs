@@ -72,8 +72,8 @@ impl Report {
     /// Phase 3's start: the warnings, then the error.
     pub(crate) fn finish<T>(self, cx: &mut Cx, call: Root<'_>, r: Result<T, Fail>) -> Result<T, RError> {
         for w in &self.warnings {
-            // R: errors.c:warning drops one trailing newline
-            cx.warning(w.strip_suffix('\n').unwrap_or(w))?;
+            // (Cx::warning drops one trailing newline, as errors.c:warning)
+            cx.warning(w)?;
         }
         match r {
             Ok(t) => Ok(t),

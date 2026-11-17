@@ -268,6 +268,60 @@ impl Cx {
 
     /// [`Cx::error_call`] with the call as an object of a live record or
     /// root, read in this interval.
+    /// Signal the classed error `cond` reported against `call` (`None`:
+    /// `R_NilValue`): GNU R's `R_makeErrorCondition(call, ...)` signalled by
+    /// `R_signalErrorConditionEx`, through the isolate's hook
+    /// ([`crate::Hooks::error_condition`]): the handlers for the
+    /// condition's classes, then the default handling of its message.
+    // R: errors.c:R_makeErrorCondition, R_signalErrorConditionEx
+    pub fn error_condition_call(&mut self, call: Option<Root<'_>>, cond: &crate::ErrorCond<'_>) -> RError {
+        let hook = self.iso().hooks.get().error_condition;
+        hook(self, call, cond)
+    }
+
+    /// [`Cx::error_condition_call`] reported against the current call, as
+    /// [`Cx::error`] (GNU R's `R_CurrentExpression` as the call: "behave
+    /// like error()").
+    pub fn error_condition(&mut self, cond: &crate::ErrorCond<'_>) -> RError {
+        let call = self.error_context_call().sexp();
+        self.error_condition_sexp(call, cond)
+    }
+
+    pub(crate) fn error_condition_sexp(&mut self, call: Sexp, cond: &crate::ErrorCond<'_>) -> RError {
+        let hook = self.iso().hooks.get().error_condition;
+        let nil = self.iso().nil;
+        self.scope(|cx, s| {
+            let c = (call != nil).then(|| s.root(cx, cx.raw_ref(call)));
+            hook(cx, c, cond)
+        })
+    }
+
+    /// `R_MissingArgError_c(arg, call, subclass)`: the `missingArgError`
+    /// of subclass `subclass`, "argument \"`arg`\" is missing, with no
+    /// default" ("argument is missing, with no default" for an empty name),
+    /// reported against `call` (`None`: the current call, GNU R's
+    /// `R_CurrentExpression`).
+    // R: errors.c:R_MissingArgError_c
+    #[cold]
+    pub fn missing_arg_error(&mut self, arg: &str, call: Option<Root<'_>>, subclass: &'static str) -> RError {
+        let msg = if arg.is_empty() {
+            "argument is missing, with no default".to_owned()
+        } else {
+            format!("argument \"{arg}\" is missing, with no default")
+        };
+        let cond = crate::ErrorCond {
+            class: "missingArgError",
+            subclass: Some(subclass),
+            msg: &msg,
+            fields: &[],
+            exit_only: false,
+        };
+        match call {
+            Some(c) => self.error_condition_call(Some(c), &cond),
+            None => self.error_condition(&cond),
+        }
+    }
+
     pub(crate) fn error_call_sexp(&mut self, call: Sexp, msg: &str) -> RError {
         let hook = self.iso().hooks.get().error;
         let nil = self.iso().nil;
