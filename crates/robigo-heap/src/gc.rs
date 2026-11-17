@@ -1345,7 +1345,21 @@ impl Core {
             }
             return Ok(x);
         }
+        if n <= 256 && matches!(t, STRSXP | VECSXP | EXPRSXP) {
+            return self.alloc_pointer_vector_small(t, n);
+        }
         self.alloc_vector_slow(t, n)
+    }
+
+    /// A small string, list or expression vector (ScalarString's, a short
+    /// list's): no overflow check, filled as GNU R fills them. Out of line,
+    /// so `alloc_vector`'s inlined body stays the atomic fast path.
+    #[inline(never)]
+    fn alloc_pointer_vector_small(&mut self, t: u8, n: usize) -> Result<Sexp, NeedGc> {
+        let x = self.alloc_object(t, n, granule_round(data_off(t) + n * crate::elt_size(t)), vec_cells(t, n))?;
+        // SAFETY: fresh, of type `t`, with room for `n` elements.
+        unsafe { self.init_vector(x, t, n) };
+        Ok(x)
     }
 
     fn alloc_vector_slow(&mut self, t: u8, n: usize) -> Result<Sexp, NeedGc> {
