@@ -583,7 +583,7 @@ impl Cx {
     /// the mode reaches no state the heap cannot. It makes many in one run,
     /// as a run near a vector limit does, where `ROBIGO_FAIL_ALLOC_AT` makes
     /// one. It shares the knob, so it is not combined with
-    /// `ROBIGO_FAIL_ALLOC_AT` (`robigo-rt` refuses both).
+    /// `ROBIGO_FAIL_ALLOC_AT` ([`Cx::set_retry_torture`] refuses both).
     ///
     /// It is compiled in only with the crate's `retry-torture` feature
     /// (`cargo build --release -p robigo-rtapi --features
@@ -596,12 +596,19 @@ impl Cx {
 
     /// Turn [`Cx::retry_torture`] mode on or off (`robigo-rt` reads
     /// `ROBIGO_RETRY_TORTURE`). Turning it on panics in a build without
-    /// the `retry-torture` feature, which could not honor it.
+    /// the `retry-torture` feature, which could not honor it, and with
+    /// `ROBIGO_FAIL_ALLOC_AT` set (as the heap reads it), whose knob it
+    /// would take over.
     pub fn set_retry_torture(&mut self, on: bool) {
         assert!(
             !on || cfg!(feature = "retry-torture"),
             "robigo: ROBIGO_RETRY_TORTURE needs robigo-rtcore built with its retry-torture feature \
              (cargo build --release -p robigo-rtapi --features robigo-rtcore/retry-torture)"
+        );
+        let fail_at = std::env::var("ROBIGO_FAIL_ALLOC_AT").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+        assert!(
+            !on || fail_at == 0,
+            "robigo: ROBIGO_RETRY_TORTURE and ROBIGO_FAIL_ALLOC_AT both use E9's knob: set one"
         );
         self.iso().retry_torture.set(on);
     }

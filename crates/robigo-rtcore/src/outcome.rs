@@ -114,16 +114,15 @@ impl Cx {
     ) -> RResult<M> {
         let mut retried = None;
         // ROBIGO_RETRY_TORTURE: the first attempt's first allocation refused
+        // (compiled in with the retry-torture feature only)
+        #[cfg(feature = "retry-torture")]
         let mut first = self.retry_torture();
-        if first {
-            self.refuse_next_alloc(true);
-        }
         loop {
-            let attempt = f(self);
-            if first {
-                self.refuse_next_alloc(false);
-                first = false;
-            }
+            let attempt = {
+                #[cfg(feature = "retry-torture")]
+                let _refuse = std::mem::take(&mut first).then(|| self.refuse_first());
+                f(self)
+            };
             match attempt {
                 Ok(Built::Done(r, m)) => {
                     out.set(self, r);
@@ -156,16 +155,15 @@ impl Cx {
     pub fn retry_alloc<T>(&mut self, mut f: impl FnMut(&Cx) -> Result<T, NeedGc>) -> RResult<T> {
         let mut retried = None;
         // ROBIGO_RETRY_TORTURE, as in build_with
+        // (compiled in with the retry-torture feature only)
+        #[cfg(feature = "retry-torture")]
         let mut first = self.retry_torture();
-        if first {
-            self.refuse_next_alloc(true);
-        }
         loop {
-            let attempt = f(self);
-            if first {
-                self.refuse_next_alloc(false);
-                first = false;
-            }
+            let attempt = {
+                #[cfg(feature = "retry-torture")]
+                let _refuse = std::mem::take(&mut first).then(|| self.refuse_first());
+                f(self)
+            };
             match attempt {
                 Ok(t) => return Ok(t),
                 Err(e) if retried == Some(e) => return Err(self.cannot_allocate(e)),

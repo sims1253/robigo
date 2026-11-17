@@ -124,10 +124,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         Ok("0") | Ok("") | Err(_) => false,
         Ok(other) => panic!("robigo: ROBIGO_RETRY_TORTURE={other:?} is neither \"0\" nor \"1\""),
     };
-    // both set E9's knob (Cx::retry_torture)
-    if retry_torture && std::env::var("ROBIGO_FAIL_ALLOC_AT").is_ok_and(|v| v.parse::<u64>().is_ok_and(|n| n > 0)) {
-        panic!("robigo: ROBIGO_RETRY_TORTURE and ROBIGO_FAIL_ALLOC_AT both use E9's knob: set one");
-    }
+    // (refused without its feature, and with ROBIGO_FAIL_ALLOC_AT)
     cx.set_retry_torture(retry_torture);
     let cond = conditions::CondState::new(cx);
     let defs = prims::base_defs();

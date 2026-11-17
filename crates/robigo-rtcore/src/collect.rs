@@ -19,6 +19,17 @@ use crate::isolate::Cx;
 use robigo_heap::{GC_DUE, GcStats, LARGE, Safepoint};
 use std::sync::atomic::Ordering;
 
+/// [`Cx::refuse_first`]'s guard.
+#[cfg(feature = "retry-torture")]
+pub(crate) struct RefuseFirst<'c>(&'c Cx);
+
+#[cfg(feature = "retry-torture")]
+impl Drop for RefuseFirst<'_> {
+    fn drop(&mut self) {
+        self.0.refuse_next_alloc(false);
+    }
+}
+
 impl Cx {
     /// Whether a collection is due: served at the next safepoint.
     #[inline(always)]
@@ -159,9 +170,19 @@ impl Cx {
 
     /// [`Cx::retry_torture`]'s step: E9's knob set to refuse the next
     /// allocation once (`on`), or off.
-    pub(crate) fn refuse_next_alloc(&self, on: bool) {
+    #[cfg(feature = "retry-torture")]
+    fn refuse_next_alloc(&self, on: bool) {
         // SAFETY: one call into the core, which calls nothing of ours.
         unsafe { self.iso().core() }.fail_alloc_at(on as u64)
+    }
+
+    /// [`Cx::retry_torture`] for one attempt: the next allocation is
+    /// refused while the guard lives, and the knob is off once it drops,
+    /// after an attempt that panicked too.
+    #[cfg(feature = "retry-torture")]
+    pub(crate) fn refuse_first(&self) -> RefuseFirst<'_> {
+        self.refuse_next_alloc(true);
+        RefuseFirst(self)
     }
 
     /// Whether gctorture is on (`gctorture()`'s result).

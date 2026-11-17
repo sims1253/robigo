@@ -36,8 +36,8 @@ class about K / allocations of the time. The foreman declined it.
 `ROBIGO_RETRY_TORTURE=1` refuses the first allocation of every
 `build_with` and `retry_alloc` call once:
 - the knob is set to refuse the next allocation before the first attempt;
-- it is off again after that attempt, whether the attempt allocated or
-  not;
+- it is off again after that attempt, whether the attempt allocated,
+  failed or panicked (a drop guard);
 - so each build's retry runs once, and nothing outside a build is refused.
 
 `robigo-rt` reads it at `install`, as `ROBIGO_NO_INPLACE` is read. Embedders
@@ -64,7 +64,8 @@ limit does the same: E9's small-limit step, `R_MAX_VSIZE=16M`, refuses
 every request that would pass the limit, counting garbage. Some failures
 below need more than one refusal in a run.
 
-The two share the knob, so `robigo-rt` refuses to start with both set.
+The two share the knob, so `Cx::set_retry_torture` refuses the mode while
+`ROBIGO_FAIL_ALLOC_AT` is set.
 
 ### What it finds on main
 
@@ -138,6 +139,8 @@ Each comes as its own PR, as the foreman decided.
     `retry` collection each;
   - a build that allocates nothing runs once, and leaves the next
     allocation unrefused. Without the disarm, that test fails;
+  - an attempt that panics before it allocates leaves the knob off. With a
+    no-op guard, that test fails;
   - with the mode off, a build runs once.
 
   Without the feature, which CI's build is, turning the mode on panics

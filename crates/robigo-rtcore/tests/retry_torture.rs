@@ -81,6 +81,24 @@ mod on {
             assert_eq!(retries(cx), 0);
         });
     }
+
+    /// An attempt that panics before it allocates leaves the knob off: the
+    /// next allocation, after the panic is caught, is not refused (no
+    /// collection, so Miri runs this too).
+    #[test]
+    fn a_panicking_attempt_leaves_the_knob_off() {
+        let mut iso = OwnedIsolate::new();
+        let cx = iso.cx();
+        cx.set_retry_torture(true);
+        cx.scope(|cx, s| {
+            let out = s.out(cx);
+            let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = cx.build(out, |_| panic!("an attempt that panics before it allocates"));
+            }));
+            assert!(caught.is_err());
+            assert!(cx.alloc_copy(&[2.0]).is_ok(), "the refusal outlived the attempt's panic");
+        });
+    }
 }
 
 /// A build without the feature cannot honor the mode, so it refuses it.
