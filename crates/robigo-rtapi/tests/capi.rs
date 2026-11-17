@@ -189,6 +189,19 @@ fn printing_a_package_altrep_vector_is_not_implemented_yet() {
             ("print(z)", "printing a package ALTREP vector is not implemented yet"),
             ("print(list(a = z))", "printing a package ALTREP vector is not implemented yet"),
             ("deparse(z)", "deparse of a package ALTREP vector is not implemented yet"),
+            ("cat(z)", "cat() of a package ALTREP vector is not implemented yet"),
+            // as an attribute's value (names and dimnames go through the same
+            // check, print_value_rec's and deparse2buff's attribute walk)
+            ("x <- c(1, 2); attr(x, \"w\") <- z; print(x)", "printing a package ALTREP vector is not implemented yet"),
+            (
+                "x <- c(1, 2); attr(x, \"w\") <- z; deparse(x)",
+                "deparse of a package ALTREP vector is not implemented yet",
+            ),
+            // a function's source text (useSource)
+            (
+                "f <- quote(function(x) x); f[[4]] <- z; deparse(f, control = \"useSource\")",
+                "deparse of a package ALTREP vector is not implemented yet",
+            ),
         ] {
             let m = s.err(src);
             assert!(m.contains(want), "{p:?} {src}: {m}");

@@ -188,11 +188,35 @@ fn print_object(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
 
 /// `PrintValueRec(s, data)`: print `s` by its type, then its attributes.
 // R: print.c:PrintValueRec
+/// Whether `x`, one of its attributes' values, or an element of a list
+/// among them (`dimnames`) is a package ALTREP vector: storage whose length
+/// and elements are its C methods' (M5), which the printers and deparse do
+/// not read.
+pub(crate) fn reads_package_altrep(x: Ref<'_>) -> bool {
+    if x.is_package_altrep() {
+        return true;
+    }
+    let mut a = x.attrib().and_then(|a| a.as_cons());
+    while let Some(cell) = a {
+        let v = cell.car();
+        if v.is_package_altrep() {
+            return true;
+        }
+        if let View::List(l) = v.view()
+            && (0..l.len()).any(|i| l.get(i).is_package_altrep())
+        {
+            return true;
+        }
+        a = cell.cdr().as_cons();
+    }
+    false
+}
+
 pub fn print_value_rec(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
     let v = s.bind(cx);
     // a package class's length and elements are its C methods' (M5): the
     // printers below read standard storage
-    if v.is_package_altrep() {
+    if reads_package_altrep(v) {
         return Err(cx.error("robigo: printing a package ALTREP vector is not implemented yet"));
     }
     // !isMethodsDispatchOn(): methods is never loaded here

@@ -363,6 +363,10 @@ fn cat(
             let View::List(elements) = objs.view() else {
                 return Err("robigo: cat()'s objects are not a list".into());
             };
+            // a package class's length and elements are its C methods' (M5)
+            if (0..elements.len()).any(|i| elements.get(i).is_package_altrep()) {
+                return Err("robigo: cat() of a package ALTREP vector is not implemented yet".into());
+            }
             let mut width = 0usize;
             let mut ntot = 0usize;
             let mut nlines = 0usize;
