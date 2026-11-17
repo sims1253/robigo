@@ -17,11 +17,17 @@ use robigo_rtcore::{ArgValue, Cx, RResult, RawArg, bytecode_expr};
 /// `p` is live; `nil` is R_NilValue.
 unsafe fn root_promise(mut p: Sexp, nil: Sexp) -> Sexp {
     // SAFETY: the caller's contract; PREXPR of a promise is its code's
-    // expression (`bytecodeExpr`: byte code's first constant).
+    // expression (`bytecodeExpr`: byte code's first constant), which the
+    // walk tests and descends through, as GNU R's
+    // `while (TYPEOF(PREXPR(p)) == PROMSXP) p = PREXPR(p)`.
     unsafe {
         if p.typ() == PROMSXP {
-            while bytecode_expr(p.cdr(), nil).typ() == PROMSXP {
-                p = p.cdr();
+            loop {
+                let e = bytecode_expr(p.cdr(), nil);
+                if e.typ() != PROMSXP {
+                    break;
+                }
+                p = e;
             }
         }
     }
