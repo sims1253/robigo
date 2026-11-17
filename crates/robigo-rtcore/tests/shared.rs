@@ -104,8 +104,10 @@ fn two_isolates_intern_at_once_and_keep_their_own_printnames() {
                     };
                     let pn = robigo_rtcore::Ref::from(s.name(cx));
                     assert_eq!(pn.sexp(), c.sexp(), "{name}: the PRINTNAME is this isolate's CHARSXP");
-                    assert!(unsafe { s.as_ref().sexp().heap_id() }.is_shared(), "{name}: the process's symbol");
-                    seen.push((s.as_ref().sexp().addr(), unsafe { s.as_ref().sexp().sym_id() }, pn.sexp().addr()));
+                    // SAFETY: a live symbol (immortal), read in its header and 4th word.
+                    let (shared, id) = unsafe { (s.as_ref().sexp().heap_id().is_shared(), s.as_ref().sexp().sym_id()) };
+                    assert!(shared, "{name}: the process's symbol");
+                    seen.push((s.as_ref().sexp().addr(), id, pn.sexp().addr()));
                 }
                 // the same symbol, a value per isolate
                 cx.scope(|cx, sc| {

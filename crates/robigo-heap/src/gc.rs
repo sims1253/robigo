@@ -3203,6 +3203,12 @@ pub struct HeapReport {
     pub max_v_size: Option<usize>,
 }
 
+#[cold]
+#[inline(never)]
+fn no_printname() -> ! {
+    panic!("robigo: the PRINTNAME of a symbol this heap never installed")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3276,10 +3282,4 @@ mod tests {
             assert_eq!(counts, [1; OBJECTS], "each release once, after a panic at death {k}, {at} its call");
         }
     }
-}
-
-#[cold]
-#[inline(never)]
-fn no_printname() -> ! {
-    panic!("robigo: the PRINTNAME of a symbol this heap never installed")
 }
