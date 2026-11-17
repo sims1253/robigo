@@ -11,7 +11,7 @@ const NA_LOGICAL: i32 = i32::MIN;
 
 /// `translateCharFP(s)`: `s` in the native encoding, or its error.
 // R: sysutils.c:translateCharFP
-fn translate_fp(cx: &mut Cx, x: Root<'_>, i: usize) -> RResult<Vec<u8>> {
+pub(crate) fn translate_fp(cx: &mut Cx, x: Root<'_>, i: usize) -> RResult<Vec<u8>> {
     let loc = robigo_rtbuiltins::text::ctype(cx.locale());
     let tr = {
         let c = x.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);

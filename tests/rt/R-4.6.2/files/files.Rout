@@ -1,0 +1,64 @@
+[1] "size"  "isdir" "mode"  "mtime" "ctime" "atime"
+[1]  6  0  3 NA NA
+[1] FALSE FALSE  TRUE FALSE    NA    NA
+[1] "octmode"
+[1] FALSE FALSE FALSE FALSE  TRUE  TRUE
+[1] TRUE
+ [1] "size"   "isdir"  "mode"   "mtime"  "ctime"  "atime"  "uid"    "gid"   
+ [9] "uname"  "grname"
+[1] FALSE  TRUE
+[1] TRUE
+$size
+numeric(0)
+
+$isdir
+logical(0)
+
+$mode
+<0-length octmode>
+
+$mtime
+numeric(0)
+
+$ctime
+numeric(0)
+
+$atime
+numeric(0)
+
+Error: invalid filename argument 
+Error: invalid 'extra_cols' argument 
+[1]  TRUE  TRUE FALSE
+[1] 0 0
+[1]  TRUE  TRUE FALSE FALSE FALSE
+[1] 9
+[1] TRUE TRUE TRUE TRUE
+[1] 18 12
+logical(0)
+Error: nothing to append to 
+Error: invalid 'file1' argument 
+Error: invalid 'file2' argument 
+[1] TRUE
+[1] TRUE TRUE
+[1] 683
+[1] FALSE
+[1]  TRUE FALSE
+[1] TRUE
+[1] 0
+<d>/nosuchdir/x', reason 'No such file or directory' 
+[1] FALSE
+[1] FALSE
+Error: invalid filename argument 
+[1] 384 420
+[1] 511 511
+[1] 256 448
+Error: 'mode' must be of length at least one 
+Error: invalid 'use_umask' argument 
+Error: invalid 'paths' argument 
+[1] TRUE TRUE
+[1] TRUE
+[1] "a/~b"                   ""                       NA                      
+[4] "/x"                     "~robigo-no-such-user/y"
+[1] TRUE
+character(0)
+Error: invalid 'path' argument 

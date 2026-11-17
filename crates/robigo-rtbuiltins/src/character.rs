@@ -545,3 +545,110 @@ pub fn do_encode_string(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<
         Ok(ans.finish().into())
     })
 }
+
+/// C's `strtol(s, &endp, base)` (glibc, C locale) on a whole string: the
+/// value when every byte was read and it fits a `long` (`errno` unset);
+/// `None` otherwise.
+// R: glibc stdlib/strtol_l.c
+fn strtol_whole(s: &[u8], base: u32) -> Option<i64> {
+    let mut i = 0;
+    while i < s.len() && matches!(s[i], b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r') {
+        i += 1;
+    }
+    let neg = match s.get(i) {
+        Some(b'-') => {
+            i += 1;
+            true
+        }
+        Some(b'+') => {
+            i += 1;
+            false
+        }
+        _ => false,
+    };
+    let mut base = base;
+    let hex = s.get(i) == Some(&b'0') && matches!(s.get(i + 1), Some(b'x' | b'X'));
+    if base == 0 {
+        base = if hex {
+            i += 2;
+            16
+        } else if s.get(i) == Some(&b'0') {
+            8
+        } else {
+            10
+        };
+    } else if base == 16 && hex {
+        i += 2;
+    }
+    let start = i;
+    // the magnitude, in u64 with room for i64::MIN's
+    let mut v: u64 = 0;
+    let mut overflow = false;
+    while let Some(d) = s.get(i).and_then(|&c| (c as char).to_digit(36)).filter(|&d| d < base) {
+        match v.checked_mul(base as u64).and_then(|x| x.checked_add(d as u64)) {
+            Some(x) => v = x,
+            None => overflow = true,
+        }
+        i += 1;
+    }
+    // no digits: endp is the start, a non-empty string's first byte
+    if i == start || i != s.len() {
+        return None;
+    }
+    let limit = if neg { i64::MIN.unsigned_abs() } else { i64::MAX as u64 };
+    if overflow || v > limit {
+        // ERANGE
+        return None;
+    }
+    Some(if neg { (v as i64).wrapping_neg() } else { v as i64 })
+}
+
+/// `.Internal(strtoi(x, base))`: each string read as an integer in `base`
+/// (0: C's prefixes), NA where it is not one whole number that fits.
+// R: character.c:do_strtoi, strtoi
+pub fn do_strtoi(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("strtoi", true).check_arity(cx, call, args)?;
+    let altrep = |cx: &mut Cx| not_yet(cx, Some(call), "strtoi() of a package ALTREP vector");
+    let b = args.get(cx, 1);
+    if b.is_package_altrep() {
+        return Err(altrep(cx));
+    }
+    // isInteger(b): an INTSXP, not a factor
+    let base = match b.view() {
+        robigo_rtcore::View::Int(v) if !attrib::inherits(b, b"factor") && !v.is_empty() => v.get(0),
+        _ => return Err(cx.error("invalid 'base' argument")),
+    };
+    if base != 0 && !(2..=36).contains(&base) {
+        return Err(cx.error("invalid 'base' argument"));
+    }
+    let x = args.get(cx, 0);
+    if x.is_package_altrep() {
+        return Err(altrep(cx));
+    }
+    if x.len() == Some(0) || x.sexptype() == NILSXP {
+        // LENGTH(x) is 0: no STRING_ELT is read
+        return cx.build(out, |cx| Ok(cx.alloc_vector::<i32>(0)?.finish().into()));
+    }
+    let robigo_rtcore::View::Str(xs) = x.view() else {
+        // STRING_ELT on another type
+        let msg = format!(
+            "STRING_ELT() can only be applied to a 'character vector', not a '{}'",
+            crate::util::type_to_char(x)
+        );
+        return Err(cx.error(&msg));
+    };
+    let na = cx.na_string();
+    let vals: Vec<i32> = (0..xs.len())
+        .map(|i| {
+            let c = xs.get(i);
+            if c == na || c.bytes().is_empty() {
+                return i32::MIN;
+            }
+            match strtol_whole(c.bytes(), base as u32) {
+                Some(r) if (i32::MIN as i64..=i32::MAX as i64).contains(&r) => r as i32,
+                _ => i32::MIN,
+            }
+        })
+        .collect();
+    cx.build(out, |cx| Ok(cx.alloc_copy(&vals)?.finish().into()))
+}
