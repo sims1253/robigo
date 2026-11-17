@@ -22,3 +22,9 @@ expression(42)
 [1] TRUE
 expression(7)
 [1] TRUE
+expression(42)
+[1] TRUE
+expression(8)
+[1] TRUE
+expression(9)
+[1] TRUE

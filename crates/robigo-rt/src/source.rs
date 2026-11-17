@@ -142,6 +142,30 @@ pub fn do_parse(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
     })
 }
 
+/// The bytes gram.y's `token()` reads past the token `src[start..end]`
+/// before it returns it (the connection's position runs ahead of the token
+/// by that much): one when it looked for a longer token and found none (a
+/// symbol's or number's end, `<` without `=`, `-` without `>`, ...), none
+/// when the token ends on a character of its own or at the end of input.
+// R: gram.y:token, nextchar, SymbolValue, NumericValue
+fn read_ahead(src: &[u8], start: usize, end: usize) -> usize {
+    let tok = &src[start..end];
+    let (Some(&first), Some(&last)) = (tok.first(), tok.last()) else { return 0 };
+    if end >= src.len() {
+        return 0;
+    }
+    let extends = match tok {
+        b"<" | b"-" | b"->" | b">" | b"!" | b"=" | b":" | b"::" | b"&" | b"|" | b"[" | b"*" => true,
+        // SymbolValue and NumericValue read until a character that is not
+        // the token's (a quoted string or symbol, a %op% end on their own)
+        _ => {
+            !matches!(first, b'"' | b'\'' | b'`' | b'%')
+                && (last.is_ascii_alphanumeric() || matches!(last, b'.' | b'_') || last >= 0x80)
+        }
+    };
+    extends as usize
+}
+
 /// `R_ParseVector`'s parse of `src` with `parseError`'s messages;
 /// `consumed` is set to the end of what R_Parse reads: the n-th
 /// expression's terminator, the offending token, or all of `src`.
@@ -177,7 +201,8 @@ fn parse_text(
         Ok(r) => r,
         Err(e) => {
             if !e.incomplete {
-                *consumed = e.end.max(e.offset);
+                let end = e.end.max(e.offset);
+                *consumed = end + read_ahead(src, e.offset.min(end), end);
             }
             signal(cx, if e.incomplete { usize::MAX } else { e.offset })?;
             return Err(match e.style {
