@@ -478,23 +478,29 @@ impl Sexp {
         unsafe { (crate::heap::alloc_end(self.0) as *mut isize).sub(1) }
     }
     /// The payload of a non-ALTREP vector (inline, or EXTDATA's pointer).
+    /// Not a CHARSXP's: its bytes are [`Sexp::char_bytes`], after a header
+    /// of its own (D8's h24: a vector's payload is at `vector::OFF_DATA`
+    /// whatever its type, so this reads no type).
     ///
     /// # Safety
-    /// As for [`Sexp::std_len`]: an ALTREP object's payload word is its class, and a
-    /// node has no payload. The pointer stays valid while the object is
+    /// As for [`Sexp::std_len`], and `self` is not a CHARSXP (debug-checked):
+    /// an ALTREP object's payload word is its class, and a node has no
+    /// payload. The pointer stays valid while the object is
     /// live and until the next collection, which may move the object
     /// ([`Sexp`]'s address rule) unless it is immortal or handed to C; an
     /// EXTDATA pointer is as good as its owner's promise to
     /// [`Core::alloc_extdata`].
     #[inline(always)]
     pub unsafe fn std_data(self) -> *mut u8 {
-        // SAFETY: the caller's contract makes this a standard vector, whose
-        // payload starts at `data_off` or, for EXTDATA, is stored there.
+        // SAFETY: the caller's contract makes this a standard vector but a
+        // CHARSXP, whose payload starts at `vector::OFF_DATA` or, for
+        // EXTDATA, is stored there.
         unsafe {
+            debug_assert!(self.typ() != CHARSXP, "robigo: std_data of a CHARSXP (char_bytes)");
             if self.has_flag(flags::EXTDATA) {
                 *(self.word(extdata::OFF_PTR) as *const *mut u8)
             } else {
-                self.0.add(data_off(self.typ()))
+                self.0.add(vector::OFF_DATA)
             }
         }
     }
@@ -508,11 +514,12 @@ impl Sexp {
     /// [`Core::alloc_extdata`].
     #[inline(always)]
     pub unsafe fn inline_data(self) -> *mut u8 {
-        // SAFETY: the caller's contract: a standard vector with its payload
-        // at `data_off`.
+        // SAFETY: the caller's contract: a standard vector but a CHARSXP,
+        // with its payload at `vector::OFF_DATA`.
         unsafe {
             debug_assert!(!self.has_flag(flags::EXTDATA), "robigo: inline_data of an EXTDATA vector");
-            self.0.add(data_off(self.typ()))
+            debug_assert!(self.typ() != CHARSXP, "robigo: inline_data of a CHARSXP (char_bytes)");
+            self.0.add(vector::OFF_DATA)
         }
     }
 
