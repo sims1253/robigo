@@ -136,16 +136,33 @@ fn cases(long_src: &[u8]) -> Vec<Case> {
     ]
 }
 
+/// `robigo-rt ARGS` in `dir`: (stdout, stderr, status). The child inherits
+/// the verification modes scripts/rt-ci.py runs the tests under (gctorture,
+/// the moving collector, the observation modes, `ROBIGO_GC_STATS=check`'s
+/// panics), so the cases hold under each; the reports those modes write to
+/// stderr are not the program's and are left out.
 fn run(dir: &Path, args: &[&str], stdin: Option<&str>) -> (Vec<u8>, Vec<u8>, i32) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
     cmd.args(args).current_dir(dir).env("LANGUAGE", "en").env("LC_ALL", "C.UTF-8").env("TZ", "UTC");
-    cmd.env("R_DEFAULT_PACKAGES", "NULL").env_remove("ROBIGO_FAIL_ALLOC_AT");
+    cmd.env("R_DEFAULT_PACKAGES", "NULL").env_remove("ROBIGO_FAIL_ALLOC_AT").env_remove("ROBIGO_BOOT_VERBOSE");
+    // the pin report to stderr (`1`); to a file it stays, as rt-ci's check
+    if std::env::var_os("ROBIGO_GC_PIN_REPORT").is_some_and(|v| v == "1") {
+        cmd.env_remove("ROBIGO_GC_PIN_REPORT");
+    }
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().expect("run robigo-rt");
     let input = stdin.map(|f| std::fs::read(dir.join(f)).unwrap()).unwrap_or_default();
     child.stdin.take().unwrap().write_all(&input).unwrap();
     let o = child.wait_with_output().unwrap();
-    (o.stdout, o.stderr, o.status.code().unwrap_or(-1))
+    // ROBIGO_GC_STATS' report (the heap's, when the isolate is dropped)
+    let err: Vec<u8> = o
+        .stderr
+        .split_inclusive(|&b| b == b'\n')
+        .filter(|l| !l.starts_with(b"robigo gc: "))
+        .flatten()
+        .copied()
+        .collect();
+    (o.stdout, err, o.status.code().unwrap_or(-1))
 }
 
 #[test]
