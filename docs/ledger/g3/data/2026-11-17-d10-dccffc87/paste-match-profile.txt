@@ -1,0 +1,11 @@
+# d10-paste-match's loop under callgrind, N=2000 vs 4000, self Ir / calls / inclusive Ir per iteration (scratchpad cgcalls.py)
+## uncached
+total self per unit: 323,762.4
+  10,296.8   100.00    11,844.0  robigo_heap::gc::Core::alloc_char
+   9,986.0     2.00     9,986.0  robigo_rtbuiltins::unique::StrKeys::new
+   9,983.0     3.00    20,385.3  robigo_rtcore::fresh::intern_strings_in
+   8,419.7   100.00    10,402.3  robigo_heap::gc::Core::intern_char
+## interned
+total self per unit: 278,229.5
+      68.0     2.00        68.0  robigo_rtbuiltins::unique::StrKeys::new
+       0.0     0.00         0.0  robigo_heap::gc::Core::alloc_char

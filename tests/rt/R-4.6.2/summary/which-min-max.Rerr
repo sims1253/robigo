@@ -1,0 +1,4 @@
+Warning message:
+In which.max(c("1", "10", "x")) : NAs introduced by coercion
+Warning message:
+In which.min(z) : imaginary parts discarded in coercion

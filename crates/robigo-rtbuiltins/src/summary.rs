@@ -1,5 +1,6 @@
 //! summary.c's `sum`, `min`, `max` (`do_summary`), `.Internal(pmin(na.rm,
-//! ...))`/`pmax`, and logic.c's `all`/`any` (`do_logic3`). `prod`, `mean`
+//! ...))`/`pmax`, `which`, `which.min`/`which.max` (`do_first_min`), and
+//! logic.c's `all`/`any` (`do_logic3`). `prod`, `mean`
 //! and `range` are not ported: their rows are absent.
 //!
 //! The "Summary" group dispatches for an object argument (GNU R's
@@ -856,5 +857,107 @@ pub fn do_which(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
             a.apply(cx, &mut ans)?;
         }
         Ok(ans.finish().into())
+    })
+}
+
+/// `.Internal(which.min(x))` (CODE 0) and `.Internal(which.max(x))` (1):
+/// the 1-based position of the first minimum (maximum) of `x`, NA and NaN
+/// skipped, named by the element's name; `integer(0)` when there is none.
+/// An object other than a data frame is compared by `xtfrm(x)`, evaluated
+/// in the caller's environment; anything else not numeric is coerced to
+/// double first.
+// R: summary.c:do_first_min
+pub fn do_first_min<const CODE: i32>(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: Args<'_>,
+    env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    let row = if CODE == 0 { crate::row!("which.min", true) } else { crate::row!("which.max", true) };
+    row.check_arity(cx, call, args)?;
+    cx.scope(|cx, s| {
+        let mut sx = args.root(0);
+        let x = sx.bind(cx);
+        if x.is_object() && !crate::attrib::inherits(x, b"data.frame") {
+            // eval(lang2(install("xtfrm"), sx), rho)
+            let c = s.capture(cx, |cx, o| {
+                cx.build(o, |cx| {
+                    let tail = cx.cons(sx.bind(cx), cx.nil())?;
+                    let f = cx.install(b"xtfrm")?;
+                    cx.lcons(f.into(), tail)
+                })
+            })?;
+            sx = s.capture(cx, |cx, o| cx.eval(c, env, o))?;
+        } else if !crate::util::is_numeric(x) {
+            sx = s.capture(cx, |cx, o| crate::coerce::vector::coerce_vector(cx, sx, REALSXP, o))?;
+        }
+        let x = sx.bind(cx);
+        if x.is_package_altrep() {
+            let what = if CODE == 0 {
+                "which.min() of a package ALTREP vector"
+            } else {
+                "which.max() of a package ALTREP vector"
+            };
+            return Err(not_yet(cx, Some(call), what));
+        }
+        let mut indx: Option<usize> = None;
+        match x.view() {
+            // with only (TRUE, FALSE, NA): the first FALSE (TRUE) ends the
+            // search, else the first non-NA
+            View::Lgl(v) => {
+                let want = if CODE == 0 { 0 } else { 1 };
+                for (i, l) in v.as_slice().unwrap().iter().enumerate() {
+                    if l.0 == want {
+                        indx = Some(i);
+                        break;
+                    } else if indx.is_none() && l.0 != NA_INTEGER {
+                        indx = Some(i);
+                    }
+                }
+            }
+            View::Int(v) => {
+                let mut best = if CODE == 0 { i32::MAX } else { i32::MIN };
+                for (i, &r) in v.as_slice().unwrap().iter().enumerate() {
+                    let better = if CODE == 0 { r < best } else { r > best };
+                    if r != NA_INTEGER && (better || indx.is_none()) {
+                        best = r;
+                        indx = Some(i);
+                    }
+                }
+            }
+            View::Real(v) => {
+                let mut best = if CODE == 0 { f64::INFINITY } else { f64::NEG_INFINITY };
+                for (i, &r) in v.as_slice().unwrap().iter().enumerate() {
+                    let better = if CODE == 0 { r < best } else { r > best };
+                    if !r.is_nan() && (better || indx.is_none()) {
+                        best = r;
+                        indx = Some(i);
+                    }
+                }
+            }
+            _ => {}
+        }
+        cx.build(out, |cx| {
+            let x = sx.bind(cx);
+            let Some(i) = indx else { return Ok(cx.alloc_vector::<i32>(0)?.finish().into()) };
+            let name = crate::attrib::names(x).and_then(|n| n.as_vector::<Char<'_>>()).map(|n| n.get(i));
+            let mut a = crate::attrib::Attrs::new();
+            if let Some(name) = name {
+                let mut n = cx.alloc_vector::<Char<'_>>(1)?;
+                n.set(0, name);
+                a.install(crate::attrib::Attr { tag: cx.sym(robigo_rtcore::RSym::Names), value: n.finish().into() });
+            }
+            // a position past INT_MAX is a double
+            if i + 1 > i32::MAX as usize {
+                let mut ans = cx.alloc_copy(&[(i + 1) as f64])?;
+                a.apply(cx, &mut ans)?;
+                Ok(ans.finish().into())
+            } else {
+                let mut ans = cx.alloc_copy(&[(i + 1) as i32])?;
+                a.apply(cx, &mut ans)?;
+                Ok(ans.finish().into())
+            }
+        })
     })
 }
