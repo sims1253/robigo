@@ -10,7 +10,7 @@
 # The union of base-subset.txt (the trace) and the static bound (the free
 # variables of the same inputs that name base functions, transitively through
 # base closures), so that a branch GNU R did not take still finds its function.
-# 351 closures, 132 primitives, 197 internals, 6 variables.
+# 338 closures, 131 primitives, 193 internals, 6 variables.
 closure %in% match.R
 closure %||% utils.R
 closure .Date dates.R
@@ -20,7 +20,6 @@ closure .deparseOpts New-Internal.R
 closure .difftime datetime.R
 closure .doSortWrap sort.R
 closure .dynLibs zdynvars.R
-closure .getNamespace namespace.R
 closure .getNamespaceInfo namespace.R
 closure .gt sort.R
 closure .gtn sort.R
@@ -28,7 +27,6 @@ closure .handleSimpleError conditions.R
 closure .libPaths zdynvars.R
 closure .makeMessage message.R
 closure .make_numeric_version version.R
-closure .maskedMsg attach.R
 closure .mergeExportMethods namespace.R
 closure .mergeImportMethods namespace.R
 closure .packages library.R
@@ -78,7 +76,6 @@ closure as.symbol as.R
 closure as.vector as.R
 closure asNamespace namespace.R
 closure assign assign.R
-closure attach attach.R
 closure basename files.R
 closure bindingIsLocked bindenv.R
 closure bindtextdomain stop.R
@@ -100,7 +97,6 @@ closure dQuote character.R
 closure delayedAssign delay.R
 closure deparse New-Internal.R
 closure deparse1 utilities.R
-closure detach attach.R
 closure diff diff.R
 closure diff.default diff.R
 closure dir.create files.R
@@ -148,7 +144,6 @@ closure getNamespaceExports namespace.R
 closure getNamespaceImports namespace.R
 closure getNamespaceInfo namespace.R
 closure getNamespaceName namespace.R
-closure getNamespaceUsers namespace.R
 closure getNamespaceVersion namespace.R
 closure getNativeSymbolInfo dynload.R
 closure getOption options.R
@@ -197,9 +192,7 @@ closure levels.default factor.R
 closure library.dynam library.R
 closure list.files files.R
 closure list2env assign.R
-closure load load.R
 closure loadNamespace namespace.R
-closure loadedNamespaces namespace.R
 closure local eval.R
 closure lockBinding bindenv.R
 closure lockEnvironment bindenv.R
@@ -264,7 +257,6 @@ closure rawToChar raw.R
 closure rbind New-Internal.R
 closure read.dcf dcf.R
 closure readBin connections.R
-closure readChar connections.R
 closure readLines connections.R
 closure readRDS serialize.R
 closure readline New-Internal.R
@@ -310,11 +302,9 @@ closure stdout connections.R
 closure stop stop.R
 closure stopifnot stop.R
 closure storage.mode mode.R
-closure strrep character.R
 closure strsplit grep.R
 closure strtoi character.R
 closure structure structure.R
-closure strwrap strwrap.R
 closure sub grep.R
 closure substr character.R
 closure substring character.R
@@ -334,7 +324,6 @@ closure tempdir temp.R
 closure tempfile temp.R
 closure textConnection connections.R
 closure tolower character.R
-closure topenv namespace.R
 closure trimws strwrap.R
 closure try New-Internal.R
 closure tryCatch conditions.R
@@ -344,10 +333,8 @@ closure unique duplicated.R
 closure unique.default duplicated.R
 closure unlink files.R
 closure unlist unlist.R
-closure unloadNamespace namespace.R
 closure unname unname.R
 closure unserialize serialize.R
-closure validEnc raw.R
 closure vapply sapply.R
 closure vector vector.R
 closure warning stop.R
@@ -426,7 +413,6 @@ primitive cumsum
 primitive dim
 primitive dimnames
 primitive emptyenv
-primitive enc2utf8
 primitive environment<-
 primitive exp
 primitive expression
@@ -590,8 +576,6 @@ internal lazyLoadDBinsertValue
 internal lengths
 internal list.files
 internal list2env
-internal load
-internal loadFromConn2
 internal lockBinding
 internal lockEnvironment
 internal ls
@@ -602,6 +586,7 @@ internal match
 internal match.call
 internal matrix
 internal mget
+internal mkUnbound
 internal nchar
 internal new.env
 internal ngettext
@@ -629,7 +614,6 @@ internal rapply
 internal rawToChar
 internal rbind
 internal readBin
-internal readChar
 internal readDCF
 internal readLines
 internal readline
@@ -657,7 +641,6 @@ internal stderr
 internal stdin
 internal stdout
 internal stop
-internal strrep
 internal strsplit
 internal strtoi
 internal sub
@@ -681,7 +664,6 @@ internal unlist
 internal unregisterNamespace
 internal unserialize
 internal unserializeFromConn
-internal validEnc
 internal vapply
 internal vector
 internal warning

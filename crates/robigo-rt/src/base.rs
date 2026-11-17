@@ -13,12 +13,17 @@
 //!
 //! Bindings are lazy, as GNU R's are: GNU R loads base from its lazy-load
 //! database, so every base variable starts as a promise that fetches the
-//! value on first use (`lazyLoad`, `makeLazy`). Here the promise's code is
-//! the assignment's right-hand side, evaluated in the base namespace on
-//! first use: for a function literal that is the closure GNU R stored (its
-//! environment the base namespace), and a definition that computes its
-//! function (`dyn.load`'s `if (.Platform$OS.type == "windows")`) runs only
-//! when the function is first needed. Loading itself runs no R code.
+//! value on first use (`lazyLoad`, `makeLazy`: the promise's code is
+//! `lazyLoadDBfetch(key, file, compressed, hook)`, the key the value's
+//! offset and length in the file). Here the promise's code is the call
+//! `<fetch>(file, c(start, end))` of [`do_base_def`], the key the byte span
+//! of the assignment's right-hand side in base's source file: forcing it
+//! parses and lowers that text and evaluates it in the base namespace. For
+//! a function literal that is the closure GNU R stored (its environment
+//! the base namespace), and a definition that computes its function
+//! (`dyn.load`'s `if (.Platform$OS.type == "windows")`) runs only when the
+//! function is first needed. Loading itself runs no R code and keeps no
+//! definition's code in the heap until it is used.
 //!
 //! The bound's primitives and `.Internal`s that robigo-rt does not
 //! implement are bound to a builtin that raises "robigo: ... is not
@@ -140,6 +145,7 @@ pub struct Loaded {
 pub fn load(cx: &mut Cx, dir: &Path) -> Result<Loaded, String> {
     let bound = Bound::get();
     let base_r = dir.join("src/library/base/R");
+    let fetch = fetch_builtin(cx);
     let mut done = vec![false; bound.closures.len()];
     let mut st = Loaded::default();
     for file in bound.files() {
@@ -151,20 +157,28 @@ pub fn load(cx: &mut Cx, dir: &Path) -> Result<Loaded, String> {
         let exprs = robigo_syntax::parse_program(&arena, source)
             .map_err(|e| format!("{}: {}", path.display(), robigo_syntax::format_parse_error(source, "", &e)))?;
         st.files += 1;
-        for e in &exprs {
-            let Some((name, rhs)) = assignment(e) else { continue };
-            // only the definition the bound names: the last one in
-            // collation order, which is the binding GNU R's build keeps
-            for (k, c) in bound.closures.iter().enumerate() {
-                if c.file == file && c.name.as_bytes() == name {
-                    bind_lazy(cx, name, rhs).map_err(|e| format!("binding '{}': {e}", c.name))?;
-                    if !done[k] {
-                        done[k] = true;
-                        st.closures += 1;
+        cx.scope(|cx, s| {
+            // the file, as the promises' code names it (one STRSXP for all)
+            let f = s.out(cx);
+            let fr = f.root();
+            let os = path.as_os_str().as_encoded_bytes();
+            cx.build(f, |cx| cx.mk_string(os, robigo_rtcore::Encoding::Native)).map_err(|e| failed(cx, e))?;
+            for e in &exprs {
+                let Some((name, rhs)) = assignment(e) else { continue };
+                // only the definition the bound names: the last one in
+                // collation order, which is the binding GNU R's build keeps
+                for (k, c) in bound.closures.iter().enumerate() {
+                    if c.file == file && c.name.as_bytes() == name {
+                        bind_lazy(cx, name, fetch, fr, rhs.span()).map_err(|e| format!("binding '{}': {e}", c.name))?;
+                        if !done[k] {
+                            done[k] = true;
+                            st.closures += 1;
+                        }
                     }
                 }
             }
-        }
+            Ok::<(), String>(())
+        })?;
     }
     if let Some(k) = done.iter().position(|d| !d) {
         let c = bound.closures[k];
@@ -172,6 +186,24 @@ pub fn load(cx: &mut Cx, dir: &Path) -> Result<Loaded, String> {
     }
     st.stubs = bind_stubs(cx, bound);
     Ok(st)
+}
+
+/// The name of [`do_base_def`]'s builtin: an `.Internal` (bound in no
+/// environment) that the promises' code holds itself, not by name.
+const BASE_DEF: &str = "robigo base definition";
+
+/// [`do_base_def`]'s builtin's index in the primitive table, defined on
+/// the first load.
+fn fetch_builtin(cx: &mut Cx) -> usize {
+    let have = |cx: &Cx| crate::prims::state(cx).defs.iter().position(|d| d.name == BASE_DEF);
+    if let Some(i) = have(cx) {
+        return i;
+    }
+    crate::define_builtins(
+        cx,
+        &[PrimDef { name: BASE_DEF, kind: Kind::Builtin(do_base_def, crate::prims::Inline::None), eval: 11, arity: 2 }],
+    );
+    have(cx).expect("robigo: the base definition builtin was just defined")
 }
 
 /// A top-level `NAME <- RHS` or `NAME = RHS` (`"NAME" <- RHS` too): the
@@ -190,27 +222,21 @@ fn assignment<'a>(e: &'a robigo_syntax::Expr<'a>) -> Option<(&'a [u8], &'a robig
     }
 }
 
-/// Bind `name` in base to a promise of `rhs` in the base namespace. The
-/// function literals `rhs` evaluates to make closures of base's installed
-/// byte code ([`crate::jit::installed_literal`]); a binding of one of
-/// cmp.R's `safeBaseInternals` is kept as base's shipped definition.
-fn bind_lazy(cx: &mut Cx, name: &[u8], rhs: &robigo_syntax::Expr<'_>) -> Result<(), String> {
+/// Bind `name` in base to a promise in the base namespace of the call
+/// `<fetch>(file, c(start, end))` ([`do_base_def`], `fetch` its index in
+/// the primitive table), as `makeLazy` binds `lazyLoadDBfetch(key, ...)`.
+/// A binding of one of cmp.R's `safeBaseInternals` is kept as base's
+/// shipped definition.
+// R: lazyload.R:lazyLoadDBexec, envir.c:do_makelazy
+fn bind_lazy(cx: &mut Cx, name: &[u8], fetch: usize, file: Root<'_>, span: robigo_syntax::Span) -> Result<(), String> {
     cx.scope(|cx, s| {
-        let code = s.out(cx);
-        let code_r = code.root();
-        crate::reader::lower_one(cx, rhs, code).map_err(|e| failed(cx, e))?;
-        // SAFETY: the rooted, freshly lowered code, which no R code has seen.
-        unsafe { mark_literals(cx, code_r.bind(cx).sexp()) };
         let p = s.out(cx);
         let pr = p.root();
         cx.build(p, |cx| {
-            let ns = cx.base_namespace().sexp();
-            // SAFETY: the code is rooted and the namespace immortal; a
-            // PROMSXP's fields are value (R_UnboundValue: not yet forced),
-            // code and environment (GNU R's mkPROMISE).
-            let x = unsafe { cx.alloc_node_raw(PROMSXP, cx.unbound().sexp(), code_r.bind(cx).sexp(), ns)? };
-            // SAFETY: fresh.
-            Ok(unsafe { Ref::from_sexp(x, cx) })
+            let f = crate::prims::state(cx).objs[fetch].bind(cx);
+            let key = cx.alloc_copy(&[span.start as i32, span.end as i32])?.finish().into();
+            let code = cx.lang3(f, file.bind(cx), key)?;
+            cx.mk_promise(code, cx.base_namespace())
         })
         .map_err(|e| failed(cx, e))?;
         let sym = s.out(cx);
@@ -229,6 +255,54 @@ fn bind_lazy(cx: &mut Cx, name: &[u8], rhs: &robigo_syntax::Expr<'_>) -> Result<
             v[i] = Some(g);
         }
         Ok(())
+    })
+}
+
+/// The code of a lazy base binding ([`bind_lazy`]): `file`'s bytes
+/// `start..end`, a definition's right-hand side, parsed and lowered, its
+/// function literals marked as base's installed byte code (the closures
+/// they make are the ones GNU R's build compiled), then evaluated in
+/// `rho`, the promise's environment (the base namespace): the value
+/// `lazyLoadDBfetch` would have unserialized. The tree is the pinned one
+/// [`load`] read ([`source_dir`] checks its stamp).
+// R: serialize.c:do_lazyLoadDBfetch
+fn do_base_def(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let (path, start, end) = {
+        let file = args.get(cx, 0);
+        let key = args.get(cx, 1);
+        match (file.view(), key.view()) {
+            (robigo_rtcore::View::Str(f), robigo_rtcore::View::Int(k)) if f.len() == 1 && k.len() == 2 => {
+                let path = PathBuf::from(String::from_utf8_lossy(f.get(0).bytes()).into_owned());
+                (path, k.get(0) as usize, k.get(1) as usize)
+            }
+            _ => return Err(cx.error("robigo: a base definition's key is malformed")),
+        }
+    };
+    let bytes = std::fs::read(&path)
+        .map_err(|e| cx.error(&format!("robigo: cannot read base's source file '{}': {e}", path.display())))?;
+    let Some(def) = bytes.get(start..end) else {
+        return Err(
+            cx.error(&format!("robigo: base's source file '{}' has changed since it was loaded", path.display()))
+        );
+    };
+    let text = robigo_syntax::lexable(def);
+    let source = robigo_syntax::Source::new(&text, def);
+    let arena = robigo_syntax::Arena::new();
+    let exprs = match robigo_syntax::parse_program(&arena, source) {
+        Ok(v) if v.len() == 1 => v,
+        _ => {
+            return Err(
+                cx.error(&format!("robigo: base's source file '{}' has changed since it was loaded", path.display()))
+            );
+        }
+    };
+    cx.scope(|cx, s| {
+        let code = s.out(cx);
+        let code_r = code.root();
+        crate::reader::lower_one(cx, &exprs[0], code)?;
+        // SAFETY: the rooted, freshly lowered code, which no R code has seen.
+        unsafe { mark_literals(cx, code_r.bind(cx).sexp()) };
+        cx.eval(code_r, rho, out)
     })
 }
 

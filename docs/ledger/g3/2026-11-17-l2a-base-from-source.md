@@ -23,6 +23,32 @@
     with `n`, the rest of a file connection left unread), `stdin()`,
     `writeLines`; the `expression()` special, `.isMethodsDispatchOn`,
     `substitute(expr, list)`.
+- **M1's loader fetches a definition when it is first used**, as GNU R's
+  lazy load does. A binding's promise was the lowered right-hand side.
+  It is now the call `<fetch>(file, c(start, end))`, which names the
+  right-hand side's bytes in the pinned source file, as `makeLazy`'s
+  `lazyLoadDBfetch(key, file, ...)` names a value's offset and length.
+  Forcing the promise parses and lowers that text. The bound grew from
+  205 to 338 closures, through the namespace closures that `R_getNSValue`
+  and `getNamespaceName` reach (`asNamespace`, then statically
+  `loadNamespace`). Before the change, the bound's code took 450 KB of
+  heap that never ran, which raised listgrow's peak RSS by 3.2% through
+  heap growth. After it, listgrow's live LANGSXPs fall from 10,199 to 414
+  and its peak RSS is below main's.
+- **The S3 table's promise**: base's `.__S3MethodsTable__.` is now a
+  lazy binding, as GNU R's is. Once it is forced, the dispatch memo
+  looks through the promise to its value (`dispatch.rs`,
+  `forced_value`). Without that, every lookup missed the memo and s3 ran
+  30% more instructions.
+  - The table is GNU R's, so each memo hit now checks the method's
+    absence from it, as `R_LookupMethod` reads it. The check covers any
+    binding, a non-function too, so the table's version box cannot
+    replace it (`tests/rt/s3/method-table.R`).
+  - What pays for that check: a binding of the table that is a promise
+    is function-like, so the defining environment's version box moves
+    when the binding changes. The memo then holds that box (`def_box`)
+    and does not read the binding again.
+  - s3 is +0.33% in instructions against main.
 - **Stage 0 on this tree** (`ROBIGO_BOOT_VERBOSE=1`): 1,308 top-level
   expressions, 39 fail, each on a builtin robigo-rt does not have yet:
   base's `atan` (`pi`), `.Internal(strptime)` (`.leap.seconds`),

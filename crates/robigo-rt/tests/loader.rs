@@ -45,6 +45,14 @@ fn every_closure_of_the_bound_is_bound_lazily_in_base() {
             let vr = v.root();
             cx.find_var_in_frame3(base, symr, true, v).unwrap();
             assert_eq!(vr.bind(cx).sexptype(), PROMSXP, "{}", c.name);
+            // of the fetch call `<fetch>(file, c(start, end))`, not of the
+            // definition's code (that is parsed and lowered when forced)
+            let code = match vr.bind(cx).view() {
+                robigo_rtcore::View::Promise(p) => p.code(),
+                _ => unreachable!(),
+            };
+            let head = code.as_cons().map(|k| k.car().sexptype());
+            assert_eq!((code.sexptype(), head), (LANGSXP, Some(BUILTINSXP)), "{}", c.name);
             // evaluating the symbol forces it
             let f = s.out(cx);
             let fr = f.root();
