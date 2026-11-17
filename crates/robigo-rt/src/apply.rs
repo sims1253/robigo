@@ -294,7 +294,7 @@ pub fn eval_call(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RR
                         cx,
                         call,
                         fr,
-                        crate::args::Source::Site(crate::ir::NO_SITE, robigo_heap::Sexp::NULL),
+                        crate::args::Source::Site(crate::ir::NO_SITE, 0),
                         None,
                         rho,
                         None,

@@ -116,19 +116,32 @@ pub unsafe fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: 
 /// inline yet), a builtin's arguments are their values (`MAKEPROM`'s
 /// `bcEval(code, rho)`), a special gets the call as it is. Its own
 /// functions all through, so that [`call`] and what the VM's `Call`
-/// inlines of it stay as they are.
+/// inlines of it stay as they are. `codes_k`: the codes' pool index in
+/// `act`'s code (read from it where used: a collection may move them).
 ///
 /// # Safety
-/// As for [`call`]; `codes` is a constant of `act`'s code.
+/// As for [`call`]; `codes_k` is a pool index of `act`'s code.
 // R: eval.c:bcEval CALL, MAKEPROM
 #[inline(never)]
-pub unsafe fn call_codes(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, codes: Sexp, site: u16) -> RResult<()> {
+pub unsafe fn call_codes(
+    cx: &mut Cx,
+    act: &Act,
+    dst: Reg,
+    rf: Reg,
+    call: Sexp,
+    codes_k: u16,
+    site: u16,
+) -> RResult<()> {
     let fun = act.obj(rf);
     // SAFETY: a register's object is live; the caller's contract.
     unsafe {
         match fun.typ() {
-            CLOSXP => args::call_closure_codes(cx, act, dst, rf, call, codes, site),
-            BUILTINSXP => call_builtin_list_codes(cx, act, dst, fun, call, codes),
+            CLOSXP => args::call_closure_codes(cx, act, dst, rf, call, codes_k, site),
+            BUILTINSXP => {
+                // (rooted at once by the callee: nothing collects before)
+                let codes = crate::code::View::of(act.obj(crate::ir::R_CODE)).k(codes_k);
+                call_builtin_list_codes(cx, act, dst, fun, call, codes)
+            }
             SPECIALSXP => call_special(cx, act, dst, fun, call),
             // R: eval.c:bcEval CHECKFUN (as in `call`)
             _ => {

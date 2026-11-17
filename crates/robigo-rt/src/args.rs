@@ -853,9 +853,12 @@ pub(crate) fn match_builtin_args<'s>(
 #[derive(Clone, Copy)]
 pub(crate) enum Source {
     /// The call's own arguments, in the caller's environment, from call
-    /// site `site` of the caller's code (or [`NO_SITE`]), with the promise
-    /// codes of a translated call (null for none, [`arg_code`]).
-    Site(u16, Sexp),
+    /// site `site` of the caller's code (or [`NO_SITE`]), with the pool
+    /// index in the caller's code of a translated call's promise codes
+    /// ([`arg_code`]; 0 for none). An index, not the list: it is read from
+    /// the caller's rooted code where it is used, after anything that may
+    /// have collected (and moved it).
+    Site(u16, u16),
     /// A promise list (`applyClosure(call, op, arglist, rho, ...)`).
     List,
     /// S3 dispatch's method called with the generic's arguments
@@ -1510,9 +1513,16 @@ fn prepare<'s: 'r, 'r, 'a, const GENERIC: bool>(
     // SAFETY: the rooted call.
     let bytecode = profile == Profile::Bc && unsafe { call.bind(cx).sexp().car() } != bquote;
     let nil = cx.nil().sexp();
-    // a translated call's promise codes (MAKEPROM's), by call argument
-    let codes = match src {
-        Source::Site(_, codes) => codes,
+    // a translated call's promise codes (MAKEPROM's), by call argument: a
+    // constant of the caller's code, read where it is used
+    let codes_k = match src {
+        Source::Site(_, k) => k,
+        _ => 0,
+    };
+    let codes_now = || match caller {
+        // SAFETY: the caller's rooted code object (its register, which a
+        // collection updates); `codes_k` the pool index its CallCodes holds.
+        Some(a) if codes_k != 0 => unsafe { crate::code::View::of(a.obj(crate::ir::R_CODE)).k(codes_k) },
         _ => Sexp::NULL,
     };
     // R: eval.c:make_applyClosure_env's check of rho
@@ -1526,7 +1536,7 @@ fn prepare<'s: 'r, 'r, 'a, const GENERIC: bool>(
     // matched them, without the matcher's buffers
     let mut inits: Buf<SlotInit<'_>> = Buf::new();
     let hit = match (src, caller) {
-        (Source::Site(site, codes), Some(a)) if !GENERIC && site != NO_SITE => {
+        (Source::Site(site, _), Some(a)) if !GENERIC && site != NO_SITE => {
             // SAFETY: the caller's activation; the rooted call (a site's
             // plan is made only for a call without `...`) and closure;
             // the plan read before anything can collect.
@@ -1541,7 +1551,7 @@ fn prepare<'s: 'r, 'r, 'a, const GENERIC: bool>(
                     });
                     let FillData::Plan { tags, missing, .. } = fill else { unreachable!() };
                     let (c, f) = (call.bind(cx).sexp(), op.bind(cx).sexp());
-                    plan_inits(cx, s, &*p, c, f, profile, bytecode, codes, &mut inits, tags).map(|absent| {
+                    plan_inits(cx, s, &*p, c, f, profile, bytecode, codes_now(), &mut inits, tags).map(|absent| {
                         *missing = absent;
                         (p, site, a)
                     })
@@ -1704,10 +1714,10 @@ fn prepare<'s: 'r, 'r, 'a, const GENERIC: bool>(
                     // collection followed) the actuals are read again
                     unsafe {
                         if attempt == 1 {
-                            dots_list(cx, acts.as_slice(), m, r, profile, bytecode, codes)
+                            dots_list(cx, acts.as_slice(), m, r, profile, bytecode, codes_now())
                         } else {
                             reread(cx, &mut a2, &mut t2, &mut d2);
-                            dots_list(cx, a2.as_slice(), m, r, profile, bytecode, codes)
+                            dots_list(cx, a2.as_slice(), m, r, profile, bytecode, codes_now())
                         }
                     }
                 })?;
@@ -1721,6 +1731,8 @@ fn prepare<'s: 'r, 'r, 'a, const GENERIC: bool>(
                 reread(cx, acts, &mut ftags, &mut fdefs);
             }
             let missing = cx.missing_arg().sexp();
+            // (read after the list's allocation: nothing below collects)
+            let codes = codes_now();
             for i in 0..ftags.len() {
                 let default = fdefs[i];
                 // the default for a formal with no value (match MISSING 1 → 2)
@@ -2279,18 +2291,18 @@ pub unsafe fn call_closure(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp
     cx.scope(|cx, s| {
         // SAFETY: a constant of the rooted code.
         let callr = s.root(cx, unsafe { Ref::from_sexp(call, cx) });
-        let src = Source::Site(site, Sexp::NULL);
+        let src = Source::Site(site, 0);
         apply(cx, callr, act.root(rf), src, None, act.root(R_ENV), Some(act), None, true, act.out(dst))
     })
 }
 
 /// [`call_closure`] of a translated call whose promises hold their own
-/// code: `codes` ([`arg_code`]), a constant of the running code. Its own
-/// function, so that [`call_closure`], which the VM's `Call` inlines, stays
-/// as it is.
+/// code: the list at pool index `codes_k` of the running code
+/// ([`arg_code`]). Its own function, so that [`call_closure`], which the
+/// VM's `Call` inlines, stays as it is.
 ///
 /// # Safety
-/// As for [`call_closure`]; `codes` is a constant of `act`'s code.
+/// As for [`call_closure`]; `codes_k` is a pool index of `act`'s code.
 #[inline(never)]
 pub unsafe fn call_closure_codes(
     cx: &mut Cx,
@@ -2298,13 +2310,13 @@ pub unsafe fn call_closure_codes(
     dst: Reg,
     rf: Reg,
     call: Sexp,
-    codes: Sexp,
+    codes_k: u16,
     site: u16,
 ) -> RResult<()> {
     cx.scope(|cx, s| {
         // SAFETY: a constant of the rooted code.
         let callr = s.root(cx, unsafe { Ref::from_sexp(call, cx) });
-        let src = Source::Site(site, codes);
+        let src = Source::Site(site, codes_k);
         apply(cx, callr, act.root(rf), src, None, act.root(R_ENV), Some(act), None, true, act.out(dst))
     })
 }

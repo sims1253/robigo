@@ -576,12 +576,13 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
             Op::CallCodes => {
                 // `Call` with the call's promise codes (`consts[f]`), which
                 // the promises it makes hold (translated code: `Bc`)
-                // SAFETY: constants of the code.
-                let (call, codes) = unsafe { (v.k(i.e), v.k(i.f)) };
+                // SAFETY: a constant of the code.
+                let call = unsafe { v.k(i.e) };
                 cx.set_eval_depth(act.depth + i.d as i32);
                 pp_point(cx, act, &v, pc - 1);
+                // (the codes by their pool index `f`: read where used)
                 // SAFETY: the running code's constants (or rooted values): live, of this isolate.
-                unsafe { crate::call::call_codes(cx, act, i.a, i.b, call, codes, i.c) }?;
+                unsafe { crate::call::call_codes(cx, act, i.a, i.b, call, i.f, i.c) }?;
                 if i.fl & F_CLR_B != 0 && i.b != i.a {
                     act.clear(i.b);
                 }
