@@ -158,6 +158,56 @@ fn math2(cx: &mut Cx, call: Root<'_>, sa: Root<'_>, sb: Root<'_>, f: fn(f64, f64
 
 /// `R_log(x)`: -Inf at 0 and NaN below, whatever the C library does.
 // R: arithmetic.h:R_log
+/// bcEval's `math1funs` (eval.c): the function `MATH1`'s index names, the
+/// C library's (or nmath's) as the table has it, never `do_math1`'s
+/// wrappers, whose exact answers at `x == 0` drop `-0`; and whether it is
+/// nmath's, which may queue a warning (`ML_WARNING`).
+// R: eval.c:math1funs
+pub const BC_MATH1: [(&str, fn(f64) -> f64, bool); 24] = [
+    ("floor", f64::floor, false),
+    ("ceiling", f64::ceil, false),
+    ("sign", sign, false),
+    ("expm1", robigo_numerics::expm1, false),
+    ("log1p", robigo_numerics::log1p, false),
+    ("cos", f64::cos, false),
+    ("sin", f64::sin, false),
+    ("tan", f64::tan, false),
+    ("acos", f64::acos, false),
+    ("asin", f64::asin, false),
+    ("atan", f64::atan, false),
+    ("cosh", f64::cosh, false),
+    ("sinh", f64::sinh, false),
+    ("tanh", f64::tanh, false),
+    ("acosh", robigo_numerics::acosh, false),
+    ("asinh", robigo_numerics::asinh, false),
+    ("atanh", robigo_numerics::atanh, false),
+    ("lgamma", robigo_numerics::lgammafn, true),
+    ("gamma", robigo_numerics::gammafn, true),
+    ("digamma", robigo_numerics::digamma, true),
+    ("trigamma", robigo_numerics::trigamma, true),
+    ("cospi", robigo_numerics::cospi, true),
+    ("sinpi", robigo_numerics::sinpi, true),
+    ("tanpi", robigo_numerics::r_tanpi, true),
+];
+
+/// The warnings nmath queued since the last take (`MATHLIB_WARNING`'s
+/// messages, each ending in a newline).
+pub fn take_nmath_warnings() -> Vec<String> {
+    robigo_numerics::take_warnings()
+}
+
+/// `R_log(x)`, bcEval's `LOG` of one number.
+// R: arithmetic.c:R_log
+pub fn bc_log(x: f64) -> f64 {
+    r_log(x)
+}
+
+/// `logbase(x, base)`, bcEval's `LOGBASE` of two numbers.
+// R: arithmetic.c:logbase
+pub fn bc_logbase(x: f64, base: f64) -> f64 {
+    logbase(x, base)
+}
+
 fn r_log(x: f64) -> f64 {
     if x > 0.0 {
         x.ln()
