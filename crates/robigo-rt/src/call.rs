@@ -370,10 +370,10 @@ fn invoke_builtin(cx: &mut Cx, act: &Act, dst: Reg, args: Args<'_>, regs: (Reg, 
     // while the builtin runs
     // R: eval.c:BUILTIN_CALL_FRAME_ARGS, eval.c:evalList
     // SAFETY: this running activation's registers.
-    unsafe { crate::links::skip_args(act.base, regs.0, regs.1) };
+    unsafe { crate::links::skip_args(act.base(), regs.0, regs.1) };
     let r = run_builtin(cx, &def, act.root(R_SCRATCH), args, act.root(R_ENV), act.out(dst));
     // SAFETY: as above.
-    unsafe { crate::links::unskip_args(act.base) };
+    unsafe { crate::links::unskip_args(act.base()) };
     act.clear(R_SCRATCH);
     act.clear(R_SCRATCH2);
     r
@@ -715,7 +715,12 @@ pub fn loop_region(cx: &mut Cx, act: &mut Act, start: usize, regs: Reg, nregs: R
             let base = s.root(cx, cx.base_env());
             // R: eval.c:do_for, begincontext(&cntxt, CTXT_LOOP, R_NilValue,
             // rho, R_BaseEnv, R_NilValue, R_NilValue)
-            let env = act.root(R_ENV);
+            // SAFETY: the activation's environment register, live for the
+            // whole activation, which outlives this call. Only `exec` writes
+            // R_ENV, before `run` starts (the compiler allocates from
+            // R_FIRST), so the root reads the environment throughout. It is
+            // not tied to `act`'s borrow, which `run` needs mutably.
+            let env = unsafe { Root::from_raw(act.slot(R_ENV)) };
             cx.with_context(ctxt::LOOP, nil, env, base, None, |cx, _id| vm::run(cx, act, start))
         });
         let landed = match r {
