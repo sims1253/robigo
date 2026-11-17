@@ -1026,7 +1026,9 @@ pub fn print_warnings(cx: &mut Cx) {
     let mut out: Vec<u8> = Vec::new();
     {
         let ws = cx.collected_warnings();
-        let item = |out: &mut Vec<u8>, call: Ref<'_>, msg: &[u8], indent: usize| {
+        // `whole`: the one-warning branch in an MBCS locale measures all of
+        // `msg`, not its first line (it takes `wd(msg)` where it meant `msg1`).
+        let item = |out: &mut Vec<u8>, call: Ref<'_>, msg: &[u8], indent: usize, whole: bool| {
             if call.sexptype() == NILSXP {
                 out.extend_from_slice(msg);
                 out.extend_from_slice(b" \n");
@@ -1036,7 +1038,8 @@ pub fn print_warnings(cx: &mut Cx) {
             out.extend_from_slice(b"In ");
             out.extend_from_slice(&dc);
             out.extend_from_slice(b" :");
-            if indent + wd(&dc) + wd(line1(msg)) > LONGWARN {
+            let msgline1 = if whole { wd(msg) } else { wd(line1(msg)) };
+            if indent + wd(&dc) + msgline1 > LONGWARN {
                 out.extend_from_slice(b"\n ");
             }
             out.push(b' ');
@@ -1046,12 +1049,12 @@ pub fn print_warnings(cx: &mut Cx) {
         if n == 1 {
             out.extend_from_slice(b"Warning message:\n");
             let (c, m) = ws[0];
-            item(&mut out, c, m.bytes(), 6);
+            item(&mut out, c, m.bytes(), 6, cx.locale().utf8);
         } else if n <= 10 {
             out.extend_from_slice(b"Warning messages:\n");
             for (i, &(c, m)) in ws.iter().enumerate() {
                 out.extend_from_slice(format!("{}: ", i + 1).as_bytes());
-                item(&mut out, c, m.bytes(), 10);
+                item(&mut out, c, m.bytes(), 10, false);
             }
         } else if n < robigo_rtcore::MAX_WARNINGS {
             out.extend_from_slice(format!("There were {n} warnings (use warnings() to see them)\n").as_bytes());

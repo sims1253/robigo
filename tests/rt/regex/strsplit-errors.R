@@ -2,7 +2,7 @@
 # string, TRE's and PCRE's compilation errors, input invalid in the
 # locale, and empty matches at the end of a string.
 print(strsplit(as.character(pi), ".", fixed = TRUE))
-print(strsplit(format(pi, digits = 10), "[.]"))
+print(strsplit("3.141592654", "[.]"))
 try(strsplit(1, "a"))
 try(strsplit("a", list()))
 print(strsplit("a", 1))

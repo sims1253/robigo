@@ -16,10 +16,12 @@
 //! would in GNU R: what phase 2 did after it is never seen.
 
 pub mod grep;
+pub mod regexpr;
 pub mod strsplit;
 pub mod sub;
 
 pub use grep::do_grep;
+pub use regexpr::{do_regexec, do_regexpr};
 pub use strsplit::do_strsplit;
 pub use sub::do_gsub;
 
@@ -68,7 +70,8 @@ impl Report {
     /// Phase 3's start: the warnings, then the error.
     pub(crate) fn finish<T>(self, cx: &mut Cx, call: Root<'_>, r: Result<T, Fail>) -> Result<T, RError> {
         for w in &self.warnings {
-            cx.warning(w)?;
+            // R: errors.c:warning drops one trailing newline
+            cx.warning(w.strip_suffix('\n').unwrap_or(w))?;
         }
         match r {
             Ok(t) => Ok(t),
@@ -642,6 +645,12 @@ impl Pcre {
         let notbol_matters =
             pattern.contains(&b'^') && (find(pattern, b"(?<").is_some() || find(pattern, b"(*").is_some());
         Ok(Pcre { re, notbol_matters })
+    }
+
+    /// `capture_names`: each group's name from PCRE's name table, "" for
+    /// one without.
+    pub(crate) fn capture_names(&self) -> Vec<String> {
+        self.re.capture_names().iter().skip(1).map(|n| n.clone().unwrap_or_default()).collect()
     }
 
     /// An empty set of group offsets for [`Pcre::match_at`].

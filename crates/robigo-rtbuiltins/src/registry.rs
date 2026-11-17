@@ -365,6 +365,7 @@ pub static BUILTINS: &[Builtin] = &[
     op!("pmin", 0, summary::do_pmin, 11, -1, FUNCALL, Pure),
     op!("pmax", 1, summary::do_pmin, 11, -1, FUNCALL, Pure),
     row("sqrt", math::do_sqrt, 3, 1, 1, FUNCALL, Pure),
+    row("atan", math::do_atan, 25, 1, 1, FUNCALL, Pure),
     row("abs", math::do_abs, 6, 1, 1, FUNCALL, Pure),
     // context.c
     op!("sys.parent", 1, context::do_sys, 11, -1, FUNCALL, Env),
@@ -476,6 +477,9 @@ pub static BUILTINS: &[Builtin] = &[
     op!("grepl", 1, grep::do_grep, 11, 8, FUNCALL, Pure),
     op!("sub", 0, grep::do_gsub, 11, 7, FUNCALL, Pure),
     op!("gsub", 1, grep::do_gsub, 11, 7, FUNCALL, Pure),
+    op!("regexpr", 0, grep::do_regexpr, 11, 6, FUNCALL, Pure),
+    op!("gregexpr", 1, grep::do_regexpr, 11, 6, FUNCALL, Pure),
+    row("regexec", grep::do_regexec, 1, 11, 5, FUNCALL, Pure),
     row("nzchar", character::do_nzchar, 1, 1, -1, FUNCALL, Pure),
     row("encodeString", character::do_encode_string, 1, 11, 5, FUNCALL, Pure),
     row("substr", character::do_substr, 1, 11, 3, FUNCALL, Pure),
