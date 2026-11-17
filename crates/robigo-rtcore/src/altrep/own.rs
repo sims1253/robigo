@@ -138,7 +138,7 @@ unsafe fn mark_own(x: Sexp) {
 /// # Safety
 /// `x` is a live compact sequence.
 #[inline]
-pub(crate) unsafe fn compact_info(x: Sexp) -> (usize, f64, f64) {
+pub unsafe fn compact_info(x: Sexp) -> (usize, f64, f64) {
     // SAFETY: the caller's contract: data1 is the info, a standard REALSXP
     // of three that `new_compact` or `coerce_compact` made with `alloc_copy`,
     // its payload inline.
@@ -154,7 +154,7 @@ pub(crate) unsafe fn compact_info(x: Sexp) -> (usize, f64, f64) {
 /// # Safety
 /// `x` is a live instance of one of robigo's classes.
 #[inline(always)]
-pub(crate) unsafe fn expanded(x: Sexp) -> Option<Sexp> {
+pub unsafe fn expanded(x: Sexp) -> Option<Sexp> {
     // SAFETY: the caller's contract: data2 is R_NilValue or a standard
     // vector of the base type, both live.
     unsafe {
@@ -168,7 +168,7 @@ pub(crate) unsafe fn expanded(x: Sexp) -> Option<Sexp> {
 /// # Safety
 /// `x` is a live instance of one of robigo's classes.
 #[inline(always)]
-pub(crate) unsafe fn own_len(x: Sexp) -> usize {
+pub unsafe fn own_len(x: Sexp) -> usize {
     // SAFETY: the caller's contract; both classes are compact sequences,
     // whose info (inline, as `compact_info` says) has the length first, a
     // whole number below 2^52 (R_XLEN_T_MAX), so it converts exactly.

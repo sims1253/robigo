@@ -18,6 +18,7 @@
 #![allow(unsafe_code)]
 
 use crate::isolate::Cx;
+use robigo_heap::extra::vector::OWN_ALTREP;
 use robigo_heap::types::*;
 use robigo_heap::{Rcomplex, Sexp, gp};
 use std::fmt;
@@ -190,7 +191,12 @@ impl<'g> Ref<'g> {
         let t = self.sexptype();
         if robigo_heap::is_vector_type(t) {
             if self.is_altrep() {
-                return alt_len(self);
+                // one of robigo's: the info's first element, read inline
+                // (no call in the callers' hot code); a package class's
+                // needs its method
+                // SAFETY: live; with the bit, an instance of one of
+                // robigo's classes.
+                return (unsafe { self.sexp().extra() } & OWN_ALTREP != 0).then(|| own_len(self));
             }
             // SAFETY: a live vector; not ALTREP, so it has a length word.
             return Some(unsafe { self.sexp().std_len() } as usize);
@@ -251,7 +257,11 @@ impl<'g> Ref<'g> {
     /// classes (not a package class's).
     #[inline]
     pub fn as_vector<T: Elt<'g>>(self) -> Option<Vector<'g, T>> {
-        (T::accepts(self.sexptype()) && !self.is_package_altrep()).then_some(Vector { r: self, _t: PhantomData })
+        // (an instance of robigo's classes is an integer or a real vector:
+        // the other element types refuse every ALTREP object, a test of the
+        // flag alone)
+        let alt_ok = if T::OWN { !self.is_package_altrep() } else { !self.is_altrep() };
+        (T::accepts(self.sexptype()) && alt_ok).then_some(Vector { r: self, _t: PhantomData })
     }
 
     /// The element of a length-1 vector of element type `T` in standard
@@ -611,15 +621,6 @@ impl<'g, T: Elt<'g>> Vector<'g, T> {
 #[inline(never)]
 fn not_own(r: Ref<'_>) -> bool {
     r.own_class().is_none()
-}
-
-/// [`Ref::len`] of an ALTREP vector: one of robigo's has a token-free
-/// length, a package class's needs its method.
-#[cold]
-#[inline(never)]
-fn alt_len(r: Ref<'_>) -> Option<usize> {
-    // SAFETY: a live instance of one of robigo's classes.
-    r.own_class().map(|_| unsafe { crate::altrep::own::own_len(r.sexp()) })
 }
 
 /// The length of an instance of one of robigo's classes (a typed view is

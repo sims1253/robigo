@@ -893,8 +893,14 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 reload!();
             }
             Op::ForDone => {
-                // R: eval.c:do_for, DECREMENT_LINKS(val)
-                if let Some(x) = act.get(i.a).as_object() {
+                // R: eval.c:do_for, DECREMENT_LINKS(val): the sequence's
+                // (a compact one's is in `a + 5`, its buffer in `a`)
+                let seq = match act.get(i.a + 5).as_object() {
+                    // SAFETY: a live object.
+                    Some(s) if unsafe { s.typ() } != NILSXP => Some(s),
+                    _ => act.get(i.a).as_object(),
+                };
+                if let Some(x) = seq {
                     // SAFETY: a live object.
                     unsafe { x.decref() };
                 }
@@ -1596,37 +1602,162 @@ fn for_prep(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp) -> RResult<()
     // INCREMENT_LINKS(val)
     // SAFETY: a live object.
     unsafe { act.obj(a).incref() };
-    // one of robigo's compact sequences: its first element and increment,
-    // read once, so that each step computes its element (INTEGER_ELT,
-    // REAL_ELT) from the index; R_NilValue for any other sequence
-    // SAFETY: a live object.
-    let seq = unsafe { Ref::from_sexp(act.obj(a), cx) };
-    let (start, inc) = match seq.own_class() {
-        Some(_) => {
-            let (_, n1, inc) = seq.compact_info();
-            (Slot::real(n1), Slot::real(inc))
-        }
-        // SAFETY: R_NilValue, immortal.
-        None => unsafe { (Slot::object(nil), Slot::object(nil)) },
-    };
     // SAFETY: unboxed values, and a live cell of the frame (or nil).
     unsafe {
         act.set(a + 1, Slot::real(0.0));
         act.set(a + 2, Slot::real(n as f64));
         act.set(a + 3, Slot::object(nil));
         act.set(a + 4, Slot::object(cell));
-        act.set(a + 5, start);
-        act.set(a + 6, inc);
+        act.set(a + 5, Slot::object(nil));
+        act.set(a + 6, Slot::real(0.0));
+    }
+    // one of robigo's compact sequences: read by region
+    // SAFETY: a live object.
+    if unsafe { act.obj(a).is_altrep() } {
+        compact_prep(cx, act, a)?;
     }
     Ok(())
+}
+
+/// The elements a `for` loop over one of robigo's compact sequences reads
+/// at a time: GNU R's `ITERATE_BY_REGION` reads the class's `Get_region`
+/// into a buffer as this does. A multiple of `BC_LOOP_COUNT_MASK + 1`
+/// (1024), so that a chunk-relative index ticks the loop
+/// (`BC_CHECK_SIGINT_LOOP`) exactly when the sequence's index does.
+const FOR_CHUNK: usize = 1024;
+
+/// [`for_prep`] of one of robigo's compact sequences: the sequence moves to
+/// the loop's register `a + 5` (where [`for_refill`] reads it, and the loop's
+/// count of it is dropped), and the loop reads a buffer of its elements
+/// instead, one chunk at a time, through [`for_step`]'s standard path (no
+/// expansion and nothing of the sequence's length allocated). One already
+/// expanded is read in place: INTEGER_ELT reads the expansion.
+// R: eval.c:bcEval (STARTFOR, STEPFOR), R_ext/Itermacros.h:ITERATE_BY_REGION
+#[cold]
+#[inline(never)]
+fn compact_prep(cx: &mut Cx, act: &Act, a: Reg) -> RResult<()> {
+    let seq = act.obj(a);
+    // SAFETY: a live compact sequence (`for_prep` admits no other ALTREP
+    // vector) of this isolate, rooted in the loop's registers.
+    unsafe {
+        act.set(a + 5, Slot::object(seq));
+        if let Some(e) = robigo_rtcore::altrep::own::expanded(seq) {
+            act.set(a, Slot::object(e));
+            return Ok(());
+        }
+        let len = robigo_rtcore::altrep::own::own_len(seq).min(FOR_CHUNK);
+        let t = seq.typ();
+        let buf = cx.retry_alloc(|cx| cx.alloc_vector_raw(t, len))?;
+        act.set(a, Slot::object(buf));
+        fill_chunk(act, a, 0, len);
+        act.set(a + 2, Slot::real(len as f64));
+    }
+    Ok(())
+}
+
+/// The next chunk of a compact sequence's loop, when [`for_step`] has read
+/// the last one: true with the loop's registers on it, false when the
+/// sequence is done (or the loop's sequence is not a compact one: the
+/// standard loop's end).
+#[cold]
+#[inline(never)]
+fn for_refill(act: &Act, a: Reg) -> bool {
+    let Some(seq) = act.get(a + 5).as_object() else { return false };
+    // SAFETY: the sequence `compact_prep` put in the register, live and
+    // rooted, or R_NilValue for another loop.
+    unsafe {
+        if seq.typ() == NILSXP {
+            return false;
+        }
+        let base = (act.get(a + 6).as_real().unwrap() + act.get(a + 2).as_real().unwrap()) as usize;
+        let total = robigo_rtcore::altrep::own::own_len(seq);
+        if base >= total {
+            return false;
+        }
+        if let Some(e) = robigo_rtcore::altrep::own::expanded(seq) {
+            // expanded since (C's DATAPTR): the rest read in place, by the
+            // sequence's own index
+            act.set(a, Slot::object(e));
+            act.set(a + 1, Slot::real(base as f64));
+            act.set(a + 2, Slot::real(total as f64));
+            act.set(a + 6, Slot::real(0.0));
+            return true;
+        }
+        let len = (total - base).min(FOR_CHUNK);
+        fill_chunk(act, a, base, len);
+        act.set(a + 1, Slot::real(0.0));
+        act.set(a + 2, Slot::real(len as f64));
+        act.set(a + 6, Slot::real(base as f64));
+    }
+    true
+}
+
+/// Elements `base..base + len` of the compact sequence in register `a + 5`
+/// into the buffer in register `a` (`Get_region`).
+///
+/// # Safety
+/// Register `a + 5` holds a live compact sequence of at least `base + len`
+/// elements and register `a` a standard vector of its type, at least `len`
+/// long and payload inline (`alloc_vector_raw`'s).
+unsafe fn fill_chunk(act: &Act, a: Reg, base: usize, len: usize) {
+    let (seq, buf) = (act.obj(a + 5), act.obj(a));
+    // SAFETY: the caller's contract; only INTSXP and REALSXP have classes,
+    // and the sequence is not expanded (`compact_prep` and `for_refill`
+    // read an expanded one in place): its info is its elements' formula.
+    unsafe {
+        let (_, n1, inc) = robigo_rtcore::altrep::own::compact_info(seq);
+        if seq.typ() == INTSXP {
+            // an integer sequence's first element and increment (1 or -1)
+            // are ints, and so is each of its elements: this one in int
+            // arithmetic, which vectorizes
+            let first = (n1 as i64 + inc as i64 * base as i64) as i32;
+            let inc = inc as i32;
+            let d = std::slice::from_raw_parts_mut(buf.inline_data() as *mut i32, len);
+            for (k, x) in d.iter_mut().enumerate() {
+                *x = first + inc * k as i32;
+            }
+        } else {
+            let d = buf.inline_data() as *mut f64;
+            for k in 0..len {
+                *d.add(k) = n1 + inc * (base + k) as f64;
+            }
+        }
+    }
 }
 
 /// `do_for`'s iteration: bind the next element; false when done.
 // R: eval.c:do_for
 fn for_step(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp, profile: Profile) -> RResult<bool> {
+    for_step_in::<true>(cx, act, a, sym, call, profile)
+}
+
+/// [`for_step`] at the end of the loop's vector: the end, or a compact
+/// sequence's next chunk ([`for_refill`]), whose first element this binds
+/// (the step's code is then the standard loop's, unchanged).
+#[cold]
+#[inline(never)]
+fn for_next_chunk(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp, profile: Profile) -> RResult<bool> {
+    if !for_refill(act, a) {
+        return Ok(false);
+    }
+    for_step_in::<false>(cx, act, a, sym, call, profile)
+}
+
+#[inline(always)]
+fn for_step_in<const FIRST: bool>(
+    cx: &mut Cx,
+    act: &Act,
+    a: Reg,
+    sym: Sexp,
+    call: Sexp,
+    profile: Profile,
+) -> RResult<bool> {
     let i = act.get(a + 1).as_real().unwrap();
     let n = act.get(a + 2).as_real().unwrap();
     if i >= n {
+        if FIRST {
+            return for_next_chunk(cx, act, a, sym, call, profile);
+        }
         return Ok(false);
     }
     let idx = i as usize;
@@ -1686,29 +1817,10 @@ fn for_step(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp, profile: Prof
                 nv
             };
             let val = act.obj(a);
-            // one of robigo's compact sequences (for_prep read its first
-            // element and increment): read by element, never expanded,
-            // INTEGER_ELT / REAL_ELT
-            let start = act.get(a + 5).as_real();
             // SAFETY: `v` is a length-1 vector of the sequence's type, `val`
-            // a live vector longer than `idx` (standard, or an instance of
-            // one of robigo's classes, which only INTSXP and REALSXP have).
+            // a live vector longer than `idx`.
             unsafe {
                 match t {
-                    _ if let Some(start) = start => {
-                        if val.cdr() == nil {
-                            // `n1 + inc * i`, exact in a double
-                            let x = start + act.get(a + 6).as_real().unwrap() * i;
-                            if t == INTSXP {
-                                *(v.inline_data() as *mut i32) = x.to_int_unchecked();
-                            } else {
-                                *(v.inline_data() as *mut f64) = x;
-                            }
-                        } else {
-                            // expanded (DATAPTR from C): its expansion's element
-                            own_loop_elt(v, val, idx)
-                        }
-                    }
                     LGLSXP | INTSXP => *(v.std_data() as *mut i32) = *(val.std_data() as *const i32).add(idx),
                     REALSXP => *(v.std_data() as *mut f64) = *(val.std_data() as *const f64).add(idx),
                     CPLXSXP => {
@@ -1735,28 +1847,6 @@ fn for_step(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp, profile: Prof
         }
     }
     Ok(true)
-}
-
-/// Element `idx` of one of robigo's compact sequences into the loop value
-/// `v` (INTEGER_ELT, REAL_ELT) once it has been expanded (C's `DATAPTR`
-/// during the loop): out of line, as rare.
-///
-/// # Safety
-/// `v` is a length-1 vector of `val`'s type; `val` a live compact sequence
-/// longer than `idx`.
-#[cold]
-#[inline(never)]
-unsafe fn own_loop_elt(v: Sexp, val: Sexp, idx: usize) {
-    // SAFETY: the caller's contract; only INTSXP and REALSXP have classes,
-    // and `v`, a loop value `alloc_vector_raw` made, keeps its payload
-    // inline.
-    unsafe {
-        if val.typ() == INTSXP {
-            *(v.inline_data() as *mut i32) = robigo_rtcore::altrep::own::intseq_elt(val, idx);
-        } else {
-            *(v.inline_data() as *mut f64) = robigo_rtcore::altrep::own::realseq_elt(val, idx);
-        }
-    }
 }
 
 /// `defineVar(sym, value, rho)` for the loop variable.

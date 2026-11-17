@@ -1,9 +1,10 @@
 //! `for (i in 1:n)` allocates nothing that grows with `n` (AC1): `:`
 //! makes a compact sequence (altclasses.c's `R_compact_intrange`), and the
-//! loop reads each element from it, as GNU R's `for` does through
-//! `INTEGER_ELT`. The heap's count (`ROBIGO_GC_STATS`) is the same for
-//! `n` = 10 and `n` = 10^6, in the AST and in byte code, and so are those
-//! of `seq_len(n)` and `seq_along(x)` over a compact `x`.
+//! loop reads its elements a chunk at a time into one buffer of at most
+//! 1024 (`vm::for_prep`, as GNU R's `ITERATE_BY_REGION` reads a region).
+//! The heap's count (`ROBIGO_GC_STATS`) is the same for `n` = 2000 and
+//! `n` = 10^6 (both past one chunk), in the AST and in byte code, and so
+//! are those of `seq_len(n)` and `seq_along(x)` over a compact `x`.
 
 use std::process::Command;
 
@@ -48,8 +49,8 @@ fn a_for_loop_over_a_compact_sequence_allocates_nothing_per_element() {
     for def in loops {
         for profile in [Some("eval"), Some("bc"), None] {
             let run = |n: u32| allocated(&format!("{def}; invisible(f(3)); x <- f({n})"), profile);
-            let (small, large) = (run(10), run(1_000_000));
-            assert_eq!(small, large, "{def} ({profile:?}): n = 10 allocates {small:?}, n = 1e6 {large:?}");
+            let (small, large) = (run(2000), run(1_000_000));
+            assert_eq!(small, large, "{def} ({profile:?}): n = 2000 allocates {small:?}, n = 1e6 {large:?}");
         }
     }
 }
