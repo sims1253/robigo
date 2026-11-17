@@ -543,6 +543,14 @@ pub(crate) unsafe fn barrier_only(x: Sexp) {
     unsafe { barrier_slow(x) }
 }
 
+#[cold]
+#[inline(never)]
+fn shared_store() -> ! {
+    panic!(
+        "robigo: a store into a shared immutable object (R_NilValue, NA_STRING, R_BlankString, R_UnboundValue, R_MissingArg)"
+    )
+}
+
 /// # Safety
 /// As for [`store_slow`].
 #[inline(always)]
@@ -550,6 +558,10 @@ unsafe fn barrier_slow(x: Sexp) {
     // SAFETY: the caller's contract: `x` is live, so its header and its
     // block's header are readable, and the remembered set is not borrowed.
     unsafe {
+        // a shared object is never written: refused before any write
+        if crate::shared::is_shared(x) {
+            shared_store();
+        }
         x.set_flag_raw(flags::BARRIER, false);
         // A CHARSXP has nothing to trace, and must not be: `trace` would
         // count it in `marked_chars` on top of `immortal_chars`, and with
@@ -823,31 +835,25 @@ impl Core {
         // every block and large chunk header points at the log, before the
         // first allocation makes one
         c.heap.remembered = &*c.remembered as *const Remembered as *mut Remembered;
-        // SAFETY: every object here is fresh from this heap, node-sized where
-        // node fields are written, and flagged immortal before any
-        // collection, so none of them can be swept.
-        unsafe {
-            // R_NilValue: a node whose fields point at itself (memory.c InitMemory)
-            let nil = c.alloc_object(NILSXP, 1, node::size(NILSXP), 0).expect(CONSTANTS);
-            nil.set_attrib_raw(nil);
-            nil.set_car_raw(nil);
-            nil.set_cdr_raw(nil);
-            nil.set_tag_raw(nil);
-            nil.set_sexp_at(node::OFF_AUX, nil);
-            c.nil = nil;
-            c.make_immortal(nil);
-            nil.set_attrib_raw(nil);
-            // NA_STRING is not in the cache (names.c: mkChar("NA") is a different object)
-            let na = c.alloc_char(b"NA", 0, hash_bytes(b"NA")).expect(CONSTANTS);
-            c.make_immortal(na);
-            c.na_string = na;
-            let blank = c.mk_char(b"", 0).expect(CONSTANTS);
-            c.make_immortal(blank);
-            c.blank_string = blank;
-            // R_UnboundValue and R_MissingArg are symbols with empty names
-            // that are not in the symbol table (names.c InitNames)
-            c.unbound = c.new_symbol(blank).expect(CONSTANTS);
-            c.missing_arg = c.new_symbol(blank).expect(CONSTANTS);
+        // R_NilValue, NA_STRING, R_BlankString, R_UnboundValue and
+        // R_MissingArg are the process's (`shared`, H5): counted here as if
+        // this heap had allocated them, as GNU R's InitMemory does, with ""
+        // in this heap's CHARSXP cache and the symbol ids after theirs
+        let sh = crate::shared::shared();
+        (c.nil, c.na_string, c.blank_string) = (sh.nil, sh.na_string, sh.blank_string);
+        (c.unbound, c.missing_arg) = (sh.unbound, sh.missing_arg);
+        c.next_sym_id = crate::shared::FIRST_SYMBOL_ID;
+        // SAFETY: a live CHARSXP that no collection frees (immortal), and
+        // not yet in this table.
+        unsafe { c.chars.insert(sh.blank_string) };
+        c.immortal_chars += 1;
+        for (t, n, bytes, cells) in crate::shared::counts() {
+            if c.sizes.over_trigger(cells) {
+                // (InitMemory's triggers are not set yet: this polls as the
+                // allocations it stands for did)
+                c.poll_slow(t, n, bytes, cells).expect(CONSTANTS);
+            }
+            c.count(bytes, cells);
         }
         // like InitMemory: once the constants exist
         (c.force_wait, c.force_gap) = torture_from_env();
@@ -1702,9 +1708,13 @@ impl Core {
         // them); the cache's lookups ignore HASHASH (`chars::ENC_MASK`).
         unsafe {
             self.make_immortal(c);
-            // R: names.c:install (SET_HASHVALUE, SET_HASHASH on the PRINTNAME)
-            c.set_truelen(s.sym_hash() as isize);
-            c.set_gp(c.gp() | crate::gp::charsxp::HASHASH);
+            // R: names.c:install (SET_HASHVALUE, SET_HASHASH on the PRINTNAME).
+            // Not on the shared "" (a symbol named "" GNU R never installs),
+            // which no isolate writes.
+            if !crate::shared::is_shared(c) {
+                c.set_truelen(s.sym_hash() as isize);
+                c.set_gp(c.gp() | crate::gp::charsxp::HASHASH);
+            }
         }
         self.syms.insert(name.into(), s);
         Ok(s)
@@ -2946,8 +2956,9 @@ impl Core {
         self.stats.live_bytes = live_bytes;
         self.stats.live_objects = live_objects;
         self.alloc_since_gc = 0;
-        // R: memory.c:RunGenCollect (R_NodesInUse = R_NSize - R_Collected)
-        self.sizes.nodes_in_use = live_objects as usize;
+        // R: memory.c:RunGenCollect (R_NodesInUse = R_NSize - R_Collected),
+        // the shared constants included
+        self.sizes.nodes_in_use = live_objects as usize + crate::shared::OBJECTS;
     }
 }
 

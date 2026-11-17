@@ -2181,11 +2181,14 @@ fn a_sweep_keeps_the_free_slots_of_earlier_sweeps() {
 fn a_store_into_an_immortal_char_does_not_hide_dead_cache_entries() {
     let mut c = core();
     c.set_torture(false);
-    let blank = c.blank_string();
+    // a cached CHARSXP of this heap made immortal (R_BlankString is the
+    // process's, and takes no store)
+    let kept = c.mk_char(b"kept", 0).unwrap();
+    unsafe { c.make_immortal(kept) };
     // the barrier fires on the header alone; the slot is a local, as no
     // CHARSXP field is a traced one
     let mut slot = c.nil();
-    unsafe { blank.store(&mut slot, c.nil()) };
+    unsafe { kept.store(&mut slot, c.nil()) };
     let before = c.char_cache_len();
     c.mk_char(b"soon dead", 0).unwrap();
     assert_eq!(c.char_cache_len(), before + 1);
@@ -2437,16 +2440,20 @@ fn every_object_carries_its_heaps_id() {
     let b = core();
     assert_ne!(a.id(), b.id());
     // a small vector, a node, a large vector (its own chunk), a CHARSXP and
-    // the immortal constants made with the heap (allocation never collects)
+    // a symbol (allocation never collects); the constants are the
+    // process's, every heap's (H5)
     let small = a.alloc_vector(INTSXP, 3).unwrap();
     let big = a.alloc_vector(REALSXP, 100_000).unwrap();
     let nil = a.nil();
     let node = unsafe { a.alloc_node(LISTSXP, nil, nil, nil) }.unwrap();
     let s = a.mk_char(b"owner", 0).unwrap();
     let sym = a.install(b"sym").unwrap();
-    for x in [small, big, node, s, a.nil(), a.na_string(), sym] {
+    for x in [small, big, node, s, sym] {
         assert_eq!(unsafe { x.heap_id() }, a.id());
         assert_ne!(unsafe { x.heap_id() }, b.id());
+    }
+    for x in [a.nil(), a.na_string(), a.blank_string(), a.unbound(), a.missing_arg()] {
+        assert!(unsafe { x.heap_id() }.is_shared());
     }
     let mut b = b;
     let y = b.alloc_vector(INTSXP, 1).unwrap();
@@ -3172,4 +3179,76 @@ fn exit_finalizers_come_out_newest_first_without_a_collection() {
     }
     assert!(c.pop_finalizable().is_none());
     assert_eq!(c.weak_refs(), &[w[1]]);
+}
+
+/// R_NilValue, NA_STRING, R_BlankString, R_UnboundValue and R_MissingArg
+/// are the process's (H5): every heap, on any thread, has the same ones.
+/// Each heap's cache gives the shared "", collections leave the constants
+/// as they were, and a heap counts them among its nodes as GNU R does.
+#[test]
+fn the_constants_are_shared_by_every_heap() {
+    fn constants(c: &Core) -> [usize; 5] {
+        [c.nil(), c.na_string(), c.blank_string(), c.unbound(), c.missing_arg()].map(|x| x.addr())
+    }
+    let other = std::thread::spawn(|| constants(&Core::new())).join().unwrap();
+    let mut a = core();
+    let mut b = core();
+    a.set_torture(false);
+    b.set_torture(false);
+    assert_eq!(constants(&a), constants(&b));
+    assert_eq!(constants(&a), other, "a heap made on another thread");
+    assert_eq!(a.mk_char(b"", 0).unwrap(), a.blank_string());
+    assert_eq!(b.mk_char(b"", 0).unwrap(), b.blank_string());
+    assert_eq!(a.heap_sizes().nodes_in_use, 5, "a new heap counts the five constants");
+    let words = |c: &Core| {
+        [c.nil(), c.unbound(), c.missing_arg()]
+            .map(|x| unsafe { std::array::from_fn::<u64, 6, _>(|i| *(x.as_ptr() as *const u64).add(i)) })
+    };
+    let before = words(&a);
+    let mut roots = vec![a.alloc_vector(INTSXP, 1).unwrap()];
+    gc(&mut a, &mut roots);
+    gc(&mut b, &mut ());
+    assert_eq!(words(&a), before, "a collection writes no constant");
+    assert_eq!(a.heap_sizes().nodes_in_use, 5 + 1, "the constants and the one live vector");
+    // a symbol named "" takes the shared "" as its PRINTNAME, unmarked
+    let blank =
+        |c: &Core| unsafe { std::array::from_fn::<u64, 4, _>(|i| *(c.blank_string().as_ptr() as *const u64).add(i)) };
+    let name = blank(&a);
+    let s = a.install(b"").unwrap();
+    assert_eq!(blank(&a), name, "install(\"\") writes no constant");
+    assert_eq!(a.install(b"").unwrap(), s);
+}
+
+/// A store into a shared constant is refused before anything is written.
+#[test]
+#[should_panic(expected = "a store into a shared immutable object")]
+fn a_store_into_a_shared_object_is_refused() {
+    let mut c = core();
+    let v = c.alloc_vector(INTSXP, 1).unwrap();
+    unsafe { c.nil().set_attrib(v) };
+}
+
+/// The rule `set_symbol_bits` registers gives a new symbol its bits when it
+/// is made, before `install` returns it; an installed name keeps its
+/// symbol, and a second rule does not replace the first. (Process-wide: the
+/// rule here touches only its own names.)
+#[test]
+fn a_new_symbol_gets_its_names_bits_when_it_is_made() {
+    fn rule(name: &[u8]) -> (u8, u16) {
+        if name.starts_with(b"bits_rule_") { (flags::NO_TRACKREFS, gp::sym::DDVAL) } else { (0, 0) }
+    }
+    fn other(_: &[u8]) -> (u8, u16) {
+        (0, gp::sym::DDVAL)
+    }
+    robigo_heap::set_symbol_bits(rule);
+    robigo_heap::set_symbol_bits(other);
+    let mut c = core();
+    let s = c.install(b"bits_rule_x").unwrap();
+    let plain = c.install(b"plain_name").unwrap();
+    unsafe {
+        assert!(s.has_flag(flags::NO_TRACKREFS) && s.gp() & gp::sym::DDVAL != 0, "the rule's bits");
+        assert!(s.has_flag(flags::IMMORTAL), "and the symbol's own");
+        assert!(!plain.has_flag(flags::NO_TRACKREFS) && plain.gp() & gp::sym::DDVAL == 0, "the first rule stays");
+    }
+    assert_eq!(c.install(b"bits_rule_x").unwrap(), s, "an installed name keeps its symbol");
 }
