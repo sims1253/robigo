@@ -483,6 +483,11 @@ fn perl_sub(
     let (mut offset, mut nmatch, mut notbol, mut last_end) = (0usize, 0usize, false, None::<usize>);
     let mut locs = re.locations();
     let rc = loop {
+        if use_utf8 && offset < ns && s[offset] & 0xc0 == 0x80 {
+            // after a match ending inside a character (`\C`): GNU R goes on
+            // with PCRE2_NO_UTF_CHECK, which the `pcre2` crate does not pass
+            return Err(Fail::NotYet("a PCRE match from inside a UTF-8 character (gsub after '\\C')".into()));
+        }
         match re.match_at(&mut locs, s, offset, notbol)? {
             Ok(true) => {}
             Ok(false) => break Ok(()),

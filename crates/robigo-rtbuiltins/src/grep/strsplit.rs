@@ -256,6 +256,11 @@ fn split_perl(
         // each match on the rest of the string, without PCRE2_NOTBOL
         while p < buf.len() {
             let rest = &buf[p..];
+            if m.use_utf8 && rest[0] & 0xc0 == 0x80 {
+                // after a match ending inside a character (`\C`): GNU R goes
+                // on with PCRE2_NO_UTF_CHECK, which the `pcre2` crate does not pass
+                return Err(Fail::NotYet("a PCRE match from inside a UTF-8 character (strsplit after '\\C')".into()));
+            }
             match re.find_at(rest, 0) {
                 Ok(Some((so, eo))) => {
                     if eo > 0 {
