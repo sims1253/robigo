@@ -1,0 +1,18 @@
+[1] 4
+x <- 1
+if (x) y else z
+[1] "expression"
+expression(g(1), h(2))
+[1] 0
+[1] 0
+expression(a, b)
+[1] "<text>:1:3: unexpected symbol\n1: a b\n      ^"
+[1] "<text>:2:2: unexpected ')'\n1: f(x,\n2: ))\n    ^"
+[1] "<text>:2:0: unexpected end of input\n1: x <- \n   ^"
+[1] "mine.R:1:4: unexpected '*'\n1: 1 +*\n       ^"
+expression(+a, b)
+[1] "argument 'encoding = \"nonsense\"' will be ignored"
+[1] TRUE
+expression(1)
+expression(a)
+[1] "<text>:2:3: unexpected symbol\n1: a\n2: b c\n     ^"

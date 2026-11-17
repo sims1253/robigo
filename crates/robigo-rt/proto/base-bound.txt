@@ -10,7 +10,7 @@
 # The union of base-subset.txt (the trace) and the static bound (the free
 # variables of the same inputs that name base functions, transitively through
 # base closures), so that a branch GNU R did not take still finds its function.
-# 427 closures, 147 primitives, 239 internals, 10 variables.
+# 428 closures, 148 primitives, 241 internals, 10 variables.
 closure %in% match.R
 closure %||% utils.R
 closure ..getNamespace namespace.R
@@ -310,6 +310,7 @@ closure prettyNum format.R
 closure print print.R
 closure print.default print.R
 closure print.factor factor.R
+closure print.function print.R
 closure print.restart conditions.R
 closure rank rank.R
 closure rapply lapply.R
@@ -518,6 +519,7 @@ primitive floor
 primitive for
 primitive forceAndCall
 primitive function
+primitive gamma
 primitive globalenv
 primitive if
 primitive interactive
@@ -670,6 +672,7 @@ internal gctorture
 internal get
 internal get0
 internal getNamespaceRegistry
+internal getNamespaceValue
 internal getOption
 internal getRegisteredNamespace
 internal getRegisteredRoutines
@@ -722,6 +725,7 @@ internal matrix
 internal mean
 internal mget
 internal mkCode
+internal mkUnbound
 internal nchar
 internal new.env
 internal ngettext

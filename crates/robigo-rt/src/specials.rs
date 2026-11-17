@@ -1078,3 +1078,69 @@ pub fn do_substitute(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, 
         })
     })
 }
+
+/// `expression(...)`: the arguments, unevaluated, as an expression vector
+/// (each duplicated if referenced: they are the call's), named if any
+/// argument is.
+// R: builtin.c:do_expression
+pub fn do_expression(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, _rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let items: Vec<(Root<'_>, Option<Root<'_>>)> = {
+            let mut v = Vec::new();
+            let mut a = call.bind(cx).as_cons().map(|c| c.cdr()).and_then(|c| c.as_cons());
+            while let Some(c) = a {
+                v.push((c.car(), (c.tag() != cx.nil()).then(|| c.tag())));
+                a = c.cdr().as_cons();
+            }
+            v.into_iter().map(|(x, t)| (s.root(cx, x), t.map(|t| s.root(cx, t)))).collect()
+        };
+        let named = items.iter().any(|(_, t)| t.is_some());
+        let mut vals = Vec::with_capacity(items.len());
+        for (x, _) in &items {
+            if cx.referenced(x.bind(cx)) {
+                let o = s.out(cx);
+                let r = o.root();
+                cx.duplicate(*x, o)?;
+                vals.push(r);
+            } else {
+                vals.push(*x);
+            }
+        }
+        cx.build(out, |cx| {
+            let mut ans = cx.alloc_expression(vals.len())?;
+            for (i, v) in vals.iter().enumerate() {
+                ans.set(i, v.bind(cx));
+            }
+            if named {
+                let mut nms = cx.alloc_vector::<Char<'_>>(items.len())?;
+                for (i, (_, t)) in items.iter().enumerate() {
+                    nms.set(i, t.map_or(cx.blank_string(), |t| t.bind(cx).as_sym().unwrap().name()));
+                }
+                let mut a = robigo_rtbuiltins::attrib::Attrs::new();
+                a.install(robigo_rtbuiltins::attrib::Attr {
+                    tag: cx.sym(robigo_rtcore::RSym::Names),
+                    value: nms.finish().into(),
+                });
+                a.apply(cx, &mut ans)?;
+            }
+            Ok(ans.finish().into())
+        })
+    })
+}
+
+/// `.isMethodsDispatchOn(onOff)`: whether S4 dispatch is on, which it
+/// never is in robigo-rt yet (no methods package); `FALSE` turns it off.
+// R: objects.c:do_S4on, R_isMethodsDispatchOn
+pub fn do_s4on(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    if !args.is_empty() && args.get(cx, 0).len().unwrap_or(0) > 0 {
+        match robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 0)) {
+            i32::MIN => return Err(cx.error("'onOff' must be TRUE or FALSE")),
+            0 => {}
+            _ => {
+                cx.warning("R_isMethodsDispatchOn(TRUE) called -- may not work correctly")?;
+                return Err(cx.error("robigo: the methods package (initMethodDispatch) is not implemented yet"));
+            }
+        }
+    }
+    cx.build_scalar(out, robigo_rtcore::Lgl(0))
+}

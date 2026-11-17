@@ -1,19 +1,231 @@
-//! `::` and `:::` (GNU R's `envir.c`): a variable of a namespace by name;
-//! `R_FindNamespace`, `topenv` and `isNamespaceEnv`; and the seam where
-//! GNU R's C calls `loadNamespace` ([`load_namespace`]).
+//! Namespaces (L2): GNU R's `envir.c` namespace entries over the
+//! isolate's namespace registry (`R_NamespaceRegistry`, a hashed
+//! environment binding each namespace's name to it; base's from the
+//! start): `registerNamespace`, `unregisterNamespace`,
+//! `getRegisteredNamespace`, `isRegisteredNamespace`,
+//! `getNamespaceRegistry`, `isNamespaceEnv`, `importIntoEnv`, `topenv`,
+//! `getNamespaceValue`, `::` and `:::` (`R_getNSValue`, which calls base's
+//! `loadNamespace` for a namespace not loaded yet), and version.c's
+//! `internalsID`.
 //!
-//! INTERIM(L2): until L2 evaluates base's namespace code, robigo-rt has
-//! base's namespace and one more, the compiler package, which
-//! [`load_namespace`] makes from the pinned tarball's source as GNU R's
-//! `loadNamespace` makes a namespace (`makeNamespace`, the code evaluated
-//! into it, `.onLoad`, NAMESPACE's exports, `sealNamespace`). Any other
-//! package raises "not implemented yet". L2 replaces the body of
-//! [`load_namespace`] with GNU R's `loadNamespace`; its callers stay.
+//! What a namespace is, as GNU R tests it (`R_IsNamespaceEnv`): base's, or
+//! an environment whose `.__NAMESPACE__.` binding is an environment with a
+//! `spec` binding that is a non-empty character vector. A package
+//! environment (`R_IsPackageEnv`) has a `name` attribute starting with
+//! "package:". Both read bindings without running code: an active binding
+//! or an argument slot in those places is taken as absent.
 
+#![allow(unsafe_code)]
+
+use robigo_heap::Sexp;
 use robigo_heap::types::*;
-#[allow(unused_imports)]
-use robigo_rtcore::Scope;
-use robigo_rtcore::{Cx, Encoding, Out, RResult, RSym, Ref, Root, View};
+use robigo_rtcore::{Args, BindingValue, Cx, Encoding, Lookup, Out, RResult, RSym, Ref, Root, Scope, View};
+
+/// `R_INTERNALS_UUID` (Defn.h).
+const R_INTERNALS_UUID: &[u8] = b"2fdf6c18-697a-4ba7-b8ef-11c0d92f1327";
+
+// ---- what a namespace is ----------------------------------------------------
+
+/// The object `rho`'s frame binds `name` to, read without running code
+/// (`R_findVarInFrame` of a plain binding), if any.
+fn frame_value(cx: &Cx, rho: Sexp, name: &[u8]) -> Option<Sexp> {
+    let sym = cx.find_symbol(name)?;
+    // SAFETY: a live object (the caller's).
+    let r = unsafe { Ref::from_sexp(rho, cx) };
+    let View::Env(e) = r.view() else { return None };
+    match cx.frame_binding(e, sym) {
+        Lookup::Bound(b) => match b.get(cx) {
+            BindingValue::Value(v) => Some(v.sexp()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// `R_NamespaceEnvSpec(rho)` for a namespace other than base's: the
+/// `spec` of its `.__NAMESPACE__.`, if `rho` is one.
+// R: envir.c:R_IsNamespaceEnv, R_NamespaceEnvSpec
+pub(crate) fn namespace_spec(cx: &Cx, rho: Sexp) -> Option<Sexp> {
+    // SAFETY: live objects (the caller's and the bindings').
+    unsafe {
+        if rho.typ() != ENVSXP {
+            return None;
+        }
+        let info = frame_value(cx, rho, b".__NAMESPACE__.")?;
+        if info.typ() != ENVSXP {
+            return None;
+        }
+        let spec = frame_value(cx, info, b"spec")?;
+        (spec.typ() == STRSXP && spec.std_len() > 0).then_some(spec)
+    }
+}
+
+/// `R_IsNamespaceEnv(rho)`.
+// R: envir.c:R_IsNamespaceEnv
+pub(crate) fn is_namespace_env(cx: &Cx, rho: Sexp) -> bool {
+    rho == cx.base_namespace().sexp() || namespace_spec(cx, rho).is_some()
+}
+
+/// The `name` attribute of `rho`, if it is a non-empty STRSXP.
+pub(crate) fn name_attr(cx: &Cx, rho: Sexp) -> Option<Sexp> {
+    let name_sym = cx.find_symbol(b"name")?.as_ref().sexp();
+    // SAFETY: a live object and its attribute list.
+    unsafe {
+        let mut a = rho.attrib_raw();
+        while a != cx.nil().sexp() {
+            if a.tag() == name_sym {
+                let v = a.car();
+                return (v.typ() == STRSXP && v.std_len() > 0).then_some(v);
+            }
+            a = a.cdr();
+        }
+    }
+    None
+}
+
+/// `R_IsPackageEnv(rho)`: its `name` attribute starts with "package:".
+// R: envir.c:R_IsPackageEnv
+pub(crate) fn is_package_env(cx: &Cx, rho: Sexp) -> bool {
+    // SAFETY: live objects.
+    unsafe {
+        rho.typ() == ENVSXP
+            && name_attr(cx, rho)
+                .is_some_and(|n| (*(n.std_data() as *const Sexp)).char_bytes().starts_with(b"package:"))
+    }
+}
+
+// ---- argument checks -----------------------------------------------------------
+
+/// `checkNSname(call, name)` / `checkVarName(call, name)`: a symbol, or
+/// the first string as one; otherwise `errorcall(call, msg)`.
+// R: envir.c:checkNSname, checkVarName
+fn check_name<'s>(cx: &mut Cx, s: Scope<'s>, call: Option<Root<'_>>, x: Root<'_>, msg: &str) -> RResult<Root<'s>> {
+    let v = x.bind(cx);
+    match v.sexptype() {
+        SYMSXP => Ok(s.root(cx, v)),
+        STRSXP if v.len().unwrap_or(0) >= 1 => install_first_at(cx, s, x, 0),
+        _ => Err(cx.error_call(call, msg)),
+    }
+}
+
+/// `R_findVarInFrame(rho, sym)`, written to `out` (R_UnboundValue when
+/// unbound).
+fn find_in_frame(cx: &mut Cx, rho: Root<'_>, sym: Root<'_>, out: Out<'_>) -> RResult<()> {
+    cx.find_var_in_frame3(rho, sym, true, out)
+}
+
+/// `getVarValInFrame(rho, sym, unbound_ok)`: the binding's value, a
+/// promise forced (in the empty environment); GNU R's error when unbound
+/// unless `unbound_ok`.
+// R: envir.c:getVarValInFrame
+fn get_var_val_in_frame(cx: &mut Cx, rho: Root<'_>, sym: Root<'_>, unbound_ok: bool, out: Out<'_>) -> RResult<()> {
+    let r = out.root();
+    find_in_frame(cx, rho, sym, out)?;
+    if !unbound_ok && r.bind(cx).sexp() == cx.unbound().sexp() {
+        let n = String::from_utf8_lossy(sym.bind(cx).as_sym().unwrap().name().bytes()).into_owned();
+        return Err(cx.error(&format!("object '{n}' not found")));
+    }
+    if r.bind(cx).sexptype() == PROMSXP {
+        cx.scope(|cx, s| {
+            let p = s.root(cx, r.bind(cx));
+            let empty = s.root(cx, cx.empty_env());
+            let o = r.reset(cx);
+            crate::eval(cx, p, empty, o)
+        })?;
+    }
+    Ok(())
+}
+
+/// `callR1(fun, arg)`: `fun(x)` evaluated in a new environment of the base
+/// namespace binding `x` to `arg`.
+// R: envir.c:callR1
+fn call_r1(cx: &mut Cx, fun: &[u8], arg: Root<'_>, out: Out<'_>) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let rho = s.capture(cx, |cx, o| cx.build(o, |cx| cx.new_env(cx.base_namespace(), false, 0)))?;
+        let x = cx.install_rooted(s, b"x")?;
+        cx.define_var(x, arg, rho)?;
+        let f = cx.install_rooted(s, fun)?;
+        let call = s.capture(cx, |cx, o| cx.build(o, |cx| cx.lang2(f.bind(cx), x.bind(cx))))?;
+        crate::eval(cx, call, rho, out)
+    })
+}
+
+/// `R_getNSValue(call, ns, name, exported)`: `name` in namespace `ns` (a
+/// namespace, or its name: loaded if it is not yet), exported only if
+/// `exported`.
+// R: envir.c:R_getNSValue
+pub fn get_ns_value(
+    cx: &mut Cx,
+    call: Option<Root<'_>>,
+    ns: Root<'_>,
+    name: Root<'_>,
+    exported: bool,
+    out: Out<'_>,
+) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let ns = if is_namespace_env(cx, ns.bind(cx).sexp()) {
+            ns
+        } else {
+            let pkg = check_name(cx, s, call, ns, "bad namespace name")?;
+            let reg = s.root(cx, cx.namespace_registry());
+            let nsv = s.capture(cx, |cx, o| find_in_frame(cx, reg, pkg, o))?;
+            let nsv = if nsv.bind(cx).sexp() == cx.unbound().sexp() {
+                s.capture(cx, |cx, o| load_namespace(cx, pkg, o))?
+            } else {
+                nsv
+            };
+            if !is_namespace_env(cx, nsv.bind(cx).sexp()) {
+                return Err(cx.error_call(call, "bad namespace"));
+            }
+            nsv
+        };
+        let name = check_name(cx, s, call, name, "bad variable name")?;
+        // base or non-exported variables
+        if ns.bind(cx).sexp() == cx.base_namespace().sexp() || !exported {
+            return get_var_val_in_frame(cx, ns, name, false, out);
+        }
+        // exported variables
+        let nssym = cx.install_rooted(s, b".__NAMESPACE__.")?;
+        let info = s.capture(cx, |cx, o| get_var_val_in_frame(cx, ns, nssym, false, o))?;
+        let exports_sym = cx.install_rooted(s, b"exports")?;
+        let exports = s.capture(cx, |cx, o| get_var_val_in_frame(cx, info, exports_sym, false, o))?;
+        let export_name = s.capture(cx, |cx, o| get_var_val_in_frame(cx, exports, name, true, o))?;
+        if export_name.bind(cx).sexp() != cx.unbound().sexp() {
+            let e = check_name(cx, s, call, export_name, "bad variable name")?;
+            return crate::eval(cx, e, ns, out);
+        }
+        // lazydata
+        let lazy_sym = cx.install_rooted(s, b"lazydata")?;
+        let ld = s.capture(cx, |cx, o| get_var_val_in_frame(cx, info, lazy_sym, false, o))?;
+        let res = out.root();
+        get_var_val_in_frame(cx, ld, name, true, out)?;
+        if res.bind(cx).sexp() != cx.unbound().sexp() {
+            return Ok(());
+        }
+        let nsname = s.capture(cx, |cx, o| call_r1(cx, b"getNamespaceName", ns, o))?;
+        let nm = match nsname.bind(cx).view() {
+            View::Str(v) if v.len() == 1 => v.get(0).bytes().to_vec(),
+            _ => return Err(cx.error_call(call, "bad value returned by `getNamespaceName'")),
+        };
+        let sym_name = name.bind(cx).as_sym().unwrap().name().bytes().to_vec();
+        let msg = format!(
+            "'{}' is not an exported object from 'namespace:{}'",
+            String::from_utf8_lossy(&sym_name),
+            String::from_utf8_lossy(&nm)
+        );
+        Err(cx.error_call(call, &msg))
+    })
+}
+
+/// The call's `i`th argument expression, rooted.
+fn arg<'s>(cx: &mut Cx, s: Scope<'s>, call: Root<'_>, i: usize) -> Root<'s> {
+    let mut a = call.bind(cx).as_cons().unwrap().cdr();
+    for _ in 0..i {
+        a = a.as_cons().unwrap().cdr();
+    }
+    let v = a.as_cons().unwrap().car();
+    s.root(cx, v)
+}
 
 /// `checkArity` for a special of two arguments: the call's argument count.
 fn check_arity2(cx: &mut Cx, call: Root<'_>, name: &str) -> RResult<()> {
@@ -26,163 +238,324 @@ fn check_arity2(cx: &mut Cx, call: Root<'_>, name: &str) -> RResult<()> {
     crate::prims::check_arity(cx, call, n, name, 2, false)
 }
 
-/// The call's `i`th argument expression.
-fn arg<'g>(cx: &'g Cx, call: Root<'_>, i: usize) -> Ref<'g> {
-    let mut a = call.bind(cx).as_cons().unwrap().cdr();
-    for _ in 0..i {
-        a = a.as_cons().unwrap().cdr();
-    }
-    a.as_cons().unwrap().car()
-}
-
-/// `checkNSname` / `checkVarName`: a symbol, or the first string as one.
-fn as_name<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, x: Root<'_>) -> RResult<Option<Root<'s>>> {
-    let v = x.bind(cx);
-    match v.view() {
-        View::Sym(_) => Ok(Some(s.root(cx, v))),
-        _ if v.sexptype() == STRSXP && v.len().unwrap_or(0) >= 1 => {
-            let b = v.as_vector::<robigo_rtcore::Char<'_>>().unwrap().get(0).bytes().to_vec();
-            let o = s.out(cx);
-            let r = o.root();
-            cx.build(o, |cx| Ok(cx.install(&b)?.as_ref()))?;
-            Ok(Some(r))
-        }
-        _ => Ok(None),
-    }
-}
-
-/// `getVarValInFrame(rho, sym, unbound_ok)`: `sym`'s value in `rho`'s
-/// frame, a promise forced (in the empty environment, as GNU R does);
-/// unbound is GNU R's error unless `unbound_ok` (then `R_UnboundValue`).
-// R: envir.c:getVarValInFrame
-fn var_val_in_frame(cx: &mut Cx, rho: Root<'_>, sym: Root<'_>, unbound_ok: bool, out: Out<'_>) -> RResult<()> {
-    let res = out.root();
-    cx.find_var_in_frame3(rho, sym, true, out)?;
-    if !unbound_ok && res.bind(cx).sexp() == cx.unbound().sexp() {
-        let n = String::from_utf8_lossy(sym.bind(cx).as_sym().unwrap().name().bytes()).into_owned();
-        return Err(cx.error(&format!("object '{n}' not found")));
-    }
-    if res.bind(cx).sexptype() == PROMSXP {
-        cx.scope(|cx, s| {
-            let p = s.root(cx, res.bind(cx));
-            let empty = s.root(cx, cx.empty_env());
-            let o = res.reset(cx);
-            crate::eval(cx, p, empty, o)
-        })?;
-    }
-    Ok(())
-}
-
-/// A symbol of `name`, rooted in `s`.
-fn sym<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, name: &[u8]) -> RResult<Root<'s>> {
-    cx.install_rooted(s, name)
-}
-
-/// `R_getNSValue(call, ns, name, exported)`: `name` in the namespace `ns`
-/// (a namespace, or a package name to look up, loading it if need be);
-/// for an exported lookup, through the namespace's exports, then its
-/// lazy data.
-// R: envir.c:R_getNSValue
-fn get_ns_value(
-    cx: &mut Cx,
-    call: Option<Root<'_>>,
-    ns: usize,
-    name: usize,
-    src: Root<'_>,
-    exported: bool,
-    out: Out<'_>,
-) -> RResult<()> {
+/// `pkg::name`: `R_getNSValue(R_NilValue, pkg, name, TRUE)`.
+// R: envir.c:do_colon2
+pub fn do_colon2(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, _rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    check_arity2(cx, call, "::")?;
     cx.scope(|cx, s| {
-        let nsr = s.root(cx, arg(cx, src, ns));
-        let name = s.root(cx, arg(cx, src, name));
-        let nsv = if crate::dispatch::is_namespace_env(cx, nsr.bind(cx)) {
-            nsr
-        } else {
-            let pkg = match as_name(cx, s, nsr)? {
-                Some(p) => p,
-                None => return Err(cx.error_call(call, "bad namespace name")),
-            };
-            let reg = s.root(cx, cx.namespace_registry());
-            let v = s.out(cx).root();
-            let o = v.reset(cx);
-            cx.find_var_in_frame3(reg, pkg, true, o)?;
-            if v.bind(cx).sexp() == cx.unbound().sexp() {
-                let o = v.reset(cx);
-                load_namespace(cx, pkg, o)?;
-            }
-            if !crate::dispatch::is_namespace_env(cx, v.bind(cx)) {
-                return Err(cx.error_call(call, "bad namespace"));
-            }
-            v
-        };
-        let sym = match as_name(cx, s, name)? {
-            Some(p) => p,
-            None => return Err(cx.error_call(call, "bad variable name")),
-        };
-        // base or non-exported variables
-        if nsv.bind(cx).sexp() == cx.base_namespace().sexp() || !exported {
-            return var_val_in_frame(cx, nsv, sym, false, out);
-        }
-        // exported variables
-        let info_o = s.out(cx);
-        let info = info_o.root();
-        let nss = sym_of(cx, s, b".__NAMESPACE__.")?;
-        var_val_in_frame(cx, nsv, nss, false, info_o)?;
-        let exports_o = s.out(cx);
-        let exports = exports_o.root();
-        let es = sym_of(cx, s, b"exports")?;
-        var_val_in_frame(cx, info, es, false, exports_o)?;
-        let ename_o = s.out(cx);
-        let ename = ename_o.root();
-        var_val_in_frame(cx, exports, sym, true, ename_o)?;
-        if ename.bind(cx).sexp() != cx.unbound().sexp() {
-            let en = match as_name(cx, s, ename)? {
-                Some(p) => p,
-                None => return Err(cx.error_call(call, "bad variable name")),
-            };
-            return crate::eval(cx, en, nsv, out);
-        }
-        // lazydata
-        let ld_o = s.out(cx);
-        let ld = ld_o.root();
-        let ls = sym_of(cx, s, b"lazydata")?;
-        var_val_in_frame(cx, info, ls, false, ld_o)?;
-        let res = out.root();
-        var_val_in_frame(cx, ld, sym, true, out)?;
-        if res.bind(cx).sexp() != cx.unbound().sexp() {
-            return Ok(());
-        }
-        // getNamespaceName(ns): base's is "base", another's its spec's name
-        let nsname = namespace_name(cx, s, nsv)?;
-        let n = String::from_utf8_lossy(sym.bind(cx).as_sym().unwrap().name().bytes()).into_owned();
-        Err(cx.error_call(call, &format!("'{n}' is not an exported object from 'namespace:{nsname}'")))
+        let (ns, name) = (arg(cx, s, call, 0), arg(cx, s, call, 1));
+        // "use R_NilValue for the call to avoid changing the error message"
+        get_ns_value(cx, None, ns, name, true, out)
     })
 }
 
-/// [`sym`] under another name, for the lookups above.
-fn sym_of<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, name: &[u8]) -> RResult<Root<'s>> {
-    sym(cx, s, name)
+/// `pkg:::name`: `R_getNSValue(call, pkg, name, FALSE)`.
+// R: envir.c:do_colon3
+pub fn do_colon3(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, _rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    check_arity2(cx, call, ":::")?;
+    cx.scope(|cx, s| {
+        let (ns, name) = (arg(cx, s, call, 0), arg(cx, s, call, 1));
+        get_ns_value(cx, Some(call), ns, name, false, out)
+    })
 }
 
-/// `getNamespaceName(ns)`: "base", or the first element of the
-/// namespace's `spec`.
-// R: namespace.R:getNamespaceName
-fn namespace_name(cx: &mut Cx, s: robigo_rtcore::Scope<'_>, ns: Root<'_>) -> RResult<String> {
-    if ns.bind(cx).sexp() == cx.base_namespace().sexp() {
-        return Ok("base".to_owned());
+/// `getNamespaceValue(ns, name, exported)`.
+// R: envir.c:do_getNSValue
+pub fn do_get_ns_value(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "getNamespaceValue", 3, true)?;
+    let exported = robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 2));
+    // (eval column 211: R_Visible as the lookup left it)
+    get_ns_value(cx, None, args.root(0), args.root(1), exported != 0, out)
+}
+
+/// `registerNamespace(name, env)`.
+// R: envir.c:do_regNS
+pub fn do_reg_ns(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "registerNamespace", 2, true)?;
+    cx.scope(|cx, s| {
+        let name = check_name(cx, s, Some(call), args.root(0), "bad namespace name")?;
+        let reg = s.root(cx, cx.namespace_registry());
+        let v = s.capture(cx, |cx, o| find_in_frame(cx, reg, name, o))?;
+        if v.bind(cx).sexp() != cx.unbound().sexp() {
+            return Err(cx.error_call(Some(call), "namespace already registered"));
+        }
+        cx.define_var(name, args.root(1), reg)
+    })?;
+    out.set(cx, cx.nil());
+    Ok(())
+}
+
+/// `unregisterNamespace(name)`.
+// R: envir.c:do_unregNS
+pub fn do_unreg_ns(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "unregisterNamespace", 1, true)?;
+    cx.scope(|cx, s| {
+        let name = check_name(cx, s, Some(call), args.root(0), "bad namespace name")?;
+        let reg = s.root(cx, cx.namespace_registry());
+        let v = s.capture(cx, |cx, o| find_in_frame(cx, reg, name, o))?;
+        if v.bind(cx).sexp() == cx.unbound().sexp() {
+            return Err(cx.error_call(Some(call), "namespace not registered"));
+        }
+        cx.remove_var_from_frame(name, reg)
+    })?;
+    out.set(cx, cx.nil());
+    Ok(())
+}
+
+/// `getRegisteredNamespace(name)` (CODE 0: the namespace or NULL) and
+/// `isRegisteredNamespace(name)` (1).
+// R: envir.c:do_getRegNS
+pub fn do_get_reg_ns<const CODE: i32>(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: Args<'_>,
+    _env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    let fname = if CODE == 0 { "getRegisteredNamespace" } else { "isRegisteredNamespace" };
+    crate::prims::check_arity(cx, call, args.len(), fname, 1, true)?;
+    cx.scope(|cx, s| {
+        // coerceVector(CAR(args), SYMSXP): a string's first element, a symbol
+        let x = args.get(cx, 0);
+        let (t, n) = (x.sexptype(), x.len().unwrap_or(0));
+        let name = match t {
+            SYMSXP => s.root(cx, x),
+            STRSXP if n >= 1 => install_first_at(cx, s, args.root(0), 0)?,
+            _ => {
+                let r = args.root(0);
+                let coerced = s.capture(cx, |cx, o| robigo_rtbuiltins::coerce::coerce_vector(cx, r, SYMSXP, o))?;
+                check_name(cx, s, Some(call), coerced, "bad namespace name")?
+            }
+        };
+        let reg = s.root(cx, cx.namespace_registry());
+        let v = s.capture(cx, |cx, o| find_in_frame(cx, reg, name, o))?;
+        let unbound = v.bind(cx).sexp() == cx.unbound().sexp();
+        if CODE == 0 {
+            if unbound {
+                out.set(cx, cx.nil());
+            } else {
+                out.set(cx, v.bind(cx));
+            }
+            Ok(())
+        } else {
+            cx.build_scalar(out, robigo_rtcore::Lgl(!unbound as i32))
+        }
+    })
+}
+
+/// `getNamespaceRegistry()`.
+// R: envir.c:do_getNSRegistry
+pub fn do_get_ns_registry(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "getNamespaceRegistry", 0, true)?;
+    out.set(cx, cx.namespace_registry());
+    Ok(())
+}
+
+/// `isNamespaceEnv(env)`.
+// R: envir.c:do_isNSEnv
+pub fn do_is_ns_env(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "isNamespaceEnv", 1, true)?;
+    let is = is_namespace_env(cx, args.get(cx, 0).sexp());
+    cx.build_scalar(out, robigo_rtcore::Lgl(is as i32))
+}
+
+/// `topenv(envir, matchThisEnv)`: the first of `envir`'s enclosures that
+/// is `target`, global, base, a package or namespace environment, or
+/// binds `.packageName`; the global environment if none is.
+// R: envir.c:topenv, do_topenv
+pub fn do_topenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "topenv", 2, true)?;
+    cx.scope(|cx, s| {
+        let e = args.get(cx, 0);
+        let envir = s.root(cx, if e.sexptype() == ENVSXP { e } else { env.bind(cx) });
+        let t = args.get(cx, 1);
+        let target = if t.sexptype() == ENVSXP { Some(t.sexp()) } else { None };
+        let pkg_name = s.root(cx, cx.sym(RSym::DotPackageName));
+        let cur = s.root(cx, envir.bind(cx));
+        loop {
+            let c = cur.bind(cx).sexp();
+            if c == cx.empty_env().sexp() {
+                out.set(cx, cx.global_env());
+                return Ok(());
+            }
+            let top = Some(c) == target
+                || c == cx.global_env().sexp()
+                || c == cx.base_env().sexp()
+                || c == cx.base_namespace().sexp()
+                || is_package_env(cx, c)
+                || is_namespace_env(cx, c)
+                || cx.exists_var_in_frame(cur, pkg_name)?;
+            if top {
+                out.set(cx, cur.bind(cx));
+                return Ok(());
+            }
+            cur.replace_with(cx, |cx| match cur.bind(cx).view() {
+                View::Env(e) => Ok(e.enclos()),
+                _ => Ok(cx.empty_env()),
+            })?;
+        }
+    })
+}
+
+/// `importIntoEnv(impenv, impnames, expenv, expnames)`: copy bindings,
+/// promises unforced and active bindings kept.
+// R: envir.c:do_importIntoEnv
+pub fn do_import_into_env(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "importIntoEnv", 4, true)?;
+    let (impenv, impnames, expenv, expnames) = (args.root(0), args.root(1), args.root(2), args.root(3));
+    for (e, what) in [(impenv, "import"), (expenv, "export")] {
+        match e.bind(cx).sexptype() {
+            NILSXP => return Err(cx.error("use of NULL environment is defunct")),
+            ENVSXP => {}
+            OBJSXP if e.bind(cx).is_s4() => {
+                return Err(cx.error("robigo: importIntoEnv with an S4 environment object is not implemented yet"));
+            }
+            _ => return Err(cx.error(&format!("bad {what} environment argument"))),
+        }
     }
-    let info_o = s.out(cx);
-    let info = info_o.root();
-    let nss = sym(cx, s, b".__NAMESPACE__.")?;
-    var_val_in_frame(cx, ns, nss, false, info_o)?;
-    let spec_o = s.out(cx);
-    let spec = spec_o.root();
-    let ss = sym(cx, s, b"spec")?;
-    var_val_in_frame(cx, info, ss, false, spec_o)?;
-    match spec.bind(cx).as_vector::<robigo_rtcore::Char<'_>>().filter(|v| !v.is_empty()) {
-        Some(v) => Ok(String::from_utf8_lossy(v.get(0).bytes()).into_owned()),
-        None => Err(cx.error("bad value returned by `getNamespaceName'")),
+    if impnames.bind(cx).sexptype() != STRSXP || expnames.bind(cx).sexptype() != STRSXP {
+        return Err(cx.error("invalid 'names' argument"));
     }
+    let n = impnames.bind(cx).len().unwrap_or(0);
+    if n != expnames.bind(cx).len().unwrap_or(0) {
+        return Err(cx.error("length of import and export names must match"));
+    }
+    for i in 0..n {
+        cx.scope(|cx, s| {
+            let impsym = install_first_at(cx, s, impnames, i)?;
+            let expsym = install_first_at(cx, s, expnames, i)?;
+            // the binding: in the first frame of expenv's chain that has it
+            let cur = s.root(cx, expenv.bind(cx));
+            let mut found: Option<(Root<'_>, bool)> = None;
+            while cur.bind(cx).sexp() != cx.empty_env().sexp() {
+                let c = cur.bind(cx).sexp();
+                if c == cx.base_namespace().sexp() || c == cx.base_env().sexp() {
+                    found = symvalue(cx, s, expsym);
+                    break;
+                }
+                let o = s.out(cx);
+                let cell = o.root();
+                if cx.find_var_loc_in_frame(cur, expsym, o)? {
+                    // SAFETY: a binding cell (a LISTSXP) of a rooted frame.
+                    let (v, active) = unsafe {
+                        let c = cell.bind(cx).sexp();
+                        (c.car(), c.gp() & robigo_heap::gp::cell::ACTIVE_BINDING != 0)
+                    };
+                    // SAFETY: reachable from the cell.
+                    found = Some((s.root(cx, unsafe { Ref::from_sexp(v, cx) }), active));
+                    break;
+                }
+                cur.replace_with(cx, |cx| match cur.bind(cx).view() {
+                    View::Env(e) => Ok(e.enclos()),
+                    _ => Ok(cx.empty_env()),
+                })?;
+            }
+            let (val, active) = match found {
+                Some(f) => f,
+                // binding = expsym: SYMVALUE
+                None => match symvalue(cx, s, expsym) {
+                    Some(f) => f,
+                    None => {
+                        let nm = String::from_utf8_lossy(expsym.bind(cx).as_sym().unwrap().name().bytes()).into_owned();
+                        return Err(cx.error(&format!("exported symbol '{nm}' has no value")));
+                    }
+                },
+            };
+            if active { cx.make_active_binding(impsym, val, impenv) } else { cx.define_var(impsym, val, impenv) }
+        })?;
+    }
+    out.set(cx, cx.nil());
+    Ok(())
+}
+
+/// `SYMVALUE(sym)`, base's binding as its cell holds it (a promise not
+/// forced, an active binding's function not called), and whether it is an
+/// active binding; None when unbound.
+fn symvalue<'s>(cx: &Cx, s: Scope<'s>, sym: Root<'_>) -> Option<(Root<'s>, bool)> {
+    let (Some(base), Some(y)) = (crate::dispatch::env_ref(cx.base_env()), sym.bind(cx).as_sym()) else { return None };
+    let Lookup::Bound(b) = cx.frame_binding(base, y) else { return None };
+    match b.get(cx) {
+        BindingValue::Value(v) => Some((s.root(cx, v), false)),
+        BindingValue::Active(f) => Some((s.root(cx, f), true)),
+        // (base's cells hold objects)
+        BindingValue::Deferred => None,
+    }
+}
+
+fn install_first_at<'s>(cx: &mut Cx, s: Scope<'s>, v: Root<'_>, i: usize) -> RResult<Root<'s>> {
+    let c = v.bind(cx).as_vector::<robigo_rtcore::Char<'_>>().unwrap().get(i);
+    let name = robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(c), cx.locale())
+        .map(|b| b.into_owned())
+        .unwrap_or_else(|_| c.bytes().to_vec());
+    if name.is_empty() {
+        return Err(cx.error("attempt to use zero-length variable name"));
+    }
+    cx.install_rooted(s, &name)
+}
+
+/// `internalsID()`: `R_INTERNALS_UUID`.
+// R: version.c:do_internalsID
+pub fn do_internals_id(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "internalsID", 0, true)?;
+    cx.build(out, |cx| cx.mk_string(R_INTERNALS_UUID, robigo_rtcore::Encoding::Native))
+}
+
+/// `environmentName(env)`: "R_GlobalEnv", "base", "R_EmptyEnv", a package
+/// environment's name, a namespace's name (its spec's first element), the
+/// `name` attribute, or "".
+// R: builtin.c:do_envirName
+pub fn do_envir_name(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "environmentName", 1, true)?;
+    let e = args.get(cx, 0);
+    if e.sexptype() == OBJSXP && e.is_s4() {
+        return Err(cx.error("robigo: environmentName() of an S4 environment object is not implemented yet"));
+    }
+    let x = e.sexp();
+    let fixed: Option<&[u8]> = if e.sexptype() != ENVSXP {
+        Some(b"")
+    } else if x == cx.global_env().sexp() {
+        Some(b"R_GlobalEnv")
+    } else if x == cx.base_env().sexp() {
+        Some(b"base")
+    } else if x == cx.empty_env().sexp() {
+        Some(b"R_EmptyEnv")
+    } else if x == cx.base_namespace().sexp() {
+        Some(b"base")
+    } else {
+        None
+    };
+    if let Some(b) = fixed {
+        return cx.build(out, |cx| cx.mk_string(b, robigo_rtcore::Encoding::Native));
+    }
+    // the first element of the package name or the spec, as a string vector
+    let first = |cx: &Cx, x: Sexp| if is_package_env(cx, x) { name_attr(cx, x) } else { namespace_spec(cx, x) };
+    if first(cx, x).is_some() {
+        return cx.build(out, |cx| {
+            // read again on each try: a collection between tries may move it
+            let v = first(cx, args.get(cx, 0).sexp()).expect("robigo: the name read before");
+            // SAFETY: a live STRSXP of at least one element, reachable from
+            // the rooted argument, read with nothing able to collect since.
+            let c = unsafe { Ref::from_sexp(*(v.std_data() as *const Sexp), cx) }.as_char().unwrap();
+            let mut s = cx.alloc_vector::<robigo_rtcore::Char<'_>>(1)?;
+            s.set(0, c);
+            Ok(s.finish().into())
+        });
+    }
+    let a = robigo_rtbuiltins::attrib::get_attrib(cx, e, b"name").ok().flatten();
+    match a {
+        Some(v) => {
+            out.set(cx, v);
+            Ok(())
+        }
+        None => cx.build(out, |cx| cx.mk_string(b"", robigo_rtcore::Encoding::Native)),
+    }
+}
+
+// ---- loading a namespace (C1-BC's seam) -----------------------------------
+
+/// A symbol of `name`, rooted in `s`.
+fn sym<'s>(cx: &mut Cx, s: Scope<'s>, name: &[u8]) -> RResult<Root<'s>> {
+    cx.install_rooted(s, name)
 }
 
 /// `R_FindNamespace(info)`: `getNamespace(info)`, the registered namespace
@@ -203,9 +576,11 @@ pub fn find_namespace(cx: &mut Cx, name: &[u8], out: Out<'_>) -> RResult<()> {
 }
 
 /// `loadNamespace(package)` where GNU R's C calls it, the namespace to
-/// `out`. INTERIM(L2): replaced by loadNamespace. robigo-rt makes the
-/// compiler package's namespace from source ([`load_compiler`]); another
-/// package is not implemented yet.
+/// `out`: GNU R's `callR1(R_loadNamespaceSymbol, pkg)`, base's
+/// `loadNamespace`, except that robigo-rt makes the compiler package's
+/// namespace from source itself ([`load_compiler`]). INTERIM(L2): the
+/// compiler goes through `loadNamespace` too once that runs from source
+/// (it waits on B5a's file builtins).
 // R: namespace.R:loadNamespace
 pub fn load_namespace(cx: &mut Cx, pkg: Root<'_>, out: Out<'_>) -> RResult<()> {
     let name = pkg.bind(cx).as_sym().unwrap().name().bytes().to_vec();
@@ -213,7 +588,8 @@ pub fn load_namespace(cx: &mut Cx, pkg: Root<'_>, out: Out<'_>) -> RResult<()> {
         // INTERIM(L2): replaced by loadNamespace
         return load_compiler(cx, pkg, out);
     }
-    Err(cx.error("robigo: loadNamespace is not implemented yet"))
+    // GNU R's callR1(R_loadNamespaceSymbol, pkg): base's loadNamespace
+    call_r1(cx, b"loadNamespace", pkg, out)
 }
 
 /// The compiler package's namespace, made as GNU R's `loadNamespace` makes
@@ -378,106 +754,4 @@ fn exports_of(cx: &Cx, exprs: Root<'_>) -> Vec<Vec<u8>> {
         }
     }
     names
-}
-
-/// `.Internal(topenv(envir, matchThisEnv))`: [`crate::dispatch::topenv`]
-/// from `envir` (the caller's environment if it is not one), `target` NULL
-/// unless an environment.
-// R: envir.c:do_topenv
-pub fn do_topenv(
-    cx: &mut Cx,
-    call: Root<'_>,
-    args: robigo_rtcore::Args<'_>,
-    env: Root<'_>,
-    out: Out<'_>,
-) -> RResult<()> {
-    crate::prims::check_arity(cx, call, args.len(), "topenv", 2, true)?;
-    let e = args.get(cx, 0);
-    let envir = if e.sexptype() == ENVSXP { e } else { env.bind(cx) };
-    let t = args.get(cx, 1);
-    let target = (t.sexptype() == ENVSXP).then_some(t);
-    let r = crate::dispatch::topenv(cx, target, envir);
-    out.set(cx, r);
-    Ok(())
-}
-
-/// `.Internal(getRegisteredNamespace(name))` (`is`: `isRegistered...`):
-/// the registry's namespace of that name, else NULL (FALSE).
-// R: envir.c:do_getRegNS
-fn get_reg_ns(cx: &mut Cx, call: Root<'_>, args: robigo_rtcore::Args<'_>, out: Out<'_>, is: bool) -> RResult<()> {
-    let name = if is { "isRegisteredNamespace" } else { "getRegisteredNamespace" };
-    crate::prims::check_arity(cx, call, args.len(), name, 1, true)?;
-    cx.scope(|cx, s| {
-        let a = args.root(0);
-        // checkNSname(call, coerceVector(x, SYMSXP)): a symbol, or a
-        // string's first element
-        let Some(pkg) = as_name(cx, s, a)? else {
-            if a.bind(cx).sexptype() == STRSXP || a.bind(cx).sexptype() == SYMSXP {
-                return Err(cx.error_call(Some(call), "bad namespace name"));
-            }
-            return Err(cx.error("robigo: 'a namespace name that is not a string or a symbol' is not implemented yet"));
-        };
-        let reg = s.root(cx, cx.namespace_registry());
-        let res = out.root();
-        cx.find_var_in_frame3(reg, pkg, true, out)?;
-        let unbound = res.bind(cx).sexp() == cx.unbound().sexp();
-        if is {
-            let o = res.reset(cx);
-            cx.build_scalar(o, robigo_rtcore::Lgl(!unbound as i32))
-        } else if unbound {
-            let o = res.reset(cx);
-            cx.build(o, |cx| Ok(cx.nil()))
-        } else {
-            Ok(())
-        }
-    })
-}
-
-pub fn do_getregns(
-    cx: &mut Cx,
-    call: Root<'_>,
-    args: robigo_rtcore::Args<'_>,
-    _env: Root<'_>,
-    out: Out<'_>,
-) -> RResult<()> {
-    get_reg_ns(cx, call, args, out, false)
-}
-
-pub fn do_isregns(
-    cx: &mut Cx,
-    call: Root<'_>,
-    args: robigo_rtcore::Args<'_>,
-    _env: Root<'_>,
-    out: Out<'_>,
-) -> RResult<()> {
-    get_reg_ns(cx, call, args, out, true)
-}
-
-/// `.Internal(isNamespaceEnv(x))`: `R_IsNamespaceEnv(x)`.
-// R: envir.c:do_isNSEnv
-pub fn do_isnsenv(
-    cx: &mut Cx,
-    call: Root<'_>,
-    args: robigo_rtcore::Args<'_>,
-    _env: Root<'_>,
-    out: Out<'_>,
-) -> RResult<()> {
-    crate::prims::check_arity(cx, call, args.len(), "isNamespaceEnv", 1, true)?;
-    let b = crate::dispatch::is_namespace_env(cx, args.get(cx, 0));
-    cx.build_scalar(out, robigo_rtcore::Lgl(b as i32))
-}
-
-/// `pkg::name`: `R_getNSValue(R_NilValue, pkg, name, TRUE)`.
-// R: envir.c:do_colon2
-pub fn do_colon2(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, _rho: Root<'_>, out: Out<'_>) -> RResult<()> {
-    check_arity2(cx, call, "::")?;
-    // "use R_NilValue for the call to avoid changing the error message"
-    get_ns_value(cx, None, 0, 1, call, true, out)
-}
-
-/// `pkg:::name`: `R_getNSValue(call, pkg, name, FALSE)`.
-// R: envir.c:do_colon3
-pub fn do_colon3(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, _rho: Root<'_>, out: Out<'_>) -> RResult<()> {
-    check_arity2(cx, call, ":::")?;
-    get_ns_value(cx, Some(call), 0, 1, call, false, out)
 }
