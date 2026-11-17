@@ -83,7 +83,9 @@ impl DllInfo {
 /// and the `.Call` routines found in them by name.
 #[derive(Default)]
 struct Dlls {
-    /// Boxed: a `DLLInfoReference` holds a record's address.
+    /// Boxed: a `DLLInfoReference` holds a record's address, which must not
+    /// move when the list grows.
+    #[allow(clippy::vec_box)]
     list: RefCell<Vec<Box<DllInfo>>>,
     /// `R_FindSymbol`'s `.Call` results by (name, `PACKAGE`): what the
     /// search over `list` returns, so cleared whenever `list` changes. (GNU
