@@ -358,7 +358,9 @@ def main(argv):
             for line in errors:
                 print(f"::error::rt: {line}")
             if errors:
-                print(f"::error::rt: {title}: {len(errors)} closure(s)")
+                # (an error is a closure's line, a malformed line or a
+                # report that compared nothing: bc_report_check)
+                print(f"::error::rt: {title}: {len(errors)} report problem(s)")
                 return 1
     return 0
 

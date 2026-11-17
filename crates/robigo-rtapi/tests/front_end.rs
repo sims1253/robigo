@@ -6,8 +6,10 @@ use std::process::Command;
 
 /// `robigo-rt` with the environment `env` adds to one without `R_HOME`, the
 /// three directories, or the runtime's own controls that change what it
-/// writes or how it starts (as cli.rs's `run` drops them): rt-ci runs the
-/// tests under those, and they are not the front end's to test.
+/// writes or how it starts: rt-ci runs the tests under those, and they are
+/// not the front end's to test. (cli.rs's `run` drops fewer: it keeps
+/// `ROBIGO_GC_STATS` and `ROBIGO_RT_BOOT`, filtering the `robigo gc: `
+/// report lines, so that its cases hold under the inherited modes.)
 fn front_end<V: AsRef<std::ffi::OsStr>>(env: &[(&str, V)]) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
     for v in [
@@ -97,6 +99,8 @@ fn an_empty_r_home_or_directory_is_unset() {
 #[test]
 fn stage0_says_a_missing_tree_is_missing() {
     let dir = std::env::temp_dir().join(format!("robigo-rt-no-home-{}", std::process::id()));
+    // (a stale directory of a reused pid might hold a tree)
+    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let out = front_end(&[("R_HOME", dir.as_os_str()), ("ROBIGO_RT_BOOT", std::ffi::OsStr::new("stage0"))])
         .args(["-e", "1"])
@@ -106,6 +110,6 @@ fn stage0_says_a_missing_tree_is_missing() {
     assert_eq!(out.status.code(), Some(2));
     assert_eq!(
         String::from_utf8_lossy(&out.stderr),
-        format!("robigo-rt: R_HOME ('{}') not found: it has no library/base\n", dir.display())
+        format!("robigo-rt: R_HOME ('{}') not found: it has no library/base/R/base\n", dir.display())
     );
 }
