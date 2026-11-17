@@ -258,6 +258,7 @@ closure union sets.R
 closure unique duplicated.R
 closure unique.default duplicated.R
 closure unlist unlist.R
+closure unlockBinding bindenv.R
 closure unname unname.R
 closure unserialize serialize.R
 closure vapply sapply.R
@@ -548,6 +549,7 @@ internal traceback
 internal typeof
 internal unique
 internal unlist
+internal unlockBinding
 internal unregisterNamespace
 internal unserialize
 internal unserializeFromConn
