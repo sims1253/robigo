@@ -3285,3 +3285,49 @@ fn a_new_symbol_gets_its_names_bits_when_it_is_made() {
     }
     assert_eq!(c.install(b"bits_rule_x").unwrap(), s, "an installed name keeps its symbol");
 }
+
+/// A child forked while another thread interns can intern too (H5): the
+/// arena's lock is taken around the fork and released on both sides, so the
+/// child never finds it held by a thread it does not have. The child
+/// installs a name the parent has (the same symbol) and a new one, and exits
+/// with the result.
+#[test]
+fn a_fork_child_interns_while_another_thread_interns() {
+    use std::sync::atomic::AtomicBool;
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let bg = {
+        let stop = std::sync::Arc::clone(&stop);
+        std::thread::spawn(move || {
+            let mut c = Core::new();
+            let mut i = 0u64;
+            while !stop.load(Ordering::Relaxed) {
+                c.install(format!("fork_bg_{i}").as_bytes()).unwrap();
+                i += 1;
+            }
+            i
+        })
+    };
+    let mut c = core();
+    let known = c.install(b"fork_known_name").unwrap();
+    for round in 0..20 {
+        // SAFETY: the child calls only what the arena's fork handlers and
+        // glibc's make safe after fork (its allocator, the arena), then
+        // `_exit`s.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            let same = c.install(b"fork_known_name").map(|s| s == known).unwrap_or(false);
+            let mut fresh = Core::new();
+            let new = fresh.install(format!("fork_child_{round}").as_bytes()).is_ok();
+            let shared = fresh.install(b"fork_known_name").map(|s| s == known).unwrap_or(false);
+            // SAFETY: ends the child without running the parent's handlers.
+            unsafe { libc::_exit(if same && new && shared { 0 } else { 1 }) };
+        }
+        let mut status = 0;
+        // SAFETY: waits for the child just forked.
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "round {round}: the child could not intern");
+    }
+    stop.store(true, Ordering::Relaxed);
+    assert!(bg.join().unwrap() > 0, "the other thread interned");
+}

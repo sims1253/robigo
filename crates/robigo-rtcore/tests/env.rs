@@ -952,28 +952,29 @@ fn env_op_cost() {
     });
 }
 
-/// Symbol ids are per heap in M1, so a symbol of another isolate must never
-/// index this isolate's tables: with two fresh isolates the same id names
-/// `.BaseNamespaceEnv` in both, and a lookup of B's symbol from A's global
-/// environment would cache B's symbol in A's roots, dangling once B is
-/// dropped. Every lookup refuses it (Sol N1a S1).
+/// A symbol is the process's (H5): B's install of a name is A's symbol, with
+/// one id, and every lookup through A's capability reads A's own tables, so
+/// A never sees B's objects. (Until H5 symbols were per heap, and a symbol
+/// of another isolate was refused.)
 #[test]
-fn a_symbol_of_another_isolate_is_refused() {
+fn a_symbol_is_every_isolates() {
     let mut a = iso();
     let mut b = iso();
     let (ca, cb) = (a.cx(), b.cx());
-    let foreign = cb.install(b".BaseNamespaceEnv").unwrap();
-    let g = env_of(ca.global_env());
-    let m = panic_message(|| ca.var_binding(foreign, g));
-    assert!(m.contains("another isolate"), "{m}");
-    let m = panic_message(|| ca.frame_binding(env_of(ca.base_env()), foreign));
-    assert!(m.contains("another isolate"), "{m}");
-    // a binding of B read through A's capability
-    let Lookup::Bound(bb) = cb.frame_binding(env_of(cb.base_env()), foreign) else { panic!() };
-    let m = panic_message(|| bb.get(ca));
-    assert!(m.contains("another isolate"), "{m}");
+    let from_b = cb.install(b".BaseNamespaceEnv").unwrap();
     let own = ca.install(b".BaseNamespaceEnv").unwrap();
-    assert!(matches!(ca.var_binding(own, g), Lookup::Bound(_)));
+    assert_eq!(from_b.as_ref().sexp(), own.as_ref().sexp(), "one symbol");
+    let g = env_of(ca.global_env());
+    let Lookup::Bound(ba) = ca.var_binding(from_b, g) else { panic!("A's binding") };
+    let Lookup::Bound(bb) = cb.frame_binding(env_of(cb.base_env()), from_b) else { panic!("B's binding") };
+    let value = |v: BindingValue<'_>| match v {
+        BindingValue::Value(r) => r.sexp(),
+        _ => panic!("a plain binding"),
+    };
+    let (va, vb) = (value(ba.get(ca)), value(bb.get(cb)));
+    assert_ne!(va, vb, "each isolate's own base namespace");
+    assert_eq!(va, ca.base_namespace().sexp());
+    assert_eq!(vb, cb.base_namespace().sexp());
 }
 
 fn panic_message<R>(f: impl FnOnce() -> R) -> String {
