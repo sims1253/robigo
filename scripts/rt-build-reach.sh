@@ -16,7 +16,10 @@
 #   vdesc     tools:::.vinstall_package_descriptions_as_RDS
 #   vns       tools:::.vinstall_package_namespaces_as_RDS
 # plus static.keys: the primitives and .Internals compiler's and tools' own
-# code calls (the tracer records base's closures only).
+# code calls, defaults included (the tracer records base's closures only).
+# Every step runs with the JIT off, as base-subset traces: compiling runs
+# the compiler's code, which the tracer would count in the step that
+# triggered it (the union is the same; the compiler step has that reach).
 # Base booted from source has no .C_* symbols (baseloader.R makes them for
 # a lazy-loaded base); the tracer's addTaskCallback needs one, so the
 # profile defines them in the global environment (base's enclosure) first.
@@ -85,12 +88,12 @@ step() {
     { echo "rt-build-reach: step $name failed:" >&2; tail -5 "$out/$name.err" >&2; exit 1; }
   echo "rt-build-reach: $name: $(wc -l < "$out/$name.keys") keys"
 }
-step base "$out/in/makebasedb.R" _R_COMPILE_PKGS_=1 R_COMPILER_SUPPRESS_ALL=1
+step base "$out/in/makebasedb.R" _R_COMPILE_PKGS_=1 R_COMPILER_SUPPRESS_ALL=1 R_ENABLE_JIT=0
 step compiler "$out/in/compiler-step.R" _R_COMPILE_PKGS_=1 R_COMPILER_SUPPRESS_ALL=1 R_ENABLE_JIT=0
 step tools "$out/in/tools-step.R" _R_COMPILE_PKGS_=1 R_COMPILER_SUPPRESS_ALL=1 R_ENABLE_JIT=0
-step desc "$out/in/desc-step.R"
-step vdesc "$out/in/vdesc-step.R" R_DEFAULT_PACKAGES=tools
-step vns "$out/in/vns-step.R" R_DEFAULT_PACKAGES=tools
+step desc "$out/in/desc-step.R" R_ENABLE_JIT=0
+step vdesc "$out/in/vdesc-step.R" R_DEFAULT_PACKAGES=tools R_ENABLE_JIT=0
+step vns "$out/in/vns-step.R" R_DEFAULT_PACKAGES=tools R_ENABLE_JIT=0
 # what compiler's and tools' own code calls directly
 cat > "$out/in/static.R" << 'EOF'
 heads <- character(); ints <- character()
@@ -103,6 +106,9 @@ walk <- function(e) {
             if (n == ".Internal" && length(e) > 1L && is.call(e[[2L]]) && is.symbol(e[[2L]][[1L]]))
                 ints <<- c(ints, as.character(e[[2L]][[1L]]))
         }
+        for (a in as.list(e)) if (!missing(a)) walk(a)
+    } else if (is.pairlist(e)) {
+        # a function literal's formals: the defaults
         for (a in as.list(e)) if (!missing(a)) walk(a)
     }
 }
