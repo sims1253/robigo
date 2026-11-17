@@ -2640,7 +2640,7 @@ fn a_stale_young_local_reads_poison_at_every_young_collection() {
             assert_eq!(stale.typ(), POISON_TYPE, "round {round}: the stale local reads poison");
         }
     }
-    assert_eq!(c.stats.young_collections, 5);
+    assert_eq!(c.young_collections(), 5);
 }
 
 /// An object a collection moved is old: the young collections leave it
@@ -2664,7 +2664,7 @@ fn an_old_object_moves_at_the_nth_collection_only() {
         assert_eq!(ints(roots[0]), &[7]);
         assert_eq!(stale.typ(), POISON_TYPE, "and the stale local reads poison");
     }
-    assert_eq!(c.stats.young_collections, 3);
+    assert_eq!(c.young_collections(), 3);
 }
 
 /// What a C word may point at stays where it is, young or not, and what
@@ -2675,7 +2675,7 @@ fn a_pinned_young_object_does_not_move() {
     let mut c = young_core(16);
     let (seen, free, pinned) = c_objects(&mut c);
     collect_holding(&mut c, &[!pinned]);
-    assert_eq!(c.stats.young_collections, 1, "a young collection");
+    assert_eq!(c.young_collections(), 1, "a young collection");
     let holder = ROOTED_ARG.replace(Sexp::NULL);
     // SAFETY: the pinned node's address, as in
     // `objects_c_has_seen_or_pins_do_not_move`.

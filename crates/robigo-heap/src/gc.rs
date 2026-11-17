@@ -362,9 +362,6 @@ pub struct GcStats {
     pub by_type: [(u64, u64); 32],
     /// Objects moved by `ROBIGO_GC_MOVE`'s collections.
     pub moved: u64,
-    /// `ROBIGO_GC_MOVE=young:N`'s collections that moved only the young
-    /// objects (the others moved everything).
-    pub young_collections: u64,
     /// Weak references the pin report found decided dead while a C word
     /// reached their key (counted with the report or the strong library on).
     pub pin_hits: u64,
@@ -493,14 +490,9 @@ pub struct Core {
     /// `ROBIGO_GC_MOVE` (`mover.rs`): collections move what they may and
     /// poison the old copies.
     gc_move: bool,
-    /// `ROBIGO_GC_MOVE=young:N` (`mover.rs`): every N-th moving collection
-    /// moves everything it may, the others only the young objects; 0 (`=1`):
-    /// every collection moves everything.
-    move_full_every: u32,
-    /// The moving collections so far, which pick the full ones.
-    move_collections: u64,
-    /// A young collection's old copies, retired after its marking.
-    young_moved: mover::Moved,
+    /// `ROBIGO_GC_MOVE=young:N`'s state (`mover.rs`), boxed: the debug
+    /// collector's, kept out of the core's own layout.
+    young: Box<mover::Young>,
     /// Under `gc_move`, the chunks of the large objects the last
     /// collection moved, without access until the next one gives them back.
     quarantine: Vec<crate::heap::Chunk>,
@@ -820,9 +812,7 @@ impl Core {
             precious: Vec::new(),
             call65_plain: std::env::var_os("ROBIGO_CALL65_PLAIN").is_some_and(|v| v == "1"),
             gc_move: mover::policy_from_env().is_some(),
-            move_full_every: mover::policy_from_env().unwrap_or(0),
-            move_collections: 0,
-            young_moved: mover::Moved::default(),
+            young: Box::new(mover::Young::new(mover::policy_from_env().unwrap_or(0))),
             quarantine: Vec::new(),
             diag: diag::Diag::from_env(),
             weak_refs: Vec::new(),
@@ -2465,14 +2455,14 @@ impl Core {
                 // ROBIGO_GC_MOVE=young:N (mover.rs): the pins first, then a
                 // marking that copies the young objects as it reaches them
                 self.pin_segments();
-                self.mark_heap_roots::<true>();
+                self.mark_heap_roots_young();
                 roots.trace(&mut mover::MarkYoung(self));
-                self.mark_rest::<true>();
+                self.mark_rest_young();
                 self.retire_young();
             } else {
-                self.mark_heap_roots::<false>();
+                self.mark_heap_roots();
                 roots.trace(&mut Mark(self));
-                self.mark_rest::<false>();
+                self.mark_rest();
                 if self.gc_move {
                     let moved = self.evacuate();
                     Self::forward_roots(roots);
@@ -2528,7 +2518,7 @@ impl Core {
     ///
     /// # Safety
     /// During a collection, before anything is swept.
-    unsafe fn mark_heap_roots<const Y: bool>(&mut self) {
+    unsafe fn mark_heap_roots_as<const Y: bool>(&mut self) {
         // SAFETY: the caller's contract; see `collect_needing`. In a young
         // collection each list entry and field takes its object's address
         // after marking (its copy's if it moved).
@@ -2572,7 +2562,7 @@ impl Core {
     ///
     /// # Safety
     /// During a collection, after `begin_collection` and the precise roots.
-    unsafe fn mark_rest<const Y: bool>(&mut self) {
+    unsafe fn mark_rest_as<const Y: bool>(&mut self) {
         // SAFETY: the caller's contract; `spill` gets a callback and a
         // context of matching types, on the core's thread.
         unsafe {
@@ -2592,6 +2582,49 @@ impl Core {
             }
             self.prune_chars();
         }
+    }
+
+    // The marking's two instances, each a function of this crate: the
+    // generic bodies are compiled here, not in the crate that instantiates
+    // `collect_needing` with its roots (where more code shifts that crate's
+    // inlining: H8 measured s3 +0.9% instructions).
+
+    /// [`Core::mark_heap_roots_as`]: the shipped marking.
+    ///
+    /// # Safety
+    /// As for [`Core::mark_heap_roots_as`].
+    unsafe fn mark_heap_roots(&mut self) {
+        // SAFETY: the caller's contract.
+        unsafe { self.mark_heap_roots_as::<false>() }
+    }
+
+    /// [`Core::mark_heap_roots_as`] in a young collection.
+    ///
+    /// # Safety
+    /// As for [`Core::mark_heap_roots_as`], after [`Core::pin_segments`].
+    #[inline(never)]
+    unsafe fn mark_heap_roots_young(&mut self) {
+        // SAFETY: the caller's contract.
+        unsafe { self.mark_heap_roots_as::<true>() }
+    }
+
+    /// [`Core::mark_rest_as`]: the shipped marking.
+    ///
+    /// # Safety
+    /// As for [`Core::mark_rest_as`].
+    unsafe fn mark_rest(&mut self) {
+        // SAFETY: the caller's contract.
+        unsafe { self.mark_rest_as::<false>() }
+    }
+
+    /// [`Core::mark_rest_as`] in a young collection.
+    ///
+    /// # Safety
+    /// As for [`Core::mark_rest_as`].
+    #[inline(never)]
+    unsafe fn mark_rest_young(&mut self) {
+        // SAFETY: the caller's contract.
+        unsafe { self.mark_rest_as::<true>() }
     }
 
     /// The end of a collection: the sweep, then the heap sizes, the due bit
@@ -2963,7 +2996,7 @@ impl Core {
             let _ = writeln!(
                 r,
                 "robigo gc: moved {} objects (ROBIGO_GC_MOVE), {} collections young only",
-                st.moved, st.young_collections
+                st.moved, self.young.young_only
             );
         }
         if st.pin_hits > 0 {

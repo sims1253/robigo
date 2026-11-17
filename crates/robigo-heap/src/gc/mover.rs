@@ -78,6 +78,25 @@ pub(super) fn policy_from_env() -> Option<u32> {
     }
 }
 
+/// `ROBIGO_GC_MOVE=young:N`'s state.
+pub(super) struct Young {
+    /// Every `full_every`-th moving collection moves everything it may, the
+    /// others only the young objects; 0 (`=1`): every one moves everything.
+    full_every: u32,
+    /// The moving collections so far, which pick the full ones.
+    collections: u64,
+    /// The collections that moved only the young objects.
+    pub(super) young_only: u64,
+    /// A young collection's old copies, retired after its marking.
+    moved: Moved,
+}
+
+impl Young {
+    pub(super) fn new(full_every: u32) -> Young {
+        Young { full_every, collections: 0, young_only: 0, moved: Moved::default() }
+    }
+}
+
 /// What [`Core::evacuate`] moved, for the forwarding and the retirement.
 #[derive(Default)]
 pub(super) struct Moved {
@@ -146,7 +165,7 @@ impl Core {
     /// anything is handed to C.
     pub unsafe fn set_gc_move(&mut self, on: bool) {
         self.gc_move = on;
-        self.move_full_every = 0;
+        self.young.full_every = 0;
     }
 
     /// Move objects from now on as `ROBIGO_GC_MOVE=young:every` does: every
@@ -161,7 +180,13 @@ impl Core {
     pub unsafe fn set_gc_move_young(&mut self, every: u32) {
         assert!(every >= 1, "robigo: a young moving policy needs a full collection every N >= 1");
         self.gc_move = true;
-        self.move_full_every = every;
+        self.young.full_every = every;
+    }
+
+    /// The collections that moved only the young objects
+    /// (`ROBIGO_GC_MOVE=young:N`; the others moved everything).
+    pub fn young_collections(&self) -> u64 {
+        self.young.young_only
     }
 
     /// Whether the collection starting now moves only the young objects;
@@ -171,11 +196,10 @@ impl Core {
         if !self.gc_move {
             return false;
         }
-        self.move_collections += 1;
-        let young = self.move_full_every > 1
-            && self.diag.is_none()
-            && !self.move_collections.is_multiple_of(self.move_full_every as u64);
-        self.stats.young_collections += young as u64;
+        let y = &mut *self.young;
+        y.collections += 1;
+        let young = y.full_every > 1 && self.diag.is_none() && !y.collections.is_multiple_of(y.full_every as u64);
+        y.young_only += young as u64;
         young
     }
 
@@ -325,7 +349,7 @@ impl Core {
                 let q = self.heap.alloc(size);
                 std::ptr::copy_nonoverlapping(p.0, q, size);
                 self.mark_copy(q);
-                self.young_moved.small.push(p.0);
+                self.young.moved.small.push(p.0);
                 q
             } else {
                 let base = b as usize;
@@ -334,7 +358,7 @@ impl Core {
                 let q = self.heap.try_alloc_large(size)?;
                 std::ptr::copy_nonoverlapping(p.0, q, size);
                 *((q as usize - DATA_OFF) as *mut u64).add(1) = self.epoch;
-                self.young_moved.large.push(base);
+                self.young.moved.large.push(base);
                 q
             };
             *q.add(header::OFF_FLAGS) |= OLD;
@@ -352,11 +376,12 @@ impl Core {
     /// After a young collection's marking, before the prune.
     pub(super) unsafe fn forward_young_chars(&mut self) {
         let olds: Vec<*mut u8> = self
-            .young_moved
+            .young
+            .moved
             .small
             .iter()
             .copied()
-            .chain(self.young_moved.large.iter().map(|&b| (b + DATA_OFF) as *mut u8))
+            .chain(self.young.moved.large.iter().map(|&b| (b + DATA_OFF) as *mut u8))
             .collect();
         for p in olds {
             // SAFETY: an old copy keeps its copy's address in its link word
@@ -376,7 +401,7 @@ impl Core {
     /// # Safety
     /// After a young collection's marking and the CHARSXP fix-up.
     pub(super) unsafe fn retire_young(&mut self) {
-        let moved = std::mem::take(&mut self.young_moved);
+        let moved = std::mem::take(&mut self.young.moved);
         for p in moved.small {
             // SAFETY: as in `retire`; the old copy was never marked.
             unsafe {
