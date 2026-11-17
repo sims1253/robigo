@@ -136,6 +136,16 @@ unsafe extern "C" {
     fn robigo_heap_jmpbuf_size() -> usize;
     fn robigo_heap_jmpbuf_align() -> usize;
     pub(crate) fn robigo_heap_spill(cb: unsafe extern "C" fn(*mut c_void), ctx: *mut c_void);
+    /// `hit(ctx, at, v)` for each word `v` at `at` in `[from, to)` with
+    /// `min <= v <= max` (shim.c): the conservative scan's loads.
+    pub(crate) fn robigo_heap_scan_words(
+        from: usize,
+        to: usize,
+        min: usize,
+        max: usize,
+        hit: unsafe extern "C" fn(*mut c_void, usize, usize),
+        ctx: *mut c_void,
+    );
 }
 
 /// Jump to the record `jb`: the trampoline that set it returns 1.

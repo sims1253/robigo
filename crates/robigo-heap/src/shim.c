@@ -14,7 +14,8 @@
  *   (docs/g3.md §3): its top just above the callee's stack arguments
  *   (robigo_heap_try_call65) or at the call (robigo_heap_try_call6), and the
  *   previous top comes back as the callee returns or jumps. And the C frame
- *   the scan runs behind (robigo_heap_spill).
+ *   the scan runs behind (robigo_heap_spill), and the scan's word loop
+ *   (robigo_heap_scan_words), which reads memory Rust may not.
  *
  * Built without unwind tables (build.rs): nothing may unwind through these
  * frames, and without tables a C++ exception cannot. */
@@ -66,6 +67,24 @@ void robigo_heap_spill(void (*cb)(void *), void *ctx)
     __builtin_unwind_init();
     cb(ctx);
     __asm__ volatile("" ::: "memory");
+}
+
+/* The conservative scan's reads of other frames' memory (#745): call
+ * hit(ctx, at, v) for each word-aligned word at `at` in [from, to) whose
+ * value v lies in [min, max], a candidate object address. The memory is
+ * this thread's stack (frames suspended above the collector's) or a
+ * segment node's spilled registers: it may be uninitialized, or borrowed
+ * exclusively by a suspended Rust frame, so the loads are C's, plain
+ * machine loads of integers, and Rust only ever sees the values. */
+void robigo_heap_scan_words(uintptr_t from, uintptr_t to, uintptr_t min, uintptr_t max,
+                            void (*hit)(void *, uintptr_t, uintptr_t), void *ctx)
+{
+    for (uintptr_t w = (from + sizeof(uintptr_t) - 1) & ~(uintptr_t)(sizeof(uintptr_t) - 1); w < to;
+         w += sizeof(uintptr_t)) {
+        uintptr_t v = *(const uintptr_t *)w;
+        if (v >= min && v <= max)
+            hit(ctx, w, v);
+    }
 }
 
 #if !defined(__x86_64__)

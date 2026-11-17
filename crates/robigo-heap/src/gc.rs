@@ -2204,14 +2204,11 @@ impl Core {
     unsafe extern "C" fn scan_segments(ctx: *mut c_void) {
         // SAFETY: `ctx` is as the caller promises. Each segment is mapped
         // stack of this thread (collect checked the thread, and a segment
-        // lies in frames that are suspended above this one) and word-aligned,
-        // and `resolve` only returns allocated objects. This is the one block
-        // in the crate whose reason lies outside Rust's rules: the loop reads
-        // other frames' memory, which can be uninitialized, or borrowed
-        // exclusively by a frame that is suspended here. A conservative scan
-        // needs those reads. It works because they are ordinary machine
-        // loads of integers compared to addresses, in a function only called
-        // through C, so nothing can be optimized from them.
+        // lies in frames that are suspended above this one), and the
+        // segment nodes are live (an export's frame holds each until it
+        // returns). The words of the segments, which can be uninitialized or
+        // borrowed exclusively by a suspended frame, are read by C
+        // (`scan_words`), never by Rust.
         unsafe {
             let c = &mut *(ctx as *mut Core);
             let marker = 0usize;
@@ -2229,41 +2226,56 @@ impl Core {
     }
 
     /// Mark what the words in `[from, to)` point at: a range of this
-    /// thread's stack, or a segment node's spilled registers.
+    /// thread's stack, or a segment node's spilled registers. C reads the
+    /// words (shim.c's `robigo_heap_scan_words`, #745): they can be
+    /// uninitialized or exclusively borrowed by a suspended frame, which
+    /// Rust may not read. Rust sees only the values in the heap's range.
     ///
     /// # Safety
-    /// As [`Core::scan_segments`]'s loop: `[from, to)` is readable memory of
-    /// this thread, read while marking.
+    /// `[from, to)` is readable memory of this thread, read while marking.
     unsafe fn scan_words(&mut self, from: usize, to: usize) {
-        // SAFETY: the caller's contract; see `scan_segments`.
+        let (min, max) = (self.heap.min_addr, self.heap.max_addr);
+        // SAFETY: the caller's contract; `scan_hit` gets this core back
+        // and is the only user of it during the call.
         unsafe {
-            let (min, max) = (self.heap.min_addr, self.heap.max_addr);
-            let mut w = (from + 7) & !7;
-            while w < to {
-                let v = *(w as *const usize);
-                // (`max` itself is no object's address, but it is one past
-                // the end of the highest chunk's last object)
-                if v >= min && v <= max {
-                    if v < max {
-                        if let Some(p) = self.heap.resolve(v) {
-                            self.mark_obj(Sexp(p));
-                            self.pin(Sexp(p));
-                        }
-                    }
-                    // a word on a granule boundary may be one past the end
-                    // of the previous object's data (a loop bound, p + n)
-                    if v & 15 == 0 && v > min {
-                        if let Some(p) = self.heap.resolve(v - 1) {
-                            if has_inline_data(Sexp(p)) {
-                                self.mark_obj(Sexp(p));
-                                self.pin(Sexp(p));
-                            }
-                        }
-                    }
-                }
-                w += 8;
+            crate::unwind::robigo_heap_scan_words(from, to, min, max, Self::scan_hit, self as *mut Core as *mut c_void)
+        }
+    }
+
+    /// `scan_words`' answer to a word `v` in the heap's address range: the
+    /// objects it may point at, marked and pinned.
+    ///
+    /// # Safety
+    /// `ctx` is the core `scan_words` passed, marking.
+    unsafe extern "C" fn scan_hit(ctx: *mut c_void, _at: usize, v: usize) {
+        // SAFETY: the caller's contract.
+        let c = unsafe { &mut *(ctx as *mut Core) };
+        for p in c.scan_candidates(v).into_iter().flatten() {
+            // SAFETY: `resolve` returns allocated objects of this heap.
+            unsafe {
+                c.mark_obj(Sexp(p));
+                c.pin(Sexp(p));
             }
         }
+    }
+
+    /// The objects a word `v` of the conservative scan keeps: the one it
+    /// points into, and the one it is one past the end of.
+    fn scan_candidates(&self, v: usize) -> [Option<*mut u8>; 2] {
+        let (min, max) = (self.heap.min_addr, self.heap.max_addr);
+        // (`max` itself is no object's address, but it is one past the end
+        // of the highest chunk's last object)
+        let a = if v < max { self.heap.resolve(v) } else { None };
+        // a word on a granule boundary may be one past the end of the
+        // previous object's data (a loop bound, p + n)
+        let b = if v % GRANULE == 0 && v > min {
+            // SAFETY: `resolve` returns allocated objects, whose header
+            // `has_inline_data` reads.
+            self.heap.resolve(v - 1).filter(|&p| unsafe { has_inline_data(Sexp(p)) })
+        } else {
+            None
+        };
+        [a, b]
     }
 
     /// A full collection (`gc()`, `R_gc()`), whether or not one is due and

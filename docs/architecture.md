@@ -158,7 +158,11 @@ EXTPTRSXP · WEAKREFSXP · OBJSXP (S4) · BUILTINSXP/SPECIALSXP
   (`context.rs`, `native.rs`) are GNU R's `RCNTXT` records, linked by raw
   pointer in the frames that push them and read by C, with the layout
   `include/Defn.h` declares (checked against `src/context.c`'s table); the
-  heap's shim sets and jumps to their jump records. Its C API state
+  heap's shim sets and jumps to their jump records. The conservative scan
+  reads other frames' stack words, which can be uninitialized or
+  exclusively borrowed: those loads are the shim's
+  (`robigo_heap_scan_words`), and Rust sees only the values that may be
+  object addresses. Its C API state
   (`capi.rs`) is the per-isolate block of GNU R's C globals that C reads
   through the one isolate thread-local (`src/capi.c`, `include/robigo_capi.h`,
   layout checked the same way).
