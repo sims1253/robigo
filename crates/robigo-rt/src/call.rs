@@ -749,26 +749,65 @@ pub(crate) fn materialize_args(cx: &mut Cx, def: &prims::PrimDef, args: Args<'_>
     if !args.any_altrep() || reads_by_element(def.name) {
         return Ok(());
     }
-    materialize_each(cx, args)
+    cx.materialize_args(args)
 }
 
-/// [`materialize_args`] for a builtin the VM calls by itself (the
-/// subset and subassign defaults), which reads its arguments' data.
-#[inline]
-pub(crate) fn materialize_altrep_args(cx: &mut Cx, args: Args<'_>) -> RResult<()> {
-    if args.any_altrep() { materialize_each(cx, args) } else { Ok(()) }
-}
-
-#[cold]
-fn materialize_each(cx: &mut Cx, args: Args<'_>) -> RResult<()> {
-    for i in 0..args.len() {
-        cx.materialize(args.root(i))?;
-    }
-    Ok(())
-}
-
-/// The builtins GNU R writes against `XLENGTH` and the element, region and
-/// summary methods for their ALTREP arguments ([`materialize_args`]).
+/// The builtins that leave their ALTREP arguments unexpanded in GNU R
+/// ([`materialize_args`]):
+/// - those written against `XLENGTH` and the element, region and summary
+///   methods: `length`, `seq_along`, the summaries;
+/// - the foreign calls, which hand their arguments to C as they are (C's
+///   `DATAPTR` then expands one: robigo-rtapi's `api.c`);
+/// - the type and attribute queries, which read no data (coerce.c's
+///   `do_is`, `do_typeof`, `do_isvector`; attrib.c's `do_attributes`,
+///   `do_attr`, `do_data_class`, `do_oldclass`, `do_inherits`, `do_names`,
+///   `do_dim`, `do_dimnames`), and `invisible`.
+// R: names.c's rows of these
 fn reads_by_element(name: &str) -> bool {
-    matches!(name, "length" | "seq_along" | "sum" | "min" | "max" | "prod")
+    matches!(
+        name,
+        "length"
+            | "seq_along"
+            | "sum"
+            | "min"
+            | "max"
+            | "prod"
+            | ".Call"
+            | ".External"
+            | ".External2"
+            | "typeof"
+            | "is.vector"
+            | "is.null"
+            | "is.logical"
+            | "is.integer"
+            | "is.double"
+            | "is.complex"
+            | "is.character"
+            | "is.symbol"
+            | "is.name"
+            | "is.environment"
+            | "is.list"
+            | "is.pairlist"
+            | "is.expression"
+            | "is.raw"
+            | "is.object"
+            | "isS4"
+            | "is.numeric"
+            | "is.matrix"
+            | "is.array"
+            | "is.atomic"
+            | "is.recursive"
+            | "is.call"
+            | "is.language"
+            | "is.function"
+            | "attributes"
+            | "attr"
+            | "class"
+            | "oldClass"
+            | "inherits"
+            | "names"
+            | "dim"
+            | "dimnames"
+            | "invisible"
+    )
 }

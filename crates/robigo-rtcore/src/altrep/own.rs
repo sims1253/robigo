@@ -414,6 +414,22 @@ impl Cx {
         })
     }
 
+    /// [`Cx::materialize`] of each of `args` that is ALTREP: what a
+    /// builtin whose GNU R counterpart reads its arguments through
+    /// `DATAPTR` (`INTEGER`, `REAL`, ...) does first.
+    #[inline]
+    pub fn materialize_args(&mut self, args: crate::Args<'_>) -> RResult<()> {
+        if args.any_altrep() { self.materialize_each(args) } else { Ok(()) }
+    }
+
+    #[cold]
+    fn materialize_each(&mut self, args: crate::Args<'_>) -> RResult<()> {
+        for i in 0..args.len() {
+            self.materialize(args.root(i))?;
+        }
+        Ok(())
+    }
+
     /// The class's `Duplicate`: a standard vector of the elements
     /// (`compact_intseq_Duplicate`), then `altrep_DuplicateEX_default`'s
     /// attributes: a copy of `x`'s (deep or shallow), its object and S4

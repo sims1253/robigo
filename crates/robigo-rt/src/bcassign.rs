@@ -365,7 +365,7 @@ fn getter<'s>(cx: &mut Cx, s: Scope<'s>, step: Root<'_>, lhs: Root<'_>, rho: Roo
             }
             let ev = default_args(cx, s, call, lhs, rho, None)?;
             let args = ev.args(cx);
-            crate::call::materialize_altrep_args(cx, args)?;
+            cx.materialize_args(args)?;
             if sub2 {
                 robigo_rtbuiltins::subset::do_subset2_dflt(cx, call, args, rho, out)?;
             } else {
@@ -424,7 +424,7 @@ fn setter<'s>(
             }
             let ev = default_args(cx, s, call, lhs, rho, Some(rhs))?;
             let args = ev.args(cx);
-            crate::call::materialize_altrep_args(cx, args)?;
+            cx.materialize_args(args)?;
             if sub2 {
                 robigo_rtbuiltins::subassign::do_subassign2_dflt(cx, call, args, rho, out)?;
             } else {

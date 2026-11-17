@@ -423,7 +423,7 @@ pub fn do_subset(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out:
         Disp::Done => Ok(()),
         Disp::Default(ev) => {
             let args = ev.args(cx);
-            crate::call::materialize_altrep_args(cx, args)?;
+            cx.materialize_args(args)?;
             subset::do_subset_dflt(cx, call, args, rho, out)
         }
     })
@@ -436,7 +436,7 @@ pub fn do_subset2(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out
         Disp::Done => Ok(()),
         Disp::Default(ev) => {
             let args = ev.args(cx);
-            crate::call::materialize_altrep_args(cx, args)?;
+            cx.materialize_args(args)?;
             subset::do_subset2_dflt(cx, call, args, rho, out)
         }
     })
@@ -541,7 +541,7 @@ pub fn do_subassign(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, o
         Disp::Done => Ok(()),
         Disp::Default(ev) => {
             let args = ev.args(cx);
-            crate::call::materialize_altrep_args(cx, args)?;
+            cx.materialize_args(args)?;
             subassign::do_subassign_dflt(cx, call, args, rho, out)
         }
     })
@@ -554,7 +554,7 @@ pub fn do_subassign2(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, 
         Disp::Done => Ok(()),
         Disp::Default(ev) => {
             let args = ev.args(cx);
-            crate::call::materialize_altrep_args(cx, args)?;
+            cx.materialize_args(args)?;
             subassign::do_subassign2_dflt(cx, call, args, rho, out)
         }
     })

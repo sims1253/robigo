@@ -1363,7 +1363,7 @@ fn dflt_subset(
     // GNU R's byte code keeps the object below the call frame,
     // DO_STARTDISPATCH, and BUILTIN_CALL_FRAME_ARGS drops only the
     // argument list's links: tests/rt/assign/link-walk-subset.R)
-    let r = crate::call::materialize_altrep_args(cx, args).and_then(|()| {
+    let r = cx.materialize_args(args).and_then(|()| {
         if sub2 {
             robigo_rtbuiltins::subset::do_subset2_dflt(cx, call, args, rho, out)
         } else {

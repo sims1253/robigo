@@ -319,6 +319,10 @@ fn rep_count(cx: &mut Cx, v: Option<Root<'_>>) -> RResult<Option<f64>> {
 }
 
 fn rep_dflt(cx: &mut Cx, s: Scope<'_>, call: Root<'_>, args: Args<'_>, out: Out<'_>) -> RResult<()> {
+    // rep3 and rep4 read `x` and `times` through INTEGER and REAL, which
+    // expand one of robigo's compact sequences
+    // R: seq.c:rep3, seq.c:rep4
+    cx.materialize_args(args)?;
     let m = crate::util::match_args(cx, call, &["x", "times", "length.out", "each", "..."], args)?;
     fn arg<'g>(cx: &'g Cx, m: &crate::util::Matched, args: Args<'_>, k: usize) -> Option<Ref<'g>> {
         m.formals[k].map(|i| args.get(cx, i)).filter(|v| *v != cx.missing_arg())
