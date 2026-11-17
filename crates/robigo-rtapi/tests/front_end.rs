@@ -19,14 +19,17 @@ fn homes(env: &[(&str, &str)]) -> Vec<String> {
 }
 
 /// `p` with its `.` and `..` components resolved by name (no file system
-/// access).
+/// access). A `..` with nothing before it to remove panics: the helper
+/// compares absolute paths, and dropping it would make two different
+/// paths equal.
 fn normalized(p: &Path) -> std::path::PathBuf {
     let mut out = std::path::PathBuf::new();
     for c in p.components() {
         match c {
             std::path::Component::CurDir => {}
             std::path::Component::ParentDir => {
-                out.pop();
+                // (`pop` is false at the root and on an empty path)
+                assert!(out.pop(), "{p:?}: '..' with nothing to remove");
             }
             c => out.push(c),
         }
@@ -50,4 +53,17 @@ fn r_home_defaults_to_the_checkout_s_tree() {
 fn a_set_r_home_and_directories_are_kept() {
     assert_eq!(homes(&[("R_HOME", "/opt/x")]), ["/opt/x", "/opt/x/share", "/opt/x/include", "/opt/x/doc"]);
     assert_eq!(homes(&[("R_HOME", "/opt/x"), ("R_DOC_DIR", "/d")]), ["/opt/x", "/opt/x/share", "/opt/x/include", "/d"]);
+}
+
+/// An empty `R_HOME`, or an empty directory variable, is unset (R.sh.in's
+/// `test -n "${R_HOME}"`; the script assigns the directories itself).
+#[test]
+fn an_empty_r_home_or_directory_is_unset() {
+    let unset = homes(&[]);
+    assert_eq!(homes(&[("R_HOME", "")]), unset);
+    assert_eq!(homes(&[("R_SHARE_DIR", ""), ("R_INCLUDE_DIR", ""), ("R_DOC_DIR", "")]), unset);
+    assert_eq!(
+        homes(&[("R_HOME", "/opt/x"), ("R_SHARE_DIR", "")]),
+        ["/opt/x", "/opt/x/share", "/opt/x/include", "/opt/x/doc"]
+    );
 }
