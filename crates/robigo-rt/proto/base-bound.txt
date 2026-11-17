@@ -10,7 +10,7 @@
 # The union of base-subset.txt (the trace) and the static bound (the free
 # variables of the same inputs that name base functions, transitively through
 # base closures), so that a branch GNU R did not take still finds its function.
-# 338 closures, 131 primitives, 193 internals, 6 variables.
+# 343 closures, 132 primitives, 196 internals, 7 variables.
 closure %in% match.R
 closure %||% utils.R
 closure .Date dates.R
@@ -37,6 +37,7 @@ closure .standard_regexps utils.R
 closure .valid.factor factor.R
 closure Encoding New-Internal.R
 closure I dataframe.R
+closure Map funprog.R
 closure NROW matrix.R
 closure NextMethod New-Internal.R
 closure R.home files.R
@@ -152,6 +153,7 @@ closure geterrmessage New-Internal.R
 closure gettext stop.R
 closure gettextf stop.R
 closure getwd files.R
+closure gregexpr grep.R
 closure grep grep.R
 closure grepl grep.R
 closure grouping sort.R
@@ -261,6 +263,7 @@ closure readLines connections.R
 closure readRDS serialize.R
 closure readline New-Internal.R
 closure reg.finalizer New-Internal.R
+closure regexec grep.R
 closure regexpr grep.R
 closure registerS3method namespace.R
 closure registerS3methods namespace.R
@@ -271,7 +274,9 @@ closure rev rev.R
 closure rev.default rev.R
 closure rle rle.R
 closure rm rm.R
+closure row matrix.R
 closure rowSums colSums.R
+closure rownames matrix.R
 closure sQuote character.R
 closure saveRDS serialize.R
 closure search New-Internal.R
@@ -398,6 +403,7 @@ primitive as.integer
 primitive as.logical
 primitive as.numeric
 primitive as.raw
+primitive atan
 primitive attr
 primitive attr<-
 primitive attributes
@@ -554,6 +560,7 @@ internal getVarsFromFrame
 internal geterrmessage
 internal gettext
 internal getwd
+internal gregexpr
 internal grep
 internal grepl
 internal gsub
@@ -618,11 +625,13 @@ internal readDCF
 internal readLines
 internal readline
 internal reg.finalizer
+internal regexec
 internal regexpr
 internal registerNamespace
 internal remove
 internal rep.int
 internal rep_len
+internal row
 internal rowSums
 internal search
 internal serialize
@@ -679,3 +688,4 @@ variable .__S3MethodsTable__. namespace.R
 variable .knownS3Generics zzz.R
 variable .userHooksEnv userhooks.R
 variable letters constants.R
+variable pi constants.R

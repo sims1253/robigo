@@ -268,7 +268,8 @@ impl Cx {
     // R: envir.c:addMissingVarsToNewEnv
     pub fn bind_frame_slots(&mut self, env: Root<'_>, binds: &[(usize, Root<'_>)]) -> RResult<()> {
         let r = expect_env(env.bind(self));
-        self.note_write(r);
+        // SAFETY: a rooted environment.
+        unsafe { self.note_write(r) };
         let iso = self.iso();
         iso.check_owns(r);
         // SAFETY: a rooted environment; each slot is checked to be one of
@@ -331,7 +332,8 @@ impl Cx {
     pub fn define_scalar(&mut self, sym: Root<'_>, value: Scalar, rho: Root<'_>) -> RResult<()> {
         let s = expect_sym(sym.bind(self));
         let r = expect_env(rho.bind(self));
-        self.note_write(r);
+        // SAFETY: a rooted environment.
+        unsafe { self.note_write(r) };
         let iso = self.iso();
         iso.check_owns(s);
         iso.check_owns(r);
@@ -494,7 +496,9 @@ impl Cx {
         // SAFETY: found in this interval.
         let cell = match unsafe { l.at() } {
             At::FrameSlot(sl) => self.cell_back(sl)?,
-            _ => l.sexp(),
+            // SAFETY: not a slot: the location's object (a cell or a base
+            // binding's symbol), live, reachable from the rooted frame.
+            _ => unsafe { l.object() },
         };
         // SAFETY: the cell (or symbol) is reachable from the rooted frame.
         out.set(self, unsafe { Ref::from_sexp(cell, self) });

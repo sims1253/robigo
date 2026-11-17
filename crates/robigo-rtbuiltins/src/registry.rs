@@ -6,8 +6,8 @@
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
 use crate::{
-    apply, arith, array, attrib, bind, builtin, character, coerce, complex, context, cum, envir, errors, identical, is,
-    logic, math, options, paste, relop, seq, sort, sprintf, subset, summary, sysutils, unique,
+    apply, arith, array, attrib, bind, builtin, character, coerce, complex, context, cum, envir, errors, grep,
+    identical, is, logic, math, options, paste, relop, seq, sort, sprintf, subset, summary, sysutils, unique,
 };
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
@@ -365,6 +365,7 @@ pub static BUILTINS: &[Builtin] = &[
     op!("pmin", 0, summary::do_pmin, 11, -1, FUNCALL, Pure),
     op!("pmax", 1, summary::do_pmin, 11, -1, FUNCALL, Pure),
     row("sqrt", math::do_sqrt, 3, 1, 1, FUNCALL, Pure),
+    row("atan", math::do_atan, 25, 1, 1, FUNCALL, Pure),
     row("abs", math::do_abs, 6, 1, 1, FUNCALL, Pure),
     // context.c
     op!("sys.parent", 1, context::do_sys, 11, -1, FUNCALL, Env),
@@ -471,6 +472,14 @@ pub static BUILTINS: &[Builtin] = &[
     op!("paste", 0, paste::do_paste, 11, 4, FUNCALL, Pure),
     op!("paste0", 1, paste::do_paste, 11, 3, FUNCALL, Pure),
     row("nchar", character::do_nchar, 1, 11, 4, FUNCALL, Pure),
+    row("strsplit", grep::do_strsplit, 1, 11, 5, FUNCALL, Pure),
+    op!("grep", 0, grep::do_grep, 11, 8, FUNCALL, Pure),
+    op!("grepl", 1, grep::do_grep, 11, 8, FUNCALL, Pure),
+    op!("sub", 0, grep::do_gsub, 11, 7, FUNCALL, Pure),
+    op!("gsub", 1, grep::do_gsub, 11, 7, FUNCALL, Pure),
+    op!("regexpr", 0, grep::do_regexpr, 11, 6, FUNCALL, Pure),
+    op!("gregexpr", 1, grep::do_regexpr, 11, 6, FUNCALL, Pure),
+    row("regexec", grep::do_regexec, 1, 11, 5, FUNCALL, Pure),
     row("nzchar", character::do_nzchar, 1, 1, -1, FUNCALL, Pure),
     row("encodeString", character::do_encode_string, 1, 11, 5, FUNCALL, Pure),
     row("substr", character::do_substr, 1, 11, 3, FUNCALL, Pure),

@@ -1,6 +1,6 @@
 //! arithmetic.c's mathematical functions of one argument that the base
-//! subset reaches: `sqrt` (`do_math1` with `math1`) and `abs` (`do_abs`).
-//! Both are "Math" group generics.
+//! subset reaches: `sqrt` and `atan` (`do_math1` with `math1` and
+//! `math1_ari`) and `abs` (`do_abs`). All are "Math" group generics.
 
 use crate::attrib::Attrs;
 use crate::util::{is_numeric, not_yet};
@@ -109,6 +109,33 @@ pub fn do_sqrt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: 
         return Err(not_yet(cx, Some(call), "sqrt() of a complex vector (complex_math1)"));
     }
     math1(cx, call, args.root(0), rsqrt, out)
+}
+
+/// `Ratan(x)`: `x` itself where `atan(x)` rounds to it.
+// R: arithmetic.c:Ratan
+fn ratan(x: f64) -> f64 {
+    // f_x_x(x, atan, sqrt(1.5 * DBL_EPSILON))
+    if x.abs() <= (1.5 * f64::EPSILON).sqrt() { x } else { x.atan() }
+}
+
+/// `math1_ari(sa, Ratan, 0., 0., lcall)`: `atan(0)` (and `atan(-0)`) is `+0`.
+// R: arithmetic.c:math1_ari
+fn ratan_ari(x: f64) -> f64 {
+    if x == 0.0 { 0.0 } else { ratan(x) }
+}
+
+const ATAN: Generic = Generic::group("Math", "atan");
+
+/// `atan(x)` (`do_math1`, code 25).
+// R: arithmetic.c:do_math1
+pub fn do_atan(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("atan").check_arity(cx, call, args)?;
+    crate::util::check1arg(cx, args, call, "x")?;
+    let Dispatched::Default(out) = math_dispatch(cx, &ATAN, call, args, env, out)? else { return Ok(()) };
+    if args.get(cx, 0).sexptype() == CPLXSXP {
+        return Err(not_yet(cx, Some(call), "atan() of a complex vector (complex_math1)"));
+    }
+    math1(cx, call, args.root(0), ratan_ari, out)
 }
 
 const ABS: Generic = Generic::group("Math", "abs");

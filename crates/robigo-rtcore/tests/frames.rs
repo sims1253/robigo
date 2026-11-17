@@ -698,7 +698,7 @@ fn stamps_renumber_when_the_counter_wraps() {
         assign(cx, "c", 1.0, f).unwrap();
         // the frame's next stamp, near the end of its range
         unsafe {
-            let m = f.bind(cx).sexp().0.add(robigo_heap::slots::OFF_META) as *mut u64;
+            let m = f.bind(cx).sexp().as_ptr().add(robigo_heap::slots::OFF_META) as *mut u64;
             *m = (*m & 0xFFFF_FFFF) | ((u32::MAX as u64 - 1) << 32);
         }
         for n in ["d", "e", "g"] {
@@ -707,7 +707,7 @@ fn stamps_renumber_when_the_counter_wraps() {
         assert_eq!(ls(cx, f, false), "g e d c a b");
         // an unboxed definition takes its stamp the same way (Sol N1b S1)
         unsafe {
-            let m = f.bind(cx).sexp().0.add(robigo_heap::slots::OFF_META) as *mut u64;
+            let m = f.bind(cx).sexp().as_ptr().add(robigo_heap::slots::OFF_META) as *mut u64;
             *m = (*m & 0xFFFF_FFFF) | ((u32::MAX as u64) << 32);
         }
         let h = sym(cx, s, "h");

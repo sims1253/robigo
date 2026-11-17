@@ -1441,7 +1441,12 @@ impl Cx {
     /// its delayed slots (§6.2's precomputed arguments): the values its
     /// caller computed for argument expressions that run no code, which the
     /// callee's forces take while nothing else has happened.
-    pub fn set_early_frame(&self, f: Sexp, n: u32) {
+    ///
+    /// # Safety
+    /// `f` is a live slot frame of this isolate with `n` early values in its
+    /// delayed slots: it is a root from here on, and dropping the values
+    /// writes its slots.
+    pub unsafe fn set_early_frame(&self, f: Sexp, n: u32) {
         let st = self.ctxs();
         debug_assert_eq!(st.early_frame.get(), self.iso().nil, "robigo: a second frame with early values");
         st.early_frame.set(f);
@@ -1462,8 +1467,12 @@ impl Cx {
     }
 
     /// Put back a record [`Cx::take_early_wasted`] took.
+    ///
+    /// # Safety
+    /// `r` is what `take_early_wasted` returned in the same call, whose
+    /// frame is R_NilValue or still live: the record's frame is a root.
     #[inline(always)]
-    pub fn restore_early_wasted(&self, r: (Sexp, u32)) {
+    pub unsafe fn restore_early_wasted(&self, r: (Sexp, u32)) {
         let st = self.ctxs();
         st.early_wasted.set(r.0);
         st.early_wasted_mask.set(r.1);
@@ -1472,8 +1481,12 @@ impl Cx {
     /// Which of frame `f`'s first 32 slots had early values that were
     /// dropped before the callee took them (0 for none): a call site's
     /// reason to stop computing those arguments early.
+    ///
+    /// # Safety
+    /// `f` is a live object of this isolate (only its address is compared
+    /// today; the contract keeps a read sound).
     #[inline(always)]
-    pub fn early_wasted(&self, f: Sexp) -> u32 {
+    pub unsafe fn early_wasted(&self, f: Sexp) -> u32 {
         let st = self.ctxs();
         if st.early_wasted.get() == f { st.early_wasted_mask.get() } else { 0 }
     }
@@ -1495,8 +1508,12 @@ impl Cx {
     /// unless `rho` is the early frame itself (the callee's own locals,
     /// which no argument expression reads: its caller's environments do
     /// not reach the new frame).
+    ///
+    /// # Safety
+    /// `rho` is a live environment of this isolate (only its address is
+    /// compared today; the contract keeps a read sound).
     #[inline(always)]
-    pub fn note_write(&self, rho: Sexp) {
+    pub unsafe fn note_write(&self, rho: Sexp) {
         let st = self.ctxs();
         let e = st.early_frame.get();
         if e != self.iso().nil && e != rho {
@@ -1506,8 +1523,12 @@ impl Cx {
 
     /// The call that made frame `f` ends (returns or is left by a jump):
     /// early values its body did not take are dropped.
+    ///
+    /// # Safety
+    /// `f` is a live object of this isolate (only its address is compared
+    /// today; the contract keeps a read sound).
     #[inline(always)]
-    pub fn end_early_frame(&self, f: Sexp) {
+    pub unsafe fn end_early_frame(&self, f: Sexp) {
         if self.ctxs().early_frame.get() == f {
             self.drop_early_values();
         }

@@ -187,7 +187,11 @@ impl Cenv {
     }
 
     /// Add the variables of a top-level loop to the first real frame.
-    pub fn add_top_vars(&mut self, vars: Vec<Sexp>) {
+    ///
+    /// # Safety
+    /// Each of `vars` is a live symbol (symbols are immortal) of the isolate
+    /// this environment compiles for.
+    pub unsafe fn add_top_vars(&mut self, vars: Vec<Sexp>) {
         for v in vars {
             if !self.top_extra.contains(&v) {
                 self.top_extra.push(v);
@@ -196,12 +200,20 @@ impl Cenv {
     }
 
     /// A function's frame on top (`addCenvFrame(cenv, names(forms))`).
-    pub fn push_unit(&mut self, vars: Vec<Sexp>) {
+    ///
+    /// # Safety
+    /// Each of `vars` is a live symbol (symbols are immortal) of the isolate
+    /// this environment compiles for.
+    pub unsafe fn push_unit(&mut self, vars: Vec<Sexp>) {
         self.units.push(vars);
     }
 
     /// Add `vars` to the innermost function frame (`addCenvVars`).
-    pub fn add_unit_vars(&mut self, vars: &[Sexp]) {
+    ///
+    /// # Safety
+    /// Each of `vars` is a live symbol (symbols are immortal) of the isolate
+    /// this environment compiles for.
+    pub unsafe fn add_unit_vars(&mut self, vars: &[Sexp]) {
         let u = self.units.last_mut().expect("robigo: no function frame to add to");
         for &v in vars {
             if !u.contains(&v) {
@@ -295,7 +307,8 @@ impl Cenv {
     // R: cmp.R:findFunDef
     pub unsafe fn fun_def(&self, cx: &Cx, st: &RtState, sym: Sexp) -> Result<Option<Sexp>, Need> {
         let raw = if self.installed
-            && let Some(p) = st.shipped(cx, sym)
+            // SAFETY: the caller's contract.
+            && let Some(p) = unsafe { st.shipped(cx, sym) }
         {
             p
         } else {
