@@ -10,7 +10,7 @@
 # The union of base-subset.txt (the trace) and the static bound (the free
 # variables of the same inputs that name base functions, transitively through
 # base closures), so that a branch GNU R did not take still finds its function.
-# 203 closures, 119 primitives, 111 internals, 3 variables.
+# 220 closures, 120 primitives, 130 internals, 3 variables.
 closure %in% match.R
 closure %||% utils.R
 closure .Date dates.R
@@ -31,6 +31,7 @@ closure Map funprog.R
 closure NROW matrix.R
 closure NextMethod New-Internal.R
 closure Sys.getenv getenv.R
+closure Sys.getpid getenv.R
 closure [.factor factor.R
 closure anyDuplicated duplicated.R
 closure anyDuplicated.default duplicated.R
@@ -49,11 +50,13 @@ closure as.symbol as.R
 closure as.vector as.R
 closure assign assign.R
 closure bindingIsLocked bindenv.R
+closure bzfile connections.R
 closure cat cat.R
 closure cbind New-Internal.R
 closure character vector.R
 closure chkDots warnings.R
 closure close connections.R
+closure close.connection connections.R
 closure complex vector.R
 closure computeRestarts conditions.R
 closure conditionCall conditions.R
@@ -75,6 +78,8 @@ closure eval eval.R
 closure eval.parent eval.R
 closure exists get.R
 closure factor factor.R
+closure file connections.R
+closure file.remove files.R
 closure findRestart conditions.R
 closure force eval.R
 closure formals formals.R
@@ -91,10 +96,13 @@ closure grep grep.R
 closure grepl grep.R
 closure grouping sort.R
 closure gsub grep.R
+closure gzcon connections.R
+closure gzfile connections.R
 closure iconv New-Internal.R
 closure identical identical.R
 closure identity funprog.R
 closure ifelse ifelse.R
+closure infoRDS serialize.R
 closure inherits New-Internal.R
 closure integer vector.R
 closure invokeRestart conditions.R
@@ -152,7 +160,9 @@ closure print.factor factor.R
 closure print.restart conditions.R
 closure rank rank.R
 closure rapply lapply.R
+closure raw raw.R
 closure rawToChar raw.R
+closure readRDS serialize.R
 closure reg.finalizer New-Internal.R
 closure regexec grep.R
 closure regexpr grep.R
@@ -164,8 +174,10 @@ closure row matrix.R
 closure rowSums colSums.R
 closure rownames matrix.R
 closure sQuote character.R
+closure saveRDS serialize.R
 closure seq seq.R
 closure seq.default seq.R
+closure serialize serialize.R
 closure setdiff sets.R
 closure signalCondition conditions.R
 closure simpleCondition conditions.R
@@ -189,6 +201,8 @@ closure strsplit grep.R
 closure structure structure.R
 closure sub grep.R
 closure substring character.R
+closure summary summary.R
+closure summary.connection connections.R
 closure suppressWarnings conditions.R
 closure sys.call sys.R
 closure sys.frame sys.R
@@ -203,6 +217,7 @@ closure unique duplicated.R
 closure unique.default duplicated.R
 closure unlist unlist.R
 closure unname unname.R
+closure unserialize serialize.R
 closure vapply sapply.R
 closure vector vector.R
 closure warning stop.R
@@ -214,6 +229,8 @@ closure withRestarts conditions.R
 closure xtfrm.AsIs sort.R
 closure xtfrm.default sort.R
 closure xtfrm.factor sort.R
+closure xzfile connections.R
+closure zstdfile connections.R
 primitive !
 primitive !=
 primitive $
@@ -303,6 +320,7 @@ primitive is.object
 primitive is.pairlist
 primitive is.symbol
 primitive isS4
+primitive lazyLoadDBfetch
 primitive length
 primitive length<-
 primitive levels<-
@@ -342,14 +360,17 @@ internal .invokeRestart
 internal .signalCondition
 internal NextMethod
 internal Sys.getenv
+internal Sys.getpid
 internal anyDuplicated
 internal array
 internal as.vector
 internal asCharacterFactor
 internal assign
 internal bindingIsLocked
+internal bzfile
 internal cat
 internal cbind
+internal close
 internal complex
 internal delayedAssign
 internal deparse
@@ -361,17 +382,22 @@ internal env2list
 internal environment
 internal eval
 internal exists
+internal file
+internal file.remove
 internal formals
 internal gc
 internal gctorture
 internal get
 internal getOption
+internal getVarsFromFrame
 internal geterrmessage
 internal gettext
 internal gregexpr
 internal grep
 internal grepl
 internal gsub
+internal gzcon
+internal gzfile
 internal iconv
 internal identical
 internal inherits
@@ -380,6 +406,8 @@ internal is.vector
 internal islistfactor
 internal l10n_info
 internal lapply
+internal lazyLoadDBflush
+internal lazyLoadDBinsertValue
 internal lengths
 internal list2env
 internal lockBinding
@@ -419,6 +447,10 @@ internal rep.int
 internal rep_len
 internal row
 internal rowSums
+internal serialize
+internal serializeInfoFromConn
+internal serializeToConn
+internal serializeb
 internal seterrmessage
 internal sort
 internal sorted_fpass
@@ -430,6 +462,7 @@ internal stop
 internal strsplit
 internal sub
 internal substr
+internal summary.connection
 internal sys.call
 internal sys.frame
 internal sys.function
@@ -438,12 +471,16 @@ internal sys.parent
 internal typeof
 internal unique
 internal unlist
+internal unserialize
+internal unserializeFromConn
 internal vapply
 internal vector
 internal warning
 internal which
 internal which.max
 internal wrap_meta
+internal xzfile
+internal zstdfile
 variable ..deparseOpts New-Internal.R
 variable letters constants.R
 variable pi constants.R

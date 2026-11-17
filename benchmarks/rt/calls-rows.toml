@@ -27,6 +27,12 @@
 #   layout, envs, growth, cold, d0
 #          the M2/M3 decisions' rows (D8 and D13; D2u; D12; D11; D0's
 #          pilot), docs/ledger/g3/2026-11-17-m2m3-bars.md.
+#
+# `address_sensitive = true` marks a row whose count follows where its strings
+# were allocated: GNU R's string hash, and robigo-rt's port of it, hashes a
+# cached string by its address (unique.c:cshash). The bars measure such a row
+# as the median over heap shifts (idiom-vs-r.py --shifts, perf.py's
+# ADDRESS_SHIFTS; docs/ledger/g3/2026-11-17-address-rows.md).
 
 # --- calls.R ---------------------------------------------------------------
 
@@ -165,6 +171,7 @@ n = 200
 [[row]]
 name = "e7-match"
 group = "e7"
+address_sensitive = true
 note = "match of 100 strings into a 1,000-string table"
 setup = '''
 keys <- paste0("k", 1:1000)

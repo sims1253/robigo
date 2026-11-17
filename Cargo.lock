@@ -1086,12 +1086,14 @@ version = "0.0.1"
 name = "robigo-rt"
 version = "0.0.1"
 dependencies = [
+ "flate2",
  "robigo-heap",
  "robigo-numerics",
  "robigo-rtbuiltins",
  "robigo-rtcore",
  "robigo-syntax",
  "robigo-text",
+ "zlib-rs",
 ]
 
 [[package]]
