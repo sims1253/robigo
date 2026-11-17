@@ -16,5 +16,14 @@ cases <- list(
   list(name = "k_tailif", fun = function(x) { invisible(x); if (x) 1 else 2 },
        calls = c("k_tailif(TRUE)", "k_tailif(FALSE)")),
   list(name = "k_retinvisible", fun = function(x) { invisible(x); return(if (x) invisible(1) else 2) },
-       calls = c("k_retinvisible(TRUE)", "k_retinvisible(FALSE)"))
+       calls = c("k_retinvisible(TRUE)", "k_retinvisible(FALSE)")),
+  # a tail `&&` sets visibility on its own paths (AND1ST and AND2ND), not
+  # at a RETURN another branch shares
+  list(name = "k_retand", fun = function(c, x, y) return(if (c) x && y else invisible(1)),
+       calls = c("k_retand(TRUE, TRUE, FALSE)", "k_retand(TRUE, FALSE, TRUE)", "k_retand(FALSE, TRUE, TRUE)")),
+  list(name = "k_retand_last", fun = function(c, x, y) return(if (c) invisible(1) else x || y),
+       calls = c("k_retand_last(TRUE, TRUE, TRUE)", "k_retand_last(FALSE, FALSE, TRUE)",
+                 "k_retand_last(FALSE, TRUE, FALSE)")),
+  list(name = "k_tailand", fun = function(x, y) { invisible(x); x && y },
+       calls = c("k_tailand(TRUE, TRUE)", "k_tailand(FALSE, TRUE)"))
 )

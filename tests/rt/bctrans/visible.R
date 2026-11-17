@@ -116,3 +116,53 @@ k_retinvisible <- .Internal(bcClose(as.pairlist(alist(x = )),
 k_retinvisible(TRUE)
 k_retinvisible(FALSE)
 
+# k_retand
+k_retand <- .Internal(bcClose(as.pairlist(alist(c = , x = , y = )),
+ mk(c(12L, 20L, 1L, 3L, 2L, 17L, 20L, 4L, 88L, 3L, 15L, 20L, 5L, 89L, 3L, 2L, 26L, 123L, 6L, 26L, 26L, 7L, 34L, 8L, 39L, 6L, 1L), list(quote(return(if (c) x && y else invisible(1))),
+  as.name("c"),
+  quote(if (c) x && y else invisible(1)),
+  quote(x && y),
+  as.name("x"),
+  as.name("y"),
+  quote(invisible(1)),
+  as.name("invisible"),
+  1,
+  structure(c(NA, 1L, 1L, 2L, 2L, 2L, 4L, 4L, 3L, 3L, 3L, 5L, 5L, 3L, 3L, 2L, 2L, 6L, 6L, 6L, 6L, 6L, 6L, 6L, 6L, 6L, 0L), class = "expressionsIndex"))),
+ globalenv()))
+k_retand(TRUE, TRUE, FALSE)
+k_retand(TRUE, FALSE, TRUE)
+k_retand(FALSE, TRUE, TRUE)
+
+# k_retand_last
+k_retand_last <- .Internal(bcClose(as.pairlist(alist(c = , x = , y = )),
+ mk(c(12L, 20L, 1L, 3L, 2L, 17L, 123L, 3L, 15L, 26L, 4L, 34L, 5L, 39L, 3L, 2L, 26L, 20L, 7L, 90L, 6L, 26L, 20L, 8L, 91L, 6L, 1L), list(quote(return(if (c) invisible(1) else x || y)),
+  as.name("c"),
+  quote(if (c) invisible(1) else x || y),
+  quote(invisible(1)),
+  as.name("invisible"),
+  1,
+  quote(x || y),
+  as.name("x"),
+  as.name("y"),
+  structure(c(NA, 1L, 1L, 2L, 2L, 2L, 3L, 3L, 3L, 3L, 3L, 3L, 3L, 3L, 3L, 2L, 2L, 7L, 7L, 6L, 6L, 6L, 8L, 8L, 6L, 6L, 0L), class = "expressionsIndex"))),
+ globalenv()))
+k_retand_last(TRUE, TRUE, TRUE)
+k_retand_last(FALSE, FALSE, TRUE)
+k_retand_last(FALSE, TRUE, FALSE)
+
+# k_tailand
+k_tailand <- .Internal(bcClose(as.pairlist(alist(x = , y = )),
+ mk(c(12L, 123L, 1L, 11L, 26L, 2L, 20L, 3L, 33L, 39L, 1L, 4L, 20L, 3L, 88L, 4L, 21L, 20L, 5L, 89L, 4L, 1L), list(quote({
+    invisible(x)
+    x && y
+}),
+  quote(invisible(x)),
+  as.name("invisible"),
+  as.name("x"),
+  quote(x && y),
+  as.name("y"),
+  structure(c(NA, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 3L, 3L, 4L, 4L, 4L, 5L, 5L, 4L, 4L, 4L), class = "expressionsIndex"))),
+ globalenv()))
+k_tailand(TRUE, TRUE)
+k_tailand(FALSE, TRUE)
+
