@@ -331,7 +331,7 @@ pub const RT: Column = Column {
 /// paths there. `r-home-tools`: it loads tools' native code from the
 /// binary's `R_HOME` tree (`library/tools/libs/tools.so`, which
 /// `scripts/rt-home.sh` builds), so it runs where the caller found that
-/// file (robigo-rtapi's conformance test).
+/// tree, its stamp and the file (robigo-rtapi's conformance test).
 pub const KNOWN_FEATURES: &[&str] =
     &["bytecode-fidelity", "inplace-identity", "promise-identity", "r-home-tools", "volume"];
 

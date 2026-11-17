@@ -47,19 +47,29 @@ fn rt_conformance() {
     // SAFETY: set before any other thread of this test binary runs (the one
     // test here has not started its cases).
     unsafe { std::env::set_var("RT_CAPI_LIBS", &libs) };
+    // robigo-rt's R_HOME is its own tree, which its front end finds when the
+    // environment names none (the checkout's, scripts/rt-home.sh). An
+    // R_HOME inherited from an installed GNU R (the CI image's
+    // /usr/lib/R) would have the cases load that R's library, its tools.so
+    // among them, built for GNU R's objects.
+    // SAFETY: as above.
+    unsafe { std::env::remove_var("R_HOME") };
     let mut o = conf::Options::from_env(&conf::RT, rt_bin()).unwrap_or_else(|e| panic!("{e}"));
     // the cases that load tools' native code from the binary's R_HOME tree
     // run where scripts/rt-home.sh built it (CI's rt job does)
-    if has_tools_so(&o.bin) {
+    if has_rt_home_tools(&o.bin) {
         o.features.push("r-home-tools");
     }
     conf::run(&root, &conf::RT, &o).unwrap_or_else(|e| panic!("{e}"));
 }
 
-/// Whether `bin`'s `R.home()` has `library/tools/libs/tools.so`.
-fn has_tools_so(bin: &Path) -> bool {
+/// Whether `bin`'s `R.home()` is the tree scripts/rt-home.sh made (its
+/// stamp, `.rt-home`) and has tools' native code. An installed GNU R's
+/// R_HOME (the test job's `R_HOME=/usr/lib/R`) has a tools.so too, but one
+/// built for GNU R's objects, which robigo-rt must not load.
+fn has_rt_home_tools(bin: &Path) -> bool {
     let out = std::process::Command::new(bin)
-        .args(["-e", "cat(file.exists(file.path(R.home(), 'library', 'tools', 'libs', 'tools.so')))"])
+        .args(["-e", "cat(all(file.exists(file.path(R.home(), c('.rt-home', 'library/tools/libs/tools.so')))))"])
         .output()
         .unwrap_or_else(|e| panic!("running {}: {e}", bin.display()));
     out.stdout == b"TRUE"

@@ -144,6 +144,10 @@ pub type DeparseFn = for<'g> fn(&'g Cx, Ref<'g>, i32) -> Result<Vec<u8>, String>
 /// encoding `enc` (which may hold NULs): how an error message shows it.
 pub type EncodeStringFn = fn(&Cx, &[u8], crate::Encoding) -> Vec<u8>;
 
+/// `R_FindSymbol(name, "", NULL) != NULL`: whether an object loaded with
+/// `dyn.load` (or the base one) has the native symbol `name`.
+pub type FindSymbolFn = fn(&Cx, &[u8]) -> bool;
+
 /// What an internal generic asks the dispatcher: a static descriptor
 /// (builtins name theirs in a `const`), passed by reference so that the
 /// hook call carries one word for it.
@@ -215,6 +219,9 @@ pub struct Hooks {
     pub exit_value: ExitValueFn,
     pub deparse: DeparseFn,
     pub encode_string: EncodeStringFn,
+    /// `R_FindSymbol`'s lookup (rtapi's table of loaded objects). Defaults
+    /// to none found: with no table, nothing is loaded.
+    pub has_native_symbol: FindSymbolFn,
 }
 
 impl Default for Hooks {
@@ -223,7 +230,7 @@ impl Default for Hooks {
         Hooks {
             eval: no_eval,
             eval_bytecode: no_eval,
-            force_and_call: |cx, _, _, _, _| Err(not_yet(cx, "'eval'")),
+            force_and_call: |cx, _, _, _, _| Err(not_yet(cx, "'forceAndCall'")),
             apply: no_apply,
             dispatch: no_dispatch,
             force: no_force,
@@ -242,6 +249,7 @@ impl Default for Hooks {
             // (before `rt` installs EncodeString: NULs escaped, the rest as
             // it is)
             encode_string: |_, b, _| b.iter().flat_map(|&c| if c == 0 { b"\\0".to_vec() } else { vec![c] }).collect(),
+            has_native_symbol: |_, _| false,
         }
     }
 }
@@ -301,6 +309,13 @@ impl Cx {
     /// Install `rt`'s hooks (replacing the whole table).
     pub fn install_hooks(&mut self, hooks: Hooks) {
         self.iso().hooks.set(hooks);
+    }
+
+    /// `R_FindSymbol(name, "", NULL) != NULL` through the hook
+    /// ([`Hooks::has_native_symbol`]).
+    #[inline]
+    pub fn has_native_symbol(&self, name: &[u8]) -> bool {
+        (self.iso().hooks.get().has_native_symbol)(self, name)
     }
 
     /// The installed hooks (to wrap or restore one).

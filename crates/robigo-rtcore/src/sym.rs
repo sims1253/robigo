@@ -158,11 +158,27 @@ rsyms! {
 /// top-level expression is not duplicated at its next change.
 // R: names.c:R_initAssignSymbols
 pub(crate) fn install_rsyms(core: &mut Core) -> [Sexp; RSym::ALL.len()] {
-    let syms = RSym::ALL.map(|s| core.install(s.name()).expect("robigo: no room for the pre-installed symbols"));
-    // SAFETY: a symbol just interned (live and immortal); a header flag,
-    // set before any binding of it is stored.
-    unsafe { syms[RSym::LastValue as usize].set_flag(robigo_heap::flags::NO_TRACKREFS, true) };
-    syms
+    // (`.Last.value`'s NO_TRACKREFS comes with it: `symbol_bits`)
+    RSym::ALL.map(|s| core.install(s.name()).expect("robigo: no room for the pre-installed symbols"))
+}
+
+/// The bits a new symbol is made with, from its name alone
+/// (`robigo_heap::set_symbol_bits`, registered when an isolate is made):
+/// GNU R's `SPECIAL_SYMBOL` for names.c's `Spec_name`, `DDVAL` for `..N`
+/// (`mkSYMSXP`), and no reference counting on `.Last.value`'s binding
+/// (`DISABLE_REFCNT(R_LastvalueSymbol)`). Nothing writes a symbol after it
+/// is made (H5: symbols become process-shared and immutable).
+// R: names.c:InitNames, names.c:mkSYMSXP, names.c:R_initAssignSymbols
+pub(crate) fn symbol_bits(name: &[u8]) -> (u8, u16) {
+    let mut gp = 0;
+    if SPEC_NAME.iter().any(|n| n.as_bytes() == name) {
+        gp |= SPECIAL_SYMBOL;
+    }
+    if crate::fresh::is_dd_name(name) {
+        gp |= robigo_heap::gp::sym::DDVAL;
+    }
+    let flags = if name == b".Last.value" { robigo_heap::flags::NO_TRACKREFS } else { 0 };
+    (flags, gp)
 }
 
 /// GNU R's symbol table size (`Defn.h:HSIZE`): the base environment lists
@@ -269,6 +285,10 @@ impl SymCell {
 #[derive(Default, Trace)]
 pub(crate) struct SymCells {
     cells: Vec<SymCell>,
+    /// GNU R's `INTERNAL(sym)`, by id: the `.Internal` function the symbol
+    /// names (null for none). Kept apart from [`SymCell`], which variable
+    /// lookups copy, since few symbols have one.
+    internals: Vec<Sexp>,
 }
 
 impl SymCells {
@@ -291,6 +311,25 @@ impl SymCells {
     fn grow(&mut self, i: usize) {
         let n = (i + 1).max(self.cells.len() * 2).max(1024);
         self.cells.resize(n, SymCell::EMPTY);
+    }
+
+    /// `INTERNAL(sym)`: null for none.
+    pub(crate) fn internal(&self, id: SymId) -> Sexp {
+        self.internals.get(id.0 as usize).copied().unwrap_or(Sexp::NULL)
+    }
+
+    /// `SET_INTERNAL(sym, x)`.
+    pub(crate) fn set_internal(&mut self, id: SymId, x: Sexp) {
+        let i = id.0 as usize;
+        if i >= self.internals.len() {
+            self.internals.resize(i + 1, Sexp::NULL);
+        }
+        self.internals[i] = x;
+    }
+
+    /// Every `.Internal` function the table holds.
+    pub(crate) fn internals(&self) -> impl Iterator<Item = Sexp> + '_ {
+        self.internals.iter().copied().filter(|x| !x.is_null())
     }
 
     /// The cells that exist (ids at or past it have none).

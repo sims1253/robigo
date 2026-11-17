@@ -1684,6 +1684,17 @@ impl Core {
         }
         let c = if printname.is_null() { self.mk_char(name, 0)? } else { printname };
         let s = self.new_symbol(c)?;
+        // the bits its name gives it, before anything sees it: nothing
+        // writes a symbol after it is made (H5: symbols are shared)
+        if let Some(bits) = SYMBOL_BITS.get() {
+            let (f, g) = bits(name);
+            // SAFETY: `s` is fresh and not yet published; flags other than
+            // IMMORTAL and BARRIER, and gp bits, are the caller's to set.
+            unsafe {
+                s.set_flags_raw(s.flags() | f);
+                s.set_gp(s.gp() | g);
+            }
+        }
         // SAFETY: `c` is live (nothing collected since it was made or
         // passed), and a CHARSXP has no children. The immortal symbol is
         // not traced, so its name must be immortal too. HASHASH and
@@ -2953,6 +2964,24 @@ impl Visitor for Mark<'_> {
         // them: each is null or live.
         unsafe { self.0.mark_obj(*edge) }
     }
+}
+
+/// The bits a new symbol is made with, from its name: (header flags, gp).
+/// The runtime registers its rule once per process ([`set_symbol_bits`]).
+pub type SymbolBits = fn(&[u8]) -> (u8, u16);
+
+static SYMBOL_BITS: std::sync::OnceLock<SymbolBits> = std::sync::OnceLock::new();
+
+/// Register the rule that gives a new symbol its name's bits (GNU R's
+/// `DDVAL` in `mkSYMSXP`, `SPECIAL_SYMBOL` in `InitNames`,
+/// `DISABLE_REFCNT(R_LastvalueSymbol)`): every heap's `install` applies it
+/// before the symbol is used, so nothing writes a symbol after it is made
+/// (H5: symbols become process-shared and immutable). The first rule
+/// registered stays; the runtime is the one caller. (Function pointers
+/// cannot be compared to check that a later call gives the same rule: one
+/// function may have several addresses.)
+pub fn set_symbol_bits(bits: SymbolBits) {
+    SYMBOL_BITS.get_or_init(|| bits);
 }
 
 /// SEXPTYPE names for the statistics (Rinternals.h).
