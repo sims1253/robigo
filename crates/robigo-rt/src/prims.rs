@@ -209,6 +209,29 @@ static RT_PRIMS: &[PrimDef] = &[
     // platform.c, sysutils.c (L1's tests' files)
     builtin("file.remove", crate::platform::do_fileremove, Inline::None, 11, 1),
     builtin("Sys.getpid", crate::platform::do_sysgetpid, Inline::None, 11, 0),
+    // envir.c's namespaces, version.c (L2)
+    builtin("getNamespaceValue", crate::ns::do_get_ns_value, Inline::None, 211, 3),
+    builtin("isNamespaceEnv", crate::ns::do_is_ns_env, Inline::None, 11, 1),
+    builtin("registerNamespace", crate::ns::do_reg_ns, Inline::None, 11, 2),
+    builtin("unregisterNamespace", crate::ns::do_unreg_ns, Inline::None, 11, 1),
+    builtin("getRegisteredNamespace", crate::ns::do_get_reg_ns::<0>, Inline::None, 11, 1),
+    builtin("isRegisteredNamespace", crate::ns::do_get_reg_ns::<1>, Inline::None, 11, 1),
+    builtin("getNamespaceRegistry", crate::ns::do_get_ns_registry, Inline::None, 11, 0),
+    builtin("importIntoEnv", crate::ns::do_import_into_env, Inline::None, 11, 4),
+    builtin("topenv", crate::ns::do_topenv, Inline::None, 11, 2),
+    builtin("internalsID", crate::ns::do_internals_id, Inline::None, 11, 0),
+    builtin("environmentName", crate::ns::do_envir_name, Inline::None, 11, 1),
+    // source.c, connections.c (L2)
+    builtin("parse", crate::source::do_parse, Inline::None, 11, 6),
+    builtin("stdin", crate::builtin::do_stdin, Inline::None, 11, 0),
+    // envir.c's search path (L2)
+    builtin("attach", crate::search::do_attach, Inline::None, 111, 3),
+    builtin("detach", crate::search::do_detach, Inline::None, 111, 1),
+    builtin("search", crate::search::do_search, Inline::None, 11, 0),
+    builtin("mkUnbound", crate::search::do_mkunbound, Inline::None, 111, 1),
+    // builtin.c, objects.c (L2: parse()'s and attach()'s)
+    special_fn("expression", crate::specials::do_expression, 0, -1),
+    builtin(".isMethodsDispatchOn", crate::specials::do_s4on, Inline::None, 1, -1),
 ];
 
 /// How the VM runs B1's builtin `name` inline, if it does.

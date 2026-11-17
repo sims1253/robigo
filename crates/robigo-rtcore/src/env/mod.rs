@@ -64,6 +64,7 @@
 #![allow(unsafe_code)]
 
 mod alias;
+mod attach;
 mod chain;
 mod frame;
 mod hashtab;

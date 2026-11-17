@@ -343,3 +343,121 @@ mod tests {
         assert!(sh.contains(&format!("sha256={RSRC_SHA256}\n")), "scripts/r-src.sh pins another tarball");
     }
 }
+
+/// What [`stage0`] did: the top-level expressions it evaluated, and those
+/// that failed (their first lines and the error), in file order.
+#[derive(Debug, Default)]
+pub struct Stage0 {
+    pub exprs: usize,
+    pub failed: Vec<(usize, String)>,
+}
+
+/// L2's stage 0 (m2m3-plan §B L2): base evaluated from source, as GNU R's
+/// `setup_Rmainloop` does with the source `library/base/R/base` of a build
+/// that has no databases yet: `R_ReplFile(fp, R_BaseNamespace)`, each
+/// top-level expression evaluated in the base namespace at the top level,
+/// its value printed if visible. Eager, unlike [`load`]'s lazy bindings,
+/// and every name of base's files is bound, so it is the path L5's boot
+/// keeps. The file is `home/library/base/R/base` (`scripts/rt-home.sh`).
+///
+/// GNU R stops at an error (its base has none); robigo-rt records it and
+/// goes on, so one run lists every expression a missing builtin stops.
+// R: main.c:R_ReplFile, setup_Rmainloop
+pub fn stage0(cx: &mut Cx, home: &Path) -> Result<Stage0, String> {
+    let mut st = Stage0::default();
+    repl_file(cx, &home.join("library/base/R/base"), &mut st)?;
+    // R_LoadProfile(R_OpenSysInitFile(), baseNSenv): the system profile,
+    // in the base namespace, the same way (setup_Rmainloop's next steps,
+    // the locks, .OptRequireMethods, the site and user profiles, .First.sys
+    // and the JIT, are L5's boot)
+    repl_file(cx, &home.join("library/base/R/Rprofile"), &mut st)?;
+    Ok(st)
+}
+
+/// `R_ReplFile(fp, R_BaseNamespace)` of one file, into `st`: each
+/// top-level expression evaluated in the base namespace at the top level,
+/// its value printed if visible, the deferred warnings after it
+/// ([`repl_eval_toplevel`], `Rf_ReplIteration`'s too).
+// R: main.c:R_ReplFile
+pub fn repl_file(cx: &mut Cx, path: &Path, st: &mut Stage0) -> Result<(), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let file = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+    // R_Parse1File, expression after expression: robigo-syntax parses the
+    // file at once, as the repeated calls would
+    let text = robigo_syntax::lexable(&bytes);
+    let source = robigo_syntax::Source::new(&text, &bytes);
+    let arena = robigo_syntax::Arena::new();
+    let exprs = robigo_syntax::parse_program(&arena, source)
+        .map_err(|e| format!("{}: {}", path.display(), robigo_syntax::format_parse_error(source, "", &e)))?;
+    // R_ReplFile's savestack
+    let savestack = cx.pp_top();
+    for e in &exprs {
+        st.exprs += 1;
+        // under PROTECT(R_CurrentExpr), unprotected before the print
+        let r = repl_eval_toplevel(cx, e, |cx| cx.base_namespace(), savestack, (1, 0));
+        if let Err(m) = r {
+            let line = robigo_syntax::line_col(&text, e.span().start as usize).0;
+            let m = m.unwrap_or_else(|| "lowering failed".into());
+            st.failed.push((line, format!("{file}: {}", m.trim_end())));
+        }
+    }
+    Ok(())
+}
+
+/// The PARSE_OK body `R_ReplFile` and `Rf_ReplIteration` share, for one
+/// parsed top-level expression: `R_PPStackTop = savestack`, then at the top
+/// level `R_Visible = FALSE`, `eval(expr, rho)`, `.Last.value`, the value
+/// printed by `PrintValueEnv(value, rho)` if visible, then the deferred
+/// warnings (`PrintWarnings`). `pp` is the protections GNU R's loop holds
+/// during the evaluation and during the print (robigo-rtcore's ppacct).
+/// The error, if one ended it, comes back as its report's text (written
+/// where it was raised); a failure to lower the expression as `None`.
+// R: main.c:Rf_ReplIteration, R_ReplFile
+pub(crate) fn repl_eval_toplevel(
+    cx: &mut Cx,
+    expr: &robigo_syntax::Expr<'_>,
+    rho: for<'g> fn(&'g Cx) -> Ref<'g>,
+    savestack: i32,
+    pp: (i32, i32),
+) -> Result<(), Option<String>> {
+    // a C routine's imbalance does not outlive its statement
+    cx.set_pp_top(savestack);
+    cx.scope(|cx, s| {
+        let e = s.out(cx);
+        let er = e.root();
+        if let Err(err) = crate::reader::lower_one(cx, expr, e) {
+            // (reported where it was raised)
+            cx.resolve_exit(err, None);
+            return Err(None);
+        }
+        let g = s.root(cx, cx.global_env());
+        let base = s.root(cx, cx.base_env());
+        let env = s.root(cx, rho(cx));
+        let o = s.out(cx);
+        let or = o.root();
+        let mut msg = None;
+        let done = cx
+            .toplevel(g, base, |cx| {
+                cx.set_visible(false);
+                let r = cx.with_pp_excess(pp.0, |cx| crate::eval(cx, er, env, o)).and_then(|()| {
+                    cx.set_last_value(or)?;
+                    if cx.visible() {
+                        cx.with_pp_excess(pp.1, |cx| crate::print::print_value_env(cx, or, env))?;
+                    }
+                    Ok(())
+                });
+                if let Err(e) = &r {
+                    msg = Some(crate::repl::error_text(cx, e));
+                }
+                r
+            })
+            .expect("robigo: an exit that passed the top level");
+        if !done {
+            // a jump to the top level: the error (or restart) reported
+            // where it was raised
+            return Err(Some(msg.unwrap_or_default()));
+        }
+        crate::repl::print_warnings(cx);
+        Ok(())
+    })
+}

@@ -82,6 +82,10 @@ pub fn do_stdout(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
     std_connection(cx, args, call, out, 1, "stdout")
 }
 
+pub fn do_stdin(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    std_connection(cx, args, call, out, 0, "stdin")
+}
+
 pub fn do_stderr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     std_connection(cx, args, call, out, 2, "stderr")
 }

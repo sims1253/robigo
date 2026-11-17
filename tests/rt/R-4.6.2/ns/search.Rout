@@ -1,0 +1,18 @@
+[1] ".GlobalEnv"   "package:base"
+[1] ".GlobalEnv"   "mylist"       "package:base"
+[1] 1
+[1] "alpha" "beta" 
+[1] "mylist"
+[1] ".GlobalEnv"   "mylist"       "myenv"        "package:base"
+[1] 7
+[1] "active!"
+[1] ".GlobalEnv"   "empty"        "mylist"       "myenv"        "package:base"
+[1] "all elements of a list must be named"
+[1] "'attach' only works for lists, data frames and environments"
+[1] "invalid 'name' argument"
+[1] "global"
+[1] 1
+[1] "alpha" "beta" 
+[1] ".GlobalEnv"   "empty"        "myenv"        "package:base"
+[1] ".GlobalEnv"   "package:base"
+[1] "subscript out of bounds"

@@ -72,6 +72,8 @@ pub mod print;
 pub mod reader;
 pub mod repl;
 pub mod serialize;
+pub mod search;
+pub mod source;
 mod specials;
 pub mod vm;
 

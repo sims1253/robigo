@@ -49,7 +49,7 @@ for (f in sort(Sys.glob(file.path(work, "rows", "*.R")), method = "radix")) {
 # files' R code. Each exits with the status GNU R 4.6.2's recording of it has
 # (tests/rt/R-4.6.2/AREA/NAME.Rstatus). (Not `args`: tracing changes the
 # binding types its cases print.)
-for (area in c("conditions", "env", "s3", "serialize", "sort")) {
+for (area in c("conditions", "env", "ns", "parse", "s3", "serialize", "sort")) {
   for (f in sort(Sys.glob(file.path(root, "tests", "rt", area, "*.R")), method = "radix")) {
     name <- sub("[.]R$", "", basename(f))
     st <- as.integer(readLines(file.path(root, "tests", "rt", "R-4.6.2", area, paste0(name, ".Rstatus"))))
