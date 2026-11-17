@@ -180,7 +180,7 @@ def steps(crates):
     # runner's default 20 s allow)
     slow = {"ROBIGO_CONF_TIMEOUT": "600"}
     gc_move_slow = ",".join(f"{c}={secs}" for c, secs in sorted(GC_MOVE_SLOW.items()))
-    return [
+    out = [
         ("release tests", {}, [*test, *pkgs, *skip]),
         ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {}, conformance),
         # docs/g3.md §15.3 E5: the same cases and recordings under each
@@ -241,6 +241,11 @@ def steps(crates):
         ("injected allocation failures (E9, scripts/rt-fail-alloc.py)", {},
          ["python3", "scripts/rt-fail-alloc.py", "--points", "400"]),
     ]
+    # The conformance steps run one test alone (`--exact`), so the runner may
+    # use every CPU for cases (the default, 2, is for a cargo test that shares
+    # the machine with other test binaries); its slow cases start first.
+    jobs = str(os.cpu_count() or 2)
+    return [(t, {**e, "ROBIGO_CONF_JOBS": jobs} if CONFORMANCE in c and "--exact" in c else e, c) for t, e, c in out]
 
 
 def metadata():

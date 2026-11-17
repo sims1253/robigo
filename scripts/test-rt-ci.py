@@ -40,7 +40,9 @@ class RtCi(unittest.TestCase):
 
     def test_conformance_runs_alone_in_its_own_steps(self):
         steps = rt.steps(["robigo-rt", "robigo-rtcore"])
-        own = [(env, cmd) for _, env, cmd in steps if rt.CONFORMANCE in cmd and "--skip" not in cmd]
+        # (a step's mode is its environment but the runner's job count)
+        own = [({k: v for k, v in env.items() if k != "ROBIGO_CONF_JOBS"}, cmd) for _, env, cmd in steps
+               if rt.CONFORMANCE in cmd and "--skip" not in cmd]
         # once plain, once under each observation mode, then only under a
         # collector mode or the byte-code crosscheck (V3: every translated
         # closure also compiled from source and compared, its report read by
@@ -64,6 +66,16 @@ class RtCi(unittest.TestCase):
         # would run nothing, and still pass.
         src = (HERE.parent / "crates/robigo-rtapi/tests/conformance.rs").read_text()
         self.assertIn(f"fn {rt.CONFORMANCE}()", src)
+
+    def test_conformance_steps_use_every_cpu(self):
+        # they run one test alone, so the runner may run a case per CPU
+        steps = rt.steps(["robigo-rt", "robigo-rtcore"])
+        conf = [(t, e) for t, e, c in steps if rt.CONFORMANCE in c and "--exact" in c]
+        self.assertTrue(conf)
+        for title, env in conf:
+            self.assertEqual(env.get("ROBIGO_CONF_JOBS"), str(os.cpu_count() or 2), title)
+        others = [t for t, e, c in steps if "ROBIGO_CONF_JOBS" in e and not (rt.CONFORMANCE in c and "--exact" in c)]
+        self.assertEqual(others, [])
 
     def test_slow_case_timeouts_are_the_moving_collector_steps_only(self):
         # INTERIM(H8): exactly the GC_MOVE + gctorture conformance step gets

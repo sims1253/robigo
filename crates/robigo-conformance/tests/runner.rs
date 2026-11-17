@@ -12,8 +12,8 @@ use std::sync::OnceLock;
 
 /// The fake binaries, written once before any test spawns one: a binary
 /// written while another thread forks can fail to exec ("text file busy").
-fn fakes() -> &'static (PathBuf, PathBuf, PathBuf) {
-    static FAKES: OnceLock<(PathBuf, PathBuf, PathBuf)> = OnceLock::new();
+fn fakes() -> &'static (PathBuf, PathBuf, PathBuf, PathBuf) {
+    static FAKES: OnceLock<(PathBuf, PathBuf, PathBuf, PathBuf)> = OnceLock::new();
     FAKES.get_or_init(|| {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("robigo-conformance-fakes-{}", std::process::id()));
@@ -27,7 +27,9 @@ fn fakes() -> &'static (PathBuf, PathBuf, PathBuf) {
         let cat = write("cat", "#!/bin/sh\nexec cat \"$1\"\n");
         let stub = write("stub", "#!/bin/sh\necho 'robigo-rt: the G3 runtime is not implemented yet' >&2\nexit 1\n");
         let slow = write("slow", "#!/bin/sh\nsleep 1\nexec cat \"$1\"\n");
-        (cat, stub, slow)
+        // `cat`, noting each case's path in $ROBIGO_TEST_ORDER as it starts
+        let order = write("order", "#!/bin/sh\necho \"$1\" >> \"$ROBIGO_TEST_ORDER\"\nexec cat \"$1\"\n");
+        (cat, stub, slow, order)
     })
 }
 
@@ -41,6 +43,10 @@ fn stub() -> PathBuf {
 
 fn slow() -> PathBuf {
     fakes().2.clone()
+}
+
+fn order() -> PathBuf {
+    fakes().3.clone()
 }
 
 struct Fixture(PathBuf);
@@ -282,6 +288,32 @@ fn an_empty_ratchet_is_an_error_in_every_column() {
     let f = rt_tree("empty-ratchet-rt");
     let err = run(f.root(), &RT, &opts(&RT, cat())).unwrap_err();
     assert!(err.contains("requires nothing"), "{err}");
+}
+
+/// The cases `ROBIGO_CONF_TIMEOUTS` names are the slow ones: they start
+/// first, so a run with several workers does not wait on one that began
+/// late. One worker here, so the start order is the order they run in.
+#[test]
+fn the_cases_with_a_longer_timeout_start_first() {
+    let f = rt_tree("slow-first");
+    f.case("tests/rt/smoke/two.R", "2\n").record("tests/rt", "tests/rt/smoke/two.R", "4.6.2", "2\n");
+    let log = f.root().join("order.log");
+    // SAFETY: the fake reads it; set before the run spawns any case, and no
+    // other test of this binary reads ROBIGO_TEST_ORDER
+    unsafe { std::env::set_var("ROBIGO_TEST_ORDER", &log) };
+    let mut o = opts(&RT, order());
+    o.filter = Some("tests/rt/smoke".into());
+    o.jobs = 1;
+    let first = |o: &Options| {
+        let _ = std::fs::remove_file(&log);
+        run(f.root(), &RT, o).unwrap();
+        let started = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(started.lines().count(), 2, "{started}");
+        started.lines().next().unwrap().rsplit('/').next().unwrap().to_string()
+    };
+    assert_eq!(first(&o), "two.R", "the workers take the last case first");
+    o.case_timeouts.insert("tests/rt/smoke/one.R".into(), std::time::Duration::from_secs(30));
+    assert_eq!(first(&o), "one.R");
 }
 
 /// `ROBIGO_CONF_TIMEOUTS` gives the case it names its own timeout. It names
