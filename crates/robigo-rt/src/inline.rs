@@ -575,7 +575,8 @@ unsafe fn pure<S: Scope + ?Sized>(cx: &Cx, code: Sexp, scope: &S) -> Option<Slot
             Op::GetVar => scope.read(cx, unsafe { v.k(i.e) }, i.f, v.shape)?,
             // (byte code: `pure` takes no other)
             Op::Arith => arith_slots(cx, i.g as u8, r(i.b)?, r(i.c)?, true)?,
-            Op::Arith1 => num_slot(ops::arith1(i.g as u8, num(cx, r(i.b)?)?)),
+            // SAFETY: registers of the running activation: their objects are live, rooted.
+            Op::Arith1 => num_slot(ops::arith1(i.g as u8, unsafe { num(cx, r(i.b)?) }?)),
             Op::Clear | Op::ClearRange | Op::Nop => continue,
             // `x[[i]]` (`[[` behind its base guard): as in [`body_loop`]
             Op::BaseGuard => {
@@ -1379,7 +1380,8 @@ unsafe fn body_loop<const FUSED: bool>(
                 continue;
             }
             Op::BrFalse => {
-                let c = match num(cx, r(i.b)?)? {
+                // SAFETY: registers of the running activation: their objects are live, rooted.
+                let c = match unsafe { num(cx, r(i.b)?) }? {
                     ops::Num::Lgl(x) if x != ops::NA_LOGICAL => x != 0,
                     ops::Num::Int(x) if x != i32::MIN => x != 0,
                     ops::Num::Real(x) if !x.is_nan() => x != 0.0,
@@ -1514,7 +1516,8 @@ unsafe fn body_loop<const FUSED: bool>(
                 continue;
             }
             Op::Arith => arith_slots(cx, i.g as u8, r(i.b)?, r(i.c)?, v.profile == Profile::Bc)?,
-            Op::Arith1 => num_slot(ops::arith1(i.g as u8, num(cx, r(i.b)?)?)),
+            // SAFETY: registers of the running activation: their objects are live, rooted.
+            Op::Arith1 => num_slot(ops::arith1(i.g as u8, unsafe { num(cx, r(i.b)?) }?)),
             Op::Relop => {
                 let (x, y) = (r(i.b)?, r(i.c)?);
                 match relop_slots(cx, i.g as u8, x, y) {
@@ -1531,8 +1534,10 @@ unsafe fn body_loop<const FUSED: bool>(
                     _ => return None,
                 }
             }
-            Op::Not => Slot::logical(ops::not1(num(cx, r(i.b)?)?)),
-            Op::Logic => Slot::logical(ops::logic2(i.g, num(cx, r(i.b)?)?, num(cx, r(i.c)?)?)),
+            // SAFETY: registers of the running activation: their objects are live, rooted.
+            Op::Not => Slot::logical(ops::not1(unsafe { num(cx, r(i.b)?) }?)),
+            // SAFETY: registers of the running activation: their objects are live, rooted.
+            Op::Logic => Slot::logical(ops::logic2(i.g, unsafe { num(cx, r(i.b)?) }?, unsafe { num(cx, r(i.c)?) }?)),
             Op::AndOr1 | Op::AndOr2 => {
                 // logical operands only (others are do_logic2's to check)
                 let x = match r(i.b)? {
@@ -1883,7 +1888,8 @@ fn arith_slots(cx: &Cx, op: u8, x: Slot, y: Slot, bc: bool) -> Option<Slot> {
 /// a call here costs the rows whose operands mix integers and doubles).
 #[inline(always)]
 fn arith_nums(cx: &Cx, op: u8, x: Slot, y: Slot, bc: bool) -> Option<Slot> {
-    match ops::arith2(op, num(cx, x)?, num(cx, y)?, bc) {
+    // SAFETY: registers of the running activation: their objects are live, rooted.
+    match ops::arith2(op, unsafe { num(cx, x) }?, unsafe { num(cx, y) }?, bc) {
         (n, false) => Some(num_slot(n)),
         (_, true) => None,
     }
@@ -1904,7 +1910,8 @@ fn relop_slots(cx: &Cx, op: u8, x: Slot, y: Slot) -> Option<i32> {
 /// [`relop_slots`] for operands that are not two unboxed doubles.
 #[inline(always)]
 fn relop_nums(cx: &Cx, op: u8, x: Slot, y: Slot) -> Option<i32> {
-    Some(ops::relop2(op, num(cx, x)?, num(cx, y)?))
+    // SAFETY: registers of the running activation: their objects are live, rooted.
+    Some(ops::relop2(op, unsafe { num(cx, x) }?, unsafe { num(cx, y) }?))
 }
 
 /// `x[[i]]` for a plain list `x` and a numeric index `i` in its range (an
@@ -2004,7 +2011,8 @@ unsafe fn fused(
                     (_, true) => Step::Done(None),
                 };
             }
-            let (Some(x), Some(y)) = (num(cx, x), num(cx, y)) else { return Step::Each };
+            // SAFETY: registers of the running activation: their objects are live, rooted.
+            let (Some(x), Some(y)) = (unsafe { num(cx, x) }, unsafe { num(cx, y) }) else { return Step::Each };
             match ops::arith2(s.g, x, y, bc) {
                 (n, false) => {
                     if s.k != 0 {

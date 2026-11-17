@@ -225,7 +225,7 @@ fn is_unboxed(s: Slot) -> bool {
 
 /// Box register `r` if it holds an unboxed scalar (the box is written back,
 /// so later reads see the one object); its object.
-pub(crate) fn boxed(cx: &mut Cx, act: &Act, r: Reg) -> RResult<Sexp> {
+pub fn boxed(cx: &mut Cx, act: &Act, r: Reg) -> RResult<Sexp> {
     let s = act.get(r);
     if let Some(x) = s.as_object() {
         return Ok(x);
@@ -236,8 +236,9 @@ pub(crate) fn boxed(cx: &mut Cx, act: &Act, r: Reg) -> RResult<Sexp> {
     Ok(x)
 }
 
-/// A new length-1 vector holding the unboxed `s`.
-pub(crate) fn box_slot(cx: &Cx, s: Slot) -> Result<Sexp, NeedGc> {
+/// A new length-1 vector holding the unboxed `s` (an object slot's object
+/// itself, not read).
+pub fn box_slot(cx: &Cx, s: Slot) -> Result<Sexp, NeedGc> {
     Ok(match s.tag() {
         Tag::Real => cx.alloc_with(1, |_| s.as_real().unwrap())?.finish().as_ref().sexp(),
         Tag::Int => cx.alloc_with(1, |_| s.as_int().unwrap())?.finish().as_ref().sexp(),
@@ -249,8 +250,12 @@ pub(crate) fn box_slot(cx: &Cx, s: Slot) -> Result<Sexp, NeedGc> {
 
 /// A register's value as a scalar number, if it is one the kernels take
 /// (an unboxed scalar, or a plain length-1 vector without attributes).
+///
+/// # Safety
+/// An object slot's object is live (a register of a running activation,
+/// rooted): its header and payload are read.
 #[inline(always)]
-pub(crate) fn num(cx: &Cx, s: Slot) -> Option<Num> {
+pub unsafe fn num(cx: &Cx, s: Slot) -> Option<Num> {
     match s.tag() {
         Tag::Real => Some(Num::Real(s.as_real().unwrap())),
         Tag::Int => Some(Num::Int(s.as_int().unwrap())),
@@ -581,7 +586,8 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 reload!();
             }
             Op::Arith => {
-                let (x, y) = (num(cx, act.get(i.b)), num(cx, act.get(i.c)));
+                // SAFETY: registers of the running activation: their objects are live, rooted.
+                let (x, y) = (unsafe { num(cx, act.get(i.b)) }, unsafe { num(cx, act.get(i.c)) });
                 let fast = match (x, y) {
                     (Some(x), Some(y)) => match ops::arith2(i.g as u8, x, y, v.profile == Profile::Bc) {
                         (r, false) => Some(r),
@@ -606,7 +612,8 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     }
                 }
             }
-            Op::Arith1 => match num(cx, act.get(i.b)) {
+            // SAFETY: registers of the running activation: their objects are live, rooted.
+            Op::Arith1 => match unsafe { num(cx, act.get(i.b)) } {
                 Some(x) => {
                     // SAFETY: an unboxed value.
                     unsafe { act.set(i.a, num_slot(ops::arith1(i.g as u8, x))) };
@@ -621,7 +628,8 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 }
             },
             Op::Relop => {
-                let (x, y) = (num(cx, act.get(i.b)), num(cx, act.get(i.c)));
+                // SAFETY: registers of the running activation: their objects are live, rooted.
+                let (x, y) = (unsafe { num(cx, act.get(i.b)) }, unsafe { num(cx, act.get(i.c)) });
                 let fast = match (x, y) {
                     (Some(x), Some(y)) => Some(ops::relop2(i.g as u8, x, y)),
                     _ if matches!(i.g as u8, EQOP | NEOP) => {
@@ -653,7 +661,8 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     }
                 }
             }
-            Op::Not => match num(cx, act.get(i.b)) {
+            // SAFETY: registers of the running activation: their objects are live, rooted.
+            Op::Not => match unsafe { num(cx, act.get(i.b)) } {
                 Some(x) => {
                     // SAFETY: an unboxed value.
                     unsafe { act.set(i.a, Slot::logical(ops::not1(x))) };
@@ -667,7 +676,8 @@ pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     reload!();
                 }
             },
-            Op::Logic => match (num(cx, act.get(i.b)), num(cx, act.get(i.c))) {
+            // SAFETY: registers of the running activation: their objects are live, rooted.
+            Op::Logic => match (unsafe { num(cx, act.get(i.b)) }, unsafe { num(cx, act.get(i.c)) }) {
                 (Some(x), Some(y)) => {
                     let r = ops::logic2(i.g, x, y);
                     // SAFETY: an unboxed value.
