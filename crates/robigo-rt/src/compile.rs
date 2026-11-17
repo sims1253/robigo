@@ -1154,7 +1154,11 @@ impl<'g> Comp<'g> {
         let (f, args) = unsafe { (e.car(), e.cdr()) };
         // SAFETY: as above; the compile environment's frames are live.
         let info = unsafe {
-            if f.typ() == SYMSXP { self.bc.as_ref().unwrap().inline_info(self.cx, self.st, f, true, cenv::Table::Inline)? } else { None }
+            if f.typ() == SYMSXP {
+                self.bc.as_ref().unwrap().inline_info(self.cx, self.st, f, true, cenv::Table::Inline)?
+            } else {
+                None
+            }
         };
         let Some(info) = info else {
             // SAFETY: as above.
