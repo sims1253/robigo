@@ -220,9 +220,13 @@
     `row.names` too (GNU R reads it with `INTEGER_ELT`, leaving it
     unexpanded: now read by element). `lengthgets` refused every ALTREP
     vector; it now refuses only a package class's and expands one of
-    robigo's before the copy, as GNU R's `INTEGER(x)` does (not when the
-    length is unchanged). Case: `tests/rt/capi/compact-api.R`, recorded on
-    4.6.2.
+    robigo's before the copy, as GNU R's `INTEGER(x)` does (only when an
+    element is copied). Row names kept compact reach two more readers:
+    `shortRowNames` expands only an integer vector of length 2 (GNU R's
+    `INTEGER(s)[0]` behind `LENGTH(s) == 2`), and `asCharacterFactor`
+    (a factor with compact codes, as `dimnames`) reads the codes by
+    element (`INTEGER_ELT`). Case: `tests/rt/capi/compact-api.R`,
+    recorded on 4.6.2.
   - In a debug build, `as_slice` and `as_ints` pass their caller's
     location to the panic (`#[track_caller]`), so it names the site that
     read the slice; release builds are unchanged.
