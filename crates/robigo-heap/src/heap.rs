@@ -132,17 +132,20 @@ pub const REMEMBERED_OFF: usize = 48;
 /// own): the slow path finds it through the block header.
 pub struct Remembered(pub std::cell::UnsafeCell<Vec<crate::Sexp>>);
 
-/// Where a large chunk's header keeps the chunk's end (the `freelist`
-/// word, which a large chunk does not use): [`alloc_end`] reads it.
+/// Where a large chunk's header keeps its object's end, the start plus the
+/// bytes requested (the `freelist` word, which a large chunk does not use):
+/// [`alloc_end`] reads it.
 const LARGE_END_OFF: usize = 24;
 const _: () = assert!(std::mem::offset_of!(Block, freelist) == LARGE_END_OFF);
 
 /// The end of the allocation that holds object `p`: its slot's end in a
-/// small block (the size class's, whatever was requested), its chunk's end
-/// for a large object. D8's h24 keeps a vector's TRUELENGTH word just below
-/// it (`layout::vector`), so it moves with neither the length nor the
-/// collector: the debug mover copies a slot or chunk whole into one of the
-/// same size.
+/// small block (the size class's, whatever was requested), and for a large
+/// object the bytes it was requested with (not its chunk's end: the pages
+/// past them stay untouched, as they are without the word). D8's h24 keeps
+/// a vector's TRUELENGTH word just below it (`layout::vector`), so it moves
+/// with neither the length nor the collector: the debug mover copies a slot
+/// whole into one of the same class, and a large object's requested bytes
+/// into a chunk requested with as many.
 ///
 /// # Safety
 /// `p` must be an object of a live heap.
@@ -470,8 +473,8 @@ impl Heap {
     pub fn try_alloc_large(&mut self, size: usize) -> Option<*mut u8> {
         // object header + payload live after a pseudo block header area
         let total_payload = size.checked_add(DATA_OFF)?;
-        let (base, idx) = self.try_new_chunk(true, total_payload)?;
-        let (base, end) = (base as usize, self.chunks[idx].end);
+        let (base, _) = self.try_new_chunk(true, total_payload)?;
+        let base = base as usize;
         // a large chunk has no block header: clear the magic word so
         // per-block bookkeeping never mistakes it for one, and the object's
         // mark word (an epoch; epochs start at 1), as the allocator's memory
@@ -480,7 +483,7 @@ impl Heap {
         unsafe {
             *(base as *mut u64) = 0;
             *(base as *mut u64).add(1) = 0;
-            *((base + LARGE_END_OFF) as *mut usize) = end;
+            *((base + LARGE_END_OFF) as *mut usize) = base + DATA_OFF + size;
             *((base + REMEMBERED_OFF) as *mut *mut Remembered) = self.remembered;
         }
         Some((base + DATA_OFF) as *mut u8)
