@@ -40,6 +40,28 @@ fn check_name(cx: &mut Cx, name: &[u8]) -> RResult<()> {
     Ok(())
 }
 
+/// `installTrChar(STRING_ELT(c, i))` with its errors, rooted in `s`. A
+/// name the isolate has already is found from the string's bytes in place;
+/// any other is translated and installed.
+// R: sysutils.c:installTrChar
+fn install_tr_char<'s>(cx: &mut Cx, s: Scope<'s>, c: Root<'_>, i: usize) -> RResult<Root<'s>> {
+    let found = {
+        let cx = &*cx;
+        let ch = c.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
+        match crate::text::to_native(crate::coerce::text(ch), cx.locale()) {
+            Ok(b) if !b.is_empty() && b.len() <= 10000 => cx.find_symbol(&b).map(|y| s.root(cx, y.as_ref())),
+            _ => None,
+        }
+    };
+    match found {
+        Some(y) => Ok(y),
+        None => {
+            let b = translated(cx, c, i)?;
+            install_name(cx, s, &b)
+        }
+    }
+}
+
 /// `translateChar(c)`: an attribute name in the native encoding.
 fn translated(cx: &mut Cx, c: Root<'_>, i: usize) -> RResult<Vec<u8>> {
     let r = {
@@ -58,23 +80,37 @@ fn translated(cx: &mut Cx, c: Root<'_>, i: usize) -> RResult<Vec<u8>> {
 pub fn set_attrib(cx: &mut Cx, x: Root<'_>, name: &[u8], val: Root<'_>) -> RResult<()> {
     cx.scope(|cx, s| {
         let sym = install_name(cx, s, name)?;
-        if val.bind(cx).sexptype() == NILSXP {
-            return cx.remove_attrib(x, sym);
-        }
-        if x.bind(cx).sexptype() == NILSXP {
-            return Err(cx.error("attempt to set an attribute on NULL"));
-        }
-        match name {
-            b"names" => namesgets(cx, x, val),
-            b"dim" => dimgets(cx, x, val),
-            b"dimnames" => dimnamesgets(cx, x, val),
-            b"class" => classgets(cx, x, val),
-            b"tsp" => tspgets(cx, x, val),
-            b"comment" => commentgets(cx, x, val),
-            b"row.names" => row_names_gets(cx, x, val),
-            _ => install_attrib(cx, x, sym, val),
-        }
+        set_attrib_sym(cx, x, sym, val)
     })
+}
+
+/// `setAttrib(vec, name, val)` for the symbol `name`: the special names
+/// are told apart by symbol, as GNU R compares them with `R_NamesSymbol`
+/// and the rest.
+// R: attrib.c:setAttrib
+fn set_attrib_sym(cx: &mut Cx, x: Root<'_>, name: Root<'_>, val: Root<'_>) -> RResult<()> {
+    if val.bind(cx).sexptype() == NILSXP {
+        return cx.remove_attrib(x, name);
+    }
+    if x.bind(cx).sexptype() == NILSXP {
+        return Err(cx.error("attempt to set an attribute on NULL"));
+    }
+    let special = {
+        let n = name.bind(cx);
+        [RSym::Names, RSym::Dim, RSym::DimNames, RSym::Class, RSym::Tsp, RSym::Comment, RSym::RowNames]
+            .into_iter()
+            .find(|&r| n == cx.sym(r).into())
+    };
+    match special {
+        Some(RSym::Names) => namesgets(cx, x, val),
+        Some(RSym::Dim) => dimgets(cx, x, val),
+        Some(RSym::DimNames) => dimnamesgets(cx, x, val),
+        Some(RSym::Class) => classgets(cx, x, val),
+        Some(RSym::Tsp) => tspgets(cx, x, val),
+        Some(RSym::Comment) => commentgets(cx, x, val),
+        Some(RSym::RowNames) => row_names_gets(cx, x, val),
+        _ => install_attrib(cx, x, name, val),
+    }
 }
 
 /// `installAttrib(vec, name, val)`: a value replacing another goes through
@@ -626,8 +662,8 @@ pub fn do_attrgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
             Some((true, _)) => return Err(cx.error("'name' must be a scalar string")),
             _ => return Err(cx.error("'name' must be non-null character string")),
         }
-        let nm = translated(cx, name, 0)?;
-        set_attrib(cx, obj, &nm, args.root(vi))?;
+        let sym = install_tr_char(cx, s, name, 0)?;
+        set_attrib_sym(cx, obj, sym, args.root(vi))?;
         out.set(cx, obj.bind(cx));
         Ok(())
     })
@@ -708,13 +744,13 @@ pub fn do_attributesgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root
                 (0..nattrs).find(|&i| nv.get(i).bytes() == b"dim")
             };
             if let Some(i) = dim {
-                let v = elt(cx, i);
-                set_attrib(cx, obj, b"dim", v)?;
+                let (sym, v) = (s.root(cx, cx.sym(RSym::Dim)), elt(cx, i));
+                set_attrib_sym(cx, obj, sym, v)?;
             }
             for i in (0..nattrs).filter(|&i| Some(i) != dim) {
-                let nm = translated(cx, names, i)?;
+                let sym = install_tr_char(cx, s, names, i)?;
                 let v = elt(cx, i);
-                set_attrib(cx, obj, &nm, v)?;
+                set_attrib_sym(cx, obj, sym, v)?;
             }
         }
         out.set(cx, obj.bind(cx));
