@@ -119,7 +119,12 @@ impl Visitor for MarkYoung<'_> {
         // SAFETY: as for `Mark`: a `MarkYoung` exists only inside a young
         // collection's marking (this module makes it), shown the edges of
         // the roots and of marked objects, each null, an old copy or live.
-        unsafe { *edge = self.0.mark_young(*edge) }
+        unsafe {
+            let q = self.0.mark_young(*edge);
+            if q != *edge {
+                *edge = q;
+            }
+        }
     }
 }
 
@@ -226,30 +231,77 @@ impl Core {
     /// Mark `p` in a young collection and return where it is now: an old
     /// copy gives its copy's address; a young object that may move is
     /// copied first (the copy marked and queued for tracing); anything else
-    /// is marked where it is.
+    /// is marked where it is. The marker's fast path is `mark_obj`'s: a
+    /// null, immortal or marked object returns at once, and only an object
+    /// seen for the first time takes [`Core::mark_young_first`]'s call.
     ///
     /// # Safety
     /// As for [`Core::mark_obj`], during a young collection's marking, after
     /// [`Core::pin_segments`].
-    #[inline]
+    #[inline(always)]
     pub(super) unsafe fn mark_young(&mut self, p: Sexp) -> Sexp {
-        // SAFETY: the caller's contract: `p` is null, an old copy (whose link
-        // word is its copy) or an allocated object.
+        // SAFETY: the caller's contract: `p` is null, an old copy (no flags,
+        // never marked) or an allocated object, whose header and mark are
+        // readable.
         unsafe {
             if p.is_null() {
                 return p;
             }
+            let f = p.flags();
+            if f & flags::IMMORTAL != 0 || self.is_marked(p) {
+                return p;
+            }
+            // most first visits are to old objects: marked here, as
+            // `mark_obj` marks; only a young object or an old copy takes the
+            // call
+            if f & OLD != 0 {
+                self.set_mark(p);
+                return p;
+            }
+            self.mark_young_first(p)
+        }
+    }
+
+    /// Mark the unmarked, mortal object `p` and queue it for tracing:
+    /// `mark_obj`'s second half.
+    ///
+    /// # Safety
+    /// `p` is an allocated, mortal object of this heap, not yet marked, during
+    /// a collection's marking.
+    #[inline(always)]
+    unsafe fn set_mark(&mut self, p: Sexp) {
+        // SAFETY: as in `mark_obj`: its block or large chunk's header.
+        unsafe {
+            let b = (p.0 as usize & !(BLOCK - 1)) as *mut Block;
+            if (*b).magic == 0x524f4249474f4241 {
+                let g = (p.0 as usize - Block::data_ptr(b) as usize) / GRANULE;
+                *(*b).marks.as_mut_ptr().add(g >> 6) |= 1u64 << (g & 63);
+                (*b).marked = (*b).marked.wrapping_add(1);
+            } else {
+                *(b as *mut u64).add(1) = self.epoch;
+            }
+            self.mark_stack.push(p);
+        }
+    }
+
+    /// [`Core::mark_young`] of a young object or an old copy, not yet
+    /// marked by this collection.
+    ///
+    /// # Safety
+    /// As for [`Core::mark_young`]; `p` is unmarked, mortal and not [`OLD`].
+    #[inline(never)]
+    unsafe fn mark_young_first(&mut self, p: Sexp) -> Sexp {
+        // SAFETY: the caller's contract.
+        unsafe {
             if p.typ() == FORWARDED {
                 return Sexp(*(p.0.add(header::OFF_LINK) as *const *mut u8));
             }
-            if p.flags() & (flags::IMMORTAL | OLD) == 0
-                && !p.seen_by_c()
-                && !self.is_marked(p)
+            if !p.seen_by_c()
                 && let Some(q) = self.copy_young(p)
             {
                 return q;
             }
-            self.mark_obj(p);
+            self.set_mark(p);
             p
         }
     }
