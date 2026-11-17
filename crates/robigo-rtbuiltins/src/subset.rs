@@ -122,10 +122,16 @@ pub fn extract_subset<'g>(cx: &'g Cx, x: Ref<'g>, idx: &Subscript) -> Result<Ref
         let ii = idx.get(i);
         (ii != subscript::NA_IDX && 0 < ii && ii <= nx).then(|| (ii - 1) as usize)
     };
+    // (one of robigo's compact sequences, not expanded, is read by element,
+    // as the `*_ELT` accessors read it)
     macro_rules! plain {
         ($v:expr, $na:expr) => {{
-            let xs = $v.as_slice().unwrap();
-            cx.alloc_with(n, |i| at(i).map_or($na, |j| xs[j])).map(|v| v.finish().into())
+            let v = $v;
+            match v.dataptr_or_null() {
+                Some(xs) => cx.alloc_with(n, |i| at(i).map_or($na, |j| xs[j])),
+                None => cx.alloc_with(n, |i| at(i).map_or($na, |j| v.get(j))),
+            }
+            .map(|v| v.finish().into())
         }};
     }
     match x.view() {

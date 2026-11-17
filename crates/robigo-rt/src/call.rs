@@ -761,7 +761,13 @@ pub(crate) fn materialize_args(cx: &mut Cx, def: &prims::PrimDef, args: Args<'_>
 /// - the type and attribute queries, which read no data (coerce.c's
 ///   `do_is`, `do_typeof`, `do_isvector`; attrib.c's `do_attributes`,
 ///   `do_attr`, `do_data_class`, `do_oldclass`, `do_inherits`, `do_names`,
-///   `do_dim`, `do_dimnames`), and `invisible`.
+///   `do_dim`, `do_dimnames`), and `invisible`;
+/// - those that store or compare a value without reading its data:
+///   `list` (`do_makelist`), `assign`, and `identical` and the compiler's
+///   `putconst` (`R_compute_identical` reads the data only of two vectors
+///   of one type and length; robigo-rtbuiltins' reads it by element);
+/// - `serialize`, which writes a compact sequence's state
+///   (`Serialized_state`), expanded or not.
 // R: names.c's rows of these
 fn reads_by_element(name: &str) -> bool {
     matches!(
@@ -809,5 +815,12 @@ fn reads_by_element(name: &str) -> bool {
             | "dim"
             | "dimnames"
             | "invisible"
+            | "list"
+            | "assign"
+            | "identical"
+            | "putconst"
+            | "serialize"
+            | "serializeb"
+            | "serializeToConn"
     )
 }

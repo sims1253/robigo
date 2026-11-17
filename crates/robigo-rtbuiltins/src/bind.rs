@@ -672,6 +672,14 @@ pub fn do_c(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out
                 _ => kept.push(i),
             }
         }
+        // the answers read the elements of the lists they recurse into
+        // through INTEGER, REAL, ... (the arguments themselves were
+        // materialized at entry)
+        if recurse {
+            for &i in &kept {
+                cx.materialize_nested(args.root(i), None)?;
+            }
+        }
         cx.build_with(out, |cx| {
             let top: Vec<Item<'_>> = kept
                 .iter()
@@ -707,6 +715,9 @@ pub fn do_unlist(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out
         out.set(cx, x.bind(cx));
         return Ok(());
     }
+    // the answers read the elements of `x` (and with `recursive`, of the
+    // lists under it) through INTEGER, REAL, ...
+    cx.materialize_nested(x, if recurse { None } else { Some(1) })?;
     cx.build_with(out, |cx| {
         let xv = x.bind(cx);
         let top = items(xv).unwrap();

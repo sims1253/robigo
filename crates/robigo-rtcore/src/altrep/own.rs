@@ -25,7 +25,7 @@
 
 #![allow(unsafe_code)]
 
-use crate::{Cx, Global, Out, RResult, Ref, Root};
+use crate::{Cx, Global, Out, RResult, Ref, Root, View};
 use robigo_heap::Sexp;
 use robigo_heap::types::*;
 use std::cell::RefCell;
@@ -255,14 +255,21 @@ impl<'g> Ref<'g> {
 struct OwnClasses(RefCell<[Option<Global>; 2]>);
 
 impl Cx {
-    /// The class object of `c` in this isolate, made the first time.
-    fn own_class_object(&mut self, c: OwnClass) -> RResult<Sexp> {
+    /// The class object of `c`, which [`Cx::make_own_class_object`] has
+    /// made. Its global is a root the moving collector updates: read it
+    /// after any collection, never keep it across one.
+    fn own_class_object(&self, c: OwnClass) -> Sexp {
+        let g = self.ext::<OwnClasses>().expect("robigo: the classes are made").0.borrow();
+        g[c.index()].as_ref().expect("robigo: the class is made").bind(self).sexp()
+    }
+
+    /// Make the class object of `c` in this isolate the first time.
+    fn make_own_class_object(&mut self, c: OwnClass) -> RResult<()> {
         if self.ext::<OwnClasses>().is_none() {
             self.set_ext(OwnClasses(RefCell::new([None, None])));
         }
-        let have = self.ext::<OwnClasses>().unwrap().0.borrow()[c.index()].as_ref().map(|g| g.bind(self).sexp());
-        if let Some(x) = have {
-            return Ok(x);
+        if self.ext::<OwnClasses>().unwrap().0.borrow()[c.index()].is_some() {
+            return Ok(());
         }
         let (cname, pname) = c.names();
         let t = c.base_type();
@@ -292,9 +299,8 @@ impl Cx {
             let g = cx.global(r.bind(cx));
             Ok::<_, crate::RError>(g)
         })?;
-        let x = class.bind(self).sexp();
         self.ext::<OwnClasses>().unwrap().0.borrow_mut()[c.index()] = Some(class);
-        Ok(x)
+        Ok(())
     }
 
     /// `new_compact_intseq(n, n1, inc)` / `new_compact_realseq`: the
@@ -307,11 +313,14 @@ impl Cx {
                 OwnClass::CompactRealseq => self.build(out, |cx| Ok(cx.alloc_copy(&[n1])?.finish().into())),
             };
         }
-        let class = self.own_class_object(c)?;
+        self.make_own_class_object(c)?;
         let t = c.base_type();
         let res = out.root();
         self.build(out, |cx| {
             let info: Ref<'_> = cx.alloc_copy(&[n as f64, n1, inc])?.finish().into();
+            // (read in the closure: a retry follows a collection, which may
+            // have moved the class object)
+            let class = cx.own_class_object(c);
             // SAFETY: the class object is held by a global (immortal for
             // this isolate's life) and `info` is fresh; the flag is set
             // before anything can collect, so every collection reads the
@@ -414,12 +423,92 @@ impl Cx {
         })
     }
 
+    /// [`Cx::materialize`] of each instance of robigo's classes among the
+    /// elements of the lists (VECSXP, EXPRSXP), pairlists and calls under
+    /// `x`, to `depth` levels (`None`: all): what a builtin whose GNU R
+    /// counterpart walks into list elements and reads them through
+    /// `INTEGER` and `REAL` does first (bind.c's answers, deparse.c's
+    /// vectors). Its entry has already materialized `x` itself. Nothing is
+    /// rooted or allocated when there is nothing to expand.
+    // R: bind.c:IntegerAnswer, RealAnswer, ...; deparse.c:vector2buff
+    pub fn materialize_nested(&mut self, x: Root<'_>, depth: Option<usize>) -> RResult<()> {
+        if !has_unexpanded(x.bind(self), depth) {
+            return Ok(());
+        }
+        self.materialize_nested_slow(x, depth)
+    }
+
+    #[cold]
+    fn materialize_nested_slow(&mut self, x: Root<'_>, depth: Option<usize>) -> RResult<()> {
+        if depth == Some(0) {
+            return Ok(());
+        }
+        let below = depth.map(|d| d - 1);
+        self.scope(|cx, s| {
+            match x.bind(cx).view() {
+                View::List(_) | View::Expr(_) => {
+                    let n = x.bind(cx).len().unwrap_or(0);
+                    for i in 0..n {
+                        // (bound afresh: a materialization may move the list)
+                        let e = match x.bind(cx).view() {
+                            View::List(v) | View::Expr(v) => v.get(i),
+                            _ => unreachable!(),
+                        };
+                        if has_unexpanded_here(e, below) {
+                            let e = s.root(cx, e);
+                            cx.materialize(e)?;
+                            cx.materialize_nested(e, below)?;
+                        }
+                    }
+                }
+                View::Pairlist(_) | View::Lang(_) | View::Dots(_) => {
+                    let mut cell = s.root(cx, x.bind(cx));
+                    while let Some(c) = cell.bind(cx).as_cons() {
+                        let e = c.car();
+                        if has_unexpanded_here(e, below) {
+                            let e = s.root(cx, e);
+                            cx.materialize(e)?;
+                            cx.materialize_nested(e, below)?;
+                        }
+                        let next = cell.bind(cx).as_cons().unwrap().cdr();
+                        cell = s.root(cx, next);
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        })
+    }
+
     /// [`Cx::materialize`] of each of `args` that is ALTREP: what a
     /// builtin whose GNU R counterpart reads its arguments through
     /// `DATAPTR` (`INTEGER`, `REAL`, ...) does first.
     #[inline]
     pub fn materialize_args(&mut self, args: crate::Args<'_>) -> RResult<()> {
         if args.any_altrep() { self.materialize_each(args) } else { Ok(()) }
+    }
+
+    /// [`Cx::materialize_args`] for the subset and subassign defaults
+    /// (`[`, `[[`, `[<-`, `[[<-`), which read `x`, the first argument, by
+    /// element (`ExtractSubset`'s `*_ELT`) or copy it (`Duplicate`'s
+    /// `Get_region`) and expand only the subscripts and the value they
+    /// read through `INTEGER` and `REAL`. One of robigo's compact
+    /// sequences with attributes (as only `unserialize` makes one: a `dim`,
+    /// say) is expanded all the same, for the matrix and array paths.
+    // R: subset.c:ExtractSubset, subscript.c:integerSubscript
+    #[inline]
+    pub fn materialize_subset_args(&mut self, args: crate::Args<'_>) -> RResult<()> {
+        if !args.any_altrep() {
+            return Ok(());
+        }
+        let first = (args.len() > 0 && {
+            let x = args.get(self, 0);
+            x.own_class().is_some() && x.attrib().is_none_or(|a| a.sexptype() == NILSXP)
+        }) as usize;
+        for i in first..args.len() {
+            self.materialize(args.root(i))?;
+        }
+        Ok(())
     }
 
     #[cold]
@@ -474,5 +563,35 @@ impl Cx {
             })?;
         }
         Ok(())
+    }
+}
+
+/// Whether an element `e` (at the level below the walk's current one,
+/// `depth` levels left under it) is or holds an unexpanded instance.
+fn has_unexpanded_here(e: Ref<'_>, depth: Option<usize>) -> bool {
+    (e.own_class().is_some() && !e.own_is_expanded()) || has_unexpanded(e, depth)
+}
+
+/// Whether the elements of `x`'s lists, pairlists and calls, to `depth`
+/// levels, include an instance of robigo's classes not yet expanded. A
+/// read: no allocation, no rooting.
+fn has_unexpanded(x: Ref<'_>, depth: Option<usize>) -> bool {
+    if depth == Some(0) {
+        return false;
+    }
+    let below = depth.map(|d| d - 1);
+    match x.view() {
+        View::List(v) | View::Expr(v) => (0..v.len()).any(|i| has_unexpanded_here(v.get(i), below)),
+        View::Pairlist(c) | View::Lang(c) | View::Dots(c) => {
+            let mut c = Some(c);
+            while let Some(cell) = c {
+                if has_unexpanded_here(cell.car(), below) {
+                    return true;
+                }
+                c = cell.cdr().as_cons();
+            }
+            false
+        }
+        _ => false,
     }
 }
