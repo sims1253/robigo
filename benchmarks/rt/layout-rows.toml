@@ -36,7 +36,7 @@ n = 200
 [[row]]
 name = "e7-unique-pad1"
 group = "layout"
-note = "e7-unique after 1 unrelated strings"
+note = "e7-unique after 1 unrelated string"
 setup = '''
 pad <- paste0("pad", seq_len(1L))
 keys <- paste0("k", 1:1000)
@@ -48,7 +48,7 @@ n = 200
 [[row]]
 name = "e7-match-pad1"
 group = "layout"
-note = "e7-match after 1 unrelated strings"
+note = "e7-match after 1 unrelated string"
 setup = '''
 pad <- paste0("pad", seq_len(1L))
 keys <- paste0("k", 1:1000)
