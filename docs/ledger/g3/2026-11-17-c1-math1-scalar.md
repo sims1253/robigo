@@ -77,6 +77,17 @@ against the calling function.
   `log-compiled.R` ratcheted. `log-missing-class.R` (the condition
   classes of `log()`'s missing argument) is not this path; it stays B's.
 
+### Review
+
+- Sol round 1 (`e96fcc9d`): CHANGES, S1 [blocker]: the fast path dropped
+  nmath's queued warnings (`ML_WARNING`) for a non-NaN result (compiled
+  `gamma(1e-310)` must warn "value out of range in 'gammafn'"). Fixed in
+  `7718ce96`: `BC_MATH1` marks nmath's functions (as #802's `do_math1`
+  does); the arm drops stale queued warnings before the computation and
+  raises those it queued after it, before "NaNs produced"; fixture
+  `k_gamma_range` (the warning's call is the closure call's, as GNU R's).
+- Sol round 2 (`7718ce96`): APPROVE, S1 resolved, no new findings.
+
 ### Verification
 
 VERIFICATION (after #803 merges: main merged, measured on top of it)
