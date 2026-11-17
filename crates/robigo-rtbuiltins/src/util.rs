@@ -531,6 +531,13 @@ pub fn do_compare_numeric_version(
             }
         }
     }
+    // (a package ALTREP component's INTEGER() is its class's Dataptr)
+    let alt = |v: robigo_rtcore::Root<'_>, cx: &Cx| {
+        v.bind(cx).as_vector::<Ref<'_>>().is_some_and(|l| (0..l.len()).any(|i| l.get(i).is_package_altrep()))
+    };
+    if na > 0 && (alt(x, cx) || alt(y, cx)) {
+        return Err(not_yet(cx, Some(call), "compareNumericVersion() of a package ALTREP vector"));
+    }
     let res: Result<Vec<i32>, &'static str> =
         match (x.bind(cx).as_vector::<Ref<'_>>(), y.bind(cx).as_vector::<Ref<'_>>()) {
             (Some(xl), Some(yl)) => (0..na).map(|i| compare_numeric_version(xl.get(i % nx), yl.get(i % ny))).collect(),
