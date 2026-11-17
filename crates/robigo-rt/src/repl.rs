@@ -231,41 +231,8 @@ fn parse_error_message(src: robigo_syntax::Source<'_>, e: &robigo_syntax::ParseE
 /// then the deferred warnings. False when an error ended the statement.
 // R: main.c:Rf_ReplIteration
 fn eval_statement(cx: &mut Cx, expr: &robigo_syntax::Expr<'_>, savestack: i32) -> bool {
-    // R: main.c:Rf_ReplIteration, `R_PPStackTop = savestack`: a C routine's
-    // imbalance does not outlive its statement
-    cx.set_pp_top(savestack);
-    cx.scope(|cx, s| {
-        let e = s.out(cx);
-        let er = e.root();
-        let g = s.root(cx, cx.global_env());
-        let base = s.root(cx, cx.base_env());
-        let o = s.out(cx);
-        let or = o.root();
-        let done = cx
-            .repl_toplevel(g, base, |cx| {
-                // the parse's objects are made at the top level
-                // (R_Parse1Buffer), so an error there lands on it
-                crate::reader::lower_one(cx, expr, e)?;
-                cx.set_visible(false);
-                // under PROTECT(thisExpr), then PROTECT(value) for the print
-                // (robigo_rtcore's ppacct)
-                cx.with_pp_excess(1, |cx| crate::eval(cx, er, g, o)).and_then(|()| {
-                    cx.set_last_value(or)?;
-                    if cx.visible() {
-                        cx.with_pp_excess(2, |cx| crate::print::print_value_env(cx, or, g))?;
-                    }
-                    Ok(())
-                })
-            })
-            .expect("robigo: an exit that passed the top level");
-        if !done {
-            // a jump to the top level: the error (or restart) reported
-            // where it was raised; Rscript halts (check_session_exit)
-            return false;
-        }
-        print_warnings(cx);
-        true
-    })
+    // under PROTECT(thisExpr), then PROTECT(value) for the print
+    crate::base::repl_eval_toplevel(cx, expr, |cx| cx.global_env(), savestack, (1, 2)).is_ok()
 }
 
 /// `R_dot_Last()`, which `R_CleanUp` runs when a session ends normally

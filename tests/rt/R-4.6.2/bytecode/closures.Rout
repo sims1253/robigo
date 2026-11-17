@@ -1,0 +1,27 @@
+[1] "invalid formal argument list for \"bcClose\""
+[1] "invalid formal argument list for \"bcClose\""
+[1] "invalid body"
+[1] "use of NULL environment is defunct"
+[1] "invalid environment"
+[1] "closure"
+[1] 42
+[1] 42
+[1] 42
+$x
+[1] 1
+
+[1] "bytecode"
+[1] TRUE
+[1] "function (x = 1L) " "42L"               
+[1] FALSE
+[1] FALSE
+[1] TRUE
+[1] "integer"
+[1] 42
+[1] "bytecode"
+x
+NULL
+NULL
+NULL
+x + 1
+[1] 5

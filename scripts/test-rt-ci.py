@@ -59,6 +59,21 @@ class RtCi(unittest.TestCase):
         src = (HERE.parent / "crates/robigo-rtapi/tests/conformance.rs").read_text()
         self.assertIn(f"fn {rt.CONFORMANCE}()", src)
 
+    def test_slow_case_timeouts_are_the_moving_collector_steps_only(self):
+        # INTERIM(H8): exactly the GC_MOVE + gctorture conformance step gets
+        # the longer timeouts, and each case it names exists
+        steps = rt.steps(["robigo-rt"])
+        with_overrides = [title for title, env, _ in steps if "ROBIGO_CONF_TIMEOUTS" in env]
+        self.assertEqual(with_overrides, ["conformance under ROBIGO_GC_MOVE with gctorture (E3)"])
+        env = next(e for t, e, _ in steps if t == with_overrides[0])
+        self.assertEqual(env["ROBIGO_GC_MOVE"], "1")
+        self.assertEqual(env["ROBIGO_GCTORTURE"], "1")
+        named = dict(item.rsplit("=", 1) for item in env["ROBIGO_CONF_TIMEOUTS"].split(","))
+        self.assertEqual(set(named), set(rt.GC_MOVE_SLOW))
+        for case, secs in named.items():
+            self.assertTrue((HERE.parent / case).is_file(), case)
+            self.assertGreater(int(secs), int(env["ROBIGO_CONF_TIMEOUT"]), case)
+
     def test_the_pin_report_expects_only_the_probes(self):
         import tempfile
         probe = ("robigo pin report: kind=finalizer key=EXTPTRSXP@0x1 weakref=0x2 word=0x1@0x3 "

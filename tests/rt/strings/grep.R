@@ -1,0 +1,155 @@
+# grep, grepl, sub and gsub: the subset of POSIX EREs robigo-rt's interim
+# matcher knows (INTERIM(RX)), fixed = TRUE, NA inputs, encodings and the
+# argument checks.
+show <- function(expr) withCallingHandlers(
+    tryCatch(print(expr), error = function(e) cat("Error:", conditionMessage(e), "\n")),
+    warning = function(w) {
+        cat("Warning:", conditionMessage(w), "\n")
+        invokeRestart("muffleWarning")
+    })
+
+# anchors
+show(grepl("^a", c("abc", "bac", "")))
+show(grepl("c$", c("abc", "cab", "")))
+show(grepl("^$", c("", "a")))
+show(sub("^", "X", "abc"))
+show(sub("$", "X", "abc"))
+show(gsub("^a", "X", "aaa"))
+show(gsub("a$", "X", "aaa"))
+show(gsub("^", "-", "abc"))
+show(gsub("$", "-", "abc"))
+show(grepl("a^b", "ab"))
+
+# bracket expressions and ranges
+show(grepl("[a-c]", c("a", "b", "d", "")))
+show(grepl("[^a-c]", c("a", "b", "d", "")))
+show(grepl("[]x]", c("]", "x", "y")))
+show(grepl("[a-]", c("-", "b", "a")))
+show(grepl("[-a]", c("-", "b")))
+show(grepl("[\\.]", c(".", "\\", "a")))
+show(grepl("[\\d]", c("d", "5", "\\")))
+show(gsub("[0-9]", "#", "a1b22c333"))
+show(gsub("[^0-9]", "", "a1b22c333"))
+show(gsub("[^a-cb-e]", "_", "abcdefg"))
+show(gsub("[!--]", "_", "a!b,c-d.e"))
+
+# quantifiers, on . and otherwise
+show(sub(".*", "X", "abc"))
+show(sub(".+", "X", ""))
+show(sub("a.*c", "X", "xabcbcy"))
+show(sub("a.?c", "X", "abbc ac"))
+show(sub("b+", "X", "abbbc"))
+show(sub("ab*", "X", "xabbbc"))
+show(sub("a*ab", "X", "aaab"))
+show(sub("x?y", "X", "zxy"))
+show(sub("\\.\\.[0-9]+", "X", "a..12b"))
+show(grepl("^\\.\\.[0-9]+$", c("..1", "..12", "...", "..1a", "x..1")))
+show(sub("\\.[a-zA-Z0-9]$", "", c("file.R", "file.Rd", "file")))
+show(sub("imports:", "", "imports:compiler"))
+show(sub("package:", "", c("package:base", "base")))
+
+# empty matches in gsub
+show(gsub("", "-", "abc"))
+show(gsub("", "-", ""))
+show(sub("", "-", ""))
+show(sub("", "-", "abc"))
+show(gsub("b*", "-", "abc"))
+show(gsub("x*", "-", "abc"))
+show(gsub("a*", "X", "baaac"))
+show(sub("x*", "-", "abc"))
+show(gsub(".?", "-", "ab"))
+
+# the replacement's escapes
+show(gsub("b", "\\\\", "abc"))
+show(sub("b", "[\\1]", "abc"))
+show(sub("b", "x\\", "abc"))
+show(sub("b", "\\0", "abc"))
+show(gsub(".", "\\1x\\0\\", "ab"))
+
+# fixed = TRUE
+show(grepl(".", c("a", "."), fixed = TRUE))
+show(sub(".", "!", "a.b.c", fixed = TRUE))
+show(gsub(".", "!", "a.b.c", fixed = TRUE))
+show(gsub("ab", "X", "abababa", fixed = TRUE))
+show(gsub("aa", "X", "aaaaa", fixed = TRUE))
+show(grepl("", c("abc", ""), fixed = TRUE))
+show(gsub("b", "\\1", "abc", fixed = TRUE))
+show(grep("a", c("a", "b"), ignore.case = TRUE, fixed = TRUE))
+show(grep("a", c("a", "b"), perl = TRUE, fixed = TRUE))
+show(sub("a", "A", "a", ignore.case = TRUE, fixed = TRUE))
+
+# NA inputs
+show(grepl("a", c("a", NA, "b")))
+show(grep("a", c(x = "a", y = NA, z = "ba")))
+show(grep("a", c(x = "a", y = NA, z = "ba"), value = TRUE))
+show(grep(NA, c("a", "b")))
+show(grepl(NA, c("a", "b")))
+show(grep(NA, c(p = "a", q = "b"), value = TRUE))
+show(grep(NA, character()))
+show(sub("a", "b", c("a", NA)))
+show(sub(NA, "b", c(x = "a", y = NA)))
+show(gsub("a", NA, c("a", "b", NA)))
+show(sub("a", NA, "xyz"))
+show(grepl("a", NA))
+show(grepl("NA", NA))
+show(sub("N", "X", NA))
+
+# invert, value, names
+show(grep("a", c("a", "b", "ca"), invert = TRUE))
+show(grep("a", c(x = "a", y = "b"), invert = TRUE, value = TRUE))
+show(grep("z", c(x = "a", y = "b"), value = TRUE))
+show(grep("z", c("a", "b")))
+show(grepl("a", character()))
+show(sub("a", "b", character()))
+x <- c(a = "xa", b = "yb")
+show(sub("a", "A", x))
+m <- matrix(c("a", "b", "c", "a"), 2)
+show(c(gsub("a", "z", m)))
+show(dim(gsub("a", "z", m)))
+show(attributes(sub("a", "z", structure(c("a", "b"), myattr = 1))))
+show(grep("a", structure(c("a", "b"), myattr = 1), value = TRUE))
+
+# encodings
+show(Encoding(sub("a", "é", "abc")))
+show(Encoding(gsub("é", "e", "café")))
+show(gsub("é", "e", "café"))
+show(grep("é", c("café", "cafe")))
+show(sub(".", "X", "été"))
+show(gsub(".", "-", "héllo"))
+show(nchar(sub(".", "", "été", useBytes = TRUE), type = "bytes"))
+show(Encoding(sub("a", "é", "abc", useBytes = TRUE)))
+show(Encoding(sub("a", "é", "abc", fixed = TRUE)))
+show(sub("é", "E", "café", fixed = TRUE))
+l <- "caf\xe9"
+Encoding(l) <- "latin1"
+show(sub("f", "F", l))
+show(Encoding(sub("f", "F", l)))
+show(grepl("é", l))
+show(grepl("é", l, fixed = TRUE))
+
+# strings the matcher's encoding cannot read
+show(grepl("a", "caf\xe9"))
+show(grepl("a", c("a", "caf\xe9", "b")))
+show(grepl("a", "caf\xe9", fixed = TRUE))
+show(grepl("a", "caf\xe9", useBytes = TRUE))
+show(sub("a", "b", "caf\xe9"))
+show(sub("f", "b", "caf\xe9", fixed = TRUE))
+show(sub("f", "b", "caf\xe9", useBytes = TRUE))
+show(grepl("caf\xe9", "a"))
+show(sub("caf\xe9", "b", "a"))
+show(sub("a", "caf\xe9", "a"))
+
+# the argument checks
+show(.Internal(grep(character(), "a", FALSE, FALSE, FALSE, FALSE, FALSE, FALSE)))
+show(.Internal(grep(1, "a", FALSE, FALSE, FALSE, FALSE, FALSE, FALSE)))
+show(.Internal(grep("a", 1, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE)))
+show(.Internal(sub("a", character(), "a", FALSE, FALSE, FALSE, FALSE)))
+show(.Internal(sub("a", "b", 1, FALSE, FALSE, FALSE, FALSE)))
+show(.Internal(grep("a", "a", NA, FALSE, FALSE, FALSE, FALSE, FALSE)))
+show(.Internal(gsub("a", "b", "a", FALSE, FALSE, c(TRUE, FALSE), FALSE)))
+show(.Internal(grepl("a", "a", FALSE, FALSE, FALSE, FALSE, FALSE)))
+show(grep(c("a", "b"), c("a", "b")))
+show(sub("a", c("x", "y"), "a"))
+show(sub(c("a", "b"), c("x", "y"), "ab"))
+show(sub("", "X", "abc", fixed = TRUE))
+show(gsub("", "X", "abc", fixed = TRUE))

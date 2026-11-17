@@ -86,7 +86,26 @@ fn run(args: Vec<std::ffi::OsString>) -> i32 {
     robigo_rt::install(cx);
     // `.Call` and `dyn.load`, before base binds its stubs
     robigo_rtapi::install(cx);
-    if let Err(e) = robigo_rt::base::load(cx, &dir) {
+    // L2's stage 0 (base evaluated from source, ROBIGO_RT_BOOT=stage0, from
+    // R_HOME's library/base/R/base: scripts/rt-home.sh) beside M1's loader
+    // until L5 boots from the databases
+    if std::env::var_os("ROBIGO_RT_BOOT").is_some_and(|v| v == "stage0") {
+        let home = std::env::var_os("R_HOME").map_or_else(|| std::path::PathBuf::from(".robigo/rt-home"), Into::into);
+        match robigo_rt::base::stage0(cx, &home) {
+            Ok(st) => {
+                if std::env::var_os("ROBIGO_BOOT_VERBOSE").is_some() {
+                    for (line, m) in &st.failed {
+                        eprintln!("robigo-rt: stage 0: line {line}: {m}");
+                    }
+                    eprintln!("robigo-rt: stage 0: {} expressions, {} failed", st.exprs, st.failed.len());
+                }
+            }
+            Err(e) => {
+                eprintln!("robigo-rt: stage 0: {e}");
+                return 2;
+            }
+        }
+    } else if let Err(e) = robigo_rt::base::load(cx, &dir) {
         eprintln!("robigo-rt: loading base: {e}");
         return 2;
     }

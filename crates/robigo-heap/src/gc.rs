@@ -336,6 +336,9 @@ pub struct GcStats {
     pub frees: u64,
     pub live_bytes: u64,
     pub live_objects: u64,
+    /// Wall time in collections, summed and the longest: from the start of
+    /// marking to the end of the sweep and the next trigger (the quarantine
+    /// a collection releases first is not counted).
     pub collect_total_ns: u64,
     pub collect_max_pause_ns: u64,
     /// Collections by where they were entered ([`Safepoint`] as index).
@@ -2764,7 +2767,8 @@ impl Core {
     }
 
     /// `ROBIGO_GC_STATS`'s report, printed to stderr when the core is
-    /// dropped: collections by safepoint kind, E4's overshoot, large `&Cx`
+    /// dropped: collections by safepoint kind, the time spent in them, E4's
+    /// overshoot, large `&Cx`
     /// requests made while a collection was due, allocations by SEXPTYPE.
     pub fn stats_report(&self) -> String {
         use std::fmt::Write;
@@ -2773,6 +2777,16 @@ impl Core {
         let kinds: Vec<String> =
             Safepoint::ALL.iter().map(|k| format!("{} {}", k.name(), st.collections_by_kind[*k as usize])).collect();
         let _ = writeln!(r, "robigo gc: collections {} ({})", st.collections, kinds.join(", "));
+        // D13's bar (ledger 2026-11-17-m2m3-bars.md): collection time per
+        // MiB the heap handed out, by its own count (`count`'s bytes, what
+        // triggers collections), including what came after the last one
+        let heap_bytes = st.bytes_allocated + self.alloc_since_gc as u64;
+        let per_mib = (st.collect_total_ns as u128 * (1 << 20)).checked_div(heap_bytes as u128).unwrap_or(0);
+        let _ = writeln!(
+            r,
+            "robigo gc: collection time {} ns, max pause {} ns, heap bytes allocated {heap_bytes}, {per_mib} ns per MiB",
+            st.collect_total_ns, st.collect_max_pause_ns
+        );
         let _ = writeln!(
             r,
             "robigo gc: overshoot max {} bytes (live {} bytes after it), total {} bytes, over max(32 MiB, 10% live) {}",
