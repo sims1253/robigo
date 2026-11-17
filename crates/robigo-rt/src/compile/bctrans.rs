@@ -432,6 +432,9 @@ struct Tr {
     /// Pass 2: the last instruction of a complex assignment translated
     /// whole.
     skip_to: Option<usize>,
+    /// A tail `&&` or `||` ended: its value is visible on every path to
+    /// the RETURN after it, the jumps' too (set there).
+    vis_at_return: bool,
 }
 
 impl Tr {
@@ -788,6 +791,7 @@ impl<'g> Comp<'g> {
             assigning: Vec::new(),
             assigned: HashMap::new(),
             skip_to: None,
+            vis_at_return: false,
         };
         // `dst` is the code's value (the first register)
         self.free_to(dst);
@@ -1141,6 +1145,9 @@ impl<'g> Comp<'g> {
         let planning = t.plan.is_none();
         match i.op {
             RETURN => {
+                if std::mem::take(&mut t.vis_at_return) {
+                    self.set_vis(true);
+                }
                 let r = self.top(t)?;
                 if r != R_FIRST {
                     let mut m = Ins::new(Op::Move);
@@ -1175,6 +1182,11 @@ impl<'g> Comp<'g> {
                 let r = self.pop(t)?;
                 self.clear(r);
             }
+            // (after an assignment, which leaves its value invisible, and
+            // where no jump lands: nothing to do)
+            INVISIBLE
+                if !t.labels.contains_key(&i.at)
+                    && matches!(self.ins.last().map(|l| l.op), Some(Op::SetVar | Op::SetVar2 | Op::BcAssign)) => {}
             INVISIBLE => self.set_vis(false),
             VISIBLE => self.set_vis(true),
             LDCONST => {
@@ -1908,7 +1920,8 @@ impl<'g> Comp<'g> {
                 a.fl |= F_CLR_B;
                 self.emit(a);
                 if tail {
-                    self.set_vis(true);
+                    // (at the RETURN, where AND1ST's jump lands too)
+                    t.vis_at_return = true;
                 }
             }
             BASEGUARD => {

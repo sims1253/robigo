@@ -35,6 +35,7 @@ use robigo_rtcore::{Cx, RResult, Ref, Root};
 use std::collections::HashMap;
 
 mod bctrans;
+mod crosscheck;
 
 /// Run one compile attempt under `&Cx` until it succeeds: a refused
 /// allocation collects and compiles again (the same request refused twice
@@ -189,6 +190,9 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
         // this interval.
         unsafe {
             if f.cdr().typ() == BCODESXP {
+                if crosscheck::enabled() {
+                    crosscheck_closure(cx, f)?;
+                }
                 // V3: GNU R's byte code, translated
                 return translate_code(cx, f.cdr(), Some(f.car()));
             }
@@ -206,6 +210,70 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
             Ok(code)
         }
     })
+}
+
+/// `ROBIGO_BC_CROSSCHECK`: closure `f`'s byte code translated and its
+/// source compiled as the from-source compiler compiles it for the
+/// closure's environment, the two compared ([`crosscheck`]). The
+/// from-source compile goes first, so the argument code that stays on an
+/// expression both share is the translation's. A compile that would force
+/// a lazy binding, or that cmp.R declines, is skipped (reported).
+///
+/// # Safety
+/// `f` is a live closure whose body is a BCODESXP; nothing collects.
+unsafe fn crosscheck_closure(cx: &Cx, f: Sexp) -> Result<(), Need> {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let (formals, bc) = (f.car(), f.cdr());
+        let body = robigo_rtbuiltins::bytecode::expr(cx, Ref::from_sexp(bc, cx)).sexp();
+        let st = prims::state(cx);
+        let what = crate::deparse::deparse1line(cx, Ref::from_sexp(body, cx), false, 0)
+            .map(|d| {
+                let s = String::from_utf8_lossy(&d).split_whitespace().collect::<Vec<_>>().join(" ");
+                if s.chars().count() > 70 { format!("{}...", s.chars().take(70).collect::<String>()) } else { s }
+            })
+            .unwrap_or_else(|_| "<a closure>".to_owned());
+        let source = (|| -> Result<Option<Built>, Need> {
+            let mut cenv = Cenv::of_env(cx, f.tag(), false)?;
+            if !function_context(cx, st, &mut cenv, formals, body)? {
+                return Ok(None);
+            }
+            let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
+            let mut b = c.root(body)?;
+            c.add_unit_locals(&mut b);
+            Ok(Some(b))
+        })();
+        let source = match source {
+            Ok(Some(b)) => b,
+            Ok(None) | Err(Need::Fail) => {
+                crosscheck::report(&format!("skipped: {what}: the from-source compiler leaves it uncompiled"));
+                return Ok(());
+            }
+            Err(Need::Force(_)) => {
+                crosscheck::report(&format!("skipped: {what}: the from-source compile would force a binding"));
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+        let mut c = Comp::new(cx, st, Profile::Bc, Some(Cenv::for_translation()));
+        let r = c.alloc();
+        match c.translate(bc, r) {
+            Ok(()) => {
+                let mut i = Ins::new(Op::Ret);
+                i.b = r;
+                c.emit(i);
+                let t = c.finish();
+                crosscheck::compare(cx, &what, &t, &source);
+            }
+            Err(Need::Fail) => {
+                let why =
+                    c.bc_untranslated.take().unwrap_or_else(|| "byte code the translation cannot follow".to_owned());
+                crosscheck::report(&format!("untranslated: {what}: {why}"));
+            }
+            Err(e) => return Err(e),
+        }
+        Ok(())
+    }
 }
 
 /// The code of the byte code `bc` evaluated as itself (`eval(bc, rho)`,
@@ -1231,7 +1299,11 @@ impl<'g> Comp<'g> {
             self.k(call);
             // SAFETY: a fresh call.
             unsafe { self.expr(call, dst, d + 1, tail)? };
-            // (it does not return: the default follows, as in cmp.R)
+            // (it does not return: the default follows, as in cmp.R; in
+            // tail position cmp.R's call RETURNs, a jump to the end)
+            if tail {
+                ends.push(self.emit(Ins::new(Op::Jmp)));
+            }
         }
         at[dflt] = self.pc();
         self.ld_nil(dst, false);
