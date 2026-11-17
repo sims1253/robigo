@@ -41,3 +41,8 @@ long <- paste0(strrep("./", (4085L - nchar(d)) %/% 2L), d)
 nchar(long)
 withCallingHandlers(length(lf(path = long, recursive = TRUE)),
                     warning = function(w) { cat("warning:", conditionMessage(w), "\n"); invokeRestart("muffleWarning") })
+# a directory whose path is 4095 bytes: opened before its separator
+long <- paste0(strrep("./", (4095L - nchar(d)) %/% 2L), d)
+nchar(long)
+withCallingHandlers(lf(path = long),
+                    warning = function(w) { cat("warning:", conditionMessage(w), "\n"); invokeRestart("muffleWarning") })

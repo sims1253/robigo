@@ -50,3 +50,12 @@ character(0)
 warning: over-long path 
 warning: over-long path 
 [1] 7
+[1] 4095
+warning: over-long path 
+warning: over-long path 
+warning: over-long path 
+warning: over-long path 
+warning: over-long path 
+warning: over-long path 
+[1] "a.txt"          "b.Rd"           "B.txt"          "sub"           
+[5] "with space.txt" "z_9.Rd"        
