@@ -29,6 +29,7 @@
 #![allow(unsafe_code)]
 
 use super::Comp;
+use crate::bcassign as ba;
 use crate::cenv::{Cenv, Need};
 use crate::ir::*;
 use crate::prims::Kind;
@@ -235,26 +236,32 @@ struct Frame {
     /// the register the function is in (`GETFUN`).
     base: Reg,
     args: Vec<PArg>,
+    /// `CHECKFUN`'s function's code (instruction indices from, to).
+    fun_code: Option<(usize, usize)>,
 }
 
 #[derive(Clone, Copy)]
 enum Fun {
-    /// `GETFUN`'s function, in `base`, and the `GetFun` instruction's
-    /// index (its call is the `CALL`'s, written then); or `CHECKFUN`'s, a
-    /// value computed into `base`.
-    Found { get: Option<usize> },
+    /// `GETFUN`'s function, in `base`, the `GetFun` instruction's index
+    /// (its call is the `CALL`'s, written then) and the symbol; or
+    /// `CHECKFUN`'s, a value computed into `base`.
+    Found { get: Option<usize>, sym: Option<Sexp> },
     /// `GETBUILTIN`'s primitive, or `GETINTLBUILTIN`'s `.Internal`.
     Builtin { prim: Sexp, internal: bool },
     /// `STARTSUBSET`'s (`STARTSUBSET2`'s) arguments for `DFLTSUBSET`: the
     /// object first (in `base`), then the pushes, a window; its call.
     Dispatch { sub2: bool, call: Sexp },
+    /// A complex assignment's `STARTSUBSET` (`[`'s getter) or
+    /// `STARTSUBASSIGN` (`[<-`'s setter) with arguments for the default
+    /// method: no registers (pass 1 notes their code).
+    AssignDispatch { sub2: bool, call: Sexp },
 }
 
 impl Fun {
     /// Whether the pushes are values in a window from `base` (a builtin's
     /// arguments, or the default method's).
     fn window(&self) -> bool {
-        !matches!(self, Fun::Found { .. })
+        matches!(self, Fun::Builtin { .. } | Fun::Dispatch { .. })
     }
 }
 
@@ -265,6 +272,8 @@ struct Sub {
     dst: Reg,
     obj: Reg,
     sub2: bool,
+    /// A complex assignment's getter or setter (on its stack's values).
+    assign: bool,
 }
 
 /// A pushed argument.
@@ -272,6 +281,9 @@ struct Sub {
 struct PArg {
     kind: PKind,
     tag: Option<Sexp>,
+    /// A complex assignment's `PUSHARG`: its value's code (instruction
+    /// indices from, to).
+    code: Option<(usize, usize)>,
 }
 
 #[derive(Clone, Copy)]
@@ -313,7 +325,57 @@ enum What {
     LoopCtx {
         at: usize,
     },
+    /// A complex assignment's value on GNU R's stack (the target's cell,
+    /// a left-hand value, the right-hand side's copy): pass 1's only.
+    Slot,
 }
+
+/// A complex assignment as pass 1 found it, `STARTASSIGN` to `ENDASSIGN`
+/// (instruction indices): pass 2 translates it into [`Op::BcAssign`] of a
+/// plan ([`crate::bcassign`]) made from its steps' opcodes.
+#[derive(Clone)]
+struct Assign {
+    end: usize,
+    sym: Sexp,
+    getters: Vec<Step>,
+    setters: Vec<Step>,
+}
+
+/// A getter or setter of a complex assignment: what its opcodes say.
+#[derive(Clone)]
+struct Step {
+    /// [`crate::bcassign`]'s kind (`K_GENERIC`, `K_SUB`, ...).
+    kind: u8,
+    /// Its last instruction: the expression bcEval is at there is what
+    /// `error()` reports.
+    at: usize,
+    /// Its call constant.
+    call: Sexp,
+    /// The function (a symbol, or an expression `CHECKFUN` checks), or
+    /// `$`'s member.
+    what: Sexp,
+    /// A setter's value expression.
+    vexpr: Option<Sexp>,
+    /// The code of each argument after the object, in order.
+    args: Vec<StepArg>,
+    /// `CHECKFUN`'s function's code.
+    fun_code: Option<(usize, usize)>,
+}
+
+/// An argument's code in a step.
+#[derive(Clone, Copy)]
+enum StepArg {
+    /// Inline code (instruction indices from, to), which leaves its value.
+    Code(usize, usize),
+    /// `MAKEPROM`'s code.
+    Prom(Sexp),
+    /// None (a constant, a missing argument).
+    None,
+}
+
+/// A label's state: the stack, the register count, and where the code
+/// toward each depth's slot begins (`Tr::open`).
+type Lab = (Vec<Item>, Reg, Vec<usize>);
 
 /// What pass 1 learned for pass 2.
 struct Plan {
@@ -322,6 +384,8 @@ struct Plan {
     res_at: HashMap<usize, Vec<usize>>,
     /// The stack's depth at each instruction: pass 2 meets the same.
     depth: Vec<Option<usize>>,
+    /// The complex assignments, by their `STARTASSIGN`.
+    assigns: HashMap<usize, Assign>,
 }
 
 /// The translation state of one code object, in one pass.
@@ -329,8 +393,8 @@ struct Tr {
     code: Vec<BcIns>,
     /// The code's constants (a VECSXP).
     consts: Sexp,
-    /// The stack at a label a jump reached, and the register count.
-    labels: HashMap<usize, (Vec<Item>, Reg)>,
+    /// The state at a label a jump reached.
+    labels: HashMap<usize, Lab>,
     /// Jumps to patch: the IR instruction and the code position.
     patches: Vec<(usize, usize)>,
     /// IR position of each translated code position (its first
@@ -357,6 +421,17 @@ struct Tr {
     res: HashMap<usize, Reg>,
     /// The `_N` subsets begun (`STARTSUBSET_N`), innermost last.
     subsets: Vec<Sub>,
+    /// Where the code toward the slot at each depth begins (an
+    /// instruction index): after the instruction that last wrote the slot
+    /// below. A stack entry's code begins at `open[its depth]`.
+    open: Vec<usize>,
+    /// Pass 1: the complex assignments begun, innermost last (by their
+    /// `STARTASSIGN`), and those ended.
+    assigning: Vec<(usize, Assign)>,
+    assigned: HashMap<usize, Assign>,
+    /// Pass 2: the last instruction of a complex assignment translated
+    /// whole.
+    skip_to: Option<usize>,
 }
 
 impl Tr {
@@ -398,7 +473,7 @@ impl Tr {
         for v in res_at.values_mut() {
             v.sort_unstable_by(|a, b| b.cmp(a));
         }
-        Plan { res_at, depth: self.depth }
+        Plan { res_at, depth: self.depth, assigns: self.assigned }
     }
 }
 
@@ -415,6 +490,7 @@ fn merge(into: &mut [Item], from: &[Item]) -> Result<(), Need> {
             (What::Mark, What::Mark) => true,
             (What::For { state: a, .. }, What::For { state: b, .. }) => a == b,
             (What::LoopCtx { at: a }, What::LoopCtx { at: b }) => a == b,
+            (What::Slot, What::Slot) => true,
             _ => false,
         };
         if !same {
@@ -429,16 +505,69 @@ fn merge(into: &mut [Item], from: &[Item]) -> Result<(), Need> {
 /// registers: the label's state, or met with it.
 fn meet(t: &mut Tr, to: usize, st: Vec<Item>, next: Reg) -> Result<(), Need> {
     match t.labels.get_mut(&to) {
-        Some((have, n)) => {
+        Some((have, n, open)) => {
             if *n != next {
                 return Err(mismatch());
             }
+            join_open(open, &t.open);
             merge(have, &st)
         }
         None => {
-            t.labels.insert(to, (st, next));
+            t.labels.insert(to, (st, next, t.open.clone()));
             Ok(())
         }
+    }
+}
+
+/// Two paths' `open` met: the code toward a slot begins after both paths'
+/// last writes of the slot below (the join, in cmp.R's structured code).
+fn join_open(into: &mut Vec<usize>, from: &[usize]) {
+    if into.len() < from.len() {
+        into.resize(from.len(), 0);
+    }
+    for (a, &b) in into.iter_mut().zip(from) {
+        *a = (*a).max(b);
+    }
+}
+
+/// Note a getter or setter of the innermost complex assignment (its
+/// getters come first).
+fn record(t: &mut Tr, setter: bool, step: Step) -> Result<(), Need> {
+    let (_, a) = t.assigning.last_mut().ok_or(Need::Fail)?;
+    if setter {
+        a.setters.push(step);
+    } else {
+        if !a.setters.is_empty() {
+            return Err(Need::Fail);
+        }
+        a.getters.push(step);
+    }
+    Ok(())
+}
+
+/// A frame's pushes as a step's arguments' code.
+fn step_args(args: &[PArg]) -> Vec<StepArg> {
+    args.iter()
+        .map(|a| match (a.kind, a.code) {
+            (_, Some((from, to))) => StepArg::Code(from, to),
+            (PKind::Prom(c), None) => StepArg::Prom(c),
+            _ => StepArg::None,
+        })
+        .collect()
+}
+
+/// A call's last argument (a setter call's `value = vexpr`).
+///
+/// # Safety
+/// `call` is a live call.
+unsafe fn last_arg(call: Sexp) -> Sexp {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let mut c = call;
+        while c.cdr().typ() == LISTSXP {
+            c = c.cdr();
+        }
+        c.car()
     }
 }
 
@@ -499,9 +628,8 @@ unsafe fn successors(i: &BcIns, next: Option<usize>, consts: Sexp) -> Result<Vec
         }
         STARTLOOPCNTXT | STEPFOR => s.push(i.a[if i.op == STEPFOR { 0 } else { 1 }] as usize),
         GOTO => s.push(i.a[0] as usize),
-        BRIFNOT | BASEGUARD | AND1ST | OR1ST | STARTSUBSET | STARTSUBSET2 | STARTSUBSET_N | STARTSUBSET2_N => {
-            s.push(i.a[1] as usize)
-        }
+        BRIFNOT | BASEGUARD | AND1ST | OR1ST | STARTSUBSET | STARTSUBSET2 | STARTSUBSET_N | STARTSUBSET2_N
+        | STARTSUBASSIGN | STARTSUBASSIGN2 | STARTSUBASSIGN_N | STARTSUBASSIGN2_N => s.push(i.a[1] as usize),
         _ => {}
     }
     if falls_through(i.op)
@@ -560,12 +688,23 @@ impl<'g> Comp<'g> {
         };
         let Ok(dec) = decode(&code) else { return Err(Need::Fail) };
         // SAFETY: as above.
-        let live = unsafe { reachable(&dec, consts)? };
+        unsafe { self.translate_ins(&dec, consts, dst) }
+    }
+
+    /// Translate the instructions `dec` (a code's, or an argument's slice
+    /// of one ending in a RETURN) with the constants `consts`, the value
+    /// into `dst`: the two passes.
+    ///
+    /// # Safety
+    /// `consts` are the live byte code's constants.
+    unsafe fn translate_ins(&mut self, dec: &[BcIns], consts: Sexp, dst: Reg) -> Result<(), Need> {
+        // SAFETY: the caller's contract.
+        let live = unsafe { reachable(dec, consts)? };
         debug_assert_eq!(dst, R_FIRST);
         let mut p = Comp::new(self.cx, self.st, Profile::Bc, Some(Cenv::for_translation()));
         let r = p.alloc();
         // SAFETY: the caller's contract.
-        let plan = match unsafe { p.pass(&dec, &live, consts, None, r) } {
+        let plan = match unsafe { p.pass(dec, &live, consts, None, r) } {
             Ok(t) => t.plan(),
             Err(e) => {
                 self.bc_untranslated = p.bc_untranslated.take();
@@ -573,7 +712,47 @@ impl<'g> Comp<'g> {
             }
         };
         // SAFETY: as above.
-        unsafe { self.pass(&dec, &live, consts, Some(plan), dst) }.map(drop)
+        unsafe { self.pass(dec, &live, consts, Some(plan), dst) }.map(drop)
+    }
+
+    /// The code of instructions `from..to` of `t`'s code (an argument's,
+    /// which leaves its value), a code object for `arg`, kept on it as a
+    /// call's argument code is ([`crate::code::cache_on`]: what
+    /// [`crate::bcassign`]'s evaluation of the argument runs).
+    ///
+    /// # Safety
+    /// `t`'s constants are live; `arg` is a live call.
+    unsafe fn slice_code(&mut self, t: &Tr, from: usize, to: usize, arg: Sexp) -> Result<(), Need> {
+        if from >= to || to >= t.code.len() {
+            return Err(mismatch());
+        }
+        let mut dec = t.code[from..to].to_vec();
+        // the value left: the code's, at the position after it
+        dec.push(BcIns { at: t.code[to].at, op: RETURN, a: [0; 4] });
+        let cenv = self.bc.take().expect("robigo: byte code outside the Bc profile");
+        let mut sub = Comp::new(self.cx, self.st, Profile::Bc, Some(cenv));
+        let r = sub.alloc();
+        // SAFETY: the caller's contract.
+        let res = unsafe { sub.translate_ins(&dec, t.consts, r) };
+        let res = res.map(|()| {
+            let mut i = Ins::new(Op::Ret);
+            i.b = r;
+            sub.emit(i);
+            sub.finish()
+        });
+        self.bc = sub.bc.take();
+        if res.is_err() && sub.bc_untranslated.is_some() {
+            self.bc_untranslated = sub.bc_untranslated.take();
+        }
+        let b = res?;
+        // SAFETY: as above.
+        unsafe {
+            let built = crate::code::build(self.cx, &super::verified(b), arg, None)?;
+            crate::code::cache_on(arg, built);
+            self.arg_codes.push(built);
+            self.arg_codes.append(&mut sub.arg_codes);
+        }
+        Ok(())
     }
 
     /// One pass over the reachable instructions, in order: pass 1 (no
@@ -605,6 +784,10 @@ impl<'g> Comp<'g> {
             depth: vec![None; dec.len()],
             res: HashMap::new(),
             subsets: Vec::new(),
+            open: vec![0],
+            assigning: Vec::new(),
+            assigned: HashMap::new(),
+            skip_to: None,
         };
         // `dst` is the code's value (the first register)
         self.free_to(dst);
@@ -614,19 +797,28 @@ impl<'g> Comp<'g> {
                 fell = false;
                 continue;
             }
+            // (a complex assignment translated whole)
+            if let Some(end) = t.skip_to {
+                if k <= end {
+                    continue;
+                }
+                t.skip_to = None;
+            }
             let i = t.code[k];
             t.cur = k;
             // a label: the stack a jump left there, met by control falling in
             match (t.labels.get(&i.at).cloned(), fell) {
-                (Some((st, next)), true) => {
+                (Some((st, next, open)), true) => {
                     if next != self.next {
                         return Err(mismatch());
                     }
                     merge(&mut t.stack, &st)?;
+                    join_open(&mut t.open, &open);
                 }
-                (Some((st, next)), false) => {
+                (Some((st, next, open)), false) => {
                     t.stack = st;
                     self.next = next;
+                    t.open = open;
                     t.pending = None;
                 }
                 (None, true) => {}
@@ -634,7 +826,7 @@ impl<'g> Comp<'g> {
                 // the jump into its loop): the stack the jump before left
                 // there, which that back-edge meets
                 (None, false) => {
-                    t.labels.insert(i.at, (t.stack.clone(), self.next));
+                    t.labels.insert(i.at, (t.stack.clone(), self.next, t.open.clone()));
                 }
             }
             match &t.plan {
@@ -658,6 +850,15 @@ impl<'g> Comp<'g> {
             // SAFETY: constants of the live byte code.
             unsafe { self.op(&mut t, i, tail)? };
             fell = falls_through(i.op);
+            // the code toward the next slot begins after an instruction that
+            // wrote the top one (not after a pop or a jump)
+            if !matches!(i.op, POP | BRIFNOT | SWITCH | RETURN | RETURNJMP | ENDLOOPCNTXT | GOTO | BASEGUARD) {
+                let d = t.stack.len();
+                if t.open.len() <= d {
+                    t.open.resize(d + 1, 0);
+                }
+                t.open[d] = k + 1;
+            }
         }
         if !t.guards.is_empty() {
             return Err(mismatch());
@@ -739,6 +940,126 @@ impl<'g> Comp<'g> {
                 _ => None,
             })
             .ok_or(Need::Fail)
+    }
+
+    /// Whether the entry `j` below the top is a complex assignment's value.
+    fn top_slot(&self, t: &Tr, j: usize) -> bool {
+        t.stack.len() > j && matches!(t.stack[t.stack.len() - 1 - j].what, What::Slot)
+    }
+
+    /// Push a complex assignment's value (no register).
+    fn push_slot(&mut self, t: &mut Tr) {
+        let starts = starts_new(t);
+        t.stack.push(Item { what: What::Slot, starts });
+    }
+
+    /// A complex assignment's `STARTSUBSET` or `STARTSUBASSIGN` frame.
+    fn push_dispatch(&mut self, t: &mut Tr, sub2: bool, call: Sexp) {
+        let starts = starts_new(t);
+        let fun = Fun::AssignDispatch { sub2, call };
+        let f = Frame { fun, dst: self.next, base: self.next, args: Vec::new(), fun_code: None };
+        t.stack.push(Item { what: What::Frame(f), starts });
+    }
+
+    /// The code of the `n` values on top of the stack (indices), in order:
+    /// each from where its code began to where the next one's did (the
+    /// last's to the instruction being translated).
+    fn index_codes(&self, t: &Tr, n: usize) -> Result<Vec<StepArg>, Need> {
+        let len = t.stack.len();
+        if len < n {
+            return Err(Need::Fail);
+        }
+        let at = |d: usize| t.open.get(d).copied().ok_or(Need::Fail);
+        (0..n)
+            .map(|j| {
+                let from = at(len - n + j)?;
+                let to = if j + 1 < n { at(len - n + j + 1)? } else { t.cur };
+                Ok(StepArg::Code(from, to))
+            })
+            .collect()
+    }
+
+    /// The plan of the complex assignment `a` (what
+    /// [`Comp::bc_assign_plan`] makes from source): its steps as their
+    /// opcodes say, each argument's code translated and kept on its
+    /// expression in the step's call.
+    ///
+    /// # Safety
+    /// `t`'s constants are live.
+    // R: cmp.R:cmpComplexAssign, cmpGetterCall, cmpSetterCall
+    unsafe fn assign_plan(&mut self, t: &Tr, a: &Assign) -> Result<Sexp, Need> {
+        let cx = self.cx;
+        // SAFETY: the caller's contract; every object made here is reached
+        // from the plan, which the code's pool keeps, and nothing collects.
+        unsafe {
+            let mut g = Vec::with_capacity(a.getters.len());
+            for s in &a.getters {
+                g.push(self.step(t, s, false)?);
+            }
+            let mut st = Vec::with_capacity(a.setters.len());
+            for s in &a.setters {
+                st.push(self.step(t, s, true)?);
+            }
+            let getters = cx.alloc_vector_raw(VECSXP, g.len())?;
+            for (j, &x) in g.iter().enumerate() {
+                getters.set_elt(j, x);
+            }
+            let setters = cx.alloc_vector_raw(VECSXP, st.len())?;
+            for (j, &x) in st.iter().enumerate() {
+                setters.set_elt(j, x);
+            }
+            let plan = cx.alloc_vector_raw(VECSXP, ba::PLAN_LEN)?;
+            plan.set_elt(ba::P_SYM, a.sym);
+            plan.set_elt(ba::P_GETTERS, getters);
+            plan.set_elt(ba::P_SETTERS, setters);
+            Ok(plan)
+        }
+    }
+
+    /// A plan's step ([`ba::make_step`]): the expression `error()` reports
+    /// the one bcEval is at (a setter call's inflated into its assignment,
+    /// `R_getBCInterpreterExpression`'s).
+    ///
+    /// # Safety
+    /// As for [`Comp::assign_plan`].
+    unsafe fn step(&mut self, t: &Tr, s: &Step, setter: bool) -> Result<Sexp, Need> {
+        let cx = self.cx;
+        // SAFETY: the caller's contract: live constants.
+        unsafe {
+            // the arguments after the object, in order (a setter's `value`
+            // after them)
+            let first = s.call.cdr();
+            if first.typ() != LISTSXP {
+                return Err(Need::Fail);
+            }
+            let mut cell = first.cdr();
+            for arg in &s.args {
+                if cell.typ() != LISTSXP {
+                    return Err(Need::Fail);
+                }
+                let e = cell.car();
+                match *arg {
+                    StepArg::Code(from, to) if e.typ() == LANGSXP => self.slice_code(t, from, to, e)?,
+                    StepArg::Prom(code) if code.typ() == BCODESXP && e.typ() == LANGSXP => {
+                        self.promise_code(code, e)?
+                    }
+                    _ => {}
+                }
+                cell = cell.cdr();
+            }
+            if let Some((from, to)) = s.fun_code
+                && s.what.typ() == LANGSXP
+            {
+                self.slice_code(t, from, to, s.what)?;
+            }
+            let Some(cexpr) = t.expr_at(cx, t.code[s.at].at) else {
+                self.bc_untranslated = Some("byte code without its expressions index".to_owned());
+                return Err(Need::Fail);
+            };
+            let fin = setter && s.call.car().typ() == SYMSXP;
+            let report = if fin { ba::inflate_assignment_call(cx, cexpr)? } else { cexpr };
+            ba::make_step(cx, s.kind, s.call, s.what, s.vexpr, report, fin)
+        }
     }
 
     /// The `n` values on top of the stack, popped: the first one's
@@ -906,7 +1227,8 @@ impl<'g> Comp<'g> {
                 g.a = r;
                 g.e = self.k(k(i.a[0]));
                 let get = self.emit(g);
-                let f = Frame { fun: Fun::Found { get: Some(get) }, dst, base: r, args: Vec::new() };
+                let fun = Fun::Found { get: Some(get), sym: Some(k(i.a[0])) };
+                let f = Frame { fun, dst, base: r, args: Vec::new(), fun_code: None };
                 t.stack.push(Item { what: What::Frame(f), starts });
             }
             GETBUILTIN | GETINTLBUILTIN => {
@@ -924,7 +1246,7 @@ impl<'g> Comp<'g> {
                 let starts = starts_new(t);
                 let dst = self.alloc();
                 let fun = Fun::Builtin { prim, internal: i.op == GETINTLBUILTIN };
-                let f = Frame { fun, dst, base: self.next, args: Vec::new() };
+                let f = Frame { fun, dst, base: self.next, args: Vec::new(), fun_code: None };
                 t.stack.push(Item { what: What::Frame(f), starts });
             }
             MAKEPROM | PUSHCONSTARG | PUSHNULLARG | PUSHTRUEARG | PUSHFALSEARG | DOMISSING | DODOTS => {
@@ -963,16 +1285,23 @@ impl<'g> Comp<'g> {
                     (DODOTS, _) => PKind::Dots,
                     _ => PKind::Const,
                 };
-                self.frame(t)?.args.push(PArg { kind, tag: None });
+                self.frame(t)?.args.push(PArg { kind, tag: None, code: None });
             }
             PUSHARG => {
-                // the value stays in its register: the builtin's window
+                // the value stays in its register: the builtin's window (a
+                // complex assignment's default method's: its code noted)
+                let from = t.open.get(t.stack.len().wrapping_sub(1)).copied().unwrap_or(0);
                 let Some(Item { what: What::Val(r), .. }) = t.stack.pop() else { return Err(Need::Fail) };
+                let cur = t.cur;
                 let f = self.frame(t)?;
                 if f.fun.window() && r != f.base + f.args.len() as Reg {
                     return Err(mismatch());
                 }
-                f.args.push(PArg { kind: PKind::Val, tag: None });
+                let code = matches!(f.fun, Fun::AssignDispatch { .. }).then_some((from, cur));
+                f.args.push(PArg { kind: PKind::Val, tag: None, code });
+                if !f.fun.window() {
+                    self.free_to(r);
+                }
             }
             SETTAG => {
                 let tag = k(i.a[0]);
@@ -985,7 +1314,7 @@ impl<'g> Comp<'g> {
             CALL => {
                 let call = k(i.a[0]);
                 let Some(Item { what: What::Frame(f), starts }) = t.stack.pop() else { return Err(Need::Fail) };
-                let Fun::Found { get } = f.fun else { return Err(Need::Fail) };
+                let Fun::Found { get, .. } = f.fun else { return Err(Need::Fail) };
                 // SAFETY: a constant call of the byte code.
                 unsafe { self.call_found(&f, get, call, planning)? };
                 self.push_at(t, f.dst, starts);
@@ -1133,6 +1462,22 @@ impl<'g> Comp<'g> {
                 self.builtin_on(i, b".Call", call, dst, x, n as u16)?;
             }
             LOG | LOGBASE => return self.untranslated(i, "byte code calling log"),
+            DOLLAR if self.top_slot(t, 0) => {
+                // a complex assignment's `$` getter
+                let (call, sym) = (k(i.a[0]), k(i.a[1]));
+                t.stack.pop();
+                self.push_slot(t);
+                let step = Step {
+                    kind: ba::K_DOLLAR,
+                    at: t.cur,
+                    call,
+                    what: sym,
+                    vexpr: None,
+                    args: Vec::new(),
+                    fun_code: None,
+                };
+                record(t, false, step)?;
+            }
             DOLLAR => {
                 let (call, sym) = (k(i.a[0]), k(i.a[1]));
                 let (dst, x) = self.consume(t, 1)?;
@@ -1142,6 +1487,19 @@ impl<'g> Comp<'g> {
                 d.e = self.k(call);
                 d.c = self.k(sym);
                 self.emit(d);
+            }
+            STARTSUBSET_N | STARTSUBSET2_N | STARTSUBSET | STARTSUBSET2 if self.top_slot(t, 0) => {
+                // a complex assignment's `[` or `[[` getter: a method's
+                // value at the label in the copy's place, as here
+                let call = k(i.a[0]);
+                let sub2 = matches!(i.op, STARTSUBSET2_N | STARTSUBSET2);
+                let st = t.stack.clone();
+                meet(t, i.a[1] as usize, st, self.next)?;
+                if matches!(i.op, STARTSUBSET_N | STARTSUBSET2_N) {
+                    t.subsets.push(Sub { dst: 0, obj: 0, sub2, assign: true });
+                } else {
+                    self.push_dispatch(t, sub2, call);
+                }
             }
             STARTSUBSET_N | STARTSUBSET2_N | STARTSUBSET | STARTSUBSET2 => {
                 // an object dispatches, its method's value going to the
@@ -1163,7 +1521,7 @@ impl<'g> Comp<'g> {
                 meet(t, to, st, dst + 1)?;
                 if matches!(i.op, STARTSUBSET_N | STARTSUBSET2_N) {
                     // the indices follow as values
-                    t.subsets.push(Sub { dst, obj: x, sub2 });
+                    t.subsets.push(Sub { dst, obj: x, sub2, assign: false });
                 } else {
                     // the default method's arguments: the object (its tag
                     // the call's), then the pushes (DO_STARTDISPATCH)
@@ -1175,8 +1533,8 @@ impl<'g> Comp<'g> {
                     }
                     // SAFETY: as above.
                     let tag = unsafe { rest.tag() };
-                    let obj = PArg { kind: PKind::Val, tag: (tag != nil).then_some(tag) };
-                    let f = Frame { fun: Fun::Dispatch { sub2, call }, dst, base: x, args: vec![obj] };
+                    let obj = PArg { kind: PKind::Val, tag: (tag != nil).then_some(tag), code: None };
+                    let f = Frame { fun: Fun::Dispatch { sub2, call }, dst, base: x, args: vec![obj], fun_code: None };
                     t.stack.push(Item { what: What::Frame(f), starts });
                 }
             }
@@ -1189,12 +1547,49 @@ impl<'g> Comp<'g> {
                     _ => i.a[1] as usize,
                 };
                 let s = t.subsets.pop().ok_or(Need::Fail)?;
+                if s.assign {
+                    // a complex assignment's getter: its indices' code
+                    if s.sub2 != sub2 {
+                        return Err(mismatch());
+                    }
+                    let args = self.index_codes(t, nidx)?;
+                    for _ in 0..nidx {
+                        self.pop(t)?;
+                    }
+                    if !self.top_slot(t, 0) {
+                        return Err(mismatch());
+                    }
+                    t.stack.pop();
+                    self.push_slot(t);
+                    let kind = if sub2 { ba::K_SUB2 } else { ba::K_SUB };
+                    // SAFETY: a call constant.
+                    let what = unsafe { call.car() };
+                    record(t, false, Step { kind, at: t.cur, call, what, vexpr: None, args, fun_code: None })?;
+                    return Ok(());
+                }
                 let (x, starts) = self.pop_window(t, 1 + nidx)?;
                 if x != s.obj || s.sub2 != sub2 {
                     return Err(mismatch());
                 }
                 self.dflt_subset(call, s.dst, x, 1 + nidx, sub2, &[]);
                 self.push_at(t, s.dst, starts);
+            }
+            DFLTSUBSET | DFLTSUBSET2 if matches!(t.stack.last().map(|e| &e.what), Some(What::Frame(f)) if matches!(f.fun, Fun::AssignDispatch { .. })) =>
+            {
+                // a complex assignment's `[` or `[[` getter, for the default
+                // method
+                let Some(Item { what: What::Frame(f), .. }) = t.stack.pop() else { return Err(Need::Fail) };
+                let Fun::AssignDispatch { sub2, call } = f.fun else { return Err(Need::Fail) };
+                if sub2 != (i.op == DFLTSUBSET2) || !self.top_slot(t, 0) {
+                    return Err(mismatch());
+                }
+                t.stack.pop();
+                self.push_slot(t);
+                let kind = if sub2 { ba::K_SUB2_PUNT } else { ba::K_SUB_PUNT };
+                // SAFETY: a call constant.
+                let what = unsafe { call.car() };
+                let args = step_args(&f.args);
+                record(t, false, Step { kind, at: t.cur, call, what, vexpr: None, args, fun_code: None })?;
             }
             DFLTSUBSET | DFLTSUBSET2 => {
                 let Some(Item { what: What::Frame(f), .. }) = t.stack.pop() else { return Err(Need::Fail) };
@@ -1215,10 +1610,12 @@ impl<'g> Comp<'g> {
                 // its value's register below it (`attempt to apply
                 // non-function` is the call's to raise, before any
                 // argument is evaluated)
+                let from = t.open.get(t.stack.len().wrapping_sub(1)).copied().unwrap_or(0);
                 let Some(Item { what: What::Val(r), starts }) = t.stack.pop() else { return Err(Need::Fail) };
                 let dst = self.reserve(t, r, &starts)?;
                 self.next = r + 1;
-                let f = Frame { fun: Fun::Found { get: None }, dst, base: r, args: Vec::new() };
+                let fun = Fun::Found { get: None, sym: None };
+                let f = Frame { fun, dst, base: r, args: Vec::new(), fun_code: Some((from, t.cur)) };
                 t.stack.push(Item { what: What::Frame(f), starts });
             }
             INCLNKSTK => {
@@ -1336,6 +1733,149 @@ impl<'g> Comp<'g> {
                 let Some(Item { what: What::LoopCtx { at }, .. }) = t.stack.pop() else { return Err(Need::Fail) };
                 let end = self.emit(Ins::new(Op::LoopEnd));
                 self.patch(at, end);
+            }
+            STARTASSIGN | STARTASSIGN2 if !planning => {
+                // pass 2: the assignment whole, `BcAssign` of the plan its
+                // opcodes make, the right-hand side's register its value
+                let a = t.plan.as_ref().and_then(|p| p.assigns.get(&t.cur)).cloned().ok_or_else(mismatch)?;
+                let r = self.top(t)?;
+                // SAFETY: the code's live constants.
+                let plan = unsafe { self.assign_plan(t, &a)? };
+                let mut b = Ins::new(Op::BcAssign);
+                b.a = r;
+                b.b = r;
+                b.e = self.k(plan);
+                b.g = (i.op == STARTASSIGN2) as u16;
+                self.emit(b);
+                t.skip_to = Some(a.end);
+            }
+            STARTASSIGN | STARTASSIGN2 => {
+                // pass 1: above the right-hand side, the target's cell, its
+                // value and the right-hand side's copy
+                if !matches!(t.stack.last().map(|e| &e.what), Some(What::Val(_))) {
+                    return Err(Need::Fail);
+                }
+                for _ in 0..3 {
+                    self.push_slot(t);
+                }
+                let a = Assign { end: 0, sym: k(i.a[0]), getters: Vec::new(), setters: Vec::new() };
+                t.assigning.push((t.cur, a));
+            }
+            ENDASSIGN | ENDASSIGN2 => {
+                // the cell and the new value off: the right-hand side's left
+                if !planning || !self.top_slot(t, 0) || !self.top_slot(t, 1) {
+                    return Err(mismatch());
+                }
+                t.stack.truncate(t.stack.len() - 2);
+                let (start, mut a) = t.assigning.pop().ok_or(Need::Fail)?;
+                if a.sym != k(i.a[0]) || a.setters.len() != a.getters.len() + 1 {
+                    return self.untranslated(i, "a complex assignment of a shape cmp.R does not make");
+                }
+                a.end = t.cur;
+                t.assigned.insert(start, a);
+            }
+            DUP2ND if !t.assigning.is_empty() && self.top_slot(t, 1) => self.push_slot(t),
+            SWAP if !t.assigning.is_empty() && t.stack.len() >= 2 => {
+                let n = t.stack.len();
+                t.stack.swap(n - 1, n - 2);
+            }
+            GETTER_CALL | SETTER_CALL if !t.assigning.is_empty() => {
+                // a generic getter or setter: its frame's function and
+                // promises, on the left-hand value (and the right-hand side)
+                let call = k(i.a[0]);
+                let Some(Item { what: What::Frame(f), .. }) = t.stack.pop() else { return Err(Need::Fail) };
+                let Fun::Found { sym, .. } = f.fun else { return Err(Need::Fail) };
+                let setter = i.op == SETTER_CALL;
+                // (below the frame: the left-hand value and the right-hand
+                // side, which a setter's value replaces, a getter's goes
+                // above)
+                if !self.top_slot(t, 0) || !self.top_slot(t, 1) {
+                    return Err(mismatch());
+                }
+                if setter {
+                    t.stack.truncate(t.stack.len() - 2);
+                }
+                self.next = f.dst;
+                self.push_slot(t);
+                // SAFETY: a call constant.
+                let what = sym.unwrap_or_else(|| unsafe { call.car() });
+                // (the first argument is `*tmp*`'s PUSHNULLARG)
+                let args = step_args(f.args.get(1..).unwrap_or(&[]));
+                let vexpr = setter.then(|| k(i.a[1]));
+                let step = Step { kind: ba::K_GENERIC, at: t.cur, call, what, vexpr, args, fun_code: f.fun_code };
+                record(t, setter, step)?;
+            }
+            DOLLARGETS if !t.assigning.is_empty() => {
+                let (call, sym) = (k(i.a[0]), k(i.a[1]));
+                if !self.top_slot(t, 0) || !self.top_slot(t, 1) {
+                    return Err(mismatch());
+                }
+                t.stack.truncate(t.stack.len() - 2);
+                self.push_slot(t);
+                // SAFETY: a call constant.
+                let vexpr = Some(unsafe { last_arg(call) });
+                let step =
+                    Step { kind: ba::K_DOLLAR, at: t.cur, call, what: sym, vexpr, args: Vec::new(), fun_code: None };
+                record(t, true, step)?;
+            }
+            STARTSUBASSIGN_N | STARTSUBASSIGN2_N | STARTSUBASSIGN | STARTSUBASSIGN2 if !t.assigning.is_empty() => {
+                // a `[<-` or `[[<-` setter: a method's value at the label in
+                // the left-hand value's place, the right-hand side off
+                let call = k(i.a[0]);
+                let sub2 = matches!(i.op, STARTSUBASSIGN2_N | STARTSUBASSIGN2);
+                if !self.top_slot(t, 0) || !self.top_slot(t, 1) {
+                    return Err(mismatch());
+                }
+                let mut st = t.stack.clone();
+                st.pop();
+                meet(t, i.a[1] as usize, st, self.next)?;
+                if matches!(i.op, STARTSUBASSIGN_N | STARTSUBASSIGN2_N) {
+                    t.subsets.push(Sub { dst: 0, obj: 0, sub2, assign: true });
+                } else {
+                    self.push_dispatch(t, sub2, call);
+                }
+            }
+            VECSUBASSIGN | MATSUBASSIGN | SUBASSIGN_N | VECSUBASSIGN2 | MATSUBASSIGN2 | SUBASSIGN2_N
+                if !t.assigning.is_empty() =>
+            {
+                let call = k(i.a[0]);
+                let sub2 = matches!(i.op, VECSUBASSIGN2 | MATSUBASSIGN2 | SUBASSIGN2_N);
+                let nidx = match i.op {
+                    VECSUBASSIGN | VECSUBASSIGN2 => 1,
+                    MATSUBASSIGN | MATSUBASSIGN2 => 2,
+                    _ => i.a[1] as usize,
+                };
+                let s = t.subsets.pop().ok_or(Need::Fail)?;
+                if !s.assign || s.sub2 != sub2 {
+                    return Err(mismatch());
+                }
+                let args = self.index_codes(t, nidx)?;
+                for _ in 0..nidx {
+                    self.pop(t)?;
+                }
+                if !self.top_slot(t, 0) || !self.top_slot(t, 1) {
+                    return Err(mismatch());
+                }
+                t.stack.truncate(t.stack.len() - 2);
+                self.push_slot(t);
+                let kind = if sub2 { ba::K_SUB2 } else { ba::K_SUB };
+                // SAFETY: a call constant.
+                let (what, vexpr) = unsafe { (call.car(), Some(last_arg(call))) };
+                record(t, true, Step { kind, at: t.cur, call, what, vexpr, args, fun_code: None })?;
+            }
+            DFLTSUBASSIGN | DFLTSUBASSIGN2 if !t.assigning.is_empty() => {
+                let Some(Item { what: What::Frame(f), .. }) = t.stack.pop() else { return Err(Need::Fail) };
+                let Fun::AssignDispatch { sub2, call } = f.fun else { return Err(Need::Fail) };
+                if sub2 != (i.op == DFLTSUBASSIGN2) || !self.top_slot(t, 0) || !self.top_slot(t, 1) {
+                    return Err(mismatch());
+                }
+                t.stack.truncate(t.stack.len() - 2);
+                self.push_slot(t);
+                let kind = if sub2 { ba::K_SUB2_PUNT } else { ba::K_SUB_PUNT };
+                // SAFETY: a call constant.
+                let (what, vexpr) = unsafe { (call.car(), Some(last_arg(call))) };
+                let args = step_args(&f.args);
+                record(t, true, Step { kind, at: t.cur, call, what, vexpr, args, fun_code: None })?;
             }
             RETURNJMP => {
                 // `return` in a promise: out of the function's context
@@ -1562,6 +2102,9 @@ impl<'g> Comp<'g> {
             sub.finish()
         });
         self.bc = sub.bc.take();
+        if res.is_err() && sub.bc_untranslated.is_some() {
+            self.bc_untranslated = sub.bc_untranslated.take();
+        }
         let b = res?;
         // SAFETY: as above.
         unsafe {
