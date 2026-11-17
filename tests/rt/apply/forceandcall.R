@@ -1,0 +1,25 @@
+# forceAndCall(n, FUN, ...): the first n arguments forced before FUN's
+# body runs; specials and builtins called as eval calls them
+f <- function(a, b) { cat("body\n"); a + b }
+forceAndCall(2, f, { cat("a\n"); 1 }, { cat("b\n"); 2 })
+forceAndCall(1, f, { cat("a\n"); 1 }, { cat("b\n"); 2 })
+forceAndCall(0, f, { cat("a\n"); 1 }, { cat("b\n"); 2 })
+forceAndCall(5, f, { cat("a\n"); 1 }, { cat("b\n"); 2 })
+forceAndCall(1, sum, 1, 2, 3)
+forceAndCall(1, quote, x + y)
+forceAndCall(2, function(...) list(...), 1, 2)
+k <- function(...) forceAndCall(2, f, ...)
+k({ cat("a\n"); 10 }, { cat("b\n"); 20 })
+forceAndCall(2L, function(x, y) y, 1, 2)
+forceAndCall("1", function(x) x, 7)
+forceAndCall(NA, function(x) x, 8)
+show <- function(expr) tryCatch(expr,
+    error = function(e) cat("Error in", deparse(conditionCall(e)), ":", conditionMessage(e), "\n"))
+show(forceAndCall(1, function(x) x, ))
+show(forceAndCall(2, function(x, y) y, 1, ))
+show(forceAndCall(1, nosuchfunction, 1))
+show(forceAndCall(1, 3, 1))
+show(forceAndCall(1))
+Reduce(function(a, b) a * b, 1:5, accumulate = TRUE)
+Reduce(`+`, 1:4, accumulate = TRUE, right = TRUE)
+Filter(function(x) x > 2, 1:5)

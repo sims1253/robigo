@@ -313,6 +313,8 @@ pub static BUILTINS: &[Builtin] = &[
     row("lapply", apply::do_lapply, 0, 10, 2, FUNCALL, Calls),
     row("vapply", apply::do_vapply, 0, 10, 4, FUNCALL, Calls),
     row("islistfactor", apply::do_islistfactor, 0, 11, 2, FUNCALL, Pure),
+    // mapply.c
+    row("mapply", apply::do_mapply, 0, 11, 3, FUNCALL, Calls),
     // attrib.c, objects.c
     row("attributes", attrib::do_attributes, 0, 1, 1, FUNCALL, Pure),
     row("attr", attrib::do_attr, 0, 1, -1, FUNCALL, Pure),
