@@ -1,7 +1,7 @@
 # platform.c's file.exists (do_fileexists, R_FileExists).
 d <- if (dir.exists("tests/rt/platform/listfiles")) "tests/rt/platform/listfiles" else "listfiles"
 fe <- function(x) .Internal(file.exists(x))
-fe(c(d, file.path(d, "a.txt"), file.path(d, ".hidden"), file.path(d, "sub", "deeper", "e.R")))
+fe(c(d, file.path(d, "a.txt"), file.path(d, ".hidden"), file.path(d, "sub", "deeper", "e.Rd")))
 fe(c(file.path(d, "nosuch"), NA, "", file.path(d, "a.txt", "x")))
 fe(character(0))
 fe("~")
