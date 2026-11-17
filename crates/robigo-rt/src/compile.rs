@@ -1312,11 +1312,12 @@ impl<'g> Comp<'g> {
                 return Ok(Some(Handler::Known(Known::Fn(o))));
             }
             // (a name of its own: base's binding is the builtin itself)
-            // SAFETY: base's frame and a symbol.
-            if t == BUILTINSXP
-                && st.defs[o].eval % 10 == 1
-                && (alias.is_some() || unsafe { self.base_binding(f) } == Some(prim))
-            {
+            let own = || {
+                // SAFETY: base's frame and a symbol.
+                let b = unsafe { self.base_binding(f) };
+                b == Some(prim)
+            };
+            if t == BUILTINSXP && st.defs[o].eval % 10 == 1 && (alias.is_some() || own()) {
                 if args.iter().any(|&(a, _)| a == dots || a == missing) {
                     return Ok(None);
                 }
