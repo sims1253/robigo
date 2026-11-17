@@ -1,0 +1,18 @@
+# c() and unlist() over lists, pairlists and expression vectors: the
+# elements walked in place with their names, NULLs after the first dropped
+c(list(a = 1, 2), list(b = "x"))
+c(list(names = c("message", "call")), list(class = c("simpleError", "error", "condition")))
+c(list(1), NULL, list(2), NULL)
+c(NULL, list(a = 1), NULL)
+c(pairlist(a = 1, b = 2), list(3))
+c(pairlist(a = 1, 2), recursive = TRUE)
+c(expression(a + b, x), list(1))
+c(list(a = list(b = 1, c = 2), d = 3), recursive = TRUE)
+c(list(a = 1:2, b = list(c = 3, 4)), recursive = TRUE, use.names = FALSE)
+c(x = list(1, 2), y = list(z = 3))
+c(a = pairlist(1, b = 2))
+c(list(1), use.names = FALSE, list(b = 2))
+unlist(pairlist(a = 1, b = list(c = 2, 3)))
+unlist(list(a = pairlist(x = 1, y = 2), b = 3))
+unlist(list(list(1, 2), list(a = 3)), recursive = FALSE)
+length(c(pairlist(1, 2, 3), NULL))

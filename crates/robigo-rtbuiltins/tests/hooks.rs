@@ -226,8 +226,9 @@ fn get_and_mget_force_promises_exists_does_not() {
 }
 
 /// A warning hook that makes every warning an error (`options(warn = 2)`).
-fn warn_to_error(cx: &mut Cx, call: Option<Root<'_>>, msg: &str) -> RResult<()> {
-    Err(cx.error_call(call, &format!("(converted from warning) {msg}")))
+fn warn_to_error(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RResult<()> {
+    let m = [&b"(converted from warning) "[..], msg].concat();
+    Err(cx.error_call_bytes(call, &m))
 }
 
 #[test]
