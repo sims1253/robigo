@@ -87,6 +87,9 @@ def programs(tmp):
               for f in sorted(os.listdir(mem)) if f.endswith(".R")]
     with open(os.path.join(ROOT, "benchmarks", "rt", "calls-rows.toml"), "rb") as f:
         rows = rows_with_setups(tomllib.load(f))
+    # (the jit rows compile through the compiler namespace, which robigo-rt
+    # cannot load until V4 step 3: run them here from then on)
+    rows = [r for r in rows if r.get("group") != "jit"]
     for r in rows:
         path = os.path.join(tmp, f"row-{r['name']}.R")
         with open(path, "w") as f:

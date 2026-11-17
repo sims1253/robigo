@@ -121,6 +121,27 @@ class Guards(unittest.TestCase):
         self.assertLessEqual({n for n, r in rows.items() if r["group"] == "guard"}, set(guards))
 
 
+class Rows(unittest.TestCase):
+    """A rows file's `setup_ref`, and a bars file that names no program."""
+
+    def test_a_row_takes_its_own_setup_or_the_shared_one(self):
+        doc = {"row": [{"name": "a", "setup": "x <- 1"}, {"name": "jit-b", "setup_ref": "calls"}, {"name": "c"}],
+               "setups": {"calls": "f <- function() 1"}}
+        rows = perf.rows_with_setups(doc)
+        self.assertEqual([r.get("setup") for r in rows], ["x <- 1", "f <- function() 1", None])
+        # the parsed document is left as it was
+        self.assertNotIn("setup", doc["row"][1])
+
+    def test_an_unknown_setup_names_its_row(self):
+        with self.assertRaises(KeyError) as e:
+            perf.rows_with_setups({"row": [{"name": "jit-c", "setup_ref": "nope"}]})
+        self.assertEqual(e.exception.args[0], "row `jit-c`: no setup named `nope` in the [setups] table")
+
+    def test_no_program_means_no_rss_run(self):
+        # (rss.py refuses a call without files; /nonexistent would fail if run)
+        self.assertEqual(perf.rt_rss(None, [], 1, "/nonexistent", "gnur"), {})
+
+
 class AgainstMain(unittest.TestCase):
     # main's binary, measured on the same machine
     MAIN = {"instr": {**OK}, "rss": {"p.R": 30000}}

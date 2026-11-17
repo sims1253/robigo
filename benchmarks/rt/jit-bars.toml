@@ -22,7 +22,8 @@
 #   ledger's early look (at N = 40) puts robigo-rt at 1.80-1.97x. The gate
 #   says when one is met, so that it can be set to met.
 # - `rss`: no peak-RSS bars. perf.py reads every bars file's `rss`, so the
-#   empty list keeps this file one that `rt-bars` and `rt-gnur --bars` parse.
+#   empty list keeps this file one that `rt-bars` and `rt-gnur --bars` parse
+#   and run (perf.py's RSS step does nothing for a file naming no program).
 
 rss = []
 
