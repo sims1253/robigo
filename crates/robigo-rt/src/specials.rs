@@ -99,7 +99,7 @@ impl<'s> Evaluated<'s> {
 
     /// The window for a builtin's default method.
     pub(crate) fn args(&self, cx: &Cx) -> Args<'s> {
-        let any_alt = (0..self.n).any(|i| self.root(i).bind(cx).is_package_altrep());
+        let any_alt = (0..self.n).any(|i| self.root(i).bind(cx).is_altrep());
         // SAFETY: `n` filled value slots and `n` tag slots of the scope.
         unsafe { Args::from_raw(self.vals, Some(self.names), self.n as u32, any_alt) }
     }
@@ -437,6 +437,7 @@ pub fn do_subset(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out:
         Disp::Done => Ok(()),
         Disp::Default(ev) => {
             let args = ev.args(cx);
+            cx.materialize_subset_args(args)?;
             subset::do_subset_dflt(cx, call, args, rho, out)
         }
     })
@@ -449,6 +450,7 @@ pub fn do_subset2(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out
         Disp::Done => Ok(()),
         Disp::Default(ev) => {
             let args = ev.args(cx);
+            cx.materialize_subset_args(args)?;
             subset::do_subset2_dflt(cx, call, args, rho, out)
         }
     })
@@ -553,6 +555,7 @@ pub fn do_subassign(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, o
         Disp::Done => Ok(()),
         Disp::Default(ev) => {
             let args = ev.args(cx);
+            cx.materialize_subset_args(args)?;
             subassign::do_subassign_dflt(cx, call, args, rho, out)
         }
     })
@@ -565,6 +568,7 @@ pub fn do_subassign2(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, 
         Disp::Done => Ok(()),
         Disp::Default(ev) => {
             let args = ev.args(cx);
+            cx.materialize_subset_args(args)?;
             subassign::do_subassign2_dflt(cx, call, args, rho, out)
         }
     })

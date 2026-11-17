@@ -123,6 +123,11 @@ unsafe extern "C" {
     fn INTEGER_RO();
     fn REAL();
     fn REAL_RO();
+    fn DATAPTR();
+    fn DATAPTR_RO();
+    fn DATAPTR_OR_NULL();
+    fn INTEGER_ELT();
+    fn REAL_ELT();
     fn COMPLEX();
     fn COMPLEX_RO();
     fn RAW();
@@ -199,7 +204,9 @@ exports! {
         R_SetExternalPtrAddr R_SetExternalPtrTag R_SetExternalPtrProtected R_ExternalPtrAddrFn R_WeakRefKey
         R_WeakRefValue Rf_protect Rf_unprotect R_ProtectWithIndex R_Reprotect Rf_unprotect_ptr Rprintf REprintf
         Rvprintf REvprintf R_ClosureFormals R_ClosureBody R_ClosureEnv R_ClosureExpr ALTREP ALTREP_CLASS
-        R_altrep_data1 R_altrep_data2 R_set_altrep_data1 R_set_altrep_data2;
+        R_altrep_data1 R_altrep_data2 R_set_altrep_data1 R_set_altrep_data2 INTEGER_ELT REAL_ELT DATAPTR_OR_NULL;
+    // C over entries that allocate (DATAPTR: an ALTREP class's Dataptr)
+    (c), true => DATAPTR DATAPTR_RO;
     // C over entries that allocate (the error's condition, the cleanup's
     // continuation)
     (c), true => Rf_error Rf_errorcall Rf_warning Rf_warningcall R_UnwindProtect R_tryCatch R_tryCatchError
@@ -230,6 +237,9 @@ exports! {
         robigo_rtapi_charsxp_error;
     (entry 2), true => robigo_rtapi_errorcall robigo_rtapi_warningcall robigo_rtapi_extptr_error;
     (entry 3), true => robigo_rtapi_type_error robigo_rtapi_index_error robigo_rtapi_set_index_error;
+    (entry 1), true => robigo_rtapi_dataptr_type_error robigo_rtapi_altvec_dataptr
+        robigo_rtapi_altvec_dataptr_or_null;
+    (entry 2), true => robigo_rtapi_altinteger_elt robigo_rtapi_altreal_elt;
     (entry 0), true => robigo_rtapi_protect_error robigo_rtapi_unprotect_error;
     // memory.c
     (entry 2), true => Rf_allocVector Rf_cons Rf_lcons Rf_list2 Rf_lang2 Rf_mkCharLen Rf_mkCharCE

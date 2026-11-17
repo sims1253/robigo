@@ -67,11 +67,11 @@ enum RowNames<'g> {
 }
 
 fn row_names(v: Ref<'_>) -> RowNames<'_> {
-    if let Some(xs) = v.as_ints()
+    if v.sexptype() == INTSXP
+        && !v.is_altrep()
+        && let Some(xs) = v.as_ints()
         && xs.len() == 2
         && xs[0] == i32::MIN
-        && v.sexptype() == INTSXP
-        && !v.is_altrep()
     {
         return RowNames::Seq(xs[1].unsigned_abs() as usize);
     }
@@ -84,7 +84,10 @@ fn row_names_identical(cx: &Cx, x: Ref<'_>, y: Ref<'_>, flags: u32) -> Result<bo
     let is_seq = |v: Ref<'_>, n: usize| {
         v.sexptype() == INTSXP
             && !crate::attrib::has_attrib(v)
-            && v.as_ints().is_some_and(|xs| xs.len() == n && xs.iter().enumerate().all(|(i, &x)| x == i as i32 + 1))
+            && v.as_vector::<i32>().is_some_and(|v| {
+                let xs = v.elements();
+                xs.len() == n && xs.iter().enumerate().all(|(i, &x)| x == i as i32 + 1)
+            })
     };
     match (row_names(x), row_names(y)) {
         (RowNames::Seq(a), RowNames::Seq(b)) => Ok(a == b),
@@ -154,12 +157,14 @@ pub fn compute_identical(cx: &Cx, x: Ref<'_>, y: Ref<'_>, flags: u32) -> Result<
     let single_na = flags & IDENT_NA_AS_BITS == 0;
     Ok(match (x.view(), y.view()) {
         (View::Null, _) => true,
-        (View::Lgl(a), View::Lgl(b)) => a.as_slice() == b.as_slice() && a.as_slice().is_some(),
-        (View::Int(a), View::Int(b)) => a.as_slice() == b.as_slice() && a.as_slice().is_some(),
+        // (INTEGER_RO and REAL_RO expand one of robigo's compact sequences
+        // in GNU R; this reads its elements without, under `&Cx`)
+        (View::Lgl(a), View::Lgl(b)) => a.elements() == b.elements(),
+        (View::Int(a), View::Int(b)) => a.elements() == b.elements(),
         (View::Raw(a), View::Raw(b)) => a.as_slice() == b.as_slice() && a.as_slice().is_some(),
         (View::Real(a), View::Real(b)) => {
-            let (a, b) = (a.as_slice().unwrap(), b.as_slice().unwrap());
-            a.len() == b.len() && !a.iter().zip(b).any(|(&p, &q)| ne_with_nan(p, q, num_eq, single_na))
+            let (a, b) = (a.elements(), b.elements());
+            a.len() == b.len() && !a.iter().zip(b.iter()).any(|(&p, &q)| ne_with_nan(p, q, num_eq, single_na))
         }
         (View::Cplx(a), View::Cplx(b)) => {
             let (a, b) = (a.as_slice().unwrap(), b.as_slice().unwrap());

@@ -490,8 +490,10 @@ pub(crate) fn compile_special_with(
     .map(|c| c.expect("robigo: the Eval profile always compiles"))
 }
 
-/// The registers of a `for` loop's state ([`Op::ForPrep`]).
-pub const FOR_STATE: usize = 5;
+/// The registers of a `for` loop's state ([`Op::ForPrep`]): the
+/// sequence, the index, the length, the loop value, the variable's cell,
+/// and a compact sequence's first element and increment (`vm::for_prep`).
+pub const FOR_STATE: usize = 7;
 
 /// Labels of a loop being compiled: `break` jumps to its end, `next` to
 /// its start (both inside its region).
