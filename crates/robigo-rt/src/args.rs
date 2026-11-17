@@ -1031,7 +1031,7 @@ unsafe fn list_element(cx: &Cx, a: &Actual, rho: Sexp, profile: Profile, bytecod
                 let p = mk_promise(cx, a.val, rho)?;
                 if bytecode {
                     // compiled code's promise holds byte code (MAKEPROM)
-                    p.set_extra(p.extra() | robigo_heap::extra::BYTECODE);
+                    p.set_extra(p.extra() | robigo_heap::extra::promise::BYTECODE);
                 }
                 Ok(p)
             }
