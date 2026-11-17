@@ -1,0 +1,16 @@
+[1] "one trailing newline"
+f("one trailing newline\n")
+NULL
+[1] "two trailing newlines\n"
+f("two trailing newlines\n\n")
+NULL
+[1] "no newline"
+f("no newline")
+NULL
+[1] ""
+f("\n")
+NULL
+[1] "kept by warningcall\n"
+caller()
+NULL
+NULL

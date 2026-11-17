@@ -684,9 +684,7 @@ void Rf_warning(const char *format, ...)
     /* R: errors.c:warning (psize = min(BUFSIZE, R_WarnLength + 1)) */
     vsnprintf_mbcs(buf, min_size(BUFSIZE, (size_t) robigo_rtapi_warn_length() + 1), format, ap);
     va_end(ap);
-    size_t n = strlen(buf);
-    if (n > 0 && buf[n - 1] == '\n')
-        buf[n - 1] = '\0';
+    /* (its trailing newline is removed by Cx::warning) */
     robigo_rtapi_warning(buf);
 }
 

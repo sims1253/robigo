@@ -1,0 +1,262 @@
+sec : [1] 30.25 60.00
+min : [1] 45 59
+hour : [1] 13 23
+mday : [1] 29 31
+mon : [1]  1 11
+year :   a   b 
+124  99 
+wday : [1] 4 5
+yday : [1]  59 364
+isdst : [1] 0 0
+zone : [1] "UTC" "UTC"
+gmtoff : [1] 0 0
+$tzone
+[1] "UTC"
+
+$balanced
+[1] TRUE
+
+[1] "POSIXlt" "POSIXt" 
+sec : [1] 0 0
+min : [1] 0 0
+hour : [1] 0 0
+mday : [1] 1 2
+mon : [1] 1 0
+year :   p   p 
+103 103 
+wday : [1] 6 4
+yday : [1] 31  1
+isdst : [1] 0 0
+zone : [1] "GMT" "GMT"
+gmtoff : [1] 0 0
+sec : [1] 0 0 0
+min : [1] 0 0 0
+hour : [1] 0 0 0
+mday : [1]  4  3 30
+mon : [1] 2 1 5
+year : [1] 124 101 120
+wday : [1] 1 6 2
+yday : [1]  63  33 181
+isdst : [1] 0 0 0
+zone : [1] "UTC" "UTC" "UTC"
+gmtoff : [1] 0 0 0
+sec : [1] 0
+min : [1] 0
+hour : [1] 15
+mday : [1] 7
+mon : [1] 10
+year : [1] 105
+wday : [1] 1
+yday : [1] 310
+isdst : [1] 0
+zone : [1] "UTC"
+gmtoff : [1] 0
+sec : [1] 0 0 0
+min : [1]  0 30  5
+hour : [1]  0 12  1
+mday : [1] 17 17 17
+mon : [1] 10 10 10
+year : [1] 126 126 126
+wday : [1] 2 2 2
+yday : [1] 320 320 320
+isdst : [1] 0 0 0
+zone : [1] "UTC" "UTC" "UTC"
+gmtoff : [1] 0 0 0
+sec : [1]  0  0 NA
+min : [1]  0  0 NA
+hour : [1]  0  0 NA
+mday : [1]  1 31 NA
+mon : [1]  2 11 NA
+year : [1] 123 124  NA
+wday : [1]  3  2 NA
+yday : [1]  59 365  NA
+isdst : [1]  0  0 -1
+zone : [1] "UTC" "UTC" "UTC"
+gmtoff : [1] 0 0 0
+sec : [1]  0 NA
+min : [1]  0 NA
+hour : [1]  0 NA
+mday : [1] 13 NA
+mon : [1]  2 NA
+year : [1] 124  NA
+wday : [1]  3 NA
+yday : [1] 72 NA
+isdst : [1]  0 -1
+zone : [1] "UTC" "UTC"
+gmtoff : [1] 0 0
+sec : [1] 0
+min : [1] 0
+hour : [1] 0
+mday : [1] 4
+mon : [1] 2
+year : [1] 124
+wday : [1] 1
+yday : [1] 63
+isdst : [1] 0
+zone : [1] "UTC"
+gmtoff : [1] 0
+sec : [1] 0 0
+min : [1] 0 0
+hour : [1] 0 0
+mday : [1] 17 17
+mon : [1] 10 10
+year : [1] 124  69
+wday : [1] 0 1
+yday : [1] 321 320
+isdst : [1] 0 0
+zone : [1] "UTC" "UTC"
+gmtoff : [1] 0 0
+sec : [1]  0  0  0 12
+min : [1]  0  0 11 11
+hour : [1]  0  0 10 10
+mday : [1]  3  4 17 17
+mon : [1]  1  2 10 10
+year : [1] 101 102 126 126
+wday : [1] 6 1 2 2
+yday : [1]  33  62 320 320
+isdst : [1] 0 0 0 0
+zone : [1] "UTC" "UTC" "UTC" "UTC"
+gmtoff : [1] 0 0 0 0
+sec : [1] 6
+min : [1] 5
+hour : [1] 4
+mday : [1] 3
+mon : [1] 1
+year : [1] 101
+wday : [1] 6
+yday : [1] 33
+isdst : [1] 0
+zone : [1] "UTC"
+gmtoff : [1] 0
+sec : [1] 0 0
+min : [1] 0 0
+hour : [1] 7 7
+mday : [1] 5 5
+mon : [1] 10 10
+year : [1] 101 101
+wday : [1] 1 1
+yday : [1] 308 308
+isdst : [1] 0 0
+zone : [1] "UTC" "UTC"
+gmtoff : [1] 0 0
+sec : [1] 0
+min : [1] 0
+hour : [1] 0
+mday : [1] 17
+mon : [1] 10
+year : [1] 101
+wday : [1] 6
+yday : [1] 320
+isdst : [1] 0
+zone : [1] "UTC"
+gmtoff : [1] 0
+sec : [1]  0  0 NA
+min : [1]  0 30 NA
+hour : [1] 10 21 NA
+mday : [1]  1  1 NA
+mon : [1]  5  5 NA
+year : [1] 120 120  NA
+wday : [1]  1  1 NA
+yday : [1] 152 152  NA
+isdst : [1]  0  0 -1
+zone : [1] "UTC" "UTC" "UTC"
+gmtoff : [1] 0 0 0
+sec : [1]  0 59 20
+min : [1]  0 59 13
+hour : [1]  0 23 22
+mday : [1]  1  1 14
+mon : [1]  0  0 10
+year : [1]  70  70 123
+wday : [1] 4 4 2
+yday : [1]   0   0 317
+isdst : [1] 0 0 0
+zone : [1] "UTC" "UTC" "UTC"
+gmtoff : [1] 0 0 0
+sec : [1]  0 NA
+min : [1]  0 NA
+hour : [1]  0 NA
+mday : [1]  1 NA
+mon : [1]  0 NA
+year : [1] 121  NA
+wday : [1]  5 NA
+yday : [1]  0 NA
+isdst : [1]  0 -1
+zone : [1] "UTC" "UTC"
+gmtoff : [1] 0 0
+sec : [1] 3.75  NaN   NA   NA
+min : [1]  2  2 NA NA
+hour : [1]  1  1 NA NA
+mday : [1] 17 17 NA NA
+mon : [1] 10 10 NA NA
+year : [1] 126 126  NA  NA
+wday : [1]  2  2 NA NA
+yday : [1] 320 320  NA  NA
+isdst : [1]  0  0 -1 -1
+zone : [1] "UTC" "UTC" "UTC" "UTC"
+gmtoff : [1] 0 0 0 0
+sec : [1] 3.141
+min : [1] 2
+hour : [1] 1
+mday : [1] 17
+mon : [1] 10
+year : [1] 126
+wday : [1] 2
+yday : [1] 320
+isdst : [1] 0
+zone : [1] "UTC"
+gmtoff : [1] 0
+sec : [1] NA NA NA  0
+min : [1] NA NA NA  0
+hour : [1] NA NA NA  0
+mday : [1] NA NA NA  1
+mon : [1] NA NA NA  0
+year : [1]  NA  NA  NA 120
+wday : [1] NA NA NA  3
+yday : [1] NA NA NA  0
+isdst : [1] -1 -1 -1  0
+zone : [1] "UTC" "UTC" "UTC" "UTC"
+gmtoff : [1] 0 0 0 0
+sec : numeric(0)
+min : integer(0)
+hour : integer(0)
+mday : integer(0)
+mon : integer(0)
+year : integer(0)
+wday : integer(0)
+yday : integer(0)
+isdst : integer(0)
+zone : character(0)
+gmtoff : integer(0)
+sec : [1] 2.5
+min : [1] 0
+hour : [1] 0
+mday : [1] 1
+mon : [1] 0
+year : [1] 100
+wday : [1] 6
+yday : [1] 0
+isdst : [1] 0
+zone : [1] "UTC"
+gmtoff : [1] 0
+sec : [1] NA NA
+min : [1] NA NA
+hour : [1] NA NA
+mday : [1] NA NA
+mon : [1] NA NA
+year : [1] NA NA
+wday : [1] NA NA
+yday : [1] NA NA
+isdst : [1] -1 -1
+zone : [1] "UTC" "UTC"
+gmtoff : [1] 0 0
+sec : [1] NA  0  0
+min : [1] NA  0  0
+hour : [1] NA  0  0
+mday : [1] NA 31 31
+mon : [1] NA 11 11
+year : [1]  NA 124 123
+wday : [1] NA  2  0
+yday : [1]  NA 365 364
+isdst : [1] -1  0  0
+zone : [1] "UTC" "UTC" "UTC"
+gmtoff : [1] 0 0 0

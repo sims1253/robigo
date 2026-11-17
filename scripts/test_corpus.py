@@ -184,6 +184,32 @@ class RtRuntimeTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     self.run_rt(update=True, r_version=corpus.GATED_R_VERSION)
 
+    def test_a_host_dependent_case_is_neither_run_nor_held(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "fixture/passing-rt").mkdir(parents=True)
+            (root / "corpora.toml").write_text('[fixture]\ndefault_packages = "NULL"\nhost_dependent = ["big"]\n')
+            (root / "fixture/passing-rt/big.pass").write_text("")
+            (root / "fixture/passing-rt/case.pass").write_text("")
+            rec = {"id": "case", "sha": corpus.sha(b"1"), "out": corpus.enc(b"ok"), "err": corpus.enc(b""),
+                   "status": 0}
+            big = dict(rec, id="big", sha=corpus.sha(b"2"))
+            ran = []
+
+            def fake_run(name, conf, cid, src, runtime, robigo=None, tier=None):
+                ran.append(cid)
+                return (b"ok", b"", 0) if cid == "case" else (b"", b"Error: cannot allocate\n", 1)
+
+            with patch.object(corpus, "CORPORA", tmp), patch.object(corpus, "STATE", str(root / "state")), \
+                 patch.object(corpus, "load_cases", return_value=[("case", b"1"), ("big", b"2")]), \
+                 patch.object(corpus, "run_case", side_effect=fake_run), \
+                 patch.object(corpus, "rt_sources", return_value=None), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                corpus.write_expected("fixture", {"case": rec, "big": big}, corpus.expected_file({}, corpus.pins()["rt"]))
+                self.assertEqual(self.run_rt(), 0, "a listed case's marker is no regression")
+                self.assertEqual(ran, ["case"])
+                self.assertTrue((root / "fixture/passing-rt/big.pass").is_file())
+
     def test_rt_refuses_what_it_cannot_run_yet(self):
         self.assertIn("build step", corpus.rt_unsupported("x", {"build": "build.sh"}))
         self.assertIsNone(corpus.rt_unsupported("x", {"mode": "script"}))

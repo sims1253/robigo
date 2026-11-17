@@ -233,6 +233,7 @@ const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
 
 pub mod altrep;
 mod capi;
+pub mod clib;
 mod console;
 mod context;
 mod env;
