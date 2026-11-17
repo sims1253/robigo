@@ -160,24 +160,26 @@
   - Startup (`invisible(1)`): main 40,659,642 instructions, BW 12,110,664
     (−70%). Peak RSS 26,524 against 26,508 KiB.
   - The gate, `scripts/perf.py rt-bars`, on the branch merged with main
-    `c4a60e89` (BW `3c734519`, sha256 c14f910f87297d92), against main's
-    binary (sha256 c70f0a3b2ef28b16). It reports 0 failures
+    `6bfbf91f` (BW `d6148372`, sha256 7c2f1c35158d2905), against main's
+    binary (sha256 0307fcd794173b57). It reports 0 failures
     (`rt-bars.md`). Instructions per iteration:
 
     | row | main | BW | change |
     |---|---:|---:|---:|
-    | env-fn | 2,503.6 | 1,942.9 | −22.39% |
-    | s3 | 18,747.5 | 18,806.4 | +0.31% |
-    | superassign | 4,937.9 | 4,939.9 | +0.04% |
-    | plain, defaults, named | | | −0.02%, −0.01%, −0.02% |
-    | fib, binarytrees | | | +0.00%, −0.00% |
-    | e7-paste, e7-unique | | | +0.07%, −0.01% |
-    | e7-match, median over the heap shifts (#761) | 92,020.3 | 92,279.6 | +0.28% |
+    | env-fn | 2,503.6 | 1,942.3 | −22.42% |
+    | s3 | 18,764.2 | 18,815.8 | +0.28% |
+    | superassign | 4,928.8 | 4,940.8 | +0.24% |
+    | plain, defaults, named | | | −0.01%, +0.01%, −0.01% |
+    | fib, binarytrees | | | −0.00%, −0.00% |
+    | e7-paste, e7-unique | | | +0.06%, −0.00% |
+    | e7-match, median over the heap shifts (#761) | 92,197.7 | 92,304.6 | +0.12% |
 
-    s3 reads 1.080x GNU R now. #760 changed the rival to GNU R's stock
-    build, which leaves that bar not met yet on main too (1.077x).
+    s3 reads 1.081x GNU R. #760 changed the rival to GNU R's stock build,
+    which leaves that bar not met yet on main too. superassign's +0.24% is
+    the `memcmp` of `$`'s name compare, whose count follows the strings'
+    addresses (see `2026-11-16-s1-alias.md`).
   - Peak RSS of the gate's programs (KiB, main against BW): binarytrees
-    26,500 / 26,552, listgrow 45,392 / 45,288, churn 73,856 / 73,300.
+    26,440 / 26,484, listgrow 45,748 / 45,672, churn 74,372 / 73,860.
   - e7-match is heap layout, not code. The row matches 100 strings into
     1,000 that its setup makes, and it hashes them by address (`cshash`,
     unique.c, ported), as GNU R does. No collection runs during the row:
@@ -196,11 +198,13 @@
     BW's lowest count equals main's lowest. Its unshifted layout falls in a
     band where the strings collide more. The foreman chose to gate the row
     on the median over shifts, which A1 built (#761). On the merged tree
-    the range over the gate's five shifts is BW 91,911.7–96,111.9 and main
-    91,887.4–92,250.8.
+    the range over the gate's five shifts is BW 91,891.2–96,136.1 and main
+    91,898.3–92,290.9.
 - The ratchet (condition (d)): `tests/r` on rt goes from 42 to 131 of
   632 byte-exact passes. The sweep ran 602 cases, and none ratcheted
-  before regressed. A 132nd case, `cli/exit-warnings`, also passes but is
+  before regressed. With main's L1 merged, 2 more pass and are ratcheted:
+  `eval/values-only-dotdot` and `serialize/corrupt-lengths`, so 133 in
+  all. One more case, `cli/exit-warnings`, also passes but is
   not ratcheted. Its finalizer is registered on an environment nothing
   holds, and the recording assumes no collection before exit. Under
   rt-ci's gctorture conformance (E3) the environment is collected during
@@ -223,9 +227,12 @@
     reaches `.Internal(strrep)`, which robigo-rt lacked.
   - This entry ports `do_strrep` (character.c) and adds
     `tests/rt/strings/strrep.R`, recorded on 4.6.2.
-  - With it (`0236869f`): **21,696 of 31,374 pass (69.2%), against
-    18,812 (60.0%)**. That is 2,884 new passes and no regression
-    (`data/2026-11-17-bw-wide-loader/fastr-rt.md`).
+  - With it (`0236869f`), 21,696 of 31,374 pass (69.2%), against 18,812
+    (60.0%): 2,884 new passes and no regression.
+  - On the branch merged with main `6bfbf91f` (L1's serialization, #752):
+    **21,808 of 31,374 (69.5%)**, 112 more and still no regression
+    (`data/2026-11-17-bw-wide-loader/fastr-rt.md`). All 2,996 are
+    ratcheted.
   - The names A1's run found unbound (`toString`, `intersect`, `array`,
     `log`'s callers) are bound now. Their cases fail further in.
   - The next blockers, by the cases each blocks first:
@@ -243,7 +250,7 @@
     | `cbind` and `[<-` with matrix subscripts | 137 each |
 
   - RC's ratchet, `tests/corpora/fastr/passing-rt/`, came with main's
-    merge (#755). The 2,884 new passes are ratcheted there. L5 must keep
+    merge (#755). The 2,996 new passes are ratcheted there. L5 must keep
     them, as it must keep BW's other markers.
 - The bar (condition (c)): `tests/rt/base/wide-names.R` prints the count
   and the sorted names of `ls(baseenv(), all.names = TRUE)`, and matches
