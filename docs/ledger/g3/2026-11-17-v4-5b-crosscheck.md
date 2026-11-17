@@ -117,15 +117,59 @@ difference by the constants' count; `%%` by the opcode alone).
   just loaded, returned visible by the translation and invisible by the
   port. 5d drops it.
 
+### Sol's round 2
+
+S1-S4 resolved, three new blockers in what replaced them:
+
+- **A tail `&&` set visibility at a RETURN others share.** Its AND2ND
+  set a flag the next RETURN read (`vis_at_return`). In
+  `return(if (c) x && y else invisible(1))` that RETURN is the `else`'s
+  too, which came back visible. The GOTO tail above reached the first
+  branch, but the last branch had it already. The translation now does
+  as the from-source code does: a SetVis at the `&&`'s own join, with
+  AND1ST's jump patched to land on it. bcEval's AND1ST and AND2ND both
+  set R_Visible. `visible.R` has the cases (`k_retand`, `k_retand_last`,
+  `k_tailand`); the binary before the fix printed `[1] 1` for two of them.
+- **F_VIS is not a way out's visibility for every instruction.** A
+  `GetVar` sets it before it forces a promise, whose code may call
+  `invisible()` (bcEval's DO_GETVAR alike). The fold now takes only a load
+  that runs no code after it: a constant (`LdConst`), `Quote`,
+  `MkClosure`.
+- **A Clear on the way out is not neutral.** `exit()` reads the value
+  back through the Moves and Clears in order, and a Clear of the value,
+  or of a Move's source before the Move, makes the way out none. Unit
+  tests (`crosscheck::tests`) pin it.
+
 ### Result
 
 One verdict per closure. base.rdb: 980 the same, 145 expected in five
 classes (a nested function's code 63, a loop's shape 60, a switch's
 stop() 12, `%%`/`%/%` 9, return()'s operand 1), 21 untranslated
 (specials robigo-rt lacks, CALLSPECIAL), 6 skipped, **0 unexpected**.
-The conformance crosscheck: 116 the same, 21 expected, 3 skipped,
+The conformance crosscheck: 119 the same, 21 expected, 3 skipped,
 **0 unexpected**.
 
 ### Verification
 
-VERIFICATION
+The first cut was verified on V4 step 2's head (with #824's OCR fix
+`d278f3c9`), at `6883d428`:
+- `scripts/rt-ci.py`: exit 0. Conformance 536/542, with the 6 failing as
+  on main. Every observation mode, the moving collector and fail-alloc
+  pass (2800 runs, 0 differences).
+- perf-rt: flat, every row within +0.25%.
+
+After Sol's rounds 1 and 2:
+- robigo-rt's conformance: 537/543. The new `bctrans/visible.R` passes and
+  is ratcheted; the 6 failing are the same as before.
+- The rdb tests, under the crosscheck: 3 passed. The translation test
+  holds V3's numbers.
+- perf-rt after round 1 (`scripts/perf.py rt-bars --main`, main
+  `2a7f3be6`'s binary): flat. The worst row is binarytrees at +0.30%, the
+  call rows are 0.2% faster, and peak RSS is within 2%. Round 2 changes
+  where a tail `&&`'s SetVis goes in translated code. Step 5c's perf-rt
+  measures it with this step whole. The translation's tail change
+  reaches base's translated closures, but the M1 rows' code is compiled
+  from source.
+- The full `scripts/rt-ci.py`, with the observation modes and the moving
+  collector, ran on step 5c's head, which has this step whole.
+- `cargo fmt --check`, `scripts/lint.sh`: clean.

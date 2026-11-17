@@ -188,25 +188,39 @@ fn reachable(ins: &[Ins], returns: impl Fn(usize) -> bool) -> Vec<bool> {
 /// `Ret`'s, else the last `SetVis`'s: 1 visible, 2 invisible, 0 as it
 /// was), and the instructions on the way.
 fn exit(ins: &[Ins], k: usize) -> Option<(u16, u16, Vec<usize>)> {
-    let (mut j, mut moves, mut vis, mut path) = (k, Vec::new(), 0u16, Vec::new());
+    // the Moves and Clears on the way, in order: (to, from) a Move, (lo, hi)
+    // the registers lo..hi a Clear clears (`from` None)
+    let (mut j, mut ops, mut vis, mut path) = (k, Vec::new(), 0u16, Vec::new());
     for _ in 0..=ins.len() {
         let i = ins.get(j)?;
         path.push(j);
         match i.op {
             Op::Ret | Op::Return => {
+                // the value read back through the Moves; a Clear of it on
+                // the way returns no value of the instructions before
                 let mut r = i.b;
-                for &(a, src) in moves.iter().rev() {
-                    if a == r {
-                        r = src;
+                for &(a, b, mv) in ops.iter().rev() {
+                    if mv && a == r {
+                        r = b;
+                    } else if !mv && (a..b).contains(&r) {
+                        return None;
                     }
                 }
                 let g = if i.op == Op::Ret { i.g } else { 0 };
                 return Some((r, if g != 0 { g } else { vis }, path));
             }
             Op::Jmp => j = i.target(),
-            Op::Nop | Op::Clear | Op::ClearRange => j += 1,
+            Op::Nop => j += 1,
+            Op::Clear => {
+                ops.push((i.a, i.a + 1, false));
+                j += 1;
+            }
+            Op::ClearRange => {
+                ops.push((i.a, i.b, false));
+                j += 1;
+            }
             Op::Move => {
-                moves.push((i.a, i.b));
+                ops.push((i.a, i.b, true));
                 j += 1;
             }
             Op::SetVis => {
@@ -310,12 +324,14 @@ fn normalize(b: &Built) -> Vec<Norm> {
         };
         if let Some((r, mut vis)) = r {
             // the instruction before, when only it falls through to the
-            // way out (no jump lands between): its F_VIS is the way out's
-            // visibility, unless a SetVis or the Ret sets it
+            // way out (no jump lands between) and runs no code after it
+            // sets the visibility (a load of a constant or a closure, not a
+            // variable, whose promise may be forced after): its F_VIS is the
+            // way out's visibility, unless a SetVis or the Ret sets it
             if let Some(p) = last
                 && !(p + 1..=k).any(|j| targets.contains(&j))
                 && let Some(prev) = out.last_mut()
-                && prev.op != Op::Ret
+                && matches!(prev.op, Op::LdConst | Op::Quote | Op::MkClosure)
                 && prev.fl & crate::ir::F_VIS != 0
             {
                 prev.fl &= !crate::ir::F_VIS;
@@ -599,5 +615,55 @@ pub fn report(line: &str) {
             }
         }
         None => eprintln!("robigo: bc crosscheck: {line}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ins(op: Op, a: u16, b: u16, g: u16) -> Ins {
+        let mut i = Ins::new(op);
+        (i.a, i.b, i.g) = (a, b, g);
+        i
+    }
+
+    fn jmp(to: usize) -> Ins {
+        let mut i = Ins::new(Op::Jmp);
+        i.set_target(to);
+        i
+    }
+
+    /// The register and the visibility a way out from 0 returns.
+    fn out(code: &[Ins]) -> Option<(u16, u16)> {
+        exit(code, 0).map(|(r, vis, _)| (r, vis))
+    }
+
+    #[test]
+    fn a_way_out_reads_its_value_through_moves_and_clears() {
+        // a Clear of the value returned: no value of the code before
+        assert_eq!(out(&[jmp(1), ins(Op::Clear, 1, 0, 0), ins(Op::Ret, 0, 1, 0)]), None);
+        assert_eq!(out(&[ins(Op::ClearRange, 0, 2, 0), ins(Op::Ret, 0, 1, 0)]), None);
+        // of another register, or past the range's end: the value
+        assert_eq!(out(&[jmp(1), ins(Op::Clear, 2, 0, 0), ins(Op::Ret, 0, 1, 0)]), Some((1, 0)));
+        assert_eq!(out(&[ins(Op::ClearRange, 0, 1, 0), ins(Op::Ret, 0, 1, 0)]), Some((1, 0)));
+        // a Move's source read before a Clear of it: the source's value
+        let moved = [ins(Op::Move, 3, 1, 0), ins(Op::Clear, 1, 0, 0), ins(Op::Ret, 0, 3, 0)];
+        assert_eq!(out(&moved), Some((1, 0)));
+        // a Move of a register cleared before it: none
+        let cleared = [ins(Op::Clear, 1, 0, 0), ins(Op::Move, 3, 1, 0), ins(Op::Ret, 0, 3, 0)];
+        assert_eq!(out(&cleared), None);
+        // anything else on the way: no way out
+        assert_eq!(out(&[ins(Op::GetVar, 1, 0, 0), ins(Op::Ret, 0, 1, 0)]), None);
+    }
+
+    #[test]
+    fn a_way_out_leaves_the_last_visibility_set() {
+        assert_eq!(out(&[ins(Op::SetVis, 0, 0, 0), ins(Op::Ret, 0, 1, 0)]), Some((1, 2)));
+        assert_eq!(out(&[ins(Op::SetVis, 0, 0, 1), jmp(2), ins(Op::Ret, 0, 1, 0)]), Some((1, 1)));
+        // the Ret's own visibility sets it last
+        assert_eq!(out(&[ins(Op::SetVis, 0, 0, 1), ins(Op::Ret, 0, 1, 2)]), Some((1, 2)));
+        // a Return keeps it
+        assert_eq!(out(&[ins(Op::Return, 0, 4, 0)]), Some((4, 0)));
     }
 }

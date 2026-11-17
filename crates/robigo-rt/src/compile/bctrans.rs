@@ -450,9 +450,12 @@ struct Tr {
     /// Pass 2: the last instruction of a complex assignment translated
     /// whole.
     skip_to: Option<usize>,
-    /// A tail `&&` or `||` ended: its value is visible on every path to
-    /// the RETURN (or RETURNJMP) after it, the jumps' too (set there).
-    vis_at_return: bool,
+    /// The `AndOr1`s of the `&&`s and `||`s begun (their IR index),
+    /// innermost last.
+    and_or: Vec<usize>,
+    /// Jumps to patch to an IR position: a tail `AndOr1` to its
+    /// `SetVis`.
+    ir_patches: Vec<(usize, usize)>,
 }
 
 impl Tr {
@@ -809,7 +812,8 @@ impl<'g> Comp<'g> {
             assigning: Vec::new(),
             assigned: HashMap::new(),
             skip_to: None,
-            vis_at_return: false,
+            and_or: Vec::new(),
+            ir_patches: Vec::new(),
         };
         // `dst` is the code's value (the first register)
         self.free_to(dst);
@@ -920,6 +924,9 @@ impl<'g> Comp<'g> {
         }
         for &(at, pos) in &t.patches {
             let target = *t.at_ir.get(&pos).ok_or(Need::Fail)?;
+            self.patch(at, target);
+        }
+        for &(at, target) in &t.ir_patches {
             self.patch(at, target);
         }
         Ok(t)
@@ -1205,9 +1212,6 @@ impl<'g> Comp<'g> {
         let planning = t.plan.is_none();
         match i.op {
             RETURN => {
-                if std::mem::take(&mut t.vis_at_return) {
-                    self.set_vis(true);
-                }
                 let r = self.top(t)?;
                 if r != R_FIRST {
                     let mut m = Ins::new(Op::Move);
@@ -2006,9 +2010,6 @@ impl<'g> Comp<'g> {
             }
             RETURNJMP => {
                 // `return` in a promise: out of the function's context
-                if std::mem::take(&mut t.vis_at_return) {
-                    self.set_vis(true);
-                }
                 let r = self.pop(t)?;
                 let mut ret = Ins::new(Op::Return);
                 ret.b = r;
@@ -2022,6 +2023,7 @@ impl<'g> Comp<'g> {
                 a.b = r;
                 a.c = if i.op == AND1ST { 1 } else { 2 };
                 a.e = self.k(call);
+                t.and_or.push(self.pc());
                 self.jump(t, a, i.a[1] as usize)?;
             }
             AND2ND | OR2ND => {
@@ -2037,9 +2039,18 @@ impl<'g> Comp<'g> {
                 a.e = self.k(call);
                 a.fl |= F_CLR_B;
                 self.emit(a);
+                let first = t.and_or.pop();
                 if tail {
-                    // (at the RETURN, where AND1ST's jump lands too)
-                    t.vis_at_return = true;
+                    // bcEval's AND1ST and AND2ND set R_Visible: the value
+                    // is visible on both paths, at the join they share
+                    // (AND1ST's jump lands on the SetVis), as the
+                    // from-source code's; not at a RETURN another branch
+                    // may jump to
+                    let at = self.pc();
+                    self.set_vis(true);
+                    if let Some(f) = first {
+                        t.ir_patches.push((f, at));
+                    }
                 }
             }
             BASEGUARD => {
