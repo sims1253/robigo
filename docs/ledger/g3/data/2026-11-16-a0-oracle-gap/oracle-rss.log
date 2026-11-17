@@ -1,0 +1,5 @@
+| program | robigo KiB (range) | GNU R KiB (range) | robigo÷GNU R |
+|---|---:|---:|---:|
+| benchmarks/suite/binarytrees.R | - | 42,140 (41,852-44,012) | - |
+| benchmarks/rt/mem/listgrow.R | - | 54,028 (53,752-54,244) | - |
+| benchmarks/rt/mem/churn.R | - | 134,768 (134,520-134,908) | - |

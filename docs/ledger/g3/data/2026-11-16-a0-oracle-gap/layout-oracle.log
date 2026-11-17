@@ -1,0 +1,12 @@
+| row | group | GNU R instr |
+|---|---|---:|
+| e7-unique-pad0 | layout | 170,397 |
+| e7-match-pad0 | layout | 205,949 |
+| e7-unique-pad1 | layout | 171,308 |
+| e7-match-pad1 | layout | 206,546 |
+| e7-unique-pad7 | layout | 170,845 |
+| e7-match-pad7 | layout | 205,479 |
+| e7-unique-pad50 | layout | 161,939 |
+| e7-match-pad50 | layout | 208,686 |
+| e7-unique-pad333 | layout | 161,943 |
+| e7-match-pad333 | layout | 206,658 |

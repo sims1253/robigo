@@ -1,0 +1,98 @@
+{
+ "meta": {
+  "cycles": false,
+  "gnur": "/opt/R/lib/R/bin/exec/R",
+  "robigo": null,
+  "robigo_env": {
+   "ROBIGO_COMPILE": "1"
+  },
+  "rows": "benchmarks/rt/calls-rows.toml",
+  "valgrind": "valgrind"
+ },
+ "rows": {
+  "binarytrees": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 3373969.1,
+   "n": 40,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "defaults": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 5448.91925,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "e7-match": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 203417.895,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "e7-paste": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 177053.885,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "e7-unique": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 158016.615,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "env-fn": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 3388.77975,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "fib": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 21255253.4,
+   "n": 20,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "named": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 4186.97575,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "plain": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 4275.24725,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "s3": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 17392.4435,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "superassign": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 6892.452,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "trycatch": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 84944.455,
+   "n": 1000,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  }
+ }
+}
