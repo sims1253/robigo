@@ -348,6 +348,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("getOption", options::do_get_option, 0, 11, 1, FUNCALL, Env),
     row("gettext", errors::do_gettext, 0, 11, 3, FUNCALL, Pure),
     row("ngettext", errors::do_ngettext, 0, 11, 4, FUNCALL, Pure),
+    row("bindtextdomain", errors::do_bindtextdomain, 0, 11, 2, FUNCALL, External),
     row("interactive", sysutils::do_interactive, 0, 1, 0, FUNCALL, Pure),
     row("Sys.getenv", sysutils::do_getenv, 0, 11, 2, FUNCALL, External),
     row("l10n_info", sysutils::do_l10n_info, 0, 11, 0, FUNCALL, Pure),

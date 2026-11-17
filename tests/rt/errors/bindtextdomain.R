@@ -1,0 +1,30 @@
+# errors.c's bindtextdomain (ENABLE_NLS): the bindings of message domains.
+bt <- function(d, p) .Internal(bindtextdomain(d, p))
+# a domain nothing bound: the C library's default directory
+bt("nosuchdomain", NULL)
+bt("mine", "/some/dir")
+bt("mine", NULL)
+bt("mine", "/other/dir")
+bt("mine", NULL)
+bt("rel", "relative/dir")
+bt("rel", NULL)
+bt("emp", "")
+bt("emp", NULL)
+bt("NAdir", NA_character_)
+bt(NA_character_, "/x")
+bt("NA", NULL)
+bt(NULL, NULL)
+# R's own domains are bound at start-up
+is.character(bt("R", NULL))
+f <- function(...) tryCatch(bt(...), error = function(e) conditionMessage(e))
+f(1, NULL)
+f(c("a", "b"), NULL)
+f(character(0), NULL)
+f("a", 1)
+f("a", c("x", "y"))
+f(NULL, "x")
+s <- "é"
+Encoding(s) <- "bytes"
+f(s, NULL)
+f("a", s)
+tryCatch(.Internal(bindtextdomain("a")), error = function(e) conditionMessage(e))

@@ -1,8 +1,9 @@
 //! The C library behind safe functions, for builtins that GNU R implements
 //! with it (robigo-rtbuiltins forbids `unsafe`): the clock and broken-down
 //! time (`time`, `localtime_r`, `gmtime_r`, which datetime.c calls on Linux),
-//! `wcstod` (Rstrptime.h's `%OS`) and the password database's home
-//! directories (sys-unix.c's `R_ExpandFileName_unix`). None of them changes the process: they
+//! `wcstod` (Rstrptime.h's `%OS`), the password database's home
+//! directories (sys-unix.c's `R_ExpandFileName_unix`) and libintl's default
+//! message directory (errors.c's `bindtextdomain`). None of them changes the process: they
 //! read the environment's `TZ` and the C library's locale, which robigo never
 //! sets (the isolate's locale is its own, `Locale`).
 
@@ -134,6 +135,24 @@ pub fn passwd_home(user: Option<&[u8]>) -> Option<Vec<u8>> {
             return None;
         }
         Some(std::ffi::CStr::from_ptr(pw.pw_dir).to_bytes().to_vec())
+    }
+}
+
+unsafe extern "C" {
+    fn bindtextdomain(domainname: *const libc::c_char, dirname: *const libc::c_char) -> *mut libc::c_char;
+}
+
+/// The C library's default directory of message catalogues
+/// (`_nl_default_dirname`): what `bindtextdomain(domain, NULL)` gives for a
+/// domain nothing has bound. Only asked, never set: robigo keeps its own
+/// bindings per isolate.
+pub fn default_textdomain_dir() -> Vec<u8> {
+    // SAFETY: with a NULL dirname, bindtextdomain only reads its table and
+    // returns a string it owns (or NULL); the domain is NUL-terminated and
+    // no one binds it.
+    unsafe {
+        let p = bindtextdomain(c"robigo-unbound-domain".as_ptr(), std::ptr::null());
+        if p.is_null() { Vec::new() } else { std::ffi::CStr::from_ptr(p).to_bytes().to_vec() }
     }
 }
 
