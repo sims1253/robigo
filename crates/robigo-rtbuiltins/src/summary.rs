@@ -77,6 +77,23 @@ pub fn do_summary<const CODE: i32>(
     if args.any_package_altrep() {
         return Err(not_yet(cx, Some(call), "a summary of a package ALTREP vector"));
     }
+    if args.any_altrep() {
+        // an ALTREP first argument alone (na.rm the only other one): its
+        // class's Sum (a compact sequence has no Min or Max method, so those
+        // read it as GNU R's region iteration does: here, materialized)
+        if CODE == 0
+            && rest == [0]
+            && let Some(s) = args.get(cx, 0).own_sum()
+        {
+            return match s {
+                Ok(i) => cx.build(out, |cx| Ok(cx.alloc_copy(&[i])?.finish().into())),
+                Err(d) => cx.build(out, |cx| Ok(cx.alloc_copy(&[d])?.finish().into())),
+            };
+        }
+        for &i in &rest {
+            cx.materialize(args.root(i))?;
+        }
+    }
     let iop = CODE;
     // check the types first (GNU R's invalid_type, against the call)
     for &i in &rest {

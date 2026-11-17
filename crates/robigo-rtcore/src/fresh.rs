@@ -558,6 +558,11 @@ impl<'u, T: Plain> Unique<'u, T> {
     /// `MAYBE_SHARED`).
     #[inline(always)]
     pub(crate) unsafe fn new(x: Sexp, n: usize, cx: &'u mut Cx) -> Self {
+        // the choke point of the raw writes: never into an ALTREP vector,
+        // whose payload word is its class (one of robigo's classes is
+        // duplicated or materialized first)
+        // SAFETY: the caller's contract: `x` is live.
+        debug_assert!(!unsafe { x.is_altrep() }, "robigo: a raw write into an ALTREP vector");
         Unique { x, n, _cx: cx, _t: PhantomData }
     }
 

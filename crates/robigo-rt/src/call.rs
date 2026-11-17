@@ -575,7 +575,7 @@ pub fn builtin_evallist(
                 values.add(i).write(Slot::object(cell.car().sexp()));
                 names.add(i).write(Slot::object(cell.tag().sexp()));
             }
-            any_alt |= cell.car().is_package_altrep();
+            any_alt |= cell.car().is_altrep();
             c = cell.cdr();
         }
         linked.release();
@@ -638,6 +638,7 @@ pub(crate) fn run_builtin(
     let Kind::Builtin(f, _) = def.kind else {
         unreachable!("robigo: a special called as a builtin");
     };
+    materialize_args(cx, def, args)?;
     let flag = def.print();
     // a builtin may change what an argument expression evaluates to or
     // look at an argument: values computed early are dropped (crate::early)
@@ -734,4 +735,40 @@ pub fn loop_region(cx: &mut Cx, act: &mut Act, start: usize, regs: Reg, nregs: R
             crate::eval::bc_tick(cx)?;
         }
     }
+}
+
+/// GNU R's builtins read an argument's data through `INTEGER`, `REAL` and
+/// their `_RO` forms, which expand an instance of one of robigo's ALTREP
+/// classes (its `Dataptr`): so does this, for each argument that is one,
+/// before the builtin runs. The builtins GNU R writes against the element
+/// and region accessors instead are left to read the object as it is:
+/// `length` and `seq_along` (its length), and the summaries (`sum` takes
+/// the class's `Sum`; `do_summary` materializes for the rest itself).
+// R: memory.c:DATAPTR, altrep.c:ALTVEC_DATAPTR_EX; summary.c:do_summary
+pub(crate) fn materialize_args(cx: &mut Cx, def: &prims::PrimDef, args: Args<'_>) -> RResult<()> {
+    if !args.any_altrep() || reads_by_element(def.name) {
+        return Ok(());
+    }
+    materialize_each(cx, args)
+}
+
+/// [`materialize_args`] for a builtin the VM calls by itself (the
+/// subset and subassign defaults), which reads its arguments' data.
+#[inline]
+pub(crate) fn materialize_altrep_args(cx: &mut Cx, args: Args<'_>) -> RResult<()> {
+    if args.any_altrep() { materialize_each(cx, args) } else { Ok(()) }
+}
+
+#[cold]
+fn materialize_each(cx: &mut Cx, args: Args<'_>) -> RResult<()> {
+    for i in 0..args.len() {
+        cx.materialize(args.root(i))?;
+    }
+    Ok(())
+}
+
+/// The builtins GNU R writes against `XLENGTH` and the element, region and
+/// summary methods for their ALTREP arguments ([`materialize_args`]).
+fn reads_by_element(name: &str) -> bool {
+    matches!(name, "length" | "seq_along" | "sum" | "min" | "max" | "prod")
 }

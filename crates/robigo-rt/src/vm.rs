@@ -1363,11 +1363,13 @@ fn dflt_subset(
     // GNU R's byte code keeps the object below the call frame,
     // DO_STARTDISPATCH, and BUILTIN_CALL_FRAME_ARGS drops only the
     // argument list's links: tests/rt/assign/link-walk-subset.R)
-    let r = if sub2 {
-        robigo_rtbuiltins::subset::do_subset2_dflt(cx, call, args, rho, out)
-    } else {
-        robigo_rtbuiltins::subset::do_subset_dflt(cx, call, args, rho, out)
-    };
+    let r = crate::call::materialize_altrep_args(cx, args).and_then(|()| {
+        if sub2 {
+            robigo_rtbuiltins::subset::do_subset2_dflt(cx, call, args, rho, out)
+        } else {
+            robigo_rtbuiltins::subset::do_subset_dflt(cx, call, args, rho, out)
+        }
+    });
     // SAFETY: R_NilValue.
     unsafe { cx.set_bc_expression(cx.nil().sexp()) };
     for r in base..base + if names { 2 * n } else { n } as Reg {
@@ -1597,10 +1599,17 @@ fn for_step(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp, profile: Prof
                 nv
             };
             let val = act.obj(a);
+            // an instance of one of robigo's classes (a compact sequence) is
+            // read by element, never expanded: INTEGER_ELT / REAL_ELT
+            // SAFETY: a live object.
+            let own = unsafe { val.is_altrep() };
             // SAFETY: `v` is a length-1 vector of the sequence's type, `val`
-            // a live vector longer than `idx`.
+            // a live vector longer than `idx` (standard, or an instance of
+            // one of robigo's classes, which only INTSXP and REALSXP have).
             unsafe {
                 match t {
+                    INTSXP if own => *(v.std_data() as *mut i32) = robigo_rtcore::altrep::own::intseq_elt(val, idx),
+                    REALSXP if own => *(v.std_data() as *mut f64) = robigo_rtcore::altrep::own::realseq_elt(val, idx),
                     LGLSXP | INTSXP => *(v.std_data() as *mut i32) = *(val.std_data() as *const i32).add(idx),
                     REALSXP => *(v.std_data() as *mut f64) = *(val.std_data() as *const f64).add(idx),
                     CPLXSXP => {

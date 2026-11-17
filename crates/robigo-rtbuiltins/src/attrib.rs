@@ -261,12 +261,14 @@ pub fn get_attrib<'g>(cx: &'g Cx, x: Ref<'g>, name: &[u8]) -> Result<Option<Ref<
         return Ok(names(x));
     }
     let v = get_value(x, name);
+    // (GNU R makes `1:n` a compact sequence, R_compact_intrange: here, in a
+    // `&Cx` build, a standard vector of the same elements)
     if name == b"row.names"
         && let Some(s) = v
+        && !s.is_altrep()
         && let Some(xs) = s.as_ints()
         && xs.len() == 2
         && xs[0] == i32::MIN
-        && !s.is_altrep()
     {
         let n = xs[1].unsigned_abs() as usize;
         return Ok(Some(cx.alloc_with(n, |i| (i + 1) as i32)?.finish().into()));
