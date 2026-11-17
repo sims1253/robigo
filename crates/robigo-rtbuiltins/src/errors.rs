@@ -1,5 +1,6 @@
-//! errors.c's `.Internal(gettext(domain, string, trim))` and
-//! `.Internal(ngettext(n, msg1, msg2, domain))`.
+//! errors.c's `.Internal(gettext(domain, string, trim))`,
+//! `.Internal(ngettext(n, msg1, msg2, domain))` and
+//! `.Internal(bindtextdomain(domain, dirname))`.
 //!
 //! robigo has no message catalogues: messages are GNU R's English (the
 //! oracle's `LANGUAGE=en`), so a translation is the identity. What remains
@@ -144,4 +145,105 @@ pub fn do_ngettext(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
     }
     out.set(cx, pick.bind(cx));
     Ok(())
+}
+
+/// The isolate's message domains and the directories bound to them: what
+/// GNU R binds in libintl's process-wide table. robigo translates nothing
+/// (see the module's documentation), so only the bindings are kept, per
+/// isolate; a domain with none reports the C library's default directory.
+pub struct TextDomains {
+    bound: std::cell::RefCell<Vec<(Vec<u8>, Vec<u8>)>>,
+    /// `None`: the C library answered NULL (`do_bindtextdomain`'s NULL).
+    default: Option<Vec<u8>>,
+}
+
+/// `BindDomain(R_Home)` at start-up: "R" and "R-base" bound to
+/// `R_TRANSLATIONS`, or `R_HOME/library/translations` (no binding without
+/// an R home). An empty `R_TRANSLATIONS` is GNU R's fatal error
+/// (`Rasprintf_malloc` of "" fails): its message, for `R_Suicide`.
+// R: main.c:BindDomain
+pub fn bind_domain(cx: &mut Cx) -> Result<(), &'static str> {
+    use std::os::unix::ffi::OsStrExt;
+    let localedir = match std::env::var_os("R_TRANSLATIONS") {
+        Some(p) if p.is_empty() => return Err("allocation failure in BindDomain"),
+        Some(p) => Some(p.as_bytes().to_vec()),
+        None => std::env::var_os("R_HOME").map(|h| {
+            let mut v = h.as_bytes().to_vec();
+            v.extend_from_slice(b"/library/translations");
+            v
+        }),
+    };
+    let bound = match localedir {
+        Some(d) => vec![(b"R".to_vec(), d.clone()), (b"R-base".to_vec(), d)],
+        None => Vec::new(),
+    };
+    cx.set_ext(TextDomains {
+        bound: std::cell::RefCell::new(bound),
+        default: robigo_rtcore::clib::default_textdomain_dir(),
+    });
+    Ok(())
+}
+
+/// `.Internal(bindtextdomain(domain, dirname))`: bind `domain`'s messages
+/// to `dirname` (with NULL, ask): the directory now bound, NULL if that
+/// failed; `bindtextdomain(NULL, NULL)` flushes the catalogue cache (TRUE).
+// R: errors.c:do_bindtextdomain (ENABLE_NLS)
+pub fn do_bindtextdomain(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("bindtextdomain", true).check_arity(cx, call, args)?;
+    let (d, p) = (args.get(cx, 0), args.get(cx, 1));
+    if d.sexptype() == NILSXP && p.sexptype() == NILSXP {
+        // textdomain(textdomain(NULL)): no catalogues to flush
+        return cx.build(out, |cx| Ok(cx.logical_value(1)));
+    }
+    if d.sexptype() != STRSXP || d.len() != Some(1) {
+        return Err(cx.error("invalid 'domain' value"));
+    }
+    if p.sexptype() != NILSXP && (p.sexptype() != STRSXP || p.len() != Some(1)) {
+        return Err(cx.error("invalid 'dirname' value"));
+    }
+    // translateChar of each
+    let loc = cx.locale();
+    let tr = |cx: &Cx, x: Ref<'_>| -> Result<Vec<u8>, ()> {
+        let c = x.as_vector::<Char<'_>>().unwrap().get(0);
+        let _ = cx;
+        crate::text::to_native(crate::coerce::text(c), loc).map(|b| b.into_owned()).map_err(|_| ())
+    };
+    let Ok(domain) = tr(cx, d) else {
+        return Err(cx.error("translating strings with \"bytes\" encoding is not allowed"));
+    };
+    let dirname = if p.sexptype() == NILSXP {
+        None
+    } else {
+        match tr(cx, p) {
+            Ok(v) => Some(v),
+            Err(()) => return Err(cx.error("translating strings with \"bytes\" encoding is not allowed")),
+        }
+    };
+    // libintl refuses an empty domain name: bindtextdomain returns NULL
+    if domain.is_empty() {
+        out.set(cx, cx.nil());
+        return Ok(());
+    }
+    let res = {
+        let Some(t) = cx.ext::<TextDomains>() else {
+            return Err(crate::util::not_yet(cx, Some(call), "bindtextdomain() before the start-up's BindDomain"));
+        };
+        let mut b = t.bound.borrow_mut();
+        match dirname {
+            Some(dir) => {
+                match b.iter_mut().find(|(k, _)| *k == domain) {
+                    Some(e) => e.1 = dir.clone(),
+                    None => b.push((domain, dir.clone())),
+                }
+                Some(dir)
+            }
+            None => b.iter().find(|(k, _)| *k == domain).map_or_else(|| t.default.clone(), |(_, v)| Some(v.clone())),
+        }
+    };
+    // (the C call's NULL is R_NilValue)
+    let Some(res) = res else {
+        out.set(cx, cx.nil());
+        return Ok(());
+    };
+    cx.build(out, |cx| cx.mk_string(&res, Encoding::Native))
 }

@@ -209,6 +209,13 @@ every record must come back from robigo-rt's unserialize and serialize as
 GNU R's round trip has it (M3's L1 bar). It reports the records with byte
 code apart while robigo-rt has no BCODESXP.
 
+What GNU R's own build of base, compiler and tools needs (L4):
+`scripts/rt-build-reach.sh` runs each R step of the build under GNU R
+4.6.2, traced as base-subset traces (`.robigo/build-reach/STEP.keys`),
+and `scripts/rt-build-gaps.py --robigo-rt BIN` lists the primitives and
+`.Internal`s among them that a robigo-rt binary lacks, by step. Rerun the
+second after a merge that adds builtins.
+
 The parse oracle (`tests/parse`, the corpora's `parse-dumps.tsv.gz`) has
 no per-version files. 4.6.2's `parse()` gives the same dumps as 4.5.0's
 for every recorded source (`docs/ledger/g3.md`), so `robigo-syntax`
