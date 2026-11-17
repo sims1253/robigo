@@ -302,6 +302,17 @@ enum What {
     /// `DECLNKSTK` drops from under the value: no register (the links it
     /// counts are `BcAssign`'s to commit, as in the from-source code).
     Mark,
+    /// `STARTFOR`'s loop state: [`super::FOR_STATE`] registers from `state` (the
+    /// sequence first), the loop variable and the `for` call.
+    For {
+        state: Reg,
+        sym: Sexp,
+        call: Sexp,
+    },
+    /// `STARTLOOPCNTXT`'s context: the `Loop` instruction's index.
+    LoopCtx {
+        at: usize,
+    },
 }
 
 /// What pass 1 learned for pass 2.
@@ -402,6 +413,8 @@ fn merge(into: &mut [Item], from: &[Item]) -> Result<(), Need> {
             (What::Val(x), What::Val(y)) => x == y,
             (What::Frame(f), What::Frame(g)) => f.dst == g.dst && f.base == g.base && f.args.len() == g.args.len(),
             (What::Mark, What::Mark) => true,
+            (What::For { state: a, .. }, What::For { state: b, .. }) => a == b,
+            (What::LoopCtx { at: a }, What::LoopCtx { at: b }) => a == b,
             _ => false,
         };
         if !same {
@@ -443,13 +456,48 @@ fn starts_new(t: &mut Tr) -> Starts {
 
 /// Whether control can fall from `op` into the next instruction.
 fn falls_through(op: u8) -> bool {
-    !matches!(op, RETURN | GOTO | RETURNJMP)
+    !matches!(op, RETURN | GOTO | RETURNJMP | SWITCH | STARTFOR)
+}
+
+/// The code positions an INTSXP of offsets (`SWITCH`'s) names; R_NilValue
+/// names none.
+///
+/// # Safety
+/// `x` is live.
+unsafe fn offsets(x: Sexp) -> Result<Vec<usize>, Need> {
+    // SAFETY: the caller's contract.
+    unsafe {
+        match x.typ() {
+            NILSXP => Ok(Vec::new()),
+            INTSXP => {
+                let v = std::slice::from_raw_parts(x.std_data() as *const i32, x.std_len() as usize);
+                v.iter().map(|&o| usize::try_from(o).map_err(|_| Need::Fail)).collect()
+            }
+            _ => Err(Need::Fail),
+        }
+    }
 }
 
 /// The code positions each instruction may go to.
-fn successors(i: &BcIns, next: Option<usize>) -> Vec<usize> {
+///
+/// # Safety
+/// `consts` are the code's live constants.
+unsafe fn successors(i: &BcIns, next: Option<usize>, consts: Sexp) -> Result<Vec<usize>, Need> {
     let mut s = Vec::new();
+    // SAFETY: the caller's contract: a VECSXP's elements.
+    let k = |x: i32| unsafe { *(consts.std_data() as *const Sexp).add(x as usize) };
     match i.op {
+        // SAFETY: as above.
+        SWITCH => unsafe {
+            s.extend(offsets(k(i.a[2]))?);
+            s.extend(offsets(k(i.a[3]))?);
+        },
+        STARTFOR => {
+            s.push(i.a[2] as usize);
+            // (the body, which STEPFOR jumps back to)
+            s.extend(next);
+        }
+        STARTLOOPCNTXT | STEPFOR => s.push(i.a[if i.op == STEPFOR { 0 } else { 1 }] as usize),
         GOTO => s.push(i.a[0] as usize),
         BRIFNOT | BASEGUARD | AND1ST | OR1ST | STARTSUBSET | STARTSUBSET2 | STARTSUBSET_N | STARTSUBSET2_N => {
             s.push(i.a[1] as usize)
@@ -461,11 +509,14 @@ fn successors(i: &BcIns, next: Option<usize>) -> Vec<usize> {
     {
         s.push(n);
     }
-    s
+    Ok(s)
 }
 
 /// The instructions control reaches from the first.
-fn reachable(dec: &[BcIns]) -> Result<Vec<bool>, Need> {
+///
+/// # Safety
+/// `consts` are the code's live constants.
+unsafe fn reachable(dec: &[BcIns], consts: Sexp) -> Result<Vec<bool>, Need> {
     let index: HashMap<usize, usize> = dec.iter().enumerate().map(|(k, i)| (i.at, k)).collect();
     let mut live = vec![false; dec.len()];
     let mut todo = vec![0usize];
@@ -475,7 +526,8 @@ fn reachable(dec: &[BcIns]) -> Result<Vec<bool>, Need> {
         }
         live[k] = true;
         let next = dec.get(k + 1).map(|i| i.at);
-        for p in successors(&dec[k], next) {
+        // SAFETY: the caller's contract.
+        for p in unsafe { successors(&dec[k], next, consts)? } {
             match index.get(&p) {
                 Some(&j) => todo.push(j),
                 None => return Err(Need::Fail),
@@ -507,7 +559,8 @@ impl<'g> Comp<'g> {
             (std::slice::from_raw_parts(c.std_data() as *const i32, c.std_len() as usize).to_vec(), bc.cdr())
         };
         let Ok(dec) = decode(&code) else { return Err(Need::Fail) };
-        let live = reachable(&dec)?;
+        // SAFETY: as above.
+        let live = unsafe { reachable(&dec, consts)? };
         debug_assert_eq!(dst, R_FIRST);
         let mut p = Comp::new(self.cx, self.st, Profile::Bc, Some(Cenv::for_translation()));
         let r = p.alloc();
@@ -577,8 +630,12 @@ impl<'g> Comp<'g> {
                     t.pending = None;
                 }
                 (None, true) => {}
-                // (reached from nowhere the translation went)
-                (None, false) => return Err(mismatch()),
+                // the target of a back-edge yet to come (a loop body after
+                // the jump into its loop): the stack the jump before left
+                // there, which that back-edge meets
+                (None, false) => {
+                    t.labels.insert(i.at, (t.stack.clone(), self.next));
+                }
             }
             match &t.plan {
                 None => t.depth[k] = Some(t.stack.len()),
@@ -679,7 +736,7 @@ impl<'g> Comp<'g> {
             .rev()
             .find_map(|i| match &mut i.what {
                 What::Frame(f) => Some(f),
-                What::Val(_) | What::Mark => None,
+                _ => None,
             })
             .ok_or(Need::Fail)
     }
@@ -777,7 +834,14 @@ impl<'g> Comp<'g> {
                 }
                 self.pop(t)?;
             }
-            GOTO => self.jump(t, Ins::new(Op::Jmp), i.a[0] as usize)?,
+            GOTO => {
+                // a back-edge: a safepoint and bcEval's poll; a forward
+                // jump plain, as the from-source code's (bcEval's GOTO
+                // counts toward its poll either way)
+                let to = i.a[0] as usize;
+                let op = if to <= i.at { Op::BackJmp } else { Op::Jmp };
+                self.jump(t, Ins::new(op), to)?
+            }
             BRIFNOT => {
                 let r = self.pop(t)?;
                 let mut br = Ins::new(Op::BrFalse);
@@ -1166,6 +1230,112 @@ impl<'g> Comp<'g> {
                 let Some(Item { what: v @ What::Val(_), .. }) = t.stack.pop() else { return Err(Need::Fail) };
                 let Some(Item { what: What::Mark, starts }) = t.stack.pop() else { return Err(Need::Fail) };
                 t.stack.push(Item { what: v, starts });
+            }
+            SWITCH => {
+                // EXPR popped; its value picks a jump of the tables that
+                // follow (the names', then the numeric offsets')
+                let (call, names) = (k(i.a[0]), k(i.a[1]));
+                // SAFETY: constants of the byte code.
+                let (co, io) = unsafe { (offsets(k(i.a[2]))?, offsets(k(i.a[3]))?) };
+                // SAFETY: as above.
+                let nn = unsafe { if names.typ() == STRSXP { names.std_len() as usize } else { 0 } };
+                if io.is_empty() || nn != co.len() || (nn == 0 && self.nil() != names) {
+                    return self.untranslated(i, "a malformed switch");
+                }
+                let r = self.pop(t)?;
+                let mut sw = Ins::new(Op::Switch);
+                sw.b = r;
+                sw.e = self.k(call);
+                sw.c = self.k(names);
+                sw.f = u16::try_from(io.len()).map_err(|_| Need::Fail)?;
+                self.emit(sw);
+                for &to in co.iter().chain(&io) {
+                    self.jump(t, Ins::new(Op::Jmp), to)?;
+                }
+            }
+            STARTFOR => {
+                // the sequence is the first of the loop's state registers
+                let (call, sym, to) = (k(i.a[0]), k(i.a[1]), i.a[2] as usize);
+                let Some(Item { what: What::Val(s), starts }) = t.stack.pop() else { return Err(Need::Fail) };
+                self.next = s + 1;
+                if self.alloc_n(super::FOR_STATE - 1) != s + 1 {
+                    return Err(mismatch());
+                }
+                if !self.locals.contains(&sym) {
+                    self.locals.push(sym);
+                }
+                let mut p = Ins::new(Op::ForPrep);
+                p.a = s;
+                p.e = self.k(sym);
+                p.c = self.k(call);
+                self.emit(p);
+                t.stack.push(Item { what: What::For { state: s, sym, call }, starts });
+                // to the label (STEPFOR, or a loop context's start); the
+                // body after this is STEPFOR's jump's
+                let body = t.code.get(t.cur + 1).map(|n| n.at).ok_or(Need::Fail)?;
+                if to != body {
+                    self.jump(t, Ins::new(Op::Jmp), to)?;
+                }
+                let st = t.stack.clone();
+                meet(t, body, st, self.next)?;
+            }
+            STEPFOR => {
+                // the next element, back to the body (a back-edge); the
+                // end falls through
+                let (state, sym, call) = t
+                    .stack
+                    .iter()
+                    .rev()
+                    .find_map(|e| match e.what {
+                        What::For { state, sym, call } => Some((state, sym, call)),
+                        _ => None,
+                    })
+                    .ok_or(Need::Fail)?;
+                let mut s = Ins::new(Op::ForStep);
+                s.a = state;
+                s.e = self.k(sym);
+                s.c = self.k(call);
+                let at = self.emit(s);
+                let after = t.code.get(t.cur + 1).map(|n| n.at).ok_or(Need::Fail)?;
+                t.patches.push((at, after));
+                self.jump(t, Ins::new(Op::BackJmp), i.a[0] as usize)?;
+            }
+            ENDFOR => {
+                // the loop's value, NULL, in the sequence's place
+                let Some(Item { what: What::For { state, .. }, starts }) = t.stack.pop() else {
+                    return Err(Need::Fail);
+                };
+                let mut d = Ins::new(Op::ForDone);
+                d.a = state;
+                self.emit(d);
+                for r in state..state + super::FOR_STATE as Reg {
+                    self.clear(r);
+                }
+                self.next = state;
+                let r = self.alloc();
+                self.ld_nil(r, false);
+                t.stack.push(Item { what: What::Val(r), starts });
+            }
+            STARTLOOPCNTXT => {
+                // the loop's context: its region runs inside the record; a
+                // `break` lands at the label (ENDLOOPCNTXT), a `next` here
+                let mut l = Ins::new(Op::Loop);
+                // SAFETY: the code's live constants.
+                if let Some(e) = unsafe { t.expr_at(self.cx, i.at) } {
+                    l.e = self.k(e);
+                }
+                // (registers from here are the region's temporaries)
+                l.a = self.next;
+                let at = self.emit(l);
+                let starts = starts_new(t);
+                t.stack.push(Item { what: What::LoopCtx { at }, starts });
+                let st = t.stack.clone();
+                meet(t, i.a[1] as usize, st, self.next)?;
+            }
+            ENDLOOPCNTXT => {
+                let Some(Item { what: What::LoopCtx { at }, .. }) = t.stack.pop() else { return Err(Need::Fail) };
+                let end = self.emit(Ins::new(Op::LoopEnd));
+                self.patch(at, end);
             }
             RETURNJMP => {
                 // `return` in a promise: out of the function's context
