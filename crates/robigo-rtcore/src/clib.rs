@@ -114,26 +114,36 @@ pub fn wcstod_of(s: &[u32]) -> Option<(f64, usize)> {
 
 /// The home directory in the password database of `user` (`getpwnam`), or
 /// of the process's user (`getpwuid(getuid())`) for `None`; `None` when
-/// there is no such entry. (The reentrant lookups.)
+/// there is no such entry. (The reentrant lookups, with the buffer grown
+/// while they say `ERANGE`, as glibc's `getpwnam` does.)
 pub fn passwd_home(user: Option<&[u8]>) -> Option<Vec<u8>> {
+    let name = match user {
+        Some(u) => Some(std::ffi::CString::new(u).ok()?),
+        None => None,
+    };
     let mut buf = vec![0 as libc::c_char; 16384];
-    // SAFETY: a zeroed passwd is a valid out-argument; the reentrant lookups
-    // write it and `result`, whose strings point into `buf`, alive for the
-    // reads below; `name` is NUL-terminated.
-    unsafe {
-        let mut pw: libc::passwd = std::mem::zeroed();
-        let mut result: *mut libc::passwd = std::ptr::null_mut();
-        let rc = match user {
-            Some(u) => {
-                let name = std::ffi::CString::new(u).ok()?;
-                libc::getpwnam_r(name.as_ptr(), &mut pw, buf.as_mut_ptr(), buf.len(), &mut result)
+    loop {
+        // SAFETY: a zeroed passwd is a valid out-argument; the reentrant
+        // lookups write it and `result`, whose strings point into `buf`,
+        // alive for the reads below; `name` is NUL-terminated.
+        unsafe {
+            let mut pw: libc::passwd = std::mem::zeroed();
+            let mut result: *mut libc::passwd = std::ptr::null_mut();
+            let rc = match &name {
+                Some(n) => libc::getpwnam_r(n.as_ptr(), &mut pw, buf.as_mut_ptr(), buf.len(), &mut result),
+                None => libc::getpwuid_r(libc::getuid(), &mut pw, buf.as_mut_ptr(), buf.len(), &mut result),
+            };
+            if rc == libc::ERANGE {
+                // the entry did not fit
+                let n = buf.len().checked_mul(2)?;
+                buf.resize(n, 0);
+                continue;
             }
-            None => libc::getpwuid_r(libc::getuid(), &mut pw, buf.as_mut_ptr(), buf.len(), &mut result),
-        };
-        if rc != 0 || result.is_null() || pw.pw_dir.is_null() {
-            return None;
+            if rc != 0 || result.is_null() || pw.pw_dir.is_null() {
+                return None;
+            }
+            return Some(std::ffi::CStr::from_ptr(pw.pw_dir).to_bytes().to_vec());
         }
-        Some(std::ffi::CStr::from_ptr(pw.pw_dir).to_bytes().to_vec())
     }
 }
 

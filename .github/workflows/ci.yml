@@ -196,6 +196,9 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+    # Measured (docs/ledger/g3/2026-11-17-rt-job-capacity.md): since H8 the
+    # slowest hosted runners take ~20 min, ~9 of them the release tests; 30
+    # keeps 1.5x that. A step that adds minutes moves this number with data.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
