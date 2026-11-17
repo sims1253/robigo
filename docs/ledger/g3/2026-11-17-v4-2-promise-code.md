@@ -64,3 +64,48 @@ share one cache slot, and the last translation wins.
 The from-source compiler's code (`Comp`) keeps its per-expression caching
 until V4 retires it to the crosscheck; its `Call`s carry no codes, so their
 path is unchanged.
+
+### What landed
+
+- **The codes.** `bctrans`'s `CALL` collects its pushes' `MAKEPROM`
+  BCODESXPs (symbols' too: cmp.R's `cmpCallArgs` gives a symbol argument
+  byte code, `GETVAR`) into a list constant, `Call`'s `f`; each is
+  translated with the code it runs in (the caller's compile environment,
+  its frame's slot indices) and the translation kept on the BCODESXP
+  itself (`code::cache_on`), no longer on the call's argument expression.
+  A complex assignment's generic step carries its promises' codes the same
+  way (`bcassign`'s `S_CODES`). `args::arg_code(codes, pos)` reads code
+  `pos`, null for none (a constant, `...`, an empty argument, `bquote`'s,
+  the from-source compiler's calls: `f` 0).
+- **Where a promise is made.** `call::call` takes the codes; a closure's
+  delayed slot (by the site's plan or the matcher, by the actual's call
+  position), a `...` list's promise (`list_element`) and a complex
+  assignment's closure argument (`closure_args`) hold code `pos` as their
+  code, still byte code's (`META_BYTECODE`, `promise::BYTECODE`). A
+  builtin called through `CALL` (or a complex assignment's builtin getter
+  or setter) runs the argument's code in place, `MAKEPROM`'s `bcEval(code,
+  rho)`: `eval::bc_eval_inline`, no `eval` level, bcEval's entry poll.
+- **Forcing.** `eval_bytecode` of a BCODESXP is `forcePromise`'s
+  `eval(PRCODE)`: `eval`'s BCODESXP case (its count and level), the
+  translation kept on the code, bcEval's poll. An early value
+  (`crate::early`) reads the translation as it reads a call's code, and
+  the early force counts what that force counts: the early-force hook
+  takes the code's type (`SYMSXP`, `LANGSXP`, `BCODESXP`, both counts for
+  byte code). Pure-closure inlining takes the codes as its arguments
+  (`inline::actual`), evaluates them as calls' code, and fuses `GetFun` +
+  `Call` only for a call without codes.
+- **Readers (PREXPR).** rtcore's `bytecode_expr` (`bytecodeExpr`,
+  `R_PromiseExpr`): `frame_arg_raw`'s `ArgValue` (`missing()`,
+  `R_isMissing`), `findRootPromise`, `substitute()`, `match.call()`'s
+  `...`, deparse's `<promise: >`, the unused-argument message. `ArgSlot`
+  stays PRCODE (forcing, aliases). `identical()` of promises is still
+  not implemented in robigo-rt (its error stands).
+- **Serialization.** An unforced promise of a translated call is written
+  with its code, the BCODESXP, as GNU R writes it; robigo-rt refused that
+  before ("serializing a promise of byte code is not implemented yet",
+  which still covers the from-source compiler's promises).
+- **Fixtures.** `tests/rt/bctrans/promise.R` (13 cases: `substitute`,
+  `missing` through a symbol argument, `match.call`'s `...`, the unused
+  argument, forcing, `...`, a builtin through `CALL`, inlining, a setter's
+  and a builtin getter's arguments, an environment's serialization byte
+  for byte and read back), recorded on 4.6.2; ratcheted.

@@ -1757,8 +1757,12 @@ fn prepare<'s: 'r, 'r, 'a, const GENERIC: bool>(
                                 // constant of the caller's code, as each
                                 // code it holds.
                                 let code = unsafe { arg_code(codes, a.pos as usize) };
-                                let expr =
-                                    if code.is_null() { v } else { s.root(cx, unsafe { Ref::from_sexp(code, cx) }) };
+                                let expr = if code.is_null() {
+                                    v
+                                } else {
+                                    // SAFETY: as above: a live code.
+                                    s.root(cx, unsafe { Ref::from_sexp(code, cx) })
+                                };
                                 SlotInit::Delayed { expr, value: None, bytecode }
                             }
                             // (`...`'s double promise: its code is the promise)
