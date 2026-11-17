@@ -158,7 +158,10 @@ impl Ast {
     // R: tre-ast.c:tre_ast_new_union
     pub fn new_union(&mut self, left: NodeId, right: NodeId) -> NodeId {
         let n = self.new_node(Obj::Union { left, right });
-        self.nodes[n].num_submatches = self.nodes[left].num_submatches.wrapping_add(self.nodes[right].num_submatches);
+        // C adds without a check (signed overflow, needs 2^31 groups); take
+        // new_catenation's guard rather than wrap.
+        self.nodes[n].num_submatches =
+            self.nodes[left].num_submatches.checked_add(self.nodes[right].num_submatches).unwrap_or(0);
         n
     }
 

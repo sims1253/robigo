@@ -106,7 +106,8 @@ pub const REG_BACKTRACKING_MATCHER: i32 = 8;
 pub use approx::{AMatch, AParams};
 /// glibc's `towupper`/`towlower` in a locale.
 pub use ctype::{tolower as towlower, toupper as towupper};
-pub use exec::{Match, Mbs, Text};
+pub use exec::Match;
+use exec::Mbs;
 
 /// A compiled regex (`regex_t`).
 pub struct Regex {
