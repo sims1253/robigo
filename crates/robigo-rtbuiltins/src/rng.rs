@@ -125,6 +125,13 @@ fn get_rng_kind(cx: &mut Cx, seeds: Option<Root<'_>>) -> RResult<bool> {
             cx.warning(&msg)?;
             return Ok(Some(None));
         }
+        // INTEGER(seeds): an ALTREP vector's data (a compact sequence
+        // expanded), as copy_seeds_in reads it too
+        if v.is_package_altrep() {
+            return Err(not_yet(cx, None, "a package ALTREP '.Random.seed'"));
+        }
+        cx.materialize(seeds)?;
+        let v = seeds.bind(cx);
         // INTEGER(seeds)[0] (a zero-length vector reads past its end in C)
         let Some(&tmp) = v.as_ints().unwrap().first() else {
             return Err(not_yet(cx, None, "a zero-length '.Random.seed'"));
