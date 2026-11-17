@@ -546,6 +546,20 @@ const JIT_BITS: u16 = gp::closure::NOJIT | gp::closure::MAYBEJIT;
 use robigo_heap::gp::call::ASSIGNMENT_CALL;
 
 /// The types `duplicate1` returns as they are.
+/// Whether `duplicate1`'s per-cell work would change the pairlist copy `l`:
+/// a car of a type it copies, or a cell with attributes.
+fn cells_need_deep(cx: &Cx, l: Ref<'_>) -> bool {
+    let nil = cx.nil();
+    let mut c = l.as_cons();
+    while let Some(cell) = c {
+        if !shared_by_duplicate(cell.car().sexptype()) || cell.as_ref().attrib().is_some_and(|a| a != nil) {
+            return true;
+        }
+        c = cell.cdr().as_cons();
+    }
+    false
+}
+
 fn shared_by_duplicate(t: u8) -> bool {
     matches!(
         t,
@@ -694,7 +708,15 @@ impl Cx {
 
     /// For each cell of the fresh pairlist copy in `l`: its car replaced by
     /// its duplicate, and its attributes' values too.
+    ///
+    /// A copy whose cars are all of the types `duplicate1` shares and whose
+    /// cells have no attributes is already its deep copy (most calls: a
+    /// function name and symbol arguments): one read-only pass finds that,
+    /// and the walk, which would change nothing, is skipped.
     fn deep_cells(&mut self, l: Root<'_>) -> RResult<()> {
+        if !cells_need_deep(self, l.bind(self)) {
+            return Ok(());
+        }
         self.scope(|cx, s| {
             let cur = s.root(cx, l.bind(cx));
             while let Some(c) = cur.bind(cx).as_cons() {
