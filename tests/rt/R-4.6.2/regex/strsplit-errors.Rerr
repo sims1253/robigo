@@ -1,0 +1,51 @@
+Error in strsplit(1, "a") : non-character argument
+Error in strsplit("a", "[") : 
+  invalid regular expression '[', reason 'Missing ']''
+In addition: Warning message:
+In strsplit("a", "[") : TRE pattern compilation error 'Missing ']''
+Error in strsplit("a", "a{2,1}") : 
+  invalid regular expression 'a{2,1}', reason 'Invalid contents of {}'
+In addition: Warning message:
+In strsplit("a", "a{2,1}") :
+  TRE pattern compilation error 'Invalid contents of {}'
+Error in strsplit("a", "(", perl = TRUE) : invalid regular expression '('
+In addition: Warning message:
+In strsplit("a", "(", perl = TRUE) :
+  PCRE pattern compilation error
+	'missing closing parenthesis'
+	at ''
+Error in strsplit("a", "(?<", perl = TRUE) : 
+  invalid regular expression '(?<'
+In addition: Warning message:
+In strsplit("a", "(?<", perl = TRUE) :
+  PCRE pattern compilation error
+	'subpattern name expected'
+	at ''
+Error in strsplit("a", "\\") : 
+  invalid regular expression '\', reason 'Trailing backslash'
+In addition: Warning message:
+In strsplit("a", "\\") : TRE pattern compilation error 'Trailing backslash'
+Warning messages:
+1: In strsplit(x, "") : input string 1 is invalid UTF-8
+2: In strsplit(x, "") : input string 2 is invalid UTF-8
+Warning messages:
+1: In strsplit(x, "b") : unable to translate 'a<ff>b' to a wide string
+2: In strsplit(x, "b") : input string 1 is invalid
+3: In strsplit(x, "b") : unable to translate '<fe>' to a wide string
+4: In strsplit(x, "b") : input string 2 is invalid
+Error in strsplit("a", "\xff") : 'split' string 1 is invalid
+In addition: Warning message:
+In strsplit("a", "\xff") : unable to translate '<ff>' to a wide string
+Error in strsplit("a", "\xff", fixed = TRUE) : 
+  'split' string 1 is invalid in this locale
+Error in strsplit("a", "\xff", perl = TRUE) : 
+  'split' string 1 is invalid UTF-8
+Warning messages:
+1: In strsplit(y, "") : input string 1 is invalid UTF-8
+2: In strsplit(y, "") : input string 2 is invalid UTF-8
+3: In strsplit(y, "") : input string 3 is invalid UTF-8
+4: In strsplit(y, "") : input string 4 is invalid UTF-8
+5: In strsplit(y, "") : input string 5 is invalid UTF-8
+Error in strsplit("aé", "\xe9") : 'split' string 1 is invalid
+In addition: Warning message:
+In strsplit("aé", "\xe9") : unable to translate '<e9>' to a wide string

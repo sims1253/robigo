@@ -51,7 +51,7 @@ impl<'g> Ref<'g> {
         let _ = cx;
         debug_assert!(!x.is_null());
         // SAFETY: the caller's contract: a live object is not null.
-        Ref { p: unsafe { NonNull::new_unchecked(x.0) }, _g: PhantomData }
+        Ref { p: unsafe { NonNull::new_unchecked(x.as_ptr()) }, _g: PhantomData }
     }
 
     /// A field of an object this `Ref` reaches: the same brand.
@@ -63,13 +63,14 @@ impl<'g> Ref<'g> {
     unsafe fn child(self, x: Sexp) -> Ref<'g> {
         // SAFETY: the caller's contract; the parent is reachable for 'g and
         // its fields do not change during 'g, so neither can the child.
-        Ref { p: unsafe { NonNull::new_unchecked(x.0) }, _g: PhantomData }
+        Ref { p: unsafe { NonNull::new_unchecked(x.as_ptr()) }, _g: PhantomData }
     }
 
     /// The raw object, for the raw layer. Using it is `unsafe` there.
     #[inline(always)]
     pub fn sexp(self) -> Sexp {
-        Sexp(self.p.as_ptr())
+        // SAFETY: a `Ref` holds a live object of its isolate for 'g.
+        unsafe { Sexp::from_ptr(self.p.as_ptr()) }
     }
 
     /// GNU R's TYPEOF.
@@ -721,7 +722,7 @@ impl<'g> ExtPtr<'g> {
     #[inline(always)]
     pub fn addr(self) -> *mut std::ffi::c_void {
         // SAFETY: a live EXTPTRSXP: its car is an untraced word.
-        unsafe { self.0.sexp().car().0.cast() }
+        unsafe { self.0.sexp().car().as_ptr().cast() }
     }
     /// GNU R's R_ExternalPtrProtected.
     #[inline(always)]

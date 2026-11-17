@@ -371,10 +371,10 @@ fn do_dotcall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: O
         return Err(cx.error_call(Some(call), "too many arguments in foreign function call"));
     }
     let nil = cx.nil().sexp();
-    let mut a = [nil.0.cast::<c_void>(); MAX_ARGS];
+    let mut a = [nil.as_ptr().cast::<c_void>(); MAX_ARGS];
     for k in 0..nargs {
         let i = keep.as_ref().map_or(k + 1, |v| v[k]);
-        a[k] = args.get(cx, i).sexp().0.cast();
+        a[k] = args.get(cx, i).sexp().as_ptr().cast();
     }
     // R: eval.c (the PP_FOREIGN builtin's context, `vmax`)
     let vmax = cx.vmax();
@@ -384,7 +384,8 @@ fn do_dotcall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: O
         // calls one (SEXP f(SEXP, ...)); every argument is in `args`,
         // rooted by the caller. The result word is rooted right away.
         let w = unsafe { cx.call_native65(call, base, f.cast(), &mut a, nargs) }?;
-        Ok(Sexp(w.cast()))
+        // SAFETY: the routine's result, a SEXP (C's contract).
+        Ok(unsafe { Sexp::from_ptr(w.cast()) })
     });
     let w = r?;
     // R: dotcode.c:check_retval

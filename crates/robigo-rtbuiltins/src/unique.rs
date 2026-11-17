@@ -289,7 +289,7 @@ impl Keys for RawKeys<'_> {
 /// `PTRHASH(x)`: an object's address, its two 32-bit halves xored.
 #[inline(always)]
 fn ptrhash(x: Ref<'_>) -> u32 {
-    let z = x.sexp().0 as usize as u64;
+    let z = x.sexp().as_ptr() as usize as u64;
     (z as u32) ^ ((z >> 32) as u32)
 }
 
