@@ -1,0 +1,28 @@
+ [1] "c"        "b"        ""         ""         "a"        ""        
+ [7] NA         "a"        "b"        "a"        "b"        "x"       
+[13] "y"        "x.tar.gz"
+ [1] "a/b" "a"   "/"   "/"   "."   ""    NA    "/"   "a"   "/"   "a"   "."  
+[13] ".."  "."  
+character(0)
+character(0)
+[1] TRUE
+[1] "a character vector argument expected"
+[1] "a character vector argument expected"
+[1] "translating strings with \"bytes\" encoding is not allowed"
+[1] "translating strings with \"bytes\" encoding is not allowed"
+[1] "ü"
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] "nosuch/x" NA        
+[1] "path[1]=\"nosuch/x\": No such file or directory"
+[1] "path[2]=NA"
+[1] "nosuch/x" NA        
+[1] "path[1]=\"nosuch/x\": No such file or directory"
+[1] "path[1]=NA"
+[1] "'path' must be a character vector"
+[1] "translating strings with \"bytes\" encoding is not allowed"
+[1] "1 argument passed to .Internal(getwd) which requires 0"
+[1] "/root"          "/"              "~nosuchuserxyz"
+[1] "x"              "~nosuchuserxyz"

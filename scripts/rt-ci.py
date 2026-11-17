@@ -37,8 +37,10 @@ Then the conformance again under gctorture and under the moving collector
 (E3; `young:N`, which moves the young objects at each collection and
 everything at every N-th, H8), the stress script in a few fresh processes (E3, scripts/rt-stress.sh),
 the overshoot of every slice (E4, scripts/rt-overshoot.py), and E9: the
-conformance under a small vector limit, and allocations refused once after
-visible effects (scripts/rt-fail-alloc.py). The
+conformance under a small vector limit, allocations refused once after
+visible effects (scripts/rt-fail-alloc.py), and, last, the conformance with
+every `&Cx` build's retry run once (`ROBIGO_RETRY_TORTURE=1`), in a build with
+robigo-rtcore's `retry-torture` feature made for that step alone. The
 verification modes of g3.md §16 add their steps here as they land.
 """
 import argparse
@@ -188,15 +190,30 @@ def conformance_command():
 SLOW = {"ROBIGO_CONF_TIMEOUT": "600"}
 
 
+def every_cpu(steps):
+    """The steps, with the conformance runner given a case per CPU in each
+    conformance step: those run one test alone (`--exact`), so the cases may
+    use every CPU (the runner's default, 2, is for a cargo test that shares
+    the machine with other test binaries). The runner starts the cases named
+    in ROBIGO_CONF_TIMEOUTS first."""
+    jobs = str(os.cpu_count() or 2)
+    return [(t, {**e, "ROBIGO_CONF_JOBS": jobs} if CONFORMANCE in c and "--exact" in c else e, c) for t, e, c in steps]
+
+
 def full_move_steps():
     """The nightly's full run (`--full-move`): the conformance slice under
     gctorture, every collection moving everything it may."""
     full_slow = ",".join(f"{c}={secs}" for c, secs in sorted(FULL_MOVE_SLOW.items()))
-    return [
+    return every_cpu([
         ("conformance under ROBIGO_GC_MOVE=1 with gctorture (every collection moves everything)",
          {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **SLOW, "ROBIGO_CONF_TIMEOUTS": full_slow},
          conformance_command()),
-    ]
+    ])
+
+
+# The cargo feature that compiles ROBIGO_RETRY_TORTURE in (robigo-rtcore's
+# Cargo.toml): only its step builds with it.
+RETRY_TORTURE_FEATURE = "robigo-rtcore/retry-torture"
 
 
 def steps(crates):
@@ -206,7 +223,7 @@ def steps(crates):
     skip = ["--", "--skip", CONFORMANCE]
     conformance = conformance_command()
     slow = SLOW
-    return [
+    out = [
         ("release tests", {}, [*test, *pkgs, *skip]),
         ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {}, conformance),
         # docs/g3.md §15.3 E5: the same cases and recordings under each
@@ -268,7 +285,18 @@ def steps(crates):
          {"ROBIGO_BC_CROSSCHECK": "1", "ROBIGO_BC_CROSSCHECK_REPORT": BC_REPORT}, conformance),
         ("injected allocation failures (E9, scripts/rt-fail-alloc.py)", {},
          ["python3", "scripts/rt-fail-alloc.py", "--points", "400"]),
+        # E9 (docs/g3.md §16): every `&Cx` build's first allocation refused
+        # once, so each build's retry runs. The mode is compiled in only
+        # with robigo-rtcore's feature, built for this step alone and last:
+        # every step above tests the binary users get (cargo keeps both
+        # builds). With ROBIGO_GC_MOVE=1 as well it takes about 20 minutes,
+        # so that run is by hand (g3.md §16).
+        ("conformance under ROBIGO_RETRY_TORTURE=1 (E9: every build's retry runs once)",
+         {"ROBIGO_RETRY_TORTURE": "1", **slow},
+         [*test, "-p", "robigo-rtapi", "--features", RETRY_TORTURE_FEATURE, "--test", "conformance", "--",
+          "--exact", CONFORMANCE, "--nocapture"]),
     ]
+    return every_cpu(out)
 
 
 def metadata():
@@ -330,7 +358,9 @@ def main(argv):
             for line in errors:
                 print(f"::error::rt: {line}")
             if errors:
-                print(f"::error::rt: {title}: {len(errors)} closure(s)")
+                # (an error is a closure's line, a malformed line or a
+                # report that compared nothing: bc_report_check)
+                print(f"::error::rt: {title}: {len(errors)} report problem(s)")
                 return 1
     return 0
 

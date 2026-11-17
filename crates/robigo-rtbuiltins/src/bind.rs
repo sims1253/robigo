@@ -9,8 +9,8 @@ use crate::util::{not_yet, type_to_char};
 use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{
-    Args, Built, Char, Cx, Diag, Dispatched, Encoding, FreshVec, Generic, Lgl, NeedGc, Out, RResult, Rcomplex, Ref,
-    Root, Sym, View,
+    Args, Built, Char, Cons, Cx, Diag, Dispatched, Encoding, FreshVec, Generic, Lgl, NeedGc, Out, RResult, Rcomplex,
+    Ref, Root, Sym, Vector, View,
 };
 
 const NA_INTEGER: i32 = i32::MIN;
@@ -33,27 +33,49 @@ struct Item<'g> {
 }
 
 /// The elements of a list, expression vector or pairlist with their item
+/// names, walked in place as GNU R's loops over `VECTOR_ELT` and `CDR` do.
+enum Items<'g> {
+    Vector {
+        v: Vector<'g, Ref<'g>>,
+        names: Option<Vector<'g, Char<'g>>>,
+        i: usize,
+    },
+    /// (a tag's PRINTNAME is the isolate's: H5)
+    Pairlist(&'g Cx, Option<Cons<'g>>),
+}
+
+impl<'g> Iterator for Items<'g> {
+    type Item = Item<'g>;
+
+    fn next(&mut self) -> Option<Item<'g>> {
+        match self {
+            Items::Vector { v, names, i } => {
+                let k = *i;
+                if k >= v.len() {
+                    return None;
+                }
+                *i += 1;
+                let name = names.map(|n| n.get(k)).filter(|c| !c.bytes().is_empty());
+                Some(Item { value: v.get(k), name })
+            }
+            Items::Pairlist(cx, c) => {
+                let cell = (*c)?;
+                *c = cell.cdr().as_cons();
+                let name = cell.tag().as_sym().map(|s| s.name(cx)).filter(|c| !c.bytes().is_empty());
+                Some(Item { value: cell.car(), name })
+            }
+        }
+    }
+}
+
+/// The elements of a list, expression vector or pairlist with their item
 /// names; None for anything else.
-fn items<'g>(cx: &'g Cx, x: Ref<'g>) -> Option<Vec<Item<'g>>> {
+fn items<'g>(cx: &'g Cx, x: Ref<'g>) -> Option<Items<'g>> {
     match x.view() {
         View::List(v) | View::Expr(v) => {
-            let names = attrib::names(x).and_then(|n| n.as_vector::<Char<'g>>());
-            Some(
-                (0..v.len())
-                    .map(|i| Item { value: v.get(i), name: names.map(|n| n.get(i)).filter(|c| !c.bytes().is_empty()) })
-                    .collect(),
-            )
+            Some(Items::Vector { v, names: attrib::names(x).and_then(|n| n.as_vector::<Char<'g>>()), i: 0 })
         }
-        View::Pairlist(_) | View::Null => {
-            let mut out = Vec::new();
-            let mut c = x.as_cons();
-            while let Some(cell) = c {
-                let name = cell.tag().as_sym().map(|s| s.name(cx)).filter(|c| !c.bytes().is_empty());
-                out.push(Item { value: cell.car(), name });
-                c = cell.cdr().as_cons();
-            }
-            Some(out)
-        }
+        View::Pairlist(_) | View::Null => Some(Items::Pairlist(cx, x.as_cons())),
         _ => None,
     }
 }
@@ -64,7 +86,7 @@ fn has_names<'g>(cx: &'g Cx, x: Ref<'g>) -> bool {
     if attrib::is_vector(x) {
         attrib::names(x).is_some()
     } else if matches!(x.sexptype(), LISTSXP) {
-        items(cx, x).unwrap().iter().any(|i| i.name.is_some())
+        items(cx, x).unwrap().any(|i| i.name.is_some())
     } else {
         false
     }
@@ -103,7 +125,7 @@ fn answer_type<'g>(cx: &'g Cx, x: Ref<'g>, recurse: bool, usenames: bool, d: &mu
                 answer_type(cx, it.value, recurse, usenames, d);
             }
         }
-        LISTSXP => (d.flags, d.len) = (d.flags | 256, d.len + items(cx, x).unwrap().len()),
+        LISTSXP => (d.flags, d.len) = (d.flags | 256, d.len + items(cx, x).unwrap().count()),
         _ => (d.flags, d.len) = (d.flags | 256, d.len + 1),
     }
 }
@@ -624,6 +646,12 @@ fn bind_result<'g, 'r>(
 
 const C: Generic = Generic::builtin("c");
 
+/// Whether `c()`'s argument `i` is one of the options `c_Extract_opt`
+/// takes out (`recursive`, `use.names`, by exact name).
+fn is_c_option(cx: &Cx, args: Args<'_>, i: usize) -> bool {
+    matches!(args.name(cx, i).map(|s| s.name_bytes()), Some(b"recursive" | b"use.names"))
+}
+
 /// `c(...)`: its arguments combined, `recursive` and `use.names` taken out
 /// by exact name.
 // R: bind.c:do_c, do_c_dflt, c_Extract_opt
@@ -633,10 +661,11 @@ pub fn do_c(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out
     }
     cx.scope(|cx, s| {
         // R_listCompact(args, keep_first = TRUE): later NULLs dropped
-        let keep: Vec<usize> = (0..args.len()).filter(|&i| i == 0 || args.get(cx, i).sexptype() != NILSXP).collect();
-        let args = if keep.len() == args.len() {
+        let args = if (1..args.len()).all(|i| args.get(cx, i).sexptype() != NILSXP) {
             args
         } else {
+            let keep: Vec<usize> =
+                (0..args.len()).filter(|&i| i == 0 || args.get(cx, i).sexptype() != NILSXP).collect();
             let vals: Vec<Ref<'_>> = keep.iter().map(|&i| args.get(cx, i)).collect();
             let names: Vec<Option<Sym<'_>>> = keep.iter().map(|&i| args.name(cx, i)).collect();
             s.args(cx, &vals, Some(&names))
@@ -646,7 +675,6 @@ pub fn do_c(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out
         let mut recurse = false;
         let mut usenames = true;
         let (mut nrec, mut nuse) = (0, 0);
-        let mut kept = Vec::new();
         for i in 0..args.len() {
             let name = args.name(cx, i).map(|s| s.name_bytes());
             match name {
@@ -670,21 +698,24 @@ pub fn do_c(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out
                         usenames = v != 0;
                     }
                 }
-                _ => kept.push(i),
+                _ => {}
             }
         }
         // the answers read the elements of the lists they recurse into
         // through INTEGER, REAL, ... (the arguments themselves were
         // materialized at entry)
         if recurse {
-            for &i in &kept {
-                cx.materialize_nested(args.root(i), None)?;
+            for i in 0..args.len() {
+                if !is_c_option(cx, args, i) {
+                    cx.materialize_nested(args.root(i), None)?;
+                }
             }
         }
         cx.build_with(out, |cx| {
-            let top: Vec<Item<'_>> = kept
-                .iter()
-                .map(|&i| Item { value: args.get(cx, i), name: args.name(cx, i).map(|s| s.name(cx)) })
+            // the arguments but those two
+            let top: Vec<Item<'_>> = (0..args.len())
+                .filter(|&i| !is_c_option(cx, args, i))
+                .map(|i| Item { value: args.get(cx, i), name: args.name(cx, i).map(|s| s.name(cx)) })
                 .collect();
             let mut d = Bind::default();
             for it in &top {
@@ -721,7 +752,7 @@ pub fn do_unlist(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out
     cx.materialize_nested(x, if recurse { None } else { Some(1) })?;
     cx.build_with(out, |cx| {
         let xv = x.bind(cx);
-        let top = items(cx, xv).unwrap();
+        let top: Vec<Item<'_>> = items(cx, xv).unwrap().collect();
         let mut d = Bind::default();
         if xv.sexptype() == VECSXP {
             if usenames && attrib::names(xv).is_some() {

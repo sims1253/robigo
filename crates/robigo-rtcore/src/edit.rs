@@ -250,6 +250,31 @@ impl Cx {
         Ok(())
     }
 
+    /// GNU R's bare `INTEGER(x)[i] = v` (or `REAL(x)[i] = v`) on a vector
+    /// that R code may share: the write shows through every reference to
+    /// `x`, as in GNU R (`do_mapply` writes the index constants of the call
+    /// it makes so, mapply.c). For ports whose C writes in place on purpose;
+    /// anything else goes through [`Cx::unique_mut`]. Panics unless `x`
+    /// holds a standard vector of `T` and `i` is in range.
+    pub fn set_plain_shared<T: Plain>(&mut self, x: Root<'_>, i: usize, v: T) -> RResult<()> {
+        let r = x.bind(self);
+        assert!(
+            r.sexptype() == T::SEXPTYPE,
+            "robigo: a write of the wrong type into a SEXPTYPE {} object",
+            r.sexptype()
+        );
+        if r.is_altrep() {
+            return Err(self.error_call(None, "robigo: 'writing into an ALTREP vector' is not implemented yet"));
+        }
+        let (sx, n) = (r.sexp(), r.len().expect("robigo: a standard vector has a length"));
+        assert!(i < n, "robigo: element {i} of {n}");
+        // SAFETY: element `i` of a live standard vector of `T` of this heap;
+        // `&mut self` borrows the capability, so no `Ref` or slice of it
+        // coexists, and plain data needs no barrier.
+        unsafe { (sx.std_data() as *mut T).add(i).write(v) };
+        Ok(())
+    }
+
     /// [`Cx::owned_mut`]'s and [`Cx::owned_list`]'s checks: a write the
     /// production rule would also have made in place.
     fn check_owned(&mut self, x: Root<'_>, accepts: impl Fn(u8) -> bool) -> RResult<()> {

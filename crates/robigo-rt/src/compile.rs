@@ -1012,7 +1012,9 @@ impl<'g> Comp<'g> {
         let off = *self.st.by_sym.get(&(f.as_ptr() as usize))?;
         match self.st.defs[off].kind {
             Kind::Special(s) => Some(Known::Special(s, off)),
-            Kind::Builtin(_, Inline::None) => None,
+            // (bcEval's scalar math is the `Bc` profile's alone: `eval` calls
+            // the builtin)
+            Kind::Builtin(_, Inline::None | Inline::Math1(_)) => None,
             Kind::Builtin(_, inl) => Some(Known::Inline(inl, off)),
             Kind::Fn(_) => Some(Known::Fn(off)),
         }
@@ -1142,6 +1144,7 @@ impl<'g> Comp<'g> {
                 Handler::Known(Known::Fn(_))
                     if (f == self.st.syms.subset || f == self.st.syms.subset2) && self.bc_subset(f, e, dst, d)? => {}
                 Handler::Known(Known::Fn(_)) if f == self.st.syms.dollar && self.bc_dollar(e, dst, d)? => {}
+                Handler::Known(Known::Fn(off)) if self.st.defs[off].name == "log" && self.bc_log(e, dst, d)? => {}
                 Handler::Known(Known::Fn(off)) => {
                     // (`cmpSpecial`)
                     let prim = self.st.objs[off].bind(self.cx).sexp();
@@ -1490,6 +1493,52 @@ impl<'g> Comp<'g> {
             }
             self.expr(a, r, d, false)
         }
+    }
+
+    /// cmp.R's inline handler for `log`: the argument (and the base)
+    /// compiled, then [`Op::Math1`]'s `LOG` (`LOGBASE`), `log`'s evaluated
+    /// form its slow path. False when cmp.R calls the special instead
+    /// (`...` or an empty argument, a name, not one or two arguments).
+    ///
+    /// # Safety
+    /// As for [`Comp::expr`]; `e` is a call of `log`.
+    // R: cmp.R:setInlineHandler("log")
+    unsafe fn bc_log(&mut self, e: Sexp, dst: Reg, d: u16) -> Result<bool, Need> {
+        let (cx, st) = (self.cx, self.st);
+        let (nil, missing) = (self.nil(), cx.missing_arg().sexp());
+        // SAFETY: the caller's contract.
+        let args = unsafe { cenv::elements(cx, e, true) };
+        if args.is_empty() || args.len() > 2 || args.iter().any(|&(a, t)| a == st.syms.dots || a == missing || t != nil)
+        {
+            return Ok(false);
+        }
+        let n = args.len();
+        let r = self.alloc_n(n);
+        for (j, &(a, _)) in args.iter().enumerate() {
+            // SAFETY: the caller's contract.
+            unsafe { self.expr(a, r + j as Reg, d + 1, false)? };
+        }
+        let kind = if n == 1 { crate::ir::MATH_LOG } else { crate::ir::MATH_LOGBASE };
+        self.math1_op(e, None, dst, r, n as u16, kind, d);
+        self.free_to(r);
+        Ok(true)
+    }
+
+    /// [`Op::Math1`] of kind `kind` on the `n` operands from `x` for the
+    /// call `e`, the builtin `prim` its slow path (None: `log`'s), the
+    /// value into `dst`.
+    #[allow(clippy::too_many_arguments)]
+    fn math1_op(&mut self, e: Sexp, prim: Option<Sexp>, dst: Reg, x: Reg, n: u16, kind: u16, d: u16) {
+        let mut i = Ins::new(Op::Math1);
+        i.a = dst;
+        i.b = x;
+        i.c = n;
+        i.e = self.k(e);
+        i.f = prim.map_or(0, |p| self.k(p));
+        i.g = kind;
+        i.fl |= F_DEPTH;
+        i.d = d;
+        self.emit(i);
     }
 
     /// cmp.R's inline handler for `$`: the object compiled, then
@@ -2725,12 +2774,23 @@ impl<'g> Comp<'g> {
             Inline::Logic(op) => (op, a.len() == 2),
             Inline::Not => (0, a.len() == 1),
             Inline::Paren => (0, a.len() == 1),
+            // (bcEval's: the AST's `do_math1` wraps the C functions)
+            Inline::Math1(_) => (0, a.len() == 1 && self.bc.is_some()),
             Inline::None => unreachable!(),
         };
         if !(plain && n_ok) {
             // evalList and the builtin itself (its arity errors)
             // SAFETY: as above.
             return unsafe { self.builtin_args_call(Op::CallBuiltin, prim, e, args, dst, d, tail) };
+        }
+        if let Inline::Math1(kind) = inl {
+            // cmp.R's cmpMath1 / cmpPrim1: the operand, then the op
+            let r = self.alloc();
+            // SAFETY: as above.
+            unsafe { self.expr(a[0].0, r, d + 1, false)? };
+            self.math1_op(e, Some(prim), dst, r, 1, kind, d);
+            self.free_to(r);
+            return Ok(());
         }
         if inl == Inline::Paren {
             // evalList's first argument, under eval's PROTECT(op)

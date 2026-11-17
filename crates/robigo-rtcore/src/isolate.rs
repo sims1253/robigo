@@ -632,9 +632,8 @@ impl Cx {
             "robigo: ROBIGO_RETRY_TORTURE needs robigo-rtcore built with its retry-torture feature \
              (cargo build --release -p robigo-rtapi --features robigo-rtcore/retry-torture)"
         );
-        let fail_at = std::env::var("ROBIGO_FAIL_ALLOC_AT").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
         assert!(
-            !on || fail_at == 0,
+            !on || !self.fail_alloc_set(),
             "robigo: ROBIGO_RETRY_TORTURE and ROBIGO_FAIL_ALLOC_AT both use E9's knob: set one"
         );
         self.iso().retry_torture.set(on);

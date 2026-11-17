@@ -492,3 +492,134 @@ pub fn do_deparse(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
     }
     Ok(())
 }
+
+/// `R_IsImportsEnv(env)`: a package's imports environment, enclosed by
+/// base's namespace and named "imports:<pkg>".
+// R: builtin.c:R_IsImportsEnv
+fn is_imports_env(cx: &Cx, env: Ref<'_>) -> bool {
+    let View::Env(e) = env.view() else { return false };
+    if e.enclos() != cx.base_namespace() {
+        return false;
+    }
+    // getAttrib(env, R_NameSymbol): a lookup, which allocates nothing
+    let Ok(Some(name)) = robigo_rtbuiltins::attrib::get_attrib(cx, env, b"name") else { return false };
+    let Some(v) = name.as_vector::<Char<'_>>() else { return false };
+    v.len() == 1 && v.get(0).bytes().starts_with(b"imports:")
+}
+
+/// `.Internal("parent.env<-"(env, value))`: `env`'s enclosure set to
+/// `value`, except for the empty environment and a locked namespace's or
+/// imports environment's.
+// R: builtin.c:do_parentenvgets
+pub fn do_parentenvgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "parent.env<-", 2, true)?;
+    let env = args.root(0);
+    let check = |cx: &mut Cx, x: Root<'_>, msg: &str| -> RResult<()> {
+        let v = x.bind(cx);
+        match v.sexptype() {
+            NILSXP => Err(cx.error("use of NULL environment is defunct")),
+            ENVSXP => Ok(()),
+            // simple_as_environment: an S4 object's .xData
+            OBJSXP if v.is_s4() => {
+                Err(robigo_rtbuiltins::util::not_yet(cx, Some(call), "parent.env<-() of an S4 object's environment"))
+            }
+            _ => Err(cx.error(msg)),
+        }
+    };
+    check(cx, env, "argument is not an environment")?;
+    let e = env.bind(cx).sexp();
+    if e == cx.empty_env().sexp() {
+        return Err(cx.error("can not set parent of the empty environment"));
+    }
+    if cx.environment_is_locked(env)? && crate::ns::is_namespace_env(cx, env.bind(cx).sexp()) {
+        return Err(cx.error("can not set the parent environment of a namespace"));
+    }
+    if cx.environment_is_locked(env)? && is_imports_env(cx, env.bind(cx)) {
+        return Err(cx.error("can not set the parent environment of package imports"));
+    }
+    let parent = args.root(1);
+    check(cx, parent, "'parent' is not an environment")?;
+    cx.set_enclos(env, parent);
+    out.set(cx, env.bind(cx));
+    Ok(())
+}
+
+/// `pos2env(pos, call)`: the search path's `pos`-th environment from the
+/// global one; for -1, the caller's frame's parent (the innermost function
+/// context's `sysparent`). The error's message otherwise (`errorcall`
+/// against `call`).
+// R: envir.c:pos2env
+fn pos2env(cx: &Cx, pos: i32) -> Result<Ref<'_>, &'static str> {
+    if pos == i32::MIN || pos < -1 || pos == 0 {
+        return Err("invalid 'pos' argument");
+    }
+    if pos == -1 {
+        // make sure the context is a funcall
+        let mut c = cx.global_context();
+        while c.callflag() & robigo_rtcore::ctxt::FUNCTION == 0 {
+            match c.next() {
+                Some(n) => c = n,
+                None => break,
+            }
+        }
+        if c.callflag() & robigo_rtcore::ctxt::FUNCTION == 0 {
+            return Err("no enclosing environment");
+        }
+        let env = c.sysparent();
+        if env == cx.nil() {
+            return Err("invalid 'pos' argument");
+        }
+        return Ok(env);
+    }
+    let empty = cx.empty_env();
+    let mut env = cx.global_env();
+    let mut pos = pos;
+    while env != empty && pos > 1 {
+        let View::Env(e) = env.view() else { break };
+        env = e.enclos();
+        pos -= 1;
+    }
+    if pos != 1 {
+        return Err("invalid 'pos' argument");
+    }
+    Ok(env)
+}
+
+/// `pos.to.env(x)`: the environment at each search position in `x` (a
+/// list of them for more than one).
+// R: envir.c:do_pos2env
+pub fn do_pos2env(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "pos.to.env", 1, false)?;
+    robigo_rtbuiltins::util::check1arg(cx, args, call, "x")?;
+    cx.scope(|cx, s| {
+        let pos =
+            s.capture(cx, |cx, o| robigo_rtbuiltins::coerce::vector::coerce_vector(cx, args.root(0), INTSXP, o))?;
+        if pos.bind(cx).is_package_altrep() {
+            return Err(robigo_rtbuiltins::util::not_yet(cx, Some(call), "pos.to.env() of a package ALTREP vector"));
+        }
+        // INTEGER(pos): a compact sequence expanded
+        cx.materialize(pos)?;
+        let ps: Vec<i32> = pos.bind(cx).as_ints().map(<[i32]>::to_vec).unwrap_or_default();
+        if ps.is_empty() {
+            return Err(cx.error_call(Some(call), "invalid 'pos' argument"));
+        }
+        let mut envs = Vec::with_capacity(ps.len());
+        for &p in &ps {
+            match pos2env(cx, p) {
+                Ok(e) => envs.push(s.root(cx, e)),
+                Err(m) => return Err(cx.error_call(Some(call), m)),
+            }
+        }
+        if envs.len() == 1 {
+            out.set(cx, envs[0].bind(cx));
+            return Ok(());
+        }
+        cx.build(out, |cx| {
+            let mut v = cx.alloc_vector::<Ref<'_>>(envs.len())?;
+            for (i, e) in envs.iter().enumerate() {
+                v.set(i, e.bind(cx));
+            }
+            Ok(v.finish().into())
+        })
+    })
+}

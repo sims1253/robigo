@@ -289,6 +289,7 @@ impl<'g> Ref<'g> {
     /// first ([`Vector::as_slice`]); None for another type or a package
     /// ALTREP vector.
     #[inline]
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn as_ints(self) -> Option<&'g [i32]> {
         if !matches!(self.sexptype(), LGLSXP | INTSXP) || self.is_package_altrep() {
             return None;
@@ -538,6 +539,7 @@ impl<'g, T: Elt<'g>> Vector<'g, T> {
     /// caller, which reads it with [`Vector::get`] or materializes it.
     /// [`Vector::dataptr_or_null`] is GNU R's `DATAPTR_OR_NULL`.
     #[inline(always)]
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn as_slice(self) -> Option<&'g [T]> {
         match self.dataptr_or_null() {
             Some(s) => Some(s),
@@ -635,9 +637,12 @@ fn own_expansion(r: Ref<'_>) -> Option<Sexp> {
 }
 
 /// [`Vector::as_slice`] of an instance of one of robigo's classes that is
-/// not materialized.
+/// not materialized. In a debug build the panic names the site that read
+/// the slice (`as_slice` and `as_ints` pass their caller's location on), not
+/// this accessor; a release build keeps the accessors' code as it is.
 #[cold]
 #[inline(never)]
+#[cfg_attr(debug_assertions, track_caller)]
 fn unexpanded<T>(r: Ref<'_>) -> T {
     panic!(
         "robigo: the data of an unexpanded {:?} (SEXPTYPE {}) was read as a slice: materialize it first (Cx::materialize) or read it with Vector::get",

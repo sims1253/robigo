@@ -240,10 +240,9 @@ pub fn r_expand_file_name(cx: &mut robigo_rtcore::Cx, name: &[u8]) -> robigo_rtc
 }
 
 /// `R_ExpandFileName(name)` without its over-long expansion warning: for
-/// a connection's open callback, which has no `Cx`, and today also for
-/// `file()`'s and `gzfile()`'s sniffing of the file's type (connections,
-/// L's: docs/ledger/g3/2026-11-17-b5a-platform.md). Elsewhere,
-/// `r_expand_file_name`.
+/// a connection's open callback (`file_open`, `gzfile_open`), which has no
+/// `Cx` to give it (L's: docs/ledger/g3/2026-11-17-b5a-platform.md).
+/// Elsewhere, `r_expand_file_name`.
 pub fn expand_file_name(name: &[u8]) -> Vec<u8> {
     expand_file_name_unix(name).0
 }
@@ -1108,7 +1107,7 @@ pub fn do_file(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
         }
         (url.clone(), "file")
     };
-    let efn = expand_file_name(&desc);
+    let efn = r_expand_file_name(cx, &desc)?;
     if !raw && !desc.is_empty() {
         if let Ok(m) = std::fs::metadata(path_of(&efn)) {
             use std::os::unix::fs::FileTypeExt;
@@ -1190,7 +1189,7 @@ pub fn do_gzfile<const CODE: i32>(
     }
     let mut ty = CODE;
     if ty == 0 && (open.is_empty() || open.starts_with('r')) {
-        ty = match comp_type_from_file(&expand_file_name(&file)) {
+        ty = match comp_type_from_file(&r_expand_file_name(cx, &file)?) {
             0 | 1 => 0,
             2 => 1,
             3 => 2,
@@ -1482,4 +1481,56 @@ pub fn unread(cx: &mut Cx, n: i32, k: usize) -> RResult<bool> {
 /// Whether connection `n` is a file connection.
 pub fn is_file(cx: &mut Cx, n: i32) -> RResult<bool> {
     with_conn(cx, n, |c| matches!(c.imp, Imp::File(_)))
+}
+
+#[cfg(test)]
+mod expand_tests {
+    use super::{R_PATH_MAX, expand_file_name_unix};
+    use robigo_rtcore::clib::passwd_home;
+
+    #[test]
+    fn names_without_a_tilde_or_a_known_user_stay() {
+        for s in [&b"etc/x"[..], b"", b"a~b", b"/~root", b"~robigo-no-such-user/x", b"~robigo-no-such-user", b"~a\0b/x"]
+        {
+            assert_eq!(expand_file_name_unix(s), (s.to_vec(), None), "{s:?}");
+        }
+    }
+
+    #[test]
+    fn tilde_user_is_split_at_the_first_slash() {
+        // (root's entry, where the password database has one)
+        let Some(home) = passwd_home(Some(b"root")) else { return };
+        let with = |tail: &[u8]| [&home[..], tail].concat();
+        assert_eq!(expand_file_name_unix(b"~root"), (home.clone(), None));
+        assert_eq!(expand_file_name_unix(b"~root/"), (with(b"/"), None));
+        assert_eq!(expand_file_name_unix(b"~root/x/y"), (with(b"/x/y"), None));
+        assert_eq!(expand_file_name_unix(b"~root//x"), (with(b"//x"), None));
+    }
+
+    #[test]
+    fn tilde_alone_is_home_else_the_process_user() {
+        let home = match std::env::var_os("HOME") {
+            Some(h) if !h.is_empty() => Some(std::os::unix::ffi::OsStrExt::as_bytes(h.as_os_str()).to_vec()),
+            _ => passwd_home(None),
+        };
+        let Some(home) = home else {
+            assert_eq!(expand_file_name_unix(b"~/x"), (b"~/x".to_vec(), None));
+            return;
+        };
+        assert_eq!(expand_file_name_unix(b"~"), (home.clone(), None));
+        assert_eq!(expand_file_name_unix(b"~/x"), ([&home[..], b"/x"].concat(), None));
+    }
+
+    #[test]
+    fn an_expansion_from_r_path_max_on_is_refused_with_the_warning() {
+        let Some(home) = passwd_home(Some(b"root")) else { return };
+        // home + "/" + tail: one byte under the limit fits, the limit does not
+        let fits = R_PATH_MAX - 1 - home.len() - 1;
+        let s = [&b"~root/"[..], &vec![b'a'; fits]].concat();
+        let (v, w) = expand_file_name_unix(&s);
+        assert_eq!((v.len(), w), (R_PATH_MAX - 1, None));
+        let s = [&b"~root/"[..], &vec![b'a'; fits + 1]].concat();
+        let msg = format!("expanded path length {R_PATH_MAX} would be too long for\n{}\n", String::from_utf8_lossy(&s));
+        assert_eq!(expand_file_name_unix(&s), (s.clone(), Some(msg)));
+    }
 }

@@ -367,6 +367,53 @@ pub unsafe fn call_builtin_regs(
     r
 }
 
+/// [`call_builtin_regs`] for a builtin function that is no primitive of
+/// the table (`log`'s evaluated form, `do_log_builtin`: bcEval's `LOG` and
+/// `LOGBASE` slow path), its value visible.
+///
+/// # Safety
+/// As for [`call_builtin_regs`].
+pub unsafe fn call_fn_regs(
+    cx: &mut Cx,
+    act: &Act,
+    dst: Reg,
+    f: crate::prims::BuiltinFn,
+    call: Sexp,
+    base: Reg,
+    n: usize,
+) -> RResult<()> {
+    // SAFETY: a constant of the rooted code.
+    unsafe { act.scratch(R_SCRATCH, call) };
+    let mut any_alt = false;
+    for r in base..base + n as Reg {
+        let x = vm::boxed(cx, act, r)?;
+        // SAFETY: a register's object is live.
+        any_alt |= unsafe { x.is_altrep() };
+    }
+    // SAFETY: `n` object slots from `base`, rooted by the activation.
+    let args = unsafe { Args::from_raw(act.slot(base), None, n as u32, any_alt) };
+    // an argument that is one of robigo's compact sequences expanded, as
+    // a builtin's ([`run_builtin`]: GNU R reads it through `REAL()`)
+    if any_alt {
+        cx.materialize_args(args)?;
+    }
+    // SAFETY: this running activation's registers.
+    unsafe { crate::links::skip_args(act.base(), base, n) };
+    cx.note_effect();
+    cx.set_visible(true);
+    let r = f(cx, act.root(R_SCRATCH), args, act.root(R_ENV), act.out(dst)).and_then(|()| {
+        cx.set_visible(true);
+        cx.safepoint(Safepoint::Return)
+    });
+    // SAFETY: as above.
+    unsafe { crate::links::unskip_args(act.base()) };
+    act.clear(R_SCRATCH);
+    for r in base..base + n as Reg {
+        act.clear(r);
+    }
+    r
+}
+
 /// Call the builtin in the scratch register `R_SCRATCH2` with `args`
 /// (rooted) for the call in `R_SCRATCH`, the value into register `dst`,
 /// `R_Visible` as `PRIMPRINT` says; a safepoint on return. Clears the
