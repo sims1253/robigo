@@ -65,6 +65,7 @@ print(k_log(-0))
 print(k_log(8L))
 print(k_log(NA_integer_))
 print(k_log(NaN))
+print(k_log(1:3))
 
 # k_logbase
 k_logbase <- .Internal(bcClose(as.pairlist(alist(x = , b = )),
@@ -78,6 +79,8 @@ print(k_logbase(100L, 10))
 print(k_logbase(NaN, 2))
 print(k_logbase(2, NA))
 print(k_logbase(c(1, 8), 2))
+print(k_logbase(1:4, 2))
+print(k_logbase(8, 1:3))
 
 # k_nan_warn
 k_nan_warn <- .Internal(bcClose(as.pairlist(alist(x = )),

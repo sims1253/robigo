@@ -392,6 +392,11 @@ pub unsafe fn call_fn_regs(
     }
     // SAFETY: `n` object slots from `base`, rooted by the activation.
     let args = unsafe { Args::from_raw(act.slot(base), None, n as u32, any_alt) };
+    // an argument that is one of robigo's compact sequences expanded, as
+    // a builtin's ([`run_builtin`]: GNU R reads it through `REAL()`)
+    if any_alt {
+        cx.materialize_args(args)?;
+    }
     // SAFETY: this running activation's registers.
     unsafe { crate::links::skip_args(act.base(), base, n) };
     cx.note_effect();
