@@ -358,4 +358,24 @@ generational: every collection is full (`crates/robigo-heap/src/gc.rs:2273`).
 
 ### Verification
 
-VERIFICATION
+On `e8868090`, main `a9c4fda3` merged in:
+- **`scripts/rt-ci.py`, full:** passes. That covers release tests,
+  conformance, NO_INPLACE, MATERIALIZE, gctorture, GC_MOVE with
+  gctorture at 600 s, FRAME_QUARANTINE, PIN_REPORT, stress, overshoot,
+  the small vector limit and injected allocation failures.
+- **Conformance:** 450/458 against GNU R 4.6.2. The failures are the
+  three `link-walk-*` cases, pre-existing on main, and the five
+  unratcheted compiler cases (above).
+- **Miri on robigo-rtcore** (`cargo +nightly-2026-11-02 miri test -p
+  robigo-rtcore`): passes, on `90aadcf9`. rtcore is unchanged since.
+- **perf-rt against `a9c4fda3`:** 0 failures (the table above).
+- **`cargo fmt --check`, `scripts/lint.sh`** (with #765's Sexp check)
+  and **`scripts/base-subset.sh --check`:** pass.
+- **Sol** (gpt-6.1-sol, high), three rounds, APPROVE.
+  - Round 1: a pairlist `[[<-` with an empty subscript overflowed, now
+    GetOneIndex's error; `substitute`'s list names, now installed as
+    `installTrChar` installs them.
+  - Round 3, on the code new since: `dir.exists` translates as
+    `translateCharFP2`, and `file.path` links its `as.character()`
+    values.
+  - Each fix has an oracle-recorded case except `file.path`'s.
