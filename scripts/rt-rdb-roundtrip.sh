@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # L1's bar (m2m3-plan §B L1): GNU R 4.6.2's own lazy-load databases (base,
 # compiler and tools, from the oracle image robigo-oracle:4.6.2) unserialize
-# record by record on robigo-rt and serialize back to the same bytes; the
-# records holding one of base's compact sequences (ALTREP) are counted apart
-# until robigo-rt has those classes (AC). Runs crates/robigo-rt/tests/rdb_roundtrip.rs on a copy of the
+# record by record on robigo-rt and serialize back to the same bytes, the
+# records holding one of base's compact sequences (ALTREP, robigo-rtcore's
+# altrep::own) included. Runs crates/robigo-rt/tests/rdb_roundtrip.rs on a copy of the
 # image's library, against GNU R's own round trip of each record (written
 # beside it as PKG.roundtrip by GNU R in the image): GNU R's reader changes
 # a few records (a forced promise's PRENV, R_NilValue, becomes the base

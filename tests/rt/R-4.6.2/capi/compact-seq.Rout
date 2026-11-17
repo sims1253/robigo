@@ -1,0 +1,31 @@
+[1]  1 10 10  0
+[1]  1  5 10
+[1] 11
+[1] "subscript out of bounds"
+[1] "subscript out of bounds"
+[1]  1 10 10  0
+[1] 55
+[1]  1 10 10  1
+[1]  1 10
+[1] 1 8 8 0
+[1]  5  4  3  2  1  0 -1 -2
+[1] 12
+[1] 1 8 8 1
+[1] 1 6 6 0
+[1]  1 26 26  0
+[1] 1 4 4 0
+[1] "double"  "numeric" "TRUE"    "TRUE"    "TRUE"    "TRUE"   
+[1] 1 4 4 0
+[1] 2147483647 2147483648 2147483649 2147483650
+[1] 8589934594
+[1] 1 4 4 1
+[1] 0 3 3 1
+[1] 1 2 3
+[1] "bad INTSXP vector"
+[1] "bad INTSXP vector"
+[1] "cannot get data pointer of 'environment' objects"
+[1] "cannot get data pointer of 'language' objects"
+[1]   1 100   3   4   5
+[1] 100
+[1] 15
+[1] 1 2 3 4 5
