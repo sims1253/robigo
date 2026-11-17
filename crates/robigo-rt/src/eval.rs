@@ -442,7 +442,7 @@ pub unsafe fn keepmiss_missing(cx: &mut Cx, sym: Sexp, rho: Root<'_>) -> RResult
 /// # Safety
 /// `sym` is a live symbol of `cx`'s isolate.
 // R: eval.c:getvar
-pub unsafe fn get_var_missok(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp) -> RResult<()> {
+pub unsafe fn get_var_missok(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, bc: bool) -> RResult<()> {
     // SAFETY: the caller's contract: a live symbol.
     if unsafe { keepmiss_missing(cx, sym, act.root(crate::ir::R_ENV)) }? {
         let m = cx.missing_arg().sexp();
@@ -453,7 +453,7 @@ pub unsafe fn get_var_missok(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sex
     // SAFETY: a live symbol; gp is a header field.
     let dd = unsafe { sym.gp() } & robigo_rtcore::DDVAL != 0;
     // SAFETY: the caller's contract: a live symbol.
-    unsafe { get_var(cx, act, a, sym, dd) }
+    unsafe { get_var(cx, act, a, sym, dd, bc) }
 }
 
 /// `eval(sym, rho)` into register `a` (`..N` when `dd`), the slow path:
@@ -461,7 +461,10 @@ pub unsafe fn get_var_missok(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sex
 ///
 /// # Safety
 /// `sym` is a live symbol of `cx`'s isolate.
-pub unsafe fn get_var(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: bool) -> RResult<()> {
+pub unsafe fn get_var(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: bool, bc: bool) -> RResult<()> {
+    // a missing argument's error: byte code's (`getvar`) or the AST
+    // interpreter's (`eval`)
+    let subclass = if bc { "getvarError" } else { "evalError" };
     if !dd && sym != prims::state(cx).syms.dots {
         // SAFETY: an immortal symbol and the rooted environment.
         match unsafe { cx.var_lookup_raw(sym, act.rho()) } {
@@ -489,10 +492,10 @@ pub unsafe fn get_var(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: 
         }
     }
     if dd {
-        dd_value(cx, sym, act.root(crate::ir::R_ENV), act.out(a))
+        dd_value(cx, sym, act.root(crate::ir::R_ENV), act.out(a), subclass)
     } else {
         // SAFETY: the caller's contract: a live symbol.
-        unsafe { symbol_value(cx, sym, act.root(crate::ir::R_ENV), act.out(a)) }
+        unsafe { symbol_value_as(cx, sym, act.root(crate::ir::R_ENV), act.out(a), subclass) }
     }
 }
 
@@ -503,13 +506,30 @@ pub unsafe fn get_var(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: 
 /// `sym` is a live symbol of `cx`'s isolate.
 // R: eval.c:eval (SYMSXP)
 pub unsafe fn symbol_value(cx: &mut Cx, sym: Sexp, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    // SAFETY: the caller's contract.
+    unsafe { symbol_value_as(cx, sym, rho, out, "evalError") }
+}
+
+/// [`symbol_value`] whose missing argument raises the `missingArgError`
+/// of subclass `subclass` (`evalError` from `eval`, `getvarError` from
+/// byte code's `getvar`).
+///
+/// # Safety
+/// `sym` is a live symbol of `cx`'s isolate.
+pub unsafe fn symbol_value_as(
+    cx: &mut Cx,
+    sym: Sexp,
+    rho: Root<'_>,
+    out: Out<'_>,
+    subclass: &'static str,
+) -> RResult<()> {
     let st = prims::state(cx);
     if sym == st.syms.dots {
         return Err(cx.error("'...' used in an incorrect context"));
     }
     // SAFETY: a live symbol.
     if unsafe { sym.gp() } & robigo_rtcore::DDVAL != 0 {
-        return dd_value(cx, sym, rho, out);
+        return dd_value(cx, sym, rho, out, subclass);
     }
     // an argument not yet read: its slot forced in place
     // SAFETY: an immortal symbol and a rooted environment.
@@ -525,13 +545,20 @@ pub unsafe fn symbol_value(cx: &mut Cx, sym: Sexp, rho: Root<'_>, out: Out<'_>) 
         // SAFETY: an immortal symbol.
         let sr = s.root(cx, unsafe { Ref::from_sexp(sym, cx) });
         cx.find_var(sr, rho, out)?;
-        finish_value(cx, sym, rho, res, s)
+        finish_value(cx, sym, rho, res, s, subclass)
     })
 }
 
 /// The rest of `eval`'s SYMSXP case once the value is in `res`: an unbound
 /// or missing value is GNU R's error, a promise is forced.
-fn finish_value(cx: &mut Cx, sym: Sexp, rho: Root<'_>, res: Root<'_>, s: robigo_rtcore::Scope<'_>) -> RResult<()> {
+fn finish_value(
+    cx: &mut Cx,
+    sym: Sexp,
+    rho: Root<'_>,
+    res: Root<'_>,
+    s: robigo_rtcore::Scope<'_>,
+    subclass: &'static str,
+) -> RResult<()> {
     let mut v = res.bind(cx).sexp();
     if v == cx.unbound().sexp() && sym == cx.missing_arg().sexp() {
         // the empty symbol R_MissingArg is its own value (names.c:
@@ -547,16 +574,12 @@ fn finish_value(cx: &mut Cx, sym: Sexp, rho: Root<'_>, res: Root<'_>, s: robigo_
         return Err(cx.error_call(Some(call), &msg));
     }
     if v == cx.missing_arg().sexp() {
-        // R: R_MissingArgError(e, getLexicalCall(rho), "evalError")
+        // R: R_MissingArgError(e, getLexicalCall(rho), "evalError"), or
+        // getvar's "getvarError"
         // SAFETY: `finish_value`'s callers (this module) pass a live symbol.
         let name = unsafe { sym_name(cx, sym) };
         let call = s.root(cx, cx.lexical_context(rho.bind(cx)).call());
-        let msg = if name.is_empty() {
-            "argument is missing, with no default".to_owned()
-        } else {
-            format!("argument \"{name}\" is missing, with no default")
-        };
-        return Err(cx.error_call(Some(call), &msg));
+        return Err(cx.missing_arg_error(&name, Some(call), subclass));
     }
     // SAFETY: a live object.
     if unsafe { v.typ() } == PROMSXP {
@@ -580,11 +603,11 @@ pub unsafe fn sym_name(cx: &Cx, sym: Sexp) -> String {
 
 /// `ddfindVar(sym, rho)` and the rest of `eval`'s SYMSXP case.
 // R: envir.c:ddfindVar
-fn dd_value(cx: &mut Cx, sym: Sexp, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+fn dd_value(cx: &mut Cx, sym: Sexp, rho: Root<'_>, out: Out<'_>, subclass: &'static str) -> RResult<()> {
     let res = out.root();
     cx.scope(|cx, s| {
         dd_find(cx, sym, rho, out)?;
-        finish_value(cx, sym, rho, res, s)
+        finish_value(cx, sym, rho, res, s, subclass)
     })
 }
 
@@ -664,6 +687,33 @@ pub fn force_arg_eval(cx: &mut Cx, frame: Root<'_>, index: usize, out: Out<'_>) 
 /// The profile `ROBIGO_RT_PROFILE` forces, if any (for tests).
 pub fn profile(cx: &Cx) -> Option<Profile> {
     prims::state(cx).forced
+}
+
+/// `.Internal(returnValue(default))`: the value the function whose
+/// `on.exit` code is running returns (`R_ExitContext`'s), marked not
+/// mutable; `default` when no exit is under way or it carries no value (an
+/// error, a jump through the function).
+// R: eval.c:do_returnValue
+pub fn do_return_value(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "returnValue", 1, true)?;
+    cx.scope(|cx, s| {
+        let v = cx.exit_context().and_then(|c| c.return_value());
+        match v {
+            Some(v) => {
+                let v = s.root(cx, v);
+                cx.mark_not_mutable(v);
+                out.set(cx, v.bind(cx));
+            }
+            None => out.set(cx, args.get(cx, 0)),
+        }
+        Ok(())
+    })
 }
 
 /// `.Internal(eval(expr, envir, enclos))`: `expr` (a call or symbol, or

@@ -53,8 +53,6 @@ const RESULT_SIZE: usize = 4;
 pub struct CondState {
     /// The symbols S3 dispatch names.
     pub s3: crate::dispatch::S3Syms,
-    /// `R_RestartToken`: the handler of an internal restart's entry.
-    pub restart_token: Global,
     /// `R_HandlerResultToken`: the last element of an exiting handler's
     /// result vector.
     pub handler_result_token: Global,
@@ -99,18 +97,12 @@ pub struct CondState {
 impl CondState {
     /// The state of a new session.
     pub fn new(cx: &mut Cx) -> CondState {
-        // R: names.c:InitNames (R_RestartToken = mkSymMarker(mkChar(""))):
-        // any object no R code can make serves as the marker
-        let restart = cx.alloc_vector_raw(VECSXP, 0).expect("robigo: no room for the condition system");
-        // SAFETY: fresh, of this heap.
-        let restart_token = cx.global(unsafe { Ref::from_sexp(restart, cx) });
         // R: errors.c:do_addCondHands, `allocVector(VECSXP, 1)`
         let token = cx.alloc_vector_raw(VECSXP, 1).expect("robigo: no room for the condition system");
-        // SAFETY: as above.
+        // SAFETY: fresh, of this heap.
         let handler_result_token = cx.global(unsafe { Ref::from_sexp(token, cx) });
         CondState {
             s3: crate::dispatch::S3Syms::new(cx),
-            restart_token,
             handler_result_token,
             errbuf: RefCell::new(Vec::new()),
             in_error: Cell::new(0),
@@ -136,6 +128,7 @@ impl CondState {
 pub(crate) fn install_hooks(cx: &mut Cx) {
     let mut h = cx.hooks();
     h.error = error_hook;
+    h.error_condition = error_condition_hook;
     h.warning = warning_hook;
     h.exit_value = fixup_exiting_handler_result;
     h.dispatch = crate::dispatch::dispatch_hook;
@@ -365,6 +358,126 @@ pub fn error_hook(cx: &mut Cx, call: Option<Root<'_>>, msg: &str) -> RError {
     verrorcall_dflt(cx, call, msg)
 }
 
+/// The isolate's classed-error hook: GNU R's `R_makeErrorCondition(call,
+/// class, subclass, nextra, msg)` with its fields set, then
+/// `R_signalErrorConditionEx(cond, call, exitOnly)`: the handlers for the
+/// condition's classes, the handler stack restored after them, then the
+/// default handling of its message.
+///
+/// GNU R makes the expression and node stack overflows' conditions once
+/// (`R_InitConditions`, with a NULL call); one is made here per signal,
+/// with the same value.
+// R: errors.c:R_signalErrorConditionEx, R_vmakeErrorCondition
+pub fn error_condition_hook(cx: &mut Cx, call: Option<Root<'_>>, c: &robigo_rtcore::ErrorCond<'_>) -> RError {
+    // Rvsnprintf_mbcs(emsg_buf, BUFSIZE, ...); a C string ends at a NUL
+    let msg = trunc(c.msg.split('\0').next().unwrap_or_default().as_bytes(), BUFSIZE - 1).to_vec();
+    let preset = matches!(c.subclass, Some("expressionStackOverflowError" | "nodeStackOverflowError"));
+    cx.scope(|cx, s| {
+        let cond = match make_error_condition(cx, s, if preset { None } else { call }, c, &msg) {
+            Ok(cond) => cond,
+            Err(e) => return e,
+        };
+        let oldstack = s.root(cx, cx.handler_stack());
+        if let Some(e) = signal_condition_c(cx, cond, call, c.exit_only) {
+            return e;
+        }
+        cx.set_handler_stack(oldstack);
+        verrorcall_dflt(cx, call, &msg)
+    })
+}
+
+/// `R_vmakeErrorCondition(call, class, subclass, nextra, msg)` and
+/// `R_setConditionField` of each of `c`'s fields: the list `(message,
+/// call, fields...)`, named, of class `c(subclass, class, "error",
+/// "condition")`.
+// R: errors.c:R_vmakeErrorCondition, R_setConditionField
+fn make_error_condition<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    call: Option<Root<'_>>,
+    c: &robigo_rtcore::ErrorCond<'_>,
+    msg: &[u8],
+) -> RResult<Root<'s>> {
+    let o = s.out(cx);
+    let r = o.root();
+    cx.build(o, |cx| {
+        let n = 2 + c.fields.len();
+        let m = cx.mk_string(msg, Encoding::Native)?;
+        let mut names = cx.alloc_vector::<Char<'_>>(n)?;
+        names.set(0, cx.mk_char(b"message", Encoding::Native)?);
+        names.set(1, cx.mk_char(b"call", Encoding::Native)?);
+        for (i, (nm, _)) in c.fields.iter().enumerate() {
+            names.set(2 + i, cx.mk_char(nm.as_bytes(), Encoding::Native)?);
+        }
+        let names = names.finish();
+        let classes: Vec<&str> = c.subclass.into_iter().chain([c.class, "error", "condition"]).collect();
+        let mut klass = cx.alloc_vector::<Char<'_>>(classes.len())?;
+        for (i, k) in classes.iter().enumerate() {
+            klass.set(i, cx.mk_char(k.as_bytes(), Encoding::Native)?);
+        }
+        let klass = klass.finish();
+        let mut l = cx.alloc_vector::<Ref<'_>>(n)?;
+        l.set(0, m);
+        l.set(1, call.map_or(cx.nil(), |c| c.bind(cx)));
+        for (i, (_, v)) in c.fields.iter().enumerate() {
+            l.set(2 + i, v.bind(cx));
+        }
+        // setAttrib(cond, R_NamesSymbol, names), then the class
+        let attrs = cx.cons_tagged(klass.as_ref(), cx.nil(), cx.sym(RSym::Class))?;
+        let attrs = cx.cons_tagged(names.as_ref(), attrs, cx.sym(RSym::Names))?;
+        l.set_attrib(attrs);
+        l.set_object(true);
+        Ok(l.finish().into())
+    })?;
+    Ok(r)
+}
+
+/// `R_signalCondition(cond, call, FALSE, exitOnly)`: each handler for the
+/// condition's classes, innermost first, each popped as it is tried. A
+/// calling handler is called with the condition in the global environment
+/// (skipped under `exit_only`); the restart token ends the walk (to the
+/// default handling); an exiting handler is a jump. `Some`: the exit that
+/// leaves; `None`: the walk ended (the caller restores the stack).
+// R: errors.c:R_signalCondition
+fn signal_condition_c(cx: &mut Cx, cond: Root<'_>, call: Option<Root<'_>>, exit_only: bool) -> Option<RError> {
+    cx.scope(|cx, s| {
+        while let Some(list) = find_condition_handler(cx, cond.bind(cx)) {
+            let list = s.root(cx, list);
+            let entry = s.root(cx, list.bind(cx).as_cons().unwrap().car());
+            pop_handlers_to(cx, list);
+            if is_calling(entry.bind(cx)) {
+                let h = entry_elt(entry.bind(cx), entry::HANDLER);
+                if h.sexp() == cx.restart_token().sexp() {
+                    return None;
+                }
+                if !exit_only {
+                    let h = s.root(cx, h);
+                    if let Err(e) = cx.check_c_stack() {
+                        return Some(e);
+                    }
+                    let r = (|| -> RResult<()> {
+                        let o = s.out(cx);
+                        let hcall = o.root();
+                        cx.build(o, |cx| {
+                            let a = cx.cons(cond.bind(cx), cx.nil())?;
+                            cx.lcons(h.bind(cx), a)
+                        })?;
+                        let g = s.root(cx, cx.global_env());
+                        let o = s.out(cx);
+                        crate::eval(cx, hcall, g, o)
+                    })();
+                    if let Err(e) = r {
+                        return Some(e);
+                    }
+                }
+            } else {
+                return Some(goto_exiting_handler(cx, cond, call, entry));
+            }
+        }
+        None
+    })
+}
+
 /// `vsignalError(call, msg)`: the handlers for simple errors, innermost
 /// first, each popped as it is tried (the stack is not restored: an exit
 /// restores it). A calling handler runs `.handleSimpleError(h, msg,
@@ -384,11 +497,15 @@ fn signal_error(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> Option<RErro
             *state(cx).errbuf.borrow_mut() = trunc(&localbuf, BUFSIZE - 1).to_vec();
             if is_calling(entry.bind(cx)) {
                 let h = entry_elt(entry.bind(cx), entry::HANDLER);
-                if h.sexp() == state(cx).restart_token.bind(cx).sexp() {
+                if h.sexp() == cx.restart_token().sexp() {
                     // go to default error handling
                     return Some(None);
                 }
-                // (R_OldCStackLimit: no C stack overflow is handled here)
+                // while a C stack overflow is handled (R_OldCStackLimit),
+                // every calling handler counts as failed
+                if cx.c_stack_overflow_pending() {
+                    return Some(Some(None));
+                }
                 let h = s.root(cx, h);
                 let r = (|| -> RResult<()> {
                     let hooksym = sym(cx, s, b".handleSimpleError")?;
@@ -675,8 +792,8 @@ fn jump_to_top_ex(
     let old_in_error = st.in_error.get();
     let mut have_handler = false;
     let restore = |cx: &Cx| state(cx).in_error.set(old_in_error);
-    // (R_OldCStackLimit: no C stack overflow is handled here)
-    if try_user_handler && st.in_error.get() < 3 {
+    // R_OldCStackLimit == 0: not while a C stack overflow is handled
+    if !cx.c_stack_overflow_pending() && try_user_handler && st.in_error.get() < 3 {
         if st.in_error.get() == 0 {
             st.in_error.set(1);
         }
@@ -726,9 +843,23 @@ fn jump_to_top_ex(
         restore(cx);
         return e;
     }
-    // (only an interactive session, options(error) or catch.script.errors
-    // save the traceback: R_Interactive is FALSE)
-    if have_handler && traceback && state(cx).in_error.get() < 2 && state(cx).in_error.get() == old_in_error {
+    // only an interactive session, options(error) or
+    // options(catch.script.errors) save the traceback (R_Interactive is
+    // FALSE)
+    let catch_script_errors = cx.scope(|cx, s| {
+        get_option1(cx, s, b"catch.script.errors")
+            .map(|c| {
+                // R_isTRUE
+                let c = c.bind(cx);
+                c.sexptype() == LGLSXP && c.as_ints() == Some(&[1][..])
+            })
+            .unwrap_or(false)
+    });
+    if (have_handler || catch_script_errors)
+        && traceback
+        && state(cx).in_error.get() < 2
+        && state(cx).in_error.get() == old_in_error
+    {
         state(cx).in_error.set(2);
         let r = save_traceback(cx);
         state(cx).in_error.set(old_in_error);
@@ -747,25 +878,43 @@ fn jump_to_top_ex(
     }
 }
 
+/// `R_GetTracebackOnly(skip)`'s walk: the calls of the function and
+/// builtin records from the innermost out, the first `skip` left out.
+/// GNU R gives a call its record's srcref as an attribute; robigo-rt's
+/// records have none yet (`keep.source` is not honored), and one that has
+/// is refused rather than dropped.
+// R: errors.c:R_GetTracebackOnly
+fn traceback_calls<'s>(cx: &mut Cx, s: Scope<'s>, mut skip: usize) -> RResult<Vec<Root<'s>>> {
+    let mut v = Vec::new();
+    let mut has_srcref = false;
+    let mut c = Some(cx.global_context());
+    while let Some(r) = c {
+        if r.callflag() == ctxt::TOPLEVEL {
+            break;
+        }
+        if r.callflag() & (ctxt::FUNCTION | ctxt::BUILTIN) != 0 {
+            if skip > 0 {
+                skip -= 1;
+            } else {
+                has_srcref |= r.srcref().sexptype() != NILSXP;
+                v.push(r.call());
+            }
+        }
+        c = r.next();
+    }
+    let v: Vec<Root<'s>> = v.into_iter().map(|c| s.root(cx, c)).collect();
+    if has_srcref {
+        return Err(robigo_rtbuiltins::util::not_yet(cx, None, "a traceback of calls with srcrefs"));
+    }
+    Ok(v)
+}
+
 /// `.Traceback`: the calls of the function and builtin records, each
 /// duplicated (`R_GetTracebackOnly(0)`), as the symbol's value.
 // R: errors.c:R_GetTracebackOnly
 fn save_traceback(cx: &mut Cx) -> RResult<()> {
     cx.scope(|cx, s| {
-        let calls: Vec<Root<'_>> = {
-            let mut v = Vec::new();
-            let mut c = Some(cx.global_context());
-            while let Some(r) = c {
-                if r.callflag() == ctxt::TOPLEVEL {
-                    break;
-                }
-                if r.callflag() & (ctxt::FUNCTION | ctxt::BUILTIN) != 0 {
-                    v.push(r.call());
-                }
-                c = r.next();
-            }
-            v.into_iter().map(|c| s.root(cx, c)).collect()
-        };
+        let calls = traceback_calls(cx, s, 0)?;
         let mut dups = Vec::with_capacity(calls.len());
         for c in &calls {
             let o = s.out(cx);
@@ -787,6 +936,39 @@ fn save_traceback(cx: &mut Cx) -> RResult<()> {
         let sy = sym(cx, s, b".Traceback")?;
         let base = s.root(cx, cx.base_env());
         cx.define_var(sy, l, base)
+    })
+}
+
+/// `.Internal(traceback(skip))`: the calls of the function and builtin
+/// records, the innermost `skip` left out, each deparsed: a pairlist of
+/// character vectors (`R_GetTraceback`).
+// R: errors.c:do_traceback, R_GetTraceback
+pub fn do_traceback(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    check_arity(cx, call, args, "traceback", 1)?;
+    let skip = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(0))?;
+    if skip == i32::MIN || skip < 0 {
+        return Err(cx.error("invalid 'skip' value"));
+    }
+    cx.scope(|cx, s| {
+        let calls = traceback_calls(cx, s, skip as usize)?;
+        let mut lines = Vec::with_capacity(calls.len());
+        for c in &calls {
+            // deparse1m(CAR(t), 0, DEFAULTDEPARSE)
+            let d = crate::deparse::deparse1(cx, c.bind(cx), false, crate::deparse::DEFAULTDEPARSE)
+                .map_err(|m| cx.error(&m))?;
+            lines.push(d.lines);
+        }
+        cx.build(out, |cx| {
+            let mut l = cx.nil();
+            for d in lines.iter().rev() {
+                let mut v = cx.alloc_vector::<Char<'_>>(d.len())?;
+                for (i, line) in d.iter().enumerate() {
+                    v.set(i, cx.mk_char(line, Encoding::Native)?);
+                }
+                l = cx.cons(v.finish().as_ref(), l)?;
+            }
+            Ok(l)
+        })
     })
 }
 
@@ -838,9 +1020,15 @@ fn invoke_restart(cx: &mut Cx, r: Root<'_>, arglist: Root<'_>) -> RError {
             let rest = s.root(cx, c.cdr());
             if this == exit.bind(cx).sexp() {
                 cx.set_restart_stack(rest);
-                if exit.bind(cx).sexptype() == EXTPTRSXP {
-                    // R_JumpToContext(c, CTXT_RESTART, R_RestartToken)
-                    return cx.error("robigo: internal restarts (browser, try) are not implemented yet");
+                if let robigo_rtcore::View::ExtPtr(p) = exit.bind(cx).view() {
+                    // R_JumpToContext(c, CTXT_RESTART, R_RestartToken): an
+                    // internal restart's exit is its record's address
+                    let addr = p.addr() as usize;
+                    let Some(target) = context_at(cx, addr) else {
+                        return cx.error("target context is not on the stack");
+                    };
+                    let token = s.root(cx, cx.restart_token());
+                    return cx.jump_to_context(target, ctxt::RESTART, Some(token));
                 }
                 return cx.find_context(ctxt::FUNCTION, exit, Some(arglist));
             }
@@ -848,6 +1036,95 @@ fn invoke_restart(cx: &mut Cx, r: Root<'_>, arglist: Root<'_>) -> RError {
         }
         cx.error("restart not on stack")
     })
+}
+
+/// The record on the chain at `addr` (an internal restart's exit).
+fn context_at(cx: &Cx, addr: usize) -> Option<robigo_rtcore::ContextId> {
+    let mut c = Some(cx.global_context());
+    while let Some(r) = c {
+        if r.id().addr() == addr {
+            return Some(r.id());
+        }
+        c = r.next();
+    }
+    None
+}
+
+/// `checkRestartStacks(cptr)`: an old record (one whose stacks are not the
+/// current ones) takes an internal restart only with its restart bit set.
+// R: errors.c:checkRestartStacks
+fn check_restart_stacks(cx: &mut Cx, c: robigo_rtcore::ContextId) -> RResult<()> {
+    let ok = {
+        let r = cx.context(c).expect("robigo: a record on the chain");
+        (r.handler_stack().sexp() == cx.handler_stack().sexp() && r.restart_stack().sexp() == cx.restart_stack().sexp())
+            || r.callflag() & ctxt::RESTART != 0
+    };
+    if ok { Ok(()) } else { Err(cx.error("handler or restart stack mismatch in old restart")) }
+}
+
+/// `addInternalRestart(cptr, cname)`: a restart named `cname` whose exit
+/// is the record `c` (an external pointer to it), pushed.
+// R: errors.c:addInternalRestart
+fn add_internal_restart(cx: &mut Cx, c: robigo_rtcore::ContextId, cname: &[u8]) -> RResult<()> {
+    check_restart_stacks(cx, c)?;
+    cx.scope(|cx, s| {
+        let o = s.out(cx);
+        let stack = o.root();
+        cx.build(o, |cx| {
+            let mut name = cx.alloc_vector::<Char<'_>>(1)?;
+            name.set(0, cx.mk_char(cname, Encoding::Native)?);
+            let name = name.finish().as_ref();
+            let nil = cx.nil();
+            let exit = cx.extptr(c.addr(), nil, nil)?;
+            let mut entry = cx.alloc_vector::<Ref<'_>>(2)?;
+            entry.set(0, name);
+            entry.set(1, exit);
+            let mut k = cx.alloc_vector::<Char<'_>>(1)?;
+            k.set(0, cx.mk_char(b"restart", Encoding::Native)?);
+            let attrs = cx.cons_tagged(k.finish().as_ref(), cx.nil(), cx.sym(RSym::Class))?;
+            entry.set_attrib(attrs);
+            entry.set_object(true);
+            cx.cons(entry.finish().as_ref(), cx.restart_stack())
+        })?;
+        cx.set_restart_stack(stack);
+        Ok(())
+    })
+}
+
+/// `R_InsertRestartHandlers(cptr, cname)`: on the record `c`, an error
+/// handler (`options(browser.error.handler)` if a function, else
+/// `R_RestartToken`, which sends an error to the default handling) and the
+/// internal restart `cname`.
+// R: errors.c:R_InsertRestartHandlers
+fn insert_restart_handlers(cx: &mut Cx, c: robigo_rtcore::ContextId, cname: &[u8]) -> RResult<()> {
+    check_restart_stacks(cx, c)?;
+    cx.scope(|cx, s| {
+        let opt = get_option1(cx, s, b"browser.error.handler")?;
+        let h = if matches!(opt.bind(cx).sexptype(), CLOSXP | BUILTINSXP | SPECIALSXP) {
+            opt
+        } else {
+            s.root(cx, cx.restart_token())
+        };
+        let rho = s.root(cx, cx.context(c).expect("robigo: a record on the chain").cloenv());
+        let o = s.out(cx);
+        let stack = o.root();
+        cx.build(o, |cx| {
+            // mkHandlerEntry(mkChar("error"), rho, h, rho, R_NilValue, TRUE)
+            let mut e = cx.alloc_vector::<Ref<'_>>(5)?;
+            e.set(0, cx.mk_char(b"error", Encoding::Native)?.as_ref());
+            e.set(1, rho.bind(cx));
+            e.set(2, h.bind(cx));
+            e.set(3, rho.bind(cx));
+            e.set(4, cx.nil());
+            let e = e.finish().as_ref();
+            // SAFETY: fresh; gp is a header field (SETLEVELS: calling).
+            unsafe { e.sexp().set_gp(1) };
+            cx.cons(e, cx.handler_stack())
+        })?;
+        cx.set_handler_stack(stack);
+        Ok(())
+    })?;
+    add_internal_restart(cx, c, cname)
 }
 
 /// `jump_to_toplevel()`: no traceback, no `options(error)`, warnings
@@ -983,7 +1260,7 @@ pub fn vwarningcall_dflt(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RRe
                         buf.extend_from_slice(&tr);
                     }
                 }
-                cx.collect_warning(call, &String::from_utf8_lossy(&buf));
+                cx.collect_warning(call, &String::from_utf8_lossy(&buf))?;
             }
             Ok(())
         })();
@@ -1056,10 +1333,10 @@ pub fn print_warnings(cx: &mut Cx) {
                 out.extend_from_slice(format!("{}: ", i + 1).as_bytes());
                 item(&mut out, c, m.bytes(), 10, false);
             }
-        } else if n < robigo_rtcore::MAX_WARNINGS {
+        } else if n < cx.nwarnings() {
             out.extend_from_slice(format!("There were {n} warnings (use warnings() to see them)\n").as_bytes());
         } else {
-            let m = robigo_rtcore::MAX_WARNINGS;
+            let m = cx.nwarnings();
             out.extend_from_slice(
                 format!("There were {m} or more warnings (use warnings() to see the first {m})\n").as_bytes(),
             );
@@ -1303,6 +1580,31 @@ pub fn do_add_cond_hands(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root
     })
 }
 
+/// `.Internal(.addGlobHands(classes, handlers, parentenv, target,
+/// calling))` (`globalCallingHandlers`): with no handlers established
+/// below the top level, the global handlers made anew from these (as
+/// `.addCondHands` makes entries, on an empty stack), and every record
+/// down to the top level given them.
+// R: errors.c:do_addGlobHands
+pub fn do_add_glob_hands(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    check_arity(cx, call, args, ".addGlobHands", 5)?;
+    // check for handlers on the stack before proceeding (PR1826)
+    if !cx.handlers_only_global() {
+        return Err(cx.error("should not be called with handlers on the stack"));
+    }
+    cx.scope(|cx, s| {
+        let nil = s.root(cx, cx.nil());
+        cx.set_handler_stack(nil);
+        let o = s.out(cx);
+        do_add_cond_hands(cx, call, args, env, o)?;
+        let stack = s.root(cx, cx.handler_stack());
+        cx.set_global_handlers(stack);
+        Ok(())
+    })?;
+    out.set(cx, cx.nil());
+    Ok(())
+}
+
 /// `.Internal(.resetCondHands(stack))`.
 // R: errors.c:do_resetCondHands
 pub fn do_reset_cond_hands(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
@@ -1338,7 +1640,7 @@ pub fn do_signal_condition(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Ro
             pop_handlers_to(cx, list);
             if is_calling(entry.bind(cx)) {
                 let h = entry_elt(entry.bind(cx), entry::HANDLER);
-                if h.sexp() == state(cx).restart_token.bind(cx).sexp() {
+                if h.sexp() == cx.restart_token().sexp() {
                     let m = msg.bind(cx);
                     let text = match m.as_vector::<Char<'_>>().filter(|v| m.sexptype() == STRSXP && !v.is_empty()) {
                         Some(v) => robigo_rtbuiltins::coerce::text(v.get(0)).bytes().to_vec(),
@@ -1458,6 +1760,24 @@ pub fn do_add_restart(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_
         cx.set_restart_stack(st);
         Ok(())
     })?;
+    out.set(cx, cx.nil());
+    Ok(())
+}
+
+/// `.Internal(.addTryHandlers())`: the calling function's record takes a
+/// `tryRestart` (its restart bit set): an error the handlers do not catch
+/// is reported, then the function returns `R_RestartToken`.
+// R: errors.c:do_addTryHandlers
+pub fn do_add_try_handlers(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    check_arity(cx, call, args, ".addTryHandlers", 0)?;
+    let g = cx.global_context();
+    if g.callflag() == ctxt::TOPLEVEL || g.callflag() & ctxt::FUNCTION == 0 {
+        return Err(cx.error("not in a try context"));
+    }
+    let (id, flag) = (g.id(), g.callflag());
+    // SET_RESTART_BIT_ON(R_GlobalContext->callflag)
+    cx.set_context_callflag(id, flag | ctxt::RESTART);
+    insert_restart_handlers(cx, id, b"tryRestart")?;
     out.set(cx, cx.nil());
     Ok(())
 }

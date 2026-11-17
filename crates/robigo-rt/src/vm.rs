@@ -441,7 +441,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                         cx.force_arg(act.root(R_ENV), at - 1, act.out(i.a))?;
                     } else {
                         // SAFETY: the running code's constants (or rooted values): live, of this isolate.
-                        unsafe { crate::eval::get_var(cx, act, i.a, sym, false) }?;
+                        unsafe { crate::eval::get_var(cx, act, i.a, sym, false, v.profile == Profile::Bc) }?;
                     }
                     reload!();
                 }
@@ -455,7 +455,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 cx.set_eval_depth(act.depth + i.d as i32);
                 pp_point(cx, act, &v, pc - 1);
                 // SAFETY: the running code's constants (or rooted values): live, of this isolate.
-                unsafe { crate::eval::get_var(cx, act, i.a, sym, true) }?;
+                unsafe { crate::eval::get_var(cx, act, i.a, sym, true, v.profile == Profile::Bc) }?;
                 reload!();
             }
             Op::SetVar | Op::SetVar2 => {
@@ -493,7 +493,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     cx.set_visible(true);
                 }
                 // SAFETY: the running code's constants (or rooted values): live, of this isolate.
-                unsafe { crate::eval::get_var_missok(cx, act, i.a, sym) }?;
+                unsafe { crate::eval::get_var_missok(cx, act, i.a, sym, v.profile == Profile::Bc) }?;
                 reload!();
             }
             Op::Switch => {

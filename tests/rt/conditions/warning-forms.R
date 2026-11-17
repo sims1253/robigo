@@ -1,0 +1,40 @@
+# Every form of a warning's report: immediate (warn = 1), deferred (warn = 0)
+# by count, converted (warn = 2), ignored (warn < 0), truncated by
+# warning.length, replaced by warning.expression, "In addition:", long
+# calls and messages (LONGWARN), conditions, immediate. and noBreaks.
+# (errors.c:vwarningcall_dflt, PrintWarnings).
+f <- function() warning("short")
+long_function_name_that_is_quite_long_indeed <- function(a_long_argument_name) warning("a message that is long enough to make the call and message overflow LONGWARN")
+options(warn = 1)
+f()
+long_function_name_that_is_quite_long_indeed(1)
+warning("no call here", call. = FALSE)
+warning("multi\nline\nmessage")
+options(warn = 0)
+g <- function() { warning("one"); warning("two\nlines"); long_function_name_that_is_quite_long_indeed(2) }
+g()
+h <- function() { warning("before the error"); stop("the error") }
+try(h())
+cat("--\n")
+options(warning.length = 100)
+warning(strrep("x", 300))
+options(warning.length = 1000)
+options(warning.expression = quote(cat("warning.expression ran\n")))
+f()
+options(warning.expression = NULL)
+options(warn = 2)
+print(tryCatch(f(), error = conditionMessage))
+options(warn = 0)
+warning(simpleWarning("a condition", call = quote(cond_call(x))))
+k <- function() warning("immediate one", immediate. = TRUE)
+k()
+nb <- function() warning("no breaks: ", strrep("y", 80), noBreaks. = TRUE)
+nb()
+options(warn = -1)
+f()
+options(warn = 0)
+m <- function(...) warning("deparse of a long call")
+m(aaaaaaaaaaaaaaaaaaaa = 1, bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb = 2, ccccccccccccccccccccccccc = 3, dddddddddddddddddd = 4)
+w <- function() { for (i in 1:3) warning(paste("loop", i)); invisible() }
+w()
+print(warnings())

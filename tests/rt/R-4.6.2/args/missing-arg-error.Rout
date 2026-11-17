@@ -1,0 +1,15 @@
+evalError missingArgError error condition | argument "x" is missing, with no default | f() 
+[1] "message" "call"   
+getvarError missingArgError error condition | argument "x" is missing, with no default | k() 
+[1] "message" "call"   
+getMissingError missingArgError error condition | argument "x" is missing, with no default | get(x, envir, mode, inherits) 
+[1] "message" "call"   
+getMissingError missingArgError error condition | argument "g" is missing, with no default | g() 
+[1] "message" "call"   
+evalError missingArgError error condition | argument "..1" is missing, with no default | d(, 2) 
+[1] "message" "call"   
+[1] "missingArgError caught"
+[1] "getvarError caught"
+[1] "exiting"
+[1] "getvarError"     "missingArgError" "error"           "condition"      
+Error in f() : argument "x" is missing, with no default

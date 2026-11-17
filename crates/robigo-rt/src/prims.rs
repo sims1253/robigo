@@ -156,11 +156,17 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("stop", crate::conditions::do_stop, Inline::None, 11, 2),
     builtin("warning", crate::conditions::do_warning, Inline::None, 111, 4),
     builtin(".addCondHands", crate::conditions::do_add_cond_hands, Inline::None, 111, 5),
+    // names.c: {".addGlobHands", do_addGlobHands, 0, 111, 5, ...}
+    builtin(".addGlobHands", crate::conditions::do_add_glob_hands, Inline::None, 111, 5),
     builtin(".resetCondHands", crate::conditions::do_reset_cond_hands, Inline::None, 111, 1),
     builtin(".signalCondition", crate::conditions::do_signal_condition, Inline::None, 11, 3),
     builtin(".dfltStop", crate::conditions::do_dflt_stop, Inline::None, 11, 2),
     builtin(".dfltWarn", crate::conditions::do_dflt_warn, Inline::None, 11, 2),
     builtin(".addRestart", crate::conditions::do_add_restart, Inline::None, 11, 1),
+    // names.c: {"traceback", do_traceback, 0, 11, 1, ...}
+    builtin("traceback", crate::conditions::do_traceback, Inline::None, 11, 1),
+    // names.c: {".addTryHandlers", do_addTryHandlers, 0, 111, 0, ...}
+    builtin(".addTryHandlers", crate::conditions::do_add_try_handlers, Inline::None, 111, 0),
     builtin(".getRestart", crate::conditions::do_get_restart, Inline::None, 11, 1),
     builtin(".invokeRestart", crate::conditions::do_invoke_restart, Inline::None, 11, 2),
     builtin("geterrmessage", crate::conditions::do_geterrmessage, Inline::None, 11, 0),
@@ -189,6 +195,8 @@ static RT_PRIMS: &[PrimDef] = &[
     // names.c: {"mem.maxVSize", do_maxVSize, 0, 11, 1, ...}
     builtin("mem.maxVSize", crate::memory::do_max_vsize, Inline::None, 11, 1),
     builtin("eval", crate::eval::do_eval, Inline::None, 211, 3),
+    // names.c: {"returnValue", do_returnValue, 0, 11, 1, ...}
+    builtin("returnValue", crate::eval::do_return_value, Inline::None, 11, 1),
     builtin("reg.finalizer", crate::memory::do_reg_finalizer, Inline::None, 11, 3),
     // serialize.c (L1)
     builtin("serialize", crate::serialize::do_serialize::<0>, Inline::None, 11, 5),

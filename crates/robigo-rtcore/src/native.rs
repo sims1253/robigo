@@ -76,6 +76,19 @@ impl Landing {
     }
 }
 
+/// The kinds of top-level record [`Cx::toplevel_with`] makes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TopLevel {
+    /// `R_ToplevelExec` around a native entry ([`Cx::toplevel_exec`]): the
+    /// stacks emptied for the body, and a jump from C lands on the record.
+    ExecNative,
+    /// `R_ToplevelExec` around Rust code ([`Cx::toplevel`], the finalizer
+    /// runner): the stacks emptied for the body.
+    Exec,
+    /// The REPL's `R_Toplevel` ([`Cx::repl_toplevel`]): the stacks kept.
+    Repl,
+}
+
 impl Cx {
     /// Run `enter` (a heap trampoline call: jump record, segment slot,
     /// `.Call` plain switch) with the capability suspended; true if an exit
@@ -238,20 +251,24 @@ impl Cx {
         }
     }
 
-    /// A top-level record (`R_ToplevelExec`'s): `R_HandlerStack` and
-    /// `R_RestartStack` empty while `body` runs in it, the record
-    /// `R_ToplevelContext`, and everything restored after. Ok(true): `body`
-    /// finished; Ok(false): an exit to the record landed there (an error
-    /// with no handler outside the record: GNU R reported it before the
-    /// jump). An exit to a record further out passes (GNU R's `longjmp`
-    /// would leave `R_ToplevelExec`'s frame too).
+    /// A top-level record of kind `kind`, the record `R_ToplevelContext`
+    /// while `body` runs in it. For `R_ToplevelExec`'s kinds,
+    /// `R_HandlerStack` and `R_RestartStack` are empty while `body` runs and
+    /// restored after; the REPL's ([`Cx::repl_toplevel`]) keeps them for
+    /// `body`, and the record's end restores them from what it saved.
+    /// Ok(true): `body` finished; Ok(false): an exit to the record landed
+    /// there (an error with no handler outside the record: GNU R reported it
+    /// before the jump). An exit to a record further out passes (GNU R's
+    /// `longjmp` would leave `R_ToplevelExec`'s frame too).
     fn toplevel_with(
         &mut self,
         global_env: Root<'_>,
         base_env: Root<'_>,
-        landing: bool,
+        kind: TopLevel,
         body: impl FnOnce(&mut Cx, Rec) -> Result<(), Option<RError>>,
     ) -> RResult<bool> {
+        let landing = kind == TopLevel::ExecNative;
+        let exec = kind != TopLevel::Repl;
         let nil = self.iso().nil;
         // R: context.c:R_ToplevelExec
         let st = self.ctxs();
@@ -259,8 +276,10 @@ impl Cx {
         let old_r = st.restart_stack.get();
         let oldvis = st.visible.get();
         let save_top = st.toplevel.get();
-        st.handler_stack.set(nil);
-        st.restart_stack.set(nil);
+        if exec {
+            st.handler_stack.set(nil);
+            st.restart_stack.set(nil);
+        }
         let mut init = Init::plain(self, ctxt::TOPLEVEL, if landing { rflags::LANDING } else { 0 });
         init.cloenv = global_env.bind(self).sexp();
         init.sysparent = base_env.bind(self).sexp();
@@ -292,8 +311,10 @@ impl Cx {
                 r
             });
             let st = cx.ctxs();
-            st.handler_stack.set(old_h.bind(cx).sexp());
-            st.restart_stack.set(old_r.bind(cx).sexp());
+            if exec {
+                st.handler_stack.set(old_h.bind(cx).sexp());
+                st.restart_stack.set(old_r.bind(cx).sexp());
+            }
             st.visible.set(oldvis);
             r
         })
@@ -315,7 +336,7 @@ impl Cx {
         fun: unsafe extern "C" fn(*mut c_void),
         data: *mut c_void,
     ) -> RResult<bool> {
-        self.toplevel_with(global_env, base_env, true, |cx, c| {
+        self.toplevel_with(global_env, base_env, TopLevel::ExecNative, |cx, c| {
             let a = [data as usize, 0, 0, 0, 0, 0];
             // SAFETY: the caller's contract.
             let jumped = cx.enter_native(c, |jb, scan, _| unsafe {
@@ -325,16 +346,31 @@ impl Cx {
         })
     }
 
-    /// A top-level record around Rust code (the finalizer runner, the
-    /// REPL's evaluation of one expression): [`Cx::toplevel_exec`]'s
-    /// semantics for `body`.
+    /// A top-level record around Rust code (the finalizer runner):
+    /// [`Cx::toplevel_exec`]'s semantics for `body`.
     pub fn toplevel(
         &mut self,
         global_env: Root<'_>,
         base_env: Root<'_>,
         body: impl FnOnce(&mut Cx) -> RResult<()>,
     ) -> RResult<bool> {
-        self.toplevel_with(global_env, base_env, false, |cx, _| body(cx).map_err(Some))
+        self.toplevel_with(global_env, base_env, TopLevel::Exec, |cx, _| body(cx).map_err(Some))
+    }
+
+    /// The REPL's top level around one statement (GNU R's `R_Toplevel`,
+    /// the session record `run_Rmainloop` evaluates in): [`Cx::toplevel`]
+    /// but for the stacks. `R_HandlerStack` and `R_RestartStack` are saved
+    /// as `begincontext` saves them, left as they are while `body` runs, and
+    /// restored from the record at its end, so the global calling handlers
+    /// (`.addGlobHands`, which rewrites the top level's saved stack) last
+    /// from one statement to the next.
+    pub fn repl_toplevel(
+        &mut self,
+        global_env: Root<'_>,
+        base_env: Root<'_>,
+        body: impl FnOnce(&mut Cx) -> RResult<()>,
+    ) -> RResult<bool> {
+        self.toplevel_with(global_env, base_env, TopLevel::Repl, |cx, _| body(cx).map_err(Some))
     }
 
     /// A new `R_UnwindProtect` continuation (`R_MakeUnwindCont`): robigo's

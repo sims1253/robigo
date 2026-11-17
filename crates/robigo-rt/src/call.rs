@@ -722,19 +722,7 @@ pub(crate) unsafe fn call_special(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, c
 /// region's temporaries, registers `regs..nregs`, are dead (D9).
 pub fn loop_region(cx: &mut Cx, act: &mut Act, start: usize, regs: Reg, nregs: Reg, profile: Profile) -> RResult<Flow> {
     loop {
-        let r = cx.scope(|cx, s| {
-            let nil = s.root(cx, cx.nil());
-            let base = s.root(cx, cx.base_env());
-            // R: eval.c:do_for, begincontext(&cntxt, CTXT_LOOP, R_NilValue,
-            // rho, R_BaseEnv, R_NilValue, R_NilValue)
-            // SAFETY: the activation's environment register, live for the
-            // whole activation, which outlives this call. Only `exec` writes
-            // R_ENV, before `run` starts (the compiler allocates from
-            // R_FIRST), so the root reads the environment throughout. It is
-            // not tied to `act`'s borrow, which `run` needs mutably.
-            let env = unsafe { Root::from_raw(act.slot(R_ENV)) };
-            cx.with_context(ctxt::LOOP, nil, env, base, None, |cx, _id| vm::run(cx, act, start))
-        });
+        let r = loop_context(cx, act, start);
         let landed = match r {
             Ok(f) => return Ok(f),
             Err(Left::Exit(e)) => return Err(e),
@@ -751,4 +739,24 @@ pub fn loop_region(cx: &mut Cx, act: &mut Act, start: usize, regs: Reg, nregs: R
             crate::eval::bc_tick(cx)?;
         }
     }
+}
+
+/// One run of a loop's region in its `CTXT_LOOP` record. Out of line: the
+/// record would otherwise sit in `vm::run`'s frame, which every R call level
+/// keeps (X9).
+#[inline(never)]
+fn loop_context(cx: &mut Cx, act: &mut Act, start: usize) -> Result<Flow, Left> {
+    cx.scope(|cx, s| {
+        let nil = s.root(cx, cx.nil());
+        let base = s.root(cx, cx.base_env());
+        // R: eval.c:do_for, begincontext(&cntxt, CTXT_LOOP, R_NilValue,
+        // rho, R_BaseEnv, R_NilValue, R_NilValue)
+        // SAFETY: the activation's environment register, live for the
+        // whole activation, which outlives this call. Only `exec` writes
+        // R_ENV, before `run` starts (the compiler allocates from
+        // R_FIRST), so the root reads the environment throughout. It is
+        // not tied to `act`'s borrow, which `run` needs mutably.
+        let env = unsafe { Root::from_raw(act.slot(R_ENV)) };
+        cx.with_context(ctxt::LOOP, nil, env, base, None, |cx, _id| vm::run(cx, act, start))
+    })
 }
