@@ -595,6 +595,8 @@ pub mod extra {
         /// robigo-rt's own classes (robigo-rtcore's `altrep::own`), set by
         /// the one maker of such instances: the hot accessors tell it from
         /// a package class's with this bit, without reading the class.
+        /// Bit 2 is free on main and in all four X3 layout cells (a code
+        /// object takes bit 8, the h24 cells bit 0): H, 2026-11-17.
         pub const OWN_ALTREP: u16 = 1 << 2;
         const _: () = assert!(super::super::disjoint(&[super::TYPE_BLIND as u64, TRACE as u64, OWN_ALTREP as u64]));
     }
@@ -611,6 +613,7 @@ pub mod extra {
         const _: () = assert!(super::super::disjoint(&[
             super::TYPE_BLIND as u64,
             super::vector::TRACE as u64,
+            super::vector::OWN_ALTREP as u64,
             WEAK_CACHE as u64
         ]));
     }
