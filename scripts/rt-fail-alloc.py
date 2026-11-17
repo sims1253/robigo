@@ -28,7 +28,19 @@ from concurrent.futures import ThreadPoolExecutor
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 COUNT = re.compile(r"^robigo gc: allocations since ROBIGO_FAIL_ALLOC_AT was armed (\d+)", re.M)
-DEFAULT = ["tests/rt/alloc/effects.R", "tests/rt/serialize-closures/unserialize-e9.R"]
+# The default scripts: visible effects (alloc/effects.R), unserialize's, and
+# on.exit code run during unwinds, where one refused allocation in
+# endcontext's fixup freed the on.exit list before it ran
+# (docs/ledger/g3/2026-11-17-e9-onexit-unwind.md)
+DEFAULT = [
+    "tests/rt/alloc/effects.R",
+    "tests/rt/serialize-closures/unserialize-e9.R",
+    "tests/rt/conditions/onexit-unwind.R",
+    "tests/rt/conditions/trycatch-finally.R",
+    "tests/rt/capi/e8-unwind.R",
+    "tests/r/lang/on-exit.R",
+    "tests/rt/parse/file.R",
+]
 
 
 def default_bin():

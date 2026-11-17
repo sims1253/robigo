@@ -261,6 +261,47 @@ fn an_uncaught_error_reaches_the_top_level() {
 /// while on.exit code runs (`returnValue`), an exit parked in a record while
 /// its on.exit code runs, and the `on.exit` list (cells `on.exit` made).
 #[cfg(not(miri))]
+/// E9 (A1, 2026-11-17): `endcontext` at an intermediate stop clears the
+/// record's `conexit` and then runs `R_FixupExitingHandlerResult`, which
+/// may allocate, so a collection there (a refused allocation's) found the
+/// `on.exit` list unreferenced: it was freed, its cells reused, and the code
+/// then run from them (a hang or a segfault in
+/// `tests/rt/conditions/onexit-unwind.R` at `ROBIGO_FAIL_ALLOC_AT=1249`;
+/// a moved list under the moving collector). GNU R protects `s` there.
+#[test]
+fn the_on_exit_list_survives_a_collection_in_the_stops_fixup() {
+    let mut iso = iso();
+    let cx = iso.cx();
+    let mut h = cx.hooks();
+    h.exit_value = |cx, _| {
+        collect(cx);
+        // node-sized objects: a freed cell's slot is reused
+        for _ in 0..20_000 {
+            std::hint::black_box(cx.cons(cx.nil(), cx.nil()).unwrap());
+        }
+    };
+    cx.install_hooks(h);
+    let r = run(cx, |cx| {
+        let f = l!(
+            cx,
+            "fn",
+            l!(
+                cx,
+                "seq",
+                l!(cx, "onexit", l!(cx, "log", string(cx, "first"))),
+                l!(cx, "onexit", l!(cx, "log", string(cx, "second")), string(cx, "T")),
+                l!(cx, "stop", string(cx, "boom"))
+            )
+        );
+        l!(cx, "catch", f)
+    });
+    assert_eq!(r, Ok("boom".into()));
+    assert_eq!(take_log(), ["first", "second"]);
+    assert_eq!(cx.pending_exits(), 0);
+    assert_eq!(cx.context_depth(), 1);
+}
+
+#[cfg(not(miri))]
 #[test]
 fn records_and_parked_exits_are_roots() {
     let mut iso = iso();
