@@ -118,10 +118,7 @@ extern "C" fn h_begin(c: *mut Context, flag: c_int) {
 }
 
 extern "C" fn h_end(c: *mut Context) {
-    export(|cx| {
-        unsafe { cx.end_foreign(NonNull::new(c).unwrap()) };
-        Ok(())
-    })
+    export(|cx| unsafe { cx.end_foreign(NonNull::new(c).unwrap()) })
 }
 
 extern "C" fn h_on_chain(c: *mut Context) -> c_int {
@@ -511,4 +508,28 @@ fn six_argument_entries_return_words_doubles_and_complexes() {
         unsafe { cx.call_native6(rt_test_cplx as *const c_void, a, 0, Ret6::Complex) }.unwrap(),
         Native6::Complex([40.0, 3.0])
     );
+}
+
+/// `on.exit` code R code adds to a function record C pushed is not run
+/// yet: `endcontext` of that record pops it and raises the error that says
+/// so (S3x-c), where it panicked.
+#[test]
+fn on_exit_code_in_a_context_c_pushed_is_an_r_error() {
+    let mut iso = iso();
+    let cx = iso.cx();
+    let mut rec = Box::new(std::mem::MaybeUninit::<robigo_rtcore::Context>::uninit());
+    let p = NonNull::new(rec.as_mut_ptr()).unwrap();
+    cx.scope(|cx, s| {
+        let rho = s.root(cx, env(cx));
+        let nil = cx.nil().sexp();
+        let r = rho.bind(cx).sexp();
+        unsafe { cx.begin_foreign(p, robigo_rtcore::ctxt::FUNCTION, nil, r, r, nil, nil) };
+        let call = s.root(cx, cx.nil());
+        let code = s.root(cx, string(cx, "never run"));
+        cx.on_exit(call, rho, code, None, None).unwrap();
+        let e = unsafe { cx.end_foreign(p) }.unwrap_err();
+        assert_eq!(text(cx.exit_objects(&e).0), "robigo: on.exit code in a context C pushed is not implemented yet");
+        cx.resolve_exit(e, None);
+    });
+    assert_eq!(cx.context_depth(), 1, "the record is popped");
 }

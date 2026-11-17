@@ -360,7 +360,7 @@ pub struct GcStats {
     /// Objects and bytes allocated by SEXPTYPE (only while [`StatsMode`] is
     /// not `Off`). Bytes are the request rounded to 16, as `bytes_allocated`.
     pub by_type: [(u64, u64); 32],
-    /// Objects moved by `ROBIGO_GC_MOVE=1`'s collections.
+    /// Objects moved by `ROBIGO_GC_MOVE`'s collections.
     pub moved: u64,
     /// Weak references the pin report found decided dead while a C word
     /// reached their key (counted with the report or the strong library on).
@@ -487,9 +487,12 @@ pub struct Core {
     /// Experiment A: `ROBIGO_CALL65_PLAIN=1`, read when the core is made
     /// (see [`Core::call65_plain`]).
     call65_plain: bool,
-    /// `ROBIGO_GC_MOVE=1` (`mover.rs`): every collection moves what it
-    /// may and poisons the old copies.
+    /// `ROBIGO_GC_MOVE` (`mover.rs`): collections move what they may and
+    /// poison the old copies.
     gc_move: bool,
+    /// `ROBIGO_GC_MOVE=young:N`'s state (`mover.rs`), boxed: the debug
+    /// collector's, kept out of the core's own layout.
+    young: Box<mover::Young>,
     /// Under `gc_move`, the chunks of the large objects the last
     /// collection moved, without access until the next one gives them back.
     quarantine: Vec<crate::heap::Chunk>,
@@ -808,7 +811,8 @@ impl Core {
             next_sym_id: 0,
             precious: Vec::new(),
             call65_plain: std::env::var_os("ROBIGO_CALL65_PLAIN").is_some_and(|v| v == "1"),
-            gc_move: std::env::var_os("ROBIGO_GC_MOVE").is_some_and(|v| v == "1"),
+            gc_move: mover::policy_from_env().is_some(),
+            young: Box::new(mover::Young::new(mover::policy_from_env().unwrap_or(0))),
             quarantine: Vec::new(),
             diag: diag::Diag::from_env(),
             weak_refs: Vec::new(),
@@ -908,6 +912,13 @@ impl Core {
     #[inline(always)]
     pub fn missing_arg(&self) -> Sexp {
         self.missing_arg
+    }
+    /// GNU R's `mkSymMarker(mkChar(""))`: an immortal symbol named "" that
+    /// is not in the symbol table, as `R_UnboundValue` and `R_MissingArg`
+    /// are (`R_RestartToken`, which the isolate makes once).
+    // R: names.c:mkSymMarker
+    pub fn new_marker_symbol(&mut self) -> Result<Sexp, NeedGc> {
+        self.new_symbol(self.blank_string)
     }
 
     // ---- the poll word ------------------------------------------------
@@ -2063,6 +2074,81 @@ impl Core {
         }
     }
 
+    /// [`Core::mark_obj`], or in a young collection (`Y`) [`Core::mark_young`]:
+    /// the object's address after marking (its copy's if it moved).
+    ///
+    /// # Safety
+    /// As for those.
+    #[inline(always)]
+    unsafe fn mark_y<const Y: bool>(&mut self, p: Sexp) -> Sexp {
+        // SAFETY: the caller's contract.
+        unsafe {
+            if Y {
+                self.mark_young(p)
+            } else {
+                self.mark_obj(p);
+                p
+            }
+        }
+    }
+
+    /// [`Core::trace`], or in a young collection (`Y`) its moving form.
+    ///
+    /// # Safety
+    /// As for [`Core::trace`].
+    #[inline(always)]
+    unsafe fn trace_y<const Y: bool>(&mut self) {
+        // SAFETY: the caller's contract.
+        unsafe { if Y { self.trace_young() } else { self.trace() } }
+    }
+
+    /// [`Core::trace`] in a young collection: the fields are shown to
+    /// [`mover::MarkYoung`], which rewrites the edges to moved objects.
+    ///
+    /// # Safety
+    /// As for [`Core::trace`], during a young collection's marking.
+    unsafe fn trace_young(&mut self) {
+        while let Some(p) = self.mark_stack.pop() {
+            // SAFETY: as in `trace`.
+            unsafe {
+                if p.typ() == CHARSXP {
+                    self.marked_chars += (p.gp() & gp::charsxp::CACHED != 0) as usize;
+                    continue;
+                }
+                p.trace_fields(&mut mover::MarkYoung(self));
+            }
+        }
+    }
+
+    /// Field `i` of a weak reference, as [`Core::weak_field`]; in a young
+    /// collection (`Y`) a field naming a moved object takes its copy first.
+    ///
+    /// # Safety
+    /// As for [`Core::weak_field`], during a collection's marking.
+    #[inline(always)]
+    unsafe fn weak_field_y<const Y: bool>(w: Sexp, i: usize) -> Sexp {
+        // SAFETY: the caller's contract; an old copy's link word is its copy.
+        unsafe {
+            let x = Self::weak_field(w, i);
+            if Y && !x.is_null() && x.typ() == mover::FORWARDED {
+                let q = Sexp(*(x.0.add(header::OFF_LINK) as *const *mut u8));
+                Self::set_weak_field(w, i, q);
+                return q;
+            }
+            x
+        }
+    }
+
+    /// Write field `i` of a weak reference (the collector's: no barrier).
+    ///
+    /// # Safety
+    /// As for [`Core::weak_field`]; `v` null or an object.
+    #[inline(always)]
+    unsafe fn set_weak_field(w: Sexp, i: usize, v: Sexp) {
+        // SAFETY: element `i` of a standard vector's pointer payload.
+        unsafe { *(w.std_data() as *mut Sexp).add(i) = v }
+    }
+
     /// Mark what the objects on the mark stack reach.
     ///
     /// # Safety
@@ -2104,12 +2190,12 @@ impl Core {
     ///
     /// # Safety
     /// Only during a collection, after the roots are marked.
-    unsafe fn process_weak_refs(&mut self) {
+    unsafe fn process_weak_refs<const Y: bool>(&mut self) {
         // SAFETY: the caller's contract, the three steps' own.
         unsafe {
-            self.weak_fixpoint();
-            self.classify_weak_refs();
-            self.keep_weak_fields();
+            self.weak_fixpoint::<Y>();
+            self.classify_weak_refs::<Y>();
+            self.keep_weak_fields::<Y>();
         }
     }
 
@@ -2118,27 +2204,31 @@ impl Core {
     ///
     /// # Safety
     /// As for [`Core::process_weak_refs`].
-    unsafe fn weak_fixpoint(&mut self) {
+    unsafe fn weak_fixpoint<const Y: bool>(&mut self) {
         // SAFETY: `register_weak_ref`'s contract makes every entry an
         // initialized WEAKREFSXP. `collect` marked them, and nothing has been
-        // swept since, so their fields still point at objects.
+        // swept since, so their fields still point at objects (or, in a young
+        // collection, at old copies, which `weak_field_y` resolves).
         unsafe {
             loop {
                 let mut changed = false;
                 for i in 0..self.weak_refs.len() {
                     let w = self.weak_refs[i];
-                    let key = Self::weak_field(w, 0);
+                    let key = Self::weak_field_y::<Y>(w, 0);
                     if self.is_marked(key) {
                         for k in 1..3 {
-                            let v = Self::weak_field(w, k);
+                            let v = Self::weak_field_y::<Y>(w, k);
                             if !self.is_marked(v) {
-                                self.mark_obj(v);
+                                let v = self.mark_y::<Y>(v);
+                                if Y {
+                                    Self::set_weak_field(w, k, v);
+                                }
                                 changed = true;
                             }
                         }
                     }
                 }
-                self.trace();
+                self.trace_y::<Y>();
                 if !changed {
                     break;
                 }
@@ -2152,14 +2242,14 @@ impl Core {
     ///
     /// # Safety
     /// As for [`Core::process_weak_refs`], after the fixed point.
-    unsafe fn classify_weak_refs(&mut self) {
+    unsafe fn classify_weak_refs<const Y: bool>(&mut self) {
         // SAFETY: as in `weak_fixpoint`.
         unsafe {
             let refs = std::mem::take(&mut self.weak_refs);
             let mut keep = Vec::with_capacity(refs.len());
             // R_weak_refs' order, newest first
             for w in refs.into_iter().rev() {
-                let key = Self::weak_field(w, 0);
+                let key = Self::weak_field_y::<Y>(w, 0);
                 if w.gp() & gp::weakref::READY_TO_FINALIZE != 0 || !self.is_marked(key) {
                     w.set_gp(w.gp() | gp::weakref::READY_TO_FINALIZE);
                     self.finalize_queue.push_back(w);
@@ -2181,22 +2271,28 @@ impl Core {
     ///
     /// # Safety
     /// As for [`Core::process_weak_refs`], after the classification.
-    unsafe fn keep_weak_fields(&mut self) {
+    unsafe fn keep_weak_fields<const Y: bool>(&mut self) {
         // SAFETY: as in `weak_fixpoint`.
         unsafe {
             for i in 0..self.weak_refs.len() {
                 let w = self.weak_refs[i];
                 for k in 0..3 {
-                    self.mark_obj(Self::weak_field(w, k));
+                    let v = self.mark_y::<Y>(Self::weak_field_y::<Y>(w, k));
+                    if Y {
+                        Self::set_weak_field(w, k, v);
+                    }
                 }
             }
             for i in 0..self.finalize_queue.len() {
                 let w = self.finalize_queue[i];
                 for k in 0..3 {
-                    self.mark_obj(Self::weak_field(w, k));
+                    let v = self.mark_y::<Y>(Self::weak_field_y::<Y>(w, k));
+                    if Y {
+                        Self::set_weak_field(w, k, v);
+                    }
                 }
             }
-            self.trace();
+            self.trace_y::<Y>();
         }
     }
 
@@ -2207,17 +2303,14 @@ impl Core {
     /// `ctx` must be the core `collect_needing` passed to
     /// `robigo_heap_spill`, the only way to reach it during this call, and
     /// the thread must be the core's.
-    unsafe extern "C" fn scan_segments(ctx: *mut c_void) {
+    unsafe extern "C" fn scan_segments<const Y: bool>(ctx: *mut c_void) {
         // SAFETY: `ctx` is as the caller promises. Each segment is mapped
         // stack of this thread (collect checked the thread, and a segment
-        // lies in frames that are suspended above this one) and word-aligned,
-        // and `resolve` only returns allocated objects. This is the one block
-        // in the crate whose reason lies outside Rust's rules: the loop reads
-        // other frames' memory, which can be uninitialized, or borrowed
-        // exclusively by a frame that is suspended here. A conservative scan
-        // needs those reads. It works because they are ordinary machine
-        // loads of integers compared to addresses, in a function only called
-        // through C, so nothing can be optimized from them.
+        // lies in frames that are suspended above this one), and the
+        // segment nodes are live (an export's frame holds each until it
+        // returns). The words of the segments, which can be uninitialized or
+        // borrowed exclusively by a suspended frame, are read by C
+        // (`scan_words`), never by Rust.
         unsafe {
             let c = &mut *(ctx as *mut Core);
             let marker = 0usize;
@@ -2230,46 +2323,70 @@ impl Core {
                 c.scan_words(regs, regs + std::mem::size_of_val(&s.regs));
                 seg = s.prev;
             }
-            c.trace();
+            c.trace_y::<Y>();
         }
     }
 
     /// Mark what the words in `[from, to)` point at: a range of this
-    /// thread's stack, or a segment node's spilled registers.
+    /// thread's stack, or a segment node's spilled registers. C reads the
+    /// words (shim.c's `robigo_heap_scan_words`, #745): they can be
+    /// uninitialized or exclusively borrowed by a suspended frame, which
+    /// Rust may not read. Rust sees only the values in the heap's range.
     ///
     /// # Safety
-    /// As [`Core::scan_segments`]'s loop: `[from, to)` is readable memory of
-    /// this thread, read while marking.
+    /// `[from, to)` is readable memory of this thread, read while marking.
     unsafe fn scan_words(&mut self, from: usize, to: usize) {
-        // SAFETY: the caller's contract; see `scan_segments`.
+        let (min, max) = (self.heap.min_addr, self.heap.max_addr);
+        // SAFETY: the caller's contract; `scan_hit` gets this core back
+        // and is the only user of it during the call.
         unsafe {
-            let (min, max) = (self.heap.min_addr, self.heap.max_addr);
-            let mut w = (from + 7) & !7;
-            while w < to {
-                let v = *(w as *const usize);
-                // (`max` itself is no object's address, but it is one past
-                // the end of the highest chunk's last object)
-                if v >= min && v <= max {
-                    if v < max {
-                        if let Some(p) = self.heap.resolve(v) {
-                            self.mark_obj(Sexp(p));
-                            self.pin(Sexp(p));
-                        }
-                    }
-                    // a word on a granule boundary may be one past the end
-                    // of the previous object's data (a loop bound, p + n)
-                    if v & 15 == 0 && v > min {
-                        if let Some(p) = self.heap.resolve(v - 1) {
-                            if has_inline_data(Sexp(p)) {
-                                self.mark_obj(Sexp(p));
-                                self.pin(Sexp(p));
-                            }
-                        }
-                    }
-                }
-                w += 8;
+            crate::unwind::robigo_heap_scan_words(from, to, min, max, Self::scan_hit, self as *mut Core as *mut c_void)
+        }
+    }
+
+    /// `scan_words`' answer to a word `v` in the heap's address range: the
+    /// objects it may point at, marked and pinned.
+    ///
+    /// # Safety
+    /// `ctx` is the core `scan_words` passed, marking.
+    unsafe extern "C" fn scan_hit(ctx: *mut c_void, _at: usize, v: usize) {
+        // SAFETY: the caller's contract.
+        unsafe { (*(ctx as *mut Core)).keep_candidates(v) }
+    }
+
+    /// Mark and pin what a word `v` of the conservative scan keeps
+    /// ([`Core::scan_candidates`]): the collector's scan and the pin
+    /// report's.
+    ///
+    /// # Safety
+    /// During a collection's segment scan.
+    unsafe fn keep_candidates(&mut self, v: usize) {
+        for p in self.scan_candidates(v).into_iter().flatten() {
+            // SAFETY: `resolve` returns allocated objects of this heap.
+            unsafe {
+                self.mark_obj(Sexp(p));
+                self.pin(Sexp(p));
             }
         }
+    }
+
+    /// The objects a word `v` of the conservative scan keeps: the one it
+    /// points into, and the one it is one past the end of.
+    fn scan_candidates(&self, v: usize) -> [Option<*mut u8>; 2] {
+        let (min, max) = (self.heap.min_addr, self.heap.max_addr);
+        // (`max` itself is no object's address, but it is one past the end
+        // of the highest chunk's last object)
+        let a = if v < max { self.heap.resolve(v) } else { None };
+        // a word on a granule boundary may be one past the end of the
+        // previous object's data (a loop bound, p + n)
+        let b = if v.is_multiple_of(GRANULE) && v > min {
+            // SAFETY: `resolve` returns allocated objects, whose header
+            // `has_inline_data` reads.
+            self.heap.resolve(v - 1).filter(|&p| unsafe { has_inline_data(Sexp(p)) })
+        } else {
+            None
+        };
+        [a, b]
     }
 
     /// A full collection (`gc()`, `R_gc()`), whether or not one is due and
@@ -2340,14 +2457,28 @@ impl Core {
             // end, so an unwinding panic leaves it set and the heap is
             // never collected again
             self.poisoned = true;
-            self.mark_heap_roots();
-            roots.trace(&mut Mark(self));
-            self.mark_rest();
-            if self.gc_move {
-                let moved = self.evacuate();
-                Self::forward_roots(roots);
-                self.forward_heap();
-                self.retire(moved);
+            if self.young_collection() {
+                // ROBIGO_GC_MOVE=young:N (mover.rs): the pins first, then a
+                // marking that copies the young objects as it reaches them
+                self.pin_segments();
+                self.mark_heap_roots_young();
+                // the root walk's `dyn Visitor` instance, the full mover's
+                // too (`forward_roots`): no third instance of it in the
+                // embedder's crate, where its size moved inlining (H8: s3
+                // +0.9% instructions)
+                roots.trace::<dyn Visitor>(&mut mover::MarkYoung(self));
+                self.mark_rest_young();
+                self.retire_young();
+            } else {
+                self.mark_heap_roots();
+                roots.trace(&mut Mark(self));
+                self.mark_rest();
+                if self.gc_move {
+                    let moved = self.evacuate();
+                    Self::forward_roots(roots);
+                    self.forward_heap();
+                    self.retire(moved);
+                }
             }
             self.poisoned = false;
             self.finish_collection(size_needed, kind, t0)
@@ -2397,23 +2528,34 @@ impl Core {
     ///
     /// # Safety
     /// During a collection, before anything is swept.
-    unsafe fn mark_heap_roots(&mut self) {
-        // SAFETY: the caller's contract; see `collect_needing`.
+    unsafe fn mark_heap_roots_as<const Y: bool>(&mut self) {
+        // SAFETY: the caller's contract; see `collect_needing`. In a young
+        // collection each list entry and field takes its object's address
+        // after marking (its copy's if it moved).
         unsafe {
             for i in 0..self.precious.len() {
-                let p = self.precious[i];
-                self.mark_obj(p);
+                let p = self.mark_y::<Y>(self.precious[i]);
+                if Y {
+                    self.precious[i] = p;
+                }
             }
             for i in 0..self.finalize_queue.len() {
-                let w = self.finalize_queue[i];
-                self.mark_obj(w);
+                let w = self.mark_y::<Y>(self.finalize_queue[i]);
+                if Y {
+                    self.finalize_queue[i] = w;
+                }
                 for k in 0..3 {
-                    self.mark_obj(Self::weak_field(w, k));
+                    let v = self.mark_y::<Y>(Self::weak_field_y::<Y>(w, k));
+                    if Y {
+                        Self::set_weak_field(w, k, v);
+                    }
                 }
             }
             for i in 0..self.weak_refs.len() {
-                let w = self.weak_refs[i];
-                self.mark_obj(w);
+                let w = self.mark_y::<Y>(self.weak_refs[i]);
+                if Y {
+                    self.weak_refs[i] = w;
+                }
             }
             // immortal objects are never marked, but their fields can
             // change (a symbol's value, attributes set on a constant): the
@@ -2430,23 +2572,69 @@ impl Core {
     ///
     /// # Safety
     /// During a collection, after `begin_collection` and the precise roots.
-    unsafe fn mark_rest(&mut self) {
+    unsafe fn mark_rest_as<const Y: bool>(&mut self) {
         // SAFETY: the caller's contract; `spill` gets a callback and a
         // context of matching types, on the core's thread.
         unsafe {
-            self.trace();
+            self.trace_y::<Y>();
             // docs/g3.md §3, "What a collection marks" (L8): precise roots
             // (above), weak references and finalizers decided on them alone,
             // then the C segments as pins: what a C word reaches stays
             // allocated, and decides nothing.
-            if self.diag.is_some() {
+            if !Y && self.diag.is_some() {
                 self.weak_and_segments_diag();
             } else {
-                self.process_weak_refs();
-                crate::unwind::robigo_heap_spill(Self::scan_segments, self as *mut Core as *mut c_void);
+                self.process_weak_refs::<Y>();
+                crate::unwind::robigo_heap_spill(Self::scan_segments::<Y>, self as *mut Core as *mut c_void);
+            }
+            if Y {
+                self.forward_young_chars();
             }
             self.prune_chars();
         }
+    }
+
+    // The marking's two instances, each a function of this crate: the
+    // generic bodies are compiled here, not in the crate that instantiates
+    // `collect_needing` with its roots (where more code shifts that crate's
+    // inlining: H8 measured s3 +0.9% instructions).
+
+    /// [`Core::mark_heap_roots_as`]: the shipped marking.
+    ///
+    /// # Safety
+    /// As for [`Core::mark_heap_roots_as`].
+    unsafe fn mark_heap_roots(&mut self) {
+        // SAFETY: the caller's contract.
+        unsafe { self.mark_heap_roots_as::<false>() }
+    }
+
+    /// [`Core::mark_heap_roots_as`] in a young collection.
+    ///
+    /// # Safety
+    /// As for [`Core::mark_heap_roots_as`], after [`Core::pin_segments`].
+    #[inline(never)]
+    unsafe fn mark_heap_roots_young(&mut self) {
+        // SAFETY: the caller's contract.
+        unsafe { self.mark_heap_roots_as::<true>() }
+    }
+
+    /// [`Core::mark_rest_as`]: the shipped marking.
+    ///
+    /// # Safety
+    /// As for [`Core::mark_rest_as`].
+    unsafe fn mark_rest(&mut self) {
+        // SAFETY: the caller's contract.
+        unsafe { self.mark_rest_as::<false>() }
+    }
+
+    /// [`Core::mark_rest_as`] in a young collection.
+    ///
+    /// # Safety
+    /// As for [`Core::mark_rest_as`].
+    #[inline(never)]
+    unsafe fn mark_rest_young(&mut self) {
+        // SAFETY: the caller's contract.
+        unsafe { self.mark_rest_as::<true>() }
     }
 
     /// The end of a collection: the sweep, then the heap sizes, the due bit
@@ -2815,7 +3003,11 @@ impl Core {
             st.large_while_due, st.largest_while_due
         );
         if self.gc_move || st.moved > 0 {
-            let _ = writeln!(r, "robigo gc: moved {} objects (ROBIGO_GC_MOVE)", st.moved);
+            let _ = writeln!(
+                r,
+                "robigo gc: moved {} objects (ROBIGO_GC_MOVE), {} collections young only",
+                st.moved, self.young.young_only
+            );
         }
         if st.pin_hits > 0 {
             let _ = writeln!(r, "robigo gc: pin report hits {}", st.pin_hits);

@@ -175,6 +175,14 @@ impl Diag {
     }
 }
 
+/// What `scan_words_diag` hands its callback: the core, the report and the
+/// segment's routine.
+struct DiagScan {
+    core: *mut Core,
+    d: *mut Diag,
+    routine: usize,
+}
+
 impl Core {
     /// Report weak references decided dead while a C word reaches their key
     /// (`ROBIGO_GC_PIN_REPORT`), to `to`, or stop with None.
@@ -211,7 +219,7 @@ impl Core {
                 d = self.diag.take().expect("diag");
                 d.strong_phase = false;
             }
-            self.weak_fixpoint();
+            self.weak_fixpoint::<false>();
             if d.report.is_some() {
                 // R_weak_refs' order, newest first (the list is kept oldest
                 // first: `register_weak_ref`)
@@ -225,10 +233,10 @@ impl Core {
                     .collect();
                 d.open = d.cand.len();
             }
-            self.classify_weak_refs();
+            self.classify_weak_refs::<false>();
             self.diag = Some(d);
             crate::unwind::robigo_heap_spill(Self::scan_segments_diag, self as *mut Core as *mut c_void);
-            self.keep_weak_fields();
+            self.keep_weak_fields::<false>();
             let mut d = self.diag.take().expect("diag");
             let hits = std::mem::take(&mut d.hits);
             d.cand.clear();
@@ -273,38 +281,46 @@ impl Core {
     /// # Safety
     /// As for [`Core::scan_words`].
     unsafe fn scan_words_diag(&mut self, d: &mut Diag, routine: usize, from: usize, to: usize) {
-        // SAFETY: as in `scan_words`; `cand` holds live weak references and
-        // their keys (nothing is swept during the scan).
+        let (min, max) = (self.heap.min_addr, self.heap.max_addr);
+        let mut at = DiagScan { core: self as *mut Core, d: d as *mut Diag, routine };
+        // SAFETY: the caller's contract; `diag_hit` gets `at` back and is
+        // the only user of the core and the report during the call.
         unsafe {
-            let (min, max) = (self.heap.min_addr, self.heap.max_addr);
-            let mut w = (from + 7) & !7;
-            while w < to {
-                let v = *(w as *const usize);
-                if v >= min && v <= max {
-                    // the objects `scan_words` would mark for this word
-                    let a = if v < max { self.heap.resolve(v) } else { None };
-                    let b = if v & 15 == 0 && v > min {
-                        self.heap.resolve(v - 1).filter(|&p| has_inline_data(Sexp(p)))
-                    } else {
-                        None
-                    };
-                    for p in [a, b].into_iter().flatten() {
-                        self.mark_obj(Sexp(p));
-                        self.pin(Sexp(p));
-                    }
-                    if !d.strong_phase && d.open > 0 && !self.mark_stack.is_empty() {
-                        self.trace();
-                        for i in 0..d.cand.len() {
-                            let (weak, key, hit) = d.cand[i];
-                            if !hit && self.is_marked(key) {
-                                d.cand[i].2 = true;
-                                d.open -= 1;
-                                d.hits.push(Hit { weak, key, at: w, word: v, routine });
-                            }
-                        }
+            crate::unwind::robigo_heap_scan_words(
+                from,
+                to,
+                min,
+                max,
+                Self::diag_hit,
+                &mut at as *mut DiagScan as *mut c_void,
+            )
+        }
+    }
+
+    /// `scan_words_diag`'s answer to a word `v` at `at` in the heap's
+    /// address range.
+    ///
+    /// # Safety
+    /// `ctx` is the `DiagScan` `scan_words_diag` passed, marking.
+    unsafe extern "C" fn diag_hit(ctx: *mut c_void, at: usize, v: usize) {
+        // SAFETY: the caller's contract; `cand` holds live weak references
+        // and their keys (nothing is swept during the scan), and `resolve`
+        // returns allocated objects of this heap.
+        unsafe {
+            let s = &mut *(ctx as *mut DiagScan);
+            let (c, d) = (&mut *s.core, &mut *s.d);
+            // the objects `scan_words` would mark for this word
+            c.keep_candidates(v);
+            if !d.strong_phase && d.open > 0 && !c.mark_stack.is_empty() {
+                c.trace();
+                for i in 0..d.cand.len() {
+                    let (weak, key, hit) = d.cand[i];
+                    if !hit && c.is_marked(key) {
+                        d.cand[i].2 = true;
+                        d.open -= 1;
+                        d.hits.push(Hit { weak, key, at, word: v, routine: s.routine });
                     }
                 }
-                w += 8;
             }
         }
     }

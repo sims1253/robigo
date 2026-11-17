@@ -82,17 +82,23 @@ class RtCi(unittest.TestCase):
         manifest = (HERE.parent / "crates" / crate / "Cargo.toml").read_text()
         self.assertIn(f"\n{feature} = [", manifest)
 
-    def test_slow_case_timeouts_are_the_moving_collector_steps_only(self):
-        # INTERIM(H8): exactly the GC_MOVE + gctorture conformance step gets
-        # the longer timeouts, and each case it names exists
+    def test_the_moving_conformance_step_is_young_and_the_full_run_nightly(self):
+        # H8: the job's GC_MOVE + gctorture conformance step moves the young
+        # objects (no per-case timeouts); the nightly's --full-move run moves
+        # everything, with the longer timeouts, each naming a case that exists
         steps = rt.steps(["robigo-rt"])
-        with_overrides = [title for title, env, _ in steps if "ROBIGO_CONF_TIMEOUTS" in env]
-        self.assertEqual(with_overrides, ["conformance under ROBIGO_GC_MOVE with gctorture (E3)"])
-        env = next(e for t, e, _ in steps if t == with_overrides[0])
-        self.assertEqual(env["ROBIGO_GC_MOVE"], "1")
-        self.assertEqual(env["ROBIGO_GCTORTURE"], "1")
+        self.assertEqual([t for t, e, _ in steps if "ROBIGO_CONF_TIMEOUTS" in e], [])
+        moving = [e for t, e, c in steps if "ROBIGO_GC_MOVE" in e and "--exact" in c]
+        self.assertEqual(len(moving), 1)
+        self.assertEqual(moving[0]["ROBIGO_GC_MOVE"], rt.GC_MOVE_YOUNG)
+        self.assertTrue(rt.GC_MOVE_YOUNG.startswith("young:") and int(rt.GC_MOVE_YOUNG[6:]) >= 1)
+        full = rt.full_move_steps()
+        self.assertEqual(len(full), 1)
+        _, env, cmd = full[0]
+        self.assertEqual((env["ROBIGO_GC_MOVE"], env["ROBIGO_GCTORTURE"]), ("1", "1"))
+        self.assertIn(rt.CONFORMANCE, cmd)
         named = dict(item.rsplit("=", 1) for item in env["ROBIGO_CONF_TIMEOUTS"].split(","))
-        self.assertEqual(set(named), set(rt.GC_MOVE_SLOW))
+        self.assertEqual(set(named), set(rt.FULL_MOVE_SLOW))
         for case, secs in named.items():
             self.assertTrue((HERE.parent / case).is_file(), case)
             self.assertGreater(int(secs), int(env["ROBIGO_CONF_TIMEOUT"]), case)

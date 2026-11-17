@@ -92,6 +92,7 @@ pub struct Isolate {
     pub(crate) blank_string: Sexp,
     pub(crate) unbound: Sexp,
     pub(crate) missing_arg: Sexp,
+    pub(crate) restart_token: Sexp,
     /// GNU R's pre-installed symbols ([`crate::RSym`]), immortal.
     pub(crate) rsyms: [Sexp; crate::sym::RSym::ALL.len()],
     /// The string [`Cx::mk_char`] refused for an embedded NUL, and its
@@ -364,6 +365,14 @@ impl Isolate {
     pub(crate) fn warnings_clear(&self) {
         // SAFETY: as in `global_add`.
         unsafe { (*self.roots.get()).warnings.clear() }
+    }
+    pub(crate) fn warnings_limit(&self) -> usize {
+        // SAFETY: as in `global_add`.
+        unsafe { (*self.roots.get()).warnings.limit() }
+    }
+    pub(crate) fn warnings_set_limit(&self, k: usize) {
+        // SAFETY: as in `global_add`.
+        unsafe { (*self.roots.get()).warnings.set_limit(k) }
     }
 
     /// Whether `x`, a live object of some heap, belongs to this isolate's.
@@ -980,6 +989,8 @@ impl OwnedIsolate {
         let contexts = Contexts::new(core.nil(), core.stack_bounds());
         let envs = crate::env::EnvState::new(&mut core);
         let rsyms = crate::sym::install_rsyms(&mut core);
+        // R: names.c:InitNames, R_RestartToken = mkSymMarker(mkChar(""))
+        let restart_token = core.new_marker_symbol().expect("robigo: no room for R_RestartToken");
         crate::capi::check_layout();
         let capi = crate::capi::CApi::new(
             crate::capi::constants(&mut core, &envs),
@@ -993,6 +1004,7 @@ impl OwnedIsolate {
             blank_string: core.blank_string(),
             unbound: core.unbound(),
             missing_arg: core.missing_arg(),
+            restart_token,
             rsyms,
             embedded_nul: Default::default(),
             core: UnsafeCell::new(core),

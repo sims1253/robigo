@@ -36,6 +36,8 @@
     vector, so it writes it back expanded. That gap is AC's (robigo-rt's
     ALTREP classes) and is counted apart, typed: the reader counts what
     it expanded (`serialize::take_compact_sequences_expanded`).
+    INTERIM(AC): the foreman accepted those records counted apart
+    (2026-11-17). AC, now on L's track, removes the exception.
 - **L1's deferred items:**
   - `rdb_roundtrip.rs`:
     - context on every panic;

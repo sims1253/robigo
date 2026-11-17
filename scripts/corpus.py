@@ -407,9 +407,10 @@ def write_expected(name, exp, filename="expected.jsonl.gz"):
 
 def host_dependent(conf):
     """Cases whose output shows the host (`host_dependent` in corpora.toml:
-    kernel, CPU count, installed tools, packages or locales), so GNU R's
-    recorded output holds only on the machine that recorded it. They are
-    neither run nor scored."""
+    kernel, CPU count, installed tools, packages or locales, or memory a
+    runner may not have), so GNU R's recorded output holds only on the
+    machine that recorded it. They are neither run nor scored, and a
+    ratchet marker of one holds nothing while it is listed."""
     return set(conf.get("host_dependent", []))
 
 
