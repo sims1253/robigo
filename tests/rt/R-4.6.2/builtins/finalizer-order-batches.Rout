@@ -1,0 +1,10 @@
+NULL
+outer starts
+outer ends
+finalizer 3 
+finalizer 1 
+after the first collection
+finalizer 6 
+after the second collection
+finalizer 2 
+end

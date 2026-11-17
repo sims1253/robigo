@@ -333,6 +333,9 @@ pub fn load(cx: &mut Cx, dir: &Path) -> Result<Loaded, String> {
     }
     init_graphics(cx).map_err(|e| format!("binding .Device: {e}"))?;
     let stubs = bind_stubs_wide(cx, wide);
+    // the profile's bindings are among the lazy ones: this is the point
+    // after R_LoadProfile
+    lock_base(cx).map_err(|e| failed(cx, e))?;
     if std::env::var_os("ROBIGO_BOOT_VERBOSE").is_some_and(|v| !v.is_empty() && v != "0") {
         for (f, why) in &wide.skips {
             eprintln!("robigo-rt: base's {} not run: {why} (INTERIM(L5))", where_is(&lib, *f));
@@ -477,7 +480,8 @@ fn base_fetch(cx: &mut Cx, call: Root<'_>, _: Root<'_>, _: Root<'_>, out: Out<'_
         let o = s.out(cx);
         let promise = o.root();
         cx.find_var_in_frame3(base, sym, true, o)?;
-        let r = fetch_steps(cx, w, sym, base, res);
+        // (base's build-time code, run late: past the locks on base)
+        let r = cx.building_base(|cx| fetch_steps(cx, w, sym, base, res));
         // a step failed after one rebound the name: the fetch's promise again,
         // so the name raises again when touched (as a lazy-load promise whose
         // fetch failed), not an intermediate value
@@ -486,7 +490,7 @@ fn base_fetch(cx: &mut Cx, call: Root<'_>, _: Root<'_>, _: Root<'_>, out: Out<'_
             let now = o.root();
             cx.find_var_in_frame3(base, sym, true, o)?;
             if now.bind(cx).sexp() != promise.bind(cx).sexp() {
-                cx.define_var(sym, promise, base)?;
+                cx.building_base(|cx| cx.define_var(sym, promise, base))?;
             }
         }
         r
@@ -765,7 +769,27 @@ pub fn stage0(cx: &mut Cx, home: &Path) -> Result<Stage0, String> {
     // the locks, .OptRequireMethods, the site and user profiles, .First.sys
     // and the JIT, are L5's boot)
     repl_file(cx, &home.join("library/base/R/Rprofile"), &mut st)?;
+    lock_base(cx).map_err(|e| failed(cx, e))?;
     Ok(st)
+}
+
+/// `setup_Rmainloop`'s locks right after the system profile: base's
+/// namespace and its bindings (one set, shared with `baseenv()`), then
+/// `baseenv()` itself, then `.Device` and `.Devices` unlocked again for
+/// graphics.
+// R: main.c:setup_Rmainloop
+pub fn lock_base(cx: &mut Cx) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let ns = s.root(cx, cx.base_namespace());
+        cx.lock_environment(ns, true)?;
+        let base = s.root(cx, cx.base_env());
+        cx.lock_environment(base, false)?;
+        for name in [&b".Device"[..], b".Devices"] {
+            let sym = cx.install_rooted(s, name)?;
+            cx.unlock_binding(sym, base)?;
+        }
+        Ok(())
+    })
 }
 
 /// `R_ReplFile(fp, R_BaseNamespace)` of one file, into `st`: each

@@ -1300,7 +1300,7 @@ impl<'g> Comp<'g> {
                 let sym = k(i.a[0]);
                 let prim = if i.op == GETINTLBUILTIN {
                     // SAFETY: a live symbol: its INTERNAL.
-                    unsafe { robigo_rtcore::Ref::from_sexp(sym, self.cx) }.as_sym().map(|s| s.internal().sexp())
+                    unsafe { robigo_rtcore::Ref::from_sexp(sym, self.cx) }.as_sym().map(|s| self.cx.internal(s).sexp())
                 } else {
                     // getPrimitive: the symbol's value, which for a name base
                     // binds to a primitive of another name is that one's

@@ -406,7 +406,7 @@ pub fn do_is_builtin_internal(
     // implement yet (cmp.R chooses CALLBUILTIN by it)
     let b = match crate::names::internal_eval(sym.name().bytes()) {
         Some(eval) => eval % 10 == 1,
-        None => sym.internal().sexptype() == BUILTINSXP,
+        None => cx.internal(sym).sexptype() == BUILTINSXP,
     };
     cx.build_scalar(out, robigo_rtcore::Lgl(b as i32))
 }

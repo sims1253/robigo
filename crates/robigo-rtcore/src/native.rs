@@ -488,8 +488,10 @@ impl Cx {
     pub fn continue_unwind(&mut self, cont: Root<'_>) -> RError {
         let x = cont.bind(self).sexp();
         if !is_cont(x) {
-            return self
-                .error_call_sexp(self.iso().nil, "robigo: R_ContinueUnwind: not a continuation from R_MakeUnwindCont");
+            return self.error_call_sexp(
+                self.iso().nil,
+                b"robigo: R_ContinueUnwind: not a continuation from R_MakeUnwindCont",
+            );
         }
         // SAFETY: a live continuation (checked), its cells and info vector
         // live with it.
