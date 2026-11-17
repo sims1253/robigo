@@ -6,8 +6,19 @@
 
 use robigo_rtcore::altrep::own::{OwnClass, SORTED_DECR, SORTED_INCR};
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Cx, OwnedIsolate, Ref, Root, Scope};
+use robigo_rtcore::{Char, Cx, ExitKind, OwnedIsolate, Ref, Root, Scope};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+
+/// The message an `RError` carries.
+fn error_message(cx: &mut Cx, e: robigo_rtcore::RError) -> String {
+    assert_eq!(cx.exit_info(&e).kind, ExitKind::Error);
+    cx.scope(|cx, s| {
+        let out = s.out(cx);
+        let m = out.root();
+        cx.resolve_exit(e, Some(out));
+        String::from_utf8(m.bind(cx).as_vector::<Char<'_>>().unwrap().get(0).bytes().to_vec()).unwrap()
+    })
+}
 
 /// `n1:n2` as `:` makes it.
 fn range<'s>(cx: &mut Cx, s: Scope<'s>, n1: i64, n2: i64) -> Root<'s> {
@@ -124,10 +135,11 @@ fn materialize_nested_expands_the_elements_of_a_list() {
 fn unserialize_refuses_an_increment_other_than_one() {
     let mut iso = OwnedIsolate::new();
     let cx = iso.cx();
+    let e = cx.scope(|cx, s| {
+        s.capture(cx, |cx, o| cx.compact_unserialize(OwnClass::CompactIntseq, 3, 1.0, 2.0, o)).unwrap_err()
+    });
+    assert_eq!(error_message(cx, e), "compact sequences with increment 2 not supported yet");
     cx.scope(|cx, s| {
-        let e = s.capture(cx, |cx, o| cx.compact_unserialize(OwnClass::CompactIntseq, 3, 1.0, 2.0, o)).unwrap_err();
-        let msg = cx.peek_error_message(&e);
-        assert_eq!(msg, "compact sequences with increment 2 not supported yet");
         let x = s.capture(cx, |cx, o| cx.compact_unserialize(OwnClass::CompactRealseq, 3, 0.5, -1.0, o)).unwrap();
         assert_eq!(&*x.bind(cx).as_vector::<f64>().unwrap().elements(), &[0.5, -0.5, -1.5][..]);
     });
