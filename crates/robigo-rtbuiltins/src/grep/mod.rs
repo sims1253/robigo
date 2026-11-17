@@ -557,59 +557,21 @@ pub(crate) fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 
 /// Whether `PCRE2_NOTBOL` could change a match of `pattern` from an offset
 /// past 0: only a lookbehind can reach back to a `^` at the subject's start.
-/// So both have to be there, outside classes, escapes, `\Q...\E` and `(?#...)`
-/// comments. Errs towards `true`; the caller then reports not_yet.
+/// A plain byte search for both, so it never misses one (a `[^a]` or `\^`
+/// only costs a not_yet when there is also a lookbehind); parsing PCRE's
+/// syntax to be finer is not worth its corners.
 fn notbol_matters(p: &[u8]) -> bool {
-    let (mut anchor, mut lookbehind) = (false, false);
-    let mut i = 0;
-    while i < p.len() {
-        match p[i] {
-            b'\\' if p.get(i + 1) == Some(&b'Q') => {
-                i = find(&p[i + 2..], b"\\E").map_or(p.len(), |k| i + 2 + k + 2);
-                continue;
-            }
-            b'\\' => {
-                // \cX takes the byte after it: `\c[` is ESC, not a class
-                i += if p.get(i + 1) == Some(&b'c') { 3 } else { 2 };
-                // \p{^L}, \x{..}, \g{..}, ...
-                if p.get(i) == Some(&b'{') {
-                    i = p[i..].iter().position(|&b| b == b'}').map_or(p.len(), |k| i + k + 1);
-                }
-                continue;
-            }
-            b'[' => {
-                i += 1;
-                if p.get(i) == Some(&b'^') {
-                    i += 1;
-                }
-                if p.get(i) == Some(&b']') {
-                    i += 1;
-                }
-                while i < p.len() && p[i] != b']' {
-                    if p[i] == b'\\' {
-                        i += if p.get(i + 1) == Some(&b'c') { 2 } else { 1 };
-                    } else if p[i] == b'[' && p.get(i + 1) == Some(&b':') {
-                        i = find(&p[i + 2..], b":]").map_or(p.len(), |k| i + 2 + k + 1);
-                    }
-                    i += 1;
-                }
-            }
-            b'(' if p[i + 1..].starts_with(b"?#") => {
-                i = p[i..].iter().position(|&b| b == b')').map_or(p.len(), |k| i + k);
-            }
-            b'(' if p[i + 1..].starts_with(b"?<=") || p[i + 1..].starts_with(b"?<!") => lookbehind = true,
-            b'(' if p.get(i + 1) == Some(&b'*') => {
-                // (*plb:...), (*negative_lookbehind:...), ...
+    let lookbehind = find(p, b"(?<=").is_some()
+        || find(p, b"(?<!").is_some()
+        // (*plb:...), (*negative_lookbehind:...), (*naplb:...), ...
+        || p.windows(2).enumerate().any(|(i, w)| {
+            w == b"(*" && {
                 let name = &p[i + 2..];
                 let name = &name[..name.iter().position(|&b| b == b':' || b == b')').unwrap_or(name.len())];
-                lookbehind |= name.ends_with(b"lb") || name.ends_with(b"lookbehind");
+                name.ends_with(b"lb") || name.ends_with(b"lookbehind")
             }
-            b'^' => anchor = true,
-            _ => {}
-        }
-        i += 1;
-    }
-    anchor && lookbehind
+        });
+    lookbehind && p.contains(&b'^')
 }
 
 /// A compiled PCRE2 pattern (`R_pcre2_prepare`).
@@ -782,20 +744,20 @@ mod tests {
     use super::notbol_matters;
 
     #[test]
-    fn notbol_needs_a_real_lookbehind_and_anchor() {
-        // named groups, negated classes, escapes and comments are neither
-        for p in [&b"(?<x>[^a])"[..], b"(?<=a)\\^", b"(?<=a)[\\]^]", b"(?<!a)\\Q^\\E", b"(?#^)(?<=a)", b"(*atomic:^a)"]
-        {
+    fn notbol_needs_a_lookbehind_and_an_anchor() {
+        // a named group or a negated class is not a lookbehind
+        for p in [&b"(?<x>[^a])"[..], b"(?<=a)b", b"^a|(*atomic:b)"] {
             assert!(!notbol_matters(p), "{}", String::from_utf8_lossy(p));
         }
+        // escapes that a lexer could misread hide nothing from a byte search
         for p in [
             &b"(?<=^)a"[..],
             b"(?<!^a)b",
-            b"\\c[|a|(?<=^a)b",
-            b"[\\c[:]|(?<=^a)b",
             b"^|(*plb:x)",
             b"(*negative_lookbehind:^)b",
-            b"[[:alpha:]](?<=^.)",
+            b"\\c[|a|(?<=^a)b",
+            b"\\cA{|a|(?<=^a)b",
+            b"[\\c[:]|(?<=^a)b",
         ] {
             assert!(notbol_matters(p), "{}", String::from_utf8_lossy(p));
         }
