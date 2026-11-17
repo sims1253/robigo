@@ -151,13 +151,31 @@ AND2ND now finds its AND1ST by the join, the code position AND1ST
 jumps to, which is right after its AND2ND. `visible.R`'s
 `k_and_inner_return` is the case.
 
+### Sol's round 4
+
+S8 resolved. The tail `&&`'s visibility was still wrong when its AND2ND
+is unreachable (S9): in `{ a <- FALSE; a && return(TRUE) }` no SetVis was
+translated, so AND1ST's path returned FALSE invisible after the
+assignment, where GNU R returns it visible. bcEval's AND1ST and AND2ND
+each set R_Visible, and the IR now says so: `AndOr1` and `AndOr2` honor
+F_VIS (vm.rs, one flag test in their arm). The translation sets it on
+both when the `&&`'s join leads to a RETURN, and the from-source
+compiler sets it on both in the tail. The SetVis, the pairing by join
+and the re-patch are gone. `visible.R`'s `k_and_return` and
+`k_or_return` are the cases.
+
+The crosscheck's numbering had to follow: a join only a jump reaches
+(no path falls into it, the jumps agree) takes the jumps' values, not
+those the code before it left. Elsewhere values stay numbered in the
+code's order.
+
 ### Result
 
 One verdict per closure. base.rdb: 980 the same, 145 expected in five
 classes (a nested function's code 63, a loop's shape 60, a switch's
 stop() 12, `%%`/`%/%` 9, return()'s operand 1), 21 untranslated
 (specials robigo-rt lacks, CALLSPECIAL), 6 skipped, **0 unexpected**.
-The conformance crosscheck: 120 the same, 21 expected, 3 skipped,
+The conformance crosscheck: 122 the same, 21 expected, 3 skipped,
 **0 unexpected**.
 
 ### Verification
@@ -169,7 +187,7 @@ The first cut was verified on V4 step 2's head (with #824's OCR fix
   pass (2800 runs, 0 differences).
 - perf-rt: flat, every row within +0.25%.
 
-After Sol's rounds 1 to 3:
+After Sol's rounds 1 to 4:
 - robigo-rt's conformance: 537/543. The new `bctrans/visible.R` passes and
   is ratcheted; the 6 failing are the same as before.
 - The rdb tests, under the crosscheck: 3 passed. The translation test

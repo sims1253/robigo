@@ -30,5 +30,9 @@ cases <- list(
   # returns): the outer `&&` is paired with its own AND1ST, by its join
   list(name = "k_and_inner_return", fun = function(a, b) a && { b && return(TRUE); FALSE },
        calls = c("k_and_inner_return(TRUE, FALSE)", "k_and_inner_return(TRUE, TRUE)",
-                 "k_and_inner_return(FALSE, TRUE)"))
+                 "k_and_inner_return(FALSE, TRUE)")),
+  # a tail `&&` or `||` whose AND2ND no path reaches: AND1ST's path is
+  # visible, after an assignment left it invisible
+  list(name = "k_and_return", fun = function() { a <- FALSE; a && return(TRUE) }, calls = "k_and_return()"),
+  list(name = "k_or_return", fun = function() { a <- TRUE; a || return(FALSE) }, calls = "k_or_return()")
 )

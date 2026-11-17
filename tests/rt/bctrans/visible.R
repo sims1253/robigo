@@ -184,3 +184,35 @@ k_and_inner_return(TRUE, FALSE)
 k_and_inner_return(TRUE, TRUE)
 k_and_inner_return(FALSE, TRUE)
 
+# k_and_return
+k_and_return <- .Internal(bcClose(NULL,
+ mk(c(12L, 19L, 22L, 2L, 4L, 20L, 2L, 88L, 4L, 14L, 18L, 1L, 89L, 4L, 1L), list(quote({
+    a <- FALSE
+    a && return(TRUE)
+}),
+  FALSE,
+  as.name("a"),
+  quote(a <- FALSE),
+  quote(a && return(TRUE)),
+  TRUE,
+  quote(return(TRUE)),
+  structure(c(NA, 1L, 3L, 3L, 3L, 2L, 2L, 4L, 4L, 4L, 5L, 6L, 4L, 4L, 4L), class = "expressionsIndex"))),
+ globalenv()))
+k_and_return()
+
+# k_or_return
+k_or_return <- .Internal(bcClose(NULL,
+ mk(c(12L, 18L, 22L, 2L, 4L, 20L, 2L, 90L, 4L, 14L, 19L, 1L, 91L, 4L, 1L), list(quote({
+    a <- TRUE
+    a || return(FALSE)
+}),
+  TRUE,
+  as.name("a"),
+  quote(a <- TRUE),
+  quote(a || return(FALSE)),
+  FALSE,
+  quote(return(FALSE)),
+  structure(c(NA, 1L, 3L, 3L, 3L, 2L, 2L, 4L, 4L, 4L, 5L, 6L, 4L, 4L, 4L), class = "expressionsIndex"))),
+ globalenv()))
+k_or_return()
+

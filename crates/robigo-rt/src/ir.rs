@@ -127,7 +127,8 @@ pub enum Op {
     Logic,
     /// `&&` (`c` = 1) / `||` (2), first operand: `a <- asLogical2(b)` with
     /// do_logic2's checks for the call `consts[e]`; jump to `(f, g)` when it
-    /// decides the result (`&&` FALSE, `||` TRUE).
+    /// decides the result (`&&` FALSE, `||` TRUE). [`F_VIS`] on either
+    /// path, as bcEval's AND1ST sets R_Visible jumping or not.
     AndOr1,
     /// `&&` / `||`, second operand `b`: `a <- combine(a, b)`.
     AndOr2,

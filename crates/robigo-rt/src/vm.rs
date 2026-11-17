@@ -816,6 +816,9 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 }
                 // SAFETY: an unboxed value.
                 unsafe { act.set(i.a, Slot::logical(r)) };
+                if i.fl & F_VIS != 0 {
+                    cx.set_visible(true);
+                }
             }
             Op::MkClosure => {
                 mk_closure(cx, act, i.a, i.e, i.f, i.c, i.g == 1)?;

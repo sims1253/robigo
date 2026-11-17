@@ -304,119 +304,144 @@ fn normalize(b: &Built) -> Vec<Norm> {
     let mut out: Vec<Norm> = Vec::new();
     // the instruction the last normalized one was made of
     let mut last: Option<usize> = None;
+    // the values at an instruction forward jumps land on, from each jump,
+    // and whether control falls into the next instruction: where no path
+    // falls in and the jumps agree, the values are theirs, not those the
+    // code before left (a join only a jump reaches: `a && return(x)`'s);
+    // elsewhere they are numbered in the code's order
+    let mut landing: HashMap<usize, Vec<HashMap<u16, u32>>> = HashMap::new();
+    let mut fell = true;
     for (k, i) in b.ins.iter().enumerate() {
-        if i.op == Op::Move && live[k] {
-            // the value forwarded
-            let v = read(&defs, i.b);
-            defs.insert(i.a, v);
-            continue;
+        if let Some(paths) = landing.remove(&k)
+            && !fell
+            && paths.iter().all(|p| *p == paths[0])
+        {
+            defs = paths.into_iter().next().unwrap_or_default();
         }
-        if !keep[k] {
-            continue;
-        }
-        // a way out: the value returned, the visibility left
-        let r = match i.op {
-            Op::Ret => Some((i.b, i.g)),
-            Op::Return => Some((i.b, 0)),
-            Op::Jmp => ret(k),
-            Op::SetVis => vis_exit[k],
-            _ => None,
-        };
-        if let Some((r, mut vis)) = r {
-            // the instruction before, when only it falls through to the
-            // way out (no jump lands between) and runs no code after it
-            // sets the visibility (a load of a constant or a closure, not a
-            // variable, whose promise may be forced after): its F_VIS is the
-            // way out's visibility, unless a SetVis or the Ret sets it
-            if let Some(p) = last
-                && !(p + 1..=k).any(|j| targets.contains(&j))
-                && let Some(prev) = out.last_mut()
-                && matches!(prev.op, Op::LdConst | Op::Quote | Op::MkClosure)
-                && prev.fl & crate::ir::F_VIS != 0
-            {
-                prev.fl &= !crate::ir::F_VIS;
-                if vis == 0 {
-                    vis = 1;
-                }
+        'one: {
+            if i.op == Op::Move && live[k] {
+                // the value forwarded
+                let v = read(&defs, i.b);
+                defs.insert(i.a, v);
+                break 'one;
             }
-            out.push(Norm {
-                op: Op::Ret,
-                fl: 0,
-                regs: vec![read(&defs, r)],
-                imm: vec![vis],
+            if !keep[k] {
+                break 'one;
+            }
+            // a way out: the value returned, the visibility left
+            let r = match i.op {
+                Op::Ret => Some((i.b, i.g)),
+                Op::Return => Some((i.b, 0)),
+                Op::Jmp => ret(k),
+                Op::SetVis => vis_exit[k],
+                _ => None,
+            };
+            if let Some((r, mut vis)) = r {
+                // the instruction before, when only it falls through to the
+                // way out (no jump lands between) and runs no code after it
+                // sets the visibility (a load of a constant or a closure, not a
+                // variable, whose promise may be forced after): its F_VIS is the
+                // way out's visibility, unless a SetVis or the Ret sets it
+                if let Some(p) = last
+                    && !(p + 1..=k).any(|j| targets.contains(&j))
+                    && let Some(prev) = out.last_mut()
+                    && matches!(prev.op, Op::LdConst | Op::Quote | Op::MkClosure)
+                    && prev.fl & crate::ir::F_VIS != 0
+                {
+                    prev.fl &= !crate::ir::F_VIS;
+                    if vis == 0 {
+                        vis = 1;
+                    }
+                }
+                out.push(Norm {
+                    op: Op::Ret,
+                    fl: 0,
+                    regs: vec![read(&defs, r)],
+                    imm: vec![vis],
+                    consts: Vec::new(),
+                    target: None,
+                });
+                last = Some(k);
+                break 'one;
+            }
+            let (ks, jumps) = kinds(i.op);
+            let mut fields = [i.a, i.b, i.c, i.e, i.f, i.g];
+            // an inlined simple `.Internal` wrapper (cmpSimpleInternal): the
+            // port keeps the wrapper's call, the one an error reports, in `g`
+            // beside the inlined call `e`; GNU R's byte code has the wrapper's
+            // call as the call constant itself. Both report the same call, so
+            // the call compared is the reported one (the builtin, `f`, and the
+            // arguments' registers are compared as they are).
+            if i.op == Op::Internal && i.g != 0 {
+                fields[3] = i.g;
+                fields[5] = 0;
+            }
+            let mut v = Norm {
+                op: match i.op {
+                    Op::LdScalar => Op::LdConst,
+                    Op::CallCodes => Op::Call,
+                    op => op,
+                },
+                fl: i.fl & !(crate::ir::F_CLR_B | crate::ir::F_CLR_C),
+                regs: Vec::new(),
+                imm: Vec::new(),
                 consts: Vec::new(),
                 target: None,
-            });
+            };
+            for (j, (&k, &x)) in ks.iter().zip(&fields).enumerate() {
+                if jumps && j >= 4 {
+                    continue;
+                }
+                match k {
+                    R => v.regs.push(read(&defs, x)),
+                    W => {
+                        // (after the reads: the operands come first)
+                    }
+                    Win => {
+                        let n = if i.c == crate::ir::SPECIAL_INTERNAL || i.c == u16::MAX {
+                            0
+                        } else {
+                            i.c as usize * if i.fl & crate::ir::F_NAMES != 0 { 2 } else { 1 }
+                        };
+                        for r in x..x + n as u16 {
+                            v.regs.push(read(&defs, r));
+                        }
+                    }
+                    C | C0 if x as usize >= crate::code::FIRST_CONST => {
+                        if let Some(&c) = b.consts.get(x as usize - crate::code::FIRST_CONST) {
+                            v.consts.push(c);
+                        }
+                    }
+                    C | C0 => v.imm.push(x),
+                    I => v.imm.push(x),
+                    X => {}
+                }
+            }
+            if jumps {
+                // (a jump to a return lands where that return is)
+                let t = if ret(i.target()).is_some() { i.target() } else { land(i.target()) };
+                v.target = Some(at.get(t).copied().unwrap_or(usize::MAX));
+            }
+            for (&k, &x) in ks.iter().zip(&fields) {
+                if k == W {
+                    defs.insert(x, ndefs);
+                    v.regs.push(ndefs);
+                    ndefs += 1;
+                }
+            }
+            out.push(v);
             last = Some(k);
-            continue;
         }
-        let (ks, jumps) = kinds(i.op);
-        let mut fields = [i.a, i.b, i.c, i.e, i.f, i.g];
-        // an inlined simple `.Internal` wrapper (cmpSimpleInternal): the
-        // port keeps the wrapper's call, the one an error reports, in `g`
-        // beside the inlined call `e`; GNU R's byte code has the wrapper's
-        // call as the call constant itself. Both report the same call, so
-        // the call compared is the reported one (the builtin, `f`, and the
-        // arguments' registers are compared as they are).
-        if i.op == Op::Internal && i.g != 0 {
-            fields[3] = i.g;
-            fields[5] = 0;
+        fell = live[k]
+            && !matches!(
+                i.op,
+                Op::Jmp | Op::BackJmp | Op::Ret | Op::Return | Op::ErrorCall | Op::LoopEnd | Op::BreakJump
+            );
+        // (a jump out of the code lands nowhere: its way out read the
+        // values; a back edge's are the loop's)
+        if live[k] && kinds(i.op).1 && i.op != Op::Loop && i.target() > k && !(i.op == Op::Jmp && ret(k).is_some()) {
+            landing.entry(i.target()).or_default().push(defs.clone());
         }
-        let mut v = Norm {
-            op: match i.op {
-                Op::LdScalar => Op::LdConst,
-                Op::CallCodes => Op::Call,
-                op => op,
-            },
-            fl: i.fl & !(crate::ir::F_CLR_B | crate::ir::F_CLR_C),
-            regs: Vec::new(),
-            imm: Vec::new(),
-            consts: Vec::new(),
-            target: None,
-        };
-        for (j, (&k, &x)) in ks.iter().zip(&fields).enumerate() {
-            if jumps && j >= 4 {
-                continue;
-            }
-            match k {
-                R => v.regs.push(read(&defs, x)),
-                W => {
-                    // (after the reads: the operands come first)
-                }
-                Win => {
-                    let n = if i.c == crate::ir::SPECIAL_INTERNAL || i.c == u16::MAX {
-                        0
-                    } else {
-                        i.c as usize * if i.fl & crate::ir::F_NAMES != 0 { 2 } else { 1 }
-                    };
-                    for r in x..x + n as u16 {
-                        v.regs.push(read(&defs, r));
-                    }
-                }
-                C | C0 if x as usize >= crate::code::FIRST_CONST => {
-                    if let Some(&c) = b.consts.get(x as usize - crate::code::FIRST_CONST) {
-                        v.consts.push(c);
-                    }
-                }
-                C | C0 => v.imm.push(x),
-                I => v.imm.push(x),
-                X => {}
-            }
-        }
-        if jumps {
-            // (a jump to a return lands where that return is)
-            let t = if ret(i.target()).is_some() { i.target() } else { land(i.target()) };
-            v.target = Some(at.get(t).copied().unwrap_or(usize::MAX));
-        }
-        for (&k, &x) in ks.iter().zip(&fields) {
-            if k == W {
-                defs.insert(x, ndefs);
-                v.regs.push(ndefs);
-                ndefs += 1;
-            }
-        }
-        out.push(v);
-        last = Some(k);
     }
     out
 }

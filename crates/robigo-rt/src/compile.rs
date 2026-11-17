@@ -2590,11 +2590,16 @@ impl<'g> Comp<'g> {
                     }
                     // both operands under PROTECT(op), PROTECT(e)
                     self.expr_at(a[0].0, dst, d + 1, self.pp + 2, false)?;
+                    // in the tail, the value visible on both paths (bcEval's
+                    // AND1ST and AND2ND set R_Visible), the second operand
+                    // reached or not (`a && return(x)`)
+                    let vis = if tail { F_VIS } else { 0 };
                     let mut i1 = Ins::new(Op::AndOr1);
                     i1.a = dst;
                     i1.b = dst;
                     i1.c = op;
                     i1.e = self.k(e);
+                    i1.fl |= vis;
                     let i1 = self.emit(i1);
                     let r = self.alloc();
                     self.expr_at(a[1].0, r, d + 1, self.pp + 2, false)?;
@@ -2603,14 +2608,11 @@ impl<'g> Comp<'g> {
                     i2.b = r;
                     i2.c = op;
                     i2.e = self.k(e);
-                    i2.fl |= F_CLR_B;
+                    i2.fl |= F_CLR_B | vis;
                     self.emit(i2);
                     self.free_to(r);
                     let end = self.pc();
                     self.patch(i1, end);
-                    if tail {
-                        self.set_vis(true);
-                    }
                 }
                 Special::Internal => {
                     // R: names.c:do_internal
