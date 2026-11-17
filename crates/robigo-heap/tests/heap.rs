@@ -2612,6 +2612,116 @@ fn objects_c_has_seen_or_pins_do_not_move() {
     assert_eq!(roots[0], pinned);
 }
 
+// ---- ROBIGO_GC_MOVE=young:N: the young objects alone (H8) -------------------
+
+/// A heap whose moving collections move only the young objects, and
+/// everything at every `every`-th (`ROBIGO_GC_MOVE=young:every`).
+fn young_core(every: u32) -> Box<Core> {
+    let mut c = core();
+    // SAFETY: nothing has been handed to C yet.
+    unsafe { c.set_gc_move_young(every) };
+    c.set_torture(false);
+    c
+}
+
+/// A fresh object is young: each young collection moves it once, and a
+/// stale local to it reads poison after that collection.
+#[test]
+fn a_stale_young_local_reads_poison_at_every_young_collection() {
+    let mut c = young_core(16);
+    for round in 0..5 {
+        let x = int_vec(&mut c, &[round, 2, 3]);
+        let stale = std::hint::black_box(x);
+        let mut roots = vec![x];
+        gc(&mut c, &mut roots);
+        assert_ne!(roots[0], stale, "round {round}: the young object moved");
+        unsafe {
+            assert_eq!(ints(roots[0]), &[round, 2, 3]);
+            assert_eq!(stale.typ(), POISON_TYPE, "round {round}: the stale local reads poison");
+        }
+    }
+    assert_eq!(c.stats.young_collections, 5);
+}
+
+/// An object a collection moved is old: the young collections leave it
+/// where it is, and the next full one (every N-th moving collection) moves
+/// it, so a stale local to it reads poison then.
+#[test]
+fn an_old_object_moves_at_the_nth_collection_only() {
+    let mut c = young_core(4);
+    let mut roots = vec![int_vec(&mut c, &[7])];
+    gc(&mut c, &mut roots); // 1: young, moves it (it is old now)
+    let old = roots[0];
+    let stale = std::hint::black_box(old);
+    for n in 2..4 {
+        gc(&mut c, &mut roots);
+        assert_eq!(roots[0], old, "collection {n} is young: an old object stays");
+        unsafe { assert_eq!(ints(stale), &[7], "collection {n}: the old address is still the object") };
+    }
+    gc(&mut c, &mut roots); // 4: full
+    assert_ne!(roots[0], old, "the 4th moving collection moves everything");
+    unsafe {
+        assert_eq!(ints(roots[0]), &[7]);
+        assert_eq!(stale.typ(), POISON_TYPE, "and the stale local reads poison");
+    }
+    assert_eq!(c.stats.young_collections, 3);
+}
+
+/// What a C word may point at stays where it is, young or not, and what
+/// only it reaches moves, with its fields forwarded: the pins are taken
+/// before anything moves.
+#[test]
+fn a_pinned_young_object_does_not_move() {
+    let mut c = young_core(16);
+    let (seen, free, pinned) = c_objects(&mut c);
+    collect_holding(&mut c, &[!pinned]);
+    assert_eq!(c.stats.young_collections, 1, "a young collection");
+    let holder = ROOTED_ARG.replace(Sexp::NULL);
+    // SAFETY: the pinned node's address, as in
+    // `objects_c_has_seen_or_pins_do_not_move`.
+    let pinned = unsafe { Sexp::from_ptr(!pinned as *mut u8) };
+    unsafe {
+        assert!(pinned.seen_by_c(), "the young object a C word reaches is pinned");
+        assert_eq!(pinned.car(), holder, "its field was forwarded to the moved holder");
+        assert_eq!(elt(holder, 0).addr(), !seen, "an object C has seen stays");
+        assert_ne!(elt(holder, 1).addr(), !free, "a young object C has not seen moves");
+        assert_eq!(ints(elt(holder, 1)), &[3]);
+    }
+}
+
+/// A weak reference whose young key moved keeps it, and is decided on the
+/// copy: it is not finalized while the key lives, and is once it dies.
+#[test]
+fn a_young_key_that_moves_keeps_its_weak_reference() {
+    let mut c = young_core(16);
+    let key = int_vec(&mut c, &[1]);
+    let fin = int_vec(&mut c, &[2]);
+    let w = weak(&mut c, key, fin);
+    let mut roots = vec![key, w];
+    gc(&mut c, &mut roots);
+    let (key, w) = (roots[0], roots[1]);
+    unsafe {
+        assert_eq!(elt(w, 0), key, "the reference's key is the moved key");
+        assert_eq!(ints(elt(w, 2)), &[2], "and its finalizer moved with it");
+    }
+    assert_eq!(c.pop_finalizable(), None, "a live key is not finalized");
+    let mut roots = vec![w];
+    gc(&mut c, &mut roots);
+    assert_eq!(c.pop_finalizable(), Some(roots[0]), "a dead key is");
+}
+
+/// The CHARSXP cache follows the strings a young collection moves: the same
+/// bytes give the moved string, not a second one.
+#[test]
+fn the_char_cache_follows_moved_young_strings() {
+    let mut c = young_core(16);
+    let s = c.mk_char(b"young string", 0).unwrap();
+    let mut roots = vec![s];
+    gc(&mut c, &mut roots);
+    assert_ne!(roots[0], s, "the young string moved");
+    assert_eq!(c.mk_char(b"young string", 0).unwrap(), roots[0], "the cache gives the moved string");
+}
+
 /// A large object moves too, to a chunk of its own; the old chunk leaves the
 /// heap without access, so a stale access faults (checked in a child
 /// process), and the next collection gives it back.

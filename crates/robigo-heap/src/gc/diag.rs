@@ -219,7 +219,7 @@ impl Core {
                 d = self.diag.take().expect("diag");
                 d.strong_phase = false;
             }
-            self.weak_fixpoint();
+            self.weak_fixpoint::<false>();
             if d.report.is_some() {
                 // R_weak_refs' order, newest first (the list is kept oldest
                 // first: `register_weak_ref`)
@@ -233,10 +233,10 @@ impl Core {
                     .collect();
                 d.open = d.cand.len();
             }
-            self.classify_weak_refs();
+            self.classify_weak_refs::<false>();
             self.diag = Some(d);
             crate::unwind::robigo_heap_spill(Self::scan_segments_diag, self as *mut Core as *mut c_void);
-            self.keep_weak_fields();
+            self.keep_weak_fields::<false>();
             let mut d = self.diag.take().expect("diag");
             let hits = std::mem::take(&mut d.hits);
             d.cand.clear();

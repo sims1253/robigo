@@ -19,19 +19,19 @@ fn sessions() -> [Session; 2] {
 /// write (`MAYBE_REFERENCED(object) && nattrs`), and `unclass` outside an
 /// assignment copies a referenced one.
 ///
-/// The test reads addresses, so under `ROBIGO_GC_MOVE=1` (every collection
-/// moves objects) it skips and says so in the log. They are production
+/// The test reads addresses, so under `ROBIGO_GC_MOVE` (collections
+/// move objects) it skips and says so in the log. They are production
 /// identities (docs/g3.md §15.3 E5), so it runs with `ROBIGO_NO_INPLACE`
 /// off whatever the environment says; [`no_inplace_copies_every_setter`]
 /// is the mode's side.
 #[test]
 fn setters_write_in_place_when_gnu_r_does() {
-    if std::env::var("ROBIGO_GC_MOVE").as_deref() == Ok("1") {
+    if std::env::var("ROBIGO_GC_MOVE").is_ok_and(|v| !v.is_empty() && v != "0") {
         // to the stream itself: libtest captures `eprintln!` of a passing test
         use std::io::Write;
         let _ = writeln!(
             std::io::stderr(),
-            "setters_write_in_place_when_gnu_r_does: skipped, under ROBIGO_GC_MOVE=1 an address does not identify an object"
+            "setters_write_in_place_when_gnu_r_does: skipped, under ROBIGO_GC_MOVE an address does not identify an object"
         );
         return;
     }
@@ -45,11 +45,11 @@ fn setters_write_in_place_when_gnu_r_does() {
 /// object, and the values are production's.
 #[test]
 fn no_inplace_copies_every_setter() {
-    if std::env::var("ROBIGO_GC_MOVE").as_deref() == Ok("1") {
+    if std::env::var("ROBIGO_GC_MOVE").is_ok_and(|v| !v.is_empty() && v != "0") {
         use std::io::Write;
         let _ = writeln!(
             std::io::stderr(),
-            "no_inplace_copies_every_setter: skipped, under ROBIGO_GC_MOVE=1 an address does not identify an object"
+            "no_inplace_copies_every_setter: skipped, under ROBIGO_GC_MOVE an address does not identify an object"
         );
         return;
     }

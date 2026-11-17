@@ -227,19 +227,19 @@ fn substitute_and_on_exit() {
 /// counts are GNU R 4.6.2's (`.Internal(inspect(x))`'s address after each
 /// step): 59 moves for 200 list elements, 91 for 1000 doubles.
 ///
-/// The test reads addresses, so under `ROBIGO_GC_MOVE=1` (every collection
-/// moves objects) it skips and says so in the log: the other passes count
+/// The test reads addresses, so under `ROBIGO_GC_MOVE` (collections
+/// move objects) it skips and says so in the log: the other passes count
 /// it. The counts are production identities (docs/g3.md §15.3 E5): it runs
 /// with `ROBIGO_NO_INPLACE` off whatever the environment says, and again
 /// with it on, where every step moves.
 #[test]
 fn growth_reallocates_as_gnu_r_does() {
-    if std::env::var("ROBIGO_GC_MOVE").as_deref() == Ok("1") {
+    if std::env::var("ROBIGO_GC_MOVE").is_ok_and(|v| !v.is_empty() && v != "0") {
         // to the stream itself: libtest captures `eprintln!` of a passing test
         use std::io::Write;
         let _ = writeln!(
             std::io::stderr(),
-            "growth_reallocates_as_gnu_r_does: skipped, under ROBIGO_GC_MOVE=1 an address does not identify an object"
+            "growth_reallocates_as_gnu_r_does: skipped, under ROBIGO_GC_MOVE an address does not identify an object"
         );
         return;
     }
