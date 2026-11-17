@@ -10,9 +10,18 @@ evaluating it prints. robigo-rt had only Rscript's front end, so
 
 ### What changes
 
-- **The console loop** (`robigo_rt::repl::run_console`) gains `echo`, which
-  is `!R_NoEcho`. It stays the one loop for Rscript and `R -f`. The
-  statements still go through `base::repl_eval_toplevel`, as before.
+- **`R_NoEcho` is isolate state** (`Cx::no_echo`). It stays the one
+  console loop (`robigo_rt::repl::run_console`) for Rscript and `R -f`,
+  and the statements still go through `base::repl_eval_toplevel`, as
+  before. As in GNU R:
+  - the start-up options set it (true for Rscript, false for `-f`);
+  - `options()`' initial `echo` is its negation;
+  - `options(echo = k)` sets it to `!k`, an NA turning the echo on. `echo`
+    is off the list of options refused as unhonored;
+  - the reader checks it at every read. A script that sets
+    `options(echo = FALSE)` stops echoing at the next read, and an Rscript
+    session that sets `options(echo = TRUE)` starts. Both are recorded in
+    the CLI cases.
   - **Reading** ports `Rstd_ReadConsole`'s non-interactive branch
     (sys-std.c:994-1050):
     - with echo, the prompt is written before each read, the end of the
@@ -25,6 +34,9 @@ evaluating it prints. robigo-rt had only Rscript's front end, so
     statement and `getOption("continue")` inside one. As in
     `Rf_ReplIteration`, PARSE_INCOMPLETE and PARSE_EOF ask for a
     continuation, and the other statuses for a new statement.
+  - **Every read is parsed at least once.** An empty read, from a line
+    that starts with a NUL, is PARSE_EOF, so a continuation prompt
+    follows.
   - **A port fix:** PARSE_EOF ended the loop. It now reads on, as GNU R
     does (PR#15941). It arises when a read ends in blanks without a
     newline, at a long line's 4,095-byte cut or a NUL.
@@ -86,10 +98,13 @@ prompt line is the start of GNU R's.
     addresses masked as the corpora mask them.
   - That is 25,226 lines: 9,741 prompt lines and 2,671 continuation lines.
   - 125 of the runs end in an error.
-- **The reader's edges.** `crates/robigo-rtapi/tests/cli.rs` holds 16
+- **The reader's edges.** `crates/robigo-rtapi/tests/cli.rs` holds 20
   cases recorded with GNU R 4.6.2:
   - statements split by `;`, continued statements, comments, blank lines;
-  - a last line without a newline, CRLF, a line over 4,095 bytes, a NUL;
+  - a last line without a newline, CRLF, a line over 4,095 bytes, a NUL
+    inside a line and one first;
+  - `getOption("echo")` and `options(echo = )` under `-f` and under
+    Rscript, NA included;
   - `.Last` after the final newline, and an error that halts;
   - `--no-echo`, `--file=FILE`, `--file=-`, `-f -`, `-e` with `-f`, an
     extra argument, `--args`, a missing file under R and under Rscript.

@@ -33,11 +33,11 @@ const CONSOLE_BUFFER_SIZE: usize = 4096;
 /// Run `src` as R runs console input that is not interactive: true when it
 /// ran to the end, false when an error ended it (the error written
 /// already; the caller writes "Execution halted" and exits with status 1).
-/// `echo` is `!R_NoEcho`: each line read is written after its prompt
-/// (`R -f FILE`); Rscript (`--no-echo`) writes neither. The end of the
-/// input is the caller's (`end_Rmainloop`).
+/// Unless `R_NoEcho` ([`Cx::no_echo`], checked at each read: `options(echo
+/// = )` changes it), each line read is written after its prompt (`R -f
+/// FILE`). The end of the input is the caller's (`end_Rmainloop`).
 // R: main.c:R_ReplConsole, Rf_ReplIteration; unix/sys-std.c:Rstd_ReadConsole
-pub fn run_console(cx: &mut Cx, src: &[u8], echo: bool) -> bool {
+pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
     // setup_Rmainloop: `.Last.value` is NULL before the first statement
     let ok = cx.scope(|cx, s| {
         let nil = s.root(cx, cx.nil());
@@ -65,7 +65,7 @@ pub fn run_console(cx: &mut Cx, src: &[u8], echo: bool) -> bool {
     let mut input = src;
     // Rf_ReplIteration: the next line is read once the last is used up
     loop {
-        let line = match read_console(cx, &mut input, prompt_type, echo) {
+        let line = match read_console(cx, &mut input, prompt_type) {
             Ok(Some(line)) => line,
             Ok(None) => break,
             Err(err) => {
@@ -75,7 +75,11 @@ pub fn run_console(cx: &mut Cx, src: &[u8], echo: bool) -> bool {
             }
         };
         let mut bufp = 0;
-        while bufp < line.len() {
+        // each read is parsed at least once: an empty one (a NUL first) is
+        // PARSE_EOF, or the statement it continues
+        let mut fresh = true;
+        while fresh || bufp < line.len() {
+            fresh = false;
             // the console buffer takes the line up to the first ';' or
             // newline (not looking inside strings or comments)
             while bufp < line.len() {
@@ -153,7 +157,8 @@ pub fn run_console(cx: &mut Cx, src: &[u8], echo: bool) -> bool {
 /// `sink()`; here that is the console's output, which robigo-rt has no
 /// `sink()` for yet.
 // R: unix/sys-std.c:Rstd_ReadConsole
-fn read_console(cx: &mut Cx, input: &mut &[u8], prompt_type: i32, echo: bool) -> RResult<Option<Vec<u8>>> {
+fn read_console(cx: &mut Cx, input: &mut &[u8], prompt_type: i32) -> RResult<Option<Vec<u8>>> {
+    let echo = !cx.no_echo();
     if echo {
         let prompt = prompt_string(cx, prompt_type)?;
         cx.rprintf(&prompt);
@@ -200,7 +205,7 @@ fn prompt_string(cx: &mut Cx, prompt_type: i32) -> RResult<Vec<u8>> {
         let first = v
             .bind(cx)
             .as_vector::<robigo_rtcore::Char<'_>>()
-            .filter(|v| v.len() > 0)
+            .filter(|v| !v.is_empty())
             .map(|v| v.get(0).bytes().to_vec());
         match first {
             Some(b) => Ok(b),

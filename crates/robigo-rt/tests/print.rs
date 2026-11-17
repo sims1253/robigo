@@ -39,7 +39,7 @@ fn session() -> OwnedIsolate {
 fn run(cx: &mut Cx, src: &str) -> (String, String, bool) {
     let (c, out, err) = Console::capture();
     let old = cx.replace_console(c);
-    let ok = run_console(cx, src.as_bytes(), false);
+    let ok = run_console(cx, src.as_bytes());
     cx.replace_console(old);
     (String::from_utf8(out.take()).unwrap(), String::from_utf8(err.take()).unwrap(), ok)
 }

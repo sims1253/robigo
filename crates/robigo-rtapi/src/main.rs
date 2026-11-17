@@ -145,6 +145,8 @@ fn run(args: Vec<std::ffi::OsString>) -> i32 {
     };
     let mut iso = OwnedIsolate::new();
     let cx = iso.cx();
+    // R_NoEcho before InitOptions, whose `echo` is its negation
+    cx.set_no_echo(!echo);
     robigo_rt::install(cx);
     // `.Call` and `dyn.load`, before base binds its stubs
     robigo_rtapi::install(cx);
@@ -177,8 +179,8 @@ fn run(args: Vec<std::ffi::OsString>) -> i32 {
     // end_Rmainloop's R_CleanUp(SA_DEFAULT, 0, 1) runs .Last; after an
     // error, check_session_exit's R_CleanUp(SA_NOSAVE, 1, 0) does not
     // end_Rmainloop: `if (!R_NoEcho) Rprintf("\n")`, before .Last
-    let ok = run_console(cx, &src, echo) && {
-        if echo {
+    let ok = run_console(cx, &src) && {
+        if !cx.no_echo() {
             cx.rprintf(b"\n");
         }
         robigo_rt::repl::dot_last(cx)

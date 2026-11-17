@@ -27,6 +27,11 @@ fn inputs() -> Vec<(&'static str, Vec<u8>)> {
         ("long.R", long.into_bytes()),
         // strlen ends the line read at a NUL
         ("nul.R", b"x <- 1\x00junk\n2\n".to_vec()),
+        // an empty read, parsed all the same (PARSE_EOF)
+        ("nul0.R", b"\x00junk\n1\n".to_vec()),
+        // R_NoEcho, as the console reads it at each prompt
+        ("opt.R", b"getOption(\"echo\")\noptions(echo = FALSE)\n1\noptions(echo = TRUE)\n2\n".to_vec()),
+        ("optna.R", b"options(echo = NA)\n3\n".to_vec()),
         ("last.R", b".Last <- function() cat(\"bye\\n\")\n1\n".to_vec()),
         ("stdin.R", b"1 + 1\n".to_vec()),
     ]
@@ -48,6 +53,18 @@ fn cases(long_src: &[u8]) -> Vec<Case> {
         ("error", q("error.R"), None, b"> stop(\"boom\")\n".to_vec(), b"Error: boom\nExecution halted\n", 1),
         ("long", q("long.R"), None, long, b"", 0),
         ("nul", q("nul.R"), None, b"> x <- 1+ 2\n> \n".to_vec(), b"", 0),
+        ("nul0", q("nul0.R"), None, b"> + 1\n[1] 1\n> \n".to_vec(), b"", 0),
+        (
+            "opt-f",
+            q("opt.R"),
+            None,
+            b"> getOption(\"echo\")\n[1] TRUE\n> options(echo = FALSE)\n[1] 1\n> 2\n[1] 2\n> \n".to_vec(),
+            b"",
+            0,
+        ),
+        ("optna-f", q("optna.R"), None, b"> options(echo = NA)\n> 3\n[1] 3\n> \n".to_vec(), b"", 0),
+        // Rscript: R_NoEcho until options(echo = TRUE)
+        ("opt-rscript", vec!["--vanilla", "opt.R"], None, b"[1] FALSE\n[1] 1\n> 2\n[1] 2\n> \n".to_vec(), b"", 0),
         // end_Rmainloop's newline comes before .Last
         ("last", q("last.R"), None, b"> .Last <- function() cat(\"bye\\n\")\n> 1\n[1] 1\n> \nbye\n".to_vec(), b"", 0),
         (
