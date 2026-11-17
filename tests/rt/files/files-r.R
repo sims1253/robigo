@@ -4,7 +4,7 @@ d <- if (dir.exists("tests/rt/files/fixture")) "tests/rt/files/fixture" else "fi
 s <- file.path(d, "r1.txt")
 file.create(s)
 file.append(s, file.path(d, "five.txt"))
-Sys.chmod(s, "640")
+Sys.chmod(s, "640", use_umask = FALSE)
 as.integer(file.info(s, extra_cols = FALSE)$mode)
 file.size(s)
 file.info(s, extra_cols = FALSE)$isdir

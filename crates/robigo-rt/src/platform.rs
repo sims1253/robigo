@@ -557,9 +557,21 @@ fn fopen_notdir(cx: &mut Cx, x: robigo_rtcore::Root<'_>, i: usize, append: bool)
     Ok(f.ok().filter(|f| !f.metadata().is_ok_and(|m| m.is_dir())))
 }
 
+/// `file1` as `fopen` gives it to `fwrite`: buffered as glibc buffers a
+/// stream (`st_blksize` when it is below `BUFSIZ`, else `BUFSIZ`), so a
+/// short write succeeds into the buffer and `fclose`'s error on dropping it
+/// is ignored, as GNU R ignores it.
+// R: glibc libio/filedoalloc.c:_IO_file_doallocate
+fn stdio(f: std::fs::File) -> std::io::BufWriter<std::fs::File> {
+    use std::os::unix::fs::MetadataExt;
+    const BUFSIZ: usize = 8192;
+    let blk = f.metadata().map(|m| m.blksize() as usize).unwrap_or(0);
+    std::io::BufWriter::with_capacity(if blk > 0 && blk < BUFSIZ { blk } else { BUFSIZ }, f)
+}
+
 /// Copy `from` to the end of `to`: GNU R's 128 KiB `fread`/`fwrite` loop,
 /// false on a write error.
-fn append_copy(from: &mut std::fs::File, to: &mut std::fs::File) -> bool {
+fn append_copy(from: &mut std::fs::File, to: &mut std::io::BufWriter<std::fs::File>) -> bool {
     use std::io::{Read, Write};
     let mut buf = vec![0u8; 128 * 1024];
     loop {
@@ -605,8 +617,9 @@ pub fn do_fileappend(
         if n1 == 1 {
             // the common case: file1 opened once
             if !is_na_elt(cx, f1, 0)
-                && let Some(mut fp1) = fopen_notdir(cx, f1, 0, true)?
+                && let Some(fp1) = fopen_notdir(cx, f1, 0, true)?
             {
+                let mut fp1 = stdio(fp1);
                 for (i, a) in ans.iter_mut().enumerate() {
                     if is_na_elt(cx, f2, i) {
                         continue;
@@ -624,7 +637,8 @@ pub fn do_fileappend(
                 // (GNU R tests the elements against R_NilValue, which they
                 // never are: an NA name is RC_fopen's NULL)
                 // R: platform.c:R_AppendFile
-                let Some(mut fp1) = fopen_notdir(cx, f1, i % n1, true)? else { continue };
+                let Some(fp1) = fopen_notdir(cx, f1, i % n1, true)? else { continue };
+                let mut fp1 = stdio(fp1);
                 let Some(mut fp2) = fopen_notdir(cx, f2, i % n2, false)? else { continue };
                 let ok = append_copy(&mut fp2, &mut fp1);
                 if !ok {

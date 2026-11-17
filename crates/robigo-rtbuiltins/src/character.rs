@@ -617,6 +617,10 @@ pub fn do_strtoi(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
         return Err(cx.error("invalid 'base' argument"));
     }
     let x = args.get(cx, 0);
+    if x.len() == Some(0) || x.sexptype() == NILSXP {
+        // LENGTH(x) is 0: no STRING_ELT is read
+        return cx.build(out, |cx| Ok(cx.alloc_vector::<i32>(0)?.finish().into()));
+    }
     let robigo_rtcore::View::Str(xs) = x.view() else {
         // STRING_ELT on another type
         let msg = format!(

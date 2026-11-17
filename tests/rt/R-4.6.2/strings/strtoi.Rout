@@ -6,6 +6,9 @@
 [1]  5 NA
 [1]  2147483647          NA -2147483647          NA          NA
 integer(0)
+integer(0)
+integer(0)
+integer(0)
 [1] 1
 Error: invalid 'base' argument 
 Error: invalid 'base' argument 

@@ -39,6 +39,8 @@ Error: nothing to append to
 Error: invalid 'file1' argument 
 Error: invalid 'file2' argument 
 [1] TRUE
+[1] TRUE TRUE
+[1] TRUE
 [1] 0
 <d>/nosuchdir/x', reason 'No such file or directory' 
 [1] FALSE
