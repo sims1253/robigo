@@ -6,6 +6,9 @@
 #     g <- function() { for (i in 1:N) { BODY }; NULL }; g()
 #
 # at N and 2N under callgrind, so startup, base loading and SETUP cancel.
+# A row's SETUP is its `setup`, or with `setup_ref` the setup of that name
+# in the `[setups]` table at the end, which rows share (scripts/perf.py's
+# rows_with_setups resolves it for every reader).
 # That makes robigo-rt, which loads a base subset, comparable with today's
 # robigo and GNU R, which load all of base. No C floors (benchmarks/idioms.toml
 # has those). SETUP must not define `g`, the harness's loop function. These
@@ -36,7 +39,11 @@
 #   jit    V4's JIT-cost bar (docs/ledger/g3/2026-11-17-v4-4-jit-cost.md):
 #          one JIT compile of a closure of benchmarks/suite/calls.R that GNU
 #          R's JIT compiles running it, as R_cmpfun1 makes it
-#          (`compiler:::tryCmpfun(f)`, eval.c:1828), per iteration. GNU R's
+#          (`compiler:::tryCmpfun(f)`, eval.c:1828), per iteration, its
+#          result checked to be byte code (tryCmpfun returns the closure as
+#          it is when the compile fails, which would read as cheap), N = 400
+#          (at 40, the extra N compiles catch 0 or 1 of robigo-rt's full
+#          collections, ±0.65M per compile: X's profile). GNU R's
 #          side only until V4 step 3 lands: robigo-rt cannot load the
 #          compiler namespace yet, and idiom-vs-r.py stops at a row that
 #          fails, so measure them with --no-robigo, or keep them out of a
@@ -534,152 +541,62 @@ n = 4000
 [[row]]
 name = "jit-scale_by"
 group = "jit"
-note = "one JIT compile of calls.R's `scale_by`: compiler:::tryCmpfun(scale_by), as R_cmpfun1 calls it"
-setup = '''
-scale_by <- function(x, scale = 1, label = "a") { if (label == "zz") x else x * scale }
-weigh <- function(x, y) { z <- x * y; z + 1 }
-tag <- function(x, label) { if (label == "bc") x * 2 else x }
-e <- new.env()
-e$f <- function(x) x + 1
-acct <- function() {
-  bal <- 0
-  list(dep = function(x) { bal <<- bal + x; invisible(bal) }, get = function() bal)
-}
-a <- acct()
-area <- function(s) UseMethod("area")
-area.sq <- function(s) s$side^2
-area.default <- function(s) 0
-sq <- structure(list(side = 2), class = "sq")
-safe <- function(x) tryCatch(if (x > 0) x else stop("neg"), error = function(err) 0)
-'''
-body = 'compiler:::tryCmpfun(scale_by)'
-n = 40
+note = "one JIT compile of calls.R's `scale_by`: compiler:::tryCmpfun(scale_by), as R_cmpfun1 calls it, checked to be byte code"
+setup_ref = "calls"
+body = 'if (typeof(.Internal(bodyCode(compiler:::tryCmpfun(scale_by)))) != "bytecode") stop("tryCmpfun left scale_by uncompiled")'
+n = 400
 
 [[row]]
 name = "jit-weigh"
 group = "jit"
-note = "one JIT compile of calls.R's `weigh`: compiler:::tryCmpfun(weigh), as R_cmpfun1 calls it"
-setup = '''
-scale_by <- function(x, scale = 1, label = "a") { if (label == "zz") x else x * scale }
-weigh <- function(x, y) { z <- x * y; z + 1 }
-tag <- function(x, label) { if (label == "bc") x * 2 else x }
-e <- new.env()
-e$f <- function(x) x + 1
-acct <- function() {
-  bal <- 0
-  list(dep = function(x) { bal <<- bal + x; invisible(bal) }, get = function() bal)
-}
-a <- acct()
-area <- function(s) UseMethod("area")
-area.sq <- function(s) s$side^2
-area.default <- function(s) 0
-sq <- structure(list(side = 2), class = "sq")
-safe <- function(x) tryCatch(if (x > 0) x else stop("neg"), error = function(err) 0)
-'''
-body = 'compiler:::tryCmpfun(weigh)'
-n = 40
+note = "one JIT compile of calls.R's `weigh`: compiler:::tryCmpfun(weigh), as R_cmpfun1 calls it, checked to be byte code"
+setup_ref = "calls"
+body = 'if (typeof(.Internal(bodyCode(compiler:::tryCmpfun(weigh)))) != "bytecode") stop("tryCmpfun left weigh uncompiled")'
+n = 400
 
 [[row]]
 name = "jit-tag"
 group = "jit"
-note = "one JIT compile of calls.R's `tag`: compiler:::tryCmpfun(tag), as R_cmpfun1 calls it"
-setup = '''
-scale_by <- function(x, scale = 1, label = "a") { if (label == "zz") x else x * scale }
-weigh <- function(x, y) { z <- x * y; z + 1 }
-tag <- function(x, label) { if (label == "bc") x * 2 else x }
-e <- new.env()
-e$f <- function(x) x + 1
-acct <- function() {
-  bal <- 0
-  list(dep = function(x) { bal <<- bal + x; invisible(bal) }, get = function() bal)
-}
-a <- acct()
-area <- function(s) UseMethod("area")
-area.sq <- function(s) s$side^2
-area.default <- function(s) 0
-sq <- structure(list(side = 2), class = "sq")
-safe <- function(x) tryCatch(if (x > 0) x else stop("neg"), error = function(err) 0)
-'''
-body = 'compiler:::tryCmpfun(tag)'
-n = 40
+note = "one JIT compile of calls.R's `tag`: compiler:::tryCmpfun(tag), as R_cmpfun1 calls it, checked to be byte code"
+setup_ref = "calls"
+body = 'if (typeof(.Internal(bodyCode(compiler:::tryCmpfun(tag)))) != "bytecode") stop("tryCmpfun left tag uncompiled")'
+n = 400
 
 [[row]]
 name = "jit-env-fn"
 group = "jit"
-note = "one JIT compile of calls.R's `e$f`: compiler:::tryCmpfun(e$f), as R_cmpfun1 calls it"
-setup = '''
-scale_by <- function(x, scale = 1, label = "a") { if (label == "zz") x else x * scale }
-weigh <- function(x, y) { z <- x * y; z + 1 }
-tag <- function(x, label) { if (label == "bc") x * 2 else x }
-e <- new.env()
-e$f <- function(x) x + 1
-acct <- function() {
-  bal <- 0
-  list(dep = function(x) { bal <<- bal + x; invisible(bal) }, get = function() bal)
-}
-a <- acct()
-area <- function(s) UseMethod("area")
-area.sq <- function(s) s$side^2
-area.default <- function(s) 0
-sq <- structure(list(side = 2), class = "sq")
-safe <- function(x) tryCatch(if (x > 0) x else stop("neg"), error = function(err) 0)
-'''
-body = 'compiler:::tryCmpfun(e$f)'
-n = 40
+note = "one JIT compile of calls.R's `e$f`: compiler:::tryCmpfun(e$f), as R_cmpfun1 calls it, checked to be byte code"
+setup_ref = "calls"
+body = 'if (typeof(.Internal(bodyCode(compiler:::tryCmpfun(e$f)))) != "bytecode") stop("tryCmpfun left e$f uncompiled")'
+n = 400
 
 [[row]]
 name = "jit-area"
 group = "jit"
-note = "one JIT compile of calls.R's `area`: compiler:::tryCmpfun(area), as R_cmpfun1 calls it"
-setup = '''
-scale_by <- function(x, scale = 1, label = "a") { if (label == "zz") x else x * scale }
-weigh <- function(x, y) { z <- x * y; z + 1 }
-tag <- function(x, label) { if (label == "bc") x * 2 else x }
-e <- new.env()
-e$f <- function(x) x + 1
-acct <- function() {
-  bal <- 0
-  list(dep = function(x) { bal <<- bal + x; invisible(bal) }, get = function() bal)
-}
-a <- acct()
-area <- function(s) UseMethod("area")
-area.sq <- function(s) s$side^2
-area.default <- function(s) 0
-sq <- structure(list(side = 2), class = "sq")
-safe <- function(x) tryCatch(if (x > 0) x else stop("neg"), error = function(err) 0)
-'''
-body = 'compiler:::tryCmpfun(area)'
-n = 40
+note = "one JIT compile of calls.R's `area`: compiler:::tryCmpfun(area), as R_cmpfun1 calls it, checked to be byte code"
+setup_ref = "calls"
+body = 'if (typeof(.Internal(bodyCode(compiler:::tryCmpfun(area)))) != "bytecode") stop("tryCmpfun left area uncompiled")'
+n = 400
 
 [[row]]
 name = "jit-area-sq"
 group = "jit"
-note = "one JIT compile of calls.R's `area.sq`: compiler:::tryCmpfun(area.sq), as R_cmpfun1 calls it"
-setup = '''
-scale_by <- function(x, scale = 1, label = "a") { if (label == "zz") x else x * scale }
-weigh <- function(x, y) { z <- x * y; z + 1 }
-tag <- function(x, label) { if (label == "bc") x * 2 else x }
-e <- new.env()
-e$f <- function(x) x + 1
-acct <- function() {
-  bal <- 0
-  list(dep = function(x) { bal <<- bal + x; invisible(bal) }, get = function() bal)
-}
-a <- acct()
-area <- function(s) UseMethod("area")
-area.sq <- function(s) s$side^2
-area.default <- function(s) 0
-sq <- structure(list(side = 2), class = "sq")
-safe <- function(x) tryCatch(if (x > 0) x else stop("neg"), error = function(err) 0)
-'''
-body = 'compiler:::tryCmpfun(area.sq)'
-n = 40
+note = "one JIT compile of calls.R's `area.sq`: compiler:::tryCmpfun(area.sq), as R_cmpfun1 calls it, checked to be byte code"
+setup_ref = "calls"
+body = 'if (typeof(.Internal(bodyCode(compiler:::tryCmpfun(area.sq)))) != "bytecode") stop("tryCmpfun left area.sq uncompiled")'
+n = 400
 
 [[row]]
 name = "jit-safe"
 group = "jit"
-note = "one JIT compile of calls.R's `safe`: compiler:::tryCmpfun(safe), as R_cmpfun1 calls it"
-setup = '''
+note = "one JIT compile of calls.R's `safe`: compiler:::tryCmpfun(safe), as R_cmpfun1 calls it, checked to be byte code"
+setup_ref = "calls"
+body = 'if (typeof(.Internal(bodyCode(compiler:::tryCmpfun(safe)))) != "bytecode") stop("tryCmpfun left safe uncompiled")'
+n = 400
+
+# The setups rows share (`setup_ref`): calls.R's definitions.
+[setups]
+calls = '''
 scale_by <- function(x, scale = 1, label = "a") { if (label == "zz") x else x * scale }
 weigh <- function(x, y) { z <- x * y; z + 1 }
 tag <- function(x, label) { if (label == "bc") x * 2 else x }
@@ -696,5 +613,3 @@ area.default <- function(s) 0
 sq <- structure(list(side = 2), class = "sq")
 safe <- function(x) tryCatch(if (x > 0) x else stop("neg"), error = function(err) 0)
 '''
-body = 'compiler:::tryCmpfun(safe)'
-n = 40

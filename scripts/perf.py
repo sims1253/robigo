@@ -62,6 +62,14 @@ CACHE = os.environ.get("ROBIGO_BENCH_CACHE", os.path.expanduser("~/.cache/robigo
 BASE_ENV = {"LANGUAGE": "en", "LC_ALL": "C.UTF-8", "TZ": "UTC", "R_ENVIRON_USER": "", "R_PROFILE_USER": ""}
 
 
+def rows_with_setups(doc):
+    """The `[[row]]` tables of a rows file (benchmarks/rt/calls-rows.toml)
+    with each one's `setup` resolved: its own, or with `setup_ref` the
+    `[setups]` table's setup of that name, which rows share."""
+    setups = doc.get("setups", {})
+    return [{**r, "setup": setups[r["setup_ref"]]} if "setup_ref" in r else r for r in doc["row"]]
+
+
 def env_pair(kv):
     """argparse type for K=V: a value without '=' is an error, not a crash later."""
     k, sep, v = kv.partition("=")

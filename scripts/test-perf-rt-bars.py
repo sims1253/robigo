@@ -211,9 +211,11 @@ class Pin(unittest.TestCase):
             names = {r["name"] for r in tomllib.load(f)["row"]}
         # m1-bars.toml, and V4's JIT-cost bars, not gated until V4 step 3
         jit = os.path.join(perf.ROOT, "benchmarks", "rt", "jit-bars.toml")
+        specs = {}
         for path in (perf.RT_BARS, jit):
             with open(path, "rb") as f:
-                spec = tomllib.load(f)
+                specs[path] = tomllib.load(f)
+        for path, spec in specs.items():
             self.assertEqual(spec["gnur"]["version"], perf.pins()["rt"], path)
             rows = {b["row"] for b in spec["bar"]}
             for b in spec["bar"]:
@@ -224,8 +226,7 @@ class Pin(unittest.TestCase):
                     self.assertIn(r["program"], spec[against]["rss"], path)
             self.assertLessEqual(rows, names, path)
         # (robigo-rt is at about 1.9x GNU R's there: none is met yet)
-        with open(jit, "rb") as f:
-            self.assertTrue(all(b.get("met") is False for b in tomllib.load(f)["bar"]))
+        self.assertTrue(all(b.get("met") is False for b in specs[jit]["bar"]))
 
 
     def test_committed_s3_is_unmet_and_still_held_to_main(self):

@@ -34,6 +34,8 @@ import tomllib
 from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+from perf import rows_with_setups  # noqa: E402
 BOUND_FLOOR = 32 << 20
 
 COLLECTIONS = re.compile(r"^robigo gc: collections (\d+)", re.M)
@@ -84,7 +86,7 @@ def programs(tmp):
     progs += [(os.path.join("benchmarks/rt/mem", f), os.path.join("benchmarks/rt/mem", f))
               for f in sorted(os.listdir(mem)) if f.endswith(".R")]
     with open(os.path.join(ROOT, "benchmarks", "rt", "calls-rows.toml"), "rb") as f:
-        rows = tomllib.load(f)["row"]
+        rows = rows_with_setups(tomllib.load(f))
     for r in rows:
         path = os.path.join(tmp, f"row-{r['name']}.R")
         with open(path, "w") as f:

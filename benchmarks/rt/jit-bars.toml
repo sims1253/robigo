@@ -3,8 +3,9 @@
 # instructions, on the closures of benchmarks/suite/calls.R that GNU R's JIT
 # compiles running it. The rows are benchmarks/rt/calls-rows.toml's `jit`
 # group, one `compiler:::tryCmpfun(f)` per iteration (what R_cmpfun1 calls,
-# eval.c:1828), measured as every row is: callgrind instructions, N against
-# 2N (scripts/idiom-vs-r.py --rows).
+# eval.c:1828), its result checked to be byte code, measured as every row
+# is: callgrind instructions, N against 2N (scripts/idiom-vs-r.py --rows),
+# with N = 400.
 #
 # Not a gate yet. robigo-rt compiles through cmp.R only once V4 step 3
 # lands, and step 3 waits on L5, since the compiler namespace does not load
@@ -14,12 +15,12 @@
 #
 # - [gnur]: GNU R's side, measured with the bars' rival: GNU R 4.6.2's
 #   literal default build (scripts/gnur-stock.sh), in the oracle image with
-#   Debian's valgrind, as perf-rt measures it. Two runs; they agree within
-#   0.00004%.
+#   Debian's valgrind, as perf-rt measures it, at N = 400; the mean of two
+#   runs, which agree within 0.00001%.
 # - [[bar]]: each row held to `max` times GNU R's instructions, the bar's
 #   1.0x. None is met yet (`met = false`, as m1-bars.toml marks one): the
-#   ledger's early look puts robigo-rt at 1.80-1.97x. The gate says when
-#   one is met, so that it can be set to met.
+#   ledger's early look (at N = 40) puts robigo-rt at 1.80-1.97x. The gate
+#   says when one is met, so that it can be set to met.
 # - `rss`: no peak-RSS bars. perf.py reads every bars file's `rss`, so the
 #   empty list keeps this file one that `rt-bars` and `rt-gnur --bars` parse.
 
@@ -33,13 +34,13 @@ cpu_signature = "1be0f69f7d2b7252"
 packages = "libc6=2.41-12+deb13u4 valgrind=1:3.24.0-3"
 
 [gnur.instr]
-"jit-scale_by" = 6410625.8
-"jit-weigh" = 5861133.7
-"jit-tag" = 6246336.7
-"jit-env-fn" = 3222303.9
-"jit-area" = 2637217.6
-"jit-area-sq" = 3877717.2
-"jit-safe" = 9713532.7
+"jit-scale_by" = 6396039.1
+"jit-weigh" = 5879190.2
+"jit-tag" = 6265942.5
+"jit-env-fn" = 3152604.3
+"jit-area" = 2624477.3
+"jit-area-sq" = 3861660.6
+"jit-safe" = 9742662.3
 
 [[bar]]
 row = "jit-scale_by"
