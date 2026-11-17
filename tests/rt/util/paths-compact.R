@@ -1,0 +1,16 @@
+# basename, dirname and normalizePath over vectors built from compact
+# sequences (AC1), directly, in lists and through dots
+x <- paste0("dir", seq_along(1:3), "/file", seq_len(3), ".txt")
+basename(x)
+dirname(x)
+basename(as.character(seq_along(1:4)))
+dirname(as.character(1:3))
+basename(c(x, NA))
+p <- c(".", "..", as.character(seq_len(2)))
+identical(.Internal(normalizePath(p, "/", FALSE))[1], getwd())
+basename(.Internal(normalizePath(as.character(1:2), "/", FALSE)))
+f <- function(...) basename(c(...))
+f(as.character(1:3), "a/b")
+lapply(list(as.character(1:2), "x/y"), dirname)
+file.exists(as.character(1:3))
+dir.exists(as.character(seq_len(2)))
