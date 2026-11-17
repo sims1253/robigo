@@ -38,3 +38,12 @@ attr(,"class")
 0.5849625       NaN 
 attr(,"class")
 [1] "nomethod"
+log2.a(8, 2)
+[1] 2
+[1] "method"
+Math.b(100, 10)
+log10 2 
+[1] "group"
+[1] 2
+attr(,"class")
+[1] "nomethod"

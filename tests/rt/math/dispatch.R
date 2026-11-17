@@ -22,3 +22,12 @@ floor(n)
 log(n)
 log(n, 2)
 log2(n)
+# log2 and log10 dispatch again on log(x, base): a `.default` alias skips
+# only the first dispatch
+log2.a <- function(x, ...) { print(sys.call()); print(nargs()); "method" }
+log2.default <- .Primitive("log2")
+log2.default(structure(8, class = "a"))
+Math.b <- function(x, ...) { print(sys.call()); cat(.Generic, nargs(), "\n"); "group" }
+log10.default <- .Primitive("log10")
+log10.default(structure(100, class = "b"))
+log10.default(structure(100, class = "nomethod"))

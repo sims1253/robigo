@@ -287,16 +287,25 @@ pub fn do_log1arg<const CODE: i32>(
     let Dispatched::Default(out) = math_dispatch(cx, &Log1::<CODE>::GENERIC, call, args, env, out)? else {
         return Ok(());
     };
-    // GNU R dispatches again on `log(x, base)` with (x, base) as the
-    // arguments: the same first argument, so the same methods, and none
-    // was found above.
-    if args.get(cx, 0).sexptype() == CPLXSXP {
-        let what = format!("{}() of a complex vector (complex_math2)", Log1::<CODE>::NAME);
-        return Err(not_yet(cx, Some(call), &what));
-    }
     let base = if CODE == 10010 { 10.0 } else { 2.0 };
     cx.scope(|cx, s| {
         let tmp = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_copy(&[base])?.finish().into())))?;
+        // dispatch again, on `log(x, base)` with (x, base): a call through
+        // a `.default` name skips the first (DispatchGroup), not this one
+        let call2 = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| {
+                let log = cx.install(b"log")?;
+                cx.lang3(log.as_ref(), args.get(cx, 0), tmp.bind(cx))
+            })
+        })?;
+        let args2 = s.args(cx, &[args.get(cx, 0), tmp.bind(cx)], None);
+        let Dispatched::Default(out) = math_dispatch(cx, &Log1::<CODE>::GENERIC, call2, args2, env, out)? else {
+            return Ok(());
+        };
+        if args.get(cx, 0).sexptype() == CPLXSXP {
+            let what = format!("{}() of a complex vector (complex_math2)", Log1::<CODE>::NAME);
+            return Err(not_yet(cx, Some(call2), &what));
+        }
         math2(cx, call, args.root(0), tmp, logbase, out)
     })
 }
