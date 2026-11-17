@@ -1223,7 +1223,8 @@ pub fn vwarningcall_dflt(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RRe
                 state(cx).in_warning.set(false);
                 let mut m = b"(converted from warning) ".to_vec();
                 m.extend_from_slice(&buf);
-                return Err(cx.error_call(call, &String::from_utf8_lossy(&m)));
+                // the buffer's bytes, as errorcall gets them
+                return Err(cx.error_call_bytes(call, &m));
             } else if w == 1 {
                 if let Some(c) = call {
                     force_call_promises(cx, c)?;
