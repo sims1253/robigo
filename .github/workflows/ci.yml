@@ -137,8 +137,58 @@ jobs:
   # Every pull request but a docs-only one runs it. One that touches only
   # those crates (`rt` mode) runs this instead of the heavy jobs:
   # scripts/rt-ci.py first checks that the robigo binary does not link them.
-  rt:
+  # L1's byte-exactness bar's data (crates/robigo-rt/tests/rdb_roundtrip.rs):
+  # GNU R 4.6.2's own base, compiler and tools databases with GNU R's round
+  # trip of each record, made in the oracle image (scripts/rt-rdb-roundtrip.sh
+  # --data-only: its GNU R is the R on PATH) and cached per image and script,
+  # saved on main only, as every cache here; a pull request that misses
+  # makes them and hands them to the rt job as an artifact. The rt job
+  # restores them; a container job cannot run docker, and the Rust image has
+  # no GNU R 4.6.2.
+  rdb-data:
     needs: select
+    if: ${{ needs.select.outputs.rt == 'true' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.select.outputs.image_oracle_4_6_2 }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 15
+    outputs:
+      key: ${{ steps.key.outputs.key }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: The data's cache key
+        id: key
+        env:
+          IMAGE: ${{ needs.select.outputs.image_oracle_4_6_2 }}
+        run: |
+          image=$(printf '%s' "$IMAGE" | sha256sum | cut -c1-16)
+          echo "key=rdb-oracle-1-$image-${{ hashFiles('scripts/rt-rdb-roundtrip.sh') }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v6
+        id: data
+        with:
+          path: .robigo/oracle-lib
+          key: ${{ steps.key.outputs.key }}
+          lookup-only: true
+      - name: GNU R's databases and their round trip
+        if: steps.data.outputs.cache-hit != 'true'
+        run: scripts/rt-rdb-roundtrip.sh --data-only .robigo/oracle-lib
+      - uses: actions/cache/save@v6
+        if: steps.data.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+        with:
+          path: .robigo/oracle-lib
+          key: ${{ steps.key.outputs.key }}
+      - uses: actions/upload-artifact@v7
+        if: steps.data.outputs.cache-hit != 'true' && github.ref != 'refs/heads/main'
+        with:
+          name: rdb-oracle-lib
+          path: .robigo/oracle-lib
+          retention-days: 1
+
+  rt:
+    needs: [select, rdb-data]
     if: ${{ needs.select.outputs.rt == 'true' }}
     runs-on: ubuntu-24.04
     container:
@@ -173,6 +223,25 @@ jobs:
         run: |
           python3 scripts/test-rt-ci.py
           python3 scripts/rt-ci.py
+      # L1's bar, outside rt-ci's gctorture modes (its 2,440 records): every
+      # record of GNU R's base, compiler and tools databases round-trips as
+      # GNU R's does. The test fails when the variable is set and a file is
+      # missing, and the artifact's download fails when neither has the data.
+      - uses: actions/cache/restore@v6
+        id: rdb
+        with:
+          path: .robigo/oracle-lib
+          key: ${{ needs.rdb-data.outputs.key }}
+      # a pull request whose rdb-data missed main's cache made the data itself
+      - uses: actions/download-artifact@v7
+        if: steps.rdb.outputs.cache-hit != 'true'
+        with:
+          name: rdb-oracle-lib
+          path: .robigo/oracle-lib
+      - name: GNU R's lazy-load databases round-trip (rdb_roundtrip)
+        run: |
+          ROBIGO_ORACLE_LIBRARY="$PWD/.robigo/oracle-lib" \
+            cargo test --release --locked -p robigo-rt --test rdb_roundtrip -- --nocapture
 
   # robigo-rt's base subset (crates/robigo-rt/proto/base-subset.txt and
   # base-bound.txt) is what scripts/base-subset.sh traces from this tree's
@@ -989,12 +1058,14 @@ jobs:
           chmod +x dist/robigo-rt
           shard=1/1
           if [ -n "$PR" ]; then shard="$(( PR % 4 + 1 ))/4"; fi
+          # named as the corpora jobs' results are (corpus-GROUP-SHARD)
+          echo "RESULT_NAME=corpus-rt-fastr-${shard/\//of}" >> "$GITHUB_ENV"
           python3 scripts/corpus.py run fastr --runtime rt --shard "$shard" --robigo dist/robigo-rt \
             --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: rt-corpora
+          name: ${{ env.RESULT_NAME || 'corpus-rt-fastr' }}
           path: .robigo/results/
           retention-days: 14
 
@@ -1007,7 +1078,7 @@ jobs:
   check:
     name: Check
     if: ${{ always() }}
-    needs: [select, lint, miri, rt, base-subset, build, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
+    needs: [select, lint, miri, rdb-data, rt, base-subset, build, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

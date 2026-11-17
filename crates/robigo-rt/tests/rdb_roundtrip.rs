@@ -7,7 +7,9 @@
 //! The databases are not in the repository: `scripts/rt-rdb-roundtrip.sh`
 //! copies them out of the oracle image, with GNU R's own round trip of each
 //! record (`PKG.roundtrip`), and runs this test with `ROBIGO_ORACLE_LIBRARY`
-//! set to that copy. Without it the test says so and passes.
+//! set to that copy; CI's rt job does the same with the data its rdb-data
+//! job makes. Without the variable the test says so and passes; with it set
+//! and a file missing, it fails.
 //!
 //! The comparison is with GNU R's round trip: GNU R's reader changes a few
 //! records (a forced promise's PRENV, R_NilValue, becomes the base
@@ -209,6 +211,21 @@ fn oracle_databases_round_trip() {
         return;
     };
     let lib = std::path::PathBuf::from(lib);
+    // set but incomplete is a broken setup, never a skip: CI sets it only
+    // after restoring the data (ci.yml's rdb-data job)
+    for pkg in ["base", "compiler", "tools"] {
+        for ext in ["rdb", "rdx", "roundtrip"] {
+            let f = lib.join(pkg).join("R").join(format!("{pkg}.{ext}"));
+            assert!(
+                f.is_file(),
+                "ROBIGO_ORACLE_LIBRARY={} is set, but {} is missing: make the data with \
+                 scripts/rt-rdb-roundtrip.sh --data-only {}",
+                lib.display(),
+                f.display(),
+                lib.display()
+            );
+        }
+    }
     let mut session = common::Session::jit();
     // (the records with byte code are errors, and their messages noise)
     session.val(".Internal(options(show.error.messages = FALSE))");
