@@ -90,7 +90,8 @@ fn scmp(x: Char<'_>, y: Char<'_>, nalast: bool, na: Char<'_>, loc: Locale) -> Re
 /// `ssort(x, n)` of native strings given as bytes (platform.c's
 /// `list.files` sorts its result so): Shell sort with `scmp` (the same
 /// string is equal, else `Scollate`), which is not stable, so the
-/// algorithm is GNU R's.
+/// algorithm is GNU R's. On `Err` (collation failed), `x` is left
+/// partially permuted with one element emptied: the caller discards it.
 // R: sort.c:ssort, sort_body
 pub fn ssort_native(x: &mut [Vec<u8>], loc: Locale) -> Result<(), CollateError> {
     let cmp = |a: &[u8], b: &[u8]| -> Result<i32, CollateError> {

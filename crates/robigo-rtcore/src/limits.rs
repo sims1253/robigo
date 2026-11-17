@@ -6,11 +6,11 @@
 //! does: `eval` increments the depth and checks the C stack for every call
 //! it evaluates.
 //!
-//! GNU R signals these as condition objects of classes
-//! `expressionStackOverflowError`, `CStackOverflowError` and
-//! `nodeStackOverflowError` (`errors.c:R_InitConditions`); building
-//! condition objects is S1's, so the exits recorded here carry the message
-//! and the call, as `errorcall` does.
+//! GNU R signals these as condition objects
+//! (`errors.c:R_InitConditions`, `R_makeCStackOverflowError`): classes
+//! `stackOverflowError` with `expressionStackOverflowError`,
+//! `CStackOverflowError` or `nodeStackOverflowError`, raised here through
+//! [`Cx::error_condition_call`].
 
 use crate::exit::{Exit, ExitKind, RError, RResult};
 use crate::isolate::Cx;
@@ -37,6 +37,26 @@ pub const EXPR_SO_MSG: &str = "evaluation nested too deeply: infinite recursion 
 /// robigo's value stack reports.
 pub const NODE_SO_MSG: &str = "node stack overflow";
 
+/// `R_expressionStackOverflowError` (errors.c:R_InitConditions): what an
+/// evaluation past `R_Expressions` signals, with a NULL call.
+pub const EXPR_SO: crate::ErrorCond<'static> = crate::ErrorCond {
+    class: "stackOverflowError",
+    subclass: Some("expressionStackOverflowError"),
+    msg: EXPR_SO_MSG,
+    fields: &[],
+    exit_only: false,
+};
+
+/// `R_nodeStackOverflowError` (errors.c:R_InitConditions): what an R entry
+/// signals when robigo's value stack, GNU R's node stack, is full.
+pub const NODE_SO: crate::ErrorCond<'static> = crate::ErrorCond {
+    class: "stackOverflowError",
+    subclass: Some("nodeStackOverflowError"),
+    msg: NODE_SO_MSG,
+    fields: &[],
+    exit_only: false,
+};
+
 impl Cx {
     /// `INCREMENT_EVAL_DEPTH()` and `R_CheckStack()`, as `eval` does for
     /// every call: one level deeper, and GNU R's errors past
@@ -55,7 +75,7 @@ impl Cx {
             // R_Expressions doesn't really work in many cases ...")
             st.expressions.set(st.expressions_keep.get().saturating_add(500));
             // a NULL call, so the handler does not deparse it
-            return Err(self.error_call_sexp(self.iso().nil, EXPR_SO_MSG));
+            return Err(self.error_condition_call(None, &EXPR_SO));
         }
         self.check_c_stack()?;
         Ok(EvalDepth(save))
@@ -85,7 +105,7 @@ impl Cx {
         // R_Expressions doesn't really work in many cases ...")
         st.expressions.set(st.expressions_keep.get() + 500);
         // a NULL call, so the handler does not deparse it
-        self.error_call_sexp(self.iso().nil, EXPR_SO_MSG)
+        self.error_condition_call(None, &EXPR_SO)
     }
 
     /// `R_EvalDepth = depth`, unchecked: an R entry restoring the depth it
@@ -146,6 +166,13 @@ impl Cx {
         if usage > limit as isize { Err(self.signal_c_stack_overflow(usage)) } else { Ok(()) }
     }
 
+    /// `R_OldCStackLimit != 0`: a C stack overflow is being handled (the
+    /// limit raised by [`Cx::check_c_stack`]'s error until an exit's stop
+    /// puts it back). `jump_to_top_ex` then runs no `options(error)`.
+    pub fn c_stack_overflow_pending(&self) -> bool {
+        self.ctxs().old_cstack_limit.get() != 0
+    }
+
     /// `Cstack_info()`'s numbers.
     pub fn c_stack_info(&self) -> CStackInfo {
         let st = self.ctxs();
@@ -167,9 +194,25 @@ impl Cx {
             st.old_cstack_limit.set(st.cstack_limit.get());
             st.cstack_limit.set((st.cstack_limit.get() as f64 / 0.95) as usize);
         }
-        // (C_SO_msg_fmt, not translated; a NULL call)
+        // R: errors.c:R_makeCStackOverflowError (C_SO_msg_fmt, not
+        // translated; a NULL call), the usage a double field; calling
+        // handlers are skipped (R_signalErrorConditionEx's exitOnly)
         let msg = format!("C stack usage  {usage} is too close to the limit");
-        self.error_call_sexp(self.iso().nil, &msg)
+        self.scope(|cx, s| {
+            let o = s.out(cx);
+            let u = o.root();
+            if let Err(e) = cx.build_scalar(o, usage as f64) {
+                return e;
+            }
+            let cond = crate::ErrorCond {
+                class: "stackOverflowError",
+                subclass: Some("CStackOverflowError"),
+                msg: &msg,
+                fields: &[("usage", u)],
+                exit_only: true,
+            };
+            cx.error_condition_call(None, &cond)
+        })
     }
 
     /// GNU R's node-stack check for robigo's value stack: an R entry about
@@ -178,7 +221,7 @@ impl Cx {
     /// the stack's panic).
     #[inline]
     pub fn check_value_stack(&mut self, slots: usize) -> RResult<()> {
-        if self.stack_headroom() >= slots { Ok(()) } else { Err(self.error(NODE_SO_MSG)) }
+        if self.stack_headroom() >= slots { Ok(()) } else { Err(self.error_condition(&NODE_SO)) }
     }
 
     /// `R_interrupts_suspended`.

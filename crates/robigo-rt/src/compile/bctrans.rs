@@ -1927,6 +1927,15 @@ impl<'g> Comp<'g> {
                 let args = step_args(&f.args);
                 record(t, true, Step { kind, at: t.cur, call, what, vexpr, args, fun_code: None })?;
             }
+            DOTSERR => {
+                // `...` evaluated as a value (cmpSym): bcEval's error(),
+                // reported against the context's call; the value it never
+                // pushes keeps the stack's shape for what follows
+                // SAFETY: the code's live constants.
+                let e = unsafe { t.expr_at(self.cx, i.at) }.unwrap_or_else(|| self.nil());
+                self.error_op(e, "'...' used in an incorrect context", false)?;
+                self.push(t);
+            }
             RETURNJMP => {
                 // `return` in a promise: out of the function's context
                 if std::mem::take(&mut t.vis_at_return) {
