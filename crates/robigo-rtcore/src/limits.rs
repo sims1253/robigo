@@ -43,7 +43,7 @@ pub const NODE_SO_MSG: &str = "node stack overflow";
 pub const EXPR_SO: crate::ErrorCond<'static> = crate::ErrorCond {
     class: "stackOverflowError",
     subclass: Some("expressionStackOverflowError"),
-    msg: EXPR_SO_MSG,
+    msg: EXPR_SO_MSG.as_bytes(),
     fields: &[],
     exit_only: false,
 };
@@ -53,7 +53,7 @@ pub const EXPR_SO: crate::ErrorCond<'static> = crate::ErrorCond {
 pub const NODE_SO: crate::ErrorCond<'static> = crate::ErrorCond {
     class: "stackOverflowError",
     subclass: Some("nodeStackOverflowError"),
-    msg: NODE_SO_MSG,
+    msg: NODE_SO_MSG.as_bytes(),
     fields: &[],
     exit_only: false,
 };
@@ -208,7 +208,7 @@ impl Cx {
             let cond = crate::ErrorCond {
                 class: "stackOverflowError",
                 subclass: Some("CStackOverflowError"),
-                msg: &msg,
+                msg: msg.as_bytes(),
                 fields: &[("usage", u)],
                 exit_only: true,
             };

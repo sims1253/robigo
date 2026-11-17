@@ -84,7 +84,7 @@ pub type EvalArgsFn = for<'s, 'a, 'b> fn(&mut Cx, Scope<'s>, Root<'a>, Root<'b>)
 /// Signal a warning with message `msg` reported against `call` (None:
 /// GNU R's `R_NilValue`, no call). `Err` when a handler or
 /// `options(warn = 2)` turned it into an exit.
-pub type WarningFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &str) -> RResult<()>;
+pub type WarningFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &[u8]) -> RResult<()>;
 
 /// Signal an error with message `msg` reported against `call` (None:
 /// GNU R's `R_NilValue`, no call): GNU R's `errorcall`. The handlers run
@@ -92,7 +92,7 @@ pub type WarningFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &str) -> RResult<()>;
 /// handler by a jump to its frame), then the default handling reports it
 /// and jumps to the top level; the token returned stands for the exit
 /// that leaves (that jump, a restart a handler invoked, ...).
-pub type ErrorFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &str) -> RError;
+pub type ErrorFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &[u8]) -> RError;
 
 /// A classed error condition as GNU R's `R_makeErrorCondition` makes it
 /// (errors.c:R_vmakeErrorCondition): the list `(message, call, fields...)`
@@ -102,9 +102,10 @@ pub type ErrorFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &str) -> RError;
 pub struct ErrorCond<'a> {
     pub class: &'static str,
     pub subclass: Option<&'static str>,
-    /// The message, verbatim (the hook cuts it at a NUL and at `BUFSIZE`,
-    /// as `Rvsnprintf_mbcs` into `emsg_buf` does).
-    pub msg: &'a str,
+    /// The message in the native encoding's bytes, verbatim (the hook cuts
+    /// it at a NUL and at `BUFSIZE`, as `Rvsnprintf_mbcs` into `emsg_buf`
+    /// does).
+    pub msg: &'a [u8],
     /// The fields after `message` and `call`, in order
     /// (`R_setConditionField`).
     pub fields: &'a [(&'static str, Root<'a>)],
@@ -267,7 +268,7 @@ fn no_force(cx: &mut Cx, _: Root<'_>, _: Out<'_>) -> RResult<()> {
     Err(not_yet(cx, "forcing a promise"))
 }
 
-fn collect(cx: &mut Cx, call: Option<Root<'_>>, msg: &str) -> RResult<()> {
+fn collect(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RResult<()> {
     cx.collect_warning(call, msg)
 }
 
@@ -393,6 +394,13 @@ impl Cx {
     /// GNU R's `warningcall(call, msg)`: through the warning hook.
     #[inline]
     pub fn warning_call(&mut self, call: Option<Root<'_>>, msg: &str) -> RResult<()> {
+        (self.iso().hooks.get().warning)(self, call, msg.as_bytes())
+    }
+
+    /// [`Cx::warning_call`] of a message in the native encoding's bytes
+    /// ([`Cx::error_call_bytes`]).
+    #[inline]
+    pub fn warning_call_bytes(&mut self, call: Option<Root<'_>>, msg: &[u8]) -> RResult<()> {
         (self.iso().hooks.get().warning)(self, call, msg)
     }
 
@@ -416,14 +424,13 @@ impl Cx {
     /// [`Cx::nwarnings`]. The message's allocation is retried after a
     /// collection, and a refusal is the error GNU R's `mkChar` raises.
     // R: errors.c:vwarningcall_dflt
-    pub fn collect_warning(&mut self, call: Option<Root<'_>>, msg: &str) -> RResult<()> {
+    pub fn collect_warning(&mut self, call: Option<Root<'_>>, msg: &[u8]) -> RResult<()> {
         if self.iso().warnings_len() >= self.nwarnings() {
             return Ok(());
         }
         // a C string's message ends at a NUL
-        let msg = &msg[..msg.find('\0').unwrap_or(msg.len())];
-        let m =
-            self.retry_alloc(|cx| cx.mk_char(msg.as_bytes(), crate::Encoding::Native).map(|m| m.as_ref().sexp()))?;
+        let msg = msg.split(|&b| b == 0).next().unwrap_or_default();
+        let m = self.retry_alloc(|cx| cx.mk_char(msg, crate::Encoding::Native).map(|m| m.as_ref().sexp()))?;
         let iso = self.iso();
         let call = call.map_or(iso.nil, |c| c.bind(self).sexp());
         iso.check_owns(call);

@@ -1254,7 +1254,8 @@ impl Cx {
                 // R: context.c:R_run_onexits (a target that is not on the
                 // chain)
                 self.drop_exit(e);
-                let e2 = self.error_call_sexp(nil, "bad target context--should NEVER happen if R was called correctly");
+                let e2 =
+                    self.error_call_sexp(nil, b"bad target context--should NEVER happen if R was called correctly");
                 return Err(self.start_leg(e2));
             };
             if let Some(cend) = r.cend() {
