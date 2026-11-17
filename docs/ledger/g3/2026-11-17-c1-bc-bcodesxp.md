@@ -6,7 +6,11 @@ the compiler package's cmp.R runs from source on robigo-rt.
 
 **The bar:** cmp.R's `cmpfun`, run from source on robigo-rt, gives a
 `disassemble()` identical to the oracle's on the bytecode-fidelity
-fixtures. It holds:
+fixtures. It held on this branch before BW (`978fed99`, with the
+bound-only base). On BW's wide base the compiler namespace does not load
+yet: cmp.R's top level forces every base binding, and 14 cannot be made
+yet (below, "Waiting"). The five cases that load the compiler stay in the
+PR with their recordings but without markers. What the bar covers:
 - `tests/rt/bytecode/fidelity.R` compiles each function the fixtures were
   made from: `tests/r/serialize/bytecode-fixtures/generate.r`,
   `generate-constructed.r`, `compiled-fixtures/source.txt`, and the live
@@ -16,11 +20,13 @@ fixtures. It holds:
   control flow, complex assignment, arithmetic and math, logical
   operators, `missing` and `on.exit`, closures, `...`, `switch` and
   `tryCatch`.
-- All six bytecode cases (`internals`, `closures`, `cmpfun`,
-  `cmpfun-ops`, `compile`, `jit`), `fidelity.R` and
-  `tests/rt/strings/grep.R` give their 4.6.2 recordings.
+- At `978fed99` all seven bytecode cases gave their 4.6.2 recordings.
+  Now `internals.R` and `closures.R`, which do not load the compiler, do
+  and are ratcheted.
 
-- **Tree:** branch `g3/c1-bc-bcodesxp`, from main `d25d0586`.
+- **Tree:** branch `g3/c1-bc-bcodesxp`, from main `d25d0586`, with main
+  merged in up to `a9c4fda3` (BW #767; RX #764, H7 #765 and L1 #752
+  before it).
 - **Oracle:** GNU R 4.6.2 (`scripts/oracle-run.sh 4.6.2
   scripts/regen-expected.sh`). The ports follow the 4.6.2 sources. Of the
   code ported here, only eval.c's `loadCompilerNamespace` differs from
@@ -129,19 +135,22 @@ made for that:
   `.onLoad`, binds NAMESPACE's exports and locks both environments. An
   error unregisters the namespace.
 
-The base functions cmp.R needs come in through base-subset.R's inputs (a
-new input, `compiler`, and the `bytecode` area). Each internal they reach
-is a real port. Loading the namespace surfaced these, each ported:
+Before BW, the base functions cmp.R needs came in through base-subset.R's
+inputs (a new input, `compiler`, and the `bytecode` area); BW now binds
+all of base. Each internal they reach is a real port. Loading the
+namespace surfaced these, each ported:
 - `substitute` in a list (`list_env`);
-- replacement functions and `UseMethod` targets, which the static walk
-  now counts;
+- replacement functions and `UseMethod` targets, which base-subset.R's
+  static walk now counts (kept with BW);
 - coerce.c's `as.function.default`;
-- `T` and `F`;
 - grep.c (first an interim matcher; RX's #764 now, below);
 - `getRegisteredNamespace`, `isRegisteredNamespace` and `environmentName`;
 - `[[<-` on a call (cmp.R's `flattenPlace`), below;
-- `.GlobalEnv`;
 - `eval` of byte code.
+
+`T`, `F` and `.GlobalEnv` were stop-gaps here; BW binds them from the
+system profile (`Common.R`'s `.GlobalEnv <- globalenv()`), so they are
+gone.
 
 ### grep.c: RX's ports (#764) replaced the interim matcher
 
@@ -171,14 +180,26 @@ removed `grep.rs` and its four registry rows and kept the cases.
 - **util.c:** `Encoding`, `setEncoding`.
 - **eval.c:** `do_eval` evaluates a BCODESXP, as GNU R's
   `isByteCode(expr)` case does.
-- **base:** `.GlobalEnv` is bound to the global environment
-  (`crates/robigo-rt/src/base.rs`). GNU R's base build evaluates eval.R's
-  `.GlobalEnv <- environment()` at top level; a promise in the base
-  namespace would give base.
+- **subscript.c:** `vectorIndex` takes pairlists, so calls and `...` too
+  (`isPairList`, subscript.c:354, :366). zzz.R's `as.data.frame.<class>`
+  code indexes into a call with `bdy[[c(2L, 3L, 2L, 3L)]]`. Case
+  `tests/rt/subset/recursive-index-call.R`.
+- **version.c:** `Version` (`R.version`), with `Rversion.h`'s 4.6.2
+  values and configure's triplet for linux-gnu (another platform is "not
+  implemented yet").
+- **platform.c:** `R.home` (sysutils.c's `R_HomeDir`: the environment
+  variable `R_HOME`, else "unable to determine R home location") and
+  `dir.exists`.
+- **paste.c:** `file.path`.
+- Case `tests/rt/builtins/version-paths.R` covers `Version`, `dir.exists`
+  and `file.path`. `R.home` has no oracle case: robigo-rt's
+  `Sys.setenv` is not implemented yet, so a case cannot set `R_HOME`.
 
 **B5a-file ports, for the foreman:**
 - builtin.c: `body`, `bodyCode`, `parent.env` (rtbuiltins `builtin.rs`);
   `dput`, `args`, `environmentName` (rt `builtin.rs`).
+- platform.c: `R.home` and `dir.exists` (rt `platform.rs`); sysutils.c's
+  `R_HomeDir` with it.
 - envir.c: `topenv`, `isNamespaceEnv`, `getRegisteredNamespace`,
   `isRegisteredNamespace`, and `R_getNSValue` for `::` and `:::`. These
   are in rt's `ns.rs`, which already held envir.c's `do_colon2` and
@@ -220,41 +241,65 @@ C).
     rebase. If L2a merges first, C1-BC drops its three and registers the
     hook.
 
+### Waiting: the compiler namespace on BW's wide base
+
+cmp.R's top level (cmp.R:2499-2508) runs `basevars <- ls('package:base',
+all.names = TRUE); types <- sapply(basevars, function(n)
+typeof(get(n)))`, so loading the compiler forces every one of base's 1,407
+bindings. On BW's base, 30 raised; GNU R raises none.
+- **Fixed here (16):**
+  - the 12 `as.data.frame.<class>` (complex, Date, difftime, factor,
+    integer, logical, noquote, numeric, numeric_version, ordered, POSIXct,
+    raw): vectorIndex's pairlists;
+  - `R.version`, `R.version.string`, `version`: `Version`;
+  - `.Library.site`: `dir.exists`.
+- **Waiting (14):**
+  - **getLoadedDLLs and base's native-symbol lookup** (B5a, Rdynload.c):
+    `.C_R_addTaskCallback`, `.C_R_getTaskCallbackNames`,
+    `.C_R_removeTaskCallback`, `.F_dqrcf`, `.F_dqrdc2`, `.F_dqrqty`,
+    `.F_dqrqy`, `.F_dqrrsd`, `.F_dqrxb`, `.F_dtrco`;
+  - **strptime** (B5a, datetime.c): `.leap.seconds`;
+  - **L2a's attach**: `.AutoloadEnv`, which BW does not run
+    (Common.R's `attach(NULL, name = "Autoloads")`);
+  - **robigo-rt's R home**: `.Library` is `file.path(R.home(),
+    "library")`. `R.home()` reads `R_HOME`, which GNU R's front end
+    always sets and robigo-rt's does not set;
+  - **Rprofile.unix's translations block**: `.popath` needs
+    `.libPaths()` (so `.Library`), `file.exists`, `dirname` and
+    `bindtextdomain`.
+- **Which case hits what:** `cmpfun.R`, `cmpfun-ops.R`, `compile.R`
+  and `fidelity.R` call `compiler::`, and `jit.R`'s `enableJIT(3)` loads
+  the compiler. So each runs the scan, and each waits on all 14: the
+  first binding that raises (`.AutoloadEnv`) stops the scan. What a case
+  reaches after the scan cannot be known until the scan passes.
+- **The ratchet:** whoever lands the last of these runs the five cases
+  and ratchets them.
+
 ### Stop-gap inventory
 
 | marker | what | where | owner |
 |---|---|---|---|
 | INTERIM(V3) | a BCODESXP body or value runs its source expression, compiled by robigo's own decisions | `rt/compile.rs:163-176`, `rt/eval.rs:117` | V3 |
 | INTERIM(L2) | `loadNamespace("compiler")` builds the namespace from the pinned tarball's cmp.R; any other namespace is "not implemented yet"; `path` is the tarball's | `rt/ns.rs:5-11,206-226` | L2 |
-| INTERIM(L5) | `T` and `F` bound in base; `.ArgsEnv`/`.GenericArgsEnv` empty | `rt/base.rs:174-176,195` | BW (S1), then L5 |
-| INTERIM(BW) | rt-ci's "conformance under ROBIGO_GC_MOVE with gctorture (E3)" step allows 1200 s per case, up from 600 (below) | `scripts/rt-ci.py` | BW (S1) reverts it |
 
-**The base heap and the moving-collector step** (the foreman's decision:
-option 3, as INTERIM(BW)).
-- **Cause:** robigo-rt binds each base closure as a promise of its parsed
-  right-hand side, so the bound's ASTs are on the heap from startup.
-  The static walk now takes in what cmp.R names transitively: 415
-  closures, 226 internals and 9 variables, against main's 188 closures.
-  - At startup, after `gc()`: 51.4k cells, against 15.6k on main `fb429442`
-    (3.3×).
-  - Under `ROBIGO_GCTORTURE=1 ROBIGO_GC_MOVE=1`, every allocation runs a
-    full moving collection, so a case costs its allocations × the heap.
-    `tests/r/jit/loop-closed-form-super.R` alone takes 598.5 s on this
-    branch, against 154 s on main, on the same machine. In the parallel
-    conformance run it passes 600 s. The output is identical.
-  - A 20k-iteration probe of its `<<-` loop: 40.8 s against 10.8 s, and
-    the same ratio under gctorture alone.
-- **The interim:** that step's per-case timeout is 1200 s
-  (`# INTERIM(BW)` in `scripts/rt-ci.py`). The other gctorture step keeps
-  600 s.
-- **The fix is BW's** (S1): index-only startup with a per-name fetch
-  promise, nothing lowered until forced, and M1's eager closures made
-  lazy too. BW reverts the bump and reports this case's time.
-- **A candidate for H, after X3:** generational torture. GNU R's
-  gctorture runs mostly level-0 collections (memory.c's
-  `num_old_gens_to_collect`), so it does not trace base's old objects at
-  every allocation. robigo-heap is not generational: every collection is
-  full (`crates/robigo-heap/src/gc.rs:2273`).
+**The base heap and the moving-collector step, before BW.** The bound-only
+loader bound each base closure as a promise of its parsed right-hand
+side, and cmp.R's static walk grew the bound to 415 closures, 226
+internals and 9 variables, against 188 closures on main `fb429442`:
+- the startup heap grew to 51.4k cells, against 15.6k;
+- `tests/r/jit/loop-closed-form-super.R` under GC_MOVE+gctorture took
+  598.5 s, against 154 s, with identical output;
+- peak RSS rose 5.7% (listgrow) and 2.9% (churn).
+
+The foreman's decisions: an INTERIM(BW) 1200 s timeout for that step,
+then waiting for BW and rebasing onto it. BW's index-only startup (8,009
+objects against 15,502) removed the growth. The timeout is back to
+600 s, and the numbers are below.
+
+A candidate for H, after X3: generational torture. GNU R's gctorture runs
+mostly level-0 collections (memory.c's `num_old_gens_to_collect`), so it
+does not trace base's old objects at every allocation. robigo-heap is not
+generational: every collection is full (`crates/robigo-heap/src/gc.rs:2273`).
 
 **Gaps, not marked:**
 - `options(keep.source = TRUE)` is not implemented, so the fixtures'
@@ -262,7 +307,7 @@ option 3, as INTERIM(BW)).
   srcrefs. Owner: M4 (options).
 - `dput` writes only to connections 1 and 2.
 - `getRegisteredNamespace` of anything but a string or a symbol is "not
-  implemented yet".
+  implemented yet" (L2a's coerces to a symbol, and replaces it).
 - `print` of a compiled closure shows `<bytecode: 0x…>` with an address,
   as GNU R does. The cases print `deparse` instead.
 - `setEncoding` returns a new vector with `x`'s attributes, where GNU R
@@ -270,31 +315,46 @@ option 3, as INTERIM(BW)).
 
 ### perf-rt and the S3 methods table
 
-Measured against main `fb429442`'s binary, on this machine (Ryzen 9 5900X).
-- **The first run:** s3 +31.0% instructions, e7-unique +4.0%.
-  - Base's `.__S3MethodsTable__.` is now bound, lazily as a promise, as
-    GNU R binds it.
-  - dispatch.rs's method-lookup memo declined every search whose table
-    binding was a promise, so each dispatch ran the full search.
-  - The fix on this branch: the memo reads a forced promise's value, skips
-    the lookup in a table that surely binds nothing (rtcore's
-    `Cx::frame_surely_empty`, HASHPRI 0), and checks the defining
-    environment's box instead of re-reading a forced-promise table binding.
-  - With it: s3 +0.18%, e7-unique −0.19%, every other row within ±0.1%.
+- **Before BW**, against main `fb429442`:
+  - The first run showed s3 at +31.0% instructions and e7-unique at
+    +4.0%. Base's `.__S3MethodsTable__.` had entered the bound as a lazy
+    promise, and dispatch.rs's method-lookup memo declined every search
+    whose table binding was a promise.
+  - This branch's fix brought s3 to +0.18% and e7-unique to −0.19%. It
+    read a forced promise as its value, checked the defining environment's
+    box instead of re-reading that binding, and skipped the lookup in a
+    table that surely binds nothing (`Cx::frame_surely_empty`).
+  - BW's dispatch.rs fixes the same problem: a forced promise read as its
+    value, an absent method checked by the table's version box, the table
+    read once per dispatch. This branch takes BW's.
+  - The empty-table skip, measured on top of BW's for the only check that
+    still looks the method up (found after the table): s3 −0.06%,
+    e7-unique −0.01%. Other rows move as much as ±0.03% between runs, so
+    that is not measurable. The skip and `Cx::frame_surely_empty` are
+    dropped.
 - **`tests/rt/s3/methods-table.R`** puts a method into base's table after
   calls that missed it, then removes it. It matches the oracle; main
-  fails at once ("object '.__S3MethodsTable__.' not found").
-- **Peak RSS** fails the 2% gate: listgrow 45,188 → 47,764 KiB (+5.7%),
-  churn 73,684 → 75,832 KiB (+2.9%). This is the same startup heap growth.
-- **The foreman's decision:** wait for BW and rebase onto it. S1 measured
-  BW at 8,009 startup objects against main's 15,502. On the rebase:
-  - take BW's dispatch.rs, which fixes the same memo problem: a forced
-    promise read as its value, absent methods checked by the table's
-    version box, the table read once per dispatch, rtcore `Cx::env_version`;
-  - keep `frame_surely_empty` and the empty-table skip only if they still
-    help measurably on top of BW's;
-  - drop the INTERIM(BW) timeout bump if BW has not;
-  - re-measure RSS, the GC_MOVE step and every perf-rt row.
+  `fb429442` failed it at once ("object '.__S3MethodsTable__.' not
+  found").
+- **Now, against main `a9c4fda3`** (Ryzen 9 5900X, callgrind
+  instructions per iteration): 0 failures.
+
+  | row | change |
+  |---|---:|
+  | plain | +0.02% |
+  | defaults | −0.01% |
+  | named | +0.06% |
+  | env-fn | −0.01% |
+  | superassign | +0.01% |
+  | s3 | +0.19% |
+  | fib | −0.00% |
+  | binarytrees | −0.00% |
+  | e7-paste | −0.00% |
+  | e7-match | −0.06% |
+  | e7-unique | +0.02% |
+
+  Peak RSS: binarytrees 26,460 against 26,592 KiB, listgrow 46,068
+  against 45,848 (+0.5%), churn 74,332 against 73,820 (+0.7%).
 
 ### Verification
 
