@@ -1404,6 +1404,18 @@ unsafe fn has_class(cx: &Cx, a: Sexp) -> bool {
     false
 }
 
+/// `reps`' index `i` as `VECTOR_ELT` and `SET_VECTOR_ELT` check it, with
+/// their message (`{i}` and `{n}` the index and the length).
+// R: memory.c:VECTOR_ELT, SET_VECTOR_ELT (the index check)
+fn rep_index(cx: &mut Cx, reps: Root<'_>, i: i32, msg: &str) -> RResult<usize> {
+    // SAFETY: the rooted list.
+    let n = unsafe { reps.bind(cx).sexp().std_len() } as i64;
+    match usize::try_from(i) {
+        Ok(k) if (k as i64) < n => Ok(k),
+        _ => Err(cx.error(&msg.replace("{i}", &i.to_string()).replace("{n}", &n.to_string()))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1414,17 +1426,5 @@ mod tests {
         assert_eq!(convert(Codeset::Utf8, Codeset::Latin1, "café".as_bytes()).unwrap(), b"caf\xe9");
         assert!(convert(Codeset::Ascii, Codeset::Utf8, b"caf\xe9").is_none());
         assert_eq!(re_enc3(b"a\xffb", Codeset::Utf8, Codeset::Utf8), b"a<ff>b");
-    }
-}
-
-/// `reps`' index `i` as `VECTOR_ELT` and `SET_VECTOR_ELT` check it, with
-/// their message (`{i}` and `{n}` the index and the length).
-// R: memory.c:VECTOR_ELT, SET_VECTOR_ELT (the index check)
-fn rep_index(cx: &mut Cx, reps: Root<'_>, i: i32, msg: &str) -> RResult<usize> {
-    // SAFETY: the rooted list.
-    let n = unsafe { reps.bind(cx).sexp().std_len() } as i64;
-    match usize::try_from(i) {
-        Ok(k) if (k as i64) < n => Ok(k),
-        _ => Err(cx.error(&msg.replace("{i}", &i.to_string()).replace("{n}", &n.to_string()))),
     }
 }
