@@ -779,13 +779,13 @@ pub fn c_fgetc_internal(cx: &mut Cx, con: *mut RconnC) -> RResult<c_int> {
 /// `con->read(ptr, size, nitems, con)`: the items read whole.
 // R: connections.c:file_read (fread)
 pub fn c_read(cx: &mut Cx, buf: &mut [u8], size: usize, con: *mut RconnC) -> RResult<usize> {
-    with_c(cx, con, |c| conn_read_raw(c, buf).map(|n| if size == 0 { 0 } else { n / size }).map_err(|e| e.to_string()))
+    with_c(cx, con, |c| conn_read_raw(c, buf).map(|n| n.checked_div(size).unwrap_or(0)).map_err(|e| e.to_string()))
 }
 
 /// `con->write(ptr, size, nitems, con)`: the items written.
 // R: connections.c:file_write (fwrite)
 pub fn c_write(cx: &mut Cx, buf: &[u8], size: usize, con: *mut RconnC) -> RResult<usize> {
-    with_c(cx, con, |c| conn_write(c, buf).map(|n| if size == 0 { 0 } else { n / size }).map_err(|e| e.to_string()))
+    with_c(cx, con, |c| conn_write(c, buf).map(|n| n.checked_div(size).unwrap_or(0)).map_err(|e| e.to_string()))
 }
 
 /// `con->fflush(con)`: a file's stream has no buffer of its own here (0,

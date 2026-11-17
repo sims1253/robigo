@@ -270,11 +270,14 @@ entry! {
 }
 
 /// `isInteger(s)`: an integer vector that is not a factor.
+///
+/// # Safety
+/// Called from C code a native entry of the thread's isolate runs, with
+/// `s` a live object of that isolate (C's contract for the API).
 // R: Rinlinedfuns.h:isInteger
 #[unsafe(no_mangle)]
-pub extern "C" fn Rf_isInteger(s: Sexp) -> c_int {
-    // SAFETY: called from C code a native entry of the thread's isolate
-    // runs; `s` is a live object (C's contract), read without allocating.
+pub unsafe extern "C" fn Rf_isInteger(s: Sexp) -> c_int {
+    // SAFETY: the caller's contract; `s` is read without allocating.
     unsafe {
         robigo_rtcore::enter_leaf(|cx| {
             let x = robigo_rtcore::Ref::from_sexp(s, cx);
