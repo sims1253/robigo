@@ -69,7 +69,9 @@ def main():
     keys = sorted(by_key)
     # the tree robigo-rt finds as its own R_HOME (its build checkout's): it
     # ignores an inherited R_HOME with GNU R's warning
-    subprocess.run([str(ROOT / "scripts/rt-home.sh")], capture_output=True, text=True, check=True)
+    made = subprocess.run([str(ROOT / "scripts/rt-home.sh")], capture_output=True, text=True, check=False)
+    if made.returncode:
+        sys.exit(f"rt-build-gaps: scripts/rt-home.sh failed (status {made.returncode}):\n{made.stderr}")
     env = {k: v for k, v in os.environ.items() if k != "R_HOME"}
     env.update(R_DEFAULT_PACKAGES="NULL", LANGUAGE="en", LC_ALL="C.UTF-8")
     skip, crashed, missing = set(SKIP), [], []

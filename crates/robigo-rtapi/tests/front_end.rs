@@ -21,6 +21,7 @@ fn front_end<V: AsRef<std::ffi::OsStr>>(env: &[(&str, V)]) -> Command {
         "ROBIGO_GC_STATS",
         "ROBIGO_BOOT_VERBOSE",
         "ROBIGO_RT_BOOT",
+        "ROBIGO_RT_CHECKOUT",
     ] {
         cmd.env_remove(v);
     }
@@ -93,4 +94,30 @@ fn an_inherited_r_home_is_ignored_with_gnu_rs_warning() {
 fn the_directories_are_the_tree_s() {
     let own = homes(&[]);
     assert_eq!(homes(&[("R_DOC_DIR", "/d"), ("R_SHARE_DIR", ""), ("R_INCLUDE_DIR", "/i")]), own);
+}
+
+/// Stage 0 reads base's source under robigo-rt's own tree: with none in
+/// the default place (no install's, and a checkout, `ROBIGO_RT_CHECKOUT`,
+/// whose tree is not made), it fails at start-up with GNU R's script's
+/// message and the way to make the tree, not with a file error deeper in.
+#[test]
+fn stage0_says_a_missing_tree_is_missing() {
+    let dir = std::env::temp_dir().join(format!("robigo-rt-no-home-{}", std::process::id()));
+    // (a stale directory of a reused pid might hold a tree)
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = front_end(&[("ROBIGO_RT_CHECKOUT", dir.as_os_str()), ("ROBIGO_RT_BOOT", std::ffi::OsStr::new("stage0"))])
+        .args(["-e", "1"])
+        .output()
+        .expect("running robigo-rt");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!(
+            "robigo-rt: R_HOME ('{}') not found: no installed tree (<prefix>/lib/robigo) has library/base/R/base, \
+             and the checkout's is not made (scripts/rt-home.sh)\n",
+            dir.join(".robigo/rt-home").display()
+        )
+    );
 }

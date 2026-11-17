@@ -85,9 +85,14 @@ fn default_r_home() -> RHome {
     if let Some(h) = installed {
         return RHome::Given(std::path::absolute(&h).unwrap_or(h));
     }
-    let checkout = match option_env!("ROBIGO_WORKTREE") {
-        Some(w) if !w.is_empty() => std::path::PathBuf::from(w),
-        _ => std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
+    // the build checkout, or the one `ROBIGO_RT_CHECKOUT` names (robigo's
+    // own control, not GNU R's R_HOME: a relocated binary, a test)
+    let checkout = match std::env::var_os("ROBIGO_RT_CHECKOUT").filter(|c| !c.is_empty()) {
+        Some(c) => std::path::PathBuf::from(c),
+        None => match option_env!("ROBIGO_WORKTREE") {
+            Some(w) if !w.is_empty() => std::path::PathBuf::from(w),
+            _ => std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
+        },
     };
     let h = checkout.join(".robigo/rt-home");
     let h = std::path::absolute(&h).unwrap_or(h);
