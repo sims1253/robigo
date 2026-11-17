@@ -3,8 +3,8 @@
 //! ignore.case, fixed, useBytes))`.
 
 use super::{
-    Fail, Pcre, Report, Subj, Text, fgrep_one, have, input, only_ascii, pattern, pcre_exec_error, strings, tre_comp_native,
-    tre_exec, tre_fail, utf8clen, wide_input, wtrans,
+    Fail, Pcre, Report, Subj, Text, fgrep_one, have, input, only_ascii, pattern, pcre_exec_error, strings,
+    tre_comp_native, tre_exec, tre_fail, utf8clen, wide_input, wtrans,
 };
 use crate::attrib::{Attr, Attrs};
 use crate::util::{as_bool2, as_logical};
@@ -453,7 +453,9 @@ fn pcre_gregexpr(re: &Pcre, s: &[u8], use_utf8: bool, cc: usize, i: usize, rep: 
         if use_utf8 && start < slen && s[start] & 0xc0 == 0x80 {
             // GNU R matches from inside a character with PCRE2_NO_UTF_CHECK,
             // which the `pcre2` crate does not pass
-            return Err(Fail::NotYet("a PCRE match from inside a UTF-8 character (gregexpr after an empty match)".into()));
+            return Err(Fail::NotYet(
+                "a PCRE match from inside a UTF-8 character (gregexpr after an empty match)".into(),
+            ));
         }
         match re.match_at(&mut locs, s, start, false)? {
             Ok(true) => {
