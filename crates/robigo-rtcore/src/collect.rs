@@ -20,7 +20,13 @@ use robigo_heap::{GC_DUE, GcStats, LARGE, Safepoint};
 use std::sync::atomic::Ordering;
 
 /// [`Cx::refuse_first`]'s guard.
+///
+/// Attempts cannot nest: a build's closure gets `&Cx`, and
+/// [`Cx::build_with`] and [`Cx::retry_alloc`] take `&mut Cx`, so no attempt
+/// starts while another's guard lives, and this drop's disarm ends only
+/// its own attempt's refusal.
 #[cfg(feature = "retry-torture")]
+#[must_use = "the refusal ends when this guard drops; dropping it at once makes it a no-op"]
 pub(crate) struct RefuseFirst<'c>(&'c Cx);
 
 #[cfg(feature = "retry-torture")]
@@ -180,9 +186,24 @@ impl Cx {
     /// refused while the guard lives, and the knob is off once it drops,
     /// after an attempt that panicked too.
     #[cfg(feature = "retry-torture")]
-    pub(crate) fn refuse_first(&self) -> RefuseFirst<'_> {
+    fn refuse_first(&self) -> RefuseFirst<'_> {
         self.refuse_next_alloc(true);
         RefuseFirst(self)
+    }
+
+    /// The guard of a build's attempt under [`Cx::retry_torture`]:
+    /// [`Cx::refuse_first`]'s for the first attempt (`first`, then false),
+    /// none for the retries. `build_with` and `retry_alloc` share it.
+    #[cfg(feature = "retry-torture")]
+    pub(crate) fn refuse_once(&self, first: &mut bool) -> Option<RefuseFirst<'_>> {
+        std::mem::take(first).then(|| self.refuse_first())
+    }
+
+    /// Whether E9's knob is set (`ROBIGO_FAIL_ALLOC_AT` as the heap read
+    /// it, armed or not yet): [`Cx::set_retry_torture`] would take it over.
+    pub(crate) fn fail_alloc_set(&self) -> bool {
+        // SAFETY: one read of the core.
+        unsafe { self.iso().core() }.fail_at() != 0
     }
 
     /// Whether gctorture is on (`gctorture()`'s result).
