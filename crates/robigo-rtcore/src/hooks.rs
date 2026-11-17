@@ -41,6 +41,10 @@ use robigo_heap::{Sexp, Trace};
 /// `eval(expr, env)`, the result written to `out`.
 pub type EvalFn = for<'a, 'b, 'c> fn(&mut Cx, Root<'a>, Root<'b>, Out<'c>) -> RResult<()>;
 
+/// `R_forceAndCall(call, n, env)`: the call, its first `n` arguments
+/// forced before a closure's body runs; the result written to `out`.
+pub type ForceAndCallFn = for<'a, 'b, 'c> fn(&mut Cx, Root<'a>, i32, Root<'b>, Out<'c>) -> RResult<()>;
+
 /// Call the function `fun` with the arguments in `args` (values, or
 /// promises the callee forces), reporting `call` (`sys.call()`, error
 /// messages) from the caller's environment `env`; the result written to
@@ -84,7 +88,7 @@ pub type EvalArgsFn = for<'s, 'a, 'b> fn(&mut Cx, Scope<'s>, Root<'a>, Root<'b>)
 /// Signal a warning with message `msg` reported against `call` (None:
 /// GNU R's `R_NilValue`, no call). `Err` when a handler or
 /// `options(warn = 2)` turned it into an exit.
-pub type WarningFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &str) -> RResult<()>;
+pub type WarningFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &[u8]) -> RResult<()>;
 
 /// Signal an error with message `msg` reported against `call` (None:
 /// GNU R's `R_NilValue`, no call): GNU R's `errorcall`. The handlers run
@@ -92,7 +96,39 @@ pub type WarningFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &str) -> RResult<()>;
 /// handler by a jump to its frame), then the default handling reports it
 /// and jumps to the top level; the token returned stands for the exit
 /// that leaves (that jump, a restart a handler invoked, ...).
-pub type ErrorFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &str) -> RError;
+pub type ErrorFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &[u8]) -> RError;
+
+/// A classed error condition as GNU R's `R_makeErrorCondition` makes it
+/// (errors.c:R_vmakeErrorCondition): the list `(message, call, fields...)`
+/// of class `c(subclass, class, "error", "condition")`, or
+/// `c(class, "error", "condition")` without a subclass.
+#[derive(Clone, Copy, Debug)]
+pub struct ErrorCond<'a> {
+    pub class: &'static str,
+    pub subclass: Option<&'static str>,
+    /// The message in the native encoding's bytes, verbatim (the hook cuts
+    /// it at a NUL and at `BUFSIZE`, as `Rvsnprintf_mbcs` into `emsg_buf`
+    /// does).
+    pub msg: &'a [u8],
+    /// The fields after `message` and `call`, in order
+    /// (`R_setConditionField`).
+    pub fields: &'a [(&'static str, Root<'a>)],
+    /// `R_signalErrorConditionEx`'s `exitOnly`: calling handlers are not
+    /// run (a C stack overflow's: they might overflow again).
+    pub exit_only: bool,
+}
+
+/// Signal the classed error `cond` reported against `call` (None: GNU R's
+/// `R_NilValue`): `R_makeErrorCondition` then `R_signalErrorConditionEx`,
+/// so the handlers for its classes, then the default handling of its
+/// message. The token returned stands for the exit that leaves, as
+/// [`ErrorFn`]'s does.
+pub type ErrorCondFn = for<'a, 'b> fn(&mut Cx, Option<Root<'a>>, &ErrorCond<'b>) -> RError;
+
+/// Take a user interrupt (`onintr`): signal the `interrupt` condition,
+/// then jump to the top level; `Ok` when a handler invoked the `resume`
+/// restart and evaluation goes on.
+pub type InterruptFn = fn(&mut Cx) -> RResult<()>;
 
 /// GNU R's `R_FixupExitingHandlerResult(R_ReturnedValue)`: called with the
 /// value an exit carries when it stops at a record to run its `on.exit`
@@ -162,9 +198,10 @@ pub struct Hooks {
     /// marks the promise, `robigo_heap::extra::promise::BYTECODE`; M1 makes no
     /// BCODESXP). Defaults to `eval`'s default.
     pub eval_bytecode: EvalFn,
-    /// `R_forceAndCall(call, n, rho)` for a call `lapply` and `vapply`
-    /// make (`FUN(X[[i]], ...)`). Defaults to `eval`'s default.
-    pub force_and_call: EvalFn,
+    /// `R_forceAndCall(call, n, rho)` for a call a builtin makes (`lapply`'s
+    /// and `vapply`'s `FUN(X[[i]], ...)`, `mapply`'s) and for
+    /// `forceAndCall`. Defaults to an error, as `eval`'s does.
+    pub force_and_call: ForceAndCallFn,
     pub apply: ApplyFn,
     pub dispatch: DispatchFn,
     pub force: ForceFn,
@@ -173,6 +210,8 @@ pub struct Hooks {
     pub eval_args: EvalArgsFn,
     pub warning: WarningFn,
     pub error: ErrorFn,
+    pub error_condition: ErrorCondFn,
+    pub interrupt: InterruptFn,
     pub exit_value: ExitValueFn,
     pub deparse: DeparseFn,
     pub encode_string: EncodeStringFn,
@@ -184,7 +223,7 @@ impl Default for Hooks {
         Hooks {
             eval: no_eval,
             eval_bytecode: no_eval,
-            force_and_call: no_eval,
+            force_and_call: |cx, _, _, _, _| Err(not_yet(cx, "'eval'")),
             apply: no_apply,
             dispatch: no_dispatch,
             force: no_force,
@@ -194,6 +233,10 @@ impl Default for Hooks {
             eval_args: |cx, _, _, _| Err(not_yet(cx, "'evalListKeepMissing'")),
             warning: collect,
             error: |cx, call, msg| cx.record_error_call(call, msg),
+            // (no condition system: the message, as `errorcall`'s default)
+            error_condition: |cx, call, c| cx.record_error_call(call, c.msg),
+            // (no condition system: straight to the top level)
+            interrupt: |cx| Err(cx.interrupt_exit()),
             exit_value: |_, _| {},
             deparse: |_, _, _| Err("robigo: 'deparse' is not implemented yet (no evaluator is registered)".to_owned()),
             // (before `rt` installs EncodeString: NULs escaped, the rest as
@@ -230,7 +273,7 @@ fn no_force(cx: &mut Cx, _: Root<'_>, _: Out<'_>) -> RResult<()> {
     Err(not_yet(cx, "forcing a promise"))
 }
 
-fn collect(cx: &mut Cx, call: Option<Root<'_>>, msg: &str) -> RResult<()> {
+fn collect(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RResult<()> {
     cx.collect_warning(call, msg)
 }
 
@@ -293,11 +336,11 @@ impl Cx {
         }
     }
 
-    /// `R_forceAndCall` of `call` in `env` through the hook
+    /// `R_forceAndCall(call, n, env)` through the hook
     /// ([`Hooks::force_and_call`]), the result written to `out`.
     #[inline]
-    pub fn force_and_call(&mut self, call: Root<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-        (self.iso().hooks.get().force_and_call)(self, call, env, out)
+    pub fn force_and_call(&mut self, call: Root<'_>, n: i32, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+        (self.iso().hooks.get().force_and_call)(self, call, n, env, out)
     }
 
     /// A special's arguments evaluated for its default method, as GNU R's
@@ -356,6 +399,13 @@ impl Cx {
     /// GNU R's `warningcall(call, msg)`: through the warning hook.
     #[inline]
     pub fn warning_call(&mut self, call: Option<Root<'_>>, msg: &str) -> RResult<()> {
+        (self.iso().hooks.get().warning)(self, call, msg.as_bytes())
+    }
+
+    /// [`Cx::warning_call`] of a message in the native encoding's bytes
+    /// ([`Cx::error_call_bytes`]).
+    #[inline]
+    pub fn warning_call_bytes(&mut self, call: Option<Root<'_>>, msg: &[u8]) -> RResult<()> {
         (self.iso().hooks.get().warning)(self, call, msg)
     }
 
@@ -379,14 +429,13 @@ impl Cx {
     /// [`Cx::nwarnings`]. The message's allocation is retried after a
     /// collection, and a refusal is the error GNU R's `mkChar` raises.
     // R: errors.c:vwarningcall_dflt
-    pub fn collect_warning(&mut self, call: Option<Root<'_>>, msg: &str) -> RResult<()> {
+    pub fn collect_warning(&mut self, call: Option<Root<'_>>, msg: &[u8]) -> RResult<()> {
         if self.iso().warnings_len() >= self.nwarnings() {
             return Ok(());
         }
         // a C string's message ends at a NUL
-        let msg = &msg[..msg.find('\0').unwrap_or(msg.len())];
-        let m =
-            self.retry_alloc(|cx| cx.mk_char(msg.as_bytes(), crate::Encoding::Native).map(|m| m.as_ref().sexp()))?;
+        let msg = msg.split(|&b| b == 0).next().unwrap_or_default();
+        let m = self.retry_alloc(|cx| cx.mk_char(msg, crate::Encoding::Native).map(|m| m.as_ref().sexp()))?;
         let iso = self.iso();
         let call = call.map_or(iso.nil, |c| c.bind(self).sexp());
         iso.check_owns(call);

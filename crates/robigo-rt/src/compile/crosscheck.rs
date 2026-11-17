@@ -84,6 +84,7 @@ fn kinds(op: Op) -> ([K; 6], bool) {
         Op::StartSubset => ([W, R, I, C, X, X], true),
         Op::DfltSubset => ([W, Win, I, C, X, I], false),
         Op::Dollar => ([W, R, C, C, X, X], false),
+        Op::Math1 => ([W, Win, I, C, C0, I], false),
         Op::BreakJump => ([X, X, X, X, X, I], false),
         _ => ([X; 6], false),
     }
@@ -355,10 +356,17 @@ pub fn compare(cx: &Cx, what: &str, t: &Built, s: &Built) {
         // SAFETY: a symbol constant of the pool (GetFun's `e`, after `c`).
         && x.consts.get(1).is_some_and(|&sym| unsafe { sym.typ() == robigo_heap::types::SYMSXP
             && crate::cenv::safe_internal(cx, sym).is_some() }));
+    // `...` evaluated as a value: cmpSym's DOTSERR raises at once, the port
+    // reads `...` and raises the same error then
+    let dots = matches!((a, b), (Some(y), Some(x)) if y.op == Op::ErrorCall && x.op == Op::GetVar
+        // SAFETY: GetVar's symbol constant, of the pool.
+        && x.consts.first().is_some_and(|&sym| unsafe { robigo_rtcore::Ref::from_sexp(sym, cx) }
+            .as_sym().is_some_and(|s| s.name().bytes() == b"...")));
     let class = match expected(a, b, ns.get(k + 1)) {
         _ if wrapper => {
             "expected (a simple .Internal wrapper the port calls (cmpSimpleInternal, lazily bound base))".to_owned()
         }
+        _ if dots => "expected ('...' as a value (cmpSym's DOTSERR; the port reads it))".to_owned(),
         Some(c) => format!("expected ({c})"),
         None => "unexpected".to_owned(),
     };

@@ -212,7 +212,13 @@ entry! {
         let r = x.bind(cx);
         match r.sexptype() {
             ENVSXP => Err(not_yet(cx, "length of an environment from C")),
-            t if robigo_heap::is_vector_type(t) => Err(not_yet(cx, "the length of an ALTREP vector from C")),
+            // ALTREP_LENGTH: one of robigo's classes has its `Length` in
+            // Rust (it runs no code); a package class's is not dispatched
+            // from C yet
+            t if robigo_heap::is_vector_type(t) => match r.len() {
+                Some(n) => Ok(n as isize),
+                None => Err(not_yet(cx, "the length of an ALTREP vector from C")),
+            },
             _ => {
                 let t = r_type_to_char(r);
                 Err(cx.error(&format!("LENGTH or similar applied to {t} object")))

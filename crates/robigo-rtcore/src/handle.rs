@@ -8,13 +8,17 @@
 //! takes `&mut Cx`, which ends `'g`, or goes through a `FreshVec` whose
 //! object no `Ref` can name yet.
 //!
-//! ALTREP: robigo's own classes (none exist yet) will appear as their typed
-//! view; every other ALTREP object is a package class and appears as
+//! ALTREP: an instance of one of robigo's own classes (`altclasses.c`'s,
+//! [`crate::altrep::own`]) appears as its typed view: its length and
+//! elements are read token-free, and a slice of its data exists once it is
+//! materialized ([`Cx::materialize`]; [`Vector::elements`] reads either).
+//! Every other ALTREP object is a package class and appears as
 //! [`View::Alt`], whose length and data need `&mut Cx` (R1b, T2).
 
 #![allow(unsafe_code)]
 
 use crate::isolate::Cx;
+use robigo_heap::extra::vector::OWN_ALTREP;
 use robigo_heap::types::*;
 use robigo_heap::{Rcomplex, Sexp, gp};
 use std::fmt;
@@ -123,11 +127,12 @@ impl<'g> Ref<'g> {
     }
 
     /// An ALTREP object of a package class: its methods are C, so its
-    /// length and data need `&mut Cx` (docs/g3.md §2.4). Every ALTREP
-    /// object is one until robigo's own classes exist.
+    /// length and data need `&mut Cx` (docs/g3.md §2.4). An instance of one
+    /// of robigo's own classes is not one ([`Ref::own_class`]).
     #[inline(always)]
     pub fn is_package_altrep(self) -> bool {
-        self.is_altrep()
+        // SAFETY: live; `extra` is header state (OWN_ALTREP: own.rs's mark).
+        self.is_altrep() && unsafe { self.sexp().extra() } & OWN_ALTREP == 0
     }
 
     /// GNU R's REFCNT.
@@ -186,8 +191,16 @@ impl<'g> Ref<'g> {
     pub fn len(self) -> Option<usize> {
         let t = self.sexptype();
         if robigo_heap::is_vector_type(t) {
+            if self.is_altrep() {
+                // one of robigo's: the info's first element, read inline
+                // (no call in the callers' hot code); a package class's
+                // needs its method
+                // SAFETY: live; with the bit, an instance of one of
+                // robigo's classes.
+                return (unsafe { self.sexp().extra() } & OWN_ALTREP != 0).then(|| own_len(self));
+            }
             // SAFETY: a live vector; not ALTREP, so it has a length word.
-            return (!self.is_altrep()).then(|| unsafe { self.sexp().std_len() } as usize);
+            return Some(unsafe { self.sexp().std_len() } as usize);
         }
         match t {
             NILSXP => Some(0),
@@ -209,7 +222,7 @@ impl<'g> Ref<'g> {
     #[inline]
     pub fn view(self) -> View<'g> {
         let t = self.sexptype();
-        if robigo_heap::is_vector_type(t) && t != CHARSXP && self.is_altrep() {
+        if robigo_heap::is_vector_type(t) && t != CHARSXP && self.is_package_altrep() {
             return View::Alt(AltVec(self));
         }
         let v = Vector::<()> { r: self, _t: PhantomData };
@@ -241,10 +254,15 @@ impl<'g> Ref<'g> {
     }
 
     /// The typed view of a vector of element type `T`, if this is one in
-    /// standard storage.
+    /// standard storage or an instance of one of robigo's own ALTREP
+    /// classes (not a package class's).
     #[inline]
     pub fn as_vector<T: Elt<'g>>(self) -> Option<Vector<'g, T>> {
-        (T::accepts(self.sexptype()) && !self.is_altrep()).then_some(Vector { r: self, _t: PhantomData })
+        // (an instance of robigo's classes is an integer or a real vector:
+        // the other element types refuse every ALTREP object, a test of the
+        // flag alone)
+        let alt_ok = if T::OWN { !self.is_package_altrep() } else { !self.is_altrep() };
+        (T::accepts(self.sexptype()) && alt_ok).then_some(Vector { r: self, _t: PhantomData })
     }
 
     /// The element of a length-1 vector of element type `T` in standard
@@ -254,21 +272,65 @@ impl<'g> Ref<'g> {
     /// another type or length, or a package ALTREP vector.
     #[inline]
     pub fn as_scalar<T: Elt<'g>>(self) -> Option<T> {
-        self.as_vector::<T>().filter(|v| v.len() == 1).map(|v| v.get(0))
-    }
-
-    /// The elements of a logical or integer vector in standard storage as
-    /// integers: GNU R's `INTEGER_RO`, which reads both (a logical is an
-    /// int that is 0, 1 or NA).
-    #[inline]
-    pub fn as_ints(self) -> Option<&'g [i32]> {
-        if !matches!(self.sexptype(), LGLSXP | INTSXP) || self.is_altrep() {
+        // (no instance of robigo's classes has length 1: a length-1 range is
+        // the standard scalar, `new_compact`; so one test of the header)
+        if !T::accepts(self.sexptype()) || self.is_altrep() {
             return None;
         }
-        let v = Vector::<i32> { r: self, _t: PhantomData };
-        // SAFETY: a live LGLSXP or INTSXP in standard storage: `len` 4-byte
-        // ints at its data pointer, unwritten for 'g (module docs).
-        Some(unsafe { std::slice::from_raw_parts(self.sexp().std_data() as *const i32, v.len()) })
+        let x = self.sexp();
+        // SAFETY: a live vector of `T` elements in standard storage, read at
+        // index 0 when its length word says 1.
+        unsafe { (x.std_len() == 1).then(|| *(x.std_data() as *const T)) }
+    }
+
+    /// The elements of a logical or integer vector as integers: GNU R's
+    /// `INTEGER_RO`, which reads both (a logical is an int that is 0, 1 or
+    /// NA). An instance of one of robigo's classes must be materialized
+    /// first ([`Vector::as_slice`]); None for another type or a package
+    /// ALTREP vector.
+    #[inline]
+    #[cfg_attr(debug_assertions, track_caller)]
+    pub fn as_ints(self) -> Option<&'g [i32]> {
+        if !matches!(self.sexptype(), LGLSXP | INTSXP) || self.is_package_altrep() {
+            return None;
+        }
+        Vector::<i32> { r: self, _t: PhantomData }.as_slice()
+    }
+
+    /// The elements of an integer vector in standard storage: one test of
+    /// the header (an ALTREP vector, materialized or not, is None). For the
+    /// hot readers of values robigo-rt keeps standard (an attribute's `dim`,
+    /// say), with [`Ref::as_ints`] behind it for the rest.
+    #[inline(always)]
+    pub fn as_std_ints(self) -> Option<&'g [i32]> {
+        if self.sexptype() != INTSXP || self.is_altrep() {
+            return None;
+        }
+        let x = self.sexp();
+        // SAFETY: a live INTSXP in standard storage: its length word and its
+        // elements, valid and unwritten for 'g (module docs).
+        Some(unsafe { std::slice::from_raw_parts(x.std_data() as *const i32, x.std_len() as usize) })
+    }
+
+    /// The elements of an integer vector in standard storage, or of an
+    /// expanded compact integer sequence of robigo's ([`Ref::own_class`]):
+    /// the header tests and loads, with no call. None for anything else
+    /// (an unexpanded sequence among it).
+    #[inline(always)]
+    pub fn std_or_expanded_ints(self) -> Option<&'g [i32]> {
+        if self.sexptype() != INTSXP {
+            return None;
+        }
+        let x = if self.is_altrep() {
+            self.own_class()?;
+            own_expansion(self)?
+        } else {
+            self.sexp()
+        };
+        // SAFETY: a live INTSXP in standard storage (this one, or the
+        // expansion an instance keeps as its data2): its length word and
+        // its elements, valid and unwritten for 'g (module docs).
+        Some(unsafe { std::slice::from_raw_parts(x.std_data() as *const i32, x.std_len() as usize) })
     }
 
     /// Admit a vector or NULL whose length is read without running code:
@@ -363,6 +425,11 @@ impl Lgl {
 pub unsafe trait Elt<'g>: Copy + 'g {
     /// The SEXPTYPE `cx.alloc_vector` makes.
     const SEXPTYPE: u8;
+    /// Whether a vector of `Self` elements may be an instance of one of
+    /// robigo's ALTREP classes (`altrep::own`): their base types, INTSXP
+    /// and REALSXP. The typed views of the other element types read
+    /// standard storage with no test of the header.
+    const OWN: bool = false;
     /// Whether vectors of type `t` have `Self` elements.
     fn accepts(t: u8) -> bool {
         t == Self::SEXPTYPE
@@ -404,6 +471,7 @@ unsafe impl Plain for Rcomplex {
 // contract.
 unsafe impl<'g, T: Plain> Elt<'g> for T {
     const SEXPTYPE: u8 = <T as Plain>::SEXPTYPE;
+    const OWN: bool = matches!(<T as Plain>::SEXPTYPE, INTSXP | REALSXP);
 }
 // SAFETY: a STRSXP's elements are live CHARSXPs (the heap fills a new one
 // with R_BlankString, and every store takes a live object), one word each,
@@ -445,9 +513,14 @@ impl<'g, T> Vector<'g, T> {
     pub fn as_ref(self) -> Ref<'g> {
         self.r
     }
+}
 
+impl<'g, T: Elt<'g>> Vector<'g, T> {
     #[inline(always)]
     pub fn len(self) -> usize {
+        if T::OWN && self.r.is_altrep() {
+            return own_len(self.r);
+        }
         // SAFETY: a live vector in standard storage, which has a length word.
         unsafe { self.r.sexp().std_len() as usize }
     }
@@ -456,28 +529,126 @@ impl<'g, T> Vector<'g, T> {
     pub fn is_empty(self) -> bool {
         self.len() == 0
     }
-}
 
-impl<'g, T: Elt<'g>> Vector<'g, T> {
-    /// The elements, for storage no method will write again: always, for
-    /// standard storage; for one of robigo's own ALTREP classes, once it is
-    /// materialized.
+    /// The elements, for storage no method will write again: standard
+    /// storage, or the expansion of an instance of one of robigo's own
+    /// ALTREP classes, which must be materialized first ([`Cx::materialize`],
+    /// GNU R's `DATAPTR`: the builtins' entry does it for their arguments,
+    /// and robigo's stores into containers for what they store). `Some`
+    /// always; panics on an instance that is not materialized, a bug in the
+    /// caller, which reads it with [`Vector::get`] or materializes it.
+    /// [`Vector::dataptr_or_null`] is GNU R's `DATAPTR_OR_NULL`.
     #[inline(always)]
+    #[cfg_attr(debug_assertions, track_caller)]
     pub fn as_slice(self) -> Option<&'g [T]> {
+        match self.dataptr_or_null() {
+            Some(s) => Some(s),
+            None => unexpanded(self.r),
+        }
+    }
+
+    /// GNU R's `DATAPTR_OR_NULL`: the elements of standard storage or of an
+    /// expanded instance of one of robigo's classes; None for one that is
+    /// not expanded.
+    #[inline(always)]
+    pub fn dataptr_or_null(self) -> Option<&'g [T]> {
+        let x = if T::OWN && self.r.is_altrep() { own_expansion(self.r)? } else { self.r.sexp() };
         // SAFETY: a live vector of `T` elements (`Elt`'s contract) in
         // standard storage, `len` of them at its data pointer, which stays
         // valid and unwritten for 'g (module docs).
-        Some(unsafe { std::slice::from_raw_parts(self.r.sexp().std_data() as *const T, self.len()) })
+        Some(unsafe { std::slice::from_raw_parts(x.std_data() as *const T, x.std_len() as usize) })
     }
 
-    /// Element `i`. Panics if `i` is out of bounds.
+    /// Element `i` (GNU R's `*_ELT`: an instance of one of robigo's classes
+    /// computes it). Panics if `i` is out of bounds.
     #[inline(always)]
     pub fn get(self, i: usize) -> T {
-        match self.as_slice() {
-            Some(s) => s[i],
-            None => unreachable!("robigo: no robigo ALTREP class exists yet"),
+        if T::OWN && self.r.is_altrep() {
+            return self.own_get(i);
+        }
+        // SAFETY: as in `as_slice`: standard storage, its length word read
+        // directly.
+        let s = unsafe {
+            let x = self.r.sexp();
+            std::slice::from_raw_parts(x.std_data() as *const T, x.std_len() as usize)
+        };
+        s[i]
+    }
+
+    /// [`Vector::get`] of an instance of one of robigo's classes. Out of
+    /// line: the formula is larger than the standard read, and the hot
+    /// callers (the VM's) make calls anyway, so a call costs them no
+    /// prologue, where the inline formula costs their register use.
+    #[inline(never)]
+    fn own_get(self, i: usize) -> T {
+        let n = self.len();
+        assert!(i < n, "robigo: element {i} of {n}");
+        let x = self.r.sexp();
+        // SAFETY: a live instance, `i` below its length; `T` is the element
+        // type of its base type (`Elt`'s contract: i32 for INTSXP, f64 for
+        // REALSXP), so the value is copied bit for bit as one.
+        unsafe {
+            match x.typ() {
+                INTSXP => {
+                    let v = crate::altrep::own::intseq_elt(x, i);
+                    std::mem::transmute_copy::<i32, T>(&v)
+                }
+                REALSXP => {
+                    let v = crate::altrep::own::realseq_elt(x, i);
+                    std::mem::transmute_copy::<f64, T>(&v)
+                }
+                t => unreachable!("robigo: an own ALTREP class of base type {t}"),
+            }
         }
     }
+
+    /// The elements: borrowed from standard storage, or from the expansion
+    /// of a materialized instance of one of robigo's classes; computed into
+    /// a Rust vector for one that is not (GNU R's `*_GET_REGION` over the
+    /// whole; no R allocation, so token-free).
+    #[inline]
+    pub fn elements(self) -> std::borrow::Cow<'g, [T]> {
+        match self.dataptr_or_null() {
+            Some(s) => std::borrow::Cow::Borrowed(s),
+            None => std::borrow::Cow::Owned((0..self.len()).map(|i| self.own_get(i)).collect()),
+        }
+    }
+}
+
+// The ALTREP arms of the hot accessors: inline, with no call, so that a
+// hot function that inlines an accessor keeps the register use and the
+// prologue it had without them (a call would make it save registers).
+
+/// The length of an instance of one of robigo's classes (a typed view is
+/// never a package class's).
+#[inline(always)]
+fn own_len(r: Ref<'_>) -> usize {
+    // SAFETY: a live instance of one of robigo's classes.
+    unsafe { crate::altrep::own::own_len(r.sexp()) }
+}
+
+/// The expansion (data2) of an instance of one of robigo's classes, if it
+/// has one.
+#[inline(always)]
+fn own_expansion(r: Ref<'_>) -> Option<Sexp> {
+    // SAFETY: a live instance of one of robigo's classes: its data2 is its
+    // expansion, a standard vector of the base type, or nil.
+    unsafe { crate::altrep::own::expanded(r.sexp()) }
+}
+
+/// [`Vector::as_slice`] of an instance of one of robigo's classes that is
+/// not materialized. In a debug build the panic names the site that read
+/// the slice (`as_slice` and `as_ints` pass their caller's location on), not
+/// this accessor; a release build keeps the accessors' code as it is.
+#[cold]
+#[inline(never)]
+#[cfg_attr(debug_assertions, track_caller)]
+fn unexpanded<T>(r: Ref<'_>) -> T {
+    panic!(
+        "robigo: the data of an unexpanded {:?} (SEXPTYPE {}) was read as a slice: materialize it first (Cx::materialize) or read it with Vector::get",
+        r.own_class(),
+        r.sexptype()
+    )
 }
 
 impl<'g, T> From<Vector<'g, T>> for Ref<'g> {
@@ -498,6 +669,9 @@ impl<'g> StdVec<'g> {
     pub fn len(self) -> usize {
         if self.0.sexptype() == NILSXP {
             return 0;
+        }
+        if self.0.is_altrep() {
+            return own_len(self.0);
         }
         // SAFETY: a live vector in standard storage, which has a length word.
         unsafe { self.0.sexp().std_len() as usize }

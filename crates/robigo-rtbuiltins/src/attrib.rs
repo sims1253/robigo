@@ -70,8 +70,11 @@ pub fn is_ts(x: Ref<'_>) -> bool {
 }
 
 /// The `dim` attribute's extents (it is always an integer vector).
+#[inline(always)]
 pub fn dims<'g>(x: Ref<'g>) -> Option<&'g [i32]> {
-    get_value(x, b"dim").and_then(|d| d.as_vector::<i32>()).and_then(|v| v.as_slice())
+    // (a `dim` that is one of robigo's sequences is expanded: `dim<-` and
+    // `attributes<-` expand their values, and unserialize what it nests)
+    get_value(x, b"dim")?.std_or_expanded_ints()
 }
 
 /// GNU R's `conformable`: the same `dim`.
@@ -261,12 +264,14 @@ pub fn get_attrib<'g>(cx: &'g Cx, x: Ref<'g>, name: &[u8]) -> Result<Option<Ref<
         return Ok(names(x));
     }
     let v = get_value(x, name);
+    // (GNU R makes `1:n` a compact sequence, R_compact_intrange: here, in a
+    // `&Cx` build, a standard vector of the same elements)
     if name == b"row.names"
         && let Some(s) = v
+        && !s.is_altrep()
         && let Some(xs) = s.as_ints()
         && xs.len() == 2
         && xs[0] == i32::MIN
-        && !s.is_altrep()
     {
         let n = xs[1].unsigned_abs() as usize;
         return Ok(Some(cx.alloc_with(n, |i| (i + 1) as i32)?.finish().into()));
@@ -549,20 +554,27 @@ pub fn do_short_row_names(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
     if !(0..=2).contains(&ty) {
         return Err(cx.error("invalid 'type' argument"));
     }
-    let s = get_value(args.get(cx, 0), b"row.names");
-    if ty == 0 {
-        out.set(cx, s.unwrap_or(cx.nil()));
-        return Ok(());
-    }
-    let n = match s {
-        None => 0,
-        Some(s) => match s.as_ints() {
-            Some(&[i32::MIN, n]) if s.sexptype() == INTSXP => n,
-            _ => crate::coerce::xlength(s) as i32,
-        },
-    };
-    let n = if ty == 1 { n } else { n.wrapping_abs() };
-    cx.build_scalar(out, n)
+    cx.scope(|cx, sc| {
+        let s = get_value(args.get(cx, 0), b"row.names").map(|r| sc.root(cx, r));
+        if ty == 0 {
+            out.set(cx, s.map_or(cx.nil(), |r| r.bind(cx)));
+            return Ok(());
+        }
+        let n = match s {
+            None => 0,
+            // INTEGER(s)[0] only for an integer vector of length 2: one of
+            // robigo's sequences there expands (row names from C's setAttrib
+            // are kept as they are); the rest is LENGTH(s)
+            Some(r) if r.bind(cx).sexptype() == INTSXP && r.bind(cx).len() == Some(2) => {
+                cx.materialize(r)?;
+                let v = r.bind(cx).as_ints().expect("robigo: an expanded integer vector");
+                if v[0] == i32::MIN { v[1] } else { 2 }
+            }
+            Some(r) => crate::coerce::xlength(r.bind(cx)) as i32,
+        };
+        let n = if ty == 1 { n } else { n.wrapping_abs() };
+        cx.build_scalar(out, n)
+    })
 }
 
 /// `.Internal(copyDFattr(in, out))`: `out` takes a shallow copy of `in`'s

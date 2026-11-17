@@ -8,8 +8,10 @@
 #   support           directory whose files are linked into each case's
 #                     working directory
 #   host_dependent    case ids whose output shows the machine (installed
-#                     tools, packages or locales, CPU count) beyond what
-#                     masking can absorb: neither run nor scored. Prefer
+#                     tools, packages or locales, CPU count, or memory: GNU
+#                     R's recording needed more than every runner has)
+#                     beyond what masking can absorb: neither run nor
+#                     scored. Prefer
 #                     re-recording on the oracle platform with
 #                     `record --mask-against-previous`, which keeps the case
 #                     scored with the machine-dependent lines masked
@@ -26,6 +28,14 @@ commit = "f9d9199e51b371f076b19456933ee395d28360bf"
 path = "com.oracle.truffle.r.test/src/com/oracle/truffle/r/test/ExpectedTestOutput.test"
 # FastR-only features (Java interop, FastR's own functions).
 exclude_prefix = ["library.fastr.", "rffi."]
+# Memory: `x[[2147483648]] <- 42` grows a double vector to 2^31 elements
+# (16 GiB). GNU R recorded it on a machine that had that (exit 0); a runner
+# with less fails it, as #787's rt-corpora run did on a GitHub-hosted runner,
+# and under a fixed limit GNU R fails it too ("cannot allocate vector of size
+# 16.8 Gb"), so no limit makes the recording hold. The only case of the rt
+# corpora that needs more than 4 GiB where GNU R's recording succeeded
+# (serialize(1:2147483649) is GNU R's compact sequence, a few bytes).
+host_dependent = ["builtins/TestBuiltin_extract_replace/2d3f74f6c25fd37a"]
 # Sets the en_US.utf8 collation locale, which not every machine has.
 
 [gnur-tests]

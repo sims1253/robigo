@@ -65,7 +65,7 @@
 
 mod alias;
 mod attach;
-mod chain;
+pub(crate) mod chain;
 mod frame;
 mod hashtab;
 mod promise;
@@ -2794,23 +2794,15 @@ unsafe fn promise_value(iso: &Isolate, p: Sexp) -> Option<Sexp> {
     }
 }
 
-/// `R_MissingArgError(sym, call, "getMissingError")`: the message; the
-/// condition's classes are S1's.
+/// `R_MissingArgError(sym, call, "getMissingError")` (envir.c:findFun3):
+/// `None` is the current call (`R_CurrentExpression`).
 ///
 /// # Safety (not unsafe: `s` is a live symbol of the isolate)
 #[cold]
 fn missing_arg_error(cx: &mut Cx, s: Sexp, call: Option<Root<'_>>) -> RError {
     // SAFETY: a live symbol (the callers' rooted `sym`).
     let name = unsafe { sym_name(s) };
-    let msg = if name.is_empty() {
-        "argument is missing, with no default".to_owned()
-    } else {
-        format!("argument \"{name}\" is missing, with no default")
-    };
-    match call {
-        Some(c) => cx.error_call(Some(c), &msg),
-        None => env_error(cx, &msg),
-    }
+    cx.missing_arg_error(&name, call, "getMissingError")
 }
 
 /// `errorcall_cpy(call, _("could not find function \"%s\""), ...)`.

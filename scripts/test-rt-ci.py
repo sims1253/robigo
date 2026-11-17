@@ -40,7 +40,9 @@ class RtCi(unittest.TestCase):
 
     def test_conformance_runs_alone_in_its_own_steps(self):
         steps = rt.steps(["robigo-rt", "robigo-rtcore"])
-        own = [(env, cmd) for _, env, cmd in steps if rt.CONFORMANCE in cmd and "--skip" not in cmd]
+        # (a step's mode is its environment but the runner's job count)
+        own = [({k: v for k, v in env.items() if k != "ROBIGO_CONF_JOBS"}, cmd) for _, env, cmd in steps
+               if rt.CONFORMANCE in cmd and "--skip" not in cmd]
         # once plain, once under each observation mode, then only under a
         # collector mode or the byte-code crosscheck (V3: every translated
         # closure also compiled from source and compared, its report read by
@@ -53,7 +55,7 @@ class RtCi(unittest.TestCase):
             self.assertIn("--exact", cmd)
             if env:
                 self.assertTrue({"ROBIGO_GCTORTURE", "R_MAX_VSIZE", "ROBIGO_NO_INPLACE", "ROBIGO_MATERIALIZE", "ROBIGO_FRAME_QUARANTINE",
-                                 "ROBIGO_BC_CROSSCHECK"} & set(env), env)
+                                 "ROBIGO_BC_CROSSCHECK", "ROBIGO_RETRY_TORTURE"} & set(env), env)
             # a crosscheck step writes its report, which `main` reads
             if "ROBIGO_BC_CROSSCHECK" in env:
                 self.assertIn("ROBIGO_BC_CROSSCHECK_REPORT", env)
@@ -65,17 +67,50 @@ class RtCi(unittest.TestCase):
         src = (HERE.parent / "crates/robigo-rtapi/tests/conformance.rs").read_text()
         self.assertIn(f"fn {rt.CONFORMANCE}()", src)
 
-    def test_slow_case_timeouts_are_the_moving_collector_steps_only(self):
-        # INTERIM(H8): exactly the GC_MOVE + gctorture conformance step gets
-        # the longer timeouts, and each case it names exists
+    def test_the_retry_torture_feature_is_built_for_its_step_alone(self):
+        # every other step tests the binary users get; this one, last, the
+        # mode compiled in and on, with the collector modes' case timeout
+        steps = rt.steps(["robigo-rt", "robigo-rtcore"])
+        featured = [(title, env, cmd) for title, env, cmd in steps if "--features" in cmd]
+        self.assertEqual(len(featured), 1)
+        title, env, cmd = featured[0]
+        self.assertEqual(cmd[cmd.index("--features") + 1], rt.RETRY_TORTURE_FEATURE)
+        self.assertEqual(env.get("ROBIGO_RETRY_TORTURE"), "1")
+        self.assertEqual(env.get("ROBIGO_CONF_TIMEOUT"), "600")
+        self.assertEqual(steps[-1][0], title, "the feature build comes after every plain step")
+        self.assertEqual([t for t, e, _ in steps if "ROBIGO_RETRY_TORTURE" in e], [title])
+        # the feature exists where the step names it
+        crate, feature = rt.RETRY_TORTURE_FEATURE.split("/")
+        manifest = (HERE.parent / "crates" / crate / "Cargo.toml").read_text()
+        self.assertIn(f"\n{feature} = [", manifest)
+
+    def test_conformance_steps_use_every_cpu(self):
+        # they run one test alone, so the runner may run a case per CPU
+        steps = rt.steps(["robigo-rt", "robigo-rtcore"]) + rt.full_move_steps()
+        conf = [(t, e) for t, e, c in steps if rt.CONFORMANCE in c and "--exact" in c]
+        self.assertTrue(conf)
+        for title, env in conf:
+            self.assertEqual(env.get("ROBIGO_CONF_JOBS"), str(os.cpu_count() or 2), title)
+        others = [t for t, e, c in steps if "ROBIGO_CONF_JOBS" in e and not (rt.CONFORMANCE in c and "--exact" in c)]
+        self.assertEqual(others, [])
+
+    def test_the_moving_conformance_step_is_young_and_the_full_run_nightly(self):
+        # H8: the job's GC_MOVE + gctorture conformance step moves the young
+        # objects (no per-case timeouts); the nightly's --full-move run moves
+        # everything, with the longer timeouts, each naming a case that exists
         steps = rt.steps(["robigo-rt"])
-        with_overrides = [title for title, env, _ in steps if "ROBIGO_CONF_TIMEOUTS" in env]
-        self.assertEqual(with_overrides, ["conformance under ROBIGO_GC_MOVE with gctorture (E3)"])
-        env = next(e for t, e, _ in steps if t == with_overrides[0])
-        self.assertEqual(env["ROBIGO_GC_MOVE"], "1")
-        self.assertEqual(env["ROBIGO_GCTORTURE"], "1")
+        self.assertEqual([t for t, e, _ in steps if "ROBIGO_CONF_TIMEOUTS" in e], [])
+        moving = [e for t, e, c in steps if "ROBIGO_GC_MOVE" in e and "--exact" in c]
+        self.assertEqual(len(moving), 1)
+        self.assertEqual(moving[0]["ROBIGO_GC_MOVE"], rt.GC_MOVE_YOUNG)
+        self.assertTrue(rt.GC_MOVE_YOUNG.startswith("young:") and int(rt.GC_MOVE_YOUNG[6:]) >= 1)
+        full = rt.full_move_steps()
+        self.assertEqual(len(full), 1)
+        _, env, cmd = full[0]
+        self.assertEqual((env["ROBIGO_GC_MOVE"], env["ROBIGO_GCTORTURE"]), ("1", "1"))
+        self.assertIn(rt.CONFORMANCE, cmd)
         named = dict(item.rsplit("=", 1) for item in env["ROBIGO_CONF_TIMEOUTS"].split(","))
-        self.assertEqual(set(named), set(rt.GC_MOVE_SLOW))
+        self.assertEqual(set(named), set(rt.FULL_MOVE_SLOW))
         for case, secs in named.items():
             self.assertTrue((HERE.parent / case).is_file(), case)
             self.assertGreater(int(secs), int(env["ROBIGO_CONF_TIMEOUT"]), case)

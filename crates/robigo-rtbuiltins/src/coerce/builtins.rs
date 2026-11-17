@@ -571,9 +571,11 @@ fn any_na(cx: &mut Cx, call: Root<'_>, x: Root<'_>, recursive: bool, env: Root<'
     let xv = x.bind(cx);
     let na = cx.na_string();
     Ok(match xv.view() {
-        View::Real(v) => v.as_slice().unwrap().iter().any(|x| x.is_nan()),
-        View::Int(v) => v.as_slice().unwrap().contains(&i32::MIN),
-        View::Lgl(v) => v.as_slice().unwrap().iter().any(|x| x.0 == i32::MIN),
+        // (INTEGER_NO_NA, then ITERATE_BY_REGION: one of robigo's compact
+        // sequences, reached in a list, is read by element)
+        View::Real(v) => v.elements().iter().any(|x| x.is_nan()),
+        View::Int(v) => v.elements().contains(&i32::MIN),
+        View::Lgl(v) => v.elements().iter().any(|x| x.0 == i32::MIN),
         View::Cplx(v) => v.as_slice().unwrap().iter().any(|z| z.r.is_nan() || z.i.is_nan()),
         View::Str(v) => v.as_slice().unwrap().contains(&na),
         View::Raw(_) | View::Null => false,

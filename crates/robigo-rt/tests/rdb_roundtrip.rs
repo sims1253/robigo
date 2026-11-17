@@ -1,10 +1,7 @@
 //! L1's bar: every record of GNU R 4.6.2's own lazy-load databases
 //! (`base.rdb`, `compiler.rdb`, `tools.rdb` of the oracle image's
-//! library) unserializes and serializes back to the same bytes. The one
-//! gap is typed, never guessed from a message: a record holding one of
-//! base's compact sequences (an ALTREP object robigo-rt reads as the
-//! standard vector, [`take_compact_sequences_expanded`]) is written back
-//! expanded, and is counted apart until robigo-rt has those classes (AC).
+//! library) unserializes and serializes back to the same bytes, byte code
+//! and base's compact sequences (robigo-rt's own ALTREP classes) included.
 //!
 //! The databases are not in the repository: `scripts/rt-rdb-roundtrip.sh`
 //! copies them out of the oracle image, with GNU R's own round trip of each
@@ -25,7 +22,7 @@
 
 mod common;
 
-use robigo_rt::serialize::{Format, serialize_bytes, take_compact_sequences_expanded, unserialize_bytes};
+use robigo_rt::serialize::{Format, serialize_bytes, unserialize_bytes};
 use robigo_rtcore::{Args, Cx, Global, Locale, Out, RResult, Ref, Root, View};
 use std::cell::RefCell;
 use std::io::Read;
@@ -146,8 +143,6 @@ fn gnur_roundtrips(what: &str, b: &[u8]) -> std::collections::HashMap<String, Ve
 struct Tally {
     same: usize,
     stored: usize,
-    /// Records that hold a compact sequence and are written back expanded.
-    compact: usize,
     /// Read or write errors.
     errors: Vec<String>,
     differ: Vec<String>,
@@ -205,19 +200,16 @@ fn roundtrip(
         cx.scope(|cx, s| {
             let o = s.out(cx);
             let v = o.root();
-            take_compact_sequences_expanded(cx);
             if let Err(e) = unserialize_bytes(cx, data.clone(), Some(hooks.0), o) {
                 let m = common::message(cx, e);
                 t.errors.push(format!("{name}: {m}"));
                 return;
             }
-            let expanded = take_compact_sequences_expanded(cx) > 0;
             match serialize_bytes(cx, v, Format::Xdr, 3, Some(hooks.1)) {
                 Ok(b) if b == *want => {
                     t.same += 1;
                     t.stored += (b == data) as usize;
                 }
-                Ok(_) if expanded => t.compact += 1,
                 Ok(b) => {
                     let at = b.iter().zip(want).position(|(x, y)| x != y).unwrap_or(b.len().min(want.len()));
                     t.differ.push(format!("{name}: {} vs {} bytes, first difference at {at}", b.len(), want.len()));
@@ -293,13 +285,11 @@ fn oracle_databases_round_trip() {
             roundtrip(cx, pkg, &rdb, &records, &gnur, (hin, hout), &mut t);
         });
         report.push_str(&format!(
-            "{pkg}: {} records as GNU R's round trip ({} of them their stored bytes), {} differ, {} errors, \
-             {} hold a compact sequence (AC)\n",
+            "{pkg}: {} records as GNU R's round trip ({} of them their stored bytes), {} differ, {} errors\n",
             t.same,
             t.stored,
             t.differ.len(),
             t.errors.len(),
-            t.compact,
         ));
         for m in t.differ.iter().chain(&t.errors) {
             report.push_str(&format!("  {m}\n"));

@@ -1,0 +1,14 @@
+<simpleError in floor("a"): non-numeric argument to mathematical function>
+<simpleError in ceiling(list(1)): non-numeric argument to mathematical function>
+<simpleError in Math.factor(factor("a")): ‘exp’ not meaningful for factors>
+<simpleError in sqrt(NULL): non-numeric argument to mathematical function>
+<simpleError in floor(): 0 arguments passed to 'floor' which requires 1>
+<simpleError in floor(1, 2): 2 arguments passed to 'floor' which requires 1>
+<simpleError in ceiling(y = 1): supplied argument name 'y' does not match 'x'>
+<simpleError in trunc("a"): non-numeric argument to mathematical function>
+<simpleError in trunc(): non-numeric argument to mathematical function>
+<simpleError in trunc(1 + (0+2i)): unimplemented complex function>
+<simpleError in gamma(quote(x)): non-numeric argument to mathematical function>
+[1] 2
+[1] 2
+[1] -2

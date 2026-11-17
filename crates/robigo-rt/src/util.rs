@@ -5,8 +5,7 @@
 
 use robigo_rtcore::{Args, Char, Cx, Encoding, Out, RResult, Root, View};
 
-/// `R_PATH_MAX`: `PATH_MAX` on Linux.
-const R_PATH_MAX: usize = 4096;
+use crate::connections::R_PATH_MAX;
 
 const NA_LOGICAL: i32 = i32::MIN;
 

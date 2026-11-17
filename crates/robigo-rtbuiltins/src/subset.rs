@@ -8,7 +8,7 @@
 //! (`x[m]` with a matrix `m`) are not ported yet and say so.
 
 use crate::attrib::{self, Attr, Attrs};
-use crate::subscript::{self, Names, OUT_OF_BOUNDS, Subscript, ecall, get1index, make_subscript};
+use crate::subscript::{self, Names, Sindex, Subscript, ecall, get1index, make_subscript};
 use crate::util::{self, type_to_char};
 use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
@@ -17,11 +17,6 @@ use robigo_rtcore::{Args, Char, Cx, Lgl, NeedGc, Out, RResult, Rcomplex, Ref, Ro
 /// GNU R's `NA_REAL`.
 const NA_REAL: f64 = crate::kernel::arith::NA_REAL;
 const NA_INTEGER: i32 = i32::MIN;
-
-/// GNU R's `R_MSG_ob_nonsub`.
-pub fn not_subsettable(x: Ref<'_>) -> String {
-    format!("object of type '{}' is not subsettable", type_to_char(x))
-}
 
 /// The arguments of a subsetting call after `ExtractArg` took out `drop`
 /// and `exact` (the first argument so named, anywhere): the window
@@ -122,10 +117,16 @@ pub fn extract_subset<'g>(cx: &'g Cx, x: Ref<'g>, idx: &Subscript) -> Result<Ref
         let ii = idx.get(i);
         (ii != subscript::NA_IDX && 0 < ii && ii <= nx).then(|| (ii - 1) as usize)
     };
+    // (one of robigo's compact sequences, not expanded, is read by element,
+    // as the `*_ELT` accessors read it)
     macro_rules! plain {
         ($v:expr, $na:expr) => {{
-            let xs = $v.as_slice().unwrap();
-            cx.alloc_with(n, |i| at(i).map_or($na, |j| xs[j])).map(|v| v.finish().into())
+            let v = $v;
+            match v.dataptr_or_null() {
+                Some(xs) => cx.alloc_with(n, |i| at(i).map_or($na, |j| xs[j])),
+                None => cx.alloc_with(n, |i| at(i).map_or($na, |j| v.get(j))),
+            }
+            .map(|v| v.finish().into())
         }};
     }
     match x.view() {
@@ -379,8 +380,7 @@ pub fn do_subset_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_
             cx.build(o, |cx| pairs_to_list(cx, xr.bind(cx)))?;
             r
         } else {
-            let msg = not_subsettable(xr.bind(cx));
-            return Err(cx.error_call(Some(call), &msg));
+            return Err(subscript::not_subsettable(cx, Some(call), xr));
         };
         let ndim = attrib::dims(xr.bind(cx)).map_or(0, |d| d.len());
         let ans = s.out(cx);
@@ -432,9 +432,9 @@ pub fn do_subset_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_
 
 /// `int_arraySubscript(d, s, dims, x, call)`: the 1-based positions (NA
 /// as [`subscript::NA_IDX`]) subscript `s` selects along dimension `d` of
-/// extent `nd`.
+/// extent `nd` of `x`.
 // R: subscript.c:int_arraySubscript
-fn array_subscript(cx: &mut Cx, s: Root<'_>, nd: usize, call: Root<'_>) -> RResult<Vec<i64>> {
+fn array_subscript(cx: &mut Cx, x: Root<'_>, s: Root<'_>, nd: usize, call: Root<'_>) -> RResult<Vec<i64>> {
     use subscript::IntErr;
     let r = {
         let sv = s.bind(cx);
@@ -459,7 +459,8 @@ fn array_subscript(cx: &mut Cx, s: Root<'_>, nd: usize, call: Root<'_>) -> RResu
         }
     };
     r.map_err(|e| match e {
-        IntErr::OutOfBounds => ecall(cx, Some(call), OUT_OF_BOUNDS),
+        // integerSubscript's ECALL_OutOfBounds(x, -1, max, call)
+        IntErr::OutOfBounds(max) => subscript::out_of_bounds(cx, Some(call), x, -1, Sindex::Real(max), None),
         IntErr::Msg(m) => ecall(cx, Some(call), &m),
     })
 }
@@ -481,8 +482,8 @@ fn matrix_subset(
         let d = attrib::dims(x.bind(cx)).unwrap();
         (d[0].max(0) as usize, d[1].max(0) as usize)
     };
-    let sr = array_subscript(cx, si, nr, call)?;
-    let sc = array_subscript(cx, sj, nc, call)?;
+    let sr = array_subscript(cx, x, si, nr, call)?;
+    let sc = array_subscript(cx, x, sj, nc, call)?;
     let t = x.bind(cx).sexptype();
     if !matches!(t, LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | VECSXP | EXPRSXP | RAWSXP) {
         return Err(cx.error_call(Some(call), "matrix subscripting not handled for this type"));
@@ -626,7 +627,8 @@ pub fn do_subset2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'
     let x = args.get(cx, sa.pos[0]);
     if x.sexptype() == NILSXP {
         if args.get(cx, subs[0]) == cx.missing_arg() {
-            return Err(cx.error_call(Some(call), subscript::MISSING_SUBSCRIPT));
+            // errorcallMissingSubs(x, call)
+            return Err(subscript::missing_subscript(cx, Some(call), Some(args.root(sa.pos[0]))));
         }
         out.set(cx, x);
         return Ok(());
@@ -641,8 +643,7 @@ pub fn do_subset2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'
         _ => {}
     }
     if !(attrib::is_vector(x) || matches!(x.sexptype(), LISTSXP | LANGSXP)) {
-        let msg = not_subsettable(x);
-        return Err(cx.error_call(Some(call), &msg));
+        return Err(subscript::not_subsettable(cx, Some(call), args.root(sa.pos[0])));
     }
     if x.is_package_altrep() {
         return Err(util::not_yet(cx, Some(call), "'[[' of an ALTREP vector"));
@@ -668,7 +669,7 @@ pub fn do_subset2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'
                 let names = Names::of(cx, xv);
                 get1index(cx, thesub.bind(cx), &names, xv.len().unwrap_or(0), pok, (len > 1).then(|| len - 1))
             }
-            .map_err(|m| ecall(cx, Some(call), &m))?;
+            .map_err(|m| subscript::raise_get1(cx, Some(call), m))?;
             for (m, with_call) in warnings {
                 cx.warning_call(if with_call { Some(call) } else { None }, &m)?;
             }
@@ -679,7 +680,8 @@ pub fn do_subset2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'
                     out.set(cx, cx.nil());
                     return Ok(());
                 }
-                return Err(cx.error_call(Some(call), OUT_OF_BOUNDS));
+                // errorcallOutOfBoundsSEXP(x, -1, thesub, call)
+                return Err(subscript::out_of_bounds(cx, Some(call), xr, -1, Sindex::Value(thesub), None));
             }
             off as usize
         } else {
@@ -698,9 +700,17 @@ pub fn do_subset2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'
                     };
                     get1index(cx, args.get(cx, si), &names, dims[i] as usize, pok, None).map(|(o, _)| (o, dims[i]))
                 };
-                let (p, d) = r.map_err(|m| ecall(cx, Some(call), &m))?;
+                let (p, d) = r.map_err(|m| subscript::raise_get1(cx, Some(call), m))?;
                 if p < 0 || p >= d as i64 {
-                    return Err(cx.error_call(Some(call), OUT_OF_BOUNDS));
+                    // errorcallOutOfBoundsSEXP(x, i, thesub, call)
+                    return Err(subscript::out_of_bounds(
+                        cx,
+                        Some(call),
+                        xr,
+                        i as i32,
+                        Sindex::Value(args.root(si)),
+                        None,
+                    ));
                 }
                 pos.push(p);
             }
@@ -791,7 +801,7 @@ pub fn vector_index(
             let names = Names::of(cx, xv);
             get1index(cx, thesub.bind(cx), &names, xv.len().unwrap_or(0), pok, Some(i))
         };
-        let (offset, _) = r.map_err(|m| ecall(cx, Some(call), &m))?;
+        let (offset, _) = r.map_err(|m| subscript::raise_get1(cx, Some(call), m))?;
         let nx = x.bind(cx).len().unwrap_or(0) as i64;
         if offset < 0 || offset >= nx {
             let msg = format!("no such index at level {}\n", i + 1);
@@ -988,9 +998,6 @@ pub fn subset3_dflt(cx: &mut Cx, x: Root<'_>, input: Root<'_>, call: Root<'_>, o
         LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | RAWSXP => {
             Err(cx.error_call(Some(call), "$ operator is invalid for atomic vectors"))
         }
-        _ => {
-            let msg = not_subsettable(x.bind(cx));
-            Err(cx.error_call(Some(call), &msg))
-        }
+        _ => Err(subscript::not_subsettable(cx, Some(call), x)),
     }
 }

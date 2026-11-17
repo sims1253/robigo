@@ -26,19 +26,79 @@
 //!
 //! The heap sizes do not change: a copy is the object, not an allocation
 //! (its cells stay counted once, and the poisoned old copy counts none).
+//!
+//! `ROBIGO_GC_MOVE=young:N` (H8) is the same check at a torture
+//! collection's cost: every N-th moving collection moves everything as
+//! above, and the others move only the **young** objects, those no
+//! collection has moved yet ([`OLD`] clear: every fresh object). Such a
+//! collection takes the pins first ([`Core::pin_segments`]), then marks as
+//! always, but the marker itself copies each young object that may move the
+//! first time it reaches it and rewrites the edge it came through, and every
+//! later edge to the old copy ([`Core::mark_young`]): one pass over the live
+//! heap, which visits every edge, so no barrier and no second (forwarding)
+//! pass are needed. The heap's own lists get the new addresses as they are
+//! marked, the CHARSXP cache the copied strings'; then the old copies are
+//! retired. A stale `Sexp` to a young object reads poison at the next
+//! collection; one to an older object, at the next full one.
 
 use super::*;
 
 /// The type byte of an old copy while a collection forwards edges: the new
 /// address is in its link word (`layout::header::OFF_LINK`). Never seen outside a collection.
-const FORWARDED: u8 = 0xFE;
+pub(super) const FORWARDED: u8 = 0xFE;
 
 /// The type byte of a retired old copy (and, under gctorture, of a freed
 /// slot): no SEXPTYPE has it, and the rest of the object is `0xDB` bytes,
 /// so a stale `Sexp` reads garbage types and pointers and fails loudly.
 pub const POISON_TYPE: u8 = 0xDB;
 
+/// Under `ROBIGO_GC_MOVE=young:N`: a moving collection copied this object
+/// (it is the copy), so the young collections leave it where it is. Fresh
+/// objects have it clear. The header's free flag bit
+/// ([`flags::SPARE`]), which only the moving collector sets; a copy made
+/// by any later code path that copies flags keeps it, which only means the
+/// copy waits for a full collection to move.
+pub(super) const OLD: u8 = flags::SPARE;
+
+/// `ROBIGO_GC_MOVE`: off (unset, empty or `0`), `Some(0)` for `1` (every
+/// collection moves everything), `Some(n)` for `young:n` (every n-th moving
+/// collection moves everything, the others the young objects).
+///
+/// # Panics
+/// On any other value: a mistyped check must not silently not check.
+pub(super) fn policy_from_env() -> Option<u32> {
+    let v = std::env::var("ROBIGO_GC_MOVE").ok()?;
+    match v.as_str() {
+        "" | "0" => None,
+        "1" => Some(0),
+        _ => match v.strip_prefix("young:").and_then(|n| n.parse::<u32>().ok()) {
+            Some(n) if n >= 1 => Some(n),
+            _ => panic!("robigo: ROBIGO_GC_MOVE is 1 or young:N (N at least 1), not {v:?}"),
+        },
+    }
+}
+
+/// `ROBIGO_GC_MOVE=young:N`'s state.
+pub(super) struct Young {
+    /// Every `full_every`-th moving collection moves everything it may, the
+    /// others only the young objects; 0 (`=1`): every one moves everything.
+    full_every: u32,
+    /// The moving collections so far, which pick the full ones.
+    collections: u64,
+    /// The collections that moved only the young objects.
+    pub(super) young_only: u64,
+    /// A young collection's old copies, retired after its marking.
+    moved: Moved,
+}
+
+impl Young {
+    pub(super) fn new(full_every: u32) -> Young {
+        Young { full_every, collections: 0, young_only: 0, moved: Moved::default() }
+    }
+}
+
 /// What [`Core::evacuate`] moved, for the forwarding and the retirement.
+#[derive(Default)]
 pub(super) struct Moved {
     /// old small copies
     small: Vec<*mut u8>,
@@ -68,6 +128,25 @@ impl Visitor for Forward {
     }
 }
 
+/// A young collection's marking visitor: each edge is marked, and takes
+/// the address of the object's copy when the marker moved it.
+pub(super) struct MarkYoung<'a>(pub(super) &'a mut Core);
+
+impl Visitor for MarkYoung<'_> {
+    #[inline(always)]
+    fn edge(&mut self, edge: &mut Sexp) {
+        // SAFETY: as for `Mark`: a `MarkYoung` exists only inside a young
+        // collection's marking (this module makes it), shown the edges of
+        // the roots and of marked objects, each null, an old copy or live.
+        unsafe {
+            let q = self.0.mark_young(*edge);
+            if q != *edge {
+                *edge = q;
+            }
+        }
+    }
+}
+
 impl Core {
     /// Whether collections move objects (`ROBIGO_GC_MOVE=1`, read when the
     /// core is made, or [`Core::set_gc_move`]).
@@ -86,6 +165,253 @@ impl Core {
     /// anything is handed to C.
     pub unsafe fn set_gc_move(&mut self, on: bool) {
         self.gc_move = on;
+        self.young.full_every = 0;
+    }
+
+    /// Move objects from now on as `ROBIGO_GC_MOVE=young:every` does: every
+    /// `every`-th moving collection moves everything it may, the others only
+    /// the young objects.
+    ///
+    /// # Safety
+    /// As for [`Core::set_gc_move`] with `on` true.
+    ///
+    /// # Panics
+    /// If `every` is 0.
+    pub unsafe fn set_gc_move_young(&mut self, every: u32) {
+        assert!(every >= 1, "robigo: a young moving policy needs a full collection every N >= 1");
+        self.gc_move = true;
+        self.young.full_every = every;
+    }
+
+    /// The collections that moved only the young objects
+    /// (`ROBIGO_GC_MOVE=young:N`; the others moved everything).
+    pub fn young_collections(&self) -> u64 {
+        self.young.young_only
+    }
+
+    /// Whether the collection starting now moves only the young objects;
+    /// counts the moving collections. Not while the pin report watches: its
+    /// scan is the full collection's.
+    pub(super) fn young_collection(&mut self) -> bool {
+        if !self.gc_move {
+            return false;
+        }
+        let y = &mut *self.young;
+        y.collections += 1;
+        let young = y.full_every > 1 && self.diag.is_none() && !y.collections.is_multiple_of(y.full_every as u64);
+        y.young_only += young as u64;
+        young
+    }
+
+    /// A young collection's pins, before anything moves: what a C word may
+    /// point at is recorded as seen by C ([`Core::pin`]), so the marker
+    /// that copies young objects leaves it where it is. Marks nothing: the
+    /// segments are scanned again, as pins, after the weak references.
+    ///
+    /// # Safety
+    /// At a young collection's start, on the core's thread.
+    pub(super) unsafe fn pin_segments(&mut self) {
+        // SAFETY: a callback and a context of matching types, on the core's
+        // thread (the caller's contract).
+        unsafe { crate::unwind::robigo_heap_spill(Self::pin_segments_cb, self as *mut Core as *mut c_void) }
+    }
+
+    /// # Safety
+    /// As for [`Core::scan_segments`].
+    unsafe extern "C" fn pin_segments_cb(ctx: *mut c_void) {
+        // SAFETY: as in `scan_segments`: the words are C's to read.
+        unsafe {
+            let c = &mut *(ctx as *mut Core);
+            let (min, max) = (c.heap.min_addr, c.heap.max_addr);
+            let marker = 0usize;
+            let sp = std::hint::black_box(&marker) as *const usize as usize;
+            let mut seg = c.scan_chain;
+            while !seg.is_null() {
+                let s = &*seg;
+                let regs = s.regs.as_ptr() as usize;
+                for (lo, hi) in [(s.lo.max(sp), s.hi.min(c.stack_top)), (regs, regs + std::mem::size_of_val(&s.regs))] {
+                    crate::unwind::robigo_heap_scan_words(lo, hi, min, max, Self::pin_hit, ctx);
+                }
+                seg = s.prev;
+            }
+        }
+    }
+
+    /// `pin_segments`' answer to a word: what it keeps is pinned.
+    ///
+    /// # Safety
+    /// `ctx` is the collecting core.
+    unsafe extern "C" fn pin_hit(ctx: *mut c_void, _at: usize, v: usize) {
+        // SAFETY: the caller's contract; `scan_candidates` gives allocated
+        // objects.
+        unsafe {
+            let c = &mut *(ctx as *mut Core);
+            for p in c.scan_candidates(v).into_iter().flatten() {
+                c.pin(Sexp(p));
+            }
+        }
+    }
+
+    /// Mark `p` in a young collection and return where it is now: an old
+    /// copy gives its copy's address; a young object that may move is
+    /// copied first (the copy marked and queued for tracing); anything else
+    /// is marked where it is. The marker's fast path is `mark_obj`'s: a
+    /// null, immortal or marked object returns at once, and only an object
+    /// seen for the first time takes [`Core::mark_young_first`]'s call.
+    ///
+    /// # Safety
+    /// As for [`Core::mark_obj`], during a young collection's marking, after
+    /// [`Core::pin_segments`].
+    #[inline(always)]
+    pub(super) unsafe fn mark_young(&mut self, p: Sexp) -> Sexp {
+        // SAFETY: the caller's contract: `p` is null, an old copy (no flags,
+        // never marked) or an allocated object, whose header and mark are
+        // readable.
+        unsafe {
+            if p.is_null() {
+                return p;
+            }
+            let f = p.flags();
+            if f & flags::IMMORTAL != 0 || self.is_marked(p) {
+                return p;
+            }
+            // most first visits are to old objects: marked here, as
+            // `mark_obj` marks; only a young object or an old copy takes the
+            // call
+            if f & OLD != 0 {
+                self.set_mark(p);
+                return p;
+            }
+            self.mark_young_first(p)
+        }
+    }
+
+    /// Mark the unmarked, mortal object `p` and queue it for tracing:
+    /// `mark_obj`'s second half.
+    ///
+    /// # Safety
+    /// `p` is an allocated, mortal object of this heap, not yet marked, during
+    /// a collection's marking.
+    #[inline(always)]
+    unsafe fn set_mark(&mut self, p: Sexp) {
+        // SAFETY: as in `mark_obj`: its block or large chunk's header.
+        unsafe {
+            let b = (p.0 as usize & !(BLOCK - 1)) as *mut Block;
+            if (*b).magic == 0x524f4249474f4241 {
+                let g = (p.0 as usize - Block::data_ptr(b) as usize) / GRANULE;
+                *(*b).marks.as_mut_ptr().add(g >> 6) |= 1u64 << (g & 63);
+                (*b).marked = (*b).marked.wrapping_add(1);
+            } else {
+                *(b as *mut u64).add(1) = self.epoch;
+            }
+            self.mark_stack.push(p);
+        }
+    }
+
+    /// [`Core::mark_young`] of a young object or an old copy, not yet
+    /// marked by this collection.
+    ///
+    /// # Safety
+    /// As for [`Core::mark_young`]; `p` is unmarked, mortal and not [`OLD`].
+    #[inline(never)]
+    unsafe fn mark_young_first(&mut self, p: Sexp) -> Sexp {
+        // SAFETY: the caller's contract.
+        unsafe {
+            if p.typ() == FORWARDED {
+                return Sexp(*(p.0.add(header::OFF_LINK) as *const *mut u8));
+            }
+            if !p.seen_by_c()
+                && let Some(q) = self.copy_young(p)
+            {
+                return q;
+            }
+            self.set_mark(p);
+            p
+        }
+    }
+
+    /// Copy the young, unmarked object `p`: the copy is marked, [`OLD`] and
+    /// queued for tracing, the old copy forwards to it and waits for
+    /// [`Core::retire_young`]. None if the system refuses a large copy (it
+    /// stays where it is: a debug collector degrades).
+    ///
+    /// # Safety
+    /// `p` is an unmarked object of this heap that may move, during a young
+    /// collection's marking.
+    unsafe fn copy_young(&mut self, p: Sexp) -> Option<Sexp> {
+        // SAFETY: the caller's contract: `p`'s block or large chunk has a
+        // header; a small object's slot is its class's size, a large one's
+        // payload its chunk's; both are copied into fresh memory of the size.
+        unsafe {
+            let b = (p.0 as usize & !(BLOCK - 1)) as *mut Block;
+            let q = if (*b).magic == 0x524f4249474f4241 {
+                let size = SIZES[(*b).class as usize];
+                let q = self.heap.alloc(size);
+                std::ptr::copy_nonoverlapping(p.0, q, size);
+                self.mark_copy(q);
+                self.young.moved.small.push(p.0);
+                q
+            } else {
+                let base = b as usize;
+                let c = *self.heap.chunks.iter().find(|c| c.base == base)?;
+                let size = c.end - base - DATA_OFF;
+                let q = self.heap.try_alloc_large(size)?;
+                std::ptr::copy_nonoverlapping(p.0, q, size);
+                *((q as usize - DATA_OFF) as *mut u64).add(1) = self.epoch;
+                self.young.moved.large.push(base);
+                q
+            };
+            *q.add(header::OFF_FLAGS) |= OLD;
+            forward_to(p.0, q);
+            self.mark_stack.push(Sexp(q));
+            self.stats.moved += 1;
+            Some(Sexp(q))
+        }
+    }
+
+    /// The CHARSXP cache's entries of the strings a young collection
+    /// copied take their copies (the cache is pruned on the marks next).
+    ///
+    /// # Safety
+    /// After a young collection's marking, before the prune.
+    pub(super) unsafe fn forward_young_chars(&mut self) {
+        let olds: Vec<*mut u8> = self
+            .young
+            .moved
+            .small
+            .iter()
+            .copied()
+            .chain(self.young.moved.large.iter().map(|&b| (b + DATA_OFF) as *mut u8))
+            .collect();
+        for p in olds {
+            // SAFETY: an old copy keeps its copy's address in its link word
+            // until it is retired; the copy is a live object.
+            unsafe {
+                let q = Sexp(*(p.add(header::OFF_LINK) as *const *mut u8));
+                if q.typ() == CHARSXP && q.gp() & gp::charsxp::CACHED != 0 {
+                    self.chars.replace(Sexp(p), q);
+                }
+            }
+        }
+    }
+
+    /// Retire a young collection's old copies, as [`Core::retire`] does,
+    /// for copies that were never marked.
+    ///
+    /// # Safety
+    /// After a young collection's marking and the CHARSXP fix-up.
+    pub(super) unsafe fn retire_young(&mut self) {
+        let moved = std::mem::take(&mut self.young.moved);
+        for p in moved.small {
+            // SAFETY: as in `retire`; the old copy was never marked.
+            unsafe {
+                let b = (p as usize & !(BLOCK - 1)) as *mut Block;
+                std::ptr::write_bytes(p, 0xDB, SIZES[(*b).class as usize]);
+                *p.add(header::OFF_FLAGS) = 0;
+            }
+        }
+        // SAFETY: the caller's contract.
+        unsafe { self.retire_large(moved.large) };
     }
 
     /// Under `gc_move`, record a C word's object as one C has seen (the
@@ -169,6 +495,7 @@ impl Core {
                 let size = SIZES[(*b).class as usize];
                 let q = self.heap.alloc(size);
                 std::ptr::copy_nonoverlapping(p, q, size);
+                *q.add(header::OFF_FLAGS) |= OLD;
                 self.mark_copy(q);
                 forward_to(p, q);
             }
@@ -186,6 +513,7 @@ impl Core {
             // collection's mark.
             unsafe {
                 std::ptr::copy_nonoverlapping(p, q, size);
+                *q.add(header::OFF_FLAGS) |= OLD;
                 *((q as usize - DATA_OFF) as *mut u64).add(1) = self.epoch;
                 forward_to(p, q);
             }
@@ -260,7 +588,9 @@ impl Core {
     /// # Safety
     /// As for [`Core::forward_heap`]; `roots` are the collection's.
     pub(super) unsafe fn forward_roots<R: Trace + ?Sized>(roots: &mut R) {
-        roots.trace(&mut Forward);
+        // through `dyn Visitor`: one instance of the embedder's root walk for
+        // both moving modes (`collect_needing`)
+        roots.trace::<dyn Visitor>(&mut Forward);
     }
 
     /// Poison the old small copies and leave them to the sweep; take the
@@ -285,7 +615,17 @@ impl Core {
                 (*b).marked = (*b).marked.wrapping_sub(1);
             }
         }
-        for base in moved.large {
+        // SAFETY: the caller's contract.
+        unsafe { self.retire_large(moved.large) };
+    }
+
+    /// Take the old large chunks out of the heap, without access, until the
+    /// next collection.
+    ///
+    /// # Safety
+    /// As for [`Core::retire`]: nothing refers to their objects.
+    unsafe fn retire_large(&mut self, large: Vec<usize>) {
+        for base in large {
             let Some(i) = self.heap.chunks.iter().position(|c| c.base == base) else { continue };
             let c = self.heap.chunks.remove(i);
             // SAFETY: the chunk is out of the heap's list (the sweep and the

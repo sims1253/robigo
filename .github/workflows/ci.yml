@@ -196,7 +196,12 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 30
+    # Measured (docs/ledger/g3/2026-11-17-rt-job-capacity.md and
+    # 2026-11-17-retry-torture-ci.md): the slowest hosted runners take ~20 min
+    # with a case per CPU, ~9 of them the release tests, and the retry-torture
+    # step (rt-ci.py's last: its feature rebuild and run) adds ~4; 40 keeps
+    # 1.6x the ~24. A step that adds minutes moves this number with data.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
@@ -273,6 +278,15 @@ jobs:
         run: scripts/r-src.sh
       - name: The base subset is the one this tree generates
         run: scripts/base-subset.sh --check
+      # which scripts reach each name: the committed file leaves it out, so
+      # that a new case changes it only where it reaches a new name
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: base-subset-reached-by
+          path: .robigo/base-subset/reached-by.txt
+          if-no-files-found: ignore
+          retention-days: 14
 
   build:
     needs: select
@@ -980,8 +994,9 @@ jobs:
           image=$(printf '%s' "$IMAGE" | sha256sum | cut -c1-16)
           echo "CPU: $model, signature $sig; ${pkgs% }; oracle image $IMAGE" | tee -a "$GITHUB_STEP_SUMMARY"
           # rt-gnur-2: the rival is GNU R's literal default build (the lead's
-          # F2, docs/ledger/g3/2026-11-17-a0b-stock-rival.md), not the image's
-          echo "key=rt-gnur-2-$image-$sig-$(printf '%s' "$pkgs" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          # F2, docs/ledger/g3/2026-11-17-a0b-stock-rival.md), not the image's;
+          # rt-gnur-3: churn.R starts with a full collection (m1-bars.toml)
+          echo "key=rt-gnur-3-$image-$sig-$(printf '%s' "$pkgs" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
           echo "image=$image" >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@v6
         id: gnur
