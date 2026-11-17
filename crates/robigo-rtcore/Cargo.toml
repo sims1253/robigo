@@ -18,5 +18,11 @@ cc = "1"
 [dev-dependencies]
 trybuild = "1"
 
+[features]
+# ROBIGO_RETRY_TORTURE=1 (Cx::retry_torture, docs/g3.md §16): compiled in only
+# with this feature, as GNU R's --enable-strict-barrier is, since its check in
+# every build costs about 0.2-0.7% of the perf rows' instructions
+retry-torture = []
+
 [lints]
 workspace = true
