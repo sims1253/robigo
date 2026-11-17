@@ -204,10 +204,10 @@ pub fn expand_file_name_unix(s: &[u8]) -> (Vec<u8>, Option<String>) {
         // follow readline (and not libedit) in preferring HOME
         match std::env::var_os("HOME") {
             Some(h) if !h.is_empty() => Some(std::os::unix::ffi::OsStrExt::as_bytes(h.as_os_str()).to_vec()),
-            _ => passwd_dir(None),
+            _ => robigo_rtcore::clib::passwd_home(None),
         }
     } else {
-        passwd_dir(Some(user))
+        robigo_rtcore::clib::passwd_home(Some(user))
     };
     let Some(home) = home else { return (s.to_vec(), None) };
     match slash {
@@ -219,11 +219,8 @@ pub fn expand_file_name_unix(s: &[u8]) -> (Vec<u8>, Option<String>) {
             v.push(b'/');
             v.extend_from_slice(&s[k + 1..]);
             if v.len() >= R_PATH_MAX {
-                let msg = format!(
-                    "expanded path length {} would be too long for\n{}\n",
-                    v.len(),
-                    String::from_utf8_lossy(s)
-                );
+                let msg =
+                    format!("expanded path length {} would be too long for\n{}\n", v.len(), String::from_utf8_lossy(s));
                 return (s.to_vec(), Some(msg));
             }
             (v, None)
@@ -244,31 +241,6 @@ pub fn r_expand_file_name(cx: &mut robigo_rtcore::Cx, name: &[u8]) -> robigo_rtc
 /// open callback): GNU R's over-long expansion warning is dropped.
 pub fn expand_file_name(name: &[u8]) -> Vec<u8> {
     expand_file_name_unix(name).0
-}
-
-/// The home directory of the password entry of `user` (`getpwnam`), or of
-/// the process's user (`getpwuid(getuid())`).
-fn passwd_dir(user: Option<&[u8]>) -> Option<Vec<u8>> {
-    let mut buf = vec![0 as libc::c_char; 16384];
-    #[allow(unsafe_code)]
-    // SAFETY: a zeroed passwd is a valid out-argument; the reentrant
-    // lookups write it and `result`, pointing into `buf`, which outlives
-    // the reads below; `name` is NUL-terminated.
-    unsafe {
-        let mut pw: libc::passwd = std::mem::zeroed();
-        let mut result: *mut libc::passwd = std::ptr::null_mut();
-        let rc = match user {
-            Some(u) => {
-                let name = std::ffi::CString::new(u).ok()?;
-                libc::getpwnam_r(name.as_ptr(), &mut pw, buf.as_mut_ptr(), buf.len(), &mut result)
-            }
-            None => libc::getpwuid_r(libc::getuid(), &mut pw, buf.as_mut_ptr(), buf.len(), &mut result),
-        };
-        if rc != 0 || result.is_null() || pw.pw_dir.is_null() {
-            return None;
-        }
-        Some(std::ffi::CStr::from_ptr(pw.pw_dir).to_bytes().to_vec())
-    }
 }
 
 fn path_of(name: &[u8]) -> std::path::PathBuf {

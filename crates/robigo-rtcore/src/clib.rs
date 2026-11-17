@@ -1,7 +1,8 @@
 //! The C library behind safe functions, for builtins that GNU R implements
 //! with it (robigo-rtbuiltins forbids `unsafe`): the clock and broken-down
-//! time (`time`, `localtime_r`, `gmtime_r`, which datetime.c calls on Linux)
-//! and `wcstod` (Rstrptime.h's `%OS`). None of them changes the process: they
+//! time (`time`, `localtime_r`, `gmtime_r`, which datetime.c calls on Linux),
+//! `wcstod` (Rstrptime.h's `%OS`) and the password database's home
+//! directories (sys-unix.c's `R_ExpandFileName_unix`). None of them changes the process: they
 //! read the environment's `TZ` and the C library's locale, which robigo never
 //! sets (the isolate's locale is its own, `Locale`).
 
@@ -113,4 +114,29 @@ pub fn wcstod_of(s: &[u32]) -> (f64, usize) {
     // SAFETY: `end` points into `buf` (at its start when nothing was read).
     let used = unsafe { end.offset_from(buf.as_ptr()) } as usize;
     (v, used.min(s.len()))
+}
+
+/// The home directory in the password database of `user` (`getpwnam`), or
+/// of the process's user (`getpwuid(getuid())`) for `None`; `None` when
+/// there is no such entry. (The reentrant lookups.)
+pub fn passwd_home(user: Option<&[u8]>) -> Option<Vec<u8>> {
+    let mut buf = vec![0 as libc::c_char; 16384];
+    // SAFETY: a zeroed passwd is a valid out-argument; the reentrant lookups
+    // write it and `result`, whose strings point into `buf`, alive for the
+    // reads below; `name` is NUL-terminated.
+    unsafe {
+        let mut pw: libc::passwd = std::mem::zeroed();
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+        let rc = match user {
+            Some(u) => {
+                let name = std::ffi::CString::new(u).ok()?;
+                libc::getpwnam_r(name.as_ptr(), &mut pw, buf.as_mut_ptr(), buf.len(), &mut result)
+            }
+            None => libc::getpwuid_r(libc::getuid(), &mut pw, buf.as_mut_ptr(), buf.len(), &mut result),
+        };
+        if rc != 0 || result.is_null() || pw.pw_dir.is_null() {
+            return None;
+        }
+        Some(std::ffi::CStr::from_ptr(pw.pw_dir).to_bytes().to_vec())
+    }
 }

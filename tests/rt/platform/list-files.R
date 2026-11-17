@@ -35,3 +35,9 @@ f(include.dirs = NA)
 f(no.. = NA)
 f(fixed = NA, pattern = ".")
 tryCatch(.Internal(list.files(d)), error = function(e) conditionMessage(e))
+# path_buffer_append's warning, given as each over-long path is made
+# (padded to 4085 bytes before the separator, wherever the script runs)
+long <- paste0(strrep("./", (4085L - nchar(d)) %/% 2L), d)
+nchar(long)
+withCallingHandlers(length(lf(path = long, recursive = TRUE)),
+                    warning = function(w) { cat("warning:", conditionMessage(w), "\n"); invokeRestart("muffleWarning") })

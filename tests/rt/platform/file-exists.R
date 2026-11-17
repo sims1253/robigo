@@ -16,3 +16,5 @@ tryCatch(fe(s), error = function(e) conditionMessage(e))
 l <- "\x81"
 Encoding(l) <- "latin1"
 withCallingHandlers(fe(l), warning = function(w) { print(conditionMessage(w)); invokeRestart("muffleWarning") })
+# ~user is that user's home (the password database)
+fe(c("~root", "~root/", "~nosuchuserxyz"))

@@ -153,7 +153,7 @@ pub fn do_fileremove(
     for n in &names {
         let ok = match n {
             Some(b) => {
-                let p = crate::connections::expand_file_name(b);
+                let p = crate::connections::r_expand_file_name(cx, b)?;
                 let path = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&p);
                 // glibc's remove(): unlink, and rmdir only when unlink
                 // failed with EISDIR (the errno GNU R then reports is
@@ -247,12 +247,14 @@ pub fn do_direxists(
                 None
             }
         };
-        let is_dir = !na
-            && p.is_some_and(|b| {
-                let p = crate::connections::expand_file_name(&b);
+        let is_dir = match p {
+            Some(b) if !na => {
+                let p = crate::connections::r_expand_file_name(cx, &b)?;
                 std::fs::metadata(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&p))
                     .is_ok_and(|m| m.is_dir())
-            });
+            }
+            _ => false,
+        };
         ans.push(robigo_rtcore::Lgl(is_dir as i32));
     }
     cx.build(out, |cx| Ok(cx.alloc_copy(&ans)?.finish().into()))
@@ -320,7 +322,7 @@ pub fn do_fileexists(
         // (R_CheckUserInterrupt every 16: robigo-rt's interrupts are S3x's)
         let ok = match translate_fp2(cx, file, i)? {
             // documented to report FALSE for paths too long after expansion
-            Some(p) if p.len() <= R_PATH_MAX => stat_ok(&crate::connections::expand_file_name(&p)),
+            Some(p) if p.len() <= R_PATH_MAX => stat_ok(&crate::connections::r_expand_file_name(cx, &p)?),
             _ => false,
         };
         ans.push(robigo_rtcore::Lgl(ok as i32));
@@ -340,25 +342,41 @@ struct ListFiles<'a> {
 
 impl ListFiles<'_> {
     /// `tre_regexec(reg, name, 0, NULL, 0) == 0` (no pattern matches all).
-    fn matches(&self, name: &[u8]) -> bool {
-        match self.reg {
-            None => true,
-            Some(r) => {
-                let mut m = [];
-                let hit = if self.utf8 { r.exec_mbs(name, &mut m, 0) } else { r.exec_bytes(name, &mut m, 0) };
-                matches!(hit, Ok(true))
+    /// In a UTF-8 locale GNU R matches the name as a multibyte string, which
+    /// TRE's backtracking matcher (back references) walks with a position
+    /// it does not restore on backing up; robigo-text has not ported that
+    /// path, so such a pattern is refused rather than answered differently.
+    fn matches(&self, cx: &mut Cx, name: &[u8]) -> RResult<bool> {
+        let Some(r) = self.reg else { return Ok(true) };
+        let mut m = [];
+        let hit = if self.utf8 {
+            if r.have_backrefs() {
+                return Err(cx.error(
+                    "robigo: list.files() with a back reference in 'pattern' in a UTF-8 locale \
+                     (TRE's backtracking matcher on a multibyte string) is not implemented yet",
+                ));
             }
+            r.exec_mbs(name, &mut m, 0)
+        } else {
+            r.exec_bytes(name, &mut m, 0)
+        };
+        match hit {
+            Ok(h) => Ok(h),
+            // a status (REG_NOMATCH, REG_ESPACE): not 0, so no match
+            Err(robigo_text::tre::Error::Status(_)) => Ok(false),
+            // R_assert's error (TRE's `assert`), or what robigo has not
+            // ported
+            Err(e) => Err(cx.error(&e.message())),
         }
     }
 
     /// `list_files(pb, offset, len, ...)`: the entries of the directory
     /// `pb[..len]` (which ends in a separator), with `.` and `..` as
     /// `readdir` gives them (their order does not matter: the result is
-    /// sorted); a match is added as `pb[offset..]`. `warnings` collects
-    /// path_buffer_append's "over-long path".
-    fn list(&self, pb: &mut Vec<u8>, offset: usize, len: usize, ans: &mut Vec<Vec<u8>>, warnings: &mut usize) {
+    /// sorted); a match is added as `pb[offset..]`.
+    fn list(&self, cx: &mut Cx, pb: &mut Vec<u8>, offset: usize, len: usize, ans: &mut Vec<Vec<u8>>) -> RResult<()> {
         let dir = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&pb[..len]).to_owned();
-        let Ok(rd) = std::fs::read_dir(&dir) else { return };
+        let Ok(rd) = std::fs::read_dir(&dir) else { return Ok(()) };
         let mut names: Vec<Vec<u8>> = vec![b".".to_vec(), b"..".to_vec()];
         names.extend(
             rd.filter_map(|e| e.ok())
@@ -373,25 +391,26 @@ impl ListFiles<'_> {
             pb.truncate(len);
             pb.extend_from_slice(&name);
             if pb.len() + 1 > R_PATH_MAX {
-                *warnings += 1;
+                cx.warning("over-long path")?;
             }
             let not_dot = name != b"." && name != b"..";
             if self.recursive && is_dir_path(pb) {
                 if not_dot {
-                    if self.idirs && self.matches(&name) {
+                    if self.idirs && self.matches(cx, &name)? {
                         ans.push(pb[offset..].to_vec());
                     }
                     // the terminator becomes a separator
                     pb.push(b'/');
                     let newlen = pb.len();
-                    self.list(pb, offset, newlen, ans, warnings);
+                    self.list(cx, pb, offset, newlen, ans)?;
                 }
                 continue;
             }
-            if (not_dot || self.allowdots) && self.matches(&name) {
+            if (not_dot || self.allowdots) && self.matches(cx, &name)? {
                 ans.push(pb[offset..].to_vec());
             }
         }
+        Ok(())
     }
 }
 
@@ -475,20 +494,16 @@ pub fn do_listfiles(
     };
     let lf = ListFiles { allfiles, recursive, idirs, allowdots: nodots == 0, reg: reg.as_ref(), utf8: loc.utf8 };
     let mut ans: Vec<Vec<u8>> = Vec::new();
-    let mut warnings = 0;
     for i in 0..nd {
         // search_setup: the expanded path, opened, then a separator
         let Some(path) = translate_fp2(cx, d, i)? else { continue };
-        let mut pb = crate::connections::expand_file_name(&path);
+        let mut pb = crate::connections::r_expand_file_name(cx, &path)?;
         if std::fs::read_dir(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&pb)).is_err() {
             continue;
         }
         pb.push(b'/');
         let len = pb.len();
-        lf.list(&mut pb, if fullnames != 0 { 0 } else { len }, len, &mut ans, &mut warnings);
-    }
-    for _ in 0..warnings {
-        cx.warning("over-long path")?;
+        lf.list(cx, &mut pb, if fullnames != 0 { 0 } else { len }, len, &mut ans)?;
     }
     if let Err(e) = robigo_rtbuiltins::sort::ssort_native(&mut ans, loc) {
         let d = e.diag(Some(call));

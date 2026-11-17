@@ -46,3 +46,7 @@ character(0)
 [1] "a.txt"          "b.Rd"           "B.txt"          "with space.txt"
 [5] "z_9.Rd"        
 [1] "1 argument passed to .Internal(list.files) which requires 9"
+[1] 4085
+warning: over-long path 
+warning: over-long path 
+[1] 7
