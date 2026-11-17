@@ -7,8 +7,10 @@
 //! below `2n`, keys scattered by Knuth's multiplier, collisions resolved by
 //! linear probing. Strings are hashed by their CHARSXP's address unless an
 //! element carries a known encoding (latin1 or UTF-8): then by the bytes
-//! of their UTF-8 translation (docs/g3.md §7). The table is built and read
-//! within one `&Cx` interval, so the addresses do not move under it.
+//! of their UTF-8 translation (docs/g3.md §7). The table is an INTSXP on
+//! the heap, as `HashTableSetup` allocates it, built and read within one
+//! `&Cx` interval, which is GNU R's `PROTECT` for it: nothing collects, so
+//! neither it nor the keys' addresses move under it.
 //!
 //! The results do not depend on the hash function (only the probe order
 //! does), so the keys are compared exactly as GNU R's `equal` functions
@@ -30,21 +32,22 @@ use std::cell::Cell;
 const NIL: i32 = -1;
 const NA_INTEGER: i32 = i32::MIN;
 
-/// The table's shape: `M` slots, `K = log2(M)`, and the `nmax` budget.
-struct Table {
+/// `HashData`'s table: `M` slots, `K = log2(M)`, the `nmax` budget, and
+/// `HashTable`'s elements.
+struct Table<'g> {
     k: u32,
     m: usize,
     nmax: i64,
-    h: Vec<i32>,
+    h: &'g mut [i32],
 }
 
 /// "hash table is full" (an `nmax` too small).
 struct Full;
 
-impl Table {
-    /// `MKsetup(n, d, nmax)`.
+impl<'g> Table<'g> {
+    /// `MKsetup(n, d, nmax)`, then `HashTableSetup`'s table.
     // R: unique.c:MKsetup
-    fn sized(n: usize, nmax: Option<usize>) -> Table {
+    fn sized(cx: &'g Cx, n: usize, nmax: Option<usize>) -> Result<Table<'g>, NeedGc> {
         let n = match nmax {
             Some(m) if m != 1 => m,
             _ => n,
@@ -55,12 +58,18 @@ impl Table {
             m *= 2;
             k += 1;
         }
-        Table { k, m, nmax: n as i64, h: vec![NIL; m] }
+        Ok(Table { k, m, nmax: n as i64, h: Self::slots(cx, m)? })
     }
 
     /// The fixed tables of logical (4 slots) and raw (256) keys.
-    fn fixed(m: usize) -> Table {
-        Table { k: m.trailing_zeros(), m, nmax: m as i64, h: vec![NIL; m] }
+    fn fixed(cx: &'g Cx, m: usize) -> Result<Table<'g>, NeedGc> {
+        Ok(Table { k: m.trailing_zeros(), m, nmax: m as i64, h: Self::slots(cx, m)? })
+    }
+
+    /// `d->HashTable = allocVector(INTSXP, d->M)`, every slot `NIL`.
+    // R: unique.c:HashTableSetup
+    fn slots(cx: &'g Cx, m: usize) -> Result<&'g mut [i32], NeedGc> {
+        Ok(cx.alloc_with(m, |_| NIL)?.into_mut_slice())
     }
 
     /// `scatter(key, d)`.
@@ -123,7 +132,7 @@ impl Table {
 /// The keys of one vector type: GNU R's `hash` and `equal` pair.
 trait Keys {
     fn len(&self) -> usize;
-    fn hash(&self, i: usize, t: &Table) -> usize;
+    fn hash(&self, i: usize, t: &Table<'_>) -> usize;
     /// `equal(self, i, other, j)`.
     fn eq(&self, i: usize, other: &Self, j: usize) -> bool;
     /// A comparison robigo could not make (list elements only).
@@ -131,8 +140,8 @@ trait Keys {
         None
     }
     /// The table GNU R's `HashTableSetup` makes for these keys.
-    fn table(&self, nmax: Option<usize>) -> Table {
-        Table::sized(self.len(), nmax)
+    fn table<'g>(&self, cx: &'g Cx, nmax: Option<usize>) -> Result<Table<'g>, NeedGc> {
+        Table::sized(cx, self.len(), nmax)
     }
 }
 
@@ -147,15 +156,15 @@ impl Keys for LglKeys<'_> {
         self.0.len()
     }
     // R: unique.c:lhash, lequal
-    fn hash(&self, i: usize, _: &Table) -> usize {
+    fn hash(&self, i: usize, _: &Table<'_>) -> usize {
         let x = self.0[i].0;
         if x == NA_INTEGER { 2 } else { x as usize }
     }
     fn eq(&self, i: usize, o: &Self, j: usize) -> bool {
         self.0[i] == o.0[j]
     }
-    fn table(&self, _: Option<usize>) -> Table {
-        Table::fixed(4)
+    fn table<'g>(&self, cx: &'g Cx, _: Option<usize>) -> Result<Table<'g>, NeedGc> {
+        Table::fixed(cx, 4)
     }
 }
 
@@ -165,7 +174,7 @@ impl Keys for IntKeys<'_> {
     }
     // R: unique.c:ihash, iequal
     #[inline(always)]
-    fn hash(&self, i: usize, t: &Table) -> usize {
+    fn hash(&self, i: usize, t: &Table<'_>) -> usize {
         let x = self.0[i];
         if x == NA_INTEGER { 0 } else { t.scatter(x as u32) }
     }
@@ -207,7 +216,7 @@ impl Keys for RealKeys<'_> {
     }
     // R: unique.c:rhash
     #[inline(always)]
-    fn hash(&self, i: usize, t: &Table) -> usize {
+    fn hash(&self, i: usize, t: &Table<'_>) -> usize {
         let b = real_key(self.0[i]);
         t.scatter((b as u32).wrapping_add((b >> 32) as u32))
     }
@@ -239,7 +248,7 @@ impl Keys for CplxKeys<'_> {
         self.0.len()
     }
     // R: unique.c:chash, unify_complex_na
-    fn hash(&self, i: usize, t: &Table) -> usize {
+    fn hash(&self, i: usize, t: &Table<'_>) -> usize {
         let z = self.0[i];
         let (mut r, mut im) = (if z.r == 0.0 { 0.0 } else { z.r }, if z.i == 0.0 { 0.0 } else { z.i });
         if robigo_text::is_na(r) || robigo_text::is_na(im) {
@@ -262,14 +271,14 @@ impl Keys for RawKeys<'_> {
         self.0.len()
     }
     // R: unique.c:rawhash, rawequal
-    fn hash(&self, i: usize, _: &Table) -> usize {
+    fn hash(&self, i: usize, _: &Table<'_>) -> usize {
         self.0[i] as usize
     }
     fn eq(&self, i: usize, o: &Self, j: usize) -> bool {
         self.0[i] == o.0[j]
     }
-    fn table(&self, _: Option<usize>) -> Table {
-        Table::fixed(256)
+    fn table<'g>(&self, cx: &'g Cx, _: Option<usize>) -> Result<Table<'g>, NeedGc> {
+        Table::fixed(cx, 256)
     }
 }
 
@@ -311,7 +320,7 @@ impl Keys for StrKeys<'_> {
     }
     // R: unique.c:shash, cshash
     #[inline(always)]
-    fn hash(&self, i: usize, t: &Table) -> usize {
+    fn hash(&self, i: usize, t: &Table<'_>) -> usize {
         match &self.utf8 {
             None => t.scatter(ptrhash(self.v[i].as_ref())),
             Some(u) => {
@@ -408,7 +417,7 @@ impl Keys for ListKeys<'_> {
     fn len(&self) -> usize {
         self.v.len()
     }
-    fn hash(&self, i: usize, t: &Table) -> usize {
+    fn hash(&self, i: usize, t: &Table<'_>) -> usize {
         self.vhash_one(self.v[i], t) as usize
     }
     fn failed(&self) -> Option<NotYet> {
@@ -515,46 +524,50 @@ macro_rules! with_keys {
     }};
 }
 
-/// `duplicated(x)` (`Duplicated`, `duplicated3`): the flags, with
-/// `incomp`'s values never duplicates.
-fn duplicated_flags<K: Keys>(
+/// `duplicated(x)` (`Duplicated`, `duplicated3`): the flags, in the
+/// logical vector `duplicated()` returns, with `incomp`'s values never
+/// duplicates.
+// R: unique.c:duplicated3
+fn duplicated_flags<'g, K: Keys>(
+    cx: &'g Cx,
     x: &K,
     incomp: Option<&K>,
     from_last: bool,
     nmax: Option<usize>,
-) -> Result<Vec<bool>, Fail> {
+) -> Result<FreshVec<'g, Lgl>, Fail> {
     let n = x.len();
-    let mut t = x.table(nmax);
-    let mut v = vec![false; n];
+    let mut t = x.table(cx, nmax)?;
+    let mut ans = cx.alloc_vector::<Lgl>(n)?;
+    let v = ans.as_mut_slice();
     if from_last {
         for i in (0..n).rev() {
-            v[i] = t.is_dup(x, i).map_err(|_| Fail::Full)?;
+            v[i] = Lgl(t.is_dup(x, i).map_err(|_| Fail::Full)? as i32);
         }
     } else {
         for i in 0..n {
-            v[i] = t.is_dup(x, i).map_err(|_| Fail::Full)?;
+            v[i] = Lgl(t.is_dup(x, i).map_err(|_| Fail::Full)? as i32);
         }
     }
     if let Some(inc) = incomp {
         for i in 0..n {
-            if v[i] && (0..inc.len()).any(|j| x.eq(i, inc, j)) {
-                v[i] = false;
+            if v[i].0 != 0 && (0..inc.len()).any(|j| x.eq(i, inc, j)) {
+                v[i] = Lgl(0);
             }
         }
     }
     if let Some(e) = x.failed() {
         return Err(Fail::NotYet(e));
     }
-    Ok(v)
+    Ok(ans)
 }
 
 /// `any_duplicated(x)` / `any_duplicated3`: the 1-based index of the first
 /// duplicate (from the end with `from_last`), 0 for none.
-fn any_duplicated<K: Keys>(x: &K, incomp: Option<&K>, from_last: bool) -> Result<usize, Fail> {
+fn any_duplicated<K: Keys>(cx: &Cx, x: &K, incomp: Option<&K>, from_last: bool) -> Result<usize, Fail> {
     let n = x.len();
-    let mut t = x.table(None);
-    let order: Box<dyn Iterator<Item = usize>> = if from_last { Box::new((0..n).rev()) } else { Box::new(0..n) };
-    for i in order {
+    let mut t = x.table(cx, None)?;
+    for k in 0..n {
+        let i = if from_last { n - 1 - k } else { k };
         if t.is_dup(x, i).map_err(|_| Fail::Full)? {
             let excluded = incomp.is_some_and(|inc| (0..inc.len()).any(|j| x.eq(i, inc, j)));
             if !excluded {
@@ -643,9 +656,9 @@ pub fn do_duplicated<const CODE: i32>(
         let res: Result<Ref<'_>, Fail> = (|| {
             if CODE == 2 {
                 let ind = match inc {
-                    None => with_keys!(cx, xv, utf8, |k| any_duplicated(&k, None, from_last))?,
+                    None => with_keys!(cx, xv, utf8, |k| any_duplicated(cx, &k, None, from_last))?,
                     Some(iv) => with_keys!(cx, xv, utf8, |k| {
-                        with_same_keys(cx, iv, &k, utf8, |kk| any_duplicated(&k, Some(kk), from_last))
+                        with_same_keys(cx, iv, &k, utf8, |kk| any_duplicated(cx, &k, Some(kk), from_last))
                     })?,
                 };
                 return Ok(if ind > i32::MAX as usize {
@@ -655,15 +668,15 @@ pub fn do_duplicated<const CODE: i32>(
                 });
             }
             let dup = match inc {
-                None => with_keys!(cx, xv, utf8, |k| duplicated_flags(&k, None, from_last, nmax))?,
+                None => with_keys!(cx, xv, utf8, |k| duplicated_flags(cx, &k, None, from_last, nmax))?,
                 Some(iv) => with_keys!(cx, xv, utf8, |k| {
-                    with_same_keys(cx, iv, &k, utf8, |kk| duplicated_flags(&k, Some(kk), from_last, nmax))
+                    with_same_keys(cx, iv, &k, utf8, |kk| duplicated_flags(cx, &k, Some(kk), from_last, nmax))
                 })?,
             };
             if CODE == 0 {
-                return Ok(cx.alloc_with(dup.len(), |i| Lgl(dup[i] as i32))?.finish().into());
+                return Ok(dup.finish().into());
             }
-            Ok(keep_unique(cx, xv, &dup)?)
+            Ok(keep_unique(cx, xv, dup.as_slice())?)
         })();
         match res {
             Ok(r) => Ok(Built::done(r).with(warns)),
@@ -691,7 +704,7 @@ pub fn any_duplicated_of(cx: &mut Cx, x: Root<'_>) -> RResult<usize> {
             let cx = &*cx;
             let xv = x.bind(cx);
             let utf8 = any_known(xv).unwrap_or(false);
-            with_keys!(cx, xv, utf8, |k| any_duplicated(&k, None, false))
+            with_keys!(cx, xv, utf8, |k| any_duplicated(cx, &k, None, false))
         };
         match r {
             Ok(i) => return Ok(i),
@@ -777,14 +790,20 @@ fn empty_of(cx: &Cx, t: u8) -> Result<Ref<'_>, NeedGc> {
 
 /// `unique`'s result: the elements not duplicated, in order, no
 /// attributes.
-fn keep_unique<'g>(cx: &'g Cx, x: Ref<'g>, dup: &[bool]) -> Result<Ref<'g>, NeedGc> {
-    let k = dup.iter().filter(|d| !**d).count();
-    let idx: Vec<usize> = (0..dup.len()).filter(|&i| !dup[i]).collect();
+/// `do_duplicated`'s `unique`: the elements whose `dup` flag is 0, in order.
+// R: unique.c:do_duplicated
+fn keep_unique<'g>(cx: &'g Cx, x: Ref<'g>, dup: &[Lgl]) -> Result<Ref<'g>, NeedGc> {
+    let k = dup.iter().filter(|d| d.0 == 0).count();
+    // the kept indices, in order (GNU R's loop over `dup`)
+    let kept = || dup.iter().enumerate().filter(|(_, d)| d.0 == 0).map(|(i, _)| i);
     let none = Attrs::new();
     macro_rules! plain {
         ($t:ty, $v:expr) => {{
             let v = $v.as_slice().unwrap();
-            let mut r: FreshVec<'g, $t> = cx.alloc_with(k, |j| v[idx[j]])?;
+            let mut r: FreshVec<'g, $t> = cx.alloc_vector(k)?;
+            for (o, i) in r.as_mut_slice().iter_mut().zip(kept()) {
+                *o = v[i];
+            }
             none.apply(cx, &mut r)?;
             r.finish().into()
         }};
@@ -797,14 +816,14 @@ fn keep_unique<'g>(cx: &'g Cx, x: Ref<'g>, dup: &[bool]) -> Result<Ref<'g>, Need
         View::Raw(v) => plain!(u8, v),
         View::Str(v) => {
             let mut r = cx.alloc_vector::<Char<'g>>(k)?;
-            for (j, &i) in idx.iter().enumerate() {
+            for (j, i) in kept().enumerate() {
                 r.set(j, v.get(i));
             }
             r.finish().into()
         }
         View::List(v) | View::Expr(v) => {
             let mut r = if x.sexptype() == EXPRSXP { cx.alloc_expression(k)? } else { cx.alloc_vector::<Ref<'g>>(k)? };
-            for (j, &i) in idx.iter().enumerate() {
+            for (j, i) in kept().enumerate() {
                 r.set(j, v.get(i));
             }
             r.finish().into()
@@ -884,7 +903,7 @@ fn match5<'g>(
     }
     // the scalar case, for speed only
     if n == 1 && incomp.is_none() {
-        let val = scalar_match(cx, table, x, nmatch);
+        let val = scalar_match(cx, table, x, nmatch)?;
         return Ok(Built::done(cx.alloc_copy(&[val])?.finish()).with(warns));
     }
     let inc = match incomp {
@@ -925,7 +944,7 @@ fn match5<'g>(
             ($k:ty) => {{
                 let tk = <$k>::of(cx, table, utf8);
                 let xk = <$k>::of(cx, x, utf8);
-                let mut t = tk.table(None);
+                let mut t = tk.table(cx, None)?;
                 for i in 0..tk.len() {
                     let _ = t.is_dup(&tk, i);
                 }
@@ -963,7 +982,7 @@ fn is_valid_string(x: Ref<'_>) -> bool {
 }
 
 /// `match5`'s scalar case: a linear scan of the table.
-fn scalar_match(cx: &Cx, table: Ref<'_>, x: Ref<'_>, nmatch: i32) -> i32 {
+fn scalar_match(cx: &Cx, table: Ref<'_>, x: Ref<'_>, nmatch: i32) -> Result<i32, NeedGc> {
     let pos = match (x.view(), table.view()) {
         (View::Str(a), View::Str(t)) => {
             let xv = a.get(0);
@@ -989,15 +1008,15 @@ fn scalar_match(cx: &Cx, table: Ref<'_>, x: Ref<'_>, nmatch: i32) -> i32 {
         (View::List(_), View::List(_)) | (View::Expr(_), View::Expr(_)) => {
             let tk = ListKeys::of(cx, table, false);
             let xk = ListKeys::of(cx, x, false);
-            let mut t = tk.table(None);
+            let mut t = tk.table(cx, None)?;
             for i in 0..tk.len() {
                 let _ = t.is_dup(&tk, i);
             }
-            return t.lookup(&tk, &xk, 0, nmatch);
+            return Ok(t.lookup(&tk, &xk, 0, nmatch));
         }
         _ => None,
     };
-    pos.map_or(nmatch, |p| p as i32 + 1)
+    Ok(pos.map_or(nmatch, |p| p as i32 + 1))
 }
 
 /// `.Internal(match(x, table, nomatch, incomparables))`.
@@ -1109,7 +1128,7 @@ pub fn do_pmatch(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
         } else {
             let tk = StrKeys::new(cx, tv, use_utf8);
             let xk = StrKeys::new(cx, iv, use_utf8);
-            let mut t = tk.table(None);
+            let mut t = tk.table(cx, None)?;
             for j in 0..n_target {
                 let _ = t.is_dup(&tk, j);
             }
