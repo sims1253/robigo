@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 /// Fake addresses: never dereferenced here.
 fn obj(n: usize) -> Sexp {
     // SAFETY: only compared and counted, never read through.
-    unsafe { Sexp::from_ptr(std::ptr::without_provenance_mut(n * 16)) }
+    unsafe { Sexp::from_word(std::ptr::without_provenance_mut(n * 16)) }
 }
 
 /// Records each edge it is shown.

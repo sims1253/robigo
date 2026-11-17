@@ -505,10 +505,24 @@ impl Loc {
         unsafe { if s.kind() == CELL { Loc::cell(s.val()) } else { Loc::slot(s) } }
     }
 
+    /// The location's word, for identity: a cell's (or a base binding's
+    /// symbol's) address, or a slot's owner's, tagged.
     #[inline(always)]
     fn sexp(self) -> Sexp {
-        // SAFETY: a location is made from a live object's address (a cell's,
-        // or a slot's owner's, tagged); it is the same word.
+        // SAFETY: compared or masked only; [`Loc::object`] is the object
+        // handle of a location that is not a slot.
+        unsafe { Sexp::from_word(self.0.as_ptr()) }
+    }
+
+    /// The object a location that is not a slot names: its cell, or a
+    /// base binding's symbol.
+    ///
+    /// # Safety
+    /// The location is not a slot location (`at` is not `FrameSlot`), and
+    /// its object is live.
+    #[inline(always)]
+    unsafe fn object(self) -> Sexp {
+        // SAFETY: the caller's contract: an untagged object address.
         unsafe { Sexp::from_ptr(self.0.as_ptr()) }
     }
 
@@ -883,8 +897,9 @@ impl<'g> Binding<'g> {
     fn owned(self, cx: &Cx) {
         let x = self.loc.sexp();
         // a slot location's word is its owner's address, tagged
-        // SAFETY: the word of a binding's location: a cell's address, or a
-        // slot's owner's, tagged (only its block header is read).
+        // SAFETY: the location's word with the tag bits cleared: a live
+        // cell's (or symbol's) address, or a slot frame's (only its block
+        // header is read).
         let x = unsafe { Sexp::from_ptr(x.as_ptr().map_addr(|a| a & ADDR_MASK & !SLOT_TAG)) };
         cx.iso().check_owns(x);
     }
@@ -957,7 +972,7 @@ impl<'g> Binding<'g> {
         unsafe {
             match self.loc.at() {
                 At::FrameSlot(_) => None,
-                _ => Some(Ref::from_sexp(self.loc.sexp(), cx)),
+                _ => Some(Ref::from_sexp(self.loc.object(), cx)),
             }
         }
     }
@@ -1114,7 +1129,8 @@ unsafe fn global_walk(iso: &Isolate, s: Sexp) -> Result<Option<Loc>, Special> {
                 // holds objects): the walk finds it again.
                 if let Some(l) = loc_in_frame(iso, rho, s)? {
                     if !matches!(l.at(), At::FrameSlot(_)) {
-                        e.cell_mut(s, |c| c.cache = l.sexp());
+                        // (not a slot: the location's object, a live cell)
+                        e.cell_mut(s, |c| c.cache = l.object());
                     }
                     return Ok(Some(l));
                 }
@@ -3342,7 +3358,7 @@ mod loc_tests {
     /// A 16-byte aligned owner address below 2^48, never read.
     fn owner() -> Sexp {
         // SAFETY: never read through: the tests encode and decode it only.
-        unsafe { Sexp::from_ptr(std::ptr::without_provenance_mut(0x7ff1_2345_6780)) }
+        unsafe { Sexp::from_word(std::ptr::without_provenance_mut(0x7ff1_2345_6780)) }
     }
 
     /// Every slot index below [`MAX_SLOTS`] comes back from its location,

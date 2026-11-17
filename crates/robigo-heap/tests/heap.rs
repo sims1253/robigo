@@ -1156,7 +1156,11 @@ fn each_type_traces_exactly_its_pointer_words() {
         assert_eq!(traced_offsets(e), frame_words, "empty slot frame");
     }
     // an external pointer's car is an address
-    let p = unsafe { c.alloc_node(EXTPTRSXP, Sexp::from_ptr(16 as *mut u8), nil, nil) }.unwrap();
+    // SAFETY: a fake address, only stored as an external pointer's car.
+    let addr = unsafe { Sexp::from_word(16 as *mut u8) };
+    // SAFETY: only for EXTPTRSXP may `car` be any word (`Core::alloc_node`):
+    // an external pointer's car is neither counted nor traced.
+    let p = unsafe { c.alloc_node(EXTPTRSXP, addr, nil, nil) }.unwrap();
     assert_eq!(traced_offsets(p), words(EXTPTRSXP, &[layout::extptr::OFF_PROT, layout::extptr::OFF_TAG]), "EXTPTRSXP");
     for (t, n) in [(STRSXP, 3), (VECSXP, 2), (EXPRSXP, 1), (STRSXP, 300)] {
         let x = c.alloc_vector(t, n).unwrap();
@@ -2545,8 +2549,9 @@ fn objects_c_has_seen_or_pins_do_not_move() {
     // argument; the export roots the holder precisely
     collect_holding(&mut c, &[!pinned]);
     let holder = ROOTED_ARG.replace(Sexp::NULL);
-    // SAFETY: the pinned object's address, kept hidden from the scan.
-    let pinned = unsafe { Sexp::from_ptr(!pinned as *mut u8) };
+    // SAFETY: the complement of the pinned object's address, which no exact
+    // scan matches, so it stays hidden; compared and kept, never read.
+    let pinned = unsafe { Sexp::from_word(!pinned as *mut u8) };
     unsafe {
         assert_eq!(elt(holder, 0).addr(), !seen, "an object C has seen stays");
         assert_ne!(elt(holder, 1).addr(), !free, "an object C has not seen moves");
@@ -2743,8 +2748,9 @@ fn report_path(name: &str) -> std::path::PathBuf {
 fn run_probe(c: &mut Core, hidden_key: usize) {
     let p = probe();
     (p.hooks)(routine_collect);
-    // SAFETY: the key's address, kept hidden from the scan; it is live.
-    (p.give)(unsafe { Sexp::from_ptr(!hidden_key as *mut u8) });
+    // SAFETY: the complement of the key's address, hidden from the scan the
+    // same way; the probe only keeps it (in C), Rust never reads it.
+    (p.give)(unsafe { Sexp::from_word(!hidden_key as *mut u8) });
     let core: *mut Core = c;
     unsafe { native_call(core, p.routine, &[]) };
     ROUTINE_CORE.set(std::ptr::null_mut());

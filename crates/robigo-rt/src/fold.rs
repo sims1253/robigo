@@ -46,7 +46,7 @@ const HELPER: &[u8] = b"function(f, a, cl, h) {
 /// A call the compiler would fold: the base function and the folded
 /// arguments with their tags (R_NilValue for none).
 #[derive(Clone, Debug)]
-pub struct FoldReq {
+pub(crate) struct FoldReq {
     pub(crate) call: Sexp,
     pub(crate) fun: Sexp,
     pub(crate) args: Vec<(Sexp, Sexp)>,
@@ -76,7 +76,7 @@ impl Folds {
     /// # Safety
     /// `call` is a live object of the isolate the table is for (only its
     /// address is compared today; the contract keeps a read sound).
-    pub unsafe fn lookup(&self, call: Sexp) -> Option<Option<Sexp>> {
+    pub(crate) unsafe fn lookup(&self, call: Sexp) -> Option<Option<Sexp>> {
         self.view.borrow().iter().find(|e| e.0 == call).map(|e| e.1)
     }
 
@@ -130,7 +130,7 @@ impl Round {
     /// The end of a try: the view gone (a nested compile sets its own), the
     /// requests it made. Their objects are live until the next allocation
     /// that may collect.
-    pub fn end(cx: &Cx) -> Vec<FoldReq> {
+    pub(crate) fn end(cx: &Cx) -> Vec<FoldReq> {
         let f = &prims::state(cx).folds;
         f.view.borrow_mut().clear();
         std::mem::take(&mut *f.pending.borrow_mut())
