@@ -138,6 +138,9 @@ pub(crate) fn install(cx: &mut Cx) {
         eref: Default::default(),
     };
     cx.set_ext(Dlls { list: RefCell::new(vec![Box::new(base)]), found: Default::default() });
+    let mut h = cx.hooks();
+    h.has_native_symbol = has_symbol;
+    cx.install_hooks(h);
     robigo_rt::define_builtins(
         cx,
         &[
@@ -305,6 +308,15 @@ fn find_symbol_in(list: &[Box<DllInfo>], name: &[u8], pkg: &str, symbol: &mut Fo
         }
     }
     std::ptr::null()
+}
+
+/// `R_FindSymbol(name, "", NULL) != NULL`: the isolate's `has_native_symbol`
+/// hook (RNG.c's `user_unif_rand`, `user_norm_rand`).
+// R: Rdynload.c:R_FindSymbol
+fn has_symbol(cx: &Cx, name: &[u8]) -> bool {
+    let Some(d) = cx.ext::<Dlls>() else { return false };
+    let mut symbol = Found::of(SymType::Any);
+    !find_symbol_in(&d.list.borrow(), name, "", &mut symbol).is_null()
 }
 
 /// `.Call`'s `R_FindSymbol(name, pkg, &symbol)` with a `.Call` symbol, by
