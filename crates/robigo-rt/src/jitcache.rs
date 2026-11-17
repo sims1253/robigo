@@ -259,6 +259,9 @@ unsafe fn env_match(cx: &Cx, entry: Sexp, f: Sexp) -> bool {
 /// marked `NOJIT`.
 // R: eval.c:R_cmpfun
 pub fn cmpfun(cx: &mut Cx, op: Root<'_>, strategy: i32) -> RResult<()> {
+    // the JIT state is a closure's: never another object's (NULL's would be
+    // every isolate's, H5)
+    assert_eq!(op.bind(cx).sexptype(), CLOSXP, "robigo: compiling an object that is not a closure");
     let cached = strategy != jit::STRATEGY_NO_CACHE;
     // SAFETY: a rooted closure.
     let hash = cached.then(|| unsafe { hashfun(cx, op.bind(cx).sexp()) });
