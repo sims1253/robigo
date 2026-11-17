@@ -591,6 +591,8 @@ impl Sexp {
     /// pairlist or R_NilValue.
     #[inline(always)]
     pub unsafe fn set_attrib(self, v: Sexp) {
+        // SAFETY: the caller's contract (a live object).
+        debug_assert!(!unsafe { self.is_symbol() }, "robigo: a store into a symbol");
         // SAFETY: the attribute slot of every non-CHARSXP header.
         unsafe { self.store(self.field(header::OFF_ATTRIB), v) }
     }

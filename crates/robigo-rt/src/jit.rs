@@ -409,6 +409,9 @@ pub unsafe fn score(cx: &Cx, e: Sexp, loop_score: i32) -> i32 {
 /// profile of every code object, and GNU R's state is not tracked.
 // R: eval.c:R_execClosure
 pub fn closure_profile(cx: &mut Cx, op: Root<'_>) -> RResult<Profile> {
+    // the JIT state is a closure's gp bits: never another object's (NULL's
+    // would be every isolate's, H5)
+    assert_eq!(op.bind(cx).sexptype(), CLOSXP, "robigo: the JIT profile of an object that is not a closure");
     let st = prims::state(cx);
     if let Some(p) = st.forced {
         return Ok(p);

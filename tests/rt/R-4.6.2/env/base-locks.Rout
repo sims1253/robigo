@@ -3,6 +3,10 @@
 [1] TRUE
 [1] FALSE
 [1] FALSE
+[1] TRUE
+[1] TRUE
+[1] "can not set the parent environment of a namespace"
+[1] TRUE
 [1] "cannot add binding of 'zzz' to the base environment"
 [1] "cannot change value of locked binding for 'paste'"
 [1] "cannot change value of locked binding for 'paste'"
