@@ -66,3 +66,31 @@
   - robigo-rtapi's `tests/sigint.rs`: SIGINT from outside to a looping
     script, uncaught and caught, with on.exit code. The transcripts are
     GNU R's, recorded in the oracle image by the same protocol.
+- Not here: GNU R also polls inside some builtins' own loops (for
+  example `Sys.sleep`'s wait); robigo-rt polls where its evaluator and
+  byte code do.
+- Measurements (WSL2 workstation, Ryzen 9 5900X, rustc 1.100.0; release
+  `robigo-rt` from `~/.cache/cargo-target-s1`, at `e9a5da70`, over S3x-b):
+  - `scripts/perf.py rt-bars` against main's binary at `dce8a3eb` reports
+    0 failures, with every row within ±0.16% (s3 −0.04%, e7-match −0.01%
+    as the median over heap shifts). Peak RSS is within 0.2% of main's
+    (`data/2026-11-17-s3x-c-interrupts-c-trycatch/rt-bars.md`).
+- Proof:
+  - At `805b267b`, `scripts/rt-ci.py` passes every step:
+    - conformance 500/507. The 7 failures fail on main too, none is
+      ratcheted;
+    - `ROBIGO_NO_INPLACE` 494/501 and `ROBIGO_MATERIALIZE` 500/507;
+    - gctorture, and `ROBIGO_GC_MOVE` with gctorture: 499/506;
+    - quarantine and the small vector limit: 500/507;
+    - stress, overshoot, the pin report and injected failures pass.
+
+    `tests/sigint.rs` runs under each of those modes.
+  - At `e9a5da70`:
+    - debug builds pass the tests of `robigo-rtcore`, `robigo-rt`,
+      `robigo-rtbuiltins` and `robigo-rtapi`;
+    - Miri passes on `robigo-rtcore`;
+    - `scripts/base-subset.sh --check`, `scripts/lint.sh` and
+      `cargo fmt --check` are clean.
+  - At `78a8fe56`, main `fccc6fa0` merged in (S3x-b among it): release
+    conformance 506/513 (the same 7), `tests/sigint.rs`, `tests/cli.rs`,
+    `scripts/base-subset.sh --check` and `cargo fmt --check` pass.
