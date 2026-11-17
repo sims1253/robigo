@@ -18,3 +18,7 @@ f(.Internal(strtoi("1", 10)))
 f(.Internal(strtoi("1", integer(0))))
 as.octmode("644")
 as.integer(as.octmode(c("755", "600")))
+# isInteger(base): an INTSXP that is not a factor, whatever its attributes
+f(.Internal(strtoi("ff", factor(16))))
+.Internal(strtoi("ff", structure(16L, foo = 1)))
+.Internal(strtoi("ff", structure(16L, class = "bar")))
