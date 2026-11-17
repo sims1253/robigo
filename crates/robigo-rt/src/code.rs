@@ -196,8 +196,8 @@ fn check(b: &Built) -> Result<(), Malformed> {
                 } else {
                     // the jump tables that follow: one per name, then `f`
                     // numeric entries, each a Jmp
-                    // SAFETY: a live constant of the pool (as above).
                     let names = b.consts[i.c as usize - FIRST_CONST];
+                    // SAFETY: a live constant of the pool (as above).
                     let nc = unsafe { if names.typ() == NILSXP { 0 } else { names.std_len() as usize } };
                     let end = at + 1 + nc + i.f as usize;
                     if end > n || !b.ins[at + 1..end].iter().all(|j| j.op == Op::Jmp) {
