@@ -15,6 +15,8 @@
 //! A warning that a handler turns into an exit ends the builtin there, as it
 //! would in GNU R: what phase 2 did after it is never seen.
 
+// named after its C function (do_grep), like its siblings
+#[allow(clippy::module_inception)]
 pub mod grep;
 pub mod regexpr;
 pub mod strsplit;
@@ -567,7 +569,8 @@ fn notbol_matters(p: &[u8]) -> bool {
                 continue;
             }
             b'\\' => {
-                i += 2;
+                // \cX takes the byte after it: `\c[` is ESC, not a class
+                i += if p.get(i + 1) == Some(&b'c') { 3 } else { 2 };
                 // \p{^L}, \x{..}, \g{..}, ...
                 if p.get(i) == Some(&b'{') {
                     i = p[i..].iter().position(|&b| b == b'}').map_or(p.len(), |k| i + k + 1);
@@ -584,7 +587,7 @@ fn notbol_matters(p: &[u8]) -> bool {
                 }
                 while i < p.len() && p[i] != b']' {
                     if p[i] == b'\\' {
-                        i += 1;
+                        i += if p.get(i + 1) == Some(&b'c') { 2 } else { 1 };
                     } else if p[i] == b'[' && p.get(i + 1) == Some(&b':') {
                         i = find(&p[i + 2..], b":]").map_or(p.len(), |k| i + 2 + k + 1);
                     }
@@ -785,7 +788,15 @@ mod tests {
         {
             assert!(!notbol_matters(p), "{}", String::from_utf8_lossy(p));
         }
-        for p in [&b"(?<=^)a"[..], b"(?<!^a)b", b"^|(*plb:x)", b"(*negative_lookbehind:^)b", b"[[:alpha:]](?<=^.)"] {
+        for p in [
+            &b"(?<=^)a"[..],
+            b"(?<!^a)b",
+            b"\\c[|a|(?<=^a)b",
+            b"[\\c[:]|(?<=^a)b",
+            b"^|(*plb:x)",
+            b"(*negative_lookbehind:^)b",
+            b"[[:alpha:]](?<=^.)",
+        ] {
             assert!(notbol_matters(p), "{}", String::from_utf8_lossy(p));
         }
     }
