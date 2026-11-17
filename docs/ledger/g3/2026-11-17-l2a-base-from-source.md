@@ -29,7 +29,7 @@
   right-hand side's bytes in the pinned source file, as `makeLazy`'s
   `lazyLoadDBfetch(key, file, ...)` names a value's offset and length.
   Forcing the promise parses and lowers that text. The bound grew from
-  205 to 338 closures, through the namespace closures that `R_getNSValue`
+  220 to 343 closures (main at `908cb765`), through the namespace closures that `R_getNSValue`
   and `getNamespaceName` reach (`asNamespace`, then statically
   `loadNamespace`). Before the change, the bound's code took 450 KB of
   heap that never ran, which raised listgrow's peak RSS by 3.2% through
