@@ -203,8 +203,7 @@ fn collect(cx: &mut Cx) {
 /// The default warning path, after a collection.
 fn warn_collecting(cx: &mut Cx, call: Option<Root<'_>>, msg: &str) -> RResult<()> {
     collect(cx);
-    cx.collect_warning(call, msg);
-    Ok(())
+    cx.collect_warning(call, msg)
 }
 
 /// No methods, after a collection.

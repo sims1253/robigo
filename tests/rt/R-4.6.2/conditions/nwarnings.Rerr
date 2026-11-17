@@ -1,0 +1,23 @@
+Warning message:
+In f(i) : w 1
+Warning messages:
+1: In f(i) : w 1
+2: In f(i) : w 2
+3: In f(i) : w 3
+4: In f(i) : w 4
+5: In f(i) : w 5
+6: In f(i) : w 6
+7: In f(i) : w 7
+8: In f(i) : w 8
+9: In f(i) : w 9
+10: In f(i) : w 10
+There were 11 warnings (use warnings() to see them)
+There were 50 or more warnings (use warnings() to see the first 50)
+Warning messages:
+1: In f(i) : w 1
+2: In f(i) : w 2
+3: In f(i) : w 3
+There were 15 warnings (use warnings() to see them)
+There were 20 or more warnings (use warnings() to see the first 20)
+Warning message:
+In k() : kept

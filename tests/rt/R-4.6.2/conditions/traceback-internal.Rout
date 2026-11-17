@@ -1,0 +1,16 @@
+1 : g(skip) 
+1 : f(0) 
+1 : str1(f(0)) 
+1 : f(1) 
+1 : str1(f(1)) 
+[1] "invalid 'skip' value"
+[1] "invalid 'skip' value"
+[1] TRUE
+1 : long(c(a = 1, b = 2, c = "a long argument that is long enough to wrap the deparse of this call onto lines")) 
+No traceback available 
+[[1]]
+stop("recorded")
+
+[[2]]
+h()
+

@@ -909,6 +909,13 @@ impl Core {
     pub fn missing_arg(&self) -> Sexp {
         self.missing_arg
     }
+    /// GNU R's `mkSymMarker(mkChar(""))`: an immortal symbol named "" that
+    /// is not in the symbol table, as `R_UnboundValue` and `R_MissingArg`
+    /// are (`R_RestartToken`, which the isolate makes once).
+    // R: names.c:mkSymMarker
+    pub fn new_marker_symbol(&mut self) -> Result<Sexp, NeedGc> {
+        self.new_symbol(self.blank_string)
+    }
 
     // ---- the poll word ------------------------------------------------
 

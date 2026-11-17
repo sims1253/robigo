@@ -596,8 +596,7 @@ fn reentrant_warning(cx: &mut Cx, call: Option<Root<'_>>, msg: &str) -> RResult<
             robigo_rt::eval(cx, e, g, o)
         });
     }
-    cx.collect_warning(call, msg);
-    Ok(())
+    cx.collect_warning(call, msg)
 }
 
 /// GNU R marks an interrupted promise under evaluation (PRSEEN 1) before it

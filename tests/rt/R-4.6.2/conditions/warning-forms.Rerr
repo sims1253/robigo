@@ -1,0 +1,31 @@
+Warning in f() : short
+Warning in long_function_name_that_is_quite_long_indeed(1) :
+  a message that is long enough to make the call and message overflow LONGWARN
+Warning: no call here
+Warning: multi
+line
+message
+Warning messages:
+1: In g() : one
+2: In g() : two
+lines
+3: In long_function_name_that_is_quite_long_indeed(2) :
+  a message that is long enough to make the call and message overflow LONGWARN
+Error in h() : the error
+In addition: Warning message:
+In h() : before the error
+Warning message:
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx [... truncated] 
+Warning message:
+In cond_call(x) : a condition
+Warning in k() : immediate one
+Warning message:
+In nb() :
+  no breaks: yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
+Warning message:
+In m(aaaaaaaaaaaaaaaaaaaa = 1, bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb = 2,  :
+  deparse of a long call
+Warning messages:
+1: In w() : loop 1
+2: In w() : loop 2
+3: In w() : loop 3

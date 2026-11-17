@@ -1,0 +1,7 @@
+--
+warning.expression ran
+[1] "(converted from warning) short"
+Warning messages:
+1: In w() : loop 1
+2: In w() : loop 2
+3: In w() : loop 3
