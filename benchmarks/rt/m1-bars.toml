@@ -131,13 +131,14 @@ accepted = "docs/ledger/g3/2026-11-15-e7-seq.md"
 ceiling = 2.0
 
 [[bar]]
-# E7
+# E7. Address-sensitive (calls-rows.toml): measured as the median over
+# perf.py's ADDRESS_SHIFTS, docs/ledger/g3/2026-11-17-address-rows.md
 row = "e7-match"
 against = "today"
 max = 1.0
 
 [[bar]]
-# E7
+# E7. Address-sensitive, as e7-match
 row = "e7-unique"
 against = "today"
 max = 1.0

@@ -10,6 +10,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("perf", Path(__file__).with_name("perf.py"))
 perf = importlib.util.module_from_spec(spec)
@@ -219,6 +220,92 @@ class Pin(unittest.TestCase):
             names = {r["name"] for r in tomllib.load(f)["row"]}
         self.assertLessEqual(rows, names)
 
+
+
+ivr_spec = importlib.util.spec_from_file_location("idiom_vs_r", Path(__file__).with_name("idiom-vs-r.py"))
+ivr = importlib.util.module_from_spec(ivr_spec)
+ivr_spec.loader.exec_module(ivr)
+
+
+class AddressShifts(unittest.TestCase):
+    """The address-sensitive rows are measured as the median over heap
+    shifts (docs/ledger/g3/2026-11-17-address-rows.md): a real slowdown
+    still fails, one layout's count does not."""
+
+    SPEC = {"gnur": {"version": "4.6.2", "source": "test", "instr": {}, "rss": {}},
+            "today": {"source": "test", "instr": {"e7-match": 114413.0}, "rss": {}},
+            "bar": [{"row": "e7-match", "against": "today", "max": 1.0}], "rss": []}
+    # main's counts over k = 0, 300, 1000, 3000, 5000 (the foreman's range on main)
+    MAIN = [99000.0, 98900.0, 99276.0, 99100.0, 98950.0]
+
+    def verdict(self, new):
+        main = {"instr": {"e7-match": ivr.median(self.MAIN)}, "rss": {}}
+        return perf.rt_verdict(self.SPEC, {"e7-match": ivr.median(new)}, {}, main)[0]
+
+    def test_a_real_regression_on_every_shift_fails(self):
+        failures = self.verdict([v * 1.006 for v in self.MAIN])
+        self.assertEqual(len(failures), 1)
+        self.assertIn("`e7-match`: +0.60% instructions against main", failures[0])
+
+    def test_one_layout_moving_alone_does_not_fail(self):
+        # BW's case: the same code, one shift's keys landing elsewhere (+4.15%)
+        new = list(self.MAIN)
+        new[0] *= 1.0415
+        self.assertEqual(self.verdict(new), [])
+
+    def test_rows_measures_each_shift_of_a_marked_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = Path(tmp, "rows.toml")
+            rows.write_text('[[row]]\nname = "hashed"\ngroup = "e7"\naddress_sensitive = true\nsetup = "s <- 1"\n'
+                            'body = "x"\nn = 10\n[[row]]\nname = "plain"\ngroup = "calls"\nsetup = "s <- 1"\n'
+                            'body = "x"\nn = 10\n')
+            seen = []
+
+            class Fake:
+                robigo, robigo_env, r_bin, valgrind = "rt", {}, "R", "valgrind"
+
+                def robigo_iter(self, setup, body, n, tag):
+                    seen.append(setup)
+                    return 1000.0 + 10 * setup.count("seq_len") * (len(seen) % 3)
+
+            out = Path(tmp, "out.json")
+            a = SimpleNamespace(rows=str(rows), filter=None, no_r=True, no_robigo=False, cycles=False,
+                                shifts=list(perf.ADDRESS_SHIFTS), json=str(out))
+            with redirect_stdout(io.StringIO()):
+                ivr.cmd_rows(a, Fake())
+            doc = json.loads(out.read_text())["rows"]
+            # the marked row ran once per shift, k = 0 as written; the other once
+            self.assertEqual(seen[0], "s <- 1")
+            self.assertEqual(seen[1], 'zz <- paste0("z", seq_len(300L))\ns <- 1')
+            self.assertEqual(len(seen), len(perf.ADDRESS_SHIFTS) + 1)
+            self.assertEqual(sorted(doc["hashed"]["shifts"]), sorted(str(k) for k in perf.ADDRESS_SHIFTS))
+            counts = [v["robigo_instr"] for v in doc["hashed"]["shifts"].values()]
+            self.assertEqual(doc["hashed"]["robigo_instr"], ivr.median(counts))
+            self.assertNotIn("shifts", doc["plain"])
+
+    def test_rt_instr_passes_the_shifts_and_collects_their_range(self):
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            out = cmd[cmd.index("--json") + 1]
+            Path(out).write_text(json.dumps({"rows": {"e7-match": {
+                "robigo_instr": 99000.0, "robigo_est_cycles": None,
+                "shifts": {str(k): {"robigo_instr": v} for k, v in zip(perf.ADDRESS_SHIFTS, self.MAIN)}}}}))
+            return SimpleNamespace(returncode=0, stderr="")
+        ranges = {}
+        with tempfile.TemporaryDirectory() as tmp, patch.object(perf.subprocess, "run", side_effect=fake_run):
+            instr = perf.rt_instr("rt", ["e7-match"], 1, tmp, "new", ranges=ranges)
+        self.assertEqual(instr, {"e7-match": 99000.0})
+        self.assertEqual(ranges, {"e7-match": (98900.0, 99276.0)})
+        cmd = calls[0]
+        self.assertEqual(cmd[cmd.index("--shifts") + 1], "0,300,1000,3000,5000")
+
+    def test_the_committed_rows_mark_exactly_the_hashing_rows(self):
+        import tomllib
+        with open(perf.RT_ROWS, "rb") as f:
+            marked = sorted(r["name"] for r in tomllib.load(f)["row"] if r.get("address_sensitive"))
+        self.assertEqual(marked, ["e7-match", "e7-unique"])
 
 if __name__ == "__main__":
     unittest.main()
