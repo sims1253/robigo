@@ -161,6 +161,8 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin(".dfltStop", crate::conditions::do_dflt_stop, Inline::None, 11, 2),
     builtin(".dfltWarn", crate::conditions::do_dflt_warn, Inline::None, 11, 2),
     builtin(".addRestart", crate::conditions::do_add_restart, Inline::None, 11, 1),
+    // names.c: {"traceback", do_traceback, 0, 11, 1, ...}
+    builtin("traceback", crate::conditions::do_traceback, Inline::None, 11, 1),
     // names.c: {".addTryHandlers", do_addTryHandlers, 0, 111, 0, ...}
     builtin(".addTryHandlers", crate::conditions::do_add_try_handlers, Inline::None, 111, 0),
     builtin(".getRestart", crate::conditions::do_get_restart, Inline::None, 11, 1),

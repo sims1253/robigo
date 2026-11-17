@@ -753,25 +753,43 @@ fn jump_to_top_ex(
     }
 }
 
+/// `R_GetTracebackOnly(skip)`'s walk: the calls of the function and
+/// builtin records from the innermost out, the first `skip` left out.
+/// GNU R gives a call its record's srcref as an attribute; robigo-rt's
+/// records have none yet (`keep.source` is not honored), and one that has
+/// is refused rather than dropped.
+// R: errors.c:R_GetTracebackOnly
+fn traceback_calls<'s>(cx: &mut Cx, s: Scope<'s>, mut skip: usize) -> RResult<Vec<Root<'s>>> {
+    let mut v = Vec::new();
+    let mut has_srcref = false;
+    let mut c = Some(cx.global_context());
+    while let Some(r) = c {
+        if r.callflag() == ctxt::TOPLEVEL {
+            break;
+        }
+        if r.callflag() & (ctxt::FUNCTION | ctxt::BUILTIN) != 0 {
+            if skip > 0 {
+                skip -= 1;
+            } else {
+                has_srcref |= r.srcref().sexptype() != NILSXP;
+                v.push(r.call());
+            }
+        }
+        c = r.next();
+    }
+    let v: Vec<Root<'s>> = v.into_iter().map(|c| s.root(cx, c)).collect();
+    if has_srcref {
+        return Err(robigo_rtbuiltins::util::not_yet(cx, None, "a traceback of calls with srcrefs"));
+    }
+    Ok(v)
+}
+
 /// `.Traceback`: the calls of the function and builtin records, each
 /// duplicated (`R_GetTracebackOnly(0)`), as the symbol's value.
 // R: errors.c:R_GetTracebackOnly
 fn save_traceback(cx: &mut Cx) -> RResult<()> {
     cx.scope(|cx, s| {
-        let calls: Vec<Root<'_>> = {
-            let mut v = Vec::new();
-            let mut c = Some(cx.global_context());
-            while let Some(r) = c {
-                if r.callflag() == ctxt::TOPLEVEL {
-                    break;
-                }
-                if r.callflag() & (ctxt::FUNCTION | ctxt::BUILTIN) != 0 {
-                    v.push(r.call());
-                }
-                c = r.next();
-            }
-            v.into_iter().map(|c| s.root(cx, c)).collect()
-        };
+        let calls = traceback_calls(cx, s, 0)?;
         let mut dups = Vec::with_capacity(calls.len());
         for c in &calls {
             let o = s.out(cx);
@@ -793,6 +811,39 @@ fn save_traceback(cx: &mut Cx) -> RResult<()> {
         let sy = sym(cx, s, b".Traceback")?;
         let base = s.root(cx, cx.base_env());
         cx.define_var(sy, l, base)
+    })
+}
+
+/// `.Internal(traceback(skip))`: the calls of the function and builtin
+/// records, the innermost `skip` left out, each deparsed: a pairlist of
+/// character vectors (`R_GetTraceback`).
+// R: errors.c:do_traceback, R_GetTraceback
+pub fn do_traceback(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    check_arity(cx, call, args, "traceback", 1)?;
+    let skip = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(0))?;
+    if skip == i32::MIN || skip < 0 {
+        return Err(cx.error("invalid 'skip' value"));
+    }
+    cx.scope(|cx, s| {
+        let calls = traceback_calls(cx, s, skip as usize)?;
+        let mut lines = Vec::with_capacity(calls.len());
+        for c in &calls {
+            // deparse1m(CAR(t), 0, DEFAULTDEPARSE)
+            let d = crate::deparse::deparse1(cx, c.bind(cx), false, crate::deparse::DEFAULTDEPARSE)
+                .map_err(|m| cx.error(&m))?;
+            lines.push(d.lines);
+        }
+        cx.build(out, |cx| {
+            let mut l = cx.nil();
+            for d in lines.iter().rev() {
+                let mut v = cx.alloc_vector::<Char<'_>>(d.len())?;
+                for (i, line) in d.iter().enumerate() {
+                    v.set(i, cx.mk_char(line, Encoding::Native)?);
+                }
+                l = cx.cons(v.finish().as_ref(), l)?;
+            }
+            Ok(l)
+        })
     })
 }
 
