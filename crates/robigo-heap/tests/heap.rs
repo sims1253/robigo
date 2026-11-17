@@ -868,7 +868,7 @@ fn a_large_request_while_due_panics_under_the_check() {
 }
 
 /// `ROBIGO_GC_STATS`: allocations by SEXPTYPE, collections by safepoint
-/// kind.
+/// kind, the time spent collecting.
 #[test]
 fn statistics_count_allocations_by_type_and_collections_by_kind() {
     let mut c = core();
@@ -904,6 +904,13 @@ fn statistics_count_allocations_by_type_and_collections_by_kind() {
         "{r}"
     );
     assert!(r.contains("INTSXP 11 objects, 528 bytes"), "{r}");
+    // the time line: two collections took some time, never more than all
+    let time = r.lines().find(|l| l.starts_with("robigo gc: collection time ")).expect(&r);
+    let n: Vec<u64> = time.split(' ').filter_map(|w| w.trim_end_matches(',').parse().ok()).collect();
+    let [total, max, heap, per_mib] = n[..] else { panic!("{time}") };
+    assert!(total > 0 && max > 0 && max <= total, "{time}");
+    assert!(heap >= 800_032, "{time}");
+    assert_eq!(per_mib, (total as u128 * (1 << 20) / heap as u128) as u64, "{time}");
     c.set_stats_mode(StatsMode::Off);
 }
 
