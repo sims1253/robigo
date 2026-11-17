@@ -29,7 +29,7 @@ pub(crate) fn install(cx: &mut Cx) {
 /// name, the usual case).
 // R: dotcode.c:pkgtrim, setDLLname
 fn pkgtrim(cx: &mut Cx, args: Args<'_>) -> RResult<(Option<String>, Option<Vec<usize>>)> {
-    let named = (1..args.len()).any(|i| args.name(cx, i).is_some_and(|n| n.name().bytes() == b"PACKAGE"));
+    let named = (1..args.len()).any(|i| args.name(cx, i).is_some_and(|n| n.name_bytes() == b"PACKAGE"));
     if !named {
         return Ok((None, None));
     }
@@ -37,7 +37,7 @@ fn pkgtrim(cx: &mut Cx, args: Args<'_>) -> RResult<(Option<String>, Option<Vec<u
     let mut used = 0;
     let mut keep = Vec::new();
     for i in 1..args.len() {
-        let is_pkg = args.name(cx, i).is_some_and(|n| n.name().bytes() == b"PACKAGE");
+        let is_pkg = args.name(cx, i).is_some_and(|n| n.name_bytes() == b"PACKAGE");
         if !is_pkg {
             keep.push(i);
             continue;

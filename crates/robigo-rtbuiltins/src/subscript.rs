@@ -251,7 +251,7 @@ impl<'g> Names<'g> {
                 let mut any = false;
                 let mut c = x.as_cons();
                 while let Some(cell) = c {
-                    let t = cell.tag().as_sym().map(|s| s.name());
+                    let t = cell.tag().as_sym().map(|s| s.name(cx));
                     any |= t.is_some();
                     tags.push(t);
                     c = cell.cdr().as_cons();
@@ -451,7 +451,7 @@ pub fn get1index(
             if s == cx.missing_arg() {
                 return Err(MISSING_SUBSCRIPT.into());
             }
-            let pn = sym.name().bytes();
+            let pn = sym.name_bytes();
             let na = cx.na_string();
             for i in 0..names.len() {
                 let n = names.get(cx, i);
@@ -535,7 +535,7 @@ pub fn one_index<'g>(
         }
         View::Sym(sym) => {
             let names = Names::of(cx, x);
-            let pn = sym.name();
+            let pn = sym.name(cx);
             for i in 0..nx.min(names.len()) {
                 if *native(cx, names.get(cx, i)) == *pn.bytes() {
                     indx = i as i64;

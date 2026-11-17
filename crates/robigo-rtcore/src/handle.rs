@@ -780,11 +780,25 @@ impl<'g> Sym<'g> {
         unsafe { crate::sym::id_of(self.0.sexp()) }
     }
 
-    /// GNU R's PRINTNAME.
+    /// GNU R's PRINTNAME: the isolate's CHARSXP of the name (symbols are
+    /// the process's, H5; a PRINTNAME is what R code sees of a name, so it
+    /// is each isolate's own, from its CHARSXP cache).
+    #[inline]
+    pub fn name(self, cx: &'g crate::Cx) -> Char<'g> {
+        // SAFETY: one read of the core, which calls nothing of ours. A
+        // symbol `cx` reaches was installed in its heap, which keeps the
+        // PRINTNAME (immortal) for 'g.
+        unsafe {
+            let c = cx.iso().core().printname(self.0.sexp());
+            Char(self.0.child(c))
+        }
+    }
+
+    /// The symbol's name, as bytes (no CHARSXP: [`Sym::name`] for one).
     #[inline(always)]
-    pub fn name(self) -> Char<'g> {
-        // SAFETY: a live symbol: its car is its PRINTNAME, a CHARSXP.
-        Char(unsafe { self.0.child(self.0.sexp().car()) })
+    pub fn name_bytes(self) -> &'g [u8] {
+        // SAFETY: a live symbol, immortal: its name lives for 'g.
+        unsafe { self.0.sexp().sym_name_bytes() }
     }
 
     #[inline(always)]

@@ -170,7 +170,7 @@ fn structure2(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
         a.copy_all(x);
         for i in 1..args.len() {
             let tag = args.name(cx, i).expect("structure2: named attributes");
-            if tag.name().bytes() == b"class" {
+            if tag.name_bytes() == b"class" {
                 a.set_class(tag, Some(args.get(cx, i)));
             } else {
                 a.install(Attr { tag, value: args.get(cx, i) });

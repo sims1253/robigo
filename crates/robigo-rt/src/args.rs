@@ -1113,7 +1113,7 @@ fn match_message(cx: &Cx, e: MatchError, acts: &[Actual]) -> String {
     match e {
         MatchError::FormalTwice(s) => {
             // SAFETY: a formal's tag, a live symbol.
-            let name = unsafe { Ref::from_sexp(s, cx) }.as_sym().unwrap().name();
+            let name = unsafe { Ref::from_sexp(s, cx) }.as_sym().unwrap().name(cx);
             format!(
                 "formal argument \"{}\" matched by multiple actual arguments",
                 String::from_utf8_lossy(name.bytes())

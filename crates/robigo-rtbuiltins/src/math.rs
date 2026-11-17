@@ -201,7 +201,7 @@ pub fn do_log_builtin(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>
     cx.scope(|cx, s| {
         let n = args.len();
         let missing = cx.missing_arg();
-        let tag_is = |cx: &Cx, i: usize, name: &[u8]| args.name(cx, i).is_some_and(|t| t.name().bytes() == name);
+        let tag_is = |cx: &Cx, i: usize, name: &[u8]| args.name(cx, i).is_some_and(|t| t.name_bytes() == name);
         if n == 1 && args.name(cx, 0).is_none() {
             // log(x)
             let x = args.get(cx, 0);

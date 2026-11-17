@@ -434,7 +434,7 @@ pub fn coerce<'g>(cx: &'g Cx, v: Ref<'g>, ty: u8, keep_attrs: bool) -> Result<Co
             let mut ans = cx.alloc_vector::<Char<'g>>(items.len())?;
             for (i, &(e, op)) in items.iter().enumerate() {
                 let s = if op {
-                    e.as_sym().unwrap().name()
+                    e.as_sym().unwrap().name(cx)
                 } else {
                     match deparsed_or_string(cx, e, 0)? {
                         Ok(s) => s,
@@ -691,7 +691,7 @@ fn coerce_symbol<'g>(cx: &'g Cx, v: Ref<'g>, ty: u8) -> Result<Coerced<'g>, Need
         }
         STRSXP => {
             let mut r = cx.alloc_vector::<Char<'g>>(1)?;
-            r.set(0, v.as_sym().unwrap().name());
+            r.set(0, v.as_sym().unwrap().name(cx));
             done(r.finish(), Warns::new())
         }
         _ => fail(format!("'symbol' object cannot be coerced to type '{}'", type2char(ty))),
@@ -802,7 +802,7 @@ fn coerce_pairlist<'g>(cx: &'g Cx, v: Ref<'g>, ty: u8) -> Result<Coerced<'g>, Ne
     let mut c = v.as_cons();
     while let Some(cell) = c {
         items.push(cell.car());
-        tags.push(cell.tag().as_sym().map(|s| s.name()));
+        tags.push(cell.tag().as_sym().map(|s| s.name(cx)));
         c = cell.cdr().as_cons();
     }
     let mut a = Attrs::new();
@@ -860,7 +860,7 @@ fn coerce_vector_list<'g>(cx: &'g Cx, v: Ref<'g>, ty: u8) -> Result<Coerced<'g>,
         return done(r.finish(), Warns::new());
     }
     if ty == LISTSXP {
-        if attrib::attrs(v).any(|a| a.tag.name().bytes() != b"names") {
+        if attrib::attrs(v).any(|a| a.tag.name_bytes() != b"names") {
             // VectorToPairList's copyMostAttrib onto a pairlist
             return fail("robigo: as.pairlist() of a list with attributes besides names is not implemented yet".into());
         }
@@ -895,7 +895,7 @@ pub fn pair_to_vector_list<'g>(cx: &'g Cx, x: Ref<'g>) -> Result<Ref<'g>, NeedGc
     let mut c = x.as_cons();
     while let Some(cell) = c {
         items.push(cell.car());
-        let t = cell.tag().as_sym().map(|s| s.name());
+        let t = cell.tag().as_sym().map(|s| s.name(cx));
         named |= t.is_some();
         tags.push(t);
         c = cell.cdr().as_cons();

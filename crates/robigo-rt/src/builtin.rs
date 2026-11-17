@@ -37,7 +37,7 @@ pub fn do_makelist(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>,
         if havenames {
             let mut names = cx.alloc_vector::<Char<'_>>(n)?;
             for i in 0..n {
-                names.set(i, args.name(cx, i).map_or(cx.blank_string(), |s| s.name()));
+                names.set(i, args.name(cx, i).map_or(cx.blank_string(), |s| s.name(cx)));
             }
             let mut a = Attrs::new();
             a.install(Attr { tag: cx.sym(RSym::Names), value: names.finish().into() });
@@ -391,7 +391,7 @@ fn cat(
                 let elt = |i: usize| -> Result<Vec<u8>, String> {
                     match s.view() {
                         View::Str(v) => native(v.get(i)),
-                        View::Sym(sym) => Ok(sym.name().bytes().to_vec()),
+                        View::Sym(sym) => Ok(sym.name_bytes().to_vec()),
                         _ => {
                             let mut b = Vec::new();
                             deparse::encode_element(cx, s, i, 0, &pp, &mut b);

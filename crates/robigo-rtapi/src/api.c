@@ -481,7 +481,9 @@ SEXP (R_altrep_data2)(SEXP x) { return seen(CDR_(x)); }
 void (R_set_altrep_data1)(SEXP x, SEXP v) { robigo_rtapi_store(x, &CAR_(x), v); }
 void (R_set_altrep_data2)(SEXP x, SEXP v) { robigo_rtapi_store(x, &CDR_(x), v); }
 
-SEXP (CAR)(SEXP e) { return seen(CAR_(e)); }
+SEXP robigo_rtapi_printname(SEXP x);
+/* a symbol's CAR is its PRINTNAME, as in GNU R (one field there) */
+SEXP (CAR)(SEXP e) { return seen(RB_TYPE(e) == SYMSXP ? robigo_rtapi_printname(e) : CAR_(e)); }
 SEXP (CDR)(SEXP e) { return seen(CDR_(e)); }
 SEXP (TAG)(SEXP e) { return seen(TAG_(e)); }
 SEXP (CAAR)(SEXP e) { return seen(CAR_(CAR_(e))); }
@@ -560,9 +562,13 @@ SEXP (SETCADDR)(SEXP x, SEXP y)
 
 /* ---- symbols -------------------------------------------------------- */
 
+/* a symbol's PRINTNAME is the isolate's (H5: the symbol is the process's,
+ * its own CAR the arena's copy of the name, which C must never see) */
+SEXP robigo_rtapi_printname(SEXP x);
+
 SEXP (PRINTNAME)(SEXP x)
 {
-    return seen(CAR_(x));
+    return seen(RB_TYPE(x) == SYMSXP ? robigo_rtapi_printname(x) : CAR_(x));
 }
 
 /* ---- external pointers and weak references ---------------------------- */

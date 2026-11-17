@@ -242,7 +242,7 @@ pub fn match_args(
                 && match args.name(cx, i) {
                     None => true,
                     Some(t) => {
-                        let t = t.name().bytes();
+                        let t = t.name_bytes();
                         t == formals[i].as_bytes()
                             && args.get(cx, i) != missing
                             && formals.iter().enumerate().all(|(j, f)| j == i || f.as_bytes() != t)
@@ -254,7 +254,7 @@ pub fn match_args(
         let formals = (0..formals.len()).map(|i| (i < n).then_some(i)).collect();
         return Ok(Matched { formals, dots: Vec::new() });
     }
-    let tags: Vec<Option<Vec<u8>>> = (0..n).map(|i| args.name(cx, i).map(|s| s.name().bytes().to_vec())).collect();
+    let tags: Vec<Option<Vec<u8>>> = (0..n).map(|i| args.name(cx, i).map(|s| s.name_bytes().to_vec())).collect();
     let mut actual: Vec<Option<usize>> = vec![None; formals.len()];
     let mut fused = vec![0u8; formals.len()];
     let mut used = vec![0u8; n];
@@ -371,7 +371,7 @@ pub fn check1arg(
     formal: &str,
 ) -> robigo_rtcore::RResult<()> {
     let Some(tag) = (!args.is_empty()).then(|| args.name(cx, 0)).flatten() else { return Ok(()) };
-    let supplied = String::from_utf8_lossy(tag.name().bytes()).into_owned();
+    let supplied = String::from_utf8_lossy(tag.name_bytes()).into_owned();
     if !formal.starts_with(&supplied) {
         let msg = format!("supplied argument name '{supplied}' does not match '{formal}'");
         return Err(cx.error_call(Some(call), &msg));

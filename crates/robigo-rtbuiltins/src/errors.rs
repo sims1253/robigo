@@ -36,7 +36,7 @@ fn has_domain(cx: &mut Cx, domain: Root<'_>, up: bool) -> RResult<bool> {
                         let a2 = a1.cdr().as_cons()?;
                         let t = a2.tag().as_sym()?;
                         let v = a2.car().as_sym()?;
-                        (t.name().bytes() == b"domain" && v.name().bytes() == b"domain").then_some(())
+                        (t.name_bytes() == b"domain" && v.name_bytes() == b"domain").then_some(())
                     })();
                     if shaped.is_some()
                         && let Some(p) = cx.parent_context(g, 1)

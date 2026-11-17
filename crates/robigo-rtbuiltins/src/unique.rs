@@ -1247,7 +1247,7 @@ pub fn do_matchcall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
             let mut c = funcall.bind(cx).as_cons().unwrap().cdr().as_cons();
             let mut found = false;
             while let Some(cell) = c {
-                found |= cell.car().as_sym().is_some_and(|y| y.name().bytes() == b"...");
+                found |= cell.car().as_sym().is_some_and(|y| y.name_bytes() == b"...");
                 c = cell.cdr().as_cons();
             }
             found
@@ -1305,7 +1305,7 @@ pub fn do_matchcall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
             };
             let mut spliced = false;
             for (e, t) in elems {
-                if !spliced && e.as_sym().is_some_and(|y| y.name().bytes() == b"...") {
+                if !spliced && e.as_sym().is_some_and(|y| y.name_bytes() == b"...") {
                     spliced = true;
                     if let Some(items) = &dots_items {
                         for (v, tg) in items {
@@ -1341,7 +1341,7 @@ pub fn do_matchcall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
         };
         let fnames: Vec<String> = formals
             .iter()
-            .map(|(t, _)| String::from_utf8_lossy(t.bind(cx).as_sym().unwrap().name().bytes()).into_owned())
+            .map(|(t, _)| String::from_utf8_lossy(t.bind(cx).as_sym().unwrap().name_bytes()).into_owned())
             .collect();
         let fnames_ref: Vec<&str> = fnames.iter().map(String::as_str).collect();
         let a = {
@@ -1384,7 +1384,7 @@ pub fn do_matchcall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
                 match m.formals[k] {
                     Some(j) if a.get(cx, j) != missing => {
                         let v = a.get(cx, j);
-                        if v.as_sym().is_some_and(|y| y.name().bytes() == b"...") {
+                        if v.as_sym().is_some_and(|y| y.name_bytes() == b"...") {
                             continue;
                         }
                         parts.push((v, ftag));

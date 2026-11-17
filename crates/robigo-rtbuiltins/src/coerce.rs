@@ -181,7 +181,7 @@ impl<'g> Strings<'g> {
         Ok(match x.view() {
             View::Str(v) => Strings { kind: Kind::Chars(v.as_slice().unwrap(), cx.na_string()) },
             View::Null => owned(0, Box::new(|_, _| true)),
-            View::Sym(s) => Strings { kind: Kind::One(s.name()) },
+            View::Sym(s) => Strings { kind: Kind::One(s.name(cx)) },
             View::Lgl(v) => {
                 let v = v.as_slice().unwrap();
                 owned(v.len(), Box::new(move |b, i| lgl_string(v[i].0).map(|s| b.extend_from_slice(s)).is_some()))

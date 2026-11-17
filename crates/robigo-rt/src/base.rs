@@ -465,7 +465,7 @@ fn base_fetch(cx: &mut Cx, call: Root<'_>, _: Root<'_>, _: Root<'_>, out: Out<'_
         .as_cons()
         .and_then(|c| c.cdr().as_cons())
         .and_then(|a| a.car().as_sym())
-        .map(|s| String::from_utf8_lossy(s.name().bytes()).into_owned());
+        .map(|s| String::from_utf8_lossy(s.name_bytes()).into_owned());
     let wide = Wide::get();
     let Some(w) = name.as_deref().and_then(|n| wide.find(n)) else {
         return Err(cx.error("robigo: a fetch of no name of base"));
@@ -690,7 +690,7 @@ fn stubs_for(cx: &mut Cx, primitives: &[&'static str], internals: &[&'static str
 /// The name a stub was called by: the call's function when it is a symbol.
 fn called_name(cx: &Cx, call: Root<'_>) -> String {
     match call.bind(cx).as_cons().and_then(|c| c.car().as_sym()) {
-        Some(s) => String::from_utf8_lossy(s.name().bytes()).into_owned(),
+        Some(s) => String::from_utf8_lossy(s.name_bytes()).into_owned(),
         None => "?".into(),
     }
 }

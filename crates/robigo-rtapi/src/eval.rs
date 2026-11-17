@@ -17,7 +17,7 @@ use std::ffi::c_int;
 fn name_bytes(cx: &Cx, x: Root<'_>) -> Option<Vec<u8>> {
     let r = x.bind(cx);
     if let Some(s) = r.as_sym() {
-        return Some(s.name().bytes().to_vec());
+        return Some(s.name_bytes().to_vec());
     }
     let v = r.as_vector::<robigo_rtcore::Char<'_>>()?;
     (!v.is_empty()).then(|| v.get(0).bytes().to_vec())
@@ -92,7 +92,7 @@ entry! {
     /// `GetOption1(tag)`: the option's value, or NULL; allocates nothing.
     // R: options.c:GetOption1
     [1] fn Rf_GetOption1(tag: Sexp) -> Sexp => |cx, s| {
-        let Some(name) = tag.bind(cx).as_sym().map(|y| y.name().bytes().to_vec()) else {
+        let Some(name) = tag.bind(cx).as_sym().map(|y| y.name_bytes().to_vec()) else {
             return Err(not_yet(cx, "GetOption1 of a tag that is not a symbol"));
         };
         Ok(robigo_rtbuiltins::options::get_option(cx, s, &name)?.bind(cx).sexp())

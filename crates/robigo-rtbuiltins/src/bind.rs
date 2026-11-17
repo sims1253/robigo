@@ -34,7 +34,7 @@ struct Item<'g> {
 
 /// The elements of a list, expression vector or pairlist with their item
 /// names; None for anything else.
-fn items<'g>(x: Ref<'g>) -> Option<Vec<Item<'g>>> {
+fn items<'g>(cx: &'g Cx, x: Ref<'g>) -> Option<Vec<Item<'g>>> {
     match x.view() {
         View::List(v) | View::Expr(v) => {
             let names = attrib::names(x).and_then(|n| n.as_vector::<Char<'g>>());
@@ -48,7 +48,7 @@ fn items<'g>(x: Ref<'g>) -> Option<Vec<Item<'g>>> {
             let mut out = Vec::new();
             let mut c = x.as_cons();
             while let Some(cell) = c {
-                let name = cell.tag().as_sym().map(|s| s.name()).filter(|c| !c.bytes().is_empty());
+                let name = cell.tag().as_sym().map(|s| s.name(cx)).filter(|c| !c.bytes().is_empty());
                 out.push(Item { value: cell.car(), name });
                 c = cell.cdr().as_cons();
             }
@@ -60,11 +60,11 @@ fn items<'g>(x: Ref<'g>) -> Option<Vec<Item<'g>>> {
 
 /// `HasNames(x)`.
 // R: bind.c:HasNames
-fn has_names(x: Ref<'_>) -> bool {
+fn has_names<'g>(cx: &'g Cx, x: Ref<'g>) -> bool {
     if attrib::is_vector(x) {
         attrib::names(x).is_some()
     } else if matches!(x.sexptype(), LISTSXP) {
-        items(x).unwrap().iter().any(|i| i.name.is_some())
+        items(cx, x).unwrap().iter().any(|i| i.name.is_some())
     } else {
         false
     }
@@ -72,7 +72,7 @@ fn has_names(x: Ref<'_>) -> bool {
 
 /// `AnswerType(x, recurse, usenames, data, call)`.
 // R: bind.c:AnswerType
-fn answer_type(x: Ref<'_>, recurse: bool, usenames: bool, d: &mut Bind) {
+fn answer_type<'g>(cx: &'g Cx, x: Ref<'g>, recurse: bool, usenames: bool, d: &mut Bind) {
     let n = x.len().unwrap_or(0);
     match x.sexptype() {
         NILSXP => {}
@@ -86,24 +86,24 @@ fn answer_type(x: Ref<'_>, recurse: bool, usenames: bool, d: &mut Bind) {
             if usenames && !d.nnames && attrib::names(x).is_some() {
                 d.nnames = true;
             }
-            for it in items(x).unwrap() {
+            for it in items(cx, x).unwrap() {
                 if usenames && !d.nnames {
-                    d.nnames = has_names(it.value);
+                    d.nnames = has_names(cx, it.value);
                 }
-                answer_type(it.value, recurse, usenames, d);
+                answer_type(cx, it.value, recurse, usenames, d);
             }
         }
         VECSXP => (d.flags, d.len) = (d.flags | 256, d.len + n),
         EXPRSXP => (d.flags, d.len) = (d.flags | 512, d.len + n),
         LISTSXP if recurse => {
-            for it in items(x).unwrap() {
+            for it in items(cx, x).unwrap() {
                 if usenames && !d.nnames {
-                    d.nnames = it.name.is_some() || has_names(it.value);
+                    d.nnames = it.name.is_some() || has_names(cx, it.value);
                 }
-                answer_type(it.value, recurse, usenames, d);
+                answer_type(cx, it.value, recurse, usenames, d);
             }
         }
-        LISTSXP => (d.flags, d.len) = (d.flags | 256, d.len + items(x).unwrap().len()),
+        LISTSXP => (d.flags, d.len) = (d.flags | 256, d.len + items(cx, x).unwrap().len()),
         _ => (d.flags, d.len) = (d.flags | 256, d.len + 1),
     }
 }
@@ -133,12 +133,12 @@ fn mode(flags: u32) -> u8 {
 
 /// The atomic leaves of `x` (lists and pairlists walked), as the
 /// `*Answer` functions of an atomic result visit them.
-fn leaves<'g>(x: Ref<'g>, f: &mut impl FnMut(Ref<'g>) -> Result<(), Fill>) -> Result<(), Fill> {
+fn leaves<'g>(cx: &'g Cx, x: Ref<'g>, f: &mut impl FnMut(Ref<'g>) -> Result<(), Fill>) -> Result<(), Fill> {
     match x.sexptype() {
         NILSXP => Ok(()),
         LISTSXP | VECSXP | EXPRSXP => {
-            for it in items(x).unwrap() {
-                leaves(it.value, f)?;
+            for it in items(cx, x).unwrap() {
+                leaves(cx, it.value, f)?;
             }
             Ok(())
         }
@@ -163,6 +163,7 @@ impl From<NeedGc> for Fill {
 /// `conv`, which writes a leaf's elements at `k..` or names the
 /// `*Answer` function that refuses its type.
 fn fill_plain<'g, T: robigo_rtcore::Plain>(
+    cx: &'g Cx,
     args: &[Item<'g>],
     out: &mut [T],
     who: &'static str,
@@ -170,7 +171,7 @@ fn fill_plain<'g, T: robigo_rtcore::Plain>(
 ) -> Result<(), Fill> {
     let mut k = 0;
     for it in args {
-        leaves(it.value, &mut |leaf| {
+        leaves(cx, it.value, &mut |leaf| {
             let n = leaf.len().unwrap_or(0);
             if !conv(leaf, &mut out[k..k + n]) {
                 return Err(Fill::Type(type_to_char(leaf), who));
@@ -190,7 +191,7 @@ fn atomic_answer<'g>(cx: &'g Cx, args: &[Item<'g>], ty: u8, n: usize, a: &Attrs<
     macro_rules! plain {
         ($t:ty, $who:literal, $conv:expr) => {{
             let mut r: FreshVec<'g, $t> = cx.alloc_vector(n)?;
-            fill_plain(args, r.as_mut_slice(), $who, $conv)?;
+            fill_plain(cx, args, r.as_mut_slice(), $who, $conv)?;
             a.apply(cx, &mut r)?;
             r.finish().into()
         }};
@@ -306,7 +307,7 @@ fn atomic_answer<'g>(cx: &'g Cx, args: &[Item<'g>], ty: u8, n: usize, a: &Attrs<
             let mut k = 0;
             let mut buf = Vec::new();
             for it in args {
-                leaves(it.value, &mut |leaf| {
+                leaves(cx, it.value, &mut |leaf| {
                     if !crate::util::is_vector_atomic(leaf) {
                         return Err(Fill::Type(type_to_char(leaf), "StringAnswer"));
                     }
@@ -351,7 +352,7 @@ fn list_answer<'g>(cx: &'g Cx, x: Ref<'g>, recurse: bool, out: &mut Vec<Ref<'g>>
             }
         }
         VECSXP | EXPRSXP | LISTSXP => {
-            for it in items(x).unwrap() {
+            for it in items(cx, x).unwrap() {
                 if recurse {
                     list_answer(cx, it.value, recurse, out)?;
                 } else {
@@ -466,7 +467,7 @@ impl<'g> Names<'g, '_> {
             saveseqno = nd.seqno;
             savecount = nd.count;
             nd.count = 0;
-            names_count(v, recurse, nd);
+            names_count(self.cx, v, recurse, nd);
             nd.seqno = 0;
         } else {
             saveseqno = 0;
@@ -474,7 +475,7 @@ impl<'g> Names<'g, '_> {
         match v.sexptype() {
             NILSXP => {}
             LISTSXP | VECSXP | EXPRSXP => {
-                for it in items(v).unwrap() {
+                for it in items(self.cx, v).unwrap() {
                     if recurse {
                         self.extract(it.value, base, it.name, recurse, nd)?;
                     } else {
@@ -510,16 +511,16 @@ impl<'g> Names<'g, '_> {
 /// `namesCount(v, recurse, nameData)`: count the leaves of `v` that get a
 /// sequence number, stopping past 1.
 // R: bind.c:namesCount
-fn names_count(v: Ref<'_>, recurse: bool, nd: &mut NameData) {
+fn names_count<'g>(cx: &'g Cx, v: Ref<'g>, recurse: bool, nd: &mut NameData) {
     match v.sexptype() {
         NILSXP => {}
         LISTSXP | VECSXP | EXPRSXP if recurse => {
-            for it in items(v).unwrap() {
+            for it in items(cx, v).unwrap() {
                 if nd.count > 1 {
                     break;
                 }
                 if it.name.is_none() {
-                    names_count(it.value, recurse, nd);
+                    names_count(cx, it.value, recurse, nd);
                 }
             }
         }
@@ -647,7 +648,7 @@ pub fn do_c(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out
         let (mut nrec, mut nuse) = (0, 0);
         let mut kept = Vec::new();
         for i in 0..args.len() {
-            let name = args.name(cx, i).map(|s| s.name().bytes());
+            let name = args.name(cx, i).map(|s| s.name_bytes());
             match name {
                 Some(b"recursive") => {
                     nrec += 1;
@@ -683,14 +684,14 @@ pub fn do_c(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out
         cx.build_with(out, |cx| {
             let top: Vec<Item<'_>> = kept
                 .iter()
-                .map(|&i| Item { value: args.get(cx, i), name: args.name(cx, i).map(|s| s.name()) })
+                .map(|&i| Item { value: args.get(cx, i), name: args.name(cx, i).map(|s| s.name(cx)) })
                 .collect();
             let mut d = Bind::default();
             for it in &top {
                 if usenames && !d.nnames {
-                    d.nnames = it.name.is_some() || has_names(it.value);
+                    d.nnames = it.name.is_some() || has_names(cx, it.value);
                 }
-                answer_type(it.value, recurse, usenames, &mut d);
+                answer_type(cx, it.value, recurse, usenames, &mut d);
             }
             bind_result(cx, call, &top, &d, recurse, TopNames::PerItem)
         })
@@ -720,7 +721,7 @@ pub fn do_unlist(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out
     cx.materialize_nested(x, if recurse { None } else { Some(1) })?;
     cx.build_with(out, |cx| {
         let xv = x.bind(cx);
-        let top = items(xv).unwrap();
+        let top = items(cx, xv).unwrap();
         let mut d = Bind::default();
         if xv.sexptype() == VECSXP {
             if usenames && attrib::names(xv).is_some() {
@@ -728,16 +729,16 @@ pub fn do_unlist(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out
             }
             for it in &top {
                 if usenames && !d.nnames {
-                    d.nnames = has_names(it.value);
+                    d.nnames = has_names(cx, it.value);
                 }
-                answer_type(it.value, recurse, usenames, &mut d);
+                answer_type(cx, it.value, recurse, usenames, &mut d);
             }
         } else {
             for it in &top {
                 if usenames && !d.nnames {
-                    d.nnames = it.name.is_some() || has_names(it.value);
+                    d.nnames = it.name.is_some() || has_names(cx, it.value);
                 }
-                answer_type(it.value, recurse, usenames, &mut d);
+                answer_type(cx, it.value, recurse, usenames, &mut d);
             }
         }
         let by = if recurse { TopNames::Whole(xv) } else { TopNames::Shared };

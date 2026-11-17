@@ -747,7 +747,7 @@ fn env_symbols_lists_symbols_in_order() {
             .as_slice()
             .unwrap()
             .iter()
-            .map(|x| String::from_utf8(x.as_sym().unwrap().name().bytes().to_vec()).unwrap())
+            .map(|x| String::from_utf8(x.as_sym().unwrap().name_bytes().to_vec()).unwrap())
             .collect();
         assert_eq!(names, ["c", ".a", "b"]);
         let r = cx.frame_bindings(env_of(e.bind(cx)), false).unwrap();

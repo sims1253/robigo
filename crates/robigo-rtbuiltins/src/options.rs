@@ -232,7 +232,7 @@ fn find<'g>(cx: &'g Cx, l: Ref<'g>, name: &[u8]) -> Result<Option<Ref<'g>>, Stri
     let _ = cx;
     let mut c = l.as_cons();
     while let Some(cell) = c {
-        if cell.tag().as_sym().is_some_and(|t| t.name().bytes() == name) {
+        if cell.tag().as_sym().is_some_and(|t| t.name_bytes() == name) {
             if cell.car().sexptype() == NILSXP {
                 return Err(format!("option {} has NULL value", String::from_utf8_lossy(name)));
             }
@@ -279,7 +279,7 @@ fn set_option<'g>(cx: &'g Cx, l: Ref<'g>, name: &[u8], value: Option<Ref<'g>>) -
         items.push((cell.tag().as_sym().expect("robigo: a tagged option"), cell.car()));
         c = cell.cdr().as_cons();
     }
-    let pos = items.iter().position(|(t, _)| t.name().bytes() == name);
+    let pos = items.iter().position(|(t, _)| t.name_bytes() == name);
     let old = pos.map_or(cx.nil(), |p| items[p].1);
     match (pos, value) {
         (Some(p), None) => {
@@ -386,7 +386,7 @@ pub fn do_options(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
                     let mut c = a.as_cons();
                     let mut elts = Vec::new();
                     while let Some(cell) = c {
-                        elts.push((cell.tag().as_sym().map(|t| t.name().bytes().to_vec()), cell.car()));
+                        elts.push((cell.tag().as_sym().map(|t| t.name_bytes().to_vec()), cell.car()));
                         c = cell.cdr().as_cons();
                     }
                     for (nm, e) in elts {
@@ -397,7 +397,7 @@ pub fn do_options(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
             }
         } else {
             for i in 0..args.len() {
-                items.push((args.name(cx, i).map(|t| t.name().bytes().to_vec()), args.root(i)));
+                items.push((args.name(cx, i).map(|t| t.name_bytes().to_vec()), args.root(i)));
             }
         }
         let n = items.len();
@@ -482,7 +482,7 @@ fn all_options<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, call: Root<'_>, l: 
     {
         let mut c = l.bind(cx).as_cons();
         while let Some(cell) = c {
-            let nm = cell.tag().as_sym().map(|t| t.name());
+            let nm = cell.tag().as_sym().map(|t| t.name(cx));
             names.push(nm.map_or((Vec::new(), Encoding::Native), |n| (n.bytes().to_vec(), n.enc())));
             values.push(s.root(cx, cell.car()));
             c = cell.cdr().as_cons();

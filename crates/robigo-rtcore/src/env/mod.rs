@@ -2392,7 +2392,7 @@ impl Cx {
             let b = cx.frame_bindings(env.bind(cx).as_env(), all).unwrap();
             let mut ans = cx.alloc_vector::<crate::Char<'_>>(b.len())?;
             for (i, (s, _)) in b.iter().enumerate() {
-                ans.set(i, s.name());
+                ans.set(i, s.name(cx));
             }
             Ok(ans.finish().into())
         })
