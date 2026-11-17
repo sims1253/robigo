@@ -326,6 +326,15 @@ fn do_paren(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Ou
     Ok(())
 }
 
+/// The primitive (not `.Internal`) named `name`, as `R_Primitive` finds it:
+/// the builtin object a foreign call hands its routine as `op`.
+// R: names.c:R_Primitive
+pub fn primitive<'g>(cx: &'g Cx, name: &str) -> Option<Ref<'g>> {
+    let st = state(cx);
+    let i = st.defs.iter().position(|d| !d.internal() && d.name == name)?;
+    Some(st.objs[i].bind(cx))
+}
+
 /// `.Primitive(name)`: the primitive (not `.Internal`) named `name`.
 // R: names.c:do_primitive, R_Primitive
 fn do_primitive(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {

@@ -37,6 +37,34 @@ fn registry<'s>(cx: &mut Cx, s: Scope<'s>) -> RResult<Root<'s>> {
     Ok(head)
 }
 
+/// `R_reinit_altrep_classes(dll)`: each class registered with `dll` gets
+/// GNU R's default methods back (`reinit_altrep_class`; all null here, as
+/// [`make_class`] makes them), so that nothing calls into an object
+/// `dyn.unload` closes.
+// R: altrep.c:R_reinit_altrep_classes, reinit_altrep_class
+pub(crate) fn reinit_classes(cx: &mut Cx, dll: *mut c_void) -> RResult<()> {
+    let Some(r) = cx.ext::<Registry>() else { return Ok(()) };
+    let head = r.0.bind(cx).sexp();
+    let nil = cx.nil().sexp();
+    // SAFETY: the registry is a pairlist of `list4(class, psym, stype,
+    // iptr)` entries, iptr an external pointer (its address an untraced
+    // word) and class a RAWSXP method table of plain data; nothing here
+    // allocates.
+    unsafe {
+        let mut chain = head.cdr();
+        while chain != nil {
+            let entry = chain.car();
+            let iptr = entry.cdr().cdr().cdr().car();
+            if iptr.car().as_ptr().cast::<c_void>() == dll {
+                let class = entry.car();
+                std::ptr::write_bytes(class.std_data(), 0, class.std_len() as usize);
+            }
+            chain = chain.cdr();
+        }
+    }
+    Ok(())
+}
+
 /// `install(name)` of a C string.
 fn install<'s>(cx: &mut Cx, s: Scope<'s>, name: *const c_char) -> RResult<Root<'s>> {
     // SAFETY: C's contract: a NUL-terminated string.
