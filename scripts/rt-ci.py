@@ -190,15 +190,25 @@ def conformance_command():
 SLOW = {"ROBIGO_CONF_TIMEOUT": "600"}
 
 
+def every_cpu(steps):
+    """The steps, with the conformance runner given a case per CPU in each
+    conformance step: those run one test alone (`--exact`), so the cases may
+    use every CPU (the runner's default, 2, is for a cargo test that shares
+    the machine with other test binaries). The runner starts the cases named
+    in ROBIGO_CONF_TIMEOUTS first."""
+    jobs = str(os.cpu_count() or 2)
+    return [(t, {**e, "ROBIGO_CONF_JOBS": jobs} if CONFORMANCE in c and "--exact" in c else e, c) for t, e, c in steps]
+
+
 def full_move_steps():
     """The nightly's full run (`--full-move`): the conformance slice under
     gctorture, every collection moving everything it may."""
     full_slow = ",".join(f"{c}={secs}" for c, secs in sorted(FULL_MOVE_SLOW.items()))
-    return [
+    return every_cpu([
         ("conformance under ROBIGO_GC_MOVE=1 with gctorture (every collection moves everything)",
          {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **SLOW, "ROBIGO_CONF_TIMEOUTS": full_slow},
          conformance_command()),
-    ]
+    ])
 
 
 # The cargo feature that compiles ROBIGO_RETRY_TORTURE in (robigo-rtcore's
@@ -213,7 +223,7 @@ def steps(crates):
     skip = ["--", "--skip", CONFORMANCE]
     conformance = conformance_command()
     slow = SLOW
-    return [
+    out = [
         ("release tests", {}, [*test, *pkgs, *skip]),
         ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {}, conformance),
         # docs/g3.md §15.3 E5: the same cases and recordings under each
@@ -286,6 +296,7 @@ def steps(crates):
          [*test, "-p", "robigo-rtapi", "--features", RETRY_TORTURE_FEATURE, "--test", "conformance", "--",
           "--exact", CONFORMANCE, "--nocapture"]),
     ]
+    return every_cpu(out)
 
 
 def metadata():
