@@ -76,3 +76,4 @@ if [ "${1:-}" = --check ]; then
   diff -u "$wide" "$wout" || { echo "error: $wide is not what scripts/base-subset.sh generates" >&2; exit 1; }
   echo "$file, $bound and $wide are up to date"
 fi
+echo "which scripts reach each name: $work/reached-by.txt"
