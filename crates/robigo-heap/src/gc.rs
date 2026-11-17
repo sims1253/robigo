@@ -3193,6 +3193,106 @@ mod tests {
 
     const OBJECTS: usize = 16;
 
+    /// `alloc_node`'s fast path copies `alloc_object`'s steps by hand
+    /// (#816): for the same requests it must leave the same header, fields,
+    /// slot, counts and trigger state as `alloc_object` (`alloc_node_slow`,
+    /// the path every other allocation takes). The setups start from no
+    /// statistics, torture or injection, whatever the environment says, and
+    /// each asserts the paths it is for were taken: the fast path through
+    /// block refills; a node trigger crossed (the collection comes due); a
+    /// node limit reached (requests refused); torture; an injected failure.
+    #[test]
+    fn alloc_node_and_alloc_object_agree() {
+        type State = (usize, usize, usize, u64, bool, usize, bool, i32, i32, bool, usize, usize);
+        fn state(c: &Core) -> State {
+            let poll = c.poll_word().load(Ordering::Relaxed) & GC_DUE != 0;
+            let (s, wait, gap) = (&c.sizes, c.force_wait, c.force_gap);
+            let counts = (c.alloc_since_gc, s.nodes_in_use, s.valloc, c.fail_seen);
+            (
+                counts.0,
+                counts.1,
+                counts.2,
+                counts.3,
+                c.due,
+                c.due_at,
+                poll,
+                wait,
+                gap,
+                c.fail_armed,
+                s.n_trigger,
+                s.v_trigger,
+            )
+        }
+        #[derive(Clone, Copy, PartialEq)]
+        enum Setup {
+            Plain,
+            Trigger,
+            Limit,
+            Torture,
+            Inject,
+        }
+        for setup in [Setup::Plain, Setup::Trigger, Setup::Limit, Setup::Torture, Setup::Inject] {
+            let (mut a, mut b) = (Core::new(), Core::new());
+            for c in [&mut a, &mut b] {
+                c.stats_mode = StatsMode::Off;
+                c.gc_torture(0, 0);
+                c.fail_alloc_at(0);
+                let used = c.sizes.nodes_in_use;
+                match setup {
+                    Setup::Plain => {}
+                    // the heap's size reached (R_NSize) at the 1000th node
+                    Setup::Trigger => (c.sizes.n_trigger, c.sizes.n_size) = (used + 1000, used + 1000),
+                    Setup::Limit => {
+                        (c.sizes.n_trigger, c.sizes.n_size, c.sizes.max_n_size) =
+                            (used + 1000, used + 1000, used + 2000)
+                    }
+                    Setup::Torture => c.gc_torture(3, 0),
+                    Setup::Inject => c.fail_alloc_at(1500),
+                }
+            }
+            let (car_a, car_b) = (a.alloc_vector(REALSXP, 1).unwrap(), b.alloc_vector(REALSXP, 1).unwrap());
+            let (mut fast, mut refused, mut came_due) = (0, 0, false);
+            for i in 0..4000 {
+                let t = [LISTSXP, LANGSXP, CLOSXP, EXTPTRSXP][i % 4];
+                let (nil_a, nil_b) = (a.nil(), b.nil());
+                fast += !a.sizes.over_trigger(0) as usize;
+                let due_before = a.due;
+                // SAFETY: live objects of each heap (nothing collects).
+                let x = unsafe { a.alloc_node(t, car_a, nil_a, nil_a) };
+                // SAFETY: as for `x`.
+                let y = unsafe { b.alloc_node_slow(t, car_b, nil_b, nil_b) };
+                came_due |= !due_before && a.due;
+                assert_eq!(state(&a), state(&b), "the counts and triggers, at request {i}");
+                let (x, y) = match (x, y) {
+                    (Ok(x), Ok(y)) => (x, y),
+                    (Err(_), Err(_)) => {
+                        refused += 1;
+                        continue;
+                    }
+                    _ => panic!("one path refused request {i} and the other did not"),
+                };
+                assert_eq!(x.addr() % BLOCK, y.addr() % BLOCK, "the same slot, at request {i}");
+                // SAFETY: fresh nodes; the header and field words.
+                unsafe {
+                    let w = |z: Sexp, k: usize| *(z.0 as *const u64).add(k);
+                    assert_eq!(w(x, 0), w(y, 0), "the header's first word, at request {i}");
+                    assert_eq!(x.attrib_raw() == nil_a, y.attrib_raw() == nil_b);
+                    assert_eq!((x.car() == car_a, x.cdr() == nil_a, x.tag() == nil_a), (true, true, true));
+                    assert_eq!((y.car() == car_b, y.cdr() == nil_b, y.tag() == nil_b), (true, true, true));
+                    assert_eq!(car_a.refcnt(), car_b.refcnt(), "the car's count, at request {i}");
+                }
+            }
+            match setup {
+                // 4000 nodes fill three blocks: the fast path and its refills
+                Setup::Plain => assert_eq!(fast, 4000, "every request on the fast path"),
+                Setup::Trigger => assert!(fast >= 999 && came_due && refused == 0, "the trigger crossed"),
+                Setup::Limit => assert!(came_due && refused > 0, "the limit reached"),
+                Setup::Torture => assert!(came_due, "torture made a collection due"),
+                Setup::Inject => assert_eq!(refused, 1, "the injected failure"),
+            }
+        }
+    }
+
     /// Counts a release: `owner` is the address of its counter.
     unsafe extern "C" fn release(owner: usize) {
         // SAFETY: the test passes the address of an `AtomicU32` that
