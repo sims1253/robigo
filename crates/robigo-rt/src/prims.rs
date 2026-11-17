@@ -247,6 +247,8 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin(".isMethodsDispatchOn", crate::specials::do_s4on, Inline::None, 1, -1),
     builtin("R.home", crate::platform::do_rhome, Inline::None, 11, 0),
     builtin("dir.exists", crate::platform::do_direxists, Inline::None, 11, 1),
+    builtin("file.exists", crate::platform::do_fileexists, Inline::None, 11, 1),
+    builtin("list.files", crate::platform::do_listfiles, Inline::None, 11, 9),
 ];
 
 /// How the VM runs B1's builtin `name` inline, if it does.
