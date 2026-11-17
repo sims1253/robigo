@@ -47,6 +47,10 @@ Run locally, with the runner's two jobs:
 | the step: `ROBIGO_RETRY_TORTURE=1`, as rt-ci.py runs it | 201 s, plus a 37 s feature build | 509/516 |
 | by hand: `ROBIGO_RETRY_TORTURE=1 ROBIGO_GC_MOVE=1` | 1,243 s | 509/516 |
 
+Again with main merged at filing (#794 in): the plain run 12 s, the step
+231 s plus a 60 s feature build, both 522/532 (a busier machine than the
+table's).
+
 All three runs pass the same 509 of 516 cases, and no ratcheted case fails,
 so the mode adds no failure on either collector. Under it, #780's three
 failing cases pass, and with GC_MOVE too, its four. The foreman expected
@@ -91,3 +95,9 @@ this PR:
 - **r4598852728:** `tests/retry_torture_knob.rs` checks the refusal. It is
   its own test binary, because the knob's variable is process-wide and the
   sibling tests turn the mode on. It fails without the check.
+
+### #794's deferred OCR low
+
+- **r4600865695:** `scripts/base-subset.sh` prints where the reached-by
+  report is before `--check`'s diffs. A failing check is when the report
+  helps, and it used to print only on success.
