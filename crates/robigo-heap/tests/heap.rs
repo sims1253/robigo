@@ -390,7 +390,7 @@ fn chars_are_interned_by_bytes_and_encoding() {
     assert_eq!(a, b, "ASCII drops the encoding bits");
     unsafe {
         assert!(a.gp() & gp::charsxp::ASCII != 0);
-        assert_eq!(*a.std_data().add(5), 0, "NUL-terminated");
+        assert_eq!(*a.char_bytes().as_ptr().add(5), 0, "NUL-terminated");
     }
     let u = c.mk_char("café".as_bytes(), gp::charsxp::UTF8).unwrap();
     let l = c.mk_char("café".as_bytes(), gp::charsxp::LATIN1).unwrap();
