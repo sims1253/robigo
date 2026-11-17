@@ -474,6 +474,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("nzchar", character::do_nzchar, 1, 1, -1, FUNCALL, Pure),
     row("encodeString", character::do_encode_string, 1, 11, 5, FUNCALL, Pure),
     row("substr", character::do_substr, 1, 11, 3, FUNCALL, Pure),
+    row("strrep", character::do_strrep, 0, 11, 2, FUNCALL, Pure),
     row("sprintf", sprintf::do_sprintf, 1, 11, -1, FUNCALL, Pure),
     op!("startsWith", 0, character::do_starts_with, 11, 2, FUNCALL, Pure),
     op!("endsWith", 1, character::do_starts_with, 11, 2, FUNCALL, Pure),

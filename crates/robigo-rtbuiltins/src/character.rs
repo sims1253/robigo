@@ -227,6 +227,69 @@ fn nchar_error(e: Nchar, ty: NcharType, i: usize) -> String {
 /// `DispatchOrEval(call, op, "nchar", args, env, &ans, 0, 1)`.
 const NCHAR: Generic = Generic::builtin("nchar");
 
+// ---- strrep ---------------------------------------------------------------------
+
+/// `.Internal(strrep(x, times))`: each string repeated, `x` and `times`
+/// recycled to the longer, NA for an NA of either; the names of `x` kept
+/// when it is not recycled. base's `strrep` passes a character `x` and an
+/// integer `times`.
+// R: character.c:do_strrep
+pub fn do_strrep(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("strrep", true).check_arity(cx, call, args)?;
+    let (x, n) = (args.root(0), args.root(1));
+    let length = |cx: &Cx, v: Root<'_>| {
+        let v = v.bind(cx);
+        v.len().ok_or_else(|| format!("LENGTH or similar applied to {} object", crate::util::type2char(v.sexptype())))
+    };
+    let (nx, nn) = match (length(cx, x), length(cx, n)) {
+        (Ok(a), Ok(b)) => (a, b),
+        (Err(m), _) | (_, Err(m)) => return Err(cx.error(&m)),
+    };
+    if nx == 0 || nn == 0 {
+        return cx.build(out, |cx| Ok(cx.alloc_vector::<Char<'_>>(0)?.finish().into()));
+    }
+    // STRING_ELT(x, .) and INTEGER(n) of anything else
+    for (v, accessor, what, ty) in [(x, "STRING_ELT", "character vector", STRSXP), (n, "INTEGER", "integer", INTSXP)] {
+        let t = v.bind(cx).sexptype();
+        if t != ty {
+            let m = format!("{accessor}() can only be applied to a '{what}', not a '{}'", crate::util::type2char(t));
+            return Err(cx.error(&m));
+        }
+    }
+    let ns = nx.max(nn);
+    cx.build_with(out, |cx| {
+        let (xv, nv) = (x.bind(cx), n.bind(cx));
+        let xs = xv.as_vector::<Char<'_>>().unwrap();
+        let times = nv.as_ints().unwrap();
+        let mut s = cx.alloc_vector::<Char<'_>>(ns)?;
+        for i in 0..ns {
+            let (el, ni) = (xs.get(i % nx), times[i % nn]);
+            if el == cx.na_string() || ni == NA_INTEGER {
+                s.set(i, cx.na_string());
+                continue;
+            }
+            if ni < 0 {
+                return Ok(Built::fail(Diag::error("invalid 'times' value")));
+            }
+            let b = el.bytes();
+            // a feasible length, in double against integer overflow
+            if b.len() as f64 * ni as f64 > i32::MAX as f64 {
+                return Ok(Built::fail(Diag::error("R character strings are limited to 2^31-1 bytes")));
+            }
+            s.set(i, cx.mk_char(&b.repeat(ni as usize), el.enc())?);
+        }
+        // the names, if not recycled
+        if ns == nx
+            && let Some(d) = attrib::names(xv)
+        {
+            let mut a = Attrs::new();
+            a.install(attrib::Attr { tag: cx.sym(robigo_rtcore::RSym::Names), value: d });
+            a.apply(cx, &mut s)?;
+        }
+        Ok(Built::done(s.finish()))
+    })
+}
+
 // ---- substr, startsWith (B2b) ------------------------------------------------
 
 /// `.Internal(substr(x, start, stop))`: characters `start..=stop` of each
