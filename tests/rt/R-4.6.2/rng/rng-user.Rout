@@ -1,0 +1,3 @@
+Error: 'user_unif_rand' not in load table 
+Error: 'user_norm_rand' not in load table 
+[1] "Mersenne-Twister" "Inversion"        "Rejection"       
