@@ -936,6 +936,7 @@ impl<'r> Reader<'_, 'r> {
                 return Err(cx.error("robigo: a compact sequence's serialized state is not understood"));
             };
             let int = cls == b"compact_intseq";
+            COMPACT_EXPANDED.set(COMPACT_EXPANDED.get() + 1);
             if inc != 1.0 && inc != -1.0 {
                 let msg = if int {
                     format!("compact sequences with increment {} not supported yet", inc as i32)
@@ -1117,7 +1118,9 @@ impl<'r> Reader<'_, 'r> {
                     x
                 }
                 BCODESXP => {
-                    return Err(cx.error("robigo: unserializing byte code is not implemented yet"));
+                    let v = self.read_bc(cx)?;
+                    // SAFETY: just read.
+                    s.root(cx, unsafe { r(cx, v) })
                 }
                 OBJSXP => {
                     // SAFETY: nil is immortal.
@@ -1154,8 +1157,162 @@ impl<'r> Reader<'_, 'r> {
                     o.set_attrib(a);
                 }
             }
-            Ok(x.bind(cx).sexp())
+            // byte code this R cannot run reads as its expression
+            let v = x.bind(cx);
+            if t == BCODESXP && !robigo_rtbuiltins::bytecode::version_ok(v) {
+                return Ok(robigo_rtbuiltins::bytecode::expr(cx, v).sexp());
+            }
+            Ok(v.sexp())
         })
+    }
+
+    /// `ReadBC`: byte code, after the number of its shared language cells
+    /// (`reps`, filled as `BCREPDEF`s define them).
+    // R: serialize.c:ReadBC
+    fn read_bc(&mut self, cx: &mut Cx) -> RResult<Sexp> {
+        let n = self.int(cx)?;
+        let Ok(n) = usize::try_from(n) else {
+            return Err(cx.error("negative length vectors are not allowed"));
+        };
+        cx.scope(|cx, s| {
+            let v = cx.retry_alloc(|cx| cx.alloc_vector_raw(VECSXP, n))?;
+            // SAFETY: fresh.
+            let reps = s.root(cx, unsafe { r(cx, v) });
+            self.read_bc1(cx, reps)
+        })
+    }
+
+    /// `ReadBC1`: a BCODESXP, its code encoded as `R_bcEncode` encodes it
+    /// before the constants are read; its expression (TAG) R_NilValue.
+    /// (`R_registerBC` records the code for the constants check of an R
+    /// built with it, which robigo-rt does not have.)
+    // R: serialize.c:ReadBC1
+    fn read_bc1(&mut self, cx: &mut Cx, reps: Root<'_>) -> RResult<Sexp> {
+        cx.scope(|cx, s| {
+            let nil = cx.nil().sexp();
+            // SAFETY: nil is immortal.
+            let b = cx.retry_alloc(|cx| unsafe { cx.alloc_node_raw(BCODESXP, nil, nil, nil) })?;
+            // SAFETY: fresh.
+            let bc = s.root(cx, unsafe { r(cx, b) });
+            let bytes = self.read_deeper(cx)?;
+            // SAFETY: just read.
+            let bytes = s.root(cx, unsafe { r(cx, bytes) });
+            let code = robigo_rtbuiltins::bytecode::bc_encode(cx, bytes)?;
+            let code = match code {
+                Some(pc) => s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_copy(&pc)?.finish().into())))?,
+                None => s.root(cx, cx.nil()),
+            };
+            // SAFETY: the rooted cell and code.
+            unsafe { bc.bind(cx).sexp().set_car(code.bind(cx).sexp()) };
+            let consts = self.read_bc_consts(cx, reps)?;
+            // SAFETY: the rooted cell, the constants just read.
+            unsafe { bc.bind(cx).sexp().set_cdr(consts) };
+            Ok(bc.bind(cx).sexp())
+        })
+    }
+
+    /// `ReadBCConsts`: the constants, a list; byte code and language cells
+    /// in the representation that shares cells.
+    // R: serialize.c:ReadBCConsts
+    fn read_bc_consts(&mut self, cx: &mut Cx, reps: Root<'_>) -> RResult<Sexp> {
+        let n = self.int(cx)?;
+        let Ok(n) = usize::try_from(n) else {
+            return Err(cx.error("negative length vectors are not allowed"));
+        };
+        cx.scope(|cx, s| {
+            let v = cx.retry_alloc(|cx| cx.alloc_vector_raw(VECSXP, n))?;
+            // SAFETY: fresh.
+            let ans = s.root(cx, unsafe { r(cx, v) });
+            for i in 0..n {
+                let t = self.int(cx)?;
+                let c = match t {
+                    x if x == BCODESXP as i32 => self.read_bc1(cx, reps)?,
+                    x if x == LANGSXP as i32 || x == LISTSXP as i32 => self.read_bc_lang(cx, t, reps)?,
+                    BCREPDEF | BCREPREF | ATTRLANGSXP | ATTRLISTSXP => self.read_bc_lang(cx, t, reps)?,
+                    _ => self.read_deeper(cx)?,
+                };
+                // SAFETY: the rooted list, `i` in range, `c` just read.
+                unsafe { ans.bind(cx).sexp().set_elt(i, c) };
+            }
+            Ok(ans.bind(cx).sexp())
+        })
+    }
+
+    /// `ReadBCLang(type)`: a language or pairlist cell, its CAR and CDR in
+    /// the same representation; a `BCREPDEF` cell is entered in `reps`
+    /// before its contents are read, so a later `BCREPREF` (inside it too)
+    /// finds it. Anything else is an item.
+    // R: serialize.c:ReadBCLang
+    fn read_bc_lang(&mut self, cx: &mut Cx, t: i32, reps: Root<'_>) -> RResult<Sexp> {
+        cx.check_c_stack()?;
+        match t {
+            BCREPREF => {
+                let i = self.int(cx)?;
+                let i = rep_index(cx, reps, i, "attempt access index {i}/{n} in VECTOR_ELT")?;
+                // SAFETY: the rooted list (a standard VECSXP), `i` in range.
+                Ok(unsafe { *(reps.bind(cx).sexp().std_data() as *const Sexp).add(i) })
+            }
+            _ if t == BCREPDEF
+                || t == LANGSXP as i32
+                || t == LISTSXP as i32
+                || t == ATTRLANGSXP
+                || t == ATTRLISTSXP =>
+            {
+                let mut t = t;
+                let mut pos = None;
+                if t == BCREPDEF {
+                    let p = self.int(cx)?;
+                    pos = Some(rep_index(cx, reps, p, "attempt to set index {i}/{n} in SET_VECTOR_ELT")?);
+                    t = self.int(cx)?;
+                }
+                let (t, hasattr) = match t {
+                    ATTRLANGSXP => (LANGSXP, true),
+                    ATTRLISTSXP => (LISTSXP, true),
+                    x if x == LANGSXP as i32 || x == LISTSXP as i32 => (x as u8, false),
+                    _ => {
+                        return Err(cx.error(&format!(
+                            "robigo: a shared cell of byte code of type {t} (not a language or pairlist cell) is not \
+                             implemented yet"
+                        )));
+                    }
+                };
+                cx.scope(|cx, s| {
+                    let nil = cx.nil().sexp();
+                    // SAFETY: nil is immortal.
+                    let c = cx.retry_alloc(|cx| unsafe { cx.alloc_node_raw(t, nil, nil, nil) })?;
+                    // SAFETY: fresh.
+                    let ans = s.root(cx, unsafe { r(cx, c) });
+                    if let Some(i) = pos {
+                        // SAFETY: the rooted list, `i` in range, the rooted cell.
+                        unsafe { reps.bind(cx).sexp().set_elt(i, ans.bind(cx).sexp()) };
+                    }
+                    self.depth += 1;
+                    let parts = (|| -> RResult<()> {
+                        if hasattr {
+                            let a = self.read_item(cx)?;
+                            // SAFETY: the rooted cell, `a` just read.
+                            unsafe { ans.bind(cx).sexp().set_attrib(a) };
+                        }
+                        let tag = self.read_item(cx)?;
+                        // SAFETY: as above.
+                        unsafe { ans.bind(cx).sexp().set_tag(tag) };
+                        Ok(())
+                    })();
+                    self.depth -= 1;
+                    parts?;
+                    let a = self.int(cx)?;
+                    let car = self.read_bc_lang(cx, a, reps)?;
+                    // SAFETY: the rooted cell, `car` just read.
+                    unsafe { ans.bind(cx).sexp().set_car(car) };
+                    let d = self.int(cx)?;
+                    let cdr = self.read_bc_lang(cx, d, reps)?;
+                    // SAFETY: the rooted cell, `cdr` just read.
+                    unsafe { ans.bind(cx).sexp().set_cdr(cdr) };
+                    Ok(ans.bind(cx).sexp())
+                })
+            }
+            _ => self.read_deeper(cx),
+        }
     }
 
     /// `ReadChar(stream, buf, length, levs)`: the CHARSXP, converted from
@@ -1258,4 +1415,27 @@ mod tests {
         assert!(convert(Codeset::Ascii, Codeset::Utf8, b"caf\xe9").is_none());
         assert_eq!(re_enc3(b"a\xffb", Codeset::Utf8, Codeset::Utf8), b"a<ff>b");
     }
+}
+
+/// `reps`' index `i` as `VECTOR_ELT` and `SET_VECTOR_ELT` check it, with
+/// their message (`{i}` and `{n}` the index and the length).
+// R: memory.c:VECTOR_ELT, SET_VECTOR_ELT (the index check)
+fn rep_index(cx: &mut Cx, reps: Root<'_>, i: i32, msg: &str) -> RResult<usize> {
+    // SAFETY: the rooted list.
+    let n = unsafe { reps.bind(cx).sexp().std_len() } as i64;
+    match usize::try_from(i) {
+        Ok(k) if (k as i64) < n => Ok(k),
+        _ => Err(cx.error(&msg.replace("{i}", &i.to_string()).replace("{n}", &n.to_string()))),
+    }
+}
+
+thread_local! {
+    /// The compact sequences read as standard vectors on this thread
+    /// ([`super::take_compact_sequences_expanded`]).
+    static COMPACT_EXPANDED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// [`COMPACT_EXPANDED`], reset.
+pub(super) fn take_compact_expanded() -> usize {
+    COMPACT_EXPANDED.replace(0)
 }

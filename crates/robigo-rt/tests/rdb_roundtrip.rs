@@ -1,8 +1,10 @@
 //! L1's bar: every record of GNU R 4.6.2's own lazy-load databases
 //! (`base.rdb`, `compiler.rdb`, `tools.rdb` of the oracle image's
-//! library) unserializes and serializes back to the same bytes, the
-//! records holding byte code excepted until robigo-rt has BCODESXP
-//! (C1-BC).
+//! library) unserializes and serializes back to the same bytes. The one
+//! gap is typed, never guessed from a message: a record holding one of
+//! base's compact sequences (an ALTREP object robigo-rt reads as the
+//! standard vector, [`take_compact_sequences_expanded`]) is written back
+//! expanded, and is counted apart until robigo-rt has those classes (AC).
 //!
 //! The databases are not in the repository: `scripts/rt-rdb-roundtrip.sh`
 //! copies them out of the oracle image, with GNU R's own round trip of each
@@ -23,7 +25,7 @@
 
 mod common;
 
-use robigo_rt::serialize::{Format, serialize_bytes, unserialize_bytes};
+use robigo_rt::serialize::{Format, serialize_bytes, take_compact_sequences_expanded, unserialize_bytes};
 use robigo_rtcore::{Args, Cx, Global, Locale, Out, RResult, Ref, Root, View};
 use std::cell::RefCell;
 use std::io::Read;
@@ -99,33 +101,41 @@ fn get_namespace(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
     })
 }
 
-fn gunzip(b: &[u8]) -> Vec<u8> {
+/// The packages whose databases the bar reads.
+const PACKAGES: [&str; 3] = ["base", "compiler", "tools"];
+
+fn gunzip(what: &str, b: &[u8]) -> Vec<u8> {
     let mut v = Vec::new();
-    flate2::read::GzDecoder::new(b).read_to_end(&mut v).expect("a gzip file");
+    flate2::read::GzDecoder::new(b).read_to_end(&mut v).unwrap_or_else(|e| panic!("{what}: not gzip: {e}"));
     v
 }
 
-fn inflate_record(b: &[u8]) -> Vec<u8> {
+/// A record of an `.rdb`: its uncompressed length (4 bytes, big-endian),
+/// then the zlib stream.
+fn inflate_record(what: &str, b: &[u8]) -> Vec<u8> {
+    assert!(b.len() >= 4, "{what}: a record of {} bytes, shorter than its length header", b.len());
     let n = u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize;
     let mut v = Vec::with_capacity(n);
-    flate2::read::ZlibDecoder::new(&b[4..]).read_to_end(&mut v).expect("a zlib record");
-    assert_eq!(v.len(), n);
+    flate2::read::ZlibDecoder::new(&b[4..]).read_to_end(&mut v).unwrap_or_else(|e| panic!("{what}: not zlib: {e}"));
+    assert_eq!(v.len(), n, "{what}: the record inflates to {} bytes, its header says {n}", v.len());
     v
 }
 
 /// `PKG.roundtrip`: each record's name and GNU R's re-serialization.
-fn gnur_roundtrips(b: &[u8]) -> std::collections::HashMap<String, Vec<u8>> {
+fn gnur_roundtrips(what: &str, b: &[u8]) -> std::collections::HashMap<String, Vec<u8>> {
     let mut m = std::collections::HashMap::new();
     let mut i = 0;
     let line = |i: &mut usize| {
-        let e = b[*i..].iter().position(|&c| c == b'\n').unwrap() + *i;
+        let e =
+            b[*i..].iter().position(|&c| c == b'\n').unwrap_or_else(|| panic!("{what}: a line without its end")) + *i;
         let s = String::from_utf8_lossy(&b[*i..e]).into_owned();
         *i = e + 1;
         s
     };
     while i < b.len() {
         let name = line(&mut i);
-        let n: usize = line(&mut i).parse().unwrap();
+        let n: usize = line(&mut i).parse().unwrap_or_else(|e| panic!("{what}: {name}'s length: {e}"));
+        assert!(i + n <= b.len(), "{what}: {name}'s {n} bytes run past the end");
         m.insert(name, b[i..i + n].to_vec());
         i += n;
     }
@@ -136,27 +146,44 @@ fn gnur_roundtrips(b: &[u8]) -> std::collections::HashMap<String, Vec<u8>> {
 struct Tally {
     same: usize,
     stored: usize,
-    bytecode: usize,
-    other_gap: Vec<String>,
+    /// Records that hold a compact sequence and are written back expanded.
+    compact: usize,
+    /// Read or write errors.
+    errors: Vec<String>,
     differ: Vec<String>,
 }
 
-/// The keys of an `.rdx` (its `variables` and `references`): name, offset,
-/// length.
-fn keys(cx: &mut Cx, rdx: &[u8]) -> Vec<(String, usize, usize)> {
+/// The records an `.rdx` names (its `variables` and `references`): name,
+/// offset and length, each checked to lie inside the `.rdb` of
+/// `rdb_len` bytes.
+fn rdx_records(cx: &mut Cx, pkg: &str, rdx: &[u8], rdb_len: usize) -> Vec<(String, usize, usize)> {
     cx.scope(|cx, s| {
         let o = s.out(cx);
         let idx = o.root();
-        unserialize_bytes(cx, gunzip(rdx), None, o).expect("the index unserializes");
+        let what = format!("{pkg}.rdx");
+        if let Err(e) = unserialize_bytes(cx, gunzip(&what, rdx), None, o) {
+            panic!("{what} does not unserialize: {}", common::message(cx, e));
+        }
         let mut v = Vec::new();
-        let l = idx.bind(cx).as_vector::<Ref<'_>>().unwrap();
+        let l = idx.bind(cx).as_vector::<Ref<'_>>().unwrap_or_else(|| panic!("{what}: not a list"));
+        assert!(l.len() >= 2, "{what}: no variables and references");
         for part in [l.get(0), l.get(1)] {
-            let items = part.as_vector::<Ref<'_>>().unwrap();
-            let names = robigo_rtbuiltins::attrib::get_attrib(cx, part, b"names").unwrap().unwrap();
-            let names = names.as_vector::<robigo_rtcore::Char<'_>>().unwrap();
+            let items = part.as_vector::<Ref<'_>>().unwrap_or_else(|| panic!("{what}: a part that is not a list"));
+            let names = robigo_rtbuiltins::attrib::get_attrib(cx, part, b"names")
+                .ok()
+                .flatten()
+                .and_then(|n| n.as_vector::<robigo_rtcore::Char<'_>>())
+                .unwrap_or_else(|| panic!("{what}: a part without names"));
             for i in 0..items.len() {
-                let k = items.get(i).as_ints().unwrap();
-                v.push((String::from_utf8_lossy(names.get(i).bytes()).into_owned(), k[0] as usize, k[1] as usize));
+                let name = String::from_utf8_lossy(names.get(i).bytes()).into_owned();
+                let k = items.get(i).as_ints().unwrap_or_else(|| panic!("{what}: {name}'s key is not integers"));
+                assert!(
+                    k.len() == 2 && k[0] >= 0 && k[1] >= 0,
+                    "{what}: {name}'s key {k:?} is not an offset and a length"
+                );
+                let (off, len) = (k[0] as usize, k[1] as usize);
+                assert!(off + len <= rdb_len, "{what}: {name} at {off}+{len} runs past the .rdb's {rdb_len} bytes");
+                v.push((name, off, len));
             }
         }
         v
@@ -165,39 +192,39 @@ fn keys(cx: &mut Cx, rdx: &[u8]) -> Vec<(String, usize, usize)> {
 
 fn roundtrip(
     cx: &mut Cx,
+    pkg: &str,
     rdb: &[u8],
-    keys: &[(String, usize, usize)],
+    records: &[(String, usize, usize)],
     gnur: &std::collections::HashMap<String, Vec<u8>>,
     hooks: (Root<'_>, Root<'_>),
     t: &mut Tally,
 ) {
-    for (name, off, len) in keys {
-        let data = inflate_record(&rdb[*off..off + len]);
-        let want = &gnur[name];
+    for (name, off, len) in records {
+        let data = inflate_record(&format!("{pkg}.rdb: {name}"), &rdb[*off..off + len]);
+        let want = gnur.get(name).unwrap_or_else(|| panic!("{pkg}.roundtrip has no {name}"));
         cx.scope(|cx, s| {
             let o = s.out(cx);
             let v = o.root();
+            take_compact_sequences_expanded();
             if let Err(e) = unserialize_bytes(cx, data.clone(), Some(hooks.0), o) {
                 let m = common::message(cx, e);
-                if m.contains("byte code") {
-                    t.bytecode += 1;
-                } else {
-                    t.other_gap.push(format!("{name}: {m}"));
-                }
+                t.errors.push(format!("{name}: {m}"));
                 return;
             }
+            let expanded = take_compact_sequences_expanded() > 0;
             match serialize_bytes(cx, v, Format::Xdr, 3, Some(hooks.1)) {
                 Ok(b) if b == *want => {
                     t.same += 1;
                     t.stored += (b == data) as usize;
                 }
+                Ok(_) if expanded => t.compact += 1,
                 Ok(b) => {
                     let at = b.iter().zip(want).position(|(x, y)| x != y).unwrap_or(b.len().min(want.len()));
                     t.differ.push(format!("{name}: {} vs {} bytes, first difference at {at}", b.len(), want.len()));
                 }
                 Err(e) => {
                     let m = common::message(cx, e);
-                    t.other_gap.push(format!("{name}: re-serialize: {m}"));
+                    t.errors.push(format!("{name}: re-serialize: {m}"));
                 }
             }
         });
@@ -213,7 +240,7 @@ fn oracle_databases_round_trip() {
     let lib = std::path::PathBuf::from(lib);
     // set but incomplete is a broken setup, never a skip: CI sets it only
     // after restoring the data (ci.yml's rdb-data job)
-    for pkg in ["base", "compiler", "tools"] {
+    for pkg in PACKAGES {
         for ext in ["rdb", "rdx", "roundtrip"] {
             let f = lib.join(pkg).join("R").join(format!("{pkg}.{ext}"));
             assert!(
@@ -227,7 +254,8 @@ fn oracle_databases_round_trip() {
         }
     }
     let mut session = common::Session::jit();
-    // (the records with byte code are errors, and their messages noise)
+    // (a record that fails to read is reported below: its message, printed
+    // too, would be noise)
     session.val(".Internal(options(show.error.messages = FALSE))");
     let cx = session.cx();
     // the databases were written in the build's C locale (their headers
@@ -238,41 +266,45 @@ fn oracle_databases_round_trip() {
     robigo_rt::define_builtin(cx, "..getNamespace", get_namespace, 1, 2);
     let mut report = String::new();
     let mut failed = false;
-    for pkg in ["base", "compiler", "tools"] {
+    for pkg in PACKAGES {
         let dir = lib.join(pkg).join("R");
-        let rdb = std::fs::read(dir.join(format!("{pkg}.rdb"))).expect("the .rdb");
-        let rdx = std::fs::read(dir.join(format!("{pkg}.rdx"))).expect("the .rdx");
-        let gnur = gnur_roundtrips(&std::fs::read(dir.join(format!("{pkg}.roundtrip"))).expect("GNU R's round trip"));
+        let read = |ext: &str| {
+            let f = dir.join(format!("{pkg}.{ext}"));
+            std::fs::read(&f).unwrap_or_else(|e| panic!("{}: {e}", f.display()))
+        };
+        let (rdb, rdx) = (read("rdb"), read("rdx"));
+        let gnur = gnur_roundtrips(&format!("{pkg}.roundtrip"), &read("roundtrip"));
         let mut t = Tally::default();
         cx.scope(|cx, s| {
-            let ks = keys(cx, &rdx);
+            let records = rdx_records(cx, pkg, &rdx, rdb.len());
             let hook = |cx: &mut Cx, name: &str| {
                 let o = s.out(cx);
                 let r = o.root();
                 let ex = s.out(cx);
                 let exr = ex.root();
-                robigo_rt::lower::parse(cx, name, ex).expect("parse");
-                let e = s.root(cx, exr.bind(cx).as_vector::<Ref<'_>>().unwrap().get(0));
+                robigo_rt::lower::parse(cx, name, ex).unwrap_or_else(|_| panic!("parsing {name}"));
+                let e = s.root(cx, exr.bind(cx).as_vector::<Ref<'_>>().expect("parse() gives an expression").get(0));
                 let g = s.root(cx, cx.global_env());
-                robigo_rt::eval(cx, e, g, o).expect("the hook");
+                robigo_rt::eval(cx, e, g, o).unwrap_or_else(|_| panic!("evaluating {name}"));
                 r
             };
             let hin = hook(cx, "rdb_in_hook");
             let hout = hook(cx, "rdb_out_hook");
-            roundtrip(cx, &rdb, &ks, &gnur, (hin, hout), &mut t);
+            roundtrip(cx, pkg, &rdb, &records, &gnur, (hin, hout), &mut t);
         });
         report.push_str(&format!(
-            "{pkg}: {} records as GNU R's round trip ({} of them their stored bytes), {} with byte code (C1-BC), {} other gaps, {} differ\n",
+            "{pkg}: {} records as GNU R's round trip ({} of them their stored bytes), {} differ, {} errors, \
+             {} hold a compact sequence (AC)\n",
             t.same,
             t.stored,
-            t.bytecode,
-            t.other_gap.len(),
-            t.differ.len()
+            t.differ.len(),
+            t.errors.len(),
+            t.compact,
         ));
-        for m in t.other_gap.iter().chain(&t.differ).take(20) {
+        for m in t.differ.iter().chain(&t.errors) {
             report.push_str(&format!("  {m}\n"));
         }
-        failed |= !t.differ.is_empty() || !t.other_gap.is_empty();
+        failed |= !t.differ.is_empty() || !t.errors.is_empty();
     }
     eprintln!("{report}");
     assert!(!failed, "{report}");
