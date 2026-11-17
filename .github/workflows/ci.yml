@@ -922,6 +922,50 @@ jobs:
           python3 scripts/perf.py rt-bars --robigo-rt dist/robigo-rt "${main_flag[@]}" --gnur rt-gnur.json \
             --cycles --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
 
+  # robigo-rt's corpus column (`corpus.py run --runtime rt`, against the rt
+  # pin's recordings and the `passing-rt/` ratchets;
+  # docs/ledger/g3/2026-11-17-rc-rt-corpora.md). A pull request runs a
+  # quarter of fastr, the quarter rotating with its number, and a push to
+  # main runs all of it (about two minutes). Corpora in echo mode wait for
+  # robigo-rt's `-f` front end, and those with a build step for its natives.
+  rt-corpora:
+    needs: [select, perf-rt-build]
+    if: ${{ needs.select.outputs.rt == 'true' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.select.outputs.image_rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
+      - uses: actions/download-artifact@v7
+        with:
+          name: perf-rt-bins
+          path: dist
+      - name: fastr on robigo-rt
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          chmod +x dist/robigo-rt
+          shard=1/1
+          if [ -n "$PR" ]; then shard="$(( PR % 4 + 1 ))/4"; fi
+          python3 scripts/corpus.py run fastr --runtime rt --shard "$shard" --robigo dist/robigo-rt \
+            --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: rt-corpora
+          path: .robigo/results/
+          retention-days: 14
+
   # Branch protection requires this job, `Check`, and nothing else, so
   # adding, splitting or resharding jobs needs no ruleset change: add every
   # new gating job to `needs`. It passes when each job passed, or was skipped
@@ -931,7 +975,7 @@ jobs:
   check:
     name: Check
     if: ${{ always() }}
-    needs: [select, lint, miri, rt, base-subset, build, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt]
+    needs: [select, lint, miri, rt, base-subset, build, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
