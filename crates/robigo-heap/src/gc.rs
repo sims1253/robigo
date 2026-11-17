@@ -28,7 +28,7 @@ use crate::layout::{GRANULE, charsxp, charsxp_bytes, data_off, extdata, granule_
 use crate::trace::{Trace, Visitor};
 use crate::types::*;
 use crate::{Sexp, flags, gp, hash_bytes, is_vector_type};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::c_void;
 
 mod diag;
@@ -490,8 +490,9 @@ pub struct Core {
     diag: Option<Box<diag::Diag>>,
     /// weak references (WEAKREFSXP) not yet finalized
     weak_refs: Vec<Sexp>,
-    /// weak references whose key died, waiting for their finalizer
-    finalize_queue: Vec<Sexp>,
+    /// weak references whose key died, waiting for their finalizer, in
+    /// the order RunFinalizers runs them (taken from the front)
+    finalize_queue: VecDeque<Sexp>,
     /// release callbacks of objects found dead by the last sweep
     releases: Vec<(ReleaseFn, usize)>,
     /// The store barrier's log ([`Sexp::store`]): immortal objects
@@ -803,7 +804,7 @@ impl Core {
             quarantine: Vec::new(),
             diag: diag::Diag::from_env(),
             weak_refs: Vec::new(),
-            finalize_queue: Vec::new(),
+            finalize_queue: VecDeque::new(),
             releases: Vec::new(),
             remembered: Box::new(Remembered(Default::default())),
         });
@@ -1678,8 +1679,11 @@ impl Core {
     /// `w` must be a live, fully initialized WEAKREFSXP of this heap: the
     /// collector keeps it and follows those fields on every collection.
     pub unsafe fn register_weak_ref(&mut self, w: Sexp) {
-        // R: memory.c:NewWeakRef prepends to R_weak_refs.
-        self.weak_refs.insert(0, w);
+        // R: memory.c:NewWeakRef prepends to R_weak_refs: the list is kept
+        // oldest first (a push, not an O(n) insert at the front), and walked
+        // newest first where its order shows ([`Core::classify_weak_refs`],
+        // [`Core::queue_exit_finalizers`])
+        self.weak_refs.push(w);
     }
 
     /// Number of references queued before a finalizer batch begins.
@@ -1692,23 +1696,25 @@ impl Core {
     /// order, then let the ordinary runner execute it.
     pub fn queue_exit_finalizers(&mut self) {
         let mut keep = Vec::with_capacity(self.weak_refs.len());
-        for w in std::mem::take(&mut self.weak_refs) {
+        // R_weak_refs' order, newest first
+        for w in std::mem::take(&mut self.weak_refs).into_iter().rev() {
             // SAFETY: every collection marks the objects in `weak_refs`.
             if unsafe { w.gp() } & gp::weakref::FINALIZE_ON_EXIT != 0 {
                 // SAFETY: as above.
                 unsafe { w.set_gp(w.gp() | gp::weakref::READY_TO_FINALIZE) };
-                self.finalize_queue.push(w);
+                self.finalize_queue.push_back(w);
             } else {
                 keep.push(w);
             }
         }
+        keep.reverse();
         self.weak_refs = keep;
     }
 
     /// The next weak reference whose key died, ready for its finalizer.
     /// It stays rooted until popped; the caller protects it while it runs.
     pub fn pop_finalizable(&mut self) -> Option<Sexp> {
-        if self.finalize_queue.is_empty() { None } else { Some(self.finalize_queue.remove(0)) }
+        self.finalize_queue.pop_front()
     }
 
     /// Release callbacks of external buffers the last
@@ -1914,7 +1920,7 @@ impl Core {
     }
 
     /// Weak references still waiting for their key to die (for
-    /// finalizers that run on exit).
+    /// finalizers that run on exit), oldest first: R_weak_refs reversed.
     pub fn weak_refs(&self) -> &[Sexp] {
         &self.weak_refs
     }
@@ -2117,15 +2123,17 @@ impl Core {
         unsafe {
             let refs = std::mem::take(&mut self.weak_refs);
             let mut keep = Vec::with_capacity(refs.len());
-            for w in refs {
+            // R_weak_refs' order, newest first
+            for w in refs.into_iter().rev() {
                 let key = Self::weak_field(w, 0);
                 if w.gp() & gp::weakref::READY_TO_FINALIZE != 0 || !self.is_marked(key) {
                     w.set_gp(w.gp() | gp::weakref::READY_TO_FINALIZE);
-                    self.finalize_queue.push(w);
+                    self.finalize_queue.push_back(w);
                 } else {
                     keep.push(w);
                 }
             }
+            keep.reverse();
             self.weak_refs = keep;
         }
     }
