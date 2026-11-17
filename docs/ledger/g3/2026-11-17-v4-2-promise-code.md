@@ -126,6 +126,19 @@ path is unchanged.
   from-source compiler's steps have none of. The first full rt-ci run
   flagged the two new assignment fixtures as unexpected without it.
 
+### Owed: a translated call's perf row (for V4 step 3, after L5)
+
+perf-rt's rows run robigo-rt's own from-source compile (`Comp`): its
+`Call`, `call::call` and inlining are main's, so "flat" above says nothing
+about a translated closure's call (`CallCodes`, no inline run, no early
+values). #824's OCR (r4604947677) asked for that path to be gated once
+translated code is the common path. Owed with V4 step 3: a
+`calls-rows.toml` row whose closure is GNU R's byte code (rebuilt with
+`.Internal(mkCode())` and `.Internal(bcClose())`, as `scripts/bc-fixtures.R`
+does, or compiled by cmp.R once the compiler namespace loads), measured
+against GNU R and main. Then the inlining and early values of calls with
+codes come back, with an entry of their own, measured by that row.
+
 ### Review
 
 - Sol round 1 (`01564e8c`): APPROVE, no findings.
