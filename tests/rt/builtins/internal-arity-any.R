@@ -43,5 +43,9 @@ is.unsorted.foo <- function(x, na.rm = FALSE, strictly = FALSE) c(na.rm, strictl
 as.vector.foo <- function(x, mode) 42L
 .Internal(as.vector(structure(1, class = "foo")))
 f(.Internal(as.vector(1)))
+.Internal(paste(list("a", "b"), "-", NULL))
+.Internal(paste0(list("a", "b"), NULL))
+f(.Internal(paste0(list("a"))))
+f(.Internal(paste(list("a"), "-")))
 g <- function() .Internal(paste0())
 f(g())

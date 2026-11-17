@@ -677,9 +677,11 @@ pub(crate) fn run_builtin(
 /// 4", `gettext`'s, `identical`'s), another error first (`recordGraphics`,
 /// `munmap_file`), extra arguments ignored (`internalsID`, `mem.maxNSize`,
 /// `mem.maxVSize`), a dispatch first (`as.vector`) or a short form
-/// accepted (`is.unsorted(x, strictly)`, `na.rm` inserted). Found by
+/// accepted (`is.unsorted(x, strictly)`, `na.rm` inserted; `paste` and
+/// `paste0` without `recycle0`, as R 4.0.0's code calls them). Found by
 /// calling every fixed-arity `.Internal` of GNU R 4.6.2 with one argument
-/// too many, and by reading what each one's C does before `checkArity`.
+/// too many and one too few, and by reading what each one's C does before
+/// `checkArity`.
 const OWN_ARITY_CHECK: &[&str] = &[
     "as.vector",
     "gettext",
@@ -690,6 +692,8 @@ const OWN_ARITY_CHECK: &[&str] = &[
     "mem.maxVSize",
     "munmap_file",
     "nchar",
+    "paste",
+    "paste0",
     "recordGraphics",
 ];
 

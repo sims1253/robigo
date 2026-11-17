@@ -37,4 +37,8 @@ ok
 [1]  TRUE FALSE
 [1] 42
 <simpleError in doTryCatch(return(expr), name, parentenv, handler): 1 argument passed to .Internal(as.vector) which requires 2>
+[1] "a-b"
+[1] "ab"
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): 1 argument passed to .Internal(paste0) which requires 3>
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): 2 arguments passed to .Internal(paste) which requires 4>
 <simpleError in g(): 0 arguments passed to .Internal(paste0) which requires 3>
