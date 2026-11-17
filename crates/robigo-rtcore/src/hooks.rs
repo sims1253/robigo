@@ -41,6 +41,10 @@ use robigo_heap::{Sexp, Trace};
 /// `eval(expr, env)`, the result written to `out`.
 pub type EvalFn = for<'a, 'b, 'c> fn(&mut Cx, Root<'a>, Root<'b>, Out<'c>) -> RResult<()>;
 
+/// `R_forceAndCall(call, n, env)`: the call, its first `n` arguments
+/// forced before a closure's body runs; the result written to `out`.
+pub type ForceAndCallFn = for<'a, 'b, 'c> fn(&mut Cx, Root<'a>, i32, Root<'b>, Out<'c>) -> RResult<()>;
+
 /// Call the function `fun` with the arguments in `args` (values, or
 /// promises the callee forces), reporting `call` (`sys.call()`, error
 /// messages) from the caller's environment `env`; the result written to
@@ -195,9 +199,10 @@ pub struct Hooks {
     /// marks the promise, `robigo_heap::extra::promise::BYTECODE`; M1 makes no
     /// BCODESXP). Defaults to `eval`'s default.
     pub eval_bytecode: EvalFn,
-    /// `R_forceAndCall(call, n, rho)` for a call `lapply` and `vapply`
-    /// make (`FUN(X[[i]], ...)`). Defaults to `eval`'s default.
-    pub force_and_call: EvalFn,
+    /// `R_forceAndCall(call, n, rho)` for a call a builtin makes (`lapply`'s
+    /// and `vapply`'s `FUN(X[[i]], ...)`, `mapply`'s) and for
+    /// `forceAndCall`. Defaults to an error, as `eval`'s does.
+    pub force_and_call: ForceAndCallFn,
     pub apply: ApplyFn,
     pub dispatch: DispatchFn,
     pub force: ForceFn,
@@ -219,7 +224,7 @@ impl Default for Hooks {
         Hooks {
             eval: no_eval,
             eval_bytecode: no_eval,
-            force_and_call: no_eval,
+            force_and_call: |cx, _, _, _, _| Err(not_yet(cx, "'eval'")),
             apply: no_apply,
             dispatch: no_dispatch,
             force: no_force,
@@ -332,11 +337,11 @@ impl Cx {
         }
     }
 
-    /// `R_forceAndCall` of `call` in `env` through the hook
+    /// `R_forceAndCall(call, n, env)` through the hook
     /// ([`Hooks::force_and_call`]), the result written to `out`.
     #[inline]
-    pub fn force_and_call(&mut self, call: Root<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-        (self.iso().hooks.get().force_and_call)(self, call, env, out)
+    pub fn force_and_call(&mut self, call: Root<'_>, n: i32, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+        (self.iso().hooks.get().force_and_call)(self, call, n, env, out)
     }
 
     /// A special's arguments evaluated for its default method, as GNU R's

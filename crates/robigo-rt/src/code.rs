@@ -191,6 +191,19 @@ fn check(b: &Built) -> Result<(), Malformed> {
             Op::StartSubset => reg(i.a) && reg(i.b) && k(i.e) && tgt(i.target()),
             Op::DfltSubset => reg(i.a) && k(i.e) && window(i.b, i.c),
             Op::Dollar => reg(i.a) && reg(i.b) && k(i.e) && k(i.c),
+            Op::Math1 => {
+                let kinds =
+                    i.g < crate::ir::MATH_SQRT || (crate::ir::MATH_SQRT..=crate::ir::MATH_LOGBASE).contains(&i.g);
+                let n = if i.g == crate::ir::MATH_LOGBASE { 2 } else { 1 };
+                reg(i.a)
+                    && k(i.e)
+                    && (i.f == 0 || k(i.f))
+                    && (i.f != 0 || i.g >= crate::ir::MATH_LOG)
+                    && i.c == n
+                    && regs(i.b, n as usize)
+                    && kinds
+                    && (i.g >= crate::ir::MATH_SQRT || (i.g as usize) < robigo_rtbuiltins::math::BC_MATH1.len())
+            }
             Op::Resume => reg(i.a) && (i.b == NO_REG || reg(i.b)) && k(i.e) && tgt(i.target()),
             Op::LoopResume => reg(i.a) && k(i.e) && (i.c == NO_CONST || (k(i.c) && k(i.b))) && tgt(i.target() + 1),
             Op::Switch => {
@@ -224,6 +237,7 @@ fn check(b: &Built) -> Result<(), Malformed> {
             Op::Arith | Op::Relop | Op::Logic => i.c as usize == i.b as usize + 1 && outside(i.b, 2),
             Op::Arith1 | Op::Not => outside(i.b, 1),
             Op::DfltSubset => outside(i.b, i.c as usize * if w { 2 } else { 1 }),
+            Op::Math1 => outside(i.b, i.c as usize),
             Op::CallBuiltin | Op::Internal if i.c != SPECIAL_INTERNAL && i.c != u16::MAX => {
                 outside(i.b, i.c as usize * if w { 2 } else { 1 })
             }

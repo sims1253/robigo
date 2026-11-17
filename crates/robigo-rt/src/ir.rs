@@ -282,7 +282,22 @@ pub enum Op {
     /// it started) evaluated into `a`, and a jump to the back-edge `(f, g)`.
     /// Both at depth `d`.
     LoopResume,
+    /// bcEval's scalar math (`MATH1`, `SQRT`, `EXP`, `LOG`, `LOGBASE`;
+    /// eval.c's `FastMath1`, `DO_MATH1`, `DO_LOG`, `DO_LOGBASE`): `c`
+    /// operands from `b` (1, or 2 for `LOGBASE`), kind `g` ([`MATH_SQRT`]
+    /// ..., or a `math1funs` index), the call `consts[e]`. A plain scalar
+    /// operand's value is the C function's, its NaN of a non-NaN operand
+    /// warning "NaNs produced" against the call; anything else calls the
+    /// builtin `consts[f]` (0: `log`'s, `do_log_builtin`) on the window.
+    /// The value into `a`, visible.
+    Math1,
 }
+
+/// [`Op::Math1`]'s kinds past `math1funs`' indices.
+pub const MATH_SQRT: u16 = 100;
+pub const MATH_EXP: u16 = 101;
+pub const MATH_LOG: u16 = 102;
+pub const MATH_LOGBASE: u16 = 103;
 
 /// [`Op::Resume`]'s `b` when no statement has run yet.
 pub const NO_REG: Reg = Reg::MAX;

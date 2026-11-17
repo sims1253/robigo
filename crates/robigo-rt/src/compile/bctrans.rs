@@ -1467,10 +1467,15 @@ impl<'g> Comp<'g> {
                 }
             }
             SQRT | EXP => {
-                // FastMath1: the builtin's value for any argument
+                // FastMath1: a number's value at once, else the builtin
                 let call = k(i.a[0]);
+                let name: &[u8] = if i.op == SQRT { b"sqrt" } else { b"exp" };
+                let Ok(prim) = self.prim_named(name) else {
+                    return self.untranslated(i, "byte code calling a builtin robigo-rt lacks");
+                };
                 let (dst, x) = self.consume(t, 1)?;
-                self.builtin_on(i, if i.op == SQRT { b"sqrt" } else { b"exp" }, call, dst, x, 1)?;
+                let kind = if i.op == SQRT { MATH_SQRT } else { MATH_EXP };
+                self.math1(call, Some(prim), dst, x, 1, kind);
             }
             ISNULL | ISLOGICAL | ISINTEGER | ISDOUBLE | ISCOMPLEX | ISCHARACTER | ISSYMBOL | ISOBJECT => {
                 // DO_ISTEST, DO_ISTYPE: the builtin's test, no dispatch; the
@@ -1505,9 +1510,22 @@ impl<'g> Comp<'g> {
                 self.builtin_on(i, name, call, dst, x, n as u16)?;
             }
             MATH1 => {
-                // a plain double's value, else the builtin the call names
-                // (DO_MATH1's getPrimitive(CAR(call)))
+                // a plain double's value (the table's C function), else the
+                // builtin the call names (DO_MATH1's getPrimitive(CAR(call)));
+                // getMath1Fun's check that the two agree
                 let call = k(i.a[0]);
+                let idx = i.a[1] as usize;
+                // SAFETY: a call constant: its function, a symbol.
+                let fname = unsafe { robigo_rtcore::Ref::from_sexp(call.car(), self.cx) }
+                    .as_sym()
+                    .map(|s| s.name().bytes().to_vec());
+                let table = robigo_rtbuiltins::math::BC_MATH1.get(idx).map(|e| e.0.as_bytes());
+                if fname.as_deref() != table {
+                    return self.untranslated(
+                        i,
+                        "byte code whose MATH1 does not match its call (math1 compiler/interpreter mismatch)",
+                    );
+                }
                 // SAFETY: a call constant.
                 let prim = unsafe { self.prim_of(call.car()) }
                     .map(|o| self.st.objs[o].bind(self.cx).sexp())
@@ -1517,7 +1535,7 @@ impl<'g> Comp<'g> {
                     return self.untranslated(i, "byte code calling a builtin robigo-rt lacks");
                 };
                 let (dst, x) = self.consume(t, 1)?;
-                self.builtin_call(prim, call, dst, x, 1);
+                self.math1(call, Some(prim), dst, x, 1, idx as u16);
             }
             DOTCALL => {
                 // `.Call` on the function and the arguments (DO_DOTCALL's
@@ -1527,7 +1545,14 @@ impl<'g> Comp<'g> {
                 let (dst, x) = self.consume(t, n)?;
                 self.builtin_on(i, b".Call", call, dst, x, n as u16)?;
             }
-            LOG | LOGBASE => return self.untranslated(i, "byte code calling log"),
+            LOG | LOGBASE => {
+                // R_log or logbase of numbers at once, else log's evaluated
+                // form (do_log_builtin)
+                let call = k(i.a[0]);
+                let n = if i.op == LOG { 1 } else { 2 };
+                let (dst, x) = self.consume(t, n as usize)?;
+                self.math1(call, None, dst, x, n, if i.op == LOG { MATH_LOG } else { MATH_LOGBASE });
+            }
             DOLLAR if self.top_slot(t, 0) => {
                 // a complex assignment's `$` getter
                 let (call, sym) = (k(i.a[0]), k(i.a[1]));
@@ -2066,6 +2091,21 @@ impl<'g> Comp<'g> {
         };
         self.builtin_call(prim, call, dst, x, n);
         Ok(())
+    }
+
+    /// bcEval's scalar math ([`Op::Math1`]) of kind `kind` on the `n`
+    /// operands from `x` for `call`, the builtin `prim` its slow path (None:
+    /// `log`'s), its value into `dst`.
+    fn math1(&mut self, call: Sexp, prim: Option<Sexp>, dst: Reg, x: Reg, n: u16, kind: u16) {
+        let mut i = Ins::new(Op::Math1);
+        i.a = dst;
+        i.b = x;
+        i.c = n;
+        i.e = self.k(call);
+        i.f = prim.map_or(0, |p| self.k(p));
+        i.g = kind;
+        i.fl |= F_DEPTH;
+        self.emit(i);
     }
 
     /// The builtin `prim` called on the `n` values from register `x` for

@@ -772,6 +772,11 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     reload!();
                 }
             },
+            Op::Math1 => {
+                // (out of line: the arm leaves vm::run's own code as it was)
+                math1(cx, act, &v, &i, pc - 1)?;
+                reload!();
+            }
             Op::AndOr1 | Op::AndOr2 => {
                 // SAFETY: as above.
                 let call = unsafe { v.k(i.e) };
@@ -1007,6 +1012,146 @@ fn clear_operands(act: &Act, i: &Ins) {
     if i.fl & F_CLR_C != 0 && i.c != i.a {
         act.clear(i.c);
     }
+}
+
+/// bcEval's scalar math ([`Op::Math1`]) of kind `kind` on the operands
+/// `x` (and `y`), read as bcStackScalar reads them: the value and whether
+/// it warns "NaNs produced"; None for the builtin. `SQRT` and `EXP` take a
+/// double or a non-NA integer; `MATH1`, `LOG` and `LOGBASE` a double or an
+/// integer as a double, NA too (bcStackScalarReal). A NaN of a NaN operand
+/// is that operand; of others it warns.
+// R: eval.c:FastMath1, DO_MATH1, DO_LOG, DO_LOGBASE, bcStackScalarReal
+fn math1_fast(kind: u16, x: Option<Num>, y: Option<Num>) -> Option<(f64, bool)> {
+    use robigo_rtbuiltins::kernel::arith::{NA_INTEGER, NA_REAL};
+    let real = |n: Option<Num>| match n {
+        Some(Num::Real(d)) => Some(d),
+        Some(Num::Int(i)) => Some(if i == NA_INTEGER { NA_REAL } else { i as f64 }),
+        _ => None,
+    };
+    let of = |v: f64, a: f64| if v.is_nan() { if a.is_nan() { (a, false) } else { (v, true) } } else { (v, false) };
+    match kind {
+        MATH_SQRT | MATH_EXP => {
+            let f = if kind == MATH_SQRT { f64::sqrt } else { f64::exp };
+            match x? {
+                Num::Real(a) => Some(of(f(a), a)),
+                Num::Int(i) if i != NA_INTEGER => {
+                    let v = f(i as f64);
+                    Some((v, v.is_nan()))
+                }
+                _ => None,
+            }
+        }
+        MATH_LOG => {
+            let a = real(x)?;
+            Some(of(robigo_rtbuiltins::math::bc_log(a), a))
+        }
+        MATH_LOGBASE => {
+            let (a, b) = (real(x)?, real(y)?);
+            let v = robigo_rtbuiltins::math::bc_logbase(a, b);
+            Some(match v.is_nan() {
+                true if a.is_nan() => (a, false),
+                true if b.is_nan() => (b, false),
+                nan => (v, nan),
+            })
+        }
+        k => {
+            let a = real(x)?;
+            let f = robigo_rtbuiltins::math::BC_MATH1.get(k as usize)?.1;
+            Some(of(f(a), a))
+        }
+    }
+}
+
+/// [`Op::Math1`]: bcEval's scalar math on the operands' registers
+/// ([`math1_fast`]), nmath's queued warnings and "NaNs produced" after it
+/// ([`math1_warnings`]); else the builtin ([`math1_slow`]). Out of
+/// `vm::run`, whose register allocation an inline arm shifted (every
+/// closure-call row of perf-rt paid ~8 instructions a call).
+// R: eval.c:FastMath1, DO_MATH1, DO_LOG, DO_LOGBASE
+#[inline(never)]
+fn math1(cx: &mut Cx, act: &mut Act, v: &View, i: &Ins, pc: usize) -> RResult<()> {
+    // SAFETY: registers of the running activation: their objects are live, rooted.
+    let (x, y) = unsafe { (num(cx, act.get(i.b)), if i.c == 2 { num(cx, act.get(i.b + 1)) } else { None }) };
+    // nmath's functions queue their warnings (ML_WARNING): those of this
+    // number only
+    let nmath = robigo_rtbuiltins::math::BC_MATH1.get(i.g as usize).is_some_and(|e| e.2);
+    if nmath {
+        robigo_rtbuiltins::math::take_nmath_warnings();
+    }
+    let Some((val, warn)) = math1_fast(i.g, x, y) else {
+        return math1_slow(cx, act, v, i, pc);
+    };
+    let queued = if nmath { robigo_rtbuiltins::math::take_nmath_warnings() } else { Vec::new() };
+    if warn || !queued.is_empty() {
+        // SAFETY: a constant of the code.
+        let call = unsafe { v.k(i.e) };
+        math1_warnings(cx, act, call, &queued, warn)?;
+    }
+    // SAFETY: an unboxed value.
+    unsafe { act.set(i.a, Slot::real(val)) };
+    for r in i.b..i.b + i.c {
+        act.clear(r);
+    }
+    cx.set_visible(true);
+    Ok(())
+}
+
+/// [`Op::Math1`]'s warnings, in bcEval's order: nmath's (`queued`, raised
+/// by `MATHLIB_WARNING`'s `warning()` while the function ran, so against
+/// the expression bcEval is at, the call), then "NaNs produced" if `nan`,
+/// against the call (`warningcall(call, R_MSG_NA)`).
+#[inline(never)]
+fn math1_warnings(cx: &mut Cx, act: &Act, call: Sexp, queued: &[String], nan: bool) -> RResult<()> {
+    // SAFETY: a constant of the rooted code.
+    unsafe { act.scratch(R_SCRATCH, call) };
+    let r = (|| {
+        for w in queued {
+            // SAFETY: the rooted call.
+            unsafe { cx.set_bc_expression(act.obj(R_SCRATCH)) };
+            let r = cx.warning(w.strip_suffix('\n').unwrap_or(w));
+            // SAFETY: R_NilValue.
+            unsafe { cx.set_bc_expression(cx.nil().sexp()) };
+            r?;
+        }
+        if nan {
+            cx.warning_call(Some(act.root(R_SCRATCH)), "NaNs produced")?;
+        }
+        Ok(())
+    })();
+    act.clear(R_SCRATCH);
+    r
+}
+
+/// [`Op::Math1`]'s slow path: the builtin `consts[f]` (or, 0, `log`'s
+/// evaluated form, `do_log_builtin`) on the window, for the call
+/// `consts[e]`, as bcEval's `Builtin1(do_math1, ...)` and
+/// `do_log_builtin(call, ...)` call them.
+fn math1_slow(cx: &mut Cx, act: &mut Act, v: &View, i: &Ins, pc: usize) -> RResult<()> {
+    // SAFETY: constants of the code.
+    let call = unsafe { v.k(i.e) };
+    cx.set_eval_depth(act.depth + i.d as i32);
+    pp_point(cx, act, v, pc);
+    if v.profile == Profile::Bc {
+        // the expression bcEval is at, for error() and warning()
+        // SAFETY: a constant of the rooted code object.
+        unsafe { cx.set_bc_expression(call) };
+    }
+    let r = if i.f != 0 {
+        // SAFETY: a primitive constant of the code.
+        let fun = unsafe { v.k(i.f) };
+        // SAFETY: the running code's constants: live, of this isolate.
+        unsafe { crate::call::call_builtin_regs(cx, act, i.a, fun, call, i.b, i.c as usize, false) }
+    } else {
+        // SAFETY: as above.
+        unsafe {
+            crate::call::call_fn_regs(cx, act, i.a, robigo_rtbuiltins::math::do_log_builtin, call, i.b, i.c as usize)
+        }
+    };
+    if v.profile == Profile::Bc {
+        // SAFETY: R_NilValue.
+        unsafe { cx.set_bc_expression(cx.nil().sexp()) };
+    }
+    r
 }
 
 /// An inlined builtin's slow path: the builtin `consts[f]` called with the
