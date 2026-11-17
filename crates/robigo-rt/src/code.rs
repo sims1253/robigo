@@ -85,7 +85,8 @@ pub struct Built {
 /// fixed registers below [`R_FIRST`]; every constant operand indexes the
 /// pool; every jump target is an instruction, and the code cannot run off
 /// its end; a `Switch`'s jump tables are there, one `Jmp` each; a call
-/// site is below `nsites`; an `LdScalar` constant is a plain scalar.
+/// site is below `nsites` (or [`crate::ir::NO_SITE`]); an `LdScalar`
+/// constant is a plain scalar.
 pub struct Verified(Built);
 
 /// Why [`Verified::new`] refused code: the instruction and the check.
@@ -158,7 +159,7 @@ fn check(b: &Built) -> Result<(), Malformed> {
             Op::BrFalse => reg(i.b) && k(i.e) && tgt(i.target()),
             Op::Guard => (i.a == 0 || reg(i.a)) && k(i.e) && k(i.c) && tgt(i.target()),
             Op::GetFun => reg(i.a) && k(i.e) && k(i.c),
-            Op::Call => reg(i.a) && reg(i.b) && k(i.e) && i.c < b.nsites,
+            Op::Call => reg(i.a) && reg(i.b) && k(i.e) && (i.c < b.nsites || i.c == crate::ir::NO_SITE),
             Op::CallBuiltin | Op::Internal => {
                 reg(i.a)
                     && k(i.e)
@@ -208,6 +209,24 @@ fn check(b: &Built) -> Result<(), Malformed> {
         };
         if !ok {
             return bad(at, "an operand out of range");
+        }
+        // a builtin's call and an inlined builtin's slow path pass the
+        // window's registers as the arguments, write the value after and
+        // then clear the window (`call_builtin_regs`): the value's register
+        // is outside it, and a binary operation's operands are its two
+        // registers
+        let w = i.fl & crate::ir::F_NAMES != 0;
+        let outside = |lo: u16, k: usize| !(lo as usize..lo as usize + k).contains(&(i.a as usize));
+        let apart = match i.op {
+            Op::Arith | Op::Relop | Op::Logic => i.c as usize == i.b as usize + 1 && outside(i.b, 2),
+            Op::Arith1 | Op::Not => outside(i.b, 1),
+            Op::CallBuiltin | Op::Internal if i.c != SPECIAL_INTERNAL && i.c != u16::MAX => {
+                outside(i.b, i.c as usize * if w { 2 } else { 1 })
+            }
+            _ => true,
+        };
+        if !apart {
+            return bad(at, "a value register inside its operands' window");
         }
         at += 1;
     }

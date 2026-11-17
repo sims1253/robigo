@@ -34,6 +34,8 @@ use robigo_heap::types::*;
 use robigo_rtcore::{Cx, RResult, Ref, Root};
 use std::collections::HashMap;
 
+mod bctrans;
+
 /// Run one compile attempt under `&Cx` until it succeeds: a refused
 /// allocation collects and compiles again (the same request refused twice
 /// is an error), a lazy binding a decision needs is forced first
@@ -188,6 +190,10 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
         // SAFETY: a rooted closure (and cache entry); nothing collects in
         // this interval.
         unsafe {
+            if f.cdr().typ() == BCODESXP {
+                // V3: GNU R's byte code, translated
+                return translate_closure(cx, f);
+            }
             let (formals, body) = (f.car(), source_body(cx, f));
             let mut cenv = Cenv::of_env(cx, f.tag(), installed)?;
             let st = prims::state(cx);
@@ -202,6 +208,48 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
             Ok(code)
         }
     })
+}
+
+/// The code of closure `f`, whose body is byte code (a BCODESXP): its
+/// translation (V3, [`bctrans`]), with the frame shape of its formals and
+/// the variables it assigns. Where the translation stops at what it does
+/// not know, the code raises "not implemented yet" when it runs.
+///
+/// # Safety
+/// `f` is a live closure of `cx`'s isolate whose body is a BCODESXP.
+unsafe fn translate_closure(cx: &Cx, f: Sexp) -> Result<Sexp, Need> {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let (formals, bc) = (f.car(), f.cdr());
+        let st = prims::state(cx);
+        let mut c = Comp::new(cx, st, Profile::Bc, Some(Cenv::for_translation()));
+        let r = c.alloc();
+        let res = c.translate(bc, r);
+        let b = match res {
+            Ok(()) => {
+                let mut i = Ins::new(Op::Ret);
+                i.b = r;
+                c.emit(i);
+                c.finish()
+            }
+            Err(Need::Fail) if c.bc_untranslated.is_some() => {
+                let what = c.bc_untranslated.take().unwrap();
+                let mut c = Comp::new(cx, st, Profile::Bc, Some(Cenv::for_translation()));
+                let r = c.alloc();
+                let nil = c.nil();
+                c.unimplemented(nil, &format!("translating {what}"))?;
+                let mut i = Ins::new(Op::Ret);
+                i.b = r;
+                c.emit(i);
+                c.finish()
+            }
+            Err(e) => return Err(e),
+        };
+        let expr = robigo_rtbuiltins::bytecode::expr(cx, Ref::from_sexp(bc, cx)).sexp();
+        let code = crate::code::build(cx, &verified(b), expr, Some(formals))?;
+        index_arg_codes(cx, code, &c.arg_codes);
+        Ok(code)
+    }
 }
 
 /// `make.functionContext(cntxt, forms, body)` on `cenv`: a frame of the
@@ -341,6 +389,9 @@ struct Comp<'g> {
     /// shape's slot indices once it exists ([`index_arg_codes`]). Raw: an
     /// attempt collects nothing.
     arg_codes: Vec<Sexp>,
+    /// What a byte-code translation stopped at ([`bctrans`]): the code
+    /// raises "not implemented yet" for it.
+    bc_untranslated: Option<String>,
 }
 
 /// Give the argument codes compiled with closure code `code` (`arg_codes`)
@@ -407,6 +458,7 @@ impl<'g> Comp<'g> {
             ppk: Vec::new(),
             site_save: 0,
             arg_codes: Vec::new(),
+            bc_untranslated: None,
         }
     }
 

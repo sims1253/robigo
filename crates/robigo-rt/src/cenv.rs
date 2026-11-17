@@ -103,6 +103,19 @@ pub struct Cenv<'g> {
 }
 
 impl<'g> Cenv<'g> {
+    /// The compile environment of a byte-code translation ([`crate::compile`]'s
+    /// `bctrans`): it decides nothing (the byte code's opcodes have), so it
+    /// has no frames and no environments.
+    pub fn for_translation() -> Cenv<'g> {
+        Cenv {
+            units: Vec::new(),
+            top_extra: Vec::new(),
+            chain: Vec::new(),
+            installed: false,
+            _cx: std::marker::PhantomData,
+        }
+    }
+
     /// The compiler environment of code that runs in `env`
     /// (`makeCenv(env)`, `frameTypes`), or [`Need::Fail`] for cmp.R's
     /// errors ("namespace found within local environments", ...).
