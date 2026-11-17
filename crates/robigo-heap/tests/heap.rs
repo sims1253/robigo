@@ -2964,3 +2964,26 @@ fn finalizers_come_out_newest_first_as_r_weak_refs_lists_them() {
     assert!(c.pop_finalizable().is_none());
     assert_eq!(c.weak_refs(), &[wl, y], "the others in their order");
 }
+
+/// The same contract with no collection (so Miri runs it): registrations
+/// kept oldest first, the exit queue taken newest first from its front.
+#[test]
+fn exit_finalizers_come_out_newest_first_without_a_collection() {
+    let mut c = core();
+    let fin = c.alloc_vector(RAWSXP, 8).unwrap();
+    let keys: Vec<Sexp> = (0..4).map(|_| c.alloc_vector(INTSXP, 1).unwrap()).collect();
+    let w: Vec<Sexp> = keys.iter().map(|&k| weak(&mut c, k, fin)).collect();
+    assert_eq!(c.weak_refs(), &w[..], "registration order, oldest first");
+    unsafe {
+        for &x in [w[0], w[2], w[3]].iter() {
+            x.set_gp(x.gp() | gp::weakref::FINALIZE_ON_EXIT);
+        }
+    }
+    c.queue_exit_finalizers();
+    assert_eq!(c.pending_finalizer_count(), 3);
+    for x in [w[3], w[2], w[0]] {
+        assert_eq!(c.pop_finalizable(), Some(x));
+    }
+    assert!(c.pop_finalizable().is_none());
+    assert_eq!(c.weak_refs(), &[w[1]]);
+}
