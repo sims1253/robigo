@@ -139,9 +139,11 @@ jobs:
   # L1's byte-exactness bar's data (crates/robigo-rt/tests/rdb_roundtrip.rs):
   # GNU R 4.6.2's own base, compiler and tools databases with GNU R's round
   # trip of each record, made in the oracle image (scripts/rt-rdb-roundtrip.sh
-  # --data-only: its GNU R is the R on PATH) and cached per image and script.
-  # The rt job restores them; a container job cannot run docker, and the
-  # Rust image has no GNU R 4.6.2.
+  # --data-only: its GNU R is the R on PATH) and cached per image and script,
+  # saved on main only, as every cache here; a pull request that misses
+  # makes them and hands them to the rt job as an artifact. The rt job
+  # restores them; a container job cannot run docker, and the Rust image has
+  # no GNU R 4.6.2.
   rdb-data:
     needs: select
     if: ${{ needs.select.outputs.rt == 'true' }}
@@ -173,10 +175,16 @@ jobs:
         if: steps.data.outputs.cache-hit != 'true'
         run: scripts/rt-rdb-roundtrip.sh --data-only .robigo/oracle-lib
       - uses: actions/cache/save@v6
-        if: steps.data.outputs.cache-hit != 'true'
+        if: steps.data.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
         with:
           path: .robigo/oracle-lib
           key: ${{ steps.key.outputs.key }}
+      - uses: actions/upload-artifact@v7
+        if: steps.data.outputs.cache-hit != 'true' && github.ref != 'refs/heads/main'
+        with:
+          name: rdb-oracle-lib
+          path: .robigo/oracle-lib
+          retention-days: 1
 
   rt:
     needs: [select, rdb-data]
@@ -217,12 +225,18 @@ jobs:
       # L1's bar, outside rt-ci's gctorture modes (its 2,440 records): every
       # record of GNU R's base, compiler and tools databases round-trips as
       # GNU R's does. The test fails when the variable is set and a file is
-      # missing, and the restore fails without the data.
+      # missing, and the artifact's download fails when neither has the data.
       - uses: actions/cache/restore@v6
+        id: rdb
         with:
           path: .robigo/oracle-lib
           key: ${{ needs.rdb-data.outputs.key }}
-          fail-on-cache-miss: true
+      # a pull request whose rdb-data missed main's cache made the data itself
+      - uses: actions/download-artifact@v7
+        if: steps.rdb.outputs.cache-hit != 'true'
+        with:
+          name: rdb-oracle-lib
+          path: .robigo/oracle-lib
       - name: GNU R's lazy-load databases round-trip (rdb_roundtrip)
         run: |
           ROBIGO_ORACLE_LIBRARY="$PWD/.robigo/oracle-lib" \
