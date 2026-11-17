@@ -292,6 +292,7 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     // the isolate's console is the process's stdout and stderr
     // E9's ROBIGO_FAIL_ALLOC_AT counts the script's allocations, not base's
     cx.arm_fail_alloc();
+    install_sigint();
     // end_Rmainloop's R_CleanUp(SA_DEFAULT, 0, 1) runs .Last; after an
     // error, check_session_exit's R_CleanUp(SA_NOSAVE, 1, 0) does not
     // (end_Rmainloop's newline unless R_NoEcho, then .Last: run_session)
@@ -306,6 +307,29 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     robigo_rt::repl::print_warnings(cx);
     cx.flush_console();
     if ok { 0 } else { 1 }
+}
+
+/// GNU R's `handleInterrupt` (main.c), the SIGINT handler:
+/// `R_interrupts_pending = 1`, which the next poll takes.
+extern "C" fn handle_interrupt(_sig: libc::c_int) {
+    robigo_rtcore::note_sigint();
+}
+
+/// setup_Rmainloop's `if (signal(SIGINT, handleInterrupt) == SIG_IGN)
+/// signal(SIGINT, SIG_IGN)`: SIGINT is the user interrupt, unless the
+/// process started with it ignored.
+// R: main.c:setup_Rmainloop
+#[allow(unsafe_code)]
+fn install_sigint() {
+    // SAFETY: the handler is async-signal-safe (one atomic store); signal()
+    // is called before any other thread exists.
+    unsafe {
+        if libc::signal(libc::SIGINT, handle_interrupt as extern "C" fn(libc::c_int) as libc::sighandler_t)
+            == libc::SIG_IGN
+        {
+            libc::signal(libc::SIGINT, libc::SIG_IGN);
+        }
+    }
 }
 
 /// `strerror` for the usual cases, as GNU R prints it.

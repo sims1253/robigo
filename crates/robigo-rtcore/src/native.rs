@@ -373,6 +373,37 @@ impl Cx {
         self.toplevel_with(global_env, base_env, TopLevel::Repl, |cx, _| body(cx).map_err(Some))
     }
 
+    /// GNU R's `begincontext(&c, CTXT_RESTART, R_NilValue, global_env,
+    /// base_env, R_NilValue, R_NilValue)` with its `SETJMP`, around `body`:
+    /// Ok(true) when an exit to the record landed there (an internal
+    /// restart made on it, `R_JumpToContext(c, CTXT_RESTART, ...)`),
+    /// Ok(false) when `body` returned. Another exit passes.
+    // R: errors.c:onintrEx (the restart context)
+    pub fn restart_context(
+        &mut self,
+        global_env: Root<'_>,
+        base_env: Root<'_>,
+        body: impl FnOnce(&mut Cx, crate::ContextId) -> RResult<()>,
+    ) -> RResult<bool> {
+        let mut init = Init::plain(self, ctxt::RESTART, 0);
+        init.cloenv = global_env.bind(self).sexp();
+        init.sysparent = base_env.bind(self).sexp();
+        self.with_record(&init, |cx, c| {
+            let r = match body(cx, c.id()) {
+                Ok(()) => false,
+                Err(e) => match cx.arrive(c, e) {
+                    Arrival::Landed(e) => {
+                        cx.take_exit(e);
+                        true
+                    }
+                    Arrival::Pass(e) | Arrival::Stop(e) => return Err(e),
+                },
+            };
+            cx.end_plain(c);
+            Ok(r)
+        })
+    }
+
     /// A new `R_UnwindProtect` continuation (`R_MakeUnwindCont`): robigo's
     /// shape is the pairlist `(value, condition, call, info)`, `info` a raw
     /// vector of the exit's kind, mask and target; it owns an exit's record
