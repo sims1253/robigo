@@ -52,20 +52,6 @@ unsafe fn block_has_room(b: *mut Block) -> bool {
     }
 }
 
-/// Poisons the heap if dropped, which only an unwinding panic does: the
-/// collection forgets it once marking and moving have ended.
-struct PoisonOnUnwind(*mut bool);
-
-impl Drop for PoisonOnUnwind {
-    #[cold]
-    fn drop(&mut self) {
-        // SAFETY: the `Core`'s own flag; the collection that made the guard
-        // is unwinding through the `Core`'s frame, so the `Core` is alive
-        // and nothing else borrows the flag.
-        unsafe { *self.0 = true };
-    }
-}
-
 /// `alloc_vector` of a type without elements: tracing the result would read
 /// its length word as a car.
 #[cold]
@@ -2333,9 +2319,10 @@ impl Core {
         // barrier); the caller vouches for `roots`.
         unsafe {
             // a panic out of marking and moving leaves the heap halfway
-            // (forwarded objects, `collecting` set): poisoned, never
-            // collected again
-            let guard = PoisonOnUnwind(&raw mut self.poisoned);
+            // (forwarded objects, `collecting` set): poisoned until both
+            // end, so an unwinding panic leaves it set and the heap is
+            // never collected again
+            self.poisoned = true;
             self.mark_heap_roots();
             roots.trace(&mut Mark(self));
             self.mark_rest();
@@ -2345,7 +2332,7 @@ impl Core {
                 self.forward_heap();
                 self.retire(moved);
             }
-            std::mem::forget(guard);
+            self.poisoned = false;
             self.finish_collection(size_needed, kind, t0)
         }
     }
