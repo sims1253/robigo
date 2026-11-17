@@ -295,3 +295,15 @@ fn regexec_afuzz_utf8() {
 fn regexec_afuzz_c() {
     check("regex-afuzz-c.tsv", Locale::C);
 }
+
+/// A string matched up to its end stops at its first NUL, as C's does
+/// (the first-character search is `strchr`); one matched by length scans
+/// every byte (`memchr`).
+#[test]
+fn regexec_stops_at_nul() {
+    let re = Regex::new_bytes(b"a", tre::REG_EXTENDED, Locale::C).unwrap();
+    assert!(!re.exec_bytes(b"\0a", &mut [], 0).unwrap());
+    assert!(!re.exec_bytes(b"b\0a", &mut [], 0).unwrap());
+    assert!(re.exec_bytes(b"ba\0", &mut [], 0).unwrap());
+    assert!(re.exec_bytes_n(b"\0a", &mut [], 0).unwrap());
+}

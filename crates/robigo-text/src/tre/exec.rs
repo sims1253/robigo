@@ -82,12 +82,18 @@ impl Text for [u8] {
         if i >= 0 && (i as usize) < <[u8]>::len(self) { self[i as usize] as i32 } else { 0 }
     }
     fn find(&self, c: i32, len: i32) -> Option<usize> {
-        let n = if len >= 0 { (len as usize).min(<[u8]>::len(self)) } else { <[u8]>::len(self) };
         // memchr/strchr compare as unsigned char.
         let b = c as u8;
-        match self[..n].iter().position(|&x| x == b) {
-            Some(p) => Some(p),
-            None if len < 0 && b == 0 => Some(n),
+        if len >= 0 {
+            let n = (len as usize).min(<[u8]>::len(self));
+            return self[..n].iter().position(|&x| x == b);
+        }
+        // strchr: the byte or the string's NUL, whichever comes first (the
+        // end of the slice stands for the NUL)
+        match self.iter().position(|&x| x == b || x == 0) {
+            Some(p) if self[p] == b => Some(p),
+            Some(_) => None,
+            None if b == 0 => Some(<[u8]>::len(self)),
             None => None,
         }
     }
