@@ -30,6 +30,11 @@
 //!   ROBIGO_CONF_TIMEOUT=secs    how long one case may run (default 20: a
 //!                               collector mode, gctorture or the moving
 //!                               collector, needs longer)
+//!   ROBIGO_CONF_TIMEOUTS=CASE=SECS,...
+//!                               a longer timeout for the named cases
+//!                               (repository-relative paths), each of which
+//!                               must exist: scripts/rt-ci.py's table of
+//!                               cases a collector mode makes too slow
 //!   ROBIGO_R_VERSION=4.6.2      compare with that GNU R version's
 //!                               recordings (default: the column's gated
 //!                               version); a run against another version
@@ -362,6 +367,24 @@ pub struct Options {
     pub jobs: usize,
     /// How long one case may run.
     pub timeout: Duration,
+    /// Cases that may run longer than `timeout` (`ROBIGO_CONF_TIMEOUTS`):
+    /// repository-relative path -> timeout.
+    pub case_timeouts: BTreeMap<String, Duration>,
+}
+
+/// `ROBIGO_CONF_TIMEOUTS`'s value: `CASE=SECS` pairs, comma-separated.
+pub fn parse_case_timeouts(v: &str) -> Result<BTreeMap<String, Duration>, String> {
+    let mut out = BTreeMap::new();
+    for item in v.split(',').filter(|i| !i.trim().is_empty()) {
+        let (case, secs) =
+            item.rsplit_once('=').ok_or_else(|| format!("ROBIGO_CONF_TIMEOUTS: {item:?} is not CASE=SECS"))?;
+        let secs: u64 =
+            secs.trim().parse().map_err(|_| format!("ROBIGO_CONF_TIMEOUTS: {secs:?} is not a number of seconds"))?;
+        if out.insert(case.trim().to_string(), Duration::from_secs(secs)).is_some() {
+            return Err(format!("ROBIGO_CONF_TIMEOUTS names {case:?} twice"));
+        }
+    }
+    Ok(out)
 }
 
 impl Options {
@@ -385,6 +408,10 @@ impl Options {
                 s.parse().map_err(|_| format!("ROBIGO_CONF_TIMEOUT={s:?} is not a number of seconds"))?,
             ),
         };
+        let case_timeouts = match std::env::var("ROBIGO_CONF_TIMEOUTS") {
+            Err(_) => BTreeMap::new(),
+            Ok(s) => parse_case_timeouts(&s)?,
+        };
         Ok(Options {
             bin,
             version: r_version(std::env::var_os("ROBIGO_R_VERSION").as_deref(), column)?,
@@ -396,6 +423,7 @@ impl Options {
             results: None,
             jobs: 2,
             timeout,
+            case_timeouts,
         })
     }
 }
@@ -708,7 +736,8 @@ fn check(
             return Outcome { id, unrecorded: Some(why), stdout_ok: false, stderr_ok: false, status_ok: false, diff };
         }
     };
-    let (out, err, status, timed_out) = run_case(&o.bin, script, o.timeout);
+    let timeout = o.case_timeouts.get(&id).copied().unwrap_or(o.timeout);
+    let (out, err, status, timed_out) = run_case(&o.bin, script, timeout);
     let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
     let mut diff = String::new();
     if timed_out {
@@ -766,6 +795,10 @@ pub fn run(root: &Path, column: &Column, o: &Options) -> Result<Report, String> 
         ));
     }
     let filtered = |p: &Path| o.filter.as_ref().is_none_or(|f| p.display().to_string().contains(f.as_str()));
+    // a longer timeout for a case that is gone would hide nothing, and stay
+    if let Some(gone) = o.case_timeouts.keys().find(|c| !root.join(c).is_file()) {
+        return Err(format!("ROBIGO_CONF_TIMEOUTS names {gone}, which is no case"));
+    }
 
     // (suite, script) to run. The ratchet selects a `Marked` suite's cases
     // in every run, but only a gated run checks or extends it.
@@ -1045,12 +1078,24 @@ pub fn sha256_hex(data: &[u8]) -> String {
 
 #[cfg(test)]
 mod boot_record_tests {
-    use super::{Options, RT, boot_record};
+    use super::{Options, RT, boot_record, parse_case_timeouts};
+    use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
 
     /// A binary that hangs at startup: the probe is killed at the case
     /// timeout and says so, rather than wedging the run.
     #[cfg(unix)]
+    #[test]
+    fn case_timeouts_parse_and_refuse_what_is_malformed() {
+        let t = parse_case_timeouts("tests/r/a.R=1200, tests/rt/b.R=30").unwrap();
+        assert_eq!(t.get("tests/r/a.R"), Some(&Duration::from_secs(1200)));
+        assert_eq!(t.get("tests/rt/b.R"), Some(&Duration::from_secs(30)));
+        assert!(parse_case_timeouts("").unwrap().is_empty());
+        assert!(parse_case_timeouts("tests/r/a.R").unwrap_err().contains("is not CASE=SECS"));
+        assert!(parse_case_timeouts("tests/r/a.R=soon").unwrap_err().contains("is not a number of seconds"));
+        assert!(parse_case_timeouts("tests/r/a.R=1,tests/r/a.R=2").unwrap_err().contains("twice"));
+    }
+
     #[test]
     fn a_probe_that_hangs_is_killed_at_the_case_timeout() {
         use std::os::unix::fs::PermissionsExt;
@@ -1070,6 +1115,7 @@ mod boot_record_tests {
             results: None,
             jobs: 1,
             timeout: Duration::from_secs(1),
+            case_timeouts: BTreeMap::new(),
         };
         let t = Instant::now();
         let r = boot_record(&RT, &o);

@@ -114,6 +114,7 @@ fn opts(column: &Column, bin: PathBuf) -> Options {
         results: None,
         jobs: 2,
         timeout: std::time::Duration::from_secs(20),
+        case_timeouts: Default::default(),
     }
 }
 
