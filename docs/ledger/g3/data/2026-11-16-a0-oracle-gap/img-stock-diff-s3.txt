@@ -1,0 +1,46 @@
+total: work 306,949,188  base 237,380,635  per unit 17,392
+     2,557.4   14.7%  R_gc_internal
+     1,000.0    5.7%  bcEval_loop
+       880.0    5.1%  Rf_findVarInFrame3
+       871.0    5.0%  SETCAR
+       713.0    4.1%  Rf_matchArgs_NR
+       660.1    3.8%  TryToReleasePages.part.0
+       629.6    3.6%  Rf_cons
+       465.1    2.7%  Rf_allocVector3
+       396.0    2.3%  Rf_eval
+       382.0    2.2%  R_LookupMethod
+       288.0    1.7%  SET_TAG
+       263.0    1.5%  bcEval
+       252.7    1.5%  GetNewPage
+       246.0    1.4%  findVarLocInFrame.part.0
+       244.0    1.4%  Rf_getAttrib
+       243.0    1.4%  duplicate1
+       237.0    1.4%  Rf_addMissingVarsToNewEnv
+       236.0    1.4%  duplicate_list
+       229.0    1.3%  R_existsVarInFrame
+       225.0    1.3%  R_Newhashpjw
+       223.0    1.3%  Rf_installS3Signature
+       222.0    1.3%  Rf_usemethod
+       213.1    1.2%  Rf_begincontext
+       203.0    1.2%  R_CleanupEnvir.part.0
+       179.0    1.0%  GET_BINDING_CELL_CACHE
+       174.4    1.0%  Rf_NewEnvironment
+       172.0    1.0%  Rf_install
+       165.6    1.0%  CONS_NR
+       164.0    0.9%  Rf_topenv
+       155.0    0.9%  dispatchMethod
+
+| Cause | Instructions | Share | Largest function |
+|---|---:|---:|---|
+| Allocation and GC (memory.c) | 6,784 | 39.0% | `R_gc_internal` |
+| Evaluation (eval.c: bcEval, eval, applyClosure, promises) | 2,855 | 16.4% | `bcEval_loop` |
+| Environments and variable lookup (envir.c) | 2,745 | 15.8% | `Rf_findVarInFrame3` |
+| Inlined header code (src/include: Rinlinedfuns.h, Defn.h, ...) | 1,240 | 7.1% | `R_gc_internal` |
+| Other builtins (src/main) | 978 | 5.6% | `Rf_installS3Signature` |
+| Argument matching (match.c) | 724 | 4.2% | `Rf_matchArgs_NR` |
+| S3 dispatch (objects.c) | 724 | 4.2% | `R_LookupMethod` |
+| libc: memcpy, memset and the rest | 487 | 2.8% | `__strcmp_avx2` |
+| Conditions and contexts (errors.c, context.c) | 449 | 2.6% | `Rf_begincontext` |
+| Attributes (attrib.c) | 399 | 2.3% | `Rf_getAttrib` |
+| 5 smaller causes | 7 | 0.0% | |
+| **Total** | **17,392** | 100% | |

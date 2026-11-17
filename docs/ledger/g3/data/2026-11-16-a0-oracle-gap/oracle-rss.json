@@ -1,0 +1,40 @@
+{
+ "meta": {
+  "gnur": "/usr/lib/R/bin/exec/R",
+  "robigo": null,
+  "robigo_env": [],
+  "runs": 5
+ },
+ "results": {
+  "benchmarks/rt/mem/churn.R": {
+   "gnur": {
+    "max_kib": 134908,
+    "median_kib": 134768,
+    "min_kib": 134520,
+    "out": "30150 \n"
+   },
+   "robigo": null,
+   "wrong": false
+  },
+  "benchmarks/rt/mem/listgrow.R": {
+   "gnur": {
+    "max_kib": 54244,
+    "median_kib": 54028,
+    "min_kib": 53752,
+    "out": "200000 400000 \n"
+   },
+   "robigo": null,
+   "wrong": false
+  },
+  "benchmarks/suite/binarytrees.R": {
+   "gnur": {
+    "max_kib": 44012,
+    "median_kib": 42140,
+    "min_kib": 41852,
+    "out": "129712 \n"
+   },
+   "robigo": null,
+   "wrong": false
+  }
+ }
+}

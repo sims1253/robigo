@@ -49,6 +49,7 @@ missing tryWrap
 missing tzone_name
 missing unz
 missing vhash
+gap robigo: '{what}' is not implemented yet
 gap robigo: C API function '{name}' is not implemented yet
 gap robigo: C API host operation '{name}' is not implemented yet
 gap robigo: La_dgecon() of a matrix with fewer rows than columns is not implemented (GNU R reads past the matrix)

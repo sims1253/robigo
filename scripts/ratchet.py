@@ -9,6 +9,7 @@ nothing else:
 
     tests/r/passing/<script path relative to tests/r>.pass
     tests/corpora/<name>/passing/<case id>.pass
+    tests/corpora/<name>/passing-rt/<case id>.pass   (robigo-rt's column)
 
 One file per case means two branches that ratchet different cases add
 different files, so merging them never conflicts; the single
@@ -71,6 +72,9 @@ def ratchets():
         known = {cid for cid, _ in corpus.load_cases(name)}
         out.append((name, corpus.passing_dir(name),
                     os.path.join(corpus.cdir(name), "passing.txt"), known.__contains__))
+        # robigo-rt's column (`corpus.py run --runtime rt`), which never had a list
+        out.append((name + " (rt)", corpus.passing_dir(name, "rt"),
+                    os.path.join(corpus.cdir(name), "passing-rt.txt"), known.__contains__))
     return out
 
 

@@ -1,0 +1,98 @@
+{
+ "meta": {
+  "cycles": false,
+  "gnur": "~/robigo-a0/host-plain/lib/R/bin/exec/R",
+  "robigo": null,
+  "robigo_env": {
+   "ROBIGO_COMPILE": "1"
+  },
+  "rows": "benchmarks/rt/calls-rows.toml",
+  "valgrind": "valgrind"
+ },
+ "rows": {
+  "binarytrees": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 3571974.2,
+   "n": 40,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "defaults": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 5645.0215,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "e7-match": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 191464.52,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "e7-paste": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 177497.375,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "e7-unique": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 151329.62,
+   "n": 200,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "env-fn": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 3618.97125,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "fib": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 22723897.25,
+   "n": 20,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "named": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 4376.2585,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "plain": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 4473.7385,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "s3": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 18518.494,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "superassign": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 7484.65975,
+   "n": 4000,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  },
+  "trycatch": {
+   "gnur_est_cycles": null,
+   "gnur_instr": 88516.011,
+   "n": 1000,
+   "robigo_est_cycles": null,
+   "robigo_instr": null
+  }
+ }
+}

@@ -136,7 +136,7 @@ impl Default for CharTable {
 use crate::{Core, ce, gp};
 
 /// The encoding marks of a CHARSXP (ASCII included).
-pub const ENC_MASK: u16 = gp::UTF8 | gp::LATIN1 | gp::BYTES | gp::ASCII;
+pub const ENC_MASK: u16 = gp::charsxp::UTF8 | gp::charsxp::LATIN1 | gp::charsxp::BYTES | gp::charsxp::ASCII;
 
 /// Why `mkCharLenCE` refuses its input. The C API turns each into GNU R's
 /// message (`EmbeddedNul` needs EncodeString, which lives above the core).
@@ -164,9 +164,9 @@ impl From<crate::NeedGc> for MkCharError {
 #[inline]
 pub fn ce_bits(enc: i32) -> u16 {
     match enc {
-        ce::UTF8 => gp::UTF8,
-        ce::LATIN1 => gp::LATIN1,
-        ce::BYTES => gp::BYTES,
+        ce::UTF8 => gp::charsxp::UTF8,
+        ce::LATIN1 => gp::charsxp::LATIN1,
+        ce::BYTES => gp::charsxp::BYTES,
         _ => 0,
     }
 }
@@ -177,11 +177,11 @@ pub fn ce_bits(enc: i32) -> u16 {
 /// R: sysutils.c:getCharCE
 #[inline]
 pub fn char_ce(g: u16) -> i32 {
-    if g & gp::UTF8 != 0 {
+    if g & gp::charsxp::UTF8 != 0 {
         ce::UTF8
-    } else if g & gp::LATIN1 != 0 {
+    } else if g & gp::charsxp::LATIN1 != 0 {
         ce::LATIN1
-    } else if g & gp::BYTES != 0 {
+    } else if g & gp::charsxp::BYTES != 0 {
         ce::BYTES
     } else {
         ce::NATIVE
@@ -220,16 +220,16 @@ impl BytesEncoding {
 /// R: sysutils.c:needsTranslation
 #[inline]
 pub fn to_native(g: u16, is_na: bool, l: Locale) -> Result<Translation, BytesEncoding> {
-    if g & gp::ASCII != 0 {
+    if g & gp::charsxp::ASCII != 0 {
         return Ok(Translation::None);
     }
-    if g & gp::UTF8 != 0 {
+    if g & gp::charsxp::UTF8 != 0 {
         return Ok(if l.utf8 || is_na { Translation::None } else { Translation::FromUtf8 });
     }
-    if g & gp::LATIN1 != 0 {
+    if g & gp::charsxp::LATIN1 != 0 {
         return Ok(if is_na || l.latin1 { Translation::None } else { Translation::FromLatin1 });
     }
-    if g & gp::BYTES != 0 {
+    if g & gp::charsxp::BYTES != 0 {
         return Err(BytesEncoding);
     }
     Ok(Translation::None)
@@ -241,13 +241,13 @@ pub fn to_native(g: u16, is_na: bool, l: Locale) -> Result<Translation, BytesEnc
 /// R: sysutils.c:needsTranslationUTF8
 #[inline]
 pub fn to_utf8(g: u16, is_na: bool, l: Locale) -> Result<Translation, BytesEncoding> {
-    if g & (gp::UTF8 | gp::ASCII) != 0 || is_na {
+    if g & (gp::charsxp::UTF8 | gp::charsxp::ASCII) != 0 || is_na {
         return Ok(Translation::None);
     }
-    if g & gp::BYTES != 0 {
+    if g & gp::charsxp::BYTES != 0 {
         return Err(BytesEncoding);
     }
-    if g & gp::LATIN1 != 0 || l.latin1 {
+    if g & gp::charsxp::LATIN1 != 0 || l.latin1 {
         return Ok(Translation::FromLatin1);
     }
     if l.utf8 {
@@ -259,19 +259,19 @@ pub fn to_utf8(g: u16, is_na: bool, l: Locale) -> Result<Translation, BytesEncod
 /// R: sysutils.c:charIsUTF8
 #[inline]
 pub fn is_utf8(g: u16, is_na: bool, l: Locale) -> bool {
-    if g & (gp::ASCII | gp::UTF8) != 0 {
+    if g & (gp::charsxp::ASCII | gp::charsxp::UTF8) != 0 {
         return true;
     }
-    !(g & (gp::LATIN1 | gp::BYTES) != 0 || !l.utf8 || is_na)
+    !(g & (gp::charsxp::LATIN1 | gp::charsxp::BYTES) != 0 || !l.utf8 || is_na)
 }
 
 /// R: sysutils.c:charIsLatin1
 #[inline]
 pub fn is_latin1(g: u16, is_na: bool, l: Locale) -> bool {
-    if g & (gp::ASCII | gp::LATIN1) != 0 {
+    if g & (gp::charsxp::ASCII | gp::charsxp::LATIN1) != 0 {
         return true;
     }
-    !(!l.latin1 || g & (gp::UTF8 | gp::BYTES) != 0 || is_na)
+    !(!l.latin1 || g & (gp::charsxp::UTF8 | gp::charsxp::BYTES) != 0 || is_na)
 }
 
 impl Core {
@@ -333,7 +333,7 @@ mod tests {
         // SAFETY: as in `marks`.
         let ce_of = |x: Sexp| char_ce(unsafe { x.gp() });
         assert_eq!(all.map(ce_of), [ce::NATIVE, ce::UTF8, ce::LATIN1, ce::BYTES]);
-        assert_eq!(all.map(marks), [0, gp::UTF8, gp::LATIN1, gp::BYTES]);
+        assert_eq!(all.map(marks), [0, gp::charsxp::UTF8, gp::charsxp::LATIN1, gp::charsxp::BYTES]);
     }
 
     #[test]
@@ -343,12 +343,12 @@ mod tests {
         for enc in [ce::UTF8, ce::LATIN1, ce::BYTES, ce::SYMBOL, ce::ANY] {
             assert_eq!(c.mk_char_ce(b"abc", enc).unwrap(), a);
         }
-        assert_eq!(marks(a), gp::ASCII);
+        assert_eq!(marks(a), gp::charsxp::ASCII);
         // SAFETY: as in `marks`.
         assert_eq!(char_ce(unsafe { a.gp() }), ce::NATIVE);
-        assert_eq!(marks(c.mk_char_ce(b"", ce::UTF8).unwrap()), gp::ASCII);
-        assert_eq!(marks(c.mk_char_ce(b"\x7f", ce::BYTES).unwrap()), gp::ASCII);
-        assert_eq!(marks(c.mk_char_ce(b"\x80", ce::BYTES).unwrap()), gp::BYTES);
+        assert_eq!(marks(c.mk_char_ce(b"", ce::UTF8).unwrap()), gp::charsxp::ASCII);
+        assert_eq!(marks(c.mk_char_ce(b"\x7f", ce::BYTES).unwrap()), gp::charsxp::ASCII);
+        assert_eq!(marks(c.mk_char_ce(b"\x80", ce::BYTES).unwrap()), gp::charsxp::BYTES);
     }
 
     #[test]
@@ -364,12 +364,12 @@ mod tests {
         let n = c.mk_char_ce(s, ce::NATIVE).unwrap();
         assert_eq!(c.mk_char_ce(s, ce::SYMBOL), Ok(n));
         assert_eq!(c.mk_char_ce(s, ce::ANY), Ok(n));
-        assert_eq!(c.find_char(s, gp::UTF8), None);
+        assert_eq!(c.find_char(s, gp::charsxp::UTF8), None);
     }
 
     #[test]
     fn translation_needs() {
-        let (u, l, b, a, n) = (gp::UTF8, gp::LATIN1, gp::BYTES, gp::ASCII, 0);
+        let (u, l, b, a, n) = (gp::charsxp::UTF8, gp::charsxp::LATIN1, gp::charsxp::BYTES, gp::charsxp::ASCII, 0);
         use Translation::*;
         for loc in [UTF8_LOCALE, LATIN1_LOCALE, C_LOCALE] {
             assert_eq!(to_native(b, false, loc), Err(BytesEncoding));
@@ -394,7 +394,7 @@ mod tests {
 
     #[test]
     fn char_is_utf8_and_latin1() {
-        let (u, l, b, a, n) = (gp::UTF8, gp::LATIN1, gp::BYTES, gp::ASCII, 0);
+        let (u, l, b, a, n) = (gp::charsxp::UTF8, gp::charsxp::LATIN1, gp::charsxp::BYTES, gp::charsxp::ASCII, 0);
         assert!(is_utf8(a, false, C_LOCALE) && is_utf8(u, false, C_LOCALE));
         assert!(is_utf8(n, false, UTF8_LOCALE) && !is_utf8(n, false, C_LOCALE));
         assert!(!is_utf8(n, true, UTF8_LOCALE) && !is_utf8(l, false, UTF8_LOCALE));

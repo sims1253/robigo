@@ -394,6 +394,124 @@ pub fn translate_char<'a>(s: Str<'a>, loc: Locale) -> Result<Cow<'a, [u8]>, Tran
     Ok(Cow::Owned(out))
 }
 
+/// Why [`wtrans_char2`] gave no wide string.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WideError {
+    /// The string is marked "bytes": [`TranslateError`]'s error.
+    Bytes,
+    /// iconv could not convert it. R warns "unable to translate '%s' to a
+    /// wide string" with this text (the string, bytes iconv rejected as
+    /// `<xx>`, truncated to 255 bytes) and the caller reports failure.
+    Invalid(String),
+}
+
+/// iconv's conversion of one character to UCS-4: `(width, wc)`, or `None`
+/// for EILSEQ/EINVAL. glibc's UTF-8 decoder takes the shortest forms of
+/// U+0000..U+10FFFF without surrogates (std's definition).
+fn iconv_char(p: &[u8], i: usize, from: Enc, loc: Locale) -> Option<(usize, i32)> {
+    let b = p[i];
+    if b < 0x80 {
+        return Some((1, b as i32));
+    }
+    match from {
+        Enc::Latin1 => {
+            // CP1252 (R's choice where iconv has it)
+            let u = if b < 0xA0 { CP1252_HIGH[(b - 0x80) as usize]? } else { b as u16 };
+            Some((1, u as i32))
+        }
+        Enc::Utf8 => {
+            let w = match b {
+                0xC2..=0xDF => 2,
+                0xE0..=0xEF => 3,
+                0xF0..=0xF4 => 4,
+                _ => return None,
+            };
+            let c = std::str::from_utf8(p.get(i..i + w)?).ok()?.chars().next()?;
+            Some((w, c as i32))
+        }
+        // the C locale's charset is ASCII
+        Enc::Native | Enc::Bytes => {
+            debug_assert!(!loc.utf8());
+            None
+        }
+    }
+}
+
+/// `wtransChar2(s)`: the string as wide characters (UCS-4).
+// R: sysutils.c:wtransChar2, wneedsTranslation, translateToWchar
+pub fn wtrans_char2(s: Str<'_>, loc: Locale) -> Result<Vec<i32>, WideError> {
+    let p = s.bytes();
+    let from = match s.enc() {
+        Enc::Bytes => return Err(WideError::Bytes),
+        _ if s.is_ascii() => return Ok(p.iter().map(|&b| b as i32).collect()),
+        Enc::Utf8 => Enc::Utf8,
+        Enc::Latin1 => Enc::Latin1,
+        Enc::Native if loc.utf8() => Enc::Utf8,
+        Enc::Native => Enc::Native,
+    };
+    let mut out = Vec::with_capacity(p.len());
+    let mut failed = false;
+    let mut i = 0;
+    while i < p.len() {
+        match iconv_char(p, i, from, loc) {
+            Some((w, wc)) => {
+                out.push(wc);
+                i += w;
+            }
+            None => {
+                failed = true;
+                out.extend(format!("<{:02x}>", p[i]).bytes().map(|b| b as i32));
+                i += 1;
+            }
+        }
+    }
+    if !failed {
+        return Ok(out);
+    }
+    // reEnc3(wide, native, subst = 2): what the native encoding lacks as
+    // <U+XXXX>
+    let mut msg = Vec::new();
+    for &wc in &out {
+        match char::from_u32(wc as u32) {
+            Some(c) if wc < 0x80 || loc.utf8() => {
+                let mut buf = [0u8; 4];
+                msg.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            }
+            _ if wc < 0x10000 => msg.extend_from_slice(format!("<U+{wc:04X}>").as_bytes()),
+            _ => msg.extend_from_slice(format!("<U+{wc:08X}>").as_bytes()),
+        }
+    }
+    if msg.len() > 255 {
+        msg.truncate(252);
+        mbcs_truncate_to_valid(&mut msg, loc);
+        msg.extend_from_slice(b"...");
+    }
+    Err(WideError::Invalid(String::from_utf8_lossy(&msg).into_owned()))
+}
+
+/// `mbcsTruncateToValid(s)`: drops an incomplete or invalid character at
+/// the end, and everything after the first invalid one.
+// R: util.c:mbcsTruncateToValid
+pub(crate) fn mbcs_truncate_to_valid(s: &mut Vec<u8>, loc: Locale) {
+    if !loc.mbcs() || s.is_empty() {
+        return;
+    }
+    let mut good = s.len() - 1;
+    while good > 0 && s[good] & 0xC0 == 0x80 {
+        good -= 1;
+    }
+    while good < s.len() {
+        let (n, _) = mbrtowc_utf8(&s[..], good);
+        // (the end of the buffer reads as the terminator here, which is
+        // mbrtowc's -2 for a cut-short character)
+        if n <= 0 {
+            s.truncate(good);
+            return;
+        }
+        good += n as usize;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

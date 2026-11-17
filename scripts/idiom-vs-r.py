@@ -97,9 +97,15 @@ def c_source(idiom):
 class Meter:
     """Callgrind instruction counts per iteration, N against 2N."""
 
-    def __init__(self, keep=None, robigo=None, robigo_env=(), cycles=False, need_robigo=True):
+    def __init__(self, keep=None, robigo=None, robigo_env=(), cycles=False, need_robigo=True, identify=True):
         self.valgrind = perf.valgrind_path()
         self.robigo = robigo_path(robigo) if need_robigo else None
+        # which binary this measures, in the report and the JSON (a stale
+        # build is warned about: perf.binary_identity)
+        self.robigo_identity = None
+        if identify and self.robigo and os.path.exists(self.robigo):
+            self.robigo_identity = perf.binary_identity(self.robigo, perf.crate_of(self.robigo))
+            perf.report_identity("robigo", self.robigo_identity)
         self.robigo_env = {"ROBIGO_COMPILE": "1", **dict(kv.split("=", 1) for kv in robigo_env)}
         self.cycles = cycles
         self.r_bin = os.environ.get("RSCRIPT_BIN", "/usr/lib/R/bin/exec/R")
@@ -216,8 +222,26 @@ def load_rows(path, rx=None):
     return [r for r in rows if not rx or re.search(rx, r["name"])]
 
 
+def shifted(setup, k):
+    """A row's setup after `k` unrelated strings: the heap shift of
+    --shifts. k = 0 is the row as written."""
+    return setup if k == 0 else f'zz <- paste0("z", seq_len({k}L))\n' + setup
+
+
+def median(xs):
+    xs = sorted(xs)
+    n = len(xs)
+    return xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2
+
+
 def cmd_rows(a, m):
-    """Each row's instructions (and estimated cycles) per iteration; no floors."""
+    """Each row's instructions (and estimated cycles) per iteration; no floors.
+
+    With --shifts, a row marked `address_sensitive` (one whose count follows
+    where its strings were allocated: GNU R's and robigo-rt's string hash is
+    an address hash, unique.c:cshash) is measured once per heap shift, after
+    k unrelated strings, and reports the median, with every shift's count in
+    the JSON (docs/ledger/g3/2026-11-17-address-rows.md)."""
     both = not a.no_r and not a.no_robigo
     cols = ["row", "group"]
     if not a.no_robigo:
@@ -228,11 +252,20 @@ def cmd_rows(a, m):
     out = {}
     for d in load_rows(a.rows, a.filter):
         tag = f"{d['name']}-"
-        r = None if a.no_robigo else m.robigo_iter(d["setup"], d["body"], d["n"], tag)
-        g = None if a.no_r else m.gnur_iter(d["setup"], d["body"], d["n"], tag)
-        ri, rc = (r if a.cycles else (r, None)) if r is not None else (None, None)
-        gi, gc = (g if a.cycles else (g, None)) if g is not None else (None, None)
-        cells = [d["name"], d.get("group", "")]
+        ks = a.shifts if a.shifts and d.get("address_sensitive") else [0]
+        rs, gs = [], []
+        for k in ks:
+            setup = shifted(d["setup"], k)
+            r = None if a.no_robigo else m.robigo_iter(setup, d["body"], d["n"], f"{tag}{k}-")
+            g = None if a.no_r else m.gnur_iter(setup, d["body"], d["n"], f"{tag}{k}-")
+            rs.append((r if a.cycles else (r, None)) if r is not None else (None, None))
+            gs.append((g if a.cycles else (g, None)) if g is not None else (None, None))
+
+        def mid(xs, i):
+            v = [x[i] for x in xs if x[i] is not None]
+            return median(v) if v else None
+        ri, rc, gi, gc = mid(rs, 0), mid(rs, 1), mid(gs, 0), mid(gs, 1)
+        cells = [d["name"], d.get("group", "") + (f", median of {len(ks)} heap shifts" if len(ks) > 1 else "")]
         if not a.no_robigo:
             cells += [f"{ri:,.0f}"] + ([f"{rc:,.0f}"] if a.cycles else [])
         if not a.no_r:
@@ -240,9 +273,15 @@ def cmd_rows(a, m):
         print("| " + " | ".join(cells) + " |", flush=True)
         out[d["name"]] = {"n": d["n"], "robigo_instr": ri, "robigo_est_cycles": rc,
                           "gnur_instr": gi, "gnur_est_cycles": gc}
+        if len(ks) > 1:
+            # every shift's count: the median above is what the row reports
+            out[d["name"]]["shifts"] = {str(k): {"robigo_instr": r[0], "robigo_est_cycles": r[1],
+                                                 "gnur_instr": g[0], "gnur_est_cycles": g[1]}
+                                        for k, r, g in zip(ks, rs, gs)}
     if a.json:
-        meta = {"rows": a.rows, "robigo": m.robigo, "robigo_env": m.robigo_env,
-                "gnur": None if a.no_r else m.r_bin, "valgrind": m.valgrind, "cycles": a.cycles}
+        meta = {"rows": a.rows, "robigo": m.robigo, "robigo_identity": m.robigo_identity, "robigo_env": m.robigo_env,
+                "gnur": None if a.no_r else m.r_bin, "valgrind": m.valgrind, "cycles": a.cycles,
+                "shifts": a.shifts}
         with open(a.json, "w") as f:
             json.dump({"meta": meta, "rows": out}, f, indent=1, sort_keys=True)
             f.write("\n")
@@ -261,7 +300,8 @@ def cmd_allocs(a, m):
         out[d["name"]] = {"n": d["n"], "objects": objs, "bytes": nbytes,
                           "by_type": {t: {"objects": o, "bytes": b} for t, (o, b) in c.items()}}
     if a.json:
-        meta = {"rows": a.rows, "robigo": m.robigo, "robigo_env": m.robigo_env, "allocs": True}
+        meta = {"rows": a.rows, "robigo": m.robigo, "robigo_identity": m.robigo_identity, "robigo_env": m.robigo_env,
+                "allocs": True}
         with open(a.json, "w") as f:
             json.dump({"meta": meta, "rows": out}, f, indent=1, sort_keys=True)
             f.write("\n")
@@ -289,6 +329,9 @@ def main():
     ap.add_argument("--rows", metavar="FILE", help="a rows file without floors (benchmarks/rt/calls-rows.toml)")
     ap.add_argument("--filter", metavar="REGEX", help="with --rows: the rows whose name matches")
     ap.add_argument("--cycles", action="store_true", help="with --rows: estimated cycles too (cache simulation)")
+    ap.add_argument("--shifts", type=lambda v: [int(k) for k in v.split(",")], metavar="K,K,...",
+                    help="with --rows: measure address_sensitive rows after each of these heap shifts "
+                         "(k unrelated strings; 0 = as written) and report the median")
     ap.add_argument("--allocs", action="store_true",
                     help="with --rows: allocations per iteration (robigo-rt's ROBIGO_GC_STATS), no callgrind")
     ap.add_argument("--json", metavar="OUT", help="with --rows: write the counts here")
@@ -301,9 +344,13 @@ def main():
     a = ap.parse_args()
     if a.no_robigo and (a.no_r or a.rows is None or a.allocs):
         ap.error("--no-robigo goes with --rows (not --allocs), and not with --no-r")
+    if a.shifts and (a.rows is None or a.allocs):
+        ap.error("--shifts goes with --rows (not --allocs)")
     if a.rx is None and a.floors is None and a.rows is None and (a.setup is None or a.body is None):
         ap.error("give SETUP and BODY, --idioms, --floors or --rows")
-    m = Meter(a.keep, a.robigo, a.robigo_env, a.cycles and a.rows is not None, need_robigo=not a.no_robigo)
+    # --floors measures C versions only: no robigo binary to name
+    m = Meter(a.keep, a.robigo, a.robigo_env, a.cycles and a.rows is not None, need_robigo=not a.no_robigo,
+              identify=a.floors is None)
     try:
         if a.rows is not None and a.allocs:
             cmd_allocs(a, m)

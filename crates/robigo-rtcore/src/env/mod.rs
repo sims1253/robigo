@@ -3,12 +3,12 @@
 //!
 //! # Representation
 //!
-//! An environment is a node-shaped ENVSXP: ENCLOS at +24 (the heap's one
-//! fixed field), and its frame words:
+//! An environment is a node-shaped ENVSXP: ENCLOS (the heap's one fixed
+//! field, `robigo_heap::layout::env`), and its frame words:
 //!
 //! - **hashed** (the global environment, namespaces, `new.env()`,
-//!   `R_NewHashedEnv`): GNU R's representation bit for bit. +16 FRAME is
-//!   R_NilValue, +32 HASHTAB a VECSXP of chains of binding cells whose
+//!   `R_NewHashedEnv`): GNU R's representation bit for bit. FRAME is
+//!   R_NilValue, HASHTAB a VECSXP of chains of binding cells whose
 //!   TRUELENGTH is `HASHPRI` (`hashtab.rs`). Listing order is GNU R's by
 //!   construction.
 //! - **unhashed** (closure frames, `new.env(hash = FALSE)`): a slot frame
@@ -21,7 +21,7 @@
 //! - **base** (`R_BaseEnv`, `R_BaseNamespace`): no frame; the bindings are
 //!   the symbols' per-isolate cells (`sym.rs`).
 //!
-//! +40 holds the frame's **version box** or R_NilValue: an INTSXP of one
+//! The 4th word (`layout::env::OFF_VERSION`) holds the frame's **version box** or R_NilValue: an INTSXP of one
 //! element, `fn_version`, made the first time something asks for it
 //! ([`Cx::env_version_box`]) and bumped from then on whenever a binding of
 //! the frame that holds or held a function-like value (a closure, builtin,
@@ -89,13 +89,11 @@ use std::cell::{Cell, UnsafeCell};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 
-/// ENVFLAGS: the frame is locked (`FRAME_LOCK_MASK`).
-const FRAME_LOCK: u16 = 1 << 14;
-/// ENVFLAGS: a global frame (`GLOBAL_FRAME_MASK`): the global environment
-/// and attached frames, whose bindings the global cache may hold.
-const GLOBAL_FRAME: u16 = 1 << 15;
-/// ENVFLAGS: no special symbol was ever bound here (`NO_SPECIAL_SYMBOLS`).
-const NO_SPECIAL_SYMBOLS: u16 = SPECIAL_SYMBOL;
+/// ENVFLAGS: the frame is locked (`FRAME_LOCK_MASK`); a global frame
+/// (`GLOBAL_FRAME_MASK`): the global environment and attached frames, whose
+/// bindings the global cache may hold; no special symbol was ever bound here
+/// (`NO_SPECIAL_SYMBOLS`).
+use robigo_heap::gp::env::{FRAME_LOCK, GLOBAL_FRAME, NO_SPECIAL_SYMBOLS};
 
 /// The isolate's environments: the fixed ones, the symbol cells (base
 /// bindings and the global cache), the search epoch. A precise root (the
@@ -1368,7 +1366,7 @@ impl Cx {
                             let p = c.alloc_node(PROMSXP, iso.unbound, s.aux(), env)?;
                             p.set_gp(s.prseen());
                             if s.has(layout::META_BYTECODE) {
-                                p.set_extra(p.extra() | robigo_heap::extra::BYTECODE);
+                                p.set_extra(p.extra() | robigo_heap::extra::promise::BYTECODE);
                             }
                             Ok(p)
                         }

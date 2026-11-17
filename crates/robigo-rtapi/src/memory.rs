@@ -668,27 +668,37 @@ fn fresh_vector(cx: &Cx, t: u8, n: usize) -> Result<Ref<'_>, NeedGc> {
 
 /// `R_ReleaseObject(x)`: cannot collect (GNU R's `DeleteFromList` allocates
 /// nothing).
+///
+/// # Safety
+/// C code of the thread's isolate calls it, with an isolate current.
 // R: memory.c:R_ReleaseObject
 #[unsafe(no_mangle)]
-pub extern "C" fn R_ReleaseObject(x: Sexp) {
+pub unsafe extern "C" fn R_ReleaseObject(x: Sexp) {
     // SAFETY: called from C code of the thread's isolate; releasing does
     // not collect.
     unsafe { robigo_rtcore::enter_leaf_mut(|cx| cx.release_raw(x)) }
 }
 
 /// `vmaxget()`: R_alloc's stack top.
+///
+/// # Safety
+/// C code of the thread's isolate calls it, with an isolate current.
 // R: memory.c:vmaxget
 #[unsafe(no_mangle)]
-pub extern "C" fn vmaxget() -> *mut c_void {
+pub unsafe extern "C" fn vmaxget() -> *mut c_void {
     // SAFETY: called from C code of the thread's isolate.
     unsafe { robigo_rtcore::enter_leaf(|cx| cx.vmax().0.cast()) }
 }
 
 /// `vmaxset(v)`: drop the R_alloc blocks made since `vmaxget()` returned
 /// `v`.
+///
+/// # Safety
+/// C code of the thread's isolate calls it, with an isolate current, and
+/// `v` is null or what `vmaxget()` returned in a frame still live.
 // R: memory.c:vmaxset
 #[unsafe(no_mangle)]
-pub extern "C" fn vmaxset(v: *const c_void) {
+pub unsafe extern "C" fn vmaxset(v: *const c_void) {
     // SAFETY: called from C code of the thread's isolate; `v` is what
     // vmaxget returned in a frame still live (C's contract), or null.
     unsafe {

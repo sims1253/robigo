@@ -125,6 +125,11 @@ jobs:
       # 11 s to the job (1 min 45 s cold, PR #642), well inside the timeout.
       - name: Miri on the rt-core facade
         run: cargo +nightly-2026-11-02 miri test --locked -p robigo-rtcore
+      # robigo-heap's tests that call no C (G3 M2, H4): the layout's
+      # definitions, its no-overlap checks and #[repr(C)] views, the block
+      # bitmaps and the size classes. The collector's tests need the C shim.
+      - name: Miri on the heap's layout and bitmaps
+        run: cargo +nightly-2026-11-02 miri test --locked -p robigo-heap --lib -- 'layout::' 'heap::bitmap_tests' 'heap::medium_tests'
 
   # G3's runtime crates (docs/g3.md §14.1, §16): release tests, then the
   # same under gctorture; the verification modes add steps as they land.
@@ -899,16 +904,42 @@ jobs:
           pkgs=$(dpkg-query -W -f '${Package}=${Version} ' libc6 valgrind)
           image=$(printf '%s' "$IMAGE" | sha256sum | cut -c1-16)
           echo "CPU: $model, signature $sig; ${pkgs% }; oracle image $IMAGE" | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "key=rt-gnur-1-$image-$sig-$(printf '%s' "$pkgs" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          # rt-gnur-2: the rival is GNU R's literal default build (the lead's
+          # F2, docs/ledger/g3/2026-11-17-a0b-stock-rival.md), not the image's
+          echo "key=rt-gnur-2-$image-$sig-$(printf '%s' "$pkgs" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@v6
         id: gnur
         with:
           path: rt-gnur.json
-          # the measurement's inputs: the rows, the bars and their programs, the scripts
-          key: ${{ steps.cpu.outputs.key }}-${{ hashFiles('benchmarks/rt/calls-rows.toml', 'benchmarks/rt/m1-bars.toml', 'benchmarks/rt/mem/*.R', 'benchmarks/suite/binarytrees.R', 'scripts/idiom-vs-r.py', 'scripts/rss.py', 'scripts/perf.py') }}
+          # the measurement's inputs: the rows, the bars and their programs, the
+          # scripts, and the rival's build (gnur-stock.sh, the tarball pin in r-src.sh)
+          key: ${{ steps.cpu.outputs.key }}-${{ hashFiles('benchmarks/rt/calls-rows.toml', 'benchmarks/rt/m1-bars.toml', 'benchmarks/rt/mem/*.R', 'benchmarks/suite/binarytrees.R', 'scripts/idiom-vs-r.py', 'scripts/rss.py', 'scripts/perf.py', 'scripts/gnur-stock.sh', 'scripts/r-src.sh') }}
+      # The rival, GNU R's literal default build in this image's toolchain, is
+      # needed only to measure GNU R: it does not depend on the CPU, so it is
+      # cached per image and build script.
+      - uses: actions/cache/restore@v6
+        id: stock
+        if: steps.gnur.outputs.cache-hit != 'true'
+        with:
+          path: ~/.cache/robigo-research/gnur-stock
+          key: gnur-stock-1-${{ steps.cpu.outputs.image }}-${{ hashFiles('scripts/gnur-stock.sh', 'scripts/r-src.sh') }}
+      - name: GNU R 4.6.2's literal default build
+        if: steps.gnur.outputs.cache-hit != 'true' && steps.stock.outputs.cache-hit != 'true'
+        run: scripts/gnur-stock.sh ~/.cache/robigo-research/gnur-stock
+      - uses: actions/cache/save@v6
+        if: steps.gnur.outputs.cache-hit != 'true' && steps.stock.outputs.cache-hit != 'true'
+        with:
+          path: ~/.cache/robigo-research/gnur-stock
+          key: ${{ steps.stock.outputs.cache-primary-key }}
       - name: GNU R's side, measured on this CPU signature
         if: steps.gnur.outputs.cache-hit != 'true'
-        run: python3 scripts/perf.py rt-gnur --jobs "$(nproc)" --out rt-gnur.json | tee -a "$GITHUB_STEP_SUMMARY"
+        run: |
+          stock=~/.cache/robigo-research/gnur-stock
+          r_home=$(env -u R_HOME "$stock/bin/R" RHOME)
+          tee -a "$GITHUB_STEP_SUMMARY" < "$stock/robigo-stock.txt"
+          RSCRIPT_BIN="$r_home/bin/exec/R" R_HOME_DIR="$r_home" \
+            python3 scripts/perf.py rt-gnur --jobs "$(nproc)" --out rt-gnur.json | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/cache/save@v6
         if: steps.gnur.outputs.cache-hit != 'true'
         with:
@@ -922,6 +953,50 @@ jobs:
           python3 scripts/perf.py rt-bars --robigo-rt dist/robigo-rt "${main_flag[@]}" --gnur rt-gnur.json \
             --cycles --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
 
+  # robigo-rt's corpus column (`corpus.py run --runtime rt`, against the rt
+  # pin's recordings and the `passing-rt/` ratchets;
+  # docs/ledger/g3/2026-11-17-rc-rt-corpora.md). A pull request runs a
+  # quarter of fastr, the quarter rotating with its number, and a push to
+  # main runs all of it (about two minutes). Corpora in echo mode wait for
+  # robigo-rt's `-f` front end, and those with a build step for its natives.
+  rt-corpora:
+    needs: [select, perf-rt-build]
+    if: ${{ needs.select.outputs.rt == 'true' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.select.outputs.image_rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
+      - uses: actions/download-artifact@v7
+        with:
+          name: perf-rt-bins
+          path: dist
+      - name: fastr on robigo-rt
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          chmod +x dist/robigo-rt
+          shard=1/1
+          if [ -n "$PR" ]; then shard="$(( PR % 4 + 1 ))/4"; fi
+          python3 scripts/corpus.py run fastr --runtime rt --shard "$shard" --robigo dist/robigo-rt \
+            --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: rt-corpora
+          path: .robigo/results/
+          retention-days: 14
+
   # Branch protection requires this job, `Check`, and nothing else, so
   # adding, splitting or resharding jobs needs no ruleset change: add every
   # new gating job to `needs`. It passes when each job passed, or was skipped
@@ -931,7 +1006,7 @@ jobs:
   check:
     name: Check
     if: ${{ always() }}
-    needs: [select, lint, miri, rt, base-subset, build, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt]
+    needs: [select, lint, miri, rt, base-subset, build, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

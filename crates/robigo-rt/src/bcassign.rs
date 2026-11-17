@@ -919,7 +919,7 @@ fn promise<'s>(cx: &mut Cx, s: Scope<'s>, e: Root<'_>, rho: Root<'_>, bytecode: 
         unsafe {
             let p = crate::args::mk_promise(cx, e.bind(cx).sexp(), rho.bind(cx).sexp())?;
             if bytecode {
-                p.set_extra(p.extra() | robigo_heap::extra::BYTECODE);
+                p.set_extra(p.extra() | robigo_heap::extra::promise::BYTECODE);
             }
             Ok(p)
         }
