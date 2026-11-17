@@ -2456,7 +2456,11 @@ impl Core {
                 // marking that copies the young objects as it reaches them
                 self.pin_segments();
                 self.mark_heap_roots_young();
-                roots.trace(&mut mover::MarkYoung(self));
+                // the root walk's `dyn Visitor` instance, the full mover's
+                // too (`forward_roots`): no third instance of it in the
+                // embedder's crate, where its size moved inlining (H8: s3
+                // +0.9% instructions)
+                roots.trace::<dyn Visitor>(&mut mover::MarkYoung(self));
                 self.mark_rest_young();
                 self.retire_young();
             } else {

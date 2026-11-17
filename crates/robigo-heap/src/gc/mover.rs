@@ -588,7 +588,9 @@ impl Core {
     /// # Safety
     /// As for [`Core::forward_heap`]; `roots` are the collection's.
     pub(super) unsafe fn forward_roots<R: Trace + ?Sized>(roots: &mut R) {
-        roots.trace(&mut Forward);
+        // through `dyn Visitor`: one instance of the embedder's root walk for
+        // both moving modes (`collect_needing`)
+        roots.trace::<dyn Visitor>(&mut Forward);
     }
 
     /// Poison the old small copies and leave them to the sweep; take the
