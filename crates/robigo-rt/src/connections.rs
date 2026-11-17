@@ -26,11 +26,13 @@
 //! the same), so a file `gzfile` writes may differ from GNU R's in its
 //! compressed bytes, never in what it decompresses to.
 
+use crate::rconn::{CMethods, RconnC};
 use flate2::{Compress, Compression, Crc, Decompress, FlushCompress, FlushDecompress, Status};
 use robigo_heap::types::*;
 use robigo_rtbuiltins::attrib::{Attr, Attrs};
 use robigo_rtcore::{Args, Char, Cx, Encoding, Global, Out, RResult, RSym, Ref, Root};
 use std::cell::{Cell, RefCell};
+use std::ffi::{CString, c_int};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -47,6 +49,9 @@ pub struct Connections {
     slots: RefCell<Vec<Option<Box<Conn>>>>,
     /// `current_id`: the last connection id handed out.
     current_id: Cell<usize>,
+    /// The C API's methods (robigo-rtapi's entries), once installed: every
+    /// connection's `struct Rconn` points at them.
+    c_methods: Cell<Option<CMethods>>,
 }
 
 impl Connections {
@@ -54,12 +59,15 @@ impl Connections {
         let mut slots: Vec<Option<Box<Conn>>> = (0..NCONNECTIONS).map(|_| None).collect();
         for (i, d) in ["stdin", "stdout", "stderr"].iter().enumerate() {
             let mut c = Conn::new("terminal", d.as_bytes(), if i == 0 { "r" } else { "w" }, Imp::Std);
-            c.isopen = true;
-            c.canread = i == 0;
-            c.canwrite = i != 0;
-            slots[i] = Some(Box::new(c));
+            c.set_isopen(true);
+            c.set_canread(i == 0);
+            c.set_canwrite(i != 0);
+            c.id = i + 1;
+            let mut b = Box::new(c);
+            attach_c(&mut b, None);
+            slots[i] = Some(b);
         }
-        Connections { slots: RefCell::new(slots), current_id: Cell::new(3) }
+        Connections { slots: RefCell::new(slots), current_id: Cell::new(3), c_methods: Cell::new(None) }
     }
 }
 
@@ -69,30 +77,104 @@ impl Default for Connections {
     }
 }
 
+/// The boxed connection's `struct Rconn` made whole for C: `private` is
+/// the connection, `id` its id (GNU R's `void *` counter), the methods the
+/// C API's (if installed).
+fn attach_c(b: &mut Box<Conn>, m: Option<CMethods>) {
+    let p: *mut Conn = &mut **b;
+    b.c.private = p.cast();
+    b.c.id = b.id as *mut std::ffi::c_void;
+    if let Some(m) = m {
+        b.c.set_methods(&m);
+    }
+}
+
+/// Install the C API's connection methods (robigo-rtapi's install): every
+/// connection's `struct Rconn`, now and later, points at them.
+pub fn set_c_methods(cx: &Cx, m: CMethods) {
+    let t = table(cx);
+    t.c_methods.set(Some(m));
+    for b in t.slots.borrow_mut().iter_mut().flatten() {
+        b.c.set_methods(&m);
+    }
+}
+
 fn table(cx: &Cx) -> &Connections {
     cx.ext::<Connections>().expect("robigo: the connection table is not installed (robigo_rt::install)")
 }
 
 /// One connection (GNU R's `struct Rconn`, the fields robigo uses).
 pub struct Conn {
+    /// GNU R's state of the connection (`struct Rconn`, the A5 note's
+    /// decision C): C reads and writes it through `Rconnection`, so these
+    /// fields are the connection's (the accessors below read them).
+    pub c: RconnC,
     pub class: &'static str,
     pub description: Vec<u8>,
-    /// at most 4 characters, as GNU R keeps it
-    pub mode: String,
-    pub encname: String,
-    pub isopen: bool,
-    pub canread: bool,
-    pub canwrite: bool,
-    pub canseek: bool,
-    pub text: bool,
-    pub blocking: bool,
-    pub is_gzcon: bool,
-    /// `status`: what closing returned (NA until a file is closed).
-    pub status: i32,
+    /// `c.class` and `c.description` point into these.
+    class_c: CString,
+    description_c: CString,
+    /// `c.buff` points into this (`buff_init`'s buffer).
+    buff: Vec<u8>,
     pub id: usize,
     /// `ex_ptr`: the `conn_id` external pointer.
     ex_ptr: Option<Global>,
     imp: Imp,
+}
+
+/// The flag accessors over `c`'s `Rboolean`s.
+macro_rules! rconn_flags {
+    ($($get:ident $set:ident;)*) => {
+        $(
+            #[inline]
+            pub fn $get(&self) -> bool {
+                self.c.$get != 0
+            }
+            #[inline]
+            pub fn $set(&mut self, v: bool) {
+                self.c.$get = v as c_int;
+            }
+        )*
+    };
+}
+
+impl Conn {
+    rconn_flags! {
+        isopen set_isopen;
+        canread set_canread;
+        canwrite set_canwrite;
+        canseek set_canseek;
+        text set_text;
+        blocking set_blocking;
+        is_gzcon set_is_gzcon;
+        incomplete set_incomplete;
+    }
+
+    /// `status`: what closing returned (NA until a file is closed).
+    pub fn status(&self) -> i32 {
+        self.c.status
+    }
+
+    pub fn set_status(&mut self, s: i32) {
+        self.c.status = s;
+    }
+
+    /// `mode`: at most 4 characters, as GNU R keeps it.
+    pub fn mode(&self) -> String {
+        self.c.mode()
+    }
+
+    pub fn set_mode(&mut self, m: &str) {
+        self.c.set_mode(m);
+    }
+
+    pub fn encname(&self) -> String {
+        self.c.encname()
+    }
+
+    pub fn set_encname(&mut self, e: &str) {
+        self.c.set_encname(e);
+    }
 }
 
 enum Imp {
@@ -162,23 +244,23 @@ impl Write for ConnWriter {
 impl Conn {
     // R: connections.c:init_con
     fn new(class: &'static str, description: &[u8], mode: &str, imp: Imp) -> Conn {
-        Conn {
+        let class_c = CString::new(class).expect("a class name has no NUL");
+        let description_c =
+            CString::new(description.iter().copied().filter(|&b| b != 0).collect::<Vec<u8>>()).expect("NULs removed");
+        let mut c = Conn {
+            c: RconnC::new(mode),
             class,
             description: description.to_vec(),
-            mode: mode.chars().take(4).collect(),
-            encname: String::new(),
-            isopen: false,
-            canread: true,
-            canwrite: true,
-            canseek: false,
-            text: true,
-            blocking: false,
-            is_gzcon: false,
-            status: NA_INTEGER,
+            class_c,
+            description_c,
+            buff: Vec::new(),
             id: 0,
             ex_ptr: None,
             imp,
-        }
+        };
+        c.c.class = c.class_c.as_ptr().cast_mut();
+        c.c.description = c.description_c.as_ptr().cast_mut();
+        c
     }
 }
 
@@ -299,26 +381,32 @@ fn file_open(c: &mut Conn) -> OpenResult {
         return Err("robigo: 'file(\"stdin\")' is not implemented yet".into());
     }
     let shown = String::from_utf8_lossy(&name).into_owned();
-    let fp = match fopen(&name, &c.mode) {
+    let fp = match fopen(&name, &c.mode()) {
         Ok(f) => f,
         Err(e) => return Err(format!("cannot open file '{shown}': {}", strerror(&e))),
     };
     if fp.metadata().is_ok_and(|m| m.is_dir()) {
         return Err(format!("cannot open file '{shown}': it is a directory"));
     }
-    let m = c.mode.as_bytes();
+    let mode = c.mode();
+    let m = mode.as_bytes();
     let mlen = m.len();
-    c.isopen = true;
-    c.canwrite = m[0] == b'w' || m[0] == b'a';
-    c.canread = !c.canwrite;
+    c.set_isopen(true);
+    c.set_canwrite(m[0] == b'w' || m[0] == b'a');
+    c.set_canread(!c.canwrite());
     if mlen >= 2 && m[1] == b'+' {
-        c.canread = true;
-        c.canwrite = true;
+        c.set_canread(true);
+        c.set_canwrite(true);
     }
-    c.text = !(mlen >= 2 && m[mlen - 1] == b'b');
+    c.set_text(!(mlen >= 2 && m[mlen - 1] == b'b'));
+    // set_buffer: a text connection read from a regular file is buffered
+    // (shouldBuffer: fstat's S_ISREG)
+    if c.canread() && c.text() && fp.metadata().is_ok_and(|md| md.is_file()) {
+        buff_init(c);
+    }
     let mut fp = fp;
-    let wpos = if c.canwrite { fp.stream_position().unwrap_or(0) } else { 0 };
-    let canread = c.canread;
+    let wpos = if c.canwrite() { fp.stream_position().unwrap_or(0) } else { 0 };
+    let canread = c.canread();
     if let Imp::File(f) = &mut c.imp {
         f.fp = Some(fp);
         f.rpos = 0;
@@ -365,10 +453,11 @@ fn gzfile_open(c: &mut Conn) -> OpenResult {
     if is_dir(&name) {
         return Err(format!("cannot open file '{shown}': it is a directory"));
     }
-    let write = c.mode.contains('w') || c.mode.starts_with('a');
+    let mode = c.mode();
+    let write = mode.contains('w') || mode.starts_with('a');
     let Imp::Gz(g) = &mut c.imp else { unreachable!() };
     let io = if write {
-        let f = if c.mode.starts_with('a') { fopen(&name, "ab") } else { fopen(&name, "wb") };
+        let f = if mode.starts_with('a') { fopen(&name, "ab") } else { fopen(&name, "wb") };
         match f {
             Ok(f) => GzIo::Write(GzWriter::new(f, g.compress)),
             Err(e) => return Err(format!("cannot open compressed file '{shown}', probable reason '{}'", strerror(&e))),
@@ -380,24 +469,25 @@ fn gzfile_open(c: &mut Conn) -> OpenResult {
         }
     };
     g.io = Some(io);
-    c.isopen = true;
-    c.canwrite = c.mode.starts_with('w') || c.mode.starts_with('a');
-    c.canread = !c.canwrite;
-    c.text = !c.mode.contains('b');
+    c.set_isopen(true);
+    c.set_canwrite(mode.starts_with('w') || mode.starts_with('a'));
+    c.set_canread(!c.canwrite());
+    c.set_text(!mode.contains('b'));
     Ok(())
 }
 
 // R: connections.c:gzcon_open
 fn gzcon_open(c: &mut Conn) -> Result<(), (String, bool)> {
     let Imp::Gzcon(g) = &mut c.imp else { unreachable!() };
-    if !g.inner.isopen {
+    if !g.inner.isopen() {
         open_conn(&mut g.inner).map_err(|m| (m, false))?;
     }
-    c.isopen = true;
-    c.canwrite = g.inner.canwrite;
-    c.canread = !c.canwrite;
+    // (c.c's fields: the gzcon's private part stays borrowed)
+    c.c.isopen = 1;
+    c.c.canwrite = g.inner.c.canwrite;
+    c.c.canread = (c.c.canwrite == 0) as c_int;
     let inner: *mut Conn = &mut *g.inner;
-    if c.canread {
+    if c.c.canread != 0 {
         let mut r = GzReader::new(ConnReader(inner), g.allow);
         match r.check_header() {
             Header::Transparent if !g.allow => {
@@ -429,14 +519,16 @@ fn open_conn(c: &mut Conn) -> OpenResult {
     }
 }
 
-/// `con->close(con)`.
+/// `con->close(con)`, and `con_close1`'s release of the buffer.
 fn close_conn(c: &mut Conn) -> Option<String> {
     let mut err = None;
+    buff_free(c);
     match &mut c.imp {
         Imp::Std => {}
         Imp::File(f) => {
-            if c.isopen {
-                c.status = match f.fp.take() {
+            // (c.c's fields: the file's private part stays borrowed)
+            if c.c.isopen != 0 {
+                c.c.status = match f.fp.take() {
                     Some(fp) => match fp.sync_all().or(Ok::<(), std::io::Error>(())) {
                         Ok(()) => 0,
                         Err(_) => -1,
@@ -459,18 +551,35 @@ fn close_conn(c: &mut Conn) -> Option<String> {
                 err = Some("writing error whilst flushing 'gzcon' connection".into());
             }
             g.io = None;
-            if g.inner.isopen {
+            if g.inner.isopen() {
                 close_conn(&mut g.inner);
-                g.inner.isopen = false;
+                g.inner.set_isopen(false);
             }
         }
     }
-    c.isopen = false;
+    c.set_isopen(false);
     err
 }
 
-/// `con->read(buf, 1, n, con)`.
+/// A read of the connection's stream: the bytes its buffer holds first
+/// (`buff_fgetc` filled it; GNU R's text readers all read through it), then
+/// `con->read`.
 fn conn_read(c: &mut Conn, buf: &mut [u8]) -> std::io::Result<usize> {
+    let unread = c.c.buff_stored_len - c.c.buff_pos;
+    let k = unread.min(buf.len());
+    if k > 0 {
+        let from = c.c.buff_pos;
+        buf[..k].copy_from_slice(&c.buff[from..from + k]);
+        c.c.buff_pos += k;
+    }
+    if k == buf.len() {
+        return Ok(k);
+    }
+    Ok(k + conn_read_raw(c, &mut buf[k..])?)
+}
+
+/// `con->read(buf, 1, n, con)`.
+fn conn_read_raw(c: &mut Conn, buf: &mut [u8]) -> std::io::Result<usize> {
     match &mut c.imp {
         Imp::Std => Err(std::io::Error::other("robigo: reading the standard connections is not implemented yet")),
         Imp::File(f) => {
@@ -526,6 +635,204 @@ fn conn_write(c: &mut Conn, buf: &[u8]) -> std::io::Result<usize> {
             _ => Ok(0),
         },
     }
+}
+
+// ---- the buffer and the C view (getConnection, Rconn_fgetc, the methods) ----
+
+/// `RBUFFCON_LEN_DEFAULT`.
+const RBUFFCON_LEN_DEFAULT: usize = 4096;
+
+/// `R_EOF`.
+const R_EOF: c_int = -1;
+
+/// `buff_init(con)`: an empty buffer of the default length.
+// R: connections.c:buff_init, buff_set_len
+fn buff_init(c: &mut Conn) {
+    c.buff = vec![0; RBUFFCON_LEN_DEFAULT];
+    c.c.buff = c.buff.as_mut_ptr();
+    c.c.buff_len = RBUFFCON_LEN_DEFAULT;
+    c.c.buff_pos = 0;
+    c.c.buff_stored_len = 0;
+}
+
+/// The buffer released (`con_close1`).
+// R: connections.c:con_close1
+fn buff_free(c: &mut Conn) {
+    c.buff = Vec::new();
+    c.c.buff = std::ptr::null_mut();
+    c.c.buff_len = 0;
+    c.c.buff_pos = 0;
+    c.c.buff_stored_len = 0;
+}
+
+/// `buff_fill(con)`: the unread bytes moved to the front, the rest filled
+/// by `con->read`; how many it read.
+// R: connections.c:buff_fill, buff_reset
+fn buff_fill(c: &mut Conn) -> std::io::Result<usize> {
+    let (pos, stored, len) = (c.c.buff_pos, c.c.buff_stored_len, c.c.buff_len);
+    c.buff.copy_within(pos..stored, 0);
+    c.c.buff_pos = 0;
+    c.c.buff_stored_len = stored - pos;
+    let mut tmp = std::mem::take(&mut c.buff);
+    let r = conn_read_raw(c, &mut tmp[stored - pos..len]);
+    c.buff = tmp;
+    c.c.buff = c.buff.as_mut_ptr();
+    let n = r?;
+    c.c.buff_stored_len += n;
+    Ok(n)
+}
+
+/// `buff_fgetc(con)`.
+// R: connections.c:buff_fgetc
+fn buff_fgetc(c: &mut Conn) -> Result<c_int, String> {
+    if c.c.buff_stored_len == c.c.buff_pos {
+        match buff_fill(c) {
+            Ok(0) => return Ok(R_EOF),
+            Ok(_) => {}
+            Err(_) => return Err("error reading from the connection".to_owned()),
+        }
+    }
+    let v = c.buff[c.c.buff_pos];
+    c.c.buff_pos += 1;
+    Ok(v as c_int)
+}
+
+/// `con->fgetc_internal(con)`: one byte of the stream, `R_EOF` at its end.
+// R: connections.c:file_fgetc_internal (and the other classes')
+fn fgetc_internal(c: &mut Conn) -> Result<c_int, String> {
+    let mut b = [0u8; 1];
+    match conn_read_raw(c, &mut b) {
+        Ok(0) => Ok(R_EOF),
+        Ok(_) => Ok(b[0] as c_int),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// `con->fgetc(con)`, `dummy_fgetc`: through the buffer when there is one,
+/// else `fgetc_internal`. robigo has no re-encoding (`inconv` is never set).
+// R: connections.c:dummy_fgetc
+fn dummy_fgetc(c: &mut Conn) -> Result<c_int, String> {
+    if !c.c.inconv.is_null() {
+        return Err("robigo: re-encoding a connection is not implemented yet".to_owned());
+    }
+    if !c.c.buff.is_null() { buff_fgetc(c) } else { fgetc_internal(c) }
+}
+
+/// The slot of the connection whose `struct Rconn` C holds at `con`.
+fn slot_of(cx: &Cx, con: *const RconnC) -> Option<i32> {
+    table(cx)
+        .slots
+        .borrow()
+        .iter()
+        .position(|s| s.as_deref().is_some_and(|c| std::ptr::eq(&c.c, con)))
+        .map(|i| i as i32)
+}
+
+/// [`with_conn`] by the address C holds: a pointer that is no connection of
+/// the isolate is not one robigo made.
+fn with_c<T>(cx: &mut Cx, con: *mut RconnC, f: impl FnOnce(&mut Conn) -> Result<T, String>) -> RResult<T> {
+    let Some(n) = slot_of(cx, con) else {
+        return Err(cx.error("robigo: a connection robigo did not make is not implemented yet"));
+    };
+    match with_conn(cx, n, f)? {
+        Ok(v) => Ok(v),
+        Err(m) => Err(cx.error(&m)),
+    }
+}
+
+/// `getConnection(n)`: the connection's `struct Rconn`.
+// R: connections.c:getConnection
+pub fn get_connection(cx: &mut Cx, n: i32) -> RResult<*mut RconnC> {
+    with_conn(cx, n, |c| &mut c.c as *mut RconnC)
+}
+
+/// `con->open(con)`: true, or false after the warning GNU R's open gives.
+// R: connections.c:file_open, gzfile_open, gzcon_open
+pub fn c_open(cx: &mut Cx, con: *mut RconnC) -> RResult<bool> {
+    match with_c(cx, con, |c| Ok(open_conn(c)))? {
+        Ok(()) => Ok(true),
+        Err(w) => {
+            cx.warning(&w)?;
+            Ok(false)
+        }
+    }
+}
+
+/// `con->close(con)`.
+// R: connections.c:file_close, gzfile_close, gzcon_close
+pub fn c_close(cx: &mut Cx, con: *mut RconnC) -> RResult<()> {
+    with_c(cx, con, |c| {
+        close_conn(c);
+        Ok(())
+    })
+}
+
+/// `con->fgetc(con)` (`dummy_fgetc`).
+pub fn c_fgetc(cx: &mut Cx, con: *mut RconnC) -> RResult<c_int> {
+    with_c(cx, con, dummy_fgetc)
+}
+
+/// `con->fgetc_internal(con)`.
+pub fn c_fgetc_internal(cx: &mut Cx, con: *mut RconnC) -> RResult<c_int> {
+    with_c(cx, con, fgetc_internal)
+}
+
+/// `con->read(ptr, size, nitems, con)`: the items read whole.
+// R: connections.c:file_read (fread)
+pub fn c_read(cx: &mut Cx, buf: &mut [u8], size: usize, con: *mut RconnC) -> RResult<usize> {
+    with_c(cx, con, |c| conn_read_raw(c, buf).map(|n| if size == 0 { 0 } else { n / size }).map_err(|e| e.to_string()))
+}
+
+/// `con->write(ptr, size, nitems, con)`: the items written.
+// R: connections.c:file_write (fwrite)
+pub fn c_write(cx: &mut Cx, buf: &[u8], size: usize, con: *mut RconnC) -> RResult<usize> {
+    with_c(cx, con, |c| conn_write(c, buf).map(|n| if size == 0 { 0 } else { n / size }).map_err(|e| e.to_string()))
+}
+
+/// `con->fflush(con)`: a file's stream has no buffer of its own here (0,
+/// fflush's success); the other classes' are not implemented yet.
+// R: connections.c:file_fflush
+pub fn c_fflush(cx: &mut Cx, con: *mut RconnC) -> RResult<c_int> {
+    with_c(cx, con, |c| match c.imp {
+        Imp::File(_) => Ok(0),
+        _ => Err(format!("robigo: fflush of a '{}' connection is not implemented yet", c.class)),
+    })
+}
+
+/// `Rconn_fgetc(con)`: a character saved by a look-ahead, else the stream's
+/// next, a CR or CRLF read as LF. robigo pushes nothing back, and a
+/// `fgetc` method C replaced is not robigo's.
+// R: connections.c:Rconn_fgetc
+pub fn rconn_fgetc(cx: &mut Cx, con: *mut RconnC) -> RResult<c_int> {
+    let ours = table(cx).c_methods.get().map(|m| m.fgetc as usize);
+    with_c(cx, con, |c| {
+        if c.c.save2 != crate::rconn::NO_SAVE {
+            let v = c.c.save2;
+            c.c.save2 = crate::rconn::NO_SAVE;
+            return Ok(v);
+        }
+        if c.c.n_push_back > 0 {
+            return Err("robigo: a connection's pushback is not implemented yet".to_owned());
+        }
+        // map CR or CRLF to LF
+        if c.c.save != crate::rconn::NO_SAVE {
+            let v = c.c.save;
+            c.c.save = crate::rconn::NO_SAVE;
+            return Ok(v);
+        }
+        if c.c.fgetc.map(|f| f as usize) != ours {
+            return Err("robigo: a connection whose fgetc C replaced is not implemented yet".to_owned());
+        }
+        let mut v = dummy_fgetc(c)?;
+        if v == b'\r' as c_int {
+            v = dummy_fgetc(c)?;
+            if v != b'\n' as c_int {
+                c.c.save = if v != b'\r' as c_int { v } else { b'\n' as c_int };
+                return Ok(b'\n' as c_int);
+            }
+        }
+        Ok(v)
+    })
 }
 
 // ---- gzip, as gzio.h has it -------------------------------------------------
@@ -851,10 +1158,10 @@ pub fn with_conn<T>(cx: &mut Cx, n: i32, f: impl FnOnce(&mut Conn) -> T) -> RRes
 /// or the error GNU R's caller gives (`msg`).
 pub fn read_exact(cx: &mut Cx, n: i32, buf: &mut [u8], msg: &str) -> RResult<()> {
     let r = with_conn(cx, n, |c| {
-        if !c.isopen {
+        if !c.isopen() {
             return Err("connection is not open".to_string());
         }
-        if !c.canread {
+        if !c.canread() {
             return Err("cannot read from this connection".to_string());
         }
         match conn_read(c, buf) {
@@ -875,10 +1182,10 @@ pub fn read_raw(cx: &Cx, n: i32, buf: &mut [u8]) -> Result<(), String> {
     let Some(c) = usize::try_from(n).ok().filter(|&i| i < NCONNECTIONS).and_then(|i| t[i].as_deref_mut()) else {
         return Err("invalid connection".into());
     };
-    if !c.isopen {
+    if !c.isopen() {
         return Err("connection is not open".into());
     }
-    if !c.canread {
+    if !c.canread() {
         return Err("cannot read from this connection".into());
     }
     match conn_read(c, buf) {
@@ -891,10 +1198,10 @@ pub fn read_raw(cx: &Cx, n: i32, buf: &mut [u8]) -> Result<(), String> {
 /// The streams' write: all of `buf`, or `msg`.
 pub fn write_all(cx: &mut Cx, n: i32, buf: &[u8], msg: &str) -> RResult<()> {
     let r = with_conn(cx, n, |c| {
-        if !c.isopen {
+        if !c.isopen() {
             return Err("connection is not open".to_string());
         }
-        if !c.canwrite {
+        if !c.canwrite() {
             return Err("cannot write to this connection".to_string());
         }
         match conn_write(c, buf) {
@@ -911,9 +1218,10 @@ pub fn write_all(cx: &mut Cx, n: i32, buf: &[u8], msg: &str) -> RResult<()> {
 /// on failure.
 pub fn open_with_mode(cx: &mut Cx, n: i32, mode: &str) -> RResult<bool> {
     let r = with_conn(cx, n, |c| {
-        let old = std::mem::replace(&mut c.mode, mode.to_string());
+        let old = c.mode();
+        c.set_mode(mode);
         let r = open_conn(c);
-        c.mode = old;
+        c.set_mode(&old);
         r
     })?;
     match r {
@@ -942,7 +1250,7 @@ pub struct Flags {
 }
 
 pub fn flags(cx: &mut Cx, n: i32) -> RResult<Flags> {
-    with_conn(cx, n, |c| Flags { isopen: c.isopen, canread: c.canread, canwrite: c.canwrite, text: c.text })
+    with_conn(cx, n, |c| Flags { isopen: c.isopen(), canread: c.canread(), canwrite: c.canwrite(), text: c.text() })
 }
 
 /// `con_destroy(i)`: close it (GNU R's `checkClose` warnings) and free the
@@ -951,8 +1259,8 @@ pub fn flags(cx: &mut Cx, n: i32) -> RResult<Flags> {
 fn con_destroy(cx: &mut Cx, i: usize) -> RResult<i32> {
     let c = table(cx).slots.borrow_mut()[i].take();
     let Some(mut c) = c else { return Err(cx.error("invalid connection")) };
-    let err = if c.isopen { close_conn(&mut c) } else { None };
-    let status = c.status;
+    let err = if c.isopen() { close_conn(&mut c) } else { None };
+    let status = c.status();
     if let Some(e) = err {
         cx.warning(&format!("Problem closing connection:  {e}"))?;
     }
@@ -991,7 +1299,9 @@ fn publish(cx: &mut Cx, ncon: usize, mut con: Conn, class: &str, out: Out<'_>) -
     let id = t.current_id.get() + 1;
     t.current_id.set(id);
     con.id = id;
-    t.slots.borrow_mut()[ncon] = Some(Box::new(con));
+    let mut b = Box::new(con);
+    attach_c(&mut b, t.c_methods.get());
+    t.slots.borrow_mut()[ncon] = Some(b);
     cx.scope(|cx, s| {
         let o = s.out(cx);
         let ptr = o.root();
@@ -1132,10 +1442,10 @@ pub fn do_file(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
     } else {
         new_file(&desc, &mode, raw)
     };
-    con.blocking = block != 0;
-    con.encname = enc.clone();
-    if !con.encname.is_empty() && con.encname != "native.enc" {
-        con.canseek = false;
+    con.set_blocking(block != 0);
+    con.set_encname(&enc.clone());
+    if !con.encname().is_empty() && con.encname() != "native.enc" {
+        con.set_canseek(false);
     }
     publish(cx, ncon, con, class, out)?;
     if !open.is_empty() {
@@ -1149,15 +1459,15 @@ pub fn do_file(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
 fn new_file(desc: &[u8], mode: &str, raw: bool) -> Conn {
     let mut c =
         Conn::new("file", desc, mode, Imp::File(FileConn { fp: None, rpos: 0, wpos: 0, last_was_write: false }));
-    c.canseek = !raw;
+    c.set_canseek(!raw);
     c
 }
 
 // R: connections.c:newgzfile
 fn new_gzfile(desc: &[u8], mode: &str, compress: u32) -> Conn {
     let mut c = Conn::new("gzfile", desc, mode, Imp::Gz(GzFile { compress, io: None }));
-    c.canseek = true;
-    c.text = !mode.contains('b');
+    c.set_canseek(true);
+    c.set_text(!mode.contains('b'));
     c
 }
 
@@ -1205,10 +1515,10 @@ pub fn do_gzfile<const CODE: i32>(
     }
     let mut con = new_gzfile(&file, if open.is_empty() { "rb" } else { &open }, compress as u32);
     let ncon = next_connection(cx)?;
-    con.blocking = true;
-    con.encname = enc.clone();
-    if !con.encname.is_empty() && con.encname != "native.enc" {
-        con.canseek = false;
+    con.set_blocking(true);
+    con.set_encname(&enc.clone());
+    if !con.encname().is_empty() && con.encname() != "native.enc" {
+        con.set_canseek(false);
     }
     publish(cx, ncon, con, "gzfile", out)?;
     if !open.is_empty() {
@@ -1266,7 +1576,7 @@ pub fn do_gzcon(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
     if text == NA_INTEGER {
         return Err(cx.error("'text' must be TRUE or FALSE"));
     }
-    let (is_gzcon, mode, class) = with_conn(cx, icon, |c| (c.is_gzcon, c.mode.clone(), c.class))?;
+    let (is_gzcon, mode, class) = with_conn(cx, icon, |c| (c.is_gzcon(), c.mode().clone(), c.class))?;
     if is_gzcon {
         cx.warning("this is already a 'gzcon' connection")?;
         let x = args.get(cx, 0);
@@ -1293,17 +1603,17 @@ pub fn do_gzcon(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
     desc.extend_from_slice(&inner.description);
     desc.push(b')');
     desc.truncate(999);
-    let inner_open = inner.isopen;
-    let encname = inner.encname.clone();
+    let inner_open = inner.isopen();
+    let encname = inner.encname().clone();
     let mut con = Conn::new(
         "gzcon",
         &desc,
         nmode,
         Imp::Gzcon(Box::new(GzconConn { inner, level: level as u32, allow: allow != 0, io: None })),
     );
-    con.text = text != 0;
-    con.is_gzcon = true;
-    con.encname = encname;
+    con.set_text(text != 0);
+    con.set_is_gzcon(true);
+    con.set_encname(&encname);
     publish(cx, icon as usize, con, "gzcon", out)?;
     if inner_open {
         let r = with_conn(cx, icon, gzcon_open)?;
@@ -1325,11 +1635,11 @@ pub fn do_sumconnection(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<
         [
             c.description.clone(),
             c.class.as_bytes().to_vec(),
-            c.mode.as_bytes().to_vec(),
-            if c.text { b"text".to_vec() } else { b"binary".to_vec() },
-            if c.isopen { b"opened".to_vec() } else { b"closed".to_vec() },
-            yn(c.canread),
-            yn(c.canwrite),
+            c.mode().as_bytes().to_vec(),
+            if c.text() { b"text".to_vec() } else { b"binary".to_vec() },
+            if c.isopen() { b"opened".to_vec() } else { b"closed".to_vec() },
+            yn(c.canread()),
+            yn(c.canwrite()),
         ]
     })?;
     let names: [&[u8]; 7] = [b"description", b"class", b"mode", b"text", b"opened", b"can read", b"can write"];

@@ -38,6 +38,7 @@
 pub mod entry;
 
 mod altrep;
+mod connections;
 mod dotcode;
 mod errors;
 mod eval;
@@ -103,6 +104,7 @@ macro_rules! exports {
 }
 
 use altrep::*;
+use connections::*;
 use errors::*;
 use eval::*;
 use gram::*;
@@ -300,6 +302,13 @@ exports! {
     (entry 1), true => Rf_translateChar Rf_translateCharUTF8 Rf_getCharCE Rf_installTrChar R_FileExists;
     (entry 3), true => RC_fopen;
     (entry 4), true => Rf_mbrtowc;
+    // connections.c's C view (connections.rs): getConnection and the
+    // methods every connection's struct Rconn points at
+    (entry 1), true => getConnection R_GetConnection Rconn_fgetc robigo_rtapi_conn_open robigo_rtapi_conn_close
+        robigo_rtapi_conn_destroy robigo_rtapi_conn_fgetc robigo_rtapi_conn_fgetc_internal robigo_rtapi_conn_truncate
+        robigo_rtapi_conn_fflush;
+    (entry 3), true => robigo_rtapi_conn_vfprintf robigo_rtapi_conn_seek;
+    (entry 4), true => robigo_rtapi_conn_read robigo_rtapi_conn_write;
     // source.c (gram.rs)
     (entry 2), true => parseError;
     // the internet module's help server (internet.rs): not implemented yet
@@ -351,6 +360,7 @@ pub fn install(cx: &mut Cx) {
     ]);
     rdynload::install(cx);
     dotcode::install(cx);
+    connections::install(cx);
     trycatch::install(cx);
 }
 

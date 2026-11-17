@@ -34,7 +34,12 @@ fn native(c: Char<'_>, loc: robigo_rtcore::Locale) -> Result<Option<Vec<u8>>, St
 
 /// What a translation gives C: `CHAR(x)` when nothing changes, else a copy
 /// on the R_alloc stack (`copyAndFreeStringBuffer`).
-fn hand_out(cx: &mut Cx, s: robigo_rtcore::Scope<'_>, x: Root<'_>, t: Result<Option<Vec<u8>>, String>) -> RResult<*const c_char> {
+fn hand_out(
+    cx: &mut Cx,
+    s: robigo_rtcore::Scope<'_>,
+    x: Root<'_>,
+    t: Result<Option<Vec<u8>>, String>,
+) -> RResult<*const c_char> {
     match t {
         Ok(None) => {
             let c = x.bind(cx).as_char().unwrap();

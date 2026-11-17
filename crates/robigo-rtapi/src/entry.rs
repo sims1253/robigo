@@ -108,7 +108,7 @@ macro_rules! plain_args {
         })*
     };
 }
-plain_args!(true => c_int, c_uint, isize, usize, *const c_char, *mut c_void, *const c_void, *mut c_int, *mut Sexp);
+plain_args!(true => c_int, c_uint, isize, usize, *const c_char, *mut c_void, *const c_void, *mut c_int, *mut Sexp, *mut robigo_rt::rconn::RconnC);
 plain_args!(false => f64);
 
 // SAFETY: a function pointer, one integer register.

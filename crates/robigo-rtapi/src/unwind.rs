@@ -103,9 +103,7 @@ pub unsafe extern "C" fn Rf_begincontext(
     // SAFETY: called from C code a native entry of the thread's isolate
     // runs; begin_foreign writes the record and links it, collecting
     // nothing; C's contract for the record and the objects.
-    unsafe {
-        robigo_rtcore::enter_leaf_mut(|cx| cx.begin_foreign(rec, flags, syscall, env, sysp, promargs, callfun))
-    }
+    unsafe { robigo_rtcore::enter_leaf_mut(|cx| cx.begin_foreign(rec, flags, syscall, env, sysp, promargs, callfun)) }
 }
 
 entry! {

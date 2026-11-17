@@ -285,7 +285,9 @@ pub(crate) fn r_alloc(cx: &mut Cx, s: Scope<'_>, nelem: usize, eltsize: c_int) -
         return Ok(std::ptr::null_mut());
     }
     if size >= R_XLEN_T_MAX as f64 {
-        return Err(cx.error(&format!("cannot allocate memory block of size {:.1} Gb", size / 1024.0 / 1024.0 / 1024.0)));
+        return Err(
+            cx.error(&format!("cannot allocate memory block of size {:.1} Gb", size / 1024.0 / 1024.0 / 1024.0))
+        );
     }
     // a raw vector of size + 1 bytes, or doubles for alignment past
     // 8 bytes (GNU R: a REALSXP when size + 1 does not fit a raw
