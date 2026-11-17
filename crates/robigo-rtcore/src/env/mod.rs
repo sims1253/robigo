@@ -1811,11 +1811,17 @@ impl Cx {
 
     /// Where [`Cx::set_var`]`(sym, _, rho)` would write, found without
     /// writing: the binding of `sym` in the first frame from `rho` outwards
-    /// that has one, when that binding is neither locked nor active. None
-    /// when `set_var` would do anything else there: define `sym` in the
-    /// global environment, raise an error, or call an active binding's
-    /// function. A [`Cx::set_var_at`] of the target, with no binding written
-    /// in between, is that `set_var`.
+    /// that has one, when storing into it neither allocates nor runs code.
+    /// None when `set_var` would do anything else there:
+    /// - define `sym` in the global environment;
+    /// - raise an error (a locked binding);
+    /// - call an active binding's function;
+    /// - store into an argument slot that a method's alias reads, or an
+    ///   alias itself. That store makes the promise first
+    ///   (`store_unshared`), so it allocates and may collect.
+    ///
+    /// A [`Cx::set_var_at`] of the target, with no binding written in
+    /// between, is that `set_var`, and it neither allocates nor collects.
     ///
     /// # Safety
     /// `sym` is a live symbol and `rho` a live environment of this
@@ -1832,11 +1838,16 @@ impl Cx {
             while r != e.empty {
                 global |= r == e.global;
                 if let Some(l) = loc_in_frame(iso, r, sym).ok()? {
-                    return (l.bits(iso) & (BINDING_LOCK | ACTIVE_BINDING) == 0).then_some(SetVarTarget {
-                        loc: l,
-                        frame: r,
-                        global,
-                    });
+                    if l.bits(iso) & (BINDING_LOCK | ACTIVE_BINDING) != 0 {
+                        return None;
+                    }
+                    // (set_binding_value's store_unshared case: it allocates)
+                    if let At::FrameSlot(s) = l.at()
+                        && (s.has(META_ALIASED) || s.kind() == ALIAS)
+                    {
+                        return None;
+                    }
+                    return Some(SetVarTarget { loc: l, frame: r, global });
                 }
                 r = env::enclos(r);
             }
@@ -1847,6 +1858,9 @@ impl Cx {
     /// [`Cx::set_var`] at a target [`Cx::set_var_target_raw`] found: the
     /// effect note, the global environment's dirty mark if the walk reached
     /// it, then the store.
+    ///
+    /// The store neither allocates nor collects: the target excludes every
+    /// binding whose store would (see [`Cx::set_var_target_raw`]).
     ///
     /// # Safety
     /// `t` came from [`Cx::set_var_target_raw`] of this isolate, and since

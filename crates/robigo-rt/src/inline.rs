@@ -817,11 +817,12 @@ impl WriteLog {
             cx.scope(|cx, s| {
                 // SAFETY: the logged box, live: nothing collected since.
                 let v = s.root(cx, unsafe { Ref::from_sexp(w.value, cx) });
-                // SAFETY: `write` found the target in this isolate; nothing
-                // collects while a run holds the log, a commit neither
-                // allocates nor collects, and the run binds no names, so no
-                // binding was written since but the log's own, in order
-                // (each to its own target).
+                // SAFETY: `write` found the target in this isolate. Nothing
+                // collects while a run holds the log. A commit neither
+                // allocates nor collects, because `set_var_target_raw`
+                // refuses every binding whose store would (locked, active,
+                // aliased). The run binds no names, so no binding was written
+                // since but the log's own, in order, each to its own target.
                 unsafe { cx.set_var_at(w.target, v) }
             })?;
         }
