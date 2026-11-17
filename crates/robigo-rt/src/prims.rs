@@ -64,6 +64,10 @@ pub enum Inline {
     Logic(u8),
     /// `(`
     Paren,
+    /// bcEval's scalar math under `Bc` ([`crate::ir::Op::Math1`]'s kind):
+    /// cmp.R's `cmpMath1` (a `math1funs` index) and `sqrt`'s and `exp`'s
+    /// `cmpPrim1`.
+    Math1(u16),
 }
 
 /// A special that is a function over its call: GNU R's `do_*` of a
@@ -251,13 +255,22 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin(".isMethodsDispatchOn", crate::specials::do_s4on, Inline::None, 1, -1),
     builtin("R.home", crate::platform::do_rhome, Inline::None, 11, 0),
     builtin("dir.exists", crate::platform::do_direxists, Inline::None, 11, 1),
+    builtin("getwd", crate::util::do_getwd, Inline::None, 11, 0),
+    builtin("basename", crate::util::do_basename, Inline::None, 11, 1),
+    builtin("dirname", crate::util::do_dirname, Inline::None, 11, 1),
+    builtin("normalizePath", crate::util::do_normalizepath, Inline::None, 11, 3),
     builtin("file.exists", crate::platform::do_fileexists, Inline::None, 11, 1),
     builtin("list.files", crate::platform::do_listfiles, Inline::None, 11, 9),
 ];
 
 /// How the VM runs B1's builtin `name` inline, if it does.
 fn inline_of(name: &str) -> Inline {
+    if let Some(i) = robigo_rtbuiltins::math::BC_MATH1.iter().position(|e| e.0 == name) {
+        return Inline::Math1(i as u16);
+    }
     match name {
+        "sqrt" => Inline::Math1(crate::ir::MATH_SQRT),
+        "exp" => Inline::Math1(crate::ir::MATH_EXP),
         "+" => Inline::Arith(PLUSOP),
         "-" => Inline::Arith(MINUSOP),
         "*" => Inline::Arith(TIMESOP),

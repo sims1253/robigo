@@ -1,0 +1,4 @@
+Warning message:
+In tanpi(x) : NaNs produced
+Warning message:
+In k_gamma_range(9.99999999999997e-311) : value out of range in 'gammafn'

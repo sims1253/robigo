@@ -322,6 +322,18 @@ impl Heap {
         if size > MAX_MEDIUM {
             return self.alloc_large(size);
         }
+        match self.alloc_fast(size) {
+            Some(p) => p.as_ptr(),
+            None => self.alloc_small(size),
+        }
+    }
+
+    /// [`Heap::alloc`]'s fast path for a size of at most `MAX_MEDIUM`, with
+    /// no call: the current block's free list, then its bump region; none
+    /// when neither has a slot.
+    #[inline(always)]
+    pub fn alloc_fast(&mut self, size: usize) -> Option<std::ptr::NonNull<u8>> {
+        debug_assert!((GRANULE..=MAX_MEDIUM).contains(&size));
         let ci = class_index(size);
         // the fast path, inlined into the callers: the current block's
         // free list, then its bump region
@@ -332,26 +344,28 @@ impl Heap {
             // sweep that releases a chunk clears every `cur`), and nothing
             // else refers to its header during this call.
             let b = unsafe { &mut *cur };
-            let p = b.freelist;
-            if !p.is_null() {
+            if let Some(p) = std::ptr::NonNull::new(b.freelist) {
                 // SAFETY: free-list entries are free slots of this block,
                 // whose link word contains the next link.
-                b.freelist = unsafe { *(p.add(header::OFF_LINK) as *mut *mut u8) };
-                b.start_set((p as usize - Block::data_ptr(cur) as usize) / GRANULE);
+                b.freelist = unsafe { *(p.as_ptr().add(header::OFF_LINK) as *mut *mut u8) };
+                b.start_set((p.as_ptr() as usize - Block::data_ptr(cur) as usize) / GRANULE);
                 b.live_objects += 1;
-                return p;
+                return Some(p);
             }
             let g = (SIZES[ci] / GRANULE) as u32;
             if b.bump_next + g <= b.granules {
-                // SAFETY: bump_next < granules, so this is in the data area.
-                let p = unsafe { Block::data_ptr(cur).add(b.bump_next as usize * GRANULE) };
+                // SAFETY: bump_next < granules, so this is in the data area
+                // of the block, which `cur` (not null) points at.
+                let p = unsafe {
+                    std::ptr::NonNull::new_unchecked(cur).cast::<u8>().add(DATA_OFF + b.bump_next as usize * GRANULE)
+                };
                 b.start_set(b.bump_next as usize);
                 b.bump_next += g;
                 b.live_objects += 1;
-                return p;
+                return Some(p);
             }
         }
-        self.alloc_small(size)
+        None
     }
 
     #[cold]
