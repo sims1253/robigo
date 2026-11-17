@@ -255,6 +255,9 @@ pub fn do_args(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: 
 // R: builtin.c:do_cat, cat_newline, cat_sepwidth, cat_printsep
 pub fn do_cat(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     check_arity(cx, call, args, "cat", 6, true)?;
+    // `list(...)`'s elements are read as the builtin's arguments are
+    // (`list` leaves one of robigo's compact sequences as it is)
+    cx.materialize_nested(args.root(0), Some(1))?;
     // Use standard printing defaults
     let data = PrintData::init(cx, None);
     let ifile = as_integer(args.get(cx, 1));

@@ -32,7 +32,10 @@ use std::cell::{Cell, RefCell};
 /// The source of the closure that evaluates one fold, given the handlers'
 /// classes `cl` (`c("error", "warning")`) and handlers `h` (unused, as an
 /// exiting handler's result is returned): `list(value)`, or (a handler
-/// took a condition) `.addCondHands`'s result vector of four. Its frame
+/// took a condition) `.addCondHands`'s result vector of four. A value
+/// longer than `checkConst`'s `maxConstSize` (10) does not fold, and is
+/// never put in a list, which would expand one of robigo's compact
+/// sequences (`1:4000` in a `for` loop): `list(NULL, NULL)` says so. Its frame
 /// comes from `.Internal(environment(NULL))` in a closure it calls
 /// (base's `environment` may not be bound: an isolate without base's R
 /// code). Its body holds no call that folds, so compiling it (the `Bc`
@@ -40,7 +43,8 @@ use std::cell::{Cell, RefCell};
 const HELPER: &[u8] = b"function(f, a, cl, h) {
     env <- (function() .Internal(environment(NULL)))()
     .Internal(.addCondHands(cl, h, env, env, FALSE))
-    list(.Internal(do.call(f, a, env)))
+    v <- .Internal(do.call(f, a, env))
+    if (length(v) <= 10L) list(v) else list(NULL, NULL)
 }";
 
 /// A call the compiler would fold: the base function and the folded
@@ -267,7 +271,8 @@ fn fold1(cx: &mut Cx, fun: &Global, args: &[(Global, Global)]) -> RResult<Option
         crate::eval(cx, call, env, o)?;
         let r = r.bind(cx);
         let Some(v) = r.as_vector::<Ref<'_>>().filter(|v| v.len() == 1) else {
-            // an exiting handler's result: a condition
+            // an exiting handler's result (a condition), or a value too long
+            // to fold
             return Ok(None);
         };
         let v = v.get(0);

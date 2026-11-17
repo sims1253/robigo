@@ -407,6 +407,11 @@ pub fn coerce<'g>(cx: &'g Cx, v: Ref<'g>, ty: u8, keep_attrs: bool) -> Result<Co
     if v.is_package_altrep() {
         return fail("robigo: coercing a package ALTREP vector (ALTREP_COERCE) is not implemented yet".into());
     }
+    if v.is_altrep()
+        && let Some(r) = cx.coerce_compact(v, ty)?
+    {
+        return done(r, Warns::new());
+    }
     if v.is_s4() && t == OBJSXP {
         return fail("robigo: coercing an S4 object (R_getS4DataSlot) is not implemented yet".into());
     }
