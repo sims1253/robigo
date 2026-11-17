@@ -33,6 +33,9 @@
 #          and `[<-` of a double vector, and `[` of a matrix, by scalar
 #          indices (docs/ledger/g3/2026-11-17-perf-subset-guard.md). Rows
 #          of other groups can be guards too: grow-dbl, scalars and d0-*.
+#          Also: arithmetic and sum() on long vectors, `...` forwarding,
+#          `$<-` on a list, while and repeat loops
+#          (docs/ledger/g3/2026-11-18-perf-guard-rows2.md).
 #   conditions
 #          the trycatch row split into its branches and neighbours, reported
 #          only (no bar cites them): what X9 (frames, argument matching), X7
@@ -560,4 +563,61 @@ j <- 2L
 s <- 0
 '''
 body = 's <- s + m[i, j]'
+n = 4000
+
+[[row]]
+name = "guard-vec-arith"
+group = "guard"
+note = "y <- x * 2 + x: arithmetic on a 1,000-element double vector (two new vectors per iteration)"
+setup = '''
+x <- seq_len(1000L) * 0.5
+'''
+body = 'y <- x * 2 + x'
+n = 4000
+
+[[row]]
+name = "guard-vec-sum"
+group = "guard"
+note = "s <- sum(x): a summary of a 1,000-element double vector"
+setup = '''
+x <- seq_len(1000L) * 0.5
+'''
+body = 's <- sum(x)'
+n = 4000
+
+[[row]]
+name = "guard-dots"
+group = "guard"
+note = "v <- f(i, 1): `...` forwarded through a wrapper, f <- function(...) h(...)"
+setup = '''
+h <- function(a, b) a + b
+f <- function(...) h(...)
+'''
+body = 'v <- f(i, 1)'
+n = 4000
+
+[[row]]
+name = "guard-dollar-assign"
+group = "guard"
+note = "l$a <- i: `$<-` on a list of two, in place (g's copy of l is made once)"
+setup = '''
+l <- list(a = 1, b = 2)
+'''
+body = 'l$a <- i'
+n = 4000
+
+[[row]]
+name = "guard-while"
+group = "guard"
+note = "a while loop of ten steps: k <- 0L; while (k < 10L) k <- k + 1L"
+setup = ""
+body = 'k <- 0L; while (k < 10L) k <- k + 1L'
+n = 4000
+
+[[row]]
+name = "guard-repeat"
+group = "guard"
+note = "a repeat loop of ten steps, left by break"
+setup = ""
+body = 'k <- 0L; repeat { k <- k + 1L; if (k >= 10L) break }'
 n = 4000
