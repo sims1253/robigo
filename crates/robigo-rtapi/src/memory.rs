@@ -583,7 +583,7 @@ fn lengthgets(cx: &mut Cx, s: Scope<'_>, x: Root<'_>, len: isize) -> RResult<Sex
     if t == NILSXP && len > 0 {
         cx.warning("length of NULL cannot be changed")?;
     }
-    if x.bind(cx).is_altrep() {
+    if x.bind(cx).is_package_altrep() {
         return Err(not_yet(cx, "lengthgets of an ALTREP vector"));
     }
     let lenx = match t {
@@ -594,6 +594,11 @@ fn lengthgets(cx: &mut Cx, s: Scope<'_>, x: Root<'_>, len: isize) -> RResult<Sex
     let len = len as usize;
     if lenx == len {
         return Ok(x.bind(cx).sexp());
+    }
+    // the copy reads INTEGER(x), REAL(x), ... for each element it copies:
+    // one of robigo's sequences expands (its Dataptr), unless none is
+    if lenx.min(len) > 0 {
+        cx.materialize(x)?;
     }
     alloc(cx, s, |cx| xlengthgets(cx, x.bind(cx), lenx, len))
 }
