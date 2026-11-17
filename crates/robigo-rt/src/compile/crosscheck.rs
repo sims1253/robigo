@@ -344,7 +344,18 @@ pub fn compare(cx: &Cx, what: &str, t: &Built, s: &Built) {
         None => "the end".to_owned(),
     };
     let (a, b) = (nt.get(k), ns.get(k));
+    // the from-source code calls a simple `.Internal` wrapper of base's
+    // (cmp.R's safeBaseInternals) that GNU R's code inlines
+    // (cmpSimpleInternal): the port finds no definition in a base bound
+    // lazily (V4 owns the gap)
+    let wrapper = matches!(b, Some(x) if x.op == Op::GetFun && a.is_none_or(|y| y.op != Op::GetFun)
+        // SAFETY: a symbol constant of the pool (GetFun's `e`, after `c`).
+        && x.consts.get(1).is_some_and(|&sym| unsafe { sym.typ() == robigo_heap::types::SYMSXP
+            && crate::cenv::safe_internal(cx, sym).is_some() }));
     let class = match expected(a, b, ns.get(k + 1)) {
+        _ if wrapper => {
+            "expected (a simple .Internal wrapper the port calls (cmpSimpleInternal, lazily bound base))".to_owned()
+        }
         Some(c) => format!("expected ({c})"),
         None => "unexpected".to_owned(),
     };

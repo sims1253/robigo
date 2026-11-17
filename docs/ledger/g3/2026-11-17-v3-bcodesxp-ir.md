@@ -181,16 +181,41 @@ the from-source port (or a translation choice) to settle later:
 | guard of a declined inline handler | 1 | `tryInline` puts `BASEGUARD` before `cmpCall` when the handler declines (`sum(...)`); the port calls unguarded. |
 
 **On base's installed code** (the base.rdb test under the crosscheck,
-compiled from source for base's namespace as installed code): 72 nested
-functions, 33 loop shapes, 21 folds, 6 skipped, 358 untranslated (the
-primitives robigo-rt lacks, above), and 221 first differences not classed
-yet. Most (161) are a call of a base closure GNU R's installed code
-inlines as a simple `.Internal` (`match`, `inherits`: `cmpSimpleInternal`)
-where the from-source compile, in this session's lazily bound base, calls
-it. Classing them is the from-source port's (V2) to settle, so this part
-is reported only: CI's rt job runs the rdb tests (where the data is) with
-the crosscheck on and prints the counts per class; the job fails only when
-the base.rdb test does.
+compiled from source for base's namespace as installed code; reported
+only, foreman's decision): CI's rdb step runs the rdb tests with the
+crosscheck on and prints each class's count; it fails only when the
+base.rdb test does. Conformance keeps the crosscheck as a failing gate.
+
+| class | count |
+| --- | --- |
+| untranslated (a primitive robigo-rt lacks, above) | 358 |
+| a simple `.Internal` wrapper the port calls | 160 |
+| a nested function's code | 72 |
+| a loop's shape | 33 |
+| a constant cmp.R folds | 21 |
+| an unbalanced join the translation refuses | 11 |
+| skipped (the compile would force a binding) | 6 |
+| **not classed yet** | **56** |
+
+The wrapper class: GNU R's installed code inlines a call of a base
+closure in cmp.R's `safeBaseInternals` (`match`, `inherits`, ...) as its
+`.Internal` (`cmpSimpleInternal`); the from-source compile, in this
+session's lazily bound base, finds no definition to inline and calls it.
+
+The 56 not classed yet, by the first difference (translated vs from
+source): `GetFun` vs `GetFun` 10 (a different function or call),
+`GetFun` vs `Internal` 9, `GetFun` vs `SpecialFn` 8, `CallBuiltin` vs
+`CallBuiltin` 7, `CallBuiltin` vs `Arith` 7, `GetFun` vs `CallBuiltin` 6,
+`SpecialFn` vs `GetFun` 3, `GetFun` vs `LdConst` 2, and one each of `Ret`
+vs `SetVis`, `LdConst` vs `LdConst`, `GetFun` vs `GetVar`, `GetFun` vs
+`ErrorCall`. Most are the same kind of gap from the other side: an inline
+decision the port makes differently in this session's base (a builtin it
+calls generically, a special it inlines that cmp.R calls).
+
+**V4 follow-up (owned by V3's agent):** drive the not-classed count to 0,
+by fixing the port (the from-source compile seeing base's bindings as
+cmp.R does with a fully loaded base) or by classing each difference as
+expected with its reason; then the wrapper class should go to 0 too.
 
 Fixed rather than listed: the from-source `switch` now ends an empty
 numeric alternative as cmp.R does in tail position (a jump to the end
