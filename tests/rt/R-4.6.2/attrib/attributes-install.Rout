@@ -1,0 +1,30 @@
+$dim
+[1] 3
+
+$dimnames
+$dimnames[[1]]
+[1] "a" "b" "c"
+
+
+$someNewAttribute
+[1] "v"
+
+$class
+[1] "foo"
+
+$thisNameIsNewHere
+[1] TRUE
+
+[1] 1
+attr(,"thisNameIsNewHere")
+[1] TRUE
+$café
+[1] 1
+
+[1] "café"  "naïve"
+[1] "café"
+[1] TRUE
+[1] 1
+$dim
+[1] 1
+

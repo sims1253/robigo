@@ -684,11 +684,13 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    `tests/rt/serialize-closures/unserialize-e9.R`, and for on.exit code
    run during unwinds `conditions/onexit-unwind.R`,
    `conditions/trycatch-finally.R`, `capi/e8-unwind.R`,
-   `tests/r/lang/on-exit.R` and `parse/file.R`; `ROBIGO_RETRY_TORTURE=1`,
-   which refuses the first allocation of every `&Cx` build once, E9's
-   refusal at every build in one run, in a build with robigo-rtcore's
-   `retry-torture` feature, has no step yet:
-   `docs/ledger/g3/2026-11-17-retry-torture.md`). Every pull
+   `tests/r/lang/on-exit.R` and `parse/file.R`), and, last, the conformance
+   under `ROBIGO_RETRY_TORTURE=1` (E9's refusal at every build: the first
+   allocation of every `&Cx` build refused once, so each build's retry
+   runs), in a build with robigo-rtcore's `retry-torture` feature made for
+   that step alone, so every step before it tests the binary users get
+   (`docs/ledger/g3/2026-11-17-retry-torture-ci.md`; with the moving
+   collector as well it is a run by hand, `docs/g3.md` §16). Every pull
    request but a docs-only one runs it, and with it **base-subset**:
    `scripts/base-subset.sh --check` inside the GNU R 4.6.2 oracle image
    (robigo-rt's checked-in base subset is what this tree traces: its

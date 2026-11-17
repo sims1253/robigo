@@ -1971,6 +1971,12 @@ impl Core {
         self.fail_alloc_at(self.fail_at);
     }
 
+    /// E9's knob's `n` (`ROBIGO_FAIL_ALLOC_AT`, or what
+    /// [`Core::fail_alloc_at`] set last; 0: off), armed or not yet.
+    pub fn fail_at(&self) -> u64 {
+        self.fail_at
+    }
+
     /// [`Core::arm_fail_alloc`] with `n` in place of the environment's
     /// (0: off), for tests.
     pub fn fail_alloc_at(&mut self, n: u64) {

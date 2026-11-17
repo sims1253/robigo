@@ -37,8 +37,10 @@ Then the conformance again under gctorture and under the moving collector
 (E3; `young:N`, which moves the young objects at each collection and
 everything at every N-th, H8), the stress script in a few fresh processes (E3, scripts/rt-stress.sh),
 the overshoot of every slice (E4, scripts/rt-overshoot.py), and E9: the
-conformance under a small vector limit, and allocations refused once after
-visible effects (scripts/rt-fail-alloc.py). The
+conformance under a small vector limit, allocations refused once after
+visible effects (scripts/rt-fail-alloc.py), and, last, the conformance with
+every `&Cx` build's retry run once (`ROBIGO_RETRY_TORTURE=1`), in a build with
+robigo-rtcore's `retry-torture` feature made for that step alone. The
 verification modes of g3.md §16 add their steps here as they land.
 """
 import argparse
@@ -209,6 +211,11 @@ def full_move_steps():
     ])
 
 
+# The cargo feature that compiles ROBIGO_RETRY_TORTURE in (robigo-rtcore's
+# Cargo.toml): only its step builds with it.
+RETRY_TORTURE_FEATURE = "robigo-rtcore/retry-torture"
+
+
 def steps(crates):
     """(title, extra environment, command) for each step of the job."""
     pkgs = [x for c in crates for x in ("-p", c)]
@@ -281,6 +288,16 @@ def steps(crates):
          {"ROBIGO_BC_CROSSCHECK": "1", "ROBIGO_BC_CROSSCHECK_REPORT": BC_REPORT}, conformance),
         ("injected allocation failures (E9, scripts/rt-fail-alloc.py)", {},
          ["python3", "scripts/rt-fail-alloc.py", "--points", "400"]),
+        # E9 (docs/g3.md §16): every `&Cx` build's first allocation refused
+        # once, so each build's retry runs. The mode is compiled in only
+        # with robigo-rtcore's feature, built for this step alone and last:
+        # every step above tests the binary users get (cargo keeps both
+        # builds). With ROBIGO_GC_MOVE=1 as well it takes about 20 minutes,
+        # so that run is by hand (g3.md §16).
+        ("conformance under ROBIGO_RETRY_TORTURE=1 (E9: every build's retry runs once)",
+         {"ROBIGO_RETRY_TORTURE": "1", **slow},
+         [*test, "-p", "robigo-rtapi", "--features", RETRY_TORTURE_FEATURE, "--test", "conformance", "--",
+          "--exact", CONFORMANCE, "--nocapture"]),
     ]
     return every_cpu(out)
 
