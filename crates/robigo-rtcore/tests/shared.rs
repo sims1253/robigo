@@ -44,6 +44,7 @@ fn isolates_on_two_threads_share_the_constants() {
                     let nil = s.root(cx, cx.nil());
                     cx.set_object_bit(nil, false);
                     cx.set_s4_bit(nil, false);
+                    cx.mark_assignment_call(nil);
                 });
                 let _ = cx.install(b"").unwrap();
                 assert_eq!(constants(&mut iso), seen);

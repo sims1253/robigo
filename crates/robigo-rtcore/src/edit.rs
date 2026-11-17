@@ -907,12 +907,13 @@ impl Cx {
 
     /// GNU R's `MARK_ASSIGNMENT_CALL(call)`: a replacement call built by a
     /// complex assignment, which `IS_ASSIGNMENT_CALL` ([`Ref::is_assignment_call`])
-    /// reads.
+    /// reads. Only a call is marked: the bit is read on nothing else, and
+    /// R_NilValue, a shared constant, is never written.
     pub fn mark_assignment_call(&mut self, call: Root<'_>) {
         let v = call.bind(self).sexp();
         // SAFETY: a rooted object; the bit changes no body.
         unsafe {
-            if v.typ() != CHARSXP {
+            if v.typ() == LANGSXP {
                 v.set_gp(v.gp() | ASSIGNMENT_CALL);
             }
         }
