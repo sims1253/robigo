@@ -1012,4 +1012,3 @@ fn a_symbol_is_every_isolates() {
     assert_eq!(robigo_rtcore::Ref::from(in_a).sexp(), pa, "A's cache gives A's");
     assert_eq!(ca.install(b"a_name_only_b_installed").unwrap().as_ref().sexp(), only_b.as_ref().sexp());
 }
-
