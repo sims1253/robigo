@@ -32,9 +32,11 @@ use robigo_heap::types::*;
 use robigo_rtbuiltins::attrib::{Attr, Attrs};
 use robigo_rtcore::{Args, Char, Cx, Encoding, Global, Out, RResult, RSym, Ref, Root};
 use std::cell::{Cell, RefCell};
-use std::ffi::{CString, c_int};
+use std::ffi::{CString, c_char, c_int};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
+
+pub mod readers;
 
 /// `NCONNECTIONS`.
 const NCONNECTIONS: usize = 128;
@@ -120,6 +122,17 @@ pub struct Conn {
     /// `ex_ptr`: the `conn_id` external pointer.
     ex_ptr: Option<Global>,
     imp: Imp,
+    /// `PushBack`'s lines, GNU R's order (the last is the line being read);
+    /// `c.push_back` points at `push_back_ptrs`, their addresses, so C
+    /// reads `con->PushBack` as GNU R lays it out ([`Conn::sync_push_back`]).
+    push_back: Vec<CString>,
+    push_back_ptrs: Vec<*mut c_char>,
+    /// The warnings `R_ExpandFileName` gave in the last open (the callback
+    /// has no `Cx`): the open's caller gives it first ([`run_open`]).
+    expand_warning: Vec<String>,
+    /// `set_iconv` would have set up `inconv` or `outconv` (an `encoding`
+    /// robigo does not re-encode from yet): reads and writes refuse.
+    reencode: bool,
 }
 
 /// The flag accessors over `c`'s `Rboolean`s.
@@ -174,6 +187,63 @@ impl Conn {
 
     pub fn set_encname(&mut self, e: &str) {
         self.c.set_encname(e);
+    }
+
+    /// Point `c.push_back` at the lines and set `c.n_push_back` (the
+    /// position is the caller's).
+    fn sync_push_back(&mut self) {
+        self.push_back_ptrs = self.push_back.iter().map(|l| l.as_ptr().cast_mut()).collect();
+        self.c.push_back =
+            if self.push_back_ptrs.is_empty() { std::ptr::null_mut() } else { self.push_back_ptrs.as_mut_ptr() };
+        self.c.n_push_back = self.push_back.len() as c_int;
+    }
+
+    /// The lines C left (`nPushBack` lowered from C, as a package's own
+    /// clear would: the lines above it are gone).
+    fn push_back_len(&mut self) -> usize {
+        let n = self.c.n_push_back.max(0) as usize;
+        if n < self.push_back.len() {
+            self.push_back.truncate(n);
+            self.sync_push_back();
+        }
+        n
+    }
+
+    /// `con_pushback(con, newLine, line)`: `line` up to its first NUL
+    /// (`strcpy`), then a newline if `new_line`, on top; read from its
+    /// start.
+    // R: connections.c:con_pushback
+    pub(crate) fn push_back_line(&mut self, line: &[u8], new_line: bool) -> Result<(), String> {
+        let n = self.push_back_len();
+        if n == c_int::MAX as usize {
+            return Err("maximum number of pushback lines exceeded".into());
+        }
+        let cut = line.iter().position(|&b| b == 0).unwrap_or(line.len());
+        let mut l = line[..cut].to_vec();
+        if new_line {
+            l.push(b'\n');
+        }
+        self.push_back.push(CString::new(l).expect("cut at the first NUL"));
+        self.sync_push_back();
+        self.c.pos_push_back = 0;
+        Ok(())
+    }
+
+    /// The pushback freed (`do_clearpushback`, `con_close1`).
+    fn clear_push_back(&mut self) {
+        self.push_back.clear();
+        self.sync_push_back();
+    }
+
+    /// `R_ExpandFileName`'s warnings from the last open, the wrapped
+    /// connection's first (it opens first).
+    fn take_expand_warnings(&mut self) -> Vec<String> {
+        let mut w = Vec::new();
+        if let Imp::Gzcon(g) = &mut self.imp {
+            w.extend(g.inner.take_expand_warnings());
+        }
+        w.append(&mut self.expand_warning);
+        w
     }
 }
 
@@ -257,6 +327,10 @@ impl Conn {
             id: 0,
             ex_ptr: None,
             imp,
+            push_back: Vec::new(),
+            push_back_ptrs: Vec::new(),
+            expand_warning: Vec::new(),
+            reencode: false,
         };
         c.c.class = c.class_c.as_ptr().cast_mut();
         c.c.description = c.description_c.as_ptr().cast_mut();
@@ -271,13 +345,12 @@ type OpenResult = Result<(), String>;
 /// `R_PATH_MAX`: `PATH_MAX` on Linux.
 pub(crate) const R_PATH_MAX: usize = 4096;
 
-/// `R_ExpandFileName_unix(s)`: a leading `~` or `~user` (up to the first
+/// `R_ExpandFileName_unix(s)` (when readline's expansion left a tilde): a leading `~` or `~user` (up to the first
 /// `/`) is that home directory: `HOME` for `~` (the password entry when it
 /// is unset or empty), the password entry for `~user`. A name with no such
 /// directory is left as it is, and so is one whose expansion would not fit
 /// in `R_PATH_MAX`, with the text of GNU R's warning.
-// R: sys-unix.c:R_ExpandFileName_unix (no readline: robigo-rt's and
-// Rscript's case)
+// R: sys-unix.c:R_ExpandFileName_unix
 pub fn expand_file_name_unix(s: &[u8]) -> (Vec<u8>, Option<String>) {
     if s.first() != Some(&b'~') {
         return (s.to_vec(), None);
@@ -312,21 +385,69 @@ pub fn expand_file_name_unix(s: &[u8]) -> (Vec<u8>, Option<String>) {
     }
 }
 
+/// readline's `tilde_expand_word(s)`: `~` and `~/...` take `HOME`, even
+/// empty (the password entry of the process's user when it is unset, and
+/// nothing when that has none either); `~user` and `~user/...` the user's
+/// password entry, or stay as they are.
+// R: readline's tilde.c:tilde_expand_word (no hooks: R sets none)
+fn tilde_expand_word(s: &[u8]) -> Vec<u8> {
+    if s.first() != Some(&b'~') {
+        return s.to_vec();
+    }
+    // isolate_tilde_prefix: what follows the tilde, up to a slash
+    let user_len = s[1..].iter().position(|&c| c == b'/').map_or(s.len(), |k| k + 1);
+    let home = if user_len == 1 {
+        match std::env::var_os("HOME") {
+            Some(h) => Some(std::os::unix::ffi::OsStrExt::as_bytes(h.as_os_str()).to_vec()),
+            None => robigo_rtcore::clib::passwd_home(None),
+        }
+        .unwrap_or_default()
+    } else {
+        match robigo_rtcore::clib::passwd_home(Some(&s[1..user_len])) {
+            Some(h) => h,
+            None => return s.to_vec(),
+        }
+    };
+    // glue_prefix_and_suffix(home, s, user_len)
+    [&home[..], &s[user_len..]].concat()
+}
+
+/// `R_ExpandFileName_readline(s)`: [`tilde_expand_word`], cut to
+/// `R_PATH_MAX - 1` bytes with the text of GNU R's warning when longer.
+// R: sys-std.c:R_ExpandFileName_readline
+fn expand_file_name_readline(s: &[u8]) -> (Vec<u8>, Option<String>) {
+    let mut v = tilde_expand_word(s);
+    if v.len() >= R_PATH_MAX {
+        let msg = format!("expanded path length {} would be too long for\n{}\n", v.len(), String::from_utf8_lossy(s));
+        v.truncate(R_PATH_MAX - 1);
+        return (v, Some(msg));
+    }
+    (v, None)
+}
+
+/// `R_ExpandFileName(s)`: readline's expansion (GNU R's `UsingReadline`
+/// is TRUE unless `--no-readline`, which robigo-rt does not take: so in
+/// Rscript and `R -f` too), unless what it gives still starts with `~` or
+/// `~/`, then [`expand_file_name_unix`]'s.
+// R: sys-unix.c:R_ExpandFileName
+pub fn expand_file_name(s: &[u8]) -> (Vec<u8>, Vec<String>) {
+    let (c, w) = expand_file_name_readline(s);
+    let mut ws: Vec<String> = w.into_iter().collect();
+    if c.first() != Some(&b'~') || (c.len() > 1 && c[1] != b'/') {
+        return (c, ws);
+    }
+    let (u, w2) = expand_file_name_unix(s);
+    ws.extend(w2);
+    (u, ws)
+}
+
 /// `R_ExpandFileName(name)`, its warning given.
 pub fn r_expand_file_name(cx: &mut robigo_rtcore::Cx, name: &[u8]) -> robigo_rtcore::RResult<Vec<u8>> {
-    let (v, w) = expand_file_name_unix(name);
-    if let Some(w) = w {
+    let (v, ws) = expand_file_name(name);
+    for w in ws {
         cx.warning(&w)?;
     }
     Ok(v)
-}
-
-/// `R_ExpandFileName(name)` without its over-long expansion warning: for
-/// a connection's open callback (`file_open`, `gzfile_open`), which has no
-/// `Cx` to give it (L's: docs/ledger/g3/2026-11-17-b5a-platform.md).
-/// Elsewhere, `r_expand_file_name`.
-pub fn expand_file_name(name: &[u8]) -> Vec<u8> {
-    expand_file_name_unix(name).0
 }
 
 fn path_of(name: &[u8]) -> std::path::PathBuf {
@@ -375,7 +496,8 @@ fn file_open(c: &mut Conn) -> OpenResult {
     if c.description.is_empty() {
         return Err("robigo: 'file(\"\")' (an anonymous file) is not implemented yet".into());
     }
-    let name = expand_file_name(&c.description);
+    let (name, w) = expand_file_name(&c.description);
+    c.expand_warning = w;
     if name == b"stdin" {
         return Err("robigo: 'file(\"stdin\")' is not implemented yet".into());
     }
@@ -412,7 +534,22 @@ fn file_open(c: &mut Conn) -> OpenResult {
         f.wpos = wpos;
         f.last_was_write = !canread;
     }
+    set_iconv(c);
     Ok(())
+}
+
+/// `set_iconv(con)`: no conversion for a binary connection or the native
+/// encoding, and `UTF8out` (readLines' and scan's request) dropped; any
+/// other encoding is one robigo cannot convert yet ([`Conn::reencode`]).
+// R: connections.c:set_iconv
+fn set_iconv(c: &mut Conn) {
+    let enc = c.encname();
+    c.reencode = false;
+    if !c.text() || enc.is_empty() || enc == "native.enc" {
+        c.c.utf8out = 0;
+        return;
+    }
+    c.reencode = c.canread() || c.canwrite();
 }
 
 /// What `comp_type_from_file` finds: 0 not compressed (or unreadable),
@@ -447,7 +584,8 @@ fn comp_type_from_file(name: &[u8]) -> u8 {
 
 // R: connections.c:gzfile_open
 fn gzfile_open(c: &mut Conn) -> OpenResult {
-    let name = expand_file_name(&c.description);
+    let (name, w) = expand_file_name(&c.description);
+    c.expand_warning = w;
     let shown = String::from_utf8_lossy(&name).into_owned();
     if is_dir(&name) {
         return Err(format!("cannot open file '{shown}': it is a directory"));
@@ -472,6 +610,7 @@ fn gzfile_open(c: &mut Conn) -> OpenResult {
     c.set_canwrite(mode.starts_with('w') || mode.starts_with('a'));
     c.set_canread(!c.canwrite());
     c.set_text(!mode.contains('b'));
+    set_iconv(c);
     Ok(())
 }
 
@@ -612,6 +751,9 @@ fn conn_read_raw(c: &mut Conn, buf: &mut [u8]) -> std::io::Result<usize> {
 
 /// `con->write(buf, 1, n, con)`.
 fn conn_write(c: &mut Conn, buf: &[u8]) -> std::io::Result<usize> {
+    if c.reencode {
+        return Err(std::io::Error::other("robigo: re-encoding a connection is not implemented yet"));
+    }
     match &mut c.imp {
         Imp::Std => Err(std::io::Error::other("robigo: writing the standard connections is not implemented yet")),
         Imp::File(f) => {
@@ -711,7 +853,7 @@ fn fgetc_internal(c: &mut Conn) -> Result<c_int, String> {
 /// else `fgetc_internal`. robigo has no re-encoding (`inconv` is never set).
 // R: connections.c:dummy_fgetc
 fn dummy_fgetc(c: &mut Conn) -> Result<c_int, String> {
-    if !c.c.inconv.is_null() {
+    if !c.c.inconv.is_null() || c.reencode {
         return Err("robigo: re-encoding a connection is not implemented yet".to_owned());
     }
     if !c.c.buff.is_null() { buff_fgetc(c) } else { fgetc_internal(c) }
@@ -748,7 +890,10 @@ pub fn get_connection(cx: &mut Cx, n: i32) -> RResult<*mut RconnC> {
 /// `con->open(con)`: true, or false after the warning GNU R's open gives.
 // R: connections.c:file_open, gzfile_open, gzcon_open
 pub fn c_open(cx: &mut Cx, con: *mut RconnC) -> RResult<bool> {
-    match with_c(cx, con, |c| Ok(open_conn(c)))? {
+    let Some(n) = slot_of(cx, con) else {
+        return Err(cx.error("robigo: a connection robigo did not make is not implemented yet"));
+    };
+    match run_open(cx, n, open_conn)? {
         Ok(()) => Ok(true),
         Err(w) => {
             cx.warning(&w)?;
@@ -798,21 +943,32 @@ pub fn c_fflush(cx: &mut Cx, con: *mut RconnC) -> RResult<c_int> {
     })
 }
 
-/// `Rconn_fgetc(con)`: a character saved by a look-ahead, else the stream's
-/// next, a CR or CRLF read as LF. robigo pushes nothing back, and a
-/// `fgetc` method C replaced is not robigo's.
-// R: connections.c:Rconn_fgetc
+/// `Rconn_fgetc(con)`, C's entry.
 pub fn rconn_fgetc(cx: &mut Cx, con: *mut RconnC) -> RResult<c_int> {
-    let ours = table(cx).c_methods.get().map(|m| m.fgetc as usize);
-    with_c(cx, con, |c| {
-        if c.c.save2 != crate::rconn::NO_SAVE {
-            let v = c.c.save2;
-            c.c.save2 = crate::rconn::NO_SAVE;
-            return Ok(v);
-        }
-        if c.c.n_push_back > 0 {
-            return Err("robigo: a connection's pushback is not implemented yet".to_owned());
-        }
+    let ours = our_fgetc(cx);
+    with_c(cx, con, |c| conn_fgetc(c, ours))
+}
+
+/// The address of the C API's `fgetc` method (none before it is installed,
+/// as a connection's own `c.fgetc` is then): [`conn_fgetc`]'s check that C
+/// did not replace a connection's method.
+fn our_fgetc(cx: &Cx) -> Option<usize> {
+    table(cx).c_methods.get().map(|m| m.fgetc as usize)
+}
+
+/// `Rconn_fgetc(con)`: a character saved by a look-ahead, else the
+/// pushback's (a line popped at its end), else the stream's next, a CR or
+/// CRLF read as LF. `ours` is [`our_fgetc`]: a `fgetc` method C replaced is
+/// not robigo's.
+// R: connections.c:Rconn_fgetc
+pub(crate) fn conn_fgetc(c: &mut Conn, ours: Option<usize>) -> Result<c_int, String> {
+    if c.c.save2 != crate::rconn::NO_SAVE {
+        let v = c.c.save2;
+        c.c.save2 = crate::rconn::NO_SAVE;
+        return Ok(v);
+    }
+    let n = c.push_back_len();
+    if n == 0 {
         // map CR or CRLF to LF
         if c.c.save != crate::rconn::NO_SAVE {
             let v = c.c.save;
@@ -830,8 +986,21 @@ pub fn rconn_fgetc(cx: &mut Cx, con: *mut RconnC) -> RResult<c_int> {
                 return Ok(b'\n' as c_int);
             }
         }
-        Ok(v)
-    })
+        return Ok(v);
+    }
+    let line = c.push_back[n - 1].as_bytes_with_nul();
+    let pos = c.c.pos_push_back.max(0) as usize;
+    let Some(&b) = line.get(pos) else {
+        return Err("robigo: a pushback position C set past its line is not implemented yet".to_owned());
+    };
+    c.c.pos_push_back += 1;
+    if pos + 1 >= line.len() - 1 {
+        // last character on a line, so pop the line
+        c.push_back.pop();
+        c.sync_push_back();
+        c.c.pos_push_back = 0;
+    }
+    Ok(b as c_int)
 }
 
 // ---- gzip, as gzio.h has it -------------------------------------------------
@@ -1212,11 +1381,25 @@ pub fn write_all(cx: &mut Cx, n: i32, buf: &[u8], msg: &str) -> RResult<()> {
     r.map_err(|m| cx.error(&m))
 }
 
+/// Run an open `f` on connection `n`, then give the warnings
+/// `R_ExpandFileName` gave in it (GNU R gives them inside the open, so
+/// before the open's own warning, which is the caller's).
+fn run_open(cx: &mut Cx, n: i32, f: impl FnOnce(&mut Conn) -> OpenResult) -> RResult<OpenResult> {
+    let (r, ws) = with_conn(cx, n, |c| {
+        let r = f(c);
+        (r, c.take_expand_warnings())
+    })?;
+    for w in ws {
+        cx.warning(&w)?;
+    }
+    Ok(r)
+}
+
 /// `con->open(con)` with `mode` in place for the call (serialize's
 /// `strcpy(con->mode, "rb")`), then the mode back: false and the warning
 /// on failure.
 pub fn open_with_mode(cx: &mut Cx, n: i32, mode: &str) -> RResult<bool> {
-    let r = with_conn(cx, n, |c| {
+    let r = run_open(cx, n, |c| {
         let old = c.mode();
         c.set_mode(mode);
         let r = open_conn(c);
@@ -1260,6 +1443,7 @@ fn con_destroy(cx: &mut Cx, i: usize) -> RResult<i32> {
     let Some(mut c) = c else { return Err(cx.error("invalid connection")) };
     let err = if c.isopen() { close_conn(&mut c) } else { None };
     let status = c.status();
+    c.clear_push_back();
     if let Some(e) = err {
         cx.warning(&format!("Problem closing connection:  {e}"))?;
     }
@@ -1278,11 +1462,20 @@ fn con_destroy(cx: &mut Cx, i: usize) -> RResult<i32> {
 /// error after the open's warning.
 // R: connections.c:checked_open
 fn checked_open(cx: &mut Cx, ncon: usize) -> RResult<()> {
-    let r = with_conn(cx, ncon as i32, open_conn)?;
-    if let Err(w) = r {
-        // the warning is given while the connection exists (it may become
-        // an error, which destroys it, PR#18491)
-        let warned = cx.warning(&w);
+    let (r, ws) = with_conn(cx, ncon as i32, |c| {
+        let r = open_conn(c);
+        (r, c.take_expand_warnings())
+    })?;
+    // the open's warnings are given while the connection exists; one that
+    // becomes an error destroys it (the context's cend, PR#18491)
+    let mut warned = Ok(());
+    for w in ws.iter().chain(r.as_ref().err()) {
+        warned = cx.warning(w);
+        if warned.is_err() {
+            break;
+        }
+    }
+    if warned.is_err() || r.is_err() {
         con_destroy(cx, ncon)?;
         warned?;
         return Err(cx.error("cannot open the connection"));
@@ -1615,7 +1808,13 @@ pub fn do_gzcon(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
     con.set_encname(&encname);
     publish(cx, icon as usize, con, "gzcon", out)?;
     if inner_open {
-        let r = with_conn(cx, icon, gzcon_open)?;
+        let (r, ws) = with_conn(cx, icon, |c| {
+            let r = gzcon_open(c);
+            (r, c.take_expand_warnings())
+        })?;
+        for w in ws {
+            cx.warning(&w)?;
+        }
         if let Err((w, true)) = r {
             cx.warning(&w)?;
         }
@@ -1659,7 +1858,7 @@ pub fn do_sumconnection(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<
 /// `con->open(con)` in the connection's own mode: false and the warning on
 /// failure (do_parse's `if(!con->open(con)) error(...)`).
 pub fn open(cx: &mut Cx, n: i32) -> RResult<bool> {
-    let r = with_conn(cx, n, open_conn)?;
+    let r = run_open(cx, n, open_conn)?;
     match r {
         Ok(()) => Ok(true),
         Err(w) => {
@@ -1795,7 +1994,7 @@ pub fn is_file(cx: &mut Cx, n: i32) -> RResult<bool> {
 
 #[cfg(test)]
 mod expand_tests {
-    use super::{R_PATH_MAX, expand_file_name_unix};
+    use super::{R_PATH_MAX, expand_file_name, expand_file_name_unix, tilde_expand_word};
     use robigo_rtcore::clib::passwd_home;
 
     #[test]
@@ -1842,5 +2041,28 @@ mod expand_tests {
         let s = [&b"~root/"[..], &vec![b'a'; fits + 1]].concat();
         let msg = format!("expanded path length {R_PATH_MAX} would be too long for\n{}\n", String::from_utf8_lossy(&s));
         assert_eq!(expand_file_name_unix(&s), (s.clone(), Some(msg)));
+    }
+
+    #[test]
+    fn readline_expansion_keeps_unknown_users_and_cuts_long_names() {
+        for s in [&b"etc/x"[..], b"", b"a~b", b"/~root", b"~robigo-no-such-user/x", b"~robigo-no-such-user"] {
+            assert_eq!(tilde_expand_word(s), s.to_vec(), "{s:?}");
+            assert_eq!(expand_file_name(s), (s.to_vec(), vec![]), "{s:?}");
+        }
+        // any name of R_PATH_MAX bytes or more, with or without a tilde
+        let s = vec![b'a'; R_PATH_MAX];
+        let (v, w) = expand_file_name(&s);
+        assert_eq!(v, s[..R_PATH_MAX - 1].to_vec());
+        let msg = format!("expanded path length {R_PATH_MAX} would be too long for\n{}\n", String::from_utf8_lossy(&s));
+        assert_eq!(w, vec![msg]);
+        let s = vec![b'a'; R_PATH_MAX - 1];
+        assert_eq!(expand_file_name(&s), (s.clone(), vec![]));
+        let Some(home) = passwd_home(Some(b"root")) else { return };
+        let s = [&b"~root/"[..], &vec![b'b'; R_PATH_MAX]].concat();
+        let (v, w) = expand_file_name(&s);
+        assert_eq!(v.len(), R_PATH_MAX - 1);
+        assert!(v.starts_with(&home));
+        assert_eq!(w.len(), 1);
+        assert_eq!(expand_file_name(b"~root/x").0, [&home[..], b"/x"].concat());
     }
 }
