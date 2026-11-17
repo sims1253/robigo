@@ -167,6 +167,11 @@ fn cases(long_src: &[u8]) -> Vec<Case> {
 /// panics), so the cases hold under each; the reports those modes write to
 /// stderr are not the program's and are left out.
 fn run(dir: &Path, args: &[&str], stdin: Option<&str>) -> (Vec<u8>, Vec<u8>, i32) {
+    run_env(dir, args, stdin, &[])
+}
+
+/// [`run`] with `env` set on top of its environment.
+fn run_env(dir: &Path, args: &[&str], stdin: Option<&str>, env: &[(&str, &str)]) -> (Vec<u8>, Vec<u8>, i32) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
     cmd.args(args).current_dir(dir).env("LANGUAGE", "en").env("LC_ALL", "C.UTF-8").env("TZ", "UTC");
     // (an inherited R_HOME, GNU R's, robigo-rt ignores with a warning on
@@ -178,6 +183,9 @@ fn run(dir: &Path, args: &[&str], stdin: Option<&str>) -> (Vec<u8>, Vec<u8>, i32
     // the pin report to stderr (`1`); to a file it stays, as rt-ci's check
     if std::env::var_os("ROBIGO_GC_PIN_REPORT").is_some_and(|v| v == "1") {
         cmd.env_remove("ROBIGO_GC_PIN_REPORT");
+    }
+    for (k, v) in env {
+        cmd.env(k, v);
     }
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().expect("run robigo-rt");
@@ -273,4 +281,15 @@ fn the_save_check_does_not_wait_for_stdin() {
         String::from_utf8_lossy(&out.stderr),
         "Fatal error: you must specify '--save', '--no-save' or '--vanilla'\n"
     );
+}
+
+/// An empty `R_TRANSLATIONS` is GNU R 4.6.2's fatal start-up error
+/// (main.c's BindDomain: `Rasprintf_malloc` of "" fails): "Fatal error:
+/// allocation failure in BindDomain" on stdout, status 2 (R_Suicide).
+#[test]
+fn an_empty_r_translations_is_fatal() {
+    let (out, err, status) = run_env(&std::env::temp_dir(), &["--vanilla", "-e", "1"], None, &[("R_TRANSLATIONS", "")]);
+    assert_eq!(String::from_utf8_lossy(&out), "Fatal error: allocation failure in BindDomain\n");
+    assert_eq!(String::from_utf8_lossy(&err), "");
+    assert_eq!(status, 2);
 }
