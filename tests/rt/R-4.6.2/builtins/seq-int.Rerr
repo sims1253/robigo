@@ -1,0 +1,5 @@
+Warning message:
+In print(x) : imaginary parts discarded in coercion
+Error in seq.int(0.95, -2.999999999, 2L) : wrong sign in 'by' argument
+Calls: p -> print
+Execution halted
