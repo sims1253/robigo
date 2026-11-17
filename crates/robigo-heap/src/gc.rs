@@ -1217,18 +1217,41 @@ impl Core {
     /// A node (cons cell shape): LISTSXP, LANGSXP, CLOSXP, ENVSXP, ...
     /// Never collects.
     ///
+    /// D13's nT has two node sizes ([`node::size`]): this picks the
+    /// allocator of `t`'s, which a constant `t` folds to a direct call, so
+    /// only a call with a type known at run time tests it.
+    ///
     /// # Safety
     /// `car`, `cdr` and `tag` must be live objects of this heap: they are
     /// reference counted here and traced by every later collection. Only
     /// for EXTPTRSXP, BUILTINSXP and SPECIALSXP may `car` be any word.
-    #[inline]
+    #[inline(always)]
     pub unsafe fn alloc_node(&mut self, t: u8, car: Sexp, cdr: Sexp, tag: Sexp) -> Result<Sexp, NeedGc> {
-        // D13's nT has two node sizes: one test of the type, and each arm
-        // allocates a constant size, whose class folds as n48's one size
-        // does (`node::size(t)` read at run time costs a class lookup)
-        let aux = node::has_aux(t);
-        let x = if aux { self.alloc_object(t, 1, node::SIZE, 0)? } else { self.alloc_object(t, 1, node::OFF_AUX, 0)? };
-        debug_assert_eq!(node::size(t), if aux { node::SIZE } else { node::OFF_AUX });
+        // SAFETY: the caller's contract; each allocates `t`'s size.
+        unsafe {
+            if node::has_aux(t) {
+                self.alloc_node_sized::<{ node::SIZE }>(t, car, cdr, tag)
+            } else {
+                self.alloc_node_sized::<{ node::OFF_AUX }>(t, car, cdr, tag)
+            }
+        }
+    }
+
+    /// [`Core::alloc_node`] of a type whose node is `SIZE` bytes: with the
+    /// 4th word ([`node::OFF_AUX`]) when it is a full node's.
+    ///
+    /// # Safety
+    /// As for [`Core::alloc_node`], and `SIZE` is `node::size(t)`.
+    #[inline(never)]
+    unsafe fn alloc_node_sized<const SIZE: usize>(
+        &mut self,
+        t: u8,
+        car: Sexp,
+        cdr: Sexp,
+        tag: Sexp,
+    ) -> Result<Sexp, NeedGc> {
+        debug_assert_eq!(node::size(t), SIZE);
+        let x = self.alloc_object(t, 1, SIZE, 0)?;
         // read before the field stores, which the compiler cannot tell from
         // a store to `self.nil`: one load, shared with the header's
         let nil = self.nil;
@@ -1239,7 +1262,7 @@ impl Core {
             x.set_car_raw(car);
             x.set_cdr_raw(cdr);
             x.set_tag_raw(tag);
-            if aux {
+            if SIZE > node::OFF_AUX {
                 x.set_sexp_at(node::OFF_AUX, nil);
             }
             // GNU R's constructors count the children they store; an
