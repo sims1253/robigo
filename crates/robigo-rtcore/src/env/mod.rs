@@ -1803,7 +1803,13 @@ impl Cx {
         unsafe {
             assert!(s.typ() == SYMSXP, "robigo: SET_SYMVALUE of a non-symbol");
             flush_global_cache(iso, s);
-            Loc::base(s).store(iso, v);
+            let l = Loc::base(s);
+            // base's version, as a function binding's change bumps it in
+            // `set_binding_value` (the S3 method memo reads it)
+            if l.holds_fn_like(iso) || fn_like(iso, v) {
+                bump(iso, iso.envs().base);
+            }
+            l.store(iso, v);
         }
     }
 

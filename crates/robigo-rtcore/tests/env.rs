@@ -698,6 +698,32 @@ fn versions_track_function_bindings() {
     });
 }
 
+/// `SET_SYMVALUE` (`Cx::set_symvalue`, past base's locks) moves base's
+/// version as an assignment does when a function is stored or replaced, so
+/// a memo of a base lookup (S3's) sees a primitive defined after the boot.
+#[test]
+fn set_symvalue_tracks_function_bindings() {
+    let mut iso = iso();
+    let cx = iso.cx();
+    cx.scope(|cx, s| {
+        let base = s.root(cx, cx.base_env());
+        let out = s.out(cx);
+        let bx = out.root();
+        cx.env_version_box(base, out).unwrap();
+        let (v0, epoch0) = (cx.box_version(bx.bind(cx)), cx.search_epoch());
+        let sym = cx.install_rooted(s, b"robigo.symvalue.test").unwrap();
+        let one = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_copy(&[1.0f64])?.finish().into()))).unwrap();
+        cx.set_symvalue(sym, one);
+        assert_eq!((cx.box_version(bx.bind(cx)), cx.search_epoch()), (v0, epoch0), "a plain value");
+        let f = s.root(cx, closure(cx, cx.nil()));
+        cx.set_symvalue(sym, f);
+        assert_eq!(cx.box_version(bx.bind(cx)), v0 + 1, "a function");
+        assert!(cx.search_epoch() > epoch0, "a base function moves the search epoch");
+        cx.set_symvalue(sym, one);
+        assert_eq!(cx.box_version(bx.bind(cx)), v0 + 2, "a function replaced");
+    });
+}
+
 /// An attached frame (a global frame between the global environment and
 /// base) is found through the global cache, which forgets its symbols when
 /// it is attached and detached.
