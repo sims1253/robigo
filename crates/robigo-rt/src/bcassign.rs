@@ -451,8 +451,14 @@ pub(crate) fn dollar(
             return Ok(());
         }
     }
-    let name = s.root(cx, member.bind(cx).as_sym().unwrap().name().as_ref());
-    robigo_rtbuiltins::subset::subset3_dflt(cx, x, name, call, out)?;
+    let name = member.bind(cx).as_sym().unwrap().name();
+    if x.bind(cx).sexptype() == ENVSXP && name.is_ascii() {
+        // R_subset3_dflt's lookup of installTrChar(name), the symbol itself
+        robigo_rtbuiltins::subset::env_value_sym(cx, x, member, out)?;
+    } else {
+        let name = s.root(cx, name.as_ref());
+        robigo_rtbuiltins::subset::subset3_dflt(cx, x, name, call, out)?;
+    }
     cx.set_visible(true);
     Ok(())
 }

@@ -2687,6 +2687,21 @@ impl Cx {
         // SAFETY: a live INTSXP of one element.
         unsafe { *(b.sexp().std_data() as *const u32) }
     }
+
+    /// The version `env`'s box holds now, None while it has none. An
+    /// environment keeps the box it is given for good, so a memo that
+    /// holds the environment may keep the version without the box.
+    #[inline]
+    pub fn env_version(&self, env: Ref<'_>) -> Option<u32> {
+        let r = expect_env(env);
+        let nil = self.iso().nil;
+        // SAFETY: a live environment: +40 is its box, an INTSXP of one
+        // element, or R_NilValue.
+        unsafe {
+            let b = r.aux();
+            (b != nil).then(|| *(b.std_data() as *const u32))
+        }
+    }
 }
 
 /// `env.profile()`'s numbers (`R_HashProfile`).

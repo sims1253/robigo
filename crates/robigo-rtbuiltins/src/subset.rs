@@ -846,6 +846,15 @@ fn subset_env(cx: &mut Cx, call: Root<'_>, env: Root<'_>, sub: Root<'_>, nsubs: 
 pub fn env_value(cx: &mut Cx, env: Root<'_>, name: &[u8], out: Out<'_>) -> RResult<()> {
     cx.scope(|cx, s| {
         let sym = install_sym(cx, s, name)?;
+        env_value_sym(cx, env, sym, out)
+    })
+}
+
+/// [`env_value`] of the symbol `sym`. `R_subset3_dflt` of an environment
+/// and an ASCII symbol's name is this: `installTrChar(PRINTNAME(sym))` is
+/// `sym` itself.
+pub fn env_value_sym(cx: &mut Cx, env: Root<'_>, sym: Root<'_>, out: Out<'_>) -> RResult<()> {
+    cx.scope(|cx, s| {
         let v = s.out(cx);
         let vr = v.root();
         cx.find_var_in_frame3(env, sym, true, v)?;
