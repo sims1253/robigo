@@ -1,0 +1,4 @@
+global error handler: unexpected ')' in "x <- )" 
+global error handler: second 
+after the second
+global error handler: unexpected end of input 

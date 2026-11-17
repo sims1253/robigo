@@ -6,7 +6,7 @@
 //! packages. Exit status 0, or 1 after "Execution halted"; 2 for a usage or
 //! start-up failure.
 
-use robigo_rt::repl::run_console;
+use robigo_rt::repl::run_session;
 use robigo_rtcore::OwnedIsolate;
 
 const USAGE: &str = "Usage: robigo-rt [--vanilla] [options] file [args]\n   or: robigo-rt [--vanilla] [options] -e expr [-e expr2 ...] [args]\n";
@@ -95,7 +95,7 @@ fn run(args: Vec<std::ffi::OsString>) -> i32 {
     cx.arm_fail_alloc();
     // end_Rmainloop's R_CleanUp(SA_DEFAULT, 0, 1) runs .Last; after an
     // error, check_session_exit's R_CleanUp(SA_NOSAVE, 1, 0) does not
-    let ok = run_console(cx, &src) && robigo_rt::repl::dot_last(cx);
+    let ok = run_session(cx, &src);
     if !ok {
         // R: main.c:check_session_exit
         cx.reprintf(b"Execution halted\n");
