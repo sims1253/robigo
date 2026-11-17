@@ -512,3 +512,390 @@ pub fn do_listfiles(
         Ok(v.finish().into())
     })
 }
+
+/// The character vector argument `x` (`isString`), its length, or
+/// `msg`'s error.
+fn string_arg(cx: &mut Cx, x: robigo_rtcore::Root<'_>, msg: &str) -> RResult<usize> {
+    match x.bind(cx).view() {
+        robigo_rtcore::View::Str(v) => Ok(v.len()),
+        _ => Err(cx.error(msg)),
+    }
+}
+
+/// Whether element `i` of the character vector `x` is NA.
+fn is_na_elt(cx: &Cx, x: robigo_rtcore::Root<'_>, i: usize) -> bool {
+    x.bind(cx).as_vector::<Char<'_>>().unwrap().get(i) == cx.na_string()
+}
+
+/// `RC_fopen(fn, mode, TRUE)`'s file name: element `i` translated
+/// (`translateCharFP`, an error if it cannot be) and expanded; `None` for
+/// NA.
+// R: sysutils.c:RC_fopen
+fn rc_fopen_name(cx: &mut Cx, x: robigo_rtcore::Root<'_>, i: usize) -> RResult<Option<Vec<u8>>> {
+    let name = crate::util::translate_fp(cx, x, i)?;
+    if is_na_elt(cx, x, i) {
+        return Ok(None);
+    }
+    crate::connections::r_expand_file_name(cx, &name).map(Some)
+}
+
+fn os(p: &[u8]) -> &std::ffi::OsStr {
+    <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(p)
+}
+
+/// `RC_fopen_notdir(fn, "ab" or "rb", TRUE)`: the file opened for
+/// appending (created if need be) or reading; `None` when that fails or it
+/// is a directory.
+// R: platform.c:RC_fopen_notdir
+fn fopen_notdir(cx: &mut Cx, x: robigo_rtcore::Root<'_>, i: usize, append: bool) -> RResult<Option<std::fs::File>> {
+    let Some(name) = rc_fopen_name(cx, x, i)? else { return Ok(None) };
+    let f = if append {
+        std::fs::OpenOptions::new().append(true).create(true).open(os(&name))
+    } else {
+        std::fs::File::open(os(&name))
+    };
+    Ok(f.ok().filter(|f| !f.metadata().is_ok_and(|m| m.is_dir())))
+}
+
+/// Copy `from` to the end of `to`: GNU R's 128 KiB `fread`/`fwrite` loop,
+/// false on a write error.
+fn append_copy(from: &mut std::fs::File, to: &mut std::fs::File) -> bool {
+    use std::io::{Read, Write};
+    let mut buf = vec![0u8; 128 * 1024];
+    loop {
+        // fread: a short count at the end or on an error, alike
+        let mut got = 0;
+        while got < buf.len() {
+            match from.read(&mut buf[got..]) {
+                Ok(0) => break,
+                Ok(k) => got += k,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+        if to.write_all(&buf[..got]).is_err() {
+            return false;
+        }
+        if got < buf.len() {
+            return true;
+        }
+    }
+}
+
+/// `.Internal(file.append(file1, file2))`: each `file2` appended to its
+/// `file1` (recycled), TRUE where that worked.
+// R: platform.c:do_fileappend, R_AppendFile
+pub fn do_fileappend(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: robigo_rtcore::Root<'_>,
+    out: robigo_rtcore::Out<'_>,
+) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "file.append", 2, true)?;
+    let (f1, f2) = (args.root(0), args.root(1));
+    let n1 = string_arg(cx, f1, "invalid 'file1' argument")?;
+    let n2 = string_arg(cx, f2, "invalid 'file2' argument")?;
+    if n1 < 1 {
+        return Err(cx.error("nothing to append to"));
+    }
+    let n = n1.max(n2);
+    let mut ans = vec![robigo_rtcore::Lgl(0); if n2 < 1 { 0 } else { n }];
+    if n2 >= 1 {
+        if n1 == 1 {
+            // the common case: file1 opened once
+            if !is_na_elt(cx, f1, 0)
+                && let Some(mut fp1) = fopen_notdir(cx, f1, 0, true)?
+            {
+                for (i, a) in ans.iter_mut().enumerate() {
+                    if is_na_elt(cx, f2, i) {
+                        continue;
+                    }
+                    let Some(mut fp2) = fopen_notdir(cx, f2, i, false)? else { continue };
+                    let ok = append_copy(&mut fp2, &mut fp1);
+                    if !ok {
+                        cx.warning("write error during file append")?;
+                    }
+                    *a = robigo_rtcore::Lgl(ok as i32);
+                }
+            }
+        } else {
+            for (i, a) in ans.iter_mut().enumerate() {
+                // (GNU R tests the elements against R_NilValue, which they
+                // never are: an NA name is RC_fopen's NULL)
+                // R: platform.c:R_AppendFile
+                let Some(mut fp1) = fopen_notdir(cx, f1, i % n1, true)? else { continue };
+                let Some(mut fp2) = fopen_notdir(cx, f2, i % n2, false)? else { continue };
+                let ok = append_copy(&mut fp2, &mut fp1);
+                if !ok {
+                    cx.warning("write error during file append")?;
+                }
+                *a = robigo_rtcore::Lgl(ok as i32);
+            }
+        }
+    }
+    cx.build(out, |cx| Ok(cx.alloc_copy(&ans)?.finish().into()))
+}
+
+/// `.Internal(file.create(file, showWarnings))`: each file created (or
+/// truncated), TRUE where that worked; with `showWarnings`, GNU R's warning
+/// for each that did not.
+// R: platform.c:do_filecreate
+pub fn do_filecreate(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: robigo_rtcore::Root<'_>,
+    out: robigo_rtcore::Out<'_>,
+) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "file.create", 2, true)?;
+    let fn_ = args.root(0);
+    let n = string_arg(cx, fn_, "invalid filename argument")?;
+    let show = robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 1));
+    let show = show != i32::MIN && show != 0;
+    let mut ans = Vec::with_capacity(n);
+    for i in 0..n {
+        if is_na_elt(cx, fn_, i) {
+            ans.push(robigo_rtcore::Lgl(0));
+            continue;
+        }
+        let name = rc_fopen_name(cx, fn_, i)?.unwrap_or_default();
+        // fopen(name, "w")
+        match std::fs::File::create(os(&name)) {
+            Ok(_) => ans.push(robigo_rtcore::Lgl(1)),
+            Err(e) => {
+                if show {
+                    // translateChar(STRING_ELT(fn, i)): the name as given
+                    let shown = {
+                        let c = fn_.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
+                        robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(c), cx.locale())
+                            .map(|b| String::from_utf8_lossy(&b).into_owned())
+                            .unwrap_or_else(|_| String::from_utf8_lossy(c.bytes()).into_owned())
+                    };
+                    let msg = format!("cannot create file '{shown}', reason '{}'", crate::connections::strerror(&e));
+                    cx.warning(&msg)?;
+                }
+                ans.push(robigo_rtcore::Lgl(0));
+            }
+        }
+    }
+    cx.build(out, |cx| Ok(cx.alloc_copy(&ans)?.finish().into()))
+}
+
+/// `.Internal(path.expand(path))`: each path with a leading `~` or
+/// `~user` expanded; NA and a name iconv cannot translate (after its
+/// warning) stay as they are. A translated path is marked as its input
+/// was, when that is a known encoding (`markKnown`).
+// R: platform.c:do_pathexpand, util.c:markKnown
+pub fn do_pathexpand(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: robigo_rtcore::Root<'_>,
+    out: robigo_rtcore::Out<'_>,
+) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "path.expand", 1, true)?;
+    let fn_ = args.root(0);
+    let n = string_arg(cx, fn_, "invalid 'path' argument")?;
+    // None: the element as given
+    let mut res: Vec<Option<(Vec<u8>, Encoding)>> = Vec::with_capacity(n);
+    for i in 0..n {
+        if is_na_elt(cx, fn_, i) {
+            res.push(None);
+            continue;
+        }
+        let Some(p) = translate_fp2(cx, fn_, i)? else {
+            res.push(None);
+            continue;
+        };
+        let e = crate::connections::r_expand_file_name(cx, &p)?;
+        // markKnown(s, ref): UTF-8 when ref is marked and the locale is
+        // UTF-8 (a C locale is neither UTF-8 nor latin1: native)
+        let known =
+            matches!(fn_.bind(cx).as_vector::<Char<'_>>().unwrap().get(i).enc(), Encoding::Utf8 | Encoding::Latin1);
+        let enc = if known && cx.locale().utf8 { Encoding::Utf8 } else { Encoding::Native };
+        res.push(Some((e, enc)));
+    }
+    cx.build(out, |cx| {
+        let src = fn_.bind(cx).as_vector::<Char<'_>>().unwrap();
+        let mut v = cx.alloc_vector::<Char<'_>>(n)?;
+        for (i, r) in res.iter().enumerate() {
+            v.set(
+                i,
+                match r {
+                    Some((b, enc)) => cx.mk_char(b, *enc)?,
+                    None => src.get(i),
+                },
+            );
+        }
+        Ok(v.finish().into())
+    })
+}
+
+/// `.Internal(Sys.chmod(paths, mode, use_umask))`: each path's permission
+/// bits set to its mode (recycled; NA is 0777), masked by the process's
+/// umask when `use_umask`; TRUE where `chmod` worked.
+// R: platform.c:do_syschmod
+pub fn do_syschmod(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: robigo_rtcore::Root<'_>,
+    out: robigo_rtcore::Out<'_>,
+) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "Sys.chmod", 3, true)?;
+    let paths = args.root(0);
+    let n = string_arg(cx, paths, "invalid 'paths' argument")?;
+    cx.scope(|cx, s| {
+        let smode = s.capture(cx, |cx, o| {
+            robigo_rtbuiltins::coerce::vector::coerce_vector(cx, args.root(1), robigo_heap::types::INTSXP, o)
+        })?;
+        if smode.bind(cx).is_package_altrep() {
+            return Err(robigo_rtbuiltins::util::not_yet(cx, Some(call), "Sys.chmod() of a package ALTREP 'mode'"));
+        }
+        // INTEGER(smode): a compact sequence expanded
+        cx.materialize(smode)?;
+        let modes: Vec<i32> = smode.bind(cx).as_ints().unwrap().to_vec();
+        let m = modes.len();
+        if m == 0 && n > 0 {
+            return Err(cx.error("'mode' must be of length at least one"));
+        }
+        let use_umask = robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 2));
+        if use_umask == i32::MIN {
+            return Err(cx.error("invalid 'use_umask' argument"));
+        }
+        let um = robigo_rtcore::clib::umask_get();
+        let mut ans = Vec::with_capacity(n);
+        for i in 0..n {
+            // (mode_t) modes[i % m]; NA_INTEGER compares equal after the
+            // conversion
+            let mut mode = modes[i % m] as u32;
+            if modes[i % m] == i32::MIN {
+                mode = 0o777;
+            }
+            if use_umask != 0 {
+                mode &= !um;
+            }
+            let ok = if is_na_elt(cx, paths, i) {
+                false
+            } else {
+                let name = crate::util::translate_fp(cx, paths, i)?;
+                let p = crate::connections::r_expand_file_name(cx, &name)?;
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(os(&p), std::fs::Permissions::from_mode(mode)).is_ok()
+            };
+            ans.push(robigo_rtcore::Lgl(ok as i32));
+        }
+        cx.build(out, |cx| Ok(cx.alloc_copy(&ans)?.finish().into()))
+    })
+}
+
+/// `.Internal(file.info(fn, extra_cols))`: a list of `size`, `isdir`,
+/// `mode` (class "octmode"), `mtime`, `ctime`, `atime` (seconds with their
+/// nanoseconds), and with `extra_cols` `uid`, `gid`, `uname`, `grname`;
+/// NA where `stat` fails.
+// R: platform.c:do_fileinfo (Unix, UNIX_EXTRAS, STAT_TIMESPEC)
+pub fn do_fileinfo(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: robigo_rtcore::Root<'_>,
+    out: robigo_rtcore::Out<'_>,
+) -> RResult<()> {
+    use std::os::unix::fs::MetadataExt;
+    crate::prims::check_arity(cx, call, args.len(), "file.info", 2, true)?;
+    let fn_ = args.root(0);
+    let n = string_arg(cx, fn_, "invalid filename argument")?;
+    let extras = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(1))?;
+    if extras == i32::MIN {
+        return Err(cx.error("invalid 'extra_cols' argument"));
+    }
+    let extras = extras != 0;
+    const NA_INT: i32 = i32::MIN;
+    let na_real = robigo_text::NA_REAL;
+    let mut size = vec![na_real; n];
+    let mut isdir = vec![robigo_rtcore::Lgl(NA_INT); n];
+    let mut mode = vec![NA_INT; n];
+    let (mut mtime, mut ctime, mut atime) = (vec![na_real; n], vec![na_real; n], vec![na_real; n]);
+    let (mut uid, mut gid) = (vec![NA_INT; n], vec![NA_INT; n]);
+    // None: NA
+    let mut uname: Vec<Option<Vec<u8>>> = vec![None; n];
+    let mut grname: Vec<Option<Vec<u8>>> = vec![None; n];
+    for i in 0..n {
+        let p = translate_fp2(cx, fn_, i)?;
+        let efn = match p {
+            Some(p) => Some(crate::connections::r_expand_file_name(cx, &p)?),
+            None => None,
+        };
+        // stat: the target, not the link
+        let md = match &efn {
+            Some(e) if !is_na_elt(cx, fn_, i) => std::fs::metadata(os(e)).ok(),
+            _ => None,
+        };
+        let Some(md) = md else { continue };
+        size[i] = md.size() as f64;
+        // (sb.st_mode & S_IFDIR) > 0: a socket's type bits include it
+        isdir[i] = robigo_rtcore::Lgl((md.mode() & 0o040000 != 0) as i32);
+        mode[i] = (md.mode() & 0o7777) as i32;
+        mtime[i] = md.mtime() as f64 + 1e-9 * md.mtime_nsec() as f64;
+        ctime[i] = md.ctime() as f64 + 1e-9 * md.ctime_nsec() as f64;
+        atime[i] = md.atime() as f64 + 1e-9 * md.atime_nsec() as f64;
+        if extras {
+            uid[i] = md.uid() as i32;
+            gid[i] = md.gid() as i32;
+            // the previous element's name for the same id (PR#15804)
+            uname[i] = if i > 0 && uid[i - 1] == uid[i] {
+                uname[i - 1].clone()
+            } else {
+                robigo_rtcore::clib::passwd_name(md.uid())
+            };
+            grname[i] = if i > 0 && gid[i - 1] == gid[i] {
+                grname[i - 1].clone()
+            } else {
+                robigo_rtcore::clib::group_name(md.gid())
+            };
+        }
+    }
+    cx.build(out, |cx| {
+        let ncols = if extras { 10 } else { 6 };
+        let mut ans = cx.alloc_vector::<robigo_rtcore::Ref<'_>>(ncols)?;
+        let mut names = cx.alloc_vector::<Char<'_>>(ncols)?;
+        let colnames: [&[u8]; 10] =
+            [b"size", b"isdir", b"mode", b"mtime", b"ctime", b"atime", b"uid", b"gid", b"uname", b"grname"];
+        for (i, nm) in colnames.iter().take(ncols).enumerate() {
+            names.set(i, cx.mk_char(nm, Encoding::Native)?);
+        }
+        ans.set(0, cx.alloc_copy(&size)?.finish().into());
+        ans.set(1, cx.alloc_copy(&isdir)?.finish().into());
+        let mut m = cx.alloc_copy(&mode)?;
+        let mut class = cx.alloc_vector::<Char<'_>>(1)?;
+        class.set(0, cx.mk_char(b"octmode", Encoding::Native)?);
+        let mut a = robigo_rtbuiltins::attrib::Attrs::new();
+        a.set_class(cx.sym(robigo_rtcore::RSym::Class), Some(class.finish().into()));
+        a.apply(cx, &mut m)?;
+        ans.set(2, m.finish().into());
+        ans.set(3, cx.alloc_copy(&mtime)?.finish().into());
+        ans.set(4, cx.alloc_copy(&ctime)?.finish().into());
+        ans.set(5, cx.alloc_copy(&atime)?.finish().into());
+        if extras {
+            ans.set(6, cx.alloc_copy(&uid)?.finish().into());
+            ans.set(7, cx.alloc_copy(&gid)?.finish().into());
+            for (k, col) in [(8, &uname), (9, &grname)] {
+                let mut v = cx.alloc_vector::<Char<'_>>(n)?;
+                for (i, e) in col.iter().enumerate() {
+                    v.set(
+                        i,
+                        match e {
+                            Some(b) => cx.mk_char(b, Encoding::Native)?,
+                            None => cx.na_string(),
+                        },
+                    );
+                }
+                ans.set(k, v.finish().into());
+            }
+        }
+        let attr = cx.cons_tagged(names.finish().into(), cx.nil(), cx.install(b"names")?)?;
+        ans.set_attrib(attr);
+        Ok(ans.finish().into())
+    })
+}
