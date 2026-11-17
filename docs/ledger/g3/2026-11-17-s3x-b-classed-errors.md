@@ -83,3 +83,28 @@
 
   Two `tests/r` cases now pass and are ratcheted:
   `conditions/c-stack-overflow` and `basics/nested-inline-calls`.
+- #773's two deferred OCR lows are here: `set_global_handlers` asserts
+  through `handlers_only_global` instead of a second copy of its check
+  (r4599147222), and `toplevel_with` takes a `TopLevel` kind
+  (`ExecNative`, `Exec`, `Repl`) instead of two adjacent bools
+  (r4599147253).
+- Measurements (WSL2 workstation, Ryzen 9 5900X, rustc 1.100.0; release
+  `robigo-rt` from `~/.cache/cargo-target-s1`, at `38b18679`, main
+  `dce8a3eb` merged in):
+  - `scripts/perf.py rt-bars` against main's binary at `dce8a3eb` reports
+    0 failures, with every row within ±0.16% (s3 −0.05%, e7-match +0.01%
+    as the median over heap shifts). Peak RSS is within 0.6% of main's on
+    the three programs (`data/2026-11-17-s3x-b-classed-errors/rt-bars.md`).
+- Proof, at `38b18679`:
+  - `scripts/rt-ci.py` passes every step:
+    - conformance 498/505. The 7 failures fail on main too, none is
+      ratcheted;
+    - `ROBIGO_NO_INPLACE` 492/499 and `ROBIGO_MATERIALIZE` 498/505;
+    - gctorture, and `ROBIGO_GC_MOVE` with gctorture: 497/504;
+    - quarantine and the small vector limit: 498/505;
+    - stress, overshoot, the pin report and injected failures pass.
+  - Debug builds pass the tests of `robigo-rtcore`, `robigo-rt`,
+    `robigo-rtbuiltins` and `robigo-rtapi`.
+  - Miri passes on `robigo-rtcore`.
+  - `scripts/base-subset.sh --check` passes.
+  - `scripts/lint.sh` and `cargo fmt --check` are clean.
