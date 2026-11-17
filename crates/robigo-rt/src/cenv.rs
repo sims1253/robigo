@@ -84,8 +84,10 @@ pub struct InlineInfo {
     pub guard: bool,
 }
 
-/// cmp.R's compiler environment.
-pub struct Cenv {
+/// cmp.R's compiler environment. It holds raw environments and symbols,
+/// so it is branded with the `&'g Cx` it was made under: no collection
+/// (which needs `&mut Cx`) can happen while it lives (#738).
+pub struct Cenv<'g> {
     /// The frames of the code being compiled (the function, the functions
     /// it makes, `local()`'s): formals and locals, innermost last.
     units: Vec<Vec<Sexp>>,
@@ -97,9 +99,10 @@ pub struct Cenv {
     /// The code is base's installed byte code: compiled when base was
     /// built, with base's shipped definitions ([`Cenv::fun_def`]).
     installed: bool,
+    _cx: std::marker::PhantomData<&'g Cx>,
 }
 
-impl Cenv {
+impl<'g> Cenv<'g> {
     /// The compiler environment of code that runs in `env`
     /// (`makeCenv(env)`, `frameTypes`), or [`Need::Fail`] for cmp.R's
     /// errors ("namespace found within local environments", ...).
@@ -109,7 +112,7 @@ impl Cenv {
     /// # Safety
     /// `env` is a live environment of `cx`'s isolate.
     // R: cmp.R:makeCenv, frameTypes
-    pub unsafe fn of_env(cx: &Cx, env: Sexp, installed: bool) -> Result<Cenv, Need> {
+    pub unsafe fn of_env(cx: &'g Cx, env: Sexp, installed: bool) -> Result<Cenv<'g>, Need> {
         let empty = cx.empty_env().sexp();
         let global = cx.global_env().sexp();
         let is_ns = |e: Sexp| {
@@ -155,7 +158,7 @@ impl Cenv {
                 e = robigo_heap::env::enclos(e);
             }
         }
-        Ok(Cenv { units: Vec::new(), top_extra: Vec::new(), chain, installed })
+        Ok(Cenv { units: Vec::new(), top_extra: Vec::new(), chain, installed, _cx: std::marker::PhantomData })
     }
 
     /// The compiler environment of a promise's code that compiled code
@@ -169,7 +172,7 @@ impl Cenv {
     ///
     /// # Safety
     /// `rho` is a live environment of `cx`'s isolate.
-    pub unsafe fn of_promise(cx: &Cx, rho: Sexp) -> Result<Cenv, Need> {
+    pub unsafe fn of_promise(cx: &'g Cx, rho: Sexp) -> Result<Cenv<'g>, Need> {
         // SAFETY: the caller's contract.
         unsafe {
             if rho.has_flag(flags::SLOTS) {
@@ -783,7 +786,7 @@ pub(crate) unsafe fn assigned_var(cx: &Cx, e: Sexp) -> Result<Sexp, Need> {
 /// # Safety
 /// `e` is live.
 // R: cmp.R:mayCallBrowser, mayCallBrowserList
-pub unsafe fn may_call_browser(cx: &Cx, st: &RtState, cenv: &Cenv, e: Sexp) -> bool {
+pub unsafe fn may_call_browser(cx: &Cx, st: &RtState, cenv: &Cenv<'_>, e: Sexp) -> bool {
     let missing = cx.missing_arg().sexp();
     // SAFETY: the caller's contract.
     unsafe {

@@ -105,7 +105,7 @@ pub fn compile(cx: &mut Cx, expr: Root<'_>, rho: Root<'_>, profile: Profile) -> 
                 let st = prims::state(cx);
                 let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
                 let b = c.root(e)?;
-                let code = crate::code::build(cx, &b, e, None)?;
+                let code = crate::code::build(cx, &verified(b), e, None)?;
                 // the code runs in `env`'s frames: their shape's slot
                 // indices, for it and the arguments compiled with it
                 if env.typ() == ENVSXP && env.has_flag(robigo_heap::flags::SLOTS) {
@@ -131,7 +131,7 @@ pub fn compile(cx: &mut Cx, expr: Root<'_>, rho: Root<'_>, profile: Profile) -> 
             let st = prims::state(cx);
             let mut c = Comp::new(cx, st, Profile::Eval, None);
             let b = c.root(e)?;
-            Ok(crate::code::build(cx, &b, e, None)?)
+            Ok(crate::code::build(cx, &verified(b), e, None)?)
         }
     })
     .map(|c| c.expect("robigo: the Eval profile always compiles"))
@@ -152,7 +152,7 @@ pub unsafe fn compile_closure(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
             let st = prims::state(cx);
             let mut c = Comp::new(cx, st, Profile::Eval, None);
             let b = c.root(body)?;
-            Ok(crate::code::build(cx, &b, body, Some(formals))?)
+            Ok(crate::code::build(cx, &verified(b), body, Some(formals))?)
         }
     })
     .map(|c| c.expect("robigo: the Eval profile always compiles"))
@@ -197,7 +197,7 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
             let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
             let mut b = c.root(body)?;
             c.add_unit_locals(&mut b);
-            let code = crate::code::build(cx, &b, body, Some(formals))?;
+            let code = crate::code::build(cx, &verified(b), body, Some(formals))?;
             index_arg_codes(cx, code, &c.arg_codes);
             Ok(code)
         }
@@ -211,7 +211,13 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
 ///
 /// # Safety
 /// `formals` (a pairlist) and `body` are live.
-unsafe fn function_context(cx: &Cx, st: &RtState, cenv: &mut Cenv, formals: Sexp, body: Sexp) -> Result<bool, Need> {
+unsafe fn function_context(
+    cx: &Cx,
+    st: &RtState,
+    cenv: &mut Cenv<'_>,
+    formals: Sexp,
+    body: Sexp,
+) -> Result<bool, Need> {
     // SAFETY: the caller's contract.
     unsafe {
         let forms = cenv::elements(cx, formals, false);
@@ -239,7 +245,7 @@ pub fn compile_top_loop(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RResult<O
             cenv.add_top_vars(locals);
             let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
             let b = c.root(e)?;
-            Ok(crate::code::build(cx, &b, e, None)?)
+            Ok(crate::code::build(cx, &verified(b), e, None)?)
         }
     })
 }
@@ -279,7 +285,7 @@ pub(crate) fn compile_special_with(
             i.b = dst;
             c.emit(i);
             let b = c.finish();
-            Ok(crate::code::build(cx, &b, call, None)?)
+            Ok(crate::code::build(cx, &verified(b), call, None)?)
         }
     })
     .map(|c| c.expect("robigo: the Eval profile always compiles"))
@@ -318,7 +324,7 @@ struct Comp<'g> {
     sites: u16,
     /// The `Bc` profile's compile environment (cmp.R's `cntxt$env`), whose
     /// decisions say what the code inlines; None under `Eval`.
-    bc: Option<Cenv>,
+    bc: Option<Cenv<'g>>,
     /// `Eval`: GNU R's evaluator protections at the entry of the `eval` of
     /// the expression being compiled, above the code object's root's
     /// (robigo_rtcore's ppacct): what `eval`'s `PROTECT(op)`, `evalList`'s
@@ -380,7 +386,7 @@ enum Known {
 }
 
 impl<'g> Comp<'g> {
-    fn new(cx: &'g Cx, st: &'g RtState, profile: Profile, bc: Option<Cenv>) -> Comp<'g> {
+    fn new(cx: &'g Cx, st: &'g RtState, profile: Profile, bc: Option<Cenv<'g>>) -> Comp<'g> {
         debug_assert_eq!(bc.is_some(), profile == Profile::Bc);
         Comp {
             cx,
@@ -1651,7 +1657,7 @@ impl<'g> Comp<'g> {
         let b = r?;
         // SAFETY: as above.
         unsafe {
-            let code = crate::code::build(self.cx, &b, a, None)?;
+            let code = crate::code::build(self.cx, &verified(b), a, None)?;
             crate::code::cache_on(a, code);
             // (its promises, and those of the arguments inside it, run in
             // this code's frame)
@@ -1716,7 +1722,7 @@ impl<'g> Comp<'g> {
         // SAFETY: as above; the constants are the source's, immortal or
         // made in this interval.
         unsafe {
-            let code = crate::code::build(self.cx, &b, body, Some(formals))?;
+            let code = crate::code::build(self.cx, &verified(b), body, Some(formals))?;
             index_arg_codes(self.cx, code, &sub.arg_codes);
             Ok(Some(code))
         }
@@ -2688,19 +2694,16 @@ unsafe fn mark_not_mutable(x: Sexp) {
 /// # Safety
 /// `x` is live.
 unsafe fn plain_scalar_const(x: Sexp) -> Option<()> {
+    // (its payload inline: C-owned EXTDATA vectors are loaded as constants,
+    // so `inline::scalar` reads `LdScalar`'s operand without the test)
     // SAFETY: the caller's contract.
-    unsafe {
-        let t = x.typ();
-        // (its payload inline: C-owned EXTDATA vectors are loaded as
-        // constants, so `inline::scalar` reads `LdScalar`'s operand without
-        // the test)
-        (matches!(t, REALSXP | INTSXP | LGLSXP)
-            && !x.is_altrep()
-            && !x.has_flag(robigo_heap::flags::EXTDATA)
-            && x.std_len() == 1
-            && x.attrib_raw().typ() == NILSXP)
-            .then_some(())
-    }
+    unsafe { crate::code::plain_scalar(x) }.then_some(())
+}
+
+/// `b` through [`crate::code::Verified`]'s gate, the one every code object
+/// passes (#738): a check that fails is a compiler bug.
+fn verified(b: Built) -> crate::code::Verified {
+    crate::code::Verified::new(b).unwrap_or_else(|e| panic!("{e}"))
 }
 
 /// `checkArity`'s message for a special (`crate::prims::arity_message`).
