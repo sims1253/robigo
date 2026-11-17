@@ -1929,11 +1929,11 @@ impl<'g> Comp<'g> {
             }
             DOTSERR => {
                 // `...` evaluated as a value (cmpSym): bcEval's error(),
-                // reported against the context's call; the value it never
+                // reported against the context's call (so no call of its
+                // own: R_NilValue fills the operand); the value it never
                 // pushes keeps the stack's shape for what follows
-                // SAFETY: the code's live constants.
-                let e = unsafe { t.expr_at(self.cx, i.at) }.unwrap_or_else(|| self.nil());
-                self.error_op(e, "'...' used in an incorrect context", false)?;
+                let nil = self.nil();
+                self.error_op(nil, "'...' used in an incorrect context", false)?;
                 self.push(t);
             }
             RETURNJMP => {
