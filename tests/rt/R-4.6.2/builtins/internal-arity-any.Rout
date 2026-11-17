@@ -30,4 +30,9 @@ ok
 <simpleError in gettext(NULL, "a", TRUE, 4): either 2 or 3 arguments are required>
 <simpleError in doTryCatch(return(expr), name, parentenv, handler): 1 argument passed to .Internal(Version) which requires 0>
 <simpleError in doTryCatch(return(expr), name, parentenv, handler): 1 argument passed to .Internal(R.home) which requires 0>
+[1] TRUE
+[1] FALSE
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): 1 argument passed to .Internal(is.unsorted) which requires 3>
+[1] 42
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): 1 argument passed to .Internal(as.vector) which requires 2>
 <simpleError in g(): 0 arguments passed to .Internal(paste0) which requires 3>

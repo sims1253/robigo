@@ -675,11 +675,23 @@ pub(crate) fn run_builtin(
 /// The `.Internal`s with a fixed arity in names.c whose C does not start
 /// with `checkArity`: their own messages (`nchar`'s "which requires 3 to
 /// 4", `gettext`'s, `identical`'s), another error first (`recordGraphics`,
-/// `munmap_file`) or extra arguments ignored (`internalsID`,
-/// `mem.maxNSize`, `mem.maxVSize`). Found by calling every fixed-arity
-/// `.Internal` of GNU R 4.6.2 with one argument too many.
-const OWN_ARITY_CHECK: &[&str] =
-    &["gettext", "identical", "internalsID", "mem.maxNSize", "mem.maxVSize", "munmap_file", "nchar", "recordGraphics"];
+/// `munmap_file`), extra arguments ignored (`internalsID`, `mem.maxNSize`,
+/// `mem.maxVSize`), a dispatch first (`as.vector`) or a short form
+/// accepted (`is.unsorted(x, strictly)`, `na.rm` inserted). Found by
+/// calling every fixed-arity `.Internal` of GNU R 4.6.2 with one argument
+/// too many, and by reading what each one's C does before `checkArity`.
+const OWN_ARITY_CHECK: &[&str] = &[
+    "as.vector",
+    "gettext",
+    "identical",
+    "internalsID",
+    "is.unsorted",
+    "mem.maxNSize",
+    "mem.maxVSize",
+    "munmap_file",
+    "nchar",
+    "recordGraphics",
+];
 
 /// `checkArity(op, args)`'s error for an `.Internal` (`error()`, against
 /// the context).
