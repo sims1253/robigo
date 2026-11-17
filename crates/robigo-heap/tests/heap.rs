@@ -405,13 +405,43 @@ fn symbols_are_unique_and_immortal() {
     assert_ne!(x, c.install(b"y").unwrap());
     unsafe {
         assert_eq!(x.typ(), SYMSXP);
-        assert_eq!(x.car().char_bytes(), b"x");
+        assert_eq!(x.sym_name_bytes(), b"x");
+        assert_eq!(c.printname(x).char_bytes(), b"x");
         assert!(x.has_flag(flags::IMMORTAL));
     }
     for _ in 0..3 {
         gc(&mut c, &mut ());
     }
-    unsafe { assert_eq!(c.install(b"x").unwrap().car().char_bytes(), b"x") };
+    let x = c.install(b"x").unwrap();
+    unsafe { assert_eq!(c.printname(x).char_bytes(), b"x") };
+}
+
+/// A symbol is the process's (H5): every heap installs the same one, with
+/// one id, and each has its own PRINTNAME, the CHARSXP its own cache gives
+/// for the name, so GNU R's one CHARSXP per string holds in each.
+#[test]
+fn heaps_share_symbols_and_keep_their_own_printnames() {
+    let mut a = core();
+    let mut b = core();
+    let in_b_first = b.mk_char(b"shared_symbol_h5", 0).unwrap();
+    let s = a.install(b"shared_symbol_h5").unwrap();
+    assert_eq!(b.install(b"shared_symbol_h5").unwrap(), s, "one symbol");
+    let other = std::thread::spawn(|| {
+        let mut c = Core::new();
+        let s = c.install(b"shared_symbol_h5").unwrap();
+        (s.addr(), unsafe { s.sym_id() })
+    })
+    .join()
+    .unwrap();
+    assert_eq!(other, (s.addr(), unsafe { s.sym_id() }), "on another thread too");
+    unsafe {
+        assert!(s.heap_id().is_shared());
+        let (pa, pb) = (a.printname(s), b.printname(s));
+        assert_ne!(pa, pb, "a PRINTNAME per heap");
+        assert_eq!(pa.heap_id(), a.id());
+        assert_eq!(pb, in_b_first, "b's own CHARSXP of the name, made before the symbol");
+        assert_eq!(a.mk_char(b"shared_symbol_h5", 0).unwrap(), pa, "a's cache gives a's");
+    }
 }
 
 /// Only the roots keep objects: no Rust frame is scanned, so what a
@@ -2207,22 +2237,25 @@ fn symbols_carry_an_id_and_gnu_rs_hash() {
     unsafe {
         assert_eq!(c.unbound().sym_id(), 0);
         assert_eq!(c.missing_arg().sym_id(), 1);
-        let n0 = c.symbol_count() as u32;
+        let n0 = c.symbol_count();
         let marker = c.new_marker_symbol().unwrap();
-        assert_eq!(marker.sym_id(), n0 + 2, "a marker takes the next id");
-        assert_eq!(c.symbol_count() as u32, n0, "a marker is not installed");
+        assert!(marker.sym_id() > 1, "a marker takes an id of its own");
+        assert_eq!(c.symbol_count(), n0, "a marker is not installed");
+        assert_eq!(c.printname(marker), c.blank_string());
+        // (ids are the process's: names no other test installs)
+        let x = c.install(b"id_test_x").unwrap();
+        let y = c.install(b"id_test_y").unwrap();
+        assert!(x.sym_id() > marker.sym_id(), "ids follow the order the arena made them in");
+        assert!(y.sym_id() > x.sym_id());
+        assert_eq!(c.install(b"id_test_x").unwrap().sym_id(), x.sym_id(), "an installed symbol keeps its id");
         let x = c.install(b"x").unwrap();
-        let y = c.install(b"y").unwrap();
-        assert_eq!(x.sym_id(), n0 + 3, "ids follow the installs and markers, after the two unnamed symbols");
-        assert_eq!(y.sym_id(), x.sym_id() + 1);
-        assert_eq!(c.install(b"x").unwrap().sym_id(), x.sym_id(), "an installed symbol keeps its id");
         // R_Newhashpjw("x") = 'x'; "foo" folds no nibble; a long name folds
         assert_eq!(x.sym_hash(), b'x' as u32);
         assert_eq!(robigo_heap::sym_hash(b"foo"), ((b'f' as u32) << 8) + ((b'o' as u32) << 4) + b'o' as u32);
         let long = c.install(b"a_rather_long_variable_name").unwrap();
         assert_eq!(long.sym_hash(), robigo_heap::sym_hash(b"a_rather_long_variable_name"));
         assert!(long.sym_hash() < 1 << 28);
-        let name = long.car();
+        let name = c.printname(long);
         assert_eq!(name.truelen(), long.sym_hash() as isize, "HASHVALUE on the PRINTNAME");
         assert_ne!(name.gp() & robigo_heap::gp::charsxp::HASHASH, 0, "HASHASH on the PRINTNAME");
         // the name is still found in the CHARSXP cache under its marks
@@ -2448,11 +2481,11 @@ fn every_object_carries_its_heaps_id() {
     let node = unsafe { a.alloc_node(LISTSXP, nil, nil, nil) }.unwrap();
     let s = a.mk_char(b"owner", 0).unwrap();
     let sym = a.install(b"sym").unwrap();
-    for x in [small, big, node, s, sym] {
+    for x in [small, big, node, s] {
         assert_eq!(unsafe { x.heap_id() }, a.id());
         assert_ne!(unsafe { x.heap_id() }, b.id());
     }
-    for x in [a.nil(), a.na_string(), a.blank_string(), a.unbound(), a.missing_arg()] {
+    for x in [a.nil(), a.na_string(), a.blank_string(), a.unbound(), a.missing_arg(), sym] {
         assert!(unsafe { x.heap_id() }.is_shared());
     }
     let mut b = b;

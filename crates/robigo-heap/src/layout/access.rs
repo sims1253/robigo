@@ -488,6 +488,11 @@ impl Sexp {
     /// an EXTPTRSXP or a primitive is not an object.
     #[inline(always)]
     pub unsafe fn car(self) -> Sexp {
+        // A symbol's CAR is the arena's copy of its name, which no R value
+        // may hold: its PRINTNAME is the isolate's (`Core::printname`), its
+        // bytes `sym_name_bytes`.
+        // SAFETY: the caller's contract (a live object).
+        debug_assert!(!unsafe { self.is_symbol() }, "robigo: the CAR of a symbol (its PRINTNAME is the isolate's)");
         // SAFETY: the caller's contract puts a field at `node::OFF_CAR`.
         unsafe { self.sexp_at(node::OFF_CAR) }
     }
@@ -553,6 +558,19 @@ impl Sexp {
         unsafe { self.sexp_at(node::OFF_AUX) }
     }
 
+    /// A symbol's name, as bytes: the arena's own copy (H5), which no R value
+    /// holds. A PRINTNAME (a CHARSXP R code may see) is an isolate's
+    /// (`Core::printname`).
+    ///
+    /// # Safety
+    /// `self` must be a live SYMSXP, and the bytes are read while it is (a
+    /// symbol is immortal).
+    #[inline(always)]
+    pub unsafe fn sym_name_bytes<'a>(self) -> &'a [u8] {
+        // SAFETY: the caller's contract: a symbol's CAR is a CHARSXP (the
+        // arena's name, or the shared "").
+        unsafe { self.sexp_at(sym::OFF_PRINTNAME).char_bytes() }
+    }
     /// A symbol's id ([`sym::OFF_ID`]): dense, in the order this heap made
     /// its symbols.
     ///
