@@ -84,6 +84,15 @@ pub struct InlineInfo {
     pub guard: bool,
 }
 
+/// `getInlineInfo`'s list: the frame the name is found in, whether its
+/// package is base (the only one with inline handlers), and the guard.
+#[derive(Clone, Copy)]
+struct Info {
+    frame: Sexp,
+    base: bool,
+    guard: bool,
+}
+
 /// cmp.R's compiler environment. It holds raw environments and symbols,
 /// so it is branded with the `&'g Cx` it was made under: no collection
 /// (which needs `&mut Cx`) can happen while it lives (#738).
@@ -280,7 +289,6 @@ impl<'g> Cenv<'g> {
     ///
     /// # Safety
     /// As for [`Cenv::find`].
-    // R: cmp.R:getInlineInfo (optimize = 2), packFrameName, nsName, findHomeNS
     pub unsafe fn inline_info(
         &self,
         cx: &Cx,
@@ -288,27 +296,54 @@ impl<'g> Cenv<'g> {
         sym: Sexp,
         guard_ok: bool,
     ) -> Result<Option<InlineInfo>, Need> {
+        // SAFETY: the caller's contract.
+        let info = unsafe { self.info(cx, st, sym, guard_ok) }?;
+        Ok(info.filter(|i| i.base).map(|i| InlineInfo { guard: i.guard }))
+    }
+
+    /// `isBaseVar(var, cntxt)`: `getInlineInfo` (no guard) has an answer,
+    /// and the frame it found `sym` in is base's namespace or environment
+    /// (not an imports frame, whatever the name's home). Its error is
+    /// isBaseVar's.
+    ///
+    /// # Safety
+    /// As for [`Cenv::find`].
+    // R: cmp.R:isBaseVar
+    pub unsafe fn is_base_var(&self, cx: &Cx, st: &RtState, sym: Sexp) -> Result<bool, Need> {
+        let (base_ns, base_env) = (cx.base_namespace().sexp(), cx.base_env().sexp());
+        // SAFETY: the caller's contract.
+        let info = unsafe { self.info(cx, st, sym, false) }?;
+        Ok(info.is_some_and(|i| i.frame == base_ns || i.frame == base_env))
+    }
+
+    /// `getInlineInfo(name, cntxt, guardOK)`, its list for
+    /// [`Cenv::inline_info`] and [`Cenv::is_base_var`].
+    ///
+    /// # Safety
+    /// As for [`Cenv::find`].
+    // R: cmp.R:getInlineInfo (optimize = 2), packFrameName, nsName, findHomeNS
+    unsafe fn info(&self, cx: &Cx, st: &RtState, sym: Sexp, guard_ok: bool) -> Result<Option<Info>, Need> {
         if sym == st.syms.standard_generic {
             return Ok(None);
         }
         let base_ns = cx.base_namespace().sexp();
         // SAFETY: the caller's contract.
         Ok(match unsafe { self.find(cx, sym) } {
-            Found::In(env, FType::Namespace) => {
+            Found::In(frame, FType::Namespace) => {
                 let is_ns = |e: Sexp| {
                     // SAFETY: a live environment of the chain.
                     crate::dispatch::is_namespace_env(cx, unsafe { Ref::from_sexp(e, cx) })
                 };
-                let home = if is_ns(env) {
+                let home = if is_ns(frame) {
                     // (findHomeNS of a namespace that binds the name: itself)
-                    Some(env)
+                    Some(frame)
                 } else {
                     // the import frame of the code's top environment, the
                     // first namespace frame
                     let top = self.chain.iter().find(|&&(_, t)| t == FType::Namespace).map(|&(e, _)| e);
                     match top {
                         // SAFETY: live environments of the chain.
-                        Some(top) if is_ns(top) && unsafe { robigo_heap::env::enclos(top) } == env => {
+                        Some(top) if is_ns(top) && unsafe { robigo_heap::env::enclos(top) } == frame => {
                             // SAFETY: as above.
                             unsafe { find_home_ns(cx, sym, top, 0) }
                         }
@@ -316,32 +351,22 @@ impl<'g> Cenv<'g> {
                     }
                 };
                 // (nsName's "" for none: no handler)
-                (home == Some(base_ns)).then_some(InlineInfo { guard: false })
+                Some(Info { frame, base: home == Some(base_ns), guard: false })
             }
-            Found::In(env, FType::Global) => {
-                let base = env == cx.base_env().sexp();
+            Found::In(frame, FType::Global) => {
+                // packFrameName(frame) == "base"
+                let base = frame == cx.base_env().sexp();
                 // SAFETY: a symbol.
                 if unsafe { is_language_fun(cx, sym) } {
-                    base.then_some(InlineInfo { guard: false })
+                    Some(Info { frame, base, guard: false })
                 } else if guard_ok && base {
-                    Some(InlineInfo { guard: true })
+                    Some(Info { frame, base, guard: true })
                 } else {
                     None
                 }
             }
             _ => None,
         })
-    }
-
-    /// `isBaseVar(var, cntxt)`: `getInlineInfo` (no guard) finds `sym` in
-    /// base's namespace or environment.
-    ///
-    /// # Safety
-    /// As for [`Cenv::find`].
-    // R: cmp.R:isBaseVar
-    pub unsafe fn is_base_var(&self, cx: &Cx, st: &RtState, sym: Sexp) -> bool {
-        // SAFETY: the caller's contract.
-        unsafe { self.inline_info(cx, st, sym, false) }.is_ok_and(|i| i.is_some())
     }
 
     /// `findFunDef(fun, cntxt)` for a base function `inline_info` inlines:
@@ -404,9 +429,13 @@ impl<'g> Cenv<'g> {
     // R: cmp.R:findLocalsList, findLocalsList1, findLocals1, getAssignedVar
     pub unsafe fn find_locals(&self, cx: &Cx, st: &RtState, elist: &[Sexp]) -> Result<Vec<Sexp>, Need> {
         let initial = [st.syms.expression, st.syms.local, st.syms.quote];
-        // SAFETY: symbols.
-        let shadowed: Vec<Sexp> =
-            initial.iter().copied().filter(|&n| !unsafe { self.is_base_var(cx, st, n) }).collect();
+        let mut shadowed: Vec<Sexp> = Vec::new();
+        for n in initial {
+            // SAFETY: symbols.
+            if !unsafe { self.is_base_var(cx, st, n) }? {
+                shadowed.push(n);
+            }
+        }
         let mut sf: Vec<Sexp> = initial.to_vec();
         loop {
             // SAFETY: the caller's contract.
@@ -935,26 +964,31 @@ pub(crate) unsafe fn assigned_var(cx: &Cx, e: Sexp) -> Result<Sexp, Need> {
 /// # Safety
 /// `e` is live.
 // R: cmp.R:mayCallBrowser, mayCallBrowserList
-pub unsafe fn may_call_browser(cx: &Cx, st: &RtState, cenv: &Cenv<'_>, e: Sexp) -> bool {
+pub unsafe fn may_call_browser(cx: &Cx, st: &RtState, cenv: &Cenv<'_>, e: Sexp) -> Result<bool, Need> {
     let missing = cx.missing_arg().sexp();
     // SAFETY: the caller's contract.
     unsafe {
         if e.typ() != LANGSXP {
-            return false;
+            return Ok(false);
         }
         let fun = e.car();
         let list = if fun.typ() == SYMSXP {
             if fun == st.syms.browser {
-                return true;
+                return Ok(true);
             }
-            if fun == st.syms.function && cenv.is_base_var(cx, st, fun) {
-                return false;
+            if fun == st.syms.function && cenv.is_base_var(cx, st, fun)? {
+                return Ok(false);
             }
             elements(cx, e, true)
         } else {
             elements(cx, e, false)
         };
-        list.iter().any(|&(a, _)| a != missing && may_call_browser(cx, st, cenv, a))
+        for (a, _) in list {
+            if a != missing && may_call_browser(cx, st, cenv, a)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 

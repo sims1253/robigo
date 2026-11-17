@@ -453,7 +453,7 @@ unsafe fn function_context(
         elist.push(body);
         let locals = cenv.find_locals(cx, st, &elist)?;
         cenv.add_unit_vars(&locals);
-        Ok(!cenv::may_call_browser(cx, st, cenv, body))
+        Ok(!cenv::may_call_browser(cx, st, cenv, body)?)
     }
 }
 
@@ -987,14 +987,14 @@ impl<'g> Comp<'g> {
         unsafe {
             match e.typ() {
                 SYMSXP => {
-                    if !cenv::is_const_name(cx, e) || !cenv.is_base_var(cx, st, e) {
+                    if !cenv::is_const_name(cx, e) || !cenv.is_base_var(cx, st, e)? {
                         return Ok(None);
                     }
                     Ok(cenv::base_value(cx, e)?.filter(|&v| cenv::check_const(cx, v)))
                 }
                 LANGSXP => {
                     let fun = e.car();
-                    if fun.typ() != SYMSXP || !cenv::is_fold_fun(cx, fun) || !cenv.is_base_var(cx, st, fun) {
+                    if fun.typ() != SYMSXP || !cenv::is_fold_fun(cx, fun) || !cenv.is_base_var(cx, st, fun)? {
                         return Ok(None);
                     }
                     let Some(ffun) = cenv::base_value(cx, fun)? else { return Ok(None) };

@@ -51,3 +51,22 @@ ns4 <- mkns("foo4", imp1)
 u <- function() { for (i in 1) NULL; c(k(), bt(1)) }
 environment(u) <- ns4
 print(u()); print(u()); print(u())
+# isBaseVar takes the frame a name is found in, not its home: `pi` bound
+# in an imports frame whose namespace imports base whole has base for its
+# home, yet compiled code reads the binding (no constant folding)
+imp5 <- new.env(parent = .BaseNamespaceEnv)
+attr(imp5, "name") <- "imports:foo5"
+assign("pi", 3, envir = imp5)
+ns5 <- mkns("foo5", imp5)
+assign("imports", list(base = TRUE), envir = get(".__NAMESPACE__.", ns5))
+p <- function() { for (i in 1) NULL; c(pi, bt(1)) }
+environment(p) <- ns5
+print(p()); print(p()); print(p())
+# isBaseVar's getInlineInfo stops on `pi` found in an imports frame below
+# the top's ("bad namespace import frame"): uncompiled (a body of its own:
+# the JIT's cache would reuse p's code)
+assign("pi", 4, envir = imp2)
+ns6 <- mkns("foo6", imp1)
+q <- function() { for (i in 1) NULL; c(bt(1), pi) }
+environment(q) <- ns6
+print(q()); print(q()); print(q())
