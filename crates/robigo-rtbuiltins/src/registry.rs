@@ -7,7 +7,8 @@
 
 use crate::{
     apply, arith, array, attrib, bind, builtin, bytecode, character, coerce, complex, context, cum, envir, errors,
-    identical, is, logic, math, options, paste, relop, seq, sort, sprintf, subset, summary, sysutils, unique,
+    grep, identical, is, logic, math, options, paste, relop, seq, sort, sprintf, subset, summary, sysutils, unique,
+    util,
 };
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
@@ -492,6 +493,14 @@ pub static BUILTINS: &[Builtin] = &[
     row("sprintf", sprintf::do_sprintf, 1, 11, -1, FUNCALL, Pure),
     op!("startsWith", 0, character::do_starts_with, 11, 2, FUNCALL, Pure),
     op!("endsWith", 1, character::do_starts_with, 11, 2, FUNCALL, Pure),
+    // util.c
+    row("Encoding", util::do_encoding, 0, 11, 1, FUNCALL, Pure),
+    row("setEncoding", util::do_setencoding, 0, 11, 2, FUNCALL, Pure),
+    // grep.c (INTERIM(RX): the interim matcher)
+    op!("grep", 0, grep::do_grep, 11, 8, FUNCALL, Pure),
+    op!("grepl", 1, grep::do_grep, 11, 8, FUNCALL, Pure),
+    op!("sub", 0, grep::do_gsub, 11, 7, FUNCALL, Pure),
+    op!("gsub", 1, grep::do_gsub, 11, 7, FUNCALL, Pure),
     // sort.c, radixsort.c, altclasses.c's wrap_meta
     row("sort", sort::do_sort, 1, 11, 2, FUNCALL, Pure),
     row("is.unsorted", sort::do_isunsorted, 0, 11, 3, FUNCALL, Pure),

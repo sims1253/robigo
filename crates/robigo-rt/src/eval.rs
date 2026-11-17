@@ -746,7 +746,7 @@ pub fn do_eval(cx: &mut Cx, call: Root<'_>, args: robigo_rtcore::Args<'_>, rho: 
         if t == PROMSXP {
             return cx.with_pp_excess(1, |cx| eval(cx, expr, rho, out));
         }
-        if !matches!(t, LANGSXP | SYMSXP | EXPRSXP) {
+        if !matches!(t, LANGSXP | SYMSXP | EXPRSXP | BCODESXP) {
             out.set(cx, expr.bind(cx));
             return Ok(());
         }

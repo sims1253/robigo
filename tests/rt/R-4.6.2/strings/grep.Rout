@@ -1,0 +1,143 @@
+[1]  TRUE FALSE FALSE
+[1]  TRUE FALSE FALSE
+[1]  TRUE FALSE
+[1] "Xabc"
+[1] "abcX"
+[1] "Xaa"
+[1] "aaX"
+[1] "-abc"
+[1] "abc-"
+[1] FALSE
+[1]  TRUE  TRUE FALSE FALSE
+[1] FALSE FALSE  TRUE FALSE
+[1]  TRUE  TRUE FALSE
+[1]  TRUE FALSE  TRUE
+[1]  TRUE FALSE
+[1]  TRUE  TRUE FALSE
+[1]  TRUE FALSE  TRUE
+[1] "a#b##c###"
+[1] "122333"
+[1] "abc____"
+[1] "a_b_c_d.e"
+[1] "X"
+[1] ""
+[1] "xXy"
+[1] "abbc X"
+[1] "aXc"
+[1] "xXc"
+[1] "X"
+[1] "zX"
+[1] "aXb"
+[1]  TRUE  TRUE FALSE FALSE FALSE
+[1] "file"    "file.Rd" "file"   
+[1] "compiler"
+[1] "base" "base"
+[1] "-a-b-c-"
+[1] "-"
+[1] "-"
+[1] "-abc"
+[1] "-a-c-"
+[1] "-a-b-c-"
+[1] "XbXcX"
+[1] "-abc"
+[1] "--"
+[1] "a\\c"
+[1] "a[]c"
+[1] "axc"
+[1] "a0c"
+[1] "x0x0"
+[1] FALSE  TRUE
+[1] "a!b.c"
+[1] "a!b!c"
+[1] "XXXa"
+[1] "XXa"
+[1] TRUE TRUE
+[1] "a\\1c"
+Warning: argument 'ignore.case = TRUE' will be ignored 
+[1] 1
+Warning: argument 'perl = TRUE' will be ignored 
+[1] 1
+Warning: argument 'ignore.case = TRUE' will be ignored 
+[1] "A"
+[1]  TRUE FALSE FALSE
+[1] 1 3
+   x    z 
+ "a" "ba" 
+[1] NA NA
+[1] NA NA
+ p  q 
+NA NA 
+integer(0)
+[1] "b" NA 
+ x  y 
+NA NA 
+[1] NA  "b" NA 
+[1] "xyz"
+[1] FALSE
+[1] FALSE
+[1] NA
+[1] 2
+  y 
+"b" 
+named character(0)
+integer(0)
+logical(0)
+character(0)
+   a    b 
+"xA" "yb" 
+[1] "z" "b" "c" "z"
+[1] 2 2
+$myattr
+[1] 1
+
+[1] "a"
+[1] "UTF-8"
+[1] "unknown"
+[1] "cafe"
+[1] 1
+[1] "Xté"
+[1] "-----"
+[1] 4
+[1] "unknown"
+[1] "UTF-8"
+[1] "cafE"
+[1] "caFé"
+[1] "UTF-8"
+[1] TRUE
+[1] TRUE
+Warning: unable to translate 'caf<e9>' to a wide string 
+Warning: input string 1 is invalid 
+[1] FALSE
+Warning: unable to translate 'caf<e9>' to a wide string 
+Warning: input string 2 is invalid 
+[1]  TRUE FALSE FALSE
+Warning: input string 1 is invalid in this locale 
+[1] FALSE
+[1] TRUE
+Warning: unable to translate 'caf<e9>' to a wide string 
+Error: input string 1 is invalid 
+Error: input string 1 is invalid in this locale 
+[1] "cab\xe9"
+Warning: unable to translate 'caf<e9>' to a wide string 
+Error: regular expression is invalid 
+Warning: unable to translate 'caf<e9>' to a wide string 
+Error: 'pattern' is invalid 
+Warning: unable to translate 'caf<e9>' to a wide string 
+Error: 'replacement' is invalid 
+Error: invalid 'pattern' argument 
+Error: invalid 'pattern' argument 
+Error: invalid 'text' argument 
+Error: invalid 'replacement' argument 
+Error: invalid 'text' argument 
+Error: NA in coercion to boolean 
+Error: 'length = 2' in coercion to 'logical(1)' 
+Error: 7 arguments passed to .Internal(grepl) which requires 8 
+Warning: argument 'pattern' has length > 1 and only the first element will be used 
+[1] 1
+Warning: argument 'replacement' has length > 1 and only the first element will be used 
+[1] "x"
+Warning: argument 'pattern' has length > 1 and only the first element will be used 
+Warning: argument 'replacement' has length > 1 and only the first element will be used 
+[1] "xb"
+Error: zero-length pattern 
+Error: zero-length pattern 

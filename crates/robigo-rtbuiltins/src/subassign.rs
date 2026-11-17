@@ -5,9 +5,9 @@
 //! object is written in place unless it may be shared (`MAYBE_SHARED`),
 //! or referenced at all outside a complex assignment (`IS_ASSIGNMENT_CALL`).
 //!
-//! Vectors, lists and environments; matrix and array assignment
-//! (`x[i, j] <- v`) and `[[<-` on a pairlist are not ported yet and say
-//! so.
+//! Vectors, lists, pairlists and environments; matrix and array
+//! assignment (`x[i, j] <- v`, and `[[<-` with several subscripts on a
+//! pairlist) is not ported yet and says so.
 
 use crate::attrib::{self, Attr, Attrs};
 use crate::coerce::coerce_vector;
@@ -821,7 +821,9 @@ pub fn do_subassign2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
                         if matches!(xup.bind(cx).sexptype(), VECSXP | EXPRSXP) {
                             cx.owned_list(xup)?.set(off as usize, r);
                         } else {
-                            return Err(util::not_yet(cx, Some(call), "'[[<-' into a pairlist element"));
+                            // (the result is xtop, whatever this returns)
+                            let o3 = s.out(cx);
+                            simple_list_assign(cx, xup, args.root(1), r, len - 2, o3)?;
                         }
                     } else {
                         if r.bind(cx) != x.bind(cx) {
@@ -956,7 +958,18 @@ pub fn do_subassign2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
                 clear_vector(cx, old_x)?;
             }
         } else if matches!(xt, LISTSXP | LANGSXP) {
-            return Err(util::not_yet(cx, Some(call), "'[[<-' on a pairlist"));
+            if nsubs != 1 {
+                return Err(util::not_yet(cx, Some(call), "'[[<-' on a pairlist with matrix or array subscripts"));
+            }
+            let thesub = args.root(1);
+            let o = s.out(cx);
+            let r = o.root();
+            if y.bind(cx).sexptype() == NILSXP {
+                list_remove(cx, x, thesub, len - 1, o)?;
+            } else {
+                simple_list_assign(cx, x, thesub, y, len - 1, o)?;
+            }
+            x.replace_from(cx, r);
         } else {
             let msg = not_subsettable(x.bind(cx));
             return Err(cx.error(&msg));
@@ -965,7 +978,10 @@ pub fn do_subassign2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
             if matches!(xup.bind(cx).sexptype(), VECSXP | EXPRSXP) {
                 cx.owned_list(xup)?.set(off as usize, x);
             } else {
-                return Err(util::not_yet(cx, Some(call), "'[[<-' into a pairlist element"));
+                let o = s.out(cx);
+                let r = o.root();
+                simple_list_assign(cx, xup, args.root(1), x, len - 2, o)?;
+                xup.replace_from(cx, r);
             }
             if len == 2 {
                 xtop.replace_from(cx, xup);
@@ -977,6 +993,163 @@ pub fn do_subassign2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
             cx.set_s4_bit(xtop, true);
         }
         out.set(cx, xtop.bind(cx));
+        Ok(())
+    })
+}
+
+/// `GetOneIndex(sub, ind)`: element `ind` of a recursive subscript as a
+/// length-one vector (`sub` itself when it has one element), in `out`.
+// R: subassign.c:GetOneIndex
+fn get_one_index(cx: &mut Cx, sub: Root<'_>, ind: usize, out: Out<'_>) -> RResult<()> {
+    let n = rlength(cx, sub.bind(cx));
+    if ind + 1 > n {
+        return Err(cx.error(&format!("internal error: index {ind} from length {n}")));
+    }
+    if n == 1 {
+        out.set(cx, sub.bind(cx));
+        return Ok(());
+    }
+    match sub.bind(cx).sexptype() {
+        INTSXP => {
+            cx.build(out, |cx| Ok(cx.alloc_copy(&[sub.bind(cx).as_vector::<i32>().unwrap().get(ind)])?.finish().into()))
+        }
+        REALSXP => {
+            cx.build(out, |cx| Ok(cx.alloc_copy(&[sub.bind(cx).as_vector::<f64>().unwrap().get(ind)])?.finish().into()))
+        }
+        STRSXP => cx.build(out, |cx| {
+            let mut v = cx.alloc_vector::<Char<'_>>(1)?;
+            v.set(0, sub.bind(cx).as_vector::<Char<'_>>().unwrap().get(ind));
+            Ok(v.finish().into())
+        }),
+        _ => Err(cx.error("invalid subscript in list assign")),
+    }
+}
+
+/// The cell `k` cells down the pairlist in root `x` (`nthcdr`), in `out`.
+fn nthcdr(cx: &mut Cx, x: Root<'_>, k: usize, out: Out<'_>) -> RResult<()> {
+    let cur = out.root();
+    out.set(cx, x.bind(cx));
+    for _ in 0..k {
+        cur.replace_with(cx, |cx| Ok(cur.bind(cx).as_cons().unwrap().cdr()))?;
+    }
+    Ok(())
+}
+
+/// `SimpleListAssign(call, x, s, y, ind)`: `[[<-` of `y` into the
+/// pairlist (or call) in root `x` at element `ind` of the subscript in
+/// `sub`, appending cells (tagged by a character subscript) past the end.
+/// The result, `x` or its new head, in `out`.
+// R: subassign.c:SimpleListAssign
+fn simple_list_assign(cx: &mut Cx, x: Root<'_>, sub: Root<'_>, y: Root<'_>, ind: usize, out: Out<'_>) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let one = s.out(cx);
+        let one_r = one.root();
+        get_one_index(cx, sub, ind, one)?;
+        let indx = make_subscript(cx, x, one_r, true, None)?;
+        let n = indx.len();
+        if n > 1 {
+            return Err(cx.error("invalid subscript in list assign"));
+        }
+        let x = s.root(cx, x.bind(cx));
+        let mut nx = rlength(cx, x.bind(cx));
+        let stretch = indx.stretch;
+        if stretch > 0 {
+            // allocList(stretch - nx), tagged by a character subscript of
+            // that length, appended (listAppend)
+            let extra = stretch - nx;
+            let o = s.out(cx);
+            let yi = o.root();
+            cx.build(o, |cx| {
+                let t = sub.bind(cx);
+                let tags = t.as_vector::<Char<'_>>().filter(|v| v.len() == extra);
+                let mut l = cx.nil();
+                for i in (0..extra).rev() {
+                    l = match tags {
+                        Some(v) => {
+                            // installTrChar
+                            let c = v.get(i);
+                            let name = crate::text::to_native(crate::coerce::text(c), cx.locale())
+                                .map(|b| b.into_owned())
+                                .unwrap_or_else(|_| c.bytes().to_vec());
+                            let tag = cx.install(&name)?;
+                            cx.cons_tagged(cx.nil(), l, tag)?
+                        }
+                        None => cx.cons(cx.nil(), l)?,
+                    };
+                }
+                Ok(l)
+            })?;
+            if nx == 0 {
+                x.replace_from(cx, yi);
+            } else {
+                let o = s.out(cx);
+                let last = o.root();
+                nthcdr(cx, x, nx - 1, o)?;
+                cx.set_cdr(last, yi);
+            }
+            nx = stretch;
+        }
+        if n == 1 {
+            let ii = indx.get(0);
+            if ii != NA_IDX {
+                let o = s.out(cx);
+                let xi = o.root();
+                nthcdr(cx, x, (ii - 1) as usize % nx, o)?;
+                if y.bind(cx).maybe_shared() && xi.bind(cx).as_cons().unwrap().car() != y.bind(cx) {
+                    fixup_rhs(cx, x, y)?;
+                }
+                cx.set_car(xi, y);
+            }
+        }
+        out.set(cx, x.bind(cx));
+        Ok(())
+    })
+}
+
+/// `listRemove(x, s, ind)`: the pairlist in root `x` without the cells
+/// element `ind` of the subscript in `sub` selects; the first kept cell
+/// takes `x`'s attributes and object bits. The result (NULL when none is
+/// kept) in `out`.
+// R: subassign.c:listRemove
+fn list_remove(cx: &mut Cx, x: Root<'_>, sub: Root<'_>, ind: usize, out: Out<'_>) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let one = s.out(cx);
+        let one_r = one.root();
+        get_one_index(cx, sub, ind, one)?;
+        let indx = make_subscript(cx, x, one_r, false, None)?;
+        let nx = rlength(cx, x.bind(cx));
+        let mut keep = vec![true; nx];
+        for i in indx.iter() {
+            if i != NA_IDX {
+                keep[(i - 1) as usize] = false;
+            }
+        }
+        // px walks the cells; pv is the last kept one, val the first
+        let px = s.root(cx, x.bind(cx));
+        let pv = s.root(cx, cx.nil());
+        let val = s.root(cx, cx.nil());
+        let after = s.out(cx).root();
+        for &k in &keep {
+            after.replace_with(cx, |cx| Ok(px.bind(cx).as_cons().unwrap().cdr()))?;
+            if k {
+                if val.bind(cx).sexptype() == NILSXP {
+                    val.replace_from(cx, px);
+                }
+                pv.replace_from(cx, px);
+            } else if pv.bind(cx).sexptype() != NILSXP {
+                cx.set_cdr(pv, after);
+            }
+            px.replace_from(cx, after);
+        }
+        if val.bind(cx).sexptype() != NILSXP && val.bind(cx) != x.bind(cx) {
+            // SET_ATTRIB(val, ATTRIB(x)), the S4 and OBJECT bits
+            let a = s.root(cx, x.bind(cx).attrib().unwrap());
+            cx.set_attrib_list(val, a);
+            let (s4, obj) = (x.bind(cx).is_s4(), x.bind(cx).is_object());
+            cx.set_s4_bit(val, s4);
+            cx.set_object_bit(val, obj);
+        }
+        out.set(cx, val.bind(cx));
         Ok(())
     })
 }

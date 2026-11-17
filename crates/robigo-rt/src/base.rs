@@ -174,7 +174,21 @@ pub fn load(cx: &mut Cx, dir: &Path) -> Result<Loaded, String> {
     // INTERIM(L5): GNU R evaluates the system profile into base at start-up
     // (library/profile/Common.R: `T <- TRUE`, `F <- FALSE`); L5 runs it
     bind_profile_constants(cx).map_err(|e| failed(cx, e))?;
+    bind_global_env(cx).map_err(|e| failed(cx, e))?;
     Ok(st)
+}
+
+/// eval.R's `.GlobalEnv <- environment()`, bound in base: GNU R's base build
+/// evaluates it at top level, where `environment()` is the global
+/// environment (a promise in the base namespace would give base, so
+/// base-subset.R leaves it out of the variables).
+fn bind_global_env(cx: &mut Cx) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let sym = cx.install_rooted(s, b".GlobalEnv")?;
+        let val = s.root(cx, cx.global_env());
+        let base = s.root(cx, cx.base_env());
+        cx.define_var(sym, val, base)
+    })
 }
 
 /// The system profile's `T <- TRUE` and `F <- FALSE`, bound in base.

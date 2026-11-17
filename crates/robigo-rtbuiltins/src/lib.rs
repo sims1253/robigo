@@ -42,6 +42,7 @@ pub mod context;
 pub mod cum;
 pub mod envir;
 pub mod errors;
+pub mod grep;
 pub mod identical;
 pub mod is;
 pub mod kernel;
