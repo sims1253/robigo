@@ -587,6 +587,10 @@ impl<'g> State<'g> {
         if s.is_s4() {
             return Err("robigo: deparse of an S4 object is not implemented yet".into());
         }
+        // a package class's length and elements are its C methods' (M5)
+        if s.is_package_altrep() {
+            return Err("robigo: deparse of a package ALTREP vector is not implemented yet".into());
+        }
         match s.sexptype() {
             NILSXP => self.print(b"NULL"),
             SYMSXP => {

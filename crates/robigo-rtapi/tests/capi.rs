@@ -176,6 +176,26 @@ fn vapply_of_a_package_altrep_result_is_not_implemented_yet() {
     }
 }
 
+/// Printing or deparsing a package ALTREP vector (its length and elements
+/// are its C methods', M5's) is robigo's refusal, raised before the
+/// printers read standard storage: not a panic, in both profiles, at the
+/// top and inside a list.
+#[test]
+fn printing_a_package_altrep_vector_is_not_implemented_yet() {
+    for p in PROFILES {
+        let mut s = Session::new(p);
+        s.val("z <- .Call(\"rt_altrep_str\", c(\"ff\", \"10\"))");
+        for (src, want) in [
+            ("print(z)", "printing a package ALTREP vector is not implemented yet"),
+            ("print(list(a = z))", "printing a package ALTREP vector is not implemented yet"),
+            ("deparse(z)", "deparse of a package ALTREP vector is not implemented yet"),
+        ] {
+            let m = s.err(src);
+            assert!(m.contains(want), "{p:?} {src}: {m}");
+        }
+    }
+}
+
 /// cpp11's `unwind_protect`: the cleanup leaves `R_UnwindProtect` by its
 /// own `longjmp` (past the export's frame), the routine resumes the unwind
 /// with `R_ContinueUnwind`, and the error reaches the catcher; the protect

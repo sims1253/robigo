@@ -479,3 +479,16 @@ SEXP rt_altrep_one(void)
     R_set_altrep_Length_method(c, one_length);
     return R_new_altrep(c, R_NilValue, R_NilValue);
 }
+
+static R_xlen_t str_length(SEXP x) { return XLENGTH(R_altrep_data1(x)); }
+static SEXP str_elt(SEXP x, R_xlen_t i) { return STRING_ELT(R_altrep_data1(x), i); }
+
+/* A package ALTSTRING over the character vector `v`, its Length and Elt
+   methods reading it (B's probe class). */
+SEXP rt_altrep_str(SEXP v)
+{
+    R_altrep_class_t c = R_make_altstring_class("rt_str", "rtcapi", NULL);
+    R_set_altrep_Length_method(c, str_length);
+    R_set_altstring_Elt_method(c, str_elt);
+    return R_new_altrep(c, v, R_NilValue);
+}

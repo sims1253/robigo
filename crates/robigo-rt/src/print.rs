@@ -190,6 +190,11 @@ fn print_object(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
 // R: print.c:PrintValueRec
 pub fn print_value_rec(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
     let v = s.bind(cx);
+    // a package class's length and elements are its C methods' (M5): the
+    // printers below read standard storage
+    if v.is_package_altrep() {
+        return Err(cx.error("robigo: printing a package ALTREP vector is not implemented yet"));
+    }
     // !isMethodsDispatchOn(): methods is never loaded here
     if v.is_s4() || v.sexptype() == OBJSXP {
         let cl = attrib::get_value(v, b"class");
