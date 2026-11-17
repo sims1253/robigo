@@ -47,5 +47,12 @@ f(.Internal(as.vector(1)))
 .Internal(paste0(list("a", "b"), NULL))
 f(.Internal(paste0(list("a"))))
 f(.Internal(paste(list("a"), "-")))
+# the same from closures, called often enough to be compiled
+g1 <- function() .Internal(radixsort())
+for (i in 1:3) f(g1())
+g2 <- function() .Internal(dyn.load())
+for (i in 1:3) f(g2())
+# internalsID checks nothing
+nchar(.Internal(internalsID(1, 2)))
 g <- function() .Internal(paste0())
 f(g())

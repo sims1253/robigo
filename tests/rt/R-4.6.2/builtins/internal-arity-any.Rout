@@ -41,4 +41,11 @@ ok
 [1] "ab"
 <simpleError in doTryCatch(return(expr), name, parentenv, handler): 1 argument passed to .Internal(paste0) which requires 3>
 <simpleError in doTryCatch(return(expr), name, parentenv, handler): 2 arguments passed to .Internal(paste) which requires 4>
+<simpleError in radixsort(): NA in coercion to boolean>
+<simpleError in radixsort(): NA in coercion to boolean>
+<simpleError in radixsort(): NA in coercion to boolean>
+<simpleError in g2(): 0 arguments passed to .Internal(dyn.load) which requires 4>
+<simpleError in g2(): 0 arguments passed to .Internal(dyn.load) which requires 4>
+<simpleError in g2(): 0 arguments passed to .Internal(dyn.load) which requires 4>
+[1] 36
 <simpleError in g(): 0 arguments passed to .Internal(paste0) which requires 3>

@@ -651,12 +651,7 @@ pub(crate) fn run_builtin(
     let Kind::Builtin(f, _) = def.kind else {
         unreachable!("robigo: a special called as a builtin");
     };
-    if def.internal() && def.arity >= 0 && args.len() != def.arity as usize && !OWN_ARITY_CHECK.contains(&def.name) {
-        // the internal's own checkArity(op, args), first thing it does:
-        // here once for every row with a fixed arity in names.c, so that no
-        // builtin reads past its arguments
-        return Err(internal_arity_error(cx, def, args.len()));
-    }
+    check_internal_arity(cx, def, args.len())?;
     materialize_args(cx, def, args)?;
     let flag = def.print();
     // a builtin may change what an argument expression evaluates to or
@@ -675,8 +670,8 @@ pub(crate) fn run_builtin(
 /// The `.Internal`s with a fixed arity in names.c whose C does not start
 /// with `checkArity`: their own messages (`nchar`'s "which requires 3 to
 /// 4", `gettext`'s, `identical`'s), another error first (`recordGraphics`,
-/// `munmap_file`), extra arguments ignored (`internalsID`, `mem.maxNSize`,
-/// `mem.maxVSize`), a dispatch first (`as.vector`) or a short form
+/// `munmap_file`), extra arguments ignored (`internalsID`, which checks nothing,
+/// `mem.maxNSize`, `mem.maxVSize`), a dispatch first (`as.vector`) or a short form
 /// accepted (`is.unsorted(x, strictly)`, `na.rm` inserted; `paste` and
 /// `paste0` without `recycle0`, as R 4.0.0's code calls them). Found by
 /// calling every fixed-arity `.Internal` of GNU R 4.6.2 with one argument
@@ -697,14 +692,24 @@ const OWN_ARITY_CHECK: &[&str] = &[
     "recordGraphics",
 ];
 
-/// `checkArity(op, args)`'s error for an `.Internal` (`error()`, against
-/// the context).
+/// An `.Internal` builtin's own `checkArity(op, args)`, the first thing
+/// it does: here once, for every row with a fixed arity in names.c (but
+/// those of [`OWN_ARITY_CHECK`]), on every path that calls a builtin's
+/// function (`run_builtin`, compiled assignment steps, applyMethod), so
+/// that no builtin reads past its arguments. `error()`, against the
+/// context.
 // R: util.c:Rf_checkArityCall
+#[inline]
+pub(crate) fn check_internal_arity(cx: &mut Cx, def: &prims::PrimDef, n: usize) -> RResult<()> {
+    if def.internal() && def.arity >= 0 && n != def.arity as usize && !OWN_ARITY_CHECK.contains(&def.name) {
+        return Err(internal_arity_error(cx, def, n));
+    }
+    Ok(())
+}
+
 #[cold]
 fn internal_arity_error(cx: &mut Cx, def: &prims::PrimDef, n: usize) -> robigo_rtcore::RError {
-    let what = if n == 1 { "argument" } else { "arguments" };
-    let msg = format!("{n} {what} passed to .Internal({}) which requires {}", def.name, def.arity);
-    cx.error(&msg)
+    cx.error(&prims::arity_message(n, def.name, def.arity as usize, true))
 }
 
 /// Append `CONS_NR(value, R_NilValue)` with tag `tag` to the list
