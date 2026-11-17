@@ -12,12 +12,11 @@
 //! Not yet, and saying so when reached (AGENTS rule 6): a closure or
 //! promise robigo-rt compiles itself where GNU R holds byte code (there is
 //! no BCODESXP of GNU R's to write; one whose body is a BCODESXP is written
-//! as it is), the `R_compile_pkgs` compile on write, ALTREP classes
-//! (robigo-rt has no classes of its own yet: base's compact sequences are
-//! read as the standard vectors they expand to and written back so,
-//! [`take_compact_sequences_expanded`], and a package class is
-//! robigo-rtapi's), bzip2 and xz compressed databases, and native encodings
-//! other than UTF-8, Latin-1 and ASCII.
+//! as it is), the `R_compile_pkgs` compile on write, package ALTREP classes
+//! (robigo-rtapi's; base's compact sequences are robigo-rt's own,
+//! `robigo_rtcore::altrep::own`, written and read as GNU R writes them),
+//! bzip2 and xz compressed databases, and native encodings other than
+//! UTF-8, Latin-1 and ASCII.
 
 #![allow(unsafe_code)]
 
@@ -417,14 +416,11 @@ pub fn do_unserialize_from_conn<const CODE: i32>(
 
 // ---- lazy-load databases ------------------------------------------------------
 
-/// serialize's state in the isolate: the `.rdb` files read whole
-/// (serialize.c's `names`/`ptr` cache: up to 100 files under 10 MB, kept
-/// until `lazyLoadDBflush`), and the count of compact sequences read
-/// expanded ([`take_compact_sequences_expanded`]).
+/// The `.rdb` files read whole (serialize.c's `names`/`ptr` cache: up to
+/// 100 files under 10 MB, kept until `lazyLoadDBflush`).
 #[derive(Default)]
 pub struct RdbCache {
     files: std::cell::RefCell<Vec<Option<(Vec<u8>, Vec<u8>)>>>,
-    compact_expanded: std::cell::Cell<usize>,
 }
 
 const NC: usize = 100;
@@ -764,21 +760,6 @@ fn marked_encoding(levs: u16) -> Option<Encoding> {
 /// written to `out`.
 pub fn unserialize_bytes(cx: &mut Cx, data: Vec<u8>, hook: Option<Root<'_>>, out: Out<'_>) -> RResult<()> {
     read::unserialize(cx, InStream::memory(data), hook, out)
-}
-
-/// How many of base's compact sequences (`compact_intseq`,
-/// `compact_realseq`) `unserialize` read in `cx`'s isolate as the standard
-/// vectors they expand to since the last call. GNU R keeps them compact
-/// and writes them back as ALTREP; robigo-rt has no ALTREP classes of its
-/// own yet (AC's), so an object holding one serializes to other bytes.
-pub fn take_compact_sequences_expanded(cx: &Cx) -> usize {
-    rdb_cache(cx).compact_expanded.replace(0)
-}
-
-/// One more compact sequence read expanded.
-pub(crate) fn count_compact_expanded(cx: &Cx) {
-    let c = &rdb_cache(cx).compact_expanded;
-    c.set(c.get() + 1);
 }
 
 /// `R_Serialize` of `object` in `fmt` and `version` with `hook` as the

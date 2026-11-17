@@ -891,12 +891,14 @@ impl<'r> Reader<'_, 'r> {
     }
 
     /// `ALTREP_SXP`: the class info, state and attributes, then the class's
-    /// `UnserializeEX`. robigo-rt has no ALTREP classes of its own yet:
-    /// base's compact sequences are read as the standard vectors they
-    /// expand to (robigo-rt's `:` makes those too); any other class is not
-    /// implemented yet.
+    /// `UnserializeEX`: base's compact sequences are robigo-rt's own classes
+    /// (`robigo_rtcore::altrep::own`); any other class is not implemented
+    /// yet. A compact sequence read inside another object is materialized
+    /// (its serialized state is its info all the same), so code that reads
+    /// that object's elements finds their data.
     // R: serialize.c:ReadItem_Recursive (ALTREP_SXP), altrep.c:ALTREP_UNSERIALIZE_EX,
-    // altclasses.c:compact_intseq_Unserialize, compact_realseq_Unserialize
+    // altrep_UnserializeEX_default, altclasses.c:compact_intseq_Unserialize,
+    // compact_realseq_Unserialize
     fn altrep(&mut self, cx: &mut Cx, levs: u16, objf: bool) -> RResult<Sexp> {
         cx.scope(|cx, s| {
             self.depth += 1;
@@ -908,15 +910,26 @@ impl<'r> Reader<'_, 'r> {
             }
             self.depth -= 1;
             let (info, state, attr) = (parts[0], parts[1], parts[2]);
-            let names = |cx: &Cx| -> Option<(Vec<u8>, Vec<u8>)> {
+            let names = |cx: &Cx| -> Option<(Vec<u8>, Vec<u8>, u8)> {
                 let i = info.bind(cx).as_cons()?;
                 let c = i.car().as_sym()?.name().bytes().to_vec();
-                let p = i.cdr().as_cons()?.car().as_sym()?.name().bytes().to_vec();
-                Some((c, p))
+                let rest = i.cdr().as_cons()?;
+                let p = rest.car().as_sym()?.name().bytes().to_vec();
+                let t = rest.cdr().as_cons()?.car().as_scalar::<i32>()?;
+                Some((c, p, t as u8))
             };
-            let Some((cls, pkg)) = names(cx) else {
+            let Some((cls, pkg, t)) = names(cx) else {
                 return Err(cx.error("cannot unserialize this ALTREP object"));
             };
+            let Some(class) = robigo_rtcore::altrep::own::OwnClass::from_names(&cls, &pkg, t) else {
+                let msg = format!(
+                    "robigo: unserializing an ALTREP object of class '{}' from package '{}' is not implemented yet",
+                    String::from_utf8_lossy(&cls),
+                    String::from_utf8_lossy(&pkg)
+                );
+                return Err(cx.error(&msg));
+            };
+            // COMPACT_INTSEQ_SERIALIZED_STATE_*: an INTSXP or REALSXP of three
             let seq = |cx: &Cx| -> Option<(f64, f64, f64)> {
                 match state.bind(cx).view() {
                     View::Real(v) if v.len() >= 3 => Some((v.get(0), v.get(1), v.get(2))),
@@ -924,45 +937,22 @@ impl<'r> Reader<'_, 'r> {
                     _ => None,
                 }
             };
-            if pkg != b"base" || !(cls == b"compact_intseq" || cls == b"compact_realseq") {
-                let msg = format!(
-                    "robigo: unserializing an ALTREP object of class '{}' from package '{}' is not implemented yet",
-                    String::from_utf8_lossy(&cls),
-                    String::from_utf8_lossy(&pkg)
-                );
-                return Err(cx.error(&msg));
-            }
             let Some((n, n1, inc)) = seq(cx) else {
                 return Err(cx.error("robigo: a compact sequence's serialized state is not understood"));
             };
-            let int = cls == b"compact_intseq";
-            super::count_compact_expanded(cx);
-            if inc != 1.0 && inc != -1.0 {
-                let msg = if int {
-                    format!("compact sequences with increment {} not supported yet", inc as i32)
-                } else {
-                    format!("compact sequences with increment {inc:.6} not supported yet")
-                };
-                return Err(cx.error(&msg));
-            }
-            let n = n as usize;
             let o = s.out(cx);
             let v = o.root();
-            cx.build(o, |cx| {
-                if int {
-                    let (n1, inc) = (n1 as i32, inc as i32);
-                    Ok(cx.alloc_with(n, |i| n1.wrapping_add(inc.wrapping_mul(i as i32)))?.finish().into())
-                } else {
-                    Ok(cx.alloc_with(n, |i| n1 + inc * i as f64)?.finish().into())
-                }
-            })?;
+            cx.compact_unserialize(class, n as usize, n1, inc, o)?;
             // altrep_UnserializeEX_default: SET_ATTRIB, SET_OBJECT, SETLEVELS
-            // SAFETY: the rooted vector and attributes.
+            // SAFETY: the rooted object and attributes.
             unsafe {
                 let x = v.bind(cx).sexp();
                 x.set_attrib(attr.bind(cx).sexp());
                 x.set_object(objf);
                 x.set_gp(levs);
+            }
+            if self.depth > 0 {
+                cx.materialize(v)?;
             }
             Ok(v.bind(cx).sexp())
         })

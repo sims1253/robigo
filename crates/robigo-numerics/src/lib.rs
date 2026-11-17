@@ -143,6 +143,9 @@ mod libm {
         pub safe fn nearbyint(x: f64) -> f64;
         pub safe fn expm1(x: f64) -> f64;
         pub safe fn log1p(x: f64) -> f64;
+        pub safe fn acosh(x: f64) -> f64;
+        pub safe fn asinh(x: f64) -> f64;
+        pub safe fn atanh(x: f64) -> f64;
     }
 }
 
@@ -292,6 +295,25 @@ pub fn expm1(x: f64) -> f64 {
 #[inline]
 pub fn log1p(x: f64) -> f64 {
     libm::log1p(x)
+}
+
+/// The C library's `acosh` (Rust's `f64::acosh` is its own formula, which
+/// rounds differently).
+#[inline]
+pub fn acosh(x: f64) -> f64 {
+    libm::acosh(x)
+}
+
+/// The C library's `asinh` (Rust's `f64::asinh` is its own formula).
+#[inline]
+pub fn asinh(x: f64) -> f64 {
+    libm::asinh(x)
+}
+
+/// The C library's `atanh` (Rust's `f64::atanh` is its own formula).
+#[inline]
+pub fn atanh(x: f64) -> f64 {
+    libm::atanh(x)
 }
 
 /// C `round`: half away from zero.

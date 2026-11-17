@@ -250,6 +250,9 @@ impl Isolate {
     // The global table and the pending-exit stack: each method borrows its
     // table for its own body only and calls nothing that reaches the isolate.
 
+    // (out of line: its callers' fast paths reach it only on a miss, and
+    // its table growth inlined there costs them registers)
+    #[inline(never)]
     pub(crate) fn global_add(&self, x: Sexp) -> u32 {
         // SAFETY: the borrow ends with this call, which calls nothing of ours.
         unsafe { (*self.roots.get()).globals.add(x) }

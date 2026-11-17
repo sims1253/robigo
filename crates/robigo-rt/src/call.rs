@@ -587,7 +587,7 @@ pub fn builtin_evallist(
                 values.add(i).write(Slot::object(cell.car().sexp()));
                 names.add(i).write(Slot::object(cell.tag().sexp()));
             }
-            any_alt |= cell.car().is_package_altrep();
+            any_alt |= cell.car().is_altrep();
             c = cell.cdr();
         }
         linked.release();
@@ -639,6 +639,7 @@ fn invoke_builtin_root(
 /// builtin's return is (docs/g3.md §3 item 2). Every builtin call of the
 /// evaluator goes through here.
 // R: eval.c:eval (BUILTINSXP)
+#[inline(always)]
 pub(crate) fn run_builtin(
     cx: &mut Cx,
     def: &prims::PrimDef,
@@ -650,6 +651,7 @@ pub(crate) fn run_builtin(
     let Kind::Builtin(f, _) = def.kind else {
         unreachable!("robigo: a special called as a builtin");
     };
+    materialize_args(cx, def, args)?;
     let flag = def.print();
     // a builtin may change what an argument expression evaluates to or
     // look at an argument: values computed early are dropped (crate::early)
@@ -739,6 +741,105 @@ pub fn loop_region(cx: &mut Cx, act: &mut Act, start: usize, regs: Reg, nregs: R
             crate::eval::bc_tick(cx)?;
         }
     }
+}
+
+/// GNU R's builtins read an argument's data through `INTEGER`, `REAL` and
+/// their `_RO` forms, which expand an instance of one of robigo's ALTREP
+/// classes (its `Dataptr`): so does this, for each argument that is one,
+/// before the builtin runs. The builtins GNU R writes against the element
+/// and region accessors instead are left to read the object as it is:
+/// `length` and `seq_along` (its length), and the summaries (`sum` takes
+/// the class's `Sum`; `do_summary` materializes for the rest itself).
+// R: memory.c:DATAPTR, altrep.c:ALTVEC_DATAPTR_EX; summary.c:do_summary
+#[inline(always)]
+pub(crate) fn materialize_args(cx: &mut Cx, def: &prims::PrimDef, args: Args<'_>) -> RResult<()> {
+    if args.any_altrep() { materialize_args_slow(cx, def, args) } else { Ok(()) }
+}
+
+#[cold]
+#[inline(never)]
+fn materialize_args_slow(cx: &mut Cx, def: &prims::PrimDef, args: Args<'_>) -> RResult<()> {
+    if reads_by_element(def.name) {
+        return Ok(());
+    }
+    cx.materialize_args(args)
+}
+
+/// The builtins that leave their ALTREP arguments unexpanded in GNU R
+/// ([`materialize_args`]):
+/// - those written against `XLENGTH` and the element, region and summary
+///   methods: `length`, `seq_along`, the summaries;
+/// - the foreign calls, which hand their arguments to C as they are (C's
+///   `DATAPTR` then expands one: robigo-rtapi's `api.c`);
+/// - the type and attribute queries, which read no data (coerce.c's
+///   `do_is`, `do_typeof`, `do_isvector`; attrib.c's `do_attributes`,
+///   `do_attr`, `do_data_class`, `do_oldclass`, `do_inherits`, `do_names`,
+///   `do_dim`, `do_dimnames`), and `invisible`;
+/// - those that store or compare a value without reading its data:
+///   `assign`, and `identical` and the compiler's `putconst`
+///   (`R_compute_identical` reads the data only of two vectors of one type
+///   and length; robigo-rtbuiltins' reads it by element);
+/// - `serialize`, which writes a compact sequence's state
+///   (`Serialized_state`), expanded or not.
+///
+/// `list` (`do_makelist`) only stores its arguments, but it materializes
+/// them here: the builtins that take a list of values (`attributes<-`,
+/// `dimnames<-`, `.Internal(paste(list(...)))`, ...) read its elements as
+/// their own arguments, and not all of them read by element yet (AC2).
+// R: names.c's rows of these
+fn reads_by_element(name: &str) -> bool {
+    matches!(
+        name,
+        "length"
+            | "seq_along"
+            | "sum"
+            | "min"
+            | "max"
+            | "prod"
+            | ".Call"
+            | ".External"
+            | ".External2"
+            | "typeof"
+            | "is.vector"
+            | "is.null"
+            | "is.logical"
+            | "is.integer"
+            | "is.double"
+            | "is.complex"
+            | "is.character"
+            | "is.symbol"
+            | "is.name"
+            | "is.environment"
+            | "is.list"
+            | "is.pairlist"
+            | "is.expression"
+            | "is.raw"
+            | "is.object"
+            | "isS4"
+            | "is.numeric"
+            | "is.matrix"
+            | "is.array"
+            | "is.atomic"
+            | "is.recursive"
+            | "is.call"
+            | "is.language"
+            | "is.function"
+            | "attributes"
+            | "attr"
+            | "class"
+            | "oldClass"
+            | "inherits"
+            | "names"
+            | "dim"
+            | "dimnames"
+            | "invisible"
+            | "assign"
+            | "identical"
+            | "putconst"
+            | "serialize"
+            | "serializeb"
+            | "serializeToConn"
+    )
 }
 
 /// One run of a loop's region in its `CTXT_LOOP` record. Out of line: the

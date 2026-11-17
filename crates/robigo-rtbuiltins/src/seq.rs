@@ -88,25 +88,11 @@ fn c_ftoi(x: f64) -> i64 {
     if x.is_nan() || x >= 9223372036854775808.0 || x < -9223372036854775808.0 { i64::MIN } else { x as i64 }
 }
 
-/// `R_compact_intrange(n1, n2)`: integers when both ends are, else doubles.
+/// `R_compact_intrange(n1, n2)`: a compact integer sequence when both ends
+/// are integers, else a compact real one (the scalar for one element).
 // R: altclasses.c:R_compact_intrange
-fn intrange(cx: &mut Cx, n1: i64, n2: i64, call: Root<'_>, out: Out<'_>) -> RResult<()> {
-    let n = (n1 - n2).unsigned_abs() + 1;
-    if n as f64 >= XLEN_MAX {
-        return Err(cx.error_call(Some(call), "result would be too long a vector"));
-    }
-    let n = n as usize;
-    let up = n1 <= n2;
-    let ints = (i32::MIN as i64) < n1 && n1 <= i32::MAX as i64 && (i32::MIN as i64) < n2 && n2 <= i32::MAX as i64;
-    cx.build(out, |cx| {
-        if ints {
-            let a = n1 as i32;
-            Ok(cx.alloc_with(n, |i| if up { a + i as i32 } else { a - i as i32 })?.finish().into())
-        } else {
-            let a = n1 as f64;
-            Ok(cx.alloc_with(n, |i| if up { a + i as f64 } else { a - i as f64 })?.finish().into())
-        }
-    })
+fn intrange(cx: &mut Cx, n1: i64, n2: i64, _call: Root<'_>, out: Out<'_>) -> RResult<()> {
+    cx.compact_intrange(n1, n2, out)
 }
 
 /// `length(x)` as `do_colon` reads it: a vector's length, a pairlist's,
@@ -333,6 +319,10 @@ fn rep_count(cx: &mut Cx, v: Option<Root<'_>>) -> RResult<Option<f64>> {
 }
 
 fn rep_dflt(cx: &mut Cx, s: Scope<'_>, call: Root<'_>, args: Args<'_>, out: Out<'_>) -> RResult<()> {
+    // rep3 and rep4 read `x` and `times` through INTEGER and REAL, which
+    // expand one of robigo's compact sequences
+    // R: seq.c:rep3, seq.c:rep4
+    cx.materialize_args(args)?;
     let m = crate::util::match_args(cx, call, &["x", "times", "length.out", "each", "..."], args)?;
     fn arg<'g>(cx: &'g Cx, m: &crate::util::Matched, args: Args<'_>, k: usize) -> Option<Ref<'g>> {
         m.formals[k].map(|i| args.get(cx, i)).filter(|v| *v != cx.missing_arg())
@@ -686,8 +676,7 @@ pub fn do_rep_len(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
     .map(|_: ()| ())
 }
 
-/// `seq_len(length.out)`: `1:n` (GNU R's compact sequence, here an
-/// ordinary integer vector).
+/// `seq_len(length.out)`: `1:n`, a compact sequence.
 // R: seq.c:do_seq_len
 pub fn do_seq_len(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::row!("seq_len").check_arity(cx, call, args)?;
@@ -706,16 +695,13 @@ pub fn do_seq_len(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
     seq_1_to(cx, call, d as usize, out)
 }
 
-/// `1:n` as GNU R's `R_compact_intrange(1, n)` makes it (double past the
-/// integer range), or `integer(0)`.
+/// `1:n` as GNU R's `R_compact_intrange(1, n)` makes it (a compact
+/// sequence, double past the integer range), or `integer(0)`.
 fn seq_1_to(cx: &mut Cx, _call: Root<'_>, n: usize, out: Out<'_>) -> RResult<()> {
-    cx.build(out, |cx| {
-        if n > i32::MAX as usize {
-            Ok(cx.alloc_with(n, |i| (i + 1) as f64)?.finish().into())
-        } else {
-            Ok(cx.alloc_with(n, |i| (i + 1) as i32)?.finish().into())
-        }
-    })
+    if n == 0 {
+        return cx.build(out, |cx| Ok(cx.alloc_copy::<i32>(&[])?.finish().into()));
+    }
+    cx.compact_intrange(1, n as i64, out)
 }
 
 const LENGTH: Generic = Generic::builtin("length");
