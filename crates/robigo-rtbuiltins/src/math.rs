@@ -158,6 +158,49 @@ fn math2(cx: &mut Cx, call: Root<'_>, sa: Root<'_>, sb: Root<'_>, f: fn(f64, f64
 
 /// `R_log(x)`: -Inf at 0 and NaN below, whatever the C library does.
 // R: arithmetic.h:R_log
+/// bcEval's `math1funs` (eval.c): the function `MATH1`'s index names, the
+/// C library's (or nmath's) as the table has it, never `do_math1`'s
+/// wrappers, whose exact answers at `x == 0` drop `-0`.
+// R: eval.c:math1funs
+pub const BC_MATH1: [(&str, fn(f64) -> f64); 24] = [
+    ("floor", f64::floor),
+    ("ceiling", f64::ceil),
+    ("sign", sign),
+    ("expm1", robigo_numerics::expm1),
+    ("log1p", robigo_numerics::log1p),
+    ("cos", f64::cos),
+    ("sin", f64::sin),
+    ("tan", f64::tan),
+    ("acos", f64::acos),
+    ("asin", f64::asin),
+    ("atan", f64::atan),
+    ("cosh", f64::cosh),
+    ("sinh", f64::sinh),
+    ("tanh", f64::tanh),
+    ("acosh", robigo_numerics::acosh),
+    ("asinh", robigo_numerics::asinh),
+    ("atanh", robigo_numerics::atanh),
+    ("lgamma", robigo_numerics::lgammafn),
+    ("gamma", robigo_numerics::gammafn),
+    ("digamma", robigo_numerics::digamma),
+    ("trigamma", robigo_numerics::trigamma),
+    ("cospi", robigo_numerics::cospi),
+    ("sinpi", robigo_numerics::sinpi),
+    ("tanpi", robigo_numerics::r_tanpi),
+];
+
+/// `R_log(x)`, bcEval's `LOG` of one number.
+// R: arithmetic.c:R_log
+pub fn bc_log(x: f64) -> f64 {
+    r_log(x)
+}
+
+/// `logbase(x, base)`, bcEval's `LOGBASE` of two numbers.
+// R: arithmetic.c:logbase
+pub fn bc_logbase(x: f64, base: f64) -> f64 {
+    logbase(x, base)
+}
+
 fn r_log(x: f64) -> f64 {
     if x > 0.0 {
         x.ln()
