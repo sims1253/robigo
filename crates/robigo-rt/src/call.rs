@@ -383,9 +383,10 @@ fn invoke_builtin(cx: &mut Cx, act: &Act, dst: Reg, args: Args<'_>, regs: (Reg, 
     // R: eval.c:BUILTIN_CALL_FRAME_ARGS, eval.c:evalList
     // SAFETY: this running activation's registers.
     unsafe { crate::links::skip_args(act.base(), regs.0, regs.1) };
-    // (the compiler routes an `.Internal` call whose count is not its
-    // row's fixed arity through the list path, which checks: see
-    // `internal_arity_ok`; a primitive's is not checked)
+    // (the compilers never emit a register call of an `.Internal` whose
+    // count its checkArity refuses: they evaluate the arguments and raise
+    // the error instead, see `internal_arity_ok`; a primitive's is not
+    // checked)
     let r = run_builtin_unchecked(cx, &def, act.root(R_SCRATCH), args, act.root(R_ENV), act.out(dst));
     // SAFETY: as above.
     unsafe { crate::links::unskip_args(act.base()) };
@@ -715,10 +716,11 @@ const OWN_ARITY_CHECK: &[&str] = &[
 
 /// Whether an `.Internal` builtin called with `n` arguments passes its
 /// own `checkArity(op, args)`, the first thing it does: always for a
-/// primitive, a row of any arity, or a row of [`OWN_ARITY_CHECK`]. The
-/// compiler asks this for a call with a known count, and routes one that
-/// fails through the list path ([`run_builtin`]), so that the VM's
-/// register path needs no check.
+/// primitive, a row of any arity, or a row of [`OWN_ARITY_CHECK`]. Both
+/// compilers (from source, and the byte-code translation) ask this for a
+/// call with a known count, and compile one that fails as its arguments
+/// followed by checkArity's error, so that the VM's register path needs no
+/// check.
 pub(crate) fn internal_arity_ok(def: &prims::PrimDef, n: usize) -> bool {
     !(def.arity >= 0 && n != def.arity as usize && def.internal() && !OWN_ARITY_CHECK.contains(&def.name))
 }

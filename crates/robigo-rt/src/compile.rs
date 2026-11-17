@@ -2840,15 +2840,18 @@ impl<'g> Comp<'g> {
         i.fl |= F_DEPTH;
         i.d = d;
         let _ = tail;
-        // an .Internal of the wrong count goes the checked way (its error,
-        // after the arguments are evaluated, as GNU R's checkArity)
-        let unchecked = op != Op::Internal || {
-            // SAFETY: `fun` is a live primitive of this isolate (the
-            // caller's contract).
-            let off = unsafe { crate::prims::offset(fun) };
-            crate::call::internal_arity_ok(&self.st.defs[off], n)
-        };
-        if !unchecked || a.iter().any(|&(v, _)| v == dots || v == missing) {
+        // an .Internal of a count its checkArity refuses: the arguments
+        // evaluated, then the error (the VM's register call does not check)
+        let refused = (op == Op::Internal)
+            .then(|| {
+                // SAFETY: `fun` is a live primitive of this isolate (the
+                // caller's contract).
+                let def = &self.st.defs[unsafe { crate::prims::offset(fun) }];
+                (!crate::call::internal_arity_ok(def, n))
+                    .then(|| crate::prims::arity_message(n, def.name, def.arity as usize, true))
+            })
+            .flatten();
+        if a.iter().any(|&(v, _)| v == dots || v == missing) {
             // evaluated at run time (`...` expanded, an empty argument's
             // error in order); under `Bc` as the generic call's (cmp.R's
             // `cmpBuiltin` declines): each call by code compiled now
@@ -2870,6 +2873,13 @@ impl<'g> Comp<'g> {
         for (j, &(v, _)) in a.iter().enumerate() {
             // SAFETY: as above.
             unsafe { self.expr_at(v, r + j as Reg, d + 1, base + (j > 0) as i32, false)? };
+        }
+        if let Some(msg) = refused {
+            // against the context, as for every .Internal
+            // R: util.c:Rf_checkArityCall
+            self.error_op(call, &msg, false)?;
+            self.free_to(r);
+            return Ok(());
         }
         if named {
             for (j, &(_, t)) in a.iter().enumerate() {
