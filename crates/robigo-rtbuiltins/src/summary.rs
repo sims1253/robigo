@@ -58,6 +58,17 @@ const SUMMARY: [Generic; 5] = [
     Generic::group("Summary", "prod"),
 ];
 
+/// The integer (or logical) data of a summary's argument: one of robigo's
+/// compact sequences is read by element (`ITERATE_BY_REGION`), not
+/// expanded.
+fn int_data(a: Ref<'_>) -> std::borrow::Cow<'_, [i32]> {
+    if a.own_class().is_some() {
+        a.as_vector::<i32>().expect("robigo: a compact integer sequence").elements()
+    } else {
+        std::borrow::Cow::Borrowed(a.as_ints().unwrap())
+    }
+}
+
 /// `sum(..., na.rm = FALSE)` (`CODE` 0), `min` (2), `max` (3), `prod` (4).
 // R: summary.c:do_summary
 pub fn do_summary<const CODE: i32>(
@@ -77,6 +88,23 @@ pub fn do_summary<const CODE: i32>(
     };
     if args.any_package_altrep() {
         return Err(not_yet(cx, Some(call), "a summary of a package ALTREP vector"));
+    }
+    if args.any_altrep() {
+        // an ALTREP first argument alone (na.rm the only other one): its
+        // class's Sum (a compact sequence has no Min or Max method, so those
+        // read it as GNU R's region iteration does: here, materialized)
+        if CODE == 0
+            && rest == [0]
+            && let Some(s) = args.get(cx, 0).own_sum()
+        {
+            return match s {
+                Ok(i) => cx.build(out, |cx| Ok(cx.alloc_copy(&[i])?.finish().into())),
+                Err(d) => cx.build(out, |cx| Ok(cx.alloc_copy(&[d])?.finish().into())),
+            };
+        }
+        // the rest read a compact sequence by element, as GNU R's
+        // ITERATE_BY_REGION reads it (a compact sequence has no Min or Max
+        // method): not expanded
     }
     let iop = CODE;
     // check the types first (GNU R's invalid_type, against the call)
@@ -134,7 +162,7 @@ fn sum(cx: &mut Cx, args: Args<'_>, rest: &[usize], narm: bool, out: Out<'_>) ->
         let updated;
         match a.view() {
             View::Lgl(_) | View::Int(_) => {
-                let xs = a.as_ints().unwrap();
+                let xs = &*int_data(a);
                 // isum: NA (unless na.rm) is the answer; 42 is an
                 // impending overflow (then risum)
                 let r = isum(xs, narm);
@@ -183,7 +211,7 @@ fn sum(cx: &mut Cx, args: Args<'_>, rest: &[usize], narm: bool, out: Out<'_>) ->
                         zr = il as f64;
                     }
                 }
-                let (up, t) = rsum(v.as_slice().unwrap(), narm);
+                let (up, t) = rsum(&v.elements(), narm);
                 updated = up;
                 if up {
                     zr += t;
@@ -322,9 +350,9 @@ fn prod(cx: &mut Cx, args: Args<'_>, rest: &[usize], narm: bool, out: Out<'_>) -
             continue;
         }
         let (updated, tmp) = match a.view() {
-            View::Real(v) => rprod(v.as_slice().unwrap(), narm),
+            View::Real(v) => rprod(&v.elements(), narm),
             View::Lgl(v) => iprod(v.as_slice().unwrap().iter().map(|l| l.0), narm),
-            View::Int(v) => iprod(v.as_slice().unwrap().iter().copied(), narm),
+            View::Int(v) => iprod(v.elements().iter().copied(), narm),
             View::Cplx(v) => {
                 cplx = true;
                 let (updated, z) = cprod(v.as_slice().unwrap(), narm);
@@ -460,7 +488,7 @@ fn minmax(
         match a.view() {
             View::Lgl(_) | View::Int(_) => {
                 int_a = true;
-                let xs = a.as_ints().unwrap();
+                let xs = &*int_data(a);
                 let mut s = 0;
                 for &x in xs {
                     if x != NA_INTEGER {
@@ -485,7 +513,7 @@ fn minmax(
                     }
                 }
                 let mut s = 0.0f64;
-                for &x in v.as_slice().unwrap() {
+                for &x in v.elements().iter() {
                     if x.is_nan() {
                         if !narm {
                             if !robigo_text::is_na(s) {

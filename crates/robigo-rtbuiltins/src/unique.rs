@@ -381,10 +381,21 @@ impl ListKeys<'_> {
             key ^= h;
             key = key.wrapping_mul(97);
         };
+        // (a list's element is read by element, INTEGER_ELT and REAL_ELT:
+        // one of robigo's compact sequences stays as it is)
         match x.view() {
-            View::Lgl(v) => (0..v.len()).for_each(|i| mix(LglKeys(v.as_slice().unwrap()).hash(i, t) as u32)),
-            View::Int(v) => (0..v.len()).for_each(|i| mix(IntKeys(v.as_slice().unwrap()).hash(i, t) as u32)),
-            View::Real(v) => (0..v.len()).for_each(|i| mix(RealKeys(v.as_slice().unwrap()).hash(i, t) as u32)),
+            View::Lgl(v) => {
+                let e = v.elements();
+                (0..e.len()).for_each(|i| mix(LglKeys(&e).hash(i, t) as u32))
+            }
+            View::Int(v) => {
+                let e = v.elements();
+                (0..e.len()).for_each(|i| mix(IntKeys(&e).hash(i, t) as u32))
+            }
+            View::Real(v) => {
+                let e = v.elements();
+                (0..e.len()).for_each(|i| mix(RealKeys(&e).hash(i, t) as u32))
+            }
             View::Cplx(v) => (0..v.len()).for_each(|i| mix(CplxKeys(v.as_slice().unwrap()).hash(i, t) as u32)),
             View::Str(v) => {
                 let k = StrKeys::new(self.cx, v.as_slice().unwrap(), self.use_utf8);

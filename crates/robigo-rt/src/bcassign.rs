@@ -403,6 +403,7 @@ fn getter<'s>(cx: &mut Cx, s: Scope<'s>, step: Root<'_>, lhs: Root<'_>, rho: Roo
             }
             let ev = default_args(cx, s, call, lhs, rho, None)?;
             let args = ev.args(cx);
+            cx.materialize_subset_args(args)?;
             if sub2 {
                 robigo_rtbuiltins::subset::do_subset2_dflt(cx, call, args, rho, out)?;
             } else {
@@ -464,6 +465,7 @@ fn setter<'s>(
             }
             let ev = default_args(cx, s, call, lhs, rho, Some(rhs))?;
             let args = ev.args(cx);
+            cx.materialize_subset_args(args)?;
             if sub2 {
                 robigo_rtbuiltins::subassign::do_subassign2_dflt(cx, call, args, rho, out)?;
             } else {
@@ -1026,6 +1028,7 @@ fn call_builtin(
     // SAFETY: a rooted primitive of this isolate.
     let def = *unsafe { prims::def(cx, fun.bind(cx).sexp()) };
     let Kind::Builtin(f, _) = def.kind else { unreachable!("robigo: a special called as a builtin") };
+    crate::call::materialize_args(cx, &def, args)?;
     let flag = def.print();
     // a builtin may change what an argument expression evaluates to or
     // look at an argument: values computed early are dropped (crate::early)
