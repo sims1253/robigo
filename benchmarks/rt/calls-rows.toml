@@ -36,7 +36,11 @@
 #   jit    V4's JIT-cost bar (docs/ledger/g3/2026-11-17-v4-4-jit-cost.md):
 #          one JIT compile of a closure of benchmarks/suite/calls.R that GNU
 #          R's JIT compiles running it, as R_cmpfun1 makes it
-#          (`compiler:::tryCmpfun(f)`, eval.c:1828), per iteration.
+#          (`compiler:::tryCmpfun(f)`, eval.c:1828), per iteration. GNU R's
+#          side only until V4 step 3 lands: robigo-rt cannot load the
+#          compiler namespace yet, and idiom-vs-r.py stops at a row that
+#          fails, so measure them with --no-robigo, or keep them out of a
+#          run under both (--filter) until then.
 #
 # `address_sensitive = true` marks a row whose count follows where its strings
 # were allocated: GNU R's string hash, and robigo-rt's port of it, hashes a

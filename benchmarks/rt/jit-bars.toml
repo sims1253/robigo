@@ -17,7 +17,13 @@
 #   Debian's valgrind, as perf-rt measures it. Two runs; they agree within
 #   0.00004%.
 # - [[bar]]: each row held to `max` times GNU R's instructions, the bar's
-#   1.0x.
+#   1.0x. None is met yet (`met = false`, as m1-bars.toml marks one): the
+#   ledger's early look puts robigo-rt at 1.80-1.97x. The gate says when
+#   one is met, so that it can be set to met.
+# - `rss`: no peak-RSS bars. perf.py reads every bars file's `rss`, so the
+#   empty list keeps this file one that `rt-bars` and `rt-gnur --bars` parse.
+
+rss = []
 
 [gnur]
 version = "4.6.2"
@@ -39,33 +45,40 @@ packages = "libc6=2.41-12+deb13u4 valgrind=1:3.24.0-3"
 row = "jit-scale_by"
 against = "gnur"
 max = 1.0
+met = false
 
 [[bar]]
 row = "jit-weigh"
 against = "gnur"
 max = 1.0
+met = false
 
 [[bar]]
 row = "jit-tag"
 against = "gnur"
 max = 1.0
+met = false
 
 [[bar]]
 row = "jit-env-fn"
 against = "gnur"
 max = 1.0
+met = false
 
 [[bar]]
 row = "jit-area"
 against = "gnur"
 max = 1.0
+met = false
 
 [[bar]]
 row = "jit-area-sq"
 against = "gnur"
 max = 1.0
+met = false
 
 [[bar]]
 row = "jit-safe"
 against = "gnur"
 max = 1.0
+met = false
