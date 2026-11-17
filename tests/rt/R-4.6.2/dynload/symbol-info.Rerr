@@ -1,0 +1,3 @@
+Error in f(s, "") : 
+  translating strings with "bytes" encoding is not allowed
+Execution halted

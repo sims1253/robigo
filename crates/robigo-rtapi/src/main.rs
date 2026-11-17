@@ -10,7 +10,7 @@
 
 #![deny(unsafe_code)]
 
-use robigo_rt::repl::run_console;
+use robigo_rt::repl::run_session;
 use robigo_rtcore::OwnedIsolate;
 use std::os::unix::ffi::OsStrExt;
 
@@ -238,13 +238,8 @@ fn run(args: Vec<std::ffi::OsString>, home: &std::path::Path) -> i32 {
     cx.arm_fail_alloc();
     // end_Rmainloop's R_CleanUp(SA_DEFAULT, 0, 1) runs .Last; after an
     // error, check_session_exit's R_CleanUp(SA_NOSAVE, 1, 0) does not
-    // end_Rmainloop: `if (!R_NoEcho) Rprintf("\n")`, before .Last
-    let ok = run_console(cx, &src) && {
-        if !cx.no_echo() {
-            cx.rprintf(b"\n");
-        }
-        robigo_rt::repl::dot_last(cx)
-    };
+    // (end_Rmainloop's newline unless R_NoEcho, then .Last: run_session)
+    let ok = run_session(cx, &src);
     if !ok {
         // R: main.c:check_session_exit
         cx.reprintf(b"Execution halted\n");

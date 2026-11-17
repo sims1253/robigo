@@ -259,6 +259,17 @@ fn c_finalizer<'s>(cx: &mut Cx, s: Scope<'s>, fun: *const c_void) -> RResult<Roo
     Ok(r)
 }
 
+/// `R_RegisterCFinalizer(s, fun)` from Rust: `fun` runs when `s` is
+/// collected.
+// R: memory.c:R_RegisterCFinalizer
+pub(crate) fn register_c_finalizer(cx: &mut Cx, x: Root<'_>, fun: *const c_void) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let f = c_finalizer(cx, s, fun)?;
+        let nil = s.root(cx, cx.nil());
+        new_weak_ref(cx, s, x, nil, f, false).map(|_| ())
+    })
+}
+
 /// `R_RegisterFinalizerEx(s, fun, onexit)` of an R function.
 // R: memory.c:R_RegisterFinalizerEx
 fn register_finalizer(cx: &mut Cx, s: Root<'_>, fun: Root<'_>, onexit: bool) -> RResult<()> {

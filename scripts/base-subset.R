@@ -334,8 +334,40 @@ free <- function(e, locals) {
   walk(e)
   list(acc = unique(acc), ints = unique(ints))
 }
-exprs <- unlist(lapply(inputs, function(i) as.list(parse(file.path(root, i$file), keep.source = FALSE))),
-                recursive = FALSE)
+# A script's top-level expressions as the console reads it
+# (main.c:R_ReplConsole): a statement at a time, and a syntax error drops
+# the lines read for its statement, then reading goes on at the next line.
+# GNU R runs the lines after it when options(catch.script.errors) or
+# options(error) is set (main.c:check_session_exit) and otherwise halts
+# there; they are walked either way, which can only add names. What is not
+# walked is reported.
+script_exprs <- function(file) {
+  p <- tryCatch(parse(file, keep.source = FALSE), error = identity)
+  if (!inherits(p, "error")) return(as.list(p))
+  lines <- readLines(file, warn = FALSE)
+  out <- list()
+  buf <- character()
+  start <- 1L
+  for (i in seq_along(lines)) {
+    if (!length(buf)) start <- i
+    buf <- c(buf, lines[[i]])
+    r <- tryCatch(parse(text = buf, keep.source = FALSE), error = identity)
+    if (!inherits(r, "error")) {
+      out <- c(out, as.list(r))
+      buf <- character()
+    } else if (!grepl("unexpected (end of input|INCOMPLETE_STRING)", conditionMessage(r))) {
+      message(sprintf("base-subset: %s:%d-%d not walked: %s", substring(file, nchar(root) + 2L), start, i,
+                      sub("\n.*", "", sub("^<text>:[0-9]+:[0-9]+: ", "", conditionMessage(r)))))
+      buf <- character()
+    }
+  }
+  if (length(buf)) {
+    message(sprintf("base-subset: %s:%d-%d not walked: unexpected end of input",
+                    substring(file, nchar(root) + 2L), start, length(lines)))
+  }
+  out
+}
+exprs <- unlist(lapply(inputs, function(i) script_exprs(file.path(root, i$file))), recursive = FALSE)
 g <- free(as.call(c(as.name("{"), exprs)), character())
 # and through the bodies of the closures the trace entered (S3 methods and
 # what C calls are reached by no name in the inputs' text, and their

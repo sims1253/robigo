@@ -1,0 +1,13 @@
+[1] "DLLRegisteredRoutines"
+       .C     .Call  .Fortran .External 
+        0         3         7         0 
+[1] "CallRoutine"      "NativeSymbolInfo"
+[1] "R_addTaskCallback"
+[1] "R_getTaskCallbackNames"
+[1] 1
+[1] "dqrdc2"
+[1] 6
+[1] "FortranRoutine"   "NativeSymbolInfo"
+ .F_dqrcf .F_dqrdc2 .F_dqrqty  .F_dqrqy .F_dqrrsd  .F_dqrxb  .F_dtrco 
+        8         9         7         7         7         7         6 
+[1] "dqrxb"

@@ -1,0 +1,8 @@
+Error in f() : first
+Error: at the top level
+Error: unexpected ')' in "x <- )"
+Error in g() : second
+Warning message:
+deferred 
+Error in h() : final
+Execution halted

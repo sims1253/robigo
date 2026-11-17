@@ -1,0 +1,8 @@
+NULL
+global handler: w1 
+global handler: w2 in f 
+local handler first
+global handler: w3 in g 
+[1] "should not be called with handlers on the stack"
+global handler: w4 after a call that set them 
+[1] "tryCatch wins"

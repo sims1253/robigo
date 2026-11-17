@@ -3,8 +3,8 @@
 //! statement at a time (`R_ReplConsole`, `Rf_ReplIteration`): each is
 //! evaluated in the global environment, a visible value printed, then the
 //! deferred warnings; an error is reported and ends the session
-//! ("Execution halted", exit status 1: `check_session_exit` with no
-//! `options(error)`). Rscript is `R --no-echo --file=FILE`, and `Rscript
+//! ("Execution halted", exit status 1: `check_session_exit` with neither
+//! `options(error)` nor `options(catch.script.errors)`). Rscript is `R --no-echo --file=FILE`, and `Rscript
 //! -e EXPR` the same loop over the expressions, one per line; `R -f FILE`
 //! (R CMD check's transcripts) also writes each line it reads after its
 //! prompt, as a terminal would show it.
@@ -12,8 +12,8 @@
 //! An error is reported where it is raised, by the condition system
 //! ([`crate::conditions`]: handlers, then `verrorcall_dflt`'s report),
 //! before any `on.exit` code runs; what reaches the top level is the jump
-//! there, after which Rscript halts. So does any other jump to the top
-//! level (`invokeRestart("abort")`).
+//! there, after which `check_session_exit` halts Rscript or lets it read
+//! on. So does any other jump to the top level (`invokeRestart("abort")`).
 //!
 //! Output goes to the isolate's console ([`Cx::rprintf`], [`Cx::reprintf`]);
 //! values are printed by `PrintValueEnv` ([`crate::print`]).
@@ -119,8 +119,7 @@ pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
                     // R: source.c:parseError, `error("%s", msg)` with no
                     // call at the top level
                     let msg = parse_error_message(source, &e);
-                    let err = cx.error_call(None, &msg);
-                    cx.resolve_exit(err, None);
+                    error_at_top(cx, &msg);
                     false
                 }
                 robigo_syntax::ConsoleStatus::Ok(exprs, warnings) => {
@@ -133,17 +132,118 @@ pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
             drop(text);
             iob.clear();
             if !ok {
-                return false;
+                if !check_session_exit(cx) {
+                    return false;
+                }
+                // run_Rmainloop's longjmp target: R_ReplConsole again, its
+                // state reset, so the rest of this line is dropped and the
+                // next read shows a new statement's prompt
+                incomplete = false;
+                prompt_type = 1;
+                break;
             }
         }
     }
     if incomplete {
-        // R_ReplConsole: `error(_("unexpected end of input"))` at the top
-        let err = cx.error_call(None, "unexpected end of input");
-        cx.resolve_exit(err, None);
-        return false;
+        // R_ReplConsole: `error(_("unexpected end of input"))` at the top;
+        // past check_session_exit, R_ReplConsole again reads the end
+        error_at_top(cx, "unexpected end of input");
+        return check_session_exit(cx) && console_at_end(cx);
     }
     true
+}
+
+/// Rscript's session: the console's statements (`run_Rmainloop`), then
+/// `end_Rmainloop`: its newline unless `R_NoEcho`, then `R_CleanUp(SA_DEFAULT,
+/// 0, 1)`, which runs `.Last`. True when it ended normally; false when an
+/// error halted it (the caller writes "Execution halted", runs no `.Last`
+/// and exits with status 1).
+///
+/// An error in `.Last` jumps to `R_Toplevel`'s `SETJMP` in
+/// `run_Rmainloop`, so `check_session_exit` decides there too: when the
+/// session goes on, `R_ReplConsole` reads the end of the input at once and
+/// `end_Rmainloop` runs again. As in GNU R, a `.Last` that always fails
+/// then never ends.
+// R: main.c:run_Rmainloop, end_Rmainloop, R_CleanUp (unix/sys-std.c)
+pub fn run_session(cx: &mut Cx, src: &[u8]) -> bool {
+    if !run_console(cx, src) {
+        return false;
+    }
+    loop {
+        // end_Rmainloop: `if (!R_NoEcho) Rprintf("\n")`, before .Last
+        if !cx.no_echo() {
+            cx.rprintf(b"\n");
+        }
+        if dot_last(cx) {
+            return true;
+        }
+        if !check_session_exit(cx) || !console_at_end(cx) {
+            return false;
+        }
+    }
+}
+
+/// `R_ReplConsole` once its input is used up, as after `check_session_exit`
+/// let the session go on at the end: its read writes the prompt (unless
+/// `R_NoEcho`) and finds the end. False if writing the prompt failed (the
+/// error reported).
+// R: main.c:R_ReplConsole, unix/sys-std.c:Rstd_ReadConsole
+fn console_at_end(cx: &mut Cx) -> bool {
+    match read_console(cx, &mut &b""[..], 1) {
+        Ok(_) => true,
+        Err(err) => {
+            // (reported where it was raised)
+            cx.resolve_exit(err, None);
+            false
+        }
+    }
+}
+
+/// An error raised at the top level, as the console's parse error and its
+/// "unexpected end of input" are (`error()` with `R_Toplevel` the context):
+/// reported where it is raised, by the handlers then the default handling.
+/// Its jump lands on a REPL top-level record, so `R_HandlerStack` and
+/// `R_RestartStack`, which the error's signal left as it found them or
+/// emptied, are restored from the top level's saved stacks, the global
+/// calling handlers among them.
+// R: errors.c:jump_to_top_ex, context.c:R_restore_globals
+fn error_at_top(cx: &mut Cx, msg: &str) {
+    cx.scope(|cx, s| {
+        let g = s.root(cx, cx.global_env());
+        let base = s.root(cx, cx.base_env());
+        let landed = cx
+            .repl_toplevel(g, base, |cx| Err(cx.error_call(None, msg)))
+            .expect("robigo: an exit that passed the top level");
+        debug_assert!(!landed, "robigo: an error that returned");
+    })
+}
+
+/// `check_session_exit()`, run after a jump to the top level: a script
+/// goes on (true) when `options(error)` is set or
+/// `options(catch.script.errors)` is TRUE; otherwise it halts (false: the
+/// caller writes "Execution halted" and quits with status 1, running no
+/// `.Last`). R_Interactive is FALSE.
+// R: main.c:check_session_exit
+fn check_session_exit(cx: &mut Cx) -> bool {
+    cx.scope(|cx, s| {
+        let go_on = (|| {
+            let error = robigo_rtbuiltins::options::get_option(cx, s, b"error")?;
+            if error.bind(cx).sexptype() != NILSXP {
+                return Ok(true);
+            }
+            // R_isTRUE
+            let c = robigo_rtbuiltins::options::get_option(cx, s, b"catch.script.errors")?;
+            let c = c.bind(cx);
+            Ok::<bool, RError>(c.sexptype() == LGLSXP && c.as_ints() == Some(&[1][..]))
+        })();
+        match go_on {
+            Ok(b) => b,
+            Err(err) => {
+                cx.resolve_exit(err, None);
+                false
+            }
+        }
+    })
 }
 
 /// `R_ReadConsole(R_PromptString(0, prompt_type), buf, CONSOLE_BUFFER_SIZE,
@@ -256,15 +356,15 @@ fn eval_statement(cx: &mut Cx, expr: &robigo_syntax::Expr<'_>, savestack: i32) -
 /// `.Last`, looked up from the global environment, is a closure; then
 /// `.Last.sys()` from the base namespace the same way (only `R CMD
 /// BATCH`'s profile defines one), each at the top level. False when an
-/// error ended one: reported where it was raised, and Rscript halts
-/// (`check_session_exit`).
+/// error ended one: reported where it was raised, and
+/// [`run_session`] asks `check_session_exit` whether the session halts.
 ///
 /// As GNU R 4.6.2 does (`tests/rt/toplevel/dot-last-*.R`): neither call has
 /// a context of its own, so an error in `.Last` jumps to the top level and
 /// `check_session_exit`'s `R_CleanUp(SA_NOSAVE, 1, 0)` runs no
 /// `.Last.sys`; the values go to `R_CurrentExpr`, not `.Last.value`.
 // R: main.c:R_dot_Last
-pub fn dot_last(cx: &mut Cx) -> bool {
+fn dot_last(cx: &mut Cx) -> bool {
     cx.scope(|cx, s| {
         let global = s.root(cx, cx.global_env());
         let base = s.root(cx, cx.base_env());
@@ -280,6 +380,10 @@ pub fn dot_last(cx: &mut Cx) -> bool {
 /// from `R_BaseEnv`, one only in the global environment is found by
 /// `findVar` through the namespace's parent but not by the call ("could
 /// not find function"), as in GNU R.
+///
+/// The lookup and the call both run in R_Toplevel (`R_dot_Last` sets it
+/// the global context), so an error in either lands on a REPL top-level
+/// record.
 fn call_if_closure(cx: &mut Cx, name: &[u8], from: Root<'_>, rho: Root<'_>) -> bool {
     cx.scope(|cx, s| {
         let sym = s.out(cx);
@@ -288,32 +392,23 @@ fn call_if_closure(cx: &mut Cx, name: &[u8], from: Root<'_>, rho: Root<'_>) -> b
         let fr = f.root();
         let call = s.out(cx);
         let callr = call.root();
-        let looked_up = cx
-            .build(sym, |cx| Ok(cx.install(name)?.as_ref()))
-            .and_then(|()| cx.find_var(symr, from, f))
-            .and_then(|()| {
-                if fr.bind(cx).sexptype() != CLOSXP {
-                    return Ok(false);
-                }
-                // lang1(cmd)
-                cx.build(call, |cx| {
-                    let nil = cx.nil();
-                    cx.lcons(symr.bind(cx), nil)
-                })?;
-                Ok(true)
-            });
-        match looked_up {
-            Ok(false) => return true,
-            Ok(true) => {}
-            Err(err) => {
-                cx.resolve_exit(err, None);
-                return false;
-            }
-        }
+        let o = s.out(cx);
         let g = s.root(cx, cx.global_env());
         let base = s.root(cx, cx.base_env());
-        let o = s.out(cx);
-        cx.toplevel(g, base, |cx| crate::eval(cx, callr, rho, o)).expect("robigo: an exit that passed the top level")
+        cx.repl_toplevel(g, base, |cx| {
+            cx.build(sym, |cx| Ok(cx.install(name)?.as_ref()))?;
+            cx.find_var(symr, from, f)?;
+            if fr.bind(cx).sexptype() != CLOSXP {
+                return Ok(());
+            }
+            // lang1(cmd)
+            cx.build(call, |cx| {
+                let nil = cx.nil();
+                cx.lcons(symr.bind(cx), nil)
+            })?;
+            crate::eval(cx, callr, rho, o)
+        })
+        .expect("robigo: an exit that passed the top level")
     })
 }
 
