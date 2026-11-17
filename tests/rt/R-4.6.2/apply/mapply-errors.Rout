@@ -1,0 +1,31 @@
+Error in mapply(function(x) x, 1:3, MoreArgs = 1) : argument 'MoreArgs' of 'mapply' is not a list or pairlist 
+Error in mapply(function(x) x, 1:3, MoreArgs = "a") : argument 'MoreArgs' of 'mapply' is not a list or pairlist 
+Error in doTryCatch(return(expr), name, parentenv, handler) : argument 'MoreArgs' of 'mapply' is not a list or pairlist 
+Warning in mapply(function(x, y) x, 1:3, 1:2) : longer argument not a multiple of length of shorter 
+Error in match.fun(FUN) : '1' is not a function, character or symbol 
+Error in (function (x)  stop("boom ", x))(dots[[1L]][[1L]]) : boom 1 
+body
+in h
+in h
+[[1]]
+a
+
+[[2]]
+b
+
+Error in NULL : object 'dots' not found 
+[[1]]
+[1] 5
+
+[[2]]
+[1] 7
+
+[[3]]
+[1] 9
+
+[[1]]
+[1] 9
+
+[[2]]
+[1] 11
+

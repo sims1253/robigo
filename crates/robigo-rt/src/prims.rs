@@ -146,6 +146,8 @@ static RT_PRIMS: &[PrimDef] = &[
     special_fn("switch", crate::specials::do_switch, 200, -1),
     special_fn("on.exit", crate::specials::do_onexit, 100, -1),
     special_fn("substitute", crate::specials::do_substitute, 0, -1),
+    // eval.c
+    special_fn("forceAndCall", crate::apply::do_force_and_call, 0, -1),
     // arithmetic.c
     special_fn("log", crate::specials::do_log, 0, -1),
     // objects.c (S1)
