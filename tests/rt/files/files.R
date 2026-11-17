@@ -32,6 +32,12 @@ f(.Internal(file.append("a", 1)))
 # fwrite into stdio's buffer: a short append to /dev/full succeeds
 if (file.exists("/dev/full")) .Internal(file.append("/dev/full", file.path(d, "five.txt"))) else TRUE
 if (file.exists("/dev/full")) .Internal(file.append(c("/dev/full", "/dev/full"), file.path(d, c("five.txt", "empty.txt")))) else c(TRUE, TRUE)
+# a failed flush drops what was buffered (glibc): one FALSE where the
+# 4096-byte buffer overflows, then appends succeed again
+if (file.exists("/dev/full")) {
+    r <- suppressWarnings(.Internal(file.append("/dev/full", rep(file.path(d, "five.txt"), 1000))))
+    which(!r)
+} else 683L
 .Internal(file.create(s[1], FALSE))
 fi(s[1])$size
 w <- withCallingHandlers(.Internal(file.create(file.path(d, "nosuchdir/x"), TRUE)),

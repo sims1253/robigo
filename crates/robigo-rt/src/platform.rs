@@ -557,22 +557,81 @@ fn fopen_notdir(cx: &mut Cx, x: robigo_rtcore::Root<'_>, i: usize, append: bool)
     Ok(f.ok().filter(|f| !f.metadata().is_ok_and(|m| m.is_dir())))
 }
 
-/// `file1` as `fopen` gives it to `fwrite`: buffered as glibc buffers a
-/// stream (`st_blksize` when it is below `BUFSIZ`, else `BUFSIZ`), so a
-/// short write succeeds into the buffer and `fclose`'s error on dropping it
-/// is ignored, as GNU R ignores it.
+/// `file1` as `fopen` gives it to `fwrite`: a glibc stream's buffer
+/// (`st_blksize` when it is below `BUFSIZ`, else `BUFSIZ`) in front of the
+/// file. Dropping it is `fclose`: what is buffered is written and its
+/// error ignored, as GNU R ignores it.
 // R: glibc libio/filedoalloc.c:_IO_file_doallocate
-fn stdio(f: std::fs::File) -> std::io::BufWriter<std::fs::File> {
+struct Stdio {
+    f: std::fs::File,
+    buf: Vec<u8>,
+    cap: usize,
+}
+
+fn stdio(f: std::fs::File) -> Stdio {
     use std::os::unix::fs::MetadataExt;
     const BUFSIZ: usize = 8192;
     let blk = f.metadata().map(|m| m.blksize() as usize).unwrap_or(0);
-    std::io::BufWriter::with_capacity(if blk > 0 && blk < BUFSIZ { blk } else { BUFSIZ }, f)
+    let cap = if blk > 0 && blk < BUFSIZ { blk } else { BUFSIZ };
+    Stdio { f, buf: Vec::with_capacity(cap), cap }
+}
+
+impl Stdio {
+    /// `_IO_SYSWRITE` of all of `data`: false on an error.
+    fn sys_write(&mut self, data: &[u8]) -> bool {
+        use std::io::Write;
+        self.f.write_all(data).is_ok()
+    }
+
+    /// The buffer written out (`new_do_write`): emptied whether that worked
+    /// or not, as glibc resets its write pointers either way.
+    fn flush(&mut self) -> bool {
+        let data = std::mem::take(&mut self.buf);
+        let ok = self.sys_write(&data);
+        self.buf = data;
+        self.buf.clear();
+        ok
+    }
+
+    /// `fwrite(data, 1, n, fp) == n`: fill the buffer; when more is left,
+    /// flush it (a failure loses what was buffered), write whole blocks
+    /// directly and buffer the rest.
+    // R: glibc libio/fileops.c:_IO_new_file_xsputn
+    fn fwrite(&mut self, mut data: &[u8]) -> bool {
+        let k = (self.cap - self.buf.len()).min(data.len());
+        self.buf.extend_from_slice(&data[..k]);
+        data = &data[k..];
+        if data.is_empty() {
+            return true;
+        }
+        if !self.flush() {
+            return false;
+        }
+        let whole = data.len() - if self.cap >= 128 { data.len() % self.cap } else { 0 };
+        if whole > 0 {
+            if !self.sys_write(&data[..whole]) {
+                return false;
+            }
+            data = &data[whole..];
+        }
+        self.buf.extend_from_slice(data);
+        true
+    }
+}
+
+impl Drop for Stdio {
+    fn drop(&mut self) {
+        // fclose: its error is ignored
+        if !self.buf.is_empty() {
+            self.flush();
+        }
+    }
 }
 
 /// Copy `from` to the end of `to`: GNU R's 128 KiB `fread`/`fwrite` loop,
 /// false on a write error.
-fn append_copy(from: &mut std::fs::File, to: &mut std::io::BufWriter<std::fs::File>) -> bool {
-    use std::io::{Read, Write};
+fn append_copy(from: &mut std::fs::File, to: &mut Stdio) -> bool {
+    use std::io::Read;
     let mut buf = vec![0u8; 128 * 1024];
     loop {
         // fread: a short count at the end or on an error, alike
@@ -585,7 +644,7 @@ fn append_copy(from: &mut std::fs::File, to: &mut std::io::BufWriter<std::fs::Fi
                 Err(_) => break,
             }
         }
-        if to.write_all(&buf[..got]).is_err() {
+        if !to.fwrite(&buf[..got]) {
             return false;
         }
         if got < buf.len() {
