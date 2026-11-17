@@ -59,6 +59,10 @@ class RtCi(unittest.TestCase):
             # a crosscheck step writes its report, which `main` reads
             if "ROBIGO_BC_CROSSCHECK" in env:
                 self.assertIn("ROBIGO_BC_CROSSCHECK_REPORT", env)
+        # the crosscheck step exists at all: dropping it from steps() would
+        # leave every assertion above green, and V3's gate (`main` failing on
+        # an unexpected or untranslated closure) would leave CI unnoticed
+        self.assertEqual(len([e for e, _ in own if "ROBIGO_BC_CROSSCHECK" in e]), 1)
         for title, _, cmd in steps:
             if cmd[0] == "cargo" and rt.CONFORMANCE not in cmd[-1:] and "--exact" not in cmd:
                 self.assertEqual(cmd[-2:], ["--skip", rt.CONFORMANCE], title)
@@ -66,6 +70,14 @@ class RtCi(unittest.TestCase):
         # would run nothing, and still pass.
         src = (HERE.parent / "crates/robigo-rtapi/tests/conformance.rs").read_text()
         self.assertIn(f"fn {rt.CONFORMANCE}()", src)
+
+    def test_the_r_home_tree_is_made_before_any_conformance_step(self):
+        # the cases that load tools' native code need it (r-home-tools)
+        steps = rt.steps(["robigo-rt", "robigo-rtcore"])
+        names = [c for _, _, c in steps]
+        tree = names.index(["scripts/rt-home.sh"])
+        first = next(i for i, c in enumerate(names) if rt.CONFORMANCE in c and "--exact" in c)
+        self.assertLess(tree, first)
 
     def test_the_retry_torture_feature_is_built_for_its_step_alone(self):
         # every other step tests the binary users get; this one, last, the
