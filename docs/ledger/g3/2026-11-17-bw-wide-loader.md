@@ -147,6 +147,14 @@
   - BW: 8,009 objects, 390,576 bytes (−48%). That is 1,192 fetch promises,
     1,733 symbols and 733 builtins and stubs, and no parsed base code.
     M1's loader evaluated the subset's R code at startup.
+  - C1-BC (`g3/c1-bc-bcodesxp` at `8cde4129`, whose bound has about 415
+    eagerly evaluated closures): 51,330 objects, 2,478,272 bytes.
+  - rt-ci's "conformance under ROBIGO_GC_MOVE with gctorture" step, on its
+    slowest case, `tests/r/jit/loop-closed-form-super.R` (wall time, this
+    machine, the step's environment). main takes 156.6 s and BW 75.5 s
+    (−52%). Both print the same output, and the collections are about the
+    same (305,890 and 308,343): each one traces a smaller live heap. The
+    step keeps its 600 s timeout.
 - Measurements (WSL2 workstation, Ryzen 9 5900X, rustc 1.100.0; release
   `robigo-rt` from `~/.cache/cargo-target-s1`; `scripts/perf.py rt-bars`
   against main `fb429442`'s binary, whose code is the branch's base
