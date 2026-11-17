@@ -1,0 +1,16 @@
+[1] "file1.txt" "file2.txt" "file3.txt"
+[1] "dir1" "dir2" "dir3"
+[1] "1" "2" "3" "4"
+[1] "." "." "."
+[1] "file1.txt" "file2.txt" "file3.txt" NA         
+[1] TRUE
+[1] "1" "2"
+[1] "1" "2" "3" "b"
+[[1]]
+[1] "." "."
+
+[[2]]
+[1] "x"
+
+[1] FALSE FALSE FALSE
+[1] FALSE FALSE
