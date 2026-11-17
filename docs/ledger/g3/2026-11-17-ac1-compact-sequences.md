@@ -135,5 +135,10 @@
   - `robigo-rtcore/tests/compact.rs`, which runs under Miri.
   - E9 under `ROBIGO_GC_MOVE=1` at every allocation point of the four
     cases: 48,439 points, clean.
-  - Corpora on robigo-rt against main's binary: fastr gains 3 (serialize)
-    and loses none; gnur-tests is equal.
+  - Corpora on robigo-rt against main's binary: fastr gains 3 and loses
+    none; gnur-tests is equal. The three are ratcheted (`passing-rt`):
+    `builtins/TestBuiltin_serialize/` `03e9e5aa894e97cd`
+    (`serialize(1L:10L, NULL, version = 3)`), `a47a59a0134ad4ce`
+    (`1:10`) and `6260e145e42c04ad` (`1:2147483649`, a compact real
+    sequence of a few bytes that main wrote as 2^31 doubles; A1's memory
+    sweep found it).
