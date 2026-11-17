@@ -355,6 +355,8 @@ pub static BUILTINS: &[Builtin] = &[
     op!("sum", 0, summary::do_summary, 1, -1, FUNCALL, Pure),
     op!("prod", 4, summary::do_summary, 1, -1, FUNCALL, Pure),
     row("which", summary::do_which, 0, 11, 1, FUNCALL, Pure),
+    op!("which.min", 0, summary::do_first_min, 11, 1, FUNCALL, Pure),
+    op!("which.max", 1, summary::do_first_min, 11, 1, FUNCALL, Pure),
     op!("min", 2, summary::do_summary, 1, -1, FUNCALL, Pure),
     op!("max", 3, summary::do_summary, 1, -1, FUNCALL, Pure),
     // cum.c
