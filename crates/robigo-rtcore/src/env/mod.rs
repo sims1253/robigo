@@ -433,7 +433,7 @@ fn env_error(cx: &mut Cx, msg: &str) -> RError {
 /// `s` is a live symbol.
 unsafe fn sym_name(s: Sexp) -> String {
     // SAFETY: the caller's contract: PRINTNAME is a live CHARSXP.
-    String::from_utf8_lossy(unsafe { s.car().char_bytes() }).into_owned()
+    String::from_utf8_lossy(unsafe { s.sym_name_bytes() }).into_owned()
 }
 
 /// Panics unless `x` is a symbol: the GNU R entry points that do not check
@@ -1212,6 +1212,17 @@ impl Cx {
             let x = self.iso().envs().internal(sym.as_ref().sexp());
             if x.is_null() { self.nil() } else { Ref::from_sexp(x, self) }
         }
+    }
+
+    /// `PRINTNAME(sym)` for code that holds raw objects: the isolate's
+    /// CHARSXP of the name ([`crate::Sym::name`]).
+    ///
+    /// # Safety
+    ///
+    /// `sym` must be a live symbol.
+    pub unsafe fn printname_raw(&self, sym: Sexp) -> Sexp {
+        // SAFETY: one read of the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.printname(sym)
     }
 
     /// `INTERNAL(sym)` for the compiler and the evaluator, which hold raw
@@ -2335,7 +2346,7 @@ impl Cx {
         let mut out = Vec::new();
         let mut push = |s: Sexp, l: Loc| {
             // SAFETY: a symbol of a binding of a live frame.
-            if all || unsafe { s.car().char_bytes() }.first() != Some(&b'.') {
+            if all || unsafe { s.sym_name_bytes() }.first() != Some(&b'.') {
                 // SAFETY: as above.
                 out.push((unsafe { Ref::from_sexp(s, self) }.as_sym().unwrap(), Binding::new(l)));
             }

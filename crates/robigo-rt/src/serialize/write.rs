@@ -407,7 +407,8 @@ impl Writer<'_> {
                     if t == SYMSXP {
                         self.hash_add(s);
                         self.out.integer(SYMSXP as i32);
-                        let pname = s.car();
+                        // the isolate's PRINTNAME (H5), with its encoding
+                        let pname = cx.printname_raw(s);
                         return self.item(cx, pname);
                     }
                     if t == ENVSXP {

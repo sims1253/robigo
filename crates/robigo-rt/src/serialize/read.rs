@@ -615,7 +615,7 @@ impl<'r> Reader<'_, 'r> {
                     unsafe {
                         last.bind(cx).sexp().set_tag(tag);
                         if self.depth == 1 && tag.typ() == SYMSXP {
-                            self.lastname = tag.car().char_bytes().to_vec();
+                            self.lastname = tag.sym_name_bytes().to_vec();
                             set_lastname = true;
                         }
                     }

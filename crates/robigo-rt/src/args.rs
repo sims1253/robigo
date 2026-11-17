@@ -396,7 +396,7 @@ enum MatchError {
 // R: match.c:pmatch, psmatch
 unsafe fn pmatch(formal: Sexp, tag: Sexp, exact: bool) -> bool {
     // SAFETY: the caller's contract.
-    let (f, t) = unsafe { (formal.car().char_bytes(), tag.car().char_bytes()) };
+    let (f, t) = unsafe { (formal.sym_name_bytes(), tag.sym_name_bytes()) };
     if exact { f == t } else { f.starts_with(t) }
 }
 
@@ -1908,7 +1908,7 @@ fn early_args<'s>(cx: &mut Cx, s: Scope<'s>, inits: &mut [SlotInit<'s>], rho: Ro
 // R: eval.c:R_isReplaceSymbol
 unsafe fn is_replace_symbol(f: Sexp) -> bool {
     // SAFETY: the caller's contract.
-    unsafe { f.typ() == SYMSXP && f.car().char_bytes().ends_with(b"<-") }
+    unsafe { f.typ() == SYMSXP && f.sym_name_bytes().ends_with(b"<-") }
 }
 
 /// The kinds of this module's lazy `promargs` fillers (the tag a record
