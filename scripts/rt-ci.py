@@ -101,18 +101,35 @@ PIN_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-pin-report-{os.g
 # closure whose code differs from the from-source compiler's)
 BC_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-bc-crosscheck-{os.getpid()}.txt")
 
+# the kinds of line the crosscheck writes (crates/robigo-rt/src/compile/crosscheck.rs)
+BC_KINDS = ("expected", "unexpected", "untranslated", "skipped")
+
+
 def bc_report_check(path):
-    """The crosscheck report's errors (an unexpected difference, an
-    untranslated closure) and the expected classes' counts."""
+    """The crosscheck report's errors and its classes' counts. An error is
+    an unexpected difference, an untranslated closure, a line of no kind
+    the crosscheck writes, or no report at all: the step compared nothing,
+    a broken setup, never a pass."""
     try:
         with open(path) as f:
             lines = [line.rstrip("\n") for line in f if line.strip()]
     except FileNotFoundError:
-        return [], {}
-    errors = [x for x in lines if x.startswith(("unexpected", "untranslated"))]
+        lines = []
+    if not lines:
+        return [f"no crosscheck report at {path}"], {}
+    errors = []
     classes = {}
     for x in lines:
-        c = x.split(":", 1)[0] if x.startswith("expected") else x.split(":", 1)[0].split(" ")[0]
+        if x.startswith("    "):
+            # (ROBIGO_BC_CROSSCHECK_DUMP's instruction lines)
+            continue
+        if not x.startswith(BC_KINDS) or ":" not in x:
+            errors.append(f"malformed: {x}")
+            continue
+        if x.startswith(("unexpected", "untranslated")):
+            errors.append(x)
+        kind = x.split(":", 1)[0]
+        c = kind if x.startswith("expected") else kind.split(" ")[0]
         classes[c] = classes.get(c, 0) + 1
     return errors, classes
 

@@ -90,6 +90,30 @@ class RtCi(unittest.TestCase):
             os.unlink(f.name)
         self.assertEqual(rt.pin_report_hits(f.name + ".missing"), [])
 
+    def test_the_crosscheck_report_passes_only_with_every_difference_classed(self):
+        import tempfile
+
+        def check(text):
+            with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+                f.write(text)
+            try:
+                return rt.bc_report_check(f.name)
+            finally:
+                os.unlink(f.name)
+
+        loop = "expected (a loop's shape (checkSkipLoopCntxt, cmpForBody))"
+        ok = (f"{loop}: for (v in x) v: at 2: translated Jmp regs [] imm [] consts 0 target Some(4); "
+              "from source Loop regs [] imm [] consts 0 target Some(6)\n"
+              "skipped: f(x): the from-source compile would force a binding\n")
+        self.assertEqual(check(ok), ([], {loop: 1, "skipped": 1}))
+        bad = ("unexpected: g(x): at 0: translated GetVar regs [0] imm [] consts 1 target None; "
+               "from source GetFun regs [0] imm [0] consts 2 target None")
+        self.assertEqual(check(ok + bad + "\n")[0], [bad])
+        # a malformed, an empty or a missing report fails rather than passing
+        self.assertEqual(len(check(ok + "garbage\n")[0]), 1)
+        self.assertEqual(len(check("")[0]), 1)
+        self.assertEqual(len(rt.bc_report_check("/nonexistent/robigo-bc-report.txt")[0]), 1)
+
     def test_this_workspace_holds_the_premise(self):
         m = rt.metadata()
         crates = rt.rt_crates(m, PATS)
