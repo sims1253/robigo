@@ -112,6 +112,31 @@ pub fn wcstod_of(s: &[u32]) -> Option<(f64, usize)> {
     Some((v, used.min(s.len())))
 }
 
+/// The home directory in the password database of `user` (`getpwnam`), or
+/// of the process's user (`getpwuid(getuid())`) for `None`; `None` when
+/// there is no such entry. (The reentrant lookups.)
+pub fn passwd_home(user: Option<&[u8]>) -> Option<Vec<u8>> {
+    let mut buf = vec![0 as libc::c_char; 16384];
+    // SAFETY: a zeroed passwd is a valid out-argument; the reentrant lookups
+    // write it and `result`, whose strings point into `buf`, alive for the
+    // reads below; `name` is NUL-terminated.
+    unsafe {
+        let mut pw: libc::passwd = std::mem::zeroed();
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+        let rc = match user {
+            Some(u) => {
+                let name = std::ffi::CString::new(u).ok()?;
+                libc::getpwnam_r(name.as_ptr(), &mut pw, buf.as_mut_ptr(), buf.len(), &mut result)
+            }
+            None => libc::getpwuid_r(libc::getuid(), &mut pw, buf.as_mut_ptr(), buf.len(), &mut result),
+        };
+        if rc != 0 || result.is_null() || pw.pw_dir.is_null() {
+            return None;
+        }
+        Some(std::ffi::CStr::from_ptr(pw.pw_dir).to_bytes().to_vec())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::wcstod_of;
@@ -140,30 +165,5 @@ mod tests {
                 libc::setlocale(libc::LC_NUMERIC, c"C".as_ptr());
             }
         }
-    }
-}
-
-/// The home directory in the password database of `user` (`getpwnam`), or
-/// of the process's user (`getpwuid(getuid())`) for `None`; `None` when
-/// there is no such entry. (The reentrant lookups.)
-pub fn passwd_home(user: Option<&[u8]>) -> Option<Vec<u8>> {
-    let mut buf = vec![0 as libc::c_char; 16384];
-    // SAFETY: a zeroed passwd is a valid out-argument; the reentrant lookups
-    // write it and `result`, whose strings point into `buf`, alive for the
-    // reads below; `name` is NUL-terminated.
-    unsafe {
-        let mut pw: libc::passwd = std::mem::zeroed();
-        let mut result: *mut libc::passwd = std::ptr::null_mut();
-        let rc = match user {
-            Some(u) => {
-                let name = std::ffi::CString::new(u).ok()?;
-                libc::getpwnam_r(name.as_ptr(), &mut pw, buf.as_mut_ptr(), buf.len(), &mut result)
-            }
-            None => libc::getpwuid_r(libc::getuid(), &mut pw, buf.as_mut_ptr(), buf.len(), &mut result),
-        };
-        if rc != 0 || result.is_null() || pw.pw_dir.is_null() {
-            return None;
-        }
-        Some(std::ffi::CStr::from_ptr(pw.pw_dir).to_bytes().to_vec())
     }
 }
