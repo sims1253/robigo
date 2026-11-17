@@ -186,3 +186,14 @@ On main `2a7f3be6` (#812, #808) merged, at `d232ca12`:
      (`call::call_codes`, `args::call_closure_codes`,
      `call_builtin_list_codes`), `call::call`, `inline` and `early` as on
      main: flat.
+
+### On main after #825
+
+S1's #825 (vm.rs's `vec_subset_fast` for `StartSubset`/`DfltSubset`)
+landed first, as `cb0605ab`, so this branch merged main, with no
+conflict, and was measured again. perf-rt (`scripts/perf.py rt-bars
+--main`, against main `cb0605ab`'s binary) is flat: every row within
++0.24% (binarytrees, +0.25% before the merge) and peak RSS within 2%. No
+row moved, so the per-function check of `vm::run` was not needed.
+robigo-rt's conformance is 550/555, with the 5 failures being cases that
+have no pass marker. `scripts/lint.sh` is clean.
