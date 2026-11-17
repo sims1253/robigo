@@ -18,13 +18,29 @@ fn homes(env: &[(&str, &str)]) -> Vec<String> {
     String::from_utf8(out.stdout).unwrap().lines().map(str::to_owned).collect()
 }
 
+/// `p` with its `.` and `..` components resolved by name (no file system
+/// access).
+fn normalized(p: &Path) -> std::path::PathBuf {
+    let mut out = std::path::PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 #[test]
 fn r_home_defaults_to_the_checkout_s_tree() {
     let tree = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.robigo/rt-home");
-    let tree = std::path::absolute(tree).unwrap();
     let got = homes(&[]);
-    assert_eq!(Path::new(&got[0]).canonicalize().ok(), tree.canonicalize().ok(), "{got:?}");
-    assert!(Path::new(&got[0]).is_absolute());
+    assert!(Path::new(&got[0]).is_absolute(), "{got:?}");
+    // compared lexically: the tree need not exist (a clean checkout)
+    assert_eq!(normalized(Path::new(&got[0])), normalized(&std::path::absolute(tree).unwrap()), "{got:?}");
     for (i, d) in ["share", "include", "doc"].iter().enumerate() {
         assert_eq!(got[i + 1], format!("{}/{d}", got[0]));
     }
