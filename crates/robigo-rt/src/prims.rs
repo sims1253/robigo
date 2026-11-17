@@ -261,6 +261,8 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("normalizePath", crate::util::do_normalizepath, Inline::None, 11, 3),
     builtin("file.exists", crate::platform::do_fileexists, Inline::None, 11, 1),
     builtin("list.files", crate::platform::do_listfiles, Inline::None, 11, 9),
+    builtin("parent.env<-", crate::builtin::do_parentenvgets, Inline::None, 11, 2),
+    builtin("pos.to.env", crate::builtin::do_pos2env, Inline::None, 1, 1),
 ];
 
 /// How the VM runs B1's builtin `name` inline, if it does.
