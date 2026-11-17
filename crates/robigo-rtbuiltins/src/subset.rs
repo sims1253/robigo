@@ -434,7 +434,7 @@ pub fn do_subset_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_
 /// as [`subscript::NA_IDX`]) subscript `s` selects along dimension `d` of
 /// extent `nd` of `x`.
 // R: subscript.c:int_arraySubscript
-fn array_subscript(cx: &mut Cx, x: Root<'_>, s: Root<'_>, nd: usize, call: Root<'_>) -> RResult<Vec<i64>> {
+fn array_subscript(cx: &mut Cx, x: Root<'_>, s: Root<'_>, nd: usize, call: Root<'_>, dd: usize) -> RResult<Vec<i64>> {
     use subscript::IntErr;
     let r = {
         let sv = s.bind(cx);
@@ -453,7 +453,22 @@ fn array_subscript(cx: &mut Cx, x: Root<'_>, s: Root<'_>, nd: usize, call: Root<
                     .collect();
                 subscript::integer_subscript(&ints, nd, &mut st)
             }
-            View::Str(_) => Err(IntErr::Msg("robigo: matrix subscripts by dimnames are not implemented yet".into())),
+            View::Str(v) => {
+                // PROBE-ONLY stand-in (never committed): linear match on dimnames[[dd]]
+                let want: Vec<Vec<u8>> = (0..v.len()).map(|i| v.get(i).bytes().to_vec()).collect();
+                let dn = attrib::get_value(x.bind(cx), b"dimnames");
+                let mut names: Vec<Vec<u8>> = Vec::new();
+                if let Some(dn) = dn
+                    && let Some(l) = dn.as_vector::<Ref<'_>>()
+                    && dd < l.len()
+                    && let Some(sv) = l.get(dd).as_vector::<Char<'_>>()
+                {
+                    names = (0..sv.len()).map(|i| sv.get(i).bytes().to_vec()).collect();
+                }
+                want.iter()
+                    .map(|w| names.iter().position(|n| n == w).map(|p| p as i64 + 1).ok_or(IntErr::Msg("subscript out of bounds".into())))
+                    .collect()
+            }
             View::Sym(_) if sv == cx.missing_arg() => Ok((1..=nd as i64).collect()),
             _ => Err(IntErr::Msg(format!("invalid subscript type '{}'", type_to_char(sv)))),
         }
@@ -482,8 +497,8 @@ fn matrix_subset(
         let d = attrib::dims(x.bind(cx)).unwrap();
         (d[0].max(0) as usize, d[1].max(0) as usize)
     };
-    let sr = array_subscript(cx, x, si, nr, call)?;
-    let sc = array_subscript(cx, x, sj, nc, call)?;
+    let sr = array_subscript(cx, x, si, nr, call, 0)?;
+    let sc = array_subscript(cx, x, sj, nc, call, 1)?;
     let t = x.bind(cx).sexptype();
     if !matches!(t, LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | VECSXP | EXPRSXP | RAWSXP) {
         return Err(cx.error_call(Some(call), "matrix subscripting not handled for this type"));

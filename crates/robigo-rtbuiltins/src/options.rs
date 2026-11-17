@@ -343,7 +343,6 @@ const UNHONORED: &[&str] = &[
     "digits",
     "deparse.cutoff",
     "max.print",
-    "keep.source",
     "verbose",
     "warnPartialMatchDollar",
     "warnPartialMatchAttr",
