@@ -26,7 +26,10 @@ pub enum Num {
 /// with no attributes, as a [`Num`].
 #[inline]
 pub fn plain_num(x: Ref<'_>) -> Option<Num> {
-    if x.attrib().is_some_and(|a| a.sexptype() != NILSXP) {
+    // (ALTREP is not standard storage, and no instance of robigo's classes
+    // has length 1: one test, after which the views' own-class arms fold
+    // away)
+    if x.is_altrep() || x.attrib().is_some_and(|a| a.sexptype() != NILSXP) {
         return None;
     }
     match x.view() {

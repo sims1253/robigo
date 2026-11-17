@@ -65,7 +65,7 @@
 
 mod alias;
 mod attach;
-mod chain;
+pub(crate) mod chain;
 mod frame;
 mod hashtab;
 mod promise;
