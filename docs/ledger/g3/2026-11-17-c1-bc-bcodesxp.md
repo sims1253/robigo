@@ -268,6 +268,34 @@ C).
 | INTERIM(L2) | `loadNamespace("compiler")` builds the namespace from the pinned tarball's cmp.R; any other namespace is "not implemented yet"; `path` is the tarball's | `rt/ns.rs:5-11,206-226` | L2 |
 | INTERIM(RX) | the regex matcher's subset and refusals (above) | `bi/grep.rs:7-40` | RX |
 | INTERIM(L5) | `T` and `F` bound in base; `.ArgsEnv`/`.GenericArgsEnv` empty | `rt/base.rs:174-176,195` | BW (S1), then L5 |
+| INTERIM(BW) | rt-ci's "conformance under ROBIGO_GC_MOVE with gctorture (E3)" step allows 1200 s per case, up from 600 (below) | `scripts/rt-ci.py` | BW (S1) reverts it |
+
+**The base heap and the moving-collector step** (the foreman's decision:
+option 3, as INTERIM(BW)).
+- **Cause:** robigo-rt binds each base closure as a promise of its parsed
+  right-hand side, so the bound's ASTs are on the heap from startup.
+  The static walk now takes in what cmp.R names transitively: 415
+  closures, 226 internals and 9 variables, against main's 188 closures.
+  - At startup, after `gc()`: 51.4k cells, against 15.6k on main `fb429442`
+    (3.3×).
+  - Under `ROBIGO_GCTORTURE=1 ROBIGO_GC_MOVE=1`, every allocation runs a
+    full moving collection, so a case costs its allocations × the heap.
+    `tests/r/jit/loop-closed-form-super.R` alone takes 598.5 s on this
+    branch, against 154 s on main, on the same machine. In the parallel
+    conformance run it passes 600 s. The output is identical.
+  - A 20k-iteration probe of its `<<-` loop: 40.8 s against 10.8 s, and
+    the same ratio under gctorture alone.
+- **The interim:** that step's per-case timeout is 1200 s
+  (`# INTERIM(BW)` in `scripts/rt-ci.py`). The other gctorture step keeps
+  600 s.
+- **The fix is BW's** (S1): index-only startup with a per-name fetch
+  promise, nothing lowered until forced, and M1's eager closures made
+  lazy too. BW reverts the bump and reports this case's time.
+- **A candidate for H, after X3:** generational torture. GNU R's
+  gctorture runs mostly level-0 collections (memory.c's
+  `num_old_gens_to_collect`), so it does not trace base's old objects at
+  every allocation. robigo-heap is not generational: every collection is
+  full (`crates/robigo-heap/src/gc.rs:2273`).
 
 **Gaps, not marked:**
 - `options(keep.source = TRUE)` is not implemented, so the fixtures'
