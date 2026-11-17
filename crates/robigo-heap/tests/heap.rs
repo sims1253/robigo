@@ -2549,9 +2549,10 @@ fn objects_c_has_seen_or_pins_do_not_move() {
     // argument; the export roots the holder precisely
     collect_holding(&mut c, &[!pinned]);
     let holder = ROOTED_ARG.replace(Sexp::NULL);
-    // SAFETY: the complement of the pinned object's address, which no exact
-    // scan matches, so it stays hidden; compared and kept, never read.
-    let pinned = unsafe { Sexp::from_word(!pinned as *mut u8) };
+    // SAFETY: the pinned node's address (`c_objects` hands it inverted, so
+    // `!pinned` restores it): the pin kept it alive and in place, and it is
+    // a root below, so the reads through it are sound.
+    let pinned = unsafe { Sexp::from_ptr(!pinned as *mut u8) };
     unsafe {
         assert_eq!(elt(holder, 0).addr(), !seen, "an object C has seen stays");
         assert_ne!(elt(holder, 1).addr(), !free, "an object C has not seen moves");
@@ -2748,8 +2749,10 @@ fn report_path(name: &str) -> std::path::PathBuf {
 fn run_probe(c: &mut Core, hidden_key: usize) {
     let p = probe();
     (p.hooks)(routine_collect);
-    // SAFETY: the complement of the key's address, hidden from the scan the
-    // same way; the probe only keeps it (in C), Rust never reads it.
+    // SAFETY: the key's address (`finalizable_key` hands it inverted, so
+    // `!hidden_key` restores it). The probe keeps it in its own unscanned
+    // memory, where the pin scan compares it and pins the key; Rust never
+    // reads through it.
     (p.give)(unsafe { Sexp::from_word(!hidden_key as *mut u8) });
     let core: *mut Core = c;
     unsafe { native_call(core, p.routine, &[]) };

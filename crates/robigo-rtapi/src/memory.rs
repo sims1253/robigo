@@ -672,7 +672,9 @@ fn fresh_vector(cx: &Cx, t: u8, n: usize) -> Result<Ref<'_>, NeedGc> {
 ///
 /// # Safety
 /// C code of the thread's isolate calls it, with an isolate current, and
-/// `x` is null or one of its objects.
+/// `x` is null or one of its objects that the caller preserved
+/// (`R_PreserveObject`): the release ends that preservation, not another
+/// owner's ([`robigo_heap::Core::release`]).
 // R: memory.c:R_ReleaseObject
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_ReleaseObject(x: Sexp) {

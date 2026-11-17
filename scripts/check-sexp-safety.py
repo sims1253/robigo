@@ -16,9 +16,12 @@ section, or takes a `Ref<'_>`/`Root<'_>`. C exports are
 
 A parameter counts when its type names `Sexp` outside a closure type (`impl
 Fn(Sexp)`, `&mut dyn FnMut(Sexp)`, a bound `F: FnMut(Sexp)`): a callback is
-handed objects by the callee, which vouches for them. Only fully public functions (`pub fn`,
-`pub extern "C" fn`, and macro-generated `fn $name`) are checked: a
-crate-internal one is the crate's own to keep sound.
+handed objects by the callee, which vouches for them. Fully public
+functions are checked (`pub fn`, `pub extern "C" fn`, a macro's `fn $name`,
+and the methods of a `pub trait`, public without `pub`): a crate-internal
+one is the crate's own to keep sound. `ALLOWED` names the trait methods
+that take one by design, each with its reason. The check is textual: a
+`Sexp` inside another public type passed by value is outside its view.
 """
 
 import os
@@ -70,7 +73,7 @@ def params(src, start):
 
 
 def without_closures(text):
-    """`text` with every closure type's parenthesized argument list cut."""
+    """`text` with every closure type's argument list and return type cut."""
     out = []
     pos = 0
     for m in CLOSURE.finditer(text):
@@ -82,9 +85,37 @@ def without_closures(text):
         while depth and k < len(text):
             depth += {"(": 1, ")": -1}.get(text[k], 0)
             k += 1
+        # and its return type: `impl Fn(usize) -> Sexp` is a callback too
+        ret = re.match(r"\s*->\s*[^,)>]+", text[k:])
+        if ret:
+            k += ret.end()
         pos = k
     out.append(text[pos:])
     return "".join(out)
+
+
+TRAIT = re.compile(r"\bpub\s+(?:unsafe\s+)?trait\s+(?P<name>\w+)[^{;]*\{")
+METHOD = re.compile(r"(?P<qual>(?:(?:const|async|unsafe|extern(?:\s+\"C\")?)\s+)*)fn\s+(?P<name>\w+)")
+
+# Safe trait methods that take a Sexp by design, with the reason: the
+# obligation sits where the objects come from, not on the method.
+ALLOWED = {
+    "Visitor::edge": "a collection's caller vouches for every edge its roots show (Core::collect's contract)",
+}
+
+
+def body(src, start):
+    """The text of the braced block whose `{` is just before `start`."""
+    depth = 1
+    k = start
+    while depth and k < len(src):
+        depth += {"{": 1, "}": -1}.get(src[k], 0)
+        k += 1
+    return src[start : k - 1]
+
+
+def takes_sexp(src, end):
+    return re.search(r"\bSexp\b", without_closures(params(src, end)))
 
 
 def hits(path, src):
@@ -92,8 +123,17 @@ def hits(path, src):
     for m in FN.finditer(src):
         if "unsafe" in m.group("qual"):
             continue
-        if re.search(r"\bSexp\b", without_closures(params(src, m.end()))):
+        if takes_sexp(src, m.end()):
             yield f"{path}:{src.count(chr(10), 0, m.start()) + 1}: safe pub fn {m.group('name')} takes a Sexp"
+    # a `pub` trait's methods are public without `pub`
+    for t in TRAIT.finditer(src):
+        b = body(src, t.end())
+        for m in METHOD.finditer(b):
+            if "unsafe" in m.group("qual") or f"{t.group('name')}::{m.group('name')}" in ALLOWED:
+                continue
+            if takes_sexp(b, m.end()):
+                line = src.count(chr(10), 0, t.end() + m.start()) + 1
+                yield f"{path}:{line}: safe pub fn {t.group('name')}::{m.group('name')} takes a Sexp"
 
 
 def files():

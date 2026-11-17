@@ -186,7 +186,9 @@ unsafe fn run(cx: &Cx, code: Sexp, rho: Sexp) -> Option<Slot> {
                 }
             }
             Op::Arith => {
-                // SAFETY: registers of the running activation: their objects are live, rooted.
+                // SAFETY: `num` only reads: nothing collects while `run` runs (its
+                // contract), so the operands' objects stay live (the registers are a
+                // local array, not rooted).
                 let (x, y) = (unsafe { crate::vm::num(cx, r(i.b)?) }?, unsafe { crate::vm::num(cx, r(i.c)?) }?);
                 // (byte code: `run` takes no other)
                 match ops::arith2(i.g as u8, x, y, true) {
@@ -195,7 +197,9 @@ unsafe fn run(cx: &Cx, code: Sexp, rho: Sexp) -> Option<Slot> {
                     (_, true) => return None,
                 }
             }
-            // SAFETY: registers of the running activation: their objects are live, rooted.
+            // SAFETY: `num` only reads: nothing collects while `run` runs (its
+            // contract), so the operands' objects stay live (the registers are a
+            // local array, not rooted).
             Op::Arith1 => num_slot(ops::arith1(i.g as u8, unsafe { crate::vm::num(cx, r(i.b)?) }?)),
             Op::Clear | Op::ClearRange | Op::Nop => continue,
             // the code's value, visible (`Ret` 2 would make it invisible)

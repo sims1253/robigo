@@ -93,9 +93,13 @@ pub mod ce {
 /// The field is private (#736): outside this crate a `Sexp` is made only by
 /// the heap, by [`Sexp::NULL`], or by the `unsafe` constructors, so safe
 /// code cannot name an object that was never one: [`Sexp::from_ptr`] for an
-/// object's address, [`Sexp::from_word`] for a word only compared or kept. A safe public
-/// function of the runtime crates never takes one either
-/// (`scripts/check-sexp-safety.py`).
+/// object's address, [`Sexp::from_word`] for a word only compared or kept.
+/// No safe public function of the runtime crates takes one either: a
+/// textual check of signatures (`scripts/check-sexp-safety.py`, run by
+/// `scripts/lint.sh`) refuses one, including a `pub` trait's methods. A
+/// `Sexp` carried inside another public type passed by value stays outside
+/// its view: such a type keeps its fields crate-private, or its readers are
+/// `unsafe`.
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Sexp(*mut u8);
@@ -127,18 +131,21 @@ impl Sexp {
     /// [`Sexp::from_word`]'s.
     ///
     /// # Safety
-    /// `p` is null or the address of an object of some heap. The result
-    /// may be read through only while that object is live, and every read
-    /// is held to the contract of the accessor (or `unsafe fn`) it goes
-    /// through; making the handle reads nothing.
+    /// `p` is null or the address of an object of some heap, whose
+    /// collections decide its liveness. The result may be read through
+    /// only while that object is live, and every read is held to the
+    /// contract of the accessor (or `unsafe fn`) it goes through, which may
+    /// ask for more: a [`Core`] method such as `preserve` or `release`
+    /// needs an object of its own heap. Making the handle reads nothing.
     #[inline(always)]
     pub const unsafe fn from_ptr(p: *mut u8) -> Sexp {
         Sexp(p)
     }
     /// A `Sexp` of a word that need not be an object's address, for
     /// identity only: a primitive's car (its table index), an external
-    /// pointer's car (its address), a tagged slot location, the complement
-    /// of an address a test hides from the scan, a test's fake.
+    /// pointer's car (its address), a tagged slot location, a test's fake.
+    /// (An object's address handed somewhere that reads it, even a test's
+    /// restored one, is [`Sexp::from_ptr`]'s.)
     ///
     /// # Safety
     /// The result is never read through: not passed to an accessor, nor to

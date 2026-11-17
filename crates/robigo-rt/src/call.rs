@@ -70,7 +70,8 @@ pub unsafe fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: 
         }
         // SAFETY: the caller's contract: `fun` and `call` are live.
         BUILTINSXP if bc => unsafe { call_builtin_list(cx, act, dst, fun, call, bc) },
-        SPECIALSXP if bc => call_special(cx, act, dst, fun, call),
+        // SAFETY: the caller's contract: `fun` and `call` are live.
+        SPECIALSXP if bc => unsafe { call_special(cx, act, dst, fun, call) },
         BUILTINSXP | SPECIALSXP => {
             // eval's check_stack_balance (bcEval's CALL checks nothing):
             // `save` after PROTECT(op), the primitive's entry one more
@@ -83,7 +84,8 @@ pub unsafe fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: 
                 // SAFETY: the caller's contract: `fun` and `call` are live.
                 unsafe { call_builtin_list(cx, act, dst, fun, call, bc) }?;
             } else {
-                call_special(cx, act, dst, fun, call)?;
+                // SAFETY: the caller's contract: `fun` and `call` are live.
+                unsafe { call_special(cx, act, dst, fun, call) }?;
             }
             cx.check_stack_balance(name.as_bytes(), save);
             Ok(())
@@ -675,7 +677,11 @@ fn append(cx: &mut Cx, head: Root<'_>, tail: Root<'_>, value: Root<'_>, tag: Sex
 /// A special reached through a value (`(if)(TRUE, 1)`, `f <- quote;
 /// f(x)`, `` `[`(x, 1) ``): applied to its call in the activation's
 /// environment.
-pub(crate) fn call_special(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
+///
+/// # Safety
+/// `fun` is a live SPECIALSXP and `call` a live call of `cx`'s isolate
+/// (constants of `act`'s code, or rooted).
+pub(crate) unsafe fn call_special(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
     cx.scope(|cx, s| {
         // SAFETY: a constant of the rooted code, and a register's function.
         let (callr, funr) = unsafe { (s.root(cx, Ref::from_sexp(call, cx)), s.root(cx, Ref::from_sexp(fun, cx))) };

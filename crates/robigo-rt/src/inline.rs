@@ -575,7 +575,9 @@ unsafe fn pure<S: Scope + ?Sized>(cx: &Cx, code: Sexp, scope: &S) -> Option<Slot
             Op::GetVar => scope.read(cx, unsafe { v.k(i.e) }, i.f, v.shape)?,
             // (byte code: `pure` takes no other)
             Op::Arith => arith_slots(cx, i.g as u8, r(i.b)?, r(i.c)?, true)?,
-            // SAFETY: registers of the running activation: their objects are live, rooted.
+            // SAFETY: `num` only reads: nothing collects while `pure` runs (its
+            // contract), so the operand's object stays live (its registers are a
+            // local array).
             Op::Arith1 => num_slot(ops::arith1(i.g as u8, unsafe { num(cx, r(i.b)?) }?)),
             Op::Clear | Op::ClearRange | Op::Nop => continue,
             // `x[[i]]` (`[[` behind its base guard): as in [`body_loop`]
@@ -769,7 +771,9 @@ impl WriteLog {
         }
         let w = self.writes.borrow();
         let w = w.iter().find(|w| w.sym == sym)?;
-        // SAFETY: a logged write's value, rooted by the log (`Writes`).
+        // SAFETY: a logged write's value: the log holds it raw (nothing roots
+        // it); it is live because nothing collects while the run holds it
+        // (`WriteLog`'s doc).
         Some((w.rho == rho).then(|| unsafe { Slot::object(w.value) }))
     }
 
@@ -1342,7 +1346,9 @@ unsafe fn body_loop<const FUSED: bool>(
                             }
                             cx.evalcount().set(c);
                             cx.set_visible(true);
-                            // SAFETY: the value just computed, a live object.
+                            // SAFETY: no eval runs here (only its count and R_Visible): `d` is the
+                            // formal's default constant, a live object of the frame's live code
+                            // (nothing collects while the run holds it).
                             let x = unsafe { Slot::object(d) };
                             fr.args[k] = Arg::Value(x);
                             x
@@ -1380,7 +1386,8 @@ unsafe fn body_loop<const FUSED: bool>(
                 continue;
             }
             Op::BrFalse => {
-                // SAFETY: registers of the running activation: their objects are live, rooted.
+                // SAFETY: `num` only reads: an inline run gives up before anything could
+                // collect, so the frame's register objects (a local array) stay live.
                 let c = match unsafe { num(cx, r(i.b)?) }? {
                     ops::Num::Lgl(x) if x != ops::NA_LOGICAL => x != 0,
                     ops::Num::Int(x) if x != i32::MIN => x != 0,
@@ -1495,7 +1502,8 @@ unsafe fn body_loop<const FUSED: bool>(
             Op::SetVar2 => {
                 // SAFETY: a symbol constant; the enclosure is live.
                 let obj = unsafe { super_assign(cx, fr.log(), v.k(i.e), r(i.a)?, fr.enclos)? };
-                // SAFETY: the value `super_assign` stored, a live object.
+                // SAFETY: the value `super_assign` logged: live, as nothing
+                // collects while the run holds it (`WriteLog`'s doc).
                 *regs.get_mut(i.a as usize)? = unsafe { Slot::object(obj) };
                 continue;
             }
@@ -1516,7 +1524,8 @@ unsafe fn body_loop<const FUSED: bool>(
                 continue;
             }
             Op::Arith => arith_slots(cx, i.g as u8, r(i.b)?, r(i.c)?, v.profile == Profile::Bc)?,
-            // SAFETY: registers of the running activation: their objects are live, rooted.
+            // SAFETY: `num` only reads: an inline run gives up before anything could
+            // collect, so the frame's register objects (a local array) stay live.
             Op::Arith1 => num_slot(ops::arith1(i.g as u8, unsafe { num(cx, r(i.b)?) }?)),
             Op::Relop => {
                 let (x, y) = (r(i.b)?, r(i.c)?);
@@ -1534,9 +1543,11 @@ unsafe fn body_loop<const FUSED: bool>(
                     _ => return None,
                 }
             }
-            // SAFETY: registers of the running activation: their objects are live, rooted.
+            // SAFETY: `num` only reads: an inline run gives up before anything could
+            // collect, so the frame's register objects (a local array) stay live.
             Op::Not => Slot::logical(ops::not1(unsafe { num(cx, r(i.b)?) }?)),
-            // SAFETY: registers of the running activation: their objects are live, rooted.
+            // SAFETY: `num` only reads: an inline run gives up before anything could
+            // collect, so the frame's register objects (a local array) stay live.
             Op::Logic => Slot::logical(ops::logic2(i.g, unsafe { num(cx, r(i.b)?) }?, unsafe { num(cx, r(i.c)?) }?)),
             Op::AndOr1 | Op::AndOr2 => {
                 // logical operands only (others are do_logic2's to check)
@@ -1888,7 +1899,9 @@ fn arith_slots(cx: &Cx, op: u8, x: Slot, y: Slot, bc: bool) -> Option<Slot> {
 /// a call here costs the rows whose operands mix integers and doubles).
 #[inline(always)]
 fn arith_nums(cx: &Cx, op: u8, x: Slot, y: Slot, bc: bool) -> Option<Slot> {
-    // SAFETY: registers of the running activation: their objects are live, rooted.
+    // SAFETY: `num` only reads: every caller (`pure`, `arg_value`,
+    // `body_loop`, `fused`, through `arith_slots`) runs with nothing
+    // collecting, so the operands' objects stay live.
     match ops::arith2(op, unsafe { num(cx, x) }?, unsafe { num(cx, y) }?, bc) {
         (n, false) => Some(num_slot(n)),
         (_, true) => None,
@@ -1910,7 +1923,9 @@ fn relop_slots(cx: &Cx, op: u8, x: Slot, y: Slot) -> Option<i32> {
 /// [`relop_slots`] for operands that are not two unboxed doubles.
 #[inline(always)]
 fn relop_nums(cx: &Cx, op: u8, x: Slot, y: Slot) -> Option<i32> {
-    // SAFETY: registers of the running activation: their objects are live, rooted.
+    // SAFETY: `num` only reads: every caller (`body_loop` and `fused`,
+    // through `relop_slots`) runs with nothing collecting, so the operands'
+    // objects stay live.
     Some(ops::relop2(op, unsafe { num(cx, x) }?, unsafe { num(cx, y) }?))
 }
 
@@ -2011,7 +2026,8 @@ unsafe fn fused(
                     (_, true) => Step::Done(None),
                 };
             }
-            // SAFETY: registers of the running activation: their objects are live, rooted.
+            // SAFETY: as in `body_loop`: an inline run gives up before anything
+            // could collect; the step's operands are register or constant slots.
             let (Some(x), Some(y)) = (unsafe { num(cx, x) }, unsafe { num(cx, y) }) else { return Step::Each };
             match ops::arith2(s.g, x, y, bc) {
                 (n, false) => {
@@ -2085,7 +2101,9 @@ unsafe fn slot_read(cx: &mut Cx, fr: &mut Frame<'_>, k: usize, sym: Sexp, d: u16
             }
             cx.evalcount().set(c);
             cx.set_visible(true);
-            // SAFETY: the value just computed, a live object.
+            // SAFETY: no eval runs here (only its count and R_Visible): `d` is the
+            // formal's default constant, a live object of the frame's live code
+            // (nothing collects while the run holds it).
             let x = unsafe { Slot::object(d) };
             fr.args[k] = Arg::Value(x);
             Some(x)

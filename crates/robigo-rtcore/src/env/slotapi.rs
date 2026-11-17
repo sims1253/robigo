@@ -496,7 +496,9 @@ impl Cx {
         // SAFETY: found in this interval.
         let cell = match unsafe { l.at() } {
             At::FrameSlot(sl) => self.cell_back(sl)?,
-            _ => l.sexp(),
+            // SAFETY: not a slot: the location's object (a cell or a base
+            // binding's symbol), live, reachable from the rooted frame.
+            _ => unsafe { l.object() },
         };
         // SAFETY: the cell (or symbol) is reachable from the rooted frame.
         out.set(self, unsafe { Ref::from_sexp(cell, self) });

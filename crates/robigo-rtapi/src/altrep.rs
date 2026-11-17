@@ -212,7 +212,8 @@ entry! {
 // R: altrep.c:R_altrep_inherits
 ///
 /// # Safety
-/// C's contract: `x` is a live object of the calling isolate.
+/// C's contract: `x` is a live object of the calling isolate; `class` is
+/// only compared (by address), so any word will do.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn R_altrep_inherits(x: Sexp, class: Sexp) -> c_int {
     // SAFETY: the caller's contract: a live object; an ALTREP object's TAG
@@ -237,7 +238,10 @@ macro_rules! setters {
         ///
         /// # Safety
         /// C's contract: `class` is a class object of a type whose method
-        /// table has this entry (GNU R casts the table the same way).
+        /// table has this entry (GNU R casts the table the same way), and
+        /// `fun` is null or a function of the entry's signature, which
+        /// ALTREP dispatch calls as one (GNU R's dispatch skips a null
+        /// method).
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $name(class: Sexp, fun: *const c_void) {
             // SAFETY: the caller's contract.

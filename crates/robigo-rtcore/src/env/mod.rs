@@ -507,10 +507,15 @@ impl Loc {
 
     /// The location's word, for identity: a cell's (or a base binding's
     /// symbol's) address, or a slot's owner's, tagged.
+    ///
+    /// # Safety
+    /// The result is compared or masked only: never read through, nor
+    /// stored or passed as an object (a slot location's word carries the
+    /// slot tag and index, so it is no object handle; [`Loc::object`] is
+    /// the handle of a location that is not a slot).
     #[inline(always)]
-    fn sexp(self) -> Sexp {
-        // SAFETY: compared or masked only; [`Loc::object`] is the object
-        // handle of a location that is not a slot.
+    unsafe fn sexp(self) -> Sexp {
+        // SAFETY: the caller's contract: identity only.
         unsafe { Sexp::from_word(self.0.as_ptr()) }
     }
 
@@ -539,8 +544,10 @@ impl Loc {
             let owner = unsafe { Sexp::from_ptr(self.0.as_ptr().map_addr(|a| a & ADDR_MASK & !SLOT_TAG)) };
             return At::FrameSlot(SlotRef { owner, index: w >> INDEX_SHIFT });
         }
-        let x = self.sexp();
-        // SAFETY: the caller's contract.
+        // SAFETY: the caller's contract: a live location whose tag is clear
+        // names its object (a cell, or a base binding's symbol).
+        let x = unsafe { self.object() };
+        // SAFETY: as above.
         if unsafe { x.typ() } == SYMSXP { At::Base(x) } else { At::Cell(x) }
     }
 
@@ -895,7 +902,8 @@ impl<'g> Binding<'g> {
     /// The owner check of a binding read through `cx`.
     #[inline(always)]
     fn owned(self, cx: &Cx) {
-        let x = self.loc.sexp();
+        // SAFETY: masked below before anything reads through it.
+        let x = unsafe { self.loc.sexp() };
         // a slot location's word is its owner's address, tagged
         // SAFETY: the location's word with the tag bits cleared: a live
         // cell's (or symbol's) address, or a slot frame's (only its block

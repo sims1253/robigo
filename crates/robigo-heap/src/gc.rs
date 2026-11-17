@@ -1668,11 +1668,15 @@ impl Core {
     /// Only addresses are compared; the hazard is which entry goes.
     ///
     /// # Safety
-    /// `x` is null or a live object of this heap. A live `x` ends exactly
-    /// the preservation meant. A stale one (an object since moved or freed,
-    /// its address perhaps reused by another preserved object) could remove
-    /// another object's entry and un-root an object C still uses, which the
-    /// next collection then frees; or match nothing and leak the entry.
+    /// `x` is null or a live object of this heap, and the caller ends only a
+    /// preservation it owns: the `release` pairs with a [`Core::preserve`]
+    /// of the same object made by (or on behalf of) the caller. Then it
+    /// ends exactly the preservation meant. A live `x` the caller never
+    /// preserved still matches another owner's entry and removes it,
+    /// un-rooting an object that owner still uses, which the next
+    /// collection frees; a stale one (an object since moved or freed, its
+    /// address perhaps reused by another preserved object) can do the same,
+    /// or match nothing and leak the entry.
     #[inline]
     pub unsafe fn release(&mut self, x: Sexp) {
         if let Some(k) = self.precious.iter().rposition(|&p| p == x) {

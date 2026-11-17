@@ -24,7 +24,8 @@ use std::ptr::NonNull;
 /// `fun` is a live SPECIALSXP and `call` a live call of `cx`'s isolate
 /// (constants of `act`'s code, or rooted).
 pub unsafe fn special_fn(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
-    call_special(cx, act, dst, fun, call)
+    // SAFETY: the caller's contract: `fun` and `call` are live.
+    unsafe { call_special(cx, act, dst, fun, call) }
 }
 
 /// A special applied to its call in `rho` (`eval`'s SPECIALSXP case,
