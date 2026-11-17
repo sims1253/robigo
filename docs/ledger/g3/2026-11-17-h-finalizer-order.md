@@ -34,3 +34,14 @@
 - GNU R's singly linked list can lose a reference registered during a
   pass (`last == R_NilValue` overwrites `R_weak_refs`); robigo keeps it, as
   before (`a_reference_registered_during_a_finalizer_batch_waits_for_the_next_round`).
+- Measured (this box, release, `scripts/perf.py rt-bars --main`): the
+  branch against its base (#797's head), each built in its own target from
+  its own checkout, sha256 checked to differ: 0 failures, every row within
+  ±0.04%.
+- Verified: both finalizer-order cases match GNU R 4.6.2 (the new one
+  ratcheted); the full `scripts/rt-ci.py` (every mode, 800 injected
+  failures); the rt crates' debug tests (53 binaries); Miri on
+  robigo-rtcore and the heap's layout and bitmap tests; `scripts/lint.sh`.
+- Review: sol-loop, 1 round with gpt-6.1-sol on high, approved (it also ran
+  both cases with the moving collector off, `=1` and `young:3`, and an
+  erroring finalizer mid-pass).
