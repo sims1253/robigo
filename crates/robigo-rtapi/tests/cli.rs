@@ -136,6 +136,8 @@ fn cases(long_src: &[u8]) -> Vec<Case> {
             0,
         ),
         ("stdin-quiet", vec!["--vanilla", "--quiet"], Some("stdin.R"), b"> 1 + 1\n[1] 2\n> \n".to_vec(), b"", 0),
+        // --args ends the options in any mode
+        ("stdin-args", vec!["--vanilla", "--no-echo", "--args", "a"], Some("stdin.R"), b"[1] 2\n".to_vec(), b"", 0),
         // --no-echo is SA_NOSAVE too
         ("stdin-no-echo-save", vec!["--no-echo"], Some("stdin.R"), b"[1] 2\n".to_vec(), b"", 0),
         // stdin needs the save action named, a FILE implies it
@@ -236,5 +238,34 @@ fn the_greeting_is_refused() {
     assert_eq!(
         String::from_utf8_lossy(&err),
         "robigo-rt: R's start-up greeting (R without --quiet) is not implemented yet\n"
+    );
+}
+
+/// Without a save action, R on stdin stops at once: it does not wait for
+/// the input to end (a pipe left open).
+#[test]
+fn the_save_check_does_not_wait_for_stdin() {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
+    cmd.arg("--quiet").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("run robigo-rt");
+    // (stdin stays open until the child has exited)
+    let held = child.stdin.take();
+    let start = std::time::Instant::now();
+    let status = loop {
+        if let Some(st) = child.try_wait().unwrap() {
+            break Some(st);
+        }
+        if start.elapsed() > std::time::Duration::from_secs(20) {
+            let _ = child.kill();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    drop(held);
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(status.and_then(|s| s.code()), Some(2), "robigo-rt waited for stdin to end");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "Fatal error: you must specify '--save', '--no-save' or '--vanilla'\n"
     );
 }

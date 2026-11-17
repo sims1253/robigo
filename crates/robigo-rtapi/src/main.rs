@@ -179,8 +179,9 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
             b"--vanilla" | b"--no-save" => save_given = true,
             b"--no-restore" | b"--no-environ" | b"--no-site-file" | b"--no-init-file" | b"--verbose" => {}
             _ if b.starts_with(b"--default-packages=") => {}
-            // R: the rest are commandArgs()'s
-            b"--args" if r_file.is_some() => break,
+            // R: the rest are commandArgs()'s, whatever the mode (an
+            // Rscript's FILE ends the options before it)
+            b"--args" => break,
             _ if b.starts_with(b"-") && exprs.is_empty() && file.is_none() => {
                 eprintln!("robigo-rt: unknown option '{}'", a.to_string_lossy());
                 return 2;
@@ -235,6 +236,19 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
         }
         s
     } else if stdin {
+        // non-interactive R needs the save action named, which a FILE
+        // implies (`if (ifp && ...) SaveAction = SA_NOSAVE`) and stdin does
+        // not: checked before anything is read (an open pipe does not hold
+        // it up)
+        // R: unix/system.c:Rf_initialize_R, R_Suicide
+        if !save_given {
+            eprintln!("Fatal error: you must specify '--save', '--no-save' or '--vanilla'");
+            return 2;
+        }
+        if !quiet {
+            eprintln!("robigo-rt: R's start-up greeting (R without --quiet) is not implemented yet");
+            return 2;
+        }
         // `-f -`: the console input is stdin
         let mut s = Vec::new();
         if let Err(e) = std::io::Read::read_to_end(&mut std::io::stdin(), &mut s) {
@@ -256,21 +270,11 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
         eprint!("{USAGE}");
         return 2;
     };
-    if r_mode {
-        // after the options (whose -f FILE is opened as they are read):
-        // non-interactive R needs the save action named, which a FILE
-        // implies (`if (ifp && ...) SaveAction = SA_NOSAVE`) and stdin does
-        // not
-        // R: unix/system.c:Rf_initialize_R, R_Suicide
-        if stdin && !save_given {
-            eprintln!("Fatal error: you must specify '--save', '--no-save' or '--vanilla'");
-            return 2;
-        }
-        // setup_Rmainloop's greeting, unless R_Quiet
-        if !quiet {
-            eprintln!("robigo-rt: R's start-up greeting (R without --quiet) is not implemented yet");
-            return 2;
-        }
+    // setup_Rmainloop's greeting, unless R_Quiet (a FILE's open error, at
+    // the options, comes first)
+    if r_mode && !stdin && !quiet {
+        eprintln!("robigo-rt: R's start-up greeting (R without --quiet) is not implemented yet");
+        return 2;
     }
 
     let mut iso = OwnedIsolate::new();
