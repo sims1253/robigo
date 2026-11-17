@@ -129,18 +129,47 @@ path is unchanged.
 ### Review
 
 - Sol round 1 (`01564e8c`): APPROVE, no findings.
+- Sol round 2 (`5ccf7ae2`, after the redesign below): CHANGES, S1
+  [should]: `Source::Site` carried the codes as a raw `Sexp` across
+  points that collect (the entry safepoint, `closure_code`, warning
+  handlers, the `...` list's allocation retries), stale after a moving
+  collection. Fixed in `d232ca12`: the site carries the codes' pool index
+  in the caller's code; `args::prepare` reads them from the caller's
+  rooted code where it uses them, after anything that collects (each
+  allocation attempt too); the builtin path reads them just before rooting.
+- Sol round 3 (`d232ca12`): APPROVE, S1 resolved, no new findings.
 
 ### Verification
 
-On main `f7378ac3` with #810 (`9987b86b`) merged, at `a3149e98`:
+On main `2a7f3be6` (#812, #808) merged, at `d232ca12`:
 
-- `scripts/rt-ci.py`: exit 0. Conformance 523/533: the 8 failing as on
-  main, plus `math/math1-compiled.R`, which #812 fixes. Every observation
-  mode, gctorture, the moving collector and fail-alloc pass (2800 runs,
-  0 differences). The crosscheck compared 127, 101 the same, 0 unexpected.
-- Miri, `cargo +nightly-2026-11-02 miri test -p robigo-rtcore` (rtcore
-  changed: `bytecode_expr`, `frame_arg_raw`, then also the early-force hook): 121
-  passed, 10 ignored, 0 failed.
+- `scripts/rt-ci.py`: exit 0. Conformance 536/542 (the 6 failing as on
+  main: the 5 `bytecode/` compiler-namespace cases and
+  `math/log-missing-class`); every observation mode, gctorture, the
+  moving collector, fail-alloc (2800 runs, 0 differences); the crosscheck
+  135 compared, 110 the same, 0 unexpected. `bctrans/promise.R` also
+  under `ROBIGO_GC_MOVE=1 ROBIGO_GCTORTURE=1`.
+- Miri, `cargo +nightly-2026-11-02 miri test -p robigo-rtcore` (rtcore:
+  `bytecode_expr`, `frame_arg_raw`): 122 passed, 10 ignored, 0 failed.
 - `scripts/lint.sh`, `cargo fmt --check`: clean.
-- perf-rt: measured after #812 lands, on top of it (S1's and C1's
-  vm.rs order: whoever lands second re-measures).
+- perf-rt (`scripts/perf.py rt-bars --main`, main `2a7f3be6`'s binary,
+  this runner): flat. plain -0.03%, defaults +0.01%, named +0.07%,
+  env-fn -0.02%, superassign +0.02%, s3 +0.15%, fib +0.02%, binarytrees
+  +0.25%, e7-* within ±0.02%; peak RSS within 2%; 0 failures.
+- The road there, on the same runner and baseline:
+  1. The codes as a `Call` field, threaded through `call::call`,
+     `inline::enter` and the early force: plain +4.8%, defaults +3.4%,
+     named +4.8%, env-fn +3.1%, superassign +1.6%, binarytrees +1.9%,
+     fib +7.5%. Callgrind: `inline::enter` +79 instructions a call.
+  2. Inlining declined for calls with codes, "no codes" a null `Sexp`:
+     plain +0.83% (`early_force` out of line; the codes still a
+     parameter of `call::call`).
+  3. `CallCodes` an op of its own, its arm one out-of-line call taking
+     `&View`: plain +3.2% (`call::call`, now with two callers, outlined
+     from `vm::run`).
+  4. `call::call` pinned inline: plain +1.7% (`reload!` of the `View`:
+     the out-of-line helper took its address).
+  5. `CallCodes`' arm shaped as `Call`'s, its path its own functions
+     (`call::call_codes`, `args::call_closure_codes`,
+     `call_builtin_list_codes`), `call::call`, `inline` and `early` as on
+     main: flat.
