@@ -182,8 +182,12 @@ pub fn do_filepath(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, o
     }
     cx.scope(|cx, s| {
         // the arguments as strings: an object through as.character(), a
-        // symbol its name, anything else coerceVector(xj, STRSXP)
+        // symbol its name, anything else coerceVector(xj, STRSXP). GNU R
+        // stores an object's value back into the list (SET_VECTOR_ELT),
+        // whose link keeps a later method from writing it in place;
+        // robigo links the values from a list of its own, as do_paste does
         let mut elts: Vec<Option<Root<'_>>> = Vec::with_capacity(nx);
+        let mut held: Option<Root<'_>> = None;
         let mut maxlen = 0usize;
         for j in 0..nx {
             let (is_str, is_obj) = {
@@ -199,6 +203,17 @@ pub fn do_filepath(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, o
                 if r.bind(cx).sexptype() != STRSXP {
                     return Err(non_string(cx, "file.path"));
                 }
+                let h = match held {
+                    Some(h) => h,
+                    None => {
+                        let h = s.capture(cx, |cx, o| {
+                            cx.build(o, |cx| Ok(cx.alloc_vector::<Ref<'_>>(nx)?.finish().into()))
+                        })?;
+                        held = Some(h);
+                        h
+                    }
+                };
+                cx.owned_list(h)?.set(j, r);
                 elts.push(Some(r));
                 r.bind(cx).len().unwrap_or(0)
             } else {

@@ -23,3 +23,10 @@ print(err(.Internal(file.path(1, "/"))))
 print(err(.Internal(file.path(list("a"), NA_character_))))
 print(err(.Internal(file.path(list("a"), character()))))
 print(err(.Internal(file.path(list(sum), "/"))))
+b <- "abc\xff"
+Encoding(b) <- "bytes"
+print(err(.Internal(dir.exists(c("/", b)))))
+l <- "a\x81"
+Encoding(l) <- "latin1"
+print(withCallingHandlers(.Internal(dir.exists(c("/", l))),
+  warning = function(w) { cat("Warning:", conditionMessage(w), "\n"); invokeRestart("muffleWarning") }))

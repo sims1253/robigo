@@ -34,3 +34,6 @@ character(0)
 [1] "invalid separator"
 [1] "invalid separator"
 [1] "cannot coerce type 'builtin' to vector of type 'character'"
+[1] "translating strings with \"bytes\" encoding is not allowed"
+Warning: unable to translate 'a<81>' to native encoding 
+[1]  TRUE FALSE

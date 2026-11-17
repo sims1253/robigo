@@ -212,9 +212,10 @@ pub fn do_rhome(
 }
 
 /// `.Internal(dir.exists(paths))`: whether each path names a directory
-/// (`stat`, so a link to one counts); NA and an untranslatable name are
-/// FALSE.
-// R: platform.c:do_direxists
+/// (`stat`, so a link to one counts). NA is FALSE; so is a name iconv
+/// cannot translate, after `translateCharFP2`'s warning; a "bytes" name
+/// is its error.
+// R: platform.c:do_direxists, sysutils.c:translateCharFP2
 pub fn do_direxists(
     cx: &mut Cx,
     call: robigo_rtcore::Root<'_>,
@@ -223,35 +224,36 @@ pub fn do_direxists(
     out: robigo_rtcore::Out<'_>,
 ) -> RResult<()> {
     crate::prims::check_arity(cx, call, args.len(), "dir.exists", 1, true)?;
-    let names: Option<Vec<Option<Vec<u8>>>> = match args.get(cx, 0).view() {
-        robigo_rtcore::View::Str(v) => Some(
-            (0..v.len())
-                .map(|i| {
-                    let c = v.get(i);
-                    // translateCharFP2: None where it cannot translate
-                    (c != cx.na_string())
-                        .then(|| {
-                            robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(c), cx.locale())
-                                .ok()
-                                .map(|b| b.into_owned())
-                        })
-                        .flatten()
-                })
-                .collect(),
-        ),
-        _ => None,
+    let fn_ = args.root(0);
+    let n = match fn_.bind(cx).view() {
+        robigo_rtcore::View::Str(v) => v.len(),
+        _ => return Err(cx.error("invalid filename argument")),
     };
-    let Some(names) = names else { return Err(cx.error("invalid filename argument")) };
-    let ans: Vec<robigo_rtcore::Lgl> = names
-        .iter()
-        .map(|n| {
-            let is_dir = n.as_ref().is_some_and(|b| {
-                let p = crate::connections::expand_file_name(b);
+    let loc = robigo_rtbuiltins::text::ctype(cx.locale());
+    let mut ans = Vec::with_capacity(n);
+    for i in 0..n {
+        let (tr, na) = {
+            let c = fn_.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
+            let tr = robigo_text::translate_char2(robigo_rtbuiltins::coerce::text(c), loc).map(|b| b.into_owned());
+            (tr, c == cx.na_string())
+        };
+        let p = match tr {
+            Ok(b) => Some(b),
+            Err(robigo_text::Untranslatable::Bytes) => {
+                return Err(cx.error("translating strings with \"bytes\" encoding is not allowed"));
+            }
+            Err(robigo_text::Untranslatable::Failed(m)) => {
+                cx.warning(&format!("unable to translate '{m}' to native encoding"))?;
+                None
+            }
+        };
+        let is_dir = !na
+            && p.is_some_and(|b| {
+                let p = crate::connections::expand_file_name(&b);
                 std::fs::metadata(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&p))
                     .is_ok_and(|m| m.is_dir())
             });
-            robigo_rtcore::Lgl(is_dir as i32)
-        })
-        .collect();
+        ans.push(robigo_rtcore::Lgl(is_dir as i32));
+    }
     cx.build(out, |cx| Ok(cx.alloc_copy(&ans)?.finish().into()))
 }
