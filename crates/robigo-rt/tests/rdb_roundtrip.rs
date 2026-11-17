@@ -205,13 +205,13 @@ fn roundtrip(
         cx.scope(|cx, s| {
             let o = s.out(cx);
             let v = o.root();
-            take_compact_sequences_expanded();
+            take_compact_sequences_expanded(cx);
             if let Err(e) = unserialize_bytes(cx, data.clone(), Some(hooks.0), o) {
                 let m = common::message(cx, e);
                 t.errors.push(format!("{name}: {m}"));
                 return;
             }
-            let expanded = take_compact_sequences_expanded() > 0;
+            let expanded = take_compact_sequences_expanded(cx) > 0;
             match serialize_bytes(cx, v, Format::Xdr, 3, Some(hooks.1)) {
                 Ok(b) if b == *want => {
                     t.same += 1;

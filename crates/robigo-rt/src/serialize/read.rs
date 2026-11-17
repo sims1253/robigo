@@ -936,7 +936,7 @@ impl<'r> Reader<'_, 'r> {
                 return Err(cx.error("robigo: a compact sequence's serialized state is not understood"));
             };
             let int = cls == b"compact_intseq";
-            COMPACT_EXPANDED.set(COMPACT_EXPANDED.get() + 1);
+            super::count_compact_expanded(cx);
             if inc != 1.0 && inc != -1.0 {
                 let msg = if int {
                     format!("compact sequences with increment {} not supported yet", inc as i32)
@@ -1427,15 +1427,4 @@ fn rep_index(cx: &mut Cx, reps: Root<'_>, i: i32, msg: &str) -> RResult<usize> {
         Ok(k) if (k as i64) < n => Ok(k),
         _ => Err(cx.error(&msg.replace("{i}", &i.to_string()).replace("{n}", &n.to_string()))),
     }
-}
-
-thread_local! {
-    /// The compact sequences read as standard vectors on this thread
-    /// ([`super::take_compact_sequences_expanded`]).
-    static COMPACT_EXPANDED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-/// [`COMPACT_EXPANDED`], reset.
-pub(super) fn take_compact_expanded() -> usize {
-    COMPACT_EXPANDED.replace(0)
 }
