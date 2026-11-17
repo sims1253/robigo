@@ -160,26 +160,26 @@
   - Startup (`invisible(1)`): main 40,659,642 instructions, BW 12,110,664
     (−70%). Peak RSS 26,524 against 26,508 KiB.
   - The gate, `scripts/perf.py rt-bars`, on the branch merged with main
-    `6bfbf91f` (BW `d6148372`, sha256 7c2f1c35158d2905), against main's
-    binary (sha256 0307fcd794173b57). It reports 0 failures
-    (`rt-bars.md`). Instructions per iteration:
+    `908cb765` (BW `0023e17f`, sha256 7cd2769ab7ed97f0, with the heap fix
+    below), against main's binary (sha256 f24cdde4c2c3bec4). It reports 0
+    failures (`rt-bars.md`). Instructions per iteration:
 
     | row | main | BW | change |
     |---|---:|---:|---:|
-    | env-fn | 2,503.6 | 1,942.3 | −22.42% |
-    | s3 | 18,764.2 | 18,815.8 | +0.28% |
-    | superassign | 4,928.8 | 4,940.8 | +0.24% |
-    | plain, defaults, named | | | −0.01%, +0.01%, −0.01% |
-    | fib, binarytrees | | | −0.00%, −0.00% |
-    | e7-paste, e7-unique | | | +0.06%, −0.00% |
-    | e7-match, median over the heap shifts (#761) | 92,197.7 | 92,304.6 | +0.12% |
+    | env-fn | 2,484.5 | 1,942.6 | −21.81% |
+    | s3 | 18,722.5 | 18,776.3 | +0.29% |
+    | superassign | 4,896.9 | 4,910.9 | +0.28% |
+    | plain, defaults, named | | | +0.00%, −0.01%, −0.01% |
+    | fib, binarytrees | | | −0.00%, +0.00% |
+    | e7-paste, e7-unique | | | +0.06%, −0.01% |
+    | e7-match, median over the heap shifts (#761) | 92,184.0 | 92,284.1 | +0.11% |
 
-    s3 reads 1.081x GNU R. #760 changed the rival to GNU R's stock build,
-    which leaves that bar not met yet on main too. superassign's +0.24% is
+    s3 reads 1.079x GNU R. #760 changed the rival to GNU R's stock build,
+    which leaves that bar not met yet on main too. superassign's +0.28% is
     the `memcmp` of `$`'s name compare, whose count follows the strings'
     addresses (see `2026-11-16-s1-alias.md`).
   - Peak RSS of the gate's programs (KiB, main against BW): binarytrees
-    26,440 / 26,484, listgrow 45,748 / 45,672, churn 74,372 / 73,860.
+    26,596 / 26,516, listgrow 46,324 / 46,240, churn 75,128 / 74,180.
   - e7-match is heap layout, not code. The row matches 100 strings into
     1,000 that its setup makes, and it hashes them by address (`cshash`,
     unique.c, ported), as GNU R does. No collection runs during the row:
@@ -198,8 +198,8 @@
     BW's lowest count equals main's lowest. Its unshifted layout falls in a
     band where the strings collide more. The foreman chose to gate the row
     on the median over shifts, which A1 built (#761). On the merged tree
-    the range over the gate's five shifts is BW 91,891.2–96,136.1 and main
-    91,898.3–92,290.9.
+    the range over the gate's five shifts is BW 91,930.4–96,071.2 and main
+    91,914.7–92,314.0.
 - The ratchet (condition (d)): `tests/r` on rt goes from 42 to 131 of
   632 byte-exact passes. The sweep ran 602 cases, and none ratcheted
   before regressed. With main's L1 merged, 2 more pass and are ratcheted:
@@ -306,19 +306,28 @@
   and the sorted names of `ls(baseenv(), all.names = TRUE)`, and matches
   GNU R 4.6.2's 1,407 byte for byte.
 - Proof:
-  - On the branch merged with main `6bfbf91f` (`694ff562`):
+  - On the branch merged with main `908cb765` (`0023e17f`, the heap fix
+    and the OCR fixes in):
     - `scripts/rt-ci.py` passes every step:
-      - conformance 415/419, with the four failing on main too;
-      - `ROBIGO_NO_INPLACE` 411/414 and `ROBIGO_MATERIALIZE` 415/419;
-      - gctorture, and `ROBIGO_GC_MOVE` with gctorture: 414/418;
-      - quarantine and the small vector limit: 415/419;
-      - stress, overshoot, the pin report, and injected failures (L1's E9
-        case among them) pass;
-    - `scripts/base-subset.sh --check` passes;
-    - Miri passes on `robigo-rtcore`; `scripts/lint.sh` and
+      - conformance 441/444, with the three `assign/link-walk-*` cases that
+        fail on main;
+      - `ROBIGO_NO_INPLACE` 436/438, after `tests/r/conditions/
+        replacement-rebind-in-handler` got an `inplace-identity` sidecar.
+        In GNU R, its `class<-` writes `x` in place before the handler
+        sees it, and the old runtime keeps that identity always;
+      - `ROBIGO_MATERIALIZE` 441/444;
+      - gctorture, and `ROBIGO_GC_MOVE` with gctorture: 440/443;
+      - quarantine and the small vector limit: 441/444;
+      - stress, overshoot, the pin report and injected failures pass;
+    - Miri passes on `robigo-rtcore`, on CI's `robigo-heap` set, and on
+      the heap's order test without a collection;
+    - `scripts/base-subset.sh` regenerates `base-subset.txt`, and the
+      others are unchanged;
+    - `scripts/lint.sh`, with the Sexp safety check, and
       `cargo fmt --check` are clean;
     - the gate reports 0 failures (above);
-    - the fastr corpus: 21,808 of 31,374 pass, with no regression.
+    - the fastr corpus: 22,134 of 31,374 pass, with no regression.
+  - The merge with main `6bfbf91f` (`694ff562`) passed the same checks.
   - The merge with main `c4a60e89` (`36e2f273`) passed the same checks.
   - `scripts/rt-ci.py` passed every step at `2b336662`, before the merge:
     - release tests;
