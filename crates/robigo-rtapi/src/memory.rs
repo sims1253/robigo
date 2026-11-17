@@ -207,7 +207,7 @@ fn duplicates(t: u8) -> bool {
 /// onexit)`: GNU R's key check, the value duplicated if it is referenced,
 /// then the reference, registered with the collector.
 // R: memory.c:NewWeakRef
-fn new_weak_ref<'s>(
+pub(crate) fn new_weak_ref<'s>(
     cx: &mut Cx,
     s: Scope<'s>,
     key: Root<'_>,

@@ -40,93 +40,130 @@ pub fn include_flags() -> Vec<String> {
 pub fn support_so() -> &'static Path {
     static SO: OnceLock<PathBuf> = OnceLock::new();
     SO.get_or_init(|| {
-        use std::hash::{Hash, Hasher};
         let src = root().join("crates/robigo-rtapi/tests/support/capi_test.c");
-        let flags = include_flags();
-        // the compiler's own arguments, before the output's name
-        const CC_ARGS: [&str; 4] = ["-fPIC", "-shared", "-O1", "-g"];
-        let mut h = std::hash::DefaultHasher::new();
-        let mut inputs = vec![src.clone()];
-        let layout = PathBuf::from(env!("ROBIGO_LAYOUT_INCLUDE"));
-        for dir in [root().join("crates/robigo-rtapi/include"), root().join("crates/robigo-rtcore/include"), layout] {
-            let mut files: Vec<PathBuf> =
-                std::fs::read_dir(&dir).expect("reading robigo's headers").map(|e| e.unwrap().path()).collect();
-            files.sort();
-            inputs.extend(files);
-        }
-        for f in &inputs {
-            std::fs::read(f).unwrap_or_else(|e| panic!("reading {}: {e}", f.display())).hash(&mut h);
-        }
-        flags.hash(&mut h);
-        CC_ARGS.hash(&mut h);
-        // the compiler, as named and as it reports itself, and the pinned
-        // GNU R tree whose headers the flags name (its stamp)
-        let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
-        cc.hash(&mut h);
-        let version = std::process::Command::new(&cc).arg("--version").output().expect("running cc --version");
-        version.stdout.hash(&mut h);
-        std::fs::read(rsrc().join(".rsrc-pinned")).unwrap_or_default().hash(&mut h);
-        let key = h.finish();
-        let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
-        let out = dir.join(format!("capi_test-{key:016x}.so"));
-        // the lookup, the refresh, a build and the cleanup under one lock of
-        // the directory's, which other processes take for theirs: a cleanup
-        // never removes an object between another run's lookup and refresh
-        let lock = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(dir.join("capi_test.lock"))
-            .expect("opening the support objects' lock");
-        lock.lock().expect("locking the support objects");
-        if out.exists() {
-            // each use dates the object (before it is loaded): the cleanup
-            // below removes only what no run has used for a day
-            if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&out) {
-                let _ = f.set_modified(std::time::SystemTime::now());
-            }
-        } else {
-            // (built under a name of this process's, then renamed: another
-            // process may build the same object at once)
-            let tmp = dir.join(format!("capi_test-{key:016x}.so.{}", std::process::id()));
-            let st = std::process::Command::new(&cc)
-                .args(CC_ARGS)
-                .arg("-o")
-                .arg(&tmp)
-                .args(&flags)
-                .arg(&src)
-                .status()
-                .expect("running cc");
-            assert!(st.success(), "building {}", src.display());
-            // (a rename that fails while another process's identical object
-            // is in place leaves a usable one)
-            if let Err(e) = std::fs::rename(&tmp, &out) {
-                let _ = std::fs::remove_file(&tmp);
-                assert!(out.exists(), "renaming {}: {e}", tmp.display());
-            }
-            remove_stale_objects(dir, &out);
-        }
-        drop(lock);
+        let key = support_key(&src, &[]);
+        let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("capi_test-{key:016x}.so"));
+        build_support(&src, &[], &out);
         out
     })
+}
+
+/// `tests/support/<src>` built with `defines` (`-D...` flags) into
+/// `<name>.so`, in a directory named by what goes into it: `dyn.load` names
+/// an object by its file (`R_init_<name>`), so the name is the file's.
+pub fn support_object(src: &str, name: &str, defines: &[&str]) -> PathBuf {
+    let src = root().join("crates/robigo-rtapi/tests/support").join(src);
+    let defines: Vec<String> = defines.iter().map(|d| d.to_string()).collect();
+    let key = support_key(&src, &defines);
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("capi_test-{name}-{key:016x}"));
+    std::fs::create_dir_all(&dir).expect("making a support object's directory");
+    let out = dir.join(format!("{name}.so"));
+    build_support(&src, &defines, &out);
+    out
+}
+
+/// The compiler's own arguments, before the output's name.
+const CC_ARGS: [&str; 4] = ["-fPIC", "-shared", "-O1", "-g"];
+
+/// What a support object is built from, hashed: the source, robigo's
+/// headers, the flags, the compiler (as named and as it reports itself) and
+/// the pinned GNU R tree whose headers the flags name (its stamp).
+fn support_key(src: &Path, extra: &[String]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let flags = include_flags();
+    let mut h = std::hash::DefaultHasher::new();
+    let mut inputs = vec![src.to_path_buf()];
+    let layout = PathBuf::from(env!("ROBIGO_LAYOUT_INCLUDE"));
+    for dir in [root().join("crates/robigo-rtapi/include"), root().join("crates/robigo-rtcore/include"), layout] {
+        let mut files: Vec<PathBuf> =
+            std::fs::read_dir(&dir).expect("reading robigo's headers").map(|e| e.unwrap().path()).collect();
+        files.sort();
+        inputs.extend(files);
+    }
+    for f in &inputs {
+        std::fs::read(f).unwrap_or_else(|e| panic!("reading {}: {e}", f.display())).hash(&mut h);
+    }
+    flags.hash(&mut h);
+    extra.hash(&mut h);
+    CC_ARGS.hash(&mut h);
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+    cc.hash(&mut h);
+    let version = std::process::Command::new(&cc).arg("--version").output().expect("running cc --version");
+    version.stdout.hash(&mut h);
+    std::fs::read(rsrc().join(".rsrc-pinned")).unwrap_or_default().hash(&mut h);
+    h.finish()
+}
+
+/// Build `src` with `extra` flags into `out` unless it is there.
+fn build_support(src: &Path, extra: &[String], out: &Path) {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+    // the lookup, the refresh, a build and the cleanup under one lock of
+    // the directory's, which other processes take for theirs: a cleanup
+    // never removes an object between another run's lookup and refresh
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("capi_test.lock"))
+        .expect("opening the support objects' lock");
+    lock.lock().expect("locking the support objects");
+    if out.exists() {
+        // each use dates the object (before it is loaded): the cleanup
+        // below removes only what no run has used for a day
+        if let Ok(f) = std::fs::OpenOptions::new().write(true).open(out) {
+            let _ = f.set_modified(std::time::SystemTime::now());
+        }
+    } else {
+        // (built under a name of this process's, then renamed: another
+        // process may build the same object at once)
+        let tmp = PathBuf::from(format!("{}.{}", out.display(), std::process::id()));
+        let st = std::process::Command::new(&cc)
+            .args(CC_ARGS)
+            .arg("-o")
+            .arg(&tmp)
+            .args(include_flags())
+            .args(extra)
+            .arg(src)
+            .status()
+            .expect("running cc");
+        assert!(st.success(), "building {}", src.display());
+        // (a rename that fails while another process's identical object
+        // is in place leaves a usable one)
+        if let Err(e) = std::fs::rename(&tmp, out) {
+            let _ = std::fs::remove_file(&tmp);
+            assert!(out.exists(), "renaming {}: {e}", tmp.display());
+        }
+        remove_stale_objects(dir, out);
+    }
+    drop(lock);
 }
 
 /// The support objects of other keys that no run has used for a day
 /// removed, once a new one is built (under the directory's lock): the
 /// directory is the target directory's, which checkouts share, and a run
 /// dates the object it uses, under the lock, before loading it, so an
-/// object another checkout uses stays.
+/// object another checkout uses stays. A directory of [`support_object`]'s
+/// goes with its object.
 fn remove_stale_objects(dir: &Path, keep: &Path) {
     let day = std::time::Duration::from_secs(24 * 60 * 60);
+    let old = |p: &Path| {
+        std::fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|a| a > day)
+    };
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for e in entries.flatten() {
         let p = e.path();
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if p == keep || !name.starts_with("capi_test-") {
+        if p == keep || keep.starts_with(&p) || !name.starts_with("capi_test-") {
             continue;
         }
-        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|a| a > day);
-        if old {
+        if p.is_dir() {
+            let objects: Vec<PathBuf> =
+                std::fs::read_dir(&p).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+            if objects.iter().all(|o| old(o)) {
+                let _ = std::fs::remove_dir_all(&p);
+            }
+        } else if old(&p) {
             let _ = std::fs::remove_file(&p);
         }
     }
