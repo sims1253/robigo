@@ -64,3 +64,21 @@
   (`keep.source = TRUE`), the parse errors GNU R raises as `parseError`
   conditions, parsing from the console, `parse(n = )` on an open
   connection that is not a file, attaching a user-defined database.
+- Follow-ups, deferred by the foreman (OCR round 1 on #769):
+  - `parse()` from a connection reads all of what is left into one
+    buffer and gives back what follows the n-th expression
+    (r4596397588). GNU R's `R_ParseConn` reads through `Rconn_fgetc` and
+    stops soon after it.
+  - `writeLines` builds all of its output before it writes
+    (r4596397636). GNU R writes each element as it goes.
+- `writeLines` follows `do_writelines`, which OCR round 1 misread in
+  places (`tests/rt/connections/writelines.R`, recorded on 4.6.2):
+  - A connection that is not open is opened in mode "wt" before
+    `canwrite` is checked, as GNU R documents, so it replaces the file.
+    One that is open read-only refuses and leaves the file alone.
+  - `sep` need only be a character vector: GNU R uses the first element,
+    and an empty one fails in `translateChar0`.
+  - `useBytes` that `asLogical` makes NA is an error.
+  - A write the system fails raises nothing, as `Rconn_printf`'s result
+    is not looked at. A read the system fails ends `parse()`'s input, as
+    `fgetc`'s EOF does in `R_ParseConn`.

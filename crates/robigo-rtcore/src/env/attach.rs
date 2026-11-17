@@ -11,13 +11,16 @@ use robigo_heap::env;
 use robigo_heap::types::*;
 
 impl Cx {
-    /// `SET_FRAME(s, frame); R_HashFrame(s)` then `while
+    /// `R_HashFrame(s)` over `attach`'s frame, then `while
     /// (R_HashSizeCheck(HASHTAB(s))) SET_HASHTAB(s, R_HashResize(...))`:
     /// `attach`'s way to fill the new hashed environment `env` (a shell
     /// from [`Cx::new_env`] of the table size GNU R asks for, nothing bound
     /// yet). Each binding cell of the pairlist `frame` goes, in order, to
-    /// the head of its chain, counting only the chains it starts; the
-    /// cells are relinked, not copied.
+    /// the head of its chain, counting only the chains it starts. The cells
+    /// are relinked, not copied, so `frame` is consumed: GNU R's
+    /// `SET_FRAME(s, frame)` before it has no counterpart, a hashed
+    /// environment's bindings being its table's alone, and `frame` must not
+    /// be used as a frame afterwards.
     // R: envir.c:R_HashFrame, do_attach
     pub fn hash_frame(&mut self, env: Root<'_>, frame: Root<'_>) -> RResult<()> {
         let iso = self.iso();
@@ -25,21 +28,33 @@ impl Cx {
         iso.check_owns(e);
         iso.check_owns(f);
         let nil = iso.nil;
-        // SAFETY: rooted, live; every cell is checked to be a binding cell
-        // before any is relinked.
-        unsafe {
-            let Kind::Hashed(t) = kind(iso, e) else {
-                return Err(env_error(self, "robigo: hash_frame of an environment that is not hashed"));
-            };
-            let mut cells = Vec::new();
-            let mut c = f;
-            while c != nil {
-                if c.typ() != LISTSXP || c.tag().typ() != SYMSXP {
-                    return Err(env_error(self, "robigo: hash_frame of a frame that is not a frame"));
-                }
-                cells.push(c);
-                c = c.cdr();
+        // SAFETY: `e` is a rooted, live object of this isolate.
+        let Kind::Hashed(t) = (unsafe { kind(iso, e) }) else {
+            return Err(env_error(self, "robigo: hash_frame of an environment that is not hashed"));
+        };
+        // the frame's cells, each checked to be a binding cell before any
+        // is relinked
+        let mut cells = Vec::new();
+        let mut c = f;
+        while c != nil {
+            // SAFETY: `c` is `frame` or the CDR of a cell of it: a live
+            // object of the rooted pairlist, read without allocating.
+            let (cell, next) = unsafe { (c.typ() == LISTSXP && c.tag().typ() == SYMSXP, c.cdr()) };
+            if !cell {
+                return Err(env_error(
+                    self,
+                    "robigo: hash_frame of a frame with a cell that is not a pairlist node tagged with a symbol",
+                ));
             }
+            cells.push(c);
+            c = next;
+        }
+        // SAFETY: `t` is the live table of the rooted `env` and each cell a
+        // binding cell of the rooted `frame`; nothing here allocates, so no
+        // collection moves or frees what these raw words name before the
+        // loop ends; `hashtab::index` is below the table's length, and the
+        // stores go through `Sexp::store`'s barrier.
+        unsafe {
             for c in cells {
                 let i = hashtab::index(c.tag(), t);
                 let chain = hashtab::chain_at(t, i);
@@ -97,7 +112,7 @@ mod tests {
             for (n, v) in [(&b"a"[..], 1.0), (b"b", 2.0), (b"c", 3.0)] {
                 assert_eq!(value(cx, s, env, n), v);
             }
-            let t = cx.env_hashtab_for_tests(env.bind(cx));
+            let t = hashtab_of(cx, env.bind(cx));
             assert!(t.len().unwrap() > 1, "the table grew");
         });
     }
@@ -110,7 +125,7 @@ mod tests {
             let env = s.capture(cx, |cx, o| cx.build(o, |cx| cx.new_env(cx.nil(), true, 29))).unwrap();
             let f = cells(cx, s);
             cx.hash_frame(env, f).unwrap();
-            let t = cx.env_hashtab_for_tests(env.bind(cx));
+            let t = hashtab_of(cx, env.bind(cx));
             assert_eq!(t.len(), Some(29));
             let filled = (0..29).filter(|&i| t.as_vector::<Ref<'_>>().unwrap().get(i) != cx.nil()).count();
             assert_eq!(t.truelength(), filled);
@@ -118,15 +133,13 @@ mod tests {
         });
     }
 
-    impl Cx {
-        /// HASHTAB(env), for this module's tests.
-        fn env_hashtab_for_tests<'g>(&'g self, env: crate::Ref<'g>) -> crate::Ref<'g> {
-            // SAFETY: a live environment of this isolate; its table is live.
-            unsafe {
-                match kind(self.iso(), env.sexp()) {
-                    Kind::Hashed(t) => crate::Ref::from_sexp(t, self),
-                    _ => self.nil(),
-                }
+    /// HASHTAB(env), for this module's tests.
+    fn hashtab_of<'g>(cx: &'g Cx, env: crate::Ref<'g>) -> crate::Ref<'g> {
+        // SAFETY: a live environment of this isolate; its table is live.
+        unsafe {
+            match kind(cx.iso(), env.sexp()) {
+                Kind::Hashed(t) => crate::Ref::from_sexp(t, cx),
+                _ => cx.nil(),
             }
         }
     }
