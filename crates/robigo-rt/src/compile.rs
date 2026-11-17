@@ -1667,7 +1667,7 @@ impl<'g> Comp<'g> {
             }
             let ifun = icall.car();
             let inner = cx.alloc_node_raw(LANGSXP, ifun, l, nil)?;
-            Ok(Some(Handler::SimpleInternal { inner, internal: ifun.tag() }))
+            Ok(Some(Handler::SimpleInternal { inner, internal: cx.internal_raw(ifun) }))
         }
     }
 
@@ -2532,7 +2532,7 @@ impl<'g> Comp<'g> {
                     if fun.typ() != SYMSXP {
                         return self.error_op(e, "invalid .Internal() argument", true);
                     }
-                    let internal = fun.tag();
+                    let internal = self.cx.internal_raw(fun);
                     if internal == nil {
                         let name = String::from_utf8_lossy(fun.car().char_bytes()).into_owned();
                         let msg = format!("there is no .Internal function '{name}'");
