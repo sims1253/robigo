@@ -128,4 +128,23 @@ The conformance crosscheck: 116 the same, 21 expected, 3 skipped,
 
 ### Verification
 
-VERIFICATION
+The first cut was verified on V4 step 2's head (with #824's OCR fix
+`d278f3c9`), at `6883d428`:
+- `scripts/rt-ci.py`: exit 0. Conformance 536/542, with the 6 failing as
+  on main. Every observation mode, the moving collector and fail-alloc
+  pass (2800 runs, 0 differences).
+- perf-rt: flat, every row within +0.25%.
+
+After Sol's round 1, at `48e3c39b`:
+- robigo-rt's conformance: 537/543. The new `bctrans/visible.R` passes and
+  is ratcheted; the 6 failing are the same as before.
+- The rdb tests, under the crosscheck: 3 passed. The translation test
+  holds V3's numbers.
+- perf-rt (`scripts/perf.py rt-bars --main`, main `2a7f3be6`'s binary):
+  flat. The worst row is binarytrees at +0.30%, the call rows are 0.2%
+  faster, and peak RSS is within 2%. The translation's tail change
+  reaches base's translated closures, but the M1 rows' code is compiled
+  from source.
+- The full `scripts/rt-ci.py`, with the observation modes and the moving
+  collector, ran on step 5c's head, which has this step whole.
+- `cargo fmt --check`, `scripts/lint.sh`: clean.
