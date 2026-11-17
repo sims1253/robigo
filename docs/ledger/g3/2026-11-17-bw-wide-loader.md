@@ -156,33 +156,37 @@
     same (305,890 and 308,343): each one traces a smaller live heap. The
     step keeps its 600 s timeout.
 - Measurements (WSL2 workstation, Ryzen 9 5900X, rustc 1.100.0; release
-  `robigo-rt` from `~/.cache/cargo-target-s1`; `scripts/perf.py rt-bars`
-  against main `fb429442`'s binary, whose code is the branch's base
-  `518f77c1`; `data/2026-11-17-bw-wide-loader/`):
+  `robigo-rt` from `~/.cache/cargo-target-s1`; `data/2026-11-17-bw-wide-loader/`):
   - Startup (`invisible(1)`): main 40,659,642 instructions, BW 12,110,664
     (−70%). Peak RSS 26,524 against 26,508 KiB.
-  - Gate rows (instructions per iteration):
+  - The gate, `scripts/perf.py rt-bars`, on the branch merged with main
+    `c4a60e89` (BW `3c734519`, sha256 c14f910f87297d92), against main's
+    binary (sha256 c70f0a3b2ef28b16). It reports 0 failures
+    (`rt-bars.md`). Instructions per iteration:
 
     | row | main | BW | change |
     |---|---:|---:|---:|
-    | env-fn | 2,503.6 | 1,942.1 | −22.43% |
-    | s3 | 18,747.2 | 18,806.2 | +0.31% |
-    | superassign | 4,937.9 | 4,940.1 | +0.05% |
-    | plain, defaults, named | | | −0.02%, +0.00%, +0.00% |
+    | env-fn | 2,503.6 | 1,942.9 | −22.39% |
+    | s3 | 18,747.5 | 18,806.4 | +0.31% |
+    | superassign | 4,937.9 | 4,939.9 | +0.04% |
+    | plain, defaults, named | | | −0.02%, −0.01%, −0.02% |
     | fib, binarytrees | | | +0.00%, −0.00% |
-    | e7-paste, e7-unique | | | +0.04%, +0.01% |
-    | e7-match | 99,035.9 | 103,148.9 | +4.15% (below) |
+    | e7-paste, e7-unique | | | +0.07%, −0.01% |
+    | e7-match, median over the heap shifts (#761) | 92,020.3 | 92,279.6 | +0.28% |
 
+    s3 reads 1.080x GNU R now. #760 changed the rival to GNU R's stock
+    build, which leaves that bar not met yet on main too (1.077x).
   - Peak RSS of the gate's programs (KiB, main against BW): binarytrees
-    26,528 / 26,620, listgrow 45,240 / 45,176, churn 73,616 / 73,384.
+    26,500 / 26,552, listgrow 45,392 / 45,288, churn 73,856 / 73,300.
   - e7-match is heap layout, not code. The row matches 100 strings into
     1,000 that its setup makes, and it hashes them by address (`cshash`,
     unique.c, ported), as GNU R does. No collection runs during the row:
     small objects are bump-allocated in 64 KiB blocks, so the strings'
     addresses jump where their size class moves to its next block. BW's
-    smaller startup moves those points. Shifting the heap with
+    smaller startup moves those points. Against main `fb429442`, before
+    #757 and #761, the unshifted row read +4.15%. Shifting the heap with
     `zz <- paste0('z', 1:k)` before the setup (callgrind per iteration,
-    N/2N as the gate runs it):
+    N/2N as the gate runs it; `e7-match-shifts.md`):
 
     | k | 0 | 1 | 3 | 10 | 30 | 100 | 300 | 600 | 1000 | 1500 | 2000 | 3000 | 5000 |
     |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -190,7 +194,10 @@
     | BW | 103,129 | 102,812 | 102,921 | 102,857 | 102,746 | 103,570 | 99,610 | 99,313 | 98,907 | 99,141 | 99,292 | 99,301 | 98,940 |
 
     BW's lowest count equals main's lowest. Its unshifted layout falls in a
-    band where the strings collide more. TODO(foreman's decision).
+    band where the strings collide more. The foreman chose to gate the row
+    on the median over shifts, which A1 built (#761). On the merged tree
+    the range over the gate's five shifts is BW 91,911.7–96,111.9 and main
+    91,887.4–92,250.8.
 - The ratchet (condition (d)): `tests/r` on rt goes from 42 to 131 of
   632 byte-exact passes. The sweep ran 602 cases, and none ratcheted
   before regressed. A 132nd case, `cli/exit-warnings`, also passes but is
