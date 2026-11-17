@@ -798,13 +798,32 @@ pub fn do_eval(cx: &mut Cx, call: Root<'_>, args: robigo_rtcore::Args<'_>, rho: 
             let i = st.defs.iter().position(|d| d.internal() && d.name == "eval").expect("robigo: eval in the table");
             s.root(cx, st.objs[i].bind(cx))
         };
+        // (the record's args are evalList's list, whose cells count no
+        // references, CONS_NR: the expression's references stay its
+        // bindings', so a write into it while it runs is in place)
         let promargs = s.capture(cx, |cx, o| {
             cx.build(o, |cx| {
-                let mut l = cx.nil();
+                let nil = cx.nil().sexp();
+                let mut l = nil;
                 for i in (0..args.len()).rev() {
-                    l = cx.cons(args.get(cx, i), l)?;
+                    let v = args.get(cx, i).sexp();
+                    // SAFETY: the call's live values and the list made so
+                    // far; nothing collects in this interval
+                    l = unsafe {
+                        let c = cx.alloc_node_raw(LISTSXP, v, l, nil)?;
+                        // CONS_NR: the construction's counts undone, and
+                        // none later
+                        v.decref();
+                        if l != nil {
+                            l.decref();
+                        }
+                        c.set_flag(robigo_heap::flags::NO_TRACKREFS, true);
+                        c
+                    };
                 }
-                Ok(l)
+                // SAFETY: a live object of this isolate: the first cell made
+                // above, or with no arguments R_NilValue (immortal).
+                Ok(unsafe { Ref::from_sexp(l, cx) })
             })
         })?;
         let spec = FunctionContext {
