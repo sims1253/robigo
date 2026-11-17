@@ -178,7 +178,7 @@
     band where the strings collide more. TODO(foreman's decision).
 - The ratchet (condition (d)): `tests/r` on rt goes from 42 to 131 of
   632 byte-exact passes. The sweep ran 602 cases, and none ratcheted
-  before regressed. A 133rd case, `cli/exit-warnings`, also passes but is
+  before regressed. A 132nd case, `cli/exit-warnings`, also passes but is
   not ratcheted. Its finalizer is registered on an environment nothing
   holds, and the recording assumes no collection before exit. Under
   rt-ci's gctorture conformance (E3) the environment is collected during
