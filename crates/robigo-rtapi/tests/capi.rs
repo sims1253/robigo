@@ -223,6 +223,10 @@ fn printing_a_package_altrep_vector_is_not_implemented_yet() {
 fn the_attribute_setters_read_a_package_altrep_length() {
     for p in PROFILES {
         let mut s = Session::new(p);
+        // production identities: a setter writes an unshared package
+        // ALTREP vector in place (under ROBIGO_NO_INPLACE it would copy it,
+        // through its Duplicate method, which robigo refuses)
+        s.cx().set_no_inplace(false);
         s.val("z <- .Call(\"rt_altrep_str\", c(\"ff\", \"10\"))");
         s.val("zi <- .Call(\"rt_altrep_int\", 5:6); zr <- .Call(\"rt_altrep_real\", c(1, 2, 1))");
         s.val("zl <- .Call(\"rt_altrep_list\", list(c(\"a\", \"b\"), NULL))");
@@ -293,6 +297,10 @@ fn the_attribute_setters_read_a_package_altrep_length() {
 fn the_attribute_setters_call_the_length_method_as_gnu_r_does() {
     for p in PROFILES {
         let mut s = Session::new(p);
+        // production identities: a setter writes an unshared package
+        // ALTREP vector in place (under ROBIGO_NO_INPLACE it would copy it,
+        // through its Duplicate method, which robigo refuses)
+        s.cx().set_no_inplace(false);
         for (setup, assign, calls) in [
             ("x <- c(1, 2); z <- .Call(\"rt_altrep_str\", c(\"a\", \"b\"))", "names(x) <- z", 2),
             ("x <- 1; z <- .Call(\"rt_altrep_str\", c(\"a\", \"b\"))", "names(x) <- z", 3),

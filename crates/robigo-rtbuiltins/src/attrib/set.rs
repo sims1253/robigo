@@ -223,29 +223,31 @@ pub fn namesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
         } else {
             coerce_vector(cx, val, STRSXP, o)?;
         }
-        // the lengths in GNU R's order of reading (a package ALTREP vector's
-        // is its Length method)
-        if xlength_mut(cx, v)? < xlength_mut(cx, x)? {
-            // xlengthgets reads the elements (STRING_ELT)
-            if v.bind(cx).is_package_altrep() {
-                return Err(not_yet(cx, None, "recycling package ALTREP names"));
-            }
-            let nx = xlength_mut(cx, x)?;
-            let o = s.out(cx);
-            let r = o.root();
-            cx.build(o, |cx| crate::seq::xlengthgets(cx, v.bind(cx), nx))?;
-            v.replace_from(cx, r);
-        }
-        // checkNames
         let (xt, s4) = (x.bind(cx).sexptype(), x.bind(cx).is_s4());
-        if is_vector(x.bind(cx)) || matches!(xt, LISTSXP | LANGSXP) {
-            if xlength_mut(cx, x)? != xlength_mut(cx, v)? {
-                // (the message reads both again)
-                let (nv, nx) = (xlength_mut(cx, v)?, xlength_mut(cx, x)?);
-                let msg = format!("'names' attribute [{nv}] must be the same length as the vector [{nx}]");
-                return Err(cx.error(&msg));
+        let checked = is_vector(x.bind(cx)) || matches!(xt, LISTSXP | LANGSXP);
+        // (`len` is None for a package ALTREP vector, whose length is its
+        // Length method, and for the objects xlength counts as 1)
+        let (lx, lv) = (x.bind(cx).len(), v.bind(cx).len());
+        if (lx.is_none() && x.bind(cx).is_package_altrep()) || (lv.is_none() && v.bind(cx).is_package_altrep()) {
+            names_lengths_altrep(cx, x, v, checked)?;
+        } else {
+            let nx = lx.unwrap_or(1);
+            if lv.unwrap_or(1) < nx {
+                let o = s.out(cx);
+                let r = o.root();
+                cx.build(o, |cx| crate::seq::xlengthgets(cx, v.bind(cx), nx))?;
+                v.replace_from(cx, r);
             }
-        } else if !s4 {
+            // checkNames
+            if checked {
+                let nv = v.bind(cx).len().unwrap_or(1);
+                if nx != nv {
+                    let msg = format!("'names' attribute [{nv}] must be the same length as the vector [{nx}]");
+                    return Err(cx.error(&msg));
+                }
+            }
+        }
+        if !checked && !s4 {
             return Err(cx.error("names() applied to a non-vector"));
         }
         if one_dimensional(x.bind(cx)) {
@@ -283,6 +285,27 @@ pub fn namesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
         }
         install_named(cx, x, RSym::Names, v)
     })
+}
+
+/// [`namesgets`]' length checks when the object or its names are a
+/// package ALTREP vector: the lengths read in GNU R's order and as often
+/// (each a Length method call): the recycling test, then `checkNames` (if
+/// `checked`: `x` a vector, pairlist or call), whose message reads both
+/// again. Recycling package ALTREP names reads their elements: refused.
+// R: attrib.c:namesgets, attrib.c:checkNames
+#[cold]
+#[inline(never)]
+fn names_lengths_altrep(cx: &mut Cx, x: Root<'_>, v: Root<'_>, checked: bool) -> RResult<()> {
+    if xlength_mut(cx, v)? < xlength_mut(cx, x)? {
+        // xlengthgets reads the elements (STRING_ELT)
+        return Err(not_yet(cx, None, "recycling package ALTREP names"));
+    }
+    if checked && xlength_mut(cx, x)? != xlength_mut(cx, v)? {
+        let (nv, nx) = (xlength_mut(cx, v)?, xlength_mut(cx, x)?);
+        let msg = format!("'names' attribute [{nv}] must be the same length as the vector [{nx}]");
+        return Err(cx.error(&msg));
+    }
+    Ok(())
 }
 
 /// `dimgets(vec, val)`: `val` as integers (`coerceVector`), whose product
