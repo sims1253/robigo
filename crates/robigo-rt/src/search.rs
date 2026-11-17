@@ -213,9 +213,10 @@ pub fn do_detach(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
 // R: envir.c:do_search
 pub fn do_search(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::prims::check_arity(cx, call, args.len(), "search", 0, true)?;
-    let g = cx.global_env().sexp();
-    let base = cx.base_env().sexp();
     cx.build(out, |cx| {
+        // (read on each try: a collection between tries may move objects)
+        let g = cx.global_env().sexp();
+        let base = cx.base_env().sexp();
         let mut names: Vec<robigo_rtcore::Char<'_>> = vec![cx.mk_char(b".GlobalEnv", Encoding::Native)?];
         let mut t = enclos(cx, g);
         while t != base {

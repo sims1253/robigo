@@ -430,18 +430,7 @@ pub fn do_import_into_env(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
             while cur.bind(cx).sexp() != cx.empty_env().sexp() {
                 let c = cur.bind(cx).sexp();
                 if c == cx.base_namespace().sexp() || c == cx.base_env().sexp() {
-                    // SYMVALUE(expsym)
-                    let base = s.root(cx, cx.base_env());
-                    let v = s.capture(cx, |cx, o| find_in_frame(cx, base, expsym, o))?;
-                    if v.bind(cx).sexp() != cx.unbound().sexp() {
-                        let active = cx.binding_is_active(expsym, base)?;
-                        let v = if active {
-                            s.capture(cx, |cx, o| cx.active_binding_function(expsym, base, o))?
-                        } else {
-                            raw_binding_value(cx, s, base, expsym)?
-                        };
-                        found = Some((v, active));
-                    }
+                    found = symvalue(cx, s, expsym);
                     break;
                 }
                 let o = s.out(cx);
@@ -463,16 +452,14 @@ pub fn do_import_into_env(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
             }
             let (val, active) = match found {
                 Some(f) => f,
-                None => {
-                    // binding = expsym: SYMVALUE
-                    let base = s.root(cx, cx.base_env());
-                    let v = s.capture(cx, |cx, o| find_in_frame(cx, base, expsym, o))?;
-                    if v.bind(cx).sexp() == cx.unbound().sexp() {
+                // binding = expsym: SYMVALUE
+                None => match symvalue(cx, s, expsym) {
+                    Some(f) => f,
+                    None => {
                         let nm = String::from_utf8_lossy(expsym.bind(cx).as_sym().unwrap().name().bytes()).into_owned();
                         return Err(cx.error(&format!("exported symbol '{nm}' has no value")));
                     }
-                    (raw_binding_value(cx, s, base, expsym)?, false)
-                }
+                },
             };
             if active { cx.make_active_binding(impsym, val, impenv) } else { cx.define_var(impsym, val, impenv) }
         })?;
@@ -481,10 +468,18 @@ pub fn do_import_into_env(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
     Ok(())
 }
 
-/// A binding's value as GNU R's CAR of the cell holds it (a promise not
-/// forced).
-fn raw_binding_value<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>, sym: Root<'_>) -> RResult<Root<'s>> {
-    s.capture(cx, |cx, o| find_in_frame(cx, env, sym, o))
+/// `SYMVALUE(sym)`, base's binding as its cell holds it (a promise not
+/// forced, an active binding's function not called), and whether it is an
+/// active binding; None when unbound.
+fn symvalue<'s>(cx: &Cx, s: Scope<'s>, sym: Root<'_>) -> Option<(Root<'s>, bool)> {
+    let (Some(base), Some(y)) = (crate::dispatch::env_ref(cx.base_env()), sym.bind(cx).as_sym()) else { return None };
+    let Lookup::Bound(b) = cx.frame_binding(base, y) else { return None };
+    match b.get(cx) {
+        BindingValue::Value(v) => Some((s.root(cx, v), false)),
+        BindingValue::Active(f) => Some((s.root(cx, f), true)),
+        // (base's cells hold objects)
+        BindingValue::Deferred => None,
+    }
 }
 
 fn install_first_at<'s>(cx: &mut Cx, s: Scope<'s>, v: Root<'_>, i: usize) -> RResult<Root<'s>> {
@@ -533,11 +528,13 @@ pub fn do_envir_name(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
         return cx.build(out, |cx| cx.mk_string(b, robigo_rtcore::Encoding::Native));
     }
     // the first element of the package name or the spec, as a string vector
-    let first = if is_package_env(cx, x) { name_attr(cx, x) } else { namespace_spec(cx, x) };
-    if let Some(v) = first {
+    let first = |cx: &Cx, x: Sexp| if is_package_env(cx, x) { name_attr(cx, x) } else { namespace_spec(cx, x) };
+    if first(cx, x).is_some() {
         return cx.build(out, |cx| {
+            // read again on each try: a collection between tries may move it
+            let v = first(cx, args.get(cx, 0).sexp()).expect("robigo: the name read before");
             // SAFETY: a live STRSXP of at least one element, reachable from
-            // the rooted argument.
+            // the rooted argument, read with nothing able to collect since.
             let c = unsafe { Ref::from_sexp(*(v.std_data() as *const Sexp), cx) }.as_char().unwrap();
             let mut s = cx.alloc_vector::<robigo_rtcore::Char<'_>>(1)?;
             s.set(0, c);

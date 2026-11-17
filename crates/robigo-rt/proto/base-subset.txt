@@ -406,7 +406,7 @@ internal encodeString sort:factor
 internal env.profile env:hashed-env,env:unhashed-env
 internal env2list env:closure-frames,env:hashed-env,env:unhashed-env,s3:dispatch-alias,s3:dispatch-vars
 internal environment calls,capi-unwind,row:d2s-delayed,conditions:calling-handlers,conditions:error-traceback,conditions:onexit-unwind,conditions:restarts,conditions:stop-no-call,conditions:trycatch-error,conditions:trycatch-finally,conditions:warn-option,conditions:warnings,env:binding-errors,env:closure-frames,env:delayed-assign,env:hashed-env,env:large-frames,env:recycle-observers,env:unhashed-env,ns:registry,ns:search,parse:file,parse:text,s3:dispatch-alias,s3:dispatch-args,s3:dispatch-cache,s3:dispatch-vars,s3:method-plans,s3:usemethod-object,serialize:errors,serialize:lazyload,serialize:rds,serialize:refhook,sort:complex,sort:errors,sort:factor,sort:order,sort:radix,sort:rank,sort:xtfrm
-internal environmentName ns:search
+internal environmentName ns:registry,ns:search
 internal eval capi-pairlist,weak-keys,row:d2s-eval,env:delayed-assign,env:large-frames,ns:search,parse:file,parse:text,s3:dispatch-alias,sort:character,sort:complex,sort:double,sort:errors,sort:factor,sort:integer,sort:objects,sort:order,sort:radix-random,sort:radix-volume,sort:random,sort:rank,sort:xtfrm
 internal exists env:closure-frames,env:unhashed-env,s3:dispatch-alias,s3:dispatch-vars
 internal file parse:file,serialize:rds
