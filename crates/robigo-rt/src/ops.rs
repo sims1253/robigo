@@ -9,7 +9,7 @@ use robigo_heap::types::*;
 use robigo_rtbuiltins::kernel::arith::{self, ArithOp};
 use robigo_rtbuiltins::kernel::logic;
 use robigo_rtbuiltins::kernel::relop::{self, RelOp};
-use robigo_rtcore::{Cx, Ref, View};
+use robigo_rtcore::{Cx, Ref};
 
 pub const NA_INTEGER: i32 = arith::NA_INTEGER;
 pub const NA_LOGICAL: i32 = relop::NA_LOGICAL;
@@ -29,10 +29,12 @@ pub fn plain_num(x: Ref<'_>) -> Option<Num> {
     if x.attrib().is_some_and(|a| a.sexptype() != NILSXP) {
         return None;
     }
-    match x.view() {
-        View::Real(v) if v.len() == 1 => Some(Num::Real(v.get(0))),
-        View::Int(v) if v.len() == 1 => Some(Num::Int(v.get(0))),
-        View::Lgl(v) if v.len() == 1 => Some(Num::Lgl(v.get(0).0)),
+    // (an ALTREP vector is not standard storage; no instance of robigo's
+    // classes has length 1 either)
+    match x.sexptype() {
+        REALSXP => x.as_scalar::<f64>().map(Num::Real),
+        INTSXP => x.as_scalar::<i32>().map(Num::Int),
+        LGLSXP => x.as_scalar::<robigo_rtcore::Lgl>().map(|l| Num::Lgl(l.0)),
         _ => None,
     }
 }

@@ -745,8 +745,15 @@ pub fn loop_region(cx: &mut Cx, act: &mut Act, start: usize, regs: Reg, nregs: R
 /// `length` and `seq_along` (its length), and the summaries (`sum` takes
 /// the class's `Sum`; `do_summary` materializes for the rest itself).
 // R: memory.c:DATAPTR, altrep.c:ALTVEC_DATAPTR_EX; summary.c:do_summary
+#[inline(always)]
 pub(crate) fn materialize_args(cx: &mut Cx, def: &prims::PrimDef, args: Args<'_>) -> RResult<()> {
-    if !args.any_altrep() || reads_by_element(def.name) {
+    if args.any_altrep() { materialize_args_slow(cx, def, args) } else { Ok(()) }
+}
+
+#[cold]
+#[inline(never)]
+fn materialize_args_slow(cx: &mut Cx, def: &prims::PrimDef, args: Args<'_>) -> RResult<()> {
+    if reads_by_element(def.name) {
         return Ok(());
     }
     cx.materialize_args(args)
@@ -763,11 +770,16 @@ pub(crate) fn materialize_args(cx: &mut Cx, def: &prims::PrimDef, args: Args<'_>
 ///   `do_attr`, `do_data_class`, `do_oldclass`, `do_inherits`, `do_names`,
 ///   `do_dim`, `do_dimnames`), and `invisible`;
 /// - those that store or compare a value without reading its data:
-///   `list` (`do_makelist`), `assign`, and `identical` and the compiler's
-///   `putconst` (`R_compute_identical` reads the data only of two vectors
-///   of one type and length; robigo-rtbuiltins' reads it by element);
+///   `assign`, and `identical` and the compiler's `putconst`
+///   (`R_compute_identical` reads the data only of two vectors of one type
+///   and length; robigo-rtbuiltins' reads it by element);
 /// - `serialize`, which writes a compact sequence's state
 ///   (`Serialized_state`), expanded or not.
+///
+/// `list` (`do_makelist`) only stores its arguments, but it materializes
+/// them here: the builtins that take a list of values (`attributes<-`,
+/// `dimnames<-`, `.Internal(paste(list(...)))`, ...) read its elements as
+/// their own arguments, and not all of them read by element yet (AC2).
 // R: names.c's rows of these
 fn reads_by_element(name: &str) -> bool {
     matches!(
@@ -815,7 +827,6 @@ fn reads_by_element(name: &str) -> bool {
             | "dim"
             | "dimnames"
             | "invisible"
-            | "list"
             | "assign"
             | "identical"
             | "putconst"
