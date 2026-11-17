@@ -27,7 +27,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from corpus import robigo_path  # noqa: E402
-from perf import BASE_ENV, env_pair  # noqa: E402
+from perf import BASE_ENV, binary_identity, crate_of, env_pair, report_identity  # noqa: E402
 
 
 def peak(cmd, env):
@@ -97,8 +97,16 @@ def main():
         ratio = "-" if g is None or r is None else f"{r['median_kib'] / g['median_kib']:.2f}"
         print(f"| {os.path.relpath(f)} | {cell(r)} | {cell(g)} | {ratio}{' **wrong**' if wrong else ''} |",
               flush=True)
+    # which binary this measured, named after the measurements: a child's
+    # peak RSS starts from this process's at the fork, so nothing may grow
+    # it before (perf.binary_identity)
+    ident = None
+    if robigo and os.path.exists(robigo):
+        ident = binary_identity(robigo, crate_of(robigo))
+        report_identity("robigo", ident)
     if a.json:
-        meta = {"robigo": robigo, "robigo_env": a.robigo_env, "gnur": None if a.no_r else r_bin, "runs": a.runs}
+        meta = {"robigo": robigo, "robigo_identity": ident, "robigo_env": a.robigo_env,
+                "gnur": None if a.no_r else r_bin, "runs": a.runs}
         with open(a.json, "w") as fh:
             json.dump({"meta": meta, "results": results}, fh, indent=1, sort_keys=True)
     return 1 if any(v["wrong"] for v in results.values()) else 0
