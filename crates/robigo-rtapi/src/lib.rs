@@ -43,6 +43,7 @@ mod errors;
 mod eval;
 mod memory;
 mod rdynload;
+mod trycatch;
 mod unwind;
 
 pub use rdynload::{DllInfo, loaded_dlls};
@@ -103,6 +104,7 @@ use errors::*;
 use eval::*;
 use memory::*;
 use rdynload::*;
+use trycatch::*;
 use unwind::*;
 
 unsafe extern "C" {
@@ -187,6 +189,9 @@ unsafe extern "C" {
     fn Rvprintf();
     fn REvprintf();
     fn R_UnwindProtect();
+    fn R_tryCatch();
+    fn R_tryCatchError();
+    fn R_withCallingErrorHandler();
 }
 
 exports! {
@@ -204,7 +209,8 @@ exports! {
     (c), true => DATAPTR DATAPTR_RO;
     // C over entries that allocate (the error's condition, the cleanup's
     // continuation)
-    (c), true => Rf_error Rf_errorcall Rf_warning Rf_warningcall R_UnwindProtect;
+    (c), true => Rf_error Rf_errorcall Rf_warning Rf_warningcall R_UnwindProtect R_tryCatch R_tryCatchError
+        R_withCallingErrorHandler;
     // Rust leaves: no collection, no exit
     (leaf), false =>
         robigo_rtapi_store robigo_rtapi_print robigo_rtapi_warn_length R_ReleaseObject vmaxget vmaxset
@@ -254,7 +260,10 @@ exports! {
     (entry 2), true => R_ToplevelExec;
     (entry 4), true => robigo_rtapi_unwind_protect R_ExecWithCleanup;
     (entry 1), true => R_ContinueUnwind;
-    (entry 0), true => R_MakeUnwindCont;
+    (entry 0), true => R_MakeUnwindCont R_CheckUserInterrupt;
+    // errors.c's C-level tryCatch (api.c's, over these)
+    (entry 3), true => robigo_rtapi_try_catch;
+    (entry 1), true => robigo_rtapi_push_error_handler robigo_rtapi_set_handler_stack;
     // registration.c: base's routines (rdynload.rs)
     (entry 4), true => robigo_rtapi_base_R_addTaskCallback;
     (entry 1), true => robigo_rtapi_base_R_removeTaskCallback;
@@ -294,6 +303,7 @@ pub fn install(cx: &mut Cx) {
     ]);
     rdynload::install(cx);
     dotcode::install(cx);
+    trycatch::install(cx);
 }
 
 /// The layout `api.c` was compiled with (the table of its
