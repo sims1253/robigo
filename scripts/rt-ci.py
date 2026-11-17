@@ -306,6 +306,10 @@ def metadata():
 
 
 def main(argv):
+    # robigo-rt's R_HOME is its own tree; an inherited one (the CI image's
+    # GNU R, /usr/lib/R) it ignores with GNU R's warning on stdout, which
+    # every compared output would then carry: none for what this runs
+    os.environ.pop("R_HOME", None)
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--list", action="store_true", help="print the rt crates and stop")
     ap.add_argument("--check", action="store_true", help="check the premise and stop")
