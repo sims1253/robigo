@@ -1,0 +1,32 @@
+Warning message:
+In log(x) : NaNs produced
+Warning message:
+NaNs produced 
+Warning message:
+NaNs produced 
+Warning message:
+NaNs produced 
+Warning message:
+NaNs produced 
+Warning message:
+In log(x = x) : NaNs produced
+Warning message:
+NaNs produced 
+Warning message:
+NaNs produced 
+Warning message:
+NaNs produced 
+Warning message:
+NaNs produced 
+Warning message:
+In f(-1, 2) : NaNs produced
+Warning message:
+In log(-1) : NaNs produced
+Warning message:
+NaNs produced 
+Warning message:
+NaNs produced 
+Warning message:
+NaNs produced 
+Warning message:
+In g() : NaNs produced

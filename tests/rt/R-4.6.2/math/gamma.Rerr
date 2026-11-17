@@ -1,0 +1,4 @@
+Warning message:
+In gamma(c(0, -1, -2)) : NaNs produced
+Warning message:
+In digamma(c(0, -1)) : NaNs produced
