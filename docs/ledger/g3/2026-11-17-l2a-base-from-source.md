@@ -82,3 +82,24 @@
   - A write the system fails raises nothing, as `Rconn_printf`'s result
     is not looked at. A read the system fails ends `parse()`'s input, as
     `fgetc`'s EOF does in `R_ParseConn`.
+- **The overlap with C1-BC (#771)**, resolved on the merge with main
+  `fb332640`. By the foreman's rule, L2a's versions are kept, except
+  where C1's is the more faithful:
+  - Kept from L2a: `R_getNSValue` (`::`, `:::`, `getNamespaceValue`),
+    `topenv`, `isNamespaceEnv`, `getRegisteredNamespace`,
+    `isRegisteredNamespace`, `environmentName`.
+  - Kept from C1: `substitute(expr, list)`'s environment (`list_env`
+    reads each name as `installTrChar` does and raises its error), and
+    C1's loading seam `ns::load_namespace`, with its INTERIM(L2) loader
+    of the compiler package from source.
+  - Differences in behaviour:
+    - Loading a package that is not registered: C1 raised "robigo:
+      loadNamespace is not implemented yet" for any package but the
+      compiler. L2a calls base's `loadNamespace`, as GNU R's
+      `callR1(R_loadNamespaceSymbol, pkg)` does, and that fails on the
+      first builtin it lacks (B5a). The compiler still goes through C1's
+      loader.
+    - A name that is not exported: C1 built the namespace's name in
+      Rust; L2a calls base's `getNamespaceName`, as GNU R does. The
+      messages are the same.
+    - The others matched on the cases of both branches.

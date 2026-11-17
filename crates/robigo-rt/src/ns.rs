@@ -19,7 +19,7 @@
 
 use robigo_heap::Sexp;
 use robigo_heap::types::*;
-use robigo_rtcore::{Args, BindingValue, Cx, Lookup, Out, RResult, RSym, Ref, Root, Scope, View};
+use robigo_rtcore::{Args, BindingValue, Cx, Encoding, Lookup, Out, RResult, RSym, Ref, Root, Scope, View};
 
 /// `R_INTERNALS_UUID` (Defn.h).
 const R_INTERNALS_UUID: &[u8] = b"2fdf6c18-697a-4ba7-b8ef-11c0d92f1327";
@@ -170,7 +170,7 @@ pub fn get_ns_value(
             let reg = s.root(cx, cx.namespace_registry());
             let nsv = s.capture(cx, |cx, o| find_in_frame(cx, reg, pkg, o))?;
             let nsv = if nsv.bind(cx).sexp() == cx.unbound().sexp() {
-                s.capture(cx, |cx, o| call_r1(cx, b"loadNamespace", pkg, o))?
+                s.capture(cx, |cx, o| load_namespace(cx, pkg, o))?
             } else {
                 nsv
             };
@@ -549,4 +549,209 @@ pub fn do_envir_name(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
         }
         None => cx.build(out, |cx| cx.mk_string(b"", robigo_rtcore::Encoding::Native)),
     }
+}
+
+// ---- loading a namespace (C1-BC's seam) -----------------------------------
+
+/// A symbol of `name`, rooted in `s`.
+fn sym<'s>(cx: &mut Cx, s: Scope<'s>, name: &[u8]) -> RResult<Root<'s>> {
+    cx.install_rooted(s, name)
+}
+
+/// `R_FindNamespace(info)`: `getNamespace(info)`, the registered namespace
+/// of that name, else [`load_namespace`]'s.
+// R: envir.c:R_FindNamespace; namespace.R:getNamespace
+pub fn find_namespace(cx: &mut Cx, name: &[u8], out: Out<'_>) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let pkg = sym(cx, s, name)?;
+        let reg = s.root(cx, cx.namespace_registry());
+        let res = out.root();
+        cx.find_var_in_frame3(reg, pkg, true, out)?;
+        if res.bind(cx).sexp() == cx.unbound().sexp() {
+            let o = res.reset(cx);
+            load_namespace(cx, pkg, o)?;
+        }
+        Ok(())
+    })
+}
+
+/// `loadNamespace(package)` where GNU R's C calls it, the namespace to
+/// `out`: GNU R's `callR1(R_loadNamespaceSymbol, pkg)`, base's
+/// `loadNamespace`, except that robigo-rt makes the compiler package's
+/// namespace from source itself ([`load_compiler`]). INTERIM(L2): the
+/// compiler goes through `loadNamespace` too once that runs from source
+/// (it waits on B5a's file builtins).
+// R: namespace.R:loadNamespace
+pub fn load_namespace(cx: &mut Cx, pkg: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let name = pkg.bind(cx).as_sym().unwrap().name().bytes().to_vec();
+    if name == b"compiler" {
+        // INTERIM(L2): replaced by loadNamespace
+        return load_compiler(cx, pkg, out);
+    }
+    // GNU R's callR1(R_loadNamespaceSymbol, pkg): base's loadNamespace
+    call_r1(cx, b"loadNamespace", pkg, out)
+}
+
+/// The compiler package's namespace, made as GNU R's `loadNamespace` makes
+/// one from source: `makeNamespace`'s environments, registered; the
+/// package's R code (the pinned tarball's `cmp.R`, unmodified) evaluated
+/// into it as `sys.source` does; `.onLoad`; NAMESPACE's exports; then
+/// `sealNamespace`. The library is the tarball's `src/library` (no R_HOME
+/// tree before L4). INTERIM(L2): replaced by loadNamespace.
+// R: namespace.R:loadNamespace, makeNamespace, sealNamespace, runHook
+fn load_compiler(cx: &mut Cx, pkg: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let dir = crate::base::source_dir().map_err(|m| cx.error(&format!("robigo: loading the compiler package: {m}")))?;
+    let lib = dir.join("src/library");
+    let pkgdir = lib.join("compiler");
+    let read = |cx: &mut Cx, f: &std::path::Path| {
+        std::fs::read_to_string(f)
+            .map_err(|e| cx.error(&format!("robigo: loading the compiler package: {}: {e}", f.display())))
+    };
+    let code = read(cx, &pkgdir.join("R/cmp.R"))?;
+    let namespace = read(cx, &pkgdir.join("NAMESPACE"))?;
+    let lib_s = lib.display().to_string();
+    let path_s = pkgdir.display().to_string();
+    cx.scope(|cx, s| {
+        let nil = s.root(cx, cx.nil());
+        let base_ns = s.root(cx, cx.base_namespace());
+        let base_env = s.root(cx, cx.base_env());
+        let new_env = |cx: &mut Cx, parent: Root<'_>| {
+            s.capture(cx, |cx, o| cx.build(o, |cx| cx.new_env(parent.bind(cx), true, 0)))
+        };
+        let string = |cx: &mut Cx, t: &[u8]| s.capture(cx, |cx, o| cx.build(o, |cx| cx.mk_string(t, Encoding::Native)));
+        let define = |cx: &mut Cx, env: Root<'_>, n: &[u8], v: Root<'_>| -> RResult<()> {
+            let k = sym(cx, s, n)?;
+            cx.define_var(k, v, env)
+        };
+        // makeNamespace(name, version, lib)
+        let impenv = new_env(cx, base_ns)?;
+        let iname = string(cx, b"imports:compiler")?;
+        robigo_rtbuiltins::attrib::set_attrib(cx, impenv, b"name", iname)?;
+        let env = new_env(cx, impenv)?;
+        let info = new_env(cx, base_env)?;
+        define(cx, env, b".__NAMESPACE__.", info)?;
+        let spec = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| {
+                let mut v = cx.alloc_vector::<robigo_rtcore::Char<'_>>(2)?;
+                v.set(0, cx.mk_char(b"compiler", Encoding::Native)?);
+                v.set(1, cx.mk_char(R_VERSION.as_bytes(), Encoding::Native)?);
+                let mut nm = cx.alloc_vector::<robigo_rtcore::Char<'_>>(2)?;
+                nm.set(0, cx.mk_char(b"name", Encoding::Native)?);
+                nm.set(1, cx.mk_char(b"version", Encoding::Native)?);
+                let mut a = robigo_rtbuiltins::attrib::Attrs::new();
+                a.install(robigo_rtbuiltins::attrib::Attr { tag: cx.sym(RSym::Names), value: nm.finish().into() });
+                a.apply(cx, &mut v)?;
+                Ok(v.finish().into())
+            })
+        })?;
+        define(cx, info, b"spec", spec)?;
+        let exports = new_env(cx, base_env)?;
+        define(cx, info, b"exports", exports)?;
+        let dimpenv = new_env(cx, base_env)?;
+        let lname = string(cx, b"lazydata:compiler")?;
+        robigo_rtbuiltins::attrib::set_attrib(cx, dimpenv, b"name", lname)?;
+        define(cx, info, b"lazydata", dimpenv)?;
+        let imports = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| {
+                let mut v = cx.alloc_vector::<Ref<'_>>(1)?;
+                v.set(0, cx.alloc_copy(&[robigo_rtcore::Lgl(1)])?.finish().into());
+                let mut nm = cx.alloc_vector::<robigo_rtcore::Char<'_>>(1)?;
+                nm.set(0, cx.mk_char(b"base", Encoding::Native)?);
+                let mut a = robigo_rtbuiltins::attrib::Attrs::new();
+                a.install(robigo_rtbuiltins::attrib::Attr { tag: cx.sym(RSym::Names), value: nm.finish().into() });
+                a.apply(cx, &mut v)?;
+                Ok(v.finish().into())
+            })
+        })?;
+        define(cx, info, b"imports", imports)?;
+        let path = string(cx, path_s.as_bytes())?;
+        define(cx, info, b"path", path)?;
+        define(cx, info, b"dynlibs", nil)?;
+        let s3 = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| {
+                let mut v = cx.alloc_vector::<robigo_rtcore::Char<'_>>(0)?;
+                let mut a = robigo_rtbuiltins::attrib::Attrs::new();
+                a.install(robigo_rtbuiltins::attrib::Attr {
+                    tag: cx.sym(RSym::Dim),
+                    value: cx.alloc_copy(&[0i32, 4])?.finish().into(),
+                });
+                a.apply(cx, &mut v)?;
+                Ok(v.finish().into())
+            })
+        })?;
+        define(cx, info, b"S3methods", s3)?;
+        let s3t = new_env(cx, base_env)?;
+        define(cx, env, b".__S3MethodsTable__.", s3t)?;
+        // .Internal(registerNamespace(name, env)); unregistered if the
+        // load fails (loadNamespace's on.exit)
+        let reg = s.root(cx, cx.namespace_registry());
+        cx.define_var(pkg, env, reg)?;
+        let r = (|| -> RResult<()> {
+            // env$.packageName <- package
+            let pname = string(cx, b"compiler")?;
+            define(cx, env, b".packageName", pname)?;
+            // sys.source(codeFile, env): each expression evaluated in env
+            let exprs = s.capture(cx, |cx, o| crate::lower::parse(cx, &code, o))?;
+            let n = exprs.bind(cx).len().unwrap_or(0);
+            for i in 0..n {
+                cx.scope(|cx, t| {
+                    let e = t.root(cx, exprs.bind(cx).as_vector::<Ref<'_>>().unwrap().get(i));
+                    let o = t.out(cx);
+                    crate::eval(cx, e, env, o)
+                })?;
+            }
+            // runHook(".onLoad", env, package.lib, package)
+            let onload = sym(cx, s, b".onLoad")?;
+            let libname = string(cx, lib_s.as_bytes())?;
+            let pkgname = string(cx, b"compiler")?;
+            let hook =
+                s.capture(cx, |cx, o| cx.build(o, |cx| cx.lang3(onload.bind(cx), libname.bind(cx), pkgname.bind(cx))))?;
+            s.capture(cx, |cx, o| crate::eval(cx, hook, env, o))?;
+            // namespaceExport(ns, exports): each export bound to its name
+            let spec_exprs = s.capture(cx, |cx, o| crate::lower::parse(cx, &namespace, o))?;
+            for name in exports_of(cx, spec_exprs) {
+                let v = string(cx, &name)?;
+                define(cx, exports, &name, v)?;
+            }
+            // sealNamespace(ns)
+            cx.lock_environment(env, true)?;
+            cx.lock_environment(impenv, true)
+        })();
+        if let Err(e) = r {
+            cx.remove_var_from_frame(pkg, reg)?;
+            return Err(e);
+        }
+        out.set(cx, env.bind(cx));
+        Ok(())
+    })
+}
+
+/// R's version, the version of its base packages.
+const R_VERSION: &str = "4.6.2";
+
+/// The names a NAMESPACE file's `export(...)` directives name.
+// R: namespace.R:parseNamespaceFile (export)
+fn exports_of(cx: &Cx, exprs: Root<'_>) -> Vec<Vec<u8>> {
+    let mut names = Vec::new();
+    let v = exprs.bind(cx);
+    let Some(l) = v.as_vector::<Ref<'_>>() else { return names };
+    for i in 0..l.len() {
+        let Some(c) = l.get(i).as_cons().filter(|c| c.as_ref().sexptype() == LANGSXP) else { continue };
+        if c.car().as_sym().is_none_or(|f| f.name().bytes() != b"export") {
+            continue;
+        }
+        let mut a = c.cdr().as_cons();
+        while let Some(cell) = a {
+            let x = cell.car();
+            if let Some(sy) = x.as_sym() {
+                names.push(sy.name().bytes().to_vec());
+            } else if let Some(sv) = x.as_vector::<robigo_rtcore::Char<'_>>().filter(|_| x.sexptype() == STRSXP) {
+                for k in 0..sv.len() {
+                    names.push(sv.get(k).bytes().to_vec());
+                }
+            }
+            a = cell.cdr().as_cons();
+        }
+    }
+    names
 }

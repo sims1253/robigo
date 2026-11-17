@@ -216,6 +216,33 @@ impl Cx {
         Ok(UniqueList { x: sx, n, cx: self })
     }
 
+    /// GNU R's bare `SET_VECTOR_ELT(x, i, v)` on a list that R code may
+    /// share: the write shows through every reference to `x`, as in GNU R
+    /// (`do_putconst` writes cmp.R's constant buffer so, eval.c:9230). The
+    /// barrier and the counts are kept. For ports whose C writes an
+    /// argument in place on purpose; anything else goes through
+    /// [`Cx::unique_list`]. Panics unless `x` holds a standard list and `i`
+    /// is in range.
+    pub fn set_vector_elt_shared(&mut self, x: Root<'_>, i: usize, v: Root<'_>) -> RResult<()> {
+        let r = x.bind(self);
+        assert!(
+            matches!(r.sexptype(), VECSXP | EXPRSXP),
+            "robigo: SET_VECTOR_ELT of a SEXPTYPE {} object",
+            r.sexptype()
+        );
+        if r.is_altrep() {
+            return Err(self.error_call(None, "robigo: 'writing into an ALTREP vector' is not implemented yet"));
+        }
+        let (sx, n) = (r.sexp(), r.len().expect("robigo: a standard vector has a length"));
+        assert!(i < n, "robigo: element {i} of {n}");
+        let v = v.bind(self).sexp();
+        self.iso().check_owns(v);
+        // SAFETY: element `i` of a live standard list of this heap, and a
+        // live object of it; the store keeps the barrier and the counts.
+        unsafe { sx.set_elt(i, v) };
+        Ok(())
+    }
+
     /// [`Cx::owned_mut`]'s and [`Cx::owned_list`]'s checks: a write the
     /// production rule would also have made in place.
     fn check_owned(&mut self, x: Root<'_>, accepts: impl Fn(u8) -> bool) -> RResult<()> {

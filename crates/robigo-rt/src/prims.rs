@@ -171,6 +171,10 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("invisible", crate::builtin::do_invisible, Inline::None, 101, 1),
     builtin("print.default", crate::print::do_printdefault, Inline::None, 111, 3),
     builtin("deparse", crate::builtin::do_deparse, Inline::None, 11, 5),
+    builtin("dput", crate::builtin::do_dput, Inline::None, 111, 3),
+    builtin("enableJIT", crate::jit::do_enablejit, Inline::None, 11, 1),
+    builtin("compilePKGS", crate::jit::do_compilepkgs, Inline::None, 11, 1),
+    builtin("args", crate::builtin::do_args, Inline::None, 11, 1),
     builtin("cat", crate::builtin::do_cat, Inline::None, 111, 6),
     builtin("list", crate::builtin::do_makelist, Inline::None, 1, -1),
     builtin("stdout", crate::builtin::do_stdout, Inline::None, 11, 0),
@@ -233,6 +237,8 @@ static RT_PRIMS: &[PrimDef] = &[
     // builtin.c, objects.c (L2: parse()'s and attach()'s)
     special_fn("expression", crate::specials::do_expression, 0, -1),
     builtin(".isMethodsDispatchOn", crate::specials::do_s4on, Inline::None, 1, -1),
+    builtin("R.home", crate::platform::do_rhome, Inline::None, 11, 0),
+    builtin("dir.exists", crate::platform::do_direxists, Inline::None, 11, 1),
 ];
 
 /// How the VM runs B1's builtin `name` inline, if it does.
@@ -433,8 +439,12 @@ pub struct RtState {
     /// The profile `ROBIGO_RT_PROFILE` forces on every code object (None:
     /// GNU R's decisions, [`crate::jit`]).
     pub forced: Option<Profile>,
-    /// GNU R's JIT settings ([`crate::jit::Config`]).
-    pub jit: crate::jit::Config,
+    /// GNU R's JIT settings ([`crate::jit::Config`]); `enableJIT` sets the
+    /// level.
+    pub jit: std::cell::Cell<crate::jit::Config>,
+    /// `R_compile_pkgs` (`compilePKGS`, `_R_COMPILE_PKGS_`): a logical,
+    /// NA included.
+    pub compile_pkgs: std::cell::Cell<i32>,
     /// GNU R's JIT cache ([`crate::jitcache`]).
     pub jit_cache: std::cell::RefCell<crate::jitcache::Cache>,
     /// Base's shipped bindings of cmp.R's `safeBaseInternals`, by their

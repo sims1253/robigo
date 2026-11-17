@@ -1,7 +1,8 @@
 //! The builtins of B3's files that robigo-rt defines: builtin.c's `cat`
 //! (`do_cat`) and `list` (`do_makelist`), print.c's `invisible` and
 //! `print.default` ([`crate::print::do_printdefault`]), deparse.c's
-//! `deparse`, and connections.c's `stdout()` and `stderr()`.
+//! `deparse` and `dput`, connections.c's `stdout()` and `stderr()`, and
+//! builtin.c's `args` (which reads the primitives' names).
 //!
 //! Connections: robigo-rt has the three standard ones only (GNU R's
 //! `Connections[0..2]`, `stdin` not writable), so `getConnection` of any
@@ -141,6 +142,111 @@ fn r_length(cx: &Cx, x: Ref<'_>) -> usize {
         View::Env(e) => cx.frame_bindings(e, true).map_or(0, |b| b.len()),
         _ => x.len().unwrap_or(1),
     }
+}
+
+/// `.Internal(dput(x, file, opts))`: `x` deparsed (a closure with the
+/// global environment as its own) and written to `file`, a line each; `x`
+/// returned. robigo-rt has the standard connections only: another is GNU
+/// R's error for a connection that does not exist.
+// R: deparse.c:do_dput
+pub fn do_dput(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    check_arity(cx, call, args, "dput", 3, true)?;
+    let o = args.get(cx, 2);
+    let opts = if o.sexptype() == NILSXP { deparse::SHOWATTRIBUTES } else { as_integer(o) };
+    let d = cx.scope(|cx, s| {
+        let x = args.root(0);
+        let v = if x.bind(cx).sexptype() == CLOSXP {
+            // a duplicate with CLOENV R_GlobalEnv (deparse reads no
+            // environment of a closure: the duplicate is the closure's)
+            let clo = s.capture(cx, |cx, o| cx.duplicate(x, o))?;
+            clo.bind(cx)
+        } else {
+            x.bind(cx)
+        };
+        deparse::deparse1(cx, v, false, opts).map_err(|m| cx.error(&m))
+    })?;
+    let file = args.get(cx, 1);
+    if !robigo_rtbuiltins::attrib::inherits(file, b"connection") {
+        return Err(cx.error("'file' must be a character string or connection"));
+    }
+    let target = match as_integer(file) {
+        1 => Target::Out,
+        2 => Target::Err,
+        // stdin
+        0 => return Err(cx.error("cannot write to this connection")),
+        _ => return Err(cx.error("invalid connection")),
+    };
+    for l in &d.lines {
+        let mut b = l.clone();
+        b.push(b'\n');
+        emit(cx, target, &b);
+    }
+    out.set(cx, args.get(cx, 0));
+    Ok(())
+}
+
+/// `.Internal(args(name))`: a closure of `name`'s formals with a NULL body
+/// in the global environment, for a closure or a primitive (whose formals
+/// are those of its entry in base's `.ArgsEnv`, else `.GenericArgsEnv`);
+/// a single string names the function first (`findFun`); else NULL.
+// R: builtin.c:do_args
+pub fn do_args(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    check_arity(cx, call, args, "args", 1, true)?;
+    cx.scope(|cx, s| {
+        let a0 = args.get(cx, 0);
+        let f = match a0.as_vector::<Char<'_>>().filter(|v| a0.sexptype() == STRSXP && v.len() == 1) {
+            Some(v) => {
+                let name = robigo_rtbuiltins::coerce::text(v.get(0)).bytes().to_vec();
+                let sym = cx.install_rooted(s, &name)?;
+                s.capture(cx, |cx, o| cx.find_fun3(sym, env, Some(call), o))?
+            }
+            None => s.root(cx, a0),
+        };
+        let (global, nil) = (s.root(cx, cx.global_env()), s.root(cx, cx.nil()));
+        let formals = match f.bind(cx).view() {
+            View::Closure(c) => Some(c.formals()),
+            View::Builtin(_) | View::Special(_) => {
+                let name = crate::prims::prim_name(cx, f.bind(cx)).expect("robigo: a primitive's name");
+                let mut found = None;
+                for envname in [b".ArgsEnv".as_slice(), b".GenericArgsEnv".as_slice()] {
+                    let es = cx.install_rooted(s, envname)?;
+                    let base = s.root(cx, cx.base_env());
+                    let ev = s.capture(cx, |cx, o| cx.find_var_in_frame3(base, es, true, o))?;
+                    if ev.bind(cx).sexptype() == PROMSXP {
+                        let p = s.root(cx, ev.bind(cx));
+                        let o = ev.reset(cx);
+                        crate::eval(cx, p, base, o)?;
+                    }
+                    if ev.bind(cx).sexptype() != ENVSXP {
+                        return Err(cx.error("robigo: 'args() of a primitive without base's argument environments' is not implemented yet"));
+                    }
+                    let ns = cx.install_rooted(s, name.as_bytes())?;
+                    let v = s.capture(cx, |cx, o| cx.find_var_in_frame3(ev, ns, true, o))?;
+                    if v.bind(cx).sexp() != cx.unbound().sexp() {
+                        // (.ArgsEnv's: duplicate(s2), its attributes kept;
+                        // its entries have none)
+                        if v.bind(cx).attrib().is_some_and(|a| a.sexptype() != NILSXP) {
+                            return Err(cx.error("robigo: 'args() of a primitive whose argument closure has attributes' is not implemented yet"));
+                        }
+                        found = match v.bind(cx).view() {
+                            View::Closure(c) => Some(c.formals()),
+                            _ => Some(cx.nil()),
+                        };
+                        break;
+                    }
+                }
+                found
+            }
+            _ => None,
+        };
+        match formals {
+            Some(fm) => {
+                let fm = s.root(cx, fm);
+                cx.build(out, |cx| cx.closure(fm.bind(cx), nil.bind(cx), global.bind(cx)))
+            }
+            None => cx.build(out, |cx| Ok(cx.nil())),
+        }
+    })
 }
 
 /// `.Internal(cat(list(...), file, sep, fill, labels, append))`: the

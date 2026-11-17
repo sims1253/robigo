@@ -16,7 +16,7 @@ use crate::prims;
 use robigo_heap::Sexp;
 use robigo_heap::types::*;
 use robigo_rtbuiltins::{subassign, subset};
-use robigo_rtcore::{Args, Char, Cx, Out, RResult, Ref, Root, Scope, Slot, Sym};
+use robigo_rtcore::{Args, Char, Cx, Out, RResult, Ref, Root, Scope, Slot, Sym, View};
 use std::ptr::NonNull;
 
 /// The number of arguments of `call`.
@@ -943,40 +943,75 @@ fn symbols_of(e: Ref<'_>, acc: &mut Vec<Sexp>) {
     }
 }
 
-/// `NewEnvironment(R_NilValue, pairlist, R_BaseEnv)` of a list's or
-/// pairlist's named elements, for `substitute(expr, list)`: a frame of
-/// those values (looked up only, never written), the first element of a
-/// repeated name bound.
-// R: coerce.c:do_substitute, memory.c:NewEnvironment
-fn list_env<'s>(cx: &mut Cx, s: Scope<'s>, list: Root<'_>) -> RResult<Root<'s>> {
-    let e = s.capture(cx, |cx, o| cx.build(o, |cx| cx.new_env(cx.base_env(), false, 0)))?;
-    let items: Vec<(Option<Vec<u8>>, Root<'_>)> = {
-        let l = list.bind(cx);
-        let mut v = Vec::new();
-        match l.view() {
-            robigo_rtcore::View::List(xs) => {
-                let names = robigo_rtbuiltins::attrib::get_attrib(cx, l, b"names").ok().flatten();
-                let names = names.and_then(|n| n.as_vector::<robigo_rtcore::Char<'_>>());
-                for i in 0..xs.len() {
-                    let n = names.map(|n| n.get(i).bytes().to_vec()).filter(|n| !n.is_empty());
-                    v.push((n, xs.get(i)));
+/// `substitute`'s environment of a list: a new environment whose frame
+/// binds each named element (`VectorToPairList` keeps the names as tags; an
+/// unnamed element binds nothing a symbol could find), enclosed by base.
+// R: coerce.c:do_substitute, VectorToPairList
+fn list_env<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>) -> RResult<Root<'s>> {
+    let base = s.root(cx, cx.base_env());
+    let e = s.capture(cx, |cx, o| cx.build(o, |cx| cx.new_env(base.bind(cx), false, 0)))?;
+    let loc = cx.locale();
+    let mut bad = None;
+    let pairs: Vec<(Option<Vec<u8>>, usize)> = {
+        let v = env.bind(cx);
+        match v.view() {
+            View::List(l) => {
+                let names = robigo_rtbuiltins::attrib::names(v).and_then(|n| n.as_vector::<Char<'_>>());
+                let mut out = Vec::with_capacity(l.len());
+                for i in 0..l.len() {
+                    // installTrChar: the name in the native encoding
+                    let name = match names.map(|n| n.get(i)).filter(|c| !c.bytes().is_empty()) {
+                        Some(c) => match robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(c), loc) {
+                            Ok(b) => Some(b.into_owned()),
+                            Err(e) => {
+                                bad = Some(e.to_string());
+                                break;
+                            }
+                        },
+                        None => None,
+                    };
+                    out.push((name, i));
                 }
+                out
             }
             _ => {
-                let mut c = l.as_cons();
+                let mut out = Vec::new();
+                let mut c = v.as_cons();
+                let mut i = 0;
                 while let Some(cell) = c {
-                    let n = cell.tag().as_sym().map(|t| t.name().bytes().to_vec());
-                    v.push((n, cell.car()));
+                    out.push((cell.tag().as_sym().map(|t| t.name().bytes().to_vec()), i));
                     c = cell.cdr().as_cons();
+                    i += 1;
                 }
+                out
             }
         }
-        v.into_iter().map(|(n, x)| (n, s.root(cx, x))).collect()
     };
-    for (name, value) in items.into_iter().rev() {
-        let Some(name) = name else { continue };
-        let sym = cx.install_rooted(s, &name)?;
-        cx.define_var(sym, value, e)?;
+    if let Some(msg) = bad {
+        return Err(cx.error(&msg));
+    }
+    // a frame lookup finds a name's first cell: defined in reverse, the
+    // first element of a repeated name is the binding that stays
+    for (name, i) in pairs.into_iter().rev() {
+        let Some(name) = name.filter(|n| !n.is_empty()) else { continue };
+        cx.scope(|cx, t| {
+            let val = {
+                let v = env.bind(cx);
+                let x = match v.view() {
+                    View::List(l) => l.get(i),
+                    _ => {
+                        let mut c = v.as_cons().unwrap();
+                        for _ in 0..i {
+                            c = c.cdr().as_cons().unwrap();
+                        }
+                        c.car()
+                    }
+                };
+                t.root(cx, x)
+            };
+            let sym = cx.install_rooted(t, &name)?;
+            cx.define_var(sym, val, e)
+        })?;
     }
     Ok(e)
 }
@@ -994,9 +1029,8 @@ pub fn do_substitute(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, 
             match ev.sexptype() {
                 ENVSXP => Some(env),
                 NILSXP => None,
-                // NewEnvironment(R_NilValue, VectorToPairList(env) or
-                // duplicate(env), R_BaseEnv): the named elements as
-                // bindings, the first of a repeated name the one found
+                // NewEnvironment(R_NilValue, VectorToPairList(env), R_BaseEnv), or
+                // of duplicate(env) for a pairlist
                 VECSXP | LISTSXP => Some(list_env(cx, s, env)?),
                 _ => return Err(cx.error_call(Some(call), "invalid environment specified")),
             }
