@@ -108,6 +108,25 @@ impl CharTable {
         }
     }
 
+    /// Make the entry `old` the moved string `new` (same bytes, so the same
+    /// hash and slot); nothing if `old` is not an entry.
+    ///
+    /// # Safety
+    /// `new` is a live CHARSXP, `old`'s copy.
+    pub unsafe fn replace(&mut self, old: Sexp, new: Sexp) {
+        debug_assert!(self.slots.len().is_power_of_two(), "robigo: the CHARSXP cache's length is not a power of two");
+        let mask = self.slots.len() - 1;
+        // SAFETY: the caller's contract: `new`'s header carries the hash.
+        let mut i = unsafe { new.char_hash() } as usize & mask;
+        while !self.slots[i].is_null() {
+            if self.slots[i] == old {
+                self.slots[i] = new;
+                return;
+            }
+            i = (i + 1) & mask;
+        }
+    }
+
     pub fn all(&self, f: impl Fn(Sexp) -> bool) -> bool {
         self.slots.iter().all(|c| c.is_null() || f(*c))
     }

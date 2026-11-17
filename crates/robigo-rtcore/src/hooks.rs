@@ -94,6 +94,37 @@ pub type WarningFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &str) -> RResult<()>;
 /// that leaves (that jump, a restart a handler invoked, ...).
 pub type ErrorFn = for<'a> fn(&mut Cx, Option<Root<'a>>, &str) -> RError;
 
+/// A classed error condition as GNU R's `R_makeErrorCondition` makes it
+/// (errors.c:R_vmakeErrorCondition): the list `(message, call, fields...)`
+/// of class `c(subclass, class, "error", "condition")`, or
+/// `c(class, "error", "condition")` without a subclass.
+#[derive(Clone, Copy, Debug)]
+pub struct ErrorCond<'a> {
+    pub class: &'static str,
+    pub subclass: Option<&'static str>,
+    /// The message, verbatim (the hook cuts it at a NUL and at `BUFSIZE`,
+    /// as `Rvsnprintf_mbcs` into `emsg_buf` does).
+    pub msg: &'a str,
+    /// The fields after `message` and `call`, in order
+    /// (`R_setConditionField`).
+    pub fields: &'a [(&'static str, Root<'a>)],
+    /// `R_signalErrorConditionEx`'s `exitOnly`: calling handlers are not
+    /// run (a C stack overflow's: they might overflow again).
+    pub exit_only: bool,
+}
+
+/// Signal the classed error `cond` reported against `call` (None: GNU R's
+/// `R_NilValue`): `R_makeErrorCondition` then `R_signalErrorConditionEx`,
+/// so the handlers for its classes, then the default handling of its
+/// message. The token returned stands for the exit that leaves, as
+/// [`ErrorFn`]'s does.
+pub type ErrorCondFn = for<'a, 'b> fn(&mut Cx, Option<Root<'a>>, &ErrorCond<'b>) -> RError;
+
+/// Take a user interrupt (`onintr`): signal the `interrupt` condition,
+/// then jump to the top level; `Ok` when a handler invoked the `resume`
+/// restart and evaluation goes on.
+pub type InterruptFn = fn(&mut Cx) -> RResult<()>;
+
 /// GNU R's `R_FixupExitingHandlerResult(R_ReturnedValue)`: called with the
 /// value an exit carries when it stops at a record to run its `on.exit`
 /// code, before the code runs.
@@ -173,6 +204,8 @@ pub struct Hooks {
     pub eval_args: EvalArgsFn,
     pub warning: WarningFn,
     pub error: ErrorFn,
+    pub error_condition: ErrorCondFn,
+    pub interrupt: InterruptFn,
     pub exit_value: ExitValueFn,
     pub deparse: DeparseFn,
     pub encode_string: EncodeStringFn,
@@ -194,6 +227,10 @@ impl Default for Hooks {
             eval_args: |cx, _, _, _| Err(not_yet(cx, "'evalListKeepMissing'")),
             warning: collect,
             error: |cx, call, msg| cx.record_error_call(call, msg),
+            // (no condition system: the message, as `errorcall`'s default)
+            error_condition: |cx, call, c| cx.record_error_call(call, c.msg),
+            // (no condition system: straight to the top level)
+            interrupt: |cx| Err(cx.interrupt_exit()),
             exit_value: |_, _| {},
             deparse: |_, _, _| Err("robigo: 'deparse' is not implemented yet (no evaluator is registered)".to_owned()),
             // (before `rt` installs EncodeString: NULs escaped, the rest as
@@ -361,9 +398,11 @@ impl Cx {
 
     /// GNU R's `warning(msg)`: reported against the context's call, as
     /// [`Cx::error`] finds it (the innermost record as R sees the chain, or
-    /// the one below a `CTXT_BUILTIN` record).
+    /// the one below a `CTXT_BUILTIN` record), one trailing newline removed.
     // R: errors.c:Rf_warning
     pub fn warning(&mut self, msg: &str) -> RResult<()> {
+        // a message ending in a newline loses it
+        let msg = msg.strip_suffix('\n').unwrap_or(msg);
         let call = self.error_context_call().sexp();
         self.scope(|cx, s| {
             // SAFETY: a field of a live record, read in this interval.

@@ -146,6 +146,8 @@ static RT_PRIMS: &[PrimDef] = &[
     special_fn("switch", crate::specials::do_switch, 200, -1),
     special_fn("on.exit", crate::specials::do_onexit, 100, -1),
     special_fn("substitute", crate::specials::do_substitute, 0, -1),
+    // arithmetic.c
+    special_fn("log", crate::specials::do_log, 0, -1),
     // objects.c (S1)
     special_fn("UseMethod", crate::dispatch::do_usemethod, 200, -1),
     special_fn("NextMethod", crate::dispatch::do_nextmethod, 210, -1),
@@ -247,6 +249,8 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin(".isMethodsDispatchOn", crate::specials::do_s4on, Inline::None, 1, -1),
     builtin("R.home", crate::platform::do_rhome, Inline::None, 11, 0),
     builtin("dir.exists", crate::platform::do_direxists, Inline::None, 11, 1),
+    builtin("file.exists", crate::platform::do_fileexists, Inline::None, 11, 1),
+    builtin("list.files", crate::platform::do_listfiles, Inline::None, 11, 9),
 ];
 
 /// How the VM runs B1's builtin `name` inline, if it does.

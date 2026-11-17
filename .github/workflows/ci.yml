@@ -980,8 +980,9 @@ jobs:
           image=$(printf '%s' "$IMAGE" | sha256sum | cut -c1-16)
           echo "CPU: $model, signature $sig; ${pkgs% }; oracle image $IMAGE" | tee -a "$GITHUB_STEP_SUMMARY"
           # rt-gnur-2: the rival is GNU R's literal default build (the lead's
-          # F2, docs/ledger/g3/2026-11-17-a0b-stock-rival.md), not the image's
-          echo "key=rt-gnur-2-$image-$sig-$(printf '%s' "$pkgs" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          # F2, docs/ledger/g3/2026-11-17-a0b-stock-rival.md), not the image's;
+          # rt-gnur-3: churn.R starts with a full collection (m1-bars.toml)
+          echo "key=rt-gnur-3-$image-$sig-$(printf '%s' "$pkgs" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
           echo "image=$image" >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@v6
         id: gnur

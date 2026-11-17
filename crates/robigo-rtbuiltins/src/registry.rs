@@ -6,9 +6,9 @@
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
 use crate::{
-    apply, arith, array, attrib, bind, builtin, bytecode, character, coerce, complex, context, cum, envir, errors,
-    grep, identical, is, logic, math, options, paste, relop, seq, sort, sprintf, subset, summary, sysutils, unique,
-    util, version,
+    apply, arith, array, attrib, bind, builtin, bytecode, character, coerce, complex, context, cum, datetime, envir,
+    errors, grep, identical, is, logic, math, options, paste, relop, seq, sort, sprintf, subset, summary, sysutils,
+    unique, util, version,
 };
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
@@ -357,6 +357,8 @@ pub static BUILTINS: &[Builtin] = &[
     row("which", summary::do_which, 0, 11, 1, FUNCALL, Pure),
     op!("which.min", 0, summary::do_first_min, 11, 1, FUNCALL, Pure),
     op!("which.max", 1, summary::do_first_min, 11, 1, FUNCALL, Pure),
+    row("as.POSIXct", datetime::do_as_posixct, 0, 11, 2, FUNCALL, External),
+    row("strptime", datetime::do_strptime, 0, 11, 3, FUNCALL, External),
     op!("min", 2, summary::do_summary, 1, -1, FUNCALL, Pure),
     op!("max", 3, summary::do_summary, 1, -1, FUNCALL, Pure),
     // cum.c
@@ -368,9 +370,38 @@ pub static BUILTINS: &[Builtin] = &[
     op!("any", 2, summary::do_logic3, 1, -1, FUNCALL, Pure),
     op!("pmin", 0, summary::do_pmin, 11, -1, FUNCALL, Pure),
     op!("pmax", 1, summary::do_pmin, 11, -1, FUNCALL, Pure),
-    row("sqrt", math::do_sqrt, 3, 1, 1, FUNCALL, Pure),
-    row("atan", math::do_atan, 25, 1, 1, FUNCALL, Pure),
+    // arithmetic.c's mathematical functions
+    // (log is robigo-rt's special, on math::do_log_builtin)
+    op!("log10", 10010, math::do_log1arg, 1, 1, FUNCALL, Pure),
+    op!("log2", 10002, math::do_log1arg, 1, 1, FUNCALL, Pure),
     row("abs", math::do_abs, 6, 1, 1, FUNCALL, Pure),
+    op!("floor", 1, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("ceiling", 2, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("sqrt", 3, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("sign", 4, math::do_math1, 1, 1, FUNCALL, Pure),
+    row("trunc", math::do_trunc, 5, 1, -1, FUNCALL, Pure),
+    op!("exp", 10, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("expm1", 11, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("log1p", 12, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("cos", 20, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("sin", 21, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("tan", 22, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("acos", 23, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("asin", 24, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("atan", 25, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("cosh", 30, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("sinh", 31, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("tanh", 32, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("acosh", 33, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("asinh", 34, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("atanh", 35, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("lgamma", 40, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("gamma", 41, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("digamma", 42, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("trigamma", 43, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("cospi", 47, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("sinpi", 48, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("tanpi", 49, math::do_math1, 1, 1, FUNCALL, Pure),
     // context.c
     op!("sys.parent", 1, context::do_sys, 11, -1, FUNCALL, Env),
     op!("sys.call", 2, context::do_sys, 11, -1, FUNCALL, Env),

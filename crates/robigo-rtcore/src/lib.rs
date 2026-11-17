@@ -233,6 +233,7 @@ const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
 
 pub mod altrep;
 mod capi;
+pub mod clib;
 mod console;
 mod context;
 mod env;
@@ -273,12 +274,13 @@ pub use handle::{
     AltVec, Bytecode, Char, Clo, Cons, Elt, Encoding, EnvRef, ExtPtr, Lgl, Plain, Prom, Ref, StdVec, Sym, Vector, View,
 };
 pub use hooks::{
-    ApplyFn, DeparseFn, DispatchFn, Dispatched, EvalFn, ForceArgFn, ForceFn, Generic, Hooks, MAX_WARNINGS, WarningFn,
+    ApplyFn, DeparseFn, DispatchFn, Dispatched, ErrorCond, ErrorCondFn, EvalFn, ForceArgFn, ForceFn, Generic, Hooks,
+    InterruptFn, MAX_WARNINGS, WarningFn,
 };
 pub use isolate::{
     Capability, CodeSource, Cx, Isolate, Locale, Options, OwnedIsolate, Reentry, ReportOptions, enter_raw,
 };
-pub use limits::{CStackInfo, EXPR_SO_MSG, EvalDepth, NODE_SO_MSG};
+pub use limits::{CStackInfo, EXPR_SO, EXPR_SO_MSG, EvalDepth, NODE_SO, NODE_SO_MSG, note_sigint};
 pub use native::{Landing, NATIVE_MAX_ARGS, Native6, enter_export, enter_leaf, enter_leaf_mut};
 pub use outcome::{Built, Diag};
 pub use ppacct::PpSave;

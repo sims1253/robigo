@@ -10,9 +10,9 @@
 //! (`mat2indsub`, `arraySubscript`) are not ported yet.
 //!
 //! The errors are GNU R's messages. Out-of-bounds, missing-subscript and
-//! not-subsettable errors are condition objects of their own class in GNU R
-//! (`subscriptOutOfBoundsError`, ...); until the condition system (S1)
-//! makes those, they are plain errors with the same message and call.
+//! not-subsettable errors are condition objects of their own class, with
+//! the object, the subscript and the index as fields
+//! ([`out_of_bounds`], [`missing_subscript`], [`not_subsettable`]).
 
 use crate::attrib;
 use crate::text;
@@ -111,6 +111,129 @@ fn invalid_type(s: Ref<'_>) -> SubErr {
 
 /// GNU R's `R_MSG_subs_o_b`.
 pub const OUT_OF_BOUNDS: &str = "subscript out of bounds";
+
+/// What a `subscriptOutOfBoundsError` reports as its `index` field.
+pub enum Sindex<'a> {
+    /// `ScalarReal((double) index)`: a position.
+    Real(f64),
+    /// `ScalarString(STRING_ELT(s, i))`: a name of the subscript `s`.
+    StrElt(Root<'a>, usize),
+    /// The subscript itself (`errorcallOutOfBoundsSEXP`).
+    Value(Root<'a>),
+}
+
+/// `R_makeOutOfBoundsError(x, subscript, sindex, call, prefix)` signalled
+/// against `call` (None: the current call, as `ECALL_OutOfBounds` makes
+/// `R_CurrentExpression` of a NULL call): a `subscriptOutOfBoundsError`
+/// with fields `object`, `subscript` (the 1-based dimension, NA for -1) and
+/// `index`.
+// R: errors.c:R_makeOutOfBoundsError; subscript.c:ECALL_OutOfBounds,
+// ECALL_OutOfBoundsCHAR; subset.c:errorcallOutOfBounds[SEXP];
+// subassign.c:errorOutOfBoundsSEXP
+pub fn out_of_bounds(
+    cx: &mut Cx,
+    call: Option<Root<'_>>,
+    x: Root<'_>,
+    subscript: i32,
+    sindex: Sindex<'_>,
+    prefix: Option<&str>,
+) -> RError {
+    let msg = match prefix {
+        Some(p) => format!("{p} {OUT_OF_BOUNDS}"),
+        None => OUT_OF_BOUNDS.to_owned(),
+    };
+    cx.scope(|cx, s| {
+        let o = s.out(cx);
+        let ssub = o.root();
+        if let Err(e) = cx.build_scalar(o, if subscript >= 0 { subscript + 1 } else { NA_INTEGER }) {
+            return e;
+        }
+        let index = match sindex {
+            Sindex::Real(d) => {
+                let o = s.out(cx);
+                let r = o.root();
+                if let Err(e) = cx.build_scalar(o, d) {
+                    return e;
+                }
+                r
+            }
+            Sindex::StrElt(v, i) => {
+                let o = s.out(cx);
+                let r = o.root();
+                let built = cx.build(o, |cx| {
+                    let c = v.bind(cx).as_vector::<Char<'_>>().expect("robigo: a string subscript").get(i);
+                    let mut sv = cx.alloc_vector::<Char<'_>>(1)?;
+                    sv.set(0, c);
+                    Ok(sv.finish().into())
+                });
+                if let Err(e) = built {
+                    return e;
+                }
+                r
+            }
+            Sindex::Value(r) => r,
+        };
+        let fields = [("object", x), ("subscript", ssub), ("index", index)];
+        let cond = robigo_rtcore::ErrorCond {
+            class: "subscriptOutOfBoundsError",
+            subclass: None,
+            msg: &msg,
+            fields: &fields,
+            exit_only: false,
+        };
+        match call {
+            Some(c) => cx.error_condition_call(Some(c), &cond),
+            None => cx.error_condition(&cond),
+        }
+    })
+}
+
+/// `R_makeMissingSubscriptError(x, call)` (with the field `object`), or
+/// `R_makeMissingSubscriptError1(call)` without `x`, signalled against
+/// `call` (None: the current call).
+// R: errors.c:R_makeMissingSubscriptError[1]; subscript.c:ECALL_MissingSubs;
+// subset.c:errorcallMissingSubs; subassign.c:errorMissingSubscript
+pub fn missing_subscript(cx: &mut Cx, call: Option<Root<'_>>, x: Option<Root<'_>>) -> RError {
+    let fields: Vec<(&'static str, Root<'_>)> = x.map(|x| ("object", x)).into_iter().collect();
+    let cond = robigo_rtcore::ErrorCond {
+        class: "MissingSubscriptError",
+        subclass: None,
+        msg: MISSING_SUBSCRIPT,
+        fields: &fields,
+        exit_only: false,
+    };
+    match call {
+        Some(c) => cx.error_condition_call(Some(c), &cond),
+        None => cx.error_condition(&cond),
+    }
+}
+
+/// `R_makeNotSubsettableError(x, call)`: "object of type '...' is not
+/// subsettable" with the field `object`, signalled against `call` (None:
+/// the current call, as subassign.c's `errorNotSubsettable`).
+// R: errors.c:R_makeNotSubsettableError; subset.c:errorcallNotSubsettable;
+// subassign.c:errorNotSubsettable
+pub fn not_subsettable(cx: &mut Cx, call: Option<Root<'_>>, x: Root<'_>) -> RError {
+    let msg = format!("object of type '{}' is not subsettable", type_to_char(x.bind(cx)));
+    let fields = [("object", x)];
+    let cond = robigo_rtcore::ErrorCond {
+        class: "notSubsettableError",
+        subclass: None,
+        msg: &msg,
+        fields: &fields,
+        exit_only: false,
+    };
+    match call {
+        Some(c) => cx.error_condition_call(Some(c), &cond),
+        None => cx.error_condition(&cond),
+    }
+}
+
+/// A [`get1index`] error raised: `ECALL_MissingSubs` for a missing
+/// subscript, else `ECALL(call, msg)`.
+pub fn raise_get1(cx: &mut Cx, call: Option<Root<'_>>, e: SubErr) -> RError {
+    if e == MISSING_SUBSCRIPT { missing_subscript(cx, call, None) } else { ecall(cx, call, &e) }
+}
 
 /// The names `getAttrib(x, R_NamesSymbol)` gives: a vector's names (a 1-d
 /// array's `dimnames[[1]]`), a pairlist's tags.
@@ -223,7 +346,9 @@ pub fn get1index(
 ) -> Result<(i64, Vec<(String, bool)>), SubErr> {
     let warn_pok = pok == -1;
     let pok = pok != 0;
-    let ns = s.len().unwrap_or(0);
+    // length(s): 1 for what is not a vector or a list (a symbol, the
+    // missing argument among them)
+    let ns = s.len().unwrap_or(1);
     let mut warnings = Vec::new();
     match pos {
         None if ns != 1 => {
@@ -481,7 +606,7 @@ pub(crate) fn integer_subscript(ps: &[i32], nx: usize, stretch: &mut usize) -> R
         if canstretch {
             *stretch = max as usize;
         } else {
-            return Err(IntErr::OutOfBounds);
+            return Err(IntErr::OutOfBounds(max as f64));
         }
     }
     if neg {
@@ -499,7 +624,9 @@ pub(crate) fn integer_subscript(ps: &[i32], nx: usize, stretch: &mut usize) -> R
 /// An integer or real subscript's failure: GNU R's out-of-bounds condition
 /// (`ECALL_OutOfBounds`), or a message.
 pub enum IntErr {
-    OutOfBounds,
+    /// The largest position, past the end (`ECALL_OutOfBounds(x, -1, max,
+    /// call)`).
+    OutOfBounds(f64),
     Msg(SubErr),
 }
 
@@ -521,7 +648,8 @@ fn real_subscript(ps: &[f64], nx: usize, stretch: &mut usize) -> Result<Vec<i64>
         if canstretch {
             *stretch = max as usize;
         } else {
-            return Err(IntErr::OutOfBounds);
+            // (R_xlen_t) max
+            return Err(IntErr::OutOfBounds(max.trunc()));
         }
     }
     if min <= -1.0 {
@@ -665,7 +793,10 @@ pub fn make_subscript(
 ) -> RResult<Subscript> {
     enum E {
         Msg(SubErr),
-        Bounds,
+        /// past the end: the largest position
+        Bounds(f64),
+        /// a name `x` lacks: its index in the subscript
+        BoundsName(usize),
     }
     let r = {
         let cx = &*cx;
@@ -703,7 +834,7 @@ pub fn make_subscript(
                             r.stretch = st;
                             Ok(r)
                         }
-                        Err(IntErr::OutOfBounds) => Err(E::Bounds),
+                        Err(IntErr::OutOfBounds(max)) => Err(E::Bounds(max)),
                         Err(IntErr::Msg(m)) => Err(E::Msg(m)),
                     }
                 }
@@ -715,7 +846,7 @@ pub fn make_subscript(
                             r.stretch = st;
                             Ok(r)
                         }
-                        Err(IntErr::OutOfBounds) => Err(E::Bounds),
+                        Err(IntErr::OutOfBounds(max)) => Err(E::Bounds(max)),
                         Err(IntErr::Msg(m)) => Err(E::Msg(m)),
                     }
                 }
@@ -727,7 +858,7 @@ pub fn make_subscript(
                             r.stretch = st;
                             Ok(r)
                         }
-                        Err(Some(_)) => Err(E::Bounds),
+                        Err(Some(i)) => Err(E::BoundsName(i)),
                         Err(None) => unreachable!(),
                     }
                 }
@@ -739,6 +870,8 @@ pub fn make_subscript(
     match r {
         Ok(s) => Ok(s),
         Err(E::Msg(m)) => Err(ecall(cx, call, &m)),
-        Err(E::Bounds) => Err(ecall(cx, call, OUT_OF_BOUNDS)),
+        // stringSubscript(..., x, -1): no dimension
+        Err(E::Bounds(max)) => Err(out_of_bounds(cx, call, x, -1, Sindex::Real(max), None)),
+        Err(E::BoundsName(i)) => Err(out_of_bounds(cx, call, x, -1, Sindex::StrElt(s, i), None)),
     }
 }

@@ -76,6 +76,19 @@ impl Landing {
     }
 }
 
+/// The kinds of top-level record [`Cx::toplevel_with`] makes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TopLevel {
+    /// `R_ToplevelExec` around a native entry ([`Cx::toplevel_exec`]): the
+    /// stacks emptied for the body, and a jump from C lands on the record.
+    ExecNative,
+    /// `R_ToplevelExec` around Rust code ([`Cx::toplevel`], the finalizer
+    /// runner): the stacks emptied for the body.
+    Exec,
+    /// The REPL's `R_Toplevel` ([`Cx::repl_toplevel`]): the stacks kept.
+    Repl,
+}
+
 impl Cx {
     /// Run `enter` (a heap trampoline call: jump record, segment slot,
     /// `.Call` plain switch) with the capability suspended; true if an exit
@@ -238,23 +251,24 @@ impl Cx {
         }
     }
 
-    /// A top-level record (`R_ToplevelExec`'s when `exec`): `R_HandlerStack`
-    /// and `R_RestartStack` empty while `body` runs in it, the record
-    /// `R_ToplevelContext`, and everything restored after. Without `exec`
-    /// (the REPL's, [`Cx::repl_toplevel`]) the stacks are kept for `body`,
-    /// and the record's end restores them from what it saved. Ok(true):
-    /// `body` finished; Ok(false): an exit to the record landed there (an
-    /// error with no handler outside the record: GNU R reported it before
-    /// the jump). An exit to a record further out passes (GNU R's `longjmp`
-    /// would leave `R_ToplevelExec`'s frame too).
+    /// A top-level record of kind `kind`, the record `R_ToplevelContext`
+    /// while `body` runs in it. For `R_ToplevelExec`'s kinds,
+    /// `R_HandlerStack` and `R_RestartStack` are empty while `body` runs and
+    /// restored after; the REPL's ([`Cx::repl_toplevel`]) keeps them for
+    /// `body`, and the record's end restores them from what it saved.
+    /// Ok(true): `body` finished; Ok(false): an exit to the record landed
+    /// there (an error with no handler outside the record: GNU R reported it
+    /// before the jump). An exit to a record further out passes (GNU R's
+    /// `longjmp` would leave `R_ToplevelExec`'s frame too).
     fn toplevel_with(
         &mut self,
         global_env: Root<'_>,
         base_env: Root<'_>,
-        landing: bool,
-        exec: bool,
+        kind: TopLevel,
         body: impl FnOnce(&mut Cx, Rec) -> Result<(), Option<RError>>,
     ) -> RResult<bool> {
+        let landing = kind == TopLevel::ExecNative;
+        let exec = kind != TopLevel::Repl;
         let nil = self.iso().nil;
         // R: context.c:R_ToplevelExec
         let st = self.ctxs();
@@ -322,7 +336,7 @@ impl Cx {
         fun: unsafe extern "C" fn(*mut c_void),
         data: *mut c_void,
     ) -> RResult<bool> {
-        self.toplevel_with(global_env, base_env, true, true, |cx, c| {
+        self.toplevel_with(global_env, base_env, TopLevel::ExecNative, |cx, c| {
             let a = [data as usize, 0, 0, 0, 0, 0];
             // SAFETY: the caller's contract.
             let jumped = cx.enter_native(c, |jb, scan, _| unsafe {
@@ -340,7 +354,7 @@ impl Cx {
         base_env: Root<'_>,
         body: impl FnOnce(&mut Cx) -> RResult<()>,
     ) -> RResult<bool> {
-        self.toplevel_with(global_env, base_env, false, true, |cx, _| body(cx).map_err(Some))
+        self.toplevel_with(global_env, base_env, TopLevel::Exec, |cx, _| body(cx).map_err(Some))
     }
 
     /// The REPL's top level around one statement (GNU R's `R_Toplevel`,
@@ -356,7 +370,38 @@ impl Cx {
         base_env: Root<'_>,
         body: impl FnOnce(&mut Cx) -> RResult<()>,
     ) -> RResult<bool> {
-        self.toplevel_with(global_env, base_env, false, false, |cx, _| body(cx).map_err(Some))
+        self.toplevel_with(global_env, base_env, TopLevel::Repl, |cx, _| body(cx).map_err(Some))
+    }
+
+    /// GNU R's `begincontext(&c, CTXT_RESTART, R_NilValue, global_env,
+    /// base_env, R_NilValue, R_NilValue)` with its `SETJMP`, around `body`:
+    /// Ok(true) when an exit to the record landed there (an internal
+    /// restart made on it, `R_JumpToContext(c, CTXT_RESTART, ...)`),
+    /// Ok(false) when `body` returned. Another exit passes.
+    // R: errors.c:onintrEx (the restart context)
+    pub fn restart_context(
+        &mut self,
+        global_env: Root<'_>,
+        base_env: Root<'_>,
+        body: impl FnOnce(&mut Cx, crate::ContextId) -> RResult<()>,
+    ) -> RResult<bool> {
+        let mut init = Init::plain(self, ctxt::RESTART, 0);
+        init.cloenv = global_env.bind(self).sexp();
+        init.sysparent = base_env.bind(self).sexp();
+        self.with_record(&init, |cx, c| {
+            let r = match body(cx, c.id()) {
+                Ok(()) => false,
+                Err(e) => match cx.arrive(c, e) {
+                    Arrival::Landed(e) => {
+                        cx.take_exit(e);
+                        true
+                    }
+                    Arrival::Pass(e) | Arrival::Stop(e) => return Err(e),
+                },
+            };
+            cx.end_plain(c);
+            Ok(r)
+        })
     }
 
     /// A new `R_UnwindProtect` continuation (`R_MakeUnwindCont`): robigo's
