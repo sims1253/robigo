@@ -77,7 +77,7 @@ shlib <- function(dir, c_file) {
   src <- basename(c_file)
   log <- "shlib.log"
   st <- system2("R", c("CMD", "SHLIB", src), stdout = log, stderr = log)
-  if (st != 0L && any(grepl("SET_TYPEOF", readLines(log)))) {
+  if (st != 0L && any(grepl("SET_TYPEOF", readLines(log), useBytes = TRUE))) {
     writeLines('#define SET_TYPEOF(x, t) Rf_error("SET_TYPEOF is not in GNU R 4.6\'s C API")', "shim.h")
     unlink(sub("\\.c$", ".o", src))
     st <- system2("R", c("CMD", "SHLIB", src), stdout = log, stderr = log,
