@@ -648,10 +648,15 @@ fn versions_track_function_bindings() {
     cx.scope(|cx, s| {
         let g = s.root(cx, cx.global_env());
         let e = new_env(cx, s, true, 29, g);
+        assert_eq!(cx.env_version(e.bind(cx)), None, "no box yet");
         let out = s.out(cx);
         let bx = out.root();
         cx.env_version_box(e, out).unwrap();
-        let version = |cx: &Cx| cx.box_version(bx.bind(cx));
+        let version = |cx: &Cx| {
+            let v = cx.box_version(bx.bind(cx));
+            assert_eq!(cx.env_version(e.bind(cx)), Some(v), "env_version reads the box");
+            v
+        };
         let epoch0 = cx.search_epoch();
         let v0 = version(cx);
         assign(cx, "x", 1.0, e).unwrap();
