@@ -217,8 +217,15 @@ def newest_source(dirs, root=ROOT):
     if last and last.strip():
         t, h = last.split()
         best = (float(t), f"commit {h}")
-    for line in (git(["status", "--porcelain", "--", *rel], root) or "").splitlines():
-        f = os.path.join(root, line[3:].split(" -> ")[-1])
+    # NUL-separated entries: paths unquoted, untracked files listed one by one;
+    # a rename or copy is followed by its source, which is skipped
+    entries = iter((git(["status", "--porcelain", "-z", "--untracked-files=all", "--", *rel], root) or "").split("\0"))
+    for e in entries:
+        if len(e) < 4:
+            continue
+        if "R" in e[:2] or "C" in e[:2]:
+            next(entries, None)
+        f = os.path.join(root, e[3:])
         if os.path.isfile(f):
             best = max(best, (os.path.getmtime(f), os.path.relpath(f, root) + " (uncommitted)"))
     return best
@@ -604,14 +611,23 @@ def cmd_recheck(a):
     return cmd_compare(a)
 
 
-def rt_instr(binary, rows, jobs, outdir, tag, cycles=False):
+# The heap shifts the address-sensitive rows are measured over (k unrelated
+# strings before the row's setup; idiom-vs-r.py --shifts): their counts
+# follow where the strings were allocated, so one layout's count is noise.
+# The gate compares the medians (docs/ledger/g3/2026-11-17-address-rows.md).
+ADDRESS_SHIFTS = (0, 300, 1000, 3000, 5000)
+
+
+def rt_instr(binary, rows, jobs, outdir, tag, cycles=False, ranges=None):
     """Instructions per iteration of `rows` (names of
     benchmarks/rt/calls-rows.toml rows), as the M1 bars measure them:
     scripts/idiom-vs-r.py --rows, callgrind N against 2N; robigo-rt's
     (`binary`), or GNU R's (`binary` None: RSCRIPT_BIN). The rows are split
     over up to `jobs` parallel runs, the long ones (fib, binarytrees) first.
     With `cycles`, also the estimated cycles under PINNED_CACHE: ({row:
-    instr}, {row: cycles}); without, {row: instr}."""
+    instr}, {row: cycles}); without, {row: instr}. An address-sensitive row
+    reports the median over ADDRESS_SHIFTS, and `ranges` (a dict) gets its
+    {row: (lowest, highest)} count over them."""
     long = [r for r in ("fib", "binarytrees") if r in rows]
     order = long + [r for r in rows if r not in long]
     n = max(1, min(jobs, len(order)))
@@ -625,7 +641,7 @@ def rt_instr(binary, rows, jobs, outdir, tag, cycles=False):
         rx = "^(" + "|".join(re.escape(r) for r in groups[i]) + ")$"
         side = ["--robigo", binary, "--no-r"] if binary else ["--no-robigo"]
         cmd = [sys.executable, script, "--rows", RT_ROWS, "--filter", rx, *side, "--json", out,
-               *(["--cycles"] if cycles else [])]
+               "--shifts", ",".join(map(str, ADDRESS_SHIFTS)), *(["--cycles"] if cycles else [])]
         p = subprocess.run(cmd, capture_output=True, text=True, env=env)
         if p.returncode:
             raise SystemExit(f"rt-bars: {' '.join(cmd)} failed:\n{p.stderr[-3000:]}")
@@ -637,6 +653,11 @@ def rt_instr(binary, rows, jobs, outdir, tag, cycles=False):
         for got in ex.map(one, range(n)):
             instr.update({name: v[f"{who}_instr"] for name, v in got.items()})
             cyc.update({name: v[f"{who}_est_cycles"] for name, v in got.items()})
+            if ranges is not None:
+                for name, v in got.items():
+                    if "shifts" in v:
+                        ks = [x[f"{who}_instr"] for x in v["shifts"].values()]
+                        ranges[name] = (min(ks), max(ks))
     missing = sorted(set(rows) - set(instr))
     if missing:
         raise SystemExit(f"rt-bars: no measurement of {', '.join(missing)}")
@@ -842,8 +863,10 @@ def cmd_rt_bars(a):
     files = [r["program"] for r in spec["rss"]]
     work = tempfile.mkdtemp(prefix="rt-bars-")
 
+    ranges = {"new": {}, "main": {}}
+
     def measure(binary, tag):
-        got = rt_instr(binary, rows, a.jobs, work, tag, cycles=a.cycles)
+        got = rt_instr(binary, rows, a.jobs, work, tag, cycles=a.cycles, ranges=ranges[tag])
         instr, cyc = got if a.cycles else (got, None)
         return instr, cyc, rt_rss(binary, files, a.runs, work, tag)
 
@@ -865,8 +888,7 @@ def cmd_rt_bars(a):
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with open(out, "w") as f:
         json.dump({"instr": instr, "rss": rss, "cycles": cycles, "main": main, "cpu": model, "cpu_signature": sig,
-                   "binaries": idents},
-                  f, indent=1, sort_keys=True)
+                   "shift_ranges": ranges, "binaries": idents}, f, indent=1, sort_keys=True)
     failures, notes, table = rt_verdict(spec, instr, rss, main)
     print("### robigo-rt's M1 bars (scripts/perf.py rt-bars)\n")
     print(f"CPU: {model}, signature {sig}.")
@@ -890,6 +912,13 @@ def cmd_rt_bars(a):
             cyc = f" {cycles[row]:,.1f} | {f'{pct(cycles[row], mc):+.2f}%' if mc else ''} |"
         print(f"| {row} | {v:,.1f} | {main_s} | {change} | {against} | {ratio:.3f}x | "
               f"{'' if met else '('}{cap}x{'' if met else ')'} | {status} |{cyc}")
+    if ranges["new"]:
+        ks = ", ".join(map(str, ADDRESS_SHIFTS))
+        print(f"\nAddress-sensitive rows: the median over heap shifts k ∈ {{{ks}}} (k unrelated strings before "
+              "the setup), with the range over them:")
+        for row, (lo, hi) in sorted(ranges["new"].items()):
+            m = ranges["main"].get(row)
+            print(f"- {row}: {lo:,.1f}–{hi:,.1f}" + (f"; main {m[0]:,.1f}–{m[1]:,.1f}" if m else ""))
     print("\n| program | peak RSS KiB | main | bars |")
     print("|---|---:|---:|---|")
     for r in spec["rss"]:

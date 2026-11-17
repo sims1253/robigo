@@ -727,6 +727,14 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
       - **Estimated cycles** under a pinned cache model
         (`--LL=33554432,16,64`) are a report-only column. They never fail
         (`docs/ledger/g3/2026-11-16-cycles-study.md`).
+      - **Address-sensitive rows** (`address_sensitive = true` in
+        `calls-rows.toml`: e7-match, whose string hash is by address, as
+        GNU R's) are measured as the median over heap shifts,
+        k ∈ {0, 300, 1000, 3000, 5000} unrelated strings before the setup
+        (`perf.py`'s `ADDRESS_SHIFTS`, `idiom-vs-r.py --shifts`). Both
+        binaries, and GNU R's side, get the same shifts. The 0.5% rule
+        applies to the median, and the report gives the range over the
+        shifts (`docs/ledger/g3/2026-11-17-address-rows.md`).
       - **The binaries:** `rt-bars`, `idiom-vs-r.py` and `rss.py` name every
         binary they measure, in the report and the JSON: its sha256, GNU
         build ID and modification time, and the checkout's `git describe`
