@@ -3,9 +3,8 @@
 //! function for the three) and `mget`.
 //!
 //! Not here yet, each an error that says so: a frame number as `envir`
-//! (`R_sysframe` needs C2's contexts), environments that are S4 objects
-//! (`R_getS4DataSlot`), and the condition class of the missing-argument
-//! error (S1 makes it a `missingArgError`; the message is GNU R's).
+//! (`R_sysframe` needs C2's contexts) and environments that are S4
+//! objects (`R_getS4DataSlot`).
 
 use crate::attrib::{Attr, Attrs};
 use crate::text::to_native;
@@ -284,9 +283,9 @@ pub fn do_get<const CODE: u8>(
         let rval = rv.root();
         find_var1_mode(cx, t1, genv, mode, inherits != 0, CODE != 0, rv)?;
         if rval.bind(cx) == cx.missing_arg() {
+            // signal a *classed* error: R_MissingArgError(t1, call, "getMissingError")
             let sym = t1.bind(cx).as_sym().unwrap().name().bytes().to_vec();
-            let msg = format!("argument \"{}\" is missing, with no default", String::from_utf8_lossy(&sym));
-            return Err(cx.error_call(Some(call), &msg));
+            return Err(cx.missing_arg_error(&String::from_utf8_lossy(&sym), Some(call), "getMissingError"));
         }
         let unbound = rval.bind(cx) == cx.unbound();
         match CODE {
