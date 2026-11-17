@@ -349,7 +349,10 @@ pub unsafe fn num(cx: &Cx, s: Slot) -> Option<Num> {
                         _ => Num::Lgl(*(p as *const i32)),
                     });
                 }
-                ops::plain_num(Ref::from_sexp(x, cx))
+                // anything else (not a real, integer or logical vector, or
+                // ALTREP) is not a plain scalar: `ops::plain_num`'s None,
+                // without its views inlined into the interpreter's loop
+                None
             }
         }
         Tag::Empty => None,
