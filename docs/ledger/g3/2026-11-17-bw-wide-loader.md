@@ -176,9 +176,14 @@
 
     BW's lowest count equals main's lowest. Its unshifted layout falls in a
     band where the strings collide more. TODO(foreman's decision).
-- The ratchet (condition (d)): `tests/r` on rt goes from 42 to 132 of
+- The ratchet (condition (d)): `tests/r` on rt goes from 42 to 131 of
   632 byte-exact passes. The sweep ran 602 cases, and none ratcheted
-  before regressed. The new `tests/rt` passes:
+  before regressed. A 133rd case, `cli/exit-warnings`, also passes but is
+  not ratcheted. Its finalizer is registered on an environment nothing
+  holds, and the recording assumes no collection before exit. Under
+  rt-ci's gctorture conformance (E3) the environment is collected during
+  the script, so the finalizer's warning comes before `.Last`'s. The
+  tests/rt cases register on `.BaseNamespaceEnv` for that reason. The new `tests/rt` passes:
   - `assign/link-walk-evalq`, `assign/link-walk-sapply`;
   - this entry's four cases: `base/wide-names`, `base/wide-defs`,
     `s3/method-table`, `env/dollar-env`.
