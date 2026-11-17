@@ -147,9 +147,13 @@
   - Recorded on 4.6.2 and ratcheted:
     - `tests/rt/capi/compact-seq.R`: the C API; byte-identical with GNU
       R.
-    - `tests/rt/serialize/compact.R`: versions 2 and 3, xdr, binary and
+    - `tests/rt/serialize-closures/compact.R`: versions 2 and 3, xdr, binary and
       ascii; nested; shared; an expanded sequence; attributes; a
-      hand-built `ALTREP_SXP` with attributes.
+      hand-built `ALTREP_SXP` with attributes. It is in
+      `serialize-closures`, outside base-subset's traced areas, as
+      `frames.R` is: it serializes a closure, and the tracer rewrites the
+      body of every closure in the global environment, so the traced run's
+      bytes differ from the untraced run's.
     - `tests/rt/seq/compact-writes.R` and `tests/rt/seq/compact-nested.R`.
   - `robigo-rtapi/tests/alloc.rs`: the same allocation count for n = 2000
     and n = 10^6 (both past one chunk), in AST, byte code and JIT.
