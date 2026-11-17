@@ -465,6 +465,9 @@ pub struct RtState {
     pub assign_fns: std::cell::RefCell<std::collections::HashMap<robigo_rtcore::SymId, Sexp>>,
     /// cmp.R's constant folds of the compile under way ([`crate::fold`]).
     pub folds: crate::fold::Folds,
+    /// INTERIM(L5): the pinned GNU R tree the wide base loader reads its
+    /// definitions from on first use ([`crate::base::load`]).
+    pub base_src: std::cell::RefCell<Option<std::path::PathBuf>>,
 }
 
 impl RtState {

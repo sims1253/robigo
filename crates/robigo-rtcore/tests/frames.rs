@@ -901,8 +901,7 @@ fn tagged_promises_box_once_and_are_no_function() {
                     // its tag before anything reads it.
                     unsafe {
                         let p = cx.alloc_node_raw(PROMSXP, nil, nil, nil)?;
-                        p.set_promise_tag(REALSXP);
-                        p.set_promise_bits(2.5f64.to_bits());
+                        p.set_promise_unboxed(REALSXP, 2.5f64.to_bits());
                         Ok(Ref::from_sexp(p, cx))
                     }
                 })
@@ -928,8 +927,7 @@ fn tagged_promises_box_once_and_are_no_function() {
                     // SAFETY: as above.
                     unsafe {
                         let p = cx.alloc_node_raw(PROMSXP, nil, nil, nil)?;
-                        p.set_promise_tag(INTSXP);
-                        p.set_promise_bits(7);
+                        p.set_promise_unboxed(INTSXP, 7);
                         Ok(Ref::from_sexp(p, cx))
                     }
                 })

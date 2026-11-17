@@ -1899,9 +1899,9 @@ fn arith_slots(cx: &Cx, op: u8, x: Slot, y: Slot, bc: bool) -> Option<Slot> {
 /// a call here costs the rows whose operands mix integers and doubles).
 #[inline(always)]
 fn arith_nums(cx: &Cx, op: u8, x: Slot, y: Slot, bc: bool) -> Option<Slot> {
-    // SAFETY: `num` only reads: every caller (`pure`, `arg_value`,
-    // `body_loop`, `fused`, through `arith_slots`) runs with nothing
-    // collecting, so the operands' objects stay live.
+    // SAFETY: `num` only reads: every caller (`pure`, `arg_value` and
+    // `body_loop`, through `arith_slots`) runs with nothing collecting, so
+    // the operands' objects stay live.
     match ops::arith2(op, unsafe { num(cx, x) }?, unsafe { num(cx, y) }?, bc) {
         (n, false) => Some(num_slot(n)),
         (_, true) => None,

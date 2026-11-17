@@ -153,9 +153,8 @@ def steps(crates):
         # collection gctorture makes due
         ("ROBIGO_GC_MOVE (move every movable object at every collection), with gctorture",
          {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1"}, [*test, *pkgs, *skip]),
-        # INTERIM(BW): base heap growth from the wider bound; BW's lazy fetch promises restore it
         ("conformance under ROBIGO_GC_MOVE with gctorture (E3)",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **slow, "ROBIGO_CONF_TIMEOUT": "1200"}, conformance),
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **slow}, conformance),
         # D5's frame recycling (docs/g3.md §16): every frame that would be recycled
         # is poisoned and held back instead, so a frame that escaped without
         # its ESCAPED bit panics where it is used next

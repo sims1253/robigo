@@ -11,6 +11,8 @@
 use crate::Sexp;
 
 pub(crate) struct CharTable {
+    /// Open addressing; the length is a power of two (`MIN_SLOTS`, doubled
+    /// as it grows), which `find`'s masked, unchecked probe relies on.
     slots: Vec<Sexp>,
     len: usize,
 }
@@ -35,6 +37,7 @@ impl CharTable {
     /// The entry with hash `h` for which `eq` is true.
     #[inline]
     pub fn find(&self, h: u32, mut eq: impl FnMut(Sexp) -> bool) -> Option<Sexp> {
+        debug_assert!(self.slots.len().is_power_of_two(), "robigo: the CHARSXP cache's length is not a power of two");
         let mask = self.slots.len() - 1;
         let mut i = h as usize & mask;
         loop {
@@ -82,6 +85,7 @@ impl CharTable {
     }
 
     fn rebuild(&mut self, cap: usize, keep: impl Fn(Sexp) -> bool) {
+        debug_assert!(cap.is_power_of_two(), "robigo: the CHARSXP cache's length must be a power of two");
         let old = std::mem::replace(&mut self.slots, vec![Sexp::NULL; cap]);
         self.len = 0;
         for c in old {

@@ -776,7 +776,8 @@ pub fn vector_index(
     for i in start..stop {
         let xv = x.bind(cx);
         let t = xv.sexptype();
-        if !matches!(t, VECSXP | EXPRSXP | NILSXP | LISTSXP) {
+        // isVectorList || isPairList (a call and `...` are pairlists too)
+        if !matches!(t, VECSXP | EXPRSXP | NILSXP | LISTSXP | LANGSXP | DOTSXP) {
             let msg = if i > 0 {
                 format!("recursive indexing failed at level {}\n", i + 1)
             } else {
@@ -808,7 +809,7 @@ pub fn vector_index(
                 let o = s.out(cx);
                 let d = o.root();
                 cx.shallow_duplicate(er, o)?;
-                if container.bind(cx).sexptype() == LISTSXP {
+                if matches!(container.bind(cx).sexptype(), LISTSXP | LANGSXP | DOTSXP) {
                     let mut c = container.bind(cx).as_cons().unwrap();
                     for _ in 0..offset {
                         c = c.cdr().as_cons().unwrap();
@@ -846,6 +847,15 @@ fn subset_env(cx: &mut Cx, call: Root<'_>, env: Root<'_>, sub: Root<'_>, nsubs: 
 pub fn env_value(cx: &mut Cx, env: Root<'_>, name: &[u8], out: Out<'_>) -> RResult<()> {
     cx.scope(|cx, s| {
         let sym = install_sym(cx, s, name)?;
+        env_value_sym(cx, env, sym, out)
+    })
+}
+
+/// [`env_value`] of the symbol `sym`. `R_subset3_dflt` of an environment
+/// and an ASCII symbol's name is this: `installTrChar(PRINTNAME(sym))` is
+/// `sym` itself.
+pub fn env_value_sym(cx: &mut Cx, env: Root<'_>, sym: Root<'_>, out: Out<'_>) -> RResult<()> {
+    cx.scope(|cx, s| {
         let v = s.out(cx);
         let vr = v.root();
         cx.find_var_in_frame3(env, sym, true, v)?;

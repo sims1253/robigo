@@ -1,0 +1,13 @@
+finalizer c 
+finalizer b 
+finalizer a 
+after the first collection
+same key z 
+same key y 
+same key x 
+after the second collection
+finalizer d 
+after the third collection
+end of the script
+finalizer exit q 
+finalizer exit p 
