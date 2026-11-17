@@ -309,6 +309,16 @@ pub mod flags {
     /// The payload is elsewhere: a data pointer at `extdata::OFF_PTR`,
     /// owned by the words after it ([`super::extdata`]).
     pub const EXTDATA: u8 = 0x04;
+    /// Never marked, moved or freed (`Core::make_immortal`, and the
+    /// process's shared constants). The contract that comes with it:
+    /// - The collector does not trace an immortal object, so what it points
+    ///   at must be immortal too, or kept alive some other way, until a
+    ///   store into it passes the barrier ([`BARRIER`], set with this flag),
+    ///   which makes it a root of its heap.
+    /// - Reference counts, `SEEN_BY_C` and `MARK_NOT_MUTABLE` skip it: its
+    ///   header is not written after it is made, beyond that one barrier bit.
+    /// - A shared constant (H5, `shared.rs`) takes no store at all: the
+    ///   barrier's slow path refuses it before writing anything.
     pub const IMMORTAL: u8 = 0x08;
     /// The barrier's state bit (council item 8): a store into this object
     /// must take the barrier's slow path (`Sexp::store`), which logs the
