@@ -32,7 +32,7 @@ name = "Attributes (attrib.c)"
 patterns = ['src/main/attrib\.c:']
 
 [[cause]]
-name = "Arithmetic, comparison and logic"
+name = "Arithmetic, comparison and logic, and all of nmath"
 patterns = ['src/main/(arithmetic|relop|logic|complex)\.c:', 'src/nmath/']
 
 [[cause]]
@@ -45,7 +45,7 @@ patterns = ['src/include/']
 
 [[cause]]
 name = "Other builtins (src/main)"
-patterns = ['src/main/[a-z0-9_]+\.c:']
+patterns = ['src/main/[A-Za-z0-9_]+\.c:']
 
 [[cause]]
 name = "libc: memcpy, memset and the rest"
@@ -60,5 +60,5 @@ name = "Dynamic linking (ld.so)"
 patterns = ['\[ld-linux-x86-64\.so\.2\]$']
 
 [[cause]]
-name = "Other libR (no source line)"
+name = "Other libR (any other file, or no source line)"
 patterns = ['\[libR\.so\]$', '\[R\]$']

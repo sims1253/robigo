@@ -82,22 +82,24 @@ GNUR_CASES = [
     (f"{DEB}/objects.c:R_LookupMethod{LIBR}", "S3 dispatch (objects.c)"),
     (f"{DEB}/memory.c:R_gc_internal{LIBR}", "Allocation and GC (memory.c)"),
     (f"{DEB}/attrib.c:Rf_getAttrib{LIBR}", "Attributes (attrib.c)"),
-    (f"{STOCK}/arithmetic.c:R_binary{EXE}", "Arithmetic, comparison and logic"),
-    ("/tmp/a0/R-4.6.2/src/nmath/bessel_j.c:bessel_j" + EXE, "Arithmetic, comparison and logic"),
+    (f"{STOCK}/arithmetic.c:R_binary{EXE}", "Arithmetic, comparison and logic, and all of nmath"),
+    ("/tmp/a0/R-4.6.2/src/nmath/bessel_j.c:bessel_j" + EXE, "Arithmetic, comparison and logic, and all of nmath"),
     (f"{DEB}/context.c:Rf_begincontext{LIBR}", "Conditions and contexts (errors.c, context.c)"),
     (".tmp/a0/R-4.6.2/src/main/../../src/include/Rinlinedfuns.h:ReadItem_Recursive'2",
      "Inlined header code (src/include: Rinlinedfuns.h, Defn.h, ...)"),
     (f"{STOCK}/serialize.c:InBytesMem{EXE}", "Other builtins (src/main)"),
+    (f"{DEB}/RNG.c:unif_rand{LIBR}", "Other builtins (src/main)"),
     (f"./string/../sysdeps/x86_64/multiarch/strcmp-avx2.S:__strcmp_avx2 [{LIB}/libc.so.6]",
      "libc: memcpy, memset and the rest"),
     (f"???:exp [{LIB}/libm.so.6]", "libm"),
     (f"./elf/./elf/dl-lookup.c:do_lookup_x [{LIB}/ld-linux-x86-64.so.2]", "Dynamic linking (ld.so)"),
-    (f"???:0x00000000000a1b20{LIBR}", "Other libR (no source line)"),
-    (f"???:0x00000000000a1b20{EXE}", "Other libR (no source line)"),
+    (f"???:0x00000000000a1b20{LIBR}", "Other libR (any other file, or no source line)"),
+    (f"???:0x00000000000a1b20{EXE}", "Other libR (any other file, or no source line)"),
     # Debian's _FORTIFY_SOURCE wrappers, inlined from glibc's headers
     (".tmp/a0/R-4.6.2/src/main/.usr/include/x86_64-linux-gnu/bits/string_fortified.h:InBytesMem", cd.OTHER),
     (f"???:xdr_int [{LIB}/libtirpc.so.3.0.0]", cd.OTHER),
 ]
+
 
 class Causes(unittest.TestCase):
     def test_lines_map_to_their_causes(self):
@@ -153,6 +155,7 @@ class GnurCauses(unittest.TestCase):
         for name, _ in CAUSES_GNUR:
             with self.subTest(cause=name):
                 self.assertIn(name, used, f"no case for {name}")
+
 
 class Idioms(unittest.TestCase):
     def test_every_idiom_has_a_floor_and_its_arithmetic(self):
