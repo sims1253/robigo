@@ -140,13 +140,24 @@ S1-S4 resolved, three new blockers in what replaced them:
   or of a Move's source before the Move, makes the way out none. Unit
   tests (`crosscheck::tests`) pin it.
 
+### Sol's round 3
+
+S6 and S7 resolved. The `&&` pairing was not (S5, S8): AND1ST and AND2ND
+were paired by a stack, and an AND2ND no path reaches is never
+translated. In `a && { b && return(TRUE); FALSE }` the outer AND2ND took
+the inner AND1ST, whose jump then landed on the outer SetVis, so the
+call returned TRUE for `(TRUE, FALSE)` where GNU R returns FALSE. An
+AND2ND now finds its AND1ST by the join, the code position AND1ST
+jumps to, which is right after its AND2ND. `visible.R`'s
+`k_and_inner_return` is the case.
+
 ### Result
 
 One verdict per closure. base.rdb: 980 the same, 145 expected in five
 classes (a nested function's code 63, a loop's shape 60, a switch's
 stop() 12, `%%`/`%/%` 9, return()'s operand 1), 21 untranslated
 (specials robigo-rt lacks, CALLSPECIAL), 6 skipped, **0 unexpected**.
-The conformance crosscheck: 119 the same, 21 expected, 3 skipped,
+The conformance crosscheck: 120 the same, 21 expected, 3 skipped,
 **0 unexpected**.
 
 ### Verification
@@ -158,7 +169,7 @@ The first cut was verified on V4 step 2's head (with #824's OCR fix
   pass (2800 runs, 0 differences).
 - perf-rt: flat, every row within +0.25%.
 
-After Sol's rounds 1 and 2:
+After Sol's rounds 1 to 3:
 - robigo-rt's conformance: 537/543. The new `bctrans/visible.R` passes and
   is ratcheted; the 6 failing are the same as before.
 - The rdb tests, under the crosscheck: 3 passed. The translation test
