@@ -76,6 +76,12 @@ against the calling function.
   NaN warnings' calls), recorded on 4.6.2; #802's `math1-compiled.R` and
   `log-compiled.R` ratcheted. `log-missing-class.R` (the condition
   classes of `log()`'s missing argument) is not this path; it stays B's.
+- After #803 (AC1, `1:n` compact): the slow path's `call_fn_regs` expands
+  a compact sequence argument as `run_builtin` does (`do_log_builtin`
+  reads `REAL()`), and the fixtures call `log(1:3)`, `log(1:4, 2)`,
+  `log(8, 1:3)`. Merging main found main itself broken the same way
+  (`log(1:3)` panicked in #802's `do_log` special): #810, merged into
+  this branch until it lands on main.
 
 ### Review
 
@@ -90,4 +96,21 @@ against the calling function.
 
 ### Verification
 
-VERIFICATION (after #803 merges: main merged, measured on top of it)
+On main `5f5f63f4` (#803) merged, with #810, at `4ae13f3a`:
+
+- `scripts/rt-ci.py`: exit 0. Conformance 524/532 (the 8 failing as on
+  main: `link-walk-mapply`, `link-walk-reduce`, the 5 `bytecode/`
+  compiler-namespace cases, `math/log-missing-class`); every observation
+  mode, gctorture, the moving collector, fail-alloc (2800 runs, 0
+  differences); the crosscheck 123 compared, 98 same, 0 unexpected.
+- `scripts/lint.sh`, `cargo fmt --check`: clean.
+- perf-rt (`scripts/perf.py rt-bars --main`, main `5f5f63f4`'s binary,
+  this runner): flat, every row within ±0.04% of main (plain -0.01%,
+  defaults +0.04%, named +0.01%, env-fn, superassign, s3, fib,
+  binarytrees, e7-* within ±0.02%), peak RSS within noise; 0 failures.
+  A first measurement with the arm inline in `vm::run` failed: plain
+  +0.48%, defaults +0.50%, named +0.61%, env-fn +0.33%. The same set of
+  functions stayed out of line (no inlining flip), but the arm shifted
+  `run`'s register allocation, ~8 instructions a closure call. The arm
+  is now one call (`vm::math1`, `#[inline(never)]`) and a reload, which
+  measures flat.
