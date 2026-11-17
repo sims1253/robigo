@@ -199,6 +199,14 @@ scripts/oracle-diff.py --ids fastr      # the changed cases of one suite
 scripts/oracle-diff.py --check          # exit 1 if 4.6.2 lacks a case or recorded a stale one
 ```
 
+**GNU R's own databases.** `scripts/rt-rdb-roundtrip.sh` copies base's,
+compiler's and tools' `.rdb`/`.rdx` out of the 4.6.2 oracle image, with
+GNU R's round trip of each record (unserialize, serialize, the
+persistent names kept), and runs `crates/robigo-rt/tests/rdb_roundtrip.rs`:
+every record must come back from robigo-rt's unserialize and serialize as
+GNU R's round trip has it (M3's L1 bar). It reports the records with byte
+code apart while robigo-rt has no BCODESXP.
+
 The parse oracle (`tests/parse`, the corpora's `parse-dumps.tsv.gz`) has
 no per-version files. 4.6.2's `parse()` gives the same dumps as 4.5.0's
 for every recorded source (`docs/ledger/g3.md`), so `robigo-syntax`
@@ -669,7 +677,9 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    `scripts/rt-overshoot.py` (E4: every slice's overshoot against max(32
    MiB, 10% of the live heap)), the conformance under a small vector limit
    and `scripts/rt-fail-alloc.py` (E9: `ROBIGO_FAIL_ALLOC_AT=n` refuses the
-   script's `n`th allocation once; the output must not change). Every pull
+   script's `n`th allocation once; the output must not change; its scripts
+   are `tests/rt/alloc/effects.R` and, for unserialize,
+   `tests/rt/serialize-closures/unserialize-e9.R`). Every pull
    request but a docs-only one runs it, and with it **base-subset**:
    `scripts/base-subset.sh --check` inside the GNU R 4.6.2 oracle image
    (robigo-rt's checked-in base subset is what this tree traces); the modes of `docs/g3.md` §16 add
