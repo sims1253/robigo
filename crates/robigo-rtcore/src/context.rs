@@ -1709,20 +1709,18 @@ impl Cx {
     }
 
     /// GNU R's `endcontext(cptr)` for a record [`Cx::begin_foreign`]
-    /// pushed, which must be the innermost. Records in C frames carry no
-    /// `on.exit` code (only R code adds it, to function records the
-    /// evaluator pushes); one that does panics.
+    /// pushed, which must be the innermost. The record is popped either
+    /// way. `on.exit` code that R code added to it (a function record of C
+    /// whose environment R code ran in) is not run yet: it is an error that
+    /// says so, which the C caller raises.
     ///
     /// # Safety
     /// `rec` was pushed by [`Cx::begin_foreign`] and is still on the chain.
-    pub unsafe fn end_foreign(&mut self, rec: NonNull<Context>) {
+    pub unsafe fn end_foreign(&mut self, rec: NonNull<Context>) -> RResult<()> {
         let c = Rec(rec);
         assert!(self.ctxs().global.get() == c.ptr(), "robigo: endcontext of a context that is not the innermost");
         let nil = self.iso().nil;
-        assert!(
-            c.cloenv() == nil || c.conexit() == nil,
-            "robigo: on.exit code in a context C pushed is not implemented yet"
-        );
+        let has_onexit = c.cloenv() != nil && c.conexit() != nil;
         // R: context.c:endcontext
         let hs = self.unwind_handler_stack(c.handlerstack());
         let st = self.ctxs();
@@ -1732,6 +1730,10 @@ impl Cx {
             st.exit_context.set(null_mut());
         }
         st.global.set(c.nextcontext());
+        if has_onexit {
+            return Err(self.error("robigo: on.exit code in a context C pushed is not implemented yet"));
+        }
+        Ok(())
     }
 
     // ---- jumps -------------------------------------------------------------

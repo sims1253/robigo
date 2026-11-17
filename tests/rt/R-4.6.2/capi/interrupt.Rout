@@ -1,0 +1,15 @@
+[1] "interrupt" "condition"
+[1] 0
+[1] "a condition handler"
+calling handler; first restart: resume 
+C: after R_CheckUserInterrupt
+[1] "after the interrupt"
+[1] "interrupt handler"
+on.exit of f
+[1] "caught after f"
+calling first
+[1] "exiting last"
+C: after R_CheckUserInterrupt
+still running while suspended
+[1] "taken after the suspension"
+[1] "taken at a poll"

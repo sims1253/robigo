@@ -14,6 +14,7 @@
 
 use crate::exit::{Exit, ExitKind, RError, RResult};
 use crate::isolate::Cx;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// `Cstack_info()`'s numbers ([`Cx::c_stack_info`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -242,20 +243,45 @@ impl Cx {
     }
 
     /// `R_CheckUserInterrupt()`: [`Cx::check_c_stack`], then, unless
-    /// interrupts are suspended, take a pending interrupt: an exit of kind
-    /// [`ExitKind::Interrupt`] to the top level (`onintr`; signalling the
-    /// `interrupt` condition to calling handlers and the console's newline
-    /// are S1's, before this exit).
+    /// interrupts are suspended, take a pending interrupt (a SIGINT
+    /// [`note_sigint`] noted, or [`Cx::set_interrupt_pending`]) through the
+    /// isolate's interrupt hook ([`crate::Hooks::interrupt`], `onintr`):
+    /// the condition system's handlers, then its jump to the top level, or
+    /// `Ok` when a handler invoked the `resume` restart.
     pub fn check_user_interrupt(&mut self) -> RResult<()> {
         self.check_c_stack()?;
         let st = self.ctxs();
+        // handleInterrupt's R_interrupts_pending = 1, from the signal
+        if SIGINT.load(Ordering::Relaxed) && SIGINT.swap(false, Ordering::Relaxed) {
+            st.intr_pending.set(true);
+        }
         // R: errors.c:R_CheckUserInterrupt, onintrEx
         if st.intr_suspended.get() || !st.intr_pending.get() {
             return Ok(());
         }
         st.intr_pending.set(false);
-        Err(self.exit(Exit::new(ExitKind::Interrupt)))
+        let hook = self.iso().hooks.get().interrupt;
+        hook(self)
     }
+
+    /// The interrupt hook's default ([`crate::Hooks::interrupt`]): an exit
+    /// of kind [`ExitKind::Interrupt`] to the top level, with no condition
+    /// signalled.
+    pub fn interrupt_exit(&mut self) -> RError {
+        self.exit(Exit::new(ExitKind::Interrupt))
+    }
+}
+
+/// A SIGINT arrived and no poll has taken it yet: process state, as a
+/// signal is the process's ([`note_sigint`]).
+static SIGINT: AtomicBool = AtomicBool::new(false);
+
+/// GNU R's `handleInterrupt` (main.c), the SIGINT handler's work:
+/// `R_interrupts_pending = 1`, noted for the next
+/// [`Cx::check_user_interrupt`] to take. Async-signal-safe: one atomic
+/// store.
+pub fn note_sigint() {
+    SIGINT.store(true, Ordering::Relaxed);
 }
 
 /// `R_CStackDir * (R_CStackStart - (uintptr_t) &dummy)`: the C stack in

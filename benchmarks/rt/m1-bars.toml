@@ -57,7 +57,10 @@ source = "docs/ledger/g3/2026-11-17-a0b-stock-rival.md"
 [gnur.rss]
 "benchmarks/suite/binarytrees.R" = 42428
 "benchmarks/rt/mem/listgrow.R" = 54220
-"benchmarks/rt/mem/churn.R" = 134684
+# churn.R collects in its loop's first iteration since the foreman's churn
+# decision (2026-11-17, its [[rss]] note): re-measured with scripts/rss.py
+# --runs 5 in the oracle image (134,684 before, at one of the phase's levels)
+"benchmarks/rt/mem/churn.R" = 123268
 
 [today]
 source = "docs/ledger/g3.md, M1 baselines"
@@ -163,6 +166,21 @@ program = "benchmarks/rt/mem/listgrow.R"
 against = ["gnur"]
 
 [[rss]]
-# E4
+# E4: steady-state churn. churn.R collects in its loop's first iteration,
+# after the loop is compiled (the foreman's decision, 2026-11-17, with L's
+# correction). Without it the loop starts wherever start-up and compilation
+# left the collector's cycle, and the peak follows: k MiB of garbage made
+# first (k = 0..14) moved it, net of the garbage, between discrete levels,
+# 65-80 MB in robigo-rt (5.7% over a 0-4 MiB shift) and 85-132 MB in GNU R,
+# so builds with the same allocations, collections and live bytes (L's AC1)
+# differed by 5.6%. A median over k in {0, 2, 4, 8} MiB of garbage still moved
+# 2.6% (robigo-rt) and 31% (GNU R). A gc() before the loop was not enough:
+# main's JIT folds 1:1e6 into a 4 MB vector and AC1's into a compact
+# sequence, so the first cycle still started elsewhere (+5.4%, L). With the
+# gc() in the first iteration, AC1 is within 0.6% of main at every k from 0
+# to 14 (both creep about 2.4% over k together: the garbage's own residue),
+# and GNU R within 0.5%, so one measurement per binary holds. listgrow and
+# binarytrees do not flip (their peak grows with k by about the garbage
+# itself). The data: ~/.cache/robigo-research/churn-rss/ (README.md).
 program = "benchmarks/rt/mem/churn.R"
 against = ["gnur"]

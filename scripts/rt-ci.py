@@ -4,6 +4,7 @@
     scripts/rt-ci.py            # premise check, release tests, gctorture
     scripts/rt-ci.py --list     # the rt crates, one per line
     scripts/rt-ci.py --check    # the premise check alone
+    scripts/rt-ci.py --full-move  # the nightly's run: every collection moves everything
 
 The rt crates are the workspace members under the `rt` rule of
 scripts/ci-selection.toml, so the selection and this job cannot drift apart.
@@ -33,7 +34,8 @@ its key: the rt slice's package code protects what it keeps, so any report
 but those of experiment A's two probes, which hold unprotected pointers on
 purpose, fails the job).
 Then the conformance again under gctorture and under the moving collector
-(E3), the stress script in a few fresh processes (E3, scripts/rt-stress.sh),
+(E3; `young:N`, which moves the young objects at each collection and
+everything at every N-th, H8), the stress script in a few fresh processes (E3, scripts/rt-stress.sh),
 the overshoot of every slice (E4, scripts/rt-overshoot.py), and E9: the
 conformance under a small vector limit, and allocations refused once after
 visible effects (scripts/rt-fail-alloc.py). The
@@ -157,17 +159,44 @@ def pin_report_hits(path):
     return [x for x in lines if not any(f" routine={r} " in x for r in EXPECTED_PIN_ROUTINES)]
 
 
-# INTERIM(H8): the cases that need longer than the slow modes' 600 s in the
-# moving collector's gctorture step only, and how long they get. There every
-# collection moves the whole live heap; H8's generational torture collects
-# the young objects alone, and then this table goes
-# (docs/ledger/g3/2026-11-17-gc-move-timeout.md). The cases still run: only
-# their timeout differs.
-GC_MOVE_SLOW = {
+# H8: the moving collector's policy in the job's gctorture conformance step.
+# `young:N` moves the young objects at each collection and everything at
+# every N-th (crates/robigo-heap/src/gc/mover.rs): a torture collection then
+# costs about a plain one. N was chosen by measurement
+# (docs/ledger/g3/2026-11-17-h8-young-torture.md). The nightly's full run
+# (`--full-move`, .github/workflows/nightly.yml) moves everything at every
+# collection, so a path that runs once is still caught by some run.
+GC_MOVE_YOUNG = "young:16"
+
+# The cases that need longer than the slow modes' 600 s in the full run,
+# and how long they get: there every collection moves the whole live heap.
+# The cases still run: only their timeout differs.
+FULL_MOVE_SLOW = {
     # 2.4M collections of a ~5k-object live heap: ~470 s here, ~536 s for
     # main's whole step on CI, so 600 s fails on a slow runner
     "tests/r/memory/finalizers-self-ref-envs.R": 1200,
 }
+
+
+def conformance_command():
+    test = ["cargo", "test", "--release", "--locked"]
+    return [*test, "-p", "robigo-rtapi", "--test", "conformance", "--", "--exact", CONFORMANCE, "--nocapture"]
+
+
+# (a case under a collector mode runs many times longer than the runner's
+# default 20 s allow)
+SLOW = {"ROBIGO_CONF_TIMEOUT": "600"}
+
+
+def full_move_steps():
+    """The nightly's full run (`--full-move`): the conformance slice under
+    gctorture, every collection moving everything it may."""
+    full_slow = ",".join(f"{c}={secs}" for c, secs in sorted(FULL_MOVE_SLOW.items()))
+    return [
+        ("conformance under ROBIGO_GC_MOVE=1 with gctorture (every collection moves everything)",
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **SLOW, "ROBIGO_CONF_TIMEOUTS": full_slow},
+         conformance_command()),
+    ]
 
 
 def steps(crates):
@@ -175,11 +204,8 @@ def steps(crates):
     pkgs = [x for c in crates for x in ("-p", c)]
     test = ["cargo", "test", "--release", "--locked"]
     skip = ["--", "--skip", CONFORMANCE]
-    conformance = [*test, "-p", "robigo-rtapi", "--test", "conformance", "--", "--exact", CONFORMANCE, "--nocapture"]
-    # (a case under a collector mode runs many times longer than the
-    # runner's default 20 s allow)
-    slow = {"ROBIGO_CONF_TIMEOUT": "600"}
-    gc_move_slow = ",".join(f"{c}={secs}" for c, secs in sorted(GC_MOVE_SLOW.items()))
+    conformance = conformance_command()
+    slow = SLOW
     return [
         ("release tests", {}, [*test, *pkgs, *skip]),
         ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {}, conformance),
@@ -210,8 +236,10 @@ def steps(crates):
         # collection gctorture makes due
         ("ROBIGO_GC_MOVE (move every movable object at every collection), with gctorture",
          {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1"}, [*test, *pkgs, *skip]),
-        ("conformance under ROBIGO_GC_MOVE with gctorture (E3)",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **slow, "ROBIGO_CONF_TIMEOUTS": gc_move_slow}, conformance),
+        # H8: the young objects at each collection, everything at every N-th;
+        # the nightly runs it with every collection moving everything
+        (f"conformance under ROBIGO_GC_MOVE={GC_MOVE_YOUNG} with gctorture (E3)",
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": GC_MOVE_YOUNG, **slow}, conformance),
         # D5's frame recycling (docs/g3.md §16): every frame that would be recycled
         # is poisoned and held back instead, so a frame that escaped without
         # its ESCAPED bit panics where it is used next
@@ -253,6 +281,8 @@ def main(argv):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--list", action="store_true", help="print the rt crates and stop")
     ap.add_argument("--check", action="store_true", help="check the premise and stop")
+    ap.add_argument("--full-move", action="store_true",
+                    help="only the conformance slice with every collection moving everything (the nightly's run)")
     a = ap.parse_args(argv)
 
     meta = metadata()
@@ -273,7 +303,7 @@ def main(argv):
     if a.check:
         return 0
 
-    for title, env, cmd in steps(crates):
+    for title, env, cmd in full_move_steps() if a.full_move else steps(crates):
         report = env.get("ROBIGO_GC_PIN_REPORT")
         if report and os.path.exists(report):
             os.remove(report)
