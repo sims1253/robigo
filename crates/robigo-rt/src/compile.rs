@@ -231,16 +231,12 @@ pub fn compile_top_loop(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RResult<O
 /// evaluated one level below the code object's base, as the special's own
 /// `eval` calls nest. Always the `Eval` profile: GNU R calls the special,
 /// which evaluates its arguments by `eval` (bcEval's `CALLSPECIAL` too).
-///
 /// `call` is read through its root on every attempt.
-pub(crate) fn compile_special(cx: &mut Cx, call: robigo_rtcore::Root<'_>, off: usize) -> RResult<Sexp> {
-    compile_special_with(cx, call, None, off)
-}
-
-/// [`compile_special`] with the special's arguments `args` (a pairlist)
-/// in place of the call's: `applyMethod`'s `PRIMFUN(op)(call, op, args,
-/// rho)` of a special method, `call` for its messages and its dispatch,
-/// `args` the method's promises (each forced as `eval` forces it).
+///
+/// With `args` (a pairlist), they stand in place of the call's:
+/// `applyMethod`'s `PRIMFUN(op)(call, op, args, rho)` of a special method,
+/// `call` for its messages and its dispatch, `args` the method's promises
+/// (each forced as `eval` forces it).
 // R: objects.c:applyMethod (SPECIALSXP)
 pub(crate) fn compile_special_with(
     cx: &mut Cx,
