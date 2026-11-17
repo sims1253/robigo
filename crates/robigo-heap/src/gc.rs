@@ -1219,7 +1219,12 @@ impl Core {
     /// for EXTPTRSXP, BUILTINSXP and SPECIALSXP may `car` be any word.
     #[inline]
     pub unsafe fn alloc_node(&mut self, t: u8, car: Sexp, cdr: Sexp, tag: Sexp) -> Result<Sexp, NeedGc> {
-        let x = self.alloc_object(t, 1, node::size(t), 0)?;
+        // D13's nT has two node sizes: one test of the type, and each arm
+        // allocates a constant size, whose class folds as n48's one size
+        // does (`node::size(t)` read at run time costs a class lookup)
+        let aux = node::has_aux(t);
+        let x = if aux { self.alloc_object(t, 1, node::SIZE, 0)? } else { self.alloc_object(t, 1, node::OFF_AUX, 0)? };
+        debug_assert_eq!(node::size(t), if aux { node::SIZE } else { node::OFF_AUX });
         // read before the field stores, which the compiler cannot tell from
         // a store to `self.nil`: one load, shared with the header's
         let nil = self.nil;
@@ -1230,7 +1235,7 @@ impl Core {
             x.set_car_raw(car);
             x.set_cdr_raw(cdr);
             x.set_tag_raw(tag);
-            if node::has_aux(t) {
+            if aux {
                 x.set_sexp_at(node::OFF_AUX, nil);
             }
             // GNU R's constructors count the children they store; an
