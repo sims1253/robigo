@@ -2577,11 +2577,22 @@ impl<'g> Comp<'g> {
             unsafe { plain_scalar_const(c) }.is_some()
         });
         if let Some(c) = c {
+            // the pool's entry, which may be an earlier identical constant
+            // (`kv`): loaded unboxed only if it is a plain scalar as well
+            // (an EXTDATA one is loaded as an object; `inline::scalar`
+            // reads `LdScalar`'s operand inline)
+            let k = self.kv(c);
+            // SAFETY: a live constant of the pool.
+            if unsafe { plain_scalar_const(self.consts[usize::from(k) - FIRST_CONST]) }.is_none() {
+                // SAFETY: as above.
+                unsafe { self.const_value(c, r, d, false) };
+                return Ok(());
+            }
             // (an unboxed constant is no object: nothing is marked, as
             // neither `eval` nor LDCONST marks one)
             let mut i = Ins::new(Op::LdScalar);
             i.a = r;
-            i.e = self.kv(c);
+            i.e = k;
             let i = self.at_depth(i, d, true);
             self.emit(i);
             return Ok(());
@@ -2684,7 +2695,14 @@ unsafe fn plain_scalar_const(x: Sexp) -> Option<()> {
     // SAFETY: the caller's contract.
     unsafe {
         let t = x.typ();
-        (matches!(t, REALSXP | INTSXP | LGLSXP) && !x.is_altrep() && x.std_len() == 1 && x.attrib_raw().typ() == NILSXP)
+        // (its payload inline: C-owned EXTDATA vectors are loaded as
+        // constants, so `inline::scalar` reads `LdScalar`'s operand without
+        // the test)
+        (matches!(t, REALSXP | INTSXP | LGLSXP)
+            && !x.is_altrep()
+            && !x.has_flag(robigo_heap::flags::EXTDATA)
+            && x.std_len() == 1
+            && x.attrib_raw().typ() == NILSXP)
             .then_some(())
     }
 }

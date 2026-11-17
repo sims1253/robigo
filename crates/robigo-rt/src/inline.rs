@@ -615,14 +615,17 @@ unsafe fn pure<S: Scope + ?Sized>(cx: &Cx, code: Sexp, scope: &S) -> Option<Slot
 /// A plain length-1 constant as an unboxed scalar (`LdScalar`).
 ///
 /// # Safety
-/// `k` is a double, integer or logical constant of length 1.
+/// `k` is a double, integer or logical constant of length 1 with its
+/// payload inline: the compiler loads no other with `LdScalar`
+/// (`compile::plain_scalar_const` refuses EXTDATA vectors).
 unsafe fn scalar(k: Sexp) -> Slot {
     // SAFETY: the caller's contract.
     unsafe {
+        let d = k.inline_data();
         match k.typ() {
-            REALSXP => Slot::real(*(k.std_data() as *const f64)),
-            INTSXP => Slot::int(*(k.std_data() as *const i32)),
-            _ => Slot::logical(*(k.std_data() as *const i32)),
+            REALSXP => Slot::real(*(d as *const f64)),
+            INTSXP => Slot::int(*(d as *const i32)),
+            _ => Slot::logical(*(d as *const i32)),
         }
     }
 }
