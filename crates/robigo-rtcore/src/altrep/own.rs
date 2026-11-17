@@ -579,7 +579,7 @@ impl Cx {
     #[cold]
     #[inline(never)]
     fn materialize_subset_args_slow(&mut self, args: crate::Args<'_>) -> RResult<()> {
-        let first = (args.len() > 0 && {
+        let first = (!args.is_empty() && {
             let x = args.get(self, 0);
             x.own_class().is_some() && x.attrib().is_none_or(|a| a.sexptype() == NILSXP)
         }) as usize;

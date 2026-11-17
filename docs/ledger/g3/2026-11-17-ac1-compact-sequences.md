@@ -4,7 +4,7 @@
   approved by the foreman with its six decisions). It adds base's compact
   integer and real sequences from altclasses.c as robigo-rt's own ALTREP
   classes. `:`, `seq_len` and `seq_along` make them, as
-  `R_compact_intrange` does. Base: `main` at `93ee731c`.
+  `R_compact_intrange` does. Base: `main` at `f49b7d80`.
   - **The classes** (`robigo-rtcore/src/altrep/own.rs`):
     - An instance is GNU R's layout: the info `c(n, n1, inc)` in data1, the
       expansion or R_NilValue in data2, the class in TAG.
@@ -18,6 +18,13 @@
       its error for an increment other than 1 or -1).
     - Dataptr is `Cx::materialize`. It allocates as `allocVector` does,
       collecting first when a collection is due.
+  - **The header bit:** an instance carries `extra::vector::OWN_ALTREP`
+    (bit 2, `robigo-heap`'s `layout/defs.rs`), which only `own.rs`'s
+    makers set. The hot accessors tell it from a package class's with
+    one more bit test and read no class. H confirmed the bit free on main
+    and in all four X3 layout cells (a code object takes bit 8, the h24
+    cells bit 0). It is in the vector map's and the code map's
+    no-overlap checks and "Free:" lists.
   - **Class identity:** the class object is a RAWSXP that holds a magic
     string and the class number, with GNU R's `list3(csym, psym, stype)` as
     its ATTRIB. Decision 1 named the class object's identity. A `Ref` has
@@ -48,7 +55,14 @@
     `*_ELT`, `Duplicate`'s `Get_region`) and materialize the subscripts
     and the value.
   - `rep` reads `x` and `times` through `INTEGER`, as `rep3` and `rep4` do.
-  - The `for` loop reads each element (`INTEGER_ELT`). With `1:n` it
+  - The `for` loop reads a sequence by region, as GNU R's
+    `ITERATE_BY_REGION` does (`vm::for_prep`, `compact_prep`,
+    `for_refill`). `for_prep` moves the sequence to a loop register and
+    fills one buffer of at most 1024 elements from its formula. The step
+    is the standard loop's code, with one bound compare that falls to a
+    cold refill at the end of a chunk. 1024 is `BC_LOOP_COUNT_MASK + 1`,
+    so the chunk-relative index ticks `BC_CHECK_SIGINT_LOOP` when GNU R's
+    does. An expanded sequence is read in place. With `1:n` the loop
     allocates nothing that grows with `n` (`robigo-rtapi/tests/alloc.rs`).
 - **Sites converted** (bar 6). Each of these failed or refused before:
   - `rep` and `rep_len`;
@@ -117,6 +131,13 @@
   - `identical` reads by element where GNU R's `INTEGER_RO` expands two
     vectors of the same type and length.
   - The reader expands a nested sequence.
+  - A write that C makes into an expansion while a loop is reading the
+    sequence is seen from the next chunk; GNU R's `INTEGER_ELT` reads it
+    at once.
+  - `min`, `max`, `prod` and `sum` of several arguments read an
+    unexpanded sequence into a temporary Rust vector of its length
+    (`Vector::elements`), where GNU R scans bounded regions: memory, not
+    values (Sol's S1; AC2).
   - `row.names` is still made a standard vector.
 - **`.Internal(inspect())`** is not ported to robigo-rt. Its output has
   addresses and GC fields, so a recorded case would need them filtered.
@@ -130,8 +151,8 @@
       ascii; nested; shared; an expanded sequence; attributes; a
       hand-built `ALTREP_SXP` with attributes.
     - `tests/rt/seq/compact-writes.R` and `tests/rt/seq/compact-nested.R`.
-  - `robigo-rtapi/tests/alloc.rs`: the same allocation count for n = 10
-    and n = 10^6, in AST, byte code and JIT.
+  - `robigo-rtapi/tests/alloc.rs`: the same allocation count for n = 2000
+    and n = 10^6 (both past one chunk), in AST, byte code and JIT.
   - `robigo-rtcore/tests/compact.rs`, which runs under Miri.
   - E9 under `ROBIGO_GC_MOVE=1` at every allocation point of the four
     cases: 48,439 points, clean.
@@ -142,3 +163,21 @@
     (`1:10`) and `6260e145e42c04ad` (`1:2147483649`, a compact real
     sequence of a few bytes that main wrote as 2^31 doubles; A1's memory
     sweep found it).
+- **Performance** (callgrind instructions; the gate is 0.5% per row):
+  - Against main at `f49b7d80`, `perf.py rt-bars`: plain −1.00%, defaults
+    −0.70%, named −0.01%, env-fn +0.49%, superassign +0.16%, s3 +0.50%,
+    fib −0.17%, binarytrees +0.38%, e7-paste +0.21%, e7-match −0.11%,
+    e7-unique +0.19%. AC1 holds #798's `vm::num` change; the foreman
+    ordered #793, AC1, then #798.
+  - churn's peak RSS with A1's in-loop `gc()` (#793): 78,448 KiB against
+    main's 78,524.
+  - The loop's refill costs 1.1 instructions per iteration, against 2.5
+    for main's `intrange` building `1:n`.
+  - The rest is the plain-vector fast path's cost (bar 8). The ALTREP arms
+    of the shared accessors (`len`, `as_vector`, `get`) change register
+    allocation in `vm::run` (31,486 bytes and 1,337 stack operands,
+    against 30,753 and 1,244 for main + #798) and the compiler's inlining
+    elsewhere (s3's dispatch functions, which AC1 does not touch). With
+    no loop code in `run` at all, env-fn is still +0.67% against main +
+    #798, so a separate loop op would not help; moving the arms out of
+    line made every row worse. The per-function table is in the PR.
