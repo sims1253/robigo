@@ -2923,3 +2923,44 @@ fn the_fail_alloc_knob_refuses_one_allocation_once() {
     }
     c.fail_alloc_at(0);
 }
+
+/// The order contract of the weak reference list: kept oldest first (a
+/// registration is a push), and walked newest first wherever GNU R walks
+/// R_weak_refs, which it prepends to (memory.c:NewWeakRef): the finalizers
+/// a collection makes ready, and those that run at exit, come out of the
+/// queue newest first (memory.c:RunFinalizers, R_RunExitFinalizers).
+#[test]
+fn finalizers_come_out_newest_first_as_r_weak_refs_lists_them() {
+    let mut c = core();
+    let fin = c.alloc_vector(RAWSXP, 8).unwrap();
+    let live = c.alloc_vector(INTSXP, 1).unwrap();
+    let k: Vec<Sexp> = (0..3).map(|_| c.alloc_vector(INTSXP, 1).unwrap()).collect();
+    let w0 = weak(&mut c, k[0], fin);
+    let wl = weak(&mut c, live, fin);
+    let w1 = weak(&mut c, k[1], fin);
+    let w2 = weak(&mut c, k[2], fin);
+    assert_eq!(c.weak_refs(), &[w0, wl, w1, w2], "registration order, oldest first");
+    let mut roots = vec![live];
+    gc(&mut c, &mut roots);
+    assert_eq!(c.pending_finalizer_count(), 3);
+    for (w, which) in [(w2, "newest"), (w1, "middle"), (w0, "oldest")] {
+        assert_eq!(c.pop_finalizable(), Some(w), "the {which} dead key's reference");
+    }
+    assert!(c.pop_finalizable().is_none());
+    assert_eq!(c.weak_refs(), &[wl], "the live key's reference stays");
+    // at exit: every onexit reference, newest first; the others stay
+    let e: Vec<Sexp> = (0..3).map(|_| c.alloc_vector(INTSXP, 1).unwrap()).collect();
+    let x0 = weak(&mut c, e[0], fin);
+    let y = weak(&mut c, e[1], fin);
+    let x1 = weak(&mut c, e[2], fin);
+    unsafe {
+        for x in [x0, x1] {
+            x.set_gp(x.gp() | gp::weakref::FINALIZE_ON_EXIT);
+        }
+    }
+    c.queue_exit_finalizers();
+    assert_eq!(c.pop_finalizable(), Some(x1));
+    assert_eq!(c.pop_finalizable(), Some(x0));
+    assert!(c.pop_finalizable().is_none());
+    assert_eq!(c.weak_refs(), &[wl, y], "the others in their order");
+}
