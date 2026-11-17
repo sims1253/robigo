@@ -816,19 +816,24 @@ pub(crate) fn repl_eval_toplevel(
     cx.scope(|cx, s| {
         let e = s.out(cx);
         let er = e.root();
-        if let Err(err) = crate::reader::lower_one(cx, expr, e) {
-            // (reported where it was raised)
-            cx.resolve_exit(err, None);
-            return Err(None);
-        }
         let g = s.root(cx, cx.global_env());
         let base = s.root(cx, cx.base_env());
         let env = s.root(cx, rho(cx));
         let o = s.out(cx);
         let or = o.root();
         let mut msg = None;
+        let mut lowered = true;
+        // R_Toplevel, the session's record: the handler and restart stacks
+        // kept (the global calling handlers last from one expression to the
+        // next), and an error's jump lands on it
         let done = cx
-            .toplevel(g, base, |cx| {
+            .repl_toplevel(g, base, |cx| {
+                // the parse's objects are made at the top level
+                // (R_Parse1Buffer, R_Parse1File), so an error there lands on it
+                if let Err(err) = crate::reader::lower_one(cx, expr, e) {
+                    lowered = false;
+                    return Err(err);
+                }
                 cx.set_visible(false);
                 let r = cx.with_pp_excess(pp.0, |cx| crate::eval(cx, er, env, o)).and_then(|()| {
                     cx.set_last_value(or)?;
@@ -846,7 +851,7 @@ pub(crate) fn repl_eval_toplevel(
         if !done {
             // a jump to the top level: the error (or restart) reported
             // where it was raised
-            return Err(Some(msg.unwrap_or_default()));
+            return Err(if lowered { Some(msg.unwrap_or_default()) } else { None });
         }
         crate::repl::print_warnings(cx);
         Ok(())

@@ -10,7 +10,7 @@
 # The union of base-subset.txt (the trace) and the static bound (the free
 # variables of the same inputs that name base functions, transitively through
 # base closures), so that a branch GNU R did not take still finds its function.
-# 429 closures, 148 primitives, 241 internals, 10 variables.
+# 434 closures, 148 primitives, 245 internals, 10 variables.
 closure %in% match.R
 closure %||% utils.R
 closure ..getNamespace namespace.R
@@ -43,6 +43,7 @@ closure .set_ops_need_as_vector sets.R
 closure .set_row_names dataframe.R
 closure .signalSimpleWarning conditions.R
 closure .standard_regexps utils.R
+closure .traceback traceback.R
 closure .valid.factor factor.R
 closure Encoding New-Internal.R
 closure Encoding<- New-Internal.R
@@ -313,6 +314,7 @@ closure print.default print.R
 closure print.factor factor.R
 closure print.function print.R
 closure print.restart conditions.R
+closure print.warnings warnings.R
 closure rank rank.R
 closure rapply lapply.R
 closure raw raw.R
@@ -332,6 +334,7 @@ closure registerS3methods namespace.R
 closure remove rm.R
 closure rep.int rep.R
 closure rep_len rep.R
+closure returnValue methodsSupport.R
 closure rev rev.R
 closure rev.default rev.R
 closure rle rle.R
@@ -412,6 +415,7 @@ closure textConnection connections.R
 closure toString.default toString.R
 closure tolower character.R
 closure topenv namespace.R
+closure traceback traceback.R
 closure trimws strwrap.R
 closure try New-Internal.R
 closure tryCatch conditions.R
@@ -430,6 +434,7 @@ closure vapply sapply.R
 closure vector vector.R
 closure warning stop.R
 closure warningCondition conditions.R
+closure warnings warnings.R
 closure which which.R
 closure which.max which.R
 closure withCallingHandlers conditions.R
@@ -589,7 +594,9 @@ primitive {
 primitive |
 primitive ||
 internal .addCondHands
+internal .addGlobHands
 internal .addRestart
+internal .addTryHandlers
 internal .dfltStop
 internal .dfltWarn
 internal .getRestart
@@ -766,6 +773,7 @@ internal registerNamespace
 internal remove
 internal rep.int
 internal rep_len
+internal returnValue
 internal row
 internal rowSums
 internal save
@@ -812,6 +820,7 @@ internal tempfile
 internal textConnection
 internal tolower
 internal topenv
+internal traceback
 internal typeof
 internal unique
 internal unlink

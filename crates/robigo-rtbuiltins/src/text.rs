@@ -60,6 +60,19 @@ pub fn to_native(s: Str<'_>, loc: Locale) -> Result<Cow<'_, [u8]>, TranslateErro
     translate_char(s, ctype(loc))
 }
 
+/// `translateCharFP(s)`: `s` in the native encoding, or the message of GNU
+/// R's `error()`: a "bytes" string, or what iconv could not convert.
+// R: sysutils.c:translateCharFP, translateToNative(mustWork = 1)
+pub fn to_native_fp(s: Str<'_>, loc: Locale) -> Result<Cow<'_, [u8]>, String> {
+    match robigo_text::translate_char2(s, ctype(loc)) {
+        Ok(b) => Ok(b),
+        Err(robigo_text::Untranslatable::Bytes) => {
+            Err("translating strings with \"bytes\" encoding is not allowed".to_owned())
+        }
+        Err(robigo_text::Untranslatable::Failed(m)) => Err(format!("unable to translate '{m}' to native encoding")),
+    }
+}
+
 /// GNU R's `Seql(a, b)`: the same CHARSXP, or, for strings whose
 /// `ENC_KNOWN` differ and neither "bytes", the same text in UTF-8. (Two
 /// different cached CHARSXPs with the same `ENC_KNOWN` differ.)

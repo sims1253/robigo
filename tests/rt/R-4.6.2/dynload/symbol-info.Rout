@@ -1,0 +1,28 @@
+[1] "CallRoutine"      "NativeSymbolInfo"
+[1] "name"          "address"       "dll"           "numParameters"
+[1] "R_addTaskCallback"
+[1] "NativeSymbol"
+[1] "base"
+[1] "FortranRoutine"   "NativeSymbolInfo"
+[1] "name"          "address"       "dll"           "numParameters"
+[1] 9
+[1] "RegisteredNativeSymbol"
+[1] "FortranRoutine"   "NativeSymbolInfo"
+[1] "dtrco"
+[1] "dqrcf" "dqrxb"
+  dqrcf   dqrxb 
+"dqrcf" "dqrxb" 
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] "no such symbol R_addTaskCallback in package base"
+[1] "no such symbol nosuchsymbol in package base"
+[1] "invalid 'name' argument"
+[1] "invalid 'name' argument"
+[1] "must pass package name or DllInfo reference"
+[1] "must pass package name or DllInfo reference"
+[1] "translating strings with \"bytes\" encoding is not allowed"
+[1] "translating strings with \"bytes\" encoding is not allowed"
+[1] "translating strings with \"bytes\" encoding is not allowed"
+[1] "unable to translate '<81>' to native encoding"
+[1] "unable to translate '<81>' to native encoding"

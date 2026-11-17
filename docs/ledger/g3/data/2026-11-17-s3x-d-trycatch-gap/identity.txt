@@ -1,0 +1,11 @@
+valgrind: valgrind-3.24.0
+image: ghcr.io/sims1253/robigo-ci:oracle-4.6.2-49a8ee77bb6c46db (glibc 2.41)
+cpu: AMD Ryzen 9 5900X 12-Core Processor 1be0f69f7d2b7252
+~/.cache/robigo-research/x9-trycatch/robigo-rt-main-a9c4: sha256 8c2f0fbd6119e3615a5ada72eca4a9013960eec97c02472331794eb9bedf3d4e, build id 23991091d8f19f2056c1ac4d40eae3df7a018f13
+~/.cache/robigo-research/gnur-stock-local/lib/R/bin/exec/R: sha256 00995777969284e9968bf7c841caa038ed07e6c4727fa47b86a683d679707a08, build id badf4b02ac7df34cf081d657154083984c41f169
+GNU R stock build (scripts/gnur-stock.sh):
+  configure: ./configure --prefix=~/.cache/robigo-research/gnur-stock-local
+  CC = gcc -std=gnu23
+  CFLAGS = -g -O2 
+  LDFLAGS = -L/usr/local/lib
+  libR: static

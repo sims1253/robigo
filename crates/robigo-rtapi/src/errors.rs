@@ -106,7 +106,7 @@ entry! {
     /// memory.c's `CHKEXTPTRSXP`.
     // R: memory.c:CHKEXTPTRSXP
     [2] fn robigo_rtapi_extptr_error(fun: *const c_char, x: Sexp) -> () => |cx, _s| {
-        let t = robigo_rtbuiltins::util::type2char(x.bind(cx).sexptype());
+        let t = robigo_rtbuiltins::util::sexptype2char(x.bind(cx).sexptype());
         // SAFETY: C's contract: NUL-terminated strings, kept for the call.
         let fun = unsafe { text(fun) };
         Err(cx.error(&format!("{fun}: argument of type {t} is not an external pointer")))
