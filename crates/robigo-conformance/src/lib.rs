@@ -866,11 +866,13 @@ pub fn run(root: &Path, column: &Column, o: &Options) -> Result<Report, String> 
     // (ROBIGO_CONF_TIMEOUTS) are the slow ones, so they go last and start
     // first, and the run does not wait on one that began late
     jobs.sort_by_key(|(_, p)| o.case_timeouts.contains_key(&case_id(root, p)));
+    // no more workers than cases
+    let workers = o.jobs.min(jobs.len()).max(1);
     let record = std::sync::OnceLock::new();
     let queue = std::sync::Mutex::new(jobs);
     let results = std::sync::Mutex::new(Vec::new());
     std::thread::scope(|s| {
-        for _ in 0..o.jobs.max(1) {
+        for _ in 0..workers {
             s.spawn(|| {
                 loop {
                     let next = queue.lock().unwrap().pop();

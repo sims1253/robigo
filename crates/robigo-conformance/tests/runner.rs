@@ -27,8 +27,9 @@ fn fakes() -> &'static (PathBuf, PathBuf, PathBuf, PathBuf) {
         let cat = write("cat", "#!/bin/sh\nexec cat \"$1\"\n");
         let stub = write("stub", "#!/bin/sh\necho 'robigo-rt: the G3 runtime is not implemented yet' >&2\nexit 1\n");
         let slow = write("slow", "#!/bin/sh\nsleep 1\nexec cat \"$1\"\n");
-        // `cat`, noting each case's path in $ROBIGO_TEST_ORDER as it starts
-        let order = write("order", "#!/bin/sh\necho \"$1\" >> \"$ROBIGO_TEST_ORDER\"\nexec cat \"$1\"\n");
+        // `cat`, noting each case's path as it starts in a log beside
+        // itself (`order_log`): one test uses it
+        let order = write("order", "#!/bin/sh\necho \"$1\" >> \"$0.log\"\nexec cat \"$1\"\n");
         (cat, stub, slow, order)
     })
 }
@@ -47,6 +48,11 @@ fn slow() -> PathBuf {
 
 fn order() -> PathBuf {
     fakes().3.clone()
+}
+
+/// Where `order` notes the cases it starts.
+fn order_log() -> PathBuf {
+    PathBuf::from(format!("{}.log", order().display()))
 }
 
 struct Fixture(PathBuf);
@@ -297,10 +303,7 @@ fn an_empty_ratchet_is_an_error_in_every_column() {
 fn the_cases_with_a_longer_timeout_start_first() {
     let f = rt_tree("slow-first");
     f.case("tests/rt/smoke/two.R", "2\n").record("tests/rt", "tests/rt/smoke/two.R", "4.6.2", "2\n");
-    let log = f.root().join("order.log");
-    // SAFETY: the fake reads it; set before the run spawns any case, and no
-    // other test of this binary reads ROBIGO_TEST_ORDER
-    unsafe { std::env::set_var("ROBIGO_TEST_ORDER", &log) };
+    let log = order_log();
     let mut o = opts(&RT, order());
     o.filter = Some("tests/rt/smoke".into());
     o.jobs = 1;
