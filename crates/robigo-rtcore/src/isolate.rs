@@ -564,6 +564,8 @@ impl Cx {
     /// Change the locale (`Sys.setlocale`).
     pub fn set_locale(&mut self, l: Locale) {
         self.iso().locale.set(l);
+        // the C globals that read it (Defn.h's mbcslocale, R_MB_CUR_MAX)
+        self.cglobals().set_locale(l);
     }
 
     /// GNU R's `R_warn_partial_match_args`: argument matching warns of
@@ -1058,6 +1060,7 @@ impl OwnedIsolate {
             let capi = &mut (*i.roots.get()).capi;
             capi.set_isolate(iso.as_ptr());
             capi.g.gc_move.set(moving as std::ffi::c_int);
+            capi.g.set_locale(i.locale.get());
         }
         // SAFETY: the isolate is boxed and never moves, and its `poll` field
         // outlives its core (declared after it); nothing else refers to the

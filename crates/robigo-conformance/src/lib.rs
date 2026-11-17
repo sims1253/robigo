@@ -328,8 +328,12 @@ pub const RT: Column = Column {
 /// allocations that a collection at each (`ROBIGO_GCTORTURE=1`, whose
 /// cost is allocations times the heap) does not finish it in the case
 /// timeout, so it does not run under gctorture; a smaller case covers its
-/// paths there.
-pub const KNOWN_FEATURES: &[&str] = &["bytecode-fidelity", "inplace-identity", "promise-identity", "volume"];
+/// paths there. `r-home-tools`: it loads tools' native code from the
+/// binary's `R_HOME` tree (`library/tools/libs/tools.so`, which
+/// `scripts/rt-home.sh` builds), so it runs where the caller found that
+/// tree, its stamp and the file (robigo-rtapi's conformance test).
+pub const KNOWN_FEATURES: &[&str] =
+    &["bytecode-fidelity", "inplace-identity", "promise-identity", "r-home-tools", "volume"];
 
 /// The production identities the environment's observation modes keep
 /// ([`KNOWN_FEATURES`]), and `volume` unless gctorture is on; and whether

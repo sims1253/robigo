@@ -85,6 +85,8 @@ rsyms! {
     Comment = b"comment",
     /// `srcref` (`R_SrcrefSymbol`)
     Srcref = b"srcref",
+    /// `srcfile` (`R_SrcfileSymbol`)
+    Srcfile = b"srcfile",
     /// `...` (`R_DotsSymbol`)
     Dots = b"...",
     /// `as.character` (`R_AsCharacterSymbol`)

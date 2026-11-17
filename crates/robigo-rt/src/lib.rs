@@ -69,6 +69,7 @@ pub mod ops;
 pub mod platform;
 pub mod prims;
 pub mod print;
+pub mod rconn;
 pub mod reader;
 pub mod repl;
 pub mod search;
