@@ -105,11 +105,18 @@ impl Cx {
         self.cglobals().gc_move.set(on as std::ffi::c_int);
     }
 
-    /// Whether weak references wait for their finalizers
-    /// (`R_finalizers_pending`).
+    /// GNU R's `R_finalizers_pending`: a collection (or the exit) left
+    /// weak references ready, and no finalizer pass ran since.
     pub fn finalizers_pending(&self) -> bool {
         // SAFETY: one read of the core.
-        unsafe { self.iso().core() }.pending_finalizer_count() > 0
+        unsafe { self.iso().core() }.finalizers_pending()
+    }
+
+    /// The end of a finalizer pass: what is still ready waits for the next
+    /// collection (`RunFinalizers`' `R_finalizers_pending = FALSE`).
+    pub fn end_finalizer_pass(&mut self) {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.end_finalizer_pass()
     }
 
     /// `R_RunExitFinalizers`' marking: every weak reference registered
@@ -120,12 +127,14 @@ impl Cx {
         unsafe { self.iso().core() }.queue_exit_finalizers()
     }
 
-    /// The next weak reference whose finalizer is due (GNU R's
-    /// `RunFinalizers` order): no longer rooted by the queue once popped,
-    /// so the caller roots it before its next safepoint.
-    pub fn pop_finalizable_raw(&mut self) -> Option<Sexp> {
+    /// The next weak reference of a finalizer pass (GNU R's
+    /// `RunFinalizers` walk): the newest ready one older than `before`, the
+    /// position of the last one this pass took (`usize::MAX` to start), with
+    /// its own position. No longer rooted by the list once taken, so the
+    /// caller roots it before its next safepoint.
+    pub fn pop_finalizable_raw(&mut self, before: usize) -> Option<(Sexp, usize)> {
         // SAFETY: one call into the core, which calls nothing of ours.
-        unsafe { self.iso().core() }.pop_finalizable()
+        unsafe { self.iso().core() }.pop_finalizable_before(before)
     }
 
     /// GNU R's `NewWeakRef(key, value, fin, onexit)` for a key of a
@@ -229,11 +238,19 @@ impl Cx {
     }
 
     /// GNU R's `ASSIGNMENT_PENDING(cell)` of a binding cell from
-    /// [`Cx::find_var_loc_in_frame`] (a symbol: a base binding).
+    /// [`Cx::find_var_loc_in_frame`] (a symbol: a base binding, whose bits
+    /// are the isolate's symbol table's).
     pub fn assignment_pending(&self, cell: crate::Ref<'_>) -> bool {
         assert!(matches!(cell.sexptype(), types::LISTSXP | types::SYMSXP), "robigo: not a binding cell");
-        // SAFETY: a live object; gp is a header field.
-        unsafe { cell.sexp().gp() & ASSIGNMENT_PENDING != 0 }
+        let x = cell.sexp();
+        // SAFETY: a live cell (gp is a header field) or a live symbol.
+        unsafe {
+            if cell.sexptype() == types::SYMSXP {
+                self.iso().envs().base_assignment_pending(x)
+            } else {
+                x.gp() & ASSIGNMENT_PENDING != 0
+            }
+        }
     }
 
     /// GNU R's `SET_ASSIGNMENT_PENDING(cell, on)` of a binding cell.
@@ -244,10 +261,15 @@ impl Cx {
             return;
         }
         let x = c.sexp();
-        // SAFETY: a rooted cell; the bit changes no body.
+        // SAFETY: a rooted cell (the bit changes no body) or a live symbol,
+        // which is never written (H5): its binding's bits are the table's.
         unsafe {
-            let g = x.gp();
-            x.set_gp(if on { g | ASSIGNMENT_PENDING } else { g & !ASSIGNMENT_PENDING });
+            if c.sexptype() == types::SYMSXP {
+                self.iso().envs().set_base_assignment_pending(x, on);
+            } else {
+                let g = x.gp();
+                x.set_gp(if on { g | ASSIGNMENT_PENDING } else { g & !ASSIGNMENT_PENDING });
+            }
         }
     }
 

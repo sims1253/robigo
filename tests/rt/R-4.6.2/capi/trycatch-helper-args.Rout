@@ -1,0 +1,3 @@
+[1] "not an external pointer"
+[1] "not an external pointer"
+doTryCatch(return(expr), name, parentenv, handler)

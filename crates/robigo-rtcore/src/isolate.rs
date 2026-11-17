@@ -250,6 +250,9 @@ impl Isolate {
     // The global table and the pending-exit stack: each method borrows its
     // table for its own body only and calls nothing that reaches the isolate.
 
+    // (out of line: its callers' fast paths reach it only on a miss, and
+    // its table growth inlined there costs them registers)
+    #[inline(never)]
     pub(crate) fn global_add(&self, x: Sexp) -> u32 {
         // SAFETY: the borrow ends with this call, which calls nothing of ours.
         unsafe { (*self.roots.get()).globals.add(x) }
@@ -380,7 +383,14 @@ impl Isolate {
     pub(crate) fn owns(&self, x: Sexp) -> bool {
         // SAFETY: the callers pass objects from `Ref`s and `Char`s, which
         // are live by the minting rule (lib.rs).
-        unsafe { x.heap_id() == self.heap }
+        let h = unsafe { x.heap_id() };
+        if h == self.heap {
+            return true;
+        }
+        // the shared constants are every isolate's (H5): R_NilValue, the
+        // commonest object checked, by its address, the others by their
+        // heap id (no call, which would cost every caller registers)
+        x == self.nil || h.is_shared()
     }
 
     /// Panics unless `x` (a live object) belongs to this isolate: an object
@@ -616,9 +626,8 @@ impl Cx {
             "robigo: ROBIGO_RETRY_TORTURE needs robigo-rtcore built with its retry-torture feature \
              (cargo build --release -p robigo-rtapi --features robigo-rtcore/retry-torture)"
         );
-        let fail_at = std::env::var("ROBIGO_FAIL_ALLOC_AT").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
         assert!(
-            !on || fail_at == 0,
+            !on || !self.fail_alloc_set(),
             "robigo: ROBIGO_RETRY_TORTURE and ROBIGO_FAIL_ALLOC_AT both use E9's knob: set one"
         );
         self.iso().retry_torture.set(on);
@@ -979,6 +988,8 @@ impl OwnedIsolate {
     }
 
     pub fn with_options(opts: Options) -> OwnedIsolate {
+        // a new symbol's bits come from its name (H5): before any install
+        robigo_heap::set_symbol_bits(crate::sym::symbol_bits);
         // The heap's allocation never collects (H2), and no C segment is open
         // until a native call opens one, so no Rust frame is ever scanned
         // (docs/g3.md §3).

@@ -165,7 +165,7 @@ impl<'s> Scope<'s> {
         let mut base = None;
         for &v in values {
             iso.check_owns(v.sexp());
-            any_alt |= v.is_package_altrep();
+            any_alt |= v.is_altrep();
             // SAFETY: a `Ref`'s object, of this isolate (checked).
             let p = iso.stack().push(unsafe { Slot::object(v.sexp()) });
             base.get_or_insert(p);
@@ -466,10 +466,29 @@ impl<'a> Args<'a> {
         r.as_sym()
     }
 
+    /// Whether any argument is an ALTREP object (a package class's, or
+    /// one of robigo's own: [`Ref::own_class`]). One branch for the common
+    /// case (§2.4).
+    #[inline(always)]
+    pub fn any_altrep(&self) -> bool {
+        self.any_alt
+    }
+
     /// Whether any argument is an object of a package ALTREP class.
     #[inline(always)]
     pub fn any_package_altrep(&self) -> bool {
-        self.any_alt
+        self.any_alt && self.any_package_altrep_slow()
+    }
+
+    #[cold]
+    fn any_package_altrep_slow(&self) -> bool {
+        (0..self.len()).any(|i| {
+            // SAFETY: the window has `n` live object slots from `base`
+            // (`from_raw`'s and `Scope::args`'s contract), each read once.
+            let s = unsafe { *self.base.add(i).as_ptr() };
+            // SAFETY: a live object of the window's isolate.
+            s.as_object().is_some_and(|x| unsafe { x.is_altrep() && crate::altrep::own::own_class(x).is_none() })
+        })
     }
 
     /// The window the VM's dispatcher built.
@@ -477,8 +496,8 @@ impl<'a> Args<'a> {
     /// # Safety
     /// `base` (and `names`, if given) start `n` live object slots of the
     /// isolate the window is read with, rooted for `'a`; `names` hold
-    /// symbols or R_NilValue; `any_alt` is true if any value is a package
-    /// ALTREP object.
+    /// symbols or R_NilValue; `any_alt` is true if any value is an ALTREP
+    /// object.
     #[inline(always)]
     pub unsafe fn from_raw(base: NonNull<Slot>, names: Option<NonNull<Slot>>, n: u32, any_alt: bool) -> Args<'a> {
         Args { base, names, n, any_alt, _a: PhantomData }

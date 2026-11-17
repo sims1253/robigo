@@ -342,7 +342,6 @@ const UNHONORED: &[&str] = &[
     "width",
     "digits",
     "deparse.cutoff",
-    "expressions",
     "max.print",
     "keep.source",
     "verbose",
@@ -409,7 +408,6 @@ pub fn do_options(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
         let nlr = s.out(cx).root();
         let oldr = s.out(cx).root();
         let sym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(options_sym(cx)?.into())))?;
-        let base = s.root(cx, cx.base_env());
         for (i, (name, argi)) in items.iter().enumerate() {
             match name {
                 Some(nm) => {
@@ -435,7 +433,9 @@ pub fn do_options(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
                     })?;
                     values[i].replace_from(cx, oldr);
                     l.replace_from(cx, nlr);
-                    cx.define_var(sym, l, base)?;
+                    // (GNU R's SETCAR changes the bound list in place: past
+                    // base's locks, as SET_SYMVALUE)
+                    cx.set_symvalue(sym, l);
                 }
                 None => {
                     let tag = match argi.bind(cx).as_vector::<Char<'_>>() {
@@ -578,6 +578,8 @@ fn check_option<'s>(
             if !(25..=500000).contains(&k) {
                 return Err(cx.error(&format!("invalid '{nm}' parameter, allowed 25...500000")));
             }
+            // R_Expressions = R_Expressions_keep = k
+            cx.set_expressions(k);
             int(cx, s, k)?
         }
         b"keep.source" | b"check.bounds" | b"echo" | b"quiet" | b"verbose" => {

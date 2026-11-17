@@ -28,7 +28,7 @@ use crate::layout::{GRANULE, charsxp, charsxp_bytes, data_off, extdata, granule_
 use crate::trace::{Trace, Visitor};
 use crate::types::*;
 use crate::{Sexp, flags, gp, hash_bytes, is_vector_type};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::ffi::c_void;
 
 mod diag;
@@ -360,7 +360,7 @@ pub struct GcStats {
     /// Objects and bytes allocated by SEXPTYPE (only while [`StatsMode`] is
     /// not `Off`). Bytes are the request rounded to 16, as `bytes_allocated`.
     pub by_type: [(u64, u64); 32],
-    /// Objects moved by `ROBIGO_GC_MOVE=1`'s collections.
+    /// Objects moved by `ROBIGO_GC_MOVE`'s collections.
     pub moved: u64,
     /// Weak references the pin report found decided dead while a C word
     /// reached their key (counted with the report or the strong library on).
@@ -487,19 +487,31 @@ pub struct Core {
     /// Experiment A: `ROBIGO_CALL65_PLAIN=1`, read when the core is made
     /// (see [`Core::call65_plain`]).
     call65_plain: bool,
-    /// `ROBIGO_GC_MOVE=1` (`mover.rs`): every collection moves what it
-    /// may and poisons the old copies.
+    /// `ROBIGO_GC_MOVE` (`mover.rs`): collections move what they may and
+    /// poison the old copies.
     gc_move: bool,
+    /// `ROBIGO_GC_MOVE=young:N`'s state (`mover.rs`), boxed: the debug
+    /// collector's, kept out of the core's own layout.
+    young: Box<mover::Young>,
     /// Under `gc_move`, the chunks of the large objects the last
     /// collection moved, without access until the next one gives them back.
     quarantine: Vec<crate::heap::Chunk>,
     /// `ROBIGO_GC_PIN_REPORT`, `ROBIGO_GC_STRONG_DLL` (`diag.rs`)
     diag: Option<Box<diag::Diag>>,
-    /// weak references (WEAKREFSXP) not yet finalized
+    /// GNU R's `R_weak_refs`: the weak references (WEAKREFSXP) not yet
+    /// finalized, ready ones (`READY_TO_FINALIZE`, their key dead or the
+    /// session ending) included, oldest first (`R_weak_refs` reversed).
+    /// A reference leaves it when its finalizer is about to run
+    /// ([`Core::pop_finalizable_before`]): a null entry until the pass
+    /// ends, so a pass's positions never move and taking one out is O(1)
+    /// (a removal would shift every newer one: a pass quadratic in the
+    /// list). Every walk of the list skips them.
     weak_refs: Vec<Sexp>,
-    /// weak references whose key died, waiting for their finalizer, in
-    /// the order RunFinalizers runs them (taken from the front)
-    finalize_queue: VecDeque<Sexp>,
+    /// GNU R's `R_finalizers_pending`: set by each collection when a
+    /// reference is ready (memory.c:CheckFinalizers), and by the exit
+    /// finalizers; cleared when a finalizer pass ends
+    /// ([`Core::end_finalizer_pass`]).
+    finalizers_pending: bool,
     /// release callbacks of objects found dead by the last sweep
     releases: Vec<(ReleaseFn, usize)>,
     /// The store barrier's log ([`Sexp::store`]): immortal objects
@@ -540,6 +552,14 @@ pub(crate) unsafe fn barrier_only(x: Sexp) {
     unsafe { barrier_slow(x) }
 }
 
+#[cold]
+#[inline(never)]
+fn shared_store() -> ! {
+    panic!(
+        "robigo: a store into a shared immutable object (R_NilValue, NA_STRING, R_BlankString, R_UnboundValue, R_MissingArg)"
+    )
+}
+
 /// # Safety
 /// As for [`store_slow`].
 #[inline(always)]
@@ -547,6 +567,10 @@ unsafe fn barrier_slow(x: Sexp) {
     // SAFETY: the caller's contract: `x` is live, so its header and its
     // block's header are readable, and the remembered set is not borrowed.
     unsafe {
+        // a shared object is never written: refused before any write
+        if crate::shared::is_shared(x) {
+            shared_store();
+        }
         x.set_flag_raw(flags::BARRIER, false);
         // A CHARSXP has nothing to trace, and must not be: `trace` would
         // count it in `marked_chars` on top of `immortal_chars`, and with
@@ -808,42 +832,37 @@ impl Core {
             next_sym_id: 0,
             precious: Vec::new(),
             call65_plain: std::env::var_os("ROBIGO_CALL65_PLAIN").is_some_and(|v| v == "1"),
-            gc_move: std::env::var_os("ROBIGO_GC_MOVE").is_some_and(|v| v == "1"),
+            gc_move: mover::policy_from_env().is_some(),
+            young: Box::new(mover::Young::new(mover::policy_from_env().unwrap_or(0))),
             quarantine: Vec::new(),
             diag: diag::Diag::from_env(),
             weak_refs: Vec::new(),
-            finalize_queue: VecDeque::new(),
+            finalizers_pending: false,
             releases: Vec::new(),
             remembered: Box::new(Remembered(Default::default())),
         });
         // every block and large chunk header points at the log, before the
         // first allocation makes one
         c.heap.remembered = &*c.remembered as *const Remembered as *mut Remembered;
-        // SAFETY: every object here is fresh from this heap, node-sized where
-        // node fields are written, and flagged immortal before any
-        // collection, so none of them can be swept.
-        unsafe {
-            // R_NilValue: a node whose fields point at itself (memory.c InitMemory)
-            let nil = c.alloc_object(NILSXP, 1, node::size(NILSXP), 0).expect(CONSTANTS);
-            nil.set_attrib_raw(nil);
-            nil.set_car_raw(nil);
-            nil.set_cdr_raw(nil);
-            nil.set_tag_raw(nil);
-            nil.set_sexp_at(node::OFF_AUX, nil);
-            c.nil = nil;
-            c.make_immortal(nil);
-            nil.set_attrib_raw(nil);
-            // NA_STRING is not in the cache (names.c: mkChar("NA") is a different object)
-            let na = c.alloc_char(b"NA", 0, hash_bytes(b"NA")).expect(CONSTANTS);
-            c.make_immortal(na);
-            c.na_string = na;
-            let blank = c.mk_char(b"", 0).expect(CONSTANTS);
-            c.make_immortal(blank);
-            c.blank_string = blank;
-            // R_UnboundValue and R_MissingArg are symbols with empty names
-            // that are not in the symbol table (names.c InitNames)
-            c.unbound = c.new_symbol(blank).expect(CONSTANTS);
-            c.missing_arg = c.new_symbol(blank).expect(CONSTANTS);
+        // R_NilValue, NA_STRING, R_BlankString, R_UnboundValue and
+        // R_MissingArg are the process's (`shared`, H5): counted here as if
+        // this heap had allocated them, as GNU R's InitMemory does, with ""
+        // in this heap's CHARSXP cache and the symbol ids after theirs
+        let sh = crate::shared::shared();
+        (c.nil, c.na_string, c.blank_string) = (sh.nil, sh.na_string, sh.blank_string);
+        (c.unbound, c.missing_arg) = (sh.unbound, sh.missing_arg);
+        c.next_sym_id = crate::shared::FIRST_SYMBOL_ID;
+        // SAFETY: a live CHARSXP that no collection frees (immortal), and
+        // not yet in this table.
+        unsafe { c.chars.insert(sh.blank_string) };
+        c.immortal_chars += 1;
+        for (t, n, bytes, cells) in crate::shared::counts() {
+            if c.sizes.over_trigger(cells) {
+                // (InitMemory's triggers are not set yet: this polls as the
+                // allocations it stands for did)
+                c.poll_slow(t, n, bytes, cells).expect(CONSTANTS);
+            }
+            c.count(bytes, cells);
         }
         // like InitMemory: once the constants exist
         (c.force_wait, c.force_gap) = torture_from_env();
@@ -1219,13 +1238,58 @@ impl Core {
     /// A node (cons cell shape): LISTSXP, LANGSXP, CLOSXP, ENVSXP, ...
     /// Never collects.
     ///
+    /// One out-of-line body, compiled in this crate only: its machine code
+    /// cannot change with what else a calling crate allocates (LLVM gave
+    /// each crate's copy of an `#[inline]` one a shape of its own, from the
+    /// set of types that crate passed). The body is the fast path, with no
+    /// call, so it saves no registers; every other case goes to
+    /// [`Core::alloc_node_slow`].
+    ///
     /// # Safety
     /// `car`, `cdr` and `tag` must be live objects of this heap: they are
     /// reference counted here and traced by every later collection. Only
     /// for EXTPTRSXP, BUILTINSXP and SPECIALSXP may `car` be any word.
-    #[inline]
+    #[inline(never)]
     pub unsafe fn alloc_node(&mut self, t: u8, car: Sexp, cdr: Sexp, tag: Sexp) -> Result<Sexp, NeedGc> {
+        // `alloc_object`, without the calls: a trigger due, or no slot in
+        // the class's current block, takes the slow path
+        let size = node::size(t).max(GRANULE);
+        if self.sizes.over_trigger(0) {
+            // SAFETY: the caller's contract.
+            return unsafe { self.alloc_node_slow(t, car, cdr, tag) };
+        }
+        let Some(p) = self.heap.alloc_fast(size) else {
+            // SAFETY: the caller's contract.
+            return unsafe { self.alloc_node_slow(t, car, cdr, tag) };
+        };
+        // SAFETY: `p` is fresh, with at least 16 bytes.
+        let x = unsafe { self.init_header(p.as_ptr(), t) };
+        self.count(size, 0);
+        // SAFETY: the caller's contract; `x` is a fresh node.
+        unsafe { self.init_node(x, t, car, cdr, tag) };
+        Ok(x)
+    }
+
+    /// [`Core::alloc_node`] when its fast path has no slot or a collection
+    /// trigger is reached.
+    ///
+    /// # Safety
+    /// As for [`Core::alloc_node`].
+    #[cold]
+    #[inline(never)]
+    unsafe fn alloc_node_slow(&mut self, t: u8, car: Sexp, cdr: Sexp, tag: Sexp) -> Result<Sexp, NeedGc> {
         let x = self.alloc_object(t, 1, node::size(t), 0)?;
+        // SAFETY: the caller's contract; `x` is a fresh node.
+        unsafe { self.init_node(x, t, car, cdr, tag) };
+        Ok(x)
+    }
+
+    /// A fresh node's fields, and its children's counts.
+    ///
+    /// # Safety
+    /// `x` is a fresh node of type `t`; as for [`Core::alloc_node`].
+    #[inline(always)]
+    unsafe fn init_node(&self, x: Sexp, t: u8, car: Sexp, cdr: Sexp, tag: Sexp) {
         // read before the field stores, which the compiler cannot tell from
         // a store to `self.nil`: one load, shared with the header's
         let nil = self.nil;
@@ -1254,7 +1318,6 @@ impl Core {
                 tag.incref();
             }
         }
-        Ok(x)
     }
 
     /// A vector as GNU R's allocVector: STRSXP filled with
@@ -1636,6 +1699,17 @@ impl Core {
         }
         let c = if printname.is_null() { self.mk_char(name, 0)? } else { printname };
         let s = self.new_symbol(c)?;
+        // the bits its name gives it, before anything sees it: nothing
+        // writes a symbol after it is made (H5: symbols are shared)
+        if let Some(bits) = SYMBOL_BITS.get() {
+            let (f, g) = bits(name);
+            // SAFETY: `s` is fresh and not yet published; flags other than
+            // IMMORTAL and BARRIER, and gp bits, are the caller's to set.
+            unsafe {
+                s.set_flags_raw(s.flags() | f);
+                s.set_gp(s.gp() | g);
+            }
+        }
         // SAFETY: `c` is live (nothing collected since it was made or
         // passed), and a CHARSXP has no children. The immortal symbol is
         // not traced, so its name must be immortal too. HASHASH and
@@ -1643,9 +1717,13 @@ impl Core {
         // them); the cache's lookups ignore HASHASH (`chars::ENC_MASK`).
         unsafe {
             self.make_immortal(c);
-            // R: names.c:install (SET_HASHVALUE, SET_HASHASH on the PRINTNAME)
-            c.set_truelen(s.sym_hash() as isize);
-            c.set_gp(c.gp() | crate::gp::charsxp::HASHASH);
+            // R: names.c:install (SET_HASHVALUE, SET_HASHASH on the PRINTNAME).
+            // Not on the shared "" (a symbol named "" GNU R never installs),
+            // which no isolate writes.
+            if !crate::shared::is_shared(c) {
+                c.set_truelen(s.sym_hash() as isize);
+                c.set_gp(c.gp() | crate::gp::charsxp::HASHASH);
+            }
         }
         self.syms.insert(name.into(), s);
         Ok(s)
@@ -1714,40 +1792,69 @@ impl Core {
     pub unsafe fn register_weak_ref(&mut self, w: Sexp) {
         // R: memory.c:NewWeakRef prepends to R_weak_refs: the list is kept
         // oldest first (a push, not an O(n) insert at the front), and walked
-        // newest first where its order shows ([`Core::classify_weak_refs`],
-        // [`Core::queue_exit_finalizers`])
+        // newest first where its order shows (a finalizer pass,
+        // [`Core::pop_finalizable_before`])
         self.weak_refs.push(w);
     }
 
-    /// Number of references queued before a finalizer batch begins.
+    /// The references ready for their finalizer (tests, statistics).
     pub fn pending_finalizer_count(&self) -> usize {
-        self.finalize_queue.len()
+        self.weak_refs
+            .iter()
+            // SAFETY: every collection marks the objects in `weak_refs`.
+            .filter(|w| !w.is_null() && unsafe { w.gp() } & gp::weakref::READY_TO_FINALIZE != 0)
+            .count()
     }
 
-    /// R: memory.c:R_RunExitFinalizers -- mark every onexit reference
-    /// ready and move it to the finalizer queue in weak-reference list
-    /// order, then let the ordinary runner execute it.
+    /// GNU R's `R_finalizers_pending`: whether a collection (or the exit)
+    /// left references ready, and no finalizer pass ran since.
+    pub fn finalizers_pending(&self) -> bool {
+        self.finalizers_pending
+    }
+
+    /// The end of a finalizer pass (`RunFinalizers`' last statement):
+    /// what is still ready waits for the next collection.
+    pub fn end_finalizer_pass(&mut self) {
+        self.finalizers_pending = false;
+        self.weak_refs.retain(|w| !w.is_null());
+    }
+
+    /// R: memory.c:R_RunExitFinalizers -- every onexit reference becomes
+    /// ready, in place, and a pass is due (GNU R runs one whatever the
+    /// pending flag says).
     pub fn queue_exit_finalizers(&mut self) {
-        let mut keep = Vec::with_capacity(self.weak_refs.len());
-        // R_weak_refs' order, newest first
-        for w in std::mem::take(&mut self.weak_refs).into_iter().rev() {
+        for &w in &self.weak_refs {
             // SAFETY: every collection marks the objects in `weak_refs`.
-            if unsafe { w.gp() } & gp::weakref::FINALIZE_ON_EXIT != 0 {
-                // SAFETY: as above.
-                unsafe { w.set_gp(w.gp() | gp::weakref::READY_TO_FINALIZE) };
-                self.finalize_queue.push_back(w);
-            } else {
-                keep.push(w);
+            unsafe {
+                if !w.is_null() && w.gp() & gp::weakref::FINALIZE_ON_EXIT != 0 {
+                    w.set_gp(w.gp() | gp::weakref::READY_TO_FINALIZE);
+                }
             }
         }
-        keep.reverse();
-        self.weak_refs = keep;
+        self.finalizers_pending = true;
     }
 
-    /// The next weak reference whose key died, ready for its finalizer.
-    /// It stays rooted until popped; the caller protects it while it runs.
+    /// The next weak reference of a `RunFinalizers` pass: the newest ready
+    /// one older than `before` (the position the last one had; `usize::MAX`
+    /// to start), taken out of the list before its finalizer runs, with
+    /// its position. GNU R's pass walks `R_weak_refs` once, newest first:
+    /// a reference readied during the pass runs in it only if it is older
+    /// than the one running then, and one registered during it waits for
+    /// the next pass. The entry becomes null until the pass ends
+    /// ([`Core::end_finalizer_pass`]), so no position moves.
+    pub fn pop_finalizable_before(&mut self, before: usize) -> Option<(Sexp, usize)> {
+        let end = before.min(self.weak_refs.len());
+        let i = (0..end).rev().find(|&i| {
+            let w = self.weak_refs[i];
+            // SAFETY: every collection marks the objects in `weak_refs`.
+            !w.is_null() && unsafe { w.gp() } & gp::weakref::READY_TO_FINALIZE != 0
+        })?;
+        Some((std::mem::replace(&mut self.weak_refs[i], Sexp::NULL), i))
+    }
+
+    /// The next ready reference of a pass started now (tests).
     pub fn pop_finalizable(&mut self) -> Option<Sexp> {
-        self.finalize_queue.pop_front()
+        self.pop_finalizable_before(usize::MAX).map(|(w, _)| w)
     }
 
     /// Release callbacks of external buffers the last
@@ -1923,6 +2030,12 @@ impl Core {
         self.fail_alloc_at(self.fail_at);
     }
 
+    /// E9's knob's `n` (`ROBIGO_FAIL_ALLOC_AT`, or what
+    /// [`Core::fail_alloc_at`] set last; 0: off), armed or not yet.
+    pub fn fail_at(&self) -> u64 {
+        self.fail_at
+    }
+
     /// [`Core::arm_fail_alloc`] with `n` in place of the environment's
     /// (0: off), for tests.
     pub fn fail_alloc_at(&mut self, n: u64) {
@@ -1954,22 +2067,21 @@ impl Core {
         self.retrigger();
     }
 
-    /// Weak references still waiting for their key to die (for
-    /// finalizers that run on exit), oldest first: R_weak_refs reversed.
-    pub fn weak_refs(&self) -> &[Sexp] {
-        &self.weak_refs
+    /// The weak references not yet finalized, ready ones included, oldest
+    /// first: R_weak_refs reversed.
+    pub fn weak_refs(&self) -> Vec<Sexp> {
+        self.weak_refs.iter().copied().filter(|w| !w.is_null()).collect()
     }
 
     /// Every field of every weak reference the collector still tracks (key,
-    /// value, finalizer), for both entries awaiting classification and ones
-    /// queued for RunFinalizers. GNU R keeps key, value and finalizer alive
+    /// value, finalizer), ready ones included. GNU R keeps key, value and finalizer alive
     /// for the finalization round (memory.c RunGenCollect), so the runtime
     /// must not sweep what only they reach yet.
     pub fn weak_ref_fields(&self) -> Vec<Sexp> {
         self.weak_refs
             .iter()
-            .chain(self.finalize_queue.iter())
-            // SAFETY: both lists contain initialized WEAKREFSXPs that every
+            .filter(|w| !w.is_null())
+            // SAFETY: the list contains initialized WEAKREFSXPs that every
             // collection marks.
             .flat_map(|&w| (0..3).map(move |i| unsafe { Self::weak_field(w, i) }))
             .collect()
@@ -2064,6 +2176,81 @@ impl Core {
         }
     }
 
+    /// [`Core::mark_obj`], or in a young collection (`Y`) [`Core::mark_young`]:
+    /// the object's address after marking (its copy's if it moved).
+    ///
+    /// # Safety
+    /// As for those.
+    #[inline(always)]
+    unsafe fn mark_y<const Y: bool>(&mut self, p: Sexp) -> Sexp {
+        // SAFETY: the caller's contract.
+        unsafe {
+            if Y {
+                self.mark_young(p)
+            } else {
+                self.mark_obj(p);
+                p
+            }
+        }
+    }
+
+    /// [`Core::trace`], or in a young collection (`Y`) its moving form.
+    ///
+    /// # Safety
+    /// As for [`Core::trace`].
+    #[inline(always)]
+    unsafe fn trace_y<const Y: bool>(&mut self) {
+        // SAFETY: the caller's contract.
+        unsafe { if Y { self.trace_young() } else { self.trace() } }
+    }
+
+    /// [`Core::trace`] in a young collection: the fields are shown to
+    /// [`mover::MarkYoung`], which rewrites the edges to moved objects.
+    ///
+    /// # Safety
+    /// As for [`Core::trace`], during a young collection's marking.
+    unsafe fn trace_young(&mut self) {
+        while let Some(p) = self.mark_stack.pop() {
+            // SAFETY: as in `trace`.
+            unsafe {
+                if p.typ() == CHARSXP {
+                    self.marked_chars += (p.gp() & gp::charsxp::CACHED != 0) as usize;
+                    continue;
+                }
+                p.trace_fields(&mut mover::MarkYoung(self));
+            }
+        }
+    }
+
+    /// Field `i` of a weak reference, as [`Core::weak_field`]; in a young
+    /// collection (`Y`) a field naming a moved object takes its copy first.
+    ///
+    /// # Safety
+    /// As for [`Core::weak_field`], during a collection's marking.
+    #[inline(always)]
+    unsafe fn weak_field_y<const Y: bool>(w: Sexp, i: usize) -> Sexp {
+        // SAFETY: the caller's contract; an old copy's link word is its copy.
+        unsafe {
+            let x = Self::weak_field(w, i);
+            if Y && !x.is_null() && x.typ() == mover::FORWARDED {
+                let q = Sexp(*(x.0.add(header::OFF_LINK) as *const *mut u8));
+                Self::set_weak_field(w, i, q);
+                return q;
+            }
+            x
+        }
+    }
+
+    /// Write field `i` of a weak reference (the collector's: no barrier).
+    ///
+    /// # Safety
+    /// As for [`Core::weak_field`]; `v` null or an object.
+    #[inline(always)]
+    unsafe fn set_weak_field(w: Sexp, i: usize, v: Sexp) {
+        // SAFETY: element `i` of a standard vector's pointer payload.
+        unsafe { *(w.std_data() as *mut Sexp).add(i) = v }
+    }
+
     /// Mark what the objects on the mark stack reach.
     ///
     /// # Safety
@@ -2096,21 +2283,21 @@ impl Core {
 
     /// GNU R's weak-reference protocol (memory.c RunGenCollect): values
     /// and finalizers of references with live keys are live; references
-    /// whose key died and that have a finalizer are queued, keeping key,
-    /// value and finalizer alive for the finalizer; the others are
-    /// cleared. In three steps, so that the pin report can watch the C
+    /// whose key died are ready to finalize; every reference keeps its key,
+    /// value and finalizer alive this round (its finalizer pass clears
+    /// them). In three steps, so that the pin report can watch the C
     /// segments between the decision and the keeping
     /// ([`Core::weak_fixpoint`], [`Core::classify_weak_refs`],
     /// [`Core::keep_weak_fields`]).
     ///
     /// # Safety
     /// Only during a collection, after the roots are marked.
-    unsafe fn process_weak_refs(&mut self) {
+    unsafe fn process_weak_refs<const Y: bool>(&mut self) {
         // SAFETY: the caller's contract, the three steps' own.
         unsafe {
-            self.weak_fixpoint();
-            self.classify_weak_refs();
-            self.keep_weak_fields();
+            self.weak_fixpoint::<Y>();
+            self.classify_weak_refs::<Y>();
+            self.keep_weak_fields::<Y>();
         }
     }
 
@@ -2119,27 +2306,34 @@ impl Core {
     ///
     /// # Safety
     /// As for [`Core::process_weak_refs`].
-    unsafe fn weak_fixpoint(&mut self) {
+    unsafe fn weak_fixpoint<const Y: bool>(&mut self) {
         // SAFETY: `register_weak_ref`'s contract makes every entry an
         // initialized WEAKREFSXP. `collect` marked them, and nothing has been
-        // swept since, so their fields still point at objects.
+        // swept since, so their fields still point at objects (or, in a young
+        // collection, at old copies, which `weak_field_y` resolves).
         unsafe {
             loop {
                 let mut changed = false;
                 for i in 0..self.weak_refs.len() {
                     let w = self.weak_refs[i];
-                    let key = Self::weak_field(w, 0);
+                    if w.is_null() {
+                        continue;
+                    }
+                    let key = Self::weak_field_y::<Y>(w, 0);
                     if self.is_marked(key) {
                         for k in 1..3 {
-                            let v = Self::weak_field(w, k);
+                            let v = Self::weak_field_y::<Y>(w, k);
                             if !self.is_marked(v) {
-                                self.mark_obj(v);
+                                let v = self.mark_y::<Y>(v);
+                                if Y {
+                                    Self::set_weak_field(w, k, v);
+                                }
                                 changed = true;
                             }
                         }
                     }
                 }
-                self.trace();
+                self.trace_y::<Y>();
                 if !changed {
                     break;
                 }
@@ -2148,28 +2342,29 @@ impl Core {
     }
 
     /// memory.c CheckFinalizers: every reference whose key is unmarked is
-    /// ready to finalize (with or without a finalizer) and moves to the
-    /// finalizer queue.
+    /// ready to finalize (with or without a finalizer), and stays in the
+    /// list, whose order a finalizer pass walks; `R_finalizers_pending` is
+    /// whether any is ready.
     ///
     /// # Safety
     /// As for [`Core::process_weak_refs`], after the fixed point.
-    unsafe fn classify_weak_refs(&mut self) {
+    unsafe fn classify_weak_refs<const Y: bool>(&mut self) {
         // SAFETY: as in `weak_fixpoint`.
+        // (in place: a ready reference stays in R_weak_refs until its
+        // finalizer is about to run)
         unsafe {
-            let refs = std::mem::take(&mut self.weak_refs);
-            let mut keep = Vec::with_capacity(refs.len());
-            // R_weak_refs' order, newest first
-            for w in refs.into_iter().rev() {
-                let key = Self::weak_field(w, 0);
-                if w.gp() & gp::weakref::READY_TO_FINALIZE != 0 || !self.is_marked(key) {
-                    w.set_gp(w.gp() | gp::weakref::READY_TO_FINALIZE);
-                    self.finalize_queue.push_back(w);
-                } else {
-                    keep.push(w);
+            let mut pending = false;
+            for i in 0..self.weak_refs.len() {
+                let w = self.weak_refs[i];
+                if w.is_null() {
+                    continue;
                 }
+                if w.gp() & gp::weakref::READY_TO_FINALIZE == 0 && !self.is_marked(Self::weak_field_y::<Y>(w, 0)) {
+                    w.set_gp(w.gp() | gp::weakref::READY_TO_FINALIZE);
+                }
+                pending |= w.gp() & gp::weakref::READY_TO_FINALIZE != 0;
             }
-            keep.reverse();
-            self.weak_refs = keep;
+            self.finalizers_pending = pending;
         }
     }
 
@@ -2182,22 +2377,22 @@ impl Core {
     ///
     /// # Safety
     /// As for [`Core::process_weak_refs`], after the classification.
-    unsafe fn keep_weak_fields(&mut self) {
+    unsafe fn keep_weak_fields<const Y: bool>(&mut self) {
         // SAFETY: as in `weak_fixpoint`.
         unsafe {
             for i in 0..self.weak_refs.len() {
                 let w = self.weak_refs[i];
+                if w.is_null() {
+                    continue;
+                }
                 for k in 0..3 {
-                    self.mark_obj(Self::weak_field(w, k));
+                    let v = self.mark_y::<Y>(Self::weak_field_y::<Y>(w, k));
+                    if Y {
+                        Self::set_weak_field(w, k, v);
+                    }
                 }
             }
-            for i in 0..self.finalize_queue.len() {
-                let w = self.finalize_queue[i];
-                for k in 0..3 {
-                    self.mark_obj(Self::weak_field(w, k));
-                }
-            }
-            self.trace();
+            self.trace_y::<Y>();
         }
     }
 
@@ -2208,7 +2403,7 @@ impl Core {
     /// `ctx` must be the core `collect_needing` passed to
     /// `robigo_heap_spill`, the only way to reach it during this call, and
     /// the thread must be the core's.
-    unsafe extern "C" fn scan_segments(ctx: *mut c_void) {
+    unsafe extern "C" fn scan_segments<const Y: bool>(ctx: *mut c_void) {
         // SAFETY: `ctx` is as the caller promises. Each segment is mapped
         // stack of this thread (collect checked the thread, and a segment
         // lies in frames that are suspended above this one), and the
@@ -2228,7 +2423,7 @@ impl Core {
                 c.scan_words(regs, regs + std::mem::size_of_val(&s.regs));
                 seg = s.prev;
             }
-            c.trace();
+            c.trace_y::<Y>();
         }
     }
 
@@ -2256,12 +2451,21 @@ impl Core {
     /// `ctx` is the core `scan_words` passed, marking.
     unsafe extern "C" fn scan_hit(ctx: *mut c_void, _at: usize, v: usize) {
         // SAFETY: the caller's contract.
-        let c = unsafe { &mut *(ctx as *mut Core) };
-        for p in c.scan_candidates(v).into_iter().flatten() {
+        unsafe { (*(ctx as *mut Core)).keep_candidates(v) }
+    }
+
+    /// Mark and pin what a word `v` of the conservative scan keeps
+    /// ([`Core::scan_candidates`]): the collector's scan and the pin
+    /// report's.
+    ///
+    /// # Safety
+    /// During a collection's segment scan.
+    unsafe fn keep_candidates(&mut self, v: usize) {
+        for p in self.scan_candidates(v).into_iter().flatten() {
             // SAFETY: `resolve` returns allocated objects of this heap.
             unsafe {
-                c.mark_obj(Sexp(p));
-                c.pin(Sexp(p));
+                self.mark_obj(Sexp(p));
+                self.pin(Sexp(p));
             }
         }
     }
@@ -2353,14 +2557,28 @@ impl Core {
             // end, so an unwinding panic leaves it set and the heap is
             // never collected again
             self.poisoned = true;
-            self.mark_heap_roots();
-            roots.trace(&mut Mark(self));
-            self.mark_rest();
-            if self.gc_move {
-                let moved = self.evacuate();
-                Self::forward_roots(roots);
-                self.forward_heap();
-                self.retire(moved);
+            if self.young_collection() {
+                // ROBIGO_GC_MOVE=young:N (mover.rs): the pins first, then a
+                // marking that copies the young objects as it reaches them
+                self.pin_segments();
+                self.mark_heap_roots_young();
+                // the root walk's `dyn Visitor` instance, the full mover's
+                // too (`forward_roots`): no third instance of it in the
+                // embedder's crate, where its size moved inlining (H8: s3
+                // +0.9% instructions)
+                roots.trace::<dyn Visitor>(&mut mover::MarkYoung(self));
+                self.mark_rest_young();
+                self.retire_young();
+            } else {
+                self.mark_heap_roots();
+                roots.trace(&mut Mark(self));
+                self.mark_rest();
+                if self.gc_move {
+                    let moved = self.evacuate();
+                    Self::forward_roots(roots);
+                    self.forward_heap();
+                    self.retire(moved);
+                }
             }
             self.poisoned = false;
             self.finish_collection(size_needed, kind, t0)
@@ -2405,28 +2623,27 @@ impl Core {
     }
 
     /// Mark the heap's own precise roots: the precious set, the weak
-    /// references and those queued for their finalizers, the store
+    /// reference objects (their fields are the weak pass's), the store
     /// barrier's log of immortal objects.
     ///
     /// # Safety
     /// During a collection, before anything is swept.
-    unsafe fn mark_heap_roots(&mut self) {
-        // SAFETY: the caller's contract; see `collect_needing`.
+    unsafe fn mark_heap_roots_as<const Y: bool>(&mut self) {
+        // SAFETY: the caller's contract; see `collect_needing`. In a young
+        // collection each list entry and field takes its object's address
+        // after marking (its copy's if it moved).
         unsafe {
             for i in 0..self.precious.len() {
-                let p = self.precious[i];
-                self.mark_obj(p);
-            }
-            for i in 0..self.finalize_queue.len() {
-                let w = self.finalize_queue[i];
-                self.mark_obj(w);
-                for k in 0..3 {
-                    self.mark_obj(Self::weak_field(w, k));
+                let p = self.mark_y::<Y>(self.precious[i]);
+                if Y {
+                    self.precious[i] = p;
                 }
             }
             for i in 0..self.weak_refs.len() {
-                let w = self.weak_refs[i];
-                self.mark_obj(w);
+                let w = self.mark_y::<Y>(self.weak_refs[i]);
+                if Y {
+                    self.weak_refs[i] = w;
+                }
             }
             // immortal objects are never marked, but their fields can
             // change (a symbol's value, attributes set on a constant): the
@@ -2443,23 +2660,69 @@ impl Core {
     ///
     /// # Safety
     /// During a collection, after `begin_collection` and the precise roots.
-    unsafe fn mark_rest(&mut self) {
+    unsafe fn mark_rest_as<const Y: bool>(&mut self) {
         // SAFETY: the caller's contract; `spill` gets a callback and a
         // context of matching types, on the core's thread.
         unsafe {
-            self.trace();
+            self.trace_y::<Y>();
             // docs/g3.md §3, "What a collection marks" (L8): precise roots
             // (above), weak references and finalizers decided on them alone,
             // then the C segments as pins: what a C word reaches stays
             // allocated, and decides nothing.
-            if self.diag.is_some() {
+            if !Y && self.diag.is_some() {
                 self.weak_and_segments_diag();
             } else {
-                self.process_weak_refs();
-                crate::unwind::robigo_heap_spill(Self::scan_segments, self as *mut Core as *mut c_void);
+                self.process_weak_refs::<Y>();
+                crate::unwind::robigo_heap_spill(Self::scan_segments::<Y>, self as *mut Core as *mut c_void);
+            }
+            if Y {
+                self.forward_young_chars();
             }
             self.prune_chars();
         }
+    }
+
+    // The marking's two instances, each a function of this crate: the
+    // generic bodies are compiled here, not in the crate that instantiates
+    // `collect_needing` with its roots (where more code shifts that crate's
+    // inlining: H8 measured s3 +0.9% instructions).
+
+    /// [`Core::mark_heap_roots_as`]: the shipped marking.
+    ///
+    /// # Safety
+    /// As for [`Core::mark_heap_roots_as`].
+    unsafe fn mark_heap_roots(&mut self) {
+        // SAFETY: the caller's contract.
+        unsafe { self.mark_heap_roots_as::<false>() }
+    }
+
+    /// [`Core::mark_heap_roots_as`] in a young collection.
+    ///
+    /// # Safety
+    /// As for [`Core::mark_heap_roots_as`], after [`Core::pin_segments`].
+    #[inline(never)]
+    unsafe fn mark_heap_roots_young(&mut self) {
+        // SAFETY: the caller's contract.
+        unsafe { self.mark_heap_roots_as::<true>() }
+    }
+
+    /// [`Core::mark_rest_as`]: the shipped marking.
+    ///
+    /// # Safety
+    /// As for [`Core::mark_rest_as`].
+    unsafe fn mark_rest(&mut self) {
+        // SAFETY: the caller's contract.
+        unsafe { self.mark_rest_as::<false>() }
+    }
+
+    /// [`Core::mark_rest_as`] in a young collection.
+    ///
+    /// # Safety
+    /// As for [`Core::mark_rest_as`].
+    #[inline(never)]
+    unsafe fn mark_rest_young(&mut self) {
+        // SAFETY: the caller's contract.
+        unsafe { self.mark_rest_as::<true>() }
     }
 
     /// The end of a collection: the sweep, then the heap sizes, the due bit
@@ -2716,8 +2979,9 @@ impl Core {
         self.stats.live_bytes = live_bytes;
         self.stats.live_objects = live_objects;
         self.alloc_since_gc = 0;
-        // R: memory.c:RunGenCollect (R_NodesInUse = R_NSize - R_Collected)
-        self.sizes.nodes_in_use = live_objects as usize;
+        // R: memory.c:RunGenCollect (R_NodesInUse = R_NSize - R_Collected),
+        // the shared constants included
+        self.sizes.nodes_in_use = live_objects as usize + crate::shared::OBJECTS;
     }
 }
 
@@ -2734,6 +2998,24 @@ impl Visitor for Mark<'_> {
         // them: each is null or live.
         unsafe { self.0.mark_obj(*edge) }
     }
+}
+
+/// The bits a new symbol is made with, from its name: (header flags, gp).
+/// The runtime registers its rule once per process ([`set_symbol_bits`]).
+pub type SymbolBits = fn(&[u8]) -> (u8, u16);
+
+static SYMBOL_BITS: std::sync::OnceLock<SymbolBits> = std::sync::OnceLock::new();
+
+/// Register the rule that gives a new symbol its name's bits (GNU R's
+/// `DDVAL` in `mkSYMSXP`, `SPECIAL_SYMBOL` in `InitNames`,
+/// `DISABLE_REFCNT(R_LastvalueSymbol)`): every heap's `install` applies it
+/// before the symbol is used, so nothing writes a symbol after it is made
+/// (H5: symbols become process-shared and immutable). The first rule
+/// registered stays; the runtime is the one caller. (Function pointers
+/// cannot be compared to check that a later call gives the same rule: one
+/// function may have several addresses.)
+pub fn set_symbol_bits(bits: SymbolBits) {
+    SYMBOL_BITS.get_or_init(|| bits);
 }
 
 /// SEXPTYPE names for the statistics (Rinternals.h).
@@ -2828,7 +3110,11 @@ impl Core {
             st.large_while_due, st.largest_while_due
         );
         if self.gc_move || st.moved > 0 {
-            let _ = writeln!(r, "robigo gc: moved {} objects (ROBIGO_GC_MOVE)", st.moved);
+            let _ = writeln!(
+                r,
+                "robigo gc: moved {} objects (ROBIGO_GC_MOVE), {} collections young only",
+                st.moved, self.young.young_only
+            );
         }
         if st.pin_hits > 0 {
             let _ = writeln!(r, "robigo gc: pin report hits {}", st.pin_hits);
@@ -2969,6 +3255,106 @@ mod tests {
     }
 
     const OBJECTS: usize = 16;
+
+    /// `alloc_node`'s fast path copies `alloc_object`'s steps by hand
+    /// (#816): for the same requests it must leave the same header, fields,
+    /// slot, counts and trigger state as `alloc_object` (`alloc_node_slow`,
+    /// the path every other allocation takes). The setups start from no
+    /// statistics, torture or injection, whatever the environment says, and
+    /// each asserts the paths it is for were taken: the fast path through
+    /// block refills; a node trigger crossed (the collection comes due); a
+    /// node limit reached (requests refused); torture; an injected failure.
+    #[test]
+    fn alloc_node_and_alloc_object_agree() {
+        type State = (usize, usize, usize, u64, bool, usize, bool, i32, i32, bool, usize, usize);
+        fn state(c: &Core) -> State {
+            let poll = c.poll_word().load(Ordering::Relaxed) & GC_DUE != 0;
+            let (s, wait, gap) = (&c.sizes, c.force_wait, c.force_gap);
+            let counts = (c.alloc_since_gc, s.nodes_in_use, s.valloc, c.fail_seen);
+            (
+                counts.0,
+                counts.1,
+                counts.2,
+                counts.3,
+                c.due,
+                c.due_at,
+                poll,
+                wait,
+                gap,
+                c.fail_armed,
+                s.n_trigger,
+                s.v_trigger,
+            )
+        }
+        #[derive(Clone, Copy, PartialEq)]
+        enum Setup {
+            Plain,
+            Trigger,
+            Limit,
+            Torture,
+            Inject,
+        }
+        for setup in [Setup::Plain, Setup::Trigger, Setup::Limit, Setup::Torture, Setup::Inject] {
+            let (mut a, mut b) = (Core::new(), Core::new());
+            for c in [&mut a, &mut b] {
+                c.stats_mode = StatsMode::Off;
+                c.gc_torture(0, 0);
+                c.fail_alloc_at(0);
+                let used = c.sizes.nodes_in_use;
+                match setup {
+                    Setup::Plain => {}
+                    // the heap's size reached (R_NSize) at the 1000th node
+                    Setup::Trigger => (c.sizes.n_trigger, c.sizes.n_size) = (used + 1000, used + 1000),
+                    Setup::Limit => {
+                        (c.sizes.n_trigger, c.sizes.n_size, c.sizes.max_n_size) =
+                            (used + 1000, used + 1000, used + 2000)
+                    }
+                    Setup::Torture => c.gc_torture(3, 0),
+                    Setup::Inject => c.fail_alloc_at(1500),
+                }
+            }
+            let (car_a, car_b) = (a.alloc_vector(REALSXP, 1).unwrap(), b.alloc_vector(REALSXP, 1).unwrap());
+            let (mut fast, mut refused, mut came_due) = (0, 0, false);
+            for i in 0..4000 {
+                let t = [LISTSXP, LANGSXP, CLOSXP, EXTPTRSXP][i % 4];
+                let (nil_a, nil_b) = (a.nil(), b.nil());
+                fast += !a.sizes.over_trigger(0) as usize;
+                let due_before = a.due;
+                // SAFETY: live objects of each heap (nothing collects).
+                let x = unsafe { a.alloc_node(t, car_a, nil_a, nil_a) };
+                // SAFETY: as for `x`.
+                let y = unsafe { b.alloc_node_slow(t, car_b, nil_b, nil_b) };
+                came_due |= !due_before && a.due;
+                assert_eq!(state(&a), state(&b), "the counts and triggers, at request {i}");
+                let (x, y) = match (x, y) {
+                    (Ok(x), Ok(y)) => (x, y),
+                    (Err(_), Err(_)) => {
+                        refused += 1;
+                        continue;
+                    }
+                    _ => panic!("one path refused request {i} and the other did not"),
+                };
+                assert_eq!(x.addr() % BLOCK, y.addr() % BLOCK, "the same slot, at request {i}");
+                // SAFETY: fresh nodes; the header and field words.
+                unsafe {
+                    let w = |z: Sexp, k: usize| *(z.0 as *const u64).add(k);
+                    assert_eq!(w(x, 0), w(y, 0), "the header's first word, at request {i}");
+                    assert_eq!(x.attrib_raw() == nil_a, y.attrib_raw() == nil_b);
+                    assert_eq!((x.car() == car_a, x.cdr() == nil_a, x.tag() == nil_a), (true, true, true));
+                    assert_eq!((y.car() == car_b, y.cdr() == nil_b, y.tag() == nil_b), (true, true, true));
+                    assert_eq!(car_a.refcnt(), car_b.refcnt(), "the car's count, at request {i}");
+                }
+            }
+            match setup {
+                // 4000 nodes fill three blocks: the fast path and its refills
+                Setup::Plain => assert_eq!(fast, 4000, "every request on the fast path"),
+                Setup::Trigger => assert!(fast >= 999 && came_due && refused == 0, "the trigger crossed"),
+                Setup::Limit => assert!(came_due && refused > 0, "the limit reached"),
+                Setup::Torture => assert!(came_due, "torture made a collection due"),
+                Setup::Inject => assert_eq!(refused, 1, "the injected failure"),
+            }
+        }
+    }
 
     /// Counts a release: `owner` is the address of its counter.
     unsafe extern "C" fn release(owner: usize) {

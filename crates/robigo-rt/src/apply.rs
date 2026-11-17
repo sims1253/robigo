@@ -134,57 +134,103 @@ pub fn apply_special_args(
     }
 }
 
-/// The isolate's `force_and_call` hook: `R_forceAndCall(call, 1, rho)`
-/// for `lapply`'s and `vapply`'s `FUN(X[[i]], ...)`, under its
-/// PROTECT(fun) and the arguments' or the call's: a primitive called as
-/// `eval` calls it but with no `check_stack_balance`; a closure applied to
-/// the call's promised arguments, the first forced before its body runs.
-/// A function that needs code to find (a promise) is `eval` of the call.
+/// The isolate's `force_and_call` hook: `R_forceAndCall(call, n, rho)`
+/// (`lapply`'s and `vapply`'s `FUN(X[[i]], ...)` with `n` 1, `mapply`'s
+/// call, `forceAndCall`), under its PROTECT(fun) and the arguments' or
+/// the call's: the function is `findFun` of a symbol head, else the head
+/// evaluated; a primitive is called as `eval` calls it but with no
+/// `check_stack_balance`; a closure is applied to the call's promised
+/// arguments, the first `n` forced before its body runs.
 // R: eval.c:R_forceAndCall
-pub fn force_and_call(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
-    let head = call.bind(cx).as_cons().map(|c| c.car().sexp());
-    // (a function found with no code to run: `lapply`'s FUN is a value)
-    // SAFETY: an immortal symbol and a rooted environment.
-    let fun = head
-        .filter(|&h| unsafe { h.typ() } == SYMSXP)
-        .and_then(|h| unsafe { cx.fun_lookup_raw(h, rho.bind(cx).sexp()) });
-    // SAFETY: a function bound in a live frame.
-    match fun.map(|f| unsafe { f.typ() }) {
-        Some(t @ (BUILTINSXP | SPECIALSXP | CLOSXP)) => cx.scope(|cx, s| {
-            // SAFETY: as above; rooted before anything can collect.
-            let fr = s.root(cx, unsafe { Ref::from_sexp(fun.unwrap(), cx) });
-            cx.with_pp_excess(2, |cx| match t {
-                SPECIALSXP => apply_special(cx, call, fr, rho, out),
-                BUILTINSXP => builtin_evallist(cx, call, fr, rho, out, false),
-                _ => {
-                    let pargs = s.out(cx).root();
-                    let o = pargs.reset(cx);
-                    crate::dispatch::promise_call_args(cx, call, rho, o)?;
-                    // the first argument forced: a promise, else GNU R's
-                    // errors
-                    let first = pargs.bind(cx).as_cons().map(|c| c.car().sexp());
-                    if let Some(p) = first {
-                        // SAFETY: a live element of the rooted list (nothing
-                        // collected since it was read).
-                        if unsafe { p.typ() } == PROMSXP {
-                            cx.scope(|cx, s2| {
-                                // SAFETY: as above; rooted at once.
-                                let pr = s2.root(cx, unsafe { Ref::from_sexp(p, cx) });
-                                let o = s2.out(cx);
-                                cx.eval(pr, rho, o)
-                            })?;
-                        } else if p == cx.missing_arg().sexp() {
-                            return Err(cx.error_call(Some(call), "argument 1 is empty"));
-                        } else {
-                            return Err(cx.error("something weird happened"));
+pub fn force_and_call(cx: &mut Cx, call: Root<'_>, n: i32, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    cx.scope(|cx, s| {
+        // SAFETY: the head of the rooted call.
+        let head = s.root(cx, unsafe { Ref::from_sexp(call.bind(cx).sexp().car(), cx) });
+        let f = s.out(cx);
+        let fr = f.root();
+        if head.bind(cx).sexptype() == SYMSXP {
+            // findFun: an error if there is none
+            // SAFETY: an immortal symbol and a rooted environment.
+            match unsafe { cx.fun_lookup_raw(head.bind(cx).sexp(), rho.bind(cx).sexp()) } {
+                // SAFETY: a function bound in a live frame.
+                Some(fun) => f.set(cx, unsafe { Ref::from_sexp(fun, cx) }),
+                None => cx.find_fun3(head, rho, None, f)?,
+            }
+        } else {
+            crate::eval::eval(cx, head, rho, f)?;
+        }
+        // SAFETY: a rooted object.
+        let t = unsafe { fr.bind(cx).sexp().typ() };
+        cx.with_pp_excess(2, |cx| match t {
+            SPECIALSXP => apply_special(cx, call, fr, rho, out),
+            BUILTINSXP => builtin_evallist(cx, call, fr, rho, out, false),
+            CLOSXP => {
+                let pargs = s.out(cx).root();
+                let o = pargs.reset(cx);
+                crate::dispatch::promise_call_args(cx, call, rho, o)?;
+                // the first n arguments forced: promises, else GNU R's errors
+                let mut i = 0;
+                while i < n {
+                    // the i-th cell, read again after each forcing (which
+                    // may collect)
+                    let p = {
+                        let mut a = pargs.bind(cx).as_cons();
+                        for _ in 0..i {
+                            a = a.and_then(|c| c.cdr().as_cons());
                         }
+                        match a {
+                            Some(c) => c.car().sexp(),
+                            None => break,
+                        }
+                    };
+                    // SAFETY: a live element of the rooted list (nothing
+                    // collected since it was read).
+                    if unsafe { p.typ() } == PROMSXP {
+                        cx.scope(|cx, s2| {
+                            // SAFETY: as above; rooted at once.
+                            let pr = s2.root(cx, unsafe { Ref::from_sexp(p, cx) });
+                            let o = s2.out(cx);
+                            cx.eval(pr, rho, o)
+                        })?;
+                    } else if p == cx.missing_arg().sexp() {
+                        let msg = format!("argument {} is empty", i + 1);
+                        return Err(cx.error_call(Some(call), &msg));
+                    } else {
+                        return Err(cx.error("something weird happened"));
                     }
-                    crate::call::apply_closure(cx, call, fr, pargs, rho, None, out)
+                    i += 1;
                 }
+                crate::call::apply_closure(cx, call, fr, pargs, rho, None, out)
+            }
+            _ => Err(cx.error("attempt to apply non-function")),
+        })
+    })
+}
+
+/// `forceAndCall(n, FUN, ...)`: the call `FUN(...)` made of the rest of
+/// the call, its first `n` arguments forced before a closure's body runs.
+// R: eval.c:do_forceAndCall
+pub fn do_force_and_call(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let (nexpr, rest) = {
+            let args = call.bind(cx).as_cons().map_or(cx.nil(), |c| c.cdr());
+            // CADR(call), CDDR(call): R_NilValue past the end
+            let c = args.as_cons();
+            (c.map_or(cx.nil(), |c| c.car()), c.map_or(cx.nil(), |c| c.cdr()))
+        };
+        let (nexpr, rest) = (s.root(cx, nexpr), s.root(cx, rest));
+        let nv = s.capture(cx, |cx, o| crate::eval::eval(cx, nexpr, rho, o))?;
+        let n = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, nv)?;
+        // LCONS(CAR(e), CDR(e)): CDDR(call) as a call
+        let e = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| {
+                let r = rest.bind(cx);
+                let (car, cdr) = r.as_cons().map_or((cx.nil(), cx.nil()), |c| (c.car(), c.cdr()));
+                cx.lcons(car, cdr)
             })
-        }),
-        _ => cx.eval(call, rho, out),
-    }
+        })?;
+        force_and_call(cx, e, n, rho, out)
+    })
 }
 
 /// `eval(call, rho)` for a call made at run time (complex assignment's

@@ -209,6 +209,13 @@ every record must come back from robigo-rt's unserialize and serialize as
 GNU R's round trip has it (M3's L1 bar). It reports the records with byte
 code apart while robigo-rt has no BCODESXP.
 
+What GNU R's own build of base, compiler and tools needs (L4):
+`scripts/rt-build-reach.sh` runs each R step of the build under GNU R
+4.6.2, traced as base-subset traces (`.robigo/build-reach/STEP.keys`),
+and `scripts/rt-build-gaps.py --robigo-rt BIN` lists the primitives and
+`.Internal`s among them that a robigo-rt binary lacks, by step. Rerun the
+second after a merge that adds builtins.
+
 The parse oracle (`tests/parse`, the corpora's `parse-dumps.tsv.gz`) has
 no per-version files. 4.6.2's `parse()` gives the same dumps as 4.5.0's
 for every recorded source (`docs/ledger/g3.md`), so `robigo-syntax`
@@ -680,15 +687,23 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    MiB, 10% of the live heap)), the conformance under a small vector limit
    and `scripts/rt-fail-alloc.py` (E9: `ROBIGO_FAIL_ALLOC_AT=n` refuses the
    script's `n`th allocation once; the output must not change; its scripts
-   are `tests/rt/alloc/effects.R` and, for unserialize,
-   `tests/rt/serialize-closures/unserialize-e9.R`; `ROBIGO_RETRY_TORTURE=1`,
-   which refuses the first allocation of every `&Cx` build once, E9's
-   refusal at every build in one run, in a build with robigo-rtcore's
-   `retry-torture` feature, has no step yet:
-   `docs/ledger/g3/2026-11-17-retry-torture.md`). Every pull
+   are `tests/rt/alloc/effects.R`, for unserialize
+   `tests/rt/serialize-closures/unserialize-e9.R`, and for on.exit code
+   run during unwinds `conditions/onexit-unwind.R`,
+   `conditions/trycatch-finally.R`, `capi/e8-unwind.R`,
+   `tests/r/lang/on-exit.R` and `parse/file.R`), and, last, the conformance
+   under `ROBIGO_RETRY_TORTURE=1` (E9's refusal at every build: the first
+   allocation of every `&Cx` build refused once, so each build's retry
+   runs), in a build with robigo-rtcore's `retry-torture` feature made for
+   that step alone, so every step before it tests the binary users get
+   (`docs/ledger/g3/2026-11-17-retry-torture-ci.md`; with the moving
+   collector as well it is a run by hand, `docs/g3.md` §16). Every pull
    request but a docs-only one runs it, and with it **base-subset**:
    `scripts/base-subset.sh --check` inside the GNU R 4.6.2 oracle image
-   (robigo-rt's checked-in base subset is what this tree traces); the modes of `docs/g3.md` §16 add
+   (robigo-rt's checked-in base subset is what this tree traces: its
+   names, kinds and defining files; which scripts reach each name is the
+   job's artifact `base-subset-reached-by`, kept out of the file so that a
+   new case changes it only where it reaches a new name); the modes of `docs/g3.md` §16 add
    steps here.
 3. **build:** release build, base-package natives, the binary the heavy
    jobs use; the ratchet markers, the parse-corpus ratchet and the builtin

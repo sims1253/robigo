@@ -6,9 +6,9 @@
 //! `rt` makes (`.Primitive("+")`, the `.Internal` table) hold it.
 
 use crate::{
-    apply, arith, array, attrib, bind, builtin, bytecode, character, coerce, complex, context, cum, envir, errors,
-    grep, identical, is, logic, math, options, paste, relop, seq, sort, sprintf, subset, summary, sysutils, unique,
-    util, version,
+    apply, arith, array, attrib, bind, builtin, bytecode, character, coerce, complex, context, cum, datetime, envir,
+    errors, grep, identical, is, logic, math, options, paste, relop, rng, seq, sort, sprintf, subset, summary,
+    sysutils, unique, util, version,
 };
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
@@ -271,7 +271,7 @@ macro_rules! op {
 
 use crate::kernel::arith::{DIVOP, IDIVOP, MINUSOP, MODOP, PLUSOP, POWOP, TIMESOP};
 use crate::kernel::relop::{EQOP, GEOP, GTOP, LEOP, LTOP, NEOP};
-use Effect::{Calls, Env, External, Pure};
+use Effect::{Calls, Env, External, Pure, Rng};
 use PpKind::{Binary, Binary2, Unary};
 
 /// The registry: names.c's rows for the builtins of this crate, in names.c's
@@ -313,6 +313,8 @@ pub static BUILTINS: &[Builtin] = &[
     row("lapply", apply::do_lapply, 0, 10, 2, FUNCALL, Calls),
     row("vapply", apply::do_vapply, 0, 10, 4, FUNCALL, Calls),
     row("islistfactor", apply::do_islistfactor, 0, 11, 2, FUNCALL, Pure),
+    // mapply.c
+    row("mapply", apply::do_mapply, 0, 11, 3, FUNCALL, Calls),
     // attrib.c, objects.c
     row("attributes", attrib::do_attributes, 0, 1, 1, FUNCALL, Pure),
     row("attr", attrib::do_attr, 0, 1, -1, FUNCALL, Pure),
@@ -348,6 +350,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("getOption", options::do_get_option, 0, 11, 1, FUNCALL, Env),
     row("gettext", errors::do_gettext, 0, 11, 3, FUNCALL, Pure),
     row("ngettext", errors::do_ngettext, 0, 11, 4, FUNCALL, Pure),
+    row("bindtextdomain", errors::do_bindtextdomain, 0, 11, 2, FUNCALL, External),
     row("interactive", sysutils::do_interactive, 0, 1, 0, FUNCALL, Pure),
     row("Sys.getenv", sysutils::do_getenv, 0, 11, 2, FUNCALL, External),
     row("l10n_info", sysutils::do_l10n_info, 0, 11, 0, FUNCALL, Pure),
@@ -357,6 +360,8 @@ pub static BUILTINS: &[Builtin] = &[
     row("which", summary::do_which, 0, 11, 1, FUNCALL, Pure),
     op!("which.min", 0, summary::do_first_min, 11, 1, FUNCALL, Pure),
     op!("which.max", 1, summary::do_first_min, 11, 1, FUNCALL, Pure),
+    row("as.POSIXct", datetime::do_as_posixct, 0, 11, 2, FUNCALL, External),
+    row("strptime", datetime::do_strptime, 0, 11, 3, FUNCALL, External),
     op!("min", 2, summary::do_summary, 1, -1, FUNCALL, Pure),
     op!("max", 3, summary::do_summary, 1, -1, FUNCALL, Pure),
     // cum.c
@@ -368,9 +373,41 @@ pub static BUILTINS: &[Builtin] = &[
     op!("any", 2, summary::do_logic3, 1, -1, FUNCALL, Pure),
     op!("pmin", 0, summary::do_pmin, 11, -1, FUNCALL, Pure),
     op!("pmax", 1, summary::do_pmin, 11, -1, FUNCALL, Pure),
-    row("sqrt", math::do_sqrt, 3, 1, 1, FUNCALL, Pure),
-    row("atan", math::do_atan, 25, 1, 1, FUNCALL, Pure),
+    // arithmetic.c's mathematical functions
+    // (log is robigo-rt's special, on math::do_log_builtin)
+    op!("log10", 10010, math::do_log1arg, 1, 1, FUNCALL, Pure),
+    op!("log2", 10002, math::do_log1arg, 1, 1, FUNCALL, Pure),
     row("abs", math::do_abs, 6, 1, 1, FUNCALL, Pure),
+    op!("floor", 1, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("ceiling", 2, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("sqrt", 3, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("sign", 4, math::do_math1, 1, 1, FUNCALL, Pure),
+    row("trunc", math::do_trunc, 5, 1, -1, FUNCALL, Pure),
+    op!("exp", 10, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("expm1", 11, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("log1p", 12, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("cos", 20, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("sin", 21, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("tan", 22, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("acos", 23, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("asin", 24, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("atan", 25, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("cosh", 30, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("sinh", 31, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("tanh", 32, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("acosh", 33, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("asinh", 34, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("atanh", 35, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("lgamma", 40, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("gamma", 41, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("digamma", 42, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("trigamma", 43, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("cospi", 47, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("sinpi", 48, math::do_math1, 1, 1, FUNCALL, Pure),
+    op!("tanpi", 49, math::do_math1, 1, 1, FUNCALL, Pure),
+    // RNG.c
+    row("RNGkind", rng::do_rngkind, 0, 11, 3, FUNCALL, Rng),
+    row("set.seed", rng::do_setseed, 0, 111, 4, FUNCALL, Rng),
     // context.c
     op!("sys.parent", 1, context::do_sys, 11, -1, FUNCALL, Env),
     op!("sys.call", 2, context::do_sys, 11, -1, FUNCALL, Env),
@@ -481,6 +518,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("lockEnvironment", envir::do_lock_env, 0, 111, 2, FUNCALL, Env),
     row("lockBinding", envir::do_lock_bnd, 0, 111, 2, FUNCALL, Env),
     row("bindingIsLocked", envir::do_bnd_is_locked, 0, 11, 2, FUNCALL, Env),
+    row("environmentIsLocked", envir::do_env_is_locked, 0, 11, 1, FUNCALL, Env),
     row("makeActiveBinding", envir::do_mk_active_bnd, 0, 111, 3, FUNCALL, Env),
     row("env.profile", envir::do_envprofile, 0, 211, 1, FUNCALL, Env),
     row("...elt", envir::do_dots_elt, 0, 201, 1, FUNCALL, Env),
@@ -509,6 +547,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("Version", version::do_version, 0, 11, 0, FUNCALL, Pure),
     row("file.path", paste::do_filepath, 0, 11, 2, FUNCALL, Pure),
     // util.c
+    row("compareNumericVersion", util::do_compare_numeric_version, 0, 11, 2, FUNCALL, Pure),
     row("Encoding", util::do_encoding, 0, 11, 1, FUNCALL, Pure),
     row("setEncoding", util::do_setencoding, 0, 11, 2, FUNCALL, Pure),
     // sort.c, radixsort.c, altclasses.c's wrap_meta

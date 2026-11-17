@@ -108,10 +108,11 @@ enum { NILSXP = 0, SYMSXP = 1, LISTSXP = 2, CLOSXP = 3, ENVSXP = 4, PROMSXP = 5,
 #endif
 
 /* An object C is handed from here on is C's: under ROBIGO_GC_MOVE=1 it is
- * marked so that the debug collector leaves it in place. */
+ * marked so that the debug collector leaves it in place. An immortal object
+ * never moves and is not written (H5: symbols are immutable). */
 static inline SEXP seen(SEXP x)
 {
-    if (__builtin_expect(robigo_cg->gc_move, 0) && x)
+    if (__builtin_expect(robigo_cg->gc_move, 0) && x && !(RB_FLAGS(x) & ROBIGO_FLAG_IMMORTAL))
         RB_EXTRA(x) |= RB_SEEN_BY_C;
     return x;
 }
@@ -125,6 +126,8 @@ __attribute__((noreturn)) void robigo_rtapi_error(const char *msg);
 __attribute__((noreturn)) void robigo_rtapi_errorcall(SEXP call, const char *msg);
 /* "%s() can only be applied to a '%s', not a '%s'" with R_typeToChar(x) */
 __attribute__((noreturn)) void robigo_rtapi_type_error(const char *fun, const char *what, SEXP x);
+/* CHKVEC's "cannot get data pointer of '%s' objects" */
+__attribute__((noreturn)) void robigo_rtapi_dataptr_type_error(SEXP x);
 /* "attempt access index %lld/%lld in %s" (set: "attempt to set index") */
 __attribute__((noreturn)) void robigo_rtapi_index_error(const char *fun, R_xlen_t i, R_xlen_t n);
 __attribute__((noreturn)) void robigo_rtapi_set_index_error(const char *fun, R_xlen_t i, R_xlen_t n);
@@ -144,11 +147,21 @@ void robigo_rtapi_warningcall(SEXP call, const char *msg);
 void robigo_rtapi_print(int to_stderr, const char *buf, size_t n);
 int robigo_rtapi_warn_length(void);
 R_xlen_t robigo_rtapi_length_slow(SEXP x);
+/* an ALTREP vector's Dataptr, Dataptr_or_null and Elt methods (altrep.rs):
+ * robigo's own classes; a package class's are not yet */
+void *robigo_rtapi_altvec_dataptr(SEXP x);
+void *robigo_rtapi_altvec_dataptr_or_null(SEXP x);
+int robigo_rtapi_altinteger_elt(SEXP x, R_xlen_t i);
+double robigo_rtapi_altreal_elt(SEXP x, R_xlen_t i);
 int robigo_rtapi_unwind_protect(SEXP (*fun)(void *), void *data, SEXP cont, SEXP *result);
 #ifndef R_INTERNALS_H_
 /* never returns: the exit `cont` owns continues (unwind.rs) */
 __attribute__((noreturn)) void R_ContinueUnwind(SEXP cont);
 SEXP R_MakeUnwindCont(void);
+SEXP Rf_mkString(const char *s);
+SEXP Rf_allocVector(SEXPTYPE type, R_xlen_t n);
+SEXP R_tryCatch(SEXP (*body)(void *), void *bdata, SEXP conds, SEXP (*handler)(SEXP, void *), void *hdata,
+                void (*finally)(void *), void *fdata);
 SEXP (CDDR)(SEXP e);
 #endif
 
@@ -251,10 +264,69 @@ int (OBJECT)(SEXP x)
 static inline void *dataptr(SEXP x)
 {
     if (RB_IS_ALTREP(x))
-        robigo_rtapi_not_yet("DATAPTR of an ALTREP object");
+        return robigo_rtapi_altvec_dataptr(x); /* ALTVEC_DATAPTR */
     if (RB_LEN(x) == 0)
         return (void *) 1;
     return RB_DATA(x);
+}
+
+/* CHKVEC (Rinlinedfuns.h, STRICT_TYPECHECK) */
+static inline void chkvec(SEXP x)
+{
+    switch (RB_TYPE(x)) {
+    case CHARSXP: case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case STRSXP: case VECSXP:
+    case EXPRSXP: case RAWSXP: case WEAKREFSXP:
+        break;
+    default:
+        robigo_rtapi_dataptr_type_error(x);
+    }
+}
+
+void *(DATAPTR)(SEXP x)
+{
+    chkvec(x);
+    if (!RB_IS_ALTREP(x) && RB_TYPE(x) == CHARSXP)
+        return RB_DATA(x); /* (a CHARSXP's trailing zero byte) */
+    return dataptr(x);
+}
+
+const void *(DATAPTR_RO)(SEXP x)
+{
+    chkvec(x);
+    if (RB_IS_ALTREP(x))
+        return robigo_rtapi_altvec_dataptr(x); /* ALTVEC_DATAPTR_RO */
+    return RB_DATA(x);
+}
+
+const void *(DATAPTR_OR_NULL)(SEXP x)
+{
+    chkvec(x);
+    if (RB_IS_ALTREP(x))
+        return robigo_rtapi_altvec_dataptr_or_null(x);
+    return RB_DATA(x);
+}
+
+/* CHECK_BOUNDS_ELT: GNU R's test is i > XLENGTH(x) */
+static inline void check_bounds_elt(SEXP x, R_xlen_t i)
+{
+    if (i < 0 || i > XLENGTH(x))
+        robigo_rtapi_error("subscript out of bounds");
+}
+
+int (INTEGER_ELT)(SEXP x, R_xlen_t i)
+{
+    if (RB_TYPE(x) != INTSXP && RB_TYPE(x) != LGLSXP)
+        robigo_rtapi_error("bad INTSXP vector");
+    check_bounds_elt(x, i);
+    return RB_IS_ALTREP(x) ? robigo_rtapi_altinteger_elt(x, i) : ((int *) RB_DATA(x))[i];
+}
+
+double (REAL_ELT)(SEXP x, R_xlen_t i)
+{
+    if (RB_TYPE(x) != REALSXP)
+        robigo_rtapi_error("bad REALSXP vector");
+    check_bounds_elt(x, i);
+    return RB_IS_ALTREP(x) ? robigo_rtapi_altreal_elt(x, i) : ((double *) RB_DATA(x))[i];
 }
 
 int *(LOGICAL)(SEXP x)
@@ -680,9 +752,7 @@ void Rf_warning(const char *format, ...)
     /* R: errors.c:warning (psize = min(BUFSIZE, R_WarnLength + 1)) */
     vsnprintf_mbcs(buf, min_size(BUFSIZE, (size_t) robigo_rtapi_warn_length() + 1), format, ap);
     va_end(ap);
-    size_t n = strlen(buf);
-    if (n > 0 && buf[n - 1] == '\n')
-        buf[n - 1] = '\0';
+    /* (its trailing newline is removed by Cx::warning) */
     robigo_rtapi_warning(buf);
 }
 
@@ -748,6 +818,90 @@ void Rvprintf(const char *format, va_list arg)
 void REvprintf(const char *format, va_list arg)
 {
     vprint(1, format, arg);
+}
+
+/* ---- C-level tryCatch (errors.c) --------------------------------------- */
+
+/* errors.c's tryCatchData_t; trycatch.rs reads it (TryCatchData) */
+typedef struct {
+    SEXP (*body)(void *);
+    void *bdata;
+    SEXP (*handler)(SEXP, void *);
+    void *hdata;
+    void (*finally)(void *);
+    void *fdata;
+    int suspended;
+} robigo_trycatch_t;
+
+SEXP robigo_rtapi_try_catch(robigo_trycatch_t *tcd, SEXP conds, int fin);
+SEXP robigo_rtapi_push_error_handler(robigo_trycatch_t *tcd);
+void robigo_rtapi_set_handler_stack(SEXP old);
+
+static SEXP default_tryCatch_handler(SEXP cond, void *data)
+{
+    (void)cond;
+    (void)data;
+    return R_NilValue;
+}
+
+static void default_tryCatch_finally(void *data)
+{
+    (void)data;
+}
+
+/* R: errors.c:R_tryCatchError */
+SEXP R_tryCatchError(SEXP (*body)(void *), void *bdata, SEXP (*handler)(SEXP, void *), void *hdata)
+{
+    SEXP val;
+    SEXP cond = Rf_mkString("error");
+
+    Rf_protect(cond);
+    val = R_tryCatch(body, bdata, cond, handler, hdata, NULL, NULL);
+    Rf_unprotect(1);
+    return val;
+}
+
+/* R: errors.c:R_tryCatch. The R part (the interrupts' state, the call of
+ * trycatch_callback) is the entry's (trycatch.rs). */
+SEXP R_tryCatch(SEXP (*body)(void *), void *bdata, SEXP conds, SEXP (*handler)(SEXP, void *), void *hdata,
+                void (*finally)(void *), void *fdata)
+{
+    if (body == NULL)
+        Rf_error("must supply a body function");
+    robigo_trycatch_t tcd = {
+        .body = body,
+        .bdata = bdata,
+        .handler = handler != NULL ? handler : default_tryCatch_handler,
+        .hdata = hdata,
+        .finally = finally != NULL ? finally : default_tryCatch_finally,
+        .fdata = fdata,
+        .suspended = 0,
+    };
+    if (conds == NULL)
+        conds = Rf_allocVector(STRSXP, 0);
+    Rf_protect(conds);
+    SEXP val = robigo_rtapi_try_catch(&tcd, conds, finally != NULL);
+    Rf_unprotect(1);
+    return val;
+}
+
+/* R: errors.c:R_withCallingErrorHandler. The handler's closure and entry
+ * are the entry's (trycatch.rs); the body is called here, from C, as GNU R
+ * calls it. */
+SEXP R_withCallingErrorHandler(SEXP (*body)(void *), void *bdata, SEXP (*handler)(SEXP, void *), void *hdata)
+{
+    if (body == NULL)
+        Rf_error("must supply a body function");
+    robigo_trycatch_t tcd = {
+        .handler = handler != NULL ? handler : default_tryCatch_handler,
+        .hdata = hdata,
+    };
+    SEXP oldstack = robigo_rtapi_push_error_handler(&tcd);
+    Rf_protect(oldstack);
+    SEXP val = body(bdata);
+    robigo_rtapi_set_handler_stack(oldstack);
+    Rf_unprotect(1);
+    return val;
 }
 
 /* ---- R_UnwindProtect -------------------------------------------------- */

@@ -407,6 +407,11 @@ pub fn coerce<'g>(cx: &'g Cx, v: Ref<'g>, ty: u8, keep_attrs: bool) -> Result<Co
     if v.is_package_altrep() {
         return fail("robigo: coercing a package ALTREP vector (ALTREP_COERCE) is not implemented yet".into());
     }
+    if v.is_altrep()
+        && let Some(r) = cx.coerce_compact(v, ty)?
+    {
+        return done(r, Warns::new());
+    }
     if v.is_s4() && t == OBJSXP {
         return fail("robigo: coercing an S4 object (R_getS4DataSlot) is not implemented yet".into());
     }
@@ -474,8 +479,10 @@ pub fn as_character_factor<'g>(cx: &'g Cx, x: Ref<'g>) -> Result<Result<Ref<'g>,
     // INTEGER_ELT: a logical vector's codes too (GNU R reads any other
     // type's bytes as integers, unchecked)
     let codes: Vec<i32> = match x.view() {
-        View::Int(v) => v.as_slice().unwrap().to_vec(),
-        View::Lgl(v) => v.as_slice().unwrap().iter().map(|l| l.0).collect(),
+        // (by element: one of robigo's sequences stays as it is, as GNU R's
+        // INTEGER_ELT leaves it)
+        View::Int(v) => v.elements().into_owned(),
+        View::Lgl(v) => (0..v.len()).map(|i| v.get(i).0).collect(),
         _ if crate::coerce::xlength(x) == 0 => Vec::new(),
         _ => {
             let msg = format!("robigo: the labels of a factor of type '{}' are not implemented yet", type_to_char(x));

@@ -349,7 +349,11 @@ pub unsafe fn num(cx: &Cx, s: Slot) -> Option<Num> {
                         _ => Num::Lgl(*(p as *const i32)),
                     });
                 }
-                ops::plain_num(Ref::from_sexp(x, cx))
+                // anything else (not a real, integer or logical vector, or
+                // ALTREP: no instance of robigo's classes has length 1, and
+                // a package class's is not standard storage) is not a plain
+                // scalar, `ops::plain_num`'s None
+                None
             }
         }
         Tag::Empty => None,
@@ -441,7 +445,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                         cx.force_arg(act.root(R_ENV), at - 1, act.out(i.a))?;
                     } else {
                         // SAFETY: the running code's constants (or rooted values): live, of this isolate.
-                        unsafe { crate::eval::get_var(cx, act, i.a, sym, false) }?;
+                        unsafe { crate::eval::get_var(cx, act, i.a, sym, false, v.profile == Profile::Bc) }?;
                     }
                     reload!();
                 }
@@ -455,7 +459,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 cx.set_eval_depth(act.depth + i.d as i32);
                 pp_point(cx, act, &v, pc - 1);
                 // SAFETY: the running code's constants (or rooted values): live, of this isolate.
-                unsafe { crate::eval::get_var(cx, act, i.a, sym, true) }?;
+                unsafe { crate::eval::get_var(cx, act, i.a, sym, true, v.profile == Profile::Bc) }?;
                 reload!();
             }
             Op::SetVar | Op::SetVar2 => {
@@ -493,7 +497,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     cx.set_visible(true);
                 }
                 // SAFETY: the running code's constants (or rooted values): live, of this isolate.
-                unsafe { crate::eval::get_var_missok(cx, act, i.a, sym) }?;
+                unsafe { crate::eval::get_var_missok(cx, act, i.a, sym, v.profile == Profile::Bc) }?;
                 reload!();
             }
             Op::Switch => {
@@ -762,6 +766,11 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     reload!();
                 }
             },
+            Op::Math1 => {
+                // (out of line: the arm leaves vm::run's own code as it was)
+                math1(cx, act, &v, &i, pc - 1)?;
+                reload!();
+            }
             Op::AndOr1 | Op::AndOr2 => {
                 // SAFETY: as above.
                 let call = unsafe { v.k(i.e) };
@@ -889,8 +898,14 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 reload!();
             }
             Op::ForDone => {
-                // R: eval.c:do_for, DECREMENT_LINKS(val)
-                if let Some(x) = act.get(i.a).as_object() {
+                // R: eval.c:do_for, DECREMENT_LINKS(val): the sequence's
+                // (a compact one's is in `a + 5`, its buffer in `a`)
+                let seq = match act.get(i.a + 5).as_object() {
+                    // SAFETY: a live object.
+                    Some(s) if unsafe { s.typ() } != NILSXP => Some(s),
+                    _ => act.get(i.a).as_object(),
+                };
+                if let Some(x) = seq {
                     // SAFETY: a live object.
                     unsafe { x.decref() };
                 }
@@ -991,6 +1006,146 @@ fn clear_operands(act: &Act, i: &Ins) {
     if i.fl & F_CLR_C != 0 && i.c != i.a {
         act.clear(i.c);
     }
+}
+
+/// bcEval's scalar math ([`Op::Math1`]) of kind `kind` on the operands
+/// `x` (and `y`), read as bcStackScalar reads them: the value and whether
+/// it warns "NaNs produced"; None for the builtin. `SQRT` and `EXP` take a
+/// double or a non-NA integer; `MATH1`, `LOG` and `LOGBASE` a double or an
+/// integer as a double, NA too (bcStackScalarReal). A NaN of a NaN operand
+/// is that operand; of others it warns.
+// R: eval.c:FastMath1, DO_MATH1, DO_LOG, DO_LOGBASE, bcStackScalarReal
+fn math1_fast(kind: u16, x: Option<Num>, y: Option<Num>) -> Option<(f64, bool)> {
+    use robigo_rtbuiltins::kernel::arith::{NA_INTEGER, NA_REAL};
+    let real = |n: Option<Num>| match n {
+        Some(Num::Real(d)) => Some(d),
+        Some(Num::Int(i)) => Some(if i == NA_INTEGER { NA_REAL } else { i as f64 }),
+        _ => None,
+    };
+    let of = |v: f64, a: f64| if v.is_nan() { if a.is_nan() { (a, false) } else { (v, true) } } else { (v, false) };
+    match kind {
+        MATH_SQRT | MATH_EXP => {
+            let f = if kind == MATH_SQRT { f64::sqrt } else { f64::exp };
+            match x? {
+                Num::Real(a) => Some(of(f(a), a)),
+                Num::Int(i) if i != NA_INTEGER => {
+                    let v = f(i as f64);
+                    Some((v, v.is_nan()))
+                }
+                _ => None,
+            }
+        }
+        MATH_LOG => {
+            let a = real(x)?;
+            Some(of(robigo_rtbuiltins::math::bc_log(a), a))
+        }
+        MATH_LOGBASE => {
+            let (a, b) = (real(x)?, real(y)?);
+            let v = robigo_rtbuiltins::math::bc_logbase(a, b);
+            Some(match v.is_nan() {
+                true if a.is_nan() => (a, false),
+                true if b.is_nan() => (b, false),
+                nan => (v, nan),
+            })
+        }
+        k => {
+            let a = real(x)?;
+            let f = robigo_rtbuiltins::math::BC_MATH1.get(k as usize)?.1;
+            Some(of(f(a), a))
+        }
+    }
+}
+
+/// [`Op::Math1`]: bcEval's scalar math on the operands' registers
+/// ([`math1_fast`]), nmath's queued warnings and "NaNs produced" after it
+/// ([`math1_warnings`]); else the builtin ([`math1_slow`]). Out of
+/// `vm::run`, whose register allocation an inline arm shifted (every
+/// closure-call row of perf-rt paid ~8 instructions a call).
+// R: eval.c:FastMath1, DO_MATH1, DO_LOG, DO_LOGBASE
+#[inline(never)]
+fn math1(cx: &mut Cx, act: &mut Act, v: &View, i: &Ins, pc: usize) -> RResult<()> {
+    // SAFETY: registers of the running activation: their objects are live, rooted.
+    let (x, y) = unsafe { (num(cx, act.get(i.b)), if i.c == 2 { num(cx, act.get(i.b + 1)) } else { None }) };
+    // nmath's functions queue their warnings (ML_WARNING): those of this
+    // number only
+    let nmath = robigo_rtbuiltins::math::BC_MATH1.get(i.g as usize).is_some_and(|e| e.2);
+    if nmath {
+        robigo_rtbuiltins::math::take_nmath_warnings();
+    }
+    let Some((val, warn)) = math1_fast(i.g, x, y) else {
+        return math1_slow(cx, act, v, i, pc);
+    };
+    let queued = if nmath { robigo_rtbuiltins::math::take_nmath_warnings() } else { Vec::new() };
+    if warn || !queued.is_empty() {
+        // SAFETY: a constant of the code.
+        let call = unsafe { v.k(i.e) };
+        math1_warnings(cx, act, call, &queued, warn)?;
+    }
+    // SAFETY: an unboxed value.
+    unsafe { act.set(i.a, Slot::real(val)) };
+    for r in i.b..i.b + i.c {
+        act.clear(r);
+    }
+    cx.set_visible(true);
+    Ok(())
+}
+
+/// [`Op::Math1`]'s warnings, in bcEval's order: nmath's (`queued`, raised
+/// by `MATHLIB_WARNING`'s `warning()` while the function ran, so against
+/// the expression bcEval is at, the call), then "NaNs produced" if `nan`,
+/// against the call (`warningcall(call, R_MSG_NA)`).
+#[inline(never)]
+fn math1_warnings(cx: &mut Cx, act: &Act, call: Sexp, queued: &[String], nan: bool) -> RResult<()> {
+    // SAFETY: a constant of the rooted code.
+    unsafe { act.scratch(R_SCRATCH, call) };
+    let r = (|| {
+        for w in queued {
+            // SAFETY: the rooted call.
+            unsafe { cx.set_bc_expression(act.obj(R_SCRATCH)) };
+            let r = cx.warning(w.strip_suffix('\n').unwrap_or(w));
+            // SAFETY: R_NilValue.
+            unsafe { cx.set_bc_expression(cx.nil().sexp()) };
+            r?;
+        }
+        if nan {
+            cx.warning_call(Some(act.root(R_SCRATCH)), "NaNs produced")?;
+        }
+        Ok(())
+    })();
+    act.clear(R_SCRATCH);
+    r
+}
+
+/// [`Op::Math1`]'s slow path: the builtin `consts[f]` (or, 0, `log`'s
+/// evaluated form, `do_log_builtin`) on the window, for the call
+/// `consts[e]`, as bcEval's `Builtin1(do_math1, ...)` and
+/// `do_log_builtin(call, ...)` call them.
+fn math1_slow(cx: &mut Cx, act: &mut Act, v: &View, i: &Ins, pc: usize) -> RResult<()> {
+    // SAFETY: constants of the code.
+    let call = unsafe { v.k(i.e) };
+    cx.set_eval_depth(act.depth + i.d as i32);
+    pp_point(cx, act, v, pc);
+    if v.profile == Profile::Bc {
+        // the expression bcEval is at, for error() and warning()
+        // SAFETY: a constant of the rooted code object.
+        unsafe { cx.set_bc_expression(call) };
+    }
+    let r = if i.f != 0 {
+        // SAFETY: a primitive constant of the code.
+        let fun = unsafe { v.k(i.f) };
+        // SAFETY: the running code's constants: live, of this isolate.
+        unsafe { crate::call::call_builtin_regs(cx, act, i.a, fun, call, i.b, i.c as usize, false) }
+    } else {
+        // SAFETY: as above.
+        unsafe {
+            crate::call::call_fn_regs(cx, act, i.a, robigo_rtbuiltins::math::do_log_builtin, call, i.b, i.c as usize)
+        }
+    };
+    if v.profile == Profile::Bc {
+        // SAFETY: R_NilValue.
+        unsafe { cx.set_bc_expression(cx.nil().sexp()) };
+    }
+    r
 }
 
 /// An inlined builtin's slow path: the builtin `consts[f]` called with the
@@ -1393,11 +1548,148 @@ fn start_subset(cx: &mut Cx, act: &Act, dst: Reg, r: Reg, call: Sexp, sub2: bool
     done
 }
 
+/// GNU R's `NA_INTEGER`.
+const NA_INTEGER: i32 = i32::MIN;
+
+/// `bcStackIndex(si)`: register `r`'s scalar index, -1 for none (NA, a
+/// logical, not a scalar number, not above 0 for a double).
+// R: eval.c:bcStackIndex
+fn stack_index(act: &Act, r: Reg) -> i64 {
+    let s = act.get(r);
+    match s.tag() {
+        Tag::Int => s.as_int().map_or(-1, |i| if i != NA_INTEGER { i as i64 } else { -1 }),
+        Tag::Real => s.as_real().map_or(-1, real_index),
+        Tag::Object => {
+            let x = s.as_object().unwrap();
+            // SAFETY: a register's object is live; its length and data are
+            // read only once it is an integer or double vector in standard
+            // storage.
+            unsafe {
+                // IS_SCALAR(idx, INTSXP | REALSXP): the type first, then
+                // the length; an ALTREP index is never IS_SCALAR (only
+                // allocVector3 sets the scalar bit)
+                let t = x.typ();
+                if !matches!(t, INTSXP | REALSXP) || x.is_altrep() || x.std_len() != 1 {
+                    return -1;
+                }
+                if t == INTSXP {
+                    let i = *(x.std_data() as *const i32);
+                    if i != NA_INTEGER { i as i64 } else { -1 }
+                } else {
+                    real_index(*(x.std_data() as *const f64))
+                }
+            }
+        }
+        _ => -1,
+    }
+}
+
+/// bcStackIndex's double: `(R_xlen_t) val` when not NaN, at most
+/// `R_XLEN_T_MAX` and above 0; else -1.
+fn real_index(d: f64) -> i64 {
+    const R_XLEN_T_MAX: f64 = 4503599627370496.0;
+    if !d.is_nan() && d <= R_XLEN_T_MAX && d > 0.0 { d as i64 } else { -1 }
+}
+
+/// bcEval's `DO_VECSUBSET` and `VECSUBSET_PTR`'s `DO_FAST_VECELT`: `x[i]`
+/// or `x[[i]]` (`sub2`) with the vector `x` in register `base` and one
+/// scalar index in `base + 1`, without the default. It applies to a vector
+/// of type REAL, INT, LGL, CPLX, RAW or VECSXP; for `[`, the vector must
+/// have no attributes, or only `dim` (`FAST_VECELT_OK`). The index must be
+/// in range. A REAL, INT or LGL element goes into `dst` unboxed. A CPLX or
+/// RAW element is a new scalar. A list element is the element itself for
+/// `[[`, a new list of one for `[`. True when it did that; false leaves
+/// the call to the default.
+///
+/// An ALTREP vector takes the default too. GNU R's fast path reads one
+/// through its class's `Elt` method; here no ALTREP method runs from the
+/// byte-code loop, and the default gives the same values.
+// R: eval.c:DO_VECSUBSET, VECSUBSET_PTR, DO_FAST_VECELT, FAST_VECELT_OK
+#[inline(never)]
+fn vec_subset_fast(cx: &mut Cx, act: &Act, dst: Reg, base: Reg, sub2: bool) -> RResult<bool> {
+    use robigo_rtcore::View as V;
+    let Some(x) = act.get(base).as_object() else {
+        return Ok(false);
+    };
+    // SAFETY: a register's object is live.
+    if unsafe { x.is_altrep() } {
+        return Ok(false);
+    }
+    let i = stack_index(act, base + 1) - 1;
+    // SAFETY: a register's object is live, of this isolate.
+    let xr = unsafe { Ref::from_sexp(x, cx) };
+    if !sub2 {
+        // FAST_VECELT_OK(vec): ATTRIB(vec) == R_NilValue, or a single `dim`
+        let ok = match xr.attrib().filter(|a| a.sexptype() != NILSXP) {
+            None => true,
+            Some(a) => {
+                a.as_cons().is_some_and(|c| c.tag() == cx.sym(robigo_rtcore::RSym::Dim).into() && c.cdr() == cx.nil())
+            }
+        };
+        if !ok {
+            return Ok(false);
+        }
+    }
+    let in_range = |n: usize| i >= 0 && (i as usize) < n;
+    let k = i as usize;
+    let slot = match xr.view() {
+        V::Real(v) if in_range(v.len()) => Slot::real(v.get(k)),
+        V::Int(v) if in_range(v.len()) => Slot::int(v.get(k)),
+        V::Lgl(v) if in_range(v.len()) => Slot::logical(v.get(k).0),
+        // VECTOR_ELT(vec, i) for `[[`: the element itself (RAISE_NAMED
+        // changes no count)
+        // SAFETY: a live element of the list a register keeps.
+        V::List(v) if sub2 && in_range(v.len()) => unsafe { Slot::object(v.get(k).sexp()) },
+        // ScalarComplex, ScalarRaw, and mkVector1(elt) for `[`: the
+        // operands stay rooted in their registers while it allocates
+        V::Cplx(_) | V::Raw(_) | V::List(_) if in_range(xr.len().unwrap_or(0)) => {
+            cx.build(act.out(dst), |cx| {
+                // SAFETY: the register's live object.
+                let xr = unsafe { Ref::from_sexp(act.obj(base), cx) };
+                Ok(match xr.view() {
+                    V::Cplx(v) => {
+                        let c = v.get(k);
+                        cx.alloc_with(1, |_| c)?.finish().as_ref()
+                    }
+                    V::Raw(v) => {
+                        let b = v.get(k);
+                        cx.alloc_with(1, |_| b)?.finish().as_ref()
+                    }
+                    V::List(v) => {
+                        let e = v.get(k);
+                        let mut l = cx.alloc_vector::<Ref<'_>>(1)?;
+                        l.set(0, e);
+                        l.finish().as_ref()
+                    }
+                    _ => unreachable!(),
+                })
+            })?;
+            clear_subset_operands(cx, act, base);
+            return Ok(true);
+        }
+        _ => return Ok(false),
+    };
+    // SAFETY: an unboxed value holds no object; a list element is live.
+    unsafe { act.set(dst, slot) };
+    clear_subset_operands(cx, act, base);
+    Ok(true)
+}
+
+/// The two operand registers of a subset cleared, `R_Visible` on: what
+/// `DFVE_NEXT` leaves (`R_BCNodeStackTop--`, `R_Visible = TRUE`).
+fn clear_subset_operands(cx: &mut Cx, act: &Act, base: Reg) {
+    act.clear(base);
+    act.clear(base + 1);
+    cx.set_visible(true);
+}
+
 /// bcEval's default subset (`VECSUBSET`, `MATSUBSET`, `SUBSET_N`, their
 /// `[[` forms, `DFLTSUBSET`): `do_subset_dflt` or `do_subset2_dflt` for
 /// the call `call` with the `n` arguments in registers `base..` (their
 /// names after them if `names`), the value in `dst`; `R_Visible` on.
 // R: eval.c:VECSUBSET_PTR, DO_SUBSET_N, DO_DFLTDISPATCH
+#[cold]
+#[inline(never)]
 #[allow(clippy::too_many_arguments)]
 fn dflt_subset(
     cx: &mut Cx,
@@ -1409,6 +1701,11 @@ fn dflt_subset(
     names: bool,
     sub2: bool,
 ) -> RResult<()> {
+    // VECSUBSET's and VECSUBSET2's fast path: one index, no names (cmp.R
+    // compiles any other form to MATSUBSET, SUBSET_N or DFLTSUBSET)
+    if n == 2 && !names && vec_subset_fast(cx, act, dst, base, sub2)? {
+        return Ok(());
+    }
     // SAFETY: as in `start_subset`.
     unsafe { act.scratch(R_SCRATCH, call) };
     let mut any_alt = false;
@@ -1431,11 +1728,13 @@ fn dflt_subset(
     // GNU R's byte code keeps the object below the call frame,
     // DO_STARTDISPATCH, and BUILTIN_CALL_FRAME_ARGS drops only the
     // argument list's links: tests/rt/assign/link-walk-subset.R)
-    let r = if sub2 {
-        robigo_rtbuiltins::subset::do_subset2_dflt(cx, call, args, rho, out)
-    } else {
-        robigo_rtbuiltins::subset::do_subset_dflt(cx, call, args, rho, out)
-    };
+    let r = cx.materialize_subset_args(args).and_then(|()| {
+        if sub2 {
+            robigo_rtbuiltins::subset::do_subset2_dflt(cx, call, args, rho, out)
+        } else {
+            robigo_rtbuiltins::subset::do_subset_dflt(cx, call, args, rho, out)
+        }
+    });
     // SAFETY: R_NilValue.
     unsafe { cx.set_bc_expression(cx.nil().sexp()) };
     for r in base..base + if names { 2 * n } else { n } as Reg {
@@ -1596,16 +1895,158 @@ fn for_prep(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp) -> RResult<()
         act.set(a + 2, Slot::real(n as f64));
         act.set(a + 3, Slot::object(nil));
         act.set(a + 4, Slot::object(cell));
+        act.set(a + 5, Slot::object(nil));
+        act.set(a + 6, Slot::real(0.0));
+    }
+    // one of robigo's compact sequences: read by region
+    // SAFETY: a live object.
+    if unsafe { act.obj(a).is_altrep() } {
+        compact_prep(cx, act, a)?;
     }
     Ok(())
+}
+
+/// The elements a `for` loop over one of robigo's compact sequences reads
+/// at a time: GNU R's `ITERATE_BY_REGION` reads the class's `Get_region`
+/// into a buffer as this does. A multiple of `BC_LOOP_COUNT_MASK + 1`
+/// (1024), so that a chunk-relative index ticks the loop
+/// (`BC_CHECK_SIGINT_LOOP`) exactly when the sequence's index does.
+const FOR_CHUNK: usize = 1024;
+
+/// [`for_prep`] of one of robigo's compact sequences: the sequence moves to
+/// the loop's register `a + 5` (where [`for_refill`] reads it, and the loop's
+/// count of it is dropped), and the loop reads a buffer of its elements
+/// instead, one chunk at a time, through [`for_step`]'s standard path (no
+/// expansion and nothing of the sequence's length allocated). One already
+/// expanded is read in place: INTEGER_ELT reads the expansion.
+// R: eval.c:bcEval (STARTFOR, STEPFOR), R_ext/Itermacros.h:ITERATE_BY_REGION
+#[cold]
+#[inline(never)]
+fn compact_prep(cx: &mut Cx, act: &Act, a: Reg) -> RResult<()> {
+    let seq = act.obj(a);
+    // SAFETY: a live compact sequence (`for_prep` admits no other ALTREP
+    // vector) of this isolate, rooted in the loop's registers.
+    unsafe {
+        act.set(a + 5, Slot::object(seq));
+        if let Some(e) = robigo_rtcore::altrep::own::expanded(seq) {
+            act.set(a, Slot::object(e));
+            return Ok(());
+        }
+        let len = robigo_rtcore::altrep::own::own_len(seq).min(FOR_CHUNK);
+        let t = seq.typ();
+        let buf = cx.retry_alloc(|cx| cx.alloc_vector_raw(t, len))?;
+        act.set(a, Slot::object(buf));
+        fill_chunk(act, a, 0, len);
+        act.set(a + 2, Slot::real(len as f64));
+    }
+    Ok(())
+}
+
+/// The next chunk of a compact sequence's loop, when [`for_step`] has read
+/// the last one: true with the loop's registers on it, false when the
+/// sequence is done (or the loop's sequence is not a compact one: the
+/// standard loop's end).
+#[cold]
+#[inline(never)]
+fn for_refill(act: &Act, a: Reg) -> bool {
+    let Some(seq) = act.get(a + 5).as_object() else { return false };
+    // SAFETY: the sequence `compact_prep` put in the register, live and
+    // rooted, or R_NilValue for another loop.
+    unsafe {
+        if seq.typ() == NILSXP {
+            return false;
+        }
+        let base = (act.get(a + 6).as_real().unwrap() + act.get(a + 2).as_real().unwrap()) as usize;
+        let total = robigo_rtcore::altrep::own::own_len(seq);
+        if base >= total {
+            return false;
+        }
+        if let Some(e) = robigo_rtcore::altrep::own::expanded(seq) {
+            // expanded since (C's DATAPTR): the rest read in place, by the
+            // sequence's own index
+            act.set(a, Slot::object(e));
+            act.set(a + 1, Slot::real(base as f64));
+            act.set(a + 2, Slot::real(total as f64));
+            act.set(a + 6, Slot::real(0.0));
+            return true;
+        }
+        let len = (total - base).min(FOR_CHUNK);
+        fill_chunk(act, a, base, len);
+        act.set(a + 1, Slot::real(0.0));
+        act.set(a + 2, Slot::real(len as f64));
+        act.set(a + 6, Slot::real(base as f64));
+    }
+    true
+}
+
+/// Elements `base..base + len` of the compact sequence in register `a + 5`
+/// into the buffer in register `a` (`Get_region`).
+///
+/// # Safety
+/// Register `a + 5` holds a live compact sequence of at least `base + len`
+/// elements and register `a` a standard vector of its type, at least `len`
+/// long and payload inline (`alloc_vector_raw`'s).
+unsafe fn fill_chunk(act: &Act, a: Reg, base: usize, len: usize) {
+    let (seq, buf) = (act.obj(a + 5), act.obj(a));
+    // SAFETY: the caller's contract; only INTSXP and REALSXP have classes,
+    // and the sequence is not expanded (`compact_prep` and `for_refill`
+    // read an expanded one in place): its info is its elements' formula.
+    unsafe {
+        let (_, n1, inc) = robigo_rtcore::altrep::own::compact_info(seq);
+        if seq.typ() == INTSXP {
+            // an integer sequence's first element and increment (1 or -1)
+            // are ints, and so is each of its elements: this one in int
+            // arithmetic, which vectorizes
+            let mut v = (n1 as i64 + inc as i64 * base as i64) as i32;
+            let inc = inc as i32;
+            let d = std::slice::from_raw_parts_mut(buf.inline_data() as *mut i32, len);
+            for x in d {
+                *x = v;
+                // (past the last element only: an int wraps there)
+                v = v.wrapping_add(inc);
+            }
+        } else {
+            let d = buf.inline_data() as *mut f64;
+            for k in 0..len {
+                *d.add(k) = n1 + inc * (base + k) as f64;
+            }
+        }
+    }
 }
 
 /// `do_for`'s iteration: bind the next element; false when done.
 // R: eval.c:do_for
 fn for_step(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp, profile: Profile) -> RResult<bool> {
+    for_step_in::<true>(cx, act, a, sym, call, profile)
+}
+
+/// [`for_step`] at the end of the loop's vector: the end, or a compact
+/// sequence's next chunk ([`for_refill`]), whose first element this binds
+/// (the step's code is then the standard loop's, unchanged).
+#[cold]
+#[inline(never)]
+fn for_next_chunk(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp, profile: Profile) -> RResult<bool> {
+    if !for_refill(act, a) {
+        return Ok(false);
+    }
+    for_step_in::<false>(cx, act, a, sym, call, profile)
+}
+
+#[inline(always)]
+fn for_step_in<const FIRST: bool>(
+    cx: &mut Cx,
+    act: &Act,
+    a: Reg,
+    sym: Sexp,
+    call: Sexp,
+    profile: Profile,
+) -> RResult<bool> {
     let i = act.get(a + 1).as_real().unwrap();
     let n = act.get(a + 2).as_real().unwrap();
     if i >= n {
+        if FIRST {
+            return for_next_chunk(cx, act, a, sym, call, profile);
+        }
         return Ok(false);
     }
     let idx = i as usize;

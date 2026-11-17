@@ -37,6 +37,34 @@ fn registry<'s>(cx: &mut Cx, s: Scope<'s>) -> RResult<Root<'s>> {
     Ok(head)
 }
 
+/// `R_reinit_altrep_classes(dll)`: each class registered with `dll` gets
+/// GNU R's default methods back (`reinit_altrep_class`; all null here, as
+/// [`make_class`] makes them), so that nothing calls into an object
+/// `dyn.unload` closes.
+// R: altrep.c:R_reinit_altrep_classes, reinit_altrep_class
+pub(crate) fn reinit_classes(cx: &mut Cx, dll: *mut c_void) -> RResult<()> {
+    let Some(r) = cx.ext::<Registry>() else { return Ok(()) };
+    let head = r.0.bind(cx).sexp();
+    let nil = cx.nil().sexp();
+    // SAFETY: the registry is a pairlist of `list4(class, psym, stype,
+    // iptr)` entries, iptr an external pointer (its address an untraced
+    // word) and class a RAWSXP method table of plain data; nothing here
+    // allocates.
+    unsafe {
+        let mut chain = head.cdr();
+        while chain != nil {
+            let entry = chain.car();
+            let iptr = entry.cdr().cdr().cdr().car();
+            if iptr.car().as_ptr().cast::<c_void>() == dll {
+                let class = entry.car();
+                std::ptr::write_bytes(class.std_data(), 0, class.std_len() as usize);
+            }
+            chain = chain.cdr();
+        }
+    }
+    Ok(())
+}
+
 /// `install(name)` of a C string.
 fn install<'s>(cx: &mut Cx, s: Scope<'s>, name: *const c_char) -> RResult<Root<'s>> {
     // SAFETY: C's contract: a NUL-terminated string.
@@ -291,4 +319,100 @@ setters! {
     R_set_altstring_No_NA_method => AltstringMethods.no_na;
     R_set_altlist_Elt_method => AltlistMethods.elt;
     R_set_altlist_Set_elt_method => AltlistMethods.set_elt;
+}
+
+/// The class methods api.c reaches for an ALTREP vector: `DATAPTR` (and
+/// `INTEGER`, `REAL`, ... over it), `DATAPTR_OR_NULL` and the elements.
+/// robigo's own classes are served here (`robigo_rtcore::altrep::own`);
+/// a package class's `Dataptr`, `Dataptr_or_null` and `Elt` are not
+/// dispatched yet (M5).
+fn not_own(cx: &mut Cx, what: &str) -> robigo_rtcore::RError {
+    crate::errors::not_yet(cx, &format!("{what} of a package ALTREP object"))
+}
+
+entry! {
+    /// `ALTVEC_DATAPTR(x)`: the class's `Dataptr`, which expands one of
+    /// robigo's compact sequences into its data2 the first time
+    /// (`compact_intseq_Dataptr`). GNU R runs the method with the
+    /// collector disabled, so no collection is due here: this one collects
+    /// only if the heap refuses the expansion. The expansion is C's from
+    /// here on: under ROBIGO_GC_MOVE=1 it stays where it is.
+    // R: altrep.c:ALTVEC_DATAPTR_EX, altclasses.c:compact_intseq_Dataptr
+    [1] fn robigo_rtapi_altvec_dataptr(x: Sexp) -> *mut c_void => |cx, s| {
+        if x.bind(cx).own_class().is_none() {
+            return Err(not_own(cx, "DATAPTR"));
+        }
+        let x = s.root(cx, x.bind(cx));
+        cx.materialize(x)?;
+        let e = x.bind(cx).sexp();
+        // SAFETY: a materialized instance: data2 is its expansion, a live
+        // standard vector of at least two elements, handed to C.
+        unsafe {
+            let e = e.cdr();
+            cx.hand_to_c(e);
+            Ok(e.std_data().cast())
+        }
+    }
+
+    /// `ALTVEC_DATAPTR_OR_NULL(x)`: the expansion's data, or NULL before
+    /// one is made (`compact_intseq_Dataptr_or_null`).
+    // R: altrep.c:ALTVEC_DATAPTR_OR_NULL, altclasses.c:compact_intseq_Dataptr_or_null
+    [1] fn robigo_rtapi_altvec_dataptr_or_null(x: Sexp) -> *mut c_void => |cx, _s| {
+        let r = x.bind(cx);
+        if r.own_class().is_none() {
+            return Err(not_own(cx, "DATAPTR_OR_NULL"));
+        }
+        if !r.own_is_expanded() {
+            return Ok(std::ptr::null_mut());
+        }
+        // SAFETY: an expanded instance: data2 is a live standard vector,
+        // handed to C.
+        unsafe {
+            let e = r.sexp().cdr();
+            cx.hand_to_c(e);
+            Ok(e.std_data().cast())
+        }
+    }
+
+    /// `ALTINTEGER_ELT(x, i)` (`compact_intseq_Elt`); api.c has checked the
+    /// type and the bounds as `CHECK_VECTOR_INT_ELT` does.
+    // R: altrep.c:ALTINTEGER_ELT, altclasses.c:compact_intseq_Elt
+    [2] fn robigo_rtapi_altinteger_elt(x: Sexp, i: isize) -> c_int => |cx, _s| {
+        let r = x.bind(cx);
+        if r.own_class() != Some(robigo_rtcore::altrep::own::OwnClass::CompactIntseq) {
+            return Err(not_own(cx, "INTEGER_ELT"));
+        }
+        Ok(match in_range(r, i) {
+            // SAFETY: a live compact integer sequence, `k` below its length.
+            Ok(k) => unsafe { robigo_rtcore::altrep::own::intseq_elt(r.sexp(), k) },
+            Err((n1, inc)) => (n1 as i64 + inc as i64 * i as i64) as i32,
+        })
+    }
+
+    /// `ALTREAL_ELT(x, i)` (`compact_realseq_Elt`); api.c has checked the
+    /// type and the bounds as `CHECK_VECTOR_REAL_ELT` does.
+    // R: altrep.c:ALTREAL_ELT, altclasses.c:compact_realseq_Elt
+    [2] fn robigo_rtapi_altreal_elt(x: Sexp, i: isize) -> f64 => |cx, _s| {
+        let r = x.bind(cx);
+        if r.own_class() != Some(robigo_rtcore::altrep::own::OwnClass::CompactRealseq) {
+            return Err(not_own(cx, "REAL_ELT"));
+        }
+        Ok(match in_range(r, i) {
+            // SAFETY: a live compact real sequence, `k` below its length.
+            Ok(k) => unsafe { robigo_rtcore::altrep::own::realseq_elt(r.sexp(), k) },
+            Err((n1, inc)) => n1 + inc * i as f64,
+        })
+    }
+}
+
+/// Index `i` of one of robigo's compact sequences when it is below the
+/// length, for the class's `Elt`; past the end, the first element and the
+/// increment, for the formula. GNU R's bounds check lets `i == XLENGTH(x)` through
+/// (`CHECK_BOUNDS_ELT` tests `i > XLENGTH(x)`), where `Elt` computes the
+/// formula one step past the end, or reads past an expansion's end; here
+/// that element is the formula's either way.
+// R: Rinlinedfuns.h:CHECK_BOUNDS_ELT, altclasses.c:compact_intseq_Elt
+fn in_range(r: Ref<'_>, i: isize) -> Result<usize, (f64, f64)> {
+    let (n, n1, inc) = r.compact_info();
+    if (i as usize) < n { Ok(i as usize) } else { Err((n1, inc)) }
 }

@@ -87,6 +87,27 @@ impl Cx {
         Ok(FreshVec { x, n, cx: self, _t: PhantomData })
     }
 
+    /// [`Cx::alloc_with`] for a fill that can fail: element `i` is `f(i)`
+    /// until `f` returns an error, which is returned instead of the vector
+    /// (the vector, partly written, is never published).
+    pub fn alloc_try_with<'g, T: Plain, E>(
+        &'g self,
+        n: usize,
+        mut f: impl FnMut(usize) -> Result<T, E>,
+    ) -> Result<Result<FreshVec<'g, T>, E>, NeedGc> {
+        let x = self.alloc_raw(T::SEXPTYPE, n)?;
+        // SAFETY: a fresh vector with room for `n` elements of `T`.
+        let d = unsafe { x.std_data() } as *mut T;
+        for i in 0..n {
+            match f(i) {
+                // SAFETY: `i < n`: inside the payload, written without reading.
+                Ok(v) => unsafe { d.add(i).write(v) },
+                Err(e) => return Ok(Err(e)),
+            }
+        }
+        Ok(Ok(FreshVec { x, n, cx: self, _t: PhantomData }))
+    }
+
     /// A vector of plain data with `xs`'s elements.
     pub fn alloc_copy<'g, T: Plain>(&'g self, xs: &[T]) -> Result<FreshVec<'g, T>, NeedGc> {
         let x = self.alloc_raw(T::SEXPTYPE, xs.len())?;
@@ -295,14 +316,8 @@ impl Cx {
     /// empty name, `MAXIDSIZE`) are the caller's.
     pub fn install<'g>(&'g self, name: &[u8]) -> Result<Sym<'g>, NeedGc> {
         // SAFETY: one call into the core, which calls nothing of ours.
+        // (DDVAL, names.c:mkSYMSXP's, comes with a new symbol: `sym::symbol_bits`)
         let s = unsafe { self.iso().core() }.install(name)?;
-        // R: names.c:mkSYMSXP (`if (isDDName(name)) SET_DDVAL(ans, 1)`):
-        // set on every install of such a name (the bit never changes).
-        if is_dd_name(name) {
-            // SAFETY: a live symbol; gp is a header field no reader holds a
-            // view of.
-            unsafe { s.set_gp(s.gp() | DDVAL) };
-        }
         // SAFETY: symbols are immortal in their heap.
         Ok(unsafe { Ref::from_sexp(s, self) }.as_sym().unwrap())
     }
@@ -591,6 +606,11 @@ impl<'u, T: Plain> Unique<'u, T> {
     /// `MAYBE_SHARED`).
     #[inline(always)]
     pub(crate) unsafe fn new(x: Sexp, n: usize, cx: &'u mut Cx) -> Self {
+        // the choke point of the raw writes: never into an ALTREP vector,
+        // whose payload word is its class (one of robigo's classes is
+        // duplicated or materialized first)
+        // SAFETY: the caller's contract: `x` is live.
+        debug_assert!(!unsafe { x.is_altrep() }, "robigo: a raw write into an ALTREP vector");
         Unique { x, n, _cx: cx, _t: PhantomData }
     }
 

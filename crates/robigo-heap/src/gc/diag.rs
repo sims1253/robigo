@@ -219,7 +219,7 @@ impl Core {
                 d = self.diag.take().expect("diag");
                 d.strong_phase = false;
             }
-            self.weak_fixpoint();
+            self.weak_fixpoint::<false>();
             if d.report.is_some() {
                 // R_weak_refs' order, newest first (the list is kept oldest
                 // first: `register_weak_ref`)
@@ -227,16 +227,18 @@ impl Core {
                     .weak_refs
                     .iter()
                     .rev()
+                    // (a reference already ready was decided before)
+                    .filter(|&&w| !w.is_null() && w.gp() & gp::weakref::READY_TO_FINALIZE == 0)
                     .map(|&w| (w, Self::weak_field(w, 0)))
                     .filter(|&(_, k)| !k.is_null() && !self.is_marked(k))
                     .map(|(w, k)| (w, k, false))
                     .collect();
                 d.open = d.cand.len();
             }
-            self.classify_weak_refs();
+            self.classify_weak_refs::<false>();
             self.diag = Some(d);
             crate::unwind::robigo_heap_spill(Self::scan_segments_diag, self as *mut Core as *mut c_void);
-            self.keep_weak_fields();
+            self.keep_weak_fields::<false>();
             let mut d = self.diag.take().expect("diag");
             let hits = std::mem::take(&mut d.hits);
             d.cand.clear();
@@ -310,10 +312,7 @@ impl Core {
             let s = &mut *(ctx as *mut DiagScan);
             let (c, d) = (&mut *s.core, &mut *s.d);
             // the objects `scan_words` would mark for this word
-            for p in c.scan_candidates(v).into_iter().flatten() {
-                c.mark_obj(Sexp(p));
-                c.pin(Sexp(p));
-            }
+            c.keep_candidates(v);
             if !d.strong_phase && d.open > 0 && !c.mark_stack.is_empty() {
                 c.trace();
                 for i in 0..d.cand.len() {

@@ -79,6 +79,14 @@ entry! {
         Err(cx.error(&msg))
     }
 
+    /// `CHKVEC`'s error: `DATAPTR` and its kin of an object that is not a
+    /// vector.
+    // R: Rinlinedfuns.h:CHKVEC
+    [1] fn robigo_rtapi_dataptr_type_error(x: Sexp) -> () => |cx, _s| {
+        let msg = format!("cannot get data pointer of '{}' objects", r_type_to_char(x.bind(cx)));
+        Err(cx.error(&msg))
+    }
+
     /// An element index out of range: memory.c's "attempt access index
     /// %lld/%lld in %s".
     // R: memory.c:VECTOR_ELT

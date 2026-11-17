@@ -1866,6 +1866,7 @@ fn invoke_builtin(
     // SAFETY: a rooted primitive of this isolate.
     let def = *unsafe { prims::def(cx, op.bind(cx).sexp()) };
     let Kind::Builtin(f, _) = def.kind else { unreachable!("robigo: a special applied as a builtin") };
+    crate::call::materialize_args(cx, &def, args)?;
     let flag = def.print();
     // a builtin may change what an argument expression evaluates to or
     // look at an argument: values computed early are dropped (crate::early)
@@ -2442,8 +2443,8 @@ pub fn do_nextmethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, 
                     return Err(cx.error("no method to invoke"));
                 }
                 if nextfun.bind(cx).sexptype() == CLOSXP {
-                    // SAFETY: an immortal symbol: INTERNAL is its tag.
-                    let internal = unsafe { t.bind(cx).sexp().tag() };
+                    // SAFETY: a live symbol.
+                    let internal = unsafe { cx.internal_raw(t.bind(cx).sexp()) };
                     if internal != cx.nil().sexp() {
                         let o = nextfun.reset(cx);
                         // SAFETY: a symbol's INTERNAL is an immortal primitive.

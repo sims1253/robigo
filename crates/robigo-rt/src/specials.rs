@@ -99,7 +99,7 @@ impl<'s> Evaluated<'s> {
 
     /// The window for a builtin's default method.
     pub(crate) fn args(&self, cx: &Cx) -> Args<'s> {
-        let any_alt = (0..self.n).any(|i| self.root(i).bind(cx).is_package_altrep());
+        let any_alt = (0..self.n).any(|i| self.root(i).bind(cx).is_altrep());
         // SAFETY: `n` filled value slots and `n` tag slots of the scope.
         unsafe { Args::from_raw(self.vals, Some(self.names), self.n as u32, any_alt) }
     }
@@ -236,6 +236,25 @@ fn eval_list_keep_missing<'s>(
     }
     lk.release();
     Ok(())
+}
+
+/// `log(x, base)`: its arguments evaluated, missing ones kept, then
+/// `do_log_builtin` (robigo_rtbuiltins::math), which matches and
+/// dispatches. An argument that is one of robigo's compact sequences is
+/// expanded first, as a builtin's are ([`crate::call::run_builtin`]):
+/// GNU R's `math1`/`math2` read it through `REAL()`.
+// R: arithmetic.c:do_log, memory.c:DATAPTR
+pub fn do_log(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let cap = count_args(cx, call, 0, rho)?;
+        let mut ev = Evaluated::new(cx, s, cap);
+        eval_list_keep_missing(cx, s, call, 0, rho, &mut ev, 0)?;
+        let args = ev.args(cx);
+        if args.any_altrep() {
+            cx.materialize_args(args)?;
+        }
+        robigo_rtbuiltins::math::do_log_builtin(cx, call, args, rho, out)
+    })
 }
 
 /// The isolate's `eval_args` hook: `DispatchOrEval(call, op, generic,
@@ -423,6 +442,7 @@ pub fn do_subset(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out:
         Disp::Done => Ok(()),
         Disp::Default(ev) => {
             let args = ev.args(cx);
+            cx.materialize_subset_args(args)?;
             subset::do_subset_dflt(cx, call, args, rho, out)
         }
     })
@@ -435,6 +455,7 @@ pub fn do_subset2(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out
         Disp::Done => Ok(()),
         Disp::Default(ev) => {
             let args = ev.args(cx);
+            cx.materialize_subset_args(args)?;
             subset::do_subset2_dflt(cx, call, args, rho, out)
         }
     })
@@ -539,6 +560,7 @@ pub fn do_subassign(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, o
         Disp::Done => Ok(()),
         Disp::Default(ev) => {
             let args = ev.args(cx);
+            cx.materialize_subset_args(args)?;
             subassign::do_subassign_dflt(cx, call, args, rho, out)
         }
     })
@@ -551,6 +573,7 @@ pub fn do_subassign2(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, 
         Disp::Done => Ok(()),
         Disp::Default(ev) => {
             let args = ev.args(cx);
+            cx.materialize_subset_args(args)?;
             subassign::do_subassign2_dflt(cx, call, args, rho, out)
         }
     })

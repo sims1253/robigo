@@ -3,9 +3,8 @@
 //! function for the three) and `mget`.
 //!
 //! Not here yet, each an error that says so: a frame number as `envir`
-//! (`R_sysframe` needs C2's contexts), environments that are S4 objects
-//! (`R_getS4DataSlot`), and the condition class of the missing-argument
-//! error (S1 makes it a `missingArgError`; the message is GNU R's).
+//! (`R_sysframe` needs C2's contexts) and environments that are S4
+//! objects (`R_getS4DataSlot`).
 
 use crate::attrib::{Attr, Attrs};
 use crate::text::to_native;
@@ -53,7 +52,7 @@ fn mode_class(t: u8) -> u8 {
 /// `installTrChar(c)`: the symbol named by the native translation of `c`,
 /// rooted in `s`, with `install`'s errors.
 // R: sysutils.c:installTrChar, names.c:install
-fn install_tr<'s>(cx: &mut Cx, s: Scope<'s>, c: Root<'_>, i: usize) -> RResult<Root<'s>> {
+pub(crate) fn install_tr<'s>(cx: &mut Cx, s: Scope<'s>, c: Root<'_>, i: usize) -> RResult<Root<'s>> {
     let name: Vec<u8> = {
         let ch = c.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
         match to_native(crate::coerce::text(ch), cx.locale()) {
@@ -284,9 +283,9 @@ pub fn do_get<const CODE: u8>(
         let rval = rv.root();
         find_var1_mode(cx, t1, genv, mode, inherits != 0, CODE != 0, rv)?;
         if rval.bind(cx) == cx.missing_arg() {
+            // signal a *classed* error: R_MissingArgError(t1, call, "getMissingError")
             let sym = t1.bind(cx).as_sym().unwrap().name().bytes().to_vec();
-            let msg = format!("argument \"{}\" is missing, with no default", String::from_utf8_lossy(&sym));
-            return Err(cx.error_call(Some(call), &msg));
+            return Err(cx.missing_arg_error(&String::from_utf8_lossy(&sym), Some(call), "getMissingError"));
         }
         let unbound = rval.bind(cx) == cx.unbound();
         match CODE {
@@ -1158,4 +1157,13 @@ pub fn do_as_environment(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<
 
 fn arg_len(cx: &Cx, args: Args<'_>) -> usize {
     args.get(cx, 0).len().unwrap_or(0)
+}
+
+/// `.Internal(environmentIsLocked(env))`.
+// R: envir.c:do_envIsLocked, R_EnvironmentIsLocked
+pub fn do_env_is_locked(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("environmentIsLocked", true).check_arity(cx, call, args)?;
+    let locked = cx.environment_is_locked(args.root(0))?;
+    out.set(cx, cx.logical_value(locked as i32));
+    Ok(())
 }

@@ -309,6 +309,16 @@ pub mod flags {
     /// The payload is elsewhere: a data pointer at `extdata::OFF_PTR`,
     /// owned by the words after it ([`super::extdata`]).
     pub const EXTDATA: u8 = 0x04;
+    /// Never marked, moved or freed (`Core::make_immortal`, and the
+    /// process's shared constants). The contract that comes with it:
+    /// - The collector does not trace an immortal object, so what it points
+    ///   at must be immortal too, or kept alive some other way, until a
+    ///   store into it passes the barrier ([`BARRIER`], set with this flag),
+    ///   which makes it a root of its heap.
+    /// - Reference counts, `SEEN_BY_C` and `MARK_NOT_MUTABLE` skip it: its
+    ///   header is not written after it is made, beyond that one barrier bit.
+    /// - A shared constant (H5, `shared.rs`) takes no store at all: the
+    ///   barrier's slow path refuses it before writing anything.
     pub const IMMORTAL: u8 = 0x08;
     /// The barrier's state bit (council item 8): a store into this object
     /// must take the barrier's slow path (`Sexp::store`), which logs the
@@ -587,15 +597,22 @@ pub mod extra {
         const _: () = assert!(super::super::disjoint(&[super::TYPE_BLIND as u64, CALL_LIVE as u64, ESCAPED as u64]));
     }
 
-    /// A vector. Free: 0, 2, 3, 5, 6, 8-12, 14, 15.
+    /// A vector. Free: 0, 3, 5, 6, 8-12, 14, 15.
     pub mod vector {
         /// GNU R's RTRACE (`sxpinfo.trace`): `tracemem` is on.
         pub const TRACE: u16 = 1 << 1;
-        const _: () = assert!(super::super::disjoint(&[super::TYPE_BLIND as u64, TRACE as u64]));
+        /// An ALTREP vector (`flags::ALTREP`) that is an instance of one of
+        /// robigo-rt's own classes (robigo-rtcore's `altrep::own`), set by
+        /// the one maker of such instances: the hot accessors tell it from
+        /// a package class's with this bit, without reading the class.
+        /// Bit 2 is free on main and in all four X3 layout cells (a code
+        /// object takes bit 8, the h24 cells bit 0): H, 2026-11-17.
+        pub const OWN_ALTREP: u16 = 1 << 2;
+        const _: () = assert!(super::super::disjoint(&[super::TYPE_BLIND as u64, TRACE as u64, OWN_ALTREP as u64]));
     }
 
     /// A code object (robigo-rt's `code.rs`: a VECSXP), which has the
-    /// vector bits too. Free: 0, 2, 3, 5, 6, 9-12, 14, 15.
+    /// vector bits too. Free: 0, 3, 5, 6, 9-12, 14, 15.
     pub mod code {
         /// The code object holds weak cache words (inline caches that
         /// name an object without keeping it alive: docs/g3.md §6.1, the
@@ -606,6 +623,7 @@ pub mod extra {
         const _: () = assert!(super::super::disjoint(&[
             super::TYPE_BLIND as u64,
             super::vector::TRACE as u64,
+            super::vector::OWN_ALTREP as u64,
             WEAK_CACHE as u64
         ]));
     }
@@ -637,6 +655,7 @@ pub const TABLE: &[(&str, u64)] = &[
     ("FLAG_OBJECT", flags::OBJECT as u64),
     ("FLAG_ALTREP", flags::ALTREP as u64),
     ("FLAG_EXTDATA", flags::EXTDATA as u64),
+    ("FLAG_IMMORTAL", flags::IMMORTAL as u64),
     ("EXTRA_SEEN_BY_C", extra::SEEN_BY_C as u64),
     ("GP_S4", gp::S4 as u64),
     ("GP_CHAR_HASHASH", gp::charsxp::HASHASH as u64),

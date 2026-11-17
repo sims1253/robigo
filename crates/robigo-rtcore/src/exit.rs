@@ -149,6 +149,13 @@ impl Cx {
     /// then its default handling reports it. The token stands for the exit
     /// that leaves. The text is the caller's, verbatim.
     pub fn error_call(&mut self, call: Option<Root<'_>>, msg: &str) -> RError {
+        self.error_call_bytes(call, msg.as_bytes())
+    }
+
+    /// [`Cx::error_call`] of a message in the native encoding's bytes, as
+    /// GNU R's `char *` messages are (text an R string gives, which need
+    /// not be valid UTF-8).
+    pub fn error_call_bytes(&mut self, call: Option<Root<'_>>, msg: &[u8]) -> RError {
         let call = call.map_or(self.iso().nil, |c| c.bind(self).sexp());
         self.error_call_sexp(call, msg)
     }
@@ -157,6 +164,12 @@ impl Cx {
     /// GNU R's `error()`: the innermost record as R sees the chain, or the
     /// one below it if that is a `CTXT_BUILTIN` record (a foreign call's).
     pub fn error(&mut self, msg: &str) -> RError {
+        self.error_bytes(msg.as_bytes())
+    }
+
+    /// [`Cx::error`] of a message in the native encoding's bytes
+    /// ([`Cx::error_call_bytes`]).
+    pub fn error_bytes(&mut self, msg: &[u8]) -> RError {
         let call = self.error_context_call().sexp();
         self.error_call_sexp(call, msg)
     }
@@ -268,7 +281,61 @@ impl Cx {
 
     /// [`Cx::error_call`] with the call as an object of a live record or
     /// root, read in this interval.
-    pub(crate) fn error_call_sexp(&mut self, call: Sexp, msg: &str) -> RError {
+    /// Signal the classed error `cond` reported against `call` (`None`:
+    /// `R_NilValue`): GNU R's `R_makeErrorCondition(call, ...)` signalled by
+    /// `R_signalErrorConditionEx`, through the isolate's hook
+    /// ([`crate::Hooks::error_condition`]): the handlers for the
+    /// condition's classes, then the default handling of its message.
+    // R: errors.c:R_makeErrorCondition, R_signalErrorConditionEx
+    pub fn error_condition_call(&mut self, call: Option<Root<'_>>, cond: &crate::ErrorCond<'_>) -> RError {
+        let hook = self.iso().hooks.get().error_condition;
+        hook(self, call, cond)
+    }
+
+    /// [`Cx::error_condition_call`] reported against the current call, as
+    /// [`Cx::error`] (GNU R's `R_CurrentExpression` as the call: "behave
+    /// like error()").
+    pub fn error_condition(&mut self, cond: &crate::ErrorCond<'_>) -> RError {
+        let call = self.error_context_call().sexp();
+        self.error_condition_sexp(call, cond)
+    }
+
+    pub(crate) fn error_condition_sexp(&mut self, call: Sexp, cond: &crate::ErrorCond<'_>) -> RError {
+        let hook = self.iso().hooks.get().error_condition;
+        let nil = self.iso().nil;
+        self.scope(|cx, s| {
+            let c = (call != nil).then(|| s.root(cx, cx.raw_ref(call)));
+            hook(cx, c, cond)
+        })
+    }
+
+    /// `R_MissingArgError_c(arg, call, subclass)`: the `missingArgError`
+    /// of subclass `subclass`, "argument \"`arg`\" is missing, with no
+    /// default" ("argument is missing, with no default" for an empty name),
+    /// reported against `call` (`None`: the current call, GNU R's
+    /// `R_CurrentExpression`).
+    // R: errors.c:R_MissingArgError_c
+    #[cold]
+    pub fn missing_arg_error(&mut self, arg: &str, call: Option<Root<'_>>, subclass: &'static str) -> RError {
+        let msg = if arg.is_empty() {
+            "argument is missing, with no default".to_owned()
+        } else {
+            format!("argument \"{arg}\" is missing, with no default")
+        };
+        let cond = crate::ErrorCond {
+            class: "missingArgError",
+            subclass: Some(subclass),
+            msg: msg.as_bytes(),
+            fields: &[],
+            exit_only: false,
+        };
+        match call {
+            Some(c) => self.error_condition_call(Some(c), &cond),
+            None => self.error_condition(&cond),
+        }
+    }
+
+    pub(crate) fn error_call_sexp(&mut self, call: Sexp, msg: &[u8]) -> RError {
         let hook = self.iso().hooks.get().error;
         let nil = self.iso().nil;
         self.scope(|cx, s| {
@@ -283,16 +350,18 @@ impl Cx {
     /// (R_NilValue if it cannot be allocated), its call `call`. The error
     /// hook's default, and the condition system's last step (GNU R's
     /// `jump_to_top_ex` after `verrorcall_dflt` reported the error).
-    pub fn record_error_call(&mut self, call: Option<Root<'_>>, msg: &str) -> RError {
+    pub fn record_error_call(&mut self, call: Option<Root<'_>>, msg: &[u8]) -> RError {
         let cx = &*self;
         let iso = cx.iso();
         let call = call.map_or(iso.nil, |c| c.bind(cx).sexp());
         // A message vector that cannot be allocated leaves the value
         // R_NilValue: the error is still recorded.
         // a C string's message ends at a NUL
-        let msg = msg.split('\0').next().unwrap_or_default();
+        let msg = msg.split(|&b| b == 0).next().unwrap_or_default();
+        // (bytes that are not UTF-8 are the native encoding's)
+        let enc = if std::str::from_utf8(msg).is_ok() { crate::Encoding::Utf8 } else { crate::Encoding::Native };
         let value = cx
-            .mk_char(msg.as_bytes(), crate::Encoding::Utf8)
+            .mk_char(msg, enc)
             .ok()
             .and_then(|c| {
                 let mut v = cx.alloc_vector::<crate::Char<'_>>(1).ok()?;

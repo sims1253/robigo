@@ -43,6 +43,7 @@ mod errors;
 mod eval;
 mod memory;
 mod rdynload;
+mod trycatch;
 mod unwind;
 
 pub use rdynload::{DllInfo, loaded_dlls};
@@ -103,6 +104,7 @@ use errors::*;
 use eval::*;
 use memory::*;
 use rdynload::*;
+use trycatch::*;
 use unwind::*;
 
 unsafe extern "C" {
@@ -121,6 +123,11 @@ unsafe extern "C" {
     fn INTEGER_RO();
     fn REAL();
     fn REAL_RO();
+    fn DATAPTR();
+    fn DATAPTR_RO();
+    fn DATAPTR_OR_NULL();
+    fn INTEGER_ELT();
+    fn REAL_ELT();
     fn COMPLEX();
     fn COMPLEX_RO();
     fn RAW();
@@ -182,6 +189,9 @@ unsafe extern "C" {
     fn Rvprintf();
     fn REvprintf();
     fn R_UnwindProtect();
+    fn R_tryCatch();
+    fn R_tryCatchError();
+    fn R_withCallingErrorHandler();
 }
 
 exports! {
@@ -194,10 +204,13 @@ exports! {
         R_SetExternalPtrAddr R_SetExternalPtrTag R_SetExternalPtrProtected R_ExternalPtrAddrFn R_WeakRefKey
         R_WeakRefValue Rf_protect Rf_unprotect R_ProtectWithIndex R_Reprotect Rf_unprotect_ptr Rprintf REprintf
         Rvprintf REvprintf R_ClosureFormals R_ClosureBody R_ClosureEnv R_ClosureExpr ALTREP ALTREP_CLASS
-        R_altrep_data1 R_altrep_data2 R_set_altrep_data1 R_set_altrep_data2;
+        R_altrep_data1 R_altrep_data2 R_set_altrep_data1 R_set_altrep_data2 INTEGER_ELT REAL_ELT DATAPTR_OR_NULL;
+    // C over entries that allocate (DATAPTR: an ALTREP class's Dataptr)
+    (c), true => DATAPTR DATAPTR_RO;
     // C over entries that allocate (the error's condition, the cleanup's
     // continuation)
-    (c), true => Rf_error Rf_errorcall Rf_warning Rf_warningcall R_UnwindProtect;
+    (c), true => Rf_error Rf_errorcall Rf_warning Rf_warningcall R_UnwindProtect R_tryCatch R_tryCatchError
+        R_withCallingErrorHandler;
     // Rust leaves: no collection, no exit
     (leaf), false =>
         robigo_rtapi_store robigo_rtapi_print robigo_rtapi_warn_length R_ReleaseObject vmaxget vmaxset
@@ -224,6 +237,9 @@ exports! {
         robigo_rtapi_charsxp_error;
     (entry 2), true => robigo_rtapi_errorcall robigo_rtapi_warningcall robigo_rtapi_extptr_error;
     (entry 3), true => robigo_rtapi_type_error robigo_rtapi_index_error robigo_rtapi_set_index_error;
+    (entry 1), true => robigo_rtapi_dataptr_type_error robigo_rtapi_altvec_dataptr
+        robigo_rtapi_altvec_dataptr_or_null;
+    (entry 2), true => robigo_rtapi_altinteger_elt robigo_rtapi_altreal_elt;
     (entry 0), true => robigo_rtapi_protect_error robigo_rtapi_unprotect_error;
     // memory.c
     (entry 2), true => Rf_allocVector Rf_cons Rf_lcons Rf_list2 Rf_lang2 Rf_mkCharLen Rf_mkCharCE
@@ -244,7 +260,14 @@ exports! {
     (entry 2), true => R_ToplevelExec;
     (entry 4), true => robigo_rtapi_unwind_protect R_ExecWithCleanup;
     (entry 1), true => R_ContinueUnwind;
-    (entry 0), true => R_MakeUnwindCont;
+    (entry 0), true => R_MakeUnwindCont R_CheckUserInterrupt;
+    // errors.c's C-level tryCatch (api.c's, over these)
+    (entry 3), true => robigo_rtapi_try_catch;
+    (entry 1), true => robigo_rtapi_push_error_handler robigo_rtapi_set_handler_stack;
+    // Rdynload.c's registration API (rdynload.rs): R_registerRoutines may
+    // raise its error; the setters touch only the record
+    (entry 5), true => R_registerRoutines;
+    (leaf), false => R_useDynamicSymbols R_forceSymbols;
     // registration.c: base's routines (rdynload.rs)
     (entry 4), true => robigo_rtapi_base_R_addTaskCallback;
     (entry 1), true => robigo_rtapi_base_R_removeTaskCallback;
@@ -284,6 +307,7 @@ pub fn install(cx: &mut Cx) {
     ]);
     rdynload::install(cx);
     dotcode::install(cx);
+    trycatch::install(cx);
 }
 
 /// The layout `api.c` was compiled with (the table of its

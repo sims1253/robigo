@@ -381,10 +381,21 @@ impl ListKeys<'_> {
             key ^= h;
             key = key.wrapping_mul(97);
         };
+        // (a list's element is read by element, INTEGER_ELT and REAL_ELT:
+        // one of robigo's compact sequences stays as it is)
         match x.view() {
-            View::Lgl(v) => (0..v.len()).for_each(|i| mix(LglKeys(v.as_slice().unwrap()).hash(i, t) as u32)),
-            View::Int(v) => (0..v.len()).for_each(|i| mix(IntKeys(v.as_slice().unwrap()).hash(i, t) as u32)),
-            View::Real(v) => (0..v.len()).for_each(|i| mix(RealKeys(v.as_slice().unwrap()).hash(i, t) as u32)),
+            View::Lgl(v) => {
+                let e = v.elements();
+                (0..e.len()).for_each(|i| mix(LglKeys(&e).hash(i, t) as u32))
+            }
+            View::Int(v) => {
+                let e = v.elements();
+                (0..e.len()).for_each(|i| mix(IntKeys(&e).hash(i, t) as u32))
+            }
+            View::Real(v) => {
+                let e = v.elements();
+                (0..e.len()).for_each(|i| mix(RealKeys(&e).hash(i, t) as u32))
+            }
             View::Cplx(v) => (0..v.len()).for_each(|i| mix(CplxKeys(v.as_slice().unwrap()).hash(i, t) as u32)),
             View::Str(v) => {
                 let k = StrKeys::new(self.cx, v.as_slice().unwrap(), self.use_utf8);
@@ -551,18 +562,8 @@ fn duplicated_flags<'g, K: Keys>(
     } else {
         // each flag written once, in order, as the vector is made (GNU R's
         // allocVector does not clear it either)
-        let mut full = false;
-        let ans = cx.alloc_with(n, |i| match t.is_dup(x, i) {
-            Ok(d) => Lgl(d as i32),
-            Err(Full) => {
-                full = true;
-                Lgl(0)
-            }
-        })?;
-        if full {
-            return Err(Fail::Full);
-        }
-        ans
+        // (a full table ends the fill: no more lookups)
+        cx.alloc_try_with(n, |i| t.is_dup(x, i).map(|d| Lgl(d as i32)))?.map_err(|_| Fail::Full)?
     };
     let v = ans.as_mut_slice();
     if let Some(inc) = incomp {
@@ -805,9 +806,8 @@ fn empty_of(cx: &Cx, t: u8) -> Result<Ref<'_>, NeedGc> {
     })
 }
 
-/// `unique`'s result: the elements not duplicated, in order, no
-/// attributes.
-/// `do_duplicated`'s `unique`: the elements whose `dup` flag is 0, in order.
+/// `do_duplicated`'s `unique`: the elements whose `dup` flag is 0, in
+/// order, no attributes.
 // R: unique.c:do_duplicated
 fn keep_unique<'g>(cx: &'g Cx, x: Ref<'g>, dup: &[Lgl]) -> Result<Ref<'g>, NeedGc> {
     let k = dup.iter().filter(|d| d.0 == 0).count();

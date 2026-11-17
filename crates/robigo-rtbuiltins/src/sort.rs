@@ -87,6 +87,40 @@ fn scmp(x: Char<'_>, y: Char<'_>, nalast: bool, na: Char<'_>, loc: Locale) -> Re
     collate(x, y, loc)
 }
 
+/// `ssort(x, n)` of native strings given as bytes (platform.c's
+/// `list.files` sorts its result so): Shell sort with `scmp` (the same
+/// string is equal, else `Scollate`), which is not stable, so the
+/// algorithm is GNU R's. On `Err` (collation failed), `x` is left
+/// partially permuted with one element emptied: the caller discards it.
+// R: sort.c:ssort, sort_body
+pub fn ssort_native(x: &mut [Vec<u8>], loc: Locale) -> Result<(), CollateError> {
+    let cmp = |a: &[u8], b: &[u8]| -> Result<i32, CollateError> {
+        if a == b {
+            return Ok(0);
+        }
+        let e = robigo_text::Enc::Native;
+        Ok(text::scollate(robigo_text::Str::new(a, e), robigo_text::Str::new(b, e), loc)? as i32)
+    };
+    let n = x.len();
+    let mut h = 1;
+    while h <= n / 9 {
+        h = 3 * h + 1;
+    }
+    while h > 0 {
+        for i in h..n {
+            let v = std::mem::take(&mut x[i]);
+            let mut j = i;
+            while j >= h && cmp(&x[j - h], &v)? > 0 {
+                x[j] = std::mem::take(&mut x[j - h]);
+                j -= h;
+            }
+            x[j] = v;
+        }
+        h /= 3;
+    }
+    Ok(())
+}
+
 /// `Scollate(x, y)` as -1, 0 or 1.
 fn collate(x: Char<'_>, y: Char<'_>, loc: Locale) -> Result<i32, CollateError> {
     Ok(text::scollate(crate::coerce::text(x), crate::coerce::text(y), loc)? as i32)

@@ -1,0 +1,15 @@
+[1] NaN   2 NaN
+[1] NaN
+[1] NaN   0
+[1] NaN
+[1] NaN
+[1] NaN
+[1] NaN
+[1] NaN
+[1] NaN
+[1] NaN
+[1] NaN
+[1] NaN
+tan(c(1, Inf))
+[1] "NaNs produced"
+[1] 1.557408      NaN

@@ -260,6 +260,9 @@ pub(crate) unsafe fn store_value(s: SlotRef, v: Sexp) {
 /// # Safety
 /// `s` a slot of a live frame, of kind VALUE, REAL, INT, LGL or UNBOUND
 /// (an unbound one already stamped by the caller); `kind` one of the three.
+// (always inlined: the VM's local stores in vm::run, whose inlining
+// otherwise turns on the size of its other arms)
+#[inline(always)]
 pub(crate) unsafe fn store_scalar(s: SlotRef, kind: u64, bits: u64) {
     // SAFETY: the caller's contract.
     unsafe {

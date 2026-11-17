@@ -70,6 +70,8 @@ else
   scripts/oracle-run.sh "$rt" Rscript --vanilla scripts/base-subset.R "$work" "$out" "$bout"
   scripts/oracle-run.sh "$rt" env R_DEFAULT_PACKAGES=NULL Rscript --vanilla scripts/base-wide.R "$work/library" "$wout"
 fi
+# (before --check's diffs: a failing check is when the report helps)
+echo "which scripts reach each name: $work/reached-by.txt"
 if [ "${1:-}" = --check ]; then
   diff -u "$file" "$out" || { echo "error: $file is not what scripts/base-subset.sh generates" >&2; exit 1; }
   diff -u "$bound" "$bout" || { echo "error: $bound is not what scripts/base-subset.sh generates" >&2; exit 1; }

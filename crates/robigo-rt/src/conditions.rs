@@ -92,6 +92,10 @@ pub struct CondState {
     /// dispatchMethod's `static int option` (R_USEMETHOD_FORWARD_LOCALS):
     /// -1 until the first generic with a local that is not a formal.
     pub forward_locals: Cell<i8>,
+    /// errors.c's `trycatch_callback` and `wceh_callback`, the functions
+    /// C-level tryCatch calls back through, made on first use
+    /// (`R_PreserveObject`).
+    c_callbacks: RefCell<[Option<Global>; 2]>,
 }
 
 impl CondState {
@@ -118,6 +122,7 @@ impl CondState {
             method_shapes: RefCell::new(Default::default()),
             method_plans: RefCell::new(Default::default()),
             forward_locals: Cell::new(-1),
+            c_callbacks: RefCell::new([None, None]),
         }
     }
 }
@@ -128,6 +133,8 @@ impl CondState {
 pub(crate) fn install_hooks(cx: &mut Cx) {
     let mut h = cx.hooks();
     h.error = error_hook;
+    h.error_condition = error_condition_hook;
+    h.interrupt = onintr_hook;
     h.warning = warning_hook;
     h.exit_value = fixup_exiting_handler_result;
     h.dispatch = crate::dispatch::dispatch_hook;
@@ -348,13 +355,133 @@ fn pop_handlers_to(cx: &mut Cx, list: Root<'_>) {
 /// handler walk (`vsignalError`) then the default handling
 /// (`verrorcall_dflt`). Returns the token of the exit that leaves.
 // R: errors.c:errorcall
-pub fn error_hook(cx: &mut Cx, call: Option<Root<'_>>, msg: &str) -> RError {
+pub fn error_hook(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RError {
     // a C string's message ends at a NUL
-    let msg = msg.split('\0').next().unwrap_or_default().as_bytes();
+    let msg = msg.split(|&b| b == 0).next().unwrap_or_default();
     if let Some(e) = signal_error(cx, call, msg) {
         return e;
     }
     verrorcall_dflt(cx, call, msg)
+}
+
+/// The isolate's classed-error hook: GNU R's `R_makeErrorCondition(call,
+/// class, subclass, nextra, msg)` with its fields set, then
+/// `R_signalErrorConditionEx(cond, call, exitOnly)`: the handlers for the
+/// condition's classes, the handler stack restored after them, then the
+/// default handling of its message.
+///
+/// GNU R makes the expression and node stack overflows' conditions once
+/// (`R_InitConditions`, with a NULL call); one is made here per signal,
+/// with the same value.
+// R: errors.c:R_signalErrorConditionEx, R_vmakeErrorCondition
+pub fn error_condition_hook(cx: &mut Cx, call: Option<Root<'_>>, c: &robigo_rtcore::ErrorCond<'_>) -> RError {
+    // Rvsnprintf_mbcs(emsg_buf, BUFSIZE, ...); a C string ends at a NUL
+    let msg = trunc(c.msg.split(|&b| b == 0).next().unwrap_or_default(), BUFSIZE - 1).to_vec();
+    let preset = matches!(c.subclass, Some("expressionStackOverflowError" | "nodeStackOverflowError"));
+    cx.scope(|cx, s| {
+        let cond = match make_error_condition(cx, s, if preset { None } else { call }, c, &msg) {
+            Ok(cond) => cond,
+            Err(e) => return e,
+        };
+        let oldstack = s.root(cx, cx.handler_stack());
+        if let Some(e) = signal_condition_c(cx, cond, call, c.exit_only) {
+            return e;
+        }
+        cx.set_handler_stack(oldstack);
+        verrorcall_dflt(cx, call, &msg)
+    })
+}
+
+/// `R_vmakeErrorCondition(call, class, subclass, nextra, msg)` and
+/// `R_setConditionField` of each of `c`'s fields: the list `(message,
+/// call, fields...)`, named, of class `c(subclass, class, "error",
+/// "condition")`.
+// R: errors.c:R_vmakeErrorCondition, R_setConditionField
+fn make_error_condition<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    call: Option<Root<'_>>,
+    c: &robigo_rtcore::ErrorCond<'_>,
+    msg: &[u8],
+) -> RResult<Root<'s>> {
+    let o = s.out(cx);
+    let r = o.root();
+    cx.build(o, |cx| {
+        let n = 2 + c.fields.len();
+        let m = cx.mk_string(msg, Encoding::Native)?;
+        let mut names = cx.alloc_vector::<Char<'_>>(n)?;
+        names.set(0, cx.mk_char(b"message", Encoding::Native)?);
+        names.set(1, cx.mk_char(b"call", Encoding::Native)?);
+        for (i, (nm, _)) in c.fields.iter().enumerate() {
+            names.set(2 + i, cx.mk_char(nm.as_bytes(), Encoding::Native)?);
+        }
+        let names = names.finish();
+        let classes: Vec<&str> = c.subclass.into_iter().chain([c.class, "error", "condition"]).collect();
+        let mut klass = cx.alloc_vector::<Char<'_>>(classes.len())?;
+        for (i, k) in classes.iter().enumerate() {
+            klass.set(i, cx.mk_char(k.as_bytes(), Encoding::Native)?);
+        }
+        let klass = klass.finish();
+        let mut l = cx.alloc_vector::<Ref<'_>>(n)?;
+        l.set(0, m);
+        l.set(1, call.map_or(cx.nil(), |c| c.bind(cx)));
+        for (i, (_, v)) in c.fields.iter().enumerate() {
+            l.set(2 + i, v.bind(cx));
+        }
+        // setAttrib(cond, R_NamesSymbol, names), then the class
+        let attrs = cx.cons_tagged(klass.as_ref(), cx.nil(), cx.sym(RSym::Class))?;
+        let attrs = cx.cons_tagged(names.as_ref(), attrs, cx.sym(RSym::Names))?;
+        l.set_attrib(attrs);
+        l.set_object(true);
+        Ok(l.finish().into())
+    })?;
+    Ok(r)
+}
+
+/// `R_signalCondition(cond, call, FALSE, exitOnly)`: each handler for the
+/// condition's classes, innermost first, each popped as it is tried. A
+/// calling handler is called with the condition in the global environment
+/// (skipped under `exit_only`); the restart token ends the walk (to the
+/// default handling); an exiting handler is a jump. `Some`: the exit that
+/// leaves; `None`: the walk ended (the caller restores the stack).
+// R: errors.c:R_signalCondition
+fn signal_condition_c(cx: &mut Cx, cond: Root<'_>, call: Option<Root<'_>>, exit_only: bool) -> Option<RError> {
+    cx.scope(|cx, s| {
+        while let Some(list) = find_condition_handler(cx, cond.bind(cx)) {
+            let list = s.root(cx, list);
+            let entry = s.root(cx, list.bind(cx).as_cons().unwrap().car());
+            pop_handlers_to(cx, list);
+            if is_calling(entry.bind(cx)) {
+                let h = entry_elt(entry.bind(cx), entry::HANDLER);
+                if h.sexp() == cx.restart_token().sexp() {
+                    return None;
+                }
+                if !exit_only {
+                    let h = s.root(cx, h);
+                    if let Err(e) = cx.check_c_stack() {
+                        return Some(e);
+                    }
+                    let r = (|| -> RResult<()> {
+                        let o = s.out(cx);
+                        let hcall = o.root();
+                        cx.build(o, |cx| {
+                            let a = cx.cons(cond.bind(cx), cx.nil())?;
+                            cx.lcons(h.bind(cx), a)
+                        })?;
+                        let g = s.root(cx, cx.global_env());
+                        let o = s.out(cx);
+                        crate::eval(cx, hcall, g, o)
+                    })();
+                    if let Err(e) = r {
+                        return Some(e);
+                    }
+                }
+            } else {
+                return Some(goto_exiting_handler(cx, cond, call, entry));
+            }
+        }
+        None
+    })
 }
 
 /// `vsignalError(call, msg)`: the handlers for simple errors, innermost
@@ -380,7 +507,11 @@ fn signal_error(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> Option<RErro
                     // go to default error handling
                     return Some(None);
                 }
-                // (R_OldCStackLimit: no C stack overflow is handled here)
+                // while a C stack overflow is handled (R_OldCStackLimit),
+                // every calling handler counts as failed
+                if cx.c_stack_overflow_pending() {
+                    return Some(Some(None));
+                }
                 let h = s.root(cx, h);
                 let r = (|| -> RResult<()> {
                     let hooksym = sym(cx, s, b".handleSimpleError")?;
@@ -667,8 +798,8 @@ fn jump_to_top_ex(
     let old_in_error = st.in_error.get();
     let mut have_handler = false;
     let restore = |cx: &Cx| state(cx).in_error.set(old_in_error);
-    // (R_OldCStackLimit: no C stack overflow is handled here)
-    if try_user_handler && st.in_error.get() < 3 {
+    // R_OldCStackLimit == 0: not while a C stack overflow is handled
+    if !cx.c_stack_overflow_pending() && try_user_handler && st.in_error.get() < 3 {
         if st.in_error.get() == 0 {
             st.in_error.set(1);
         }
@@ -745,7 +876,7 @@ fn jump_to_top_ex(
     restore(cx);
     // R_jumpctxt(R_ToplevelContext, 0, NULL)
     match error {
-        Some((call, msg)) => cx.record_error_call(call, &String::from_utf8_lossy(msg)),
+        Some((call, msg)) => cx.record_error_call(call, msg),
         None => {
             let top = cx.toplevel_context().id();
             cx.jump_to(top, 0, None)
@@ -808,9 +939,10 @@ fn save_traceback(cx: &mut Cx) -> RResult<()> {
             }
             Ok(l)
         })?;
+        // SET_SYMVALUE: past base's locks
         let sy = sym(cx, s, b".Traceback")?;
-        let base = s.root(cx, cx.base_env());
-        cx.define_var(sy, l, base)
+        cx.set_symvalue(sy, l);
+        Ok(())
     })
 }
 
@@ -1015,8 +1147,8 @@ fn jump_to_toplevel(cx: &mut Cx) -> RError {
 /// (`vsignalWarning`): `.signalSimpleWarning(msg, base::quote(call))` in
 /// base when base defines it, else the default handling.
 // R: errors.c:vsignalWarning
-pub fn warning_hook(cx: &mut Cx, call: Option<Root<'_>>, msg: &str) -> RResult<()> {
-    let msg = msg.split('\0').next().unwrap_or_default().as_bytes();
+pub fn warning_hook(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RResult<()> {
+    let msg = msg.split(|&b| b == 0).next().unwrap_or_default();
     let hooked = cx.scope(|cx, s| -> RResult<bool> {
         let hooksym = sym(cx, s, b".signalSimpleWarning")?;
         let quote = sym(cx, s, b"quote")?;
@@ -1092,7 +1224,8 @@ pub fn vwarningcall_dflt(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RRe
                 state(cx).in_warning.set(false);
                 let mut m = b"(converted from warning) ".to_vec();
                 m.extend_from_slice(&buf);
-                return Err(cx.error_call(call, &String::from_utf8_lossy(&m)));
+                // the buffer's bytes, as errorcall gets them
+                return Err(cx.error_call_bytes(call, &m));
             } else if w == 1 {
                 if let Some(c) = call {
                     force_call_promises(cx, c)?;
@@ -1135,7 +1268,7 @@ pub fn vwarningcall_dflt(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RRe
                         buf.extend_from_slice(&tr);
                     }
                 }
-                cx.collect_warning(call, &String::from_utf8_lossy(&buf))?;
+                cx.collect_warning(call, &buf)?;
             }
             Ok(())
         })();
@@ -1246,9 +1379,10 @@ fn save_last_warning(cx: &mut Cx) -> RResult<()> {
             l.set_attrib(attrs);
             Ok(l.finish().into())
         })?;
+        // SET_SYMVALUE: past base's locks
         let sy = sym(cx, s, b"last.warning")?;
-        let base = s.root(cx, cx.base_env());
-        cx.define_var(sy, v, base)
+        cx.set_symvalue(sy, v);
+        Ok(())
     })
 }
 
@@ -1318,7 +1452,7 @@ pub fn do_stop(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, _out
         let m = args.root(1);
         if m.bind(cx).sexptype() != NILSXP {
             match message_arg(cx, m)? {
-                Some(msg) => Err(cx.error_call(c, &String::from_utf8_lossy(&msg))),
+                Some(msg) => Err(cx.error_call_bytes(c, &msg)),
                 None => Err(cx.error_call(c, " [invalid string in stop(.)]")),
             }
         } else {
@@ -1341,7 +1475,7 @@ pub fn do_warning(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
         let m = args.root(3);
         let r = if m.bind(cx).sexptype() != NILSXP {
             match message_arg(cx, m) {
-                Ok(Some(msg)) => cx.warning_call(c, &String::from_utf8_lossy(&msg)),
+                Ok(Some(msg)) => cx.warning_call_bytes(c, &msg),
                 Ok(None) => cx.warning_call(c, " [invalid string in warning(.)]"),
                 Err(e) => Err(e),
             }
@@ -1709,4 +1843,201 @@ pub fn try_eval(cx: &mut Cx, e: Root<'_>, env: Root<'_>, silent: bool, out: Out<
     });
     cx.report_options().show_error_messages.set(oldshow);
     r
+}
+
+// ---- C-level tryCatch (R_tryCatch, R_withCallingErrorHandler) ---------------
+
+/// errors.c's `trycatch_callback_source`, verbatim.
+const TRYCATCH_CALLBACK: &str = "function(addr, classes, fin) {\n\
+    handler <- function(cond)\n\
+        .Internal(C_tryCatchHelper(addr, 1L, cond))\n\
+    handlers <- rep_len(alist(handler), length(classes))\n\
+    names(handlers) <- classes\n\
+    if (fin)\n\
+\t     handlers <- c(handlers,\n\
+            alist(finally = .Internal(C_tryCatchHelper(addr, 2L))))\n\
+    args <- c(alist(.Internal(C_tryCatchHelper(addr, 0L))), handlers)\n\
+    do.call('tryCatch', args)\n\
+}";
+
+/// errors.c's `wceh_callback_source`, verbatim.
+const WCEH_CALLBACK: &str = "function(cond) .Internal(C_tryCatchHelper(addr, 1L, cond))";
+
+/// `R_ParseEvalString(src, R_BaseNamespace)` of the callback `which` (0:
+/// `trycatch_callback`, 1: `wceh_callback`), made once per isolate.
+// R: errors.c:R_tryCatch, R_withCallingErrorHandler; util.c:R_ParseEvalString
+fn c_callback<'s>(cx: &mut Cx, s: Scope<'s>, which: usize) -> RResult<Root<'s>> {
+    if let Some(g) = &state(cx).c_callbacks.borrow()[which] {
+        return Ok(s.root(cx, g.bind(cx)));
+    }
+    let src = [TRYCATCH_CALLBACK, WCEH_CALLBACK][which];
+    let o = s.out(cx);
+    let exprs = o.root();
+    let (status, _) = crate::reader::parse_bytes(cx, src.as_bytes(), -1, o)?;
+    if status != crate::reader::ParseStatus::Ok {
+        return Err(cx.error("robigo: errors.c's C tryCatch callback does not parse"));
+    }
+    let e = s.root(cx, exprs.bind(cx).as_vector::<Ref<'_>>().expect("robigo: an expression vector").get(0));
+    let ns = s.root(cx, cx.base_namespace());
+    let o = s.out(cx);
+    let f = o.root();
+    crate::eval(cx, e, ns, o)?;
+    let g = cx.global(f.bind(cx));
+    state(cx).c_callbacks.borrow_mut()[which] = Some(g);
+    Ok(f)
+}
+
+/// `R_tryCatch`'s call into R: `evalKeepVis(lang4(trycatch_callback,
+/// addr, conds, fin), R_GlobalEnv)` into `out`, where `addr` is the
+/// external pointer to C's `tryCatchData_t` that
+/// `.Internal(C_tryCatchHelper())` reads.
+// R: errors.c:R_tryCatch
+pub fn eval_trycatch_callback(cx: &mut Cx, addr: Root<'_>, conds: Root<'_>, fin: bool, out: Out<'_>) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let cb = c_callback(cx, s, 0)?;
+        let o = s.out(cx);
+        let call = o.root();
+        cx.build(o, |cx| {
+            let fin = cx.alloc_with(1, |_| robigo_rtcore::Lgl(fin as i32))?.finish().as_ref();
+            let a = cx.cons(fin, cx.nil())?;
+            let a = cx.cons(conds.bind(cx), a)?;
+            let a = cx.cons(addr.bind(cx), a)?;
+            cx.lcons(cb.bind(cx), a)
+        })?;
+        let g = s.root(cx, cx.global_env());
+        // evalKeepVis
+        let vis = cx.visible();
+        let r = crate::eval(cx, call, g, out);
+        cx.set_visible(vis);
+        r
+    })
+}
+
+/// `R_withCallingErrorHandler`'s handler pushed: `wceh_callback` with a
+/// new environment holding `addr` (enclosed by the base namespace) as its
+/// own, made a calling handler for `"error"` (`mkHandlerEntry(wceh_class,
+/// R_GlobalEnv, h, R_NilValue, R_NilValue, TRUE)`) on top of
+/// `R_HandlerStack`. The old stack is the result, for C to put back after
+/// the body.
+// R: errors.c:R_withCallingErrorHandler
+pub fn push_calling_error_handler<'s>(cx: &mut Cx, s: Scope<'s>, addr: Root<'_>) -> RResult<Root<'s>> {
+    let cb = c_callback(cx, s, 1)?;
+    let old = s.root(cx, cx.handler_stack());
+    let addr_sym = sym(cx, s, b"addr")?;
+    let o = s.out(cx);
+    let env = o.root();
+    let ns = s.root(cx, cx.base_namespace());
+    cx.build(o, |cx| cx.new_env(ns.bind(cx), false, 1))?;
+    cx.define_var(addr_sym, addr, env)?;
+    let o = s.out(cx);
+    let stack = o.root();
+    cx.build(o, |cx| {
+        let robigo_rtcore::View::Closure(f) = cb.bind(cx).view() else {
+            unreachable!("robigo: wceh_callback is a closure")
+        };
+        // duplicate(wceh_callback), SET_CLOENV(h, env)
+        let h = cx.closure(f.formals(), f.body(), env.bind(cx))?;
+        let mut e = cx.alloc_vector::<Ref<'_>>(5)?;
+        e.set(0, cx.mk_char(b"error", Encoding::Native)?.as_ref());
+        e.set(1, cx.global_env());
+        e.set(2, h);
+        e.set(3, cx.nil());
+        e.set(4, cx.nil());
+        let e = e.finish().as_ref();
+        // SAFETY: fresh; gp is a header field (SETLEVELS: calling).
+        unsafe { e.sexp().set_gp(1) };
+        cx.cons(e, old.bind(cx))
+    })?;
+    cx.set_handler_stack(stack);
+    Ok(old)
+}
+
+// ---- user interrupts ---------------------------------------------------------
+
+/// The isolate's interrupt hook, GNU R's `onintr()` (`onintrEx(TRUE)`): the
+/// `interrupt` condition signalled in a restart context that offers the
+/// internal restart `resume`; a handler that invokes it lets evaluation go
+/// on (`Ok`). Otherwise the console's newline, then the jump to the top
+/// level, which `options(error)` sees only while `options(interrupt)` is
+/// NULL ("as a transition").
+// R: errors.c:onintrEx
+pub fn onintr_hook(cx: &mut Cx) -> RResult<()> {
+    let resumed = cx.scope(|cx, s| {
+        let g = s.root(cx, cx.global_env());
+        let b = s.root(cx, cx.base_env());
+        cx.restart_context(g, b, |cx, c| {
+            add_internal_restart(cx, c, b"resume")?;
+            signal_interrupt(cx)
+        })
+    })?;
+    if resumed {
+        // R_ReturnedValue = R_NilValue; R_Visible = FALSE
+        cx.set_visible(false);
+        return Ok(());
+    }
+    let try_user_error = cx.scope(|cx, s| -> RResult<bool> {
+        let h = get_option1(cx, s, b"interrupt")?;
+        Ok(h.bind(cx).sexptype() == NILSXP)
+    })?;
+    cx.reprintf(b"\n");
+    Err(jump_to_top_ex(cx, true, try_user_error, true, true, false, None))
+}
+
+/// `signalInterrupt()`: the handlers for `interrupt` or `condition`,
+/// innermost first, each popped as it runs. A calling handler is called
+/// with a new interrupt condition in the global environment; an exiting
+/// one is a jump with it (no call). The stack is put back after them, then
+/// `options(interrupt)` is called.
+// R: errors.c:signalInterrupt, findInterruptHandler
+fn signal_interrupt(cx: &mut Cx) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let oldstack = s.root(cx, cx.handler_stack());
+        let g = s.root(cx, cx.global_env());
+        while let Some(list) = find_handler(cx, |c| c == b"interrupt" || c == b"condition") {
+            let list = s.root(cx, list);
+            let entry = s.root(cx, list.bind(cx).as_cons().unwrap().car());
+            pop_handlers_to(cx, list);
+            let cond = interrupt_condition(cx, s)?;
+            if !is_calling(entry.bind(cx)) {
+                return Err(goto_exiting_handler(cx, cond, None, entry));
+            }
+            let h = s.root(cx, entry_elt(entry.bind(cx), entry::HANDLER));
+            let o = s.out(cx);
+            let hcall = o.root();
+            cx.build(o, |cx| {
+                let a = cx.cons(cond.bind(cx), cx.nil())?;
+                cx.lcons(h.bind(cx), a)
+            })?;
+            eval_keep_vis(cx, hcall, g)?;
+        }
+        cx.set_handler_stack(oldstack);
+        let h = get_option1(cx, s, b"interrupt")?;
+        if h.bind(cx).sexptype() != NILSXP {
+            let o = s.out(cx);
+            let call = o.root();
+            cx.build(o, |cx| cx.lcons(h.bind(cx), cx.nil()))?;
+            eval_keep_vis(cx, call, g)?;
+        }
+        Ok(())
+    })
+}
+
+/// `getInterruptCondition()`: an empty list of class `c("interrupt",
+/// "condition")`.
+// R: errors.c:getInterruptCondition
+fn interrupt_condition<'s>(cx: &mut Cx, s: Scope<'s>) -> RResult<Root<'s>> {
+    let o = s.out(cx);
+    let r = o.root();
+    cx.build(o, |cx| {
+        let mut k = cx.alloc_vector::<Char<'_>>(2)?;
+        k.set(0, cx.mk_char(b"interrupt", Encoding::Native)?);
+        k.set(1, cx.mk_char(b"condition", Encoding::Native)?);
+        let k = k.finish();
+        let mut l = cx.alloc_vector::<Ref<'_>>(0)?;
+        let attrs = cx.cons_tagged(k.as_ref(), cx.nil(), cx.sym(RSym::Class))?;
+        l.set_attrib(attrs);
+        l.set_object(true);
+        Ok(l.finish().into())
+    })?;
+    Ok(r)
 }

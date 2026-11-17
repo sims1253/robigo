@@ -64,6 +64,10 @@ pub enum Inline {
     Logic(u8),
     /// `(`
     Paren,
+    /// bcEval's scalar math under `Bc` ([`crate::ir::Op::Math1`]'s kind):
+    /// cmp.R's `cmpMath1` (a `math1funs` index) and `sqrt`'s and `exp`'s
+    /// `cmpPrim1`.
+    Math1(u16),
 }
 
 /// A special that is a function over its call: GNU R's `do_*` of a
@@ -146,6 +150,10 @@ static RT_PRIMS: &[PrimDef] = &[
     special_fn("switch", crate::specials::do_switch, 200, -1),
     special_fn("on.exit", crate::specials::do_onexit, 100, -1),
     special_fn("substitute", crate::specials::do_substitute, 0, -1),
+    // eval.c
+    special_fn("forceAndCall", crate::apply::do_force_and_call, 0, -1),
+    // arithmetic.c
+    special_fn("log", crate::specials::do_log, 0, -1),
     // objects.c (S1)
     special_fn("UseMethod", crate::dispatch::do_usemethod, 200, -1),
     special_fn("NextMethod", crate::dispatch::do_nextmethod, 210, -1),
@@ -247,11 +255,24 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin(".isMethodsDispatchOn", crate::specials::do_s4on, Inline::None, 1, -1),
     builtin("R.home", crate::platform::do_rhome, Inline::None, 11, 0),
     builtin("dir.exists", crate::platform::do_direxists, Inline::None, 11, 1),
+    builtin("getwd", crate::util::do_getwd, Inline::None, 11, 0),
+    builtin("basename", crate::util::do_basename, Inline::None, 11, 1),
+    builtin("dirname", crate::util::do_dirname, Inline::None, 11, 1),
+    builtin("normalizePath", crate::util::do_normalizepath, Inline::None, 11, 3),
+    builtin("file.exists", crate::platform::do_fileexists, Inline::None, 11, 1),
+    builtin("list.files", crate::platform::do_listfiles, Inline::None, 11, 9),
+    builtin("parent.env<-", crate::builtin::do_parentenvgets, Inline::None, 11, 2),
+    builtin("pos.to.env", crate::builtin::do_pos2env, Inline::None, 1, 1),
 ];
 
 /// How the VM runs B1's builtin `name` inline, if it does.
 fn inline_of(name: &str) -> Inline {
+    if let Some(i) = robigo_rtbuiltins::math::BC_MATH1.iter().position(|e| e.0 == name) {
+        return Inline::Math1(i as u16);
+    }
     match name {
+        "sqrt" => Inline::Math1(crate::ir::MATH_SQRT),
+        "exp" => Inline::Math1(crate::ir::MATH_EXP),
         "+" => Inline::Arith(PLUSOP),
         "-" => Inline::Arith(MINUSOP),
         "*" => Inline::Arith(TIMESOP),
@@ -320,6 +341,15 @@ fn do_paren(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Ou
     let x = args.get(cx, 0);
     out.set(cx, x);
     Ok(())
+}
+
+/// The primitive (not `.Internal`) named `name`, as `R_Primitive` finds it:
+/// the builtin object a foreign call hands its routine as `op`.
+// R: names.c:R_Primitive
+pub fn primitive<'g>(cx: &'g Cx, name: &str) -> Option<Ref<'g>> {
+    let st = state(cx);
+    let i = st.defs.iter().position(|d| !d.internal() && d.name == name)?;
+    Some(st.objs[i].bind(cx))
 }
 
 /// `.Primitive(name)`: the primitive (not `.Internal`) named `name`.
@@ -585,16 +615,18 @@ pub(crate) fn make_prims(cx: &mut Cx, defs: &[PrimDef], first: usize) -> (Vec<Gl
         let sym = cx.install(d.name.as_bytes()).expect("robigo: no room for the primitives' symbols");
         let sym = sym.as_ref().sexp();
         if d.internal() {
-            // SAFETY: a live (immortal) symbol and a rooted primitive: the
-            // store is SET_INTERNAL's.
-            unsafe { sym.set_tag(g.bind(cx).sexp()) };
+            // SET_INTERNAL: the isolate's table (not the symbol, H5)
+            // SAFETY: an immortal symbol of this heap.
+            let s = unsafe { Ref::from_sexp(sym, cx) }.as_sym().expect("robigo: a symbol");
+            cx.set_internal(s, g.bind(cx));
         } else {
             cx.scope(|cx, s| {
                 // SAFETY: an immortal symbol of this heap.
                 let sr = s.root(cx, unsafe { Ref::from_sexp(sym, cx) });
                 let v = s.root(cx, g.bind(cx));
-                let base = s.root(cx, cx.base_env());
-                cx.define_var(sr, v, base).expect("robigo: binding a primitive in base");
+                // SET_SYMVALUE(install(name), prim), as names.c binds them
+                // (no lock check: a definition after the boot locked base)
+                cx.set_symvalue(sr, v);
             });
         }
         objs.push(g);
