@@ -72,7 +72,7 @@ pub(crate) mod recycle;
 mod slotapi;
 
 pub use promise::{ArgLoc, BindingType};
-pub use slotapi::{SUPER_ASSIGN_HOPS, Scalar, SlotInit, SuperAssignCache};
+pub use slotapi::{Scalar, SlotInit};
 
 use crate::exit::{RError, RResult};
 use crate::handle::{EnvRef, Ref, Sym};
@@ -1844,11 +1844,17 @@ impl Cx {
         None
     }
 
-    /// [`Cx::set_var`] at a target [`Cx::set_var_target_raw`] found, with no
-    /// binding written since: the effect note, the global environment's
-    /// dirty mark if the walk reached it, then the store.
+    /// [`Cx::set_var`] at a target [`Cx::set_var_target_raw`] found: the
+    /// effect note, the global environment's dirty mark if the walk reached
+    /// it, then the store.
+    ///
+    /// # Safety
+    /// `t` came from [`Cx::set_var_target_raw`] of this isolate, and since
+    /// then nothing has collected (its location and frame are raw words that
+    /// no root keeps or a moving collection updates) and no binding has been
+    /// written (the walk would find another one).
     // R: envir.c:setVar
-    pub fn set_var_at(&mut self, t: SetVarTarget, value: Root<'_>) -> RResult<()> {
+    pub unsafe fn set_var_at(&mut self, t: SetVarTarget, value: Root<'_>) -> RResult<()> {
         self.note_effect();
         if t.global {
             self.iso().envs().dirty_image.set(true);
