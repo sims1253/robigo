@@ -121,8 +121,20 @@
     "tools", .Library)`. It waits for `path.expand` (B5b): it is recorded
     and not ratcheted, and a one-line follow-up adds its marker.
   - The tools cases require the new conformance feature `r-home-tools`.
-    robigo-rtapi's conformance test turns it on when the binary's `R_HOME`
-    has tools.so.
+    robigo-rtapi's conformance test turns it on when the binary's
+    `R.home()` is the tree rt-home.sh made (its `.rt-home` stamp) and has
+    tools.so.
+  - That test also drops an `R_HOME` the environment has, so robigo-rt
+    uses its own tree, which the front end finds when none is named. #828's
+    first CI run showed why. The CI image sets `R_HOME=/usr/lib/R` (its
+    GNU R 4.5.0, for robigo's corpora). With it, the test job's robigo-rt
+    loaded that R's tools.so, built for GNU R's objects. It found 18 `.Call`
+    routines where 4.6.2 has 19, and its inlined `CAR` (Rinlinedfuns.h)
+    stopped with "bad binding access". The feature check had only asked
+    whether a tools.so existed. Now the test job, which makes no tree,
+    skips the two cases. The rt job, which makes one, runs them against
+    it. The other rt cases pass either way: the two that print `R.home()`
+    do not depend on where it points.
 - Also: #815's deferred OCR low (r4603919725). `.NAME`'s check now
   returns the name it validated (`SymId`), so `resolveNativeRoutine` no
   longer unwraps argument 0's type again.
