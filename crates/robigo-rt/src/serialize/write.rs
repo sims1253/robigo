@@ -365,10 +365,22 @@ impl Writer<'_> {
                     // (`R_compile_pkgs`: GNU R's byte compiler runs on each
                     // closure written; robigo's has no byte code objects
                     // yet: C1-BC)
-                    if s.is_altrep() && self.out.version >= 3 {
-                        return Err(cx
-                            .error("robigo: serializing an ALTREP object of a package class is not implemented yet")
-                            .into());
+                    if s.is_altrep() {
+                        if robigo_rtcore::altrep::own::own_class(s).is_none() {
+                            return Err(cx
+                                .error("robigo: serializing an ALTREP object of a package class is not implemented yet")
+                                .into());
+                        }
+                        // one of robigo's classes: ALTREP_SERIALIZED_CLASS
+                        // (the class object's ATTRIB) and _STATE (a compact
+                        // sequence's info, data1); before version 3 the
+                        // standard form below, its elements read by element
+                        if self.out.version >= 3 {
+                            self.out.integer(pack_flags(ALTREP_SXP, s.gp(), s.is_object(), false, false));
+                            self.item(cx, s.tag().attrib_raw())?;
+                            self.item(cx, s.car())?;
+                            return self.item(cx, s.attrib_raw());
+                        }
                     }
                     let t = s.typ();
                     let pn = if matches!(t, WEAKREFSXP | EXTPTRSXP | ENVSXP) {
@@ -470,6 +482,18 @@ impl Writer<'_> {
                                 self.out.integer(b.len() as i32);
                                 self.out.string(b);
                             }
+                        }
+                        INTSXP if s.is_altrep() => {
+                            let n = robigo_rtcore::Ref::from_sexp(s, cx).len().unwrap_or(0);
+                            self.write_length(n);
+                            let xs: Vec<i32> = (0..n).map(|i| robigo_rtcore::altrep::own::intseq_elt(s, i)).collect();
+                            self.out.ints(&xs);
+                        }
+                        REALSXP if s.is_altrep() => {
+                            let n = robigo_rtcore::Ref::from_sexp(s, cx).len().unwrap_or(0);
+                            self.write_length(n);
+                            let xs: Vec<f64> = (0..n).map(|i| robigo_rtcore::altrep::own::realseq_elt(s, i)).collect();
+                            self.out.reals(&xs);
                         }
                         LGLSXP | INTSXP => {
                             let n = s.std_len() as usize;
