@@ -97,6 +97,28 @@ CONFORMANCE = "rt_conformance"
 PIN_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-pin-report-{os.getpid()}.txt")
 
 
+# where the byte-code crosscheck step writes (V3: one line per translated
+# closure whose code differs from the from-source compiler's)
+BC_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-bc-crosscheck-{os.getpid()}.txt")
+
+
+def bc_report_check(path):
+    """The crosscheck report's errors (an unexpected difference, an
+    untranslated closure) and the expected classes' counts."""
+    try:
+        with open(path) as f:
+            lines = [line.rstrip("\n") for line in f if line.strip()]
+    except FileNotFoundError:
+        return [], {}
+    errors = [x for x in lines if x.startswith(("unexpected", "untranslated"))]
+    classes = {}
+    for x in lines:
+        if x.startswith(("expected", "skipped")):
+            c = x.split(":", 1)[0] if x.startswith("expected") else "skipped"
+            classes[c] = classes.get(c, 0) + 1
+    return errors, classes
+
+
 # Experiment A's probes and the allocation-parity probe built on them
 # (crates/robigo-rtapi/tests/support/capi_test.c, docs/g3.md §15.1) keep
 # external pointers only in C locals on purpose: the report may name them,
@@ -175,6 +197,12 @@ def steps(crates):
         # E9: the slice under a small vector heap and limit, and allocations
         # refused once after visible effects (ROBIGO_FAIL_ALLOC_AT)
         ("conformance under a small vector limit (E9)", {"R_VSIZE": "4M", "R_MAX_VSIZE": "16M"}, conformance),
+        # V3: every closure whose body is GNU R's byte code translated and
+        # compared with the from-source compiler's code of its source;
+        # `main` fails the job on an unexpected difference (the expected
+        # ones are the from-source port's known gaps, counted)
+        ("conformance under ROBIGO_BC_CROSSCHECK=1 (translated byte code against the from-source compiler's)",
+         {"ROBIGO_BC_CROSSCHECK": "1", "ROBIGO_BC_CROSSCHECK_REPORT": BC_REPORT}, conformance),
         ("injected allocation failures (E9, scripts/rt-fail-alloc.py)", {},
          ["python3", "scripts/rt-fail-alloc.py", "--points", "400"]),
     ]
@@ -214,6 +242,9 @@ def main(argv):
         report = env.get("ROBIGO_GC_PIN_REPORT")
         if report and os.path.exists(report):
             os.remove(report)
+        bc = env.get("ROBIGO_BC_CROSSCHECK_REPORT")
+        if bc and os.path.exists(bc):
+            os.remove(bc)
         print(f"::group::{title}", flush=True)
         r = subprocess.run(cmd, cwd=ROOT, env={**os.environ, **env})
         print("::endgroup::", flush=True)
@@ -226,6 +257,15 @@ def main(argv):
                 print(f"::error::rt: {line}")
             if hits:
                 print(f"::error::rt: {title}: {len(hits)} report(s)")
+                return 1
+        if bc:
+            errors, classes = bc_report_check(bc)
+            for c, n in sorted(classes.items()):
+                print(f"rt: bc crosscheck: {n} x {c}")
+            for line in errors:
+                print(f"::error::rt: {line}")
+            if errors:
+                print(f"::error::rt: {title}: {len(errors)} closure(s)")
                 return 1
     return 0
 
