@@ -2268,7 +2268,7 @@ impl Core {
         let a = if v < max { self.heap.resolve(v) } else { None };
         // a word on a granule boundary may be one past the end of the
         // previous object's data (a loop bound, p + n)
-        let b = if v % GRANULE == 0 && v > min {
+        let b = if v.is_multiple_of(GRANULE) && v > min {
             // SAFETY: `resolve` returns allocated objects, whose header
             // `has_inline_data` reads.
             self.heap.resolve(v - 1).filter(|&p| unsafe { has_inline_data(Sexp(p)) })
