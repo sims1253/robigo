@@ -13,13 +13,18 @@
 #   library/PKG/DESCRIPTION   DESCRIPTION.in with @VERSION@ (config.status)
 #   library/PKG/NAMESPACE     the package's NAMESPACE
 #   library/PKG/R/PKG         mkR1/mkRbase's all.R, for compiler and tools
+#   include/Rmath.h           src/include/Makefile's Rmath.h: config.status's
+#                             Rmath.h0 from Rmath.h0.in (@PACKAGE_VERSION@, and
+#                             @RMATH_HAVE_WORKING_LOG1P@ as configure finds it
+#                             on the oracle image: glibc's log1p works)
 #   library/tools/libs/tools.so
 #                             tools' native code (src/library/tools/src, its
 #                             Makefile.in's flags: -DHAVE_CONFIG_H and
 #                             C_VISIBILITY), built against robigo's headers for
 #                             GNU R's natives (crates/robigo-rtapi/internal,
 #                             docs/g3.md §10) and the C API's, then the
-#                             tarball's public ones
+#                             tarball's public ones and the tree's include/:
+#                             nothing from an installed R
 # The tree is rebuilt when the tarball's tree or this script changes (the
 # stamp holds both hashes).
 set -euo pipefail
@@ -77,10 +82,13 @@ for pkg in compiler tools; do
   # shellcheck disable=SC2046
   (cd "$lib/$pkg" && LC_COLLATE=C cat $(LC_COLLATE=C ls R/*.R)) > "$tmp/library/$pkg/R/$pkg"
 done
+mkdir -p "$tmp/include"
+sed -e "s/@PACKAGE_VERSION@/$version/" -e "s/@RMATH_HAVE_WORKING_LOG1P@/# define HAVE_WORKING_LOG1P 1/" \
+  "$src/src/include/Rmath.h0.in" > "$tmp/include/Rmath.h"
 mkdir -p "$tmp/build/tools" "$tmp/library/tools/libs"
 for f in "$lib/tools/src"/*.c; do
   "$cc" -std=gnu11 -O2 -fPIC -fvisibility=hidden -DHAVE_CONFIG_H "${headers[@]/#/-I}" -I"$src/src/include" \
-    -I"$lib/tools/src" -c "$f" -o "$tmp/build/tools/$(basename "$f" .c).o"
+    -I"$tmp/include" -I"$lib/tools/src" -c "$f" -o "$tmp/build/tools/$(basename "$f" .c).o"
 done
 "$cc" -shared -o "$tmp/library/tools/libs/tools.so" "$tmp/build/tools"/*.o
 rm -rf "$tmp/build"
