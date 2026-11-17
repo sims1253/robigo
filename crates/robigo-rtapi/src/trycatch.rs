@@ -71,16 +71,21 @@ entry! {
 
 /// `.Internal(C_tryCatchHelper(addr, sw, cond))`: 0 calls the body (with
 /// interrupts enabled for it if they were at `R_tryCatch`), 1 the handler
-/// with `cond`, 2 the finally function.
+/// with `cond`, 2 the finally function. Its arity is not checked (-1), and
+/// an argument past the end is R_NilValue, as `CAR`, `CADR` and `CADDR`
+/// read a short list.
 // R: errors.c:do_tryCatchHelper
 fn do_try_catch_helper(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    let View::ExtPtr(p) = args.get(cx, 0).view() else {
+    let n = args.len();
+    let eptr = if n > 0 { args.get(cx, 0) } else { cx.nil() };
+    let View::ExtPtr(p) = eptr.view() else {
         return Err(cx.error("not an external pointer"));
     };
     // SAFETY: R_tryCatch's data in its frame, which stays while the R code
     // it called runs (the external pointer is that call's).
     let t = unsafe { &*(p.addr() as *const TryCatchData) };
-    let sw = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(1))?;
+    // asInteger(R_NilValue) is NA_INTEGER
+    let sw = if n > 1 { robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(1))? } else { i32::MIN };
     let word = match sw {
         0 => {
             // SAFETY: C's contract for the body: SEXP (*)(void *).
@@ -97,18 +102,25 @@ fn do_try_catch_helper(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<
             }
         }
         // (R_tryCatch puts the default handler in when C gives none)
-        1 if !t.handler.is_null() => {
-            let cond = args.get(cx, 2).sexp().as_ptr() as usize;
+        1 => {
+            if t.handler.is_null() {
+                out.set(cx, cx.nil());
+                return Ok(());
+            }
+            let cond = (if n > 2 { args.get(cx, 2) } else { cx.nil() }).sexp().as_ptr() as usize;
             // SAFETY: C's contract for the handler: SEXP (*)(SEXP, void *);
-            // `cond` is the rooted argument.
+            // `cond` is the rooted argument (or R_NilValue).
             unsafe { cx.call_native6(t.handler, [cond, t.hdata as usize, 0, 0, 0, 0], 1, Ret6::Word) }?
         }
-        2 if !t.finally.is_null() => {
-            // SAFETY: C's contract for finally: void (*)(void *).
-            unsafe { cx.call_native6(t.finally, [t.fdata as usize, 0, 0, 0, 0, 0], 0, Ret6::Word) }?;
+        2 => {
+            if !t.finally.is_null() {
+                // SAFETY: C's contract for finally: void (*)(void *).
+                unsafe { cx.call_native6(t.finally, [t.fdata as usize, 0, 0, 0, 0, 0], 0, Ret6::Word) }?;
+            }
             out.set(cx, cx.nil());
             return Ok(());
         }
+        // "should not happen"
         _ => {
             out.set(cx, cx.nil());
             return Ok(());
