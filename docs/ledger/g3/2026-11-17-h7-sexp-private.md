@@ -45,11 +45,38 @@
   object's constant (`v.k`), a `Ref`'s or a rooted value's object, the
   caller's contract, a C contract. Most VM call sites pass constants the
   instruction just loaded from the running code object.
+- Review (sol-loop, gpt-6.1-sol on high, 3 rounds, approved). Round 1
+  found safe public entries that took `Sexp`-holding or type-assuming
+  values:
+  - `FoldReq`'s fields and `Round::resolve`;
+  - `vm::num` on a `Slot` copied out by `Cx::stack_slot`;
+  - `Act`'s public fields (an `Act` with a dangling base);
+  - `compile_special*` and `compile_closure_bc` on a `Root` of the wrong
+    type.
+
+  Fixes:
+  - those items are `pub(crate)` (nothing outside robigo-rt uses them);
+  - `compile_special` was dead code and is deleted;
+  - `Slot::as_object` is lazy;
+  - the checker reads generic bounds and `where` clauses, ignores
+    comments, and exempts callback bounds (26 controls).
+- A perf lesson: making `vm::num`, `box_slot` and `boxed` `pub(crate)` cost
+  `plain` 21 instructions a call (+1.09%; `defaults` and `named` likewise,
+  fib +0.34%). Internal linkage changed LLVM's inlining in `vm::run` and
+  `inline::enter`. Bisected over the round's commits, then over the
+  items: reverting just those three to `pub` restores main's count
+  exactly. So `num`, the one that reads its slot's object, is
+  `pub unsafe fn` (a register's live object), and `boxed`/`box_slot` are
+  `pub` and safe (`box_slot` reads nothing through the object; an `&Act`
+  cannot be made outside robigo-rt).
 - Measured (this box, release, `scripts/perf.py rt-bars --main`): main
   `66c1a0b1` (sha256 cdf11294…, build id 691e1d81…) against this branch
-  `ea0673d9` (5069c0cc…, 89088084…), each built in a fresh private target
-  from its own checkout. Every row is ±0.00% in instructions; peak RSS is
-  within ±0.5%; 0 failures. `unsafe` changes no code.
+  `9b6675df` (7c5e7026…, f0b05160…), each built in a fresh private target
+  from its own checkout. 0 failures:
+  - every row within ±0.01%, except env-fn −0.28%, superassign −0.10%, s3
+    −0.08% and binarytrees −0.03% (all faster);
+  - peak RSS within ±0.7%.
 - Verified: the full `scripts/rt-ci.py` (310/316, every mode, 400 injected
-  failures), Miri on robigo-rtcore, `scripts/lint.sh` (with the new check),
-  the check's controls, and actionlint (main's two shellcheck notes).
+  failures), Miri on robigo-rtcore, `scripts/lint.sh` (with the new
+  check), the check's controls, and actionlint (main's two shellcheck
+  notes).
