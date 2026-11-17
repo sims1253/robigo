@@ -928,6 +928,8 @@ impl OwnedIsolate {
         let contexts = Contexts::new(core.nil(), core.stack_bounds());
         let envs = crate::env::EnvState::new(&mut core);
         let rsyms = crate::sym::install_rsyms(&mut core);
+        // R: names.c:InitNames, R_RestartToken = mkSymMarker(mkChar(""))
+        let restart_token = core.new_marker_symbol().expect("robigo: no room for R_RestartToken");
         crate::capi::check_layout();
         let capi = crate::capi::CApi::new(
             crate::capi::constants(&mut core, &envs),
@@ -941,7 +943,7 @@ impl OwnedIsolate {
             blank_string: core.blank_string(),
             unbound: core.unbound(),
             missing_arg: core.missing_arg(),
-            restart_token: core.restart_token(),
+            restart_token,
             rsyms,
             embedded_nul: Default::default(),
             core: UnsafeCell::new(core),

@@ -213,7 +213,12 @@ impl Cx {
     /// only compares, never dereferences (a context record's, a
     /// connection's id): `addr` is the pointer's untraced word, `tag` and
     /// `prot` its traced fields.
+    ///
+    /// Inline, so its allocation is compiled where it is called: a call
+    /// of the heap's `alloc_node` with `EXTPTRSXP` here made the copy
+    /// rtcore's `cons` and `lcons` share slower (s3 +0.3%).
     // R: memory.c:R_MakeExternalPtr
+    #[inline]
     pub fn extptr<'g>(&'g self, addr: usize, tag: Ref<'g>, prot: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
         let iso = self.iso();
         iso.check_owns(tag.sexp());
