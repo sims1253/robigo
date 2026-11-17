@@ -3501,6 +3501,9 @@ impl Cx {
     /// `cell` is a live binding cell of `rho` (or one removed from it), and
     /// `v` a live object, all of this isolate and rooted.
     // R: eval.c:SET_BINDING_VALUE
+    // (always inlined: the VM's SETVAR in vm::run, whose inlining otherwise
+    // turns on the size of its other arms)
+    #[inline(always)]
     pub unsafe fn set_cell_value_raw(&self, rho: Sexp, cell: Sexp, v: Sexp) -> bool {
         let iso = self.iso();
         // SAFETY: the caller's contract.
