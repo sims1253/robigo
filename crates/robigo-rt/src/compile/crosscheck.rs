@@ -319,6 +319,12 @@ fn same(cx: &Cx, a: &Norm, b: &Norm, targets: bool) -> bool {
 /// from-source port (V2) the translation does not share.
 fn expected(t: Option<&Norm>, s: Option<&Norm>, s_next: Option<&Norm>) -> Option<&'static str> {
     let op = |n: Option<&Norm>| n.map(|n| n.op);
+    // (the two the same but for the port's F_VIS)
+    let vis_only = matches!((t, s), (Some(x), Some(y)) if x.op == y.op
+        && x.regs == y.regs
+        && x.imm == y.imm
+        && x.consts.len() == y.consts.len()
+        && (x.fl ^ y.fl) == crate::ir::F_VIS);
     match (op(t), op(s)) {
         // a constant cmp.R folds (constantFold: `:`, a negated literal)
         // that the port computes
@@ -345,6 +351,26 @@ fn expected(t: Option<&Norm>, s: Option<&Norm>, s_next: Option<&Norm>) -> Option
         // (`sum(...)`: cmpBuiltin with `...`) and calls it; the port calls
         // it unguarded
         (Some(Op::BaseGuard), Some(Op::GetFun)) => Some("guard of a declined inline handler (tryInline)"),
+        // `%%` and `%/%`: bcEval has no opcode for them, so cmp.R calls the
+        // builtin (cmpBuiltin, CALLBUILTIN); the port's Arith computes
+        // do_arith's MODOP and IDIVOP, the same value and conditions
+        (Some(Op::CallBuiltin), Some(Op::Arith))
+            if s.is_some_and(|s| {
+                s.imm.first().is_some_and(|&g| {
+                    g == robigo_rtbuiltins::kernel::arith::MODOP as u16
+                        || g == robigo_rtbuiltins::kernel::arith::IDIVOP as u16
+                })
+            }) =>
+        {
+            Some("`%%` or `%/%`: cmp.R's CALLBUILTIN, the port's Arith")
+        }
+        // a tail return's shape: GNU R's code returns from each branch (a
+        // tail switch's alternatives, `return(if ...)`), the port jumps to
+        // one return, the branch's visibility set where its value is made
+        (Some(Op::Ret), Some(Op::Jmp | Op::SetVis)) => Some("a tail return's shape (one return a branch jumps to)"),
+        // the same value, made visible where it is loaded (the port's
+        // F_VIS) or at the return it reaches (GNU R's RETURN)
+        _ if vis_only => Some("a tail return's shape (one return a branch jumps to)"),
         _ => None,
     }
 }
@@ -367,21 +393,41 @@ pub fn compare(cx: &Cx, what: &str, t: &Built, s: &Built) {
         report(&format!("same: {what}"));
         return;
     };
+    // (a symbol constant by its name, a loaded constant deparsed, for
+    // triage)
+    let syms = |x: &Norm| {
+        x.consts
+            .iter()
+            .filter_map(|&c| {
+                // SAFETY: the pools' live constants.
+                let r = unsafe { robigo_rtcore::Ref::from_sexp(c, cx) };
+                if let Some(s) = r.as_sym() {
+                    return Some(format!(" `{}`", String::from_utf8_lossy(s.name().bytes())));
+                }
+                if matches!(r.sexptype(), robigo_heap::types::BUILTINSXP | robigo_heap::types::SPECIALSXP) {
+                    return crate::prims::prim_name(cx, r).map(|n| format!(" .Primitive({n})"));
+                }
+                (x.op == Op::LdConst).then(|| {
+                    let d = crate::deparse::deparse1line(cx, r, false, 0).unwrap_or_default();
+                    format!(" {{{}}}", String::from_utf8_lossy(&d).chars().take(40).collect::<String>())
+                })
+            })
+            .collect::<String>()
+    };
     let show = |x: Option<&Norm>| match x {
-        Some(x) => {
-            format!("{:?} regs {:?} imm {:?} consts {} target {:?}", x.op, x.regs, x.imm, x.consts.len(), x.target)
-        }
+        Some(x) => format!(
+            "{:?} fl {:#x} regs {:?} imm {:?} consts {}{} target {:?}",
+            x.op,
+            x.fl,
+            x.regs,
+            x.imm,
+            x.consts.len(),
+            syms(x),
+            x.target
+        ),
         None => "the end".to_owned(),
     };
     let (a, b) = (nt.get(k), ns.get(k));
-    // the from-source code calls a simple `.Internal` wrapper of base's
-    // (cmp.R's safeBaseInternals) that GNU R's code inlines
-    // (cmpSimpleInternal): the port finds no definition in a base bound
-    // lazily (V4 owns the gap)
-    let wrapper = matches!(b, Some(x) if x.op == Op::GetFun && a.is_none_or(|y| y.op != Op::GetFun)
-        // SAFETY: a symbol constant of the pool (GetFun's `e`, after `c`).
-        && x.consts.get(1).is_some_and(|&sym| unsafe { sym.typ() == robigo_heap::types::SYMSXP
-            && crate::cenv::safe_internal(cx, sym).is_some() }));
     // `...` evaluated as a value: cmpSym's DOTSERR raises at once, the port
     // reads `...` and raises the same error then
     let dots = matches!((a, b), (Some(y), Some(x)) if y.op == Op::ErrorCall && x.op == Op::GetVar
@@ -389,9 +435,6 @@ pub fn compare(cx: &Cx, what: &str, t: &Built, s: &Built) {
         && x.consts.first().is_some_and(|&sym| unsafe { robigo_rtcore::Ref::from_sexp(sym, cx) }
             .as_sym().is_some_and(|s| s.name().bytes() == b"...")));
     let class = match expected(a, b, ns.get(k + 1)) {
-        _ if wrapper => {
-            "expected (a simple .Internal wrapper the port calls (cmpSimpleInternal, lazily bound base))".to_owned()
-        }
         _ if dots => "expected ('...' as a value (cmpSym's DOTSERR; the port reads it))".to_owned(),
         Some(c) => format!("expected ({c})"),
         None => "unexpected".to_owned(),

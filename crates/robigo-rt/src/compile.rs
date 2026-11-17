@@ -252,8 +252,12 @@ unsafe fn crosscheck_closure(cx: &Cx, f: Sexp, installed: bool) -> Result<(), Ne
                 crosscheck::report(&format!("skipped: {what}: the from-source compiler leaves it uncompiled"));
                 return Ok(());
             }
-            Err(Need::Force(_)) => {
-                crosscheck::report(&format!("skipped: {what}: the from-source compile would force a binding"));
+            Err(Need::Force(p)) => {
+                // (the promise's code, for triage)
+                let code = crate::deparse::deparse1line(cx, Ref::from_sexp(p.cdr(), cx), false, 0)
+                    .map(|d| String::from_utf8_lossy(&d).chars().take(60).collect::<String>())
+                    .unwrap_or_default();
+                crosscheck::report(&format!("skipped: {what}: the from-source compile would force a binding ({code})"));
                 return Ok(());
             }
             Err(e) => return Err(e),
@@ -1220,6 +1224,39 @@ impl<'g> Comp<'g> {
         let st = self.st;
         let missing = self.cx.missing_arg().sexp();
         let dots = st.syms.dots;
+        // `::` and `:::` (closures of GNU R's base, robigo-rt's specials):
+        // cmpMultiColon calls the function with the two names as strings
+        // (cmpCallSymFun: GETFUN, the constant arguments, CALL of the call),
+        // or declines and the call is the generic one; either way the IR's
+        // generic call of the call (whose arguments it reads from the call)
+        // R: cmp.R:cmpMultiColon, cmpCallSymFun
+        if f == st.syms.double_colon || f == st.syms.triple_colon {
+            return Ok(None);
+        }
+        // `.Internal` of a builtin internal: cmpDotInternalCall's cmpBuiltin,
+        // which declines for `...` or an empty argument of the inner call
+        // (then the call is the generic one)
+        // R: cmp.R:cmpDotInternalCall, cmpBuiltin
+        if f == st.syms.dot_internal {
+            // SAFETY: the caller's contract: a live call.
+            let inner = unsafe { cenv::elements(self.cx, e, true) };
+            // (a builtin internal by names.c, whatever robigo-rt's object:
+            // `cbind`'s is a special there, eval 10)
+            if let [(ic, _)] = inner[..]
+                // SAFETY: a live part of the call; a symbol's internal is
+                // R_NilValue or a primitive of this isolate.
+                && unsafe {
+                    ic.typ() == LANGSXP
+                        && ic.car().typ() == SYMSXP
+                        && matches!(ic.car().tag().typ(), BUILTINSXP | SPECIALSXP)
+                        && st.defs[crate::prims::offset(ic.car().tag())].eval % 10 == 1
+                }
+                // SAFETY: as above.
+                && unsafe { cenv::elements(self.cx, ic, true) }.iter().any(|&(a, _)| a == dots || a == missing)
+            {
+                return Ok(None);
+            }
+        }
         // the primitives the VM inlines: cmp.R's handlers of the language
         // functions, `cmpSpecial`'s and `cmpBuiltin`'s for the others
         let off = st.by_sym.get(&(f.as_ptr() as usize)).copied().filter(|&o| !st.defs[o].internal());
@@ -1254,14 +1291,32 @@ impl<'g> Comp<'g> {
             // SAFETY: as above.
             return unsafe { self.simple_internal(f, e, &args) };
         }
-        // `cmpBuiltin`: base's binding is a builtin (it declines for `...`
-        // or an empty argument)
-        if let Some(off) = off
-            && st.defs[off].eval % 10 == 1
-        {
-            let prim = st.objs[off].bind(self.cx).sexp();
+        // cmp.R's default handlers, set for every name of base by the type
+        // of its binding in GNU R's base when the compiler was built:
+        // `cmpSpecial` for a special (a row of the registry's table that
+        // names.c makes one: `rep`), `cmpBuiltin` for a builtin (declining
+        // for `...` or an empty argument). A name bound to a primitive of
+        // another name is that primitive's ([`cenv::PRIMITIVE_ALIASES`]:
+        // `as.numeric`, base's `as.double`).
+        // R: cmp.R:local() (setInlineHandler(s, cmpSpecial), setInlineHandler(b, cmpBuiltin)), cmpBuiltin
+        // SAFETY: a symbol.
+        let alias = unsafe { cenv::alias_of(self.cx, f) }.and_then(|t| st.defs.iter().position(|d| d.name == t));
+        // (an alias is its primitive's, before a row of its own name:
+        // robigo-rt's table has an `is.name`, GNU R's base binds
+        // `is.symbol` to the name)
+        if let Some(o) = alias.or(off) {
+            let prim = st.objs[o].bind(self.cx).sexp();
+            // SAFETY: a live primitive of this isolate.
+            let t = unsafe { prim.typ() };
+            if t == SPECIALSXP && matches!(st.defs[o].kind, Kind::Builtin(..)) {
+                return Ok(Some(Handler::Known(Known::Fn(o))));
+            }
+            // (a name of its own: base's binding is the builtin itself)
             // SAFETY: base's frame and a symbol.
-            if unsafe { self.base_binding(f) } == Some(prim) {
+            if t == BUILTINSXP
+                && st.defs[o].eval % 10 == 1
+                && (alias.is_some() || unsafe { self.base_binding(f) } == Some(prim))
+            {
                 if args.iter().any(|&(a, _)| a == dots || a == missing) {
                     return Ok(None);
                 }

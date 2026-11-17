@@ -1289,7 +1289,14 @@ impl<'g> Comp<'g> {
                     // SAFETY: a live symbol: its INTERNAL.
                     unsafe { robigo_rtcore::Ref::from_sexp(sym, self.cx) }.as_sym().map(|s| s.internal().sexp())
                 } else {
-                    self.prim_of(sym).map(|off| self.st.objs[off].bind(self.cx).sexp())
+                    // getPrimitive: the symbol's value, which for a name base
+                    // binds to a primitive of another name is that one's
+                    // (`as.numeric`, base's `as.double`: robigo-rt's table
+                    // has a row of the name too)
+                    // SAFETY: a live symbol.
+                    let alias = unsafe { crate::cenv::alias_of(self.cx, sym) }
+                        .and_then(|t| self.st.defs.iter().position(|d| d.name == t && !d.internal()));
+                    alias.or_else(|| self.prim_of(sym)).map(|off| self.st.objs[off].bind(self.cx).sexp())
                 };
                 // SAFETY: a live primitive.
                 let Some(prim) = prim.filter(|p| unsafe { p.typ() } == BUILTINSXP) else {
