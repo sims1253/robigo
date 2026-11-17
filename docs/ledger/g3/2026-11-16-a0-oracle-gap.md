@@ -237,16 +237,16 @@ where the strings were allocated. To test it,
 | e7-unique, img-deb | 161,946 | 161,934 | 161,927 | 161,949 | 161,938 |
 | e7-match, oracle | 205,949 | 206,546 | 205,479 | 208,686 | 206,658 |
 | e7-match, img-deb | 207,231 | 206,810 | 207,153 | 207,999 | 206,384 |
-| e7-unique, robigo-rt | 126,476 | 126,494 | 126,385 | 126,384 | 126,354 |
-| e7-match, robigo-rt | 99,032 | 98,903 | 98,909 | 98,906 | 98,928 |
+| e7-unique, robigo-rt | 126,475 | 126,492 | 126,385 | 126,384 | 126,353 |
+| e7-match, robigo-rt | 99,036 | 98,903 | 98,915 | 98,908 | 98,934 |
 
 - **GNU R:** the oracle build's e7-unique drops 5.0% once 50 strings move
   its keys, and e7-match moves by up to 1.3% in either build.
 - **robigo-rt:** it ports `cshash`
   (`crates/robigo-rtbuiltins/src/unique.rs:316`), so its counts on these
   rows follow its layout too. Across the same paddings they move by at
-  most 0.13% (e7-unique 0.11%, e7-match 0.13%). This was measured on the
-  desktop with a release build of main `2ae1e075` and valgrind 3.27.1
+  most 0.14% (e7-unique 0.11%, e7-match 0.14%). This was measured on the
+  desktop with a release build of main `fb429442` and valgrind 3.27.1
   (`layout-rt.json`).
 
 Both rows' bars compare robigo-rt with today's robigo, so no bar moves.
@@ -303,7 +303,7 @@ ratios should be within a few tenths of a point of these.
    cache key, and CI has no newer compiler without another image.
 3. **The hashing rows, and X3's instruction guard** ("no instruction row
    worse than +1%"). X3 compares robigo-rt variants, so robigo-rt's
-   sensitivity is the one that counts: at most 0.13% across five
+   sensitivity is the one that counts: at most 0.14% across five
    paddings, inside the guard and the gate's 0.5%. A header or node-size
    change moves every address, which padding does not test. So X3 should
    run `benchmarks/rt/layout-rows.toml` on each variant before it reads a +1% on
@@ -339,7 +339,8 @@ in `~/robigo-a0`, with a copy of the repository's `scripts/` and
           --no-robigo --json layout-$CELL.json
 
   - `layout-rt.json`, on the desktop with a release robigo-rt of main
-    `2ae1e075` (`cargo build --release --locked -p robigo-rt`):
+    `fb429442` (`cargo build --release --locked -p robigo-rtapi`, the
+    package that builds the `robigo-rt` binary):
 
         scripts/idiom-vs-r.py --rows benchmarks/rt/layout-rows.toml \
           --robigo BIN --no-r --json layout-rt.json
