@@ -215,6 +215,95 @@ fn printing_a_package_altrep_vector_is_not_implemented_yet() {
     }
 }
 
+/// The attribute setters read a package ALTREP vector's length through its
+/// class's Length method (GNU R's `xlength`, `ALTREP_LENGTH`), so `names<-`,
+/// `dim<-`, `dimnames<-`, `comment<-` and `row.names` take one as GNU R
+/// does; where GNU R would read its elements, robigo says it cannot.
+#[test]
+fn the_attribute_setters_read_a_package_altrep_length() {
+    for p in PROFILES {
+        let mut s = Session::new(p);
+        s.val("z <- .Call(\"rt_altrep_str\", c(\"ff\", \"10\"))");
+        s.val("zi <- .Call(\"rt_altrep_int\", 5:6); zr <- .Call(\"rt_altrep_real\", c(1, 2, 1))");
+        s.val("zl <- .Call(\"rt_altrep_list\", list(c(\"a\", \"b\"), NULL))");
+        for (src, want) in [
+            ("x <- c(1, 2); names(x) <- z; length(names(x))", int(2)),
+            ("x <- c(1, 2); attr(x, \"names\") <- z; length(names(x))", int(2)),
+            ("x <- c(1, 2); dim(x) <- 2L; names(x) <- z; length(dimnames(x)[[1]])", int(2)),
+            ("m <- matrix(1:4, 2); dimnames(m) <- list(z, NULL); length(dimnames(m)[[1]])", int(2)),
+            ("x <- c(1, 2); comment(x) <- z; length(attr(x, \"comment\"))", int(2)),
+            ("x <- c(1, 2); class(x) <- character(0); length(x)", int(2)),
+            ("d <- list(1:2); attr(d, \"row.names\") <- zi; length(attr(d, \"row.names\"))", int(2)),
+            ("y <- .Call(\"rt_altrep_str\", c(\"ff\", \"10\")); names(y) <- c(\"a\", \"b\"); length(names(y))", int(2)),
+            ("y <- .Call(\"rt_altrep_str\", c(\"ff\", \"10\")); dim(y) <- 2L; dim(y)", int(2)),
+        ] {
+            assert_eq!(s.val(src), want, "{p:?} {src}");
+        }
+        for (src, want) in [
+            // the case the print refusal could not reach before
+            ("x <- c(1, 2); names(x) <- z; print(x)", "printing a package ALTREP vector is not implemented yet"),
+            ("x <- c(1, 2); names(x) <- z; deparse(x)", "deparse of a package ALTREP vector is not implemented yet"),
+            (
+                "m <- matrix(1:4, 2); dimnames(m) <- list(z, NULL); print(m)",
+                "printing a package ALTREP vector is not implemented yet",
+            ),
+            // GNU R reads the elements
+            ("x <- c(1, 2); attr(x, \"names\") <- zi", "coercing a package ALTREP vector"),
+            ("m <- matrix(1:4, 2); dimnames(m) <- list(zi, NULL)", "coercing a package ALTREP vector"),
+            ("x <- c(1, 2, 3); names(x) <- z", "recycling package ALTREP names is not implemented yet"),
+            ("x <- pairlist(a = 1, b = 2); names(x) <- z", "package ALTREP names of a pairlist or call"),
+            ("x <- c(1, 2); class(x) <- z", "a package ALTREP class attribute is not implemented yet"),
+            ("m <- matrix(1:4, 2); dimnames(m) <- zl", "a package ALTREP list as dimnames is not implemented yet"),
+            ("x <- 1:3; attr(x, \"tsp\") <- zr", "a package ALTREP 'tsp' attribute is not implemented yet"),
+            (
+                "d <- list(1:2); attr(d, \"row.names\") <- .Call(\"rt_altrep_real\", c(NA, -2))",
+                "row names from a package ALTREP double vector is not implemented yet",
+            ),
+            // a shared one is copied first (its Duplicate method)
+            ("y <- z; names(y) <- c(\"a\", \"b\")", "'duplicate' of an ALTREP object is not implemented yet"),
+            // the length GNU R reads, not 1
+            ("x <- 1; names(x) <- z", "'names' attribute [2] must be the same length as the vector [1]"),
+            (
+                "y <- .Call(\"rt_altrep_str\", c(\"ff\", \"10\")); dim(y) <- 3L",
+                "dims [product 3] do not match the length of object [2]",
+            ),
+            ("x <- 1:2; attr(x, \"tsp\") <- zi", "'tsp' attribute must be numeric of length three"),
+        ] {
+            let m = s.err(src);
+            assert!(m.contains(want), "{p:?} {src}: {m}");
+        }
+    }
+}
+
+/// The setters run a package class's Length method as many times as GNU R
+/// 4.6.2 does (counts from the oracle with the same class compiled as a
+/// package: `R CMD SHLIB`, a counter in the Length method).
+#[test]
+fn the_attribute_setters_call_the_length_method_as_gnu_r_does() {
+    for p in PROFILES {
+        let mut s = Session::new(p);
+        for (setup, assign, calls) in [
+            ("x <- c(1, 2); z <- .Call(\"rt_altrep_str\", c(\"a\", \"b\"))", "names(x) <- z", 2),
+            ("x <- 1; z <- .Call(\"rt_altrep_str\", c(\"a\", \"b\"))", "names(x) <- z", 3),
+            ("y <- .Call(\"rt_altrep_str\", c(\"a\", \"b\"))", "names(y) <- c(\"u\", \"v\")", 2),
+            ("y <- .Call(\"rt_altrep_str\", c(\"a\", \"b\"))", "attr(y, \"names\") <- pairlist(\"u\", \"v\")", 6),
+            ("y <- .Call(\"rt_altrep_str\", c(\"a\", \"b\"))", "dim(y) <- 2L", 1),
+            ("m <- matrix(1:4, 2); z <- .Call(\"rt_altrep_str\", c(\"a\", \"b\"))", "dimnames(m) <- list(z, NULL)", 2),
+            ("m <- matrix(1:6, 3); z <- .Call(\"rt_altrep_str\", c(\"a\", \"b\"))", "dimnames(m) <- list(z, NULL)", 2),
+            ("x <- 1; z <- .Call(\"rt_altrep_str\", c(\"a\", \"b\"))", "comment(x) <- z", 2),
+            ("d <- list(1:2); z <- .Call(\"rt_altrep_int\", 5:6)", "attr(d, \"row.names\") <- z", 0),
+            ("x <- 1:2; z <- .Call(\"rt_altrep_int\", 5:6)", "attr(x, \"tsp\") <- z", 1),
+        ] {
+            s.val(setup);
+            s.val(".Call(\"rt_altrep_length_calls\")");
+            // (an error or not: GNU R's count is the same either way; NULL
+            // last, so that describing the result reads no length)
+            let _ = s.run(&format!("{assign}; NULL"));
+            assert_eq!(s.val(".Call(\"rt_altrep_length_calls\")"), int(calls), "{p:?} {setup}; {assign}");
+        }
+    }
+}
+
 /// cpp11's `unwind_protect`: the cleanup leaves `R_UnwindProtect` by its
 /// own `longjmp` (past the export's frame), the routine resumes the unwind
 /// with `R_ContinueUnwind`, and the error reaches the catcher; the protect

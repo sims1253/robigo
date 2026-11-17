@@ -13,7 +13,7 @@
 
 use super::{dims, get_value, has_attrib, inherits, is_array, is_vector};
 use crate::coerce::vector::{NA_INTEGER, as_character_factor, as_real, coerce, coerce_vector};
-use crate::coerce::{dispatch_or_eval, xlength};
+use crate::coerce::{dispatch_or_eval, xlength, xlength_mut};
 use crate::util::{is_numeric, is_vector_atomic, not_yet, type_to_char};
 use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
@@ -177,8 +177,8 @@ pub fn namesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
             if !ok {
                 return Err(cx.error("incompatible 'names' argument"));
             }
-            let n = xlength(x.bind(cx));
-            cx.build_with(o, |cx| {
+            let n = xlength_mut(cx, x)?;
+            let steps = cx.build_with(o, |cx| {
                 let mut r = cx.alloc_vector::<Char<'_>>(n)?;
                 let mut c = val.bind(cx).as_cons();
                 let mut i = 0;
@@ -189,6 +189,11 @@ pub fn namesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
                         Built::Done(sv, _) => sv,
                         Built::Fail(d) => return Ok(Built::fail(Diag::error(d.message().to_owned()))),
                     };
+                    if sv.is_package_altrep() {
+                        let m =
+                            "robigo: 'names<-' from a pairlist with a package ALTREP element is not implemented yet";
+                        return Ok(Built::fail(Diag::error(m.to_owned())));
+                    }
                     match sv.as_vector::<Char<'_>>() {
                         Some(sv) if !sv.is_empty() => r.set(i, sv.get(0)),
                         // GNU R reads STRING_ELT(s, 0) of an empty vector
@@ -200,13 +205,26 @@ pub fn namesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
                     i += 1;
                     c = cell.cdr().as_cons();
                 }
-                Ok(Built::done(r.finish()))
+                Ok(Built::Done(r.finish().into(), i + 1))
             })?;
+            // the loop's test `i < length(vec)` reads the length at each of
+            // its `steps` checks (a package class's Length method each time)
+            if x.bind(cx).is_package_altrep() {
+                for _ in 0..steps {
+                    cx.altrep_length(x)?;
+                }
+            }
         } else {
             coerce_vector(cx, val, STRSXP, o)?;
         }
-        let nx = xlength(x.bind(cx));
-        if xlength(v.bind(cx)) < nx {
+        // the lengths in GNU R's order of reading (a package ALTREP vector's
+        // is its Length method)
+        if xlength_mut(cx, v)? < xlength_mut(cx, x)? {
+            // xlengthgets reads the elements (STRING_ELT)
+            if v.bind(cx).is_package_altrep() {
+                return Err(not_yet(cx, None, "recycling package ALTREP names"));
+            }
+            let nx = xlength_mut(cx, x)?;
             let o = s.out(cx);
             let r = o.root();
             cx.build(o, |cx| crate::seq::xlengthgets(cx, v.bind(cx), nx))?;
@@ -215,8 +233,9 @@ pub fn namesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
         // checkNames
         let (xt, s4) = (x.bind(cx).sexptype(), x.bind(cx).is_s4());
         if is_vector(x.bind(cx)) || matches!(xt, LISTSXP | LANGSXP) {
-            let nv = xlength(v.bind(cx));
-            if nx != nv {
+            if xlength_mut(cx, x)? != xlength_mut(cx, v)? {
+                // (the message reads both again)
+                let (nv, nx) = (xlength_mut(cx, v)?, xlength_mut(cx, x)?);
                 let msg = format!("'names' attribute [{nv}] must be the same length as the vector [{nx}]");
                 return Err(cx.error(&msg));
             }
@@ -230,6 +249,10 @@ pub fn namesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
             return dimnamesgets(cx, x, l);
         }
         if matches!(xt, LISTSXP | LANGSXP) {
+            // the tags read the names' elements (STRING_ELT)
+            if v.bind(cx).is_package_altrep() {
+                return Err(not_yet(cx, None, "package ALTREP names of a pairlist or call"));
+            }
             // (one root each for the cursor and the tag: no slot per cell)
             let cur = s.root(cx, x.bind(cx));
             let t = s.out(cx).root();
@@ -300,7 +323,7 @@ pub fn dimgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
             }
             dn as u64
         };
-        let len = xlength(x.bind(cx)) as u64;
+        let len = xlength_mut(cx, x)? as u64;
         if total != len {
             let msg = format!("dims [product {total}] do not match the length of object [{len}]");
             return Err(cx.error(&msg));
@@ -317,11 +340,15 @@ pub fn dimgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
 /// without attributes.
 // R: attrib.c:as_char_simpl
 fn as_char_simpl<'s>(cx: &mut Cx, s: Scope<'s>, v: Root<'_>) -> RResult<Root<'s>> {
-    let vv = v.bind(cx);
-    if xlength(vv) == 0 {
+    if xlength_mut(cx, v)? == 0 {
         return Ok(s.root(cx, cx.nil()));
     }
+    let vv = v.bind(cx);
     if inherits(vv, b"factor") {
+        // asCharacterFactor reads the codes (INTEGER_ELT)
+        if vv.is_package_altrep() {
+            return Err(not_yet(cx, None, "package ALTREP factor dimnames"));
+        }
         let o = s.out(cx);
         let r = o.root();
         cx.build_with(o, |cx| {
@@ -365,12 +392,17 @@ pub fn dimnamesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
     }
     let extents: Vec<i32> = dims(xv).map(<[i32]>::to_vec).unwrap_or_default();
     let k = extents.len();
-    let lv = xlength(val.bind(cx));
-    if k < lv {
+    if k < xlength_mut(cx, val)? {
+        let lv = xlength_mut(cx, val)?;
         return Err(cx.error(&format!("length of 'dimnames' [{lv}] must match that of 'dims' [{k}]")));
     }
-    if lv == 0 {
+    if xlength_mut(cx, val)? == 0 {
         return remove_named(cx, x, RSym::DimNames);
+    }
+    // lengthgets, shallow_duplicate and VECTOR_ELT read the list's
+    // elements (its Elt and Duplicate methods)
+    if val.bind(cx).is_package_altrep() {
+        return Err(not_yet(cx, None, "a package ALTREP list as dimnames"));
     }
     cx.scope(|cx, s| {
         let v = s.root(cx, val.bind(cx));
@@ -420,8 +452,8 @@ pub fn dimnamesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
                 let msg = format!("invalid type ({}) for 'dimnames' (must be a vector)", type_to_char(t));
                 return Err(cx.error(&msg));
             }
-            let len = xlength(t);
-            if extent as usize != len && len != 0 {
+            // LENGTH(_this) twice, the second only when the first differs
+            if extent as usize != xlength_mut(cx, this)? && xlength_mut(cx, this)? != 0 {
                 return Err(cx.error(&format!("length of 'dimnames' [{}] not equal to array extent", i + 1)));
             }
             let c = as_char_simpl(cx, s, this)?;
@@ -433,6 +465,9 @@ pub fn dimnamesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
                 let View::List(l) = v.bind(cx).view() else { unreachable!("robigo: made a list above") };
                 s.root(cx, l.get(0))
             };
+            if top.bind(cx).is_package_altrep() {
+                return Err(not_yet(cx, None, "package ALTREP dimnames of a pairlist"));
+            }
             if top.bind(cx).sexptype() != STRSXP {
                 let msg = format!(
                     "STRING_ELT() can only be applied to a 'character vector', not a '{}'",
@@ -467,11 +502,16 @@ pub fn classgets(cx: &mut Cx, x: Root<'_>, klass: Root<'_>) -> RResult<()> {
     if !matches!(k.sexptype(), NILSXP | STRSXP) {
         return Err(cx.error("attempt to set invalid 'class' attribute"));
     }
-    if xlength(k) == 0 {
+    if xlength_mut(cx, klass)? == 0 {
         // stripAttrib, SET_OBJECT(vec, 0)
         return remove_named(cx, x, RSym::Class);
     }
+    // the search for "factor" reads the elements (STRING_ELT)
+    if klass.bind(cx).is_package_altrep() {
+        return Err(not_yet(cx, None, "a package ALTREP class attribute"));
+    }
     let factor = {
+        let k = klass.bind(cx);
         let kv = k.as_vector::<Char<'_>>().unwrap();
         (0..kv.len()).any(|i| kv.get(i).bytes() == b"factor")
     };
@@ -487,12 +527,12 @@ pub fn classgets(cx: &mut Cx, x: Root<'_>, klass: Root<'_>) -> RResult<()> {
 /// length.
 // R: util.c:nrows
 fn nrows(cx: &mut Cx, x: Root<'_>) -> RResult<usize> {
-    let x = x.bind(cx);
-    if is_vector(x) || matches!(x.sexptype(), NILSXP | LISTSXP) {
-        return Ok(match dims(x) {
-            Some(d) => d.first().copied().unwrap_or(0).max(0) as usize,
-            None => xlength(x),
-        });
+    let xv = x.bind(cx);
+    if is_vector(xv) || matches!(xv.sexptype(), NILSXP | LISTSXP) {
+        return match dims(xv) {
+            Some(d) => Ok(d.first().copied().unwrap_or(0).max(0) as usize),
+            None => xlength_mut(cx, x),
+        };
     }
     Err(cx.error("object is not a matrix"))
 }
@@ -509,8 +549,12 @@ fn tspgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
         }
         return install_named(cx, x, RSym::Tsp, val);
     }
-    if !is_numeric(vv) || vv.len() != Some(3) {
+    if !is_numeric(vv) || xlength_mut(cx, val)? != 3 {
         return Err(cx.error("'tsp' attribute must be numeric of length three"));
+    }
+    // REAL(val) or INTEGER(val): a package class's Dataptr method
+    if val.bind(cx).is_package_altrep() {
+        return Err(not_yet(cx, None, "a package ALTREP 'tsp' attribute"));
     }
     // REAL(val) or INTEGER(val): one of robigo's sequences expands (from
     // C's setAttrib it arrives unexpanded)
@@ -558,7 +602,11 @@ fn commentgets(cx: &mut Cx, x: Root<'_>, comment: Root<'_>) -> RResult<()> {
     if !matches!(c.sexptype(), NILSXP | STRSXP) {
         return Err(cx.error("attempt to set invalid 'comment' attribute"));
     }
-    if xlength(c) == 0 { remove_named(cx, x, RSym::Comment) } else { install_named(cx, x, RSym::Comment, comment) }
+    if xlength_mut(cx, comment)? == 0 {
+        remove_named(cx, x, RSym::Comment)
+    } else {
+        install_named(cx, x, RSym::Comment, comment)
+    }
 }
 
 /// `row_names_gets(vec, val)`: character or integer row names; `1:n` (or
@@ -566,6 +614,11 @@ fn commentgets(cx: &mut Cx, x: Root<'_>, comment: Root<'_>) -> RResult<()> {
 /// in the compact form `c(NA_integer_, n)`.
 // R: attrib.c:row_names_gets
 fn row_names_gets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
+    // a package class's double vector of length 2: REAL(val)[0] is its
+    // Dataptr method
+    if val.bind(cx).sexptype() == REALSXP && val.bind(cx).is_package_altrep() && xlength_mut(cx, val)? == 2 {
+        return Err(not_yet(cx, None, "row names from a package ALTREP double vector"));
+    }
     let vv = val.bind(cx);
     if let View::Real(r) = vv.view()
         && r.len() == 2
@@ -582,8 +635,9 @@ fn row_names_gets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
     if vv.sexptype() == INTSXP && !inherits(vv, b"factor") {
         // INTEGER_ELT: one of robigo's sequences is read as it is (from C's
         // setAttrib it arrives unexpanded, and GNU R leaves it so)
+        // any ALTREP but a compact 1:n is installed as it is
         let Some(iv) = vv.as_vector::<i32>() else {
-            return Err(not_yet(cx, None, "row names from a package ALTREP vector"));
+            return install_named(cx, x, RSym::RowNames, val);
         };
         let n = iv.len();
         let compact = if n == 2 && iv.get(0) == NA_INTEGER {
@@ -788,9 +842,10 @@ pub fn do_classgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
     })
 }
 
-/// `if (length(v) == 0) v = R_NilValue`, rooted.
+/// `if (length(v) == 0) v = R_NilValue`, rooted (a package ALTREP
+/// vector's length is its Length method).
 fn generic_length_zero<'s>(cx: &mut Cx, s: Scope<'s>, v: Root<'_>) -> RResult<Root<'s>> {
-    match crate::builtin::length(cx, v.bind(cx)) {
+    match crate::builtin::length_mut(cx, v)? {
         Some(0) => Ok(s.root(cx, cx.nil())),
         Some(_) => Ok(s.root(cx, v.bind(cx))),
         None => Err(not_yet(cx, None, "the length of this environment")),
@@ -857,7 +912,7 @@ fn unset_s4(cx: &mut Cx, obj: Root<'_>, value: Root<'_>) -> RResult<()> {
 // R: coerce.c:R_set_class
 fn set_class<'s>(cx: &mut Cx, s: Scope<'s>, call: Root<'_>, obj: Root<'s>, value: Root<'_>) -> RResult<Root<'s>> {
     let nil = s.root(cx, cx.nil());
-    let Some(len) = crate::builtin::length(cx, value.bind(cx)) else {
+    let Some(len) = crate::builtin::length_mut(cx, value)? else {
         return Err(not_yet(cx, Some(call), "'class<-' with an environment robigo cannot list"));
     };
     if len == 0 {
@@ -866,6 +921,10 @@ fn set_class<'s>(cx: &mut Cx, s: Scope<'s>, call: Root<'_>, obj: Root<'s>, value
             unset_s4(cx, obj, value)?;
         }
         return Ok(obj);
+    }
+    // duplicate, coerceVector and STRING_ELT read the elements
+    if value.bind(cx).is_package_altrep() {
+        return Err(not_yet(cx, None, "a package ALTREP class attribute"));
     }
     let value = if value.bind(cx).sexptype() != STRSXP {
         let o = s.out(cx);

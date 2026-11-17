@@ -480,7 +480,14 @@ SEXP rt_altrep_one(void)
     return R_new_altrep(c, R_NilValue, R_NilValue);
 }
 
-static R_xlen_t str_length(SEXP x) { return XLENGTH(R_altrep_data1(x)); }
+/* The package classes' Length method over data1, which counts its calls
+   (rt_altrep_length_calls). */
+static int data1_length_calls = 0;
+static R_xlen_t data1_length(SEXP x)
+{
+    data1_length_calls++;
+    return XLENGTH(R_altrep_data1(x));
+}
 static SEXP str_elt(SEXP x, R_xlen_t i) { return STRING_ELT(R_altrep_data1(x), i); }
 
 /* A package ALTSTRING over the character vector `v`, its Length and Elt
@@ -488,7 +495,45 @@ static SEXP str_elt(SEXP x, R_xlen_t i) { return STRING_ELT(R_altrep_data1(x), i
 SEXP rt_altrep_str(SEXP v)
 {
     R_altrep_class_t c = R_make_altstring_class("rt_str", "rtcapi", NULL);
-    R_set_altrep_Length_method(c, str_length);
+    R_set_altrep_Length_method(c, data1_length);
     R_set_altstring_Elt_method(c, str_elt);
+    return R_new_altrep(c, v, R_NilValue);
+}
+
+/* Package ALTINTEGER, ALTREAL and ALTLIST classes over the vector `v`, the
+   same way (the attribute setters' cases). */
+
+/* How many times these classes' Length method ran since the last call. */
+SEXP rt_altrep_length_calls(void)
+{
+    int n = data1_length_calls;
+    data1_length_calls = 0;
+    return ScalarInteger(n);
+}
+static int int_elt(SEXP x, R_xlen_t i) { return INTEGER_ELT(R_altrep_data1(x), i); }
+static double real_elt(SEXP x, R_xlen_t i) { return REAL_ELT(R_altrep_data1(x), i); }
+static SEXP list_elt(SEXP x, R_xlen_t i) { return VECTOR_ELT(R_altrep_data1(x), i); }
+
+SEXP rt_altrep_int(SEXP v)
+{
+    R_altrep_class_t c = R_make_altinteger_class("rt_int", "rtcapi", NULL);
+    R_set_altrep_Length_method(c, data1_length);
+    R_set_altinteger_Elt_method(c, int_elt);
+    return R_new_altrep(c, v, R_NilValue);
+}
+
+SEXP rt_altrep_real(SEXP v)
+{
+    R_altrep_class_t c = R_make_altreal_class("rt_real", "rtcapi", NULL);
+    R_set_altrep_Length_method(c, data1_length);
+    R_set_altreal_Elt_method(c, real_elt);
+    return R_new_altrep(c, v, R_NilValue);
+}
+
+SEXP rt_altrep_list(SEXP v)
+{
+    R_altrep_class_t c = R_make_altlist_class("rt_list", "rtcapi", NULL);
+    R_set_altrep_Length_method(c, data1_length);
+    R_set_altlist_Elt_method(c, list_elt);
     return R_new_altrep(c, v, R_NilValue);
 }
