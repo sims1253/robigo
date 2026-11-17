@@ -255,7 +255,9 @@ fn normalize(b: &Built) -> Vec<Norm> {
             }
         }
         if jumps {
-            v.target = Some(at.get(land(i.target())).copied().unwrap_or(usize::MAX));
+            // (a jump to a return lands where that return is)
+            let t = if ret(i.target()).is_some() { i.target() } else { land(i.target()) };
+            v.target = Some(at.get(t).copied().unwrap_or(usize::MAX));
         }
         for (&k, &x) in ks.iter().zip(&fields) {
             if k == W {
@@ -270,9 +272,9 @@ fn normalize(b: &Built) -> Vec<Norm> {
 }
 
 /// Whether two normalized instructions are the same: their constants
-/// `identical()`.
-fn same(cx: &Cx, a: &Norm, b: &Norm) -> bool {
-    if a.op != b.op || a.fl != b.fl || a.regs != b.regs || a.imm != b.imm || a.target != b.target {
+/// `identical()`, their jump targets equal if `targets`.
+fn same(cx: &Cx, a: &Norm, b: &Norm, targets: bool) -> bool {
+    if a.op != b.op || a.fl != b.fl || a.regs != b.regs || a.imm != b.imm || (targets && a.target != b.target) {
         return false;
     }
     a.consts.len() == b.consts.len()
@@ -318,10 +320,15 @@ fn expected(t: Option<&Norm>, s: Option<&Norm>, s_next: Option<&Norm>) -> Option
 pub fn compare(cx: &Cx, what: &str, t: &Built, s: &Built) {
     let (nt, ns) = (normalize(t), normalize(s));
     let n = nt.len().max(ns.len());
-    let Some(k) = (0..n).find(|&k| match (nt.get(k), ns.get(k)) {
-        (Some(a), Some(b)) => !same(cx, a, b),
-        _ => true,
-    }) else {
+    // the first difference of what the instructions do; then of where
+    // they jump (a difference later on moves the targets before it)
+    let differs = |targets: bool| {
+        (0..n).find(|&k| match (nt.get(k), ns.get(k)) {
+            (Some(a), Some(b)) => !same(cx, a, b, targets),
+            _ => true,
+        })
+    };
+    let Some(k) = differs(false).or_else(|| differs(true)) else {
         return;
     };
     let show = |x: Option<&Norm>| match x {

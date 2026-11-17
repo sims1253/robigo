@@ -11,7 +11,8 @@
 # CASES.R defines `cases`: a list of list(name, fun, calls), `fun` a
 # function (compiled here), `calls` the R source of the calls to print; or
 # list(name, expr, calls), `expr` top-level code (compiler::compile) the
-# script binds to `name` as byte code.
+# script binds to `name` as byte code. A case's `env` (R source; the
+# global environment by default) is the closure's environment.
 args <- commandArgs(trailingOnly = TRUE)
 stopifnot(length(args) == 2L)
 source(args[[1L]])
@@ -76,9 +77,10 @@ for (cs in cases) {
   f <- compiler::cmpfun(cs$fun)
   bc <- .Internal(bodyCode(f))
   stopifnot(typeof(bc) == "bytecode")
+  env <- if (is.null(cs$env)) "globalenv()" else cs$env
   lines <- c(lines, sprintf("# %s", cs$name),
-             sprintf("%s <- .Internal(bcClose(%s,\n %s,\n globalenv()))", cs$name,
-                     formals_src(formals(f)), code(.Internal(disassemble(bc)))),
+             sprintf("%s <- .Internal(bcClose(%s,\n %s,\n %s))", cs$name,
+                     formals_src(formals(f)), code(.Internal(disassemble(bc))), env),
              cs$calls, "")
 }
 writeLines(lines, out)

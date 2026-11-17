@@ -1337,6 +1337,15 @@ impl<'g> Comp<'g> {
                 let Fun::Builtin { prim, internal } = f.fun else { return Err(Need::Fail) };
                 // SAFETY: as above.
                 unsafe { self.call_builtin(&f, prim, internal, call)? };
+                // the expression bcEval is at, for error() and warning():
+                // the expressions index's (a `.Internal` wrapper's call)
+                // SAFETY: the code's live constants.
+                if let Some(e) = unsafe { t.expr_at(self.cx, i.at) }
+                    && e != call
+                {
+                    let at = self.ins.len() - 1;
+                    self.ins[at].g = self.k(e);
+                }
                 self.push_at(t, f.dst, starts);
             }
             CALLSPECIAL => {
@@ -1344,14 +1353,19 @@ impl<'g> Comp<'g> {
                 let r = self.push(t);
                 // SAFETY: as above: a call whose function is a symbol.
                 let off = unsafe { self.prim_of(call.car()) };
+                // (a special of the registry, `rep`, is a function over its
+                // call too)
+                // SAFETY: a live primitive.
+                let special = |o: usize| unsafe { self.st.objs[o].bind(self.cx).sexp().typ() } == SPECIALSXP;
                 match off.map(|o| (o, self.st.defs[o].kind)) {
                     // pass 1 wants the stack only (a special's code caches
                     // its arguments' code on them)
-                    Some((_, Kind::Special(_) | Kind::Fn(_))) if planning => {}
+                    Some((o, _)) if planning && special(o) => {}
                     // a language special: what its PRIMFUN does, compiled
                     // SAFETY: as above.
                     Some((_, Kind::Special(s))) => unsafe { self.special(s, call, call.cdr(), r, 0, tail)? },
-                    Some((o, Kind::Fn(_))) => {
+                    // getPrimitive(symbol, SPECIALSXP) on the call
+                    Some((o, _)) if special(o) => {
                         let prim = self.st.objs[o].bind(self.cx).sexp();
                         let mut s = Ins::new(Op::SpecialFn);
                         s.a = r;
