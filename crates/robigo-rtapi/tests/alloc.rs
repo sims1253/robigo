@@ -16,6 +16,9 @@ fn allocated(src: &str, profile: Option<&str>) -> (u64, u64) {
     if std::env::var("ROBIGO_GC_STATS").as_deref() != Ok("check") {
         cmd.env("ROBIGO_GC_STATS", "1");
     }
+    // (the observation modes rt-ci runs the tests under allocate per step
+    // on purpose: ROBIGO_NO_INPLACE=1 makes the loop value anew each time)
+    cmd.env_remove("ROBIGO_NO_INPLACE").env_remove("ROBIGO_MATERIALIZE");
     match profile {
         Some(p) => cmd.env("ROBIGO_RT_PROFILE", p),
         None => cmd.env_remove("ROBIGO_RT_PROFILE"),
