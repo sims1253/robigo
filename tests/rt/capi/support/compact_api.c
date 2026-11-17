@@ -40,3 +40,22 @@ SEXP rt_ca_rownames(SEXP rn) {
 SEXP rt_ca_lengthgets(SEXP x, SEXP n) {
     return lengthgets(x, asInteger(n));
 }
+
+// codes becomes a factor (levels lev, in place, as C may do), and the row
+// names of a 2 x 1 matrix through setAttrib's dimnames
+SEXP rt_ca_factor_dimnames(SEXP codes, SEXP lev) {
+    setAttrib(codes, R_LevelsSymbol, lev);
+    setAttrib(codes, R_ClassSymbol, mkString("factor"));
+    SEXP m = PROTECT(allocVector(INTSXP, 2));
+    INTEGER(m)[0] = 10;
+    INTEGER(m)[1] = 20;
+    SEXP d = PROTECT(allocVector(INTSXP, 2));
+    INTEGER(d)[0] = 2;
+    INTEGER(d)[1] = 1;
+    setAttrib(m, R_DimSymbol, d);
+    SEXP dn = PROTECT(allocVector(VECSXP, 2));
+    SET_VECTOR_ELT(dn, 0, codes);
+    setAttrib(m, R_DimNamesSymbol, dn);
+    UNPROTECT(3);
+    return m;
+}
