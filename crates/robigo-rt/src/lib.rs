@@ -24,6 +24,14 @@
 //! console loop, printing through [`print`], error and warning reports),
 //! which the `robigo-rt` binary runs.
 //!
+//! # Serialization and lazy-load databases (M3's L1)
+//!
+//! [`serialize`] is serialize.c: the formats, `WriteItem` and `ReadItem`,
+//! the persistent-name hooks, `saveRDS`/`readRDS`'s internals and the
+//! lazy-load database's (`lazyLoadDBfetch`, which base's databases are read
+//! through). [`connections`] is the part of connections.c they need: the
+//! isolate's connection table, `file`, `gzfile`, `gzcon` and `close`.
+//!
 //! The `robigo` binary does not depend on this crate (`scripts/rt-ci.py`
 //! checks it), which is why pull requests that touch only the runtime's
 //! crates run CI's `rt` slice.
@@ -41,6 +49,7 @@ pub mod cenv;
 pub mod code;
 pub mod compile;
 pub mod conditions;
+pub mod connections;
 pub mod deparse;
 pub mod dispatch;
 mod early;
@@ -62,6 +71,7 @@ pub mod prims;
 pub mod print;
 pub mod reader;
 pub mod repl;
+pub mod serialize;
 mod specials;
 pub mod vm;
 
@@ -133,6 +143,9 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         folds: Default::default(),
         base_src: Default::default(),
     });
+    // the connection table and the lazy-load databases' cache (L1)
+    cx.set_ext(connections::Connections::new());
+    cx.set_ext(serialize::RdbCache::default());
     // the evaluator, closure application and forcing behind the isolate's
     // hook table (B1's), for the code below `rt`: environments' active
     // bindings and `findFun`'s promises, the builtins' callbacks

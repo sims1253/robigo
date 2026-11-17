@@ -1,0 +1,46 @@
+[1] TRUE
+$version
+[1] 3
+
+$writer_version
+[1] "4.6.2"
+
+$min_reader_version
+[1] "3.5.0"
+
+$format
+[1] "xdr"
+
+$native_encoding
+[1] "UTF-8"
+
+[1] TRUE
+[1] TRUE
+[1] "ascii"
+$version
+[1] 2
+
+$writer_version
+[1] "4.6.2"
+
+$min_reader_version
+[1] "2.3.0"
+
+$format
+[1] "xdr"
+
+[1] "gzfile"     "connection"
+[1] "rb"
+[1] TRUE
+NULL
+[1] "gzcon"      "connection"
+[1] TRUE
+NULL
+[1] 0
+[1] TRUE
+NULL
+[1] 1.5  NA
+[1] TRUE
+[1] "cannot open compressed file '/nonexistent/robigo.rds', probable reason 'No such file or directory'"
+[1] "cannot open the connection"
+[1] "'file' must be a non-empty character string"
