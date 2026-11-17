@@ -220,7 +220,17 @@ fn normalize(b: &Built) -> Vec<Norm> {
             continue;
         }
         let (ks, jumps) = kinds(i.op);
-        let fields = [i.a, i.b, i.c, i.e, i.f, i.g];
+        let mut fields = [i.a, i.b, i.c, i.e, i.f, i.g];
+        // an inlined simple `.Internal` wrapper (cmpSimpleInternal): the
+        // port keeps the wrapper's call, the one an error reports, in `g`
+        // beside the inlined call `e`; GNU R's byte code has the wrapper's
+        // call as the call constant itself. Both report the same call, so
+        // the call compared is the reported one (the builtin, `f`, and the
+        // arguments' registers are compared as they are).
+        if i.op == Op::Internal && i.g != 0 {
+            fields[3] = i.g;
+            fields[5] = 0;
+        }
         let mut v = Norm {
             op: match i.op {
                 Op::LdScalar => Op::LdConst,

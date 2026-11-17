@@ -23,7 +23,7 @@
 mod common;
 
 use robigo_rt::serialize::{Format, serialize_bytes, unserialize_bytes};
-use robigo_rtcore::{Args, Cx, Global, Locale, Out, RResult, Ref, Root, View};
+use robigo_rtcore::{Args, Cx, Global, Locale, Out, OwnedIsolate, RResult, Ref, Root, View};
 use std::cell::RefCell;
 use std::io::Read;
 
@@ -382,4 +382,98 @@ fn oracle_base_closures_translate() {
     eprintln!("{report}");
     assert!(closures > 1000, "{report}");
     assert!(failures.is_empty(), "{report}");
+}
+
+/// V3's crosscheck on base's installed code (`ROBIGO_BC_CROSSCHECK`, CI's
+/// rdb step; docs/ledger/g3/2026-11-17-v3-bcodesxp-ir.md): every closure of
+/// base.rdb compared with what the from-source compiler makes of its
+/// source ([`robigo_rt::compile::crosscheck_installed`]), reported. The
+/// session has base loaded with every binding forced: GNU R compiled
+/// base's installed code with all of base defined (makebasedb.R), so the
+/// compile decides on base's definitions as cmp.R did (a simple
+/// `.Internal` wrapper's, a binding's kind). A definition robigo-rt cannot
+/// evaluate yet stays a promise, and the compile that needs it is skipped.
+/// (The translation test keeps its session without base: there a missing
+/// primitive is a gap it counts, not a stub that hides it.)
+#[test]
+fn oracle_base_closures_crosscheck() {
+    let Some(lib) = std::env::var_os("ROBIGO_ORACLE_LIBRARY") else {
+        eprintln!("ROBIGO_ORACLE_LIBRARY is not set: skipped (scripts/rt-rdb-roundtrip.sh sets it)");
+        return;
+    };
+    if std::env::var_os("ROBIGO_BC_CROSSCHECK").is_none_or(|v| v.is_empty() || v == "0") {
+        eprintln!("ROBIGO_BC_CROSSCHECK is not set: skipped");
+        return;
+    }
+    let dir = std::path::PathBuf::from(lib).join("base").join("R");
+    let read = |ext: &str| {
+        let f = dir.join(format!("base.{ext}"));
+        std::fs::read(&f).unwrap_or_else(|e| panic!("{}: {e}", f.display()))
+    };
+    let (rdb, rdx) = (read("rdb"), read("rdx"));
+    let src = robigo_rt::base::source_dir().unwrap_or_else(|e| panic!("{e}"));
+    let mut iso = OwnedIsolate::new();
+    robigo_rt::install_with(iso.cx(), None);
+    robigo_rt::base::load(iso.cx(), &src).unwrap_or_else(|e| panic!("{e}"));
+    eval_src(
+        iso.cx(),
+        ".Internal(options(show.error.messages = FALSE))
+         for (n in .Internal(ls(baseenv(), TRUE, FALSE)))
+             tryCatch(.Internal(get(n, baseenv(), \"any\", FALSE)), error = function(e) NULL)",
+    );
+    let cx = iso.cx();
+    cx.set_locale(Locale { utf8: false, collate_c: true });
+    robigo_rt::define_builtin(cx, "rdb_in_hook", in_hook, 1, 1);
+    robigo_rt::define_builtin(cx, "..getNamespace", get_namespace, 1, 2);
+    let mut closures = 0usize;
+    let mut failures = Vec::new();
+    cx.scope(|cx, s| {
+        let records = rdx_records(cx, "base", &rdx, rdb.len());
+        let o = s.out(cx);
+        let hin = o.root();
+        let ex = s.out(cx);
+        let exr = ex.root();
+        robigo_rt::lower::parse(cx, "rdb_in_hook", ex).expect("parsing the hook's name");
+        let e = s.root(cx, exr.bind(cx).as_vector::<Ref<'_>>().expect("parse() gives an expression").get(0));
+        let g = s.root(cx, cx.global_env());
+        robigo_rt::eval(cx, e, g, o).expect("the hook");
+        for (name, off, len) in &records {
+            let data = inflate_record(&format!("base.rdb: {name}"), &rdb[*off..off + len]);
+            cx.scope(|cx, s| {
+                let o = s.out(cx);
+                let v = o.root();
+                if let Err(e) = unserialize_bytes(cx, data, Some(hin), o) {
+                    failures.push(format!("{name}: unserialize: {}", common::message(cx, e)));
+                    return;
+                }
+                if !matches!(v.bind(cx).view(), View::Closure(_)) {
+                    return;
+                }
+                closures += 1;
+                if let Err(e) = robigo_rt::compile::crosscheck_installed(cx, v) {
+                    failures.push(format!("{name}: {}", common::message(cx, e)));
+                }
+            });
+        }
+    });
+    eprintln!("base.rdb crosscheck: {closures} closures, {} failure(s)", failures.len());
+    assert!(closures > 1000, "{closures} closures");
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Evaluate every expression of `src` in the global environment, each
+/// error ignored.
+fn eval_src(cx: &mut Cx, src: &str) {
+    cx.scope(|cx, s| {
+        let ex = s.out(cx);
+        let exr = ex.root();
+        robigo_rt::lower::parse(cx, src, ex).expect("parsing");
+        let n = exr.bind(cx).as_vector::<Ref<'_>>().expect("parse() gives an expression").len();
+        let g = s.root(cx, cx.global_env());
+        for i in 0..n {
+            let e = s.root(cx, exr.bind(cx).as_vector::<Ref<'_>>().unwrap().get(i));
+            let o = s.out(cx);
+            let _ = robigo_rt::eval(cx, e, g, o);
+        }
+    });
 }

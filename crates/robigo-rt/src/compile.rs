@@ -284,8 +284,8 @@ unsafe fn crosscheck_closure(cx: &Cx, f: Sexp, installed: bool) -> Result<(), Ne
 /// running any; each translation through the [`crate::code::Verified`]
 /// gate. What each one stopped at (an opcode or a primitive robigo-rt does
 /// not have, code the translation cannot follow, a refusal of the gate);
-/// none when all of them translate. Under `ROBIGO_BC_CROSSCHECK` the
-/// closure is compared too, as base's installed code.
+/// none when all of them translate. (The crosscheck has its own entry,
+/// [`crosscheck_installed`], in a session with base loaded.)
 #[doc(hidden)]
 pub fn translation_gaps(cx: &mut Cx, f: Root<'_>) -> RResult<Vec<String>> {
     let mut gaps = Vec::new();
@@ -295,9 +295,6 @@ pub fn translation_gaps(cx: &mut Cx, f: Root<'_>) -> RResult<Vec<String>> {
         // from it; nothing collects in this interval.
         unsafe {
             let f = f.bind(cx).sexp();
-            if crosscheck::enabled() && f.cdr().typ() == BCODESXP {
-                crosscheck_closure(cx, f, true)?;
-            }
             let st = prims::state(cx);
             let mut todo = vec![f.cdr()];
             while let Some(bc) = todo.pop() {
@@ -340,6 +337,30 @@ pub fn translation_gaps(cx: &mut Cx, f: Root<'_>) -> RResult<Vec<String>> {
         }
     })?;
     Ok(gaps)
+}
+
+/// For the base.rdb crosscheck test: under `ROBIGO_BC_CROSSCHECK`, closure
+/// `f`'s byte code (base's installed code) compared with what the
+/// from-source compiler makes of its source ([`crosscheck`]), reported.
+/// The session has base loaded with every binding forced, as GNU R's
+/// build had when it compiled base (makebasedb.R), so the compile decides
+/// on base's definitions as cmp.R did. Nothing otherwise.
+#[doc(hidden)]
+pub fn crosscheck_installed(cx: &mut Cx, f: Root<'_>) -> RResult<()> {
+    if !crosscheck::enabled() {
+        return Ok(());
+    }
+    attempt(cx, |cx| {
+        // SAFETY: a rooted closure; nothing collects in this interval.
+        unsafe {
+            let f = f.bind(cx).sexp();
+            if f.cdr().typ() == BCODESXP {
+                crosscheck_closure(cx, f, true)?;
+            }
+        }
+        Ok(cx.nil().sexp())
+    })?;
+    Ok(())
 }
 
 /// The code of the byte code `bc` evaluated as itself (`eval(bc, rho)`,
