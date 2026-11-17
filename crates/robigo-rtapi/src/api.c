@@ -126,6 +126,8 @@ __attribute__((noreturn)) void robigo_rtapi_error(const char *msg);
 __attribute__((noreturn)) void robigo_rtapi_errorcall(SEXP call, const char *msg);
 /* "%s() can only be applied to a '%s', not a '%s'" with R_typeToChar(x) */
 __attribute__((noreturn)) void robigo_rtapi_type_error(const char *fun, const char *what, SEXP x);
+/* CHKVEC's "cannot get data pointer of '%s' objects" */
+__attribute__((noreturn)) void robigo_rtapi_dataptr_type_error(SEXP x);
 /* "attempt access index %lld/%lld in %s" (set: "attempt to set index") */
 __attribute__((noreturn)) void robigo_rtapi_index_error(const char *fun, R_xlen_t i, R_xlen_t n);
 __attribute__((noreturn)) void robigo_rtapi_set_index_error(const char *fun, R_xlen_t i, R_xlen_t n);
@@ -145,6 +147,12 @@ void robigo_rtapi_warningcall(SEXP call, const char *msg);
 void robigo_rtapi_print(int to_stderr, const char *buf, size_t n);
 int robigo_rtapi_warn_length(void);
 R_xlen_t robigo_rtapi_length_slow(SEXP x);
+/* an ALTREP vector's Dataptr, Dataptr_or_null and Elt methods (altrep.rs):
+ * robigo's own classes; a package class's are not yet */
+void *robigo_rtapi_altvec_dataptr(SEXP x);
+void *robigo_rtapi_altvec_dataptr_or_null(SEXP x);
+int robigo_rtapi_altinteger_elt(SEXP x, R_xlen_t i);
+double robigo_rtapi_altreal_elt(SEXP x, R_xlen_t i);
 int robigo_rtapi_unwind_protect(SEXP (*fun)(void *), void *data, SEXP cont, SEXP *result);
 #ifndef R_INTERNALS_H_
 /* never returns: the exit `cont` owns continues (unwind.rs) */
@@ -256,10 +264,69 @@ int (OBJECT)(SEXP x)
 static inline void *dataptr(SEXP x)
 {
     if (RB_IS_ALTREP(x))
-        robigo_rtapi_not_yet("DATAPTR of an ALTREP object");
+        return robigo_rtapi_altvec_dataptr(x); /* ALTVEC_DATAPTR */
     if (RB_LEN(x) == 0)
         return (void *) 1;
     return RB_DATA(x);
+}
+
+/* CHKVEC (Rinlinedfuns.h, STRICT_TYPECHECK) */
+static inline void chkvec(SEXP x)
+{
+    switch (RB_TYPE(x)) {
+    case CHARSXP: case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case STRSXP: case VECSXP:
+    case EXPRSXP: case RAWSXP: case WEAKREFSXP:
+        break;
+    default:
+        robigo_rtapi_dataptr_type_error(x);
+    }
+}
+
+void *(DATAPTR)(SEXP x)
+{
+    chkvec(x);
+    if (!RB_IS_ALTREP(x) && RB_TYPE(x) == CHARSXP)
+        return RB_DATA(x); /* (a CHARSXP's trailing zero byte) */
+    return dataptr(x);
+}
+
+const void *(DATAPTR_RO)(SEXP x)
+{
+    chkvec(x);
+    if (RB_IS_ALTREP(x))
+        return robigo_rtapi_altvec_dataptr(x); /* ALTVEC_DATAPTR_RO */
+    return RB_DATA(x);
+}
+
+const void *(DATAPTR_OR_NULL)(SEXP x)
+{
+    chkvec(x);
+    if (RB_IS_ALTREP(x))
+        return robigo_rtapi_altvec_dataptr_or_null(x);
+    return RB_DATA(x);
+}
+
+/* CHECK_BOUNDS_ELT: GNU R's test is i > XLENGTH(x) */
+static inline void check_bounds_elt(SEXP x, R_xlen_t i)
+{
+    if (i < 0 || i > XLENGTH(x))
+        robigo_rtapi_error("subscript out of bounds");
+}
+
+int (INTEGER_ELT)(SEXP x, R_xlen_t i)
+{
+    if (RB_TYPE(x) != INTSXP && RB_TYPE(x) != LGLSXP)
+        robigo_rtapi_error("bad INTSXP vector");
+    check_bounds_elt(x, i);
+    return RB_IS_ALTREP(x) ? robigo_rtapi_altinteger_elt(x, i) : ((int *) RB_DATA(x))[i];
+}
+
+double (REAL_ELT)(SEXP x, R_xlen_t i)
+{
+    if (RB_TYPE(x) != REALSXP)
+        robigo_rtapi_error("bad REALSXP vector");
+    check_bounds_elt(x, i);
+    return RB_IS_ALTREP(x) ? robigo_rtapi_altreal_elt(x, i) : ((double *) RB_DATA(x))[i];
 }
 
 int *(LOGICAL)(SEXP x)
