@@ -1,0 +1,15 @@
+[1]      10403        624 -169270483
+[1]      10403        624 -169270483
+[1] "Mersenne-Twister" "Inversion"        "Rejection"       
+[1] 10403 10404 10405 10406
+[1]      10403        624 -224501472
+Error: '.Random.seed' has wrong length 
+[1] "Wichmann-Hill" "Inversion"     "Rejection"    
+[1] 10400 10401 10402 10403
+[1] "Marsaglia-Multicarry"   "Buggy Kinderman-Ramage" "Rounding"              
+[1] 1
+Warning: '.Random.seed[1]' is not a valid integer, so ignored 
+[1] "Mersenne-Twister" "Inversion"        "Rejection"       
+[1] 10403
+Error: 'kind' must be a character string (RNG to be used). 
+[1] "Mersenne-Twister" "Inversion"        "Rejection"       

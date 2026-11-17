@@ -7,8 +7,8 @@
 
 use crate::{
     apply, arith, array, attrib, bind, builtin, bytecode, character, coerce, complex, context, cum, datetime, envir,
-    errors, grep, identical, is, logic, math, options, paste, relop, seq, sort, sprintf, subset, summary, sysutils,
-    unique, util, version,
+    errors, grep, identical, is, logic, math, options, paste, relop, rng, seq, sort, sprintf, subset, summary,
+    sysutils, unique, util, version,
 };
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
@@ -271,7 +271,7 @@ macro_rules! op {
 
 use crate::kernel::arith::{DIVOP, IDIVOP, MINUSOP, MODOP, PLUSOP, POWOP, TIMESOP};
 use crate::kernel::relop::{EQOP, GEOP, GTOP, LEOP, LTOP, NEOP};
-use Effect::{Calls, Env, External, Pure};
+use Effect::{Calls, Env, External, Pure, Rng};
 use PpKind::{Binary, Binary2, Unary};
 
 /// The registry: names.c's rows for the builtins of this crate, in names.c's
@@ -404,6 +404,9 @@ pub static BUILTINS: &[Builtin] = &[
     op!("cospi", 47, math::do_math1, 1, 1, FUNCALL, Pure),
     op!("sinpi", 48, math::do_math1, 1, 1, FUNCALL, Pure),
     op!("tanpi", 49, math::do_math1, 1, 1, FUNCALL, Pure),
+    // RNG.c
+    row("RNGkind", rng::do_rngkind, 0, 11, 3, FUNCALL, Rng),
+    row("set.seed", rng::do_setseed, 0, 111, 4, FUNCALL, Rng),
     // context.c
     op!("sys.parent", 1, context::do_sys, 11, -1, FUNCALL, Env),
     op!("sys.call", 2, context::do_sys, 11, -1, FUNCALL, Env),
@@ -515,6 +518,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("lockBinding", envir::do_lock_bnd, 0, 111, 2, FUNCALL, Env),
     row("unlockBinding", envir::do_unlock_bnd, 1, 111, 2, FUNCALL, Env),
     row("bindingIsLocked", envir::do_bnd_is_locked, 0, 11, 2, FUNCALL, Env),
+    row("environmentIsLocked", envir::do_env_is_locked, 0, 11, 1, FUNCALL, Env),
     row("makeActiveBinding", envir::do_mk_active_bnd, 0, 111, 3, FUNCALL, Env),
     row("env.profile", envir::do_envprofile, 0, 211, 1, FUNCALL, Env),
     row("...elt", envir::do_dots_elt, 0, 201, 1, FUNCALL, Env),
@@ -543,6 +547,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("Version", version::do_version, 0, 11, 0, FUNCALL, Pure),
     row("file.path", paste::do_filepath, 0, 11, 2, FUNCALL, Pure),
     // util.c
+    row("compareNumericVersion", util::do_compare_numeric_version, 0, 11, 2, FUNCALL, Pure),
     row("Encoding", util::do_encoding, 0, 11, 1, FUNCALL, Pure),
     row("setEncoding", util::do_setencoding, 0, 11, 2, FUNCALL, Pure),
     // sort.c, radixsort.c, altclasses.c's wrap_meta

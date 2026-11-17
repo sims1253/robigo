@@ -1,0 +1,12 @@
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] FALSE
+[1] FALSE
+[1] "cannot add binding of 'zzz' to the base environment"
+[1] "cannot change value of locked binding for 'paste'"
+[1] "cannot change value of locked binding for 'paste'"
+[1] "ab"
+[1] 5
+[1] 1
+[1] "from g"
