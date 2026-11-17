@@ -390,9 +390,11 @@ impl Cx {
 
     /// GNU R's `warning(msg)`: reported against the context's call, as
     /// [`Cx::error`] finds it (the innermost record as R sees the chain, or
-    /// the one below a `CTXT_BUILTIN` record).
+    /// the one below a `CTXT_BUILTIN` record), one trailing newline removed.
     // R: errors.c:Rf_warning
     pub fn warning(&mut self, msg: &str) -> RResult<()> {
+        // a message ending in a newline loses it
+        let msg = msg.strip_suffix('\n').unwrap_or(msg);
         let call = self.error_context_call().sexp();
         self.scope(|cx, s| {
             // SAFETY: a field of a live record, read in this interval.
