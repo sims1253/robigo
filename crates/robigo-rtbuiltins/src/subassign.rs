@@ -678,6 +678,28 @@ pub fn do_subassign_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root
                     vector_assign(cx, call, x, m, y)?
                 }
                 1 => vector_assign(cx, call, x, args.root(1), y)?,
+                // PROBE-ONLY stand-in (never committed): x[i, j] <- y as x[k] <- y
+                2 if attrib::dims(x.bind(cx)).is_some_and(|d| d.len() == 2) => {
+                    let (nr, nc) = {
+                        let d = attrib::dims(x.bind(cx)).unwrap();
+                        (d[0].max(0) as usize, d[1].max(0) as usize)
+                    };
+                    let (a1, a2) = (args.root(1), args.root(2));
+                    let ri = crate::subset::array_subscript(cx, x, a1, nr, call, 0)?;
+                    let ci = crate::subset::array_subscript(cx, x, a2, nc, call, 1)?;
+                    let mut k: Vec<f64> = Vec::new();
+                    for &c in &ci {
+                        for &r in &ri {
+                            k.push(((c - 1) as f64) * nr as f64 + r as f64);
+                        }
+                    }
+                    let kv = s.capture(cx, |cx, o| {
+                        cx.build(o, |cx| {
+                            Ok(cx.alloc_copy::<f64>(&k)?.finish().into())
+                        })
+                    })?;
+                    vector_assign(cx, call, x, kv, y)?
+                }
                 _ => return Err(util::not_yet(cx, Some(call), "'[<-' with matrix or array subscripts")),
             },
             // errorNotSubsettable(x)

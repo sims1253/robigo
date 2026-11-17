@@ -1159,7 +1159,20 @@ pub fn do_as_environment(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<
         }
         NILSXP => Err(cx.error_call(Some(call), "using 'as.environment(NULL)' is defunct")),
         OBJSXP => Err(not_yet(cx, Some(call), "as.environment() of an S4 object (R_getS4DataSlot)")),
-        VECSXP => Err(not_yet(cx, Some(call), "as.environment() of a list (list2env)")),
+        // PROBE-ONLY port of envir.c's VECSXP case: eval(lang4(list2env, arg, NULL, emptyenv), rho)
+        VECSXP => cx.scope(|cx, s| {
+            let a = s.root(cx, args.get(cx, 0));
+            let c = s.capture(cx, |cx, o| {
+                cx.build(o, |cx| {
+                    let f: robigo_rtcore::Ref<'_> = cx.install(b"list2env")?.into();
+                    let t = cx.cons(cx.empty_env(), cx.nil())?;
+                    let t = cx.cons(cx.nil(), t)?;
+                    let t = cx.cons(a.bind(cx), t)?;
+                    cx.lcons(f, t)
+                })
+            })?;
+            cx.eval(c, env, out)
+        }),
         _ => Err(cx.error_call(Some(call), "invalid object for 'as.environment'")),
     }
 }

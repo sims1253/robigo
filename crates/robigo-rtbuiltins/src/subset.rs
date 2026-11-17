@@ -434,7 +434,7 @@ pub fn do_subset_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_
 /// as [`subscript::NA_IDX`]) subscript `s` selects along dimension `d` of
 /// extent `nd` of `x`.
 // R: subscript.c:int_arraySubscript
-fn array_subscript(cx: &mut Cx, x: Root<'_>, s: Root<'_>, nd: usize, call: Root<'_>, dd: usize) -> RResult<Vec<i64>> {
+pub(crate) fn array_subscript(cx: &mut Cx, x: Root<'_>, s: Root<'_>, nd: usize, call: Root<'_>, dd: usize) -> RResult<Vec<i64>> {
     use subscript::IntErr;
     let r = {
         let sv = s.bind(cx);
