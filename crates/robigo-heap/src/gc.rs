@@ -3323,25 +3323,37 @@ mod tests {
     /// node limit reached (requests refused); torture; an injected failure.
     #[test]
     fn alloc_node_and_alloc_object_agree() {
-        type State = (usize, usize, usize, u64, bool, usize, bool, i32, i32, bool, usize, usize);
+        /// What an allocation leaves behind, compared after each request.
+        #[derive(Debug, PartialEq)]
+        struct State {
+            alloc_since_gc: usize,
+            nodes_in_use: usize,
+            valloc: usize,
+            fail_seen: u64,
+            fail_armed: bool,
+            due: bool,
+            due_at: usize,
+            poll_due: bool,
+            force_wait: i32,
+            force_gap: i32,
+            n_trigger: usize,
+            v_trigger: usize,
+        }
         fn state(c: &Core) -> State {
-            let poll = c.poll_word().load(Ordering::Relaxed) & GC_DUE != 0;
-            let (s, wait, gap) = (&c.sizes, c.force_wait, c.force_gap);
-            let counts = (c.alloc_since_gc, s.nodes_in_use, s.valloc, c.fail_seen);
-            (
-                counts.0,
-                counts.1,
-                counts.2,
-                counts.3,
-                c.due,
-                c.due_at,
-                poll,
-                wait,
-                gap,
-                c.fail_armed,
-                s.n_trigger,
-                s.v_trigger,
-            )
+            State {
+                alloc_since_gc: c.alloc_since_gc,
+                nodes_in_use: c.sizes.nodes_in_use,
+                valloc: c.sizes.valloc,
+                fail_seen: c.fail_seen,
+                fail_armed: c.fail_armed,
+                due: c.due,
+                due_at: c.due_at,
+                poll_due: c.poll_word().load(Ordering::Relaxed) & GC_DUE != 0,
+                force_wait: c.force_wait,
+                force_gap: c.force_gap,
+                n_trigger: c.sizes.n_trigger,
+                v_trigger: c.sizes.v_trigger,
+            }
         }
         #[derive(Clone, Copy, PartialEq)]
         enum Setup {
@@ -3392,11 +3404,16 @@ mod tests {
                     _ => panic!("one path refused request {i} and the other did not"),
                 };
                 assert_eq!(x.addr() % BLOCK, y.addr() % BLOCK, "the same slot, at request {i}");
-                // SAFETY: fresh nodes; the header and field words.
+                // SAFETY: `x` and `y` are nodes just returned by a successful
+                // allocation and nothing has collected since (no safepoint in
+                // this loop), so both are live and node-sized: their first
+                // header word and their CAR, CDR, TAG and attribute words may
+                // be read, and `car_a`/`car_b` (live vectors of each heap)
+                // have a header whose count may be read.
                 unsafe {
                     let w = |z: Sexp, k: usize| *(z.0 as *const u64).add(k);
                     assert_eq!(w(x, 0), w(y, 0), "the header's first word, at request {i}");
-                    assert_eq!(x.attrib_raw() == nil_a, y.attrib_raw() == nil_b);
+                    assert_eq!(x.attrib_raw() == nil_a, y.attrib_raw() == nil_b, "the attributes, at request {i}");
                     assert_eq!((x.car() == car_a, x.cdr() == nil_a, x.tag() == nil_a), (true, true, true));
                     assert_eq!((y.car() == car_b, y.cdr() == nil_b, y.tag() == nil_b), (true, true, true));
                     assert_eq!(car_a.refcnt(), car_b.refcnt(), "the car's count, at request {i}");
