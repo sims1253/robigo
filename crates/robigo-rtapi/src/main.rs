@@ -21,6 +21,14 @@ fn main() {
     std::process::exit(run(std::env::args_os().skip(1).collect(), &home));
 }
 
+/// The `R_HOME` in effect, and where it came from.
+struct RHome {
+    path: std::path::PathBuf,
+    /// Neither an install's tree nor the checkout's has `library/base`:
+    /// `path` is the checkout's, which `scripts/rt-home.sh` makes.
+    missing_default: bool,
+}
+
 /// The front end's `R_HOME` (m2m3-plan F7b): robigo-rt's R_HOME tree, as
 /// GNU R's `R` script exports its own with `R_SHARE_DIR`, `R_INCLUDE_DIR`
 /// and `R_DOC_DIR` under it. An installed robigo-rt's is
@@ -34,14 +42,17 @@ fn main() {
 /// `R_HOME` in effect, as the script assigns all three. Returns that
 /// `R_HOME`.
 // R: scripts/R.sh.in
-fn init_r_home() -> std::path::PathBuf {
+fn init_r_home() -> RHome {
     let mut vars = Vec::new();
-    let home = match std::env::var_os("R_HOME").filter(|h| !h.is_empty()) {
-        Some(h) => std::path::PathBuf::from(h),
+    let (home, missing_default) = match std::env::var_os("R_HOME").filter(|h| !h.is_empty()) {
+        Some(h) => (std::path::PathBuf::from(h), false),
         None => {
-            let h = default_r_home();
+            let (h, missing) = match default_r_home() {
+                DefaultHome::Found(h) => (h, false),
+                DefaultHome::Missing(h) => (h, true),
+            };
             vars.push(("R_HOME", h.clone()));
-            h
+            (h, missing)
         }
     };
     for (var, dir) in [("R_SHARE_DIR", "share"), ("R_INCLUDE_DIR", "include"), ("R_DOC_DIR", "doc")] {
@@ -57,29 +68,67 @@ fn init_r_home() -> std::path::PathBuf {
             std::env::set_var(var, value)
         };
     }
-    home
+    RHome { path: home, missing_default }
 }
 
 /// robigo-rt's R_HOME tree when the environment names none: an install's,
-/// else the build checkout's.
-fn default_r_home() -> std::path::PathBuf {
+/// else the build checkout's, each only when it has `library/base`.
+/// `Missing` with the checkout's when neither has: it is still exported
+/// (so that `R.home()` names where the tree belongs), and what reads the
+/// tree says it is missing ([`missing_tree`]).
+fn default_r_home() -> DefaultHome {
     let installed = std::env::current_exe()
         .ok()
         .and_then(|e| Some(e.parent()?.parent()?.join("lib/robigo")))
-        .filter(|h| h.join("library/base").is_dir());
-    let home = installed.unwrap_or_else(|| {
-        let checkout = match option_env!("ROBIGO_WORKTREE") {
-            Some(w) if !w.is_empty() => std::path::PathBuf::from(w),
-            _ => std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
-        };
-        checkout.join(".robigo/rt-home")
-    });
-    std::path::absolute(&home).unwrap_or(home)
+        .filter(|h| has_base(h));
+    if let Some(h) = installed {
+        return DefaultHome::Found(std::path::absolute(&h).unwrap_or(h));
+    }
+    let checkout = match option_env!("ROBIGO_WORKTREE") {
+        Some(w) if !w.is_empty() => std::path::PathBuf::from(w),
+        _ => std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
+    };
+    let h = checkout.join(".robigo/rt-home");
+    let h = std::path::absolute(&h).unwrap_or(h);
+    if has_base(&h) { DefaultHome::Found(h) } else { DefaultHome::Missing(h) }
+}
+
+/// [`default_r_home`]'s answer: a tree with base's files, or where the
+/// checkout's belongs when none has them.
+enum DefaultHome {
+    Found(std::path::PathBuf),
+    Missing(std::path::PathBuf),
+}
+
+/// Whether `h` holds base's tree (what stage 0 reads): `library/base` is a
+/// directory.
+fn has_base(h: &std::path::Path) -> bool {
+    h.join("library/base").is_dir()
+}
+
+/// The start-up error for an `R_HOME` without base's tree, when stage 0
+/// is to read it: GNU R's script's "R_HOME ('...') not found" (it checks
+/// its own home at start-up; robigo-rt's M1 loader reads no tree, so the
+/// check waits for what does), with the way to make the tree.
+// R: scripts/R.sh.in ("R_HOME may have moved, so check")
+fn missing_tree(home: &RHome) -> Option<String> {
+    if has_base(&home.path) {
+        return None;
+    }
+    let p = home.path.display();
+    Some(if home.missing_default {
+        format!(
+            "R_HOME ('{p}') not found: no installed tree (<prefix>/lib/robigo) has library/base, \
+             and the checkout's is not made (scripts/rt-home.sh)"
+        )
+    } else {
+        format!("R_HOME ('{p}') not found: it has no library/base")
+    })
 }
 
 /// The front end over `args`, with `home` the `R_HOME` that
 /// [`init_r_home`] has put in the environment.
-fn run(args: Vec<std::ffi::OsString>, home: &std::path::Path) -> i32 {
+fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     // Rscript's options: R's start-up options, then FILE or -e EXPR, then
     // the script's arguments (commandArgs(), not yet read by anything).
     // Or R's: start-up options with -f FILE among them, then --args.
@@ -197,13 +246,6 @@ fn run(args: Vec<std::ffi::OsString>, home: &std::path::Path) -> i32 {
         return 2;
     };
 
-    let dir = match robigo_rt::base::source_dir() {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("robigo-rt: {e}");
-            return 2;
-        }
-    };
     let mut iso = OwnedIsolate::new();
     let cx = iso.cx();
     // R_NoEcho before InitOptions, whose `echo` is its negation
@@ -215,7 +257,11 @@ fn run(args: Vec<std::ffi::OsString>, home: &std::path::Path) -> i32 {
     // R_HOME's library/base/R/base: scripts/rt-home.sh) beside M1's loader
     // until L5 boots from the databases
     if std::env::var_os("ROBIGO_RT_BOOT").is_some_and(|v| v == "stage0") {
-        match robigo_rt::base::stage0(cx, home) {
+        if let Some(e) = missing_tree(home) {
+            eprintln!("robigo-rt: {e}");
+            return 2;
+        }
+        match robigo_rt::base::stage0(cx, &home.path) {
             Ok(st) => {
                 if std::env::var_os("ROBIGO_BOOT_VERBOSE").is_some() {
                     for (line, m) in &st.failed {
@@ -229,9 +275,19 @@ fn run(args: Vec<std::ffi::OsString>, home: &std::path::Path) -> i32 {
                 return 2;
             }
         }
-    } else if let Err(e) = robigo_rt::base::load(cx, &dir) {
-        eprintln!("robigo-rt: loading base: {e}");
-        return 2;
+    } else {
+        // (the pinned sources M1's loader reads: stage 0 reads R_HOME's)
+        let dir = match robigo_rt::base::source_dir() {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("robigo-rt: {e}");
+                return 2;
+            }
+        };
+        if let Err(e) = robigo_rt::base::load(cx, &dir) {
+            eprintln!("robigo-rt: loading base: {e}");
+            return 2;
+        }
     }
     // the isolate's console is the process's stdout and stderr
     // E9's ROBIGO_FAIL_ALLOC_AT counts the script's allocations, not base's

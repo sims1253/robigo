@@ -77,7 +77,7 @@ shlib <- function(dir, c_file) {
   src <- basename(c_file)
   log <- "shlib.log"
   st <- system2("R", c("CMD", "SHLIB", src), stdout = log, stderr = log)
-  if (st != 0L && any(grepl("SET_TYPEOF", readLines(log)))) {
+  if (st != 0L && any(grepl("SET_TYPEOF", readLines(log), useBytes = TRUE))) {
     writeLines('#define SET_TYPEOF(x, t) Rf_error("SET_TYPEOF is not in GNU R 4.6\'s C API")', "shim.h")
     unlink(sub("\\.c$", ".o", src))
     st <- system2("R", c("CMD", "SHLIB", src), stdout = log, stderr = log,
@@ -101,9 +101,11 @@ run <- function(dir, script, rargs, env = character()) {
 # What a comparison sees. GNU R's "stack imbalance" warning names the
 # protect stack's depth, which the tracer's own objects change (capi
 # extptr's C leaves one object protected); the warning itself must match.
+# By bytes: a transcript may hold bytes that are not valid in the session's
+# locale (conditions/native-bytes), which gsub refuses under UTF-8.
 mask <- function(x) {
   if (!is.raw(x)) return(format(x))
-  gsub("(stack imbalance in '[^']*', )[0-9]+ then [0-9]+", "\\1N then M", rawToChar(x))
+  gsub("(stack imbalance in '[^']*', )[0-9]+ then [0-9]+", "\\1N then M", rawToChar(x), useBytes = TRUE)
 }
 
 trace_r <- file.path(root, "scripts", "base-subset-trace.R")

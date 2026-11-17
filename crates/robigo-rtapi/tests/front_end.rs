@@ -4,14 +4,37 @@
 use std::path::Path;
 use std::process::Command;
 
-/// `R.home()` and the three directories, one per line, from `robigo-rt -e`
-/// with the environment `env` adds to one without any of them.
-fn homes(env: &[(&str, &str)]) -> Vec<String> {
+/// `robigo-rt` with the environment `env` adds to one without `R_HOME`, the
+/// three directories, or the runtime's own controls that change what it
+/// writes or how it starts (as cli.rs's `run` drops them): rt-ci runs the
+/// tests under those, and they are not the front end's to test.
+fn front_end<V: AsRef<std::ffi::OsStr>>(env: &[(&str, V)]) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
-    for v in ["R_HOME", "R_SHARE_DIR", "R_INCLUDE_DIR", "R_DOC_DIR"] {
+    for v in [
+        "R_HOME",
+        "R_SHARE_DIR",
+        "R_INCLUDE_DIR",
+        "R_DOC_DIR",
+        "ROBIGO_FAIL_ALLOC_AT",
+        "ROBIGO_GC_STATS",
+        "ROBIGO_BOOT_VERBOSE",
+        "ROBIGO_RT_BOOT",
+    ] {
         cmd.env_remove(v);
     }
-    cmd.envs(env.iter().copied());
+    // the pin report to stderr (`1`); to a file it stays, as rt-ci's check
+    // (cli.rs's `run`)
+    if std::env::var_os("ROBIGO_GC_PIN_REPORT").is_some_and(|v| v == "1") {
+        cmd.env_remove("ROBIGO_GC_PIN_REPORT");
+    }
+    cmd.envs(env.iter().map(|(k, v)| (k, v)));
+    cmd
+}
+
+/// `R.home()` and the three directories, one per line, from `robigo-rt -e`
+/// under [`front_end`]'s environment.
+fn homes(env: &[(&str, &str)]) -> Vec<String> {
+    let mut cmd = front_end(env);
     cmd.args(["-e", r#"cat(R.home(), Sys.getenv(c("R_SHARE_DIR", "R_INCLUDE_DIR", "R_DOC_DIR")), sep = "\n")"#]);
     let out = cmd.output().expect("running robigo-rt");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -65,5 +88,24 @@ fn an_empty_r_home_or_directory_is_unset() {
     assert_eq!(
         homes(&[("R_HOME", "/opt/x"), ("R_SHARE_DIR", "")]),
         ["/opt/x", "/opt/x/share", "/opt/x/include", "/opt/x/doc"]
+    );
+}
+
+/// Stage 0 reads base's source under `R_HOME`: an `R_HOME` without that
+/// tree fails at start-up with GNU R's script's message, not with a file
+/// error deeper in.
+#[test]
+fn stage0_says_a_missing_tree_is_missing() {
+    let dir = std::env::temp_dir().join(format!("robigo-rt-no-home-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = front_end(&[("R_HOME", dir.as_os_str()), ("ROBIGO_RT_BOOT", std::ffi::OsStr::new("stage0"))])
+        .args(["-e", "1"])
+        .output()
+        .expect("running robigo-rt");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!("robigo-rt: R_HOME ('{}') not found: it has no library/base\n", dir.display())
     );
 }

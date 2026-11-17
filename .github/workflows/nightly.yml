@@ -68,6 +68,57 @@ jobs:
             echo "main $sha already has a nightly; skipping"
           fi
 
+  # H8: CI's rt job runs the conformance slice under gctorture with the
+  # moving collector's young policy (the young objects at each collection,
+  # everything at every N-th: scripts/rt-ci.py's GC_MOVE_YOUNG). Here every
+  # collection moves everything, so a path run once is still caught by some
+  # run. The rt job's image: main's CI made it for this tree.
+  rt-image:
+    needs: check
+    if: needs.check.outputs.proceed == 'true'
+    runs-on: ubuntu-24.04
+    # a checkout and a hash of the image inputs: seconds
+    timeout-minutes: 10
+    outputs:
+      rust: ${{ steps.image.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+      - id: image
+        run: scripts/ci-image.sh refs | tee -a "$GITHUB_OUTPUT"
+
+  rt-full-move:
+    needs: [check, rt-image]
+    if: needs.check.outputs.proceed == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ${{ needs.rt-image.outputs.rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+      - uses: ./.github/actions/setup
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: rt
+          save-if: false
+      - uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
+      - name: rt conformance, every collection moving everything (gctorture)
+        run: python3 scripts/rt-ci.py --full-move
+
   # Profile-guided optimization needs GNU R 4.5.0's library to train on, and
   # the oracle's container has it. Its newer glibc must not reach the binaries,
   # so only the profile leaves this job. macOS has no such R and stays without
