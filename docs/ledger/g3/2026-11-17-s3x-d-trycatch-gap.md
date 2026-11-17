@@ -17,8 +17,8 @@
 - **The row is 1.38x.** robigo-rt takes 116,758 instructions per
   iteration and GNU R 84,911. Meeting the bar needs 31.8k fewer, about
   27%.
-- **The gap is the error branch.** The row alternates a value and an
-  error. The new `conditions` rows split it into its branches and its
+- **The error branch holds most of the gap.** The row alternates a value
+  and an error. The new `conditions` rows split it into its branches and its
   neighbours. They are reported, and no bar cites them:
 
   | row | robigo-rt | GNU R | ratio |
@@ -30,8 +30,14 @@
   | `withcalling-ok`: a calling handler, no condition | 20,942 | 15,339 | 1.37x |
   | `try-err`: try(silent = TRUE) of an error | 510,182 | 484,131 | 1.05x |
 
-  Without an error, tryCatch is already below the bar. An error costs
-  about 53k more than GNU R's, which is about 26.5k of the row's 31.8k.
+  Without an error, tryCatch is already below the bar (1.8k less than
+  GNU R). An error costs 53.1k more than GNU R's. Half of each, the
+  row's mix, is 25.6k of the row's 31.8k.
+  - The other 6.2k is not in either branch alone. GNU R's mixed row costs
+    5.1k less than the mean of its two branches (84,911 against 90,048);
+    robigo-rt's costs 1.1k more (116,758 against 115,697). Nothing here
+    says why. X9 and X7 should measure the mixed row as well as the
+    branches.
 - **Where an error's instructions go** (callgrind self cost per error,
   `trycatch-err`):
   - The condition system is not the gap. GNU R's errors.c and context.c
@@ -74,8 +80,17 @@
     `do_makelist`, paste, `c`, `attributes<-`, `names`. These are
     port-faithful speedups. Each is measured on its own row and on
     `trycatch-err`, and no other perf-rt row may get worse.
-  - X/P1, package X9: frames and `define_var` (about 14k), and argument
-    matching (about 6.6k). The raw callgrind files, the row scripts and
+  - X/P1, package X9: the frames, the variables and the argument
+    matching, against GNU R per error:
+    - frames: 14.1k more;
+    - variables: 3.7k more in all. `define_var` alone is 5.1k more, and
+      the lookups are 1.4k less;
+    - argument matching: 6.4k more.
+
+    The foreman's assignment quoted "frames and `define_var` (about 14k)"
+    and "argument matching (about 6.6k)" from the first report. Those
+    figures had two errors: the frames alone are 14.1k, and the argument
+    matching is 6.4k. The raw callgrind files, the row scripts and
     the binaries for both sides are in
     `~/.cache/robigo-research/x9-trycatch/` (its README.md).
   - X7 (D11): the compile on a fresh call's first eval.
