@@ -1,0 +1,65 @@
+{
+ "meta": {
+  "cycles": true,
+  "gnur": "/cache/gnur-stock-local/lib/R/bin/exec/R",
+  "robigo": "/work/.robigo/s3x-bins/main-a9c4",
+  "robigo_env": {
+   "ROBIGO_COMPILE": "1"
+  },
+  "robigo_identity": {
+   "build_id": "23991091d8f19f2056c1ac4d40eae3df7a018f13",
+   "checkout": null,
+   "mtime": "2026-11-17T07:38:54Z",
+   "path": "/work/.robigo/s3x-bins/main-a9c4",
+   "sha256": "8c2f0fbd6119e3615a5ada72eca4a9013960eec97c02472331794eb9bedf3d4e",
+   "stale": null
+  },
+  "rows": "benchmarks/rt/calls-rows.toml",
+  "shifts": null,
+  "valgrind": "valgrind"
+ },
+ "rows": {
+  "try-err": {
+   "gnur_est_cycles": 687415.5,
+   "gnur_instr": 484131.45,
+   "n": 200,
+   "robigo_est_cycles": 606386.465,
+   "robigo_instr": 510182.315
+  },
+  "trycatch": {
+   "gnur_est_cycles": 102664.703,
+   "gnur_instr": 84911.353,
+   "n": 1000,
+   "robigo_est_cycles": 140079.44,
+   "robigo_instr": 116757.81
+  },
+  "trycatch-bare": {
+   "gnur_est_cycles": 2440.73575,
+   "gnur_instr": 2149.61575,
+   "n": 4000,
+   "robigo_est_cycles": 1241.726,
+   "robigo_instr": 1226.9185
+  },
+  "trycatch-err": {
+   "gnur_est_cycles": 151145.304,
+   "gnur_instr": 126671.774,
+   "n": 1000,
+   "robigo_est_cycles": 215307.937,
+   "robigo_instr": 179759.687
+  },
+  "trycatch-ok": {
+   "gnur_est_cycles": 86323.84,
+   "gnur_instr": 53423.81,
+   "n": 1000,
+   "robigo_est_cycles": 61872.305,
+   "robigo_instr": 51632.855
+  },
+  "withcalling-ok": {
+   "gnur_est_cycles": 19409.268,
+   "gnur_instr": 15338.638,
+   "n": 1000,
+   "robigo_est_cycles": 24326.713,
+   "robigo_instr": 20942.493
+  }
+ }
+}

@@ -27,6 +27,11 @@
 #   layout, envs, growth, cold, d0
 #          the M2/M3 decisions' rows (D8 and D13; D2u; D12; D11; D0's
 #          pilot), docs/ledger/g3/2026-11-17-m2m3-bars.md.
+#   conditions
+#          the trycatch row split into its branches and neighbours, reported
+#          only (no bar cites them): what X9 (frames, argument matching), X7
+#          (D11) and S3x-d measure against
+#          (docs/ledger/g3/2026-11-17-s3x-d-trycatch-gap.md).
 #
 # `address_sensitive = true` marks a row whose count follows where its strings
 # were allocated: GNU R's string hash, and robigo-rt's port of it, hashes a
@@ -129,6 +134,62 @@ safe <- function(x) tryCatch(if (x > 0) x else stop("neg"), error = function(err
 # be positive), so alternate instead: the same one-in-two mix at every N.
 body = 's <- s + safe(i %% 2L - 0.5)'
 n = 1000
+
+# --- the trycatch row's split (S3x-d): reported, no bar ----------------------
+
+[[row]]
+name = "trycatch-ok"
+group = "conditions"
+note = "safe(0.5): trycatch's row with no error, the value branch only"
+setup = '''
+s <- 0
+safe <- function(x) tryCatch(if (x > 0) x else stop("neg"), error = function(err) 0)
+'''
+body = 's <- s + safe(0.5)'
+n = 1000
+
+[[row]]
+name = "trycatch-err"
+group = "conditions"
+note = "safe(-0.5): trycatch's row with every call raising: stop(), the exiting handler, the handler's call"
+setup = '''
+s <- 0
+safe <- function(x) tryCatch(if (x > 0) x else stop("neg"), error = function(err) 0)
+'''
+body = 's <- s + safe(-0.5)'
+n = 1000
+
+[[row]]
+name = "trycatch-bare"
+group = "conditions"
+note = "safe(0.5) with no tryCatch: trycatch-ok's control, the call and its `if`"
+setup = '''
+s <- 0
+safe <- function(x) if (x > 0) x else 0
+'''
+body = 's <- s + safe(0.5)'
+n = 4000
+
+[[row]]
+name = "withcalling-ok"
+group = "conditions"
+note = "withCallingHandlers() with no condition: a calling handler established and dropped"
+setup = '''
+s <- 0
+safe <- function(x) withCallingHandlers(if (x > 0) x else 0, error = function(err) 0)
+'''
+body = 's <- s + safe(0.5)'
+n = 1000
+
+[[row]]
+name = "try-err"
+group = "conditions"
+note = "try(silent = TRUE) of an error: try's handler formats the message and the call into a try-error"
+setup = '''
+safe <- function(x) try(if (x > 0) x else stop("neg"), silent = TRUE)
+'''
+body = 'v <- safe(-0.5)'
+n = 200
 
 # --- suite programs as N/2N loops (E2) ---------------------------------------
 
