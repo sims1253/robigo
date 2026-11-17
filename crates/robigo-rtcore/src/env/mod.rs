@@ -124,6 +124,12 @@ pub(crate) struct EnvState {
     search_epoch: Cell<u64>,
     #[trace(skip = "a flag")]
     dirty_image: Cell<bool>,
+    /// INTERIM(L5): how deep the wide base loader's lazy definitions run
+    /// ([`Cx::building_base`]): GNU R's build ran them before
+    /// `setup_Rmainloop` locked base, so they change base's bindings past
+    /// the binding locks (never adding one)
+    #[trace(skip = "a counter")]
+    building_base: Cell<u32>,
 }
 
 const INIT: &str = "robigo: the isolate's environments";
@@ -179,6 +185,7 @@ impl EnvState {
                 residues: promise::Residues::default(),
                 pool: recycle::FramePool::default(),
                 search_epoch: Cell::new(0),
+                building_base: Cell::new(0),
                 dirty_image: Cell::new(false),
             }
         }
@@ -1538,7 +1545,9 @@ impl Cx {
         // nothing run since; `value` is rooted.
         unsafe {
             let bits = l.bits(iso);
-            if bits & BINDING_LOCK != 0 {
+            // (INTERIM(L5): the wide base's definitions, run late, change
+            // base's bindings as GNU R's build did before the locks)
+            if bits & BINDING_LOCK != 0 && !(matches!(l.at(), At::Base(_)) && iso.envs().building_base.get() > 0) {
                 let msg = format!("cannot change value of locked binding for '{}'", sym_name(l.symbol()));
                 return Err(env_error(self, &msg));
             }
@@ -1767,12 +1776,56 @@ impl Cx {
         // SAFETY: rooted, live.
         unsafe {
             if r.gp() & FRAME_LOCK != 0 && iso.envs().cell(s).value.is_null() {
+                if iso.envs().building_base.get() > 0 {
+                    let msg = format!(
+                        "robigo: base's lazy definitions add '{}' to the locked base environment, which GNU R's build bound before the lock (INTERIM(L5))",
+                        sym_name(s)
+                    );
+                    return Err(env_error(self, &msg));
+                }
                 let msg = format!("cannot add binding of '{}' to the base environment", sym_name(s));
                 return Err(env_error(self, &msg));
             }
             flush_global_cache(iso, s);
         }
         self.set_binding_value(Loc::base(s), value, r, false)
+    }
+
+    /// GNU R's `SET_SYMVALUE(sym, value)`: `value` stored as `sym`'s base
+    /// binding with no lock or active check, as GNU R's C keeps
+    /// `.Last.value`, `last.warning` and `.Traceback` (base is locked after
+    /// the system profile). Panics on a non-symbol.
+    // R: memory.c:SET_SYMVALUE
+    pub fn set_symvalue(&mut self, sym: Root<'_>, value: Root<'_>) {
+        let (s, v) = (sym.bind(self).sexp(), value.bind(self).sexp());
+        let iso = self.iso();
+        // SAFETY: rooted live objects of this heap (a symbol: checked).
+        unsafe {
+            assert!(s.typ() == SYMSXP, "robigo: SET_SYMVALUE of a non-symbol");
+            flush_global_cache(iso, s);
+            let l = Loc::base(s);
+            // base's version, as a function binding's change bumps it in
+            // `set_binding_value` (the S3 method memo reads it)
+            if l.holds_fn_like(iso) || fn_like(iso, v) {
+                bump(iso, iso.envs().base);
+            }
+            l.store(iso, v);
+        }
+    }
+
+    /// INTERIM(L5): run `f` as the wide base loader's lazy definitions run
+    /// (robigo-rt's `base::base_fetch`): GNU R's build ran base's code
+    /// before `setup_Rmainloop` locked base, so while `f` runs a binding of
+    /// base changes past its lock. Adding a binding to the locked base
+    /// still fails, naming the loader. L5's boot from the databases deletes
+    /// this with the loader.
+    pub fn building_base<T>(&mut self, f: impl FnOnce(&mut Cx) -> T) -> T {
+        let depth = &self.iso().envs().building_base;
+        depth.set(depth.get() + 1);
+        let r = f(self);
+        let depth = &self.iso().envs().building_base;
+        depth.set(depth.get() - 1);
+        r
     }
 
     /// `Rf_ReplIteration`'s record of a top-level expression's value:
@@ -1783,12 +1836,8 @@ impl Cx {
     // R: main.c:Rf_ReplIteration
     pub fn set_last_value(&mut self, value: Root<'_>) -> RResult<()> {
         let lv = self.iso().rsyms[crate::RSym::LastValue as usize];
-        self.scope(|cx, sc| {
-            // SAFETY: a symbol interned with the isolate (immortal).
-            let sym = sc.root(cx, unsafe { Ref::from_sexp(lv, cx) });
-            let base = sc.root(cx, cx.base_env());
-            cx.define_var(sym, value, base)
-        })?;
+        // SAFETY: a symbol interned with the isolate (immortal).
+        self.scope(|cx, sc| cx.set_symvalue(sc.root(cx, unsafe { Ref::from_sexp(lv, cx) }), value));
         let v = value.bind(self).sexp();
         // SAFETY: rooted, live; GNU R's count raise.
         unsafe {

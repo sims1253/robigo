@@ -623,8 +623,9 @@ pub(crate) fn make_prims(cx: &mut Cx, defs: &[PrimDef], first: usize) -> (Vec<Gl
                 // SAFETY: an immortal symbol of this heap.
                 let sr = s.root(cx, unsafe { Ref::from_sexp(sym, cx) });
                 let v = s.root(cx, g.bind(cx));
-                let base = s.root(cx, cx.base_env());
-                cx.define_var(sr, v, base).expect("robigo: binding a primitive in base");
+                // SET_SYMVALUE(install(name), prim), as names.c binds them
+                // (no lock check: a definition after the boot locked base)
+                cx.set_symvalue(sr, v);
             });
         }
         objs.push(g);
