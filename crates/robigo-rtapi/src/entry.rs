@@ -25,15 +25,36 @@
 //! Exports that cannot collect, exit or run R code (accessors, `Rprintf`)
 //! are plain `extern "C"` functions or C (`api.c`), with no stub.
 //!
-//! Elsewhere than x86-64 the registers are spilled into the segment node
-//! instead and the node's address is `lo` (the heap's documented fallback:
-//! the body's frame above the node is scanned too).
+//! The machine entries are x86-64 SysV only: other targets fail to compile
+//! (a naked stub per target is the way to add one; a register spill into
+//! the body's frame would put a Rust frame in the C segment, which §3 rules
+//! out).
+//!
+//! Two assumptions outside the Rust Reference are trusted here, as GNU R's
+//! own C trusts them: a `longjmp` over Rust frames that hold nothing to
+//! drop (RFC 2945's "plain old frames"; [`run`], `native.rs`), and a C++
+//! exception stopping at a frame without unwind tables (libgcc's
+//! behaviour), so it never unwinds through a body.
+
+#[cfg(not(target_arch = "x86_64"))]
+compile_error!(
+    "robigo-rtapi's machine entries (entry.rs) exist for x86-64 SysV only; another target needs its own naked stub"
+);
 
 use robigo_rtcore::{Cx, RResult, Ref, Root, ScanSegment, Scope, Sexp};
 use std::ffi::{c_char, c_int, c_uint, c_void};
 
 /// One argument of an export, as its body receives it.
-pub trait CArg<'s>: Copy {
+///
+/// # Safety
+/// The type decides the export's ABI, which the naked stub relies on: it is
+/// a scalar of at most 8 bytes that x86-64 SysV passes in one register, an
+/// integer register exactly when [`CArg::INT`] is true and an SSE register
+/// otherwise. A type passed in memory or in two registers (a struct, a
+/// 16-byte value) breaks the stub's register hand-over and the caller's
+/// saved registers. [`entry!`] checks the size and the register counts; the
+/// class it cannot check.
+pub unsafe trait CArg<'s>: Copy {
     /// Passed in an integer register (x86-64 SysV's INTEGER class).
     const INT: bool;
     /// What the body sees.
@@ -43,7 +64,8 @@ pub trait CArg<'s>: Copy {
     fn enter(self, cx: &mut Cx, s: Scope<'s>) -> Self::Body;
 }
 
-impl<'s> CArg<'s> for Sexp {
+// SAFETY: a pointer, one integer register.
+unsafe impl<'s> CArg<'s> for Sexp {
     const INT: bool = true;
     type Body = Root<'s>;
     #[inline(always)]
@@ -62,7 +84,8 @@ impl<'s> CArg<'s> for Sexp {
 #[derive(Clone, Copy, Debug)]
 pub struct OrNull(pub Sexp);
 
-impl<'s> CArg<'s> for OrNull {
+// SAFETY: a transparent pointer, one integer register.
+unsafe impl<'s> CArg<'s> for OrNull {
     const INT: bool = true;
     type Body = Option<Root<'s>>;
     #[inline(always)]
@@ -73,7 +96,8 @@ impl<'s> CArg<'s> for OrNull {
 
 macro_rules! plain_args {
     ($int:expr => $($t:ty),*) => {
-        $(impl<'s> CArg<'s> for $t {
+        // SAFETY: C scalars of at most 8 bytes, in the register class `$int` says.
+        $(unsafe impl<'s> CArg<'s> for $t {
             const INT: bool = $int;
             type Body = $t;
             #[inline(always)]
@@ -86,7 +110,8 @@ macro_rules! plain_args {
 plain_args!(true => c_int, c_uint, isize, usize, *const c_char, *mut c_void, *const c_void, *mut c_int, *mut Sexp);
 plain_args!(false => f64);
 
-impl<'s, A, B> CArg<'s> for unsafe extern "C" fn(A) -> B {
+// SAFETY: a function pointer, one integer register.
+unsafe impl<'s, A, B> CArg<'s> for unsafe extern "C" fn(A) -> B {
     const INT: bool = true;
     type Body = Self;
     #[inline(always)]
@@ -95,7 +120,8 @@ impl<'s, A, B> CArg<'s> for unsafe extern "C" fn(A) -> B {
     }
 }
 
-impl<'s, A, B, C> CArg<'s> for unsafe extern "C" fn(A, B) -> C {
+// SAFETY: a function pointer, one integer register.
+unsafe impl<'s, A, B, C> CArg<'s> for unsafe extern "C" fn(A, B) -> C {
     const INT: bool = true;
     type Body = Self;
     #[inline(always)]
@@ -105,12 +131,19 @@ impl<'s, A, B, C> CArg<'s> for unsafe extern "C" fn(A, B) -> C {
 }
 
 /// What an export's body returns, as C receives it.
-pub trait CRet {
+///
+/// # Safety
+/// `C` is returned in rax, rdx or xmm0 alone: a scalar of at most 8 bytes,
+/// or `()`. A type returned through memory (a struct of more than 16 bytes)
+/// makes the caller pass a hidden pointer in rdi, which the stub overwrites
+/// with `lo`. [`entry!`] checks the size.
+pub unsafe trait CRet {
     type C;
     fn to_c(self, cx: &Cx) -> Self::C;
 }
 
-impl CRet for Sexp {
+// SAFETY: a pointer, returned in rax.
+unsafe impl CRet for Sexp {
     type C = Sexp;
     /// A result object is C's from here (held by a C local, pinned by the
     /// conservative scan, protected by C if it lives on): marked as seen by
@@ -124,7 +157,8 @@ impl CRet for Sexp {
 
 macro_rules! plain_ret {
     ($($t:ty),*) => {
-        $(impl CRet for $t {
+        // SAFETY: scalars of at most 8 bytes, or `()`, returned in rax or xmm0.
+        $(unsafe impl CRet for $t {
             type C = $t;
             #[inline(always)]
             fn to_c(self, _: &Cx) -> $t {
@@ -140,7 +174,12 @@ plain_ret!((), c_int, c_uint, isize, usize, f64, *mut c_void, *const c_char);
 /// `f`'s result to C, or jump with its exit.
 ///
 /// # Safety
-/// Called only by an [`entry!`] body, with the `lo` its stub passed.
+/// - `lo` is the address of the lowest callee-saved register the export's
+///   stub pushed, just below its return address in C's frame;
+/// - `seg` lives in the caller's frame, below `lo`, until this returns;
+/// - the frames between the stub and this call hold nothing to drop (an
+///   exit leaves through them with `longjmp`);
+/// - the thread's isolate is current, with C's segment open.
 #[inline(always)]
 pub unsafe fn run<T: CRet>(lo: usize, seg: &mut ScanSegment, f: impl FnOnce(&mut Cx) -> RResult<T>) -> T::C {
     // SAFETY: the stub's contract: `lo` is the lowest register it pushed,
@@ -210,10 +249,18 @@ macro_rules! __entry_one {
             0 $(+ (<$t as $crate::entry::CArg<'static>>::INT as usize))* == $n,
             concat!("robigo-rtapi: ", stringify!($name), "'s argument-count class is not ", stringify!($n))
         );
+        // the stub hands `lo` over in a register: every argument and the
+        // result fit one, and the SSE arguments the eight xmm registers
+        const _: () = assert!(
+            true $(&& ::core::mem::size_of::<$t>() <= 8)*
+                && ::core::mem::size_of::<<$ret as $crate::entry::CRet>::C>() <= 8
+                && 0 $(+ (!<$t as $crate::entry::CArg<'static>>::INT as usize))* <= 8,
+            concat!("robigo-rtapi: ", stringify!($name), " has an argument or result the machine entry cannot pass")
+        );
         $(#[$m])*
         #[unsafe(no_mangle)]
         #[unsafe(naked)]
-        pub extern "C" fn $name($($a: $t),*) -> $ret {
+        pub unsafe extern "C" fn $name($($a: $t),*) -> $ret {
             // push the callee-saved registers C left in place, hand the
             // lowest one's address to the body, keep the call 16-byte
             // aligned; the epilogue leaves rax/rdx/xmm0 as the body set them
@@ -239,13 +286,16 @@ macro_rules! __entry_one {
             );
         }
         // the body, in a module of the export's name (a naked function holds
-        // its assembly only)
+        // its assembly only), with the class EXPORTS is checked against
         #[allow(non_snake_case)]
         #[doc(hidden)]
-        mod $name {
+        pub(crate) mod $name {
             #[allow(unused_imports)]
             use super::*;
-            pub(super) extern "C" fn body($($a: $t,)* lo: usize) -> $ret {
+            pub(crate) const CLASS: u8 = $n;
+            /// # Safety
+            /// Only the export's stub calls this, with `lo` as [`run`] states it.
+            pub(super) unsafe extern "C" fn body($($a: $t,)* lo: usize) -> $ret {
                 let mut seg = $crate::entry::ScanSegmentNode::new();
                 let f = |$cx: &mut ::robigo_rtcore::Cx| {
                     $cx.scope(|$cx, $s| -> ::robigo_rtcore::RResult<$ret> {
@@ -253,31 +303,11 @@ macro_rules! __entry_one {
                         $body
                     })
                 };
-                // SAFETY: called by this export's stub, which passes `lo`.
+                // SAFETY: this fn's contract is `run`'s: its stub passes `lo`,
+                // `seg` is in this frame, which holds nothing to drop when an
+                // exit leaves.
                 unsafe { $crate::entry::run(lo, seg.get(), f) }
             }
-        }
-    };
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __entry_one {
-    ($(#[$m:meta])* [$n:tt] fn $name:ident($($a:ident: $t:ty),*) -> $ret:ty => |$cx:ident, $s:ident| $body:block) => {
-        $(#[$m])*
-        #[unsafe(no_mangle)]
-        pub extern "C" fn $name($($a: $t),*) -> $ret {
-            let mut seg = $crate::entry::ScanSegmentNode::new();
-            let lo = seg.spill();
-            let f = |$cx: &mut ::robigo_rtcore::Cx| {
-                $cx.scope(|$cx, $s| -> ::robigo_rtcore::RResult<$ret> {
-                    $(let $a = $crate::entry::CArg::enter($a, $cx, $s);)*
-                    $body
-                })
-            };
-            // SAFETY: the registers are in the node, whose address is `lo`.
-            unsafe { $crate::entry::run(lo, seg.get(), f) }
         }
     };
 }
@@ -295,14 +325,6 @@ impl ScanSegmentNode {
     #[inline(always)]
     pub fn get(&mut self) -> &mut ScanSegment {
         &mut self.0
-    }
-
-    /// Spill the callee-saved registers into the node; its address is the
-    /// segment's low end (no machine entry: not x86-64).
-    #[inline(always)]
-    pub fn spill(&mut self) -> usize {
-        self.0.spill_registers();
-        &self.0 as *const ScanSegment as usize
     }
 }
 
