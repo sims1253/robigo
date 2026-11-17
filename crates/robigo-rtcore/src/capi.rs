@@ -28,7 +28,7 @@ use std::ffi::c_int;
 use std::ffi::{CStr, c_char};
 
 /// The symbol shortcuts' count (`ROBIGO_CAPI_SYMBOLS` in `robigo_capi.h`).
-pub const SYMBOLS: usize = 39;
+pub const SYMBOLS: usize = 41;
 
 /// GNU R's default protect stack size (`R_PPSSIZE`, Defn.h) and its red
 /// zone (`PP_REDZONE_SIZE`, memory.c): room the stack keeps past its size
@@ -57,8 +57,43 @@ pub struct CGlobals {
     pub(crate) ppsize: c_int,
     pub(crate) vstack: Cell<Sexp>,
     pub(crate) gc_move: Cell<c_int>,
+    /// GNU R's parser globals (Defn.h's `R_ParseError`,
+    /// `R_ParseContextLast`, `R_ParseContextLine`, `R_ParseErrorMsg`,
+    /// `R_ParseContext`, of GNU R's types and sizes): a native's parser
+    /// writes them, `parseError` reads them.
+    pub parse_error: Cell<c_int>,
+    pub parse_context_last: Cell<c_int>,
+    pub parse_context_line: Cell<c_int>,
+    pub parse_error_msg: std::cell::UnsafeCell<[u8; PARSE_ERROR_SIZE]>,
+    pub parse_context: std::cell::UnsafeCell<[u8; PARSE_CONTEXT_SIZE]>,
+    /// Defn.h's `mbcslocale` and `R_MB_CUR_MAX`: the isolate's `LC_CTYPE`'s
+    /// ([`CGlobals::set_locale`]).
+    pub(crate) mbcslocale: Cell<c_int>,
+    pub(crate) mb_cur_max: Cell<c_int>,
     /// the isolate (`*mut Isolate`, opaque to C)
     pub(crate) isolate: *mut std::ffi::c_void,
+}
+
+/// Defn.h's `PARSE_ERROR_SIZE`.
+pub const PARSE_ERROR_SIZE: usize = 256;
+/// Defn.h's `PARSE_CONTEXT_SIZE`.
+pub const PARSE_CONTEXT_SIZE: usize = 256;
+
+// GNU R's sizes (Defn.h), as capi.c asserts them too
+const _: () = {
+    assert!(std::mem::size_of::<[u8; PARSE_ERROR_SIZE]>() == 256);
+    assert!(std::mem::size_of::<[u8; PARSE_CONTEXT_SIZE]>() == 256);
+};
+
+impl CGlobals {
+    /// Set `mbcslocale` and `R_MB_CUR_MAX` from the locale: glibc's
+    /// `MB_CUR_MAX` is 6 in a UTF-8 `LC_CTYPE` and 1 in `C`.
+    // R: platform.c:R_check_locale (mbcslocale = MB_CUR_MAX > 1,
+    // R_MB_CUR_MAX = MB_CUR_MAX: the Solaris correction is not Linux's)
+    pub(crate) fn set_locale(&self, l: crate::Locale) {
+        self.mbcslocale.set(l.utf8 as c_int);
+        self.mb_cur_max.set(if l.utf8 { 6 } else { 1 });
+    }
 }
 
 #[cfg(not(miri))]
@@ -115,12 +150,14 @@ const CAPI_SYMBOLS: [RSym; SYMBOLS] = [
     RSym::DotPackageName,
     RSym::DotTarget,
     RSym::DotGeneric,
+    RSym::Srcfile,
+    RSym::Srcref,
 ];
 
 /// The layout table's length: size, alignment, the ten constants' offsets,
-/// the symbols', and the six fields after them (`capi.c` exports its own
+/// the symbols', and the thirteen fields after them (`capi.c` exports its own
 /// length, checked against this before the table is read).
-const LAYOUT_LEN: usize = 2 + 10 + SYMBOLS + 6;
+const LAYOUT_LEN: usize = 2 + 10 + SYMBOLS + 13;
 
 /// The layout `capi.c` exports: size, alignment, each field's offset.
 /// Miri runs no C: there the Rust table stands in.
@@ -159,6 +196,13 @@ fn rust_layout() -> Vec<usize> {
         offset_of!(CGlobals, ppsize),
         offset_of!(CGlobals, vstack),
         offset_of!(CGlobals, gc_move),
+        offset_of!(CGlobals, parse_error),
+        offset_of!(CGlobals, parse_context_last),
+        offset_of!(CGlobals, parse_context_line),
+        offset_of!(CGlobals, parse_error_msg),
+        offset_of!(CGlobals, parse_context),
+        offset_of!(CGlobals, mbcslocale),
+        offset_of!(CGlobals, mb_cur_max),
         offset_of!(CGlobals, isolate),
     ]);
     v
@@ -279,6 +323,13 @@ impl CApi {
                 ppsize: PPSTACK_SIZE as c_int,
                 vstack: Cell::new(nil),
                 gc_move: Cell::new(0),
+                parse_error: Cell::new(0),
+                parse_context_last: Cell::new(0),
+                parse_context_line: Cell::new(0),
+                parse_error_msg: std::cell::UnsafeCell::new([0; PARSE_ERROR_SIZE]),
+                parse_context: std::cell::UnsafeCell::new([0; PARSE_CONTEXT_SIZE]),
+                mbcslocale: Cell::new(0),
+                mb_cur_max: Cell::new(1),
                 isolate: std::ptr::null_mut(),
             },
             stack,
