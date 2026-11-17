@@ -41,6 +41,32 @@
     (a heap's own immortal CHARSXP).
   - robigo-rtcore: `isolates_on_two_threads_share_the_constants`, two
     isolates made at the same moment on two threads, also under Miri.
-- Verified: (pending)
-- Measured: (pending)
-- Review: (pending)
+- No safe API writes a published constant. Sol's review found four that
+  could, each reachable with R_NilValue, and each is fixed:
+  - `Cx::set_object_bit` and `Cx::set_s4_bit` leave an unchanged bit
+    unwritten and refuse to change a shared object's.
+  - `Cx::mark_assignment_call` marks only a call, the one type its bit is
+    read on.
+  - `jit::closure_profile` and `jitcache::cmpfun` assert a closure before
+    anything else.
+  - `install("")` does not mark the shared `""` as a PRINTNAME.
+  `shared.rs`'s `Sync` justification lists these writers.
+- The owner check: `Isolate::owns` tests its heap first, then R_NilValue by
+  address, then the shared id, all inline. A first form
+  (`h == heap || h.is_shared()`) cost s3 +1.2%, and an out-of-line cold
+  test of the shared id +1.7%: R_NilValue, now not of any heap, is checked
+  about 7 times per s3 iteration, and the call cost every caller registers.
+- Verified: the debug tests of robigo-heap, -rtcore, -rt, -rtbuiltins and
+  -rtapi; the full `scripts/rt-ci.py` (every mode, 2,800 injected
+  failures); Miri on robigo-rtcore (the two-thread test included: no data
+  race) and the heap's layout and bitmap tests; `scripts/lint.sh`.
+- Measured (this box, release, `scripts/perf.py rt-bars --main`): #811's
+  head `b649558e` (sha256 8aa5d877…) against this branch (611e40d8…), each
+  built in its own target from its own checkout. 0 failures. s3 +0.25%, the
+  other calls rows within ±0.08%, fib +0.01%, binarytrees +0.13%, e7-paste
+  +0.00%. Peak RSS is within ±0.8%.
+- Review: sol-loop, 4 rounds with gpt-6.1-sol on high (extended for
+  concurrency), approved. Rounds 1 to 3 found the writers above, and the
+  statistics' allocation types.
+- Not here: #816's deferred test that `alloc_node` and `alloc_object` agree.
+  This branch predates #816, so it goes in its own PR on main.
