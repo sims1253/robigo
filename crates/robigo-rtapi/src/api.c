@@ -482,19 +482,25 @@ void (R_set_altrep_data1)(SEXP x, SEXP v) { robigo_rtapi_store(x, &CAR_(x), v); 
 void (R_set_altrep_data2)(SEXP x, SEXP v) { robigo_rtapi_store(x, &CDR_(x), v); }
 
 SEXP robigo_rtapi_printname(SEXP x);
-/* a symbol's CAR is its PRINTNAME, as in GNU R (one field there) */
-SEXP (CAR)(SEXP e) { return seen(RB_TYPE(e) == SYMSXP ? robigo_rtapi_printname(e) : CAR_(e)); }
+/* GNU R's CAR read: a symbol's CAR is its PRINTNAME (one field there),
+ * which is the isolate's (H5): the symbol's own CAR is the arena's copy of
+ * the name, which C must never see. Every accessor's last CAR is this. */
+static inline SEXP car_of(SEXP e)
+{
+    return RB_TYPE(e) == SYMSXP ? robigo_rtapi_printname(e) : CAR_(e);
+}
+SEXP (CAR)(SEXP e) { return seen(car_of(e)); }
 SEXP (CDR)(SEXP e) { return seen(CDR_(e)); }
 SEXP (TAG)(SEXP e) { return seen(TAG_(e)); }
-SEXP (CAAR)(SEXP e) { return seen(CAR_(CAR_(e))); }
+SEXP (CAAR)(SEXP e) { return seen(car_of(CAR_(e))); }
 SEXP (CDAR)(SEXP e) { return seen(CDR_(CAR_(e))); }
-SEXP (CADR)(SEXP e) { return seen(CAR_(CDR_(e))); }
+SEXP (CADR)(SEXP e) { return seen(car_of(CDR_(e))); }
 SEXP (CDDR)(SEXP e) { return seen(CDR_(CDR_(e))); }
 SEXP (CDDDR)(SEXP e) { return seen(CDR_(CDR_(CDR_(e)))); }
-SEXP (CADDR)(SEXP e) { return seen(CAR_(CDR_(CDR_(e)))); }
-SEXP (CADDDR)(SEXP e) { return seen(CAR_(CDR_(CDR_(CDR_(e))))); }
-SEXP (CAD4R)(SEXP e) { return seen(CAR_(CDR_(CDR_(CDR_(CDR_(e)))))); }
-SEXP (CAD5R)(SEXP e) { return seen(CAR_(CDR_(CDR_(CDR_(CDR_(CDR_(e))))))); }
+SEXP (CADDR)(SEXP e) { return seen(car_of(CDR_(CDR_(e)))); }
+SEXP (CADDDR)(SEXP e) { return seen(car_of(CDR_(CDR_(CDR_(e))))); }
+SEXP (CAD4R)(SEXP e) { return seen(car_of(CDR_(CDR_(CDR_(CDR_(e)))))); }
+SEXP (CAD5R)(SEXP e) { return seen(car_of(CDR_(CDR_(CDR_(CDR_(CDR_(e))))))); }
 
 /* GNU R's CHKCONS(x) == NULL || x == R_NilValue: "bad value" */
 static inline void check_cons(SEXP x)
@@ -562,13 +568,9 @@ SEXP (SETCADDR)(SEXP x, SEXP y)
 
 /* ---- symbols -------------------------------------------------------- */
 
-/* a symbol's PRINTNAME is the isolate's (H5: the symbol is the process's,
- * its own CAR the arena's copy of the name, which C must never see) */
-SEXP robigo_rtapi_printname(SEXP x);
-
 SEXP (PRINTNAME)(SEXP x)
 {
-    return seen(RB_TYPE(x) == SYMSXP ? robigo_rtapi_printname(x) : CAR_(x));
+    return seen(car_of(x));
 }
 
 /* ---- external pointers and weak references ---------------------------- */

@@ -960,6 +960,16 @@ impl Core {
         }
     }
 
+    /// Whether this heap installed or made symbol `s` (it has its
+    /// PRINTNAME): an isolate holds no other symbol, as it holds no object
+    /// of another isolate.
+    #[inline]
+    pub fn has_symbol(&self, s: Sexp) -> bool {
+        // SAFETY: a symbol: its 4th word holds its id.
+        let id = unsafe { s.sym_id() } as usize;
+        self.printnames.get(id).is_some_and(|c| !c.is_null())
+    }
+
     fn set_printname(&mut self, s: Sexp, c: Sexp) {
         // SAFETY: a symbol.
         let id = unsafe { s.sym_id() } as usize;

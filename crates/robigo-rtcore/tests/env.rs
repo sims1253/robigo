@@ -975,6 +975,16 @@ fn a_symbol_is_every_isolates() {
     assert_ne!(va, vb, "each isolate's own base namespace");
     assert_eq!(va, ca.base_namespace().sexp());
     assert_eq!(vb, cb.base_namespace().sexp());
+    // a symbol only B has made is not A's: A refuses it, as it refuses B's
+    // objects (A has no PRINTNAME for it)
+    let only_b = cb.install(b"a_name_only_b_installed").unwrap();
+    let m = panic_message(|| ca.var_binding(only_b, g));
+    assert!(m.contains("another isolate"), "{m}");
+    let m = panic_message(|| ca.frame_binding(env_of(ca.base_env()), only_b));
+    assert!(m.contains("another isolate"), "{m}");
+    // once A installs the name, the same symbol is A's too
+    assert_eq!(ca.install(b"a_name_only_b_installed").unwrap().as_ref().sexp(), only_b.as_ref().sexp());
+    assert!(matches!(ca.var_binding(only_b, g), Lookup::Unbound));
 }
 
 fn panic_message<R>(f: impl FnOnce() -> R) -> String {

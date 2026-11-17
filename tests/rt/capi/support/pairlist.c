@@ -111,3 +111,20 @@ SEXP capi_car(SEXP x) {
 SEXP capi_cadr(SEXP x) {
     return CADR(x);
 }
+
+// A symbol's CAR, its CAR through a composite accessor, and its PRINTNAME
+// are one CHARSXP, the one mkChar gives for the name (robigo's symbols are
+// the process's and their PRINTNAMEs each isolate's: H5).
+SEXP capi_printname_identity(void) {
+    SEXP s = install("capi_printname_name");
+    SEXP l = PROTECT(cons(s, R_NilValue));
+    SEXP two = PROTECT(list2(R_NilValue, s));
+    SEXP pn = PRINTNAME(s);
+    SEXP ans = PROTECT(allocVector(LGLSXP, 4));
+    LOGICAL(ans)[0] = CAR(s) == pn;
+    LOGICAL(ans)[1] = CAAR(l) == pn;
+    LOGICAL(ans)[2] = CAR(CADR(two)) == pn;
+    LOGICAL(ans)[3] = mkChar("capi_printname_name") == pn;
+    UNPROTECT(3);
+    return ans;
+}
