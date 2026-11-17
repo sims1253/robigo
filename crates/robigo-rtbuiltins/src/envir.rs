@@ -52,7 +52,7 @@ fn mode_class(t: u8) -> u8 {
 /// `installTrChar(c)`: the symbol named by the native translation of `c`,
 /// rooted in `s`, with `install`'s errors.
 // R: sysutils.c:installTrChar, names.c:install
-fn install_tr<'s>(cx: &mut Cx, s: Scope<'s>, c: Root<'_>, i: usize) -> RResult<Root<'s>> {
+pub(crate) fn install_tr<'s>(cx: &mut Cx, s: Scope<'s>, c: Root<'_>, i: usize) -> RResult<Root<'s>> {
     let name: Vec<u8> = {
         let ch = c.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
         match to_native(crate::coerce::text(ch), cx.locale()) {

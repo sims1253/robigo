@@ -27,6 +27,11 @@
 //!   ROBIGO_CONF_SWEEP=1         also run the suites a column runs only for
 //!                               its marked cases (`RT`'s `tests/r`), to see
 //!                               which pass
+//!   ROBIGO_CONF_JOBS=n          cases run at once (default 2, for a cargo
+//!                               test that shares the machine with other
+//!                               test binaries; scripts/rt-ci.py's
+//!                               conformance steps run alone and use
+//!                               every CPU)
 //!   ROBIGO_CONF_TIMEOUT=secs    how long one case may run (default 20: a
 //!                               collector mode, gctorture or the moving
 //!                               collector, needs longer)
@@ -412,6 +417,13 @@ impl Options {
             Err(_) => BTreeMap::new(),
             Ok(s) => parse_case_timeouts(&s)?,
         };
+        let jobs = match std::env::var("ROBIGO_CONF_JOBS") {
+            Err(_) => 2,
+            Ok(s) => match s.parse::<usize>() {
+                Ok(n) if n > 0 => n,
+                _ => return Err(format!("ROBIGO_CONF_JOBS={s:?} is not a positive number")),
+            },
+        };
         Ok(Options {
             bin,
             version: r_version(std::env::var_os("ROBIGO_R_VERSION").as_deref(), column)?,
@@ -421,7 +433,7 @@ impl Options {
             sweep: flag("ROBIGO_CONF_SWEEP"),
             features,
             results: None,
-            jobs: 2,
+            jobs,
             timeout,
             case_timeouts,
         })
@@ -850,11 +862,17 @@ pub fn run(root: &Path, column: &Column, o: &Options) -> Result<Report, String> 
         return Err(format!("no enabled conformance scripts in {} match {:?}", suite_dirs(column), o.filter));
     }
 
+    // the workers take cases from the end: the ones given a longer timeout
+    // (ROBIGO_CONF_TIMEOUTS) are the slow ones, so they go last and start
+    // first, and the run does not wait on one that began late
+    jobs.sort_by_key(|(_, p)| o.case_timeouts.contains_key(&case_id(root, p)));
+    // no more workers than cases
+    let workers = o.jobs.min(jobs.len()).max(1);
     let record = std::sync::OnceLock::new();
     let queue = std::sync::Mutex::new(jobs);
     let results = std::sync::Mutex::new(Vec::new());
     std::thread::scope(|s| {
-        for _ in 0..o.jobs.max(1) {
+        for _ in 0..workers {
             s.spawn(|| {
                 loop {
                     let next = queue.lock().unwrap().pop();

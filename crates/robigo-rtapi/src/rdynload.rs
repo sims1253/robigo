@@ -1,23 +1,26 @@
 //! Rdynload.c: one isolate's table of loaded shared objects (`LoadedDLL`,
 //! base first, as `InitDynload` makes it), the routines registered in them
-//! (`R_init_base`'s, registration.c), `dyn.load` with GNU R's `dlopen`
+//! (`R_init_base`'s, registration.c, and a package's `R_init_<pkg>` through
+//! `R_registerRoutines`), `dyn.load` and `dyn.unload` with GNU R's `dlopen`
 //! flags, symbol lookup (`R_FindSymbol`, `R_dlsym`: registered routines
 //! first, then `dlsym` when the object allows dynamic lookup) and the R
 //! objects that describe them: `getLoadedDLLs()`, `getRegisteredRoutines`
 //! and `getSymbolInfo` (`getNativeSymbolInfo`).
 //!
 //! As GNU R does (`DLLInfoEptrs`), each object's `DLLInfoReference` is made
-//! once and kept rooted. GNU R also keeps the weak list `SymbolEptrs`, so
-//! that `dyn.unload` can clear the addresses of the references it handed
-//! out. robigo-rt has no `dyn.unload` yet: an object's record never moves
-//! or goes away (each is boxed), and every reference to it stays valid.
+//! once and kept rooted while the object is loaded, and the weak list
+//! `SymbolEptrs` holds the other external pointers handed out for it (its
+//! handle's, its routines'): `dyn.unload` clears them all before it frees
+//! the record, so a reference kept past the unload reads a null address.
+//! A record is boxed: its address, which C holds as `DllInfo *` and the
+//! references hold, does not move while it is loaded.
 
 use crate::errors::not_yet;
 use robigo_rt::prims::{Inline, Kind, PrimDef};
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Char, Cx, NeedGc, Out, RResult, RSym, Ref, Root, Sexp, View};
-use std::cell::RefCell;
-use std::ffi::{CStr, CString, c_void};
+use std::cell::{Cell, OnceCell, RefCell};
+use std::ffi::{CStr, CString, c_char, c_int, c_void};
 
 /// Rdynload.c's `MaxNumDLLs` default (`R_MAX_NUM_DLLS` unset, a large
 /// enough file descriptor limit).
@@ -43,7 +46,23 @@ pub struct Routine {
     pub num_args: i32,
 }
 
-/// One loaded shared object: GNU R's `DllInfo`.
+/// One interface's routines, as `R_registerRoutines` copied them.
+pub type Routines = Box<[Routine]>;
+
+/// The registered routines, by interface (`CSymbols`, `CallSymbols`,
+/// `FortranSymbols`, `ExternalSymbols`).
+#[derive(Default, Debug)]
+struct Tables {
+    c: Routines,
+    call: Routines,
+    fortran: Routines,
+    external: Routines,
+}
+
+/// One loaded shared object: GNU R's `DllInfo`. C sees it as the opaque
+/// `DllInfo *` (`R_ext/Rdynload.h`) that `R_init_<pkg>` gets: what C sets
+/// through it (`R_registerRoutines`, `R_useDynamicSymbols`,
+/// `R_forceSymbols`) is held in cells.
 #[derive(Debug)]
 pub struct DllInfo {
     /// The object's name: its file name without `.so`.
@@ -53,46 +72,81 @@ pub struct DllInfo {
     /// `dlopen`'s handle (null for base).
     pub handle: *mut c_void,
     /// `useDynamicLookup`: routines are found by `dlsym` too.
-    pub dynamic_lookup: bool,
+    dynamic_lookup: Cell<bool>,
     /// `forceSymbols`: its routines are not found by name alone.
-    pub force_symbols: bool,
-    /// The registered routines, by interface (`CSymbols`, `CallSymbols`,
-    /// `FortranSymbols`, `ExternalSymbols`).
-    pub c: Vec<Routine>,
-    pub call: Vec<Routine>,
-    pub fortran: Vec<Routine>,
-    pub external: Vec<Routine>,
+    force_symbols: Cell<bool>,
+    tables: RefCell<Tables>,
+    /// The tables a later `R_registerRoutines` replaced: GNU R leaks them,
+    /// and a lookup's result may still point into one; they go with the
+    /// record.
+    retired: RefCell<Vec<Tables>>,
     /// Its `DLLInfoReference`, made once and rooted while it is loaded
     /// (GNU R's `DLLInfoEptrs`): every `DLLInfo` of it shares the object.
-    eref: std::cell::OnceCell<robigo_rtcore::Global>,
+    eref: OnceCell<robigo_rtcore::Global>,
 }
 
 impl DllInfo {
-    fn routines(&self, t: SymType) -> &[Routine] {
-        match t {
-            SymType::C => &self.c,
-            SymType::Call => &self.call,
-            SymType::Fortran => &self.fortran,
-            SymType::External => &self.external,
-            SymType::Any => &[],
+    fn new(name: String, path: String, handle: *mut c_void, dynamic_lookup: bool, force_symbols: bool) -> DllInfo {
+        DllInfo {
+            name,
+            path,
+            handle,
+            dynamic_lookup: Cell::new(dynamic_lookup),
+            force_symbols: Cell::new(force_symbols),
+            tables: Default::default(),
+            retired: Default::default(),
+            eref: Default::default(),
         }
+    }
+
+    /// `useDynamicLookup`.
+    pub fn dynamic_lookup(&self) -> bool {
+        self.dynamic_lookup.get()
+    }
+
+    /// `forceSymbols`.
+    pub fn force_symbols(&self) -> bool {
+        self.force_symbols.get()
+    }
+
+    /// The routines registered for interface `t` (none for `Any`). The
+    /// elements stay where they are while the record is loaded: a lookup
+    /// keeps their addresses.
+    fn routines(&self, t: SymType) -> std::cell::Ref<'_, [Routine]> {
+        std::cell::Ref::map(self.tables.borrow(), |tb| match t {
+            SymType::C => &*tb.c,
+            SymType::Call => &*tb.call,
+            SymType::Fortran => &*tb.fortran,
+            SymType::External => &*tb.external,
+            SymType::Any => &[],
+        })
     }
 }
 
 /// An isolate's loaded objects (`LoadedDLL`, `CountDLL`), in load order,
-/// and the `.Call` routines found in them by name.
-#[derive(Default)]
+/// the weak list of the references handed out for them, and the `.Call`
+/// routines found in them by name.
 struct Dlls {
-    /// Boxed: a `DLLInfoReference` holds a record's address, which must not
-    /// move when the list grows.
+    /// Boxed: C and the `DLLInfoReference`s hold a record's address, which
+    /// must not move when the list grows.
     #[allow(clippy::vec_box)]
     list: RefCell<Vec<Box<DllInfo>>>,
+    /// `SymbolEptrs`: a cons whose cdr is the list of weak references, each
+    /// keyed by an external pointer handed out (a handle's, a routine's)
+    /// with the `DLLInfoReference` of its object as value.
+    symbol_eptrs: robigo_rtcore::Global,
+    /// `R_registerSymbolEptr`'s `cleancount`.
+    clean_count: Cell<u32>,
     /// `R_FindSymbol`'s `.Call` results by (name, `PACKAGE`): what the
     /// search over `list` returns, so cleared whenever `list` changes. (GNU
     /// R caches only on Windows, `CACHE_DLL_SYM`; elsewhere every `.Call`
     /// searches. Cached or not, the routine found is the same.)
-    found: RefCell<std::collections::HashMap<Vec<u8>, Vec<(Option<String>, usize)>, robigo_heap::BuildFx>>,
+    #[allow(clippy::type_complexity)]
+    found: RefCell<std::collections::HashMap<Vec<u8>, Vec<(Option<String>, usize, Found)>, robigo_heap::BuildFx>>,
 }
+
+/// `R_registerSymbolEptr`'s `MAXCOUNT`.
+const MAX_COUNT: u32 = 10;
 
 fn dlls(cx: &Cx) -> &Dlls {
     cx.ext::<Dlls>().expect("robigo-rtapi: install() was not called")
@@ -109,23 +163,19 @@ pub fn loaded_dlls(cx: &Cx) -> Vec<(String, String)> {
 // R: Rdynload.c:InitDynload, registration.c:R_init_base
 pub(crate) fn install(cx: &mut Cx) {
     let call = |name: &[u8], fun: *const c_void, num_args| Routine { name: name.to_vec(), fun, num_args };
-    let base = DllInfo {
-        name: "base".into(),
-        path: "base".into(),
-        handle: std::ptr::null_mut(),
-        // R_registerRoutines sets it from the handle; R_init_base's
-        // R_useDynamicSymbols(dll, FALSE) and R_forceSymbols(dll, TRUE)
-        dynamic_lookup: false,
-        force_symbols: true,
-        c: Vec::new(),
+    // R_registerRoutines sets useDynamicLookup from the handle; R_init_base's
+    // R_useDynamicSymbols(dll, FALSE) and R_forceSymbols(dll, TRUE)
+    let base = DllInfo::new("base".into(), "base".into(), std::ptr::null_mut(), false, true);
+    *base.tables.borrow_mut() = Tables {
+        c: Box::default(),
         // registration.c's callMethods
-        call: vec![
+        call: Box::new([
             call(b"R_addTaskCallback", robigo_rtapi_base_R_addTaskCallback as *const c_void, 4),
             call(b"R_getTaskCallbackNames", robigo_rtapi_base_R_getTaskCallbackNames as *const c_void, 0),
             call(b"R_removeTaskCallback", robigo_rtapi_base_R_removeTaskCallback as *const c_void, 1),
-        ],
+        ]),
         // registration.c's fortranMethods (LINPACK)
-        fortran: vec![
+        fortran: Box::new([
             call(b"dqrcf", base_fortran_dqrcf as *const c_void, 8),
             call(b"dqrdc2", base_fortran_dqrdc2 as *const c_void, 9),
             call(b"dqrqty", base_fortran_dqrqty as *const c_void, 7),
@@ -133,16 +183,29 @@ pub(crate) fn install(cx: &mut Cx) {
             call(b"dqrrsd", base_fortran_dqrrsd as *const c_void, 7),
             call(b"dqrxb", base_fortran_dqrxb as *const c_void, 7),
             call(b"dtrco", base_fortran_dtrco as *const c_void, 6),
-        ],
-        external: Vec::new(),
-        eref: Default::default(),
+        ]),
+        external: Box::default(),
     };
-    cx.set_ext(Dlls { list: RefCell::new(vec![Box::new(base)]), found: Default::default() });
+    // SymbolEptrs = CONS(R_NilValue, R_NilValue), preserved
+    let symbol_eptrs = cx.scope(|cx, s| {
+        let o = s.out(cx);
+        let r = o.root();
+        cx.build(o, |cx| cx.cons(cx.nil(), cx.nil())).expect("robigo-rtapi: allocating the DLL table's symbol list");
+        cx.global(r.bind(cx))
+    });
+    cx.set_ext(Dlls {
+        list: RefCell::new(vec![Box::new(base)]),
+        symbol_eptrs,
+        clean_count: Cell::new(MAX_COUNT),
+        found: Default::default(),
+    });
     robigo_rt::define_builtins(
         cx,
         &[
             // names.c: {"dyn.load", do_dynload, 0, 111, 4, ...}
             PrimDef { name: "dyn.load", kind: Kind::Builtin(do_dynload, Inline::None), eval: 111, arity: 4 },
+            // names.c: {"dyn.unload", do_dynunload, 0, 111, 1, ...}
+            PrimDef { name: "dyn.unload", kind: Kind::Builtin(do_dynunload, Inline::None), eval: 111, arity: 1 },
             // names.c: {"getRegisteredRoutines", do_getRegisteredRoutines, 0, 11, 1, ...}
             PrimDef {
                 name: "getRegisteredRoutines",
@@ -231,7 +294,7 @@ pub struct Found {
 }
 
 impl Found {
-    fn of(ty: SymType) -> Found {
+    pub(crate) fn of(ty: SymType) -> Found {
         Found { ty, routine: std::ptr::null(), dll: std::ptr::null() }
     }
 }
@@ -246,6 +309,7 @@ fn registered_symbol(info: &DllInfo, name: &[u8], symbol: &mut Found) -> *const 
             continue;
         }
         if let Some(r) = info.routines(t).iter().find(|r| r.name == name) {
+            // (the element stays put while the record is loaded)
             *symbol = Found { ty: t, routine: r, dll: info };
             return r.fun;
         }
@@ -262,7 +326,7 @@ fn dlsym(info: &DllInfo, name: &[u8], symbol: &mut Found) -> *const c_void {
     if !f.is_null() {
         return f;
     }
-    if !info.dynamic_lookup || info.handle.is_null() {
+    if !info.dynamic_lookup() || info.handle.is_null() {
         return std::ptr::null();
     }
     let sym = |buf: &[u8]| -> *const c_void {
@@ -293,7 +357,7 @@ fn find_symbol_in(list: &[Box<DllInfo>], name: &[u8], pkg: &str, symbol: &mut Fo
     let all = pkg.is_empty();
     for info in list.iter().rev() {
         let named = !all && pkg == info.name;
-        if (all || named) && !info.force_symbols {
+        if (all || named) && !info.force_symbols() {
             let f = dlsym(info, name, symbol);
             if !f.is_null() {
                 symbol.dll = &**info;
@@ -307,28 +371,60 @@ fn find_symbol_in(list: &[Box<DllInfo>], name: &[u8], pkg: &str, symbol: &mut Fo
     std::ptr::null()
 }
 
-/// `.Call`'s `R_FindSymbol(name, pkg, &symbol)` with a `.Call` symbol, by
-/// name (`pkg`: `PACKAGE`, if given).
-// R: dotcode.c:resolveNativeRoutine (R_FindSymbol with R_CALL_SYM)
-pub(crate) fn find_call_symbol(cx: &Cx, name: &[u8], pkg: Option<&str>) -> Option<*const c_void> {
+/// `R_FindSymbol(name, pkg, &symbol)` for `resolveNativeRoutine`: the
+/// routine `name` for interface `ty` in the loaded objects (`pkg`:
+/// `PACKAGE`, if given), and what the lookup found. `.Call`'s results are
+/// cached (`Dlls::found`).
+// R: Rdynload.c:R_FindSymbol, dotcode.c:resolveNativeRoutine
+pub(crate) fn find_symbol(cx: &Cx, name: &[u8], pkg: Option<&str>, ty: SymType) -> Option<(*const c_void, Found)> {
     let d = cx.ext::<Dlls>()?;
+    let cached = ty == SymType::Call;
     // (a hit allocates nothing)
-    if let Some(v) = d.found.borrow().get(name)
-        && let Some(&(_, f)) = v.iter().find(|(p, _)| p.as_deref() == pkg)
+    if cached
+        && let Some(v) = d.found.borrow().get(name)
+        && let Some(&(_, f, found)) = v.iter().find(|(p, _, _)| p.as_deref() == pkg)
     {
-        return Some(f as *const c_void);
+        return Some((f as *const c_void, found));
     }
-    let mut symbol = Found::of(SymType::Call);
+    let mut symbol = Found::of(ty);
     let f = find_symbol_in(&d.list.borrow(), name, pkg.unwrap_or(""), &mut symbol);
     if f.is_null() {
         return None;
     }
-    d.found.borrow_mut().entry(name.to_vec()).or_default().push((pkg.map(str::to_owned), f as usize));
-    Some(f)
+    if cached {
+        d.found.borrow_mut().entry(name.to_vec()).or_default().push((pkg.map(str::to_owned), f as usize, symbol));
+    }
+    Some((f, symbol))
+}
+
+/// `R_FindNativeSymbolFromDLL`'s lookup in the object a "DLLInfo" names:
+/// `addr` is its `DLLInfoReference`'s address (`VECTOR_ELT(obj, 4)`).
+// R: dotcode.c:R_FindNativeSymbolFromDLL
+pub(crate) fn find_symbol_in_dll(
+    cx: &mut Cx,
+    addr: *mut c_void,
+    name: &[u8],
+    ty: SymType,
+) -> RResult<Option<(*const c_void, Found)>> {
+    if addr.is_null() {
+        return Err(cx.error("NULL value for DLLInfoReference when looking for DLL"));
+    }
+    let info = match dll_of(cx, addr) {
+        Some(p) => p,
+        None => return Err(not_yet(cx, "a DllInfo reference to an object that is not loaded")),
+    };
+    // SAFETY: a record of the table (dll_of), not freed while this runs.
+    let info = unsafe { &*info };
+    if info.force_symbols() {
+        return Err(cx.error("DLL requires the use of native symbols"));
+    }
+    let mut symbol = Found::of(ty);
+    let f = dlsym(info, name, &mut symbol);
+    Ok((!f.is_null()).then_some((f, symbol)))
 }
 
 /// The record a `DLLInfoReference`'s address names, if it is one of the
-/// table's (robigo-rt never frees one, see the module's documentation; an
+/// table's (`dyn.unload` clears the references of a record it frees; an
 /// address C code made up is refused rather than read).
 fn dll_of(cx: &Cx, addr: *mut c_void) -> Option<*const DllInfo> {
     let list = dlls(cx).list.borrow();
@@ -392,23 +488,27 @@ fn list_with<'g>(cx: &'g Cx, elts: &[Ref<'g>], attrs: &[(RSym, Ref<'g>)]) -> Res
 /// (class "DLLHandle"), `info` (class "DLLInfoReference") and
 /// `forceSymbols`, of class "DLLInfo".
 // R: Rdynload.c:Rf_MakeDLLInfo, Rf_makeDllObject, Rf_makeDllInfoReference
-fn dll_info<'g>(cx: &'g Cx, info: &DllInfo) -> Result<Ref<'g>, NeedGc> {
+fn dll_info<'g>(cx: &'g Cx, info: &DllInfo, made: &mut Made) -> Result<Ref<'g>, NeedGc> {
+    let ehandle = extptr(cx, info.handle, b"DLLHandle", b"DLLHandle")?;
+    // R: Rdynload.c:Rf_makeDllInfoReference (DLLInfoEptrs)
+    let einfo = match info.eref.get() {
+        Some(g) => g.bind(cx),
+        None => {
+            let e = extptr(cx, (info as *const DllInfo).cast_mut().cast(), b"DLLInfo", b"DLLInfoReference")?;
+            // (a build retried after a collection reuses it)
+            let _ = info.eref.set(cx.global(e));
+            e
+        }
+    };
+    // R_registerSymbolEptr(ehandle, einfo), once the build is done
+    made.eptrs.push((ehandle.sexp(), einfo.sexp()));
     let elts = [
         str1(cx, info.name.as_bytes())?,
         str1(cx, info.path.as_bytes())?,
-        cx.logical_value(info.dynamic_lookup as i32),
-        extptr(cx, info.handle, b"DLLHandle", b"DLLHandle")?,
-        // R: Rdynload.c:Rf_makeDllInfoReference (DLLInfoEptrs)
-        match info.eref.get() {
-            Some(g) => g.bind(cx),
-            None => {
-                let e = extptr(cx, (info as *const DllInfo).cast_mut().cast(), b"DLLInfo", b"DLLInfoReference")?;
-                // (a build retried after a collection reuses it)
-                let _ = info.eref.set(cx.global(e));
-                e
-            }
-        },
-        cx.logical_value(info.force_symbols as i32),
+        cx.logical_value(info.dynamic_lookup() as i32),
+        ehandle,
+        einfo,
+        cx.logical_value(info.force_symbols() as i32),
     ];
     let names = strs(cx, &[b"name", b"path", b"dynamicLookup", b"handle", b"info", b"forceSymbols"])?;
     let class = str1(cx, b"DLLInfo")?;
@@ -444,23 +544,32 @@ fn symbol_object<'g>(
     f: *const c_void,
     symbol: &Found,
     copy: Option<*mut Found>,
-) -> Result<(Ref<'g>, Option<Ref<'g>>), NeedGc> {
+    made: &mut Made,
+) -> Result<Ref<'g>, NeedGc> {
     let registered = symbol.ty != SymType::Any;
     let sname = match sname {
         Some(s) => s,
-        // SAFETY: a lookup's routine is an element of a live record
-        // (records are never freed).
+        // SAFETY: a lookup's routine is an element of a loaded record.
         None => str1(cx, &unsafe { &*symbol.routine }.name)?,
     };
-    let (address, reg) = match copy {
+    let address = match copy {
         Some(p) => {
             let e = extptr(cx, p.cast(), b"registered native symbol", b"RegisteredNativeSymbol")?;
-            (e, Some(e))
+            made.regs.push(e.sexp());
+            e
         }
-        None => (extptr(cx, f.cast_mut(), b"native symbol", b"NativeSymbol")?, None),
+        None => extptr(cx, f.cast_mut(), b"native symbol", b"NativeSymbol")?,
     };
-    // SAFETY: as above: the record is live.
-    let dll = if symbol.dll.is_null() { cx.nil() } else { dll_info(cx, unsafe { &*symbol.dll })? };
+    let dll = if symbol.dll.is_null() {
+        cx.nil()
+    } else {
+        // SAFETY: as above: the record is loaded.
+        let rinfo = dll_info(cx, unsafe { &*symbol.dll }, made)?;
+        // R_registerSymbolEptr(eaddress, einfo), once the build is done
+        let einfo = rinfo.as_vector::<Ref<'_>>().unwrap().get(4);
+        made.eptrs.push((address.sexp(), einfo.sexp()));
+        rinfo
+    };
     let mut elts = vec![sname, address, dll];
     let mut names: Vec<&[u8]> = vec![b"name", b"address", b"dll"];
     let mut class: Vec<&[u8]> = vec![b"NativeSymbolInfo"];
@@ -472,7 +581,7 @@ fn symbol_object<'g>(
             SymType::External => b"ExternalRoutine",
             SymType::Any => unreachable!(),
         };
-        // SAFETY: as above: the record is live.
+        // SAFETY: as above: the record is loaded.
         let n = if symbol.routine.is_null() { -1 } else { unsafe { &*symbol.routine }.num_args };
         elts.push(cx.alloc_copy(&[n])?.finish().into());
         names.push(b"numParameters");
@@ -480,38 +589,47 @@ fn symbol_object<'g>(
     }
     let class = strs(cx, &class)?;
     let names = strs(cx, &names)?;
-    Ok((list_with(cx, &elts, &[(RSym::Class, class), (RSym::Names, names)])?, reg))
+    list_with(cx, &elts, &[(RSym::Class, class), (RSym::Names, names)])
 }
 
 /// `R_getRoutineSymbols(type, info)`: the routines of one interface, a list
 /// of class "NativeRoutineList".
 // R: Rdynload.c:R_getRoutineSymbols
-fn routine_list<'g>(cx: &'g Cx, info: &DllInfo, t: SymType, copies: &mut Copies) -> Result<Ref<'g>, NeedGc> {
+fn routine_list<'g>(cx: &'g Cx, info: &DllInfo, t: SymType, made: &mut Made) -> Result<Ref<'g>, NeedGc> {
+    // the routines' addresses first: building runs no C, but holds no
+    // borrow of the table while it allocates
+    let routines: Vec<*const Routine> = info.routines(t).iter().map(|r| r as *const Routine).collect();
     let mut elts = Vec::new();
-    for r in info.routines(t) {
+    for r in routines {
         let symbol = Found { ty: t, routine: r, dll: info };
-        let (o, reg) = symbol_object(cx, None, r.fun, &symbol, Some(copies.next(symbol)))?;
-        copies.made.extend(reg.map(|r| r.sexp()));
-        elts.push(o);
+        // SAFETY: an element of the loaded record's table.
+        let fun = unsafe { &*r }.fun;
+        let copy = made.next(symbol);
+        elts.push(symbol_object(cx, None, fun, &symbol, Some(copy), made)?);
     }
     let class = str1(cx, b"NativeRoutineList")?;
     list_with(cx, &elts, &[(RSym::Class, class)])
 }
 
-/// The copies a build hands to "RegisteredNativeSymbol" references, and the
-/// references made in the build's last (successful) run. A run that needs a
-/// collection is retried from the start: its copies are reused in order.
+/// What a build hands out that needs work once it is done: the copies
+/// "RegisteredNativeSymbol" references hold, the references made in the
+/// build's last (successful) run, and the external pointers to enter in
+/// `SymbolEptrs`, each with its object's `DLLInfoReference`. A run that
+/// needs a collection is retried from the start: its copies are reused in
+/// order.
 #[derive(Default)]
-struct Copies {
+struct Made {
     all: Vec<*mut Found>,
     used: usize,
-    made: Vec<Sexp>,
+    regs: Vec<Sexp>,
+    eptrs: Vec<(Sexp, Sexp)>,
 }
 
-impl Copies {
+impl Made {
     fn start(&mut self) {
         self.used = 0;
-        self.made.clear();
+        self.regs.clear();
+        self.eptrs.clear();
     }
     fn next(&mut self, symbol: Found) -> *mut Found {
         if self.used == self.all.len() {
@@ -523,9 +641,9 @@ impl Copies {
         self.used += 1;
         p
     }
-    /// Register each made reference's finalizer, and free the copies no
-    /// reference took.
-    fn finish(mut self, cx: &mut Cx, made: &[Root<'_>]) -> RResult<()> {
+    /// Register each made reference's finalizer, free the copies no
+    /// reference took, and enter the external pointers in `SymbolEptrs`.
+    fn finish(mut self, cx: &mut Cx, regs: &[Root<'_>], eptrs: &[(Root<'_>, Root<'_>)]) -> RResult<()> {
         for p in self.all.drain(self.used..) {
             // SAFETY: ours, never handed out.
             drop(unsafe { Box::from_raw(p) });
@@ -533,14 +651,17 @@ impl Copies {
         // the rest belong to the references now: their finalizers free them
         // (one whose registration fails below is leaked, never freed twice)
         self.all.clear();
-        for &r in made {
+        for &r in regs {
             crate::memory::register_c_finalizer(cx, r, free_registered_symbol as *const c_void)?;
+        }
+        for &(e, i) in eptrs {
+            register_symbol_eptr(cx, e, i)?;
         }
         Ok(())
     }
 }
 
-impl Drop for Copies {
+impl Drop for Made {
     fn drop(&mut self) {
         // a build that failed: no reference holds a copy
         for p in self.all.drain(..) {
@@ -550,33 +671,91 @@ impl Drop for Copies {
     }
 }
 
-/// Build `f`'s result into `out`, then register the finalizers of the
-/// "RegisteredNativeSymbol" references it made.
-fn build_with_copies(
+/// Build `f`'s result into `out`, then do what [`Made::finish`] does for
+/// what it handed out.
+fn build_made(
     cx: &mut Cx,
     out: Out<'_>,
-    mut f: impl for<'g> FnMut(&'g Cx, &mut Copies) -> Result<Ref<'g>, NeedGc>,
+    mut f: impl for<'g> FnMut(&'g Cx, &mut Made) -> Result<Ref<'g>, NeedGc>,
 ) -> RResult<()> {
-    let mut copies = Copies::default();
+    let mut made = Made::default();
     cx.scope(|cx, s| {
         let res = s.out(cx);
         let r = res.root();
         cx.build(res, |cx| {
-            copies.start();
-            f(cx, &mut copies)
+            made.start();
+            f(cx, &mut made)
         })?;
-        // root the references while finalizers are registered
-        let made: Vec<Sexp> = std::mem::take(&mut copies.made);
-        let roots: Vec<Root<'_>> = made
-            .iter()
-            .map(|&x| {
-                // SAFETY: an object of the result just built, rooted by `r`.
-                let x = unsafe { Ref::from_sexp(x, cx) };
-                s.root(cx, x)
-            })
-            .collect();
-        std::mem::take(&mut copies).finish(cx, &roots)?;
+        // root what the result holds while the work allocates
+        let held = |cx: &mut Cx, x: Sexp| {
+            // SAFETY: an object of the result just built, rooted by `r`, and
+            // nothing has collected since.
+            s.root(cx, unsafe { Ref::from_sexp(x, cx) })
+        };
+        let regs: Vec<Root<'_>> = std::mem::take(&mut made.regs).into_iter().map(|x| held(cx, x)).collect();
+        let eptrs: Vec<(Root<'_>, Root<'_>)> =
+            std::mem::take(&mut made.eptrs).into_iter().map(|(e, i)| (held(cx, e), held(cx, i))).collect();
+        std::mem::take(&mut made).finish(cx, &regs, &eptrs)?;
         out.set(cx, r.bind(cx));
+        Ok(())
+    })
+}
+
+/// A weak reference's key and value (`WEAKREF_KEY`, `WEAKREF_VALUE`).
+///
+/// # Safety
+/// `w` is a live WEAKREFSXP of this isolate.
+unsafe fn weak_key_value(w: Sexp) -> (Sexp, Sexp) {
+    // SAFETY: the caller's contract: a weak reference's elements 0 and 1.
+    unsafe {
+        let d = w.std_data().cast::<Sexp>();
+        (*d, *d.add(1))
+    }
+}
+
+/// `R_registerSymbolEptr(eptr, einfo)`: every `MAX_COUNT`-th call drops the
+/// entries whose key is gone, then a weak reference keyed by `eptr` with
+/// `einfo` as value goes at the head of `SymbolEptrs`.
+// R: Rdynload.c:R_registerSymbolEptr
+fn register_symbol_eptr(cx: &mut Cx, eptr: Root<'_>, einfo: Root<'_>) -> RResult<()> {
+    let d = dlls(cx);
+    let c = d.clean_count.get() - 1;
+    if c == 0 {
+        d.clean_count.set(MAX_COUNT);
+        let nil = cx.nil().sexp();
+        let head = d.symbol_eptrs.bind(cx).sexp();
+        cx.scope(|cx, s| {
+            // (nothing below allocates: the words stay put)
+            // SAFETY: SymbolEptrs is a pairlist of weak references.
+            unsafe {
+                let mut last = head;
+                let mut next = head.cdr();
+                while next != nil {
+                    if weak_key_value(next.car()).0 == nil {
+                        let l = s.root(cx, Ref::from_sexp(last, cx));
+                        let rest = s.root(cx, Ref::from_sexp(next.cdr(), cx));
+                        cx.set_cdr(l, rest);
+                    } else {
+                        last = next;
+                    }
+                    next = next.cdr();
+                }
+            }
+        });
+    } else {
+        d.clean_count.set(c);
+    }
+    cx.scope(|cx, s| {
+        let nil = s.root(cx, cx.nil());
+        let w = crate::memory::new_weak_ref(cx, s, eptr, einfo, nil, false)?;
+        // SAFETY: the fresh reference, rooted by the collector's list.
+        let w = s.root(cx, unsafe { Ref::from_sexp(w, cx) });
+        let head = s.root(cx, dlls(cx).symbol_eptrs.bind(cx));
+        let rest = s.root(cx, head.bind(cx).as_cons().unwrap().cdr());
+        let o = s.out(cx);
+        let cell = o.root();
+        cx.build(o, |cx| cx.cons(w.bind(cx), rest.bind(cx)))?;
+        cx.set_cdr(head, cell);
         Ok(())
     })
 }
@@ -586,9 +765,9 @@ fn build_with_copies(
 // R: Rdynload.c:do_getDllTable, R_getDllTable
 fn do_get_dll_table(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     robigo_rt::prims::check_arity(cx, call, args.len(), "getLoadedDLLs", 0, true)?;
-    cx.build(out, |cx| {
+    build_made(cx, out, |cx, made| {
         let list = dlls(cx).list.borrow();
-        let elts = list.iter().map(|i| dll_info(cx, i)).collect::<Result<Vec<_>, _>>()?;
+        let elts = list.iter().map(|i| dll_info(cx, i, made)).collect::<Result<Vec<_>, _>>()?;
         let names: Vec<&[u8]> = list.iter().map(|i| i.name.as_bytes()).collect();
         let class = str1(cx, b"DLLInfoList")?;
         let names = strs(cx, &names)?;
@@ -630,14 +809,15 @@ fn do_get_registered_routines(
     let View::ExtPtr(e) = dll.view() else { unreachable!("an external pointer") };
     let addr = e.addr();
     let info = dll_reference(cx, addr)?;
-    build_with_copies(cx, out, |cx, copies| {
-        // SAFETY: a record of the table, never freed.
+    build_made(cx, out, |cx, made| {
+        // SAFETY: a record of the table (dll_reference), loaded while this
+        // runs.
         let info = unsafe { &*info };
         let elts = [
-            routine_list(cx, info, SymType::C, copies)?,
-            routine_list(cx, info, SymType::Call, copies)?,
-            routine_list(cx, info, SymType::Fortran, copies)?,
-            routine_list(cx, info, SymType::External, copies)?,
+            routine_list(cx, info, SymType::C, made)?,
+            routine_list(cx, info, SymType::Call, made)?,
+            routine_list(cx, info, SymType::Fortran, made)?,
+            routine_list(cx, info, SymType::External, made)?,
         ];
         let names = strs(cx, &[b".C", b".Call", b".Fortran", b".External"])?;
         list_with(cx, &elts, &[(RSym::Names, names)])
@@ -683,7 +863,8 @@ fn do_get_symbol_info(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_
     {
         let addr = e.addr();
         let info = dll_reference(cx, addr)?;
-        // SAFETY: a record of the table, never freed.
+        // SAFETY: a record of the table (dll_reference), loaded while this
+        // runs.
         dlsym(unsafe { &*info }, &name, &mut symbol)
     } else {
         return Err(cx.error("must pass package name or DllInfo reference"));
@@ -705,11 +886,9 @@ fn do_get_symbol_info(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_
         v != 0
     };
     let sname = args.root(0);
-    build_with_copies(cx, out, |cx, copies| {
-        let copy = (with_reg && !symbol.routine.is_null() && !symbol.dll.is_null()).then(|| copies.next(symbol));
-        let (o, reg) = symbol_object(cx, Some(sname.bind(cx)), f, &symbol, copy)?;
-        copies.made.extend(reg.map(|r| r.sexp()));
-        Ok(o)
+    build_made(cx, out, |cx, made| {
+        let copy = (with_reg && !symbol.routine.is_null() && !symbol.dll.is_null()).then(|| made.next(symbol));
+        symbol_object(cx, Some(sname.bind(cx)), f, &symbol, copy, made)
     })
 }
 
@@ -782,18 +961,9 @@ fn do_dynload(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: 
                         // R_RegisterDLL: the basename without SHLIB_EXT
                         let base = path.rsplit('/').next().unwrap_or(&path);
                         let name = base.strip_suffix(".so").filter(|n| !n.is_empty()).unwrap_or(base).to_owned();
-                        list.push(Box::new(DllInfo {
-                            name,
-                            path: path.clone(),
-                            handle: h,
-                            dynamic_lookup: true,
-                            force_symbols: false,
-                            c: Vec::new(),
-                            call: Vec::new(),
-                            fortran: Vec::new(),
-                            external: Vec::new(),
-                            eref: Default::default(),
-                        }));
+                        // R_RegisterDLL: old-style dynamic lookup until the
+                        // object's R_init_<name> says otherwise
+                        list.push(Box::new(DllInfo::new(name, path.clone(), h, true, false)));
                         Ok(usize::MAX)
                     }
                 }
@@ -804,24 +974,294 @@ fn do_dynload(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: 
         Ok(k) => k,
         Err(m) => return Err(cx.error(&format!("unable to load shared object '{path}':\n  {m}"))),
     };
+    // the record AddDLL returns: boxed, so its address stays while loaded
+    let rec: *const DllInfo = {
+        let l = dlls(cx).list.borrow();
+        &**l.last().unwrap()
+    };
     if k == usize::MAX {
-        // a new object: its R_init_<name>, if it has one
-        let (name, h) = {
-            let l = dlls(cx).list.borrow();
-            let i = l.last().unwrap();
-            (i.name.clone(), i.handle)
-        };
+        // a new object: its R_init_<name>, or with `.` as `_` (a package
+        // name's `.` is not valid in a symbol), called with the record
+        // SAFETY: the record just pushed, loaded.
+        let (name, h) = unsafe { ((*rec).name.clone(), (*rec).handle) };
         let init = |n: &str| -> *mut c_void {
-            let s = CString::new(format!("R_init_{n}")).unwrap();
+            let Ok(s) = CString::new(format!("R_init_{n}")) else { return std::ptr::null_mut() };
             // SAFETY: a live handle and a symbol name.
             unsafe { libc::dlsym(h, s.as_ptr()) }
         };
-        if !init(&name).is_null() || !init(&name.replace('.', "_")).is_null() {
-            return Err(not_yet(cx, &format!("R_init_{name} (routine registration)")));
+        let mut f = init(&name);
+        if f.is_null() {
+            f = init(&name.replace('.', "_"));
+        }
+        if !f.is_null() {
+            // SAFETY: GNU R's contract for R_init_<name>: `void f(DllInfo *)`,
+            // a word argument returning nothing (Ret6::Word reads a register
+            // the callee may leave anything in, and the value is dropped).
+            // GNU R calls it directly, with no context: a hidden record.
+            unsafe { cx.call_native6(f, [rec as usize, 0, 0, 0, 0, 0], 0, robigo_rtcore::Ret6::Word) }?;
         }
     }
-    cx.build(out, |cx| {
-        let list = dlls(cx).list.borrow();
-        dll_info(cx, list.last().unwrap())
-    })
+    // SAFETY: loaded: R_init_<name> runs C that may load or unload others,
+    // not this one (GNU R reads `info` the same way after the call).
+    build_made(cx, out, |cx, made| dll_info(cx, unsafe { &*rec }, made))
+}
+
+/// `R_callDLLUnload(info)`: the object's `R_unload_<name>`, as `R_dlsym`
+/// finds it (registered routines first; `dlsym` only when the object
+/// allows dynamic lookup), called with the record.
+// R: Rdynload.c:R_callDLLUnload
+fn call_dll_unload(cx: &mut Cx, rec: *const DllInfo) -> RResult<()> {
+    // SAFETY: a loaded record (the caller's).
+    let info = unsafe { &*rec };
+    let mut symbol = Found::of(SymType::Any);
+    let f = dlsym(info, format!("R_unload_{}", info.name).as_bytes(), &mut symbol);
+    if !f.is_null() {
+        // SAFETY: as R_init_<name>'s call in do_dynload.
+        unsafe { cx.call_native6(f, [rec as usize, 0, 0, 0, 0, 0], 0, robigo_rtcore::Ret6::Word) }?;
+    }
+    Ok(())
+}
+
+/// `DeleteDLL(path)`: the object loaded from `path` unloaded (its
+/// `R_unload_<name>` called, its ALTREP classes reset, the library closed)
+/// and its record freed, after every reference handed out for it is
+/// cleared (`DLLInfoEptrs`, `SymbolEptrs`). False if no object was loaded
+/// from `path`.
+// R: Rdynload.c:DeleteDLL
+fn delete_dll(cx: &mut Cx, path: &str) -> RResult<bool> {
+    let rec: *const DllInfo = {
+        let l = dlls(cx).list.borrow();
+        match l.iter().find(|i| i.path == path) {
+            Some(i) => &**i,
+            None => return Ok(false),
+        }
+    };
+    crate::altrep::reinit_classes(cx, rec.cast_mut().cast())?;
+    call_dll_unload(cx, rec)?;
+    // no cached lookup may name the record once it goes (`R_unload_<name>`
+    // may have looked routines up by name)
+    dlls(cx).found.borrow_mut().clear();
+    // the record leaves the table now (`R_unload_<name>` may have changed
+    // it: found again by address)
+    let mut info = {
+        let mut l = dlls(cx).list.borrow_mut();
+        match l.iter().position(|i| std::ptr::eq(&**i, rec)) {
+            Some(k) => l.remove(k),
+            None => return Ok(true),
+        }
+    };
+    if !info.handle.is_null() {
+        // SAFETY: the handle dlopen gave this record, closed once.
+        unsafe { libc::dlclose(info.handle) };
+    }
+    // zero the pointers to the record and its handle: its DLLInfoReference,
+    // then each reference SymbolEptrs holds for it
+    // (the symbol first: making it may collect, which may move the words
+    // read below)
+    let registered = cx.scope(|cx, s| -> RResult<Sexp> {
+        let o = s.out(cx);
+        let r = o.root();
+        cx.build(o, |cx| Ok(cx.install(b"registered native symbol")?.into()))?;
+        Ok(r.bind(cx).sexp())
+    })?;
+    let e = info.eref.get().map(|g| g.bind(cx).sexp());
+    if let Some(e) = e {
+        let nil = cx.nil().sexp();
+        let head = dlls(cx).symbol_eptrs.bind(cx).sexp();
+        cx.scope(|cx, s| {
+            // (nothing below allocates: the words stay put)
+            // SAFETY: e and the list's keys are external pointers (their
+            // addresses untraced words); SymbolEptrs is a pairlist of weak
+            // references.
+            unsafe {
+                e.set_extptr_addr(std::ptr::null_mut());
+                let mut last = head;
+                let mut next = head.cdr();
+                while next != nil {
+                    let (p, v) = weak_key_value(next.car());
+                    if v == e {
+                        let l = s.root(cx, Ref::from_sexp(last, cx));
+                        let rest = s.root(cx, Ref::from_sexp(next.cdr(), cx));
+                        cx.set_cdr(l, rest);
+                        if p.typ() == EXTPTRSXP && !p.car().as_ptr().is_null() {
+                            if p.tag() == registered {
+                                // freeRegisteredNativeSymbolCopy
+                                drop(Box::from_raw(p.car().as_ptr().cast::<Found>()));
+                            }
+                            p.set_extptr_addr(std::ptr::null_mut());
+                        }
+                    } else {
+                        last = next;
+                    }
+                    next = next.cdr();
+                }
+            }
+        });
+    }
+    // the record goes, and its DLLInfoReference's root (DLLInfoEptrs' slot)
+    if let Some(g) = info.eref.take() {
+        cx.release_global(g);
+    }
+    drop(info);
+    Ok(true)
+}
+
+/// `.Internal(dyn.unload(x))`.
+// R: Rdynload.c:do_dynunload
+fn do_dynunload(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let Some(x) = string1(cx, args.get(cx, 0)) else {
+        return Err(cx.error("character argument expected"));
+    };
+    let path = full_dll_path(cx, call, &String::from_utf8_lossy(&x))?;
+    if !delete_dll(cx, &path)? {
+        return Err(cx.error(&format!("shared object '{path}' was not loaded")));
+    }
+    out.set(cx, cx.nil());
+    Ok(())
+}
+
+// --- the registration API (R_ext/Rdynload.h) ----------------------------
+
+/// `R_CMethodDef` and `R_FortranMethodDef` (`R_ext/Rdynload.h`): GNU R's
+/// layout, checked here and against GNU R's header in the C API tests.
+#[repr(C)]
+pub struct CMethodDef {
+    pub name: *const c_char,
+    pub fun: *const c_void,
+    pub num_args: c_int,
+    pub types: *const c_void,
+}
+
+/// `R_CallMethodDef` and `R_ExternalMethodDef` (`R_ext/Rdynload.h`).
+#[repr(C)]
+pub struct CallMethodDef {
+    pub name: *const c_char,
+    pub fun: *const c_void,
+    pub num_args: c_int,
+}
+
+// GNU R's layout on x86-64 (LP64): the C API tests assert the same numbers
+// with `static_assert` against R_ext/Rdynload.h
+const _: () = {
+    assert!(std::mem::size_of::<CMethodDef>() == 32);
+    assert!(std::mem::offset_of!(CMethodDef, name) == 0);
+    assert!(std::mem::offset_of!(CMethodDef, fun) == 8);
+    assert!(std::mem::offset_of!(CMethodDef, num_args) == 16);
+    assert!(std::mem::offset_of!(CMethodDef, types) == 24);
+    assert!(std::mem::size_of::<CallMethodDef>() == 24);
+    assert!(std::mem::offset_of!(CallMethodDef, name) == 0);
+    assert!(std::mem::offset_of!(CallMethodDef, fun) == 8);
+    assert!(std::mem::offset_of!(CallMethodDef, num_args) == 16);
+};
+
+/// The routines of a NULL-terminated table (`R_addCRoutine`, ...: the
+/// name copied, the address, `numArgs` with anything below -1 as -1).
+///
+/// # Safety
+/// `defs` is null or points at a table of `T` whose last entry has a null
+/// name, each name a C string.
+unsafe fn copy_table<T>(
+    defs: *const T,
+    name: impl Fn(&T) -> *const c_char,
+    entry: impl Fn(&T) -> (*const c_void, c_int),
+) -> Routines {
+    let mut out = Vec::new();
+    if defs.is_null() {
+        return out.into_boxed_slice();
+    }
+    // SAFETY: the caller's contract.
+    unsafe {
+        let mut p = defs;
+        while !name(&*p).is_null() {
+            let (fun, n) = entry(&*p);
+            out.push(Routine { name: CStr::from_ptr(name(&*p)).to_bytes().to_vec(), fun, num_args: n.max(-1) });
+            p = p.add(1);
+        }
+    }
+    out.into_boxed_slice()
+}
+
+crate::entry! {
+    /// `R_registerRoutines(info, croutines, callRoutines, fortranRoutines,
+    /// externalRoutines)`: the tables copied into the record (a table given
+    /// before is kept until the record goes, as GNU R leaks it), dynamic
+    /// lookup on when the object has a handle, symbols not forced.
+    // R: Rdynload.c:R_registerRoutines, R_addCRoutine, R_addCallRoutine,
+    // R_addFortranRoutine, R_addExternalRoutine
+    [5] fn R_registerRoutines(
+        info: *mut c_void,
+        croutines: *const c_void,
+        call_routines: *const c_void,
+        fortran_routines: *const c_void,
+        external_routines: *const c_void
+    ) -> c_int => |cx, _s| {
+        if info.is_null() {
+            return Err(cx.error("R_RegisterRoutines called with invalid DllInfo object."));
+        }
+        // SAFETY: C's contract: the DllInfo * robigo handed out (R_init_<name>'s
+        // argument), a loaded record; the tables as R_ext/Rdynload.h has them.
+        unsafe {
+            let info = &*info.cast_const().cast::<DllInfo>();
+            info.dynamic_lookup.set(!info.handle.is_null());
+            info.force_symbols.set(false);
+            let c = |d: &CMethodDef| (d.fun, d.num_args);
+            let k = |d: &CallMethodDef| (d.fun, d.num_args);
+            let mut tables = info.tables.borrow_mut();
+            let mut old = std::mem::take(&mut *tables);
+            if !croutines.is_null() {
+                tables.c = copy_table(croutines.cast::<CMethodDef>(), |d| d.name, c);
+            } else {
+                tables.c = std::mem::take(&mut old.c);
+            }
+            if !fortran_routines.is_null() {
+                tables.fortran = copy_table(fortran_routines.cast::<CMethodDef>(), |d| d.name, c);
+            } else {
+                tables.fortran = std::mem::take(&mut old.fortran);
+            }
+            if !call_routines.is_null() {
+                tables.call = copy_table(call_routines.cast::<CallMethodDef>(), |d| d.name, k);
+            } else {
+                tables.call = std::mem::take(&mut old.call);
+            }
+            if !external_routines.is_null() {
+                tables.external = copy_table(external_routines.cast::<CallMethodDef>(), |d| d.name, k);
+            } else {
+                tables.external = std::mem::take(&mut old.external);
+            }
+            drop(tables);
+            info.retired.borrow_mut().push(old);
+        }
+        dlls(cx).found.borrow_mut().clear();
+        Ok(1)
+    }
+}
+
+/// `R_useDynamicSymbols(info, value)`: the old setting.
+// R: Rdynload.c:R_useDynamicSymbols
+#[unsafe(no_mangle)]
+pub extern "C" fn R_useDynamicSymbols(info: *mut c_void, value: c_int) -> c_int {
+    // SAFETY: C's contract: the DllInfo * robigo handed out, a loaded record.
+    let info = unsafe { &*info.cast_const().cast::<DllInfo>() };
+    let old = info.dynamic_lookup.replace(value != 0);
+    forget_lookups();
+    old as c_int
+}
+
+/// `R_forceSymbols(info, value)`: the old setting.
+// R: Rdynload.c:R_forceSymbols
+#[unsafe(no_mangle)]
+pub extern "C" fn R_forceSymbols(info: *mut c_void, value: c_int) -> c_int {
+    // SAFETY: C's contract: the DllInfo * robigo handed out, a loaded record.
+    let info = unsafe { &*info.cast_const().cast::<DllInfo>() };
+    let old = info.force_symbols.replace(value != 0);
+    forget_lookups();
+    old as c_int
+}
+
+/// The cached `.Call` lookups dropped: a record's lookup settings changed,
+/// which may change what any lookup finds (GNU R caches none on Linux).
+fn forget_lookups() {
+    // SAFETY: called from C code a native entry of the thread's isolate
+    // runs (the setters' contract, as GNU R's: `R_init_<name>`'s).
+    unsafe { robigo_rtcore::enter_leaf(|cx| dlls(cx).found.borrow_mut().clear()) }
 }

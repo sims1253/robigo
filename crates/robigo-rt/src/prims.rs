@@ -146,6 +146,8 @@ static RT_PRIMS: &[PrimDef] = &[
     special_fn("switch", crate::specials::do_switch, 200, -1),
     special_fn("on.exit", crate::specials::do_onexit, 100, -1),
     special_fn("substitute", crate::specials::do_substitute, 0, -1),
+    // eval.c
+    special_fn("forceAndCall", crate::apply::do_force_and_call, 0, -1),
     // arithmetic.c
     special_fn("log", crate::specials::do_log, 0, -1),
     // objects.c (S1)
@@ -326,6 +328,15 @@ fn do_paren(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Ou
     let x = args.get(cx, 0);
     out.set(cx, x);
     Ok(())
+}
+
+/// The primitive (not `.Internal`) named `name`, as `R_Primitive` finds it:
+/// the builtin object a foreign call hands its routine as `op`.
+// R: names.c:R_Primitive
+pub fn primitive<'g>(cx: &'g Cx, name: &str) -> Option<Ref<'g>> {
+    let st = state(cx);
+    let i = st.defs.iter().position(|d| !d.internal() && d.name == name)?;
+    Some(st.objs[i].bind(cx))
 }
 
 /// `.Primitive(name)`: the primitive (not `.Internal`) named `name`.
