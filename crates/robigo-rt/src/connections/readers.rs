@@ -3,7 +3,10 @@
 //! `readLines`. They read through [`conn_fgetc`] (`Rconn_fgetc`), as GNU
 //! R's do.
 
-use super::{Conn, NA_INTEGER, R_EOF, close_conn, conn_fgetc, conn_number, flags, open_with_mode, our_fgetc, with_conn};
+use super::{
+    Conn, NA_INTEGER, R_EOF, close_conn, conn_fgetc, conn_number, flags, open_with_mode, our_fgetc, rconn_seek,
+    with_conn,
+};
 use robigo_heap::types::STRSXP;
 use robigo_rtbuiltins::coerce::vector::as_integer_warn;
 use robigo_rtbuiltins::util::as_logical;
@@ -65,7 +68,11 @@ pub fn do_pushback(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
     let mut lines = Vec::new();
     {
         let Some(v) = args.get(cx, 0).as_vector::<Char<'_>>() else {
-            return Err(robigo_rtbuiltins::util::not_yet(cx, Some(call), "pushBack() of a package ALTREP character vector"));
+            return Err(robigo_rtbuiltins::util::not_yet(
+                cx,
+                Some(call),
+                "pushBack() of a package ALTREP character vector",
+            ));
         };
         let loc = cx.locale();
         for i in (0..v.len()).rev() {
@@ -199,14 +206,14 @@ pub fn do_readlines(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
         if wasopen {
             // for a non-blocking connection, more input may have become
             // available, so re-position
-            let reseek = with_conn(cx, ncon, |c| c.canseek() && !c.blocking())?;
-            if reseek {
-                return Err(robigo_rtbuiltins::util::not_yet(
-                    cx,
-                    Some(call),
-                    "readLines() of an open non-blocking seekable connection",
-                ));
-            }
+            let r = with_conn(cx, ncon, |c| {
+                if c.canseek() && !c.blocking() {
+                    let pos = rconn_seek(c, -1.0, 1, 1)?;
+                    rconn_seek(c, pos, 1, 1)?;
+                }
+                Ok::<(), String>(())
+            })?;
+            r.map_err(|m| cx.error(&m))?;
         }
         let utf8out = with_conn(cx, ncon, |c| {
             c.set_incomplete(false);
@@ -269,8 +276,8 @@ pub fn do_readlines(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
             })?;
             r.map_err(|m| cx.error(&m))?;
         } else if warn {
-                let d = String::from_utf8_lossy(&desc).into_owned();
-                cx.warning(&format!("incomplete final line found on '{d}'"))?;
+            let d = String::from_utf8_lossy(&desc).into_owned();
+            cx.warning(&format!("incomplete final line found on '{d}'"))?;
         }
     }
     if (lines.len() as i64) < nnn && ok == 0 {

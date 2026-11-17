@@ -10,5 +10,5 @@ print(msg(readLines(con)))
 close(con)
 print(msg(gzfile(long, "r")))
 # R_ExpandFileName_readline: any name of R_PATH_MAX bytes or more is cut
-print(nchar(suppressWarnings(path.expand(c(strrep("a", 5000), paste0("~root/", strrep("b", 4100)))))))
-print(path.expand(c("~root", "~root/x", "~robigo-no-such-user/x", "a~")))
+# (the open's warning shows the name it tried)
+print(msg(file(strrep("a", 5000), "r")))

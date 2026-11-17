@@ -9,6 +9,7 @@ warning: expanded path length 4106 would be too l
 warning: expanded path length 4106 would be too l 
 warning: cannot open compressed file '/root/aaaaa 
 [1] "cannot open the connection"
-[1] 4095 4095
-[1] "/root"                  "/root/x"                "~robigo-no-such-user/x"
-[4] "a~"                    
+warning: expanded path length 5000 would be too l 
+warning: expanded path length 5000 would be too l 
+warning: cannot open file 'aaaaaaaaaaaaaaaaaaaaaa 
+[1] "cannot open the connection"

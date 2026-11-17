@@ -859,6 +859,96 @@ fn dummy_fgetc(c: &mut Conn) -> Result<c_int, String> {
     if !c.c.buff.is_null() { buff_fgetc(c) } else { fgetc_internal(c) }
 }
 
+/// `R_IsNA(x)`: NA, not another NaN (the low word 1954).
+// R: arithmetic.c:R_IsNA
+fn r_is_na(x: f64) -> bool {
+    x.is_nan() && (x.to_bits() & 0xffff_ffff) == 1954
+}
+
+/// `con->seek(con, where, origin, rw)` of a file: the position before
+/// (the read position for `rw` 1, the write one for 2), then the move
+/// (none for `where` NA; a move the system refuses, as to a negative
+/// offset, leaves the position).
+// R: connections.c:file_seek
+fn file_seek(c: &mut Conn, where_: f64, origin: c_int, rw: c_int) -> Result<f64, String> {
+    let (canread, canwrite) = (c.canread(), c.canwrite());
+    let Imp::File(f) = &mut c.imp else {
+        return Err(format!("robigo: seeking a '{}' connection is not implemented yet", c.class));
+    };
+    let Some(fp) = f.fp.as_mut() else { return Err("connection is not open".into()) };
+    // make sure both positions are set
+    let mut pos = fp.stream_position().unwrap_or(0);
+    if f.last_was_write {
+        f.wpos = pos;
+    } else {
+        f.rpos = pos;
+    }
+    if rw == 1 {
+        if !canread {
+            return Err("connection is not open for reading".into());
+        }
+        pos = f.rpos;
+        f.last_was_write = false;
+    }
+    if rw == 2 {
+        if !canwrite {
+            return Err("connection is not open for writing".into());
+        }
+        pos = f.wpos;
+        f.last_was_write = true;
+    }
+    if r_is_na(where_) {
+        return Ok(pos as f64);
+    }
+    let w = where_ as i64;
+    let to = match origin {
+        2 => SeekFrom::Current(w),
+        3 => SeekFrom::End(w),
+        _ => {
+            if w < 0 {
+                // fseeko's EINVAL: no move
+                SeekFrom::Current(0)
+            } else {
+                SeekFrom::Start(w as u64)
+            }
+        }
+    };
+    let _ = fp.seek(to);
+    let now = fp.stream_position().unwrap_or(0);
+    if f.last_was_write {
+        f.wpos = now;
+    } else {
+        f.rpos = now;
+    }
+    Ok(pos as f64)
+}
+
+/// `Rconn_seek(con, where, origin, rw)`: through the buffer when there is
+/// one (a read's seek drops what it holds unread, unless it moves within
+/// it from the current position).
+// R: connections.c:Rconn_seek, buff_seek
+pub(crate) fn rconn_seek(c: &mut Conn, mut where_: f64, origin: c_int, rw: c_int) -> Result<f64, String> {
+    if c.c.buff.is_null() || rw == 2 {
+        return file_seek(c, where_, origin, rw);
+    }
+    let unread_len = (c.c.buff_stored_len - c.c.buff_pos) as f64;
+    if r_is_na(where_) {
+        // tell
+        return Ok(file_seek(c, where_, origin, rw)? - unread_len);
+    }
+    if origin == 2 {
+        // current
+        if where_ < unread_len {
+            c.c.buff_pos = (c.c.buff_pos as f64 + where_) as usize;
+            return file_seek(c, robigo_heap::NA_REAL, origin, rw);
+        }
+        where_ -= unread_len;
+    }
+    c.c.buff_pos = 0;
+    c.c.buff_stored_len = 0;
+    file_seek(c, where_, origin, rw)
+}
+
 /// The slot of the connection whose `struct Rconn` C holds at `con`.
 fn slot_of(cx: &Cx, con: *const RconnC) -> Option<i32> {
     table(cx)
