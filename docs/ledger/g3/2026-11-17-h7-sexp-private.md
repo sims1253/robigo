@@ -72,7 +72,8 @@
 - Measured (this box, release, `scripts/perf.py rt-bars --main`): main
   `66c1a0b1` (sha256 cdf11294…, build id 691e1d81…) against this branch
   `9b6675df` (7c5e7026…, f0b05160…), then after review round 1 `a712c54c`
-  (0e090872…, 413bd99a…; the same numbers, plain and defaults ±0.00%), each built in a fresh private target
+  (0e090872…, 413bd99a…) and after round 2 `ea21e034` (2efdc983…,
+  6712d4d1…), the same numbers each time (plain and defaults ±0.00%), each built in a fresh private target
   from its own checkout. 0 failures:
   - every row within ±0.01%, except env-fn −0.28%, superassign −0.10%, s3
     −0.08% and binarytrees −0.03% (all faster);
@@ -97,6 +98,38 @@
     reason.
   - `FoldReq`, `Round::end` and `Folds::lookup` are `pub(crate)`
     (compile.rs is their only user).
+- Review round 2 on #765 (OCR, the last round the foreman takes):
+  - **`Loc::sexp` was safe and returned a `from_word` handle**, a tagged
+    slot word for a slot location: #736's hole again, inside rtcore. It is
+    `unsafe` (identity only). The two places that read through it now go
+    through `Loc::object`: `Loc::at`'s non-slot path, and
+    `find_var_loc_in_frame`, which made a `Ref` of it.
+  - **SAFETY reasons that claimed rooting where there is none.** The
+    `num` callers in early.rs and in inline.rs's `pure`, `body_loop`,
+    `fused`, `arith_nums` and `relop_nums` run on local register arrays
+    while nothing collects; the write log holds raw values; a forced
+    default is the formal's constant (no eval runs). Each now states its
+    true ground. The VM's own sites (vm.rs) are a running activation's
+    rooted registers.
+  - **Test reasons:** the tests' `!x` words restore the real address
+    (`c_objects` and `finalizable_key` hand addresses inverted). The
+    pinned node is read through, so `from_ptr`; the key handed to the
+    probe stays `from_word`.
+  - **Contracts:**
+    - `from_ptr` names the owning heap, and a `Core` method needs its own;
+    - `Core::release` (and `R_ReleaseObject`) state the pairing with the
+      caller's own `preserve`;
+    - the ALTREP setters constrain `fun` (null, or a function of the
+      entry's signature);
+    - `R_altrep_inherits` says `class` is only compared;
+    - `call_special` is an `unsafe fn` like its siblings.
+  - **The check** cuts a closure's return type (a callback's), and reads
+    a `pub trait`'s methods, which are public without `pub`. `ALLOWED`
+    holds `Visitor::edge` with its reason: a collection's caller vouches
+    for the roots' edges. There are 32 controls, and an empty allowlist
+    finds `Visitor::edge` (trace.rs:122). The docs say the check is
+    textual: a `Sexp` inside another public type passed by value is
+    outside its view.
 - Verified: the full `scripts/rt-ci.py` (310/316, every mode, 400 injected
   failures), Miri on robigo-rtcore, `scripts/lint.sh` (with the new
   check), the check's controls, and actionlint (main's two shellcheck
