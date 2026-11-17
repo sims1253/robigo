@@ -1547,8 +1547,7 @@ impl Cx {
             let bits = l.bits(iso);
             // (INTERIM(L5): the wide base's definitions, run late, change
             // base's bindings as GNU R's build did before the locks)
-            let building = matches!(l.at(), At::Base(_)) && iso.envs().building_base.get() > 0;
-            if bits & BINDING_LOCK != 0 && !building {
+            if bits & BINDING_LOCK != 0 && !(matches!(l.at(), At::Base(_)) && iso.envs().building_base.get() > 0) {
                 let msg = format!("cannot change value of locked binding for '{}'", sym_name(l.symbol()));
                 return Err(env_error(self, &msg));
             }
