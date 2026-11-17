@@ -780,7 +780,7 @@ def cmd_run(a):
     robigo = robigo_rt_path(a.robigo) if rt else robigo_path(a.robigo)
     if not os.path.exists(robigo):
         sys.exit(f"no {'robigo-rt' if rt else 'robigo'} binary at {robigo}; "
-                 + ("build it with cargo build --release -p robigo-rt" if rt else "run scripts/build.sh"))
+                 + ("build it with cargo build --release -p robigo-rtapi (the package of the robigo-rt binary)" if rt else "run scripts/build.sh"))
     if rt:
         rt_sources()
     fx = fixture_preflight(a.name, conf) if getattr(a, "net_fixture", False) else None
