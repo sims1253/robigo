@@ -812,19 +812,29 @@ impl<'g> Comp<'g> {
             t.cur = k;
             // a label: the stack a jump left there, met by control falling in
             match (t.labels.get(&i.at).cloned(), fell) {
-                (Some((st, next, open)), true) => {
-                    // values the falling path leaves that the label's do
-                    // not have are dead: a numeric switch's empty
-                    // alternative, whose stop() call cmp.R lets fall into
-                    // the default (bcEval leaves its value below, never
-                    // read)
+                // a path falling in with values the label's state lacks: a
+                // non-tail numeric switch's empty alternative, whose stop()
+                // call cmp.R lets fall into the default. Should `stop`
+                // return (a redefinition), bcEval goes on with that value
+                // left on its stack, a later operation's operand: that path
+                // raises "not implemented yet" instead (AGENTS rule 6);
+                // the jumps to the label go on as the code says
+                (Some((st, next, open)), true)
                     if st.len() < t.stack.len()
                         && next <= self.next
-                        && t.stack[st.len()..].iter().all(|e| matches!(e.what, What::Val(_)))
-                    {
-                        t.stack.truncate(st.len());
-                        self.next = next;
-                    }
+                        && t.stack[st.len()..].iter().all(|e| matches!(e.what, What::Val(_))) =>
+                {
+                    let nil = self.nil();
+                    self.unimplemented(
+                        nil,
+                        "a stack left unbalanced where the byte code joins (a 'switch' whose stop() returned)",
+                    )?;
+                    t.stack = st;
+                    self.next = next;
+                    t.open = open;
+                    t.pending = None;
+                }
+                (Some((st, next, open)), true) => {
                     if next != self.next {
                         return Err(mismatch());
                     }

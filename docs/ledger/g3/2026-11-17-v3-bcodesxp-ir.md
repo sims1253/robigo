@@ -34,11 +34,16 @@ runs now passes one gate, `code::Verified` (#738).
   26 specials, 10 `MATH1` functions, 3 `.Call`, 2 `exp`, 1 `log`), each
   of which translates once the primitive exists. The test fails on code
   the translation cannot follow, an opcode it does not know, or the
-  verifier's refusal. Its first run found one: a numeric `switch`'s
-  empty alternative in non-tail position, whose `stop()` call cmp.R lets
-  fall into the default with its value left on the stack (the 14 `Ops.*`
-  and `Summary.*` group methods); a join now drops values the falling
-  path leaves that the label's state does not have
+  verifier's refusal. It also walks the byte code of promises
+  (`MAKEPROM`) and of the functions they make. Its first run found one: a
+  numeric `switch`'s empty alternative in non-tail position, whose `stop()`
+  call cmp.R lets fall into the default with its value left on the stack
+  (the 14 `Ops.*` and `Summary.*` group methods). That path now raises
+  "robigo: 'a stack left unbalanced where the byte code joins (a 'switch'
+  whose stop() returned)' is not implemented yet" after the call, which
+  only a redefined `stop` that returns reaches: bcEval then goes on with
+  the call's value on its stack, a later operation's operand (Sol, round
+  3). The jumps to the default go on as the code says
   (`tests/rt/bctrans/loops.R`'s `k_switch_nontail`).
 - **Real base code run:** `tests/rt/bctrans/basefuns.R` replays GNU R's
   installed byte code of 24 base functions (`.Internal(bodyCode(f))`,
@@ -172,6 +177,7 @@ the from-source port (or a translation choice) to settle later:
 | a loop's shape | 10 | cmp.R skips a loop's context when no `break`/`next` can leave it from elsewhere (`checkSkipLoopCntxt`) and puts a `for` loop's step after its body (`cmpForBody`); the port makes a context always, the step first. |
 | a constant cmp.R folds | 5 | `constantFold` folds `1:2` and `-1L`; the port computes them. |
 | a nested function's code | 5 | the port compiles a nested function's source at once; the translation translates its byte code at its first call. |
+| an unbalanced join the translation refuses | 1 | a non-tail numeric `switch`'s empty alternative (above): the port falls into the default. |
 | guard of a declined inline handler | 1 | `tryInline` puts `BASEGUARD` before `cmpCall` when the handler declines (`sum(...)`); the port calls unguarded. |
 
 **On base's installed code** (the base.rdb test under the crosscheck,
@@ -181,8 +187,10 @@ primitives robigo-rt lacks, above), and 221 first differences not classed
 yet. Most (161) are a call of a base closure GNU R's installed code
 inlines as a simple `.Internal` (`match`, `inherits`: `cmpSimpleInternal`)
 where the from-source compile, in this session's lazily bound base, calls
-it. Classing them is the from-source port's (V2) to settle, so rt-ci runs
-this part report-only: the step fails only when the base.rdb test does.
+it. Classing them is the from-source port's (V2) to settle, so this part
+is reported only: CI's rt job runs the rdb tests (where the data is) with
+the crosscheck on and prints the counts per class; the job fails only when
+the base.rdb test does.
 
 Fixed rather than listed: the from-source `switch` now ends an empty
 numeric alternative as cmp.R does in tail position (a jump to the end
@@ -223,3 +231,10 @@ On `556f2d56` (main `78dcf1ee` merged), unless noted:
   verifier checks a `Loop` region's continuation, `target + 1`, with a
   rejection test. Round 2: APPROVE.
 - **After L1b's merge:** the base.rdb test (above) and the switch join.
+  Sol round 3, on that commit: S3 [blocker] dropping the falling path's
+  values changed what a returning `stop` gives (GNU R 12, robigo 15 in
+  Sol's case), so that path now raises not-implemented; S4 [should] the
+  test skipped promises' byte code, now walked; S5 [should] the rt-ci
+  report step could not run in CI (the data is restored after rt-ci), so
+  CI's rdb step runs with the crosscheck instead. Fixed; not re-reviewed
+  (the loop's budget of three rounds).

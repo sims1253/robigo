@@ -100,11 +100,6 @@ PIN_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-pin-report-{os.g
 # where the byte-code crosscheck step writes (V3: one line per translated
 # closure whose code differs from the from-source compiler's)
 BC_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-bc-crosscheck-{os.getpid()}.txt")
-# and the base.rdb test's (report-only: the from-source compiler's
-# differences on base's installed code are not classed yet, and a closure
-# robigo-rt cannot run yet is untranslated)
-BC_BASE_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-bc-crosscheck-base-{os.getpid()}.txt")
-
 
 def bc_report_check(path):
     """The crosscheck report's errors (an unexpected difference, an
@@ -220,13 +215,6 @@ def steps(crates):
         # ones are the from-source port's known gaps, counted)
         ("conformance under ROBIGO_BC_CROSSCHECK=1 (translated byte code against the from-source compiler's)",
          {"ROBIGO_BC_CROSSCHECK": "1", "ROBIGO_BC_CROSSCHECK_REPORT": BC_REPORT}, conformance),
-        # base.rdb's closures translated (fails on a translation that
-        # cannot follow its code; skipped without ROBIGO_ORACLE_LIBRARY),
-        # their crosscheck reported only
-        ("base.rdb's closures translated, under ROBIGO_BC_CROSSCHECK=1 (report only)",
-         {"ROBIGO_BC_CROSSCHECK": "1", "ROBIGO_BC_CROSSCHECK_REPORT": BC_BASE_REPORT},
-         [*test, "-p", "robigo-rt", "--test", "rdb_roundtrip", "--", "--exact", "oracle_base_closures_translate",
-          "--nocapture"]),
         ("injected allocation failures (E9, scripts/rt-fail-alloc.py)", {},
          ["python3", "scripts/rt-fail-alloc.py", "--points", "400"]),
     ]
@@ -286,8 +274,6 @@ def main(argv):
             errors, classes = bc_report_check(bc)
             for c, n in sorted(classes.items()):
                 print(f"rt: bc crosscheck: {n} x {c}")
-            if bc == BC_BASE_REPORT:
-                continue
             for line in errors:
                 print(f"::error::rt: {line}")
             if errors:

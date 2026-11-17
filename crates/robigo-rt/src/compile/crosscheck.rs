@@ -309,6 +309,10 @@ fn expected(t: Option<&Norm>, s: Option<&Norm>, s_next: Option<&Norm>) -> Option
         (_, Some(Op::Loop | Op::ForStep)) | (Some(Op::Loop | Op::ForStep), _) => {
             Some("a loop's shape (checkSkipLoopCntxt, cmpForBody)")
         }
+        // a non-tail numeric switch's empty alternative: should its stop()
+        // return, the translation raises not-implemented where bcEval goes
+        // on with its stack unbalanced; the port falls into the default
+        (Some(Op::ErrorCall), _) => Some("an unbalanced join the translation refuses (a switch's stop())"),
         // tryInline guards a base function whose handler then declines
         // (`sum(...)`: cmpBuiltin with `...`) and calls it; the port calls
         // it unguarded

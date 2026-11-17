@@ -321,12 +321,16 @@ pub fn translation_gaps(cx: &mut Cx, f: Root<'_>) -> RResult<Vec<String>> {
                     ),
                     Err(e) => return Err(e),
                 }
-                // the functions it makes: MAKECLOSURE's list(formals, body, ...)
+                // the byte code it holds: MAKEPROM's, and the functions it
+                // makes (MAKECLOSURE's list(formals, body, ...)), whose
+                // own byte code a promise's may hold in turn
                 let consts = bc.cdr();
                 let p = consts.std_data() as *const Sexp;
                 for j in 0..consts.std_len() as usize {
                     let k = *p.add(j);
-                    if k.typ() == VECSXP && k.std_len() >= 2 {
+                    if k.typ() == BCODESXP {
+                        todo.push(k);
+                    } else if k.typ() == VECSXP && k.std_len() >= 2 {
                         todo.push(*(k.std_data() as *const Sexp).add(1));
                     }
                 }
