@@ -69,7 +69,11 @@ impl<'g> Table<'g> {
     /// `d->HashTable = allocVector(INTSXP, d->M)`, every slot `NIL`.
     // R: unique.c:HashTableSetup
     fn slots(cx: &'g Cx, m: usize) -> Result<&'g mut [i32], NeedGc> {
-        Ok(cx.alloc_with(m, |_| NIL)?.into_mut_slice())
+        // (opaque to the optimizer: a loop storing a known all-ones word
+        // becomes a `memset` call, which costs several times the
+        // vectorized stores of this one)
+        let nil = std::hint::black_box(NIL);
+        Ok(cx.alloc_with(m, |_| nil)?.into_mut_slice())
     }
 
     /// `scatter(key, d)`.
@@ -537,17 +541,30 @@ fn duplicated_flags<'g, K: Keys>(
 ) -> Result<FreshVec<'g, Lgl>, Fail> {
     let n = x.len();
     let mut t = x.table(cx, nmax)?;
-    let mut ans = cx.alloc_vector::<Lgl>(n)?;
-    let v = ans.as_mut_slice();
-    if from_last {
+    let mut ans = if from_last {
+        let mut ans = cx.alloc_vector::<Lgl>(n)?;
+        let v = ans.as_mut_slice();
         for i in (0..n).rev() {
             v[i] = Lgl(t.is_dup(x, i).map_err(|_| Fail::Full)? as i32);
         }
+        ans
     } else {
-        for i in 0..n {
-            v[i] = Lgl(t.is_dup(x, i).map_err(|_| Fail::Full)? as i32);
+        // each flag written once, in order, as the vector is made (GNU R's
+        // allocVector does not clear it either)
+        let mut full = false;
+        let ans = cx.alloc_with(n, |i| match t.is_dup(x, i) {
+            Ok(d) => Lgl(d as i32),
+            Err(Full) => {
+                full = true;
+                Lgl(0)
+            }
+        })?;
+        if full {
+            return Err(Fail::Full);
         }
-    }
+        ans
+    };
+    let v = ans.as_mut_slice();
     if let Some(inc) = incomp {
         for i in 0..n {
             if v[i].0 != 0 && (0..inc.len()).any(|j| x.eq(i, inc, j)) {
