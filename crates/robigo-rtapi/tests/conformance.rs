@@ -47,6 +47,20 @@ fn rt_conformance() {
     // SAFETY: set before any other thread of this test binary runs (the one
     // test here has not started its cases).
     unsafe { std::env::set_var("RT_CAPI_LIBS", &libs) };
-    let o = conf::Options::from_env(&conf::RT, rt_bin()).unwrap_or_else(|e| panic!("{e}"));
+    let mut o = conf::Options::from_env(&conf::RT, rt_bin()).unwrap_or_else(|e| panic!("{e}"));
+    // the cases that load tools' native code from the binary's R_HOME tree
+    // run where scripts/rt-home.sh built it (CI's rt job does)
+    if has_tools_so(&o.bin) {
+        o.features.push("r-home-tools");
+    }
     conf::run(&root, &conf::RT, &o).unwrap_or_else(|e| panic!("{e}"));
+}
+
+/// Whether `bin`'s `R.home()` has `library/tools/libs/tools.so`.
+fn has_tools_so(bin: &Path) -> bool {
+    let out = std::process::Command::new(bin)
+        .args(["-e", "cat(file.exists(file.path(R.home(), 'library', 'tools', 'libs', 'tools.so')))"])
+        .output()
+        .unwrap_or_else(|e| panic!("running {}: {e}", bin.display()));
+    out.stdout == b"TRUE"
 }

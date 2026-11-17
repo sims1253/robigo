@@ -67,6 +67,14 @@ class RtCi(unittest.TestCase):
         src = (HERE.parent / "crates/robigo-rtapi/tests/conformance.rs").read_text()
         self.assertIn(f"fn {rt.CONFORMANCE}()", src)
 
+    def test_the_r_home_tree_is_made_before_any_conformance_step(self):
+        # the cases that load tools' native code need it (r-home-tools)
+        steps = rt.steps(["robigo-rt", "robigo-rtcore"])
+        names = [c for _, _, c in steps]
+        tree = names.index(["scripts/rt-home.sh"])
+        first = next(i for i, c in enumerate(names) if rt.CONFORMANCE in c and "--exact" in c)
+        self.assertLess(tree, first)
+
     def test_conformance_steps_use_every_cpu(self):
         # they run one test alone, so the runner may run a case per CPU
         steps = rt.steps(["robigo-rt", "robigo-rtcore"]) + rt.full_move_steps()
