@@ -76,10 +76,6 @@ def main():
         ap.error("--no-r and --no-robigo leave nothing to measure")
 
     robigo = None if a.no_robigo else robigo_path(a.robigo)
-    ident = None
-    if robigo and os.path.exists(robigo):
-        ident = binary_identity(robigo, crate_of(robigo))
-        report_identity("robigo", ident)
     r_bin = os.environ.get("RSCRIPT_BIN", "/usr/lib/R/bin/exec/R")
     r_home = os.environ.get("R_HOME_DIR", "/usr/lib/R")
     base = dict(os.environ, **BASE_ENV, R_DEFAULT_PACKAGES="NULL")
@@ -101,6 +97,13 @@ def main():
         ratio = "-" if g is None or r is None else f"{r['median_kib'] / g['median_kib']:.2f}"
         print(f"| {os.path.relpath(f)} | {cell(r)} | {cell(g)} | {ratio}{' **wrong**' if wrong else ''} |",
               flush=True)
+    # which binary this measured, named after the measurements: a child's
+    # peak RSS starts from this process's at the fork, so nothing may grow
+    # it before (perf.binary_identity)
+    ident = None
+    if robigo and os.path.exists(robigo):
+        ident = binary_identity(robigo, crate_of(robigo))
+        report_identity("robigo", ident)
     if a.json:
         meta = {"robigo": robigo, "robigo_identity": ident, "robigo_env": a.robigo_env,
                 "gnur": None if a.no_r else r_bin, "runs": a.runs}

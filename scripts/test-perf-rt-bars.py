@@ -12,6 +12,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("perf", Path(__file__).with_name("perf.py"))
 perf = importlib.util.module_from_spec(spec)
@@ -244,18 +245,30 @@ class BinaryIdentity(unittest.TestCase):
             self.assertEqual(ident["sha256"], hashlib.sha256(b"not an ELF file").hexdigest())
             self.assertIsNone(ident["build_id"])
             self.assertIsNone(ident["stale"])  # no crate given: nothing to compare with
-            # older than the last commit touching robigo-rt's crates: stale
+            # the crates' last commit, as git would report it (CI's oracle
+            # image has no git, so the history is given here)
+            history = {"log": "2000000000 abc1234\n", "status": "", "describe": "v1-2-gabc1234\n"}
+            with patch.object(perf, "git", side_effect=lambda args, root=perf.ROOT: history[args[0]]):
+                os.utime(b, (1000, 1000))  # older than that commit: stale
+                stale = perf.binary_identity(b, "robigo-rtapi")
+                self.assertEqual(stale["stale"]["source"], "commit abc1234")
+                self.assertEqual(stale["checkout"], "v1-2-gabc1234")
+                buf = io.StringIO()
+                perf.report_identity("robigo-rt", stale, out=buf)
+                self.assertIn("is not a build of this checkout's sources", buf.getvalue())
+                os.utime(b, (2000000001, 2000000001))  # newer: a build of this checkout
+                self.assertIsNone(perf.binary_identity(b, "robigo-rtapi")["stale"])
+
+    def test_without_git_nothing_is_stale_and_nothing_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = os.path.join(tmp, "robigo-rt")
+            Path(b).write_bytes(b"x")
             os.utime(b, (1000, 1000))
-            stale = perf.binary_identity(b, "robigo-rtapi")["stale"]
-            self.assertIsNotNone(stale)
-            self.assertTrue(stale["source"].startswith("commit ") or stale["source"].endswith("(uncommitted)"))
-            buf = io.StringIO()
-            perf.report_identity("robigo-rt", perf.binary_identity(b, "robigo-rtapi"), out=buf)
-            self.assertIn("is not a build of this checkout's sources", buf.getvalue())
-            # newer than every change: a build of this checkout
-            future = time.time() + 3600
-            os.utime(b, (future, future))
-            self.assertIsNone(perf.binary_identity(b, "robigo-rtapi")["stale"])
+            with patch.object(perf.subprocess, "run", side_effect=FileNotFoundError("git")):
+                ident = perf.binary_identity(b, "robigo-rtapi")
+            self.assertIsNone(ident["stale"])
+            self.assertIsNone(ident["checkout"])
+            self.assertIsNone(ident["build_id"])
 
 if __name__ == "__main__":
     unittest.main()

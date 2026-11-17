@@ -244,8 +244,13 @@ def binary_identity(path, crate=None, root=ROOT):
     only; the robigo-rt binary comes from -p robigo-rtapi). A copy made with
     plain `cp` takes a new mtime and hides that: the sha256 and build ID in
     the report are what identify it."""
+    # in bounded chunks: reading the whole binary would raise this process's
+    # peak RSS, which the programs rss.py then starts inherit
+    h = hashlib.sha256()
     with open(path, "rb") as f:
-        sha = hashlib.sha256(f.read()).hexdigest()
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    sha = h.hexdigest()
     mtime = os.path.getmtime(path)
     describe = git(["describe", "--always", "--dirty", "--tags"], root)
     ident = {"path": path, "sha256": sha, "build_id": build_id(path),
