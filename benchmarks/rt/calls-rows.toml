@@ -33,6 +33,10 @@
 #          only (no bar cites them): what X9 (frames, argument matching), X7
 #          (D11) and S3x-d measure against
 #          (docs/ledger/g3/2026-11-17-s3x-d-trycatch-gap.md).
+#   jit    V4's JIT-cost bar (docs/ledger/g3/2026-11-17-v4-4-jit-cost.md):
+#          one JIT compile of a closure of benchmarks/suite/calls.R that GNU
+#          R's JIT compiles running it, as R_cmpfun1 makes it
+#          (`compiler:::tryCmpfun(f)`, eval.c:1828), per iteration.
 #
 # `address_sensitive = true` marks a row whose count follows where its strings
 # were allocated: GNU R's string hash, and robigo-rt's port of it, hashes a
@@ -520,3 +524,173 @@ note = "D0's pilot, paste.c: paste0() of a string and an integer"
 setup = ""
 body = 'v <- paste0("a", i)'
 n = 4000
+
+# --- jit (V4's JIT-cost bar) ---------------------------------------------
+
+[[row]]
+name = "jit-scale_by"
+group = "jit"
+note = "one JIT compile of calls.R's `scale_by`: compiler:::tryCmpfun(scale_by), as R_cmpfun1 calls it"
+setup = '''
+scale_by <- function(x, scale = 1, label = "a") { if (label == "zz") x else x * scale }
+weigh <- function(x, y) { z <- x * y; z + 1 }
+tag <- function(x, label) { if (label == "bc") x * 2 else x }
+e <- new.env()
+e$f <- function(x) x + 1
+acct <- function() {
+  bal <- 0
+  list(dep = function(x) { bal <<- bal + x; invisible(bal) }, get = function() bal)
+}
+a <- acct()
+area <- function(s) UseMethod("area")
+area.sq <- function(s) s$side^2
+area.default <- function(s) 0
+sq <- structure(list(side = 2), class = "sq")
+safe <- function(x) tryCatch(if (x > 0) x else stop("neg"), error = function(err) 0)
+'''
+body = 'compiler:::tryCmpfun(scale_by)'
+n = 40
+
+[[row]]
+name = "jit-weigh"
+group = "jit"
+note = "one JIT compile of calls.R's `weigh`: compiler:::tryCmpfun(weigh), as R_cmpfun1 calls it"
+setup = '''
+scale_by <- function(x, scale = 1, label = "a") { if (label == "zz") x else x * scale }
+weigh <- function(x, y) { z <- x * y; z + 1 }
+tag <- function(x, label) { if (label == "bc") x * 2 else x }
+e <- new.env()
+e$f <- function(x) x + 1
+acct <- function() {
+  bal <- 0
+  list(dep = function(x) { bal <<- bal + x; invisible(bal) }, get = function() bal)
+}
+a <- acct()
+area <- function(s) UseMethod("area")
+area.sq <- function(s) s$side^2
+area.default <- function(s) 0
+sq <- structure(list(side = 2), class = "sq")
+safe <- function(x) tryCatch(if (x > 0) x else stop("neg"), error = function(err) 0)
+'''
+body = 'compiler:::tryCmpfun(weigh)'
+n = 40
+
+[[row]]
+name = "jit-tag"
+group = "jit"
+note = "one JIT compile of calls.R's `tag`: compiler:::tryCmpfun(tag), as R_cmpfun1 calls it"
+setup = '''
+scale_by <- function(x, scale = 1, label = "a") { if (label == "zz") x else x * scale }
+weigh <- function(x, y) { z <- x * y; z + 1 }
+tag <- function(x, label) { if (label == "bc") x * 2 else x }
+e <- new.env()
+e$f <- function(x) x + 1
+acct <- function() {
+  bal <- 0
+  list(dep = function(x) { bal <<- bal + x; invisible(bal) }, get = function() bal)
+}
+a <- acct()
+area <- function(s) UseMethod("area")
+area.sq <- function(s) s$side^2
+area.default <- function(s) 0
+sq <- structure(list(side = 2), class = "sq")
+safe <- function(x) tryCatch(if (x > 0) x else stop("neg"), error = function(err) 0)
+'''
+body = 'compiler:::tryCmpfun(tag)'
+n = 40
+
+[[row]]
+name = "jit-env-fn"
+group = "jit"
+note = "one JIT compile of calls.R's `e$f`: compiler:::tryCmpfun(e$f), as R_cmpfun1 calls it"
+setup = '''
+scale_by <- function(x, scale = 1, label = "a") { if (label == "zz") x else x * scale }
+weigh <- function(x, y) { z <- x * y; z + 1 }
+tag <- function(x, label) { if (label == "bc") x * 2 else x }
+e <- new.env()
+e$f <- function(x) x + 1
+acct <- function() {
+  bal <- 0
+  list(dep = function(x) { bal <<- bal + x; invisible(bal) }, get = function() bal)
+}
+a <- acct()
+area <- function(s) UseMethod("area")
+area.sq <- function(s) s$side^2
+area.default <- function(s) 0
+sq <- structure(list(side = 2), class = "sq")
+safe <- function(x) tryCatch(if (x > 0) x else stop("neg"), error = function(err) 0)
+'''
+body = 'compiler:::tryCmpfun(e$f)'
+n = 40
+
+[[row]]
+name = "jit-area"
+group = "jit"
+note = "one JIT compile of calls.R's `area`: compiler:::tryCmpfun(area), as R_cmpfun1 calls it"
+setup = '''
+scale_by <- function(x, scale = 1, label = "a") { if (label == "zz") x else x * scale }
+weigh <- function(x, y) { z <- x * y; z + 1 }
+tag <- function(x, label) { if (label == "bc") x * 2 else x }
+e <- new.env()
+e$f <- function(x) x + 1
+acct <- function() {
+  bal <- 0
+  list(dep = function(x) { bal <<- bal + x; invisible(bal) }, get = function() bal)
+}
+a <- acct()
+area <- function(s) UseMethod("area")
+area.sq <- function(s) s$side^2
+area.default <- function(s) 0
+sq <- structure(list(side = 2), class = "sq")
+safe <- function(x) tryCatch(if (x > 0) x else stop("neg"), error = function(err) 0)
+'''
+body = 'compiler:::tryCmpfun(area)'
+n = 40
+
+[[row]]
+name = "jit-area-sq"
+group = "jit"
+note = "one JIT compile of calls.R's `area.sq`: compiler:::tryCmpfun(area.sq), as R_cmpfun1 calls it"
+setup = '''
+scale_by <- function(x, scale = 1, label = "a") { if (label == "zz") x else x * scale }
+weigh <- function(x, y) { z <- x * y; z + 1 }
+tag <- function(x, label) { if (label == "bc") x * 2 else x }
+e <- new.env()
+e$f <- function(x) x + 1
+acct <- function() {
+  bal <- 0
+  list(dep = function(x) { bal <<- bal + x; invisible(bal) }, get = function() bal)
+}
+a <- acct()
+area <- function(s) UseMethod("area")
+area.sq <- function(s) s$side^2
+area.default <- function(s) 0
+sq <- structure(list(side = 2), class = "sq")
+safe <- function(x) tryCatch(if (x > 0) x else stop("neg"), error = function(err) 0)
+'''
+body = 'compiler:::tryCmpfun(area.sq)'
+n = 40
+
+[[row]]
+name = "jit-safe"
+group = "jit"
+note = "one JIT compile of calls.R's `safe`: compiler:::tryCmpfun(safe), as R_cmpfun1 calls it"
+setup = '''
+scale_by <- function(x, scale = 1, label = "a") { if (label == "zz") x else x * scale }
+weigh <- function(x, y) { z <- x * y; z + 1 }
+tag <- function(x, label) { if (label == "bc") x * 2 else x }
+e <- new.env()
+e$f <- function(x) x + 1
+acct <- function() {
+  bal <- 0
+  list(dep = function(x) { bal <<- bal + x; invisible(bal) }, get = function() bal)
+}
+a <- acct()
+area <- function(s) UseMethod("area")
+area.sq <- function(s) s$side^2
+area.default <- function(s) 0
+sq <- structure(list(side = 2), class = "sq")
+safe <- function(x) tryCatch(if (x > 0) x else stop("neg"), error = function(err) 0)
+'''
+body = 'compiler:::tryCmpfun(safe)'
+n = 40
