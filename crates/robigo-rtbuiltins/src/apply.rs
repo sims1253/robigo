@@ -208,8 +208,9 @@ pub fn do_vapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
                 let val = t.capture(cx, |cx, o| lp.call(cx, i, o))?;
                 // (GNU R reads a package ALTREP value through its methods,
                 // materializing it: docs/ledger/g3/2026-11-16-c1-link-walk.md,
-                // DEFERRED)
-                if val.bind(cx).is_altrep() {
+                // DEFERRED; one of robigo's is read below, as INTEGER(val)
+                // and REAL(val) read it)
+                if val.bind(cx).is_package_altrep() {
                     return Err(not_yet(cx, Some(call), "vapply() of a package ALTREP result of FUN"));
                 }
                 let len = coerce::xlength(val.bind(cx));
@@ -251,6 +252,8 @@ pub fn do_vapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
                     }
                 }
                 let off = i * common_len;
+                // INTEGER(val), REAL(val), LOGICAL(val): DATAPTR
+                cx.materialize(val)?;
                 match common_type {
                     CPLXSXP => buf.cplx.copy(cx, ans, off, val),
                     REALSXP => buf.real.copy(cx, ans, off, val),

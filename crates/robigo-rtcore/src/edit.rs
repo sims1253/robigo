@@ -44,6 +44,10 @@ impl Cx {
     pub fn shallow_duplicate(&mut self, x: Root<'_>, out: Out<'_>) -> RResult<()> {
         let r = x.bind(self);
         if r.is_altrep() {
+            // duplicate1's ALTREP_DUPLICATE_EX(s, FALSE)
+            if r.own_class().is_some() {
+                return self.own_duplicate(x, false, out);
+            }
             return Err(self.error_call(None, "robigo: 'duplicate' of an ALTREP object is not implemented yet"));
         }
         match r.sexptype() {
@@ -143,10 +147,13 @@ impl Cx {
         let r = x.bind(self);
         let t = r.sexptype();
         assert!(accepts(t), "robigo: a write into a SEXPTYPE {t} object through the wrong handle");
-        if r.is_altrep() {
+        if r.is_package_altrep() {
             return Err(self.error_call(None, "robigo: 'writing into an ALTREP vector' is not implemented yet"));
         }
-        if !self.shared(r) {
+        // an instance of one of robigo's classes is never written: it is
+        // marked not mutable when made (GNU R's MARK_NOT_MUTABLE), and is
+        // duplicated here as a standard vector whatever its count
+        if !self.shared(r) && r.own_class().is_none() {
             return Ok(());
         }
         // SAFETY: a live object's header.
@@ -274,6 +281,9 @@ impl Cx {
         let r = x.bind(self);
         let t = r.sexptype();
         assert!(accepts(t), "robigo: a write into a SEXPTYPE {t} object through the wrong handle");
+        // (an instance of one of robigo's classes is never owned: it is
+        // marked not mutable when made)
+        debug_assert!(r.own_class().is_none(), "robigo: an owned write into one of robigo's ALTREP objects");
         if r.is_altrep() {
             return Err(self.error_call(None, "robigo: 'writing into an ALTREP vector' is not implemented yet"));
         }
@@ -299,17 +309,33 @@ impl Cx {
             (r.sexptype(), r.is_altrep())
         };
         assert!(y_type == U::SEXPTYPE, "robigo: edit_pair reads a SEXPTYPE {y_type} vector as another type");
-        if y_alt {
+        let y_own = y_alt && y.bind(self).own_class().is_some();
+        if y_alt && !y_own {
             return Err(self.error_call(None, "robigo: 'reading an ALTREP vector in place' is not implemented yet"));
         }
         self.make_unique(x, |t| t == T::SEXPTYPE)?;
+        // GNU R's kernels read `y` through INTEGER_RO / REAL_RO, which
+        // expand one of robigo's classes (DATAPTR): its expansion is read
+        if y_own {
+            self.materialize(y)?;
+        }
         let cx = &*self;
         let (xs, ys) = (x.bind(cx), y.bind(cx));
         let (nx, ny) = (xs.len().unwrap_or(0), ys.len().unwrap_or(0));
+        // `x` is a unique standard vector now (make_unique), never one of
+        // robigo's classes; `y`'s data is its own or its expansion's
+        debug_assert!(!xs.is_altrep(), "robigo: a raw write into an ALTREP vector");
+        let yd = if y_own {
+            // SAFETY: a live instance just materialized: its data2 is its
+            // expansion, a standard vector of `U`.
+            unsafe { crate::altrep::own::expanded(ys.sexp()).expect("robigo: materialized") }
+        } else {
+            ys.sexp()
+        };
         // SAFETY: both are live standard vectors (checked above), whose data
         // pointers stay valid while `&mut self` is held here: nothing
         // collects or runs code until the kernel returns.
-        let (px, py) = unsafe { (xs.sexp().std_data() as *mut T, ys.sexp().std_data() as *const U) };
+        let (px, py) = unsafe { (xs.sexp().std_data() as *mut T, yd.std_data() as *const U) };
         let (bx, by) = (nx * size_of::<T>(), ny * size_of::<U>());
         let overlap = bx > 0 && by > 0 && (px as usize) < py as usize + by && (py as usize) < px as usize + bx;
         let snapshot: Vec<U>;
@@ -543,6 +569,10 @@ impl Cx {
             (r.sexptype(), r.is_altrep())
         };
         if alt {
+            // duplicate1's ALTREP_DUPLICATE_EX(s, TRUE)
+            if x.bind(self).own_class().is_some() {
+                return self.own_duplicate(x, true, out);
+            }
             return Err(self.error_call(None, "robigo: 'duplicate' of an ALTREP object is not implemented yet"));
         }
         let res = out.root();

@@ -643,6 +643,9 @@ pub fn do_attributesgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root
         return Err(cx.error("attributes must be a list or NULL"));
     }
     let nattrs = xlength(attrs.bind(cx));
+    // each value is set as `attr<-`'s value argument is (a `dim` read
+    // through INTEGER)
+    cx.materialize_nested(attrs, Some(1))?;
     cx.scope(|cx, s| {
         let names = if nattrs > 0 {
             let Some(n) = super::names(attrs.bind(cx)) else {
@@ -1048,6 +1051,8 @@ pub fn do_dimnamesgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_
     };
     cx.scope(|cx, s| {
         let x = writable(cx, s, call, args.root(0), Copy::Setter)?;
+        // the list's components are coerced and checked as vectors
+        cx.materialize_nested(args.root(1), Some(1))?;
         set_attrib(cx, x, b"dimnames", args.root(1))?;
         out.set(cx, x.bind(cx));
         Ok(())
