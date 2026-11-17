@@ -31,6 +31,13 @@ print(tryCatch(s1(vals$lst, 0L), error = conditionMessage))
 print(tryCatch(s1(vals$int, NA_integer_), error = conditionMessage))
 print(tryCatch(s1(vals$dbl, -1L), error = conditionMessage))
 print(tryCatch(s1(vals$lst, 5), error = conditionMessage))
+# indices that are not numbers: a symbol, a string, a list, NULL (the
+# default and its errors)
+print(tryCatch(s1(vals$lst, quote(a)), error = conditionMessage))
+print(tryCatch(s0(vals$dbl, quote(a)), error = conditionMessage))
+show(s1(nl, "b")); show(s0(nx, "a"))
+print(tryCatch(s1(vals$lst, list(1)), error = conditionMessage))
+show(s0(vals$dbl, NULL))
 # a compact sequence (ALTREP) and a character vector: the default
 show(s1(1:10, 3L)); show(s0(1:10, 4L)); show(s1(c("p", "q"), 2L)); show(s0(c("p", "q"), 1L))
 # the element a `[[` of a list gives is the element: changing the copy

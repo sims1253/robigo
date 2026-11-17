@@ -1561,20 +1561,22 @@ fn stack_index(act: &Act, r: Reg) -> i64 {
         Tag::Real => s.as_real().map_or(-1, real_index),
         Tag::Object => {
             let x = s.as_object().unwrap();
-            // SAFETY: a register's object is live.
+            // SAFETY: a register's object is live; its length and data are
+            // read only once it is an integer or double vector in standard
+            // storage.
             unsafe {
-                // IS_SCALAR(idx, INTSXP | REALSXP); an ALTREP index is the
-                // default's
-                if x.is_altrep() || x.std_len() != 1 {
+                // IS_SCALAR(idx, INTSXP | REALSXP): the type first, then
+                // the length; an ALTREP index is never IS_SCALAR (only
+                // allocVector3 sets the scalar bit)
+                let t = x.typ();
+                if !matches!(t, INTSXP | REALSXP) || x.is_altrep() || x.std_len() != 1 {
                     return -1;
                 }
-                match x.typ() {
-                    INTSXP => {
-                        let i = *(x.std_data() as *const i32);
-                        if i != NA_INTEGER { i as i64 } else { -1 }
-                    }
-                    REALSXP => real_index(*(x.std_data() as *const f64)),
-                    _ => -1,
+                if t == INTSXP {
+                    let i = *(x.std_data() as *const i32);
+                    if i != NA_INTEGER { i as i64 } else { -1 }
+                } else {
+                    real_index(*(x.std_data() as *const f64))
                 }
             }
         }
@@ -1617,8 +1619,8 @@ fn vec_subset_fast(cx: &mut Cx, act: &Act, dst: Reg, base: Reg, sub2: bool) -> R
     // SAFETY: a register's object is live, of this isolate.
     let xr = unsafe { Ref::from_sexp(x, cx) };
     if !sub2 {
-        // FAST_VECELT_OK(vec)
-        let ok = match xr.attrib() {
+        // FAST_VECELT_OK(vec): ATTRIB(vec) == R_NilValue, or a single `dim`
+        let ok = match xr.attrib().filter(|a| a.sexptype() != NILSXP) {
             None => true,
             Some(a) => {
                 a.as_cons().is_some_and(|c| c.tag() == cx.sym(robigo_rtcore::RSym::Dim).into() && c.cdr() == cx.nil())

@@ -57,12 +57,20 @@
   | env-fn | 1,948 | 1,929 | -0.98% | -19 |
   | superassign | 4,909 | 4,895 | -0.29% | -14 |
   | s3 | 18,894 | 18,886 | -0.04% | -8 |
+  | `s + x[2L]` in a loop | 1,362 | 963 | -29.3% | -146 |
 
   - In the error branch, four of the six `do_subset2_dflt` calls are now
     byte code's, as in GNU R: `do_subset2_dflt` -1,433, `get1index`
     -574, the boxing of indices -200, malloc and free -489.
+  - The last row is `x <- c(1.5, 2.5, 3.5)` read by `[` in a loop. The
+    gate's rows use `[[` only. Sol's review found that the first version
+    took `[`'s fast path only for an object with no attribute field at
+    all: `Ref::attrib()` gives `R_NilValue` for a vector without
+    attributes. So `[` always went to the default, now through one more
+    call: 1,477 instructions there, +8.4%. `FAST_VECELT_OK` now accepts
+    `ATTRIB(vec) == R_NilValue`, as GNU R's does.
   - `scripts/perf.py rt-bars` against the same base reports 0 failures:
-    - plain -0.38%, defaults -0.39%, named -0.36%, env-fn -0.95%,
-      superassign -0.28%, binarytrees -0.23%;
-    - s3 +0.00%, fib +0.02%, the e7 rows -0.02%.
+    - plain -0.36%, defaults -0.40%, named -0.42%, env-fn -1.00%,
+      superassign -0.30%, binarytrees -0.23%;
+    - s3 +0.00%, fib +0.02%, the e7 rows -0.04%.
 - Proof: see the PR.
