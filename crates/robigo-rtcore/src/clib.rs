@@ -22,19 +22,10 @@ pub struct Tm {
     pub yday: i32,
     pub isdst: i32,
     pub gmtoff: i64,
-    /// The zone's abbreviation, if the C library gave one.
-    pub zone: Option<Vec<u8>>,
 }
 
 impl Tm {
     fn from_c(t: &libc::tm) -> Tm {
-        let zone = if t.tm_zone.is_null() {
-            None
-        } else {
-            // SAFETY: glibc's tm_zone points at a NUL-terminated abbreviation
-            // in its own tables, alive for the process.
-            Some(unsafe { std::ffi::CStr::from_ptr(t.tm_zone) }.to_bytes().to_vec())
-        };
         Tm {
             sec: t.tm_sec,
             min: t.tm_min,
@@ -46,7 +37,6 @@ impl Tm {
             yday: t.tm_yday,
             isdst: t.tm_isdst,
             gmtoff: t.tm_gmtoff,
-            zone,
         }
     }
 }
@@ -78,42 +68,79 @@ pub fn gmtime(t: i64) -> Option<Tm> {
 }
 
 unsafe extern "C" {
-    fn wcstod(nptr: *const libc::wchar_t, endptr: *mut *mut libc::wchar_t) -> f64;
     fn wcstod_l(nptr: *const libc::wchar_t, endptr: *mut *mut libc::wchar_t, loc: libc::locale_t) -> f64;
 }
 
-/// The C library's `C.UTF-8` locale, made once for the process (an
-/// object, not the process's locale, which robigo never sets): GNU R's
-/// `LC_CTYPE` in the oracle's environment, with `LC_NUMERIC` "C" as GNU R
-/// always has it. `None` if the C library has no C.UTF-8.
+/// The C library's `C.UTF-8` locale (`C.utf8` in older glibc), made once
+/// for the process (an object, not the process's locale, which robigo never
+/// sets): GNU R's `LC_CTYPE` in the oracle's environment, with
+/// `LC_NUMERIC` "C" (the base), as GNU R always has it. `None` if the C
+/// library has neither.
 fn c_utf8() -> Option<libc::locale_t> {
     static LOC: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     let l = *LOC.get_or_init(|| {
-        // SAFETY: newlocale makes a new object from a NUL-terminated name;
-        // it is never freed (kept for the process, read only).
-        unsafe { libc::newlocale(libc::LC_CTYPE_MASK, c"C.UTF-8".as_ptr(), std::ptr::null_mut()) as usize }
+        for name in [c"C.UTF-8", c"C.utf8"] {
+            // SAFETY: newlocale makes a new object from a NUL-terminated
+            // name and no base; it is never freed (kept for the process,
+            // read only).
+            let l = unsafe { libc::newlocale(libc::LC_CTYPE_MASK, name.as_ptr(), std::ptr::null_mut()) };
+            if !l.is_null() {
+                return l as usize;
+            }
+        }
+        0
     });
     (l != 0).then_some(l as libc::locale_t)
 }
 
 /// `wcstod(s, &end)` in a UTF-8 locale (white space as `iswspace` reads it
-/// there; the C library's own locale when it has no C.UTF-8) of the wide
-/// characters `s` (a NUL is appended): the number and how many of `s` it
-/// read.
-pub fn wcstod_of(s: &[u32]) -> (f64, usize) {
-    let mut buf: Vec<libc::wchar_t> = s.iter().map(|&c| c as libc::wchar_t).collect();
+/// there; `.` the decimal point) of the wide characters `s` (a NUL is
+/// appended): the number and how many of `s` it read. `None` when the C
+/// library has no C.UTF-8 locale: the result never depends on the
+/// process's locale.
+pub fn wcstod_of(s: &[u32]) -> Option<(f64, usize)> {
+    let loc = c_utf8()?;
+    let mut buf: Vec<libc::wchar_t> = Vec::with_capacity(s.len() + 1);
+    buf.extend(s.iter().map(|&c| c as libc::wchar_t));
     buf.push(0);
     let mut end: *mut libc::wchar_t = std::ptr::null_mut();
-    let v = match c_utf8() {
-        // SAFETY: a NUL-terminated wide string, alive for the call; `end`
-        // is set to a position inside it; `loc` is a live locale object.
-        Some(loc) => unsafe { wcstod_l(buf.as_ptr(), &mut end, loc) },
-        // SAFETY: as above, without a locale object.
-        None => unsafe { wcstod(buf.as_ptr(), &mut end) },
-    };
+    // SAFETY: a NUL-terminated wide string, alive for the call; `end` is set
+    // to a position inside it; `loc` is a live locale object.
+    let v = unsafe { wcstod_l(buf.as_ptr(), &mut end, loc) };
     // SAFETY: `end` points into `buf` (at its start when nothing was read).
     let used = unsafe { end.offset_from(buf.as_ptr()) } as usize;
-    (v, used.min(s.len()))
+    Some((v, used.min(s.len())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wcstod_of;
+
+    fn w(s: &str) -> Vec<u32> {
+        s.chars().map(|c| c as u32).collect()
+    }
+
+    // (the C library's locale objects are not Miri's)
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn wcstod_reads_c_utf8_numbers_whatever_the_process_locale() {
+        // '.' is the decimal point, ',' ends the number
+        assert_eq!(wcstod_of(&w("1.5x")), Some((1.5, 3)));
+        assert_eq!(wcstod_of(&w("1,5")), Some((1.0, 1)));
+        // C.UTF-8's white space (an em space) is skipped
+        assert_eq!(wcstod_of(&w("\u{2003}2.5!")), Some((2.5, 4)));
+        assert_eq!(wcstod_of(&w("x")), Some((0.0, 0)));
+        // a ',' decimal locale set for the process changes nothing
+        // SAFETY: the test thread sets LC_NUMERIC and restores "C"; no
+        // other test reads the process locale.
+        unsafe {
+            let de = libc::setlocale(libc::LC_NUMERIC, c"de_DE.UTF-8".as_ptr());
+            assert_eq!(wcstod_of(&w("1.5")), Some((1.5, 3)));
+            if !de.is_null() {
+                libc::setlocale(libc::LC_NUMERIC, c"C".as_ptr());
+            }
+        }
+    }
 }
 
 /// The home directory in the password database of `user` (`getpwnam`), or
