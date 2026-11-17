@@ -186,6 +186,9 @@ impl Conn {
 /// connection".
 type OpenResult = Result<(), String>;
 
+/// `R_PATH_MAX`: `PATH_MAX` on Linux.
+pub(crate) const R_PATH_MAX: usize = 4096;
+
 /// `R_ExpandFileName_unix(s)`: a leading `~` or `~user` (up to the first
 /// `/`) is that home directory: `HOME` for `~` (the password entry when it
 /// is unset or empty), the password entry for `~user`. A name with no such
@@ -194,7 +197,6 @@ type OpenResult = Result<(), String>;
 // R: sys-unix.c:R_ExpandFileName_unix (no readline: robigo-rt's and
 // Rscript's case)
 pub fn expand_file_name_unix(s: &[u8]) -> (Vec<u8>, Option<String>) {
-    const R_PATH_MAX: usize = 4096;
     if s.first() != Some(&b'~') {
         return (s.to_vec(), None);
     }
@@ -237,8 +239,11 @@ pub fn r_expand_file_name(cx: &mut robigo_rtcore::Cx, name: &[u8]) -> robigo_rtc
     Ok(v)
 }
 
-/// `R_ExpandFileName(name)` where no warning can be given (a connection's
-/// open callback): GNU R's over-long expansion warning is dropped.
+/// `R_ExpandFileName(name)` without its over-long expansion warning: for
+/// a connection's open callback, which has no `Cx`, and today also for
+/// `file()`'s and `gzfile()`'s sniffing of the file's type (connections,
+/// L's: docs/ledger/g3/2026-11-17-b5a-platform.md). Elsewhere,
+/// `r_expand_file_name`.
 pub fn expand_file_name(name: &[u8]) -> Vec<u8> {
     expand_file_name_unix(name).0
 }

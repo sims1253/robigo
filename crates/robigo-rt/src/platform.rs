@@ -7,6 +7,7 @@
 //! their `Renviron`), else the configure value `PLATFORM_PKGTYPE`, which a
 //! unix build leaves unset: `"source"` (platform.c).
 
+use crate::connections::R_PATH_MAX;
 use robigo_numerics::ldouble::LDouble;
 use robigo_numerics::machar::machar;
 use robigo_rtcore::{Char, Cx, Encoding, RResult};
@@ -229,39 +230,21 @@ pub fn do_direxists(
         robigo_rtcore::View::Str(v) => v.len(),
         _ => return Err(cx.error("invalid filename argument")),
     };
-    let loc = robigo_rtbuiltins::text::ctype(cx.locale());
     let mut ans = Vec::with_capacity(n);
     for i in 0..n {
-        let (tr, na) = {
-            let c = fn_.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
-            let tr = robigo_text::translate_char2(robigo_rtbuiltins::coerce::text(c), loc).map(|b| b.into_owned());
-            (tr, c == cx.na_string())
-        };
-        let p = match tr {
-            Ok(b) => Some(b),
-            Err(robigo_text::Untranslatable::Bytes) => {
-                return Err(cx.error("translating strings with \"bytes\" encoding is not allowed"));
-            }
-            Err(robigo_text::Untranslatable::Failed(m)) => {
-                cx.warning(&format!("unable to translate '{m}' to native encoding"))?;
-                None
-            }
-        };
-        let is_dir = match p {
-            Some(b) if !na => {
+        // (translateCharFP2 of NA is "NA": nothing to warn about)
+        let is_dir = match translate_fp2(cx, fn_, i)? {
+            Some(b) => {
                 let p = crate::connections::r_expand_file_name(cx, &b)?;
                 std::fs::metadata(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&p))
                     .is_ok_and(|m| m.is_dir())
             }
-            _ => false,
+            None => false,
         };
         ans.push(robigo_rtcore::Lgl(is_dir as i32));
     }
     cx.build(out, |cx| Ok(cx.alloc_copy(&ans)?.finish().into()))
 }
-
-/// `R_PATH_MAX`: `PATH_MAX` on Linux.
-const R_PATH_MAX: usize = 4096;
 
 /// `translateCharFP2(s)` of element `i` of a character vector: `None` for NA
 /// and, after its warning, for a name iconv cannot translate; a "bytes"
