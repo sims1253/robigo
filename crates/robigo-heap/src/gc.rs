@@ -990,7 +990,9 @@ impl Core {
         let name: Box<[u8]> = unsafe { s.sym_name_bytes() }.into();
         let t = self.install_named(&name, Sexp::NULL).expect("robigo: no room for a PRINTNAME");
         debug_assert_eq!(t, s, "robigo: one symbol per name");
-        self.printnames[unsafe { s.sym_id() } as usize]
+        // SAFETY: the caller's contract: a live symbol.
+        let id = unsafe { s.sym_id() } as usize;
+        self.printnames[id]
     }
 
     /// # Safety
