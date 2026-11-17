@@ -92,6 +92,19 @@ made for that:
   compiled mark and code (`jit::set_compiled`,
   `crates/robigo-rt/src/call.rs:218`). The next call takes the common
   path. `jit::bytecode_body` and `is_compiled` say "compiled" for either.
+- **The trust boundary (#738, the foreman's decision, V3's scope).**
+  rt's VM trusts its IR: `code::Built` has public fields
+  (`crates/robigo-rt/src/code.rs:62`), and `code::build`'s `# Safety`
+  asks only for liveness. That holds while rt's own compiler is the only
+  source. V3 adds GNU R byte code from `.rdb` files as a second source,
+  so the translation must produce a `Verified` code type, and the VM
+  takes only that type. Before it exists, the translation checks:
+  - each operand index against the constant pool and the frame shape;
+  - each jump target;
+  - the register counts.
+
+  V3 also brands `Cenv<'g>` (`crates/robigo-rt/src/cenv.rs:88`). The V3
+  PR closes #738, together with X/P1's `Act` fix.
 - **The fallback:** `R_disable_bytecode` or a version mismatch runs the
   source (`jit::closure_profile`), as `bcEval` does. A BCODESXP
   evaluated directly (`eval(compile(e))`, `crates/robigo-rt/src/eval.rs:117`)
@@ -210,6 +223,42 @@ RX replaces `ere` and keeps the callers.
   `isRegisteredNamespace`, and `R_getNSValue` for `::` and `:::`. These
   are in rt's `ns.rs`, which already held envir.c's `do_colon2` and
   `do_colon3`. robigo-rt has no `envir.rs`.
+
+**The overlap with L2a** (`g3/l2-base-source`; the foreman's rule:
+whoever merges second keeps the other's, unless theirs is closer to the
+C).
+- **Ported here:**
+  - `isNamespaceEnv`, `topenv`, `getRegisteredNamespace`,
+    `isRegisteredNamespace`, `R_FindNamespace`, and `R_getNSValue` for `::`
+    and `:::` (exports, lazydata, the not-exported error), all in rt
+    `ns.rs`;
+  - `environmentName` (rt `builtin.rs`);
+  - `substitute(expr, list)` (rt `specials.rs`, `list_env`).
+- **Not ported here:**
+  - `registerNamespace`, `unregisterNamespace` and
+    `getNamespaceRegistry` as internals. The INTERIM(L2) loader writes
+    rtcore's registry directly (`cx.namespace_registry()`, the
+    `defineVar` that `registerNamespace` does). Once both are on main, it
+    registers through L's.
+  - `importIntoEnv`, `attach`, `detach`, `search`.
+- **The foreman's decision** (L compared both branches at `805824ea`):
+  - **The same behaviour, so the first to merge wins:**
+    `substitute(e, <list>)`, `isNamespaceEnv`/`R_IsPackageEnv`, `topenv`
+    and `environmentName`. For `topenv`, this one stays because its shape
+    cache is faster.
+  - **L's win whichever merges first,** because they are closer to the C:
+    - `R_getNSValue`. `::` loads a missing namespace through R's
+      `loadNamespace` (`callR1`, so the load shows in `sys.calls()` and
+      in error calls). The "not exported" path goes through R's
+      `getNamespaceName`. String names are translated and installed.
+    - `getRegisteredNamespace` and `isRegisteredNamespace`: a name that
+      is neither a string nor a symbol is coerced to a symbol. This
+      branch raises "not implemented yet" there instead.
+  - The INTERIM(L2) compiler loader becomes a hook in L's `callR1` step:
+    `compiler` goes to it, everything else to `loadNamespace`.
+  - If C1-BC merges first, these stay as they are and L replaces them on
+    rebase. If L2a merges first, C1-BC drops its three and registers the
+    hook.
 
 ### Stop-gap inventory
 

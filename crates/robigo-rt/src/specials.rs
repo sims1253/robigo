@@ -950,12 +950,29 @@ fn symbols_of(e: Ref<'_>, acc: &mut Vec<Sexp>) {
 fn list_env<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>) -> RResult<Root<'s>> {
     let base = s.root(cx, cx.base_env());
     let e = s.capture(cx, |cx, o| cx.build(o, |cx| cx.new_env(base.bind(cx), false, 0)))?;
+    let loc = cx.locale();
+    let mut bad = None;
     let pairs: Vec<(Option<Vec<u8>>, usize)> = {
         let v = env.bind(cx);
         match v.view() {
             View::List(l) => {
                 let names = robigo_rtbuiltins::attrib::names(v).and_then(|n| n.as_vector::<Char<'_>>());
-                (0..l.len()).map(|i| (names.map(|n| n.get(i).bytes().to_vec()), i)).collect()
+                let mut out = Vec::with_capacity(l.len());
+                for i in 0..l.len() {
+                    // installTrChar: the name in the native encoding
+                    let name = match names.map(|n| n.get(i)).filter(|c| !c.bytes().is_empty()) {
+                        Some(c) => match robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(c), loc) {
+                            Ok(b) => Some(b.into_owned()),
+                            Err(e) => {
+                                bad = Some(e.to_string());
+                                break;
+                            }
+                        },
+                        None => None,
+                    };
+                    out.push((name, i));
+                }
+                out
             }
             _ => {
                 let mut out = Vec::new();
@@ -970,6 +987,9 @@ fn list_env<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>) -> RResult<Root<'s>> {
             }
         }
     };
+    if let Some(msg) = bad {
+        return Err(cx.error(&msg));
+    }
     // a frame lookup finds a name's first cell: defined in reverse, the
     // first element of a repeated name is the binding that stays
     for (name, i) in pairs.into_iter().rev() {

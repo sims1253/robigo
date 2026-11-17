@@ -823,7 +823,7 @@ pub fn do_subassign2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
                         } else {
                             // (the result is xtop, whatever this returns)
                             let o3 = s.out(cx);
-                            simple_list_assign(cx, xup, args.root(1), r, len - 2, o3)?;
+                            simple_list_assign(cx, xup, args.root(1), r, len as i64 - 2, o3)?;
                         }
                     } else {
                         if r.bind(cx) != x.bind(cx) {
@@ -965,9 +965,9 @@ pub fn do_subassign2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
             let o = s.out(cx);
             let r = o.root();
             if y.bind(cx).sexptype() == NILSXP {
-                list_remove(cx, x, thesub, len - 1, o)?;
+                list_remove(cx, x, thesub, len as i64 - 1, o)?;
             } else {
-                simple_list_assign(cx, x, thesub, y, len - 1, o)?;
+                simple_list_assign(cx, x, thesub, y, len as i64 - 1, o)?;
             }
             x.replace_from(cx, r);
         } else {
@@ -980,7 +980,7 @@ pub fn do_subassign2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
             } else {
                 let o = s.out(cx);
                 let r = o.root();
-                simple_list_assign(cx, xup, args.root(1), x, len - 2, o)?;
+                simple_list_assign(cx, xup, args.root(1), x, len as i64 - 2, o)?;
                 xup.replace_from(cx, r);
             }
             if len == 2 {
@@ -1000,11 +1000,12 @@ pub fn do_subassign2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
 /// `GetOneIndex(sub, ind)`: element `ind` of a recursive subscript as a
 /// length-one vector (`sub` itself when it has one element), in `out`.
 // R: subassign.c:GetOneIndex
-fn get_one_index(cx: &mut Cx, sub: Root<'_>, ind: usize, out: Out<'_>) -> RResult<()> {
+fn get_one_index(cx: &mut Cx, sub: Root<'_>, ind: i64, out: Out<'_>) -> RResult<()> {
     let n = rlength(cx, sub.bind(cx));
-    if ind + 1 > n {
+    if ind < 0 || ind + 1 > n as i64 {
         return Err(cx.error(&format!("internal error: index {ind} from length {n}")));
     }
+    let ind = ind as usize;
     if n == 1 {
         out.set(cx, sub.bind(cx));
         return Ok(());
@@ -1040,7 +1041,7 @@ fn nthcdr(cx: &mut Cx, x: Root<'_>, k: usize, out: Out<'_>) -> RResult<()> {
 /// `sub`, appending cells (tagged by a character subscript) past the end.
 /// The result, `x` or its new head, in `out`.
 // R: subassign.c:SimpleListAssign
-fn simple_list_assign(cx: &mut Cx, x: Root<'_>, sub: Root<'_>, y: Root<'_>, ind: usize, out: Out<'_>) -> RResult<()> {
+fn simple_list_assign(cx: &mut Cx, x: Root<'_>, sub: Root<'_>, y: Root<'_>, ind: i64, out: Out<'_>) -> RResult<()> {
     cx.scope(|cx, s| {
         let one = s.out(cx);
         let one_r = one.root();
@@ -1111,7 +1112,7 @@ fn simple_list_assign(cx: &mut Cx, x: Root<'_>, sub: Root<'_>, y: Root<'_>, ind:
 /// takes `x`'s attributes and object bits. The result (NULL when none is
 /// kept) in `out`.
 // R: subassign.c:listRemove
-fn list_remove(cx: &mut Cx, x: Root<'_>, sub: Root<'_>, ind: usize, out: Out<'_>) -> RResult<()> {
+fn list_remove(cx: &mut Cx, x: Root<'_>, sub: Root<'_>, ind: i64, out: Out<'_>) -> RResult<()> {
     cx.scope(|cx, s| {
         let one = s.out(cx);
         let one_r = one.root();
