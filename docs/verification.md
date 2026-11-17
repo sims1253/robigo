@@ -154,7 +154,14 @@ scripts/corpus.py run gnur-tests --r-version 4.6.2
 **Ratchet columns.** `passing/` holds the old runtime against 4.5.0;
 `passing-rt/`, its sibling, holds `robigo-rt` against 4.6.2, one marker
 per case. A case can pass in either column or both, and the two never
-touch the same file. One runner serves both (`crates/robigo-conformance`,
+touch the same file. The corpora have the same two columns:
+`scripts/corpus.py run NAME --runtime rt` runs robigo-rt against the rt
+pin's recordings into `tests/corpora/NAME/passing-rt/`, ranks what blocks
+its failing cases (the first stub, "not implemented yet" or unbound
+function each one hit), and refuses the corpora robigo-rt cannot run yet
+(echo mode, a build step). CI's `rt-corpora` job runs fastr that way on
+every rt pull request, a rotating quarter of it, and all of it on main
+(`docs/ledger/g3/2026-11-17-rc-rt-corpora.md`). One runner serves both (`crates/robigo-conformance`,
 columns `OLD` and `RT`); `robigo-cli`'s conformance test runs `OLD`,
 `robigo-rt`'s runs `RT`:
 
@@ -216,6 +223,7 @@ output (`scripts/corpus.py`, manifest `tests/corpora/corpora.toml`):
 scripts/corpus.py run fastr --filter 'builtins/TestBuiltin_paste/'   # a slice
 scripts/corpus.py show fastr builtins/TestBuiltin_paste/0aefed6423ab410d
 scripts/corpus.py run gnur-tests --update   # also record new passes
+scripts/corpus.py run fastr --runtime rt     # robigo-rt against 4.6.2, ratchet passing-rt/
 scripts/corpus.py score
 scripts/triage.py gnur-demos                # first difference per failing case
 scripts/reduce.py --corpus gnur-demos --case ID   # shrink one (triage prints the command)
