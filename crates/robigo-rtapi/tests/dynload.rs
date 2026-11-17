@@ -74,7 +74,13 @@ fn r_init_registers_the_routines() {
         );
         assert_eq!(
             s.val("names(r$.Call)"),
-            Val::Str(vec!["dl_add1".into(), "dl_nargs".into(), "dl_force_now".into()]),
+            Val::Str(vec![
+                "dl_add1".into(),
+                "dl_nargs".into(),
+                "dl_force_now".into(),
+                "dl_mark_closed".into(),
+                "dl_conn_state".into()
+            ]),
             "{p:?}"
         );
         assert_eq!(
@@ -82,7 +88,7 @@ fn r_init_registers_the_routines() {
             Val::Str(vec!["dl_ext".into(), "dl_ext2".into(), "dl_ext2_error".into()]),
             "{p:?}"
         );
-        assert_eq!(s.val("sapply(r$.Call, `[[`, \"numParameters\")"), Val::Int(vec![1, -1, 0]), "{p:?}");
+        assert_eq!(s.val("sapply(r$.Call, `[[`, \"numParameters\")"), Val::Int(vec![1, -1, 0, 1, 1]), "{p:?}");
         assert_eq!(s.val("r$.External$dl_ext2$numParameters"), int(2), "{p:?}");
         assert_eq!(s.val("r$.C$dl_c$numParameters"), int(1), "{p:?}");
         assert_eq!(s.val("length(r$.Fortran)"), int(0), "{p:?}");
@@ -258,5 +264,27 @@ fn dyn_unload_calls_r_unload_and_clears_the_references() {
         s.val(&format!("dp <- dyn.load({})", lit(&plain())));
         assert_eq!(stdout(&mut s), "R_init_dl_plain\n", "{p:?}");
         assert_eq!(s.val(".Call(\"dl_add1\", 1L, PACKAGE = \"dl_plain\")"), int(2), "{p:?}");
+    }
+}
+
+/// A connection's state is its `struct Rconn` (the A5 note's decision C):
+/// C reads R's flags there, and what C writes there is what R sees.
+#[test]
+fn a_connections_state_is_what_c_reads_and_writes() {
+    for p in PROFILES {
+        let mut s = session(p);
+        let path = std::env::temp_dir().join(format!("robigo-dynload-conn-{}-{p:?}.txt", std::process::id()));
+        s.val(&format!("con <- file({}, \"w\")", lit(&path)));
+        assert_eq!(
+            s.val(".Call(\"dl_conn_state\", con, PACKAGE = \"dl_plain\")"),
+            Val::Str(["isopen", "-", "canwrite", "text", "w", "file"].map(String::from).to_vec()),
+            "{p:?}"
+        );
+        assert_eq!(s.val("summary(con)$opened"), str1("opened"), "{p:?}");
+        s.val(".Call(\"dl_mark_closed\", con, PACKAGE = \"dl_plain\")");
+        assert_eq!(s.val("summary(con)$opened"), str1("closed"), "{p:?}");
+        assert_eq!(s.err(".Call(\"dl_conn_state\", 99L, PACKAGE = \"dl_plain\")"), "invalid connection", "{p:?}");
+        s.val("close(con)");
+        let _ = std::fs::remove_file(&path);
     }
 }

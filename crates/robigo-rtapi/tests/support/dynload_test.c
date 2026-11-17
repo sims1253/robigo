@@ -6,7 +6,12 @@
 #include <R.h>
 #include <Rinternals.h>
 #include <R_ext/Rdynload.h>
+#include <R_ext/Connections.h>
 #include <stddef.h>
+
+#if R_CONNECTIONS_VERSION != 1
+#error "this code expects R_CONNECTIONS_VERSION 1"
+#endif
 
 #ifndef DL_NAME
 #error "DL_NAME names the object"
@@ -56,6 +61,31 @@ static SEXP dl_force_now(void)
     return R_NilValue;
 }
 
+/* .Call: the connection's isopen flag written from C: R sees it (the
+ * connection's state is its struct Rconn) */
+static SEXP dl_mark_closed(SEXP sconn)
+{
+    Rconnection con = R_GetConnection(sconn);
+    con->isopen = FALSE;
+    return R_NilValue;
+}
+
+/* .Call: what C reads through the connection: isopen, canread, canwrite,
+ * text, mode and class */
+static SEXP dl_conn_state(SEXP sconn)
+{
+    Rconnection con = R_GetConnection(sconn);
+    SEXP ans = PROTECT(allocVector(STRSXP, 6));
+    SET_STRING_ELT(ans, 0, mkChar(con->isopen ? "isopen" : "closed"));
+    SET_STRING_ELT(ans, 1, mkChar(con->canread ? "canread" : "-"));
+    SET_STRING_ELT(ans, 2, mkChar(con->canwrite ? "canwrite" : "-"));
+    SET_STRING_ELT(ans, 3, mkChar(con->text ? "text" : "binary"));
+    SET_STRING_ELT(ans, 4, mkChar(con->mode));
+    SET_STRING_ELT(ans, 5, mkChar(con->class));
+    UNPROTECT(1);
+    return ans;
+}
+
 /* .External: the pairlist it gets, as a list with its tags as names */
 static SEXP dl_ext(SEXP args)
 {
@@ -100,6 +130,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"dl_add1", (DL_FUNC) &dl_add1, 1},
     {"dl_nargs", (DL_FUNC) &dl_nargs, -1},
     {"dl_force_now", (DL_FUNC) &dl_force_now, 0},
+    {"dl_mark_closed", (DL_FUNC) &dl_mark_closed, 1},
+    {"dl_conn_state", (DL_FUNC) &dl_conn_state, 1},
     {NULL, NULL, 0}
 };
 
