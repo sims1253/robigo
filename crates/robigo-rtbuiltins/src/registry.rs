@@ -512,6 +512,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("lockEnvironment", envir::do_lock_env, 0, 111, 2, FUNCALL, Env),
     row("lockBinding", envir::do_lock_bnd, 0, 111, 2, FUNCALL, Env),
     row("bindingIsLocked", envir::do_bnd_is_locked, 0, 11, 2, FUNCALL, Env),
+    row("environmentIsLocked", envir::do_env_is_locked, 0, 11, 1, FUNCALL, Env),
     row("makeActiveBinding", envir::do_mk_active_bnd, 0, 111, 3, FUNCALL, Env),
     row("env.profile", envir::do_envprofile, 0, 211, 1, FUNCALL, Env),
     row("...elt", envir::do_dots_elt, 0, 201, 1, FUNCALL, Env),
@@ -540,6 +541,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("Version", version::do_version, 0, 11, 0, FUNCALL, Pure),
     row("file.path", paste::do_filepath, 0, 11, 2, FUNCALL, Pure),
     // util.c
+    row("compareNumericVersion", util::do_compare_numeric_version, 0, 11, 2, FUNCALL, Pure),
     row("Encoding", util::do_encoding, 0, 11, 1, FUNCALL, Pure),
     row("setEncoding", util::do_setencoding, 0, 11, 2, FUNCALL, Pure),
     // sort.c, radixsort.c, altclasses.c's wrap_meta

@@ -462,3 +462,84 @@ pub fn do_setencoding(
         Ok(ans.finish().into())
     })
 }
+
+/// `compareNumericVersion(x, y)` of two version components: -1, 0 or 1,
+/// trailing zeros of the longer ignored; NA when either is empty; the
+/// error's message when one is not an integer vector.
+// R: util.c:compareNumericVersion
+fn compare_numeric_version(x: Ref<'_>, y: Ref<'_>) -> Result<i32, &'static str> {
+    let ints = |v: Ref<'_>| v.sexptype() == INTSXP && !attrib::inherits(v, b"factor");
+    if !ints(x) {
+        return Err("invalid 'x' argument");
+    }
+    if !ints(y) {
+        return Err("invalid 'y' argument");
+    }
+    // (element by element: a compact sequence is read without expanding)
+    let (ix, iy) = (x.as_vector::<i32>().unwrap(), y.as_vector::<i32>().unwrap());
+    let (nx, ny) = (ix.len(), iy.len());
+    let nc = nx.min(ny);
+    if nc == 0 {
+        return Ok(i32::MIN);
+    }
+    for i in 0..nc {
+        let (a, b) = (ix.get(i), iy.get(i));
+        if a > b {
+            return Ok(1);
+        }
+        if a < b {
+            return Ok(-1);
+        }
+    }
+    if nc < nx {
+        if (nc..nx).any(|i| ix.get(i) > 0) {
+            return Ok(1);
+        }
+    } else if nc < ny && (nc..ny).any(|i| iy.get(i) > 0) {
+        return Ok(-1);
+    }
+    Ok(0)
+}
+
+/// `.Internal(compareNumericVersion(x, y))`: the elementwise comparison
+/// of two lists of version components, recycled.
+// R: util.c:do_compareNumericVersion
+pub fn do_compare_numeric_version(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: robigo_rtcore::Root<'_>,
+    out: robigo_rtcore::Out<'_>,
+) -> robigo_rtcore::RResult<()> {
+    crate::row!("compareNumericVersion", true).check_arity(cx, call, args)?;
+    let (x, y) = (args.root(0), args.root(1));
+    if !attrib::is_vector(x.bind(cx)) {
+        return Err(cx.error("invalid 'x' argument"));
+    }
+    if !attrib::is_vector(y.bind(cx)) {
+        return Err(cx.error("invalid 'y' argument"));
+    }
+    let (nx, ny) = (x.bind(cx).len().unwrap_or(0), y.bind(cx).len().unwrap_or(0));
+    let na = if nx > 0 && ny > 0 { nx.max(ny) } else { 0 };
+    if na > 0 {
+        for v in [x, y] {
+            let r = v.bind(cx);
+            if !matches!(r.sexptype(), VECSXP | EXPRSXP) {
+                // VECTOR_ELT of an atomic vector
+                let msg = format!("VECTOR_ELT() can only be applied to a 'list', not a '{}'", type_to_char(r));
+                return Err(cx.error(&msg));
+            }
+        }
+    }
+    let res: Result<Vec<i32>, &'static str> =
+        match (x.bind(cx).as_vector::<Ref<'_>>(), y.bind(cx).as_vector::<Ref<'_>>()) {
+            (Some(xl), Some(yl)) => (0..na).map(|i| compare_numeric_version(xl.get(i % nx), yl.get(i % ny))).collect(),
+            // (no comparison: one of them is empty)
+            _ => Ok(Vec::new()),
+        };
+    let ans = match res {
+        Ok(a) => a,
+        Err(m) => return Err(cx.error(m)),
+    };
+    cx.build(out, |cx| Ok(cx.alloc_copy(&ans)?.finish().into()))
+}
