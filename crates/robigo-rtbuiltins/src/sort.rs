@@ -255,18 +255,32 @@ fn is_unsorted(x: Ref<'_>, strictly: bool, na: Char<'_>, loc: Locale) -> Result<
 /// an object that is not atomic, `.gtn(x, strictly)`.
 // R: sort.c:do_isunsorted
 pub fn do_isunsorted(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    // an old call's two arguments get na.rm = FALSE inserted
-    let row = crate::row!("is.unsorted", true);
-    if args.len() != 2 {
-        row.check_arity(cx, call, args)?;
+    if args.len() == 2 {
+        // an old call's .Internal(is.unsorted(x, strictly)): na.rm = FALSE
+        // inserted (untagged) before the dispatch, so that methods see the
+        // closure's signature
+        return cx.scope(|cx, s| {
+            let f = cx.logical_value(0);
+            let vals = [args.get(cx, 0), f, args.get(cx, 1)];
+            let names = [args.name(cx, 0), None, args.name(cx, 1)];
+            let named = names.iter().any(Option::is_some);
+            let args3 = s.args(cx, &vals, named.then_some(&names[..]));
+            isunsorted3(cx, call, args3, env, out)
+        });
     }
+    isunsorted3(cx, call, args, env, out)
+}
+
+/// `do_isunsorted` after the two-argument form's insertion.
+fn isunsorted3(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("is.unsorted", true).check_arity(cx, call, args)?;
     let robigo_rtcore::Dispatched::Default(out) =
         crate::coerce::dispatch_or_eval(cx, &IS_UNSORTED, call, args, env, out)?
     else {
         return Ok(());
     };
     let x = args.root(0);
-    let strictly_arg = args.root(args.len() - 1);
+    let strictly_arg = args.root(2);
     let strictly = as_logical(cx, strictly_arg.bind(cx));
     if strictly == NA_INTEGER {
         return Err(cx.error("invalid 'strictly' argument"));
