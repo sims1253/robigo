@@ -12,6 +12,7 @@ publish = false
 robigo-numerics = { path = "../robigo-numerics" }
 robigo-rtcore = { path = "../robigo-rtcore" }
 robigo-text = { path = "../robigo-text" }
+pcre2 = "0.2.11"
 
 [lints]
 workspace = true

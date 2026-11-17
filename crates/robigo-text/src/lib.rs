@@ -37,7 +37,8 @@ mod tables;
 pub mod tre;
 
 pub use locale::{
-    Enc, Locale, Str, TranslateError, WideError, is_high_surrogate, mbrtowc_utf8, ri18n_wcwidth, translate_char,
+    Enc, Locale, Str, TranslateError, Untranslatable, WideError, is_high_surrogate, mbrtowc_utf8, ri18n_wcwidth,
+    translate_char, translate_char_utf8_2, translate_char2,
     utf8toucs, utf8toucs32, wtrans_char2,
 };
 
