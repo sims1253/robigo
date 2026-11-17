@@ -138,7 +138,8 @@ against = "today"
 max = 1.0
 
 [[bar]]
-# E7. Address-sensitive, as e7-match
+# E7. Not address-sensitive since #757 (0.012% over the shifts,
+# docs/ledger/g3/2026-11-17-address-rows.md)
 row = "e7-unique"
 against = "today"
 max = 1.0

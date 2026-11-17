@@ -183,7 +183,6 @@ n = 200
 [[row]]
 name = "e7-unique"
 group = "e7"
-address_sensitive = true
 note = "unique of 1,000 strings with 100 distinct values"
 setup = '''
 keys <- paste0("k", 1:1000)

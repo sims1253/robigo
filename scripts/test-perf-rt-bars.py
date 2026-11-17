@@ -306,7 +306,7 @@ class AddressShifts(unittest.TestCase):
         import tomllib
         with open(perf.RT_ROWS, "rb") as f:
             marked = sorted(r["name"] for r in tomllib.load(f)["row"] if r.get("address_sensitive"))
-        self.assertEqual(marked, ["e7-match", "e7-unique"])
+        self.assertEqual(marked, ["e7-match"])
 
 
 class BinaryIdentity(unittest.TestCase):

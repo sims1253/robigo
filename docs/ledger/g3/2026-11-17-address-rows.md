@@ -1,10 +1,11 @@
 ## 2026-11-17: the address-hashing rows are measured as the median over heap shifts
 
 The foreman's decision, a change to the gate's measurement method that Max
-can reverse. e7-match and e7-unique are measured in `perf-rt`
-(`scripts/perf.py rt-bars`) as the median over a fixed set of heap shifts,
-for both binaries. The 0.5% rule against main applies to the median. Every
-other row is measured as before.
+can reverse. e7-match is measured in `perf-rt` (`scripts/perf.py
+rt-bars`) as the median over a fixed set of heap shifts, for both binaries.
+The 0.5% rule against main applies to the median. Every other row is
+measured as before. e7-unique was marked too, until #757 made its count
+stable ("After #757" below).
 
 ### Why
 
@@ -43,8 +44,8 @@ with Max and is not built.
 ### The method
 
 - **The marking:** a row marked `address_sensitive = true` in
-  `benchmarks/rt/calls-rows.toml` (e7-match and e7-unique, and their bars'
-  comments in `m1-bars.toml` point at it).
+  `benchmarks/rt/calls-rows.toml`: e7-match, whose bar's comment in
+  `m1-bars.toml` points at it.
 - **The shifts:** `scripts/idiom-vs-r.py --rows ... --shifts K,...`
   measures each marked row once per shift.
   - Shift k puts `zz <- paste0("z", seq_len(k))` before the row's setup,
@@ -71,7 +72,7 @@ with Max and is not built.
   - `idiom-vs-r.py` measures each shifted setup of a marked row and a plain
     row once;
   - `rt_instr` passes the shift set and collects the range;
-  - exactly e7-match and e7-unique are marked.
+  - exactly e7-match is marked.
 
 - **A real run:** `rt-bars --cycles` on the desktop with main `fb429442`'s
   release robigo-rt as both binaries (sha256 `237f49bb…`, GNU build ID
@@ -88,3 +89,22 @@ with Max and is not built.
   single-layout gate by most of its 0.5%. The medians of two identical
   binaries differ by 0.01%.
 
+### After #757: e7-unique no longer needs the median
+
+H's #757 ported `HashTableSetup` faithfully, with the table on robigo's heap.
+That removed the malloc-state dependence of e7-unique that H diagnosed.
+
+Both rows were re-measured over eight shifts (k = 0, 50, 100, 300, 1000,
+2000, 3000 and 5000), on robigo-rt release builds of main before #757
+(`fb429442`) and after it (with #757):
+
+| row | before #757: median, spread | after #757: median, spread |
+|---|---:|---:|
+| e7-match | 98,976.9, 0.385% | 91,955.8, 0.413% |
+| e7-unique | 126,402.3, 0.554% | 123,011.9, **0.012%** |
+
+- **e7-unique's count no longer moves** with the heap layout: 123,003 to
+  123,018 over the eight shifts. Its marking is dropped, and it is measured
+  once, as before.
+- **e7-match still moves by 0.41%**, so it keeps the median.
+- **#757 also made both faster:** e7-match by 7.1% and e7-unique by 2.7%.
