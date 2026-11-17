@@ -196,9 +196,11 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    # about 20 minutes, and the retry-torture step's feature build and run
-    # (scripts/rt-ci.py, last) add about 10
-    timeout-minutes: 45
+    # Measured (docs/ledger/g3/2026-11-17-retry-torture-ci.md): the slowest
+    # hosted runners take ~20 min, and the retry-torture step (rt-ci.py's
+    # last: its feature rebuild and run) adds ~4; 40 keeps 1.6x the ~24.
+    # A step that adds minutes moves this number with data.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup

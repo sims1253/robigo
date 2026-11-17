@@ -30,29 +30,49 @@ decided.
   seconds in all.
 - **With `ROBIGO_GC_MOVE=1` as well** it takes about 20 minutes, so it is
   not a step: `docs/g3.md` §16 gives the command for the run by hand.
-- **The `rt` job's timeout goes from 30 to 45 minutes.** The job takes about
-  20 minutes on main, and this step's feature build and run add about 10.
+- **The `rt` job's timeout goes from 30 to 40 minutes,** from the
+  measurements below.
 - **`scripts/test-rt-ci.py` checks** that exactly one step builds with the
   feature, that it is the last, that it turns the mode on with the 600 s
   timeout, and that robigo-rtcore's manifest has the feature.
 
 ### On main with #791
 
-The ledger's two numbers again, on main 81eeb1ab with #791's head
-(6e60a04e) merged in. Run locally, with the runner's two jobs:
+The ledger's two numbers again, on main 229f54d6, where #791 is merged.
+Run locally, with the runner's two jobs:
 
-| run | time | passes | ratcheted cases that fail |
-|---|---:|---:|---:|
-| plain, for scale | 10 s | 473/481 | 0 |
-| the step: `ROBIGO_RETRY_TORTURE=1`, as rt-ci.py runs it | 178 s, plus a 33 s feature build | 473/481 | 0 |
-| by hand: `ROBIGO_RETRY_TORTURE=1 ROBIGO_GC_MOVE=1` | 1,206 s | 473/481 | 0 |
+| run | time | passes |
+|---|---:|---:|
+| plain, for scale | 9 s | 509/516 |
+| the step: `ROBIGO_RETRY_TORTURE=1`, as rt-ci.py runs it | 201 s, plus a 37 s feature build | 509/516 |
+| by hand: `ROBIGO_RETRY_TORTURE=1 ROBIGO_GC_MOVE=1` | 1,243 s | 509/516 |
 
-The slice has 481 cases now, of which 473 are ratcheted, and every
-ratcheted case passes in all three runs. The 8 that don't pass fail
-without the mode too, so the mode adds no failure on either collector.
-Under it, #780's three failing cases and, with GC_MOVE too, its four now
-pass. The foreman expected "464/464 for both": the slice grew, and the
-result is the one meant, every ratcheted case.
+All three runs pass the same 509 of 516 cases, and no ratcheted case fails,
+so the mode adds no failure on either collector. Under it, #780's three
+failing cases pass, and with GC_MOVE too, its four. The foreman expected
+"464/464 for both": the slice grew, and the result is the one meant, every
+ratcheted case.
+
+### The job's timeout
+
+A hosted runner has 4 CPUs, so the step was also measured on 4 pinned CPUs.
+Its build was the feature rebuild, robigo-rtcore and every crate above it,
+with 4 build jobs. The step ran with this branch's binary under #804's
+runner (`ROBIGO_RT_BIN`, `ROBIGO_CONF_JOBS`), against #804's 515 cases:
+
+| | time |
+|---|---:|
+| the feature rebuild | 43 s |
+| the step, 2 cases at a time | 229 s |
+| the step, a case per CPU (#804) | 125 s |
+
+The slowest hosted runners ran the gctorture conformance step in 150 s,
+against 130 s on these 4 pinned CPUs: 1.15x. On such a runner the step
+takes about 145 s with #804 and about 265 s without it. The rebuild is
+compiling, not the runtime: at twice the time here it is under 1.5 min.
+The job without this step takes about 20 min there with #804
+(`2026-11-17-rt-job-capacity.md`) and about 22 without it. With the step
+that is about 24 and 28 min, and 40 keeps 1.6x and 1.4x of those.
 
 ### #780's deferred OCR lows
 
