@@ -11,8 +11,8 @@
 
 use crate::attrib::{self, Attr, Attrs};
 use crate::coerce::coerce_vector;
-use crate::subscript::{self, NA_IDX, NewName, Subscript, ecall, get1index, make_subscript, one_index};
-use crate::subset::{install_sym, not_subsettable, vector_index};
+use crate::subscript::{self, NA_IDX, NewName, Sindex, Subscript, ecall, get1index, make_subscript, one_index};
+use crate::subset::{install_sym, vector_index};
 use crate::util::{self, type_to_char};
 use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
@@ -680,10 +680,8 @@ pub fn do_subassign_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root
                 1 => vector_assign(cx, call, x, args.root(1), y)?,
                 _ => return Err(util::not_yet(cx, Some(call), "'[<-' with matrix or array subscripts")),
             },
-            _ => {
-                let msg = not_subsettable(x.bind(cx));
-                return Err(cx.error(&msg));
-            }
+            // errorNotSubsettable(x)
+            _ => return Err(subscript::not_subsettable(cx, None, x)),
         }
         if oldtype == LANGSXP {
             if x.bind(cx).len().unwrap_or(0) == 0 {
@@ -789,7 +787,8 @@ pub fn do_subassign2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
                 return Err(cx.error("more elements supplied than there are to replace"));
             }
             if nsubs == 0 || args.get(cx, 1) == cx.missing_arg() {
-                return Err(cx.error(subscript::MISSING_SUBSCRIPT));
+                // errorMissingSubscript(x)
+                return Err(subscript::missing_subscript(cx, None, Some(x)));
             }
             let mut stretch = 0usize;
             let mut newname: Option<Root<'_>> = None;
@@ -833,7 +832,9 @@ pub fn do_subassign2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
                     return Ok(());
                 }
                 if o < 0 {
-                    return Err(cx.error(&format!("[[ ]] {}", subscript::OUT_OF_BOUNDS)));
+                    // errorOutOfBoundsSEXP(x, -1, thesub)
+                    let thesub = args.root(1);
+                    return Err(subscript::out_of_bounds(cx, None, x, -1, Sindex::Value(thesub), Some("[[ ]]")));
                 }
                 if o as usize >= x.bind(cx).len().unwrap_or(0) {
                     stretch = o as usize + 1;
@@ -856,9 +857,18 @@ pub fn do_subassign2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
                         };
                         get1index(cx, args.get(cx, 1 + i), &names, d as usize, 0, None).map(|(o, _)| o)
                     };
-                    let p = r.map_err(|m| ecall(cx, Some(call), &m))?;
+                    let p = r.map_err(|m| subscript::raise_get1(cx, Some(call), m))?;
                     if p < 0 || p >= d as i64 {
-                        return Err(cx.error(&format!("[[ ]] {}", subscript::OUT_OF_BOUNDS)));
+                        // errorOutOfBoundsSEXP(x, i, thesub)
+                        let thesub = args.root(1 + i);
+                        return Err(subscript::out_of_bounds(
+                            cx,
+                            None,
+                            x,
+                            i as i32,
+                            Sindex::Value(thesub),
+                            Some("[[ ]]"),
+                        ));
                     }
                     pos.push(p);
                 }
@@ -958,8 +968,8 @@ pub fn do_subassign2_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
         } else if matches!(xt, LISTSXP | LANGSXP) {
             return Err(util::not_yet(cx, Some(call), "'[[<-' on a pairlist"));
         } else {
-            let msg = not_subsettable(x.bind(cx));
-            return Err(cx.error(&msg));
+            // errorNotSubsettable(x)
+            return Err(subscript::not_subsettable(cx, None, x));
         }
         if recursed {
             if matches!(xup.bind(cx).sexptype(), VECSXP | EXPRSXP) {
@@ -1007,8 +1017,8 @@ pub fn subassign3_dflt(
         } else if t == ENVSXP {
             cx.define_var(nlist, val, x)?;
         } else if matches!(t, SYMSXP | CLOSXP | SPECIALSXP | BUILTINSXP) {
-            let msg = not_subsettable(x.bind(cx));
-            return Err(cx.error(&msg));
+            // errorNotSubsettable(x)
+            return Err(subscript::not_subsettable(cx, None, x));
         } else {
             // (NULL is a list here: isNewList)
             let mut ty = VECSXP;
