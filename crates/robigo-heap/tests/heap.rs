@@ -1876,8 +1876,10 @@ fn manually_finalized_weak_reference_is_removed_even_with_nil_key() {
         w.set_gp(w.gp() | gp::weakref::READY_TO_FINALIZE);
     }
     gc(&mut c, &mut ());
-    assert!(c.weak_refs().is_empty());
+    // ready, it stays in R_weak_refs until its finalizer is about to run
+    assert_eq!(c.weak_refs(), &[w]);
     assert_eq!(c.pop_finalizable(), Some(w));
+    assert!(c.weak_refs().is_empty());
     assert!(c.pop_finalizable().is_none());
 }
 
@@ -1902,6 +1904,73 @@ fn a_reference_registered_during_a_finalizer_batch_waits_for_the_next_round() {
     gc(&mut c, &mut ());
     assert_eq!(c.pop_finalizable(), Some(later));
     assert!(c.pop_finalizable().is_none());
+}
+
+/// GNU R's RunFinalizers walks R_weak_refs once, newest first: of two
+/// references readied by two collections, a pass takes the newer first,
+/// whichever was readied first (tests/rt/builtins/finalizer-order-batches.R).
+#[test]
+fn a_pass_takes_the_newer_of_two_batches_first() {
+    let mut c = core();
+    let fin = c.alloc_vector(RAWSXP, 8).unwrap();
+    let keys: Vec<Sexp> = (0..3).map(|_| c.alloc_vector(INTSXP, 1).unwrap()).collect();
+    let w: Vec<Sexp> = keys.iter().map(|&k| weak(&mut c, k, fin)).collect();
+    gc(&mut c, &mut vec![keys[1], keys[2]]); // readies w[0]
+    gc(&mut c, &mut vec![keys[1]]); // readies w[2]
+    assert!(c.finalizers_pending());
+    let (a, at) = c.pop_finalizable_before(usize::MAX).unwrap();
+    assert_eq!(a, w[2], "the newer batch first");
+    let (b, _) = c.pop_finalizable_before(at).unwrap();
+    assert_eq!(b, w[0]);
+    assert!(c.pop_finalizable_before(usize::MAX).is_none());
+}
+
+/// A reference readied during a pass, newer than the one the pass took
+/// last, waits for the next pass; and the pending flag is
+/// `R_finalizers_pending`'s: set by a collection that leaves one ready,
+/// cleared when a pass ends.
+#[test]
+fn a_reference_readied_above_the_walk_waits_for_the_next_pass() {
+    let mut c = core();
+    let fin = c.alloc_vector(RAWSXP, 8).unwrap();
+    let keys: Vec<Sexp> = (0..3).map(|_| c.alloc_vector(INTSXP, 1).unwrap()).collect();
+    let w: Vec<Sexp> = keys.iter().map(|&k| weak(&mut c, k, fin)).collect();
+    gc(&mut c, &mut vec![keys[0], keys[2]]); // readies w[1]
+    let (a, at) = c.pop_finalizable_before(usize::MAX).unwrap();
+    assert_eq!(a, w[1]);
+    // its finalizer collects: w[0] (older) and w[2] (newer) get ready
+    gc(&mut c, &mut ());
+    let (b, at) = c.pop_finalizable_before(at).unwrap();
+    assert_eq!(b, w[0], "an older one runs in this pass");
+    assert!(c.pop_finalizable_before(at).is_none(), "the newer one waits");
+    c.end_finalizer_pass();
+    assert!(!c.finalizers_pending(), "until a collection finds it ready");
+    gc(&mut c, &mut ());
+    assert!(c.finalizers_pending());
+    assert_eq!(c.pop_finalizable_before(usize::MAX).map(|p| p.0), Some(w[2]));
+}
+
+/// A ready reference's fields are not roots before the classification, as
+/// in GNU R (memory.c:RunGenCollect keeps every reference's fields after
+/// CheckFinalizers): a key that only a ready reference's finalizer
+/// reaches is dead for its own reference.
+#[test]
+fn a_ready_references_finalizer_does_not_keep_another_key_live() {
+    let mut c = core();
+    let k1 = c.alloc_vector(INTSXP, 1).unwrap();
+    let k2 = c.alloc_vector(INTSXP, 1).unwrap();
+    let f1 = c.alloc_vector(VECSXP, 1).unwrap();
+    let f2 = c.alloc_vector(RAWSXP, 8).unwrap();
+    unsafe { *(f1.std_data() as *mut Sexp) = k2 };
+    let w1 = weak(&mut c, k1, f1);
+    let w2 = weak(&mut c, k2, f2);
+    gc(&mut c, &mut vec![k2]); // readies w1 (not run)
+    assert_eq!(c.pending_finalizer_count(), 1);
+    gc(&mut c, &mut ()); // k2 only through w1's finalizer
+    assert_eq!(c.pending_finalizer_count(), 2, "w2 is ready too");
+    assert_eq!(c.pop_finalizable(), Some(w2));
+    assert_eq!(c.pop_finalizable(), Some(w1));
+    unsafe { assert_eq!(*(f1.std_data() as *const Sexp), k2, "and its key was kept for the finalizer") };
 }
 
 #[test]
@@ -1929,10 +1998,13 @@ fn exit_finalizers_queue_in_weak_reference_list_order() {
         second.set_gp(second.gp() | gp::weakref::FINALIZE_ON_EXIT);
     }
     c.queue_exit_finalizers();
-    // only the onexit reference leaves the weak list; the other stays live
-    assert_eq!(c.weak_refs(), &[first]);
+    // only the onexit reference is ready; both stay in the list until a
+    // finalizer is about to run, and a pass is due
+    assert_eq!(c.weak_refs(), &[first, second]);
     assert_eq!(c.pending_finalizer_count(), 1);
+    assert!(c.finalizers_pending());
     assert_eq!(c.pop_finalizable(), Some(second));
+    assert_eq!(c.weak_refs(), &[first]);
     assert!(c.pop_finalizable().is_none());
     // the live key is not queued by a later collection
     gc(&mut c, &mut vec![first_key]);
