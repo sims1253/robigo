@@ -168,11 +168,27 @@
     sequence of a few bytes that main wrote as 2^31 doubles; A1's memory
     sweep found it).
 - **Performance** (callgrind instructions; the gate is 0.5% per row):
-  - Against main at `f49b7d80`, `perf.py rt-bars`: plain −1.00%, defaults
-    −0.70%, named −0.01%, env-fn +0.49%, superassign +0.16%, s3 +0.50%,
-    fib −0.17%, binarytrees +0.38%, e7-paste +0.21%, e7-match −0.11%,
-    e7-unique +0.19%. AC1 holds #798's `vm::num` change; the foreman
-    ordered #793, AC1, then #798.
+  - Against main at `4d6efe47` (debuginfo builds, the rt-bars call rows):
+    plain −1.00%, defaults −0.71%, named −0.10%, env-fn +0.43%,
+    superassign +0.17%, s3 +0.41%, fib −0.17%, binarytrees +0.38%. AC1
+    holds #798's `vm::num` change; the foreman ordered #793, AC1, and #798
+    closed as included.
+  - s3 was +0.53% on that main before `Isolate::global_add` went out of
+    line (`#[inline(never)]`). AC1's build had inlined it into dispatch's
+    `topenv` and `quick_search`, where main calls it; their cache misses
+    alone reach it. Out of line: `quick_search` +23 → +4 instructions per
+    iteration, `topenv` +6 → 0. (`Global::bind` out of line, to undo
+    `memo_get`'s +6, made s3 +2.48%: not taken.)
+  - **For H (heap):** `<robigo_heap::gc::Core>::alloc_node` is +24
+    instructions per iteration on s3 with the same 11 calls per iteration
+    and the same source. The binary holds three copies of it. The copy
+    robigo-rt's callers reach is, in main's build, a specialized one with
+    no register pushes at entry and a different type test for the
+    EXTPTRSXP/BUILTINSXP/SPECIALSXP check; in AC1's build it is the generic
+    copy, the same as the heap crate's own, which pushes `%rbp` and `%rax`
+    on every call. A loop over a standard vector in place of `1:n` gives
+    the same +24, so it is the compiler's choice for heap code, not the
+    heap's state.
   - churn's peak RSS with A1's in-loop `gc()` (#793): 78,448 KiB against
     main's 78,524.
   - The loop's refill costs 1.1 instructions per iteration, against 2.5
