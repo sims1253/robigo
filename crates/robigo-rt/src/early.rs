@@ -54,15 +54,10 @@ pub(crate) fn value<'s>(
             Some(x) => x,
             None => return Ok(None),
         },
-        // a translated call's promise code (MAKEPROM's BCODESXP) keeps its
-        // translation as a call keeps its code, unless bcEval would run
-        // its source (byte code disabled)
-        BCODESXP if crate::prims::state(cx).jit.get().disable_bytecode => return Ok(None),
-        LANGSXP | BCODESXP => {
-            // SAFETY: the rooted call's (or byte code's) 4th word is
-            // R_NilValue or its code cache; the code object it holds is
-            // live, the environment rooted, and nothing collects before the
-            // run ends.
+        LANGSXP => {
+            // SAFETY: the rooted call's 4th word is R_NilValue or its code
+            // cache; the code object it holds is live, the environment
+            // rooted, and nothing collects before the run ends.
             match unsafe { crate::code::cached(cx, e.aux(), Profile::Bc).and_then(|c| run(cx, c, rho.bind(cx).sexp())) }
             {
                 Some(x) => x,
@@ -217,17 +212,14 @@ unsafe fn run(cx: &Cx, code: Sexp, rho: Sexp) -> Option<Slot> {
 }
 
 /// [`robigo_rtcore::hooks::EarlyForceFn`]: the counts the evaluation of a
-/// delayed argument's code (of type `ty`) makes in `eval::eval_bytecode`
-/// (the path a force without an early value takes), made in place: for a
-/// symbol `eval`'s `R_Visible`, evaluation count and depth check; for a
-/// call the code's `vm::exec` entry: `R_Visible`, the depth check and
-/// `bcEval`'s entry poll count; for byte code (a translated call's
-/// promise, `forcePromise`'s `eval` of its BCODESXP) both counts, `eval`'s
-/// then `bcEval`'s, at the one level `eval` raises. False, with nothing
-/// counted, when either count would poll or the depth would pass
-/// `R_Expressions`.
+/// delayed argument's expression makes in `eval::eval_bytecode` (the path
+/// a force without an early value takes), made in place: for a symbol
+/// `eval`'s `R_Visible`, evaluation count and depth check; for a call the
+/// code's `vm::exec` entry: `R_Visible`, the depth check and `bcEval`'s
+/// entry poll count. False, with nothing counted, when either count would
+/// poll or the depth would pass `R_Expressions`.
 // R: eval.c:eval, eval.c:bcEval (the entry's BC_CHECK_SIGINT)
-pub fn early_force(cx: &mut Cx, bytecode: bool, ty: u8) -> bool {
+pub fn early_force(cx: &mut Cx, bytecode: bool, call: bool) -> bool {
     // (only compiled code's arguments are computed early: their promises
     // hold byte code, evaluated under the `Bc` profile)
     if !bytecode {
@@ -236,19 +228,12 @@ pub fn early_force(cx: &mut Cx, bytecode: bool, ty: u8) -> bool {
     if cx.eval_depth() + 1 > cx.expressions() {
         return false;
     }
-    let (eval, bc) = match ty {
-        SYMSXP => (true, false),
-        LANGSXP => (false, true),
-        BCODESXP => (true, true),
-        _ => return false,
-    };
-    let n = cx.evalcount().get() + eval as i32;
-    let m = cx.bc_evalcount().get() + bc as i32;
-    if n > 1000 || m > 1023 {
+    let count = if call { cx.bc_evalcount() } else { cx.evalcount() };
+    let n = count.get() + 1;
+    if n > if call { 1023 } else { 1000 } {
         return false;
     }
-    cx.evalcount().set(n);
-    cx.bc_evalcount().set(m);
+    count.set(n);
     cx.set_visible(true);
     true
 }

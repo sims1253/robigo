@@ -564,13 +564,24 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
             Op::Call => {
                 // SAFETY: as above.
                 let call = unsafe { v.k(i.e) };
-                // a translated call's promise codes (MAKEPROM's), or none
-                // SAFETY: a constant of the code.
-                let codes = if i.f != 0 { unsafe { v.k(i.f) } } else { cx.nil().sexp() };
                 cx.set_eval_depth(act.depth + i.d as i32);
                 pp_point(cx, act, &v, pc - 1);
                 // SAFETY: the running code's constants (or rooted values): live, of this isolate.
-                unsafe { crate::call::call(cx, act, i.a, i.b, call, codes, i.c, v.profile == Profile::Bc) }?;
+                unsafe { crate::call::call(cx, act, i.a, i.b, call, i.c, v.profile == Profile::Bc) }?;
+                if i.fl & F_CLR_B != 0 && i.b != i.a {
+                    act.clear(i.b);
+                }
+                reload!();
+            }
+            Op::CallCodes => {
+                // `Call` with the call's promise codes (`consts[f]`), which
+                // the promises it makes hold (translated code: `Bc`)
+                // SAFETY: constants of the code.
+                let (call, codes) = unsafe { (v.k(i.e), v.k(i.f)) };
+                cx.set_eval_depth(act.depth + i.d as i32);
+                pp_point(cx, act, &v, pc - 1);
+                // SAFETY: the running code's constants (or rooted values): live, of this isolate.
+                unsafe { crate::call::call_codes(cx, act, i.a, i.b, call, codes, i.c) }?;
                 if i.fl & F_CLR_B != 0 && i.b != i.a {
                     act.clear(i.b);
                 }
@@ -648,10 +659,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     unsafe { crate::call::call_special_internal(cx, act, i.a, fun, call) }
                 } else if i.c == u16::MAX {
                     // SAFETY: the running code's constants (or rooted values): live, of this isolate.
-                    unsafe {
-                        let nil = cx.nil().sexp();
-                        crate::call::call_builtin_list(cx, act, i.a, fun, call, nil, v.profile == Profile::Bc)
-                    }
+                    unsafe { crate::call::call_builtin_list(cx, act, i.a, fun, call, v.profile == Profile::Bc) }
                 } else {
                     // SAFETY: the running code's constants (or rooted values): live, of this isolate.
                     unsafe {

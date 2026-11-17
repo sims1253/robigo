@@ -107,10 +107,7 @@ pub enum Op {
     /// in `b`, dispatched on its type at run time (closure: its arguments
     /// bound by `args::bind`, with call site `c`'s match plan; builtin: the
     /// arguments evaluated; special: the call compiled). A translated
-    /// call's `f` is its arguments' promise codes, `consts[f]` (a list of
-    /// `MAKEPROM`'s BCODESXPs by argument, R_NilValue for an argument that
-    /// has none; `args::arg_code`): each promise holds its own code, as
-    /// GNU R's PRCODE. 0: none (the from-source compiler's calls).
+    /// call whose promises hold their own code is [`Op::CallCodes`].
     Call,
     /// A builtin `consts[f]` called with the evaluated arguments in
     /// registers `b..b+c` (and their names after them with [`F_NAMES`]),
@@ -291,6 +288,12 @@ pub enum Op {
     /// builtin `consts[f]` (0: `log`'s, `do_log_builtin`) on the window.
     /// The value into `a`, visible.
     Math1,
+    /// [`Op::Call`] of a translated call whose promises hold their own
+    /// code: `consts[f]`, its arguments' `MAKEPROM` BCODESXPs (a list by
+    /// argument, R_NilValue for one that has none; `args::arg_code`), each
+    /// promise's code as GNU R's PRCODE. Its own op, so that `Call`, the
+    /// from-source compiler's, stays as it is on the hot path.
+    CallCodes,
 }
 
 /// [`Op::Math1`]'s kinds past `math1funs`' indices.

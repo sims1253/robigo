@@ -854,7 +854,7 @@ pub(crate) fn match_builtin_args<'s>(
 pub(crate) enum Source {
     /// The call's own arguments, in the caller's environment, from call
     /// site `site` of the caller's code (or [`NO_SITE`]), with the promise
-    /// codes of a translated call (R_NilValue for none, [`arg_code`]).
+    /// codes of a translated call (null for none, [`arg_code`]).
     Site(u16, Sexp),
     /// A promise list (`applyClosure(call, op, arglist, rho, ...)`).
     List,
@@ -1034,16 +1034,19 @@ unsafe fn mark_not_mutable(x: Sexp) {
 
 /// The promise code of call argument `pos` (`MAKEPROM`'s BCODESXP, GNU
 /// R's PRCODE) among a translated call's codes `codes`, or null for none:
-/// a call without them (R_NilValue: the from-source compiler's, the AST's),
+/// a call without them (null: the from-source compiler's, the AST's),
 /// or an argument that is no promise of byte code (a constant, `...`, an
 /// empty one, `bquote`'s). The promise holds the code; what reads its
 /// expression reads the code's first constant
 /// ([`robigo_rtcore::bytecode_expr`]).
 ///
 /// # Safety
-/// `codes` is R_NilValue or a live VECSXP.
+/// `codes` is null, R_NilValue or a live VECSXP.
 #[inline(always)]
 pub(crate) unsafe fn arg_code(codes: Sexp, pos: usize) -> Sexp {
+    if codes.is_null() {
+        return Sexp::NULL;
+    }
     // SAFETY: the caller's contract.
     unsafe {
         if codes.typ() != VECSXP || pos >= codes.std_len() as usize {
@@ -1510,7 +1513,7 @@ fn prepare<'s: 'r, 'r, 'a, const GENERIC: bool>(
     // a translated call's promise codes (MAKEPROM's), by call argument
     let codes = match src {
         Source::Site(_, codes) => codes,
-        _ => nil,
+        _ => Sexp::NULL,
     };
     // R: eval.c:make_applyClosure_env's check of rho
     if rho.bind(cx).sexptype() != ENVSXP {
@@ -2267,13 +2270,29 @@ fn generic_promargs(cx: &mut Cx, _id: ContextId, data: usize, out: Out<'_>) -> R
 
 /// The VM's closure call: the closure in register `rf` called by `call`
 /// (a constant of the running code) from the activation's environment,
-/// with call site `site`'s plan and a translated call's promise codes
-/// `codes` ([`arg_code`]); the value into register `dst`.
+/// with call site `site`'s plan; the value into register `dst`.
 ///
 /// # Safety
 /// `call` is a live call of `cx`'s isolate (a constant of `act`'s code, or
-/// rooted); `codes` R_NilValue or a constant of `act`'s code.
-pub unsafe fn call_closure(
+/// rooted).
+pub unsafe fn call_closure(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: u16) -> RResult<()> {
+    cx.scope(|cx, s| {
+        // SAFETY: a constant of the rooted code.
+        let callr = s.root(cx, unsafe { Ref::from_sexp(call, cx) });
+        let src = Source::Site(site, Sexp::NULL);
+        apply(cx, callr, act.root(rf), src, None, act.root(R_ENV), Some(act), None, true, act.out(dst))
+    })
+}
+
+/// [`call_closure`] of a translated call whose promises hold their own
+/// code: `codes` ([`arg_code`]), a constant of the running code. Its own
+/// function, so that [`call_closure`], which the VM's `Call` inlines, stays
+/// as it is.
+///
+/// # Safety
+/// As for [`call_closure`]; `codes` is a constant of `act`'s code.
+#[inline(never)]
+pub unsafe fn call_closure_codes(
     cx: &mut Cx,
     act: &Act,
     dst: Reg,

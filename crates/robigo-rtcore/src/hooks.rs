@@ -72,13 +72,11 @@ pub type ForceArgFn = for<'a, 'b> fn(&mut Cx, Root<'a>, usize, Out<'b>) -> RResu
 /// (`eval`'s `R_Visible`, depth and evaluation count, or `bcEval`'s entry
 /// poll count for byte code), made in place by a force that takes the value
 /// the caller computed early (docs/g3.md §6.2) instead of evaluating:
-/// `bytecode` when the slot's expression is byte code's; the last argument
-/// is the type of the slot's code: a symbol, a call, or the BCODESXP a
-/// translated call's promise holds (`MAKEPROM`'s). False, with nothing
-/// counted, when the evaluation would poll (run finalizers, take an
-/// interrupt) or raise the depth error: the force then evaluates the
-/// expression as usual.
-pub type EarlyForceFn = fn(&mut Cx, bool, u8) -> bool;
+/// `bytecode` when the slot's expression is byte code's, `call` when it is a
+/// call (else a symbol). False, with nothing counted, when the evaluation
+/// would poll (run finalizers, take an interrupt) or raise the depth error:
+/// the force then evaluates the expression as usual.
+pub type EarlyForceFn = fn(&mut Cx, bool, bool) -> bool;
 
 /// `DispatchOrEval(call, op, generic, args, rho, &ans, dropmissing = 0,
 /// argsevald = 0)`'s evaluation of a special's arguments (the call's) for

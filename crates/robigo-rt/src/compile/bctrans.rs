@@ -2151,8 +2151,9 @@ impl<'g> Comp<'g> {
 
     /// `CALL` of `GETFUN`'s function: the generic call of `call`
     /// ([`Comp::generic_call`]'s shape), with its arguments' promise codes
-    /// (`MAKEPROM`'s BCODESXPs, by argument: `Call`'s `f`), each
-    /// translated and kept on itself. Pass 1 (`planning`) translates none.
+    /// (`MAKEPROM`'s BCODESXPs, by argument: [`Op::CallCodes`]'s `f`),
+    /// each translated and kept on itself. Pass 1 (`planning`) translates
+    /// none.
     ///
     /// # Safety
     /// `call` is a live call constant of the byte code.
@@ -2198,7 +2199,7 @@ impl<'g> Comp<'g> {
                 codes_k = self.k(v);
             }
         }
-        let mut i = Ins::new(Op::Call);
+        let mut i = Ins::new(if codes_k != 0 { Op::CallCodes } else { Op::Call });
         i.a = f.dst;
         i.b = f.base;
         i.e = self.k(call);

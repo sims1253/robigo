@@ -751,6 +751,7 @@ impl<'g> Comp<'g> {
                 // or PROTECT(e) (a special): the primitive's entry, or a
                 // closure's arguments promised (`newrho` is the body's)
                 Op::Call
+                | Op::CallCodes
                 | Op::CallBuiltin
                 | Op::SpecialFn
                 | Op::ComplexAssign

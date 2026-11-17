@@ -69,15 +69,18 @@ path is unchanged.
 
 - **The codes.** `bctrans`'s `CALL` collects its pushes' `MAKEPROM`
   BCODESXPs (symbols' too: cmp.R's `cmpCallArgs` gives a symbol argument
-  byte code, `GETVAR`) into a list constant, `Call`'s `f`; each is
+  byte code, `GETVAR`) into a list constant, the `f` of an op of its own,
+  `CallCodes` (`Call` with codes; the from-source compiler's `Call`, its
+  VM arm and `call::call` stay as they were on the hot path); each is
   translated with the code it runs in (the caller's compile environment,
   its frame's slot indices) and the translation kept on the BCODESXP
   itself (`code::cache_on`), no longer on the call's argument expression.
   A complex assignment's generic step carries its promises' codes the same
   way (`bcassign`'s `S_CODES`). `args::arg_code(codes, pos)` reads code
   `pos`, null for none (a constant, `...`, an empty argument, `bquote`'s,
-  the from-source compiler's calls: `f` 0).
-- **Where a promise is made.** `call::call` takes the codes; a closure's
+  the from-source compiler's calls).
+- **Where a promise is made.** `CallCodes`' arm (`vm::call_codes`, out of
+  line) calls `call::call_codes`, which takes the codes; a closure's
   delayed slot (by the site's plan or the matcher, by the actual's call
   position), a `...` list's promise (`list_element`) and a complex
   assignment's closure argument (`closure_args`) hold code `pos` as their
@@ -87,13 +90,21 @@ path is unchanged.
   rho)`: `eval::bc_eval_inline`, no `eval` level, bcEval's entry poll.
 - **Forcing.** `eval_bytecode` of a BCODESXP is `forcePromise`'s
   `eval(PRCODE)`: `eval`'s BCODESXP case (its count and level), the
-  translation kept on the code, bcEval's poll. An early value
-  (`crate::early`) reads the translation as it reads a call's code, and
-  the early force counts what that force counts: the early-force hook
-  takes the code's type (`SYMSXP`, `LANGSXP`, `BCODESXP`, both counts for
-  byte code). Pure-closure inlining takes the codes as its arguments
-  (`inline::actual`), evaluates them as calls' code, and fuses `GetFun` +
-  `Call` only for a call without codes.
+  translation kept on the code, bcEval's poll. A promise of byte code
+  gets no early value (`crate::early` computes them for a symbol or a
+  call), so the early force and its hook are as they were. A translated
+  call with codes does not run inline yet (`CallCodes` is no op
+  `crate::inline` runs): the real call makes its promises. Both come back
+  for translated calls with an entry of their own when translated code is
+  the common path. A first version threaded the codes through
+  `inline::enter`'s matching and `call::call`, and every call of the
+  from-source compiler's code paid for it (perf-rt plain +4.8%, fib +7.5%;
+  then, with inlining declined but the codes still a parameter of
+  `call::call`, plain +0.83%; see Verification). Inlining translated calls
+  comes back when translated code is the common path (V4 retires the
+  from-source compiler), with an entry of its own (a const-generic
+  `enter`) so the from-source path stays as it is. "No codes" is a null
+  `Sexp` on the hot paths (a register test, no load).
 - **Readers (PREXPR).** rtcore's `bytecode_expr` (`bytecodeExpr`,
   `R_PromiseExpr`): `frame_arg_raw`'s `ArgValue` (`missing()`,
   `R_isMissing`), `findRootPromise`, `substitute()`, `match.call()`'s
@@ -109,8 +120,8 @@ path is unchanged.
   argument, forcing, `...`, a builtin through `CALL`, inlining, a setter's
   and a builtin getter's arguments, an environment's serialization byte
   for byte and read back), recorded on 4.6.2; ratcheted.
-- **The crosscheck.** A translated `Call`'s codes were already outside
-  its comparison (`f`); a complex assignment's plan now is compared but
+- **The crosscheck.** `CallCodes` compares as `Call`, its codes (`f`)
+  outside the comparison; a complex assignment's plan is compared but
   for its steps' codes (`bcassign::same_but_codes`), which the
   from-source compiler's steps have none of. The first full rt-ci run
   flagged the two new assignment fixtures as unexpected without it.
@@ -128,7 +139,7 @@ On main `f7378ac3` with #810 (`9987b86b`) merged, at `a3149e98`:
   mode, gctorture, the moving collector and fail-alloc pass (2800 runs,
   0 differences). The crosscheck compared 127, 101 the same, 0 unexpected.
 - Miri, `cargo +nightly-2026-11-02 miri test -p robigo-rtcore` (rtcore
-  changed: `bytecode_expr`, the early-force hook, `frame_arg_raw`): 121
+  changed: `bytecode_expr`, `frame_arg_raw`, then also the early-force hook): 121
   passed, 10 ignored, 0 failed.
 - `scripts/lint.sh`, `cargo fmt --check`: clean.
 - perf-rt: measured after #812 lands, on top of it (S1's and C1's

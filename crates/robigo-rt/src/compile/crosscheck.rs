@@ -60,7 +60,9 @@ fn kinds(op: Op) -> ([K; 6], bool) {
         Op::BrFalse => ([X, R, X, C, X, X], true),
         Op::Guard => ([C0, X, C, C, X, X], true),
         Op::GetFun => ([W, X, C, C, I, X], false),
-        Op::Call => ([W, R, X, C, X, X], false),
+        // (a translated call's promise codes: the from-source compiler's
+        // promises have none)
+        Op::Call | Op::CallCodes => ([W, R, X, C, X, X], false),
         Op::CallBuiltin | Op::Internal => ([W, Win, I, C, C, C0], false),
         Op::Arith | Op::Relop | Op::Logic => ([W, R, R, C, C, I], false),
         Op::Arith1 | Op::Not => ([W, R, X, C, C, I], false),
@@ -220,7 +222,11 @@ fn normalize(b: &Built) -> Vec<Norm> {
         let (ks, jumps) = kinds(i.op);
         let fields = [i.a, i.b, i.c, i.e, i.f, i.g];
         let mut v = Norm {
-            op: if i.op == Op::LdScalar { Op::LdConst } else { i.op },
+            op: match i.op {
+                Op::LdScalar => Op::LdConst,
+                Op::CallCodes => Op::Call,
+                op => op,
+            },
             fl: i.fl & !(crate::ir::F_CLR_B | crate::ir::F_CLR_C),
             regs: Vec::new(),
             imm: Vec::new(),
