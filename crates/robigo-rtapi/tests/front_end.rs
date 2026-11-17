@@ -8,7 +8,7 @@ use std::process::Command;
 /// three directories, or the runtime's own controls that change what it
 /// writes or how it starts (as cli.rs's `run` drops them): rt-ci runs the
 /// tests under those, and they are not the front end's to test.
-fn front_end(env: &[(&str, &str)]) -> Command {
+fn front_end<V: AsRef<std::ffi::OsStr>>(env: &[(&str, V)]) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
     for v in [
         "R_HOME",
@@ -17,13 +17,17 @@ fn front_end(env: &[(&str, &str)]) -> Command {
         "R_DOC_DIR",
         "ROBIGO_FAIL_ALLOC_AT",
         "ROBIGO_GC_STATS",
-        "ROBIGO_GC_PIN_REPORT",
         "ROBIGO_BOOT_VERBOSE",
         "ROBIGO_RT_BOOT",
     ] {
         cmd.env_remove(v);
     }
-    cmd.envs(env.iter().copied());
+    // the pin report to stderr (`1`); to a file it stays, as rt-ci's check
+    // (cli.rs's `run`)
+    if std::env::var_os("ROBIGO_GC_PIN_REPORT").is_some_and(|v| v == "1") {
+        cmd.env_remove("ROBIGO_GC_PIN_REPORT");
+    }
+    cmd.envs(env.iter().map(|(k, v)| (k, v)));
     cmd
 }
 
@@ -94,7 +98,7 @@ fn an_empty_r_home_or_directory_is_unset() {
 fn stage0_says_a_missing_tree_is_missing() {
     let dir = std::env::temp_dir().join(format!("robigo-rt-no-home-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let out = front_end(&[("R_HOME", dir.to_str().unwrap()), ("ROBIGO_RT_BOOT", "stage0")])
+    let out = front_end(&[("R_HOME", dir.as_os_str()), ("ROBIGO_RT_BOOT", std::ffi::OsStr::new("stage0"))])
         .args(["-e", "1"])
         .output()
         .expect("running robigo-rt");
