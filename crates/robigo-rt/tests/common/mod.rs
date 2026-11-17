@@ -28,6 +28,14 @@ pub const NA: i32 = i32::MIN;
 /// own thread).
 static LOG: Mutex<Vec<(std::thread::ThreadId, String)>> = Mutex::new(Vec::new());
 
+/// Whether `ROBIGO_GC_MOVE` turns the moving collector on, by
+/// robigo-heap's rule (`mover::policy_from_env`: off when unset, empty or
+/// `0`): under it an address does not identify an object, so the tests that
+/// read addresses skip.
+pub fn gc_move_on() -> bool {
+    std::env::var("ROBIGO_GC_MOVE").is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
 pub fn log_take() -> Vec<String> {
     let id = std::thread::current().id();
     let mut l = LOG.lock().unwrap();

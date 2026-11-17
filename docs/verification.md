@@ -680,8 +680,11 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    MiB, 10% of the live heap)), the conformance under a small vector limit
    and `scripts/rt-fail-alloc.py` (E9: `ROBIGO_FAIL_ALLOC_AT=n` refuses the
    script's `n`th allocation once; the output must not change; its scripts
-   are `tests/rt/alloc/effects.R` and, for unserialize,
-   `tests/rt/serialize-closures/unserialize-e9.R`; `ROBIGO_RETRY_TORTURE=1`,
+   are `tests/rt/alloc/effects.R`, for unserialize
+   `tests/rt/serialize-closures/unserialize-e9.R`, and for on.exit code
+   run during unwinds `conditions/onexit-unwind.R`,
+   `conditions/trycatch-finally.R`, `capi/e8-unwind.R`,
+   `tests/r/lang/on-exit.R` and `parse/file.R`; `ROBIGO_RETRY_TORTURE=1`,
    which refuses the first allocation of every `&Cx` build once, E9's
    refusal at every build in one run, in a build with robigo-rtcore's
    `retry-torture` feature, has no step yet:

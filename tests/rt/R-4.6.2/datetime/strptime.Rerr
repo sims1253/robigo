@@ -1,0 +1,3 @@
+Warning message:
+In strptime(c("2023 060", "2024 366", "2023 366"), "%Y %j", tz = "UTC") :
+  day-of-year 366 in year 2023 is invalid
