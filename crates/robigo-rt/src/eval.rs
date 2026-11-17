@@ -806,7 +806,8 @@ pub fn do_eval(cx: &mut Cx, call: Root<'_>, args: robigo_rtcore::Args<'_>, rho: 
                         c
                     };
                 }
-                // SAFETY: fresh, of this isolate.
+                // SAFETY: a live object of this isolate: the first cell made
+                // above, or with no arguments R_NilValue (immortal).
                 Ok(unsafe { Ref::from_sexp(l, cx) })
             })
         })?;
