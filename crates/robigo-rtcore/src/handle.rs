@@ -300,6 +300,27 @@ impl<'g> Ref<'g> {
         Some(unsafe { std::slice::from_raw_parts(x.std_data() as *const i32, x.std_len() as usize) })
     }
 
+    /// The elements of an integer vector in standard storage, or of an
+    /// expanded compact integer sequence of robigo's ([`Ref::own_class`]):
+    /// the header tests and loads, with no call. None for anything else
+    /// (an unexpanded sequence among it).
+    #[inline(always)]
+    pub fn std_or_expanded_ints(self) -> Option<&'g [i32]> {
+        if self.sexptype() != INTSXP {
+            return None;
+        }
+        let x = if self.is_altrep() {
+            self.own_class()?;
+            own_expansion(self)?
+        } else {
+            self.sexp()
+        };
+        // SAFETY: a live INTSXP in standard storage (this one, or the
+        // expansion an instance keeps as its data2): its length word and
+        // its elements, valid and unwritten for 'g (module docs).
+        Some(unsafe { std::slice::from_raw_parts(x.std_data() as *const i32, x.std_len() as usize) })
+    }
+
     /// Admit a vector or NULL whose length is read without running code:
     /// `Some` for NULL and every vector type (GNU R's `isVector`: logical,
     /// integer, double, complex, character, raw, list, expression) in
@@ -541,9 +562,11 @@ impl<'g, T: Elt<'g>> Vector<'g, T> {
         s[i]
     }
 
-    /// [`Vector::get`] of an instance of one of robigo's classes (inline:
-    /// its only call is the bounds check's panic).
-    #[inline(always)]
+    /// [`Vector::get`] of an instance of one of robigo's classes. Out of
+    /// line: the formula is larger than the standard read, and the hot
+    /// callers (the VM's) make calls anyway, so a call costs them no
+    /// prologue, where the inline formula costs their register use.
+    #[inline(never)]
     fn own_get(self, i: usize) -> T {
         let n = self.len();
         assert!(i < n, "robigo: element {i} of {n}");
@@ -584,14 +607,16 @@ impl<'g, T: Elt<'g>> Vector<'g, T> {
 // prologue it had without them (a call would make it save registers).
 
 /// [`Ref::is_package_altrep`] of an ALTREP object: not one of robigo's.
-#[inline(always)]
+#[cold]
+#[inline(never)]
 fn not_own(r: Ref<'_>) -> bool {
     r.own_class().is_none()
 }
 
 /// [`Ref::len`] of an ALTREP vector: one of robigo's has a token-free
 /// length, a package class's needs its method.
-#[inline(always)]
+#[cold]
+#[inline(never)]
 fn alt_len(r: Ref<'_>) -> Option<usize> {
     // SAFETY: a live instance of one of robigo's classes.
     r.own_class().map(|_| unsafe { crate::altrep::own::own_len(r.sexp()) })

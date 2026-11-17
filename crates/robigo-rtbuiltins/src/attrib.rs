@@ -72,11 +72,9 @@ pub fn is_ts(x: Ref<'_>) -> bool {
 /// The `dim` attribute's extents (it is always an integer vector).
 #[inline(always)]
 pub fn dims<'g>(x: Ref<'g>) -> Option<&'g [i32]> {
-    // (standard storage first: the hot callers, `names` among them, inline
-    // this; a `dim` that is one of robigo's sequences is read through its
-    // expansion, which `dim<-` and `attributes<-` make)
-    let d = get_value(x, b"dim")?;
-    d.as_std_ints().or_else(|| d.as_vector::<i32>().and_then(|v| v.as_slice()))
+    // (a `dim` that is one of robigo's sequences is expanded: `dim<-` and
+    // `attributes<-` expand their values, and unserialize what it nests)
+    get_value(x, b"dim")?.std_or_expanded_ints()
 }
 
 /// GNU R's `conformable`: the same `dim`.

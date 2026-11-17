@@ -349,7 +349,11 @@ pub unsafe fn num(cx: &Cx, s: Slot) -> Option<Num> {
                         _ => Num::Lgl(*(p as *const i32)),
                     });
                 }
-                ops::plain_num(Ref::from_sexp(x, cx))
+                // anything else (not a real, integer or logical vector, or
+                // ALTREP: no instance of robigo's classes has length 1, and
+                // a package class's is not standard storage) is not a plain
+                // scalar, `ops::plain_num`'s None
+                None
             }
         }
         Tag::Empty => None,
@@ -1592,12 +1596,27 @@ fn for_prep(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp) -> RResult<()
     // INCREMENT_LINKS(val)
     // SAFETY: a live object.
     unsafe { act.obj(a).incref() };
+    // one of robigo's compact sequences: its first element and increment,
+    // read once, so that each step computes its element (INTEGER_ELT,
+    // REAL_ELT) from the index; R_NilValue for any other sequence
+    // SAFETY: a live object.
+    let seq = unsafe { Ref::from_sexp(act.obj(a), cx) };
+    let (start, inc) = match seq.own_class() {
+        Some(_) => {
+            let (_, n1, inc) = seq.compact_info();
+            (Slot::real(n1), Slot::real(inc))
+        }
+        // SAFETY: R_NilValue, immortal.
+        None => unsafe { (Slot::object(nil), Slot::object(nil)) },
+    };
     // SAFETY: unboxed values, and a live cell of the frame (or nil).
     unsafe {
         act.set(a + 1, Slot::real(0.0));
         act.set(a + 2, Slot::real(n as f64));
         act.set(a + 3, Slot::object(nil));
         act.set(a + 4, Slot::object(cell));
+        act.set(a + 5, start);
+        act.set(a + 6, inc);
     }
     Ok(())
 }
@@ -1667,16 +1686,29 @@ fn for_step(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp, profile: Prof
                 nv
             };
             let val = act.obj(a);
-            // an instance of one of robigo's classes (a compact sequence) is
-            // read by element, never expanded: INTEGER_ELT / REAL_ELT
-            // SAFETY: a live object.
-            let own = unsafe { val.is_altrep() };
+            // one of robigo's compact sequences (for_prep read its first
+            // element and increment): read by element, never expanded,
+            // INTEGER_ELT / REAL_ELT
+            let start = act.get(a + 5).as_real();
             // SAFETY: `v` is a length-1 vector of the sequence's type, `val`
             // a live vector longer than `idx` (standard, or an instance of
             // one of robigo's classes, which only INTSXP and REALSXP have).
             unsafe {
                 match t {
-                    _ if own => own_loop_elt(v, val, idx),
+                    _ if let Some(start) = start => {
+                        if val.cdr() == nil {
+                            // `n1 + inc * i`, exact in a double
+                            let x = start + act.get(a + 6).as_real().unwrap() * i;
+                            if t == INTSXP {
+                                *(v.inline_data() as *mut i32) = x.to_int_unchecked();
+                            } else {
+                                *(v.inline_data() as *mut f64) = x;
+                            }
+                        } else {
+                            // expanded (DATAPTR from C): its expansion's element
+                            own_loop_elt(v, val, idx)
+                        }
+                    }
                     LGLSXP | INTSXP => *(v.std_data() as *mut i32) = *(val.std_data() as *const i32).add(idx),
                     REALSXP => *(v.std_data() as *mut f64) = *(val.std_data() as *const f64).add(idx),
                     CPLXSXP => {
@@ -1706,12 +1738,13 @@ fn for_step(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp, profile: Prof
 }
 
 /// Element `idx` of one of robigo's compact sequences into the loop value
-/// `v` (INTEGER_ELT, REAL_ELT), out of line so that `for_step`'s other
-/// paths keep the VM loop's registers.
+/// `v` (INTEGER_ELT, REAL_ELT) once it has been expanded (C's `DATAPTR`
+/// during the loop): out of line, as rare.
 ///
 /// # Safety
 /// `v` is a length-1 vector of `val`'s type; `val` a live compact sequence
 /// longer than `idx`.
+#[cold]
 #[inline(never)]
 unsafe fn own_loop_elt(v: Sexp, val: Sexp, idx: usize) {
     // SAFETY: the caller's contract; only INTSXP and REALSXP have classes,
