@@ -59,6 +59,10 @@ class RtCi(unittest.TestCase):
             # a crosscheck step writes its report, which `main` reads
             if "ROBIGO_BC_CROSSCHECK" in env:
                 self.assertIn("ROBIGO_BC_CROSSCHECK_REPORT", env)
+        # the crosscheck step exists at all: dropping it from steps() would
+        # leave every assertion above green, and V3's gate (`main` failing on
+        # an unexpected or untranslated closure) would leave CI unnoticed
+        self.assertEqual(len([e for e, _ in own if "ROBIGO_BC_CROSSCHECK" in e]), 1)
         for title, _, cmd in steps:
             if cmd[0] == "cargo" and rt.CONFORMANCE not in cmd[-1:] and "--exact" not in cmd:
                 self.assertEqual(cmd[-2:], ["--skip", rt.CONFORMANCE], title)

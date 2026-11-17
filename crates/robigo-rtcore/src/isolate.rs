@@ -383,7 +383,14 @@ impl Isolate {
     pub(crate) fn owns(&self, x: Sexp) -> bool {
         // SAFETY: the callers pass objects from `Ref`s and `Char`s, which
         // are live by the minting rule (lib.rs).
-        unsafe { x.heap_id() == self.heap }
+        let h = unsafe { x.heap_id() };
+        if h == self.heap {
+            return true;
+        }
+        // the shared constants are every isolate's (H5): R_NilValue, the
+        // commonest object checked, by its address, the others by their
+        // heap id (no call, which would cost every caller registers)
+        x == self.nil || h.is_shared()
     }
 
     /// Panics unless `x` (a live object) belongs to this isolate: an object
@@ -981,6 +988,8 @@ impl OwnedIsolate {
     }
 
     pub fn with_options(opts: Options) -> OwnedIsolate {
+        // a new symbol's bits come from its name (H5): before any install
+        robigo_heap::set_symbol_bits(crate::sym::symbol_bits);
         // The heap's allocation never collects (H2), and no C segment is open
         // until a native call opens one, so no Rust frame is ever scanned
         // (docs/g3.md §3).

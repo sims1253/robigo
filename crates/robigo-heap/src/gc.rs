@@ -28,7 +28,7 @@ use crate::layout::{GRANULE, charsxp, charsxp_bytes, data_off, extdata, granule_
 use crate::trace::{Trace, Visitor};
 use crate::types::*;
 use crate::{Sexp, flags, gp, hash_bytes, is_vector_type};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::ffi::c_void;
 
 mod diag;
@@ -498,11 +498,20 @@ pub struct Core {
     quarantine: Vec<crate::heap::Chunk>,
     /// `ROBIGO_GC_PIN_REPORT`, `ROBIGO_GC_STRONG_DLL` (`diag.rs`)
     diag: Option<Box<diag::Diag>>,
-    /// weak references (WEAKREFSXP) not yet finalized
+    /// GNU R's `R_weak_refs`: the weak references (WEAKREFSXP) not yet
+    /// finalized, ready ones (`READY_TO_FINALIZE`, their key dead or the
+    /// session ending) included, oldest first (`R_weak_refs` reversed).
+    /// A reference leaves it when its finalizer is about to run
+    /// ([`Core::pop_finalizable_before`]): a null entry until the pass
+    /// ends, so a pass's positions never move and taking one out is O(1)
+    /// (a removal would shift every newer one: a pass quadratic in the
+    /// list). Every walk of the list skips them.
     weak_refs: Vec<Sexp>,
-    /// weak references whose key died, waiting for their finalizer, in
-    /// the order RunFinalizers runs them (taken from the front)
-    finalize_queue: VecDeque<Sexp>,
+    /// GNU R's `R_finalizers_pending`: set by each collection when a
+    /// reference is ready (memory.c:CheckFinalizers), and by the exit
+    /// finalizers; cleared when a finalizer pass ends
+    /// ([`Core::end_finalizer_pass`]).
+    finalizers_pending: bool,
     /// release callbacks of objects found dead by the last sweep
     releases: Vec<(ReleaseFn, usize)>,
     /// The store barrier's log ([`Sexp::store`]): immortal objects
@@ -543,6 +552,14 @@ pub(crate) unsafe fn barrier_only(x: Sexp) {
     unsafe { barrier_slow(x) }
 }
 
+#[cold]
+#[inline(never)]
+fn shared_store() -> ! {
+    panic!(
+        "robigo: a store into a shared immutable object (R_NilValue, NA_STRING, R_BlankString, R_UnboundValue, R_MissingArg)"
+    )
+}
+
 /// # Safety
 /// As for [`store_slow`].
 #[inline(always)]
@@ -550,6 +567,10 @@ unsafe fn barrier_slow(x: Sexp) {
     // SAFETY: the caller's contract: `x` is live, so its header and its
     // block's header are readable, and the remembered set is not borrowed.
     unsafe {
+        // a shared object is never written: refused before any write
+        if crate::shared::is_shared(x) {
+            shared_store();
+        }
         x.set_flag_raw(flags::BARRIER, false);
         // A CHARSXP has nothing to trace, and must not be: `trace` would
         // count it in `marked_chars` on top of `immortal_chars`, and with
@@ -816,38 +837,32 @@ impl Core {
             quarantine: Vec::new(),
             diag: diag::Diag::from_env(),
             weak_refs: Vec::new(),
-            finalize_queue: VecDeque::new(),
+            finalizers_pending: false,
             releases: Vec::new(),
             remembered: Box::new(Remembered(Default::default())),
         });
         // every block and large chunk header points at the log, before the
         // first allocation makes one
         c.heap.remembered = &*c.remembered as *const Remembered as *mut Remembered;
-        // SAFETY: every object here is fresh from this heap, node-sized where
-        // node fields are written, and flagged immortal before any
-        // collection, so none of them can be swept.
-        unsafe {
-            // R_NilValue: a node whose fields point at itself (memory.c InitMemory)
-            let nil = c.alloc_object(NILSXP, 1, node::size(NILSXP), 0).expect(CONSTANTS);
-            nil.set_attrib_raw(nil);
-            nil.set_car_raw(nil);
-            nil.set_cdr_raw(nil);
-            nil.set_tag_raw(nil);
-            nil.set_sexp_at(node::OFF_AUX, nil);
-            c.nil = nil;
-            c.make_immortal(nil);
-            nil.set_attrib_raw(nil);
-            // NA_STRING is not in the cache (names.c: mkChar("NA") is a different object)
-            let na = c.alloc_char(b"NA", 0, hash_bytes(b"NA")).expect(CONSTANTS);
-            c.make_immortal(na);
-            c.na_string = na;
-            let blank = c.mk_char(b"", 0).expect(CONSTANTS);
-            c.make_immortal(blank);
-            c.blank_string = blank;
-            // R_UnboundValue and R_MissingArg are symbols with empty names
-            // that are not in the symbol table (names.c InitNames)
-            c.unbound = c.new_symbol(blank).expect(CONSTANTS);
-            c.missing_arg = c.new_symbol(blank).expect(CONSTANTS);
+        // R_NilValue, NA_STRING, R_BlankString, R_UnboundValue and
+        // R_MissingArg are the process's (`shared`, H5): counted here as if
+        // this heap had allocated them, as GNU R's InitMemory does, with ""
+        // in this heap's CHARSXP cache and the symbol ids after theirs
+        let sh = crate::shared::shared();
+        (c.nil, c.na_string, c.blank_string) = (sh.nil, sh.na_string, sh.blank_string);
+        (c.unbound, c.missing_arg) = (sh.unbound, sh.missing_arg);
+        c.next_sym_id = crate::shared::FIRST_SYMBOL_ID;
+        // SAFETY: a live CHARSXP that no collection frees (immortal), and
+        // not yet in this table.
+        unsafe { c.chars.insert(sh.blank_string) };
+        c.immortal_chars += 1;
+        for (t, n, bytes, cells) in crate::shared::counts() {
+            if c.sizes.over_trigger(cells) {
+                // (InitMemory's triggers are not set yet: this polls as the
+                // allocations it stands for did)
+                c.poll_slow(t, n, bytes, cells).expect(CONSTANTS);
+            }
+            c.count(bytes, cells);
         }
         // like InitMemory: once the constants exist
         (c.force_wait, c.force_gap) = torture_from_env();
@@ -1684,6 +1699,17 @@ impl Core {
         }
         let c = if printname.is_null() { self.mk_char(name, 0)? } else { printname };
         let s = self.new_symbol(c)?;
+        // the bits its name gives it, before anything sees it: nothing
+        // writes a symbol after it is made (H5: symbols are shared)
+        if let Some(bits) = SYMBOL_BITS.get() {
+            let (f, g) = bits(name);
+            // SAFETY: `s` is fresh and not yet published; flags other than
+            // IMMORTAL and BARRIER, and gp bits, are the caller's to set.
+            unsafe {
+                s.set_flags_raw(s.flags() | f);
+                s.set_gp(s.gp() | g);
+            }
+        }
         // SAFETY: `c` is live (nothing collected since it was made or
         // passed), and a CHARSXP has no children. The immortal symbol is
         // not traced, so its name must be immortal too. HASHASH and
@@ -1691,9 +1717,13 @@ impl Core {
         // them); the cache's lookups ignore HASHASH (`chars::ENC_MASK`).
         unsafe {
             self.make_immortal(c);
-            // R: names.c:install (SET_HASHVALUE, SET_HASHASH on the PRINTNAME)
-            c.set_truelen(s.sym_hash() as isize);
-            c.set_gp(c.gp() | crate::gp::charsxp::HASHASH);
+            // R: names.c:install (SET_HASHVALUE, SET_HASHASH on the PRINTNAME).
+            // Not on the shared "" (a symbol named "" GNU R never installs),
+            // which no isolate writes.
+            if !crate::shared::is_shared(c) {
+                c.set_truelen(s.sym_hash() as isize);
+                c.set_gp(c.gp() | crate::gp::charsxp::HASHASH);
+            }
         }
         self.syms.insert(name.into(), s);
         Ok(s)
@@ -1762,40 +1792,69 @@ impl Core {
     pub unsafe fn register_weak_ref(&mut self, w: Sexp) {
         // R: memory.c:NewWeakRef prepends to R_weak_refs: the list is kept
         // oldest first (a push, not an O(n) insert at the front), and walked
-        // newest first where its order shows ([`Core::classify_weak_refs`],
-        // [`Core::queue_exit_finalizers`])
+        // newest first where its order shows (a finalizer pass,
+        // [`Core::pop_finalizable_before`])
         self.weak_refs.push(w);
     }
 
-    /// Number of references queued before a finalizer batch begins.
+    /// The references ready for their finalizer (tests, statistics).
     pub fn pending_finalizer_count(&self) -> usize {
-        self.finalize_queue.len()
+        self.weak_refs
+            .iter()
+            // SAFETY: every collection marks the objects in `weak_refs`.
+            .filter(|w| !w.is_null() && unsafe { w.gp() } & gp::weakref::READY_TO_FINALIZE != 0)
+            .count()
     }
 
-    /// R: memory.c:R_RunExitFinalizers -- mark every onexit reference
-    /// ready and move it to the finalizer queue in weak-reference list
-    /// order, then let the ordinary runner execute it.
+    /// GNU R's `R_finalizers_pending`: whether a collection (or the exit)
+    /// left references ready, and no finalizer pass ran since.
+    pub fn finalizers_pending(&self) -> bool {
+        self.finalizers_pending
+    }
+
+    /// The end of a finalizer pass (`RunFinalizers`' last statement):
+    /// what is still ready waits for the next collection.
+    pub fn end_finalizer_pass(&mut self) {
+        self.finalizers_pending = false;
+        self.weak_refs.retain(|w| !w.is_null());
+    }
+
+    /// R: memory.c:R_RunExitFinalizers -- every onexit reference becomes
+    /// ready, in place, and a pass is due (GNU R runs one whatever the
+    /// pending flag says).
     pub fn queue_exit_finalizers(&mut self) {
-        let mut keep = Vec::with_capacity(self.weak_refs.len());
-        // R_weak_refs' order, newest first
-        for w in std::mem::take(&mut self.weak_refs).into_iter().rev() {
+        for &w in &self.weak_refs {
             // SAFETY: every collection marks the objects in `weak_refs`.
-            if unsafe { w.gp() } & gp::weakref::FINALIZE_ON_EXIT != 0 {
-                // SAFETY: as above.
-                unsafe { w.set_gp(w.gp() | gp::weakref::READY_TO_FINALIZE) };
-                self.finalize_queue.push_back(w);
-            } else {
-                keep.push(w);
+            unsafe {
+                if !w.is_null() && w.gp() & gp::weakref::FINALIZE_ON_EXIT != 0 {
+                    w.set_gp(w.gp() | gp::weakref::READY_TO_FINALIZE);
+                }
             }
         }
-        keep.reverse();
-        self.weak_refs = keep;
+        self.finalizers_pending = true;
     }
 
-    /// The next weak reference whose key died, ready for its finalizer.
-    /// It stays rooted until popped; the caller protects it while it runs.
+    /// The next weak reference of a `RunFinalizers` pass: the newest ready
+    /// one older than `before` (the position the last one had; `usize::MAX`
+    /// to start), taken out of the list before its finalizer runs, with
+    /// its position. GNU R's pass walks `R_weak_refs` once, newest first:
+    /// a reference readied during the pass runs in it only if it is older
+    /// than the one running then, and one registered during it waits for
+    /// the next pass. The entry becomes null until the pass ends
+    /// ([`Core::end_finalizer_pass`]), so no position moves.
+    pub fn pop_finalizable_before(&mut self, before: usize) -> Option<(Sexp, usize)> {
+        let end = before.min(self.weak_refs.len());
+        let i = (0..end).rev().find(|&i| {
+            let w = self.weak_refs[i];
+            // SAFETY: every collection marks the objects in `weak_refs`.
+            !w.is_null() && unsafe { w.gp() } & gp::weakref::READY_TO_FINALIZE != 0
+        })?;
+        Some((std::mem::replace(&mut self.weak_refs[i], Sexp::NULL), i))
+    }
+
+    /// The next ready reference of a pass started now (tests).
     pub fn pop_finalizable(&mut self) -> Option<Sexp> {
-        self.finalize_queue.pop_front()
+        self.pop_finalizable_before(usize::MAX).map(|(w, _)| w)
     }
 
     /// Release callbacks of external buffers the last
@@ -2008,22 +2067,21 @@ impl Core {
         self.retrigger();
     }
 
-    /// Weak references still waiting for their key to die (for
-    /// finalizers that run on exit), oldest first: R_weak_refs reversed.
-    pub fn weak_refs(&self) -> &[Sexp] {
-        &self.weak_refs
+    /// The weak references not yet finalized, ready ones included, oldest
+    /// first: R_weak_refs reversed.
+    pub fn weak_refs(&self) -> Vec<Sexp> {
+        self.weak_refs.iter().copied().filter(|w| !w.is_null()).collect()
     }
 
     /// Every field of every weak reference the collector still tracks (key,
-    /// value, finalizer), for both entries awaiting classification and ones
-    /// queued for RunFinalizers. GNU R keeps key, value and finalizer alive
+    /// value, finalizer), ready ones included. GNU R keeps key, value and finalizer alive
     /// for the finalization round (memory.c RunGenCollect), so the runtime
     /// must not sweep what only they reach yet.
     pub fn weak_ref_fields(&self) -> Vec<Sexp> {
         self.weak_refs
             .iter()
-            .chain(self.finalize_queue.iter())
-            // SAFETY: both lists contain initialized WEAKREFSXPs that every
+            .filter(|w| !w.is_null())
+            // SAFETY: the list contains initialized WEAKREFSXPs that every
             // collection marks.
             .flat_map(|&w| (0..3).map(move |i| unsafe { Self::weak_field(w, i) }))
             .collect()
@@ -2225,9 +2283,9 @@ impl Core {
 
     /// GNU R's weak-reference protocol (memory.c RunGenCollect): values
     /// and finalizers of references with live keys are live; references
-    /// whose key died and that have a finalizer are queued, keeping key,
-    /// value and finalizer alive for the finalizer; the others are
-    /// cleared. In three steps, so that the pin report can watch the C
+    /// whose key died are ready to finalize; every reference keeps its key,
+    /// value and finalizer alive this round (its finalizer pass clears
+    /// them). In three steps, so that the pin report can watch the C
     /// segments between the decision and the keeping
     /// ([`Core::weak_fixpoint`], [`Core::classify_weak_refs`],
     /// [`Core::keep_weak_fields`]).
@@ -2258,6 +2316,9 @@ impl Core {
                 let mut changed = false;
                 for i in 0..self.weak_refs.len() {
                     let w = self.weak_refs[i];
+                    if w.is_null() {
+                        continue;
+                    }
                     let key = Self::weak_field_y::<Y>(w, 0);
                     if self.is_marked(key) {
                         for k in 1..3 {
@@ -2281,28 +2342,29 @@ impl Core {
     }
 
     /// memory.c CheckFinalizers: every reference whose key is unmarked is
-    /// ready to finalize (with or without a finalizer) and moves to the
-    /// finalizer queue.
+    /// ready to finalize (with or without a finalizer), and stays in the
+    /// list, whose order a finalizer pass walks; `R_finalizers_pending` is
+    /// whether any is ready.
     ///
     /// # Safety
     /// As for [`Core::process_weak_refs`], after the fixed point.
     unsafe fn classify_weak_refs<const Y: bool>(&mut self) {
         // SAFETY: as in `weak_fixpoint`.
+        // (in place: a ready reference stays in R_weak_refs until its
+        // finalizer is about to run)
         unsafe {
-            let refs = std::mem::take(&mut self.weak_refs);
-            let mut keep = Vec::with_capacity(refs.len());
-            // R_weak_refs' order, newest first
-            for w in refs.into_iter().rev() {
-                let key = Self::weak_field_y::<Y>(w, 0);
-                if w.gp() & gp::weakref::READY_TO_FINALIZE != 0 || !self.is_marked(key) {
-                    w.set_gp(w.gp() | gp::weakref::READY_TO_FINALIZE);
-                    self.finalize_queue.push_back(w);
-                } else {
-                    keep.push(w);
+            let mut pending = false;
+            for i in 0..self.weak_refs.len() {
+                let w = self.weak_refs[i];
+                if w.is_null() {
+                    continue;
                 }
+                if w.gp() & gp::weakref::READY_TO_FINALIZE == 0 && !self.is_marked(Self::weak_field_y::<Y>(w, 0)) {
+                    w.set_gp(w.gp() | gp::weakref::READY_TO_FINALIZE);
+                }
+                pending |= w.gp() & gp::weakref::READY_TO_FINALIZE != 0;
             }
-            keep.reverse();
-            self.weak_refs = keep;
+            self.finalizers_pending = pending;
         }
     }
 
@@ -2320,15 +2382,9 @@ impl Core {
         unsafe {
             for i in 0..self.weak_refs.len() {
                 let w = self.weak_refs[i];
-                for k in 0..3 {
-                    let v = self.mark_y::<Y>(Self::weak_field_y::<Y>(w, k));
-                    if Y {
-                        Self::set_weak_field(w, k, v);
-                    }
+                if w.is_null() {
+                    continue;
                 }
-            }
-            for i in 0..self.finalize_queue.len() {
-                let w = self.finalize_queue[i];
                 for k in 0..3 {
                     let v = self.mark_y::<Y>(Self::weak_field_y::<Y>(w, k));
                     if Y {
@@ -2567,7 +2623,7 @@ impl Core {
     }
 
     /// Mark the heap's own precise roots: the precious set, the weak
-    /// references and those queued for their finalizers, the store
+    /// reference objects (their fields are the weak pass's), the store
     /// barrier's log of immortal objects.
     ///
     /// # Safety
@@ -2581,18 +2637,6 @@ impl Core {
                 let p = self.mark_y::<Y>(self.precious[i]);
                 if Y {
                     self.precious[i] = p;
-                }
-            }
-            for i in 0..self.finalize_queue.len() {
-                let w = self.mark_y::<Y>(self.finalize_queue[i]);
-                if Y {
-                    self.finalize_queue[i] = w;
-                }
-                for k in 0..3 {
-                    let v = self.mark_y::<Y>(Self::weak_field_y::<Y>(w, k));
-                    if Y {
-                        Self::set_weak_field(w, k, v);
-                    }
                 }
             }
             for i in 0..self.weak_refs.len() {
@@ -2935,8 +2979,9 @@ impl Core {
         self.stats.live_bytes = live_bytes;
         self.stats.live_objects = live_objects;
         self.alloc_since_gc = 0;
-        // R: memory.c:RunGenCollect (R_NodesInUse = R_NSize - R_Collected)
-        self.sizes.nodes_in_use = live_objects as usize;
+        // R: memory.c:RunGenCollect (R_NodesInUse = R_NSize - R_Collected),
+        // the shared constants included
+        self.sizes.nodes_in_use = live_objects as usize + crate::shared::OBJECTS;
     }
 }
 
@@ -2953,6 +2998,24 @@ impl Visitor for Mark<'_> {
         // them: each is null or live.
         unsafe { self.0.mark_obj(*edge) }
     }
+}
+
+/// The bits a new symbol is made with, from its name: (header flags, gp).
+/// The runtime registers its rule once per process ([`set_symbol_bits`]).
+pub type SymbolBits = fn(&[u8]) -> (u8, u16);
+
+static SYMBOL_BITS: std::sync::OnceLock<SymbolBits> = std::sync::OnceLock::new();
+
+/// Register the rule that gives a new symbol its name's bits (GNU R's
+/// `DDVAL` in `mkSYMSXP`, `SPECIAL_SYMBOL` in `InitNames`,
+/// `DISABLE_REFCNT(R_LastvalueSymbol)`): every heap's `install` applies it
+/// before the symbol is used, so nothing writes a symbol after it is made
+/// (H5: symbols become process-shared and immutable). The first rule
+/// registered stays; the runtime is the one caller. (Function pointers
+/// cannot be compared to check that a later call gives the same rule: one
+/// function may have several addresses.)
+pub fn set_symbol_bits(bits: SymbolBits) {
+    SYMBOL_BITS.get_or_init(|| bits);
 }
 
 /// SEXPTYPE names for the statistics (Rinternals.h).
@@ -3192,6 +3255,106 @@ mod tests {
     }
 
     const OBJECTS: usize = 16;
+
+    /// `alloc_node`'s fast path copies `alloc_object`'s steps by hand
+    /// (#816): for the same requests it must leave the same header, fields,
+    /// slot, counts and trigger state as `alloc_object` (`alloc_node_slow`,
+    /// the path every other allocation takes). The setups start from no
+    /// statistics, torture or injection, whatever the environment says, and
+    /// each asserts the paths it is for were taken: the fast path through
+    /// block refills; a node trigger crossed (the collection comes due); a
+    /// node limit reached (requests refused); torture; an injected failure.
+    #[test]
+    fn alloc_node_and_alloc_object_agree() {
+        type State = (usize, usize, usize, u64, bool, usize, bool, i32, i32, bool, usize, usize);
+        fn state(c: &Core) -> State {
+            let poll = c.poll_word().load(Ordering::Relaxed) & GC_DUE != 0;
+            let (s, wait, gap) = (&c.sizes, c.force_wait, c.force_gap);
+            let counts = (c.alloc_since_gc, s.nodes_in_use, s.valloc, c.fail_seen);
+            (
+                counts.0,
+                counts.1,
+                counts.2,
+                counts.3,
+                c.due,
+                c.due_at,
+                poll,
+                wait,
+                gap,
+                c.fail_armed,
+                s.n_trigger,
+                s.v_trigger,
+            )
+        }
+        #[derive(Clone, Copy, PartialEq)]
+        enum Setup {
+            Plain,
+            Trigger,
+            Limit,
+            Torture,
+            Inject,
+        }
+        for setup in [Setup::Plain, Setup::Trigger, Setup::Limit, Setup::Torture, Setup::Inject] {
+            let (mut a, mut b) = (Core::new(), Core::new());
+            for c in [&mut a, &mut b] {
+                c.stats_mode = StatsMode::Off;
+                c.gc_torture(0, 0);
+                c.fail_alloc_at(0);
+                let used = c.sizes.nodes_in_use;
+                match setup {
+                    Setup::Plain => {}
+                    // the heap's size reached (R_NSize) at the 1000th node
+                    Setup::Trigger => (c.sizes.n_trigger, c.sizes.n_size) = (used + 1000, used + 1000),
+                    Setup::Limit => {
+                        (c.sizes.n_trigger, c.sizes.n_size, c.sizes.max_n_size) =
+                            (used + 1000, used + 1000, used + 2000)
+                    }
+                    Setup::Torture => c.gc_torture(3, 0),
+                    Setup::Inject => c.fail_alloc_at(1500),
+                }
+            }
+            let (car_a, car_b) = (a.alloc_vector(REALSXP, 1).unwrap(), b.alloc_vector(REALSXP, 1).unwrap());
+            let (mut fast, mut refused, mut came_due) = (0, 0, false);
+            for i in 0..4000 {
+                let t = [LISTSXP, LANGSXP, CLOSXP, EXTPTRSXP][i % 4];
+                let (nil_a, nil_b) = (a.nil(), b.nil());
+                fast += !a.sizes.over_trigger(0) as usize;
+                let due_before = a.due;
+                // SAFETY: live objects of each heap (nothing collects).
+                let x = unsafe { a.alloc_node(t, car_a, nil_a, nil_a) };
+                // SAFETY: as for `x`.
+                let y = unsafe { b.alloc_node_slow(t, car_b, nil_b, nil_b) };
+                came_due |= !due_before && a.due;
+                assert_eq!(state(&a), state(&b), "the counts and triggers, at request {i}");
+                let (x, y) = match (x, y) {
+                    (Ok(x), Ok(y)) => (x, y),
+                    (Err(_), Err(_)) => {
+                        refused += 1;
+                        continue;
+                    }
+                    _ => panic!("one path refused request {i} and the other did not"),
+                };
+                assert_eq!(x.addr() % BLOCK, y.addr() % BLOCK, "the same slot, at request {i}");
+                // SAFETY: fresh nodes; the header and field words.
+                unsafe {
+                    let w = |z: Sexp, k: usize| *(z.0 as *const u64).add(k);
+                    assert_eq!(w(x, 0), w(y, 0), "the header's first word, at request {i}");
+                    assert_eq!(x.attrib_raw() == nil_a, y.attrib_raw() == nil_b);
+                    assert_eq!((x.car() == car_a, x.cdr() == nil_a, x.tag() == nil_a), (true, true, true));
+                    assert_eq!((y.car() == car_b, y.cdr() == nil_b, y.tag() == nil_b), (true, true, true));
+                    assert_eq!(car_a.refcnt(), car_b.refcnt(), "the car's count, at request {i}");
+                }
+            }
+            match setup {
+                // 4000 nodes fill three blocks: the fast path and its refills
+                Setup::Plain => assert_eq!(fast, 4000, "every request on the fast path"),
+                Setup::Trigger => assert!(fast >= 999 && came_due && refused == 0, "the trigger crossed"),
+                Setup::Limit => assert!(came_due && refused > 0, "the limit reached"),
+                Setup::Torture => assert!(came_due, "torture made a collection due"),
+                Setup::Inject => assert_eq!(refused, 1, "the injected failure"),
+            }
+        }
+    }
 
     /// Counts a release: `owner` is the address of its counter.
     unsafe extern "C" fn release(owner: usize) {

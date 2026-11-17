@@ -261,6 +261,8 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("normalizePath", crate::util::do_normalizepath, Inline::None, 11, 3),
     builtin("file.exists", crate::platform::do_fileexists, Inline::None, 11, 1),
     builtin("list.files", crate::platform::do_listfiles, Inline::None, 11, 9),
+    builtin("parent.env<-", crate::builtin::do_parentenvgets, Inline::None, 11, 2),
+    builtin("pos.to.env", crate::builtin::do_pos2env, Inline::None, 1, 1),
 ];
 
 /// How the VM runs B1's builtin `name` inline, if it does.
@@ -613,16 +615,18 @@ pub(crate) fn make_prims(cx: &mut Cx, defs: &[PrimDef], first: usize) -> (Vec<Gl
         let sym = cx.install(d.name.as_bytes()).expect("robigo: no room for the primitives' symbols");
         let sym = sym.as_ref().sexp();
         if d.internal() {
-            // SAFETY: a live (immortal) symbol and a rooted primitive: the
-            // store is SET_INTERNAL's.
-            unsafe { sym.set_tag(g.bind(cx).sexp()) };
+            // SET_INTERNAL: the isolate's table (not the symbol, H5)
+            // SAFETY: an immortal symbol of this heap.
+            let s = unsafe { Ref::from_sexp(sym, cx) }.as_sym().expect("robigo: a symbol");
+            cx.set_internal(s, g.bind(cx));
         } else {
             cx.scope(|cx, s| {
                 // SAFETY: an immortal symbol of this heap.
                 let sr = s.root(cx, unsafe { Ref::from_sexp(sym, cx) });
                 let v = s.root(cx, g.bind(cx));
-                let base = s.root(cx, cx.base_env());
-                cx.define_var(sr, v, base).expect("robigo: binding a primitive in base");
+                // SET_SYMVALUE(install(name), prim), as names.c binds them
+                // (no lock check: a definition after the boot locked base)
+                cx.set_symvalue(sr, v);
             });
         }
         objs.push(g);

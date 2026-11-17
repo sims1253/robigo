@@ -31,6 +31,11 @@
 #   layout, envs, growth, cold, d0
 #          the M2/M3 decisions' rows (D8 and D13; D2u; D12; D11; D0's
 #          pilot), docs/ledger/g3/2026-11-17-m2m3-bars.md.
+#   guard  common VM paths no bar's row reaches, held by the perf-rt gate to
+#          the 0.5% rule against main only (m1-bars.toml's [[guard]]): `[`
+#          and `[<-` of a double vector, and `[` of a matrix, by scalar
+#          indices (docs/ledger/g3/2026-11-17-perf-subset-guard.md). Rows
+#          of other groups can be guards too: grow-dbl, scalars and d0-*.
 #   conditions
 #          the trycatch row split into its branches and neighbours, reported
 #          only (no bar cites them): what X9 (frames, argument matching), X7
@@ -534,6 +539,42 @@ group = "d0"
 note = "D0's pilot, paste.c: paste0() of a string and an integer"
 setup = ""
 body = 'v <- paste0("a", i)'
+n = 4000
+
+# --- guards ------------------------------------------------------------------
+
+[[row]]
+name = "guard-subset-dbl"
+group = "guard"
+note = "s <- s + x[i]: `[` of a double vector by a scalar index"
+setup = '''
+x <- seq_len(8000L) * 0.5
+s <- 0
+'''
+body = 's <- s + x[i]'
+n = 4000
+
+[[row]]
+name = "guard-subassign-dbl"
+group = "guard"
+note = "x[i] <- v: `[<-` of a double vector by a scalar index, in place (g's copy of x is made once)"
+setup = '''
+x <- numeric(8000L)
+v <- 0.5
+'''
+body = 'x[i] <- v'
+n = 4000
+
+[[row]]
+name = "guard-subset-matrix"
+group = "guard"
+note = "s <- s + m[i, j]: `[` of a double matrix by two scalar indices"
+setup = '''
+m <- matrix(seq_len(16000L) * 0.5, nrow = 8000L)
+j <- 2L
+s <- 0
+'''
+body = 's <- s + m[i, j]'
 n = 4000
 
 # --- jit (V4's JIT-cost bar) ---------------------------------------------

@@ -893,8 +893,14 @@ impl Cx {
 
     /// GNU R's `SET_OBJECT(x, on)` on an object the caller may write.
     pub fn set_object_bit(&mut self, x: Root<'_>, on: bool) {
+        let v = x.bind(self).sexp();
         // SAFETY: a rooted object; OBJECT changes no body.
-        unsafe { x.bind(self).sexp().set_object(on) }
+        unsafe {
+            if v.is_object() != on {
+                refuse_shared(v);
+                v.set_object(on);
+            }
+        }
     }
 
     /// GNU R's `SET_S4_OBJECT(x)` / `UNSET_S4_OBJECT(x)` on an object the
@@ -904,8 +910,10 @@ impl Cx {
         // SAFETY: a rooted object (not a CHARSXP, whose gp is the cache's);
         // the S4 bit changes no body.
         unsafe {
-            if v.typ() != CHARSXP {
-                v.set_gp(if on { v.gp() | gp::S4 } else { v.gp() & !gp::S4 });
+            let g = if on { v.gp() | gp::S4 } else { v.gp() & !gp::S4 };
+            if v.typ() != CHARSXP && g != v.gp() {
+                refuse_shared(v);
+                v.set_gp(g);
             }
         }
     }
@@ -924,12 +932,13 @@ impl Cx {
 
     /// GNU R's `MARK_ASSIGNMENT_CALL(call)`: a replacement call built by a
     /// complex assignment, which `IS_ASSIGNMENT_CALL` ([`Ref::is_assignment_call`])
-    /// reads.
+    /// reads. Only a call is marked: the bit is read on nothing else, and
+    /// R_NilValue, a shared constant, is never written.
     pub fn mark_assignment_call(&mut self, call: Root<'_>) {
         let v = call.bind(self).sexp();
         // SAFETY: a rooted object; the bit changes no body.
         unsafe {
-            if v.typ() != CHARSXP {
+            if v.typ() == LANGSXP {
                 v.set_gp(v.gp() | ASSIGNMENT_CALL);
             }
         }
@@ -1051,4 +1060,26 @@ impl UniqueList<'_> {
             self.x.set_elt(i, cx.blank_string().as_ref().sexp());
         }
     }
+}
+
+/// Panics if `x` is one of the process's shared constants (H5), which no
+/// isolate may write: R_NilValue's OBJECT or S4 bit would change in every
+/// isolate at once.
+///
+/// # Safety
+/// `x` is a live object.
+#[inline]
+unsafe fn refuse_shared(x: Sexp) {
+    // SAFETY: the caller's contract.
+    if unsafe { x.heap_id() }.is_shared() {
+        shared_write();
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn shared_write() -> ! {
+    panic!(
+        "robigo: a write into a shared immutable object (R_NilValue, NA_STRING, R_BlankString, R_UnboundValue, R_MissingArg)"
+    )
 }
