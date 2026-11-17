@@ -376,6 +376,16 @@ P	315	UTF-8	(caf%C3%A9){%7E1}
 P	316	UTF-8	(%C3%A9a){%7E1}
 P	317	latin1	(caf%E9){%7E1}
 P	318	bytes	(caf%E9){%7E1}
+P	319	native	a{2 %7E1}
+P	320	native	(ab){1,2 %7E1}
+P	321	native	a{0,2 %7E1}
+P	322	native	a{2, %7E1}
+P	323	native	(a{2 %7E1})*
+P	324	native	a{3 1i+1d<2}
+P	325	native	a{1 %7E1}
+P	326	native	a{0,1 %7E1}
+P	327	native	(a{1 %7E1}){2}
+P	328	native	a{2}b{1 %7E1}
 R	1	000	c-	c1:1	c-~2	c1:1	c2:1	c1:1~5	c2:1	c1:1~2	c-	c1:1	c-	c2:1	c6:1	c1:1~3	c-~4	c2:1	c-	c1:1	c-	c1:1	c-~3	c1:1~3	-	2:1	-	2:1	-	4:1	1:1	-~2	3:1	-~4	2:1	5:1	-	Wunable to translate 'a<81>' to a wide string|Einput string 1 is invalid in this locale	b2:1	b-	2:1	Wunable to translate 'a<e9>b' to a wide string|Einput string 1 is invalid in this locale	NA
 R	1	001	b-	b1:1	b-~2	b1:1	b2:1	b1:1~5	b2:1	b1:1~2	b-	b1:1	b-	b2:1	b6:1	b1:1~3	b-~4	b2:1	b-	b1:1	b-	b1:1	b-~3	b1:1~3	b-	b2:1	b-	b2:1	b-	b4:1	b1:1	b-~2	b5:1	b-~4	b2:1	b5:1	b-	b1:1	b2:1	b-	b2:1	b1:1	NA
 R	1	010	c-	c1:1	c-~2	c1:1	c2:1	c1:1~5	c2:1	c1:1~2	c-	c1:1	c-	c2:1	c6:1	c1:1~3	c-~2	c1:1	c-	c2:1	c-	c1:1	c-	c1:1	c-~3	c1:1~3	-	2:1~3	-	4:1	1:1	-~2	3:1	-~4	2:1	5:1	-	Wunable to translate 'a<81>' to a wide string|Einput string 1 is invalid in this locale	b2:1	b-	2:1	Wunable to translate 'a<e9>b' to a wide string|Einput string 1 is invalid in this locale	NA
@@ -2286,3 +2296,63 @@ R	318	010	b-~38	b1:4,1:4~2	b-~11	b1:4,1:4	b-~3	b1:4,1:4	b-	b1:4,1:4	b-	NA
 R	318	011	b-~38	b1:4,1:4~2	b-~11	b1:4,1:4	b-~3	b1:4,1:4	b-	b1:4,1:4	b-	NA
 R	318	100	b-~59	NA
 R	318	101	b-~59	NA
+R	319	000	Eregcomp error: 'Invalid contents of {}'~60
+R	319	001	Eregcomp error: 'Invalid contents of {}'~60
+R	319	010	Eregcomp error: 'Invalid contents of {}'~60
+R	319	011	Eregcomp error: 'Invalid contents of {}'~60
+R	319	100	c-~37	-~17	Wunable to translate 'a<81>' to a wide string|Einput string 1 is invalid in this locale	b-~2	-	Einput string 1 is invalid in this locale	NA
+R	319	101	b-~59	NA
+R	320	000	Eregcomp error: 'Invalid contents of {}'~60
+R	320	001	Eregcomp error: 'Invalid contents of {}'~60
+R	320	010	Eregcomp error: 'Invalid contents of {}'~60
+R	320	011	Eregcomp error: 'Invalid contents of {}'~60
+R	320	100	c-~37	-~17	Wunable to translate 'a<81>' to a wide string|Einput string 1 is invalid in this locale	b-~2	-	Einput string 1 is invalid in this locale	NA
+R	320	101	b-~59	NA
+R	321	000	Eregcomp error: 'Invalid contents of {}'~60
+R	321	001	Eregcomp error: 'Invalid contents of {}'~60
+R	321	010	Eregcomp error: 'Invalid contents of {}'~60
+R	321	011	Eregcomp error: 'Invalid contents of {}'~60
+R	321	100	c-~37	-~17	Wunable to translate 'a<81>' to a wide string|Einput string 1 is invalid in this locale	b-~2	-	Einput string 1 is invalid in this locale	NA
+R	321	101	b-~59	NA
+R	322	000	Eregcomp error: 'Invalid contents of {}'~60
+R	322	001	Eregcomp error: 'Invalid contents of {}'~60
+R	322	010	Eregcomp error: 'Invalid contents of {}'~60
+R	322	011	Eregcomp error: 'Invalid contents of {}'~60
+R	322	100	c-~37	-~17	Wunable to translate 'a<81>' to a wide string|Einput string 1 is invalid in this locale	b-~2	-	Einput string 1 is invalid in this locale	NA
+R	322	101	b-~59	NA
+R	323	000	Eregcomp error: 'Invalid contents of {}'~60
+R	323	001	Eregcomp error: 'Invalid contents of {}'~60
+R	323	010	Eregcomp error: 'Invalid contents of {}'~60
+R	323	011	Eregcomp error: 'Invalid contents of {}'~60
+R	323	100	c-~37	-~17	Wunable to translate 'a<81>' to a wide string|Einput string 1 is invalid in this locale	b-~2	-	Einput string 1 is invalid in this locale	NA
+R	323	101	b-~59	NA
+R	324	000	Eregcomp error: 'Invalid contents of {}'~60
+R	324	001	Eregcomp error: 'Invalid contents of {}'~60
+R	324	010	Eregcomp error: 'Invalid contents of {}'~60
+R	324	011	Eregcomp error: 'Invalid contents of {}'~60
+R	324	100	c-~37	-~17	Wunable to translate 'a<81>' to a wide string|Einput string 1 is invalid in this locale	b-~2	-	Einput string 1 is invalid in this locale	NA
+R	324	101	b-~59	NA
+R	325	000	c1:0	c1:1~4	c2:1	c1:1~5	c2:1	c1:1~5	c2:1	c6:1	c1:1~7	c2:1	c1:1~10	1:1	2:1	1:1	2:1	1:1	4:1	1:1~3	3:1	1:1~4	2:1	5:1	1:1	Wunable to translate 'a<81>' to a wide string|Einput string 1 is invalid in this locale	b2:1	b1:1	2:1	Wunable to translate 'a<e9>b' to a wide string|Einput string 1 is invalid in this locale	NA
+R	325	001	b1:0	b1:1~4	b2:1	b1:1~5	b2:1	b1:1~5	b2:1	b6:1	b1:1~7	b2:1	b1:1~11	b2:1	b1:1	b2:1	b1:1	b4:1	b1:1~3	b5:1	b1:1~4	b2:1	b5:1	b1:1~2	b2:1	b1:1	b2:1	b1:1	NA
+R	325	010	c1:0	c1:1~4	c2:1	c1:1~5	c2:1	c1:1~5	c2:1	c6:1	c1:1~7	c2:1	c1:1~10	1:1	2:1~3	1:1	4:1	1:1~3	3:1	1:1~4	2:1	5:1	1:1	Wunable to translate 'a<81>' to a wide string|Einput string 1 is invalid in this locale	b2:1	b1:1	2:1	Wunable to translate 'a<e9>b' to a wide string|Einput string 1 is invalid in this locale	NA
+R	325	011	b1:0	b1:1~4	b2:1	b1:1~5	b2:1	b1:1~5	b2:1	b6:1	b1:1~7	b2:1	b1:1~11	b2:1~3	b1:1	b4:1	b1:1~3	b5:1	b1:1~4	b2:1	b5:1	b1:1~2	b2:1	b1:1	b2:1	b1:1	NA
+R	325	100	c-~37	-~17	Wunable to translate 'a<81>' to a wide string|Einput string 1 is invalid in this locale	b-~2	-	Einput string 1 is invalid in this locale	NA
+R	325	101	b-~59	NA
+R	326	000	c1:0	c1:1	c1:0~2	c1:1	c1:0	c1:1~5	c1:0	c1:1~2	c1:0	c1:1	c1:0~3	c1:1~3	c1:0~6	c1:1	c1:0	c1:1	c1:0~3	c1:1~3	1:0~6	1:1	1:0~10	Wunable to translate 'a<81>' to a wide string|Einput string 1 is invalid in this locale	b1:0~2	1:0	Wunable to translate 'a<e9>b' to a wide string|Einput string 1 is invalid in this locale	NA
+R	326	001	b1:0	b1:1	b1:0~2	b1:1	b1:0	b1:1~5	b1:0	b1:1~2	b1:0	b1:1	b1:0~3	b1:1~3	b1:0~6	b1:1	b1:0	b1:1	b1:0~3	b1:1~3	b1:0~6	b1:1	b1:0~10	b1:1	b1:0~3	b1:1	NA
+R	326	010	c1:0	c1:1~4	c1:2	c1:1	c1:2~2	c1:1~2	c1:2	c1:1	c1:2	c1:1	c1:2	c1:1	c1:2	c1:1~8	c1:2	c1:1~10	1:1	1:2~3	1:1~10	1:2	1:1~2	Wunable to translate 'a<81>' to a wide string|Einput string 1 is invalid in this locale	b1:2	b1:1	1:2	Wunable to translate 'a<e9>b' to a wide string|Einput string 1 is invalid in this locale	NA
+R	326	011	b1:0	b1:1~4	b1:2	b1:1	b1:2~2	b1:1~2	b1:2	b1:1	b1:2	b1:1	b1:2	b1:1	b1:2	b1:1~8	b1:2	b1:1~11	b1:2~3	b1:1~10	b1:2	b1:1~3	b1:2	b1:1	b1:2	b1:1	NA
+R	326	100	c-~37	-~17	Wunable to translate 'a<81>' to a wide string|Einput string 1 is invalid in this locale	b-~2	-	Einput string 1 is invalid in this locale	NA
+R	326	101	b-~59	NA
+R	327	000	c-	c1:1,2:0	c-~2	c1:2,2:1~10	c-	c1:2,2:1	c-	c1:2,2:1	c5:2,6:1	c1:2,2:1~3	c-~4	c1:2,2:1	c-	c1:2,2:1	c-	c1:2,2:1	c-~3	c1:2,2:1~3	-	1:2,2:1	-	1:2,2:1	-	3:2,4:1	1:2,2:1	-~2	2:2,3:1	-~4	1:2,2:1	4:2,5:1	-	Wunable to translate 'a<81>' to a wide string|Einput string 1 is invalid in this locale	b1:2,2:1	b-	1:2,2:1	Wunable to translate 'a<e9>b' to a wide string|Einput string 1 is invalid in this locale	NA
+R	327	001	b-	b1:1,2:0	b-~2	b1:2,2:1~10	b-	b1:2,2:1	b-	b1:2,2:1	b5:2,6:1	b1:2,2:1~3	b-~4	b1:2,2:1	b-	b1:2,2:1	b-	b1:2,2:1	b-~3	b1:2,2:1~3	b-	b1:2,2:1	b-	b1:2,2:1	b-	b3:2,4:1	b1:2,2:1	b-~2	b4:2,5:1	b-~4	b1:2,2:1	b4:2,5:1	b-	b1:2,2:1~2	b-	b1:2,2:1~2	NA
+R	327	010	c-	c1:1,2:0	c-~2	c1:2,2:1~10	c-	c1:2,2:1	c-	c1:2,2:1	c5:2,6:1	c1:2,2:1~3	c-~2	c1:2,2:1	c-	c1:2,2:1	c-	c1:2,2:1	c-	c1:2,2:1	c-~3	c1:2,2:1~3	-	1:2,2:1~3	-	3:2,4:1	1:2,2:1	-~2	2:2,3:1	-~4	1:2,2:1	4:2,5:1	-	Wunable to translate 'a<81>' to a wide string|Einput string 1 is invalid in this locale	b1:2,2:1	b-	1:2,2:1	Wunable to translate 'a<e9>b' to a wide string|Einput string 1 is invalid in this locale	NA
+R	327	011	b-	b1:1,2:0	b-~2	b1:2,2:1~10	b-	b1:2,2:1	b-	b1:2,2:1	b5:2,6:1	b1:2,2:1~3	b-~2	b1:2,2:1	b-	b1:2,2:1	b-	b1:2,2:1	b-	b1:2,2:1	b-~3	b1:2,2:1~3	b-	b1:2,2:1~3	b-	b3:2,4:1	b1:2,2:1	b-~2	b4:2,5:1	b-~4	b1:2,2:1	b4:2,5:1	b-	b1:2,2:1~2	b-	b1:2,2:1~2	NA
+R	327	100	c-~37	-~17	Wunable to translate 'a<81>' to a wide string|Einput string 1 is invalid in this locale	b-~2	-	Einput string 1 is invalid in this locale	NA
+R	327	101	b-~59	NA
+R	328	000	c-~7	c1:3~2	c-~4	c1:3	c-~23	-~17	Wunable to translate 'a<81>' to a wide string|Einput string 1 is invalid in this locale	b-~2	-	Wunable to translate 'a<e9>b' to a wide string|Einput string 1 is invalid in this locale	NA
+R	328	001	b-~7	b1:3~2	b-~4	b1:3	b-~45	NA
+R	328	010	c-~7	c1:3~2	c-~4	c1:3	c-	c1:3	c-~21	-~17	Wunable to translate 'a<81>' to a wide string|Einput string 1 is invalid in this locale	b-~2	-	Wunable to translate 'a<e9>b' to a wide string|Einput string 1 is invalid in this locale	NA
+R	328	011	b-~7	b1:3~2	b-~4	b1:3	b-	b1:3	b-~43	NA
+R	328	100	c-~37	-~17	Wunable to translate 'a<81>' to a wide string|Einput string 1 is invalid in this locale	b-~2	-	Einput string 1 is invalid in this locale	NA
+R	328	101	b-~59	NA

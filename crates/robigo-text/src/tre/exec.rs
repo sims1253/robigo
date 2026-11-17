@@ -82,7 +82,12 @@ impl Text for [u8] {
         if i >= 0 && (i as usize) < <[u8]>::len(self) { self[i as usize] as i32 } else { 0 }
     }
     fn find(&self, c: i32, len: i32) -> Option<usize> {
-        let n = if len >= 0 { (len as usize).min(<[u8]>::len(self)) } else { <[u8]>::len(self) };
+        // (strchr stops at the string's NUL; memchr scans `len` bytes)
+        let n = if len >= 0 {
+            (len as usize).min(<[u8]>::len(self))
+        } else {
+            self.iter().position(|&x| x == 0).unwrap_or(<[u8]>::len(self))
+        };
         // memchr/strchr compare as unsigned char.
         let b = c as u8;
         match self[..n].iter().position(|&x| x == b) {

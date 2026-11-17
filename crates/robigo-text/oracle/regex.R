@@ -155,7 +155,11 @@ pats <- list(
   "(abc){~a}", "(abc){1i}", "(abc){~1,2}", "(abc){~1", "(aXc){~1}",
   "(b){~3}", "(abc){~1}|x", "([ab]c){#1}", "(a\\wc){~1}", "(abc){0,1}",
   utf8("(caf\u00e9){~1}"), utf8("(\u00e9a){~1}"),
-  mark("(caf\xe9){~1}", "latin1"), mark("(caf\xe9){~1}", "bytes")
+  mark("(caf\xe9){~1}", "latin1"), mark("(caf\xe9){~1}", "bytes"),
+  # approximate parameters on a counted repetition: GNU R fails the ones
+  # TRE expands (min or max over 1)
+  "a{2 ~1}", "(ab){1,2 ~1}", "a{0,2 ~1}", "a{2, ~1}", "(a{2 ~1})*",
+  "a{3 1i+1d<2}", "a{1 ~1}", "a{0,1 ~1}", "(a{1 ~1}){2}", "a{2}b{1 ~1}"
 )
 
 args <- commandArgs(trailingOnly = TRUE)

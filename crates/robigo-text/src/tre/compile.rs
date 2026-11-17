@@ -637,6 +637,16 @@ fn expand_ast(
         // Approximate parameters: surround the result with a node setting
         // them and one restoring the old ones.
         if let Some(p) = &iter.params {
+            // C labels the copy below ITERATION even when the node was
+            // expanded into a catenation or union above, and
+            // tre_ast_to_tnfa then reads that two-pointer object as an
+            // iteration: its `max` is the high half of a heap pointer,
+            // never -1 or 1, so R's replacement of TRE's assert there
+            // fails the compilation (`a{2 ~1}`, `a{0,2 ~1}` in GNU R
+            // 4.6.2). Nothing between here and there fails otherwise.
+            if iter.min > 1 || iter.max > 1 {
+                return Err(Status::Badbr.into());
+            }
             let mut set = **p;
             set[PARAM_DEPTH] = params_depth + 1;
             let tmp_l = ast.new_literal(PARAMETER, 0, -1);
@@ -645,9 +655,7 @@ fn expand_ast(
             old[PARAM_DEPTH] = params_depth;
             let tmp_r = ast.new_literal(PARAMETER, 0, -1);
             ast.lit_mut(tmp_r).params = Some(Rc::new(old));
-            // C labels this copy ITERATION even when the node was expanded
-            // into a catenation above (and then reads it as one); here the
-            // copy keeps the node's actual content.
+            // (Not expanded, so the copy really is the iteration.)
             let node_copy = ast.new_node(ast.nodes[node].obj.clone());
             let tmp = ast.new_catenation(tmp_l, node_copy);
             let tmp = ast.new_catenation(tmp, tmp_r);
