@@ -2,7 +2,7 @@
  "meta": {
   "cycles": true,
   "gnur": null,
-  "robigo": "robigo-rt (release, main 2ae1e075)",
+  "robigo": "robigo-rt (release, main fb429442)",
   "robigo_env": {
    "ROBIGO_COMPILE": "1",
    "ROBIGO_NO_INLINE": "1"
@@ -15,99 +15,99 @@
    "gnur_est_cycles": null,
    "gnur_instr": null,
    "n": 4000,
-   "robigo_est_cycles": 2496.34725,
-   "robigo_instr": 2493.62975
+   "robigo_est_cycles": 2496.5515,
+   "robigo_instr": 2493.7065
   },
   "d0-attributes": {
    "gnur_est_cycles": null,
    "gnur_instr": null,
    "n": 4000,
-   "robigo_est_cycles": 2757.023,
-   "robigo_instr": 2538.058
+   "robigo_est_cycles": 2757.0335,
+   "robigo_instr": 2538.1885
   },
   "d0-names": {
    "gnur_est_cycles": null,
    "gnur_instr": null,
    "n": 4000,
-   "robigo_est_cycles": 5492.42,
-   "robigo_instr": 5355.585
+   "robigo_est_cycles": 5470.9995,
+   "robigo_instr": 5355.557
   },
   "d0-paste": {
    "gnur_est_cycles": null,
    "gnur_instr": null,
    "n": 4000,
-   "robigo_est_cycles": 15159.82925,
-   "robigo_instr": 14064.21925
+   "robigo_est_cycles": 15154.29975,
+   "robigo_instr": 14064.13475
   },
   "d0-paste0": {
    "gnur_est_cycles": null,
    "gnur_instr": null,
    "n": 4000,
-   "robigo_est_cycles": 14084.17,
-   "robigo_instr": 12980.755
+   "robigo_est_cycles": 14069.90625,
+   "robigo_instr": 12980.76625
   },
   "d0-unlist": {
    "gnur_est_cycles": null,
    "gnur_instr": null,
    "n": 4000,
-   "robigo_est_cycles": 11756.43175,
-   "robigo_instr": 11018.88675
+   "robigo_est_cycles": 11760.838,
+   "robigo_instr": 11014.828
   },
   "evallist": {
    "gnur_est_cycles": null,
    "gnur_instr": null,
    "n": 2000,
-   "robigo_est_cycles": 32155.7945,
-   "robigo_instr": 26597.2445
+   "robigo_est_cycles": 32034.0215,
+   "robigo_instr": 26596.9165
   },
   "grow-dbl": {
    "gnur_est_cycles": null,
    "gnur_instr": null,
    "n": 20000,
-   "robigo_est_cycles": 6471.95185,
-   "robigo_instr": 6042.27285
+   "robigo_est_cycles": 6461.7939,
+   "robigo_instr": 6042.2674
   },
   "grow-list": {
    "gnur_est_cycles": null,
    "gnur_instr": null,
    "n": 20000,
-   "robigo_est_cycles": 8595.3445,
-   "robigo_instr": 7717.335
+   "robigo_est_cycles": 8584.8125,
+   "robigo_instr": 7717.343
   },
   "henv": {
    "gnur_est_cycles": null,
    "gnur_instr": null,
    "n": 4000,
-   "robigo_est_cycles": 10970.701,
-   "robigo_instr": 10359.5285
+   "robigo_est_cycles": 10931.20325,
+   "robigo_instr": 10351.47075
   },
   "l2e": {
    "gnur_est_cycles": null,
    "gnur_instr": null,
    "n": 2000,
-   "robigo_est_cycles": 60814.5125,
-   "robigo_instr": 53228.3575
+   "robigo_est_cycles": 60850.7535,
+   "robigo_instr": 53224.2335
   },
   "nenv": {
    "gnur_est_cycles": null,
    "gnur_instr": null,
    "n": 1000,
-   "robigo_est_cycles": 89857.653,
-   "robigo_instr": 86219.313
+   "robigo_est_cycles": 89876.793,
+   "robigo_instr": 86219.423
   },
   "plist": {
    "gnur_est_cycles": null,
    "gnur_instr": null,
    "n": 1000,
-   "robigo_est_cycles": 91789.511,
-   "robigo_instr": 74757.741
+   "robigo_est_cycles": 91839.108,
+   "robigo_instr": 74757.288
   },
   "scalars": {
    "gnur_est_cycles": null,
    "gnur_instr": null,
    "n": 4000,
-   "robigo_est_cycles": 6785.53575,
-   "robigo_instr": 6584.97325
+   "robigo_est_cycles": 6763.19825,
+   "robigo_instr": 6572.96575
   }
  }
 }

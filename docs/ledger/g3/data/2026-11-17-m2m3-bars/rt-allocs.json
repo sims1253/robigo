@@ -1,7 +1,7 @@
 {
  "meta": {
   "allocs": true,
-  "robigo": "robigo-rt (release, main 2ae1e075)",
+  "robigo": "robigo-rt (release, main fb429442)",
   "robigo_env": {
    "ROBIGO_COMPILE": "1"
   },

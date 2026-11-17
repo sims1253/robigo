@@ -1,10 +1,10 @@
 | program | robigo KiB (range) | GNU R KiB (range) | robigo÷GNU R |
 |---|---:|---:|---:|
-| benchmarks/rt/mem/scalars.R | 74,240 (74,148-74,356) | - | - |
-| benchmarks/rt/mem/plist.R | 66,748 (66,696-66,892) | - | - |
-| benchmarks/rt/mem/henv.R | 54,100 (53,708-54,260) | - | - |
-| benchmarks/rt/mem/growdbl.R | 76,456 (76,268-76,712) | - | - |
-| benchmarks/rt/mem/cappend.R | 87,220 (87,048-87,340) | - | - |
-| benchmarks/rt/mem/listgrow.R | 45,216 (45,200-45,416) | - | - |
-| benchmarks/rt/mem/churn.R | 73,744 (73,640-73,832) | - | - |
-| benchmarks/suite/binarytrees.R | 26,648 (26,648-26,648) | - | - |
+| benchmarks/rt/mem/scalars.R | 74,424 (74,264-74,600) | - | - |
+| benchmarks/rt/mem/plist.R | 66,828 (66,772-66,912) | - | - |
+| benchmarks/rt/mem/henv.R | 54,228 (54,032-54,380) | - | - |
+| benchmarks/rt/mem/growdbl.R | 76,856 (76,768-76,924) | - | - |
+| benchmarks/rt/mem/cappend.R | 87,604 (87,436-87,660) | - | - |
+| benchmarks/rt/mem/listgrow.R | 45,444 (45,312-45,552) | - | - |
+| benchmarks/rt/mem/churn.R | 73,924 (73,844-74,048) | - | - |
+| benchmarks/suite/binarytrees.R | 26,692 (26,692-26,692) | - | - |
