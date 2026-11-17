@@ -1141,7 +1141,7 @@ impl<'g> Comp<'g> {
         let (f, args) = unsafe { (e.car(), e.cdr()) };
         // SAFETY: as above; the compile environment's frames are live.
         let info = unsafe {
-            if f.typ() == SYMSXP { self.bc.as_ref().unwrap().inline_info(self.cx, self.st, f, true) } else { None }
+            if f.typ() == SYMSXP { self.bc.as_ref().unwrap().inline_info(self.cx, self.st, f, true)? } else { None }
         };
         let Some(info) = info else {
             // SAFETY: as above.
@@ -1831,7 +1831,7 @@ impl<'g> Comp<'g> {
             let mut kind = ba::K_GENERIC;
             let mut what = fun;
             if fun.typ() == SYMSXP
-                && self.bc.as_ref().unwrap().inline_info(self.cx, self.st, fun, false).is_some()
+                && self.bc.as_ref().unwrap().inline_info(self.cx, self.st, fun, false)?.is_some()
                 && let Some((k, w)) = self.subset_handler(fun, place, false)?
             {
                 kind = k;
@@ -1897,7 +1897,7 @@ impl<'g> Comp<'g> {
             let mut kind = ba::K_GENERIC;
             let mut what = afun;
             if afun.typ() == SYMSXP
-                && self.bc.as_ref().unwrap().inline_info(cx, st, afun, false).is_some()
+                && self.bc.as_ref().unwrap().inline_info(cx, st, afun, false)?.is_some()
                 && let Some((k, w)) = self.subset_handler(afun, place, true)?
             {
                 kind = k;

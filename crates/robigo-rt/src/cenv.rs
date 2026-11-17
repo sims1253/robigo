@@ -155,8 +155,9 @@ impl<'g> Cenv<'g> {
                     if e == empty || e.typ() != ENVSXP {
                         return Err(Need::Fail);
                     }
-                    // (an imports frame would be allowed: M1 has none)
-                    if !is_ns(e) {
+                    // a namespace's imports frame is a namespace frame too:
+                    // its `name` attribute starts with "imports:"
+                    if !is_ns(e) && !is_imports_frame(cx, e) {
                         return Err(Need::Fail);
                     }
                     chain.push((e, FType::Namespace));
@@ -271,20 +272,51 @@ impl<'g> Cenv<'g> {
     }
 
     /// `getInlineInfo(name, cntxt, guardOK)` for a function of package
-    /// base (the only package robigo-rt has, so a handler exists only for
-    /// base's): None when the call is compiled as a call.
+    /// base (cmp.R's inline handlers are all base's): None when the call
+    /// is compiled as a call. A name found in a namespace's imports frame
+    /// is its home namespace's (`findHomeNS`); an imports frame that is not
+    /// the code's top environment's is cmp.R's "bad namespace import
+    /// frame" ([`Need::Fail`]).
     ///
     /// # Safety
     /// As for [`Cenv::find`].
-    // R: cmp.R:getInlineInfo (optimize = 2), packFrameName, nsName
-    pub unsafe fn inline_info(&self, cx: &Cx, st: &RtState, sym: Sexp, guard_ok: bool) -> Option<InlineInfo> {
+    // R: cmp.R:getInlineInfo (optimize = 2), packFrameName, nsName, findHomeNS
+    pub unsafe fn inline_info(
+        &self,
+        cx: &Cx,
+        st: &RtState,
+        sym: Sexp,
+        guard_ok: bool,
+    ) -> Result<Option<InlineInfo>, Need> {
         if sym == st.syms.standard_generic {
-            return None;
+            return Ok(None);
         }
+        let base_ns = cx.base_namespace().sexp();
         // SAFETY: the caller's contract.
-        match unsafe { self.find(cx, sym) } {
+        Ok(match unsafe { self.find(cx, sym) } {
             Found::In(env, FType::Namespace) => {
-                (env == cx.base_namespace().sexp()).then_some(InlineInfo { guard: false })
+                let is_ns = |e: Sexp| {
+                    // SAFETY: a live environment of the chain.
+                    crate::dispatch::is_namespace_env(cx, unsafe { Ref::from_sexp(e, cx) })
+                };
+                let home = if is_ns(env) {
+                    // (findHomeNS of a namespace that binds the name: itself)
+                    Some(env)
+                } else {
+                    // the import frame of the code's top environment, the
+                    // first namespace frame
+                    let top = self.chain.iter().find(|&&(_, t)| t == FType::Namespace).map(|&(e, _)| e);
+                    // SAFETY: live environments of the chain.
+                    match top {
+                        Some(top) if is_ns(top) && unsafe { robigo_heap::env::enclos(top) } == env => {
+                            // SAFETY: as above.
+                            unsafe { find_home_ns(cx, sym, top, 0) }
+                        }
+                        _ => return Err(Need::Fail),
+                    }
+                };
+                // (nsName's "" for none: no handler)
+                (home == Some(base_ns)).then_some(InlineInfo { guard: false })
             }
             Found::In(env, FType::Global) => {
                 let base = env == cx.base_env().sexp();
@@ -298,7 +330,7 @@ impl<'g> Cenv<'g> {
                 }
             }
             _ => None,
-        }
+        })
     }
 
     /// `isBaseVar(var, cntxt)`: `getInlineInfo` (no guard) finds `sym` in
@@ -309,7 +341,7 @@ impl<'g> Cenv<'g> {
     // R: cmp.R:isBaseVar
     pub unsafe fn is_base_var(&self, cx: &Cx, st: &RtState, sym: Sexp) -> bool {
         // SAFETY: the caller's contract.
-        unsafe { self.inline_info(cx, st, sym, false).is_some() }
+        unsafe { self.inline_info(cx, st, sym, false) }.is_ok_and(|i| i.is_some())
     }
 
     /// `findFunDef(fun, cntxt)` for a base function `inline_info` inlines:
@@ -404,6 +436,90 @@ unsafe fn exists_in_frame(cx: &Cx, env: Sexp, sym: Sexp) -> bool {
     let (Some(e), Some(s)) = (crate::dispatch::env_ref(e), s.as_sym()) else { return false };
     // (a frame GNU R reads through code: a binding may be there)
     !matches!(cx.frame_binding(e, s), Lookup::Unbound)
+}
+
+/// Whether `e` is a namespace's imports frame as cmp.R's `frameTypes` tests
+/// it: its `name` attribute is one string, not NA, starting with
+/// "imports:" (anything else makes the test an error, a compiler error).
+///
+/// # Safety
+/// `e` is a live environment.
+// R: cmp.R:frameTypes
+unsafe fn is_imports_frame(cx: &Cx, e: Sexp) -> bool {
+    // SAFETY: the caller's contract.
+    unsafe {
+        crate::ns::name_attr(cx, e).is_some_and(|n| {
+            let c = *(n.std_data() as *const Sexp);
+            n.std_len() == 1 && c != cx.na_string().as_ref().sexp() && c.char_bytes().starts_with(b"imports:")
+        })
+    }
+}
+
+/// `findHomeNS(sym, ns)`: the namespace in which the value `sym` has
+/// through namespace `ns` was defined: `ns` if it binds it, else the home
+/// of the import its `.__NAMESPACE__.`'s `imports` makes it, the last one
+/// first (a whole namespace's when it exports `sym`, a named import's when
+/// not renamed); None when there is none (or a renamed import). Reads
+/// bindings without running code: an imported namespace not registered is
+/// none.
+///
+/// # Safety
+/// `ns` is a live namespace environment.
+// R: cmp.R:findHomeNS
+unsafe fn find_home_ns(cx: &Cx, sym: Sexp, ns: Sexp, depth: u32) -> Option<Sexp> {
+    if depth > 64 {
+        return None;
+    }
+    let base_ns = cx.base_namespace().sexp();
+    // SAFETY: the caller's contract; the bindings read are live.
+    unsafe {
+        if exists_in_frame(cx, ns, sym) {
+            return Some(ns);
+        }
+        let info = crate::ns::frame_value(cx, ns, b".__NAMESPACE__.")?;
+        if info.typ() != ENVSXP {
+            return None;
+        }
+        let imports = crate::ns::frame_value(cx, info, b"imports")?;
+        if imports.typ() != VECSXP {
+            return None;
+        }
+        let names = robigo_rtbuiltins::attrib::names(Ref::from_sexp(imports, cx))?;
+        let names = names.as_vector::<robigo_rtcore::Char<'_>>()?;
+        let registry = cx.namespace_registry().sexp();
+        let sname = Ref::from_sexp(sym, cx).as_sym()?.name().bytes().to_vec();
+        for i in (0..imports.std_len() as usize).rev() {
+            let entry = *(imports.std_data() as *const Sexp).add(i);
+            let iname = names.get(i).bytes().to_vec();
+            let Some(ins) = crate::ns::frame_value(cx, registry, &iname) else { continue };
+            let whole = entry.typ() == LGLSXP
+                && entry.std_len() == 1
+                && *(entry.std_data() as *const i32) == 1
+                && entry.attrib_raw() == cx.nil().sexp();
+            if whole {
+                // identical(imports[[i]], TRUE): the namespace's exports
+                let exports = if ins == base_ns {
+                    base_ns
+                } else {
+                    let iinfo = crate::ns::frame_value(cx, ins, b".__NAMESPACE__.")?;
+                    crate::ns::frame_value(cx, iinfo, b"exports")?
+                };
+                if exports.typ() == ENVSXP && exists_in_frame(cx, exports, sym) {
+                    return find_home_ns(cx, sym, ins, depth + 1);
+                }
+            } else if entry.typ() == STRSXP {
+                // a named import: match(sym, names(exports)), renamed or not
+                let enames = robigo_rtbuiltins::attrib::names(Ref::from_sexp(entry, cx))
+                    .and_then(|n| n.as_vector::<robigo_rtcore::Char<'_>>());
+                let Some(enames) = enames else { continue };
+                if let Some(pos) = (0..enames.len()).find(|&k| enames.get(k).bytes() == sname.as_slice()) {
+                    let target = (*(entry.std_data() as *const Sexp).add(pos)).char_bytes();
+                    return if target == sname.as_slice() { find_home_ns(cx, sym, ins, depth + 1) } else { None };
+                }
+            }
+        }
+        None
+    }
 }
 
 /// The names GNU R 4.6.2's base binds to a primitive of another name, and
