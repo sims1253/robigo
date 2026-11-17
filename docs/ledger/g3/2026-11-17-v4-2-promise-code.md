@@ -45,9 +45,16 @@ share one cache slot, and the last translation wins.
    keeps the code on that node (`compile::bytecode_code`). The mapping goes
    by call argument cell, since a `...` argument expands into several
    actuals.
-3. Everything that reads a promise's expression applies `bytecodeExpr`
-   (GNU R's `R_PromiseExpr`): `substitute`, `deparse` of a promise,
-   `match.call`'s dots, the conditions' calls. To check one by one.
+3. Everything that reads a promise's expression applies `bytecodeExpr`:
+   GNU R reads it only through `PREXPR`, defined as `R_PromiseExpr`
+   (`Rinternals.h:1269`), at 15 sites in six files: `coerce.c` (2,
+   `substitute`), `deparse.c` (1), `identical.c` (2), `match.c` (2),
+   `unique.c` (1), `envir.c` (7: `R_isMissing`, `delayedAssign`, ...).
+   robigo-rt gets one rtcore helper, `R_PromiseExpr`'s port (a BCODESXP's
+   first constant, else the code), used at the equivalent of each site and
+   wherever a delayed slot's expression is read as an expression
+   (`ArgValue::Delayed`, `ArgSlot`: `missing()`, `substitute()`); forcing
+   keeps the raw code.
 4. `BcAssign`'s generic steps carry their promises' BCODESXPs in the plan
    the same way.
 5. V3's `promise_code` caching on argument expressions goes.
