@@ -196,10 +196,10 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    # The slowest hosted runners take ~29 min with 2 cases at a time; with a
-    # case per CPU and the slow cases first, ~25 (and #800's, cancelled at
-    # 30, ~28.5), and the retry-torture step adds ~5-8: 45 keeps ~20% over that.
-    timeout-minutes: 45
+    # Measured (docs/ledger/g3/2026-11-17-rt-job-capacity.md): since H8 the
+    # slowest hosted runners take ~20 min, ~9 of them the release tests; 30
+    # keeps 1.5x that. A step that adds minutes moves this number with data.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
