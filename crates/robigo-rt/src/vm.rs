@@ -252,8 +252,10 @@ pub fn box_slot(cx: &Cx, s: Slot) -> Result<Sexp, NeedGc> {
 /// (an unboxed scalar, or a plain length-1 vector without attributes).
 ///
 /// # Safety
-/// An object slot's object is live (a register of a running activation,
-/// rooted): its header and payload are read.
+/// If `s` holds an object, that object is live while `num` reads its
+/// header and payload. A register of a running activation (rooted, with
+/// nothing collecting during the read) is one way to meet that; a local
+/// register array while nothing collects is another.
 #[inline(always)]
 pub unsafe fn num(cx: &Cx, s: Slot) -> Option<Num> {
     match s.tag() {

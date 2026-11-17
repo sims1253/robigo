@@ -229,7 +229,9 @@ fn a_shallow_duplicate_of_a_call_keeps_cars_tags_and_type() {
 fn a_raw_sexp_kept_across_a_collection_reads_poison_under_gc_move() {
     let mut iso = OwnedIsolate::new();
     let cx = iso.cx();
-    cx.set_gc_move(true);
+    // SAFETY: a new isolate: C holds only its constants (its C globals),
+    // which are immortal and never move.
+    unsafe { cx.set_gc_move(true) };
     cx.scope(|cx, s| {
         let x = s.root(cx, cx.alloc_copy(&[1.0, 2.0]).unwrap().finish());
         let raw = x.bind(cx).sexp();

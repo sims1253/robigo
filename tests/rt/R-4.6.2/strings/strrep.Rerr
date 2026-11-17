@@ -1,0 +1,2 @@
+Error in strrep("a", -1) : invalid 'times' value
+Execution halted

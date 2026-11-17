@@ -128,7 +128,8 @@ static ALLOCATOR: DirtyChunks = DirtyChunks;
 /// the environment's pin diagnostics (the report's tests set their own).
 fn core() -> Box<Core> {
     let mut c = Core::new();
-    c.set_gc_move(false);
+    // SAFETY: stopping has no condition.
+    unsafe { c.set_gc_move(false) };
     // (and whose pin diagnostics are the test's own, not the environment's)
     c.set_pin_report(None);
     c.set_strong_dll(None);
@@ -460,8 +461,7 @@ fn tagged_promises_keep_their_bits_and_their_edges() {
     // traced it would read a stale object
     let bits = (code.addr() as u64) ^ 0x10;
     unsafe {
-        p.set_promise_tag(REALSXP);
-        p.set_promise_bits(bits);
+        p.set_promise_unboxed(REALSXP, bits);
     }
     for i in 0..10_000 {
         int_vec(&mut c, &[i]);
@@ -500,9 +500,8 @@ fn a_tagged_promise_value_is_replaced_without_reading_its_bits() {
     let v = int_vec(&mut c, &[9]);
     unsafe {
         assert_eq!(code.refcnt(), 1, "PRCODE's count");
-        p.set_promise_tag(REALSXP);
         // the bits of an unboxed value that happen to be an address
-        p.set_promise_bits(code.addr() as u64);
+        p.set_promise_unboxed(REALSXP, code.addr() as u64);
         p.set_promise_value(v);
         assert_eq!(p.promise_tag(), 0);
         assert_eq!(p.car(), v);
@@ -1103,9 +1102,8 @@ fn each_type_traces_exactly_its_pointer_words() {
     for t in [REALSXP, INTSXP, LGLSXP] {
         let p = unsafe { c.alloc_node(PROMSXP, nil, nil, nil) }.unwrap();
         unsafe {
-            p.set_promise_tag(t);
             // bits that are no object: tracing them would crash, not differ
-            p.set_promise_bits(0x7FF0_0000_0000_07A2);
+            p.set_promise_unboxed(t, 0x7FF0_0000_0000_07A2);
             assert_eq!(p.promise_tag(), t);
         }
         let tagged = words(PROMSXP, &[layout::promise::OFF_CODE, layout::promise::OFF_ENV]);
@@ -1670,6 +1668,42 @@ fn dead_chars_leave_the_cache() {
     // a fresh string gets a fresh object
     let a = c.mk_char(b"s123", 0).unwrap();
     unsafe { assert_eq!(a.char_bytes(), b"s123") };
+}
+
+/// `release` pairs with one `preserve` of its own object, the most recent:
+/// an object preserved twice stays a root until both end, and a release
+/// of another object, or of one never preserved, ends no other entry
+/// (`Core::release`'s contract relies on this pairing).
+#[test]
+fn release_ends_one_preservation_of_its_own_object() {
+    let mut c = core();
+    c.set_torture(false);
+    let a = c.alloc_vector(REALSXP, 4).unwrap();
+    let b = c.alloc_vector(REALSXP, 4).unwrap();
+    let never = c.alloc_vector(REALSXP, 4).unwrap();
+    let (aa, ba, na) = (a.addr(), b.addr(), never.addr());
+    // SAFETY: live objects of this heap, preserved by this test.
+    unsafe {
+        c.preserve(a);
+        c.preserve(b);
+        c.preserve(a);
+    }
+    // SAFETY: `never` is live and was never preserved: nothing happens.
+    unsafe { c.release(never) };
+    // SAFETY: one of the test's two preservations of `a`.
+    unsafe { c.release(a) };
+    gc(&mut c, &mut ());
+    assert_eq!(c.resolve(aa), Some(a), "a's other preservation keeps it");
+    assert_eq!(c.resolve(ba), Some(b), "b's entry is untouched");
+    assert_ne!(c.resolve(na), Some(never), "an object never preserved is collected");
+    // SAFETY: the test's last preservation of `a`, and its one of `b`.
+    unsafe {
+        c.release(a);
+        c.release(b);
+    }
+    gc(&mut c, &mut ());
+    assert_ne!(c.resolve(aa), Some(a), "both of a's preservations ended");
+    assert_ne!(c.resolve(ba), Some(b));
 }
 
 #[test]
@@ -2407,7 +2441,8 @@ fn every_object_carries_its_heaps_id() {
 /// A heap whose every collection moves what it may (`ROBIGO_GC_MOVE=1`).
 fn moving_core() -> Box<Core> {
     let mut c = core();
-    c.set_gc_move(true);
+    // SAFETY: nothing has been handed to C yet.
+    unsafe { c.set_gc_move(true) };
     c.set_torture(false);
     c
 }
@@ -2660,7 +2695,8 @@ unsafe extern "C" fn count_forward_panic_release(_: usize) {
 
 /// A heap dropped in the middle of a moving collection (a panic unwound
 /// out of the roots' forwarding) runs an EXTDATA release once: the
-/// forwarding header leaves the old copy without flags.
+/// forwarding header leaves the old copy without flags. Until then the
+/// heap is poisoned: it refuses to collect again.
 #[test]
 fn a_panic_while_forwarding_releases_a_moved_extdata_once() {
     let mut c = moving_core();
@@ -2670,6 +2706,11 @@ fn a_panic_while_forwarding_releases_a_moved_extdata_once() {
     let mut roots = PanicOnForward { x, calls: 0 };
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gc(&mut c, &mut roots)));
     assert!(r.is_err(), "the forwarding pass panicked");
+    // the heap is poisoned: no collection runs on its forwarded objects
+    let again = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gc(&mut c, &mut ())));
+    let msg = again.expect_err("a poisoned heap refuses to collect");
+    let msg = msg.downcast_ref::<String>().map(String::as_str).or(msg.downcast_ref::<&str>().copied()).unwrap_or("");
+    assert!(msg.contains("left halfway by a panic"), "{msg}");
     drop(c);
     assert_eq!(FORWARD_PANIC_RELEASES.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
@@ -2938,4 +2979,68 @@ fn the_fail_alloc_knob_refuses_one_allocation_once() {
         assert!(c.alloc_vector(INTSXP, 1).is_ok(), "only one allocation is refused");
     }
     c.fail_alloc_at(0);
+}
+
+/// The order contract of the weak reference list: kept oldest first (a
+/// registration is a push), and walked newest first wherever GNU R walks
+/// R_weak_refs, which it prepends to (memory.c:NewWeakRef): the finalizers
+/// a collection makes ready, and those that run at exit, come out of the
+/// queue newest first (memory.c:RunFinalizers, R_RunExitFinalizers).
+#[test]
+fn finalizers_come_out_newest_first_as_r_weak_refs_lists_them() {
+    let mut c = core();
+    let fin = c.alloc_vector(RAWSXP, 8).unwrap();
+    let live = c.alloc_vector(INTSXP, 1).unwrap();
+    let k: Vec<Sexp> = (0..3).map(|_| c.alloc_vector(INTSXP, 1).unwrap()).collect();
+    let w0 = weak(&mut c, k[0], fin);
+    let wl = weak(&mut c, live, fin);
+    let w1 = weak(&mut c, k[1], fin);
+    let w2 = weak(&mut c, k[2], fin);
+    assert_eq!(c.weak_refs(), &[w0, wl, w1, w2], "registration order, oldest first");
+    let mut roots = vec![live];
+    gc(&mut c, &mut roots);
+    assert_eq!(c.pending_finalizer_count(), 3);
+    for (w, which) in [(w2, "newest"), (w1, "middle"), (w0, "oldest")] {
+        assert_eq!(c.pop_finalizable(), Some(w), "the {which} dead key's reference");
+    }
+    assert!(c.pop_finalizable().is_none());
+    assert_eq!(c.weak_refs(), &[wl], "the live key's reference stays");
+    // at exit: every onexit reference, newest first; the others stay
+    let e: Vec<Sexp> = (0..3).map(|_| c.alloc_vector(INTSXP, 1).unwrap()).collect();
+    let x0 = weak(&mut c, e[0], fin);
+    let y = weak(&mut c, e[1], fin);
+    let x1 = weak(&mut c, e[2], fin);
+    unsafe {
+        for x in [x0, x1] {
+            x.set_gp(x.gp() | gp::weakref::FINALIZE_ON_EXIT);
+        }
+    }
+    c.queue_exit_finalizers();
+    assert_eq!(c.pop_finalizable(), Some(x1));
+    assert_eq!(c.pop_finalizable(), Some(x0));
+    assert!(c.pop_finalizable().is_none());
+    assert_eq!(c.weak_refs(), &[wl, y], "the others in their order");
+}
+
+/// The same contract with no collection (so Miri runs it): registrations
+/// kept oldest first, the exit queue taken newest first from its front.
+#[test]
+fn exit_finalizers_come_out_newest_first_without_a_collection() {
+    let mut c = core();
+    let fin = c.alloc_vector(RAWSXP, 8).unwrap();
+    let keys: Vec<Sexp> = (0..4).map(|_| c.alloc_vector(INTSXP, 1).unwrap()).collect();
+    let w: Vec<Sexp> = keys.iter().map(|&k| weak(&mut c, k, fin)).collect();
+    assert_eq!(c.weak_refs(), &w[..], "registration order, oldest first");
+    unsafe {
+        for &x in [w[0], w[2], w[3]].iter() {
+            x.set_gp(x.gp() | gp::weakref::FINALIZE_ON_EXIT);
+        }
+    }
+    c.queue_exit_finalizers();
+    assert_eq!(c.pending_finalizer_count(), 3);
+    for x in [w[3], w[2], w[0]] {
+        assert_eq!(c.pop_finalizable(), Some(x));
+    }
+    assert!(c.pop_finalizable().is_none());
+    assert_eq!(c.weak_refs(), &[w[1]]);
 }

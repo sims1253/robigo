@@ -65,12 +65,14 @@ pub unsafe fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: 
             {
                 return Ok(());
             }
-            // SAFETY: the caller's contract: `fun` and `call` are live.
+            // SAFETY: the caller's contract: `call` is live.
             unsafe { args::call_closure(cx, act, dst, rf, call, site) }
         }
-        // SAFETY: the caller's contract: `fun` and `call` are live.
+        // SAFETY: `fun` is register `rf`'s object, live while the activation
+        // runs; `call` is live (the caller's contract).
         BUILTINSXP if bc => unsafe { call_builtin_list(cx, act, dst, fun, call, bc) },
-        // SAFETY: the caller's contract: `fun` and `call` are live.
+        // SAFETY: `fun` is register `rf`'s object, live while the activation
+        // runs; `call` is live (the caller's contract).
         SPECIALSXP if bc => unsafe { call_special(cx, act, dst, fun, call) },
         BUILTINSXP | SPECIALSXP => {
             // eval's check_stack_balance (bcEval's CALL checks nothing):
@@ -81,10 +83,12 @@ pub unsafe fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: 
             let save = cx.pp_save(-1);
             // SAFETY: as above.
             if unsafe { fun.typ() } == BUILTINSXP {
-                // SAFETY: the caller's contract: `fun` and `call` are live.
+                // SAFETY: `fun` is register `rf`'s object, live while the activation
+                // runs; `call` is live (the caller's contract).
                 unsafe { call_builtin_list(cx, act, dst, fun, call, bc) }?;
             } else {
-                // SAFETY: the caller's contract: `fun` and `call` are live.
+                // SAFETY: `fun` is register `rf`'s object, live while the activation
+                // runs; `call` is live (the caller's contract).
                 unsafe { call_special(cx, act, dst, fun, call) }?;
             }
             cx.check_stack_balance(name.as_bytes(), save);

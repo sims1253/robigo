@@ -1,20 +1,57 @@
+environment TRUE 
+TRUE TRUE 
 [1] 2
-[1] 99
 [1] 2
 [1] 2
-[1] -1
-[1] -1
-[1] 7
 [1] 2
-[1] 42
 [1] 2
-[1] 42
 [1] 2
-[1] "sq global"
-[1] "sq global"
-[1] "default"
-[1] "sq in the table"
-[1] "sq global"
-[1] "sq global"
-[1] "sq global"
-[1] "default"
+[1] "from the table"
+[1] "from the table"
+[1] "from the table"
+[1] 2
+[1] 2
+[1] 2
+[1] 2
+[1] 2
+[1] 2
+[1] 2
+[1] 2
+[1] 2
+[1] "from outer"
+[1] "from outer"
+[1] "from outer"
+[1] 2
+[1] 2
+[1] 2
+[1] "from outer"
+[1] "from outer"
+[1] "from outer"
+forcing
+[1] "promised"
+[1] "promised"
+[1] "promised"
+[1] "promised"
+[1] "promised"
+[1] "promised"
+[1] "from outer"
+[1] "from outer"
+[1] "from outer"
+[1] 2
+[1] 2
+[1] 2
+[1] 2
+[1] 2
+[1] 2
+[1] 99  1
+[1] 99  1
+[1] "sq unique"
+[1] "sq unique"
+[1] 1
+[1] 1
+[[1]]
+[1] 2
+
+[[1]]
+[1] 2
+

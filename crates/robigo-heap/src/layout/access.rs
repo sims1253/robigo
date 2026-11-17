@@ -75,13 +75,47 @@ impl Sexp {
     ///
     /// # Safety
     /// `self` must be live, and the new flags must describe its body:
-    /// ALTREP and EXTDATA change how it is read, by accessors and by
-    /// the collector. IMMORTAL goes through [`Core::make_immortal`], which
-    /// also counts it for the sweep.
+    /// ALTREP, EXTDATA and SLOTS change how it is read, by accessors and by
+    /// the collector. IMMORTAL and BARRIER are the heap's and must not
+    /// change: IMMORTAL goes through [`Core::make_immortal`], which also
+    /// counts it for the sweep, and BARRIER is the store barrier's state
+    /// (clearing it on an immortal object skips the remembered set, and
+    /// what is stored into it next is not kept alive). Debug builds check
+    /// both.
     #[inline(always)]
     pub unsafe fn set_flags(self, f: u8) {
         // SAFETY: the flags byte of a live object.
+        unsafe {
+            debug_assert_eq!(
+                (self.flags() ^ f) & (flags::IMMORTAL | flags::BARRIER),
+                0,
+                "robigo: set_flags changes IMMORTAL or BARRIER (the heap's bits)"
+            );
+            self.set_flags_raw(f)
+        }
+    }
+    /// [`Sexp::set_flags`] for the heap's own bits too: `make_immortal`,
+    /// the barrier.
+    ///
+    /// # Safety
+    /// As for [`Sexp::set_flags`], and the heap's bookkeeping follows the
+    /// change (the immortal count, the remembered set).
+    #[inline(always)]
+    pub(crate) unsafe fn set_flags_raw(self, f: u8) {
+        // SAFETY: the flags byte of a live object.
         unsafe { *self.0.add(header::OFF_FLAGS) = f }
+    }
+    /// [`Sexp::set_flag`] for the heap's own bits too.
+    ///
+    /// # Safety
+    /// As for [`Sexp::set_flags_raw`].
+    #[inline(always)]
+    pub(crate) unsafe fn set_flag_raw(self, f: u8, on: bool) {
+        // SAFETY: the caller's contract.
+        unsafe {
+            let v = self.flags();
+            self.set_flags_raw(if on { v | f } else { v & !f });
+        }
     }
     /// Whether any of the bits `f` is set.
     ///
@@ -180,12 +214,38 @@ impl Sexp {
         // SAFETY: the `extra` word of a live, aligned object.
         unsafe { *(self.0.add(header::OFF_EXTRA) as *const u16) }
     }
-    /// Overwrite the debug, trace and step bits.
+    /// Overwrite the `extra` bits (the type's map: [`extra`]).
     ///
     /// # Safety
-    /// `self` must be live.
+    /// `self` must be live, and `v` must keep two kinds of bit as they are:
+    /// [`extra::SEEN_BY_C`], which is sticky once set (a moving collection
+    /// must never move what C may hold: [`Sexp::mark_seen_by_c`] sets it);
+    /// and a promise's `PROMISE_TAG`, which says whether the collector reads
+    /// PRVALUE as an object ([`Sexp::set_promise_unboxed`] and
+    /// [`Sexp::set_promise_value`] change it with PRVALUE). Debug builds
+    /// check both.
     #[inline(always)]
     pub unsafe fn set_extra(self, v: u16) {
+        // SAFETY: the `extra` word of a live, aligned object.
+        unsafe {
+            let old = self.extra();
+            debug_assert!(
+                old & extra::SEEN_BY_C == 0 || v & extra::SEEN_BY_C != 0,
+                "robigo: set_extra clears SEEN_BY_C (sticky)"
+            );
+            debug_assert!(
+                self.typ() != PROMSXP || (old ^ v) & extra::promise::TAG_MASK == 0,
+                "robigo: set_extra changes a promise's tag (set_promise_unboxed, set_promise_value)"
+            );
+            self.set_extra_raw(v)
+        }
+    }
+    /// [`Sexp::set_extra`] for the bits the heap keeps in step with PRVALUE.
+    ///
+    /// # Safety
+    /// `self` must be live; a promise's PRVALUE matches the tag written.
+    #[inline(always)]
+    pub(crate) unsafe fn set_extra_raw(self, v: u16) {
         // SAFETY: the `extra` word of a live, aligned object.
         unsafe { *(self.0.add(header::OFF_EXTRA) as *mut u16) = v }
     }
@@ -211,12 +271,31 @@ impl Sexp {
     /// when the tag goes from 0 to a type, PRVALUE holds no object whose count
     /// is still needed (the caller dropped it).
     #[inline(always)]
-    pub unsafe fn set_promise_tag(self, t: u8) {
+    pub(crate) unsafe fn set_promise_tag(self, t: u8) {
         debug_assert!(matches!(t, 0 | REALSXP | INTSXP | LGLSXP));
         // SAFETY: the caller's contract.
         unsafe {
             let e = self.extra() & !extra::promise::TAG_MASK;
-            self.set_extra(e | ((t as u16) << extra::promise::TAG_SHIFT));
+            self.set_extra_raw(e | ((t as u16) << extra::promise::TAG_SHIFT));
+        }
+    }
+    /// Make PRVALUE the unboxed value `bits` of type `t` (REALSXP, INTSXP
+    /// or LGLSXP): the tag and the bits in one step, so that the collector
+    /// never sees a tag that disagrees with PRVALUE. GNU R's
+    /// `SET_BNDCELL_DVAL`/`IVAL`/`LVAL` on a promise, with its tag.
+    ///
+    /// # Safety
+    /// `self` must be a live PROMSXP whose PRVALUE holds no object whose
+    /// count is still needed (an unboxed value, R_UnboundValue, or an
+    /// object whose count the caller dropped); `t` is one of the three.
+    // R: Defn.h:SET_BNDCELL_DVAL, SET_BNDCELL_IVAL, SET_BNDCELL_LVAL
+    #[inline(always)]
+    pub unsafe fn set_promise_unboxed(self, t: u8, bits: u64) {
+        debug_assert!(matches!(t, REALSXP | INTSXP | LGLSXP));
+        // SAFETY: the caller's contract.
+        unsafe {
+            self.set_promise_bits(bits);
+            self.set_promise_tag(t);
         }
     }
     /// The raw bits of PRVALUE (`promise::OFF_VALUE`): a tagged promise's unboxed value.
@@ -257,7 +336,7 @@ impl Sexp {
     /// `self` must be a live PROMSXP whose tag is (or is being set to) a
     /// type, and whose PRVALUE held no counted object (or the caller dropped it).
     #[inline(always)]
-    pub unsafe fn set_promise_bits(self, bits: u64) {
+    pub(crate) unsafe fn set_promise_bits(self, bits: u64) {
         // SAFETY: the caller's contract.
         unsafe { *(self.word(promise::OFF_VALUE) as *mut u64) = bits }
     }
@@ -359,9 +438,11 @@ impl Sexp {
     ///
     /// # Safety
     /// As for [`Sexp::std_len`]: an ALTREP object's payload word is its class, and a
-    /// node has no payload. The pointer stays valid while the
-    /// object is live (objects do not move); an EXTDATA pointer is as good
-    /// as its owner's promise to [`Core::alloc_extdata`].
+    /// node has no payload. The pointer stays valid while the object is
+    /// live and until the next collection, which may move the object
+    /// ([`Sexp`]'s address rule) unless it is immortal or handed to C; an
+    /// EXTDATA pointer is as good as its owner's promise to
+    /// [`Core::alloc_extdata`].
     #[inline(always)]
     pub unsafe fn std_data(self) -> *mut u8 {
         // SAFETY: the caller's contract makes this a standard vector, whose
@@ -576,10 +657,12 @@ impl Sexp {
     /// The bytes of a CHARSXP (without the terminating NUL).
     ///
     /// # Safety
-    /// `self` must be a live CHARSXP that stays live for `'a`. Nothing ties
-    /// `'a` to the object: the caller picks it, and the slice dangles as
-    /// soon as the CHARSXP is swept. If it is not rooted, that is the next
-    /// allocation. The bytes must not change for `'a` either.
+    /// `self` must be a live CHARSXP that stays live and in place for `'a`.
+    /// Nothing ties `'a` to the object: the caller picks it, and the slice
+    /// dangles as soon as the CHARSXP is swept, or moved by a collection
+    /// ([`Sexp`]'s address rule: a CHARSXP that is immortal or handed to C
+    /// stays put). If it is not rooted, that is the next allocation. The
+    /// bytes must not change for `'a` either.
     #[inline(always)]
     pub unsafe fn char_bytes<'a>(self) -> &'a [u8] {
         // SAFETY: a CHARSXP has `std_len` initialized bytes at `charsxp::OFF_DATA`, and

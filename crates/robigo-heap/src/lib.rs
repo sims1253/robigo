@@ -83,10 +83,19 @@ pub mod ce {
 ///
 /// A `Sexp` is a plain address and says nothing about what it points at, so
 /// every accessor that reads through it is `unsafe`. Their contracts share
-/// one word: a *live* object is one a [`Core`] allocated and has not swept.
+/// one word: a *live* object is one a [`Core`] allocated, has not swept,
+/// and still exists (dropping the `Core` frees every chunk unswept).
 /// Liveness is not a property of the `Sexp`: an object stays live only while
 /// the rooting rule (docs/core.md section 3) is met for it, so an unrooted one
-/// can be freed by anything that allocates. Every accessor reads or writes
+/// can be freed by anything that allocates.
+///
+/// A live object's *address* is stable only between collections: the
+/// moving debug collector (`ROBIGO_GC_MOVE=1`, [`Core::set_gc_move`]) moves
+/// every object it may at every collection and poisons the old copy. So a
+/// `Sexp` kept across a collection must be a root the collection forwards,
+/// and an address derived from an object (a payload pointer, a byte slice)
+/// lasts until the next collection, unless the object never moves: an
+/// immortal one, or one handed to C ([`extra::SEEN_BY_C`]). Every accessor reads or writes
 /// the fixed layout of [`layout`], and a store through one of
 /// the `_raw` setters is invisible to the reference counts and the barrier.
 ///
@@ -94,12 +103,16 @@ pub mod ce {
 /// the heap, by [`Sexp::NULL`], or by the `unsafe` constructors, so safe
 /// code cannot name an object that was never one: [`Sexp::from_ptr`] for an
 /// object's address, [`Sexp::from_word`] for a word only compared or kept.
-/// No safe public function of the runtime crates takes one either: a
-/// textual check of signatures (`scripts/check-sexp-safety.py`, run by
-/// `scripts/lint.sh`) refuses one, including a `pub` trait's methods. A
-/// `Sexp` carried inside another public type passed by value stays outside
-/// its view: such a type keeps its fields crate-private, or its readers are
-/// `unsafe`.
+/// No safe public function of the runtime crates (heap, rtcore, rt, rtapi,
+/// rtbuiltins) takes one either. `scripts/check-sexp-safety.py` (run by
+/// `scripts/lint.sh`) refuses a safe `pub fn`, `pub extern "C" fn`, macro
+/// `fn $name` or `pub trait` method whose parameters, generic bounds or
+/// `where` clause name `Sexp` outside a closure type; its `ALLOWED` list
+/// names the trait methods that take one by design (`Visitor::edge`). The
+/// check is textual, so it does not see a `Sexp` reached through another
+/// name: one inside another public type (a struct's field, a tuple), or a
+/// type alias. Such a type keeps its fields crate-private, or its readers
+/// are `unsafe`.
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Sexp(*mut u8);

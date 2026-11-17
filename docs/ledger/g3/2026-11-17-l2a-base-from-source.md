@@ -1,7 +1,7 @@
 ## 2026-11-17: L2a, base evaluated from source, namespaces, the search path, parse()
 
 - What: the first part of m2m3-plan L2 (split as L2a, foreman 2026-11-17;
-  the rest waits on B5a and C1-BC). Base: `main` at `908cb765`.
+  the rest waits on B5a and C1-BC). Base: `main` at `a9c4fda3` (BW merged).
   - **Stage 0** (`ROBIGO_RT_BOOT=stage0`, beside M1's loader until L5):
     main.c's `R_ReplFile` of all of base's source (`library/base/R/base`)
     into the base namespace, then the system profile
@@ -23,32 +23,20 @@
     with `n`, the rest of a file connection left unread), `stdin()`,
     `writeLines`; the `expression()` special, `.isMethodsDispatchOn`,
     `substitute(expr, list)`.
-- **M1's loader fetches a definition when it is first used**, as GNU R's
-  lazy load does. A binding's promise was the lowered right-hand side.
-  It is now the call `<fetch>(file, c(start, end))`, which names the
-  right-hand side's bytes in the pinned source file, as `makeLazy`'s
-  `lazyLoadDBfetch(key, file, ...)` names a value's offset and length.
-  Forcing the promise parses and lowers that text. The bound grew from
-  220 to 343 closures (main at `908cb765`), through the namespace closures that `R_getNSValue`
-  and `getNamespaceName` reach (`asNamespace`, then statically
-  `loadNamespace`). Before the change, the bound's code took 450 KB of
-  heap that never ran, which raised listgrow's peak RSS by 3.2% through
-  heap growth. After it, listgrow's live LANGSXPs fall from 10,199 to 414
-  and its peak RSS is below main's.
-- **The S3 table's promise**: base's `.__S3MethodsTable__.` is now a
-  lazy binding, as GNU R's is. Once it is forced, the dispatch memo
-  looks through the promise to its value (`dispatch.rs`,
-  `forced_value`). Without that, every lookup missed the memo and s3 ran
-  30% more instructions.
-  - The table is GNU R's, so each memo hit now checks the method's
-    absence from it, as `R_LookupMethod` reads it. The check covers any
-    binding, a non-function too, so the table's version box cannot
-    replace it (`tests/rt/s3/method-table.R`).
-  - What pays for that check: a binding of the table that is a promise
-    is function-like, so the defining environment's version box moves
-    when the binding changes. The memo then holds that box (`def_box`)
-    and does not read the binding again.
-  - s3 is +0.33% in instructions against main.
+- **Base's bindings and the S3 memo are BW's** (#767, foreman
+  2026-11-17). Before BW, this package had its own fetch promise and its
+  own memo fix, because its traced bound grew from 220 to 343 closures and
+  raised listgrow's peak RSS by 3.2%. The fetch promise named a
+  definition's byte span in the pinned source file. The memo read a forced
+  `.__S3MethodsTable__.` promise as its value and held the defining
+  environment's version box. BW binds all of base lazily from an index
+  with the same spans (`proto/base-wide.txt`), and fixes the memo the same
+  way. Both of this package's versions were dropped for BW's on the merge.
+  `tests/rt/s3/method-table-defenv.R` (once `method-table.R`, a name BW
+  also took) passes on BW's loader and stays. It covers `length`'s
+  internal dispatch through base's table, a global environment's own
+  table, and a method found after the table that a non-function in the
+  table hides.
 - **Stage 0 on this tree** (`ROBIGO_BOOT_VERBOSE=1`): 1,308 top-level
   expressions, 36 fail, each on something robigo-rt does not have yet:
   - base: `.Internal(strptime)` (`.leap.seconds`),
