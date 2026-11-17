@@ -37,12 +37,18 @@
   - **`set_gc_move`** is `unsafe` in the heap and in rtcore. Stopping has
     no condition; starting needs that C holds no address handed to it
     while moving was off.
-  - **Collection panics.** An abort-on-unwind guard covers marking,
-    evacuation and forwarding (`collect_needing`). The sweep stays
-    unwindable: a heap test panics mid-sweep, and dropping the heap still
-    runs every release once. `collect`'s contract adds that `roots` shows
-    the same edges each time it is traced in one collection (a moving
-    collection traces twice).
+  - **Collection panics.** A panic that unwinds out of marking,
+    evacuation or forwarding (`collect_needing`) poisons the heap: objects
+    may be forwarded copies, so every later collection panics ("left
+    halfway by a panic"), and the heap is only good to drop. Dropping still
+    runs every EXTDATA release once.
+    - The issue offered an abort instead, which I tried first. It aborted
+      the existing heap test that panics while roots are forwarded and
+      checks exactly that drop. That test now also checks the poison.
+    - The sweep was already unwindable and stays so.
+    - `collect`'s contract adds that `roots` shows the same edges each
+      time it is traced in one collection (a moving collection traces
+      twice).
   - **The other gaps:**
     - `scan_top_slot` and `robigo_heap_try_call65` need a core that neither
       moves nor is dropped;

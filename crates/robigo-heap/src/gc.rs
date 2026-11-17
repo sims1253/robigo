@@ -52,15 +52,17 @@ unsafe fn block_has_room(b: *mut Block) -> bool {
     }
 }
 
-/// Aborts the process if dropped, which only an unwinding panic does: the
-/// collection forgets it once its phase has ended.
-struct AbortOnUnwind(&'static str);
+/// Poisons the heap if dropped, which only an unwinding panic does: the
+/// collection forgets it once marking and moving have ended.
+struct PoisonOnUnwind(*mut bool);
 
-impl Drop for AbortOnUnwind {
+impl Drop for PoisonOnUnwind {
     #[cold]
     fn drop(&mut self) {
-        eprintln!("robigo: a panic during a collection's {}: the heap cannot be left halfway; aborting", self.0);
-        std::process::abort();
+        // SAFETY: the `Core`'s own flag; the collection that made the guard
+        // is unwinding through the `Core`'s frame, so the `Core` is alive
+        // and nothing else borrows the flag.
+        unsafe { *self.0 = true };
     }
 }
 
@@ -432,6 +434,10 @@ pub struct Core {
     pub gc_inhibit: u32,
     /// a collection is running: a nested one panics
     collecting: bool,
+    /// a panic unwound out of a collection's marking or moving: objects may
+    /// be forwarded copies and marks half set, so no collection runs again
+    /// (the heap can only be dropped)
+    poisoned: bool,
     /// A collection is due: the poll-only path crossed the trigger, or
     /// gctorture's countdown ran out. Mirrored in the poll word's
     /// [`GC_DUE`]; cleared by the collection that serves it.
@@ -784,6 +790,7 @@ impl Core {
             immortal_chars: 0,
             gc_inhibit: 0,
             collecting: false,
+            poisoned: false,
             #[cfg(test)]
             panic_at: tests::PanicAt::default(),
             due: false,
@@ -2279,10 +2286,11 @@ impl Core {
     /// # Panics
     /// If a C segment is open (C code runs, and the export that collects
     /// did not close its segment), if a collection is already running, or
-    /// if called from another thread. A panic while the objects are marked,
-    /// moved and forwarded (a `Trace` impl's, say) aborts the process
-    /// instead of unwinding: the heap would be left with forwarded objects
-    /// and a collection marked as running.
+    /// if called from another thread, or if a panic earlier left the heap
+    /// poisoned. A panic while the objects are marked, moved and forwarded
+    /// (a `Trace` impl's, say) unwinds with the heap poisoned: objects may
+    /// be forwarded copies, so every later collection panics, and the heap
+    /// is only good to drop (which still runs every EXTDATA release once).
     // R: memory.c:R_gc -> R_gc_internal(0)
     pub unsafe fn collect<R: Trace + ?Sized>(&mut self, roots: &mut R) -> u64 {
         // SAFETY: the caller's contract.
@@ -2324,9 +2332,10 @@ impl Core {
         // contracts of `preserve`, `register_weak_ref` and the store
         // barrier); the caller vouches for `roots`.
         unsafe {
-            // no unwinding out of marking and moving: a heap left halfway
-            // (forwarded objects, `collecting` set) is no heap
-            let guard = AbortOnUnwind("marking or moving");
+            // a panic out of marking and moving leaves the heap halfway
+            // (forwarded objects, `collecting` set): poisoned, never
+            // collected again
+            let guard = PoisonOnUnwind(&raw mut self.poisoned);
             self.mark_heap_roots();
             roots.trace(&mut Mark(self));
             self.mark_rest();
@@ -2353,6 +2362,10 @@ impl Core {
                 "robigo: a collection under Miri (the collector calls the heap's C shim): mark the test #[cfg(not(miri))]"
             );
         }
+        assert!(
+            !self.poisoned,
+            "robigo: this heap was left halfway by a panic during a collection's marking or moving: it can only be dropped"
+        );
         assert!(!self.collecting, "robigo: a collection inside a collection");
         assert!(
             self.open.top == 0,

@@ -2695,7 +2695,8 @@ unsafe extern "C" fn count_forward_panic_release(_: usize) {
 
 /// A heap dropped in the middle of a moving collection (a panic unwound
 /// out of the roots' forwarding) runs an EXTDATA release once: the
-/// forwarding header leaves the old copy without flags.
+/// forwarding header leaves the old copy without flags. Until then the
+/// heap is poisoned: it refuses to collect again.
 #[test]
 fn a_panic_while_forwarding_releases_a_moved_extdata_once() {
     let mut c = moving_core();
@@ -2705,6 +2706,11 @@ fn a_panic_while_forwarding_releases_a_moved_extdata_once() {
     let mut roots = PanicOnForward { x, calls: 0 };
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gc(&mut c, &mut roots)));
     assert!(r.is_err(), "the forwarding pass panicked");
+    // the heap is poisoned: no collection runs on its forwarded objects
+    let again = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gc(&mut c, &mut ())));
+    let msg = again.expect_err("a poisoned heap refuses to collect");
+    let msg = msg.downcast_ref::<String>().map(String::as_str).or(msg.downcast_ref::<&str>().copied()).unwrap_or("");
+    assert!(msg.contains("left halfway by a panic"), "{msg}");
     drop(c);
     assert_eq!(FORWARD_PANIC_RELEASES.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
