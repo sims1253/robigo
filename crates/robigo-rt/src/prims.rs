@@ -209,6 +209,7 @@ static RT_PRIMS: &[PrimDef] = &[
     // platform.c, sysutils.c (L1's tests' files)
     builtin("file.remove", crate::platform::do_fileremove, Inline::None, 11, 1),
     builtin("Sys.getpid", crate::platform::do_sysgetpid, Inline::None, 11, 0),
+    builtin("R.home", crate::platform::do_rhome, Inline::None, 11, 0),
     // envir.c's namespaces, version.c (L2)
     builtin("getNamespaceValue", crate::ns::do_get_ns_value, Inline::None, 211, 3),
     builtin("isNamespaceEnv", crate::ns::do_is_ns_env, Inline::None, 11, 1),

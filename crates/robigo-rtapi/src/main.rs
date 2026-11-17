@@ -12,7 +12,61 @@ use robigo_rtcore::OwnedIsolate;
 const USAGE: &str = "Usage: robigo-rt [--vanilla] [options] file [args]\n   or: robigo-rt [--vanilla] [options] -e expr [-e expr2 ...] [args]\n";
 
 fn main() {
+    init_r_home();
     std::process::exit(run(std::env::args_os().skip(1).collect()));
+}
+
+/// The front end's `R_HOME` (m2m3-plan F7b): robigo-rt's R_HOME tree, as
+/// GNU R's `R` script exports its own with `R_SHARE_DIR`, `R_INCLUDE_DIR`
+/// and `R_DOC_DIR` under it. An installed robigo-rt's is
+/// `<prefix>/lib/robigo` (the binary in `<prefix>/bin`); else the tree of
+/// the checkout it was built from, `.robigo/rt-home` (`scripts/rt-home.sh`),
+/// as an uninstalled GNU R's is its build directory. Unlike GNU R's script,
+/// which ignores an `R_HOME` the environment has ("WARNING: ignoring
+/// environment value of R_HOME"), a set `R_HOME` is kept, and so is each of
+/// the three directories that is set; those that are not are under the
+/// `R_HOME` in effect.
+// R: scripts/R.sh.in
+fn init_r_home() {
+    let mut vars = Vec::new();
+    let home = match std::env::var_os("R_HOME").filter(|h| !h.is_empty()) {
+        Some(h) => std::path::PathBuf::from(h),
+        None => {
+            let h = default_r_home();
+            vars.push(("R_HOME", h.clone()));
+            h
+        }
+    };
+    for (var, dir) in [("R_SHARE_DIR", "share"), ("R_INCLUDE_DIR", "include"), ("R_DOC_DIR", "doc")] {
+        if std::env::var_os(var).is_none() {
+            vars.push((var, home.join(dir)));
+        }
+    }
+    for (var, value) in vars {
+        // SAFETY: the first thing main does, before any other thread
+        // exists to read the environment.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::set_var(var, value)
+        };
+    }
+}
+
+/// robigo-rt's R_HOME tree when the environment names none: an install's,
+/// else the build checkout's.
+fn default_r_home() -> std::path::PathBuf {
+    let installed = std::env::current_exe()
+        .ok()
+        .and_then(|e| Some(e.parent()?.parent()?.join("lib/robigo")))
+        .filter(|h| h.join("library/base").is_dir());
+    let home = installed.unwrap_or_else(|| {
+        let checkout = match option_env!("ROBIGO_WORKTREE") {
+            Some(w) if !w.is_empty() => std::path::PathBuf::from(w),
+            _ => std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
+        };
+        checkout.join(".robigo/rt-home")
+    });
+    std::path::absolute(&home).unwrap_or(home)
 }
 
 fn run(args: Vec<std::ffi::OsString>) -> i32 {
@@ -90,7 +144,8 @@ fn run(args: Vec<std::ffi::OsString>) -> i32 {
     // R_HOME's library/base/R/base: scripts/rt-home.sh) beside M1's loader
     // until L5 boots from the databases
     if std::env::var_os("ROBIGO_RT_BOOT").is_some_and(|v| v == "stage0") {
-        let home = std::env::var_os("R_HOME").map_or_else(|| std::path::PathBuf::from(".robigo/rt-home"), Into::into);
+        // (init_r_home has set it)
+        let home = std::path::PathBuf::from(std::env::var_os("R_HOME").unwrap_or_default());
         match robigo_rt::base::stage0(cx, &home) {
             Ok(st) => {
                 if std::env::var_os("ROBIGO_BOOT_VERBOSE").is_some() {

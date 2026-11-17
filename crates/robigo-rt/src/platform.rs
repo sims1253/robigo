@@ -192,3 +192,20 @@ pub fn do_sysgetpid(
     crate::prims::check_arity(cx, call, args.len(), "Sys.getpid", 0, true)?;
     cx.build_scalar(out, std::process::id() as i32)
 }
+
+/// `R.home()`: R_HomeDir(), the environment's `R_HOME` (the front end sets
+/// it when it is not set, as GNU R's does).
+// R: platform.c:do_Rhome, sysutils.c:R_HomeDir
+pub fn do_rhome(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: robigo_rtcore::Root<'_>,
+    out: robigo_rtcore::Out<'_>,
+) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "R.home", 0, true)?;
+    let Some(path) = std::env::var_os("R_HOME") else {
+        return Err(cx.error("unable to determine R home location"));
+    };
+    cx.build(out, |cx| cx.mk_string(path.as_encoded_bytes(), Encoding::Native))
+}
