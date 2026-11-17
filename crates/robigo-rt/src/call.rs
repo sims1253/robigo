@@ -383,7 +383,10 @@ fn invoke_builtin(cx: &mut Cx, act: &Act, dst: Reg, args: Args<'_>, regs: (Reg, 
     // R: eval.c:BUILTIN_CALL_FRAME_ARGS, eval.c:evalList
     // SAFETY: this running activation's registers.
     unsafe { crate::links::skip_args(act.base(), regs.0, regs.1) };
-    let r = run_builtin(cx, &def, act.root(R_SCRATCH), args, act.root(R_ENV), act.out(dst));
+    // (the compiler routes an `.Internal` call whose count is not its
+    // row's fixed arity through the list path, which checks: see
+    // `internal_arity_ok`; a primitive's is not checked)
+    let r = run_builtin_unchecked(cx, &def, act.root(R_SCRATCH), args, act.root(R_ENV), act.out(dst));
     // SAFETY: as above.
     unsafe { crate::links::unskip_args(act.base()) };
     act.clear(R_SCRATCH);
@@ -440,6 +443,9 @@ fn call_special_args(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp, in
         if internal {
             cx.set_visible(true);
         }
+        // (a registry special called by compiled code checks its own count:
+        // `lapply` and `vapply` call checkArity first, `rep` takes any;
+        // the check here would cost the VM's loop, which inlines this)
         invoke_builtin(cx, act, dst, args, (0, 0))
     })
 }
@@ -648,10 +654,25 @@ pub(crate) fn run_builtin(
     rho: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
+    check_internal_arity(cx, def, args.len())?;
+    run_builtin_unchecked(cx, def, call, args, rho, out)
+}
+
+/// [`run_builtin`] without the arity check: the VM's register calls,
+/// whose `.Internal`s the compiler has checked. Inlined into its callers,
+/// as `run_builtin`'s body was into the VM's `invoke_builtin`.
+#[inline(always)]
+pub(crate) fn run_builtin_unchecked(
+    cx: &mut Cx,
+    def: &prims::PrimDef,
+    call: Root<'_>,
+    args: Args<'_>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     let Kind::Builtin(f, _) = def.kind else {
         unreachable!("robigo: a special called as a builtin");
     };
-    check_internal_arity(cx, def, args.len())?;
     materialize_args(cx, def, args)?;
     let flag = def.print();
     // a builtin may change what an argument expression evaluates to or
@@ -692,24 +713,48 @@ const OWN_ARITY_CHECK: &[&str] = &[
     "recordGraphics",
 ];
 
-/// An `.Internal` builtin's own `checkArity(op, args)`, the first thing
-/// it does: here once, for every row with a fixed arity in names.c (but
-/// those of [`OWN_ARITY_CHECK`]), on every path that calls a builtin's
-/// function (`run_builtin`, compiled assignment steps, applyMethod), so
-/// that no builtin reads past its arguments. `error()`, against the
-/// context.
+/// Whether an `.Internal` builtin called with `n` arguments passes its
+/// own `checkArity(op, args)`, the first thing it does: always for a
+/// primitive, a row of any arity, or a row of [`OWN_ARITY_CHECK`]. The
+/// compiler asks this for a call with a known count, and routes one that
+/// fails through the list path ([`run_builtin`]), so that the VM's
+/// register path needs no check.
+pub(crate) fn internal_arity_ok(def: &prims::PrimDef, n: usize) -> bool {
+    !(def.arity >= 0 && n != def.arity as usize && def.internal() && !OWN_ARITY_CHECK.contains(&def.name))
+}
+
+/// A builtin's entry on a path that calls its function at run time
+/// (`run_builtin`, compiled assignment steps, applyMethod, the registry's
+/// specials): its `.Internal` arity checked ([`check_internal_arity`]),
+/// then its arguments materialized ([`materialize_args`]).
+#[inline(always)]
+pub(crate) fn enter_builtin(cx: &mut Cx, def: &prims::PrimDef, args: Args<'_>) -> RResult<()> {
+    check_internal_arity(cx, def, args.len())?;
+    materialize_args(cx, def, args)
+}
+
+/// [`internal_arity_ok`]'s error where a builtin is called at run time:
+/// every path but the VM's register call, whose `.Internal` calls the
+/// compilers check ([`internal_arity_ok`]), and the VM's call of a registry
+/// special (`call_special_args`: `lapply` and `vapply` check their own
+/// count, `rep` takes any), so that no builtin reads past its arguments. `error()`, against the context. One compare on the hot
+/// path; the rest out of line.
 // R: util.c:Rf_checkArityCall
-#[inline]
+#[inline(always)]
 pub(crate) fn check_internal_arity(cx: &mut Cx, def: &prims::PrimDef, n: usize) -> RResult<()> {
-    if def.internal() && def.arity >= 0 && n != def.arity as usize && !OWN_ARITY_CHECK.contains(&def.name) {
-        return Err(internal_arity_error(cx, def, n));
+    if def.arity >= 0 && n != def.arity as usize {
+        return arity_mismatch(cx, def, n);
     }
     Ok(())
 }
 
 #[cold]
-fn internal_arity_error(cx: &mut Cx, def: &prims::PrimDef, n: usize) -> robigo_rtcore::RError {
-    cx.error(&prims::arity_message(n, def.name, def.arity as usize, true))
+#[inline(never)]
+fn arity_mismatch(cx: &mut Cx, def: &prims::PrimDef, n: usize) -> RResult<()> {
+    if internal_arity_ok(def, n) {
+        return Ok(());
+    }
+    Err(cx.error(&prims::arity_message(n, def.name, def.arity as usize, true)))
 }
 
 /// Append `CONS_NR(value, R_NilValue)` with tag `tag` to the list

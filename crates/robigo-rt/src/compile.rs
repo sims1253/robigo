@@ -2840,7 +2840,15 @@ impl<'g> Comp<'g> {
         i.fl |= F_DEPTH;
         i.d = d;
         let _ = tail;
-        if a.iter().any(|&(v, _)| v == dots || v == missing) {
+        // an .Internal of the wrong count goes the checked way (its error,
+        // after the arguments are evaluated, as GNU R's checkArity)
+        let unchecked = op != Op::Internal || {
+            // SAFETY: `fun` is a live primitive of this isolate (the
+            // caller's contract).
+            let off = unsafe { crate::prims::offset(fun) };
+            crate::call::internal_arity_ok(&self.st.defs[off], n)
+        };
+        if !unchecked || a.iter().any(|&(v, _)| v == dots || v == missing) {
             // evaluated at run time (`...` expanded, an empty argument's
             // error in order); under `Bc` as the generic call's (cmp.R's
             // `cmpBuiltin` declines): each call by code compiled now

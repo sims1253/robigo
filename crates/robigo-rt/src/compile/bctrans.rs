@@ -2197,6 +2197,17 @@ impl<'g> Comp<'g> {
             self.bc_untranslated = Some("byte code calling a builtin with '...' or a missing argument".to_owned());
             return Err(Need::Fail);
         }
+        // SAFETY: `prim` is a live primitive of this isolate (the frame's).
+        let off = unsafe { crate::prims::offset(prim) };
+        if internal && !crate::call::internal_arity_ok(&self.st.defs[off], n) {
+            // an .Internal of the wrong count: the VM's register call does
+            // not check it (the from-source compiler routes such a call
+            // through the checked list path, which byte code's evaluated
+            // frame cannot take)
+            self.bc_untranslated =
+                Some("byte code calling an .Internal with a count its checkArity refuses".to_owned());
+            return Err(Need::Fail);
+        }
         let named = f.args.iter().any(|a| a.tag.is_some());
         if named {
             for (j, a) in f.args.iter().enumerate() {
