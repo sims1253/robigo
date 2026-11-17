@@ -513,6 +513,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("list2env", envir::do_list2env, 0, 11, 2, FUNCALL, Env),
     row("lockEnvironment", envir::do_lock_env, 0, 111, 2, FUNCALL, Env),
     row("lockBinding", envir::do_lock_bnd, 0, 111, 2, FUNCALL, Env),
+    row("unlockBinding", envir::do_unlock_bnd, 1, 111, 2, FUNCALL, Env),
     row("bindingIsLocked", envir::do_bnd_is_locked, 0, 11, 2, FUNCALL, Env),
     row("makeActiveBinding", envir::do_mk_active_bnd, 0, 111, 3, FUNCALL, Env),
     row("env.profile", envir::do_envprofile, 0, 211, 1, FUNCALL, Env),

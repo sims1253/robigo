@@ -755,6 +755,15 @@ pub fn do_lock_bnd(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
     Ok(())
 }
 
+/// `.Internal(unlockBinding(sym, env))`.
+// R: envir.c:do_lockBnd (PRIMVAL 1)
+pub fn do_unlock_bnd(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("unlockBinding", true).check_arity(cx, call, args)?;
+    cx.unlock_binding(args.root(0), args.root(1))?;
+    out.set(cx, cx.nil());
+    Ok(())
+}
+
 /// `.Internal(bindingIsLocked(sym, env))`.
 // R: envir.c:do_bndIsLocked
 pub fn do_bnd_is_locked(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {

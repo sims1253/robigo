@@ -20,7 +20,7 @@
 # name (do.call("c", ...)) do not, except that a capi case counts every
 # primitive its C names (install("sqrt")) or parses. Top-level printing in
 # C does not count.
-# 247 closures, 120 primitives, 166 internals.
+# 248 closures, 120 primitives, 167 internals.
 closure %in% match.R
 closure %||% utils.R
 closure ..getNamespace namespace.R
@@ -255,6 +255,7 @@ closure union sets.R
 closure unique duplicated.R
 closure unique.default duplicated.R
 closure unlist unlist.R
+closure unlockBinding bindenv.R
 closure unname unname.R
 closure unserialize serialize.R
 closure vapply sapply.R
@@ -545,6 +546,7 @@ internal traceback
 internal typeof
 internal unique
 internal unlist
+internal unlockBinding
 internal unregisterNamespace
 internal unserialize
 internal unserializeFromConn

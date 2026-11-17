@@ -1,0 +1,13 @@
+[1] TRUE
+Error in assign("x", 2, envir = e) : cannot change value of locked binding for 'x' 
+[1] FALSE
+[1] 3
+Error in assign("x", 4, envir = e) : cannot change value of locked binding for 'x' 
+[1] 5
+Error in assign("y", 1, envir = e) : cannot add bindings to a locked environment 
+Error in unlockBinding("nosuch", e) : no binding for "nosuch" 
+Error in doTryCatch(return(expr), name, parentenv, handler) : not a symbol 
+Error in doTryCatch(return(expr), name, parentenv, handler) : not an environment 
+Error in doTryCatch(return(expr), name, parentenv, handler) : use of NULL environment is defunct 
+[1] 2
+[1] 2
