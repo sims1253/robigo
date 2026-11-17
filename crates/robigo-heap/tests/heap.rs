@@ -2183,7 +2183,8 @@ fn a_store_into_an_immortal_char_does_not_hide_dead_cache_entries() {
 }
 
 /// A symbol's 4th word holds its id, dense in the order the heap made its
-/// symbols (R_UnboundValue 0, R_MissingArg 1, then installs), and GNU R's
+/// symbols (R_UnboundValue 0, R_MissingArg 1, R_RestartToken 2, then
+/// installs), and GNU R's
 /// `R_Newhashpjw` of its name, which install also leaves on the name
 /// (HASHASH, HASHVALUE in TRUELENGTH).
 #[test]
@@ -2192,10 +2193,11 @@ fn symbols_carry_an_id_and_gnu_rs_hash() {
     unsafe {
         assert_eq!(c.unbound().sym_id(), 0);
         assert_eq!(c.missing_arg().sym_id(), 1);
+        assert_eq!(c.restart_token().sym_id(), 2);
         let n0 = c.symbol_count() as u32;
         let x = c.install(b"x").unwrap();
         let y = c.install(b"y").unwrap();
-        assert_eq!(x.sym_id(), n0 + 2, "ids follow the installs, after the two unnamed symbols");
+        assert_eq!(x.sym_id(), n0 + 3, "ids follow the installs, after the three unnamed symbols");
         assert_eq!(y.sym_id(), x.sym_id() + 1);
         assert_eq!(c.install(b"x").unwrap().sym_id(), x.sym_id(), "an installed symbol keeps its id");
         // R_Newhashpjw("x") = 'x'; "foo" folds no nibble; a long name folds
