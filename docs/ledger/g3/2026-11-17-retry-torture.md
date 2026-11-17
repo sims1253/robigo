@@ -43,6 +43,17 @@ class about K / allocations of the time. The foreman declined it.
 `robigo-rt` reads it at `install`, as `ROBIGO_NO_INPLACE` is read. Embedders
 and tests use `Cx::set_retry_torture`.
 
+**It is compiled in only with robigo-rtcore's `retry-torture` feature:**
+`cargo build --release -p robigo-rtapi --features robigo-rtcore/retry-torture`.
+GNU R's `--enable-strict-barrier` works the same way.
+- **Why:** as a plain runtime switch, its check in every build cost 3 to 4
+  instructions per build. `perf.py rt-bars` measured that against main's
+  binary at the same base (7a628603): +0.65% on s3 and +0.70% on
+  binarytrees, which the perf gate fails (0.5%, no bypass), and +0.22% on
+  plain.
+- **Without the feature,** the check is a constant false and compiled out,
+  and `ROBIGO_RETRY_TORTURE=1` is refused with the build command.
+
 **It reaches no state the heap cannot.** Each refusal is E9's knob refusing
 that allocation, which is what `ROBIGO_FAIL_ALLOC_AT=n` does at one `n`. The
 heap refuses an allocation the same way when the request would pass a limit
@@ -121,15 +132,27 @@ Each comes as its own PR, as the foreman decided.
 
 ### Proof
 
-- **Unit tests,** `crates/robigo-rtcore/tests/retry_torture.rs`:
+- **Unit tests,** `crates/robigo-rtcore/tests/retry_torture.rs`. With the
+  feature (`cargo test -p robigo-rtcore --features retry-torture`):
   - with the mode on, a build and a `retry_alloc` each run twice, with one
     `retry` collection each;
   - a build that allocates nothing runs once, and leaves the next
     allocation unrefused. Without the disarm, that test fails;
   - with the mode off, a build runs once.
-- **Miri:** `cargo +nightly-2026-11-02 miri test --locked -p robigo-rtcore`,
-  CI's command, passes (302 s). `nothing_else_is_refused` runs under it;
-  the other test needs a collection, which Miri cannot run.
+
+  Without the feature, which CI's build is, turning the mode on panics
+  with the build command.
+- **Miri:**
+  - CI's command, `cargo +nightly-2026-11-02 miri test --locked -p
+    robigo-rtcore`, passes all 14 test binaries (313 s), the feature's
+    refusal included;
+  - with `--features retry-torture`, `nothing_else_is_refused` passes. The
+    other test needs a collection, which Miri cannot run.
+- **No cost without the feature:** `perf.py rt-bars` against main's binary
+  at 7a628603: every row within ±0.05%, 0 failures.
+- **The feature build** reproduces `onexit-unwind.R`'s segfault under the
+  mode. A default build refuses `ROBIGO_RETRY_TORTURE=1` with the build
+  command.
 - **The two knobs together:** `ROBIGO_RETRY_TORTURE=1
   ROBIGO_FAIL_ALLOC_AT=5 robigo-rt -e 1` stops with "robigo:
   ROBIGO_RETRY_TORTURE and ROBIGO_FAIL_ALLOC_AT both use E9's knob: set

@@ -681,7 +681,8 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    are `tests/rt/alloc/effects.R` and, for unserialize,
    `tests/rt/serialize-closures/unserialize-e9.R`; `ROBIGO_RETRY_TORTURE=1`,
    which refuses the first allocation of every `&Cx` build once, E9's
-   refusal at every build in one run, has no step yet:
+   refusal at every build in one run, in a build with robigo-rtcore's
+   `retry-torture` feature, has no step yet:
    `docs/ledger/g3/2026-11-17-retry-torture.md`). Every pull
    request but a docs-only one runs it, and with it **base-subset**:
    `scripts/base-subset.sh --check` inside the GNU R 4.6.2 oracle image

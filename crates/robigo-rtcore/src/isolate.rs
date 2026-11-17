@@ -584,14 +584,25 @@ impl Cx {
     /// as a run near a vector limit does, where `ROBIGO_FAIL_ALLOC_AT` makes
     /// one. It shares the knob, so it is not combined with
     /// `ROBIGO_FAIL_ALLOC_AT` (`robigo-rt` refuses both).
+    ///
+    /// It is compiled in only with the crate's `retry-torture` feature
+    /// (`cargo build --release -p robigo-rtapi --features
+    /// robigo-rtcore/retry-torture`): without it this is false, and the
+    /// builds' check is compiled out.
     #[inline(always)]
     pub fn retry_torture(&self) -> bool {
-        self.iso().retry_torture.get()
+        cfg!(feature = "retry-torture") && self.iso().retry_torture.get()
     }
 
     /// Turn [`Cx::retry_torture`] mode on or off (`robigo-rt` reads
-    /// `ROBIGO_RETRY_TORTURE`).
+    /// `ROBIGO_RETRY_TORTURE`). Turning it on panics in a build without
+    /// the `retry-torture` feature, which could not honor it.
     pub fn set_retry_torture(&mut self, on: bool) {
+        assert!(
+            !on || cfg!(feature = "retry-torture"),
+            "robigo: ROBIGO_RETRY_TORTURE needs robigo-rtcore built with its retry-torture feature \
+             (cargo build --release -p robigo-rtapi --features robigo-rtcore/retry-torture)"
+        );
         self.iso().retry_torture.set(on);
     }
 
