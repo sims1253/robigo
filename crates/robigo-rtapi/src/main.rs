@@ -4,7 +4,9 @@
 //! (`robigo_rt::base`), and the script run as Rscript runs it
 //! (`robigo_rt::repl`). `robigo-rt --quiet [--no-save] -f FILE` runs it as
 //! `R -f FILE` does instead, echoing each line after its prompt (R CMD
-//! check's transcripts). `R_DEFAULT_PACKAGES` is ignored: there are no
+//! check's transcripts), and with neither a FILE nor `-e`, a stdin that is
+//! not a terminal is read the same way (`R --vanilla --no-echo < script`, as
+//! GNU R's own build runs R). `R_DEFAULT_PACKAGES` is ignored: there are no
 //! other packages. Exit status 0, or 1 after "Execution halted"; 2 for a
 //! usage or start-up failure.
 
@@ -22,11 +24,20 @@ fn main() {
 }
 
 /// The `R_HOME` in effect, and where it came from.
-struct RHome {
-    path: std::path::PathBuf,
-    /// Neither an install's tree nor the checkout's has `library/base`:
-    /// `path` is the checkout's, which `scripts/rt-home.sh` makes.
-    missing_default: bool,
+enum RHome {
+    /// One the environment names, or a default tree with base's files.
+    Given(std::path::PathBuf),
+    /// Neither an install's tree nor the checkout's has base's files: the
+    /// checkout's, which `scripts/rt-home.sh` makes.
+    MissingDefault(std::path::PathBuf),
+}
+
+impl RHome {
+    fn path(&self) -> &std::path::Path {
+        match self {
+            RHome::Given(p) | RHome::MissingDefault(p) => p,
+        }
+    }
 }
 
 /// The front end's `R_HOME` (m2m3-plan F7b): robigo-rt's R_HOME tree, as
@@ -44,20 +55,17 @@ struct RHome {
 // R: scripts/R.sh.in
 fn init_r_home() -> RHome {
     let mut vars = Vec::new();
-    let (home, missing_default) = match std::env::var_os("R_HOME").filter(|h| !h.is_empty()) {
-        Some(h) => (std::path::PathBuf::from(h), false),
+    let home = match std::env::var_os("R_HOME").filter(|h| !h.is_empty()) {
+        Some(h) => RHome::Given(std::path::PathBuf::from(h)),
         None => {
-            let (h, missing) = match default_r_home() {
-                DefaultHome::Found(h) => (h, false),
-                DefaultHome::Missing(h) => (h, true),
-            };
-            vars.push(("R_HOME", h.clone()));
-            (h, missing)
+            let h = default_r_home();
+            vars.push(("R_HOME", h.path().to_path_buf()));
+            h
         }
     };
     for (var, dir) in [("R_SHARE_DIR", "share"), ("R_INCLUDE_DIR", "include"), ("R_DOC_DIR", "doc")] {
         if std::env::var_os(var).filter(|v| !v.is_empty()).is_none() {
-            vars.push((var, home.join(dir)));
+            vars.push((var, home.path().join(dir)));
         }
     }
     for (var, value) in vars {
@@ -68,21 +76,21 @@ fn init_r_home() -> RHome {
             std::env::set_var(var, value)
         };
     }
-    RHome { path: home, missing_default }
+    home
 }
 
 /// robigo-rt's R_HOME tree when the environment names none: an install's,
-/// else the build checkout's, each only when it has `library/base`.
-/// `Missing` with the checkout's when neither has: it is still exported
-/// (so that `R.home()` names where the tree belongs), and what reads the
-/// tree says it is missing ([`missing_tree`]).
-fn default_r_home() -> DefaultHome {
+/// else the build checkout's, each only when it has base's files.
+/// `MissingDefault` with the checkout's when neither has: it is still
+/// exported (so that `R.home()` names where the tree belongs), and what
+/// reads the tree says it is missing ([`missing_tree`]).
+fn default_r_home() -> RHome {
     let installed = std::env::current_exe()
         .ok()
         .and_then(|e| Some(e.parent()?.parent()?.join("lib/robigo")))
         .filter(|h| has_base(h));
     if let Some(h) = installed {
-        return DefaultHome::Found(std::path::absolute(&h).unwrap_or(h));
+        return RHome::Given(std::path::absolute(&h).unwrap_or(h));
     }
     let checkout = match option_env!("ROBIGO_WORKTREE") {
         Some(w) if !w.is_empty() => std::path::PathBuf::from(w),
@@ -90,20 +98,13 @@ fn default_r_home() -> DefaultHome {
     };
     let h = checkout.join(".robigo/rt-home");
     let h = std::path::absolute(&h).unwrap_or(h);
-    if has_base(&h) { DefaultHome::Found(h) } else { DefaultHome::Missing(h) }
+    if has_base(&h) { RHome::Given(h) } else { RHome::MissingDefault(h) }
 }
 
-/// [`default_r_home`]'s answer: a tree with base's files, or where the
-/// checkout's belongs when none has them.
-enum DefaultHome {
-    Found(std::path::PathBuf),
-    Missing(std::path::PathBuf),
-}
-
-/// Whether `h` holds base's tree (what stage 0 reads): `library/base` is a
-/// directory.
+/// Whether `h` holds base's tree: the file stage 0 reads first,
+/// `library/base/R/base`.
 fn has_base(h: &std::path::Path) -> bool {
-    h.join("library/base").is_dir()
+    h.join("library/base/R/base").is_file()
 }
 
 /// The start-up error for an `R_HOME` without base's tree, when stage 0
@@ -112,17 +113,16 @@ fn has_base(h: &std::path::Path) -> bool {
 /// check waits for what does), with the way to make the tree.
 // R: scripts/R.sh.in ("R_HOME may have moved, so check")
 fn missing_tree(home: &RHome) -> Option<String> {
-    if has_base(&home.path) {
+    if has_base(home.path()) {
         return None;
     }
-    let p = home.path.display();
-    Some(if home.missing_default {
-        format!(
-            "R_HOME ('{p}') not found: no installed tree (<prefix>/lib/robigo) has library/base, \
+    let p = home.path().display();
+    Some(match home {
+        RHome::MissingDefault(_) => format!(
+            "R_HOME ('{p}') not found: no installed tree (<prefix>/lib/robigo) has library/base/R/base, \
              and the checkout's is not made (scripts/rt-home.sh)"
-        )
-    } else {
-        format!("R_HOME ('{p}') not found: it has no library/base")
+        ),
+        RHome::Given(_) => format!("R_HOME ('{p}') not found: it has no library/base/R/base"),
     })
 }
 
@@ -136,8 +136,9 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     let mut file = None;
     // -f FILE or --file=FILE: None for stdin (`-f -`)
     let mut r_file: Option<Option<std::ffi::OsString>> = None;
-    // R_Quiet and R_NoEcho (R_common_command_line)
-    let (mut quiet, mut no_echo) = (false, false);
+    // R_Quiet and R_NoEcho (R_common_command_line), and whether the save
+    // action is given (SA_NOSAVE: --vanilla, --no-save, --no-echo)
+    let (mut quiet, mut no_echo, mut save_given) = (false, false, false);
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         let b = a.as_encoded_bytes();
@@ -169,17 +170,18 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
             }
             // R: CommandLineArgs.c:R_common_command_line
             b"--quiet" | b"--silent" | b"-q" => quiet = true,
-            b"--no-echo" | b"--slave" | b"-s" => (quiet, no_echo) = (true, true),
+            b"--no-echo" | b"--slave" | b"-s" => (quiet, no_echo, save_given) = (true, true, true),
             b"--save" => {
                 eprintln!("robigo-rt: --save (the workspace saved at the end) is not implemented yet");
                 return 2;
             }
             // start-up options that change nothing robigo-rt has
-            b"--vanilla" | b"--no-save" | b"--no-restore" | b"--no-environ" | b"--no-site-file" | b"--no-init-file"
-            | b"--verbose" => {}
+            b"--vanilla" | b"--no-save" => save_given = true,
+            b"--no-restore" | b"--no-environ" | b"--no-site-file" | b"--no-init-file" | b"--verbose" => {}
             _ if b.starts_with(b"--default-packages=") => {}
-            // R: the rest are commandArgs()'s
-            b"--args" if r_file.is_some() => break,
+            // R: the rest are commandArgs()'s, whatever the mode (an
+            // Rscript's FILE ends the options before it)
+            b"--args" => break,
             _ if b.starts_with(b"-") && exprs.is_empty() && file.is_none() => {
                 eprintln!("robigo-rt: unknown option '{}'", a.to_string_lossy());
                 return 2;
@@ -198,18 +200,28 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
             }
         }
     }
+    // R with neither a file nor -e (`R --vanilla --no-echo < script`, as GNU
+    // R's own build runs R_EXE): stdin is the console, as `-f -` reads it,
+    // when it is not a terminal (R_Interactive is R_isatty(0)); a terminal's
+    // interactive console is not ported, so Rscript's usage stays there
+    // R: unix/system.c:Rf_initialize_R
+    if exprs.is_empty() && file.is_none() && r_file.is_none() {
+        if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            eprint!("{USAGE}");
+            return 2;
+        }
+        r_file = Some(None);
+    }
+    // R (-f, --file, stdin), not Rscript (a FILE or -e, with --no-echo)
+    let r_mode = r_file.is_some();
     // Rscript runs R with --no-echo; R -f echoes unless told not to
-    let echo = r_file.is_some() && !no_echo;
+    let echo = r_mode && !no_echo;
     let mut stdin = false;
     if let Some(f) = r_file {
         if !exprs.is_empty() {
             // R: unix/system.c:Rf_initialize_R, R_Suicide (to stdout this
             // early)
             println!("Fatal error: cannot use -e with -f or --file");
-            return 2;
-        }
-        if !quiet {
-            eprintln!("robigo-rt: R's start-up greeting (-f without --quiet) is not implemented yet");
             return 2;
         }
         stdin = f.is_none();
@@ -224,6 +236,19 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
         }
         s
     } else if stdin {
+        // non-interactive R needs the save action named, which a FILE
+        // implies (`if (ifp && ...) SaveAction = SA_NOSAVE`) and stdin does
+        // not: checked before anything is read (an open pipe does not hold
+        // it up)
+        // R: unix/system.c:Rf_initialize_R, R_Suicide
+        if !save_given {
+            eprintln!("Fatal error: you must specify '--save', '--no-save' or '--vanilla'");
+            return 2;
+        }
+        if !quiet {
+            eprintln!("robigo-rt: R's start-up greeting (R without --quiet) is not implemented yet");
+            return 2;
+        }
         // `-f -`: the console input is stdin
         let mut s = Vec::new();
         if let Err(e) = std::io::Read::read_to_end(&mut std::io::stdin(), &mut s) {
@@ -245,6 +270,12 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
         eprint!("{USAGE}");
         return 2;
     };
+    // setup_Rmainloop's greeting, unless R_Quiet (a FILE's open error, at
+    // the options, comes first)
+    if r_mode && !stdin && !quiet {
+        eprintln!("robigo-rt: R's start-up greeting (R without --quiet) is not implemented yet");
+        return 2;
+    }
 
     let mut iso = OwnedIsolate::new();
     let cx = iso.cx();
@@ -261,7 +292,7 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
             eprintln!("robigo-rt: {e}");
             return 2;
         }
-        match robigo_rt::base::stage0(cx, &home.path) {
+        match robigo_rt::base::stage0(cx, home.path()) {
             Ok(st) => {
                 if std::env::var_os("ROBIGO_BOOT_VERBOSE").is_some() {
                     for (line, m) in &st.failed {
@@ -345,3 +376,26 @@ fn io_reason(e: &std::io::Error) -> String {
 // rebuilds the crate when another worktree built it last in a shared
 // target directory.
 const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The unmade checkout's message (no installed tree either), which an
+    /// integration test cannot reach: it depends on the machine's trees.
+    #[test]
+    fn a_missing_default_tree_says_how_to_make_it() {
+        let h = std::path::PathBuf::from("/nonexistent/robigo/.robigo/rt-home");
+        assert_eq!(
+            missing_tree(&RHome::MissingDefault(h.clone())).as_deref(),
+            Some(
+                "R_HOME ('/nonexistent/robigo/.robigo/rt-home') not found: no installed tree \
+                 (<prefix>/lib/robigo) has library/base/R/base, and the checkout's is not made (scripts/rt-home.sh)"
+            )
+        );
+        assert_eq!(
+            missing_tree(&RHome::Given(h)).as_deref(),
+            Some("R_HOME ('/nonexistent/robigo/.robigo/rt-home') not found: it has no library/base/R/base")
+        );
+    }
+}
