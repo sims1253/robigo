@@ -1710,11 +1710,13 @@ unsafe fn fill_chunk(act: &Act, a: Reg, base: usize, len: usize) {
             // an integer sequence's first element and increment (1 or -1)
             // are ints, and so is each of its elements: this one in int
             // arithmetic, which vectorizes
-            let first = (n1 as i64 + inc as i64 * base as i64) as i32;
+            let mut v = (n1 as i64 + inc as i64 * base as i64) as i32;
             let inc = inc as i32;
             let d = std::slice::from_raw_parts_mut(buf.inline_data() as *mut i32, len);
-            for (k, x) in d.iter_mut().enumerate() {
-                *x = first + inc * k as i32;
+            for x in d {
+                *x = v;
+                // (past the last element only: an int wraps there)
+                v = v.wrapping_add(inc);
             }
         } else {
             let d = buf.inline_data() as *mut f64;

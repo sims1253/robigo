@@ -2742,9 +2742,7 @@ impl Cx {
 
     /// The version a box holds now.
     pub fn box_version(&self, b: Ref<'_>) -> u32 {
-        // (a box is a standard integer scalar, which `Cx::env_version_box`
-        // makes)
-        assert!(b.as_std_ints().is_some_and(|v| v.len() == 1), "robigo: not a version box");
+        assert!(b.sexptype() == INTSXP && b.len() == Some(1), "robigo: not a version box");
         // SAFETY: a live INTSXP of one element.
         unsafe { *(b.sexp().std_data() as *const u32) }
     }
