@@ -201,7 +201,27 @@
     reaches `.Internal(strrep)`, which robigo-rt lacked.
   - This entry ports `do_strrep` (character.c) and adds
     `tests/rt/strings/strrep.R`, recorded on 4.6.2.
-  - TODO(final run).
+  - With it (`0236869f`): **21,696 of 31,374 pass (69.2%), against
+    18,812 (60.0%)**. That is 2,884 new passes and no regression
+    (`data/2026-11-17-bw-wide-loader/fastr-rt.md`).
+  - The names A1's run found unbound (`toString`, `intersect`, `array`,
+    `log`'s callers) are bound now. Their cases fail further in.
+  - The next blockers, by the cases each blocks first:
+
+    | blocker | cases |
+    |---|---:|
+    | primitive `ceiling` | 1,251 |
+    | printing a matrix | 501 |
+    | `.Internal(set.seed)` | 392 |
+    | `options(keep.source =)` | 324 |
+    | `.Internal(array)` | 236 |
+    | `deriv`, which is stats' | 203 |
+    | `crossprod` | 197 |
+    | `loadNamespace` | 179 |
+    | `cbind` and `[<-` with matrix subscripts | 137 each |
+
+  - The markers belong to RC's ratchet, `tests/corpora/fastr/passing-rt/`,
+    which is not on main yet. They are added with `--update` once it is.
 - The bar (condition (c)): `tests/rt/base/wide-names.R` prints the count
   and the sorted names of `ls(baseenv(), all.names = TRUE)`, and matches
   GNU R 4.6.2's 1,407 byte for byte.
