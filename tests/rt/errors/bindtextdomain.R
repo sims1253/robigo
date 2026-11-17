@@ -28,3 +28,6 @@ Encoding(s) <- "bytes"
 f(s, NULL)
 f("a", s)
 tryCatch(.Internal(bindtextdomain("a")), error = function(e) conditionMessage(e))
+# an empty domain name: libintl refuses it, NULL
+bt("", NULL)
+bt("", "/x")

@@ -147,11 +147,20 @@ unsafe extern "C" {
 /// domain nothing has bound. Only asked, never set: robigo keeps its own
 /// bindings per isolate.
 pub fn default_textdomain_dir() -> Vec<u8> {
+    // a domain name no one else can have bound: the process's id and this
+    // function's address
+    let name = std::ffi::CString::new(format!(
+        "robigo-unbound-{}-{:x}",
+        std::process::id(),
+        default_textdomain_dir as fn() -> Vec<u8> as usize
+    ))
+    .unwrap();
     // SAFETY: with a NULL dirname, bindtextdomain only reads its table and
-    // returns a string it owns (or NULL); the domain is NUL-terminated and
-    // no one binds it.
+    // returns a string it owns (the default directory, a constant of the
+    // library, for a domain nothing bound), copied before anything else
+    // could change it; the domain is NUL-terminated.
     unsafe {
-        let p = bindtextdomain(c"robigo-unbound-domain".as_ptr(), std::ptr::null());
+        let p = bindtextdomain(name.as_ptr(), std::ptr::null());
         if p.is_null() { Vec::new() } else { std::ffi::CStr::from_ptr(p).to_bytes().to_vec() }
     }
 }

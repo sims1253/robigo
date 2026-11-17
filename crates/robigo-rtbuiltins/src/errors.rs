@@ -158,11 +158,13 @@ pub struct TextDomains {
 
 /// `BindDomain(R_Home)` at start-up: "R" and "R-base" bound to
 /// `R_TRANSLATIONS`, or `R_HOME/library/translations` (no binding without
-/// an R home).
+/// an R home). An empty `R_TRANSLATIONS` is GNU R's fatal error
+/// (`Rasprintf_malloc` of "" fails): its message, for `R_Suicide`.
 // R: main.c:BindDomain
-pub fn bind_domain(cx: &mut Cx) {
+pub fn bind_domain(cx: &mut Cx) -> Result<(), &'static str> {
     use std::os::unix::ffi::OsStrExt;
     let localedir = match std::env::var_os("R_TRANSLATIONS") {
+        Some(p) if p.is_empty() => return Err("allocation failure in BindDomain"),
         Some(p) => Some(p.as_bytes().to_vec()),
         None => std::env::var_os("R_HOME").map(|h| {
             let mut v = h.as_bytes().to_vec();
@@ -178,6 +180,7 @@ pub fn bind_domain(cx: &mut Cx) {
         bound: std::cell::RefCell::new(bound),
         default: robigo_rtcore::clib::default_textdomain_dir(),
     });
+    Ok(())
 }
 
 /// `.Internal(bindtextdomain(domain, dirname))`: bind `domain`'s messages
@@ -215,6 +218,11 @@ pub fn do_bindtextdomain(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root
             Err(()) => return Err(cx.error("translating strings with \"bytes\" encoding is not allowed")),
         }
     };
+    // libintl refuses an empty domain name: bindtextdomain returns NULL
+    if domain.is_empty() {
+        out.set(cx, cx.nil());
+        return Ok(());
+    }
     let res = {
         let Some(t) = cx.ext::<TextDomains>() else {
             return Err(crate::util::not_yet(cx, Some(call), "bindtextdomain() before the start-up's BindDomain"));

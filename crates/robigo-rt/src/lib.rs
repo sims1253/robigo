@@ -181,8 +181,12 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     // R: platform.c:Init_R_Variables (.Machine, then .Platform)
     platform::init_machine(cx).expect("robigo: no room for .Machine");
     platform::init(cx).expect("robigo: no room for .Platform");
-    // the message domains (main.c's BindDomain, in setup_Rmainloop)
-    robigo_rtbuiltins::errors::bind_domain(cx);
+    // the message domains (main.c's BindDomain, in setup_Rmainloop); its
+    // failure is R_Suicide's (stdout this early, status 2)
+    if let Err(msg) = robigo_rtbuiltins::errors::bind_domain(cx) {
+        println!("Fatal error: {msg}");
+        std::process::exit(2);
+    }
 }
 
 /// `EncodeString(c, 0, 0, Rprt_adj_none)` of a string's bytes (which may

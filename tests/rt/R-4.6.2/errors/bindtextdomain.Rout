@@ -21,3 +21,5 @@
 [1] "translating strings with \"bytes\" encoding is not allowed"
 [1] "translating strings with \"bytes\" encoding is not allowed"
 [1] "1 argument passed to .Internal(bindtextdomain) which requires 2"
+NULL
+NULL

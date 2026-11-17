@@ -215,3 +215,19 @@ fn the_greeting_is_refused() {
         "robigo-rt: R's start-up greeting (-f without --quiet) is not implemented yet\n"
     );
 }
+
+/// An empty `R_TRANSLATIONS` is GNU R 4.6.2's fatal start-up error
+/// (main.c's BindDomain: `Rasprintf_malloc` of "" fails): "Fatal error:
+/// allocation failure in BindDomain" on stdout, status 2 (R_Suicide).
+#[test]
+fn an_empty_r_translations_is_fatal() {
+    let o = Command::new(env!("CARGO_BIN_EXE_robigo-rt"))
+        .args(["--vanilla", "-e", "1"])
+        .env("LANGUAGE", "en")
+        .env("LC_ALL", "C.UTF-8")
+        .env("R_TRANSLATIONS", "")
+        .output()
+        .expect("run robigo-rt");
+    assert_eq!(String::from_utf8_lossy(&o.stdout), "Fatal error: allocation failure in BindDomain\n");
+    assert_eq!(o.status.code(), Some(2));
+}
