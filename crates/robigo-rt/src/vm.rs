@@ -28,25 +28,33 @@ use robigo_rtcore::{Cx, Lgl, Out, RResult, Ref, Root, Slot, Tag, ctxt};
 use std::ptr::NonNull;
 
 /// An activation of a code object.
+///
+/// # Safety invariant
+/// `base` points to `nregs` (at least [`R_FIRST`]) value-stack slots of this
+/// isolate that stay live as long as the activation, and the code it runs
+/// names no register at or past `nregs` ([`Act::new`]'s contract). The
+/// compiler keeps that today; #738's verifier (C1, V3) is to prove it.
 pub struct Act {
     /// The registers.
-    pub(crate) base: NonNull<Slot>,
+    base: NonNull<Slot>,
+    /// How many there are.
+    nregs: u32,
     /// Where the value goes: an empty object slot of the caller.
-    pub(crate) out: NonNull<Slot>,
+    out: NonNull<Slot>,
     /// `R_EvalDepth` when the activation began: an evaluation point of depth
     /// `d` runs at `depth + d`.
-    pub(crate) depth: i32,
+    depth: i32,
     /// The body of a closure call: `return` leaves it directly.
-    pub(crate) body: bool,
+    body: bool,
     /// The value may go to `out` unboxed: the body of a closure that
     /// compiled code called, whose register takes it (`args::apply`).
-    pub(crate) unboxed: bool,
+    unboxed: bool,
     /// The value went to `out` unboxed ([`exec`]'s result).
-    pub(crate) left_unboxed: bool,
+    left_unboxed: bool,
     /// `Eval` code: GNU R's evaluator protections at the root's `eval`
     /// minus `depth` (robigo_rtcore's ppacct): an instruction calling out
     /// sets the excess to this plus its offset ([`View::ppk`]).
-    pub(crate) e0: i32,
+    e0: i32,
 }
 
 /// How a run of instructions ended.
@@ -61,12 +69,60 @@ pub enum Flow {
 }
 
 impl Act {
-    /// The slot of register `r`.
+    /// An activation of code with `nregs` registers at `base`, its value
+    /// going to `out`.
+    ///
+    /// # Safety
+    /// `base` points to `nregs` (at least [`R_FIRST`]) value-stack slots of
+    /// this isolate, live and initialized for as long as the activation is
+    /// used; the code run on it names no register at or past `nregs`; `out`
+    /// is an empty value-stack slot of this isolate that stays live.
+    #[inline(always)]
+    unsafe fn new(
+        base: NonNull<Slot>,
+        nregs: usize,
+        out: NonNull<Slot>,
+        depth: i32,
+        body: bool,
+        unboxed: bool,
+        e0: i32,
+    ) -> Act {
+        debug_assert!(
+            nregs >= R_FIRST as usize && nregs <= u32::MAX as usize,
+            "robigo: an activation of {nregs} registers"
+        );
+        Act { base, nregs: nregs as u32, out, depth, body, unboxed, left_unboxed: false, e0 }
+    }
+
+    /// The registers' first slot (the links walk's view of the frame).
+    #[inline(always)]
+    pub(crate) fn base(&self) -> NonNull<Slot> {
+        self.base
+    }
+
+    /// The slot of register `r`. Its bound is the type's invariant: checked
+    /// in debug builds, and in release builds by the code's construction.
     #[inline(always)]
     pub fn slot(&self, r: Reg) -> NonNull<Slot> {
-        // SAFETY: registers are below the frame's size (the compiler's
-        // contract), all inside the activation's frame.
+        debug_assert!(u32::from(r) < self.nregs, "robigo: VM register {r} past the activation's {}", self.nregs);
+        // SAFETY: `r` is below `nregs` (the invariant), so the slot is in
+        // the activation's frame.
         unsafe { self.base.add(r as usize) }
+    }
+
+    /// The first slot of the `len` registers from `base`, a call's argument
+    /// window. It may be empty: `base` is then at most `nregs`, the slot one
+    /// past the last register, which nothing reads or writes.
+    #[inline(always)]
+    pub(crate) fn window(&self, base: Reg, len: usize) -> NonNull<Slot> {
+        debug_assert!(
+            u32::from(base) as usize + len <= self.nregs as usize,
+            "robigo: VM registers {base}..+{len} past the activation's {}",
+            self.nregs
+        );
+        // SAFETY: `base + len <= nregs` (the invariant), so the window is in
+        // the activation's frame or, when empty, one past its end.
+        unsafe { self.base.add(base as usize) }
     }
 
     #[inline(always)]
@@ -100,17 +156,17 @@ impl Act {
         }
     }
 
-    /// Register `r` as a root.
+    /// Register `r` as a root, for as long as the activation is borrowed.
     #[inline(always)]
-    pub fn root<'s>(&self, r: Reg) -> Root<'s> {
-        // SAFETY: a live slot of this activation, which outlives every use
-        // the VM makes of the root (within one instruction).
+    pub fn root(&self, r: Reg) -> Root<'_> {
+        // SAFETY: a live slot of this activation, which outlives the borrow.
         unsafe { Root::from_raw(self.slot(r)) }
     }
 
-    /// Register `r`, emptied, as the `Out` of a callee.
+    /// Register `r`, emptied, as the `Out` of a callee, for as long as the
+    /// activation is borrowed.
     #[inline(always)]
-    pub fn out<'s>(&self, r: Reg) -> Out<'s> {
+    pub fn out(&self, r: Reg) -> Out<'_> {
         self.clear(r);
         // SAFETY: as in `root`; the slot is empty.
         unsafe { Out::from_raw(self.slot(r)) }
@@ -172,7 +228,10 @@ pub unsafe fn exec(cx: &mut Cx, code: Sexp, rho: Sexp, out: NonNull<Slot>, body:
             crate::links::mark_frame(frame, v.nregs);
             frame.add(crate::links::FRAME_HEAD)
         };
-        let mut act = Act { base, out, depth: entry, body, unboxed, left_unboxed: false, e0: excess + body as i32 };
+        // SAFETY: `v.nregs` fresh slots of this scope follow the head, live
+        // until the scope ends with the activation; the compiler names only
+        // registers below `v.nregs`; `out` as the caller's contract says.
+        let mut act = unsafe { Act::new(base, v.nregs, out, entry, body, unboxed, excess + body as i32) };
         // SAFETY: `rho` and `code` are live and rooted by the caller, and
         // nothing collected since they were read (no safepoint between):
         // from here on the registers hold them.
@@ -253,9 +312,17 @@ pub fn box_slot(cx: &Cx, s: Slot) -> Result<Sexp, NeedGc> {
 ///
 /// # Safety
 /// If `s` holds an object, that object is live while `num` reads its
-/// header and payload. A register of a running activation (rooted, with
-/// nothing collecting during the read) is one way to meet that; a local
-/// register array while nothing collects is another.
+/// header and payload: it was live when `s` was read, and nothing has
+/// collected since. That rules out an object pointer kept unrooted across
+/// anything that can collect, since a collection may free or move it. Two
+/// kinds of caller meet the contract today:
+/// - the VM, reading a register of the running activation (rooted);
+/// - the inline runs (`inline::pure`, `body_loop`, `fused`) and early
+///   evaluation (`early.rs`), reading their local register arrays during a
+///   run, while nothing collects.
+///
+/// Any other caller has to show the same: the object is live and has not
+/// been through a collection since the slot was read.
 #[inline(always)]
 pub unsafe fn num(cx: &Cx, s: Slot) -> Option<Num> {
     match s.tag() {
@@ -264,8 +331,9 @@ pub unsafe fn num(cx: &Cx, s: Slot) -> Option<Num> {
         Tag::Logical => Some(Num::Lgl(s.as_int().unwrap())),
         Tag::Object => {
             let x = s.as_object().unwrap();
-            // SAFETY: a register's object is live and rooted; a vector that
-            // is not ALTREP has its length and payload in its own words.
+            // SAFETY: the caller's contract, the object is live while it is
+            // read; a vector that is not ALTREP has its length and payload in
+            // its own words.
             unsafe {
                 // a plain vector, read from its words (`ops::plain_num`'s
                 // answer without its view)
@@ -298,7 +366,7 @@ pub(crate) fn num_slot(v: Num) -> Slot {
 }
 
 /// Run `act`'s code from `pc` until it returns or its region ends.
-pub fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
+pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
     // SAFETY: the code register holds the activation's live code object.
     let mut v = unsafe { View::of(act.obj(R_CODE)) };
     // an evaluation point of depth d errs when depth + d > R_Expressions
@@ -1352,7 +1420,7 @@ fn dflt_subset(
     // SAFETY: `n` object slots from `base` (and `n` name slots after them),
     // rooted by the activation for the call.
     let args = unsafe {
-        let p = act.slot(base);
+        let p = act.window(base, if names { 2 * n } else { n });
         robigo_rtcore::Args::from_raw(p, names.then(|| p.add(n)), n as u32, any_alt)
     };
     // the expression bcEval is at, for error() and warning()

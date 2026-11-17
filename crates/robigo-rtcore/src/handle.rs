@@ -64,8 +64,9 @@ impl<'g> Ref<'g> {
     /// `self`'s object.
     #[inline(always)]
     unsafe fn child(self, x: Sexp) -> Ref<'g> {
-        // SAFETY: the caller's contract; the parent is reachable for 'g and
-        // its fields do not change during 'g, so neither can the child.
+        // SAFETY: the caller's contract; nothing collects or moves during
+        // 'g, so the child, live now, stays live at this address for 'g even
+        // if a `&Cx` write clears the field (the crate docs, "Minting").
         Ref { p: unsafe { NonNull::new_unchecked(x.as_ptr()) }, _g: PhantomData }
     }
 

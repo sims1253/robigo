@@ -1,0 +1,6 @@
+Warning message:
+w5 deferred: no global handlers left 
+Error in doTryCatch(return(expr), name, parentenv, handler) : 
+  bad handler data
+Calls: print ... tryCatch -> tryCatchList -> tryCatchOne -> doTryCatch
+Execution halted

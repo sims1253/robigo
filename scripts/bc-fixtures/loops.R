@@ -1,0 +1,37 @@
+# Byte-code translation cases: for, while and repeat, with break and next
+# as jumps and through a loop context (a promise's), and switch
+# (scripts/bc-fixtures.R).
+cases <- list(
+  list(name = "k_for", fun = function(x) { s <- 0; for (v in x) s <- s + v; s },
+       calls = c("print(k_for(1:4))", "print(k_for(c(0.5, 1.5)))", "print(k_for(NULL))")),
+  list(name = "k_for_value", fun = function(x) for (v in x) v,
+       calls = c("print(k_for_value(1:2))", "k_for_value(1)")),
+  list(name = "k_for_list", fun = function(l) { n <- character(); for (e in l) n <- c(n, class(e)); n },
+       calls = "print(k_for_list(list(1, 'a', TRUE, NULL)))"),
+  list(name = "k_for_next", fun = function(x) { s <- 0; for (v in x) { if (v %% 2 == 0) next; if (v > 7) break; s <- s + v }; s },
+       calls = "print(k_for_next(1:10))"),
+  list(name = "k_while", fun = function(n) { i <- 0; while (i < n) i <- i + 1; i },
+       calls = c("print(k_while(5))", "print(k_while(-1))")),
+  list(name = "k_while_break", fun = function() { i <- 0; while (TRUE) { i <- i + 1; if (i == 3) next; if (i >= 6) break }; i },
+       calls = "print(k_while_break())"),
+  list(name = "k_repeat", fun = function() { i <- 1; repeat { i <- i * 2; if (i > 50) break }; i },
+       calls = "print(k_repeat())"),
+  list(name = "k_ctx_repeat", fun = function() { i <- 0; repeat { i <- i + 1; if (i > 3) g(break) }; i },
+       calls = c("g <- function(x) x", "print(k_ctx_repeat())")),
+  list(name = "k_ctx_for", fun = function(x) { s <- 0; for (v in x) { if (v == 2) g(next); s <- s + v }; s },
+       calls = c("g <- function(x) x", "print(k_ctx_for(1:4))")),
+  list(name = "k_ctx_while", fun = function(n) { i <- 0; while (g(i < n)) { i <- i + 1; if (i == 2) g(break) }; i },
+       calls = c("g <- function(x) x", "print(k_ctx_while(5))")),
+  list(name = "k_nested", fun = function(n) { s <- 0; for (i in seq_len(n)) for (j in seq_len(i)) s <- s + j; s },
+       calls = "print(k_nested(4))"),
+  list(name = "k_switch", fun = function(x) switch(x, a = "A", b = , c = "BC", "other"),
+       calls = c("print(k_switch('a'))", "print(k_switch('b'))", "print(k_switch('c'))", "print(k_switch('z'))")),
+  list(name = "k_switch_num", fun = function(i) switch(i, "one", "two"),
+       calls = c("print(k_switch_num(2))", "print(k_switch_num(3))", "print(k_switch_num(2.9))")),
+  list(name = "k_switch_nodflt", fun = function(x) switch(x, a = 1, b = 2),
+       calls = c("print(k_switch_nodflt('b'))", "print(k_switch_nodflt('q'))")),
+  list(name = "k_switch_nontail", fun = function(x) { ok <- switch(x, a = , b = TRUE, FALSE); ok },
+       calls = c("print(k_switch_nontail('a'))", "print(k_switch_nontail('z'))", "print(k_switch_nontail(2))")),
+  list(name = "k_switch_empty", fun = function(i) switch(i, , "two"),
+       calls = c("print(k_switch_empty(2))", "print(k_switch_empty(1))"))
+)

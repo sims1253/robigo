@@ -34,6 +34,9 @@ use robigo_heap::types::*;
 use robigo_rtcore::{Cx, RResult, Ref, Root};
 use std::collections::HashMap;
 
+mod bctrans;
+mod crosscheck;
+
 /// Run one compile attempt under `&Cx` until it succeeds: a refused
 /// allocation collects and compiles again (the same request refused twice
 /// is an error), a lazy binding a decision needs is forced first
@@ -105,7 +108,7 @@ pub fn compile(cx: &mut Cx, expr: Root<'_>, rho: Root<'_>, profile: Profile) -> 
                 let st = prims::state(cx);
                 let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
                 let b = c.root(e)?;
-                let code = crate::code::build(cx, &b, e, None)?;
+                let code = crate::code::build(cx, &verified(b), e, None)?;
                 // the code runs in `env`'s frames: their shape's slot
                 // indices, for it and the arguments compiled with it
                 if env.typ() == ENVSXP && env.has_flag(robigo_heap::flags::SLOTS) {
@@ -131,7 +134,7 @@ pub fn compile(cx: &mut Cx, expr: Root<'_>, rho: Root<'_>, profile: Profile) -> 
             let st = prims::state(cx);
             let mut c = Comp::new(cx, st, Profile::Eval, None);
             let b = c.root(e)?;
-            Ok(crate::code::build(cx, &b, e, None)?)
+            Ok(crate::code::build(cx, &verified(b), e, None)?)
         }
     })
     .map(|c| c.expect("robigo: the Eval profile always compiles"))
@@ -152,18 +155,17 @@ pub unsafe fn compile_closure(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
             let st = prims::state(cx);
             let mut c = Comp::new(cx, st, Profile::Eval, None);
             let b = c.root(body)?;
-            Ok(crate::code::build(cx, &b, body, Some(formals))?)
+            Ok(crate::code::build(cx, &verified(b), body, Some(formals))?)
         }
     })
     .map(|c| c.expect("robigo: the Eval profile always compiles"))
 }
 
-/// The expression closure `f`'s body runs: its body, or for a BCODESXP
-/// body its first constant, the source (`bytecodeExpr`), never anything
-/// else of the closure. INTERIM(V3): robigo compiles that source with its
-/// own decisions, as GNU R's bcEval falls back to `eval(bytecodeExpr(body))`
-/// when it cannot run the code; V3 translates the byte code itself, and
-/// `ROBIGO_BC_CROSSCHECK` measures the gap between the two.
+/// The expression closure `f`'s body runs under the `Eval` profile: its
+/// body, or for a BCODESXP body its first constant, the source
+/// (`bytecodeExpr`): what bcEval falls back to when it does not run the
+/// code (`R_disable_bytecode`, a version it does not know). The `Bc`
+/// profile translates the byte code ([`translate_code`]).
 ///
 /// # Safety
 /// `f` is a live closure.
@@ -171,7 +173,6 @@ pub unsafe fn compile_closure(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
 unsafe fn source_body(cx: &Cx, f: Sexp) -> Sexp {
     // SAFETY: the caller's contract.
     let b = unsafe { f.cdr() };
-    // INTERIM(V3): replaced by the translation of the byte code
     // SAFETY: a live object of `cx`'s heap.
     robigo_rtbuiltins::bytecode::expr(cx, unsafe { Ref::from_sexp(b, cx) }).sexp()
 }
@@ -188,6 +189,13 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
         // SAFETY: a rooted closure (and cache entry); nothing collects in
         // this interval.
         unsafe {
+            if f.cdr().typ() == BCODESXP {
+                if crosscheck::enabled() {
+                    crosscheck_closure(cx, f, installed)?;
+                }
+                // V3: GNU R's byte code, translated
+                return translate_code(cx, f.cdr(), Some(f.car()));
+            }
             let (formals, body) = (f.car(), source_body(cx, f));
             let mut cenv = Cenv::of_env(cx, f.tag(), installed)?;
             let st = prims::state(cx);
@@ -197,11 +205,202 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
             let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
             let mut b = c.root(body)?;
             c.add_unit_locals(&mut b);
-            let code = crate::code::build(cx, &b, body, Some(formals))?;
+            let code = crate::code::build(cx, &verified(b), body, Some(formals))?;
             index_arg_codes(cx, code, &c.arg_codes);
             Ok(code)
         }
     })
+}
+
+/// `ROBIGO_BC_CROSSCHECK`: closure `f`'s byte code translated and its
+/// source compiled as the from-source compiler compiles it for the
+/// closure's environment, the two compared ([`crosscheck`]). The
+/// from-source compile goes first, so the argument code that stays on an
+/// expression both share is the translation's. A compile that would force
+/// a lazy binding, or that cmp.R declines, is skipped (reported).
+/// `installed`: base's installed byte code (provenance, as for
+/// [`compile_closure_bc`]).
+///
+/// # Safety
+/// `f` is a live closure whose body is a BCODESXP; nothing collects.
+unsafe fn crosscheck_closure(cx: &Cx, f: Sexp, installed: bool) -> Result<(), Need> {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let (formals, bc) = (f.car(), f.cdr());
+        let body = robigo_rtbuiltins::bytecode::expr(cx, Ref::from_sexp(bc, cx)).sexp();
+        let st = prims::state(cx);
+        let what = crate::deparse::deparse1line(cx, Ref::from_sexp(body, cx), false, 0)
+            .map(|d| {
+                let s = String::from_utf8_lossy(&d).split_whitespace().collect::<Vec<_>>().join(" ");
+                if s.chars().count() > 70 { format!("{}...", s.chars().take(70).collect::<String>()) } else { s }
+            })
+            .unwrap_or_else(|_| "<a closure>".to_owned());
+        let source = (|| -> Result<Option<Built>, Need> {
+            let mut cenv = Cenv::of_env(cx, f.tag(), installed)?;
+            if !function_context(cx, st, &mut cenv, formals, body)? {
+                return Ok(None);
+            }
+            let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
+            let mut b = c.root(body)?;
+            c.add_unit_locals(&mut b);
+            Ok(Some(b))
+        })();
+        let source = match source {
+            Ok(Some(b)) => b,
+            Ok(None) | Err(Need::Fail) => {
+                crosscheck::report(&format!("skipped: {what}: the from-source compiler leaves it uncompiled"));
+                return Ok(());
+            }
+            Err(Need::Force(_)) => {
+                crosscheck::report(&format!("skipped: {what}: the from-source compile would force a binding"));
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+        let mut c = Comp::new(cx, st, Profile::Bc, Some(Cenv::for_translation()));
+        let r = c.alloc();
+        match c.translate(bc, r) {
+            Ok(()) => {
+                let mut i = Ins::new(Op::Ret);
+                i.b = r;
+                c.emit(i);
+                let t = c.finish();
+                crosscheck::compare(cx, &what, &t, &source);
+            }
+            Err(Need::Fail) => {
+                let why =
+                    c.bc_untranslated.take().unwrap_or_else(|| "byte code the translation cannot follow".to_owned());
+                crosscheck::report(&format!("untranslated: {what}: {why}"));
+            }
+            Err(e) => return Err(e),
+        }
+        Ok(())
+    }
+}
+
+/// For the base.rdb translation test: closure `f`'s byte code translated,
+/// and the byte code of each function it makes (`MAKECLOSURE`'s), without
+/// running any; each translation through the [`crate::code::Verified`]
+/// gate. What each one stopped at (an opcode or a primitive robigo-rt does
+/// not have, code the translation cannot follow, a refusal of the gate);
+/// none when all of them translate. Under `ROBIGO_BC_CROSSCHECK` the
+/// closure is compared too, as base's installed code.
+#[doc(hidden)]
+pub fn translation_gaps(cx: &mut Cx, f: Root<'_>) -> RResult<Vec<String>> {
+    let mut gaps = Vec::new();
+    attempt(cx, |cx| {
+        gaps.clear();
+        // SAFETY: a rooted closure; the byte code it makes is reachable
+        // from it; nothing collects in this interval.
+        unsafe {
+            let f = f.bind(cx).sexp();
+            if crosscheck::enabled() && f.cdr().typ() == BCODESXP {
+                crosscheck_closure(cx, f, true)?;
+            }
+            let st = prims::state(cx);
+            let mut todo = vec![f.cdr()];
+            while let Some(bc) = todo.pop() {
+                if bc.typ() != BCODESXP {
+                    continue;
+                }
+                let mut c = Comp::new(cx, st, Profile::Bc, Some(Cenv::for_translation()));
+                let r = c.alloc();
+                match c.translate(bc, r) {
+                    Ok(()) => {
+                        let mut i = Ins::new(Op::Ret);
+                        i.b = r;
+                        c.emit(i);
+                        if let Err(e) = crate::code::Verified::new(c.finish()) {
+                            gaps.push(format!("the verifier refuses the translation: {e}"));
+                        }
+                    }
+                    Err(Need::Fail) => gaps.push(
+                        c.bc_untranslated
+                            .take()
+                            .unwrap_or_else(|| "byte code the translation cannot follow".to_owned()),
+                    ),
+                    Err(e) => return Err(e),
+                }
+                // the byte code it holds: MAKEPROM's, and the functions it
+                // makes (MAKECLOSURE's list(formals, body, ...)), whose
+                // own byte code a promise's may hold in turn
+                let consts = bc.cdr();
+                let p = consts.std_data() as *const Sexp;
+                for j in 0..consts.std_len() as usize {
+                    let k = *p.add(j);
+                    if k.typ() == BCODESXP {
+                        todo.push(k);
+                    } else if k.typ() == VECSXP && k.std_len() >= 2 {
+                        todo.push(*(k.std_data() as *const Sexp).add(1));
+                    }
+                }
+            }
+            Ok(cx.nil().sexp())
+        }
+    })?;
+    Ok(gaps)
+}
+
+/// The code of the byte code `bc` evaluated as itself (`eval(bc, rho)`,
+/// bcEval at the top level): its translation, kept on it (per expression;
+/// V4 makes a promise's code per promise).
+pub(crate) fn bytecode_code(cx: &mut Cx, bc: Root<'_>) -> RResult<Sexp> {
+    // SAFETY: a rooted BCODESXP: its 4th word is R_NilValue or a code
+    // object this module stored.
+    if let Some(c) = unsafe { crate::code::cached(cx, bc.bind(cx).sexp().aux(), Profile::Bc) } {
+        return Ok(c);
+    }
+    let code = attempt(cx, |cx| {
+        // SAFETY: a rooted BCODESXP; nothing collects in this interval.
+        unsafe { translate_code(cx, bc.bind(cx).sexp(), None) }
+    })?
+    .expect("robigo: a translation always makes code");
+    // SAFETY: as above: a traced word, stored with the barrier.
+    unsafe { crate::code::cache_on(bc.bind(cx).sexp(), code) };
+    Ok(code)
+}
+
+/// The code of the byte code `bc` (a BCODESXP): its translation (V3,
+/// [`bctrans`]); with `formals`, a closure body's, with the frame shape of
+/// its formals and the variables it assigns. Where the translation stops
+/// at what it does not know, the code raises "not implemented yet" when it
+/// runs (AGENTS rule 6), never runs the source instead.
+///
+/// # Safety
+/// `bc` is a live BCODESXP of `cx`'s isolate, `formals` a live pairlist.
+unsafe fn translate_code(cx: &Cx, bc: Sexp, formals: Option<Sexp>) -> Result<Sexp, Need> {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let st = prims::state(cx);
+        let mut c = Comp::new(cx, st, Profile::Bc, Some(Cenv::for_translation()));
+        let r = c.alloc();
+        let res = c.translate(bc, r);
+        let b = match res {
+            Ok(()) => {
+                let mut i = Ins::new(Op::Ret);
+                i.b = r;
+                c.emit(i);
+                c.finish()
+            }
+            Err(Need::Fail) => {
+                let what =
+                    c.bc_untranslated.take().unwrap_or_else(|| "byte code the translation cannot follow".to_owned());
+                let mut c = Comp::new(cx, st, Profile::Bc, Some(Cenv::for_translation()));
+                let r = c.alloc();
+                let nil = c.nil();
+                c.unimplemented(nil, &format!("translating {what}"))?;
+                let mut i = Ins::new(Op::Ret);
+                i.b = r;
+                c.emit(i);
+                c.finish()
+            }
+            Err(e) => return Err(e),
+        };
+        let expr = robigo_rtbuiltins::bytecode::expr(cx, Ref::from_sexp(bc, cx)).sexp();
+        let code = crate::code::build(cx, &verified(b), expr, formals)?;
+        index_arg_codes(cx, code, &c.arg_codes);
+        Ok(code)
+    }
 }
 
 /// `make.functionContext(cntxt, forms, body)` on `cenv`: a frame of the
@@ -211,7 +410,13 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
 ///
 /// # Safety
 /// `formals` (a pairlist) and `body` are live.
-unsafe fn function_context(cx: &Cx, st: &RtState, cenv: &mut Cenv, formals: Sexp, body: Sexp) -> Result<bool, Need> {
+unsafe fn function_context(
+    cx: &Cx,
+    st: &RtState,
+    cenv: &mut Cenv<'_>,
+    formals: Sexp,
+    body: Sexp,
+) -> Result<bool, Need> {
     // SAFETY: the caller's contract.
     unsafe {
         let forms = cenv::elements(cx, formals, false);
@@ -239,7 +444,7 @@ pub fn compile_top_loop(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RResult<O
             cenv.add_top_vars(locals);
             let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
             let b = c.root(e)?;
-            Ok(crate::code::build(cx, &b, e, None)?)
+            Ok(crate::code::build(cx, &verified(b), e, None)?)
         }
     })
 }
@@ -279,7 +484,7 @@ pub(crate) fn compile_special_with(
             i.b = dst;
             c.emit(i);
             let b = c.finish();
-            Ok(crate::code::build(cx, &b, call, None)?)
+            Ok(crate::code::build(cx, &verified(b), call, None)?)
         }
     })
     .map(|c| c.expect("robigo: the Eval profile always compiles"))
@@ -318,7 +523,7 @@ struct Comp<'g> {
     sites: u16,
     /// The `Bc` profile's compile environment (cmp.R's `cntxt$env`), whose
     /// decisions say what the code inlines; None under `Eval`.
-    bc: Option<Cenv>,
+    bc: Option<Cenv<'g>>,
     /// `Eval`: GNU R's evaluator protections at the entry of the `eval` of
     /// the expression being compiled, above the code object's root's
     /// (robigo_rtcore's ppacct): what `eval`'s `PROTECT(op)`, `evalList`'s
@@ -335,6 +540,9 @@ struct Comp<'g> {
     /// shape's slot indices once it exists ([`index_arg_codes`]). Raw: an
     /// attempt collects nothing.
     arg_codes: Vec<Sexp>,
+    /// What a byte-code translation stopped at ([`bctrans`]): the code
+    /// raises "not implemented yet" for it.
+    bc_untranslated: Option<String>,
 }
 
 /// Give the argument codes compiled with closure code `code` (`arg_codes`)
@@ -380,7 +588,7 @@ enum Known {
 }
 
 impl<'g> Comp<'g> {
-    fn new(cx: &'g Cx, st: &'g RtState, profile: Profile, bc: Option<Cenv>) -> Comp<'g> {
+    fn new(cx: &'g Cx, st: &'g RtState, profile: Profile, bc: Option<Cenv<'g>>) -> Comp<'g> {
         debug_assert_eq!(bc.is_some(), profile == Profile::Bc);
         Comp {
             cx,
@@ -401,6 +609,7 @@ impl<'g> Comp<'g> {
             ppk: Vec::new(),
             site_save: 0,
             arg_codes: Vec::new(),
+            bc_untranslated: None,
         }
     }
 
@@ -1155,7 +1364,11 @@ impl<'g> Comp<'g> {
             self.k(call);
             // SAFETY: a fresh call.
             unsafe { self.expr(call, dst, d + 1, tail)? };
-            // (it does not return: the default follows, as in cmp.R)
+            // (it does not return: the default follows, as in cmp.R; in
+            // tail position cmp.R's call RETURNs, a jump to the end)
+            if tail {
+                ends.push(self.emit(Ins::new(Op::Jmp)));
+            }
         }
         at[dflt] = self.pc();
         self.ld_nil(dst, false);
@@ -1651,7 +1864,7 @@ impl<'g> Comp<'g> {
         let b = r?;
         // SAFETY: as above.
         unsafe {
-            let code = crate::code::build(self.cx, &b, a, None)?;
+            let code = crate::code::build(self.cx, &verified(b), a, None)?;
             crate::code::cache_on(a, code);
             // (its promises, and those of the arguments inside it, run in
             // this code's frame)
@@ -1716,7 +1929,7 @@ impl<'g> Comp<'g> {
         // SAFETY: as above; the constants are the source's, immortal or
         // made in this interval.
         unsafe {
-            let code = crate::code::build(self.cx, &b, body, Some(formals))?;
+            let code = crate::code::build(self.cx, &verified(b), body, Some(formals))?;
             index_arg_codes(self.cx, code, &sub.arg_codes);
             Ok(Some(code))
         }
@@ -2688,19 +2901,16 @@ unsafe fn mark_not_mutable(x: Sexp) {
 /// # Safety
 /// `x` is live.
 unsafe fn plain_scalar_const(x: Sexp) -> Option<()> {
+    // (its payload inline: C-owned EXTDATA vectors are loaded as constants,
+    // so `inline::scalar` reads `LdScalar`'s operand without the test)
     // SAFETY: the caller's contract.
-    unsafe {
-        let t = x.typ();
-        // (its payload inline: C-owned EXTDATA vectors are loaded as
-        // constants, so `inline::scalar` reads `LdScalar`'s operand without
-        // the test)
-        (matches!(t, REALSXP | INTSXP | LGLSXP)
-            && !x.is_altrep()
-            && !x.has_flag(robigo_heap::flags::EXTDATA)
-            && x.std_len() == 1
-            && x.attrib_raw().typ() == NILSXP)
-            .then_some(())
-    }
+    unsafe { crate::code::plain_scalar(x) }.then_some(())
+}
+
+/// `b` through [`crate::code::Verified`]'s gate, the one every code object
+/// passes (#738): a check that fails is a compiler bug.
+fn verified(b: Built) -> crate::code::Verified {
+    crate::code::Verified::new(b).unwrap_or_else(|e| panic!("{e}"))
 }
 
 /// `checkArity`'s message for a special (`crate::prims::arity_message`).

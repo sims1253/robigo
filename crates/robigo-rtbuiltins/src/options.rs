@@ -8,7 +8,7 @@
 //! value `Renviron` substitutes) and from `R_HOME`: the oracle build's
 //! values, as `.Platform`'s are (robigo-rt has no installation of its own).
 //!
-//! Options robigo-rt does not honor yet (`width`, `digits`, `nwarnings`, ...:
+//! Options robigo-rt does not honor yet (`width`, `digits`, ...:
 //! [`UNHONORED`]) cannot be set: GNU R's checks of the value run, then
 //! "not implemented yet".
 //!
@@ -343,7 +343,6 @@ const UNHONORED: &[&str] = &[
     "digits",
     "deparse.cutoff",
     "expressions",
-    "nwarnings",
     "max.print",
     "keep.source",
     "verbose",
@@ -637,11 +636,20 @@ fn check_option<'s>(
                 return Err(invalid(cx));
             }
         }
-        b"max.print" | b"nwarnings" => {
+        b"max.print" => {
             let k = as_int(cx)?;
             if k < 1 {
                 return Err(invalid(cx));
             }
+            int(cx, s, k)?
+        }
+        b"nwarnings" => {
+            let k = as_int(cx)?;
+            if k < 1 {
+                return Err(invalid(cx));
+            }
+            // R_nwarnings = k; R_CollectWarnings = 0 (a reset)
+            cx.set_nwarnings(k as usize);
             int(cx, s, k)?
         }
         b"show.error.messages" => {

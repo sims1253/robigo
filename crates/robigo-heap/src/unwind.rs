@@ -136,6 +136,28 @@ unsafe extern "C" {
     fn robigo_heap_jmpbuf_size() -> usize;
     fn robigo_heap_jmpbuf_align() -> usize;
     pub(crate) fn robigo_heap_spill(cb: unsafe extern "C" fn(*mut c_void), ctx: *mut c_void);
+    /// `hit(ctx, at, v)` for each word `v` at a word-aligned address `at`
+    /// from `from` (rounded up to the word size) up to `to`, with
+    /// `min <= v <= max` (shim.c): the conservative scan's loads.
+    ///
+    /// # Safety
+    /// `[from, to)` is readable memory of this thread for the whole call (a
+    /// mapped stack segment or a live segment node): C loads every
+    /// word-aligned address in it. `hit` must not unwind (the shim's frames
+    /// have no unwind tables), and `ctx` must be valid for `hit` during the
+    /// call; neither is used after it returns. `hit` sees only the loaded
+    /// values, never the memory they came from: that memory can be
+    /// uninitialized or exclusively borrowed by a suspended Rust frame,
+    /// which is why the loads are C's (#745). Do not move them back into
+    /// Rust.
+    pub(crate) fn robigo_heap_scan_words(
+        from: usize,
+        to: usize,
+        min: usize,
+        max: usize,
+        hit: unsafe extern "C" fn(*mut c_void, usize, usize),
+        ctx: *mut c_void,
+    );
 }
 
 /// Jump to the record `jb`: the trampoline that set it returns 1.

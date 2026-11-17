@@ -1,0 +1,30 @@
+# Byte-code translation cases: the opcodes that replace their operands by
+# a builtin's value (IS*, SEQLEN, SEQALONG, COLON, MATH1), DOLLAR,
+# CHECKFUN, and the missing-OK `..n` read (scripts/bc-fixtures.R).
+cases <- list(
+  list(name = "k_isnull", fun = function(x) is.null(x),
+       calls = c("print(k_isnull(NULL))", "print(k_isnull(1))")),
+  list(name = "k_istypes",
+       fun = function(x) c(is.logical(x), is.integer(x), is.double(x), is.complex(x),
+                           is.character(x), is.symbol(x), is.object(x)),
+       calls = c("print(k_istypes(TRUE))", "print(k_istypes(1L))", "print(k_istypes(factor('a')))",
+                 "print(k_istypes('a'))", "print(k_istypes(quote(a)))", "print(k_istypes(1i))")),
+  list(name = "k_seq", fun = function(n, x) list(seq_len(n), seq_along(x), 1:n, n:1, 2.5:n),
+       calls = c("print(k_seq(3, c('a', 'b')))", "print(k_seq(1L, NULL))")),
+  list(name = "k_math1", fun = function(x) atan(x),
+       calls = c("print(k_math1(1))", "print(k_math1(c(0, 1)))", "print(k_math1(1L))",
+                 "Math.myc <- function(x, ...) paste('Math', .Generic)",
+                 "print(k_math1(structure(1, class = 'myc')))")),
+  list(name = "k_dollar", fun = function(x) x$a,
+       calls = c("print(k_dollar(list(a = 1, b = 2)))", "print(k_dollar(list(b = 2)))",
+                 "`$.myc` <- function(x, name) paste('dollar', name)",
+                 "print(k_dollar(structure(list(), class = 'myc')))")),
+  list(name = "k_checkfun", fun = function(f, x) (f)(x),
+       calls = c("print(k_checkfun(sqrt, 16))", "print(k_checkfun(function(y) y + 1, 1))")),
+  list(name = "k_checkfun2", fun = function(l, x) l[[2]](x, 10),
+       calls = "print(k_checkfun2(list(1, function(a, b) a * b), 3))"),
+  list(name = "k_ddmissok", fun = function(x, ...) x[..1],
+       calls = c("print(k_ddmissok(c(5, 6, 7), 2))", "print(k_ddmissok(c(5, 6, 7), -1))")),
+  list(name = "k_checkfun_bad", fun = function(f, x) (f)(x),
+       calls = "print(k_checkfun_bad(1, 2))")
+)

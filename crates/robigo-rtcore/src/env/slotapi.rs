@@ -21,7 +21,7 @@ use layout::{
     OFF_SHAPE, REAL, SlotRef, UNBOUND, VALUE,
 };
 use robigo_heap::types::*;
-use robigo_heap::{NeedGc, Sexp, Trace, env};
+use robigo_heap::{NeedGc, Sexp, env};
 
 /// An unboxed scalar a slot can hold (the VM's locals, V1).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -77,39 +77,6 @@ pub enum SlotInit<'s> {
     /// ([`Cx::reserve_alias_promises`]), so that the call's end can make it
     /// without allocating; a frame made without one panics.
     Alias { frame: Root<'s>, index: usize },
-}
-
-/// The deepest `<<-` memo: enclosures followed before the binding.
-pub const SUPER_ASSIGN_HOPS: usize = 4;
-
-/// `<<-`'s memo for one assignment site (docs/g3.md §5.3, "`<<-` caches
-/// (depth, shape, slot)"): the binding `<<-` assigns from the frame it runs
-/// in is `hops` enclosures up, in slot `slot` of a slot frame of shape
-/// `shapes[hops - 1]`, and every frame between has the shape recorded for
-/// it, which does not hold the symbol. It holds while each frame on the way
-/// has its recorded shape and no overflow binding of the symbol, so a hit is
-/// one compare per hop and a store. Its owner (V1's code object) traces it:
-/// the shapes are objects, and a memo never keys on a bare address.
-#[derive(Clone, Copy, Debug, Trace)]
-pub struct SuperAssignCache {
-    shapes: [Sexp; SUPER_ASSIGN_HOPS],
-    #[trace(skip = "a count")]
-    hops: u8,
-    #[trace(skip = "an index")]
-    slot: u32,
-}
-
-impl Default for SuperAssignCache {
-    fn default() -> SuperAssignCache {
-        SuperAssignCache { shapes: [Sexp::NULL; SUPER_ASSIGN_HOPS], hops: 0, slot: 0 }
-    }
-}
-
-impl SuperAssignCache {
-    /// Whether the memo holds a path (a test's view).
-    pub fn is_filled(&self) -> bool {
-        self.hops > 0
-    }
 }
 
 impl Cx {
@@ -315,6 +282,13 @@ impl Cx {
     /// D5: the call that ran in `frame` returned `value` (its
     /// cleanup done; None for an unboxed scalar, which references nothing):
     /// the frame goes to the pool if nothing can reach it (`env::recycle`).
+    ///
+    /// "Reach" counts heap edges and escapes, not roots: a root is not a
+    /// count. The caller must therefore not read `frame`, or any other root
+    /// of it, after this call. A root that does would see the next closure
+    /// frame of that capacity, rewritten in place. No memory is reused
+    /// behind it: a root keeps the frame live through a collection, which
+    /// empties the pool.
     pub fn recycle_frame(&mut self, frame: Root<'_>, value: Option<Root<'_>>) {
         let iso = self.iso();
         let f = frame.bind(self).sexp();
@@ -568,40 +542,6 @@ impl Cx {
         self.set_binding_value(l, value, base, false)
     }
 
-    /// GNU R's `<<-` of a symbol: `setVar(sym, value, ENCLOS(rho))`, through
-    /// the site's memo (see [`SuperAssignCache`]): a hit stores into the
-    /// remembered slot, a miss walks as `setVar` does and remembers the path
-    /// when it is short and all slot frames whose shapes lack the symbol.
-    // R: eval.c:do_set (`<<-`), envir.c:setVar
-    pub fn set_var_super(
-        &mut self,
-        sym: Root<'_>,
-        value: Root<'_>,
-        rho: Root<'_>,
-        cache: &mut SuperAssignCache,
-    ) -> RResult<()> {
-        self.note_effect();
-        let s = expect_sym(sym.bind(self));
-        let r = expect_env(rho.bind(self));
-        let iso = self.iso();
-        iso.check_owns(s);
-        iso.check_owns(r);
-        // SAFETY: rooted, live; the walks read frames only.
-        unsafe {
-            if cache.hops > 0
-                && let Some((f, sl)) = super_hit(iso.nil, s, env::enclos(r), cache)
-            {
-                return self.set_binding_value(Loc::of_slot(sl), value, f, true);
-            }
-            *cache = super_record(iso.nil, s, env::enclos(r));
-        }
-        self.scope(|cx, sc| {
-            // SAFETY: ENCLOS of a rooted environment, rooted at once.
-            let start = sc.root(cx, unsafe { Ref::from_sexp(env::enclos(rho.bind(cx).sexp()), cx) });
-            cx.set_var(sym, value, start)
-        })
-    }
-
     /// A slot frame's shape, and whether it has an overflow block: the shape
     /// is the list of symbols its inline slots are keyed by (set when the
     /// frame is made and never changed, part of its closure's code), and
@@ -661,70 +601,4 @@ impl Cx {
         // SAFETY: rooted, live; a header bit.
         unsafe { r.set_gp(r.gp() | NO_SPECIAL_SYMBOLS) };
     }
-}
-
-/// A `<<-` memo's binding, if every frame on its path still has its
-/// recorded shape and no overflow binding of `sym`: the target frame and
-/// its slot.
-///
-/// # Safety
-/// `f` a live environment (or R_NilValue), `sym` a live symbol, of one heap.
-unsafe fn super_hit(nil: Sexp, sym: Sexp, mut f: Sexp, cache: &SuperAssignCache) -> Option<(Sexp, SlotRef)> {
-    // SAFETY: the caller's contract; frames are read only.
-    unsafe {
-        let hops = cache.hops as usize;
-        for h in 0..hops {
-            if f == nil || f.typ() != ENVSXP || !layout::is_slots(f) || layout::get(f, OFF_SHAPE) != cache.shapes[h] {
-                return None;
-            }
-            let b = layout::get(f, layout::OFF_OVERFLOW);
-            if h + 1 < hops {
-                if b != nil && frame::find_bound(f, sym, nil).is_some() {
-                    return None;
-                }
-                f = env::enclos(f);
-            } else {
-                let s = SlotRef { owner: f, index: cache.slot as usize };
-                return (s.kind() != UNBOUND).then_some((f, s));
-            }
-        }
-        None
-    }
-}
-
-/// The memo for `<<-` of `sym` from `f` (ENCLOS of the frame it runs in):
-/// filled when the binding `setVar` will find is a shape slot of a slot
-/// frame within [`SUPER_ASSIGN_HOPS`], and the frames before it are slot
-/// frames whose shapes do not hold `sym`; empty otherwise.
-///
-/// # Safety
-/// As for [`super_hit`].
-unsafe fn super_record(nil: Sexp, sym: Sexp, mut f: Sexp) -> SuperAssignCache {
-    let mut c = SuperAssignCache::default();
-    // SAFETY: the caller's contract; frames are read only.
-    unsafe {
-        for h in 0..SUPER_ASSIGN_HOPS {
-            if f == nil || f.typ() != ENVSXP || !layout::is_slots(f) {
-                return SuperAssignCache::default();
-            }
-            let shape = layout::get(f, OFF_SHAPE);
-            c.shapes[h] = shape;
-            match frame::find_slot(f, sym, nil) {
-                Some(s) if s.owner == f => {
-                    if s.kind() == UNBOUND {
-                        // another frame of this shape may bind it
-                        return SuperAssignCache::default();
-                    }
-                    c.hops = h as u8 + 1;
-                    c.slot = s.index as u32;
-                    return c;
-                }
-                // an overflow binding: not a stable place
-                Some(s) if s.kind() != UNBOUND => return SuperAssignCache::default(),
-                _ => {}
-            }
-            f = env::enclos(f);
-        }
-    }
-    SuperAssignCache::default()
 }

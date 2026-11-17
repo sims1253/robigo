@@ -42,9 +42,10 @@ mod dotcode;
 mod errors;
 mod eval;
 mod memory;
+mod rdynload;
 mod unwind;
 
-pub use dotcode::{DllInfo, loaded_dlls};
+pub use rdynload::{DllInfo, loaded_dlls};
 
 use robigo_rtcore::Cx;
 
@@ -101,6 +102,7 @@ use altrep::*;
 use errors::*;
 use eval::*;
 use memory::*;
+use rdynload::*;
 use unwind::*;
 
 unsafe extern "C" {
@@ -253,6 +255,10 @@ exports! {
     (entry 4), true => robigo_rtapi_unwind_protect R_ExecWithCleanup;
     (entry 1), true => R_ContinueUnwind;
     (entry 0), true => R_MakeUnwindCont;
+    // registration.c: base's routines (rdynload.rs)
+    (entry 4), true => robigo_rtapi_base_R_addTaskCallback;
+    (entry 1), true => robigo_rtapi_base_R_removeTaskCallback;
+    (entry 0), true => robigo_rtapi_base_R_getTaskCallbackNames;
 }
 
 /// GNU R's numeric constants (`R_ext/Arith.h`): immutable process data,
@@ -286,6 +292,7 @@ pub fn install(cx: &mut Cx) {
         &R_PosInf as *const f64 as usize,
         &R_NegInf as *const f64 as usize,
     ]);
+    rdynload::install(cx);
     dotcode::install(cx);
 }
 
