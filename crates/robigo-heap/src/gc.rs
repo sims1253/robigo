@@ -502,7 +502,10 @@ pub struct Core {
     /// finalized, ready ones (`READY_TO_FINALIZE`, their key dead or the
     /// session ending) included, oldest first (`R_weak_refs` reversed).
     /// A reference leaves it when its finalizer is about to run
-    /// ([`Core::pop_finalizable`]).
+    /// ([`Core::pop_finalizable_before`]): a null entry until the pass
+    /// ends, so a pass's positions never move and taking one out is O(1)
+    /// (a removal would shift every newer one: a pass quadratic in the
+    /// list). Every walk of the list skips them.
     weak_refs: Vec<Sexp>,
     /// GNU R's `R_finalizers_pending`: set by each collection when a
     /// reference is ready (memory.c:CheckFinalizers), and by the exit
@@ -1734,7 +1737,7 @@ impl Core {
         self.weak_refs
             .iter()
             // SAFETY: every collection marks the objects in `weak_refs`.
-            .filter(|w| unsafe { w.gp() } & gp::weakref::READY_TO_FINALIZE != 0)
+            .filter(|w| !w.is_null() && unsafe { w.gp() } & gp::weakref::READY_TO_FINALIZE != 0)
             .count()
     }
 
@@ -1748,6 +1751,7 @@ impl Core {
     /// what is still ready waits for the next collection.
     pub fn end_finalizer_pass(&mut self) {
         self.finalizers_pending = false;
+        self.weak_refs.retain(|w| !w.is_null());
     }
 
     /// R: memory.c:R_RunExitFinalizers -- every onexit reference becomes
@@ -1757,7 +1761,7 @@ impl Core {
         for &w in &self.weak_refs {
             // SAFETY: every collection marks the objects in `weak_refs`.
             unsafe {
-                if w.gp() & gp::weakref::FINALIZE_ON_EXIT != 0 {
+                if !w.is_null() && w.gp() & gp::weakref::FINALIZE_ON_EXIT != 0 {
                     w.set_gp(w.gp() | gp::weakref::READY_TO_FINALIZE);
                 }
             }
@@ -1771,14 +1775,16 @@ impl Core {
     /// its position. GNU R's pass walks `R_weak_refs` once, newest first:
     /// a reference readied during the pass runs in it only if it is older
     /// than the one running then, and one registered during it waits for
-    /// the next pass. Taking out the one at a position moves only newer
-    /// ones, and nothing else takes a reference out, so positions below it
-    /// stay what they were.
+    /// the next pass. The entry becomes null until the pass ends
+    /// ([`Core::end_finalizer_pass`]), so no position moves.
     pub fn pop_finalizable_before(&mut self, before: usize) -> Option<(Sexp, usize)> {
         let end = before.min(self.weak_refs.len());
-        // SAFETY: every collection marks the objects in `weak_refs`.
-        let i = (0..end).rev().find(|&i| unsafe { self.weak_refs[i].gp() } & gp::weakref::READY_TO_FINALIZE != 0)?;
-        Some((self.weak_refs.remove(i), i))
+        let i = (0..end).rev().find(|&i| {
+            let w = self.weak_refs[i];
+            // SAFETY: every collection marks the objects in `weak_refs`.
+            !w.is_null() && unsafe { w.gp() } & gp::weakref::READY_TO_FINALIZE != 0
+        })?;
+        Some((std::mem::replace(&mut self.weak_refs[i], Sexp::NULL), i))
     }
 
     /// The next ready reference of a pass started now (tests).
@@ -1992,8 +1998,8 @@ impl Core {
 
     /// The weak references not yet finalized, ready ones included, oldest
     /// first: R_weak_refs reversed.
-    pub fn weak_refs(&self) -> &[Sexp] {
-        &self.weak_refs
+    pub fn weak_refs(&self) -> Vec<Sexp> {
+        self.weak_refs.iter().copied().filter(|w| !w.is_null()).collect()
     }
 
     /// Every field of every weak reference the collector still tracks (key,
@@ -2003,6 +2009,7 @@ impl Core {
     pub fn weak_ref_fields(&self) -> Vec<Sexp> {
         self.weak_refs
             .iter()
+            .filter(|w| !w.is_null())
             // SAFETY: the list contains initialized WEAKREFSXPs that every
             // collection marks.
             .flat_map(|&w| (0..3).map(move |i| unsafe { Self::weak_field(w, i) }))
@@ -2238,6 +2245,9 @@ impl Core {
                 let mut changed = false;
                 for i in 0..self.weak_refs.len() {
                     let w = self.weak_refs[i];
+                    if w.is_null() {
+                        continue;
+                    }
                     let key = Self::weak_field_y::<Y>(w, 0);
                     if self.is_marked(key) {
                         for k in 1..3 {
@@ -2275,6 +2285,9 @@ impl Core {
             let mut pending = false;
             for i in 0..self.weak_refs.len() {
                 let w = self.weak_refs[i];
+                if w.is_null() {
+                    continue;
+                }
                 if w.gp() & gp::weakref::READY_TO_FINALIZE == 0 && !self.is_marked(Self::weak_field_y::<Y>(w, 0)) {
                     w.set_gp(w.gp() | gp::weakref::READY_TO_FINALIZE);
                 }
@@ -2298,6 +2311,9 @@ impl Core {
         unsafe {
             for i in 0..self.weak_refs.len() {
                 let w = self.weak_refs[i];
+                if w.is_null() {
+                    continue;
+                }
                 for k in 0..3 {
                     let v = self.mark_y::<Y>(Self::weak_field_y::<Y>(w, k));
                     if Y {
