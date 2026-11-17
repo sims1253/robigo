@@ -22,9 +22,9 @@
 - The denominator is a choice D13's runs depend on. It counts the heap's
   bytes, so a smaller node allocates fewer of them: if `nT` cuts
   `plist.R`'s bytes by 17% and its collections take the same time, its ns
-  per MiB is 20% worse. The line prints the total time and the bytes, so
-  the per-program time can be compared too; which the bar means is the
-  foreman's to settle before X3's runs.
+  per MiB is 20% worse. The foreman settled it: D13 compares total
+  collection time on the same program (`2026-11-17-d13-gc-time-reading.md`),
+  and "ns per MiB" stays a report.
 - Measured (this box, release, `scripts/perf.py rt-bars --main`): main
   `908cb765` (sha256 001325ce…, build id 69e70762…) against `754413b2`
   (49a89d42…, 11cddb43…), each built in its own target from its own
