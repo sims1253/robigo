@@ -551,12 +551,18 @@ fn duplicated_flags<'g, K: Keys>(
     } else {
         // each flag written once, in order, as the vector is made (GNU R's
         // allocVector does not clear it either)
+        // (once the table is full the answer is discarded: no more lookups)
         let mut full = false;
-        let ans = cx.alloc_with(n, |i| match t.is_dup(x, i) {
-            Ok(d) => Lgl(d as i32),
-            Err(Full) => {
-                full = true;
-                Lgl(0)
+        let ans = cx.alloc_with(n, |i| {
+            if full {
+                return Lgl(0);
+            }
+            match t.is_dup(x, i) {
+                Ok(d) => Lgl(d as i32),
+                Err(Full) => {
+                    full = true;
+                    Lgl(0)
+                }
             }
         })?;
         if full {
@@ -805,9 +811,8 @@ fn empty_of(cx: &Cx, t: u8) -> Result<Ref<'_>, NeedGc> {
     })
 }
 
-/// `unique`'s result: the elements not duplicated, in order, no
-/// attributes.
-/// `do_duplicated`'s `unique`: the elements whose `dup` flag is 0, in order.
+/// `do_duplicated`'s `unique`: the elements whose `dup` flag is 0, in
+/// order, no attributes.
 // R: unique.c:do_duplicated
 fn keep_unique<'g>(cx: &'g Cx, x: Ref<'g>, dup: &[Lgl]) -> Result<Ref<'g>, NeedGc> {
     let k = dup.iter().filter(|d| d.0 == 0).count();
