@@ -383,7 +383,9 @@ impl Isolate {
     pub(crate) fn owns(&self, x: Sexp) -> bool {
         // SAFETY: the callers pass objects from `Ref`s and `Char`s, which
         // are live by the minting rule (lib.rs).
-        unsafe { x.heap_id() == self.heap }
+        let h = unsafe { x.heap_id() };
+        // (the shared constants are every isolate's: H5)
+        h == self.heap || h.is_shared()
     }
 
     /// Panics unless `x` (a live object) belongs to this isolate: an object
