@@ -178,7 +178,11 @@ impl Core {
             let Some(i) = self.heap.chunks.iter().position(|c| c.base == base) else { continue };
             let c = self.heap.chunks[i];
             let p = (base + DATA_OFF) as *mut u8;
-            let size = c.end - base - DATA_OFF;
+            // the bytes it was requested with (`heap::alloc_end`): a copy
+            // requested with as many ends where the original does
+            // SAFETY: `p` is a large object of this heap.
+            let size = unsafe { crate::heap::alloc_end(p) } as usize - p as usize;
+            debug_assert!(size <= c.end - base - DATA_OFF);
             // (a refused copy stays where it is: a debug collector degrades)
             let Some(q) = self.heap.try_alloc_large(size) else { continue };
             // SAFETY: both are large objects' payloads of `size` bytes in
