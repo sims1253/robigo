@@ -120,6 +120,13 @@ impl Class {
     }
 }
 
+/// `iswspace(c)` in `locale` (also what datetime.c's strptime matches
+/// white space with).
+#[inline]
+pub fn iswspace(c: u32, locale: Locale) -> bool {
+    Class::Space.contains(c, locale)
+}
+
 /// `towupper(c)` in `locale`.
 #[inline]
 pub fn toupper(c: u32, locale: Locale) -> u32 {

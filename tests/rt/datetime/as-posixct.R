@@ -1,0 +1,41 @@
+# datetime.c's do_asPOSIXct (UTC) and valid_POSIXlt.
+lt <- strptime(c(a = "1970-01-01 00:00:00", b = "1969-12-31 23:59:59", c = "2024-02-29 12:34:56.5"),
+               "%Y-%m-%d %H:%M:%OS", tz = "UTC")
+ct <- .Internal(as.POSIXct(lt, "UTC"))
+unclass(ct)
+class(ct)
+unclass(as.POSIXct(lt, "GMT"))
+attributes(as.POSIXct(lt, "GMT"))
+# fields out of range are normalized; NA fields give NA; infinite seconds stay
+x <- unclass(lt)
+x$mday <- c(0L, 32L, NA)
+x$sec <- c(Inf, -Inf, 0)
+class(x) <- c("POSIXlt", "POSIXt")
+unclass(.Internal(as.POSIXct(x, "GMT")))
+x$sec <- c(0, 1, 2)
+x$mon <- c(0L, 25L, -1L)
+x$mday <- c(1000001L, 1L, 1L)
+unclass(.Internal(as.POSIXct(x, "GMT")))
+# numeric components are coerced
+x <- unclass(strptime("2000-01-01", "%Y-%m-%d", tz = "UTC"))
+x$min <- 30.7
+x$year <- 100
+unclass(.Internal(as.POSIXct(x, "UTC")))
+f <- function(x) tryCatch(unclass(.Internal(as.POSIXct(x, "UTC"))), error = function(e) conditionMessage(e))
+f(list(1, 2))
+y <- unclass(lt); f(y[1:8])
+y <- unclass(lt); names(y)[3] <- "hours"; f(y)
+y <- unclass(lt); y$mday <- "1"; f(y)
+y <- unclass(lt); y$min <- integer(0); f(y)
+y <- unclass(lt); attr(y, "tzone") <- 1; f(y)
+y <- unclass(lt); attr(y, "tzone") <- c("a", "b"); f(y)
+y <- unclass(lt); y$zone <- NULL; y$gmtoff <- NULL; unclass(.Internal(as.POSIXct(y, "UTC")))
+tryCatch(.Internal(as.POSIXct(lt, 1)), error = function(e) conditionMessage(e))
+# seconds outside int: C's (int) cast gives INT_MIN
+x <- unclass(strptime("2000-01-01", "%Y-%m-%d", tz = "UTC"))
+x$sec <- c(2147483648, -3e9, 2147483647)
+unclass(.Internal(as.POSIXct(x, "UTC")))
+# a year whose 1900 + year wraps to INT_MIN (mkdate00's -year0 / 400)
+x <- unclass(strptime("2000-01-01", "%Y-%m-%d", tz = "UTC"))
+x$year <- c(2147481748L, -2147483647L, 2147483647L)
+unclass(.Internal(as.POSIXct(x, "UTC")))
