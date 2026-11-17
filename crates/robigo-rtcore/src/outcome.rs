@@ -120,7 +120,7 @@ impl Cx {
         loop {
             let attempt = {
                 #[cfg(feature = "retry-torture")]
-                let _refuse = std::mem::take(&mut first).then(|| self.refuse_first());
+                let _refuse = self.refuse_once(&mut first);
                 f(self)
             };
             match attempt {
@@ -161,7 +161,7 @@ impl Cx {
         loop {
             let attempt = {
                 #[cfg(feature = "retry-torture")]
-                let _refuse = std::mem::take(&mut first).then(|| self.refuse_first());
+                let _refuse = self.refuse_once(&mut first);
                 f(self)
             };
             match attempt {
