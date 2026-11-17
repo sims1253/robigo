@@ -1978,8 +1978,13 @@ impl Cx {
         // SAFETY: as above.
         let top_rec = Rec(unsafe { NonNull::new_unchecked(top) });
         let old = top_rec.handlerstack();
+        // the whole chain checked before any record changes, so a failed
+        // assertion leaves it as it was
+        assert!(
+            st.chain().take_while(|r| r.ptr() != top).all(|r| r.handlerstack() == old),
+            "robigo: handlers on the stack (check handlers_only_global first)"
+        );
         for r in st.chain().take_while(|r| r.ptr() != top) {
-            assert!(r.handlerstack() == old, "robigo: handlers on the stack (check handlers_only_global first)");
             r.set_handlerstack(x);
         }
         top_rec.set_handlerstack(x);
