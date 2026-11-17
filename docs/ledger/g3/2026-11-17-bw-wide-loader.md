@@ -256,18 +256,20 @@
   and the sorted names of `ls(baseenv(), all.names = TRUE)`, and matches
   GNU R 4.6.2's 1,407 byte for byte.
 - Proof:
-  - On the branch merged with main `c4a60e89` (`36e2f273`):
-    - `scripts/rt-ci.py` passes every step: conformance 406/410, with the
-      four failing on main too; `ROBIGO_NO_INPLACE` 402/405;
-      `ROBIGO_MATERIALIZE` 406/410; gctorture and `ROBIGO_GC_MOVE` with
-      gctorture 405/409; quarantine and the small vector limit 406/410;
-      stress, overshoot, the pin report and injected failures pass;
+  - On the branch merged with main `6bfbf91f` (`694ff562`):
+    - `scripts/rt-ci.py` passes every step:
+      - conformance 415/419, with the four failing on main too;
+      - `ROBIGO_NO_INPLACE` 411/414 and `ROBIGO_MATERIALIZE` 415/419;
+      - gctorture, and `ROBIGO_GC_MOVE` with gctorture: 414/418;
+      - quarantine and the small vector limit: 415/419;
+      - stress, overshoot, the pin report, and injected failures (L1's E9
+        case among them) pass;
     - `scripts/base-subset.sh --check` passes;
     - Miri passes on `robigo-rtcore`; `scripts/lint.sh` and
       `cargo fmt --check` are clean;
     - the gate reports 0 failures (above);
-    - the fastr corpus: 21,696 of 31,374 pass, with no regression. The
-      2,884 new passes are ratcheted in `tests/corpora/fastr/passing-rt/`.
+    - the fastr corpus: 21,808 of 31,374 pass, with no regression.
+  - The merge with main `c4a60e89` (`36e2f273`) passed the same checks.
   - `scripts/rt-ci.py` passed every step at `2b336662`, before the merge:
     - release tests;
     - conformance: 405/409. The four that fail, fail on main too:
