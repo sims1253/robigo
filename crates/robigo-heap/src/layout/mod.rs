@@ -25,20 +25,24 @@ mod tests {
     use super::*;
     use crate::types::*;
 
-    /// X3's cell h24-n48: D8's 24-byte vector header (a CHARSXP keeps its
-    /// 32), with today's nodes. A variant changes these with the
-    /// definitions.
+    /// X3's cell h24-nT: D8's 24-byte vector header (a CHARSXP keeps its
+    /// 32), with D13's 8-byte granules and per-type node sizes. A variant
+    /// changes these with the definitions.
     #[test]
-    fn the_layout_is_h24_n48() {
+    fn the_layout_is_h24_nt() {
         assert_eq!((header::SIZE, vector::OFF_LEN, vector::OFF_DATA), (16, 16, 24));
         assert_eq!((charsxp::OFF_HASH, charsxp::OFF_TRUELEN, charsxp::OFF_DATA), (8, 24, 32));
         assert_eq!((node::OFF_CAR, node::OFF_CDR, node::OFF_TAG, node::OFF_AUX, node::SIZE), (16, 24, 32, 40, 48));
         assert_eq!((extdata::OFF_PTR, extdata::OFF_OWNER, extdata::OFF_RELEASE, extdata::SIZE), (24, 32, 40, 48));
         assert_eq!((slots::OFF_CALLER, slots::OFF_META, slots::OFF_SLOTS, slots::SLOT_SIZE), (48, 56, 64, 32));
-        assert_eq!(GRANULE, 16);
-        for t in [NILSXP, SYMSXP, LISTSXP, CLOSXP, ENVSXP, PROMSXP, LANGSXP, DOTSXP, EXTPTRSXP, BCODESXP, OBJSXP] {
+        assert_eq!(GRANULE, 8);
+        for t in [NILSXP, SYMSXP, CLOSXP, ENVSXP, LANGSXP, BCODESXP, OBJSXP, INTSXP, VECSXP] {
             assert_eq!(node::size(t), 48, "SEXPTYPE {t}");
             assert!(node::has_aux(t));
+        }
+        for t in [LISTSXP, DOTSXP, PROMSXP, EXTPTRSXP] {
+            assert_eq!(node::size(t), 40, "SEXPTYPE {t}");
+            assert!(!node::has_aux(t));
         }
     }
 
@@ -52,16 +56,16 @@ mod tests {
         }
         assert_eq!(vector_bytes(REALSXP, usize::MAX / 4), None);
         assert_eq!(vector_bytes(RAWSXP, usize::MAX - 8), None);
-        assert_eq!(charsxp_bytes(0), 48);
+        assert_eq!(charsxp_bytes(0), 40);
         assert_eq!(charsxp_bytes(15), 48);
-        assert_eq!(charsxp_bytes(16), 64);
+        assert_eq!(charsxp_bytes(16), 56);
         assert_eq!(data_off(CHARSXP), charsxp::OFF_DATA);
         assert_eq!(data_off(REALSXP), vector::OFF_DATA);
         assert_eq!(slots::frame_bytes(0), slots::OFF_SLOTS);
-        // a scalar is 32 bytes (h32: 48), 48 with a TRUELENGTH word; an
-        // empty vector's word fits in its granule
-        assert_eq!((vector_bytes(REALSXP, 1), vector_bytes_tl(REALSXP, 1)), (Some(32), Some(48)));
-        assert_eq!((vector_bytes(RAWSXP, 0), vector_bytes_tl(RAWSXP, 0)), (Some(32), Some(32)));
+        // a scalar is 32 bytes (h32: 48), 40 with a TRUELENGTH word; an
+        // empty vector is its header
+        assert_eq!((vector_bytes(REALSXP, 1), vector_bytes_tl(REALSXP, 1)), (Some(32), Some(40)));
+        assert_eq!((vector_bytes(RAWSXP, 0), vector_bytes_tl(RAWSXP, 0)), (Some(24), Some(32)));
         assert_eq!(vector_bytes_tl(CHARSXP, 5), vector_bytes(CHARSXP, 5));
         assert_eq!(vector_bytes_tl(REALSXP, usize::MAX / 8), None);
     }
@@ -98,11 +102,11 @@ mod tests {
             *(p as *mut u64) = header::first_word(CLOSXP);
             let h = p as *const HeaderView;
             assert_eq!(((*h).typ, (*h).flags, (*h).gp, (*h).refcnt, (*h).extra), (CLOSXP, 0, 0, 0, 0));
-            x.set_typ(LISTSXP);
+            x.set_typ(LANGSXP);
             x.set_gp(0x1234);
             x.set_extra(0x0042);
             let v = p as *const NodeView;
-            assert_eq!(((*v).header.typ, (*v).header.gp, (*v).header.extra), (LISTSXP, 0x1234, 0x0042));
+            assert_eq!(((*v).header.typ, (*v).header.gp, (*v).header.extra), (LANGSXP, 0x1234, 0x0042));
             x.set_car_raw(crate::Sexp(std::ptr::without_provenance_mut(16)));
             x.set_tag_raw(crate::Sexp(std::ptr::without_provenance_mut(32)));
             assert_eq!(((*v).car as usize, (*v).tag as usize), (16, 32));
@@ -129,10 +133,16 @@ mod tests {
         let x = crate::Sexp(p as *mut u8);
         // SAFETY: `w` is a node's words; the retags read only the header.
         unsafe {
-            for (from, to) in [(LISTSXP, LANGSXP), (INTSXP, LGLSXP), (REALSXP, INTSXP), (LISTSXP, INTSXP)] {
+            for (from, to) in
+                [(LISTSXP, DOTSXP), (LANGSXP, CLOSXP), (INTSXP, LGLSXP), (REALSXP, INTSXP), (LANGSXP, INTSXP)]
+            {
                 *p = header::first_word(from);
                 x.set_typ(to);
             }
+            // D13's nT: a 40-byte cell has no room for a call's 4th word
+            *p = header::first_word(LISTSXP);
+            assert!(std::panic::catch_unwind(|| x.set_typ(LANGSXP)).is_err(), "a pairlist cell is smaller than a call");
+            assert!(std::panic::catch_unwind(|| x.set_typ(INTSXP)).is_err(), "an ALTREP instance needs a 4th word");
             *p = header::first_word(RAWSXP);
             let widen = std::panic::catch_unwind(|| x.set_typ(CPLXSXP));
             assert!(widen.is_err(), "RAWSXP to CPLXSXP reads past the payload");

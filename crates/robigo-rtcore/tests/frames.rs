@@ -368,7 +368,9 @@ fn delayed_and_forced_arguments_are_gnu_rs_promises() {
         let pre = get_in(cx, s, "pre", f);
         let View::Promise(p) = pre.bind(cx).view() else { panic!() };
         assert_eq!(p.value(), cx.unbound(), "unforced until the callee's first read");
-        assert_eq!(unsafe { p.as_ref().sexp().aux() }, cx.nil().sexp(), "the early value stays behind");
+        // the early value stays behind: a promise has no 4th word to keep
+        // it in (D13's nT: 40 bytes)
+        assert!(!robigo_heap::layout::node::has_aux(PROMSXP), "the early value stays behind");
         assert_eq!(caller_word(cx), cx.nil().sexp(), "no delayed argument needs the caller any more");
         let fo = get_in(cx, s, "fo", f);
         let View::Promise(p) = fo.bind(cx).view() else { panic!() };

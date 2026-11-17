@@ -228,7 +228,7 @@ impl Cx {
 
     // The node, CHARSXP and symbol paths return `NeedGc` like vectors do
     // (GNU R's cons and string allocation fail at its limits too).
-    fn node<'g>(&'g self, t: u8, car: Ref<'g>, cdr: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
+    pub(crate) fn node<'g>(&'g self, t: u8, car: Ref<'g>, cdr: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
         let iso = self.iso();
         iso.check_owns(car.sexp());
         iso.check_owns(cdr.sexp());

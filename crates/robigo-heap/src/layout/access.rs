@@ -43,7 +43,8 @@ impl Sexp {
     /// [`Sexp::set_typ`]'s contract, for its debug assertion: a standard
     /// vector becomes a vector type of the same element size or a smaller
     /// one, and neither is a CHARSXP; a node (or an ALTREP instance, a node
-    /// whatever its type) becomes a node type of the same size, or a vector
+    /// whatever its type) becomes a node type of the same size or a smaller
+    /// one ([`node::fits_body`]), or a vector
     /// type when it has a full node's words (an ALTREP instance in the
     /// making: data1, data2, class and the 4th word).
     ///
@@ -59,7 +60,7 @@ impl Sexp {
         } else if crate::is_vector_type(t) {
             node::size(old) == node::SIZE
         } else {
-            node::same_body(old, t)
+            node::fits_body(old, t)
         }
     }
     /// The header flags (the `flags` module).
@@ -583,6 +584,8 @@ impl Sexp {
     /// `self` must be a live node made by [`Core::alloc_node`] (not a vector).
     #[inline(always)]
     pub unsafe fn aux(self) -> Sexp {
+        // D13's nT: a 40-byte node has none (`node::has_aux`)
+        debug_assert!(node::has_aux(unsafe { self.typ() }), "robigo: the 4th word of a node without one");
         // SAFETY: the caller's contract puts the 4th word at `node::OFF_AUX`.
         unsafe { self.sexp_at(node::OFF_AUX) }
     }
@@ -662,6 +665,7 @@ impl Sexp {
     /// As for [`Sexp::store`]; `self` is as for [`Sexp::aux`].
     #[inline(always)]
     pub unsafe fn set_aux(self, v: Sexp) {
+        debug_assert!(node::has_aux(unsafe { self.typ() }), "robigo: the 4th word of a node without one");
         // SAFETY: the caller's contract puts the traced 4th word at `node::OFF_AUX`.
         unsafe { self.store(self.field(node::OFF_AUX), v) }
     }

@@ -228,8 +228,9 @@ fn args_are_a_window_with_names() {
 
         // a package ALTREP argument (the flag is all a builtin branches on),
         // in an ALTREP object's shape: node-sized, its data1, data2, class
-        // and 4th word the R_NilValue `cons` wrote
-        let alt = cx.cons(cx.nil(), cx.nil()).unwrap();
+        // and 4th word the R_NilValue `lcons` wrote (a call node: D13's nT
+        // makes a pairlist cell 40 bytes, without a 4th word)
+        let alt = cx.lcons(cx.nil(), cx.nil()).unwrap();
         // SAFETY: `alt` is fresh and node-sized. Flagged ALTREP first, then
         // typed INTSXP, it is a well-formed ALTREP vector at every step: the
         // collector reads an ALTREP object's four node words as its edges,

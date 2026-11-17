@@ -1,9 +1,11 @@
 //! The block allocator of the mark-region heap, from the memory bake-off
 //! (`experiments/memory/mm-heap`, `docs/ledger/memory.md`).
 //!
-//! 64 KiB, 64 KiB-aligned blocks; granules of `layout::GRANULE` (16) bytes;
-//! size classes (multiples of 16 up to 256, then multiples of 64 up to 2048); objects larger than
-//! 2048 bytes get a dedicated ("large") chunk. Free objects are linked
+//! 64 KiB, 64 KiB-aligned blocks; granules of `layout::GRANULE` (8) bytes
+//! (D13's nT: 8-byte granules heap-wide, so a 40-byte node is 40 bytes);
+//! size classes (multiples of 8 up to 256, then multiples of 64 up to
+//! 2048, then the medium classes); objects larger than the largest medium
+//! class get a dedicated ("large") chunk. Free objects are linked
 //! through their link word (`layout::header::OFF_LINK`), so a freed object
 //! keeps a valid type byte, which the RC variant's stale-purple validation reads.
 //!
@@ -17,42 +19,46 @@ pub const BLOCK: usize = 65536;
 /// The block header: 64 bytes of fields, the start bitmap and the mark
 /// bitmap (marks live here, not in object headers, so a collection in a
 /// forked child does not dirty the parent's object pages: docs/core.md §10).
-pub const DATA_OFF: usize = 1072;
-pub const BLOCK_GRANULES: u32 = ((BLOCK - DATA_OFF) / GRANULE) as u32; // 4029
-pub const START_WORDS: usize = (BLOCK_GRANULES as usize).div_ceil(64); // 63
+/// With 8-byte granules the two bitmaps are twice h32's: 64 + 2 × 8 × 124.
+pub const DATA_OFF: usize = 2048;
+pub const BLOCK_GRANULES: u32 = ((BLOCK - DATA_OFF) / GRANULE) as u32; // 7936
+pub const START_WORDS: usize = (BLOCK_GRANULES as usize).div_ceil(64); // 124
 pub const CHUNK_BLOCKS: usize = 16;
 pub const CHUNK_BYTES: usize = BLOCK * CHUNK_BLOCKS;
 pub const MAX_SMALL: usize = 2048;
 /// The largest object a block contains (one per block); larger objects get
 /// a dedicated chunk.
-pub const MAX_MEDIUM: usize = 64464;
+pub const MAX_MEDIUM: usize = 63488;
 
 pub const CLASS_NONE: u8 = 255; // block not yet assigned to a size class
 pub const OWNER_NONE: u8 = 0; // current allocation source of its class
 pub const OWNER_LIST: u8 = 1; // in the class's block list (has free space)
 pub const OWNER_EMPTY: u8 = 2; // in the heap-wide empty pool (pristine)
 
-/// Small classes: 16, 32, ..., 256, 320, 384, ..., 2048. Medium classes
-/// (council item 13): the largest 16-byte multiple of (block data)/k for
-/// k = 31 .. 1, so k objects tile a block; objects up to 64464 bytes
-/// share blocks instead of taking a 64 KiB chunk each.
-pub const SIZES: [usize; 75] = [
-    16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 256, 320, 384, 448, 512, 576, 640, 704, 768,
-    832, 896, 960, 1024, 1088, 1152, 1216, 1280, 1344, 1408, 1472, 1536, 1600, 1664, 1728, 1792, 1856, 1920, 1984,
-    2048, 2064, 2144, 2208, 2288, 2384, 2464, 2576, 2672, 2800, 2928, 3056, 3216, 3392, 3568, 3792, 4016, 4288, 4592,
-    4944, 5360, 5856, 6432, 7152, 8048, 9200, 10736, 12880, 16112, 21488, 32224, 64464,
+/// Small classes: 16, 24, ..., 256, 320, 384, ..., 2048. Medium classes
+/// (council item 13): the largest 8-byte multiple of (block data)/k for
+/// k = 30 .. 1 (k = 31's is 2048, a small class), so k objects tile a
+/// block; objects up to 63488 bytes share blocks instead of taking a
+/// 64 KiB chunk each.
+pub const SIZES: [usize; 89] = [
+    16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152, 160, 168, 176, 184, 192, 200, 208,
+    216, 224, 232, 240, 248, 256, 320, 384, 448, 512, 576, 640, 704, 768, 832, 896, 960, 1024, 1088, 1152, 1216, 1280,
+    1344, 1408, 1472, 1536, 1600, 1664, 1728, 1792, 1856, 1920, 1984, 2048, 2112, 2184, 2264, 2344, 2440, 2536, 2640,
+    2760, 2880, 3016, 3168, 3336, 3520, 3728, 3968, 4232, 4528, 4880, 5288, 5768, 6344, 7048, 7936, 9064, 10576, 12696,
+    15872, 21160, 31744, 63488,
 ];
 
 /// The first medium class.
-const FIRST_MEDIUM: usize = 44;
+const FIRST_MEDIUM: usize = 59;
 
 #[inline]
 pub fn class_index(size: usize) -> usize {
     debug_assert!((1..=MAX_MEDIUM).contains(&size));
     if size <= 256 {
-        ((size + 15) >> 4) - 1
+        // (every object has at least a 16-byte header: 16 is the smallest)
+        ((size.max(16) + 7) >> 3) - 2
     } else if size <= MAX_SMALL {
-        16 + ((size - 257) >> 6)
+        31 + ((size - 257) >> 6)
     } else {
         FIRST_MEDIUM + SIZES[FIRST_MEDIUM..].partition_point(|&c| c < size)
     }

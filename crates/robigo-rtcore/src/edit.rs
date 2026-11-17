@@ -355,6 +355,10 @@ impl Cx {
     fn duplicate_list(&mut self, s: Root<'_>, out: Out<'_>) -> RResult<()> {
         let head = out.root();
         let mut out = Some(out);
+        // the head is made with the source's type: GNU R's SET_TYPEOF of a
+        // LISTSXP copy, which D13's per-type node sizes cannot do in place
+        // (a LANGSXP is larger)
+        let head_type = s.bind(self).sexptype();
         self.scope(|cx, sc| {
             // the next source cell, the copy's last cell (R_NilValue before
             // the first) and the source cell whose attributes come next
@@ -370,7 +374,8 @@ impl Cx {
                     let (mut with_attrib, mut need) = (None, None);
                     for _ in 0..LIST_CHUNK {
                         let Some(c) = sp.as_cons() else { break };
-                        let cell = match cx.cons(c.car(), nil) {
+                        let made = if tl == nil { cx.node(head_type, c.car(), nil) } else { cx.cons(c.car(), nil) };
+                        let cell = match made {
                             Ok(cell) => cell,
                             Err(e) => {
                                 need = Some(e);
@@ -429,14 +434,9 @@ impl Cx {
                 return Ok(());
             }
             let (h, src) = (head.bind(cx).sexp(), s.bind(cx));
-            // SAFETY: `h` is the copy's head cell, live in `out`: made a call
-            // or `...` list it keeps its body; OBJECT and S4 change no body.
-            unsafe {
-                if src.sexptype() != LISTSXP {
-                    h.set_typ(src.sexptype());
-                }
-                copy_object_bits(h, src.sexp());
-            }
+            // SAFETY: `h` is the copy's head cell, live in `out`, made with
+            // the source's type; OBJECT and S4 change no body.
+            unsafe { copy_object_bits(h, src.sexp()) };
             Ok(())
         })
     }
