@@ -283,3 +283,4 @@
   - `scripts/base-subset.sh --check` passes. `base-subset.txt` was
     regenerated, because the new rt cases joined its inputs.
     `base-bound.txt` is unchanged.
+  - `scripts/lint.sh` and `cargo fmt --check` are clean.
