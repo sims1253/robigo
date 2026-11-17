@@ -1844,7 +1844,8 @@ impl Cx {
 
     /// Where [`Cx::set_var`]`(sym, _, rho)` would write, found without
     /// writing: the binding of `sym` in the first frame from `rho` outwards
-    /// that has one, when storing into it neither allocates nor runs code.
+    /// that has one, when storing into it neither allocates on the R heap
+    /// nor runs code.
     /// None when `set_var` would do anything else there:
     /// - define `sym` in the global environment;
     /// - raise an error (a locked binding);
@@ -1854,7 +1855,9 @@ impl Cx {
     ///   (`store_unshared`), so it allocates and may collect.
     ///
     /// A [`Cx::set_var_at`] of the target, with no binding written in
-    /// between, is that `set_var`, and it neither allocates nor collects.
+    /// between, is that `set_var`, and it neither allocates on the R heap nor
+    /// collects. (Rust-side tables, the residues and the remembered set, may
+    /// grow; that never collects.)
     ///
     /// # Safety
     /// `sym` is a live symbol and `rho` a live environment of this
@@ -1892,7 +1895,8 @@ impl Cx {
     /// effect note, the global environment's dirty mark if the walk reached
     /// it, then the store.
     ///
-    /// The store neither allocates nor collects: the target excludes every
+    /// The store neither allocates on the R heap nor collects: the target
+    /// excludes every
     /// binding whose store would (see [`Cx::set_var_target_raw`]).
     ///
     /// # Safety

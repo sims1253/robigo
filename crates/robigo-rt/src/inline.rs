@@ -736,7 +736,7 @@ struct Write {
 /// The `<<-` writes of the inline run under way, in order: committed when
 /// it ends, dropped when it gives up (the real call then writes them).
 /// Empty outside a run. Its objects are raw: nothing collects while a run
-/// holds them, and a commit neither allocates nor collects.
+/// holds them, and a commit neither allocates on the R heap nor collects.
 #[derive(Default)]
 pub(crate) struct WriteLog {
     writes: std::cell::RefCell<Vec<Write>>,
@@ -825,7 +825,7 @@ impl WriteLog {
                 let v = s.root(cx, unsafe { Ref::from_sexp(w.value, cx) });
                 // SAFETY: `write` found the target in this isolate. Nothing
                 // collects while a run holds the log. A commit neither
-                // allocates nor collects, because `set_var_target_raw`
+                // allocates on the R heap nor collects, because `set_var_target_raw`
                 // refuses every binding whose store would (locked, active,
                 // aliased). The run binds no names, so no binding was written
                 // since but the log's own, in order, each to its own target.
