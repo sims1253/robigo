@@ -101,9 +101,11 @@ run <- function(dir, script, rargs, env = character()) {
 # What a comparison sees. GNU R's "stack imbalance" warning names the
 # protect stack's depth, which the tracer's own objects change (capi
 # extptr's C leaves one object protected); the warning itself must match.
+# By bytes: a transcript may hold bytes that are not valid in the session's
+# locale (conditions/native-bytes), which gsub refuses under UTF-8.
 mask <- function(x) {
   if (!is.raw(x)) return(format(x))
-  gsub("(stack imbalance in '[^']*', )[0-9]+ then [0-9]+", "\\1N then M", rawToChar(x))
+  gsub("(stack imbalance in '[^']*', )[0-9]+ then [0-9]+", "\\1N then M", rawToChar(x), useBytes = TRUE)
 }
 
 trace_r <- file.path(root, "scripts", "base-subset-trace.R")
