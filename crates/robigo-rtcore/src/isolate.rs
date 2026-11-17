@@ -384,9 +384,13 @@ impl Isolate {
         // SAFETY: the callers pass objects from `Ref`s and `Char`s, which
         // are live by the minting rule (lib.rs).
         let h = unsafe { x.heap_id() };
-        // (the shared constants are every isolate's, H5: tested out of line,
-        // so that the owner check stays one compare and a branch)
-        h == self.heap || shared_heap(h)
+        if h == self.heap {
+            return true;
+        }
+        // the shared constants are every isolate's (H5): R_NilValue, the
+        // commonest object checked, by its address, the others by their
+        // heap id (no call, which would cost every caller registers)
+        x == self.nil || h.is_shared()
     }
 
     /// Panics unless `x` (a live object) belongs to this isolate: an object
@@ -398,13 +402,6 @@ impl Isolate {
             foreign_object();
         }
     }
-}
-
-/// Whether an object not of this isolate's heap is a shared constant.
-#[cold]
-#[inline(never)]
-fn shared_heap(h: robigo_heap::HeapId) -> bool {
-    h.is_shared()
 }
 
 #[cold]
