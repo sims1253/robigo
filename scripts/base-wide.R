@@ -64,6 +64,7 @@ known <- list(
     "base/baseloader.R#10" = "after .__S3MethodsTable__.",  # base's S3 methods registered
     "base/baseloader.R#11" = "after .ArgsEnv", "base/baseloader.R#12" = "after .GenericArgsEnv",
     "profile/Common.R#2" = "skip the Autoloads environment: robigo-rt's search path is its own",
+    "profile/Common.R#4" = "after .AutoloadEnv",  # assign(".Autoloaded", NULL, envir = .AutoloadEnv)
     "profile/Common.R#10" = "none", "profile/Common.R#11" = "none", "profile/Common.R#12" = "none",
     "profile/Common.R#13" = "none", "profile/Common.R#14" = "none", "profile/Common.R#15" = "none",
     "profile/Common.R#16" = "none", "profile/Common.R#17" = "none", "profile/Common.R#18" = "none",
@@ -112,8 +113,11 @@ for (f in sources) {
             }
             next
         }
-        # assign(NAME, VALUE, envir = TARGET) into a base environment: after TARGET
-        if (is.call(e) && identical(e[[1L]], as.name("assign")) && is.name(e$envir)) {
+        # assign(NAME, VALUE, envir = TARGET) into one of base's argument
+        # environments: after TARGET. Any other assign() is classified by
+        # `known` below, or stops there as unclassified.
+        if (is.call(e) && identical(e[[1L]], as.name("assign")) && is.name(e$envir) &&
+            as.character(e$envir) %in% c(".ArgsEnv", ".GenericArgsEnv")) {
             others[[length(others) + 1L]] <- data.frame(kind = "after", name = as.character(e$envir), src = rel(f),
                                                         start = r[1L], end = r[2L], why = "", form = i)
             next

@@ -275,7 +275,7 @@ pub use handle::{
 };
 pub use hooks::{
     ApplyFn, DeparseFn, DispatchFn, Dispatched, ErrorCond, ErrorCondFn, EvalFn, ForceArgFn, ForceFn, Generic, Hooks,
-    InterruptFn, MAX_WARNINGS, WarningFn,
+    InterruptFn, MAX_WARNINGS, WarningFn, c_str_bytes,
 };
 pub use isolate::{
     Capability, CodeSource, Cx, Isolate, Locale, Options, OwnedIsolate, Reentry, ReportOptions, enter_raw,
