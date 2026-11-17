@@ -140,6 +140,13 @@
     non-ASCII and quoted names, a promise, an active binding, an unbound
     name, partial names, a classed environment, base and the global
     environment.
+- The startup heap, which gctorture's cost scales with (allocations
+  times the heap): objects allocated by the end of startup,
+  `ROBIGO_GC_STATS=1` on `invisible(1)`:
+  - main: 15,502 objects, 747,872 bytes;
+  - BW: 8,009 objects, 390,576 bytes (−48%). That is 1,192 fetch promises,
+    1,733 symbols and 733 builtins and stubs, and no parsed base code.
+    M1's loader evaluated the subset's R code at startup.
 - Measurements (WSL2 workstation, Ryzen 9 5900X, rustc 1.100.0; release
   `robigo-rt` from `~/.cache/cargo-target-s1`; `scripts/perf.py rt-bars`
   against main `fb429442`'s binary, whose code is the branch's base
@@ -226,21 +233,21 @@
   and the sorted names of `ls(baseenv(), all.names = TRUE)`, and matches
   GNU R 4.6.2's 1,407 byte for byte.
 - Proof:
-  - `scripts/rt-ci.py` passes every step at `985cbc0a`:
+  - `scripts/rt-ci.py` passes every step at `2b336662`:
     - release tests;
-    - conformance: 404/408. The four that fail, fail on main too:
+    - conformance: 405/409. The four that fail, fail on main too:
       `args/binding-types` and three `assign/link-walk-*` cases that need
       `.Internal(mapply)` and the like;
-    - the observation modes: `ROBIGO_NO_INPLACE` 400/403 and
-      `ROBIGO_MATERIALIZE` 404/408, without the cases their `.requires`
+    - the observation modes: `ROBIGO_NO_INPLACE` 401/404 and
+      `ROBIGO_MATERIALIZE` 405/409, without the cases their `.requires`
       exclude;
-    - gctorture with the GC stats check: 403/407;
-    - `ROBIGO_GC_MOVE` with gctorture: 403/407;
-    - frame quarantine: 404/408;
+    - gctorture with the GC stats check: 404/408;
+    - `ROBIGO_GC_MOVE` with gctorture: 404/408;
+    - frame quarantine: 405/409;
     - the pin report;
     - the stress script (3 runs per profile, none missed);
     - overshoot (424 programs, none over its bound);
-    - the small vector limit: 404/408;
+    - the small vector limit: 405/409;
     - injected allocation failures (400 points, no difference).
     The first run failed at gctorture's conformance on `cli/exit-warnings`
     (above), which is not ratcheted now.
@@ -253,6 +260,18 @@
     `.Library.site`'s three definitions, `.AutoloadEnv`'s record and
     `.ArgsEnv`'s 88 forms, and that every closure of M1's bound is in the
     wide base and forces to a function.
+  - Sol (gpt-6.1-sol, high) reviewed two rounds.
+    - Round 1 found that a name defined in several steps kept an
+      intermediate value. Each step rebound the name, so the final value
+      lived only in the detached promise. `.Library.site`'s second step
+      fails today, because robigo-rt has no `strsplit`, and every read after
+      the first returned `""`.
+    - Now the final value is bound, and a failed step binds the fetch's
+      promise again. The name then raises on every read, with GNU R's
+      "restarting interrupted promise evaluation" warning.
+      `tests/loader.rs`'s `a_name_defined_in_steps_reads_the_same_every_time`
+      fails without the fix.
+    - Round 2 approved.
   - `scripts/base-subset.sh --check` passes. `base-subset.txt` was
     regenerated, because the new rt cases joined its inputs.
     `base-bound.txt` is unchanged.
