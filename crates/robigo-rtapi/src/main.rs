@@ -319,10 +319,10 @@ extern "C" fn handle_interrupt(_sig: libc::c_int) {
 /// signal(SIGINT, SIG_IGN)`: SIGINT is the user interrupt, unless the
 /// process started with it ignored.
 // R: main.c:setup_Rmainloop
-#[allow(unsafe_code)]
 fn install_sigint() {
     // SAFETY: the handler is async-signal-safe (one atomic store); signal()
     // is called before any other thread exists.
+    #[allow(unsafe_code)]
     unsafe {
         if libc::signal(libc::SIGINT, handle_interrupt as extern "C" fn(libc::c_int) as libc::sighandler_t)
             == libc::SIG_IGN

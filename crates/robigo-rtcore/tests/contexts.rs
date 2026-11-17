@@ -257,10 +257,6 @@ fn an_uncaught_error_reaches_the_top_level() {
 
 // ---- the chain is a precise root -------------------------------------------
 
-/// Objects only a record holds survive a collection: the body's value
-/// while on.exit code runs (`returnValue`), an exit parked in a record while
-/// its on.exit code runs, and the `on.exit` list (cells `on.exit` made).
-#[cfg(not(miri))]
 /// E9 (A1, 2026-11-17): `endcontext` at an intermediate stop clears the
 /// record's `conexit` and then runs `R_FixupExitingHandlerResult`, which
 /// may allocate, so a collection there (a refused allocation's) found the
@@ -268,6 +264,7 @@ fn an_uncaught_error_reaches_the_top_level() {
 /// then run from them (a hang or a segfault in
 /// `tests/rt/conditions/onexit-unwind.R` at `ROBIGO_FAIL_ALLOC_AT=1249`;
 /// a moved list under the moving collector). GNU R protects `s` there.
+#[cfg(not(miri))]
 #[test]
 fn the_on_exit_list_survives_a_collection_in_the_stops_fixup() {
     let mut iso = iso();
@@ -301,6 +298,9 @@ fn the_on_exit_list_survives_a_collection_in_the_stops_fixup() {
     assert_eq!(cx.context_depth(), 1);
 }
 
+/// Objects only a record holds survive a collection: the body's value
+/// while on.exit code runs (`returnValue`), an exit parked in a record while
+/// its on.exit code runs, and the `on.exit` list (cells `on.exit` made).
 #[cfg(not(miri))]
 #[test]
 fn records_and_parked_exits_are_roots() {
