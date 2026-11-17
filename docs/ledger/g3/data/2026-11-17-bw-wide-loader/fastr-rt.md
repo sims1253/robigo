@@ -3,6 +3,8 @@
 A1's `scripts/corpus.py run fastr --runtime rt --jobs 4` from `g3/rc-rt-corpora` at `61ce3eec`, with the BW binary built at `0236869f` (sha256 prefix 2c79a337599f60aa), against that branch's `passing-rt/` (18,812 cases at main `fb429442`).
 
 ```text
+fastr on robigo-rt: 21696/31374 pass; stdout 23181, stderr 21776, status 23195 match; 2884 new, 0 regressions
+  most cases blocked by (the first missing thing each failing case hit):
     1,251  primitive ceiling
       501  not implemented: printing a matrix (printMatrix)
       392  .Internal set.seed
