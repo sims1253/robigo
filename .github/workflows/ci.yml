@@ -196,7 +196,9 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 30
+    # about 20 minutes, and the retry-torture step's feature build and run
+    # (scripts/rt-ci.py, last) add about 10
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
