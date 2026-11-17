@@ -1,0 +1,66 @@
+$dim
+[1] 2
+
+NULL
+$dim
+[1] 1
+
+$dim
+[1] 4
+
+b c 
+2 3 
+$dim
+[1] 2
+
+$dimnames
+$dimnames[[1]]
+[1] "b" "c"
+
+
+b 
+2 
+$dim
+[1] 1
+
+$dimnames
+$dimnames[[1]]
+[1] "b"
+
+
+d a 
+4 1 
+$dim
+[1] 2
+
+$dimnames
+$dimnames$k
+[1] "a" "c"
+
+
+$dim
+[1] 3
+
+$dimnames
+$dimnames$k
+[1] "b" "c" "d"
+
+
+$dim
+n 
+2 
+
+NULL
+$names
+character(0)
+
+<NA> 
+  NA 
+$dim
+[1] 2
+
+$dimnames
+$dimnames$k
+[1] "a" NA 
+
+

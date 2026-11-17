@@ -1,0 +1,29 @@
+[1] 10  2  6
+[1] 8
+[1]  4 NA
+[1] NA  5
+[1] 1
+[1] NA
+[1] 2 4
+integer(0)
+[1] 1 2
+[1] 1 2 3 4 5 6
+[1]  1  3  5  7  9 11
+[1] 4 8
+[1] 10  3
+[1]  4 NA
+[1] 24
+[1]  1 10 23
+[1] 2
+[1] 2 1
+[1] 11 13
+[1] 11 13
+<simpleError in m[cbind(-1, 2)]: negative values are not allowed in a matrix subscript>
+<subscriptOutOfBoundsError in m[cbind(4, 1)]: subscript out of bounds>
+<subscriptOutOfBoundsError in m[cbind(1, 5)]: subscript out of bounds>
+<subscriptOutOfBoundsError in a[cbind(1, 4, 1)]: subscript out of bounds>
+<subscriptOutOfBoundsError in mn[cbind("a", "E")]: subscript out of bounds>
+<subscriptOutOfBoundsError in mn[cbind("", "A")]: subscript out of bounds>
+<simpleError in m[cbind("a", "b")]: no 'dimnames' attribute for array>
+<subscriptOutOfBoundsError in a[cbind("x", "q", "p")]: subscript out of bounds>
+<simpleWarning in print(expr): NAs introduced by coercion to integer range>

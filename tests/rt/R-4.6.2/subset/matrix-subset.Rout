@@ -1,0 +1,119 @@
+[1] 8
+[1]  2  5  8 11
+[1] 7 8 9
+     [,1] [,2] [,3] [,4]
+[1,]    2    5    8   11
+     [,1]
+[1,]    7
+[2,]    8
+[3,]    9
+     [,1] [,2] [,3] [,4]
+[1,]    2    5    8   11
+[2,]    3    6    9   12
+     [,1] [,2] [,3] [,4]
+[1,]    1    4    7   10
+[2,]    3    6    9   12
+     [,1] [,2] [,3]
+[1,]    1    1    4
+[2,]    3    3    6
+     [,1] [,2] [,3] [,4]
+    
+[1,]
+[2,]
+[3,]
+<0 x 0 matrix>
+[1] NA NA NA
+     [,1] [,2]
+[1,]    4    7
+[2,]   NA   NA
+[1] NA NA NA NA
+[1] 2
+     [,1] [,2] [,3] [,4]
+[1,]    2    5    8   11
+[2,]    3    6    9   12
+integer(0)
+     [,1] [,2] [,3] [,4]
+[1,]    1    4    7   10
+[2,]    2    5    8   11
+[3,]    3    6    9   12
+[1] 12
+     [,1] [,2]
+[1,]    4    7
+ w  x  y  z 
+ 2  5  8 11 
+   z w
+a 10 1
+b 11 2
+c 12 3
+<subscriptOutOfBoundsError in m[c("a", NA), "x"]: subscript out of bounds>
+[1] 8
+  y
+b 8
+  w y
+a 1 7
+c 3 9
+  w x y  z
+b 2 5 8 11
+a b 
+4 5 
+    cols
+rows x
+   a 4
+   b 5
+[1] 8
+    cols
+rows w x y  z
+   b 2 5 8 11
+   b 2 5 8 11
+ w  x  y  z 
+ 2  5  8 11 
+w 
+2 
+[1] 7 8 9
+a b c 
+4 5 6 
+a 
+1 
+$dim
+r c 
+2 2 
+
+NULL
+[1] "b" "d"
+[[1]]
+[1] TRUE
+
+[[2]]
+NULL
+
+     [,1] [,2]
+[1,] 1    TRUE
+[1] 04
+[1] 03 00
+[1] NA NA
+     [,1] [,2]
+[1,]   NA TRUE
+[2,]   NA   NA
+[1] NA  "b"
+$dim
+[1] 2 2
+
+NULL
+<simpleError in m[1, 2, 3]: incorrect number of dimensions>
+<subscriptOutOfBoundsError in m[4, 1]: subscript out of bounds>
+<subscriptOutOfBoundsError in m[1, 5]: subscript out of bounds>
+<subscriptOutOfBoundsError in m[c(1, 7), ]: subscript out of bounds>
+  [,1] [,2] [,3] [,4]
+a    1    4    7   10
+b    2    5    8   11
+c    3    6    9   12
+<simpleError in m[-1, 1:2][c(-1, 1), ]: only 0's may be mixed with negative subscripts>
+<subscriptOutOfBoundsError in m["d", ]: subscript out of bounds>
+<simpleError in matrix(1:4, 2)["a", 1]: no 'dimnames' attribute for array>
+<simpleError in m[c(TRUE, FALSE, TRUE, TRUE), ]: (subscript) logical subscript too long>
+<simpleError in m[list(1), 1]: invalid subscript type 'list'>
+<simpleError in m[1, quote(a)]: invalid subscript type 'symbol'>
+<simpleError in m[0+1i, 1]: invalid subscript type 'complex'>
+<simpleError in m[c(-1, 1), ]: only 0's may be mixed with negative subscripts>
+<simpleError in m[c(-1, NA), ]: only 0's may be mixed with negative subscripts>
+<simpleWarning in print(expr): NAs introduced by coercion to integer range>

@@ -6,8 +6,8 @@
 //! subscript introduces; here it is a [`Subscript`]: 1-based positions as
 //! `i64` (NA as [`NA_IDX`]; a REALSXP index as `(R_xlen_t) d`, which is
 //! what every reader of one computes) and the new names as positions into
-//! the subscript. The observable results are GNU R's; the matrix forms
-//! (`mat2indsub`, `arraySubscript`) are not ported yet.
+//! the subscript. The observable results are GNU R's. The array forms
+//! (`int_arraySubscript`, `mat2indsub`, `strmat2intmat`) are here too.
 //!
 //! The errors are GNU R's messages. Out-of-bounds, missing-subscript and
 //! not-subsettable errors are condition objects of their own class, with
@@ -874,4 +874,249 @@ pub fn make_subscript(
         Err(E::Bounds(max)) => Err(out_of_bounds(cx, call, x, -1, Sindex::Real(max), None)),
         Err(E::BoundsName(i)) => Err(out_of_bounds(cx, call, x, -1, Sindex::StrElt(s, i), None)),
     }
+}
+
+/// `int_arraySubscript(dim, s, dims, x, call)`: the 1-based positions (NA
+/// as [`NA_IDX`]) that the subscript `s` selects along dimension `dim`
+/// (0-based) of the array `x`, whose extents are `dims`. Nothing
+/// stretches; a string matches `dimnames(x)[[dim + 1]]`.
+// R: subscript.c:int_arraySubscript
+pub fn array_subscript(
+    cx: &mut Cx,
+    dim: usize,
+    s: Root<'_>,
+    dims: &[i32],
+    x: Root<'_>,
+    call: Option<Root<'_>>,
+) -> RResult<Vec<i64>> {
+    enum E {
+        Msg(SubErr),
+        Bounds(f64),
+        BoundsName(usize),
+    }
+    let nd = dims[dim].max(0) as usize;
+    let sv = s.bind(cx);
+    if sv.is_package_altrep() {
+        return Err(ecall(cx, call, "robigo: subscripting with an ALTREP object is not implemented yet"));
+    }
+    let int = |ps: &[i32]| {
+        integer_subscript(ps, nd, &mut 0).map_err(|e| match e {
+            IntErr::OutOfBounds(max) => E::Bounds(max),
+            IntErr::Msg(m) => E::Msg(m),
+        })
+    };
+    let r = match sv.sexptype() {
+        NILSXP => Ok(Vec::new()),
+        LGLSXP | INTSXP => {
+            // (one of robigo's compact sequences, read as INTEGER_RO reads it)
+            cx.materialize(s)?;
+            let sv = s.bind(cx);
+            if sv.sexptype() == LGLSXP {
+                logical_subscript(sv.as_ints().unwrap(), nd, &mut 0).map_err(E::Msg)
+            } else {
+                int(sv.as_ints().unwrap())
+            }
+        }
+        REALSXP => {
+            // coerceVector(s, INTSXP) (with its warning), then integerSubscript
+            cx.scope(|cx, sc| {
+                let o = sc.out(cx);
+                let t = o.root();
+                crate::coerce::coerce_vector(cx, s, INTSXP, o)?;
+                cx.materialize(t)?;
+                Ok(int(t.bind(cx).as_ints().unwrap()))
+            })?
+        }
+        STRSXP => {
+            let Some(dn) = attrib::get_value(x.bind(cx), b"dimnames") else {
+                return Err(ecall(cx, call, "no 'dimnames' attribute for array"));
+            };
+            let r = {
+                let cx = &*cx;
+                let names = match dn.view() {
+                    View::List(l) if dim < l.len() => Names::of_vector(l.get(dim)),
+                    _ => Names::None,
+                };
+                let ps = s.bind(cx).as_vector::<Char<'_>>().unwrap().as_slice().unwrap();
+                string_subscript(cx, ps, nd, &names, &mut 0).map(|r| r.iter().collect())
+            };
+            r.map_err(|i| E::BoundsName(i.expect("robigo: a name past the end")))
+        }
+        SYMSXP if sv == cx.missing_arg() => Ok((1..=nd as i64).collect()),
+        _ => Err(E::Msg(invalid_type(sv))),
+    };
+    match r {
+        Ok(v) => Ok(v),
+        Err(E::Msg(m)) => Err(ecall(cx, call, &m)),
+        // integerSubscript's ECALL_OutOfBounds(x, -1, max, call)
+        Err(E::Bounds(max)) => Err(out_of_bounds(cx, call, x, -1, Sindex::Real(max), None)),
+        // stringSubscript's ECALL_OutOfBoundsCHAR(x, dim, ...)
+        Err(E::BoundsName(i)) => Err(out_of_bounds(cx, call, x, dim as i32, Sindex::StrElt(s, i), None)),
+    }
+}
+
+/// Whether `x[s]` and `x[s] <- v` index the array `x` by the rows of the
+/// matrix `s` (`isMatrix(s) && isArray(x) && ncols(s) == length(dim(x))`,
+/// after VectorSubset's pretest that `s` has attributes).
+// R: subset.c:VectorSubset, subassign.c:VectorAssign
+pub fn is_matrix_index(x: Ref<'_>, s: Ref<'_>) -> bool {
+    attrib::has_attrib(s)
+        && attrib::is_vector(s)
+        && attrib::dims(s).is_some_and(|d| d.len() == 2)
+        && attrib::is_array(x)
+        && attrib::dims(s).unwrap()[1] as usize == attrib::dims(x).unwrap().len()
+}
+
+/// The matrix index `s` of the array `x` ([`is_matrix_index`]) as the
+/// vector subscript GNU R makes of it, into `out`: a character matrix
+/// matched against `dimnames(x)` (`strmat2intmat`), then a numeric one
+/// made positions in `x` unravelled (`mat2indsub`). Any other matrix (a
+/// logical one, a factor) is `s` itself.
+// R: subset.c:VectorSubset, subscript.c:strmat2intmat, mat2indsub
+pub fn matrix_index(cx: &mut Cx, x: Root<'_>, s: Root<'_>, call: Option<Root<'_>>, out: Out<'_>) -> RResult<()> {
+    cx.scope(|cx, sc| {
+        let m = sc.root(cx, s.bind(cx));
+        if m.bind(cx).sexptype() == STRSXP {
+            let o = sc.out(cx);
+            let r = o.root();
+            strmat2intmat(cx, m, x, call, o)?;
+            m.replace_from(cx, r);
+        }
+        let mv = m.bind(cx);
+        let is_integer = mv.sexptype() == INTSXP && !attrib::inherits(mv, b"factor");
+        if is_integer || mv.sexptype() == REALSXP {
+            mat2indsub(cx, m, x, call, out)
+        } else {
+            out.set(cx, mv);
+            Ok(())
+        }
+    })
+}
+
+/// `strmat2intmat(s, dimnames(x), call, x)`: the character matrix `s` as
+/// an integer matrix, each column's strings matched against the dimnames
+/// of its dimension (NA stays NA; `""` or a string not found is out of
+/// bounds).
+// R: subscript.c:strmat2intmat
+fn strmat2intmat(cx: &mut Cx, s: Root<'_>, x: Root<'_>, call: Option<Root<'_>>, out: Out<'_>) -> RResult<()> {
+    if attrib::get_value(x.bind(cx), b"dimnames").is_none() {
+        return Err(ecall(cx, call, "no 'dimnames' attribute for array"));
+    }
+    let (nr, nc) = {
+        let d = attrib::dims(s.bind(cx)).unwrap();
+        (d[0].max(0) as usize, d[1].max(0) as usize)
+    };
+    // the positions, or the first unmatched element (column, index)
+    let found: Result<Vec<i32>, (usize, usize)> = {
+        let cx = &*cx;
+        let xv = x.bind(cx);
+        let dnl = attrib::get_value(xv, b"dimnames").unwrap();
+        let sv = s.bind(cx).as_vector::<Char<'_>>().unwrap();
+        let na = cx.na_string();
+        let mut psi = vec![0i32; nr * nc];
+        let mut bad = None;
+        'cols: for i in 0..nc {
+            let names = match dnl.view() {
+                View::List(l) if i < l.len() => Names::of_vector(l.get(i)),
+                _ => Names::None,
+            };
+            for j in 0..nr {
+                let idx = j + i * nr;
+                let e = sv.get(idx);
+                // match(dnames, snames, 0): the first equal name
+                let mut v = (0..names.len())
+                    .find(|&k| {
+                        let t = names.get(cx, k);
+                        e == t || (e != na && t != na && text::seql(crate::coerce::text(e), crate::coerce::text(t), cx.locale()))
+                    })
+                    .map_or(0, |k| k as i32 + 1);
+                if e == na {
+                    v = NA_INTEGER;
+                } else if e.bytes().is_empty() {
+                    v = 0; // disallow "" match
+                }
+                if v == 0 {
+                    bad = Some((i, idx));
+                    break 'cols;
+                }
+                psi[idx] = v;
+            }
+        }
+        match bad {
+            Some(b) => Err(b),
+            None => Ok(psi),
+        }
+    };
+    match found {
+        Err((i, idx)) => Err(out_of_bounds(cx, call, x, i as i32, Sindex::StrElt(s, idx), None)),
+        Ok(psi) => cx.scope(|cx, sc| {
+            let o = sc.out(cx);
+            let r = o.root();
+            cx.build(o, |cx| Ok(cx.alloc_copy(&psi)?.finish().into()))?;
+            // dimgets(si, dim)
+            let d = sc.root(cx, attrib::get_value(s.bind(cx), b"dim").unwrap());
+            crate::attrib::set::dimgets(cx, r, d)?;
+            out.set(cx, r.bind(cx));
+            Ok(())
+        }),
+    }
+}
+
+/// `mat2indsub(dim(x), s, call, x)`: each row of the numeric matrix `s` as
+/// the 1-based position of its element in `x` unravelled; a row with an NA
+/// (before any 0) is NA, with a 0 is 0. Negative values are an error, a
+/// value past its extent out of bounds (`x` is never a long vector here).
+// R: subscript.c:mat2indsub
+fn mat2indsub(cx: &mut Cx, s: Root<'_>, x: Root<'_>, call: Option<Root<'_>>, out: Out<'_>) -> RResult<()> {
+    let dims: Vec<i32> = attrib::dims(x.bind(cx)).unwrap().to_vec();
+    let (nrs, ncs) = {
+        let d = attrib::dims(s.bind(cx)).unwrap();
+        (d[0].max(0) as usize, d[1].max(0) as usize)
+    };
+    let ndim = dims.len();
+    if ncs != ndim {
+        return Err(ecall(cx, call, "incorrect number of columns in matrix subscript"));
+    }
+    enum E {
+        Negative,
+        Bounds(usize, i32),
+    }
+    cx.scope(|cx, sc| {
+        let o = sc.out(cx);
+        let si = o.root();
+        crate::coerce::coerce_vector(cx, s, INTSXP, o)?;
+        cx.materialize(si)?;
+        let r: Result<Vec<i32>, E> = (|| {
+            let ps = si.bind(cx).as_ints().unwrap();
+            let mut iv = vec![1i32; nrs];
+            for (i, v) in iv.iter_mut().enumerate() {
+                let mut tdim = 1i32;
+                for (j, &dj) in dims.iter().enumerate() {
+                    let k = ps[i + j * nrs];
+                    if k == NA_INTEGER {
+                        *v = NA_INTEGER;
+                        break;
+                    }
+                    if k < 0 {
+                        return Err(E::Negative);
+                    }
+                    if k == 0 {
+                        *v = 0;
+                        break;
+                    }
+                    if k > dj {
+                        return Err(E::Bounds(j, k));
+                    }
+                    *v = v.wrapping_add((k - 1).wrapping_mul(tdim));
+                    tdim = tdim.wrapping_mul(dj);
+                }
+            }
+            Ok(iv)
+        })();
+        match r {
+            Err(E::Negative) => Err(ecall(cx, call, "negative values are not allowed in a matrix subscript")),
+            Err(E::Bounds(j, k)) => Err(out_of_bounds(cx, call, x, j as i32, Sindex::Real(k as f64), None)),
+            Ok(iv) => cx.build(out, |cx| Ok(cx.alloc_copy(&iv)?.finish().into())),
+        }
+    })
 }

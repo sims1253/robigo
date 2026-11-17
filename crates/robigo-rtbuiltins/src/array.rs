@@ -455,3 +455,136 @@ pub fn do_colsum<const CODE: i32>(
         })
     })
 }
+
+/// `DropDims(x)`: `x` (fresh, or a copy) without its extents of length
+/// one: a vector with the names of the one extent left (or, for one
+/// element, of the only extent with names) when at most one remains, else
+/// an array of the extents left with their dimnames and the names of both.
+/// The attributes are set through `setAttrib`, as GNU R sets them.
+// R: array.c:DropDims
+pub fn drop_dims(cx: &mut Cx, x: Root<'_>) -> RResult<()> {
+    use crate::attrib::set::set_attrib;
+    use crate::attrib::{get_value, names};
+    let Some(dim) = get_value(x.bind(cx), b"dim").and_then(|d| d.as_ints()).map(<[i32]>::to_vec) else {
+        return Ok(());
+    };
+    let ndims = dim.len();
+    let n = dim.iter().filter(|&&d| d != 1).count();
+    if n == ndims {
+        return Ok(());
+    }
+    cx.scope(|cx, s| {
+        let dimnames = s.root(cx, get_value(x.bind(cx), b"dimnames").unwrap_or_else(|| cx.nil()));
+        let nil = s.root(cx, cx.nil());
+        // VECTOR_ELT(dimnames, i)
+        let dn_elt = |cx: &Cx, i: usize| match dimnames.bind(cx).view() {
+            View::List(l) => l.get(i),
+            _ => cx.nil(),
+        };
+        if n <= 1 {
+            // a vector: if it has length one it is ambiguous which dimnames
+            // to use, so use one only if there is only one
+            let newnames = {
+                let cx = &*cx;
+                if dimnames.bind(cx).sexptype() == NILSXP {
+                    cx.nil()
+                } else if x.bind(cx).len().unwrap_or(0) != 1 {
+                    (0..ndims).find(|&i| dim[i] != 1).map_or_else(|| cx.nil(), |i| dn_elt(cx, i))
+                } else {
+                    let set: Vec<usize> = (0..ndims).filter(|&i| dn_elt(cx, i).sexptype() != NILSXP).collect();
+                    if set.len() == 1 { dn_elt(cx, set[0]) } else { cx.nil() }
+                }
+            };
+            let newnames = s.root(cx, newnames);
+            set_attrib(cx, x, b"dimnames", nil)?;
+            set_attrib(cx, x, b"dim", nil)?;
+            return set_attrib(cx, x, b"names", newnames);
+        }
+        // a lower dimensional array of the n extents left
+        let dnn = s.root(cx, names(dimnames.bind(cx)).unwrap_or_else(|| cx.nil()));
+        let kept: Vec<usize> = (0..ndims).filter(|&i| dim[i] != 1).collect();
+        let newdims = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| {
+                let v: Vec<i32> = kept.iter().map(|&i| dim[i]).collect();
+                Ok(cx.alloc_copy(&v)?.finish().into())
+            })
+        })?;
+        let dim_names = get_value(x.bind(cx), b"dim").and_then(names);
+        if dim_names.is_some() {
+            let nms = s.capture(cx, |cx, o| {
+                cx.build(o, |cx| {
+                    let d = get_value(x.bind(cx), b"dim").and_then(names).unwrap();
+                    let d = d.as_vector::<Char<'_>>().unwrap();
+                    let mut v = cx.alloc_vector::<Char<'_>>(kept.len())?;
+                    for (k, &i) in kept.iter().enumerate() {
+                        v.set(k, d.get(i));
+                    }
+                    Ok(v.finish().into())
+                })
+            })?;
+            set_attrib(cx, newdims, b"names", nms)?;
+        }
+        let havenames =
+            dimnames.bind(cx).sexptype() != NILSXP && kept.iter().any(|&i| dn_elt(cx, i).sexptype() != NILSXP);
+        let newnames = if havenames {
+            let l = s.capture(cx, |cx, o| {
+                cx.build(o, |cx| {
+                    let mut l = cx.alloc_vector::<Ref<'_>>(kept.len())?;
+                    for (k, &i) in kept.iter().enumerate() {
+                        l.set(k, dn_elt(cx, i));
+                    }
+                    Ok(l.finish().into())
+                })
+            })?;
+            if dnn.bind(cx).sexptype() != NILSXP {
+                let nn = s.capture(cx, |cx, o| {
+                    cx.build(o, |cx| {
+                        let d = dnn.bind(cx).as_vector::<Char<'_>>();
+                        let mut v = cx.alloc_vector::<Char<'_>>(kept.len())?;
+                        for (k, &i) in kept.iter().enumerate() {
+                            v.set(k, d.map_or_else(|| cx.blank_string(), |d| d.get(i)));
+                        }
+                        Ok(v.finish().into())
+                    })
+                })?;
+                set_attrib(cx, l, b"names", nn)?;
+            }
+            Some(l)
+        } else {
+            None
+        };
+        set_attrib(cx, x, b"dimnames", nil)?;
+        set_attrib(cx, x, b"dim", newdims)?;
+        if let Some(l) = newnames {
+            set_attrib(cx, x, b"dimnames", l)?;
+        }
+        Ok(())
+    })
+}
+
+/// `.Internal(drop(x))`: `x` without its extents of length one (a copy if
+/// it is referenced).
+// R: array.c:do_drop
+pub fn do_drop(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("drop", true).check_arity(cx, call, args)?;
+    let x = args.root(0);
+    let shorten = crate::attrib::get_value(x.bind(cx), b"dim").is_some_and(|d| {
+        // INTEGER(xdims): a dim is always an integer vector
+        d.as_ints().is_some_and(|v| v.contains(&1))
+    });
+    if !shorten {
+        out.set(cx, x.bind(cx));
+        return Ok(());
+    }
+    cx.scope(|cx, s| {
+        let r = if cx.referenced(x.bind(cx)) {
+            // R_duplicate_attr: a duplicate here
+            s.capture(cx, |cx, o| cx.duplicate(x, o))?
+        } else {
+            s.root(cx, x.bind(cx))
+        };
+        drop_dims(cx, r)?;
+        out.set(cx, r.bind(cx));
+        Ok(())
+    })
+}
