@@ -9,7 +9,8 @@ needs a context) are followed, never made again. Every code object the VM
 runs now passes one gate, `code::Verified` (#738).
 
 - **Tree:** branch `g3/v3-bcodesxp-ir`, from main `fb332640` (C1-BC
-  #771), with main merged in up to `78dcf1ee` (L2a #769, #772).
+  #771), with main merged in up to `78dcf1ee` (L2a #769, #772) and then
+  L1b (#776, `48044290`).
 - **Oracle:** GNU R 4.6.2. The ports follow its eval.c (`bcEval`) and
   cmp.R.
 
@@ -23,9 +24,23 @@ runs now passes one gate, `code::Verified` (#738).
   `MATH1`, `SQRT`, `EXP` and `DOTCALL` translate to the builtin they name,
   so a closure calling `floor`, `ceiling`, `sign` or `exp` stops at that
   primitive's own not-implemented error until B5a.
-- **The base.rdb test waits on L1b** (foreman, Q3): robigo-rt cannot read
-  byte-code records of a lazy-load database yet (`rdb_roundtrip.rs`
-  excepts them). Meanwhile `tests/rt/bctrans/basefuns.R` replays GNU R's
+- **The base.rdb test** (`oracle_base_closures_translate` in
+  `crates/robigo-rt/tests/rdb_roundtrip.rs`, on L1b's data; it runs where
+  the round trip does, `ROBIGO_ORACLE_LIBRARY`): every closure of the
+  oracle's base.rdb, and each function it makes, translated without
+  running and passed through the verifier (`compile::translation_gaps`).
+  1,152 closures: 845 translate whole, 0 fail; 307 stop at a primitive
+  robigo-rt does not have yet (310 stops: 238 `.Internal`s, 30 builtins,
+  26 specials, 10 `MATH1` functions, 3 `.Call`, 2 `exp`, 1 `log`), each
+  of which translates once the primitive exists. The test fails on code
+  the translation cannot follow, an opcode it does not know, or the
+  verifier's refusal. Its first run found one: a numeric `switch`'s
+  empty alternative in non-tail position, whose `stop()` call cmp.R lets
+  fall into the default with its value left on the stack (the 14 `Ops.*`
+  and `Summary.*` group methods); a join now drops values the falling
+  path leaves that the label's state does not have
+  (`tests/rt/bctrans/loops.R`'s `k_switch_nontail`).
+- **Real base code run:** `tests/rt/bctrans/basefuns.R` replays GNU R's
   installed byte code of 24 base functions (`.Internal(bodyCode(f))`,
   rebuilt with `mkCode`/`bcClose` in `.BaseNamespaceEnv`) and calls them:
   `paste0`, `lapply`, `sapply`, `vapply`, `Filter`, `match.arg`,
@@ -159,6 +174,16 @@ the from-source port (or a translation choice) to settle later:
 | a nested function's code | 5 | the port compiles a nested function's source at once; the translation translates its byte code at its first call. |
 | guard of a declined inline handler | 1 | `tryInline` puts `BASEGUARD` before `cmpCall` when the handler declines (`sum(...)`); the port calls unguarded. |
 
+**On base's installed code** (the base.rdb test under the crosscheck,
+compiled from source for base's namespace as installed code): 72 nested
+functions, 33 loop shapes, 21 folds, 6 skipped, 358 untranslated (the
+primitives robigo-rt lacks, above), and 221 first differences not classed
+yet. Most (161) are a call of a base closure GNU R's installed code
+inlines as a simple `.Internal` (`match`, `inherits`: `cmpSimpleInternal`)
+where the from-source compile, in this session's lazily bound base, calls
+it. Classing them is the from-source port's (V2) to settle, so rt-ci runs
+this part report-only: the step fails only when the base.rdb test does.
+
 Fixed rather than listed: the from-source `switch` now ends an empty
 numeric alternative as cmp.R does in tail position (a jump to the end
 after the `stop()` call, dead at run time), and a tail `&&`/`||` is
@@ -178,4 +203,23 @@ subscripts; printing a matrix.
 
 ### Verification
 
-VERIFICATION
+On `556f2d56` (main `78dcf1ee` merged), unless noted:
+- **`scripts/rt-ci.py`, full:** every step passes. The new crosscheck
+  step first failed on one difference the classes missed (a `for` loop's
+  step placement), fixed in `556f2d56` and rerun clean: 21 expected, 3
+  skipped, 0 unexpected.
+- **Conformance:** 463/471 against GNU R 4.6.2; the failures are the
+  three `link-walk-*` and the five compiler cases, as on main.
+- **perf-rt against `78dcf1ee`** (Ryzen 9 5900X, callgrind instructions
+  per iteration): 0 failures. Every row within ±0.03% but e7-match
+  (+0.15%, address-sensitive: the median over heap shifts); peak RSS at
+  most +0.4%.
+- **Miri:** not run; robigo-rtcore and robigo-heap are unchanged.
+- **`cargo fmt --check`, `scripts/lint.sh`:** pass.
+- **Sol** (gpt-6.1-sol, high), round 1: two blockers, both fixed in
+  `a2c63078`. `RETURNJMP`'s operand is now in tail position, so
+  `function() g({ invisible(0); return(1) })` returns visibly
+  (`basic.R`'s `k_returnjmp`, which the round-1 binary failed). The
+  verifier checks a `Loop` region's continuation, `target + 1`, with a
+  rejection test. Round 2: APPROVE.
+- **After L1b's merge:** the base.rdb test (above) and the switch join.

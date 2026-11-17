@@ -191,7 +191,7 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
         unsafe {
             if f.cdr().typ() == BCODESXP {
                 if crosscheck::enabled() {
-                    crosscheck_closure(cx, f)?;
+                    crosscheck_closure(cx, f, installed)?;
                 }
                 // V3: GNU R's byte code, translated
                 return translate_code(cx, f.cdr(), Some(f.car()));
@@ -218,10 +218,12 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
 /// from-source compile goes first, so the argument code that stays on an
 /// expression both share is the translation's. A compile that would force
 /// a lazy binding, or that cmp.R declines, is skipped (reported).
+/// `installed`: base's installed byte code (provenance, as for
+/// [`compile_closure_bc`]).
 ///
 /// # Safety
 /// `f` is a live closure whose body is a BCODESXP; nothing collects.
-unsafe fn crosscheck_closure(cx: &Cx, f: Sexp) -> Result<(), Need> {
+unsafe fn crosscheck_closure(cx: &Cx, f: Sexp, installed: bool) -> Result<(), Need> {
     // SAFETY: the caller's contract.
     unsafe {
         let (formals, bc) = (f.car(), f.cdr());
@@ -234,7 +236,7 @@ unsafe fn crosscheck_closure(cx: &Cx, f: Sexp) -> Result<(), Need> {
             })
             .unwrap_or_else(|_| "<a closure>".to_owned());
         let source = (|| -> Result<Option<Built>, Need> {
-            let mut cenv = Cenv::of_env(cx, f.tag(), false)?;
+            let mut cenv = Cenv::of_env(cx, f.tag(), installed)?;
             if !function_context(cx, st, &mut cenv, formals, body)? {
                 return Ok(None);
             }
@@ -274,6 +276,65 @@ unsafe fn crosscheck_closure(cx: &Cx, f: Sexp) -> Result<(), Need> {
         }
         Ok(())
     }
+}
+
+/// For the base.rdb translation test: closure `f`'s byte code translated,
+/// and the byte code of each function it makes (`MAKECLOSURE`'s), without
+/// running any; each translation through the [`crate::code::Verified`]
+/// gate. What each one stopped at (an opcode or a primitive robigo-rt does
+/// not have, code the translation cannot follow, a refusal of the gate);
+/// none when all of them translate. Under `ROBIGO_BC_CROSSCHECK` the
+/// closure is compared too, as base's installed code.
+#[doc(hidden)]
+pub fn translation_gaps(cx: &mut Cx, f: Root<'_>) -> RResult<Vec<String>> {
+    let mut gaps = Vec::new();
+    attempt(cx, |cx| {
+        gaps.clear();
+        // SAFETY: a rooted closure; the byte code it makes is reachable
+        // from it; nothing collects in this interval.
+        unsafe {
+            let f = f.bind(cx).sexp();
+            if crosscheck::enabled() && f.cdr().typ() == BCODESXP {
+                crosscheck_closure(cx, f, true)?;
+            }
+            let st = prims::state(cx);
+            let mut todo = vec![f.cdr()];
+            while let Some(bc) = todo.pop() {
+                if bc.typ() != BCODESXP {
+                    continue;
+                }
+                let mut c = Comp::new(cx, st, Profile::Bc, Some(Cenv::for_translation()));
+                let r = c.alloc();
+                match c.translate(bc, r) {
+                    Ok(()) => {
+                        let mut i = Ins::new(Op::Ret);
+                        i.b = r;
+                        c.emit(i);
+                        if let Err(e) = crate::code::Verified::new(c.finish()) {
+                            gaps.push(format!("the verifier refuses the translation: {e}"));
+                        }
+                    }
+                    Err(Need::Fail) => gaps.push(
+                        c.bc_untranslated
+                            .take()
+                            .unwrap_or_else(|| "byte code the translation cannot follow".to_owned()),
+                    ),
+                    Err(e) => return Err(e),
+                }
+                // the functions it makes: MAKECLOSURE's list(formals, body, ...)
+                let consts = bc.cdr();
+                let p = consts.std_data() as *const Sexp;
+                for j in 0..consts.std_len() as usize {
+                    let k = *p.add(j);
+                    if k.typ() == VECSXP && k.std_len() >= 2 {
+                        todo.push(*(k.std_data() as *const Sexp).add(1));
+                    }
+                }
+            }
+            Ok(cx.nil().sexp())
+        }
+    })?;
+    Ok(gaps)
 }
 
 /// The code of the byte code `bc` evaluated as itself (`eval(bc, rho)`,

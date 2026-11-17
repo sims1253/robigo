@@ -30,6 +30,8 @@ cases <- list(
        calls = c("print(k_switch_num(2))", "print(k_switch_num(3))", "print(k_switch_num(2.9))")),
   list(name = "k_switch_nodflt", fun = function(x) switch(x, a = 1, b = 2),
        calls = c("print(k_switch_nodflt('b'))", "print(k_switch_nodflt('q'))")),
+  list(name = "k_switch_nontail", fun = function(x) { ok <- switch(x, a = , b = TRUE, FALSE); ok },
+       calls = c("print(k_switch_nontail('a'))", "print(k_switch_nontail('z'))", "print(k_switch_nontail(2))")),
   list(name = "k_switch_empty", fun = function(i) switch(i, , "two"),
        calls = c("print(k_switch_empty(2))", "print(k_switch_empty(1))"))
 )

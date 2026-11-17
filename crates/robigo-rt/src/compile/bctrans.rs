@@ -813,6 +813,18 @@ impl<'g> Comp<'g> {
             // a label: the stack a jump left there, met by control falling in
             match (t.labels.get(&i.at).cloned(), fell) {
                 (Some((st, next, open)), true) => {
+                    // values the falling path leaves that the label's do
+                    // not have are dead: a numeric switch's empty
+                    // alternative, whose stop() call cmp.R lets fall into
+                    // the default (bcEval leaves its value below, never
+                    // read)
+                    if st.len() < t.stack.len()
+                        && next <= self.next
+                        && t.stack[st.len()..].iter().all(|e| matches!(e.what, What::Val(_)))
+                    {
+                        t.stack.truncate(st.len());
+                        self.next = next;
+                    }
                     if next != self.next {
                         return Err(mismatch());
                     }

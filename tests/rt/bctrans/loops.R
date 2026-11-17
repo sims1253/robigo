@@ -365,6 +365,30 @@ k_switch_nodflt <- .Internal(bcClose(as.pairlist(alist(x = )),
 print(k_switch_nodflt('b'))
 print(k_switch_nodflt('q'))
 
+# k_switch_nontail
+k_switch_nontail <- .Internal(bcClose(as.pairlist(alist(x = )),
+ mk(c(12L, 20L, 1L, 102L, 2L, 3L, 11L, 12L, 23L, 4L, 34L, 6L, 38L, 5L, 17L, 2L, 23L, 18L, 2L, 23L, 19L, 2L, 23L, 22L, 9L, 4L, 20L, 9L, 1L), list(quote({
+    ok <- switch(x, a = , b = TRUE, FALSE)
+    ok
+}),
+  as.name("x"),
+  quote(switch(x, a = , b = TRUE, FALSE)),
+  c("a", "b", ""),
+  as.name("stop"),
+  quote(stop("empty alternative in numeric switch")),
+  "empty alternative in numeric switch",
+  TRUE,
+  FALSE,
+  as.name("ok"),
+  quote(ok <- switch(x, a = , b = TRUE, FALSE)),
+  c(17L, 17L, 20L),
+  c(8L, 17L, 20L, 14L),
+  structure(c(NA, 1L, 1L, 2L, 2L, 2L, 2L, 2L, 5L, 5L, 5L, 5L, 5L, 5L, 2L, 2L, 2L, 7L, 2L, 2L, 8L, 2L, 2L, 10L, 10L, 10L, 9L, 9L, 9L), class = "expressionsIndex"))),
+ globalenv()))
+print(k_switch_nontail('a'))
+print(k_switch_nontail('z'))
+print(k_switch_nontail(2))
+
 # k_switch_empty
 k_switch_empty <- .Internal(bcClose(as.pairlist(alist(i = )),
  mk(c(12L, 20L, 1L, 102L, 0L, 2L, 2L, 7L, 23L, 3L, 34L, 5L, 38L, 4L, 1L, 17L, 15L, 1L, 16L, 6L, 1L), list(quote(switch(i, , "two")),
