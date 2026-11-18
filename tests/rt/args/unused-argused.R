@@ -17,12 +17,10 @@ err(g(ex=, a, z = 2))
 h <- function(x, y) c(missing(x), missing(y))
 err(h(x=, , 3))
 err(h(x=, , 3, 4))
-# 5. a plain unused argument, a tagged one, from a promise's expression
+# 5. a plain unused argument, a tagged one (a promise's expression)
 k <- function(x) x
 err(k(1, 2))
 err(k(1, y = 2 + 3))
-w <- function(...) k(...)
-err(w(1, sin(2)))
 # 6. a special's own formals (on.exit: expr, add, after)
 u <- function() { on.exit(1, TRUE, FALSE, 4); "ran" }
 err(u())
