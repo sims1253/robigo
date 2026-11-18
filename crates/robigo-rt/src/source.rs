@@ -221,7 +221,14 @@ fn parse_text(
             });
         }
     };
-    crate::reader::check_non_ascii_locale(cx, src, if num < 0 { usize::MAX } else { end })?;
+    // (what R_Parse reads: to the last requested expression's end, its
+    // terminator the next byte; nothing for n = 0)
+    let upto = match exprs.last() {
+        _ if num < 0 => usize::MAX,
+        Some(e) => e.span().end as usize + 1,
+        None => 0,
+    };
+    crate::reader::check_non_ascii_locale(cx, src, upto)?;
     // the lexer's warnings up to the last expression's terminator
     *consumed = if num < 0 { src.len() } else { end };
     signal(cx, if num < 0 { usize::MAX } else { end.saturating_sub(1) })?;

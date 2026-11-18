@@ -98,7 +98,15 @@ pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
             // PARSE_NULL, PARSE_OK and PARSE_ERROR start a new statement
             prompt_type = 1;
             let ok = match status {
-                robigo_syntax::ConsoleStatus::Null => true,
+                robigo_syntax::ConsoleStatus::Null => {
+                    // (white space GNU R's C-locale lexer does not skip)
+                    if crate::reader::non_ascii_refused(cx, &iob, usize::MAX) {
+                        error_at_top(cx, crate::reader::NON_ASCII_REFUSED);
+                        false
+                    } else {
+                        true
+                    }
+                }
                 // the parser may not have seen all of the input (PR#15941):
                 // read on, as for an incomplete statement
                 robigo_syntax::ConsoleStatus::Eof => {
