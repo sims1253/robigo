@@ -720,6 +720,7 @@ internal list2env
 internal load
 internal load.from.file
 internal loadFromConn2
+internal loadInfoFromConn2
 internal lockBinding
 internal lockEnvironment
 internal ls

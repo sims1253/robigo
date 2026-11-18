@@ -484,6 +484,8 @@ internal lazyLoadDBflush
 internal lazyLoadDBinsertValue
 internal lengths
 internal list2env
+internal load.from.file
+internal loadInfoFromConn2
 internal lockBinding
 internal lockEnvironment
 internal ls
@@ -526,6 +528,7 @@ internal rep.int
 internal rep_len
 internal returnValue
 internal rowSums
+internal save.to.file
 internal search
 internal serialize
 internal serializeInfoFromConn
