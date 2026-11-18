@@ -429,6 +429,8 @@ fn print_atomic(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
                         )
                     });
                 if let Err(m) = printed {
+                    // (GNU R has printed what came before the error)
+                    cx.rprintf(&out);
                     return Err(cx.error(&m));
                 }
             }
@@ -438,6 +440,7 @@ fn print_atomic(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
                 if let Err(m) =
                     crate::printarray::print_array(cx, v, &d, data.quote, adj(data.right), dn, data, &mut out)
                 {
+                    cx.rprintf(&out);
                     return Err(cx.error(&m));
                 }
             }
@@ -810,17 +813,26 @@ fn list_element_summary(cx: &mut Cx, e: Root<'_>, data: &PrintData) -> RResult<V
             let env = sc.root(cx, data.env.as_ref().map(|g| g.bind(cx)).unwrap_or(cx.global_env()));
             let ans = sc.capture(cx, |cx, o| crate::eval(cx, call, env, o))?;
             let fmt = ans.bind(cx).as_scalar::<Char<'_>>().map(|c| translated_bytes(cx, c));
+            let fmt = match fmt {
+                Some(Ok(f)) => Some(f),
+                Some(Err(m)) => return Err(cx.error(&m)),
+                None => None,
+            };
             match fmt.filter(|f| f.len() < 100) {
                 Some(f) => Ok(f),
                 None => {
                     // translateChar(STRING_ELT(R_data_class2(s_i), 0))
-                    let mut t = {
+                    let cls = {
                         let v = e.bind(cx);
                         attrib::get_value(v, b"class")
                             .and_then(|c| c.as_vector::<Char<'_>>())
                             .filter(|c| !c.is_empty())
                             .map(|c| translated_bytes(cx, c.get(0)))
-                            .unwrap_or_default()
+                    };
+                    let mut t = match cls {
+                        Some(Ok(t)) => t,
+                        Some(Err(m)) => return Err(cx.error(&m)),
+                        None => Vec::new(),
                     };
                     // Rsnprintf_mbcs(pbuf, 115, "%s,%d", ...)
                     let n = robigo_rtbuiltins::builtin::length(cx, e.bind(cx)).unwrap_or(1);
@@ -871,7 +883,10 @@ fn list_element_summary(cx: &mut Cx, e: Root<'_>, data: &PrintData) -> RResult<V
             }
             View::Cplx(_) => out.extend_from_slice(format!("complex,{n}").as_bytes()),
             View::Str(a) if n == 1 => {
-                let t = translated_bytes(cx, a.get(0));
+                let t = match translated_bytes(cx, a.get(0)) {
+                    Ok(t) => t,
+                    Err(m) => return Err(cx.error(&m)),
+                };
                 if t.len() < 100 {
                     out.push(b'"');
                     out.extend_from_slice(&t);
@@ -898,14 +913,14 @@ fn list_element_summary(cx: &mut Cx, e: Root<'_>, data: &PrintData) -> RResult<V
     Ok(b)
 }
 
-/// `translateChar(c)`'s bytes (`NA` for NA).
-fn translated_bytes(cx: &Cx, c: Char<'_>) -> Vec<u8> {
+/// `translateChar(c)`'s bytes (`NA` for NA), or GNU R's error.
+fn translated_bytes(cx: &Cx, c: Char<'_>) -> Result<Vec<u8>, String> {
     if c == cx.na_string() {
-        return b"NA".to_vec();
+        return Ok(b"NA".to_vec());
     }
     robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(c), cx.locale())
         .map(|b| b.into_owned())
-        .unwrap_or_else(|_| c.bytes().to_vec())
+        .map_err(|e| e.to_string())
 }
 
 /// `Rsnprintf_mbcs`'s cut: at most `n` bytes, not inside a UTF-8 character.
@@ -949,13 +964,9 @@ fn print_summaries(
     } else {
         crate::printarray::print_array_of(cx, &elts, STRSXP, &dims, false, Justify::Left, dimnames, data, &mut out)
     };
-    match r {
-        Err(m) => Err(cx.error(&m)),
-        Ok(()) => {
-            cx.rprintf(&out);
-            Ok(())
-        }
-    }
+    // (on an error, GNU R has printed what came before it)
+    cx.rprintf(&out);
+    r.map_err(|m| cx.error(&m))
 }
 
 /// `R_print.right` as an `Rprt_adj` (print.default's is a logical).
@@ -1434,20 +1445,23 @@ pub fn do_prmatrix(
         let rl = lab(rowlab.bind(cx));
         let cl = lab(collab.bind(cx));
         match (rl, cl) {
-            (Err(()), _) => Err("invalid row labels".to_owned()),
-            (_, Err(())) => Err("invalid column labels".to_owned()),
+            (Err(()), _) => Err(("invalid row labels".to_owned(), Vec::new())),
+            (_, Err(())) => Err(("invalid column labels".to_owned(), Vec::new())),
             (Ok(rl), Ok(cl)) => {
                 let labels =
                     crate::printarray::Labels { rl: label_strs(cx, rl), cl: label_strs(cx, cl), rn: None, cn: None };
                 match attrib::get_value(xv, b"dim").and_then(|d| d.as_ints()).filter(|d| d.len() >= 2) {
-                    None => {
-                        Err("robigo: prmatrix() of an object without two extents is not implemented yet".to_owned())
-                    }
+                    None => Err((
+                        "robigo: prmatrix() of an object without two extents is not implemented yet".to_owned(),
+                        Vec::new(),
+                    )),
                     Some(d) => {
                         let mut o = Vec::new();
                         let rc = (d[0].max(0) as usize, d[1].max(0) as usize);
+                        // (on an error, what came before it is printed too)
                         crate::printarray::print_matrix(cx, xv, rc, quote != 0, just, &labels, &data, &mut o)
-                            .map(|()| o)
+                            .map(|()| o.clone())
+                            .map_err(|m| (m, o))
                     }
                 }
             }
@@ -1455,7 +1469,10 @@ pub fn do_prmatrix(
     };
     data.release(cx);
     match printed {
-        Err(m) => Err(cx.error(&m)),
+        Err((m, o)) => {
+            cx.rprintf(&o);
+            Err(cx.error(&m))
+        }
         Ok(o) => {
             cx.rprintf(&o);
             out.set(cx, x.bind(cx));

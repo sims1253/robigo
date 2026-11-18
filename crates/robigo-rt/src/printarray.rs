@@ -54,14 +54,15 @@ fn strs_of<'g>(cx: &'g Cx, v: Ref<'g>) -> Result<Option<Strs<'g>>, String> {
     }
 }
 
-/// `translateChar(STRING_ELT(x, i))`: native bytes (`NA` for NA).
-fn translated(cx: &Cx, c: Char<'_>) -> Vec<u8> {
+/// `translateChar(STRING_ELT(x, i))`: native bytes (`NA` for NA), or
+/// GNU R's error (a "bytes" string, a string iconv cannot convert).
+fn translated(cx: &Cx, c: Char<'_>) -> Result<Vec<u8>, String> {
     if c == cx.na_string() {
-        return b"NA".to_vec();
+        return Ok(b"NA".to_vec());
     }
     robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(c), cx.locale())
         .map(|b| b.into_owned())
-        .unwrap_or_else(|_| c.bytes().to_vec())
+        .map_err(|e| e.to_string())
 }
 
 /// `VECTOR_ELT(dimnames, i)` (a pairlist's `CAR` too).
@@ -80,10 +81,10 @@ fn dimnames_elt<'g>(cx: &'g Cx, dn: Ref<'g>, i: usize) -> Ref<'g> {
 }
 
 /// Element `i` of `names(dimnames)` translated.
-fn dnn_elt(cx: &Cx, dnn: Ref<'_>, i: usize) -> Vec<u8> {
+fn dnn_elt(cx: &Cx, dnn: Ref<'_>, i: usize) -> Result<Vec<u8>, String> {
     match dnn.as_vector::<Char<'_>>() {
         Some(v) if i < v.len() => translated(cx, v.get(i)),
-        _ => Vec::new(),
+        _ => Ok(Vec::new()),
     }
 }
 
@@ -97,7 +98,7 @@ pub fn matrix_labels<'g>(cx: &'g Cx, dimnames: Option<Ref<'g>>) -> Result<Labels
     let cl = strs_of(cx, dimnames_elt(cx, dn, 1))?;
     let (rn, cn) = match attrib::names(dn) {
         None => (None, None),
-        Some(nn) => (Some(dnn_elt(cx, nn, 0)), Some(dnn_elt(cx, nn, 1))),
+        Some(nn) => (Some(dnn_elt(cx, nn, 0)?), Some(dnn_elt(cx, nn, 1)?)),
     };
     Ok(Labels { rl, cl, rn, cn })
 }
@@ -151,7 +152,7 @@ fn print_typed_matrix(
     data: &PrintData,
     pp: &PrintParams,
     out: &mut Vec<u8>,
-) {
+) -> Result<(), String> {
     let gap = data.gap;
     // _PRINT_INIT_rl_rn
     let mut rlabw = match &labels.rl {
@@ -202,7 +203,7 @@ fn print_typed_matrix(
                 None => pp.na_width_noquote,
                 Some(s) => match robigo_text::translate_char(s, pp.locale) {
                     Ok(t) => strwidth(&t, pp),
-                    Err(_) => rstrlen(s, 0, pp.locale),
+                    Err(e) => return Err(e.to_string()),
                 },
             },
             None => index_width(j as i64 + 1) + 3,
@@ -253,7 +254,7 @@ fn print_typed_matrix(
             row_label(out, i);
         }
         out.push(b'\n');
-        return;
+        return Ok(());
     }
     let (mut jmin, mut jmax) = (0usize, 0usize);
     while jmin < c {
@@ -344,6 +345,7 @@ fn print_typed_matrix(
         out.push(b'\n');
         jmin = jmax;
     }
+    Ok(())
 }
 
 /// `ngettext(one, many, n)` with `%d`.
@@ -405,7 +407,7 @@ pub(crate) fn print_matrix_of(
     }
     let pp = data.params(cx);
     let q = if quote { b'"' } else { 0 };
-    print_typed_matrix(elts, 0, r_pr, r, c_pr, labels, q, right, true, data, &pp, out);
+    print_typed_matrix(elts, 0, r_pr, r, c_pr, labels, q, right, true, data, &pp, out)?;
     if r_pr < r || c_pr < c {
         out.extend_from_slice(b" [ reached 'max' / getOption(\"max.print\") -- omitted");
         if r_pr < r {
@@ -488,7 +490,7 @@ pub(crate) fn print_array_of(
         Some(dn) => (strs_of(cx, dimnames_elt(cx, dn, 0))?, strs_of(cx, dimnames_elt(cx, dn, 1))?, attrib::names(dn)),
     };
     let (rn, cn) = match dnn {
-        Some(nn) => (Some(dnn_elt(cx, nn, 0)), Some(dnn_elt(cx, nn, 1))),
+        Some(nn) => (Some(dnn_elt(cx, nn, 0)?), Some(dnn_elt(cx, nn, 1)?)),
         None => (None, None),
     };
     let labels = Labels { rl: dn0, cl: dn1, rn, cn };
@@ -528,11 +530,14 @@ pub(crate) fn print_array_of(
                 let dn = dimnames.map(|d| dimnames_elt(cx, d, j)).filter(|e| e.sexptype() != NILSXP);
                 match dn {
                     Some(dn) => {
-                        let name = dn.as_vector::<Char<'_>>().map_or_else(Vec::new, |v| translated(cx, v.get(l - 1)));
+                        let name = match dn.as_vector::<Char<'_>>() {
+                            Some(v) => translated(cx, v.get(l - 1))?,
+                            None => Vec::new(),
+                        };
                         match dnn {
                             Some(nn) => {
                                 out.extend_from_slice(b", ");
-                                out.extend_from_slice(&dnn_elt(cx, nn, j));
+                                out.extend_from_slice(&dnn_elt(cx, nn, j)?);
                                 out.extend_from_slice(b" = ");
                                 out.extend_from_slice(&name);
                             }
@@ -554,7 +559,7 @@ pub(crate) fn print_array_of(
             }
             out.extend_from_slice(format!(" array of {}>\n", type_name(typ)).as_bytes());
         }
-        print_typed_matrix(elts, i * b, use_nr, nr, use_nc, &labels, q, right, do_ij, data, &pp, out);
+        print_typed_matrix(elts, i * b, use_nr, nr, use_nc, &labels, q, right, do_ij, data, &pp, out)?;
         out.push(b'\n');
     }
     if max_reached {
