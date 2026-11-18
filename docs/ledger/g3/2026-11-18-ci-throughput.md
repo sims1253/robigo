@@ -87,9 +87,14 @@ not a measurement: jobs can finish in the window, the old run's queued jobs
 can start in it, and queue waits change with the scheduling. In return,
 1,268 minutes a day of waiting behind a cancelled run go away.
 
-**A cancelled run stays red** even when every job it needs had passed
-before the cancel: `Check`'s first step runs only under `cancelled()` and
-fails.
+**What "red" covers:** a run cancelled before its jobs ran has cancelled or
+skipped needs, so `Check` fails (a test covers every need cancelled). A run
+cancelled after every job it needs had passed can still show a green
+`Check`, as on main today. That green is true, since every gate ran and
+passed. A step guarded by `cancelled()` cannot turn it red: a step's
+`cancelled()` reads its own job's status, not the workflow's (Sol's round 2,
+from the runner's source). Making even that case red would need a separate
+required gate on `workflow_run: completed`, which this PR does not add.
 
 **Other events:**
 - A fork's `GITHUB_TOKEN` is read-only, so its cancel fails: the step

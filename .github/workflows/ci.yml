@@ -1167,13 +1167,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      # A cancelled run is red even when every job it needs had passed
-      # before the cancel (its later steps then do not run)
-      - name: The run was not cancelled
-        if: ${{ cancelled() }}
-        run: |
-          echo "::error::this run was cancelled: push, or re-run it, for a verdict"
-          exit 1
       - uses: actions/checkout@v7
         with:
           sparse-checkout: |
