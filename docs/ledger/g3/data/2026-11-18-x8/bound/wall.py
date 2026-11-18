@@ -1,6 +1,15 @@
 import subprocess, time, os, sys, json, statistics
 B = os.path.expanduser(os.environ.get("ROBIGO_RT", "~/.cache/robigo-research/ar-perf/robigo-rt-main"))
 D = os.path.dirname(os.path.abspath(__file__))
+# the repository root (this file is docs/ledger/g3/data/2026-11-18-x8/bound/)
+REPO = os.path.abspath(os.path.join(D, *[".."] * 6))
+
+def script(name):
+    """The program: the preallocated twins are beside this file, the grown
+    programs are the repository's benchmarks."""
+    if name.endswith("-pre"):
+        return os.path.join(D, name + ".R")
+    return os.path.join(REPO, "benchmarks", "rt", "mem", name + ".R")
 progs = ["growdbl", "growdbl-pre", "listgrow", "listgrow-pre"]
 modes = {"inline": {}, "noinline": {"ROBIGO_NO_INLINE": "1"}}
 base = dict(os.environ, R_DEFAULT_PACKAGES="NULL", LC_ALL="C.UTF-8")
@@ -14,7 +23,7 @@ for r in range(R):
     for p, m in order:
         env = dict(base, **modes[m])
         t = time.perf_counter()
-        subprocess.run([B, "--vanilla", os.path.join(D, p + ".R")], env=env, stdout=subprocess.DEVNULL, check=True)
+        subprocess.run([B, "--vanilla", script(p)], env=env, stdout=subprocess.DEVNULL, check=True)
         samples[f"{p}/{m}"].append(time.perf_counter() - t)
 loads.append(os.getloadavg()[0])
 med = {k: statistics.median(v) for k, v in samples.items()}
