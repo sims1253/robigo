@@ -13,7 +13,10 @@
     connections).** `file()`/`gzfile()`'s open callbacks have no `Cx`, so
     they call `expand_file_name`, which expands as GNU R does but cannot
     give that warning. Every other caller uses `r_expand_file_name`, which
-    gives it.
+    gives it. **Closed by L4's readers** (`2026-11-18-l4-connection-readers.md`):
+    the opens stash the warning and their callers give it; GNU R's
+    `R_ExpandFileName` takes readline's expansion first, which that entry
+    also ports.
   - **`list.files` with a back reference in `pattern`, in a UTF-8 locale
     (owner: B, package B5-rxbt).** GNU R matches each file name as a
     multibyte string (`tre_regexec`). With back references, that runs
