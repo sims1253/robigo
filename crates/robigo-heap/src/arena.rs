@@ -75,18 +75,24 @@ pub(crate) fn unlock_after_fork() {
     unsafe { libc::pthread_mutex_unlock(LOCK.0.get()) };
 }
 
-/// The arena's lock held by the caller until the guard drops: a fork test's
-/// stand-in for a thread inside `install` (not for other uses).
+/// The arena's lock, held by the caller until the guard drops: a fork
+/// test's stand-in for a thread inside `install` (not for other uses). The
+/// guard is neither `Send` nor `Sync`, so it unlocks on the thread that
+/// locked.
+///
+/// # Safety
+/// The caller interns nothing (no `install`, no new heap) while it holds the
+/// guard, and drops it on this thread.
 #[doc(hidden)]
-pub fn hold_lock_for_test() -> impl Drop {
-    struct Held;
+pub unsafe fn hold_lock_for_test() -> impl Drop {
+    struct Held(std::marker::PhantomData<*const ()>);
     impl Drop for Held {
         fn drop(&mut self) {
             unlock_after_fork();
         }
     }
     lock_for_fork();
-    Held
+    Held(std::marker::PhantomData)
 }
 
 /// Run `f` with the arena's state, under the lock (`fork.rs` registers

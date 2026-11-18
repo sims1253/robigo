@@ -29,14 +29,28 @@ fn child_work() -> i32 {
 
 /// Fork while another thread holds a lock (`hold` returns its guard), and
 /// check that the child finishes `child_work`.
+///
+/// The overlap is observed, not timed: the holder releases only once a fork
+/// has entered the `prepare` handler (`robigo_heap::fork_prepares`), so the
+/// lock is held when the handlers run. Without the handlers no `prepare`
+/// runs: the holder gives up after 2 s, by which time the fork has happened
+/// with the lock held, and the child blocks for ever (the negative control:
+/// with registration disabled, every one of these tests times out).
 fn fork_while_held<G: 'static>(what: &str, hold: fn() -> G) {
-    // the handlers are registered with the process's first heap
+    // serialized: each test forks while its own lock is held, and another
+    // test's fork would enter `prepare` and release this one's holder
+    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     drop(OwnedIsolate::new());
     let (held_tx, held_rx) = mpsc::channel();
+    let before = robigo_heap::fork_prepares();
     let holder = std::thread::spawn(move || {
         let g = hold();
         held_tx.send(()).unwrap();
-        std::thread::sleep(Duration::from_millis(200));
+        let give_up = Instant::now() + Duration::from_secs(2);
+        while robigo_heap::fork_prepares() == before && Instant::now() < give_up {
+            std::thread::sleep(Duration::from_millis(1));
+        }
         drop(g);
     });
     held_rx.recv().unwrap();
@@ -85,5 +99,7 @@ fn a_child_forked_while_the_environment_lock_is_read_writes_it() {
 
 #[test]
 fn a_child_forked_while_the_symbol_arena_is_locked_interns() {
-    fork_while_held("the arena", robigo_heap::hold_arena_lock_for_test);
+    // SAFETY: the holder thread interns nothing while it holds the lock and
+    // drops the guard on its own thread.
+    fork_while_held("the arena", || unsafe { robigo_heap::hold_arena_lock_for_test() });
 }

@@ -452,37 +452,42 @@ impl EnvWriter<'_> {
     /// (`EINVAL`).
     ///
     /// The environment is process-wide: every isolate (each on its own
-    /// thread) sees the change, as every part of a GNU R process does. Its
-    /// readers are the embedder's to keep safe, as [`EnvWrites::assume`]
-    /// states; this writer adds what robigo itself can: std's readers take
-    /// std's lock, as `set_var` does; this module's C readers hold [`ENV`]
-    /// shared, which the writer holds exclusive; and on a glibc older than
-    /// [`MIN_GLIBC`] no other isolate lives or starts while it writes.
+    /// thread) sees the change, as every part of a GNU R process does.
+    /// - Its readers are the embedder's to keep safe, as
+    ///   [`EnvWrites::assume`] states.
+    /// - This module's C readers hold [`ENV`] shared, which the writer holds
+    ///   exclusive.
+    /// - std's readers (`std::env::var`, under std's own lock) read through
+    ///   glibc's `getenv`, which tolerates this concurrent `setenv` on glibc
+    ///   [`MIN_GLIBC`] and later. On an older one no other isolate lives or
+    ///   starts while the writer writes.
+    ///
+    /// The write is the C library's `setenv`, not `std::env::set_var`: std's
+    /// lock is never taken for writing, so a child forked while a std
+    /// reader held it still writes (robigo-heap's `fork.rs`).
     pub fn set(&self, name: &[u8], value: &[u8]) -> bool {
-        use std::os::unix::ffi::OsStrExt;
         if !env_name_ok(name) || value.contains(&0) {
             return false;
         }
-        // SAFETY: the name and value are ones `set_var` accepts (checked
-        // above). No thread reads the environment unsynchronized: the
-        // embedder's grant (`self._grant`, `EnvWrites::assume`'s contract)
-        // covers every reader of the process; robigo's own are std's (std's
-        // lock) and this module's (ENV, held exclusive by `self`).
-        unsafe { std::env::set_var(std::ffi::OsStr::from_bytes(name), std::ffi::OsStr::from_bytes(value)) };
-        true
+        let (n, v) = (std::ffi::CString::new(name).unwrap(), std::ffi::CString::new(value).unwrap());
+        // SAFETY: two NUL-terminated strings without inner NULs (checked
+        // above), the name without `=`. Concurrent readers as the doc above
+        // says: the grant's contract, ENV held exclusive by `self`, and
+        // glibc's getenv for std's.
+        unsafe { libc::setenv(n.as_ptr(), v.as_ptr(), 1) == 0 }
     }
 
     /// `unsetenv(name)`: remove the process's environment variable `name`;
     /// a name `unsetenv` refuses (`EINVAL`) changes nothing. Readers as for
     /// [`EnvWriter::set`].
     pub fn unset(&self, name: &[u8]) {
-        use std::os::unix::ffi::OsStrExt;
         if !env_name_ok(name) {
             return;
         }
-        // SAFETY: as for `set`: a name `remove_var` accepts; readers by the
-        // grant's contract and the locks `self` holds.
-        unsafe { std::env::remove_var(std::ffi::OsStr::from_bytes(name)) };
+        let n = std::ffi::CString::new(name).unwrap();
+        // SAFETY: as for `set`: a NUL-terminated name without `=`; readers as
+        // `set` says.
+        unsafe { libc::unsetenv(n.as_ptr()) };
     }
 
     /// `getenv(name) != NULL`: whether the environment has `name`, read
