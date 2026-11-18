@@ -263,10 +263,8 @@ fn pointers_and_weak_references() {
 #[test]
 fn what_is_not_ported_says_so() {
     let mut iso = session();
-    for (src, msg) in [("list(sum)\n", "robigo: printing the primitive 'sum'")] {
-        let (_, err, ok) = run(iso.cx(), src);
-        assert!(!ok && err.contains(msg), "{src}: {err}");
-    }
+    let (_, err, ok) = run(iso.cx(), "list(sum)\n");
+    assert!(!ok && err.contains("robigo: printing the primitive 'sum'"), "{err}");
     // matrices and arrays print (printarray.rs; tests/rt/print has the cases)
     let (out, err, ok) = run(iso.cx(), "structure2(1:4, dim = c2(2L, 2L))\n");
     assert!(ok, "{err}");
