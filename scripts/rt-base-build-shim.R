@@ -14,6 +14,7 @@
 ## aperm (E, array.c PR: aperm, asplit, col, row): the permutation by index
 ## arithmetic, dimnames permuted (resize = TRUE) or the old dim kept
 .rt_shim("aperm.default", function(a, perm = NULL, resize = TRUE, ...) {
+    if (!is.array(a)) stop("invalid first argument, must be an array")
     d <- dim(a)
     n <- length(d)
     # do_aperm's checks of the permutation
@@ -23,13 +24,18 @@
         if (is.character(perm)) {
             dnn <- names(dimnames(a))
             if (is.null(dnn)) stop("'a' does not have named dimnames")
-            p <- match(perm, dnn)
+            # translateChar(NA_STRING) is "NA"
+            key <- function(s) { s[is.na(s)] <- "NA"; s }
+            p <- match(key(perm), key(dnn))
             if (anyNA(p)) stop(gettextf("'perm[%d]' does not match a dimension name", which(is.na(p))[1L]))
             perm <- p
         } else perm <- as.integer(perm)
     }
     if (anyNA(perm) || any(perm < 1L | perm > n)) stop("value out of range in 'perm'")
     if (anyDuplicated(perm)) stop("invalid 'perm' argument")
+    # asLogical(resize)
+    resize <- if (is.atomic(resize) && length(resize)) as.logical(resize[1L]) else NA
+    if (is.na(resize)) stop("'resize' must be TRUE or FALSE")
     nd <- d[perm]
     N <- prod(d)
     stride <- cumprod(c(1L, d))[seq_len(n)]
@@ -100,6 +106,8 @@
         if (length(f) <= 0L && length(v) > 0L) stop("group length is 0 but data length > 0")
         if (length(f) > 0L && length(v) %% length(f) != 0L) warning("data length is not a multiple of split variable")
         fi <- rep_len(unclass(f), length(v))
+        # (protect against malformed factors)
+        if (any(!is.na(fi) & (fi < 1L | fi > length(lv)))) stop("factor has bad level")
         res <- vector("list", length(lv))
         for (j in seq_along(lv)) res[[j]] <- v[which(fi == j)]
         names(res) <- lv
@@ -123,14 +131,29 @@
 ## UTF-8 (the same text in a UTF-8 locale; non-ASCII is NA in ASCII), else
 ## an error naming the conversion
 .rt_shim("iconv", function(x, from = "", to = "", sub = NA, mark = TRUE, toRaw = FALSE) {
-    # (only the plain conversion: a raw result, a substitution and marks are
-    # not stood in)
-    if (!isFALSE(toRaw) || !is.na(sub) || !is.character(x))
-        stop("rt-base-build shim: iconv with toRaw, sub or a non-character x is not stood in")
+    # base's wrapper
+    if (!(is.character(x) || (is.list(x) && is.null(oldClass(x))))) x <- as.character(x)
+    sub <- as.character(sub)
+    if (!is.character(x))
+        stop("rt-base-build shim: iconv of a list of raw vectors is not stood in")
+    # do_iconv's argument checks
+    one <- function(v) is.character(v) && length(v) == 1L
+    lgl <- function(v) if (is.atomic(v) && length(v)) as.logical(v[1L]) else NA
+    if (!one(from)) stop("invalid 'from' argument")
+    if (!one(to)) stop("invalid 'to' argument")
+    if (!one(sub)) stop("invalid 'sub' argument")
+    if (is.na(lgl(mark))) stop("invalid 'mark' argument")
+    if (is.na(lgl(toRaw))) stop("invalid 'toRaw' argument")
+    # (only the plain conversion between the native encoding and UTF-8: a
+    # raw result and a substitution are not stood in)
+    if (lgl(toRaw) || !is.na(sub))
+        stop("rt-base-build shim: iconv with toRaw or sub is not stood in")
     utf <- l10n_info()[["UTF-8"]]
     enc <- function(e) if (e %in% c("", "native.enc")) (if (utf) "UTF-8" else "ASCII") else toupper(sub("UTF8", "UTF-8", e, fixed = TRUE))
     f <- enc(from)
     t <- enc(to)
+    if (!(f %in% c("UTF-8", "ASCII") && t %in% c("UTF-8", "ASCII")))
+        stop("rt-base-build shim: iconv from '", from, "' to '", to, "' is not stood in")
     if (f == t) return(x)
     if (f == "UTF-8" && t == "ASCII") {
         r <- x
