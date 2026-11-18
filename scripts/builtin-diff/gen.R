@@ -167,7 +167,7 @@ local({
         argn <- row$args
         if (is.null(argn)) {
             if (!is.null(w)) argn <- vapply(as.list(w$call)[-1L], function(e) if (is.name(e)) as.character(e) else "", "")
-            else if (is.function(prim)) { f <- formals(args(prim)); argn <- setdiff(names(f), "...") }
+            else if (is.function(prim) && is.function(args(prim))) argn <- setdiff(names(formals(args(prim))), "...")
             else argn <- character()
         }
         k <- if (row$arity >= 0L) row$arity else max(length(argn), 1L)

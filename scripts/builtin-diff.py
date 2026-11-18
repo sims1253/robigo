@@ -269,6 +269,22 @@ def run_batch(cmd, env, batch, out, ncases, scratch, timeout=CASE_TIMEOUT):
 CLEAN_PATH = "/usr/local/bin:/usr/bin:/bin"
 
 
+def remove_tree(d):
+    """rm -rf, after giving the owner back every permission a case's
+    Sys.chmod may have taken (each directory's before it is listed)."""
+    def unlock(p):
+        os.chmod(p, 0o700)
+        for x in os.listdir(p):
+            q = os.path.join(p, x)
+            if os.path.isdir(q) and not os.path.islink(q):
+                unlock(q)
+    if not os.path.lexists(d):
+        return
+    if os.path.isdir(d) and not os.path.islink(d):
+        unlock(d)
+    shutil.rmtree(d)
+
+
 def case_root(key):
     return f"/tmp/robigo-a4-{os.getuid()}-{key}"
 
@@ -300,7 +316,7 @@ def run_isolated(cmd, env, batch, out, ncases, key, rsrc=None, timeout=CASE_TIME
     lost = {}
     base = {k: env[k] for k in (*ENV, "R_ENABLE_JIT", "A4_LABEL") if k in env}
     for i in range(1, ncases + 1):
-        shutil.rmtree(root, ignore_errors=True)
+        remove_tree(root)
         cwd, home, tmp = (os.path.join(root, x) for x in ("case", "home", "tmp"))
         for d in (cwd, home, tmp):
             os.makedirs(d)
@@ -315,7 +331,7 @@ def run_isolated(cmd, env, batch, out, ncases, key, rsrc=None, timeout=CASE_TIME
             note_lost(out, i, timed_out, text, status, lost)
         with open(os.path.join(out, f"{i:06d}.files"), "w") as f:
             json.dump(tree(cwd), f)
-    shutil.rmtree(root, ignore_errors=True)
+    remove_tree(root)
     return lost
 
 
@@ -755,6 +771,9 @@ PLANTS = {
     "abs": ("crash", None),
     "set.seed": ("mismatch", {"seed"}),
     "nzchar": ("mismatch", {"stdout"}),
+    "assign": ("mismatch", {"env"}),
+    "lapply": ("mismatch", {"log"}),
+    "Sys.getenv": ("mismatch", {"files"}),
 }
 CONTROL = ["rep_len"]
 
