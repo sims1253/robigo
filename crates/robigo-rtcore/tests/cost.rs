@@ -137,12 +137,12 @@ fn function_record_raw() {
             for _ in 0..n {
                 cx.scope(|cx, s| {
                     let out = s.out(cx);
-                    unsafe {
-                        cx.function_context_raw(&spec, out, &mut no_on_exit, |cx, _, out| {
+                    cx.with_reserved::<(), _>(|cx, res| unsafe {
+                        cx.function_context_raw(res, &spec, out, &mut no_on_exit, |cx, _, out| {
                             out.set(cx, nil.bind(cx));
                             Ok(false)
                         })
-                    }
+                    })
                     .unwrap();
                 });
                 black_box(&*cx);
