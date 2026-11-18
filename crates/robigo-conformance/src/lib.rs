@@ -510,7 +510,9 @@ pub fn scripts(dir: &Path, features: &[&str]) -> Vec<PathBuf> {
 /// packages only, `LANGUAGE=en`, `C.UTF-8`, UTC, in the script's directory.
 /// A `.tzdir` sidecar names a directory relative to the script, which also
 /// scripts/regen-expected.sh resolves before setting `TZDIR`; without one,
-/// an inherited `TZDIR` is cleared.
+/// an inherited `TZDIR` is cleared. A `.locale` sidecar names the `LC_ALL`
+/// the script runs under instead of `C.UTF-8` (regen-expected.sh records it
+/// so too).
 pub fn command(bin: &Path, script: &Path) -> Command {
     let mut command = Command::new(bin);
     command.arg(script);
@@ -524,6 +526,14 @@ pub fn command(bin: &Path, script: &Path) -> Command {
             let path = script.parent().unwrap().join(dir.trim()).canonicalize().expect("resolve .tzdir");
             assert!(path.is_dir(), ".tzdir must name a directory");
             command.env("TZDIR", path);
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => panic!("read {}: {}", sidecar.display(), err),
+    }
+    let sidecar = script.with_extension("locale");
+    match std::fs::read_to_string(&sidecar) {
+        Ok(loc) => {
+            command.env("LC_ALL", loc.trim());
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => panic!("read {}: {}", sidecar.display(), err),
