@@ -406,10 +406,7 @@ fn delete_list_elements(cx: &mut Cx, x: Root<'_>, which: &Subscript, out: Out<'_
 /// counts) once it has been replaced by a new one.
 fn clear_vector(cx: &mut Cx, x: Root<'_>) -> RResult<()> {
     if matches!(x.bind(cx).sexptype(), VECSXP | EXPRSXP) && !cx.shared(x.bind(cx)) {
-        let mut u = cx.owned_list(x)?;
-        for i in 0..u.len() {
-            u.set_na(i);
-        }
+        cx.owned_list(x)?.set_all_na();
     }
     Ok(())
 }

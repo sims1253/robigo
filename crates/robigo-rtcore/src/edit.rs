@@ -1038,6 +1038,21 @@ impl UniqueList<'_> {
         }
     }
 
+    /// Every element set to R_NilValue (a list) or `NA_STRING` (a character
+    /// vector): [`UniqueList::set_na`] for each, the counts and the barrier
+    /// kept, with the fill chosen once (GNU R's `CLEAR_VECTOR`).
+    pub fn set_all_na(&mut self) {
+        let cx = &*self.cx;
+        // SAFETY: a live list; the fill is an immortal object of this heap,
+        // and every element index is within its length.
+        unsafe {
+            let fill = if self.x.typ() == STRSXP { cx.na_string().as_ref().sexp() } else { cx.iso().nil };
+            for i in 0..self.n {
+                self.x.set_elt(i, fill);
+            }
+        }
+    }
+
     /// Set element `i` to R_NilValue (a list) or `NA_STRING` (a character
     /// vector).
     pub fn set_na(&mut self, i: usize) {
