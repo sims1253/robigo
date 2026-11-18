@@ -42,14 +42,51 @@ pub fn eval_bytecode(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> R
 /// called by a complex assignment): no evaluation of its own, so the
 /// depth is the code's ([`vm::exec`] adds one level, taken off here).
 pub fn eval_bytecode_inline(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
-    if e.bind(cx).sexptype() != LANGSXP {
-        return eval_bytecode(cx, e, rho, out);
+    match e.bind(cx).sexptype() {
+        LANGSXP => {}
+        BCODESXP => return bc_eval_inline(cx, e, rho, out),
+        _ => return eval_bytecode(cx, e, rho, out),
     }
     let profile = prims::state(cx).forced.unwrap_or(Profile::Bc);
     check_env(cx, rho.bind(cx).sexp())?;
     let depth = cx.eval_depth();
     let r = cx.scope(|cx, s| {
         let code = expr_code(cx, e, rho, profile)?;
+        // SAFETY: a fresh or cached code object.
+        let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
+        let slot = out_slot(&out);
+        cx.set_eval_depth(depth - 1);
+        // SAFETY: rooted code and environment; an empty out slot.
+        unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false, false) }.map(drop)
+    });
+    cx.set_eval_depth(depth);
+    r
+}
+
+/// `bcEval(e, rho)` of byte code `e` called by compiled code itself, with
+/// no `eval` of its own: `MAKEPROM`'s for a builtin's argument (a
+/// translated call's promise code). The translation kept on `e`
+/// ([`crate::compile::bytecode_code`]) at the code's own depth
+/// ([`vm::exec`] adds one level, taken off here), bcEval's entry poll
+/// counted; byte code disabled, of a version bcEval does not run, or a
+/// forced `Eval` profile evaluates its source (bcEval's fallback,
+/// `eval(bytecodeExpr(body), rho)`).
+// R: eval.c:bcEval
+fn bc_eval_inline(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let st = prims::state(cx);
+    let source = st.forced == Some(Profile::Eval)
+        || st.jit.get().disable_bytecode
+        || !robigo_rtbuiltins::bytecode::version_ok(e.bind(cx));
+    if source {
+        return cx.scope(|cx, s| {
+            let src = s.root(cx, robigo_rtbuiltins::bytecode::expr(cx, e.bind(cx)));
+            eval(cx, src, rho, out)
+        });
+    }
+    check_env(cx, rho.bind(cx).sexp())?;
+    let depth = cx.eval_depth();
+    let r = cx.scope(|cx, s| {
+        let code = crate::compile::bytecode_code(cx, e)?;
         // SAFETY: a fresh or cached code object.
         let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
         let slot = out_slot(&out);

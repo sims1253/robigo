@@ -521,6 +521,10 @@ pub fn do_encode_string(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<
     let pp = robigo_text::PrintParams { locale: crate::text::ctype(loc), ..robigo_text::PrintParams::DEFAULT };
     let jt = [Justify::Left, Justify::Right, Justify::Centre, Justify::None][justify as usize];
     let x = args.root(0);
+    // a package class's elements are its C methods' (M5)
+    if x.bind(cx).is_package_altrep() {
+        return Err(cx.error("robigo: encodeString() of a package ALTREP vector is not implemented yet"));
+    }
     cx.build(out, |cx| {
         let xv = x.bind(cx).as_vector::<Char<'_>>().unwrap();
         let nas = cx.na_string();

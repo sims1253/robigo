@@ -1261,8 +1261,10 @@ pub fn do_matchcall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
                 while let Some(cell) = c {
                     i += 1;
                     let mut t = cell.car();
+                    // (PREXPR: byte code's source for a promise of
+                    // compiled code)
                     while let View::Promise(p) = t.view() {
-                        t = p.code();
+                        t = crate::bytecode::expr(cx, p.code());
                     }
                     let ddval = t.sexptype() == SYMSXP || matches!(t.sexptype(), LANGSXP | NILSXP);
                     raw.push((i, ddval, s.root(cx, t), cell.tag().as_sym().map(|t| s.root(cx, t))));
