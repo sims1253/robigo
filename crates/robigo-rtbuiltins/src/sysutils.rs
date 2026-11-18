@@ -135,8 +135,8 @@ fn c_like(name: &[u8]) -> bool {
 /// `.Internal(Sys.setlocale(category, locale))`: set the category's
 /// locale; the new name ("" with a warning when the C library has no such
 /// locale). robigo-rt models what the locale changes for R only so far:
-/// `LC_CTYPE` may change within a codeset (UTF-8 or ASCII), `LC_COLLATE`
-/// not at all, the other categories between the C-like locales; any other
+/// `LC_CTYPE` only between names of the same C locale, `LC_COLLATE` not
+/// at all, the other categories between the C-like locales; any other
 /// change is refused.
 // R: platform.c:do_setlocale
 pub fn do_setlocale(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
@@ -185,10 +185,11 @@ pub fn do_setlocale(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
         let modelled = a == b
             || match c {
                 lc::LC_COLLATE => false,
+                // the character classes and case mapping are C.UTF-8's (or C's):
+                // only another name of the same locale
                 lc::LC_CTYPE => {
-                    let utf8 = |n: &[u8]| robigo_rtcore::clib::codeset_of(n).map(|s| s.eq_ignore_ascii_case(b"UTF-8"));
-                    let ascii = |n: &[u8]| robigo_rtcore::clib::codeset_of(n).is_some_and(|s| s == b"ANSI_X3.4-1968");
-                    (utf8(&a) == Some(true) && utf8(&b) == Some(true)) || (ascii(&a) && ascii(&b))
+                    let c_utf8 = |n: &[u8]| matches!(n, b"C.UTF-8" | b"C.utf8");
+                    c_utf8(&a) && c_utf8(&b)
                 }
                 _ => c_like(&a) && c_like(&b),
             };

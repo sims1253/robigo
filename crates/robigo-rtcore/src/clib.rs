@@ -335,23 +335,6 @@ impl LocaleNames {
     }
 }
 
-/// `nl_langinfo(CODESET)` of the `LC_CTYPE` locale `name` (`None` when
-/// the C library has no such locale).
-pub fn codeset_of(name: &[u8]) -> Option<Vec<u8>> {
-    let name = std::ffi::CString::new(name).ok()?;
-    // SAFETY: as in `resolve`: a new object, read, copied, freed.
-    unsafe {
-        let l = libc::newlocale(libc::LC_CTYPE_MASK, name.as_ptr(), std::ptr::null_mut());
-        if l.is_null() {
-            return None;
-        }
-        let p = libc::nl_langinfo_l(libc::CODESET, l);
-        let r = (!p.is_null()).then(|| std::ffi::CStr::from_ptr(p).to_bytes().to_vec());
-        libc::freelocale(l);
-        r
-    }
-}
-
 /// The name a `newlocale` of the category for `name` has (`None` when the
 /// C library has no such locale).
 fn resolve(cat: libc::c_int, name: &[u8]) -> Option<Vec<u8>> {

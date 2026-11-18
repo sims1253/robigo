@@ -39,6 +39,14 @@ print(suppressWarnings(readChar(n, c(2, 2, 2, 2))))
 r <- withCallingHandlers(readChar(n, c(2, 2, 2, 2, 2), useBytes = TRUE),
                          warning = function(w) { print(conditionMessage(w)); invokeRestart("muffleWarning") })
 print(r)
+print(msg(readChar(file.path(d, "nul-c3.bin"), 2)))
+print(msg(suppressWarnings(readChar(file.path(d, "nul-c3.bin"), 2))))
+# the connection's own read: what a text reader buffered is not read again
+writeLines(c("a", "bc"), f)
+con <- file(f, "r")
+print(readLines(con, 1))
+print(suppressWarnings(readChar(con, 1)))
+close(con)
 # invalid UTF-8
 writeLines("a\xe2\x82", f, useBytes = TRUE)
 print(msg(readChar(f, 3)))

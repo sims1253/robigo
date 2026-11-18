@@ -22,6 +22,10 @@ character(0)
 [1] "a"   "b\n" "c\n"
 [1] "truncating string with embedded nuls"
 [1] "a"   "b\n" "c\n"
+[1] "warning: truncating string with embedded nuls"
+[1] "invalid UTF-8 input in readChar()"
+[1] "a"
+character(0)
 [1] "invalid UTF-8 input in readChar()"
 [1] "a\xe2\x82"
 [1] "a"  "bé" "c" 

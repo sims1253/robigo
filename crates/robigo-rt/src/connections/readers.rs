@@ -293,33 +293,34 @@ pub fn do_readlines(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
     })
 }
 
-/// One `con->read(p, 1, buf.len(), con)`: how many bytes it read (a read
-/// the system fails reads none, as the C's fread does).
-fn read_bytes(c: &mut Conn, buf: &mut [u8]) -> Result<usize, String> {
-    match super::conn_read(c, buf) {
+/// One `con->read(p, 1, buf.len(), con)` of connection `ncon`: how many
+/// bytes it read (a read the system fails reads none, as the C's fread
+/// does). The connection's own read, past its text buffer and pushback.
+fn read_bytes(cx: &mut Cx, ncon: i32, buf: &mut [u8]) -> RResult<usize> {
+    let r = with_conn(cx, ncon, |c| match super::conn_read_raw(c, buf) {
         Ok(k) => Ok(k),
         Err(e) if e.raw_os_error().is_none() => Err(e.to_string()),
         Err(_) => Ok(0),
-    }
+    })?;
+    r.map_err(|m| cx.error(&m))
 }
 
 /// `readFixedString(con, len, useBytes)`: `len` characters (bytes when
-/// `!utf8`) from the connection, cut at the first NUL (with the warning
-/// once per call); `None` when nothing could be read.
+/// `!utf8`) from the connection, cut at the first NUL (the warning given
+/// as the NUL is read, once per call); `None` when nothing could be read.
 // R: connections.c:readFixedString
 fn read_fixed_string(
-    c: &mut Conn,
+    cx: &mut Cx,
+    ncon: i32,
     len: usize,
     utf8: bool,
     warn_on_nul: &mut bool,
-) -> Result<Option<(Vec<u8>, bool)>, String> {
-    // (bytes, and whether to warn of the NUL now)
-    let mut warn = false;
+) -> RResult<Option<Vec<u8>>> {
     let mut buf = Vec::new();
     if utf8 {
         for i in 0..len {
             let mut b = [0u8; 1];
-            if read_bytes(c, &mut b)? == 0 {
+            if read_bytes(cx, ncon, &mut b)? == 0 {
                 if i == 0 {
                     return Ok(None);
                 }
@@ -329,38 +330,38 @@ fn read_fixed_string(
             buf.push(b[0]);
             if clen > 1 {
                 let mut rest = vec![0u8; clen - 1];
-                let m = read_bytes(c, &mut rest)?;
+                let m = read_bytes(cx, ncon, &mut rest)?;
                 if m < clen - 1 {
-                    return Err("invalid UTF-8 input in readChar()".into());
+                    return Err(cx.error("invalid UTF-8 input in readChar()"));
                 }
                 let q = buf.len() - 1;
                 buf.extend_from_slice(&rest);
                 // NB: this only checks validity of multi-byte characters
                 if robigo_text::mbrtowc_utf8(&buf[q..], 0).0 < 0 {
-                    return Err("invalid UTF-8 input in readChar()".into());
+                    return Err(cx.error("invalid UTF-8 input in readChar()"));
                 }
             } else if b[0] == 0 && *warn_on_nul {
                 *warn_on_nul = false;
-                warn = true;
+                cx.warning("truncating string with embedded nuls")?;
             }
         }
     } else {
         buf.resize(len, 0);
-        let m = read_bytes(c, &mut buf)?;
+        let m = read_bytes(cx, ncon, &mut buf)?;
         if len > 0 && m == 0 {
             return Ok(None);
         }
         buf.truncate(m);
         if buf.contains(&0) && *warn_on_nul {
             *warn_on_nul = false;
-            warn = true;
+            cx.warning("truncating string with embedded nuls")?;
         }
     }
     // the string ends at its first NUL (R >= 2.8.0 takes NULs to be padding)
     if let Some(z) = buf.iter().position(|&b| b == 0) {
         buf.truncate(z);
     }
-    Ok(Some((buf, warn)))
+    Ok(Some(buf))
 }
 
 /// `rawFixedString(bytes, len, nbytes, &np, useBytes)`: the next `len`
@@ -483,18 +484,7 @@ pub fn do_readchar(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
             }
             let one = match &raw {
                 Some(b) => raw_fixed_string(b, len as usize, &mut np, utf8).map_err(|m| cx.error(&m))?,
-                None => {
-                    let r = with_conn(cx, ncon, |c| read_fixed_string(c, len as usize, utf8, &mut warn_on_nul))?;
-                    match r.map_err(|m| cx.error(&m))? {
-                        Some((b, warn)) => {
-                            if warn {
-                                cx.warning("truncating string with embedded nuls")?;
-                            }
-                            Some(b)
-                        }
-                        None => None,
-                    }
-                }
+                None => read_fixed_string(cx, ncon, len as usize, utf8, &mut warn_on_nul)?,
             };
             let Some(one) = one else { break };
             if one.contains(&0) {

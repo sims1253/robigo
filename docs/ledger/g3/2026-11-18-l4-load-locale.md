@@ -5,10 +5,11 @@
   calls `loadFromConn2`. base's mkdesc step calls
   `Sys.getlocale("LC_TIME")` and then `Sys.setlocale("LC_TIME", "C")`.
 - **readChar** (connections.c's do_readchar, readFixedString,
-  rawFixedString; `connections/readers.rs`): characters, or bytes with
+  rawFixedString; `connections/readers.rs`): through the connection's own
+  read (`con->read`, past its text buffer and pushback), characters, or bytes with
   `useBytes`, of a connection (opened in "rb" and closed again when it was
   not open) or of a raw vector. Includes the UTF-8 checks, the NUL warning
-  once per call, and the text-connection warning (GNU R's condition is
+  once per call, as the NUL is read, and the text-connection warning (GNU R's condition is
   always true for a text connection, since `nPushBack >= 0`).
 - **loadFromConn2** (saveload.c's do_loadFromConn2, PRIMVAL 0, with
   `loadInfoFromConn2` from #880 as PRIMVAL 1, and RestoreToEnv): the
@@ -30,8 +31,10 @@
     the environment and "POSIX" becomes "C", as setlocale does, and a
     locale the C library lacks gives "" and GNU R's warning.
   - It changes only what robigo-rt models; anything else is refused,
-    before any change is made. `LC_CTYPE` may change only within one
-    codeset (UTF-8, or ASCII), `LC_COLLATE` not at all (the ICU collator's
+    before any change is made. `LC_CTYPE` may change only to another name
+    of the same C locale (C.UTF-8, C.utf8: the character classes and case
+    mapping, `towupper` in TRE among them, are C.UTF-8's), `LC_COLLATE` not
+    at all (the ICU collator's
     reset is not modelled), and the other categories only between the
     C-like locales (C, POSIX, C.UTF-8). LC_TIME's month names, for one,
     are C's in robigo-rt.
