@@ -235,6 +235,25 @@ fn the_command_line_and_transcript_are_gnu_rs() {
 
 /// R's start-up greeting (`PrintGreeting`, R without `--quiet`) is not
 /// ported: robigo-rt says so rather than printing another.
+/// A locale the C library does not have: setup_Rmainloop's deferred
+/// warnings, one per category, "During startup - " (GNU R 4.6.2's, on the
+/// oracle), and the C locale; quiet when neither LANG nor LC_ALL is set.
+#[test]
+fn a_missing_locale_warns_during_startup_and_uses_c() {
+    let expr = "cat(l10n_info()[[4]], '\\n')";
+    let (out, err, status) =
+        run_env(&std::env::temp_dir(), &["--vanilla", "-e", expr], None, &[("LC_ALL", "xx_YY.UTF-8")]);
+    let mut want = String::from("During startup - Warning messages:\n");
+    for (i, c) in ["LC_CTYPE", "LC_COLLATE", "LC_TIME", "LC_MESSAGES", "LC_MONETARY", "LC_PAPER", "LC_MEASUREMENT"]
+        .iter()
+        .enumerate()
+    {
+        want.push_str(&format!("{}: Setting {c} failed, using \"C\" \n", i + 1));
+    }
+    assert_eq!(String::from_utf8_lossy(&err), want);
+    assert_eq!((String::from_utf8_lossy(&out).as_ref(), status), ("ANSI_X3.4-1968 \n", 0));
+}
+
 #[test]
 fn the_greeting_is_refused() {
     let dir: PathBuf = std::env::temp_dir().join(format!("robigo-rt-cli-greeting-{}", std::process::id()));

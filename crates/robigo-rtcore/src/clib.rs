@@ -151,6 +151,83 @@ pub fn passwd_home(user: Option<&[u8]>) -> Option<Vec<u8>> {
     }
 }
 
+/// What `setlocale(category, "")` would set at GNU R's startup, asked of
+/// the C library without setting it (robigo-rt's locale is the isolate's,
+/// [`crate::Locale`]; the process's stays "C").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnvLocale {
+    /// `nl_langinfo(CODESET)` of the environment's `LC_CTYPE`, or of "C"
+    /// when the C library has no such locale ("ANSI_X3.4-1968" in glibc).
+    pub codeset: Vec<u8>,
+    /// The environment's `LC_COLLATE` is "C" or "POSIX" (or the C library
+    /// has no such locale, so "C" is used).
+    pub collate_c: bool,
+    /// The categories whose locale the C library does not have, in GNU R's
+    /// order (main.c's `setlocale` calls): `LC_CTYPE`, `LC_COLLATE`, ...
+    pub failed: Vec<&'static str>,
+}
+
+/// [`EnvLocale`] of the process's environment.
+// R: main.c:setup_Rmainloop (the setlocale calls), platform.c:R_check_locale
+pub fn env_locale() -> EnvLocale {
+    let cats: [(&'static str, libc::c_int); 7] = [
+        ("LC_CTYPE", libc::LC_CTYPE_MASK),
+        ("LC_COLLATE", libc::LC_COLLATE_MASK),
+        ("LC_TIME", libc::LC_TIME_MASK),
+        ("LC_MESSAGES", libc::LC_MESSAGES_MASK),
+        ("LC_MONETARY", libc::LC_MONETARY_MASK),
+        ("LC_PAPER", libc::LC_PAPER_MASK),
+        ("LC_MEASUREMENT", libc::LC_MEASUREMENT_MASK),
+    ];
+    let mut failed = Vec::new();
+    let mut codeset = None;
+    for (name, mask) in cats {
+        // SAFETY: newlocale makes a new object from a NUL-terminated name
+        // (the environment's, "") and no base; nl_langinfo_l reads it, its
+        // string copied before the object is freed, once.
+        unsafe {
+            let l = libc::newlocale(mask, c"".as_ptr(), std::ptr::null_mut());
+            if l.is_null() {
+                failed.push(name);
+                continue;
+            }
+            if mask == libc::LC_CTYPE_MASK {
+                let p = libc::nl_langinfo_l(libc::CODESET, l);
+                if !p.is_null() {
+                    codeset = Some(std::ffi::CStr::from_ptr(p).to_bytes().to_vec());
+                }
+            }
+            libc::freelocale(l);
+        }
+    }
+    let codeset = codeset.unwrap_or_else(|| {
+        // SAFETY: "C" always exists; read and freed as above.
+        unsafe {
+            let l = libc::newlocale(libc::LC_CTYPE_MASK, c"C".as_ptr(), std::ptr::null_mut());
+            let v = if l.is_null() {
+                b"ANSI_X3.4-1968".to_vec()
+            } else {
+                let p = libc::nl_langinfo_l(libc::CODESET, l);
+                let v = if p.is_null() {
+                    b"ANSI_X3.4-1968".to_vec()
+                } else {
+                    std::ffi::CStr::from_ptr(p).to_bytes().to_vec()
+                };
+                libc::freelocale(l);
+                v
+            };
+            v
+        }
+    });
+    // setlocale(LC_COLLATE, "")'s name: LC_ALL, else LC_COLLATE, else LANG
+    // (the first set and not empty), else "C"
+    let get = |n: &str| std::env::var_os(n).filter(|v| !v.is_empty());
+    let collate = get("LC_ALL").or_else(|| get("LC_COLLATE")).or_else(|| get("LANG"));
+    let collate_c =
+        failed.contains(&"LC_COLLATE") || collate.is_none_or(|v| matches!(v.as_encoded_bytes(), b"C" | b"POSIX"));
+    EnvLocale { codeset, collate_c, failed }
+}
+
 unsafe extern "C" {
     fn bindtextdomain(domainname: *const libc::c_char, dirname: *const libc::c_char) -> *mut libc::c_char;
 }
