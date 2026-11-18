@@ -30,6 +30,13 @@ cases <- list(
                  "print(k_setter(c(1, 2, 3)))")),
   list(name = "k_getter", fun = function(x, nm) { attr(x, nm)[2] <- 9; x },
        calls = "print(k_getter(structure(1, a = c(1, 2)), 'a'))"),
+  # a step's arguments of every shape (a constant, an empty argument,
+  # `...`, a call): only the call has a promise code
+  list(name = "k_setter_shapes", fun = function(x, ...) { tg2(x, 2, , ..., i + 1) <- 5; x },
+       calls = c("i <- 1", "`tg2<-` <- function(x, a, b, ..., value) { attr(x, 'w') <- c(deparse(substitute(a)), missing(b), deparse(substitute(list(...))), value); x }",
+                 "print(k_setter_shapes(c(1, 2), 'p', q + 1))")),
+  list(name = "k_builtin_shapes", fun = function(x, nm, ...) { attr(x, "a") <- nm; attr(x, ...) <- 3; attr(x, nm) <- 4; attr(x, "a")[2] <- 7; names(x) <- nm; x },
+       calls = "print(k_builtin_shapes(1, 'b', 'c'))"),
   # an unforced promise is written with its code: MAKEPROM's byte code
   list(name = "k_serialize", fun = function(x) sr(x + 1),
        calls = c("sr <- function(y) { r <- serialize(environment(), NULL, xdr = FALSE); c(length(r), sum(as.integer(r))) }",

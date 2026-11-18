@@ -186,3 +186,46 @@ On main `2a7f3be6` (#812, #808) merged, at `d232ca12`:
      (`call::call_codes`, `args::call_closure_codes`,
      `call_builtin_list_codes`), `call::call`, `inline` and `early` as on
      main: flat.
+
+### On main after #825
+
+S1's #825 (vm.rs's `vec_subset_fast` for `StartSubset`/`DfltSubset`)
+landed first, as `cb0605ab`, so this branch merged main, with no
+conflict, and was measured again. perf-rt (`scripts/perf.py rt-bars
+--main`, against main `cb0605ab`'s binary) is flat: every row within
++0.24% (binarytrees, +0.25% before the merge) and peak RSS within 2%. No
+row moved, so the per-function check of `vm::run` was not needed.
+robigo-rt's conformance is 550/555, with the 5 failures being cases that
+have no pass marker. `scripts/lint.sh` is clean.
+
+### On main after #826 and #828
+
+#826 added the d0 guard rows, which this branch's earlier runs did not
+measure. Against main `e20eef0d1`'s binary, this branch merged with it was
+flat on every row but one: d0-names (`names(x) <- nm`) +0.94%. Callgrind
+put all of it in `bcassign`: `field` +26 instructions an iteration (one
+more step field read, `S_CODES`) and `run` +25 (its root, `generic`'s extra
+argument, `arg_code` per argument). A step's codes were read and rooted
+for every step `generic` runs, though `names<-` has no argument after the
+object.
+
+The fix: `generic` gets the step, and `builtin_args` and `closure_args`
+read an argument's code (`step_code`) only for a symbol or a call, the
+shapes `MAKEPROM` makes a promise of (cmp.R's `cmpCallArgs`; a constant is
+`PUSHCONSTARG`, an empty argument `DOMISSING`, `...` `DODOTS`). The code is
+rooted right after the read, before anything allocates. `promise.R`'s
+`k_setter_shapes` (a closure setter with a constant, an empty argument,
+`...` and a call) and `k_builtin_shapes` (`attr<-` with a constant,
+`...`, a symbol, a getter with a constant, `names<-`) are the cases,
+recorded on 4.6.2.
+
+Verification, merged with main `046c437c`: perf-rt against main
+`046c437c`'s binary is flat, every row within +0.22% (superassign +0.21%,
+s3 +0.22%, binarytrees +0.22%, d0-paste0 +0.17%), d0-names -0.00%, the
+closure-call rows within ±0.03%. Conformance: `tests/rt/bctrans` 10/10,
+`tests/rt/jit` 13/13. `scripts/lint.sh` is clean.
+
+Review of the fix: one narrow Sol round (codex `gpt-6.1-sol`, high) on
+`205917679`: APPROVE, no findings. It checked that a code read from the
+step is rooted before anything can collect, and that cmp.R's
+`cmpCallArgs` makes a promise (`MAKEPROM`) only of a symbol or a call.

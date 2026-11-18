@@ -218,6 +218,76 @@ k_getter <- .Internal(bcClose(as.pairlist(alist(x = , nm = )),
  globalenv()))
 print(k_getter(structure(1, a = c(1, 2)), 'a'))
 
+# k_setter_shapes
+k_setter_shapes <- .Internal(bcClose(as.pairlist(alist(x = , ... = )),
+ mk(c(12L, 16L, 1L, 61L, 2L, 23L, 4L, 35L, 34L, 6L, 30L, 32L, 29L, 7L, 98L, 8L, 1L, 62L, 2L, 4L, 20L, 2L, 1L), list(quote({
+    tg2(x, 2, , ..., i + 1) <- 5
+    x
+}),
+  5,
+  as.name("x"),
+  quote(tg2(x, 2, , ..., i + 1) <- 5),
+  as.name("tg2<-"),
+  quote(`tg2<-`(x, 2, , ..., i + 1, value = 5)),
+  2,
+  mk(c(12L, 20L, 1L, 16L, 2L, 44L, 0L, 1L), list(quote(i + 1),
+  as.name("i"),
+  1,
+  structure(c(NA, 1L, 1L, 2L, 2L, 0L, 0L, 0L), class = "expressionsIndex"))),
+  quote(`tg2<-`(`*tmp*`, 2, , ..., i + 1, value = 5)),
+  structure(c(NA, 1L, 1L, 3L, 3L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 3L, 3L, 3L, 2L, 2L, 2L), class = "expressionsIndex"))),
+ globalenv()))
+i <- 1
+`tg2<-` <- function(x, a, b, ..., value) { attr(x, 'w') <- c(deparse(substitute(a)), missing(b), deparse(substitute(list(...))), value); x }
+print(k_setter_shapes(c(1, 2), 'p', q + 1))
+
+# k_builtin_shapes
+k_builtin_shapes <- .Internal(bcClose(as.pairlist(alist(x = , nm = , ... = )),
+ mk(c(12L, 20L, 1L, 61L, 2L, 23L, 4L, 35L, 34L, 6L, 98L, 7L, 1L, 62L, 2L, 4L, 16L, 8L, 61L, 2L, 23L, 4L, 35L, 32L, 98L, 11L, 8L, 62L, 2L, 4L, 16L, 12L, 61L, 2L, 23L, 4L, 35L, 29L, 15L, 98L, 16L, 12L, 62L, 2L, 4L, 16L, 17L, 61L, 2L, 23L, 19L, 35L, 34L, 6L, 99L, 21L, 100L, 105L, 22L, 64L, 16L, 24L, 86L, 22L, 23L, 4L, 35L, 34L, 6L, 98L, 26L, 27L, 62L, 2L, 4L, 20L, 1L, 61L, 2L, 23L, 29L, 35L, 98L, 31L, 1L, 62L, 2L, 4L, 20L, 2L, 1L), list(quote({
+    attr(x, "a") <- nm
+    attr(x, ...) <- 3
+    attr(x, nm) <- 4
+    attr(x, "a")[2] <- 7
+    names(x) <- nm
+    x
+}),
+  as.name("nm"),
+  as.name("x"),
+  quote(attr(x, "a") <- nm),
+  as.name("attr<-"),
+  quote(`attr<-`(x, "a", value = nm)),
+  "a",
+  quote(`attr<-`(`*tmp*`, "a", value = nm)),
+  3,
+  quote(attr(x, ...) <- 3),
+  quote(`attr<-`(x, ..., value = 3)),
+  quote(`attr<-`(`*tmp*`, ..., value = 3)),
+  4,
+  quote(attr(x, nm) <- 4),
+  quote(`attr<-`(x, nm, value = 4)),
+  mk(c(12L, 20L, 0L, 1L), list(as.name("nm"),
+  quote(`attr<-`(x, nm, value = 4)),
+  structure(c(NA, 1L, 1L, 1L), class = "expressionsIndex"))),
+  quote(`attr<-`(`*tmp*`, nm, value = 4)),
+  7,
+  quote(attr(x, "a")[2] <- 7),
+  as.name("attr"),
+  quote(attr(x, "a")),
+  quote(attr(`*tmp*`, "a")),
+  quote(`[<-`(`*tmp*`, 2, value = 7)),
+  quote(`[<-`(attr(x, "a"), 2, value = 7)),
+  2,
+  quote(`attr<-`(x, "a", value = `*vtmp*`)),
+  quote(`attr<-`(`*tmp*`, "a", value = `*vtmp*`)),
+  as.name("*vtmp*"),
+  quote(names(x) <- nm),
+  as.name("names<-"),
+  quote(`names<-`(x, value = nm)),
+  quote(`names<-`(`*tmp*`, value = nm)),
+  structure(c(NA, 1L, 1L, 3L, 3L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 3L, 3L, 3L, 8L, 8L, 9L, 9L, 10L, 10L, 10L, 10L, 10L, 10L, 10L, 9L, 9L, 9L, 12L, 12L, 13L, 13L, 14L, 14L, 14L, 14L, 14L, 14L, 14L, 14L, 13L, 13L, 13L, 17L, 17L, 18L, 18L, 20L, 20L, 20L, 20L, 20L, 20L, 20L, 20L, 23L, 23L, 23L, 24L, 24L, 23L, 23L, 25L, 25L, 25L, 25L, 25L, 25L, 25L, 25L, 18L, 18L, 18L, 1L, 1L, 28L, 28L, 30L, 30L, 30L, 30L, 30L, 30L, 28L, 28L, 28L, 2L, 2L, 2L), class = "expressionsIndex"))),
+ globalenv()))
+print(k_builtin_shapes(1, 'b', 'c'))
+
 # k_serialize
 k_serialize <- .Internal(bcClose(as.pairlist(alist(x = )),
  mk(c(12L, 23L, 1L, 29L, 2L, 38L, 0L, 1L), list(quote(sr(x + 1)),
