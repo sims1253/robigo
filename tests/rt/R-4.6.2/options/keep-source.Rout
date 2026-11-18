@@ -1,0 +1,20 @@
+[1] FALSE
+[1] FALSE
+$keep.source
+[1] FALSE
+
+[1] FALSE
+[1] "NA in coercion to boolean"
+[1] "invalid value for 'keep.source'"
+[1] "invalid value for 'keep.source'"
+[1] "invalid value for 'keep.source'"
+[1] "option 'keep.source' cannot be deleted"
+[1] FALSE
+[1] FALSE
+NULL
+NULL
+NULL
+[1] "h"
+NULL
+[1] "function (z) " "{"             "    z"         "}"            
+[1] TRUE

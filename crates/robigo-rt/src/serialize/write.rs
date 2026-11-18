@@ -361,10 +361,17 @@ impl Writer<'_> {
             // has collected since it was read (an effect point that
             // collected restarts the walk).
             unsafe {
+                // `R_compile_pkgs`: GNU R's byte compiler runs on each
+                // closure written (`R_cmpfun1`); robigo-rt cannot yet,
+                // so it refuses instead of writing it uncompiled
+                if s.typ() == CLOSXP && s.cdr().typ() != BCODESXP && compile_on_write(cx, s) {
+                    return Err(cx
+                        .error(
+                            "robigo: byte-compiling closures as they are serialized (_R_COMPILE_PKGS_) is not implemented yet",
+                        )
+                        .into());
+                }
                 loop {
-                    // (`R_compile_pkgs`: GNU R's byte compiler runs on each
-                    // closure written; robigo's has no byte code objects
-                    // yet: C1-BC)
                     if s.is_altrep() {
                         if robigo_rtcore::altrep::own::own_class(s).is_none() {
                             return Err(cx
@@ -664,4 +671,25 @@ unsafe fn scan_for_circles(cx: &Cx, s: Sexp) -> HashMap<usize, Option<i32>> {
         }
     }
     seen.into_iter().filter(|&(_, twice)| twice).map(|(a, _)| (a, None)).collect()
+}
+
+/// `WriteItem`'s test for compiling a closure as it is written: compiling
+/// packages is on (`R_compile_pkgs`), byte code is not disabled, and the
+/// closure is no S4 object that inherits from "refMethodDef" or
+/// "defaultBindingFunction".
+///
+/// # Safety
+///
+/// `s` is a live closure of `cx`'s heap.
+// R: serialize.c:WriteItem
+unsafe fn compile_on_write(cx: &Cx, s: Sexp) -> bool {
+    let st = crate::prims::state(cx);
+    if st.compile_pkgs.get() == 0 || st.jit.get().disable_bytecode {
+        return false;
+    }
+    // SAFETY: the caller's contract
+    let r = unsafe { Ref::from_sexp(s, cx) };
+    !r.is_s4()
+        || (!robigo_rtbuiltins::attrib::inherits(r, b"refMethodDef")
+            && !robigo_rtbuiltins::attrib::inherits(r, b"defaultBindingFunction"))
 }
