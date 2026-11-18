@@ -100,43 +100,218 @@ effect = "Pure"
 typical = { x = "1:10", f = "factor" }
 domain = { f = ["@any", "=factor(c(1, 2, 1, 2, 1, 2, 1, 2, 1, 2))"] }
 
+# ---- Env: bindings and environments (the @env fixtures) -------------------------
+
+[assign]
+typical = { x = "a", value = "1.5", envir = "env", inherits = "=FALSE" }
+domain = { x = ["@chr", "sym"], envir = ["@env", "NULL", "list2"], inherits = ["@lgl"] }
+
+[get]
+typical = { x = "a", envir = "env", mode = "=\"any\"", inherits = "=TRUE" }
+domain = { x = ["@chr", "=\"act\"", "=\"sum\""], envir = ["@env", "NULL"], mode = ["=\"any\"", "=\"function\"", "=\"numeric\"", "@chr"], inherits = ["@lgl"] }
+
+[get0]
+typical = { x = "a", envir = "env", mode = "=\"any\"", inherits = "=TRUE", ifnotfound = "NULL" }
+domain = { x = ["@chr", "=\"act\""], envir = ["@env", "NULL"], mode = ["=\"any\"", "=\"function\"", "@chr"], inherits = ["@lgl"] }
+
+[exists]
+typical = { x = "a", envir = "env", mode = "=\"any\"", inherits = "=TRUE" }
+domain = { x = ["@chr", "=\"act\"", "=\"sum\""], envir = ["@env", "NULL"], mode = ["=\"any\"", "=\"function\"", "@chr"], inherits = ["@lgl"] }
+
+[remove]
+typical = { list = "a", envir = "env", inherits = "=FALSE" }
+domain = { list = ["@chr", "=c(\"a\", \"b\")", "=\"act\""], envir = ["@env", "NULL"], inherits = ["@lgl"] }
+
+[bindingIsLocked]
+typical = { sym = "a", env = "env" }
+domain = { sym = ["@chr", "sym", "=quote(act)"], env = ["@env", "NULL"] }
+
+[lockBinding]
+typical = { sym = "a", env = "env" }
+domain = { sym = ["@chr", "sym"], env = ["@env", "NULL"] }
+
+[unlockBinding]
+typical = { sym = "a", env = "env.lockedbinding" }
+domain = { sym = ["@chr", "sym"], env = ["@env", "NULL"] }
+
+[makeActiveBinding]
+typical = { sym = "a", fun = "fun.id", env = "env" }
+domain = { sym = ["@chr", "sym", "=quote(act)"], fun = ["@fun", "NULL", "1.5"], env = ["@env", "NULL"] }
+
+[bindingIsActive]
+effect = "Env"
+typical = { sym = "act", env = "env.active" }
+domain = { sym = ["=quote(act)", "@chr", "sym"], env = ["@env", "NULL"] }
+
+[environmentIsLocked]
+domain = { env = ["@env", "@any"] }
+
+[lockEnvironment]
+typical = { env = "env", bindings = "=FALSE" }
+domain = { env = ["@env", "NULL", "list2"], bindings = ["@lgl"] }
+
+[list2env]
+typical = { x = "nested", envir = "env" }
+domain = { x = ["@any"], envir = ["@env", "NULL"] }
+
+["new.env"]
+typical = { hash = "=TRUE", parent = "env.base", size = "=29L" }
+domain = { hash = ["@lgl"], parent = ["@env", "NULL", "1.5"], size = ["@count"] }
+
+[environment]
+domain = { fun = ["@fun", "NULL", "@any"] }
+
+["as.environment"]
+domain = { "#1" = ["@env", "@any", "=1", "=-1", "=\"package:base\"", "=\".GlobalEnv\""] }
+
+# ---- Calls: functions called back (the @fun fixtures log their calls) ----------
+
+[lapply]
+special = true
+typical = { X = "int3", FUN = "fun.id" }
+domain = { FUN = ["@fun", "NULL", "a"] }
+
+[vapply]
+special = true
+typical = { X = "int3", FUN = "fun.length", "FUN.VALUE" = "=1L", "USE.NAMES" = "=TRUE" }
+domain = { FUN = ["@fun", "NULL"], "FUN.VALUE" = ["=1L", "=0", "=character(1)", "int0", "=list(1)"], "USE.NAMES" = ["@lgl"] }
+
+[mapply]
+typical = { FUN = "fun.id", dots = "=list(1:3, 4:6)", MoreArgs = "NULL" }
+domain = { FUN = ["@fun", "NULL"], dots = ["=list(1:3, 4:6)", "=list(1:3)", "=list()", "list2", "nested"], MoreArgs = ["NULL", "=list(z = 1)", "list0", "1.5"] }
+
+["do.call"]
+typical = { what = "fun.id", args = "list2", envir = "env.base" }
+domain = { what = ["@fun", "=\"sum\"", "=\"paste\"", "a", "NULL"], args = ["list2", "list0", "nested", "=list(1, b = 2)", "1.5"], envir = ["@env", "NULL"] }
+
+[xtfrm]
+
+[env2list]
+typical = { x = "env", "all.names" = "=TRUE", sorted = "=TRUE" }
+domain = { x = ["@env", "NULL", "list2"], "all.names" = ["@lgl"], sorted = ["@lgl"] }
+
+# ---- External: the world outside (each case in a process and directory of its own)
+
+["Sys.getenv"]
+typical = { x = "=\"HOME\"", unset = "=\"\"" }
+domain = { x = ["=\"HOME\"", "=character()", "=c(\"HOME\", \"TMPDIR\", \"A4_NOT_SET\")", "=\"LC_ALL\"", "@chr"], unset = ["=\"\"", "=NA_character_", "@chr"] }
+
+["Sys.setenv"]
+effect = "External"
+typical = { nm = "=\"A4_X\"", values = "=\"1\"" }
+domain = { nm = ["=\"A4_X\"", "=c(\"A4_X\", \"A4_Y\")", "@chr"], values = ["=\"1\"", "=c(\"1\", \"2\")", "@chr"] }
+
+["Sys.unsetenv"]
+effect = "External"
+domain = { x = ["=\"HOME\"", "=\"A4_NOT_SET\"", "@chr"] }
+
+["path.expand"]
+effect = "External"
+domain = { path = ["=\"~\"", "=\"~/x\"", "=\"~nouser/x\"", "@chr"] }
+
+["file.info"]
+effect = "External"
+typical = { fn = "=\".\"", extra_cols = "=TRUE" }
+domain = { fn = ["=\".\"", "=c(\".\", \"nope\")", "@chr"], extra_cols = ["@lgl"] }
+
+["file.create"]
+effect = "External"
+typical = { fn = "=\"f1\"", showWarnings = "=TRUE" }
+domain = { fn = ["=\"f1\"", "=c(\"f1\", \"f2\")", "=\"nodir/f\"", "@chr"], showWarnings = ["@lgl"] }
+
+["file.append"]
+effect = "External"
+typical = { file1 = "=\"f1\"", file2 = "=\"f2\"" }
+domain = { file1 = ["=\"f1\"", "@chr"], file2 = ["=\"f2\"", "=\"nope\"", "@chr"] }
+
+["Sys.chmod"]
+effect = "External"
+typical = { paths = "=\".\"", octmode = "=as.octmode(\"755\")", use_umask = "=TRUE" }
+domain = { paths = ["=\".\"", "=\"nope\"", "@chr"], octmode = ["=as.octmode(\"755\")", "=as.octmode(\"700\")", "@num"], use_umask = ["@lgl"] }
+
+[bindtextdomain]
+domain = { domain = ["=\"R\"", "=\"R-base\"", "@chr"], dirname = ["NULL", "=\"/nope\"", "@chr"] }
+
+[strptime]
+typical = { x = "=\"2026-11-18 12:30:00\"", format = "=\"%Y-%m-%d %H:%M:%S\"", tz = "=\"UTC\"" }
+domain = { x = ["=\"2026-11-18 12:30:00\"", "=\"2026-02-30 00:00:00\"", "@chr"], format = ["=\"%Y-%m-%d %H:%M:%S\"", "=\"%Y-%m-%d\"", "@chr"], tz = ["=\"UTC\"", "=\"\"", "=\"Europe/Berlin\"", "@chr"] }
+
+["as.POSIXct"]
+typical = { x = "=as.POSIXlt(\"2026-11-18 12:30:00\", tz = \"UTC\")", tz = "=\"UTC\"" }
+domain = { x = ["=as.POSIXlt(\"2026-11-18 12:30:00\", tz = \"UTC\")", "@any"], tz = ["=\"UTC\"", "=\"\"", "@chr"] }
+
+# ---- specials (the case's symbols are their arguments) ------------------------
+
+[withVisible]
+special = true
+effect = "Pure"
+domain = { x = ["@any"] }
+
+[Recall]
+special = true
+effect = "Calls"
+budget = 200
+extra = ["(function(n) if (n <= 1) 1 else n * Recall(n - 1))(5)", "(function(...) if (nargs() == 0) \"done\" else Recall())(1)"]
+
+["~"]
+special = true
+effect = "Pure"
+
+["@"]
+special = true
+effect = "Pure"
+
+["["]
+special = true
+effect = "Pure"
+typical = { x = "matrix", i = "<missing>", j = "<missing>" }
+domain = { "#1" = ["@any"], "#2" = ["@any", "<missing>", "=c(TRUE, FALSE)", "=\"r1\"", "=-1L"], "#3" = ["@any", "<missing>", "=2L", "=\"b\""] }
+args = ["", "", ""]
+
+["[<-"]
+special = true
+effect = "Pure"
+args = ["", "", ""]
+domain = { "#1" = ["@any"], "#2" = ["@any", "<missing>", "=c(TRUE, FALSE)", "=\"r1\""], "#3" = ["@any", "=0L", "=NA"] }
+
+[enc2native]
+
+[enc2utf8]
+
 # ---- registry builtins with no row yet, by reason (check-rows) ----------------
 
 [uncovered]
 "special: a VM op or a special (tests/rt covers it)" = [
-  "lapply", "rep", "vapply"
+  "rep"
 ]
-"Env, Calls or External: A4's second PR" = [
-  "...elt", "...length", "...names", "Sys.getenv", "as.POSIXct", "as.environment", "assign",
-  "bindingIsLocked", "bindtextdomain", "copyDFattr", "delayedAssign", "do.call", "env.profile",
-  "env2list", "environment", "environmentIsLocked", "exists", "get", "get0", "getBindingType",
-  "getOption", "list2env", "lockBinding", "lockEnvironment", "ls", "makeActiveBinding", "mapply",
-  "match.call", "mget", "nargs", "new.env", "options", "parent.frame", "putconst", "remove",
-  "strptime", "sys.call", "sys.calls", "sys.frame", "sys.frames", "sys.function", "sys.nframe",
-  "sys.on.exit", "sys.parent", "sys.parents", "xtfrm"
+"Env, Calls or External: no row yet" = [
+  "...elt", "...length", "...names", "copyDFattr", "delayedAssign", "env.profile",
+  "getBindingType", "getOption", "ls", "match.call", "mget", "nargs", "options", "parent.frame",
+  "putconst", "sys.call", "sys.calls", "sys.frame", "sys.frames", "sys.function", "sys.nframe",
+  "sys.on.exit", "sys.parent", "sys.parents"
 ]
 "Pure: no row yet" = [
   "!", "!=", "%%", "%/%", "&", "*", "+", "-", ".subset", ".subset2", "/", ":", "<", "<=", "==",
   ">", ">=", "Encoding", "Version", "^", "acos", "acosh", "all", "any", "anyDuplicated", "anyNA",
-  "as.call", "as.character", "as.complex", "as.double", "as.function.default", "as.integer",
-  "as.logical", "as.numeric", "as.raw", "as.vector", "asCharacterFactor", "asin", "asinh", "atan",
-  "atanh", "attr", "attr<-", "attributes", "attributes<-", "baseenv", "bcClose", "bcVersion",
-  "body", "bodyCode", "c", "ceiling", "class", "class<-", "colMeans", "colSums", "comment",
-  "comment<-", "compareNumericVersion", "complex", "cos", "cosh", "cospi", "cummax", "cummin",
-  "cumprod", "cumsum", "digamma", "dim", "dim<-", "dimnames", "dimnames<-", "disassemble",
-  "duplicated", "emptyenv", "encodeString", "endsWith", "exp", "expm1", "file.path", "floor",
-  "formals", "gamma", "getconst", "gettext", "globalenv", "gregexpr", "grep", "grepl", "growconst",
-  "gsub", "identical", "inherits", "interactive", "is.array", "is.atomic", "is.builtin.internal",
-  "is.call", "is.character", "is.complex", "is.double", "is.environment", "is.expression",
-  "is.finite", "is.function", "is.infinite", "is.integer", "is.language", "is.list", "is.logical",
-  "is.matrix", "is.na", "is.name", "is.nan", "is.null", "is.numeric", "is.object", "is.pairlist",
-  "is.raw", "is.recursive", "is.single", "is.symbol", "is.unsorted", "is.vector", "isS4",
-  "islistfactor", "l10n_info", "length", "length<-", "lengths", "levels<-", "lgamma", "log10",
-  "log1p", "log2", "match", "matrix", "max", "min", "mkCode", "names<-", "ngettext",
-  "oldClass", "oldClass<-", "order", "parent.env", "paste", "paste0", "pmatch", "pmax", "pmin",
-  "prod", "psort", "qsort", "radixsort", "rank", "regexec", "regexpr", "rep.int", "rowMeans",
-  "rowSums", "seq_along", "setEncoding", "shortRowNames", "sign", "sin", "sinh", "sinpi", "sort",
-  "sorted_fpass", "sprintf", "sqrt", "startsWith", "storage.mode<-", "strrep", "strsplit", "sub",
-  "substr", "sum", "tan", "tanh", "tanpi", "trigamma", "trunc", "typeof", "unclass", "unique",
-  "unlist", "vector", "which", "which.max", "which.min", "wrap_meta", "|"
+  "array", "as.call", "as.character", "as.complex", "as.double", "as.function.default",
+  "as.integer", "as.logical", "as.numeric", "as.raw", "as.vector", "asCharacterFactor", "asin",
+  "asinh", "atan", "atanh", "attr", "attr<-", "attributes", "attributes<-", "baseenv", "bcClose",
+  "bcVersion", "body", "bodyCode", "c", "ceiling", "class", "class<-", "colMeans", "colSums",
+  "comment", "comment<-", "compareNumericVersion", "complex", "cos", "cosh", "cospi", "cummax",
+  "cummin", "cumprod", "cumsum", "digamma", "dim", "dim<-", "dimnames", "dimnames<-",
+  "disassemble", "drop", "duplicated", "emptyenv", "encodeString", "endsWith", "exp", "expm1",
+  "file.path", "floor", "formals", "gamma", "getconst", "gettext", "globalenv", "gregexpr", "grep",
+  "grepl", "growconst", "gsub", "identical", "inherits", "interactive", "is.array", "is.atomic",
+  "is.builtin.internal", "is.call", "is.character", "is.complex", "is.double", "is.environment",
+  "is.expression", "is.finite", "is.function", "is.infinite", "is.integer", "is.language",
+  "is.list", "is.logical", "is.matrix", "is.na", "is.name", "is.nan", "is.null", "is.numeric",
+  "is.object", "is.pairlist", "is.raw", "is.recursive", "is.single", "is.symbol", "is.unsorted",
+  "is.vector", "isS4", "islistfactor", "l10n_info", "length", "length<-", "lengths", "levels<-",
+  "lgamma", "log10", "log1p", "log2", "match", "matrix", "max", "min", "mkCode", "names<-",
+  "ngettext", "oldClass", "oldClass<-", "order", "parent.env", "paste", "paste0", "pmatch", "pmax",
+  "pmin", "prod", "psort", "qsort", "radixsort", "rank", "regexec", "regexpr", "rep.int",
+  "rowMeans", "rowSums", "seq_along", "setEncoding", "shortRowNames", "sign", "sin", "sinh",
+  "sinpi", "sort", "sorted_fpass", "sprintf", "sqrt", "startsWith", "storage.mode<-", "strrep",
+  "strsplit", "sub", "substr", "sum", "tan", "tanh", "tanpi", "trigamma", "trunc", "typeof",
+  "unclass", "unique", "unlist", "vector", "which", "which.max", "which.min", "wrap_meta", "|"
 ]

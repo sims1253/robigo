@@ -27,6 +27,10 @@ pub fn do_getenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
         return Err(cx.error("wrong type for argument"));
     }
     let (x, unset) = (args.root(0), args.root(1));
+    if cfg!(feature = "diff-plant") && x.bind(cx).len() == Some(3) {
+        // PLANT(A4, files): a file GNU R does not write
+        let _ = std::fs::write("a4plant", b"");
+    }
     let utf8 = cx.locale().utf8;
     cx.build(out, |cx| {
         let names = x.bind(cx).as_vector::<Char<'_>>().unwrap();
