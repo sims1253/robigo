@@ -105,6 +105,9 @@ pub enum CollateError {
     NotFcd,
     /// `R_ICU_LOCALE` names an ICU locale: robigo has the root collation only.
     IcuLocale,
+    /// The environment's `LC_COLLATE` is a locale whose ICU collation may
+    /// tailor the root one (not C, `C.UTF-8` or English).
+    EnvLocale,
 }
 
 impl CollateError {
@@ -118,6 +121,9 @@ impl CollateError {
                 "ordering strings not in FCD form (ICU collates them unnormalized, ICU4X only normalized)"
             }
             CollateError::IcuLocale => "ICU collation in the locale R_ICU_LOCALE names",
+            CollateError::EnvLocale => {
+                "ICU collation in the locale LC_COLLATE names (other than C, C.UTF-8 and English)"
+            }
         };
         Diag::error_call(call, format!("robigo: {what} is not implemented yet"))
     }
@@ -136,8 +142,11 @@ enum Collation {
     C,
     /// ICU's root collator, `C.UTF-8`'s.
     Root,
-    /// ICU's collator of another locale.
+    /// ICU's collator of the locale `R_ICU_LOCALE` names.
     Other,
+    /// ICU's collator of the environment's `LC_COLLATE`, a locale that may
+    /// tailor the root collation.
+    OtherEnv,
 }
 
 /// The collation `Scollate` sets up at its first call (util.c): C when
@@ -148,19 +157,33 @@ enum Collation {
 /// `Sys.setlocale`, which robigo-rt does not have).
 // R: util.c:Scollate, getLocale
 fn collation(loc: Locale) -> Collation {
-    static ENV: OnceLock<(bool, Option<Vec<u8>>)> = OnceLock::new();
-    let (use_c, icu) = ENV.get_or_init(|| {
+    static ENV: OnceLock<(bool, Option<Vec<u8>>, bool)> = OnceLock::new();
+    let (use_c, icu, root) = ENV.get_or_init(|| {
         let get = |n: &str| std::env::var_os(n).filter(|v| !v.is_empty());
         let envl = get("LC_ALL").or_else(|| std::env::var_os("LC_COLLATE"));
         let use_c = envl.is_some_and(|v| v.as_encoded_bytes() == b"C");
-        (use_c, get("R_ICU_LOCALE").map(|v| v.as_encoded_bytes().to_vec()))
+        // setlocale(LC_COLLATE, NULL) as startup set it (LC_ALL, else
+        // LC_COLLATE, else LANG): the collations robigo has are root's,
+        // C.UTF-8's and English's (ICU's "en" has no tailoring)
+        let name = get("LC_ALL").or_else(|| get("LC_COLLATE")).or_else(|| get("LANG"));
+        let root = name.is_none_or(|v| {
+            let b = v.as_encoded_bytes();
+            b.starts_with(b"C.")
+                || b == b"C"
+                || b == b"POSIX"
+                || b == b"en"
+                || b.starts_with(b"en_")
+                || b.starts_with(b"en.")
+        });
+        (use_c, get("R_ICU_LOCALE").map(|v| v.as_encoded_bytes().to_vec()), root)
     });
     match icu {
         _ if *use_c => Collation::C,
         Some(l) if l.as_slice() == b"C" => Collation::C,
         Some(_) => Collation::Other,
         None if loc.collate_c => Collation::C,
-        None => Collation::Root,
+        None if *root => Collation::Root,
+        None => Collation::OtherEnv,
     }
 }
 
@@ -180,5 +203,6 @@ pub fn scollate(a: Str<'_>, b: Str<'_>, loc: Locale) -> Result<Ordering, Collate
             robigo_text::collate::root_strcoll(&p, &q).map_err(|_| CollateError::NotFcd)
         }
         Collation::Other => Err(CollateError::IcuLocale),
+        Collation::OtherEnv => Err(CollateError::EnvLocale),
     }
 }
