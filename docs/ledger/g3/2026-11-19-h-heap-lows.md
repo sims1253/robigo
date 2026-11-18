@@ -79,6 +79,41 @@
     again once chunks are allowed.
   - rtcore: a build that keeps vectors until a page is refused ends in
     "memory exhausted".
-- Verified: (pending)
-- Measured (perf): (pending)
-- Review: (pending)
+- Conformance features: the near-limit case needs three conditions,
+  each now a `.requires` feature:
+  - GNU R's default heap sizes. The new `default-vsize` is off where
+    `R_VSIZE` or `R_MAX_VSIZE` sets them (rt-ci's small vector limit).
+  - GNU R's collection schedule. `collection-schedule`, defined as in
+    #861, is off under gctorture and retry torture, whose extra
+    collections move `AdjustHeapSize`.
+  - A normal allocation count (`volume`).
+
+  The list is built with `lapply`, so `ROBIGO_NO_INPLACE` does not copy it
+  at every element. #861 adds the same `collection-schedule` lines:
+  whichever lands second merges main.
+- The refused-page tests skip under `ROBIGO_GC_MOVE`: the debug mover
+  copies every object during the collection and aborts without a chunk.
+- Verified (2026-11-19):
+  - Debug `cargo test` of robigo-heap, -rtcore, -rt, -rtbuiltins and
+    -rtapi, and Miri on robigo-rtcore and on robigo-heap's `layout::`,
+    `heap::bitmap_tests` and `heap::medium_tests`, all passed on
+    `9f8aeae30`. Since then only tests, conformance features and a merge
+    of main changed.
+  - The full `scripts/rt-ci.py` passed on `7b5486228`: every mode, and
+    2,800 injected failures with no difference.
+  - robigo-conformance's tests and `scripts/lint.sh` passed.
+  - After merging main (`747b7ee61`), robigo-conformance's tests and the
+    `tests/rt/alloc` cases passed again.
+- Measured (perf, `747b7ee61` against main `eec051b83`, each built in its
+  own checkout and target): rt-bars, 0 failures. No row is worse than
+  +0.03% instructions (plain +0.00%, env-fn +0.02%, s3 −0.02%,
+  e7-paste −0.23%).
+- Review: sol-loop, 2 rounds with gpt-6.1-sol on high, approved.
+  - Round 1 found the near-limit check unreachable once a collection was
+    due: `retrigger` raised the vector trigger to the limit. It is now
+    `HeapSizes::due_v_trigger`, with a regression test (nodes make the
+    collection due, then vectors cross `v_size`) that fails without the
+    fix.
+  - Round 2 also reviewed #689's >1 MiB-frame refusal. Sound: large
+    frames refuse before a collection, keep their capacity in `NeedGc`,
+    and are the first allocation after it.
