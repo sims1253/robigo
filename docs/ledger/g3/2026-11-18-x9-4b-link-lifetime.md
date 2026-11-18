@@ -107,3 +107,22 @@ not the walks. It belongs to C1-TM's wave-5 bar, "the address relations equal
 the oracle's". The port must reproduce GNU R's accounting, including the
 links that outlive a returned callee, and `tests/rt/alloc/link-lifetime.R`
 is its first case.
+
+## #881's review lows (`links::walk`, the head scans)
+
+The review of #881 asked for one `find_map` yielding `(index, word)` in
+place of `position` plus a second `head(…).unwrap_or(0)`, so that a broken
+invariant fails loudly instead of skipping a frame as a zero word.
+Measured against the merge of #881 here (`fe28ad23`), both binaries built
+from their exact trees into empty targets:
+- **`find_map`** costs trycatch +0.33%, trycatch-err +0.44%, `jit-scale_by`
+  +1.1% and `jit-safe` +1.3% per compile. Over `enumerate` it compiles to
+  a slower scan. It is not used.
+- **Kept:** `position` (`rposition`), then one more read of the slot found,
+  `let Some(w) = head(st[j]) else { unreachable!(…) }`. A missing head now
+  fails loudly. Every row is within ±0.03% (geomean 0.9999). Per compile,
+  `jit-scale_by` 11,958,813 → 11,958,367 and `jit-safe` 18,213,079 →
+  18,212,207.
+
+This needs #881's walk, so the branch merges #881's branch: #881 merges
+first.
