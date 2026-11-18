@@ -8,3 +8,6 @@ x <- prmatrix(matrix(1:2, 1)); print(x)
 tryCatch(prmatrix(matrix(1:4, 2), rowlab = 1:2), error = function(e) print(conditionMessage(e)))
 tryCatch(prmatrix(matrix(1:4, 2), collab = 1:2), error = function(e) print(conditionMessage(e)))
 tryCatch(prmatrix(matrix(1:4, 2), rowlab = "a"), error = function(e) print(conditionMessage(e)))
+# right is an Rprt_adj: 2 centres the strings, 3 pads none
+prmatrix(matrix(c("x", "abcde", "yy", "z"), 2), quote = FALSE, right = 2)
+prmatrix(matrix(c("x", "abcde", "yy", "z"), 2), quote = FALSE, right = 3)

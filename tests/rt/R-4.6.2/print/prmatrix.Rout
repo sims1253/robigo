@@ -17,3 +17,9 @@ b 2 4
 [1] "invalid row labels"
 [1] "invalid column labels"
 [1] "too few row labels"
+      [,1] [,2]
+[1,]   x    yy 
+[2,] abcde  z  
+      [,1] [,2]
+[1,] x yy
+[2,] abcde z

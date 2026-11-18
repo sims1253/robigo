@@ -52,3 +52,5 @@ attr(,"extra")
      [,1]          [,2]       
 [1,] "numeric,1"   "logical,1"
 [2,] "character,1" "NULL"     
+     [,1]   [,2]
+[1,] café,3 1   

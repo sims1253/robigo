@@ -417,7 +417,16 @@ fn print_atomic(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
                 let (r, c) = (d[0].max(0) as usize, d[1].max(0) as usize);
                 let printed =
                     crate::printarray::matrix_labels(cx, attrib::get_value(v, b"dimnames")).and_then(|labels| {
-                        crate::printarray::print_matrix(cx, v, (r, c), data.quote, data.right, &labels, data, &mut out)
+                        crate::printarray::print_matrix(
+                            cx,
+                            v,
+                            (r, c),
+                            data.quote,
+                            adj(data.right),
+                            &labels,
+                            data,
+                            &mut out,
+                        )
                     });
                 if let Err(m) = printed {
                     return Err(cx.error(&m));
@@ -426,7 +435,9 @@ fn print_atomic(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
             _ => {
                 let d = dim.as_ints().unwrap().to_vec();
                 let dn = attrib::get_value(v, b"dimnames");
-                if let Err(m) = crate::printarray::print_array(cx, v, &d, data.quote, data.right, dn, data, &mut out) {
+                if let Err(m) =
+                    crate::printarray::print_array(cx, v, &d, data.quote, adj(data.right), dn, data, &mut out)
+                {
                     return Err(cx.error(&m));
                 }
             }
@@ -618,7 +629,7 @@ fn print_generic_vector(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<(
             })?;
             sums.push(e);
         }
-        print_summaries(cx, &sums, s, true, false, data.right, data)?;
+        print_summaries(cx, &sums, s, true, false, adj(data.right), data)?;
         return print_attributes(cx, s, data, false);
     }
     let ns = v.len().unwrap();
@@ -718,7 +729,7 @@ fn print_list(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
         }
         // (GNU R reads the dimnames of the list's end, R_NilValue, after
         // its loop: an array-like pairlist prints without labels)
-        print_summaries(cx, &sums, s, false, data.quote, data.right, data)?;
+        print_summaries(cx, &sums, s, false, data.quote, adj(data.right), data)?;
         // (and its attributes are not printed)
         return Ok(());
     }
@@ -802,13 +813,18 @@ fn list_element_summary(cx: &mut Cx, e: Root<'_>, data: &PrintData) -> RResult<V
             match fmt.filter(|f| f.len() < 100) {
                 Some(f) => Ok(f),
                 None => {
-                    let cls = {
+                    // translateChar(STRING_ELT(R_data_class2(s_i), 0))
+                    let mut t = {
                         let v = e.bind(cx);
-                        attrib::get_value(v, b"class").map(first_string).unwrap_or_default()
+                        attrib::get_value(v, b"class")
+                            .and_then(|c| c.as_vector::<Char<'_>>())
+                            .filter(|c| !c.is_empty())
+                            .map(|c| translated_bytes(cx, c.get(0)))
+                            .unwrap_or_default()
                     };
                     // Rsnprintf_mbcs(pbuf, 115, "%s,%d", ...)
                     let n = robigo_rtbuiltins::builtin::length(cx, e.bind(cx)).unwrap_or(1);
-                    let mut t = format!("{cls},{n}").into_bytes();
+                    t.extend_from_slice(format!(",{n}").as_bytes());
                     mbcs_truncate(&mut t, 114);
                     Ok(t)
                 }
@@ -915,7 +931,7 @@ fn print_summaries(
     x: Root<'_>,
     with_dimnames: bool,
     quote: bool,
-    right: bool,
+    right: Justify,
     data: &PrintData,
 ) -> RResult<()> {
     let x = x.bind(cx);
@@ -931,7 +947,7 @@ fn print_summaries(
             crate::printarray::print_matrix_of(cx, &elts, rc, quote, right, &labels, data, &mut out)
         })
     } else {
-        crate::printarray::print_array_of(cx, &elts, STRSXP, &dims, false, false, dimnames, data, &mut out)
+        crate::printarray::print_array_of(cx, &elts, STRSXP, &dims, false, Justify::Left, dimnames, data, &mut out)
     };
     match r {
         Err(m) => Err(cx.error(&m)),
@@ -940,6 +956,11 @@ fn print_summaries(
             Ok(())
         }
     }
+}
+
+/// `R_print.right` as an `Rprt_adj` (print.default's is a logical).
+fn adj(right: bool) -> Justify {
+    if right { Justify::Right } else { Justify::Left }
 }
 
 /// `printAttributes(s, data, useSlots)`: each attribute but the names,
@@ -1375,6 +1396,14 @@ pub fn do_prmatrix(
         let r = args.root(4);
         as_integer(cx, r)?
     };
+    // R_print.right = (Rprt_adj) asInteger(right): a string's adjustment
+    // (centre and none too); any other non-zero value pads as right does
+    let just = match right {
+        0 => Justify::Left,
+        2 => Justify::Centre,
+        3 => Justify::None,
+        _ => Justify::Right,
+    };
     data.right = right != 0;
     let naprint = args.get(cx, 5);
     if naprint.sexptype() != NILSXP {
@@ -1417,7 +1446,7 @@ pub fn do_prmatrix(
                     Some(d) => {
                         let mut o = Vec::new();
                         let rc = (d[0].max(0) as usize, d[1].max(0) as usize);
-                        crate::printarray::print_matrix(cx, xv, rc, quote != 0, data.right, &labels, &data, &mut o)
+                        crate::printarray::print_matrix(cx, xv, rc, quote != 0, just, &labels, &data, &mut o)
                             .map(|()| o)
                     }
                 }

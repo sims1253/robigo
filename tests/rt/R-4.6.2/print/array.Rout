@@ -254,3 +254,5 @@ a b c
 [1,]    1
 
  [ reached 'max' / getOption("max.print") -- omitted 3 slices ] 
+ [ reached 'max' / getOption("max.print") -- omitted 2 slices ] 
+ [ reached 'max' / getOption("max.print") -- omitted 2 slices ] 

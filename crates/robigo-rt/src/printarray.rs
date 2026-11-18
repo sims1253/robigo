@@ -127,7 +127,8 @@ enum Cols<'a, 'g> {
     Real(&'a [f64], Vec<RealFormat>),
     /// with each column's real and imaginary formats
     Cplx(&'a [(f64, f64)], Vec<(RealFormat, RealFormat)>),
-    Str(&'a [Option<Str<'g>>], u8, bool),
+    /// with the quote and the adjustment (`Rprt_adj`)
+    Str(&'a [Option<Str<'g>>], u8, Justify),
     Raw(&'a [u8]),
 }
 
@@ -145,7 +146,7 @@ fn print_typed_matrix(
     c: usize,
     labels: &Labels<'_>,
     quote: u8,
-    right: bool,
+    right: Justify,
     print_ij: bool,
     data: &PrintData,
     pp: &PrintParams,
@@ -196,9 +197,13 @@ fn print_typed_matrix(
             };
         }
         let clabw = match &labels.cl {
+            // strwidth(translateChar(...)): the native bytes' width
             Some(cl) => match cl.get(j).copied().flatten() {
                 None => pp.na_width_noquote,
-                Some(s) => rstrlen(s, 0, pp.locale),
+                Some(s) => match robigo_text::translate_char(s, pp.locale) {
+                    Ok(t) => strwidth(&t, pp),
+                    Err(_) => rstrlen(s, 0, pp.locale),
+                },
             },
             None => index_width(j as i64 + 1) + 3,
         };
@@ -269,23 +274,23 @@ fn print_typed_matrix(
             let iw = index_width(j as i64 + 1) + 3;
             match (&cols, cl) {
                 // RightMatrixColumnLabel
-                (Cols::Str(_, _, true), Some(s)) => {
+                (Cols::Str(_, _, a), Some(s)) if *a != Justify::Left => {
                     let l = label_width(s, pp);
                     spaces(out, gap + w[j] - l);
                     encode_string(out, s, l, 0, Justify::Right, false, pp);
                 }
-                (Cols::Str(_, _, true), None) => {
+                (Cols::Str(_, _, a), None) if *a != Justify::Left => {
                     spaces(out, gap + w[j] - iw);
                     ind(out);
                 }
                 // LeftMatrixColumnLabel
-                (Cols::Str(_, _, false), Some(s)) => {
+                (Cols::Str(..), Some(s)) => {
                     let l = label_width(s, pp);
                     spaces(out, gap);
                     encode_string(out, s, l, 0, Justify::Left, false, pp);
                     spaces(out, w[j] - l);
                 }
-                (Cols::Str(_, _, false), None) => {
+                (Cols::Str(..), None) => {
                     spaces(out, gap);
                     ind(out);
                     spaces(out, w[j] - iw);
@@ -325,10 +330,9 @@ fn print_typed_matrix(
                             encode_complex(out, z, RealFormat { w: w[j] - fi.w - 2, ..fr }, fi, b".", pp);
                         }
                     }
-                    Cols::Str(v, q, rt) => {
+                    Cols::Str(v, q, just) => {
                         spaces(out, gap);
-                        let just = if *rt { Justify::Right } else { Justify::Left };
-                        encode_string(out, v[k], w[j], *q, just, false, pp);
+                        encode_string(out, v[k], w[j], *q, *just, false, pp);
                     }
                     Cols::Raw(v) => {
                         spaces(out, w[j] - 2);
@@ -355,7 +359,7 @@ pub fn print_matrix(
     x: Ref<'_>,
     (r, c): (usize, usize),
     quote: bool,
-    right: bool,
+    right: Justify,
     labels: &Labels<'_>,
     data: &PrintData,
     out: &mut Vec<u8>,
@@ -371,7 +375,7 @@ pub(crate) fn print_matrix_of(
     elts: &Elts<'_>,
     (r, c): (usize, usize),
     quote: bool,
-    right: bool,
+    right: Justify,
     labels: &Labels<'_>,
     data: &PrintData,
     out: &mut Vec<u8>,
@@ -441,7 +445,7 @@ pub fn print_array(
     x: Ref<'_>,
     dims: &[i32],
     quote: bool,
-    right: bool,
+    right: Justify,
     dimnames: Option<Ref<'_>>,
     data: &PrintData,
     out: &mut Vec<u8>,
@@ -464,7 +468,7 @@ pub(crate) fn print_array_of(
     typ: u8,
     dims: &[i32],
     quote: bool,
-    right: bool,
+    right: Justify,
     dimnames: Option<Ref<'_>>,
     data: &PrintData,
     out: &mut Vec<u8>,
@@ -473,7 +477,7 @@ pub(crate) fn print_array_of(
     if ndim == 2 {
         let labels = matrix_labels(cx, dimnames)?;
         let rc = (dims[0].max(0) as usize, dims[1].max(0) as usize);
-        return print_matrix_of(cx, elts, rc, quote, false, &labels, data, out);
+        return print_matrix_of(cx, elts, rc, quote, Justify::Left, &labels, data, out);
     }
     let pp = data.params(cx);
     let (nr, nc) = (dims[0].max(0) as usize, dims[1].max(0) as usize);
@@ -493,17 +497,19 @@ pub(crate) fn print_array_of(
     let max = data.max;
     let max_reached = b > 0 && max / b < nb;
     let (nb_pr, nc_last, nr_last) = if max_reached {
-        let mut nb_pr = max.div_ceil(b);
+        // (GNU R's int arithmetic: with max 0 no slice is printed)
+        let (m, bi, nci) = (max as i64, b as i64, nc as i64);
+        let mut nb_pr = (m + bi - 1) / bi;
         // the last slice uses only nr_last rows (floor: nc could be huge)
-        let ne_last = max - b * (nb_pr - 1);
-        let mut nc_last = if ne_last < nc { ne_last } else { nc };
-        let mut nr_last = if ne_last < nc { 1 } else { ne_last / nc };
+        let ne_last = m - bi * (nb_pr - 1);
+        let mut nc_last = if ne_last < nci { ne_last } else { nci };
+        let mut nr_last = if ne_last < nci { 1 } else { ne_last / nci };
         if nr_last == 0 {
             nb_pr -= 1;
-            nc_last = nc;
-            nr_last = nr;
+            nc_last = nci;
+            nr_last = nr as i64;
         }
-        (nb_pr, nc_last, nr_last)
+        (nb_pr.max(0) as usize, nc_last.max(0) as usize, nr_last.max(0) as usize)
     } else {
         // print something when dim = c(a, b, 0)
         (if nb > 0 { nb } else { 1 }, nc, nr)

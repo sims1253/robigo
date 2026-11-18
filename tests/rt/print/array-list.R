@@ -22,3 +22,8 @@ dim(p) <- c(2L, 2L)
 p
 dimnames(p) <- list(c("r1", "r2"), c("c1", "c2"))
 p
+# the class of the fallback summary, translated (a latin1 class name)
+k <- "caf\xe9"; Encoding(k) <- "latin1"
+format.foo2 <- function(x, ...) c("a", "b")
+two <- structure(1:3, class = c(k, "foo2"))
+matrix(list(two, 1), 1)
