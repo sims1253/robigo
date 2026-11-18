@@ -544,9 +544,12 @@ unsafe fn exists_in_frame(cx: &Cx, env: Sexp, sym: Sexp) -> bool {
 unsafe fn is_imports_frame(cx: &Cx, e: Sexp) -> bool {
     // SAFETY: the caller's contract.
     unsafe {
+        // (a name read raw: a non-ALTREP character vector of length 1)
         crate::ns::name_attr(cx, e).is_some_and(|n| {
-            let c = *(n.std_data() as *const Sexp);
-            n.std_len() == 1 && c != cx.na_string().as_ref().sexp() && c.char_bytes().starts_with(b"imports:")
+            n.typ() == STRSXP && !n.is_altrep() && n.std_len() == 1 && {
+                let c = *(n.std_data() as *const Sexp);
+                c != cx.na_string().as_ref().sexp() && c.char_bytes().starts_with(b"imports:")
+            }
         })
     }
 }
@@ -674,7 +677,7 @@ unsafe fn find_home_ns(cx: &Cx, sym: Sexp, ns: Sexp, seen: &mut Vec<Sexp>) -> Re
             // (a NULL name is cmp.R's stop(); a name other than a character
             // vector is coerced, not ported)
             let Some(n) = attr_value(cx, ns, b"name") else { return Err(Need::Fail) };
-            if n.typ() != STRSXP || n.std_len() == 0 {
+            if n.typ() != STRSXP || n.is_altrep() || n.std_len() == 0 {
                 return Err(Need::Fail);
             }
             let first = string_name(cx, *(n.std_data() as *const Sexp));
@@ -704,7 +707,8 @@ unsafe fn find_home_ns(cx: &Cx, sym: Sexp, ns: Sexp, seen: &mut Vec<Sexp>) -> Re
             }
             _ => return Err(Need::Fail),
         };
-        let inames = attr_value(cx, imports, b"names").filter(|v| v.typ() == STRSXP);
+        // (names read raw: an ALTREP one is not ported)
+        let inames = attr_value(cx, imports, b"names").filter(|v| v.typ() == STRSXP && !v.is_altrep());
         let sname = name(cx, sym).to_vec();
         for i in (0..n).rev() {
             // `getNamespace(names(imports)[i])`: no names is "bad
@@ -735,7 +739,7 @@ unsafe fn find_home_ns(cx: &Cx, sym: Sexp, ns: Sexp, seen: &mut Vec<Sexp>) -> Re
             }
             // a named import: `match(sym, names(exports), 0)`, then
             // `sym == exports[pos]` (renamed: NULL)
-            let Some(enames) = attr_value(cx, entry, b"names").filter(|v| v.typ() == STRSXP) else {
+            let Some(enames) = attr_value(cx, entry, b"names").filter(|v| v.typ() == STRSXP && !v.is_altrep()) else {
                 if entry.typ() == ENVSXP && exists_in_frame(cx, entry, sym) {
                     // (names() of an environment is ls(), and `[` of one
                     // an error)
@@ -827,7 +831,7 @@ unsafe fn ns_name(cx: &Cx, home: Option<Sexp>) -> Result<Package, Need> {
         match spec.typ() {
             STRSXP if !spec.is_altrep() => {
                 // spec["name"]: the first element named "name", else NA
-                let names = attr_value(cx, spec, b"names").filter(|v| v.typ() == STRSXP);
+                let names = attr_value(cx, spec, b"names").filter(|v| v.typ() == STRSXP && !v.is_altrep());
                 let at = names.and_then(|nm| {
                     (0..nm.std_len() as usize)
                         .find(|&k| (*(nm.std_data() as *const Sexp).add(k)).char_bytes() == b"name")
