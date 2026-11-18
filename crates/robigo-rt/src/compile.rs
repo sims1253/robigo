@@ -976,6 +976,20 @@ impl<'g> Comp<'g> {
         self.emit(i);
     }
 
+    /// The expression bcEval is at for the `.Internal` call just emitted
+    /// (its wrapper's call, constant `k`): an [`Op::Internal`]'s `g`, or
+    /// the `c` of the [`Op::ErrorCall`] of a count its checkArity refuses.
+    pub(crate) fn set_internal_site(&mut self, k: u16) {
+        let at = self.ins.len() - 1;
+        match self.ins[at].op {
+            Op::ErrorCall => self.ins[at].c = k,
+            op => {
+                debug_assert_eq!(op, Op::Internal);
+                self.ins[at].g = k;
+            }
+        }
+    }
+
     /// An error GNU R raises when the special `call` runs (`errorcall` if
     /// `with_call`, `error` otherwise): known at compile time, raised in
     /// order at run time.
@@ -1311,9 +1325,8 @@ impl<'g> Comp<'g> {
                     self.builtin_args_call(Op::Internal, internal, inner, inner.cdr(), dst, d, tail)?;
                     // the expression bcEval is at: the wrapper's call
                     // (cmpSimpleInternal sets no location of its own)
-                    let at = self.ins.len() - 1;
-                    debug_assert_eq!(self.ins[at].op, Op::Internal);
-                    self.ins[at].g = self.k(e);
+                    let ke = self.k(e);
+                    self.set_internal_site(ke);
                 }
                 Handler::Local(ee) => self.call(ee, dst, d, tail)?,
                 Handler::Builtin(prim) => self.builtin_args_call(Op::CallBuiltin, prim, e, args, dst, d, tail)?,
@@ -2839,9 +2852,8 @@ impl<'g> Comp<'g> {
                         // the expression bcEval is at: the `.Internal` call
                         // (a closure wrapper's: error() reports the
                         // function's call)
-                        let at = self.ins.len() - 1;
-                        debug_assert_eq!(self.ins[at].op, Op::Internal);
-                        self.ins[at].g = self.k(e);
+                        let ke = self.k(e);
+                        self.set_internal_site(ke);
                     }
                     if site_save != 0 && internal.typ() == BUILTINSXP {
                         // do_internal's own check_stack_balance, its save
@@ -3155,6 +3167,17 @@ impl<'g> Comp<'g> {
         i.fl |= F_DEPTH;
         i.d = d;
         let _ = tail;
+        // an .Internal of a count its checkArity refuses: the arguments
+        // evaluated, then the error (the VM's register call does not check)
+        let refused = (op == Op::Internal)
+            .then(|| {
+                // SAFETY: `fun` is a live primitive of this isolate (the
+                // caller's contract).
+                let def = &self.st.defs[unsafe { crate::prims::offset(fun) }];
+                (!crate::call::internal_arity_ok(def, n))
+                    .then(|| crate::prims::arity_message(n, def.name, def.arity as usize, true))
+            })
+            .flatten();
         if a.iter().any(|&(v, _)| v == dots || v == missing) {
             // evaluated at run time (`...` expanded, an empty argument's
             // error in order); under `Bc` as the generic call's (cmp.R's
@@ -3177,6 +3200,13 @@ impl<'g> Comp<'g> {
         for (j, &(v, _)) in a.iter().enumerate() {
             // SAFETY: as above.
             unsafe { self.expr_at(v, r + j as Reg, d + 1, base + (j > 0) as i32, Tail::No)? };
+        }
+        if let Some(msg) = refused {
+            // against the context, as for every .Internal
+            // R: util.c:Rf_checkArityCall
+            self.error_op(call, &msg, false)?;
+            self.free_to(r);
+            return Ok(());
         }
         if named {
             for (j, &(_, t)) in a.iter().enumerate() {

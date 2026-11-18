@@ -292,6 +292,19 @@ pub struct Column {
     /// with each failing case, which may fail for one of them
     /// (INTERIM(L5): robigo-rt's wide base, `crates/robigo-rt/src/base.rs`).
     pub boot_record: Option<&'static str>,
+    /// Environment variables each case's child runs without: robigo-rt
+    /// ignores an inherited `R_HOME` (GNU R's) with GNU R's warning on
+    /// stdout, which every compared output would carry. They seed
+    /// [`Options::env`] ([`Column::case_env`]), the one place a case's
+    /// environment changes.
+    pub env_remove: &'static [&'static str],
+}
+
+impl Column {
+    /// [`Options::env`]'s start: the column's [`Column::env_remove`].
+    pub fn case_env(&self) -> Vec<(OsString, Option<OsString>)> {
+        self.env_remove.iter().map(|v| (OsString::from(v), None)).collect()
+    }
 }
 
 /// The old runtime, `robigo`: `tests/r` against GNU R 4.5.0.
@@ -303,6 +316,7 @@ pub const OLD: Column = Column {
     corpus: "conformance",
     legacy_list: Some("tests/r/passing.txt"),
     boot_record: None,
+    env_remove: &[],
 };
 
 /// G3's runtime, `robigo-rt`: its own cases in `tests/rt`, and the cases
@@ -315,6 +329,7 @@ pub const RT: Column = Column {
     corpus: "conformance-rt",
     legacy_list: None,
     boot_record: Some("ROBIGO_BOOT_VERBOSE"),
+    env_remove: &["R_HOME"],
 };
 
 /// The feature requirements a `.requires` sidecar may name:
@@ -444,7 +459,7 @@ impl Options {
             jobs,
             timeout,
             case_timeouts,
-            env: Vec::new(),
+            env: column.case_env(),
         })
     }
 }
@@ -510,7 +525,9 @@ pub fn scripts(dir: &Path, features: &[&str]) -> Vec<PathBuf> {
 /// packages only, `LANGUAGE=en`, `C.UTF-8`, UTC, in the script's directory.
 /// A `.tzdir` sidecar names a directory relative to the script, which also
 /// scripts/regen-expected.sh resolves before setting `TZDIR`; without one,
-/// an inherited `TZDIR` is cleared.
+/// an inherited `TZDIR` is cleared. A `.locale` sidecar names the `LC_ALL`
+/// the script runs under instead of `C.UTF-8` (regen-expected.sh records it
+/// so too).
 pub fn command(bin: &Path, script: &Path) -> Command {
     let mut command = Command::new(bin);
     command.arg(script);
@@ -524,6 +541,14 @@ pub fn command(bin: &Path, script: &Path) -> Command {
             let path = script.parent().unwrap().join(dir.trim()).canonicalize().expect("resolve .tzdir");
             assert!(path.is_dir(), ".tzdir must name a directory");
             command.env("TZDIR", path);
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => panic!("read {}: {}", sidecar.display(), err),
+    }
+    let sidecar = script.with_extension("locale");
+    match std::fs::read_to_string(&sidecar) {
+        Ok(loc) => {
+            command.env("LC_ALL", loc.trim());
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => panic!("read {}: {}", sidecar.display(), err),
