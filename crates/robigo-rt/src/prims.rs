@@ -263,6 +263,10 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin(".isMethodsDispatchOn", crate::specials::do_s4on, Inline::None, 1, -1),
     builtin("R.home", crate::platform::do_rhome, Inline::None, 11, 0),
     builtin("dir.exists", crate::platform::do_direxists, Inline::None, 11, 1),
+    // paste.c, util.c: format, format.info, formatC
+    builtin("format", crate::format::do_format, Inline::None, 11, 9),
+    builtin("format.info", crate::format::do_formatinfo, Inline::None, 11, 3),
+    builtin("formatC", crate::format::do_formatc, Inline::None, 11, 7),
     builtin("getwd", crate::util::do_getwd, Inline::None, 11, 0),
     builtin("basename", crate::util::do_basename, Inline::None, 11, 1),
     builtin("dirname", crate::util::do_dirname, Inline::None, 11, 1),

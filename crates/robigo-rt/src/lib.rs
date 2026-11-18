@@ -56,6 +56,7 @@ mod early;
 pub mod eval;
 pub mod fin;
 pub mod fold;
+mod format;
 mod inline;
 pub mod ir;
 pub mod jit;
