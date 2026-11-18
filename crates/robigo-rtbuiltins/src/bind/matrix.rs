@@ -55,7 +55,7 @@ fn dimnames2(u: Ref<'_>) -> Option<(Ref<'_>, Ref<'_>)> {
 fn bind_mode(cx: &mut Cx, args: &[BindArg<'_>]) -> RResult<Option<u8>> {
     let mut d = Bind::default();
     for a in args {
-        answer_type(a.value.bind(cx), false, false, &mut d);
+        answer_type(cx, a.value.bind(cx), false, false, &mut d);
     }
     // zero-extent matrices shouldn't give NULL, but cbind(NULL) should
     if d.flags == 0 && d.len == 0 {

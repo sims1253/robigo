@@ -126,13 +126,13 @@ pub fn do_bind<const CBIND: bool>(
                 cx.build(o, |cx| {
                     let c = cell.bind(cx).as_cons().unwrap();
                     if let Some(t) = c.tag().as_sym() {
-                        return Ok(t.name().into());
+                        return Ok(t.name(cx).into());
                     }
                     let expr = arg_expr(cx, c.car())?;
                     if deparse_level == 1
                         && let Some(sym) = expr.as_sym()
                     {
-                        return Ok(sym.name().into());
+                        return Ok(sym.name(cx).into());
                     }
                     Ok(cx.nil())
                 })
