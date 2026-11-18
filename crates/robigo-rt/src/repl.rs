@@ -91,7 +91,8 @@ pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
                 }
             }
             let text = robigo_syntax::lexable(&iob);
-            let source = robigo_syntax::Source::new(&text, &iob);
+            // known_to_be_utf8: the session's (mkString2's UTF-8 mark)
+            let source = robigo_syntax::Source::new(&text, &iob).known_to_be_utf8(cx.locale().utf8);
             let status = robigo_syntax::parse_console(&arena, source);
             incomplete = false;
             // PARSE_NULL, PARSE_OK and PARSE_ERROR start a new statement
@@ -126,7 +127,12 @@ pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
                     if !warnings.is_empty() {
                         return parse_warnings_unsupported(cx);
                     }
-                    eval_statement(cx, &exprs[0], savestack)
+                    if crate::reader::names_refused(cx, &iob) {
+                        error_at_top(cx, crate::reader::NAMES_REFUSED);
+                        false
+                    } else {
+                        eval_statement(cx, &exprs[0], savestack)
+                    }
                 }
             };
             drop(text);

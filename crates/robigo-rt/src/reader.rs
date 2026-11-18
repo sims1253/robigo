@@ -69,8 +69,10 @@ pub fn parse_vector(cx: &mut Cx, text: Root<'_>, n: i32, out: Out<'_>) -> RResul
 /// rejects (the warnings before it are still signalled).
 // R: gram.y:R_Parse, R_Parse1
 pub fn parse_bytes(cx: &mut Cx, src: &[u8], n: i32, out: Out<'_>) -> RResult<(ParseStatus, Option<ParseFailure>)> {
+    check_names_locale(cx, src)?;
     let text = robigo_syntax::lexable(src);
-    let source = robigo_syntax::Source::new(&text, src);
+    // known_to_be_utf8: the session's (mkString2's UTF-8 mark)
+    let source = robigo_syntax::Source::new(&text, src).known_to_be_utf8(cx.locale().utf8);
     let arena = robigo_syntax::Arena::new();
     // every token's warnings with their positions (the lexer never fails:
     // a lexical error is a token the parser rejects)
@@ -105,16 +107,17 @@ pub fn parse_bytes(cx: &mut Cx, src: &[u8], n: i32, out: Out<'_>) -> RResult<(Pa
     // the tokens up to the next expression's start (its terminator and
     // what separates them carry no warnings)
     signal(cx, if take < exprs.len() { (exprs[take].span().start as usize).saturating_sub(1) } else { usize::MAX })?;
-    lower_all(cx, &exprs[..take], out)?;
+    lower_all(cx, &exprs[..take], cx.locale().utf8, out)?;
     Ok((ParseStatus::Ok, None))
 }
 
-/// Lower `exprs` into a new expression vector written to `out`.
-pub fn lower_all(cx: &mut Cx, exprs: &[robigo_syntax::Expr<'_>], out: Out<'_>) -> RResult<()> {
+/// Lower `exprs`, of a parse whose `known_to_be_utf8` is `known`, into a
+/// new expression vector written to `out`.
+pub fn lower_all(cx: &mut Cx, exprs: &[robigo_syntax::Expr<'_>], known: bool, out: Out<'_>) -> RResult<()> {
     cx.build(out, |cx| {
         let mut v = cx.alloc_expression(exprs.len())?;
         for (i, e) in exprs.iter().enumerate() {
-            let x = crate::lower::lower(cx, e)?;
+            let x = crate::lower::lower_known(cx, e, known)?;
             // SAFETY: fresh, reachable from the expression vector from here;
             // nothing collects under `&Cx`.
             #[allow(unsafe_code)]
@@ -132,4 +135,37 @@ pub fn lower_one(cx: &mut Cx, e: &robigo_syntax::Expr<'_>, out: Out<'_>) -> RRes
         #[allow(unsafe_code)]
         Ok(unsafe { Ref::from_sexp(x, cx) })
     })
+}
+
+/// In a locale that is not UTF-8, GNU R's lexer classifies a name's bytes
+/// with the C library's single-byte classes (`isalpha`), where
+/// robigo-syntax's classifies Unicode characters: a bare name with
+/// non-ASCII bytes is refused (strings, comments and backquoted names read
+/// as GNU R reads them).
+// R: gram.y:token, SymbolValue (mbcslocale FALSE)
+pub(crate) fn check_names_locale(cx: &mut Cx, src: &[u8]) -> RResult<()> {
+    if names_refused(cx, src) {
+        return Err(cx.error(NAMES_REFUSED));
+    }
+    Ok(())
+}
+
+/// [`check_names_locale`]'s refusal.
+pub(crate) const NAMES_REFUSED: &str =
+    "robigo: a name with non-ASCII characters in a non-UTF-8 locale is not implemented yet";
+
+/// Whether [`check_names_locale`] refuses `src`.
+pub(crate) fn names_refused(cx: &Cx, src: &[u8]) -> bool {
+    if cx.locale().utf8 || src.is_ascii() {
+        return false;
+    }
+    let text = robigo_syntax::lexable(src);
+    let source = robigo_syntax::Source::new(&text, src).known_to_be_utf8(false);
+    match robigo_syntax::lexer::Lexer::new(source).lex() {
+        Ok(l) => l.toks.iter().any(|t| {
+            let b = src.get(t.span.start as usize..t.span.end as usize).unwrap_or_default();
+            matches!(t.tok, robigo_syntax::lexer::Tok::Sym(_)) && !b.is_ascii() && b.first() != Some(&b'`')
+        }),
+        Err(_) => false,
+    }
 }
