@@ -889,6 +889,13 @@ fn substitute<'g>(cx: &'g Cx, lang: Ref<'g>, found: &Found<'g>) -> Result<Ref<'g
     }
 }
 
+/// `substitute(lang, R_NilValue)`: the expression behind `lang`'s
+/// promises, no symbol replaced (`do_bind`'s naming of its arguments).
+// R: coerce.c:substitute
+pub(crate) fn substitute_nil<'g>(cx: &'g Cx, lang: Ref<'g>) -> Result<Ref<'g>, robigo_rtcore::NeedGc> {
+    substitute(cx, lang, &None)
+}
+
 /// A promise's expression (`PREXPR`, `R_PromiseExpr`): its code, or for
 /// byte code (a promise compiled code made) the code's first constant.
 // R: eval.c:R_PromiseExpr

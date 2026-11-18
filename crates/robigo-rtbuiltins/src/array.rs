@@ -2,12 +2,16 @@
 //! missing(nrow), missing(ncol)))` (`do_matrix`, with duplicate.c's
 //! `copyMatrix`; `gc()`'s own R code shapes its result with it), and
 //! `.Internal(lengths(x, use.names))` (`do_lengths`), `aperm` (`do_aperm`),
-//! `row`/`col` (`do_rowscols`) and `asplit` (`do_asplit`).
+//! `row`/`col` (`do_rowscols`), `asplit` (`do_asplit`), and the matrix
+//! products `%*%`, `crossprod`, `tcrossprod` (`do_matprod`).
 
 use crate::attrib::set::dimnamesgets;
-use crate::attrib::{Attr, Attrs};
+use crate::attrib::{self, Attr, Attrs};
 use crate::coerce::vector::as_integer_warn;
+use crate::kernel::nan::{add, mul};
 use crate::util::{as_logical, not_yet, type_to_char};
+use robigo_numerics::blas::{self, Trans};
+use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Char, Cx, Dispatched, Generic, Lgl, Out, RResult, Rcomplex, Ref, Root, View};
 
@@ -1109,4 +1113,618 @@ pub fn do_asplit(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
         out.set(cx, y.bind(cx));
         Ok(())
     })
+
+/// `.Internal(t.default(a))`: the transpose of a matrix, or of a vector
+/// (one column, `names` its row names) or a 1-d array; the dimnames (and
+/// their names) swapped, every other attribute but names kept.
+// R: array.c:do_transpose
+pub fn do_transpose(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("t.default", true).check_arity(cx, call, args)?;
+    let a = args.root(0);
+    let av = a.bind(cx);
+    if !crate::attrib::is_vector(av) {
+        return Err(cx.error("argument is not a matrix"));
+    }
+    if av.is_package_altrep() {
+        return Err(not_yet(cx, Some(call), "t() of a package ALTREP vector"));
+    }
+    let ldim = crate::attrib::dims(av).map_or(0, |d| d.len());
+    if ldim > 2 {
+        return Err(cx.error("argument is not a matrix"));
+    }
+    if !matches!(av.sexptype(), LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | VECSXP | RAWSXP) {
+        return Err(cx.error("argument is not a matrix"));
+    }
+    cx.materialize(a)?;
+    cx.build(out, |cx| {
+        let a = a.bind(cx);
+        let len = a.len().unwrap();
+        // (nrow, ncol, rnames, cnames, dimnames' names, any dimnames)
+        let (nrow, ncol) = match crate::attrib::dims(a) {
+            Some(&[r, c]) => (r as usize, c as usize),
+            _ => (len, 1),
+        };
+        let dn = match ldim {
+            0 => None,
+            _ => crate::attrib::get_value(a, b"dimnames"),
+        };
+        let dn_list = dn.and_then(|d| match d.view() {
+            View::List(l) => Some(l),
+            _ => None,
+        });
+        let (rnames, cnames) = match (ldim, dn_list) {
+            (0, _) => (crate::attrib::names(a), None),
+            (1, Some(l)) => (Some(l.get(0)), None),
+            (2, Some(l)) => (Some(l.get(0)), Some(l.get(1))),
+            _ => (None, None),
+        };
+        let dnn = dn.and_then(crate::attrib::names);
+        // !isNull(dimnames): the names of a vector, a 1-d or 2-d array's
+        // dimnames
+        let any_dimnames = if ldim == 0 { rnames.is_some() } else { dn.is_some() };
+        // filling in columnwise, "accessing row-wise"
+        // (the element read now, then j += nrow wrapped past len - 1)
+        let order = |j: &mut usize| {
+            let r = *j;
+            *j += nrow;
+            if len > 0 && *j > len - 1 {
+                *j -= len - 1;
+            }
+            r
+        };
+        macro_rules! plain {
+            ($t:ty, $v:expr) => {{
+                let src = $v.as_slice().unwrap();
+                let mut r = cx.alloc_vector::<$t>(len)?;
+                let o = r.as_mut_slice();
+                let mut j = 0;
+                for o in o.iter_mut() {
+                    *o = src[order(&mut j)];
+                }
+                r
+            }};
+        }
+        let mut at = Attrs::new();
+        let dims = cx.alloc_copy(&[ncol as i32, nrow as i32])?.finish().into();
+        at.install(Attr { tag: cx.sym(robigo_rtcore::RSym::Dim), value: dims });
+        if any_dimnames {
+            let mut d = cx.alloc_vector::<Ref<'_>>(2)?;
+            d.set(0, cnames.unwrap_or(cx.nil()));
+            d.set(1, rnames.unwrap_or(cx.nil()));
+            if let Some(dnn) = dnn.and_then(|n| n.as_vector::<Char<'_>>()) {
+                let mut nn = cx.alloc_vector::<Char<'_>>(2)?;
+                nn.set(1, dnn.get(0));
+                nn.set(0, if ldim == 2 { dnn.get(1) } else { cx.blank_string() });
+                let mut na = Attrs::new();
+                na.install(Attr { tag: cx.sym(robigo_rtcore::RSym::Names), value: nn.finish().into() });
+                na.apply(cx, &mut d)?;
+            }
+            at.install(Attr { tag: cx.sym(robigo_rtcore::RSym::DimNames), value: d.finish().into() });
+        }
+        at.copy_most(a);
+        macro_rules! done {
+            ($r:expr) => {{
+                let mut r = $r;
+                at.apply(cx, &mut r)?;
+                Ok(r.finish().into())
+            }};
+        }
+        match a.view() {
+            View::Lgl(v) => done!(plain!(Lgl, v)),
+            View::Int(v) => done!(plain!(i32, v)),
+            View::Real(v) => done!(plain!(f64, v)),
+            View::Cplx(v) => done!(plain!(Rcomplex, v)),
+            View::Raw(v) => done!(plain!(u8, v)),
+            View::Str(v) => {
+                let mut r = cx.alloc_vector::<Char<'_>>(len)?;
+                let mut j = 0;
+                for i in 0..len {
+                    r.set(i, v.get(order(&mut j)));
+                }
+                done!(r)
+            }
+            View::List(v) => {
+                let mut r = cx.alloc_vector::<Ref<'_>>(len)?;
+                let mut j = 0;
+                for i in 0..len {
+                    r.set(i, v.get(order(&mut j)));
+                }
+                done!(r)
+            }
+            _ => unreachable!("robigo: t.default's types were checked"),
+        }
+    })
+}
+
+// ---- %*%, crossprod, tcrossprod ---------------------------------------------
+//
+// array.c's matrix products: `x %*% y` (`do_matprod`, PRIMVAL 0),
+// `crossprod(x, y)` (1) and `tcrossprod(x, y)` (2), primitives that dispatch
+// on the `matrixOps` group. With `options(matprod = "default")` (the only
+// value robigo-rt's options take yet: `options(matprod = )` is not
+// implemented) a product whose operands pass `mayHaveNaNOrInf` (no NaN, no
+// infinity, no two neighbours summing to one) goes through the reference
+// BLAS (`robigo_numerics::blas`), any other through array.c's simple loops,
+// in `double` (array.c's `LDOUBLE` loops are `matprod = "internal"`'s).
+
+/// The `matrixOps` group generic of each product.
+struct MatrixOps<const OP: i32>;
+
+impl<const OP: i32> MatrixOps<OP> {
+    const GENERIC: Generic = Generic::group("matrixOps", name(OP));
+}
+
+const fn name(op: i32) -> &'static str {
+    match op {
+        0 => "%*%",
+        1 => "crossprod",
+        _ => "tcrossprod",
+    }
+}
+
+/// `mayHaveNaNOrInf(x, n)`: TRUE when x has a NaN or an infinity, and
+/// also when two neighbours sum to one (1e308 + 1e308).
+// R: array.c:mayHaveNaNOrInf
+fn may_have_nan_or_inf(x: &[f64]) -> bool {
+    let n = x.len();
+    if n & 1 != 0 && !x[0].is_finite() {
+        return true;
+    }
+    let mut i = n & 1;
+    while i < n {
+        if !(x[i] + x[i + 1]).is_finite() {
+            return true;
+        }
+        i += 2;
+    }
+    false
+}
+
+/// `cmayHaveNaNOrInf(x, n)`.
+// R: array.c:cmayHaveNaNOrInf
+fn cmay_have_nan_or_inf(x: &[Rcomplex]) -> bool {
+    let n = x.len();
+    if n & 1 != 0 && (!x[0].r.is_finite() || !x[0].i.is_finite()) {
+        return true;
+    }
+    let mut i = n & 1;
+    while i < n {
+        if !(x[i].r + x[i].i + x[i + 1].r + x[i + 1].i).is_finite() {
+            return true;
+        }
+        i += 2;
+    }
+    false
+}
+
+/// The C99 `xij * yjk` of the simple complex loops (libgcc's
+/// `__muldc3`).
+#[inline(always)]
+fn cmul(a: Rcomplex, b: Rcomplex) -> Rcomplex {
+    crate::kernel::complex::cmul(a, b)
+}
+
+/// One of the three products' simple loops (array.c's `MATPROD_BODY`,
+/// `CROSSPROD_BODY`, `TCROSSPROD_BODY` in `double`): `z[i, k]` the sum
+/// over `j` of `x[xi(i, j)] * y[yi(j, k)]`, for `i < ni`, `k < nk`,
+/// `j < nj`, stored at `i + k * ldz`.
+#[allow(clippy::too_many_arguments)]
+fn simple(
+    x: &[f64],
+    y: &[f64],
+    z: &mut [f64],
+    (ni, nk, nj, ldz): (usize, usize, usize, usize),
+    xi: impl Fn(usize, usize) -> usize,
+    yi: impl Fn(usize, usize) -> usize,
+) {
+    for i in 0..ni {
+        for k in 0..nk {
+            let mut sum = 0.0;
+            for j in 0..nj {
+                sum = add(sum, mul(x[xi(i, j)], y[yi(j, k)]));
+            }
+            z[i + k * ldz] = sum;
+        }
+    }
+}
+
+/// The complex simple loops (`CMATPROD_BODY` and friends): real and
+/// imaginary parts summed apart, each of C99's product.
+fn csimple(
+    x: &[Rcomplex],
+    y: &[Rcomplex],
+    z: &mut [Rcomplex],
+    (ni, nk, nj, ldz): (usize, usize, usize, usize),
+    xi: impl Fn(usize, usize) -> usize,
+    yi: impl Fn(usize, usize) -> usize,
+) {
+    for i in 0..ni {
+        for k in 0..nk {
+            let (mut sr, mut si) = (0.0, 0.0);
+            for j in 0..nj {
+                let p = cmul(x[xi(i, j)], y[yi(j, k)]);
+                sr = add(sr, p.r);
+                si = add(si, p.i);
+            }
+            z[i + k * ldz] = Rcomplex { r: sr, i: si };
+        }
+    }
+}
+
+/// `matprod`, `crossprod`, `tcrossprod` (and `symcrossprod`,
+/// `symtcrossprod` when `sym`) of double matrices into `z`.
+// R: array.c:matprod, crossprod, tcrossprod, symcrossprod, symtcrossprod
+#[allow(clippy::too_many_arguments)]
+fn real_product(
+    op: i32,
+    sym: bool,
+    x: &[f64],
+    nrx: usize,
+    ncx: usize,
+    y: &[f64],
+    nry: usize,
+    ncy: usize,
+    z: &mut [f64],
+) {
+    if nrx == 0 || ncx == 0 || nry == 0 || ncy == 0 {
+        // zero-extent operations should return zeroes
+        z.fill(0.0);
+        return;
+    }
+    let nonfinite = may_have_nan_or_inf(x) || (!sym && may_have_nan_or_inf(y));
+    match (op, sym) {
+        (0, _) => {
+            if nonfinite {
+                simple(x, y, z, (nrx, ncy, ncx, nrx), |i, j| i + j * nrx, |j, k| j + k * nry);
+            } else if ncy == 1 {
+                // matrix-vector or dot product
+                blas::dgemv(false, nrx, ncx, x, nrx, y, z);
+            } else if nrx == 1 {
+                // vector-matrix: (Y^T)(x^T)
+                blas::dgemv(true, nry, ncy, y, nry, x, z);
+            } else {
+                blas::dgemm(Trans::NN, nrx, ncy, ncx, x, nrx, y, nry, z, nrx);
+            }
+        }
+        (1, true) => {
+            let (nr, nc) = (nrx, ncx);
+            if nonfinite {
+                simple(x, x, z, (nc, nc, nr, nc), |i, j| j + i * nr, |j, k| j + k * nr);
+            } else {
+                blas::dsyrk_upper(true, nc, nr, x, nr, z, nc);
+                for i in 1..nc {
+                    for j in 0..i {
+                        z[i + nc * j] = z[j + nc * i];
+                    }
+                }
+            }
+        }
+        (1, false) => {
+            if nonfinite {
+                simple(x, y, z, (ncx, ncy, nrx, ncx), |i, j| j + i * nrx, |j, k| j + k * nry);
+            } else if ncy == 1 {
+                blas::dgemv(true, nrx, ncx, x, nrx, y, z);
+            } else if ncx == 1 {
+                // vector-matrix: (Y^T)x
+                blas::dgemv(true, nry, ncy, y, nry, x, z);
+            } else {
+                blas::dgemm(Trans::TN, ncx, ncy, nrx, x, nrx, y, nry, z, ncx);
+            }
+        }
+        (_, true) => {
+            let (nr, nc) = (nrx, ncx);
+            if nonfinite {
+                simple(x, x, z, (nr, nr, nc, nr), |i, j| i + j * nr, |j, k| k + j * nr);
+            } else {
+                blas::dsyrk_upper(false, nr, nc, x, nr, z, nr);
+                for i in 1..nr {
+                    for j in 0..i {
+                        z[i + nr * j] = z[j + nr * i];
+                    }
+                }
+            }
+        }
+        (_, false) => {
+            if nonfinite {
+                simple(x, y, z, (nrx, nry, ncx, nrx), |i, j| i + j * nrx, |j, k| k + j * nry);
+            } else if nry == 1 {
+                blas::dgemv(false, nrx, ncx, x, nrx, y, z);
+            } else if nrx == 1 {
+                // vector-matrix: Y(x^T)
+                blas::dgemv(false, nry, ncy, y, nry, x, z);
+            } else {
+                blas::dgemm(Trans::NT, nrx, nry, ncx, x, nrx, y, nry, z, nrx);
+            }
+        }
+    }
+}
+
+/// `cmatprod`, `ccrossprod`, `tccrossprod` into `z` (the symmetric
+/// forms are the general ones of x with itself).
+// R: array.c:cmatprod, ccrossprod, tccrossprod
+#[allow(clippy::too_many_arguments)]
+fn complex_product(
+    op: i32,
+    x: &[Rcomplex],
+    nrx: usize,
+    ncx: usize,
+    y: &[Rcomplex],
+    nry: usize,
+    ncy: usize,
+    z: &mut [Rcomplex],
+) {
+    if nrx == 0 || ncx == 0 || nry == 0 || ncy == 0 {
+        z.fill(Rcomplex { r: 0.0, i: 0.0 });
+        return;
+    }
+    let nonfinite = cmay_have_nan_or_inf(x) || cmay_have_nan_or_inf(y);
+    match op {
+        0 if nonfinite => csimple(x, y, z, (nrx, ncy, ncx, nrx), |i, j| i + j * nrx, |j, k| j + k * nry),
+        0 => blas::zgemm(Trans::NN, (nrx, ncy, ncx), x, nrx, y, nry, z, nrx, |c| (c.r, c.i), |r, i| Rcomplex { r, i }),
+        1 if nonfinite => csimple(x, y, z, (ncx, ncy, nrx, ncx), |i, j| j + i * nrx, |j, k| j + k * nry),
+        1 => blas::zgemm(Trans::TN, (ncx, ncy, nrx), x, nrx, y, nry, z, ncx, |c| (c.r, c.i), |r, i| Rcomplex { r, i }),
+        _ if nonfinite => csimple(x, y, z, (nrx, nry, ncx, nrx), |i, j| i + j * nrx, |j, k| k + j * nry),
+        _ => blas::zgemm(Trans::NT, (nrx, nry, ncx), x, nrx, y, nry, z, nrx, |c| (c.r, c.i), |r, i| Rcomplex { r, i }),
+    }
+}
+
+/// `x %*% y` (`OP` 0), `crossprod(x, y)` (1), `tcrossprod(x, y)` (2).
+// R: array.c:do_matprod
+pub fn do_matprod<const OP: i32>(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: Args<'_>,
+    env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    // .Primitive(); may have 1 or 2 args, but some methods have more
+    let nargs = args.len().min(2);
+    let min_nargs = if OP != 0 { 1 } else { 2 };
+    if nargs < min_nargs {
+        let s = if nargs == 1 { "" } else { "s" };
+        let msg = format!("{nargs} argument{s} passed to '{}' which requires at least {min_nargs}", name(OP));
+        return Err(cx.error_call(Some(call), &msg));
+    }
+    let x0 = args.get(cx, 0);
+    let y0 = if args.len() > 1 { args.get(cx, 1) } else { cx.nil() };
+    let out = if x0.is_object() || y0.is_object() {
+        // Remove argument names to ensure positional matching
+        let d = cx.scope(|cx, s| {
+            let vals: Vec<Ref<'_>> = (0..args.len()).map(|i| args.get(cx, i)).collect();
+            let plain = s.args(cx, &vals, None);
+            cx.try_dispatch(&MatrixOps::<OP>::GENERIC, call, plain, env, out)
+        })?;
+        match d {
+            Dispatched::Done => return Ok(()),
+            Dispatched::Default(out) => out,
+        }
+    } else {
+        out
+    };
+    // the default method
+    if args.len() > 2 {
+        let msg = format!("more than 2 arguments passed to default method of '{}'", name(OP));
+        cx.warning_call(Some(call), &msg)?;
+    }
+    // y = x for crossprod(x) and tcrossprod(x); x %*% NULL is refused below
+    let sym = args.len() < 2 || args.get(cx, 1).sexptype() == NILSXP;
+    let (xr, yr) = (args.root(0), if sym && OP > 0 { args.root(0) } else { args.root(1) });
+    let ok = |v: Ref<'_>| is_numeric(v) || v.sexptype() == CPLXSXP;
+    if !ok(xr.bind(cx)) || !ok(yr.bind(cx)) {
+        return Err(cx.error_call(Some(call), "requires numeric/complex matrix/vector arguments"));
+    }
+    if xr.bind(cx).is_package_altrep() || yr.bind(cx).is_package_altrep() {
+        return Err(not_yet(cx, Some(call), &format!("{}() of a package ALTREP vector", name(OP))));
+    }
+    let shape = |v: Ref<'_>| attrib::dims(v).map(|d| d.to_vec()).unwrap_or_default();
+    let (xdims, ydims) = (shape(xr.bind(cx)), shape(yr.bind(cx)));
+    let (ldx, ldy) = (xdims.len(), ydims.len());
+    let (lx, ly) = (xr.bind(cx).len().unwrap(), yr.bind(cx).len().unwrap());
+    let (nrx, ncx, nry, ncy) = dims(OP, &xdims, &ydims, lx, ly);
+    match OP {
+        // primitive, so use call
+        0 if ncx != nry => return Err(cx.error_call(Some(call), "non-conformable arguments")),
+        1 if nrx != nry => return Err(cx.error("non-conformable arguments")),
+        2 if ncx != ncy => return Err(cx.error("non-conformable arguments")),
+        _ => {}
+    }
+    let complex = args.get(cx, 0).sexptype() == CPLXSXP || (args.len() > 1 && args.get(cx, 1).sexptype() == CPLXSXP);
+    let mode = if complex { CPLXSXP } else { REALSXP };
+    cx.scope(|cx, s| {
+        let x = s.capture(cx, |cx, o| crate::coerce::vector::coerce_vector(cx, xr, mode, o))?;
+        let y = if sym { x } else { s.capture(cx, |cx, o| crate::coerce::vector::coerce_vector(cx, yr, mode, o))? };
+        cx.materialize(x)?;
+        cx.materialize(y)?;
+        let (ar, ac) = match OP {
+            0 => (nrx, ncy),
+            1 => (ncx, ncy),
+            _ => (nrx, nry),
+        };
+        cx.build(out, |cx| {
+            let (xv, yv) = (x.bind(cx), y.bind(cx));
+            let mut a = Attrs::new();
+            let d = cx.alloc_copy(&[ar as i32, ac as i32])?.finish().into();
+            a.install(Attr { tag: cx.sym(RSym::Dim), value: d });
+            if let Some(dn) = dimnames(cx, OP, sym, xv, yv, (ldx, ldy, ncx, nry))? {
+                a.install(Attr { tag: cx.sym(RSym::DimNames), value: dn });
+            }
+            match (xv.view(), yv.view()) {
+                (View::Real(xs), View::Real(ys)) => {
+                    let mut r = cx.alloc_vector::<f64>(ar * ac)?;
+                    let (xs, ys) = (xs.as_slice().unwrap(), ys.as_slice().unwrap());
+                    real_product(OP, sym && OP != 0, xs, nrx, ncx, ys, nry, ncy, r.as_mut_slice());
+                    a.apply(cx, &mut r)?;
+                    Ok(r.finish().into())
+                }
+                (View::Cplx(xs), View::Cplx(ys)) => {
+                    let mut r = cx.alloc_vector::<Rcomplex>(ar * ac)?;
+                    let (xs, ys) = (xs.as_slice().unwrap(), ys.as_slice().unwrap());
+                    complex_product(OP, xs, nrx, ncx, ys, nry, ncy, r.as_mut_slice());
+                    a.apply(cx, &mut r)?;
+                    Ok(r.finish().into())
+                }
+                _ => unreachable!("robigo: matprod's operands were coerced"),
+            }
+        })
+    })
+}
+
+/// The extents do_matprod gives x and y: (nrx, ncx, nry, ncy), a vector
+/// taking the shape that makes the product conformable where GNU R lets it.
+// R: array.c:do_matprod
+fn dims(op: i32, xd: &[i32], yd: &[i32], lx: usize, ly: usize) -> (usize, usize, usize, usize) {
+    let d = |v: &[i32], i: usize| v[i] as usize;
+    if xd.len() != 2 && yd.len() != 2 {
+        // x and y non-matrices; for crossprod, allow two cases: n x n ==>
+        // (1,n) x (n,1); 1 x n = (n, 1) x (1, n)
+        if op == 1 && lx == 1 {
+            (1, 1, 1, ly)
+        } else {
+            let (mut nry, mut ncy) = (ly, 1);
+            if op == 0 {
+                let ncx = lx;
+                if ncx == 1 {
+                    // y as row vector
+                    ncy = nry;
+                    nry = 1;
+                }
+                (1, ncx, nry, ncy)
+            } else {
+                (lx, 1, nry, ncy)
+            }
+        }
+    } else if xd.len() != 2 {
+        // x not a matrix
+        let (nry, ncy) = (d(yd, 0), d(yd, 1));
+        let (mut nrx, mut ncx) = (0, 0);
+        match op {
+            0 => {
+                if lx == nry {
+                    (nrx, ncx) = (1, nry);
+                } else if nry == 1 {
+                    (nrx, ncx) = (lx, 1);
+                }
+            }
+            1 => {
+                if lx == nry {
+                    (nrx, ncx) = (nry, 1);
+                }
+            }
+            _ => {
+                if lx == ncy {
+                    (nrx, ncx) = (1, ncy);
+                } else if ncy == 1 {
+                    (nrx, ncx) = (lx, 1);
+                }
+            }
+        }
+        (nrx, ncx, nry, ncy)
+    } else if yd.len() != 2 {
+        // y not a matrix
+        let (nrx, ncx) = (d(xd, 0), d(xd, 1));
+        let (mut nry, mut ncy) = (0, 0);
+        match op {
+            0 => {
+                if ly == ncx {
+                    (nry, ncy) = (ncx, 1);
+                } else if ncx == 1 {
+                    (nry, ncy) = (1, ly);
+                }
+            }
+            1 => {
+                if ly == nrx {
+                    (nry, ncy) = (nrx, 1);
+                } else if nrx == 1 {
+                    (nry, ncy) = (1, ly);
+                }
+            }
+            _ => {
+                if nrx == 1 {
+                    (nry, ncy) = (1, ly);
+                } else {
+                    (nry, ncy) = (ly, 1);
+                }
+            }
+        }
+        (nrx, ncx, nry, ncy)
+    } else {
+        (d(xd, 0), d(xd, 1), d(yd, 0), d(yd, 1))
+    }
+}
+
+/// The product's dimnames (`ALLOC_DIMNAMES_NAMES`, `YDIMS_ET_CETERA`,
+/// `SET_DIMNAMES_NAMES`): None when both would be NULL. `x` and `y` are
+/// the coerced operands (coerceVector keeps their attributes).
+// R: array.c:do_matprod
+fn dimnames<'g>(
+    cx: &'g Cx,
+    op: i32,
+    sym: bool,
+    x: Ref<'g>,
+    y: Ref<'g>,
+    (ldx, ldy, ncx, nry): (usize, usize, usize, usize),
+) -> Result<Option<Ref<'g>>, robigo_rtcore::NeedGc> {
+    let xdims = attrib::get_value(x, b"dimnames");
+    let ydims = if sym && op != 0 { xdims } else { attrib::get_value(y, b"dimnames") };
+    if xdims.is_none() && ydims.is_none() {
+        return Ok(None);
+    }
+    let elt = |dn: Ref<'g>, i: usize| match dn.view() {
+        View::List(l) if i < l.len() => l.get(i),
+        _ => cx.nil(),
+    };
+    let nm = |dn: Ref<'g>, i: usize| -> Option<Char<'g>> {
+        attrib::names(dn).and_then(|n| n.as_vector::<Char<'g>>()).map(|n| n.get(i))
+    };
+    let (mut d0, mut d1) = (cx.nil(), cx.nil());
+    let (mut n0, mut n1): (Option<Char<'g>>, Option<Char<'g>>) = (None, None);
+    let (mut dnx, mut dny) = (false, false);
+    if let Some(xd) = xdims {
+        let pick = match op {
+            0 if ldx == 2 || ncx == 1 => Some(0),
+            1 if ldx == 2 => Some(1),
+            2 if ldx == 2 => Some(0),
+            _ => None,
+        };
+        if let Some(i) = pick {
+            d0 = elt(xd, i);
+            if attrib::names(xd).is_some() {
+                dnx = true;
+                n0 = nm(xd, i);
+            }
+        }
+    }
+    if let Some(yd) = ydims {
+        let pick = match op {
+            2 if ldy == 2 => Some(0),
+            2 => None,
+            _ if ldy == 2 => Some(1),
+            _ if nry == 1 => Some(0),
+            _ => None,
+        };
+        if let Some(i) = pick {
+            d1 = elt(yd, i);
+            if attrib::names(yd).is_some() {
+                dny = true;
+                n1 = nm(yd, i);
+            }
+        }
+    }
+    // Since R 2.1.0, no longer attach a dimnames attribute whose elements
+    // are all NULL
+    if d0.sexptype() == NILSXP && d1.sexptype() == NILSXP {
+        return Ok(None);
+    }
+    let mut dn = cx.alloc_vector::<Ref<'g>>(2)?;
+    dn.set(0, d0);
+    dn.set(1, d1);
+    if dnx || dny {
+        let mut names = cx.alloc_vector::<Char<'g>>(2)?;
+        names.set(0, n0.unwrap_or(cx.blank_string()));
+        names.set(1, n1.unwrap_or(cx.blank_string()));
+        let mut a = Attrs::new();
+        a.install(Attr { tag: cx.sym(RSym::Names), value: names.finish().into() });
+        a.apply(cx, &mut dn)?;
+    }
+    Ok(Some(dn.finish().into()))
 }

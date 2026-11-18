@@ -153,6 +153,9 @@ static RT_PRIMS: &[PrimDef] = &[
     // eval.c
     special_fn("withVisible", crate::eval::do_with_visible, 10, 1),
     special_fn("forceAndCall", crate::apply::do_force_and_call, 0, -1),
+    // bind.c: special .Internals (names.c eval 10)
+    special_fn("cbind", crate::bind::do_bind::<true>, 10, -1),
+    special_fn("rbind", crate::bind::do_bind::<false>, 10, -1),
     // arithmetic.c
     special_fn("log", crate::specials::do_log, 0, -1),
     // objects.c (S1)
