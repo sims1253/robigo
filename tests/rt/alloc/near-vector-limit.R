@@ -8,6 +8,5 @@ g <- gc()
 lim <- ceiling(g[2, 3] * 8 / 1048576) + 1
 invisible(mem.maxVSize(lim))
 n <- floor((lim * 1048576 / 8 - 150000 - g[2, 1]) / 100)
-x <- vector("list", n)
-for (i in seq_len(n)) x[[i]] <- numeric(100)
+x <- lapply(seq_len(n), function(i) numeric(100))
 cat("all fit\n")
