@@ -356,6 +356,8 @@ pub static BUILTINS: &[Builtin] = &[
     row("bindtextdomain", errors::do_bindtextdomain, 0, 11, 2, FUNCALL, External),
     row("interactive", sysutils::do_interactive, 0, 1, 0, FUNCALL, Pure),
     row("Sys.getenv", sysutils::do_getenv, 0, 11, 2, FUNCALL, External),
+    row("Sys.setenv", sysutils::do_setenv, 0, 111, 2, FUNCALL, External),
+    row("Sys.unsetenv", sysutils::do_unsetenv, 0, 111, 1, FUNCALL, External),
     row("l10n_info", sysutils::do_l10n_info, 0, 11, 0, FUNCALL, Pure),
     // summary.c, logic.c, arithmetic.c
     op!("sum", 0, summary::do_summary, 1, -1, FUNCALL, Pure),

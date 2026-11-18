@@ -56,19 +56,10 @@ fn install_tr_char<'s>(cx: &mut Cx, s: Scope<'s>, c: Root<'_>, i: usize) -> RRes
     match found {
         Some(y) => Ok(y),
         None => {
-            let b = translated(cx, c, i)?;
+            let b = crate::text::native_elt(cx, c, i)?;
             install_name(cx, s, &b)
         }
     }
-}
-
-/// `translateChar(c)`: an attribute name in the native encoding.
-fn translated(cx: &mut Cx, c: Root<'_>, i: usize) -> RResult<Vec<u8>> {
-    let r = {
-        let ch = c.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
-        crate::text::to_native(crate::coerce::text(ch), cx.locale()).map(|b| b.into_owned())
-    };
-    r.map_err(|e| cx.error(&e.to_string()))
 }
 
 // ---- setAttrib --------------------------------------------------------------
@@ -272,7 +263,7 @@ pub fn namesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
                     c != cx.na_string() && !c.bytes().is_empty()
                 };
                 if tag {
-                    let b = translated(cx, v, i)?;
+                    let b = crate::text::native_elt(cx, v, i)?;
                     t.replace_with(cx, |cx| Ok(cx.install(&b)?.into()))?;
                 } else {
                     t.replace_with(cx, |cx| Ok(cx.nil()))?;
@@ -509,7 +500,7 @@ pub fn dimnamesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
             let t = s.out(cx).root();
             let mut i = 0;
             while cur.bind(cx).as_cons().is_some() {
-                let b = translated(cx, top, i)?;
+                let b = crate::text::native_elt(cx, top, i)?;
                 check_name(cx, &b)?;
                 t.replace_with(cx, |cx| Ok(cx.install(&b)?.into()))?;
                 cx.set_tag(cur, t);
@@ -1103,7 +1094,7 @@ pub fn do_namesgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, 
             let o = s.out(cx);
             let k = o.root();
             cx.build(o, |cx| super::data_class(cx, x.bind(cx)))?;
-            let klass = translated(cx, k, 0)?;
+            let klass = crate::text::native_elt(cx, k, 0)?;
             let msg =
                 format!("invalid to use names()<- on an S4 object of class '{}'", String::from_utf8_lossy(&klass));
             return Err(cx.error(&msg));

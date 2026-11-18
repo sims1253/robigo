@@ -35,9 +35,16 @@ pub fn parse(cx: &mut Cx, src: &str, out: Out<'_>) -> RResult<()> {
 /// One expression as a language object, under `&Cx` (never collects; the
 /// caller retries the whole lowering after a refusal).
 pub fn lower(cx: &Cx, e: &Expr<'_>) -> Result<Sexp, NeedGc> {
+    lower_known(cx, e, cx.locale().utf8)
+}
+
+/// [`lower`] of a parse whose `known_to_be_utf8` is `known` (GNU R's
+/// mkString2 marks a string without escapes UTF-8 when the parse is known
+/// to be UTF-8, and leaves it native otherwise).
+pub fn lower_known(cx: &Cx, e: &Expr<'_>, known: bool) -> Result<Sexp, NeedGc> {
     let nil = cx.nil().sexp();
     Ok(match *e {
-        Expr::Const(c, _) => constant(cx, c)?,
+        Expr::Const(c, _) => constant(cx, c, known)?,
         Expr::Sym(name, _) => cx.install(name.as_bytes())?.as_ref().sexp(),
         Expr::Placeholder(_) => cx.install(b"_")?.as_ref().sexp(),
         Expr::Call { fun, args, .. } => {
@@ -45,7 +52,7 @@ pub fn lower(cx: &Cx, e: &Expr<'_>) -> Result<Sexp, NeedGc> {
             let mut list = nil;
             for a in args.iter().rev() {
                 let v = match &a.value {
-                    Some(v) => lower(cx, v)?,
+                    Some(v) => lower_known(cx, v, known)?,
                     None => cx.missing_arg().sexp(),
                 };
                 let tag = match a.name {
@@ -56,7 +63,7 @@ pub fn lower(cx: &Cx, e: &Expr<'_>) -> Result<Sexp, NeedGc> {
                 // nothing collects under `&Cx`.
                 list = unsafe { cx.alloc_node_raw(LISTSXP, v, list, tag)? };
             }
-            let f = lower(cx, fun)?;
+            let f = lower_known(cx, fun, known)?;
             // SAFETY: as above.
             unsafe { cx.alloc_node_raw(LANGSXP, f, list, nil)? }
         }
@@ -66,14 +73,14 @@ pub fn lower(cx: &Cx, e: &Expr<'_>) -> Result<Sexp, NeedGc> {
             let mut fl = nil;
             for f in formals.iter().rev() {
                 let v = match &f.default {
-                    Some(d) => lower(cx, d)?,
+                    Some(d) => lower_known(cx, d, known)?,
                     None => cx.missing_arg().sexp(),
                 };
                 let tag = cx.install(f.name.as_bytes())?.as_ref().sexp();
                 // SAFETY: as above.
                 fl = unsafe { cx.alloc_node_raw(LISTSXP, v, fl, tag)? };
             }
-            let b = lower(cx, body)?;
+            let b = lower_known(cx, body, known)?;
             let function = cx.install(b"function")?.as_ref().sexp();
             // SAFETY: as above.
             unsafe {
@@ -87,7 +94,7 @@ pub fn lower(cx: &Cx, e: &Expr<'_>) -> Result<Sexp, NeedGc> {
 }
 
 /// A parsed constant.
-fn constant(cx: &Cx, c: Const<'_>) -> Result<Sexp, NeedGc> {
+fn constant(cx: &Cx, c: Const<'_>, known: bool) -> Result<Sexp, NeedGc> {
     const NA_INT: i32 = i32::MIN;
     Ok(match c {
         Const::Null => cx.nil().sexp(),
@@ -107,20 +114,21 @@ fn constant(cx: &Cx, c: Const<'_>) -> Result<Sexp, NeedGc> {
             .finish()
             .as_ref()
             .sexp(),
-        Const::Str(s) => string(cx, s, None)?,
-        Const::StrNative(b) => string(cx, Some(b), Some(Encoding::Native))?,
-        Const::StrUtf8(b) => string(cx, Some(b), Some(Encoding::Utf8))?,
+        Const::Str(s) => string(cx, s, None, known)?,
+        Const::StrNative(b) => string(cx, Some(b), Some(Encoding::Native), known)?,
+        Const::StrUtf8(b) => string(cx, Some(b), Some(Encoding::Utf8), known)?,
     })
 }
 
 /// A character vector of one string (NA for None). A string with no
-/// declared encoding is native when ASCII and UTF-8 otherwise (a UTF-8
-/// session, `known_to_be_utf8`).
-fn string(cx: &Cx, b: Option<&[u8]>, enc: Option<Encoding>) -> Result<Sexp, NeedGc> {
+/// declared encoding is UTF-8 when it is not ASCII and the parse is
+/// `known` to be UTF-8, native otherwise.
+// R: gram.y:mkString2
+fn string(cx: &Cx, b: Option<&[u8]>, enc: Option<Encoding>, known: bool) -> Result<Sexp, NeedGc> {
     let c = match b {
         None => cx.na_string(),
         Some(b) => {
-            let enc = enc.unwrap_or(if b.is_ascii() { Encoding::Native } else { Encoding::Utf8 });
+            let enc = enc.unwrap_or(if b.is_ascii() || !known { Encoding::Native } else { Encoding::Utf8 });
             cx.mk_char(b, enc)?
         }
     };

@@ -277,8 +277,40 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
         return 2;
     }
 
+    // setup_Rmainloop's setlocale(<category>, "") calls and R_check_locale:
+    // the isolate's locale is the environment's (the process's stays "C")
+    let env_loc = robigo_rtcore::clib::env_locale();
+    let utf8 = if env_loc.codeset.eq_ignore_ascii_case(b"UTF-8") {
+        true
+    } else if env_loc.codeset == b"ANSI_X3.4-1968" {
+        false
+    } else {
+        eprintln!(
+            "robigo-rt: a locale whose codeset is '{}' is not implemented yet",
+            String::from_utf8_lossy(&env_loc.codeset)
+        );
+        return 2;
+    };
     let mut iso = OwnedIsolate::new();
+    // The process environment is this isolate's to write (Sys.setenv,
+    // Sys.unsetenv), as it is GNU R's.
+    // SAFETY: EnvWrites::assume's contract holds for this binary. It runs
+    // this one isolate, on the main thread, and starts no threads of its
+    // own (the rt crates spawn none), so every write happens on that
+    // thread, and so do its own C readers of the environment outside clib,
+    // which are therefore sequential with the writes: RC_fopen's `fopen`
+    // with a `ccs=` mode reads GCONV_PATH (rtapi sysutils.rs); `dlerror`
+    // reads LANGUAGE through gettext, and `dlopen`, `dlclose` and `dlsym`
+    // run a library's constructors, destructors and IFUNC resolvers (rtapi
+    // rdynload.rs). On a glibc older than 2.41 it also assumes, as the
+    // contract asks, that no thread started by loaded native code reads the
+    // environment while this isolate may write: GNU R's rule that R's API
+    // belongs to the one R thread does not cover such threads, so this is
+    // an assumption about the packages it loads, not a consequence.
+    #[allow(unsafe_code)]
+    iso.grant_env_writes(unsafe { robigo_rtcore::clib::EnvWrites::assume() });
     let cx = iso.cx();
+    cx.set_locale(robigo_rtcore::Locale { utf8, collate_c: env_loc.collate_c });
     // R_NoEcho before InitOptions, whose `echo` is its negation
     cx.set_no_echo(!echo);
     robigo_rt::install(cx);
@@ -318,6 +350,20 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
         if let Err(e) = robigo_rt::base::load(cx, &dir) {
             eprintln!("robigo-rt: loading base: {e}");
             return 2;
+        }
+    }
+    // the setlocale failures setup_Rmainloop deferred, as warnings at its
+    // end (quiet when neither LANG nor LC_ALL is set and not empty), then
+    // "During startup - " and the warnings
+    // R: main.c:setup_Rmainloop
+    let set = |n: &str| std::env::var_os(n).is_some_and(|v| !v.is_empty());
+    if (set("LANG") || set("LC_ALL")) && !env_loc.failed.is_empty() {
+        for c in &env_loc.failed {
+            let _ = cx.warning(&format!("Setting {c} failed, using \"C\"\n"));
+        }
+        if !cx.collected_warnings().is_empty() {
+            cx.reprintf(b"During startup - ");
+            robigo_rt::repl::print_warnings(cx);
         }
     }
     // the isolate's console is the process's stdout and stderr
