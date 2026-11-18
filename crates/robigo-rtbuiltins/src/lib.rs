@@ -52,6 +52,7 @@ pub mod math;
 pub mod names;
 pub mod options;
 pub mod paste;
+pub mod raw;
 pub mod registry;
 pub mod relop;
 pub mod rng;

@@ -191,12 +191,12 @@ enum AttrType {
     StrucNmsA,
 }
 
-fn sym_name<'g>(x: Ref<'g>) -> Char<'g> {
-    x.as_sym().expect("robigo: a symbol").name()
+fn sym_name<'g>(cx: &'g Cx, x: Ref<'g>) -> Char<'g> {
+    x.as_sym().expect("robigo: a symbol").name(cx)
 }
 
 fn sym_is(x: Ref<'_>, name: &[u8]) -> bool {
-    x.as_sym().is_some_and(|s| s.name().bytes() == name)
+    x.as_sym().is_some_and(|s| s.name_bytes() == name)
 }
 
 /// `isValidName` of a native string.
@@ -208,7 +208,7 @@ fn is_valid_name(b: &[u8]) -> bool {
 // R: Rinlinedfuns.h:isUserBinop
 fn is_user_binop(s: Ref<'_>) -> bool {
     s.as_sym().is_some_and(|s| {
-        let b = s.name().bytes();
+        let b = s.name_bytes();
         b.len() >= 2 && b[0] == b'%' && b[b.len() - 1] == b'%'
     })
 }
@@ -234,7 +234,7 @@ fn sym_prim(cx: &Cx, op: Ref<'_>) -> Option<(PpInfo, bool)> {
             _ => None,
         },
         robigo_rtcore::Lookup::Unbound => {
-            let name = std::str::from_utf8(sym.name().bytes()).ok()?;
+            let name = std::str::from_utf8(sym.name_bytes()).ok()?;
             let info = pp_info(name);
             (info.kind != PpKind::Funcall).then_some((info, name == "["))
         }
@@ -368,7 +368,7 @@ impl<'g> Names<'g> {
                 let t = c.tag();
                 if let Some(s) = t.as_sym() {
                     any = true;
-                    v.push(s.name());
+                    v.push(s.name(cx));
                 } else {
                     v.push(cx.blank_string());
                 }
@@ -543,7 +543,7 @@ impl<'g> State<'g> {
                 continue;
             }
             self.print(b", ");
-            let n = a.tag.name().bytes();
+            let n = a.tag.name_bytes();
             match n {
                 b"dim" | b"dimnames" | b"names" | b"tsp" | b"levels" => self.print(n),
                 _ => {
@@ -587,10 +587,15 @@ impl<'g> State<'g> {
         if s.is_s4() {
             return Err("robigo: deparse of an S4 object is not implemented yet".into());
         }
+        // a package class's length and elements are its C methods' (M5), and
+        // so are its names' or dimnames' when they are one
+        if crate::print::reads_package_altrep(s) {
+            return Err("robigo: deparse of a package ALTREP vector is not implemented yet".into());
+        }
         match s.sexptype() {
             NILSXP => self.print(b"NULL"),
             SYMSXP => {
-                let name = sym_name(s);
+                let name = sym_name(self.cx, s);
                 let doquote = d_opts_in & QUOTEEXPRESSIONS != 0 && !name.bytes().is_empty();
                 let mut attr = AttrType::Simple;
                 if doquote {
@@ -784,7 +789,7 @@ impl<'g> State<'g> {
             let userbinop = prim.is_none() && is_user_binop(op);
             if prim.is_some() || userbinop {
                 let s = s0.as_cons().unwrap().cdr();
-                let opname = sym_name(op).bytes();
+                let opname = sym_name(self.cx, op).bytes();
                 let mut fop = if userbinop {
                     if Names::get(cx, s).is_none() {
                         // not quite right for spacing, but can't be unary
@@ -919,7 +924,7 @@ impl<'g> State<'g> {
                         self.print(if single { b"]" as &[u8] } else { b"]]" });
                     }
                     PpKind::Funcall | PpKind::Return => {
-                        let name = sym_name(op);
+                        let name = sym_name(self.cx, op);
                         if self.backtick {
                             self.quotify(name, b'`');
                         } else {
@@ -947,6 +952,8 @@ impl<'g> State<'g> {
                             self.args2buff(car, false, true)?;
                             self.print(b") ");
                             self.deparse2buff(cadr)?;
+                        } else if srcs.is_package_altrep() {
+                            return Err("robigo: deparse of a package ALTREP vector is not implemented yet".into());
                         } else {
                             let v = srcs.as_vector::<Char<'_>>().unwrap();
                             for i in 0..v.len() {
@@ -1109,9 +1116,9 @@ impl<'g> State<'g> {
                 // a closure, or unbound in base: a regular call (`::` and
                 // `:::`, the special cases here, are primitives in 4.6.2)
                 if d_opts_in & S_COMPAT != 0 {
-                    self.quotify(sym_name(op), b'\'');
+                    self.quotify(sym_name(self.cx, op), b'\'');
                 } else {
-                    self.quotify(sym_name(op), b'`');
+                    self.quotify(sym_name(self.cx, op), b'`');
                 }
                 self.print(b"(");
                 self.args2buff(s0.as_cons().unwrap().cdr(), false, false)?;
@@ -1450,7 +1457,7 @@ impl<'g> State<'g> {
             let c = a.as_cons().unwrap();
             let tag = c.tag();
             if tag.sexptype() != NILSXP {
-                let name = sym_name(tag);
+                let name = sym_name(self.cx, tag);
                 if name.bytes() == b"..." {
                     self.print(b"...");
                 } else if self.backtick {

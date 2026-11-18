@@ -156,7 +156,7 @@ pub(crate) fn ascommon<'g, 'r>(
     }
     if t == SYMSXP && ty == STRSXP {
         let mut s = cx.alloc_vector::<Char<'g>>(1)?;
-        s.set(0, u.as_sym().unwrap().name());
+        s.set(0, u.as_sym().unwrap().name(cx));
         return Ok(Built::done(s.finish()).with(Warns::new()));
     }
     if t == SYMSXP && ty == SYMSXP {
@@ -323,7 +323,7 @@ pub fn do_isvector(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
         stype == type_to_char(x).as_bytes()
     };
     // only a names attribute is allowed
-    if ans && attrib::attrs(x).any(|a| a.tag.name().bytes() != b"names") {
+    if ans && attrib::attrs(x).any(|a| a.tag.name_bytes() != b"names") {
         ans = false;
     }
     cx.build_scalar(out, Lgl(ans as i32))
@@ -444,13 +444,26 @@ fn cars(x: Ref<'_>) -> Vec<Ref<'_>> {
 
 /// GNU R's `xlength(x)`: a vector's length, a pairlist's or call's number
 /// of cells, an environment's number of bindings is not needed here (1 for
-/// any other object).
+/// any other object). A package ALTREP vector's length is its class's
+/// Length method, which this cannot run: such an object reads as 1, so a
+/// caller that can meet one uses [`xlength_mut`].
 pub fn xlength(x: Ref<'_>) -> usize {
     match x.sexptype() {
         NILSXP => 0,
         LISTSXP | LANGSXP | DOTSXP => cars(x).len(),
         _ => x.len().unwrap_or(1),
     }
+}
+
+/// [`xlength`] where a package ALTREP vector's length is its class's Length
+/// method (`XLENGTH` and `LENGTH` call `ALTREP_LENGTH`: C that may allocate
+/// or re-enter R).
+// R: Rinlinedfuns.h:xlength, altrep.c:ALTREP_LENGTH
+pub fn xlength_mut(cx: &mut Cx, x: Root<'_>) -> RResult<usize> {
+    if x.bind(cx).is_package_altrep() {
+        return cx.altrep_length(x);
+    }
+    Ok(xlength(x.bind(cx)))
 }
 
 /// `is.nan(x)`.
@@ -523,7 +536,7 @@ pub fn do_any_na(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out
     } else {
         // matchArgs_NR over the formals (x, recursive): exact names, then
         // partial, then by position
-        let names: Vec<Option<Vec<u8>>> = (0..2).map(|i| args.name(cx, i).map(|s| s.name().bytes().to_vec())).collect();
+        let names: Vec<Option<Vec<u8>>> = (0..2).map(|i| args.name(cx, i).map(|s| s.name_bytes().to_vec())).collect();
         let is_rec = |n: &Option<Vec<u8>>| n.as_ref().is_some_and(|n| !n.is_empty() && b"recursive".starts_with(n));
         let is_x = |n: &Option<Vec<u8>>| n.as_deref() == Some(b"x");
         let ri = if is_rec(&names[1]) || is_x(&names[0]) || names[1].is_none() && !is_rec(&names[0]) { 1 } else { 0 };
