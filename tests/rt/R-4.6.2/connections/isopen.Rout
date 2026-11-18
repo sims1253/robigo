@@ -1,0 +1,21 @@
+r TRUE TRUE FALSE TRUE FALSE 
+w TRUE FALSE TRUE FALSE TRUE 
+a TRUE FALSE TRUE FALSE TRUE 
+r+ TRUE TRUE TRUE TRUE TRUE 
+w+ TRUE TRUE TRUE TRUE TRUE 
+rb TRUE TRUE FALSE TRUE FALSE 
+wb TRUE FALSE TRUE FALSE TRUE 
+FALSE FALSE FALSE 
+[1] FALSE
+[1] FALSE
+[1] "unknown 'rw' value"
+[1] "unknown 'rw' value"
+[1] "no error"
+[1] TRUE
+[1] TRUE
+[1] FALSE
+[1] "invalid connection"
+[1] "invalid connection"
+[1] TRUE
+[1] "invalid connection"
+[1] TRUE
