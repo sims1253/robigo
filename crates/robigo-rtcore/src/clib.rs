@@ -127,17 +127,31 @@ pub fn mb_cur_max(utf8: bool) -> Option<usize> {
         return None;
     }
     let loc = if utf8 { c_utf8()? } else { c_locale()? };
-    // SAFETY: `loc` is a live locale object; uselocale makes it this
-    // thread's and returns the one it replaces (null: nothing changed),
-    // which the second call puts back before anything else here reads it.
-    unsafe {
-        let old = libc::uselocale(loc);
-        if old.is_null() {
-            return None;
-        }
-        let n = __ctype_get_mb_cur_max();
-        libc::uselocale(old);
-        Some(n)
+    let _this = ThreadLocale::switch(loc)?;
+    // SAFETY: no arguments; it reads the calling thread's locale, `loc`
+    // until `_this` drops.
+    Some(unsafe { __ctype_get_mb_cur_max() })
+}
+
+/// The calling thread's locale switched to a locale object (`uselocale`)
+/// until the guard drops, which puts back the one it replaced.
+struct ThreadLocale(libc::locale_t);
+
+impl ThreadLocale {
+    /// `None` when the C library refuses the switch (nothing changed).
+    fn switch(loc: libc::locale_t) -> Option<ThreadLocale> {
+        // SAFETY: `loc` is a live locale object (made once, never freed);
+        // uselocale returns the thread's locale it replaces, null on error.
+        let old = unsafe { libc::uselocale(loc) };
+        (!old.is_null()).then_some(ThreadLocale(old))
+    }
+}
+
+impl Drop for ThreadLocale {
+    fn drop(&mut self) {
+        // SAFETY: the locale uselocale returned, live while it is any
+        // thread's (LC_GLOBAL_LOCALE or one of this module's).
+        unsafe { libc::uselocale(self.0) };
     }
 }
 
@@ -193,6 +207,82 @@ pub fn passwd_home(user: Option<&[u8]>) -> Option<Vec<u8>> {
             return Some(std::ffi::CStr::from_ptr(pw.pw_dir).to_bytes().to_vec());
         }
     }
+}
+
+/// What `setlocale(category, "")` would set at GNU R's startup, asked of
+/// the C library without setting it (robigo-rt's locale is the isolate's,
+/// [`crate::Locale`]; the process's stays "C").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnvLocale {
+    /// `nl_langinfo(CODESET)` of the environment's `LC_CTYPE`, or of "C"
+    /// when the C library has no such locale ("ANSI_X3.4-1968" in glibc).
+    pub codeset: Vec<u8>,
+    /// The environment's `LC_COLLATE` is "C" or "POSIX" (or the C library
+    /// has no such locale, so "C" is used).
+    pub collate_c: bool,
+    /// The categories whose locale the C library does not have, in GNU R's
+    /// order (main.c's `setlocale` calls): `LC_CTYPE`, `LC_COLLATE`, ...
+    pub failed: Vec<&'static str>,
+}
+
+/// [`EnvLocale`] of the process's environment.
+// R: main.c:setup_Rmainloop (the setlocale calls), platform.c:R_check_locale
+pub fn env_locale() -> EnvLocale {
+    let cats: [(&'static str, libc::c_int); 7] = [
+        ("LC_CTYPE", libc::LC_CTYPE_MASK),
+        ("LC_COLLATE", libc::LC_COLLATE_MASK),
+        ("LC_TIME", libc::LC_TIME_MASK),
+        ("LC_MESSAGES", libc::LC_MESSAGES_MASK),
+        ("LC_MONETARY", libc::LC_MONETARY_MASK),
+        ("LC_PAPER", libc::LC_PAPER_MASK),
+        ("LC_MEASUREMENT", libc::LC_MEASUREMENT_MASK),
+    ];
+    let mut failed = Vec::new();
+    let mut codeset = None;
+    for (name, mask) in cats {
+        // SAFETY: newlocale makes a new object from a NUL-terminated name
+        // (the environment's, "") and no base; nl_langinfo_l reads it, its
+        // string copied before the object is freed, once.
+        unsafe {
+            let l = libc::newlocale(mask, c"".as_ptr(), std::ptr::null_mut());
+            if l.is_null() {
+                failed.push(name);
+                continue;
+            }
+            if mask == libc::LC_CTYPE_MASK {
+                let p = libc::nl_langinfo_l(libc::CODESET, l);
+                if !p.is_null() {
+                    codeset = Some(std::ffi::CStr::from_ptr(p).to_bytes().to_vec());
+                }
+            }
+            libc::freelocale(l);
+        }
+    }
+    let codeset = codeset.unwrap_or_else(|| {
+        // SAFETY: "C" always exists; read and freed as above.
+        unsafe {
+            let l = libc::newlocale(libc::LC_CTYPE_MASK, c"C".as_ptr(), std::ptr::null_mut());
+            if l.is_null() {
+                b"ANSI_X3.4-1968".to_vec()
+            } else {
+                let p = libc::nl_langinfo_l(libc::CODESET, l);
+                let v = if p.is_null() {
+                    b"ANSI_X3.4-1968".to_vec()
+                } else {
+                    std::ffi::CStr::from_ptr(p).to_bytes().to_vec()
+                };
+                libc::freelocale(l);
+                v
+            }
+        }
+    });
+    // setlocale(LC_COLLATE, "")'s name: LC_ALL, else LC_COLLATE, else LANG
+    // (the first set and not empty), else "C"
+    let get = |n: &str| std::env::var_os(n).filter(|v| !v.is_empty());
+    let collate = get("LC_ALL").or_else(|| get("LC_COLLATE")).or_else(|| get("LANG"));
+    let collate_c =
+        failed.contains(&"LC_COLLATE") || collate.is_none_or(|v| matches!(v.as_encoded_bytes(), b"C" | b"POSIX"));
+    EnvLocale { codeset, collate_c, failed }
 }
 
 unsafe extern "C" {
