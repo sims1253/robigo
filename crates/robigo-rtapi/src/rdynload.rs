@@ -932,6 +932,7 @@ fn full_dll_path(cx: &mut Cx, call: Root<'_>, path: &str) -> RResult<String> {
 /// `.Internal(dyn.load(x, local, now, DLLpath))`.
 // R: Rdynload.c:do_dynload, AddDLL, R_RegisterDLL
 fn do_dynload(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    robigo_rt::prims::check_arity(cx, call, args.len(), "dyn.load", 4, true)?;
     let Some(x) = string1(cx, args.get(cx, 0)) else {
         return Err(cx.error("character argument expected"));
     };
@@ -1121,6 +1122,7 @@ fn delete_dll(cx: &mut Cx, path: &str) -> RResult<bool> {
 /// `.Internal(dyn.unload(x))`.
 // R: Rdynload.c:do_dynunload
 fn do_dynunload(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    robigo_rt::prims::check_arity(cx, call, args.len(), "dyn.unload", 1, true)?;
     let Some(x) = string1(cx, args.get(cx, 0)) else {
         return Err(cx.error("character argument expected"));
     };
