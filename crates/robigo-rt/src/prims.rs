@@ -155,6 +155,7 @@ static RT_PRIMS: &[PrimDef] = &[
     special_fn("@", crate::specials::do_at, 0, 2),
     special_fn("@<-", crate::specials::do_slot_gets, 0, 3),
     // eval.c
+    special_fn("withVisible", crate::eval::do_with_visible, 10, 1),
     special_fn("forceAndCall", crate::apply::do_force_and_call, 0, -1),
     // arithmetic.c
     special_fn("log", crate::specials::do_log, 0, -1),

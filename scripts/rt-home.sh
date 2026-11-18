@@ -13,6 +13,13 @@
 #   library/PKG/DESCRIPTION   DESCRIPTION.in with @VERSION@ (config.status)
 #   library/PKG/NAMESPACE     the package's NAMESPACE
 #   library/PKG/R/PKG         mkR1/mkRbase's all.R, for compiler and tools
+#   share/                    share/Makefile.in's install-sources: R/*.R,
+#                             bibliographies/*.R, dictionaries/*.txt,
+#                             encodings/*, java/*, licenses/*, make/*.mk,
+#                             Rd/macros/*, sh/*.sh, texmf/bibtex/{bib,bst}/*,
+#                             texmf/tex/latex/* (no zoneinfo: the oracle's
+#                             configure uses the system's; install-sources2's
+#                             .rds files are made by R, L4's build)
 #   include/Rmath.h           src/include/Makefile's Rmath.h: config.status's
 #                             Rmath.h0 from Rmath.h0.in (@PACKAGE_VERSION@, and
 #                             @RMATH_HAVE_WORKING_LOG1P@ as configure finds it
@@ -73,6 +80,20 @@ for pkg in compiler tools; do
   cp "$lib/$pkg/NAMESPACE" "$tmp/library/$pkg/NAMESPACE"
   # shellcheck disable=SC2046
   (cd "$lib/$pkg" && LC_COLLATE=C cat $(LC_COLLATE=C ls R/*.R)) > "$tmp/library/$pkg/R/$pkg"
+done
+# R: share/Makefile.in install-sources: each glob in its order, expanded once
+# against the tarball's share/ (installdirs makes each one's directory)
+share_globs=('R/*.R' 'bibliographies/*.R' 'dictionaries/*.txt' 'encodings/*' 'java/*' 'licenses/*'
+  'make/*.mk' 'Rd/macros/*' 'sh/*.sh' 'texmf/bibtex/bib/*' 'texmf/bibtex/bst/*' 'texmf/tex/latex/*')
+for g in "${share_globs[@]}"; do
+  mkdir -p "$tmp/share/${g%/*}"
+  # shellcheck disable=SC2206 # the glob, as the Makefile's `for f in $(srcdir)/$g`
+  files=("$src"/share/$g)
+  for f in "${files[@]}"; do
+    # (an unmatched glob stays itself, which is no file)
+    [ -f "$f" ] || { echo "rt-home.sh: share/$g: '${f#"$src"/}' is not a regular file of the tarball" >&2; exit 1; }
+  done
+  cp -p "${files[@]}" "$tmp/share/${g%/*}/"
 done
 mkdir -p "$tmp/include"
 sed -e "s/@PACKAGE_VERSION@/$version/" -e "s/@RMATH_HAVE_WORKING_LOG1P@/# define HAVE_WORKING_LOG1P 1/" \
