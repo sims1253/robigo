@@ -333,7 +333,9 @@ primitive class
 primitive class<-
 primitive cumsum
 primitive dim
+primitive dim<-
 primitive dimnames
+primitive dimnames<-
 primitive emptyenv
 primitive environment<-
 primitive exp
