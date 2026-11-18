@@ -1261,8 +1261,8 @@ impl<'g> Comp<'g> {
                 && unsafe {
                     ic.typ() == LANGSXP
                         && ic.car().typ() == SYMSXP
-                        && matches!(ic.car().tag().typ(), BUILTINSXP | SPECIALSXP)
-                        && st.defs[crate::prims::offset(ic.car().tag())].eval % 10 == 1
+                        && matches!(self.cx.internal_raw(ic.car()).typ(), BUILTINSXP | SPECIALSXP)
+                        && st.defs[crate::prims::offset(self.cx.internal_raw(ic.car()))].eval % 10 == 1
                 }
                 // SAFETY: as above.
                 && unsafe { cenv::elements(self.cx, ic, true) }.iter().any(|&(a, _)| a == dots || a == missing)
