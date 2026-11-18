@@ -871,7 +871,7 @@ fn do_get_symbol_info(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_
         let pkg = String::from_utf8_lossy(&pkg).into_owned();
         find_symbol_in(&dlls(cx).list.borrow(), &name, &pkg, &mut symbol)
     } else if let View::ExtPtr(e) = spackage.view()
-        && e.tag().as_sym().is_some_and(|t| t.name().bytes() == b"DLLInfo")
+        && e.tag().as_sym().is_some_and(|t| t.name_bytes() == b"DLLInfo")
     {
         let addr = e.addr();
         let info = dll_reference(cx, addr)?;
@@ -932,6 +932,7 @@ fn full_dll_path(cx: &mut Cx, call: Root<'_>, path: &str) -> RResult<String> {
 /// `.Internal(dyn.load(x, local, now, DLLpath))`.
 // R: Rdynload.c:do_dynload, AddDLL, R_RegisterDLL
 fn do_dynload(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    robigo_rt::prims::check_arity(cx, call, args.len(), "dyn.load", 4, true)?;
     let Some(x) = string1(cx, args.get(cx, 0)) else {
         return Err(cx.error("character argument expected"));
     };
@@ -1121,6 +1122,7 @@ fn delete_dll(cx: &mut Cx, path: &str) -> RResult<bool> {
 /// `.Internal(dyn.unload(x))`.
 // R: Rdynload.c:do_dynunload
 fn do_dynunload(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    robigo_rt::prims::check_arity(cx, call, args.len(), "dyn.unload", 1, true)?;
     let Some(x) = string1(cx, args.get(cx, 0)) else {
         return Err(cx.error("character argument expected"));
     };
