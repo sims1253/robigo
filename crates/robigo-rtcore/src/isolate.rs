@@ -393,7 +393,9 @@ impl Isolate {
         }
         // the shared constants are every isolate's (H5): R_NilValue, the
         // commonest object checked, by its address, the others by their
-        // heap id (no call, which would cost every caller registers)
+        // heap id (no call, which would cost every caller registers). A
+        // symbol is the process's, so its identity is every isolate's; its
+        // name is the isolate's only once it took it (`Cx::adopt_symbol`).
         x == self.nil || h.is_shared()
     }
 

@@ -232,7 +232,7 @@ fn scalar_results_and_calls() {
         let c = c.bind(cx);
         assert_eq!(c.sexptype(), LANGSXP);
         let cell = c.as_cons().unwrap();
-        assert_eq!(cell.car().as_sym().unwrap().name().bytes(), b"as.character");
+        assert_eq!(cell.car().as_sym().unwrap().name_bytes(), b"as.character");
         let a1 = cell.cdr().as_cons().unwrap();
         assert_eq!(cell.cdr().sexptype(), LISTSXP);
         assert_eq!(a1.car().as_scalar::<Char<'_>>().unwrap().bytes(), b"x");
@@ -262,7 +262,7 @@ fn pre_installed_symbols_are_the_installed_ones() {
         (RSym::Dots, b"..."),
         (RSym::AsCharacter, b"as.character"),
     ] {
-        assert_eq!(cx.sym(s).name().bytes(), name);
+        assert_eq!(cx.sym(s).name_bytes(), name);
         assert_eq!(s.name(), name);
         assert!(cx.sym(s) == cx.install(name).unwrap(), "{s:?}");
     }

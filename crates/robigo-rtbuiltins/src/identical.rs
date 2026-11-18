@@ -112,7 +112,7 @@ pub fn compute_identical(cx: &Cx, x: Ref<'_>, y: Ref<'_>, flags: u32) -> Result<
     let attr_as_set = flags & IDENT_ATTR_BY_ORDER == 0;
     let ignore_srcref = flags & IDENT_USE_SRCREF == 0;
     // a closure's attributes without "srcref"
-    let keep = |a: &Attr<'_>| !(ignore_srcref && t == CLOSXP && a.tag.name().bytes() == b"srcref");
+    let keep = |a: &Attr<'_>| !(ignore_srcref && t == CLOSXP && a.tag.name_bytes() == b"srcref");
     let ax: Vec<Attr<'_>> = attrs(x).filter(keep).collect();
     let ay: Vec<Attr<'_>> = attrs(y).filter(keep).collect();
     if !ax.is_empty() || !ay.is_empty() {
@@ -140,8 +140,8 @@ pub fn compute_identical(cx: &Cx, x: Ref<'_>, y: Ref<'_>, flags: u32) -> Result<
                 return Ok(false);
             }
             for a in &ax {
-                let tx = a.tag.name().bytes();
-                let Some(b) = ay.iter().find(|b| b.tag.name().bytes() == tx) else { return Ok(false) };
+                let tx = a.tag.name_bytes();
+                let Some(b) = ay.iter().find(|b| b.tag.name_bytes() == tx) else { return Ok(false) };
                 let same = if tx == b"row.names" {
                     row_names_identical(cx, a.value, b.value, flags)?
                 } else {
@@ -203,7 +203,7 @@ pub fn compute_identical(cx: &Cx, x: Ref<'_>, y: Ref<'_>, flags: u32) -> Result<
                 }
                 // PRINTNAME(TAG(.)): R_NilValue's is NULL... both NULL
                 // compare equal, a symbol's name by Seql
-                let (tc, td) = (c.tag().as_sym().map(|s| s.name()), d.tag().as_sym().map(|s| s.name()));
+                let (tc, td) = (c.tag().as_sym().map(|s| s.name(cx)), d.tag().as_sym().map(|s| s.name(cx)));
                 match (tc, td) {
                     (None, None) => {}
                     (Some(a), Some(b)) => {
@@ -261,12 +261,12 @@ pub fn compute_identical(cx: &Cx, x: Ref<'_>, y: Ref<'_>, flags: u32) -> Result<
 /// One step of the in-order attribute walk.
 fn attr_pair(cx: &Cx, x: Ref<'_>, y: Ref<'_>, a: &Attr<'_>, b: &Attr<'_>, flags: u32) -> Result<bool, NotYet> {
     let _ = (x, y);
-    let same = if a.tag.name().bytes() == b"row.names" {
+    let same = if a.tag.name_bytes() == b"row.names" {
         row_names_identical(cx, a.value, b.value, flags)?
     } else {
         compute_identical(cx, a.value, b.value, flags)?
     };
-    Ok(same && seql(cx, a.tag.name(), b.tag.name()))
+    Ok(same && seql(cx, a.tag.name(cx), b.tag.name(cx)))
 }
 
 /// `asFlag(x, name)`: a logical that is not NA.
