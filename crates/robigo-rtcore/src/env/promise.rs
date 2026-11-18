@@ -230,6 +230,28 @@ unsafe fn set_prvalue(p: Sexp, v: Sexp, nil: Sexp) {
     unsafe { p.set_promise_value(v) }
 }
 
+/// `bytecodeExpr(e)`: byte code's source expression (its first constant,
+/// `nil` with none), anything else itself. A promise compiled code made
+/// holds byte code as its code (`MAKEPROM`'s PRCODE); what reads the
+/// promise's expression (GNU R's `PREXPR`, `R_PromiseExpr`) reads it
+/// through this, what forces it runs the code.
+///
+/// # Safety
+/// `e` is live.
+// R: eval.c:bytecodeExpr, eval.c:R_PromiseExpr
+#[inline]
+pub unsafe fn bytecode_expr(e: Sexp, nil: Sexp) -> Sexp {
+    // SAFETY: the caller's contract: a BCODESXP's CDR is its constants
+    // (a VECSXP), live.
+    unsafe {
+        if e.typ() != robigo_heap::types::BCODESXP {
+            return e;
+        }
+        let k = e.cdr();
+        if k.std_len() > 0 { *(k.std_data() as *const Sexp) } else { nil }
+    }
+}
+
 /// GNU R's `clearPromise(p)` (eval.c:2085): a tagged promise is left as it
 /// is; otherwise its value, environment and code are released.
 ///
