@@ -10,10 +10,11 @@ equal (`out` and `status`, which decide `wrong`), and the instruction
 counts its ratio is reported against. The answer does not depend on the
 CPU, but the counts do (glibc picks its routines by CPU), so CI keeps these
 records in a cache keyed by the oracle image, the CPU signature, the libc6
-and valgrind packages and the measurement's inputs. Main's run saves every
-record it made, failures included, so a pull request sees exactly the
-outcome the old job inherited from main's artifact (GNU R fails on a few
-benchmarks on every run: flexclust, flexclust_no_s4, volcano).
+and valgrind packages and the measurement's inputs. Main's run saves its
+usable records and the failures benchmarks/gnur-known-failures.txt names
+(GNU R fails on flexclust, flexclust_no_s4 and volcano on every run, which
+the old job inherited from main's artifact too); another failure is left
+out, so a pull request measures that benchmark itself.
 
 `fill` makes the records complete for the selected benchmarks. It keeps
 every cached record (main's, its failures included), measures GNU R for the
