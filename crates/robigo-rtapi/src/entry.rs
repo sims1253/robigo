@@ -108,7 +108,7 @@ macro_rules! plain_args {
         })*
     };
 }
-plain_args!(true => c_int, c_uint, isize, usize, *const c_char, *mut c_void, *const c_void, *mut c_int, *mut Sexp);
+plain_args!(true => c_int, c_uint, isize, usize, *const c_char, *mut c_void, *const c_void, *mut c_int, *mut Sexp, *mut robigo_rt::rconn::RconnC);
 plain_args!(false => f64);
 
 // SAFETY: a function pointer, one integer register.
@@ -170,7 +170,7 @@ macro_rules! plain_ret {
         })*
     };
 }
-plain_ret!((), c_int, c_uint, isize, usize, f64, *mut c_void, *const c_char);
+plain_ret!((), bool, c_int, c_uint, isize, usize, f64, *mut c_void, *const c_char);
 
 /// The body of every machine entry: close the segment at `lo`, run `f` in a
 /// root scope with a capability of the thread's isolate, reopen, and return
