@@ -72,10 +72,24 @@ pub fn do_load_info_from_conn2(
     cx: &mut Cx,
     call: Root<'_>,
     args: Args<'_>,
-    _env: Root<'_>,
+    env: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
     crate::prims::check_arity(cx, call, args.len(), "loadInfoFromConn2", 1, true)?;
+    load_from_conn2(cx, args, env, out, true)
+}
+
+/// `loadFromConn2(con, envir, verbose)`: the variables a saved file holds,
+/// bound in `envir`; their names.
+// R: saveload.c:do_loadFromConn2 (PRIMVAL 0)
+pub fn do_load_from_conn2(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "loadFromConn2", 3, true)?;
+    load_from_conn2(cx, args, env, out, false)
+}
+
+/// `do_loadFromConn2`'s two ops: the header (`info`) or the variables.
+// R: saveload.c:do_loadFromConn2
+fn load_from_conn2(cx: &mut Cx, args: Args<'_>, _env: Root<'_>, out: Out<'_>, info: bool) -> RResult<()> {
     let n = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(0))?;
     let wasopen = connections::flags(cx, n)?.isopen;
     if !wasopen && !connections::open_with_mode(cx, n, "rb")? {
@@ -90,6 +104,13 @@ pub fn do_load_info_from_conn2(
         if f.text {
             return Err(cx.error("can only load() from a binary connection"));
         }
+        if !info {
+            match args.get(cx, 1).sexptype() {
+                NILSXP => return Err(cx.error("use of NULL environment is defunct")),
+                ENVSXP => {}
+                _ => return Err(cx.error("invalid 'envir' argument")),
+            }
+        }
         // check magic
         let mut buf = [0u8; 5];
         let count = connections::read_upto(cx, n, &mut buf)?;
@@ -102,12 +123,105 @@ pub fn do_load_info_from_conn2(
             );
         }
         let st = super::conn_in_stream(cx, n)?;
-        read::serialize_info(cx, st, out)
+        if info {
+            return read::serialize_info(cx, st, out);
+        }
+        // R_InitReadItemDepth = -verbose: a depth below 0 prints the tags read
+        let verbose = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(2))?;
+        if verbose != 0 {
+            return Err(cx.error("robigo: load(verbose = TRUE) is not implemented yet"));
+        }
+        cx.scope(|cx, s| {
+            let o = s.out(cx);
+            let ans = o.root();
+            read::unserialize(cx, st, None, o)?;
+            restore_to_env(cx, ans, args.root(1), out)
+        })
     })();
     if !wasopen {
         connections::close_only(cx, n)?;
     }
     r
+}
+
+/// `RestoreToEnv(ans, aenv)`: the elements of the named list or pairlist
+/// `ans` bound in `aenv`; their names.
+// R: saveload.c:RestoreToEnv
+fn restore_to_env(cx: &mut Cx, ans: Root<'_>, aenv: Root<'_>, out: Out<'_>) -> RResult<()> {
+    /// `R_seemsOldStyleS4Object(obj)`: an object, not S4, whose class is
+    /// one string with a "package" attribute.
+    // R: objects.c:R_seemsOldStyleS4Object
+    fn old_style_s4(x: Ref<'_>) -> bool {
+        use robigo_rtbuiltins::attrib::get_value;
+        if !x.is_object() || x.is_s4() {
+            return false;
+        }
+        get_value(x, b"class").is_some_and(|k| k.len() == Some(1) && get_value(k, b"package").is_some())
+    }
+    let old_style = |cx: &mut Cx, obj: Ref<'_>, name: &[u8]| -> RResult<()> {
+        if old_style_s4(obj) {
+            let n = String::from_utf8_lossy(name).into_owned();
+            cx.warning_call(None, &format!("'{n}' looks like a pre-2.4.0 S4 object: please recreate it"))?;
+        }
+        Ok(())
+    };
+    // allow ans to be a vector-style list
+    if ans.bind(cx).sexptype() == VECSXP {
+        return cx.scope(|cx, s| {
+            let names = s.root_opt(cx, robigo_rtbuiltins::attrib::get_value(ans.bind(cx), b"names"));
+            let len = ans.bind(cx).len().unwrap_or(0);
+            if names.bind(cx).sexptype() != STRSXP || names.bind(cx).len() != Some(len) {
+                return Err(cx.error("not a valid named list"));
+            }
+            for i in 0..len {
+                cx.scope(|cx, s| {
+                    let sym = robigo_rtbuiltins::envir::install_tr(cx, s, names, i)?;
+                    let obj = s.root(cx, ans.bind(cx).as_vector::<Ref<'_>>().unwrap().get(i));
+                    cx.define_var(sym, obj, aenv)?;
+                    let name = names.bind(cx).as_vector::<Char<'_>>().unwrap().get(i).bytes().to_vec();
+                    old_style(cx, obj.bind(cx), &name)
+                })?;
+            }
+            out.set(cx, names.bind(cx));
+            Ok(())
+        });
+    }
+    if !matches!(ans.bind(cx).sexptype(), NILSXP | LISTSXP) {
+        return Err(cx.error("loaded data is not in pair list form"));
+    }
+    let mut cells = Vec::new();
+    let mut a = ans.bind(cx);
+    while let Some(c) = a.as_cons() {
+        let Some(t) = c.tag().as_sym() else {
+            return Err(cx.error("robigo: load() of a pairlist with an untagged element is not implemented yet"));
+        };
+        cells.push(t.name(cx).bytes().to_vec());
+        a = c.cdr();
+    }
+    cx.build(out, |cx| {
+        let mut v = cx.alloc_vector::<Char<'_>>(cells.len())?;
+        let mut a = ans.bind(cx);
+        for i in 0..cells.len() {
+            let c = a.as_cons().unwrap();
+            v.set(i, c.tag().as_sym().unwrap().name(cx));
+            a = c.cdr();
+        }
+        Ok(v.finish().into())
+    })?;
+    cx.scope(|cx, s| {
+        let mut cell = ans;
+        for name in &cells {
+            let (tag, car, next) = {
+                let c = cell.bind(cx).as_cons().unwrap();
+                (c.tag(), c.car(), c.cdr())
+            };
+            let (tag, car) = (s.root(cx, tag), s.root(cx, car));
+            cx.define_var(tag, car, aenv)?;
+            old_style(cx, car.bind(cx), name)?;
+            cell = s.root(cx, next);
+        }
+        Ok(())
+    })
 }
 
 /// `isValidStringF(x)`: a character vector whose first string is not
