@@ -865,7 +865,7 @@ pub fn do_onexit(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out:
 // R: coerce.c:substitute
 fn substitute<'g>(cx: &'g Cx, lang: Ref<'g>, found: &Found<'g>) -> Result<Ref<'g>, robigo_rtcore::NeedGc> {
     match lang.sexptype() {
-        PROMSXP => substitute(cx, prexpr(lang), found),
+        PROMSXP => substitute(cx, prexpr(cx, lang), found),
         SYMSXP => {
             if let Some(f) = found
                 && let Some(&(_, t)) = f.iter().find(|(s, _)| *s == lang.sexp())
@@ -874,7 +874,7 @@ fn substitute<'g>(cx: &'g Cx, lang: Ref<'g>, found: &Found<'g>) -> Result<Ref<'g
                 if t.sexptype() == PROMSXP {
                     let mut t = t;
                     while t.sexptype() == PROMSXP {
-                        t = prexpr(t);
+                        t = prexpr(cx, t);
                     }
                     return Ok(t);
                 }
@@ -889,10 +889,12 @@ fn substitute<'g>(cx: &'g Cx, lang: Ref<'g>, found: &Found<'g>) -> Result<Ref<'g
     }
 }
 
-/// A promise's expression (`PREXPR`).
-fn prexpr<'g>(p: Ref<'g>) -> Ref<'g> {
+/// A promise's expression (`PREXPR`, `R_PromiseExpr`): its code, or for
+/// byte code (a promise compiled code made) the code's first constant.
+// R: eval.c:R_PromiseExpr
+fn prexpr<'g>(cx: &'g Cx, p: Ref<'g>) -> Ref<'g> {
     match p.view() {
-        robigo_rtcore::View::Promise(pr) => pr.code(),
+        robigo_rtcore::View::Promise(pr) => robigo_rtbuiltins::bytecode::expr(cx, pr.code()),
         _ => unreachable!(),
     }
 }
@@ -947,18 +949,18 @@ fn substitute_list<'g>(cx: &'g Cx, el: Ref<'g>, found: &Found<'g>) -> Result<Ref
 }
 
 /// The symbols of `e` (and `...`), each once, for the lookups.
-fn symbols_of(e: Ref<'_>, acc: &mut Vec<Sexp>) {
+fn symbols_of<'g>(cx: &'g Cx, e: Ref<'g>, acc: &mut Vec<Sexp>) {
     match e.sexptype() {
         SYMSXP => {
             if !acc.contains(&e.sexp()) {
                 acc.push(e.sexp());
             }
         }
-        PROMSXP => symbols_of(prexpr(e), acc),
+        PROMSXP => symbols_of(cx, prexpr(cx, e), acc),
         LANGSXP | LISTSXP => {
             let mut c = e.as_cons();
             while let Some(cell) = c {
-                symbols_of(cell.car(), acc);
+                symbols_of(cx, cell.car(), acc);
                 c = cell.cdr().as_cons();
             }
         }
@@ -1066,7 +1068,7 @@ pub fn do_substitute(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, 
         // bindings (promises)
         let syms = {
             let mut v = Vec::new();
-            symbols_of(expr.bind(cx), &mut v);
+            symbols_of(cx, expr.bind(cx), &mut v);
             v
         };
         let dots = prims::state(cx).syms.dots;

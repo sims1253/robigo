@@ -160,6 +160,7 @@ fn check(b: &Built) -> Result<(), Malformed> {
             Op::Guard => (i.a == 0 || reg(i.a)) && k(i.e) && k(i.c) && tgt(i.target()),
             Op::GetFun => reg(i.a) && k(i.e) && k(i.c),
             Op::Call => reg(i.a) && reg(i.b) && k(i.e) && (i.c < b.nsites || i.c == crate::ir::NO_SITE),
+            Op::CallCodes => reg(i.a) && reg(i.b) && k(i.e) && k(i.f) && (i.c < b.nsites || i.c == crate::ir::NO_SITE),
             Op::CallBuiltin | Op::Internal => {
                 reg(i.a)
                     && k(i.e)
