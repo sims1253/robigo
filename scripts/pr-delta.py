@@ -103,7 +103,7 @@ def measure(numstat, name_status, patch):
             # a deleted file's lines belong to its old path
             current = line[6:] if line.startswith("+++ b/") else old
             continue
-        if not line[:1] in "+-":
+        if line[:1] not in ("+", "-"):
             continue
         sign, body = line[0], line[1:].strip()
         if current.endswith(".rs") and re.match(r"#\[(tokio::)?test\b", body):

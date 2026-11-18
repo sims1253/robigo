@@ -73,7 +73,7 @@ pub(crate) mod recycle;
 mod restore;
 mod slotapi;
 
-pub use promise::{ArgLoc, BindingType};
+pub use promise::{ArgLoc, BindingType, bytecode_expr};
 pub use slotapi::{Scalar, SlotInit};
 
 use crate::exit::{RError, RResult};
@@ -3387,9 +3387,10 @@ pub enum RawArg {
 /// An argument slot as [`Cx::arg_slot_raw`] reads it.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ArgSlot {
-    /// Not forced yet: its expression (`PRCODE`).
+    /// Not forced yet: its code (`PRCODE`: byte code for a promise of
+    /// compiled code; [`bytecode_expr`] reads its expression).
     Delayed { expr: Sexp },
-    /// Forced: the promise's value and expression.
+    /// Forced: the promise's value and code (`PRCODE`).
     Forced { value: Sexp, expr: Sexp },
     /// The argument's promise object (materialized, or made for an
     /// overwritten argument): what GNU R's argument list holds.
@@ -3404,9 +3405,11 @@ pub enum ArgValue {
     /// An unboxed scalar.
     Scalar,
     /// An unforced argument: its expression and the environment it is
-    /// evaluated in (GNU R's PREXPR and PRENV).
+    /// evaluated in (GNU R's PREXPR and PRENV: byte code's source
+    /// expression for a promise of compiled code).
     Delayed { expr: Sexp, env: Sexp },
-    /// A forced argument: its expression (GNU R's PRENV is R_NilValue).
+    /// A forced argument: its expression (PREXPR; GNU R's PRENV is
+    /// R_NilValue).
     Forced { expr: Sexp },
 }
 
@@ -3474,15 +3477,17 @@ impl Cx {
                     match s.kind() {
                         VALUE | ACTIVE => ArgValue::Obj(s.val()),
                         REAL | INT | LGL => ArgValue::Scalar,
+                        // (PREXPR: a promise of compiled code holds
+                        // byte code)
                         DELAYED => ArgValue::Delayed {
-                            expr: s.aux(),
+                            expr: promise::bytecode_expr(s.aux(), iso.nil),
                             env: if s.has(META_ORIGIN_SELF) {
                                 s.owner
                             } else {
                                 frame::layout::get(s.owner, frame::layout::OFF_CALLER)
                             },
                         },
-                        FORCED => ArgValue::Forced { expr: s.aux() },
+                        FORCED => ArgValue::Forced { expr: promise::bytecode_expr(s.aux(), iso.nil) },
                         k => unreachable!("robigo: a bound slot of kind {k}"),
                     }
                 }

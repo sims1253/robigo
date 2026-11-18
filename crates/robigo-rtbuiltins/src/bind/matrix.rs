@@ -204,6 +204,7 @@ fn plan(cx: &mut Cx, args: &[BindArg<'_>], cbind: bool) -> RResult<Plan> {
             if k >= lenmin && a.label.is_some() {
                 have_this = true;
             }
+            let u = a.value.bind(cx);
             nnames = nnames.max(attrib::names(u).map_or(0, length));
         }
     }

@@ -215,8 +215,9 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
 /// `ROBIGO_BC_CROSSCHECK`: closure `f`'s byte code translated and its
 /// source compiled as the from-source compiler compiles it for the
 /// closure's environment, the two compared ([`crosscheck`]). The
-/// from-source compile goes first, so the argument code that stays on an
-/// expression both share is the translation's. A compile that would force
+/// from-source compile keeps its argument code on the source's expressions,
+/// the translation its own on the promises' byte code (`MAKEPROM`'s
+/// BCODESXPs), so neither replaces the other's. A compile that would force
 /// a lazy binding, or that cmp.R declines, is skipped (reported).
 /// `installed`: base's installed byte code (provenance, as for
 /// [`compile_closure_bc`]).
@@ -342,8 +343,10 @@ pub fn translation_gaps(cx: &mut Cx, f: Root<'_>) -> RResult<Vec<String>> {
 }
 
 /// The code of the byte code `bc` evaluated as itself (`eval(bc, rho)`,
-/// bcEval at the top level): its translation, kept on it (per expression;
-/// V4 makes a promise's code per promise).
+/// bcEval at the top level, or a promise's code, `MAKEPROM`'s BCODESXP):
+/// its translation, kept on it. A translated call's promise code has its
+/// translation already, made with the code it runs in
+/// (`bctrans::promise_code`).
 pub(crate) fn bytecode_code(cx: &mut Cx, bc: Root<'_>) -> RResult<Sexp> {
     // SAFETY: a rooted BCODESXP: its 4th word is R_NilValue or a code
     // object this module stored.
@@ -748,6 +751,7 @@ impl<'g> Comp<'g> {
                 // or PROTECT(e) (a special): the primitive's entry, or a
                 // closure's arguments promised (`newrho` is the body's)
                 Op::Call
+                | Op::CallCodes
                 | Op::CallBuiltin
                 | Op::SpecialFn
                 | Op::ComplexAssign
@@ -1758,7 +1762,7 @@ impl<'g> Comp<'g> {
                 what = w;
             }
             self.precompile_args(place.cdr().cdr())?;
-            ba::make_step(self.cx, kind, place, what, None, origplace, false)
+            ba::make_step(self.cx, kind, place, what, None, origplace, false, None)
         }
     }
 
@@ -1824,7 +1828,7 @@ impl<'g> Comp<'g> {
                 what = w;
             }
             self.precompile_args(place.cdr().cdr())?;
-            ba::make_step(cx, kind, acall, what, Some(vexpr), report, fin)
+            ba::make_step(cx, kind, acall, what, Some(vexpr), report, fin, None)
         }
     }
 
