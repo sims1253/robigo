@@ -180,7 +180,8 @@ unsafe fn walk(cx: &Cx, from: usize, to: usize, inc: bool) {
     debug_assert!(from <= to && to <= st.len());
     // the frame `from` lies in, if any: the nearest head below it
     let mut i = from;
-    if let Some((j, w)) = st[..from].iter().enumerate().rev().find_map(|(j, &s)| head(s).map(|w| (j, w))) {
+    if let Some(j) = st[..from].iter().rposition(|&s| head(s).is_some()) {
+        let w = head(st[j]).unwrap_or(0);
         let (regs, skip) = frame_at(st, j, w);
         if regs.1 > from {
             let r = (regs.0.max(from), regs.1.min(to));
@@ -193,9 +194,11 @@ unsafe fn walk(cx: &Cx, from: usize, to: usize, inc: bool) {
     }
     // then each head in the range, its registers, and the roots between
     while i < to {
-        match st[i..to].iter().enumerate().find_map(|(k, &s)| head(s).map(|w| (i + k, w))) {
+        match st[i..to].iter().position(|&s| head(s).is_some()) {
             None => break,
-            Some((h, w)) => {
+            Some(k) => {
+                let h = i + k;
+                let w = head(st[h]).unwrap_or(0);
                 let (regs, skip) = frame_at(st, h, w);
                 let r = (regs.0, regs.1.min(to));
                 if r.0 < r.1 {
