@@ -548,11 +548,12 @@ pub fn do_encode_string(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<
 
 /// `translateChar(s)` of a string or `NA_STRING` ("NA"), or GNU R's error
 /// for a "bytes" one.
-fn native_bytes(cx: &mut Cx, c: Char<'_>) -> RResult<Vec<u8>> {
-    match to_native(crate::coerce::text(c), cx.locale()) {
-        Ok(b) => Ok(b.into_owned()),
-        Err(_) => Err(cx.error("translating strings with \"bytes\" encoding is not allowed")),
-    }
+fn native_bytes(cx: &mut Cx, x: Root<'_>, i: usize) -> RResult<Vec<u8>> {
+    let r = {
+        let c = x.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
+        to_native(crate::coerce::text(c), cx.locale()).map(|b| b.into_owned())
+    };
+    r.map_err(|_| cx.error("translating strings with \"bytes\" encoding is not allowed"))
 }
 
 /// `iswctype(wc, class)` in the C library's locale (`isalpha` and the like
@@ -728,8 +729,7 @@ pub fn do_make_names(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
     let loc = crate::text::ctype(cx.locale());
     let mut names: Vec<Vec<u8>> = Vec::with_capacity(n);
     for i in 0..n {
-        let c = args.get(cx, 0).as_vector::<Char<'_>>().unwrap().get(i);
-        let this = native_bytes(cx, c)?;
+        let this = native_bytes(cx, args.root(0), i)?;
         // need to prefix names not beginning with alpha or ., as well as .
         // followed by a number
         let need_prefix = if loc.mbcs() && !this.is_empty() {
@@ -831,7 +831,7 @@ pub fn do_tolower<const CODE: i32>(
             continue;
         }
         if !(loc.mbcs() || use_utf8) {
-            let mut xi = native_bytes(cx, c)?;
+            let mut xi = native_bytes(cx, x, i)?;
             for b in xi.iter_mut() {
                 *b = map(*b as u32) as u8;
             }
@@ -851,7 +851,7 @@ pub fn do_tolower<const CODE: i32>(
             }
             ys.push(Cased::Text(cbuf, Encoding::Utf8));
         } else {
-            let xi = native_bytes(cx, c)?;
+            let xi = native_bytes(cx, x, i)?;
             if !loc.mbcs() && !xi.is_ascii() {
                 return Err(not_yet(cx, None, "tolower/toupper of a native non-ASCII string in a single-byte locale"));
             }
@@ -973,8 +973,7 @@ fn chartr_wide_arg(cx: &mut Cx, c: Root<'_>, use_wc: bool, what: &str) -> RResul
         let u = u.map_err(|e| cx.error(&e.to_string()))?;
         return utf8towcs(cx, &u);
     }
-    let ch = c.bind(cx).as_vector::<Char<'_>>().unwrap().get(0);
-    let s = native_bytes(cx, ch)?;
+    let s = native_bytes(cx, c, 0)?;
     if !crate::text::ctype(cx.locale()).mbcs() && !s.is_ascii() {
         return Err(not_yet(cx, None, "chartr() of a native non-ASCII string in a single-byte locale"));
     }
@@ -1067,8 +1066,7 @@ pub fn do_chartr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
             let mut wc = if utf8 {
                 utf8towcs(cx, &bytes)?
             } else {
-                let el = x.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
-                let xi = native_bytes(cx, el)?;
+                let xi = native_bytes(cx, x, i)?;
                 if !mbcs && !xi.is_ascii() {
                     return Err(not_yet(cx, None, "chartr() of a native non-ASCII string in a single-byte locale"));
                 }
@@ -1097,16 +1095,10 @@ pub fn do_chartr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
     } else {
         let bfmt = |c: u32, m: &mut Vec<u8>| m.push(c as u8);
         let mut xtable: [u8; 256] = std::array::from_fn(|i| i as u8);
-        let o = {
-            let c = old.bind(cx).as_vector::<Char<'_>>().unwrap().get(0);
-            native_bytes(cx, c)?
-        };
+        let o = native_bytes(cx, old, 0)?;
         let o: Vec<u32> = o.iter().map(|&b| b as u32).collect();
         let trs_old = tr_build_spec(cx, &o, bfmt)?;
-        let nw = {
-            let c = new.bind(cx).as_vector::<Char<'_>>().unwrap().get(0);
-            native_bytes(cx, c)?
-        };
+        let nw = native_bytes(cx, new, 0)?;
         let nw: Vec<u32> = nw.iter().map(|&b| b as u32).collect();
         let trs_new = tr_build_spec(cx, &nw, bfmt)?;
         let mut newc = tr_chars(&trs_new);
@@ -1117,12 +1109,11 @@ pub fn do_chartr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
             }
         }
         for i in 0..n {
-            let el = x.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
-            if el == cx.na_string() {
+            if x.bind(cx).as_vector::<Char<'_>>().unwrap().get(i) == cx.na_string() {
                 ys.push(Tr::Na);
                 continue;
             }
-            let mut xi = native_bytes(cx, el)?;
+            let mut xi = native_bytes(cx, x, i)?;
             for b in xi.iter_mut() {
                 *b = xtable[*b as usize];
             }

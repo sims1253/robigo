@@ -6,9 +6,8 @@
   first  second 
 "he001" "w1r0d" 
 [1] "b"
-     [,1] [,2]
-[1,] "ba" "bb"
-[2,] "ab" "aa"
+[1] 2 2
+[1] "ba" "ab" "bb" "aa"
 [1] "ete"
 [1] "unknown"
 [1] "bénéné"

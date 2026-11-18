@@ -8,7 +8,7 @@ chartr("abc", "defg", "abc")
 x <- c(first = "hello", second = "world")
 chartr("lo", "01", x)
 f <- factor("a"); chartr("a", "b", f)
-m <- matrix(c("ab", "ba", "aa", "bb"), 2); chartr("ab", "ba", m)
+m <- matrix(c("ab", "ba", "aa", "bb"), 2); u <- chartr("ab", "ba", m); dim(u); as.vector(u)
 # UTF-8
 chartr("éè", "ee", "étè")
 Encoding(chartr("é", "e", "café"))
