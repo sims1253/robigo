@@ -186,25 +186,47 @@ pub fn not_yet(cx: &mut Cx, call: Option<robigo_rtcore::Root<'_>>, what: &str) -
     cx.error_call(call, &format!("robigo: {what} is not implemented yet"))
 }
 
-/// GNU R's `asBool2(x, call)`: `asLogical2(x, checking = 1, call)`, NA an
-/// error ("NA in coercion to boolean"), an atomic vector of more than one
-/// element an error ("'length = %lld' in coercion to 'logical(1)'"), both
-/// against `call`. As in `asLogical2`, the length check is for atomic
-/// vectors only and a zero-length one is NA: a list, or `logical(0)`, is
-/// "NA in coercion to boolean".
-// R: coerce.c:asBool2, coerce.c:asLogical2
+/// GNU R's `asLogical2(x, checking = 1, call)`: [`as_logical`], and an
+/// atomic vector of more than one element an error ("'length = %lld' in
+/// coercion to 'logical(1)'") against `call` (None: R_NilValue). The length
+/// check is for atomic vectors only and a zero-length one is NA.
+// R: coerce.c:asLogical2
+pub fn as_logical_checked(
+    cx: &mut Cx,
+    call: Option<robigo_rtcore::Root<'_>>,
+    x: robigo_rtcore::Root<'_>,
+) -> robigo_rtcore::RResult<i32> {
+    let (v, n) = as_logical_n(cx, x.bind(cx));
+    if is_vector_atomic(x.bind(cx)) && n > 1 {
+        let msg = format!("'length = {n}' in coercion to 'logical(1)'");
+        return Err(cx.error_call(call, &msg));
+    }
+    Ok(v)
+}
+
+/// GNU R's `asBool2(x, call)`: [`as_logical_checked`] against `call`, NA an
+/// error ("NA in coercion to boolean") against `call` too. A list, or
+/// `logical(0)`, is "NA in coercion to boolean".
+// R: coerce.c:asBool2
 pub fn as_bool2(
     cx: &mut Cx,
     call: robigo_rtcore::Root<'_>,
     x: robigo_rtcore::Root<'_>,
 ) -> robigo_rtcore::RResult<bool> {
-    let (v, n) = as_logical_n(cx, x.bind(cx));
-    if is_vector_atomic(x.bind(cx)) && n > 1 {
-        let msg = format!("'length = {n}' in coercion to 'logical(1)'");
-        return Err(cx.error_call(Some(call), &msg));
-    }
+    let v = as_logical_checked(cx, Some(call), x)?;
     if v == logic::NA {
         return Err(cx.error_call(Some(call), "NA in coercion to boolean"));
+    }
+    Ok(v != 0)
+}
+
+/// GNU R's public `asBool(x)`, the C API's: as [`as_bool2`] with no call,
+/// except that NA is `error()`'s, reported against the context call.
+// R: coerce.c:asBool
+pub fn as_bool(cx: &mut Cx, x: robigo_rtcore::Root<'_>) -> robigo_rtcore::RResult<bool> {
+    let v = as_logical_checked(cx, None, x)?;
+    if v == logic::NA {
+        return Err(cx.error("NA in coercion to boolean"));
     }
     Ok(v != 0)
 }
@@ -242,7 +264,7 @@ pub fn match_args(
                 && match args.name(cx, i) {
                     None => true,
                     Some(t) => {
-                        let t = t.name().bytes();
+                        let t = t.name_bytes();
                         t == formals[i].as_bytes()
                             && args.get(cx, i) != missing
                             && formals.iter().enumerate().all(|(j, f)| j == i || f.as_bytes() != t)
@@ -254,7 +276,7 @@ pub fn match_args(
         let formals = (0..formals.len()).map(|i| (i < n).then_some(i)).collect();
         return Ok(Matched { formals, dots: Vec::new() });
     }
-    let tags: Vec<Option<Vec<u8>>> = (0..n).map(|i| args.name(cx, i).map(|s| s.name().bytes().to_vec())).collect();
+    let tags: Vec<Option<Vec<u8>>> = (0..n).map(|i| args.name(cx, i).map(|s| s.name_bytes().to_vec())).collect();
     let mut actual: Vec<Option<usize>> = vec![None; formals.len()];
     let mut fused = vec![0u8; formals.len()];
     let mut used = vec![0u8; n];
@@ -371,7 +393,7 @@ pub fn check1arg(
     formal: &str,
 ) -> robigo_rtcore::RResult<()> {
     let Some(tag) = (!args.is_empty()).then(|| args.name(cx, 0)).flatten() else { return Ok(()) };
-    let supplied = String::from_utf8_lossy(tag.name().bytes()).into_owned();
+    let supplied = String::from_utf8_lossy(tag.name_bytes()).into_owned();
     if !formal.starts_with(&supplied) {
         let msg = format!("supplied argument name '{supplied}' does not match '{formal}'");
         return Err(cx.error_call(Some(call), &msg));

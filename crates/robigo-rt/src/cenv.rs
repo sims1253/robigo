@@ -588,7 +588,7 @@ pub const SAFE_BASE_INTERNALS: [&str; 20] = [
 /// `s` is a live symbol.
 unsafe fn name(cx: &Cx, s: Sexp) -> &[u8] {
     // SAFETY: the caller's contract.
-    unsafe { Ref::from_sexp(s, cx) }.as_sym().map_or(&[], |s| s.name().bytes())
+    unsafe { Ref::from_sexp(s, cx) }.as_sym().map_or(&[], |s| s.name_bytes())
 }
 
 /// Whether symbol `s` is one of [`LANGUAGE_FUNS`].

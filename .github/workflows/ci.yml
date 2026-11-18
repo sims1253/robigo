@@ -128,9 +128,10 @@ jobs:
         run: cargo +nightly-2026-11-02 miri test --locked -p robigo-rtcore
       # robigo-heap's tests that call no C (G3 M2, H4): the layout's
       # definitions, its no-overlap checks and #[repr(C)] views, the block
-      # bitmaps and the size classes. The collector's tests need the C shim.
+      # bitmaps, the size classes, and the symbol arena's threads interning
+      # at once (H5). The collector's tests need the C shim.
       - name: Miri on the heap's layout and bitmaps
-        run: cargo +nightly-2026-11-02 miri test --locked -p robigo-heap --lib -- 'layout::' 'heap::bitmap_tests' 'heap::medium_tests'
+        run: cargo +nightly-2026-11-02 miri test --locked -p robigo-heap --lib -- 'layout::' 'heap::bitmap_tests' 'heap::medium_tests' 'arena::'
 
   # G3's runtime crates (docs/g3.md §14.1, §16): release tests, then the
   # same under gctorture; the verification modes add steps as they land.
