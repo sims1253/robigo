@@ -552,10 +552,18 @@ unsafe fn pure<S: Scope + ?Sized>(cx: &Cx, code: Sexp, scope: &S) -> Option<Slot
     }
     let mut regs = [Slot::EMPTY; MAX_ARG_REGS];
     let mut pc = 0;
+    // (ROBIGO_POISON_DEAD: as in `body_loop`)
+    let mut last = None;
     while pc < v.nins {
+        if let Some((li, at)) = last.take() {
+            crate::early::poison_deaths(&mut regs, &li, at);
+        }
         // SAFETY: `pc` is below the code's instruction count.
         let i = unsafe { v.at(pc) };
         pc += 1;
+        if robigo_rtcore::poison_dead() {
+            last = Some((i, pc - 1));
+        }
         if i.fl & (F_TICK | F_DEPTH) != 0 {
             return None;
         }
@@ -563,7 +571,9 @@ unsafe fn pure<S: Scope + ?Sized>(cx: &Cx, code: Sexp, scope: &S) -> Option<Slot
             debug_assert!((x as usize) < MAX_ARG_REGS);
             // SAFETY: an operand register of the code, below its register
             // count and so below MAX_ARG_REGS (checked above).
-            Some(unsafe { *regs.get_unchecked(x as usize) })
+            let s = unsafe { *regs.get_unchecked(x as usize) };
+            s.check_live();
+            Some(s)
         };
         let w = match i.op {
             // SAFETY: constants of the live code object.
@@ -1274,10 +1284,16 @@ unsafe fn body_loop<const FUSED: bool>(
     let mut regs = [Slot::EMPTY; MAX_REGS];
     let slack = fr.limit - fr.depth;
     let mut pc = 0;
+    // (ROBIGO_POISON_DEAD: the instruction just run, whose deaths are made
+    // before the next reads; no fused steps, which make none)
+    let mut last = None;
     loop {
+        if let Some((li, at)) = last.take() {
+            crate::early::poison_deaths(&mut regs, &li, at);
+        }
         // SAFETY: the table has one byte per instruction, and the steps it
         // indexes.
-        let k = if FUSED { unsafe { *kinds.add(pc) } } else { 0 };
+        let k = if FUSED && !robigo_rtcore::poison_dead() { unsafe { *kinds.add(pc) } } else { 0 };
         if k != 0 {
             // SAFETY: as above.
             let s = unsafe { *steps.add(k as usize - 1) };
@@ -1300,6 +1316,9 @@ unsafe fn body_loop<const FUSED: bool>(
         // jump targets are instructions of the code.
         let i = unsafe { v.at(pc) };
         pc += 1;
+        if robigo_rtcore::poison_dead() {
+            last = Some((i, pc - 1));
+        }
         if i.fl & (F_TICK | F_DEPTH) != 0 {
             // (eval's count, polled past 1000: given up before the poll)
             if i.fl & F_TICK != 0 {
@@ -1592,10 +1611,10 @@ unsafe fn body_loop<const FUSED: bool>(
                 }
                 return Some(x);
             }
-            Op::Clear => Slot::dead(i.a, pc as u32 - 1),
+            Op::Clear => Slot::EMPTY,
             Op::ClearRange => {
                 for k in i.a..i.b {
-                    *regs.get_mut(k as usize)? = Slot::dead(k, pc as u32 - 1);
+                    *regs.get_mut(k as usize)? = Slot::EMPTY;
                 }
                 continue;
             }
@@ -2190,7 +2209,9 @@ unsafe fn shape_of(v: &View) -> ArgShape {
     // SAFETY: the caller's contract: instructions and constants of the code.
     unsafe {
         let none = ArgShape { kind: A_NONE, ..ArgShape::default() };
-        if v.profile != Profile::Bc || v.nregs > MAX_ARG_REGS {
+        // (ROBIGO_POISON_DEAD: a shape drops the code's clears; `pure` runs
+        // it with them)
+        if v.profile != Profile::Bc || v.nregs > MAX_ARG_REGS || robigo_rtcore::poison_dead() {
             return none;
         }
         let ins: Vec<Ins> =

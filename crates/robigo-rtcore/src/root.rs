@@ -486,6 +486,7 @@ impl<'a> Args<'a> {
             // SAFETY: the window has `n` live object slots from `base`
             // (`from_raw`'s and `Scope::args`'s contract), each read once.
             let s = unsafe { *self.base.add(i).as_ptr() };
+            s.check_live();
             // SAFETY: a live object of the window's isolate.
             s.as_object().is_some_and(|x| unsafe { x.is_altrep() && crate::altrep::own::own_class(x).is_none() })
         })

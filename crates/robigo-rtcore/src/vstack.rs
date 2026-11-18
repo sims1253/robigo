@@ -142,6 +142,17 @@ impl Slot {
     }
 }
 
+/// Whether dead slots are poisoned (`ROBIGO_POISON_DEAD=1` in a build with
+/// the `poison-dead` feature; always false without it): evaluators that keep
+/// registers of their own apply D9's deaths to them only then.
+#[inline(always)]
+pub fn poison_dead() -> bool {
+    #[cfg(feature = "poison-dead")]
+    return poison::on();
+    #[cfg(not(feature = "poison-dead"))]
+    false
+}
+
 /// [`Slot::dead`]'s poison (`poison-dead` feature): tag word
 /// `TAG | reg << 8 | pc << 32`, payload the `Location` of the source line
 /// that killed the slot.

@@ -293,7 +293,7 @@ pub use robigo_heap::{AllocError, NeedGc, Rcomplex, Sexp, types};
 pub use robigo_heap::{GcStats, LARGE, Safepoint, ScanSegment};
 pub use root::{Args, Global, Out, Root, Scope};
 pub use sym::{RSym, SymId};
-pub use vstack::{Slot, Tag};
+pub use vstack::{Slot, Tag, poison_dead};
 
 // The sizes the hot paths rely on (docs/g3.md §2.2, §6.5, §9.2).
 const _: () = {
