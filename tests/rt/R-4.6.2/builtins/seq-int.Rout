@@ -226,9 +226,9 @@ Error: unimplemented type 'raw' in 'asReal'
  
 call: print(x) 
 Warning: first element used of 'length.out' argument 
-call: seq.int(1, 10, length.out = c(1e+15, 2)) 
-Error: cannot allocate vector of size 7450580.6 Gb 
-call: NULL 
+call: seq.int(1, 10, length.out = c(3, 2)) 
+[1]  1.0  5.5 10.0
+typeof: double 
 Error: result would be too long a vector 
 call: seq.int(1, 10, length.out = 4503599627370496) 
 [1] 0 1 2
