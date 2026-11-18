@@ -480,7 +480,7 @@ fn maybe_closure_wrapper(cx: &Cx, e: Ref<'_>) -> bool {
     let Some(c) = e.as_cons() else { return false };
     let Some(s) = c.car().as_sym() else { return false };
     let wrapper = matches!(
-        s.name().bytes(),
+        s.name_bytes(),
         b".Internal"
             | b".External"
             | b".External2"

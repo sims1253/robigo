@@ -97,7 +97,7 @@ pub fn env<'g>(cx: &'g Cx) -> Ref<'g> {
 
 pub fn args_of<'g>(e: Ref<'g>) -> (String, Vec<Ref<'g>>) {
     let c = e.as_cons().unwrap();
-    let head = String::from_utf8(c.car().as_sym().unwrap().name().bytes().to_vec()).unwrap();
+    let head = String::from_utf8(c.car().as_sym().unwrap().name_bytes().to_vec()).unwrap();
     let mut args = Vec::new();
     let mut a = c.cdr();
     while let Some(cell) = a.as_cons() {

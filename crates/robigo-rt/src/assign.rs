@@ -47,7 +47,7 @@ fn assign_fcn_symbol(cx: &mut Cx, fun: Sexp) -> RResult<Sexp> {
     let (id, name) = {
         // SAFETY: an immortal symbol.
         let sym = unsafe { Ref::from_sexp(fun, cx) }.as_sym().unwrap();
-        (sym.id(), sym.name().bytes().to_vec())
+        (sym.id(), sym.name_bytes().to_vec())
     };
     if let Some(&v) = st.assign_fns.borrow().get(&id) {
         return Ok(v);
@@ -69,7 +69,7 @@ fn assign_fcn_symbol(cx: &mut Cx, fun: Sexp) -> RResult<Sexp> {
 // R: cmp.R:getAssignFun
 pub(crate) fn assign_fun_symbol_raw(cx: &Cx, fun: Sexp) -> Result<Sexp, robigo_heap::NeedGc> {
     // SAFETY: an immortal symbol.
-    let mut name = unsafe { Ref::from_sexp(fun, cx) }.as_sym().unwrap().name().bytes().to_vec();
+    let mut name = unsafe { Ref::from_sexp(fun, cx) }.as_sym().unwrap().name_bytes().to_vec();
     name.extend_from_slice(b"<-");
     Ok(cx.install(&name)?.as_ref().sexp())
 }
