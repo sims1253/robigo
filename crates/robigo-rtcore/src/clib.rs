@@ -444,6 +444,27 @@ pub fn default_textdomain_dir() -> Option<Vec<u8>> {
 mod tests {
     use super::wcstod_of;
 
+    // (the C library's locale objects are not Miri's)
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn locale_names_are_glibc_s() {
+        use super::{LocaleNames, category as lc};
+        let mut n = LocaleNames::c();
+        assert_eq!(n.get(lc::LC_ALL), b"C");
+        // POSIX is C, and every category the same is the one name
+        assert_eq!(n.set(lc::LC_TIME, b"POSIX"), Some(b"C".to_vec()));
+        assert_eq!(n.get(lc::LC_ALL), b"C");
+        assert_eq!(n.set(lc::LC_TIME, b"xx_NOWHERE"), None);
+        assert_eq!(n.get(lc::LC_TIME), b"C");
+        if n.set(lc::LC_TIME, b"C.UTF-8").is_some() {
+            assert_eq!(
+                n.get(lc::LC_ALL),
+                b"LC_CTYPE=C;LC_NUMERIC=C;LC_TIME=C.UTF-8;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;\
+                  LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C"
+            );
+        }
+    }
+
     // (the C library's message catalogue table is not Miri's)
     #[test]
     #[cfg_attr(miri, ignore)]

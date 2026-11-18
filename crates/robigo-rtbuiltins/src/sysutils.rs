@@ -98,17 +98,17 @@ pub fn do_l10n_info(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
 
 /// R's locale category numbers (`Sys.getlocale`'s `category` index):
 /// 1 `LC_ALL`, 2 `LC_COLLATE`, ... 9 `LC_MEASUREMENT`.
-fn r_category(cat: i32) -> Option<(lc::c_int, &'static str)> {
+fn r_category(cat: i32) -> Option<lc::c_int> {
     Some(match cat {
-        1 => (lc::LC_ALL, "LC_ALL"),
-        2 => (lc::LC_COLLATE, "LC_COLLATE"),
-        3 => (lc::LC_CTYPE, "LC_CTYPE"),
-        4 => (lc::LC_MONETARY, "LC_MONETARY"),
-        5 => (lc::LC_NUMERIC, "LC_NUMERIC"),
-        6 => (lc::LC_TIME, "LC_TIME"),
-        7 => (lc::LC_MESSAGES, "LC_MESSAGES"),
-        8 => (lc::LC_PAPER, "LC_PAPER"),
-        9 => (lc::LC_MEASUREMENT, "LC_MEASUREMENT"),
+        1 => lc::LC_ALL,
+        2 => lc::LC_COLLATE,
+        3 => lc::LC_CTYPE,
+        4 => lc::LC_MONETARY,
+        5 => lc::LC_NUMERIC,
+        6 => lc::LC_TIME,
+        7 => lc::LC_MESSAGES,
+        8 => lc::LC_PAPER,
+        9 => lc::LC_MEASUREMENT,
         _ => return None,
     })
 }
@@ -122,7 +122,7 @@ pub fn do_getlocale(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
     if cat == i32::MIN || cat < 0 {
         return Err(cx.error("invalid 'category' argument"));
     }
-    let p = r_category(cat).map(|(c, _)| cx.locale_names().get(c)).unwrap_or_default();
+    let p = r_category(cat).map(|c| cx.locale_names().get(c)).unwrap_or_default();
     cx.build(out, |cx| cx.mk_string(&p, Encoding::Native))
 }
 
@@ -149,7 +149,7 @@ pub fn do_setlocale(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
         Some(v) if v.len() == 1 => v.get(0).bytes().to_vec(),
         _ => return Err(cx.error("invalid 'locale' argument")),
     };
-    let Some((c, cname)) = r_category(cat) else {
+    let Some(c) = r_category(cat) else {
         return Err(cx.error("invalid 'category' argument"));
     };
     let old = cx.locale_names();
@@ -194,7 +194,6 @@ pub fn do_setlocale(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
             };
         if !modelled {
             let (a, b) = (String::from_utf8_lossy(&a), String::from_utf8_lossy(&b));
-            let _ = cname;
             return Err(
                 cx.error(&format!("robigo: Sys.setlocale() changing {n} from '{a}' to '{b}' is not implemented yet"))
             );
