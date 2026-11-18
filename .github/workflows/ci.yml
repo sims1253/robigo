@@ -90,12 +90,19 @@ jobs:
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           RUN_ID: ${{ github.run_id }}
         run: |
-          ids=$(gh api -X GET "repos/$REPO/actions/workflows/ci.yml/runs" -f event=pull_request \
-                  -f branch="$HEAD_REF" -f per_page=100 --jq ".workflow_runs[]
-                  | select(.status != \"completed\" and .id < $RUN_ID
-                           and .head_repository.full_name == \"$HEAD_REPO\") | .id") ||
-            { echo "::warning::could not list this pull request's runs; superseded ones keep running"; exit 0; }
-          for id in $ids; do
+          # one query per status that is not completed, every page (a
+          # re-run of an old run keeps its old id, however many runs came since)
+          ids=()
+          for status in queued in_progress waiting pending requested; do
+            page=$(gh api -X GET --paginate "repos/$REPO/actions/workflows/ci.yml/runs" -f event=pull_request \
+                     -f branch="$HEAD_REF" -f status="$status" -f per_page=100 --jq ".workflow_runs[]
+                     | select(.id < $RUN_ID and .head_repository.full_name == \"$HEAD_REPO\") | .id") ||
+              { echo "::warning::could not list this pull request's $status runs; superseded ones keep running"; continue; }
+            # (ids are numbers)
+            # shellcheck disable=SC2206
+            ids+=($page)
+          done
+          for id in "${ids[@]}"; do
             if gh api -X POST "repos/$REPO/actions/runs/$id/cancel" > /dev/null; then
               echo "cancelled superseded run $id"
             else
@@ -1160,6 +1167,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      # A cancelled run is red even when every job it needs had passed
+      # before the cancel (its later steps then do not run)
+      - name: The run was not cancelled
+        if: ${{ cancelled() }}
+        run: |
+          echo "::error::this run was cancelled: push, or re-run it, for a verdict"
+          exit 1
       - uses: actions/checkout@v7
         with:
           sparse-checkout: |

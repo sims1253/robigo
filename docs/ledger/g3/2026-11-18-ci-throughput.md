@@ -64,7 +64,8 @@ blocking goes instead:
   another;
 - `select`, which every job needs, cancels the pull request's older `ci`
   runs through the API as its first step (`actions: write`). It cancels
-  every run that is not completed, has the same head branch and
+  every run that is not completed (one query per such status, every page:
+  a re-run of an old run keeps its old id), has the same head branch and
   repository, and has a lower run id. It is a plain cancel, so the old
   run's `Check` still runs and is red on a commit nobody merges. That
   costs one queued tiny job and blocks nothing.
@@ -74,18 +75,27 @@ cancelled by hand read as green, because a skipped required check passes.
 Eight agents have `gh`, and a rule in a doc is not a gate.
 
 **What the window costs:** until the new run's `select` gets a runner, both
-runs are alive. In the last 24 h there were 57 supersessions. The new
-`select`'s own wait for a runner was a median of 9.6 min (p90 36), and the
-older run had a median of 1 job on a runner (mean 1.1) when the new run
-was created. Those jobs keep running in the window: roughly 57 × 15 min ×
-1.1 ≈ 900 runner-minutes a day (`window.py`), and more if queued jobs of
-the old run start in the window. In return, 1,268 minutes a day of
-waiting behind a cancelled run go away.
+runs are alive. A counterfactual approximation from the last 24 h
+(`window.py`):
+- 60 supersessions;
+- the new `select`'s own wait for a runner: a median of 10.5 min (p90 36);
+- the older run's jobs on a runner when the new run was created: a mean
+  of 1.2.
+
+Each window times its own count is about 800 runner-minutes a day. This is
+not a measurement: jobs can finish in the window, the old run's queued jobs
+can start in it, and queue waits change with the scheduling. In return,
+1,268 minutes a day of waiting behind a cancelled run go away.
+
+**A cancelled run stays red** even when every job it needs had passed
+before the cancel: `Check`'s first step runs only under `cancelled()` and
+fails.
 
 **Other events:**
 - A fork's `GITHUB_TOKEN` is read-only, so its cancel fails: the step
   warns, and both runs finish (no fork pull requests so far).
-- `workflow_dispatch` runs have a group of their own and cancel nothing.
+- `workflow_dispatch` on a branch has a group of its own and cancels
+  nothing; on main it shares that commit's group, as a push does.
 - Main's push runs are unchanged.
 - A re-run of an older run cancels only runs older than itself.
 

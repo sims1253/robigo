@@ -153,6 +153,10 @@ class Rule(unittest.TestCase):
         self.assertIn("  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.run_id }}\n"
                       "  cancel-in-progress: false\n", wf)
         # select cancels the superseded runs, as its first step
+        # ...and a run cancelled after every need passed is red too
+        check = wf.split("    name: Check\n", 1)[1].split("\n    steps:\n", 1)[1]
+        self.assertTrue(check.lstrip().startswith("# A cancelled run is red"), check[:80])
+        self.assertIn("      - name: The run was not cancelled\n        if: ${{ cancelled() }}\n", check)
         steps = wf.split("\n  select:\n", 1)[1].split("\n    steps:\n", 1)[1].splitlines()
         first = next(l.strip() for l in steps if not l.strip().startswith("#"))
         self.assertEqual(first, "- name: Cancel this pull request's superseded runs")
