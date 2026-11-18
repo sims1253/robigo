@@ -1113,6 +1113,7 @@ pub fn do_asplit(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
         out.set(cx, y.bind(cx));
         Ok(())
     })
+}
 
 /// `.Internal(t.default(a))`: the transpose of a matrix, or of a vector
 /// (one column, `names` its row names) or a 1-d array; the dimnames (and
