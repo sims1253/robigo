@@ -1,4 +1,4 @@
-# builtin-diff known failures: strtoi, seed 0, key 203e57b83102fac427888c12
+# builtin-diff known failures: strtoi, seed 0, key 3edef2a1751ff9b54e4c2026
 # strtoi: 127 / 2287 (not-implemented 2160, crash 0, timeout 0, resource 0 excluded, oracle-crash 40 excluded)
 1
 2

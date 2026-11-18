@@ -91,12 +91,18 @@ robigo-rt's builtins with GNU R 4.6.2's on generated inputs, out of process.
   - the value and its visibility;
   - each warning and message in order: message, class, call;
   - the error;
-  - each binding after the call, TRUE when its serialization is unchanged;
+  - each binding after the call: `list(unchanged = TRUE)` when its
+    serialization is the same as before the call, else
+    `list(unchanged = FALSE, value)`;
   - the global environment's names;
   - `.Random.seed`.
 
-  The records are compared byte for byte. `render.R`, run in any R ≥ 4,
-  names the first field that differs, for display only.
+  The records are compared byte for byte. So is what each case printed: the
+  driver writes a marker line before each case, and the harness splits
+  stdout at them. A case counts as done when its `.ok` marker exists, which
+  the driver writes after the record, so a crash while writing the record
+  costs that case and no other. `render.R`, run in any R ≥ 4, names the
+  first field that differs, for display only.
 - **Environment:** both runtimes run in this environment, which is part of
   the cache key:
   - `LC_ALL=C.UTF-8`, `LANGUAGE=en`, `TZ=UTC`, `R_DEFAULT_PACKAGES=NULL`,
@@ -137,6 +143,10 @@ robigo-rt's builtins with GNU R 4.6.2's on generated inputs, out of process.
   list. A changed generator, driver, lattice or row changes the key; the
   lists are then refused until `--regen-known` rewrites them, in a PR
   titled `builtin-diff:` that shows each row's pass/total before and after.
+- **The key:** a row's key hashes gen.R, driver.R, the row, the seed, the
+  environment above, the JIT setting, and the oracle image's content tag
+  (from `scripts/ci-image.sh refs`, so it is the same locally and in CI).
+  It also covers GNU R's side's version, which counts the double run.
 - **GNU R's side** is cached by key, under `~/.cache/robigo-research/builtin-diff`,
   or `--data` / `ROBIGO_BUILTIN_DIFF_DATA`. A missing row is made in the
   oracle image with docker. In CI, the `builtin-diff-data` job makes the
@@ -149,7 +159,8 @@ robigo-rt's builtins with GNU R 4.6.2's on generated inputs, out of process.
   - `seq_len`: a warning's text;
   - `names`: an attribute written on the shared argument;
   - `abs`: a panic;
-  - `set.seed`: one more draw.
+  - `set.seed`: one more draw;
+  - `nzchar`: printed output.
 
   Each must fail in its own field, the panic must cost only its own cases,
   and the control must not change. `ci`, rt-ci.py's step, runs

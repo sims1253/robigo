@@ -1,4 +1,4 @@
-# builtin-diff known failures: toupper, seed 0, key b7c6c0299fb64f28ab201caf
+# builtin-diff known failures: toupper, seed 0, key df16eb61894ceff298244b8d
 # toupper: 0 / 128 (not-implemented 128, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 1
 2

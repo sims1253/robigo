@@ -424,6 +424,17 @@ def rscript():
     return None
 
 
+def diff_fields(pairs):
+    """render(), with "stdout" for the pairs whose records are equal (what
+    differs is what the case printed)."""
+    out = render(pairs)
+    for i, o, x in pairs:
+        with open(o, "rb") as f1, open(x, "rb") as f2:
+            if f1.read() == f2.read():
+                out[i] = ("stdout", repr(printed(o)[:150]), repr(printed(x)[:150]))
+    return out
+
+
 def render(pairs):
     """For [(id, oracle, rt)]: {id: (field, GNU R's, robigo-rt's)}."""
     r = rscript()
@@ -504,14 +515,8 @@ def report(r, known, show):
     mism = [i for i in fails if r["res"][i] == "mismatch"]
     # every failing call, the new ones (not in known/) first
     shown = ([i for i in new] + [i for i in fails if i not in set(new)])[:show]
-    detail = render([(i, os.path.join(r["oracle"], f"{i:06d}.rds"), os.path.join(r["rt"], f"{i:06d}.rds"))
+    detail = diff_fields([(i, os.path.join(r["oracle"], f"{i:06d}.rds"), os.path.join(r["rt"], f"{i:06d}.rds"))
                      for i in mism])
-    for i in mism:
-        # equal records: what differs is the printed output
-        o_rds, r_rds = (os.path.join(r[k], f"{i:06d}.rds") for k in ("oracle", "rt"))
-        with open(o_rds, "rb") as f1, open(r_rds, "rb") as f2:
-            if f1.read() == f2.read():
-                detail[i] = ("stdout", repr(printed(o_rds)[:150]), repr(printed(r_rds)[:150]))
     if mism:
         if detail:
             byf = {}
@@ -683,7 +688,7 @@ def cmd_plant(a):
                 kinds = {plant["res"][i] for i in newf}
                 good = bool(newf) and kinds == {want}
                 if good and fields:
-                    det = render([(i, os.path.join(plant["oracle"], f"{i:06d}.rds"),
+                    det = diff_fields([(i, os.path.join(plant["oracle"], f"{i:06d}.rds"),
                                    os.path.join(plant["rt"], f"{i:06d}.rds")) for i in newf[:50]])
                     got = {d[0] for d in det.values()}
                     good = bool(got) and got <= fields

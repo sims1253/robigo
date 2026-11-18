@@ -441,8 +441,9 @@ pub fn do_nzchar(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
         return Err(cx.error_call(Some(call), &msg));
     }
     crate::util::check1arg(cx, args, call, "x")?;
-    if cfg!(feature = "diff-plant") && args.get(cx, 0).len() == Some(3) {
-        // PLANT(A4, stdout): output GNU R does not print
+    if cfg!(feature = "diff-plant") && nargs == 2 && args.get(cx, 0).len() == Some(3) {
+        // PLANT(A4, stdout): output GNU R does not print (for two arguments:
+        // the driver's and base's own calls pass one)
         cx.rprintf(b"a4plant\n");
     }
     let x0 = args.get(cx, 0);

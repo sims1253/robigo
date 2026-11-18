@@ -16,7 +16,7 @@
   under `[uncovered]` with its reason), `tests/builtin-diff/known/`, the
   plants behind `robigo-rtbuiltins/diff-plant`, rt-ci.py's step, and CI's
   `builtin-diff-data` job.
-- **The bar** (`plant`): all five plants fail in their own field, the panic
+- **The bar** (`plant`): all six plants fail in their own field, the panic
   costs only its own cases, and the control row (`rep_len`) is unchanged:
 
   | plant | new failures | field |
@@ -26,6 +26,7 @@
   | names | 1 | env |
   | abs | 1 | crash |
   | set.seed | 26 | seed |
+  | nzchar | 227 | stdout |
 
 - **Two things the measurements found in the harness's own path:**
   - **The formula carried the lattice.** The formula value had the
@@ -39,11 +40,12 @@
     sync; robigo-rt's file writes are unbuffered, so nothing is left to
     flush. Ported as such (robigo-rt/src/connections.rs).
 
-  A full run went from 5 min 17 s to 40 s. Its breakdown, at 4 jobs:
-  - robigo-rt's driver, 96 s summed (start 0.06–0.3 s; about 1.3 ms a case);
-  - the comparison, 2.5 s;
-  - render.R, 1.2 s;
-  - GNU R's side on a cold cache, 60 s more. It runs each batch twice.
+  A full run went from 5 min 17 s (22 rows) to 21 s (23 rows, 19,715
+  cases). Its breakdown, at 4 jobs:
+  - robigo-rt's driver, 48 s summed (start 0.1–0.3 s; about 1–2 ms a case);
+  - the comparison, 1.1 s;
+  - render.R, 0.8 s;
+  - GNU R's side on a cold cache, 31 s more. It runs each batch twice.
 - **GNU R's own nondeterminism:** 21 RNGkind and 26 set.seed cases seed from
   the clock (`set.seed(NULL)`, no `.Random.seed`). Before the double run
   they looked like seed mismatches. Now they are excluded as unstable,
