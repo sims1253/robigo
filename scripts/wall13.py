@@ -117,6 +117,19 @@ def machine():
     return {"cpu": model, "cpu_signature": sig, "cpus": os.cpu_count(), "host": platform.node()}
 
 
+# a 1-minute load above this share of the CPUs makes the run's ties
+# meaningless (§13 measures on an idle machine): the report says so
+BUSY = 0.25
+
+
+def busy_note(doc):
+    loads = [x[0] for x in doc.get("load", {}).values()]
+    if loads and max(loads) > BUSY * doc["machine"]["cpus"]:
+        return (f"WARNING: the machine was busy (1-minute load up to {max(loads):.1f} on {doc['machine']['cpus']} "
+                "CPUs): these medians are not §13's evidence")
+    return None
+
+
 def report(doc, markdown=False):
     impls = doc["impls"]
     rivals_ = [i for i in impls if i != "robigo-rt"]
@@ -140,6 +153,9 @@ def report(doc, markdown=False):
         w = [max(len(str(x)) for x in col) for col in zip(head, *rows)]
         for r in [head, *rows]:
             print("  ".join(str(x).ljust(n) for x, n in zip(r, w)))
+    note = busy_note(doc)
+    if note:
+        print(note)
     for i in rivals_:
         vs = [rec["robigo_rt_vs"][i]["verdict"] for rec in doc["programs"].values() if "robigo_rt_vs" in rec]
         print(f"robigo-rt vs {i}: faster {vs.count('faster')}, tie {vs.count('tie')}, slower {vs.count('slower')}"
@@ -178,7 +194,7 @@ def main(argv):
     doc = {"rule": "docs/g3.md §13", "machine": machine(),
            "robigo_rt": binary_identity(a.robigo_rt, "robigo-rtapi"),
            "images": {i: rivals.IMAGES[i][0] for i in rivals_}, "impls": impls, "rounds": a.rounds,
-           "batch_s": BATCH_S, "tie": TIE, "programs": {}}
+           "batch_s": BATCH_S, "tie": TIE, "programs": {}, "load": {"start": os.getloadavg()}}
     os.makedirs(rivals.RIVALS, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=rivals.RIVALS) as shared:
         os.chmod(shared, 0o777)
@@ -193,6 +209,9 @@ def main(argv):
                     json.dump(doc, f, indent=1)
         finally:
             runner.close()
+    doc["load"]["end"] = os.getloadavg()
+    with open(a.out, "w") as f:
+        json.dump(doc, f, indent=1)
     report(doc, a.markdown)
     return 0
 
