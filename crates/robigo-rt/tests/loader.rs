@@ -112,12 +112,9 @@ fn a_base_closure_runs_until_it_reaches_what_is_not_implemented() {
     assert!(ok, "{err}");
     assert_eq!(out, "[1] 1\n");
     // an .Internal that is not implemented yet
-    let (_, err, ok) = run(cx, ".Internal(rawToChar(as.raw(65), FALSE))\n");
+    let (_, err, ok) = run(cx, ".Internal(crc64(\"a\"))\n");
     assert!(!ok);
-    assert_eq!(
-        err,
-        "Error in rawToChar(as.raw(65), FALSE) : \n  robigo: .Internal(rawToChar()) is not implemented yet\n"
-    );
+    assert_eq!(err, "Error in crc64(\"a\") : robigo: .Internal(crc64()) is not implemented yet\n");
     // an .Internal outside it is GNU R's error
     let (_, err, _) = run(cx, ".Internal(nonesuch())\n");
     assert_eq!(err, "Error in .Internal(nonesuch()) : \n  there is no .Internal function 'nonesuch'\n");
