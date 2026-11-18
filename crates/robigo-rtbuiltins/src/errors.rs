@@ -121,7 +121,7 @@ pub fn do_gettext(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
 pub fn do_ngettext(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     // asInteger(CAR(args)) before checkArity: CAR of no arguments is NULL,
     // whose asInteger is NA
-    let n = if args.len() > 0 { crate::coerce::vector::as_integer_warn(cx, args.root(0))? } else { i32::MIN };
+    let n = if !args.is_empty() { crate::coerce::vector::as_integer_warn(cx, args.root(0))? } else { i32::MIN };
     crate::row!("ngettext", true).check_arity(cx, call, args)?;
     if n == i32::MIN || n < 0 {
         return Err(cx.error("invalid 'n' argument"));
