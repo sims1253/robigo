@@ -703,8 +703,11 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    (robigo-rt's checked-in base subset is what this tree traces: its
    names, kinds and defining files; which scripts reach each name is the
    job's artifact `base-subset-reached-by`, kept out of the file so that a
-   new case changes it only where it reaches a new name); the modes of `docs/g3.md` §16 add
-   steps here.
+   new case changes it only where it reaches a new name; for the same
+   reason the committed files carry no counts, which the generator prints
+   to the log, so two pull requests that each add a name merge to the file
+   the generator makes, or conflict where they add next to each other); the
+   modes of `docs/g3.md` §16 add steps here.
 3. **build:** release build, base-package natives, the binary the heavy
    jobs use; the ratchet markers, the parse-corpus ratchet and the builtin
    coverage baseline (`scripts/builtin-coverage.py --check`) are checked

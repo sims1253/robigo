@@ -255,7 +255,7 @@ fn fold1(cx: &mut Cx, fun: &Global, args: &[(Global, Global)]) -> RResult<Option
                     if let Some((nm, _)) = names {
                         let t = t.bind(cx).sexp();
                         if t != nil {
-                            nm.set_elt(i, t.car());
+                            nm.set_elt(i, cx.printname_raw(t));
                         }
                     }
                 }

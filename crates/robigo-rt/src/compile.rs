@@ -833,6 +833,20 @@ impl<'g> Comp<'g> {
         self.emit(i);
     }
 
+    /// The expression bcEval is at for the `.Internal` call just emitted
+    /// (its wrapper's call, constant `k`): an [`Op::Internal`]'s `g`, or
+    /// the `c` of the [`Op::ErrorCall`] of a count its checkArity refuses.
+    pub(crate) fn set_internal_site(&mut self, k: u16) {
+        let at = self.ins.len() - 1;
+        match self.ins[at].op {
+            Op::ErrorCall => self.ins[at].c = k,
+            op => {
+                debug_assert_eq!(op, Op::Internal);
+                self.ins[at].g = k;
+            }
+        }
+    }
+
     /// An error GNU R raises when the special `call` runs (`errorcall` if
     /// `with_call`, `error` otherwise): known at compile time, raised in
     /// order at run time.
@@ -1164,9 +1178,8 @@ impl<'g> Comp<'g> {
                     self.builtin_args_call(Op::Internal, internal, inner, inner.cdr(), dst, d, tail)?;
                     // the expression bcEval is at: the wrapper's call
                     // (cmpSimpleInternal sets no location of its own)
-                    let at = self.ins.len() - 1;
-                    debug_assert_eq!(self.ins[at].op, Op::Internal);
-                    self.ins[at].g = self.k(e);
+                    let ke = self.k(e);
+                    self.set_internal_site(ke);
                 }
                 Handler::Local(ee) => self.call(ee, dst, d, tail)?,
                 Handler::Builtin(prim) => self.builtin_args_call(Op::CallBuiltin, prim, e, args, dst, d, tail)?,
@@ -1276,8 +1289,8 @@ impl<'g> Comp<'g> {
             if t == nil {
                 return cx.blank_string().as_ref().sexp();
             }
-            // SAFETY: a tag is a symbol: its print name is a CHARSXP.
-            unsafe { t.car() }
+            // SAFETY: a tag is a symbol: its PRINTNAME, the isolate's CHARSXP.
+            unsafe { cx.printname_raw(t) }
         };
         let mut nm: Option<Vec<Sexp>> =
             cases.iter().any(|&(_, t)| t != nil).then(|| cases.iter().map(|&(_, t)| tag_name(t)).collect());
@@ -2538,7 +2551,7 @@ impl<'g> Comp<'g> {
                     }
                     let internal = self.cx.internal_raw(fun);
                     if internal == nil {
-                        let name = String::from_utf8_lossy(fun.car().char_bytes()).into_owned();
+                        let name = String::from_utf8_lossy(fun.sym_name_bytes()).into_owned();
                         let msg = format!("there is no .Internal function '{name}'");
                         return self.error_op(e, &msg, true);
                     }
@@ -2589,9 +2602,8 @@ impl<'g> Comp<'g> {
                         // the expression bcEval is at: the `.Internal` call
                         // (a closure wrapper's: error() reports the
                         // function's call)
-                        let at = self.ins.len() - 1;
-                        debug_assert_eq!(self.ins[at].op, Op::Internal);
-                        self.ins[at].g = self.k(e);
+                        let ke = self.k(e);
+                        self.set_internal_site(ke);
                     }
                     if site_save != 0 && internal.typ() == BUILTINSXP {
                         // do_internal's own check_stack_balance, its save
@@ -2904,6 +2916,17 @@ impl<'g> Comp<'g> {
         i.fl |= F_DEPTH;
         i.d = d;
         let _ = tail;
+        // an .Internal of a count its checkArity refuses: the arguments
+        // evaluated, then the error (the VM's register call does not check)
+        let refused = (op == Op::Internal)
+            .then(|| {
+                // SAFETY: `fun` is a live primitive of this isolate (the
+                // caller's contract).
+                let def = &self.st.defs[unsafe { crate::prims::offset(fun) }];
+                (!crate::call::internal_arity_ok(def, n))
+                    .then(|| crate::prims::arity_message(n, def.name, def.arity as usize, true))
+            })
+            .flatten();
         if a.iter().any(|&(v, _)| v == dots || v == missing) {
             // evaluated at run time (`...` expanded, an empty argument's
             // error in order); under `Bc` as the generic call's (cmp.R's
@@ -2926,6 +2949,13 @@ impl<'g> Comp<'g> {
         for (j, &(v, _)) in a.iter().enumerate() {
             // SAFETY: as above.
             unsafe { self.expr_at(v, r + j as Reg, d + 1, base + (j > 0) as i32, false)? };
+        }
+        if let Some(msg) = refused {
+            // against the context, as for every .Internal
+            // R: util.c:Rf_checkArityCall
+            self.error_op(call, &msg, false)?;
+            self.free_to(r);
+            return Ok(());
         }
         if named {
             for (j, &(_, t)) in a.iter().enumerate() {
@@ -2992,7 +3022,7 @@ unsafe fn check1arg(tag: Sexp, nil: Sexp, formal: &str) -> Option<String> {
         return None;
     }
     // SAFETY: the caller's contract: a tag is a symbol.
-    let supplied = unsafe { tag.car().char_bytes() };
+    let supplied = unsafe { tag.sym_name_bytes() };
     if formal.as_bytes().starts_with(supplied) {
         return None;
     }

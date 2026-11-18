@@ -624,7 +624,7 @@ fn print_list(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
                 let pp = data.params(cx);
                 match c.tag().as_sym() {
                     Some(t) => {
-                        let pn = t.name();
+                        let pn = t.name(cx);
                         if taglen + pn.bytes().len() > TAGBUFLEN {
                             (taglen <= TAGBUFLEN).then(|| b"$...".to_vec())
                         } else if pn == cx.na_string() {
@@ -695,7 +695,7 @@ fn print_attributes(cx: &mut Cx, s: Root<'_>, data: &PrintData, use_slots: bool)
             let (tag, skip) = {
                 let v = s.bind(cx);
                 let a = attrib::attrs(v).nth(k).unwrap();
-                let name = a.tag.name().bytes();
+                let name = a.tag.name_bytes();
                 let is = |n: &[u8]| name == n;
                 let is_array = attrib::is_array(v);
                 let is_list = matches!(v.sexptype(), LISTSXP | NILSXP);
@@ -708,7 +708,7 @@ fn print_attributes(cx: &mut Cx, s: Root<'_>, data: &PrintData, use_slots: bool)
                     || is(b"srcref")
                     || is(b"wholeSrcref")
                     || is(b"srcfile");
-                (a.tag.name(), skip)
+                (a.tag.name(cx), skip)
             };
             if skip {
                 continue;

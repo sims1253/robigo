@@ -508,6 +508,28 @@ fn accessor_errors_are_gnu_rs() {
     assert_eq!(s.val(&format!(".Call(\"rt_noop3\", {})", vec!["1"; 65].join(", "))), Val::Null);
 }
 
+/// `coerceVector` to a type code no SEXPTYPE has, past robigo's `u8`
+/// codes: COERCE_ERROR names the code the caller gave, after type2char's
+/// warning (GNU R reads past its type table for such a code, so no oracle
+/// case records it).
+#[test]
+fn coerce_vector_to_an_unknown_type_names_the_callers_code() {
+    let mut s = Session::new(Profile::Eval);
+    s.stderr();
+    assert_eq!(s.val(".Call(\"rt_coerce_to\", 1:2, 14)"), Val::Real(vec![1.0, 2.0]));
+    assert_eq!(
+        s.val(
+            "w <- NULL; tryCatch(withCallingHandlers(.Call(\"rt_coerce_to\", 1:2, 999), \
+             warning = function(c) { w <<- conditionMessage(c); invokeRestart(\"muffleWarning\") }), \
+             error = function(e) c(w, conditionMessage(e)))"
+        ),
+        Val::Str(vec![
+            "type 999 is unimplemented in 'type2char'".into(),
+            "cannot coerce type 'integer' to vector of type 'unknown type #999'".into(),
+        ])
+    );
+}
+
 /// eval.c's `check_stack_balance` after a `.Call` that leaves an object
 /// protected: GNU R's warnings with GNU R's depths, the `.Call`'s and then
 /// the enclosing builtin's, for an `eval` of the call at the top level

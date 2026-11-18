@@ -139,7 +139,7 @@ fn len_of(x: Option<Ref<'_>>) -> usize {
 fn lang2str(x: Ref<'_>) -> &'static [u8] {
     let head = x.as_cons().map(|c| c.car());
     if let Some(s) = head.and_then(|h| h.as_sym()) {
-        let n = s.name().bytes();
+        let n = s.name_bytes();
         if matches!(n, b"if" | b"for" | b"while" | b"(" | b"{" | b"=" | b"<-") {
             // (the names are static: each is one of these)
             return match n {
@@ -1111,14 +1111,14 @@ fn get_object(cx: &mut Cx, cptr: ContextId, out: Out<'_>) -> RResult<()> {
         let cells = cells.as_slice();
         // a tag's name (tags are symbols, immortal)
         // SAFETY: as above.
-        let name = |t: Sexp| unsafe { Ref::from_sexp(t, cx) }.as_sym().map(|y| y.name().bytes());
+        let name = |t: Sexp| unsafe { Ref::from_sexp(t, cx) }.as_sym().map(|y| y.name_bytes());
         let first = cells.first().map(|&(_, a)| a);
         let chosen: Result<Option<GenericArg>, String> = match tag
             .and_then(|t| t.as_sym())
             .filter(|t| t.as_ref().sexp() != dots)
         {
             Some(t) => (|| {
-                let tn = t.name().bytes();
+                let tn = t.name_bytes();
                 let multiple = || {
                     format!("formal argument \"{}\" matched by multiple actual arguments", String::from_utf8_lossy(tn))
                 };
@@ -1705,7 +1705,7 @@ fn dispatch_method(
         cx.build(o, |cx| {
             // ScalarString(PRINTNAME(method)): the symbol's own name
             let mut v = cx.alloc_vector::<Char<'_>>(1)?;
-            v.set(0, method.bind(cx).as_sym().unwrap().name());
+            v.set(0, method.bind(cx).as_sym().unwrap().name(cx));
             Ok(v.finish().into())
         })?;
         let class = dot_class.unwrap_or_else(|| s.root(cx, cx.nil()));
@@ -1866,7 +1866,7 @@ fn invoke_builtin(
     // SAFETY: a rooted primitive of this isolate.
     let def = *unsafe { prims::def(cx, op.bind(cx).sexp()) };
     let Kind::Builtin(f, _) = def.kind else { unreachable!("robigo: a special applied as a builtin") };
-    crate::call::materialize_args(cx, &def, args)?;
+    crate::call::enter_builtin(cx, &def, args)?;
     let flag = def.print();
     // a builtin may change what an argument expression evaluates to or
     // look at an argument: values computed early are dropped (crate::early)
@@ -1950,7 +1950,7 @@ fn patch_args_by_actuals(
             let mut v = Vec::new();
             let mut b = list.bind(cx);
             while let Some(c) = b.as_cons() {
-                v.push(c.tag().as_sym().map(|t| t.name().bytes().to_vec()));
+                v.push(c.tag().as_sym().map(|t| t.name_bytes().to_vec()));
                 b = c.cdr();
             }
             v
@@ -1967,7 +1967,7 @@ fn patch_args_by_actuals(
             }
             b
         };
-        let fname = |cx: &Cx, f: Sexp| symref(cx, f).as_sym().unwrap().name().bytes().to_vec();
+        let fname = |cx: &Cx, f: Sexp| symref(cx, f).as_sym().unwrap().name_bytes().to_vec();
         // patchArgument: R_MissingArg stays if the formal's binding is
         // R_MissingArg too; else a promise of the formal in cloenv
         let patch = |cx: &mut Cx, i: usize, f: Sexp| -> RResult<u8> {
@@ -2382,7 +2382,7 @@ pub fn do_nextmethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, 
             }
             b
         } else {
-            ccall.bind(cx).as_cons().unwrap().car().as_sym().unwrap().name().bytes().to_vec()
+            ccall.bind(cx).as_cons().unwrap().car().as_sym().unwrap().name_bytes().to_vec()
         };
         let nk = klass.bind(cx).len().unwrap_or(0);
         let mut j = 0;
@@ -2461,7 +2461,7 @@ pub fn do_nextmethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, 
         string_suffix(cx, klass, i.min(nk), o)?;
         // It is possible that if a method was called directly that
         // 'method' is unset
-        let sig_name = sig.bind(cx).as_sym().unwrap().name().bytes().to_vec();
+        let sig_name = sig.bind(cx).as_sym().unwrap().name_bytes().to_vec();
         let method = if method.bind(cx).sexp() != unbound {
             // for Ops we need `method' to be a vector
             let m = s.out(cx).root();
@@ -2519,7 +2519,7 @@ pub fn dispatch_hook<'o>(
 /// dot.
 fn call_is_default(cx: &Cx, call: Root<'_>, last_dot: bool) -> bool {
     let Some(f) = call.bind(cx).as_cons().and_then(|c| c.car().as_sym()) else { return false };
-    let n = f.name().bytes();
+    let n = f.name_bytes();
     let pos = if last_dot { n.iter().rposition(|&b| b == b'.') } else { n.iter().position(|&b| b == b'.') };
     pos.is_some_and(|p| &n[p + 1..] == b"default")
 }
@@ -2725,8 +2725,8 @@ fn dispatch_group<'o>(
             (None, Some(r)) => (r.0, r.1, r.2, r.3, rclass),
             (Some(l), Some(r)) => {
                 if l.1.bind(cx).sexp() != r.1.bind(cx).sexp() {
-                    let lname = l.0.bind(cx).as_sym().unwrap().name().bytes().to_vec();
-                    let rname = r.0.bind(cx).as_sym().unwrap().name().bytes().to_vec();
+                    let lname = l.0.bind(cx).as_sym().unwrap().name_bytes().to_vec();
+                    let rname = r.0.bind(cx).as_sym().unwrap().name_bytes().to_vec();
                     // special-case some methods involving difftime
                     let rn: &[u8] = &rname;
                     let ln: &[u8] = &lname;
@@ -2748,7 +2748,7 @@ fn dispatch_group<'o>(
         let dispatch_class = class_elt(cx, klass, which);
         let m = s.out(cx).root();
         let o = m.reset(cx);
-        let mname = meth.bind(cx).as_sym().unwrap().name().bytes().to_vec();
+        let mname = meth.bind(cx).as_sym().unwrap().name_bytes().to_vec();
         cx.build(o, |cx| {
             let mut v = cx.alloc_vector::<Char<'_>>(nargs)?;
             let mn = cx.mk_char(&mname, Encoding::Native)?;

@@ -275,8 +275,10 @@ header <- c(
   "# name (do.call(\"c\", ...)) do not, except that a capi case counts every",
   "# primitive its C names (install(\"sqrt\")) or parses. Top-level printing in",
   "# C does not count.",
-  sprintf("# %d closures, %d primitives, %d internals.", counts[["closure"]], counts[["primitive"]],
-          counts[["internal"]])
+  "#",
+  "# No counts here (the log has them): two branches that each add a name",
+  "# would both change a count line the same way, git would merge it, and the",
+  "# file would no longer be what the generator makes."
 )
 writeLines(c(header, lines[ord]), out)
 # the inputs and, per name, the ones that reach it
@@ -484,8 +486,7 @@ writeLines(c(
   "# The union of base-subset.txt (the trace) and the static bound (the free",
   "# variables of the same inputs that name base functions, transitively through",
   "# base closures), so that a branch GNU R did not take still finds its function.",
-  sprintf("# %d closures, %d primitives, %d internals, %d variables.", count(bound_lines, "closure"),
-          count(bound_lines, "primitive"), count(bound_lines, "internal"), count(bound_lines, "variable")),
+  "# (No counts: see base-subset.txt.)",
   bound_lines), bound_out)
 message(sprintf("%s: %d closures, %d primitives, %d internals, %d variables", bound_out, count(bound_lines, "closure"),
                 count(bound_lines, "primitive"), count(bound_lines, "internal"), count(bound_lines, "variable")))

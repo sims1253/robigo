@@ -473,7 +473,7 @@ fn subset3_name<'s>(cx: &mut Cx, s: Scope<'s>, call: Root<'_>, rho: Root<'_>) ->
     let v = nl.bind(cx);
     match v.sexptype() {
         SYMSXP => {
-            let name = v.as_sym().unwrap().name();
+            let name = v.as_sym().unwrap().name(cx);
             Ok((s.root(cx, name.as_ref()), Some(nl)))
         }
         STRSXP => {
@@ -739,7 +739,7 @@ pub fn do_switch(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out:
         return Err(cx.error_call(Some(call), "'EXPR' is missing"));
     }
     if let Some((_, Some(t))) = arg(cx, call, 0) {
-        let supplied = t.name().bytes();
+        let supplied = t.name_bytes();
         if supplied.len() > 4 || !b"EXPR".starts_with(supplied) {
             let msg = format!("supplied argument name '{}' does not match 'EXPR'", String::from_utf8_lossy(supplied));
             return Err(cx.error_call(Some(call), &msg));
@@ -773,7 +773,7 @@ pub fn do_switch(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out:
                     let tag = w[i].1;
                     if tag != nil {
                         // SAFETY: a tag is an immortal symbol.
-                        let name = unsafe { Ref::from_sexp(tag, cx) }.as_sym().unwrap().name().bytes();
+                        let name = unsafe { Ref::from_sexp(tag, cx) }.as_sym().unwrap().name_bytes();
                         if name == key.as_slice() {
                             // the next non-missing alternative
                             let mut y = i;
@@ -1004,7 +1004,7 @@ fn list_env<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>) -> RResult<Root<'s>> {
                 let mut c = v.as_cons();
                 let mut i = 0;
                 while let Some(cell) = c {
-                    out.push((cell.tag().as_sym().map(|t| t.name().bytes().to_vec()), i));
+                    out.push((cell.tag().as_sym().map(|t| t.name_bytes().to_vec()), i));
                     c = cell.cdr().as_cons();
                     i += 1;
                 }
@@ -1139,7 +1139,7 @@ pub fn do_expression(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, _rho: Root<'_>,
             if named {
                 let mut nms = cx.alloc_vector::<Char<'_>>(items.len())?;
                 for (i, (_, t)) in items.iter().enumerate() {
-                    nms.set(i, t.map_or(cx.blank_string(), |t| t.bind(cx).as_sym().unwrap().name()));
+                    nms.set(i, t.map_or(cx.blank_string(), |t| t.bind(cx).as_sym().unwrap().name(cx)));
                 }
                 let mut a = robigo_rtbuiltins::attrib::Attrs::new();
                 a.install(robigo_rtbuiltins::attrib::Attr {

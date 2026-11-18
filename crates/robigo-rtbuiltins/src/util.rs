@@ -186,25 +186,47 @@ pub fn not_yet(cx: &mut Cx, call: Option<robigo_rtcore::Root<'_>>, what: &str) -
     cx.error_call(call, &format!("robigo: {what} is not implemented yet"))
 }
 
-/// GNU R's `asBool2(x, call)`: `asLogical2(x, checking = 1, call)`, NA an
-/// error ("NA in coercion to boolean"), an atomic vector of more than one
-/// element an error ("'length = %lld' in coercion to 'logical(1)'"), both
-/// against `call`. As in `asLogical2`, the length check is for atomic
-/// vectors only and a zero-length one is NA: a list, or `logical(0)`, is
-/// "NA in coercion to boolean".
-// R: coerce.c:asBool2, coerce.c:asLogical2
+/// GNU R's `asLogical2(x, checking = 1, call)`: [`as_logical`], and an
+/// atomic vector of more than one element an error ("'length = %lld' in
+/// coercion to 'logical(1)'") against `call` (None: R_NilValue). The length
+/// check is for atomic vectors only and a zero-length one is NA.
+// R: coerce.c:asLogical2
+pub fn as_logical_checked(
+    cx: &mut Cx,
+    call: Option<robigo_rtcore::Root<'_>>,
+    x: robigo_rtcore::Root<'_>,
+) -> robigo_rtcore::RResult<i32> {
+    let (v, n) = as_logical_n(cx, x.bind(cx));
+    if is_vector_atomic(x.bind(cx)) && n > 1 {
+        let msg = format!("'length = {n}' in coercion to 'logical(1)'");
+        return Err(cx.error_call(call, &msg));
+    }
+    Ok(v)
+}
+
+/// GNU R's `asBool2(x, call)`: [`as_logical_checked`] against `call`, NA an
+/// error ("NA in coercion to boolean") against `call` too. A list, or
+/// `logical(0)`, is "NA in coercion to boolean".
+// R: coerce.c:asBool2
 pub fn as_bool2(
     cx: &mut Cx,
     call: robigo_rtcore::Root<'_>,
     x: robigo_rtcore::Root<'_>,
 ) -> robigo_rtcore::RResult<bool> {
-    let (v, n) = as_logical_n(cx, x.bind(cx));
-    if is_vector_atomic(x.bind(cx)) && n > 1 {
-        let msg = format!("'length = {n}' in coercion to 'logical(1)'");
-        return Err(cx.error_call(Some(call), &msg));
-    }
+    let v = as_logical_checked(cx, Some(call), x)?;
     if v == logic::NA {
         return Err(cx.error_call(Some(call), "NA in coercion to boolean"));
+    }
+    Ok(v != 0)
+}
+
+/// GNU R's public `asBool(x)`, the C API's: as [`as_bool2`] with no call,
+/// except that NA is `error()`'s, reported against the context call.
+// R: coerce.c:asBool
+pub fn as_bool(cx: &mut Cx, x: robigo_rtcore::Root<'_>) -> robigo_rtcore::RResult<bool> {
+    let v = as_logical_checked(cx, None, x)?;
+    if v == logic::NA {
+        return Err(cx.error("NA in coercion to boolean"));
     }
     Ok(v != 0)
 }
@@ -242,7 +264,7 @@ pub fn match_args(
                 && match args.name(cx, i) {
                     None => true,
                     Some(t) => {
-                        let t = t.name().bytes();
+                        let t = t.name_bytes();
                         t == formals[i].as_bytes()
                             && args.get(cx, i) != missing
                             && formals.iter().enumerate().all(|(j, f)| j == i || f.as_bytes() != t)
@@ -254,7 +276,7 @@ pub fn match_args(
         let formals = (0..formals.len()).map(|i| (i < n).then_some(i)).collect();
         return Ok(Matched { formals, dots: Vec::new() });
     }
-    let tags: Vec<Option<Vec<u8>>> = (0..n).map(|i| args.name(cx, i).map(|s| s.name().bytes().to_vec())).collect();
+    let tags: Vec<Option<Vec<u8>>> = (0..n).map(|i| args.name(cx, i).map(|s| s.name_bytes().to_vec())).collect();
     let mut actual: Vec<Option<usize>> = vec![None; formals.len()];
     let mut fused = vec![0u8; formals.len()];
     let mut used = vec![0u8; n];
@@ -371,7 +393,7 @@ pub fn check1arg(
     formal: &str,
 ) -> robigo_rtcore::RResult<()> {
     let Some(tag) = (!args.is_empty()).then(|| args.name(cx, 0)).flatten() else { return Ok(()) };
-    let supplied = String::from_utf8_lossy(tag.name().bytes()).into_owned();
+    let supplied = String::from_utf8_lossy(tag.name_bytes()).into_owned();
     if !formal.starts_with(&supplied) {
         let msg = format!("supplied argument name '{supplied}' does not match '{formal}'");
         return Err(cx.error_call(Some(call), &msg));
@@ -549,4 +571,122 @@ pub fn do_compare_numeric_version(
         Err(m) => return Err(cx.error(m)),
     };
     cx.build(out, |cx| Ok(cx.alloc_copy(&ans)?.finish().into()))
+}
+
+/// `.Internal(validUTF8(x))`: whether each string is valid UTF-8 (NA's
+/// "NA" is).
+// R: util.c:do_validUTF8
+pub fn do_valid_utf8(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: robigo_rtcore::Root<'_>,
+    out: robigo_rtcore::Out<'_>,
+) -> robigo_rtcore::RResult<()> {
+    crate::row!("validUTF8", true).check_arity(cx, call, args)?;
+    let ans: Vec<robigo_rtcore::Lgl> = match args.get(cx, 0).view() {
+        robigo_rtcore::View::Str(v) => {
+            (0..v.len()).map(|i| robigo_rtcore::Lgl(crate::raw::utf8_valid(v.get(i).bytes()) as i32)).collect()
+        }
+        _ => return Err(cx.error("invalid 'x' argument")),
+    };
+    cx.build(out, |cx| Ok(cx.alloc_copy(&ans)?.finish().into()))
+}
+
+/// `.Internal(validEnc(x))`: whether each string is valid in its
+/// encoding: "bytes" and latin1 always; UTF-8 (marked, or native in a
+/// UTF-8 locale) when it is valid UTF-8; native in the C locale always.
+// R: util.c:do_validEnc
+pub fn do_valid_enc(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: robigo_rtcore::Root<'_>,
+    out: robigo_rtcore::Out<'_>,
+) -> robigo_rtcore::RResult<()> {
+    crate::row!("validEnc", true).check_arity(cx, call, args)?;
+    let utf8locale = cx.locale().utf8;
+    let ans: Vec<robigo_rtcore::Lgl> = match args.get(cx, 0).view() {
+        robigo_rtcore::View::Str(v) => (0..v.len())
+            .map(|i| {
+                let p = v.get(i);
+                let ok = match p.enc() {
+                    robigo_rtcore::Encoding::Bytes | robigo_rtcore::Encoding::Latin1 => true,
+                    robigo_rtcore::Encoding::Utf8 => crate::raw::utf8_valid(p.bytes()),
+                    // (mbcslocale is utf8locale in the locales robigo models)
+                    _ if utf8locale => crate::raw::utf8_valid(p.bytes()),
+                    _ => true,
+                };
+                robigo_rtcore::Lgl(ok as i32)
+            })
+            .collect(),
+        _ => return Err(cx.error("invalid 'x' argument")),
+    };
+    cx.build(out, |cx| Ok(cx.alloc_copy(&ans)?.finish().into()))
+}
+
+/// `enc2native(x)` (code 0) and `enc2utf8(x)` (code 1): the strings in
+/// that encoding, `x` itself when none needs translating, else a
+/// duplicate. In a UTF-8 locale, `enc2native` is `enc2utf8`.
+// R: util.c:do_enc2
+pub fn do_enc2<const CODE: i32>(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: robigo_rtcore::Root<'_>,
+    out: robigo_rtcore::Out<'_>,
+) -> robigo_rtcore::RResult<()> {
+    let row = if CODE == 1 { crate::row!("enc2utf8") } else { crate::row!("enc2native") };
+    row.check_arity(cx, call, args)?;
+    check1arg(cx, args, call, "x")?;
+    let x = args.root(0);
+    let n = match x.bind(cx).view() {
+        robigo_rtcore::View::Str(v) => v.len(),
+        _ => return Err(cx.error_call(Some(call), "argument is not a character vector")),
+    };
+    let loc = cx.locale();
+    let to_utf8 = CODE == 1 || loc.utf8;
+    // (i, translated bytes, encoding) for each string that changes
+    let mut changed: Vec<(usize, Vec<u8>, robigo_rtcore::Encoding)> = Vec::new();
+    for i in 0..n {
+        let c = x.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
+        if c == cx.na_string() {
+            continue;
+        }
+        let t = crate::coerce::text(c);
+        let enc = c.enc();
+        let ascii = t.is_ascii();
+        if to_utf8 {
+            if enc == robigo_rtcore::Encoding::Utf8 || ascii || enc == robigo_rtcore::Encoding::Bytes {
+                continue;
+            }
+            match crate::text::to_utf8(t, loc) {
+                Ok(b) => changed.push((i, b.into_owned(), robigo_rtcore::Encoding::Utf8)),
+                Err(_) => return Err(cx.error("translating strings with \"bytes\" encoding is not allowed")),
+            }
+        } else if matches!(enc, robigo_rtcore::Encoding::Utf8 | robigo_rtcore::Encoding::Latin1) {
+            // ENC_KNOWN: to the native encoding (the C locale: neither
+            // latin1 nor UTF-8)
+            if ascii {
+                continue;
+            }
+            match crate::text::to_native(t, loc) {
+                Ok(b) => changed.push((i, b.into_owned(), robigo_rtcore::Encoding::Native)),
+                Err(_) => return Err(cx.error("translating strings with \"bytes\" encoding is not allowed")),
+            }
+        }
+    }
+    if changed.is_empty() {
+        out.set(cx, x.bind(cx));
+        return Ok(());
+    }
+    cx.scope(|cx, s| {
+        let d = s.capture(cx, |cx, o| cx.duplicate(x, o))?;
+        for (i, b, enc) in &changed {
+            let c = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.mk_char(b, *enc)?.into())))?;
+            cx.owned_list(d)?.set(*i, c);
+        }
+        out.set(cx, d.bind(cx));
+        Ok(())
+    })
 }
