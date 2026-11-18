@@ -1,4 +1,4 @@
-# builtin-diff known failures: ~, seed 0, key df959347f03d8b21d37eaf8b
+# builtin-diff known failures: ~, seed 0, key ce8d2b59afc8e9e576d89305
 # ~: 0 / 65 (not-implemented 64, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 1
 2

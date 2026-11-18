@@ -716,7 +716,9 @@ def cmd_run(a):
             new = fails
         if new:
             status = 1
-        if not a.keep:
+        if getattr(a, "reuse", None) is not None and r["row"].name in PLANT_ROWS and r["jit"] == "off":
+            a.reuse[r["row"].name] = r    # the plant check's runs on this binary (ci)
+        elif not a.keep:
             shutil.rmtree(r["scratch"], ignore_errors=True)
         else:
             print(f"  robigo-rt's records: {r['rt']}")
@@ -776,6 +778,7 @@ PLANTS = {
     "Sys.getenv": ("mismatch", {"files"}),
 }
 CONTROL = ["rep_len"]
+PLANT_ROWS = {*PLANTS, *CONTROL}
 
 
 def cmd_plant(a):
@@ -792,7 +795,7 @@ def cmd_plant(a):
     ok = True
     try:
         for row in rows:
-            base = run_rt(a, row, "off", base_rt, prefix)
+            base = (getattr(a, "reuse", None) or {}).get(row.name) or run_rt(a, row, "off", base_rt, prefix)
             plant = run_rt(a, row, "off", a.plant_rt, prefix)
             changed = sorted(i for i in base["res"] if base["res"][i] != plant["res"][i])
             if row.name in CONTROL:
@@ -873,6 +876,7 @@ def cmd_ci(a):
     base = os.path.join(work, "robigo-rt")
     shutil.copy2(rel, base)
     a.robigo_rt, a.only, a.show, a.update, a.regen_known, a.keep, a.timing = base, None, 5, False, False, False, True
+    a.reuse = {}    # run's results for the plant rows, so plant need not run them again
     status = cmd_check_rows(a)
     status = cmd_run(a) or status
     if subprocess.run([*build, "--features", PLANT_FEATURE], cwd=ROOT).returncode != 0:

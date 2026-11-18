@@ -1,4 +1,4 @@
-# builtin-diff known failures: path.expand, seed 0, key b8c1240f6f18b78ab7740711
+# builtin-diff known failures: path.expand, seed 0, key 2280ab01bca36beee82e4e2c
 # path.expand: 0 / 34 (not-implemented 34, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 1
 2

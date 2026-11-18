@@ -1,4 +1,4 @@
-# builtin-diff known failures: bindingIsActive, seed 0, key 3ee9d42ad738a44e26647afc
+# builtin-diff known failures: bindingIsActive, seed 0, key b12b706d99e8e8fd0ca8fe46
 # bindingIsActive: 1 / 160 (not-implemented 159, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 1
 2

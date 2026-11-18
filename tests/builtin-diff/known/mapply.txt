@@ -1,2 +1,2 @@
-# builtin-diff known failures: mapply, seed 0, key cbf6b3150622a1d7b99eec17
+# builtin-diff known failures: mapply, seed 0, key b49de4aa8f7ce2930311725a
 # mapply: 154 / 154 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)

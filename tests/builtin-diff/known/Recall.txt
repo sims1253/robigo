@@ -1,4 +1,4 @@
-# builtin-diff known failures: Recall, seed 0, key 2e71a8e59a84960848ba48ef
+# builtin-diff known failures: Recall, seed 0, key 1181c958c3351ad0557a7606
 # Recall: 0 / 130 (not-implemented 130, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 1
 2

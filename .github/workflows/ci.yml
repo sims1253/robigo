@@ -200,7 +200,9 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 20
+    # (measured: about 8 minutes cold here, most of it the External rows'
+    # one process per case, each batch run twice)
+    timeout-minutes: 40
     env:
       ROBIGO_BUILTIN_DIFF_ORACLE: ${{ needs.select.outputs.image_oracle_4_6_2 }}
     outputs:
@@ -251,8 +253,11 @@ jobs:
     # 2026-11-17-retry-torture-ci.md): the slowest hosted runners take ~20 min
     # with a case per CPU, ~9 of them the release tests, and the retry-torture
     # step (rt-ci.py's last: its feature rebuild and run) adds ~4; 40 keeps
-    # 1.6x the ~24. A step that adds minutes moves this number with data.
-    timeout-minutes: 40
+    # 1.6x the ~24. A step that adds minutes moves this number with data:
+    # A4's builtin differential (rt-ci.py's builtin-diff step: the plant
+    # build, every row, the planted rows once more on the plant binary)
+    # adds about 10 here, so 50.
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup

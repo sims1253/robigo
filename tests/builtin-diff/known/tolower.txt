@@ -1,4 +1,4 @@
-# builtin-diff known failures: tolower, seed 0, key 1e068e568e2ab370ad24d7db
+# builtin-diff known failures: tolower, seed 0, key aad960e27733a7a1e514d17a
 # tolower: 0 / 128 (not-implemented 128, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 1
 2

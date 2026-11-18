@@ -1,4 +1,4 @@
-# builtin-diff known failures: seq_len, seed 0, key ef7f6e7be07c91b9735044e0
+# builtin-diff known failures: seq_len, seed 0, key 3c8d15a34a903d4769cd8a0e
 # seq_len: 62 / 65 (not-implemented 0, crash 1, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 10
 40

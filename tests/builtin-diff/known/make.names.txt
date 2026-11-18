@@ -1,4 +1,4 @@
-# builtin-diff known failures: make.names, seed 0, key 2e7858c53d02ca7fcc59383d
+# builtin-diff known failures: make.names, seed 0, key 213a2872d29ac62d75b10f30
 # make.names: 0 / 583 (not-implemented 583, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 1
 2

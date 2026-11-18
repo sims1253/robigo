@@ -1,4 +1,4 @@
-# builtin-diff known failures: abs, seed 0, key 152873c0ebde470a7a2a049c
+# builtin-diff known failures: abs, seed 0, key 82ed986710fadefc1b86c9eb
 # abs: 61 / 65 (not-implemented 4, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 30
 31

@@ -1,5 +1,5 @@
-# builtin-diff known failures: Sys.chmod, seed 0, key 983dd0d36f3f62ad5488a3a7
-# Sys.chmod: 0 / 437 (not-implemented 437, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
+# builtin-diff known failures: Sys.chmod, seed 0, key 4393259d8124ec56650552ef
+# Sys.chmod: 0 / 395 (not-implemented 395, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 1
 2
 3
@@ -395,45 +395,3 @@
 393
 394
 395
-396
-397
-398
-399
-400
-401
-402
-403
-404
-405
-406
-407
-408
-409
-410
-411
-412
-413
-414
-415
-416
-417
-418
-419
-420
-421
-422
-423
-424
-425
-426
-427
-428
-429
-430
-431
-432
-433
-434
-435
-436
-437
