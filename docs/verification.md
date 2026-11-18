@@ -492,6 +492,26 @@ scripts/perf.py compare before.json after.json          # the gate
   warmed-up batch; only batches of 50 ms or more count, so programs that
   take microseconds are still timed to about 2%. This is the finish line
   of "the fastest R", which instruction counts against GNU R cannot be.
+- **robigo-rt's wall time, under docs/g3.md §13's rule** (A3):
+  - **The build:** robigo-rt's shipped build is profile-guided.
+    `scripts/pgo-build.sh -p robigo-rtapi profile` trains an instrumented
+    build on perf-rt's rows (`benchmarks/rt/calls-rows.toml`), E1's
+    programs, the boot and `tests/rt`, and writes
+    `.robigo/pgo-rt/robigo-rt.profdata`. `pgo-build.sh -p robigo-rtapi use
+    FILE` builds with it. Pull requests' perf gates stay without PGO, as
+    robigo's do.
+  - **The comparison:** `scripts/wall13.py --robigo-rt BIN` times that
+    binary against GNU R 4.6.2 (the oracle image) and, with `--impls`, Ř
+    and FastR, for each program `--filter` selects from
+    `benchmarks/benchmarks.toml`.
+  - **The rule:** each sample is a batch of at least 50 ms; at least 10
+    interleaved rounds, rotated; medians compared; within 2% is a tie,
+    which does not count as faster.
+  - **What it records:** the machine (CPU model and signature) and
+    robigo-rt's binary identity. `--report FILE [--markdown]` prints a run.
+  - **Where it runs:** by hand on the 5900X desktop and on m0pad. There is
+    no CI job: GitHub's runners vary too much for a 2% tie, and the
+    self-hosted runners were removed.
 
 ### Path-scoped perf gate
 
