@@ -589,7 +589,13 @@ scripts/counters.py check -v   # every fixture in the ast, vm and jit tiers
   marker to make a run pass; fix the regression.
 - New passes are added with `--update` (locally) or `scripts/corpus.py
   absorb` on CI's result files (artifacts `corpus-*`); both create
-  markers. `ROBIGO_CONF_UPDATE=1` marks conformance scripts.
+  markers. `absorb --from-run [ID]` fetches those artifacts itself with
+  `gh`: the newest completed push run on main that has any, or run ID,
+  which must be a push to main. It skips a profile's or a tier's results
+  and the conformance runner's. Run it with `--dry-run` first and run the
+  listed cases locally, because a CI pass can depend on CI's environment
+  (gnur-examples' `base/system.file` passes there, not on a workstation).
+  `ROBIGO_CONF_UPDATE=1` marks conformance scripts.
 - `scripts/ratchet.py check` lists the ratchets and fails if a marker
   names no case; `scripts/ratchet.py migrate` converts a legacy
   `passing.txt` (still read, for branches that predate the markers).
@@ -703,8 +709,11 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    (robigo-rt's checked-in base subset is what this tree traces: its
    names, kinds and defining files; which scripts reach each name is the
    job's artifact `base-subset-reached-by`, kept out of the file so that a
-   new case changes it only where it reaches a new name). It fails for one
-   of two reasons, and says which:
+   new case changes it only where it reaches a new name; for the same
+   reason the committed files carry no counts, which the generator prints
+   to the log, so two pull requests that each add a name merge to the file
+   the generator makes, or conflict where they add next to each other). It
+   fails for one of two reasons, and says which:
    - **a stale list:** the inputs now reach other names
      (scripts/base-subset-stale.py lists those gained, with the inputs that
      reach them, and those lost). Run `scripts/base-subset.sh` and commit

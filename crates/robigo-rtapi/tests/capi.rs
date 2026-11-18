@@ -528,6 +528,8 @@ fn coerce_vector_to_an_unknown_type_names_the_callers_code() {
             "cannot coerce type 'integer' to vector of type 'unknown type #999'".into(),
         ])
     );
+    // the warning was muffled and the error caught: nothing reached the console
+    assert_eq!(s.stderr(), "");
 }
 
 /// eval.c's `check_stack_balance` after a `.Call` that leaves an object

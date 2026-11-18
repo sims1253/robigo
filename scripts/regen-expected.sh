@@ -103,6 +103,12 @@ for f in "${files[@]}"; do
     tzdir=$(cd "$(dirname "$f")/$tzdir" && pwd -P) || exit 1
     tz_env+=("TZDIR=$tzdir")
   fi
+  # a .locale sidecar: the LC_ALL the case runs under (robigo-conformance's
+  # command reads it too)
+  if [ -f "$base.locale" ]; then
+    IFS= read -r loc < "$base.locale"
+    tz_env+=("LC_ALL=$loc")
+  fi
   "${tz_env[@]}" Rscript --vanilla "$f" > "$out.Rout" 2> "$out.Rerr"
   echo $? > "$out.Rstatus"
   if [ "$want" != "$gated" ]; then

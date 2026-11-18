@@ -6,7 +6,7 @@ each new one, and what to run.
     scripts/base-subset-stale.py COMMITTED GENERATED [REACHED_BY]
 
 Exits 0 when the two files have the same lines, 1 (with the report on
-stderr) when they do not. Comment lines (`#`, the header and its counts) are
+stderr) when they do not. Comment lines (`#`, the header) are
 compared too, but reported only when nothing else differs.
 REACHED_BY is base-subset.R's `reached-by.txt` (KIND NAME [FILE] INPUTS).
 """
@@ -63,7 +63,7 @@ def report(committed, generated, by_path=None):
     elif body_old != body_new:
         out.append("The same names, in another order.")
     else:
-        out.append("Only its header differs (the generator's comments or counts).")
+        out.append("Only its header differs (the generator's comments).")
     out += [
         "The generator ran; its output differs from the committed file. Usually that is a case added",
         "or changed among its inputs (the M1 scripts, the d2s/e7 rows, tests/rt/capi's cases, the",
