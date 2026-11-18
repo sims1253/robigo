@@ -203,6 +203,13 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("gctorture", crate::memory::do_gctorture, Inline::None, 111, 1),
     // names.c: {"mem.maxVSize", do_maxVSize, 0, 11, 1, ...}
     builtin("mem.maxVSize", crate::memory::do_max_vsize, Inline::None, 11, 1),
+    // names.c: gc.time (a primitive), gcinfo, gctorture2, memory.profile,
+    // mem.maxNSize
+    builtin("gc.time", crate::memory::do_gctime, Inline::None, 1, -1),
+    builtin("gcinfo", crate::memory::do_gcinfo, Inline::None, 11, 1),
+    builtin("gctorture2", crate::memory::do_gctorture2, Inline::None, 11, 3),
+    builtin("memory.profile", crate::memory::do_memoryprofile, Inline::None, 11, 0),
+    builtin("mem.maxNSize", crate::memory::do_max_nsize, Inline::None, 11, 1),
     builtin("eval", crate::eval::do_eval, Inline::None, 211, 3),
     // names.c: {"returnValue", do_returnValue, 0, 11, 1, ...}
     builtin("returnValue", crate::eval::do_return_value, Inline::None, 11, 1),

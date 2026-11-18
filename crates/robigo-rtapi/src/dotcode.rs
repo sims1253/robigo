@@ -38,7 +38,7 @@ pub(crate) fn install(cx: &mut Cx) {
 /// name, the usual case).
 // R: dotcode.c:pkgtrim, setDLLname
 fn pkgtrim(cx: &mut Cx, args: Args<'_>) -> RResult<(Option<String>, Option<Vec<usize>>)> {
-    let named = (1..args.len()).any(|i| args.name(cx, i).is_some_and(|n| n.name().bytes() == b"PACKAGE"));
+    let named = (1..args.len()).any(|i| args.name(cx, i).is_some_and(|n| n.name_bytes() == b"PACKAGE"));
     if !named {
         return Ok((None, None));
     }
@@ -46,7 +46,7 @@ fn pkgtrim(cx: &mut Cx, args: Args<'_>) -> RResult<(Option<String>, Option<Vec<u
     let mut used = 0;
     let mut keep = Vec::new();
     for i in 1..args.len() {
-        let is_pkg = args.name(cx, i).is_some_and(|n| n.name().bytes() == b"PACKAGE");
+        let is_pkg = args.name(cx, i).is_some_and(|n| n.name_bytes() == b"PACKAGE");
         if !is_pkg {
             keep.push(i);
             continue;
@@ -114,7 +114,7 @@ fn check_valid_symbol_id(cx: &mut Cx, call: Root<'_>, op: Root<'_>, symbol: &mut
                     .map_err(|e| e.to_string()),
             )
         } else if let View::ExtPtr(e) = x.view() {
-            Kind::Ptr(e.tag().as_sym().map(|t| t.name().bytes().to_vec()), e.addr())
+            Kind::Ptr(e.tag().as_sym().map(|t| t.name_bytes().to_vec()), e.addr())
         } else if x.as_vector::<Ref<'_>>().is_some_and(|v| v.len() >= 2 && v.get(1).sexptype() == EXTPTRSXP) {
             // isNativeSymbolInfo: a list of at least two whose second is a
             // pointer

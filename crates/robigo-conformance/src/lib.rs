@@ -55,7 +55,8 @@
 //!   ROBIGO_GCTORTURE=1          a collection at every allocation (with or
 //!                               without ROBIGO_GC_MOVE), passed on to the
 //!                               binary: the cases whose `.requires` names
-//!                               `volume` are not run
+//!                               `volume` or `collection-schedule` are not
+//!                               run
 //! The binary and the results file are the caller's (each test names its
 //! own variables), so one `cargo test --workspace` can run both columns.
 
