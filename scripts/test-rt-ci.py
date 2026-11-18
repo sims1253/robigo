@@ -71,6 +71,14 @@ class RtCi(unittest.TestCase):
         src = (HERE.parent / "crates/robigo-rtapi/tests/conformance.rs").read_text()
         self.assertIn(f"fn {rt.CONFORMANCE}()", src)
 
+    def test_the_r_home_tree_is_made_before_any_conformance_step(self):
+        # the cases that load tools' native code need it (r-home-tools)
+        steps = rt.steps(["robigo-rt", "robigo-rtcore"])
+        names = [c for _, _, c in steps]
+        tree = names.index(["scripts/rt-home.sh"])
+        first = next(i for i, c in enumerate(names) if rt.CONFORMANCE in c and "--exact" in c)
+        self.assertLess(tree, first)
+
     def test_the_retry_torture_feature_is_built_for_its_step_alone(self):
         # every other step tests the binary users get; this one, last, the
         # mode compiled in and on, with the collector modes' case timeout

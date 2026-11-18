@@ -1,0 +1,28 @@
+[1] "DLLInfo"
+[1] "tools"
+[1] FALSE
+[1] TRUE
+       .C     .Call  .Fortran .External 
+        1        19         0         2 
+[1] "parseLatex" "parseRd"   
+ [1] "codeFilesAppend"             "delim_match"                
+ [3] "dirchmod"                    "getfmts"                    
+ [5] "Rmd5"                        "Rsha256"                    
+ [7] "check_nonASCII"              "check_nonASCII2"            
+ [9] "doTabExpand"                 "ps_kill"                    
+[11] "ps_sigs"                     "ps_priority"                
+[13] "startHTTPD"                  "stopHTTPD"                  
+[15] "deparseRd"                   "splitString"                
+[17] "package_dependencies_scan"   "nonASCII"                   
+[19] "remove_dot_segments_wrapper"
+[1] "ExternalRoutine"  "NativeSymbolInfo"
+[1] 9
+[1] "opened"
+[1] 8
+[1] "\\name"        "TEXT"          "\\alias"       "TEXT"         
+[5] "\\title"       "TEXT"          "\\description" "TEXT"         
+[1] "foo"
+[1] "TEXT"   "\\emph" "TEXT"  
+[1] "Some " "text"  "."    
+[1] "text"
+[1] "\"parseRd\" not available for .External() for package \"tools\""
