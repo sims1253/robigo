@@ -2816,7 +2816,7 @@ impl Core {
         let mut r = String::new();
         let _ = write!(r, "Garbage collection {n} = 0+0+{n} (level 2) ... ");
         let _ = write!(r, "\n{ncells:.1} Mbytes of cons cells used ({}%)\n", (nfrac + 0.5) as i32);
-        let _ = write!(r, "{vcells:.1} Mbytes of vectors used ({}%)\n", (vfrac + 0.5) as i32);
+        let _ = writeln!(r, "{vcells:.1} Mbytes of vectors used ({}%)", (vfrac + 0.5) as i32);
         self.gc_report.extend_from_slice(r.as_bytes());
     }
 

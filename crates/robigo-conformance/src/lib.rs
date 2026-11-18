@@ -55,7 +55,8 @@
 //!   ROBIGO_GCTORTURE=1          a collection at every allocation (with or
 //!                               without ROBIGO_GC_MOVE), passed on to the
 //!                               binary: the cases whose `.requires` names
-//!                               `volume` are not run
+//!                               `volume` or `collection-schedule` are not
+//!                               run
 //! The binary and the results file are the caller's (each test names its
 //! own variables), so one `cargo test --workspace` can run both columns.
 
@@ -332,11 +333,15 @@ pub const RT: Column = Column {
 /// binary's `R_HOME` tree (`library/tools/libs/tools.so`, which
 /// `scripts/rt-home.sh` builds), so it runs where the caller found that
 /// tree, its stamp and the file (robigo-rtapi's conformance test).
+/// `collection-schedule`: the recording depends on where collections
+/// happen (a `gcinfo(TRUE)` report on stderr), so the case does not run
+/// under gctorture, which collects at every allocation.
 pub const KNOWN_FEATURES: &[&str] =
-    &["bytecode-fidelity", "inplace-identity", "promise-identity", "r-home-tools", "volume"];
+    &["bytecode-fidelity", "collection-schedule", "inplace-identity", "promise-identity", "r-home-tools", "volume"];
 
 /// The production identities the environment's observation modes keep
-/// ([`KNOWN_FEATURES`]), and `volume` unless gctorture is on; and whether
+/// ([`KNOWN_FEATURES`]), and `volume` and `collection-schedule` unless
+/// gctorture is on; and whether
 /// an observation mode is on.
 pub fn identity_features() -> (Vec<&'static str>, bool) {
     let on = |name: &str| std::env::var(name).as_deref() == Ok("1");
@@ -350,6 +355,7 @@ pub fn identity_features() -> (Vec<&'static str>, bool) {
     }
     if !on("ROBIGO_GCTORTURE") {
         f.push("volume");
+        f.push("collection-schedule");
     }
     (f, inplace || materialize)
 }
