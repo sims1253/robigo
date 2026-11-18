@@ -12,6 +12,7 @@ process (docs/g3.md §10, §16 "ROBIGO_BUILTIN_DIFF"; docs/verification.md,
     scripts/builtin-diff.py check-rows           # every registry builtin has a row or a reason
     scripts/builtin-diff.py oracle ...           # GNU R's side (in the oracle image)
     scripts/builtin-diff.py key                  # the cache key of GNU R's side (CI)
+    scripts/builtin-diff.py ci                   # rt-ci.py's step: run, then plant
 
 Each row of tests/builtin-diff/rows.toml becomes a batch of cases (made by
 scripts/builtin-diff/gen.R in GNU R 4.6.2). Each case runs in both runtimes
@@ -241,7 +242,7 @@ def cmd_oracle(a):
     PATH: in the oracle image)."""
     doc, _ = load_rows()
     nc, reg = names_c(a.r_src or r_source()), registry()
-    rows = [Row(n, doc[n], nc, reg) for n in a.rows]
+    rows = [Row(n, doc[n], nc, reg) for n in (sorted(doc) if a.all else a.rows)]
     todo = [(r, j) for r in rows for j in r.jits if not have_oracle(a.data, r, a.seed, j)]
     if not todo:
         return 0
@@ -287,7 +288,7 @@ def ensure_oracle(a, rows):
     missing = sorted({r.name for r in rows for j in r.jits if not have_oracle(a.data, r, a.seed, j)})
     if not missing:
         return
-    if a.no_docker:
+    if a.no_docker or not shutil.which("docker"):
         sys.exit("builtin-diff: no GNU R records for " + ", ".join(missing) +
                  f" in {a.data} (CI: the builtin-diff-data job makes them; locally: drop --no-docker)")
     os.makedirs(a.data, exist_ok=True)
@@ -428,8 +429,10 @@ def report(r, known, show):
     new = [i for i in fails if known is None or i not in known]
     print(score_line(variant, c))
     calls = {i: (kind, call) for i, kind, call in r["cases"]}
+    new_set = set(new)
     mism = [i for i in fails if r["res"][i] == "mismatch"]
-    shown = [i for i in new][:show]
+    # every failing call, the new ones (not in known/) first
+    shown = ([i for i in new] + [i for i in fails if i not in set(new)])[:show]
     detail = render([(i, os.path.join(r["oracle"], f"{i:06d}.rds"), os.path.join(r["rt"], f"{i:06d}.rds"))
                      for i in mism])
     if mism:
@@ -447,7 +450,8 @@ def report(r, known, show):
     for i in shown:
         kind, call = calls[i]
         why = r["res"][i]
-        line = f"  #{i} {kind:7} {why:15} {call}"
+        mark = "NEW " if i in new_set else "    "
+        line = f"  {mark}#{i} {kind:7} {why:15} {call}"
         if why == "mismatch" and i in detail:
             f, o, x = detail[i]
             line += f"\n      {f}: GNU R {o}\n      {' ' * len(f)}  robigo-rt {x}"
@@ -457,8 +461,8 @@ def report(r, known, show):
                 tail = [t for t in open(lostf, errors="replace").read().strip().splitlines()[1:] if t.strip()]
                 line += "".join(f"\n      {t[:200]}" for t in tail[-3:])
         print(line)
-    if len(new) > len(shown):
-        print(f"  ... {len(new) - len(shown)} more (scripts/builtin-diff.py show {r['row'].name} ID)")
+    if len(fails) > len(shown):
+        print(f"  ... {len(fails) - len(shown)} more (--show N, or scripts/builtin-diff.py show {r['row'].name} ID)")
     return new, fails
 
 
@@ -636,6 +640,32 @@ def cmd_key(a):
     return 0
 
 
+PLANT_FEATURE = "robigo-rtbuiltins/diff-plant"
+
+
+def cmd_ci(a):
+    """rt-ci.py's step: every row against the release binary the steps before
+    built, then the plant check with a build of robigo-rt with the plants."""
+    target = os.environ.get("CARGO_TARGET_DIR", os.path.join(ROOT, "target"))
+    work = os.path.join(ROOT, ".robigo", "builtin-diff")
+    os.makedirs(work, exist_ok=True)
+    rel = os.path.join(target, "release", "robigo-rt")
+    build = ["cargo", "build", "--release", "--locked", "-p", "robigo-rtapi", "--bin", "robigo-rt"]
+    if subprocess.run(build, cwd=ROOT).returncode != 0:
+        return 1
+    base = os.path.join(work, "robigo-rt")
+    shutil.copy2(rel, base)
+    a.robigo_rt, a.only, a.show, a.update, a.regen_known, a.keep = base, None, 5, False, False, False
+    status = cmd_run(a)
+    if subprocess.run([*build, "--features", PLANT_FEATURE], cwd=ROOT).returncode != 0:
+        return 1
+    plant = os.path.join(work, "robigo-rt-plant")
+    shutil.copy2(rel, plant)
+    a.plant_rt = plant
+    print("builtin-diff: the planted divergences", flush=True)
+    return status or cmd_plant(a)
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -662,17 +692,20 @@ def main(argv):
     common(p)
     p.add_argument("--plant-rt", required=True, help="robigo-rt built with robigo-rtbuiltins/diff-plant")
     sub.add_parser("check-rows")
+    p = sub.add_parser("ci")
+    common(p)
     p = sub.add_parser("oracle")
     common(p)
     p.add_argument("--r-src")
-    p.add_argument("rows", nargs="+")
+    p.add_argument("--all", action="store_true", help="every row")
+    p.add_argument("rows", nargs="*")
     p = sub.add_parser("key")
     p.add_argument("--r-src")
     a = ap.parse_args(argv)
     if hasattr(a, "data"):
         a.data = os.path.abspath(a.data)
     return {"run": cmd_run, "show": cmd_show, "plant": cmd_plant, "check-rows": cmd_check_rows,
-            "oracle": cmd_oracle, "key": cmd_key}[a.cmd](a)
+            "oracle": cmd_oracle, "key": cmd_key, "ci": cmd_ci}[a.cmd](a)
 
 
 if __name__ == "__main__":
