@@ -161,6 +161,37 @@ serialize header. The other scripts locate a difference: `why.R` (the
 first differing op or constant), `use.R` (the primitives a closure
 calls), `env*.R` and `nf.R` (environment and data records).
 
+### On main after #844: what a `_R_COMPILE_PKGS_` write does today
+
+#844 (L's readers) had serialize refuse to write a closure under
+`_R_COMPILE_PKGS_`, with a cli.rs test expecting the refusal. This step
+replaces the refusal with the compile. The test now checks what happens
+when the compiler namespace cannot load. GNU R 4.6.2 was checked on the
+oracle, with an R_HOME whose library has no compiler:
+- the first `serialize()` of a closure fails with `:::`'s error (a
+  `hasNoNamespaceError`, "package ‘compiler’ does not have a namespace",
+  call NULL);
+- `R_compile_pkgs` stays off, so the next closure is written uncompiled.
+
+The port does the same. robigo-rt makes the compiler namespace from the
+tarball's source itself (`ns::load_compiler`, INTERIM(L2)), so an R_HOME
+without the package cannot reproduce GNU R's message. The test therefore
+checks main's own failure: cmp.R stops on base's `.AutoloadEnv`
+(INTERIM(L5)), then the next write is uncompiled.
+
+So on main today, the first `_R_COMPILE_PKGS_` write fails loudly, and
+any later one is written uncompiled. GNU R's build does not catch the
+error: `makeLazyLoadDB` (tools) and `makebasedb.R` call
+`lazyLoadDBinsertValue` with no `tryCatch`. robigo-rt's build therefore
+stops at the first closure of the first package. It fails loudly, which
+is the honest state, and A1's silent uncompiled databases cannot come
+back from a build. Only code that catches the first error itself goes
+on to write uncompiled closures, as GNU R would. Two changes remove the
+failure:
+- L's `.AutoloadEnv` (stacked on #855): the compiler namespace loads, and
+  the fixture passes;
+- readDCF, in L's PR (b): L4's build reads the packages' files.
+
 ### Review
 
 Sol (codex `gpt-6.1-sol`, high), round 1 on the whole step: APPROVE, no
@@ -194,3 +225,12 @@ On main `c3a685b3e`:
   - retry torture.
 - Miri: not run. The step changes neither robigo-rtcore nor robigo-heap.
 - `cargo fmt`, `scripts/lint.sh`: clean.
+
+After merging main `326649fa6` (#844, #846):
+- The cli tests: 6 passed, among them the rewritten
+  `compiling_closures_on_serialize_when_the_compiler_cannot_load`.
+- The `tests/rt/serialize`, `tests/rt/jit` and rdb slices pass. Only the
+  unratcheted `serialize/compile-pkgs.R` and `bytecode/*` cases fail.
+- perf-rt against main `326649fa6`'s binary: flat. The largest change is
+  superassign at -0.18%, and the rest are within ±0.04%.
+- `scripts/lint.sh`: clean.
