@@ -209,6 +209,16 @@ test. F_VIS stays in the IR, where the crosscheck compares it and the
 inline evaluator reads it. Callgrind against main `046c437c`: plain
 +0.13%, defaults, named, env-fn and guard-subset-dbl within ±0.1%.
 
+### Sol's round 6
+
+A narrow round on the changes since round 5 (`4b4f22d7d..3c70a6090`):
+the decline reading the isolate's INTERNAL table, and the unconditional
+visibility in the AndOr arm (eval.c:8361-8409). Verdict APPROVE, no new
+findings. S10 and S11 are resolved: the inline evaluator keeps honoring
+F_VIS on AndOr, and the VM's store comes after the operand checks, as
+bcEval's does. Sol found no case where the inline evaluator and the VM
+disagree on visibility.
+
 ### Result
 
 One verdict per closure. base.rdb: 980 the same, 145 expected in five
