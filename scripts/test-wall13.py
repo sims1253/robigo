@@ -4,7 +4,10 @@ import contextlib
 import importlib.util
 import io
 import os
+import tempfile
+import types
 import unittest
+import unittest.mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 spec = importlib.util.spec_from_file_location("wall13", os.path.join(HERE, "wall13.py"))
@@ -43,6 +46,40 @@ class Wall13(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             w.report(doc(3.0))
         self.assertIn("WARNING: the machine was busy", out.getvalue())
+
+    def test_each_sample_is_a_batch_of_at_least_50_ms(self):
+        # the first run (the answer) takes 100 ms, every later one 1 ms: a
+        # sample is then 50 processes, never one
+        times = {"robigo-rt": [0.1], "gnur": [0.1]}
+
+        def run(impl):
+            t = times[impl].pop(0) if times[impl] else 0.001
+            return t, "same answer\n", 0
+
+        class Runner:
+            def run(self, impl, file, pk, timeout, robigo):
+                return run(impl)
+
+        a = types.SimpleNamespace(rounds=10, timeout=1.0, robigo_rt="x")
+        with tempfile.TemporaryDirectory() as d, \
+             unittest.mock.patch.object(w, "run_rt", lambda *x: run("robigo-rt")):
+            rec = w.measure(("p/a", "1", "", "utils"), ["robigo-rt", "gnur"], Runner(), a, d, io.StringIO())
+        self.assertEqual(rec["runs"]["gnur"], [50] * 10)
+        self.assertAlmostEqual(rec["median"]["robigo-rt"], 0.001)
+
+    def test_gnur_failing_on_base_alone_is_reported_not_timed(self):
+        class Runner:
+            def run(self, impl, file, pk, timeout, robigo):
+                self.pk = pk
+                return 0.1, "Error: could not find function median", 1
+
+        a = types.SimpleNamespace(rounds=10, timeout=1.0, robigo_rt="x")
+        r = Runner()
+        with tempfile.TemporaryDirectory() as d, \
+             unittest.mock.patch.object(w, "run_rt", lambda *x: (0.1, "ok\n", 0)):
+            rec = w.measure(("p/a", "1", "", "utils,stats"), ["robigo-rt", "gnur"], r, a, d, io.StringIO())
+        self.assertEqual(r.pk, "NULL")
+        self.assertIn("needs packages", rec["error"])
 
     def test_fewer_than_ten_rounds_are_refused(self):
         with self.assertRaises(SystemExit):

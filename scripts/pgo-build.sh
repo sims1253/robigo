@@ -35,10 +35,11 @@ case $pkg in
   *) echo "pgo-build.sh: -p robigo-cli or -p robigo-rtapi" >&2; exit 2 ;;
 esac
 
+# (the caller's `x=$(profdata_tool)` stops the script when this fails)
 profdata_tool() {
   local t
   t=$(rustc --print sysroot)/lib/rustlib/$host/bin/llvm-profdata
-  [ -x "$t" ] || t=$(command -v llvm-profdata)
+  [ -x "$t" ] || t=$(command -v llvm-profdata) || { echo "pgo-build.sh: no llvm-profdata" >&2; return 1; }
   echo "$t"
 }
 
@@ -63,9 +64,13 @@ PY
   [ ${#failed[@]} -eq 0 ] || echo "pgo-build.sh: ${#failed[@]} program(s) stop with an error under robigo-rt: ${failed[*]}" >&2
   for _ in 1 2 3 4 5; do env -u R_HOME "$bin" -e 1 > /dev/null; done
   scripts/rt-home.sh > /dev/null
-  # the cases' outcome is the conformance gate's business; here they only run
-  ROBIGO_RT_BIN=$bin cargo test --release --locked -p robigo-rtapi --test conformance -- --exact rt_conformance \
-    > "$work/conformance.log" 2>&1 || echo "pgo-build.sh: the rt conformance run did not pass (see $work/conformance.log)" >&2
+  # the cases' outcome is the conformance gate's business; here they must run
+  if ! ROBIGO_RT_BIN=$bin cargo test --release --locked -p robigo-rtapi --test conformance -- --exact rt_conformance \
+    > "$work/conformance.log" 2>&1; then
+    grep -q '^robigo-rt conformance against GNU R' "$work/conformance.log" ||
+      { echo "pgo-build.sh: the rt conformance run ran no case (see $work/conformance.log)" >&2; return 1; }
+    echo "pgo-build.sh: the rt conformance run did not pass (see $work/conformance.log); its cases trained" >&2
+  fi
 }
 
 case "${1:-}" in

@@ -504,9 +504,11 @@ scripts/perf.py compare before.json after.json          # the gate
     binary against GNU R 4.6.2 (the oracle image) and, with `--impls`, Ř
     and FastR, for each program `--filter` selects from
     `benchmarks/benchmarks.toml`.
-  - **The rule:** each sample is a batch of at least 50 ms; at least 10
-    interleaved rounds, rotated; medians compared; within 2% is a tie,
-    which does not count as faster.
+  - **The rule:** each sample is a batch of processes run until they took
+    50 ms; at least 10 interleaved rounds, rotated; medians compared;
+    within 2% is a tie, which does not count as faster. Every runtime
+    starts with base alone (`R_DEFAULT_PACKAGES=NULL`), since robigo-rt
+    attaches none yet.
   - **What it records:** the machine (CPU model and signature) and
     robigo-rt's binary identity. `--report FILE [--markdown]` prints a run.
   - **Where it runs:** by hand on the 5900X desktop and on m0pad. There is

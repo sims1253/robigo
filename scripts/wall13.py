@@ -7,8 +7,12 @@ selects.
     scripts/wall13.py --robigo-rt BIN [--filter RE] [--impls gnur,rir,fastr] [--rounds 11] --out FILE
     scripts/wall13.py --report FILE [--markdown]
 
-The rule: each timed sample is a batch of back-to-back processes, at least
-0.05 s in all; at least 10 interleaved rounds, the order rotated each round
+Every runtime starts with base alone (R_DEFAULT_PACKAGES=NULL): robigo-rt
+attaches no packages yet, and GNU R loading utils and stats inside the clock
+would be unfair to it. A program GNU R cannot run on base alone is reported.
+
+The rule: each timed sample is a batch of back-to-back processes, run until
+they took 0.05 s in all; at least 10 interleaved rounds, the order rotated each round
 so that no runtime always runs first; medians compared; two runtimes within
 2% tie, and a tie does not count as faster. A runtime's answer must be GNU
 R's stdout (as scripts/rivals.py requires), checked once per program.
@@ -27,7 +31,6 @@ the self-hosted ones were removed (2026-11-07). It runs by hand on both.
 """
 import argparse
 import json
-import math
 import os
 import platform
 import shlex
@@ -71,9 +74,16 @@ def verdict(ratio):
     return "tie" if abs(ratio - 1) <= TIE else ("faster" if ratio < 1 else "slower")
 
 
+# Every runtime starts with base alone: robigo-rt attaches no default
+# packages yet, so a GNU R that loads the suite's (utils, stats) would pay
+# for them inside the clock. A program that needs them is reported, not timed.
+PACKAGES = "NULL"
+
+
 def measure(prog, impls, runner, a, shared, log):
     """One program's samples under the rule."""
-    name, shot, _, pk = prog
+    name, shot, _, _ = prog
+    pk = PACKAGES
     file = os.path.join(shared, "shot.R")
     with open(file, "w") as f:
         f.write(shot)
@@ -87,21 +97,31 @@ def measure(prog, impls, runner, a, shared, log):
             raise RuntimeError(f"{impl}: failed: {out[-300:]}")
         return secs, out
 
-    rec = {"samples": {i: [] for i in impls}, "batch": {}}
+    rec = {"samples": {i: [] for i in impls}}
     answers = {}
     for impl in impls:
-        secs, out = once(impl)
-        answers[impl] = out
-        rec["batch"][impl] = max(1, math.ceil(BATCH_S / secs))
+        try:
+            _, answers[impl] = once(impl)
+        except RuntimeError as e:
+            if impl == "gnur":
+                rec["error"] = f"GNU R fails on base alone (the program needs packages): {e}"
+                return rec
+            raise
     wrong = [i for i in impls if answers[i] != answers["gnur"]]
     if wrong:
         rec["error"] = f"not GNU R's answer: {', '.join(wrong)}"
         return rec
+    rec["runs"] = {i: [] for i in impls}
     for r in range(a.rounds):
         order = impls[r % len(impls):] + impls[:r % len(impls)]
         for impl in order:
-            k = rec["batch"][impl]
-            rec["samples"][impl].append(sum(once(impl)[0] for _ in range(k)) / k)
+            # a batch: processes back to back until they took BATCH_S in all
+            total, k = 0.0, 0
+            while total < BATCH_S:
+                total += once(impl)[0]
+                k += 1
+            rec["samples"][impl].append(total / k)
+            rec["runs"][impl].append(k)
         print(f"{name}: round {r + 1}/{a.rounds}", file=log, flush=True)
     rec["median"] = {i: statistics.median(rec["samples"][i]) for i in impls}
     rec["robigo_rt_vs"] = {}
@@ -179,6 +199,7 @@ def main(argv):
         return 0
     if not a.robigo_rt or not a.out:
         ap.error("--robigo-rt and --out are needed")
+    a.robigo_rt = os.path.abspath(a.robigo_rt)
     if a.rounds < MIN_ROUNDS:
         sys.exit(f"§13 asks for at least {MIN_ROUNDS} runs per runtime")
     rivals_ = [i for i in a.impls.split(",") if i]
