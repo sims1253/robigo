@@ -281,6 +281,28 @@ fn the_save_check_does_not_wait_for_stdin() {
 /// An empty `R_TRANSLATIONS` is GNU R 4.6.2's fatal start-up error
 /// (main.c's BindDomain: `Rasprintf_malloc` of "" fails): "Fatal error:
 /// allocation failure in BindDomain" on stdout, status 2 (R_Suicide).
+/// `options(keep.source = TRUE)` would have the console keep source
+/// references (gram.c's R_Parse1Buffer), which robigo-rt cannot yet: it is
+/// refused, where GNU R accepts it (so no oracle case). `R_KEEP_PKG_SOURCE=yes`
+/// starts `keep.source.pkgs` TRUE, as options.c's InitOptions does
+/// (`keep.source` is Common.R's `interactive()`).
+#[test]
+fn keep_source_true_is_refused_and_keep_pkg_source_read() {
+    let expr = "cat(tryCatch(options(keep.source = TRUE), error = conditionMessage), getOption('keep.source'), '\\n')";
+    let (out, err, status) = run(&std::env::temp_dir(), &["--vanilla", "-e", expr], None);
+    assert_eq!(
+        String::from_utf8_lossy(&out),
+        "robigo: options(keep.source = TRUE) (source references) is not implemented yet FALSE \n"
+    );
+    assert_eq!((String::from_utf8_lossy(&err).as_ref(), status), ("", 0));
+    let expr = "cat(getOption('keep.source'), getOption('keep.source.pkgs'), '\\n')";
+    for (v, want) in [("yes", "FALSE TRUE \n"), ("no", "FALSE FALSE \n"), ("YES", "FALSE FALSE \n")] {
+        let (out, _, status) =
+            run_env(&std::env::temp_dir(), &["--vanilla", "-e", expr], None, &[("R_KEEP_PKG_SOURCE", v)]);
+        assert_eq!((String::from_utf8_lossy(&out).as_ref(), status), (want, 0), "R_KEEP_PKG_SOURCE={v}");
+    }
+}
+
 #[test]
 fn an_empty_r_translations_is_fatal() {
     let (out, err, status) = run_env(&std::env::temp_dir(), &["--vanilla", "-e", "1"], None, &[("R_TRANSLATIONS", "")]);
