@@ -167,6 +167,73 @@ pub fn passwd_home(user: Option<&[u8]>) -> Option<Vec<u8>> {
     }
 }
 
+/// The user name of `uid` in the password database (`getpwuid(uid)->
+/// pw_name`), `None` when there is no such entry (the reentrant lookup,
+/// its buffer grown on `ERANGE`).
+pub fn passwd_name(uid: u32) -> Option<Vec<u8>> {
+    let mut buf = vec![0 as libc::c_char; 16384];
+    // (the name service's modules may read the environment)
+    let _env = env_read();
+    loop {
+        // SAFETY: a zeroed passwd is a valid out-argument; getpwuid_r writes
+        // it and `result`, whose strings point into `buf`, alive for the
+        // read below.
+        unsafe {
+            let mut pw: libc::passwd = std::mem::zeroed();
+            let mut result: *mut libc::passwd = std::ptr::null_mut();
+            let rc = libc::getpwuid_r(uid, &mut pw, buf.as_mut_ptr(), buf.len(), &mut result);
+            if rc == libc::ERANGE {
+                let n = buf.len().checked_mul(2)?;
+                buf.resize(n, 0);
+                continue;
+            }
+            if rc != 0 || result.is_null() || pw.pw_name.is_null() {
+                return None;
+            }
+            return Some(std::ffi::CStr::from_ptr(pw.pw_name).to_bytes().to_vec());
+        }
+    }
+}
+
+/// The group name of `gid` in the group database (`getgrgid(gid)->
+/// gr_name`), `None` when there is no such entry (the reentrant lookup,
+/// its buffer grown on `ERANGE`).
+pub fn group_name(gid: u32) -> Option<Vec<u8>> {
+    let mut buf = vec![0 as libc::c_char; 16384];
+    // (the name service's modules may read the environment)
+    let _env = env_read();
+    loop {
+        // SAFETY: a zeroed group is a valid out-argument; getgrgid_r writes
+        // it and `result`, whose strings point into `buf`, alive for the
+        // read below.
+        unsafe {
+            let mut gr: libc::group = std::mem::zeroed();
+            let mut result: *mut libc::group = std::ptr::null_mut();
+            let rc = libc::getgrgid_r(gid, &mut gr, buf.as_mut_ptr(), buf.len(), &mut result);
+            if rc == libc::ERANGE {
+                let n = buf.len().checked_mul(2)?;
+                buf.resize(n, 0);
+                continue;
+            }
+            if rc != 0 || result.is_null() || gr.gr_name.is_null() {
+                return None;
+            }
+            return Some(std::ffi::CStr::from_ptr(gr.gr_name).to_bytes().to_vec());
+        }
+    }
+}
+
+/// The process's file mode creation mask, read as GNU R reads it: `um =
+/// umask(0); umask(um)` (a process global: another thread creating a file
+/// in between is created with no mask, as in GNU R).
+pub fn umask_get() -> u32 {
+    // SAFETY: umask has no preconditions.
+    let um = unsafe { libc::umask(0) };
+    // SAFETY: as above.
+    unsafe { libc::umask(um) };
+    um as u32
+}
+
 // Like the rest of this module (glibc's `bindtextdomain`,
 // `__ctype_get_mb_cur_max`), the environment writer below is for Linux
 // with glibc: its soundness rests on glibc's `getenv` (MIN_GLIBC), so
@@ -179,7 +246,8 @@ compile_error!(
 /// The process environment's lock: every wrapper here whose C call reads
 /// the environment holds it shared for that call ([`env_read`]:
 /// `localtime`, `gmtime`, the `C.UTF-8` locale's `newlocale`,
-/// `passwd_home`, `default_textdomain_dir`), and an [`EnvWriter`] holds it
+/// `passwd_home`, `passwd_name`, `group_name`, `default_textdomain_dir`),
+/// and an [`EnvWriter`] holds it
 /// exclusive. So robigo's own safe wrappers never read while it writes, on
 /// any glibc, with or without isolates. Lock order: the live isolates
 /// (`isolate::LIVE_ISOLATES`), then this, then std's environment lock.

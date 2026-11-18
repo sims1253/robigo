@@ -1,0 +1,76 @@
+[1] 48 69 20 c3 a9
+raw(0)
+[1] 4e 41
+Warning: argument should be a character vector of length 1
+all but the first element will be ignored 
+[1] 61
+Error: argument must be a character vector of length 1 
+Error: argument must be a character vector of length 1 
+[1] "Hi"
+[1] "Hi"
+[1] "H" ""  "i"
+[1] ""
+character(0)
+Error: embedded nul in string: 'H\0i' 
+Error: argument 'x' must be a raw vector 
+Error: argument 'multiple' must be TRUE or FALSE 
+[1] "é"
+[1] 2
+[1]   72  105   32  233 8364
+[1] 128512
+integer(0)
+[1] NA
+[1] NA
+[1] NA
+Warning: argument should be a character vector of length 1
+all but the first element will be ignored 
+[1] 97
+Error: argument must be a character vector of length 1 
+[1] "Hé€😀"
+[1] "Hi"
+[1] "H" "é"
+[1] "H" ""  NA  NA  NA  NA 
+[1] NA
+[1] NA
+[1] "\U{10ffff}"
+[1] NA
+[1] NA
+[1] "😀"
+[1] NA
+[1] NA
+[1] NA
+[1] ""
+character(0)
+[1] "AB"
+[1] "\001"
+Warning: allow_surrogate_pairs = TRUE is incompatible with multiple = TRUE and will be ignored 
+[1] "A"
+Warning: NAs introduced by coercion 
+[1] NA
+Error: argument 'multiple' must be TRUE or FALSE 
+Error: argument 'allow_surrogate_pairs' must be TRUE or FALSE 
+[1] "UTF-8"
+[1] "unknown"
+[1]  TRUE  TRUE  TRUE  TRUE FALSE  TRUE
+Error: invalid 'x' argument 
+[1]  TRUE  TRUE  TRUE  TRUE  TRUE FALSE
+Error: invalid 'x' argument 
+[1] "café"
+[1] "UTF-8"
+[1] 63 61 66 c3 a9
+[1] "a" NA  "é"
+[1] TRUE
+[1] "bytes"
+[1] "UTF-8"
+[1] 63 61 66 c3 a9
+[1] TRUE
+     k 
+"café" 
+Error: argument is not a character vector 
+Error: argument is not a character vector 
+Error: supplied argument name 'y' does not match 'x' 
+[1] "ABCDEF"
+[1] "A" "B" "C"
+[1] "Hij"
+[1] TRUE TRUE TRUE
+[1] "ABCDEF"

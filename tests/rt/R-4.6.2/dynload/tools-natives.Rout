@@ -1,0 +1,29 @@
+[1]  TRUE  TRUE  TRUE  TRUE FALSE
+[1] "licenses"  "encodings" "encodings" "make"      "share"    
+[1] "555304bdd06b9e6a8ce603dc7c368717" "09637e863f198cdb4b61a8b418e61879"
+[3] "a7fe08fe7410f181b522bef371471015" "ed712f7566c64b49375fd0824ac11a81"
+[5] NA                                
+[1] "804b990d8710413af4c7ab6a86079f203c2aca6e40e3ea118fc8cf3fbbc8be69"
+[2] "7f3b5cbe25c5d0023892582cd42c7dbbb47b62dcd27631fb20d6ba251cc0235b"
+[1] "900150983cd24fb0d6963f7d28e17f72"
+[1] "ae4b3280e56e2faf83f414a6e3dabe9d5fbe18976544c05fed121accb85b53fc"
+[1]  2 -1 -1 -1
+attr(,"match.length")
+[1]  3 -1 -1 -1
+[1] "a"  " "  "b"  "\\" "c"  " "  "d" 
+[1] "a       b       c" "      x"          
+[1] FALSE  TRUE FALSE
+[1] TRUE
+[1] FALSE
+[1] 2 3
+[1] "%d"    "%5.2f" "%s"   
+[1] "unrecognised format specification '%y'"
+[1] 1
+[1] TRUE
+[1] "/a/c/d" "/b"     ""      
+[1] "methods" "utils"   "pkg.x2" 
+[1] "LaTeX"
+[1] "MACRO" "BLOCK" "TEXT"  "MATH" 
+[1] TRUE
+[1] FALSE
+[1] FALSE
