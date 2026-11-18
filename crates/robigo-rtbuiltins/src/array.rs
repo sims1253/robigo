@@ -695,6 +695,128 @@ pub fn do_array(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
     })
 }
 
+/// `.Internal(t.default(a))`: the transpose of a matrix, or of a vector
+/// (one column, `names` its row names) or a 1-d array; the dimnames (and
+/// their names) swapped, every other attribute but names kept.
+// R: array.c:do_transpose
+pub fn do_transpose(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("t.default", true).check_arity(cx, call, args)?;
+    let a = args.root(0);
+    let av = a.bind(cx);
+    if !crate::attrib::is_vector(av) {
+        return Err(cx.error("argument is not a matrix"));
+    }
+    if av.is_package_altrep() {
+        return Err(not_yet(cx, Some(call), "t() of a package ALTREP vector"));
+    }
+    let ldim = crate::attrib::dims(av).map_or(0, |d| d.len());
+    if ldim > 2 {
+        return Err(cx.error("argument is not a matrix"));
+    }
+    if !matches!(av.sexptype(), LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | VECSXP | RAWSXP) {
+        return Err(cx.error("argument is not a matrix"));
+    }
+    cx.materialize(a)?;
+    cx.build(out, |cx| {
+        let a = a.bind(cx);
+        let len = a.len().unwrap();
+        // (nrow, ncol, rnames, cnames, dimnames' names, any dimnames)
+        let (nrow, ncol) = match crate::attrib::dims(a) {
+            Some(&[r, c]) => (r as usize, c as usize),
+            _ => (len, 1),
+        };
+        let dn = match ldim {
+            0 => None,
+            _ => crate::attrib::get_value(a, b"dimnames"),
+        };
+        let dn_list = dn.and_then(|d| match d.view() {
+            View::List(l) => Some(l),
+            _ => None,
+        });
+        let (rnames, cnames) = match (ldim, dn_list) {
+            (0, _) => (crate::attrib::names(a), None),
+            (1, Some(l)) => (Some(l.get(0)), None),
+            (2, Some(l)) => (Some(l.get(0)), Some(l.get(1))),
+            _ => (None, None),
+        };
+        let dnn = dn.and_then(crate::attrib::names);
+        // !isNull(dimnames): the names of a vector, a 1-d or 2-d array's
+        // dimnames
+        let any_dimnames = if ldim == 0 { rnames.is_some() } else { dn.is_some() };
+        // filling in columnwise, "accessing row-wise"
+        // (the element read now, then j += nrow wrapped past len - 1)
+        let order = |j: &mut usize| {
+            let r = *j;
+            *j += nrow;
+            if len > 0 && *j > len - 1 {
+                *j -= len - 1;
+            }
+            r
+        };
+        macro_rules! plain {
+            ($t:ty, $v:expr) => {{
+                let src = $v.as_slice().unwrap();
+                let mut r = cx.alloc_vector::<$t>(len)?;
+                let o = r.as_mut_slice();
+                let mut j = 0;
+                for o in o.iter_mut() {
+                    *o = src[order(&mut j)];
+                }
+                r
+            }};
+        }
+        let mut at = Attrs::new();
+        let dims = cx.alloc_copy(&[ncol as i32, nrow as i32])?.finish().into();
+        at.install(Attr { tag: cx.sym(robigo_rtcore::RSym::Dim), value: dims });
+        if any_dimnames {
+            let mut d = cx.alloc_vector::<Ref<'_>>(2)?;
+            d.set(0, cnames.unwrap_or(cx.nil()));
+            d.set(1, rnames.unwrap_or(cx.nil()));
+            if let Some(dnn) = dnn.and_then(|n| n.as_vector::<Char<'_>>()) {
+                let mut nn = cx.alloc_vector::<Char<'_>>(2)?;
+                nn.set(1, dnn.get(0));
+                nn.set(0, if ldim == 2 { dnn.get(1) } else { cx.blank_string() });
+                let mut na = Attrs::new();
+                na.install(Attr { tag: cx.sym(robigo_rtcore::RSym::Names), value: nn.finish().into() });
+                na.apply(cx, &mut d)?;
+            }
+            at.install(Attr { tag: cx.sym(robigo_rtcore::RSym::DimNames), value: d.finish().into() });
+        }
+        at.copy_most(a);
+        macro_rules! done {
+            ($r:expr) => {{
+                let mut r = $r;
+                at.apply(cx, &mut r)?;
+                Ok(r.finish().into())
+            }};
+        }
+        match a.view() {
+            View::Lgl(v) => done!(plain!(Lgl, v)),
+            View::Int(v) => done!(plain!(i32, v)),
+            View::Real(v) => done!(plain!(f64, v)),
+            View::Cplx(v) => done!(plain!(Rcomplex, v)),
+            View::Raw(v) => done!(plain!(u8, v)),
+            View::Str(v) => {
+                let mut r = cx.alloc_vector::<Char<'_>>(len)?;
+                let mut j = 0;
+                for i in 0..len {
+                    r.set(i, v.get(order(&mut j)));
+                }
+                done!(r)
+            }
+            View::List(v) => {
+                let mut r = cx.alloc_vector::<Ref<'_>>(len)?;
+                let mut j = 0;
+                for i in 0..len {
+                    r.set(i, v.get(order(&mut j)));
+                }
+                done!(r)
+            }
+            _ => unreachable!("robigo: t.default's types were checked"),
+        }
+    })
+}
+
 // ---- %*%, crossprod, tcrossprod ---------------------------------------------
 //
 // array.c's matrix products: `x %*% y` (`do_matprod`, PRIMVAL 0),
