@@ -2116,6 +2116,14 @@ pub fn unread(cx: &mut Cx, n: i32, k: usize) -> RResult<bool> {
     })
 }
 
+/// Whether connection `n` has input Rconn_fgetc gives before its stream
+/// (a saved character, the pushback).
+pub fn has_pending_input(cx: &mut Cx, n: i32) -> RResult<bool> {
+    with_conn(cx, n, |c| {
+        c.c.save2 != crate::rconn::NO_SAVE || c.push_back_len() > 0 || c.c.save != crate::rconn::NO_SAVE
+    })
+}
+
 /// Whether connection `n` is a file connection.
 pub fn is_file(cx: &mut Cx, n: i32) -> RResult<bool> {
     with_conn(cx, n, |c| matches!(c.imp, Imp::File(_)))

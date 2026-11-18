@@ -53,6 +53,21 @@ character(0)
 [1] "# Name"            "Unicode"           "# another comment"
 [4] "A"                 "0041"             
 [1] "AE;00C6"
+[[1]]
+NULL
+
+[[2]]
+[1] "c"
+
+[[1]]
+NULL
+
+[[2]]
+[1] "c"
+
+[1] "a" NA 
+[1] "(converted from warning) EOF within quoted string"
+[1] FALSE
 [1] "empty 'what' specified"
 [1] "invalid 'sep' value: must be one byte"
 [1] "invalid decimal separator: must be one byte"

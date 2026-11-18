@@ -173,7 +173,7 @@ impl Local<'_> {
                     filled = c;
                     break 'done;
                 }
-                if ty == Ty::Str && in_set(&self.quoteset, c) {
+                if matches!(ty, Ty::Str | Ty::Nil) && in_set(&self.quoteset, c) {
                     let quote = c;
                     loop {
                         c = self.scanchar(true, con)?;
@@ -235,7 +235,7 @@ impl Local<'_> {
                         }
                     }
                     // CSV style quoted string handling
-                    if ty == Ty::Str && c != 0 && in_set(&self.quoteset, c) {
+                    if matches!(ty, Ty::Str | Ty::Nil) && c != 0 && in_set(&self.quoteset, c) {
                         let quote = c;
                         loop {
                             // inquote:
@@ -636,7 +636,6 @@ pub fn do_scan(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
     };
     let frame_cols = frame.map(|(c, _)| c);
     let na_strings = strings(args.get(cx, 8));
-    let names = if frame_cols.is_some() { robigo_rtbuiltins::attrib::names(what).map(strings) } else { None };
 
     let ii = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(0))?;
     with_conn(cx, ii, |_| ())?;
@@ -716,16 +715,28 @@ pub fn do_scan(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
     })?;
     // the warnings as they arose, then the error; a connection scan opened
     // is closed (scan_cleanup)
+    // (scan_cleanup: an error from here on, a warning made one included,
+    // closes a connection scan opened)
+    let close_on_error = |cx: &mut Cx, e: robigo_rtcore::RError| -> robigo_rtcore::RError {
+        if !wasopen {
+            let _ = with_conn(cx, ii, |c| {
+                if c.isopen() {
+                    close_conn(c);
+                }
+            });
+        }
+        e
+    };
     for w in std::mem::take(&mut d.warnings) {
-        cx.warning(w)?;
+        if let Err(e) = cx.warning(w) {
+            return Err(close_on_error(cx, e));
+        }
     }
     let (read, utf8out) = match r {
         Ok(v) => v,
         Err(m) => {
-            if !wasopen {
-                with_conn(cx, ii, close_conn)?;
-            }
-            return Err(cx.error(&m));
+            let e = cx.error(&m);
+            return Err(close_on_error(cx, e));
         }
     };
     if quiet == 0 {
@@ -767,16 +778,10 @@ pub fn do_scan(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
                     None => l.set(i, cx.nil()),
                 }
             }
-            if let Some(nm) = &names {
-                let mut n = cx.alloc_vector::<Char<'_>>(nm.len())?;
-                for (i, s) in nm.iter().enumerate() {
-                    n.set(i, cx.mk_char(s, Encoding::Native)?);
-                }
+            // setAttrib(ans, R_NamesSymbol, getAttrib(what, R_NamesSymbol))
+            if let Some(nm) = robigo_rtbuiltins::attrib::names(args.get(cx, 1)) {
                 let mut a = robigo_rtbuiltins::attrib::Attrs::new();
-                a.install(robigo_rtbuiltins::attrib::Attr {
-                    tag: cx.sym(robigo_rtcore::RSym::Names),
-                    value: n.finish().into(),
-                });
+                a.install(robigo_rtbuiltins::attrib::Attr { tag: cx.sym(robigo_rtcore::RSym::Names), value: nm });
                 a.apply(cx, &mut l)?;
             }
             Ok(l.finish().into())
