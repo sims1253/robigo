@@ -280,6 +280,8 @@ fn sys_setenv_refuses_in_an_isolate_not_given_the_environment() {
     let (mut iso, _) = session();
     let cx = iso.cx();
     assert!(std::env::var_os("ROBIGO_NO_GRANT_A").is_none());
+    let home = std::env::var_os("HOME");
+    assert!(home.is_some(), "the test needs HOME set");
     let src = "r <- tryCatch(Sys.setenv(ROBIGO_NO_GRANT_A = 'x', ROBIGO_NO_GRANT_B = 'y'), error = conditionMessage)\n\
                cat(r, '\\n')\n\
                r <- tryCatch(Sys.unsetenv('HOME'), error = conditionMessage)\n\
@@ -292,4 +294,5 @@ fn sys_setenv_refuses_in_an_isolate_not_given_the_environment() {
          robigo: Sys.unsetenv() in an isolate that was not given the process environment is not implemented yet \n"
     );
     assert!(std::env::var_os("ROBIGO_NO_GRANT_A").is_none() && std::env::var_os("ROBIGO_NO_GRANT_B").is_none());
+    assert_eq!(std::env::var_os("HOME"), home, "Sys.unsetenv() unset HOME");
 }

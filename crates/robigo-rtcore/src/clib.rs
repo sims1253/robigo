@@ -235,12 +235,23 @@ impl EnvWrites {
     ///
     /// # Safety
     ///
-    /// For as long as an isolate holds it, every thread of the process
-    /// that reads the environment does so through `std::env`, through this
-    /// module's guarded wrappers, or through a C library whose `getenv`
-    /// tolerates a concurrent `setenv` (glibc [`MIN_GLIBC`] or later);
-    /// nothing walks `environ` by hand; and on an older glibc the holder is
-    /// the only isolate that runs native code while it writes.
+    /// For as long as an isolate holds it, no read of the environment can
+    /// overlap one of its writes unsynchronized. The writes happen on the
+    /// isolate's own thread ([`EnvWriter`] is neither `Send` nor `Sync`),
+    /// so:
+    /// - a read on that thread is sequential with the writes and allowed,
+    ///   whatever reads it (C code included);
+    /// - a read on any other thread goes through `std::env`, through this
+    ///   module's guarded wrappers, or through a C library whose `getenv`
+    ///   tolerates a concurrent `setenv` (glibc [`MIN_GLIBC`] or later);
+    /// - nothing walks `environ` by hand on another thread meanwhile.
+    ///
+    /// On a glibc older than [`MIN_GLIBC`] the embedder also assumes that
+    /// no other isolate runs native code while the holder writes, and that
+    /// no thread started by loaded native code reads the environment while
+    /// the isolate may write. (GNU R's rule that R's API belongs to the one
+    /// R thread does not cover such threads: a worker can call `getenv`
+    /// without touching R's API. This is an assumption, not a consequence.)
     pub unsafe fn assume() -> EnvWrites {
         EnvWrites(())
     }
@@ -277,9 +288,11 @@ pub struct EnvWriter<'a> {
     // taking them)
     _env: std::sync::RwLockWriteGuard<'static, ()>,
     _live: std::sync::MutexGuard<'static, usize>,
-    // the grant, borrowed from the isolate whose thread this is (`Cx` is
-    // that thread's)
-    _grant: &'a EnvWrites,
+    // the isolate whose thread this is, which also makes the writer
+    // neither Send nor Sync (`Cx` is neither): the writes stay on that
+    // thread, which EnvWrites::assume's contract counts on
+    // (tests/ui/env_writer_not_sync.rs)
+    _cx: &'a crate::Cx,
 }
 
 /// An [`EnvWriter`] for the isolate `cx` (the caller is on its thread:
@@ -287,13 +300,13 @@ pub struct EnvWriter<'a> {
 /// [`EnvWrites`], or [`env_write_allowed`] says no for the running glibc
 /// and the live isolates.
 pub fn env_writer(cx: &crate::Cx) -> Result<EnvWriter<'_>, EnvWriteRefused> {
-    let grant = cx.env_writes().ok_or(EnvWriteRefused::NotGranted)?;
+    cx.env_writes().ok_or(EnvWriteRefused::NotGranted)?;
     let live = crate::isolate::live_isolates();
     if !env_write_allowed(glibc_version(), *live) {
         return Err(EnvWriteRefused::SeveralIsolates);
     }
     let env = ENV.write().unwrap_or_else(|e| e.into_inner());
-    Ok(EnvWriter { _env: env, _live: live, _grant: grant })
+    Ok(EnvWriter { _env: env, _live: live, _cx: cx })
 }
 
 /// Whether `name` is one the C library's `setenv`/`unsetenv` accept: not
@@ -406,9 +419,12 @@ mod tests {
         assert_eq!(super::env_writer(iso.cx()).err(), Some(super::EnvWriteRefused::NotGranted));
     }
 
-    // a writer holds the live-isolate lock (no isolate starts while it
-    // lives), or, on a glibc older than MIN_GLIBC with other tests'
-    // isolates alive, is refused for that (the C library is not Miri's)
+    // while a writer lives the live-isolate lock is held, so no isolate
+    // starts. (The probe sees only that the lock is held; other tests'
+    // isolates hold it just for a count's update, so a free lock would be
+    // this writer's failure.) On a glibc older than MIN_GLIBC with other
+    // tests' isolates alive the writer is instead refused for that. (The C
+    // library is not Miri's.)
     #[test]
     #[cfg_attr(miri, ignore)]
     fn a_writer_holds_the_isolate_registration() {
@@ -425,6 +441,29 @@ mod tests {
                 assert_eq!(e, super::EnvWriteRefused::SeveralIsolates);
                 assert!(super::glibc_version() < super::MIN_GLIBC);
             }
+        }
+    }
+
+    // a granted writer sets, reads and unsets a variable
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn a_granted_writer_sets_and_unsets() {
+        let mut iso = crate::OwnedIsolate::new();
+        // SAFETY: this test process reads the environment only through
+        // std::env and clib, and only this test uses the variable below.
+        iso.grant_env_writes(unsafe { super::EnvWrites::assume() });
+        let name = b"ROBIGO_CLIB_GRANTED_WRITER_TEST";
+        match super::env_writer(iso.cx()) {
+            Ok(w) => {
+                assert!(!w.has(name));
+                assert!(w.set(name, b"1"));
+                assert!(w.has(name));
+                assert!(!w.set(b"A=B", b"1") && !w.set(b"", b"1"));
+                w.unset(name);
+                assert!(!w.has(name));
+            }
+            // (an old glibc with other tests' isolates alive)
+            Err(e) => assert_eq!(e, super::EnvWriteRefused::SeveralIsolates),
         }
     }
 
