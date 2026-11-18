@@ -106,7 +106,17 @@ pub fn parse_bytes(cx: &mut Cx, src: &[u8], n: i32, out: Out<'_>) -> RResult<(Pa
     let take = if n < 0 { exprs.len() } else { exprs.len().min(n as usize) };
     // (what R_Parse reads: to the last requested expression's end, its
     // terminator the next byte; nothing for n = 0)
-    check_non_ascii_locale(cx, src, if n < 0 { usize::MAX } else if take == 0 { 0 } else { exprs[take - 1].span().end as usize + 1 })?;
+    check_non_ascii_locale(
+        cx,
+        src,
+        if n < 0 {
+            usize::MAX
+        } else if take == 0 {
+            0
+        } else {
+            exprs[take - 1].span().end as usize + 1
+        },
+    )?;
     // the tokens up to the next expression's start (its terminator and
     // what separates them carry no warnings)
     signal(cx, if take < exprs.len() { (exprs[take].span().start as usize).saturating_sub(1) } else { usize::MAX })?;
