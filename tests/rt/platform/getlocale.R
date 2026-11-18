@@ -1,0 +1,40 @@
+# Sys.getlocale and Sys.setlocale (platform.c's do_getlocale,
+# do_setlocale): the names GNU R's startup set from the environment
+# (C.UTF-8 here; LC_NUMERIC and the categories it does not set stay "C"),
+# LC_ALL's composite, a change between the C locales and back, a locale
+# that does not exist, and the argument errors.
+msg <- function(expr) tryCatch({ force(expr); "no error" }, error = function(e) conditionMessage(e),
+                               warning = function(w) paste("warning:", conditionMessage(w)))
+print(Sys.getlocale())
+for (c in c("LC_ALL", "LC_COLLATE", "LC_CTYPE", "LC_MONETARY", "LC_NUMERIC", "LC_TIME", "LC_MESSAGES",
+            "LC_PAPER", "LC_MEASUREMENT"))
+    print(Sys.getlocale(c))
+print(.Internal(Sys.getlocale(0L)))
+print(.Internal(Sys.getlocale(10L)))
+print(msg(.Internal(Sys.getlocale(-1L))))
+print(msg(.Internal(Sys.getlocale(NA_integer_))))
+print(msg(Sys.getlocale("LC_FOO")))
+prev <- Sys.getlocale("LC_TIME")
+print(Sys.setlocale("LC_TIME", "C"))
+print(Sys.getlocale("LC_TIME"))
+print(Sys.getlocale())
+print(Sys.setlocale("LC_TIME", prev))
+print(Sys.getlocale())
+print(Sys.setlocale("LC_MONETARY", "POSIX"))
+print(Sys.setlocale("LC_MONETARY", ""))
+print(Sys.setlocale("LC_NUMERIC", "C"))
+print(msg(Sys.setlocale("LC_NUMERIC", "C.UTF-8")))
+print(suppressWarnings(Sys.setlocale("LC_NUMERIC", "C")))
+print(Sys.setlocale("LC_CTYPE", "C.UTF-8"))
+print(Sys.setlocale("LC_COLLATE", "C.UTF-8"))
+print(Sys.setlocale("LC_ALL", "C.UTF-8"))
+print(Sys.getlocale())
+print(msg(Sys.setlocale("LC_TIME", "xx_NOWHERE")))
+print(suppressWarnings(Sys.setlocale("LC_TIME", "xx_NOWHERE")))
+print(Sys.getlocale("LC_TIME"))
+print(msg(Sys.setlocale("LC_ALL", "xx_NOWHERE")))
+print(msg(Sys.setlocale("LC_TIME", c("C", "C"))))
+print(msg(Sys.setlocale("LC_TIME", 1)))
+print(msg(.Internal(Sys.setlocale(0L, "C"))))
+print(msg(.Internal(Sys.setlocale(10L, "C"))))
+print(msg(.Internal(Sys.setlocale(-1L, "C"))))
