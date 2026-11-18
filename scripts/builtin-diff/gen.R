@@ -35,7 +35,7 @@ local({
             "dbl0" = double(), "0" = 0, "-0" = -0, "1.5" = 1.5, "-2.5" = -2.5,
             "dblNA" = NA_real_, "NaN" = NaN, "Inf" = Inf, "-Inf" = -Inf, "1e308" = 1e308,
             "5e-324" = 5e-324, "2^53+1" = 2^53 + 1, "dbl4" = c(1, NA, NaN, Inf),
-            "dblint" = c(2, 3, 4), "runif" = runif(1e5),
+            "dblint" = c(2, 3, 4), "runif" = stats::runif(1e5),
             "cplx0" = complex(), "1+2i" = 1 + 2i, "cplxNA" = NA_complex_,
             "cplx2" = c(0i, complex(real = Inf, imaginary = NaN)),
             "chr0" = character(), "\"\"" = "", "a" = "a", "chrNA" = NA_character_,
@@ -199,7 +199,7 @@ local({
             base <- cases[vapply(cases, function(c) c$kind == "single", NA)]
             ## the positions the wrapper passes on from a formal of its own
             keep <- nzchar(argn) & argn %in% names(formals(get(w$name, baseenv())))
-            for (c in head(base, row$wrapper_budget)) {
+            for (c in base[seq_len(min(length(base), row$wrapper_budget))]) {
                 c$kind <- "wrapper"; c$wrapper <- w$name
                 c$args <- c$args[keep]; c$missing <- c$missing[keep]; c$labels <- c$labels[keep]
                 c$names <- argn[keep]

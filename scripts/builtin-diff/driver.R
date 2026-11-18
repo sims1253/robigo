@@ -54,21 +54,27 @@ local({
     check("readRDS of the batch", { b <- readRDS(batch_path); is.list(b$cases) })
     b <- readRDS(batch_path)
     invisible(file.remove(file.path(out, "selftest.rds")))
+    saveRDS(TRUE, file.path(out, "started"), version = 3L, compress = FALSE)   # the harness's sign that it ran
 
     muffle <- function(expr) withCallingHandlers(expr, warning = function(w) invokeRestart("muffleWarning"))
 
     run1 <- function(c) {
         ## the RNG state the case starts from
-        r <- c$rng
-        muffle(RNGkind(r[[1L]], r[[2L]], r[[3L]]))
-        s <- r[[4L]]
-        if (identical(s, "none")) {
-            if (!is.null(get0(".Random.seed", globalenv(), inherits = FALSE))) rm(".Random.seed", envir = globalenv())
-        } else if (identical(s, "corrupt")) {
-            assign(".Random.seed", c(10403L, 624L, 1:3), envir = globalenv())   # Mersenne-Twister with 3 of its 625 words
-        } else muffle(set.seed(s))
-        g <- setdiff(ls(globalenv(), all.names = TRUE), ".Random.seed")
+        ## an empty global environment (no .Random.seed either: a case may
+        ## have left one GetRNGstate refuses), then the case's RNG state
+        g <- ls(globalenv(), all.names = TRUE)
         if (length(g)) rm(list = g, envir = globalenv())
+        r <- c$rng
+        setup <- tryCatch({
+            muffle(RNGkind(r[[1L]], r[[2L]], r[[3L]]))
+            s <- r[[4L]]
+            if (identical(s, "none")) rm(".Random.seed", envir = globalenv())
+            else if (identical(s, "corrupt"))
+                assign(".Random.seed", c(10403L, 624L, 1:3), envir = globalenv())   # Mersenne-Twister with 3 of its 625 words
+            else muffle(set.seed(s))
+            NULL
+        }, error = function(x) conditionMessage(x))
+        if (!is.null(setup)) return(list(setup_error = setup))
 
         e <- new.env(parent = baseenv())
         if (c$kind == "extra") body <- c$expr else {

@@ -1,0 +1,143 @@
+# A4's rows (scripts/builtin-diff.py; docs/verification.md, "Builtin
+# differential"). One table per builtin, by its names.c name. A table may
+# be empty: the whole lattice over names.c's arity. Fields:
+#   args     the positions' names (default: the base wrapper's .Internal
+#            call, or the primitive's formals)
+#   domain   per argument, a list of lattice value names, "@domain"s (any,
+#            count, num, chr, lgl), "=<R expression>"s and "<missing>"
+#   typical  per argument, the value the other positions take in a single case
+#   extra    R expressions, run as written
+#   budget   the generated cases' cap (2000; plus 200 random)
+#   effect   the registry's class, needed until the builtin is in the registry
+#   jit      "both": also run under R_ENABLE_JIT=3, as <name>@jit
+# Changing gen.R, driver.R, the lattice or a row changes its key: its known/
+# list must then be regenerated (--regen-known) in a PR titled
+# `builtin-diff:`, which shows each builtin's pass/total before and after.
+
+# ---- the planted rows (builtin-diff.py plant) and the control ----------------
+
+[nchar]
+typical = { x = "chr3", type = "=\"chars\"", allowNA = "=FALSE", keepNA = "lglNA" }
+domain = { type = ["=\"chars\"", "=\"bytes\"", "=\"width\"", "=\"c\"", "@chr", "1.5"], allowNA = ["@lgl"], keepNA = ["@lgl"] }
+
+[seq_len]
+
+[names]
+
+[abs]
+
+[rep_len]
+
+["set.seed"]
+typical = { seed = "0L", "i.knd" = "NULL", "normal.kind" = "NULL", "sample.kind" = "NULL" }
+domain = { "i.knd" = ["NULL", "0L", "=1L", "=3L", "=6L", "=7L", "intNA", "-1L", "1.5", "a"], "normal.kind" = ["NULL", "0L", "=1L", "=2L", "=5L", "intNA", "1.5"], "sample.kind" = ["NULL", "0L", "=1L", "=2L", "intNA", "a"] }
+
+# ---- the builtins being ported now (B5, the trial delegates) ----------------
+
+[RNGkind]
+typical = { kind = "NULL", "normal.kind" = "NULL", "sample.kind" = "NULL" }
+domain = { kind = ["NULL", "0L", "=1L", "=3L", "=6L", "=7L", "intNA", "-1L", "1.5", "a"], "normal.kind" = ["NULL", "0L", "=1L", "=2L", "=5L", "intNA", "1.5"], "sample.kind" = ["NULL", "0L", "=1L", "=2L", "intNA", "a"] }
+
+["seq.int"]
+effect = "Pure"
+extra = ["seq.int(1, 10, length.out = 4)", "seq.int(2^31, by = -1, length.out = 3)", "seq.int(10, 1)", "seq.int(0, 1, 0.1)"]
+
+[strtoi]
+effect = "Pure"
+typical = { x = "chr3", base = "=10L" }
+domain = { base = ["=10L", "=16L", "=2L", "=36L", "=37L", "=1L", "0L", "intNA", "1.5", "a"] }
+
+[tolower]
+effect = "Pure"
+
+[toupper]
+effect = "Pure"
+
+[chartr]
+effect = "Pure"
+typical = { old = "a", new = "=\"b\"", x = "chr3" }
+domain = { old = ["@chr", "=\"abc\"", "=\"a-c\""], new = ["@chr", "=\"xyz\"", "=\"x-z\""] }
+
+["make.names"]
+effect = "Pure"
+typical = { names = "chr3", "allow_" = "T" }
+domain = { "allow_" = ["@lgl"] }
+
+["make.unique"]
+effect = "Pure"
+typical = { names = "chr3", sep = "=\".\"" }
+domain = { names = ["@chr", "=c(\"a\", \"a\", \"a.1\")"], sep = ["@chr"] }
+
+[charToRaw]
+effect = "Pure"
+
+[rawToChar]
+effect = "Pure"
+typical = { x = "raw2", multiple = "=FALSE" }
+domain = { x = ["@any", "=as.raw(c(0x61, 0x62))", "=as.raw(c(0xc3, 0xa9))"], multiple = ["@lgl"] }
+
+[utf8ToInt]
+effect = "Pure"
+
+[intToUtf8]
+effect = "Pure"
+typical = { x = "int3", multiple = "=FALSE", "allow_surrogate_pairs" = "=FALSE" }
+domain = { x = ["@any", "=c(0xD83DL, 0xDE00L)", "=0x10FFFFL", "=0x110000L"], multiple = ["@lgl"], "allow_surrogate_pairs" = ["@lgl"] }
+
+[validUTF8]
+effect = "Pure"
+
+[validEnc]
+effect = "Pure"
+
+["t.default"]
+effect = "Pure"
+
+[split]
+effect = "Pure"
+typical = { x = "1:10", f = "factor" }
+domain = { f = ["@any", "=factor(c(1, 2, 1, 2, 1, 2, 1, 2, 1, 2))"] }
+
+# ---- registry builtins with no row yet, by reason (check-rows) ----------------
+
+[uncovered]
+"special: a VM op or a special (tests/rt covers it)" = [
+  "lapply", "rep", "vapply"
+]
+"Env, Calls or External: A4's second PR" = [
+  "...elt", "...length", "...names", "Sys.getenv", "as.POSIXct", "as.environment", "assign",
+  "bindingIsLocked", "bindtextdomain", "copyDFattr", "delayedAssign", "do.call", "env.profile",
+  "env2list", "environment", "environmentIsLocked", "exists", "get", "get0", "getBindingType",
+  "getOption", "list2env", "lockBinding", "lockEnvironment", "ls", "makeActiveBinding", "mapply",
+  "match.call", "mget", "nargs", "new.env", "options", "parent.frame", "putconst", "remove",
+  "strptime", "sys.call", "sys.calls", "sys.frame", "sys.frames", "sys.function", "sys.nframe",
+  "sys.on.exit", "sys.parent", "sys.parents", "xtfrm"
+]
+"Pure: no row yet" = [
+  "!", "!=", "%%", "%/%", "&", "*", "+", "-", ".subset", ".subset2", "/", ":", "<", "<=", "==",
+  ">", ">=", "Encoding", "Version", "^", "acos", "acosh", "all", "any", "anyDuplicated", "anyNA",
+  "as.call", "as.character", "as.complex", "as.double", "as.function.default", "as.integer",
+  "as.logical", "as.numeric", "as.raw", "as.vector", "asCharacterFactor", "asin", "asinh", "atan",
+  "atanh", "attr", "attr<-", "attributes", "attributes<-", "baseenv", "bcClose", "bcVersion",
+  "body", "bodyCode", "c", "ceiling", "class", "class<-", "colMeans", "colSums", "comment",
+  "comment<-", "compareNumericVersion", "complex", "cos", "cosh", "cospi", "cummax", "cummin",
+  "cumprod", "cumsum", "digamma", "dim", "dim<-", "dimnames", "dimnames<-", "disassemble",
+  "duplicated", "emptyenv", "encodeString", "endsWith", "exp", "expm1", "file.path", "floor",
+  "formals", "gamma", "getconst", "gettext", "globalenv", "gregexpr", "grep", "grepl", "growconst",
+  "gsub", "identical", "inherits", "interactive", "is.array", "is.atomic", "is.builtin.internal",
+  "is.call", "is.character", "is.complex", "is.double", "is.environment", "is.expression",
+  "is.finite", "is.function", "is.infinite", "is.integer", "is.language", "is.list", "is.logical",
+  "is.matrix", "is.na", "is.name", "is.nan", "is.null", "is.numeric", "is.object", "is.pairlist",
+  "is.raw", "is.recursive", "is.single", "is.symbol", "is.unsorted", "is.vector", "isS4",
+  "islistfactor", "l10n_info", "length", "length<-", "lengths", "levels<-", "lgamma", "log10",
+  "log1p", "log2", "match", "matrix", "max", "min", "mkCode", "names<-", "ngettext", "nzchar",
+  "oldClass", "oldClass<-", "order", "parent.env", "paste", "paste0", "pmatch", "pmax", "pmin",
+  "prod", "psort", "qsort", "radixsort", "rank", "regexec", "regexpr", "rep.int", "rowMeans",
+  "rowSums", "seq_along", "setEncoding", "shortRowNames", "sign", "sin", "sinh", "sinpi", "sort",
+  "sorted_fpass", "sprintf", "sqrt", "startsWith", "storage.mode<-", "strrep", "strsplit", "sub",
+  "substr", "sum", "tan", "tanh", "tanpi", "trigamma", "trunc", "typeof", "unclass", "unique",
+  "unlist", "vector", "which", "which.max", "which.min", "wrap_meta", "|"
+]
+"Rng: no row yet" = [
+  "set.seed"
+]
