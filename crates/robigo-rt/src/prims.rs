@@ -152,6 +152,7 @@ static RT_PRIMS: &[PrimDef] = &[
     special_fn("substitute", crate::specials::do_substitute, 0, -1),
     // eval.c
     special_fn("Recall", crate::eval::do_recall, 210, -1),
+    special_fn("withVisible", crate::eval::do_with_visible, 10, 1),
     special_fn("forceAndCall", crate::apply::do_force_and_call, 0, -1),
     // arithmetic.c
     special_fn("log", crate::specials::do_log, 0, -1),
