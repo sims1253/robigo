@@ -578,7 +578,8 @@ unsafe fn call_builtin_list_codes(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, c
 /// an argument call by its compiled code (`bcEval(code, rho)`: a
 /// translated call's own promise code from `codes`), an empty argument
 /// R_MissingArg, reported ("argument %d is empty") only once all are
-/// evaluated.
+/// evaluated. `codes` is read only with `bc` (the AST's evaluation has no
+/// promise codes), so a caller passes it only with `bc`.
 // R: eval.c:evalList, eval.c:eval (BUILTINSXP), eval.c:bcEval MAKEPROM, checkForMissings, signalMissingArgError
 pub fn builtin_evallist(
     cx: &mut Cx,
@@ -589,6 +590,7 @@ pub fn builtin_evallist(
     bc: bool,
     codes: Option<Root<'_>>,
 ) -> RResult<()> {
+    debug_assert!(codes.is_none() || bc, "robigo: promise codes without the Bc profile's evaluation");
     let missing = cx.missing_arg().sexp();
     let dots = prims::state(cx).syms.dots;
     cx.scope(|cx, s| {
