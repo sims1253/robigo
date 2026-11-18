@@ -587,6 +587,11 @@ impl<'g> State<'g> {
         if s.is_s4() {
             return Err("robigo: deparse of an S4 object is not implemented yet".into());
         }
+        // a package class's length and elements are its C methods' (M5), and
+        // so are its names' or dimnames' when they are one
+        if crate::print::reads_package_altrep(s) {
+            return Err("robigo: deparse of a package ALTREP vector is not implemented yet".into());
+        }
         match s.sexptype() {
             NILSXP => self.print(b"NULL"),
             SYMSXP => {
@@ -947,6 +952,8 @@ impl<'g> State<'g> {
                             self.args2buff(car, false, true)?;
                             self.print(b") ");
                             self.deparse2buff(cadr)?;
+                        } else if srcs.is_package_altrep() {
+                            return Err("robigo: deparse of a package ALTREP vector is not implemented yet".into());
                         } else {
                             let v = srcs.as_vector::<Char<'_>>().unwrap();
                             for i in 0..v.len() {

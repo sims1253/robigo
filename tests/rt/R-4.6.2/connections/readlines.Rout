@@ -1,0 +1,43 @@
+[1] "one"   "two"   "three"
+[1] "one" "two"
+character(0)
+[1] "one"   "two"   "three"
+[1] "one" "two"
+[1] "too few lines read in readLines"
+[1] "one"   "two"   "three"
+[1] "invalid 'n' argument"
+[1] "warning: NAs introduced by coercion"
+[1] "invalid 'n' argument"
+[1] "invalid 'ok' argument"
+[1] "invalid 'warn' argument"
+[1] "invalid 'encoding' value"
+[1] "invalid 'skipNul' argument"
+[1] "'con' is not a connection"
+[1] "one"
+[1] "two"
+[1] TRUE
+[1] "three"
+character(0)
+[1] "one"
+[1] FALSE
+[1] "r"
+[1] "cannot read from this connection"
+[1] "warning: incomplete final line found on 'D/incomplete.txt'"
+[1] "a" "b"
+[1] "a" "b"
+[1] "a" "b" "c" ""  "d"
+[1] "warning: line 1 appears to contain an embedded nul"
+[1] "a" "c"
+[1] "ab" "c" 
+[1] "a" "c"
+[1] 1 4
+[1] 0
+[1] "unknown" "unknown"
+[1] "UTF-8"   "unknown"
+[1] "latin1"  "unknown"
+[1] "bytes"   "unknown"
+character(0)
+[1] "too few lines read in readLines"
+[1] "x" "y"
+[1] TRUE
+[1] "warning: cannot open file 'F': No such file or directory"

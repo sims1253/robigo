@@ -121,6 +121,27 @@ class Guards(unittest.TestCase):
         self.assertLessEqual({n for n, r in rows.items() if r["group"] == "guard"}, set(guards))
 
 
+class Rows(unittest.TestCase):
+    """A rows file's `setup_ref`, and a bars file that names no program."""
+
+    def test_a_row_takes_its_own_setup_or_the_shared_one(self):
+        doc = {"row": [{"name": "a", "setup": "x <- 1"}, {"name": "jit-b", "setup_ref": "calls"}, {"name": "c"}],
+               "setups": {"calls": "f <- function() 1"}}
+        rows = perf.rows_with_setups(doc)
+        self.assertEqual([r.get("setup") for r in rows], ["x <- 1", "f <- function() 1", None])
+        # the parsed document is left as it was
+        self.assertNotIn("setup", doc["row"][1])
+
+    def test_an_unknown_setup_names_its_row(self):
+        with self.assertRaises(KeyError) as e:
+            perf.rows_with_setups({"row": [{"name": "jit-c", "setup_ref": "nope"}]})
+        self.assertEqual(e.exception.args[0], "row `jit-c`: no setup named `nope` in the [setups] table")
+
+    def test_no_program_means_no_rss_run(self):
+        # (rss.py refuses a call without files; /nonexistent would fail if run)
+        self.assertEqual(perf.rt_rss(None, [], 1, "/nonexistent", "gnur"), {})
+
+
 class AgainstMain(unittest.TestCase):
     # main's binary, measured on the same machine
     MAIN = {"instr": {**OK}, "rss": {"p.R": 30000}}
@@ -251,19 +272,26 @@ class Pin(unittest.TestCase):
 
     def test_the_committed_numbers_are_for_the_rt_pin(self):
         import tomllib
-        with open(perf.RT_BARS, "rb") as f:
-            spec = tomllib.load(f)
-        self.assertEqual(spec["gnur"]["version"], perf.pins()["rt"])
-        rows = {b["row"] for b in spec["bar"]}
-        for b in spec["bar"]:
-            self.assertIn(b["row"], spec[b["against"]]["instr"])
-            self.assertEqual(perf.rt_acceptance_errors(b), [])
-        for r in spec["rss"]:
-            for against in r["against"]:
-                self.assertIn(r["program"], spec[against]["rss"])
         with open(perf.RT_ROWS, "rb") as f:
             names = {r["name"] for r in tomllib.load(f)["row"]}
-        self.assertLessEqual(rows, names)
+        # m1-bars.toml, and V4's JIT-cost bars, not gated until V4 step 3
+        jit = os.path.join(perf.ROOT, "benchmarks", "rt", "jit-bars.toml")
+        specs = {}
+        for path in (perf.RT_BARS, jit):
+            with open(path, "rb") as f:
+                specs[path] = tomllib.load(f)
+        for path, spec in specs.items():
+            self.assertEqual(spec["gnur"]["version"], perf.pins()["rt"], path)
+            rows = {b["row"] for b in spec["bar"]}
+            for b in spec["bar"]:
+                self.assertIn(b["row"], spec[b["against"]]["instr"], path)
+                self.assertEqual(perf.rt_acceptance_errors(b), [], path)
+            for r in spec["rss"]:
+                for against in r["against"]:
+                    self.assertIn(r["program"], spec[against]["rss"], path)
+            self.assertLessEqual(rows, names, path)
+        # (robigo-rt is at about 1.9x GNU R's there: none is met yet)
+        self.assertTrue(all(b.get("met") is False for b in specs[jit]["bar"]))
 
 
     def test_committed_s3_is_unmet_and_still_held_to_main(self):

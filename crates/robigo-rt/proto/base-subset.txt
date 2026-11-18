@@ -20,7 +20,10 @@
 # name (do.call("c", ...)) do not, except that a capi case counts every
 # primitive its C names (install("sqrt")) or parses. Top-level printing in
 # C does not count.
-# 253 closures, 120 primitives, 167 internals.
+#
+# No counts here (the log has them): two branches that each add a name
+# would both change a count line the same way, git would merge it, and the
+# file would no longer be what the generator makes.
 closure %in% match.R
 closure %||% utils.R
 closure ..getNamespace namespace.R
@@ -64,7 +67,6 @@ closure as.pairlist pairlist.R
 closure as.vector as.R
 closure asNamespace namespace.R
 closure assign assign.R
-closure attach attach.R
 closure basename files.R
 closure bindingIsLocked bindenv.R
 closure bindtextdomain stop.R
@@ -83,7 +85,6 @@ closure conditionMessage.condition conditions.R
 closure dQuote character.R
 closure delayedAssign delay.R
 closure deparse New-Internal.R
-closure detach attach.R
 closure diff diff.R
 closure diff.default diff.R
 closure dir.exists files.R
@@ -232,7 +233,6 @@ closure sort.default sort.R
 closure sort.int sort.R
 closure sort.list sort.R
 closure sprintf New-Internal.R
-closure startsWith character.R
 closure stderr connections.R
 closure stdin connections.R
 closure stdout connections.R
@@ -261,6 +261,7 @@ closure union sets.R
 closure unique duplicated.R
 closure unique.default duplicated.R
 closure unlist unlist.R
+closure unlockBinding bindenv.R
 closure unname unname.R
 closure unserialize serialize.R
 closure vapply sapply.R
@@ -533,7 +534,6 @@ internal seterrmessage
 internal sort
 internal sorted_fpass
 internal sprintf
-internal startsWith
 internal stderr
 internal stdin
 internal stdout
@@ -552,6 +552,7 @@ internal traceback
 internal typeof
 internal unique
 internal unlist
+internal unlockBinding
 internal unregisterNamespace
 internal unserialize
 internal unserializeFromConn
