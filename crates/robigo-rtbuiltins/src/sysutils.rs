@@ -70,6 +70,13 @@ pub fn do_getenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
     })
 }
 
+/// The process environment cannot be written now (`clib::env_write_allowed`:
+/// a glibc older than `clib::MIN_GLIBC` and several isolates).
+fn refused(cx: &mut Cx, call: Root<'_>, f: &str) -> robigo_rtcore::RError {
+    let (maj, min) = robigo_rtcore::clib::MIN_GLIBC;
+    crate::util::not_yet(cx, Some(call), &format!("{f} with several isolates on glibc older than {maj}.{min}"))
+}
+
 /// `.Internal(Sys.setenv(nm, values))`: set each variable `nm[i]` to
 /// `values[i]` in the process's environment (`setenv`, so every isolate
 /// sees it; see `clib::setenv`), each TRUE if it was set.
@@ -97,7 +104,10 @@ pub fn do_setenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
     for i in 0..n {
         let name = crate::text::native_elt(cx, nm, i)?;
         let value = crate::text::native_elt(cx, val, i)?;
-        ok.push(Lgl(robigo_rtcore::clib::setenv(&name, &value) as i32));
+        match robigo_rtcore::clib::setenv(&name, &value) {
+            Ok(set) => ok.push(Lgl(set as i32)),
+            Err(_) => return Err(refused(cx, call, "Sys.setenv()")),
+        }
     }
     cx.build(out, |cx| Ok(cx.alloc_copy(&ok)?.finish().into()))
 }
@@ -118,7 +128,9 @@ pub fn do_unsetenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
     let nm = args.root(0);
     for i in 0..n {
         let name = crate::text::native_elt(cx, nm, i)?;
-        robigo_rtcore::clib::unsetenv(&name);
+        if robigo_rtcore::clib::unsetenv(&name).is_err() {
+            return Err(refused(cx, call, "Sys.unsetenv()"));
+        }
     }
     let mut ok = Vec::with_capacity(n);
     for i in 0..n {

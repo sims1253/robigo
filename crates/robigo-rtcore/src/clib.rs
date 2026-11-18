@@ -13,7 +13,8 @@
 //! The one exception is the process environment (`setenv`, `unsetenv`:
 //! sysutils.c's `Sys.setenv`, `Sys.unsetenv`), which is the process's, not an
 //! isolate's, in robigo as in GNU R. See [`setenv`] for how its readers
-//! on other threads are kept safe (glibc 2.41 or later, [`MIN_GLIBC`]).
+//! on other threads are kept safe (glibc 2.41 or later, [`MIN_GLIBC`], or
+//! a single isolate).
 
 #![allow(unsafe_code)]
 
@@ -156,18 +157,54 @@ pub fn passwd_home(user: Option<&[u8]>) -> Option<Vec<u8>> {
     }
 }
 
-// `setenv` and `unsetenv` below are sound only with glibc's thread-safe
-// `getenv` (MIN_GLIBC): another C library must not build them silently.
-#[cfg(not(target_env = "gnu"))]
+// Like the rest of this module (glibc's `bindtextdomain`,
+// `__ctype_get_mb_cur_max`), `setenv` and `unsetenv` below are for Linux
+// with glibc: their soundness rests on glibc's `getenv` (MIN_GLIBC), so
+// another C library must not build them silently.
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 compile_error!(
-    "robigo-rtcore's clib (setenv, unsetenv) is for Linux with glibc >= 2.41, whose getenv is safe against a concurrent setenv; a port to another C library starts here"
+    "robigo-rtcore's clib is for Linux with glibc (setenv and unsetenv rely on glibc's getenv); a port to another C library starts here"
 );
 
 /// The oldest glibc whose `getenv` is safe against a concurrent `setenv`
 /// or `unsetenv` on another thread: 2.41, the first release with commit
 /// 7a61e7f557a9 ("stdlib: Make getenv thread-safe in more cases",
-/// `X-Git-Tag: glibc-2.41~465`). [`setenv`] and [`unsetenv`] rely on it.
+/// `X-Git-Tag: glibc-2.41~465`), which never frees an environment array
+/// that `getenv` may be walking, publishes each new one with a release
+/// store, and retries a `getenv` that raced a change.
 pub const MIN_GLIBC: (u32, u32) = (2, 41);
+
+/// The running C library's version (`gnu_get_libc_version`), read once.
+fn glibc_version() -> (u32, u32) {
+    unsafe extern "C" {
+        fn gnu_get_libc_version() -> *const libc::c_char;
+    }
+    static V: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        // SAFETY: glibc returns a static NUL-terminated string.
+        let v = unsafe { std::ffi::CStr::from_ptr(gnu_get_libc_version()) };
+        let mut parts = v
+            .to_bytes()
+            .split(|&b| b == b'.')
+            .map(|p| std::str::from_utf8(p).ok().and_then(|p| p.parse::<u32>().ok()).unwrap_or(0));
+        (parts.next().unwrap_or(0), parts.next().unwrap_or(0))
+    })
+}
+
+/// Whether the process environment may be written now, the rule
+/// [`setenv`] and [`unsetenv`] keep: always on a glibc `glibc` of at least
+/// [`MIN_GLIBC`]; on an older one only while at most one isolate lives,
+/// so that no other robigo thread can be inside `getenv`. (C threads a
+/// package starts are that package's business, as in GNU R, which is
+/// single-threaded by contract.)
+pub fn env_write_allowed(glibc: (u32, u32), live_isolates: usize) -> bool {
+    glibc >= MIN_GLIBC || live_isolates <= 1
+}
+
+/// The environment was not written: [`env_write_allowed`] refused (a glibc
+/// older than [`MIN_GLIBC`] and several isolates).
+#[derive(Debug)]
+pub struct EnvWriteRefused;
 
 /// Whether `name` is one the C library's `setenv`/`unsetenv` accept: not
 /// empty and without `=` (else `EINVAL`), and, as a C string, without NUL
@@ -177,7 +214,8 @@ fn env_name_ok(name: &[u8]) -> bool {
 }
 
 /// `setenv(name, value, 1) == 0`: set the process's environment variable
-/// `name` to `value`; false for a name `setenv` refuses (`EINVAL`).
+/// `name` to `value`; false for a name `setenv` refuses (`EINVAL`), and
+/// [`EnvWriteRefused`] when [`env_write_allowed`] says no.
 ///
 /// The environment is process-wide: every isolate (each on its own
 /// thread) sees the change, as every part of a GNU R process does. Its
@@ -187,40 +225,53 @@ fn env_name_ok(name: &[u8]) -> bool {
 ///   environment lock, as does this write ([`std::env::set_var`]); a read
 ///   sees the old value or the new one, never a torn array;
 /// - C code on another thread that calls `getenv` itself (glibc's time
-///   zone code reading `TZ`, a package's C) is outside that lock. It relies
-///   on [`MIN_GLIBC`]: glibc 2.41 is the first release with commit
-///   7a61e7f557a9 ("stdlib: Make getenv thread-safe in more cases"), which
-///   never frees an environment array that `getenv` may be walking,
-///   publishes each new one with a release store, and retries a `getenv`
-///   that raced a change, so such a read also gets the old value or the
-///   new one. The module builds only for glibc (`target_env = "gnu"`), and
-///   a test checks the running glibc against [`MIN_GLIBC`].
-///   Code that walks `environ` by hand while another isolate sets a
-///   variable is not covered, by glibc or by robigo.
-pub fn setenv(name: &[u8], value: &[u8]) -> bool {
+///   zone code reading `TZ`, as [`localtime`] does; a package's C) is
+///   outside that lock. On glibc [`MIN_GLIBC`] or later such a read gets
+///   the old value or the new one. On an older glibc the write happens
+///   only while this process has one isolate, decided and done under the
+///   live-isolate lock (`isolate::LIVE_ISOLATES`), so that no second
+///   isolate can start until it is over: no other robigo thread is in
+///   `getenv`.
+///
+/// Code that walks `environ` by hand while another isolate sets a
+/// variable is not covered, by glibc or by robigo.
+pub fn setenv(name: &[u8], value: &[u8]) -> Result<bool, EnvWriteRefused> {
     use std::os::unix::ffi::OsStrExt;
     if !env_name_ok(name) || value.contains(&0) {
-        return false;
+        return Ok(false);
+    }
+    let live = crate::isolate::live_isolates();
+    if !env_write_allowed(glibc_version(), *live) {
+        return Err(EnvWriteRefused);
     }
     // SAFETY: the name and value are ones `set_var` accepts (checked
-    // above); concurrent readers are as described in this function's
-    // documentation: std's under the same lock, C's `getenv` by the
-    // guarantee of glibc 2.41 and later (MIN_GLIBC, tested).
+    // above). Concurrent readers, by the rule `env_write_allowed` keeps
+    // (this function's documentation): std's under the same lock; C's
+    // `getenv` by the guarantee of glibc MIN_GLIBC and later, or, on an
+    // older glibc, there is no other isolate, and none starts while `live`
+    // is held.
     unsafe { std::env::set_var(std::ffi::OsStr::from_bytes(name), std::ffi::OsStr::from_bytes(value)) };
-    true
+    drop(live);
+    Ok(true)
 }
 
 /// `unsetenv(name)`: remove the process's environment variable `name`; a
 /// name `unsetenv` refuses (`EINVAL`) changes nothing. Readers on other
-/// threads as for [`setenv`].
-pub fn unsetenv(name: &[u8]) {
+/// threads, and when it is refused, as for [`setenv`].
+pub fn unsetenv(name: &[u8]) -> Result<(), EnvWriteRefused> {
     use std::os::unix::ffi::OsStrExt;
     if !env_name_ok(name) {
-        return;
+        return Ok(());
     }
-    // SAFETY: as for `setenv`: a name `remove_var` accepts, readers as
-    // documented there.
+    let live = crate::isolate::live_isolates();
+    if !env_write_allowed(glibc_version(), *live) {
+        return Err(EnvWriteRefused);
+    }
+    // SAFETY: as for `setenv`: a name `remove_var` accepts; readers by the
+    // rule `env_write_allowed` keeps, with `live` held.
     unsafe { std::env::remove_var(std::ffi::OsStr::from_bytes(name)) };
+    drop(live);
+    Ok(())
 }
 
 /// `getenv(name) != NULL`: whether the process's environment has `name`
@@ -262,20 +313,18 @@ pub fn default_textdomain_dir() -> Option<Vec<u8>> {
 mod tests {
     use super::wcstod_of;
 
-    unsafe extern "C" {
-        fn gnu_get_libc_version() -> *const libc::c_char;
-    }
-
-    // setenv/unsetenv's soundness: the glibc these tests run on has the
-    // thread-safe getenv (the C library is not Miri's)
+    // the rule setenv/unsetenv keep, on both sides of the glibc floor
+    // and with one isolate or several
     #[test]
-    #[cfg_attr(miri, ignore)]
-    fn the_running_glibc_has_the_thread_safe_getenv() {
-        // SAFETY: glibc returns a static NUL-terminated string.
-        let v = unsafe { std::ffi::CStr::from_ptr(gnu_get_libc_version()) }.to_str().unwrap().to_owned();
-        let mut parts = v.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
-        let got = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
-        assert!(got >= super::MIN_GLIBC, "glibc {v} is older than {:?}", super::MIN_GLIBC);
+    fn the_environment_is_written_on_a_new_glibc_or_with_one_isolate() {
+        use super::{MIN_GLIBC, env_write_allowed};
+        for glibc in [MIN_GLIBC, (MIN_GLIBC.0, MIN_GLIBC.1 + 3), (3, 0)] {
+            assert!(env_write_allowed(glibc, 0) && env_write_allowed(glibc, 1) && env_write_allowed(glibc, 2));
+        }
+        for glibc in [(MIN_GLIBC.0, MIN_GLIBC.1 - 1), (2, 39), (1, 99)] {
+            assert!(env_write_allowed(glibc, 0) && env_write_allowed(glibc, 1));
+            assert!(!env_write_allowed(glibc, 2) && !env_write_allowed(glibc, 8));
+        }
     }
 
     // (the C library's message catalogue table is not Miri's)

@@ -978,6 +978,19 @@ impl Drop for EndCallback {
     }
 }
 
+/// The process's live isolates, counted under this lock. `clib::setenv`
+/// and `clib::unsetenv` hold it across their decision and their write, so
+/// on a glibc older than `clib::MIN_GLIBC` no second isolate starts (and
+/// so no robigo thread can be inside `getenv`) while the environment
+/// changes.
+pub(crate) static LIVE_ISOLATES: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+
+/// [`LIVE_ISOLATES`] locked (a panic while it was held left a count that
+/// is still right: nothing panics between its reads and writes).
+pub(crate) fn live_isolates() -> std::sync::MutexGuard<'static, usize> {
+    LIVE_ISOLATES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// An isolate and its first capability: what an embedder (the `robigo-rt`
 /// binary, a test) creates. Dropping it frees the isolate and its heap.
 pub struct OwnedIsolate {
@@ -990,6 +1003,8 @@ impl OwnedIsolate {
     }
 
     pub fn with_options(opts: Options) -> OwnedIsolate {
+        // counted before it can run anything (an environment write waits)
+        *live_isolates() += 1;
         // a new symbol's bits come from its name (H5): before any install
         robigo_heap::set_symbol_bits(crate::sym::symbol_bits);
         // The heap's allocation never collects (H2), and no C segment is open
@@ -1090,5 +1105,6 @@ impl Drop for OwnedIsolate {
         // capability of the isolate was borrowed from this owner or lived
         // inside a callback of one that was: those have ended.
         drop(unsafe { Box::from_raw(self.cx.iso.as_ptr()) });
+        *live_isolates() -= 1;
     }
 }
