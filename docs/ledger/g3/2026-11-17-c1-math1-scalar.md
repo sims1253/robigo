@@ -93,6 +93,10 @@ against the calling function.
   raises those it queued after it, before "NaNs produced"; fixture
   `k_gamma_range` (the warning's call is the closure call's, as GNU R's).
 - Sol round 2 (`7718ce96`): APPROVE, S1 resolved, no new findings.
+- Sol round 3 (`9bc60ecb`, the delta after round 2: the arm out of
+  `vm::run`, `call_fn_regs` expanding a compact sequence argument):
+  APPROVE, no findings. (Recorded with V4 step 2's PR: a push to #812
+  would have restarted its CI.)
 
 ### Verification
 

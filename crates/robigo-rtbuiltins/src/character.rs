@@ -511,6 +511,10 @@ pub fn do_encode_string(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<
     let pp = robigo_text::PrintParams { locale: crate::text::ctype(loc), ..robigo_text::PrintParams::DEFAULT };
     let jt = [Justify::Left, Justify::Right, Justify::Centre, Justify::None][justify as usize];
     let x = args.root(0);
+    // a package class's elements are its C methods' (M5)
+    if x.bind(cx).is_package_altrep() {
+        return Err(cx.error("robigo: encodeString() of a package ALTREP vector is not implemented yet"));
+    }
     cx.build(out, |cx| {
         let xv = x.bind(cx).as_vector::<Char<'_>>().unwrap();
         let nas = cx.na_string();
@@ -606,26 +610,6 @@ fn r_mbrtowc(cx: &mut Cx, s: &[u8], i: usize, n: usize) -> RResult<(usize, i32)>
         }
     }
     Err(cx.error(&format!("invalid multibyte string at '{}'", String::from_utf8_lossy(&err))))
-}
-
-/// `wcrtomb(s, wc, ps)` in a UTF-8 locale (and R's `Rwcrtomb32`): `wc` in
-/// UTF-8, in the original up-to-six-byte forms; nothing for 0.
-// R: util.c:Rwcrtomb32
-fn wcrtomb_utf8(wc: u32, out: &mut Vec<u8>) {
-    const TABLE1: [u32; 6] = [0x7f, 0x7ff, 0xffff, 0x1fffff, 0x3ffffff, 0x7fffffff];
-    const TABLE2: [u8; 6] = [0, 0xc0, 0xe0, 0xf0, 0xf8, 0xfc];
-    let mut cvalue = wc;
-    if cvalue == 0 {
-        return;
-    }
-    let i = TABLE1.iter().position(|&t| cvalue <= t).unwrap_or(TABLE1.len()).min(5);
-    let mut buf = [0u8; 6];
-    for j in (1..=i).rev() {
-        buf[j] = 0x80 | (cvalue & 0x3f) as u8;
-        cvalue >>= 6;
-    }
-    buf[0] = TABLE2[i] | cvalue as u8;
-    out.extend_from_slice(&buf[..=i]);
 }
 
 /// gram.y's reserved words (`keywords[]`, but `...`).
@@ -763,7 +747,7 @@ pub fn do_make_names(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
             };
             tmp.clear();
             for wc in wstr {
-                wcrtomb_utf8(if keep(wc) { wc } else { b'.' as u32 }, &mut tmp);
+                crate::raw::inttomb(if keep(wc) { wc } else { b'.' as u32 } as i32, &mut tmp);
             }
         } else {
             for b in tmp.iter_mut() {
@@ -850,7 +834,7 @@ pub fn do_tolower<const CODE: i32>(
             };
             let mut cbuf = Vec::with_capacity(xi.len());
             for wc in utf8towcs(cx, &xi)? {
-                wcrtomb_utf8(map(wc), &mut cbuf);
+                crate::raw::inttomb(map(wc) as i32, &mut cbuf);
             }
             ys.push(Cased::Text(cbuf, Encoding::Utf8));
         } else {
@@ -863,7 +847,7 @@ pub fn do_tolower<const CODE: i32>(
             };
             let mut cbuf = Vec::with_capacity(xi.len());
             for w in wc {
-                wcrtomb_utf8(map(w), &mut cbuf);
+                crate::raw::inttomb(map(w) as i32, &mut cbuf);
             }
             // markKnown(cbuf, el): the string was native
             ys.push(Cased::Text(cbuf, Encoding::Native));
@@ -1049,7 +1033,7 @@ pub fn do_chartr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
     };
     let mut ys: Vec<Tr> = Vec::with_capacity(n);
     if mbcs || use_wc {
-        let wfmt = |c: u32, m: &mut Vec<u8>| wcrtomb_utf8(c, m);
+        let wfmt = |c: u32, m: &mut Vec<u8>| crate::raw::inttomb(c as i32, m);
         let wc = chartr_wide_arg(cx, old, use_wc, "old")?;
         let trs_old = tr_build_spec(cx, &wc, false, wfmt)?;
         let wc = chartr_wide_arg(cx, new, use_wc, "new")?;
@@ -1100,7 +1084,7 @@ pub fn do_chartr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
             }
             let mut cbuf = Vec::with_capacity(bytes.len());
             for &c in &wc {
-                wcrtomb_utf8(c, &mut cbuf);
+                crate::raw::inttomb(c as i32, &mut cbuf);
             }
             if !utf8 && !mbcs && !cbuf.is_ascii() {
                 return Err(not_yet(cx, None, "chartr() to a non-ASCII character in a single-byte locale"));
@@ -1156,4 +1140,111 @@ pub fn do_chartr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
         a.apply(cx, &mut y)?;
         Ok(y.finish().into())
     })
+}
+
+/// C's `strtol(s, &endp, base)` (glibc, C locale) on a whole string: the
+/// value when every byte was read and it fits a `long` (`errno` unset);
+/// `None` otherwise.
+// R: glibc stdlib/strtol_l.c
+fn strtol_whole(s: &[u8], base: u32) -> Option<i64> {
+    let mut i = 0;
+    while i < s.len() && matches!(s[i], b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r') {
+        i += 1;
+    }
+    let neg = match s.get(i) {
+        Some(b'-') => {
+            i += 1;
+            true
+        }
+        Some(b'+') => {
+            i += 1;
+            false
+        }
+        _ => false,
+    };
+    let mut base = base;
+    let hex = s.get(i) == Some(&b'0') && matches!(s.get(i + 1), Some(b'x' | b'X'));
+    if base == 0 {
+        base = if hex {
+            i += 2;
+            16
+        } else if s.get(i) == Some(&b'0') {
+            8
+        } else {
+            10
+        };
+    } else if base == 16 && hex {
+        i += 2;
+    }
+    let start = i;
+    // the magnitude, in u64 with room for i64::MIN's
+    let mut v: u64 = 0;
+    let mut overflow = false;
+    while let Some(d) = s.get(i).and_then(|&c| (c as char).to_digit(36)).filter(|&d| d < base) {
+        match v.checked_mul(base as u64).and_then(|x| x.checked_add(d as u64)) {
+            Some(x) => v = x,
+            None => overflow = true,
+        }
+        i += 1;
+    }
+    // no digits: endp is the start, a non-empty string's first byte
+    if i == start || i != s.len() {
+        return None;
+    }
+    let limit = if neg { i64::MIN.unsigned_abs() } else { i64::MAX as u64 };
+    if overflow || v > limit {
+        // ERANGE
+        return None;
+    }
+    Some(if neg { (v as i64).wrapping_neg() } else { v as i64 })
+}
+
+/// `.Internal(strtoi(x, base))`: each string read as an integer in `base`
+/// (0: C's prefixes), NA where it is not one whole number that fits.
+// R: character.c:do_strtoi, strtoi
+pub fn do_strtoi(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("strtoi", true).check_arity(cx, call, args)?;
+    let altrep = |cx: &mut Cx| not_yet(cx, Some(call), "strtoi() of a package ALTREP vector");
+    let b = args.get(cx, 1);
+    if b.is_package_altrep() {
+        return Err(altrep(cx));
+    }
+    // isInteger(b): an INTSXP, not a factor
+    let base = match b.view() {
+        robigo_rtcore::View::Int(v) if !attrib::inherits(b, b"factor") && !v.is_empty() => v.get(0),
+        _ => return Err(cx.error("invalid 'base' argument")),
+    };
+    if base != 0 && !(2..=36).contains(&base) {
+        return Err(cx.error("invalid 'base' argument"));
+    }
+    let x = args.get(cx, 0);
+    if x.is_package_altrep() {
+        return Err(altrep(cx));
+    }
+    if x.len() == Some(0) || x.sexptype() == NILSXP {
+        // LENGTH(x) is 0: no STRING_ELT is read
+        return cx.build(out, |cx| Ok(cx.alloc_vector::<i32>(0)?.finish().into()));
+    }
+    let robigo_rtcore::View::Str(xs) = x.view() else {
+        // STRING_ELT on another type
+        let msg = format!(
+            "STRING_ELT() can only be applied to a 'character vector', not a '{}'",
+            crate::util::type_to_char(x)
+        );
+        return Err(cx.error(&msg));
+    };
+    let na = cx.na_string();
+    let vals: Vec<i32> = (0..xs.len())
+        .map(|i| {
+            let c = xs.get(i);
+            if c == na || c.bytes().is_empty() {
+                return i32::MIN;
+            }
+            match strtol_whole(c.bytes(), base as u32) {
+                Some(r) if (i32::MIN as i64..=i32::MAX as i64).contains(&r) => r as i32,
+                _ => i32::MIN,
+            }
+        })
+        .collect();
+    cx.build(out, |cx| Ok(cx.alloc_copy(&vals)?.finish().into()))
 }
