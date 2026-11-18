@@ -82,12 +82,11 @@ touch -d '2000-01-01' "$B/config.status"
 # config.status's substitutions for a Makefile.in or DESCRIPTION.in of
 # src/library/DIR (DIR empty for src/library itself)
 subst() {
-  local dir=$1 in=$2 to=$3 sd=$src/src/library${1:+/$1}
+  local in=$2 to=$3 sd=$src/src/library${1:+/$1}
   sed -e "s|@srcdir@|$sd|g" -e "s|@top_srcdir@|$src|g" -e "s|@VERSION@|$version|g" \
     -e "s|@WHICH@|$which_path|g" -e "s|@R_SYSTEM_ABI@|$system_abi|g" \
     -e "s|@MAINTAINER_MODE_TRUE@|#|g" -e "s|@BYTE_COMPILE_PACKAGES_FALSE@|#|g" \
     -e "s|@BYTE_COMPILE_PACKAGES_TRUE@||g" -e "s|@NOTANGLE@|notangle|g" "$in" > "$to"
-  [ -z "$dir" ] || true
 }
 mkdir -p "$B/src/library"
 subst "" "$src/src/library/Makefile.in" "$B/src/library/Makefile"
