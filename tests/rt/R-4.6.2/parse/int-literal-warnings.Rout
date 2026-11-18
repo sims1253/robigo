@@ -5,5 +5,6 @@
 [1] "double"
 [1] "double"
 [1] "integer"
+warning: non-integer value 3000000000L qualified with L; using numeric value 
 expression(a <- 3e+09)
 [1] 4294967296

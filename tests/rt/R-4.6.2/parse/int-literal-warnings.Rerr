@@ -17,7 +17,4 @@ non-integer value 0xFFFFFFFFFL qualified with L; using numeric value
 Warning message:
 integer literal 1.L contains unnecessary decimal point 
 Warning message:
-In parse(text = "a <- 3000000000L") :
-  non-integer value 3000000000L qualified with L; using numeric value
-Warning message:
 non-integer value 4294967296L qualified with L; using numeric value 

@@ -15,7 +15,9 @@ q <- 1e10L
 p <- 0xFFFFFFFFFL
 o <- 1.L
 typeof(x); typeof(u); typeof(t); typeof(s); typeof(r); typeof(o)
-e <- parse(text = "a <- 3000000000L")
+# parse()'s warning (its message: tracing changes the call it reports)
+e <- withCallingHandlers(parse(text = "a <- 3000000000L"),
+  warning = function(w) { cat("warning:", conditionMessage(w), "\n"); invokeRestart("muffleWarning") })
 e
 f <- function() 4294967296L
 f()

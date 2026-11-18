@@ -35,8 +35,10 @@ eval(e)
 hex(e)
 # a piped call in a body, seen and called in the usual ways
 k <- function(v) v |> f(b = 1)
-body(k)
-deparse(k)
+kf <- quote(function(v) v |> f(b = 1))
+kf[[3]]
+hex(kf[[3]])
+deparse(kf)
 k(2)
 s <- function(e) substitute(e)
 s(1 |> f())
