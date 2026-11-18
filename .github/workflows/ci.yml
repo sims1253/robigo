@@ -293,6 +293,7 @@ jobs:
           ROBIGO_BUILTIN_DIFF_ORACLE: ${{ needs.select.outputs.image_oracle_4_6_2 }}
         run: |
           python3 scripts/test-rt-ci.py
+          python3 scripts/test-builtin-diff.py
           python3 scripts/rt-ci.py
       # L1's bar, outside rt-ci's gctorture modes (its 2,440 records): every
       # record of GNU R's base, compiler and tools databases round-trips as

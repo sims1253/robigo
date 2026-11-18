@@ -138,6 +138,3 @@ domain = { f = ["@any", "=factor(c(1, 2, 1, 2, 1, 2, 1, 2, 1, 2))"] }
   "substr", "sum", "tan", "tanh", "tanpi", "trigamma", "trunc", "typeof", "unclass", "unique",
   "unlist", "vector", "which", "which.max", "which.min", "wrap_meta", "|"
 ]
-"Rng: no row yet" = [
-  "set.seed"
-]

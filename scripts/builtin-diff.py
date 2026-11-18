@@ -65,6 +65,12 @@ RESOURCE = [b"cannot allocate vector of size", b"memory exhausted", b"vector mem
             b"cannot allocate memory block", b"vector memory exhausted"]
 NOT_YET = b"is not implemented yet"
 EXCLUDED = ("resource", "oracle-crash")
+# --timing: seconds per phase, summed over rows and jobs
+TIMES = {}
+
+
+def timed(phase, t0):
+    TIMES[phase] = TIMES.get(phase, 0.0) + time.monotonic() - t0
 FAILS = ("mismatch", "not-implemented", "crash", "timeout")
 
 
@@ -334,12 +340,16 @@ def run_rt(a, row, jit, rt_bin, prefix):
     env.update(ENV, R_ENABLE_JIT=JIT[jit], A4_LABEL="robigo-rt", ROBIGO_RSRC=a.rsrc)
     work = os.path.join(scratch, "cwd")
     os.makedirs(work)
+    t0 = time.monotonic()
     lost_r = run_batch([*prefix, rt_bin, "--vanilla", DRIVER], env, os.path.join(d, "batch.rds"), out,
                        len(cases), work)
+    timed("robigo-rt: the driver over the batch", t0)
+    t0 = time.monotonic()
     res = {}
     for i, kind, call in cases:
         res[i] = classify(os.path.join(d, "records", f"{i:06d}.rds"), os.path.join(out, f"{i:06d}.rds"),
                           lost_o, lost_r, i)
+    timed("harness: comparing the records", t0)
     return {"row": row, "jit": jit, "cases": cases, "res": res, "oracle": os.path.join(d, "records"),
             "rt": out, "scratch": scratch}
 
@@ -364,7 +374,9 @@ def render(pairs):
         for i, o, x in pairs:
             f.write(f"{i}\t{o}\t{x}\n")
         lst = f.name
+    t0 = time.monotonic()
     p = subprocess.run([*r, RENDER, lst], stdout=subprocess.PIPE, text=True, errors="replace")
+    timed("render.R: naming the fields of the mismatches", t0)
     os.unlink(lst)
     out = {}
     for line in p.stdout.splitlines():
@@ -474,11 +486,24 @@ def cmd_run(a):
         if n not in doc:
             sys.exit(f"builtin-diff: no row [{n}] in tests/builtin-diff/rows.toml")
     rows = [Row(n, doc[n], nc, reg) for n in names]
+    t0 = time.monotonic()
     ensure_oracle(a, rows)
+    timed("GNU R's side (cache misses only)", t0)
     rt_bin = a.robigo_rt or default_rt()
     a.rsrc = r_source()
     prefix = ["unshare", "-rn"] if unshare_works() else []
     jobs = [(r, j) for r in rows for j in r.jits]
+    if a.timing:
+        # robigo-rt's start (self-test and the batch's readRDS), with no case
+        t0 = time.monotonic()
+        d = oracle_dir(a.data, rows[0], a.seed, rows[0].jits[0])
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {k: v for k, v in os.environ.items() if k != "R_HOME"}
+            env.update(ENV, R_ENABLE_JIT="0", A4_LABEL="robigo-rt", ROBIGO_RSRC=a.rsrc, A4_BATCH=os.path.join(d, "batch.rds"),
+                       A4_OUT=tmp, A4_FROM="999999", HOME=tmp, TMPDIR=tmp)
+            subprocess.run([rt_bin, "--vanilla", DRIVER], env=env, cwd=tmp, preexec_fn=cap)
+        print(f"timing: robigo-rt's start with {rows[0].name}'s batch: {time.monotonic() - t0:.2f} s")
+    t_all = time.monotonic()
     status = 0
     try:
         with concurrent.futures.ThreadPoolExecutor(a.jobs) as ex:
@@ -512,6 +537,11 @@ def cmd_run(a):
             shutil.rmtree(r["scratch"], ignore_errors=True)
         else:
             print(f"  robigo-rt's records: {r['rt']}")
+    if a.timing:
+        n = sum(len(r["cases"]) for r in results)
+        print(f"timing: {len(results)} rows, {n} cases, {time.monotonic() - t_all:.1f} s wall at {a.jobs} jobs")
+        for k, v in sorted(TIMES.items()):
+            print(f"timing:   {k}: {v:.1f} s")
     if a.seed == 0 and not a.only:
         stale = [f[:-4] for f in os.listdir(KNOWN) if f.endswith(".txt")] if os.path.isdir(KNOWN) else []
         gone = [v for v in stale if v.split("@")[0] not in doc]
@@ -655,8 +685,9 @@ def cmd_ci(a):
         return 1
     base = os.path.join(work, "robigo-rt")
     shutil.copy2(rel, base)
-    a.robigo_rt, a.only, a.show, a.update, a.regen_known, a.keep = base, None, 5, False, False, False
-    status = cmd_run(a)
+    a.robigo_rt, a.only, a.show, a.update, a.regen_known, a.keep, a.timing = base, None, 5, False, False, False, True
+    status = cmd_check_rows(a)
+    status = cmd_run(a) or status
     if subprocess.run([*build, "--features", PLANT_FEATURE], cwd=ROOT).returncode != 0:
         return 1
     plant = os.path.join(work, "robigo-rt-plant")
@@ -683,6 +714,7 @@ def main(argv):
     p.add_argument("--update", action="store_true", help="remove fixed known failures; write new rows' lists")
     p.add_argument("--regen-known", action="store_true", help="rewrite the known lists (a `builtin-diff:` PR)")
     p.add_argument("--keep", action="store_true", help="keep robigo-rt's records")
+    p.add_argument("--timing", action="store_true", help="the seconds each phase took")
     p = sub.add_parser("show")
     common(p)
     p.add_argument("name")
