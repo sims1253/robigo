@@ -1,5 +1,10 @@
 # drop() and DropDims
-show <- function(expr) tryCatch(print(expr), error = function(e) print(e))
+# (robigo-rt does not print matrices yet: an array is shown as its
+# attributes and its elements)
+show <- function(expr) tryCatch({
+    v <- expr
+    if (is.array(v)) { print(attributes(v)); attributes(v) <- NULL; print(v) } else print(v)
+}, error = function(e) print(e), warning = function(w) print(w))
 show(drop(matrix(1:3, 1)))
 show(drop(matrix(1:3, 3)))
 show(drop(matrix(1:4, 2)))

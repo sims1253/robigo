@@ -1,70 +1,138 @@
 [1] 8
 [1]  2  5  8 11
 [1] 7 8 9
-     [,1] [,2] [,3] [,4]
-[1,]    2    5    8   11
-     [,1]
-[1,]    7
-[2,]    8
-[3,]    9
-     [,1] [,2] [,3] [,4]
-[1,]    2    5    8   11
-[2,]    3    6    9   12
-     [,1] [,2] [,3] [,4]
-[1,]    1    4    7   10
-[2,]    3    6    9   12
-     [,1] [,2] [,3]
-[1,]    1    1    4
-[2,]    3    3    6
-     [,1] [,2] [,3] [,4]
-    
-[1,]
-[2,]
-[3,]
-<0 x 0 matrix>
+$dim
+[1] 1 4
+
+[1]  2  5  8 11
+$dim
+[1] 3 1
+
+[1] 7 8 9
+$dim
+[1] 2 4
+
+[1]  2  3  5  6  8  9 11 12
+$dim
+[1] 2 4
+
+[1]  1  3  4  6  7  9 10 12
+$dim
+[1] 2 3
+
+[1] 1 3 1 3 4 6
+$dim
+[1] 0 4
+
+integer(0)
+$dim
+[1] 3 0
+
+integer(0)
+$dim
+[1] 0 0
+
+integer(0)
 [1] NA NA NA
-     [,1] [,2]
-[1,]    4    7
-[2,]   NA   NA
+$dim
+[1] 2 2
+
+[1]  4 NA  7 NA
 [1] NA NA NA NA
 [1] 2
-     [,1] [,2] [,3] [,4]
-[1,]    2    5    8   11
-[2,]    3    6    9   12
+$dim
+[1] 2 4
+
+[1]  2  3  5  6  8  9 11 12
 integer(0)
-     [,1] [,2] [,3] [,4]
-[1,]    1    4    7   10
-[2,]    2    5    8   11
-[3,]    3    6    9   12
+$dim
+[1] 3 4
+
+ [1]  1  2  3  4  5  6  7  8  9 10 11 12
 [1] 12
-     [,1] [,2]
-[1,]    4    7
+$dim
+[1] 1 2
+
+[1] 4 7
  w  x  y  z 
  2  5  8 11 
-   z w
-a 10 1
-b 11 2
-c 12 3
+$dim
+[1] 3 2
+
+$dimnames
+$dimnames[[1]]
+[1] "a" "b" "c"
+
+$dimnames[[2]]
+[1] "z" "w"
+
+
+[1] 10 11 12  1  2  3
 <subscriptOutOfBoundsError in m[c("a", NA), "x"]: subscript out of bounds>
 [1] 8
-  y
-b 8
-  w y
-a 1 7
-c 3 9
-  w x y  z
-b 2 5 8 11
+$dim
+[1] 1 1
+
+$dimnames
+$dimnames[[1]]
+[1] "b"
+
+$dimnames[[2]]
+[1] "y"
+
+
+[1] 8
+$dim
+[1] 2 2
+
+$dimnames
+$dimnames[[1]]
+[1] "a" "c"
+
+$dimnames[[2]]
+[1] "w" "y"
+
+
+[1] 1 3 7 9
+$dim
+[1] 1 4
+
+$dimnames
+$dimnames[[1]]
+[1] "b"
+
+$dimnames[[2]]
+[1] "w" "x" "y" "z"
+
+
+[1]  2  5  8 11
 a b 
 4 5 
-    cols
-rows x
-   a 4
-   b 5
+$dim
+[1] 2 1
+
+$dimnames
+$dimnames$rows
+[1] "a" "b"
+
+$dimnames$cols
+[1] "x"
+
+
+[1] 4 5
 [1] 8
-    cols
-rows w x y  z
-   b 2 5 8 11
-   b 2 5 8 11
+$dim
+[1] 2 4
+
+$dimnames
+$dimnames$rows
+[1] "b" "b"
+
+$dimnames$cols
+[1] "w" "x" "y" "z"
+
+
+[1]  2  2  5  5  8  8 11 11
  w  x  y  z 
  2  5  8 11 
 w 
@@ -86,14 +154,22 @@ NULL
 [[2]]
 NULL
 
-     [,1] [,2]
-[1,] 1    TRUE
+$dim
+[1] 1 2
+
+[[1]]
+[1] 1
+
+[[2]]
+[1] TRUE
+
 [1] 04
 [1] 03 00
 [1] NA NA
-     [,1] [,2]
-[1,]   NA TRUE
-[2,]   NA   NA
+$dim
+[1] 2 2
+
+[1]   NA   NA TRUE   NA
 [1] NA  "b"
 $dim
 [1] 2 2
@@ -103,10 +179,18 @@ NULL
 <subscriptOutOfBoundsError in m[4, 1]: subscript out of bounds>
 <subscriptOutOfBoundsError in m[1, 5]: subscript out of bounds>
 <subscriptOutOfBoundsError in m[c(1, 7), ]: subscript out of bounds>
-  [,1] [,2] [,3] [,4]
-a    1    4    7   10
-b    2    5    8   11
-c    3    6    9   12
+$dim
+[1] 3 4
+
+$dimnames
+$dimnames[[1]]
+[1] "a" "b" "c"
+
+$dimnames[[2]]
+NULL
+
+
+ [1]  1  2  3  4  5  6  7  8  9 10 11 12
 <simpleError in m[-1, 1:2][c(-1, 1), ]: only 0's may be mixed with negative subscripts>
 <subscriptOutOfBoundsError in m["d", ]: subscript out of bounds>
 <simpleError in matrix(1:4, 2)["a", 1]: no 'dimnames' attribute for array>
@@ -116,4 +200,4 @@ c    3    6    9   12
 <simpleError in m[0+1i, 1]: invalid subscript type 'complex'>
 <simpleError in m[c(-1, 1), ]: only 0's may be mixed with negative subscripts>
 <simpleError in m[c(-1, NA), ]: only 0's may be mixed with negative subscripts>
-<simpleWarning in print(expr): NAs introduced by coercion to integer range>
+<simpleWarning in doTryCatch(return(expr), name, parentenv, handler): NAs introduced by coercion to integer range>

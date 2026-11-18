@@ -477,10 +477,12 @@ pub fn drop_dims(cx: &mut Cx, x: Root<'_>) -> RResult<()> {
         let dimnames = s.root(cx, get_value(x.bind(cx), b"dimnames").unwrap_or_else(|| cx.nil()));
         let nil = s.root(cx, cx.nil());
         // VECTOR_ELT(dimnames, i)
-        let dn_elt = |cx: &Cx, i: usize| match dimnames.bind(cx).view() {
-            View::List(l) => l.get(i),
-            _ => cx.nil(),
-        };
+        fn elt<'g>(cx: &'g Cx, dn: Root<'_>, i: usize) -> Ref<'g> {
+            match dn.bind(cx).view() {
+                View::List(l) => l.get(i),
+                _ => cx.nil(),
+            }
+        }
         if n <= 1 {
             // a vector: if it has length one it is ambiguous which dimnames
             // to use, so use one only if there is only one
@@ -489,10 +491,10 @@ pub fn drop_dims(cx: &mut Cx, x: Root<'_>) -> RResult<()> {
                 if dimnames.bind(cx).sexptype() == NILSXP {
                     cx.nil()
                 } else if x.bind(cx).len().unwrap_or(0) != 1 {
-                    (0..ndims).find(|&i| dim[i] != 1).map_or_else(|| cx.nil(), |i| dn_elt(cx, i))
+                    (0..ndims).find(|&i| dim[i] != 1).map_or_else(|| cx.nil(), |i| elt(cx, dimnames, i))
                 } else {
-                    let set: Vec<usize> = (0..ndims).filter(|&i| dn_elt(cx, i).sexptype() != NILSXP).collect();
-                    if set.len() == 1 { dn_elt(cx, set[0]) } else { cx.nil() }
+                    let set: Vec<usize> = (0..ndims).filter(|&i| elt(cx, dimnames, i).sexptype() != NILSXP).collect();
+                    if set.len() == 1 { elt(cx, dimnames, set[0]) } else { cx.nil() }
                 }
             };
             let newnames = s.root(cx, newnames);
@@ -525,13 +527,13 @@ pub fn drop_dims(cx: &mut Cx, x: Root<'_>) -> RResult<()> {
             set_attrib(cx, newdims, b"names", nms)?;
         }
         let havenames =
-            dimnames.bind(cx).sexptype() != NILSXP && kept.iter().any(|&i| dn_elt(cx, i).sexptype() != NILSXP);
+            dimnames.bind(cx).sexptype() != NILSXP && kept.iter().any(|&i| elt(cx, dimnames, i).sexptype() != NILSXP);
         let newnames = if havenames {
             let l = s.capture(cx, |cx, o| {
                 cx.build(o, |cx| {
                     let mut l = cx.alloc_vector::<Ref<'_>>(kept.len())?;
                     for (k, &i) in kept.iter().enumerate() {
-                        l.set(k, dn_elt(cx, i));
+                        l.set(k, elt(cx, dimnames, i));
                     }
                     Ok(l.finish().into())
                 })
@@ -585,6 +587,106 @@ pub fn do_drop(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
         };
         drop_dims(cx, r)?;
         out.set(cx, r.bind(cx));
+        Ok(())
+    })
+}
+
+/// `dim2total(dim, &err)`: the product of the extents in `dims` (an error
+/// if there are none, or one is NA or negative); None past `R_XLEN_T_MAX`.
+// R: array.c:dim2total
+pub fn dim2total(cx: &mut Cx, dims: &[i32]) -> RResult<Option<usize>> {
+    if dims.is_empty() {
+        return Err(cx.error("'dim' cannot be of length 0"));
+    }
+    let mut dn = 1f64;
+    for &d in dims {
+        // (NA_INTEGER is negative: tested first)
+        if d == NA_INTEGER {
+            return Err(cx.error("the dims contain missing values"));
+        }
+        if d < 0 {
+            return Err(cx.error("the dims contain negative values"));
+        }
+        dn = if d != 0 { dn * d as f64 } else { 0.0 };
+    }
+    Ok((dn <= R_XLEN_T_MAX).then_some(dn as usize))
+}
+
+/// `.Internal(array(data, dim, dimnames))`: `data` recycled (or NA) to the
+/// product of `dim`, with that dim and, unless empty, the dimnames.
+// R: array.c:do_array
+pub fn do_array(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("array", true).check_arity(cx, call, args)?;
+    let vals = args.root(0);
+    let t = vals.bind(cx).sexptype();
+    if !matches!(t, LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | RAWSXP | EXPRSXP | VECSXP) {
+        let msg = format!("'data' must be of a vector type, was '{}'", type_to_char(vals.bind(cx)));
+        return Err(cx.error(&msg));
+    }
+    if vals.bind(cx).is_package_altrep() {
+        return Err(not_yet(cx, Some(call), "array() of a package ALTREP vector"));
+    }
+    cx.scope(|cx, s| {
+        let dims = s.capture(cx, |cx, o| crate::coerce::coerce_vector(cx, args.root(1), INTSXP, o))?;
+        cx.materialize(dims)?;
+        cx.materialize(vals)?;
+        let d: Vec<i32> = match dims.bind(cx).as_ints() {
+            Some(d) => d.to_vec(),
+            None => return Err(not_yet(cx, Some(call), "array() with a package ALTREP 'dim'")),
+        };
+        let Some(nans) = dim2total(cx, &d)? else {
+            return Err(cx.error("too many elements specified"));
+        };
+        let ans = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| {
+                let v = vals.bind(cx);
+                let lendat = v.len().unwrap_or(0);
+                macro_rules! fill {
+                    ($ty:ty, $na:expr) => {{
+                        let xs = v.as_vector::<$ty>().unwrap();
+                        let r = if lendat > 0 {
+                            cx.alloc_with::<$ty>(nans, |i| xs.get(i % lendat))?
+                        } else {
+                            cx.alloc_with::<$ty>(nans, |_| $na)?
+                        };
+                        Ok(r.finish().into())
+                    }};
+                }
+                match t {
+                    LGLSXP => fill!(Lgl, Lgl::NA),
+                    INTSXP => fill!(i32, NA_INTEGER),
+                    REALSXP => fill!(f64, NA_REAL),
+                    // (an NA complex here is NA_REAL + 0i)
+                    CPLXSXP => fill!(Rcomplex, Rcomplex { r: NA_REAL, i: 0.0 }),
+                    RAWSXP => fill!(u8, 0u8),
+                    STRSXP => {
+                        let xs = v.as_vector::<Char<'_>>().unwrap();
+                        let mut r = cx.alloc_vector::<Char<'_>>(nans)?;
+                        for i in 0..nans {
+                            r.set(i, if lendat > 0 { xs.get(i % lendat) } else { cx.na_string() });
+                        }
+                        Ok(r.finish().into())
+                    }
+                    _ => {
+                        let xs = v.as_vector::<Ref<'_>>().unwrap();
+                        let mut r =
+                            if t == EXPRSXP { cx.alloc_expression(nans)? } else { cx.alloc_vector::<Ref<'_>>(nans)? };
+                        if lendat > 0 {
+                            for i in 0..nans {
+                                r.set(i, xs.get(i % lendat));
+                            }
+                        }
+                        Ok(r.finish().into())
+                    }
+                }
+            })
+        })?;
+        crate::attrib::set::dimgets(cx, ans, dims)?;
+        let dn = args.root(2);
+        if dn.bind(cx).sexptype() != NILSXP && crate::builtin::length_mut(cx, dn)?.unwrap_or(0) > 0 {
+            dimnamesgets(cx, ans, dn)?;
+        }
+        out.set(cx, ans.bind(cx));
         Ok(())
     })
 }

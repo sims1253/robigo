@@ -1037,7 +1037,10 @@ fn strmat2intmat(cx: &mut Cx, s: Root<'_>, x: Root<'_>, call: Option<Root<'_>>, 
                 let mut v = (0..names.len())
                     .find(|&k| {
                         let t = names.get(cx, k);
-                        e == t || (e != na && t != na && text::seql(crate::coerce::text(e), crate::coerce::text(t), cx.locale()))
+                        e == t
+                            || (e != na
+                                && t != na
+                                && text::seql(crate::coerce::text(e), crate::coerce::text(t), cx.locale()))
                     })
                     .map_or(0, |k| k as i32 + 1);
                 if e == na {

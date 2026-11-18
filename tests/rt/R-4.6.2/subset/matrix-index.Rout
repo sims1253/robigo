@@ -16,14 +16,20 @@ integer(0)
 [1]  1 10 23
 [1] 2
 [1] 2 1
+$dim
+[1] 2
+
 [1] 11 13
+$dim
+[1] 2
+
 [1] 11 13
-<simpleError in m[cbind(-1, 2)]: negative values are not allowed in a matrix subscript>
-<subscriptOutOfBoundsError in m[cbind(4, 1)]: subscript out of bounds>
-<subscriptOutOfBoundsError in m[cbind(1, 5)]: subscript out of bounds>
-<subscriptOutOfBoundsError in a[cbind(1, 4, 1)]: subscript out of bounds>
-<subscriptOutOfBoundsError in mn[cbind("a", "E")]: subscript out of bounds>
-<subscriptOutOfBoundsError in mn[cbind("", "A")]: subscript out of bounds>
-<simpleError in m[cbind("a", "b")]: no 'dimnames' attribute for array>
-<subscriptOutOfBoundsError in a[cbind("x", "q", "p")]: subscript out of bounds>
-<simpleWarning in print(expr): NAs introduced by coercion to integer range>
+<simpleError in m[cb(-1, 2)]: negative values are not allowed in a matrix subscript>
+<subscriptOutOfBoundsError in m[cb(4, 1)]: subscript out of bounds>
+<subscriptOutOfBoundsError in m[cb(1, 5)]: subscript out of bounds>
+<subscriptOutOfBoundsError in a[cb(1, 4, 1)]: subscript out of bounds>
+<subscriptOutOfBoundsError in mn[cb("a", "E")]: subscript out of bounds>
+<subscriptOutOfBoundsError in mn[cb("", "A")]: subscript out of bounds>
+<simpleError in m[cb("a", "b")]: no 'dimnames' attribute for array>
+<subscriptOutOfBoundsError in a[cb("x", "q", "p")]: subscript out of bounds>
+<simpleWarning in doTryCatch(return(expr), name, parentenv, handler): NAs introduced by coercion to integer range>

@@ -1,5 +1,10 @@
 # ArraySubset: x[i, j, k, ...] of arrays of three or more extents
-show <- function(expr) tryCatch(print(expr), error = function(e) print(e), warning = function(w) print(w))
+# (robigo-rt does not print matrices yet: an array is shown as its
+# attributes and its elements)
+show <- function(expr) tryCatch({
+    v <- expr
+    if (is.array(v)) { print(attributes(v)); attributes(v) <- NULL; print(v) } else print(v)
+}, error = function(e) print(e), warning = function(w) print(w))
 a <- array(1:24, c(2, 3, 4))
 show(a[2, 3, 4])
 show(a[, , 1])

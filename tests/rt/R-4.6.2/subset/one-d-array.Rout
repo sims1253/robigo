@@ -8,8 +8,15 @@ $dim
 $dim
 [1] 4
 
-b c 
-2 3 
+$dim
+[1] 2
+
+$dimnames
+$dimnames[[1]]
+[1] "b" "c"
+
+
+[1] 2 3
 $dim
 [1] 2
 
@@ -28,8 +35,15 @@ $dimnames[[1]]
 [1] "b"
 
 
-d a 
-4 1 
+$dim
+[1] 2
+
+$dimnames
+$dimnames[[1]]
+[1] "d" "a"
+
+
+[1] 4 1
 $dim
 [1] 2
 

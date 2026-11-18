@@ -12,8 +12,8 @@
 
 use crate::attrib::set::set_attrib;
 use crate::attrib::{self, Attr, Attrs};
-use crate::subscript::{self, Names, Sindex, Subscript, ecall, get1index, make_subscript};
-use crate::util::{self, type_to_char};
+use crate::subscript::{self, Names, Sindex, Subscript, get1index, make_subscript};
+use crate::util;
 use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Char, Cx, Lgl, NeedGc, Out, RResult, Rcomplex, Ref, Root, Scope, View};
@@ -654,12 +654,6 @@ fn one_d_array(cx: &mut Cx, ans: Root<'_>, x: Root<'_>) -> RResult<()> {
         }
         Ok(())
     })
-}
-
-/// A copy of vector `x` without attributes.
-fn strip<'g>(cx: &'g Cx, x: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
-    let idx = Subscript::all(x.len().unwrap_or(0));
-    extract_subset(cx, x, &idx)
 }
 
 /// What `do_subset2_dflt` found, for the caller to write.
