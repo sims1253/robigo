@@ -10,7 +10,7 @@
 # The union of base-subset.txt (the trace) and the static bound (the free
 # variables of the same inputs that name base functions, transitively through
 # base closures), so that a branch GNU R did not take still finds its function.
-# 437 closures, 148 primitives, 251 internals, 10 variables.
+# (No counts: see base-subset.txt.)
 closure %in% match.R
 closure %||% utils.R
 closure ..getNamespace namespace.R

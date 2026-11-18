@@ -314,8 +314,8 @@ mod tests {
             let snap = o.root();
             cx.frame_snapshot(env, o).unwrap();
             let c = snap.bind(cx).as_cons().unwrap();
-            assert_eq!(c.tag().as_sym().unwrap().name().bytes(), b"b");
-            assert_eq!(c.cdr().as_cons().unwrap().tag().as_sym().unwrap().name().bytes(), b"a");
+            assert_eq!(c.tag().as_sym().unwrap().name_bytes(), b"b");
+            assert_eq!(c.cdr().as_cons().unwrap().tag().as_sym().unwrap().name_bytes(), b"a");
             assert!(c.cdr().as_cons().unwrap().cdr() == cx.nil());
             // a new binding goes on top
             let z = cx.install_rooted(s, b"z").unwrap();
