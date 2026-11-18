@@ -293,6 +293,196 @@ domain = { "#1" = ["@any"], "#2" = ["@any", "<missing>", "=c(TRUE, FALSE)", "=\"
 
 # ---- registry builtins with no row yet, by reason (check-rows) ----------------
 
+# ---- the builtins open PRs add to the registry (E's #866 and #878) ----------
+# (rows ahead of the registry, so `effect` is the PR's class. Environments
+# with promises or `...` are made inside the case, by `extra`: the batch
+# serializes no promise.)
+[activeBindingFunction]
+effect = "Env"
+budget = 300
+typical = { sym = "=quote(act)", env = "env.active" }
+domain = { sym = ["=quote(act)", "=quote(a)", "@chr", "sym"], env = ["@env", "NULL"] }
+
+[delayedBindingExpression]
+args = ["sym", "env"]
+effect = "Env"
+budget = 300
+typical = { sym = "=quote(p)", env = "env" }
+domain = { sym = ["=quote(p)", "=quote(a)", "@chr", "sym"], env = ["@env", "NULL"] }
+extra = [
+  "local({ e <- new.env(); delayedAssign('p', 1 + 1, assign.env = e); .Internal(delayedBindingExpression(quote(p), e)) })",
+  "local({ e <- new.env(); delayedAssign('p', 1 + 1, assign.env = e); force(e$p); .Internal(delayedBindingExpression(quote(p), e)) })",
+  "local({ e <- new.env(); assign('p', 1, e); .Internal(delayedBindingExpression(quote(p), e)) })",
+  "local({ e <- new.env(); delayedAssign('p', stop('a4 error'), assign.env = e); .Internal(delayedBindingExpression(quote(p), e)) })",
+  "local({ e <- new.env(); makeActiveBinding('p', function() 1, e); .Internal(delayedBindingExpression(quote(p), e)) })",
+]
+
+[delayedBindingEnvironment]
+args = ["sym", "env"]
+effect = "Env"
+budget = 300
+typical = { sym = "=quote(p)", env = "env" }
+domain = { sym = ["=quote(p)", "=quote(a)", "@chr", "sym"], env = ["@env", "NULL"] }
+extra = [
+  "local({ e <- new.env(); delayedAssign('p', 1 + 1, assign.env = e); .Internal(delayedBindingEnvironment(quote(p), e)) })",
+  "local({ e <- new.env(); delayedAssign('p', 1 + 1, assign.env = e); force(e$p); .Internal(delayedBindingEnvironment(quote(p), e)) })",
+  "local({ e <- new.env(); assign('p', 1, e); .Internal(delayedBindingEnvironment(quote(p), e)) })",
+  "local({ e <- new.env(); delayedAssign('p', stop('a4 error'), assign.env = e); .Internal(delayedBindingEnvironment(quote(p), e)) })",
+  "local({ e <- new.env(); makeActiveBinding('p', function() 1, e); .Internal(delayedBindingEnvironment(quote(p), e)) })",
+]
+
+[forcedBindingExpression]
+args = ["sym", "env"]
+effect = "Env"
+budget = 300
+typical = { sym = "=quote(p)", env = "env" }
+domain = { sym = ["=quote(p)", "=quote(a)", "@chr", "sym"], env = ["@env", "NULL"] }
+extra = [
+  "local({ e <- new.env(); delayedAssign('p', 1 + 1, assign.env = e); .Internal(forcedBindingExpression(quote(p), e)) })",
+  "local({ e <- new.env(); delayedAssign('p', 1 + 1, assign.env = e); force(e$p); .Internal(forcedBindingExpression(quote(p), e)) })",
+  "local({ e <- new.env(); assign('p', 1, e); .Internal(forcedBindingExpression(quote(p), e)) })",
+  "local({ e <- new.env(); delayedAssign('p', stop('a4 error'), assign.env = e); .Internal(forcedBindingExpression(quote(p), e)) })",
+  "local({ e <- new.env(); makeActiveBinding('p', function() 1, e); .Internal(forcedBindingExpression(quote(p), e)) })",
+]
+
+[dotsExist]
+args = ["env", "inherits"]
+effect = "Env"
+budget = 300
+typical = { env = "env", inherits = "=FALSE" }
+domain = { env = ["@env", "NULL"], inherits = ["=FALSE", "=TRUE", "@any"] }
+extra = [
+  "(function(...) .Internal(dotsExist(environment(), FALSE)))(1 + 1, b = 2)",
+  "(function(...) .Internal(dotsExist(environment(), FALSE)))()",
+  "(function(...) .Internal(dotsExist(environment(), FALSE)))(, 1)",
+  "(function(...) { ..1; .Internal(dotsExist(environment(), FALSE)) })(1 + 1)",
+  "(function(...) (function() .Internal(dotsExist(environment(), TRUE)))())(1)",
+  "(function(...) (function() .Internal(dotsExist(environment(), FALSE)))())(1)",
+  "(function(x) .Internal(dotsExist(environment(), FALSE)))(1)",
+]
+
+[getDotType]
+args = ["i", "env", "inherits"]
+effect = "Env"
+budget = 300
+typical = { i = "=1L", env = "env", inherits = "=FALSE" }
+domain = { i = ["=1L", "=2L", "=0L", "=-1L", "@any"], env = ["@env", "NULL"], inherits = ["=FALSE", "=TRUE", "@any"] }
+extra = [
+  "(function(...) .Internal(getDotType(1L, environment(), FALSE)))(1 + 1, b = 2)",
+  "(function(...) .Internal(getDotType(1L, environment(), FALSE)))()",
+  "(function(...) .Internal(getDotType(1L, environment(), FALSE)))(, 1)",
+  "(function(...) { ..1; .Internal(getDotType(1L, environment(), FALSE)) })(1 + 1)",
+  "(function(...) (function() .Internal(getDotType(1L, environment(), TRUE)))())(1)",
+  "(function(...) (function() .Internal(getDotType(1L, environment(), FALSE)))())(1)",
+  "(function(x) .Internal(getDotType(1L, environment(), FALSE)))(1)",
+  "(function(...) .Internal(getDotType(3L, environment(), FALSE)))(1, 2)",
+  "(function(...) .Internal(getDotType(NA, environment(), FALSE)))(1, 2)",
+]
+
+[dotDelayedExpression]
+args = ["i", "env", "inherits"]
+effect = "Env"
+budget = 300
+typical = { i = "=1L", env = "env", inherits = "=FALSE" }
+domain = { i = ["=1L", "=2L", "=0L", "=-1L", "@any"], env = ["@env", "NULL"], inherits = ["=FALSE", "=TRUE", "@any"] }
+extra = [
+  "(function(...) .Internal(dotDelayedExpression(1L, environment(), FALSE)))(1 + 1, b = 2)",
+  "(function(...) .Internal(dotDelayedExpression(1L, environment(), FALSE)))()",
+  "(function(...) .Internal(dotDelayedExpression(1L, environment(), FALSE)))(, 1)",
+  "(function(...) { ..1; .Internal(dotDelayedExpression(1L, environment(), FALSE)) })(1 + 1)",
+  "(function(...) (function() .Internal(dotDelayedExpression(1L, environment(), TRUE)))())(1)",
+  "(function(...) (function() .Internal(dotDelayedExpression(1L, environment(), FALSE)))())(1)",
+  "(function(x) .Internal(dotDelayedExpression(1L, environment(), FALSE)))(1)",
+  "(function(...) .Internal(dotDelayedExpression(3L, environment(), FALSE)))(1, 2)",
+  "(function(...) .Internal(dotDelayedExpression(NA, environment(), FALSE)))(1, 2)",
+]
+
+[dotDelayedEnvironment]
+args = ["i", "env", "inherits"]
+effect = "Env"
+budget = 300
+typical = { i = "=1L", env = "env", inherits = "=FALSE" }
+domain = { i = ["=1L", "=2L", "=0L", "=-1L", "@any"], env = ["@env", "NULL"], inherits = ["=FALSE", "=TRUE", "@any"] }
+extra = [
+  "(function(...) .Internal(dotDelayedEnvironment(1L, environment(), FALSE)))(1 + 1, b = 2)",
+  "(function(...) .Internal(dotDelayedEnvironment(1L, environment(), FALSE)))()",
+  "(function(...) .Internal(dotDelayedEnvironment(1L, environment(), FALSE)))(, 1)",
+  "(function(...) { ..1; .Internal(dotDelayedEnvironment(1L, environment(), FALSE)) })(1 + 1)",
+  "(function(...) (function() .Internal(dotDelayedEnvironment(1L, environment(), TRUE)))())(1)",
+  "(function(...) (function() .Internal(dotDelayedEnvironment(1L, environment(), FALSE)))())(1)",
+  "(function(x) .Internal(dotDelayedEnvironment(1L, environment(), FALSE)))(1)",
+  "(function(...) .Internal(dotDelayedEnvironment(3L, environment(), FALSE)))(1, 2)",
+  "(function(...) .Internal(dotDelayedEnvironment(NA, environment(), FALSE)))(1, 2)",
+]
+
+[dotForcedExpression]
+args = ["i", "env", "inherits"]
+effect = "Env"
+budget = 300
+typical = { i = "=1L", env = "env", inherits = "=FALSE" }
+domain = { i = ["=1L", "=2L", "=0L", "=-1L", "@any"], env = ["@env", "NULL"], inherits = ["=FALSE", "=TRUE", "@any"] }
+extra = [
+  "(function(...) .Internal(dotForcedExpression(1L, environment(), FALSE)))(1 + 1, b = 2)",
+  "(function(...) .Internal(dotForcedExpression(1L, environment(), FALSE)))()",
+  "(function(...) .Internal(dotForcedExpression(1L, environment(), FALSE)))(, 1)",
+  "(function(...) { ..1; .Internal(dotForcedExpression(1L, environment(), FALSE)) })(1 + 1)",
+  "(function(...) (function() .Internal(dotForcedExpression(1L, environment(), TRUE)))())(1)",
+  "(function(...) (function() .Internal(dotForcedExpression(1L, environment(), FALSE)))())(1)",
+  "(function(x) .Internal(dotForcedExpression(1L, environment(), FALSE)))(1)",
+  "(function(...) .Internal(dotForcedExpression(3L, environment(), FALSE)))(1, 2)",
+  "(function(...) .Internal(dotForcedExpression(NA, environment(), FALSE)))(1, 2)",
+]
+
+[dotsLength]
+args = ["env", "inherits"]
+effect = "Env"
+budget = 300
+typical = { env = "env", inherits = "=FALSE" }
+domain = { env = ["@env", "NULL"], inherits = ["=FALSE", "=TRUE", "@any"] }
+extra = [
+  "(function(...) .Internal(dotsLength(environment(), FALSE)))(1 + 1, b = 2)",
+  "(function(...) .Internal(dotsLength(environment(), FALSE)))()",
+  "(function(...) .Internal(dotsLength(environment(), FALSE)))(, 1)",
+  "(function(...) { ..1; .Internal(dotsLength(environment(), FALSE)) })(1 + 1)",
+  "(function(...) (function() .Internal(dotsLength(environment(), TRUE)))())(1)",
+  "(function(...) (function() .Internal(dotsLength(environment(), FALSE)))())(1)",
+  "(function(x) .Internal(dotsLength(environment(), FALSE)))(1)",
+]
+
+[dotsNames]
+args = ["env", "inherits"]
+effect = "Env"
+budget = 300
+typical = { env = "env", inherits = "=FALSE" }
+domain = { env = ["@env", "NULL"], inherits = ["=FALSE", "=TRUE", "@any"] }
+extra = [
+  "(function(...) .Internal(dotsNames(environment(), FALSE)))(1 + 1, b = 2)",
+  "(function(...) .Internal(dotsNames(environment(), FALSE)))()",
+  "(function(...) .Internal(dotsNames(environment(), FALSE)))(, 1)",
+  "(function(...) { ..1; .Internal(dotsNames(environment(), FALSE)) })(1 + 1)",
+  "(function(...) (function() .Internal(dotsNames(environment(), TRUE)))())(1)",
+  "(function(...) (function() .Internal(dotsNames(environment(), FALSE)))())(1)",
+  "(function(x) .Internal(dotsNames(environment(), FALSE)))(1)",
+]
+
+[dotsElt]
+args = ["i", "env", "inherits"]
+effect = "Calls"
+budget = 300
+typical = { i = "=1L", env = "env", inherits = "=FALSE" }
+domain = { i = ["=1L", "=2L", "=0L", "=-1L", "@any"], env = ["@env", "NULL"], inherits = ["=FALSE", "=TRUE", "@any"] }
+extra = [
+  "(function(...) .Internal(dotsElt(1L, environment(), FALSE)))(1 + 1, b = 2)",
+  "(function(...) .Internal(dotsElt(1L, environment(), FALSE)))()",
+  "(function(...) .Internal(dotsElt(1L, environment(), FALSE)))(, 1)",
+  "(function(...) { ..1; .Internal(dotsElt(1L, environment(), FALSE)) })(1 + 1)",
+  "(function(...) (function() .Internal(dotsElt(1L, environment(), TRUE)))())(1)",
+  "(function(...) (function() .Internal(dotsElt(1L, environment(), FALSE)))())(1)",
+  "(function(x) .Internal(dotsElt(1L, environment(), FALSE)))(1)",
+  "(function(...) .Internal(dotsElt(3L, environment(), FALSE)))(1, 2)",
+  "(function(...) .Internal(dotsElt(NA, environment(), FALSE)))(1, 2)",
+]
+
 [uncovered]
 "special: a VM op or a special (tests/rt covers it)" = [
   "rep"
