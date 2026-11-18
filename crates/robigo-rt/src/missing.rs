@@ -108,17 +108,29 @@ unsafe fn binding(cx: &mut Cx, rho: Sexp, var: Sexp) -> RResult<Option<Option<Se
 // R: envir.c:R_missing
 pub unsafe fn r_missing(cx: &mut Cx, act: &Act, var: Sexp) -> RResult<bool> {
     // SAFETY: the caller's contract; the activation's environment is rooted.
-    unsafe { r_missing_in(cx, act.rho(), var) }
+    unsafe { missing_in(cx, act.rho(), var) }
 }
 
 /// `R_missing(var, rho)` for an environment `rho` (`do_bind`'s
-/// `missing(deparse.level)`).
+/// `missing(deparse.level)`). Out of line: `vm::run` inlines
+/// [`r_missing`], whose code a second inlined caller would change.
 ///
 /// # Safety
 /// `var` is a live symbol of `cx`'s isolate; `rho` a live, rooted
 /// environment.
 // R: envir.c:R_missing
+#[inline(never)]
 pub unsafe fn r_missing_in(cx: &mut Cx, rho: Sexp, var: Sexp) -> RResult<bool> {
+    // SAFETY: the caller's contract.
+    unsafe { missing_in(cx, rho, var) }
+}
+
+/// `R_missing(var, rho)`'s body, for [`r_missing`] and [`r_missing_in`].
+///
+/// # Safety
+/// As for [`r_missing_in`].
+#[inline(always)]
+unsafe fn missing_in(cx: &mut Cx, rho: Sexp, var: Sexp) -> RResult<bool> {
     // SAFETY: an immortal symbol and the rooted environment.
     let b = match unsafe { binding(cx, rho, var)? } {
         None => {
