@@ -528,3 +528,93 @@ pub fn do_readdcf(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
         Ok(v.finish().into())
     })
 }
+
+// ---- text connections ------------------------------------------------------------
+
+/// `translateChar` (`ty` 1), `translateCharUTF8` (3) or `CHAR` (any
+/// other) of a string, as text_init reads them.
+/// `None` for a "bytes" string that `ty` translates (GNU R's error:
+/// [`BYTES_REFUSED`]).
+fn text_bytes(cx: &Cx, c: Char<'_>, ty: i32) -> Option<Vec<u8>> {
+    if c == cx.na_string() || (ty != 1 && ty != 3) {
+        return Some(c.bytes().to_vec());
+    }
+    let s = robigo_rtbuiltins::coerce::text(c);
+    let loc = cx.locale();
+    let r = if ty == 1 { robigo_rtbuiltins::text::to_native(s, loc) } else { robigo_rtbuiltins::text::to_utf8(s, loc) };
+    r.ok().map(|b| b.into_owned())
+}
+
+/// translateChar's error for a "bytes" string.
+const BYTES_REFUSED: &str = "translating strings with \"bytes\" encoding is not allowed";
+
+/// `textConnection(description, object, open, env, type)`: an input text
+/// connection over the strings of `object`, each followed by a newline,
+/// already open. Output text connections (`open` "w" or "a") are not
+/// implemented yet.
+// R: connections.c:do_textconnection, newtext, text_init
+pub fn do_textconnection(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "textConnection", 5, true)?;
+    let desc = match args.get(cx, 0).as_vector::<Char<'_>>() {
+        Some(v) if v.len() == 1 && v.get(0) != cx.na_string() => Some(v.get(0).bytes().to_vec()),
+        _ => None,
+    };
+    let Some(_) = desc else {
+        return Err(cx.error("invalid 'description' argument"));
+    };
+    let desc = text_bytes(cx, args.get(cx, 0).as_vector::<Char<'_>>().unwrap().get(0), 1);
+    let Some(desc) = desc else { return Err(cx.error(BYTES_REFUSED)) };
+    let open = match args.get(cx, 2).as_vector::<Char<'_>>() {
+        Some(v) if v.len() == 1 => v.get(0).bytes().to_vec(),
+        _ => return Err(cx.error("invalid 'open' argument")),
+    };
+    let venv = args.get(cx, 3);
+    if venv.sexptype() == robigo_heap::types::NILSXP {
+        return Err(cx.error("use of NULL environment is defunct"));
+    }
+    if venv.sexptype() != robigo_heap::types::ENVSXP {
+        return Err(cx.error("invalid 'environment' argument"));
+    }
+    let ty = as_integer_warn(cx, args.root(4))?;
+    if ty == NA_INTEGER {
+        return Err(cx.error("invalid 'encoding' argument"));
+    }
+    let ncon = super::next_connection(cx)?;
+    if open.is_empty() || open[0] == b'r' {
+        if args.get(cx, 1).sexptype() != STRSXP {
+            return Err(cx.error("invalid 'text' argument"));
+        }
+        let mut data = Vec::new();
+        let ok = match args.get(cx, 1).as_vector::<Char<'_>>() {
+            None => None,
+            Some(v) => Some((0..v.len()).all(|i| match text_bytes(cx, v.get(i), ty) {
+                // (strlen: up to a NUL, which a CHARSXP has none of)
+                Some(b) => {
+                    data.extend_from_slice(&b);
+                    data.push(b'\n');
+                    true
+                }
+                None => false,
+            })),
+        };
+        match ok {
+            None => {
+                return Err(robigo_rtbuiltins::util::not_yet(
+                    cx,
+                    Some(call),
+                    "textConnection() of a package ALTREP character vector",
+                ));
+            }
+            Some(false) => return Err(cx.error(BYTES_REFUSED)),
+            Some(true) => {}
+        }
+        let mut con = Conn::new("textConnection", &desc, "r", super::Imp::Text(super::TextConn { data, cur: 0 }));
+        con.set_isopen(true);
+        con.set_canwrite(false);
+        super::publish(cx, ncon, con, "textConnection", out)
+    } else if open[0] == b'w' || open[0] == b'a' {
+        Err(robigo_rtbuiltins::util::not_yet(cx, Some(call), "an output textConnection (open = \"w\" or \"a\")"))
+    } else {
+        Err(cx.error("unsupported mode"))
+    }
+}
