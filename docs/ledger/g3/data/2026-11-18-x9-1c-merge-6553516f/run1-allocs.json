@@ -1,16 +1,16 @@
 {
  "meta": {
   "allocs": true,
-  "robigo": "/home/m0hawk/.cache/x1-bins/robigo-rt-x9cm-658b9a69",
+  "robigo": "/home/m0hawk/.cache/x1-bins/robigo-rt-x9cm-6553516f",
   "robigo_env": {
    "ROBIGO_COMPILE": "1"
   },
   "robigo_identity": {
-   "build_id": "be07428c906afef18ace773a4059c7dd6f30b487",
-   "checkout": "nightly-2026-11-17-379-g658b9a699",
-   "mtime": "2026-11-18T03:07:48Z",
-   "path": "/home/m0hawk/.cache/x1-bins/robigo-rt-x9cm-658b9a69",
-   "sha256": "9b71d2b30fcf0891f91c5b146272dae87abc151a516750098931e26010921a80",
+   "build_id": "87b4d980477d752bd06c563b793c0f7a05144092",
+   "checkout": "nightly-2026-11-17-406-g6553516f7",
+   "mtime": "2026-11-18T03:15:39Z",
+   "path": "/home/m0hawk/.cache/x1-bins/robigo-rt-x9cm-6553516f",
+   "sha256": "aa97616f381a89aff6d66d5dfafe0b57493eb0fdcdb9cb35c1e77900d6c3dbe7",
    "stale": null
   },
   "rows": "benchmarks/rt/calls-rows.toml"

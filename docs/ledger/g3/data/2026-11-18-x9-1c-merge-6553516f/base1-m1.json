@@ -2,16 +2,16 @@
  "meta": {
   "cycles": true,
   "gnur": null,
-  "robigo": "/home/m0hawk/.cache/x1-bins/robigo-rt-x9cm-658b9a69",
+  "robigo": "/home/m0hawk/.cache/x1-bins/robigo-rt-main-7ca389bc",
   "robigo_env": {
    "ROBIGO_COMPILE": "1"
   },
   "robigo_identity": {
-   "build_id": "be07428c906afef18ace773a4059c7dd6f30b487",
-   "checkout": "nightly-2026-11-17-379-g658b9a699",
-   "mtime": "2026-11-18T03:07:48Z",
-   "path": "/home/m0hawk/.cache/x1-bins/robigo-rt-x9cm-658b9a69",
-   "sha256": "9b71d2b30fcf0891f91c5b146272dae87abc151a516750098931e26010921a80",
+   "build_id": "4d3104132b057b567d9c742d15421d0cc6ff99ab",
+   "checkout": "nightly-2026-11-17-406-g6553516f7",
+   "mtime": "2026-11-18T03:14:53Z",
+   "path": "/home/m0hawk/.cache/x1-bins/robigo-rt-main-7ca389bc",
+   "sha256": "4f6cb3a45ffd6c3e2ad5b6294d3c678b2baacd11a2dccb0220d0420fcb792ef7",
    "stale": null
   },
   "rows": "benchmarks/rt/calls-rows.toml",
@@ -23,36 +23,36 @@
    "gnur_est_cycles": null,
    "gnur_instr": null,
    "n": 4000,
-   "robigo_est_cycles": 21720.98525,
-   "robigo_instr": 18905.69275
+   "robigo_est_cycles": 21303.72825,
+   "robigo_instr": 18893.66075
   },
   "superassign": {
    "gnur_est_cycles": null,
    "gnur_instr": null,
    "n": 4000,
-   "robigo_est_cycles": 4996.191,
-   "robigo_instr": 4902.0585
+   "robigo_est_cycles": 4990.6235,
+   "robigo_instr": 4895.8985
   },
   "trycatch": {
    "gnur_est_cycles": null,
    "gnur_instr": null,
    "n": 1000,
-   "robigo_est_cycles": 134925.82,
-   "robigo_instr": 113536.99
+   "robigo_est_cycles": 135061.154,
+   "robigo_instr": 113746.634
   },
   "trycatch-err": {
    "gnur_est_cycles": null,
    "gnur_instr": null,
    "n": 1000,
-   "robigo_est_cycles": 207134.033,
-   "robigo_instr": 173987.383
+   "robigo_est_cycles": 207453.031,
+   "robigo_instr": 174380.041
   },
   "trycatch-ok": {
    "gnur_est_cycles": null,
    "gnur_instr": null,
    "n": 1000,
-   "robigo_est_cycles": 59801.209,
-   "robigo_instr": 50908.889
+   "robigo_est_cycles": 59852.839,
+   "robigo_instr": 50996.049
   }
  }
 }
