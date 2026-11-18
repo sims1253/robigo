@@ -17,6 +17,10 @@ f <- function(...) {
 }
 show(f())
 show(f(1, b = x + y, , 3))
+# a compiled caller passes a constant as a value (PUSHCONSTARG)
+cf <- function() { for (i in 1) NULL; f(1, b = x + y, , 3)$types }
+show(cf())
+show(cf())
 # delayed, forced, value and missing elements
 g <- function(...) {
   e <- environment()

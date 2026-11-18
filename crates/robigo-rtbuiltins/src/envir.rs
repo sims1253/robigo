@@ -803,10 +803,12 @@ pub fn do_active_bnd_fun(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root
 /// detection, as GNU R's: "cycle detected in promise chain").
 // R: envir.c:promiseUnwrap
 fn promise_unwrap(p: Ref<'_>) -> Option<Ref<'_>> {
-    let code_of = |x: Ref<'_>| match x.view() {
-        View::Promise(pr) => Some(pr.code()),
-        _ => None,
-    };
+    fn code_of(x: Ref<'_>) -> Option<Ref<'_>> {
+        match x.view() {
+            View::Promise(pr) => Some(pr.code()),
+            _ => None,
+        }
+    }
     let mut x = p;
     let mut slow = p;
     let mut advance_slow = false;
