@@ -1,0 +1,10 @@
+[1] "unused argument (4)"
+on.exit(1, TRUE, FALSE, 4)
+[1] "unused argument (foo = 2)"
+on.exit(1, foo = 2)
+[1] "formal argument \"add\" matched by multiple actual arguments"
+on.exit(a = 1, a = 2)
+[1] "formal argument \"add\" matched by multiple actual arguments"
+on.exit(1, add = TRUE, add = FALSE)
+bye
+[1] "ok"
