@@ -1,0 +1,52 @@
+list of 2 names: b,a 
+  1 : integer : 2 
+  2 : integer : 1 
+list of 2 names: b,a 
+  1 : double : 20 30 
+  2 : double : 10 
+list of 3 names: .h,b,a 
+  1 : integer : 1 
+  2 : integer : 2 
+  3 : integer : 1 
+list of 2 
+  1 : integer : 2 
+  2 : integer : 1 
+list of 2 names: b,a 
+  1 : double : 102 103 
+  2 : double : 101 
+[1] TRUE
+[1] TRUE
+list of 4 names: p,q,r,s 
+  1 : integer : 1 
+  2 : integer : 1 
+  3 : integer : 1 
+  4 : integer : 1 
+forced
+list of 2 names: act,lazy 
+  1 : character : active 
+  2 : double : 42 
+list of 2 names: v,u 
+  1 : double : 3 
+  2 : double : 2 
+list of 2 names: b,a 
+  1 : character : FUN(X[[i]], ...) 
+  2 : character : FUN(X[[i]], ...) 
+list of 2 names: b,a 
+  1 : integer : 2 
+  2 : integer : 1 
+error: use of NULL environment is defunct | call: eapply(NULL, length) 
+error: argument must be an environment | call: eapply(list(), length) 
+list of 0 names:  
+error: arguments must be symbolic | call: doTryCatch(return(expr), name, parentenv, handler) 
+error: '...' used in an incorrect context | call: doTryCatch(return(expr), name, parentenv, handler) 
+[1] 1407
+[1] 556
+[1] "zstdfile" "zapsmall" "xzfile"  
+[1] "-.POSIXt" "-.Date"   "-"       
+[1] "zstdfile"   "xzfile"     "writeLines"
+[1] ".addRestart"   ".addGlobHands" ".addCondHands"
+[1] TRUE
+[1]  TRUE  TRUE FALSE  TRUE
+[1]  TRUE  TRUE  TRUE FALSE
+[1] TRUE
+error: 0 arguments passed to .Internal(builtins) which requires 1 | call: doTryCatch(return(expr), name, parentenv, handler) 

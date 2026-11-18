@@ -516,6 +516,8 @@ pub static BUILTINS: &[Builtin] = &[
     row("as.environment", envir::do_as_environment, 0, 1, 1, FUNCALL, Env),
     row("ls", envir::do_ls, 1, 11, 3, FUNCALL, Env),
     row("env2list", envir::do_env2list, 0, 11, 3, FUNCALL, Calls),
+    row("eapply", envir::do_eapply, 0, 10, 4, FUNCALL, Calls),
+    row("builtins", envir::do_builtins, 0, 11, 1, FUNCALL, Env),
     row("list2env", envir::do_list2env, 0, 11, 2, FUNCALL, Env),
     row("lockEnvironment", envir::do_lock_env, 0, 111, 2, FUNCALL, Env),
     row("lockBinding", envir::do_lock_bnd, 0, 111, 2, FUNCALL, Env),
