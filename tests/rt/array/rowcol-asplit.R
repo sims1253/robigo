@@ -4,11 +4,19 @@ show <- function(x) {
     cat("error:", conditionMessage(x), "| call:", deparse(conditionCall(x)), "\n")
     return(invisible())
   }
-  cat(typeof(x), "|", if (is.list(x)) "<list>" else format(x), "\n")
+  elts(x, typeof(x))
   a <- attributes(x)
-  for (n in names(a)) cat(" ", n, ":", if (is.list(a[[n]])) "<list>" else paste(names(a[[n]]), format(a[[n]]), collapse = " "), "\n")
-  if (is.list(x)) for (i in seq_along(x)) { cat(" [[", i, "]] "); show(x[[i]]) }
+  for (n in names(a)) elts(a[[n]], paste0("  ", n))
   invisible()
+}
+# a vector's elements by cat() (no format() needed), a list's one by one
+elts <- function(v, label) {
+  if (is.list(v)) {
+    cat(label, ": list of", length(v), if (!is.null(names(v))) paste("names:", paste(names(v), collapse = ",")), "\n")
+    for (i in seq_along(v)) elts(v[[i]], paste0(label, "[[", i, "]]"))
+  } else {
+    cat(label, ":", if (is.null(v)) "NULL" else v, if (!is.null(names(v))) paste("| names:", paste(names(v), collapse = ",")), "\n")
+  }
 }
 try1 <- function(expr) show(tryCatch(expr, error = function(e) e))
 m <- matrix(1:6, 2, dimnames = list(c("a", "b"), c("x", "y", "z")))

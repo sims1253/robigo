@@ -6,15 +6,19 @@ show <- function(x) {
     cat("error:", conditionMessage(x), "| call:", deparse(conditionCall(x)), "\n")
     return(invisible())
   }
-  cat(typeof(x), "|", format(x), "\n")
+  elts(x, typeof(x))
   a <- attributes(x)
-  for (n in names(a)) { cat(" ", n, ": "); str1(a[[n]]) }
+  for (n in names(a)) elts(a[[n]], paste0("  ", n))
   invisible()
 }
-str1 <- function(v) {
+# a vector's elements by cat() (no format() needed), a list's one by one
+elts <- function(v, label) {
   if (is.list(v)) {
-    cat("list(", paste(names(v), vapply(v, function(e) paste(format(e), collapse = " "), ""), sep = "=", collapse = "; "), ")\n")
-  } else cat(paste(names(v), format(v), sep = if (is.null(names(v))) "" else "=", collapse = " "), "\n")
+    cat(label, ": list of", length(v), if (!is.null(names(v))) paste("names:", paste(names(v), collapse = ",")), "\n")
+    for (i in seq_along(v)) elts(v[[i]], paste0(label, "[[", i, "]]"))
+  } else {
+    cat(label, ":", if (is.null(v)) "NULL" else v, if (!is.null(names(v))) paste("| names:", paste(names(v), collapse = ",")), "\n")
+  }
 }
 try1 <- function(expr) show(tryCatch(expr, error = function(e) e))
 a <- array(1:24, c(2, 3, 4))
@@ -31,6 +35,9 @@ d <- array(1:6, c(p = 2, q = 3))
 try1(aperm(d))
 e <- array(1:8, c(2, 2, 2), dimnames = list(c("u", "v"), NULL, c("s", "t")))
 try1(aperm(e, c(3, 2, 1)))
+# other attributes are not kept
+k <- array(1:4, c(2, 2)); attr(k, "foo") <- "bar"; names(k) <- letters[1:4]
+try1(aperm(k))
 # every type
 try1(aperm(matrix(c(TRUE, NA, FALSE, TRUE), 2)))
 try1(aperm(matrix(c(1.5, 2.5, NA, 4), 2)))

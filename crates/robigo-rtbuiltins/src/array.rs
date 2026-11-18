@@ -695,9 +695,9 @@ pub fn do_array(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
 // ---- aperm, row/col, asplit --------------------------------------------------
 
 /// `translateChar(STRING_ELT(x, i))`.
-fn translated_elt(cx: &mut Cx, x: Ref<'_>, i: usize) -> RResult<Vec<u8>> {
+fn translated_elt(cx: &mut Cx, x: Root<'_>, i: usize) -> RResult<Vec<u8>> {
     let r = {
-        let c = x.as_vector::<Char<'_>>().unwrap().get(i);
+        let c = x.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
         crate::text::to_native(crate::coerce::text(c), cx.locale()).map(|b| b.into_owned())
     };
     r.map_err(|e| cx.error(&e.to_string()))
@@ -786,10 +786,9 @@ pub fn do_aperm(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
                     return Err(cx.error(no_names()));
                 };
                 let dnna = s.root(cx, dnna);
-                let names: Vec<Vec<u8>> =
-                    (0..n).map(|j| translated_elt(cx, dnna.bind(cx), j)).collect::<RResult<_>>()?;
+                let names: Vec<Vec<u8>> = (0..n).map(|j| translated_elt(cx, dnna, j)).collect::<RResult<_>>()?;
                 for (i, p) in pp.iter_mut().enumerate() {
-                    let this = translated_elt(cx, perm.bind(cx), i)?;
+                    let this = translated_elt(cx, perm, i)?;
                     match names.iter().position(|nm| *nm == this) {
                         Some(j) => *p = j as i64,
                         None => {
@@ -956,11 +955,14 @@ pub fn do_rowscols<const CODE: i32>(
         let (nr, nc) = (nr as usize, nc as usize);
         let ans = s.capture(cx, |cx, o| {
             cx.build(o, |cx| {
-                let v = cx.alloc_with::<i32>(nr * nc, |k| if CODE == 2 { (k / nr.max(1)) as i32 + 1 } else { (k % nr.max(1)) as i32 + 1 })?;
+                let v = cx.alloc_with::<i32>(nr * nc, |k| {
+                    if CODE == 2 { (k / nr.max(1)) as i32 + 1 } else { (k % nr.max(1)) as i32 + 1 }
+                })?;
                 Ok(v.finish().into())
             })
         })?;
-        let dims = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_copy(&[nr as i32, nc as i32])?.finish().into())))?;
+        let dims =
+            s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_copy(&[nr as i32, nc as i32])?.finish().into())))?;
         crate::attrib::set::dimgets(cx, ans, dims)?;
         out.set(cx, ans.bind(cx));
         Ok(())
@@ -1003,9 +1005,8 @@ pub fn do_asplit(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
             dimnamesgets(cx, y, dna)?;
         }
         for i in 0..n2 {
-            let e = s.capture(cx, |cx, o| {
-                cx.build(o, |cx| Ok(gather(cx, x.bind(cx), n1, |j| i * n1 + j)?.unwrap()))
-            })?;
+            let e =
+                s.capture(cx, |cx, o| cx.build(o, |cx| Ok(gather(cx, x.bind(cx), n1, |j| i * n1 + j)?.unwrap())))?;
             if keepdim {
                 crate::attrib::set::dimgets(cx, e, args.root(2))?;
                 if havednc {
