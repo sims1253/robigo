@@ -1,5 +1,13 @@
 # ArrayAssign: x[i, j, k, ...] <- y
-show <- function(expr) tryCatch(print(expr), error = function(e) print(e), warning = function(w) print(w))
+# (robigo-rt does not print matrices yet: an array is shown as its
+# attributes and its elements)
+show <- function(expr) tryCatch({
+    v <- expr
+    if (is.array(v)) { print(attributes(v)); attributes(v) <- NULL; print(v) } else print(v)
+}, error = function(e) print(e), warning = function(w) print(w))
+# (robigo-rt has no cbind/rbind yet: these build the same matrices)
+cb <- function(...) { a <- list(...); matrix(unlist(a), ncol = length(a)) }
+rb <- function(...) { a <- list(...); matrix(unlist(a), nrow = length(a), byrow = TRUE) }
 a <- array(1:24, c(2, 3, 4))
 a[1, 2, 3] <- 0L; show(a[, , 3])
 a[, , 1] <- 100:105; show(a[, , 1])
@@ -32,9 +40,14 @@ show({ b[1, 1, "a"] <- 0L; b })
 show({ b[1, , ] <- 1:3; b })
 show({ b[1, , ] <- integer(0); b })
 show({ b[1, 1, 1] <- NULL; b })
+show({ b[NA, 1, 1] <- NULL; b })
+show({ b[0, 1, 1] <- NULL; b })
 show({ b[c(1, NA), 1, 1] <- 1:2; b })
 show({ b[1, 1, 1] <- list(1); b })
 show({ b[1, 1, 1] <- sum; b })
 show({ b[0, 1, 1] <- NULL; b })
 e <- array(expression(a, b, c, d, e, f, g, h), c(2, 2, 2))
 show({ e[1, 1, 1] <- expression(z); e })
+a0 <- array(1:8, c(2, 2, 2))
+show({ a0[0, 1, 1] <- NULL; a0 })
+show({ a0[1, NA, 1] <- NULL; a0 })

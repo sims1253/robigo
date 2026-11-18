@@ -1,5 +1,13 @@
 # MatrixAssign: x[i, j] <- y
-show <- function(expr) tryCatch(print(expr), error = function(e) print(e), warning = function(w) print(w))
+# (robigo-rt does not print matrices yet: an array is shown as its
+# attributes and its elements)
+show <- function(expr) tryCatch({
+    v <- expr
+    if (is.array(v)) { print(attributes(v)); attributes(v) <- NULL; print(v) } else print(v)
+}, error = function(e) print(e), warning = function(w) print(w))
+# (robigo-rt has no cbind/rbind yet: these build the same matrices)
+cb <- function(...) { a <- list(...); matrix(unlist(a), ncol = length(a)) }
+rb <- function(...) { a <- list(...); matrix(unlist(a), nrow = length(a), byrow = TRUE) }
 m <- matrix(1:12, 3, 4)
 m[2, 3] <- 0L; show(m)
 m[, 1] <- c(7L, 8L, 9L); show(m)
@@ -55,6 +63,8 @@ show({ mm["a", 1] <- 1; mm })
 show({ mm[1, ] <- 1:2; mm })
 show({ mm[1, ] <- integer(0); mm })
 show({ mm[1, 1] <- NULL; mm })
+show({ mm[NA, 1] <- NULL; mm })
+show({ mm[0, 1:2] <- NULL; mm })
 show({ mm[c(1, NA), 1] <- 1:2; mm })
 show({ mm[1, 1:2] <- list(1); mm })
 show({ mm[1, 1] <- quote(a); mm })
@@ -68,3 +78,7 @@ el <- matrix(expression(a, b, c, d), 2)
 show({ el[1, 1] <- expression(z); el })
 show({ el[1, 1] <- list(1); el })
 show({ l[1, 1] <- NULL; l })
+m0 <- matrix(1:4, 2)
+show({ m0[0, 1] <- NULL; m0 })
+show({ m0[NA, 1] <- NULL; m0 })
+show({ m0[1, 1] <- NULL; m0 })

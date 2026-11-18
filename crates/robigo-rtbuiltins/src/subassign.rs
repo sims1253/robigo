@@ -501,8 +501,8 @@ fn vector_assign_by(cx: &mut Cx, call: Root<'_>, x: Root<'_>, s: Root<'_>, y: Ro
             y
         };
         match which {
-            1010 | 1310 | 1313 | 1410 | 1413 | 1414 | 1510 | 1513 | 1514 | 1515 | 2424 | 1610 | 1613 | 1614
-            | 1615 | 1616 | 1919 => assign_elements(cx, which, x, y, &idx, ny)?,
+            1010 | 1310 | 1313 | 1410 | 1413 | 1414 | 1510 | 1513 | 1514 | 1515 | 2424 | 1610 | 1613 | 1614 | 1615
+            | 1616 | 1919 => assign_elements(cx, which, x, y, &idx, ny)?,
             2019 | 2020 => {
                 let mut u = cx.unique_list(x)?;
                 assign_loop(&idx, ny, |ii, iy| u.copy_from(ii, y, iy));
@@ -593,6 +593,15 @@ fn assign_elements(cx: &mut Cx, which: i32, x: Root<'_>, y: Root<'_>, idx: &Subs
     Ok(())
 }
 
+/// `XLENGTH(y)` as `MatrixAssign` and `ArrayAssign` read it: of NULL it is
+/// R_NilValue's CAR (a pointer, so a huge length), which makes `x[i, j] <-
+/// NULL` "not a multiple of replacement length" for any element, and an NA
+/// subscript with it "not allowed".
+// R: subassign.c:MatrixAssign, ArrayAssign (XLENGTH of R_NilValue)
+fn array_value_length(cx: &Cx, y: Ref<'_>) -> usize {
+    if y.sexptype() == NILSXP { usize::MAX } else { rlength(cx, y) }
+}
+
 /// `isMatrix(x)`: a dim of two extents.
 fn is_matrix(x: Ref<'_>) -> bool {
     attrib::dims(x).is_some_and(|d| d.len() == 2)
@@ -643,8 +652,8 @@ fn array_assign_elements(
         // when array elements are permuted the RHS must be a copy
         let y = if x.bind(cx) == y.bind(cx) { sc.capture(cx, |cx, o| cx.shallow_duplicate(y, o))? } else { y };
         match which {
-            1010 | 1310 | 1313 | 1410 | 1413 | 1414 | 1510 | 1513 | 1514 | 1515 | 1610 | 1613 | 1614 | 1615
-            | 1616 | 1919 | 2424 => assign_elements(cx, which, x, y, &Subscript::of(flat), ny),
+            1010 | 1310 | 1313 | 1410 | 1413 | 1414 | 1510 | 1513 | 1514 | 1515 | 1610 | 1613 | 1614 | 1615 | 1616
+            | 1919 | 2424 => assign_elements(cx, which, x, y, &Subscript::of(flat), ny),
             _ => {
                 let msg = format!(
                     "incompatible types (from {} to {}) in {what} subset assignment",
@@ -665,7 +674,7 @@ fn matrix_assign(cx: &mut Cx, call: Root<'_>, x: Root<'_>, subs: &[Root<'_>], y:
         return Err(cx.error("incorrect number of subscripts on matrix"));
     }
     let dims: Vec<i32> = attrib::dims(x.bind(cx)).unwrap().to_vec();
-    let ny = rlength(cx, y.bind(cx));
+    let ny = array_value_length(cx, y.bind(cx));
     let sr = subscript::array_subscript(cx, 0, subs[0], &dims, x, Some(call))?;
     let sc = subscript::array_subscript(cx, 1, subs[1], &dims, x, Some(call))?;
     let any_na = sr.contains(&NA_IDX) || sc.contains(&NA_IDX);
@@ -690,7 +699,7 @@ fn array_assign(cx: &mut Cx, call: Root<'_>, x: Root<'_>, subs: &[Root<'_>], y: 
         return Err(cx.error("incorrect number of subscripts"));
     };
     let k = dims.len();
-    let ny = rlength(cx, y.bind(cx));
+    let ny = array_value_length(cx, y.bind(cx));
     let mut idx = Vec::with_capacity(k);
     for (i, &s) in subs.iter().enumerate() {
         idx.push(subscript::array_subscript(cx, i, s, &dims, x, Some(call))?);
