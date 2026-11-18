@@ -24,7 +24,7 @@ fn split_na_rm(cx: &mut Cx, args: Args<'_>) -> RResult<(Vec<usize>, Option<usize
     let mut rest = Vec::new();
     let mut narm = None;
     for i in 0..args.len() {
-        if args.name(cx, i).is_some_and(|t| t.name().bytes() == b"na.rm") {
+        if args.name(cx, i).is_some_and(|t| t.name_bytes() == b"na.rm") {
             if narm.is_some() {
                 return Err(cx.error("formal argument \"na.rm\" matched by multiple actual arguments"));
             }

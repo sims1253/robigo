@@ -103,18 +103,27 @@ const _: () = {
 /// `Defn.h`'s macros (L6's exception for unedited C declaring a global).
 #[unsafe(no_mangle)]
 #[allow(non_upper_case_globals)]
-pub static mbcslocale: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1);
+pub static mbcslocale: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(INITIAL_MBCSLOCALE);
 /// See [`mbcslocale`].
 #[unsafe(no_mangle)]
-pub static R_MB_CUR_MAX: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(6);
+pub static R_MB_CUR_MAX: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(INITIAL_MB_CUR_MAX);
+
+/// `mbcslocale` and `R_MB_CUR_MAX` before `R_check_locale`, both
+/// `INI_as(FALSE)` in Defn.h: the first values of the statics and of each
+/// block, until [`CGlobals::set_locale`].
+const INITIAL_MBCSLOCALE: c_int = 0;
+const INITIAL_MB_CUR_MAX: c_int = 0;
 
 impl CGlobals {
-    /// Set `mbcslocale` and `R_MB_CUR_MAX` from the locale: glibc's
-    /// `MB_CUR_MAX` is 6 in a UTF-8 `LC_CTYPE` and 1 in `C`.
+    /// Set `mbcslocale` and `R_MB_CUR_MAX` from the locale: the C library's
+    /// `MB_CUR_MAX` in it ([`crate::clib::mb_cur_max`]). A C library
+    /// without the locale (or Miri) gets glibc's, the oracle image's: 6 in
+    /// a UTF-8 `LC_CTYPE` and 1 in `C`.
     // R: platform.c:R_check_locale (mbcslocale = MB_CUR_MAX > 1,
     // R_MB_CUR_MAX = MB_CUR_MAX: the Solaris correction is not Linux's)
     pub(crate) fn set_locale(&self, l: crate::Locale) {
-        let (mbcs, max) = (l.utf8 as c_int, if l.utf8 { 6 } else { 1 });
+        let max = crate::clib::mb_cur_max(l.utf8).map_or(if l.utf8 { 6 } else { 1 }, |n| n as c_int);
+        let mbcs = (max > 1) as c_int;
         self.mbcslocale.set(mbcs);
         self.mb_cur_max.set(max);
         mbcslocale.store(mbcs, std::sync::atomic::Ordering::Relaxed);
@@ -354,8 +363,8 @@ impl CApi {
                 parse_context_line: Cell::new(0),
                 parse_error_msg: std::cell::UnsafeCell::new([0; PARSE_ERROR_SIZE]),
                 parse_context: std::cell::UnsafeCell::new([0; PARSE_CONTEXT_SIZE]),
-                mbcslocale: Cell::new(0),
-                mb_cur_max: Cell::new(1),
+                mbcslocale: Cell::new(INITIAL_MBCSLOCALE),
+                mb_cur_max: Cell::new(INITIAL_MB_CUR_MAX),
                 isolate: std::ptr::null_mut(),
             },
             stack,
@@ -578,4 +587,33 @@ pub(crate) fn logicals(core: &mut robigo_heap::Core) -> [Sexp; 3] {
         }
         x
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::Ordering::Relaxed;
+
+    /// `set_locale` gives the isolate's block and the process statics one
+    /// pair: `MB_CUR_MAX` in the locale, and `mbcslocale` as `MB_CUR_MAX > 1`
+    /// (R_check_locale).
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn set_locale_writes_the_block_and_the_statics_alike() {
+        let mut iso = crate::OwnedIsolate::new();
+        let cx = iso.cx();
+        for utf8 in [false, true] {
+            cx.set_locale(crate::Locale { utf8, ..cx.locale() });
+            let g = cx.cglobals();
+            let (mbcs, max) = (g.mbcslocale.get(), g.mb_cur_max.get());
+            assert_eq!(mbcs, (max > 1) as std::ffi::c_int);
+            if cfg!(target_env = "gnu") {
+                assert_eq!((mbcs, max), if utf8 { (1, 6) } else { (0, 1) });
+            }
+            // (only the UTF-8 pair: another test's new isolate also sets
+            // the statics, always from the default UTF-8 locale)
+            if utf8 {
+                assert_eq!((super::mbcslocale.load(Relaxed), super::R_MB_CUR_MAX.load(Relaxed)), (mbcs, max));
+            }
+        }
+    }
 }

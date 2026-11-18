@@ -276,22 +276,21 @@ fn register_finalizer(cx: &mut Cx, s: Root<'_>, fun: Root<'_>, onexit: bool) -> 
     robigo_rt::fin::register_finalizer(cx, s, fun, onexit)
 }
 
-/// `R_alloc(nelem, eltsize)` from Rust: a block of the R_alloc stack
-/// (null for an empty one), which C keeps until `vmaxset` frees it.
-// R: memory.c:R_alloc
+/// `R_alloc(nelem, eltsize)` from Rust: a block of the R_alloc stack, which
+/// C keeps until `vmaxset` frees it. An empty request (`nelem * eltsize`
+/// not above 0) is null, as GNU R's is.
+// R: memory.c:R_alloc (LONG_VECTOR_SUPPORT)
 pub(crate) fn r_alloc(cx: &mut Cx, s: Scope<'_>, nelem: usize, eltsize: c_int) -> RResult<*mut c_void> {
-    let size = (nelem as f64) * (eltsize.max(0) as f64);
+    // GNU R's dsize, in doubles against overflow
+    let size = (nelem as f64) * (eltsize as f64);
     if size <= 0.0 {
         return Ok(std::ptr::null_mut());
     }
-    if size >= R_XLEN_T_MAX as f64 {
-        return Err(
-            cx.error(&format!("cannot allocate memory block of size {:.1} Gb", size / 1024.0 / 1024.0 / 1024.0))
-        );
+    if size > R_XLEN_T_MAX as f64 {
+        let tb = size / 1024f64.powi(4);
+        return Err(cx.error(&format!("cannot allocate memory block of size {tb:.0} Tb")));
     }
-    // a raw vector of size + 1 bytes, or doubles for alignment past
-    // 8 bytes (GNU R: a REALSXP when size + 1 does not fit a raw
-    // vector's 8-byte alignment)
+    // a raw vector of size + 1 bytes
     let bytes = size as usize + 1;
     let x = if bytes >= LARGE {
         cx.alloc_vector_rooted_raw(RAWSXP, bytes)?
@@ -315,7 +314,10 @@ pub(crate) fn r_alloc(cx: &mut Cx, s: Scope<'_>, nelem: usize, eltsize: c_int) -
 // R: sysutils.c:copyAndFreeStringBuffer
 pub(crate) fn r_alloc_cstr(cx: &mut Cx, s: Scope<'_>, bytes: &[u8]) -> RResult<*const c_char> {
     let p = r_alloc(cx, s, bytes.len() + 1, 1)?.cast::<u8>();
-    // SAFETY: a fresh block of bytes.len() + 2 bytes (r_alloc's + 1).
+    // a request of at least one byte is never r_alloc's null
+    assert!(!p.is_null(), "R_alloc of {} bytes gave null", bytes.len() + 1);
+    // SAFETY: p is not null: a fresh block of bytes.len() + 2 bytes
+    // (r_alloc's + 1).
     unsafe {
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len());
         *p.add(bytes.len()) = 0;

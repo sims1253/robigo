@@ -9,7 +9,7 @@ use crate::entry::OrNull;
 use crate::errors::{not_yet, r_type_to_char};
 use crate::memory::{alloc, safepoint};
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Cx, RResult, Root, Scope, Sexp};
+use robigo_rtcore::{Cx, RError, RResult, Root, Scope, Sexp};
 use std::ffi::{c_int, c_uint};
 
 /// A symbol argument's name (`GetOption1`'s tag, `setAttrib`'s name), or
@@ -17,7 +17,7 @@ use std::ffi::{c_int, c_uint};
 fn name_bytes(cx: &Cx, x: Root<'_>) -> Option<Vec<u8>> {
     let r = x.bind(cx);
     if let Some(s) = r.as_sym() {
-        return Some(s.name().bytes().to_vec());
+        return Some(s.name_bytes().to_vec());
     }
     let v = r.as_vector::<robigo_rtcore::Char<'_>>()?;
     (!v.is_empty()).then(|| v.get(0).bytes().to_vec())
@@ -92,7 +92,7 @@ entry! {
     /// `GetOption1(tag)`: the option's value, or NULL; allocates nothing.
     // R: options.c:GetOption1
     [1] fn Rf_GetOption1(tag: Sexp) -> Sexp => |cx, s| {
-        let Some(name) = tag.bind(cx).as_sym().map(|y| y.name().bytes().to_vec()) else {
+        let Some(name) = tag.bind(cx).as_sym().map(|y| y.name_bytes().to_vec()) else {
             return Err(not_yet(cx, "GetOption1 of a tag that is not a symbol"));
         };
         Ok(robigo_rtbuiltins::options::get_option(cx, s, &name)?.bind(cx).sexp())
@@ -227,28 +227,37 @@ entry! {
     }
 }
 
+/// `coerceVector(v, type)`'s COERCE_ERROR for a type code too large for any
+/// SEXPTYPE, with the code the caller gave: type2char's fallback, its
+/// warning and then "unknown type #N" (GNU R itself reads past its
+/// type table for such a code).
+// R: coerce.c:coerceVector (COERCE_ERROR), util.c:type2char
+#[cold]
+fn coerce_to_unknown(cx: &mut Cx, v: Root<'_>, t: c_uint) -> RError {
+    if let Err(e) = cx.warning(&format!("type {t} is unimplemented in 'type2char'")) {
+        return e;
+    }
+    let from = r_type_to_char(v.bind(cx));
+    cx.error(&format!("cannot coerce type '{from}' to vector of type 'unknown type #{t}'"))
+}
+
 entry! {
     /// `coerceVector(v, type)`.
     // R: coerce.c:coerceVector
     [2] fn Rf_coerceVector(v: Sexp, t: c_uint) -> Sexp => |cx, s| {
         let o = s.out(cx);
         let r = o.root();
-        let t = u8::try_from(t).unwrap_or(u8::MAX);
+        let Ok(t) = u8::try_from(t) else {
+            return Err(coerce_to_unknown(cx, v, t));
+        };
         robigo_rtbuiltins::coerce::vector::coerce_vector(cx, v, t, o)?;
         Ok(r.bind(cx).sexp())
     }
 
-    /// `asBool(x)`: `asLogical2(x, checking = 1, R_NilValue)`, NA an error.
-    // R: coerce.c:asBool, asLogical2
+    /// `asBool(x)`.
+    // R: coerce.c:asBool
     [1] fn Rf_asBool(x: Sexp) -> bool => |cx, _s| {
-        let (v, n) = robigo_rtbuiltins::util::as_logical_n(cx, x.bind(cx));
-        if robigo_rtbuiltins::util::is_vector_atomic(x.bind(cx)) && n > 1 {
-            return Err(cx.error_call(None, &format!("'length = {n}' in coercion to 'logical(1)'")));
-        }
-        if v == robigo_heap::NA_LOGICAL {
-            return Err(cx.error("NA in coercion to boolean"));
-        }
-        Ok(v != 0)
+        robigo_rtbuiltins::util::as_bool(cx, x)
     }
 
     /// `findVar(sym, rho)`: the value bound to `sym` in `rho` or an
