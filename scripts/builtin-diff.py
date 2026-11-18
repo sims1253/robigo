@@ -325,6 +325,10 @@ def run_isolated(cmd, env, batch, out, ncases, key, rsrc=None, timeout=CASE_TIME
         cwd, home, tmp = (os.path.join(root, x) for x in ("case", "home", "tmp"))
         for d in (cwd, home, tmp):
             os.makedirs(d)
+        # the modes UMASK gives, whatever the harness's own umask (the
+        # directory's mode is part of `<id>.files`)
+        for d in (root, cwd, home, tmp):
+            os.chmod(d, 0o777 & ~UMASK)
         if rsrc:
             # robigo-rt finds GNU R's sources under HOME (no ROBIGO_RSRC in Sys.getenv())
             os.makedirs(os.path.join(home, ".cache", "robigo-research"))
@@ -838,7 +842,8 @@ def cmd_plant(a):
 # Whether a registry builtin with neither a row nor a reason, or an
 # [uncovered] name the registry lacks, fails check-rows. False while the
 # builtin PRs queued before A4 landed drain: they are then warnings, listed
-# in the summary. A4's second PR sets it to True.
+# in the summary. A later PR sets it to True once the foreman says that
+# queue has drained.
 UNLISTED_FAILS = False
 
 

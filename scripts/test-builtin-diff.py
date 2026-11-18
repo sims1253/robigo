@@ -219,6 +219,25 @@ class Batches(unittest.TestCase):
             self.assertEqual([x[0] for x in files], [".", f"made-{i}"])
             self.assertEqual(files[1][3], len("clean"))
 
+    def test_the_case_directory_mode_does_not_follow_the_harness_umask(self):
+        d = tempfile.mkdtemp()
+        drv = os.path.join(d, "fake.py")
+        with open(drv, "w") as f:
+            f.write(FAKE)
+        modes = []
+        for mask in (0o022, 0o077):
+            out = os.path.join(d, f"out{mask}")
+            old = os.umask(mask)
+            try:
+                with unittest.mock.patch.object(bd, "ENV", {**bd.ENV, "N": "1"}):
+                    bd.run_isolated([sys.executable, drv], {**os.environ, "N": "1"}, "batch", out, 1, "test-umask")
+            finally:
+                os.umask(old)
+            with open(os.path.join(out, "000001.files")) as f:
+                modes.append(json.load(f)[0])
+        self.assertEqual(modes[0], modes[1])
+        self.assertEqual(modes[0][2], 0o755)
+
     def test_no_losses(self):
         lost, recs, _ = self.run_fake(4)
         self.assertEqual((lost, len(recs)), ({}, 4))
