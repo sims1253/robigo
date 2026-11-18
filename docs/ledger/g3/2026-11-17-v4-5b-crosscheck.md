@@ -252,3 +252,24 @@ After Sol's rounds 1 to 4:
 - The full `scripts/rt-ci.py`, with the observation modes and the moving
   collector, ran on step 5c's head, which has this step whole.
 - `cargo fmt --check`, `scripts/lint.sh`: clean.
+
+### Verification of the head filed
+
+This head is V4 step 2's final head (#824, `c0de07ed0`, with main
+`1a9d21eb1`) merged in, plus #824's deferred OCR low: `builtin_evallist`
+reads promise codes only with `bc`, as a doc line and a `debug_assert!`
+say.
+- The base.rdb crosscheck: 980 the same, 145 expected, 21 untranslated, 6
+  skipped, **0 unexpected**. The rdb tests: 3 passed.
+- The full `scripts/rt-ci.py`: exit 0. Conformance is 555/561, and the 6
+  failing are unratcheted: the 5 `bytecode/*` cases, which wait for
+  `.AutoloadEnv`, and `dynload/library-dynam-tools.R`. Every mode passes,
+  and injected allocation failures show 0 differences in 2800 runs.
+- perf-rt (`scripts/perf.py rt-bars --main`, against main `1a9d21eb1`'s
+  binary): flat. The worst rows are s3 at +0.26% and binarytrees at +0.22%.
+  The closure-call rows are within +0.15%.
+- L's `.AutoloadEnv` branch merged with this step: the conformance
+  crosscheck is 0 unexpected (130 the same, 24 expected, 1 skipped).
+  `ifelse`'s body, unexpected on L's branch alone, is the same here.
+- `scripts/lint.sh`: clean. Miri: not run, since rtcore and heap are
+  unchanged.
