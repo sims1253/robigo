@@ -77,7 +77,7 @@ fn kinds(op: Op) -> ([K; 6], bool) {
         Op::ForStep => ([R, X, C, C, X, X], true),
         Op::ForDone => ([R, X, X, X, X, X], false),
         Op::SetVis => ([X, X, X, X, X, I], false),
-        Op::ErrorCall => ([X, X, X, C, C, I], false),
+        Op::ErrorCall => ([X, X, C0, C, C, I], false),
         Op::SpecialFn => ([W, X, C, C, X, X], false),
         Op::ComplexAssign => ([W, R, X, C, X, I], false),
         Op::BaseGuard => ([X, X, X, C, X, X], true),
@@ -377,7 +377,7 @@ pub fn compare(cx: &Cx, what: &str, t: &Built, s: &Built) {
     let dots = matches!((a, b), (Some(y), Some(x)) if y.op == Op::ErrorCall && x.op == Op::GetVar
         // SAFETY: GetVar's symbol constant, of the pool.
         && x.consts.first().is_some_and(|&sym| unsafe { robigo_rtcore::Ref::from_sexp(sym, cx) }
-            .as_sym().is_some_and(|s| s.name().bytes() == b"...")));
+            .as_sym().is_some_and(|s| s.name_bytes() == b"...")));
     let class = match expected(a, b, ns.get(k + 1)) {
         _ if wrapper => {
             "expected (a simple .Internal wrapper the port calls (cmpSimpleInternal, lazily bound base))".to_owned()

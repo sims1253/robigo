@@ -310,7 +310,7 @@ pub fn enc(cx: &Cx, x: Ref<'_>) -> String {
             )
         ),
         View::List(v) => format!("list[{}]", join(v.as_slice().unwrap().iter().map(|&e| enc(cx, e)).collect(), ";")),
-        View::Sym(s) => format!("sym({})", hex(s.name().bytes())),
+        View::Sym(s) => format!("sym({})", hex(s.name_bytes())),
         View::Lang(c) => {
             let mut v = Vec::new();
             let mut at = Some(c);
@@ -324,7 +324,7 @@ pub fn enc(cx: &Cx, x: Ref<'_>) -> String {
     };
     if !matches!(x.sexptype(), SYMSXP | LANGSXP | NILSXP) {
         let a: Vec<String> = robigo_rtbuiltins::attrib::attrs(x)
-            .map(|a| format!("{}={}", hex(a.tag.name().bytes()), enc(cx, a.value)))
+            .map(|a| format!("{}={}", hex(a.tag.name_bytes()), enc(cx, a.value)))
             .collect();
         if !a.is_empty() {
             s.push_str(&format!("{{{}}}", a.join(";")));

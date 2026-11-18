@@ -2,13 +2,19 @@
 //! with it (robigo-rtbuiltins forbids `unsafe`): the clock and broken-down
 //! time (`time`, `localtime_r`, `gmtime_r`, which datetime.c calls on Linux),
 //! `wcstod` (Rstrptime.h's `%OS`), the password database's home
-//! directories (sys-unix.c's `R_ExpandFileName_unix`) and libintl's default
-//! message directory (errors.c's `bindtextdomain`). None of them changes the
-//! process. The time and number functions read the environment's `TZ` and
-//! the C library's locale, which robigo never sets (the isolate's locale is
-//! its own, `Locale`); the password lookups read the password database; the
-//! message directory is asked of libintl's binding table for a domain no
-//! one binds.
+//! directories (sys-unix.c's `R_ExpandFileName_unix`), libintl's default
+//! message directory (errors.c's `bindtextdomain`) and `MB_CUR_MAX`
+//! (platform.c's `R_check_locale`). None of them changes the process. The
+//! time and number functions read the environment's `TZ` and the C library's
+//! locale, which robigo never sets (the isolate's locale is its own,
+//! `Locale`); the password lookups read the password database; the message
+//! directory is asked of libintl's binding table for a domain no one binds.
+//!
+//! Like the rest of robigo-rt (version.rs's `platform()`), this module is for
+//! Linux with glibc, the one C library robigo-rt builds and is tested on (the
+//! macOS lanes build robigo-cli only): `bindtextdomain` is glibc's libc's
+//! (on macOS it is libintl's) and `__ctype_get_mb_cur_max` is what glibc's
+//! `MB_CUR_MAX` expands to. A port to another C library starts here.
 
 #![allow(unsafe_code)]
 
@@ -73,6 +79,9 @@ pub fn gmtime(t: i64) -> Option<Tm> {
 
 unsafe extern "C" {
     fn wcstod_l(nptr: *const libc::wchar_t, endptr: *mut *mut libc::wchar_t, loc: libc::locale_t) -> f64;
+    /// What glibc's and musl's `MB_CUR_MAX` macro calls: the most bytes of
+    /// a character in the calling thread's `LC_CTYPE`.
+    fn __ctype_get_mb_cur_max() -> libc::size_t;
 }
 
 /// The C library's `C.UTF-8` locale (`C.utf8` in older glibc), made once
@@ -95,6 +104,55 @@ fn c_utf8() -> Option<libc::locale_t> {
         0
     });
     (l != 0).then_some(l as libc::locale_t)
+}
+
+/// The C library's `C` locale (`LC_CTYPE`), made once for the process, as
+/// [`c_utf8`]'s.
+fn c_locale() -> Option<libc::locale_t> {
+    static LOC: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    // SAFETY: as in c_utf8.
+    let l = *LOC
+        .get_or_init(|| unsafe { libc::newlocale(libc::LC_CTYPE_MASK, c"C".as_ptr(), std::ptr::null_mut()) } as usize);
+    (l != 0).then_some(l as libc::locale_t)
+}
+
+/// `MB_CUR_MAX` in the C library's `C.UTF-8` (`utf8`) or `C` locale, the
+/// two `LC_CTYPE`s robigo models (`Locale`). The C library answers for the
+/// calling thread's locale, so the object is made this thread's (`uselocale`)
+/// for the read only. `None` when the C library has no such locale (or under
+/// Miri, which has no C library).
+// R: platform.c:R_check_locale (MB_CUR_MAX)
+pub fn mb_cur_max(utf8: bool) -> Option<usize> {
+    if cfg!(miri) {
+        return None;
+    }
+    let loc = if utf8 { c_utf8()? } else { c_locale()? };
+    let _this = ThreadLocale::switch(loc)?;
+    // SAFETY: no arguments; it reads the calling thread's locale, `loc`
+    // until `_this` drops.
+    Some(unsafe { __ctype_get_mb_cur_max() })
+}
+
+/// The calling thread's locale switched to a locale object (`uselocale`)
+/// until the guard drops, which puts back the one it replaced.
+struct ThreadLocale(libc::locale_t);
+
+impl ThreadLocale {
+    /// `None` when the C library refuses the switch (nothing changed).
+    fn switch(loc: libc::locale_t) -> Option<ThreadLocale> {
+        // SAFETY: `loc` is a live locale object (made once, never freed);
+        // uselocale returns the thread's locale it replaces, null on error.
+        let old = unsafe { libc::uselocale(loc) };
+        (!old.is_null()).then_some(ThreadLocale(old))
+    }
+}
+
+impl Drop for ThreadLocale {
+    fn drop(&mut self) {
+        // SAFETY: the locale uselocale returned, live while it is any
+        // thread's (LC_GLOBAL_LOCALE or one of this module's).
+        unsafe { libc::uselocale(self.0) };
+    }
 }
 
 /// `wcstod(s, &end)` in a UTF-8 locale (white space as `iswspace` reads it
@@ -151,6 +209,82 @@ pub fn passwd_home(user: Option<&[u8]>) -> Option<Vec<u8>> {
     }
 }
 
+/// What `setlocale(category, "")` would set at GNU R's startup, asked of
+/// the C library without setting it (robigo-rt's locale is the isolate's,
+/// [`crate::Locale`]; the process's stays "C").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnvLocale {
+    /// `nl_langinfo(CODESET)` of the environment's `LC_CTYPE`, or of "C"
+    /// when the C library has no such locale ("ANSI_X3.4-1968" in glibc).
+    pub codeset: Vec<u8>,
+    /// The environment's `LC_COLLATE` is "C" or "POSIX" (or the C library
+    /// has no such locale, so "C" is used).
+    pub collate_c: bool,
+    /// The categories whose locale the C library does not have, in GNU R's
+    /// order (main.c's `setlocale` calls): `LC_CTYPE`, `LC_COLLATE`, ...
+    pub failed: Vec<&'static str>,
+}
+
+/// [`EnvLocale`] of the process's environment.
+// R: main.c:setup_Rmainloop (the setlocale calls), platform.c:R_check_locale
+pub fn env_locale() -> EnvLocale {
+    let cats: [(&'static str, libc::c_int); 7] = [
+        ("LC_CTYPE", libc::LC_CTYPE_MASK),
+        ("LC_COLLATE", libc::LC_COLLATE_MASK),
+        ("LC_TIME", libc::LC_TIME_MASK),
+        ("LC_MESSAGES", libc::LC_MESSAGES_MASK),
+        ("LC_MONETARY", libc::LC_MONETARY_MASK),
+        ("LC_PAPER", libc::LC_PAPER_MASK),
+        ("LC_MEASUREMENT", libc::LC_MEASUREMENT_MASK),
+    ];
+    let mut failed = Vec::new();
+    let mut codeset = None;
+    for (name, mask) in cats {
+        // SAFETY: newlocale makes a new object from a NUL-terminated name
+        // (the environment's, "") and no base; nl_langinfo_l reads it, its
+        // string copied before the object is freed, once.
+        unsafe {
+            let l = libc::newlocale(mask, c"".as_ptr(), std::ptr::null_mut());
+            if l.is_null() {
+                failed.push(name);
+                continue;
+            }
+            if mask == libc::LC_CTYPE_MASK {
+                let p = libc::nl_langinfo_l(libc::CODESET, l);
+                if !p.is_null() {
+                    codeset = Some(std::ffi::CStr::from_ptr(p).to_bytes().to_vec());
+                }
+            }
+            libc::freelocale(l);
+        }
+    }
+    let codeset = codeset.unwrap_or_else(|| {
+        // SAFETY: "C" always exists; read and freed as above.
+        unsafe {
+            let l = libc::newlocale(libc::LC_CTYPE_MASK, c"C".as_ptr(), std::ptr::null_mut());
+            if l.is_null() {
+                b"ANSI_X3.4-1968".to_vec()
+            } else {
+                let p = libc::nl_langinfo_l(libc::CODESET, l);
+                let v = if p.is_null() {
+                    b"ANSI_X3.4-1968".to_vec()
+                } else {
+                    std::ffi::CStr::from_ptr(p).to_bytes().to_vec()
+                };
+                libc::freelocale(l);
+                v
+            }
+        }
+    });
+    // setlocale(LC_COLLATE, "")'s name: LC_ALL, else LC_COLLATE, else LANG
+    // (the first set and not empty), else "C"
+    let get = |n: &str| std::env::var_os(n).filter(|v| !v.is_empty());
+    let collate = get("LC_ALL").or_else(|| get("LC_COLLATE")).or_else(|| get("LANG"));
+    let collate_c =
+        failed.contains(&"LC_COLLATE") || collate.is_none_or(|v| matches!(v.as_encoded_bytes(), b"C" | b"POSIX"));
+    EnvLocale { codeset, collate_c, failed }
+}
+
 unsafe extern "C" {
     fn bindtextdomain(domainname: *const libc::c_char, dirname: *const libc::c_char) -> *mut libc::c_char;
 }
@@ -196,6 +330,21 @@ mod tests {
     }
 
     // (the C library's locale objects are not Miri's)
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn mb_cur_max_is_the_c_librarys() {
+        // SAFETY: a null argument only queries the thread's locale.
+        let before = unsafe { libc::uselocale(std::ptr::null_mut()) };
+        // glibc's (the oracle image's): 6 in C.UTF-8, 1 in C
+        if cfg!(target_env = "gnu") {
+            assert_eq!(super::mb_cur_max(true), Some(6));
+        }
+        assert_eq!(super::mb_cur_max(false), Some(1));
+        // the thread's locale is as it was
+        // SAFETY: as above.
+        assert_eq!(unsafe { libc::uselocale(std::ptr::null_mut()) }, before);
+    }
+
     #[test]
     #[cfg_attr(miri, ignore)]
     fn wcstod_reads_c_utf8_numbers_whatever_the_process_locale() {

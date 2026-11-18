@@ -88,6 +88,13 @@ fn c_ftoi(x: f64) -> i64 {
     if x.is_nan() || x >= 9223372036854775808.0 || x < -9223372036854775808.0 { i64::MIN } else { x as i64 }
 }
 
+/// C's `(int) x` as x86-64 computes it (a 32-bit `cvttsd2si`): truncation,
+/// and the "integer indefinite" `i32::MIN` for NaN and out-of-range values,
+/// where Rust's `as` saturates.
+fn c_ftoi32(x: f64) -> i32 {
+    if x.is_nan() || x >= 2147483648.0 || x < -2147483648.0 { i32::MIN } else { x as i32 }
+}
+
 /// `R_compact_intrange(n1, n2)`: a compact integer sequence when both ends
 /// are integers, else a compact real one (the scalar for one element).
 // R: altclasses.c:R_compact_intrange
@@ -674,6 +681,420 @@ pub fn do_rep_len(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
         Ok(Built::done(replicate(cx, sv, na, |k| k % ns, &a)?))
     })
     .map(|_: ()| ())
+}
+
+// ---- seq.int (B5b) ----------------------------------------------------------
+
+const SEQ: Generic = Generic::builtin("seq");
+
+/// do_seq's `FEPS`, "to match seq.default".
+// R: seq.c:FEPS
+const FEPS: f64 = 1e-10;
+
+/// `length(x)` as do_seq reads it (`Rf_length`, whose vector cases are the
+/// `LENGTH` macro): `None` for an environment, whose `envlength` is not
+/// ported; a package ALTREP's length is not read; C's "long vectors not
+/// supported yet" past INT_MAX has no port here.
+// R: Rinlinedfuns.h:length, Rinlinedfuns.h:LENGTH_EX, memory.c:R_BadLongVector
+fn length_seq(cx: &mut Cx, call: Root<'_>, x: Root<'_>) -> RResult<usize> {
+    let (alt, n) = {
+        let v = x.bind(cx);
+        (v.is_package_altrep(), length(v))
+    };
+    if alt {
+        return Err(crate::util::not_yet(cx, None, "seq.int() of a package ALTREP argument"));
+    }
+    let Some(n) = n else {
+        return Err(crate::util::not_yet(cx, Some(call), "seq.int() of an environment (envlength)"));
+    };
+    if n > i32::MAX as usize {
+        return Err(crate::util::not_yet(cx, None, "seq.int() of a long vector argument"));
+    }
+    Ok(n)
+}
+
+/// `asReal(x)` with its `CoercionWarning`; a raw vector with an element is
+/// `asReal`'s UNIMPLEMENTED_TYPE (a zero-length one is NA, as for every
+/// type); a package ALTREP is not read yet.
+// R: coerce.c:asReal
+fn as_real_seq(cx: &mut Cx, x: Root<'_>) -> RResult<f64> {
+    let (alt, raw, r) = {
+        let v = x.bind(cx);
+        (v.is_package_altrep(), v.sexptype() == RAWSXP && v.len().unwrap_or(0) > 0, as_real_w(cx, v))
+    };
+    if alt {
+        return Err(crate::util::not_yet(cx, None, "seq.int() of a package ALTREP argument"));
+    }
+    if raw {
+        return Err(cx.error("unimplemented type 'raw' in 'asReal'\n"));
+    }
+    crate::coerce::vector::coercion_warning(cx, r.1)?;
+    Ok(r.0)
+}
+
+/// `seq.int(from, to, by, length.out, along.with, ...)`: a primitive with
+/// internal argument matching, an internal generic (`seq`) for objects,
+/// and the one-argument `seq.int(5)` and `along.with` forms.
+// R: seq.c:do_seq
+pub fn do_seq(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    // `One`, counted before anything messes with the arguments
+    let one = args.len() == 1;
+    // DispatchOrEval(call, op, "seq", args, rho, &ans, 0, 1): a `seq`
+    // method for an object
+    let Dispatched::Default(out) = crate::coerce::dispatch_or_eval(cx, &SEQ, call, args, env, out)? else {
+        return Ok(());
+    };
+    // a primitive: match seq.int(from, to, by, length.out, along.with, ...)
+    // ourselves
+    let m = crate::util::match_args(cx, call, &["from", "to", "by", "length.out", "along.with", "..."], args)?;
+    cx.scope(|cx, s| seq_int(cx, s, call, one, &m, args, out))
+}
+
+/// The body of [`do_seq`] after the dispatch and the matching: each formal
+/// rooted, `R_MissingArg` when unmatched or empty.
+// R: seq.c:do_seq
+fn seq_int(
+    cx: &mut Cx,
+    s: Scope<'_>,
+    call: Root<'_>,
+    one: bool,
+    m: &crate::util::Matched,
+    args: Args<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    let absent = s.root(cx, cx.missing_arg());
+    let from = m.formals[0].map_or(absent, |i| s.root(cx, args.get(cx, i)));
+    let to = m.formals[1].map_or(absent, |i| s.root(cx, args.get(cx, i)));
+    let by = m.formals[2].map_or(absent, |i| s.root(cx, args.get(cx, i)));
+    let len = m.formals[3].map_or(absent, |i| s.root(cx, args.get(cx, i)));
+    let along = m.formals[4].map_or(absent, |i| s.root(cx, args.get(cx, i)));
+    let miss_from = from.bind(cx) == cx.missing_arg();
+    let miss_to = to.bind(cx) == cx.missing_arg();
+    let by_missing = by.bind(cx) == cx.missing_arg();
+    let along_given = along.bind(cx) != cx.missing_arg();
+    let len_given = len.bind(cx) != cx.missing_arg() && len.bind(cx).sexptype() != NILSXP;
+
+    if one && !miss_from {
+        // seq.int(5), seq.int(<vector>), seq.int(NULL), seq.int("2")
+        let lf = length_seq(cx, call, from)?;
+        if lf == 1 && matches!(from.bind(cx).sexptype(), INTSXP | REALSXP) {
+            let rfrom = as_real_seq(cx, from)?;
+            if !rfrom.is_finite() {
+                return Err(cx.error_call(Some(call), "'from' must be a finite number"));
+            }
+            return seq_colon(cx, 1.0, rfrom, call, out);
+        }
+        if lf > 0 {
+            return seq_colon(cx, 1.0, lf as f64, call, out);
+        }
+        return cx.build(out, |cx| Ok(cx.alloc_copy::<i32>(&[])?.finish().into()));
+    }
+
+    // C's `R_xlen_t lout = NA_INTEGER`: NA_INTEGER as the absent mark
+    const NA_LEN: i64 = i32::MIN as i64;
+    let mut lout: i64 = NA_LEN;
+    if along_given {
+        let (alt, env, xl) = {
+            let a = along.bind(cx);
+            (a.is_package_altrep(), a.sexptype() == ENVSXP, crate::coerce::xlength(a))
+        };
+        if alt {
+            return Err(crate::util::not_yet(cx, None, "seq.int() of a package ALTREP argument"));
+        }
+        if env {
+            return Err(crate::util::not_yet(cx, Some(call), "seq.int() of an environment (envxlength)"));
+        }
+        lout = xl as i64;
+        if one {
+            return if lout != 0 {
+                seq_colon(cx, 1.0, lout as f64, call, out)
+            } else {
+                cx.build(out, |cx| Ok(cx.alloc_copy::<i32>(&[])?.finish().into()))
+            };
+        }
+    } else if len_given {
+        let rout = as_real_seq(cx, len)?;
+        if !rout.is_finite() {
+            return Err(cx.error_call(Some(call), "'length.out' must be a finite number"));
+        }
+        if rout.is_nan() || rout <= -0.5 {
+            return Err(cx.error_call(Some(call), "'length.out' must be a non-negative number"));
+        }
+        if length_seq(cx, call, len)? != 1 {
+            cx.warning_call(Some(call), "first element used of 'length.out' argument")?;
+        }
+        let rout = rout.ceil();
+        if rout >= XLEN_MAX {
+            return Err(cx.error_call(Some(call), "result would be too long a vector"));
+        }
+        lout = c_ftoi(rout);
+    }
+
+    if lout == NA_LEN {
+        let mut rfrom = 1.0;
+        if !miss_from {
+            if length_seq(cx, call, from)? != 1 {
+                return Err(cx.error_call(Some(call), "'from' must be of length 1"));
+            }
+            rfrom = as_real_seq(cx, from)?;
+            if !rfrom.is_finite() {
+                return Err(cx.error_call(Some(call), "'from' must be a finite number"));
+            }
+        }
+        let mut rto = 1.0;
+        if !miss_to {
+            if length_seq(cx, call, to)? != 1 {
+                return Err(cx.error_call(Some(call), "'to' must be of length 1"));
+            }
+            rto = as_real_seq(cx, to)?;
+            if !rto.is_finite() {
+                return Err(cx.error_call(Some(call), "'to' must be a finite number"));
+            }
+        }
+        if by_missing {
+            return seq_colon(cx, rfrom, rto, call, out);
+        }
+        // 'by' specified
+        if length_seq(cx, call, by)? != 1 {
+            return Err(cx.error_call(Some(call), "'by' must be of length 1"));
+        }
+        let del = rto - rfrom;
+        if del == 0.0 && rto == 0.0 {
+            // 'to' itself, which is *not* missing in this case (its default
+            // is 1.0)
+            return cx.build(out, |cx| Ok(to.bind(cx)));
+        }
+        let rby = as_real_seq(cx, by)?;
+        if (rby == 1.0 && del > 0.0) || (rby == -1.0 && del < 0.0) {
+            // treat as if missing: an integer sequence
+            return seq_colon(cx, rfrom, rto, call, out);
+        }
+        let finite_del = del.is_finite();
+        // overflow in (to - from) when both are finite
+        let n = if finite_del { del / rby } else { rto / rby - rfrom / rby };
+        if !n.is_finite() {
+            if del == 0.0 && rby == 0.0 {
+                return cx.build(out, |cx| {
+                    if miss_from { Ok(cx.alloc_copy::<f64>(&[rfrom])?.finish().into()) } else { Ok(from.bind(cx)) }
+                });
+            }
+            return Err(cx.error_call(Some(call), "invalid '(to - from)/by'"));
+        }
+        // inherited from seq.default() but "fudgy" (fmax2 of finite values,
+        // which is f64::max)
+        if finite_del && del.abs() / f64::max(rto.abs(), rfrom.abs()) < 100.0 * f64::EPSILON {
+            return cx.build(out, |cx| {
+                if miss_from { Ok(cx.alloc_copy::<f64>(&[rfrom])?.finish().into()) } else { Ok(from.bind(cx)) }
+            });
+        }
+        if n > 100.0 * (i32::MAX as f64) {
+            return Err(cx.error_call(Some(call), "'by' argument is much too small"));
+        }
+        if n < -FEPS {
+            return Err(cx.error_call(Some(call), "wrong sign in 'by' argument"));
+        }
+        // as seq.default also returns integer for from + (0:n)*by
+        let all_int_inputs = {
+            let (f, t, b) = (from.bind(cx), to.bind(cx), by.bind(cx));
+            (miss_from || f.sexptype() == INTSXP) && (miss_to || t.sexptype() == INTSXP) && b.sexptype() == INTSXP
+        };
+        if all_int_inputs {
+            // asInteger would read the element of a package ALTREP: not read
+            // here
+            let alt = {
+                let (f, b) = (from.bind(cx), by.bind(cx));
+                f.is_package_altrep() || b.is_package_altrep()
+            };
+            if alt {
+                return Err(crate::util::not_yet(cx, None, "seq.int() of a package ALTREP argument"));
+            }
+            let (ifrom, iby) = {
+                let (f, b) = (from.bind(cx), by.bind(cx));
+                (if miss_from { rfrom as i32 } else { as_integer(cx, f).0 }, as_integer(cx, b).0)
+            };
+            let nn = c_ftoi(n);
+            if nn < 0 {
+                // allocVector of the length C's conversion gave
+                return Err(cx.error("negative length vectors are not allowed"));
+            }
+            let nn = nn as usize;
+            return cx.build(out, |cx| {
+                // `(int)(ifrom + i * iby)`: `i` is an R_xlen_t, so the
+                // arithmetic is i64 and the int cast truncates
+                Ok(cx.alloc_with::<i32>(nn + 1, |i| (ifrom as i64 + i as i64 * iby as i64) as i32)?.finish().into())
+            });
+        }
+        let nn = c_ftoi32(n + FEPS) as i64;
+        if nn < 0 {
+            // allocVector(REALSXP, nn + 1) of the negative length C's
+            // `(int)` conversion gave for n past INT_MAX
+            return Err(cx.error("negative length vectors are not allowed"));
+        }
+        let nn = nn as usize;
+        // C divides its copies before the loop when the difference is
+        // infinite; the overshoot test then reads the divided `rby` (its
+        // sign is unchanged)
+        let (mut rfrom, mut rby) = (rfrom, rby);
+        if !finite_del {
+            // |from - to| is infinite, but n = (from-to)/by is not
+            rfrom /= 4.0;
+            rby /= 4.0;
+        }
+        return cx.build(out, |cx| {
+            let mut a = cx.alloc_with::<f64>(nn + 1, |i| {
+                let y = rfrom + i as f64 * rby;
+                if finite_del { y } else { y * 4.0 } // ldexp(y, 2) := y * 2^2
+            })?;
+            // correct for possible overshot because of fuzz
+            if nn > 0 {
+                let last = &mut a.as_mut_slice()[nn];
+                if (rby > 0.0 && *last > rto) || (rby < 0.0 && *last < rto) {
+                    *last = rto;
+                }
+            }
+            Ok(a.finish().into())
+        });
+    }
+    if lout == 0 {
+        cx.build(out, |cx| Ok(cx.alloc_copy::<i32>(&[])?.finish().into()))
+    } else if one {
+        seq_colon(cx, 1.0, lout as f64, call, out)
+    } else if by_missing {
+        // 'length.out' elements from 'from' to 'to'; either may be missing
+        let mut rfrom = as_real_seq(cx, from)?;
+        let mut rto = as_real_seq(cx, to)?;
+        let mut rby = 0.0;
+        if miss_to {
+            rto = rfrom + lout as f64 - 1.0;
+        }
+        if miss_from {
+            rfrom = rto - lout as f64 + 1.0;
+        }
+        if !rfrom.is_finite() {
+            return Err(cx.error_call(Some(call), "'from' must be a finite number"));
+        }
+        if !rto.is_finite() {
+            return Err(cx.error_call(Some(call), "'to' must be a finite number"));
+        }
+        let mut finite_del = false;
+        if lout > 2 {
+            // only then, use 'by'
+            let nint = (lout - 1) as f64;
+            rby = rto - rfrom;
+            if rby.is_finite() {
+                finite_del = true;
+                rby /= nint;
+            } else {
+                // overflow in (to - from), nint >= 2 => finite 'by'
+                rby = rto / nint - rfrom / nint;
+            }
+        }
+        let all_int = rfrom <= i32::MAX as f64
+            && rfrom >= i32::MIN as f64
+            && rto <= i32::MAX as f64
+            && rto >= i32::MIN as f64
+            && rfrom == c_ftoi32(rfrom) as f64
+            && (lout <= 1 || rto == c_ftoi32(rto) as f64)
+            && (lout <= 2 || rby == c_ftoi32(rby) as f64);
+        if all_int {
+            cx.build(out, |cx| {
+                let n = lout as usize;
+                Ok(cx
+                    .alloc_with::<i32>(n, |i| {
+                        if i == 0 {
+                            rfrom as i32
+                        } else if i == n - 1 {
+                            rto as i32
+                        } else {
+                            (rfrom + i as f64 * rby) as i32
+                        }
+                    })?
+                    .finish()
+                    .into())
+            })
+        } else {
+            cx.build(out, |cx| {
+                let n = lout as usize;
+                Ok(cx
+                    .alloc_with::<f64>(n, |i| {
+                        if i == 0 {
+                            rfrom
+                        } else if i == n - 1 {
+                            rto
+                        } else if finite_del {
+                            rfrom + i as f64 * rby
+                        } else {
+                            // |del| = from - to is infinite: ldexp(rfrom +
+                            // i*rby, 2) after both quarters (* 2^2 is exact)
+                            (rfrom / 4.0 + i as f64 * (rby / 4.0)) * 4.0
+                        }
+                    })?
+                    .finish()
+                    .into())
+            })
+        }
+    } else if miss_to {
+        // 'length.out' and 'by', no 'to'
+        let mut rfrom = as_real_seq(cx, from)?;
+        let rby = as_real_seq(cx, by)?;
+        if miss_from {
+            rfrom = 1.0;
+        }
+        if !rfrom.is_finite() {
+            return Err(cx.error_call(Some(call), "'from' must be a finite number"));
+        }
+        if !rby.is_finite() {
+            return Err(cx.error_call(Some(call), "'by' must be a finite number"));
+        }
+        let rto = rfrom + (lout - 1) as f64 * rby;
+        let all_int = rfrom <= i32::MAX as f64
+            && rfrom >= i32::MIN as f64
+            && rto <= i32::MAX as f64
+            && rto >= i32::MIN as f64
+            && rby == c_ftoi32(rby) as f64
+            && rfrom == c_ftoi32(rfrom) as f64;
+        if all_int {
+            cx.build(out, |cx| {
+                let n = lout as usize;
+                Ok(cx.alloc_with::<i32>(n, |i| (rfrom + i as f64 * rby) as i32)?.finish().into())
+            })
+        } else {
+            cx.build(out, |cx| {
+                let n = lout as usize;
+                Ok(cx.alloc_with::<f64>(n, |i| rfrom + i as f64 * rby)?.finish().into())
+            })
+        }
+    } else if miss_from {
+        // 'length.out' and 'by', no 'from'
+        let rto = as_real_seq(cx, to)?;
+        let rby = as_real_seq(cx, by)?;
+        let rfrom = rto - (lout - 1) as f64 * rby;
+        if !rto.is_finite() {
+            return Err(cx.error_call(Some(call), "'to' must be a finite number"));
+        }
+        if !rby.is_finite() {
+            return Err(cx.error_call(Some(call), "'by' must be a finite number"));
+        }
+        let all_int = rby == c_ftoi32(rby) as f64
+            && rto == c_ftoi32(rto) as f64
+            && rfrom <= i32::MAX as f64
+            && rfrom >= i32::MIN as f64
+            && rto <= i32::MAX as f64
+            && rto >= i32::MIN as f64;
+        if all_int {
+            cx.build(out, |cx| {
+                let n = lout as usize;
+                Ok(cx.alloc_with::<i32>(n, |i| (rto - (n - 1 - i) as f64 * rby) as i32)?.finish().into())
+            })
+        } else {
+            cx.build(out, |cx| {
+                let n = lout as usize;
+                Ok(cx.alloc_with::<f64>(n, |i| rto - (n - 1 - i) as f64 * rby)?.finish().into())
+            })
+        }
+    } else {
+        Err(cx.error_call(Some(call), "too many arguments"))
+    }
 }
 
 /// `seq_len(length.out)`: `1:n`, a compact sequence.
