@@ -440,6 +440,7 @@ closure which which.R
 closure which.max which.R
 closure withCallingHandlers conditions.R
 closure withRestarts conditions.R
+closure withVisible withVisible.R
 closure writeLines connections.R
 closure xtfrm.AsIs sort.R
 closure xtfrm.default sort.R
@@ -837,6 +838,7 @@ internal vector
 internal warning
 internal which
 internal which.max
+internal withVisible
 internal wrap_meta
 internal writeLines
 internal xzfile
