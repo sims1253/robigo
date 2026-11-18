@@ -79,7 +79,7 @@ fn views_read_what_was_allocated() {
     assert!(matches!(s.as_ref().view(), View::Str(v) if v.get(1) == a));
 
     let sym = cx.install(b"foo").unwrap();
-    assert_eq!(sym.name().bytes(), b"foo");
+    assert_eq!(sym.name_bytes(), b"foo");
     assert_eq!(cx.install(b"foo"), Ok(sym));
     assert!(matches!(sym.as_ref().view(), View::Sym(_)));
 

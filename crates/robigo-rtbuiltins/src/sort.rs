@@ -1251,7 +1251,7 @@ pub fn do_wrap_meta(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
 fn as_char_bytes(x: Ref<'_>) -> Vec<u8> {
     match x.view() {
         View::Str(v) if !v.is_empty() => v.get(0).bytes().to_vec(),
-        View::Sym(s) => s.name().bytes().to_vec(),
+        View::Sym(s) => s.name_bytes().to_vec(),
         _ => Vec::new(),
     }
 }

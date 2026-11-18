@@ -167,7 +167,7 @@ pub fn peek_message(cx: &Cx, e: &RError) -> String {
         _ => format!("<exit {:?}>", cx.exit_info(e)),
     };
     let head =
-        call.as_cons().and_then(|c| c.car().as_sym()).map(|s| String::from_utf8_lossy(s.name().bytes()).into_owned());
+        call.as_cons().and_then(|c| c.car().as_sym()).map(|s| String::from_utf8_lossy(s.name_bytes()).into_owned());
     match head {
         Some(h) => format!("[{h}] {msg}"),
         None => msg,
@@ -275,7 +275,7 @@ fn arg_names<'g>(cx: &'g Cx, args: Args<'_>) -> Result<Option<Ref<'g>>, robigo_r
     }
     let mut nm = cx.alloc_vector::<robigo_rtcore::Char<'g>>(args.len())?;
     for i in 0..args.len() {
-        nm.set(i, args.name(cx, i).map_or(cx.blank_string(), |s| s.name()));
+        nm.set(i, args.name(cx, i).map_or(cx.blank_string(), |s| s.name(cx)));
     }
     Ok(Some(nm.finish().into()))
 }
