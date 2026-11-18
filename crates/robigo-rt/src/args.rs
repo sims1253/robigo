@@ -64,8 +64,8 @@ use crate::vm::{self, Act};
 use robigo_heap::types::*;
 use robigo_heap::{NeedGc, Safepoint, Sexp};
 use robigo_rtcore::{
-    ArgSlot, ContextId, Cx, Out, RError, RResult, RawBinding, RawFunctionContext, Ref, Root, Scope, Slot, SlotInit,
-    bytecode_expr, ctxt,
+    ArgSlot, ContextId, Cx, Out, RError, RResult, RawBinding, RawFunctionContext, Ref, Reserved, Root, Scope, Slot,
+    SlotInit, bytecode_expr, ctxt,
 };
 use std::mem::MaybeUninit;
 use std::ptr::NonNull;
@@ -871,8 +871,10 @@ pub(crate) enum Source {
 /// What the lazy `promargs` filler needs of a call: its actuals (tags,
 /// kinds, positions; values are read again from the frame and the call)
 /// and the match. The call's record reads it while the callee runs, so it
-/// lives in the frame of [`apply`] that spans the callee's body (X9): one
-/// local there, which [`prepare`] fills, its variants sharing the storage.
+/// lives beside the record, in the fill area of the record's slot
+/// (robigo-rtcore's record stack, X9-1c), not on the C stack: [`apply`]
+/// reserves the slot, [`prepare`] fills it, its variants sharing the
+/// storage.
 enum FillData {
     /// Not made yet: [`prepare`] did not get that far.
     Unset,
@@ -885,6 +887,11 @@ enum FillData {
     /// runs, and GNU R's list was made at the call.
     Plan { plan: Plan, tags: [MaybeUninit<Sexp>; PLAN_DOTS], missing: u16 },
 }
+
+// The fill data fits the fill area beside each record (robigo-rtcore's
+// `FILL_SIZE`, `FILL_ALIGN`; `Reserved::fill` checks it again).
+const _: () =
+    assert!(size_of::<FillData>() <= robigo_rtcore::FILL_SIZE && align_of::<FillData>() <= robigo_rtcore::FILL_ALIGN);
 
 /// Where the match put an actual of a call with a lazy `promargs`.
 #[derive(Clone, Copy)]
@@ -1301,8 +1308,10 @@ pub(crate) fn apply(
 /// [`apply`], `GENERIC` when `src` is [`Source::Generic`]. The arguments
 /// are bound and the frame made out of line, by [`prepare`]: what this part
 /// keeps while the callee's body runs (its frame is one of those every R
-/// call level keeps, X9) is the call's record, the fill data the record
-/// reads ([`FillData`]) and a few words.
+/// call level keeps, X9) is a few words. The call's record and the fill
+/// data it reads ([`FillData`]) are in a slot of the record stack, reserved
+/// before [`prepare`] runs (whose warnings and early values may run R code,
+/// whose records take the slots after it).
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
 fn apply_with<const GENERIC: bool>(
@@ -1321,105 +1330,159 @@ fn apply_with<const GENERIC: bool>(
     // arguments are dropped (crate::early)
     cx.note_effect();
     cx.safepoint(Safepoint::Entry)?;
-    let res = out.root();
-    // (moved into the scope's closure: [`prepare`] reads them there, through
-    // one reference)
-    let a = CallIn { call, op, rho, caller, supplied, src, arglist };
+    // (moved into the scope's closure, and from there to [`apply_in`], where
+    // [`prepare`] reads them through one reference)
+    let a = CallIn { call, op, rho, caller, supplied, src, arglist, unpromise };
     cx.scope(move |cx, s| {
-        let mut st = CallState { generic_list: None, early: None, fill: FillData::Unset };
-        let (code, newrho) = prepare::<GENERIC>(cx, s, &a, &mut st)?;
-        let (src, arglist) = match st.generic_list {
-            Some(l) if GENERIC => (Source::List, Some(l)),
-            _ => (a.src, a.arglist),
-        };
-        // R: eval.c:applyClosure_core, "If we have a generic function we
-        // need to use the sysparent of the generic as the sysparent of the
-        // method"
-        let g = cx.global_context();
-        let sysparent = if g.callflag() == ctxt::GENERIC { g.sysparent().sexp() } else { a.rho.bind(cx).sexp() };
-        let promargs = match (src, arglist) {
-            (Source::List, Some(l)) => Ok(l.bind(cx).sexp()),
-            (Source::Generic(gr), _) if GENERIC => Err((
-                st.fill.nactuals() as i32,
-                generic_promargs as robigo_rtcore::PromargsFill,
-                gr.addr(),
-                FILL_GENERIC,
-            )),
-            _ => Err((
-                st.fill.nactuals() as i32,
-                fill_promargs as robigo_rtcore::PromargsFill,
-                &st.fill as *const FillData as usize,
-                FILL_ARGS,
-            )),
-        };
-        let spec = RawFunctionContext {
-            callflag: ctxt::RETURN,
-            call: a.call.bind(cx).sexp(),
-            cloenv: newrho.bind(cx).sexp(),
-            sysparent,
-            callfun: a.op.bind(cx).sexp(),
-            promargs,
-        };
-        let mut on_exit = |cx: &mut Cx, expr: Root<'_>, env: Root<'_>| -> RResult<()> {
-            cx.scope(|cx, s| {
-                let o = s.out(cx);
-                crate::eval::eval(cx, expr, env, o)
-            })
-        };
-        // SAFETY: every object of `spec` is rooted in this scope or by the
-        // caller (`sysparent`: the caller's environment, or a field of a
-        // live record); `st.fill` outlives the record (popped before this
-        // returns).
-        let r = unsafe {
-            cx.function_context_raw(&spec, out, &mut on_exit, |cx, _id, out| {
-                let slot = NonNull::new_unchecked(out.root().as_ptr() as *mut Slot);
-                // (a scalar may come back unboxed when compiled code made
-                // the call: its register takes it so)
-                vm::exec(cx, code.bind(cx).sexp(), newrho.bind(cx).sexp(), slot, true, a.caller.is_some())
-            })
-        };
-        // (`st.fill` lives to here: the record that pointed at it is popped)
-        st.end_early(cx, newrho);
-        // (true: an unboxed scalar in `res`, no object: the frame cannot
-        // hold it, and no one else references it)
-        let unboxed = match r {
-            Ok(u) => u,
-            Err(e) => {
-                // a jump past the call: GNU R's cleanup does not run
-                cx.end_call(newrho, false);
-                return Err(e);
-            }
-        };
-        // R: eval.c:applyClosure_core (ADJUST_ENVIR_REFCNTS)
-        let nil = cx.nil().sexp();
-        // SAFETY: the rooted call: CAR and CADR read.
-        let is_getter_call = unsafe {
-            let c = a.call.bind(cx).sexp();
-            let tmp = prims::state(cx).syms.tmpval;
-            c.cdr() != nil && c.cdr().car() == tmp && !is_replace_symbol(c.car())
-        };
-        cx.cleanup_envir(newrho, if unboxed { None } else { Some(res) });
-        if is_getter_call && !unboxed && cx.referenced(res.bind(cx)) {
-            let v = s.root(cx, res.bind(cx));
-            let o = res.reset(cx);
-            if let Err(e) = cx.shallow_duplicate(v, o) {
-                cx.end_call(newrho, false);
-                return Err(e);
-            }
-        }
-        cx.end_call(newrho, true);
-        if unpromise && let (Source::List, Some(l)) = (src, arglist) {
-            cx.unpromise_args(l);
-        }
-        // D5: the frame to the pool, if nothing can reach it (env::recycle)
-        cx.recycle_frame(newrho, if unboxed { None } else { Some(res) });
-        // (a plan's fill data owns nothing: only the matcher's is dropped,
-        // so that the common call does not call the drop glue)
-        if !matches!(st.fill, FillData::Matched { .. }) {
-            std::mem::forget(st);
-        }
-        Ok(())
+        // (a method's call stays inline in its one caller, `dispatch_method`:
+        // out of line it cost `s3` 11 instructions more an iteration, X9-1c)
+        if GENERIC { apply_in::<GENERIC>(cx, s, a, out) } else { apply_out_of_line(cx, s, a, out) }
     })
+}
+
+/// [`apply_in`] out of line, so that the reservation is in this frame only,
+/// not in its callers' (the VM's `run` loop: with the reservation inlined
+/// there, LLVM laid `run` out again and `plain` cost 13 instructions more
+/// an iteration although it makes no call through here, X9-1c).
+#[inline(never)]
+fn apply_out_of_line(cx: &mut Cx, s: Scope<'_>, a: CallIn<'_, '_>, out: Out<'_>) -> RResult<()> {
+    apply_in::<false>(cx, s, a, out)
+}
+
+/// [`apply_with`] in the scope `s`: the record slot reserved, the call
+/// prepared and made.
+#[inline(always)]
+fn apply_in<const GENERIC: bool>(cx: &mut Cx, s: Scope<'_>, a: CallIn<'_, '_>, out: Out<'_>) -> RResult<()> {
+    cx.with_reserved(move |cx, rec_slot| apply_reserved::<GENERIC>(cx, s, a, rec_slot, out))
+}
+
+/// [`apply_in`] in the record slot `rec_slot` reserved.
+#[inline(always)]
+fn apply_reserved<'s, const GENERIC: bool>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    a: CallIn<'_, '_>,
+    rec_slot: Reserved<'_, FillData>,
+    out: Out<'_>,
+) -> RResult<()> {
+    let res = out.root();
+    let fill = rec_slot.fill();
+    // SAFETY: the reserved slot's fill area, sized and aligned for a
+    // `FillData` (`Reserved::fill`), uninitialized: written once here,
+    // then read and written only through `fill` (by `prepare`, this
+    // function and the record's filler) until `_fill` drops it.
+    unsafe { fill.as_ptr().write(FillData::Unset) };
+    let _fill = FillGuard(fill);
+    let mut st = CallState { generic_list: None, early: None, fill };
+    let (code, newrho) = prepare::<GENERIC>(cx, s, &a, &mut st)?;
+    let (src, arglist) = match st.generic_list {
+        Some(l) if GENERIC => (Source::List, Some(l)),
+        _ => (a.src, a.arglist),
+    };
+    // R: eval.c:applyClosure_core, "If we have a generic function we
+    // need to use the sysparent of the generic as the sysparent of the
+    // method"
+    let g = cx.global_context();
+    let sysparent = if g.callflag() == ctxt::GENERIC { g.sysparent().sexp() } else { a.rho.bind(cx).sexp() };
+    let promargs = match (src, arglist) {
+        (Source::List, Some(l)) => Ok(l.bind(cx).sexp()),
+        (Source::Generic(gr), _) if GENERIC => Err((
+            st.fill_data().nactuals() as i32,
+            generic_promargs as robigo_rtcore::PromargsFill,
+            gr.addr(),
+            FILL_GENERIC,
+        )),
+        _ => Err((
+            st.fill_data().nactuals() as i32,
+            fill_promargs as robigo_rtcore::PromargsFill,
+            st.fill.as_ptr() as usize,
+            FILL_ARGS,
+        )),
+    };
+    let spec = RawFunctionContext {
+        callflag: ctxt::RETURN,
+        call: a.call.bind(cx).sexp(),
+        cloenv: newrho.bind(cx).sexp(),
+        sysparent,
+        callfun: a.op.bind(cx).sexp(),
+        promargs,
+    };
+    let mut on_exit = |cx: &mut Cx, expr: Root<'_>, env: Root<'_>| -> RResult<()> {
+        cx.scope(|cx, s| {
+            let o = s.out(cx);
+            crate::eval::eval(cx, expr, env, o)
+        })
+    };
+    // SAFETY: every object of `spec` is rooted in this scope or by the
+    // caller (`sysparent`: the caller's environment, or a field of a
+    // live record); the fill data outlives the record (popped before
+    // this returns; `_fill` drops it after).
+    let r = unsafe {
+        cx.function_context_raw(rec_slot, &spec, out, &mut on_exit, |cx, _id, out| {
+            let slot = NonNull::new_unchecked(out.root().as_ptr() as *mut Slot);
+            // (a scalar may come back unboxed when compiled code made
+            // the call: its register takes it so)
+            vm::exec(cx, code.bind(cx).sexp(), newrho.bind(cx).sexp(), slot, true, a.caller.is_some())
+        })
+    };
+    // (the record that pointed at the fill data is popped)
+    st.end_early(cx, newrho);
+    // (true: an unboxed scalar in `res`, no object: the frame cannot
+    // hold it, and no one else references it)
+    let unboxed = match r {
+        Ok(u) => u,
+        Err(e) => {
+            // a jump past the call: GNU R's cleanup does not run
+            cx.end_call(newrho, false);
+            return Err(e);
+        }
+    };
+    // R: eval.c:applyClosure_core (ADJUST_ENVIR_REFCNTS)
+    let nil = cx.nil().sexp();
+    // SAFETY: the rooted call: CAR and CADR read.
+    let is_getter_call = unsafe {
+        let c = a.call.bind(cx).sexp();
+        let tmp = prims::state(cx).syms.tmpval;
+        c.cdr() != nil && c.cdr().car() == tmp && !is_replace_symbol(c.car())
+    };
+    cx.cleanup_envir(newrho, if unboxed { None } else { Some(res) });
+    if is_getter_call && !unboxed && cx.referenced(res.bind(cx)) {
+        let v = s.root(cx, res.bind(cx));
+        let o = res.reset(cx);
+        if let Err(e) = cx.shallow_duplicate(v, o) {
+            cx.end_call(newrho, false);
+            return Err(e);
+        }
+    }
+    cx.end_call(newrho, true);
+    if a.unpromise
+        && let (Source::List, Some(l)) = (src, arglist)
+    {
+        cx.unpromise_args(l);
+    }
+    // D5: the frame to the pool, if nothing can reach it (env::recycle)
+    cx.recycle_frame(newrho, if unboxed { None } else { Some(res) });
+    Ok(())
+}
+
+/// Drops the [`FillData`] in a reserved slot's fill area on every path,
+/// before the slot is released. A plan's fill data owns nothing: only the
+/// matcher's is dropped, so that the common call does not call the drop
+/// glue.
+struct FillGuard(NonNull<FillData>);
+
+impl Drop for FillGuard {
+    #[inline(always)]
+    fn drop(&mut self) {
+        // SAFETY: the `FillData` [`apply_reserved`] wrote in the fill area of its
+        // slot, which is still reserved (this guard is dropped first), and
+        // which nothing reads any more (its record is popped).
+        unsafe {
+            if matches!(*self.0.as_ptr(), FillData::Matched { .. }) {
+                self.0.as_ptr().drop_in_place();
+            }
+        }
+    }
 }
 
 /// [`apply`]'s arguments that [`prepare`] reads (through one reference).
@@ -1432,9 +1495,10 @@ struct CallIn<'r, 'a> {
     supplied: Option<&'a crate::dispatch::S3Vars<'a>>,
     src: Source,
     arglist: Option<Root<'r>>,
+    unpromise: bool,
 }
 
-/// A closure call's state in the frame of [`apply_with`] that spans the
+/// A closure call's state in the frame of [`apply_in`] that spans the
 /// callee's body: what [`prepare`] leaves for the rest of the call.
 struct CallState<'r, 'a> {
     /// The generic's list, when a method called with its generic's
@@ -1443,8 +1507,9 @@ struct CallState<'r, 'a> {
     generic_list: Option<Root<'r>>,
     /// The end of the call's early values, when it computed some.
     early: Option<EarlyEnd<'a>>,
-    /// What the call's lazy `promargs` reads ([`prepare`] makes it).
-    fill: FillData,
+    /// What the call's lazy `promargs` reads ([`prepare`] makes it), in
+    /// the fill area of the call's record slot.
+    fill: NonNull<FillData>,
 }
 
 /// What the end of a call that computed early values needs
@@ -1461,6 +1526,15 @@ struct EarlyEnd<'a> {
 }
 
 impl CallState<'_, '_> {
+    /// The call's fill data.
+    #[inline(always)]
+    fn fill_data(&self) -> &FillData {
+        // SAFETY: `fill` points at the `FillData` of the call's reserved
+        // slot (`apply_in`), live while this state is; nothing writes it
+        // while the reference is used.
+        unsafe { self.fill.as_ref() }
+    }
+
     /// The end of the call's early values in its frame `newrho`
     /// ([`end_early_call`]), if it computed any.
     #[inline(always)]
@@ -1488,8 +1562,10 @@ fn prepare<'s: 'r, 'r, 'a, const GENERIC: bool>(
     a: &CallIn<'r, 'a>,
     st: &mut CallState<'r, 'a>,
 ) -> RResult<(Root<'r>, Root<'r>)> {
-    let CallIn { call, op, rho, caller, supplied, src, arglist } = *a;
-    let fill = &mut st.fill;
+    let CallIn { call, op, rho, caller, supplied, src, arglist, .. } = *a;
+    // SAFETY: the call's `FillData` (`CallState::fill`), which only this
+    // function reads or writes until it returns.
+    let fill = unsafe { &mut *st.fill.as_ptr() };
     let code = closure_code(cx, op)?;
     // SAFETY: a code object of this isolate.
     let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });

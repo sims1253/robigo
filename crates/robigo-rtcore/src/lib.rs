@@ -248,6 +248,7 @@ mod native;
 mod outcome;
 mod ppacct;
 mod raw;
+mod records;
 mod root;
 mod sym;
 mod sys;
@@ -286,6 +287,7 @@ pub use limits::{CStackInfo, EXPR_SO, EXPR_SO_MSG, EvalDepth, NODE_SO, NODE_SO_M
 pub use native::{Landing, NATIVE_MAX_ARGS, Native6, enter_export, enter_leaf, enter_leaf_mut};
 pub use outcome::{Built, Diag};
 pub use ppacct::PpSave;
+pub use records::{FILL_ALIGN, FILL_SIZE, Reserved};
 pub use robigo_heap::unwind::Ret6;
 pub use robigo_heap::{AllocError, NeedGc, Rcomplex, Sexp, types};
 pub use robigo_heap::{GcStats, LARGE, Safepoint, ScanSegment};

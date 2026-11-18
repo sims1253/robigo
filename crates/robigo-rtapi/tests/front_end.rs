@@ -21,6 +21,7 @@ fn front_end<V: AsRef<std::ffi::OsStr>>(env: &[(&str, V)]) -> Command {
         "ROBIGO_GC_STATS",
         "ROBIGO_BOOT_VERBOSE",
         "ROBIGO_RT_BOOT",
+        "ROBIGO_RT_CHECKOUT",
     ] {
         cmd.env_remove(v);
     }
@@ -74,35 +75,38 @@ fn r_home_defaults_to_the_checkout_s_tree() {
     }
 }
 
+/// An `R_HOME` the environment has that is not robigo-rt's own (GNU R's,
+/// say) is ignored, with GNU R's warning on stdout (R.sh.in's `echo`); one
+/// that is its own, or an empty one, says nothing.
 #[test]
-fn a_set_r_home_and_directories_are_kept() {
-    assert_eq!(homes(&[("R_HOME", "/opt/x")]), ["/opt/x", "/opt/x/share", "/opt/x/include", "/opt/x/doc"]);
-    assert_eq!(homes(&[("R_HOME", "/opt/x"), ("R_DOC_DIR", "/d")]), ["/opt/x", "/opt/x/share", "/opt/x/include", "/d"]);
+fn an_inherited_r_home_is_ignored_with_gnu_rs_warning() {
+    let own = homes(&[]);
+    let got = homes(&[("R_HOME", "/opt/x")]);
+    assert_eq!(got[0], "WARNING: ignoring environment value of R_HOME");
+    assert_eq!(&got[1..], &own[..]);
+    assert_eq!(homes(&[("R_HOME", own[0].as_str())]), own);
+    assert_eq!(homes(&[("R_HOME", "")]), own);
 }
 
-/// An empty `R_HOME`, or an empty directory variable, is unset (R.sh.in's
-/// `test -n "${R_HOME}"`; the script assigns the directories itself).
+/// The three directories are always the tree's (the script assigns them),
+/// set or empty in the environment.
 #[test]
-fn an_empty_r_home_or_directory_is_unset() {
-    let unset = homes(&[]);
-    assert_eq!(homes(&[("R_HOME", "")]), unset);
-    assert_eq!(homes(&[("R_SHARE_DIR", ""), ("R_INCLUDE_DIR", ""), ("R_DOC_DIR", "")]), unset);
-    assert_eq!(
-        homes(&[("R_HOME", "/opt/x"), ("R_SHARE_DIR", "")]),
-        ["/opt/x", "/opt/x/share", "/opt/x/include", "/opt/x/doc"]
-    );
+fn the_directories_are_the_tree_s() {
+    let own = homes(&[]);
+    assert_eq!(homes(&[("R_DOC_DIR", "/d"), ("R_SHARE_DIR", ""), ("R_INCLUDE_DIR", "/i")]), own);
 }
 
-/// Stage 0 reads base's source under `R_HOME`: an `R_HOME` without that
-/// tree fails at start-up with GNU R's script's message, not with a file
-/// error deeper in.
+/// Stage 0 reads base's source under robigo-rt's own tree: with none in
+/// the default place (no install's, and a checkout, `ROBIGO_RT_CHECKOUT`,
+/// whose tree is not made), it fails at start-up with GNU R's script's
+/// message and the way to make the tree, not with a file error deeper in.
 #[test]
 fn stage0_says_a_missing_tree_is_missing() {
     let dir = std::env::temp_dir().join(format!("robigo-rt-no-home-{}", std::process::id()));
     // (a stale directory of a reused pid might hold a tree)
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let out = front_end(&[("R_HOME", dir.as_os_str()), ("ROBIGO_RT_BOOT", std::ffi::OsStr::new("stage0"))])
+    let out = front_end(&[("ROBIGO_RT_CHECKOUT", dir.as_os_str()), ("ROBIGO_RT_BOOT", std::ffi::OsStr::new("stage0"))])
         .args(["-e", "1"])
         .output()
         .expect("running robigo-rt");
@@ -110,6 +114,10 @@ fn stage0_says_a_missing_tree_is_missing() {
     assert_eq!(out.status.code(), Some(2));
     assert_eq!(
         String::from_utf8_lossy(&out.stderr),
-        format!("robigo-rt: R_HOME ('{}') not found: it has no library/base/R/base\n", dir.display())
+        format!(
+            "robigo-rt: R_HOME ('{}') not found: no installed tree (<prefix>/lib/robigo) has library/base/R/base, \
+             and the checkout's is not made (scripts/rt-home.sh)\n",
+            dir.join(".robigo/rt-home").display()
+        )
     );
 }

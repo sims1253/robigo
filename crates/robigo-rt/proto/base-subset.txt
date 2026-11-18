@@ -20,7 +20,10 @@
 # name (do.call("c", ...)) do not, except that a capi case counts every
 # primitive its C names (install("sqrt")) or parses. Top-level printing in
 # C does not count.
-# 255 closures, 120 primitives, 174 internals.
+#
+# No counts here (the log has them): two branches that each add a name
+# would both change a count line the same way, git would merge it, and the
+# file would no longer be what the generator makes.
 closure %in% match.R
 closure %||% utils.R
 closure ..getNamespace namespace.R
@@ -143,7 +146,6 @@ closure is.vector is.R
 closure isBaseNamespace namespace.R
 closure isFALSE identical.R
 closure isNamespace namespace.R
-closure isOpen connections.R
 closure isRestart conditions.R
 closure isTRUE identical.R
 closure isa New-Internal.R
@@ -155,7 +157,6 @@ closure lengths New-Internal.R
 closure levels factor.R
 closure levels.default factor.R
 closure list2env assign.R
-closure load load.R
 closure loadNamespace namespace.R
 closure loadingNamespaceInfo namespace.R
 closure local eval.R
@@ -202,7 +203,6 @@ closure print.restart conditions.R
 closure print.warnings warnings.R
 closure rank rank.R
 closure raw raw.R
-closure readChar connections.R
 closure readRDS serialize.R
 closure reg.finalizer New-Internal.R
 closure regexec grep.R
@@ -271,7 +271,6 @@ closure warnings warnings.R
 closure which which.R
 closure withCallingHandlers conditions.R
 closure withRestarts conditions.R
-closure withVisible withVisible.R
 closure writeLines connections.R
 closure xtfrm.AsIs sort.R
 closure xtfrm.default sort.R
@@ -477,7 +476,6 @@ internal is.builtin.internal
 internal is.unsorted
 internal is.vector
 internal isNamespaceEnv
-internal isOpen
 internal isRegisteredNamespace
 internal islistfactor
 internal l10n_info
@@ -487,7 +485,6 @@ internal lazyLoadDBinsertValue
 internal lengths
 internal list2env
 internal load.from.file
-internal loadFromConn2
 internal loadInfoFromConn2
 internal lockBinding
 internal lockEnvironment
@@ -522,7 +519,6 @@ internal putconst
 internal qsort
 internal radixsort
 internal rank
-internal readChar
 internal reg.finalizer
 internal regexec
 internal regexpr
@@ -567,6 +563,5 @@ internal vapply
 internal vector
 internal warning
 internal which
-internal withVisible
 internal wrap_meta
 internal writeLines
