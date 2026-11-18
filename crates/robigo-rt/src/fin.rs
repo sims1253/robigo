@@ -29,9 +29,7 @@ pub fn register_finalizer(cx: &mut Cx, key: Root<'_>, fun: Root<'_>, onexit: boo
         // the collector's list once made.
         match unsafe { cx.new_weak_ref_raw(k, nil, f, onexit) } {
             Ok(_) => return Ok(()),
-            Err(e) if retried == Some(e) => {
-                return cx.retry_alloc(|_| Err::<(), _>(e));
-            }
+            Err(e) if retried == Some(e) => return Err(cx.refused_again(e)),
             Err(e) => {
                 cx.need_gc(e)?;
                 retried = Some(e);

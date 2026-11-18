@@ -1395,7 +1395,7 @@ fn a_rust_callers_registers_reach_no_segment() {
 /// the callee's frame holds survives a collection the callee makes through
 /// an export.
 #[test]
-fn a_six_argument_entrys_locals_are_roots() {
+fn a_six_argument_entry_keeps_its_locals_as_roots() {
     let mut c = core();
     c.set_torture(false);
     let core: *mut Core = &mut *c;
@@ -2498,7 +2498,7 @@ fn trampolines_and_jump() {
 /// alignment C's divides (so a `#[repr(C)]` record embedding it lays out
 /// as C's).
 #[test]
-fn jmpbuf_is_the_c_librarys() {
+fn jmpbuf_is_the_c_library_one() {
     use robigo_heap::unwind::{JMPBUF_SIZE, JmpBuf, c_jmpbuf_layout};
     let (size, align) = c_jmpbuf_layout();
     assert_eq!(size_of::<JmpBuf>(), size);

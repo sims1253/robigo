@@ -396,6 +396,21 @@ impl HeapSizes {
         self.nodes_in_use < self.max_n_size && self.valloc.saturating_add(cells) <= self.max_v_size
     }
 
+    /// Could the collection GNU R makes before this request (its vector
+    /// heap is short of `cells`) leave it short? `AdjustHeapSize` grows the
+    /// vector heap to the need only while what is in use, the request and
+    /// `R_MinVFree` stay below `R_MaxVSize`; `valloc`, garbage included,
+    /// bounds what GNU R would have in use. Only near a vector limit: the
+    /// caller then refuses the request, and the retry collects and decides
+    /// as GNU R does (`Core::make_room`).
+    // R: memory.c:allocVector3 (VHEAP_FREE() < size: R_gc_internal, then
+    // mem_err_heap), AdjustHeapSize (VNeeded < R_MaxVSize)
+    #[inline]
+    pub fn short_after_collection(&self, cells: usize) -> bool {
+        let min_v_free = (self.orig_v_size as f64 * self.min_free_frac) as usize;
+        self.vheap_free() < cells && self.valloc.saturating_add(cells).saturating_add(min_v_free) >= self.max_v_size
+    }
+
     /// Does an object of `cells` VECRECs stay within the vector limit,
     /// counting everything allocated since the last collection? (GNU R's
     /// postponed collection checks only this limit.)

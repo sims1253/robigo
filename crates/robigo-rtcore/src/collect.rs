@@ -207,6 +207,20 @@ impl Cx {
     }
 
     /// Whether gctorture is on (`gctorture()`'s result).
+    /// Why the last refusal was made, if it was a limit or a page the
+    /// system refused (then cleared): [`Cx::refused_again`]'s error.
+    pub(crate) fn take_refusal(&mut self) -> Option<robigo_heap::AllocError> {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.take_refusal()
+    }
+
+    /// Refuse every new heap chunk from now on (`on`), as a system with no
+    /// memory left would: a test knob for the refusal paths.
+    pub fn set_refuse_chunks(&mut self, on: bool) {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.set_refuse_chunks(on)
+    }
+
     pub fn gc_torture_on(&self) -> bool {
         // SAFETY: one read of the core.
         unsafe { self.iso().core() }.torture()

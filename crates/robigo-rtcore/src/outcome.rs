@@ -129,7 +129,7 @@ impl Cx {
                     return Ok(m);
                 }
                 Ok(Built::Fail(d)) => return Err(self.raise(d)),
-                Err(e) if retried == Some(e) => return Err(self.cannot_allocate(e)),
+                Err(e) if retried == Some(e) => return Err(self.refused_again(e)),
                 Err(e) => {
                     self.need_gc(e)?;
                     retried = Some(e);
@@ -166,7 +166,7 @@ impl Cx {
             };
             match attempt {
                 Ok(t) => return Ok(t),
-                Err(e) if retried == Some(e) => return Err(self.cannot_allocate(e)),
+                Err(e) if retried == Some(e) => return Err(self.refused_again(e)),
                 Err(e) => {
                     self.need_gc(e)?;
                     retried = Some(e);
@@ -175,8 +175,13 @@ impl Cx {
         }
     }
 
-    /// GNU R's error for a request refused again after a collection.
-    fn cannot_allocate(&mut self, e: NeedGc) -> RError {
-        self.error_call(None, &AllocError::CannotAllocate { vecrecs: e.vecrecs() }.message())
+    /// GNU R's error for a request refused again after a collection
+    /// ([`Cx::need_gc`]): the limit it was refused at (`mem_err_heap`,
+    /// `mem_err_cons`), "memory exhausted" for a page the system refused
+    /// (`mem_err_malloc`), else "cannot allocate vector of size ...". For
+    /// every retry loop of the form `build_with`'s.
+    pub fn refused_again(&mut self, e: NeedGc) -> RError {
+        let a = self.take_refusal().unwrap_or(AllocError::CannotAllocate { vecrecs: e.vecrecs() });
+        self.error_call(None, &a.message())
     }
 }

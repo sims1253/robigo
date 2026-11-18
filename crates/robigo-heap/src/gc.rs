@@ -207,6 +207,9 @@ pub enum AllocError {
     /// The system refused the memory, or the size does not fit in the
     /// address space: the request's vector size in 8-byte VECRECs.
     CannotAllocate { vecrecs: usize },
+    /// The system refused a chunk for small objects again after a
+    /// collection: GNU R's refused page (`GetNewPage`).
+    MemoryExhausted,
 }
 
 impl AllocError {
@@ -231,6 +234,8 @@ impl AllocError {
             AllocError::ConsMemory { limit: Some(n) } => {
                 format!("cons memory limit of {n} nodes reached, see mem.maxNSize()")
             }
+            // R: memory.c:mem_err_malloc
+            AllocError::MemoryExhausted => "memory exhausted".to_string(),
             AllocError::CannotAllocate { vecrecs } => {
                 let dsize = vecrecs as f64 * 8.0 / 1024.0;
                 if dsize > 1024.0 * 1024.0 {
@@ -484,6 +489,9 @@ pub struct Core {
     /// R_PreserveObject's multiset, as GNU R's precious list: a stack,
     /// released from the top (O(1) for the usual LIFO churn)
     precious: Vec<Sexp>,
+    /// Why the last `NeedGc` since `make_room` was returned, when it was a
+    /// limit or a refused page ([`Core::take_refusal`]).
+    refusal: Option<AllocError>,
     /// Experiment A: `ROBIGO_CALL65_PLAIN=1`, read when the core is made
     /// (see [`Core::call65_plain`]).
     call65_plain: bool,
@@ -831,6 +839,7 @@ impl Core {
             syms: HashMap::default(),
             next_sym_id: 0,
             precious: Vec::new(),
+            refusal: None,
             call65_plain: std::env::var_os("ROBIGO_CALL65_PLAIN").is_some_and(|v| v == "1"),
             gc_move: mover::policy_from_env().is_some(),
             young: Box::new(mover::Young::new(mover::policy_from_env().unwrap_or(0))),
@@ -1071,8 +1080,10 @@ impl Core {
         // R_gc_internal's `!R_GCEnabled` branch grows R_NSize unchecked)
         let within =
             if self.gc_inhibit > 0 { self.sizes.within_vector_limit(cells) } else { self.sizes.within_limits(cells) };
-        if !within {
-            return Err(NeedGc::new(t, n));
+        // near a vector limit, a request GNU R's collection could not make
+        // room for: refused, so the retry collects and reports as GNU R does
+        if !within || (self.gc_inhibit == 0 && self.sizes.short_after_collection(cells)) {
+            return Err(self.refused_at_limit(t, n, cells));
         }
         if self.stats_mode != StatsMode::Off {
             self.note_alloc(t, bytes);
@@ -1134,10 +1145,61 @@ impl Core {
         }
         let size = size.max(GRANULE);
         let p = self.heap.alloc(size);
+        if p.is_null() {
+            return Err(self.refused_chunk(t, n));
+        }
         // SAFETY: `p` is fresh, with at least 16 bytes.
         let x = unsafe { self.init_header(p, t) };
         self.count(size, cells);
         Ok(x)
+    }
+
+    /// [`Core::alloc_object`] when the system refused a chunk for small
+    /// objects: the request is refused (`NeedGc`), and the refusal noted, so
+    /// that the same refusal after a collection is GNU R's "memory
+    /// exhausted" ([`Core::take_chunk_refused`]).
+    // R: memory.c:GetNewPage (malloc, R_gc_no_finalizers, malloc,
+    // mem_err_malloc)
+    #[cold]
+    #[inline(never)]
+    fn refused_chunk(&mut self, t: u8, n: usize) -> NeedGc {
+        self.refusal = Some(AllocError::MemoryExhausted);
+        NeedGc::new(t, n)
+    }
+
+    /// [`Core::poll_slow`]'s refusal at a limit: the request, and the limit
+    /// noted (the vector heap's unless only the node count is over), so
+    /// that the same refusal after a collection is GNU R's `mem_err_heap`
+    /// or `mem_err_cons`.
+    #[cold]
+    #[inline(never)]
+    fn refused_at_limit(&mut self, t: u8, n: usize, cells: usize) -> NeedGc {
+        self.refusal =
+            Some(if self.sizes.nodes_in_use >= self.sizes.max_n_size && self.sizes.within_vector_limit(cells) {
+                AllocError::ConsMemory { limit: self.sizes.max_nsize() }
+            } else {
+                AllocError::VectorMemory { limit: self.sizes.max_vsize() }
+            });
+        NeedGc::new(t, n)
+    }
+
+    /// Why the last refusal since [`Core::make_room`] was made, if it was a
+    /// limit or a page the system refused (then cleared). The embedder's
+    /// error for a request refused again after a collection is this one,
+    /// GNU R's for the cause; otherwise `CannotAllocate`.
+    ///
+    /// A request is refused again after `make_room` collected when the
+    /// retried attempt's own allocations, made before it, filled the room
+    /// again: GNU R, which collects at each allocation, reports the limit
+    /// there.
+    pub fn take_refusal(&mut self) -> Option<AllocError> {
+        self.refusal.take()
+    }
+
+    /// Refuse every new chunk from now on (`on`), as a system with no
+    /// memory left: a test knob for the refusal paths.
+    pub fn set_refuse_chunks(&mut self, on: bool) {
+        self.heap.refuse_chunks = on;
     }
 
     /// As [`Core::alloc_object`] for an object of any size: past
@@ -1490,7 +1552,12 @@ impl Core {
             p = self.alloc_raw(bytes);
         }
         let Some(p) = p else {
-            return Err(AllocError::CannotAllocate { vecrecs: cells });
+            // (a small object's page, mem_err_malloc; a large one, allocVector3's)
+            return Err(if bytes <= MAX_MEDIUM {
+                AllocError::MemoryExhausted
+            } else {
+                AllocError::CannotAllocate { vecrecs: cells }
+            });
         };
         // SAFETY: `p` is fresh, of `bytes` (at least 16) bytes for `n`
         // elements of `t`.
@@ -1507,7 +1574,12 @@ impl Core {
     /// poll-only path's tests: None if the system refuses a large one.
     #[inline]
     fn alloc_raw(&mut self, size: usize) -> Option<*mut u8> {
-        if size <= MAX_MEDIUM { Some(self.heap.alloc(size.max(GRANULE))) } else { self.heap.try_alloc_large(size) }
+        if size <= MAX_MEDIUM {
+            let p = self.heap.alloc(size.max(GRANULE));
+            (!p.is_null()).then_some(p)
+        } else {
+            self.heap.try_alloc_large(size)
+        }
     }
 
     /// Make room for the request `req` that the poll-only path refused
@@ -1520,6 +1592,8 @@ impl Core {
     /// # Safety
     /// As for [`Core::collect`].
     pub unsafe fn make_room<R: Trace + ?Sized>(&mut self, req: NeedGc, roots: &mut R) -> Result<(), AllocError> {
+        // a refusal after this one is told apart afresh
+        self.refusal = None;
         let cells = request_cells(req)?;
         // SAFETY: the caller's contract.
         unsafe { self.room_for(cells, Safepoint::Retry, roots)? };
@@ -3397,5 +3471,55 @@ mod tests {
             let at = if after { "after queueing" } else { "before taking" };
             assert_eq!(counts, [1; OBJECTS], "each release once, after a panic at death {k}, {at} its call");
         }
+    }
+    /// Near a vector limit, the poll-only path refuses a request at the
+    /// trigger that GNU R's collection could not make room for
+    /// (`AdjustHeapSize`: used + request + `R_MinVFree` reach the limit),
+    /// before the limit itself; the refusal says so, and `make_room`, which
+    /// collects, reports GNU R's limit error.
+    #[cfg(not(miri))]
+    #[test]
+    fn a_request_gnu_r_could_not_make_room_for_is_refused_at_the_trigger() {
+        let mut c = Core::new();
+        let v = c.heap_sizes().v_size;
+        assert!(c.set_max_vsize(Some((v + 1000) * 8)), "a limit above the vector heap");
+        let mut roots: Vec<Sexp> = Vec::new();
+        let req = loop {
+            match c.alloc_vector(REALSXP, 100) {
+                Ok(x) => roots.push(x),
+                Err(e) => break e,
+            }
+        };
+        let limit = c.max_vsize();
+        assert!(c.sizes.valloc + 100 <= v + 1000, "refused before the limit itself");
+        assert_eq!(c.take_refusal(), Some(AllocError::VectorMemory { limit }), "at the vector limit");
+        // SAFETY: `roots` holds every object kept.
+        let r = unsafe { c.make_room(req, &mut roots) };
+        assert_eq!(r, Err(AllocError::VectorMemory { limit }), "GNU R's mem_err_heap after the collection");
+    }
+
+    /// A chunk for small objects the system refuses: the request is
+    /// refused and the refusal noted; refused again after a collection
+    /// (`alloc_rooted`'s), it is GNU R's "memory exhausted"
+    /// (`mem_err_malloc`), not "cannot allocate vector of size".
+    #[cfg(not(miri))]
+    #[test]
+    fn a_refused_page_is_memory_exhausted() {
+        let mut c = Core::new();
+        c.set_refuse_chunks(true);
+        let mut roots: Vec<Sexp> = Vec::new();
+        let _req = loop {
+            match c.alloc_vector(INTSXP, 1) {
+                Ok(x) => roots.push(x),
+                Err(e) => break e,
+            }
+        };
+        assert_eq!(c.take_refusal(), Some(AllocError::MemoryExhausted));
+        // SAFETY: `roots` holds every object kept.
+        let r = unsafe { c.alloc_rooted(INTSXP, 1, &mut roots) };
+        assert_eq!(r.err(), Some(AllocError::MemoryExhausted));
+        assert_eq!(AllocError::MemoryExhausted.message(), "memory exhausted");
+        c.set_refuse_chunks(false);
+        assert!(c.alloc_vector(INTSXP, 1).is_ok(), "a chunk again once the system has memory");
     }
 }

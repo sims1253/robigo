@@ -235,11 +235,9 @@ pub(crate) fn new_weak_ref<'s>(
         match unsafe { cx.new_weak_ref_raw(k, v, f, onexit) } {
             Ok(w) => return Ok(w),
             // (need_gc raises GNU R's error when a collection cannot make
-            // the room; a second refusal after one that did is the same)
-            Err(e) if retried == Some(e) => {
-                cx.need_gc(e)?;
-                return Err(cx.error_call(None, "robigo: a weak reference the heap refused twice"));
-            }
+            // the room; a second refusal after one that did is GNU R's error
+            // for its cause)
+            Err(e) if retried == Some(e) => return Err(cx.refused_again(e)),
             Err(e) => {
                 cx.need_gc(e)?;
                 retried = Some(e);

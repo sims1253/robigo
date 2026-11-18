@@ -140,6 +140,30 @@ fn alloc_rooted_refuses_with_gnu_rs_message() {
     assert!(m.starts_with("cannot allocate vector of size ") && m.ends_with(" Gb"), "{m}");
 }
 
+/// A page for small objects the system refuses, refused again after the
+/// build's collection, is GNU R's "memory exhausted" (`mem_err_malloc`),
+/// not "cannot allocate vector of size".
+#[cfg(not(miri))]
+#[test]
+fn a_build_refused_a_page_again_is_memory_exhausted() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    cx.set_refuse_chunks(true);
+    // medium vectors (8 KB), each kept in a root of the scope, until a
+    // page is needed: the build collects, and the page is refused again
+    let e = cx.scope(|cx, s| {
+        for _ in 0..20_000 {
+            let o = s.out(cx);
+            if let Err(e) = cx.build(o, |cx| Ok(cx.alloc_vector::<f64>(1000)?.finish().into())) {
+                return e;
+            }
+        }
+        panic!("no page was needed");
+    });
+    cx.set_refuse_chunks(false);
+    assert_eq!(error_message(cx, e), "memory exhausted");
+}
+
 // ---- duplicates and in-place writes (no collection: Miri runs these) ----
 
 /// A list `[a, a]` with a `names` attribute (made through the raw layer:
