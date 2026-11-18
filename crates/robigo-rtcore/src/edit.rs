@@ -811,7 +811,7 @@ impl Cx {
         let (t, nm) = {
             let r = x.bind(self);
             let n = name.bind(self).as_sym().expect("robigo: an attribute's tag is a symbol");
-            (r.sexptype(), n.name().bytes().to_vec())
+            (r.sexptype(), n.name_bytes().to_vec())
         };
         if t == CHARSXP {
             return Err(self.error("cannot set an attribute on a CHARSXP"));

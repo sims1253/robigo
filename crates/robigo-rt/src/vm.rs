@@ -573,6 +573,21 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 }
                 reload!();
             }
+            Op::CallCodes => {
+                // `Call` with the call's promise codes (`consts[f]`), which
+                // the promises it makes hold (translated code: `Bc`)
+                // SAFETY: a constant of the code.
+                let call = unsafe { v.k(i.e) };
+                cx.set_eval_depth(act.depth + i.d as i32);
+                pp_point(cx, act, &v, pc - 1);
+                // (the codes by their pool index `f`: read where used)
+                // SAFETY: the running code's constants (or rooted values): live, of this isolate.
+                unsafe { crate::call::call_codes(cx, act, i.a, i.b, call, i.f, i.c) }?;
+                if i.fl & F_CLR_B != 0 && i.b != i.a {
+                    act.clear(i.b);
+                }
+                reload!();
+            }
             Op::SpecialFn => {
                 // SAFETY: constants of the code.
                 let (call, prim) = unsafe { (v.k(i.e), v.k(i.c)) };
@@ -1424,7 +1439,7 @@ pub fn inherits(cx: &Cx, x: Ref<'_>, what: &[u8]) -> bool {
     };
     while let Some(c) = a.as_cons() {
         if let Some(t) = c.tag().as_sym()
-            && t.name().bytes() == b"class"
+            && t.name_bytes() == b"class"
         {
             if let Some(v) = c.car().as_vector::<robigo_rtcore::Char<'_>>() {
                 return v.as_slice().unwrap_or(&[]).iter().any(|s| s.bytes() == what && *s != cx.na_string());

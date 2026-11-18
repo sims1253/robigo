@@ -24,7 +24,7 @@ use crate::heap::{
     remembered_of,
 };
 use crate::heapsize::{HeapSizes, vec_cells};
-use crate::layout::{GRANULE, charsxp, charsxp_bytes, data_off, extdata, granule_round, header, node, sym};
+use crate::layout::{GRANULE, charsxp, charsxp_bytes, data_off, extdata, granule_round, header, node};
 use crate::trace::{Trace, Visitor};
 use crate::types::*;
 use crate::{Sexp, flags, gp, hash_bytes, is_vector_type};
@@ -334,6 +334,9 @@ pub struct GcStats {
     pub bytes_allocated: u64,
     pub collections: u64,
     pub frees: u64,
+    /// The bytes and objects of this heap's memory the last sweep kept:
+    /// not the process-shared constants and symbols, which `nodes_in_use`
+    /// (GNU R's count) includes.
     pub live_bytes: u64,
     pub live_objects: u64,
     /// Wall time in collections, summed and the longest: from the start of
@@ -476,10 +479,18 @@ pub struct Core {
 
     /// the CHARSXP cache: weak, pruned after marking
     chars: crate::chars::CharTable,
-    /// symbols by name (immortal)
+    /// the symbols this heap has installed, by name: the process's
+    /// (`arena.rs`), cached here so that a known name takes no lock
     syms: HashMap<Box<[u8]>, Sexp, BuildFx>,
-    /// the next symbol's id ([`crate::OFF_SYMID`])
-    next_sym_id: u32,
+    /// each symbol's PRINTNAME in this heap, by its (global) id: a CHARSXP
+    /// of this heap's cache, immortal (null: not installed here). Symbols
+    /// are shared and immutable, a PRINTNAME is what R code sees of a name,
+    /// so it is the isolate's (H5, §4 (B)): GNU R's one CHARSXP per string
+    /// holds in every isolate.
+    printnames: Vec<Sexp>,
+    /// the arena symbols this heap installed or made (its markers): GNU R's
+    /// node count has a node for each (`nodes_in_use`)
+    arena_nodes: usize,
 
     /// R_PreserveObject's multiset, as GNU R's precious list: a stack,
     /// released from the top (O(1) for the usual LIFO churn)
@@ -840,7 +851,8 @@ impl Core {
             missing_arg: Sexp::NULL,
             chars: crate::chars::CharTable::new(),
             syms: HashMap::default(),
-            next_sym_id: 0,
+            printnames: Vec::new(),
+            arena_nodes: 0,
             precious: Vec::new(),
             gc_reporting: false,
             gc_report: Vec::new(),
@@ -867,7 +879,12 @@ impl Core {
         let sh = crate::shared::shared();
         (c.nil, c.na_string, c.blank_string) = (sh.nil, sh.na_string, sh.blank_string);
         (c.unbound, c.missing_arg) = (sh.unbound, sh.missing_arg);
-        c.next_sym_id = crate::shared::FIRST_SYMBOL_ID;
+        // R_UnboundValue's and R_MissingArg's PRINTNAME, every heap's ""
+        // SAFETY: the shared symbols and the shared "".
+        unsafe {
+            c.set_printname(sh.unbound, sh.blank_string);
+            c.set_printname(sh.missing_arg, sh.blank_string);
+        }
         // SAFETY: a live CHARSXP that no collection frees (immortal), and
         // not yet in this table.
         unsafe { c.chars.insert(sh.blank_string) };
@@ -949,7 +966,119 @@ impl Core {
     /// are (`R_RestartToken`, which the isolate makes once).
     // R: names.c:mkSymMarker
     pub fn new_marker_symbol(&mut self) -> Result<Sexp, NeedGc> {
-        self.new_symbol(self.blank_string)
+        self.count_symbol()?;
+        let s = crate::arena::new_marker();
+        // SAFETY: a symbol just made.
+        unsafe { self.set_printname(s, self.blank_string) };
+        Ok(s)
+    }
+
+    /// GNU R's `PRINTNAME(s)` in this heap: its own CHARSXP of the name,
+    /// from its own cache. Reads a table; never allocates.
+    ///
+    /// Every symbol a heap holds has its PRINTNAME here by construction: it
+    /// installed the name, or made the marker, or adopted the symbol
+    /// ([`Core::adopt_symbol`]). A symbol this heap never took (only
+    /// another isolate's handle can carry one here) is refused.
+    ///
+    /// # Panics
+    /// If this heap has not taken `s` (a defined refusal naming its id).
+    ///
+    /// # Safety
+    /// `s` must be a live SYMSXP.
+    #[inline]
+    pub unsafe fn printname(&self, s: Sexp) -> Sexp {
+        // SAFETY: the caller's contract: its 4th word holds its id.
+        let id = unsafe { s.sym_id() };
+        match self.printnames.get(id as usize) {
+            Some(&c) if !c.is_null() => c,
+            _ => not_adopted(id),
+        }
+    }
+
+    /// Whether this heap has taken `s` (installed its name, made it, or
+    /// adopted it): whether [`Core::printname`] answers.
+    ///
+    /// # Safety
+    /// `s` must be a live SYMSXP.
+    #[inline]
+    pub unsafe fn has_printname(&self, s: Sexp) -> bool {
+        // SAFETY: the caller's contract.
+        let id = unsafe { s.sym_id() } as usize;
+        self.printnames.get(id).is_some_and(|c| !c.is_null())
+    }
+
+    /// Panics, naming its id, unless this heap has taken `s`
+    /// ([`Core::has_printname`]): what binding a value to it in this
+    /// isolate's base requires.
+    ///
+    /// # Safety
+    /// `s` must be a live SYMSXP.
+    #[inline]
+    pub unsafe fn check_adopted(&self, s: Sexp) {
+        // SAFETY: the caller's contract.
+        if !unsafe { self.has_printname(s) } {
+            // SAFETY: as above.
+            not_adopted(unsafe { s.sym_id() })
+        }
+    }
+
+    /// Take a symbol this heap did not install (one another isolate made:
+    /// symbols are the process's) as `install` of its name would: this
+    /// heap's PRINTNAME of it, from its own cache, and its entry in the
+    /// heap's table. A marker (a symbol named "" in no table, another
+    /// isolate's `R_RestartToken`) gets the shared "". Nothing for a symbol
+    /// this heap already has. Never collects.
+    ///
+    /// The one way, besides `install`, for a heap to take a symbol it did
+    /// not make: callers are the boundaries where a symbol of another
+    /// isolate enters (docs/core.md §10, A.2), which can return the error.
+    ///
+    /// # Safety
+    /// `s` must be a live SYMSXP.
+    pub unsafe fn adopt_symbol(&mut self, s: Sexp) -> Result<(), NeedGc> {
+        // SAFETY: the caller's contract.
+        if unsafe { self.has_printname(s) } {
+            return Ok(());
+        }
+        // SAFETY: the caller's contract; the arena's name lives as long as
+        // the process.
+        let name: Box<[u8]> = unsafe { s.sym_name_bytes() }.into();
+        if name.is_empty() && crate::arena::lookup(b"") != Some(s) {
+            // a marker: the shared "" under its own id, as
+            // `new_marker_symbol` gives this heap's own (it is in no table)
+            self.count_symbol()?;
+            // SAFETY: a live symbol; the shared "".
+            unsafe { self.set_printname(s, self.blank_string) };
+            return Ok(());
+        }
+        let t = self.install_named(&name, Sexp::NULL)?;
+        assert!(t == s, "robigo: two symbols named {:?}", String::from_utf8_lossy(&name));
+        Ok(())
+    }
+
+    /// # Safety
+    /// `s` is a live SYMSXP, `c` an immortal CHARSXP of this heap or shared.
+    unsafe fn set_printname(&mut self, s: Sexp, c: Sexp) {
+        // SAFETY: the caller's contract.
+        let id = unsafe { s.sym_id() } as usize;
+        if id >= self.printnames.len() {
+            self.printnames.resize(id + 1, Sexp::NULL);
+        }
+        self.printnames[id] = c;
+    }
+
+    /// A symbol's allocation, in GNU R's terms, for one the arena makes:
+    /// the poll and the count `alloc_object` makes for a node, with no
+    /// memory of this heap (the symbol is the process's).
+    fn count_symbol(&mut self) -> Result<(), NeedGc> {
+        let bytes = node::size(SYMSXP).max(GRANULE);
+        if self.sizes.over_trigger(0) {
+            self.poll_slow(SYMSXP, 1, bytes, 0)?;
+        }
+        self.count(bytes, 0);
+        self.arena_nodes += 1;
+        Ok(())
     }
 
     // ---- the poll word ------------------------------------------------
@@ -1660,31 +1789,6 @@ impl Core {
         self.chars.find(h, |c| unsafe { c.gp() & crate::chars::ENC_MASK == enc && c.char_bytes() == bytes })
     }
 
-    /// A symbol named by CHARSXP `name`, with the next id and GNU R's
-    /// hash of the name in its 4th word ([`sym::OFF_ID`]).
-    fn new_symbol(&mut self, name: Sexp) -> Result<Sexp, NeedGc> {
-        let id = self.next_sym_id;
-        let s = self.alloc_object(SYMSXP, 1, node::size(SYMSXP), 0)?;
-        self.next_sym_id = id.checked_add(1).expect("robigo: more than 2^32 symbols");
-        // SAFETY: `s` is fresh and node-sized; `name` is a live CHARSXP (its
-        // callers make it immortal right after) and `nil` immortal, and
-        // nothing collects in between. The 4th word is not traced for a
-        // symbol, so it may hold plain bits.
-        unsafe {
-            let hash = crate::sym_hash(name.char_bytes());
-            s.set_car_raw(name);
-            s.set_cdr_raw(self.unbound_or(s));
-            s.set_tag_raw(self.nil);
-            *(s.0.add(sym::OFF_ID) as *mut u64) = (hash as u64) << 32 | id as u64;
-            self.make_immortal(s);
-        }
-        Ok(s)
-    }
-
-    fn unbound_or(&self, s: Sexp) -> Sexp {
-        if self.unbound.is_null() { s } else { self.unbound }
-    }
-
     /// The symbol named `name` (GNU R's install). Never collects.
     #[inline]
     pub fn install(&mut self, name: &[u8]) -> Result<Sexp, NeedGc> {
@@ -1713,19 +1817,12 @@ impl Core {
         if let Some(&s) = self.syms.get(name) {
             return Ok(s);
         }
+        // this heap's PRINTNAME, then the symbol, the process's (made by
+        // the arena if no heap has made it, with the bits its name gives
+        // it: nothing writes a symbol after it is made)
         let c = if printname.is_null() { self.mk_char(name, 0)? } else { printname };
-        let s = self.new_symbol(c)?;
-        // the bits its name gives it, before anything sees it: nothing
-        // writes a symbol after it is made (H5: symbols are shared)
-        if let Some(bits) = SYMBOL_BITS.get() {
-            let (f, g) = bits(name);
-            // SAFETY: `s` is fresh and not yet published; flags other than
-            // IMMORTAL and BARRIER, and gp bits, are the caller's to set.
-            unsafe {
-                s.set_flags_raw(s.flags() | f);
-                s.set_gp(s.gp() | g);
-            }
-        }
+        self.count_symbol()?;
+        let s = crate::arena::install(name, || SYMBOL_BITS.get().map_or((0, 0), |bits| bits(name)));
         // SAFETY: `c` is live (nothing collected since it was made or
         // passed), and a CHARSXP has no children. The immortal symbol is
         // not traced, so its name must be immortal too. HASHASH and
@@ -1741,6 +1838,8 @@ impl Core {
                 c.set_gp(c.gp() | crate::gp::charsxp::HASHASH);
             }
         }
+        // SAFETY: a symbol, and an immortal CHARSXP of this heap (or "").
+        unsafe { self.set_printname(s, c) };
         self.syms.insert(name.into(), s);
         Ok(s)
     }
@@ -2853,8 +2952,9 @@ impl Core {
 
     /// GNU R's `memory.profile()` count: every object of this heap by
     /// type, after the caller's full collection, the process's shared
-    /// constants included as `nodes_in_use` includes them (one heap's view
-    /// of objects GNU R allocates in each).
+    /// constants and the arena symbols this heap took included, as
+    /// `nodes_in_use` includes them (one heap's view of objects GNU R
+    /// allocates in each).
     pub fn census_by_type(&self) -> [u64; 32] {
         let mut by = [0u64; 32];
         self.for_each_live_object(|p| {
@@ -2865,6 +2965,9 @@ impl Core {
         for (t, ..) in crate::shared::counts() {
             by[t as usize & 31] += 1;
         }
+        // the arena's symbols this heap installed or made (H5), which
+        // `nodes_in_use` counts as this heap's
+        by[SYMSXP as usize] += self.arena_nodes as u64;
         by
     }
 
@@ -3083,9 +3186,13 @@ impl Core {
         self.stats.live_bytes = live_bytes;
         self.stats.live_objects = live_objects;
         self.alloc_since_gc = 0;
-        // R: memory.c:RunGenCollect (R_NodesInUse = R_NSize - R_Collected),
-        // the shared constants included
-        self.sizes.nodes_in_use = live_objects as usize + crate::shared::OBJECTS;
+        // R: memory.c:RunGenCollect (R_NodesInUse = R_NSize - R_Collected).
+        // GNU R's count, which `gc()` reports, has a node for each object of
+        // its heap; robigo's process-shared objects count in every heap that
+        // holds them, as if it had allocated them: the shared constants and
+        // the arena's symbols this heap installed. (`stats.live_*` count
+        // this heap's memory only.)
+        self.sizes.nodes_in_use = live_objects as usize + crate::shared::OBJECTS + self.arena_nodes;
     }
 }
 
@@ -3128,6 +3235,13 @@ fn proc_times() -> [f64; 5] {
         (me, ch)
     };
     [ms(me.ru_utime), ms(me.ru_stime), 1e-3 * (1000.0 * et).round_ties_even(), ms(ch.ru_utime), ms(ch.ru_stime)]
+}
+
+/// [`Core::printname`]'s refusal: a symbol this heap never took.
+#[cold]
+#[inline(never)]
+fn not_adopted(id: u32) -> ! {
+    panic!("robigo: symbol {id} is another isolate's: adopt it first (Cx::adopt_symbol)")
 }
 
 /// Register the rule that gives a new symbol its name's bits (GNU R's
@@ -3390,25 +3504,37 @@ mod tests {
     /// node limit reached (requests refused); torture; an injected failure.
     #[test]
     fn alloc_node_and_alloc_object_agree() {
-        type State = (usize, usize, usize, u64, bool, usize, bool, i32, i32, bool, usize, usize);
+        /// What an allocation leaves behind, compared after each request.
+        #[derive(Debug, PartialEq)]
+        struct State {
+            alloc_since_gc: usize,
+            nodes_in_use: usize,
+            valloc: usize,
+            fail_seen: u64,
+            fail_armed: bool,
+            due: bool,
+            due_at: usize,
+            poll_due: bool,
+            force_wait: i32,
+            force_gap: i32,
+            n_trigger: usize,
+            v_trigger: usize,
+        }
         fn state(c: &Core) -> State {
-            let poll = c.poll_word().load(Ordering::Relaxed) & GC_DUE != 0;
-            let (s, wait, gap) = (&c.sizes, c.force_wait, c.force_gap);
-            let counts = (c.alloc_since_gc, s.nodes_in_use, s.valloc, c.fail_seen);
-            (
-                counts.0,
-                counts.1,
-                counts.2,
-                counts.3,
-                c.due,
-                c.due_at,
-                poll,
-                wait,
-                gap,
-                c.fail_armed,
-                s.n_trigger,
-                s.v_trigger,
-            )
+            State {
+                alloc_since_gc: c.alloc_since_gc,
+                nodes_in_use: c.sizes.nodes_in_use,
+                valloc: c.sizes.valloc,
+                fail_seen: c.fail_seen,
+                fail_armed: c.fail_armed,
+                due: c.due,
+                due_at: c.due_at,
+                poll_due: c.poll_word().load(Ordering::Relaxed) & GC_DUE != 0,
+                force_wait: c.force_wait,
+                force_gap: c.force_gap,
+                n_trigger: c.sizes.n_trigger,
+                v_trigger: c.sizes.v_trigger,
+            }
         }
         #[derive(Clone, Copy, PartialEq)]
         enum Setup {
@@ -3459,11 +3585,16 @@ mod tests {
                     _ => panic!("one path refused request {i} and the other did not"),
                 };
                 assert_eq!(x.addr() % BLOCK, y.addr() % BLOCK, "the same slot, at request {i}");
-                // SAFETY: fresh nodes; the header and field words.
+                // SAFETY: `x` and `y` are nodes just returned by a successful
+                // allocation and nothing has collected since (no safepoint in
+                // this loop), so both are live and node-sized: their first
+                // header word and their CAR, CDR, TAG and attribute words may
+                // be read, and `car_a`/`car_b` (live vectors of each heap)
+                // have a header whose count may be read.
                 unsafe {
                     let w = |z: Sexp, k: usize| *(z.0 as *const u64).add(k);
                     assert_eq!(w(x, 0), w(y, 0), "the header's first word, at request {i}");
-                    assert_eq!(x.attrib_raw() == nil_a, y.attrib_raw() == nil_b);
+                    assert_eq!(x.attrib_raw() == nil_a, y.attrib_raw() == nil_b, "the attributes, at request {i}");
                     assert_eq!((x.car() == car_a, x.cdr() == nil_a, x.tag() == nil_a), (true, true, true));
                     assert_eq!((y.car() == car_b, y.cdr() == nil_b, y.tag() == nil_b), (true, true, true));
                     assert_eq!(car_a.refcnt(), car_b.refcnt(), "the car's count, at request {i}");

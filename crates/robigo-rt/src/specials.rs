@@ -473,7 +473,7 @@ fn subset3_name<'s>(cx: &mut Cx, s: Scope<'s>, call: Root<'_>, rho: Root<'_>) ->
     let v = nl.bind(cx);
     match v.sexptype() {
         SYMSXP => {
-            let name = v.as_sym().unwrap().name();
+            let name = v.as_sym().unwrap().name(cx);
             Ok((s.root(cx, name.as_ref()), Some(nl)))
         }
         STRSXP => {
@@ -739,7 +739,7 @@ pub fn do_switch(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out:
         return Err(cx.error_call(Some(call), "'EXPR' is missing"));
     }
     if let Some((_, Some(t))) = arg(cx, call, 0) {
-        let supplied = t.name().bytes();
+        let supplied = t.name_bytes();
         if supplied.len() > 4 || !b"EXPR".starts_with(supplied) {
             let msg = format!("supplied argument name '{}' does not match 'EXPR'", String::from_utf8_lossy(supplied));
             return Err(cx.error_call(Some(call), &msg));
@@ -773,7 +773,7 @@ pub fn do_switch(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out:
                     let tag = w[i].1;
                     if tag != nil {
                         // SAFETY: a tag is an immortal symbol.
-                        let name = unsafe { Ref::from_sexp(tag, cx) }.as_sym().unwrap().name().bytes();
+                        let name = unsafe { Ref::from_sexp(tag, cx) }.as_sym().unwrap().name_bytes();
                         if name == key.as_slice() {
                             // the next non-missing alternative
                             let mut y = i;
@@ -865,7 +865,7 @@ pub fn do_onexit(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out:
 // R: coerce.c:substitute
 fn substitute<'g>(cx: &'g Cx, lang: Ref<'g>, found: &Found<'g>) -> Result<Ref<'g>, robigo_rtcore::NeedGc> {
     match lang.sexptype() {
-        PROMSXP => substitute(cx, prexpr(lang), found),
+        PROMSXP => substitute(cx, prexpr(cx, lang), found),
         SYMSXP => {
             if let Some(f) = found
                 && let Some(&(_, t)) = f.iter().find(|(s, _)| *s == lang.sexp())
@@ -874,7 +874,7 @@ fn substitute<'g>(cx: &'g Cx, lang: Ref<'g>, found: &Found<'g>) -> Result<Ref<'g
                 if t.sexptype() == PROMSXP {
                     let mut t = t;
                     while t.sexptype() == PROMSXP {
-                        t = prexpr(t);
+                        t = prexpr(cx, t);
                     }
                     return Ok(t);
                 }
@@ -889,10 +889,12 @@ fn substitute<'g>(cx: &'g Cx, lang: Ref<'g>, found: &Found<'g>) -> Result<Ref<'g
     }
 }
 
-/// A promise's expression (`PREXPR`).
-fn prexpr<'g>(p: Ref<'g>) -> Ref<'g> {
+/// A promise's expression (`PREXPR`, `R_PromiseExpr`): its code, or for
+/// byte code (a promise compiled code made) the code's first constant.
+// R: eval.c:R_PromiseExpr
+fn prexpr<'g>(cx: &'g Cx, p: Ref<'g>) -> Ref<'g> {
     match p.view() {
-        robigo_rtcore::View::Promise(pr) => pr.code(),
+        robigo_rtcore::View::Promise(pr) => robigo_rtbuiltins::bytecode::expr(cx, pr.code()),
         _ => unreachable!(),
     }
 }
@@ -947,18 +949,18 @@ fn substitute_list<'g>(cx: &'g Cx, el: Ref<'g>, found: &Found<'g>) -> Result<Ref
 }
 
 /// The symbols of `e` (and `...`), each once, for the lookups.
-fn symbols_of(e: Ref<'_>, acc: &mut Vec<Sexp>) {
+fn symbols_of<'g>(cx: &'g Cx, e: Ref<'g>, acc: &mut Vec<Sexp>) {
     match e.sexptype() {
         SYMSXP => {
             if !acc.contains(&e.sexp()) {
                 acc.push(e.sexp());
             }
         }
-        PROMSXP => symbols_of(prexpr(e), acc),
+        PROMSXP => symbols_of(cx, prexpr(cx, e), acc),
         LANGSXP | LISTSXP => {
             let mut c = e.as_cons();
             while let Some(cell) = c {
-                symbols_of(cell.car(), acc);
+                symbols_of(cx, cell.car(), acc);
                 c = cell.cdr().as_cons();
             }
         }
@@ -1002,7 +1004,7 @@ fn list_env<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>) -> RResult<Root<'s>> {
                 let mut c = v.as_cons();
                 let mut i = 0;
                 while let Some(cell) = c {
-                    out.push((cell.tag().as_sym().map(|t| t.name().bytes().to_vec()), i));
+                    out.push((cell.tag().as_sym().map(|t| t.name_bytes().to_vec()), i));
                     c = cell.cdr().as_cons();
                     i += 1;
                 }
@@ -1066,7 +1068,7 @@ pub fn do_substitute(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, 
         // bindings (promises)
         let syms = {
             let mut v = Vec::new();
-            symbols_of(expr.bind(cx), &mut v);
+            symbols_of(cx, expr.bind(cx), &mut v);
             v
         };
         let dots = prims::state(cx).syms.dots;
@@ -1137,7 +1139,7 @@ pub fn do_expression(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, _rho: Root<'_>,
             if named {
                 let mut nms = cx.alloc_vector::<Char<'_>>(items.len())?;
                 for (i, (_, t)) in items.iter().enumerate() {
-                    nms.set(i, t.map_or(cx.blank_string(), |t| t.bind(cx).as_sym().unwrap().name()));
+                    nms.set(i, t.map_or(cx.blank_string(), |t| t.bind(cx).as_sym().unwrap().name(cx)));
                 }
                 let mut a = robigo_rtbuiltins::attrib::Attrs::new();
                 a.install(robigo_rtbuiltins::attrib::Attr {
