@@ -1243,7 +1243,8 @@ pub(crate) fn unused_message(
         Ok(l)
     })?;
     let what = if unused.len() == 1 { "unused argument" } else { "unused arguments" };
-    let text = match crate::deparse::deparse1line(cx, l.bind(cx), false, 0) {
+    // (deparse forces a promise it meets, as GNU R's does)
+    let text = match crate::deparse::deparse1line_forcing(cx, l, false, 0)? {
         Ok(b) => b,
         Err(m) => return Err(cx.error(&m)),
     };

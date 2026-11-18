@@ -158,12 +158,13 @@ pub fn do_dput(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
         let v = if x.bind(cx).sexptype() == CLOSXP {
             // a duplicate with CLOENV R_GlobalEnv (deparse reads no
             // environment of a closure: the duplicate is the closure's)
-            let clo = s.capture(cx, |cx, o| cx.duplicate(x, o))?;
-            clo.bind(cx)
+            s.capture(cx, |cx, o| cx.duplicate(x, o))?
         } else {
-            x.bind(cx)
+            x
         };
-        deparse::deparse1(cx, v, false, opts).map_err(|m| cx.error(&m))
+        // deparse1(x, FALSE, opts), forcing the promises it meets
+        let d = deparse::deparse1_with_cutoff_forcing(cx, v, false, deparse::DEFAULT_CUTOFF, true, opts, 0)?;
+        d.map_err(|m| cx.error(&m))
     })?;
     let file = args.get(cx, 1);
     if !robigo_rtbuiltins::attrib::inherits(file, b"connection") {
@@ -487,7 +488,8 @@ pub fn do_deparse(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
     if nlines == i32::MIN {
         nlines = -1;
     }
-    let d = deparse::deparse1_with_cutoff(cx, args.get(cx, 0), false, cut0, backtick, opts, nlines);
+    // (forcing the promises it meets, as deparse2buff does)
+    let d = deparse::deparse1_with_cutoff_forcing(cx, args.root(0), false, cut0, backtick, opts, nlines)?;
     let d = d.map_err(|m| cx.error(&m))?;
     cx.build(out, |cx| {
         let mut v = cx.alloc_vector::<Char<'_>>(d.lines.len())?;
