@@ -124,12 +124,15 @@ impl Cx {
         assert!(n >= xs.len(), "robigo: alloc_copy_fill of {} elements into {n}", xs.len());
         let x = self.alloc_raw(T::SEXPTYPE, n)?;
         // SAFETY: a fresh vector with room for `n` elements, which cannot
-        // overlap `xs`; the copy writes the first `xs.len()` and the fill
-        // the rest, each written once without being read.
+        // overlap `xs`; the copy writes the first `xs.len()` and the loop
+        // the rest, each written once through a raw pointer and never read
+        // (no reference to the uninitialized tail is made).
         unsafe {
             let d = x.std_data() as *mut T;
             std::ptr::copy_nonoverlapping(xs.as_ptr(), d, xs.len());
-            std::slice::from_raw_parts_mut(d.add(xs.len()), n - xs.len()).fill(fill);
+            for i in xs.len()..n {
+                d.add(i).write(fill);
+            }
         }
         Ok(FreshVec { x, n, cx: self, _t: PhantomData })
     }
