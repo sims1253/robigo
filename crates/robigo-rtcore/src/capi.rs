@@ -599,9 +599,6 @@ pub(crate) fn logicals(core: &mut robigo_heap::Core) -> [Sexp; 3] {
 mod tests {
     use std::sync::atomic::Ordering::Relaxed;
 
-    /// `set_locale` gives the isolate's block and the process statics one
-    /// pair: `MB_CUR_MAX` in the locale, and `mbcslocale` as `MB_CUR_MAX > 1`
-    /// (R_check_locale).
     /// The pair from the C library's `MB_CUR_MAX`, and glibc's where the C
     /// library has none (the 6/1 that only Miri and a C library without the
     /// locale objects reach otherwise).
@@ -617,6 +614,9 @@ mod tests {
         assert_eq!(locale_pair(true, Some(1)), (0, 1));
     }
 
+    /// `set_locale` gives the isolate's block and the process statics one
+    /// pair: `MB_CUR_MAX` in the locale, and `mbcslocale` as `MB_CUR_MAX > 1`
+    /// (R_check_locale).
     #[test]
     #[cfg_attr(miri, ignore)]
     fn set_locale_writes_the_block_and_the_statics_alike() {
