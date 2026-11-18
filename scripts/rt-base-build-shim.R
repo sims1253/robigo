@@ -16,8 +16,20 @@
 .rt_shim("aperm.default", function(a, perm = NULL, resize = TRUE, ...) {
     d <- dim(a)
     n <- length(d)
-    if (is.null(perm)) perm <- n:1
-    if (is.character(perm)) perm <- match(perm, names(dimnames(a)))
+    # do_aperm's checks of the permutation
+    if (length(perm) == 0L) perm <- n:1
+    else {
+        if (length(perm) != n) stop(gettextf("'perm' is of wrong length %d (!= %d)", length(perm), n))
+        if (is.character(perm)) {
+            dnn <- names(dimnames(a))
+            if (is.null(dnn)) stop("'a' does not have named dimnames")
+            p <- match(perm, dnn)
+            if (anyNA(p)) stop(gettextf("'perm[%d]' does not match a dimension name", which(is.na(p))[1L]))
+            perm <- p
+        } else perm <- as.integer(perm)
+    }
+    if (anyNA(perm) || any(perm < 1L | perm > n)) stop("value out of range in 'perm'")
+    if (anyDuplicated(perm)) stop("invalid 'perm' argument")
     nd <- d[perm]
     N <- prod(d)
     stride <- cumprod(c(1L, d))[seq_len(n)]
@@ -84,6 +96,9 @@
     storage.mode(f) <- "integer"
     lv <- levels(f)
     sp <- function(v) {
+        # do_split's checks
+        if (length(f) <= 0L && length(v) > 0L) stop("group length is 0 but data length > 0")
+        if (length(f) > 0L && length(v) %% length(f) != 0L) warning("data length is not a multiple of split variable")
         fi <- rep_len(unclass(f), length(v))
         res <- vector("list", length(lv))
         for (j in seq_along(lv)) res[[j]] <- v[which(fi == j)]
@@ -108,6 +123,10 @@
 ## UTF-8 (the same text in a UTF-8 locale; non-ASCII is NA in ASCII), else
 ## an error naming the conversion
 .rt_shim("iconv", function(x, from = "", to = "", sub = NA, mark = TRUE, toRaw = FALSE) {
+    # (only the plain conversion: a raw result, a substitution and marks are
+    # not stood in)
+    if (!isFALSE(toRaw) || !is.na(sub) || !is.character(x))
+        stop("rt-base-build shim: iconv with toRaw, sub or a non-character x is not stood in")
     utf <- l10n_info()[["UTF-8"]]
     enc <- function(e) if (e %in% c("", "native.enc")) (if (utf) "UTF-8" else "ASCII") else toupper(sub("UTF8", "UTF-8", e, fixed = TRUE))
     f <- enc(from)

@@ -36,7 +36,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 root=$PWD
-bin=${CARGO_TARGET_DIR:-target}/release/robigo-rt
+# cargo's target directory, as scripts/build.sh finds it (a checkout's
+# .cargo/config.toml may set it)
+target=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
+bin=$target/release/robigo-rt
 shim=
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -144,9 +147,12 @@ for p in base tools; do
   step "$p-mklazycomp" "$p" make mklazycomp
 done
 step base-mkdesc base make mkdesc
-R_EXE="$B/bin/R --vanilla --no-echo"
-step vdesc . sh -c "echo 'tools:::.vinstall_package_descriptions_as_RDS(\"$B/library\", \"base tools compiler\")' | R_DEFAULT_PACKAGES=tools LC_ALL=C $R_EXE > /dev/null"
+# R: Makefile.in's R target, its two commands (R_EXE = bin/R --vanilla --no-echo);
+# the paths as arguments, so that spaces in OUT do not split them
+# shellcheck disable=SC2016 # the inner sh expands $1 and $2
+vinstall='echo "tools:::.vinstall_package_${3}_as_RDS(\"$2\", \"base tools compiler\")" | R_DEFAULT_PACKAGES=tools LC_ALL=C "$1" --vanilla --no-echo > /dev/null'
+step vdesc . sh -c "$vinstall" sh "$B/bin/R" "$B/library" descriptions
 rm -f "$B/library/tools/Meta/nsInfo.rds"
-step vns . sh -c "echo 'tools:::.vinstall_package_namespaces_as_RDS(\"$B/library\", \"base tools compiler\")' | R_DEFAULT_PACKAGES=tools LC_ALL=C $R_EXE > /dev/null"
+step vns . sh -c "$vinstall" sh "$B/bin/R" "$B/library" namespaces
 echo "$passed of $ran steps ran to the end" >> "$out/report.txt"
 cat "$out/report.txt"
