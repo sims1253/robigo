@@ -332,3 +332,49 @@ k_tailassign <- .Internal(bcClose(as.pairlist(alist(v = )),
  globalenv()))
 k_tailassign(3)
 
+# k_retdollar
+k_retdollar <- .Internal(bcClose(as.pairlist(alist(v = )),
+ mk(c(12L, 123L, 1L, 12L, 26L, 2L, 34L, 3L, 31L, 4L, 39L, 1L, 22L, 5L, 4L, 123L, 7L, 25L, 26L, 8L, 20L, 9L, 33L, 39L, 7L, 4L, 20L, 9L, 61L, 5L, 74L, 11L, 4L, 62L, 5L, 1L), list(quote({
+    x <- list(a = 1)
+    invisible(v)
+    return(x$a <- v)
+}),
+  quote(list(a = 1)),
+  as.name("list"),
+  1,
+  as.name("a"),
+  as.name("x"),
+  quote(x <- list(a = 1)),
+  quote(invisible(v)),
+  as.name("invisible"),
+  as.name("v"),
+  quote(x$a <- v),
+  quote(`$<-`(`*tmp*`, a, value = v)),
+  quote(`$<-`(x, a, value = v)),
+  quote(return(x$a <- v)),
+  structure(c(NA, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 6L, 6L, 6L, 7L, 7L, 7L, 7L, 7L, 7L, 7L, 7L, 7L, 7L, 7L, 9L, 9L, 10L, 10L, 12L, 12L, 12L, 10L, 10L, 13L), class = "expressionsIndex"))),
+ globalenv()))
+k_retdollar(2)
+
+# k_retsub_inv
+k_retsub_inv <- .Internal(bcClose(as.pairlist(alist(v = )),
+ mk(c(12L, 16L, 1L, 22L, 3L, 4L, 123L, 5L, 16L, 26L, 6L, 20L, 7L, 33L, 39L, 5L, 61L, 3L, 105L, 9L, 25L, 16L, 11L, 86L, 9L, 62L, 3L, 1L), list(quote({
+    x <- 1:2
+    return(x[1] <- invisible(v))
+}),
+  1:2,
+  quote(1:2),
+  as.name("x"),
+  quote(x <- 1:2),
+  quote(invisible(v)),
+  as.name("invisible"),
+  as.name("v"),
+  quote(x[1] <- invisible(v)),
+  quote(`[<-`(`*tmp*`, 1, value = invisible(v))),
+  quote(`[<-`(x, 1, value = invisible(v))),
+  1,
+  quote(return(x[1] <- invisible(v))),
+  structure(c(NA, 2L, 2L, 4L, 4L, 4L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 8L, 8L, 10L, 10L, 10L, 11L, 11L, 10L, 10L, 8L, 8L, 12L), class = "expressionsIndex"))),
+ globalenv()))
+k_retsub_inv(3L)
+

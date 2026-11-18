@@ -551,9 +551,9 @@ struct LoopLabels {
 /// (`make.nonTailCallContext`: non-tail shapes, the value's visibility what
 /// bcEval leaves at RETURN), or neither. `Live`: under `Eval`, a `{`'s
 /// statement before its last while the `{` is in the tail, compiled as the
-/// tail (a write that cuts the list there makes it the last), but an
-/// assignment's invisibility is left to its `Resume` (`c` 1), which sets it
-/// only when that cut happens.
+/// tail (a write that cuts the list there makes it the last), but when
+/// the statement is an assignment its invisibility is left to its `Resume`
+/// (`c` 1), which sets it only when that cut happens.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Tail {
     No,
@@ -683,8 +683,11 @@ struct Comp<'g> {
     /// raises "not implemented yet" for it.
     bc_untranslated: Option<String>,
     /// The assignment just compiled as a `{`'s earlier statement
-    /// ([`Tail::Live`]): its invisibility is its Resume's.
+    /// ([`Tail::Live`]): its invisibility is its Resume's. Only one that is
+    /// the statement itself (`live_stmt`); one inside it (an `if`'s
+    /// branch) sets it as the tail does.
     cut_assign: Option<Sexp>,
+    live_stmt: Option<Sexp>,
 }
 
 /// Give the argument codes compiled with closure code `code` (`arg_codes`)
@@ -753,6 +756,7 @@ impl<'g> Comp<'g> {
             arg_codes: Vec::new(),
             bc_untranslated: None,
             cut_assign: None,
+            live_stmt: None,
         }
     }
 
@@ -2313,6 +2317,7 @@ impl<'g> Comp<'g> {
                                 _ => Tail::No,
                             };
                             self.cut_assign = None;
+                            self.live_stmt = Some(st);
                             self.expr_at(st, r, d + 1, p, ctx)?;
                             if live {
                                 let at = self.resume(cell, r, dst, d + 1);
@@ -2602,9 +2607,10 @@ impl<'g> Comp<'g> {
                             // cmp.R's cmpComplexAssign: the right-hand side,
                             // then the getter and setter calls of its plan
                             let plan = self.bc_assign_plan(lhs, a[1].0)?;
-                            // (the value's visibility is no way out's: the
-                            // setter calls set R_Visible after it)
-                            self.expr(a[1].0, dst, d + 1, Tail::No)?;
+                            // (in `return()`'s operand the value's
+                            // visibility stands where no step sets it:
+                            // `x$a <- 2`)
+                            self.expr(a[1].0, dst, d + 1, tail.value())?;
                             let mut i = Ins::new(Op::BcAssign);
                             i.a = dst;
                             i.b = dst;
@@ -2668,8 +2674,8 @@ impl<'g> Comp<'g> {
                     // SETVAR leaves R_Visible, so does `return()`'s operand);
                     // a `{`'s earlier statement, on its Resume
                     match tail {
-                        Tail::Yes => self.set_vis(false),
-                        Tail::Live => self.cut_assign = Some(e),
+                        Tail::Live if self.live_stmt == Some(e) => self.cut_assign = Some(e),
+                        Tail::Yes | Tail::Live => self.set_vis(false),
                         _ => {}
                     }
                 }

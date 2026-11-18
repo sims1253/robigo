@@ -62,7 +62,11 @@ g19 <- function(v) { x <- list(); return(x$a <- v) }
 `h<-` <- function(x, value) { x }
 g20 <- function(v) { x <- 1; return(h(x) <- v) }
 g21 <- function(v) return(y <- v)
-for (i in 1:4) { g15("a"); g16(9); g17(1); g18(2); g19(3); g20(4); g21(5) }
+# no step of `x$a <- 2` sets R_Visible, so the value's load does; an
+# index's load sets it after an invisible value
+g22 <- function(v) { x <- list(a = 1); invisible(v); return(x$a <- v) }
+g23 <- function(v) { x <- 1:2; return(x[1] <- invisible(v)) }
+for (i in 1:4) { g15("a"); g16(9); g17(1); g18(2); g19(3); g20(4); g21(5); g22(6); g23(7L) }
 cat("g15: "); g15("a"); cat("\n")
 cat("g16: "); g16(9); cat("\n")
 cat("g17: "); g17(1); cat("\n")
@@ -70,3 +74,5 @@ cat("g18: "); g18(2); cat("\n")
 cat("g19: "); g19(3); cat("\n")
 cat("g20: "); g20(4); cat("\n")
 cat("g21: "); g21(5); cat("\n")
+cat("g22: "); g22(6); cat("\n")
+cat("g23: "); g23(7L); cat("\n")

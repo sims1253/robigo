@@ -51,5 +51,9 @@ cases <- list(
   list(name = "k_retloop", fun = function(n) { invisible(n); return(for (i in seq_len(n)) i) },
        calls = "k_retloop(2)"),
   list(name = "k_tailassign", fun = function(v) { invisible(v); x <- v },
-       calls = "k_tailassign(3)")
+       calls = "k_tailassign(3)"),
+  list(name = "k_retdollar", fun = function(v) { x <- list(a = 1); invisible(v); return(x$a <- v) },
+       calls = "k_retdollar(2)"),
+  list(name = "k_retsub_inv", fun = function(v) { x <- 1:2; return(x[1] <- invisible(v)) },
+       calls = "k_retsub_inv(3L)")
 )

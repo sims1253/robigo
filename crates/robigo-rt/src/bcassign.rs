@@ -616,7 +616,13 @@ fn default_args<'s>(
     ev.next(nil).set(cx, x.bind(cx));
     for (a, tag) in args {
         let o = ev.next(tag);
+        // (an index bcEval loads, LDCONST or GETVAR_MISSOK, sets
+        // R_Visible: what a `return()` of the assignment shows)
+        let load = a.bind(cx) != cx.missing_arg() && a.bind(cx).sexptype() != LANGSXP;
         eval_arg(cx, a, rho, true, o)?;
+        if load {
+            cx.set_visible(true);
+        }
     }
     if let Some(v) = value {
         ev.next(st_value).set(cx, v.bind(cx));

@@ -102,6 +102,14 @@ ts <- function() {
 }
 ts()
 print(ts())
+# the statement under way an `if` whose branch assigns: invisible too
+tb <- function(b) {
+  if (FALSE) browser()
+  if (b) x <- step(1L, function() .Call("rt_cut_after", tb, 2L))
+  "unused"
+}
+tb(TRUE)
+print(tb(TRUE))
 # a while loop whose call gets a new argument list in an iteration: the
 # loop keeps the list it read when it started (do_while's args)
 wa <- function() {

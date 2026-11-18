@@ -185,7 +185,8 @@ struct BcIns {
 
 /// Whether control at instruction `j` of `code` reaches a `RETURN` or
 /// `RETURNJMP` at once or through `GOTO`s and assignments (`SETVAR`,
-/// `SETVAR2`) only.
+/// `SETVAR2`, a complex assignment from `STARTASSIGN` to its `ENDASSIGN`)
+/// only.
 fn returns_after(code: &[BcIns], mut j: usize) -> bool {
     for _ in 0..code.len() {
         match code.get(j) {
@@ -193,6 +194,27 @@ fn returns_after(code: &[BcIns], mut j: usize) -> bool {
             // (an assignment of `return()`'s operand: bcEval's SETVAR keeps
             // the value on the stack and R_Visible as its load set it)
             Some(n) if matches!(n.op, SETVAR | SETVAR2) => j += 1,
+            // (a complex assignment of it: past its ENDASSIGN, which keeps
+            // the value; a step that sets R_Visible after the value's load
+            // sets it at run time)
+            Some(n) if matches!(n.op, STARTASSIGN | STARTASSIGN2) => {
+                let mut depth = 0;
+                loop {
+                    match code.get(j).map(|c| c.op) {
+                        Some(STARTASSIGN | STARTASSIGN2) => depth += 1,
+                        Some(ENDASSIGN | ENDASSIGN2) => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        Some(_) => {}
+                        None => return false,
+                    }
+                    j += 1;
+                }
+                j += 1;
+            }
             Some(n) if n.op == GOTO => match code.binary_search_by_key(&(n.a[0] as usize), |c| c.at) {
                 Ok(p) => j = p,
                 Err(_) => return false,
