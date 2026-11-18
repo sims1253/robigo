@@ -1,0 +1,15 @@
+[1] "unused argument (extra)"
+[1] "unused arguments (extra, more = 2)"
+[1] "unused argument (extra)"
+    n names 
+  "1"    "" 
+    n names 
+  "1"   "z" 
+[1]  TRUE FALSE
+[1] "unused argument (4)"
+[1] "unused argument (2)"
+[1] "unused argument (y = 2 + 3)"
+[1] "unused argument (0.909297426825682)"
+[1] "unused argument (4)"
+[1] "unused arguments (foo = 2, 4)"
+[1] "unused argument (3)"
