@@ -169,6 +169,46 @@ The crosscheck's numbering had to follow: a join only a jump reaches
 those the code before it left. Elsewhere values stay numbered in the
 code's order.
 
+### Sol's round 5
+
+S5 resolved. S9 was resolved in the VM, but the inline evaluator
+ignored the flag: it honors F_VIS only for a whitelist of ops, and
+`AndOr1`/`AndOr2` were not on it (S10, blocker). They are now. No fixture
+case shows it, because an inline run cannot leave R_Visible false before
+the `&&`. The crosscheck's rule for a join that only jumps reach ignored
+back edges (S11, should): it now skips a target that a back edge reaches.
+
+### Merging main, and H5
+
+Main `e20eef0d1` was merged at `e0b5a866`. It brought H5 (#811):
+symbols are immutable, and a symbol's INTERNAL lives in the isolate's
+table, not in its tag. This step's decline for a `.Internal` call with
+`...` or an empty argument (cmpDotInternalCall's cmpBuiltin) still read
+the tag, so it never declined. The port then compiled
+`.Internal(pmax(na.rm, ...))` and the like as a direct `Internal`,
+where GNU R calls `.Internal` (9 unexpected in base.rdb: pmax, pmin,
+order, sprintf, options, radixsort, icuSetCollate). The decline reads
+`internal_raw` now, and base.rdb is back to 0 unexpected.
+
+### The cost of the visibility test
+
+perf-rt at `e0b5a866` was +0.9% to +1.1% on the closure-call rows
+(plain, defaults, named, env-fn) against main's binary. V4 step 2
+merged with the same main was flat on them, so the cost is this step's.
+With main's vm.rs, this step was flat, so it came from the one vm.rs
+change: the `if i.fl & F_VIS != 0 { set_visible(true) }` in the AndOr
+arm. Callgrind put all of it in `vm::run`'s self cost (+11 instructions
+an iteration on plain), which runs no AndOr: the branch shifted the
+function's code. Moving the whole arm out of line, as `math1` is, still
+cost +0.6%.
+
+bcEval's AND1ST, AND2ND, OR1ST and OR2ND each set `R_Visible = TRUE`
+unconditionally, after the operand's check (eval.c:8361-8409), and the
+AST's `do_logic2` is visible too. The arm now does that: a store, no
+test. F_VIS stays in the IR, where the crosscheck compares it and the
+inline evaluator reads it. Callgrind against main `046c437c`: plain
++0.13%, defaults, named, env-fn and guard-subset-dbl within ±0.1%.
+
 ### Result
 
 One verdict per closure. base.rdb: 980 the same, 145 expected in five
