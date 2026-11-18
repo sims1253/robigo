@@ -1161,7 +1161,7 @@ pub fn do_dimgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
     let Dispatched::Default(out) = dispatch_or_eval(cx, &DIM_GETS, call, args, env, out)? else { return Ok(()) };
     let (x0, val) = (args.root(0), args.root(1));
     if val.bind(cx).sexptype() == NILSXP
-        && !super::attrs(x0.bind(cx)).any(|a| matches!(a.tag.name().bytes(), b"dim" | b"names"))
+        && !super::attrs(x0.bind(cx)).any(|a| matches!(a.tag.name_bytes(), b"dim" | b"names"))
     {
         out.set(cx, x0.bind(cx));
         return Ok(());

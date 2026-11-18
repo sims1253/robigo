@@ -623,7 +623,7 @@ pub fn concise_traceback(cx: &Cx, call: Option<Ref<'_>>, mut skip: usize) -> Vec
             } else {
                 let fun = r.call().as_cons().map(|c| c.car());
                 let this: Vec<u8> = match fun.and_then(|f| f.as_sym()) {
-                    Some(s) => s.name().bytes().to_vec(),
+                    Some(s) => s.name_bytes().to_vec(),
                     None => b"<Anonymous>".to_vec(),
                 };
                 if matches!(&this[..], b"stop" | b"warning" | b"suppressWarnings" | b".signalSimpleWarning") {
@@ -666,7 +666,7 @@ pub fn concise_traceback(cx: &Cx, call: Option<Ref<'_>>, mut skip: usize) -> Vec
         && call.sexptype() == LANGSXP
     {
         let this: Vec<u8> = match cell.car().as_sym() {
-            Some(s) => s.name().bytes().to_vec(),
+            Some(s) => s.name_bytes().to_vec(),
             None => b"<Anonymous>".to_vec(),
         };
         if buf == this {
