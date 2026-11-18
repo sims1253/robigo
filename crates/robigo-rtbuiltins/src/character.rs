@@ -721,6 +721,9 @@ pub fn do_make_names(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
         return Err(not_yet(cx, Some(call), "make.names() of a package ALTREP vector"));
     }
     let n = names.len().unwrap();
+    if args.get(cx, 1).is_package_altrep() {
+        return Err(not_yet(cx, Some(call), "make.names() of a package ALTREP vector"));
+    }
     let allow = as_logical(cx, args.get(cx, 1));
     if allow == NA_INTEGER {
         return Err(cx.error("invalid 'allow_' value"));
@@ -895,15 +898,18 @@ struct TrRange {
 
 /// `tr_build_spec(s, trs)` / `wtr_build_spec(s, trs)`: `s` as characters
 /// and ranges (`a-z`), the decreasing range's error raised as each is
-/// read. `fmt` writes a character into the message (`%c` / `%lc`).
+/// read. `fmt` writes a character into the message (`%c` / `%lc`). With
+/// `bytes` (tr_build_spec's `const char *`) the range ends compare as
+/// x86's signed `char`.
 // R: character.c:wtr_build_spec, character.c:tr_build_spec
-fn tr_build_spec(cx: &mut Cx, s: &[u32], fmt: impl Fn(u32, &mut Vec<u8>)) -> RResult<Vec<TrRange>> {
+fn tr_build_spec(cx: &mut Cx, s: &[u32], bytes: bool, fmt: impl Fn(u32, &mut Vec<u8>)) -> RResult<Vec<TrRange>> {
+    let key = |c: u32| if bytes { c as u8 as i8 as i64 } else { c as i64 };
     let len = s.len();
     let mut out = Vec::with_capacity(len);
     let mut i = 0;
     while i + 2 < len {
         if s[i + 1] == b'-' as u32 {
-            if s[i] > s[i + 2] {
+            if key(s[i]) > key(s[i + 2]) {
                 let mut m = b"decreasing range specification ('".to_vec();
                 fmt(s[i], &mut m);
                 m.push(b'-');
@@ -924,11 +930,23 @@ fn tr_build_spec(cx: &mut Cx, s: &[u32], fmt: impl Fn(u32, &mut Vec<u8>)) -> RRe
     Ok(out)
 }
 
-/// The characters a specification stands for, in order
-/// (`tr_get_next_char_from_spec` until it gives `'\0'`).
-// R: character.c:wtr_get_next_char_from_spec
-fn tr_chars(spec: &[TrRange]) -> impl Iterator<Item = u32> + '_ {
-    spec.iter().flat_map(|r| r.first..=r.last)
+/// The characters a specification stands for, in order, as
+/// `tr_get_next_char_from_spec` gives them: a range counts up from its
+/// first to its last (an `unsigned char` wraps, `mask` 0xff, for a range
+/// the signed check let through), and `'\0'` once the spec is done (or
+/// where a wrapped range reaches it).
+// R: character.c:wtr_get_next_char_from_spec, character.c:tr_get_next_char_from_spec
+fn tr_chars(spec: &[TrRange], mask: u32) -> impl Iterator<Item = u32> + '_ {
+    spec.iter()
+        .flat_map(move |r| {
+            let mut c = Some(r.first);
+            std::iter::from_fn(move || {
+                let v = c?;
+                c = (v != r.last).then(|| v.wrapping_add(1) & mask);
+                Some(v)
+            })
+        })
+        .chain(std::iter::repeat(0))
 }
 
 /// `utf8towcs(wc, s, nc + 1)`: R's own UTF-8 decoder over the whole
@@ -1033,15 +1051,15 @@ pub fn do_chartr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
     if mbcs || use_wc {
         let wfmt = |c: u32, m: &mut Vec<u8>| wcrtomb_utf8(c, m);
         let wc = chartr_wide_arg(cx, old, use_wc, "old")?;
-        let trs_old = tr_build_spec(cx, &wc, wfmt)?;
+        let trs_old = tr_build_spec(cx, &wc, false, wfmt)?;
         let wc = chartr_wide_arg(cx, new, use_wc, "new")?;
-        let trs_new = tr_build_spec(cx, &wc, wfmt)?;
-        let mut newc = tr_chars(&trs_new);
+        let trs_new = tr_build_spec(cx, &wc, false, wfmt)?;
+        let mut newc = tr_chars(&trs_new, u32::MAX);
         let mut xtable: Vec<(u32, u32)> = Vec::new();
-        for c_old in tr_chars(&trs_old) {
+        for c_old in tr_chars(&trs_old, u32::MAX).take_while(|&c| c != 0) {
             match newc.next() {
+                Some(0) | None => return Err(cx.error("'old' is longer than 'new'")),
                 Some(c_new) => xtable.push((c_old, c_new)),
-                None => return Err(cx.error("'old' is longer than 'new'")),
             }
         }
         // ISORT (stable) then COMPRESS: of equal c_old the last one stays
@@ -1097,15 +1115,15 @@ pub fn do_chartr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
         let mut xtable: [u8; 256] = std::array::from_fn(|i| i as u8);
         let o = native_bytes(cx, old, 0)?;
         let o: Vec<u32> = o.iter().map(|&b| b as u32).collect();
-        let trs_old = tr_build_spec(cx, &o, bfmt)?;
+        let trs_old = tr_build_spec(cx, &o, true, bfmt)?;
         let nw = native_bytes(cx, new, 0)?;
         let nw: Vec<u32> = nw.iter().map(|&b| b as u32).collect();
-        let trs_new = tr_build_spec(cx, &nw, bfmt)?;
-        let mut newc = tr_chars(&trs_new);
-        for c_old in tr_chars(&trs_old) {
+        let trs_new = tr_build_spec(cx, &nw, true, bfmt)?;
+        let mut newc = tr_chars(&trs_new, 0xff);
+        for c_old in tr_chars(&trs_old, 0xff).take_while(|&c| c != 0) {
             match newc.next() {
+                Some(0) | None => return Err(cx.error("'old' is longer than 'new'")),
                 Some(c_new) => xtable[c_old as usize] = c_new as u8,
-                None => return Err(cx.error("'old' is longer than 'new'")),
             }
         }
         for i in 0..n {
