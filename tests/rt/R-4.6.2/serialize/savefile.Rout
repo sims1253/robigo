@@ -58,6 +58,9 @@ NULL
 [1] "invalid 'version' argument"
 [1] "bad file name"
 [1] "unable to open 'file'"
+[1] "unable to open 'file'"
+[1] FALSE
+[1] "unable to open 'file'"
 [1] "bad restore file magic number (file may be corrupted) -- no data loaded"
 [1] "restore file may be from a newer version of R -- no data loaded"
 [1] "bad restore file magic number (file may be corrupted) -- no data loaded"

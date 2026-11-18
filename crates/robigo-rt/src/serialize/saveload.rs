@@ -116,26 +116,33 @@ fn valid_string_f(x: Ref<'_>) -> bool {
     x.as_vector::<Char<'_>>().is_some_and(|v| !v.is_empty() && !v.get(0).bytes().is_empty())
 }
 
-/// `RC_fopen(fn, mode, TRUE)`'s file name: the native translation, expanded.
-// R: connections.c:RC_fopen
-fn rc_name(cx: &mut Cx, x: Root<'_>) -> RResult<std::path::PathBuf> {
+/// `RC_fopen(fn, mode, TRUE)`'s file name: the native translation,
+/// expanded; `None` for NA, which RC_fopen opens no file for.
+// R: sysutils.c:RC_fopen
+fn rc_name(cx: &mut Cx, x: Root<'_>) -> RResult<Option<std::path::PathBuf>> {
+    if x.bind(cx).as_vector::<Char<'_>>().unwrap().get(0) == cx.na_string() {
+        return Ok(None);
+    }
     let name = {
         let c = x.bind(cx).as_vector::<Char<'_>>().unwrap().get(0);
         robigo_rtbuiltins::text::to_native_fp(robigo_rtbuiltins::coerce::text(c), cx.locale()).map(|b| b.into_owned())
     };
     let name = name.map_err(|m| cx.error(&m))?;
     let e = connections::r_expand_file_name(cx, &name)?;
-    Ok(std::path::PathBuf::from(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&e)))
+    Ok(Some(std::path::PathBuf::from(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&e))))
 }
 
 /// `defaultSaveVersion()`: `R_DEFAULT_SAVE_VERSION` when it is 2 or 3,
-/// else 3.
+/// else 3, read once (GNU R's static).
 // R: saveload.c:defaultSaveVersion
 fn default_save_version() -> i32 {
-    std::env::var_os("R_DEFAULT_SAVE_VERSION")
-        .map(|v| super::atoi(v.as_encoded_bytes()))
-        .filter(|v| matches!(v, 2 | 3))
-        .unwrap_or(3)
+    static DFLT: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+    *DFLT.get_or_init(|| {
+        std::env::var_os("R_DEFAULT_SAVE_VERSION")
+            .map(|v| super::atoi(v.as_encoded_bytes()))
+            .filter(|v| matches!(v, 2 | 3))
+            .unwrap_or(3)
+    })
 }
 
 /// `save.to.file(object, file, ascii, version)`: the magic number, then
@@ -164,7 +171,7 @@ pub fn do_savefile(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
         return Err(cx.error("invalid 'version' argument"));
     }
     let path = rc_name(cx, args.root(1))?;
-    let Ok(mut fp) = std::fs::File::create(&path) else {
+    let Some(Ok(mut fp)) = path.map(std::fs::File::create) else {
         return Err(cx.error("unable to open 'file'"));
     };
     if version == 1 {
@@ -196,7 +203,7 @@ pub fn do_loadfile(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
             return Err(cx.error("bad file name"));
         }
         let path = rc_name(cx, file)?;
-        let Ok(data) = std::fs::read(&path) else {
+        let Some(Ok(data)) = path.map(std::fs::read) else {
             return Err(cx.error("unable to open 'file'"));
         };
         if data.len() < 5 {
