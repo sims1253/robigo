@@ -146,8 +146,8 @@
     frame binding, dispatch) would be gone, which should show as fewer
     instructions on the calls rows. The cost is an API change across
     rtcore and every crate that holds a `Cx`.
-- Verified (2026-11-18, on `160b637de`; the later commits change docs
-  only):
+- Verified (2026-11-18, on `160b637de`; after it only docs changed and
+  main `1a9d21eb1` was merged in, which fixes the strptime case below):
   - Debug `cargo test` of robigo-heap, -rtcore, -rt, -rtbuiltins and
     -rtapi passed.
   - The full `scripts/rt-ci.py` passed: every mode, and 2,800 injected
@@ -159,13 +159,13 @@
   - Miri passed on robigo-rtcore (all tests) and on robigo-heap's
     `layout::`, `heap::bitmap_tests`, `heap::medium_tests` and `arena::`.
   - `scripts/lint.sh` passed.
-- Measured (2026-11-18, `160b637de` against main `046c437c2`, each built
+- Measured (2026-11-18, `fdb3927f6` against main `1a9d21eb1`, each built
   in its own checkout and target, `h5/ar-perf.sh`):
-  - rt-bars, 0 failures (instructions): plain −0.01%, defaults −0.00%,
-    named +0.03%, env-fn −0.06%, superassign +0.07%, s3 +0.24%, fib
-    −0.00%, binarytrees −0.00%, e7-paste +0.02%, e7-match +0.07%,
-    e7-unique +0.02%; the guard and d0 rows +0.05% to +0.37%. Peak RSS
-    within 2%.
+  - rt-bars, 0 failures (instructions): plain −0.03%, defaults +0.05%,
+    named +0.01%, env-fn −0.07%, superassign +0.07%, s3 +0.28%, fib
+    −0.00%, binarytrees −0.00%, e7-paste +0.01%, e7-match +0.06%,
+    e7-unique +0.02%; the guard and d0 rows +0.06% to +0.37%. Peak RSS
+    within 0.5%.
   - The PRINTNAME read is now a table read with a null test and a cold
     refusal. `$` on an environment read it only for `IS_ASCII`, which cost
     env-fn +0.49% (+7 instructions per call in `bcassign::dollar`). It now
@@ -174,10 +174,13 @@
     callgrind) is the table read where the CHARSXP is needed (`$` on a
     list, `dollar_call`, `dispatch_method`); the lazy path cost the same
     (+0.31%).
-  - Rows (instructions per iteration, main → branch): e7-paste 96,208 →
-    96,215; d10-sprintf 387,204 → 398,120 (+2.8%); d10-paste-match 274,969
-    → 276,790 (+0.7%); d10-ascharacter 78.46M → 78.38M; d10-assign 21,211 →
-    21,231.
+  - Rows (instructions per iteration, main → branch): e7-paste 96,202 →
+    96,197; d10-sprintf 395,498 → 398,119 (+0.66%; against main
+    `046c437c2` it was 387,204 → 398,120, +2.8%: main's own number moved by
+    2.1% with #837 and #841, neither of which touches sprintf);
+    d10-paste-match 274,868 → 277,295 (+0.9%); d10-ascharacter 78.38M →
+    78.41M; d10-assign 21,209 → 21,231. The analysis below used the
+    `046c437c2` builds.
   - d10-sprintf is glibc allocator state. Both builds make the same hot
     calls (`Spec::int`, `finish_grow` and `sprintf::tr`, each the same
     number of times), but each `malloc`/`free` costs more. The branch makes
@@ -193,7 +196,7 @@
     the keys' addresses, and the difference then falls to +0.05% to
     +0.18%.
   - Ad hoc PRINTNAME idioms (instructions per iteration, main → branch):
-    deparse of a call 141,420 → 141,715 (+0.21%), `as.character(sym)`
+    deparse of a call 141,558 → 141,723 (+0.12%), `as.character(sym)`
     1,857 → 1,866, `names(list)` 1,734 → 1,736.
 - Review: sol-loop, 4 rounds with gpt-6.1-sol on high, approved. Round 1
   found the composite C accessors and the uninstalled symbol (fixed). Round 2
