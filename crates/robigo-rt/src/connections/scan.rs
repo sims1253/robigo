@@ -378,8 +378,7 @@ fn scan_frame(
     multiline: bool,
 ) -> Result<(Vec<Option<Vec<Option<Vec<u8>>>>>, i64), String> {
     let nc = cols.len();
-    let mut ans: Vec<Option<Vec<Option<Vec<u8>>>>> =
-        cols.iter().map(|&t| (t == Ty::Str).then(Vec::new)).collect();
+    let mut ans: Vec<Option<Vec<Option<Vec<u8>>>>> = cols.iter().map(|&t| (t == Ty::Str).then(Vec::new)).collect();
     let (mut n, mut linesread, mut colsread, mut ii) = (0i64, 0i64, 0usize, 0usize);
     let mut badline = 0i64;
     let mut bch: c_int = 1;
@@ -637,11 +636,7 @@ pub fn do_scan(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
     };
     let frame_cols = frame.map(|(c, _)| c);
     let na_strings = strings(args.get(cx, 8));
-    let names = if frame_cols.is_some() {
-        robigo_rtbuiltins::attrib::names(what).map(strings)
-    } else {
-        None
-    };
+    let names = if frame_cols.is_some() { robigo_rtbuiltins::attrib::names(what).map(strings) } else { None };
 
     let ii = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(0))?;
     with_conn(cx, ii, |_| ())?;
@@ -703,17 +698,17 @@ pub fn do_scan(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
             )?),
             Some(cols) => {
                 let (f, n) = scan_frame(
-                &mut d,
-                con,
-                cols,
-                nmax,
-                nlines,
-                flush != 0,
-                fill != 0,
-                &lstrip,
-                blskip != 0,
-                multiline != 0,
-            )?;
+                    &mut d,
+                    con,
+                    cols,
+                    nmax,
+                    nlines,
+                    flush != 0,
+                    fill != 0,
+                    &lstrip,
+                    blskip != 0,
+                    multiline != 0,
+                )?;
                 Read::Frame(f, n)
             }
         };
@@ -762,31 +757,29 @@ pub fn do_scan(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
     } else {
         Encoding::Native
     };
-    cx.build(out, |cx| {
-        match &read {
-            Read::Vector(items) => strvec(cx, items, enc),
-            Read::Frame(cols, _) => {
-                let mut l = cx.alloc_vector::<Ref<'_>>(cols.len())?;
-                for (i, c) in cols.iter().enumerate() {
-                    match c {
-                        Some(items) => l.set(i, strvec(cx, items, enc)?),
-                        None => l.set(i, cx.nil()),
-                    }
+    cx.build(out, |cx| match &read {
+        Read::Vector(items) => strvec(cx, items, enc),
+        Read::Frame(cols, _) => {
+            let mut l = cx.alloc_vector::<Ref<'_>>(cols.len())?;
+            for (i, c) in cols.iter().enumerate() {
+                match c {
+                    Some(items) => l.set(i, strvec(cx, items, enc)?),
+                    None => l.set(i, cx.nil()),
                 }
-                if let Some(nm) = &names {
-                    let mut n = cx.alloc_vector::<Char<'_>>(nm.len())?;
-                    for (i, s) in nm.iter().enumerate() {
-                        n.set(i, cx.mk_char(s, Encoding::Native)?);
-                    }
-                    let mut a = robigo_rtbuiltins::attrib::Attrs::new();
-                    a.install(robigo_rtbuiltins::attrib::Attr {
-                        tag: cx.sym(robigo_rtcore::RSym::Names),
-                        value: n.finish().into(),
-                    });
-                    a.apply(cx, &mut l)?;
-                }
-                Ok(l.finish().into())
             }
+            if let Some(nm) = &names {
+                let mut n = cx.alloc_vector::<Char<'_>>(nm.len())?;
+                for (i, s) in nm.iter().enumerate() {
+                    n.set(i, cx.mk_char(s, Encoding::Native)?);
+                }
+                let mut a = robigo_rtbuiltins::attrib::Attrs::new();
+                a.install(robigo_rtbuiltins::attrib::Attr {
+                    tag: cx.sym(robigo_rtcore::RSym::Names),
+                    value: n.finish().into(),
+                });
+                a.apply(cx, &mut l)?;
+            }
+            Ok(l.finish().into())
         }
     })
 }

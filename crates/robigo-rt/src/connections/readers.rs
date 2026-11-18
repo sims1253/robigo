@@ -359,10 +359,16 @@ pub fn do_readdcf(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
         }
         let strings = |cx: &mut Cx, i: usize| -> RResult<Vec<Vec<u8>>> {
             cx.scope(|cx, s| {
-                let v = s.capture(cx, |cx, o| robigo_rtbuiltins::coerce::vector::coerce_vector(cx, args.root(i), STRSXP, o))?;
+                let v = s.capture(cx, |cx, o| {
+                    robigo_rtbuiltins::coerce::vector::coerce_vector(cx, args.root(i), STRSXP, o)
+                })?;
                 let v = v.bind(cx);
                 let Some(v) = v.as_vector::<Char<'_>>() else {
-                    return Err(robigo_rtbuiltins::util::not_yet(cx, Some(call), "readDCF() of a package ALTREP character vector"));
+                    return Err(robigo_rtbuiltins::util::not_yet(
+                        cx,
+                        Some(call),
+                        "readDCF() of a package ALTREP character vector",
+                    ));
                 };
                 Ok((0..v.len()).map(|k| v.get(k).bytes().to_vec()).collect())
             })
@@ -404,7 +410,8 @@ pub fn do_readdcf(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
                 if let Some(lead) = dcf::contline(line) {
                     // a continuation line: wrong at the start of a record
                     if lastm.is_none() && !field_skip {
-                        let m = format!("Found continuation line starting '{} ...' at begin of record.", dcf_head(line));
+                        let m =
+                            format!("Found continuation line starting '{} ...' at begin of record.", dcf_head(line));
                         return Err(cx.error(&m));
                     }
                     if let Some(m) = lastm {
@@ -523,7 +530,10 @@ pub fn do_readdcf(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
             tag: cx.sym(robigo_rtcore::RSym::Dim),
             value: cx.alloc_copy(&[nr as i32, nc as i32])?.finish().into(),
         });
-        a.install(robigo_rtbuiltins::attrib::Attr { tag: cx.sym(robigo_rtcore::RSym::DimNames), value: dn.finish().into() });
+        a.install(robigo_rtbuiltins::attrib::Attr {
+            tag: cx.sym(robigo_rtcore::RSym::DimNames),
+            value: dn.finish().into(),
+        });
         a.apply(cx, &mut v)?;
         Ok(v.finish().into())
     })
@@ -585,9 +595,8 @@ pub fn do_textconnection(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root
             return Err(cx.error("invalid 'text' argument"));
         }
         let mut data = Vec::new();
-        let ok = match args.get(cx, 1).as_vector::<Char<'_>>() {
-            None => None,
-            Some(v) => Some((0..v.len()).all(|i| match text_bytes(cx, v.get(i), ty) {
+        let ok = args.get(cx, 1).as_vector::<Char<'_>>().map(|v| {
+            (0..v.len()).all(|i| match text_bytes(cx, v.get(i), ty) {
                 // (strlen: up to a NUL, which a CHARSXP has none of)
                 Some(b) => {
                     data.extend_from_slice(&b);
@@ -595,8 +604,8 @@ pub fn do_textconnection(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root
                     true
                 }
                 None => false,
-            })),
-        };
+            })
+        });
         match ok {
             None => {
                 return Err(robigo_rtbuiltins::util::not_yet(
