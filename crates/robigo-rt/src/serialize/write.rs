@@ -89,7 +89,11 @@ pub(super) struct Writer<'h> {
 // R: serialize.c:R_Serialize
 pub(super) fn serialize(cx: &mut Cx, s: Root<'_>, out: OutStream, hook: Option<Root<'_>>) -> RResult<Vec<u8>> {
     let mut w = Writer { out, refs: HashMap::new(), count: 0, hook, effects: Vec::new(), seq: 0, depth: 0 };
+    // (a walk that starts over starts with `R_compile_pkgs` as the first
+    // did: it is off while a closure compiled on write is written)
+    let compile_pkgs = crate::prims::state(cx).compile_pkgs.get();
     let r = loop {
+        crate::prims::state(cx).compile_pkgs.set(compile_pkgs);
         w.out.buf.clear();
         w.refs.clear();
         w.count = 0;
@@ -318,6 +322,50 @@ impl Writer<'_> {
         Ok(())
     }
 
+    /// Whether `s` is a closure `R_compile_pkgs` compiles as it is written:
+    /// its body not byte code, byte code not disabled, and not a reference
+    /// class method or a default binding function (an S4 object of those
+    /// classes), whose byte code would be dropped.
+    ///
+    /// # Safety
+    /// `s` is live, reachable from the rooted object, and nothing has
+    /// collected since it was read.
+    // R: serialize.c:WriteItem
+    unsafe fn compile_on_write(&self, cx: &Cx, s: Sexp) -> bool {
+        let st = crate::prims::state(cx);
+        // SAFETY: the caller's contract; a closure's body is its CDR.
+        unsafe {
+            if st.compile_pkgs.get() == 0
+                || s.typ() != CLOSXP
+                || s.cdr().typ() == BCODESXP
+                || st.jit.get().disable_bytecode
+            {
+                return false;
+            }
+            let x = Ref::from_sexp(s, cx);
+            !x.is_s4()
+                || !(robigo_rtbuiltins::attrib::inherits(x, b"refMethodDef")
+                    || robigo_rtbuiltins::attrib::inherits(x, b"defaultBindingFunction"))
+        }
+    }
+
+    /// `R_cmpfun1(s)` (an effect point: the compiler's R code runs): the
+    /// compiled closure, raw, or `s` where the compile failed.
+    fn cmpfun1(&mut self, cx: &mut Cx, s: Sexp) -> W<Sexp> {
+        let f = cx.global(
+            // SAFETY: live, reachable from the rooted object.
+            unsafe { Ref::from_sexp(s, cx) },
+        );
+        let r = self.effect(cx, |cx, out| {
+            cx.scope(|cx, sc| {
+                let fr = sc.root(cx, f.bind(cx));
+                crate::jit::cmpfun1(cx, fr, out)
+            })
+        });
+        cx.release_global(f);
+        r
+    }
+
     /// `GetPersistentName(stream, s)`: the hook's STRSXP, or R_NilValue.
     // R: serialize.c:GetPersistentName, CallHook
     fn persistent_name(&mut self, cx: &mut Cx, s: Sexp) -> W<Sexp> {
@@ -362,9 +410,17 @@ impl Writer<'_> {
             // collected restarts the walk).
             unsafe {
                 loop {
-                    // (`R_compile_pkgs`: GNU R's byte compiler runs on each
-                    // closure written; robigo's has no byte code objects
-                    // yet: C1-BC)
+                    if self.compile_on_write(cx, s) {
+                        // R_compile_pkgs off while the compiled closure is
+                        // written (its environment's closures are written
+                        // as they are), then TRUE; an error leaves it off
+                        let st = crate::prims::state(cx);
+                        st.compile_pkgs.set(0);
+                        let new_s = self.cmpfun1(cx, s)?;
+                        self.item(cx, new_s)?;
+                        crate::prims::state(cx).compile_pkgs.set(1);
+                        return Ok(());
+                    }
                     if s.is_altrep() {
                         if robigo_rtcore::altrep::own::own_class(s).is_none() {
                             return Err(cx
