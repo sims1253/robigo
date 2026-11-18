@@ -875,7 +875,7 @@ jobs:
       # with the length of its own path (by up to 0.16%,
       # docs/ledger/g3/2026-11-18-perf-base.md).
       - uses: actions/download-artifact@v8
-        if: github.ref != 'refs/heads/main' && steps.select.outputs.run == 'true'
+        if: github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
         with:
           name: robigo-base
           path: base
@@ -892,12 +892,12 @@ jobs:
           image=$(printf '%s' "$IMAGE" | sha256sum | cut -c1-16)
           echo "key=perf-gnur-1-$image-$sig-$(printf '%s' "$pkgs" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@v6
-        if: github.ref != 'refs/heads/main' && steps.select.outputs.run == 'true'
+        if: github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
         with:
           path: gnur.json
           key: ${{ steps.gnur.outputs.key }}-${{ hashFiles('benchmarks/**', 'scripts/perf.py') }}
       - name: Measure the base (HEAD^1)
-        if: github.ref != 'refs/heads/main' && steps.select.outputs.run == 'true'
+        if: github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
         env:
           PERF_FILTER: ${{ steps.select.outputs.filter }}
         run: |
@@ -908,13 +908,11 @@ jobs:
           export VALGRIND=valgrind
           filter_flag=()
           if [ -n "$PERF_FILTER" ]; then filter_flag=(--filter "$PERF_FILTER"); fi
-          oracle_flag=()
-          runtime=both
-          if [ -f gnur.json ] && python3 scripts/perf-gnur.py covers gnur.json "$PERF_FILTER"; then
-            oracle_flag=(--oracle gnur.json)
-            runtime=robigo
-          fi
-          python3 scripts/perf.py run --metric instr --runtime "$runtime" "${oracle_flag[@]}" \
+          # every selected benchmark gets a GNU R record first: the cache's
+          # (main's, failures included), else measured here (and a failure
+          # once more), so the base and the candidate are both judged
+          python3 scripts/perf-gnur.py fill gnur.json "$PERF_FILTER" | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 scripts/perf.py run --metric instr --runtime robigo --oracle gnur.json \
             --robigo base/robigo --jobs "$(nproc)" --out base/perf.json --quiet "${filter_flag[@]}"
       - name: Measure robigo (and GNU R on main)
         if: steps.select.outputs.run == 'true'
@@ -948,7 +946,7 @@ jobs:
           export VALGRIND=valgrind
           python3 scripts/perf-paired.py --diagnostic-only --robigo dist/robigo --rdbflat dist/rdbflat | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Compare with main
-        if: github.ref != 'refs/heads/main' && steps.select.outputs.run == 'true'
+        if: github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
         run: |
           export ROBIGO_NATIVES="$PWD/dist/natives"
           export ROBIGO_RDBFLAT=""
@@ -983,7 +981,7 @@ jobs:
           path: gnur.json
           key: ${{ steps.gnur.outputs.key }}-${{ hashFiles('benchmarks/**', 'scripts/perf.py') }}
       - uses: actions/upload-artifact@v7
-        if: always() && github.ref != 'refs/heads/main' && steps.select.outputs.run == 'true'
+        if: always() && github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
         with:
           name: perf-paired-profiles
           path: .robigo/perf-paired
