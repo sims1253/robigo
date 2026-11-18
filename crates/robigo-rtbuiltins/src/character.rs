@@ -176,6 +176,10 @@ pub fn do_nchar(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out:
         }
     };
     let Some(ty) = ty else {
+        if cfg!(feature = "diff-plant") {
+            // PLANT(A4, error call): errorcall instead of GNU R's error()
+            return Err(cx.error_call(Some(call), "invalid 'type' argument"));
+        }
         return Err(cx.error("invalid 'type' argument"));
     };
     let allow_na = match as_logical(cx, args.get(cx, 2)) {
@@ -198,7 +202,8 @@ pub fn do_nchar(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out:
         let mut r = cx.alloc_vector::<i32>(v.len())?;
         for (i, slot) in r.as_mut_slice().iter_mut().enumerate() {
             match r_nchar(v.get(i), ty, allow_na, keep_na, loc) {
-                Nchar::Count(n) => *slot = n,
+                // PLANT(A4, value): one more for the first of three strings
+                Nchar::Count(n) => *slot = n + (cfg!(feature = "diff-plant") && v.len() == 3 && i == 0) as i32,
                 e => return Ok(Built::fail(Diag::error(nchar_error(e, ty, i)))),
             }
         }

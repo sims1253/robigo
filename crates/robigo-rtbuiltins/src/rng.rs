@@ -425,6 +425,10 @@ pub fn do_setseed(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
     // zaps BM history
     let kind = with_rng(cx, |r| r.kind);
     rng_init(cx, kind, seed)?;
+    if cfg!(feature = "diff-plant") {
+        // PLANT(A4, seed): the generator advanced once more
+        unif_rand(cx)?;
+    }
     put_rng_state(cx)?;
     out.set(cx, cx.nil());
     Ok(())
