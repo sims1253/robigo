@@ -938,6 +938,9 @@ def corpus_artifacts(run):
     return sorted(n for n in out.split() if n.startswith("corpus-"))
 
 
+RUNS_SEARCHED = 200
+
+
 def main_run(run):
     """The CI run to absorb: RUN, which must be a push run on main (a pull
     request's results are of its own code), or the newest completed one
@@ -947,12 +950,14 @@ def main_run(run):
         if info["headBranch"] != "main" or info["event"] != "push":
             sys.exit(f"corpus: run {run} is a {info['event']} run on {info['headBranch']}, not a push to main")
         return str(run), info["headSha"]
+    # (gh pages through the API for --limit; artifacts live 14 days, so the
+    # newest RUNS_SEARCHED runs cover them unless main sees more pushes)
     runs = json.loads(gh("run", "list", "--workflow", "ci.yml", "--branch", "main", "--event", "push",
-                         "--status", "completed", "--limit", "30", "--json", "databaseId,headSha"))
+                         "--status", "completed", "--limit", str(RUNS_SEARCHED), "--json", "databaseId,headSha"))
     for r in runs:
         if corpus_artifacts(r["databaseId"]):
             return str(r["databaseId"]), r["headSha"]
-    sys.exit("corpus: no completed push run on main with corpus artifacts")
+    sys.exit(f"corpus: none of the newest {len(runs)} completed push runs on main has corpus artifacts")
 
 
 def run_results(run, into):

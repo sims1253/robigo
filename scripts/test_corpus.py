@@ -598,6 +598,14 @@ class FromRun(unittest.TestCase):
             self.assertEqual(corpus.main_run(None), ("2", "b" * 40))
             self.assertEqual(corpus.corpus_artifacts(2), ["corpus-rt-fastr-1of1"])
 
+    def test_an_older_run_is_found_past_the_first_page(self):
+        runs = [{"databaseId": i, "headSha": f"{i:040d}"} for i in range(100, 60, -1)]
+        gh, calls = self.fake_gh(runs, {61: ["corpus-small-1of1"]})
+        with patch.object(corpus, "gh", side_effect=gh):
+            self.assertEqual(corpus.main_run(None)[0], "61")
+        listing = [c for c in calls if c[:2] == ("run", "list")][0]
+        self.assertEqual(listing[listing.index("--limit") + 1], str(corpus.RUNS_SEARCHED))
+
     def test_a_pull_request_run_is_refused(self):
         gh, _ = self.fake_gh([], {}, view={"headBranch": "g3/x", "event": "pull_request", "status": "completed",
                                            "headSha": "a" * 40})
