@@ -67,6 +67,13 @@ class Measure(unittest.TestCase):
         self.assertEqual(d["rust_tests"], {"added": 2, "removed": 2})
         self.assertEqual(d["python_tests"], {"added": 1, "removed": 2})
 
+    def test_an_empty_patch_line_is_context(self):
+        # a patch line can be empty (#844's was: a blank context line without
+        # its leading space); it is neither added nor removed
+        patch = "\n".join(["+++ b/crates/a/src/x.rs", "", "+    #[test]", "", "-    #[test]", ""])
+        d = pd.measure("", "", patch)
+        self.assertEqual(d["rust_tests"], {"added": 1, "removed": 1})
+
 
 class Render(unittest.TestCase):
     def test_nothing_to_say(self):

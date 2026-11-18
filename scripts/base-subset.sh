@@ -43,8 +43,10 @@ cp -R "$src/src/library/compiler/R" "$work/compiler-R"
 mkdir -p "$work/rows"
 python3 - "$work/rows" <<'PY'
 import sys, tomllib
+sys.path.insert(0, "scripts")
+from perf import rows_with_setups
 seen = set()
-for r in tomllib.load(open("benchmarks/rt/calls-rows.toml", "rb"))["row"]:
+for r in rows_with_setups(tomllib.load(open("benchmarks/rt/calls-rows.toml", "rb"))):
     # (one script per name: a repeated name would drop a row unseen)
     if r["name"] in seen:
         sys.exit(f"benchmarks/rt/calls-rows.toml: two rows are named {r['name']}")

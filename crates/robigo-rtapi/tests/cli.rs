@@ -178,6 +178,7 @@ fn run_env(dir: &Path, args: &[&str], stdin: Option<&str>, env: &[(&str, &str)])
     // stdout)
     cmd.env("R_DEFAULT_PACKAGES", "NULL")
         .env_remove("R_HOME")
+        .env_remove("ROBIGO_RT_CHECKOUT")
         .env_remove("ROBIGO_FAIL_ALLOC_AT")
         .env_remove("ROBIGO_BOOT_VERBOSE");
     // the pin report to stderr (`1`); to a file it stays, as rt-ci's check
@@ -286,10 +287,65 @@ fn the_save_check_does_not_wait_for_stdin() {
 /// An empty `R_TRANSLATIONS` is GNU R 4.6.2's fatal start-up error
 /// (main.c's BindDomain: `Rasprintf_malloc` of "" fails): "Fatal error:
 /// allocation failure in BindDomain" on stdout, status 2 (R_Suicide).
+/// `options(keep.source = TRUE)` would have the console keep source
+/// references (gram.c's R_Parse1Buffer), which robigo-rt cannot yet: it is
+/// refused, where GNU R accepts it (so no oracle case). `R_KEEP_PKG_SOURCE=yes`
+/// starts `keep.source.pkgs` TRUE, as options.c's InitOptions does
+/// (`keep.source` is Common.R's `interactive()`).
+#[test]
+fn keep_source_true_is_refused_and_keep_pkg_source_read() {
+    let expr = "cat(tryCatch(options(keep.source = TRUE), error = conditionMessage), getOption('keep.source'), '\\n')";
+    let (out, err, status) = run(&std::env::temp_dir(), &["--vanilla", "-e", expr], None);
+    assert_eq!(
+        String::from_utf8_lossy(&out),
+        "robigo: options(keep.source = TRUE) (source references) is not implemented yet FALSE \n"
+    );
+    assert_eq!((String::from_utf8_lossy(&err).as_ref(), status), ("", 0));
+    let expr = "cat(getOption('keep.source'), getOption('keep.source.pkgs'), '\\n')";
+    for (v, want) in [("yes", "FALSE TRUE \n"), ("no", "FALSE FALSE \n"), ("YES", "FALSE FALSE \n")] {
+        let (out, _, status) =
+            run_env(&std::env::temp_dir(), &["--vanilla", "-e", expr], None, &[("R_KEEP_PKG_SOURCE", v)]);
+        assert_eq!((String::from_utf8_lossy(&out).as_ref(), status), (want, 0), "R_KEEP_PKG_SOURCE={v}");
+    }
+}
+
 #[test]
 fn an_empty_r_translations_is_fatal() {
     let (out, err, status) = run_env(&std::env::temp_dir(), &["--vanilla", "-e", "1"], None, &[("R_TRANSLATIONS", "")]);
     assert_eq!(String::from_utf8_lossy(&out), "Fatal error: allocation failure in BindDomain\n");
     assert_eq!(String::from_utf8_lossy(&err), "");
     assert_eq!(status, 2);
+}
+
+/// With `_R_COMPILE_PKGS_` set, GNU R byte-compiles each closure as it is
+/// serialized (serialize.c's WriteItem, `R_cmpfun1`); robigo-rt cannot yet,
+/// so it refuses rather than write the closure uncompiled (AGENTS rule 6).
+/// GNU R writes it, so there is no oracle case to pass.
+#[test]
+fn compiling_closures_on_serialize_is_refused() {
+    let expr = "x <- tryCatch(serialize(function(a) a, NULL), error = conditionMessage); cat(is.raw(x), if (is.character(x)) x, '\\n')";
+    let (out, err, status) = run_env(
+        &std::env::temp_dir(),
+        &["--vanilla", "-e", expr],
+        None,
+        &[("_R_COMPILE_PKGS_", "1"), ("R_ENABLE_JIT", "0")],
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out),
+        "FALSE robigo: byte-compiling closures as they are serialized (_R_COMPILE_PKGS_) is not implemented yet \n"
+    );
+    assert_eq!((String::from_utf8_lossy(&err).as_ref(), status), ("", 0));
+    // a value with no closure in it is written as before, and so is any
+    // closure when compiling packages is off
+    let expr = "cat(is.raw(serialize(list(1, 'a'), NULL)), '\\n')";
+    let (out, _, status) = run_env(
+        &std::env::temp_dir(),
+        &["--vanilla", "-e", expr],
+        None,
+        &[("_R_COMPILE_PKGS_", "1"), ("R_ENABLE_JIT", "0")],
+    );
+    assert_eq!((String::from_utf8_lossy(&out).as_ref(), status), ("TRUE \n", 0));
+    let expr = "cat(is.raw(serialize(function(a) a, NULL)), '\\n')";
+    let (out, _, status) = run_env(&std::env::temp_dir(), &["--vanilla", "-e", expr], None, &[("R_ENABLE_JIT", "0")]);
+    assert_eq!((String::from_utf8_lossy(&out).as_ref(), status), ("TRUE \n", 0));
 }

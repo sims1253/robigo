@@ -306,6 +306,8 @@ pub static BUILTINS: &[Builtin] = &[
     // array.c
     row("matrix", array::do_matrix, 0, 11, 7, FUNCALL, Pure),
     row("lengths", array::do_lengths, 0, 11, 2, FUNCALL, Pure),
+    row("drop", array::do_drop, 0, 11, 1, FUNCALL, Pure),
+    row("array", array::do_array, 0, 11, 3, FUNCALL, Pure),
     // bind.c
     row("c", bind::do_c, 0, 1, -1, FUNCALL, Pure),
     row("unlist", bind::do_unlist, 0, 11, 3, FUNCALL, Pure),
@@ -517,6 +519,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("list2env", envir::do_list2env, 0, 11, 2, FUNCALL, Env),
     row("lockEnvironment", envir::do_lock_env, 0, 111, 2, FUNCALL, Env),
     row("lockBinding", envir::do_lock_bnd, 0, 111, 2, FUNCALL, Env),
+    row("unlockBinding", envir::do_unlock_bnd, 1, 111, 2, FUNCALL, Env),
     row("bindingIsLocked", envir::do_bnd_is_locked, 0, 11, 2, FUNCALL, Env),
     row("environmentIsLocked", envir::do_env_is_locked, 0, 11, 1, FUNCALL, Env),
     row("makeActiveBinding", envir::do_mk_active_bnd, 0, 111, 3, FUNCALL, Env),

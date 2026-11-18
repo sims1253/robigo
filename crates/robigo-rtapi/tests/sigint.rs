@@ -47,6 +47,7 @@ fn run(name: &str, script: &str, markers: usize) -> (Vec<u8>, Vec<u8>, i32) {
     // stdout)
     cmd.env("R_DEFAULT_PACKAGES", "NULL")
         .env_remove("R_HOME")
+        .env_remove("ROBIGO_RT_CHECKOUT")
         .env_remove("ROBIGO_FAIL_ALLOC_AT")
         .env_remove("ROBIGO_BOOT_VERBOSE");
     // the pin report to stderr (`1`); to a file it stays, as rt-ci's check

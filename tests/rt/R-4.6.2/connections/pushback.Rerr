@@ -1,0 +1,2 @@
+Warning message:
+In readLines(con, 1) : line 1 appears to contain an embedded nul
