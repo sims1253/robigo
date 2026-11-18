@@ -987,6 +987,12 @@ pub fn matrix_index(
     num_call: Option<Root<'_>>,
     out: Out<'_>,
 ) -> RResult<()> {
+    // a package class's elements are its methods' (strmat2intmat and
+    // mat2indsub read them): refused as make_subscript refuses one, against
+    // the call it reports to (`[`'s, or none for `[<-`)
+    if s.bind(cx).is_package_altrep() {
+        return Err(ecall(cx, num_call, "robigo: subscripting with an ALTREP object is not implemented yet"));
+    }
     cx.scope(|cx, sc| {
         let m = sc.root(cx, s.bind(cx));
         if m.bind(cx).sexptype() == STRSXP {
@@ -1160,8 +1166,10 @@ fn mat2indsub(cx: &mut Cx, s: Root<'_>, x: Root<'_>, call: Option<Root<'_>>, out
             Err(E::Negative) => Err(ecall(cx, call, "negative values are not allowed in a matrix subscript")),
             Err(E::Bounds(j, k)) => Err(out_of_bounds(cx, call, x, j as i32, Sindex::Real(k), None)),
             // a double index (NA_REAL for NA) for a long array
-            Ok(rv) if long => {
-                let rv: Vec<f64> = rv.into_iter().map(|d| if d.is_nan() { NA_REAL } else { d }).collect();
+            Ok(mut rv) if long => {
+                for d in rv.iter_mut().filter(|d| d.is_nan()) {
+                    *d = NA_REAL;
+                }
                 cx.build(out, |cx| Ok(cx.alloc_copy(&rv)?.finish().into()))
             }
             // (each position fits an int: the array is not long)

@@ -195,7 +195,9 @@ fn s4_object(s: &mut Session, name: &str) {
         let obj = o.root();
         cx.build(o, |cx| {
             let nil = cx.nil().sexp();
-            // SAFETY: R_NilValue fields; the node is fresh and rooted by `obj`.
+            // SAFETY: R_NilValue fields; the node is fresh, and `build` roots
+            // it in `obj` when the closure returns (a retry collects only
+            // after the closure has returned).
             let x = unsafe { cx.alloc_node_raw(OBJSXP, nil, nil, nil)? };
             // SAFETY: fresh.
             Ok(unsafe { Ref::from_sexp(x, cx) })
@@ -210,11 +212,12 @@ fn s4_object(s: &mut Session, name: &str) {
     .unwrap();
 }
 
-/// A primitive as the value of `x[i, j] <- v`: GNU R reads its length as
-/// its `R_FunTab` offset, which robigo's primitives do not carry, so robigo
-/// says so (any other non-vector value is tests/rt/subset's cases).
+/// A primitive or an S4 object as the value of `x[i, j] <- v`: GNU R reads
+/// its length as a primitive's `R_FunTab` offset, which robigo's primitives
+/// do not carry, or an S4 object's unset word, so robigo says so (any other
+/// non-vector value is tests/rt/subset's cases).
 #[test]
-fn a_primitive_as_a_matrix_assignment_value_is_not_implemented_yet() {
+fn a_primitive_or_s4_object_as_a_matrix_assignment_value_is_not_implemented_yet() {
     for mut s in sessions() {
         s.val("m <- c(1, 1); dim(m) <- c(2L, 1L); a <- c(1, 1); dim(a) <- c(2L, 1L, 1L)");
         for src in ["m[, 1] <- sum", "m[1, 1] <- `if`", "a[, 1, 1] <- sum"] {
