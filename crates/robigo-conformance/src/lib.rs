@@ -328,8 +328,12 @@ pub const RT: Column = Column {
 /// allocations that a collection at each (`ROBIGO_GCTORTURE=1`, whose
 /// cost is allocations times the heap) does not finish it in the case
 /// timeout, so it does not run under gctorture; a smaller case covers its
-/// paths there.
-pub const KNOWN_FEATURES: &[&str] = &["bytecode-fidelity", "inplace-identity", "promise-identity", "volume"];
+/// paths there. `r-home-tools`: it loads tools' native code from the
+/// binary's `R_HOME` tree (`library/tools/libs/tools.so`, which
+/// `scripts/rt-home.sh` builds), so it runs where the caller found that
+/// tree, its stamp and the file (robigo-rtapi's conformance test).
+pub const KNOWN_FEATURES: &[&str] =
+    &["bytecode-fidelity", "inplace-identity", "promise-identity", "r-home-tools", "volume"];
 
 /// The production identities the environment's observation modes keep
 /// ([`KNOWN_FEATURES`]), and `volume` unless gctorture is on; and whether
@@ -709,8 +713,7 @@ fn first_diff(expected: &str, got: &str, runtime: &str) -> String {
 /// with a case's timeout, killed as a case is.
 fn boot_record(column: &Column, o: &Options) -> String {
     let Some(var) = column.boot_record else { return String::new() };
-    let dir = std::env::temp_dir().join(format!("robigo-conf-boot-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("create {}: {e}", dir.display()));
+    let dir = scratch_dir("boot");
     let script = dir.join("empty.R");
     std::fs::write(&script, "invisible(NULL)\n").unwrap_or_else(|e| panic!("write {}: {e}", script.display()));
     let mut cmd = command(&o.bin, &script);
@@ -729,6 +732,17 @@ fn boot_record(column: &Column, o: &Options) -> String {
         return String::new();
     }
     format!("    (what {} does not run of base, which this case may need:)\n{}", column.runtime, lines.concat())
+}
+
+/// A new directory of its own under the temporary directory, for one probe:
+/// named by the process and a count, so two probes never share one (two
+/// columns' records in one run, or the runs of two processes).
+fn scratch_dir(tag: &str) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("robigo-conf-{tag}-{}-{n}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("create {}: {e}", dir.display()));
+    dir
 }
 
 /// A case's id: its path from the repository root, with `/` between
@@ -1131,8 +1145,7 @@ mod boot_record_tests {
     #[test]
     fn a_probe_that_hangs_is_killed_at_the_case_timeout() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("robigo-conf-hang-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = super::scratch_dir("hang");
         let bin = dir.join("hangs");
         std::fs::write(&bin, "#!/bin/sh\nexec sleep 30\n").unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
