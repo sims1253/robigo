@@ -37,6 +37,7 @@ domain = { "i.knd" = ["NULL", "0L", "=1L", "=3L", "=6L", "=7L", "intNA", "-1L", 
 # ---- the builtins being ported now (B5, the trial delegates) ----------------
 
 [RNGkind]
+args = ["kind", "normal.kind", "sample.kind"]
 typical = { kind = "NULL", "normal.kind" = "NULL", "sample.kind" = "NULL" }
 domain = { kind = ["NULL", "0L", "=1L", "=3L", "=6L", "=7L", "intNA", "-1L", "1.5", "a"], "normal.kind" = ["NULL", "0L", "=1L", "=2L", "=5L", "intNA", "1.5"], "sample.kind" = ["NULL", "0L", "=1L", "=2L", "intNA", "a"] }
 
@@ -45,6 +46,7 @@ effect = "Pure"
 extra = ["seq.int(1, 10, length.out = 4)", "seq.int(2^31, by = -1, length.out = 3)", "seq.int(10, 1)", "seq.int(0, 1, 0.1)"]
 
 [strtoi]
+args = ["x", "base"]
 effect = "Pure"
 typical = { x = "chr3", base = "=10L" }
 domain = { base = ["=10L", "=16L", "=2L", "=36L", "=37L", "=1L", "0L", "intNA", "1.5", "a"] }
@@ -193,15 +195,18 @@ domain = { x = ["@env", "NULL", "list2"], "all.names" = ["@lgl"], sorted = ["@lg
 # ---- External: the world outside (each case in a process and directory of its own)
 
 ["Sys.getenv"]
+args = ["x", "unset"]
 typical = { x = "=\"HOME\"", unset = "=\"\"" }
 domain = { x = ["=\"HOME\"", "=character()", "=c(\"HOME\", \"TMPDIR\", \"A4_NOT_SET\")", "=\"LC_ALL\"", "@chr"], unset = ["=\"\"", "=NA_character_", "@chr"] }
 
 ["Sys.setenv"]
+args = ["nm", "values"]
 effect = "External"
 typical = { nm = "=\"A4_X\"", values = "=\"1\"" }
 domain = { nm = ["=\"A4_X\"", "=c(\"A4_X\", \"A4_Y\")", "@chr"], values = ["=\"1\"", "=c(\"1\", \"2\")", "@chr"] }
 
 ["Sys.unsetenv"]
+args = ["x"]
 effect = "External"
 domain = { x = ["=\"HOME\"", "=\"A4_NOT_SET\"", "@chr"] }
 
@@ -210,11 +215,13 @@ effect = "External"
 domain = { path = ["=\"~\"", "=\"~/x\"", "=\"~nouser/x\"", "@chr"] }
 
 ["file.info"]
+args = ["fn", "extra_cols"]
 effect = "External"
 typical = { fn = "=\".\"", extra_cols = "=TRUE" }
 domain = { fn = ["=\".\"", "=c(\".\", \"nope\")", "@chr"], extra_cols = ["@lgl"] }
 
 ["file.create"]
+args = ["fn", "showWarnings"]
 effect = "External"
 typical = { fn = "=\"f1\"", showWarnings = "=TRUE" }
 domain = { fn = ["=\"f1\"", "=c(\"f1\", \"f2\")", "=\"nodir/f\"", "@chr"], showWarnings = ["@lgl"] }
@@ -225,6 +232,7 @@ typical = { file1 = "=\"f1\"", file2 = "=\"f2\"" }
 domain = { file1 = ["=\"f1\"", "@chr"], file2 = ["=\"f2\"", "=\"nope\"", "@chr"] }
 
 ["Sys.chmod"]
+args = ["paths", "octmode", "use_umask"]
 effect = "External"
 typical = { paths = "=\".\"", octmode = "=as.octmode(\"755\")", use_umask = "=TRUE" }
 domain = { paths = ["=\".\"", "=\"nope\"", "@chr"], octmode = ["=as.octmode(\"755\")", "=as.octmode(\"700\")", "@num"], use_umask = ["@lgl"] }
@@ -233,6 +241,7 @@ domain = { paths = ["=\".\"", "=\"nope\"", "@chr"], octmode = ["=as.octmode(\"75
 domain = { domain = ["=\"R\"", "=\"R-base\"", "@chr"], dirname = ["NULL", "=\"/nope\"", "@chr"] }
 
 [strptime]
+args = ["x", "format", "tz"]
 typical = { x = "=\"2026-11-18 12:30:00\"", format = "=\"%Y-%m-%d %H:%M:%S\"", tz = "=\"UTC\"" }
 domain = { x = ["=\"2026-11-18 12:30:00\"", "=\"2026-02-30 00:00:00\"", "@chr"], format = ["=\"%Y-%m-%d %H:%M:%S\"", "=\"%Y-%m-%d\"", "@chr"], tz = ["=\"UTC\"", "=\"\"", "=\"Europe/Berlin\"", "@chr"] }
 
@@ -264,7 +273,7 @@ effect = "Pure"
 ["["]
 special = true
 effect = "Pure"
-typical = { x = "matrix", i = "<missing>", j = "<missing>" }
+typical = { "#1" = "matrix", "#2" = "<missing>", "#3" = "<missing>" }
 domain = { "#1" = ["@any"], "#2" = ["@any", "<missing>", "=c(TRUE, FALSE)", "=\"r1\"", "=-1L"], "#3" = ["@any", "<missing>", "=2L", "=\"b\""] }
 args = ["", "", ""]
 

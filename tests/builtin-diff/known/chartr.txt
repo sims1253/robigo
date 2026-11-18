@@ -1,4 +1,4 @@
-# builtin-diff known failures: chartr, seed 0, key c1c0cd7a0782a48e82d02f39
+# builtin-diff known failures: chartr, seed 0, key 8dc7e4ac9066ff8f8705df7c
 # chartr: 0 / 1467 (not-implemented 1467, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 1
 2

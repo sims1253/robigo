@@ -668,3 +668,18 @@ pub fn do_enc2<const CODE: i32>(
         Ok(())
     })
 }
+
+/// A4's planted divergences (feature `diff-plant`, scripts/builtin-diff.py
+/// plant) that a builtin the driver itself calls must not trip: whether
+/// `call` is a case's own call, whose first argument is the case's symbol
+/// `a1` (the driver's and base's calls never name it). Always false in a
+/// build without the feature.
+pub fn a4_plant_case(cx: &Cx, call: robigo_rtcore::Root<'_>) -> bool {
+    cfg!(feature = "diff-plant")
+        && call
+            .bind(cx)
+            .as_cons()
+            .and_then(|c| c.cdr().as_cons())
+            .and_then(|a| a.car().as_sym())
+            .is_some_and(|s| s.name().bytes() == b"a1")
+}

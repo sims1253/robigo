@@ -1,0 +1,36 @@
+# builtin-diff known failures: path.expand, seed 0, key b8c1240f6f18b78ab7740711
+# path.expand: 0 / 34 (not-implemented 34, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34

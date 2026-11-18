@@ -1,0 +1,18 @@
+# builtin-diff known failures: as.environment, seed 0, key 78e611f142a55612492ef9f7
+# as.environment: 60 / 76 (not-implemented 14, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
+13
+18
+19
+20
+21
+22
+34
+35
+36
+47
+48
+63
+64
+65
+66
+67

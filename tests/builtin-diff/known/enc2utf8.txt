@@ -1,0 +1,2 @@
+# builtin-diff known failures: enc2utf8, seed 0, key 717af27b3fa534a0182eca96
+# enc2utf8: 65 / 65 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)

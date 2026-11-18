@@ -173,6 +173,13 @@ local({
         k <- if (row$arity >= 0L) row$arity else max(length(argn), 1L)
         if (length(argn) < k) argn <- c(argn, rep("", k - length(argn)))
         argn <- argn[seq_len(k)]
+        ## a domain or typical value for no argument is the row's mistake (the
+        ## lattice would silently stand in for it)
+        keys <- c(names(row$domain), names(row$typical))
+        bad <- setdiff(keys, c(argn[nzchar(argn)], paste0("#", seq_len(k))))
+        if (length(bad))
+            stop(sprintf("row [%s]: %s names no argument (its arguments: %s; or #1..#%d); give `args`",
+                         row$name, paste(bad, collapse = ", "), paste(argn, collapse = ", "), k), call. = FALSE)
         dom <- lapply(seq_len(k), function(i) resolve(row$domain[[argn[[i]]]] %||% row$domain[[paste0("#", i)]]))
         if (!row$internal) for (i in seq_len(k)) if (!"<missing>" %in% names(dom[[i]])) dom[[i]]["<missing>"] <- list(quote(expr = ))
         named <- !row$internal && all(nzchar(argn))

@@ -116,10 +116,7 @@ pub fn do_lapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
         // PROTECT(XX), PROTECT(ans), PROTECT(tmp), PROTECT(R_fcall),
         // PROTECT_WITH_INDEX(ind), PROTECT_WITH_INDEX(loc.cell)
         let lp = Loop::new(cx, s, x, fun, rho, 6)?;
-        for k in 0..n {
-            // PLANT(A4, log): three elements' calls made last first (the
-            // results still land in their places)
-            let i = if cfg!(feature = "diff-plant") && n == 3 { n - 1 - k } else { k };
+        for i in 0..n {
             cx.scope(|cx, t| {
                 let r = t.capture(cx, |cx, o| lp.call(cx, i, o))?;
                 cx.owned_list(ans)?.set(i, r);

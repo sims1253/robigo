@@ -1,0 +1,27 @@
+# builtin-diff known failures: strptime, seed 0, key 39e75d6346467db5d15825e1
+# strptime: 420 / 445 (not-implemented 19, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
+41
+46
+99
+102
+107
+119
+122
+124
+138
+145
+171
+175
+181
+192
+241
+248
+259
+261
+277
+284
+295
+297
+299
+303
+330

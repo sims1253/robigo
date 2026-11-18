@@ -1,4 +1,4 @@
-# builtin-diff known failures: seq.int, seed 0, key c78e6697abaa5690433aa430
+# builtin-diff known failures: seq.int, seed 0, key b08eb58fb621bade1d8955cc
 # seq.int: 0 / 2204 (not-implemented 2204, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 1
 2

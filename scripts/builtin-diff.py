@@ -727,7 +727,7 @@ def cmd_run(a):
             print(f"timing:   {k}: {v:.1f} s")
     if a.seed == 0 and not a.only:
         stale = [f[:-4] for f in os.listdir(KNOWN) if f.endswith(".txt")] if os.path.isdir(KNOWN) else []
-        gone = [v for v in stale if v.split("@")[0] not in doc]
+        gone = [v for v in stale if v.removesuffix("@jit") not in doc]
         if gone:
             print("builtin-diff: known lists without a row: " + ", ".join(gone))
             status = 1
@@ -772,7 +772,7 @@ PLANTS = {
     "set.seed": ("mismatch", {"seed"}),
     "nzchar": ("mismatch", {"stdout"}),
     "assign": ("mismatch", {"env"}),
-    "lapply": ("mismatch", {"log"}),
+    "do.call": ("mismatch", {"log", "conds"}),
     "Sys.getenv": ("mismatch", {"files"}),
 }
 CONTROL = ["rep_len"]

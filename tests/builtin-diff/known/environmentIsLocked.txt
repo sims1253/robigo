@@ -1,0 +1,2 @@
+# builtin-diff known failures: environmentIsLocked, seed 0, key 4744796e3f467e0676281938
+# environmentIsLocked: 142 / 142 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)

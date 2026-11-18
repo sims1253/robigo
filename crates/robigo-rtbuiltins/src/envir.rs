@@ -122,7 +122,7 @@ pub fn do_assign(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
         } else {
             cx.define_var(name, val, aenv)?;
         }
-        if cfg!(feature = "diff-plant") && val.bind(cx).len() == Some(3) {
+        if crate::util::a4_plant_case(cx, call) && val.bind(cx).len() == Some(3) {
             // PLANT(A4, env): a second binding GNU R does not make
             let k = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"a4plant")?.into())))?;
             cx.define_var(k, val, aenv)?;

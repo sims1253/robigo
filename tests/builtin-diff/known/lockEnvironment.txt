@@ -1,0 +1,2 @@
+# builtin-diff known failures: lockEnvironment, seed 0, key afad54249227f650ecea0d6c
+# lockEnvironment: 94 / 94 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 4 excluded)
