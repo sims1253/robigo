@@ -185,6 +185,7 @@ static RT_PRIMS: &[PrimDef] = &[
     // print.c, deparse.c, builtin.c, connections.c (B3)
     builtin("invisible", crate::builtin::do_invisible, Inline::None, 101, 1),
     builtin("print.default", crate::print::do_printdefault, Inline::None, 111, 3),
+    builtin("prmatrix", crate::print::do_prmatrix, Inline::None, 111, 6),
     builtin("deparse", crate::builtin::do_deparse, Inline::None, 11, 5),
     builtin("dput", crate::builtin::do_dput, Inline::None, 111, 3),
     builtin("enableJIT", crate::jit::do_enablejit, Inline::None, 11, 1),
