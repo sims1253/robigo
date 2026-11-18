@@ -606,15 +606,31 @@ class FromRun(unittest.TestCase):
         self.assertIn("not a push to main", str(e.exception))
 
     def test_only_default_runs_results_are_absorbed(self):
-        ok = {"summary": {"corpus": "fixture", "runtime": "rt"}, "results": []}
+        ok = {"summary": {"corpus": "fastr", "runtime": "rt"}, "results": []}
         files = {"corpus-rt-fastr-1of1": {"fastr.rt.json": ok, "notes.json": {"x": 1},
-                                          "fastr.tier.json": {"summary": {"tier": "jit"}, "results": []}}}
+                                          "fastr.tier.json": {"summary": {"corpus": "fastr", "tier": "jit"},
+                                                              "results": []},
+                                          "conformance.json": {"summary": {"corpus": "conformance"}, "results": []}}}
         gh, _ = self.fake_gh([], {5: list(files)}, files=files)
         with tempfile.TemporaryDirectory() as tmp, patch.object(corpus, "gh", side_effect=gh), \
              contextlib.redirect_stdout(io.StringIO()) as out:
             got = corpus.run_results("5", tmp)
         self.assertEqual([os.path.basename(f) for f in got], ["fastr.rt.json"])
         self.assertIn("tier run's results, skipped", out.getvalue())
+        self.assertIn("'conformance', which is no corpus, skipped", out.getvalue())
+
+    def test_a_dry_run_lists_and_writes_nothing(self):
+        doc = {"summary": {"corpus": "fastr", "runtime": "rt"},
+               "results": [{"id": "a/new", "pass": True}, {"id": "a/old", "pass": True}, {"id": "a/no", "pass": False}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp, "r.json")
+            f.write_text(json.dumps(doc))
+            with patch.object(corpus, "load_expected", return_value={"a/new": 1, "a/old": 1, "a/no": 1}), \
+                 patch.object(corpus, "load_passing", return_value={"a/old"}), \
+                 patch.object(corpus, "add_passing", side_effect=AssertionError("wrote")), \
+                 contextlib.redirect_stdout(io.StringIO()) as out:
+                corpus.cmd_absorb(argparse.Namespace(files=[str(f)], from_run=None, dry_run=True))
+        self.assertEqual(out.getvalue(), "fastr (rt): 1 new pass(es) would be added\n  a/new\n")
 
     def test_files_and_from_run_do_not_mix(self):
         with self.assertRaises(SystemExit):
