@@ -206,6 +206,7 @@ fn parse_text(
     let (exprs, end) = match parsed {
         Ok(r) => r,
         Err(e) => {
+            crate::reader::check_non_ascii_locale(cx, src)?;
             if !e.incomplete {
                 let end = e.end.max(e.offset);
                 *consumed = end + read_ahead(src, e.offset.min(end), end);
@@ -220,8 +221,9 @@ fn parse_text(
             });
         }
     };
+    crate::reader::check_non_ascii_locale(cx, src)?;
     // the lexer's warnings up to the last expression's terminator
     *consumed = if num < 0 { src.len() } else { end };
     signal(cx, if num < 0 { usize::MAX } else { end.saturating_sub(1) })?;
-    crate::reader::lower_all(cx, &exprs, out)
+    crate::reader::lower_all(cx, &exprs, known_utf8, out)
 }

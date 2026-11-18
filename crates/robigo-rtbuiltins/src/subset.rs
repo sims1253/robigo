@@ -38,7 +38,7 @@ impl SubArgs {
     pub fn of(cx: &Cx, args: Args<'_>, drop: bool, exact: bool) -> SubArgs {
         let mut pos: Vec<usize> = (0..args.len()).collect();
         let mut take = |name: &[u8]| {
-            let i = pos.iter().position(|&i| args.name(cx, i).is_some_and(|s| s.name().bytes() == name))?;
+            let i = pos.iter().position(|&i| args.name(cx, i).is_some_and(|s| s.name_bytes() == name))?;
             Some(pos.remove(i))
         };
         let drop = if drop { take(b"drop") } else { None };
@@ -265,7 +265,7 @@ fn pairs_to_list<'g>(cx: &'g Cx, x: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
     let mut c = x.as_cons();
     while let Some(cell) = c {
         items.push(cell.car());
-        let t = cell.tag().as_sym().map(|s| s.name());
+        let t = cell.tag().as_sym().map(|s| s.name(cx));
         any |= t.is_some();
         tags.push(t);
         c = cell.cdr().as_cons();
@@ -339,7 +339,7 @@ pub fn do_subset_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_
         // attribute is its dim
         let x = args.get(cx, 0);
         if let Some(a) = x.attrib().and_then(|a| a.as_cons())
-            && a.tag().as_sym().is_some_and(|s| s.name().bytes() == b"dim")
+            && a.tag().as_sym().is_some_and(|s| s.name_bytes() == b"dim")
             && a.cdr().sexptype() == NILSXP
             && let Some(d) = a.car().as_vector::<i32>()
             && d.len() == 2
@@ -815,7 +815,7 @@ fn is_getter_call(cx: &Cx, call: Root<'_>) -> bool {
         .as_cons()
         .and_then(|c| c.cdr().as_cons())
         .and_then(|c| c.car().as_sym())
-        .is_some_and(|s| s.name().bytes() == b"*tmp*")
+        .is_some_and(|s| s.name_bytes() == b"*tmp*")
 }
 
 /// `vectorIndex(x, thesub, start, stop, pok, call, dup)`: index the list
@@ -974,7 +974,7 @@ pub fn subset3_dflt(cx: &mut Cx, x: Root<'_>, input: Root<'_>, call: Root<'_>, o
                     let cx = &*cx;
                     let mut c = x.bind(cx).as_cons();
                     while let Some(cell) = c {
-                        let tag = cell.tag().as_sym().map(|s| s.name().bytes());
+                        let tag = cell.tag().as_sym().map(|s| s.name_bytes());
                         match pstrmatch(tag, &inp) {
                             2 => {
                                 exact = Some(s.root(cx, cell.car()));

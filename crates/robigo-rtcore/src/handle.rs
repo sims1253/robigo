@@ -785,11 +785,38 @@ impl<'g> Sym<'g> {
         unsafe { crate::sym::id_of(self.0.sexp()) }
     }
 
-    /// GNU R's PRINTNAME.
+    /// GNU R's PRINTNAME: the isolate's CHARSXP of the name (symbols are
+    /// the process's, H5; a PRINTNAME is what R code sees of a name, so it
+    /// is each isolate's own, from its CHARSXP cache).
+    ///
+    /// # Panics
+    /// If `cx`'s isolate has not taken the symbol: it did not install its
+    /// name and did not adopt it ([`crate::Cx::adopt_symbol`]). Only a
+    /// handle of another isolate can carry such a symbol here.
+    #[inline]
+    pub fn name(self, cx: &'g crate::Cx) -> Char<'g> {
+        // SAFETY: one read of the core, which calls nothing of ours. The
+        // core answers only with a PRINTNAME it keeps (immortal, so live
+        // for 'g, and never null) or refuses.
+        unsafe {
+            let c = cx.iso().core().printname(self.0.sexp());
+            Char(self.0.child(c))
+        }
+    }
+
+    /// Whether the name is ASCII: `IS_ASCII(PRINTNAME(sym))`, with no read
+    /// of the isolate's PRINTNAME (the same bit in every isolate).
     #[inline(always)]
-    pub fn name(self) -> Char<'g> {
-        // SAFETY: a live symbol: its car is its PRINTNAME, a CHARSXP.
-        Char(unsafe { self.0.child(self.0.sexp().car()) })
+    pub fn name_is_ascii(self) -> bool {
+        // SAFETY: a live symbol.
+        unsafe { self.0.sexp().sym_name_is_ascii() }
+    }
+
+    /// The symbol's name, as bytes (no CHARSXP: [`Sym::name`] for one).
+    #[inline(always)]
+    pub fn name_bytes(self) -> &'g [u8] {
+        // SAFETY: a live symbol, immortal: its name lives for 'g.
+        unsafe { self.0.sexp().sym_name_bytes() }
     }
 
     #[inline(always)]

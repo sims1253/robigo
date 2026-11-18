@@ -781,6 +781,9 @@ def cmd_run(a):
                  + ("build it with cargo build --release -p robigo-rtapi (the package of the robigo-rt binary)" if rt else "run scripts/build.sh"))
     if rt:
         rt_sources()
+        # robigo-rt ignores an inherited R_HOME (GNU R's) with GNU R's
+        # warning on stdout, in every case's output: none for its runs
+        os.environ.pop("R_HOME", None)
     fx = fixture_preflight(a.name, conf) if getattr(a, "net_fixture", False) else None
     # the build step (capi: robigo CMD SHLIB) uses the binary under test
     os.environ["ROBIGO"] = os.path.abspath(robigo)
@@ -873,6 +876,9 @@ def cmd_show(a):
         sys.exit("--tier selects the old runtime's execution tiers; robigo-rt has none")
     if rt:
         rt_sources()
+        # robigo-rt ignores an inherited R_HOME (GNU R's) with GNU R's
+        # warning on stdout, in every case's output: none for its runs
+        os.environ.pop("R_HOME", None)
     cases = dict(load_cases(a.name))
     if a.id not in cases:
         sys.exit(f"no case {a.id}")
