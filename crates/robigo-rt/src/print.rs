@@ -355,8 +355,25 @@ fn print_atomic(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
                     None => print_vector(cx, v, true, data.quote, data, &mut out),
                 }
             }
-            Some(2) => return Err(cx.error("robigo: printing a matrix (printMatrix) is not implemented yet")),
-            _ => return Err(cx.error("robigo: printing an array (printArray) is not implemented yet")),
+            Some(2) => {
+                let d = dim.as_ints().unwrap();
+                let (r, c) = (d[0].max(0) as usize, d[1].max(0) as usize);
+                let printed = crate::printarray::matrix_labels(cx, attrib::get_value(v, b"dimnames")).and_then(
+                    |labels| {
+                        crate::printarray::print_matrix(cx, v, (r, c), data.quote, data.right, &labels, data, &mut out)
+                    },
+                );
+                if let Err(m) = printed {
+                    return Err(cx.error(&m));
+                }
+            }
+            _ => {
+                let d = dim.as_ints().unwrap().to_vec();
+                let dn = attrib::get_value(v, b"dimnames");
+                if let Err(m) = crate::printarray::print_array(cx, v, &d, data.quote, data.right, dn, data, &mut out) {
+                    return Err(cx.error(&m));
+                }
+            }
         }
     } else if let Some(names) = attrib::get_value(v, b"names").filter(|n| n.sexptype() != NILSXP) {
         print_named_vector(cx, v, names, data.quote, None, data, &mut out);
@@ -766,7 +783,7 @@ fn spaces(out: &mut Vec<u8>, n: i32) {
 }
 
 /// The elements of an atomic vector, read once.
-enum Elts<'g> {
+pub(crate) enum Elts<'g> {
     Lgl(Vec<i32>),
     Int(Vec<i32>),
     Real(Vec<f64>),
@@ -776,7 +793,7 @@ enum Elts<'g> {
 }
 
 impl<'g> Elts<'g> {
-    fn of(cx: &'g Cx, v: Ref<'g>, n: usize) -> Elts<'g> {
+    pub(crate) fn of(cx: &'g Cx, v: Ref<'g>, n: usize) -> Elts<'g> {
         match v.view() {
             View::Lgl(a) => Elts::Lgl((0..n).map(|i| a.get(i).0).collect()),
             View::Int(a) => Elts::Int((0..n).map(|i| a.get(i)).collect()),
