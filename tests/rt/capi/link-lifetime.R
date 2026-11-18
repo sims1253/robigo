@@ -1,15 +1,15 @@
-# Stack links (docs/g3.md §4, crates/robigo-rt/src/links.rs): GNU R links
-# the node stack's values at a complex assignment (STARTASSIGN, eval.c:8209)
-# and at the compiler's INCLNK (eval.c:8691), and drops them when the
-# committing activation, loop or INCLNKSTK region ends (eval.c:7211-7214,
-# 7817, 8709); robigo-rt links its activations' registers for the length
-# of each assignment. The difference reaches R only through reference
-# counts (refcnt(), inspect(), tracemem(), address(); robigo-rt has none of
-# them yet) and C only through MAYBE_SHARED/REFCNT/NAMED (robigo-rt's C API
-# exports none) or through a copy at a write. This case checks the writes:
-# each prints whether `v[i] <- x` wrote in place (TRUE) by comparing the
-# object's address before and after, after the shapes that leave the value
-# in a register or on GNU R's stack.
+# Stack links (docs/g3.md §4, crates/robigo-rt/src/links.rs;
+# docs/ledger/g3/2026-11-18-x9-4b-link-lifetime.md): GNU R links the node
+# stack's values at a complex assignment (STARTASSIGN, eval.c:8209) and
+# drops them when the committing activation, loop or INCLNKSTK region ends
+# (eval.c:7211-7214, 7817, 8709); robigo-rt links its activations'
+# registers for the length of each assignment. Writes made by complex
+# assignments decide at the assignment, where both have linked what is
+# pending: each line prints whether `v[i] <- x` wrote in place (TRUE),
+# comparing the object's address before and after, after the shapes that
+# leave a value in a register or on GNU R's stack. (A builtin that writes in
+# place by MAYBE_SHARED alone, comment<-, does differ:
+# tests/rt/alloc/link-lifetime.R.)
 dyn.load(paste0(Sys.getenv("RT_CAPI_LIBS"), "/identity.so"))
 addr <- function(v) .Call("rt_addr", v)
 # 1. the value read for an index, an arithmetic operand, a builtin's
