@@ -26,6 +26,9 @@ def allowed_skip(job, sel, pull_request):
         return sel.get("rt") == "false"
     if job == "package-gate":
         return not pull_request or sel.get("runtime") == "false"
+    if job == "perf-base":
+        # perf's base build: pull requests with the heavy jobs only
+        return not pull_request or sel.get("heavy") == "false"
     return False
 
 

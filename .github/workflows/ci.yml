@@ -366,6 +366,61 @@ jobs:
           path: dist
           retention-days: 7
 
+  # perf's base on a pull request: robigo and the base-package natives built
+  # from the merge's base, HEAD^1, as `build` builds them, beside `build`.
+  # `perf` measures it on its own runner instead of waiting for main's run of
+  # that commit to publish `perf-main` (2026-11-18: a median 23 minutes on a
+  # runner, 31 of 73 jobs cut off at 50 and compared with an ancestor:
+  # docs/ledger/g3/2026-11-18-perf-base.md). Main does not run it.
+  perf-base:
+    needs: select
+    if: ${{ needs.select.outputs.heavy == 'true' && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.select.outputs.image_rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # the merge commit and its parents: the base is HEAD^1
+          fetch-depth: 2
+      - name: The merge's base
+        run: |
+          git config --global --add safe.directory '*'
+          git checkout -q --detach HEAD^1
+          git log -1 --format='base: %H %s' | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: ./.github/actions/setup
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          # build's cache: main's base is what it was built for
+          shared-key: release
+          key: ${{ hashFiles('Cargo.lock') }}
+          save-if: false
+      - name: Build
+        run: cargo build --release --locked --workspace
+      - uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/robigo-research/rsrc
+          key: r-4.5.0-sources
+      - name: Base-package natives
+        run: scripts/build-natives.sh stats splines tools parallel utils grDevices graphics grid
+      - name: Keep the binary for perf
+        run: |
+          mkdir -p dist/natives
+          cp "$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/robigo" dist/
+          for d in .robigo/natives/*/; do
+            p=$(basename "$d"); [ -f "$d$p.so" ] && mkdir -p "dist/natives/$p" && cp "$d"*.so "dist/natives/$p/"
+          done
+          git rev-parse HEAD > dist/BASELINE
+      - uses: actions/upload-artifact@v7
+        with:
+          name: robigo-base
+          path: dist
+          retention-days: 7
+
   # The conservative stack scan's tests depend on frame layout, which
   # differs between profiles: the test job runs them under `quick`, this job
   # under the profile that ships (docs/ledger/core.md 2026-11-11). A job of
@@ -775,7 +830,7 @@ jobs:
           if-no-files-found: ignore
 
   perf:
-    needs: [select, build]
+    needs: [select, build, perf-base]
     if: ${{ !cancelled() && !failure() && needs.select.outputs.heavy == 'true' }}
     runs-on: ubuntu-24.04
     container:
@@ -783,8 +838,9 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    # perf-baseline.py may wait 50 minutes for main's run, then this measures
-    timeout-minutes: 110
+    # the base and the candidate, each a filtered run (all of them on main),
+    # and on a cache miss GNU R too
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
         with:
@@ -809,20 +865,55 @@ jobs:
         run: |
           python3 scripts/test-callgrind-diff.py
           python3 scripts/test-perf-select.py
+          python3 scripts/test-perf-gnur.py
           python3 scripts/test-history.py
           python3 scripts/perf-select.py --github-output | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Fetch baseline from main
+      # The base, HEAD^1, built by perf-base and measured here, on this
+      # runner, with the same filter as the candidate below: the comparison
+      # never mixes runners and never waits for main's run.
+      - uses: actions/download-artifact@v8
+        if: github.ref != 'refs/heads/main' && steps.select.outputs.run == 'true'
+        with:
+          name: robigo-base
+          path: base/binary
+      # GNU R's records (its answers, and its counts for the ratio) for this
+      # CPU signature: main's run saves them (below); a pull request measures
+      # GNU R itself when they are missing or do not cover its selection.
+      - name: GNU R's records' cache key
+        id: gnur
+        env:
+          IMAGE: ${{ needs.select.outputs.image_base }}
+        run: |
+          sig=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import perf; print(perf.cpu_signature()[1])')
+          pkgs=$(dpkg-query -W -f '${Package}=${Version} ' libc6 valgrind 2> /dev/null || true)
+          image=$(printf '%s' "$IMAGE" | sha256sum | cut -c1-16)
+          echo "key=perf-gnur-1-$image-$sig-$(printf '%s' "$pkgs" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v6
+        if: github.ref != 'refs/heads/main' && steps.select.outputs.run == 'true'
+        with:
+          path: gnur.json
+          key: ${{ steps.gnur.outputs.key }}-${{ hashFiles('benchmarks/**', 'scripts/perf.py') }}
+      - name: Measure the base (HEAD^1)
         if: github.ref != 'refs/heads/main' && steps.select.outputs.run == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          PERF_FILTER: ${{ steps.select.outputs.filter }}
         run: |
-          # The PR's merge commit is built on main's commit HEAD^1 (its first
-          # parent, read from the commit object, which the shallow checkout
-          # has): compare with that commit's numbers, not with whichever main
-          # run finished last (main may have moved since, or that commit's
-          # run may still be going: perf-baseline.py waits for it).
-          base=$(git -c safe.directory='*' cat-file -p HEAD | awk '/^parent /{print $2; exit}')
-          python3 scripts/perf-baseline.py "$base" base --binary | tee -a "$GITHUB_STEP_SUMMARY"
+          chmod +x base/binary/robigo
+          cp base/binary/BASELINE base/BASELINE
+          echo "baseline: $(cat base/BASELINE), built from the merge's base and measured on this runner" | tee -a "$GITHUB_STEP_SUMMARY"
+          export ROBIGO_NATIVES="$PWD/base/binary/natives"
+          export ROBIGO_RDBFLAT=""
+          export VALGRIND=valgrind
+          filter_flag=()
+          if [ -n "$PERF_FILTER" ]; then filter_flag=(--filter "$PERF_FILTER"); fi
+          oracle_flag=()
+          runtime=both
+          if [ -f gnur.json ] && python3 scripts/perf-gnur.py covers gnur.json "$PERF_FILTER"; then
+            oracle_flag=(--oracle gnur.json)
+            runtime=robigo
+          fi
+          python3 scripts/perf.py run --metric instr --runtime "$runtime" "${oracle_flag[@]}" \
+            --robigo base/binary/robigo --jobs "$(nproc)" --out base/perf.json --quiet "${filter_flag[@]}"
       - name: Measure robigo (and GNU R on main)
         if: steps.select.outputs.run == 'true'
         env:
@@ -859,7 +950,6 @@ jobs:
         run: |
           export ROBIGO_NATIVES="$PWD/dist/natives"
           export ROBIGO_RDBFLAT=""
-          if [ ! -f base/perf.json ]; then exit 0; fi
           python3 - <<'PY'
           import json
           # Ensure GNU R's counts and outputs come from baseline if not already attached.
@@ -882,7 +972,14 @@ jobs:
             --rdbflat dist/rdbflat | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Report
         if: github.ref == 'refs/heads/main'
-        run: python3 scripts/perf.py report perf.json --markdown >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          python3 scripts/perf.py report perf.json --markdown >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/perf-gnur.py extract perf.json gnur.json
+      - uses: actions/cache/save@v6
+        if: github.ref == 'refs/heads/main' && steps.select.outputs.run == 'true'
+        with:
+          path: gnur.json
+          key: ${{ steps.gnur.outputs.key }}-${{ hashFiles('benchmarks/**', 'scripts/perf.py') }}
       - uses: actions/upload-artifact@v7
         if: always() && github.ref != 'refs/heads/main' && steps.select.outputs.run == 'true'
         with:
@@ -1113,7 +1210,7 @@ jobs:
   check:
     name: Check
     if: ${{ always() }}
-    needs: [select, lint, miri, rdb-data, rt, base-subset, build, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
+    needs: [select, lint, miri, rdb-data, rt, base-subset, build, perf-base, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
