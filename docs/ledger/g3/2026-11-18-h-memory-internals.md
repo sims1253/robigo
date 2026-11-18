@@ -105,6 +105,35 @@
   no R program's result depends on these numbers. Until the lead decides,
   the numbers stay robigo's heap in GNU R's shape. That was `gc()`'s
   behavior on main already, and this PR does not change it.
+- What the full account would cost (a rough estimate for the lead; low
+  confidence, could be off by 2x either way). Totals for simple programs
+  need five things; exact collection counts and levels need a sixth.
+  - **Boot's 50k cells:** GNU R's symbol table and base's lazy-load
+    promises and bindings, modelled object by object or as a table
+    generated on the oracle. About 2 PRs.
+  - **First use of each base closure:** unserializing it from base.rdb
+    (its formals, body and byte-code constants), as a per-closure table
+    measured once on the oracle. About 2 PRs.
+  - **Per call:** promises, the argument pairlist, and the binding cells
+    of each frame, counted at call entry. About 2 PRs plus perf work.
+    "Off the hot path" means no allocation here, but it is still an add
+    on the call path, which §13 measures.
+  - **The JIT:** GNU R compiles every closure on its second call by
+    running the compiler package's R code, thousands of cells each time.
+    Modelling that means running or tabulating that compiler. About 3
+    PRs, the most uncertain part.
+  - **Each builtin's temporaries** (`R_alloc`, `coerceVector` copies):
+    an audit of about 700 entries, robigo's ports often having none.
+    About 10 to 15 PRs.
+  - **For exact collection counts and levels:** which simulated objects
+    are still alive at each simulated collection, and in which
+    generation. In effect a shadow heap, kept on every allocation and
+    death of an object whose GNU R counterpart differs. It cannot stay
+    off the hot path. About 5 to 10 PRs.
+
+  In all, roughly 25 to 35 PRs, or 50 to 80 agent-days. The first three
+  items (about 6 PRs) would bring `gc()` totals near GNU R's for simple
+  scripts, but not to equality without the rest.
 - Note: the 10-symbols row says a new symbol costs robigo-rt about 27
   nodes and 100 VECRECs, against 3.6 and 2.9 in GNU R. H5 (#851) changes
   how symbols are counted; re-measure after it lands.
