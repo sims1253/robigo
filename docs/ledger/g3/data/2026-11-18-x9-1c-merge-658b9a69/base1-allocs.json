@@ -1,16 +1,16 @@
 {
  "meta": {
   "allocs": true,
-  "robigo": "~/.cache/x1-bins/robigo-rt-main-e20eef0d",
+  "robigo": "/home/m0hawk/.cache/x1-bins/robigo-rt-main-8c8c2949",
   "robigo_env": {
    "ROBIGO_COMPILE": "1"
   },
   "robigo_identity": {
-   "build_id": "10e815009995436f48e46ffe403e4d84b50ca464",
-   "checkout": "nightly-2026-11-17-331-g65589190d",
-   "mtime": "2026-11-17T23:12:27Z",
-   "path": "~/.cache/x1-bins/robigo-rt-main-e20eef0d",
-   "sha256": "272a657587434a527f87204a48c3b5e4a3a3faca19fc9acebb922da6f6eb243d",
+   "build_id": "ff8506b7f55e9166052d61f49ae77125e5effe18",
+   "checkout": "nightly-2026-11-17-379-g658b9a699",
+   "mtime": "2026-11-18T03:06:38Z",
+   "path": "/home/m0hawk/.cache/x1-bins/robigo-rt-main-8c8c2949",
+   "sha256": "2dc6aa2abdf887a6e0e9164fe85d5460c430e9ece86f8594686d2ec2fa862369",
    "stale": null
   },
   "rows": "benchmarks/rt/calls-rows.toml"
@@ -662,6 +662,156 @@
    "bytes": 4424.096,
    "n": 1000,
    "objects": 60.0
+  },
+  "trycatch-err": {
+   "by_type": {
+    "BUILTINSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "CHARSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "CLOSXP": {
+     "bytes": 192.0,
+     "objects": 4.0
+    },
+    "DOTSXP": {
+     "bytes": 240.0,
+     "objects": 5.0
+    },
+    "ENVSXP": {
+     "bytes": 2432.0,
+     "objects": 11.0
+    },
+    "EXPRSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "INTSXP": {
+     "bytes": 432.096,
+     "objects": 9.0
+    },
+    "LANGSXP": {
+     "bytes": 96.0,
+     "objects": 2.0
+    },
+    "LGLSXP": {
+     "bytes": 720.0,
+     "objects": 15.0
+    },
+    "LISTSXP": {
+     "bytes": 960.0,
+     "objects": 20.0
+    },
+    "PROMSXP": {
+     "bytes": 240.0,
+     "objects": 5.0
+    },
+    "RAWSXP": {
+     "bytes": 336.0,
+     "objects": 3.0
+    },
+    "REALSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "SPECIALSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "STRSXP": {
+     "bytes": 432.0,
+     "objects": 9.0
+    },
+    "SYMSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "VECSXP": {
+     "bytes": 752.0,
+     "objects": 13.0
+    }
+   },
+   "bytes": 6832.096,
+   "n": 1000,
+   "objects": 96.0
+  },
+  "trycatch-ok": {
+   "by_type": {
+    "BUILTINSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "CHARSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "CLOSXP": {
+     "bytes": 192.0,
+     "objects": 4.0
+    },
+    "DOTSXP": {
+     "bytes": 48.0,
+     "objects": 1.0
+    },
+    "ENVSXP": {
+     "bytes": 1056.0,
+     "objects": 5.0
+    },
+    "EXPRSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "INTSXP": {
+     "bytes": 144.096,
+     "objects": 3.0
+    },
+    "LANGSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "LGLSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "LISTSXP": {
+     "bytes": 144.0,
+     "objects": 3.0
+    },
+    "PROMSXP": {
+     "bytes": 48.0,
+     "objects": 1.0
+    },
+    "RAWSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "REALSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "SPECIALSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "STRSXP": {
+     "bytes": 48.0,
+     "objects": 1.0
+    },
+    "SYMSXP": {
+     "bytes": 0.0,
+     "objects": 0.0
+    },
+    "VECSXP": {
+     "bytes": 240.0,
+     "objects": 4.0
+    }
+   },
+   "bytes": 1920.096,
+   "n": 1000,
+   "objects": 22.0
   }
  }
 }
