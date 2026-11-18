@@ -332,11 +332,16 @@ pub const RT: Column = Column {
 /// binary's `R_HOME` tree (`library/tools/libs/tools.so`, which
 /// `scripts/rt-home.sh` builds), so it runs where the caller found that
 /// tree, its stamp and the file (robigo-rtapi's conformance test).
+/// `default-vsize`: the recording depends on GNU R's default vector heap
+/// sizes (how far from its limit a heap starts), so the case does not run
+/// where `R_VSIZE` or `R_MAX_VSIZE` sets them (rt-ci's small vector limit).
 pub const KNOWN_FEATURES: &[&str] =
-    &["bytecode-fidelity", "inplace-identity", "promise-identity", "r-home-tools", "volume"];
+    &["bytecode-fidelity", "default-vsize", "inplace-identity", "promise-identity", "r-home-tools", "volume"];
 
 /// The production identities the environment's observation modes keep
-/// ([`KNOWN_FEATURES`]), and `volume` unless gctorture is on; and whether
+/// ([`KNOWN_FEATURES`]), `volume` unless gctorture is on, and
+/// `default-vsize` unless the environment sets the vector heap's sizes; and
+/// whether
 /// an observation mode is on.
 pub fn identity_features() -> (Vec<&'static str>, bool) {
     let on = |name: &str| std::env::var(name).as_deref() == Ok("1");
@@ -350,6 +355,9 @@ pub fn identity_features() -> (Vec<&'static str>, bool) {
     }
     if !on("ROBIGO_GCTORTURE") {
         f.push("volume");
+    }
+    if std::env::var_os("R_VSIZE").is_none() && std::env::var_os("R_MAX_VSIZE").is_none() {
+        f.push("default-vsize");
     }
     (f, inplace || materialize)
 }

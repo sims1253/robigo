@@ -3,7 +3,8 @@
 # size": AdjustHeapSize grows the vector heap only while what is in use,
 # the request and R_MinVFree stay below the limit. The limit is 1 Mb past
 # the trigger, and the requests fill all but 150,000 VECRECs of it (robigo
-# before this case kept allocating to the limit, counting garbage).
+# before this case kept allocating to the limit, counting garbage). GNU R's
+# default heap sizes (`.requires default-vsize`).
 g <- gc()
 lim <- ceiling(g[2, 3] * 8 / 1048576) + 1
 invisible(mem.maxVSize(lim))
