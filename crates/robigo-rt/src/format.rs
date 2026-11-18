@@ -72,12 +72,12 @@ pub fn do_format(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
     match x.bind(cx).sexptype() {
         ENVSXP => {
             let s = crate::print::encode_environment(cx, x)?;
-            return cx.build(out, |cx| Ok(cx.mk_string(&s, Encoding::Native)?.into()));
+            return cx.build(out, |cx| cx.mk_string(&s, Encoding::Native));
         }
         EXTPTRSXP => {
             let p = x.bind(cx).sexp().as_ptr() as usize;
             let s = format!("<pointer: {}>", crate::print::c_pointer(p));
-            return cx.build(out, |cx| Ok(cx.mk_string(s.as_bytes(), Encoding::Native)?.into()));
+            return cx.build(out, |cx| cx.mk_string(s.as_bytes(), Encoding::Native));
         }
         _ if !is_vector_atomic(x.bind(cx)) => return Err(cx.error("first argument must be atomic or environment")),
         _ => {}
