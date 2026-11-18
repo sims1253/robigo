@@ -66,7 +66,9 @@ g21 <- function(v) return(y <- v)
 # index's load sets it after an invisible value
 g22 <- function(v) { x <- list(a = 1); invisible(v); return(x$a <- v) }
 g23 <- function(v) { x <- 1:2; return(x[1] <- invisible(v)) }
-for (i in 1:4) { g15("a"); g16(9); g17(1); g18(2); g19(3); g20(4); g21(5); g22(6); g23(7L) }
+# a named index: cmp.R pushes the constant (PUSHCONSTARG), no load
+g24 <- function(v) { x <- 1:2; return(x[i = 1] <- invisible(v)) }
+for (i in 1:4) { g15("a"); g16(9); g17(1); g18(2); g19(3); g20(4); g21(5); g22(6); g23(7L); g24(8L) }
 cat("g15: "); g15("a"); cat("\n")
 cat("g16: "); g16(9); cat("\n")
 cat("g17: "); g17(1); cat("\n")
@@ -76,3 +78,4 @@ cat("g20: "); g20(4); cat("\n")
 cat("g21: "); g21(5); cat("\n")
 cat("g22: "); g22(6); cat("\n")
 cat("g23: "); g23(7L); cat("\n")
+cat("g24: "); g24(8L); cat("\n")

@@ -412,7 +412,7 @@ fn getter<'s>(cx: &mut Cx, s: Scope<'s>, step: Root<'_>, lhs: Root<'_>, rho: Roo
                 cx.set_visible(true);
                 return Ok(v);
             }
-            let ev = default_args(cx, s, call, lhs, rho, None)?;
+            let ev = default_args(cx, s, call, lhs, rho, None, matches!(k, K_SUB_PUNT | K_SUB2_PUNT))?;
             let args = ev.args(cx);
             cx.materialize_subset_args(args)?;
             if sub2 {
@@ -471,7 +471,7 @@ fn setter<'s>(
                     return Ok(v);
                 }
             }
-            let ev = default_args(cx, s, call, lhs, rho, Some(rhs))?;
+            let ev = default_args(cx, s, call, lhs, rho, Some(rhs), matches!(k, K_SUB_PUNT | K_SUB2_PUNT))?;
             let args = ev.args(cx);
             cx.materialize_subset_args(args)?;
             if sub2 {
@@ -600,7 +600,8 @@ fn dollar_call<'s>(
 /// evaluated as compiled code evaluates them (`cmpIndices`,
 /// `cmpBuiltinArgs(missingOK = TRUE)`: an empty argument, or a symbol
 /// bound to the missing argument, is R_MissingArg; tags kept), then the
-/// setter's value tagged `value`.
+/// setter's value tagged `value`. `punt`: the step's (named arguments:
+/// cmpBuiltinArgs, whose constant is PUSHCONSTARG, not a load).
 fn default_args<'s>(
     cx: &mut Cx,
     s: Scope<'s>,
@@ -608,6 +609,7 @@ fn default_args<'s>(
     x: Root<'_>,
     rho: Root<'_>,
     value: Option<Root<'_>>,
+    punt: bool,
 ) -> RResult<Evaluated<'s>> {
     let st_value = prims::state(cx).syms.value;
     let nil = cx.nil().sexp();
@@ -617,8 +619,10 @@ fn default_args<'s>(
     for (a, tag) in args {
         let o = ev.next(tag);
         // (an index bcEval loads, LDCONST or GETVAR_MISSOK, sets
-        // R_Visible: what a `return()` of the assignment shows)
-        let load = a.bind(cx) != cx.missing_arg() && a.bind(cx).sexptype() != LANGSXP;
+        // R_Visible: what a `return()` of the assignment shows; a punt
+        // step's constant is pushed, not loaded)
+        let t = a.bind(cx).sexptype();
+        let load = a.bind(cx) != cx.missing_arg() && t != LANGSXP && (t == SYMSXP || !punt);
         eval_arg(cx, a, rho, true, o)?;
         if load {
             cx.set_visible(true);
