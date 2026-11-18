@@ -958,41 +958,87 @@ impl Core {
     }
 
     /// GNU R's `PRINTNAME(s)` in this heap: its own CHARSXP of the name,
-    /// from its own cache. A symbol this heap meets for the first time (one
-    /// another isolate made: symbols are the process's) is installed here
-    /// first, as `install` of its name would. Never collects.
+    /// from its own cache. Reads a table; never allocates.
+    ///
+    /// Every symbol a heap holds has its PRINTNAME here by construction: it
+    /// installed the name, or made the marker, or adopted the symbol
+    /// ([`Core::adopt_symbol`]). A symbol this heap never took (only
+    /// another isolate's handle can carry one here) is refused.
     ///
     /// # Panics
-    /// If that install is refused (a heap limit, or an injected failure).
+    /// If this heap has not taken `s` (a defined refusal naming its id).
     ///
     /// # Safety
     /// `s` must be a live SYMSXP.
     #[inline]
-    pub unsafe fn printname(&mut self, s: Sexp) -> Sexp {
+    pub unsafe fn printname(&self, s: Sexp) -> Sexp {
         // SAFETY: the caller's contract: its 4th word holds its id.
-        let id = unsafe { s.sym_id() } as usize;
-        match self.printnames.get(id) {
+        let id = unsafe { s.sym_id() };
+        match self.printnames.get(id as usize) {
             Some(&c) if !c.is_null() => c,
-            // SAFETY: the caller's contract.
-            _ => unsafe { self.first_printname(s) },
+            _ => not_adopted(id),
         }
     }
 
-    /// [`Core::printname`] of a symbol this heap has not installed.
+    /// Whether this heap has taken `s` (installed its name, made it, or
+    /// adopted it): whether [`Core::printname`] answers.
     ///
     /// # Safety
     /// `s` must be a live SYMSXP.
-    #[cold]
-    #[inline(never)]
-    unsafe fn first_printname(&mut self, s: Sexp) -> Sexp {
+    #[inline]
+    pub unsafe fn has_printname(&self, s: Sexp) -> bool {
+        // SAFETY: the caller's contract.
+        let id = unsafe { s.sym_id() } as usize;
+        self.printnames.get(id).is_some_and(|c| !c.is_null())
+    }
+
+    /// Panics, naming its id, unless this heap has taken `s`
+    /// ([`Core::has_printname`]): what binding a value to it in this
+    /// isolate's base requires.
+    ///
+    /// # Safety
+    /// `s` must be a live SYMSXP.
+    #[inline]
+    pub unsafe fn check_adopted(&self, s: Sexp) {
+        // SAFETY: the caller's contract.
+        if !unsafe { self.has_printname(s) } {
+            // SAFETY: as above.
+            not_adopted(unsafe { s.sym_id() })
+        }
+    }
+
+    /// Take a symbol this heap did not install (one another isolate made:
+    /// symbols are the process's) as `install` of its name would: this
+    /// heap's PRINTNAME of it, from its own cache, and its entry in the
+    /// heap's table. A marker (a symbol named "" in no table, another
+    /// isolate's `R_RestartToken`) gets the shared "". Nothing for a symbol
+    /// this heap already has. Never collects.
+    ///
+    /// The one way, besides `install`, for a heap to take a symbol it did
+    /// not make: callers are the boundaries where a symbol of another
+    /// isolate enters (docs/core.md §10, A.2), which can return the error.
+    ///
+    /// # Safety
+    /// `s` must be a live SYMSXP.
+    pub unsafe fn adopt_symbol(&mut self, s: Sexp) -> Result<(), NeedGc> {
+        // SAFETY: the caller's contract.
+        if unsafe { self.has_printname(s) } {
+            return Ok(());
+        }
         // SAFETY: the caller's contract; the arena's name lives as long as
         // the process.
         let name: Box<[u8]> = unsafe { s.sym_name_bytes() }.into();
-        let t = self.install_named(&name, Sexp::NULL).expect("robigo: no room for a PRINTNAME");
-        debug_assert_eq!(t, s, "robigo: one symbol per name");
-        // SAFETY: the caller's contract: a live symbol.
-        let id = unsafe { s.sym_id() } as usize;
-        self.printnames[id]
+        if name.is_empty() && crate::arena::lookup(b"") != Some(s) {
+            // a marker: the shared "" under its own id, as
+            // `new_marker_symbol` gives this heap's own (it is in no table)
+            self.count_symbol()?;
+            // SAFETY: a live symbol; the shared "".
+            unsafe { self.set_printname(s, self.blank_string) };
+            return Ok(());
+        }
+        let t = self.install_named(&name, Sexp::NULL)?;
+        assert!(t == s, "robigo: two symbols named {:?}", String::from_utf8_lossy(&name));
+        Ok(())
     }
 
     /// # Safety
@@ -3062,6 +3108,13 @@ impl Visitor for Mark<'_> {
 pub type SymbolBits = fn(&[u8]) -> (u8, u16);
 
 static SYMBOL_BITS: std::sync::OnceLock<SymbolBits> = std::sync::OnceLock::new();
+
+/// [`Core::printname`]'s refusal: a symbol this heap never took.
+#[cold]
+#[inline(never)]
+fn not_adopted(id: u32) -> ! {
+    panic!("robigo: symbol {id} is another isolate's: adopt it first (Cx::adopt_symbol)")
+}
 
 /// Register the rule that gives a new symbol its name's bits (GNU R's
 /// `DDVAL` in `mkSYMSXP`, `SPECIAL_SYMBOL` in `InitNames`,

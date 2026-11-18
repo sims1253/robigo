@@ -789,6 +789,11 @@ impl Loc {
                 }
                 At::Base(s) => {
                     let new = if v == iso.unbound { Sexp::NULL } else { v };
+                    if !new.is_null() {
+                        // a base binding is listed by this isolate's symbols
+                        // (`frame_bindings`), so it needs one it took
+                        iso.core().check_adopted(s);
+                    }
                     // (FIX_BINDING_REFCNT counts nothing for a symbol that
                     // tracks no references: `.Last.value`, sym::install_rsyms)
                     let tracks = s.tracks_refs();

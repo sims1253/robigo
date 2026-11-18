@@ -1001,14 +1001,125 @@ fn a_symbol_is_every_isolates() {
     assert_ne!(va, vb, "each isolate's own base namespace");
     assert_eq!(va, ca.base_namespace().sexp());
     assert_eq!(vb, cb.base_namespace().sexp());
-    // a symbol only B has made is A's too: A's lookups take it, and its
-    // PRINTNAME in A is A's own CHARSXP of the name, made at first use
+    // a symbol only B has made is A's too: A's lookups take it with no
+    // adoption (identity is the process's); its name in A needs A to adopt
+    // it, which gives A's own CHARSXP of the name
     let only_b = cb.install(b"a_name_only_b_installed").unwrap();
     assert!(matches!(ca.var_binding(only_b, g), Lookup::Unbound));
+    let adopted = ca.adopt_symbol(only_b).unwrap();
+    assert_eq!(adopted.as_ref().sexp(), only_b.as_ref().sexp(), "adoption keeps the symbol");
     let pa = robigo_rtcore::Ref::from(only_b.name(ca)).sexp();
     let pb = robigo_rtcore::Ref::from(only_b.name(cb)).sexp();
     assert_ne!(pa, pb, "a PRINTNAME per isolate");
     let in_a = ca.mk_char(b"a_name_only_b_installed", robigo_rtcore::Encoding::Native).unwrap();
     assert_eq!(robigo_rtcore::Ref::from(in_a).sexp(), pa, "A's cache gives A's");
     assert_eq!(ca.install(b"a_name_only_b_installed").unwrap().as_ref().sexp(), only_b.as_ref().sexp());
+}
+
+/// A symbol only another isolate installed, read for its name before this
+/// isolate adopted it: a defined refusal naming its id (H5).
+#[test]
+#[should_panic(expected = "is another isolate's: adopt it first")]
+fn a_name_read_without_adoption_is_refused() {
+    let (mut a, mut b) = (iso(), iso());
+    let (ca, cb) = (a.cx(), b.cx());
+    let only_b = cb.install(b"a_name_read_before_adoption").unwrap();
+    let _ = only_b.name(ca);
+}
+
+/// `SET_SYMVALUE` of a symbol this isolate never took is refused: base's
+/// listing walks this isolate's symbols, so the binding would be missing
+/// from `ls(baseenv())` (Sol r3's S2).
+#[test]
+#[should_panic(expected = "is another isolate's: adopt it first")]
+fn set_symvalue_without_adoption_is_refused() {
+    let (mut a, mut b) = (iso(), iso());
+    let cb = b.cx();
+    let only_b = cb.install(b"a_base_binding_before_adoption").unwrap();
+    let ca = a.cx();
+    ca.scope(|ca, s| {
+        let sym = s.root(ca, only_b.as_ref());
+        let v = s.root(ca, ca.nil());
+        ca.set_symvalue(sym, v);
+    });
+}
+
+/// Base's listing from a second isolate: a symbol only B installed, adopted
+/// by A and bound in A's base, is listed by A (`ls(baseenv(), TRUE)`) under
+/// A's PRINTNAME, and not by B, whose base does not bind it.
+#[test]
+fn base_listing_from_a_second_isolate() {
+    let (mut a, mut b) = (iso(), iso());
+    let name = b"a_base_binding_after_adoption";
+    let only_b = b.cx().install(name).unwrap().as_ref().sexp();
+    let listed = |iso: &mut OwnedIsolate| -> Vec<usize> {
+        let cx = iso.cx();
+        cx.scope(|cx, s| {
+            let base = s.root(cx, cx.base_env());
+            let out = s.out(cx);
+            let r = out.root();
+            cx.ls_internal(base, true, out).unwrap();
+            let v = r.bind(cx).as_vector::<robigo_rtcore::Char<'_>>().unwrap();
+            (0..v.len())
+                .filter(|&i| v.get(i).bytes() == name)
+                .map(|i| robigo_rtcore::Ref::from(v.get(i)).sexp().addr())
+                .collect()
+        })
+    };
+    {
+        let ca = a.cx();
+        // SAFETY: a symbol of the process's arena: immortal, and every
+        // isolate may hold it.
+        let sym = unsafe { robigo_rtcore::Ref::from_sexp(only_b, ca) }.as_sym().unwrap();
+        let sym = ca.adopt_symbol(sym).unwrap().as_ref().sexp();
+        ca.scope(|ca, s| {
+            // SAFETY: as above.
+            let sym = s.root(ca, unsafe { robigo_rtcore::Ref::from_sexp(sym, ca) });
+            let v = s.root(ca, ca.nil());
+            ca.set_symvalue(sym, v);
+        });
+    }
+    let in_a = listed(&mut a);
+    let pa = {
+        let cx = a.cx();
+        robigo_rtcore::Ref::from(cx.mk_char(name, robigo_rtcore::Encoding::Native).unwrap()).sexp().addr()
+    };
+    assert_eq!(in_a, vec![pa], "A lists it once, under A's PRINTNAME");
+    assert!(listed(&mut b).is_empty(), "B's base does not bind it");
+}
+
+/// Every well-known symbol and marker of one isolate, read from a second:
+/// the pre-installed symbols are every isolate's own install (one symbol,
+/// a PRINTNAME per isolate, no adoption needed); another isolate's
+/// `R_RestartToken` is refused until adopted, then is named "" (the
+/// shared blank, under its own id) without becoming the symbol `install("")`
+/// gives.
+#[test]
+fn well_known_symbols_and_markers_from_a_second_isolate() {
+    let (mut a, mut b) = (iso(), iso());
+    let (ca, cb) = (a.cx(), b.cx());
+    for k in robigo_rtcore::RSym::ALL {
+        let (sa, sb) = (ca.sym(k), cb.sym(k));
+        assert_eq!(sa.as_ref().sexp(), sb.as_ref().sexp(), "{k:?}: one symbol");
+        let (na, nb) = (robigo_rtcore::Ref::from(sb.name(ca)).sexp(), robigo_rtcore::Ref::from(sa.name(cb)).sexp());
+        assert_eq!(na, robigo_rtcore::Ref::from(sa.name(ca)).sexp(), "{k:?}: A's PRINTNAME");
+        assert_eq!(nb, robigo_rtcore::Ref::from(sb.name(cb)).sexp(), "{k:?}: B's PRINTNAME");
+        if !sa.name_bytes().is_empty() {
+            assert_ne!(na, nb, "{k:?}: a PRINTNAME per isolate");
+        }
+    }
+    for (x, y) in [(ca.unbound(), cb.unbound()), (ca.missing_arg(), cb.missing_arg())] {
+        assert_eq!(x.sexp(), y.sexp(), "one shared marker");
+        let s = y.as_sym().unwrap();
+        assert_eq!(robigo_rtcore::Ref::from(s.name(ca)).sexp(), robigo_rtcore::Ref::from(ca.blank_string()).sexp());
+    }
+    let tb = cb.restart_token().as_sym().unwrap();
+    assert_ne!(tb.as_ref().sexp(), ca.restart_token().sexp(), "a marker per isolate");
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = tb.name(ca);
+    }));
+    assert!(r.is_err(), "B's marker is refused before adoption");
+    let t = ca.adopt_symbol(tb).unwrap();
+    assert_eq!(robigo_rtcore::Ref::from(t.name(ca)).sexp(), robigo_rtcore::Ref::from(ca.blank_string()).sexp());
+    assert_ne!(ca.install(b"").unwrap().as_ref().sexp(), t.as_ref().sexp(), "a marker is no installed symbol");
 }

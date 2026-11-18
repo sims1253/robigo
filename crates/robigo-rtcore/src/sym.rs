@@ -43,7 +43,7 @@ macro_rules! rsyms {
         impl RSym {
             /// Every symbol, in the order of the table (an index is its
             /// discriminant).
-            pub(crate) const ALL: [RSym; [$(RSym::$v),*].len()] = [$(RSym::$v),*];
+            pub const ALL: [RSym; [$(RSym::$v),*].len()] = [$(RSym::$v),*];
 
 
             /// The symbol's name.

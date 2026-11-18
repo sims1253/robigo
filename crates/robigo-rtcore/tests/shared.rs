@@ -132,26 +132,30 @@ fn two_isolates_intern_at_once_and_keep_their_own_printnames() {
     }
 }
 
-/// The lazy path (H5, Sol's r1 S2 case): isolate A installs fresh names
-/// while isolate B, on another thread, meets each symbol for the first time
-/// and reads its PRINTNAME, interning names of its own meanwhile (the
-/// arena's lock contended). B's PRINTNAME is made at that first read, from
-/// B's cache: it is what B's `mkChar` gives for the name (so `match` finds
-/// it), and B's `install` gives the same symbol. A collection in B between
-/// the first and the second read leaves it in place: the PRINTNAME is
-/// rooted (immortal) in B, and the second read gives the same CHARSXP.
-/// Under Miri as well, without the collections (the collector calls C).
+/// Adoption under contention (H5): isolate A installs fresh names while
+/// isolate B, on another thread, meets each symbol for the first time,
+/// adopts it and reads its PRINTNAME, interning names of its own meanwhile
+/// (the arena's lock contended). Before adoption B refuses the name; after
+/// it, B's PRINTNAME is what B's `mkChar` gives for the name (the address
+/// `match` hashes strings by, unique.c), and B's `install` gives the same
+/// symbol. A collection in B between the first and the second read leaves
+/// it in place: the PRINTNAME is immortal in B, and the second read gives
+/// the same CHARSXP. Under Miri as well, without the collections (the
+/// collector calls C) and without the refusal (Miri does not unwind
+/// through `catch_unwind` cheaply; the native run checks it).
 #[test]
-fn a_symbol_first_seen_in_another_isolate_gets_its_printname_there() {
+fn a_symbol_another_isolate_made_is_adopted_under_contention() {
     const NAMES: usize = if cfg!(miri) { 6 } else { 300 };
     let (tx, rx) = std::sync::mpsc::channel::<(String, usize)>();
     let a = std::thread::spawn(move || {
         let mut iso = OwnedIsolate::new();
         let cx = iso.cx();
         for i in 0..NAMES {
-            let name = format!("lazy_printname_{i}");
+            let name = format!("adopted_{i}");
             let s = cx.install(name.as_bytes()).unwrap();
             tx.send((name, s.as_ref().sexp().addr())).unwrap();
+            // and a name of A's own, which B never sees
+            let _ = cx.install(format!("adopted_a_only_{i}").as_bytes()).unwrap();
         }
     });
     let b = std::thread::spawn(move || {
@@ -160,16 +164,26 @@ fn a_symbol_first_seen_in_another_isolate_gets_its_printname_there() {
         for (name, addr) in rx {
             let cx = iso.cx();
             // B interns names of its own meanwhile
-            let _ = cx.install(format!("lazy_other_{n}").as_bytes()).unwrap();
+            let _ = cx.install(format!("adopted_b_only_{n}").as_bytes()).unwrap();
             // SAFETY: a symbol of the process's arena: immortal, never moved,
-            // and every isolate may hold it.
+            // and every isolate may hold it (what a hand-over between
+            // isolates gives).
             let s = unsafe { robigo_rtcore::Ref::from_sexp(robigo_rtcore::Sexp::from_ptr(addr as *mut u8), cx) }
                 .as_sym()
                 .unwrap();
+            if !cfg!(miri) && n % 50 == 0 {
+                let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _ = s.name(cx);
+                }));
+                assert!(refused.is_err(), "{name}: refused before adoption");
+            }
+            let s = cx.adopt_symbol(s).unwrap();
+            assert_eq!(s.as_ref().sexp().addr(), addr, "{name}: adoption keeps the symbol");
             let first = robigo_rtcore::Ref::from(s.name(cx)).sexp();
             let made = robigo_rtcore::Ref::from(cx.mk_char(name.as_bytes(), Encoding::Native).unwrap()).sexp();
             assert_eq!(first, made, "{name}: B's PRINTNAME is B's mkChar (match finds it)");
             assert_eq!(cx.install(name.as_bytes()).unwrap().as_ref().sexp().addr(), addr, "{name}: one symbol");
+            assert_eq!(cx.adopt_symbol(s).unwrap().as_ref().sexp().addr(), addr, "{name}: adopting twice is a no-op");
             if !cfg!(miri) && n % 10 == 0 {
                 iso.cx().collect();
             }

@@ -201,6 +201,11 @@ pub(crate) fn install(name: &[u8], bits: impl FnOnce() -> (u8, u16)) -> Sexp {
     })
 }
 
+/// The symbol named `name` if a heap of the process has made it.
+pub(crate) fn lookup(name: &[u8]) -> Option<Sexp> {
+    locked(|a| a.names.get(name).copied())
+}
+
 /// GNU R's `mkSymMarker(mkChar(""))`: a new symbol named "" that is in no
 /// table (`R_RestartToken`, one per isolate).
 pub(crate) fn new_marker() -> Sexp {

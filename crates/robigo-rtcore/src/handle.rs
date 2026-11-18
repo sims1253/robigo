@@ -788,11 +788,16 @@ impl<'g> Sym<'g> {
     /// GNU R's PRINTNAME: the isolate's CHARSXP of the name (symbols are
     /// the process's, H5; a PRINTNAME is what R code sees of a name, so it
     /// is each isolate's own, from its CHARSXP cache).
+    ///
+    /// # Panics
+    /// If `cx`'s isolate has not taken the symbol: it did not install its
+    /// name and did not adopt it ([`crate::Cx::adopt_symbol`]). Only a
+    /// handle of another isolate can carry such a symbol here.
     #[inline]
     pub fn name(self, cx: &'g crate::Cx) -> Char<'g> {
-        // SAFETY: one read of the core, which calls nothing of ours. A
-        // symbol `cx` reaches was installed in its heap, which keeps the
-        // PRINTNAME (immortal) for 'g.
+        // SAFETY: one read of the core, which calls nothing of ours. The
+        // core answers only with a PRINTNAME it keeps (immortal, so live
+        // for 'g, and never null) or refuses.
         unsafe {
             let c = cx.iso().core().printname(self.0.sexp());
             Char(self.0.child(c))
