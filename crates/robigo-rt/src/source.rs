@@ -185,7 +185,6 @@ fn parse_text(
     consumed: &mut usize,
     out: Out<'_>,
 ) -> RResult<()> {
-    crate::reader::check_names_locale(cx, src)?;
     let text = robigo_syntax::lexable(src);
     let source = robigo_syntax::Source::new(&text, src).known_to_be_utf8(known_utf8);
     let arena = robigo_syntax::Arena::new();
@@ -207,6 +206,7 @@ fn parse_text(
     let (exprs, end) = match parsed {
         Ok(r) => r,
         Err(e) => {
+            crate::reader::check_non_ascii_locale(cx, src, if e.incomplete { usize::MAX } else { e.offset })?;
             if !e.incomplete {
                 let end = e.end.max(e.offset);
                 *consumed = end + read_ahead(src, e.offset.min(end), end);
@@ -221,6 +221,7 @@ fn parse_text(
             });
         }
     };
+    crate::reader::check_non_ascii_locale(cx, src, if num < 0 { usize::MAX } else { end })?;
     // the lexer's warnings up to the last expression's terminator
     *consumed = if num < 0 { src.len() } else { end };
     signal(cx, if num < 0 { usize::MAX } else { end.saturating_sub(1) })?;

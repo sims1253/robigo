@@ -69,7 +69,6 @@ pub fn parse_vector(cx: &mut Cx, text: Root<'_>, n: i32, out: Out<'_>) -> RResul
 /// rejects (the warnings before it are still signalled).
 // R: gram.y:R_Parse, R_Parse1
 pub fn parse_bytes(cx: &mut Cx, src: &[u8], n: i32, out: Out<'_>) -> RResult<(ParseStatus, Option<ParseFailure>)> {
-    check_names_locale(cx, src)?;
     let text = robigo_syntax::lexable(src);
     // known_to_be_utf8: the session's (mkString2's UTF-8 mark)
     let source = robigo_syntax::Source::new(&text, src).known_to_be_utf8(cx.locale().utf8);
@@ -96,6 +95,7 @@ pub fn parse_bytes(cx: &mut Cx, src: &[u8], n: i32, out: Out<'_>) -> RResult<(Pa
                     cx.error("robigo: R_ParseVector with n >= 0 on text with a parse error is not implemented yet")
                 );
             }
+            check_non_ascii_locale(cx, src, if e.incomplete { usize::MAX } else { e.offset })?;
             let (line, col) = robigo_syntax::error_line_col(source, &e);
             let status = if e.incomplete { ParseStatus::Incomplete } else { ParseStatus::Error };
             signal(cx, if e.incomplete { usize::MAX } else { e.offset })?;
@@ -104,6 +104,7 @@ pub fn parse_bytes(cx: &mut Cx, src: &[u8], n: i32, out: Out<'_>) -> RResult<(Pa
         }
     };
     let take = if n < 0 { exprs.len() } else { exprs.len().min(n as usize) };
+    check_non_ascii_locale(cx, src, if take < exprs.len() { exprs[take].span().start as usize } else { usize::MAX })?;
     // the tokens up to the next expression's start (its terminator and
     // what separates them carry no warnings)
     signal(cx, if take < exprs.len() { (exprs[take].span().start as usize).saturating_sub(1) } else { usize::MAX })?;
@@ -137,35 +138,62 @@ pub fn lower_one(cx: &mut Cx, e: &robigo_syntax::Expr<'_>, out: Out<'_>) -> RRes
     })
 }
 
-/// In a locale that is not UTF-8, GNU R's lexer classifies a name's bytes
-/// with the C library's single-byte classes (`isalpha`), where
-/// robigo-syntax's classifies Unicode characters: a bare name with
-/// non-ASCII bytes is refused (strings, comments and backquoted names read
-/// as GNU R reads them).
-// R: gram.y:token, SymbolValue (mbcslocale FALSE)
-pub(crate) fn check_names_locale(cx: &mut Cx, src: &[u8]) -> RResult<()> {
-    if names_refused(cx, src) {
-        return Err(cx.error(NAMES_REFUSED));
+/// In a locale that is not UTF-8, GNU R's lexer reads bytes with the C
+/// library's single-byte classes (`isalpha`, `isspace`: a non-ASCII byte
+/// starts no name and is no white space), where robigo-syntax's classifies
+/// Unicode characters. So a non-ASCII byte outside a string literal, a
+/// backquoted name and a comment is refused, among the first `upto` bytes
+/// (what the parse reads: R_Parse stops after the requested expressions).
+// R: gram.y:token, SkipSpace, SymbolValue (mbcslocale FALSE)
+pub(crate) fn check_non_ascii_locale(cx: &mut Cx, src: &[u8], upto: usize) -> RResult<()> {
+    if non_ascii_refused(cx, src, upto) {
+        return Err(cx.error(NON_ASCII_REFUSED));
     }
     Ok(())
 }
 
-/// [`check_names_locale`]'s refusal.
-pub(crate) const NAMES_REFUSED: &str =
-    "robigo: a name with non-ASCII characters in a non-UTF-8 locale is not implemented yet";
+/// [`check_non_ascii_locale`]'s refusal.
+pub(crate) const NON_ASCII_REFUSED: &str =
+    "robigo: non-ASCII characters outside strings and comments in a non-UTF-8 locale are not implemented yet";
 
-/// Whether [`check_names_locale`] refuses `src`.
-pub(crate) fn names_refused(cx: &Cx, src: &[u8]) -> bool {
-    if cx.locale().utf8 || src.is_ascii() {
+/// Whether [`check_non_ascii_locale`] refuses `src[..upto]`.
+pub(crate) fn non_ascii_refused(cx: &Cx, src: &[u8], upto: usize) -> bool {
+    let upto = upto.min(src.len());
+    if cx.locale().utf8 || src[..upto].is_ascii() {
         return false;
     }
     let text = robigo_syntax::lexable(src);
     let source = robigo_syntax::Source::new(&text, src).known_to_be_utf8(false);
-    match robigo_syntax::lexer::Lexer::new(source).lex() {
-        Ok(l) => l.toks.iter().any(|t| {
-            let b = src.get(t.span.start as usize..t.span.end as usize).unwrap_or_default();
-            matches!(t.tok, robigo_syntax::lexer::Tok::Sym(_)) && !b.is_ascii() && b.first() != Some(&b'`')
-        }),
-        Err(_) => false,
+    let Ok(lexed) = robigo_syntax::lexer::Lexer::new(source).lex() else { return true };
+    let mut toks = lexed.toks.iter().map(|t| (t.span.start as usize, t.span.end as usize, &t.tok)).peekable();
+    let mut i = 0;
+    while i < upto {
+        while toks.peek().is_some_and(|&(_, e, _)| e <= i) {
+            toks.next();
+        }
+        if let Some(&(st, e, tok)) = toks.peek()
+            && st <= i
+        {
+            // a string's or a backquoted name's bytes are read as GNU R reads
+            // them; any other token with a non-ASCII byte is not
+            let quoted = matches!(tok, robigo_syntax::lexer::Tok::Str(_))
+                || (matches!(tok, robigo_syntax::lexer::Tok::Sym(_)) && src.get(st) == Some(&b'`'));
+            if !quoted && !src[i..e.min(upto)].is_ascii() {
+                return true;
+            }
+            i = e;
+            continue;
+        }
+        match src[i] {
+            // a comment, to the end of the line
+            b'#' => {
+                while i < upto && src[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b if b >= 0x80 => return true,
+            _ => i += 1,
+        }
     }
+    false
 }

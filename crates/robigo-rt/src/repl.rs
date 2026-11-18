@@ -127,8 +127,8 @@ pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
                     if !warnings.is_empty() {
                         return parse_warnings_unsupported(cx);
                     }
-                    if crate::reader::names_refused(cx, &iob) {
-                        error_at_top(cx, crate::reader::NAMES_REFUSED);
+                    if crate::reader::non_ascii_refused(cx, &iob, usize::MAX) {
+                        error_at_top(cx, crate::reader::NON_ASCII_REFUSED);
                         false
                     } else {
                         eval_statement(cx, &exprs[0], savestack)

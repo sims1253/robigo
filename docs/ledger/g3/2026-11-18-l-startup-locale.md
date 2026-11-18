@@ -22,11 +22,14 @@
     `parse(text =)`. Before this, lowering marked every non-ASCII literal
     UTF-8, so `parse(text = <a native string>)` gave "UTF-8" where GNU R
     gives "unknown", even in C.UTF-8.
-  - In a locale that is not UTF-8, a bare name with non-ASCII bytes is
-    refused ("robigo: a name with non-ASCII characters in a non-UTF-8 locale
-    is not implemented yet"). GNU R's lexer classifies such bytes with
-    `isalpha` and raises its multibyte-parser error, which robigo-syntax
-    does not port. Strings, comments and backquoted names read as in GNU R.
+  - In a locale that is not UTF-8, a non-ASCII byte outside a string
+    literal, a backquoted name and a comment is refused ("robigo: non-ASCII
+    characters outside strings and comments in a non-UTF-8 locale are not
+    implemented yet"). Only the bytes the parse reads are checked: those up
+    to the requested expressions, or up to a syntax error. GNU R's lexer
+    reads such bytes with `isalpha`/`isspace`, where they are neither a name
+    nor white space, and ends in its multibyte-parser error. robigo-syntax's
+    Unicode classes would accept them, and that path is not ported.
   - Collation by the environment's `LC_COLLATE` (`R_ICU_LOCALE` unset)
     stays ICU root for C.UTF-8 and English (ICU's "en" has no tailoring).
     For any other locale it refuses, as `R_ICU_LOCALE` already did: root
