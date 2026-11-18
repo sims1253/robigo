@@ -16,6 +16,9 @@ stopifnot(grepl("its stderr differs at line 3.", r, fixed = TRUE), grepl("untrac
           grepl("traced:   c", r, fixed = TRUE))
 r <- m("a\nb\n", "a\nb\nc\n")
 stopifnot(grepl("untraced: (an empty line: a final newline)\n  traced:   c", r, fixed = TRUE))
+# an empty line inside is not a final newline
+r <- m("a\n\nb", "a\nX\nb")
+stopifnot(grepl("untraced: (an empty line)\n", r, fixed = TRUE), !grepl("final newline", r, fixed = TRUE))
 # the exit status
 stopifnot(grepl("its exit status differs at line 1.", m("0", "1", "status"), fixed = TRUE))
 cat("base-subset messages: ok\n")
