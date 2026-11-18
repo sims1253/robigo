@@ -250,9 +250,7 @@ pub fn do_log(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Ou
         let mut ev = Evaluated::new(cx, s, cap);
         eval_list_keep_missing(cx, s, call, 0, rho, &mut ev, 0)?;
         let args = ev.args(cx);
-        if args.any_altrep() {
-            cx.materialize_args(args)?;
-        }
+        cx.materialize_args(args)?;
         robigo_rtbuiltins::math::do_log_builtin(cx, call, args, rho, out)
     })
 }
@@ -355,23 +353,26 @@ enum Disp<'s> {
 /// `R_DispatchOrEvalSP(call, op, generic, args, rho, &ans)`: evaluate the
 /// first argument; unless it is an object, the others as
 /// `evalListKeepMissing` does (`x` holds a link meanwhile); an object goes
-/// to S3 dispatch (S1).
+/// to S3 dispatch (S1). The arguments are `ev`'s (a call over them: the
+/// special's own call, or compiled code's setter call of promises), the
+/// call a method sees `call`.
 // R: subset.c:R_DispatchOrEvalSP
 fn dispatch_or_eval_sp<'s>(
     cx: &mut Cx,
     s: Scope<'s>,
     call: Root<'_>,
+    ev_call: Root<'_>,
     generic: &'static str,
     rho: Root<'_>,
     out: &Out<'_>,
 ) -> RResult<Disp<'s>> {
     let dots = prims::state(cx).syms.dots;
-    let first = call.bind(cx).as_cons().unwrap().cdr().as_cons().map(|c| c.car().sexp());
+    let first = ev_call.bind(cx).as_cons().unwrap().cdr().as_cons().map(|c| c.car().sexp());
     match first {
         Some(f) if f != dots => {
-            let cap = 1 + count_args(cx, call, 1, rho)?;
+            let cap = 1 + count_args(cx, ev_call, 1, rho)?;
             let mut ev = Evaluated::new(cx, s, cap);
-            let e = s.root(cx, call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().car());
+            let e = s.root(cx, ev_call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().car());
             let nil = cx.nil().sexp();
             let mut lx = ev.linked_from(0);
             let o = ev.next(nil);
@@ -382,12 +383,12 @@ fn dispatch_or_eval_sp<'s>(
             unsafe { lx.link_next() };
             if !x.bind(cx).is_object() {
                 // under PROTECT(x)
-                eval_list_keep_missing(cx, s, call, 1, rho, &mut ev, 1)?;
+                eval_list_keep_missing(cx, s, ev_call, 1, rho, &mut ev, 1)?;
                 lx.release();
                 return Ok(Disp::Default(ev));
             }
             let prom = ev_promise(cx, s, e, x)?;
-            let rest = s.root(cx, call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().cdr());
+            let rest = s.root(cx, ev_call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().cdr());
             let r = crate::dispatch::dispatch_special(cx, generic, call, prom, rest, rho, out);
             lx.release();
             if r? {
@@ -396,17 +397,17 @@ fn dispatch_or_eval_sp<'s>(
             // DispatchOrEval's evalArgs, under R_DispatchOrEvalSP's
             // PROTECT(args) and its own PROTECT(x), PROTECT(pargs),
             // PROTECT(rho1)
-            eval_list_keep_missing(cx, s, call, 1, rho, &mut ev, 4)?;
+            eval_list_keep_missing(cx, s, ev_call, 1, rho, &mut ev, 4)?;
             Ok(Disp::Default(ev))
         }
         Some(_) => {
             // `...` first: DispatchOrEval finds the object among its
             // elements; with no object it evaluates the whole list
-            let cap = count_args(cx, call, 0, rho)?;
+            let cap = count_args(cx, ev_call, 0, rho)?;
             let mut ev = Evaluated::new(cx, s, cap);
             // DispatchOrEval's evalArgs, under R_DispatchOrEvalSP's
             // PROTECT(args) and its own PROTECT(x)
-            eval_list_keep_missing(cx, s, call, 0, rho, &mut ev, 2)?;
+            eval_list_keep_missing(cx, s, ev_call, 0, rho, &mut ev, 2)?;
             if ev.n > 0 && ev.root(0).bind(cx).is_object() {
                 let msg = format!("robigo: S3 dispatch of '{generic}' through '...' is not implemented yet");
                 return Err(cx.error(&msg));
@@ -438,7 +439,7 @@ pub(crate) fn ev_promise<'s>(cx: &mut Cx, s: Scope<'s>, expr: Root<'_>, value: R
 /// `do_subset`: `x[...]`.
 // R: subset.c:do_subset
 pub fn do_subset(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
-    cx.scope(|cx, s| match dispatch_or_eval_sp(cx, s, call, "[", rho, &out)? {
+    cx.scope(|cx, s| match dispatch_or_eval_sp(cx, s, call, call, "[", rho, &out)? {
         Disp::Done => Ok(()),
         Disp::Default(ev) => {
             let args = ev.args(cx);
@@ -451,7 +452,7 @@ pub fn do_subset(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out:
 /// `do_subset2`: `x[[...]]`.
 // R: subset.c:do_subset2
 pub fn do_subset2(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
-    cx.scope(|cx, s| match dispatch_or_eval_sp(cx, s, call, "[[", rho, &out)? {
+    cx.scope(|cx, s| match dispatch_or_eval_sp(cx, s, call, call, "[[", rho, &out)? {
         Disp::Done => Ok(()),
         Disp::Default(ev) => {
             let args = ev.args(cx);
@@ -556,7 +557,15 @@ pub fn do_subset3(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out
 /// `do_subassign`: `` `[<-`(x, ..., value) ``.
 // R: subassign.c:do_subassign
 pub fn do_subassign(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
-    cx.scope(|cx, s| match dispatch_or_eval_sp(cx, s, call, "[<-", rho, &out)? {
+    subassign_apart(cx, call, call, rho, out)
+}
+
+/// `do_subassign(call, op, args, rho)` with the arguments `ev`'s (a call
+/// over them) and `call` the call itself: compiled code's SETTER_CALL of
+/// the special, whose methods see the compiler's call (`*tmp*` in it).
+// R: subassign.c:do_subassign; eval.c:bcEval SETTER_CALL (SPECIALSXP)
+pub fn subassign_apart(cx: &mut Cx, call: Root<'_>, ev_call: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    cx.scope(|cx, s| match dispatch_or_eval_sp(cx, s, call, ev_call, "[<-", rho, &out)? {
         Disp::Done => Ok(()),
         Disp::Default(ev) => {
             let args = ev.args(cx);
@@ -569,7 +578,13 @@ pub fn do_subassign(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, o
 /// `do_subassign2`: `` `[[<-`(x, ..., value) ``.
 // R: subassign.c:do_subassign2
 pub fn do_subassign2(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
-    cx.scope(|cx, s| match dispatch_or_eval_sp(cx, s, call, "[[<-", rho, &out)? {
+    subassign2_apart(cx, call, call, rho, out)
+}
+
+/// [`subassign_apart`] for `[[<-`.
+// R: subassign.c:do_subassign2; eval.c:bcEval SETTER_CALL (SPECIALSXP)
+pub fn subassign2_apart(cx: &mut Cx, call: Root<'_>, ev_call: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    cx.scope(|cx, s| match dispatch_or_eval_sp(cx, s, call, ev_call, "[[<-", rho, &out)? {
         Disp::Done => Ok(()),
         Disp::Default(ev) => {
             let args = ev.args(cx);

@@ -773,7 +773,16 @@ fn generic(
             let ncall = o.root();
             let head = s.root(cx, call.bind(cx).as_cons().unwrap().car());
             cx.build(o, |cx| cx.lcons(head.bind(cx), args.bind(cx)))?;
-            crate::apply::apply_special(cx, ncall, fun, rho, out)
+            // PRIMFUN(fun)(call, fun, args, rho): `[<-` and `[[<-` take the
+            // two apart, so their methods see the compiler's call (`*tmp*`
+            // in it); R_Visible as the special leaves it, no eval around it
+            // SAFETY: a rooted primitive of this isolate.
+            let name = prims::state(cx).defs[unsafe { prims::offset(fun.bind(cx).sexp()) }].name;
+            match name {
+                "[<-" => crate::specials::subassign_apart(cx, call, ncall, rho, out),
+                "[[<-" => crate::specials::subassign2_apart(cx, call, ncall, rho, out),
+                _ => crate::apply::apply_special(cx, ncall, fun, rho, out),
+            }
         }
         _ => {
             // a promise list: `*tmp*` and a setter's value evaluated
