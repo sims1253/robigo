@@ -2144,7 +2144,9 @@ fn fill_promargs(cx: &mut Cx, id: ContextId, data: usize, out: Out<'_>) -> RResu
             // are fresh; nothing collects in this interval.
             unsafe {
                 for j in (0..n).rev() {
-                    let v = vals.add(j).read().as_object().unwrap();
+                    let s = vals.add(j).read();
+                    s.check_live();
+                    let v = s.as_object().unwrap();
                     let tag = acts[j].0;
                     let c = cx.alloc_node_raw(LISTSXP, v, l, tag)?;
                     // CONS_NR: the construction's counts undone

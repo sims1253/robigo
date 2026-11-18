@@ -36,15 +36,28 @@ happen.
     windows after a call, a loop region's temporaries, `Move`'s source, and
     `assign`/`bcassign`'s right-hand side, all with no pc
     (`u32::MAX`) but with the source line;
-  - the inline evaluator's `Clear` and `ClearRange`.
+  - the evaluators that run compiled code outside the VM (`early::run`,
+    `inline::pure`, `inline::body_loop`): under the poison each makes the
+    deaths of the instruction it just ran (`early::poison_deaths`:
+    F_CLR_B, F_CLR_C, a builtin call's and a default subset's register
+    window, `Clear`, `ClearRange`) before the next one reads,
+    and checks its register reads. The inline body evaluator's fused steps,
+    which make no deaths, and the argument shapes, which drop the code's
+    clears, are off under the poison. Without it, `poison_dead()` is a
+    constant false and these paths are as before.
 
   `Act::clear` stays for slots that are written again, not dead: an
   `Out`'s slot, and `apply_special`'s destination.
 - **The plant.** With the feature, `ROBIGO_POISON_PLANT=1` makes the
   compiler empty each closure's value register just before its `Ret`.
-  `crates/robigo-rt/tests/poison.rs` runs code clean under the poison, then
-  with the plant in both profiles. The VM and the inline evaluator each
-  panic with "register R, cleared by instruction N".
+  `crates/robigo-rt/tests/poison.rs` runs code clean under the poison,
+  then with the plant in both profiles: the VM panics with "register R,
+  cleared by instruction N". It then runs a warm loop whose callee runs
+  inline under the poison (no false positive, `inline_runs` grows). Next
+  it replaces the callee with one compiled under the plant
+  (`jitcache::cmpfun`, nothing run), which the loop's call site runs
+  inline at once: the inline evaluator's deaths catch it. Last it checks
+  `poison_deaths` itself.
 - **rt-ci.** The retry-torture step's build is now made with both
   features (`CHECK_FEATURES`), and two steps follow it under
   `ROBIGO_POISON_DEAD=1`: robigo-rt's tests (the plant among them) and the
@@ -73,3 +86,20 @@ happen.
   | guard-subassign-dbl | 5110.0 | 5110.6 |
   | d0-names | 5435.7 | 5434.9 |
   | guard-subset-dbl | 1739.8 | 1739.1 |
+
+### Review
+
+Sol (codex `gpt-6.1-sol`, high), round 1: CHANGES, three majors, all fixed:
+- S1: the inline paths bypassed the poison (`pure` skipped clears and
+  read unchecked; `shape_of` dropped clears; F_CLR_B/F_CLR_C were never
+  applied outside the VM).
+- S2: the test's sessions forced a profile, so they never reached the
+  inline evaluator.
+- S3: `Args::any_package_altrep_slow` read slots unchecked.
+
+Round 2: CHANGES, three majors, all fixed:
+- S1: `poison_deaths` missed the implicit window deaths of `CallBuiltin`
+  and `DfltSubset`.
+- S2: a plant can reach the inline evaluator first, through `cmpfun`; the
+  test now does that.
+- S3: args.rs's early-value list read a slot unchecked.
