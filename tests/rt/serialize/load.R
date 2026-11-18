@@ -2,7 +2,11 @@
 # files GNU R saved (data/README.md): formats 2 and 3, ASCII and
 # uncompressed, into an environment, the old-style S4 warning, and the
 # errors.
-d <- if (dir.exists("data")) "data" else "tests/rt/serialize/data"
+# (the data beside the case: the conformance runner's cwd is its directory,
+# regen's the checkout, base-subset.sh's a directory below the checkout)
+d <- "data"
+for (up in c("", "../", "../../", "../../../", "../../../../", "../../../../../"))
+    if (!dir.exists(d)) d <- paste0(up, "tests/rt/serialize/data")
 msg <- function(expr) tryCatch({ force(expr); "no error" }, error = function(e) conditionMessage(e),
                                warning = function(w) paste("warning:", conditionMessage(w)))
 for (file in c("xyf-v2.rda", "xyf-v3.rda", "xy-ascii.rda", "xy-plain.rda")) {
