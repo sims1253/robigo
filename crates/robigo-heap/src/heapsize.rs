@@ -411,6 +411,19 @@ impl HeapSizes {
         self.vheap_free() < cells && self.valloc.saturating_add(cells).saturating_add(min_v_free) >= self.max_v_size
     }
 
+    /// The vector trigger while a collection is due: the limit, or, with a
+    /// limit set, the first point at which [`HeapSizes::short_after_collection`]
+    /// can hold (past `v_size`, and within `R_MinVFree` of the limit), so
+    /// that the slow path still sees those requests.
+    #[inline]
+    pub fn due_v_trigger(&self) -> usize {
+        if self.max_v_size == usize::MAX {
+            return usize::MAX;
+        }
+        let min_v_free = (self.orig_v_size as f64 * self.min_free_frac) as usize;
+        self.max_v_size.saturating_sub(min_v_free).saturating_sub(1).max(self.v_size).min(self.max_v_size)
+    }
+
     /// Does an object of `cells` VECRECs stay within the vector limit,
     /// counting everything allocated since the last collection? (GNU R's
     /// postponed collection checks only this limit.)

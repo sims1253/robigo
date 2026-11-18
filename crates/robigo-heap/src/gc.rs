@@ -1039,7 +1039,9 @@ impl Core {
         if self.force_wait > 0 || self.stats_mode != StatsMode::Off || self.fail_armed {
             (s.n_trigger, s.v_trigger) = (0, 0);
         } else if self.due {
-            (s.n_trigger, s.v_trigger) = (s.max_n_size, s.max_v_size);
+            // (near a vector limit the slow path refuses what GNU R's
+            // collection could not serve: `due_v_trigger` keeps it reached)
+            (s.n_trigger, s.v_trigger) = (s.max_n_size, s.due_v_trigger());
         } else {
             (s.n_trigger, s.v_trigger) = (s.n_size, s.v_size);
         }
@@ -3521,5 +3523,32 @@ mod tests {
         assert_eq!(AllocError::MemoryExhausted.message(), "memory exhausted");
         c.set_refuse_chunks(false);
         assert!(c.alloc_vector(INTSXP, 1).is_ok(), "a chunk again once the system has memory");
+    }
+    /// As above, with the collection already due (from nodes) when the
+    /// vectors cross the vector heap's size: the refusal is still made at
+    /// the trigger GNU R's collection could not serve (Sol r1 S1).
+    #[cfg(not(miri))]
+    #[test]
+    fn a_request_near_the_limit_is_refused_while_a_collection_is_due() {
+        let mut c = Core::new();
+        let v = c.heap_sizes().v_size;
+        assert!(c.set_max_vsize(Some((v + 1000) * 8)));
+        let mut roots: Vec<Sexp> = Vec::new();
+        let nil = c.nil;
+        while !c.due {
+            // SAFETY: `nil` is live and immortal.
+            roots.push(unsafe { c.alloc_node(LISTSXP, nil, nil, nil) }.unwrap());
+        }
+        let req = loop {
+            match c.alloc_vector(REALSXP, 100) {
+                Ok(x) => roots.push(x),
+                Err(e) => break e,
+            }
+        };
+        let limit = c.max_vsize();
+        assert!(c.sizes.valloc + 100 <= v + 1000, "refused before the limit itself");
+        assert_eq!(c.take_refusal(), Some(AllocError::VectorMemory { limit }));
+        // SAFETY: `roots` holds every object kept.
+        assert_eq!(unsafe { c.make_room(req, &mut roots) }, Err(AllocError::VectorMemory { limit }));
     }
 }
