@@ -288,3 +288,36 @@ fn an_empty_r_translations_is_fatal() {
     assert_eq!(String::from_utf8_lossy(&err), "");
     assert_eq!(status, 2);
 }
+
+/// With `_R_COMPILE_PKGS_` set, GNU R byte-compiles each closure as it is
+/// serialized (serialize.c's WriteItem, `R_cmpfun1`); robigo-rt cannot yet,
+/// so it refuses rather than write the closure uncompiled (AGENTS rule 6).
+/// GNU R writes it, so there is no oracle case to pass.
+#[test]
+fn compiling_closures_on_serialize_is_refused() {
+    let expr = "x <- tryCatch(serialize(function(a) a, NULL), error = conditionMessage); cat(is.raw(x), if (is.character(x)) x, '\\n')";
+    let (out, err, status) = run_env(
+        &std::env::temp_dir(),
+        &["--vanilla", "-e", expr],
+        None,
+        &[("_R_COMPILE_PKGS_", "1"), ("R_ENABLE_JIT", "0")],
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out),
+        "FALSE robigo: byte-compiling closures as they are serialized (_R_COMPILE_PKGS_) is not implemented yet \n"
+    );
+    assert_eq!((String::from_utf8_lossy(&err).as_ref(), status), ("", 0));
+    // a value with no closure in it is written as before, and so is any
+    // closure when compiling packages is off
+    let expr = "cat(is.raw(serialize(list(1, 'a'), NULL)), '\\n')";
+    let (out, _, status) = run_env(
+        &std::env::temp_dir(),
+        &["--vanilla", "-e", expr],
+        None,
+        &[("_R_COMPILE_PKGS_", "1"), ("R_ENABLE_JIT", "0")],
+    );
+    assert_eq!((String::from_utf8_lossy(&out).as_ref(), status), ("TRUE \n", 0));
+    let expr = "cat(is.raw(serialize(function(a) a, NULL)), '\\n')";
+    let (out, _, status) = run_env(&std::env::temp_dir(), &["--vanilla", "-e", expr], None, &[("R_ENABLE_JIT", "0")]);
+    assert_eq!((String::from_utf8_lossy(&out).as_ref(), status), ("TRUE \n", 0));
+}
