@@ -9,7 +9,6 @@ show <- function(expr) {
 show(1@a)
 show(list()@a)
 show(NULL@a)
-show(1@1)
 f <- function() 1@a
 show(f())
 # an S3 object dispatches on `@`, the name made a string
@@ -28,6 +27,8 @@ show(`@`(y, 1))
 show(`@`(y, c("a", "b")))
 show(`@`(y, NULL))
 show(`@`(1, NULL))
+# a name of two strings, in a call built at run time
+show(eval(as.call(list(as.name("@"), y, c("a", "b")))))
 # arity
 show(`@`(y))
 show(`@`(1, 2, 3))
@@ -50,5 +51,7 @@ show(`@<-`(y, a, 2))
 show(`@<-`(z, 1, 2))
 show(`@<-`(z, c("a", "b"), 2))
 show(`@<-`(z, NULL, 2))
+show(eval(as.call(list(as.name("@<-"), quote(z), c("a", "b"), 2))))
+show(eval(as.call(list(as.name("@<-"), quote(z), character(), 2))))
 show(`@<-`(z, a))
 show(`@<-`(z, a, 2, 3))

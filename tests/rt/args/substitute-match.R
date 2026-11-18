@@ -8,7 +8,7 @@ show <- function(expr) {
 }
 substitute(a + b, list(a = 1))
 substitute(env = list(a = 2), expr = a)
-substitute(e = a, list(a = 3))
+show(substitute(e = a, list(a = 3)))
 show(substitute(a, b, c))
 show(substitute(a, env = b, c, d))
 show(substitute(a, foo = 1))

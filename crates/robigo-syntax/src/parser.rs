@@ -821,7 +821,7 @@ impl<'a> Parser<'a> {
             )
         };
         match rhs {
-            Expr::Call { fun, args, span } => {
+            Expr::Call { fun, args, span, .. } => {
                 // A placeholder as (or inside) the called function itself.
                 if contains_placeholder(fun) {
                     let mut e = err("placeholderInRHSFn", "pipe placeholder cannot be used in the RHS function");
@@ -851,7 +851,7 @@ impl<'a> Parser<'a> {
                     let mut new_args = args.to_vec();
                     new_args[i].value = Some(lhs);
                     let new_args = arena.alloc_slice(&new_args);
-                    return Ok(Expr::Call { fun, args: new_args, span: full });
+                    return Ok(Expr::Call { fun, args: new_args, span: full, pipe: false });
                 }
                 // Syntactically special functions cannot be piped into
                 // (`check_rhs`, IS_SPECIAL_SYMBOL in names.c).
@@ -868,7 +868,8 @@ impl<'a> Parser<'a> {
                 all.push(Arg::positional(lhs));
                 all.extend_from_slice(args);
                 let all = arena.alloc_slice(&all);
-                Ok(Expr::Call { fun, args: all, span: full })
+                // R: gram.y:xxpipe, lcons(fun, lcons(lhs, args))
+                Ok(Expr::Call { fun, args: all, span: full, pipe: true })
             }
             // `function(...)` as the RHS is a lang object with head
             // `function`, a special symbol; its body could be a bare
@@ -1153,7 +1154,7 @@ impl<'a> Parser<'a> {
                     };
                     let fun = arena.alloc(fun);
                     let args = arena.alloc_slice(&args);
-                    Expr::Call { fun, args, span }
+                    Expr::Call { fun, args, span, pipe: false }
                 }
                 Some(n) => {
                     let mut all = Vec::with_capacity(args.len() + 1);
@@ -1248,7 +1249,7 @@ impl<'a> Parser<'a> {
 fn call2<'a>(arena: &'a Arena, name: &'a str, name_span: Span, args: Vec<Arg<'a>>, span: Span) -> Expr<'a> {
     let fun = arena.alloc(Expr::Sym(name, name_span));
     let args = arena.alloc_slice(&args);
-    Expr::Call { fun, args, span }
+    Expr::Call { fun, args, span, pipe: false }
 }
 
 /// A symbol name: source slices pass through untouched, escaped names
