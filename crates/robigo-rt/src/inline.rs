@@ -896,7 +896,7 @@ unsafe fn base_guard(cx: &Cx, log: &WriteLog, call: Sexp, rho: Sexp) -> Option<b
 /// `sym` is a symbol constant of live code and `rho` a live environment.
 #[cold]
 #[inline(never)]
-unsafe fn super_assign(cx: &mut Cx, log: &WriteLog, sym: Sexp, x: Slot, rho: Sexp) -> Option<Sexp> {
+unsafe fn super_assign(cx: &mut Cx, log: &WriteLog, sym: Sexp, x: Slot, rho: Sexp, g: u16) -> Option<Sexp> {
     let obj = match x.as_object() {
         Some(o) => o,
         None => crate::vm::box_slot(cx, x).ok()?,
@@ -904,7 +904,9 @@ unsafe fn super_assign(cx: &mut Cx, log: &WriteLog, sym: Sexp, x: Slot, rho: Sex
     // SAFETY: the caller's contract; the box is fresh, and nothing
     // collects.
     unsafe { log.write(cx, sym, rho, obj)? };
-    cx.set_visible(false);
+    if g & crate::compile::G_KEEP_VIS == 0 {
+        cx.set_visible(false);
+    }
     Some(obj)
 }
 
@@ -1384,7 +1386,10 @@ unsafe fn body_loop<const FUSED: bool>(
                 // `defineVar` into the frame's slot (the VM's `set_var`: a
                 // scalar stays unboxed there), then R_Visible off
                 fr.args[i.f as usize - 1] = Arg::Value(r(i.a)?);
-                cx.set_visible(false);
+                // (bcEval's SETVAR of `return()`'s operand: R_Visible kept)
+                if i.g & crate::compile::G_KEEP_VIS == 0 {
+                    cx.set_visible(false);
+                }
                 continue;
             }
             Op::Jmp => {
@@ -1507,7 +1512,7 @@ unsafe fn body_loop<const FUSED: bool>(
             }
             Op::SetVar2 => {
                 // SAFETY: a symbol constant; the enclosure is live.
-                let obj = unsafe { super_assign(cx, fr.log(), v.k(i.e), r(i.a)?, fr.enclos)? };
+                let obj = unsafe { super_assign(cx, fr.log(), v.k(i.e), r(i.a)?, fr.enclos, i.g)? };
                 // SAFETY: the value `super_assign` logged: live, as nothing
                 // collects while the run holds it (`WriteLog`'s doc).
                 *regs.get_mut(i.a as usize)? = unsafe { Slot::object(obj) };

@@ -1245,7 +1245,7 @@ impl<'g> Comp<'g> {
             LDCONST => {
                 let r = self.push(t);
                 // SAFETY: a constant of the byte code.
-                unsafe { self.const_value(k(i.a[0]), r, 0, tail) };
+                unsafe { self.const_value(k(i.a[0]), r, 0, tail.into()) };
             }
             LDNULL => {
                 let r = self.push(t);
@@ -1255,7 +1255,7 @@ impl<'g> Comp<'g> {
                 let r = self.push(t);
                 let v = self.cx.logical_value((i.op == LDTRUE) as i32).sexp();
                 // SAFETY: an immortal constant.
-                unsafe { self.const_value(v, r, 0, tail) };
+                unsafe { self.const_value(v, r, 0, tail.into()) };
             }
             GETVAR | DDVAL | GETVAR_MISSOK | DDVAL_MISSOK => {
                 let r = self.push(t);
@@ -1279,6 +1279,11 @@ impl<'g> Comp<'g> {
                 let mut s = Ins::new(if i.op == SETVAR2 { Op::SetVar2 } else { Op::SetVar });
                 s.a = r;
                 s.e = self.k(sym);
+                // (its value reaches RETURN with no INVISIBLE: bcEval's
+                // SETVAR leaves R_Visible as the value's load set it)
+                if tail {
+                    s.g |= crate::compile::G_KEEP_VIS;
+                }
                 if i.op == SETVAR && !self.locals.contains(&sym) {
                     self.locals.push(sym);
                 }
@@ -1423,7 +1428,7 @@ impl<'g> Comp<'g> {
                     Some((o, _)) if planning && special(o) => {}
                     // a language special: what its PRIMFUN does, compiled
                     // SAFETY: as above.
-                    Some((_, Kind::Special(s))) => unsafe { self.special(s, call, call.cdr(), r, 0, tail)? },
+                    Some((_, Kind::Special(s))) => unsafe { self.special(s, call, call.cdr(), r, 0, tail.into())? },
                     // getPrimitive(symbol, SPECIALSXP) on the call
                     Some((o, _)) if special(o) => {
                         let prim = self.st.objs[o].bind(self.cx).sexp();
@@ -1857,6 +1862,11 @@ impl<'g> Comp<'g> {
                 b.b = r;
                 b.e = self.k(plan);
                 b.g = (i.op == STARTASSIGN2) as u16;
+                // (its value reaches RETURN: ENDASSIGN leaves R_Visible as
+                // the setter calls set it)
+                if returns_after(&t.code, a.end + 1) {
+                    b.g |= crate::compile::G_KEEP_VIS;
+                }
                 self.emit(b);
                 t.skip_to = Some(a.end);
             }

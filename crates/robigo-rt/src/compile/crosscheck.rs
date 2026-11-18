@@ -89,7 +89,8 @@ fn kinds(op: Op) -> ([K; 6], bool) {
         Op::LdConst | Op::LdScalar | Op::GetVar | Op::GetDdVar | Op::GetVarMissOk | Op::Quote | Op::EvalConst => {
             ([W, X, X, C, X, X], false)
         }
-        Op::SetVar | Op::SetVar2 => ([R, X, X, C, X, X], false),
+        // (`g`: G_KEEP_VIS, bcEval's SETVAR of `return()`'s operand)
+        Op::SetVar | Op::SetVar2 => ([R, X, X, C, X, I], false),
         Op::Jmp | Op::BackJmp => ([X; 6], true),
         Op::BrFalse => ([X, R, X, C, X, X], true),
         Op::Guard => ([C0, X, C, C, X, X], true),

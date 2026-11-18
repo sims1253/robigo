@@ -465,7 +465,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
             Op::SetVar | Op::SetVar2 => {
                 // SAFETY: as above.
                 let sym = unsafe { v.k(i.e) };
-                set_var(cx, act, i.a, sym, i.op == Op::SetVar2, i.f, v.shape)?;
+                set_var(cx, act, i.a, sym, i.op == Op::SetVar2, i.f, v.shape, i.g)?;
                 reload!();
             }
             Op::Jmp => pc = i.target(),
@@ -612,7 +612,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 // SAFETY: a constant of the code.
                 let plan = unsafe { v.k(i.e) };
                 // SAFETY: the running code's constants (or rooted values): live, of this isolate.
-                unsafe { crate::bcassign::run(cx, act, i.a, i.b, plan, i.g == 1) }?;
+                unsafe { crate::bcassign::run(cx, act, i.a, i.b, plan, i.g) }?;
                 reload!();
             }
             Op::BaseGuard => {
@@ -1181,9 +1181,13 @@ fn slow_builtin(cx: &mut Cx, act: &mut Act, v: &View, i: &Ins, pc: usize, n: usi
 }
 
 /// `defineVar(sym, value, rho)` (`<-`) or `setVar(sym, value, ENCLOS(rho))`
-/// (`<<-`), with register `r` (boxed) the value; `R_Visible = FALSE`.
-// R: eval.c:do_set
-fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: u16, shape: Sexp) -> RResult<()> {
+/// (`<<-`), with register `r` (boxed) the value; `R_Visible = FALSE`, but
+/// with `G_KEEP_VIS` in `g` left as the value set it (bcEval's SETVAR, of
+/// `return()`'s operand).
+// R: eval.c:do_set; eval.c:bcEval SETVAR, SETVAR2
+#[allow(clippy::too_many_arguments)]
+fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: u16, shape: Sexp, g: u16) -> RResult<()> {
+    let hide = g & crate::compile::G_KEEP_VIS == 0;
     if !super_assign {
         let v = act.get(r);
         let scalar = match v.tag() {
@@ -1199,7 +1203,9 @@ fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: 
             // SAFETY: an immortal symbol, the rooted environment and the
             // code's shape; the slot index was compiled for that shape.
             if unsafe { cx.frame_store_scalar_raw(act.rho(), shape, slot as usize - 1, sym, x) } {
-                cx.set_visible(false);
+                if hide {
+                    cx.set_visible(false);
+                }
                 return Ok(());
             }
         }
@@ -1211,7 +1217,9 @@ fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: 
             let res = cx.define_scalar(s, x, act.root(R_ENV));
             act.clear(R_SCRATCH);
             res?;
-            cx.set_visible(false);
+            if hide {
+                cx.set_visible(false);
+            }
             return Ok(());
         }
     }
@@ -1228,7 +1236,9 @@ fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: 
     act.clear(R_SCRATCH);
     act.clear(R_SCRATCH2);
     res?;
-    cx.set_visible(false);
+    if hide {
+        cx.set_visible(false);
+    }
     Ok(())
 }
 

@@ -518,7 +518,7 @@ pub(crate) fn compile_special_with(
             let mut c = Comp::new(cx, st, Profile::Eval, None);
             let dst = c.alloc();
             match st.defs[off].kind {
-                Kind::Special(s) => c.special(s, call, args.unwrap_or_else(|| call.cdr()), dst, 0, true)?,
+                Kind::Special(s) => c.special(s, call, args.unwrap_or_else(|| call.cdr()), dst, 0, Tail::Yes)?,
                 Kind::Builtin(..) | Kind::Fn(_) => unreachable!("robigo: only a language special is compiled"),
             }
             let mut i = Ins::new(Op::Ret);
@@ -545,6 +545,53 @@ struct LoopLabels {
     /// leaves every register from here on dead.
     regs: Reg,
 }
+
+/// Where a value is compiled (cmp.R's context): in the tail (`tailcall`,
+/// the shapes that RETURN and set visibility), as `return()`'s operand
+/// (`make.nonTailCallContext`: non-tail shapes, the value's visibility what
+/// bcEval leaves at RETURN), or neither.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Tail {
+    No,
+    Yes,
+    Ret,
+}
+
+impl Tail {
+    /// cmp.R's tail shapes (INVISIBLE, a jump to the end, RETURN).
+    fn is_tail(self) -> bool {
+        self == Tail::Yes
+    }
+
+    /// A value op sets visibility (F_VIS): bcEval's loads and operators set
+    /// R_Visible, observed in the tail and at `return()`.
+    fn vis(self) -> bool {
+        self != Tail::No
+    }
+
+    /// `return()`'s operand: an LDNULL (a missing `else`, a switch's miss, a
+    /// loop's value) sets R_Visible, and an assignment leaves it as its
+    /// value's (bcEval's SETVAR, ENDASSIGN).
+    fn ret(self) -> bool {
+        self == Tail::Ret
+    }
+
+    /// An assignment's value: `return()`'s context carries into it, the
+    /// tail's does not (cmp.R compiles the value non-tail).
+    fn value(self) -> Tail {
+        if self == Tail::Ret { Tail::Ret } else { Tail::No }
+    }
+}
+
+impl From<bool> for Tail {
+    fn from(tail: bool) -> Tail {
+        if tail { Tail::Yes } else { Tail::No }
+    }
+}
+
+/// An assignment's `g` bit (SetVar, SetVar2, BcAssign): R_Visible left as
+/// the value set it (bcEval's SETVAR and ENDASSIGN), not cleared.
+pub(crate) const G_KEEP_VIS: u16 = 2;
 
 struct Comp<'g> {
     cx: &'g Cx,
@@ -677,7 +724,7 @@ impl<'g> Comp<'g> {
     unsafe fn root(&mut self, expr: Sexp) -> Result<Built, Need> {
         let r = self.alloc();
         // SAFETY: the caller's contract.
-        unsafe { self.expr(expr, r, 1, true)? };
+        unsafe { self.expr(expr, r, 1, Tail::Yes)? };
         let mut i = Ins::new(Op::Ret);
         i.b = r;
         self.emit(i);
@@ -892,7 +939,7 @@ impl<'g> Comp<'g> {
     ///
     /// # Safety
     /// `e` is a live object reachable from the source.
-    unsafe fn expr(&mut self, e: Sexp, dst: Reg, d: u16, tail: bool) -> Result<(), Need> {
+    unsafe fn expr(&mut self, e: Sexp, dst: Reg, d: u16, tail: Tail) -> Result<(), Need> {
         // SAFETY: the caller's contract.
         let t = unsafe { e.typ() };
         if self.bc.is_some()
@@ -913,7 +960,7 @@ impl<'g> Comp<'g> {
                 i.a = dst;
                 i.e = self.k(e);
                 let mut i = self.at_depth(i, d, false);
-                if tail {
+                if tail.vis() {
                     i.fl |= F_VIS;
                 }
                 self.emit(i);
@@ -950,7 +997,7 @@ impl<'g> Comp<'g> {
     ///
     /// # Safety
     /// As for [`Comp::expr`].
-    unsafe fn expr_at(&mut self, e: Sexp, dst: Reg, d: u16, p: i32, tail: bool) -> Result<(), Need> {
+    unsafe fn expr_at(&mut self, e: Sexp, dst: Reg, d: u16, p: i32, tail: Tail) -> Result<(), Need> {
         let save = std::mem::replace(&mut self.pp, p);
         // SAFETY: the caller's contract.
         let r = unsafe { self.expr(e, dst, d, tail) };
@@ -966,7 +1013,7 @@ impl<'g> Comp<'g> {
     ///
     /// # Safety
     /// `v` is a live constant of the source or a fold.
-    unsafe fn const_value(&mut self, v: Sexp, dst: Reg, d: u16, tail: bool) {
+    unsafe fn const_value(&mut self, v: Sexp, dst: Reg, d: u16, tail: Tail) {
         let k = self.kv(v);
         let v = self.consts[usize::from(k) - FIRST_CONST];
         // SAFETY: the caller's contract.
@@ -978,7 +1025,7 @@ impl<'g> Comp<'g> {
         i.a = dst;
         i.e = k;
         let mut i = self.at_depth(i, d, true);
-        if tail {
+        if tail.vis() {
             i.fl |= F_VIS;
         }
         self.emit(i);
@@ -1066,7 +1113,7 @@ impl<'g> Comp<'g> {
     ///
     /// # Safety
     /// As for [`Comp::expr`].
-    unsafe fn call(&mut self, e: Sexp, dst: Reg, d: u16, tail: bool) -> Result<(), Need> {
+    unsafe fn call(&mut self, e: Sexp, dst: Reg, d: u16, tail: Tail) -> Result<(), Need> {
         if self.bc.is_some() {
             // SAFETY: the caller's contract.
             return unsafe { self.bc_call(e, dst, d, tail) };
@@ -1149,7 +1196,7 @@ impl<'g> Comp<'g> {
     /// # Safety
     /// As for [`Comp::expr`].
     // R: cmp.R:cmpCall, tryInline
-    unsafe fn bc_call(&mut self, e: Sexp, dst: Reg, d: u16, tail: bool) -> Result<(), Need> {
+    unsafe fn bc_call(&mut self, e: Sexp, dst: Reg, d: u16, tail: Tail) -> Result<(), Need> {
         // SAFETY: the caller's contract: a live call.
         let (f, args) = unsafe { (e.car(), e.cdr()) };
         // SAFETY: as above; the compile environment's frames are live.
@@ -1355,7 +1402,7 @@ impl<'g> Comp<'g> {
     /// # Safety
     /// As for [`Comp::expr`]; `e` is a call of `switch`.
     // R: cmp.R:setInlineHandler("switch"), findActionIndex
-    unsafe fn bc_switch(&mut self, e: Sexp, dst: Reg, d: u16, tail: bool) -> Result<bool, Need> {
+    unsafe fn bc_switch(&mut self, e: Sexp, dst: Reg, d: u16, tail: Tail) -> Result<bool, Need> {
         let (cx, st) = (self.cx, self.st);
         let (nil, missing) = (self.nil(), cx.missing_arg().sexp());
         // SAFETY: the caller's contract.
@@ -1425,7 +1472,7 @@ impl<'g> Comp<'g> {
         // EXPR
         let r = self.alloc();
         // SAFETY: the caller's contract.
-        unsafe { self.expr(args[0].0, r, d + 1, false)? };
+        unsafe { self.expr(args[0].0, r, d + 1, Tail::No)? };
         let names = if table.is_empty() {
             nil
         } else {
@@ -1469,13 +1516,13 @@ impl<'g> Comp<'g> {
             unsafe { self.expr(call, dst, d + 1, tail)? };
             // (it does not return: the default follows, as in cmp.R; in
             // tail position cmp.R's call RETURNs, a jump to the end)
-            if tail {
+            if tail.is_tail() {
                 ends.push(self.emit(Ins::new(Op::Jmp)));
             }
         }
         at[dflt] = self.pc();
-        self.ld_nil(dst, false);
-        if tail {
+        self.ld_nil(dst, tail.ret());
+        if tail.is_tail() {
             self.set_vis(false);
         }
         ends.push(self.emit(Ins::new(Op::Jmp)));
@@ -1525,7 +1572,7 @@ impl<'g> Comp<'g> {
         let base = self.alloc_n(if named { 2 * n } else { n });
         // (cmp(oe, cb, ncntxt))
         // SAFETY: the caller's contract.
-        unsafe { self.expr(args[0].0, base, d + 1, false)? };
+        unsafe { self.expr(args[0].0, base, d + 1, Tail::No)? };
         let mut start = Ins::new(Op::StartSubset);
         start.a = dst;
         start.b = base;
@@ -1589,7 +1636,7 @@ impl<'g> Comp<'g> {
                 self.emit(i);
                 return Ok(());
             }
-            self.expr(a, r, d, false)
+            self.expr(a, r, d, Tail::No)
         }
     }
 
@@ -1614,7 +1661,7 @@ impl<'g> Comp<'g> {
         let r = self.alloc_n(n);
         for (j, &(a, _)) in args.iter().enumerate() {
             // SAFETY: the caller's contract.
-            unsafe { self.expr(a, r + j as Reg, d + 1, false)? };
+            unsafe { self.expr(a, r + j as Reg, d + 1, Tail::No)? };
         }
         let kind = if n == 1 { crate::ir::MATH_LOG } else { crate::ir::MATH_LOGBASE };
         self.math1_op(e, None, dst, r, n as u16, kind, d);
@@ -1674,7 +1721,7 @@ impl<'g> Comp<'g> {
         }
         let r = self.alloc();
         // SAFETY: the caller's contract.
-        unsafe { self.expr(args[0].0, r, d + 1, false)? };
+        unsafe { self.expr(args[0].0, r, d + 1, Tail::No)? };
         let mut i = Ins::new(Op::Dollar);
         i.a = dst;
         i.b = r;
@@ -2120,7 +2167,7 @@ impl<'g> Comp<'g> {
             }
             // R: eval.c:eval, `op = eval(CAR(e), rho)`
             // SAFETY: as above.
-            unsafe { self.expr(f, rf, d + 1, false)? };
+            unsafe { self.expr(f, rf, d + 1, Tail::No)? };
         }
         let mut i = Ins::new(Op::Call);
         i.a = dst;
@@ -2164,7 +2211,7 @@ impl<'g> Comp<'g> {
     /// # Safety
     /// As for [`Comp::expr`].
     #[allow(clippy::too_many_arguments)]
-    unsafe fn special(&mut self, s: Special, e: Sexp, args: Sexp, dst: Reg, d: u16, tail: bool) -> Result<(), Need> {
+    unsafe fn special(&mut self, s: Special, e: Sexp, args: Sexp, dst: Reg, d: u16, tail: Tail) -> Result<(), Need> {
         let nil = self.nil();
         // (the call's own: compiling its operands replaces the field's)
         let mut site_save = std::mem::replace(&mut self.site_save, 0);
@@ -2188,7 +2235,7 @@ impl<'g> Comp<'g> {
                         resumes.push(self.resume(e, NO_REG, dst, d + 1));
                     }
                     if n == 0 {
-                        self.ld_nil(dst, tail);
+                        self.ld_nil(dst, tail.vis());
                     }
                     // each statement under PROTECT(op), PROTECT(e),
                     // PROTECT(srcrefs), PROTECT(R_Srcref)
@@ -2205,7 +2252,7 @@ impl<'g> Comp<'g> {
                             // under `Eval`, a write that cuts the list after
                             // this statement makes it the last, so its
                             // visibility is kept as the last one's is
-                            self.expr_at(st, r, d + 1, p, live && tail)?;
+                            self.expr_at(st, r, d + 1, p, if live { tail } else { Tail::No })?;
                             if live {
                                 resumes.push(self.resume(cell, r, dst, d + 1));
                             }
@@ -2247,8 +2294,8 @@ impl<'g> Comp<'g> {
                         } else if n == 3 {
                             self.expr(a[2].0, dst, d + 1, tail)?;
                         } else {
-                            self.ld_nil(dst, false);
-                            if tail {
+                            self.ld_nil(dst, tail.ret());
+                            if tail.is_tail() {
                                 self.set_vis(false);
                             }
                         }
@@ -2257,7 +2304,7 @@ impl<'g> Comp<'g> {
                     // the test and the branch under PROTECT(op), PROTECT(e)
                     let p = self.pp + 2;
                     let r = self.alloc();
-                    self.expr_at(a[0].0, r, d + 1, p, false)?;
+                    self.expr_at(a[0].0, r, d + 1, p, Tail::No)?;
                     let mut br = Ins::new(Op::BrFalse);
                     br.b = r;
                     br.fl |= F_CLR_B;
@@ -2271,8 +2318,8 @@ impl<'g> Comp<'g> {
                     if n == 3 {
                         self.expr_at(a[2].0, dst, d + 1, p, tail)?;
                     } else {
-                        self.ld_nil(dst, false);
-                        if tail {
+                        self.ld_nil(dst, tail.ret());
+                        if tail.is_tail() {
                             // "case of no 'else' so return invisible NULL"
                             self.set_vis(false);
                         }
@@ -2297,7 +2344,7 @@ impl<'g> Comp<'g> {
                     let state = self.alloc_n(FOR_STATE);
                     // the sequence under PROTECT(op), PROTECT(e), then
                     // do_for's PROTECT(args), PROTECT(rho)
-                    self.expr_at(a[1].0, state, d + 1, self.pp + 4, false)?;
+                    self.expr_at(a[1].0, state, d + 1, self.pp + 4, Tail::No)?;
                     let mut prep = Ins::new(Op::ForPrep);
                     prep.a = state;
                     prep.e = self.k(sym);
@@ -2340,7 +2387,7 @@ impl<'g> Comp<'g> {
                     let lp = self.loop_begin(e);
                     let r = self.alloc();
                     let resume = self.loop_resume(a[1].0, Some((e, r)), d);
-                    self.expr_at(a[0].0, r, d + 1, self.pp + 2, false)?;
+                    self.expr_at(a[0].0, r, d + 1, self.pp + 2, Tail::No)?;
                     let mut br = Ins::new(Op::BrFalse);
                     br.b = r;
                     br.fl |= F_CLR_B;
@@ -2418,11 +2465,15 @@ impl<'g> Comp<'g> {
                         return self.error_op(e, "multi-argument returns are not permitted", true);
                     }
                     // the returned value's visibility is the function's:
-                    // `eval` of the `return` call sets R_Visible, then
-                    // `eval` of its operand does
+                    // under `Eval`, `eval` of the `return` call sets
+                    // R_Visible, then `eval` of its operand does; under `Bc`,
+                    // cmp.R compiles the operand in a non-tail context
+                    // (make.nonTailCallContext), so it is visible as bcEval
+                    // leaves it at RETURN
                     let r = self.alloc();
+                    let ctx = if self.profile == Profile::Bc { Tail::Ret } else { Tail::Yes };
                     if n == 1 {
-                        self.expr_at(a[0].0, r, d + 1, self.pp + 2, true)?;
+                        self.expr_at(a[0].0, r, d + 1, self.pp + 2, ctx)?;
                     } else {
                         self.ld_nil(r, true);
                     }
@@ -2457,7 +2508,7 @@ impl<'g> Comp<'g> {
                         // a closure of base's installed byte code
                         i.g = 1;
                     }
-                    if tail {
+                    if tail.vis() {
                         i.fl |= F_VIS;
                     }
                     self.emit(i);
@@ -2486,12 +2537,15 @@ impl<'g> Comp<'g> {
                             // cmp.R's cmpComplexAssign: the right-hand side,
                             // then the getter and setter calls of its plan
                             let plan = self.bc_assign_plan(lhs, a[1].0)?;
-                            self.expr(a[1].0, dst, d + 1, false)?;
+                            self.expr(a[1].0, dst, d + 1, tail.value())?;
                             let mut i = Ins::new(Op::BcAssign);
                             i.a = dst;
                             i.b = dst;
                             i.e = self.k(plan);
                             i.g = (s == Special::Assign2) as u16;
+                            if tail.ret() {
+                                i.g |= G_KEEP_VIS;
+                            }
                             self.emit(i);
                             return Ok(());
                         }
@@ -2500,7 +2554,7 @@ impl<'g> Comp<'g> {
                             // the assignment through `*tmp*` (a target
                             // cmp.R's checkAssign refuses runs the special,
                             // do_set, in compiled code too)
-                            self.expr_at(a[1].0, dst, d + 1, self.pp + 2, false)?;
+                            self.expr_at(a[1].0, dst, d + 1, self.pp + 2, Tail::No)?;
                             let mut i = Ins::new(Op::ComplexAssign);
                             i.a = dst;
                             i.b = dst;
@@ -2532,10 +2586,13 @@ impl<'g> Comp<'g> {
                     };
                     // do_set's `eval(CADR(args), rho)` under PROTECT(op),
                     // PROTECT(e)
-                    self.expr_at(a[1].0, dst, d + 1, self.pp + 2, false)?;
+                    self.expr_at(a[1].0, dst, d + 1, self.pp + 2, tail.value())?;
                     let mut i = Ins::new(if s == Special::Assign2 { Op::SetVar2 } else { Op::SetVar });
                     i.a = dst;
                     i.e = self.k(sym);
+                    if tail.ret() {
+                        i.g |= G_KEEP_VIS;
+                    }
                     if s != Special::Assign2 && !self.locals.contains(&sym) {
                         self.locals.push(sym);
                     }
@@ -2553,7 +2610,7 @@ impl<'g> Comp<'g> {
                     let mut i = Ins::new(Op::Quote);
                     i.a = dst;
                     i.e = self.k(a[0].0);
-                    if tail {
+                    if tail.vis() {
                         i.fl |= F_VIS;
                     }
                     self.emit(i);
@@ -2580,7 +2637,7 @@ impl<'g> Comp<'g> {
                     i.a = dst;
                     i.e = self.k(sym);
                     i.f = self.k(e);
-                    if tail {
+                    if tail.vis() {
                         i.fl |= F_VIS;
                     }
                     self.emit(i);
@@ -2593,11 +2650,11 @@ impl<'g> Comp<'g> {
                         return self.error_op(e, &msg, false);
                     }
                     // both operands under PROTECT(op), PROTECT(e)
-                    self.expr_at(a[0].0, dst, d + 1, self.pp + 2, false)?;
+                    self.expr_at(a[0].0, dst, d + 1, self.pp + 2, Tail::No)?;
                     // in the tail, the value visible on both paths (bcEval's
                     // AND1ST and AND2ND set R_Visible), the second operand
                     // reached or not (`a && return(x)`)
-                    let vis = if tail { F_VIS } else { 0 };
+                    let vis = if tail.vis() { F_VIS } else { 0 };
                     let mut i1 = Ins::new(Op::AndOr1);
                     i1.a = dst;
                     i1.b = dst;
@@ -2606,7 +2663,7 @@ impl<'g> Comp<'g> {
                     i1.fl |= vis;
                     let i1 = self.emit(i1);
                     let r = self.alloc();
-                    self.expr_at(a[1].0, r, d + 1, self.pp + 2, false)?;
+                    self.expr_at(a[1].0, r, d + 1, self.pp + 2, Tail::No)?;
                     let mut i2 = Ins::new(Op::AndOr2);
                     i2.a = dst;
                     i2.b = r;
@@ -2811,7 +2868,7 @@ impl<'g> Comp<'g> {
     unsafe fn loop_body(&mut self, body: Sexp, d: u16, p: i32) -> Result<(), Need> {
         let r = self.alloc();
         // SAFETY: the caller's contract.
-        unsafe { self.expr_at(body, r, d + 1, p, false)? };
+        unsafe { self.expr_at(body, r, d + 1, p, Tail::No)? };
         self.clear(r);
         self.free_to(r);
         let start = self.loops.last().unwrap().start;
@@ -2832,9 +2889,10 @@ impl<'g> Comp<'g> {
 
     /// A loop's value: invisible NULL (`for`, `while`, `repeat` are
     /// `PRIMPRINT` 1).
-    fn loop_value(&mut self, dst: Reg, tail: bool) {
-        self.ld_nil(dst, false);
-        if tail {
+    fn loop_value(&mut self, dst: Reg, tail: Tail) {
+        // (`return()`'s operand: cmp.R's non-tail LDNULL sets R_Visible)
+        self.ld_nil(dst, tail.ret());
+        if tail.is_tail() {
             self.set_vis(false);
         }
     }
@@ -2854,7 +2912,7 @@ impl<'g> Comp<'g> {
         args: Sexp,
         dst: Reg,
         d: u16,
-        tail: bool,
+        tail: Tail,
     ) -> Result<(), Need> {
         // SAFETY: the caller's contract.
         let a = unsafe { self.arglist(args) };
@@ -2887,7 +2945,7 @@ impl<'g> Comp<'g> {
             // cmp.R's cmpMath1 / cmpPrim1: the operand, then the op
             let r = self.alloc();
             // SAFETY: as above.
-            unsafe { self.expr(a[0].0, r, d + 1, false)? };
+            unsafe { self.expr(a[0].0, r, d + 1, Tail::No)? };
             self.math1_op(e, Some(prim), dst, r, 1, kind, d);
             self.free_to(r);
             return Ok(());
@@ -2895,8 +2953,8 @@ impl<'g> Comp<'g> {
         if inl == Inline::Paren {
             // evalList's first argument, under eval's PROTECT(op)
             // SAFETY: as above.
-            unsafe { self.expr_at(a[0].0, dst, d + 1, self.pp + 1, false)? };
-            if tail {
+            unsafe { self.expr_at(a[0].0, dst, d + 1, self.pp + 1, Tail::No)? };
+            if tail.vis() {
                 self.set_vis(true);
             }
             return Ok(());
@@ -2927,7 +2985,7 @@ impl<'g> Comp<'g> {
         i.f = self.k(prim);
         i.fl |= F_DEPTH | F_CLR_B | if a.len() == 2 { F_CLR_C } else { 0 };
         i.d = d;
-        if tail {
+        if tail.vis() {
             i.fl |= F_VIS;
         }
         self.emit(i);
@@ -2956,7 +3014,7 @@ impl<'g> Comp<'g> {
             // SAFETY: a live constant of the pool.
             if unsafe { plain_scalar_const(self.consts[usize::from(k) - FIRST_CONST]) }.is_none() {
                 // SAFETY: as above.
-                unsafe { self.const_value(c, r, d, false) };
+                unsafe { self.const_value(c, r, d, Tail::No) };
                 return Ok(());
             }
             // (an unboxed constant is no object: nothing is marked, as
@@ -2969,7 +3027,7 @@ impl<'g> Comp<'g> {
             return Ok(());
         }
         // SAFETY: as above.
-        unsafe { self.expr(v, r, d, false) }
+        unsafe { self.expr(v, r, d, Tail::No) }
     }
 
     /// A builtin (or a builtin `.Internal`, `op`) called with its arguments
@@ -2985,7 +3043,7 @@ impl<'g> Comp<'g> {
         args: Sexp,
         dst: Reg,
         d: u16,
-        tail: bool,
+        tail: Tail,
     ) -> Result<(), Need> {
         let nil = self.nil();
         // SAFETY: the caller's contract.
@@ -3021,7 +3079,7 @@ impl<'g> Comp<'g> {
         let base = self.pp + if op == Op::Internal { 2 } else { 1 };
         for (j, &(v, _)) in a.iter().enumerate() {
             // SAFETY: as above.
-            unsafe { self.expr_at(v, r + j as Reg, d + 1, base + (j > 0) as i32, false)? };
+            unsafe { self.expr_at(v, r + j as Reg, d + 1, base + (j > 0) as i32, Tail::No)? };
         }
         if named {
             for (j, &(_, t)) in a.iter().enumerate() {

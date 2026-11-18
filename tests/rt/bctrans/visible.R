@@ -216,3 +216,119 @@ k_or_return <- .Internal(bcClose(NULL,
  globalenv()))
 k_or_return()
 
+# k_retassign
+k_retassign <- .Internal(bcClose(as.pairlist(alist(v = )),
+ mk(c(12L, 123L, 1L, 11L, 26L, 2L, 20L, 3L, 33L, 39L, 1L, 4L, 20L, 3L, 22L, 4L, 1L), list(quote({
+    invisible(v)
+    return(x <- v)
+}),
+  quote(invisible(v)),
+  as.name("invisible"),
+  as.name("v"),
+  as.name("x"),
+  quote(x <- v),
+  quote(return(x <- v)),
+  structure(c(NA, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 3L, 3L, 5L, 5L, 6L), class = "expressionsIndex"))),
+ globalenv()))
+k_retassign(1)
+
+# k_retassign_inv
+k_retassign_inv <- .Internal(bcClose(as.pairlist(alist(v = )),
+ mk(c(12L, 123L, 1L, 11L, 26L, 2L, 20L, 3L, 33L, 39L, 1L, 22L, 4L, 1L), list(quote(return(x <- invisible(v))),
+  quote(invisible(v)),
+  as.name("invisible"),
+  as.name("v"),
+  as.name("x"),
+  quote(x <- invisible(v)),
+  structure(c(NA, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 5L, 5L, 0L), class = "expressionsIndex"))),
+ globalenv()))
+k_retassign_inv(1)
+
+# k_retnames
+k_retnames <- .Internal(bcClose(as.pairlist(alist(v = )),
+ mk(c(12L, 16L, 1L, 22L, 3L, 4L, 123L, 5L, 16L, 26L, 6L, 20L, 7L, 33L, 39L, 5L, 4L, 20L, 7L, 61L, 3L, 23L, 9L, 35L, 98L, 11L, 7L, 62L, 3L, 1L), list(quote({
+    x <- 1:2
+    invisible(v)
+    return(names(x) <- v)
+}),
+  1:2,
+  quote(1:2),
+  as.name("x"),
+  quote(x <- 1:2),
+  quote(invisible(v)),
+  as.name("invisible"),
+  as.name("v"),
+  quote(names(x) <- v),
+  as.name("names<-"),
+  quote(`names<-`(x, value = v)),
+  quote(`names<-`(`*tmp*`, value = v)),
+  quote(return(names(x) <- v)),
+  structure(c(NA, 2L, 2L, 4L, 4L, 4L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 5L, 7L, 7L, 8L, 8L, 10L, 10L, 10L, 10L, 10L, 10L, 8L, 8L, 12L), class = "expressionsIndex"))),
+ globalenv()))
+k_retnames(c('a', 'b'))
+
+# k_retsuper
+k_retsuper <- .Internal(bcClose(as.pairlist(alist(v = )),
+ mk(c(12L, 123L, 1L, 11L, 26L, 2L, 20L, 3L, 33L, 39L, 1L, 4L, 20L, 3L, 95L, 4L, 1L), list(quote({
+    invisible(v)
+    return(zz <<- v)
+}),
+  quote(invisible(v)),
+  as.name("invisible"),
+  as.name("v"),
+  as.name("zz"),
+  quote(zz <<- v),
+  quote(return(zz <<- v)),
+  structure(c(NA, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 3L, 3L, 5L, 5L, 6L), class = "expressionsIndex"))),
+ globalenv()))
+k_retsuper(2)
+
+# k_retifnull
+k_retifnull <- .Internal(bcClose(as.pairlist(alist(c = )),
+ mk(c(12L, 123L, 1L, 11L, 26L, 2L, 20L, 3L, 33L, 39L, 1L, 4L, 20L, 3L, 3L, 4L, 21L, 16L, 5L, 2L, 22L, 17L, 1L), list(quote({
+    invisible(c)
+    return(if (c) 1)
+}),
+  quote(invisible(c)),
+  as.name("invisible"),
+  as.name("c"),
+  quote(if (c) 1),
+  1,
+  quote(return(if (c) 1)),
+  structure(c(NA, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 3L, 3L, 4L, 4L, 4L, 5L, 5L, 4L, 4L, 4L, 6L), class = "expressionsIndex"))),
+ globalenv()))
+k_retifnull(FALSE)
+k_retifnull(TRUE)
+
+# k_retloop
+k_retloop <- .Internal(bcClose(as.pairlist(alist(n = )),
+ mk(c(12L, 123L, 1L, 11L, 26L, 2L, 20L, 3L, 33L, 39L, 1L, 4L, 123L, 4L, 19L, 20L, 3L, 122L, 4L, 11L, 6L, 5L, 26L, 20L, 5L, 4L, 12L, 23L, 13L, 1L), list(quote({
+    invisible(n)
+    return(for (i in seq_len(n)) i)
+}),
+  quote(invisible(n)),
+  as.name("invisible"),
+  as.name("n"),
+  quote(seq_len(n)),
+  as.name("i"),
+  quote(for (i in seq_len(n)) i),
+  quote(return(for (i in seq_len(n)) i)),
+  structure(c(NA, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 4L, 4L, 4L, 3L, 3L, 4L, 4L, 6L, 6L, 6L, 6L, 5L, 5L, 6L, 6L, 6L, 6L, 7L), class = "expressionsIndex"))),
+ globalenv()))
+k_retloop(2)
+
+# k_tailassign
+k_tailassign <- .Internal(bcClose(as.pairlist(alist(v = )),
+ mk(c(12L, 123L, 1L, 11L, 26L, 2L, 20L, 3L, 33L, 39L, 1L, 4L, 20L, 3L, 22L, 4L, 15L, 1L), list(quote({
+    invisible(v)
+    x <- v
+}),
+  quote(invisible(v)),
+  as.name("invisible"),
+  as.name("v"),
+  as.name("x"),
+  quote(x <- v),
+  structure(c(NA, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 3L, 3L, 5L, 5L, 5L, 5L), class = "expressionsIndex"))),
+ globalenv()))
+k_tailassign(3)
+
