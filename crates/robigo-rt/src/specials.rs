@@ -765,7 +765,7 @@ pub(crate) fn slot_gets(
         let input = {
             let nl = list_elt(cx, args, 1);
             let c = match nl.sexptype() {
-                SYMSXP => nl.as_sym().unwrap().name(),
+                SYMSXP => nl.as_sym().unwrap().name(cx),
                 STRSXP => {
                     let sv = nl.as_vector::<Char<'_>>().unwrap();
                     if sv.len() != 1 {

@@ -422,7 +422,7 @@ pub const PRIMITIVE_ALIASES: [(&str, &str); 2] = [("as.numeric", "as.double"), (
 pub unsafe fn alias_of(cx: &Cx, sym: Sexp) -> Option<&'static str> {
     // SAFETY: the caller's contract.
     let s = unsafe { Ref::from_sexp(sym, cx) }.as_sym()?;
-    let n = s.name().bytes();
+    let n = s.name_bytes();
     PRIMITIVE_ALIASES.iter().find(|(a, _)| a.as_bytes() == n).map(|&(_, p)| p)
 }
 
