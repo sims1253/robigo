@@ -448,8 +448,7 @@ impl Cx {
         if self.iso().warnings_len() >= self.nwarnings() {
             return Ok(());
         }
-        // a C string's message ends at a NUL
-        let msg = msg.split(|&b| b == 0).next().unwrap_or_default();
+        let msg = c_str_bytes(msg);
         let m = self.retry_alloc(|cx| cx.mk_char(msg, crate::Encoding::Native).map(|m| m.as_ref().sexp()))?;
         let iso = self.iso();
         let call = call.map_or(iso.nil, |c| c.bind(self).sexp());
@@ -510,5 +509,24 @@ impl Warnings {
     }
     pub(crate) fn set_limit(&mut self, k: usize) {
         self.limit = k;
+    }
+}
+
+/// A message's bytes as a C string reads them: up to the first NUL, as
+/// GNU R's `%s` into its message buffer (`Rvsnprintf_mbcs`) stops there.
+#[inline]
+pub fn c_str_bytes(msg: &[u8]) -> &[u8] {
+    let end = msg.iter().position(|&b| b == 0).unwrap_or(msg.len());
+    &msg[..end]
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_message_ends_at_its_first_nul() {
+        assert_eq!(super::c_str_bytes(b"ab\0cd\0"), b"ab");
+        assert_eq!(super::c_str_bytes(b"\0x"), b"");
+        assert_eq!(super::c_str_bytes(b"abc"), b"abc");
+        assert_eq!(super::c_str_bytes(b""), b"");
     }
 }
