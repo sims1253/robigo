@@ -1279,7 +1279,22 @@ pub fn do_as_environment(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<
         }
         NILSXP => Err(cx.error_call(Some(call), "using 'as.environment(NULL)' is defunct")),
         OBJSXP => Err(not_yet(cx, Some(call), "as.environment() of an S4 object (R_getS4DataSlot)")),
-        VECSXP => Err(not_yet(cx, Some(call), "as.environment() of a list (list2env)")),
+        // as.environment.list(): `list2env(x, NULL, emptyenv())` evaluated in
+        // the caller's environment, so `list2env` is looked up from there
+        VECSXP => cx.scope(|cx, s| {
+            let x = s.root(cx, args.get(cx, 0));
+            let c = s.capture(cx, |cx, o| {
+                cx.build(o, |cx| {
+                    let f: Ref<'_> = cx.install(b"list2env")?.into();
+                    // lang4(install("list2env"), arg, R_NilValue, R_EmptyEnv)
+                    let t = cx.cons(cx.empty_env(), cx.nil())?;
+                    let t = cx.cons(cx.nil(), t)?;
+                    let t = cx.cons(x.bind(cx), t)?;
+                    cx.lcons(f, t)
+                })
+            })?;
+            cx.eval(c, env, out)
+        }),
         _ => Err(cx.error_call(Some(call), "invalid object for 'as.environment'")),
     }
 }
