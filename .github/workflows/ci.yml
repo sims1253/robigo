@@ -870,12 +870,15 @@ jobs:
           python3 scripts/perf-select.py --github-output | tee -a "$GITHUB_STEP_SUMMARY"
       # The base, HEAD^1, built by perf-base and measured here, on this
       # runner, with the same filter as the candidate below: the comparison
-      # never mixes runners and never waits for main's run.
+      # never mixes runners and never waits for main's run. It sits at
+      # base/robigo, a path as long as dist/robigo's: robigo's counts move
+      # with the length of its own path (by up to 0.16%,
+      # docs/ledger/g3/2026-11-18-perf-base.md).
       - uses: actions/download-artifact@v8
         if: github.ref != 'refs/heads/main' && steps.select.outputs.run == 'true'
         with:
           name: robigo-base
-          path: base/binary
+          path: base
       # GNU R's records (its answers, and its counts for the ratio) for this
       # CPU signature: main's run saves them (below); a pull request measures
       # GNU R itself when they are missing or do not cover its selection.
@@ -898,10 +901,9 @@ jobs:
         env:
           PERF_FILTER: ${{ steps.select.outputs.filter }}
         run: |
-          chmod +x base/binary/robigo
-          cp base/binary/BASELINE base/BASELINE
+          chmod +x base/robigo
           echo "baseline: $(cat base/BASELINE), built from the merge's base and measured on this runner" | tee -a "$GITHUB_STEP_SUMMARY"
-          export ROBIGO_NATIVES="$PWD/base/binary/natives"
+          export ROBIGO_NATIVES="$PWD/base/natives"
           export ROBIGO_RDBFLAT=""
           export VALGRIND=valgrind
           filter_flag=()
@@ -913,7 +915,7 @@ jobs:
             runtime=robigo
           fi
           python3 scripts/perf.py run --metric instr --runtime "$runtime" "${oracle_flag[@]}" \
-            --robigo base/binary/robigo --jobs "$(nproc)" --out base/perf.json --quiet "${filter_flag[@]}"
+            --robigo base/robigo --jobs "$(nproc)" --out base/perf.json --quiet "${filter_flag[@]}"
       - name: Measure robigo (and GNU R on main)
         if: steps.select.outputs.run == 'true'
         env:
@@ -968,7 +970,7 @@ jobs:
           # measurements and profiles; the 0.5% threshold is unchanged.
           python3 scripts/test-perf-paired.py
           python3 scripts/perf-paired.py base/perf.json perf.json \
-            --base-robigo base/binary/robigo --robigo dist/robigo \
+            --base-robigo base/robigo --robigo dist/robigo \
             --rdbflat dist/rdbflat | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Report
         if: github.ref == 'refs/heads/main'
