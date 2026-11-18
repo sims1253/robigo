@@ -674,6 +674,7 @@ pub fn do_enc2<const CODE: i32>(
 /// `call` is a case's own call, whose first argument is the case's symbol
 /// `a1` (the driver's and base's calls never name it). Always false in a
 /// build without the feature.
+#[inline(always)]
 pub fn a4_plant_case(cx: &Cx, call: robigo_rtcore::Root<'_>) -> bool {
     cfg!(feature = "diff-plant")
         && call
