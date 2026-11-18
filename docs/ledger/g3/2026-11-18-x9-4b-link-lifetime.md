@@ -25,10 +25,10 @@ when its scope ends:
   saved top stay. So when `h` calls `g`, which calls `k`, and `k` makes a
   complex assignment, `h`'s pending operand lies below `g`'s protection
   top: its link outlives `k` and lasts into the rest of `g`. This is the
-  recorded "returned callee" row. A callee called straight from the
-  expression that holds the operand (`x + { k(); …; 0 }`) commits nothing
-  below its caller's top that is still pending, so there the link is
-  dropped when `k` returns. This is GNU R's accounting as it is.
+  recorded "returned callee" row. When `k` is called straight from the
+  expression that holds the operand (`x + { k(); …; 0 }`), the operand
+  lies above `h`'s protection top, which `k` saved at its entry, so `k`'s
+  link on it is dropped when `k` returns. This is GNU R's accounting as it is.
 - `INCLNK`/`DECLNK` (eval.c:8691-8697) link one operand. The 4.6.2
   compiler never emits them: `checkNeedsInc` is `FALSE`, cmp.R:2104. The
   VM supports them for older byte code.
