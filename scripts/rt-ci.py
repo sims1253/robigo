@@ -40,7 +40,9 @@ the overshoot of every slice (E4, scripts/rt-overshoot.py), and E9: the
 conformance under a small vector limit, allocations refused once after
 visible effects (scripts/rt-fail-alloc.py), and, last, the conformance with
 every `&Cx` build's retry run once (`ROBIGO_RETRY_TORTURE=1`), in a build with
-robigo-rtcore's `retry-torture` feature made for that step alone. The
+robigo-rtcore's `retry-torture` feature made for the last steps alone, and in
+the same build robigo-rt's tests and the conformance with every dead slot
+poisoned (`ROBIGO_POISON_DEAD=1`, robigo-rt's `poison-dead` feature). The
 verification modes of g3.md §16 add their steps here as they land.
 """
 import argparse
@@ -211,9 +213,10 @@ def full_move_steps():
     ])
 
 
-# The cargo feature that compiles ROBIGO_RETRY_TORTURE in (robigo-rtcore's
-# Cargo.toml): only its step builds with it.
-RETRY_TORTURE_FEATURE = "robigo-rtcore/retry-torture"
+# The cargo features that compile ROBIGO_RETRY_TORTURE and ROBIGO_POISON_DEAD
+# in (robigo-rtcore's and robigo-rt's Cargo.toml): only the last steps build
+# with them, all with both, so that they share one build.
+CHECK_FEATURES = "robigo-rtcore/retry-torture,robigo-rt/poison-dead"
 
 
 def steps(crates):
@@ -296,7 +299,18 @@ def steps(crates):
         # so that run is by hand (g3.md §16).
         ("conformance under ROBIGO_RETRY_TORTURE=1 (E9: every build's retry runs once)",
          {"ROBIGO_RETRY_TORTURE": "1", **slow},
-         [*test, "-p", "robigo-rtapi", "--features", RETRY_TORTURE_FEATURE, "--test", "conformance", "--",
+         [*test, "-p", "robigo-rtapi", "--features", CHECK_FEATURES, "--test", "conformance", "--",
+          "--exact", CONFORMANCE, "--nocapture"]),
+        # C1-PZ (docs/g3.md §16): a dead slot (a register's last use, D9's
+        # clears; the slots a scope's restore frees) holds a poison naming
+        # where it died, and a read of it panics: robigo-rt's tests, with
+        # tests/poison.rs's planted early clear, then the conformance
+        ("ROBIGO_POISON_DEAD=1 (dead slots poisoned), robigo-rt's tests and the planted early clear",
+         {"ROBIGO_POISON_DEAD": "1"},
+         [*test, "-p", "robigo-rt", "--features", CHECK_FEATURES, *skip]),
+        ("ROBIGO_POISON_DEAD=1, conformance",
+         {"ROBIGO_POISON_DEAD": "1"},
+         [*test, "-p", "robigo-rtapi", "--features", CHECK_FEATURES, "--test", "conformance", "--",
           "--exact", CONFORMANCE, "--nocapture"]),
     ]
     return every_cpu(out)

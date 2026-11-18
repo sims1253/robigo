@@ -1319,6 +1319,7 @@ unsafe fn body_loop<const FUSED: bool>(
             // SAFETY: an operand register of the code, below its register
             // count and so below MAX_REGS (the caller's contract).
             let s = unsafe { *regs.get_unchecked(x as usize) };
+            s.check_live();
             (s != Slot::EMPTY).then_some(s)
         };
         let w = match i.op {
@@ -1591,10 +1592,10 @@ unsafe fn body_loop<const FUSED: bool>(
                 }
                 return Some(x);
             }
-            Op::Clear => Slot::EMPTY,
+            Op::Clear => Slot::dead(i.a, pc as u32 - 1),
             Op::ClearRange => {
                 for k in i.a..i.b {
-                    *regs.get_mut(k as usize)? = Slot::EMPTY;
+                    *regs.get_mut(k as usize)? = Slot::dead(k, pc as u32 - 1);
                 }
                 continue;
             }

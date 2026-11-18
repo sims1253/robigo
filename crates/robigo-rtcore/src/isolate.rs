@@ -171,6 +171,7 @@ impl Isolate {
     }
 
     #[inline(always)]
+    #[cfg_attr(feature = "poison-dead", track_caller)]
     pub(crate) fn restore(&self, f: Frame) {
         self.stack().restore(f.top);
         self.innermost.set(f.innermost);
