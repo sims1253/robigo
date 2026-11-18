@@ -1304,7 +1304,7 @@ impl Core {
     /// [`Core::alloc_object`] when the system refused a chunk for small
     /// objects: the request is refused (`NeedGc`), and the refusal noted, so
     /// that the same refusal after a collection is GNU R's "memory
-    /// exhausted" ([`Core::take_chunk_refused`]).
+    /// exhausted" ([`Core::take_refusal`]).
     // R: memory.c:GetNewPage (malloc, R_gc_no_finalizers, malloc,
     // mem_err_malloc)
     #[cold]
@@ -3762,7 +3762,7 @@ mod tests {
     #[cfg(not(miri))]
     #[test]
     fn a_refused_page_is_memory_exhausted() {
-        if std::env::var_os("ROBIGO_GC_MOVE").is_some() {
+        if mover::policy_from_env().is_some() {
             // the debug mover copies every object during the collection, and
             // aborts when it cannot get a chunk (`Heap::alloc_or_abort`)
             use std::io::Write;

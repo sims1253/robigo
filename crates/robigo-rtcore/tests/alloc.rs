@@ -146,7 +146,8 @@ fn alloc_rooted_refuses_with_gnu_rs_message() {
 #[cfg(not(miri))]
 #[test]
 fn a_build_refused_a_page_again_is_memory_exhausted() {
-    if std::env::var_os("ROBIGO_GC_MOVE").is_some() {
+    // (the mover's policy: unset, "" and "0" are off)
+    if std::env::var("ROBIGO_GC_MOVE").is_ok_and(|v| !v.is_empty() && v != "0") {
         // the debug mover copies every object during the collection, and
         // aborts when it cannot get a chunk (`Heap::alloc_or_abort`)
         use std::io::Write;

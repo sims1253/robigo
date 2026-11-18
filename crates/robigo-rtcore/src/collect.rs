@@ -226,7 +226,6 @@ impl Cx {
         unsafe { self.iso().core() }.fail_at() != 0
     }
 
-    /// Whether gctorture is on (`gctorture()`'s result).
     /// Why the last refusal was made, if it was a limit or a page the
     /// system refused (then cleared): [`Cx::refused_again`]'s error.
     pub(crate) fn take_refusal(&mut self) -> Option<robigo_heap::AllocError> {
@@ -288,6 +287,7 @@ impl Cx {
         unsafe { self.iso().core() }.torture_counters().1
     }
 
+    /// Whether gctorture is on (`gctorture()`'s result).
     pub fn gc_torture_on(&self) -> bool {
         // SAFETY: one read of the core.
         unsafe { self.iso().core() }.torture()

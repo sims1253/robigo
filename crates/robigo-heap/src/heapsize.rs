@@ -396,6 +396,21 @@ impl HeapSizes {
         self.nodes_in_use < self.max_n_size && self.valloc.saturating_add(cells) <= self.max_v_size
     }
 
+    /// `R_MinVFree`: the vector heap a collection keeps free, a fraction
+    /// of its initial size.
+    // R: memory.c:AdjustHeapSize (R_MinVFree)
+    #[inline]
+    fn min_v_free(&self) -> usize {
+        (self.orig_v_size as f64 * self.min_free_frac) as usize
+    }
+
+    /// `R_MinNFree`: the nodes a collection keeps free.
+    // R: memory.c:AdjustHeapSize (R_MinNFree)
+    #[inline]
+    fn min_n_free(&self) -> usize {
+        (self.orig_n_size as f64 * self.min_free_frac) as usize
+    }
+
     /// Could the collection GNU R makes before this request (its vector
     /// heap is short of `cells`) leave it short? `AdjustHeapSize` grows the
     /// vector heap to the need only while what is in use, the request and
@@ -407,7 +422,7 @@ impl HeapSizes {
     // mem_err_heap), AdjustHeapSize (VNeeded < R_MaxVSize)
     #[inline]
     pub fn short_after_collection(&self, cells: usize) -> bool {
-        let min_v_free = (self.orig_v_size as f64 * self.min_free_frac) as usize;
+        let min_v_free = self.min_v_free();
         self.vheap_free() < cells && self.valloc.saturating_add(cells).saturating_add(min_v_free) >= self.max_v_size
     }
 
@@ -420,7 +435,7 @@ impl HeapSizes {
         if self.max_v_size == usize::MAX {
             return usize::MAX;
         }
-        let min_v_free = (self.orig_v_size as f64 * self.min_free_frac) as usize;
+        let min_v_free = self.min_v_free();
         self.max_v_size.saturating_sub(min_v_free).saturating_sub(1).max(self.v_size).min(self.max_v_size)
     }
 
@@ -476,8 +491,8 @@ impl HeapSizes {
     /// collection that left `nodes_in_use` and `valloc`.
     // R: memory.c:AdjustHeapSize
     pub fn adjust(&mut self, size_needed: usize) {
-        let min_n_free = (self.orig_n_size as f64 * self.min_free_frac) as usize;
-        let min_v_free = (self.orig_v_size as f64 * self.min_free_frac) as usize;
+        let min_n_free = self.min_n_free();
+        let min_v_free = self.min_v_free();
         let n_needed = self.nodes_in_use + min_n_free;
         let v_needed = self.valloc + size_needed + min_v_free;
         let node_occup = n_needed as f64 / self.n_size as f64;
