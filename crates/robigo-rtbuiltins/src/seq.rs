@@ -691,21 +691,36 @@ const SEQ: Generic = Generic::builtin("seq");
 // R: seq.c:FEPS
 const FEPS: f64 = 1e-10;
 
-/// `length(x)` as do_seq reads it (`Rf_length`); `None` for an environment,
-/// whose `envlength` is not ported.
-// R: memory.c:Rf_length
+/// `length(x)` as do_seq reads it (`Rf_length`, whose vector cases are the
+/// `LENGTH` macro): `None` for an environment, whose `envlength` is not
+/// ported; a package ALTREP's length is not read; C's "long vectors not
+/// supported yet" past INT_MAX has no port here.
+// R: Rinlinedfuns.h:length, Rinlinedfuns.h:LENGTH_EX, memory.c:R_BadLongVector
 fn length_seq(cx: &mut Cx, call: Root<'_>, x: Root<'_>) -> RResult<usize> {
-    let n = length(x.bind(cx));
-    n.ok_or_else(|| crate::util::not_yet(cx, Some(call), "seq.int() of an environment (envlength)"))
+    let (alt, n) = {
+        let v = x.bind(cx);
+        (v.is_package_altrep(), length(v))
+    };
+    if alt {
+        return Err(crate::util::not_yet(cx, None, "seq.int() of a package ALTREP argument"));
+    }
+    let Some(n) = n else {
+        return Err(crate::util::not_yet(cx, Some(call), "seq.int() of an environment (envlength)"));
+    };
+    if n > i32::MAX as usize {
+        return Err(crate::util::not_yet(cx, None, "seq.int() of a long vector argument"));
+    }
+    Ok(n)
 }
 
-/// `asReal(x)` with its `CoercionWarning`; a raw vector is `asReal`'s
-/// UNIMPLEMENTED_TYPE; a package ALTREP is not read yet.
+/// `asReal(x)` with its `CoercionWarning`; a raw vector with an element is
+/// `asReal`'s UNIMPLEMENTED_TYPE (a zero-length one is NA, as for every
+/// type); a package ALTREP is not read yet.
 // R: coerce.c:asReal
 fn as_real_seq(cx: &mut Cx, x: Root<'_>) -> RResult<f64> {
     let (alt, raw, r) = {
         let v = x.bind(cx);
-        (v.is_package_altrep(), v.sexptype() == RAWSXP, as_real_w(cx, v))
+        (v.is_package_altrep(), v.sexptype() == RAWSXP && v.len().unwrap_or(0) > 0, as_real_w(cx, v))
     };
     if alt {
         return Err(crate::util::not_yet(cx, None, "seq.int() of a package ALTREP argument"));
@@ -779,10 +794,13 @@ fn seq_int(
     const NA_LEN: i64 = i32::MIN as i64;
     let mut lout: i64 = NA_LEN;
     if along_given {
-        let (env, xl) = {
+        let (alt, env, xl) = {
             let a = along.bind(cx);
-            (a.sexptype() == ENVSXP, crate::coerce::xlength(a))
+            (a.is_package_altrep(), a.sexptype() == ENVSXP, crate::coerce::xlength(a))
         };
+        if alt {
+            return Err(crate::util::not_yet(cx, None, "seq.int() of a package ALTREP argument"));
+        }
         if env {
             return Err(crate::util::not_yet(cx, Some(call), "seq.int() of an environment (envxlength)"));
         }
@@ -881,6 +899,15 @@ fn seq_int(
             (miss_from || f.sexptype() == INTSXP) && (miss_to || t.sexptype() == INTSXP) && b.sexptype() == INTSXP
         };
         if all_int_inputs {
+            // asInteger would read the element of a package ALTREP: not read
+            // here
+            let alt = {
+                let (f, b) = (from.bind(cx), by.bind(cx));
+                f.is_package_altrep() || b.is_package_altrep()
+            };
+            if alt {
+                return Err(crate::util::not_yet(cx, None, "seq.int() of a package ALTREP argument"));
+            }
             let (ifrom, iby) = {
                 let (f, b) = (from.bind(cx), by.bind(cx));
                 (if miss_from { rfrom as i32 } else { as_integer(cx, f).0 }, as_integer(cx, b).0)
@@ -904,8 +931,20 @@ fn seq_int(
             return Err(cx.error("negative length vectors are not allowed"));
         }
         let nn = nn as usize;
+        // C divides its copies before the loop when the difference is
+        // infinite; the overshoot test then reads the divided `rby` (its
+        // sign is unchanged)
+        let (mut rfrom, mut rby) = (rfrom, rby);
+        if !finite_del {
+            // |from - to| is infinite, but n = (from-to)/by is not
+            rfrom /= 4.0;
+            rby /= 4.0;
+        }
         return cx.build(out, |cx| {
-            let mut a = cx.alloc_with::<f64>(nn + 1, |i| rfrom + i as f64 * rby)?;
+            let mut a = cx.alloc_with::<f64>(nn + 1, |i| {
+                let y = rfrom + i as f64 * rby;
+                if finite_del { y } else { y * 4.0 } // ldexp(y, 2) := y * 2^2
+            })?;
             // correct for possible overshot because of fuzz
             if nn > 0 {
                 let last = &mut a.as_mut_slice()[nn];
