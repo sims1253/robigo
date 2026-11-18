@@ -64,8 +64,8 @@ fn a_planted_early_clear_is_caught() {
     // SAFETY: as above.
     unsafe { std::env::set_var("ROBIGO_POISON_PLANT", "1") };
     r.cx().scope(|cx, s| {
-        // SAFETY: a closure bound in the global environment (rooted here).
         let x = closure(cx, "f");
+        // SAFETY: a closure bound in the global environment (rooted here).
         let f = s.root(cx, unsafe { robigo_rtcore::Ref::from_sexp(x, cx) });
         robigo_rt::jitcache::cmpfun(cx, f, robigo_rt::jit::STRATEGY_NO_CACHE).unwrap();
     });

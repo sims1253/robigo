@@ -103,3 +103,6 @@ Round 2: CHANGES, three majors, all fixed:
 - S2: a plant can reach the inline evaluator first, through `cmpfun`; the
   test now does that.
 - S3: args.rs's early-value list read a slot unchecked.
+
+Round 3: APPROVE, no findings. The window kills match the VM's, including
+a destination inside the window: the compiler never puts one there.
