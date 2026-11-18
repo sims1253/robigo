@@ -37,7 +37,9 @@ pub fn do_bind<const CBIND: bool>(
         let missing_dl = first.bind(cx).sexptype() == SYMSXP && {
             let (sym, rho) = (first.bind(cx).sexp(), env.bind(cx).sexp());
             // SAFETY: a symbol of the rooted call and the rooted environment.
-            unsafe { crate::missing::r_is_missing(cx, sym, rho)? }
+            #[allow(unsafe_code)]
+            let m = unsafe { crate::missing::r_missing_in(cx, rho, sym)? };
+            m
         };
         // since R 2.2.0: first argument "deparse.level"
         let dl = s.capture(cx, |cx, o| crate::eval::eval(cx, first, env, o))?;
@@ -69,7 +71,7 @@ pub fn do_bind<const CBIND: bool>(
                 let classlist = s.capture(cx, |cx, o| crate::dispatch::data_class2(cx, obj, o))?;
                 let n = classlist.bind(cx).len().unwrap_or(0);
                 for i in 0..n {
-                    let class = robigo_rtbuiltins::text::native_elt(cx, classlist, i)?;
+                    let class = class_name(cx, classlist, i)?;
                     if generic.len() + class.len() + 2 > 512 {
                         let g = String::from_utf8_lossy(generic).into_owned();
                         return Err(cx.error(&format!("class name too long in '{g}'")));
@@ -96,6 +98,15 @@ pub fn do_bind<const CBIND: bool>(
         }
         if let Some(m) = method {
             // found an S3 method
+            if m.bind(cx).sexptype() != CLOSXP {
+                // (GNU R applies it as a closure all the same, and crashes)
+                let what = if CBIND {
+                    "cbind() dispatching to a method that is not a closure"
+                } else {
+                    "rbind() dispatching to a method that is not a closure"
+                };
+                return Err(robigo_rtbuiltins::util::not_yet(cx, Some(call), what));
+            }
             let args = if missing_dl {
                 // discard 'deparse.level'
                 s.root(cx, pargs.bind(cx).as_cons().unwrap().cdr())
@@ -139,6 +150,15 @@ pub fn do_bind<const CBIND: bool>(
             values.iter().zip(&labels).map(|(&value, &label)| BindArg { value, label }).collect();
         bind_default(cx, CBIND, &args, out)
     })
+}
+
+/// `translateChar(STRING_ELT(classlist, i))`.
+fn class_name(cx: &mut Cx, classlist: Root<'_>, i: usize) -> RResult<Vec<u8>> {
+    let r = {
+        let c = classlist.bind(cx).as_vector::<robigo_rtcore::Char<'_>>().unwrap().get(i);
+        robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(c), cx.locale()).map(|b| b.into_owned())
+    };
+    r.map_err(|e| cx.error(&e.to_string()))
 }
 
 /// `STRING_ELT(deparse1line(expr, TRUE), 0)` of the argument in `cell`.

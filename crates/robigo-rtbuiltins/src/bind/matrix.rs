@@ -346,14 +346,24 @@ fn do_cbind(cx: &mut Cx, args: &[BindArg<'_>], mode: u8, out: Out<'_>) -> RResul
                     // k: the source's length; idx: the elements it fills
                     // (a vector recycled to the rows)
                     let k = match u.view() {
-                        View::List(_) | View::Str(_) | View::Lgl(_) | View::Int(_) | View::Real(_) | View::Cplx(_)
+                        View::List(_)
+                        | View::Str(_)
+                        | View::Lgl(_)
+                        | View::Int(_)
+                        | View::Real(_)
+                        | View::Cplx(_)
                         | View::Raw(_) => u.len().unwrap(),
                         // (a value a list takes whole: one per row)
                         _ => 1,
                     };
                     let whole = !matches!(
                         u.view(),
-                        View::List(_) | View::Str(_) | View::Lgl(_) | View::Int(_) | View::Real(_) | View::Cplx(_)
+                        View::List(_)
+                            | View::Str(_)
+                            | View::Lgl(_)
+                            | View::Int(_)
+                            | View::Real(_)
+                            | View::Cplx(_)
                             | View::Raw(_)
                     );
                     let idx = if mat { k } else { p.rows };
