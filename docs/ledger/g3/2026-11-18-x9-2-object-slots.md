@@ -92,4 +92,22 @@ ratcheted. Each shape runs in the closure's first call and in later
 It matches GNU R in plain, gctorture, `GC_MOVE` with gctorture,
 `NO_INPLACE`, `MATERIALIZE` and `FRAME_QUARANTINE`.
 
-**Checks:** CHECKS
+`tests/rt/capi/unbound-store.R` (Sol round 1): a native `.Call` can
+return `R_UnboundValue`. The direct store leaves it to `define_var`, whose
+error "attempt to bind a variable to R_UnboundValue" GNU R raises too.
+It is recorded on 4.6.2 for a new binding and an existing one, and
+ratcheted. GNU R's byte-code SETVAR into an existing cell
+(`SET_BINDING_VALUE`, eval.c:2736) has no such check, where robigo-rt's
+`define_var` always checks. That difference predates X9-2, is unchanged by
+it, and is a low.
+
+**Checks at `b1f31e6a`:**
+- debug `cargo test -p robigo-rt -p robigo-rtcore`: 313 pass;
+- `cargo fmt --check`, `scripts/test-rt-ci.py`, the full `scripts/rt-ci.py`
+  and `scripts/lint.sh` pass. The conformance step is 590/596; the 6
+  failures are main's unratcheted cases (five `bytecode/*` and
+  `dynload/library-dynam-tools`);
+- Miri on rtcore: 143 tests pass.
+
+Sol (gpt-6.1-sol, high): round 1 found S1 (`R_UnboundValue`), which is
+fixed; round 2 approved.
