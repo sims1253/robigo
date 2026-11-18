@@ -331,7 +331,7 @@ impl Writer<'_> {
     /// `s` is live, reachable from the rooted object, and nothing has
     /// collected since it was read.
     // R: serialize.c:WriteItem
-    unsafe fn compile_on_write(&self, cx: &Cx, s: Sexp) -> bool {
+    unsafe fn compile_on_write(cx: &Cx, s: Sexp) -> bool {
         let st = crate::prims::state(cx);
         // SAFETY: the caller's contract; a closure's body is its CDR.
         unsafe {
@@ -346,6 +346,23 @@ impl Writer<'_> {
             !x.is_s4()
                 || !(robigo_rtbuiltins::attrib::inherits(x, b"refMethodDef")
                     || robigo_rtbuiltins::attrib::inherits(x, b"defaultBindingFunction"))
+        }
+    }
+
+    /// Whether `s` is a closure robigo-rt's JIT has compiled (its own
+    /// code, no BCODESXP for its body): GNU R's JIT has installed
+    /// `R_cmpfun1`'s byte code as its BODY by now (eval.c:R_cmpfun), and
+    /// serialize writes that.
+    ///
+    /// # Safety
+    /// As for [`Self::compile_on_write`].
+    unsafe fn jit_compiled(cx: &Cx, s: Sexp) -> bool {
+        // SAFETY: the caller's contract; a closure's body is its CDR.
+        unsafe {
+            s.typ() == CLOSXP
+                && crate::jit::compiled(s)
+                && s.cdr().typ() != BCODESXP
+                && !crate::prims::state(cx).jit.get().disable_bytecode
         }
     }
 
@@ -409,8 +426,11 @@ impl Writer<'_> {
             // has collected since it was read (an effect point that
             // collected restarts the walk).
             unsafe {
+                // (a JIT-compiled closure the compiler declines: written as
+                // its source)
+                let mut source = None;
                 loop {
-                    if self.compile_on_write(cx, s) {
+                    if Self::compile_on_write(cx, s) {
                         // R_compile_pkgs off while the compiled closure is
                         // written (its environment's closures are written
                         // as they are), then TRUE; an error leaves it off
@@ -420,6 +440,21 @@ impl Writer<'_> {
                         self.item(cx, new_s)?;
                         crate::prims::state(cx).compile_pkgs.set(1);
                         return Ok(());
+                    }
+                    // a closure robigo-rt's JIT compiled: GNU R's JIT has made
+                    // its BODY R_cmpfun1's byte code, so the same compile now
+                    // writes what GNU R writes (the closure cmpfun makes: the
+                    // formals, the code, the environment and attributes; no
+                    // JIT bits, as R_CheckJIT cleared MAYBEJIT)
+                    if source != Some(s.addr()) && Self::jit_compiled(cx, s) {
+                        let new_s = self.cmpfun1(cx, s)?;
+                        if new_s.typ() == CLOSXP && new_s.cdr().typ() == BCODESXP {
+                            return self.item(cx, new_s);
+                        }
+                        // R_cmpfun: the compiler declined, so GNU R's JIT left
+                        // the source and set NOJIT
+                        s.set_gp(s.gp() | crate::jit::NOJIT_MASK);
+                        source = Some(s.addr());
                     }
                     if s.is_altrep() {
                         if robigo_rtcore::altrep::own::own_class(s).is_none() {
@@ -477,15 +512,6 @@ impl Writer<'_> {
                         _ => false,
                     };
                     let hasattr = t != CHARSXP && s.attrib_raw() != nil;
-                    // a closure robigo-rt compiles itself where GNU R holds
-                    // its body as byte code: no BCODESXP of GNU R's to write
-                    // (one whose body is a BCODESXP, from bcClose or
-                    // unserialize, is written as it is)
-                    if t == CLOSXP && crate::jit::compiled(s) && s.cdr().typ() != BCODESXP {
-                        return Err(cx
-                            .error("robigo: serializing a byte-compiled closure is not implemented yet")
-                            .into());
-                    }
                     if t == PROMSXP
                         && s.extra() & robigo_heap::extra::promise::BYTECODE != 0
                         && s.cdr().typ() != BCODESXP
