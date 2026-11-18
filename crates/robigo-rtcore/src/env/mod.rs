@@ -3210,14 +3210,18 @@ impl Cx {
     ///
     /// # Safety
     /// As for [`Cx::frame_slot_raw`]; `sym` is the symbol of slot `index`;
-    /// `value` a live object of this isolate, not R_UnboundValue.
+    /// `value` a live object of this isolate (R_UnboundValue: false).
     // R: envir.c:defineVar (a frame's existing or free binding)
     #[inline]
     pub unsafe fn frame_store_object_raw(&self, rho: Sexp, shape: Sexp, index: usize, sym: Sexp, value: Sexp) -> bool {
         // SAFETY: the caller's contract: `rho` is a live environment.
         unsafe { self.note_write(rho) };
         let iso = self.iso();
-        debug_assert!(value != iso.unbound, "robigo: a slot store of R_UnboundValue");
+        // (R_UnboundValue, which a native routine can return: define_var's
+        // error, envir.c:defineVar)
+        if value == iso.unbound {
+            return false;
+        }
         // SAFETY: the caller's contract; the store goes through the frame's
         // barrier and counts, as `define_var`'s does.
         unsafe {
