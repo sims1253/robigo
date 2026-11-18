@@ -865,21 +865,39 @@ fn delayed_binding(cx: &mut Cx, sym: Root<'_>, env: Root<'_>, what: Delayed, out
 
 /// `.Internal(delayedBindingExpression(sym, env))`.
 // R: envir.c:do_delayedBindingExpr
-pub fn do_delayed_binding_expr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub fn do_delayed_binding_expr(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: Args<'_>,
+    _env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     crate::row!("delayedBindingExpression", true).check_arity(cx, call, args)?;
     delayed_binding(cx, args.root(0), args.root(1), Delayed::Expr, out)
 }
 
 /// `.Internal(delayedBindingEnvironment(sym, env))`.
 // R: envir.c:do_delayedBindingEnv
-pub fn do_delayed_binding_env(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub fn do_delayed_binding_env(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: Args<'_>,
+    _env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     crate::row!("delayedBindingEnvironment", true).check_arity(cx, call, args)?;
     delayed_binding(cx, args.root(0), args.root(1), Delayed::Env, out)
 }
 
 /// `.Internal(forcedBindingExpression(sym, env))`.
 // R: envir.c:do_forcedBindingExpr
-pub fn do_forced_binding_expr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub fn do_forced_binding_expr(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: Args<'_>,
+    _env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     crate::row!("forcedBindingExpression", true).check_arity(cx, call, args)?;
     delayed_binding(cx, args.root(0), args.root(1), Delayed::Forced, out)
 }
