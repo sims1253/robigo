@@ -19,10 +19,16 @@ when its scope ends:
   in-loop calls, eval.c:7319, 7331) drops the links above the caller's
   protection top and restores the committed mark. A for loop's links end at
   ENDFOR (eval.c:7817), a region's at `DECLNKSTK` (eval.c:8709).
-- A callee's commit also links its callers' stack values, which lie below
-  its entry top. Its release covers only the slots above the caller's top,
-  so those links outlive the callee; the recording below shows it. This is
-  GNU R's accounting as it is.
+- When an activation ends, `DECLNK_stack` drops the links committed at or
+  above the protection top saved at its entry (its caller's), and the
+  committed mark goes back to the caller's. Links it committed below that
+  saved top stay. So when `h` calls `g`, which calls `k`, and `k` makes a
+  complex assignment, `h`'s pending operand lies below `g`'s protection
+  top: its link outlives `k` and lasts into the rest of `g`. This is the
+  recorded "returned callee" row. A callee called straight from the
+  expression that holds the operand (`x + { k(); …; 0 }`) commits nothing
+  below its caller's top that is still pending, so there the link is
+  dropped when `k` returns. This is GNU R's accounting as it is.
 - `INCLNK`/`DECLNK` (eval.c:8691-8697) link one operand. The 4.6.2
   compiler never emits them: `checkNeedsInc` is `FALSE`, cmp.R:2104. The
   VM supports them for older byte code.
