@@ -25,8 +25,10 @@
   - In a locale that is not UTF-8, a non-ASCII byte outside a string
     literal, a backquoted name and a comment is refused ("robigo: non-ASCII
     characters outside strings and comments in a non-UTF-8 locale are not
-    implemented yet"). Only the bytes the parse reads are checked: those up
-    to the requested expressions, or up to a syntax error. GNU R's lexer
+    implemented yet"). The whole input is checked, also for a finite `n`
+    (where R_Parse's lexer stops is past white space the expressions' spans
+    do not show), so robigo-rt may refuse text GNU R would partly read;
+    it never accepts what GNU R rejects. GNU R's lexer
     reads such bytes with `isalpha`/`isspace`, where they are neither a name
     nor white space, and ends in its multibyte-parser error. robigo-syntax's
     Unicode classes would accept them, and that path is not ported.

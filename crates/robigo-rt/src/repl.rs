@@ -100,7 +100,7 @@ pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
             let ok = match status {
                 robigo_syntax::ConsoleStatus::Null => {
                     // (white space GNU R's C-locale lexer does not skip)
-                    if crate::reader::non_ascii_refused(cx, &iob, usize::MAX) {
+                    if crate::reader::non_ascii_refused(cx, &iob) {
                         error_at_top(cx, crate::reader::NON_ASCII_REFUSED);
                         false
                     } else {
@@ -135,7 +135,7 @@ pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
                     if !warnings.is_empty() {
                         return parse_warnings_unsupported(cx);
                     }
-                    if crate::reader::non_ascii_refused(cx, &iob, usize::MAX) {
+                    if crate::reader::non_ascii_refused(cx, &iob) {
                         error_at_top(cx, crate::reader::NON_ASCII_REFUSED);
                         false
                     } else {

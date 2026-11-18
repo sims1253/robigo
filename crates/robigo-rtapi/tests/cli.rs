@@ -254,6 +254,23 @@ fn a_missing_locale_warns_during_startup_and_uses_c() {
     assert_eq!((String::from_utf8_lossy(&out).as_ref(), status), ("ANSI_X3.4-1968 \n", 0));
 }
 
+/// Under `LC_ALL=C`, GNU R's lexer does not skip a no-break space (it
+/// raises "invalid multibyte character in parser"), with any `n`: a finite
+/// `n` must not let the port's Unicode lexer skip it into a value. The text
+/// is checked whole, so the refusal also covers bytes after the requested
+/// expressions (more than GNU R rejects).
+#[test]
+fn a_c_locale_refuses_non_ascii_outside_strings_whatever_n() {
+    let refused =
+        "robigo: non-ASCII characters outside strings and comments in a non-UTF-8 locale are not implemented yet";
+    // (the bytes 31 20 C2 A0 0A, C2 A0 0A and 31 0A C3 A9 0A, as escapes)
+    for bytes in [r"1 \xc2\xa0\n", r"\xc2\xa0\n", r"1\n\xc3\xa9\n"] {
+        let expr = format!("cat(tryCatch(deparse(parse(text = \"{bytes}\", n = 1)), error = conditionMessage), '\\n')");
+        let (out, _, status) = run_env(&std::env::temp_dir(), &["--vanilla", "-e", &expr], None, &[("LC_ALL", "C")]);
+        assert_eq!((String::from_utf8_lossy(&out).as_ref(), status), (format!("{refused} \n").as_str(), 0), "{bytes}");
+    }
+}
+
 #[test]
 fn the_greeting_is_refused() {
     let dir: PathBuf = std::env::temp_dir().join(format!("robigo-rt-cli-greeting-{}", std::process::id()));
