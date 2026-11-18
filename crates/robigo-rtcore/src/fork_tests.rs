@@ -19,9 +19,14 @@ fn child_work() -> i32 {
         // environment while it writes.
         iso.grant_env_writes(unsafe { crate::clib::EnvWrites::assume() });
         let cx = iso.cx();
-        let w = crate::clib::env_writer(cx).expect("an environment writer in the child");
-        assert!(w.set(b"ROBIGO_FORK_TEST", b"1"));
-        drop(w);
+        // other tests' isolates still count in the child: on a glibc older
+        // than MIN_GLIBC that is the writer's documented refusal
+        match crate::clib::env_writer(cx) {
+            Ok(w) => assert!(w.set(b"ROBIGO_FORK_TEST", b"1")),
+            Err(crate::clib::EnvWriteRefused::SeveralIsolates)
+                if crate::clib::glibc_version() < crate::clib::MIN_GLIBC => {}
+            Err(e) => panic!("{e:?}"),
+        }
         let _ = cx.install(format!("robigo_fork_test_{}", std::process::id()).as_bytes()).unwrap();
     });
     if r.is_ok() { 0 } else { 1 }

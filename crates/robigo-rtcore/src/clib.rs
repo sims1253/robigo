@@ -352,7 +352,7 @@ fn parse_glibc_version(v: &[u8]) -> (u32, u32) {
 }
 
 /// The running C library's version (`gnu_get_libc_version`), read once.
-fn glibc_version() -> (u32, u32) {
+pub fn glibc_version() -> (u32, u32) {
     unsafe extern "C" {
         fn gnu_get_libc_version() -> *const libc::c_char;
     }

@@ -4,7 +4,7 @@
 //! first.
 
 #[test]
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(miri)))]
 fn the_fork_handlers_run_before_the_first_heap_exists() {
     let before = robigo_heap::fork_prepares();
     // SAFETY: the child exits at once.
