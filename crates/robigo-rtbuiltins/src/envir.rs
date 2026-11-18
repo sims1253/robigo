@@ -125,10 +125,12 @@ pub fn do_assign(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
         if crate::util::a4_plant_case(cx, call)
             && val.bind(cx).len() == Some(3)
             && val.bind(cx).sexptype() != ENVSXP
-            && aenv.bind(cx) != cx.global_env()
+            && ![cx.global_env(), cx.base_env(), cx.empty_env()].contains(&aenv.bind(cx))
+            && !cx.environment_is_locked(aenv)?
         {
-            // PLANT(A4, env): a second binding GNU R does not make (not in
-            // the global environment, the globals field, nor in the value)
+            // PLANT(A4, env): a second binding GNU R does not make, only in
+            // an environment that takes it (so never an error) and that is
+            // neither the global one (the globals field) nor the value
             let k = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"a4plant")?.into())))?;
             cx.define_var(k, val, aenv)?;
         }

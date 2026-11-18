@@ -1,6 +1,2 @@
-# builtin-diff known failures: bindtextdomain, seed 0, key c87a7d2f080cefc5631bc6ed
-# bindtextdomain: 283 / 287 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
-1
-2
-257
-258
+# builtin-diff known failures: bindtextdomain, seed 0, key 3bd49b5227ad6da1f242c9db
+# bindtextdomain: 270 / 270 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)

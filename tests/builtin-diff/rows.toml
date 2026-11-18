@@ -10,6 +10,8 @@
 #   budget   the generated cases' cap (2000; plus 200 random)
 #   effect   the registry's class, needed until the builtin is in the registry
 #   jit      "both": also run under R_ENABLE_JIT=3, as <name>@jit
+#   special  true: run a special (its arguments reach it as the case's
+#            symbols a1, a2, ...)
 # Changing gen.R, driver.R, the lattice or a row changes its key: its known/
 # list must then be regenerated (--regen-known) in a PR titled
 # `builtin-diff:`, which shows each builtin's pass/total before and after.
@@ -238,7 +240,9 @@ typical = { paths = "=\".\"", octmode = "=as.octmode(\"755\")", use_umask = "=TR
 domain = { paths = ["=\".\"", "=\"nope\"", "@chr"], octmode = ["=as.octmode(\"755\")", "=as.octmode(\"700\")", "@num"], use_umask = ["@lgl"] }
 
 [bindtextdomain]
-domain = { domain = ["=\"R\"", "=\"R-base\"", "@chr"], dirname = ["NULL", "=\"/nope\"", "@chr"] }
+# (no NULL dirname: it returns the runtime's own R_HOME/library/translations,
+# which differs between the two by construction)
+domain = { domain = ["=\"R\"", "=\"R-base\"", "@chr"], dirname = ["=\"/nope\"", "@chr"] }
 
 [strptime]
 args = ["x", "format", "tz"]

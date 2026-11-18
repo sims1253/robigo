@@ -180,8 +180,10 @@ robigo-rt's builtins with GNU R 4.6.2's on generated inputs, out of process.
   - `abs`: a panic;
   - `set.seed`: one more draw;
   - `nzchar`: printed output;
-  - `assign`: a second binding in the environment;
-  - `do.call`: one more call of the function (the log);
+  - `assign`: a second binding in an environment that is neither the
+    global one nor the value;
+  - `do.call`: one more call of the function (the log, and the warnings
+    a warning fixture gives);
   - `Sys.getenv`: a file left in the working directory.
 
   A plant on a builtin the driver itself calls (`assign`, `do.call`,
@@ -190,7 +192,8 @@ robigo-rt's builtins with GNU R 4.6.2's on generated inputs, out of process.
 
   Each must fail in its own field, the panic must cost only its own cases,
   and the control must not change. `ci`, rt-ci.py's step, runs
-  `check-rows`, then `run`, then `plant`.
+  `check-rows`, then `run`, then `plant`; `plant` reuses `run`'s results
+  for the planted and control rows, so only the plant binary runs them again.
 
 ### Timezone fixtures
 
