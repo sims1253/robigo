@@ -1901,7 +1901,7 @@ impl<'g> Comp<'g> {
             // symbol becomes a string in the setter's call, not in cexpr
             // R: cmp.R:setSetterInlineHandler("@<-")
             if afun == cx.install(b"@<-")?.as_ref().sexp()
-                && self.bc.as_ref().unwrap().inline_info(cx, st, afun, false).is_some()
+                && self.bc.as_ref().unwrap().inline_info(cx, st, afun, false, cenv::Table::Setter)?.is_some()
                 && args.len() == 1
                 && place.cdr().car() != st.syms.dots
                 && place.cdr().car() != cx.missing_arg().sexp()
