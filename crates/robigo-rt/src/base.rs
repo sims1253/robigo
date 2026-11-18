@@ -417,11 +417,26 @@ fn form_bytes(cx: &Cx, form: Form) -> Result<Vec<u8>, String> {
         .and_then(|_| f.read_exact(&mut b))
         .map_err(|e| format!("{}: {e}", path.display()))?;
     for &(from, to) in &Wide::get().substs {
-        if let Some(k) = b.windows(from.len()).position(|w| w == from.as_bytes()) {
-            b.splice(k..k + from.len(), to.bytes());
-        }
+        b = sed_first_per_line(&b, from.as_bytes(), to.as_bytes());
     }
     Ok(b)
+}
+
+/// `sed -e "s:FROM:TO:"` (mkRbase's, share/make/basepkg.mk): the first
+/// occurrence of `from` on each line replaced by `to` (no `g` flag).
+fn sed_first_per_line(b: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(b.len());
+    for line in b.split_inclusive(|&c| c == b'\n') {
+        match line.windows(from.len()).position(|w| w == from) {
+            Some(k) => {
+                out.extend_from_slice(&line[..k]);
+                out.extend_from_slice(to);
+                out.extend_from_slice(&line[k + from.len()..]);
+            }
+            None => out.extend_from_slice(line),
+        }
+    }
+    out
 }
 
 /// Parse `form`, take the expression `pick` gives of its one top-level
@@ -714,6 +729,18 @@ fn not_yet_internal(cx: &mut Cx, call: Root<'_>, _: Args<'_>, _: Root<'_>, _: Ou
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// mkRbase's `sed -e "s:@WHICH@:...:"` has no `g`: the first occurrence
+    /// on each line, every line.
+    #[test]
+    fn substitutions_replace_the_first_occurrence_on_each_line() {
+        let b = b"a <- \"@W@\"; b <- \"@W@\"\nc <- \"@W@\"\nnone\n@W@";
+        let r = sed_first_per_line(b, b"@W@", b"/usr/bin/which");
+        assert_eq!(
+            String::from_utf8(r).unwrap(),
+            "a <- \"/usr/bin/which\"; b <- \"@W@\"\nc <- \"/usr/bin/which\"\nnone\n/usr/bin/which"
+        );
+    }
 
     #[test]
     fn the_bound_parses_and_names_files_in_collation_order() {

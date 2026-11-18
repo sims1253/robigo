@@ -356,8 +356,7 @@ impl Cx {
         let call = call.map_or(iso.nil, |c| c.bind(cx).sexp());
         // A message vector that cannot be allocated leaves the value
         // R_NilValue: the error is still recorded.
-        // a C string's message ends at a NUL
-        let msg = msg.split(|&b| b == 0).next().unwrap_or_default();
+        let msg = crate::c_str_bytes(msg);
         // (bytes that are not UTF-8 are the native encoding's)
         let enc = if std::str::from_utf8(msg).is_ok() { crate::Encoding::Utf8 } else { crate::Encoding::Native };
         let value = cx
