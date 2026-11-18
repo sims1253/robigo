@@ -1,7 +1,8 @@
 //! array.c: `.Internal(matrix(data, nrow, ncol, byrow, dimnames,
 //! missing(nrow), missing(ncol)))` (`do_matrix`, with duplicate.c's
 //! `copyMatrix`; `gc()`'s own R code shapes its result with it), and
-//! `.Internal(lengths(x, use.names))` (`do_lengths`).
+//! `.Internal(lengths(x, use.names))` (`do_lengths`), `aperm` (`do_aperm`),
+//! `row`/`col` (`do_rowscols`) and `asplit` (`do_asplit`).
 
 use crate::attrib::set::dimnamesgets;
 use crate::attrib::{Attr, Attrs};
@@ -687,6 +688,334 @@ pub fn do_array(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
             dimnamesgets(cx, ans, dn)?;
         }
         out.set(cx, ans.bind(cx));
+        Ok(())
+    })
+}
+
+// ---- aperm, row/col, asplit --------------------------------------------------
+
+/// `translateChar(STRING_ELT(x, i))`.
+fn translated_elt(cx: &mut Cx, x: Ref<'_>, i: usize) -> RResult<Vec<u8>> {
+    let r = {
+        let c = x.as_vector::<Char<'_>>().unwrap().get(i);
+        crate::text::to_native(crate::coerce::text(c), cx.locale()).map(|b| b.into_owned())
+    };
+    r.map_err(|e| cx.error(&e.to_string()))
+}
+
+/// A vector of `x`'s type and length `n` whose element `i` is `x`'s
+/// element `src(i)` (aperm's and asplit's copies); None for a type the
+/// copies do not take.
+fn gather<'g>(
+    cx: &'g Cx,
+    x: Ref<'g>,
+    n: usize,
+    src: impl Fn(usize) -> usize,
+) -> Result<Option<Ref<'g>>, robigo_rtcore::NeedGc> {
+    macro_rules! plain {
+        ($ty:ty) => {{
+            let xs = x.as_vector::<$ty>().unwrap();
+            Some(cx.alloc_with::<$ty>(n, |i| xs.get(src(i)))?.finish().into())
+        }};
+    }
+    Ok(match x.sexptype() {
+        LGLSXP => plain!(Lgl),
+        INTSXP => plain!(i32),
+        REALSXP => plain!(f64),
+        CPLXSXP => plain!(Rcomplex),
+        RAWSXP => plain!(u8),
+        STRSXP => {
+            let xs = x.as_vector::<Char<'_>>().unwrap();
+            let mut r = cx.alloc_vector::<Char<'_>>(n)?;
+            for i in 0..n {
+                r.set(i, xs.get(src(i)));
+            }
+            Some(r.finish().into())
+        }
+        VECSXP => {
+            let xs = x.as_vector::<Ref<'_>>().unwrap();
+            let mut r = cx.alloc_vector::<Ref<'_>>(n)?;
+            for i in 0..n {
+                r.set(i, xs.get(src(i)));
+            }
+            Some(r.finish().into())
+        }
+        _ => None,
+    })
+}
+
+/// `.Internal(aperm(a, perm, resize))`: the array `a` with its extents
+/// permuted by `perm` (reversed when it is empty; dimension names when it
+/// is character), with the permuted dim, its names and the dimnames (and
+/// their names) when `resize`, else `a`'s dim.
+// R: array.c:do_aperm
+pub fn do_aperm(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("aperm", true).check_arity(cx, call, args)?;
+    let a = args.root(0);
+    if !crate::attrib::is_array(a.bind(cx)) {
+        return Err(cx.error("invalid first argument, must be an array"));
+    }
+    if a.bind(cx).is_package_altrep() {
+        return Err(not_yet(cx, Some(call), "aperm() of a package ALTREP array"));
+    }
+    cx.scope(|cx, s| {
+        cx.materialize(a)?;
+        let dimsa = s.root(cx, crate::attrib::get_value(a.bind(cx), b"dim").unwrap());
+        cx.materialize(dimsa)?;
+        let isa: Vec<i32> = dimsa.bind(cx).as_ints().unwrap().to_vec();
+        let n = isa.len();
+        // check the permutation
+        let perm = args.root(1);
+        let mut pp = vec![0i64; n];
+        if crate::coerce::xlength(perm.bind(cx)) == 0 {
+            for (i, p) in pp.iter_mut().enumerate() {
+                *p = (n - 1 - i) as i64;
+            }
+        } else {
+            let plen = crate::coerce::xlength(perm.bind(cx));
+            if plen != n {
+                return Err(cx.error(&format!("'perm' is of wrong length {plen} (!= {n})")));
+            }
+            if perm.bind(cx).sexptype() == STRSXP {
+                let no_names = || "'a' does not have named dimnames";
+                let Some(dna) = crate::attrib::get_value(a.bind(cx), b"dimnames") else {
+                    return Err(cx.error(no_names()));
+                };
+                let dna = s.root(cx, dna);
+                let Some(dnna) = crate::attrib::get_value(dna.bind(cx), b"names") else {
+                    return Err(cx.error(no_names()));
+                };
+                let dnna = s.root(cx, dnna);
+                let names: Vec<Vec<u8>> =
+                    (0..n).map(|j| translated_elt(cx, dnna.bind(cx), j)).collect::<RResult<_>>()?;
+                for (i, p) in pp.iter_mut().enumerate() {
+                    let this = translated_elt(cx, perm.bind(cx), i)?;
+                    match names.iter().position(|nm| *nm == this) {
+                        Some(j) => *p = j as i64,
+                        None => {
+                            let msg = format!("'perm[{}]' does not match a dimension name", i + 1);
+                            return Err(cx.error(&msg));
+                        }
+                    }
+                }
+            } else {
+                let pi = s.capture(cx, |cx, o| crate::coerce::coerce_vector(cx, perm, INTSXP, o))?;
+                cx.materialize(pi)?;
+                let v = pi.bind(cx).as_ints().unwrap().to_vec();
+                for (i, p) in pp.iter_mut().enumerate() {
+                    // INTEGER(perm)[i] - 1: NA_INTEGER - 1 in C's int
+                    *p = v[i].wrapping_sub(1) as i64;
+                }
+            }
+        }
+        let mut iip = vec![0usize; n];
+        for &p in &pp {
+            if p >= 0 && (p as usize) < n {
+                iip[p as usize] += 1;
+            } else {
+                return Err(cx.error("value out of range in 'perm'"));
+            }
+        }
+        if iip.contains(&0) {
+            return Err(cx.error("invalid 'perm' argument"));
+        }
+        let pp: Vec<usize> = pp.iter().map(|&p| p as usize).collect();
+        // the strides, and the dimensions of the result
+        if n > 0 {
+            iip[0] = 1;
+        }
+        for i in 1..n {
+            iip[i] = iip[i - 1] * isa[i - 1].max(0) as usize;
+        }
+        let stride: Vec<usize> = pp.iter().map(|&p| iip[p]).collect();
+        let isr: Vec<i32> = pp.iter().map(|&p| isa[p]).collect();
+        let len = crate::coerce::xlength(a.bind(cx));
+        // the source index of each element (CLICKJ)
+        let mut src = Vec::with_capacity(len);
+        let mut idx = vec![0usize; n];
+        let mut lj = 0usize;
+        for _ in 0..len {
+            src.push(lj);
+            for i in 0..n {
+                if idx[i] as i64 == isr[i] as i64 - 1 {
+                    idx[i] = 0;
+                } else {
+                    idx[i] += 1;
+                    break;
+                }
+            }
+            lj = (0..n).map(|i| idx[i] * stride[i]).sum();
+        }
+        let o = s.out(cx);
+        let r = o.root();
+        let mut ok = true;
+        cx.build(o, |cx| match gather(cx, a.bind(cx), len, |i| src[i])? {
+            Some(v) => Ok(v),
+            None => {
+                ok = false;
+                Ok(cx.nil())
+            }
+        })?;
+        if !ok {
+            let msg = format!("unimplemented type '{}' in 'aperm'\n", crate::util::type2char(a.bind(cx).sexptype()));
+            return Err(cx.error(&msg));
+        }
+        // the resize
+        let resize = as_logical(cx, args.get(cx, 2));
+        if resize == NA_INTEGER {
+            return Err(cx.error("'resize' must be TRUE or FALSE"));
+        }
+        if resize != 0 {
+            let dimsr = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_copy(&isr)?.finish().into())))?;
+            if let Some(nmdm) = crate::attrib::get_value(dimsa.bind(cx), b"names") {
+                let nmdm = s.root(cx, nmdm);
+                let nm = s.capture(cx, |cx, o| {
+                    cx.build(o, |cx| {
+                        let src = nmdm.bind(cx).as_vector::<Char<'_>>().unwrap();
+                        let mut v = cx.alloc_vector::<Char<'_>>(n)?;
+                        for (i, &p) in pp.iter().enumerate() {
+                            v.set(i, src.get(p));
+                        }
+                        Ok(v.finish().into())
+                    })
+                })?;
+                crate::attrib::set::set_attrib(cx, dimsr, b"names", nm)?;
+            }
+            crate::attrib::set::dimgets(cx, r, dimsr)?;
+            if let Some(dna) = crate::attrib::get_value(a.bind(cx), b"dimnames") {
+                let dna = s.root(cx, dna);
+                let dnr = s.capture(cx, |cx, o| {
+                    cx.build(o, |cx| {
+                        let src = dna.bind(cx).as_vector::<Ref<'_>>().unwrap();
+                        let mut v = cx.alloc_vector::<Ref<'_>>(n)?;
+                        for (i, &p) in pp.iter().enumerate() {
+                            v.set(i, src.get(p));
+                        }
+                        Ok(v.finish().into())
+                    })
+                })?;
+                if let Some(dnna) = crate::attrib::get_value(dna.bind(cx), b"names") {
+                    let dnna = s.root(cx, dnna);
+                    let dnnr = s.capture(cx, |cx, o| {
+                        cx.build(o, |cx| {
+                            let src = dnna.bind(cx).as_vector::<Char<'_>>().unwrap();
+                            let mut v = cx.alloc_vector::<Char<'_>>(n)?;
+                            for (i, &p) in pp.iter().enumerate() {
+                                v.set(i, src.get(p));
+                            }
+                            Ok(v.finish().into())
+                        })
+                    })?;
+                    crate::attrib::set::set_attrib(cx, dnr, b"names", dnnr)?;
+                }
+                crate::attrib::set::set_attrib(cx, r, b"dimnames", dnr)?;
+            }
+        } else {
+            crate::attrib::set::dimgets(cx, r, dimsa)?;
+        }
+        out.set(cx, r.bind(cx));
+        Ok(())
+    })
+}
+
+/// `.Internal(row(dim))` (`CODE` 1) and `.Internal(col(dim))` (2): the
+/// integer matrix of the row or column number of each element.
+// R: array.c:do_rowscols, allocMatrix
+pub fn do_rowscols<const CODE: i32>(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: Args<'_>,
+    _env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    let name = if CODE == 2 { "col" } else { "row" };
+    let def = if CODE == 2 { crate::row!("col", true) } else { crate::row!("row", true) };
+    def.check_arity(cx, call, args)?;
+    cx.scope(|cx, s| {
+        let d = args.root(0);
+        let dim = if d.bind(cx).sexptype() == INTSXP && !crate::attrib::inherits(d.bind(cx), b"factor") {
+            d
+        } else {
+            s.capture(cx, |cx, o| crate::coerce::coerce_vector(cx, d, INTSXP, o))?
+        };
+        cx.materialize(dim)?;
+        if crate::coerce::xlength(dim.bind(cx)) != 2 {
+            let msg = format!("a matrix-like object is required as argument to '{name}'");
+            return Err(cx.error(&msg));
+        }
+        let (nr, nc) = {
+            let v = dim.bind(cx).as_ints().unwrap();
+            (v[0], v[1])
+        };
+        if nr < 0 || nc < 0 {
+            return Err(cx.error("negative extents to matrix"));
+        }
+        if nr as f64 * nc as f64 > R_XLEN_T_MAX {
+            return Err(cx.error("allocMatrix: too many elements specified"));
+        }
+        let (nr, nc) = (nr as usize, nc as usize);
+        let ans = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| {
+                let v = cx.alloc_with::<i32>(nr * nc, |k| if CODE == 2 { (k / nr.max(1)) as i32 + 1 } else { (k % nr.max(1)) as i32 + 1 })?;
+                Ok(v.finish().into())
+            })
+        })?;
+        let dims = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_copy(&[nr as i32, nc as i32])?.finish().into())))?;
+        crate::attrib::set::dimgets(cx, ans, dims)?;
+        out.set(cx, ans.bind(cx));
+        Ok(())
+    })
+}
+
+/// `.Internal(asplit(x, da, dc, dna, dnc, d1, d2, drop))`: `x` (permuted by
+/// base's asplit so that each piece is contiguous) cut into `d2` pieces of
+/// `d1` elements, a list with dim `da` (and dimnames `dna`), each piece with
+/// dim `dc` (and dimnames `dnc`) unless `drop`.
+// R: array.c:do_asplit, ASPLIT_ITERATE
+pub fn do_asplit(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("asplit", true).check_arity(cx, call, args)?;
+    let x = args.root(0);
+    if x.bind(cx).is_package_altrep() {
+        return Err(not_yet(cx, Some(call), "asplit() of a package ALTREP array"));
+    }
+    let n1 = crate::coerce::vector::as_integer(cx, args.get(cx, 5)).0;
+    let n2 = crate::coerce::vector::as_integer(cx, args.get(cx, 6)).0;
+    let dnc = args.root(4);
+    let havednc = dnc.bind(cx).sexptype() != NILSXP && crate::coerce::xlength(dnc.bind(cx)) > 0;
+    // !asLogical(drop): NA is true in C
+    let keepdim = as_logical(cx, args.get(cx, 7)) == 0;
+    cx.scope(|cx, s| {
+        cx.materialize(x)?;
+        let (n1, n2) = (n1.max(0) as usize, n2.max(0) as usize);
+        if !matches!(x.bind(cx).sexptype(), LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | VECSXP | RAWSXP) {
+            // (y is made before the type is looked at, as in GNU R; nothing
+            // to observe in between)
+            let msg = format!("unimplemented type '{}' in 'asplit'\n", crate::util::type2char(x.bind(cx).sexptype()));
+            return Err(cx.error(&msg));
+        }
+        if n1 * n2 > crate::coerce::xlength(x.bind(cx)) {
+            return Err(not_yet(cx, Some(call), "asplit() past the end of 'x'"));
+        }
+        let y = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_vector::<Ref<'_>>(n2)?.finish().into())))?;
+        crate::attrib::set::dimgets(cx, y, args.root(1))?;
+        let dna = args.root(3);
+        if dna.bind(cx).sexptype() != NILSXP && crate::coerce::xlength(dna.bind(cx)) > 0 {
+            dimnamesgets(cx, y, dna)?;
+        }
+        for i in 0..n2 {
+            let e = s.capture(cx, |cx, o| {
+                cx.build(o, |cx| Ok(gather(cx, x.bind(cx), n1, |j| i * n1 + j)?.unwrap()))
+            })?;
+            if keepdim {
+                crate::attrib::set::dimgets(cx, e, args.root(2))?;
+                if havednc {
+                    dimnamesgets(cx, e, dnc)?;
+                }
+            }
+            // (y is fresh: no other reference sees the write)
+            cx.set_vector_elt_shared(y, i, e)?;
+        }
+        out.set(cx, y.bind(cx));
         Ok(())
     })
 }
