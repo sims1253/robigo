@@ -412,7 +412,11 @@ fn getter<'s>(cx: &mut Cx, s: Scope<'s>, step: Root<'_>, lhs: Root<'_>, rho: Roo
                 cx.set_visible(true);
                 return Ok(v);
             }
-            let ev = default_args(cx, s, call, lhs, rho, None, matches!(k, K_SUB_PUNT | K_SUB2_PUNT))?;
+            let ev = if matches!(k, K_SUB_PUNT | K_SUB2_PUNT) {
+                default_args::<false>(cx, s, call, lhs, rho, None)?
+            } else {
+                default_args::<true>(cx, s, call, lhs, rho, None)?
+            };
             let args = ev.args(cx);
             cx.materialize_subset_args(args)?;
             if sub2 {
@@ -471,7 +475,11 @@ fn setter<'s>(
                     return Ok(v);
                 }
             }
-            let ev = default_args(cx, s, call, lhs, rho, Some(rhs), matches!(k, K_SUB_PUNT | K_SUB2_PUNT))?;
+            let ev = if matches!(k, K_SUB_PUNT | K_SUB2_PUNT) {
+                default_args::<false>(cx, s, call, lhs, rho, Some(rhs))?
+            } else {
+                default_args::<true>(cx, s, call, lhs, rho, Some(rhs))?
+            };
             let args = ev.args(cx);
             cx.materialize_subset_args(args)?;
             if sub2 {
@@ -600,16 +608,17 @@ fn dollar_call<'s>(
 /// evaluated as compiled code evaluates them (`cmpIndices`,
 /// `cmpBuiltinArgs(missingOK = TRUE)`: an empty argument, or a symbol
 /// bound to the missing argument, is R_MissingArg; tags kept), then the
-/// setter's value tagged `value`. `punt`: the step's (named arguments:
-/// cmpBuiltinArgs, whose constant is PUSHCONSTARG, not a load).
-fn default_args<'s>(
+/// setter's value tagged `value`. `LOAD_CONST`: a constant index is a
+/// load that sets R_Visible (cmpIndices' LDCONST); not on a punt step
+/// (empty or named arguments: cmpBuiltinArgs' PUSHCONSTARG). One instance
+/// each, so the common one has no test.
+fn default_args<'s, const LOAD_CONST: bool>(
     cx: &mut Cx,
     s: Scope<'s>,
     call: Root<'_>,
     x: Root<'_>,
     rho: Root<'_>,
     value: Option<Root<'_>>,
-    punt: bool,
 ) -> RResult<Evaluated<'s>> {
     let st_value = prims::state(cx).syms.value;
     let nil = cx.nil().sexp();
@@ -618,15 +627,7 @@ fn default_args<'s>(
     ev.next(nil).set(cx, x.bind(cx));
     for (a, tag) in args {
         let o = ev.next(tag);
-        // (an index bcEval loads, LDCONST or GETVAR_MISSOK, sets
-        // R_Visible: what a `return()` of the assignment shows; a punt
-        // step's constant is pushed, not loaded)
-        let t = a.bind(cx).sexptype();
-        let load = a.bind(cx) != cx.missing_arg() && t != LANGSXP && (t == SYMSXP || !punt);
-        eval_arg(cx, a, rho, true, o)?;
-        if load {
-            cx.set_visible(true);
-        }
+        eval_arg::<LOAD_CONST>(cx, a, rho, true, o)?;
     }
     if let Some(v) = value {
         ev.next(st_value).set(cx, v.bind(cx));
@@ -653,8 +654,16 @@ fn args_of<'s>(cx: &Cx, s: Scope<'s>, call: Root<'_>, setter: bool) -> Vec<(Root
 /// a call by its code (compiled with the assignment), at the code's own
 /// depth; a symbol looked up (`GETVAR`, or `GETVAR_MISSOK` with
 /// `missing_ok`: a binding to the missing argument is R_MissingArg); an
-/// empty argument R_MissingArg; a constant itself.
-fn eval_arg(cx: &mut Cx, a: Root<'_>, rho: Root<'_>, missing_ok: bool, out: Out<'_>) -> RResult<()> {
+/// empty argument R_MissingArg; a constant itself. R_Visible as bcEval
+/// leaves it: a symbol's GETVAR sets it, a constant's LDCONST with
+/// `LOAD_CONST` (PUSHCONSTARG does not), a call's code sets its own.
+fn eval_arg<const LOAD_CONST: bool>(
+    cx: &mut Cx,
+    a: Root<'_>,
+    rho: Root<'_>,
+    missing_ok: bool,
+    out: Out<'_>,
+) -> RResult<()> {
     let e = a.bind(cx);
     let missing = cx.missing_arg();
     if e == missing {
@@ -665,6 +674,8 @@ fn eval_arg(cx: &mut Cx, a: Root<'_>, rho: Root<'_>, missing_ok: bool, out: Out<
         LANGSXP => crate::eval::eval_bytecode_inline(cx, a, rho, out),
         SYMSXP => {
             let sym = e.sexp();
+            // (GETVAR and GETVAR_MISSOK set R_Visible, before the lookup)
+            cx.set_visible(true);
             // SAFETY: `e` is a rooted symbol.
             if missing_ok && unsafe { crate::eval::keepmiss_missing(cx, sym, rho) }? {
                 out.set(cx, cx.missing_arg());
@@ -674,7 +685,12 @@ fn eval_arg(cx: &mut Cx, a: Root<'_>, rho: Root<'_>, missing_ok: bool, out: Out<
             unsafe { crate::eval::symbol_value(cx, sym, rho, out) }
         }
         _ => {
+            // (an index's LDCONST sets R_Visible; a builtin's argument is
+            // PUSHCONSTARG, which does not)
             out.set(cx, e);
+            if LOAD_CONST {
+                cx.set_visible(true);
+            }
             Ok(())
         }
     }
@@ -870,7 +886,7 @@ fn builtin_args(
             })?;
             continue;
         }
-        eval_arg(cx, a, rho, false, o)?;
+        eval_arg::<false>(cx, a, rho, false, o)?;
     }
     Ok(())
 }
