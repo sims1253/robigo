@@ -56,7 +56,10 @@ typedef struct SEXPREC *SEXP;
     X(R_dot_Method, ".Method") \
     X(R_dot_packageName, ".packageName") \
     X(R_dot_target, ".target") \
-    X(R_dot_Generic, ".Generic")
+    X(R_dot_Generic, ".Generic") \
+    /* and Defn.h's that GNU R's base-package natives use */ \
+    X(R_SrcfileSymbol, "srcfile") \
+    X(R_SrcrefSymbol, "srcref")
 
 #define ROBIGO_CAPI_FIELD(name, str) SEXP name;
 
@@ -84,6 +87,18 @@ struct robigo_cglobals {
     /* ROBIGO_GC_MOVE is on: every object C is handed is marked as seen by
      * C, so the debug collector leaves it in place */
     int gc_move;
+    /* GNU R's parser globals (Defn.h, GNU R's types and sizes:
+     * PARSE_ERROR_SIZE and PARSE_CONTEXT_SIZE are 256), which a native's
+     * parser (tools' gramRd.c, gramLatex.c) writes and parseError reads */
+    int R_ParseError;
+    int R_ParseContextLast;
+    int R_ParseContextLine;
+    char R_ParseErrorMsg[256];
+    char R_ParseContext[256];
+    /* the locale's (Defn.h's mbcslocale and R_MB_CUR_MAX), set from the
+     * isolate's LC_CTYPE when it is made and when Sys.setlocale changes it */
+    int mbcslocale;
+    int R_MB_CUR_MAX;
     /* the isolate (opaque to C) */
     void *isolate;
 };

@@ -2,3 +2,5 @@
 # which a CR would be part of a value: keep them LF in every checkout.
 *.sh text eol=lf
 scripts/oracle-versions text eol=lf
+# Byte-exact inputs of the connection readers' cases (CR, CRLF, NUL, BOM): no conversion.
+tests/rt/connections/data/** -text

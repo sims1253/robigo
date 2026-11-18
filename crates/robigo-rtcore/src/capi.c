@@ -27,6 +27,8 @@ void robigo_rtcore_set_cg(struct robigo_cglobals *g)
 
 /* sizeof, alignof, then the offset of every field in declaration order;
  * capi.rs lists the same fields in the same order. */
+_Static_assert(sizeof(((struct robigo_cglobals *) 0)->R_ParseErrorMsg) == 256, "PARSE_ERROR_SIZE");
+_Static_assert(sizeof(((struct robigo_cglobals *) 0)->R_ParseContext) == 256, "PARSE_CONTEXT_SIZE");
 const size_t robigo_cglobals_layout[] = {
     sizeof(struct robigo_cglobals),
     alignof(struct robigo_cglobals),
@@ -46,6 +48,13 @@ const size_t robigo_cglobals_layout[] = {
     F(R_PPStackSize)
     F(R_VStack)
     F(gc_move)
+    F(R_ParseError)
+    F(R_ParseContextLast)
+    F(R_ParseContextLine)
+    F(R_ParseErrorMsg)
+    F(R_ParseContext)
+    F(mbcslocale)
+    F(R_MB_CUR_MAX)
     F(isolate)
 };
 
