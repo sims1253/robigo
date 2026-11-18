@@ -1183,7 +1183,7 @@ pub fn subassign3_dflt(
         if t == OBJSXP {
             return Err(util::not_yet(cx, Some(call), "'$<-' on an S4 object"));
         }
-        let name = nlist.bind(cx).as_sym().expect("robigo: '$<-' takes a symbol").name().bytes().to_vec();
+        let name = nlist.bind(cx).as_sym().expect("robigo: '$<-' takes a symbol").name_bytes().to_vec();
         if matches!(t, LISTSXP | LANGSXP) {
             pairlist_assign(cx, s, x, nlist, val)?;
         } else if t == ENVSXP {
@@ -1251,7 +1251,7 @@ pub fn subassign3_dflt(
                             nm.set(i, old.get(i));
                         }
                     }
-                    nm.set(nx, nlist.bind(cx).as_sym().unwrap().name());
+                    nm.set(nx, nlist.bind(cx).as_sym().unwrap().name(cx));
                     let mut a = Attrs::new();
                     a.install(Attr { tag: cx.sym(RSym::Names), value: nm.finish().into() });
                     a.copy_most(xv);

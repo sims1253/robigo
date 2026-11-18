@@ -538,7 +538,7 @@ fn frame_is_a_snapshot_and_set_frame_an_error() {
         let mut names = Vec::new();
         let mut x = fr.bind(cx);
         while let Some(c) = x.as_cons() {
-            names.push(String::from_utf8(c.tag().as_sym().unwrap().name().bytes().to_vec()).unwrap());
+            names.push(String::from_utf8(c.tag().as_sym().unwrap().name_bytes().to_vec()).unwrap());
             if names.last().unwrap() == "b" {
                 assert_eq!(c.car().sexptype(), PROMSXP, "the default's promise");
                 let gp = unsafe { c.as_ref().sexp().gp() };

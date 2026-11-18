@@ -339,6 +339,24 @@ impl Cx {
         Ok(unsafe { Ref::from_sexp(s, self) }.as_sym().unwrap())
     }
 
+    /// Take `sym`, a symbol this isolate may not have installed (symbols
+    /// are the process's: another isolate's handle can carry one here), as
+    /// `install` of its name would: this isolate's PRINTNAME of it, from its
+    /// own cache. The one way besides `install` for an isolate to take a
+    /// symbol it did not make; the boundaries where one enters (a frozen
+    /// segment's attach, a hand-over between workers: docs/core.md §10,
+    /// A.2) call it. Its identity (bindings, tags, comparisons) needs no
+    /// adoption; its name ([`Sym::name`]) and a base binding of it do. A
+    /// symbol this isolate already has costs a table read. Never collects.
+    pub fn adopt_symbol<'g>(&'g self, sym: Sym<'_>) -> Result<Sym<'g>, NeedGc> {
+        let s = sym.as_ref().sexp();
+        // SAFETY: one call into the core, which calls nothing of ours; a
+        // live symbol (immortal, the process's).
+        unsafe { self.iso().core().adopt_symbol(s)? };
+        // SAFETY: symbols are immortal.
+        Ok(unsafe { Ref::from_sexp(s, self) }.as_sym().unwrap())
+    }
+
     /// The symbol named `name` if the isolate has one: what GNU R's
     /// `install` returns without allocating (L8's allocation parity: an
     /// export collects only where GNU R's allocates, and `install` of a
