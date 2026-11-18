@@ -19,10 +19,12 @@
 //! Where the shapes differ:
 //! - **`RETURN`** at the end of each branch of a tail `if` becomes a jump
 //!   to the code's one `Ret`, the shape the from-source compiler emits.
-//! - **A promise's code** (`MAKEPROM`'s BCODESXP) is translated and cached
-//!   on its argument's expression in the call, as the from-source compiler
-//!   caches its own: per expression, not per promise (V4 makes it per
-//!   promise).
+//! - **A promise's code** (`MAKEPROM`'s BCODESXP) is the promise's, as
+//!   GNU R's PRCODE: the call carries its arguments' codes (`Call`'s `f`),
+//!   each translated and kept on itself; what reads the promise's
+//!   expression reads the code's first constant (`bytecodeExpr`). The
+//!   from-source compiler's promises hold their expressions, its code
+//!   cached on them.
 //! - An opcode not translated yet raises "robigo: ... is not implemented
 //!   yet" when it runs (AGENTS rule 6).
 
@@ -179,6 +181,22 @@ struct BcIns {
     at: usize,
     op: u8,
     a: [i32; 4],
+}
+
+/// Whether control at instruction `j` of `code` reaches a `RETURN` or
+/// `RETURNJMP` at once or through `GOTO`s only.
+fn returns_after(code: &[BcIns], mut j: usize) -> bool {
+    for _ in 0..code.len() {
+        match code.get(j) {
+            Some(n) if matches!(n.op, RETURN | RETURNJMP) => return true,
+            Some(n) if n.op == GOTO => match code.binary_search_by_key(&(n.a[0] as usize), |c| c.at) {
+                Ok(p) => j = p,
+                Err(_) => return false,
+            },
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// Decode the portable code `code` (the version word first) into
@@ -432,9 +450,6 @@ struct Tr {
     /// Pass 2: the last instruction of a complex assignment translated
     /// whole.
     skip_to: Option<usize>,
-    /// A tail `&&` or `||` ended: its value is visible on every path to
-    /// the RETURN (or RETURNJMP) after it, the jumps' too (set there).
-    vis_at_return: bool,
 }
 
 impl Tr {
@@ -791,7 +806,6 @@ impl<'g> Comp<'g> {
             assigning: Vec::new(),
             assigned: HashMap::new(),
             skip_to: None,
-            vis_at_return: false,
         };
         // `dst` is the code's value (the first register)
         self.free_to(dst);
@@ -872,9 +886,13 @@ impl<'g> Comp<'g> {
                     }
                 }
             }
-            // (a value `RETURN` or `RETURNJMP` returns: `return`'s operand
-            // is evaluated in tail position, its visibility the function's)
-            let tail = t.code.get(k + 1).is_some_and(|n| matches!(n.op, RETURN | RETURNJMP));
+            // (a value `RETURN` or `RETURNJMP` returns, next or through
+            // GOTOs: `return(x)`'s operand is in tail position, its
+            // visibility the function's, though cmp.R compiles it outside
+            // the tail (make.nonTailCallContext), so a branch of
+            // `return(if ...)` jumps to the RETURN; bcEval's loads set
+            // R_Visible either way)
+            let tail = returns_after(&t.code, k + 1);
             // SAFETY: constants of the live byte code.
             unsafe { self.op(&mut t, i, tail)? };
             fell = falls_through(i.op);
@@ -1061,20 +1079,34 @@ impl<'g> Comp<'g> {
                 return Err(Need::Fail);
             }
             let mut cell = first.cdr();
+            // (the promises' codes by argument: the step's, as `Call`'s)
+            let nil = self.nil();
+            let mut codes = Vec::new();
             for arg in &s.args {
                 if cell.typ() != LISTSXP {
                     return Err(Need::Fail);
                 }
                 let e = cell.car();
+                codes.push(nil);
                 match *arg {
                     StepArg::Code(from, to) if e.typ() == LANGSXP => self.slice_code(t, from, to, e)?,
-                    StepArg::Prom(code) if code.typ() == BCODESXP && e.typ() == LANGSXP => {
-                        self.promise_code(code, e)?
+                    StepArg::Prom(code) if code.typ() == BCODESXP => {
+                        self.promise_code(code)?;
+                        *codes.last_mut().unwrap() = code;
                     }
                     _ => {}
                 }
                 cell = cell.cdr();
             }
+            let codes = if codes.iter().any(|&c| c != nil) {
+                let v = cx.alloc_vector_raw(VECSXP, codes.len())?;
+                for (j, &c) in codes.iter().enumerate() {
+                    v.set_elt(j, c);
+                }
+                Some(v)
+            } else {
+                None
+            };
             if let Some((from, to)) = s.fun_code
                 && s.what.typ() == LANGSXP
             {
@@ -1086,7 +1118,7 @@ impl<'g> Comp<'g> {
             };
             let fin = setter && s.call.car().typ() == SYMSXP;
             let report = if fin { ba::inflate_assignment_call(cx, cexpr)? } else { cexpr };
-            ba::make_step(cx, s.kind, s.call, s.what, s.vexpr, report, fin)
+            ba::make_step(cx, s.kind, s.call, s.what, s.vexpr, report, fin, codes)
         }
     }
 
@@ -1169,9 +1201,6 @@ impl<'g> Comp<'g> {
         let planning = t.plan.is_none();
         match i.op {
             RETURN => {
-                if std::mem::take(&mut t.vis_at_return) {
-                    self.set_vis(true);
-                }
                 let r = self.top(t)?;
                 if r != R_FIRST {
                     let mut m = Ins::new(Op::Move);
@@ -1273,7 +1302,14 @@ impl<'g> Comp<'g> {
                     // SAFETY: a live symbol: its INTERNAL.
                     unsafe { robigo_rtcore::Ref::from_sexp(sym, self.cx) }.as_sym().map(|s| self.cx.internal(s).sexp())
                 } else {
-                    self.prim_of(sym).map(|off| self.st.objs[off].bind(self.cx).sexp())
+                    // getPrimitive: the symbol's value, which for a name base
+                    // binds to a primitive of another name is that one's
+                    // (`as.numeric`, base's `as.double`: robigo-rt's table
+                    // has a row of the name too)
+                    // SAFETY: a live symbol.
+                    let alias = unsafe { crate::cenv::alias_of(self.cx, sym) }
+                        .and_then(|t| self.st.defs.iter().position(|d| d.name == t && !d.internal()));
+                    alias.or_else(|| self.prim_of(sym)).map(|off| self.st.objs[off].bind(self.cx).sexp())
                 };
                 // SAFETY: a live primitive.
                 let Some(prim) = prim.filter(|p| unsafe { p.typ() } == BUILTINSXP) else {
@@ -1954,18 +1990,15 @@ impl<'g> Comp<'g> {
             }
             DOTSERR => {
                 // `...` evaluated as a value (cmpSym): bcEval's error(),
-                // reported against the context's call; the value it never
+                // reported against the context's call (so no call of its
+                // own: R_NilValue fills the operand); the value it never
                 // pushes keeps the stack's shape for what follows
-                // SAFETY: the code's live constants.
-                let e = unsafe { t.expr_at(self.cx, i.at) }.unwrap_or_else(|| self.nil());
-                self.error_op(e, "'...' used in an incorrect context", false)?;
+                let nil = self.nil();
+                self.error_op(nil, "'...' used in an incorrect context", false)?;
                 self.push(t);
             }
             RETURNJMP => {
                 // `return` in a promise: out of the function's context
-                if std::mem::take(&mut t.vis_at_return) {
-                    self.set_vis(true);
-                }
                 let r = self.pop(t)?;
                 let mut ret = Ins::new(Op::Return);
                 ret.b = r;
@@ -1979,6 +2012,14 @@ impl<'g> Comp<'g> {
                 a.b = r;
                 a.c = if i.op == AND1ST { 1 } else { 2 };
                 a.e = self.k(call);
+                // a tail `&&` (its join a way to the RETURN): bcEval's
+                // AND1ST sets R_Visible on the path it jumps too, which is
+                // the only one when its AND2ND is unreachable
+                // (`a && return(x)`)
+                let join = t.code.binary_search_by_key(&(i.a[1] as usize), |c| c.at);
+                if join.is_ok_and(|j| returns_after(&t.code, j)) {
+                    a.fl |= F_VIS;
+                }
                 self.jump(t, a, i.a[1] as usize)?;
             }
             AND2ND | OR2ND => {
@@ -1993,11 +2034,12 @@ impl<'g> Comp<'g> {
                 a.c = if i.op == AND2ND { 1 } else { 2 };
                 a.e = self.k(call);
                 a.fl |= F_CLR_B;
-                self.emit(a);
+                // (bcEval's AND2ND sets R_Visible; its AND1ST's jump the
+                // same, above)
                 if tail {
-                    // (at the RETURN, where AND1ST's jump lands too)
-                    t.vis_at_return = true;
+                    a.fl |= F_VIS;
                 }
+                self.emit(a);
             }
             BASEGUARD => {
                 let call = k(i.a[0]);
@@ -2133,9 +2175,11 @@ impl<'g> Comp<'g> {
         self.emit(df);
     }
 
-    /// `CALL` of `GETFUN`'s function: the generic call of `call`, its
-    /// promises' code the byte code's ([`Comp::generic_call`]'s shape).
-    /// Pass 1 (`planning`) caches no code.
+    /// `CALL` of `GETFUN`'s function: the generic call of `call`
+    /// ([`Comp::generic_call`]'s shape), with its arguments' promise codes
+    /// (`MAKEPROM`'s BCODESXPs, by argument: [`Op::CallCodes`]'s `f`),
+    /// each translated and kept on itself. Pass 1 (`planning`) translates
+    /// none.
     ///
     /// # Safety
     /// `call` is a live call constant of the byte code.
@@ -2146,33 +2190,46 @@ impl<'g> Comp<'g> {
             self.bc_untranslated = Some("byte code pushing a value into a call's frame (PUSHARG)".to_owned());
             return Err(Need::Fail);
         }
+        let mut codes_k = 0;
         // SAFETY: the caller's contract.
         unsafe {
             // GetFun reports against the call (findFun3's)
             if let Some(get) = get {
                 self.ins[get].c = self.k(call);
             }
-            // each MAKEPROM's code, on its argument's expression (the
-            // pushes are the call's arguments, in order)
+            // each MAKEPROM's code, by argument (the pushes are the call's
+            // arguments, in order): the promise holds it, as GNU R's PRCODE
             let mut cell = call.cdr();
             let nil = self.nil();
+            let mut codes = Vec::new();
             for a in &f.args {
                 if cell == nil {
                     return Err(Need::Fail);
                 }
-                if let PKind::Prom(code) = a.kind {
-                    let arg = cell.car();
-                    if code.typ() == BCODESXP && arg.typ() == LANGSXP && !planning {
-                        self.promise_code(code, arg)?;
+                codes.push(match a.kind {
+                    PKind::Prom(code) if code.typ() == BCODESXP => {
+                        if !planning {
+                            self.promise_code(code)?;
+                        }
+                        code
                     }
-                }
+                    _ => nil,
+                });
                 cell = cell.cdr();
             }
+            if codes.iter().any(|&c| c != nil) {
+                let v = self.cx.alloc_vector_raw(VECSXP, codes.len())?;
+                for (j, &c) in codes.iter().enumerate() {
+                    v.set_elt(j, c);
+                }
+                codes_k = self.k(v);
+            }
         }
-        let mut i = Ins::new(Op::Call);
+        let mut i = Ins::new(if codes_k != 0 { Op::CallCodes } else { Op::Call });
         i.a = f.dst;
         i.b = f.base;
         i.e = self.k(call);
+        i.f = codes_k;
         i.c = if self.sites < NO_SITE {
             self.sites += 1;
             self.sites - 1
@@ -2187,12 +2244,14 @@ impl<'g> Comp<'g> {
     }
 
     /// The code of a promise the byte code makes (`MAKEPROM`'s BCODESXP),
-    /// translated and kept on its expression in the call, beside any AST
-    /// code ([`crate::code::cache_on`]).
+    /// translated with the code it runs in (its compile environment, its
+    /// frame's slot indices: `Comp::arg_codes`) and kept on the BCODESXP
+    /// itself ([`crate::code::cache_on`]), which the promise holds:
+    /// forcing it runs that ([`crate::compile::bytecode_code`]).
     ///
     /// # Safety
-    /// `code` is a live BCODESXP, `arg` a live call.
-    unsafe fn promise_code(&mut self, code: Sexp, arg: Sexp) -> Result<(), Need> {
+    /// `code` is a live BCODESXP.
+    unsafe fn promise_code(&mut self, code: Sexp) -> Result<(), Need> {
         let cenv = self.bc.take().expect("robigo: byte code outside the Bc profile");
         let mut sub = Comp::new(self.cx, self.st, Profile::Bc, Some(cenv));
         let r = sub.alloc();
@@ -2209,10 +2268,11 @@ impl<'g> Comp<'g> {
             self.bc_untranslated = sub.bc_untranslated.take();
         }
         let b = res?;
-        // SAFETY: as above.
+        // SAFETY: as above; the source, the code's first constant, is live.
         unsafe {
-            let built = crate::code::build(self.cx, &super::verified(b), arg, None)?;
-            crate::code::cache_on(arg, built);
+            let source = robigo_rtcore::bytecode_expr(code, self.nil());
+            let built = crate::code::build(self.cx, &super::verified(b), source, None)?;
+            crate::code::cache_on(code, built);
             self.arg_codes.push(built);
             self.arg_codes.append(&mut sub.arg_codes);
         }

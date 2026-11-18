@@ -36,6 +36,8 @@ use std::collections::HashMap;
 
 mod bctrans;
 mod crosscheck;
+#[doc(hidden)]
+pub use crosscheck::Verdict;
 
 /// Run one compile attempt under `&Cx` until it succeeds: a refused
 /// allocation collects and compiles again (the same request refused twice
@@ -184,14 +186,17 @@ unsafe fn source_body(cx: &Cx, f: Sexp) -> Sexp {
 /// `browser()`, a compiler error).
 // R: cmp.R:cmpfun, make.functionContext, funEnv
 pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> RResult<Option<Sexp>> {
-    attempt(cx, |cx| {
+    // (the crosscheck's finding of the last attempt: an attempt a fold
+    // retries compared code without the fold's value)
+    let mut check = None;
+    let code = attempt(cx, |cx| {
         let f = op.bind(cx).sexp();
         // SAFETY: a rooted closure (and cache entry); nothing collects in
         // this interval.
         unsafe {
             if f.cdr().typ() == BCODESXP {
                 if crosscheck::enabled() {
-                    crosscheck_closure(cx, f, installed)?;
+                    check = Some(crosscheck_closure(cx, f, installed)?);
                 }
                 // V3: GNU R's byte code, translated
                 return translate_code(cx, f.cdr(), Some(f.car()));
@@ -209,21 +214,26 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
             index_arg_codes(cx, code, &c.arg_codes);
             Ok(code)
         }
-    })
+    });
+    if let Some(c) = check {
+        c.report();
+    }
+    code
 }
 
 /// `ROBIGO_BC_CROSSCHECK`: closure `f`'s byte code translated and its
 /// source compiled as the from-source compiler compiles it for the
 /// closure's environment, the two compared ([`crosscheck`]). The
-/// from-source compile goes first, so the argument code that stays on an
-/// expression both share is the translation's. A compile that would force
-/// a lazy binding, or that cmp.R declines, is skipped (reported).
-/// `installed`: base's installed byte code (provenance, as for
-/// [`compile_closure_bc`]).
+/// from-source compile keeps its argument code on the source's expressions,
+/// the translation its own on the promises' byte code (`MAKEPROM`'s
+/// BCODESXPs), so neither replaces the other's. A compile that would force
+/// a lazy binding, or that cmp.R declines, is skipped. `installed`: base's
+/// installed byte code (provenance, as for [`compile_closure_bc`]).
 ///
 /// # Safety
 /// `f` is a live closure whose body is a BCODESXP; nothing collects.
-unsafe fn crosscheck_closure(cx: &Cx, f: Sexp, installed: bool) -> Result<(), Need> {
+unsafe fn crosscheck_closure(cx: &Cx, f: Sexp, installed: bool) -> Result<crosscheck::Finding, Need> {
+    use crosscheck::{Finding, Verdict};
     // SAFETY: the caller's contract.
     unsafe {
         let (formals, bc) = (f.car(), f.cdr());
@@ -248,12 +258,16 @@ unsafe fn crosscheck_closure(cx: &Cx, f: Sexp, installed: bool) -> Result<(), Ne
         let source = match source {
             Ok(Some(b)) => b,
             Ok(None) | Err(Need::Fail) => {
-                crosscheck::report(&format!("skipped: {what}: the from-source compiler leaves it uncompiled"));
-                return Ok(());
+                let line = format!("skipped: {what}: the from-source compiler leaves it uncompiled");
+                return Ok(Finding::new(Verdict::Skipped, line));
             }
-            Err(Need::Force(_)) => {
-                crosscheck::report(&format!("skipped: {what}: the from-source compile would force a binding"));
-                return Ok(());
+            Err(Need::Force(p)) => {
+                // (the promise's code, for triage)
+                let code = crate::deparse::deparse1line(cx, Ref::from_sexp(p.cdr(), cx), false, 0)
+                    .map(|d| String::from_utf8_lossy(&d).chars().take(60).collect::<String>())
+                    .unwrap_or_default();
+                let line = format!("skipped: {what}: the from-source compile would force a binding ({code})");
+                return Ok(Finding::new(Verdict::Skipped, line));
             }
             Err(e) => return Err(e),
         };
@@ -265,16 +279,15 @@ unsafe fn crosscheck_closure(cx: &Cx, f: Sexp, installed: bool) -> Result<(), Ne
                 i.b = r;
                 c.emit(i);
                 let t = c.finish();
-                crosscheck::compare(cx, &what, &t, &source);
+                Ok(crosscheck::compare(cx, &what, &t, &source))
             }
             Err(Need::Fail) => {
                 let why =
                     c.bc_untranslated.take().unwrap_or_else(|| "byte code the translation cannot follow".to_owned());
-                crosscheck::report(&format!("untranslated: {what}: {why}"));
+                Ok(Finding::new(Verdict::Untranslated, format!("untranslated: {what}: {why}")))
             }
-            Err(e) => return Err(e),
+            Err(e) => Err(e),
         }
-        Ok(())
     }
 }
 
@@ -283,8 +296,8 @@ unsafe fn crosscheck_closure(cx: &Cx, f: Sexp, installed: bool) -> Result<(), Ne
 /// running any; each translation through the [`crate::code::Verified`]
 /// gate. What each one stopped at (an opcode or a primitive robigo-rt does
 /// not have, code the translation cannot follow, a refusal of the gate);
-/// none when all of them translate. Under `ROBIGO_BC_CROSSCHECK` the
-/// closure is compared too, as base's installed code.
+/// none when all of them translate. (The crosscheck has its own entry,
+/// [`crosscheck_installed`], in a session with base loaded.)
 #[doc(hidden)]
 pub fn translation_gaps(cx: &mut Cx, f: Root<'_>) -> RResult<Vec<String>> {
     let mut gaps = Vec::new();
@@ -294,9 +307,6 @@ pub fn translation_gaps(cx: &mut Cx, f: Root<'_>) -> RResult<Vec<String>> {
         // from it; nothing collects in this interval.
         unsafe {
             let f = f.bind(cx).sexp();
-            if crosscheck::enabled() && f.cdr().typ() == BCODESXP {
-                crosscheck_closure(cx, f, true)?;
-            }
             let st = prims::state(cx);
             let mut todo = vec![f.cdr()];
             while let Some(bc) = todo.pop() {
@@ -341,9 +351,40 @@ pub fn translation_gaps(cx: &mut Cx, f: Root<'_>) -> RResult<Vec<String>> {
     Ok(gaps)
 }
 
+/// For the base.rdb crosscheck test: under `ROBIGO_BC_CROSSCHECK`, closure
+/// `f`'s byte code (base's installed code) compared with what the
+/// from-source compiler makes of its source ([`crosscheck`]), reported,
+/// and the verdict. The session has base loaded with every binding
+/// forced, as GNU R's build had when it compiled base (makebasedb.R), so
+/// the compile decides on base's definitions as cmp.R did. None for a
+/// closure without byte code, or without the variable.
+#[doc(hidden)]
+pub fn crosscheck_installed(cx: &mut Cx, f: Root<'_>) -> RResult<Option<crosscheck::Verdict>> {
+    if !crosscheck::enabled() {
+        return Ok(None);
+    }
+    let mut check = None;
+    attempt(cx, |cx| {
+        // SAFETY: a rooted closure; nothing collects in this interval.
+        unsafe {
+            let f = f.bind(cx).sexp();
+            if f.cdr().typ() == BCODESXP {
+                check = Some(crosscheck_closure(cx, f, true)?);
+            }
+        }
+        Ok(cx.nil().sexp())
+    })?;
+    Ok(check.map(|c| {
+        c.report();
+        c.verdict
+    }))
+}
+
 /// The code of the byte code `bc` evaluated as itself (`eval(bc, rho)`,
-/// bcEval at the top level): its translation, kept on it (per expression;
-/// V4 makes a promise's code per promise).
+/// bcEval at the top level, or a promise's code, `MAKEPROM`'s BCODESXP):
+/// its translation, kept on it. A translated call's promise code has its
+/// translation already, made with the code it runs in
+/// (`bctrans::promise_code`).
 pub(crate) fn bytecode_code(cx: &mut Cx, bc: Root<'_>) -> RResult<Sexp> {
     // SAFETY: a rooted BCODESXP: its 4th word is R_NilValue or a code
     // object this module stored.
@@ -748,6 +789,7 @@ impl<'g> Comp<'g> {
                 // or PROTECT(e) (a special): the primitive's entry, or a
                 // closure's arguments promised (`newrho` is the body's)
                 Op::Call
+                | Op::CallCodes
                 | Op::CallBuiltin
                 | Op::SpecialFn
                 | Op::ComplexAssign
@@ -1195,6 +1237,39 @@ impl<'g> Comp<'g> {
         let st = self.st;
         let missing = self.cx.missing_arg().sexp();
         let dots = st.syms.dots;
+        // `::` and `:::` (closures of GNU R's base, robigo-rt's specials):
+        // cmpMultiColon calls the function with the two names as strings
+        // (cmpCallSymFun: GETFUN, the constant arguments, CALL of the call),
+        // or declines and the call is the generic one; either way the IR's
+        // generic call of the call (whose arguments it reads from the call)
+        // R: cmp.R:cmpMultiColon, cmpCallSymFun
+        if f == st.syms.double_colon || f == st.syms.triple_colon {
+            return Ok(None);
+        }
+        // `.Internal` of a builtin internal: cmpDotInternalCall's cmpBuiltin,
+        // which declines for `...` or an empty argument of the inner call
+        // (then the call is the generic one)
+        // R: cmp.R:cmpDotInternalCall, cmpBuiltin
+        if f == st.syms.dot_internal {
+            // SAFETY: the caller's contract: a live call.
+            let inner = unsafe { cenv::elements(self.cx, e, true) };
+            // (a builtin internal by names.c, whatever robigo-rt's object:
+            // `cbind`'s is a special there, eval 10)
+            if let [(ic, _)] = inner[..]
+                // SAFETY: a live part of the call; a symbol's internal is
+                // R_NilValue or a primitive of this isolate.
+                && unsafe {
+                    ic.typ() == LANGSXP
+                        && ic.car().typ() == SYMSXP
+                        && matches!(self.cx.internal_raw(ic.car()).typ(), BUILTINSXP | SPECIALSXP)
+                        && st.defs[crate::prims::offset(self.cx.internal_raw(ic.car()))].eval % 10 == 1
+                }
+                // SAFETY: as above.
+                && unsafe { cenv::elements(self.cx, ic, true) }.iter().any(|&(a, _)| a == dots || a == missing)
+            {
+                return Ok(None);
+            }
+        }
         // the primitives the VM inlines: cmp.R's handlers of the language
         // functions, `cmpSpecial`'s and `cmpBuiltin`'s for the others
         let off = st.by_sym.get(&(f.as_ptr() as usize)).copied().filter(|&o| !st.defs[o].internal());
@@ -1229,14 +1304,33 @@ impl<'g> Comp<'g> {
             // SAFETY: as above.
             return unsafe { self.simple_internal(f, e, &args) };
         }
-        // `cmpBuiltin`: base's binding is a builtin (it declines for `...`
-        // or an empty argument)
-        if let Some(off) = off
-            && st.defs[off].eval % 10 == 1
-        {
-            let prim = st.objs[off].bind(self.cx).sexp();
-            // SAFETY: base's frame and a symbol.
-            if unsafe { self.base_binding(f) } == Some(prim) {
+        // cmp.R's default handlers, set for every name of base by the type
+        // of its binding in GNU R's base when the compiler was built:
+        // `cmpSpecial` for a special (a row of the registry's table that
+        // names.c makes one: `rep`), `cmpBuiltin` for a builtin (declining
+        // for `...` or an empty argument). A name bound to a primitive of
+        // another name is that primitive's ([`cenv::PRIMITIVE_ALIASES`]:
+        // `as.numeric`, base's `as.double`).
+        // R: cmp.R:local() (setInlineHandler(s, cmpSpecial), setInlineHandler(b, cmpBuiltin)), cmpBuiltin
+        // SAFETY: a symbol.
+        let alias = unsafe { cenv::alias_of(self.cx, f) }.and_then(|t| st.defs.iter().position(|d| d.name == t));
+        // (an alias is its primitive's, before a row of its own name:
+        // robigo-rt's table has an `is.name`, GNU R's base binds
+        // `is.symbol` to the name)
+        if let Some(o) = alias.or(off) {
+            let prim = st.objs[o].bind(self.cx).sexp();
+            // SAFETY: a live primitive of this isolate.
+            let t = unsafe { prim.typ() };
+            if t == SPECIALSXP && matches!(st.defs[o].kind, Kind::Builtin(..)) {
+                return Ok(Some(Handler::Known(Known::Fn(o))));
+            }
+            // (a name of its own: base's binding is the builtin itself)
+            let own = || {
+                // SAFETY: base's frame and a symbol.
+                let b = unsafe { self.base_binding(f) };
+                b == Some(prim)
+            };
+            if t == BUILTINSXP && st.defs[o].eval % 10 == 1 && (alias.is_some() || own()) {
                 if args.iter().any(|&(a, _)| a == dots || a == missing) {
                     return Ok(None);
                 }
@@ -1758,7 +1852,7 @@ impl<'g> Comp<'g> {
                 what = w;
             }
             self.precompile_args(place.cdr().cdr())?;
-            ba::make_step(self.cx, kind, place, what, None, origplace, false)
+            ba::make_step(self.cx, kind, place, what, None, origplace, false, None)
         }
     }
 
@@ -1824,7 +1918,7 @@ impl<'g> Comp<'g> {
                 what = w;
             }
             self.precompile_args(place.cdr().cdr())?;
-            ba::make_step(cx, kind, acall, what, Some(vexpr), report, fin)
+            ba::make_step(cx, kind, acall, what, Some(vexpr), report, fin, None)
         }
     }
 
@@ -2496,11 +2590,16 @@ impl<'g> Comp<'g> {
                     }
                     // both operands under PROTECT(op), PROTECT(e)
                     self.expr_at(a[0].0, dst, d + 1, self.pp + 2, false)?;
+                    // in the tail, the value visible on both paths (bcEval's
+                    // AND1ST and AND2ND set R_Visible), the second operand
+                    // reached or not (`a && return(x)`)
+                    let vis = if tail { F_VIS } else { 0 };
                     let mut i1 = Ins::new(Op::AndOr1);
                     i1.a = dst;
                     i1.b = dst;
                     i1.c = op;
                     i1.e = self.k(e);
+                    i1.fl |= vis;
                     let i1 = self.emit(i1);
                     let r = self.alloc();
                     self.expr_at(a[1].0, r, d + 1, self.pp + 2, false)?;
@@ -2509,14 +2608,11 @@ impl<'g> Comp<'g> {
                     i2.b = r;
                     i2.c = op;
                     i2.e = self.k(e);
-                    i2.fl |= F_CLR_B;
+                    i2.fl |= F_CLR_B | vis;
                     self.emit(i2);
                     self.free_to(r);
                     let end = self.pc();
                     self.patch(i1, end);
-                    if tail {
-                        self.set_vis(true);
-                    }
                 }
                 Special::Internal => {
                     // R: names.c:do_internal

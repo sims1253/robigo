@@ -715,7 +715,10 @@ fn stubs_for(cx: &mut Cx, primitives: &[&'static str], internals: &[&'static str
             defs.push(PrimDef {
                 name: p,
                 kind: Kind::Builtin(not_yet_internal, crate::prims::Inline::None),
-                eval: 11,
+                // names.c's eval column: a special internal's stub is a
+                // special (`cbind`'s, eval 10), as cmp.R's
+                // is.builtin.internal sees it
+                eval: robigo_rtbuiltins::names::internal_eval(p.as_bytes()).map_or(11, i32::from),
                 arity: -1,
             });
         }

@@ -1607,7 +1607,12 @@ unsafe fn body_loop<const FUSED: bool>(
         };
         // (the ops whose F_VIS the VM honours after their value; GetVar's
         // is set before its read)
-        if vis && matches!(i.op, Op::LdConst | Op::Arith | Op::Arith1 | Op::Relop | Op::Not | Op::Logic) {
+        if vis
+            && matches!(
+                i.op,
+                Op::LdConst | Op::Arith | Op::Arith1 | Op::Relop | Op::Not | Op::Logic | Op::AndOr1 | Op::AndOr2
+            )
+        {
             cx.set_visible(true);
         }
         debug_assert!((i.a as usize) < MAX_REGS);

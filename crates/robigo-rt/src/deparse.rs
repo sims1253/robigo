@@ -629,7 +629,9 @@ impl<'g> State<'g> {
                     self.sourceable = false;
                     self.print(b"<promise: ");
                     self.opts &= !QUOTEEXPRESSIONS; // don't want delay(quote())
-                    self.deparse2buff(p.code())?;
+                    // PREXPR: byte code's source for a promise of
+                    // compiled code
+                    self.deparse2buff(robigo_rtbuiltins::bytecode::expr(cx, p.code()))?;
                     self.opts = d_opts_in;
                     self.print(b">");
                 } else if p.value().sexp() != cx.unbound().sexp() {

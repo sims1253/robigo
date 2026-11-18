@@ -573,6 +573,21 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 }
                 reload!();
             }
+            Op::CallCodes => {
+                // `Call` with the call's promise codes (`consts[f]`), which
+                // the promises it makes hold (translated code: `Bc`)
+                // SAFETY: a constant of the code.
+                let call = unsafe { v.k(i.e) };
+                cx.set_eval_depth(act.depth + i.d as i32);
+                pp_point(cx, act, &v, pc - 1);
+                // (the codes by their pool index `f`: read where used)
+                // SAFETY: the running code's constants (or rooted values): live, of this isolate.
+                unsafe { crate::call::call_codes(cx, act, i.a, i.b, call, i.f, i.c) }?;
+                if i.fl & F_CLR_B != 0 && i.b != i.a {
+                    act.clear(i.b);
+                }
+                reload!();
+            }
             Op::SpecialFn => {
                 // SAFETY: constants of the code.
                 let (call, prim) = unsafe { (v.k(i.e), v.k(i.c)) };
@@ -801,6 +816,12 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 }
                 // SAFETY: an unboxed value.
                 unsafe { act.set(i.a, Slot::logical(r)) };
+                // R_Visible = TRUE whatever the flag, as bcEval's AND1ST,
+                // AND2ND, OR1ST and OR2ND set it (the AST's do_logic2 is
+                // visible too); the IR's F_VIS says where it is observed. A
+                // store, not a test: a branch here shifted vm::run's code
+                // (~1% on perf-rt's closure-call rows)
+                cx.set_visible(true);
             }
             Op::MkClosure => {
                 mk_closure(cx, act, i.a, i.e, i.f, i.c, i.g == 1)?;

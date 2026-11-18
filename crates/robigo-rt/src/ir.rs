@@ -106,7 +106,8 @@ pub enum Op {
     /// The generic call: `a <- (b)(args of consts[e])` with the function
     /// in `b`, dispatched on its type at run time (closure: its arguments
     /// bound by `args::bind`, with call site `c`'s match plan; builtin: the
-    /// arguments evaluated; special: the call compiled).
+    /// arguments evaluated; special: the call compiled). A translated
+    /// call whose promises hold their own code is [`Op::CallCodes`].
     Call,
     /// A builtin `consts[f]` called with the evaluated arguments in
     /// registers `b..b+c` (and their names after them with [`F_NAMES`]),
@@ -126,7 +127,8 @@ pub enum Op {
     Logic,
     /// `&&` (`c` = 1) / `||` (2), first operand: `a <- asLogical2(b)` with
     /// do_logic2's checks for the call `consts[e]`; jump to `(f, g)` when it
-    /// decides the result (`&&` FALSE, `||` TRUE).
+    /// decides the result (`&&` FALSE, `||` TRUE). [`F_VIS`] on either
+    /// path, as bcEval's AND1ST sets R_Visible jumping or not.
     AndOr1,
     /// `&&` / `||`, second operand `b`: `a <- combine(a, b)`.
     AndOr2,
@@ -287,6 +289,19 @@ pub enum Op {
     /// builtin `consts[f]` (0: `log`'s, `do_log_builtin`) on the window.
     /// The value into `a`, visible.
     Math1,
+    /// [`Op::Call`] of a translated call whose promises hold their own
+    /// code: `consts[f]`, its arguments' `MAKEPROM` BCODESXPs (a list by
+    /// argument, R_NilValue for one that has none; `args::arg_code`), each
+    /// promise's code as GNU R's PRCODE. Its own op, so that `Call`, the
+    /// from-source compiler's, stays as it is on the hot path.
+    ///
+    /// Not inlined yet: `crate::inline` runs `Call` only (`qualifies`, the
+    /// fused `GetFun`+`Call` step, the run's op match), so a translated
+    /// closure whose body calls with codes is no candidate, and a call
+    /// with codes is always the real call. It comes back with an entry of
+    /// its own once translated code is the common path (V4 step 3, after
+    /// L5; docs/ledger/g3/2026-11-17-v4-2-promise-code.md).
+    CallCodes,
 }
 
 /// [`Op::Math1`]'s kinds past `math1funs`' indices.

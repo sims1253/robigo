@@ -406,6 +406,26 @@ unsafe fn exists_in_frame(cx: &Cx, env: Sexp, sym: Sexp) -> bool {
     !matches!(cx.frame_binding(e, s), Lookup::Unbound)
 }
 
+/// The names GNU R 4.6.2's base binds to a primitive of another name, and
+/// that primitive's name: cmp.R's default handler for such a name is the
+/// primitive's (its handler table is made from `typeof(get(n))` of every
+/// name of base). Found on the oracle by every base name whose value is a
+/// primitive named otherwise.
+// R: base/R/zzz.R (`as.numeric <- as.double`, `is.name <- is.symbol`)
+pub const PRIMITIVE_ALIASES: [(&str, &str); 2] = [("as.numeric", "as.double"), ("is.name", "is.symbol")];
+
+/// The primitive `sym` names in base when it is one of
+/// [`PRIMITIVE_ALIASES`].
+///
+/// # Safety
+/// `sym` is a symbol.
+pub unsafe fn alias_of(cx: &Cx, sym: Sexp) -> Option<&'static str> {
+    // SAFETY: the caller's contract.
+    let s = unsafe { Ref::from_sexp(sym, cx) }.as_sym()?;
+    let n = s.name().bytes();
+    PRIMITIVE_ALIASES.iter().find(|(a, _)| a.as_bytes() == n).map(|&(_, p)| p)
+}
+
 /// cmp.R's `languageFuns`.
 // R: cmp.R:languageFuns
 pub const LANGUAGE_FUNS: [&str; 46] = [
