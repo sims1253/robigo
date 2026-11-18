@@ -676,32 +676,31 @@ fn failed(cx: &mut Cx, e: robigo_rtcore::RError) -> String {
 }
 
 /// Bind the primitives and internals of these that robigo-rt does not
-/// define to the not-implemented builtins; how many.
+/// define to the not-implemented builtins; how many. Each stub has names.c's
+/// `eval` column: a special's stub is a SPECIALSXP (its arguments not
+/// evaluated), as `typeof()` and cmp.R see it.
 fn stubs_for(cx: &mut Cx, primitives: &[&'static str], internals: &[&'static str]) -> usize {
+    use robigo_rtbuiltins::names::{internal_eval, primitive_eval};
     let st = crate::prims::state(cx);
     let have = |name: &str, internal: bool| st.defs.iter().any(|d| d.name == name && d.internal() == internal);
+    let stub = |name: &'static str, eval: i32, internal: bool| {
+        let kind = match (eval % 10 == 1, internal) {
+            (true, false) => Kind::Builtin(not_yet_primitive, crate::prims::Inline::None),
+            (true, true) => Kind::Builtin(not_yet_internal, crate::prims::Inline::None),
+            (false, false) => Kind::Fn(not_yet_primitive_special),
+            (false, true) => Kind::Fn(not_yet_internal_special),
+        };
+        PrimDef { name, kind, eval, arity: -1 }
+    };
     let mut defs = Vec::new();
     for &p in primitives {
         if !have(p, false) {
-            defs.push(PrimDef {
-                name: p,
-                kind: Kind::Builtin(not_yet_primitive, crate::prims::Inline::None),
-                eval: 1,
-                arity: -1,
-            });
+            defs.push(stub(p, primitive_eval(p.as_bytes()).map_or(1, i32::from), false));
         }
     }
     for &p in internals {
         if !have(p, true) {
-            defs.push(PrimDef {
-                name: p,
-                kind: Kind::Builtin(not_yet_internal, crate::prims::Inline::None),
-                // names.c's eval column: a special internal's stub is a
-                // special (`cbind`'s, eval 10), as cmp.R's
-                // is.builtin.internal sees it
-                eval: robigo_rtbuiltins::names::internal_eval(p.as_bytes()).map_or(11, i32::from),
-                arity: -1,
-            });
+            defs.push(stub(p, internal_eval(p.as_bytes()).map_or(11, i32::from), true));
         }
     }
     let n = defs.len();
@@ -720,6 +719,20 @@ fn called_name(cx: &Cx, call: Root<'_>) -> String {
 /// A primitive of the bound that robigo-rt does not implement yet.
 fn not_yet_primitive(cx: &mut Cx, call: Root<'_>, _: Args<'_>, _: Root<'_>, _: Out<'_>) -> RResult<()> {
     let msg = format!("robigo: the primitive '{}' is not implemented yet", called_name(cx, call));
+    Err(cx.error_call(Some(call), &msg))
+}
+
+/// A special primitive of the bound that robigo-rt does not implement yet.
+fn not_yet_primitive_special(cx: &mut Cx, call: Root<'_>, _: Root<'_>, _: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let _ = out;
+    let msg = format!("robigo: the primitive '{}' is not implemented yet", called_name(cx, call));
+    Err(cx.error_call(Some(call), &msg))
+}
+
+/// A special `.Internal` of the bound that robigo-rt does not implement yet.
+fn not_yet_internal_special(cx: &mut Cx, call: Root<'_>, _: Root<'_>, _: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let _ = out;
+    let msg = format!("robigo: .Internal({}()) is not implemented yet", called_name(cx, call));
     Err(cx.error_call(Some(call), &msg))
 }
 
