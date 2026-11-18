@@ -76,8 +76,11 @@ ENV = {"LC_ALL": "C.UTF-8", "LANGUAGE": "en", "TZ": "UTC", "R_DEFAULT_PACKAGES":
 JIT = {"off": "0", "on": "3"}
 MEM_CAP = 2 << 30
 # what GNU R's side is made of beyond gen.R and driver.R (part of the key):
-# 2, two runs per batch (a case whose records differ is unstable)
-ORACLE_VERSION = 2
+# 2, two runs per batch (a case whose records differ is unstable); 3, the
+# umask below and the case directory's own entry in `<id>.files`
+ORACLE_VERSION = 3
+# every runtime process's umask (file modes are compared; part of the key)
+UMASK = 0o022
 CASE_TIMEOUT = 10.0
 RESOURCE = [b"cannot allocate vector of size", b"memory exhausted", b"vector memory limit of",
             b"cannot allocate memory block", b"vector memory exhausted"]
@@ -167,7 +170,7 @@ class Row:
             with open(p, "rb") as f:
                 h.update(f.read())
         h.update(self.r_spec(seed).encode())
-        h.update(json.dumps([ENV, JIT[jit], oracle_id(), ORACLE_VERSION, MEM_CAP], sort_keys=True).encode())
+        h.update(json.dumps([ENV, JIT[jit], oracle_id(), ORACLE_VERSION, MEM_CAP, UMASK], sort_keys=True).encode())
         return h.hexdigest()[:24]
 
     def variant(self, jit):
@@ -192,6 +195,7 @@ def unshare_works():
 
 def cap():
     resource.setrlimit(resource.RLIMIT_AS, (MEM_CAP, MEM_CAP))
+    os.umask(UMASK)
 
 
 class Unusable(Exception):
@@ -290,8 +294,9 @@ def case_root(key):
 
 
 def tree(d):
-    """A directory's files: [path, kind, mode, size, sha256], sorted."""
-    out = []
+    """A directory's files: [path, kind, mode, size, sha256], sorted, the
+    directory itself first as "." (Sys.chmod("."))."""
+    out = [[".", "dir", os.lstat(d).st_mode & 0o7777, 0, ""]]
     for root, dirs, files in os.walk(d):
         for name in sorted(dirs) + sorted(files):
             p = os.path.join(root, name)
@@ -305,7 +310,7 @@ def tree(d):
                 with open(p, "rb") as f:
                     h = hashlib.sha256(f.read()).hexdigest()
                 out.append([rel, "file", st.st_mode & 0o7777, st.st_size, h])
-    return sorted(out)
+    return out[:1] + sorted(out[1:])
 
 
 def run_isolated(cmd, env, batch, out, ncases, key, rsrc=None, timeout=CASE_TIMEOUT):

@@ -5,6 +5,7 @@ known/ ratchet's key check."""
 import importlib.util
 import json
 import os
+import subprocess
 import unittest.mock
 import sys
 import tempfile
@@ -118,8 +119,20 @@ class Classes(unittest.TestCase):
                 f.write("x")
             os.symlink("sub/f", os.path.join(d, "l"))
             t = bd.tree(d)
-        self.assertEqual([x[:2] for x in t], [["l", "link"], ["sub", "dir"], ["sub/f", "file"]])
-        self.assertEqual(t[2][3], 1)
+        self.assertEqual([x[:2] for x in t], [[".", "dir"], ["l", "link"], ["sub", "dir"], ["sub/f", "file"]])
+        self.assertEqual(t[3][3], 1)
+
+    def test_tree_sees_the_directory_own_mode(self):
+        # Sys.chmod(".") must show even when the directory is empty
+        with tempfile.TemporaryDirectory() as d:
+            os.chmod(d, 0o755)
+            a = bd.tree(d)
+            os.chmod(d, 0o700)
+            self.assertNotEqual(a, bd.tree(d))
+
+    def test_runtimes_run_under_a_fixed_umask(self):
+        r = subprocess.run(["sh", "-c", "umask"], preexec_fn=bd.cap, capture_output=True, text=True)
+        self.assertEqual(int(r.stdout, 8), bd.UMASK)
 
     def test_score_line(self):
         c = {"pass": 5, "mismatch": 1, "not-implemented": 2, "crash": 1, "timeout": 0, "resource": 3,
@@ -203,8 +216,8 @@ class Batches(unittest.TestCase):
             with open(os.path.join(out, f"{i:06d}.files")) as f:
                 files = json.load(f)
             # its own directory: only this case's file, and no leaked variable
-            self.assertEqual([x[0] for x in files], [f"made-{i}"])
-            self.assertEqual(files[0][3], len("clean"))
+            self.assertEqual([x[0] for x in files], [".", f"made-{i}"])
+            self.assertEqual(files[1][3], len("clean"))
 
     def test_no_losses(self):
         lost, recs, _ = self.run_fake(4)

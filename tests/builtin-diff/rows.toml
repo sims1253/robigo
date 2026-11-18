@@ -183,6 +183,22 @@ domain = { FUN = ["@fun", "NULL"], "FUN.VALUE" = ["=1L", "=0", "=character(1)", 
 [mapply]
 typical = { FUN = "fun.id", dots = "=list(1:3, 4:6)", MoreArgs = "NULL" }
 domain = { FUN = ["@fun", "NULL"], dots = ["=list(1:3, 4:6)", "=list(1:3)", "=list()", "list2", "nested"], MoreArgs = ["NULL", "=list(z = 1)", "list0", "1.5"] }
+# (do_mapply calls FUN on `dots[[j]][[i]]`, the wrapper's own variable, so
+# the raw cases above all stop at "object 'dots' not found"; these succeed)
+extra = [
+  "local({ dots <- list(1:3, 4:6); .Internal(mapply(function(x, y) x + y, dots, NULL)) })",
+  "local({ dots <- list(a = 1:2, b = c(p = 3, q = 4)); .Internal(mapply(function(a, b, z) a + b + z, dots, list(z = 1))) })",
+  "mapply(function(x, y) x + y, 1:3, 4:6)",
+  "mapply(function(x, y) paste(x, y), c(a = 'p', b = 'q'), 1:2)",
+  "mapply(rep, 1:3, 3:1)",
+  "mapply(function(x, ...) list(x, ...), 1:2, MoreArgs = list(z = 1))",
+  "mapply(function(x, y) x, 1:4, 1:2)",
+  "mapply(function(x, y) x, 1:3, 1:2)",
+  "mapply(function(x) x, list())",
+  "mapply(function(x, y) c(x, y), 1:2, list('a', NULL), SIMPLIFY = FALSE)",
+  "mapply(function(x) stop('a4 error'), 1:2)",
+  "mapply(function(x) x, structure(1:2, class = 'a4'))",
+]
 
 ["do.call"]
 typical = { what = "fun.id", args = "list2", envir = "env.base" }
@@ -199,18 +215,34 @@ domain = { x = ["@env", "NULL", "list2"], "all.names" = ["@lgl"], sorted = ["@lg
 ["Sys.getenv"]
 args = ["x", "unset"]
 typical = { x = "=\"HOME\"", unset = "=\"\"" }
-domain = { x = ["=\"HOME\"", "=character()", "=c(\"HOME\", \"TMPDIR\", \"A4_NOT_SET\")", "=\"LC_ALL\"", "@chr"], unset = ["=\"\"", "=NA_character_", "@chr"] }
+# (no zero-length x: the whole environment, whose R_* and harness variables
+# differ between the runtimes and between GNU R's two runs)
+domain = { x = ["=\"HOME\"", "=c(\"HOME\", \"TMPDIR\", \"A4_NOT_SET\")", "=\"LC_ALL\"", "\"\"", "a", "chrNA", "chr3", "utf8", "latin1", "bytes", "\" 3 \"", "long", "chrmatrix"], unset = ["=\"\"", "=NA_character_", "@chr"] }
 
 ["Sys.setenv"]
 args = ["nm", "values"]
 effect = "External"
 typical = { nm = "=\"A4_X\"", values = "=\"1\"" }
 domain = { nm = ["=\"A4_X\"", "=c(\"A4_X\", \"A4_Y\")", "@chr"], values = ["=\"1\"", "=c(\"1\", \"2\")", "@chr"] }
+# (the record does not hold the process environment: these read it back)
+extra = [
+  "{ .Internal(Sys.setenv('A4_X', '1')); Sys.getenv('A4_X', unset = NA) }",
+  "{ .Internal(Sys.setenv(c('A4_X', 'A4_Y'), c('1', '2'))); Sys.getenv(c('A4_X', 'A4_Y'), unset = NA) }",
+  "{ .Internal(Sys.setenv('A4_X', '')); Sys.getenv('A4_X', unset = NA) }",
+  "{ .Internal(Sys.setenv('A4_X', '1')); .Internal(Sys.setenv('A4_X', '2')); Sys.getenv('A4_X', unset = NA) }",
+  "{ Sys.setenv(A4_X = 'a', A4_Y = 2); Sys.getenv(c('A4_X', 'A4_Y'), unset = NA) }",
+  "{ .Internal(Sys.setenv('HOME', '/a4')); path.expand('~/x') }",
+]
 
 ["Sys.unsetenv"]
 args = ["x"]
 effect = "External"
 domain = { x = ["=\"HOME\"", "=\"A4_NOT_SET\"", "@chr"] }
+extra = [
+  "{ Sys.setenv(A4_X = '1'); r <- .Internal(Sys.unsetenv('A4_X')); list(r, Sys.getenv('A4_X', unset = NA)) }",
+  "{ r <- .Internal(Sys.unsetenv('HOME')); list(r, Sys.getenv('HOME', unset = NA)) }",
+  "{ r <- .Internal(Sys.unsetenv(c('A4_NOT_SET', 'TMPDIR'))); list(r, Sys.getenv(c('A4_NOT_SET', 'TMPDIR'), unset = NA)) }",
+]
 
 ["path.expand"]
 effect = "External"
@@ -232,6 +264,16 @@ domain = { fn = ["=\"f1\"", "=c(\"f1\", \"f2\")", "=\"nodir/f\"", "@chr"], showW
 effect = "External"
 typical = { file1 = "=\"f1\"", file2 = "=\"f2\"" }
 domain = { file1 = ["=\"f1\"", "@chr"], file2 = ["=\"f2\"", "=\"nope\"", "@chr"] }
+# (a case starts in an empty directory: these make the files first)
+extra = [
+  "{ writeLines('one', 'f1'); writeLines('two', 'f2'); .Internal(file.append('f1', 'f2')) }",
+  "{ writeLines('two', 'f2'); .Internal(file.append('new', 'f2')) }",
+  "{ writeLines('one', 'f1'); writeLines('two', 'f2'); .Internal(file.append(c('f1', 'f1'), c('f2', 'f2'))) }",
+  "{ writeLines('one', 'f1'); writeLines(c('a', 'b'), 'f2'); writeLines('c', 'f3'); .Internal(file.append('f1', c('f2', 'f3'))) }",
+  "{ writeLines('one', 'f1'); .Internal(file.append('f1', 'f1')) }",
+  "{ writeLines('one', 'f1'); .Internal(file.append('f1', 'nope')) }",
+  "{ writeLines('one', 'f1'); writeBin(as.raw(0:255), 'f2'); file.append('f1', 'f2') }",
+]
 
 ["Sys.chmod"]
 args = ["paths", "octmode", "use_umask"]

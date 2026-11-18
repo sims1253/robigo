@@ -124,7 +124,11 @@ robigo-rt's builtins with GNU R 4.6.2's on generated inputs, out of process.
   but the one below plus `PATH`, `HOME` and `TMPDIR`, so `Sys.getenv()` and
   the paths a case sees are the same for both runtimes. The files a case
   leaves in its directory are compared too: path, kind, mode, size and
-  sha256. Such rows default to 150 cases. `render.R`, run in any R ≥ 4, names the
+  sha256, the directory's own mode first. Every runtime process runs under
+  umask 022, which is part of the key. The record does not hold the process
+  environment, so `Sys.setenv` and `Sys.unsetenv` rows read it back in
+  their `extra` cases; a zero-length `Sys.getenv` (the whole environment)
+  is not generated, because the R_* and harness variables differ. Such rows default to 150 cases. `render.R`, run in any R ≥ 4, names the
   first field that differs, for display only.
 - **Environment:** both runtimes run in this environment, which is part of
   the cache key:
