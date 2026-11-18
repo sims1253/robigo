@@ -8,6 +8,8 @@
 ##   environment's bindings after the call (the arguments a<i> and their
 ##   aliases alias<i>, bound to the same objects before it); globals: the
 ##   global environment's names; seed: .Random.seed after the call, or NULL.
+## A binding the call left as it was (its serialization unchanged) is
+## recorded as TRUE rather than its value.
 ##
 ## Parameters come from the environment (robigo-rt has no commandArgs yet):
 ##   A4_BATCH  the batch.rds gen.R wrote    A4_OUT    the records' directory
@@ -15,7 +17,7 @@
 ##
 ## The driver uses only: readRDS, saveRDS, tryCatch, withCallingHandlers,
 ## withVisible, eval, as.call, as.name, new.env, assign, get0, ls, rm,
-## RNGkind, set.seed, sprintf, Sys.getenv, stop. The self-test checks them
+## serialize, unserialize, identical, RNGkind, set.seed, sprintf, Sys.getenv, stop. The self-test checks them
 ## first; a runtime that fails it gets "driver unusable on <label>: <what>"
 ## and no records, never a wrong comparison.
 local({
@@ -78,12 +80,13 @@ local({
 
         e <- new.env(parent = baseenv())
         if (c$kind == "extra") body <- c$expr else {
-            k <- length(c$args)
+            k <- length(c$pos)
             syms <- vector("list", k)
             for (i in seq_len(k)) {
                 if (c$missing[[i]]) syms[i] <- list(quote(expr = )) else {
                     n <- paste0("a", i)
-                    assign(n, c$args[[i]], envir = e)
+                    ## a copy of its own, so a write through it reaches no later case
+                    assign(n, unserialize(serialize(b$dom[[c$pos[[i]]]][[c$labels[[i]]]], NULL)), envir = e)
                     assign(paste0("alias", i), get0(n, e, inherits = FALSE), envir = e)
                     syms[[i]] <- as.name(n)
                 }
@@ -96,6 +99,8 @@ local({
             body <- as.call(c(list(f), syms))
             if (b$internal && c$kind != "wrapper") body <- as.call(list(as.name(".Internal"), body))
         }
+        snap <- list()
+        for (n in ls(e, all.names = TRUE)) snap[[n]] <- serialize(get0(n, e, inherits = FALSE), NULL)
         a4case <- eval(as.call(list(as.name("function"), NULL, body)), e)
         assign("a4case", a4case, envir = e)
 
@@ -111,8 +116,15 @@ local({
             }),
             error = function(x) { err <<- list(conditionMessage(x), class(x), conditionCall(x)); NULL })
         seed <- get0(".Random.seed", globalenv(), inherits = FALSE)
+        ## each binding: TRUE when it is the one made before the call, its
+        ## serialization byte for byte the same (an in-place write through
+        ## the shared argument shows here), else its value
         en <- sort(setdiff(ls(e, all.names = TRUE), "a4case"))
-        env <- lapply(en, function(n) get0(n, e, inherits = FALSE)); names(env) <- en
+        env <- lapply(en, function(n) {
+            v <- get0(n, e, inherits = FALSE)
+            if (!is.null(snap[[n]]) && identical(serialize(v, NULL), snap[[n]])) TRUE else v
+        })
+        names(env) <- en
         list(value = res$value, visible = res$visible, conds = conds, error = err, env = env,
              globals = sort(ls(globalenv(), all.names = TRUE)), seed = seed)
     }

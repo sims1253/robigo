@@ -45,7 +45,7 @@ local({
             "raw0" = raw(), "raw2" = as.raw(c(0, 255)),
             "list0" = list(), "list2" = list(1, "a"), "nested" = list(a = 1, b = list(2, NULL)),
             "sym" = quote(x), "call" = quote(f(x, 1)), "expr" = expression(1, x),
-            "formula" = y ~ x
+            "formula" = local({ f <- y ~ x; environment(f) <- baseenv(); f })   # (not this frame, which holds the lattice)
         )
         dec <- list(
             "named" = c(a = 1, b = 2, 3),
@@ -61,6 +61,11 @@ local({
         c(v, dec)
     }
     L <- lattice()
+    ## the values whose serialization is large: at most LARGE_CASES generated
+    ## cases (beyond the single ones) may hold one, so that they do not
+    ## dominate a row through the pairs
+    large <- names(L)[vapply(L, function(x) length(serialize(x, NULL)) > 65536L, NA)]
+    LARGE_CASES <- 25L
     ## the RNG states an Rng row's cases cycle through (a Pure row's cases
     ## all start from the first): kind, normal.kind, sample.kind, then the
     ## seed, or "none" (no .Random.seed) or "corrupt" (one GetSeedsFromVar
@@ -140,14 +145,18 @@ local({
         if (!row$internal) for (i in seq_len(k)) if (!"<missing>" %in% names(dom[[i]])) dom[[i]]["<missing>"] <- list(quote(expr = ))
         named <- !row$internal && all(nzchar(argn))
         cases <- list(); seen <- new.env(hash = TRUE)
+        nlarge <- 0L
         add <- function(kind, pick) {
             key <- paste(pick, collapse = "\r")
             if (kind != "wrapper" && exists(key, seen, inherits = FALSE)) return(FALSE)
+            if (kind %in% c("pair", "random") && any(pick %in% large)) {
+                if (nlarge >= LARGE_CASES) return(FALSE)
+                nlarge <<- nlarge + 1L
+            }
             assign(key, TRUE, seen)
-            vals <- lapply(seq_len(k), function(i) dom[[i]][[pick[[i]]]])
             miss <- vapply(seq_len(k), function(i) pick[[i]] == "<missing>", NA)
-            vals[miss] <- list(NULL)
-            cases[[length(cases) + 1L]] <<- list(kind = kind, labels = pick, args = vals, missing = miss,
+            ## the values themselves are the batch's `dom`, once: a case names them
+            cases[[length(cases) + 1L]] <<- list(kind = kind, labels = pick, pos = seq_len(k), missing = miss,
                                                    names = if (named || kind == "wrapper") argn else rep("", k))
             TRUE
         }
@@ -201,7 +210,7 @@ local({
             keep <- nzchar(argn) & argn %in% names(formals(get(w$name, baseenv())))
             for (c in base[seq_len(min(length(base), row$wrapper_budget))]) {
                 c$kind <- "wrapper"; c$wrapper <- w$name
-                c$args <- c$args[keep]; c$missing <- c$missing[keep]; c$labels <- c$labels[keep]
+                c$pos <- c$pos[keep]; c$missing <- c$missing[keep]; c$labels <- c$labels[keep]
                 c$names <- argn[keep]
                 cases[[length(cases) + 1L]] <- c
             }
@@ -211,7 +220,8 @@ local({
             cases[[i]]$id <- i
             cases[[i]]$rng <- if (row$effect == "Rng") rng_settings[[(i - 1L) %% length(rng_settings) + 1L]] else rng_settings[[1L]]
         }
-        list(name = row$name, internal = row$internal, effect = row$effect,
+        for (i in seq_len(k)) dom[[i]] <- dom[[i]][names(dom[[i]]) != "<missing>"]
+        list(name = row$name, internal = row$internal, effect = row$effect, dom = dom,
              lattice = LATTICE_VERSION, seed = row$seed, cases = cases)
     }
 
