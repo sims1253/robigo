@@ -716,6 +716,35 @@ pub fn do_return_value(
     })
 }
 
+/// `.Internal(withVisible(x))`, a special: `x` evaluated in `rho`, and
+/// `list(value =, visible =)` with `R_Visible` as that evaluation left it.
+// R: eval.c:do_withVisible
+pub fn do_with_visible(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    use robigo_rtbuiltins::attrib::{Attr, Attrs};
+    use robigo_rtcore::{Char, Encoding, Lgl, RSym};
+    let n = call.bind(cx).len().unwrap_or(1).saturating_sub(1);
+    crate::prims::check_arity(cx, call, n, "withVisible", 1, true)?;
+    cx.scope(|cx, s| {
+        let e = s.root(cx, call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().car());
+        let o = s.out(cx);
+        let x = o.root();
+        eval(cx, e, rho, o)?;
+        let visible = cx.visible();
+        cx.build(out, |cx| {
+            let mut ret = cx.alloc_vector::<Ref<'_>>(2)?;
+            let mut nm = cx.alloc_vector::<Char<'_>>(2)?;
+            nm.set(0, cx.mk_char(b"value", Encoding::Native)?);
+            nm.set(1, cx.mk_char(b"visible", Encoding::Native)?);
+            ret.set(0, x.bind(cx));
+            ret.set(1, cx.alloc_copy(&[Lgl(visible as i32)])?.finish().into());
+            let mut a = Attrs::new();
+            a.install(Attr { tag: cx.sym(RSym::Names), value: nm.finish().into() });
+            a.apply(cx, &mut ret)?;
+            Ok(ret.finish().into())
+        })
+    })
+}
+
 /// `.Internal(eval(expr, envir, enclos))`: `expr` (a call or symbol, or
 /// each element of an expression vector) evaluated in `envir` (an
 /// environment, a list or pairlist made into one under `enclos`, or a
