@@ -1,4 +1,4 @@
-## 2026-11-18: V4 step 3a: R_compile_pkgs compiles closures as serialize writes them (draft)
+## 2026-11-18: V4 step 3a: R_compile_pkgs compiles closures as serialize writes them
 
 GNU R's package build writes each closure's byte code into the lazy-load
 database: under `_R_COMPILE_PKGS_=1` (lazycomp.mk, tools' Makefile),
@@ -161,6 +161,36 @@ serialize header. The other scripts locate a difference: `why.R` (the
 first differing op or constant), `use.R` (the primitives a closure
 calls), `env*.R` and `nf.R` (environment and data records).
 
+### Review
+
+Sol (codex `gpt-6.1-sol`, high), round 1 on the whole step: APPROVE, no
+findings. The round checked the restart replay, that a closure inside a
+compiled closure's subtree is not compiled, the rooting around the
+effect point, R_Visible, `R_compile_pkgs` as NA_LOGICAL (C reads it as
+true), and the flag's restore.
+
 ### Verification
 
-To do before filing: full `scripts/rt-ci.py`, perf-rt, lint, Sol.
+On main `c3a685b3e`:
+- perf-rt (`scripts/perf.py rt-bars --main`, against main's binary): flat,
+  every row within +0.03% (named +0.03%, guard-subset-matrix +0.03%), peak
+  RSS within 2%.
+- `scripts/rt-ci.py` stopped at conformance, 552/560. The 8 failing are:
+  - the 5 `bytecode/*` cases and this step's `serialize/compile-pkgs.R`,
+    all unratcheted, which wait for the compiler namespace;
+  - `dynload/library-dynam-tools.R`, unratcheted;
+  - `datetime/strptime.R`, ratcheted. It prints today's date, recorded on
+    the 17th; #841 fixes it.
+
+- The full `scripts/rt-ci.py`, on a local merge with #841 (not pushed):
+  exit 0. Conformance 553/560; the 7 failing are the unratcheted ones
+  above. Every mode passes:
+  - `NO_INPLACE`, `MATERIALIZE`;
+  - gctorture, and `GC_MOVE` with gctorture;
+  - `FRAME_QUARANTINE`, `GC_PIN_REPORT`;
+  - the stress script, overshoot, the small vector limit;
+  - the byte-code crosscheck;
+  - injected allocation failures (2800 runs, 0 differences);
+  - retry torture.
+- Miri: not run. The step changes neither robigo-rtcore nor robigo-heap.
+- `cargo fmt`, `scripts/lint.sh`: clean.
