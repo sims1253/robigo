@@ -20,7 +20,10 @@
 # name (do.call("c", ...)) do not, except that a capi case counts every
 # primitive its C names (install("sqrt")) or parses. Top-level printing in
 # C does not count.
-# 251 closures, 121 primitives, 167 internals.
+#
+# No counts here (the log has them): two branches that each add a name
+# would both change a count line the same way, git would merge it, and the
+# file would no longer be what the generator makes.
 closure %in% match.R
 closure %||% utils.R
 closure ..getNamespace namespace.R
