@@ -138,10 +138,24 @@ class Rule(unittest.TestCase):
         # not stacked, the same skips are not explained
         self.assertFalse(passes(needs("false", "false", "true", **skip)))
 
-    def test_check_does_not_run_in_a_cancelled_run(self):
-        # `always()` kept a superseded run waiting for a runner for Check alone
+    def test_a_cancelled_run_fails_check(self):
+        # every need cancelled (a run cancelled by hand, or superseded): red
+        n = {j: {"result": "cancelled", "outputs": {}} for j in JOBS}
+        self.assertFalse(passes(n))
+        self.assertFalse(passes(n, pull_request=False))
+        self.assertFalse(passes(needs(rt="cancelled")))
+
+    def test_check_runs_always_and_pull_requests_share_no_group(self):
+        # Check runs in a cancelled run too, so a hand-cancelled head run is
+        # red; then no shared group may make a new run wait behind it
         wf = (HERE.parent / ".github/workflows/ci.yml").read_text()
-        self.assertIn("    name: Check\n    if: ${{ !cancelled() }}\n", wf)
+        self.assertIn("    name: Check\n    if: ${{ always() }}\n", wf)
+        self.assertIn("  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.run_id }}\n"
+                      "  cancel-in-progress: false\n", wf)
+        # select cancels the superseded runs, as its first step
+        steps = wf.split("\n  select:\n", 1)[1].split("\n    steps:\n", 1)[1].splitlines()
+        first = next(l.strip() for l in steps if not l.strip().startswith("#"))
+        self.assertEqual(first, "- name: Cancel this pull request's superseded runs")
 
     def test_workflow_needs_every_gating_job(self):
         import re

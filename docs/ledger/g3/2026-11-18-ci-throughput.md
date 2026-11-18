@@ -55,22 +55,39 @@ Example: #877's 37d1c2fdd, whose 21 other jobs were all cancelled at
 - 107 cancelled or queued runs had their `Check` waiting for a runner
   (median 12 min, max 66).
 
-**Fix:** `Check` is `if: ${{ !cancelled() }}`. It still runs after failed
-and skipped jobs, so a failure still fails it; it no longer runs in a
-cancelled run, which now ends at once and frees the group.
+**Fix (the foreman's design, after a first version that the foreman
+refused):** `Check` stays `if: always()`. So a cancelled or failed need
+still fails it, and a head run cancelled by hand is red, as before. The
+blocking goes instead:
+- pull request runs get a concurrency group of their own (`github.run_id`;
+  main keeps its group per commit), so no run waits `pending` behind
+  another;
+- `select`, which every job needs, cancels the pull request's older `ci`
+  runs through the API as its first step (`actions: write`). It cancels
+  every run that is not completed, has the same head branch and
+  repository, and has a lower run id. It is a plain cancel, so the old
+  run's `Check` still runs and is red on a commit nobody merges. That
+  costs one queued tiny job and blocks nothing.
 
-**The price:** a skipped required check counts as passing, and a run
-cancelled by hand on a pull request's head now leaves `Check` skipped. So a
-head run must never be cancelled by hand (docs/workstreams.md says so); a
-push cancels the superseded run by itself. The foreman's merge tooling
-could also refuse a pull request whose head run's conclusion is not
-`success`. Main is not affected: its runs have a group per commit and are
-never cancelled by concurrency.
+The first version made `Check` `if: ${{ !cancelled() }}`: then a head run
+cancelled by hand read as green, because a skipped required check passes.
+Eight agents have `gh`, and a rule in a doc is not a gate.
 
-A tiny first job that cancels older runs through the API would not help:
-the new run is `pending` at the workflow level, so none of its jobs starts
-before the old run ends. A separate workflow's job would wait for a runner
-in the same 3.5 h queue.
+**What the window costs:** until the new run's `select` gets a runner, both
+runs are alive. In the last 24 h there were 57 supersessions. The new
+`select`'s own wait for a runner was a median of 9.6 min (p90 36), and the
+older run had a median of 1 job on a runner (mean 1.1) when the new run
+was created. Those jobs keep running in the window: roughly 57 × 15 min ×
+1.1 ≈ 900 runner-minutes a day (`window.py`), and more if queued jobs of
+the old run start in the window. In return, 1,268 minutes a day of
+waiting behind a cancelled run go away.
+
+**Other events:**
+- A fork's `GITHUB_TOKEN` is read-only, so its cancel fails: the step
+  warns, and both runs finish (no fork pull requests so far).
+- `workflow_dispatch` runs have a group of their own and cancel nothing.
+- Main's push runs are unchanged.
+- A re-run of an older run cancels only runs older than itself.
 
 ### 2. Stacked pull requests (fixed here, as approved)
 
@@ -144,6 +161,9 @@ conflict.
 tested, since GitHub makes the test merge when the run is triggered;
 crates are compared by their `crates/<name>` directory.)
 
+- Today's stopgap (the foreman's): a local build of each stale pull
+  request's merge before merging it
+  (`~/.cache/robigo-research/g3-foreman/premerge-check.sh`).
 - **A merge queue (recommended).**
   - Each queued merge is tested as main plus the entries ahead of it, so a
     signature change on main is caught before the merge.

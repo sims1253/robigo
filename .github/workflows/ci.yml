@@ -11,10 +11,15 @@ on:
 
 # Every main commit gets its own group: its run publishes the perf baseline
 # that pull requests built on that commit compare with (a shared group would
-# cancel queued main runs). Pull requests cancel their superseded runs.
+# cancel queued main runs). Every other run has a group of its own, so no
+# run waits `pending` behind another: a pull request's superseded runs are
+# cancelled by `select`'s first step instead. (A shared group per pull
+# request did that at once, but a cancelled run still queues `Check`, which
+# runs `always()`, and held the group until a runner took it: the new
+# head's run waited behind it. 2026-11-18: 60 runs, 1,268 minutes.)
 concurrency:
-  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.run_id }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -52,6 +57,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # to cancel this pull request's superseded runs
+      actions: write
     outputs:
       heavy: ${{ steps.sel.outputs.heavy }}
       mode: ${{ steps.sel.outputs.mode }}
@@ -66,6 +73,35 @@ jobs:
       # `oracles=(...)`. A version added there needs its line here.
       image_oracle_4_6_2: ${{ steps.image.outputs.oracle_4_6_2 }}
     steps:
+      # First, before anything else: cancel this pull request's older `ci`
+      # runs that are still going (same head branch and repository, a lower
+      # run id). A plain cancel, so their `Check` still runs and is red on a
+      # commit nobody merges. Until this step runs, both runs are alive: the
+      # older one's jobs keep their runners for the new run's wait for its
+      # first runner (2026-11-18: median 10 min, about 1 job of the older
+      # run on a runner then). A fork's token cannot cancel: it warns, and
+      # both runs finish.
+      - name: Cancel this pull request's superseded runs
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          ids=$(gh api -X GET "repos/$REPO/actions/workflows/ci.yml/runs" -f event=pull_request \
+                  -f branch="$HEAD_REF" -f per_page=100 --jq ".workflow_runs[]
+                  | select(.status != \"completed\" and .id < $RUN_ID
+                           and .head_repository.full_name == \"$HEAD_REPO\") | .id") ||
+            { echo "::warning::could not list this pull request's runs; superseded ones keep running"; exit 0; }
+          for id in $ids; do
+            if gh api -X POST "repos/$REPO/actions/runs/$id/cancel" > /dev/null; then
+              echo "cancelled superseded run $id"
+            else
+              echo "::warning::could not cancel superseded run $id (a fork's token is read-only)"
+            fi
+          done
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
@@ -1113,16 +1149,13 @@ jobs:
   # adding, splitting or resharding jobs needs no ruleset change: add every
   # new gating job to `needs`. It passes when each job passed, or was skipped
   # because `select` said so; a failed, cancelled or unexplained skip fails
-  # it. `!cancelled()`, not `always()`: it runs after failed and skipped
-  # jobs, but not in a cancelled run. `always()` also ran it there, so a run
-  # superseded by a new push kept waiting for a runner for `Check` alone,
-  # holding the concurrency group, and the new head's run stayed pending
-  # behind it (2026-11-18: 60 runs, 1,268 minutes). The price: a skipped
-  # required check counts as passing, so a pull request's HEAD run must not
-  # be cancelled by hand (docs/workstreams.md); push or close it instead.
+  # it. `always()`: a skipped required check counts as passing, so a
+  # cancelled run must still report a failure here. (A superseded run's
+  # `Check` waits for a runner and is red on a commit nobody merges; it
+  # blocks nothing, since pull request runs share no concurrency group.)
   check:
     name: Check
-    if: ${{ !cancelled() }}
+    if: ${{ always() }}
     needs: [select, lint, miri, rdb-data, rt, base-subset, build, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
