@@ -804,6 +804,8 @@ impl Core {
     /// A new heap. The calling thread's stack is the one whose C segments
     /// are scanned.
     pub fn new() -> Box<Core> {
+        // the process's fork handlers, before this heap can take a lock
+        crate::fork::register();
         let (stack_lo, stack_top) = thread_stack();
         let mut c = Box::new(Core {
             heap: Heap::new(),

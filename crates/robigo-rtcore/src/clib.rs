@@ -298,9 +298,22 @@ compile_error!(
 /// `newlocale`, `default_textdomain_dir`),
 /// and an [`EnvWriter`] holds it
 /// exclusive. So robigo's own safe wrappers never read while it writes, on
-/// any glibc, with or without isolates. Lock order: the live isolates
-/// (`isolate::LIVE_ISOLATES`), then this, then std's environment lock.
+/// any glibc, with or without isolates. Its place in the process's lock
+/// order, and the fork handlers that hold it across a `fork`: robigo-heap's
+/// `fork.rs`.
 static ENV: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+/// [`ENV`] exclusive, for the fork handlers (`isolate::fork_take`): no
+/// reader is inside a C call and no writer inside `set_var` across a fork.
+pub(crate) fn env_write_lock() -> std::sync::RwLockWriteGuard<'static, ()> {
+    ENV.write().unwrap_or_else(|e| e.into_inner())
+}
+
+/// [`ENV`] shared, held by a test as a reader in a C call would hold it.
+#[cfg(test)]
+pub(crate) fn env_read_for_test() -> std::sync::RwLockReadGuard<'static, ()> {
+    env_read()
+}
 
 /// [`ENV`] shared, for a C call that reads the environment. (Never while
 /// this thread holds an [`EnvWriter`]: the lock does not nest.)

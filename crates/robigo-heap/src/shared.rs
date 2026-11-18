@@ -169,7 +169,7 @@ unsafe fn string(x: Sexp, bytes: &[u8], gpbits: u16) -> Sexp {
     x
 }
 
-/// A symbol's fields, as `Core::new_symbol` writes them.
+/// A symbol's fields, as the arena's `new_symbol` writes them (`arena.rs`).
 ///
 /// # Safety
 /// `s` is a fresh SYMSXP; the others are objects of the segment.

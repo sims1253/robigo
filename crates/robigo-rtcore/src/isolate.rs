@@ -996,14 +996,52 @@ impl Drop for EndCallback {
 /// clib's environment lock, for a whole `Sys.setenv`/`Sys.unsetenv` call,
 /// so on a glibc older than `clib::MIN_GLIBC` no second isolate starts (and
 /// so no other robigo thread can be inside `getenv`) while the environment
-/// changes. Lock order: this, then clib's `ENV`, then std's environment
-/// lock.
+/// changes. It is first in the process's lock order, and the fork handlers
+/// hold it across a `fork` (robigo-heap's `fork.rs`). In a forked child
+/// the count still includes the other threads' isolates, which the child
+/// does not have; on an older glibc that only refuses environment writes
+/// there.
 static LIVE_ISOLATES: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
 
 /// [`LIVE_ISOLATES`] locked (a panic while it was held left a count that
 /// is still right: nothing panics between its reads and writes).
 pub(crate) fn live_isolates() -> std::sync::MutexGuard<'static, usize> {
     LIVE_ISOLATES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The guards `fork_take` holds across a fork, released by `fork_release`
+/// on both sides: only the forking thread touches them, between the two
+/// handlers.
+struct ForkGuards(
+    std::cell::UnsafeCell<Option<(std::sync::MutexGuard<'static, usize>, std::sync::RwLockWriteGuard<'static, ()>)>>,
+);
+
+// SAFETY: written by the forking thread's `prepare` handler and read by the
+// same thread's `parent` or `child` handler, which the C library runs
+// around `fork`; no other thread reaches it.
+unsafe impl Sync for ForkGuards {}
+
+static FORK_GUARDS: ForkGuards = ForkGuards(std::cell::UnsafeCell::new(None));
+
+/// The fork handlers' `prepare` for this crate's locks, in the process's
+/// order (robigo-heap's `fork.rs`): the live isolates, then the
+/// environment's lock exclusive.
+fn fork_take() {
+    let live = live_isolates();
+    let env = crate::clib::env_write_lock();
+    // SAFETY: as for `ForkGuards`: the forking thread alone.
+    unsafe { *FORK_GUARDS.0.get() = Some((live, env)) };
+}
+
+/// The fork handlers' `parent` and `child` for this crate's locks: the
+/// reverse order (`ENV`, then the live isolates). In the child the forking
+/// thread is the guards' owner, so unlocking is its own.
+fn fork_release() {
+    // SAFETY: as for `ForkGuards`.
+    if let Some((live, env)) = unsafe { (*FORK_GUARDS.0.get()).take() } {
+        drop(env);
+        drop(live);
+    }
 }
 
 /// [`LIVE_ISOLATES`] if no one holds it (a test's probe).
@@ -1056,6 +1094,9 @@ impl OwnedIsolate {
         let registration = Registration::new();
         // a new symbol's bits come from its name (H5): before any install
         robigo_heap::set_symbol_bits(crate::sym::symbol_bits);
+        // the fork handlers take this crate's locks before the arena's
+        // (robigo-heap's fork.rs: the lock order), set before the first heap
+        robigo_heap::set_fork_locks(fork_take, fork_release);
         // The heap's allocation never collects (H2), and no C segment is open
         // until a native call opens one, so no Rust frame is ever scanned
         // (docs/g3.md §3).
