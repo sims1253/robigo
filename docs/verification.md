@@ -64,13 +64,17 @@ robigo-rt's builtins with GNU R 4.6.2's on generated inputs, out of process.
 
 - **Rows:** `tests/builtin-diff/rows.toml` has one table per builtin, by its
   names.c name. An empty table is a valid row; the file's header lists the
-  fields. `check-rows` fails when a registry builtin has neither a row nor
-  a reason under `[uncovered]`, so a newly ported builtin shows up. A row's
-  `domain` or `typical` key must name one of its arguments (gen.R stops
-  otherwise). A wrapper that passes `as.character(x)` names nothing, so such
-  a row gives `args`. A special runs when its row says `special = true`: its
-  arguments reach it as the case's symbols `a1`, `a2`, ..., the same
-  expressions in both runtimes.
+  fields. `check-rows` reports a registry builtin that has neither a row nor
+  a reason under `[uncovered]`, so a newly ported builtin shows up, and an
+  `[uncovered]` name the registry lacks. For now both are warnings, listed
+  in the summary, so the builtin PRs queued before A4 still pass;
+  `UNLISTED_FAILS` in `scripts/builtin-diff.py` makes them failures once
+  that queue has drained. A builtin with both a row and a reason always
+  fails. A row's `domain` or `typical` key must name one of its arguments
+  (gen.R stops otherwise). A wrapper that passes `as.character(x)` names
+  nothing, so such a row gives `args`. A special runs when its row says
+  `special = true`: its arguments reach it as the case's symbols `a1`,
+  `a2`, ..., the same expressions in both runtimes.
 - **Cases:** `scripts/builtin-diff/gen.R` makes them, in GNU R alone, from
   one value lattice (version 2, about 70 values with their decorations).
   Two fixture pools are outside `@any`, for the rows that name them:

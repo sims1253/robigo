@@ -62,6 +62,18 @@ class Sources(unittest.TestCase):
     def test_every_registry_builtin_has_a_row_or_a_reason(self):
         self.assertEqual(bd.cmd_check_rows(None), 0)
 
+    def test_an_unlisted_builtin_warns_until_unlisted_fails(self):
+        import contextlib, io
+        from unittest import mock
+        reg = {**bd.registry(), "a4.unlisted": "Pure"}
+        for strict, want in ((False, 0), (True, 1)):
+            out = io.StringIO()
+            with mock.patch.object(bd, "registry", return_value=reg), \
+                 mock.patch.object(bd, "UNLISTED_FAILS", strict), contextlib.redirect_stdout(out):
+                self.assertEqual(bd.cmd_check_rows(None), want)
+            self.assertIn("'a4.unlisted' has no row", out.getvalue())
+            self.assertEqual("warning: registry builtin" in out.getvalue(), not strict)
+
 
 class Classes(unittest.TestCase):
     def setUp(self):
