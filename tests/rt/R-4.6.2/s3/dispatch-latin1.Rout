@@ -1,0 +1,8 @@
+[1] "latin1 method" "base method"  
+[1] "registered method"
+[1] "Ops for +"
+[1] "latin1 generic"
+<simpleError in NextMethod(): no method to invoke>
+<simpleError in UseMethod("h"): no applicable method for 'h' applied to an object of class "café">
+<simpleError in f(structure(1, class = b)): translating strings with "bytes" encoding is not allowed>
+[1] 3

@@ -533,11 +533,14 @@ pub fn do_subset3(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out
         let lx = link_root(x);
         if x.bind(cx).is_object() {
             let prom = ev_promise(cx, s, e, x)?;
-            // fixSubset3Args: the name as a string is the second argument
+            // fixSubset3Args: a shallow copy of the call's cells after the
+            // object, the name made a string; its tag kept
             let str = scalar_string(cx, s, input)?;
+            let after = s.root(cx, call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().cdr());
             let o = s.out(cx);
             let rest = o.root();
-            cx.build(o, |cx| cx.cons(str.bind(cx), cx.nil()))?;
+            cx.shallow_duplicate(after, o)?;
+            cx.set_car(rest, str);
             let r = crate::dispatch::dispatch_special(cx, "$", call, prom, rest, rho, &out);
             lx.release();
             if r? {
