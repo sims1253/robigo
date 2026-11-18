@@ -263,10 +263,6 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin(".isMethodsDispatchOn", crate::specials::do_s4on, Inline::None, 1, -1),
     builtin("R.home", crate::platform::do_rhome, Inline::None, 11, 0),
     builtin("dir.exists", crate::platform::do_direxists, Inline::None, 11, 1),
-    // paste.c, util.c: format, format.info, formatC
-    builtin("format", crate::format::do_format, Inline::None, 11, 9),
-    builtin("format.info", crate::format::do_formatinfo, Inline::None, 11, 3),
-    builtin("formatC", crate::format::do_formatc, Inline::None, 11, 7),
     builtin("getwd", crate::util::do_getwd, Inline::None, 11, 0),
     builtin("basename", crate::util::do_basename, Inline::None, 11, 1),
     builtin("dirname", crate::util::do_dirname, Inline::None, 11, 1),
@@ -275,6 +271,10 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("list.files", crate::platform::do_listfiles, Inline::None, 11, 9),
     builtin("parent.env<-", crate::builtin::do_parentenvgets, Inline::None, 11, 2),
     builtin("pos.to.env", crate::builtin::do_pos2env, Inline::None, 1, 1),
+    // paste.c, util.c: format, format.info, formatC
+    builtin("format", crate::format::do_format, Inline::None, 11, 9),
+    builtin("format.info", crate::format::do_formatinfo, Inline::None, 11, 3),
+    builtin("formatC", crate::format::do_formatc, Inline::None, 11, 7),
 ];
 
 /// How the VM runs B1's builtin `name` inline, if it does.
