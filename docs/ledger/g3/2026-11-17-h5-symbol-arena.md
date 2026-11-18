@@ -62,8 +62,9 @@
   - Checked on a `gc()` table probe (`gc()` twice, then a new symbol).
     GNU R 4.6.2 with no default packages: 50,623 Ncells and 133,182 Vcells
     used. A `gc()` call costs 141 Ncells and 319 Vcells, a new symbol 18 and
-    34. robigo-rt before and after this step prints the same numbers:
-    8,226 and 4,687; 184 and 539; 32 and 153. The Mb columns are the same
+    34. robigo-rt before and after this step prints the same numbers
+    (2026-11-18, main 046c437c2): 8,227 and 4,687; 184 and 539; 32 and
+    153. The Mb columns are the same
     too. robigo's table does not equal GNU R's (it was not equal before H5);
     H5 leaves it as it was.
 - Tests:
@@ -145,8 +146,57 @@
     frame binding, dispatch) would be gone, which should show as fewer
     instructions on the calls rows. The cost is an API change across
     rtcore and every crate that holds a `Cx`.
-- Verified: (pending)
-- Measured: (pending)
-- Review: sol-loop, 2 rounds with gpt-6.1-sol on high, approved. Round 1
-  found the composite C accessors and the uninstalled symbol (both fixed
-  above).
+- Verified (2026-11-18, on `160b637de`; the later commits change docs
+  only):
+  - Debug `cargo test` of robigo-heap, -rtcore, -rt, -rtbuiltins and
+    -rtapi passed.
+  - The full `scripts/rt-ci.py` passed: every mode, and 2,800 injected
+    failures with no difference. It ran in a detached checkout of the same
+    commit, with one ratchet marker removed there and not committed:
+    `tests/rt/datetime/strptime.R` parses `%r`, which takes today's date,
+    and was recorded on 2026-11-17, so it fails on main too from
+    2026-11-18 on.
+  - Miri passed on robigo-rtcore (all tests) and on robigo-heap's
+    `layout::`, `heap::bitmap_tests`, `heap::medium_tests` and `arena::`.
+  - `scripts/lint.sh` passed.
+- Measured (2026-11-18, `160b637de` against main `046c437c2`, each built
+  in its own checkout and target, `h5/ar-perf.sh`):
+  - rt-bars, 0 failures (instructions): plain −0.01%, defaults −0.00%,
+    named +0.03%, env-fn −0.06%, superassign +0.07%, s3 +0.24%, fib
+    −0.00%, binarytrees −0.00%, e7-paste +0.02%, e7-match +0.07%,
+    e7-unique +0.02%; the guard and d0 rows +0.05% to +0.37%. Peak RSS
+    within 2%.
+  - The PRINTNAME read is now a table read with a null test and a cold
+    refusal. `$` on an environment read it only for `IS_ASCII`, which cost
+    env-fn +0.49% (+7 instructions per call in `bcassign::dollar`). It now
+    reads the ASCII bit on the symbol's own name, which every isolate's
+    PRINTNAME shares. s3's +0.24% (about 51 instructions per iteration, by
+    callgrind) is the table read where the CHARSXP is needed (`$` on a
+    list, `dollar_call`, `dispatch_method`); the lazy path cost the same
+    (+0.31%).
+  - Rows (instructions per iteration, main → branch): e7-paste 96,208 →
+    96,215; d10-sprintf 387,204 → 398,120 (+2.8%); d10-paste-match 274,969
+    → 276,790 (+0.7%); d10-ascharacter 78.46M → 78.38M; d10-assign 21,211 →
+    21,231.
+  - d10-sprintf is glibc allocator state. Both builds make the same hot
+    calls (`Spec::int`, `finish_grow` and `sprintf::tr`, each the same
+    number of times), but each `malloc`/`free` costs more. The branch makes
+    1,728 more boot allocations (each new name's key is boxed for the
+    heap's table and the arena's). Installing N extra symbols in the
+    setup, with no code change, moves main alone from 393k (N = 0) to 420k
+    (N = 3,000); at N = 3,000 the branch is 0.8% below main.
+  - d10-paste-match is the CHARSXP addresses that `match` hashes by
+    (unique.c's pointer hash). `is_dup::<StrKeys>` has the same code and
+    the same 4,000,000 calls in both builds, but 62.6 instructions per call
+    on the branch against 60.5 on main: more probe steps. Any setup line
+    ahead of the keys (`junk <- as.list(seq_len(N))`, N = 0 to 2,500) moves
+    the keys' addresses, and the difference then falls to +0.05% to
+    +0.18%.
+  - Ad hoc PRINTNAME idioms (instructions per iteration, main → branch):
+    deparse of a call 141,420 → 141,715 (+0.21%), `as.character(sym)`
+    1,857 → 1,866, `names(list)` 1,734 → 1,736.
+- Review: sol-loop, 4 rounds with gpt-6.1-sol on high, approved. Round 1
+  found the composite C accessors and the uninstalled symbol (fixed). Round 2
+  approved. Round 3, on the lazy path that replaced round 1's owner-check
+  refusal for perf, found S1 to S3 (above). The adoption design replaced
+  that path, and round 4 approved it with no findings.
