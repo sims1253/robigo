@@ -7,7 +7,7 @@
 #[cfg(not(miri))]
 use robigo_rtcore::Safepoint;
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Char, Cx, Encoding, ExitKind, OwnedIsolate, Ref};
+use robigo_rtcore::{Char, Cx, Encoding, ExitKind, OwnedIsolate, Ref, Slot};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 /// The message of the panic `f` raises.
@@ -373,6 +373,43 @@ fn roots_and_stack_slots_count_nothing() {
         let _ = s.args(cx, &[r.bind(cx), r.bind(cx)], None);
         let _g = cx.global(r.bind(cx));
         assert_eq!(r.bind(cx).refcnt(), 0);
+    });
+}
+
+/// `Cx::stack_slots` reads the live slots in place, as robigo-rt's link walk
+/// does: a frame's marks and a root's object, whose count the walk raises
+/// and drops while the slice lives (a header field, not a slot).
+#[test]
+fn stack_slots_read_in_place() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    cx.scope(|cx, s| {
+        let x = cx.alloc_copy(&[1]).unwrap().finish();
+        let r = s.root(cx, x);
+        let f = s.frame(cx, 2);
+        // SAFETY: the first of two fresh empty slots of this scope; a mark
+        // is no object.
+        unsafe { f.write(Slot::mark(7)) };
+        let d = cx.stack_depth();
+        // SAFETY: nothing writes the slots while the slice lives.
+        let st = unsafe { cx.stack_slots(0, d) };
+        assert_eq!(st.len(), d);
+        assert_eq!(st[d - 2].as_mark(), Some(7));
+        assert_eq!(st[d - 1].as_mark(), None);
+        let objs: Vec<_> = st.iter().filter_map(|s| s.as_object()).collect();
+        assert!(objs.contains(&r.bind(cx).sexp()));
+        // SAFETY: live objects of this heap; each increment is undone.
+        unsafe {
+            objs.iter().for_each(|o| o.incref());
+            assert_eq!(r.bind(cx).refcnt(), 1);
+            objs.iter().for_each(|o| o.decref());
+        }
+        assert_eq!(r.bind(cx).refcnt(), 0);
+        // SAFETY: as above (an empty range).
+        assert!(unsafe { cx.stack_slots(d, d) }.is_empty());
+        // SAFETY: (panics before reading) a range past the depth.
+        let past = catch_unwind(AssertUnwindSafe(|| unsafe { cx.stack_slots(0, d + 1) }.len()));
+        assert!(past.is_err());
     });
 }
 
