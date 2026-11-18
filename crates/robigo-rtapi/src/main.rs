@@ -294,6 +294,7 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     let mut iso = OwnedIsolate::new();
     let cx = iso.cx();
     cx.set_locale(robigo_rtcore::Locale { utf8, collate_c: env_loc.collate_c });
+    cx.set_locale_names(env_loc.names.clone());
     // R_NoEcho before InitOptions, whose `echo` is its negation
     cx.set_no_echo(!echo);
     robigo_rt::install(cx);

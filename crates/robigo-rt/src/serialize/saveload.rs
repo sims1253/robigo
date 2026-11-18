@@ -158,8 +158,8 @@ fn restore_to_env(cx: &mut Cx, ans: Root<'_>, aenv: Root<'_>, out: Out<'_>) -> R
         }
         get_value(x, b"class").is_some_and(|k| k.len() == Some(1) && get_value(k, b"package").is_some())
     }
-    let old_style = |cx: &mut Cx, obj: Ref<'_>, name: &[u8]| -> RResult<()> {
-        if old_style_s4(obj) {
+    let old_style = |cx: &mut Cx, obj: Root<'_>, name: &[u8]| -> RResult<()> {
+        if old_style_s4(obj.bind(cx)) {
             let n = String::from_utf8_lossy(name).into_owned();
             cx.warning_call(None, &format!("'{n}' looks like a pre-2.4.0 S4 object: please recreate it"))?;
         }
@@ -168,7 +168,8 @@ fn restore_to_env(cx: &mut Cx, ans: Root<'_>, aenv: Root<'_>, out: Out<'_>) -> R
     // allow ans to be a vector-style list
     if ans.bind(cx).sexptype() == VECSXP {
         return cx.scope(|cx, s| {
-            let names = s.root_opt(cx, robigo_rtbuiltins::attrib::get_value(ans.bind(cx), b"names"));
+            let nm = robigo_rtbuiltins::attrib::get_value(ans.bind(cx), b"names").unwrap_or(cx.nil());
+            let names = s.root(cx, nm);
             let len = ans.bind(cx).len().unwrap_or(0);
             if names.bind(cx).sexptype() != STRSXP || names.bind(cx).len() != Some(len) {
                 return Err(cx.error("not a valid named list"));
@@ -179,7 +180,7 @@ fn restore_to_env(cx: &mut Cx, ans: Root<'_>, aenv: Root<'_>, out: Out<'_>) -> R
                     let obj = s.root(cx, ans.bind(cx).as_vector::<Ref<'_>>().unwrap().get(i));
                     cx.define_var(sym, obj, aenv)?;
                     let name = names.bind(cx).as_vector::<Char<'_>>().unwrap().get(i).bytes().to_vec();
-                    old_style(cx, obj.bind(cx), &name)
+                    old_style(cx, obj, &name)
                 })?;
             }
             out.set(cx, names.bind(cx));
@@ -211,14 +212,11 @@ fn restore_to_env(cx: &mut Cx, ans: Root<'_>, aenv: Root<'_>, out: Out<'_>) -> R
     cx.scope(|cx, s| {
         let mut cell = ans;
         for name in &cells {
-            let (tag, car, next) = {
-                let c = cell.bind(cx).as_cons().unwrap();
-                (c.tag(), c.car(), c.cdr())
-            };
-            let (tag, car) = (s.root(cx, tag), s.root(cx, car));
+            let c = cell.bind(cx).as_cons().unwrap();
+            let (tag, car, next) = (s.root(cx, c.tag()), s.root(cx, c.car()), s.root(cx, c.cdr()));
             cx.define_var(tag, car, aenv)?;
-            old_style(cx, car.bind(cx), name)?;
-            cell = s.root(cx, next);
+            old_style(cx, car, name)?;
+            cell = next;
         }
         Ok(())
     })

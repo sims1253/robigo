@@ -356,6 +356,8 @@ pub static BUILTINS: &[Builtin] = &[
     row("interactive", sysutils::do_interactive, 0, 1, 0, FUNCALL, Pure),
     row("Sys.getenv", sysutils::do_getenv, 0, 11, 2, FUNCALL, External),
     row("l10n_info", sysutils::do_l10n_info, 0, 11, 0, FUNCALL, Pure),
+    row("Sys.getlocale", sysutils::do_getlocale, 0, 11, 1, FUNCALL, External),
+    row("Sys.setlocale", sysutils::do_setlocale, 0, 11, 2, FUNCALL, External),
     // summary.c, logic.c, arithmetic.c
     op!("sum", 0, summary::do_summary, 1, -1, FUNCALL, Pure),
     op!("prod", 4, summary::do_summary, 1, -1, FUNCALL, Pure),

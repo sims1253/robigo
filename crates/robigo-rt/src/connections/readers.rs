@@ -8,9 +8,9 @@ use super::{
     with_conn,
 };
 use robigo_heap::types::STRSXP;
-use robigo_rtcore::View;
 use robigo_rtbuiltins::coerce::vector::as_integer_warn;
 use robigo_rtbuiltins::util::as_logical;
+use robigo_rtcore::View;
 use robigo_rtcore::{Args, Char, Cx, Encoding, Lgl, Out, RResult, Root};
 use std::ffi::c_int;
 
@@ -336,7 +336,7 @@ fn read_fixed_string(
                 let q = buf.len() - 1;
                 buf.extend_from_slice(&rest);
                 // NB: this only checks validity of multi-byte characters
-                if robigo_text::locale::mbrtowc_utf8(&buf[q..], 0).0 < 0 {
+                if robigo_text::mbrtowc_utf8(&buf[q..], 0).0 < 0 {
                     return Err("invalid UTF-8 input in readChar()".into());
                 }
             } else if b[0] == 0 && *warn_on_nul {
@@ -464,8 +464,9 @@ pub fn do_readchar(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
     // context's cend, con_cleanup's checkClose)
     let body = (|| -> RResult<Vec<Vec<u8>>> {
         if raw.is_none() {
-            let (canread, warn) =
-                with_conn(cx, ncon, |c| (c.canread(), c.text() && (!c.c.buff.is_null() || c.c.n_push_back >= 0 || !c.c.inconv.is_null())))?;
+            let (canread, warn) = with_conn(cx, ncon, |c| {
+                (c.canread(), c.text() && (!c.c.buff.is_null() || c.c.n_push_back >= 0 || !c.c.inconv.is_null()))
+            })?;
             if !canread {
                 return Err(cx.error("cannot read from this connection"));
             }

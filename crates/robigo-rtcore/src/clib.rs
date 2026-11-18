@@ -209,23 +209,160 @@ pub struct EnvLocale {
     /// The categories whose locale the C library does not have, in GNU R's
     /// order (main.c's `setlocale` calls): `LC_CTYPE`, `LC_COLLATE`, ...
     pub failed: Vec<&'static str>,
+    /// The names `setlocale(category, NULL)` then gives.
+    pub names: LocaleNames,
+}
+
+/// The C library's locale category numbers (`LocaleNames` takes them).
+pub mod category {
+    pub use libc::{
+        LC_ALL, LC_COLLATE, LC_CTYPE, LC_MEASUREMENT, LC_MESSAGES, LC_MONETARY, LC_NUMERIC, LC_PAPER, LC_TIME, c_int,
+    };
+}
+
+/// The C library's category numbers (glibc's `__LC_LAST` of them, `LC_ALL`
+/// among them) and names, in its order.
+const CATEGORIES: [(libc::c_int, &str); 13] = [
+    (libc::LC_CTYPE, "LC_CTYPE"),
+    (libc::LC_NUMERIC, "LC_NUMERIC"),
+    (libc::LC_TIME, "LC_TIME"),
+    (libc::LC_COLLATE, "LC_COLLATE"),
+    (libc::LC_MONETARY, "LC_MONETARY"),
+    (libc::LC_MESSAGES, "LC_MESSAGES"),
+    (libc::LC_ALL, "LC_ALL"),
+    (libc::LC_PAPER, "LC_PAPER"),
+    (libc::LC_NAME, "LC_NAME"),
+    (libc::LC_ADDRESS, "LC_ADDRESS"),
+    (libc::LC_TELEPHONE, "LC_TELEPHONE"),
+    (libc::LC_MEASUREMENT, "LC_MEASUREMENT"),
+    (libc::LC_IDENTIFICATION, "LC_IDENTIFICATION"),
+];
+
+/// The locale's name per category, as the C library's `setlocale` keeps
+/// them (`_nl_global_locale.__names`): what `setlocale(category, NULL)`
+/// answers. robigo-rt never sets the process's locale; each isolate keeps
+/// the names its R session would have set, and asks the C library to
+/// resolve a new one ([`LocaleNames::set`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocaleNames {
+    /// By the C library's category number (the `LC_ALL` slot unused).
+    names: Vec<Vec<u8>>,
+}
+
+impl Default for LocaleNames {
+    /// GNU R's on the oracle (`LANG=C.UTF-8`): `C.UTF-8` for the
+    /// categories its startup sets, `C` for the rest.
+    fn default() -> LocaleNames {
+        let mut n = LocaleNames::c();
+        for cat in STARTUP_CATEGORIES {
+            n.names[cat.1 as usize] = b"C.UTF-8".to_vec();
+        }
+        n
+    }
+}
+
+/// The categories GNU R's startup sets from the environment, in its
+/// order (main.c's `setlocale(<category>, "")` calls).
+const STARTUP_CATEGORIES: [(&str, libc::c_int, libc::c_int); 7] = [
+    ("LC_CTYPE", libc::LC_CTYPE, libc::LC_CTYPE_MASK),
+    ("LC_COLLATE", libc::LC_COLLATE, libc::LC_COLLATE_MASK),
+    ("LC_TIME", libc::LC_TIME, libc::LC_TIME_MASK),
+    ("LC_MESSAGES", libc::LC_MESSAGES, libc::LC_MESSAGES_MASK),
+    ("LC_MONETARY", libc::LC_MONETARY, libc::LC_MONETARY_MASK),
+    ("LC_PAPER", libc::LC_PAPER, libc::LC_PAPER_MASK),
+    ("LC_MEASUREMENT", libc::LC_MEASUREMENT, libc::LC_MEASUREMENT_MASK),
+];
+
+/// glibc's `_NL_LOCALE_NAME(category)`: the `nl_langinfo` item of a
+/// locale object's name for the category.
+fn nl_locale_name(cat: libc::c_int) -> libc::nl_item {
+    (cat << 16) | 0xffff
+}
+
+impl LocaleNames {
+    /// Every category "C" (a process's names before any `setlocale`).
+    pub fn c() -> LocaleNames {
+        LocaleNames { names: vec![b"C".to_vec(); CATEGORIES.len()] }
+    }
+
+    /// `setlocale(cat, NULL)`: the category's name; for `LC_ALL` the one
+    /// name when every category has it, else glibc's composite
+    /// `LC_CTYPE=...;LC_NUMERIC=...;...`.
+    // (glibc: setlocale.c:new_composite_name)
+    pub fn get(&self, cat: libc::c_int) -> Vec<u8> {
+        if cat != libc::LC_ALL {
+            return self.names[cat as usize].clone();
+        }
+        let first = &self.names[libc::LC_CTYPE as usize];
+        let same = CATEGORIES.iter().filter(|c| c.0 != libc::LC_ALL).all(|c| self.names[c.0 as usize] == *first);
+        if same {
+            return if first == b"POSIX" { b"C".to_vec() } else { first.clone() };
+        }
+        let mut s = Vec::new();
+        for (c, name) in CATEGORIES.iter().filter(|c| c.0 != libc::LC_ALL) {
+            s.extend_from_slice(name.as_bytes());
+            s.push(b'=');
+            s.extend_from_slice(&self.names[*c as usize]);
+            s.push(b';');
+        }
+        s.pop();
+        s
+    }
+
+    /// `setlocale(cat, name)` for one category (not `LC_ALL`): the name the
+    /// C library resolves `name` to (the environment's for "", "C" for
+    /// "POSIX"), set and returned; `None`, nothing set, when it has no such
+    /// locale.
+    pub fn set(&mut self, cat: libc::c_int, name: &[u8]) -> Option<Vec<u8>> {
+        debug_assert!(cat != libc::LC_ALL);
+        let new = resolve(cat, name)?;
+        self.names[cat as usize] = new.clone();
+        Some(new)
+    }
+}
+
+/// `nl_langinfo(CODESET)` of the `LC_CTYPE` locale `name` (`None` when
+/// the C library has no such locale).
+pub fn codeset_of(name: &[u8]) -> Option<Vec<u8>> {
+    let name = std::ffi::CString::new(name).ok()?;
+    // SAFETY: as in `resolve`: a new object, read, copied, freed.
+    unsafe {
+        let l = libc::newlocale(libc::LC_CTYPE_MASK, name.as_ptr(), std::ptr::null_mut());
+        if l.is_null() {
+            return None;
+        }
+        let p = libc::nl_langinfo_l(libc::CODESET, l);
+        let r = (!p.is_null()).then(|| std::ffi::CStr::from_ptr(p).to_bytes().to_vec());
+        libc::freelocale(l);
+        r
+    }
+}
+
+/// The name a `newlocale` of the category for `name` has (`None` when the
+/// C library has no such locale).
+fn resolve(cat: libc::c_int, name: &[u8]) -> Option<Vec<u8>> {
+    let name = std::ffi::CString::new(name).ok()?;
+    // SAFETY: newlocale makes a new object from a NUL-terminated name and no
+    // base; nl_langinfo_l reads its name, copied before the object is freed.
+    unsafe {
+        let l = libc::newlocale(1 << cat, name.as_ptr(), std::ptr::null_mut());
+        if l.is_null() {
+            return None;
+        }
+        let p = libc::nl_langinfo_l(nl_locale_name(cat), l);
+        let r = (!p.is_null()).then(|| std::ffi::CStr::from_ptr(p).to_bytes().to_vec());
+        libc::freelocale(l);
+        r
+    }
 }
 
 /// [`EnvLocale`] of the process's environment.
 // R: main.c:setup_Rmainloop (the setlocale calls), platform.c:R_check_locale
 pub fn env_locale() -> EnvLocale {
-    let cats: [(&'static str, libc::c_int); 7] = [
-        ("LC_CTYPE", libc::LC_CTYPE_MASK),
-        ("LC_COLLATE", libc::LC_COLLATE_MASK),
-        ("LC_TIME", libc::LC_TIME_MASK),
-        ("LC_MESSAGES", libc::LC_MESSAGES_MASK),
-        ("LC_MONETARY", libc::LC_MONETARY_MASK),
-        ("LC_PAPER", libc::LC_PAPER_MASK),
-        ("LC_MEASUREMENT", libc::LC_MEASUREMENT_MASK),
-    ];
     let mut failed = Vec::new();
     let mut codeset = None;
-    for (name, mask) in cats {
+    let mut names = LocaleNames::c();
+    for (name, cat, mask) in STARTUP_CATEGORIES {
         // SAFETY: newlocale makes a new object from a NUL-terminated name
         // (the environment's, "") and no base; nl_langinfo_l reads it, its
         // string copied before the object is freed, once.
@@ -240,6 +377,10 @@ pub fn env_locale() -> EnvLocale {
                 if !p.is_null() {
                     codeset = Some(std::ffi::CStr::from_ptr(p).to_bytes().to_vec());
                 }
+            }
+            let p = libc::nl_langinfo_l(nl_locale_name(cat), l);
+            if !p.is_null() {
+                names.names[cat as usize] = std::ffi::CStr::from_ptr(p).to_bytes().to_vec();
             }
             libc::freelocale(l);
         }
@@ -268,7 +409,7 @@ pub fn env_locale() -> EnvLocale {
     let collate = get("LC_ALL").or_else(|| get("LC_COLLATE")).or_else(|| get("LANG"));
     let collate_c =
         failed.contains(&"LC_COLLATE") || collate.is_none_or(|v| matches!(v.as_encoded_bytes(), b"C" | b"POSIX"));
-    EnvLocale { codeset, collate_c, failed }
+    EnvLocale { codeset, collate_c, failed, names }
 }
 
 unsafe extern "C" {

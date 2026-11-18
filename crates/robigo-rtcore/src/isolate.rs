@@ -117,6 +117,8 @@ pub struct Isolate {
     /// The evaluator, dispatcher and condition system (`hooks.rs`).
     pub(crate) hooks: Cell<Hooks>,
     pub(crate) locale: Cell<Locale>,
+    /// The locale's names per category (`Sys.getlocale`).
+    pub(crate) locale_names: std::cell::RefCell<crate::clib::LocaleNames>,
     /// GNU R's `R_warn_partial_match_args` (`options(warnPartialMatchArgs)`).
     pub(crate) warn_partial_match_args: Cell<bool>,
     /// `ROBIGO_NO_INPLACE=1` (docs/g3.md §16): every in-place write copies.
@@ -566,6 +568,17 @@ impl Cx {
         self.iso().locale.set(l);
         // the C globals that read it (Defn.h's mbcslocale, R_MB_CUR_MAX)
         self.cglobals().set_locale(l);
+    }
+
+    /// The locale's names per category, as `setlocale(category, NULL)`
+    /// gives them (`Sys.getlocale`).
+    pub fn locale_names(&self) -> crate::clib::LocaleNames {
+        self.iso().locale_names.borrow().clone()
+    }
+
+    /// Set the locale's names (startup's, `Sys.setlocale`'s).
+    pub fn set_locale_names(&mut self, n: crate::clib::LocaleNames) {
+        *self.iso().locale_names.borrow_mut() = n;
     }
 
     /// GNU R's `R_warn_partial_match_args`: argument matching warns of
@@ -1032,6 +1045,7 @@ impl OwnedIsolate {
             ext_index: UnsafeCell::new(Vec::new()),
             hooks: Cell::new(Hooks::default()),
             locale: Cell::new(opts.locale),
+            locale_names: Default::default(),
             warn_partial_match_args: Cell::new(false),
             no_inplace: Cell::new(false),
             retry_torture: Cell::new(false),
