@@ -54,11 +54,11 @@ gmtoff : [1] 0
 sec : [1] 0 0 0
 min : [1]  0 30  5
 hour : [1]  0 12  1
-mday : [1] 17 17 17
-mon : [1] 10 10 10
-year : [1] 126 126 126
-wday : [1] 2 2 2
-yday : [1] 320 320 320
+mday : [1] NA NA NA
+mon : [1] NA NA NA
+year : [1] NA NA NA
+wday : [1] NA NA NA
+yday : [1] NA NA NA
 isdst : [1] 0 0 0
 zone : [1] "UTC" "UTC" "UTC"
 gmtoff : [1] 0 0 0
@@ -98,22 +98,22 @@ gmtoff : [1] 0
 sec : [1] 0 0
 min : [1] 0 0
 hour : [1] 0 0
-mday : [1] 17 17
-mon : [1] 10 10
+mday : [1] NA NA
+mon : [1] NA NA
 year : [1] 124  69
-wday : [1] 0 1
-yday : [1] 321 320
+wday : [1] NA NA
+yday : [1] NA NA
 isdst : [1] 0 0
 zone : [1] "UTC" "UTC"
 gmtoff : [1] 0 0
 sec : [1]  0  0  0 12
 min : [1]  0  0 11 11
 hour : [1]  0  0 10 10
-mday : [1]  3  4 17 17
-mon : [1]  1  2 10 10
-year : [1] 101 102 126 126
-wday : [1] 6 1 2 2
-yday : [1]  33  62 320 320
+mday : [1]  3  4 NA NA
+mon : [1]  1  2 NA NA
+year : [1] 101 102  NA  NA
+wday : [1]  6  1 NA NA
+yday : [1] 33 62 NA NA
 isdst : [1] 0 0 0 0
 zone : [1] "UTC" "UTC" "UTC" "UTC"
 gmtoff : [1] 0 0 0 0
@@ -142,11 +142,11 @@ gmtoff : [1] 0 0
 sec : [1] 0
 min : [1] 0
 hour : [1] 0
-mday : [1] 17
-mon : [1] 10
+mday : [1] NA
+mon : [1] NA
 year : [1] 101
-wday : [1] 6
-yday : [1] 320
+wday : [1] NA
+yday : [1] NA
 isdst : [1] 0
 zone : [1] "UTC"
 gmtoff : [1] 0
@@ -186,22 +186,22 @@ gmtoff : [1] 0 0
 sec : [1] 3.75  NaN   NA   NA
 min : [1]  2  2 NA NA
 hour : [1]  1  1 NA NA
-mday : [1] 17 17 NA NA
-mon : [1] 10 10 NA NA
-year : [1] 126 126  NA  NA
-wday : [1]  2  2 NA NA
-yday : [1] 320 320  NA  NA
+mday : [1] NA NA NA NA
+mon : [1] NA NA NA NA
+year : [1] NA NA NA NA
+wday : [1] NA NA NA NA
+yday : [1] NA NA NA NA
 isdst : [1]  0  0 -1 -1
 zone : [1] "UTC" "UTC" "UTC" "UTC"
 gmtoff : [1] 0 0 0 0
 sec : [1] 3.141
 min : [1] 2
 hour : [1] 1
-mday : [1] 17
-mon : [1] 10
-year : [1] 126
-wday : [1] 2
-yday : [1] 320
+mday : [1] NA
+mon : [1] NA
+year : [1] NA
+wday : [1] NA
+yday : [1] NA
 isdst : [1] 0
 zone : [1] "UTC"
 gmtoff : [1] 0
