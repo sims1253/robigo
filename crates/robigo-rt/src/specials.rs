@@ -48,6 +48,16 @@ fn arg<'g>(cx: &'g Cx, call: Root<'_>, i: usize) -> Option<(Ref<'g>, Option<Sym<
     c.map(|c| (c.car(), c.tag().as_sym()))
 }
 
+/// A copy of the cells of the pairlist `args` (their tags kept; GNU R's
+/// `shallow_duplicate`), the first one's value `first`.
+fn tagged_rest<'s>(cx: &mut Cx, s: Scope<'s>, args: Root<'_>, first: Root<'_>) -> RResult<Root<'s>> {
+    let o = s.out(cx);
+    let r = o.root();
+    cx.shallow_duplicate(args, o)?;
+    cx.set_car(r, first);
+    Ok(r)
+}
+
 /// Element `i` of the pairlist `args` (R_NilValue past its end).
 fn list_elt<'g>(cx: &'g Cx, args: Root<'_>, i: usize) -> Ref<'g> {
     let mut c = args.bind(cx).as_cons();
@@ -700,9 +710,10 @@ pub fn do_at(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out
             let lx = link_root(x);
             let prom = ev_promise(cx, s, e, x)?;
             let str = scalar_string(cx, s, input)?;
-            let o = s.out(cx);
-            let rest = o.root();
-            cx.build(o, |cx| cx.cons(str.bind(cx), cx.nil()))?;
+            // shallow_duplicate(args), the name's cell holding the string
+            // (the arguments' tags kept)
+            let after = s.root(cx, call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().cdr());
+            let rest = tagged_rest(cx, s, after, str)?;
             let r = crate::dispatch::dispatch_special(cx, "@", call, prom, rest, rho, &out);
             lx.release();
             if r? {
@@ -780,13 +791,10 @@ pub(crate) fn slot_gets(
         let lx = link_root(x);
         if x.bind(cx).is_object() {
             let prom = ev_promise(cx, s, e, x)?;
-            let ve = s.root(cx, list_elt(cx, args, 2));
-            let o = s.out(cx);
-            let rest = o.root();
-            cx.build(o, |cx| {
-                let t = cx.cons(ve.bind(cx), cx.nil())?;
-                cx.cons(input.bind(cx), t)
-            })?;
+            // the arguments after the object, their tags kept (`value =`),
+            // the name's cell holding the string
+            let after = s.root(cx, args.bind(cx).as_cons().unwrap().cdr());
+            let rest = tagged_rest(cx, s, after, input)?;
             // SETCADR(args, input): the call's own arguments are the call's
             let dcall = if own {
                 let o = s.out(cx);
