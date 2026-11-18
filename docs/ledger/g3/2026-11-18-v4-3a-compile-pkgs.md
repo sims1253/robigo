@@ -110,10 +110,56 @@ Every difference, by cause:
    compressed record is byte-identical yet, and whether robigo-rt's zlib
    output equals GNU R's for the same payload is still open.
 
-With the JIT on (the probe's own setting), robigo-rt's JIT also left
-`NOJIT` on closures that the build had called (tools' vignette engine
-registry). GNU R's build runs with `R_ENABLE_JIT=0`, and with it those
-records are identical.
+With the JIT on (the probe's default), the build's records also differed
+in closures that the build had called, in tools' vignette engine
+registry: they carried `NOJIT`. GNU R's build runs with `R_ENABLE_JIT=0`,
+and with it those records are identical. This is not a robigo-rt
+difference. With the JIT on, GNU R sets the same bits after one call, on
+the oracle and on robigo-rt alike: `NOJIT` (32) on a small closure and on
+one in a local environment, `MAYBEJIT` (64) on a loop.
+
+Owners of the causes outside this step, as the foreman assigned them:
+- cause 1: E (the audit of every names.c primitive's `typeof()`; `@`,
+  `@<-`, `~`, `Exec`, `Tailcall`, `declare`) and B (`call`, `round`,
+  `signif`);
+- cause 2: the trial's `seq.int` PR;
+- cause 3: E;
+- cause 4: L4's build step;
+- the header's native encoding: L (the start-up locale).
+
+Compression is not part of the bar: L4 compares records decompressed.
+
+**The count to beat next time:**
+- compiler: 288 of 289 variables and 6 of 8 environments identical after
+  the header;
+- tools: 887 of 915 variables and 38 of 39 environments.
+
+Once causes 1 and 3 and the `seq.int` stand-in are fixed, the only
+differences left should be cause 4's.
+
+### How to run it again
+
+The kit and the scripts are in `~/.cache/robigo-research/c1/probe-3a/`
+(README.md). It is a private copy of A1's kit with two changes:
+- `setup.sh` takes a prebuilt binary (`PROBE_PREBUILT=BIN`);
+- `run.sh` sets `R_HOME` to the kit's tree.
+
+The binary is this step's commits cherry-picked onto A1's local
+`g3/a1-a5-probe`, built in release.
+
+```
+step2-run.sh WORKTREE BIN   # makeLazyLoading("compiler"), plain, then compiled
+step3-run.sh WORKTREE BIN   # tools' makeLazyLoad.R + makeLazyLoading("tools"), compiled
+# both run under R_ENABLE_JIT=0 TZ=UTC LC_ALL=C (the Makefile.in's R_EXE);
+# the compiled runs add _R_COMPILE_PKGS_=1 R_COMPILER_SUPPRESS_ALL=1
+docker run --rm -u "$(id -u):$(id -g)" -v "$K:$K" -e LC_ALL=C.UTF-8 robigo-oracle:4.6.2 \
+  Rscript $K/z2.R $K/compiler-R-compiled/compiler $K/ora/compiler   # tools likewise
+```
+
+`z2.R` decompresses each record and compares the bytes after the
+serialize header. The other scripts locate a difference: `why.R` (the
+first differing op or constant), `use.R` (the primitives a closure
+calls), `env*.R` and `nf.R` (environment and data records).
 
 ### Verification
 
