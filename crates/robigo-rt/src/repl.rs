@@ -91,13 +91,22 @@ pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
                 }
             }
             let text = robigo_syntax::lexable(&iob);
-            let source = robigo_syntax::Source::new(&text, &iob);
+            // known_to_be_utf8: the session's (mkString2's UTF-8 mark)
+            let source = robigo_syntax::Source::new(&text, &iob).known_to_be_utf8(cx.locale().utf8);
             let status = robigo_syntax::parse_console(&arena, source);
             incomplete = false;
             // PARSE_NULL, PARSE_OK and PARSE_ERROR start a new statement
             prompt_type = 1;
             let ok = match status {
-                robigo_syntax::ConsoleStatus::Null => true,
+                robigo_syntax::ConsoleStatus::Null => {
+                    // (white space GNU R's C-locale lexer does not skip)
+                    if crate::reader::non_ascii_refused(cx, &iob) {
+                        error_at_top(cx, crate::reader::NON_ASCII_REFUSED);
+                        false
+                    } else {
+                        true
+                    }
+                }
                 // the parser may not have seen all of the input (PR#15941):
                 // read on, as for an incomplete statement
                 robigo_syntax::ConsoleStatus::Eof => {
@@ -133,7 +142,14 @@ pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
                     false
                 }
                 robigo_syntax::ConsoleStatus::Ok(exprs, warnings) => {
-                    eval_statement(cx, &exprs[0], &warnings, savestack)
+                    // (a non-ASCII statement GNU R's C-locale lexer refuses: a
+                    // parse error, after the warnings of what it lexed)
+                    if crate::reader::non_ascii_refused(cx, &iob) {
+                        error_at_top_after(cx, &warnings, crate::reader::NON_ASCII_REFUSED);
+                        false
+                    } else {
+                        eval_statement(cx, &exprs[0], &warnings, savestack)
+                    }
                 }
             };
             drop(text);

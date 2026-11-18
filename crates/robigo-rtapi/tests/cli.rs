@@ -235,6 +235,42 @@ fn the_command_line_and_transcript_are_gnu_rs() {
 
 /// R's start-up greeting (`PrintGreeting`, R without `--quiet`) is not
 /// ported: robigo-rt says so rather than printing another.
+/// A locale the C library does not have: setup_Rmainloop's deferred
+/// warnings, one per category, "During startup - " (GNU R 4.6.2's, on the
+/// oracle), and the C locale; quiet when neither LANG nor LC_ALL is set.
+#[test]
+fn a_missing_locale_warns_during_startup_and_uses_c() {
+    let expr = "cat(l10n_info()[[4]], '\\n')";
+    let (out, err, status) =
+        run_env(&std::env::temp_dir(), &["--vanilla", "-e", expr], None, &[("LC_ALL", "xx_YY.UTF-8")]);
+    let mut want = String::from("During startup - Warning messages:\n");
+    for (i, c) in ["LC_CTYPE", "LC_COLLATE", "LC_TIME", "LC_MESSAGES", "LC_MONETARY", "LC_PAPER", "LC_MEASUREMENT"]
+        .iter()
+        .enumerate()
+    {
+        want.push_str(&format!("{}: Setting {c} failed, using \"C\" \n", i + 1));
+    }
+    assert_eq!(String::from_utf8_lossy(&err), want);
+    assert_eq!((String::from_utf8_lossy(&out).as_ref(), status), ("ANSI_X3.4-1968 \n", 0));
+}
+
+/// Under `LC_ALL=C`, GNU R's lexer does not skip a no-break space (it
+/// raises "invalid multibyte character in parser"), with any `n`: a finite
+/// `n` must not let the port's Unicode lexer skip it into a value. The text
+/// is checked whole, so the refusal also covers bytes after the requested
+/// expressions (more than GNU R rejects).
+#[test]
+fn a_c_locale_refuses_non_ascii_outside_strings_whatever_n() {
+    let refused =
+        "robigo: non-ASCII characters outside strings and comments in a non-UTF-8 locale are not implemented yet";
+    // (the bytes 31 20 C2 A0 0A, C2 A0 0A and 31 0A C3 A9 0A, as escapes)
+    for bytes in [r"1 \xc2\xa0\n", r"\xc2\xa0\n", r"1\n\xc3\xa9\n"] {
+        let expr = format!("cat(tryCatch(deparse(parse(text = \"{bytes}\", n = 1)), error = conditionMessage), '\\n')");
+        let (out, _, status) = run_env(&std::env::temp_dir(), &["--vanilla", "-e", &expr], None, &[("LC_ALL", "C")]);
+        assert_eq!((String::from_utf8_lossy(&out).as_ref(), status), (format!("{refused} \n").as_str(), 0), "{bytes}");
+    }
+}
+
 #[test]
 fn the_greeting_is_refused() {
     let dir: PathBuf = std::env::temp_dir().join(format!("robigo-rt-cli-greeting-{}", std::process::id()));
@@ -278,9 +314,6 @@ fn the_save_check_does_not_wait_for_stdin() {
     );
 }
 
-/// An empty `R_TRANSLATIONS` is GNU R 4.6.2's fatal start-up error
-/// (main.c's BindDomain: `Rasprintf_malloc` of "" fails): "Fatal error:
-/// allocation failure in BindDomain" on stdout, status 2 (R_Suicide).
 /// `options(keep.source = TRUE)` would have the console keep source
 /// references (gram.c's R_Parse1Buffer), which robigo-rt cannot yet: it is
 /// refused, where GNU R accepts it (so no oracle case). `R_KEEP_PKG_SOURCE=yes`
@@ -301,8 +334,24 @@ fn keep_source_true_is_refused_and_keep_pkg_source_read() {
             run_env(&std::env::temp_dir(), &["--vanilla", "-e", expr], None, &[("R_KEEP_PKG_SOURCE", v)]);
         assert_eq!((String::from_utf8_lossy(&out).as_ref(), status), (want, 0), "R_KEEP_PKG_SOURCE={v}");
     }
+    // so sys.source (loadNamespace's) refuses where it sets the option, by
+    // design: the refusal at the point of use
+    let dir = std::env::temp_dir();
+    let f = dir.join(format!("robigo-rt-cli-keep-pkg-source-{}.R", std::process::id()));
+    std::fs::write(&f, "x <- 1\n").unwrap();
+    let expr =
+        format!("cat(tryCatch(sys.source('{}', envir = new.env()), error = conditionMessage), '\\n')", f.display());
+    let (out, _, status) = run_env(&dir, &["--vanilla", "-e", &expr], None, &[("R_KEEP_PKG_SOURCE", "yes")]);
+    let _ = std::fs::remove_file(&f);
+    assert_eq!(
+        (String::from_utf8_lossy(&out).as_ref(), status),
+        ("robigo: options(keep.source = TRUE) (source references) is not implemented yet \n", 0)
+    );
 }
 
+/// An empty `R_TRANSLATIONS` is GNU R 4.6.2's fatal start-up error
+/// (main.c's BindDomain: `Rasprintf_malloc` of "" fails): "Fatal error:
+/// allocation failure in BindDomain" on stdout, status 2 (R_Suicide).
 #[test]
 fn an_empty_r_translations_is_fatal() {
     let (out, err, status) = run_env(&std::env::temp_dir(), &["--vanilla", "-e", "1"], None, &[("R_TRANSLATIONS", "")]);
