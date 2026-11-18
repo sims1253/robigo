@@ -1430,18 +1430,18 @@ fn char_key(cx: &Cx, c: Char<'_>) -> CharKey {
 pub fn do_make_unique(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::row!("make.unique", true).check_arity(cx, call, args)?;
     let names = args.root(0);
-    let n = match names.bind(cx).view() {
-        View::Str(v) => v.len(),
-        _ => return Err(cx.error("'names' must be a character vector")),
-    };
+    if names.bind(cx).sexptype() != STRSXP {
+        return Err(cx.error("'names' must be a character vector"));
+    }
     let sep = args.get(cx, 1);
+    if names.bind(cx).is_package_altrep() || sep.is_package_altrep() {
+        return Err(not_yet(cx, Some(call), "make.unique() of a package ALTREP vector"));
+    }
     let sep = match sep.as_vector::<Char<'_>>() {
         Some(v) if sep.sexptype() == STRSXP && v.len() == 1 => v.get(0),
         _ => return Err(cx.error("'sep' must be a character string")),
     };
-    if names.bind(cx).is_package_altrep() {
-        return Err(not_yet(cx, Some(call), "make.unique() of a package ALTREP vector"));
-    }
+    let n = names.bind(cx).len().unwrap();
     let loc = cx.locale();
     let bytes_error = |cx: &mut Cx| cx.error("translating strings with \"bytes\" encoding is not allowed");
     let Ok(csep) = crate::text::to_native(crate::coerce::text(sep), loc).map(Cow::into_owned) else {
