@@ -30,7 +30,7 @@
 
 #![allow(unsafe_code)]
 
-use super::Comp;
+use super::{Comp, Tail};
 use crate::bcassign as ba;
 use crate::cenv::{Cenv, Need};
 use crate::ir::*;
@@ -184,11 +184,15 @@ struct BcIns {
 }
 
 /// Whether control at instruction `j` of `code` reaches a `RETURN` or
-/// `RETURNJMP` at once or through `GOTO`s only.
+/// `RETURNJMP` at once or through `GOTO`s and assignments (`SETVAR`,
+/// `SETVAR2`) only.
 fn returns_after(code: &[BcIns], mut j: usize) -> bool {
     for _ in 0..code.len() {
         match code.get(j) {
             Some(n) if matches!(n.op, RETURN | RETURNJMP) => return true,
+            // (an assignment of `return()`'s operand: bcEval's SETVAR keeps
+            // the value on the stack and R_Visible as its load set it)
+            Some(n) if matches!(n.op, SETVAR | SETVAR2) => j += 1,
             Some(n) if n.op == GOTO => match code.binary_search_by_key(&(n.a[0] as usize), |c| c.at) {
                 Ok(p) => j = p,
                 Err(_) => return false,
@@ -1353,7 +1357,7 @@ impl<'g> Comp<'g> {
                             self.emit(l);
                         } else {
                             // SAFETY: a constant of the byte code.
-                            unsafe { self.const_value(v, r, 0, false) };
+                            unsafe { self.const_value(v, r, 0, Tail::No) };
                         }
                         PKind::Val
                     }

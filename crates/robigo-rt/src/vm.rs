@@ -1186,7 +1186,16 @@ fn slow_builtin(cx: &mut Cx, act: &mut Act, v: &View, i: &Ins, pc: usize, n: usi
 /// `return()`'s operand).
 // R: eval.c:do_set; eval.c:bcEval SETVAR, SETVAR2
 #[allow(clippy::too_many_arguments)]
-fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: u16, shape: Sexp, g: u16) -> RResult<()> {
+fn set_var(
+    cx: &mut Cx,
+    act: &Act,
+    r: Reg,
+    sym: Sexp,
+    super_assign: bool,
+    slot: u16,
+    shape: Sexp,
+    g: u16,
+) -> RResult<()> {
     let hide = g & crate::compile::G_KEEP_VIS == 0;
     if !super_assign {
         let v = act.get(r);

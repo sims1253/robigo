@@ -484,20 +484,7 @@ fn same(cx: &Cx, a: &Norm, b: &Norm, targets: bool) -> bool {
 fn expected(cx: &Cx, nt: &[Norm], ns: &[Norm], k: usize) -> Option<&'static str> {
     let (t, s) = (nt.get(k), ns.get(k));
     let op = |n: Option<&Norm>| n.map(|n| n.op);
-    fn before(n: &[Norm], k: usize) -> Option<&Norm> {
-        k.checked_sub(1).and_then(|j| n.get(j))
-    }
     match (op(t), op(s)) {
-        // `return(x)`'s operand: cmp.R compiles it outside the tail
-        // (make.nonTailCallContext), so a value missing there (a switch's
-        // or an `if`'s) is LDNULL, visible at the RETURN; the port compiles
-        // it in the tail, the NULL invisible (step 5d ports cmp.R's). The
-        // same NULL just loaded, returned visible and invisible.
-        (Some(Op::Ret), Some(Op::Ret))
-            if t.zip(s).is_some_and(|(x, y)| return_null(cx, x, y, before(nt, k), before(ns, k))) =>
-        {
-            Some("return()'s operand outside the tail (cmp.R: a missing value visible), the port's in it")
-        }
         // a nested function: the port compiles its source at once, the
         // translation translates its byte code when it is first called
         (Some(Op::MkClosure), Some(Op::MkClosure)) => Some("a nested function's code (compiled at once by the port)"),
@@ -524,16 +511,6 @@ fn expected(cx: &Cx, nt: &[Norm], ns: &[Norm], k: usize) -> Option<&'static str>
         }
         _ => None,
     }
-}
-
-/// Whether the translation's way out `t` returns visible and the port's
-/// `s` invisible the NULL that the instruction before each (the same one)
-/// loads.
-fn return_null(cx: &Cx, t: &Norm, s: &Norm, t_before: Option<&Norm>, s_before: Option<&Norm>) -> bool {
-    let null_load = |n: Option<&Norm>| {
-        n.is_some_and(|n| n.op == Op::LdConst && n.fl == 0 && n.consts == [cx.nil().sexp()] && n.regs == t.regs)
-    };
-    t.regs == s.regs && t.imm == [1] && s.imm == [2] && null_load(t_before) && null_load(s_before)
 }
 
 /// Whether the translation's `t` calls the builtin `%%` (or `%/%`) where

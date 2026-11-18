@@ -2537,7 +2537,9 @@ impl<'g> Comp<'g> {
                             // cmp.R's cmpComplexAssign: the right-hand side,
                             // then the getter and setter calls of its plan
                             let plan = self.bc_assign_plan(lhs, a[1].0)?;
-                            self.expr(a[1].0, dst, d + 1, tail.value())?;
+                            // (the value's visibility is no way out's: the
+                            // setter calls set R_Visible after it)
+                            self.expr(a[1].0, dst, d + 1, Tail::No)?;
                             let mut i = Ins::new(Op::BcAssign);
                             i.a = dst;
                             i.b = dst;
