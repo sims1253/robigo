@@ -1,0 +1,37 @@
+# tools' .Call and .External2 routines (tools.so from GNU R's sources, A5),
+# one or two calls each, through their registered symbols: no tools R code.
+# The digests read R_HOME's share/ files (share/Makefile.in's install-sources,
+# scripts/rt-home.sh).
+d <- dyn.load(file.path(R.home(), "library", "tools", "libs", "tools.so"))
+r <- function(name) getNativeSymbolInfo(name, d)
+share <- R.home("share")
+files <- file.path(share, c("licenses/license.db", "encodings/Adobe-glyphlist",
+                            "encodings/character-sets", "make/vars.mk", "no-such-file"))
+file.exists(files)
+basename(dirname(files))
+unname(.Call(r("Rmd5"), files))
+unname(.Call(r("Rsha256"), files[1:2]))
+.Call(r("Rmd5"), as.raw(c(97, 98, 99)))
+.Call(r("Rsha256"), as.raw(0:2))
+.Call(r("delim_match"), c("a{b}c", "{{x}", "no", "\\{a}"), c("{", "}"))
+.Call(r("splitString"), "a b\\c d", " \\")
+.Call(r("doTabExpand"), c("a\tb\tc", "\tx"), c(0L, 2L))
+.Call(r("nonASCII"), c("abc", "xé", NA))
+.Call(r("check_nonASCII"), c("abc", "#xé", "yé"), FALSE)
+.Call(r("check_nonASCII"), c("abc", "#xé"), TRUE)
+.Call(r("check_nonASCII2"), c("abc", "xé", "éé"))
+.Call(r("getfmts"), "%d and %5.2f %s %%")
+tryCatch(.Call(r("getfmts"), "%y"), error = function(e) conditionMessage(e))
+.Call(r("ps_sigs"), 1L)
+.Call(r("ps_kill"), Sys.getpid(), 0L)
+.Call(r("remove_dot_segments_wrapper"), c("/a/b/../c/./d", "a/../../b", ""))
+.Call(r("package_dependencies_scan"), "R (>= 4.0), methods, utils (< 5), pkg.x2")
+x <- .External2(r("parseLatex"), "\\textbf{x} y $z$", NULL, FALSE, character(), character(), integer())
+class(x)
+vapply(x, function(e) attr(e, "latex_tag"), "")
+a <- paste0(Sys.getenv("TMPDIR", "/tmp"), "/robigo-rt-tools-natives-", Sys.getpid())
+writeLines("x <- 1", paste0(a, "b"))
+.Call(r("codeFilesAppend"), a, paste0(a, "b"))
+.Call(r("Rmd5"), a)[[1]] == .Call(r("Rmd5"), paste0(a, "b"))[[1]]
+invisible(file.remove(c(a, paste0(a, "b"))))
+tryCatch(.Call(r("nonASCII"), "a", FALSE), error = function(e) conditionMessage(e))
