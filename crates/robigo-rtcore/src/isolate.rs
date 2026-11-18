@@ -383,7 +383,14 @@ impl Isolate {
     pub(crate) fn owns(&self, x: Sexp) -> bool {
         // SAFETY: the callers pass objects from `Ref`s and `Char`s, which
         // are live by the minting rule (lib.rs).
-        unsafe { x.heap_id() == self.heap }
+        let h = unsafe { x.heap_id() };
+        if h == self.heap {
+            return true;
+        }
+        // the shared constants are every isolate's (H5): R_NilValue, the
+        // commonest object checked, by its address, the others by their
+        // heap id (no call, which would cost every caller registers)
+        x == self.nil || h.is_shared()
     }
 
     /// Panics unless `x` (a live object) belongs to this isolate: an object
@@ -555,6 +562,8 @@ impl Cx {
     /// Change the locale (`Sys.setlocale`).
     pub fn set_locale(&mut self, l: Locale) {
         self.iso().locale.set(l);
+        // the C globals that read it (Defn.h's mbcslocale, R_MB_CUR_MAX)
+        self.cglobals().set_locale(l);
     }
 
     /// GNU R's `R_warn_partial_match_args`: argument matching warns of
@@ -1049,6 +1058,7 @@ impl OwnedIsolate {
             let capi = &mut (*i.roots.get()).capi;
             capi.set_isolate(iso.as_ptr());
             capi.g.gc_move.set(moving as std::ffi::c_int);
+            capi.g.set_locale(i.locale.get());
         }
         // SAFETY: the isolate is boxed and never moves, and its `poll` field
         // outlives its core (declared after it); nothing else refers to the

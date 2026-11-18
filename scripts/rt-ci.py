@@ -225,6 +225,9 @@ def steps(crates):
     slow = SLOW
     out = [
         ("release tests", {}, [*test, *pkgs, *skip]),
+        # robigo-rt's R_HOME tree with tools' native code (A5): the
+        # conformance cases that load it (`.requires` r-home-tools) run
+        ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", {}, ["scripts/rt-home.sh"]),
         ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {}, conformance),
         # docs/g3.md §15.3 E5: the same cases and recordings under each
         # observation mode, but those whose `.requires` names the identity
@@ -358,7 +361,9 @@ def main(argv):
             for line in errors:
                 print(f"::error::rt: {line}")
             if errors:
-                print(f"::error::rt: {title}: {len(errors)} closure(s)")
+                # (an error is a closure's line, a malformed line or a
+                # report that compared nothing: bc_report_check)
+                print(f"::error::rt: {title}: {len(errors)} report problem(s)")
                 return 1
     return 0
 

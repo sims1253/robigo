@@ -15,7 +15,7 @@
 //!    sets too: C may keep any of them where no collection looks);
 //! 2. **forward** every edge through the same [`Visitor`] the marker uses:
 //!    the embedder's roots, the heap's own lists (precious set, weak
-//!    references and their fields, the finalizer queue, the barrier's
+//!    references and their fields, the barrier's
 //!    log), the CHARSXP cache (in place: a slot's position is its content
 //!    hash, which moving does not change), and the fields of every live
 //!    object, immortal ones included;
@@ -558,7 +558,7 @@ impl Core {
         // and each weak reference is a standard vector of object words;
         // `for_each_marked` yields live objects, whose fields are edges.
         unsafe {
-            for x in self.precious.iter_mut().chain(self.weak_refs.iter_mut()).chain(self.finalize_queue.iter_mut()) {
+            for x in self.precious.iter_mut().chain(self.weak_refs.iter_mut()) {
                 f.edge(x);
             }
             for x in (*self.remembered.0.get()).iter_mut() {

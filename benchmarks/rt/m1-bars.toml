@@ -33,6 +33,10 @@
 #   - `ceiling` is strictly above `max`, so the acceptance has room.
 # - [[rss]]: a program's peak RSS (scripts/rss.py's median) held to at most
 #   each named reference.
+# - [[guard]]: a row of benchmarks/rt/calls-rows.toml that no bar cites (the
+#   "guard" group's, or another group's), measured with the bars and held
+#   only to the 0.5% rule against main: a common VM path the bars' rows do
+#   not reach. It needs no GNU R number. A guard's row is not also a bar's.
 # Every row and program here is also compared with main's binary of the
 # merge's base, measured on the same runner: more than the threshold slower
 # fails the gate.
@@ -184,3 +188,36 @@ against = ["gnur"]
 # itself). The data: ~/.cache/robigo-research/churn-rss/ (README.md).
 program = "benchmarks/rt/mem/churn.R"
 against = ["gnur"]
+
+[[guard]]
+# `[` of a double vector by a scalar index: S1's vecsubset work found a
+# +8.4% regression there that the gate did not see, since its rows reach
+# only `[[` (docs/ledger/g3/2026-11-17-perf-subset-guard.md)
+row = "guard-subset-dbl"
+
+[[guard]]
+# `[<-` of a double vector by a scalar index, in place
+row = "guard-subassign-dbl"
+
+[[guard]]
+# `[` of a double matrix by two scalar indices
+row = "guard-subset-matrix"
+
+# Rows that already existed and no bar cited (docs/ledger/g3/2026-11-17-perf-subset-guard.md).
+# d0-cbind and d0-rbind join when robigo-rt has .Internal(cbind()).
+[[guard]]
+row = "grow-dbl" # x[i] <- i growing a double vector from empty
+[[guard]]
+row = "scalars" # l[[k]] <- v, a new heap double into a list
+[[guard]]
+row = "d0-attr" # attr()
+[[guard]]
+row = "d0-attributes" # attributes()
+[[guard]]
+row = "d0-names" # names<-
+[[guard]]
+row = "d0-unlist" # unlist() of two integer vectors
+[[guard]]
+row = "d0-paste" # paste() of a string and an integer
+[[guard]]
+row = "d0-paste0" # paste0() of a string and an integer
