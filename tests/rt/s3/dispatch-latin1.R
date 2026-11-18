@@ -31,3 +31,15 @@ local({
     length.zz <- function(x) NextMethod()
     print(length(structure(1:3, class = "zz")))
 })
+# an Ops method's .Method names it for each argument of the class
+# (stringPositionTr), so NextMethod moves on
+assign(paste0("Ops.", k), function(e1, e2) { print(.Method); if (.Generic == "-") NextMethod() else "latin1 Ops" })
+Ops.base <- function(e1, e2) "Ops.base"
+y <- structure(5, class = c(k, "base"))
+print(y - 1)
+print(y * y)
+# a class that cannot be translated is not reached when an earlier one
+# has a method
+f.ok <- function(x) "f.ok"
+print(f(structure(1, class = c("ok", b))))
+t(f(structure(1, class = c("none", b, "ok"))))

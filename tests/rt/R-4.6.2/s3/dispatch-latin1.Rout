@@ -6,3 +6,9 @@
 <simpleError in UseMethod("h"): no applicable method for 'h' applied to an object of class "café">
 <simpleError in f(structure(1, class = b)): translating strings with "bytes" encoding is not allowed>
 [1] 3
+[1] "Ops.café" ""        
+[1] "Ops.base"
+[1] "Ops.café" "Ops.café"
+[1] "latin1 Ops"
+[1] "f.ok"
+<simpleError in f(structure(1, class = c("none", b, "ok"))): translating strings with "bytes" encoding is not allowed>

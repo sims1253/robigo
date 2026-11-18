@@ -1270,7 +1270,8 @@ fn usemethod(
                 let mut found = None;
                 for (i, &m) in methods.iter().enumerate() {
                     let Some(m) = m else {
-                        // installS3Signature's error, where the search reaches it
+                        // translateChar's or installS3Signature's error,
+                        // where the search reaches it
                         let class = if i == nclass { b"default".to_vec() } else { class_elt(cx, klass, i)? };
                         install_s3_signature(cx, s, generic, &class)?;
                         unreachable!("robigo: a signature too long is an error");
@@ -1444,9 +1445,9 @@ fn frame_function<'g>(cx: &'g Cx, env: Ref<'g>, method: Sym<'g>) -> Option<Optio
 /// made and kept in the memo under `key`, with `mkString(generic)` (the
 /// method's `.Generic`, marked not mutable: shared by every dispatch of
 /// the entry, a method that changes its `.Generic` changes a copy). None
-/// for a signature
-/// `installS3Signature` refuses (too long): its error is raised where the
-/// search reaches it.
+/// for a signature `installS3Signature` refuses (too long) or a class
+/// `translateChar` refuses: its error is raised where the search reaches
+/// it.
 fn dispatch_methods<'s>(
     cx: &mut Cx,
     s: Scope<'s>,
@@ -1464,8 +1465,12 @@ fn dispatch_methods<'s>(
         Ok(Some(install_s3_signature(cx, s, generic, class)?.bind(cx).sexp()))
     };
     for i in 0..n {
-        let ss = class_elt(cx, klass, i)?;
-        methods.push(sig(cx, &ss)?);
+        // a class translateChar refuses: its error is raised where the
+        // search reaches it, as GNU R translates each class in turn
+        match class_elt_native(cx, klass, i) {
+            Ok(ss) => methods.push(sig(cx, &ss)?),
+            Err(_) => methods.push(None),
+        }
     }
     methods.push(sig(cx, b"default")?);
     // a copy of the class vector: its elements are the key
@@ -2796,14 +2801,40 @@ fn dispatch_group<'o>(
         let m = s.out(cx).root();
         let o = m.reset(cx);
         let mname = meth.bind(cx).as_sym().unwrap().name().bytes().to_vec();
+        // stringPositionTr(lclass, dispatchClassName) for each argument:
+        // its classes translated in turn up to the first equal one
+        let hits: Result<Vec<bool>, String> = {
+            let cx = &*cx;
+            (0..nargs)
+                .map(|i| {
+                    let t = class_for_group(cx, args.get(cx, i));
+                    let Some(tv) = t.as_vector::<Char<'_>>().filter(|_| t.sexptype() == STRSXP) else {
+                        return Ok(false);
+                    };
+                    for k in 0..tv.len() {
+                        let c = tv.get(k);
+                        let b = if c == cx.na_string() {
+                            std::borrow::Cow::Borrowed(&b"NA"[..])
+                        } else {
+                            robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(c), cx.locale())
+                                .map_err(|e| e.to_string())?
+                        };
+                        if *b == dispatch_class[..] {
+                            return Ok(true);
+                        }
+                    }
+                    Ok(false)
+                })
+                .collect()
+        };
+        let hits = match hits {
+            Ok(h) => h,
+            Err(m) => return Err(cx.error(&m)),
+        };
         cx.build(o, |cx| {
             let mut v = cx.alloc_vector::<Char<'_>>(nargs)?;
             let mn = cx.mk_char(&mname, Encoding::Native)?;
-            for i in 0..nargs {
-                let t = class_for_group(cx, args.get(cx, i));
-                let hit = t.as_vector::<Char<'_>>().filter(|_| t.sexptype() == STRSXP).is_some_and(|tv| {
-                    (0..tv.len()).any(|k| robigo_rtbuiltins::coerce::text(tv.get(k)).bytes() == &dispatch_class[..])
-                });
+            for (i, &hit) in hits.iter().enumerate() {
                 v.set(i, if hit { mn } else { cx.blank_string() });
             }
             Ok(v.finish().into())
