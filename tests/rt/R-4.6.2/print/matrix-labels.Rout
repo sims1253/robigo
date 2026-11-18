@@ -73,3 +73,4 @@ b   2 4
 <simpleError in print.default(matrix(1, dimnames = list(NULL, k))): translating strings with "bytes" encoding is not allowed>
 <simpleError in print.default(matrix(1, dimnames = structure(list("a", "b"),     names = c(k, "C")))): translating strings with "bytes" encoding is not allowed>
 , <simpleError in print.default(array(1:2, c(1, 1, 2), dimnames = list(NULL, NULL,     c(k, "b")))): translating strings with "bytes" encoding is not allowed>
+, <simpleError in print.default(k3): translating strings with "bytes" encoding is not allowed>

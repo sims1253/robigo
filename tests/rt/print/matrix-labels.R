@@ -26,3 +26,5 @@ k <- "caf\xe9"; Encoding(k) <- "bytes"
 tryCatch(print(matrix(1, dimnames = list(NULL, k))), error = function(e) print(e))
 tryCatch(print(matrix(1, dimnames = structure(list("a", "b"), names = c(k, "C")))), error = function(e) print(e))
 tryCatch(print(array(1:2, c(1, 1, 2), dimnames = list(NULL, NULL, c(k, "b")))), error = function(e) print(e))
+k3 <- array(1:2, c(1, 1, 2), dimnames = structure(list("r", "c", c("a", "b")), names = c("R", "C", k)))
+tryCatch(print(k3), error = function(e) print(e))

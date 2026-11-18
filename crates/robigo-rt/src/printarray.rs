@@ -535,9 +535,11 @@ pub(crate) fn print_array_of(
                             None => Vec::new(),
                         };
                         match dnn {
+                            // (both translated before the Rprintf)
                             Some(nn) => {
+                                let title = dnn_elt(cx, nn, j)?;
                                 out.extend_from_slice(b", ");
-                                out.extend_from_slice(&dnn_elt(cx, nn, j)?);
+                                out.extend_from_slice(&title);
                                 out.extend_from_slice(b" = ");
                                 out.extend_from_slice(&name);
                             }
