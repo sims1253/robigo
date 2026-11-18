@@ -3251,10 +3251,17 @@ impl Cx {
             if fn_like(iso, value) || (k == VALUE && fn_like(iso, sl.val())) {
                 bump(iso, rho);
             }
-            if k == UNBOUND {
-                frame::bind(rho, sl, sym, value, iso.nil);
-            } else {
-                frame::store_value(sl, value);
+            // (`frame::store_value`'s two cases here, written out: a second
+            // caller would stop its inlining into `Loc::store`, `<<-`'s
+            // path, +13 instructions per superassign)
+            match k {
+                UNBOUND => frame::bind(rho, sl, sym, value, iso.nil),
+                VALUE => sl.store_val(value),
+                _ => {
+                    sl.clear_raw_val();
+                    sl.set_key(sym, VALUE);
+                    sl.store_val(value);
+                }
             }
             sl.set_missing(0);
             true
