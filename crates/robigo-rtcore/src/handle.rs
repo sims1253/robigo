@@ -804,6 +804,14 @@ impl<'g> Sym<'g> {
         }
     }
 
+    /// Whether the name is ASCII: `IS_ASCII(PRINTNAME(sym))`, with no read
+    /// of the isolate's PRINTNAME (the same bit in every isolate).
+    #[inline(always)]
+    pub fn name_is_ascii(self) -> bool {
+        // SAFETY: a live symbol.
+        unsafe { self.0.sexp().sym_name_is_ascii() }
+    }
+
     /// The symbol's name, as bytes (no CHARSXP: [`Sym::name`] for one).
     #[inline(always)]
     pub fn name_bytes(self) -> &'g [u8] {

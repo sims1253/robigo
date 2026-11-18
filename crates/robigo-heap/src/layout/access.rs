@@ -571,6 +571,17 @@ impl Sexp {
         // arena's name, or the shared "").
         unsafe { self.sexp_at(sym::OFF_PRINTNAME).char_bytes() }
     }
+    /// Whether a symbol's name is ASCII: the ASCII bit of its PRINTNAME in
+    /// every isolate (each makes it from the same bytes), read from the
+    /// arena's name (one load less than the isolate's PRINTNAME).
+    ///
+    /// # Safety
+    /// `self` must be a live SYMSXP.
+    #[inline(always)]
+    pub unsafe fn sym_name_is_ascii(self) -> bool {
+        // SAFETY: as for `sym_name_bytes`.
+        unsafe { self.sexp_at(sym::OFF_PRINTNAME).gp() & crate::gp::charsxp::ASCII != 0 }
+    }
     /// A symbol's id ([`sym::OFF_ID`]): dense, in the order this heap made
     /// its symbols.
     ///
