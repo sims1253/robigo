@@ -816,9 +816,12 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 }
                 // SAFETY: an unboxed value.
                 unsafe { act.set(i.a, Slot::logical(r)) };
-                if i.fl & F_VIS != 0 {
-                    cx.set_visible(true);
-                }
+                // R_Visible = TRUE whatever the flag, as bcEval's AND1ST,
+                // AND2ND, OR1ST and OR2ND set it (the AST's do_logic2 is
+                // visible too); the IR's F_VIS says where it is observed. A
+                // store, not a test: a branch here shifted vm::run's code
+                // (~1% on perf-rt's closure-call rows)
+                cx.set_visible(true);
             }
             Op::MkClosure => {
                 mk_closure(cx, act, i.a, i.e, i.f, i.c, i.g == 1)?;
