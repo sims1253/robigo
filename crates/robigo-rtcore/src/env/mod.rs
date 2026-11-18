@@ -3196,6 +3196,71 @@ impl Cx {
         }
     }
 
+    /// [`Cx::define_var`] of the object `value` into slot `index` of `rho`'s
+    /// own frame, done directly when the slot takes it, by
+    /// [`Cx::frame_store_scalar_raw`]'s rule (a slot frame of shape `shape`
+    /// or keying that slot by the same symbol; a value, boxed or not,
+    /// neither locked, assignment-pending nor aliased; or unbound in an
+    /// unlocked frame). The steps are `defineVar`'s for such a slot: the
+    /// global cache and special-symbol bits, the frame's version bumped when
+    /// the old value or the new one is function-like, a new binding's stamp
+    /// (`ls()` order), then the counted, barriered store (the old object's
+    /// count dropped) and `SET_MISSING(binding, 0)`. False (nothing stored)
+    /// otherwise: the caller defines the value the long way.
+    ///
+    /// # Safety
+    /// As for [`Cx::frame_slot_raw`]; `sym` is the symbol of slot `index`;
+    /// `value` a live object of this isolate, not R_UnboundValue.
+    // R: envir.c:defineVar (a frame's existing or free binding)
+    #[inline]
+    pub unsafe fn frame_store_object_raw(&self, rho: Sexp, shape: Sexp, index: usize, sym: Sexp, value: Sexp) -> bool {
+        // SAFETY: the caller's contract: `rho` is a live environment.
+        unsafe { self.note_write(rho) };
+        let iso = self.iso();
+        debug_assert!(value != iso.unbound, "robigo: a slot store of R_UnboundValue");
+        // SAFETY: the caller's contract; the store goes through the frame's
+        // barrier and counts, as `define_var`'s does.
+        unsafe {
+            if !layout::is_slots(rho) || rho.is_object() {
+                return false;
+            }
+            if layout::get(rho, layout::OFF_SHAPE) != shape {
+                std::hint::cold_path();
+                if !keyed_as(rho, shape, index) {
+                    return false;
+                }
+            }
+            debug_assert!(index < shape.std_len() as usize, "robigo: a slot index past its shape");
+            let sl = SlotRef { owner: rho, index };
+            debug_assert_eq!(sl.sym(), sym, "robigo: a slot store's symbol is not its slot's");
+            let k = sl.kind();
+            let fast = match k {
+                VALUE | REAL | INT | LGL => sl.meta() & (META_LOCKED | META_PENDING | META_ALIASED) == 0,
+                UNBOUND => rho.gp() & FRAME_LOCK == 0,
+                _ => false,
+            };
+            if !fast {
+                return false;
+            }
+            if rho.gp() & GLOBAL_FRAME != 0 {
+                flush_global_cache(iso, sym);
+            }
+            if sym::is_special(sym) {
+                rho.set_gp(rho.gp() & !NO_SPECIAL_SYMBOLS);
+            }
+            if fn_like(iso, value) || (k == VALUE && fn_like(iso, sl.val())) {
+                bump(iso, rho);
+            }
+            if k == UNBOUND {
+                frame::bind(rho, sl, sym, value, iso.nil);
+            } else {
+                frame::store_value(sl, value);
+            }
+            sl.set_missing(0);
+            true
+        }
+    }
+
     /// Whether `rho` is a slot frame of shape `shape` whose bindings are
     /// its shape's slots alone (no overflow block) and not an object (a user
     /// database's): a name `shape` lacks is not bound in it, and a lookup of

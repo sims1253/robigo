@@ -1196,12 +1196,18 @@ fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: 
             _ => None,
         };
         // a local of the running closure: its slot, directly
-        if let Some(x) = scalar
-            && slot != 0
-        {
+        if slot != 0 {
             // SAFETY: an immortal symbol, the rooted environment and the
-            // code's shape; the slot index was compiled for that shape.
-            if unsafe { cx.frame_store_scalar_raw(act.rho(), shape, slot as usize - 1, sym, x) } {
+            // code's shape; the slot index was compiled for that shape; a
+            // register's object is live.
+            let stored = unsafe {
+                match (scalar, v.as_object()) {
+                    (Some(x), _) => cx.frame_store_scalar_raw(act.rho(), shape, slot as usize - 1, sym, x),
+                    (None, Some(o)) => cx.frame_store_object_raw(act.rho(), shape, slot as usize - 1, sym, o),
+                    (None, None) => false,
+                }
+            };
+            if stored {
                 return Ok(());
             }
         }
