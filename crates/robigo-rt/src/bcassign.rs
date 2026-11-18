@@ -196,7 +196,7 @@ pub unsafe fn inflate_assignment_call(cx: &Cx, expr: Sexp) -> Result<Sexp, NeedG
         if expr.cdr() == nil || expr.cdr().cdr() == nil {
             return Ok(expr);
         }
-        let name = Ref::from_sexp(expr.car(), cx).as_sym().map(|s| s.name().bytes().to_vec()).unwrap_or_default();
+        let name = Ref::from_sexp(expr.car(), cx).as_sym().map(|s| s.name_bytes().to_vec()).unwrap_or_default();
         if name.len() <= 2 || !name.ends_with(b"<-") {
             return Ok(expr);
         }
@@ -513,12 +513,12 @@ pub(crate) fn dollar(
             return Ok(());
         }
     }
-    let name = member.bind(cx).as_sym().unwrap().name();
-    if x.bind(cx).sexptype() == ENVSXP && name.is_ascii() {
+    let sym = member.bind(cx).as_sym().unwrap();
+    if x.bind(cx).sexptype() == ENVSXP && sym.name_is_ascii() {
         // R_subset3_dflt's lookup of installTrChar(name), the symbol itself
         robigo_rtbuiltins::subset::env_value_sym(cx, x, member, out)?;
     } else {
-        let name = s.root(cx, name.as_ref());
+        let name = s.root(cx, sym.name(cx).as_ref());
         robigo_rtbuiltins::subset::subset3_dflt(cx, x, name, call, out)?;
     }
     cx.set_visible(true);
@@ -587,7 +587,7 @@ fn dollar_call<'s>(
     cx.build(o, |cx| {
         let nm = member.bind(cx).as_sym().unwrap();
         let mut v = cx.alloc_vector::<robigo_rtcore::Char<'_>>(1)?;
-        v.set(0, nm.name());
+        v.set(0, nm.name(cx));
         Ok(v.finish().into())
     })?;
     let third = s.root(cx, raw(cx, n.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().cdr().sexp()));
@@ -768,6 +768,11 @@ fn generic(
                 let l = s.root(cx, raw(cx, last));
                 let p = crate::assign::rhs_promise(cx, s, vexpr, rhs)?;
                 cx.set_car(l, p);
+            }
+            // PRIMFUN(fun)(call, fun, args, rho): `@<-` takes the two apart
+            // (the call its methods see is the compiler's, `*tmp*` in it)
+            if prims::prim_name(cx, fun.bind(cx)) == Some("@<-") {
+                return crate::specials::slot_gets(cx, call, Some(args), rho, out);
             }
             let o = s.out(cx);
             let ncall = o.root();

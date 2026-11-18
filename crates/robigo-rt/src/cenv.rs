@@ -1192,7 +1192,7 @@ pub const PRIMITIVE_ALIASES: [(&str, &str); 2] = [("as.numeric", "as.double"), (
 pub unsafe fn alias_of(cx: &Cx, sym: Sexp) -> Option<&'static str> {
     // SAFETY: the caller's contract.
     let s = unsafe { Ref::from_sexp(sym, cx) }.as_sym()?;
-    let n = s.name().bytes();
+    let n = s.name_bytes();
     PRIMITIVE_ALIASES.iter().find(|(a, _)| a.as_bytes() == n).map(|&(_, p)| p)
 }
 
@@ -1378,7 +1378,7 @@ pub const SAFE_BASE_INTERNALS: [&str; 20] = [
 /// `s` is a live symbol.
 unsafe fn name(cx: &Cx, s: Sexp) -> &[u8] {
     // SAFETY: the caller's contract.
-    unsafe { Ref::from_sexp(s, cx) }.as_sym().map_or(&[], |s| s.name().bytes())
+    unsafe { Ref::from_sexp(s, cx) }.as_sym().map_or(&[], |s| s.name_bytes())
 }
 
 /// Whether symbol `s` is one of [`LANGUAGE_FUNS`].

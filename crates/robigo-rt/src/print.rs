@@ -188,8 +188,38 @@ fn print_object(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
 
 /// `PrintValueRec(s, data)`: print `s` by its type, then its attributes.
 // R: print.c:PrintValueRec
+/// Whether `x`, one of its attributes' values, an element of a list among
+/// them, or an attribute of such a list (`dimnames` and its names, the
+/// matrix printers' titles) is a package ALTREP vector: storage whose
+/// length and elements are its C methods' (M5), which the printers and
+/// deparse do not read.
+pub(crate) fn reads_package_altrep(x: Ref<'_>) -> bool {
+    if x.is_package_altrep() {
+        return true;
+    }
+    fn attr_values<'g>(x: Ref<'g>) -> impl Iterator<Item = Ref<'g>> {
+        let mut a = x.attrib().and_then(|a| a.as_cons());
+        std::iter::from_fn(move || {
+            let cell = a?;
+            a = cell.cdr().as_cons();
+            Some(cell.car())
+        })
+    }
+    attr_values(x).any(|v| {
+        v.is_package_altrep()
+            || matches!(v.view(), View::List(l)
+                if (0..l.len()).any(|i| l.get(i).is_package_altrep())
+                    || attr_values(v).any(|w| w.is_package_altrep()))
+    })
+}
+
 pub fn print_value_rec(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
     let v = s.bind(cx);
+    // a package class's length and elements are its C methods' (M5): the
+    // printers below read standard storage
+    if reads_package_altrep(v) {
+        return Err(cx.error("robigo: printing a package ALTREP vector is not implemented yet"));
+    }
     // !isMethodsDispatchOn(): methods is never loaded here
     if v.is_s4() || v.sexptype() == OBJSXP {
         let cl = attrib::get_value(v, b"class");
@@ -594,7 +624,7 @@ fn print_list(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
                 let pp = data.params(cx);
                 match c.tag().as_sym() {
                     Some(t) => {
-                        let pn = t.name();
+                        let pn = t.name(cx);
                         if taglen + pn.bytes().len() > TAGBUFLEN {
                             (taglen <= TAGBUFLEN).then(|| b"$...".to_vec())
                         } else if pn == cx.na_string() {
@@ -665,7 +695,7 @@ fn print_attributes(cx: &mut Cx, s: Root<'_>, data: &PrintData, use_slots: bool)
             let (tag, skip) = {
                 let v = s.bind(cx);
                 let a = attrib::attrs(v).nth(k).unwrap();
-                let name = a.tag.name().bytes();
+                let name = a.tag.name_bytes();
                 let is = |n: &[u8]| name == n;
                 let is_array = attrib::is_array(v);
                 let is_list = matches!(v.sexptype(), LISTSXP | NILSXP);
@@ -678,7 +708,7 @@ fn print_attributes(cx: &mut Cx, s: Root<'_>, data: &PrintData, use_slots: bool)
                     || is(b"srcref")
                     || is(b"wholeSrcref")
                     || is(b"srcfile");
-                (a.tag.name(), skip)
+                (a.tag.name(cx), skip)
             };
             if skip {
                 continue;

@@ -150,7 +150,12 @@ static RT_PRIMS: &[PrimDef] = &[
     special_fn("switch", crate::specials::do_switch, 200, -1),
     special_fn("on.exit", crate::specials::do_onexit, 100, -1),
     special_fn("substitute", crate::specials::do_substitute, 0, -1),
+    // names.c, attrib.c
+    special_fn("~", crate::specials::do_tilde, 0, -1),
+    special_fn("@", crate::specials::do_at, 0, 2),
+    special_fn("@<-", crate::specials::do_slot_gets, 0, 3),
     // eval.c
+    special_fn("withVisible", crate::eval::do_with_visible, 10, 1),
     special_fn("forceAndCall", crate::apply::do_force_and_call, 0, -1),
     // arithmetic.c
     special_fn("log", crate::specials::do_log, 0, -1),
@@ -245,6 +250,12 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("parse", crate::source::do_parse, Inline::None, 11, 6),
     builtin("stdin", crate::builtin::do_stdin, Inline::None, 11, 0),
     builtin("writeLines", crate::connections::do_writelines, Inline::None, 111, 4),
+    builtin("readLines", crate::connections::readers::do_readlines, Inline::None, 11, 6),
+    builtin("isOpen", crate::connections::readers::do_isopen, Inline::None, 11, 2),
+    builtin("isIncomplete", crate::connections::readers::do_isincomplete, Inline::None, 11, 1),
+    builtin("pushBack", crate::connections::readers::do_pushback, Inline::None, 111, 4),
+    builtin("pushBackLength", crate::connections::readers::do_pushbacklength, Inline::None, 11, 1),
+    builtin("clearPushBack", crate::connections::readers::do_clearpushback, Inline::None, 111, 1),
     // envir.c's search path (L2)
     builtin("attach", crate::search::do_attach, Inline::None, 111, 3),
     builtin("detach", crate::search::do_detach, Inline::None, 111, 1),
@@ -633,4 +644,39 @@ pub(crate) fn make_prims(cx: &mut Cx, defs: &[PrimDef], first: usize) -> (Vec<Gl
         names.push(sym);
     }
     (objs, names)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use robigo_rtbuiltins::names::{internal_eval, primitive_eval};
+
+    /// Every row of the primitive table (B1's registry and the evaluator's
+    /// own) has names.c's eval column, and its kind is the column's: a
+    /// BUILTINSXP for `Z = 1`, a SPECIALSXP (a language special or a function
+    /// over its call) for `Z = 0`. cmp.R picks a call's handler by that kind
+    /// (`typeof()` of a primitive; `is.builtin.internal` of an `.Internal`,
+    /// which `typeof()` cannot reach), and visibility follows the column's X.
+    // R: names.c:R_FunTab
+    #[test]
+    fn every_row_has_names_cs_eval_column_and_kind() {
+        let mut bad = Vec::new();
+        for d in base_defs() {
+            let want = if d.internal() { internal_eval(d.name.as_bytes()) } else { primitive_eval(d.name.as_bytes()) };
+            let Some(want) = want else {
+                bad.push(format!("{} (internal {}): not a row of names.c", d.name, d.internal()));
+                continue;
+            };
+            if d.eval != i32::from(want) {
+                bad.push(format!("{}: eval {} where names.c has {}", d.name, d.eval, want));
+            }
+            // the object's type, as make_prims makes it
+            let builtin = matches!(d.kind, Kind::Builtin(..)) && d.eval % 10 == 1;
+            if builtin != (want % 10 == 1) {
+                let kind = |b: bool| if b { "builtin" } else { "special" };
+                bad.push(format!("{}: a {} where names.c has a {}", d.name, kind(builtin), kind(want % 10 == 1)));
+            }
+        }
+        assert!(bad.is_empty(), "rows that are not names.c's:\n{}", bad.join("\n"));
+    }
 }

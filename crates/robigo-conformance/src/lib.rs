@@ -60,7 +60,7 @@
 //! own variables), so one `cargo test --workspace` can run both columns.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -379,6 +379,10 @@ pub struct Options {
     /// Cases that may run longer than `timeout` (`ROBIGO_CONF_TIMEOUTS`):
     /// repository-relative path -> timeout.
     pub case_timeouts: BTreeMap<String, Duration>,
+    /// Changes to each case's environment, after [`command`]'s: a variable
+    /// set (`Some`) or removed (`None`). The runner's own environment is
+    /// left alone, so a test sets these instead of `std::env::set_var`.
+    pub env: Vec<(OsString, Option<OsString>)>,
 }
 
 /// `ROBIGO_CONF_TIMEOUTS`'s value: `CASE=SECS` pairs, comma-separated.
@@ -440,6 +444,7 @@ impl Options {
             jobs,
             timeout,
             case_timeouts,
+            env: Vec::new(),
         })
     }
 }
@@ -645,8 +650,16 @@ impl Outcome {
     }
 }
 
-fn run_case(bin: &Path, script: &Path, timeout: Duration) -> (Vec<u8>, Vec<u8>, i32, bool) {
-    run_command(command(bin, script), bin, timeout)
+/// [`command`] with `o.env`'s changes.
+fn case_command(o: &Options, script: &Path) -> Command {
+    let mut cmd = command(&o.bin, script);
+    for (k, v) in &o.env {
+        match v {
+            Some(v) => cmd.env(k, v),
+            None => cmd.env_remove(k),
+        };
+    }
+    cmd
 }
 
 /// Run `cmd` (of the binary `bin`), killed after `timeout`: (stdout,
@@ -716,7 +729,7 @@ fn boot_record(column: &Column, o: &Options) -> String {
     let dir = scratch_dir("boot");
     let script = dir.join("empty.R");
     std::fs::write(&script, "invisible(NULL)\n").unwrap_or_else(|e| panic!("write {}: {e}", script.display()));
-    let mut cmd = command(&o.bin, &script);
+    let mut cmd = case_command(o, &script);
     cmd.env(var, "1");
     let (_, err, _, timed_out) = run_command(cmd, &o.bin, o.timeout);
     let _ = std::fs::remove_dir_all(&dir);
@@ -770,7 +783,7 @@ fn check(
         }
     };
     let timeout = o.case_timeouts.get(&id).copied().unwrap_or(o.timeout);
-    let (out, err, status, timed_out) = run_case(&o.bin, script, timeout);
+    let (out, err, status, timed_out) = run_command(case_command(o, script), &o.bin, timeout);
     let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
     let mut diff = String::new();
     if timed_out {
@@ -1124,8 +1137,10 @@ pub fn sha256_hex(data: &[u8]) -> String {
 
 #[cfg(test)]
 mod boot_record_tests {
-    use super::{Options, RT, boot_record, parse_case_timeouts};
+    use super::{Options, RT, boot_record, case_command, parse_case_timeouts};
     use std::collections::BTreeMap;
+    use std::ffi::OsStr;
+    use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -1137,6 +1152,23 @@ mod boot_record_tests {
         assert!(parse_case_timeouts("tests/r/a.R").unwrap_err().contains("is not CASE=SECS"));
         assert!(parse_case_timeouts("tests/r/a.R=soon").unwrap_err().contains("is not a number of seconds"));
         assert!(parse_case_timeouts("tests/r/a.R=1,tests/r/a.R=2").unwrap_err().contains("twice"));
+    }
+
+    /// `Options::env` reaches each case's command, set or removed, after
+    /// `command`'s own settings; nothing changes the runner's environment.
+    #[test]
+    fn options_env_sets_and_removes_per_case() {
+        let mut o = Options::from_env(&RT, PathBuf::from("/bin/true")).unwrap();
+        o.env.push(("ROBIGO_CONF_TEST_SET".into(), Some("x".into())));
+        o.env.push(("R_HOME".into(), None));
+        o.env.push(("TZ".into(), Some("Europe/Berlin".into())));
+        let cmd = case_command(&o, Path::new("/tmp/case.R"));
+        let envs: BTreeMap<_, _> = cmd.get_envs().map(|(k, v)| (k.to_owned(), v.map(|v| v.to_owned()))).collect();
+        assert_eq!(envs[OsStr::new("ROBIGO_CONF_TEST_SET")], Some("x".into()));
+        assert_eq!(envs[OsStr::new("R_HOME")], None);
+        assert_eq!(envs[OsStr::new("TZ")], Some("Europe/Berlin".into()));
+        assert_eq!(envs[OsStr::new("R_DEFAULT_PACKAGES")], Some("NULL".into()));
+        assert!(std::env::var_os("ROBIGO_CONF_TEST_SET").is_none());
     }
 
     /// A binary that hangs at startup: the probe is killed at the case
@@ -1161,6 +1193,7 @@ mod boot_record_tests {
             jobs: 1,
             timeout: Duration::from_secs(1),
             case_timeouts: BTreeMap::new(),
+            env: Vec::new(),
         };
         let t = Instant::now();
         let r = boot_record(&RT, &o);
