@@ -117,6 +117,10 @@ pub struct Isolate {
     /// The evaluator, dispatcher and condition system (`hooks.rs`).
     pub(crate) hooks: Cell<Hooks>,
     pub(crate) locale: Cell<Locale>,
+    /// The embedder's grant of the process environment's writes
+    /// (`clib::EnvWrites`, [`OwnedIsolate::grant_env_writes`]): without
+    /// it `Sys.setenv`/`Sys.unsetenv` refuse.
+    pub(crate) env_writes: std::cell::OnceCell<crate::clib::EnvWrites>,
     /// GNU R's `R_warn_partial_match_args` (`options(warnPartialMatchArgs)`).
     pub(crate) warn_partial_match_args: Cell<bool>,
     /// `ROBIGO_NO_INPLACE=1` (docs/g3.md §16): every in-place write copies.
@@ -551,6 +555,12 @@ impl Cx {
             f(c);
             f(m);
         }
+    }
+
+    /// The embedder's grant of the process environment's writes, if it
+    /// gave this isolate one ([`OwnedIsolate::grant_env_writes`]).
+    pub fn env_writes(&self) -> Option<&crate::clib::EnvWrites> {
+        self.iso().env_writes.get()
     }
 
     /// The locale GNU R reads ([`Locale`]).
@@ -994,6 +1004,12 @@ pub(crate) fn live_isolates() -> std::sync::MutexGuard<'static, usize> {
     LIVE_ISOLATES.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// [`LIVE_ISOLATES`] if no one holds it (a test's probe).
+#[cfg(test)]
+pub(crate) fn live_isolates_try_lock() -> Option<std::sync::MutexGuard<'static, usize>> {
+    LIVE_ISOLATES.try_lock().ok()
+}
+
 /// How many isolates the process has now (constructions under way
 /// included).
 pub fn live_isolate_count() -> usize {
@@ -1076,6 +1092,7 @@ impl OwnedIsolate {
             ext_index: UnsafeCell::new(Vec::new()),
             hooks: Cell::new(Hooks::default()),
             locale: Cell::new(opts.locale),
+            env_writes: std::cell::OnceCell::new(),
             warn_partial_match_args: Cell::new(false),
             no_inplace: Cell::new(false),
             retry_torture: Cell::new(false),
@@ -1114,6 +1131,14 @@ impl OwnedIsolate {
             i.core().set_poll_word(NonNull::from(&i.poll));
         }
         OwnedIsolate { _registration: registration, cx: capability(iso) }
+    }
+
+    /// Give this isolate the process environment's writes (`Sys.setenv`,
+    /// `Sys.unsetenv`): the embedder's [`crate::clib::EnvWrites`], whose
+    /// `assume` stated the contract. Once: a second grant is ignored.
+    pub fn grant_env_writes(&mut self, w: crate::clib::EnvWrites) {
+        let cx: &Cx = &self.cx;
+        let _ = cx.iso().env_writes.set(w);
     }
 
     /// The capability. One at a time: it is borrowed from the owner.

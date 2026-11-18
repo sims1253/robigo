@@ -79,11 +79,19 @@ fn translated(cx: &Cx, x: Root<'_>, i: usize) -> Result<Vec<u8>, String> {
     crate::text::to_native(crate::coerce::text(ch), cx.locale()).map(|b| b.into_owned()).map_err(|e| e.to_string())
 }
 
-/// The process environment cannot be written now (`clib::env_write_allowed`:
-/// a glibc older than `clib::MIN_GLIBC` and several isolates).
-fn refused(cx: &mut Cx, call: Root<'_>, f: &str) -> robigo_rtcore::RError {
-    let (maj, min) = robigo_rtcore::clib::MIN_GLIBC;
-    crate::util::not_yet(cx, Some(call), &format!("{f} with several isolates on glibc older than {maj}.{min}"))
+/// The process environment cannot be written now: this isolate holds no
+/// grant (`clib::EnvWrites`), or `clib::env_write_allowed` refused (a glibc
+/// older than `clib::MIN_GLIBC` and several isolates).
+fn refused(cx: &mut Cx, call: Root<'_>, f: &str, why: robigo_rtcore::clib::EnvWriteRefused) -> robigo_rtcore::RError {
+    use robigo_rtcore::clib::EnvWriteRefused::*;
+    let what = match why {
+        NotGranted => format!("{f} in an isolate that was not given the process environment"),
+        SeveralIsolates => {
+            let (maj, min) = robigo_rtcore::clib::MIN_GLIBC;
+            format!("{f} with several isolates on glibc older than {maj}.{min}")
+        }
+    };
+    crate::util::not_yet(cx, Some(call), &what)
 }
 
 /// `.Internal(Sys.setenv(nm, values))`: set each variable `nm[i]` to
@@ -111,9 +119,9 @@ pub fn do_setenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
     // element: a refusal changes nothing
     let w = match n {
         0 => None,
-        _ => match robigo_rtcore::clib::env_writer() {
+        _ => match robigo_rtcore::clib::env_writer(cx) {
             Ok(w) => Some(w),
-            Err(_) => return Err(refused(cx, call, "Sys.setenv()")),
+            Err(why) => return Err(refused(cx, call, "Sys.setenv()", why)),
         },
     };
     // each set as it is translated, as GNU R's loop does (an error leaves
@@ -155,8 +163,9 @@ pub fn do_unsetenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
     }
     // one write permission for the whole call (both passes: the second
     // reads an environment no one else changes meanwhile); as for setenv
-    let Ok(w) = robigo_rtcore::clib::env_writer() else {
-        return Err(refused(cx, call, "Sys.unsetenv()"));
+    let w = match robigo_rtcore::clib::env_writer(cx) {
+        Ok(w) => w,
+        Err(why) => return Err(refused(cx, call, "Sys.unsetenv()", why)),
     };
     for i in 0..n {
         match translated(cx, nm, i) {

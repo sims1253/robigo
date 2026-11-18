@@ -278,6 +278,19 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     }
 
     let mut iso = OwnedIsolate::new();
+    // The process environment is this isolate's to write (Sys.setenv,
+    // Sys.unsetenv), as it is GNU R's.
+    // SAFETY: EnvWrites::assume's contract holds for this binary: it runs
+    // this one isolate, on the main thread, and starts no threads of its
+    // own (the rt crates spawn none); its own C readers of the environment
+    // outside clib (RC_fopen's `fopen` with a `ccs=` mode reads GCONV_PATH,
+    // rtapi sysutils.rs; `dlerror` reads LANGUAGE through gettext and
+    // `dlopen` runs a library's constructors, rtapi rdynload.rs) run on
+    // that same thread, so never while a write is under way; and native
+    // code a package loads is bound by GNU R's own rule that R's API, and
+    // the process state it implies, belong to the one R thread.
+    #[allow(unsafe_code)]
+    iso.grant_env_writes(unsafe { robigo_rtcore::clib::EnvWrites::assume() });
     let cx = iso.cx();
     // R_NoEcho before InitOptions, whose `echo` is its negation
     cx.set_no_echo(!echo);
