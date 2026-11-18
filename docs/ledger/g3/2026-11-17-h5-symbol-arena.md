@@ -37,9 +37,19 @@
     and found the raw readers.
   - C (`api.c`): `PRINTNAME` and the last CAR of `CAR`, `CAAR`, `CADR`, ...
     `CAD5R` of a symbol call `robigo_rtapi_printname`, the isolate's.
-  - `Isolate::owns` accepts a symbol only once this isolate installed it
-    (it has its PRINTNAME): a symbol only another isolate made is refused,
-    as that isolate's objects are.
+  - Entry (the foreman's decision after Sol r3): an isolate takes a symbol
+    it did not make only by `install` of its name or `Cx::adopt_symbol`
+    (`Core::adopt_symbol`), which gives it this isolate's PRINTNAME and
+    table entry, fallible (`NeedGc`) at the boundary that calls it. Another
+    isolate's marker (`R_RestartToken`, named "") gets the shared "" under
+    its own id. A symbol's identity needs no adoption: `owns` passes it
+    (step 2's form), and bindings, tags and pointer comparisons work in
+    every isolate. Its name does: `Core::printname` reads the table and,
+    for a symbol the isolate never took, refuses with a cold panic naming
+    the id (no lazy install, no allocation, never a null slot). A base
+    binding of it is refused the same way (`Loc::store`'s base arm, which
+    `SET_SYMVALUE`, base definitions and active bindings all reach), since
+    base's listing walks the isolate's own symbols.
 - Accounting (#832's deferred notes):
   - `nodes_in_use` (GNU R's count, which `gc()` reports) is the heap's live
     objects plus the five shared constants plus the arena symbols this heap
@@ -67,7 +77,17 @@
     result (`match(x, as.character(quote(foo)))` is TRUE in both), and each
     isolate has its own value (also under Miri).
     `a_symbol_is_every_isolates` replaces the per-heap isolation test: a
-    symbol only B installed is refused by A until A installs the name.
+    symbol only B installed is A's by identity; A adopts it before reading
+    its name. A name read and a `SET_SYMVALUE` without adoption are refused
+    (two should-panic tests). Every pre-installed symbol and marker read
+    from a second isolate (B's `R_RestartToken` refused, then adopted as
+    "", not the symbol `install("")` gives). Base's listing from a second
+    isolate after adopting and binding. Adoption under contention: A
+    installs fresh names while B adopts, reads the PRINTNAME (B's `mkChar`)
+    and collects between reads (also under Miri, without the collections
+    and the refusal).
+  - robigo-rtbuiltins `tests/isolates.rs`: the same with GNU R's `match`
+    builtin run in B on every adopted name, before and after a collection.
   - C: `tests/rt/capi/pairlist.R` checks that `CAR(s)`, `CAAR(cons(s, nil))`,
     `CAR(CADR(list2(nil, s)))` and `mkChar(name)` are `PRINTNAME(s)`
     (recorded on GNU R 4.6.2).
@@ -91,6 +111,9 @@
       No code maps an id back to a symbol.
     - No `static`, `OnceLock` or `thread_local` in the rt crates holds a
       `Sexp`. `Generic` and the `Bound`/`Wide` tables hold names only.
+  - Decided (foreman, 2026-11-18): explicit adoption with a defined
+    refusal (above). No R program reaches path 1. Paths 2 and 3 adopt at
+    their entry.
   - Open:
     1. Safe Rust with two isolates. The `'g` brand is not generative, so a
        `Sym` or `Ref` from B's `Cx` type-checks with A's. `owns` passes every
@@ -109,6 +132,19 @@
        hand one isolate's symbol to another isolate's call. A.2 closes this
        by policy: a package with C statics that hold `SEXP`s runs in only
        one isolate unless it opts in. Note that this C idiom is common.
+       Through the C API a refusal is a panic crossing `extern "C"`, so it
+       aborts: acceptable for a violated invariant, and this idiom is the
+       one realistic way C gets there. The multi-isolate opt-in audit must
+       look for it; such a package needs its symbols adopted per isolate
+       (no code for it now).
+  - Deferred design proposal (outside H; to the lead through the
+    foreman): a generative brand on `Cx` (`OwnedIsolate::enter(|cx| ..)`
+    with an invariant `'id`). Handles of another isolate would then fail
+    to compile, which closes path 1 statically, and `check_owns` could be
+    debug-only in release. Every owner check on the hot paths (`scope`,
+    frame binding, dispatch) would be gone, which should show as fewer
+    instructions on the calls rows. The cost is an API change across
+    rtcore and every crate that holds a `Cx`.
 - Verified: (pending)
 - Measured: (pending)
 - Review: sol-loop, 2 rounds with gpt-6.1-sol on high, approved. Round 1
