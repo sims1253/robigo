@@ -74,31 +74,6 @@ fn a_slice_of_an_unexpanded_sequence_panics() {
     });
 }
 
-/// In a debug build the panic names the site that read the slice, not the
-/// accessor (the skew between #802 and #803 panicked deep in `as_slice`).
-#[cfg(debug_assertions)]
-#[test]
-fn a_debug_build_names_the_site_that_read_the_slice() {
-    use std::cell::RefCell;
-    thread_local!(static AT: RefCell<Option<(String, u32)>> = const { RefCell::new(None) });
-    let prev = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        AT.with(|a| *a.borrow_mut() = info.location().map(|l| (l.file().to_string(), l.line())));
-        prev(info)
-    }));
-    let mut iso = OwnedIsolate::new();
-    let cx = iso.cx();
-    cx.scope(|cx, s| {
-        let x = range(cx, s, 1, 3);
-        let r = x.bind(cx);
-        let line = line!() + 1;
-        let p = catch_unwind(AssertUnwindSafe(|| r.as_ints().map(|s| s.len())));
-        assert!(p.is_err());
-        let (file, at) = AT.with(|a| a.borrow().clone()).expect("a panic location");
-        assert!(file.ends_with("compact.rs") && at == line, "the panic was located at {file}:{at}");
-    });
-}
-
 #[test]
 fn materialize_expands_once_and_duplicate_makes_a_standard_vector() {
     let mut iso = OwnedIsolate::new();

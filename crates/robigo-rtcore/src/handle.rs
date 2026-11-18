@@ -792,15 +792,6 @@ impl<'g> Sym<'g> {
         Char(unsafe { self.0.child(self.0.sexp().car()) })
     }
 
-    /// GNU R's INTERNAL: the `.Internal` function this symbol names
-    /// (R_NilValue for none), which the evaluator stores in the symbol's
-    /// TAG (`SET_INTERNAL`).
-    #[inline(always)]
-    pub fn internal(self) -> Ref<'g> {
-        // SAFETY: a live symbol: its tag is R_NilValue or a primitive.
-        unsafe { self.0.child(self.0.sexp().tag()) }
-    }
-
     #[inline(always)]
     pub fn as_ref(self) -> Ref<'g> {
         self.0

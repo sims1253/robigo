@@ -1653,7 +1653,7 @@ pub unsafe fn simple_internal(cx: &Cx, st: &RtState, def: Sexp) -> Option<Sexp> 
         }
         let ifun = icall.car();
         // .Internal(is.builtin.internal(as.name(ifun)))
-        if ifun.typ() != SYMSXP || ifun.tag().typ() != BUILTINSXP {
+        if ifun.typ() != SYMSXP || cx.internal_raw(ifun).typ() != BUILTINSXP {
             return None;
         }
         for (a, _) in elements(cx, icall, true) {

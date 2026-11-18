@@ -816,6 +816,12 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 }
                 // SAFETY: an unboxed value.
                 unsafe { act.set(i.a, Slot::logical(r)) };
+                // R_Visible = TRUE whatever the flag, as bcEval's AND1ST,
+                // AND2ND, OR1ST and OR2ND set it (the AST's do_logic2 is
+                // visible too); the IR's F_VIS says where it is observed. A
+                // store, not a test: a branch here shifted vm::run's code
+                // (~1% on perf-rt's closure-call rows)
+                cx.set_visible(true);
             }
             Op::MkClosure => {
                 mk_closure(cx, act, i.a, i.e, i.f, i.c, i.g == 1)?;
@@ -1563,11 +1569,148 @@ fn start_subset(cx: &mut Cx, act: &Act, dst: Reg, r: Reg, call: Sexp, sub2: bool
     done
 }
 
+/// GNU R's `NA_INTEGER`.
+const NA_INTEGER: i32 = i32::MIN;
+
+/// `bcStackIndex(si)`: register `r`'s scalar index, -1 for none (NA, a
+/// logical, not a scalar number, not above 0 for a double).
+// R: eval.c:bcStackIndex
+fn stack_index(act: &Act, r: Reg) -> i64 {
+    let s = act.get(r);
+    match s.tag() {
+        Tag::Int => s.as_int().map_or(-1, |i| if i != NA_INTEGER { i as i64 } else { -1 }),
+        Tag::Real => s.as_real().map_or(-1, real_index),
+        Tag::Object => {
+            let x = s.as_object().unwrap();
+            // SAFETY: a register's object is live; its length and data are
+            // read only once it is an integer or double vector in standard
+            // storage.
+            unsafe {
+                // IS_SCALAR(idx, INTSXP | REALSXP): the type first, then
+                // the length; an ALTREP index is never IS_SCALAR (only
+                // allocVector3 sets the scalar bit)
+                let t = x.typ();
+                if !matches!(t, INTSXP | REALSXP) || x.is_altrep() || x.std_len() != 1 {
+                    return -1;
+                }
+                if t == INTSXP {
+                    let i = *(x.std_data() as *const i32);
+                    if i != NA_INTEGER { i as i64 } else { -1 }
+                } else {
+                    real_index(*(x.std_data() as *const f64))
+                }
+            }
+        }
+        _ => -1,
+    }
+}
+
+/// bcStackIndex's double: `(R_xlen_t) val` when not NaN, at most
+/// `R_XLEN_T_MAX` and above 0; else -1.
+fn real_index(d: f64) -> i64 {
+    const R_XLEN_T_MAX: f64 = 4503599627370496.0;
+    if !d.is_nan() && d <= R_XLEN_T_MAX && d > 0.0 { d as i64 } else { -1 }
+}
+
+/// bcEval's `DO_VECSUBSET` and `VECSUBSET_PTR`'s `DO_FAST_VECELT`: `x[i]`
+/// or `x[[i]]` (`sub2`) with the vector `x` in register `base` and one
+/// scalar index in `base + 1`, without the default. It applies to a vector
+/// of type REAL, INT, LGL, CPLX, RAW or VECSXP; for `[`, the vector must
+/// have no attributes, or only `dim` (`FAST_VECELT_OK`). The index must be
+/// in range. A REAL, INT or LGL element goes into `dst` unboxed. A CPLX or
+/// RAW element is a new scalar. A list element is the element itself for
+/// `[[`, a new list of one for `[`. True when it did that; false leaves
+/// the call to the default.
+///
+/// An ALTREP vector takes the default too. GNU R's fast path reads one
+/// through its class's `Elt` method; here no ALTREP method runs from the
+/// byte-code loop, and the default gives the same values.
+// R: eval.c:DO_VECSUBSET, VECSUBSET_PTR, DO_FAST_VECELT, FAST_VECELT_OK
+#[inline(never)]
+fn vec_subset_fast(cx: &mut Cx, act: &Act, dst: Reg, base: Reg, sub2: bool) -> RResult<bool> {
+    use robigo_rtcore::View as V;
+    let Some(x) = act.get(base).as_object() else {
+        return Ok(false);
+    };
+    // SAFETY: a register's object is live.
+    if unsafe { x.is_altrep() } {
+        return Ok(false);
+    }
+    let i = stack_index(act, base + 1) - 1;
+    // SAFETY: a register's object is live, of this isolate.
+    let xr = unsafe { Ref::from_sexp(x, cx) };
+    if !sub2 {
+        // FAST_VECELT_OK(vec): ATTRIB(vec) == R_NilValue, or a single `dim`
+        let ok = match xr.attrib().filter(|a| a.sexptype() != NILSXP) {
+            None => true,
+            Some(a) => {
+                a.as_cons().is_some_and(|c| c.tag() == cx.sym(robigo_rtcore::RSym::Dim).into() && c.cdr() == cx.nil())
+            }
+        };
+        if !ok {
+            return Ok(false);
+        }
+    }
+    let in_range = |n: usize| i >= 0 && (i as usize) < n;
+    let k = i as usize;
+    let slot = match xr.view() {
+        V::Real(v) if in_range(v.len()) => Slot::real(v.get(k)),
+        V::Int(v) if in_range(v.len()) => Slot::int(v.get(k)),
+        V::Lgl(v) if in_range(v.len()) => Slot::logical(v.get(k).0),
+        // VECTOR_ELT(vec, i) for `[[`: the element itself (RAISE_NAMED
+        // changes no count)
+        // SAFETY: a live element of the list a register keeps.
+        V::List(v) if sub2 && in_range(v.len()) => unsafe { Slot::object(v.get(k).sexp()) },
+        // ScalarComplex, ScalarRaw, and mkVector1(elt) for `[`: the
+        // operands stay rooted in their registers while it allocates
+        V::Cplx(_) | V::Raw(_) | V::List(_) if in_range(xr.len().unwrap_or(0)) => {
+            cx.build(act.out(dst), |cx| {
+                // SAFETY: the register's live object.
+                let xr = unsafe { Ref::from_sexp(act.obj(base), cx) };
+                Ok(match xr.view() {
+                    V::Cplx(v) => {
+                        let c = v.get(k);
+                        cx.alloc_with(1, |_| c)?.finish().as_ref()
+                    }
+                    V::Raw(v) => {
+                        let b = v.get(k);
+                        cx.alloc_with(1, |_| b)?.finish().as_ref()
+                    }
+                    V::List(v) => {
+                        let e = v.get(k);
+                        let mut l = cx.alloc_vector::<Ref<'_>>(1)?;
+                        l.set(0, e);
+                        l.finish().as_ref()
+                    }
+                    _ => unreachable!(),
+                })
+            })?;
+            clear_subset_operands(cx, act, base);
+            return Ok(true);
+        }
+        _ => return Ok(false),
+    };
+    // SAFETY: an unboxed value holds no object; a list element is live.
+    unsafe { act.set(dst, slot) };
+    clear_subset_operands(cx, act, base);
+    Ok(true)
+}
+
+/// The two operand registers of a subset cleared, `R_Visible` on: what
+/// `DFVE_NEXT` leaves (`R_BCNodeStackTop--`, `R_Visible = TRUE`).
+fn clear_subset_operands(cx: &mut Cx, act: &Act, base: Reg) {
+    act.clear(base);
+    act.clear(base + 1);
+    cx.set_visible(true);
+}
+
 /// bcEval's default subset (`VECSUBSET`, `MATSUBSET`, `SUBSET_N`, their
 /// `[[` forms, `DFLTSUBSET`): `do_subset_dflt` or `do_subset2_dflt` for
 /// the call `call` with the `n` arguments in registers `base..` (their
 /// names after them if `names`), the value in `dst`; `R_Visible` on.
 // R: eval.c:VECSUBSET_PTR, DO_SUBSET_N, DO_DFLTDISPATCH
+#[cold]
+#[inline(never)]
 #[allow(clippy::too_many_arguments)]
 fn dflt_subset(
     cx: &mut Cx,
@@ -1579,6 +1722,11 @@ fn dflt_subset(
     names: bool,
     sub2: bool,
 ) -> RResult<()> {
+    // VECSUBSET's and VECSUBSET2's fast path: one index, no names (cmp.R
+    // compiles any other form to MATSUBSET, SUBSET_N or DFLTSUBSET)
+    if n == 2 && !names && vec_subset_fast(cx, act, dst, base, sub2)? {
+        return Ok(());
+    }
     // SAFETY: as in `start_subset`.
     unsafe { act.scratch(R_SCRATCH, call) };
     let mut any_alt = false;

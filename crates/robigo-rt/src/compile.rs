@@ -1265,8 +1265,8 @@ impl<'g> Comp<'g> {
                 && unsafe {
                     ic.typ() == LANGSXP
                         && ic.car().typ() == SYMSXP
-                        && matches!(ic.car().tag().typ(), BUILTINSXP | SPECIALSXP)
-                        && st.defs[crate::prims::offset(ic.car().tag())].eval % 10 == 1
+                        && matches!(self.cx.internal_raw(ic.car()).typ(), BUILTINSXP | SPECIALSXP)
+                        && st.defs[crate::prims::offset(self.cx.internal_raw(ic.car()))].eval % 10 == 1
                 }
                 // SAFETY: as above.
                 && unsafe { cenv::elements(self.cx, ic, true) }.iter().any(|&(a, _)| a == dots || a == missing)
@@ -1765,7 +1765,7 @@ impl<'g> Comp<'g> {
             }
             let ifun = icall.car();
             let inner = cx.alloc_node_raw(LANGSXP, ifun, l, nil)?;
-            Ok(Some(Handler::SimpleInternal { inner, internal: ifun.tag() }))
+            Ok(Some(Handler::SimpleInternal { inner, internal: cx.internal_raw(ifun) }))
         }
     }
 
@@ -2594,11 +2594,16 @@ impl<'g> Comp<'g> {
                     }
                     // both operands under PROTECT(op), PROTECT(e)
                     self.expr_at(a[0].0, dst, d + 1, self.pp + 2, false)?;
+                    // in the tail, the value visible on both paths (bcEval's
+                    // AND1ST and AND2ND set R_Visible), the second operand
+                    // reached or not (`a && return(x)`)
+                    let vis = if tail { F_VIS } else { 0 };
                     let mut i1 = Ins::new(Op::AndOr1);
                     i1.a = dst;
                     i1.b = dst;
                     i1.c = op;
                     i1.e = self.k(e);
+                    i1.fl |= vis;
                     let i1 = self.emit(i1);
                     let r = self.alloc();
                     self.expr_at(a[1].0, r, d + 1, self.pp + 2, false)?;
@@ -2607,14 +2612,11 @@ impl<'g> Comp<'g> {
                     i2.b = r;
                     i2.c = op;
                     i2.e = self.k(e);
-                    i2.fl |= F_CLR_B;
+                    i2.fl |= F_CLR_B | vis;
                     self.emit(i2);
                     self.free_to(r);
                     let end = self.pc();
                     self.patch(i1, end);
-                    if tail {
-                        self.set_vis(true);
-                    }
                 }
                 Special::Internal => {
                     // R: names.c:do_internal
@@ -2630,7 +2632,7 @@ impl<'g> Comp<'g> {
                     if fun.typ() != SYMSXP {
                         return self.error_op(e, "invalid .Internal() argument", true);
                     }
-                    let internal = fun.tag();
+                    let internal = self.cx.internal_raw(fun);
                     if internal == nil {
                         let name = String::from_utf8_lossy(fun.car().char_bytes()).into_owned();
                         let msg = format!("there is no .Internal function '{name}'");

@@ -450,14 +450,6 @@ struct Tr {
     /// Pass 2: the last instruction of a complex assignment translated
     /// whole.
     skip_to: Option<usize>,
-    /// The `AndOr1`s of the `&&`s and `||`s begun, by their join (the
-    /// code position AND1ST jumps to, right after its AND2ND): their IR
-    /// index. (By join, not by nesting: an AND2ND no path reaches is never
-    /// translated.)
-    and_or: HashMap<usize, usize>,
-    /// Jumps to patch to an IR position: a tail `AndOr1` to its
-    /// `SetVis`.
-    ir_patches: Vec<(usize, usize)>,
 }
 
 impl Tr {
@@ -814,8 +806,6 @@ impl<'g> Comp<'g> {
             assigning: Vec::new(),
             assigned: HashMap::new(),
             skip_to: None,
-            and_or: HashMap::new(),
-            ir_patches: Vec::new(),
         };
         // `dst` is the code's value (the first register)
         self.free_to(dst);
@@ -926,9 +916,6 @@ impl<'g> Comp<'g> {
         }
         for &(at, pos) in &t.patches {
             let target = *t.at_ir.get(&pos).ok_or(Need::Fail)?;
-            self.patch(at, target);
-        }
-        for &(at, target) in &t.ir_patches {
             self.patch(at, target);
         }
         Ok(t)
@@ -1313,7 +1300,7 @@ impl<'g> Comp<'g> {
                 let sym = k(i.a[0]);
                 let prim = if i.op == GETINTLBUILTIN {
                     // SAFETY: a live symbol: its INTERNAL.
-                    unsafe { robigo_rtcore::Ref::from_sexp(sym, self.cx) }.as_sym().map(|s| s.internal().sexp())
+                    unsafe { robigo_rtcore::Ref::from_sexp(sym, self.cx) }.as_sym().map(|s| self.cx.internal(s).sexp())
                 } else {
                     // getPrimitive: the symbol's value, which for a name base
                     // binds to a primitive of another name is that one's
@@ -2025,7 +2012,14 @@ impl<'g> Comp<'g> {
                 a.b = r;
                 a.c = if i.op == AND1ST { 1 } else { 2 };
                 a.e = self.k(call);
-                t.and_or.insert(i.a[1] as usize, self.pc());
+                // a tail `&&` (its join a way to the RETURN): bcEval's
+                // AND1ST sets R_Visible on the path it jumps too, which is
+                // the only one when its AND2ND is unreachable
+                // (`a && return(x)`)
+                let join = t.code.binary_search_by_key(&(i.a[1] as usize), |c| c.at);
+                if join.is_ok_and(|j| returns_after(&t.code, j)) {
+                    a.fl |= F_VIS;
+                }
                 self.jump(t, a, i.a[1] as usize)?;
             }
             AND2ND | OR2ND => {
@@ -2040,22 +2034,12 @@ impl<'g> Comp<'g> {
                 a.c = if i.op == AND2ND { 1 } else { 2 };
                 a.e = self.k(call);
                 a.fl |= F_CLR_B;
-                self.emit(a);
-                // its AND1ST: the one whose join is the next instruction
-                let join = t.code.get(t.cur + 1).map(|n| n.at);
-                let first = join.and_then(|j| t.and_or.remove(&j));
+                // (bcEval's AND2ND sets R_Visible; its AND1ST's jump the
+                // same, above)
                 if tail {
-                    // bcEval's AND1ST and AND2ND set R_Visible: the value
-                    // is visible on both paths, at the join they share
-                    // (AND1ST's jump lands on the SetVis), as the
-                    // from-source code's; not at a RETURN another branch
-                    // may jump to
-                    let at = self.pc();
-                    self.set_vis(true);
-                    if let Some(f) = first {
-                        t.ir_patches.push((f, at));
-                    }
+                    a.fl |= F_VIS;
                 }
+                self.emit(a);
             }
             BASEGUARD => {
                 let call = k(i.a[0]);

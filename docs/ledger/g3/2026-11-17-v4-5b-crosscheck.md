@@ -151,13 +151,81 @@ AND2ND now finds its AND1ST by the join, the code position AND1ST
 jumps to, which is right after its AND2ND. `visible.R`'s
 `k_and_inner_return` is the case.
 
+### Sol's round 4
+
+S8 resolved. The tail `&&`'s visibility was still wrong when its AND2ND
+is unreachable (S9): in `{ a <- FALSE; a && return(TRUE) }` no SetVis was
+translated, so AND1ST's path returned FALSE invisible after the
+assignment, where GNU R returns it visible. bcEval's AND1ST and AND2ND
+each set R_Visible, and the IR now says so: `AndOr1` and `AndOr2` honor
+F_VIS (vm.rs, one flag test in their arm). The translation sets it on
+both when the `&&`'s join leads to a RETURN, and the from-source
+compiler sets it on both in the tail. The SetVis, the pairing by join
+and the re-patch are gone. `visible.R`'s `k_and_return` and
+`k_or_return` are the cases.
+
+The crosscheck's numbering had to follow: a join only a jump reaches
+(no path falls into it, the jumps agree) takes the jumps' values, not
+those the code before it left. Elsewhere values stay numbered in the
+code's order.
+
+### Sol's round 5
+
+S5 resolved. S9 was resolved in the VM, but the inline evaluator
+ignored the flag: it honors F_VIS only for a whitelist of ops, and
+`AndOr1`/`AndOr2` were not on it (S10, blocker). They are now. No fixture
+case shows it, because an inline run cannot leave R_Visible false before
+the `&&`. The crosscheck's rule for a join that only jumps reach ignored
+back edges (S11, should): it now skips a target that a back edge reaches.
+
+### Merging main, and H5
+
+Main `e20eef0d1` was merged at `e0b5a866`. It brought H5 (#811):
+symbols are immutable, and a symbol's INTERNAL lives in the isolate's
+table, not in its tag. This step's decline for a `.Internal` call with
+`...` or an empty argument (cmpDotInternalCall's cmpBuiltin) still read
+the tag, so it never declined. The port then compiled
+`.Internal(pmax(na.rm, ...))` and the like as a direct `Internal`,
+where GNU R calls `.Internal` (9 unexpected in base.rdb: pmax, pmin,
+order, sprintf, options, radixsort, icuSetCollate). The decline reads
+`internal_raw` now, and base.rdb is back to 0 unexpected.
+
+### The cost of the visibility test
+
+perf-rt at `e0b5a866` was +0.9% to +1.1% on the closure-call rows
+(plain, defaults, named, env-fn) against main's binary. V4 step 2
+merged with the same main was flat on them, so the cost is this step's.
+With main's vm.rs, this step was flat, so it came from the one vm.rs
+change: the `if i.fl & F_VIS != 0 { set_visible(true) }` in the AndOr
+arm. Callgrind put all of it in `vm::run`'s self cost (+11 instructions
+an iteration on plain), which runs no AndOr: the branch shifted the
+function's code. Moving the whole arm out of line, as `math1` is, still
+cost +0.6%.
+
+bcEval's AND1ST, AND2ND, OR1ST and OR2ND each set `R_Visible = TRUE`
+unconditionally, after the operand's check (eval.c:8361-8409), and the
+AST's `do_logic2` is visible too. The arm now does that: a store, no
+test. F_VIS stays in the IR, where the crosscheck compares it and the
+inline evaluator reads it. Callgrind against main `046c437c`: plain
++0.13%, defaults, named, env-fn and guard-subset-dbl within ±0.1%.
+
+### Sol's round 6
+
+A narrow round on the changes since round 5 (`4b4f22d7d..3c70a6090`):
+the decline reading the isolate's INTERNAL table, and the unconditional
+visibility in the AndOr arm (eval.c:8361-8409). Verdict APPROVE, no new
+findings. S10 and S11 are resolved: the inline evaluator keeps honoring
+F_VIS on AndOr, and the VM's store comes after the operand checks, as
+bcEval's does. Sol found no case where the inline evaluator and the VM
+disagree on visibility.
+
 ### Result
 
 One verdict per closure. base.rdb: 980 the same, 145 expected in five
 classes (a nested function's code 63, a loop's shape 60, a switch's
 stop() 12, `%%`/`%/%` 9, return()'s operand 1), 21 untranslated
 (specials robigo-rt lacks, CALLSPECIAL), 6 skipped, **0 unexpected**.
-The conformance crosscheck: 120 the same, 21 expected, 3 skipped,
+The conformance crosscheck: 122 the same, 21 expected, 3 skipped,
 **0 unexpected**.
 
 ### Verification
@@ -169,7 +237,7 @@ The first cut was verified on V4 step 2's head (with #824's OCR fix
   pass (2800 runs, 0 differences).
 - perf-rt: flat, every row within +0.25%.
 
-After Sol's rounds 1 to 3:
+After Sol's rounds 1 to 4:
 - robigo-rt's conformance: 537/543. The new `bctrans/visible.R` passes and
   is ratcheted; the 6 failing are the same as before.
 - The rdb tests, under the crosscheck: 3 passed. The translation test

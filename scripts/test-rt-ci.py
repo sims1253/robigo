@@ -55,10 +55,14 @@ class RtCi(unittest.TestCase):
             self.assertIn("--exact", cmd)
             if env:
                 self.assertTrue({"ROBIGO_GCTORTURE", "R_MAX_VSIZE", "ROBIGO_NO_INPLACE", "ROBIGO_MATERIALIZE", "ROBIGO_FRAME_QUARANTINE",
-                                 "ROBIGO_BC_CROSSCHECK"} & set(env), env)
+                                 "ROBIGO_BC_CROSSCHECK", "ROBIGO_RETRY_TORTURE"} & set(env), env)
             # a crosscheck step writes its report, which `main` reads
             if "ROBIGO_BC_CROSSCHECK" in env:
                 self.assertIn("ROBIGO_BC_CROSSCHECK_REPORT", env)
+        # the crosscheck step exists at all: dropping it from steps() would
+        # leave every assertion above green, and V3's gate (`main` failing on
+        # an unexpected or untranslated closure) would leave CI unnoticed
+        self.assertEqual(len([e for e, _ in own if "ROBIGO_BC_CROSSCHECK" in e]), 1)
         for title, _, cmd in steps:
             if cmd[0] == "cargo" and rt.CONFORMANCE not in cmd[-1:] and "--exact" not in cmd:
                 self.assertEqual(cmd[-2:], ["--skip", rt.CONFORMANCE], title)
@@ -66,6 +70,23 @@ class RtCi(unittest.TestCase):
         # would run nothing, and still pass.
         src = (HERE.parent / "crates/robigo-rtapi/tests/conformance.rs").read_text()
         self.assertIn(f"fn {rt.CONFORMANCE}()", src)
+
+    def test_the_retry_torture_feature_is_built_for_its_step_alone(self):
+        # every other step tests the binary users get; this one, last, the
+        # mode compiled in and on, with the collector modes' case timeout
+        steps = rt.steps(["robigo-rt", "robigo-rtcore"])
+        featured = [(title, env, cmd) for title, env, cmd in steps if "--features" in cmd]
+        self.assertEqual(len(featured), 1)
+        title, env, cmd = featured[0]
+        self.assertEqual(cmd[cmd.index("--features") + 1], rt.RETRY_TORTURE_FEATURE)
+        self.assertEqual(env.get("ROBIGO_RETRY_TORTURE"), "1")
+        self.assertEqual(env.get("ROBIGO_CONF_TIMEOUT"), "600")
+        self.assertEqual(steps[-1][0], title, "the feature build comes after every plain step")
+        self.assertEqual([t for t, e, _ in steps if "ROBIGO_RETRY_TORTURE" in e], [title])
+        # the feature exists where the step names it
+        crate, feature = rt.RETRY_TORTURE_FEATURE.split("/")
+        manifest = (HERE.parent / "crates" / crate / "Cargo.toml").read_text()
+        self.assertIn(f"\n{feature} = [", manifest)
 
     def test_conformance_steps_use_every_cpu(self):
         # they run one test alone, so the runner may run a case per CPU

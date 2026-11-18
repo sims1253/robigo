@@ -77,6 +77,50 @@ class Bars(unittest.TestCase):
         self.assertEqual(failures, ["`p.R`: peak RSS 41,000 KiB, above today's 40,000"])
 
 
+class Guards(unittest.TestCase):
+    """A guard row (m1-bars.toml's [[guard]]): no bar, held to main only."""
+
+    SPEC = {**SPEC, "guard": [{"row": "subset"}]}
+    INSTR = {**OK, "subset": 100.0}
+
+    def test_a_guard_only_reports_without_main(self):
+        failures, notes, table = perf.rt_verdict(self.SPEC, self.INSTR, RSS)
+        self.assertEqual((failures, notes), ([], []))
+        self.assertEqual(table[-1], ("subset", 100.0, None, "main", None, None, True, "guard"))
+
+    def test_a_guard_slower_than_main_fails(self):
+        main = {"instr": {**self.INSTR, "subset": 99.0}, "rss": RSS}
+        failures, _, table = perf.rt_verdict(self.SPEC, self.INSTR, RSS, main)
+        self.assertEqual(failures, ["`subset`: +1.01% instructions against main (99.0 -> 100.0)"])
+        self.assertEqual(table[-1][-1], "guard, SLOWER")
+        main = {"instr": {**self.INSTR, "subset": 99.6}, "rss": RSS}
+        self.assertEqual(perf.rt_verdict(self.SPEC, self.INSTR, RSS, main)[0], [])
+
+    def test_a_guard_must_be_a_row_once_and_not_a_bars(self):
+        spec = {**SPEC, "guard": [{"row": "nope"}, {"row": "plain"}, {"row": "x"}, {"row": "x"}]}
+        self.assertEqual(perf.rt_guard_errors(spec, {"plain", "x"}), [
+            "guard `nope`: no row of that name in benchmarks/rt/calls-rows.toml",
+            "guard `plain`: a bar's row already, which holds it to main",
+            "guard `x`: named twice",
+        ])
+
+    def test_the_committed_guards(self):
+        import tomllib
+        with open(perf.RT_ROWS, "rb") as f:
+            rows = {r["name"]: r for r in tomllib.load(f)["row"]}
+        with open(os.path.join(perf.ROOT, "benchmarks", "rt", "m1-bars.toml"), "rb") as f:
+            bars = tomllib.load(f)
+        self.assertEqual(perf.rt_guard_errors(bars, set(rows)), [])
+        guards = [g["row"] for g in bars["guard"]]
+        self.assertEqual(guards, [
+            "guard-subset-dbl", "guard-subassign-dbl", "guard-subset-matrix",
+            "grow-dbl", "scalars", "d0-attr", "d0-attributes", "d0-names",
+            "d0-unlist", "d0-paste", "d0-paste0",
+        ])
+        # every row of the guard group is one
+        self.assertLessEqual({n for n, r in rows.items() if r["group"] == "guard"}, set(guards))
+
+
 class AgainstMain(unittest.TestCase):
     # main's binary, measured on the same machine
     MAIN = {"instr": {**OK}, "rss": {"p.R": 30000}}
@@ -233,6 +277,7 @@ class Pin(unittest.TestCase):
         self.assertFalse(s3.get("met", True))
         instr = {b["row"]: 0.9 * b["max"] * spec[b["against"]]["instr"][b["row"]] for b in spec["bar"]}
         instr["s3"] = 1.096 * spec["gnur"]["instr"]["s3"]
+        instr.update({g["row"]: 1000.0 for g in spec.get("guard", [])})
         rss = {r["program"]: min(spec[a]["rss"][r["program"]] for a in r["against"]) - 1 for r in spec["rss"]}
         failures, _, table = perf.rt_verdict(spec, instr, rss)
         self.assertEqual(failures, [])

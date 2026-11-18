@@ -177,7 +177,7 @@ pub fn out_of_bounds(
         let cond = robigo_rtcore::ErrorCond {
             class: "subscriptOutOfBoundsError",
             subclass: None,
-            msg: &msg,
+            msg: msg.as_bytes(),
             fields: &fields,
             exit_only: false,
         };
@@ -198,7 +198,7 @@ pub fn missing_subscript(cx: &mut Cx, call: Option<Root<'_>>, x: Option<Root<'_>
     let cond = robigo_rtcore::ErrorCond {
         class: "MissingSubscriptError",
         subclass: None,
-        msg: MISSING_SUBSCRIPT,
+        msg: MISSING_SUBSCRIPT.as_bytes(),
         fields: &fields,
         exit_only: false,
     };
@@ -219,7 +219,7 @@ pub fn not_subsettable(cx: &mut Cx, call: Option<Root<'_>>, x: Root<'_>) -> RErr
     let cond = robigo_rtcore::ErrorCond {
         class: "notSubsettableError",
         subclass: None,
-        msg: &msg,
+        msg: msg.as_bytes(),
         fields: &fields,
         exit_only: false,
     };

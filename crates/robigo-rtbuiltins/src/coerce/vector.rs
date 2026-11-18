@@ -481,7 +481,7 @@ pub fn as_character_factor<'g>(cx: &'g Cx, x: Ref<'g>) -> Result<Result<Ref<'g>,
     let codes: Vec<i32> = match x.view() {
         // (by element: one of robigo's sequences stays as it is, as GNU R's
         // INTEGER_ELT leaves it)
-        View::Int(v) => (0..v.len()).map(|i| v.get(i)).collect(),
+        View::Int(v) => v.elements().into_owned(),
         View::Lgl(v) => (0..v.len()).map(|i| v.get(i).0).collect(),
         _ if crate::coerce::xlength(x) == 0 => Vec::new(),
         _ => {
