@@ -5,33 +5,36 @@
   every merge that day. The foreman's queue item (A1).
 - **Data:** every `ci` run created 2026-11-17 08:00 to 2026-11-18 06:44 UTC
   (323 runs: 248 pull_request, 75 push) and their jobs, from the Actions
-  API. Runner-minutes are a job's `completed_at - started_at` on a runner.
+  API. Runner-minutes are a job's `completed_at - started_at` on a runner,
+  each execution once: a re-run's attempt carries successful jobs forward
+  under new ids with the same runner and times (74 such copies, 370
+  minutes, are left out).
   Scripts and raw data: `~/.cache/robigo-research/a1/ci-data/`
   (`analyze.py`, `stacked.py`, `blocked.py`).
 
 ### Where the minutes went
 
-21,811 runner-minutes (24,290 billed, rounded up per job): 14,502 on pull
-requests, 7,309 on main. 77 pull requests merged in the same 24 h.
+21,440 runner-minutes (about 23,900 billed, an estimate rounding each job
+up to a minute): 14,132 on pull requests, 7,309 on main. 77 pull requests merged in the same 24 h.
 
 | job | jobs | runner-min | median queue wait |
 |---|---:|---:|---:|
-| corpora (10 shards) | 1,257 | 6,198 | 34 min |
-| rt | 210 | 3,945 | 12 |
-| perf | 127 | 3,447 | 24 |
-| miri | 268 | 1,533 | 10 |
-| test | 132 | 1,066 | 29 |
-| base-subset | 234 | 873 | 12 |
-| build | 154 | 635 | 20 |
-| release-tests | 130 | 602 | 25 |
-| bytecode-fidelity | 232 | 495 | 14 |
-| perf-rt | 204 | 463 | 12 |
-| perf-rt-build | 231 | 424 | 14 |
-| fuzz | 130 | 399 | 31 |
-| lint | 233 | 392 | 12 |
-| the other 9 | | 1,339 | |
+| corpora (10 shards) | 1,237 | 6,091 | 34 min |
+| rt | 209 | 3,925 | 12 |
+| perf | 125 | 3,330 | 25 |
+| miri | 264 | 1,513 | 12 |
+| test | 130 | 1,050 | 30 |
+| base-subset | 230 | 859 | 12 |
+| build | 152 | 628 | 20 |
+| release-tests | 128 | 593 | 25 |
+| bytecode-fidelity | 228 | 485 | 14 |
+| perf-rt | 200 | 455 | 13 |
+| perf-rt-build | 227 | 417 | 14 |
+| fuzz | 128 | 393 | 31 |
+| lint | 229 | 386 | 13 |
+| the other 10 | | 1,316 | |
 
-A job waited a median of 12 min (p90 44, max 115) for a runner on a pull
+A job waited a median of 13 min (p90 45, max 115) for a runner on a pull
 request, and 44 min (p90 90, max 151) on main. A green pull request run took
 a median of 76 min (p90 157) from creation to `Check`; a green main run, 156
 min (p90 260).
@@ -90,13 +93,14 @@ running one.
 
 ### 3. The perf job's wait for main's baseline (proposal)
 
-Measured over the 75 pull request perf jobs that ran:
+Measured over the 73 pull request perf jobs that ran:
 - "Fetch baseline from main" (scripts/perf-baseline.py) held a runner
-  for 2,026 minutes in all: 9% of all runner-minutes, and more than every
+  for 1,924 minutes in all: 9% of all runner-minutes, and more than every
   other perf step together.
 - The median wait was 23 min, p90 51.
-- 33 of the 75 hit the 50-minute cap and then fell back to an ancestor's
-  numbers anyway. 50 waited more than 5 minutes.
+- 31 of the 73 reached the 50-minute cap: 30 then fell back to an
+  ancestor's numbers anyway, 1 was cancelled at 49 minutes. 48 waited more
+  than 5 minutes.
 - The measurement itself took a median of 7.3 min.
 
 The wait is long because main's runs are the slowest in the queue: their
@@ -112,8 +116,8 @@ Proposal, best first:
   - Saves the 23-min median wait and the 50-min tail.
   - Compares exactly the commit the merge is built on: no ancestor
     fallback, no coupling to main's queue.
-  - Net: the 2,026 minutes of waiting go, and about 75 × 11 ≈ 825 minutes
-    of work come, so about -1,200 runner-minutes a day, and a perf verdict
+  - Net: the 1,924 minutes of waiting go, and about 73 × 11 ≈ 800 minutes
+    of work come, so about -1,100 runner-minutes a day, and a perf verdict
     that no longer depends on main's run.
   - Main's runs keep publishing `perf-main` for the progress history.
 - (b) Cap the wait at a few minutes and fall back to the nearest ancestor
@@ -163,7 +167,7 @@ conflict.
   would have to recompute a commit status on every open pull request (a
   required job cannot re-evaluate itself when main moves). With 51 of 74
   merges stale on a shared crate, it would force about 50 full pull request
-  reruns a day (a pull request run averages 58 runner-minutes, about 3,000
+  reruns a day (a pull request run averages 57 runner-minutes, about 2,900
   in all), each of which can go stale again while it waits. That costs
   more than the queue and protects less.
 - "Require branches to be up to date": the same as above, with GitHub doing

@@ -120,13 +120,23 @@ def changed_paths(base, head):
     return [x for x in p.stdout.split("\0") if x]
 
 
-def summary(mode, why, rows, gate):
+def summary(mode, why, rows, gate, stacked=None):
     """The step summary. `gate`: the package regression gate runs (ci.yml runs
-    it only on a pull request whose selection says runtime)."""
+    it only on a pull request whose selection says runtime). `stacked`: the
+    pull request's base, when it is not main (only lint and rt run)."""
     heavy = "build, test, counters, corpora, fuzz, cran, smoke, perf"
     always = "lint, miri and bytecode-fidelity"
     pkg = "the package regression gate"
-    if mode == "full":
+    if stacked:
+        rt = mode != "light"
+        why = (f"Stacked on `{stacked}`: the heavy jobs run once the pull request targets main. Retargeting "
+               "starts no run: push, or close and reopen the pull request, after it. `Check` fails until then. "
+               f"(Not stacked, this diff would be `{mode}`: {why})")
+        run = "lint and rt (with rdb-data)" if rt else "lint"
+        skip = (f"{heavy}, {pkg}, miri, bytecode-fidelity, base-subset, perf-rt-build, perf-rt, rt-corpora"
+                + ("" if rt else ", rt and rdb-data"))
+        mode = "stacked"
+    elif mode == "full":
         run = f"{heavy}, {pkg + ', ' if gate else ''}rt, {always}"
         skip = "nothing" if gate else pkg
     elif mode == "rt":
@@ -188,12 +198,8 @@ def main():
         print(f"ci-select: {e}", file=sys.stderr)
 
     stacked = a.event == "pull_request" and a.base_ref not in ("", "main")
-    text = summary(mode, why, rows, gate=runtime and mode == "full" and a.event == "pull_request" and not stacked)
-    if stacked:
-        text = (f"### Stacked on `{a.base_ref}`: only select, lint and rt run\n\n"
-                "The heavy jobs run once the pull request targets main. Retargeting starts no run: push, or "
-                "close and reopen the pull request, after it. `Check` fails until then.\n\n" + text)
-    print(text)
+    print(summary(mode, why, rows, gate=runtime and mode == "full" and a.event == "pull_request",
+                  stacked=a.base_ref if stacked else None))
     if a.github_output and os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:
             heavy = "true" if mode == "full" and not stacked else "false"

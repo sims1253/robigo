@@ -237,6 +237,13 @@ class Cli(unittest.TestCase):
         self.assertEqual((o["mode"], o["heavy"], o["runtime"], o["rt"], o["stacked"]),
                          ("full", "false", "false", "true", "true"))
         self.assertIn("Stacked on `g3/other`", out)
+        run = next(l for l in out.splitlines() if l.startswith("- **run:**"))
+        self.assertEqual(run, "- **run:** lint and rt (with rdb-data)")
+        self.assertIn("build, test", next(l for l in out.splitlines() if l.startswith("- **skip:**")))
+        # a stacked docs-only diff runs lint alone (rt is false)
+        o, out = self.outputs("--changed", "docs/g3.md", "--base-ref", "g3/other")
+        self.assertEqual((o["rt"], o["stacked"]), ("false", "true"))
+        self.assertIn("- **run:** lint\n", out)
         o, _ = self.outputs("--changed", "crates/robigo-runtime/src/vm.rs", "--base-ref", "main")
         self.assertEqual((o["heavy"], o["stacked"]), ("true", "false"))
         # only a pull request is stacked (main's push has no base)
