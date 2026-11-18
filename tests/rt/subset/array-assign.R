@@ -51,3 +51,9 @@ show({ e[1, 1, 1] <- expression(z); e })
 a0 <- array(1:8, c(2, 2, 2))
 show({ a0[0, 1, 1] <- NULL; a0 })
 show({ a0[1, NA, 1] <- NULL; a0 })
+# a value that is not a vector: GNU R reads its first word as the length
+nv <- function(v, n) { a <- array(1, c(n, 1, 1)); tryCatch({ a[, 1, 1] <- v; "ok" }, error = function(e) print(e)) }
+for (v in list(quote(a), quote(f(x)), function() 1, globalenv(), pairlist(1))) for (n in 1:2) nv(v, n)
+a1 <- array(1, c(2, 1, 1))
+show({ a1[NA, 1, 1] <- quote(a); a1 })
+show({ a1[0, 1, 1] <- quote(a); a1 })

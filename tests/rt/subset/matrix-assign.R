@@ -82,3 +82,9 @@ m0 <- matrix(1:4, 2)
 show({ m0[0, 1] <- NULL; m0 })
 show({ m0[NA, 1] <- NULL; m0 })
 show({ m0[1, 1] <- NULL; m0 })
+# a value that is not a vector: GNU R reads its first word as the length
+nv <- function(v, n) { m <- matrix(1, n, 1); tryCatch({ m[, 1] <- v; "ok" }, error = function(e) print(e)) }
+for (v in list(quote(a), quote(f(x)), function() 1, globalenv(), pairlist(1))) for (n in 1:2) nv(v, n)
+m1 <- matrix(1, 2, 1)
+show({ m1[NA, 1] <- quote(a); m1 })
+show({ m1[0, 1] <- quote(a); m1 })

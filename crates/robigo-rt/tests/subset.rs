@@ -185,6 +185,23 @@ fn subassignment_errors_report_gnu_rs_calls() {
     }
 }
 
+/// A primitive as the value of `x[i, j] <- v`: GNU R reads its length as
+/// its `R_FunTab` offset, which robigo's primitives do not carry, so robigo
+/// says so (any other non-vector value is tests/rt/subset's cases).
+#[test]
+fn a_primitive_as_a_matrix_assignment_value_is_not_implemented_yet() {
+    for mut s in sessions() {
+        s.val("m <- c(1, 1); dim(m) <- c(2L, 1L); a <- c(1, 1); dim(a) <- c(2L, 1L, 1L)");
+        for src in ["m[, 1] <- sum", "m[1, 1] <- `if`", "a[, 1, 1] <- sum"] {
+            let e = s.err(src);
+            assert!(
+                e.contains("robigo: a primitive as the value of a matrix or array assignment is not implemented yet"),
+                "{src}: {e}"
+            );
+        }
+    }
+}
+
 #[test]
 fn switch_selects_and_falls_through() {
     for mut s in sessions() {

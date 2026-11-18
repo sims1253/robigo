@@ -218,3 +218,15 @@ $dim
 [1] 1 2 3 4
 <simpleError in m0[NA, 1] <- NULL: NAs are not allowed in subscripted assignments>
 <simpleError in m0[1, 1] <- NULL: number of items to replace is not a multiple of replacement length>
+<simpleError in m[, 1] <- v: number of items to replace is not a multiple of replacement length>
+<simpleError in m[, 1] <- v: number of items to replace is not a multiple of replacement length>
+<simpleError in m[, 1] <- v: number of items to replace is not a multiple of replacement length>
+<simpleError in m[, 1] <- v: number of items to replace is not a multiple of replacement length>
+<simpleError in m[, 1] <- v: number of items to replace is not a multiple of replacement length>
+<simpleError in m[, 1] <- v: number of items to replace is not a multiple of replacement length>
+<simpleError in m[, 1] <- v: number of items to replace is not a multiple of replacement length>
+<simpleError in m[, 1] <- v: number of items to replace is not a multiple of replacement length>
+<simpleError in m[, 1] <- v: number of items to replace is not a multiple of replacement length>
+<simpleError in m[, 1] <- v: number of items to replace is not a multiple of replacement length>
+<simpleError in m1[NA, 1] <- quote(a): NAs are not allowed in subscripted assignments>
+<simpleError in m1[0, 1] <- quote(a): incompatible types (from double to symbol) in subassignment type fix>

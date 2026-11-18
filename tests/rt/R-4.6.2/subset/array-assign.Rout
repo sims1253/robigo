@@ -120,3 +120,15 @@ $dim
 
 [1] 1 2 3 4 5 6 7 8
 <simpleError in a0[1, NA, 1] <- NULL: number of items to replace is not a multiple of replacement length>
+<simpleError in a[, 1, 1] <- v: number of items to replace is not a multiple of replacement length>
+<simpleError in a[, 1, 1] <- v: number of items to replace is not a multiple of replacement length>
+<simpleError in a[, 1, 1] <- v: number of items to replace is not a multiple of replacement length>
+<simpleError in a[, 1, 1] <- v: number of items to replace is not a multiple of replacement length>
+<simpleError in a[, 1, 1] <- v: number of items to replace is not a multiple of replacement length>
+<simpleError in a[, 1, 1] <- v: number of items to replace is not a multiple of replacement length>
+<simpleError in a[, 1, 1] <- v: number of items to replace is not a multiple of replacement length>
+<simpleError in a[, 1, 1] <- v: number of items to replace is not a multiple of replacement length>
+<simpleError in a[, 1, 1] <- v: number of items to replace is not a multiple of replacement length>
+<simpleError in a[, 1, 1] <- v: number of items to replace is not a multiple of replacement length>
+<simpleError in a1[NA, 1, 1] <- quote(a): number of items to replace is not a multiple of replacement length>
+<simpleError in a1[0, 1, 1] <- quote(a): incompatible types (from double to symbol) in subassignment type fix>

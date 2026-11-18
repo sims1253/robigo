@@ -593,13 +593,27 @@ fn assign_elements(cx: &mut Cx, which: i32, x: Root<'_>, y: Root<'_>, idx: &Subs
     Ok(())
 }
 
-/// `XLENGTH(y)` as `MatrixAssign` and `ArrayAssign` read it: of NULL it is
-/// R_NilValue's CAR (a pointer, so a huge length), which makes `x[i, j] <-
-/// NULL` "not a multiple of replacement length" for any element, and an NA
-/// subscript with it "not allowed".
-// R: subassign.c:MatrixAssign, ArrayAssign (XLENGTH of R_NilValue)
-fn array_value_length(cx: &Cx, y: Ref<'_>) -> usize {
-    if y.sexptype() == NILSXP { usize::MAX } else { rlength(cx, y) }
+/// `XLENGTH(y)` as `MatrixAssign` and `ArrayAssign` read it, with no type
+/// check: a vector's length; of a node that is not a vector, the word that
+/// is its first field. That is a pointer for NULL (its CAR, R_NilValue),
+/// a symbol, pairlist, call, closure, environment or byte code, so a huge
+/// length ("not a multiple of replacement length" for any element); an
+/// external pointer's address (0 for a NULL one: "replacement has length
+/// zero"); 4 for a weak reference (a list of 4). A builtin's or special's
+/// is its offset in GNU R's `R_FunTab`, which robigo's primitives do not
+/// carry: refused.
+// R: subassign.c:MatrixAssign, ArrayAssign (XLENGTH of a non-vector)
+fn array_value_length(cx: &mut Cx, y: Root<'_>) -> RResult<usize> {
+    let yv = y.bind(cx);
+    Ok(match yv.view() {
+        View::Builtin(_) | View::Special(_) => {
+            return Err(util::not_yet(cx, None, "a primitive as the value of a matrix or array assignment"));
+        }
+        View::ExtPtr(p) => p.addr() as usize,
+        View::WeakRef(_) => 4,
+        _ if attrib::is_vector(yv) || yv.sexptype() == CHARSXP => rlength(cx, yv),
+        _ => usize::MAX,
+    })
 }
 
 /// `isMatrix(x)`: a dim of two extents.
@@ -674,7 +688,7 @@ fn matrix_assign(cx: &mut Cx, call: Root<'_>, x: Root<'_>, subs: &[Root<'_>], y:
         return Err(cx.error("incorrect number of subscripts on matrix"));
     }
     let dims: Vec<i32> = attrib::dims(x.bind(cx)).unwrap().to_vec();
-    let ny = array_value_length(cx, y.bind(cx));
+    let ny = array_value_length(cx, y)?;
     let sr = subscript::array_subscript(cx, 0, subs[0], &dims, x, Some(call))?;
     let sc = subscript::array_subscript(cx, 1, subs[1], &dims, x, Some(call))?;
     let any_na = sr.contains(&NA_IDX) || sc.contains(&NA_IDX);
@@ -699,7 +713,7 @@ fn array_assign(cx: &mut Cx, call: Root<'_>, x: Root<'_>, subs: &[Root<'_>], y: 
         return Err(cx.error("incorrect number of subscripts"));
     };
     let k = dims.len();
-    let ny = array_value_length(cx, y.bind(cx));
+    let ny = array_value_length(cx, y)?;
     let mut idx = Vec::with_capacity(k);
     for (i, &s) in subs.iter().enumerate() {
         idx.push(subscript::array_subscript(cx, i, s, &dims, x, Some(call))?);
