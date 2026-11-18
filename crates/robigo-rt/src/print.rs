@@ -618,7 +618,7 @@ fn print_generic_vector(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<(
             })?;
             sums.push(e);
         }
-        print_summaries(cx, &sums, s, true, data.right, data)?;
+        print_summaries(cx, &sums, s, true, false, data.right, data)?;
         return print_attributes(cx, s, data, false);
     }
     let ns = v.len().unwrap();
@@ -718,7 +718,7 @@ fn print_list(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
         }
         // (GNU R reads the dimnames of the list's end, R_NilValue, after
         // its loop: an array-like pairlist prints without labels)
-        print_summaries(cx, &sums, s, false, data.right, data)?;
+        print_summaries(cx, &sums, s, false, data.quote, data.right, data)?;
         // (and its attributes are not printed)
         return Ok(());
     }
@@ -905,14 +905,16 @@ fn mbcs_truncate(b: &mut Vec<u8>, n: usize) {
 }
 
 /// The summaries of an array-like list printed as a character matrix or
-/// array (`allocArray(STRSXP, dims)`), unquoted: a matrix with `x`'s
-/// dimnames' labels and `right`, an array left-justified.
+/// array (`allocArray(STRSXP, dims)`): a matrix with `x`'s dimnames'
+/// labels (if `with_dimnames`), `quote` and `right`; an array unquoted and
+/// left-justified.
 // R: print.c:PrintGenericVector, printList
 fn print_summaries(
     cx: &mut Cx,
     sums: &[Vec<u8>],
     x: Root<'_>,
     with_dimnames: bool,
+    quote: bool,
     right: bool,
     data: &PrintData,
 ) -> RResult<()> {
@@ -926,7 +928,7 @@ fn print_summaries(
         // as from 1.5.0: don't quote here as didn't in array case
         crate::printarray::matrix_labels(cx, dimnames).and_then(|labels| {
             let rc = (dims[0].max(0) as usize, dims[1].max(0) as usize);
-            crate::printarray::print_matrix_of(cx, &elts, rc, false, right, &labels, data, &mut out)
+            crate::printarray::print_matrix_of(cx, &elts, rc, quote, right, &labels, data, &mut out)
         })
     } else {
         crate::printarray::print_array_of(cx, &elts, STRSXP, &dims, false, false, dimnames, data, &mut out)

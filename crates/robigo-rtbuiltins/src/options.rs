@@ -8,9 +8,11 @@
 //! value `Renviron` substitutes) and from `R_HOME`: the oracle build's
 //! values, as `.Platform`'s are (robigo-rt has no installation of its own).
 //!
-//! Options robigo-rt does not honor yet (`width`, `digits`, ...:
-//! [`UNHONORED`]) cannot be set: GNU R's checks of the value run, then
-//! "not implemented yet".
+//! Options robigo-rt does not honor yet ([`UNHONORED`]: `verbose` and
+//! the partial-match warnings) cannot be set: GNU R's checks of the value
+//! run, then "not implemented yet". `width`, `digits`, `max.print` and
+//! `deparse.cutoff` are read where GNU R reads them (robigo-rt's
+//! `PrintInit`).
 //!
 //! GNU R changes `.Options` in place (`SETCAR`, `SETCDR`); here an
 //! assignment rebinds `.Options` to an updated copy of the list, which
@@ -346,8 +348,7 @@ const MANDATORY: &[&str] = &[
 /// Options GNU R reads (or mirrors in C state) where robigo-rt does not
 /// yet: setting one would be accepted without effect, so it is refused
 /// (after GNU R's own checks of the value).
-const UNHONORED: &[&str] =
-    &["width", "digits", "deparse.cutoff", "max.print", "verbose", "warnPartialMatchDollar", "warnPartialMatchAttr"];
+const UNHONORED: &[&str] = &["verbose", "warnPartialMatchDollar", "warnPartialMatchAttr"];
 
 /// `.Internal(options(...))`: the sorted list with no arguments; else, per
 /// argument, a query (an unnamed string) or an assignment (`name =
@@ -579,8 +580,9 @@ fn check_option<'s>(
         }
         b"digits" => {
             let k = as_int(cx)?;
-            if !(0..=22).contains(&k) {
-                return Err(cx.error(&format!("invalid '{nm}' parameter, allowed 0...22")));
+            // R_MIN_DIGITS_OPT ... R_MAX_DIGITS_OPT (Print.h)
+            if !(1..=22).contains(&k) {
+                return Err(cx.error(&format!("invalid '{nm}' parameter, allowed 1...22")));
             }
             int(cx, s, k)?
         }
@@ -705,8 +707,46 @@ fn check_option<'s>(
         b"par.ask.default" => {
             return Err(cx.error("\"par.ask.default\" has been replaced by \"device.ask.default\""));
         }
-        b"scipen"
-        | b"OutDec"
+        // FixupScipen(argi, iWARN)
+        b"scipen" => {
+            let a = argi.bind(cx);
+            if !crate::util::is_numeric(a) || a.len() != Some(1) {
+                return Err(cx.error("invalid 'scipen'"));
+            }
+            let d = match a.view() {
+                // (preventing a warning + an error)
+                View::Real(v) => {
+                    let x = v.get(0);
+                    if x.is_nan() {
+                        i32::MIN
+                    } else if x >= i32::MAX as f64 + 1.0 || x <= i32::MIN as f64 {
+                        let mut g = Vec::new();
+                        robigo_text::printf::Spec::parse(b"%g").unwrap().double(&mut g, x);
+                        let msg = format!("setting scipen={} is out of range", String::from_utf8_lossy(&g));
+                        return Err(cx.error(&msg));
+                    } else {
+                        x as i32
+                    }
+                }
+                _ => as_int(cx)?,
+            };
+            // R_MIN_SCIPEN_OPT ... R_MAX_SCIPEN_OPT (Print.h)
+            let k = if d == i32::MIN || !(-9..=9999).contains(&d) {
+                let dnew = if d == i32::MIN {
+                    0
+                } else if d < -9 {
+                    -9
+                } else {
+                    9999
+                };
+                cx.warning(&format!("invalid 'scipen' {d}, used {dnew}"))?;
+                dnew
+            } else {
+                d
+            };
+            int(cx, s, k)?
+        }
+        b"OutDec"
         | b"prompt"
         | b"continue"
         | b"editor"
