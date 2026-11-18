@@ -1,0 +1,15 @@
+[1] TRUE
+[1] FALSE
+[1] TRUE
+[1] TRUE
+[1] FALSE
+[1] "'length = 2' in coercion to 'logical(1)'"
+NULL
+[1] "NA in coercion to boolean"
+doTryCatch(return(expr), name, parentenv, handler)
+[1] "NA in coercion to boolean"
+doTryCatch(return(expr), name, parentenv, handler)
+[1] "NA in coercion to boolean"
+doTryCatch(return(expr), name, parentenv, handler)
+[1] "NA in coercion to boolean"
+doTryCatch(return(expr), name, parentenv, handler)
