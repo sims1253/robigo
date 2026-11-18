@@ -40,10 +40,10 @@ pub fn lower(cx: &Cx, e: &Expr<'_>) -> Result<Sexp, NeedGc> {
         Expr::Const(c, _) => constant(cx, c)?,
         Expr::Sym(name, _) => cx.install(name.as_bytes())?.as_ref().sexp(),
         Expr::Placeholder(_) => cx.install(b"_")?.as_ref().sexp(),
-        Expr::Call { fun, args, .. } => {
+        Expr::Call { fun, args, pipe, .. } => {
             // build the argument list from the end
             let mut list = nil;
-            for a in args.iter().rev() {
+            for (i, a) in args.iter().enumerate().rev() {
                 let v = match &a.value {
                     Some(v) => lower(cx, v)?,
                     None => cx.missing_arg().sexp(),
@@ -52,9 +52,13 @@ pub fn lower(cx: &Cx, e: &Expr<'_>) -> Result<Sexp, NeedGc> {
                     Some(n) => cx.install(n.as_bytes())?.as_ref().sexp(),
                     None => nil,
                 };
+                // the native pipe's first argument is held by a LANGSXP cell:
+                // gram.y's xxpipe makes `lcons(fun, lcons(lhs, args))`
+                // R: gram.y:xxpipe
+                let typ = if pipe && i == 0 { LANGSXP } else { LISTSXP };
                 // SAFETY: fresh objects and immortal symbols of this heap;
                 // nothing collects under `&Cx`.
-                list = unsafe { cx.alloc_node_raw(LISTSXP, v, list, tag)? };
+                list = unsafe { cx.alloc_node_raw(typ, v, list, tag)? };
             }
             let f = lower(cx, fun)?;
             // SAFETY: as above.
