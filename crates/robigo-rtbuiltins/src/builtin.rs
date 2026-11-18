@@ -18,6 +18,32 @@ pub fn as_vec_size(cx: &mut Cx, args: Args<'_>, i: usize) -> RResult<Result<Opti
     Ok(size)
 }
 
+/// `asVecSize(args[i])` as GNU R returns it, an `R_xlen_t`: a negative
+/// size kept (`readLines`' `n = -1`), -999 for an argument that is no
+/// vector size (the caller's "invalid argument"); `Err` is GNU R's error.
+// R: builtin.c:asVecSize
+pub fn as_vec_size_signed(cx: &mut Cx, args: Args<'_>, i: usize) -> RResult<Result<i64, &'static str>> {
+    let x = args.get(cx, i);
+    if !is_vector_atomic(x) || x.len().unwrap_or(0) < 1 {
+        return Ok(Ok(-999));
+    }
+    let (d, warn) = match x.view() {
+        View::Int(v) => {
+            let r = v.get(0);
+            return Ok(if r == i32::MIN { Err("vector size cannot be NA") } else { Ok(r as i64) });
+        }
+        View::Real(v) => (v.get(0), 0),
+        View::Str(_) => as_real(cx, x),
+        _ => return Ok(Ok(-999)),
+    };
+    coercion_warning(cx, warn)?;
+    Ok(match vec_size_of(d) {
+        Err(e) => Err(e),
+        // (R_xlen_t) d
+        Ok(_) => Ok(d as i64),
+    })
+}
+
 /// [`as_vec_size`]'s size, and `asReal`'s warning bits.
 fn vec_size(cx: &Cx, x: Ref<'_>) -> (Result<Option<usize>, &'static str>, u8) {
     if !is_vector_atomic(x) || x.len().unwrap_or(0) < 1 {

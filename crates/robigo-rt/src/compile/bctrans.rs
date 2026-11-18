@@ -19,10 +19,12 @@
 //! Where the shapes differ:
 //! - **`RETURN`** at the end of each branch of a tail `if` becomes a jump
 //!   to the code's one `Ret`, the shape the from-source compiler emits.
-//! - **A promise's code** (`MAKEPROM`'s BCODESXP) is translated and cached
-//!   on its argument's expression in the call, as the from-source compiler
-//!   caches its own: per expression, not per promise (V4 makes it per
-//!   promise).
+//! - **A promise's code** (`MAKEPROM`'s BCODESXP) is the promise's, as
+//!   GNU R's PRCODE: the call carries its arguments' codes (`Call`'s `f`),
+//!   each translated and kept on itself; what reads the promise's
+//!   expression reads the code's first constant (`bytecodeExpr`). The
+//!   from-source compiler's promises hold their expressions, its code
+//!   cached on them.
 //! - An opcode not translated yet raises "robigo: ... is not implemented
 //!   yet" when it runs (AGENTS rule 6).
 
@@ -1061,20 +1063,34 @@ impl<'g> Comp<'g> {
                 return Err(Need::Fail);
             }
             let mut cell = first.cdr();
+            // (the promises' codes by argument: the step's, as `Call`'s)
+            let nil = self.nil();
+            let mut codes = Vec::new();
             for arg in &s.args {
                 if cell.typ() != LISTSXP {
                     return Err(Need::Fail);
                 }
                 let e = cell.car();
+                codes.push(nil);
                 match *arg {
                     StepArg::Code(from, to) if e.typ() == LANGSXP => self.slice_code(t, from, to, e)?,
-                    StepArg::Prom(code) if code.typ() == BCODESXP && e.typ() == LANGSXP => {
-                        self.promise_code(code, e)?
+                    StepArg::Prom(code) if code.typ() == BCODESXP => {
+                        self.promise_code(code)?;
+                        *codes.last_mut().unwrap() = code;
                     }
                     _ => {}
                 }
                 cell = cell.cdr();
             }
+            let codes = if codes.iter().any(|&c| c != nil) {
+                let v = cx.alloc_vector_raw(VECSXP, codes.len())?;
+                for (j, &c) in codes.iter().enumerate() {
+                    v.set_elt(j, c);
+                }
+                Some(v)
+            } else {
+                None
+            };
             if let Some((from, to)) = s.fun_code
                 && s.what.typ() == LANGSXP
             {
@@ -1086,7 +1102,7 @@ impl<'g> Comp<'g> {
             };
             let fin = setter && s.call.car().typ() == SYMSXP;
             let report = if fin { ba::inflate_assignment_call(cx, cexpr)? } else { cexpr };
-            ba::make_step(cx, s.kind, s.call, s.what, s.vexpr, report, fin)
+            ba::make_step(cx, s.kind, s.call, s.what, s.vexpr, report, fin, codes)
         }
     }
 
@@ -1959,11 +1975,11 @@ impl<'g> Comp<'g> {
             }
             DOTSERR => {
                 // `...` evaluated as a value (cmpSym): bcEval's error(),
-                // reported against the context's call; the value it never
+                // reported against the context's call (so no call of its
+                // own: R_NilValue fills the operand); the value it never
                 // pushes keeps the stack's shape for what follows
-                // SAFETY: the code's live constants.
-                let e = unsafe { t.expr_at(self.cx, i.at) }.unwrap_or_else(|| self.nil());
-                self.error_op(e, "'...' used in an incorrect context", false)?;
+                let nil = self.nil();
+                self.error_op(nil, "'...' used in an incorrect context", false)?;
                 self.push(t);
             }
             RETURNJMP => {
@@ -2138,9 +2154,11 @@ impl<'g> Comp<'g> {
         self.emit(df);
     }
 
-    /// `CALL` of `GETFUN`'s function: the generic call of `call`, its
-    /// promises' code the byte code's ([`Comp::generic_call`]'s shape).
-    /// Pass 1 (`planning`) caches no code.
+    /// `CALL` of `GETFUN`'s function: the generic call of `call`
+    /// ([`Comp::generic_call`]'s shape), with its arguments' promise codes
+    /// (`MAKEPROM`'s BCODESXPs, by argument: [`Op::CallCodes`]'s `f`),
+    /// each translated and kept on itself. Pass 1 (`planning`) translates
+    /// none.
     ///
     /// # Safety
     /// `call` is a live call constant of the byte code.
@@ -2151,33 +2169,46 @@ impl<'g> Comp<'g> {
             self.bc_untranslated = Some("byte code pushing a value into a call's frame (PUSHARG)".to_owned());
             return Err(Need::Fail);
         }
+        let mut codes_k = 0;
         // SAFETY: the caller's contract.
         unsafe {
             // GetFun reports against the call (findFun3's)
             if let Some(get) = get {
                 self.ins[get].c = self.k(call);
             }
-            // each MAKEPROM's code, on its argument's expression (the
-            // pushes are the call's arguments, in order)
+            // each MAKEPROM's code, by argument (the pushes are the call's
+            // arguments, in order): the promise holds it, as GNU R's PRCODE
             let mut cell = call.cdr();
             let nil = self.nil();
+            let mut codes = Vec::new();
             for a in &f.args {
                 if cell == nil {
                     return Err(Need::Fail);
                 }
-                if let PKind::Prom(code) = a.kind {
-                    let arg = cell.car();
-                    if code.typ() == BCODESXP && arg.typ() == LANGSXP && !planning {
-                        self.promise_code(code, arg)?;
+                codes.push(match a.kind {
+                    PKind::Prom(code) if code.typ() == BCODESXP => {
+                        if !planning {
+                            self.promise_code(code)?;
+                        }
+                        code
                     }
-                }
+                    _ => nil,
+                });
                 cell = cell.cdr();
             }
+            if codes.iter().any(|&c| c != nil) {
+                let v = self.cx.alloc_vector_raw(VECSXP, codes.len())?;
+                for (j, &c) in codes.iter().enumerate() {
+                    v.set_elt(j, c);
+                }
+                codes_k = self.k(v);
+            }
         }
-        let mut i = Ins::new(Op::Call);
+        let mut i = Ins::new(if codes_k != 0 { Op::CallCodes } else { Op::Call });
         i.a = f.dst;
         i.b = f.base;
         i.e = self.k(call);
+        i.f = codes_k;
         i.c = if self.sites < NO_SITE {
             self.sites += 1;
             self.sites - 1
@@ -2192,12 +2223,14 @@ impl<'g> Comp<'g> {
     }
 
     /// The code of a promise the byte code makes (`MAKEPROM`'s BCODESXP),
-    /// translated and kept on its expression in the call, beside any AST
-    /// code ([`crate::code::cache_on`]).
+    /// translated with the code it runs in (its compile environment, its
+    /// frame's slot indices: `Comp::arg_codes`) and kept on the BCODESXP
+    /// itself ([`crate::code::cache_on`]), which the promise holds:
+    /// forcing it runs that ([`crate::compile::bytecode_code`]).
     ///
     /// # Safety
-    /// `code` is a live BCODESXP, `arg` a live call.
-    unsafe fn promise_code(&mut self, code: Sexp, arg: Sexp) -> Result<(), Need> {
+    /// `code` is a live BCODESXP.
+    unsafe fn promise_code(&mut self, code: Sexp) -> Result<(), Need> {
         let cenv = self.bc.take().expect("robigo: byte code outside the Bc profile");
         let mut sub = Comp::new(self.cx, self.st, Profile::Bc, Some(cenv));
         let r = sub.alloc();
@@ -2214,10 +2247,11 @@ impl<'g> Comp<'g> {
             self.bc_untranslated = sub.bc_untranslated.take();
         }
         let b = res?;
-        // SAFETY: as above.
+        // SAFETY: as above; the source, the code's first constant, is live.
         unsafe {
-            let built = crate::code::build(self.cx, &super::verified(b), arg, None)?;
-            crate::code::cache_on(arg, built);
+            let source = robigo_rtcore::bytecode_expr(code, self.nil());
+            let built = crate::code::build(self.cx, &super::verified(b), source, None)?;
+            crate::code::cache_on(code, built);
             self.arg_codes.push(built);
             self.arg_codes.append(&mut sub.arg_codes);
         }

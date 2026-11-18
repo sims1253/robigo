@@ -52,7 +52,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from perf import env_pair  # noqa: E402
+from perf import env_pair, rows_with_setups  # noqa: E402
 import tempfile
 import tomllib
 
@@ -225,7 +225,7 @@ def cmd_idioms(a, m):
 
 def load_rows(path, rx=None):
     with open(path, "rb") as f:
-        rows = tomllib.load(f)["row"]
+        rows = rows_with_setups(tomllib.load(f))
     return [r for r in rows if not rx or re.search(rx, r["name"])]
 
 

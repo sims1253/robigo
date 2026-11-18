@@ -151,6 +151,7 @@ static RT_PRIMS: &[PrimDef] = &[
     special_fn("on.exit", crate::specials::do_onexit, 100, -1),
     special_fn("substitute", crate::specials::do_substitute, 0, -1),
     // eval.c
+    special_fn("withVisible", crate::eval::do_with_visible, 10, 1),
     special_fn("forceAndCall", crate::apply::do_force_and_call, 0, -1),
     // arithmetic.c
     special_fn("log", crate::specials::do_log, 0, -1),
@@ -245,6 +246,12 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("parse", crate::source::do_parse, Inline::None, 11, 6),
     builtin("stdin", crate::builtin::do_stdin, Inline::None, 11, 0),
     builtin("writeLines", crate::connections::do_writelines, Inline::None, 111, 4),
+    builtin("readLines", crate::connections::readers::do_readlines, Inline::None, 11, 6),
+    builtin("isOpen", crate::connections::readers::do_isopen, Inline::None, 11, 2),
+    builtin("isIncomplete", crate::connections::readers::do_isincomplete, Inline::None, 11, 1),
+    builtin("pushBack", crate::connections::readers::do_pushback, Inline::None, 111, 4),
+    builtin("pushBackLength", crate::connections::readers::do_pushbacklength, Inline::None, 11, 1),
+    builtin("clearPushBack", crate::connections::readers::do_clearpushback, Inline::None, 111, 1),
     // envir.c's search path (L2)
     builtin("attach", crate::search::do_attach, Inline::None, 111, 3),
     builtin("detach", crate::search::do_detach, Inline::None, 111, 1),

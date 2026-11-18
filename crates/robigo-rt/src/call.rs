@@ -110,6 +110,50 @@ pub unsafe fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: 
     }
 }
 
+/// [`call`] by compiled code of a translated call whose promises hold
+/// their own code (`MAKEPROM`'s BCODESXPs, `codes`, by argument:
+/// [`args::arg_code`]): a closure's promises are made of them (not run
+/// inline yet), a builtin's arguments are their values (`MAKEPROM`'s
+/// `bcEval(code, rho)`), a special gets the call as it is. Its own
+/// functions all through, so that [`call`] and what the VM's `Call`
+/// inlines of it stay as they are. `codes_k`: the codes' pool index in
+/// `act`'s code (read from it where used: a collection may move them).
+///
+/// # Safety
+/// As for [`call`]; `codes_k` is a pool index of `act`'s code.
+// R: eval.c:bcEval CALL, MAKEPROM
+#[inline(never)]
+pub unsafe fn call_codes(
+    cx: &mut Cx,
+    act: &Act,
+    dst: Reg,
+    rf: Reg,
+    call: Sexp,
+    codes_k: u16,
+    site: u16,
+) -> RResult<()> {
+    let fun = act.obj(rf);
+    // SAFETY: a register's object is live; the caller's contract.
+    unsafe {
+        match fun.typ() {
+            CLOSXP => args::call_closure_codes(cx, act, dst, rf, call, codes_k, site),
+            BUILTINSXP => {
+                // (rooted at once by the callee: nothing collects before)
+                let codes = crate::code::View::of(act.obj(crate::ir::R_CODE)).k(codes_k);
+                call_builtin_list_codes(cx, act, dst, fun, call, codes)
+            }
+            SPECIALSXP => call_special(cx, act, dst, fun, call),
+            // R: eval.c:bcEval CHECKFUN (as in `call`)
+            _ => {
+                cx.set_bc_expression(call);
+                let e = cx.error("attempt to apply non-function");
+                cx.set_bc_expression(cx.nil().sexp());
+                Err(e)
+            }
+        }
+    }
+}
+
 /// GNU R's `applyClosure(call, op, arglist, rho, suppliedvars, TRUE)` for a
 /// promise list `arglist` (made by C, by `R_forceAndCall`, by the `apply`
 /// hook): matched and bound by `args::bind`, the body run in a function
@@ -509,7 +553,23 @@ pub unsafe fn call_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, cal
     cx.scope(|cx, s| {
         // SAFETY: constants of the rooted code (or a register's function).
         let (callr, funr) = unsafe { (s.root(cx, Ref::from_sexp(call, cx)), s.root(cx, Ref::from_sexp(fun, cx))) };
-        builtin_evallist(cx, callr, funr, act.root(R_ENV), act.out(dst), bc)
+        builtin_evallist(cx, callr, funr, act.root(R_ENV), act.out(dst), bc, None)
+    })
+}
+
+/// [`call_builtin_list`] by compiled code of a translated call whose
+/// arguments' code is `codes` ([`args::arg_code`]).
+///
+/// # Safety
+/// As for [`call_builtin_list`]; `codes` is a constant of `act`'s code.
+#[inline(never)]
+unsafe fn call_builtin_list_codes(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp, codes: Sexp) -> RResult<()> {
+    cx.scope(|cx, s| {
+        // SAFETY: constants of the rooted code (or a register's function).
+        let (callr, funr) = unsafe { (s.root(cx, Ref::from_sexp(call, cx)), s.root(cx, Ref::from_sexp(fun, cx))) };
+        // SAFETY: as above.
+        let codes = s.root(cx, unsafe { Ref::from_sexp(codes, cx) });
+        builtin_evallist(cx, callr, funr, act.root(R_ENV), act.out(dst), true, Some(codes))
     })
 }
 
@@ -522,9 +582,10 @@ pub unsafe fn call_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, cal
 ///
 /// With `bc`, as compiled code's generic call of a builtin evaluates them
 /// (bcEval's `MAKEPROM`, `DOMISSING`, `DODOTS`, then `checkForMissings`):
-/// an argument call by its compiled code (`bcEval(code, rho)`), an empty
-/// argument R_MissingArg, reported ("argument %d is empty") only once all
-/// are evaluated.
+/// an argument call by its compiled code (`bcEval(code, rho)`: a
+/// translated call's own promise code from `codes`), an empty argument
+/// R_MissingArg, reported ("argument %d is empty") only once all are
+/// evaluated.
 // R: eval.c:evalList, eval.c:eval (BUILTINSXP), eval.c:bcEval MAKEPROM, checkForMissings, signalMissingArgError
 pub fn builtin_evallist(
     cx: &mut Cx,
@@ -533,6 +594,7 @@ pub fn builtin_evallist(
     rho: Root<'_>,
     out: Out<'_>,
     bc: bool,
+    codes: Option<Root<'_>>,
 ) -> RResult<()> {
     let missing = cx.missing_arg().sexp();
     let dots = prims::state(cx).syms.dots;
@@ -601,9 +663,17 @@ pub fn builtin_evallist(
                     let ar = s2.root(cx, unsafe { Ref::from_sexp(a, cx) });
                     let o = s2.out(cx);
                     let or = o.root();
+                    // SAFETY: the rooted codes (R_NilValue or a VECSXP).
+                    let code = codes.map_or(Sexp::NULL, |c| unsafe { args::arg_code(c.bind(cx).sexp(), n - 1) });
                     if a == missing {
                         // DOMISSING
                         o.set(cx, cx.missing_arg());
+                    } else if bc && !code.is_null() {
+                        // MAKEPROM's bcEval(code, rho): the argument's own
+                        // promise code
+                        // SAFETY: a constant of the rooted caller's code.
+                        let c = s2.root(cx, unsafe { Ref::from_sexp(code, cx) });
+                        crate::eval::eval_bytecode_inline(cx, c, rho, o)?;
                     } else if bc && ar.bind(cx).sexptype() == LANGSXP {
                         crate::eval::eval_bytecode_inline(cx, ar, rho, o)?;
                     } else if bc {
