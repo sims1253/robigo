@@ -1,4 +1,4 @@
-# builtin-diff known failures: getDotType, seed 0, key cb7b9f34a3580b19d08756a9
+# builtin-diff known failures: getDotType, seed 0, key fcc8874a2aa5544d285a0776
 # getDotType: 0 / 509 (not-implemented 509, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 1
 2

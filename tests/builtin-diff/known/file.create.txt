@@ -1,4 +1,4 @@
-# builtin-diff known failures: file.create, seed 0, key 7bf608f3466f90272f900cab
+# builtin-diff known failures: file.create, seed 0, key 90edb5848efc0cf85bdeee34
 # file.create: 0 / 178 (not-implemented 178, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 1
 2

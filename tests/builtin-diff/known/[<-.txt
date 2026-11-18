@@ -1,4 +1,4 @@
-# builtin-diff known failures: [<-, seed 0, key eea08a1011d71771f8c6b8f1
+# builtin-diff known failures: [<-, seed 0, key 2f32421c736c060a4df64dc8
 # [<-: 2036 / 2174 (not-implemented 3, crash 0, timeout 0, resource 26 excluded, oracle-crash 0 excluded)
 1
 60

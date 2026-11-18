@@ -1,4 +1,4 @@
-# builtin-diff known failures: dotsLength, seed 0, key c9b21251583cc5f89c8fc9dd
+# builtin-diff known failures: dotsLength, seed 0, key a5cf79d3f76655d48a0d682f
 # dotsLength: 0 / 507 (not-implemented 507, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 1
 2

@@ -1,2 +1,2 @@
-# builtin-diff known failures: xtfrm, seed 0, key 4ddfe0a6604a03b29cbba1e3
+# builtin-diff known failures: xtfrm, seed 0, key 6407078a5faf94f86a1ecbda
 # xtfrm: 65 / 65 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)

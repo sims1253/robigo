@@ -1,4 +1,4 @@
-# builtin-diff known failures: file.info, seed 0, key 136d41b978f87efa0ed197f3
+# builtin-diff known failures: file.info, seed 0, key ba0bd45d246add7575fda020
 # file.info: 0 / 158 (not-implemented 158, crash 0, timeout 0, resource 0 excluded, oracle-crash 10 excluded)
 3
 4

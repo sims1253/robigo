@@ -1,5 +1,5 @@
-# builtin-diff known failures: Sys.unsetenv, seed 0, key f1501adfb9bfcdee3f5371cb
-# Sys.unsetenv: 0 / 32 (not-implemented 32, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
+# builtin-diff known failures: Sys.unsetenv, seed 0, key 4082d71866e3bea465256e5d
+# Sys.unsetenv: 0 / 35 (not-implemented 35, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 1
 2
 3
@@ -32,3 +32,6 @@
 30
 31
 32
+33
+34
+35
