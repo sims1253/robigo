@@ -871,7 +871,7 @@ fn do_get_symbol_info(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_
         let pkg = String::from_utf8_lossy(&pkg).into_owned();
         find_symbol_in(&dlls(cx).list.borrow(), &name, &pkg, &mut symbol)
     } else if let View::ExtPtr(e) = spackage.view()
-        && e.tag().as_sym().is_some_and(|t| t.name().bytes() == b"DLLInfo")
+        && e.tag().as_sym().is_some_and(|t| t.name_bytes() == b"DLLInfo")
     {
         let addr = e.addr();
         let info = dll_reference(cx, addr)?;
