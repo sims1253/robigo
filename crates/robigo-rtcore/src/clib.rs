@@ -127,17 +127,31 @@ pub fn mb_cur_max(utf8: bool) -> Option<usize> {
         return None;
     }
     let loc = if utf8 { c_utf8()? } else { c_locale()? };
-    // SAFETY: `loc` is a live locale object; uselocale makes it this
-    // thread's and returns the one it replaces (null: nothing changed),
-    // which the second call puts back before anything else here reads it.
-    unsafe {
-        let old = libc::uselocale(loc);
-        if old.is_null() {
-            return None;
-        }
-        let n = __ctype_get_mb_cur_max();
-        libc::uselocale(old);
-        Some(n)
+    let _this = ThreadLocale::switch(loc)?;
+    // SAFETY: no arguments; it reads the calling thread's locale, `loc`
+    // until `_this` drops.
+    Some(unsafe { __ctype_get_mb_cur_max() })
+}
+
+/// The calling thread's locale switched to a locale object (`uselocale`)
+/// until the guard drops, which puts back the one it replaced.
+struct ThreadLocale(libc::locale_t);
+
+impl ThreadLocale {
+    /// `None` when the C library refuses the switch (nothing changed).
+    fn switch(loc: libc::locale_t) -> Option<ThreadLocale> {
+        // SAFETY: `loc` is a live locale object (made once, never freed);
+        // uselocale returns the thread's locale it replaces, null on error.
+        let old = unsafe { libc::uselocale(loc) };
+        (!old.is_null()).then_some(ThreadLocale(old))
+    }
+}
+
+impl Drop for ThreadLocale {
+    fn drop(&mut self) {
+        // SAFETY: the locale uselocale returned, live while it is any
+        // thread's (LC_GLOBAL_LOCALE or one of this module's).
+        unsafe { libc::uselocale(self.0) };
     }
 }
 
