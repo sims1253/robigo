@@ -43,6 +43,7 @@ pub mod args;
 mod assign;
 pub mod base;
 mod bcassign;
+mod bind;
 pub mod builtin;
 mod call;
 pub mod cenv;

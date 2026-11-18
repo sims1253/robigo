@@ -1,7 +1,11 @@
 //! bind.c's `c()` and `.Internal(unlist(x, recursive, use.names))`: the
 //! answer type (`AnswerType`), the fill (`ListAnswer`, `StringAnswer`, ...)
 //! and the names (`NewExtractNames`, `NewName`, `NewBase`), as GNU R
-//! computes them. `cbind`/`rbind` are not ported.
+//! computes them; `cbind`/`rbind`'s default ([`matrix`]), after robigo-rt's
+//! `do_bind` has dispatched.
+
+pub mod matrix;
+pub use matrix::{BindArg, bind_default};
 
 use crate::attrib::{self, Attr, Attrs};
 use crate::coerce::{dispatch_or_eval, vector::string_elt};
