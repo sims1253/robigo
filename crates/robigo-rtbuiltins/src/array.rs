@@ -182,9 +182,9 @@ const LENGTHS: Generic = Generic::builtin("lengths");
 /// `.Internal(lengths(x, use.names))`: each element's length, or 1 for
 /// every element of an atomic vector, with `x`'s dim and, for `use.names`,
 /// its names and dimnames; a double vector when a length passes
-/// `INT_MAX` (`do_lengths_long`). GNU R reads a classed `x` and classed
-/// elements through `[[` and `length` methods (`dispatch_subset2`,
-/// `dispatch_xlength`): not implemented yet.
+/// `INT_MAX` (`do_lengths_long`). A classed `x` and classed elements are
+/// read through their `[[` and `length` methods (`dispatch_subset2`,
+/// `dispatch_xlength`).
 // R: array.c:do_lengths, getElementLength, do_lengths_long
 pub fn do_lengths(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::row!("lengths").check_arity(cx, call, args)?;
@@ -200,31 +200,40 @@ pub fn do_lengths(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
     if !is_list && !matches!(x.sexptype(), NILSXP | CHARSXP | LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | RAWSXP) {
         return Err(cx.error("'x' must be a list or atomic vector"));
     }
-    if x.is_object() {
-        return Err(crate::util::not_yet(
-            cx,
-            Some(call),
-            "lengths() of an object (dispatch_subset2, dispatch_xlength)",
-        ));
-    }
-    let n = crate::coerce::xlength(x);
-    let mut lens = Vec::with_capacity(n);
-    if is_list {
-        let elts = x.as_vector::<Ref<'_>>().expect("robigo: a list");
-        for i in 0..n {
-            let e = elts.get(i);
-            if e.is_object() {
-                return Err(crate::util::not_yet(cx, Some(call), "lengths() of a classed element (dispatch_xlength)"));
-            }
-            match crate::builtin::length(cx, e) {
-                Some(l) => lens.push(l),
-                None => return Err(crate::util::not_yet(cx, Some(call), "lengths() of this environment")),
-            }
+    let x = args.root(0);
+    // the lengths (as int, then from scratch as double once one passes
+    // INT_MAX: do_lengths_long calls the methods again)
+    let mut long = false;
+    let lens = loop {
+        let n = dispatch_xlength(cx, x, call, env)?;
+        if n < 0 {
+            return Err(cx.error("negative length vectors are not allowed"));
         }
-    } else {
-        lens.resize(n, 1);
-    }
-    let long = lens.iter().any(|&l| l > i32::MAX as usize);
+        let n = n as usize;
+        let mut lens: Vec<i64> = Vec::with_capacity(n);
+        let mut restart = false;
+        if is_list {
+            for i in 0..n {
+                let l = cx.scope(|cx, s| {
+                    let e = dispatch_subset2(cx, s, x, i, call, env)?;
+                    dispatch_xlength(cx, e, call, env)
+                })?;
+                if !long && l > i32::MAX as i64 {
+                    restart = true;
+                    break;
+                }
+                lens.push(l);
+            }
+        } else {
+            lens.resize(n, 1);
+        }
+        if restart {
+            long = true;
+            continue;
+        }
+        break lens;
+    };
+    let n = lens.len();
     let use_names = use_names != 0;
     // the result as allocVector makes one, of any length: through
     // `alloc_rooted`, which collects first if due (docs/g3.md §3 item 3), and
@@ -240,6 +249,7 @@ pub fn do_lengths(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
     } else {
         let mut r = cx.alloc_rooted::<i32>(n)?;
         for (d, &l) in r.as_mut_slice().iter_mut().zip(&lens) {
+            // (int)x_elt_len, NA_INTEGER for a method's NA
             *d = l as i32;
         }
         let c = r.cx();
@@ -264,6 +274,69 @@ pub fn do_lengths(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
         }
         Ok(())
     })
+}
+
+/// `dispatch_xlength(x, call, rho)`: an object's length through its
+/// `length` method (`DispatchOrEval` on `length`; a double result
+/// truncated, anything else `asInteger`'d with its warnings), else
+/// `xlength(x)`.
+// R: array.c:dispatch_xlength
+pub fn dispatch_xlength(cx: &mut Cx, x: Root<'_>, call: Root<'_>, rho: Root<'_>) -> RResult<i64> {
+    if x.bind(cx).is_object() {
+        static LENGTH: Generic = Generic::builtin("length");
+        let r = cx.scope(|cx, s| {
+            let a = s.args(cx, &[x.bind(cx)], None);
+            let o = s.out(cx);
+            let res = o.root();
+            match cx.try_dispatch(&LENGTH, call, a, rho, o)? {
+                Dispatched::Done => {
+                    let v = res.bind(cx);
+                    Ok(Some(if v.sexptype() == REALSXP {
+                        // (R_xlen_t) REAL(len)[0]
+                        v.as_vector::<f64>().unwrap().get(0) as i64
+                    } else {
+                        as_integer_warn(cx, res)? as i64
+                    }))
+                }
+                Dispatched::Default(_) => Ok(None),
+            }
+        })?;
+        if let Some(n) = r {
+            return Ok(n);
+        }
+    }
+    match crate::builtin::length(cx, x.bind(cx)) {
+        Some(n) => Ok(n as i64),
+        None => Err(not_yet(cx, Some(call), "lengths() of this environment")),
+    }
+}
+
+/// `dispatch_subset2(x, i, call, rho)`: element `i` of `x`, through `[[`
+/// (its method, else the default) for an object, called as
+/// `x[[i + 1]]` with a double index.
+// R: subset.c:dispatch_subset2
+fn dispatch_subset2<'s>(
+    cx: &mut Cx,
+    s: robigo_rtcore::Scope<'s>,
+    x: Root<'_>,
+    i: usize,
+    call: Root<'_>,
+    rho: Root<'_>,
+) -> RResult<Root<'s>> {
+    if x.bind(cx).is_object() {
+        static SUBSET2: Generic = Generic::builtin("[[");
+        let idx = s.capture(cx, |cx, o| cx.build_scalar(o, (i + 1) as f64))?;
+        let a = s.args(cx, &[x.bind(cx), idx.bind(cx)], None);
+        let o = s.out(cx);
+        let r = o.root();
+        if let Dispatched::Default(o) = cx.try_dispatch(&SUBSET2, call, a, rho, o)? {
+            crate::subset::do_subset2_dflt(cx, call, a, rho, o)?;
+        }
+        Ok(r)
+    } else {
+        let v = x.bind(cx).as_vector::<Ref<'_>>().expect("robigo: a list").get(i);
+        Ok(s.root(cx, v))
+    }
 }
 
 /// `.Internal(colSums(x, n, p, na.rm))` (`CODE` 0), `colMeans` (1),
