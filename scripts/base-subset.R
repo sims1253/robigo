@@ -2,6 +2,8 @@
 # from the repository root:
 #
 #   Rscript --vanilla scripts/base-subset.R WORK OUT BOUND
+#   Rscript --vanilla scripts/base-subset.R --inputs   # the input scripts in
+#                                                      # the checkout, one a line
 #
 # WORK holds the pinned sources' src/library/base/R (as base-R/) and gets
 # the build and run files; OUT is the subset file written, BOUND the bound
@@ -11,10 +13,17 @@
 # measures and the run fails. The capi cases' C is compiled here with
 # GNU R 4.6.2's R CMD SHLIB.
 args <- commandArgs(trailingOnly = TRUE)
-if (length(args) != 3L) stop("usage: Rscript --vanilla scripts/base-subset.R WORK OUT BOUND")
-work <- normalizePath(args[[1L]], mustWork = TRUE)
-out <- args[[2L]]
-bound_out <- args[[3L]]
+# (--inputs: scripts/regen-expected.sh asks which of the scripts it recorded
+# are inputs here, so that it can say the subset needs regenerating)
+inputs_only <- identical(args, "--inputs")
+if (!inputs_only && length(args) != 3L) {
+  stop("usage: Rscript --vanilla scripts/base-subset.R WORK OUT BOUND | --inputs")
+}
+if (!inputs_only) {
+  work <- normalizePath(args[[1L]], mustWork = TRUE)
+  out <- args[[2L]]
+  bound_out <- args[[3L]]
+}
 root <- normalizePath(".")
 if (getRversion() != "4.6.2") stop("base-subset.R needs GNU R 4.6.2, not ", getRversion())
 Sys.setenv(LANGUAGE = "en", LC_ALL = "C.UTF-8", TZ = "UTC", R_DEFAULT_PACKAGES = "NULL")
@@ -40,11 +49,13 @@ inputs <- list(
 # The compiler package's R code (C1-BC): robigo-rt evaluates the pinned
 # tarball's cmp.R into the compiler namespace it makes (src/rt ns.rs,
 # INTERIM(L2)), so what cmp.R names is bound too; base-subset.sh copies it.
-inputs <- c(inputs, list(list(id = "compiler", file = substring(file.path(work, "compiler-R", "cmp.R"), nchar(root) + 2L))))
-# The decision bars' D2S and E7 rows, written as scripts by base-subset.sh.
-for (f in sort(Sys.glob(file.path(work, "rows", "*.R")), method = "radix")) {
-  inputs <- c(inputs, list(list(id = paste0("row:", sub("[.]R$", "", basename(f))),
-                                file = substring(f, nchar(root) + 2L))))
+if (!inputs_only) {
+  inputs <- c(inputs, list(list(id = "compiler", file = substring(file.path(work, "compiler-R", "cmp.R"), nchar(root) + 2L))))
+  # The decision bars' D2S and E7 rows, written as scripts by base-subset.sh.
+  for (f in sort(Sys.glob(file.path(work, "rows", "*.R")), method = "radix")) {
+    inputs <- c(inputs, list(list(id = paste0("row:", sub("[.]R$", "", basename(f))),
+                                  file = substring(f, nchar(root) + 2L))))
+  }
 }
 # The conformance cases of the condition system and S3 dispatch (S1), of
 # sorting (sort.R, rank.R and what they call), of environments (N1:
@@ -58,9 +69,15 @@ for (f in sort(Sys.glob(file.path(work, "rows", "*.R")), method = "radix")) {
 for (area in c("bytecode", "conditions", "env", "ns", "parse", "regex", "s3", "serialize", "sort")) {
   for (f in sort(Sys.glob(file.path(root, "tests", "rt", area, "*.R")), method = "radix")) {
     name <- sub("[.]R$", "", basename(f))
-    st <- as.integer(readLines(file.path(root, "tests", "rt", "R-4.6.2", area, paste0(name, ".Rstatus"))))
+    st <- if (inputs_only) NA_integer_ else
+      as.integer(readLines(file.path(root, "tests", "rt", "R-4.6.2", area, paste0(name, ".Rstatus"))))
     inputs <- c(inputs, list(list(id = paste0(area, ":", name), file = substring(f, nchar(root) + 2L), status = st)))
   }
+}
+
+if (inputs_only) {
+  writeLines(vapply(inputs, function(i) i$file, ""))
+  quit(save = "no")
 }
 
 run_dir <- file.path(work, "run")
@@ -109,6 +126,28 @@ mask <- function(x) {
 }
 
 trace_r <- file.path(root, "scripts", "base-subset-trace.R")
+
+# The failure when tracing changes what an input prints. Not a stale list
+# (regenerating cannot fix it): the case prints something the tracer
+# changes. Shows the first line that differs, not the whole transcripts.
+traced_differs <- function(file, part, a, b, saved) {
+  la <- strsplit(a, "\n", fixed = TRUE)[[1L]]
+  lb <- strsplit(b, "\n", fixed = TRUE)[[1L]]
+  n <- max(length(la), length(lb))
+  i <- which(vapply(seq_len(n), function(k) !identical(la[k], lb[k]), NA))[1L]
+  show <- function(x) if (is.na(x)) "(no line)" else x
+  paste0(
+    sprintf("base-subset: %s prints differently when traced: its %s differs at line %d.\n", file,
+            c(out = "stdout", err = "stderr", status = "exit status")[[part]], i),
+    sprintf("  untraced: %s\n  traced:   %s\n", show(la[i]), show(lb[i])),
+    "This is not a stale list, and regenerating cannot fix it: the case prints something that\n",
+    "scripts/base-subset-trace.R changes: it gives every closure of base (and of the script) a body\n",
+    "that records what runs, so a deparsed function or body, a binding's type, sys.function(), or\n",
+    "the protect stack's depth differ.\n",
+    "Make the case print what does not depend on that, or leave the case out of the inputs in\n",
+    "scripts/base-subset.R and say why there.\n",
+    sprintf("Both transcripts: %s", saved))
+}
 
 # The tracer's own check, first: a branch not taken and a closure not
 # called must not count; what runs must, including a closure bound at top
@@ -177,13 +216,20 @@ for (inp in inputs) {
     a <- mask(plain[[part]])
     b <- mask(traced[[part]])
     if (!identical(a, b)) {
-      writeLines(c(a, "--- traced", b), file.path(dir, paste0("mismatch-", part, ".txt")))
-      stop(sprintf("%s: the traced run's %s differs from the untraced one's:\n--- untraced\n%s\n--- traced\n%s",
-                   inp$file, part, a, b))
+      saved <- file.path(dir, paste0("mismatch-", part, ".txt"))
+      writeLines(c(a, "--- traced", b), saved)
+      stop(traced_differs(if (is.null(inp$file)) "the self-test" else inp$file, part, a, b, saved), call. = FALSE)
     }
   }
   want <- if (is.null(inp$status)) 0L else inp$status
-  if (plain$status != want) stop(inp$file, " failed under GNU R 4.6.2:\n", rawToChar(plain$err))
+  if (plain$status != want) {
+    rec <- if (startsWith(inp$file, "tests/rt/")) {
+      sprintf(" Its recording (tests/rt/R-4.6.2/%s.Rstatus) says %d: if the case changed, re-record it with\n  scripts/oracle-run.sh 4.6.2 scripts/regen-expected.sh %s\nand then run scripts/base-subset.sh.",
+              sub("^tests/rt/(.*)[.]R$", "\\1", inp$file), want, inp$file)
+    } else ""
+    stop(sprintf("base-subset: %s exits with status %d under GNU R 4.6.2, not %d.%s\nIts stderr:\n%s",
+                 inp$file, plain$status, want, rec, rawToChar(plain$err)), call. = FALSE)
+  }
   keys <- readLines(keys_file)
   if (is.null(inp$file)) {
     missed <- setdiff(selftest$want, keys)

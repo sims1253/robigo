@@ -110,3 +110,19 @@ for f in "${files[@]}"; do
   fi
 done
 echo "recorded ${#files[@]} test(s) with $(R --version | head -1)"
+# A recorded case that robigo-rt's base subset reads (its tests/rt areas and
+# capi cases) can change what that subset reaches: say so here, before CI's
+# base-subset --check does. (Not regenerated here: that takes minutes.)
+if [ "$want" = "$rt" ] && [ ${#files[@]} -gt 0 ]; then
+  if inputs=$(Rscript --vanilla scripts/base-subset.R --inputs 2> /dev/null); then
+    hit=()
+    for f in "${files[@]}"; do
+      grep -qxF -- "$f" <<< "$inputs" && hit+=("$f")
+    done
+    if [ ${#hit[@]} -gt 0 ]; then
+      echo "note: robigo-rt's base subset reads ${#hit[@]} of these cases: ${hit[*]}." >&2
+      echo "      If they reach other base names now, CI's base-subset --check fails until you run" >&2
+      echo "      scripts/base-subset.sh and commit crates/robigo-rt/proto/base-{subset,bound,wide}.txt." >&2
+    fi
+  fi
+fi
