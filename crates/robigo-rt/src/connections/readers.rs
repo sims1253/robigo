@@ -512,7 +512,12 @@ pub fn do_readdcf(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
         }
         let mut dn = cx.alloc_vector::<robigo_rtcore::Ref<'_>>(2)?;
         dn.set(0, cx.nil());
-        dn.set(1, names.finish().into());
+        // (dimnamesgets: an empty element is NULL)
+        if nc > 0 {
+            dn.set(1, names.finish().into());
+        } else {
+            dn.set(1, cx.nil());
+        }
         let mut a = robigo_rtbuiltins::attrib::Attrs::new();
         a.install(robigo_rtbuiltins::attrib::Attr {
             tag: cx.sym(robigo_rtcore::RSym::Dim),
