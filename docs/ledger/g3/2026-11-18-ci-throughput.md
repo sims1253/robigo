@@ -140,19 +140,25 @@ requests that had a green run in the window:
 
 That is how #853, #875 and #877 would have broken main without a textual
 conflict.
+(`staleness.py`: a run's creation time stands for the main commit it
+tested, since GitHub makes the test merge when the run is triggered;
+crates are compared by their `crates/<name>` directory.)
 
 - **A merge queue (recommended).**
   - Each queued merge is tested as main plus the entries ahead of it, so a
     signature change on main is caught before the merge.
-  - Per tested group, with the jobs the foreman named (select, lint, build,
+  - Per queue entry, with the jobs the foreman named (select, lint, build,
     rdb-data, rt with its rt-ci conformance, plus builtin-diff-data once
     #863 is in): about 0.3 + 1.7 + 4.1 + 0.5 + 20.5 (+ 3) ≈ 27-30
     runner-minutes. The wall time is the select → rdb-data → rt chain, about
     22 min plus the runner wait.
-  - At 77 merges a day, about 2,100-2,300 runner-minutes (+10%) if every
-    merge is its own group. With groups of up to 3-5 entries and 3-5 groups
-    built at once (the queue's "maximum group size" and "build
-    concurrency"), about 700-1,000, with bisection on a failure.
+  - At 77 merges a day, about 2,100-2,300 runner-minutes (+10%), plus the
+    rebuilds after a failure: each entry behind a failed one is rebuilt
+    without it. The queue's merge limits (group sizes) only merge several
+    entries at once; every entry is still built on its own, so they save no
+    minutes. Its build concurrency (entries built at once, e.g. 5) keeps
+    the wall time per merge near one build, about 22 min plus the runner
+    wait.
   - perf, perf-rt, corpora, test and the rest stay judged on the pull
     request.
   - **What it needs:**
