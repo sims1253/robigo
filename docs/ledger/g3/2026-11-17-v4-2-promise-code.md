@@ -224,3 +224,8 @@ Verification, merged with main `046c437c`: perf-rt against main
 s3 +0.22%, binarytrees +0.22%, d0-paste0 +0.17%), d0-names -0.00%, the
 closure-call rows within ±0.03%. Conformance: `tests/rt/bctrans` 10/10,
 `tests/rt/jit` 13/13. `scripts/lint.sh` is clean.
+
+Review of the fix: one narrow Sol round (codex `gpt-6.1-sol`, high) on
+`205917679`: APPROVE, no findings. It checked that a code read from the
+step is rooted before anything can collect, and that cmp.R's
+`cmpCallArgs` makes a promise (`MAKEPROM`) only of a symbol or a call.
