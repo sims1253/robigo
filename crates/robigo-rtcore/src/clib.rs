@@ -204,7 +204,7 @@ pub fn env_locale() -> EnvLocale {
         // SAFETY: "C" always exists; read and freed as above.
         unsafe {
             let l = libc::newlocale(libc::LC_CTYPE_MASK, c"C".as_ptr(), std::ptr::null_mut());
-            let v = if l.is_null() {
+            if l.is_null() {
                 b"ANSI_X3.4-1968".to_vec()
             } else {
                 let p = libc::nl_langinfo_l(libc::CODESET, l);
@@ -215,8 +215,7 @@ pub fn env_locale() -> EnvLocale {
                 };
                 libc::freelocale(l);
                 v
-            };
-            v
+            }
         }
     });
     // setlocale(LC_COLLATE, "")'s name: LC_ALL, else LC_COLLATE, else LANG
