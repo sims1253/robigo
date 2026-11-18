@@ -19,3 +19,6 @@ print(l[[6]])
 print(eval(l[[6]]))
 
 print(.Call("capi_convert", list(TRUE, 2L, "three")))
+
+# a symbol's CAR (also through CAAR) is its PRINTNAME, mkChar's CHARSXP
+print(.Call("capi_printname_identity"))

@@ -1451,7 +1451,7 @@ pub fn inherits(cx: &Cx, x: Ref<'_>, what: &[u8]) -> bool {
     };
     while let Some(c) = a.as_cons() {
         if let Some(t) = c.tag().as_sym()
-            && t.name().bytes() == b"class"
+            && t.name_bytes() == b"class"
         {
             if let Some(v) = c.car().as_vector::<robigo_rtcore::Char<'_>>() {
                 return v.as_slice().unwrap_or(&[]).iter().any(|s| s.bytes() == what && *s != cx.na_string());

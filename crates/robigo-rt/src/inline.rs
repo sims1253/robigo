@@ -857,7 +857,7 @@ unsafe fn enclosure_read(cx: &Cx, log: &WriteLog, sym: Sexp, rho: Sexp) -> Optio
 unsafe fn pure_builtin_name(cx: &Cx, head: Sexp) -> bool {
     // SAFETY: the caller's contract.
     let s = unsafe { Ref::from_sexp(head, cx) };
-    s.as_sym().is_some_and(|s| s.name().bytes() == b"invisible")
+    s.as_sym().is_some_and(|s| s.name_bytes() == b"invisible")
 }
 
 /// bcEval's BASEGUARD for the call `call` of an inlined base function, on

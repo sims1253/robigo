@@ -998,14 +998,22 @@ serialization. So:
   moves into the isolate);
 - a *frozen* segment: objects made deeply immutable can be moved (copied
   once) into a shared read-only segment that every isolate may reference
-  and that mori-style shm can map into other processes;
+  and that mori-style shm can map into other processes. A symbol's
+  identity is the process's, but its PRINTNAME is each isolate's (H5): an
+  isolate that attaches a segment, or takes any object from another
+  isolate in a hand-over between workers, adopts every symbol in it first
+  (`Cx::adopt_symbol`, fallible at that boundary). Reading the name of a
+  symbol that was not adopted is refused;
 - per isolate, the council's rule stands: one owning thread, enforced in
   `collect()`;
 - packages with process-global C state (C statics holding `SEXP`s or
   mutable data) cannot run in two isolates at once. A package opts in to
   isolates (a DESCRIPTION field, e.g. `Robigo-Isolates: yes`, or a
   registry robigo ships for audited packages); a worker that loads a
-  package without the opt-in falls back to a process worker. `R_init_`
+  package without the opt-in falls back to a process worker. The audit
+  looks for symbol caches (`static SEXP s = install("x")`): a second
+  isolate would read another isolate's symbol through such a cache, so the
+  package must adopt (or install) its symbols in each isolate. `R_init_`
   runs once per isolate that loads the package.
 
 **Measurements** (§9, (d)): per-task overhead of `mirai_map`, `mclapply`

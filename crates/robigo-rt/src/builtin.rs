@@ -37,7 +37,7 @@ pub fn do_makelist(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>,
         if havenames {
             let mut names = cx.alloc_vector::<Char<'_>>(n)?;
             for i in 0..n {
-                names.set(i, args.name(cx, i).map_or(cx.blank_string(), |s| s.name()));
+                names.set(i, args.name(cx, i).map_or(cx.blank_string(), |s| s.name(cx)));
             }
             let mut a = Attrs::new();
             a.install(Attr { tag: cx.sym(RSym::Names), value: names.finish().into() });
@@ -269,6 +269,11 @@ pub fn do_cat(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: 
         0 => return Err(cx.error("cannot write to this connection")),
         _ => return Err(cx.error("invalid connection")),
     };
+    // a package class's elements are its C methods' (M5): `sep` and `labels`
+    // are read as standard storage
+    if args.get(cx, 2).is_package_altrep() || args.get(cx, 4).is_package_altrep() {
+        return Err(cx.error("robigo: cat() of a package ALTREP vector is not implemented yet"));
+    }
     let sepr = args.get(cx, 2);
     let Some(seps) = sepr.as_vector::<Char<'_>>() else {
         return Err(cx.error("invalid 'sep' specification"));
@@ -363,6 +368,10 @@ fn cat(
             let View::List(elements) = objs.view() else {
                 return Err("robigo: cat()'s objects are not a list".into());
             };
+            // a package class's length and elements are its C methods' (M5)
+            if (0..elements.len()).any(|i| elements.get(i).is_package_altrep()) {
+                return Err("robigo: cat() of a package ALTREP vector is not implemented yet".into());
+            }
             let mut width = 0usize;
             let mut ntot = 0usize;
             let mut nlines = 0usize;
@@ -391,7 +400,7 @@ fn cat(
                 let elt = |i: usize| -> Result<Vec<u8>, String> {
                     match s.view() {
                         View::Str(v) => native(v.get(i)),
-                        View::Sym(sym) => Ok(sym.name().bytes().to_vec()),
+                        View::Sym(sym) => Ok(sym.name_bytes().to_vec()),
                         _ => {
                             let mut b = Vec::new();
                             deparse::encode_element(cx, s, i, 0, &pp, &mut b);

@@ -133,6 +133,7 @@ fn opts(column: &Column, bin: PathBuf) -> Options {
         jobs: 2,
         timeout: std::time::Duration::from_secs(20),
         case_timeouts: Default::default(),
+        env: Vec::new(),
     }
 }
 

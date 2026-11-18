@@ -1559,7 +1559,7 @@ impl<'g> Comp<'g> {
                 // SAFETY: a call constant: its function, a symbol.
                 let fname = unsafe { robigo_rtcore::Ref::from_sexp(call.car(), self.cx) }
                     .as_sym()
-                    .map(|s| s.name().bytes().to_vec());
+                    .map(|s| s.name_bytes().to_vec());
                 let table = robigo_rtbuiltins::math::BC_MATH1.get(idx).map(|e| e.0.as_bytes());
                 if fname.as_deref() != table {
                     return self.untranslated(
