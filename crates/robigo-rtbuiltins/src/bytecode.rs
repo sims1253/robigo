@@ -404,7 +404,7 @@ pub fn do_is_builtin_internal(
     };
     // INTERNAL(sym)'s type: names.c's, for an internal robigo may not
     // implement yet (cmp.R chooses CALLBUILTIN by it)
-    let b = match crate::names::internal_eval(sym.name().bytes()) {
+    let b = match crate::names::internal_eval(sym.name_bytes()) {
         Some(eval) => eval % 10 == 1,
         None => cx.internal(sym).sexptype() == BUILTINSXP,
     };

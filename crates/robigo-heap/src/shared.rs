@@ -69,7 +69,13 @@ pub(crate) fn shared() -> &'static Shared {
 
 /// The heap id of every shared object.
 pub(crate) fn id() -> HeapId {
-    HeapId(&raw const SHARED_ID as usize)
+    HeapId(id_word() as usize)
+}
+
+/// What a shared segment's pseudo block header holds in its remembered-set
+/// word (this segment's, and the symbol arena's).
+pub(crate) fn id_word() -> *const u8 {
+    &raw const SHARED_ID
 }
 
 impl HeapId {
@@ -109,7 +115,7 @@ fn make() -> Shared {
     // aligned offsets past the pseudo header, and nothing else can see the
     // segment until `SHARED` publishes it.
     unsafe {
-        *(base.add(REMEMBERED_OFF) as *mut *const u8) = &raw const SHARED_ID;
+        *(base.add(REMEMBERED_OFF) as *mut *const u8) = id_word();
         let mut next = base.add(DATA_OFF);
         let mut take = |size: usize| {
             let p = next;
@@ -184,12 +190,12 @@ unsafe fn symbol(s: Sexp, nil: Sexp, name: Sexp, value: Sexp, id: u32) {
 /// vector cells.
 /// Each is (type, length, bytes, vector cells).
 pub(crate) fn counts() -> [(u8, usize, usize, usize); OBJECTS] {
-    let n = node::size(NILSXP).max(GRANULE);
+    let node = |t| node::size(t).max(GRANULE);
     [
-        (NILSXP, 1, n, 0),
+        (NILSXP, 1, node(NILSXP), 0),
         (CHARSXP, 2, charsxp_bytes(2), vec_cells(CHARSXP, 2)),
         (CHARSXP, 0, charsxp_bytes(0), vec_cells(CHARSXP, 0)),
-        (SYMSXP, 1, n, 0),
-        (SYMSXP, 1, n, 0),
+        (SYMSXP, 1, node(SYMSXP), 0),
+        (SYMSXP, 1, node(SYMSXP), 0),
     ]
 }

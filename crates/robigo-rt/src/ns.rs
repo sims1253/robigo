@@ -122,7 +122,7 @@ fn get_var_val_in_frame(cx: &mut Cx, rho: Root<'_>, sym: Root<'_>, unbound_ok: b
     let r = out.root();
     find_in_frame(cx, rho, sym, out)?;
     if !unbound_ok && r.bind(cx).sexp() == cx.unbound().sexp() {
-        let n = String::from_utf8_lossy(sym.bind(cx).as_sym().unwrap().name().bytes()).into_owned();
+        let n = String::from_utf8_lossy(sym.bind(cx).as_sym().unwrap().name_bytes()).into_owned();
         return Err(cx.error(&format!("object '{n}' not found")));
     }
     if r.bind(cx).sexptype() == PROMSXP {
@@ -207,7 +207,7 @@ pub fn get_ns_value(
             View::Str(v) if v.len() == 1 => v.get(0).bytes().to_vec(),
             _ => return Err(cx.error_call(call, "bad value returned by `getNamespaceName'")),
         };
-        let sym_name = name.bind(cx).as_sym().unwrap().name().bytes().to_vec();
+        let sym_name = name.bind(cx).as_sym().unwrap().name_bytes().to_vec();
         let msg = format!(
             "'{}' is not an exported object from 'namespace:{}'",
             String::from_utf8_lossy(&sym_name),
@@ -456,7 +456,7 @@ pub fn do_import_into_env(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
                 None => match symvalue(cx, s, expsym) {
                     Some(f) => f,
                     None => {
-                        let nm = String::from_utf8_lossy(expsym.bind(cx).as_sym().unwrap().name().bytes()).into_owned();
+                        let nm = String::from_utf8_lossy(expsym.bind(cx).as_sym().unwrap().name_bytes()).into_owned();
                         return Err(cx.error(&format!("exported symbol '{nm}' has no value")));
                     }
                 },
@@ -495,8 +495,8 @@ fn install_first_at<'s>(cx: &mut Cx, s: Scope<'s>, v: Root<'_>, i: usize) -> RRe
 
 /// `internalsID()`: `R_INTERNALS_UUID`.
 // R: version.c:do_internalsID
-pub fn do_internals_id(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    crate::prims::check_arity(cx, call, args.len(), "internalsID", 0, true)?;
+pub fn do_internals_id(cx: &mut Cx, _call: Root<'_>, _args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    // (no checkArity: arguments are ignored)
     cx.build(out, |cx| cx.mk_string(R_INTERNALS_UUID, robigo_rtcore::Encoding::Native))
 }
 
@@ -583,7 +583,7 @@ pub fn find_namespace(cx: &mut Cx, name: &[u8], out: Out<'_>) -> RResult<()> {
 /// (it waits on B5a's file builtins).
 // R: namespace.R:loadNamespace
 pub fn load_namespace(cx: &mut Cx, pkg: Root<'_>, out: Out<'_>) -> RResult<()> {
-    let name = pkg.bind(cx).as_sym().unwrap().name().bytes().to_vec();
+    let name = pkg.bind(cx).as_sym().unwrap().name_bytes().to_vec();
     if name == b"compiler" {
         // INTERIM(L2): replaced by loadNamespace
         return load_compiler(cx, pkg, out);
@@ -737,14 +737,14 @@ fn exports_of(cx: &Cx, exprs: Root<'_>) -> Vec<Vec<u8>> {
     let Some(l) = v.as_vector::<Ref<'_>>() else { return names };
     for i in 0..l.len() {
         let Some(c) = l.get(i).as_cons().filter(|c| c.as_ref().sexptype() == LANGSXP) else { continue };
-        if c.car().as_sym().is_none_or(|f| f.name().bytes() != b"export") {
+        if c.car().as_sym().is_none_or(|f| f.name_bytes() != b"export") {
             continue;
         }
         let mut a = c.cdr().as_cons();
         while let Some(cell) = a {
             let x = cell.car();
             if let Some(sy) = x.as_sym() {
-                names.push(sy.name().bytes().to_vec());
+                names.push(sy.name_bytes().to_vec());
             } else if let Some(sv) = x.as_vector::<robigo_rtcore::Char<'_>>().filter(|_| x.sexptype() == STRSXP) {
                 for k in 0..sv.len() {
                     names.push(sv.get(k).bytes().to_vec());

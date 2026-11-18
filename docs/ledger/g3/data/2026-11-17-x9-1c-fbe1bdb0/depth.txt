@@ -1,0 +1,11 @@
+# levels reached per ulimit -s (KiB); binary sha256 below
+main-0681a38d 2048 1070 
+main-0681a38d 3072 1611 
+main-0681a38d 4096 2153 
+main-0681a38d 8192 4321 
+x9cm-fbe1bdb0 2048 2093  C stack usage  1988921 is too close to the limit  
+x9cm-fbe1bdb0 3072 3148  C stack usage  2984905 is too close to the limit  
+x9cm-fbe1bdb0 4096 4205  C stack usage  3984665 is too close to the limit  
+x9cm-fbe1bdb0 8192 4988  evaluation nested too deeply: infinite recursion / options(expressions=)?  
+main-0681a38d 41aa4c5cdd1589ec05cdf94d55ff943575368c5ba834cef41169dfbb47b30a0e
+x9cm-fbe1bdb0 f712a323b6374bff4ec097c79eca9152ed4305d49946cb052cac3b823258028b
