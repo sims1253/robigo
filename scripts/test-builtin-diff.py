@@ -134,6 +134,17 @@ class Classes(unittest.TestCase):
         r = subprocess.run(["sh", "-c", "umask"], preexec_fn=bd.cap, capture_output=True, text=True)
         self.assertEqual(int(r.stdout, 8), bd.UMASK)
 
+    def test_data_directories_are_artifact_paths(self):
+        # CI's builtin-diff-data job uploads the records as an artifact,
+        # which refuses " : < > | * ? CR LF in paths: row `[<-` failed it
+        doc, _ = bd.load_rows()
+        for name in doc:
+            for v in (name, name + "@jit"):
+                self.assertFalse(set(bd.data_name(v)) & bd.ARTIFACT_REFUSES, v)
+        self.assertEqual(bd.data_name("[<-"), "[%3C-")
+        self.assertEqual(bd.data_name("nchar"), "nchar")
+        self.assertNotEqual(bd.data_name("a%3C"), bd.data_name("a<"))   # % is escaped too
+
     def test_score_line(self):
         c = {"pass": 5, "mismatch": 1, "not-implemented": 2, "crash": 1, "timeout": 0, "resource": 3,
              "oracle-crash": 4}

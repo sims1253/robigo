@@ -391,8 +391,20 @@ def read_cases(d):
 
 # ---- GNU R's side ------------------------------------------------------------
 
+# The characters an Actions artifact refuses in a path (CI's
+# builtin-diff-data job uploads the records): a row named `[<-` is stored
+# under `[%3C-` instead, and every other name as it is.
+ARTIFACT_REFUSES = set('"\':<>|*?\r\n')
+
+
+def data_name(variant):
+    """`variant` as a directory name an artifact may hold: each refused
+    character, and `%` itself, as %XX."""
+    return "".join(f"%{ord(c):02X}" if c in ARTIFACT_REFUSES or c == "%" else c for c in variant)
+
+
 def oracle_dir(data, row, seed, jit):
-    return os.path.join(data, row.variant(jit), row.key(seed, jit))
+    return os.path.join(data, data_name(row.variant(jit)), row.key(seed, jit))
 
 
 def have_oracle(data, row, seed, jit):
