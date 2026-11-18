@@ -601,7 +601,7 @@ fn assign_elements(cx: &mut Cx, which: i32, x: Root<'_>, y: Root<'_>, idx: &Subs
 /// external pointer's address (0 for a NULL one: "replacement has length
 /// zero"); 4 for a weak reference (a list of 4). A builtin's or special's
 /// is its offset in GNU R's `R_FunTab`, which robigo's primitives do not
-/// carry: refused.
+/// carry, and an S4 object's is not set: both refused.
 // R: subassign.c:MatrixAssign, ArrayAssign (XLENGTH of a non-vector)
 fn array_value_length(cx: &mut Cx, y: Root<'_>) -> RResult<usize> {
     let yv = y.bind(cx);
@@ -612,7 +612,15 @@ fn array_value_length(cx: &mut Cx, y: Root<'_>) -> RResult<usize> {
         View::ExtPtr(p) => p.addr() as usize,
         View::WeakRef(_) => 4,
         _ if attrib::is_vector(yv) || yv.sexptype() == CHARSXP => rlength(cx, yv),
-        _ => usize::MAX,
+        _ if matches!(
+            yv.sexptype(),
+            NILSXP | SYMSXP | LISTSXP | LANGSXP | DOTSXP | CLOSXP | ENVSXP | PROMSXP | BCODESXP
+        ) =>
+        {
+            usize::MAX
+        }
+        // an S4 object's first word is not set (GNU R reads whatever is there)
+        _ => return Err(util::not_yet(cx, None, "an S4 object as the value of a matrix or array assignment")),
     })
 }
 

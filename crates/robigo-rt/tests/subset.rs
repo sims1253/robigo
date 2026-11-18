@@ -185,6 +185,31 @@ fn subassignment_errors_report_gnu_rs_calls() {
     }
 }
 
+/// Bind `name` in the global environment to a fresh OBJSXP with the S4 bit
+/// (GNU R's `allocS4Object`).
+fn s4_object(s: &mut Session, name: &str) {
+    use robigo_rtcore::{Ref, types::OBJSXP};
+    let cx = s.cx();
+    cx.scope(|cx, sc| {
+        let o = sc.out(cx);
+        let obj = o.root();
+        cx.build(o, |cx| {
+            let nil = cx.nil().sexp();
+            // SAFETY: R_NilValue fields; the node is fresh and rooted by `obj`.
+            let x = unsafe { cx.alloc_node_raw(OBJSXP, nil, nil, nil)? };
+            // SAFETY: fresh.
+            Ok(unsafe { Ref::from_sexp(x, cx) })
+        })?;
+        cx.set_s4_bit(obj, true);
+        let o = sc.out(cx);
+        let sym = o.root();
+        cx.build(o, |cx| Ok(cx.install(name.as_bytes())?.as_ref()))?;
+        let g = sc.root(cx, cx.global_env());
+        cx.define_var(sym, obj, g)
+    })
+    .unwrap();
+}
+
 /// A primitive as the value of `x[i, j] <- v`: GNU R reads its length as
 /// its `R_FunTab` offset, which robigo's primitives do not carry, so robigo
 /// says so (any other non-vector value is tests/rt/subset's cases).
@@ -196,6 +221,16 @@ fn a_primitive_as_a_matrix_assignment_value_is_not_implemented_yet() {
             let e = s.err(src);
             assert!(
                 e.contains("robigo: a primitive as the value of a matrix or array assignment is not implemented yet"),
+                "{src}: {e}"
+            );
+        }
+        // an S4 object's length word is not set in GNU R (robigo-rt makes
+        // no OBJSXP from R code yet: one is bound here)
+        s4_object(&mut s, "o");
+        for src in ["m[, 1] <- o", "a[, 1, 1] <- o"] {
+            let e = s.err(src);
+            assert!(
+                e.contains("robigo: an S4 object as the value of a matrix or array assignment is not implemented yet"),
                 "{src}: {e}"
             );
         }
