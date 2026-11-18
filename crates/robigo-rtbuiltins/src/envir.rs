@@ -799,19 +799,31 @@ pub fn do_active_bnd_fun(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root
 }
 
 /// The innermost promise of the chain `p` (`promiseUnwrap`: a promise
-/// whose code is a promise is followed; [`Cx::binding_type`] has checked
-/// the chain for a cycle).
+/// whose code is a promise is followed), or None for a cycle (Floyd's
+/// detection, as GNU R's: "cycle detected in promise chain").
 // R: envir.c:promiseUnwrap
-fn promise_unwrap(p: Ref<'_>) -> Ref<'_> {
+fn promise_unwrap(p: Ref<'_>) -> Option<Ref<'_>> {
+    let code_of = |x: Ref<'_>| match x.view() {
+        View::Promise(pr) => Some(pr.code()),
+        _ => None,
+    };
     let mut x = p;
-    while let View::Promise(pr) = x.view() {
-        let code = pr.code();
+    let mut slow = p;
+    let mut advance_slow = false;
+    loop {
+        let code = code_of(x)?;
         if code.sexptype() != PROMSXP {
-            break;
+            return Some(x);
         }
         x = code;
+        if x == slow {
+            return None;
+        }
+        if advance_slow {
+            slow = code_of(slow)?;
+        }
+        advance_slow = !advance_slow;
     }
-    x
 }
 
 /// What the binding accessors read of a delayed or forced binding.
@@ -850,7 +862,8 @@ fn delayed_binding(cx: &mut Cx, sym: Root<'_>, env: Root<'_>, what: Delayed, out
         let o = s.out(cx);
         let v = o.root();
         cx.find_var_in_frame3(env, sym, true, o)?;
-        let inner = promise_unwrap(v.bind(cx));
+        // (binding_type checked the chain for a cycle)
+        let inner = promise_unwrap(v.bind(cx)).expect("robigo: a promise chain binding_type checked");
         let View::Promise(p) = inner.view() else {
             unreachable!("robigo: a delayed or forced binding that is not a promise")
         };
@@ -1047,28 +1060,7 @@ pub fn do_dots_names(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>,
         let Some(v) = dots_value(cx, s, env)? else {
             return Err(cx.error("incorrect context: the current call has no '...' to look in"));
         };
-        cx.build(out, |cx| {
-            let vv = v.bind(cx);
-            if vv.sexptype() != DOTSXP {
-                return Ok(cx.nil());
-            }
-            let mut tags = Vec::new();
-            let mut c = vv.as_cons();
-            while let Some(cell) = c {
-                tags.push(cell.tag().as_sym().map(|s| s.name()));
-                c = cell.cdr().as_cons();
-            }
-            if tags.iter().all(Option::is_none) {
-                return Ok(cx.nil());
-            }
-            let mut r = cx.alloc_vector::<Char<'_>>(tags.len())?;
-            for (i, t) in tags.iter().enumerate() {
-                if let Some(t) = t {
-                    r.set(i, *t);
-                }
-            }
-            Ok(r.finish().into())
-        })
+        dots_names_of(cx, v, out)
     })
 }
 
@@ -1115,6 +1107,273 @@ pub fn do_dots_elt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, o
             Ok(())
         }
     })
+}
+
+// ---- the `...` accessors with an environment and `inherits` --------------------
+
+/// `resolveDotsEnv(env, inherits)` and the frame's `...` value: with
+/// `inherits` the first environment outwards whose `...` is a `...` list or
+/// the missing argument (`R_findDotsEnv`), else `env` itself; None when
+/// that frame has no `...` (`R_UnboundValue`).
+// R: envir.c:resolveDotsEnv, R_findDotsEnv
+fn dots_at<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>, inherits: bool) -> RResult<Option<Root<'s>>> {
+    if inherits {
+        return dots_value(cx, s, env);
+    }
+    if !matches!(env.bind(cx).view(), View::Env(_)) {
+        // (GNU R's R_findVarInFrame reads it as an environment and crashes)
+        return Err(not_yet(cx, None, "a '...' accessor's environment that is not one"));
+    }
+    let dots = s.root(cx, cx.sym(RSym::Dots));
+    let o = s.out(cx);
+    let v = o.root();
+    cx.find_var_in_frame3(env, dots, true, o)?;
+    Ok((v.bind(cx) != cx.unbound()).then_some(v))
+}
+
+/// `asLogical(x)` as a C condition: NA is true.
+fn c_bool(cx: &Cx, x: Ref<'_>) -> bool {
+    as_logical(cx, x) != 0
+}
+
+/// `ddfindInFrame(i, rho)` on the frame's `...` value `v`: its `i`th
+/// element.
+// R: envir.c:ddfindInFrame
+fn dots_nth<'s>(cx: &mut Cx, s: Scope<'s>, v: Option<Root<'_>>, i: i32) -> RResult<Root<'s>> {
+    if i <= 0 {
+        return Err(cx.error(&format!("indexing '...' with non-positive index {i}")));
+    }
+    let Some(v) = v else {
+        return Err(cx.error(&format!("..{i} used in an incorrect context, no ... to look in")));
+    };
+    let vv = v.bind(cx);
+    if vv.sexptype() != DOTSXP && vv != cx.missing_arg() {
+        return Err(cx.error("bad ... value"));
+    }
+    if dots_len(vv) < i as usize {
+        let msg = if i == 1 {
+            format!("the ... list contains fewer than {i} element")
+        } else {
+            format!("the ... list contains fewer than {i} elements")
+        };
+        return Err(cx.error(&msg));
+    }
+    let mut c = vv.as_cons().unwrap();
+    for _ in 1..i {
+        c = c.cdr().as_cons().unwrap();
+    }
+    Ok(s.root(cx, c.car()))
+}
+
+/// The arguments `(i, env, inherits)` of the element accessors: the element.
+fn dots_elt_arg<'s>(cx: &mut Cx, s: Scope<'s>, args: Args<'_>) -> RResult<Root<'s>> {
+    let i = crate::coerce::vector::as_integer_warn(cx, args.root(0))?;
+    let inherits = c_bool(cx, args.get(cx, 2));
+    let v = dots_at(cx, s, args.root(1), inherits)?;
+    dots_nth(cx, s, v, i)
+}
+
+/// `.Internal(dotsExist(env, inherits))`.
+// R: envir.c:do_dotsExist, R_DotsExist
+pub fn do_dots_exist(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("dotsExist", true).check_arity(cx, call, args)?;
+    let inherits = c_bool(cx, args.get(cx, 1));
+    let exists = cx.scope(|cx, s| {
+        let v = dots_at(cx, s, args.root(0), inherits)?;
+        Ok(v.is_some_and(|v| {
+            let vv = v.bind(cx);
+            vv == cx.missing_arg() || vv.sexptype() == DOTSXP
+        }))
+    })?;
+    out.set(cx, cx.logical_value(exists as i32));
+    Ok(())
+}
+
+/// `.Internal(dotsLength(env, inherits))`.
+// R: envir.c:do_CDotsLength, R_DotsLength
+pub fn do_cdots_length(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("dotsLength", true).check_arity(cx, call, args)?;
+    let inherits = c_bool(cx, args.get(cx, 1));
+    cx.scope(|cx, s| {
+        let Some(v) = dots_at(cx, s, args.root(0), inherits)? else {
+            return Err(cx.error("incorrect context: the current call has no '...' to look in"));
+        };
+        let n = dots_len(v.bind(cx)) as i32;
+        cx.build_scalar(out, n)
+    })
+}
+
+/// `.Internal(dotsNames(env, inherits))`.
+// R: envir.c:do_CDotsNames, R_DotsNames
+pub fn do_cdots_names(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("dotsNames", true).check_arity(cx, call, args)?;
+    let inherits = c_bool(cx, args.get(cx, 1));
+    cx.scope(|cx, s| {
+        let Some(v) = dots_at(cx, s, args.root(0), inherits)? else {
+            return Err(cx.error("incorrect context: the current call has no '...' to look in"));
+        };
+        dots_names_of(cx, v, out)
+    })
+}
+
+/// `R_DotsNames` of the `...` value `v`: the tags, "" where there is none;
+/// NULL if none has one.
+// R: envir.c:R_DotsNames
+fn dots_names_of(cx: &mut Cx, v: Root<'_>, out: Out<'_>) -> RResult<()> {
+    cx.build(out, |cx| {
+        let vv = v.bind(cx);
+        if vv.sexptype() != DOTSXP {
+            return Ok(cx.nil());
+        }
+        let mut tags = Vec::new();
+        let mut c = vv.as_cons();
+        while let Some(cell) = c {
+            tags.push(cell.tag().as_sym().map(|s| s.name()));
+            c = cell.cdr().as_cons();
+        }
+        if tags.iter().all(Option::is_none) {
+            return Ok(cx.nil());
+        }
+        let mut r = cx.alloc_vector::<Char<'_>>(tags.len())?;
+        for (i, t) in tags.iter().enumerate() {
+            if let Some(t) = t {
+                r.set(i, *t);
+            }
+        }
+        Ok(r.finish().into())
+    })
+}
+
+/// `.Internal(dotsElt(i, env, inherits))`: the element, evaluated in `env`'s
+/// resolved frame if it is a promise or the missing argument.
+// R: envir.c:do_CDotsElt, R_DotsElt
+pub fn do_cdots_elt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("dotsElt", true).check_arity(cx, call, args)?;
+    cx.scope(|cx, s| {
+        let i = crate::coerce::vector::as_integer_warn(cx, args.root(0))?;
+        let inherits = c_bool(cx, args.get(cx, 2));
+        // the frame R_DotsElt evaluates in: resolveDotsEnv's
+        let env = if inherits { dots_env(cx, s, args.root(1))? } else { s.root(cx, args.get(cx, 1)) };
+        let v = dots_at(cx, s, env, false)?;
+        let elt = dots_nth(cx, s, v, i)?;
+        let ev = elt.bind(cx);
+        if ev.sexptype() == PROMSXP || ev == cx.missing_arg() {
+            cx.eval(elt, env, out)
+        } else {
+            out.set(cx, ev);
+            Ok(())
+        }
+    })
+}
+
+/// `R_findDotsEnv(env)`: the first environment outwards whose `...` is a
+/// `...` list or the missing argument, else R_EmptyEnv.
+// R: envir.c:R_findDotsEnv
+fn dots_env<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>) -> RResult<Root<'s>> {
+    let dots = s.root(cx, cx.sym(RSym::Dots));
+    let e = s.root(cx, env.bind(cx));
+    let v = s.out(cx).root();
+    loop {
+        if e.bind(cx) == cx.empty_env() || !matches!(e.bind(cx).view(), View::Env(_)) {
+            return Ok(s.root(cx, cx.empty_env()));
+        }
+        let o = v.reset(cx);
+        cx.find_var_in_frame3(e, dots, true, o)?;
+        let vv = v.bind(cx);
+        if vv != cx.unbound() && (vv == cx.missing_arg() || vv.sexptype() == DOTSXP) {
+            return Ok(e);
+        }
+        e.replace_with(cx, |cx| match e.bind(cx).view() {
+            View::Env(r) => Ok(r.enclos()),
+            _ => unreachable!("robigo: checked above"),
+        })?;
+    }
+}
+
+/// What the element accessors read of a `...` element.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DotWhat {
+    Type,
+    DelayedExpr,
+    DelayedEnv,
+    ForcedExpr,
+}
+
+/// `R_GetDotType`, `R_DotDelayedExpression`, `R_DotDelayedEnvironment`,
+/// `R_DotForcedExpression` of `(i, env, inherits)`.
+// R: envir.c:R_GetDotType, R_DotDelayedExpression, R_DotDelayedEnvironment, R_DotForcedExpression
+fn dot_element(cx: &mut Cx, args: Args<'_>, what: DotWhat, out: Out<'_>) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let v = dots_elt_arg(cx, s, args)?;
+        let vv = v.bind(cx);
+        let delayed_err = "not a delayed ... element";
+        let forced_err = "not a forced ... element";
+        if vv.sexptype() != PROMSXP {
+            let msg = match what {
+                DotWhat::Type => {
+                    let t = if vv == cx.missing_arg() { "missing" } else { "value" };
+                    return cx.build(out, |cx| cx.mk_string(t.as_bytes(), Encoding::Native));
+                }
+                DotWhat::ForcedExpr => forced_err,
+                _ => delayed_err,
+            };
+            return Err(cx.error(msg));
+        }
+        let Some(inner) = promise_unwrap(vv) else {
+            return Err(cx.error("cycle detected in promise chain"));
+        };
+        let inner = s.root(cx, inner);
+        let forced = {
+            let o = s.out(cx);
+            cx.promise_value(inner, o)?
+        };
+        let View::Promise(p) = inner.bind(cx).view() else { unreachable!("robigo: a promise") };
+        match what {
+            DotWhat::Type => {
+                let t = if forced { "forced" } else { "delayed" };
+                cx.build(out, |cx| cx.mk_string(t.as_bytes(), Encoding::Native))
+            }
+            DotWhat::DelayedExpr | DotWhat::DelayedEnv if forced => Err(cx.error(delayed_err)),
+            DotWhat::ForcedExpr if !forced => Err(cx.error(forced_err)),
+            DotWhat::DelayedEnv => {
+                out.set(cx, p.env());
+                Ok(())
+            }
+            _ => {
+                let e = crate::bytecode::expr(cx, p.code());
+                out.set(cx, e);
+                Ok(())
+            }
+        }
+    })
+}
+
+/// `.Internal(getDotType(i, env, inherits))`.
+// R: envir.c:do_dotType
+pub fn do_dot_type(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("getDotType", true).check_arity(cx, call, args)?;
+    dot_element(cx, args, DotWhat::Type, out)
+}
+
+/// `.Internal(dotDelayedExpression(i, env, inherits))`.
+// R: envir.c:do_dotDelayedExpr
+pub fn do_dot_delayed_expr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("dotDelayedExpression", true).check_arity(cx, call, args)?;
+    dot_element(cx, args, DotWhat::DelayedExpr, out)
+}
+
+/// `.Internal(dotDelayedEnvironment(i, env, inherits))`.
+// R: envir.c:do_dotDelayedEnv
+pub fn do_dot_delayed_env(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("dotDelayedEnvironment", true).check_arity(cx, call, args)?;
+    dot_element(cx, args, DotWhat::DelayedEnv, out)
+}
+
+/// `.Internal(dotForcedExpression(i, env, inherits))`.
+// R: envir.c:do_dotForcedExpr
+pub fn do_dot_forced_expr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("dotForcedExpression", true).check_arity(cx, call, args)?;
+    dot_element(cx, args, DotWhat::ForcedExpr, out)
 }
 
 /// `.Internal(remove(list, envir, inherits))`: each named variable removed
