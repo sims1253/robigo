@@ -37,6 +37,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 pub mod readers;
+pub mod scan;
 
 /// `NCONNECTIONS`.
 const NCONNECTIONS: usize = 128;
