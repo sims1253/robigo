@@ -291,3 +291,235 @@ pub fn do_readlines(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
         Ok(v.finish().into())
     })
 }
+
+// ---- dcf.c ---------------------------------------------------------------------
+
+/// dcf.c's patterns (TRE, on bytes), as the byte tests they are.
+mod dcf {
+    pub fn blank(c: u8) -> bool {
+        c == b' ' || c == b'\t'
+    }
+    fn space(c: u8) -> bool {
+        matches!(c, b' ' | b'\x0c' | b'\n' | b'\r' | b'\t' | b'\x0b')
+    }
+    /// `^[ \t]*$`
+    pub fn blankline(l: &[u8]) -> bool {
+        l.iter().all(|&c| blank(c))
+    }
+    /// `^[ \t]+`: the match's end, if it matches.
+    pub fn contline(l: &[u8]) -> Option<usize> {
+        let n = l.iter().take_while(|&&c| blank(c)).count();
+        (n > 0).then_some(n)
+    }
+    /// `[ \t]+$`: the match's start (the trailing run of blanks), if any.
+    pub fn trailblank(l: &[u8]) -> Option<usize> {
+        let n = l.iter().rev().take_while(|&&c| blank(c)).count();
+        (n > 0).then_some(l.len() - n)
+    }
+    /// `^[^:]+:[ \t]*`: the match's end, if it matches.
+    pub fn regline(l: &[u8]) -> Option<usize> {
+        let colon = l.iter().position(|&c| c == b':')?;
+        if colon == 0 {
+            return None;
+        }
+        Some(colon + 1 + l[colon + 1..].iter().take_while(|&&c| blank(c)).count())
+    }
+    /// `^[ \f\n\r\t\v]+\.[ \f\n\r\t\v]*$`
+    pub fn eblankline(l: &[u8]) -> bool {
+        let n = l.iter().take_while(|&&c| space(c)).count();
+        n > 0 && l.get(n) == Some(&b'.') && l[n + 1..].iter().all(|&c| space(c))
+    }
+}
+
+/// A line of a DCF message: `line[20] = '\0'`, the first 20 bytes (or
+/// fewer).
+fn dcf_head(l: &[u8]) -> String {
+    String::from_utf8_lossy(&l[..l.len().min(20)]).into_owned()
+}
+
+/// `readDCF(file, fields, keepwhite)`: the records of a Debian Control
+/// File as a character matrix, a record per row and a field per column
+/// (`fields`, or every field seen when it is empty), NA where a record has
+/// none; fields not in `keepwhite` folded (their continuation lines' and
+/// trailing white space dropped, a " ." line a blank line).
+// R: dcf.c:do_readDCF
+pub fn do_readdcf(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "readDCF", 3, true)?;
+    let ncon = as_integer_warn(cx, args.root(0))?;
+    let wasopen = flags(cx, ncon)?.isopen;
+    if !wasopen && !super::open(cx, ncon)? {
+        return Err(cx.error("cannot open the connection"));
+    }
+    let ours = our_fgetc(cx);
+    // the work; an error in it closes a connection readDCF opened (the
+    // context's cend, con_cleanup)
+    let body = (|| -> RResult<(Vec<Vec<u8>>, Vec<Vec<Option<Vec<u8>>>>)> {
+        if !flags(cx, ncon)?.canread {
+            return Err(cx.error("cannot read from this connection"));
+        }
+        let strings = |cx: &mut Cx, i: usize| -> RResult<Vec<Vec<u8>>> {
+            cx.scope(|cx, s| {
+                let v = s.capture(cx, |cx, o| robigo_rtbuiltins::coerce::vector::coerce_vector(cx, args.root(i), STRSXP, o))?;
+                let v = v.bind(cx);
+                let Some(v) = v.as_vector::<Char<'_>>() else {
+                    return Err(robigo_rtbuiltins::util::not_yet(cx, Some(call), "readDCF() of a package ALTREP character vector"));
+                };
+                Ok((0..v.len()).map(|k| v.get(k).bytes().to_vec()).collect())
+            })
+        };
+        let mut what = strings(cx, 1)?;
+        let fold_excludes = strings(cx, 2)?;
+        let dynwhat = what.is_empty();
+        let foldable = |f: &[u8]| !fold_excludes.iter().any(|e| e.as_slice() == f);
+        // a record per entry, a field per position (NA: None)
+        let mut recs: Vec<Vec<Option<Vec<u8>>>> = vec![vec![None; what.len()]];
+        let mut lastm: Option<usize> = None;
+        let mut blank_skip = true;
+        let mut field_skip = false;
+        let mut field_fold = true;
+        let mut n_eblanklines = 0usize;
+        loop {
+            let r = with_conn(cx, ncon, |c| read_line(c, false, ours))?;
+            let (buf, ch) = r.map_err(|m| cx.error(&m))?;
+            // Rconn_getline2: no line at the end of input; a C string
+            if ch == R_EOF && buf.is_empty() {
+                break;
+            }
+            let line = &buf[..strlen(&buf)];
+            if line.is_empty() || dcf::blankline(line) {
+                // a blank line: the first one after a record ends it, later
+                // ones are skipped
+                if !blank_skip {
+                    recs.push(vec![None; what.len()]);
+                    blank_skip = true;
+                    lastm = None;
+                    field_skip = false;
+                    field_fold = true;
+                    n_eblanklines = 0;
+                }
+            } else if line[0] == b'#' {
+                // a comment line
+            } else {
+                blank_skip = false;
+                if let Some(lead) = dcf::contline(line) {
+                    // a continuation line: wrong at the start of a record
+                    if lastm.is_none() && !field_skip {
+                        let m = format!("Found continuation line starting '{} ...' at begin of record.", dcf_head(line));
+                        return Err(cx.error(&m));
+                    }
+                    if let Some(m) = lastm {
+                        let k = recs.len() - 1;
+                        let is_eblankline = dcf::eblankline(line);
+                        if is_eblankline && field_fold {
+                            n_eblanklines += 1;
+                            if ch == R_EOF {
+                                break;
+                            }
+                            continue;
+                        }
+                        let rest: &[u8] = if is_eblankline {
+                            b""
+                        } else if field_fold {
+                            let end = dcf::trailblank(line).unwrap_or(line.len());
+                            &line[lead.min(end)..end]
+                        } else {
+                            line
+                        };
+                        let mut v = recs[k][m].clone().unwrap_or_else(|| b"NA".to_vec());
+                        if !v.is_empty() || !field_fold {
+                            v.push(b'\n');
+                        }
+                        if !is_eblankline {
+                            v.extend(std::iter::repeat_n(b'\n', n_eblanklines));
+                            n_eblanklines = 0;
+                            v.extend_from_slice(rest);
+                        }
+                        recs[k][m] = Some(v);
+                    }
+                } else if let Some(off) = dcf::regline(line) {
+                    let k = recs.len() - 1;
+                    for (m, w) in what.iter().enumerate() {
+                        if line.len() > w.len() && line[w.len()] == b':' && line.starts_with(w) {
+                            // a field being recorded
+                            lastm = Some(m);
+                            field_skip = false;
+                            if !fold_excludes.is_empty() {
+                                field_fold = foldable(w);
+                            }
+                            let end = if field_fold { dcf::trailblank(line).unwrap_or(line.len()) } else { line.len() };
+                            recs[k][m] = Some(line[off.min(end)..end].to_vec());
+                            break;
+                        } else {
+                            // a field, not one asked for
+                            lastm = None;
+                            field_skip = true;
+                        }
+                    }
+                    if dynwhat && lastm.is_none() {
+                        // a field not seen before, recording all of them
+                        field_skip = false;
+                        let colon = line.iter().position(|&c| c == b':').expect("regline matched");
+                        what.push(line[..colon].to_vec());
+                        for r in recs.iter_mut() {
+                            r.push(None);
+                        }
+                        let m = what.len() - 1;
+                        lastm = Some(m);
+                        if !fold_excludes.is_empty() {
+                            field_fold = foldable(&what[m]);
+                        }
+                        let end = if field_fold { dcf::trailblank(line).unwrap_or(line.len()) } else { line.len() };
+                        recs[k][m] = Some(line[off.min(end)..end].to_vec());
+                    }
+                } else {
+                    // a regular line with no tag
+                    return Err(cx.error(&format!("Line starting '{} ...' is malformed!", dcf_head(line))));
+                }
+            }
+            if ch == R_EOF {
+                break;
+            }
+        }
+        if blank_skip {
+            recs.pop();
+        }
+        Ok((what, recs))
+    })();
+    if !wasopen {
+        with_conn(cx, ncon, |c| {
+            if c.isopen() {
+                close_conn(c);
+            }
+        })?;
+    }
+    let (what, recs) = body?;
+    // the transpose: a row per record, a column per field
+    let (nr, nc) = (recs.len(), what.len());
+    cx.build(out, |cx| {
+        let mut v = cx.alloc_vector::<Char<'_>>(nr * nc)?;
+        for (k, r) in recs.iter().enumerate() {
+            for (m, x) in r.iter().enumerate() {
+                let c = match x {
+                    Some(b) => cx.mk_char(b, Encoding::Native)?,
+                    None => cx.na_string(),
+                };
+                v.set(k + nr * m, c);
+            }
+        }
+        let mut names = cx.alloc_vector::<Char<'_>>(nc)?;
+        for (m, w) in what.iter().enumerate() {
+            names.set(m, cx.mk_char(w, Encoding::Native)?);
+        }
+        let mut dn = cx.alloc_vector::<robigo_rtcore::Ref<'_>>(2)?;
+        dn.set(0, cx.nil());
+        dn.set(1, names.finish().into());
+        let mut a = robigo_rtbuiltins::attrib::Attrs::new();
+        a.install(robigo_rtbuiltins::attrib::Attr {
+            tag: cx.sym(robigo_rtcore::RSym::Dim),
+            value: cx.alloc_copy(&[nr as i32, nc as i32])?.finish().into(),
+        });
+        a.install(robigo_rtbuiltins::attrib::Attr { tag: cx.sym(robigo_rtcore::RSym::DimNames), value: dn.finish().into() });
+        a.apply(cx, &mut v)?;
+        Ok(v.finish().into())
+    })
+}

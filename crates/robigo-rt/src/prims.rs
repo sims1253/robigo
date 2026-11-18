@@ -246,6 +246,7 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("stdin", crate::builtin::do_stdin, Inline::None, 11, 0),
     builtin("writeLines", crate::connections::do_writelines, Inline::None, 111, 4),
     builtin("readLines", crate::connections::readers::do_readlines, Inline::None, 11, 6),
+    builtin("readDCF", crate::connections::readers::do_readdcf, Inline::None, 11, 3),
     builtin("isOpen", crate::connections::readers::do_isopen, Inline::None, 11, 2),
     builtin("isIncomplete", crate::connections::readers::do_isincomplete, Inline::None, 11, 1),
     builtin("pushBack", crate::connections::readers::do_pushback, Inline::None, 111, 4),
