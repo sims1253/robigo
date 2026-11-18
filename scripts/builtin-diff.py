@@ -55,7 +55,22 @@ KNOWN = os.path.join(ROOT, "tests", "builtin-diff", "known")
 NAMES_C = "src/main/names.c"
 REGISTRY = os.path.join(ROOT, "crates", "robigo-rtbuiltins", "src", "registry.rs")
 DEFAULT_DATA = os.path.expanduser("~/.cache/robigo-research/builtin-diff")
+# the image GNU R's side runs in (docker; CI names its GHCR reference)
 IMAGE = os.environ.get("ROBIGO_BUILTIN_DIFF_ORACLE", "robigo-oracle:4.6.2")
+
+
+def oracle_id():
+    """The oracle image's identity in the cache key: the content tag
+    scripts/ci-image.sh derives from the image's definition, the same in CI
+    (whatever the registry reference) and locally."""
+    if not hasattr(oracle_id, "v"):
+        p = subprocess.run([os.path.join(ROOT, "scripts", "ci-image.sh"), "refs"], cwd=ROOT,
+                           stdout=subprocess.PIPE, text=True)
+        m = re.search(r"^oracle_4_6_2=\S+:(\S+)$", p.stdout, re.M)
+        if p.returncode != 0 or not m:
+            sys.exit("builtin-diff: scripts/ci-image.sh refs gave no oracle_4_6_2 reference")
+        oracle_id.v = m.group(1)
+    return oracle_id.v
 # the environment both runtimes run in (part of the cache key)
 ENV = {"LC_ALL": "C.UTF-8", "LANGUAGE": "en", "TZ": "UTC", "R_DEFAULT_PACKAGES": "NULL"}
 JIT = {"off": "0", "on": "3"}
@@ -148,7 +163,7 @@ class Row:
             with open(p, "rb") as f:
                 h.update(f.read())
         h.update(self.r_spec(seed).encode())
-        h.update(json.dumps([ENV, JIT[jit], IMAGE, ORACLE_VERSION, MEM_CAP], sort_keys=True).encode())
+        h.update(json.dumps([ENV, JIT[jit], oracle_id(), ORACLE_VERSION, MEM_CAP], sort_keys=True).encode())
         return h.hexdigest()[:24]
 
     def variant(self, jit):
@@ -185,7 +200,9 @@ def run_batch(cmd, env, batch, out, ncases, scratch, timeout=CASE_TIMEOUT):
     os.makedirs(out, exist_ok=True)
     lost = {}
     start = 1
-    have = lambda i: os.path.exists(os.path.join(out, f"{i:06d}.rds"))
+    # a case is done when its marker is: the driver writes it after the
+    # record, so a crash while writing the record leaves the case lost
+    have = lambda i: os.path.exists(os.path.join(out, f"{i:06d}.ok"))
     while start <= ncases:
         e = {**env, "A4_BATCH": batch, "A4_OUT": out, "A4_FROM": str(start),
              "HOME": scratch, "TMPDIR": scratch}
@@ -193,7 +210,8 @@ def run_batch(cmd, env, batch, out, ncases, scratch, timeout=CASE_TIMEOUT):
         if os.path.exists(started):
             os.remove(started)
         err = open(os.path.join(scratch, "stderr.txt"), "w+b")
-        p = subprocess.Popen(cmd, env=e, cwd=scratch, stdout=subprocess.DEVNULL, stderr=err, preexec_fn=cap)
+        sout = open(os.path.join(out, f"stdout.{start}"), "wb")
+        p = subprocess.Popen(cmd, env=e, cwd=scratch, stdout=sout, stderr=err, preexec_fn=cap)
         nxt, since = start, time.monotonic()
         timed_out = False
         while p.poll() is None:
@@ -206,6 +224,8 @@ def run_batch(cmd, env, batch, out, ncases, scratch, timeout=CASE_TIMEOUT):
                 timed_out = True
         while nxt <= ncases and have(nxt):
             nxt += 1
+        sout.close()
+        split_stdout(os.path.join(out, f"stdout.{start}"), out)
         err.seek(0)
         text = err.read().decode("utf-8", "replace")
         err.close()
@@ -224,6 +244,32 @@ def run_batch(cmd, env, batch, out, ncases, scratch, timeout=CASE_TIMEOUT):
             f.write(f"{lost[nxt]} (exit status {p.returncode})\n{tail}\n")
         start = nxt + 1
     return lost
+
+
+MARK = re.compile(rb"\x01A4 (\d+)\x01\n")
+
+
+def split_stdout(path, out):
+    """A run's stdout, split at the driver's markers into `<id>.out` (the
+    output each case printed; none when it printed nothing)."""
+    with open(path, "rb") as f:
+        data = f.read()
+    os.remove(path)
+    ms = list(MARK.finditer(data))
+    for k, m in enumerate(ms):
+        end = ms[k + 1].start() if k + 1 < len(ms) else len(data)
+        if end > m.end():
+            with open(os.path.join(out, f"{int(m.group(1)):06d}.out"), "wb") as f:
+                f.write(data[m.end():end])
+
+
+def printed(rds):
+    """What the case whose record is `rds` printed."""
+    p = rds[:-4] + ".out"
+    if not os.path.exists(p):
+        return b""
+    with open(p, "rb") as f:
+        return f.read()
 
 
 def read_cases(d):
@@ -335,7 +381,7 @@ def classify(o, r, lost_o, lost_r, i):
     if i in lost_r or not os.path.exists(r):
         return lost_r.get(i, "crash")
     rb = open(r, "rb").read()
-    if ob == rb:
+    if ob == rb and printed(o) == printed(r):
         return "pass"
     if NOT_YET in rb:
         return "not-implemented"
@@ -460,6 +506,12 @@ def report(r, known, show):
     shown = ([i for i in new] + [i for i in fails if i not in set(new)])[:show]
     detail = render([(i, os.path.join(r["oracle"], f"{i:06d}.rds"), os.path.join(r["rt"], f"{i:06d}.rds"))
                      for i in mism])
+    for i in mism:
+        # equal records: what differs is the printed output
+        o_rds, r_rds = (os.path.join(r[k], f"{i:06d}.rds") for k in ("oracle", "rt"))
+        with open(o_rds, "rb") as f1, open(r_rds, "rb") as f2:
+            if f1.read() == f2.read():
+                detail[i] = ("stdout", repr(printed(o_rds)[:150]), repr(printed(r_rds)[:150]))
     if mism:
         if detail:
             byf = {}
@@ -600,6 +652,7 @@ PLANTS = {
     "names": ("mismatch", {"env"}),
     "abs": ("crash", None),
     "set.seed": ("mismatch", {"seed"}),
+    "nzchar": ("mismatch", {"stdout"}),
 }
 CONTROL = ["rep_len"]
 

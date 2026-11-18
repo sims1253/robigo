@@ -69,13 +69,16 @@ class Classes(unittest.TestCase):
         return p
 
     def test_each_class(self):
-        o = self.f("o", b"value 1")
-        same = self.f("r1", b"value 1")
+        o = self.f("o.rds", b"value 1")
+        same = self.f("r1.rds", b"value 1")
+        printed = self.f("r4.rds", b"value 1")
+        self.f("r4.out", b"extra\n")
         other = self.f("r2", b"value 2")
         ny = self.f("r3", b"robigo: x is not implemented yet")
         res = self.f("o2", b"error: cannot allocate vector of size 16.0 Gb")
         gone = os.path.join(self.d, "missing")
         self.assertEqual(bd.classify(o, same, {}, {}, 1), "pass")
+        self.assertEqual(bd.classify(o, printed, {}, {}, 1), "mismatch")
         self.assertEqual(bd.classify(o, other, {}, {}, 1), "mismatch")
         self.assertEqual(bd.classify(o, ny, {}, {}, 1), "not-implemented")
         self.assertEqual(bd.classify(res, other, {}, {}, 1), "resource")
@@ -91,8 +94,9 @@ class Classes(unittest.TestCase):
                                                 "resource 3 excluded, oracle-crash 4 excluded)")
 
 
-# a stand-in driver: writes each case's record from A4_FROM on, exits at
-# case CRASH_AT and sleeps at HANG_AT
+# a stand-in driver: from A4_FROM on, each case's marker line, output, record
+# and done marker; it exits at case CRASH_AT, exits halfway through writing
+# the record at TORN_AT, and sleeps at HANG_AT
 FAKE = textwrap.dedent("""\
     import os, sys, time
     out, start = os.environ["A4_OUT"], int(os.environ["A4_FROM"])
@@ -106,8 +110,15 @@ FAKE = textwrap.dedent("""\
             sys.stderr.write("thread 'main' panicked\\n"); os._exit(101)
         if i == int(os.environ.get("HANG_AT", "0")):
             time.sleep(30)
+        sys.stdout.write("\\x01A4 %d\\x01\\n" % i)
+        if i % 2:
+            sys.stdout.write("printed by %d\\n" % i)
+        sys.stdout.flush()
         with open(os.path.join(out, "%06d.rds" % i), "w") as f:
             f.write(str(i))
+            if i == int(os.environ.get("TORN_AT", "0")):
+                f.flush(); os._exit(101)
+        open(os.path.join(out, "%06d.ok" % i), "w").close()
     """)
 
 
@@ -129,6 +140,17 @@ class Batches(unittest.TestCase):
         self.assertEqual(recs, [f"{i:06d}.rds" for i in (1, 2, 4, 5, 7, 8)])
         with open(os.path.join(out, "000003.lost")) as f:
             self.assertIn("panicked", f.read())
+
+    def test_a_crash_while_writing_a_record_costs_that_case(self):
+        lost, recs, _ = self.run_fake(5, TORN_AT=3)
+        self.assertEqual(lost, {3: "crash"})
+        self.assertIn("000004.rds", recs)
+
+    def test_each_case_keeps_what_it_printed(self):
+        _, _, out = self.run_fake(4, CRASH_AT=2)
+        got = {f: open(os.path.join(out, f)).read() for f in sorted(os.listdir(out)) if f.endswith(".out")}
+        self.assertEqual(got, {"000001.out": "printed by 1\n", "000003.out": "printed by 3\n"})
+        self.assertFalse([f for f in os.listdir(out) if f.startswith("stdout.")])
 
     def test_no_losses(self):
         lost, recs, _ = self.run_fake(4)

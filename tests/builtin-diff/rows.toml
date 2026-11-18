@@ -28,6 +28,8 @@ domain = { type = ["=\"chars\"", "=\"bytes\"", "=\"width\"", "=\"c\"", "@chr", "
 
 [rep_len]
 
+[nzchar]
+
 ["set.seed"]
 typical = { seed = "0L", "i.knd" = "NULL", "normal.kind" = "NULL", "sample.kind" = "NULL" }
 domain = { "i.knd" = ["NULL", "0L", "=1L", "=3L", "=6L", "=7L", "intNA", "-1L", "1.5", "a"], "normal.kind" = ["NULL", "0L", "=1L", "=2L", "=5L", "intNA", "1.5"], "sample.kind" = ["NULL", "0L", "=1L", "=2L", "intNA", "a"] }
@@ -130,7 +132,7 @@ domain = { f = ["@any", "=factor(c(1, 2, 1, 2, 1, 2, 1, 2, 1, 2))"] }
   "is.matrix", "is.na", "is.name", "is.nan", "is.null", "is.numeric", "is.object", "is.pairlist",
   "is.raw", "is.recursive", "is.single", "is.symbol", "is.unsorted", "is.vector", "isS4",
   "islistfactor", "l10n_info", "length", "length<-", "lengths", "levels<-", "lgamma", "log10",
-  "log1p", "log2", "match", "matrix", "max", "min", "mkCode", "names<-", "ngettext", "nzchar",
+  "log1p", "log2", "match", "matrix", "max", "min", "mkCode", "names<-", "ngettext",
   "oldClass", "oldClass<-", "order", "parent.env", "paste", "paste0", "pmatch", "pmax", "pmin",
   "prod", "psort", "qsort", "radixsort", "rank", "regexec", "regexpr", "rep.int", "rowMeans",
   "rowSums", "seq_along", "setEncoding", "shortRowNames", "sign", "sin", "sinh", "sinpi", "sort",

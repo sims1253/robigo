@@ -441,6 +441,10 @@ pub fn do_nzchar(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
         return Err(cx.error_call(Some(call), &msg));
     }
     crate::util::check1arg(cx, args, call, "x")?;
+    if cfg!(feature = "diff-plant") && args.get(cx, 0).len() == Some(3) {
+        // PLANT(A4, stdout): output GNU R does not print
+        cx.rprintf(b"a4plant\n");
+    }
     let x0 = args.get(cx, 0);
     if x0.sexptype() == INTSXP && attrib::inherits(x0, b"factor") {
         return Err(cx.error("'nzchar()' requires a character vector"));

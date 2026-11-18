@@ -9,7 +9,9 @@
 ##   aliases alias<i>, bound to the same objects before it); globals: the
 ##   global environment's names; seed: .Random.seed after the call, or NULL.
 ## A binding the call left as it was (its serialization unchanged) is
-## recorded as TRUE rather than its value.
+## recorded as list(unchanged = TRUE), any other as list(unchanged = FALSE,
+## value). Each case's printed output follows a marker line on stdout,
+## "\001A4 <id>\001", which the harness compares too.
 ##
 ## Parameters come from the environment (robigo-rt has no commandArgs yet):
 ##   A4_BATCH  the batch.rds gen.R wrote    A4_OUT    the records' directory
@@ -122,7 +124,8 @@ local({
         en <- sort(setdiff(ls(e, all.names = TRUE), "a4case"))
         env <- lapply(en, function(n) {
             v <- get0(n, e, inherits = FALSE)
-            if (!is.null(snap[[n]]) && identical(serialize(v, NULL), snap[[n]])) TRUE else v
+            if (!is.null(snap[[n]]) && identical(serialize(v, NULL), snap[[n]])) list(unchanged = TRUE)
+            else list(unchanged = FALSE, value = v)
         })
         names(env) <- en
         list(value = res$value, visible = res$visible, conds = conds, error = err, env = env,
@@ -132,9 +135,12 @@ local({
     n <- length(b$cases)
     if (from <= n) for (i in from:n) {
         c <- b$cases[[i]]
+        cat("\001A4 ", c$id, "\001\n", sep = "")
         rec <- run1(c)
         f <- file.path(out, sprintf("%06d.rds", c$id))
         tryCatch(saveRDS(rec, f, version = 3L, compress = FALSE),
                  error = function(x) saveRDS(list(driver_error = conditionMessage(x)), f, version = 3L, compress = FALSE))
+        ## the case is done: its record is whole (robigo-rt has no file.rename)
+        saveRDS(TRUE, file.path(out, sprintf("%06d.ok", c$id)), version = 3L, compress = FALSE)
     }
 })
