@@ -303,6 +303,15 @@ compile_error!(
 /// `fork.rs`.
 static ENV: std::sync::RwLock<()> = std::sync::RwLock::new(());
 
+/// The whole environment, `std::env::vars_os()` read under [`ENV`]
+/// shared: `Sys.getenv()`'s listing, which walks `environ` and so must
+/// not overlap an [`EnvWriter`]'s `setenv` (glibc makes only `getenv` safe
+/// against it).
+pub fn env_vars() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    let _r = env_read();
+    std::env::vars_os().collect()
+}
+
 /// [`ENV`] exclusive, for the fork handlers (`isolate::fork_take`): no
 /// reader is inside a C call and no writer inside `set_var` across a fork.
 pub(crate) fn env_write_lock() -> std::sync::RwLockWriteGuard<'static, ()> {
@@ -371,15 +380,22 @@ impl EnvWrites {
     /// so:
     /// - a read on that thread is sequential with the writes and allowed,
     ///   whatever reads it (C code included);
-    /// - a read on any other thread goes through `std::env`, through this
-    ///   module's guarded wrappers, or through a C library whose `getenv`
-    ///   tolerates a concurrent `setenv` (glibc [`MIN_GLIBC`] or later);
-    /// - nothing walks `environ` by hand on another thread meanwhile.
+    /// - a read on any other thread goes through this module's guarded
+    ///   wrappers, or reads one variable through a C library whose `getenv`
+    ///   tolerates a concurrent `setenv` (glibc [`MIN_GLIBC`] or later),
+    ///   as `std::env::var` does. The writer calls the C library's
+    ///   `setenv` directly and does not take std's lock, so std's lock
+    ///   gives no exclusion from it;
+    /// - nothing walks `environ` on another thread meanwhile: not by hand,
+    ///   and not through `std::env::vars`/`vars_os`, which walk it without
+    ///   this module's lock. robigo's own listing (`Sys.getenv()`) is
+    ///   [`env_vars`], which holds it.
     ///
     /// On a glibc older than [`MIN_GLIBC`] the embedder also assumes that
-    /// no other isolate runs native code while the holder writes, and that
-    /// no thread started by loaded native code reads the environment while
-    /// the isolate may write. (GNU R's rule that R's API belongs to the one
+    /// no other thread reads the environment at all while the isolate may
+    /// write, `std::env::var` included: no other isolate runs native code
+    /// meanwhile, and no thread started by loaded native code or by the
+    /// embedder reads it. (GNU R's rule that R's API belongs to the one
     /// R thread does not cover such threads: a worker can call `getenv`
     /// without touching R's API. This is an assumption, not a consequence.)
     pub unsafe fn assume() -> EnvWrites {

@@ -45,11 +45,14 @@
 #![allow(unsafe_code)]
 
 use std::cell::UnsafeCell;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 
-/// The embedder's locks: (take them, release them), in the order above.
-static EMBEDDER: OnceLock<(fn(), fn())> = OnceLock::new();
+/// The embedder's locks: take them, release them (functions of no
+/// arguments), in the order above; null until [`set_fork_locks`]. Plain
+/// atomics, with no "being set" state a fork could catch: a fork sees
+/// both, or neither (`release` is stored first, `take` last).
+static EMBEDDER_TAKE: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
+static EMBEDDER_RELEASE: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 
 /// Whether the current fork's `prepare` took the embedder's locks: `parent`
 /// and `child` release only what it took. `FORK` serializes forks, so one
@@ -72,10 +75,14 @@ static PREPARES: AtomicU64 = AtomicU64::new(0);
 static REGISTERED: AtomicBool = AtomicBool::new(false);
 
 /// Give the fork handlers the embedder's locks, taken before the arena's
-/// in `prepare` and released after it. The first call stays. A fork in
-/// progress when it is called releases what its own `prepare` took.
+/// in `prepare` and released after it. The embedder calls it before any of
+/// its locks can be held: robigo-rtcore from a constructor of its own
+/// (before `main`), and again before an isolate's first lock (a later call
+/// with the same functions changes nothing). A fork in progress when it is
+/// called releases what its own `prepare` took.
 pub fn set_fork_locks(take: fn(), release: fn()) {
-    let _ = EMBEDDER.set((take, release));
+    EMBEDDER_RELEASE.store(release as *mut (), Ordering::SeqCst);
+    EMBEDDER_TAKE.store(take as *mut (), Ordering::SeqCst);
 }
 
 /// How many forks have entered the `prepare` handler (a test's
@@ -90,7 +97,10 @@ extern "C" fn prepare() {
     // parent, or in the child by the same (forking) thread's copy.
     unsafe { libc::pthread_mutex_lock(FORK.0.get()) };
     PREPARES.fetch_add(1, Ordering::SeqCst);
-    if let Some(&(take, _)) = EMBEDDER.get() {
+    let take = EMBEDDER_TAKE.load(Ordering::SeqCst);
+    if !take.is_null() {
+        // SAFETY: stored by `set_fork_locks` from a `fn()`.
+        let take: fn() = unsafe { std::mem::transmute::<*mut (), fn()>(take) };
         take();
         TOOK_EMBEDDER.store(true, Ordering::Relaxed);
     }
@@ -99,9 +109,12 @@ extern "C" fn prepare() {
 
 extern "C" fn release() {
     crate::arena::unlock_after_fork();
-    if TOOK_EMBEDDER.swap(false, Ordering::Relaxed)
-        && let Some(&(_, release)) = EMBEDDER.get()
-    {
+    if TOOK_EMBEDDER.swap(false, Ordering::Relaxed) {
+        // `release` was stored before `take`, which this fork's `prepare`
+        // saw
+        let release = EMBEDDER_RELEASE.load(Ordering::SeqCst);
+        // SAFETY: stored by `set_fork_locks` from a `fn()`, and not null.
+        let release: fn() = unsafe { std::mem::transmute::<*mut (), fn()>(release) };
         release();
     }
     // SAFETY: the mutex this fork's `prepare` took (on this thread, or its

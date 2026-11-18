@@ -1044,6 +1044,22 @@ fn fork_release() {
     }
 }
 
+/// The constructor: this crate's locks given to the fork handlers before
+/// `main`, while the process has one thread, so no fork can see one held
+/// before the handlers know it.
+#[cfg(all(target_os = "linux", not(miri)))]
+extern "C" fn set_fork_locks_at_load() {
+    robigo_heap::set_fork_locks(fork_take, fork_release);
+}
+
+// SAFETY: an `.init_array` entry is a function of no arguments that the
+// loader calls once, before `main`; `set_fork_locks_at_load` stores two
+// atomics and needs nothing of std's runtime.
+#[cfg(all(target_os = "linux", not(miri)))]
+#[used]
+#[unsafe(link_section = ".init_array")]
+static SET_FORK_LOCKS_AT_LOAD: extern "C" fn() = set_fork_locks_at_load;
+
 /// [`LIVE_ISOLATES`] if no one holds it (a test's probe).
 #[cfg(test)]
 pub(crate) fn live_isolates_try_lock() -> Option<std::sync::MutexGuard<'static, usize>> {
@@ -1089,14 +1105,15 @@ impl OwnedIsolate {
     }
 
     pub fn with_options(opts: Options) -> OwnedIsolate {
+        // the fork handlers know this crate's locks before one is first
+        // taken (the constructor below did it before `main`; this is the
+        // same call again, in case a linker dropped the constructor)
+        robigo_heap::set_fork_locks(fork_take, fork_release);
         // counted before it can run anything (an environment write waits);
         // a panic below takes the count back
         let registration = Registration::new();
         // a new symbol's bits come from its name (H5): before any install
         robigo_heap::set_symbol_bits(crate::sym::symbol_bits);
-        // the fork handlers take this crate's locks before the arena's
-        // (robigo-heap's fork.rs: the lock order), set before the first heap
-        robigo_heap::set_fork_locks(fork_take, fork_release);
         // The heap's allocation never collects (H2), and no C segment is open
         // until a native call opens one, so no Rust frame is ever scanned
         // (docs/g3.md §3).

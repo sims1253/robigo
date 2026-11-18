@@ -33,7 +33,10 @@ pub fn do_getenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
         let names = x.bind(cx).as_vector::<Char<'_>>().unwrap();
         if names.is_empty() {
             use std::os::unix::ffi::OsStrExt;
-            let all: Vec<Vec<u8>> = std::env::vars_os()
+            // (under the environment's lock: a writer may run on another
+            // isolate's thread)
+            let all: Vec<Vec<u8>> = robigo_rtcore::clib::env_vars()
+                .into_iter()
                 .map(|(k, v)| {
                     let mut b = k.as_bytes().to_vec();
                     b.push(b'=');
