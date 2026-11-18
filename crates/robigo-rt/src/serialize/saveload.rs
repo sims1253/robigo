@@ -132,10 +132,10 @@ fn rc_name(cx: &mut Cx, x: Root<'_>) -> RResult<std::path::PathBuf> {
 /// else 3.
 // R: saveload.c:defaultSaveVersion
 fn default_save_version() -> i32 {
-    match std::env::var_os("R_DEFAULT_SAVE_VERSION").map(|v| super::atoi(v.as_encoded_bytes())) {
-        Some(v @ (2 | 3)) => v,
-        _ => 3,
-    }
+    std::env::var_os("R_DEFAULT_SAVE_VERSION")
+        .map(|v| super::atoi(v.as_encoded_bytes()))
+        .filter(|v| matches!(v, 2 | 3))
+        .unwrap_or(3)
 }
 
 /// `save.to.file(object, file, ascii, version)`: the magic number, then
