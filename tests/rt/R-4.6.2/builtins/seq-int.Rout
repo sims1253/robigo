@@ -29,12 +29,17 @@ typeof: integer
 [1] 1
 typeof: integer 
 Error: 'from' must be a finite number 
+call: seq.int(NaN) 
 [1] 1
 typeof: integer 
 Error: 'from' must be a finite number 
+call: seq.int(Inf) 
 Error: 'from' must be a finite number 
+call: seq.int(-Inf) 
 Error: 'from' must be a finite number 
+call: seq.int(NA_integer_) 
 Error: 'from' must be a finite number 
+call: seq.int(NA_real_) 
 [1] 1 2 3 4 5
 typeof: integer 
 [1] 1 2 3
@@ -50,23 +55,37 @@ typeof: double
 [1] -3 -2 -1  0  1  2  3
 typeof: integer 
 Error: 'from' must be a finite number 
+call: seq.int(NA, 5) 
 Error: 'to' must be a finite number 
+call: seq.int(1, NA) 
 Error: 'from' must be a finite number 
+call: seq.int(NaN, NaN) 
 Error: 'to' must be a finite number 
+call: seq.int(to = NaN) 
 Error: 'from' must be a finite number 
+call: seq.int(Inf, 5) 
 Error: 'to' must be a finite number 
+call: seq.int(1, Inf) 
 [1] 2 3
 typeof: integer 
 Warning: NAs introduced by coercion 
+call: print(x) 
 Error: 'from' must be a finite number 
+call: seq.int("abc", 3) 
 Warning: NAs introduced by coercion 
+call: print(x) 
 Error: 'to' must be a finite number 
+call: seq.int(1, "abc") 
 [1] 1 2 3 4 5
 typeof: integer 
 Error: 'by' must be of length 1 
+call: seq.int(1, 3, by = c(1, 2)) 
 Error: 'from' must be of length 1 
+call: seq.int(c(1, 2), 5) 
 Error: 'to' must be of length 1 
+call: seq.int(1, c(2, 3)) 
 Error: 'from' must be of length 1 
+call: seq.int(structure(1:3, foo = "f"), 5) 
 [1]  1  4  7 10
 typeof: double 
 [1] 10  7  4  1
@@ -108,25 +127,38 @@ attr(,"foo")
 [1] 0
 [1] TRUE
 Error: wrong sign in 'by' argument 
+call: seq.int(0.95, -2.999999999, 2L) 
  [1] -1e+308 -8e+307 -6e+307 -4e+307 -2e+307   0e+00  2e+307  4e+307  6e+307
 [10]  8e+307  1e+308
 typeof: double 
+[1] 1
+typeof: double 
+[1] 1
+typeof: double 
 Error: wrong sign in 'by' argument 
+call: seq.int(1.2, 1, by = 1) 
 [1] 1
 typeof: double 
 [1] 3
 typeof: double 
 Error: invalid '(to - from)/by' 
+call: seq.int(3, 5, by = 0) 
  [1]  1.0  1.5  2.0  2.5  3.0  3.5  4.0  4.5  5.0  5.5  6.0  6.5  7.0  7.5  8.0
 [16]  8.5  9.0  9.5 10.0
 typeof: double 
 Error: wrong sign in 'by' argument 
+call: seq.int(1, 10, by = -1) 
 Error: 'by' argument is much too small 
+call: seq.int(1, 1e+12, by = 0.5) 
 Error: negative length vectors are not allowed 
+call: print(x) 
 Error: invalid '(to - from)/by' 
+call: seq.int(1, 10, by = NA) 
 Error: unimplemented type 'raw' in 'asReal'
  
+call: print(x) 
 Error: 'length.out' must be a finite number 
+call: seq.int(1, 10, length.out = raw(0)) 
 [1] 1 3 5 7 9
 typeof: double 
  [1] 2.094395 2.111848 2.129302 2.146755 2.164208 2.181662 2.199115 2.216568
@@ -167,16 +199,23 @@ typeof: integer
 [1]  1.0  5.5 10.0
 typeof: double 
 Error: 'length.out' must be a non-negative number 
+call: seq.int(1, 10, length.out = -1) 
 Error: 'length.out' must be a non-negative number 
+call: seq.int(1, 10, length.out = -0.5) 
 integer(0)
 typeof: integer 
 [1] 1
 typeof: integer 
 Error: 'length.out' must be a finite number 
+call: seq.int(1, 10, length.out = NaN) 
 Error: 'length.out' must be a finite number 
+call: seq.int(1, 10, length.out = NA) 
 Error: 'length.out' must be a finite number 
+call: seq.int(1, 10, length.out = Inf) 
 Warning: NAs introduced by coercion 
+call: print(x) 
 Error: 'length.out' must be a finite number 
+call: seq.int(1, 10, length.out = "abc") 
 [1]  1.0  5.5 10.0
 typeof: double 
 integer(0)
@@ -185,9 +224,13 @@ typeof: integer
 typeof: integer 
 Error: unimplemented type 'raw' in 'asReal'
  
+call: print(x) 
 Warning: first element used of 'length.out' argument 
+call: seq.int(1, 10, length.out = c(1e+15, 2)) 
 Error: cannot allocate vector of size 7450580.6 Gb 
+call: NULL 
 Error: result would be too long a vector 
+call: seq.int(1, 10, length.out = 4503599627370496) 
 [1] 0 1 2
 typeof: integer 
 [1] 16146 16147 16148 16149
@@ -261,6 +304,52 @@ typeof: double
 typeof: double 
 [1] -2147483646 -2147483647          NA
 typeof: integer 
+[1] 1 3 5 7
+typeof: integer 
+[1] 1.0 1.5 2.0 2.5
+typeof: double 
+[1]  4  6  8 10
+typeof: integer 
+[1]  9.0  9.5 10.0 10.5
+typeof: double 
+Error: 'from' must be a finite number 
+call: seq.int(from = Inf, length.out = 3) 
+Error: 'from' must be a finite number 
+call: seq.int(from = NA, length.out = 3) 
+Error: 'from' must be a finite number 
+call: seq.int(from = NaN, length.out = 3) 
+Error: 'from' must be a finite number 
+call: seq.int(to = Inf, length.out = 3) 
+Error: 'from' must be a finite number 
+call: seq.int(to = NA, length.out = 3) 
+Error: 'from' must be a finite number 
+call: seq.int(to = NaN, length.out = 3) 
+Error: 'from' must be a finite number 
+call: seq.int(Inf, Inf, length.out = 3) 
+Error: 'from' must be a finite number 
+call: seq.int(Inf, by = 1, length.out = 3) 
+Error: 'from' must be a finite number 
+call: seq.int(NA, by = 1, length.out = 3) 
+Error: 'from' must be a finite number 
+call: seq.int(NaN, by = 1, length.out = 3) 
+Error: 'by' must be a finite number 
+call: seq.int(1, by = Inf, length.out = 3) 
+Error: 'by' must be a finite number 
+call: seq.int(1, by = NA, length.out = 3) 
+Error: 'by' must be a finite number 
+call: seq.int(1, by = NaN, length.out = 3) 
+Error: 'to' must be a finite number 
+call: seq.int(to = Inf, by = 1, length.out = 3) 
+Error: 'to' must be a finite number 
+call: seq.int(to = NA, by = 1, length.out = 3) 
+Error: 'to' must be a finite number 
+call: seq.int(to = NaN, by = 1, length.out = 3) 
+Error: 'by' must be a finite number 
+call: seq.int(to = 10, by = Inf, length.out = 3) 
+Error: 'by' must be a finite number 
+call: seq.int(to = 10, by = NA, length.out = 3) 
+Error: 'by' must be a finite number 
+call: seq.int(to = 10, by = NaN, length.out = 3) 
 [1] 1 2 3
 typeof: integer 
 integer(0)
@@ -298,8 +387,11 @@ typeof: integer
 [1] 1 3 5 7 9
 typeof: integer 
 Error: too many arguments 
+call: seq.int(1, 2, 1, 5) 
 Error: too many arguments 
+call: seq.int(1, 10, by = 2, length.out = 3) 
 Error: too many arguments 
+call: seq.int(1, 2, 3, 4, 5, 6) 
 [1] 1 3 5 7 9
 typeof: double 
  [1]  1  2  3  4  5  6  7  8  9 10

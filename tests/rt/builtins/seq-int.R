@@ -5,9 +5,19 @@
 # results, the dispatch on a `seq` method, and every error against its own
 # call. One failing call per m(), so the script keeps going.
 p <- function(x) { print(x); cat("typeof:", typeof(x), "\n") }
+# the condition call beside the message: which call raised it (errorcall's
+# own call, or error's context call), so the recording checks the
+# attribution of every error and warning
 m <- function(e) withCallingHandlers(
-  tryCatch(e, error = function(c) cat("Error:", conditionMessage(c), "\n")),
-  warning = function(w) { cat("Warning:", conditionMessage(w), "\n"); invokeRestart("muffleWarning") })
+  tryCatch(e, error = function(c) {
+    cat("Error:", conditionMessage(c), "\n")
+    cat("call:", deparse1(conditionCall(c)), "\n")
+  }),
+  warning = function(w) {
+    cat("Warning:", conditionMessage(w), "\n")
+    cat("call:", deparse1(conditionCall(w)), "\n")
+    invokeRestart("muffleWarning")
+  })
 # One argument: seq.int(x) is 1:x (or 1:length(x))
 p(seq.int(5))
 p(seq.int(1L))
@@ -82,6 +92,10 @@ print(identical(r, -0.0))
 m(p(seq.int(0.95, -2.999999999, 2L)))
 # an infinite (to - from) with a finite n: both loops of the by branch
 p(seq.int(-1e308, 1e308, by = 2e307))
+# from missing in the by branch's early returns: a scalar allocated from
+# the default 1.0, never the missing argument itself
+m(p(seq.int(to = 1, by = 0)))
+m(p(seq.int(to = 1 + 1e-15, by = 0.5)))
 m(p(seq.int(1.2, 1, by = 1)))
 m(p(seq.int(1, 1, by = 0)))
 m(p(seq.int(3, 3, by = 0)))
@@ -160,6 +174,33 @@ p(seq.int(3.5, by = 0, length.out = 3))
 p(seq.int(2147483647, by = 1, length.out = 3))
 p(seq.int(2147483646, by = 1, length.out = 3))
 p(seq.int(to = -2147483648, by = -1, length.out = 3))
+# length.out with by and from or to missing: the integer and double ladders
+p(seq.int(1, by = 2, length.out = 4))
+p(seq.int(1, by = 0.5, length.out = 4))
+p(seq.int(to = 10, by = 2, length.out = 4))
+p(seq.int(to = 10.5, by = 0.5, length.out = 4))
+# every !R_FINITE exit of the three length.out branches: the length.out
+# ladder tests from then to, the miss_to ladder from then by, the
+# miss_from ladder to then by
+m(p(seq.int(from = Inf, length.out = 3)))
+m(p(seq.int(from = NA, length.out = 3)))
+m(p(seq.int(from = NaN, length.out = 3)))
+m(p(seq.int(to = Inf, length.out = 3)))
+m(p(seq.int(to = NA, length.out = 3)))
+m(p(seq.int(to = NaN, length.out = 3)))
+m(p(seq.int(Inf, Inf, length.out = 3)))
+m(p(seq.int(Inf, by = 1, length.out = 3)))
+m(p(seq.int(NA, by = 1, length.out = 3)))
+m(p(seq.int(NaN, by = 1, length.out = 3)))
+m(p(seq.int(1, by = Inf, length.out = 3)))
+m(p(seq.int(1, by = NA, length.out = 3)))
+m(p(seq.int(1, by = NaN, length.out = 3)))
+m(p(seq.int(to = Inf, by = 1, length.out = 3)))
+m(p(seq.int(to = NA, by = 1, length.out = 3)))
+m(p(seq.int(to = NaN, by = 1, length.out = 3)))
+m(p(seq.int(to = 10, by = Inf, length.out = 3)))
+m(p(seq.int(to = 10, by = NA, length.out = 3)))
+m(p(seq.int(to = 10, by = NaN, length.out = 3)))
 # along.with (its length, as xlength gives it; over length.out)
 p(seq.int(along.with = letters[1:3]))
 p(seq.int(along.with = NULL))
