@@ -156,11 +156,13 @@ EXTPTRSXP · WEAKREFSXP · OBJSXP (S4) · BUILTINSXP/SPECIALSXP
   (`grep -rn 'allow(unsafe_code)' crates/robigo-rtcore`), so that
   `robigo-rtbuiltins` and the crates above can forbid `unsafe`. Its contexts
   (`context.rs`, `native.rs`) are GNU R's `RCNTXT` records, linked by raw
-  pointer in the frames that push them and read by C, with the layout
-  `include/Defn.h` declares (checked against `src/context.c`'s table); the
-  heap's shim sets and jumps to their jump records. The conservative scan
-  reads other frames' stack words, which can be uninitialized or
-  exclusively borrowed: those loads are the shim's
+  pointer and read by C, with the layout `include/Defn.h` declares (checked
+  against `src/context.c`'s table); the heap's shim sets and jumps to their
+  jump records. The Rust drivers' records live in the isolate's record stack
+  (`records.rs`), a chunked arena used last in, first out, not in the frames
+  that push them, so that an R call keeps no record on the C stack. The
+  conservative scan reads other frames' stack words, which can be
+  uninitialized or exclusively borrowed: those loads are the shim's
   (`robigo_heap_scan_words`), and Rust sees only the values that may be
   object addresses. Its C API state
   (`capi.rs`) is the per-isolate block of GNU R's C globals that C reads

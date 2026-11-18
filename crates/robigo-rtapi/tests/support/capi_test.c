@@ -480,6 +480,12 @@ SEXP rt_altrep_one(void)
     return R_new_altrep(c, R_NilValue, R_NilValue);
 }
 
+/* coerceVector to a type code from R (one too large for any SEXPTYPE) */
+SEXP rt_coerce_to(SEXP x, SEXP type)
+{
+    return coerceVector(x, (SEXPTYPE) asReal(type));
+}
+
 /* The package classes' Length method over data1; it counts its calls in
    data2, an integer scalar (rt_altrep_length_calls: per object, so tests
    running in parallel do not share the count). */
