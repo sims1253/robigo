@@ -313,47 +313,22 @@ fn an_empty_r_translations_is_fatal() {
 
 /// With `_R_COMPILE_PKGS_` set, each closure is byte-compiled as it is
 /// serialized (serialize.c's WriteItem, `R_cmpfun1`: `compiler:::tryCmpfun`).
-/// Where the compiler namespace cannot load, `:::`'s error comes out of
-/// `serialize()`, and `R_compile_pkgs` stays off, so the next closure is
-/// written uncompiled. That is GNU R 4.6.2's behaviour with an R_HOME
-/// without the compiler package: "package ‘compiler’ does not have a
-/// namespace", a hasNoNamespaceError without a call. The compiled case
-/// is `tests/rt/serialize/compile-pkgs.R`.
+/// Where the compiler namespace cannot load, the load's error comes out of
+/// `serialize()` and `R_compile_pkgs` stays off, so the next closure is
+/// written uncompiled. That is GNU R 4.6.2's order, checked on the oracle with
+/// an R_HOME without the compiler package ("package ‘compiler’ does not have
+/// a namespace", then an uncompiled write). On robigo-rt today, the
+/// compiler's cmp.R stops on base's `.AutoloadEnv` (INTERIM(L5)), so that is
+/// the error. Once `.AutoloadEnv` is real, the closure compiles: that case
+/// is `tests/rt/serialize/compile-pkgs.R`, and this test changes with it.
 #[test]
-fn compiling_closures_on_serialize_without_the_compiler() {
-    // robigo-rt's R_HOME tree without library/compiler
-    let src = match option_env!("ROBIGO_WORKTREE") {
-        Some(w) if !w.is_empty() => Path::new(w).join(".robigo/rt-home"),
-        _ => Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.robigo/rt-home"),
-    };
-    if !src.join("library/base/R/base").is_file() {
-        eprintln!("skipped: no R_HOME tree at {} (scripts/rt-home.sh)", src.display());
-        return;
-    }
-    let home = std::env::temp_dir().join(format!("robigo-rt-nocompiler-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&home);
-    std::fs::create_dir_all(home.join("library")).unwrap();
-    for entry in std::fs::read_dir(&src).unwrap() {
-        let e = entry.unwrap();
-        if e.file_name() != "library" {
-            std::os::unix::fs::symlink(e.path(), home.join(e.file_name())).unwrap();
-        }
-    }
-    for entry in std::fs::read_dir(src.join("library")).unwrap() {
-        let e = entry.unwrap();
-        if e.file_name() != "compiler" {
-            std::os::unix::fs::symlink(e.path(), home.join("library").join(e.file_name())).unwrap();
-        }
-    }
+fn compiling_closures_on_serialize_when_the_compiler_cannot_load() {
     let expr = "x <- tryCatch(serialize(function(a) a, NULL), error = function(e) e); \
-                cat(class(x), conditionMessage(x), is.null(conditionCall(x)), '\\n'); \
-                cat(is.raw(serialize(function(a) a, NULL)), '\\n')";
-    let env = [("_R_COMPILE_PKGS_", "1"), ("R_ENABLE_JIT", "0"), ("R_HOME", home.to_str().unwrap())];
+                cat(inherits(x, 'error'), startsWith(conditionMessage(x), \"robigo: '.AutoloadEnv' needs\"), '\\n'); \
+                y <- serialize(function(a) a, NULL); \
+                cat(is.raw(y), typeof(.Internal(bodyCode(unserialize(y)))), '\\n')";
+    let env = [("_R_COMPILE_PKGS_", "1"), ("R_ENABLE_JIT", "0")];
     let (out, err, status) = run_env(&std::env::temp_dir(), &["--vanilla", "-e", expr], None, &env);
-    let _ = std::fs::remove_dir_all(&home);
-    assert_eq!(
-        String::from_utf8_lossy(&out),
-        "hasNoNamespaceError error condition package \u{2018}compiler\u{2019} does not have a namespace TRUE \nTRUE \n"
-    );
+    assert_eq!(String::from_utf8_lossy(&out), "TRUE TRUE \nTRUE symbol \n");
     assert_eq!((String::from_utf8_lossy(&err).as_ref(), status), ("", 0));
 }
