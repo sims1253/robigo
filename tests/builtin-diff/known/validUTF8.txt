@@ -1,4 +1,4 @@
-# builtin-diff known failures: validUTF8, seed 0, key a704df732f3026709b19840c
+# builtin-diff known failures: validUTF8, seed 0, key 27e5c49210572090f30a2eb0
 # validUTF8: 0 / 128 (not-implemented 128, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 1
 2

@@ -1,4 +1,4 @@
-# builtin-diff known failures: t.default, seed 0, key 0f49ea65fd3d46d040f5b066
+# builtin-diff known failures: t.default, seed 0, key d8417645878990735af480e0
 # t.default: 0 / 128 (not-implemented 128, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 1
 2

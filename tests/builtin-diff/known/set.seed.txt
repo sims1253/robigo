@@ -1,45 +1,19 @@
-# builtin-diff known failures: set.seed, seed 0, key 04ea3544de4231f25975ec93
-# set.seed: 959 / 1002 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
-1
+# builtin-diff known failures: set.seed, seed 0, key 9217420898234966465e9f61
+# set.seed: 959 / 976 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 26 excluded)
 40
 85
-161
 205
-215
-224
-242
 271
 319
-323
-350
-363
-386
 399
-420
-422
 423
 480
-503
 508
-512
-530
-557
-559
 565
-566
 617
-683
 699
-755
 771
-773
-791
-800
 812
 845
 850
-866
-890
-899
-919
 958

@@ -117,7 +117,10 @@ robigo-rt's builtins with GNU R 4.6.2's on generated inputs, out of process.
     the driver restarts at the next;
   - `resource`: GNU R reports an allocation failure under the cap.
     Excluded;
-  - `oracle-crash`: GNU R itself died or hung. Excluded.
+  - `oracle-crash`: GNU R itself died or hung, or its two runs of the
+    batch gave the case different records. GNU R's side runs every batch
+    twice: a raw `.Internal` call with an input its wrapper never passes can
+    read memory it should not. Excluded.
 
   robigo-rt failing to allocate where GNU R did not is a `crash`. A driver
   whose self-test fails stops the run with "driver unusable on <runtime>:

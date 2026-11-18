@@ -28,7 +28,7 @@ A case is one of:
   not-implemented robigo-rt's record says "is not implemented yet"
   crash, timeout  robigo-rt died or hung on it (it costs that case only)
   resource        GNU R ran out of memory under the cap: excluded
-  oracle-crash    GNU R died or hung on it: excluded
+  oracle-crash    GNU R died or hung on it, or gave two answers in two runs: excluded
 
 Both runtimes run with a 2 GiB address-space cap per process, no network,
 and a scratch directory as working, home and temporary directory.
@@ -60,6 +60,9 @@ IMAGE = os.environ.get("ROBIGO_BUILTIN_DIFF_ORACLE", "robigo-oracle:4.6.2")
 ENV = {"LC_ALL": "C.UTF-8", "LANGUAGE": "en", "TZ": "UTC", "R_DEFAULT_PACKAGES": "NULL"}
 JIT = {"off": "0", "on": "3"}
 MEM_CAP = 2 << 30
+# what GNU R's side is made of beyond gen.R and driver.R (part of the key):
+# 2, two runs per batch (a case whose records differ is unstable)
+ORACLE_VERSION = 2
 CASE_TIMEOUT = 10.0
 RESOURCE = [b"cannot allocate vector of size", b"memory exhausted", b"vector memory limit of",
             b"cannot allocate memory block", b"vector memory exhausted"]
@@ -145,7 +148,7 @@ class Row:
             with open(p, "rb") as f:
                 h.update(f.read())
         h.update(self.r_spec(seed).encode())
-        h.update(json.dumps([ENV, JIT[jit], IMAGE], sort_keys=True).encode())
+        h.update(json.dumps([ENV, JIT[jit], IMAGE, ORACLE_VERSION, MEM_CAP], sort_keys=True).encode())
         return h.hexdigest()[:24]
 
     def variant(self, jit):
@@ -276,8 +279,18 @@ def cmd_oracle(a):
         scratch = tempfile.mkdtemp(prefix="a4-scratch-")
         n = len(read_cases(d))
         env = {**os.environ, **ENV, "R_ENABLE_JIT": JIT[j], "A4_LABEL": "GNU R"}
-        lost = run_batch([*prefix, "Rscript", "--vanilla", DRIVER], env, os.path.join(d, "batch.rds"),
-                         os.path.join(d, "records"), n, scratch)
+        cmd = [*prefix, "Rscript", "--vanilla", DRIVER]
+        lost = run_batch(cmd, env, os.path.join(d, "batch.rds"), os.path.join(d, "records"), n, scratch)
+        # a second run: a case whose two records differ (GNU R reading memory
+        # it should not, on an input its wrapper never passes) has no answer
+        again = os.path.join(scratch, "again")
+        lost2 = run_batch(cmd, env, os.path.join(d, "batch.rds"), again, n, scratch)
+        for i in range(1, n + 1):
+            if i in lost:
+                continue
+            a_, b_ = (os.path.join(x, f"{i:06d}.rds") for x in (os.path.join(d, "records"), again))
+            if i in lost2 or not os.path.exists(b_) or open(a_, "rb").read() != open(b_, "rb").read():
+                lost[i] = "unstable"
         shutil.rmtree(scratch, ignore_errors=True)
         with open(os.path.join(d, "done"), "w") as f:
             json.dump({"lost": lost}, f)

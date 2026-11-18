@@ -1,34 +1,13 @@
-# builtin-diff known failures: RNGkind, seed 0, key 0a436ef2fb9327fc1321dd50
-# RNGkind: 761 / 793 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
-8
-17
+# builtin-diff known failures: RNGkind, seed 0, key a7d6f427cbc08d5f069c8f17
+# RNGkind: 761 / 772 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 21 excluded)
 40
-71
-89
-116
 118
-224
 236
-242
 281
-287
-314
-332
-341
-359
 376
-386
-413
-422
-440
 454
-458
 488
 530
-548
 557
-575
-593
-602
 628
 644

@@ -1,4 +1,4 @@
-# builtin-diff known failures: utf8ToInt, seed 0, key 5bce95be5ff80f83e44cde08
+# builtin-diff known failures: utf8ToInt, seed 0, key e7d7ebee1c1f5693147c49b6
 # utf8ToInt: 0 / 128 (not-implemented 128, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 1
 2

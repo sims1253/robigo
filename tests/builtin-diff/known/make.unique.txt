@@ -1,4 +1,4 @@
-# builtin-diff known failures: make.unique, seed 0, key 76968c1505a083ee655b1081
+# builtin-diff known failures: make.unique, seed 0, key ec3e90e6a4c439c328d156b6
 # make.unique: 0 / 254 (not-implemented 254, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 1
 2
