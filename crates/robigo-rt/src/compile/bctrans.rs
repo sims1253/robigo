@@ -1280,14 +1280,17 @@ impl<'g> Comp<'g> {
             SETVAR | SETVAR2 => {
                 let r = self.top(t)?;
                 let sym = k(i.a[0]);
-                let mut s = Ins::new(if i.op == SETVAR2 { Op::SetVar2 } else { Op::SetVar });
-                s.a = r;
-                s.e = self.k(sym);
                 // (its value reaches RETURN with no INVISIBLE: bcEval's
                 // SETVAR leaves R_Visible as the value's load set it)
-                if tail {
-                    s.g |= crate::compile::G_KEEP_VIS;
-                }
+                let mut s = if tail {
+                    let mut k = Ins::new(Op::SetVarKeep);
+                    k.g = (i.op == SETVAR2) as u16;
+                    k
+                } else {
+                    Ins::new(if i.op == SETVAR2 { Op::SetVar2 } else { Op::SetVar })
+                };
+                s.a = r;
+                s.e = self.k(sym);
                 if i.op == SETVAR && !self.locals.contains(&sym) {
                     self.locals.push(sym);
                 }

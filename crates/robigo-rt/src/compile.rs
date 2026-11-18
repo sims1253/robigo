@@ -589,8 +589,8 @@ impl From<bool> for Tail {
     }
 }
 
-/// An assignment's `g` bit (SetVar, SetVar2, BcAssign): R_Visible left as
-/// the value set it (bcEval's SETVAR and ENDASSIGN), not cleared.
+/// `BcAssign`'s `g` bit (1 is `<<-`): R_Visible left as the setter calls
+/// set it (bcEval's ENDASSIGN of `return()`'s operand), not cleared.
 pub(crate) const G_KEEP_VIS: u16 = 2;
 
 struct Comp<'g> {
@@ -2589,12 +2589,16 @@ impl<'g> Comp<'g> {
                     // do_set's `eval(CADR(args), rho)` under PROTECT(op),
                     // PROTECT(e)
                     self.expr_at(a[1].0, dst, d + 1, self.pp + 2, tail.value())?;
-                    let mut i = Ins::new(if s == Special::Assign2 { Op::SetVar2 } else { Op::SetVar });
+                    let mut i = if tail.ret() {
+                        // bcEval's SETVAR of `return()`'s operand
+                        let mut k = Ins::new(Op::SetVarKeep);
+                        k.g = (s == Special::Assign2) as u16;
+                        k
+                    } else {
+                        Ins::new(if s == Special::Assign2 { Op::SetVar2 } else { Op::SetVar })
+                    };
                     i.a = dst;
                     i.e = self.k(sym);
-                    if tail.ret() {
-                        i.g |= G_KEEP_VIS;
-                    }
                     if s != Special::Assign2 && !self.locals.contains(&sym) {
                         self.locals.push(sym);
                     }

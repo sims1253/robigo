@@ -302,6 +302,14 @@ pub enum Op {
     /// its own once translated code is the common path (V4 step 3, after
     /// L5; docs/ledger/g3/2026-11-17-v4-2-promise-code.md).
     CallCodes,
+    /// `SetVar` (`g` 0) or `SetVar2` (`g` 1) of `return()`'s operand under
+    /// the `Bc` profile: bcEval's SETVAR and SETVAR2, which leave R_Visible
+    /// as the value set it (`SetVar` clears it, as do_set and a tail
+    /// assignment's INVISIBLE do). The value's visibility at run time is no
+    /// constant (`return(x <- invisible(v))`), so neither an F_VIS, a
+    /// SetVis nor the Ret's visibility can say it. An op of its own keeps
+    /// `SetVar`'s arm in `vm::run` as it was. No slot index; not inlined.
+    SetVarKeep,
 }
 
 /// [`Op::Math1`]'s kinds past `math1funs`' indices.

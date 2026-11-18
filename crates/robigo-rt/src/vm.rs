@@ -465,7 +465,13 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
             Op::SetVar | Op::SetVar2 => {
                 // SAFETY: as above.
                 let sym = unsafe { v.k(i.e) };
-                set_var(cx, act, i.a, sym, i.op == Op::SetVar2, i.f, v.shape, i.g)?;
+                set_var(cx, act, i.a, sym, i.op == Op::SetVar2, i.f, v.shape)?;
+                reload!();
+            }
+            Op::SetVarKeep => {
+                // SAFETY: as above.
+                let sym = unsafe { v.k(i.e) };
+                set_var_keep(cx, act, i.a, sym, i.g == 1)?;
                 reload!();
             }
             Op::Jmp => pc = i.target(),
@@ -1180,23 +1186,32 @@ fn slow_builtin(cx: &mut Cx, act: &mut Act, v: &View, i: &Ins, pc: usize, n: usi
     unsafe { crate::call::call_builtin_regs(cx, act, i.a, fun, call, i.b, n, false) }
 }
 
+/// `SetVarKeep`: bcEval's SETVAR or SETVAR2 (`<<-`, `g` 1) of `return()`'s
+/// operand: `set_var`'s boxed path, R_Visible not touched. Out of line, and of
+/// out-of-line parts only, so the `SetVar` arm and the `set_var` it inlines
+/// stay as they were (a second caller of what `run` inlines outlines it).
+// R: eval.c:bcEval SETVAR, SETVAR2
+#[inline(never)]
+fn set_var_keep(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool) -> RResult<()> {
+    boxed(cx, act, r)?;
+    // SAFETY: an immortal symbol.
+    let s = unsafe { act.scratch(R_SCRATCH, sym) };
+    let res = if super_assign {
+        // SAFETY: ENCLOS of the live environment.
+        let enclos = unsafe { act.scratch(R_SCRATCH2, robigo_heap::env::enclos(act.rho())) };
+        cx.set_var(s, act.root(r), enclos)
+    } else {
+        cx.define_var(s, act.root(r), act.root(R_ENV))
+    };
+    act.clear(R_SCRATCH);
+    act.clear(R_SCRATCH2);
+    res
+}
+
 /// `defineVar(sym, value, rho)` (`<-`) or `setVar(sym, value, ENCLOS(rho))`
-/// (`<<-`), with register `r` (boxed) the value; `R_Visible = FALSE`, but
-/// with `G_KEEP_VIS` in `g` left as the value set it (bcEval's SETVAR, of
-/// `return()`'s operand).
-// R: eval.c:do_set; eval.c:bcEval SETVAR, SETVAR2
-#[allow(clippy::too_many_arguments)]
-fn set_var(
-    cx: &mut Cx,
-    act: &Act,
-    r: Reg,
-    sym: Sexp,
-    super_assign: bool,
-    slot: u16,
-    shape: Sexp,
-    g: u16,
-) -> RResult<()> {
-    let hide = g & crate::compile::G_KEEP_VIS == 0;
+/// (`<<-`), with register `r` (boxed) the value; `R_Visible = FALSE`.
+// R: eval.c:do_set
+fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: u16, shape: Sexp) -> RResult<()> {
     if !super_assign {
         let v = act.get(r);
         let scalar = match v.tag() {
@@ -1212,9 +1227,7 @@ fn set_var(
             // SAFETY: an immortal symbol, the rooted environment and the
             // code's shape; the slot index was compiled for that shape.
             if unsafe { cx.frame_store_scalar_raw(act.rho(), shape, slot as usize - 1, sym, x) } {
-                if hide {
-                    cx.set_visible(false);
-                }
+                cx.set_visible(false);
                 return Ok(());
             }
         }
@@ -1226,9 +1239,7 @@ fn set_var(
             let res = cx.define_scalar(s, x, act.root(R_ENV));
             act.clear(R_SCRATCH);
             res?;
-            if hide {
-                cx.set_visible(false);
-            }
+            cx.set_visible(false);
             return Ok(());
         }
     }
@@ -1245,9 +1256,7 @@ fn set_var(
     act.clear(R_SCRATCH);
     act.clear(R_SCRATCH2);
     res?;
-    if hide {
-        cx.set_visible(false);
-    }
+    cx.set_visible(false);
     Ok(())
 }
 
