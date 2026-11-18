@@ -150,6 +150,10 @@ static RT_PRIMS: &[PrimDef] = &[
     special_fn("switch", crate::specials::do_switch, 200, -1),
     special_fn("on.exit", crate::specials::do_onexit, 100, -1),
     special_fn("substitute", crate::specials::do_substitute, 0, -1),
+    // names.c, attrib.c
+    special_fn("~", crate::specials::do_tilde, 0, -1),
+    special_fn("@", crate::specials::do_at, 0, 2),
+    special_fn("@<-", crate::specials::do_slot_gets, 0, 3),
     // eval.c
     special_fn("forceAndCall", crate::apply::do_force_and_call, 0, -1),
     // arithmetic.c
@@ -633,4 +637,39 @@ pub(crate) fn make_prims(cx: &mut Cx, defs: &[PrimDef], first: usize) -> (Vec<Gl
         names.push(sym);
     }
     (objs, names)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use robigo_rtbuiltins::names::{internal_eval, primitive_eval};
+
+    /// Every row of the primitive table (B1's registry and the evaluator's
+    /// own) has names.c's eval column, and its kind is the column's: a
+    /// BUILTINSXP for `Z = 1`, a SPECIALSXP (a language special or a function
+    /// over its call) for `Z = 0`. cmp.R picks a call's handler by that kind
+    /// (`typeof()` of a primitive; `is.builtin.internal` of an `.Internal`,
+    /// which `typeof()` cannot reach), and visibility follows the column's X.
+    // R: names.c:R_FunTab
+    #[test]
+    fn every_row_has_names_cs_eval_column_and_kind() {
+        let mut bad = Vec::new();
+        for d in base_defs() {
+            let want = if d.internal() { internal_eval(d.name.as_bytes()) } else { primitive_eval(d.name.as_bytes()) };
+            let Some(want) = want else {
+                bad.push(format!("{} (internal {}): not a row of names.c", d.name, d.internal()));
+                continue;
+            };
+            if d.eval != i32::from(want) {
+                bad.push(format!("{}: eval {} where names.c has {}", d.name, d.eval, want));
+            }
+            // the object's type, as make_prims makes it
+            let builtin = matches!(d.kind, Kind::Builtin(..)) && d.eval % 10 == 1;
+            if builtin != (want % 10 == 1) {
+                let kind = |b: bool| if b { "builtin" } else { "special" };
+                bad.push(format!("{}: a {} where names.c has a {}", d.name, kind(builtin), kind(want % 10 == 1)));
+            }
+        }
+        assert!(bad.is_empty(), "rows that are not names.c's:\n{}", bad.join("\n"));
+    }
 }
