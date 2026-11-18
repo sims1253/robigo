@@ -65,8 +65,7 @@ fn pstate(cx: &mut Cx, _: Root<'_>, args: Args<'_>, _: Root<'_>, out: Out<'_>) -
             _ if x == cx.missing_arg() => "missing",
             _ => "value",
         };
-        let tag =
-            c.tag().as_sym().map(|s| format!("{}=", String::from_utf8_lossy(s.name().bytes()))).unwrap_or_default();
+        let tag = c.tag().as_sym().map(|s| format!("{}=", String::from_utf8_lossy(s.name_bytes()))).unwrap_or_default();
         v.push(format!("{tag}{st}"));
         l = c.cdr();
     }

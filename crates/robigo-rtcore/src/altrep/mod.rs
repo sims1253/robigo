@@ -142,7 +142,7 @@ impl Ref<'_> {
 fn error_in_class(msg: &str, x: Ref<'_>) -> String {
     let c = x.altrep_class().attrib().and_then(|i| i.as_cons());
     let name = |r: Option<Ref<'_>>| {
-        r.and_then(|s| s.as_sym()).map_or_else(String::new, |s| String::from_utf8_lossy(s.name().bytes()).into_owned())
+        r.and_then(|s| s.as_sym()).map_or_else(String::new, |s| String::from_utf8_lossy(s.name_bytes()).into_owned())
     };
     let (cls, pkg) = (name(c.map(|c| c.car())), name(c.and_then(|c| c.cdr().as_cons()).map(|c| c.car())));
     format!("{msg} [class: {cls}, pkg: {pkg}]")

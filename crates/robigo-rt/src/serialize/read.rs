@@ -615,7 +615,7 @@ impl<'r> Reader<'_, 'r> {
                     unsafe {
                         last.bind(cx).sexp().set_tag(tag);
                         if self.depth == 1 && tag.typ() == SYMSXP {
-                            self.lastname = tag.car().char_bytes().to_vec();
+                            self.lastname = tag.sym_name_bytes().to_vec();
                             set_lastname = true;
                         }
                     }
@@ -912,9 +912,9 @@ impl<'r> Reader<'_, 'r> {
             let (info, state, attr) = (parts[0], parts[1], parts[2]);
             let names = |cx: &Cx| -> Option<(Vec<u8>, Vec<u8>, u8)> {
                 let i = info.bind(cx).as_cons()?;
-                let c = i.car().as_sym()?.name().bytes().to_vec();
+                let c = i.car().as_sym()?.name_bytes().to_vec();
                 let rest = i.cdr().as_cons()?;
-                let p = rest.car().as_sym()?.name().bytes().to_vec();
+                let p = rest.car().as_sym()?.name_bytes().to_vec();
                 let t = rest.cdr().as_cons()?.car().as_scalar::<i32>()?;
                 Some((c, p, t as u8))
             };
