@@ -38,7 +38,7 @@ fn deparse_forces_the_promises_it_meets_in_order() {
         // forced once: a second deparse runs no code
         assert_eq!(s.val(".Internal(deparse(l, 60L, TRUE, 0L, -1L))"), strs(&[r#"list(3, "b")"#]), "{p:?}");
         assert_eq!(s.val("n"), Val::Real(vec![10.0]), "{p:?}");
-        // a promise inside a call, printed or deparsed
+        // a promise inside a call
         s.val("cl <- as.call(list(quote(f), mkprom(quote({ n <- n + 5; 7 }))))");
         assert_eq!(s.val(".Internal(deparse(cl, 60L, TRUE, 0L, -1L))"), strs(&["f(7)"]), "{p:?}");
         assert_eq!(s.val("n"), Val::Real(vec![15.0]), "{p:?}");
