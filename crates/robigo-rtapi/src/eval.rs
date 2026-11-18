@@ -10,7 +10,7 @@ use crate::errors::{not_yet, r_type_to_char};
 use crate::memory::{alloc, safepoint};
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Cx, RResult, Root, Scope, Sexp};
-use std::ffi::c_int;
+use std::ffi::{c_int, c_uint};
 
 /// A symbol argument's name (`GetOption1`'s tag, `setAttrib`'s name), or
 /// `installTrChar(STRING_ELT(name, 0))`'s for a string.
@@ -224,5 +224,64 @@ entry! {
                 Err(cx.error(&format!("LENGTH or similar applied to {t} object")))
             }
         }
+    }
+}
+
+entry! {
+    /// `coerceVector(v, type)`.
+    // R: coerce.c:coerceVector
+    [2] fn Rf_coerceVector(v: Sexp, t: c_uint) -> Sexp => |cx, s| {
+        let o = s.out(cx);
+        let r = o.root();
+        let t = u8::try_from(t).unwrap_or(u8::MAX);
+        robigo_rtbuiltins::coerce::vector::coerce_vector(cx, v, t, o)?;
+        Ok(r.bind(cx).sexp())
+    }
+
+    /// `asBool(x)`: `asLogical2(x, checking = 1, R_NilValue)`, NA an error.
+    // R: coerce.c:asBool, asLogical2
+    [1] fn Rf_asBool(x: Sexp) -> bool => |cx, _s| {
+        let (v, n) = robigo_rtbuiltins::util::as_logical_n(cx, x.bind(cx));
+        if robigo_rtbuiltins::util::is_vector_atomic(x.bind(cx)) && n > 1 {
+            return Err(cx.error_call(None, &format!("'length = {n}' in coercion to 'logical(1)'")));
+        }
+        if v == robigo_heap::NA_LOGICAL {
+            return Err(cx.error("NA in coercion to boolean"));
+        }
+        Ok(v != 0)
+    }
+
+    /// `findVar(sym, rho)`: the value bound to `sym` in `rho` or an
+    /// enclosure (a promise as it is: unforced), R_UnboundValue if none.
+    // R: envir.c:findVar
+    [2] fn Rf_findVar(sym: Sexp, rho: Sexp) -> Sexp => |cx, s| {
+        let o = s.out(cx);
+        let r = o.root();
+        cx.find_var(sym, rho, o)?;
+        Ok(r.bind(cx).sexp())
+    }
+
+    /// `R_NewHashedEnv(enclos, size)`: a hashed environment (`size` the
+    /// table's initial size).
+    // R: envir.c:R_NewHashedEnv
+    [2] fn R_NewHashedEnv(enclos: Sexp, size: c_int) -> Sexp => |cx, s| {
+        alloc(cx, s, |cx| cx.new_env(enclos.bind(cx), true, size))
+    }
+}
+
+/// `isInteger(s)`: an integer vector that is not a factor.
+///
+/// # Safety
+/// Called from C code a native entry of the thread's isolate runs, with
+/// `s` a live object of that isolate (C's contract for the API).
+// R: Rinlinedfuns.h:isInteger
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Rf_isInteger(s: Sexp) -> c_int {
+    // SAFETY: the caller's contract; `s` is read without allocating.
+    unsafe {
+        robigo_rtcore::enter_leaf(|cx| {
+            let x = robigo_rtcore::Ref::from_sexp(s, cx);
+            (x.sexptype() == INTSXP && !robigo_rtbuiltins::attrib::inherits(x, b"factor")) as c_int
+        })
     }
 }
