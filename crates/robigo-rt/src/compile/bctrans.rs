@@ -1239,11 +1239,6 @@ impl<'g> Comp<'g> {
                 let r = self.pop(t)?;
                 self.clear(r);
             }
-            // (after an assignment, which leaves its value invisible, and
-            // where no jump lands: nothing to do)
-            INVISIBLE
-                if !t.labels.contains_key(&i.at)
-                    && matches!(self.ins.last().map(|l| l.op), Some(Op::SetVar | Op::SetVar2 | Op::BcAssign)) => {}
             INVISIBLE => self.set_vis(false),
             VISIBLE => self.set_vis(true),
             LDCONST => {
@@ -1280,15 +1275,7 @@ impl<'g> Comp<'g> {
             SETVAR | SETVAR2 => {
                 let r = self.top(t)?;
                 let sym = k(i.a[0]);
-                // (its value reaches RETURN with no INVISIBLE: bcEval's
-                // SETVAR leaves R_Visible as the value's load set it)
-                let mut s = if tail {
-                    let mut k = Ins::new(Op::SetVarKeep);
-                    k.g = (i.op == SETVAR2) as u16;
-                    k
-                } else {
-                    Ins::new(if i.op == SETVAR2 { Op::SetVar2 } else { Op::SetVar })
-                };
+                let mut s = Ins::new(if i.op == SETVAR2 { Op::SetVar2 } else { Op::SetVar });
                 s.a = r;
                 s.e = self.k(sym);
                 if i.op == SETVAR && !self.locals.contains(&sym) {
@@ -1869,11 +1856,6 @@ impl<'g> Comp<'g> {
                 b.b = r;
                 b.e = self.k(plan);
                 b.g = (i.op == STARTASSIGN2) as u16;
-                // (its value reaches RETURN: ENDASSIGN leaves R_Visible as
-                // the setter calls set it)
-                if returns_after(&t.code, a.end + 1) {
-                    b.g |= crate::compile::G_KEEP_VIS;
-                }
                 self.emit(b);
                 t.skip_to = Some(a.end);
             }

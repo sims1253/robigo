@@ -87,6 +87,21 @@ ti <- function() {
 }
 ti()
 print(ti())
+# the statement under way an assignment: invisible as do_set leaves it
+ta <- function() {
+  if (FALSE) browser()
+  x <- step(1L, function() .Call("rt_cut_after", ta, 2L))
+  "unused"
+}
+ta()
+print(ta())
+ts <- function() {
+  if (FALSE) browser()
+  xs <<- step(1L, function() .Call("rt_cut_after", ts, 2L))
+  "unused"
+}
+ts()
+print(ts())
 # a while loop whose call gets a new argument list in an iteration: the
 # loop keeps the list it read when it started (do_while's args)
 wa <- function() {

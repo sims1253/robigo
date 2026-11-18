@@ -468,12 +468,6 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 set_var(cx, act, i.a, sym, i.op == Op::SetVar2, i.f, v.shape)?;
                 reload!();
             }
-            Op::SetVarKeep => {
-                // SAFETY: as above.
-                let sym = unsafe { v.k(i.e) };
-                set_var_keep(cx, act, i.a, sym, i.g == 1)?;
-                reload!();
-            }
             Op::Jmp => pc = i.target(),
             Op::StartSubset => {
                 // SAFETY: a constant of the live code object.
@@ -618,7 +612,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 // SAFETY: a constant of the code.
                 let plan = unsafe { v.k(i.e) };
                 // SAFETY: the running code's constants (or rooted values): live, of this isolate.
-                unsafe { crate::bcassign::run(cx, act, i.a, i.b, plan, i.g) }?;
+                unsafe { crate::bcassign::run(cx, act, i.a, i.b, plan, i.g == 1) }?;
                 reload!();
             }
             Op::BaseGuard => {
@@ -1186,31 +1180,12 @@ fn slow_builtin(cx: &mut Cx, act: &mut Act, v: &View, i: &Ins, pc: usize, n: usi
     unsafe { crate::call::call_builtin_regs(cx, act, i.a, fun, call, i.b, n, false) }
 }
 
-/// `SetVarKeep`: bcEval's SETVAR or SETVAR2 (`<<-`, `g` 1) of `return()`'s
-/// operand: `set_var`'s boxed path, R_Visible not touched. Out of line, and of
-/// out-of-line parts only, so the `SetVar` arm and the `set_var` it inlines
-/// stay as they were (a second caller of what `run` inlines outlines it).
-// R: eval.c:bcEval SETVAR, SETVAR2
-#[inline(never)]
-fn set_var_keep(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool) -> RResult<()> {
-    boxed(cx, act, r)?;
-    // SAFETY: an immortal symbol.
-    let s = unsafe { act.scratch(R_SCRATCH, sym) };
-    let res = if super_assign {
-        // SAFETY: ENCLOS of the live environment.
-        let enclos = unsafe { act.scratch(R_SCRATCH2, robigo_heap::env::enclos(act.rho())) };
-        cx.set_var(s, act.root(r), enclos)
-    } else {
-        cx.define_var(s, act.root(r), act.root(R_ENV))
-    };
-    act.clear(R_SCRATCH);
-    act.clear(R_SCRATCH2);
-    res
-}
-
 /// `defineVar(sym, value, rho)` (`<-`) or `setVar(sym, value, ENCLOS(rho))`
-/// (`<<-`), with register `r` (boxed) the value; `R_Visible = FALSE`.
-// R: eval.c:do_set
+/// (`<<-`), with register `r` (boxed) the value: bcEval's SETVAR and
+/// SETVAR2, which leave R_Visible as the value left it. do_set's and a tail
+/// assignment's invisibility is the code's: a SetVis, or its Ret's (cmp.R's
+/// INVISIBLE).
+// R: eval.c:bcEval SETVAR, SETVAR2; eval.c:do_set
 fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: u16, shape: Sexp) -> RResult<()> {
     if !super_assign {
         let v = act.get(r);
@@ -1227,7 +1202,6 @@ fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: 
             // SAFETY: an immortal symbol, the rooted environment and the
             // code's shape; the slot index was compiled for that shape.
             if unsafe { cx.frame_store_scalar_raw(act.rho(), shape, slot as usize - 1, sym, x) } {
-                cx.set_visible(false);
                 return Ok(());
             }
         }
@@ -1239,7 +1213,6 @@ fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: 
             let res = cx.define_scalar(s, x, act.root(R_ENV));
             act.clear(R_SCRATCH);
             res?;
-            cx.set_visible(false);
             return Ok(());
         }
     }
@@ -1256,7 +1229,6 @@ fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: 
     act.clear(R_SCRATCH);
     act.clear(R_SCRATCH2);
     res?;
-    cx.set_visible(false);
     Ok(())
 }
 
@@ -1275,7 +1247,7 @@ fn boundary(cx: &mut Cx, act: &Act, i: Ins) -> RResult<usize> {
     if i.op == Op::Resume {
         // SAFETY: a constant of the code.
         let prev = unsafe { v.k(i.e) };
-        resume_begin(cx, act, prev, i.b, i.a)?;
+        resume_begin(cx, act, prev, i.b, i.a, i.c == 1)?;
         return Ok(i.target());
     }
     // SAFETY: constants of the code.
@@ -1286,11 +1258,17 @@ fn boundary(cx: &mut Cx, act: &Act, i: Ins) -> RResult<usize> {
 /// [`Op::Resume`]: the rest of a `{` as GNU R's `do_begin` runs it, from
 /// the cell after `prev` (re-read after each statement: the list is live),
 /// the value so far in register `val` ([`NO_REG`]: NULL); the last value
-/// into `dst`.
+/// into `dst`. `assign`: the statement done was an assignment, so when no
+/// statement follows its value is invisible (do_set's; the code leaves it
+/// to this point).
 // R: eval.c:do_begin
 #[cold]
 #[inline(never)]
-fn resume_begin(cx: &mut Cx, act: &Act, prev: Sexp, val: Reg, dst: Reg) -> RResult<()> {
+fn resume_begin(cx: &mut Cx, act: &Act, prev: Sexp, val: Reg, dst: Reg, assign: bool) -> RResult<()> {
+    // SAFETY: `prev` is a cell of the source, a constant of the rooted code.
+    if assign && unsafe { prev.cdr().typ() } != LISTSXP {
+        cx.set_visible(false);
+    }
     if val == NO_REG {
         let nil = cx.nil().sexp();
         // SAFETY: R_NilValue into a register of this activation.

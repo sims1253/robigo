@@ -549,18 +549,23 @@ struct LoopLabels {
 /// Where a value is compiled (cmp.R's context): in the tail (`tailcall`,
 /// the shapes that RETURN and set visibility), as `return()`'s operand
 /// (`make.nonTailCallContext`: non-tail shapes, the value's visibility what
-/// bcEval leaves at RETURN), or neither.
+/// bcEval leaves at RETURN), or neither. `Live`: under `Eval`, a `{`'s
+/// statement before its last while the `{` is in the tail, compiled as the
+/// tail (a write that cuts the list there makes it the last), but an
+/// assignment's invisibility is left to its `Resume` (`c` 1), which sets it
+/// only when that cut happens.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Tail {
     No,
     Yes,
     Ret,
+    Live,
 }
 
 impl Tail {
     /// cmp.R's tail shapes (INVISIBLE, a jump to the end, RETURN).
     fn is_tail(self) -> bool {
-        self == Tail::Yes
+        matches!(self, Tail::Yes | Tail::Live)
     }
 
     /// A value op sets visibility (F_VIS): bcEval's loads and operators set
@@ -589,9 +594,53 @@ impl From<bool> for Tail {
     }
 }
 
-/// `BcAssign`'s `g` bit (1 is `<<-`): R_Visible left as the setter calls
-/// set it (bcEval's ENDASSIGN of `return()`'s operand), not cleared.
-pub(crate) const G_KEEP_VIS: u16 = 2;
+/// A `SetVis` that falls into a `Ret` no jump lands on, through `Move`s and
+/// `Clear`s only (`moves`: under `Eval`, whose instructions keep offsets of
+/// their own, none), gives the `Ret` its visibility (`g`; cmp.R's INVISIBLE,
+/// then RETURN): the instructions after it move up one, the `Ret` with
+/// them, and the old `Ret` is left unreached.
+fn fold_vis_into_ret(ins: &mut [Ins], moves: bool) {
+    let mut targets = std::collections::HashSet::new();
+    for i in ins.iter() {
+        match i.op {
+            Op::Jmp
+            | Op::BackJmp
+            | Op::BrFalse
+            | Op::Guard
+            | Op::AndOr1
+            | Op::ForStep
+            | Op::BaseGuard
+            | Op::TopLoop
+            | Op::StartSubset
+            | Op::Resume => {
+                targets.insert(i.target());
+            }
+            // (a region's end, and the instruction after it)
+            Op::Loop | Op::LoopResume => {
+                targets.insert(i.target());
+                targets.insert(i.target() + 1);
+            }
+            _ => {}
+        }
+    }
+    let mut j = 0;
+    while j < ins.len() {
+        if ins[j].op == Op::SetVis {
+            let mut m = j + 1;
+            while moves && m < ins.len() && matches!(ins[m].op, Op::Move | Op::Clear | Op::ClearRange) {
+                m += 1;
+            }
+            if m < ins.len() && ins[m].op == Op::Ret && ins[m].g == 0 && !(j + 1..=m).any(|k| targets.contains(&k)) {
+                let g = if ins[j].g != 0 { 1 } else { 2 };
+                ins.copy_within(j + 1..=m, j);
+                ins[m - 1].g = g;
+                j = m;
+                continue;
+            }
+        }
+        j += 1;
+    }
+}
 
 struct Comp<'g> {
     cx: &'g Cx,
@@ -633,6 +682,9 @@ struct Comp<'g> {
     /// What a byte-code translation stopped at ([`bctrans`]): the code
     /// raises "not implemented yet" for it.
     bc_untranslated: Option<String>,
+    /// The assignment just compiled as a `{`'s earlier statement
+    /// ([`Tail::Live`]): its invisibility is its Resume's.
+    cut_assign: Option<Sexp>,
 }
 
 /// Give the argument codes compiled with closure code `code` (`arg_codes`)
@@ -700,6 +752,7 @@ impl<'g> Comp<'g> {
             site_save: 0,
             arg_codes: Vec::new(),
             bc_untranslated: None,
+            cut_assign: None,
         }
     }
 
@@ -734,6 +787,7 @@ impl<'g> Comp<'g> {
     /// The compiled code. Under the `Bc` profile no instruction is an
     /// evaluation point: bcEval counts and nests once per code object.
     fn finish(&mut self) -> Built {
+        fold_vis_into_ret(&mut self.ins, self.profile == Profile::Bc);
         if self.profile == Profile::Bc {
             for i in &mut self.ins {
                 i.fl &= !(F_TICK | F_DEPTH);
@@ -2251,10 +2305,21 @@ impl<'g> Comp<'g> {
                             let r = self.alloc();
                             // under `Eval`, a write that cuts the list after
                             // this statement makes it the last, so its
-                            // visibility is kept as the last one's is
-                            self.expr_at(st, r, d + 1, p, if live { tail } else { Tail::No })?;
+                            // visibility is kept as the last one's is (an
+                            // assignment's by its Resume)
+                            let ctx = match tail {
+                                Tail::Yes if live => Tail::Live,
+                                _ if live => tail,
+                                _ => Tail::No,
+                            };
+                            self.cut_assign = None;
+                            self.expr_at(st, r, d + 1, p, ctx)?;
                             if live {
-                                resumes.push(self.resume(cell, r, dst, d + 1));
+                                let at = self.resume(cell, r, dst, d + 1);
+                                if self.cut_assign == Some(st) {
+                                    self.ins[at].c = 1;
+                                }
+                                resumes.push(at);
                             }
                             self.clear(r);
                             self.free_to(r);
@@ -2545,10 +2610,12 @@ impl<'g> Comp<'g> {
                             i.b = dst;
                             i.e = self.k(plan);
                             i.g = (s == Special::Assign2) as u16;
-                            if tail.ret() {
-                                i.g |= G_KEEP_VIS;
-                            }
                             self.emit(i);
+                            // cmp.R's INVISIBLE after a tail assignment
+                            // (bcEval's ENDASSIGN leaves R_Visible)
+                            if tail.is_tail() {
+                                self.set_vis(false);
+                            }
                             return Ok(());
                         }
                         LANGSXP => {
@@ -2589,20 +2656,22 @@ impl<'g> Comp<'g> {
                     // do_set's `eval(CADR(args), rho)` under PROTECT(op),
                     // PROTECT(e)
                     self.expr_at(a[1].0, dst, d + 1, self.pp + 2, tail.value())?;
-                    let mut i = if tail.ret() {
-                        // bcEval's SETVAR of `return()`'s operand
-                        let mut k = Ins::new(Op::SetVarKeep);
-                        k.g = (s == Special::Assign2) as u16;
-                        k
-                    } else {
-                        Ins::new(if s == Special::Assign2 { Op::SetVar2 } else { Op::SetVar })
-                    };
+                    let mut i = Ins::new(if s == Special::Assign2 { Op::SetVar2 } else { Op::SetVar });
                     i.a = dst;
                     i.e = self.k(sym);
                     if s != Special::Assign2 && !self.locals.contains(&sym) {
                         self.locals.push(sym);
                     }
                     self.emit(i);
+                    // do_set's R_Visible = FALSE, and cmp.R's INVISIBLE after
+                    // a tail assignment: observed only in the tail (bcEval's
+                    // SETVAR leaves R_Visible, so does `return()`'s operand);
+                    // a `{`'s earlier statement, on its Resume
+                    match tail {
+                        Tail::Yes => self.set_vis(false),
+                        Tail::Live => self.cut_assign = Some(e),
+                        _ => {}
+                    }
                 }
                 Special::Quote => {
                     // R: eval.c:do_quote

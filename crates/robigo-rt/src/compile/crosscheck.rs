@@ -90,8 +90,6 @@ fn kinds(op: Op) -> ([K; 6], bool) {
             ([W, X, X, C, X, X], false)
         }
         Op::SetVar | Op::SetVar2 => ([R, X, X, C, X, X], false),
-        // (`g`: `<<-`)
-        Op::SetVarKeep => ([R, X, X, C, X, I], false),
         Op::Jmp | Op::BackJmp => ([X; 6], true),
         Op::BrFalse => ([X, R, X, C, X, X], true),
         Op::Guard => ([C0, X, C, C, X, X], true),

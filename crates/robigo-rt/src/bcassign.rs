@@ -248,17 +248,14 @@ fn kind(cx: &Cx, step: Root<'_>) -> u8 {
 
 /// The complex assignment of `plan` (`super_`: `<<-`), the right-hand
 /// side's value in register `rhs`: bcEval's `STARTASSIGN`, the getter
-/// calls, the setter calls and `ENDASSIGN`; the value in `dst`, invisible.
+/// calls, the setter calls and `ENDASSIGN`; the value in `dst`.
 ///
 /// # Safety
 /// `plan` is a live assignment plan of `act`'s code (one of its constants).
 // R: eval.c: STARTASSIGN, STARTASSIGN2, ENDASSIGN, ENDASSIGN2 (bcEval)
 // (never inlined into the VM loop: its body would shape the loop's code)
 #[inline(never)]
-pub unsafe fn run(cx: &mut Cx, act: &Act, dst: Reg, rhs: Reg, plan: Sexp, g: u16) -> RResult<()> {
-    // `<<-`; and R_Visible left as the setter calls set it (bcEval's
-    // ENDASSIGN, of `return()`'s operand)
-    let (super_, hide) = (g & 1 != 0, g & crate::compile::G_KEEP_VIS == 0);
+pub unsafe fn run(cx: &mut Cx, act: &Act, dst: Reg, rhs: Reg, plan: Sexp, super_: bool) -> RResult<()> {
     cx.scope(|cx, s| {
         // SAFETY: a constant of the rooted code; a register's value.
         let plan = s.root(cx, unsafe { Ref::from_sexp(plan, cx) });
@@ -274,9 +271,8 @@ pub unsafe fn run(cx: &mut Cx, act: &Act, dst: Reg, rhs: Reg, plan: Sexp, g: u16
         let r = body(cx, s, plan, rho, saverhs, super_);
         links::release(cx, old);
         r?;
-        if hide {
-            cx.set_visible(false);
-        }
+        // (R_Visible as the setter calls left it: bcEval's ENDASSIGN; a
+        // tail assignment's invisibility is the code's, cmp.R's INVISIBLE)
         act.out(dst).set(cx, saverhs.bind(cx));
         Ok(())
     })

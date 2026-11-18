@@ -904,7 +904,6 @@ unsafe fn super_assign(cx: &mut Cx, log: &WriteLog, sym: Sexp, x: Slot, rho: Sex
     // SAFETY: the caller's contract; the box is fresh, and nothing
     // collects.
     unsafe { log.write(cx, sym, rho, obj)? };
-    cx.set_visible(false);
     Some(obj)
 }
 
@@ -1382,9 +1381,8 @@ unsafe fn body_loop<const FUSED: bool>(
             }
             Op::SetVar => {
                 // `defineVar` into the frame's slot (the VM's `set_var`: a
-                // scalar stays unboxed there), then R_Visible off
+                // scalar stays unboxed there), R_Visible as it was
                 fr.args[i.f as usize - 1] = Arg::Value(r(i.a)?);
-                cx.set_visible(false);
                 continue;
             }
             Op::Jmp => {

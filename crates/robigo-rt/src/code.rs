@@ -154,7 +154,7 @@ fn check(b: &Built) -> Result<(), Malformed> {
                 // contract, as [`build`]'s).
                 reg(i.a) && k(i.e) && unsafe { plain_scalar(b.consts[i.e as usize - FIRST_CONST]) }
             }
-            Op::SetVar | Op::SetVar2 | Op::SetVarKeep => reg(i.a) && k(i.e),
+            Op::SetVar | Op::SetVar2 => reg(i.a) && k(i.e),
             Op::Jmp | Op::BackJmp => tgt(i.target()),
             Op::BrFalse => reg(i.b) && k(i.e) && tgt(i.target()),
             Op::Guard => (i.a == 0 || reg(i.a)) && k(i.e) && k(i.c) && tgt(i.target()),
