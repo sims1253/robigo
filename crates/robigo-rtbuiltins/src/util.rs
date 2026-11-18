@@ -704,5 +704,5 @@ pub fn a4_plant_case(cx: &Cx, call: robigo_rtcore::Root<'_>) -> bool {
             .as_cons()
             .and_then(|c| c.cdr().as_cons())
             .and_then(|a| a.car().as_sym())
-            .is_some_and(|s| s.name().bytes() == b"a1")
+            .is_some_and(|s| s.name(cx).bytes() == b"a1")
 }
