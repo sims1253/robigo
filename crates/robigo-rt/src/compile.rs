@@ -1366,8 +1366,8 @@ impl<'g> Comp<'g> {
             if t == nil {
                 return cx.blank_string().as_ref().sexp();
             }
-            // SAFETY: a tag is a symbol: its print name is a CHARSXP.
-            unsafe { t.car() }
+            // SAFETY: a tag is a symbol: its PRINTNAME, the isolate's CHARSXP.
+            unsafe { cx.printname_raw(t) }
         };
         let mut nm: Option<Vec<Sexp>> =
             cases.iter().any(|&(_, t)| t != nil).then(|| cases.iter().map(|&(_, t)| tag_name(t)).collect());
@@ -2630,7 +2630,7 @@ impl<'g> Comp<'g> {
                     }
                     let internal = self.cx.internal_raw(fun);
                     if internal == nil {
-                        let name = String::from_utf8_lossy(fun.car().char_bytes()).into_owned();
+                        let name = String::from_utf8_lossy(fun.sym_name_bytes()).into_owned();
                         let msg = format!("there is no .Internal function '{name}'");
                         return self.error_op(e, &msg, true);
                     }
@@ -3084,7 +3084,7 @@ unsafe fn check1arg(tag: Sexp, nil: Sexp, formal: &str) -> Option<String> {
         return None;
     }
     // SAFETY: the caller's contract: a tag is a symbol.
-    let supplied = unsafe { tag.car().char_bytes() };
+    let supplied = unsafe { tag.sym_name_bytes() };
     if formal.as_bytes().starts_with(supplied) {
         return None;
     }

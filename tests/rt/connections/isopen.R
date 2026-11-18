@@ -1,0 +1,26 @@
+# isOpen (connections.c's do_isopen): rw 0, 1 and 2 on connections open
+# for reading, writing and both, and closed; the errors.
+msg <- function(expr) tryCatch({ force(expr); "no error" }, error = function(e) conditionMessage(e))
+f <- paste0(Sys.getenv("TMPDIR", "/tmp"), "/robigo-rt-isopen-", Sys.getpid())
+for (m in c("r", "w", "a", "r+", "w+", "rb", "wb")) {
+  if (m %in% c("r", "r+", "rb")) writeLines("x", f)
+  con <- file(f, m)
+  cat(m, isOpen(con), isOpen(con, "r"), isOpen(con, "w"), isOpen(con, "read"), isOpen(con, "write"), "\n")
+  close(con)
+}
+con <- file(f)
+cat(isOpen(con), isOpen(con, "r"), isOpen(con, "w"), "\n")
+print(.Internal(isOpen(con, 0L)))
+print(.Internal(isOpen(con, 1L)))
+print(msg(.Internal(isOpen(con, 3L))))
+print(msg(.Internal(isOpen(con, NA))))
+print(msg(isOpen(con, "x")))
+close(con)
+print(isOpen(stdin()))
+print(isOpen(stdout(), "w"))
+print(isOpen(stderr(), "r"))
+print(msg(.Internal(isOpen(99L, 0L))))
+print(msg(.Internal(isOpen("a", 0L))))
+print(.Internal(isOpen(1, 2L)))
+print(msg(isOpen(con)))
+print(file.remove(f))

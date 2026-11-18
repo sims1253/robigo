@@ -12,7 +12,7 @@ pub mod vector;
 
 pub use builtins::{
     copy_with, dispatch_or_eval, do_any_na, do_asatomic, do_asfunction, do_asvector, do_docall, do_isfinite,
-    do_isinfinite, do_isna, do_isnan, do_isvector, do_storage_mode, do_typeof, xlength,
+    do_isinfinite, do_isna, do_isnan, do_isvector, do_storage_mode, do_typeof, xlength, xlength_mut,
 };
 pub use vector::{coerce_vector, pair_to_vector_list};
 
@@ -181,7 +181,7 @@ impl<'g> Strings<'g> {
         Ok(match x.view() {
             View::Str(v) => Strings { kind: Kind::Chars(v.as_slice().unwrap(), cx.na_string()) },
             View::Null => owned(0, Box::new(|_, _| true)),
-            View::Sym(s) => Strings { kind: Kind::One(s.name()) },
+            View::Sym(s) => Strings { kind: Kind::One(s.name(cx)) },
             View::Lgl(v) => {
                 let v = v.as_slice().unwrap();
                 owned(v.len(), Box::new(move |b, i| lgl_string(v[i].0).map(|s| b.extend_from_slice(s)).is_some()))

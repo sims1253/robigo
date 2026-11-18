@@ -284,7 +284,7 @@ pub fn do_get<const CODE: u8>(
         find_var1_mode(cx, t1, genv, mode, inherits != 0, CODE != 0, rv)?;
         if rval.bind(cx) == cx.missing_arg() {
             // signal a *classed* error: R_MissingArgError(t1, call, "getMissingError")
-            let sym = t1.bind(cx).as_sym().unwrap().name().bytes().to_vec();
+            let sym = t1.bind(cx).as_sym().unwrap().name_bytes().to_vec();
             return Err(cx.missing_arg_error(&String::from_utf8_lossy(&sym), Some(call), "getMissingError"));
         }
         let unbound = rval.bind(cx) == cx.unbound();
@@ -295,7 +295,7 @@ pub fn do_get<const CODE: u8>(
                 Ok(())
             }
             _ if unbound => {
-                let nm = String::from_utf8_lossy(t1.bind(cx).as_sym().unwrap().name().bytes()).into_owned();
+                let nm = String::from_utf8_lossy(t1.bind(cx).as_sym().unwrap().name_bytes()).into_owned();
                 let msg = if mode == Mode::ANY {
                     format!("object '{nm}' not found")
                 } else {
@@ -596,7 +596,7 @@ pub fn do_env2list(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
             let v = syms.bind(cx).as_vector::<Ref<'_>>().unwrap();
             (0..v.len())
                 .map(|i| v.get(i))
-                .filter(|y| all || y.as_sym().is_some_and(|y| y.name().bytes().first() != Some(&b'.')))
+                .filter(|y| all || y.as_sym().is_some_and(|y| y.name_bytes().first() != Some(&b'.')))
                 .collect::<Vec<_>>()
                 .into_iter()
                 .map(|y| s.root(cx, y))
@@ -631,7 +631,7 @@ pub fn do_env2list(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
         let names: Vec<(Vec<u8>, Encoding)> = list
             .iter()
             .map(|y| {
-                let n = y.bind(cx).as_sym().unwrap().name();
+                let n = y.bind(cx).as_sym().unwrap().name(cx);
                 (n.bytes().to_vec(), n.enc())
             })
             .collect();
@@ -751,6 +751,15 @@ pub fn do_lock_env(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
 pub fn do_lock_bnd(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::row!("lockBinding", true).check_arity(cx, call, args)?;
     cx.lock_binding(args.root(0), args.root(1))?;
+    out.set(cx, cx.nil());
+    Ok(())
+}
+
+/// `.Internal(unlockBinding(sym, env))`.
+// R: envir.c:do_lockBnd (PRIMVAL 1)
+pub fn do_unlock_bnd(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("unlockBinding", true).check_arity(cx, call, args)?;
+    cx.unlock_binding(args.root(0), args.root(1))?;
     out.set(cx, cx.nil());
     Ok(())
 }
@@ -926,7 +935,7 @@ pub fn do_dots_names(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>,
             let mut tags = Vec::new();
             let mut c = vv.as_cons();
             while let Some(cell) = c {
-                tags.push(cell.tag().as_sym().map(|s| s.name()));
+                tags.push(cell.tag().as_sym().map(|s| s.name(cx)));
                 c = cell.cdr().as_cons();
             }
             if tags.iter().all(Option::is_none) {
@@ -1040,7 +1049,7 @@ pub fn do_remove(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
                 })?;
             }
             if !done {
-                let nm = String::from_utf8_lossy(sym.bind(cx).as_sym().unwrap().name().bytes()).into_owned();
+                let nm = String::from_utf8_lossy(sym.bind(cx).as_sym().unwrap().name_bytes()).into_owned();
                 cx.warning(&format!("object '{nm}' not found"))?;
             }
             Ok(())
@@ -1150,7 +1159,22 @@ pub fn do_as_environment(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<
         }
         NILSXP => Err(cx.error_call(Some(call), "using 'as.environment(NULL)' is defunct")),
         OBJSXP => Err(not_yet(cx, Some(call), "as.environment() of an S4 object (R_getS4DataSlot)")),
-        VECSXP => Err(not_yet(cx, Some(call), "as.environment() of a list (list2env)")),
+        // as.environment.list(): `list2env(x, NULL, emptyenv())` evaluated in
+        // the caller's environment, so `list2env` is looked up from there
+        VECSXP => cx.scope(|cx, s| {
+            let x = s.root(cx, args.get(cx, 0));
+            let c = s.capture(cx, |cx, o| {
+                cx.build(o, |cx| {
+                    let f: Ref<'_> = cx.install(b"list2env")?.into();
+                    // lang4(install("list2env"), arg, R_NilValue, R_EmptyEnv)
+                    let t = cx.cons(cx.empty_env(), cx.nil())?;
+                    let t = cx.cons(cx.nil(), t)?;
+                    let t = cx.cons(x.bind(cx), t)?;
+                    cx.lcons(f, t)
+                })
+            })?;
+            cx.eval(c, env, out)
+        }),
         _ => Err(cx.error_call(Some(call), "invalid object for 'as.environment'")),
     }
 }

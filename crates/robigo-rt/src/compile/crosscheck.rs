@@ -620,7 +620,7 @@ pub fn compare(cx: &Cx, what: &str, t: &Built, s: &Built) -> Finding {
     let dots = matches!((a, b), (Some(y), Some(x)) if y.op == Op::ErrorCall && x.op == Op::GetVar
         // SAFETY: GetVar's symbol constant, of the pool.
         && x.consts.first().is_some_and(|&sym| unsafe { robigo_rtcore::Ref::from_sexp(sym, cx) }
-            .as_sym().is_some_and(|s| s.name().bytes() == b"...")));
+            .as_sym().is_some_and(|s| s.name_bytes() == b"...")));
     let (verdict, class) = match expected(cx, &nt, &ns, k) {
         _ if dots => {
             (Verdict::Expected, "expected ('...' as a value (cmpSym's DOTSERR; the port reads it))".to_owned())
