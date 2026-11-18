@@ -75,7 +75,11 @@ pub fn do_format(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
             return cx.build(out, |cx| cx.mk_string(&s, Encoding::Native));
         }
         EXTPTRSXP => {
-            let p = x.bind(cx).sexp().as_ptr() as usize;
+            // EncodeExtptr: R_ExternalPtrAddr(x)
+            let p = match x.bind(cx).view() {
+                View::ExtPtr(e) => e.addr() as usize,
+                _ => unreachable!("robigo: an EXTPTRSXP's view"),
+            };
             let s = format!("<pointer: {}>", crate::print::c_pointer(p));
             return cx.build(out, |cx| cx.mk_string(s.as_bytes(), Encoding::Native));
         }
