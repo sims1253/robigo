@@ -93,3 +93,14 @@ error: 'MARGIN' does not match dim(X) | call: asplit(m, 3)
 error: 'x' must have named dimnames | call: asplit(m, "nope") 
 error: unimplemented type 'expression' in 'asplit'
  | call: doTryCatch(return(expr), name, parentenv, handler) 
+warning: imaginary parts discarded in coercion 
+list : list of 2 
+list[[1]] : 1 2 
+list[[2]] : 3 4 
+  dim : 2 
+error: negative length vectors are not allowed | call: doTryCatch(return(expr), name, parentenv, handler) 
+error: negative length vectors are not allowed | call: doTryCatch(return(expr), name, parentenv, handler) 
+error: dims [product 3] do not match the length of object [2] | call: doTryCatch(return(expr), name, parentenv, handler) 
+error: dims [product 2] do not match the length of object [1] | call: doTryCatch(return(expr), name, parentenv, handler) 
+list : list of 0 
+  dim : 0 

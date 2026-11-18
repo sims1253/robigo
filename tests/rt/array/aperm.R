@@ -69,3 +69,9 @@ try1(.Internal(aperm(array(expression(1, 2), 2), NULL, TRUE)))
 try1(.Internal(aperm(a, NULL)))
 f <- function(x) aperm(x, 1)
 try1(f(a))
+# a dimension name is translated only when the search reaches it
+bad <- "\xff"; Encoding(bad) <- "bytes"
+nb <- array(1:4, c(2, 2), dimnames = list(first = c("a", "b"), c("c", "d")))
+names(dimnames(nb))[2] <- bad
+try1(aperm(nb, c("first", "first")))
+try1(aperm(nb, c("nope", "first")))

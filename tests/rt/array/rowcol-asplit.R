@@ -51,3 +51,12 @@ try1(asplit(1:3, 1))
 try1(asplit(m, 3))
 try1(asplit(m, "nope"))
 try1(.Internal(asplit(expression(1), 1L, 1L, NULL, NULL, 1L, 1L, FALSE)))
+# asplit's sizes are asInteger'd (with its warnings); a negative one is
+# allocVector's error; y is shaped before x's type is looked at
+try1(withCallingHandlers(.Internal(asplit(1:4, 2L, 2L, NULL, NULL, 2+1i, 2L, FALSE)),
+  warning = function(w) { cat("warning:", conditionMessage(w), "\n"); invokeRestart("muffleWarning") }))
+try1(.Internal(asplit(1:4, 2L, 2L, NULL, NULL, 2L, -1L, FALSE)))
+try1(.Internal(asplit(1:4, 2L, 2L, NULL, NULL, 2L, NA, FALSE)))
+try1(.Internal(asplit(1:4, 3L, 2L, NULL, NULL, 2L, 2L, FALSE)))
+try1(.Internal(asplit(expression(1), 2L, 1L, NULL, NULL, 1L, 1L, FALSE)))
+try1(.Internal(asplit(1:4, 0L, 2L, NULL, NULL, -1L, 0L, FALSE)))

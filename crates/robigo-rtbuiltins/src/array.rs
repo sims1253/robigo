@@ -786,10 +786,18 @@ pub fn do_aperm(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
                     return Err(cx.error(no_names()));
                 };
                 let dnna = s.root(cx, dnna);
-                let names: Vec<Vec<u8>> = (0..n).map(|j| translated_elt(cx, dnna, j)).collect::<RResult<_>>()?;
+                // translated as the search reaches each name, as GNU R's
+                // loop does (stopping at the first match)
                 for (i, p) in pp.iter_mut().enumerate() {
                     let this = translated_elt(cx, perm, i)?;
-                    match names.iter().position(|nm| *nm == this) {
+                    let mut found = None;
+                    for j in 0..n {
+                        if translated_elt(cx, dnna, j)? == this {
+                            found = Some(j);
+                            break;
+                        }
+                    }
+                    match found {
                         Some(j) => *p = j as i64,
                         None => {
                             let msg = format!("'perm[{}]' does not match a dimension name", i + 1);
@@ -980,29 +988,38 @@ pub fn do_asplit(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
     if x.bind(cx).is_package_altrep() {
         return Err(not_yet(cx, Some(call), "asplit() of a package ALTREP array"));
     }
-    let n1 = crate::coerce::vector::as_integer(cx, args.get(cx, 5)).0;
-    let n2 = crate::coerce::vector::as_integer(cx, args.get(cx, 6)).0;
+    let n1 = crate::coerce::vector::as_integer_warn(cx, args.root(5))?;
+    let n2 = crate::coerce::vector::as_integer_warn(cx, args.root(6))?;
     let dnc = args.root(4);
     let havednc = dnc.bind(cx).sexptype() != NILSXP && crate::coerce::xlength(dnc.bind(cx)) > 0;
     // !asLogical(drop): NA is true in C
     let keepdim = as_logical(cx, args.get(cx, 7)) == 0;
     cx.scope(|cx, s| {
         cx.materialize(x)?;
-        let (n1, n2) = (n1.max(0) as usize, n2.max(0) as usize);
-        if !matches!(x.bind(cx).sexptype(), LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | VECSXP | RAWSXP) {
-            // (y is made before the type is looked at, as in GNU R; nothing
-            // to observe in between)
-            let msg = format!("unimplemented type '{}' in 'asplit'\n", crate::util::type2char(x.bind(cx).sexptype()));
-            return Err(cx.error(&msg));
+        // allocVector(VECSXP, n2): a negative (or NA) length is an error
+        if n2 < 0 {
+            return Err(cx.error("negative length vectors are not allowed"));
         }
-        if n1 * n2 > crate::coerce::xlength(x.bind(cx)) {
-            return Err(not_yet(cx, Some(call), "asplit() past the end of 'x'"));
-        }
+        let n2 = n2 as usize;
         let y = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_vector::<Ref<'_>>(n2)?.finish().into())))?;
         crate::attrib::set::dimgets(cx, y, args.root(1))?;
         let dna = args.root(3);
         if dna.bind(cx).sexptype() != NILSXP && crate::coerce::xlength(dna.bind(cx)) > 0 {
             dimnamesgets(cx, y, dna)?;
+        }
+        // the switch on TYPEOF(x), after y is shaped
+        if !matches!(x.bind(cx).sexptype(), LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | VECSXP | RAWSXP) {
+            let msg = format!("unimplemented type '{}' in 'asplit'\n", crate::util::type2char(x.bind(cx).sexptype()));
+            return Err(cx.error(&msg));
+        }
+        // each piece's allocVector(TYPEOF(x), n1), inside the loop (none
+        // when n2 is 0)
+        if n2 > 0 && n1 < 0 {
+            return Err(cx.error("negative length vectors are not allowed"));
+        }
+        let n1 = n1.max(0) as usize;
+        if n1 * n2 > crate::coerce::xlength(x.bind(cx)) {
+            return Err(not_yet(cx, Some(call), "asplit() past the end of 'x'"));
         }
         for i in 0..n2 {
             let e =
