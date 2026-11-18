@@ -67,6 +67,7 @@ closure as.pairlist pairlist.R
 closure as.vector as.R
 closure asNamespace namespace.R
 closure assign assign.R
+closure attach attach.R
 closure basename files.R
 closure bindingIsLocked bindenv.R
 closure bindtextdomain stop.R
@@ -85,6 +86,7 @@ closure conditionMessage.condition conditions.R
 closure dQuote character.R
 closure delayedAssign delay.R
 closure deparse New-Internal.R
+closure detach attach.R
 closure diff diff.R
 closure diff.default diff.R
 closure dir.exists files.R
@@ -233,6 +235,7 @@ closure sort.default sort.R
 closure sort.int sort.R
 closure sort.list sort.R
 closure sprintf New-Internal.R
+closure startsWith character.R
 closure stderr connections.R
 closure stdin connections.R
 closure stdout connections.R
@@ -534,6 +537,7 @@ internal seterrmessage
 internal sort
 internal sorted_fpass
 internal sprintf
+internal startsWith
 internal stderr
 internal stdin
 internal stdout
