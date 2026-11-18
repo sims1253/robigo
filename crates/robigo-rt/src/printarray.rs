@@ -360,6 +360,22 @@ pub fn print_matrix(
     data: &PrintData,
     out: &mut Vec<u8>,
 ) -> Result<(), String> {
+    let elts = Elts::of(cx, x, x.len().unwrap_or(0));
+    print_matrix_of(cx, &elts, (r, c), quote, right, labels, data, out)
+}
+
+/// [`print_matrix`] of elements already read.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn print_matrix_of(
+    cx: &Cx,
+    elts: &Elts<'_>,
+    (r, c): (usize, usize),
+    quote: bool,
+    right: bool,
+    labels: &Labels<'_>,
+    data: &PrintData,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
     // PR#850
     if labels.rl.as_ref().is_some_and(|rl| r > rl.len()) {
         return Err("too few row labels".into());
@@ -384,9 +400,8 @@ pub fn print_matrix(
         r_pr = 1;
     }
     let pp = data.params(cx);
-    let elts = Elts::of(cx, x, x.len().unwrap_or(0));
     let q = if quote { b'"' } else { 0 };
-    print_typed_matrix(&elts, 0, r_pr, r, c_pr, labels, q, right, true, data, &pp, out);
+    print_typed_matrix(elts, 0, r_pr, r, c_pr, labels, q, right, true, data, &pp, out);
     if r_pr < r || c_pr < c {
         out.extend_from_slice(b" [ reached 'max' / getOption(\"max.print\") -- omitted");
         if r_pr < r {
@@ -436,9 +451,29 @@ pub fn print_array(
         crate::print::print_vector(cx, x, true, quote, data, out);
         return Ok(());
     }
+    let elts = Elts::of(cx, x, x.len().unwrap_or(0));
+    print_array_of(cx, &elts, x.sexptype(), dims, quote, right, dimnames, data, out)
+}
+
+/// [`print_array`] of two or more extents, of elements already read (of
+/// type `typ`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn print_array_of(
+    cx: &Cx,
+    elts: &Elts<'_>,
+    typ: u8,
+    dims: &[i32],
+    quote: bool,
+    right: bool,
+    dimnames: Option<Ref<'_>>,
+    data: &PrintData,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    let ndim = dims.len();
     if ndim == 2 {
         let labels = matrix_labels(cx, dimnames)?;
-        return print_matrix(cx, x, (dims[0].max(0) as usize, dims[1].max(0) as usize), quote, false, &labels, data, out);
+        let rc = (dims[0].max(0) as usize, dims[1].max(0) as usize);
+        return print_matrix_of(cx, elts, rc, quote, false, &labels, data, out);
     }
     let pp = data.params(cx);
     let (nr, nc) = (dims[0].max(0) as usize, dims[1].max(0) as usize);
@@ -446,9 +481,7 @@ pub fn print_array(
     let dimnames = dimnames.filter(|d| d.sexptype() != NILSXP);
     let (dn0, dn1, dnn) = match dimnames {
         None => (None, None, None),
-        Some(dn) => {
-            (strs_of(cx, dimnames_elt(cx, dn, 0))?, strs_of(cx, dimnames_elt(cx, dn, 1))?, attrib::names(dn))
-        }
+        Some(dn) => (strs_of(cx, dimnames_elt(cx, dn, 0))?, strs_of(cx, dimnames_elt(cx, dn, 1))?, attrib::names(dn)),
     };
     let (rn, cn) = match dnn {
         Some(nn) => (Some(dnn_elt(cx, nn, 0)), Some(dnn_elt(cx, nn, 1))),
@@ -475,7 +508,6 @@ pub fn print_array(
         // print something when dim = c(a, b, 0)
         (if nb > 0 { nb } else { 1 }, nc, nr)
     };
-    let elts = Elts::of(cx, x, x.len().unwrap_or(0));
     let q = if quote { b'"' } else { 0 };
     for i in 0..nb_pr {
         let do_ij = nb > 0;
@@ -514,9 +546,9 @@ pub fn print_array(
             for (k, d) in dims.iter().enumerate() {
                 out.extend_from_slice(format!("{}{d}", if k == 0 { "<" } else { " x " }).as_bytes());
             }
-            out.extend_from_slice(format!(" array of {}>\n", type_name(x.sexptype())).as_bytes());
+            out.extend_from_slice(format!(" array of {}>\n", type_name(typ)).as_bytes());
         }
-        print_typed_matrix(&elts, i * b, use_nr, nr, use_nc, &labels, q, right, do_ij, data, &pp, out);
+        print_typed_matrix(elts, i * b, use_nr, nr, use_nc, &labels, q, right, do_ij, data, &pp, out);
         out.push(b'\n');
     }
     if max_reached {

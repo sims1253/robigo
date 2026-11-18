@@ -10,13 +10,12 @@
 //! become per-isolate state: `R_print` is the [`PrintData`] passed down,
 //! `tagbuf` lives in robigo-rt's isolate state ([`crate::prims::RtState`]).
 //!
-//! Not here yet, each raising "not implemented" where GNU R would print:
-//! matrices and arrays (`printMatrix`, `printArray`: printarray.c), the
-//! array-like lists, primitives (`PrintSpecial` reads `.ArgsEnv`, which
+//! Matrices and arrays are printarray.rs's (printarray.c), the array-like
+//! lists here. Not here yet, each raising "not implemented" where GNU R
+//! would print: primitives (`PrintSpecial` reads `.ArgsEnv`, which
 //! the base subset does not bind) and S4 objects with `methods` loaded.
-//! `options()` is not implemented (B2b), so `PrintInit` takes GNU R's
-//! defaults: `digits` 7, `scipen` 0, `max.print` 99999, `width` 80,
-//! `deparse.cutoff` 60.
+//! `PrintInit` reads `digits`, `scipen`, `max.print`, `width` and
+//! `deparse.cutoff` from `options()`.
 
 use crate::deparse::{self, DEFAULTDEPARSE, SIMPLEDEPARSE, USESOURCE};
 use robigo_heap::types::*;
@@ -58,27 +57,80 @@ pub struct PrintData {
 }
 
 impl PrintData {
-    /// `PrintInit(data, env)` with `options()` at their defaults.
-    // R: print.c:PrintInit
-    pub fn init(cx: &Cx, env: Option<Global>) -> PrintData {
-        let loc = robigo_rtbuiltins::text::ctype(cx.locale());
-        PrintData {
-            na_string: (b"NA".to_vec(), Enc::Native),
-            na_string_noquote: (b"<NA>".to_vec(), Enc::Native),
-            na_width: rstrlen(Str::ascii(b"NA"), 0, loc),
-            na_width_noquote: rstrlen(Str::ascii(b"<NA>"), 0, loc),
-            quote: true,
-            right: false,
-            digits: 7,
-            scipen: 0,
-            max: 99999,
-            gap: 1,
-            width: 80,
-            use_source: USESOURCE,
-            cutoff: deparse::DEFAULT_CUTOFF,
-            env,
-            call_args: None,
+    /// `PrintInit(data, env)`: the defaults, `digits`, `scipen`,
+    /// `max.print`, `width` and `deparse.cutoff` from `options()` (an
+    /// invalid digits, width or cutoff warns and takes its default).
+    // R: print.c:PrintInit, options.c:GetOptionDigits, FixupDigits,
+    // GetOptionWidth, FixupWidth, GetOptionCutoff
+    pub fn init(cx: &mut Cx, env: Option<Global>) -> RResult<PrintData> {
+        match Self::options(cx) {
+            Ok((digits, scipen, max, width, cutoff)) => {
+                let loc = robigo_rtbuiltins::text::ctype(cx.locale());
+                Ok(PrintData {
+                    na_string: (b"NA".to_vec(), Enc::Native),
+                    na_string_noquote: (b"<NA>".to_vec(), Enc::Native),
+                    na_width: rstrlen(Str::ascii(b"NA"), 0, loc),
+                    na_width_noquote: rstrlen(Str::ascii(b"<NA>"), 0, loc),
+                    quote: true,
+                    right: false,
+                    digits,
+                    scipen,
+                    max,
+                    gap: 1,
+                    width,
+                    use_source: USESOURCE,
+                    cutoff,
+                    env,
+                    call_args: None,
+                })
+            }
+            Err(e) => {
+                // (the caller's reference to `env` goes with the error)
+                if let Some(g) = env {
+                    cx.release_global(g);
+                }
+                Err(e)
+            }
         }
+    }
+
+    /// `PrintInit`'s options: (digits, scipen, max, width, cutoff).
+    fn options(cx: &mut Cx) -> RResult<(i32, i32, usize, i32, i32)> {
+        let opt = |cx: &mut Cx, name: &[u8]| -> RResult<i32> {
+            cx.scope(|cx, s| {
+                let v = robigo_rtbuiltins::options::get_option(cx, s, name)?;
+                as_integer(cx, v)
+            })
+        };
+        let mut digits = opt(cx, b"digits")?;
+        if digits == i32::MIN || !(1..=22).contains(&digits) {
+            cx.warning(&format!("invalid printing digits {digits}, used 7"))?;
+            digits = 7;
+        }
+        let mut scipen = opt(cx, b"scipen")?;
+        if scipen == i32::MIN {
+            scipen = 0;
+        }
+        let m = opt(cx, b"max.print")?;
+        let max = if m == i32::MIN || m < 0 {
+            99999
+        } else if m == i32::MAX {
+            // so we can add
+            m as usize - 1
+        } else {
+            m as usize
+        };
+        let mut width = opt(cx, b"width")?;
+        if width == i32::MIN || !(10..=10000).contains(&width) {
+            cx.warning(&format!("invalid printing width {width}, used 80"))?;
+            width = 80;
+        }
+        let mut cutoff = opt(cx, b"deparse.cutoff")?;
+        if cutoff == i32::MIN || cutoff <= 0 {
+            cx.warning("invalid 'deparse.cutoff', used 60")?;
+            cutoff = 60;
+        }
+        Ok((digits, scipen, max, width, cutoff))
     }
 
     /// The parts `robigo-text`'s encoders read.
@@ -122,7 +174,7 @@ pub fn c_pointer(p: usize) -> String {
 pub fn print_value_env(cx: &mut Cx, s: Root<'_>, env: Root<'_>) -> RResult<()> {
     tagbuf(cx).clear();
     let g = cx.global(env.bind(cx));
-    let data = PrintData::init(cx, Some(g));
+    let data = PrintData::init(cx, Some(g))?;
     let r = if is_function(s.bind(cx)) { print_object(cx, s, &data) } else { print_dispatch(cx, s, &data) };
     data.release(cx);
     r
@@ -186,40 +238,38 @@ fn print_object(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
     r
 }
 
-/// `PrintValueRec(s, data)`: print `s` by its type, then its attributes.
-// R: print.c:PrintValueRec
-/// Whether `x`, one of its attributes' values, an element of a list among
-/// them, or an attribute of such a list (`dimnames` and its names, the
-/// matrix printers' titles) is a package ALTREP vector: storage whose
-/// length and elements are its C methods' (M5), which the printers and
-/// deparse do not read.
-pub(crate) fn reads_package_altrep(x: Ref<'_>) -> bool {
+/// Where `x` holds a package ALTREP vector, if it does: `x` itself, one of
+/// its attributes' values, an element of a list among them, or an
+/// attribute of such a list (`dimnames` and its names, the matrix
+/// printers' titles). Such storage's length and elements are its C
+/// methods' (M5), which the printers and deparse do not read.
+pub(crate) fn package_altrep_in(x: Ref<'_>) -> Option<String> {
     if x.is_package_altrep() {
-        return true;
+        return Some("the object".into());
     }
-    fn attr_values<'g>(x: Ref<'g>) -> impl Iterator<Item = Ref<'g>> {
-        let mut a = x.attrib().and_then(|a| a.as_cons());
-        std::iter::from_fn(move || {
-            let cell = a?;
-            a = cell.cdr().as_cons();
-            Some(cell.car())
-        })
+    for a in attrib::attrs(x) {
+        let name = String::from_utf8_lossy(a.tag.name().bytes()).into_owned();
+        let v = a.value;
+        if v.is_package_altrep() {
+            return Some(format!("its attribute '{name}'"));
+        }
+        if let View::List(l) = v.view() {
+            if (0..l.len()).any(|i| l.get(i).is_package_altrep()) {
+                return Some(format!("an element of its attribute '{name}'"));
+            }
+            if let Some(b) = attrib::attrs(v).find(|b| b.value.is_package_altrep()) {
+                let inner = String::from_utf8_lossy(b.tag.name().bytes()).into_owned();
+                return Some(format!("the attribute '{inner}' of its attribute '{name}'"));
+            }
+        }
     }
-    attr_values(x).any(|v| {
-        v.is_package_altrep()
-            || matches!(v.view(), View::List(l)
-                if (0..l.len()).any(|i| l.get(i).is_package_altrep())
-                    || attr_values(v).any(|w| w.is_package_altrep()))
-    })
+    None
 }
 
+/// `PrintValueRec(s, data)`: print `s` by its type, then its attributes.
+// R: print.c:PrintValueRec
 pub fn print_value_rec(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
     let v = s.bind(cx);
-    // a package class's length and elements are its C methods' (M5): the
-    // printers below read standard storage
-    if reads_package_altrep(v) {
-        return Err(cx.error("robigo: printing a package ALTREP vector is not implemented yet"));
-    }
     // !isMethodsDispatchOn(): methods is never loaded here
     if v.is_s4() || v.sexptype() == OBJSXP {
         let cl = attrib::get_value(v, b"class");
@@ -245,6 +295,13 @@ pub fn print_value_rec(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()
         };
         cx.rprintf(text.as_bytes());
         return Ok(());
+    }
+    // a package class's length and elements are its C methods' (M5): the
+    // printers below read standard storage (the S4 branch above reads
+    // no slot)
+    if let Some(at) = package_altrep_in(v) {
+        let msg = format!("robigo: printing a package ALTREP vector ({at}) is not implemented yet");
+        return Err(cx.error(&msg));
     }
     match v.sexptype() {
         NILSXP => cx.rprintf(b"NULL\n"),
@@ -358,11 +415,10 @@ fn print_atomic(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
             Some(2) => {
                 let d = dim.as_ints().unwrap();
                 let (r, c) = (d[0].max(0) as usize, d[1].max(0) as usize);
-                let printed = crate::printarray::matrix_labels(cx, attrib::get_value(v, b"dimnames")).and_then(
-                    |labels| {
+                let printed =
+                    crate::printarray::matrix_labels(cx, attrib::get_value(v, b"dimnames")).and_then(|labels| {
                         crate::printarray::print_matrix(cx, v, (r, c), data.quote, data.right, &labels, data, &mut out)
-                    },
-                );
+                    });
                 if let Err(m) = printed {
                     return Err(cx.error(&m));
                 }
@@ -549,7 +605,21 @@ fn set_tag(cx: &Cx, taglen: usize, tag: &[u8]) {
 fn print_generic_vector(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
     let v = s.bind(cx);
     if attrib::get_value(v, b"dim").is_some_and(|d| d.len().unwrap_or(0) > 1) {
-        return Err(cx.error("robigo: printing an array-like list is not implemented yet"));
+        // special case: array-like list
+        let mut sums = Vec::new();
+        for i in 0..v.len().unwrap() {
+            let e = cx.scope(|cx, sc| {
+                let e = match s.bind(cx).view() {
+                    View::List(l) => l.get(i),
+                    _ => unreachable!(),
+                };
+                let e = sc.root(cx, e);
+                list_element_summary(cx, e, data)
+            })?;
+            sums.push(e);
+        }
+        print_summaries(cx, &sums, s, true, data.right, data)?;
+        return print_attributes(cx, s, data, false);
     }
     let ns = v.len().unwrap();
     let has_names = attrib::names(v).is_some();
@@ -626,7 +696,31 @@ fn print_generic_vector(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<(
 // R: print.c:printList
 fn print_list(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
     if attrib::get_value(s.bind(cx), b"dim").is_some_and(|d| d.len().unwrap_or(0) > 1) {
-        return Err(cx.error("robigo: printing an array-like pairlist is not implemented yet"));
+        // special case: array-like list (no format() for objects here)
+        let v = s.bind(cx);
+        let mut sums = Vec::new();
+        let mut c = v.as_cons();
+        while let Some(cell) = c {
+            let e = cell.car();
+            let len = |e: Ref<'_>| robigo_rtbuiltins::coerce::xlength(e);
+            sums.push(match e.sexptype() {
+                NILSXP => b"NULL".to_vec(),
+                LGLSXP => format!("logical,{}", len(e)).into_bytes(),
+                INTSXP | REALSXP => format!("numeric,{}", len(e)).into_bytes(),
+                CPLXSXP => format!("complex,{}", len(e)).into_bytes(),
+                STRSXP => format!("character,{}", len(e)).into_bytes(),
+                RAWSXP => format!("raw,{}", len(e)).into_bytes(),
+                LISTSXP => format!("list,{}", len(e)).into_bytes(),
+                LANGSXP => b"expression".to_vec(),
+                _ => b"?".to_vec(),
+            });
+            c = cell.cdr().as_cons();
+        }
+        // (GNU R reads the dimnames of the list's end, R_NilValue, after
+        // its loop: an array-like pairlist prints without labels)
+        print_summaries(cx, &sums, s, false, data.right, data)?;
+        // (and its attributes are not printed)
+        return Ok(());
     }
     let taglen = tagbuf(cx).len();
     cx.scope(|cx, sc| {
@@ -683,6 +777,167 @@ fn print_list(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
         cx.rprintf(b"\n");
         print_attributes(cx, cur, data, false)
     })
+}
+
+/// The summary `PrintGenericVector` prints for an element of an
+/// array-like list: an object's `format()` (if one string under 100
+/// bytes), else its class and length; a scalar's value; else the type and
+/// length (at most 114 bytes, the `pbuf` it is written to).
+// R: print.c:PrintGenericVector (the array-like list)
+fn list_element_summary(cx: &mut Cx, e: Root<'_>, data: &PrintData) -> RResult<Vec<u8>> {
+    let mut b = if e.bind(cx).is_object() {
+        cx.scope(|cx, sc| -> RResult<Vec<u8>> {
+            let fsym = sc.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"format")?.as_ref())))?;
+            let ns = sc.root(cx, cx.base_namespace());
+            let fun = sc.capture(cx, |cx, o| cx.find_fun3(fsym, ns, None, o))?;
+            let call = sc.capture(cx, |cx, o| {
+                cx.build(o, |cx| {
+                    let args = cx.cons(e.bind(cx), cx.nil())?;
+                    cx.lcons(fun.bind(cx), args)
+                })
+            })?;
+            let env = sc.root(cx, data.env.as_ref().map(|g| g.bind(cx)).unwrap_or(cx.global_env()));
+            let ans = sc.capture(cx, |cx, o| crate::eval(cx, call, env, o))?;
+            let fmt = ans.bind(cx).as_scalar::<Char<'_>>().map(|c| translated_bytes(cx, c));
+            match fmt.filter(|f| f.len() < 100) {
+                Some(f) => Ok(f),
+                None => {
+                    let cls = {
+                        let v = e.bind(cx);
+                        attrib::get_value(v, b"class").map(first_string).unwrap_or_default()
+                    };
+                    // Rsnprintf_mbcs(pbuf, 115, "%s,%d", ...)
+                    let n = robigo_rtbuiltins::builtin::length(cx, e.bind(cx)).unwrap_or(1);
+                    let mut t = format!("{cls},{n}").into_bytes();
+                    mbcs_truncate(&mut t, 114);
+                    Ok(t)
+                }
+            }
+        })?
+    } else {
+        let v = e.bind(cx);
+        let pp = data.params(cx);
+        let n = robigo_rtbuiltins::coerce::xlength(v);
+        let mut out = Vec::new();
+        match v.view() {
+            View::Null => out.extend_from_slice(b"NULL"),
+            View::Lgl(a) if n == 1 => {
+                let x = [a.get(0).0];
+                encode_logical(&mut out, x[0], format_logical(&x, &pp), &pp);
+            }
+            View::Lgl(_) => out.extend_from_slice(format!("logical,{n}").as_bytes()),
+            View::Int(_) if attrib::inherits(v, b"factor") => out.extend_from_slice(format!("factor,{n}").as_bytes()),
+            View::Int(a) if n == 1 => {
+                let x = [a.get(0)];
+                encode_integer(&mut out, x[0], format_integer(&x, &pp), &pp);
+            }
+            View::Int(_) => out.extend_from_slice(format!("integer,{n}").as_bytes()),
+            View::Real(a) if n == 1 => {
+                let x = [a.get(0)];
+                encode_real0(&mut out, x[0], format_real(&x, 0, &pp), b".", &pp);
+            }
+            View::Real(_) => out.extend_from_slice(format!("numeric,{n}").as_bytes()),
+            View::Cplx(a) if n == 1 => {
+                let z = a.get(0);
+                if is_na(z.r) || is_na(z.i) {
+                    // formatReal(NA): w = na_width, d = 0, e = 0
+                    encode_real0(
+                        &mut out,
+                        robigo_text::NA_REAL,
+                        RealFormat { w: data.na_width, d: 0, e: 0 },
+                        b".",
+                        &pp,
+                    );
+                } else {
+                    let (fr, fi) = format_complex(&[(z.r, z.i)], 0, &pp);
+                    encode_complex(&mut out, (z.r, z.i), fr, fi, b".", &pp);
+                }
+            }
+            View::Cplx(_) => out.extend_from_slice(format!("complex,{n}").as_bytes()),
+            View::Str(a) if n == 1 => {
+                let t = translated_bytes(cx, a.get(0));
+                if t.len() < 100 {
+                    out.push(b'"');
+                    out.extend_from_slice(&t);
+                    out.push(b'"');
+                } else {
+                    // Rsnprintf_mbcs(pbuf, 101, "\"%s\"", ctmp), then the
+                    // closing quote and " [truncated]"
+                    out.push(b'"');
+                    out.extend_from_slice(&t);
+                    mbcs_truncate(&mut out, 100);
+                    out.extend_from_slice(b"\" [truncated]");
+                }
+            }
+            View::Str(_) => out.extend_from_slice(format!("character,{n}").as_bytes()),
+            View::Raw(_) => out.extend_from_slice(format!("raw,{n}").as_bytes()),
+            View::List(_) | View::Pairlist(_) => out.extend_from_slice(format!("list,{n}").as_bytes()),
+            View::Lang(_) => out.extend_from_slice(b"expression"),
+            _ => out.push(b'?'),
+        }
+        out
+    };
+    // pbuf[114] = '\0'
+    b.truncate(114);
+    Ok(b)
+}
+
+/// `translateChar(c)`'s bytes (`NA` for NA).
+fn translated_bytes(cx: &Cx, c: Char<'_>) -> Vec<u8> {
+    if c == cx.na_string() {
+        return b"NA".to_vec();
+    }
+    robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(c), cx.locale())
+        .map(|b| b.into_owned())
+        .unwrap_or_else(|_| c.bytes().to_vec())
+}
+
+/// `Rsnprintf_mbcs`'s cut: at most `n` bytes, not inside a UTF-8 character.
+fn mbcs_truncate(b: &mut Vec<u8>, n: usize) {
+    if b.len() <= n {
+        return;
+    }
+    let mut cut = n;
+    while cut > 0 && (b[cut] & 0xC0) == 0x80 {
+        cut -= 1;
+    }
+    b.truncate(cut);
+}
+
+/// The summaries of an array-like list printed as a character matrix or
+/// array (`allocArray(STRSXP, dims)`), unquoted: a matrix with `x`'s
+/// dimnames' labels and `right`, an array left-justified.
+// R: print.c:PrintGenericVector, printList
+fn print_summaries(
+    cx: &mut Cx,
+    sums: &[Vec<u8>],
+    x: Root<'_>,
+    with_dimnames: bool,
+    right: bool,
+    data: &PrintData,
+) -> RResult<()> {
+    let x = x.bind(cx);
+    let dimnames = if with_dimnames { attrib::get_value(x, b"dimnames") } else { None };
+    let dims: Vec<i32> =
+        attrib::get_value(x, b"dim").and_then(|d| d.as_ints()).map(<[i32]>::to_vec).unwrap_or_default();
+    let elts = Elts::Str(sums.iter().map(|b| Some(Str::new(b, robigo_text::Enc::Native))).collect());
+    let mut out = Vec::new();
+    let r = if dims.len() == 2 {
+        // as from 1.5.0: don't quote here as didn't in array case
+        crate::printarray::matrix_labels(cx, dimnames).and_then(|labels| {
+            let rc = (dims[0].max(0) as usize, dims[1].max(0) as usize);
+            crate::printarray::print_matrix_of(cx, &elts, rc, false, right, &labels, data, &mut out)
+        })
+    } else {
+        crate::printarray::print_array_of(cx, &elts, STRSXP, &dims, false, false, dimnames, data, &mut out)
+    };
+    match r {
+        Err(m) => Err(cx.error(&m)),
+        Ok(()) => {
+            cx.rprintf(&out);
+            Ok(())
+        }
+    }
 }
 
 /// `printAttributes(s, data, useSlots)`: each attribute but the names,
@@ -1088,12 +1343,94 @@ pub fn do_printdefault(
         None => return Err(cx.error("robigo: print.default()'s 'missings' is not a logical vector")),
     };
     let g = cx.global(rho.bind(cx));
-    let mut data = PrintData::init(cx, Some(g));
+    let mut data = PrintData::init(cx, Some(g))?;
     let r = printdefault(cx, x, pargs, &missings, &mut data);
     data.release(cx);
     r?;
     out.set(cx, x.bind(cx));
     Ok(())
+}
+
+/// `.Internal(prmatrix(x, rowlab, collab, quote, right, na.print))`: the
+/// matrix `x` printed with the given labels (no titles) from the default
+/// settings, only `quote`, `right` and `na.print` set.
+// R: print.c:do_prmatrix
+pub fn do_prmatrix(
+    cx: &mut Cx,
+    _call: Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _rho: Root<'_>,
+    out: robigo_rtcore::Out<'_>,
+) -> RResult<()> {
+    // PrintDefaults()
+    let mut data = PrintData::init(cx, None)?;
+    let (x, rowlab, collab) = (args.root(0), args.root(1), args.root(2));
+    let quote = {
+        let q = args.root(3);
+        as_integer(cx, q)?
+    };
+    let right = {
+        let r = args.root(4);
+        as_integer(cx, r)?
+    };
+    data.right = right != 0;
+    let naprint = args.get(cx, 5);
+    if naprint.sexptype() != NILSXP {
+        let Some(sv) = naprint.as_vector::<Char<'_>>().filter(|v| !v.is_empty()) else {
+            return Err(cx.error("invalid 'na.print' specification"));
+        };
+        let c = sv.get(0);
+        let st = robigo_rtbuiltins::coerce::text(c);
+        let w = rstrlen(st, 0, robigo_rtbuiltins::text::ctype(cx.locale()));
+        data.na_string = (c.bytes().to_vec(), st.enc());
+        data.na_string_noquote = data.na_string.clone();
+        data.na_width = w;
+        data.na_width_noquote = w;
+    }
+    // (a zero-length label is none; another must be a character vector)
+    fn lab(v: Ref<'_>) -> Result<Option<Ref<'_>>, ()> {
+        if robigo_rtbuiltins::coerce::xlength(v) == 0 {
+            return Ok(None);
+        }
+        if v.sexptype() != STRSXP { Err(()) } else { Ok(Some(v)) }
+    }
+    fn label_strs<'g>(cx: &'g Cx, v: Option<Ref<'g>>) -> Option<Vec<Option<Str<'g>>>> {
+        v.map(|v| strs(cx, v.as_vector::<Char<'g>>().unwrap(), v.len().unwrap()))
+    }
+    let printed = {
+        let cx = &*cx;
+        let xv = x.bind(cx);
+        let rl = lab(rowlab.bind(cx));
+        let cl = lab(collab.bind(cx));
+        match (rl, cl) {
+            (Err(()), _) => Err("invalid row labels".to_owned()),
+            (_, Err(())) => Err("invalid column labels".to_owned()),
+            (Ok(rl), Ok(cl)) => {
+                let labels =
+                    crate::printarray::Labels { rl: label_strs(cx, rl), cl: label_strs(cx, cl), rn: None, cn: None };
+                match attrib::get_value(xv, b"dim").and_then(|d| d.as_ints()).filter(|d| d.len() >= 2) {
+                    None => {
+                        Err("robigo: prmatrix() of an object without two extents is not implemented yet".to_owned())
+                    }
+                    Some(d) => {
+                        let mut o = Vec::new();
+                        let rc = (d[0].max(0) as usize, d[1].max(0) as usize);
+                        crate::printarray::print_matrix(cx, xv, rc, quote != 0, data.right, &labels, &data, &mut o)
+                            .map(|()| o)
+                    }
+                }
+            }
+        }
+    };
+    data.release(cx);
+    match printed {
+        Err(m) => Err(cx.error(&m)),
+        Ok(o) => {
+            cx.rprintf(&o);
+            out.set(cx, x.bind(cx));
+            Ok(())
+        }
+    }
 }
 
 fn printdefault(cx: &mut Cx, x: Root<'_>, pargs: Root<'_>, missings: &[bool], data: &mut PrintData) -> RResult<()> {
