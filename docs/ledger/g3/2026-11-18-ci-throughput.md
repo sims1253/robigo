@@ -150,15 +150,19 @@ crates are compared by their `crates/<name>` directory.)
   - Per queue entry, with the jobs the foreman named (select, lint, build,
     rdb-data, rt with its rt-ci conformance, plus builtin-diff-data once
     #863 is in): about 0.3 + 1.7 + 4.1 + 0.5 + 20.5 (+ 3) ≈ 27-30
-    runner-minutes. The wall time is the select → rdb-data → rt chain, about
-    22 min plus the runner wait.
+    runner-minutes. One build's run time, once dispatched, is the select →
+    rdb-data → rt chain, about 22 min plus the runner wait.
   - At 77 merges a day, about 2,100-2,300 runner-minutes (+10%), plus the
     rebuilds after a failure: each entry behind a failed one is rebuilt
     without it. The queue's merge limits (group sizes) only merge several
     entries at once; every entry is still built on its own, so they save no
-    minutes. Its build concurrency (entries built at once, e.g. 5) keeps
-    the wall time per merge near one build, about 22 min plus the runner
-    wait.
+    minutes. Its build concurrency caps how many entries build at once;
+    it does not remove the wait for a slot. An entry's latency is the wait
+    for a build slot (behind the entries ahead), the runner wait, and the
+    build itself. With 5 slots and 6 entries arriving together, the sixth
+    merges after about 44 min with no failures. 77 merges a day is about 3
+    an hour, so at 5 slots the queue keeps up on average and bursts wait a
+    build or two.
   - perf, perf-rt, corpora, test and the rest stay judged on the pull
     request.
   - **What it needs:**
