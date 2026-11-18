@@ -547,6 +547,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("make.names", character::do_make_names, 0, 11, 2, FUNCALL, Pure),
     op!("tolower", 0, character::do_tolower, 11, 1, FUNCALL, Pure),
     op!("toupper", 1, character::do_tolower, 11, 1, FUNCALL, Pure),
+    row("chartr", character::do_chartr, 1, 11, 3, FUNCALL, Pure),
     // version.c, paste.c's file.path
     row("Version", version::do_version, 0, 11, 0, FUNCALL, Pure),
     row("file.path", paste::do_filepath, 0, 11, 2, FUNCALL, Pure),
