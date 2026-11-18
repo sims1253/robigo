@@ -37,6 +37,7 @@
 //! (attributes, coercion, environments, evaluation) live in the rt crates
 //! that use it.
 
+mod arena;
 pub mod chars;
 mod gc;
 mod heap;

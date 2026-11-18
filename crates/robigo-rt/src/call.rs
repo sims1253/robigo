@@ -909,6 +909,7 @@ fn reads_by_element(name: &str) -> bool {
         name,
         "length"
             | "seq_along"
+            | "seq.int"
             | "sum"
             | "min"
             | "max"
