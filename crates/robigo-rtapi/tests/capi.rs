@@ -569,6 +569,10 @@ fn rprintf_writes_a_long_text_whole() {
 fn a_package_altrep_index_matrix_is_not_implemented_yet() {
     for p in PROFILES {
         let mut s = Session::new(p);
+        // production identities: `dim<-` writes an unshared package ALTREP
+        // vector in place (under ROBIGO_NO_INPLACE it would copy it, through
+        // its Duplicate method, which robigo refuses)
+        s.cx().set_no_inplace(false);
         s.val("x <- matrix(1:4, 2, dimnames = list(c(\"a\", \"b\"), c(\"c\", \"d\")))");
         s.val("mi <- .Call(\"rt_altrep_int\", c(1L, 2L)); dim(mi) <- c(1L, 2L)");
         s.val("mr <- .Call(\"rt_altrep_real\", c(1, 2)); dim(mr) <- c(1L, 2L)");
