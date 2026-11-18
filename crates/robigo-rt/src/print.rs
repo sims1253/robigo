@@ -248,7 +248,7 @@ pub(crate) fn package_altrep_in(x: Ref<'_>) -> Option<String> {
         return Some("the object".into());
     }
     for a in attrib::attrs(x) {
-        let name = String::from_utf8_lossy(a.tag.name().bytes()).into_owned();
+        let name = String::from_utf8_lossy(a.tag.name_bytes()).into_owned();
         let v = a.value;
         if v.is_package_altrep() {
             return Some(format!("its attribute '{name}'"));
@@ -258,7 +258,7 @@ pub(crate) fn package_altrep_in(x: Ref<'_>) -> Option<String> {
                 return Some(format!("an element of its attribute '{name}'"));
             }
             if let Some(b) = attrib::attrs(v).find(|b| b.value.is_package_altrep()) {
-                let inner = String::from_utf8_lossy(b.tag.name().bytes()).into_owned();
+                let inner = String::from_utf8_lossy(b.tag.name_bytes()).into_owned();
                 return Some(format!("the attribute '{inner}' of its attribute '{name}'"));
             }
         }
