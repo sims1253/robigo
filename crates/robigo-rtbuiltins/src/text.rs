@@ -60,6 +60,18 @@ pub fn to_native(s: Str<'_>, loc: Locale) -> Result<Cow<'_, [u8]>, TranslateErro
     translate_char(s, ctype(loc))
 }
 
+/// `translateChar(STRING_ELT(x, i))`: element `i` of the character
+/// vector `x` in the native encoding, or GNU R's error for one it cannot
+/// be (a "bytes" string).
+// R: sysutils.c:translateChar
+pub fn native_elt(cx: &mut Cx, x: Root<'_>, i: usize) -> robigo_rtcore::RResult<Vec<u8>> {
+    let r = {
+        let ch = x.bind(cx).as_vector::<robigo_rtcore::Char<'_>>().unwrap().get(i);
+        to_native(crate::coerce::text(ch), cx.locale()).map(|b| b.into_owned())
+    };
+    r.map_err(|e| cx.error(&e.to_string()))
+}
+
 /// `translateCharFP(s)`: `s` in the native encoding, or the message of GNU
 /// R's `error()`: a "bytes" string, or what iconv could not convert.
 // R: sysutils.c:translateCharFP, translateToNative(mustWork = 1)

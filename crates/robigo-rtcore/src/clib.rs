@@ -13,7 +13,7 @@
 //! The one exception is the process environment (`setenv`, `unsetenv`:
 //! sysutils.c's `Sys.setenv`, `Sys.unsetenv`), which is the process's, not an
 //! isolate's, in robigo as in GNU R. See [`setenv`] for how its readers
-//! on other threads are kept safe.
+//! on other threads are kept safe (glibc 2.41 or later, [`MIN_GLIBC`]).
 
 #![allow(unsafe_code)]
 
@@ -156,6 +156,19 @@ pub fn passwd_home(user: Option<&[u8]>) -> Option<Vec<u8>> {
     }
 }
 
+// `setenv` and `unsetenv` below are sound only with glibc's thread-safe
+// `getenv` (MIN_GLIBC): another C library must not build them silently.
+#[cfg(not(target_env = "gnu"))]
+compile_error!(
+    "robigo-rtcore's clib (setenv, unsetenv) is for Linux with glibc >= 2.41, whose getenv is safe against a concurrent setenv; a port to another C library starts here"
+);
+
+/// The oldest glibc whose `getenv` is safe against a concurrent `setenv`
+/// or `unsetenv` on another thread: 2.41, the first release with commit
+/// 7a61e7f557a9 ("stdlib: Make getenv thread-safe in more cases",
+/// `X-Git-Tag: glibc-2.41~465`). [`setenv`] and [`unsetenv`] rely on it.
+pub const MIN_GLIBC: (u32, u32) = (2, 41);
+
 /// Whether `name` is one the C library's `setenv`/`unsetenv` accept: not
 /// empty and without `=` (else `EINVAL`), and, as a C string, without NUL
 /// (an R string has none).
@@ -174,11 +187,14 @@ fn env_name_ok(name: &[u8]) -> bool {
 ///   environment lock, as does this write ([`std::env::set_var`]); a read
 ///   sees the old value or the new one, never a torn array;
 /// - C code on another thread that calls `getenv` itself (glibc's time
-///   zone code reading `TZ`, a package's C) is outside that lock. glibc
-///   (since commit 7a61e7f557a9, "stdlib: Make getenv thread-safe in more
-///   cases"; this machine has 2.44) never frees an environment array that
-///   `getenv` may be walking and publishes each new one with a single
-///   pointer store, so such a read also gets the old value or the new one.
+///   zone code reading `TZ`, a package's C) is outside that lock. It relies
+///   on [`MIN_GLIBC`]: glibc 2.41 is the first release with commit
+///   7a61e7f557a9 ("stdlib: Make getenv thread-safe in more cases"), which
+///   never frees an environment array that `getenv` may be walking,
+///   publishes each new one with a release store, and retries a `getenv`
+///   that raced a change, so such a read also gets the old value or the
+///   new one. The module builds only for glibc (`target_env = "gnu"`), and
+///   a test checks the running glibc against [`MIN_GLIBC`].
 ///   Code that walks `environ` by hand while another isolate sets a
 ///   variable is not covered, by glibc or by robigo.
 pub fn setenv(name: &[u8], value: &[u8]) -> bool {
@@ -188,8 +204,8 @@ pub fn setenv(name: &[u8], value: &[u8]) -> bool {
     }
     // SAFETY: the name and value are ones `set_var` accepts (checked
     // above); concurrent readers are as described in this function's
-    // documentation: std's under the same lock, C's `getenv` by glibc's
-    // guarantee.
+    // documentation: std's under the same lock, C's `getenv` by the
+    // guarantee of glibc 2.41 and later (MIN_GLIBC, tested).
     unsafe { std::env::set_var(std::ffi::OsStr::from_bytes(name), std::ffi::OsStr::from_bytes(value)) };
     true
 }
@@ -245,6 +261,22 @@ pub fn default_textdomain_dir() -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::wcstod_of;
+
+    unsafe extern "C" {
+        fn gnu_get_libc_version() -> *const libc::c_char;
+    }
+
+    // setenv/unsetenv's soundness: the glibc these tests run on has the
+    // thread-safe getenv (the C library is not Miri's)
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn the_running_glibc_has_the_thread_safe_getenv() {
+        // SAFETY: glibc returns a static NUL-terminated string.
+        let v = unsafe { std::ffi::CStr::from_ptr(gnu_get_libc_version()) }.to_str().unwrap().to_owned();
+        let mut parts = v.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
+        let got = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
+        assert!(got >= super::MIN_GLIBC, "glibc {v} is older than {:?}", super::MIN_GLIBC);
+    }
 
     // (the C library's message catalogue table is not Miri's)
     #[test]

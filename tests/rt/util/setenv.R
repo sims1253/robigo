@@ -14,6 +14,8 @@ Sys.getenv("ROBIGO_T_F")
 Sys.setenv(ROBIGO_T_G = "B=C")
 print(.Internal(Sys.unsetenv("ROBIGO_T_G=B")))
 Sys.getenv("ROBIGO_T_G")
+# an empty name and one with "=" (no entry matches): TRUE, as unsetenv refuses both
+print(Sys.unsetenv(c("", "ROBIGO_T_X=Y")))
 # unset
 print(Sys.unsetenv(c("ROBIGO_T_A", "ROBIGO_T_B", "ROBIGO_T_NOPE", "")))
 Sys.getenv(c("ROBIGO_T_A", "ROBIGO_T_B"), unset = NA)

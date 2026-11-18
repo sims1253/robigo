@@ -70,16 +70,6 @@ pub fn do_getenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
     })
 }
 
-/// `translateChar(STRING_ELT(x, i))`: element `i` of the character vector
-/// `x` in the native encoding (GNU R's error for one it cannot be).
-fn translated(cx: &mut Cx, x: Root<'_>, i: usize) -> RResult<Vec<u8>> {
-    let r = {
-        let ch = x.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
-        crate::text::to_native(crate::coerce::text(ch), cx.locale()).map(|b| b.into_owned())
-    };
-    r.map_err(|e| cx.error(&e.to_string()))
-}
-
 /// `.Internal(Sys.setenv(nm, values))`: set each variable `nm[i]` to
 /// `values[i]` in the process's environment (`setenv`, so every isolate
 /// sees it; see `clib::setenv`), each TRUE if it was set.
@@ -105,8 +95,8 @@ pub fn do_setenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
     // the earlier ones set)
     let mut ok = Vec::with_capacity(n);
     for i in 0..n {
-        let name = translated(cx, nm, i)?;
-        let value = translated(cx, val, i)?;
+        let name = crate::text::native_elt(cx, nm, i)?;
+        let value = crate::text::native_elt(cx, val, i)?;
         ok.push(Lgl(robigo_rtcore::clib::setenv(&name, &value) as i32));
     }
     cx.build(out, |cx| Ok(cx.alloc_copy(&ok)?.finish().into()))
@@ -127,12 +117,12 @@ pub fn do_unsetenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
     let n = x.len().unwrap();
     let nm = args.root(0);
     for i in 0..n {
-        let name = translated(cx, nm, i)?;
+        let name = crate::text::native_elt(cx, nm, i)?;
         robigo_rtcore::clib::unsetenv(&name);
     }
     let mut ok = Vec::with_capacity(n);
     for i in 0..n {
-        let name = translated(cx, nm, i)?;
+        let name = crate::text::native_elt(cx, nm, i)?;
         ok.push(Lgl(!robigo_rtcore::clib::has_env(&name) as i32));
     }
     cx.build(out, |cx| Ok(cx.alloc_copy(&ok)?.finish().into()))
