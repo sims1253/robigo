@@ -217,3 +217,22 @@ pub unsafe extern "C" fn robigo_rtapi_store(x: Sexp, slot: *mut Sexp, v: Sexp) {
     // SAFETY: the caller's contract.
     unsafe { x.store(slot, v) }
 }
+
+/// `PRINTNAME(x)` of a symbol, which `api.c`'s `PRINTNAME` and `CAR` call:
+/// the isolate's CHARSXP of the name, as Rust's `Sym::name` gives it.
+/// Symbols are the process's (H5), so their own CAR is the arena's copy of
+/// the name, which C must never see. Cannot collect or exit.
+///
+/// # Safety
+/// `x` is a live SYMSXP, from C code a native entry of the thread's
+/// isolate runs.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn robigo_rtapi_printname(x: Sexp) -> Sexp {
+    // SAFETY: the caller's contract.
+    unsafe {
+        robigo_rtcore::enter_leaf(|cx| {
+            let s = Ref::from_sexp(x, cx).as_sym().expect("robigo: PRINTNAME of a symbol");
+            Ref::from(s.name(cx)).sexp()
+        })
+    }
+}
