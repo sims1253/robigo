@@ -645,7 +645,7 @@ fn array_assign_checks(cx: &mut Cx, n: usize, ny: usize, any_na: bool, na_first:
     if n > 0 && ny == 0 {
         return Err(cx.error("replacement has length zero"));
     }
-    if n > 0 && n % ny != 0 {
+    if n > 0 && !n.is_multiple_of(ny) {
         return Err(cx.error("number of items to replace is not a multiple of replacement length"));
     }
     if !na_first {
