@@ -43,9 +43,18 @@ profdata_tool() {
   echo "$t"
 }
 
+# Whether a conformance log shows cases run: the runner's summary line,
+# which it prints for 0/0 too, and at least one per-case line ("ok", "ok*",
+# "none" or "FAIL", padded to four, then the case's id)
+ran_cases() {
+  grep -q '^robigo-rt conformance against GNU R' "$1" && grep -qE '^(ok  |ok\* |none|FAIL) tests/' "$1"
+}
+
 # robigo-rt's training runs, with the instrumented binary $1
 train_rt() {
   local bin=$1 work=$2
+  # robigo-rt's R_HOME tree first: every run below boots from it
+  scripts/rt-home.sh > /dev/null
   mkdir -p "$work/rows"
   python3 - "$work/rows" <<'PY'
 import os, sys, tomllib
@@ -63,11 +72,10 @@ PY
   done
   [ ${#failed[@]} -eq 0 ] || echo "pgo-build.sh: ${#failed[@]} program(s) stop with an error under robigo-rt: ${failed[*]}" >&2
   for _ in 1 2 3 4 5; do env -u R_HOME "$bin" -e 1 > /dev/null; done
-  scripts/rt-home.sh > /dev/null
   # the cases' outcome is the conformance gate's business; here they must run
   if ! ROBIGO_RT_BIN=$bin cargo test --release --locked -p robigo-rtapi --test conformance -- --exact rt_conformance \
     > "$work/conformance.log" 2>&1; then
-    grep -q '^robigo-rt conformance against GNU R' "$work/conformance.log" ||
+    ran_cases "$work/conformance.log" ||
       { echo "pgo-build.sh: the rt conformance run ran no case (see $work/conformance.log)" >&2; return 1; }
     echo "pgo-build.sh: the rt conformance run did not pass (see $work/conformance.log); its cases trained" >&2
   fi
@@ -101,18 +109,20 @@ case "${1:-}" in
     fi
     ;;
   use)
+    profile=${2:?usage: pgo-build.sh [-p robigo-cli|robigo-rtapi] use FILE [TARGET]}
     target=${3:-$host}
     if [ "$pkg" = robigo-cli ]; then
-      RUSTFLAGS="-Cprofile-use=$(realpath "$2")" cargo build --release --locked -p robigo-cli --target "$target"
+      RUSTFLAGS="-Cprofile-use=$(realpath "$profile")" cargo build --release --locked -p robigo-cli --target "$target"
     else
       # (rustc's -Cprofile-use warns of no function the profile misses, so a
       # stale profile still builds; regenerate it with the commit it ships)
-      RUSTFLAGS="-Cprofile-use=$(realpath "$2")" \
+      RUSTFLAGS="-Cprofile-use=$(realpath "$profile")" \
         cargo build --release --locked -p robigo-rtapi --bin robigo-rt --target "$target"
     fi
     ;;
   *)
-    sed -n '2,25p' "$0" >&2
+    # the header comment: line 2 up to the first line that is not a comment
+    awk 'NR > 1 && !/^#/ { exit } NR > 1' "$0" >&2
     exit 2
     ;;
 esac
