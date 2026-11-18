@@ -352,18 +352,14 @@ impl Writer<'_> {
     /// Whether `s` is a closure robigo-rt's JIT has compiled (its own
     /// code, no BCODESXP for its body): GNU R's JIT has installed
     /// `R_cmpfun1`'s byte code as its BODY by now (eval.c:R_cmpfun), and
-    /// serialize writes that.
+    /// serialize writes that, `R_disable_bytecode` or not: that setting
+    /// stops byte code running, not an installed body being written.
     ///
     /// # Safety
     /// As for [`Self::compile_on_write`].
-    unsafe fn jit_compiled(cx: &Cx, s: Sexp) -> bool {
+    unsafe fn jit_compiled(s: Sexp) -> bool {
         // SAFETY: the caller's contract; a closure's body is its CDR.
-        unsafe {
-            s.typ() == CLOSXP
-                && crate::jit::compiled(s)
-                && s.cdr().typ() != BCODESXP
-                && !crate::prims::state(cx).jit.get().disable_bytecode
-        }
+        unsafe { s.typ() == CLOSXP && crate::jit::compiled(s) && s.cdr().typ() != BCODESXP }
     }
 
     /// `R_cmpfun1(s)` (an effect point: the compiler's R code runs): the
@@ -446,7 +442,7 @@ impl Writer<'_> {
                     // writes what GNU R writes (the closure cmpfun makes: the
                     // formals, the code, the environment and attributes; no
                     // JIT bits, as R_CheckJIT cleared MAYBEJIT)
-                    if source != Some(s.addr()) && Self::jit_compiled(cx, s) {
+                    if source != Some(s.addr()) && Self::jit_compiled(s) {
                         let new_s = self.cmpfun1(cx, s)?;
                         if new_s.typ() == CLOSXP && new_s.cdr().typ() == BCODESXP {
                             return self.item(cx, new_s);
