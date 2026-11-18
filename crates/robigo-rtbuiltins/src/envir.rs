@@ -1012,28 +1012,10 @@ pub fn do_newenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
 /// missing argument, and that value; None if there is none.
 // R: envir.c:R_findDotsEnv
 fn dots_value<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>) -> RResult<Option<Root<'s>>> {
-    let dots = s.root(cx, cx.sym(RSym::Dots));
-    // (one root each for the walk: no slot per frame)
-    let e = s.root(cx, env.bind(cx));
-    let v = s.out(cx).root();
-    loop {
-        if e.bind(cx) == cx.empty_env() {
-            return Ok(None);
-        }
-        let o = v.reset(cx);
-        cx.find_var_in_frame3(e, dots, true, o)?;
-        let vv = v.bind(cx);
-        if vv != cx.unbound() && (vv == cx.missing_arg() || vv.sexptype() == DOTSXP) {
-            return Ok(Some(v));
-        }
-        if !matches!(e.bind(cx).view(), View::Env(_)) {
-            return Ok(None);
-        }
-        e.replace_with(cx, |cx| match e.bind(cx).view() {
-            View::Env(r) => Ok(r.enclos()),
-            _ => unreachable!("robigo: checked above"),
-        })?;
-    }
+    // the frame found, then its `...` read again (an active binding runs
+    // twice, as in GNU R)
+    let e = dots_env(cx, s, env)?;
+    frame_dots(cx, s, e)
 }
 
 /// `length_DOTS(vl)`: a `...` list's length, 0 for the missing argument.
@@ -1077,51 +1059,39 @@ pub fn do_dots_elt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, o
     }
     let i = crate::coerce::vector::as_integer_warn(cx, args.root(0))?;
     cx.scope(|cx, s| {
-        let v = dots_value(cx, s, env)?;
-        if i <= 0 {
-            return Err(cx.error(&format!("indexing '...' with non-positive index {i}")));
-        }
-        let Some(v) = v else {
-            return Err(cx.error(&format!("..{i} used in an incorrect context, no ... to look in")));
-        };
-        let n = dots_len(v.bind(cx));
-        if n < i as usize {
-            let msg = if i == 1 {
-                format!("the ... list contains fewer than {i} element")
-            } else {
-                format!("the ... list contains fewer than {i} elements")
-            };
-            return Err(cx.error(&msg));
-        }
-        let elt = {
-            let mut c = v.bind(cx).as_cons().unwrap();
-            for _ in 1..i {
-                c = c.cdr().as_cons().unwrap();
-            }
-            s.root(cx, c.car())
-        };
-        // R_DotsElt: eval(val, env) of a promise or the missing argument
-        let ev = elt.bind(cx);
-        if ev.sexptype() == PROMSXP || ev == cx.missing_arg() {
-            cx.eval(elt, env, out)
-        } else {
-            out.set(cx, ev);
-            Ok(())
-        }
+        // R_DotsElt(i, R_findDotsEnv(env)): evaluated in the frame found
+        let e = dots_env(cx, s, env)?;
+        dots_elt_value(cx, s, e, i, out)
     })
+}
+
+/// `R_DotsElt(i, env)`: element `i` of `env`'s `...`, evaluated in `env` if
+/// it is a promise or the missing argument.
+// R: envir.c:R_DotsElt
+fn dots_elt_value(cx: &mut Cx, s: Scope<'_>, env: Root<'_>, i: i32, out: Out<'_>) -> RResult<()> {
+    let elt = dots_nth(cx, s, env, i)?;
+    let ev = elt.bind(cx);
+    if ev.sexptype() == PROMSXP || ev == cx.missing_arg() {
+        cx.eval(elt, env, out)
+    } else {
+        out.set(cx, ev);
+        Ok(())
+    }
 }
 
 // ---- the `...` accessors with an environment and `inherits` --------------------
 
-/// `resolveDotsEnv(env, inherits)` and the frame's `...` value: with
-/// `inherits` the first environment outwards whose `...` is a `...` list or
-/// the missing argument (`R_findDotsEnv`), else `env` itself; None when
-/// that frame has no `...` (`R_UnboundValue`).
-// R: envir.c:resolveDotsEnv, R_findDotsEnv
-fn dots_at<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>, inherits: bool) -> RResult<Option<Root<'s>>> {
-    if inherits {
-        return dots_value(cx, s, env);
-    }
+/// `resolveDotsEnv(env, inherits)`: with `inherits` the first environment
+/// outwards whose `...` is a `...` list or the missing argument
+/// (`R_findDotsEnv`), else `env` itself.
+// R: envir.c:resolveDotsEnv
+fn resolve_dots_env<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>, inherits: bool) -> RResult<Root<'s>> {
+    if inherits { dots_env(cx, s, env) } else { Ok(s.root(cx, env.bind(cx))) }
+}
+
+/// `R_findVarInFrame(env, R_DotsSymbol)`: the frame's `...` value, None
+/// when it has none (`R_UnboundValue`).
+fn frame_dots<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>) -> RResult<Option<Root<'s>>> {
     if !matches!(env.bind(cx).view(), View::Env(_)) {
         // (GNU R's R_findVarInFrame reads it as an environment and crashes)
         return Err(not_yet(cx, None, "a '...' accessor's environment that is not one"));
@@ -1133,19 +1103,25 @@ fn dots_at<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>, inherits: bool) -> RRes
     Ok((v.bind(cx) != cx.unbound()).then_some(v))
 }
 
+/// [`resolve_dots_env`], then that frame's `...` value.
+fn dots_at<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>, inherits: bool) -> RResult<Option<Root<'s>>> {
+    let e = resolve_dots_env(cx, s, env, inherits)?;
+    frame_dots(cx, s, e)
+}
+
 /// `asLogical(x)` as a C condition: NA is true.
 fn c_bool(cx: &Cx, x: Ref<'_>) -> bool {
     as_logical(cx, x) != 0
 }
 
-/// `ddfindInFrame(i, rho)` on the frame's `...` value `v`: its `i`th
-/// element.
+/// `ddfindInFrame(i, rho)`: element `i` of `rho`'s `...` (the index checked
+/// before the frame is read).
 // R: envir.c:ddfindInFrame
-fn dots_nth<'s>(cx: &mut Cx, s: Scope<'s>, v: Option<Root<'_>>, i: i32) -> RResult<Root<'s>> {
+fn dots_nth<'s>(cx: &mut Cx, s: Scope<'s>, rho: Root<'_>, i: i32) -> RResult<Root<'s>> {
     if i <= 0 {
         return Err(cx.error(&format!("indexing '...' with non-positive index {i}")));
     }
-    let Some(v) = v else {
+    let Some(v) = frame_dots(cx, s, rho)? else {
         return Err(cx.error(&format!("..{i} used in an incorrect context, no ... to look in")));
     };
     let vv = v.bind(cx);
@@ -1171,8 +1147,8 @@ fn dots_nth<'s>(cx: &mut Cx, s: Scope<'s>, v: Option<Root<'_>>, i: i32) -> RResu
 fn dots_elt_arg<'s>(cx: &mut Cx, s: Scope<'s>, args: Args<'_>) -> RResult<Root<'s>> {
     let i = crate::coerce::vector::as_integer_warn(cx, args.root(0))?;
     let inherits = c_bool(cx, args.get(cx, 2));
-    let v = dots_at(cx, s, args.root(1), inherits)?;
-    dots_nth(cx, s, v, i)
+    let e = resolve_dots_env(cx, s, args.root(1), inherits)?;
+    dots_nth(cx, s, e, i)
 }
 
 /// `.Internal(dotsExist(env, inherits))`.
@@ -1254,17 +1230,9 @@ pub fn do_cdots_elt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
     cx.scope(|cx, s| {
         let i = crate::coerce::vector::as_integer_warn(cx, args.root(0))?;
         let inherits = c_bool(cx, args.get(cx, 2));
-        // the frame R_DotsElt evaluates in: resolveDotsEnv's
-        let env = if inherits { dots_env(cx, s, args.root(1))? } else { s.root(cx, args.get(cx, 1)) };
-        let v = dots_at(cx, s, env, false)?;
-        let elt = dots_nth(cx, s, v, i)?;
-        let ev = elt.bind(cx);
-        if ev.sexptype() == PROMSXP || ev == cx.missing_arg() {
-            cx.eval(elt, env, out)
-        } else {
-            out.set(cx, ev);
-            Ok(())
-        }
+        // the frame R_DotsElt reads and evaluates in: resolveDotsEnv's
+        let e = resolve_dots_env(cx, s, args.root(1), inherits)?;
+        dots_elt_value(cx, s, e, i, out)
     })
 }
 

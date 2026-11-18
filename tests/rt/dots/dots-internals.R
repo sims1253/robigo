@@ -74,3 +74,18 @@ show(p(u + v))
 # arguments that are not what is expected
 r <- function(...) list(.Internal(dotsLength(environment(), NA)), .Internal(getDotType("1", environment(), FALSE)))
 show(r(1))
+# an active `...` binding: the index is checked before it runs, and each
+# read of the frame runs it
+cnt <- 0
+ae <- new.env()
+makeActiveBinding("...", function() { cnt <<- cnt + 1; NULL }, ae)
+show(.Internal(getDotType(0L, ae, FALSE)))
+cnt
+show(.Internal(getDotType(1L, ae, FALSE)))
+cnt
+show(.Internal(dotsLength(ae, FALSE)))
+cnt
+show(.Internal(dotsExist(ae, FALSE)))
+cnt
+show(.Internal(dotsExist(ae, TRUE)))
+cnt
