@@ -73,3 +73,4 @@ else
 fi
 [ -n "$data_only" ] && exit 0
 ROBIGO_ORACLE_LIBRARY=$dir cargo test --release -p robigo-rt --test rdb_roundtrip -- --nocapture
+ROBIGO_ORACLE_LIBRARY=$dir cargo test --release -p robigo-rtapi --test lazyload -- --nocapture

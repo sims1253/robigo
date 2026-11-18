@@ -1,0 +1,34 @@
+# save.to.file / load.from.file (saveload.c's do_savefile, do_loadfile,
+# R_SaveToFileV, R_LoadFromFile) in formats 2 and 3, ascii and XDR, and
+# loadInfoFromConn2 (do_loadFromConn2's PRIMVAL 1) of what they write;
+# their errors.
+msg <- function(expr) tryCatch({ force(expr); "no error" }, error = function(e) conditionMessage(e))
+f <- paste0(Sys.getenv("TMPDIR", "/tmp"), "/robigo-rt-savefile-", Sys.getpid())
+x <- list(a = 1:5, b = "text", c = quote(f(y)), d = function(u) u * 2)
+for (v in 2:3) for (a in c(FALSE, TRUE)) {
+  .Internal(save.to.file(x, f, a, v))
+  y <- .Internal(load.from.file(f))
+  cat(v, a, identical(y[1:3], x[1:3]), y$d(4), "\n")
+  info <- .Internal(loadInfoFromConn2(file(f)))
+  print(info[c("version", "writer_version", "min_reader_version", "format")])
+}
+.Internal(save.to.file(1, f, FALSE, NULL))
+print(.Internal(load.from.file(f)))
+print(msg(.Internal(save.to.file(1, "", FALSE, 3L))))
+print(msg(.Internal(save.to.file(1, f, 1, 3L))))
+print(msg(.Internal(save.to.file(1, f, FALSE, 0L))))
+print(msg(.Internal(save.to.file(1, f, FALSE, NA))))
+print(msg(.Internal(load.from.file(""))))
+print(msg(.Internal(load.from.file(paste0(f, "-none")))))
+writeLines("", f)
+print(msg(.Internal(load.from.file(f))))
+writeLines("RDZ9\nx", f)
+print(msg(.Internal(load.from.file(f))))
+writeLines("abcdef", f)
+print(msg(.Internal(load.from.file(f))))
+print(msg(.Internal(loadInfoFromConn2(file(f)))))
+print(msg(.Internal(loadInfoFromConn2(file(f, "r")))))
+invisible(file.remove(f))
+close(file(f, "w"))
+print(msg(.Internal(loadInfoFromConn2(file(f)))))
+print(file.remove(f))

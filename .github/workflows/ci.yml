@@ -254,6 +254,9 @@ jobs:
           status=0
           ROBIGO_ORACLE_LIBRARY="$PWD/.robigo/oracle-lib" ROBIGO_BC_CROSSCHECK=1 ROBIGO_BC_CROSSCHECK_REPORT="$report" \
             cargo test --release --locked -p robigo-rt --test rdb_roundtrip -- --nocapture || status=$?
+          # (L4's makeLazy: base's lazyLoad of the same databases, through the binary)
+          ROBIGO_ORACLE_LIBRARY="$PWD/.robigo/oracle-lib" \
+            cargo test --release --locked -p robigo-rtapi --test lazyload -- --nocapture || status=$?
           if [ -f "$report" ]; then sed 's/: .*//' "$report" | sort | uniq -c; fi
           exit "$status"
 

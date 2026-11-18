@@ -218,6 +218,10 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("lazyLoadDBflush", crate::serialize::do_lazyload_dbflush, Inline::None, 11, 1),
     builtin("lazyLoadDBinsertValue", crate::serialize::do_lazyload_dbinsert_value, Inline::None, 11, 5),
     builtin("getVarsFromFrame", crate::serialize::do_get_vars_from_frame, Inline::None, 11, 3),
+    builtin("makeLazy", crate::serialize::saveload::do_makelazy, Inline::None, 111, 5),
+    builtin("loadInfoFromConn2", crate::serialize::saveload::do_load_info_from_conn2, Inline::None, 11, 1),
+    builtin("save.to.file", crate::serialize::saveload::do_savefile, Inline::None, 11, 4),
+    builtin("load.from.file", crate::serialize::saveload::do_loadfile, Inline::None, 11, 1),
     // connections.c (L1)
     builtin("close", crate::connections::do_close, Inline::None, 111, 2),
     builtin("file", crate::connections::do_file, Inline::None, 11, 6),

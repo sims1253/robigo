@@ -1429,6 +1429,18 @@ pub fn read_exact(cx: &mut Cx, n: i32, buf: &mut [u8], msg: &str) -> RResult<()>
     r.map_err(|m| cx.error(&m))
 }
 
+/// `con->read(buf, 1, buf.len(), con)`: as many bytes as there are, up
+/// to `buf.len()` (robigo-rt's own refusals are errors; a read the system
+/// fails reads nothing more).
+pub fn read_upto(cx: &mut Cx, n: i32, buf: &mut [u8]) -> RResult<usize> {
+    let r = with_conn(cx, n, |c| match conn_read(c, buf) {
+        Ok(k) => Ok(k),
+        Err(e) if e.raw_os_error().is_none() => Err(e.to_string()),
+        Err(_) => Ok(0),
+    })?;
+    r.map_err(|m| cx.error(&m))
+}
+
 /// `InBytesConn`: exactly `buf.len()` bytes from connection `n`
 /// (`CheckInConn`'s messages, then "error reading from connection").
 // R: serialize.c:InBytesConn, CheckInConn
