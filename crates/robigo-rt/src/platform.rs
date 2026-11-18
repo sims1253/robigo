@@ -246,6 +246,127 @@ pub fn do_direxists(
     cx.build(out, |cx| Ok(cx.alloc_copy(&ans)?.finish().into()))
 }
 
+/// `.Internal(dir.create(path, showWarnings, recursive, mode))`: make the
+/// directory `path` (its parents too with `recursive`), with `mode` (as
+/// `mkdir` takes it, under the umask); TRUE if the last `mkdir` succeeded.
+/// With `showWarnings`, an existing directory and a failure are warnings.
+// R: platform.c:do_dircreate
+pub fn do_dircreate(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: robigo_rtcore::Root<'_>,
+    out: robigo_rtcore::Out<'_>,
+) -> RResult<()> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::DirBuilderExt;
+    crate::prims::check_arity(cx, call, args.len(), "dir.create", 4, true)?;
+    let path = args.root(0);
+    let pv = path.bind(cx);
+    if pv.sexptype() != robigo_heap::types::STRSXP || pv.is_package_altrep() || pv.len() != Some(1) {
+        if pv.sexptype() == robigo_heap::types::STRSXP && pv.is_package_altrep() {
+            return Err(robigo_rtbuiltins::util::not_yet(cx, Some(call), "dir.create() of a package ALTREP vector"));
+        }
+        return Err(cx.error("invalid 'path' argument"));
+    }
+    let lgl =
+        |cx: &mut Cx, b: bool| cx.build(out, |cx| Ok(cx.alloc_copy(&[robigo_rtcore::Lgl(b as i32)])?.finish().into()));
+    if pv.as_vector::<Char<'_>>().unwrap().get(0) == cx.na_string() {
+        return lgl(cx, false);
+    }
+    const NA: i32 = i32::MIN;
+    let show = robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 1));
+    let show = show != NA && show != 0;
+    let recursive = robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 2));
+    let recursive = recursive != NA && recursive != 0;
+    let mode = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(3))?;
+    // (mode == NA_LOGICAL: NA_INTEGER, the same)
+    let mode = if mode == NA { 0o777 } else { mode as u32 };
+    // translateCharFP: its error for a name that cannot be translated
+    let name = {
+        let c = path.bind(cx).as_vector::<Char<'_>>().unwrap().get(0);
+        robigo_rtbuiltins::text::to_native_fp(robigo_rtbuiltins::coerce::text(c), cx.locale()).map(|b| b.into_owned())
+    };
+    let name = name.map_err(|m| cx.error(&m))?;
+    let mut dir = crate::connections::r_expand_file_name(cx, &name)?;
+    if dir.is_empty() {
+        return Err(cx.error("zero-length 'path' argument"));
+    }
+    // remove trailing slashes
+    while dir.len() > 1 && dir.last() == Some(&b'/') {
+        dir.pop();
+    }
+    let os = |b: &[u8]| std::ffi::OsStr::from_bytes(b).to_owned();
+    let mkdir = |b: &[u8]| std::fs::DirBuilder::new().mode(mode).create(os(b));
+    let errno = |e: &std::io::Error| e.raw_os_error().unwrap_or(0);
+    // Linux's <errno.h> (robigo-rt is Linux with glibc)
+    const ENOENT: i32 = 2;
+    const EEXIST: i32 = 17;
+    const ENOTDIR: i32 = 20;
+    const EROFS: i32 = 30;
+    const ENOSYS: i32 = 38;
+    // (res, serrno, gone to `end` past the last mkdir)
+    let mut failed: Option<std::io::Error> = None;
+    let mut ended = false;
+    // the name the warnings give: `dir` as the C leaves it (cut at the
+    // component where the recursive walk stopped)
+    let mut shown_len = dir.len();
+    if recursive {
+        let mut k = 0;
+        while let Some(off) = dir[k + 1..].iter().position(|&b| b == b'/') {
+            k = k + 1 + off;
+            let prefix = &dir[..k];
+            match std::fs::metadata(os(prefix)) {
+                Ok(m) => {
+                    if !m.is_dir() {
+                        // file already exists but is not a directory
+                        failed = Some(std::io::Error::from_raw_os_error(ENOTDIR));
+                        ended = true;
+                        shown_len = k;
+                        break;
+                    }
+                }
+                Err(e) if errno(&e) != ENOENT => {
+                    failed = Some(e);
+                    ended = true;
+                    shown_len = k;
+                    break;
+                }
+                Err(_) => {
+                    if let Err(e) = mkdir(prefix) {
+                        // Solaris 10 returns ENOSYS on automount, PR#13834;
+                        // EROFS is allowed by POSIX, so we skip that too
+                        if !matches!(errno(&e), EEXIST | ENOSYS | EROFS) {
+                            failed = Some(e);
+                            ended = true;
+                            shown_len = k;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let shown = String::from_utf8_lossy(&dir[..shown_len]).into_owned();
+    if !ended {
+        if let Err(e) = mkdir(&dir) {
+            if show && errno(&e) == EEXIST {
+                cx.warning(&format!("'{shown}' already exists"))?;
+            }
+            failed = Some(e);
+        }
+    }
+    // end:
+    if let Some(e) = &failed
+        && show
+        && errno(e) != EEXIST
+    {
+        let msg = format!("cannot create dir '{shown}', reason '{}'", crate::connections::strerror(e));
+        cx.warning(&msg)?;
+    }
+    lgl(cx, failed.is_none())
+}
+
 /// `translateCharFP2(s)` of element `i` of a character vector: `None` for NA
 /// and, after its warning, for a name iconv cannot translate; a "bytes"
 /// name is its error.
