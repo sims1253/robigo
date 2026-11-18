@@ -70,6 +70,15 @@ pub fn do_getenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
     })
 }
 
+/// `translateChar(STRING_ELT(x, i))` of a character vector that is not a
+/// package ALTREP one (checked by the caller), or the message of GNU R's
+/// error, raised by the caller once it holds no environment writer.
+// R: sysutils.c:translateChar
+fn translated(cx: &Cx, x: Root<'_>, i: usize) -> Result<Vec<u8>, String> {
+    let ch = x.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
+    crate::text::to_native(crate::coerce::text(ch), cx.locale()).map(|b| b.into_owned()).map_err(|e| e.to_string())
+}
+
 /// The process environment cannot be written now (`clib::env_write_allowed`:
 /// a glibc older than `clib::MIN_GLIBC` and several isolates).
 fn refused(cx: &mut Cx, call: Root<'_>, f: &str) -> robigo_rtcore::RError {
@@ -79,7 +88,7 @@ fn refused(cx: &mut Cx, call: Root<'_>, f: &str) -> robigo_rtcore::RError {
 
 /// `.Internal(Sys.setenv(nm, values))`: set each variable `nm[i]` to
 /// `values[i]` in the process's environment (`setenv`, so every isolate
-/// sees it; see `clib::setenv`), each TRUE if it was set.
+/// sees it; see `clib::EnvWriter::set`), each TRUE if it was set.
 // R: sysutils.c:do_setenv
 pub fn do_setenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::row!("Sys.setenv", true).check_arity(cx, call, args)?;
@@ -98,17 +107,32 @@ pub fn do_setenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
     }
     let n = val.len().unwrap();
     let (nm, val) = (args.root(0), args.root(1));
+    // one write permission for the whole call, taken before the first
+    // element: a refusal changes nothing
+    let w = match n {
+        0 => None,
+        _ => match robigo_rtcore::clib::env_writer() {
+            Ok(w) => Some(w),
+            Err(_) => return Err(refused(cx, call, "Sys.setenv()")),
+        },
+    };
     // each set as it is translated, as GNU R's loop does (an error leaves
-    // the earlier ones set)
+    // the earlier ones set). Nothing here starts an isolate or reads the
+    // environment through clib: translation is robigo-text's own code, and
+    // its error is raised after the writer is dropped.
     let mut ok = Vec::with_capacity(n);
     for i in 0..n {
-        let name = crate::text::native_elt(cx, nm, i)?;
-        let value = crate::text::native_elt(cx, val, i)?;
-        match robigo_rtcore::clib::setenv(&name, &value) {
-            Ok(set) => ok.push(Lgl(set as i32)),
-            Err(_) => return Err(refused(cx, call, "Sys.setenv()")),
+        let pair = translated(cx, nm, i).and_then(|name| Ok((name, translated(cx, val, i)?)));
+        match (pair, &w) {
+            (Ok((name, value)), Some(w)) => ok.push(Lgl(w.set(&name, &value) as i32)),
+            (Err(m), _) => {
+                drop(w);
+                return Err(cx.error(&m));
+            }
+            (Ok(_), None) => unreachable!("robigo: an element of an empty vector"),
         }
     }
+    drop(w);
     cx.build(out, |cx| Ok(cx.alloc_copy(&ok)?.finish().into()))
 }
 
@@ -126,17 +150,30 @@ pub fn do_unsetenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
     }
     let n = x.len().unwrap();
     let nm = args.root(0);
+    if n == 0 {
+        return cx.build(out, |cx| Ok(cx.alloc_vector::<Lgl>(0)?.finish().into()));
+    }
+    // one write permission for the whole call (both passes: the second
+    // reads an environment no one else changes meanwhile); as for setenv
+    let Ok(w) = robigo_rtcore::clib::env_writer() else {
+        return Err(refused(cx, call, "Sys.unsetenv()"));
+    };
     for i in 0..n {
-        let name = crate::text::native_elt(cx, nm, i)?;
-        if robigo_rtcore::clib::unsetenv(&name).is_err() {
-            return Err(refused(cx, call, "Sys.unsetenv()"));
+        match translated(cx, nm, i) {
+            Ok(name) => w.unset(&name),
+            Err(m) => {
+                drop(w);
+                return Err(cx.error(&m));
+            }
         }
     }
     let mut ok = Vec::with_capacity(n);
     for i in 0..n {
-        let name = crate::text::native_elt(cx, nm, i)?;
-        ok.push(Lgl(!robigo_rtcore::clib::has_env(&name) as i32));
+        // (translated above, so it cannot fail now)
+        let name = translated(cx, nm, i).unwrap_or_default();
+        ok.push(Lgl(!w.has(&name) as i32));
     }
+    drop(w);
     cx.build(out, |cx| Ok(cx.alloc_copy(&ok)?.finish().into()))
 }
 

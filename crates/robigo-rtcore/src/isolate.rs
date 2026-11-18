@@ -978,12 +978,15 @@ impl Drop for EndCallback {
     }
 }
 
-/// The process's live isolates, counted under this lock. `clib::setenv`
-/// and `clib::unsetenv` hold it across their decision and their write, so
-/// on a glibc older than `clib::MIN_GLIBC` no second isolate starts (and
-/// so no robigo thread can be inside `getenv`) while the environment
-/// changes.
-pub(crate) static LIVE_ISOLATES: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+/// The process's live isolates, counted under this lock (an isolate is
+/// counted from before its construction does anything fallible until its
+/// teardown is over: [`Registration`]). `clib::env_writer` holds it, with
+/// clib's environment lock, for a whole `Sys.setenv`/`Sys.unsetenv` call,
+/// so on a glibc older than `clib::MIN_GLIBC` no second isolate starts (and
+/// so no other robigo thread can be inside `getenv`) while the environment
+/// changes. Lock order: this, then clib's `ENV`, then std's environment
+/// lock.
+static LIVE_ISOLATES: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
 
 /// [`LIVE_ISOLATES`] locked (a panic while it was held left a count that
 /// is still right: nothing panics between its reads and writes).
@@ -991,9 +994,36 @@ pub(crate) fn live_isolates() -> std::sync::MutexGuard<'static, usize> {
     LIVE_ISOLATES.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// How many isolates the process has now (constructions under way
+/// included).
+pub fn live_isolate_count() -> usize {
+    *live_isolates()
+}
+
+/// One isolate's place in [`LIVE_ISOLATES`]: made before the isolate's
+/// construction does anything that can fail and owned by the isolate, so
+/// that a panic in construction or teardown takes it out exactly once,
+/// and the isolate stays counted throughout its teardown.
+struct Registration(());
+
+impl Registration {
+    fn new() -> Registration {
+        *live_isolates() += 1;
+        Registration(())
+    }
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        *live_isolates() -= 1;
+    }
+}
+
 /// An isolate and its first capability: what an embedder (the `robigo-rt`
 /// binary, a test) creates. Dropping it frees the isolate and its heap.
 pub struct OwnedIsolate {
+    // dropped after `Drop::drop`'s teardown (or during its unwinding)
+    _registration: Registration,
     cx: Capability<[(); 0]>,
 }
 
@@ -1003,8 +1033,9 @@ impl OwnedIsolate {
     }
 
     pub fn with_options(opts: Options) -> OwnedIsolate {
-        // counted before it can run anything (an environment write waits)
-        *live_isolates() += 1;
+        // counted before it can run anything (an environment write waits);
+        // a panic below takes the count back
+        let registration = Registration::new();
         // a new symbol's bits come from its name (H5): before any install
         robigo_heap::set_symbol_bits(crate::sym::symbol_bits);
         // The heap's allocation never collects (H2), and no C segment is open
@@ -1082,7 +1113,7 @@ impl OwnedIsolate {
             let i = iso.as_ref();
             i.core().set_poll_word(NonNull::from(&i.poll));
         }
-        OwnedIsolate { cx: capability(iso) }
+        OwnedIsolate { _registration: registration, cx: capability(iso) }
     }
 
     /// The capability. One at a time: it is borrowed from the owner.
@@ -1105,6 +1136,6 @@ impl Drop for OwnedIsolate {
         // capability of the isolate was borrowed from this owner or lived
         // inside a callback of one that was: those have ended.
         drop(unsafe { Box::from_raw(self.cx.iso.as_ptr()) });
-        *live_isolates() -= 1;
+        // (the registration is dropped after this, with the fields)
     }
 }
