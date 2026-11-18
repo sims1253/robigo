@@ -29,7 +29,7 @@ str1(withVisible(fr()))
 str1(withVisible(fe()))
 # builtins: invisible ones (X = 1) and visible ones
 str1(withVisible(invisible()))
-str1(withVisible(gctorture(FALSE)))
+str1(withVisible(writeLines(character())))
 str1(withVisible(c(1, 2)))
 str1(withVisible(if (FALSE) 1))
 str1(withVisible(for (i in 1:2) i))

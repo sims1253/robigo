@@ -27,7 +27,7 @@ value visible | 11 | TRUE
 value visible | 12 | FALSE 
 value visible | 1 | TRUE 
 value visible | NULL | FALSE 
-value visible | FALSE | FALSE 
+value visible | NULL | FALSE 
 value visible | c(1, 2) | TRUE 
 value visible | NULL | FALSE 
 value visible | NULL | FALSE 
