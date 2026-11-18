@@ -292,6 +292,10 @@ pub static BUILTINS: &[Builtin] = &[
     op!("^", POWOP, arith::do_arith, 1, 2, pp(Binary2, Prec::Power, true), Pure),
     op!("%%", MODOP, arith::do_arith, 1, 2, pp(Binary2, Prec::Percent, false), Pure),
     op!("%/%", IDIVOP, arith::do_arith, 1, 2, pp(Binary2, Prec::Percent, false), Pure),
+    // array.c's matrix products (primitives, the matrixOps group)
+    row("%*%", array::do_matprod::<0>, 0, 1, 2, pp(Binary, Prec::Percent, false), Pure),
+    row("crossprod", array::do_matprod::<1>, 1, 1, 1, FUNCALL, Pure),
+    row("tcrossprod", array::do_matprod::<2>, 2, 1, 1, FUNCALL, Pure),
     // relop.c
     op!("==", EQOP, relop::do_relop, 1, 2, pp(Binary, Prec::Compare, false), Pure),
     op!("!=", NEOP, relop::do_relop, 1, 2, pp(Binary, Prec::Compare, false), Pure),
