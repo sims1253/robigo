@@ -117,5 +117,22 @@
   - Heap unit tests: the report's three lines, only while reporting is on;
     the census counts live objects by type, the shared constants
     included; `gc.time` counts nothing while off.
-- Verified: (pending)
-- Measured (perf): (pending)
+- Verified (2026-11-18):
+  - On `7d0fbdf6d`: debug `cargo test` of robigo-heap, -rtcore, -rt,
+    -rtbuiltins, -rtapi and -conformance passed (on `464da0de4`; after it
+    only the conformance feature and the case changed).
+  - The full `scripts/rt-ci.py` passed on `7d0fbdf6d`: every mode, and
+    2,800 injected failures with no difference. Its first run found the
+    two torture modes (gctorture, retry torture), which add collections
+    GNU R's run does not have; `gcinfo-on.R` is the case they skip.
+  - Miri passed on robigo-rtcore and on robigo-heap's `layout::`,
+    `heap::bitmap_tests` and `heap::medium_tests`. The new heap tests
+    collect, which calls C, so Miri does not run them.
+  - `scripts/lint.sh` passed.
+- Measured (perf, `dc5d698c7` against main `16ce15209`, each built in its
+  own checkout and target): rt-bars, 0 failures. Every row is within
+  ±0.05% instructions (plain +0.02%, env-fn +0.01%, s3 −0.04%, fib
+  +0.00%, e7-paste −0.00%).
+- Review: sol-loop, 2 rounds with gpt-6.1-sol on high, approved. Round 1
+  found that the collections `Cx::need_gc` makes (an allocation's retry)
+  left their report unprinted; fixed.
