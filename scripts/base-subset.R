@@ -127,27 +127,8 @@ mask <- function(x) {
 
 trace_r <- file.path(root, "scripts", "base-subset-trace.R")
 
-# The failure when tracing changes what an input prints. Not a stale list
-# (regenerating cannot fix it): the case prints something the tracer
-# changes. Shows the first line that differs, not the whole transcripts.
-traced_differs <- function(file, part, a, b, saved) {
-  la <- strsplit(a, "\n", fixed = TRUE)[[1L]]
-  lb <- strsplit(b, "\n", fixed = TRUE)[[1L]]
-  n <- max(length(la), length(lb))
-  i <- which(vapply(seq_len(n), function(k) !identical(la[k], lb[k]), NA))[1L]
-  show <- function(x) if (is.na(x)) "(no line)" else x
-  paste0(
-    sprintf("base-subset: %s prints differently when traced: its %s differs at line %d.\n", file,
-            c(out = "stdout", err = "stderr", status = "exit status")[[part]], i),
-    sprintf("  untraced: %s\n  traced:   %s\n", show(la[i]), show(lb[i])),
-    "This is not a stale list, and regenerating cannot fix it: the case prints something that\n",
-    "scripts/base-subset-trace.R changes: it gives every closure of base (and of the script) a body\n",
-    "that records what runs, so a deparsed function or body, a binding's type, sys.function(), or\n",
-    "the protect stack's depth differ.\n",
-    "Make the case print what does not depend on that, or leave the case out of the inputs in\n",
-    "scripts/base-subset.R and say why there.\n",
-    sprintf("Both transcripts: %s", saved))
-}
+# traced_differs(): the failure when tracing changes what an input prints
+source(file.path(root, "scripts", "base-subset-messages.R"))
 
 # The tracer's own check, first: a branch not taken and a closure not
 # called must not count; what runs must, including a closure bound at top
@@ -216,7 +197,9 @@ for (inp in inputs) {
     a <- mask(plain[[part]])
     b <- mask(traced[[part]])
     if (!identical(a, b)) {
-      saved <- file.path(dir, paste0("mismatch-", part, ".txt"))
+      # (beside the run directories, whose ids hold `:`, which an artifact
+      # path may not)
+      saved <- file.path(work, paste0("mismatch-", gsub("[^A-Za-z0-9._-]", "_", inp$id), "-", part, ".txt"))
       writeLines(c(a, "--- traced", b), saved)
       stop(traced_differs(if (is.null(inp$file)) "the self-test" else inp$file, part, a, b, saved), call. = FALSE)
     }

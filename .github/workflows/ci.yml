@@ -284,6 +284,7 @@ jobs:
       - name: The base subset is the one this tree generates
         run: |
           python3 scripts/test-base-subset-stale.py 2>&1 | tail -1
+          Rscript --vanilla scripts/test-base-subset-messages.R
           scripts/base-subset.sh --check
       # which scripts reach each name: the committed file leaves it out, so
       # that a new case changes it only where it reaches a new name
@@ -294,7 +295,7 @@ jobs:
           path: |
             .robigo/base-subset/reached-by.txt
             .robigo/base-subset/*.diff
-            .robigo/base-subset/run/*/mismatch-*.txt
+            .robigo/base-subset/mismatch-*.txt
           if-no-files-found: ignore
           retention-days: 14
 

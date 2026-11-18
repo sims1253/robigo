@@ -65,11 +65,12 @@ def report(committed, generated, by_path=None):
     else:
         out.append("Only its header differs (the generator's comments or counts).")
     out += [
-        "Nothing in the code failed: the list is generated from its inputs (the M1",
-        "scripts, the d2s/e7 rows, tests/rt/capi's cases, the compiler's cmp.R and the tests/rt",
-        "areas base-subset.R names; `Rscript scripts/base-subset.R --inputs` lists them), and a case",
-        "added or changed there, or a change to the generator, changes what is reached.",
-        "Regenerate and commit the three files:",
+        "The generator ran; its output differs from the committed file. Usually that is a case added",
+        "or changed among its inputs (the M1 scripts, the d2s/e7 rows, tests/rt/capi's cases, the",
+        "compiler's cmp.R and the tests/rt areas base-subset.R names; `Rscript scripts/base-subset.R",
+        "--inputs` lists them), which now reaches other base names. Check that the names above are",
+        "ones your change should reach (a change you did not expect can be a generator bug), then",
+        "regenerate and commit the three files:",
         "  scripts/base-subset.sh      # GNU R 4.6.2: the oracle image via docker, about 7 minutes",
         "  git add crates/robigo-rt/proto/base-subset.txt crates/robigo-rt/proto/base-bound.txt \\",
         "          crates/robigo-rt/proto/base-wide.txt",

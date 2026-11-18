@@ -40,7 +40,7 @@ class Report(unittest.TestCase):
         self.assertIn("  + internal chartr    (reached by env:probe,sort:x)", r)
         self.assertIn("  - internal old", r)
         self.assertIn("scripts/base-subset.sh", r)
-        self.assertIn("Nothing in the code failed", r)
+        self.assertIn("The generator ran; its output differs", r)
 
     def test_a_missing_reached_by_still_reports(self):
         a = self.f("a", HEAD + ["closure f a.R"])
