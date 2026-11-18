@@ -16,7 +16,14 @@ import sys
 HEAVY = {"build", "release-tests", "test", "counters", "corpora", "fuzz", "cran", "smoke", "perf"}
 
 
+# Skipped on a stacked pull request (select's `stacked`), beside HEAVY and
+# the package gate: only select, lint and rt (with rdb-data) run there.
+STACKED_SKIP = {"miri", "bytecode-fidelity", "base-subset", "perf-rt-build", "perf-rt", "rt-corpora"}
+
+
 def allowed_skip(job, sel, pull_request):
+    if sel.get("stacked") == "true" and (job in HEAVY or job in STACKED_SKIP or job == "package-gate"):
+        return True
     if job in HEAVY:
         return sel.get("heavy") == "false"
     if job in ("rt", "rdb-data", "base-subset", "perf-rt-build", "perf-rt", "rt-corpora"):
@@ -48,6 +55,12 @@ def main(argv):
     bad = [job for job, _, ok in rows if not ok]
     if bad:
         print(f"::error::not passed: {', '.join(bad)}")
+        return 1
+    sel = (json.loads(os.environ["NEEDS"]).get("select") or {}).get("outputs") or {}
+    if sel.get("stacked") == "true":
+        # a retarget starts no run: green here would let it merge into main untested
+        print("::error::stacked pull request: the heavy jobs did not run. Retarget it to main, then push "
+              "(or close and reopen it) for the full run")
         return 1
     return 0
 

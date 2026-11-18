@@ -57,6 +57,7 @@ jobs:
       mode: ${{ steps.sel.outputs.mode }}
       runtime: ${{ steps.sel.outputs.runtime }}
       rt: ${{ steps.sel.outputs.rt }}
+      stacked: ${{ steps.sel.outputs.stacked }}
       image_base: ${{ steps.image.outputs.base }}
       image_rust: ${{ steps.image.outputs.rust }}
       image_packages: ${{ steps.image.outputs.packages }}
@@ -111,6 +112,9 @@ jobs:
         run: python3 scripts/test-prune-target.py
 
   miri:
+    # (after select only for its `stacked`: a stacked pull request skips it)
+    needs: select
+    if: ${{ needs.select.outputs.stacked != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -264,7 +268,7 @@ jobs:
   # its Rscript directly. seccomp is off as in scripts/oracle-run.sh.
   base-subset:
     needs: select
-    if: ${{ needs.select.outputs.rt == 'true' }}
+    if: ${{ needs.select.outputs.rt == 'true' && needs.select.outputs.stacked != 'true' }}
     runs-on: ubuntu-24.04
     container:
       image: ${{ needs.select.outputs.image_oracle_4_6_2 }}
@@ -455,6 +459,7 @@ jobs:
 
   bytecode-fidelity:
     needs: select
+    if: ${{ needs.select.outputs.stacked != 'true' }}
     runs-on: ubuntu-24.04
     container:
       image: ${{ needs.select.outputs.image_rust }}
@@ -905,7 +910,7 @@ jobs:
   # bar may mix CPUs (docs/ledger/g3/2026-11-16-a2-perf-rt-policy.md).
   perf-rt-build:
     needs: select
-    if: ${{ needs.select.outputs.rt == 'true' }}
+    if: ${{ needs.select.outputs.rt == 'true' && needs.select.outputs.stacked != 'true' }}
     runs-on: ubuntu-24.04
     container:
       image: ${{ needs.select.outputs.image_rust }}
@@ -957,7 +962,7 @@ jobs:
   # on (docs/ledger/g3/2026-11-16-cycles-study.md).
   perf-rt:
     needs: [select, perf-rt-build]
-    if: ${{ needs.select.outputs.rt == 'true' }}
+    if: ${{ needs.select.outputs.rt == 'true' && needs.select.outputs.stacked != 'true' }}
     runs-on: ubuntu-24.04
     container:
       image: ${{ needs.select.outputs.image_oracle_4_6_2 }}
@@ -1057,7 +1062,7 @@ jobs:
   # with a build step wait for robigo-rt's natives.
   rt-corpora:
     needs: [select, perf-rt-build]
-    if: ${{ needs.select.outputs.rt == 'true' }}
+    if: ${{ needs.select.outputs.rt == 'true' && needs.select.outputs.stacked != 'true' }}
     runs-on: ubuntu-24.04
     container:
       image: ${{ needs.select.outputs.image_rust }}
@@ -1108,11 +1113,16 @@ jobs:
   # adding, splitting or resharding jobs needs no ruleset change: add every
   # new gating job to `needs`. It passes when each job passed, or was skipped
   # because `select` said so; a failed, cancelled or unexplained skip fails
-  # it. `always()`: a skipped required check counts as passing, so a
-  # cancelled run must still report a failure here.
+  # it. `!cancelled()`, not `always()`: it runs after failed and skipped
+  # jobs, but not in a cancelled run. `always()` also ran it there, so a run
+  # superseded by a new push kept waiting for a runner for `Check` alone,
+  # holding the concurrency group, and the new head's run stayed pending
+  # behind it (2026-11-18: 60 runs, 1,268 minutes). The price: a skipped
+  # required check counts as passing, so a pull request's HEAD run must not
+  # be cancelled by hand (docs/workstreams.md); push or close it instead.
   check:
     name: Check
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     needs: [select, lint, miri, rdb-data, rt, base-subset, build, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
     runs-on: ubuntu-24.04
     timeout-minutes: 5

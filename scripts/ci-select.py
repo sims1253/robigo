@@ -19,10 +19,17 @@ paths could be listed AND every changed path matches a rule. An unmatched
 path, an unreadable diff, a malformed mapping or any other event (main,
 workflow_dispatch) runs everything. Never silently skip a needed check.
 
+A stacked pull request (its base is not main: `--base-ref`, default
+$GITHUB_BASE_REF) runs only the cheap jobs: select, lint, rt (with its
+rdb-data) and agent-context; the heavy ones run once it targets main.
+Its `Check` then fails on purpose (scripts/ci-check.py): a retarget starts
+no run, so a green stacked `Check` would let the pull request merge into
+main with the heavy jobs never run.
+
 Prints a markdown summary (what runs and why) on stdout. `--github-output`
-sets `mode`, `heavy` (true only for `full`) and `runtime` (true when the
-package regression gate should run) and `rt` (true unless `light`: the `rt`
-job runs) for later steps.
+sets `mode`, `heavy` (true only for `full`, and not stacked), `runtime`
+(true when the package regression gate should run), `rt` (true unless
+`light`: the `rt` job runs) and `stacked` for later steps.
 """
 import argparse
 import os
@@ -143,6 +150,8 @@ def main():
                     help="only pull_request narrows (default: $GITHUB_EVENT_NAME, else pull_request)")
     ap.add_argument("--base", default="HEAD^1", help="main's commit: the merge commit's first parent")
     ap.add_argument("--head", default="HEAD")
+    ap.add_argument("--base-ref", default=os.environ.get("GITHUB_BASE_REF", ""),
+                    help="the pull request's base branch (default: $GITHUB_BASE_REF); not main = stacked")
     ap.add_argument("--paths-from", help="read changed paths from FILE (- for stdin) instead of git")
     ap.add_argument("--changed", nargs="+", help="changed paths, for a dry run")
     ap.add_argument("--config", default=CONFIG)
@@ -178,13 +187,19 @@ def main():
         why = f"Selection failed ({e}); running every job."
         print(f"ci-select: {e}", file=sys.stderr)
 
-    print(summary(mode, why, rows, gate=runtime and mode == "full" and a.event == "pull_request"))
+    stacked = a.event == "pull_request" and a.base_ref not in ("", "main")
+    text = summary(mode, why, rows, gate=runtime and mode == "full" and a.event == "pull_request" and not stacked)
+    if stacked:
+        text = (f"### Stacked on `{a.base_ref}`: only select, lint and rt run\n\n"
+                "The heavy jobs run once the pull request targets main. Retargeting starts no run: push, or "
+                "close and reopen the pull request, after it. `Check` fails until then.\n\n" + text)
+    print(text)
     if a.github_output and os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-            heavy = "true" if mode == "full" else "false"
+            heavy = "true" if mode == "full" and not stacked else "false"
             rt = "false" if mode == "light" else "true"
             f.write(f"mode={mode}\nheavy={heavy}\nruntime={'true' if runtime and heavy == 'true' else 'false'}\n"
-                    f"rt={rt}\n")
+                    f"rt={rt}\nstacked={'true' if stacked else 'false'}\n")
     return 0
 
 

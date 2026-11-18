@@ -194,6 +194,7 @@ class Cli(unittest.TestCase):
     def run_cli(self, *args, env=None):
         e = {**os.environ, **(env or {})}
         e.pop("GITHUB_EVENT_NAME", None)
+        e.pop("GITHUB_BASE_REF", None)      # (CI runs these tests on stacked pull requests too)
         e.update(env or {})
         return subprocess.run([sys.executable, str(HERE / "ci-select.py"), *args],
                               capture_output=True, text=True, env=e, cwd=ROOT)
@@ -230,6 +231,17 @@ class Cli(unittest.TestCase):
         self.assertEqual((o["mode"], o["heavy"], o["runtime"]), ("full", "true", "false"))
         o, _ = self.outputs("--changed", "unknown/x")
         self.assertEqual((o["mode"], o["heavy"], o["runtime"]), ("full", "true", "true"))
+
+    def test_stacked_pull_request(self):
+        o, out = self.outputs("--changed", "crates/robigo-runtime/src/vm.rs", "--base-ref", "g3/other")
+        self.assertEqual((o["mode"], o["heavy"], o["runtime"], o["rt"], o["stacked"]),
+                         ("full", "false", "false", "true", "true"))
+        self.assertIn("Stacked on `g3/other`", out)
+        o, _ = self.outputs("--changed", "crates/robigo-runtime/src/vm.rs", "--base-ref", "main")
+        self.assertEqual((o["heavy"], o["stacked"]), ("true", "false"))
+        # only a pull request is stacked (main's push has no base)
+        o, _ = self.outputs("--event", "push", "--base-ref", "g3/other")
+        self.assertEqual((o["heavy"], o["stacked"]), ("true", "false"))
 
     def test_rt_output(self):
         o, _ = self.outputs("--changed", "crates/robigo-rt/src/lib.rs", "docs/g3.md")

@@ -122,6 +122,27 @@ class Rule(unittest.TestCase):
         self.assertEqual(p.returncode, 1)
         self.assertIn("not passed: fuzz", p.stdout)
 
+    def test_stacked_pull_request_skips_all_but_select_lint_and_rt_and_fails(self):
+        skip = {**SKIP_HEAVY, **{j.replace("-", "_"): "skipped" for j in chk.STACKED_SKIP}, "package_gate": "skipped"}
+        n = needs("false", "false", "true", **skip)
+        n["select"]["outputs"]["stacked"] = "true"
+        self.assertTrue(passes(n))                  # every skip is explained...
+        for job in ("rt", "lint", "rdb-data"):      # ...but not these
+            m = needs("false", "false", "true", **{**skip, job.replace("-", "_"): "skipped"})
+            m["select"]["outputs"]["stacked"] = "true"
+            self.assertFalse(passes(m), job)
+        p = subprocess.run([sys.executable, str(HERE / "ci-check.py"), "--pull-request"], capture_output=True,
+                           text=True, env={**os.environ, "NEEDS": json.dumps(n)})
+        self.assertEqual(p.returncode, 1)           # ...and Check still fails: a retarget starts no run
+        self.assertIn("stacked pull request", p.stdout)
+        # not stacked, the same skips are not explained
+        self.assertFalse(passes(needs("false", "false", "true", **skip)))
+
+    def test_check_does_not_run_in_a_cancelled_run(self):
+        # `always()` kept a superseded run waiting for a runner for Check alone
+        wf = (HERE.parent / ".github/workflows/ci.yml").read_text()
+        self.assertIn("    name: Check\n    if: ${{ !cancelled() }}\n", wf)
+
     def test_workflow_needs_every_gating_job(self):
         import re
         wf = (HERE.parent / ".github/workflows/ci.yml").read_text()
