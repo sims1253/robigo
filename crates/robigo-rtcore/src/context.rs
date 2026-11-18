@@ -6,11 +6,13 @@
 //!
 //! One chain, GNU R's: `R_GlobalContext` (the innermost record) links
 //! through `nextcontext` to the session's base record (`R_Toplevel`), with
-//! `R_ToplevelContext` and `R_ExitContext` pointing into it. A record lives
-//! in the frame of the code that pushed it, at a stable address: a Rust
-//! driver's ([`Cx::function_context`], the native entries in `native.rs`)
-//! or, for C compiled against robigo's `Defn.h`, a C frame. Its layout is
-//! `#[repr(C)]` and checked against `Defn.h`'s ([`check_layout`]).
+//! `R_ToplevelContext` and `R_ExitContext` pointing into it. A record stays
+//! at one address for its life: a Rust driver's ([`Cx::function_context`],
+//! the native entries in `native.rs`) in a slot of the isolate's record
+//! stack (`records.rs`), not in the driver's frame, so that an R call keeps
+//! no record on the C stack; for C compiled against robigo's `Defn.h`, in a
+//! C frame. Its layout is `#[repr(C)]` and checked against `Defn.h`'s
+//! ([`check_layout`]).
 //!
 //! A native entry's jump record is the `cjmpbuf` of its own record (flag
 //! `LANDING`): the heap's trampoline sets it, and an export wrapper that
@@ -46,13 +48,13 @@
 use crate::exit::{ExitRecord, RError, RResult};
 use crate::handle::Ref;
 use crate::isolate::{Cx, Isolate};
+use crate::records::{Records, Reserved, Slot};
 use crate::root::{Out, Root};
 use crate::vstack::Tag;
 use robigo_heap::unwind::JmpBuf;
 use robigo_heap::{ScanState, Sexp, Trace, Visitor, types};
-use std::cell::{Cell, UnsafeCell};
+use std::cell::Cell;
 use std::ffi::{c_int, c_void};
-use std::mem::MaybeUninit;
 use std::ptr::{NonNull, addr_of, addr_of_mut, null_mut};
 
 /// GNU R's context types (`Defn.h`): a record's `callflag`. Only function
@@ -340,6 +342,18 @@ impl Rec {
         self.0.as_ptr()
     }
 
+    /// The record's slot was released (its memory holds the debug poison,
+    /// `records.rs`): a stale pointer. Only meaningful under
+    /// `debug_assertions`.
+    pub(crate) fn poisoned(self) -> bool {
+        use crate::records::POISON;
+        // (two fields, initialized whether the record is live or poisoned;
+        // never the padding after `callflag`, which a live record leaves
+        // uninitialized)
+        self.callflag() == i32::from_ne_bytes([POISON; 4])
+            && self.nextcontext().addr() == usize::from_ne_bytes([POISON; size_of::<usize>()])
+    }
+
     #[inline(always)]
     pub(crate) fn id(self) -> ContextId {
         ContextId(self.0)
@@ -501,6 +515,9 @@ pub(crate) struct Contexts {
     pub(crate) exit_context: Cell<*mut Context>,
     /// R_Toplevel, the session's base record (freed with the isolate)
     base: NonNull<Context>,
+    /// Where the Rust drivers' records live (`records.rs`): not traced
+    /// (the chain is), freed with the isolate.
+    pub(crate) records: Records,
     /// R_NilValue (immortal: the root list leaves it out)
     nil: Sexp,
     /// R_HandlerStack, R_RestartStack (S1 fills them), R_Srcref
@@ -583,6 +600,7 @@ impl Contexts {
             toplevel: Cell::new(base.as_ptr()),
             exit_context: Cell::new(null_mut()),
             base,
+            records: Records::new(),
             nil,
             handler_stack: Cell::new(nil),
             restart_stack: Cell::new(nil),
@@ -628,6 +646,7 @@ impl Contexts {
         let mut c = self.global.get();
         std::iter::from_fn(move || {
             let r = Rec(NonNull::new(c)?);
+            debug_assert!(!r.poisoned(), "robigo: a popped context record is on the chain");
             c = r.nextcontext();
             Some(r)
         })
@@ -990,16 +1009,19 @@ pub(crate) fn list_length(mut x: Sexp) -> i32 {
 
 /// Unlinks a driver's record on every path: normally after the driver's
 /// exit code ran, or if a panic unwinds through the driver. The record is
-/// the innermost one then (inner drivers unlinked theirs first).
-struct Unlink {
+/// the innermost one then (inner drivers unlinked theirs first). `RELEASE`:
+/// its slot is released too (it was taken for the record, not reserved by
+/// a [`Release`] guard outside).
+struct Unlink<const RELEASE: bool> {
     iso: NonNull<Isolate>,
     rec: Rec,
 }
 
-impl Drop for Unlink {
+impl<const RELEASE: bool> Drop for Unlink<RELEASE> {
+    #[inline(always)]
     fn drop(&mut self) {
-        // SAFETY: made by `Cx::with_record`, whose `&mut Cx` borrow keeps the
-        // isolate alive until this guard is dropped.
+        // SAFETY: made by `Cx::with_record_in`, whose `&mut Cx` borrow keeps
+        // the isolate alive until this guard is dropped.
         let st = unsafe { self.iso.as_ref() }.contexts();
         debug_assert!(
             st.global.get() == self.rec.ptr() || std::thread::panicking(),
@@ -1009,6 +1031,24 @@ impl Drop for Unlink {
         if st.exit_context.get() == self.rec.ptr() {
             st.exit_context.set(null_mut());
         }
+        if RELEASE {
+            st.records.release(self.rec.0.cast());
+        }
+    }
+}
+
+/// Releases a reserved slot ([`Cx::with_reserved`]) on every path.
+struct Release {
+    iso: NonNull<Isolate>,
+    slot: NonNull<Slot>,
+}
+
+impl Drop for Release {
+    #[inline(always)]
+    fn drop(&mut self) {
+        // SAFETY: made by `Cx::with_reserved`, whose `&mut Cx` borrow keeps
+        // the isolate alive until this guard is dropped.
+        unsafe { self.iso.as_ref() }.contexts().records.release(self.slot);
     }
 }
 
@@ -1019,16 +1059,47 @@ impl Cx {
         self.iso().contexts()
     }
 
-    /// Push a record built from `init` in this frame, run `f` with it, and
-    /// pop it on every path (`begincontext`, `endcontext`'s last step). The
-    /// record stays at its address while `f` runs.
+    /// Push a record built from `init` in the next slot of the record
+    /// stack, run `f` with it, and pop it on every path (`begincontext`,
+    /// `endcontext`'s last step). The record stays at its address while `f`
+    /// runs.
     pub(crate) fn with_record<R>(&mut self, init: &Init, f: impl FnOnce(&mut Cx, Rec) -> R) -> R {
-        let cell = UnsafeCell::new(MaybeUninit::<Context>::uninit());
-        // SAFETY: an UnsafeCell's pointer is never null.
-        let rec = Rec(unsafe { NonNull::new_unchecked(cell.get().cast::<Context>()) });
+        let rec = Rec(self.ctxs().records.take().cast());
         self.begin(rec, init);
-        let _pop = Unlink { iso: self.iso_ptr(), rec };
+        let _pop = Unlink::<true> { iso: self.iso_ptr(), rec };
         f(self, rec)
+    }
+
+    /// [`Cx::with_record`] in the slot `res` reserved: unlinked on every
+    /// path, the slot left to its reservation.
+    #[inline(always)]
+    fn with_record_in<T, R>(&mut self, res: Reserved<'_, T>, init: &Init, f: impl FnOnce(&mut Cx, Rec) -> R) -> R {
+        let rec = Rec(res.slot.cast());
+        self.begin(rec, init);
+        let _pop = Unlink::<false> { iso: self.iso_ptr(), rec };
+        f(self, rec)
+    }
+
+    /// Reserve the next slot of the record stack for the record `f` pushes
+    /// ([`Cx::function_context_raw`]), with its fill area holding a `T`
+    /// for the record's owner (robigo-rt's lazy-`promargs` fill data, made
+    /// before the record is pushed and read while it lives): what `f`
+    /// keeps in the slot is kept off the C stack. Records pushed while the
+    /// reservation lasts, before or inside its record, take the slots after
+    /// it. The slot is released on every path when `f` returns; the fill
+    /// area is never read or dropped here ([`Reserved::fill`]).
+    #[inline(always)]
+    pub fn with_reserved<T, R>(&mut self, f: impl for<'r> FnOnce(&mut Cx, Reserved<'r, T>) -> R) -> R {
+        let slot = self.ctxs().records.take();
+        let _release = Release { iso: self.iso_ptr(), slot };
+        f(self, Reserved::new(slot))
+    }
+
+    /// How many slots the record stack holds (its high-water mark, rounded
+    /// up to its chunks), and how many are in use.
+    pub fn record_stack(&self) -> (usize, usize) {
+        let r = &self.ctxs().records;
+        (r.chunks() * crate::records::CHUNK_SLOTS, r.depth())
     }
 
     /// GNU R's `begincontext`: write every field of `rec` (uninitialized
@@ -1038,7 +1109,9 @@ impl Cx {
         let global = st.global.get();
         let p = rec.ptr();
         // SAFETY: `global` is the live innermost record.
-        let browserfinish = Rec(unsafe { NonNull::new_unchecked(global) }).browserfinish();
+        let g = Rec(unsafe { NonNull::new_unchecked(global) });
+        debug_assert!(!g.poisoned(), "robigo: R_GlobalContext is a popped record");
+        let browserfinish = g.browserfinish();
         // R: context.c:begincontext, field by field in place: every field
         // but the jump record, which only a native entry sets and reads.
         // (gcenabled and the byte-code fields are the heap's GC switch and
@@ -1369,21 +1442,25 @@ impl Cx {
         debug_assert!(spec.callflag & ctxt::FUNCTION != 0, "robigo: a function record without the FUNCTION bit");
         let init = self.function_init(spec);
         // (an object, never an unboxed scalar)
-        self.run_function(init, out, eval, |cx, id, o| body(cx, id, o).map(|()| false)).map(drop)
+        self.run_function(None::<Reserved<'_, ()>>, init, out, eval, |cx, id, o| body(cx, id, o).map(|()| false))
+            .map(drop)
     }
 
     /// [`Cx::function_context`] for the raw layer (the VM), whose call,
     /// frames, closure and `promargs` are objects in its own rooted slots:
-    /// no root is bound or checked. `body` returns true when it left an
-    /// unboxed scalar in `out` (robigo-rt's VM, for a compiled caller); the
-    /// result is true when `out` still holds it.
+    /// no root is bound or checked. The record is pushed in the slot `res`
+    /// reserved ([`Cx::with_reserved`]), whose fill area a lazy `promargs`'
+    /// data may be. `body` returns true when it left an unboxed scalar in
+    /// `out` (robigo-rt's VM, for a compiled caller); the result is true
+    /// when `out` still holds it.
     ///
     /// # Safety
     /// Every object in `spec` is a live object of this isolate's heap,
     /// rooted by the caller until this returns.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn function_context_raw(
+    pub unsafe fn function_context_raw<T>(
         &mut self,
+        res: Reserved<'_, T>,
         spec: &RawFunctionContext,
         out: Out<'_>,
         eval: &mut OnExitEval<'_>,
@@ -1408,19 +1485,22 @@ impl Cx {
             filldata,
             fillkind,
         };
-        self.run_function(init, out, eval, body)
+        self.run_function(Some(res), init, out, eval, body)
     }
 
+    /// A function record's life ([`Cx::function_context`]), in the slot
+    /// `res` reserved, or the next one.
     #[inline(always)]
-    fn run_function(
+    fn run_function<T>(
         &mut self,
+        res: Option<Reserved<'_, T>>,
         init: Init,
         out: Out<'_>,
         eval: &mut OnExitEval<'_>,
         body: impl FnOnce(&mut Cx, ContextId, Out<'_>) -> RResult<bool>,
     ) -> RResult<bool> {
         let eager = self.ctxs().eager_promargs.get() && init.rflags & rflags::LAZY_ARGS != 0;
-        self.with_record(&init, |cx, c| {
+        let run = |cx: &mut Cx, c: Rec| {
             // (an error making promargs leaves the record like the body's)
             let filled = if eager { cx.materialize_promargs(c.id()) } else { Ok(()) };
             // R: eval.c:R_execClosure. The body writes the caller's slot;
@@ -1483,7 +1563,11 @@ impl Cx {
                 out.set(cx, unsafe { Ref::from_sexp(v, cx) });
             }
             Ok(false)
-        })
+        };
+        match res {
+            Some(res) => self.with_record_in(res, &init, run),
+            None => self.with_record(&init, run),
+        }
     }
 
     /// Box the unboxed scalar in slot `slot` (a double, integer or logical)
@@ -2008,5 +2092,60 @@ impl Cx {
     pub fn set_restart_stack(&mut self, v: Root<'_>) {
         let x = v.bind(self).sexp();
         self.ctxs().restart_stack.set(x);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::isolate::{Options, OwnedIsolate};
+    use crate::records::POISON;
+
+    fn small_iso() -> OwnedIsolate {
+        OwnedIsolate::with_options(Options { value_stack_slots: 1 << 12, ..Options::default() })
+    }
+
+    /// A popped record's memory is the debug poison: a stale pointer to it
+    /// (a `Rec`, an `RCNTXT *` C kept) reads 0xdd…, never a plausible old
+    /// record. The next record pushed takes the slot and fills it.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn a_popped_record_reads_as_poison() {
+        let mut iso = small_iso();
+        let cx = iso.cx();
+        let init = Init::plain(cx, ctxt::LOOP, 0);
+        let rec = cx.with_record(&init, |_, c| {
+            assert!(!c.poisoned());
+            assert_eq!(c.callflag(), ctxt::LOOP);
+            c
+        });
+        assert!(rec.poisoned());
+        assert_eq!(rec.callflag(), i32::from_ne_bytes([POISON; 4]));
+        assert_eq!(rec.nextcontext().addr(), usize::from_ne_bytes([POISON; size_of::<usize>()]));
+        assert_eq!(rec.rflags(), u32::from_ne_bytes([POISON; 4]));
+        let again = cx.with_record(&init, |_, c| {
+            assert!(!c.poisoned());
+            c
+        });
+        assert!(again == rec, "the same slot");
+    }
+
+    /// A stale pointer on the chain is caught by the first walk.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn a_popped_record_on_the_chain_is_caught() {
+        let mut iso = small_iso();
+        let cx = iso.cx();
+        let init = Init::plain(cx, ctxt::LOOP, 0);
+        let rec = cx.with_record(&init, |_, c| c);
+        let good = cx.ctxs().global.get();
+        // a stale R_GlobalContext
+        cx.ctxs().global.set(rec.ptr());
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cx.context_depth()));
+        cx.ctxs().global.set(good);
+        let e = r.expect_err("the walk met a popped record");
+        let msg = e.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| e.downcast_ref::<String>().cloned());
+        assert!(msg.is_some_and(|m| m.contains("a popped context record is on the chain")));
+        assert_eq!(cx.context_depth(), 1);
     }
 }

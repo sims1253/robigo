@@ -1,0 +1,7 @@
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] FALSE
+[1] 01 08 0f 16 1d 24 2b 32 39
+[1] "cannot allocate memory block of size 8192 Tb"
+doTryCatch(return(expr), name, parentenv, handler)

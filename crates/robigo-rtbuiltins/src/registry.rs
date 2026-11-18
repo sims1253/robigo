@@ -7,7 +7,7 @@
 
 use crate::{
     apply, arith, array, attrib, bind, builtin, bytecode, character, coerce, complex, context, cum, datetime, envir,
-    errors, grep, identical, is, logic, math, options, paste, relop, rng, seq, sort, sprintf, subset, summary,
+    errors, grep, identical, is, logic, math, options, paste, raw, relop, rng, seq, sort, sprintf, subset, summary,
     sysutils, unique, util, version,
 };
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
@@ -445,6 +445,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("rep", seq::do_rep, 0, 0, -1, FUNCALL, Pure),
     row("rep_len", seq::do_rep_len, 0, 11, 2, FUNCALL, Pure),
     row("rep.int", seq::do_rep_int, 0, 11, 2, FUNCALL, Pure),
+    row("seq.int", seq::do_seq, 0, 1, -1, FUNCALL, Pure),
     row("seq_along", seq::do_seq_along, 0, 1, 1, FUNCALL, Pure),
     row("seq_len", seq::do_seq_len, 0, 1, 1, FUNCALL, Pure),
     // coerce.c
@@ -541,6 +542,15 @@ pub static BUILTINS: &[Builtin] = &[
     row("regexec", grep::do_regexec, 1, 11, 5, FUNCALL, Pure),
     row("nzchar", character::do_nzchar, 1, 1, -1, FUNCALL, Pure),
     row("encodeString", character::do_encode_string, 1, 11, 5, FUNCALL, Pure),
+    // raw.c, util.c's encodings
+    row("charToRaw", raw::do_char_to_raw, 1, 11, 1, FUNCALL, Pure),
+    row("rawToChar", raw::do_raw_to_char, 1, 11, 2, FUNCALL, Pure),
+    row("utf8ToInt", raw::do_utf8_to_int, 1, 11, 1, FUNCALL, Pure),
+    row("intToUtf8", raw::do_int_to_utf8, 1, 11, 3, FUNCALL, Pure),
+    row("validUTF8", util::do_valid_utf8, 1, 11, 1, FUNCALL, Pure),
+    row("validEnc", util::do_valid_enc, 1, 11, 1, FUNCALL, Pure),
+    op!("enc2native", 0, util::do_enc2, 1, 1, FUNCALL, Pure),
+    op!("enc2utf8", 1, util::do_enc2, 1, 1, FUNCALL, Pure),
     row("substr", character::do_substr, 1, 11, 3, FUNCALL, Pure),
     row("strrep", character::do_strrep, 0, 11, 2, FUNCALL, Pure),
     row("sprintf", sprintf::do_sprintf, 1, 11, -1, FUNCALL, Pure),

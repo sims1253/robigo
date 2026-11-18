@@ -1,0 +1,11 @@
+[1] "environment"
+[1] "a" "b"
+[1] 1
+[1] TRUE
+[1] 0
+[1] TRUE
+[1] "names(x) must be a character vector of the same length as x"
+[1] "attempt to use zero-length variable name"
+[1] "global list2env"
+[1] "local list2env"
+[1] "environment"

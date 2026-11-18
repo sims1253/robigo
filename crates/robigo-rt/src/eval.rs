@@ -635,7 +635,7 @@ fn finish_value(
 pub unsafe fn sym_name(cx: &Cx, sym: Sexp) -> String {
     // SAFETY: a live symbol.
     let s = unsafe { Ref::from_sexp(sym, cx) }.as_sym().unwrap();
-    String::from_utf8_lossy(s.name().bytes()).into_owned()
+    String::from_utf8_lossy(s.name_bytes()).into_owned()
 }
 
 /// `ddfindVar(sym, rho)` and the rest of `eval`'s SYMSXP case.
@@ -902,7 +902,7 @@ pub fn do_eval(cx: &mut Cx, call: Root<'_>, args: robigo_rtcore::Args<'_>, rho: 
                         _ => {
                             let mut c = v.as_cons();
                             while let Some(cell) = c {
-                                pairs.push((cell.tag().as_sym().map(|t| t.name().bytes().to_vec()), cell.car()));
+                                pairs.push((cell.tag().as_sym().map(|t| t.name_bytes().to_vec()), cell.car()));
                                 c = cell.cdr().as_cons();
                             }
                         }
