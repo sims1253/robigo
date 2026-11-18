@@ -69,14 +69,20 @@ def save(path, results):
         json.dump({"results": results}, f, indent=1, sort_keys=True)
 
 
-def extract(perf_json, out):
-    """Every GNU R record of a run, failed ones too."""
-    keep = {name: {"gnur": r["gnur"]} for name, r in load(perf_json).items() if isinstance(r.get("gnur"), dict)}
+def extract(perf_json, out, known=None):
+    """A run's GNU R records for the cache: the usable ones, and the
+    failures of the known-failure list. Another failure (a timeout on one
+    main run, say) is left out, because a cache entry is immutable and
+    would keep it for every later main run with the same key: a pull
+    request then measures that benchmark itself, under fill's rule."""
+    known = known_failures() if known is None else known
+    recs = {name: {"gnur": r["gnur"]} for name, r in load(perf_json).items() if isinstance(r.get("gnur"), dict)}
+    failed = {n for n, r in recs.items() if not usable(r)}
+    keep = {n: r for n, r in recs.items() if n not in failed or n in known}
     save(out, keep)
-    failed = {n for n, r in keep.items() if not usable(r)}
-    print(f"perf-gnur: {len(keep)} GNU R records ({len(failed)} failed)")
-    known = known_failures()
-    if failed != known:
+    print(f"perf-gnur: {len(keep)} GNU R records cached ({len(failed & known)} known failures;"
+          f" {len(failed - known)} other failures left out: {', '.join(sorted(failed - known)) or 'none'})")
+    if failed != known:  # (the list's own check, against what main fails now)
         print("::warning::GNU R's failures on main no longer match benchmarks/gnur-known-failures.txt: "
               f"failing but not listed {sorted(failed - known)}, listed but passing {sorted(known - failed)}")
     return 0

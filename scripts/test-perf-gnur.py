@@ -31,12 +31,18 @@ class Gnur(unittest.TestCase):
         pg.save(path, results)
         return path
 
-    def test_extract_keeps_every_gnur_record_failures_too(self):
+    def test_extract_caches_successes_and_known_failures_only(self):
+        # a failure that is not a known one (a timeout on one main run) must
+        # not stay in the immutable cache: pull requests measure it again
         run = self.write("perf.json", {"a/x": {"robigo": {"instr": 5}, "gnur": OK}, "a/f": {"gnur": FAIL},
-                                       "a/r": {"robigo": {"instr": 5}}})
+                                       "a/t": {"gnur": {"error": "timeout"}}, "a/r": {"robigo": {"instr": 5}}})
         out = os.path.join(self.d, "gnur.json")
-        pg.extract(run, out)
+        pg.extract(run, out, known={"a/f"})
         self.assertEqual(pg.load(out), {"a/x": {"gnur": OK}, "a/f": {"gnur": FAIL}})
+        # ...and a PR then measures a/t itself, failing closed if GNU R fails twice
+        self.progs = ["a/x", "a/f", "a/t"]
+        self.assertEqual(pg.fill(out, None, lambda names: {n: {"gnur": {"error": "timeout"}} for n in names},
+                                 known={"a/f"}), 1)
 
     def test_fill_keeps_the_cache_and_measures_only_what_is_missing(self):
         g = self.write("gnur.json", {"a/x": {"gnur": OK}, "a/y": {"gnur": FAIL}})
