@@ -431,7 +431,7 @@ def report(r, known, show):
     mism = [i for i in fails if r["res"][i] == "mismatch"]
     shown = [i for i in new][:show]
     detail = render([(i, os.path.join(r["oracle"], f"{i:06d}.rds"), os.path.join(r["rt"], f"{i:06d}.rds"))
-                     for i in (mism if show else [])])
+                     for i in mism])
     if mism:
         if detail:
             byf = {}
