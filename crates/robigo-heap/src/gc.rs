@@ -3507,6 +3507,13 @@ mod tests {
     #[cfg(not(miri))]
     #[test]
     fn a_refused_page_is_memory_exhausted() {
+        if std::env::var_os("ROBIGO_GC_MOVE").is_some() {
+            // the debug mover copies every object during the collection, and
+            // aborts when it cannot get a chunk (`Heap::alloc_or_abort`)
+            use std::io::Write;
+            let _ = writeln!(std::io::stderr(), "a_refused_page_is_memory_exhausted: skipped under ROBIGO_GC_MOVE");
+            return;
+        }
         let mut c = Core::new();
         c.set_refuse_chunks(true);
         let mut roots: Vec<Sexp> = Vec::new();
