@@ -28,7 +28,7 @@ const R_INTERNALS_UUID: &[u8] = b"2fdf6c18-697a-4ba7-b8ef-11c0d92f1327";
 
 /// The object `rho`'s frame binds `name` to, read without running code
 /// (`R_findVarInFrame` of a plain binding), if any.
-pub(crate) fn frame_value(cx: &Cx, rho: Sexp, name: &[u8]) -> Option<Sexp> {
+fn frame_value(cx: &Cx, rho: Sexp, name: &[u8]) -> Option<Sexp> {
     let sym = cx.find_symbol(name)?;
     // SAFETY: a live object (the caller's).
     let r = unsafe { Ref::from_sexp(rho, cx) };

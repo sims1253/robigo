@@ -1188,7 +1188,7 @@ pub const PRIMITIVE_ALIASES: [(&str, &str); 2] = [("as.numeric", "as.double"), (
 /// [`PRIMITIVE_ALIASES`].
 ///
 /// # Safety
-/// `sym` is a symbol.
+/// `sym` is a live symbol of `cx`'s isolate (`Ref::from_sexp`'s rule).
 pub unsafe fn alias_of(cx: &Cx, sym: Sexp) -> Option<&'static str> {
     // SAFETY: the caller's contract.
     let s = unsafe { Ref::from_sexp(sym, cx) }.as_sym()?;
