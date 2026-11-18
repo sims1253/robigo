@@ -78,8 +78,9 @@ fn enlarged<'g>(cx: &'g Cx, x: Ref<'g>, newlen: usize, cap: usize, a: &Attrs<'g>
     let len = x.len().unwrap_or(0);
     macro_rules! plain {
         ($v:expr, $na:expr) => {{
+            // R: subassign.c:EnlargeVector (the elements, bitwise, then NA)
             let xs = $v.as_slice().unwrap();
-            let mut r = cx.alloc_with(cap, |i| if i < len { xs[i] } else { $na })?;
+            let mut r = cx.alloc_copy_fill(&xs[..len], cap, $na)?;
             if newlen < cap {
                 r.set_growable(newlen);
             }
