@@ -769,20 +769,19 @@ fn generic(
                 let p = crate::assign::rhs_promise(cx, s, vexpr, rhs)?;
                 cx.set_car(l, p);
             }
-            // PRIMFUN(fun)(call, fun, args, rho): `@<-` takes the two apart
-            // (the call its methods see is the compiler's, `*tmp*` in it)
-            if prims::prim_name(cx, fun.bind(cx)) == Some("@<-") {
+            // PRIMFUN(fun)(call, fun, args, rho): `@<-`, `[<-` and `[[<-` take
+            // the two apart, so their methods see the compiler's call
+            // (`*tmp*` in it); R_Visible as the special leaves it, no eval
+            // around it
+            // SAFETY: a rooted primitive of this isolate.
+            let name = prims::state(cx).defs[unsafe { prims::offset(fun.bind(cx).sexp()) }].name;
+            if name == "@<-" {
                 return crate::specials::slot_gets(cx, call, Some(args), rho, out);
             }
             let o = s.out(cx);
             let ncall = o.root();
             let head = s.root(cx, call.bind(cx).as_cons().unwrap().car());
             cx.build(o, |cx| cx.lcons(head.bind(cx), args.bind(cx)))?;
-            // PRIMFUN(fun)(call, fun, args, rho): `[<-` and `[[<-` take the
-            // two apart, so their methods see the compiler's call (`*tmp*`
-            // in it); R_Visible as the special leaves it, no eval around it
-            // SAFETY: a rooted primitive of this isolate.
-            let name = prims::state(cx).defs[unsafe { prims::offset(fun.bind(cx).sexp()) }].name;
             match name {
                 "[<-" => crate::specials::subassign_apart(cx, call, ncall, rho, out),
                 "[[<-" => crate::specials::subassign2_apart(cx, call, ncall, rho, out),
