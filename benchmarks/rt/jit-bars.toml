@@ -1,0 +1,86 @@
+# V4's JIT-cost bar (docs/ledger/g3/2026-11-17-v4-4-jit-cost.md; the M2/M3
+# plan's V4 bar): a JIT compile of a closure costs robigo-rt at most GNU R's
+# instructions, on the closures of benchmarks/suite/calls.R that GNU R's JIT
+# compiles running it. The rows are benchmarks/rt/calls-rows.toml's `jit`
+# group, one `compiler:::tryCmpfun(f)` per iteration (what R_cmpfun1 calls,
+# eval.c:1828), its result checked to be byte code, measured as every row
+# is: callgrind instructions, N against 2N (scripts/idiom-vs-r.py --rows),
+# with N = 400.
+#
+# Not a gate yet. robigo-rt compiles through cmp.R only once V4 step 3
+# lands, and step 3 waits on L5, since the compiler namespace does not load
+# before it. When it does, perf-rt gates these rows as it gates
+# m1-bars.toml's, with GNU R measured on the gating runner's CPU. The
+# numbers below are the desktop's, as m1-bars.toml's [gnur] are.
+#
+# - [gnur]: GNU R's side, measured with the bars' rival: GNU R 4.6.2's
+#   literal default build (scripts/gnur-stock.sh), in the oracle image with
+#   Debian's valgrind, as perf-rt measures it, at N = 400; the mean of two
+#   runs, which agree within 0.00001%.
+# - [[bar]]: each row held to `max` times GNU R's instructions, the bar's
+#   1.0x. None is met yet (`met = false`, as m1-bars.toml marks one): the
+#   ledger's early look (at N = 40) puts robigo-rt at 1.80-1.97x. The gate
+#   says when one is met, so that it can be set to met.
+# - `rss`: no peak-RSS bars. perf.py reads every bars file's `rss`, so the
+#   empty list keeps this file one that `rt-bars` and `rt-gnur --bars` parse
+#   and run (perf.py's RSS step does nothing for a file naming no program).
+
+rss = []
+
+[gnur]
+version = "4.6.2"
+source = "docs/ledger/g3/2026-11-17-v4-4-jit-cost.md"
+cpu = "AMD Ryzen 9 5900X 12-Core Processor"
+cpu_signature = "1be0f69f7d2b7252"
+packages = "libc6=2.41-12+deb13u4 valgrind=1:3.24.0-3"
+
+[gnur.instr]
+"jit-scale_by" = 6396039.1
+"jit-weigh" = 5879190.2
+"jit-tag" = 6265942.5
+"jit-env-fn" = 3152604.3
+"jit-area" = 2624477.3
+"jit-area-sq" = 3861660.6
+"jit-safe" = 9742662.3
+
+[[bar]]
+row = "jit-scale_by"
+against = "gnur"
+max = 1.0
+met = false
+
+[[bar]]
+row = "jit-weigh"
+against = "gnur"
+max = 1.0
+met = false
+
+[[bar]]
+row = "jit-tag"
+against = "gnur"
+max = 1.0
+met = false
+
+[[bar]]
+row = "jit-env-fn"
+against = "gnur"
+max = 1.0
+met = false
+
+[[bar]]
+row = "jit-area"
+against = "gnur"
+max = 1.0
+met = false
+
+[[bar]]
+row = "jit-area-sq"
+against = "gnur"
+max = 1.0
+met = false
+
+[[bar]]
+row = "jit-safe"
+against = "gnur"
+max = 1.0
+met = false
