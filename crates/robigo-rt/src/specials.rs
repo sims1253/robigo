@@ -536,11 +536,20 @@ pub fn do_subset3(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out
             // fixSubset3Args: a shallow copy of the call's cells after the
             // object, the name made a string; its tag kept
             let str = scalar_string(cx, s, input)?;
-            let after = s.root(cx, call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().cdr());
             let o = s.out(cx);
             let rest = o.root();
-            cx.shallow_duplicate(after, o)?;
-            cx.set_car(rest, str);
+            let plain = {
+                let c = call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().cdr().as_cons().unwrap();
+                c.tag().sexptype() == NILSXP && c.cdr().sexptype() == NILSXP
+            };
+            if plain {
+                // (an untagged last cell: its shallow copy is this cell)
+                cx.build(o, |cx| cx.cons(str.bind(cx), cx.nil()))?;
+            } else {
+                let after = s.root(cx, call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().cdr());
+                cx.shallow_duplicate(after, o)?;
+                cx.set_car(rest, str);
+            }
             let r = crate::dispatch::dispatch_special(cx, "$", call, prom, rest, rho, &out);
             lx.release();
             if r? {

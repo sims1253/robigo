@@ -346,14 +346,57 @@ fn string_suffix(cx: &mut Cx, klass: Root<'_>, from: usize, out: Out<'_>) -> RRe
 /// native encoding (a latin1 class name's UTF-8 bytes in a UTF-8 locale),
 /// or GNU R's error (a "bytes" string, one iconv cannot convert).
 // R: sysutils.c:translateChar
+#[inline(always)]
 fn class_elt(cx: &mut Cx, klass: Root<'_>, i: usize) -> RResult<Vec<u8>> {
+    // (an ASCII string is its own translation: needsTranslation's first
+    // test, inline on dispatch's path)
+    let k = klass.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
+    if k.is_ascii() {
+        return Ok(k.bytes().to_vec());
+    }
+    class_elt_slow(cx, klass, i)
+}
+
+/// The error of a method signature usemethod could not make: the class's
+/// translation, or `installS3Signature`'s (too long).
+#[cold]
+#[inline(never)]
+fn signature_error(cx: &mut Cx, generic: &[u8], klass: Root<'_>, i: usize, nclass: usize) -> robigo_rtcore::RError {
+    let class = if i == nclass {
+        b"default".to_vec()
+    } else {
+        match class_elt(cx, klass, i) {
+            Ok(c) => c,
+            Err(e) => return e,
+        }
+    };
+    let r = cx.scope(|cx, s| install_s3_signature(cx, s, generic, &class).map(drop));
+    match r {
+        Err(e) => e,
+        Ok(()) => unreachable!("robigo: a signature too long is an error"),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn class_elt_slow(cx: &mut Cx, klass: Root<'_>, i: usize) -> RResult<Vec<u8>> {
     let r = class_elt_native(cx, klass, i);
     r.map_err(|m| cx.error(&m))
 }
 
 /// [`class_elt`] under `&Cx`: the translation, or its error's message.
+#[inline(always)]
 fn class_elt_native(cx: &Cx, klass: Root<'_>, i: usize) -> Result<Vec<u8>, String> {
     let k = klass.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
+    if k.is_ascii() {
+        return Ok(k.bytes().to_vec());
+    }
+    class_elt_translated(cx, k)
+}
+
+#[cold]
+#[inline(never)]
+fn class_elt_translated(cx: &Cx, k: Char<'_>) -> Result<Vec<u8>, String> {
     if k == cx.na_string() {
         return Ok(b"NA".to_vec());
     }
@@ -981,11 +1024,12 @@ pub fn do_usemethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, _
         // PROTECT(obj); robigo_rtcore's ppacct)
         cx.with_pp_excess(1, |cx| crate::eval(cx, arg_list[0], env, o))?;
         let g = generic.bind(cx);
-        if !(g.sexptype() == STRSXP && g.len() == Some(1)) {
-            return Err(cx.error_call(Some(call), "'generic' argument must be a character string"));
-        }
-        // translateChar(STRING_ELT(generic, 0))
-        let gname = class_elt(cx, generic, 0)?;
+        let gname = match g.as_vector::<Char<'_>>().filter(|v| g.sexptype() == STRSXP && v.len() == 1) {
+            // translateChar(STRING_ELT(generic, 0)): an ASCII name is its own
+            Some(v) if v.get(0).is_ascii() => v.get(0).bytes().to_vec(),
+            Some(_) => class_elt_slow(cx, generic, 0)?,
+            None => return Err(cx.error_call(Some(call), "'generic' argument must be a character string")),
+        };
         // the environments dispatch needs: callenv where the generic was
         // called from, defenv where it was defined
         let cptr = cx.global_context();
@@ -1272,9 +1316,7 @@ fn usemethod(
                     let Some(m) = m else {
                         // translateChar's or installS3Signature's error,
                         // where the search reaches it
-                        let class = if i == nclass { b"default".to_vec() } else { class_elt(cx, klass, i)? };
-                        install_s3_signature(cx, s, generic, &class)?;
-                        unreachable!("robigo: a signature too long is an error");
+                        return Err(signature_error(cx, generic, klass, i, nclass));
                     };
                     let method = s.root(cx, symref(cx, m));
                     let sxp = s.out(cx).root();
