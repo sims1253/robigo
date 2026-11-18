@@ -484,6 +484,17 @@ pub struct Core {
     /// R_PreserveObject's multiset, as GNU R's precious list: a stack,
     /// released from the top (O(1) for the usual LIFO churn)
     precious: Vec<Sexp>,
+
+    /// GNU R's `gc_reporting` (`gcinfo`, `gc(verbose)`): each collection
+    /// appends its report to `gc_report`, which the embedder prints after
+    /// the collection (`take_gc_report`), as `REprintf` does during it.
+    gc_reporting: bool,
+    gc_report: Vec<u8>,
+    /// GNU R's `gctime_enabled` and `gctimes` (`gc.time`): the process
+    /// times (`R_getProcTime`) spent in collections while it is on.
+    gctime_enabled: bool,
+    gctimes: [f64; 5],
+    gcstarttimes: [f64; 5],
     /// Experiment A: `ROBIGO_CALL65_PLAIN=1`, read when the core is made
     /// (see [`Core::call65_plain`]).
     call65_plain: bool,
@@ -831,6 +842,11 @@ impl Core {
             syms: HashMap::default(),
             next_sym_id: 0,
             precious: Vec::new(),
+            gc_reporting: false,
+            gc_report: Vec::new(),
+            gctime_enabled: false,
+            gctimes: [0.0; 5],
+            gcstarttimes: [0.0; 5],
             call65_plain: std::env::var_os("ROBIGO_CALL65_PLAIN").is_some_and(|v| v == "1"),
             gc_move: mover::policy_from_env().is_some(),
             young: Box::new(mover::Young::new(mover::policy_from_env().unwrap_or(0))),
@@ -2612,6 +2628,10 @@ impl Core {
             std::process::abort();
         }
         self.collecting = true;
+        // R: memory.c:gc_start_timing
+        if self.gctime_enabled {
+            self.gcstarttimes = proc_times();
+        }
         if !self.quarantine.is_empty() {
             self.release_quarantine();
         }
@@ -2761,7 +2781,91 @@ impl Core {
         self.stats.collections_by_kind[kind as usize] += 1;
         self.stats.collect_total_ns += dt;
         self.stats.collect_max_pause_ns = self.stats.collect_max_pause_ns.max(dt);
+        // R: memory.c:gc_end_timing (delta 0, as GNU R's #else)
+        if self.gctime_enabled {
+            let t = proc_times();
+            for (i, g) in self.gctimes.iter_mut().enumerate() {
+                *g += t[i] - self.gcstarttimes[i];
+            }
+        }
+        if self.gc_reporting {
+            self.report_collection();
+        }
         dt
+    }
+
+    /// GNU R's report of a collection while `gc_reporting` is on, appended
+    /// to the pending report. Every robigo collection is of every
+    /// generation: GNU R's level 2, counted in its third generation count.
+    // R: memory.c:R_gc_internal (the two `if (gc_reporting)` blocks)
+    #[cold]
+    #[inline(never)]
+    fn report_collection(&mut self) {
+        use std::fmt::Write;
+        const SEXPREC: f64 = 56.0;
+        const VSFAC: f64 = 8.0;
+        const MEGA: f64 = 1048576.0;
+        let n = self.stats.collections;
+        let s = &self.sizes;
+        let ncells = s.nodes_in_use as f64;
+        let nfrac = 100.0 * ncells / s.n_size as f64;
+        let ncells = 0.1 * (10.0 * ncells * SEXPREC / MEGA).ceil();
+        let vcells = s.valloc as f64;
+        let vfrac = 100.0 * vcells / s.v_size as f64;
+        let vcells = 0.1 * (10.0 * vcells * VSFAC / MEGA).ceil();
+        let mut r = String::new();
+        let _ = write!(r, "Garbage collection {n} = 0+0+{n} (level 2) ... ");
+        let _ = write!(r, "\n{ncells:.1} Mbytes of cons cells used ({}%)\n", (nfrac + 0.5) as i32);
+        let _ = write!(r, "{vcells:.1} Mbytes of vectors used ({}%)\n", (vfrac + 0.5) as i32);
+        self.gc_report.extend_from_slice(r.as_bytes());
+    }
+
+    /// `gcinfo(on)`'s switch: whether collections report, and the previous
+    /// state.
+    pub fn set_gc_reporting(&mut self, on: bool) -> bool {
+        std::mem::replace(&mut self.gc_reporting, on)
+    }
+
+    /// Whether collections report (`gcinfo`).
+    pub fn gc_reporting(&self) -> bool {
+        self.gc_reporting
+    }
+
+    /// The reports of the collections since the last call (empty unless
+    /// `gc_reporting`): what GNU R's `REprintf` writes during them.
+    pub fn take_gc_report(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.gc_report)
+    }
+
+    /// Whether a report is pending ([`Core::take_gc_report`]).
+    #[inline]
+    pub fn has_gc_report(&self) -> bool {
+        !self.gc_report.is_empty()
+    }
+
+    /// `gc.time(on)`: time collections from now on (or stop), and the
+    /// times so far (user, system, elapsed, child user, child system).
+    // R: memory.c:do_gctime
+    pub fn gc_time(&mut self, on: bool) -> [f64; 5] {
+        self.gctime_enabled = on;
+        self.gctimes
+    }
+
+    /// GNU R's `memory.profile()` count: every object of this heap by
+    /// type, after the caller's full collection, the process's shared
+    /// constants included as `nodes_in_use` includes them (one heap's view
+    /// of objects GNU R allocates in each).
+    pub fn census_by_type(&self) -> [u64; 32] {
+        let mut by = [0u64; 32];
+        self.for_each_live_object(|p| {
+            // SAFETY: an allocated object's first byte; its header's type
+            // is set.
+            by[unsafe { Sexp(p).typ() } as usize & 31] += 1;
+        });
+        for (t, ..) in crate::shared::counts() {
+            by[t as usize & 31] += 1;
+        }
+        by
     }
 
     fn prune_chars(&mut self) {
@@ -3005,6 +3109,26 @@ impl Visitor for Mark<'_> {
 pub type SymbolBits = fn(&[u8]) -> (u8, u16);
 
 static SYMBOL_BITS: std::sync::OnceLock<SymbolBits> = std::sync::OnceLock::new();
+
+/// GNU R's `R_getProcTime`: user and system time of the process, the
+/// elapsed time (since the first call in the process: `gc.time` adds
+/// differences only), and the children's user and system time, in
+/// seconds, each to the millisecond as GNU R rounds them.
+// R: sys-unix.c:R_getProcTime
+fn proc_times() -> [f64; 5] {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    let et = START.get_or_init(Instant::now).elapsed().as_secs_f64();
+    let ms = |t: libc::timeval| t.tv_sec as f64 + 1e-3 * (t.tv_usec / 1000) as f64;
+    // SAFETY: getrusage writes the struct it is given.
+    let (me, ch) = unsafe {
+        let mut me: libc::rusage = std::mem::zeroed();
+        let mut ch: libc::rusage = std::mem::zeroed();
+        libc::getrusage(libc::RUSAGE_SELF, &mut me);
+        libc::getrusage(libc::RUSAGE_CHILDREN, &mut ch);
+        (me, ch)
+    };
+    [ms(me.ru_utime), ms(me.ru_stime), 1e-3 * (1000.0 * et).round_ties_even(), ms(ch.ru_utime), ms(ch.ru_stime)]
+}
 
 /// Register the rule that gives a new symbol its name's bits (GNU R's
 /// `DDVAL` in `mkSYMSXP`, `SPECIAL_SYMBOL` in `InitNames`,
@@ -3397,5 +3521,54 @@ mod tests {
             let at = if after { "after queueing" } else { "before taking" };
             assert_eq!(counts, [1; OBJECTS], "each release once, after a panic at death {k}, {at} its call");
         }
+    }
+    /// `gcinfo(TRUE)`: each collection appends GNU R's three report lines,
+    /// with this heap's numbers, and only while reporting is on (the
+    /// embedder prints and takes them).
+    #[cfg(not(miri))]
+    #[test]
+    fn a_reporting_collection_writes_gnu_rs_report() {
+        let mut c = Core::new();
+        let mut roots: Vec<Sexp> = Vec::new();
+        // SAFETY: no object is kept.
+        unsafe { c.collect(&mut roots) };
+        assert!(!c.has_gc_report(), "no report while reporting is off");
+        assert!(!c.set_gc_reporting(true));
+        // SAFETY: as above.
+        unsafe { c.collect(&mut roots) };
+        let r = String::from_utf8(c.take_gc_report()).unwrap();
+        let n = c.stats.collections;
+        let lines: Vec<&str> = r.split('\n').collect();
+        assert_eq!(lines[0], format!("Garbage collection {n} = 0+0+{n} (level 2) ... "), "{r}");
+        let pct = |l: &str, what: &str| {
+            let (mb, rest) = l.split_once(' ').unwrap();
+            assert!(mb.parse::<f64>().is_ok() && mb.contains('.'), "{l}");
+            let rest = rest.strip_prefix(&format!("Mbytes of {what} used (")).unwrap_or_else(|| panic!("{l}"));
+            assert!(rest.strip_suffix("%)").unwrap().parse::<u32>().is_ok(), "{l}");
+        };
+        pct(lines[1], "cons cells");
+        pct(lines[2], "vectors");
+        assert_eq!(lines.len(), 4, "three lines: {r:?}");
+        assert!(!c.has_gc_report(), "taken");
+        assert!(c.set_gc_reporting(false));
+    }
+
+    /// `memory.profile()`'s census: every live object by type, the shared
+    /// constants among them; `gc.time` counts only while it is on.
+    #[cfg(not(miri))]
+    #[test]
+    fn the_census_counts_live_objects_by_type_and_gc_time_is_off_by_default() {
+        let mut c = Core::new();
+        let mut roots: Vec<Sexp> = (0..10).map(|_| c.alloc_vector(INTSXP, 1).unwrap()).collect();
+        let _garbage: Vec<Sexp> = (0..7).map(|_| c.alloc_vector(INTSXP, 1).unwrap()).collect();
+        // SAFETY: `roots` holds every object kept.
+        unsafe { c.collect(&mut roots) };
+        let by = c.census_by_type();
+        assert_eq!(by[INTSXP as usize], 10, "the ten kept");
+        assert!(by[NILSXP as usize] >= 1 && by[SYMSXP as usize] >= 2, "the shared constants");
+        assert_eq!(c.gc_time(true), [0.0; 5], "nothing timed while off");
+        // SAFETY: as above.
+        unsafe { c.collect(&mut roots) };
+        assert!(c.gc_time(false).iter().all(|&t| t >= 0.0));
     }
 }

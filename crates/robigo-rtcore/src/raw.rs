@@ -86,6 +86,7 @@ impl Cx {
         // view and slice, so everything still needed is in a root of this
         // isolate; the collection reaches nothing of ours.
         unsafe { iso.core().collect(iso.roots_mut()) };
+        self.flush_gc_report();
     }
 
     /// Move every movable object at every collection from now on, or stop
@@ -198,6 +199,7 @@ impl Cx {
             // with the isolate's roots, while `&mut Cx` has ended every `Ref`.
             unsafe { iso.core().alloc_rooted(t, n, iso.roots_mut()) }
         };
+        self.flush_gc_report();
         r.map_err(|e| self.error_call(None, &e.message()))
     }
 
