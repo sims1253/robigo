@@ -711,6 +711,13 @@ def cmd_plant(a):
 
 # ---- coverage ----------------------------------------------------------------
 
+# Whether a registry builtin with neither a row nor a reason, or an
+# [uncovered] name the registry lacks, fails check-rows. False while the
+# builtin PRs queued before A4 landed drain: they are then warnings, listed
+# in the summary. A4's second PR sets it to True.
+UNLISTED_FAILS = False
+
+
 def cmd_check_rows(a):
     doc, uncovered = load_rows()
     reg = registry()
@@ -720,13 +727,16 @@ def cmd_check_rows(a):
     stale = sorted(n for n in listed if n not in reg)
     for n in both:
         print(f"builtin-diff: [{n}] has a row and is listed as uncovered")
+    level = "" if UNLISTED_FAILS else "warning: "
     for n in missing:
-        print(f"builtin-diff: registry builtin '{n}' has no row in tests/builtin-diff/rows.toml "
+        print(f"builtin-diff: {level}registry builtin '{n}' has no row in tests/builtin-diff/rows.toml "
               "and no reason under [uncovered]")
     for n in stale:
-        print(f"builtin-diff: [uncovered] names '{n}', which is not in the registry")
-    print(f"builtin-diff: {len(doc)} rows, {len(listed)} uncovered, {len(reg)} registry builtins")
-    return 1 if both or missing or stale else 0
+        print(f"builtin-diff: {level}[uncovered] names '{n}', which is not in the registry")
+    print(f"builtin-diff: {len(doc)} rows, {len(listed)} uncovered, {len(reg)} registry builtins"
+          + (f"; warnings: {len(missing)} without a row or reason, {len(stale)} uncovered not in the registry"
+             if not UNLISTED_FAILS and (missing or stale) else ""))
+    return 1 if both or (UNLISTED_FAILS and (missing or stale)) else 0
 
 
 def cmd_key(a):
