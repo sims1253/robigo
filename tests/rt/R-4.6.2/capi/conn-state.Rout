@@ -1,0 +1,8 @@
+[1] "isopen"   "-"        "canwrite" "text"     "w"        "file"    
+[1] TRUE
+[1] "opened"
+[1] "closed"
+[1] "closed"
+[1] "isopen"  "canread" "-"       "binary"  "rb"      "file"   
+[1] "invalid connection"
+[1] "invalid connection"

@@ -1,0 +1,8 @@
+[1] "DLLInfo"
+[1] "tools"
+[1] "tools.so"
+[1] FALSE
+[1] TRUE
+[1] "tools"
+       .C     .Call  .Fortran .External 
+        1        19         0         2 
