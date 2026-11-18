@@ -26,7 +26,8 @@ b <- "caf\xe9"; Encoding(b) <- "bytes"
 t(f(structure(1, class = b)))
 # NextMethod falls back to the generic's primitive (getPrimitive): a closure
 # masking a builtin, its base binding
-length <- function(x) UseMethod("length")
-length.zz <- function(x) NextMethod()
-print(length(structure(1:3, class = "zz")))
-rm(length)
+local({
+    length <- function(x) UseMethod("length")
+    length.zz <- function(x) NextMethod()
+    print(length(structure(1:3, class = "zz")))
+})
