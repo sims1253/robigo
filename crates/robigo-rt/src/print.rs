@@ -457,16 +457,19 @@ fn print_atomic(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
 /// `PrintLanguage(s, data)` and `PrintExpression`: the deparsed lines
 /// (srcrefs are never kept: `keep.source = FALSE`).
 // R: print.c:PrintLanguage, PrintExpression
-fn print_language(cx: &mut Cx, s: Root<'_>, data: &PrintData) -> RResult<()> {
-    let s = s.bind(cx);
+fn print_language(cx: &mut Cx, x: Root<'_>, data: &PrintData) -> RResult<()> {
+    let s = x.bind(cx);
     if s.sexptype() == LANGSXP
         && data.use_source != 0
         && attrib::get_value(s, b"srcref").is_some_and(|t| t.sexptype() == INTSXP)
     {
         return Err(cx.error("robigo: printing a call from its srcref is not implemented yet"));
     }
-    let d =
-        deparse::deparse1w(cx, s, false, data.use_source | DEFAULTDEPARSE, data.cutoff).map_err(|m| cx.error(&m))?;
+    // deparse1w(s, FALSE, useSource | DEFAULTDEPARSE), forcing the promises
+    // it meets
+    let opts = data.use_source | DEFAULTDEPARSE;
+    let d = deparse::deparse1_with_cutoff_forcing(cx, x, false, data.cutoff, true, opts, -1)?;
+    let d = d.map_err(|m| cx.error(&m))?;
     let mut out = Vec::new();
     for l in d.lines {
         out.extend_from_slice(&l);
