@@ -211,30 +211,19 @@ impl Cx {
         unsafe { crate::Ref::from_sexp(self.iso().capi_logicals()[i], self) }
     }
 
-    /// Value-stack slot `i` (an index from the base) as it is now: how
-    /// robigo-rt's link walk finds the marks that head its activations'
-    /// registers ([`crate::Slot::mark`]). Panics unless `i` is below
-    /// [`Cx::stack_depth`].
-    pub fn stack_slot(&self, i: usize) -> crate::Slot {
-        self.iso().stack().slot_at(i)
-    }
-
-    /// GNU R's link counts for the values on the stack (eval.c:997-1056):
-    /// `INCREMENT_LINKS` (`inc`) or `DECREMENT_LINKS` of the object in each
-    /// value-stack slot `from..to` (indices from the base; unboxed, empty
-    /// and marked slots hold none). The evaluator picks the ranges that are
-    /// its `R_BCNodeStack` (robigo-rt: its activations' registers, not the
-    /// roots) and keeps the committed range (`R_BCProtCommitted`).
+    /// The value-stack slots `from..to` (indices from the base) as they are
+    /// now, read in place: how robigo-rt's link walk finds the marks that
+    /// head its activations' registers ([`crate::Slot::mark`]) and the
+    /// objects in them, whose link counts it raises or drops (GNU R's
+    /// `INCLNK_stack_commit` and `DECLNK_stack`, eval.c:997-1056). Panics
+    /// unless `from <= to <=` [`Cx::stack_depth`].
     ///
     /// # Safety
-    /// `from..to` lies below [`Cx::stack_depth`]; a decrement undoes an
-    /// increment of the same objects (the slots have not changed since).
-    pub unsafe fn stack_links(&self, from: usize, to: usize, inc: bool) {
-        self.iso().stack().for_each_object_in(from, to, &mut |x| {
-            // SAFETY: an object slot holds a live object of this heap; the
-            // count is a header field.
-            unsafe { if inc { x.incref() } else { x.decref() } }
-        });
+    /// No slot of the range is written while the slice lives (a link count
+    /// is the object's header field, not a slot).
+    pub unsafe fn stack_slots(&self, from: usize, to: usize) -> &[crate::Slot] {
+        // SAFETY: the caller's contract.
+        unsafe { self.iso().stack().slots(from, to) }
     }
 
     /// GNU R's `ASSIGNMENT_PENDING(cell)` of a binding cell from
