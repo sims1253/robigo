@@ -5,9 +5,10 @@
 //! object is written in place unless it may be shared (`MAYBE_SHARED`),
 //! or referenced at all outside a complex assignment (`IS_ASSIGNMENT_CALL`).
 //!
-//! Vectors, lists, pairlists and environments; matrix and array
-//! assignment (`x[i, j] <- v`, and `[[<-` with several subscripts on a
-//! pairlist) is not ported yet and says so.
+//! Vectors, lists, pairlists and environments; matrices and arrays
+//! (`x[i, j] <- v`, `MatrixAssign`, and `ArrayAssign`, by any subscript
+//! along each extent) and arrays indexed by a matrix (`x[m] <- v`). `[[<-`
+//! with several subscripts on a pairlist is not ported yet and says so.
 
 use crate::attrib::{self, Attr, Attrs};
 use crate::coerce::coerce_vector;
@@ -456,17 +457,19 @@ fn vector_assign(cx: &mut Cx, call: Root<'_>, x: Root<'_>, s: Root<'_>, y: Root<
     if x.bind(cx).sexptype() == NILSXP && y.bind(cx).sexptype() == NILSXP {
         return Ok(());
     }
-    {
-        let (xv, sv) = (x.bind(cx), s.bind(cx));
-        if attrib::has_attrib(sv)
-            && let Some(sd) = attrib::dims(sv)
-            && sd.len() == 2
-            && let Some(xd) = attrib::dims(xv)
-            && sd[1] as usize == xd.len()
-        {
-            return Err(util::not_yet(cx, Some(call), "'assignment by a matrix of subscripts'"));
-        }
+    // special matrix subscripting: a matrix with a column per extent
+    // (strmat2intmat reports against the call, mat2indsub without one)
+    if subscript::is_matrix_index(x.bind(cx), s.bind(cx)) {
+        return cx.scope(|cx, sc| {
+            let m = sc.capture(cx, |cx, o| subscript::matrix_index(cx, x, s, Some(call), None, o))?;
+            vector_assign_by(cx, call, x, m, y)
+        });
     }
+    vector_assign_by(cx, call, x, s, y)
+}
+
+/// [`vector_assign`] by the subscript `s` (after the matrix-index case).
+fn vector_assign_by(cx: &mut Cx, call: Root<'_>, x: Root<'_>, s: Root<'_>, y: Root<'_>) -> RResult<()> {
     let idx = make_subscript(cx, x, s, true, None)?;
     let n = idx.len();
     if rlength(cx, y.bind(cx)) > 1 && idx.iter().any(|ii| ii == NA_IDX) {
@@ -498,39 +501,9 @@ fn vector_assign(cx: &mut Cx, call: Root<'_>, x: Root<'_>, s: Root<'_>, y: Root<
             y
         };
         match which {
-            1010 => cx.edit_pair::<Lgl, Lgl, _>(x, y, |px, py| assign_loop(&idx, ny, |ii, iy| px[ii] = py[iy]))?,
-            1310 => cx.edit_pair::<i32, Lgl, _>(x, y, |px, py| assign_loop(&idx, ny, |ii, iy| px[ii] = py[iy].0))?,
-            1313 => cx.edit_pair::<i32, i32, _>(x, y, |px, py| assign_loop(&idx, ny, |ii, iy| px[ii] = py[iy]))?,
-            1410 => cx.edit_pair::<f64, Lgl, _>(x, y, |px, py| {
-                assign_loop(&idx, ny, |ii, iy| px[ii] = if py[iy].0 == NA_INTEGER { NA_REAL } else { py[iy].0 as f64 })
-            })?,
-            1413 => cx.edit_pair::<f64, i32, _>(x, y, |px, py| {
-                assign_loop(&idx, ny, |ii, iy| px[ii] = if py[iy] == NA_INTEGER { NA_REAL } else { py[iy] as f64 })
-            })?,
-            1414 => cx.edit_pair::<f64, f64, _>(x, y, |px, py| assign_loop(&idx, ny, |ii, iy| px[ii] = py[iy]))?,
-            1510 => cx.edit_pair::<Rcomplex, Lgl, _>(x, y, |px, py| {
-                assign_loop(&idx, ny, |ii, iy| {
-                    let v = py[iy].0;
-                    px[ii] = Rcomplex { r: if v == NA_INTEGER { NA_REAL } else { v as f64 }, i: 0.0 }
-                })
-            })?,
-            1513 => cx.edit_pair::<Rcomplex, i32, _>(x, y, |px, py| {
-                assign_loop(&idx, ny, |ii, iy| {
-                    let v = py[iy];
-                    px[ii] = Rcomplex { r: if v == NA_INTEGER { NA_REAL } else { v as f64 }, i: 0.0 }
-                })
-            })?,
-            1514 => cx.edit_pair::<Rcomplex, f64, _>(x, y, |px, py| {
-                assign_loop(&idx, ny, |ii, iy| {
-                    let v = py[iy];
-                    px[ii] = Rcomplex { r: if robigo_text::is_na(v) { NA_REAL } else { v }, i: 0.0 }
-                })
-            })?,
-            1515 => {
-                cx.edit_pair::<Rcomplex, Rcomplex, _>(x, y, |px, py| assign_loop(&idx, ny, |ii, iy| px[ii] = py[iy]))?
-            }
-            2424 => cx.edit_pair::<u8, u8, _>(x, y, |px, py| assign_loop(&idx, ny, |ii, iy| px[ii] = py[iy]))?,
-            1610 | 1613 | 1614 | 1615 | 1616 | 1919 | 2019 | 2020 => {
+            1010 | 1310 | 1313 | 1410 | 1413 | 1414 | 1510 | 1513 | 1514 | 1515 | 2424 | 1610 | 1613 | 1614 | 1615
+            | 1616 | 1919 => assign_elements(cx, which, x, y, &idx, ny)?,
+            2019 | 2020 => {
                 let mut u = cx.unique_list(x)?;
                 assign_loop(&idx, ny, |ii, iy| u.copy_from(ii, y, iy));
             }
@@ -572,6 +545,221 @@ fn vector_assign(cx: &mut Cx, call: Root<'_>, x: Root<'_>, s: Root<'_>, y: Root<
         }
         Ok(())
     })
+}
+
+/// The element loops `VectorAssign`, `MatrixAssign` and `ArrayAssign`
+/// share: `y`'s elements, recycled, written into `x` (of the types `which`
+/// names, after `SubassignTypeFix`) at the 1-based positions `idx` (NA
+/// skipped). `which` is one of the cases all three handle.
+// R: subassign.c:VectorAssign, MatrixAssign, ArrayAssign
+fn assign_elements(cx: &mut Cx, which: i32, x: Root<'_>, y: Root<'_>, idx: &Subscript, ny: usize) -> RResult<()> {
+    match which {
+        1010 => cx.edit_pair::<Lgl, Lgl, _>(x, y, |px, py| assign_loop(idx, ny, |ii, iy| px[ii] = py[iy]))?,
+        1310 => cx.edit_pair::<i32, Lgl, _>(x, y, |px, py| assign_loop(idx, ny, |ii, iy| px[ii] = py[iy].0))?,
+        1313 => cx.edit_pair::<i32, i32, _>(x, y, |px, py| assign_loop(idx, ny, |ii, iy| px[ii] = py[iy]))?,
+        1410 => cx.edit_pair::<f64, Lgl, _>(x, y, |px, py| {
+            assign_loop(idx, ny, |ii, iy| px[ii] = if py[iy].0 == NA_INTEGER { NA_REAL } else { py[iy].0 as f64 })
+        })?,
+        1413 => cx.edit_pair::<f64, i32, _>(x, y, |px, py| {
+            assign_loop(idx, ny, |ii, iy| px[ii] = if py[iy] == NA_INTEGER { NA_REAL } else { py[iy] as f64 })
+        })?,
+        1414 => cx.edit_pair::<f64, f64, _>(x, y, |px, py| assign_loop(idx, ny, |ii, iy| px[ii] = py[iy]))?,
+        1510 => cx.edit_pair::<Rcomplex, Lgl, _>(x, y, |px, py| {
+            assign_loop(idx, ny, |ii, iy| {
+                let v = py[iy].0;
+                px[ii] = Rcomplex { r: if v == NA_INTEGER { NA_REAL } else { v as f64 }, i: 0.0 }
+            })
+        })?,
+        1513 => cx.edit_pair::<Rcomplex, i32, _>(x, y, |px, py| {
+            assign_loop(idx, ny, |ii, iy| {
+                let v = py[iy];
+                px[ii] = Rcomplex { r: if v == NA_INTEGER { NA_REAL } else { v as f64 }, i: 0.0 }
+            })
+        })?,
+        1514 => cx.edit_pair::<Rcomplex, f64, _>(x, y, |px, py| {
+            assign_loop(idx, ny, |ii, iy| {
+                let v = py[iy];
+                px[ii] = Rcomplex { r: if robigo_text::is_na(v) { NA_REAL } else { v }, i: 0.0 }
+            })
+        })?,
+        1515 => cx.edit_pair::<Rcomplex, Rcomplex, _>(x, y, |px, py| assign_loop(idx, ny, |ii, iy| px[ii] = py[iy]))?,
+        2424 => cx.edit_pair::<u8, u8, _>(x, y, |px, py| assign_loop(idx, ny, |ii, iy| px[ii] = py[iy]))?,
+        1610 | 1613 | 1614 | 1615 | 1616 | 1919 => {
+            let mut u = cx.unique_list(x)?;
+            assign_loop(idx, ny, |ii, iy| u.copy_from(ii, y, iy));
+        }
+        _ => unreachable!("robigo: assign_elements of case {which}"),
+    }
+    Ok(())
+}
+
+/// `XLENGTH(y)` as `MatrixAssign` and `ArrayAssign` read it, with no type
+/// check: a vector's length; of a node that is not a vector, the word that
+/// is its first field. That is a pointer for NULL (its CAR, R_NilValue),
+/// a symbol, pairlist, call, closure, environment or byte code, so a huge
+/// length ("not a multiple of replacement length" for any element); an
+/// external pointer's address (0 for a NULL one: "replacement has length
+/// zero"); 4 for a weak reference (a list of 4). A builtin's or special's
+/// is its offset in GNU R's `R_FunTab`, which robigo's primitives do not
+/// carry, and an S4 object's is not set: both refused.
+// R: subassign.c:MatrixAssign, ArrayAssign (XLENGTH of a non-vector)
+fn array_value_length(cx: &mut Cx, y: Root<'_>) -> RResult<usize> {
+    let yv = y.bind(cx);
+    Ok(match yv.view() {
+        View::Builtin(_) | View::Special(_) => {
+            return Err(util::not_yet(cx, None, "a primitive as the value of a matrix or array assignment"));
+        }
+        View::ExtPtr(p) => p.addr() as usize,
+        View::WeakRef(_) => 4,
+        _ if attrib::is_vector(yv) || yv.sexptype() == CHARSXP => rlength(cx, yv),
+        _ if matches!(
+            yv.sexptype(),
+            NILSXP | SYMSXP | LISTSXP | LANGSXP | DOTSXP | CLOSXP | ENVSXP | PROMSXP | BCODESXP
+        ) =>
+        {
+            usize::MAX
+        }
+        // an S4 object's first word is not set (GNU R reads whatever is there)
+        _ => return Err(util::not_yet(cx, None, "an S4 object as the value of a matrix or array assignment")),
+    })
+}
+
+/// `isMatrix(x)`: a dim of two extents.
+fn is_matrix(x: Ref<'_>) -> bool {
+    attrib::dims(x).is_some_and(|d| d.len() == 2)
+}
+
+/// The checks `MatrixAssign` and `ArrayAssign` make of `n` positions
+/// (`any_na`: one is NA) and a value of length `ny`, in their order
+/// (`na_first`: MatrixAssign tests the NAs before the lengths).
+fn array_assign_checks(cx: &mut Cx, n: usize, ny: usize, any_na: bool, na_first: bool) -> RResult<()> {
+    let na = |cx: &mut Cx| {
+        if ny > 1 && any_na {
+            return Err(cx.error("NAs are not allowed in subscripted assignments"));
+        }
+        Ok(())
+    };
+    if na_first {
+        na(cx)?;
+    }
+    if n > 0 && ny == 0 {
+        return Err(cx.error("replacement has length zero"));
+    }
+    if n > 0 && !n.is_multiple_of(ny) {
+        return Err(cx.error("number of items to replace is not a multiple of replacement length"));
+    }
+    if !na_first {
+        na(cx)?;
+    }
+    Ok(())
+}
+
+/// `MatrixAssign` and `ArrayAssign` after their checks: the types fixed,
+/// then (`n` positions `flat` in `x`) the elements written; a pair of
+/// types they do not handle is an error naming `what`.
+fn array_assign_elements(
+    cx: &mut Cx,
+    call: Root<'_>,
+    x: Root<'_>,
+    y: Root<'_>,
+    flat: Vec<i64>,
+    what: &str,
+) -> RResult<()> {
+    let which = subassign_type_fix(cx, x, y, 0, 1, call)?;
+    if flat.is_empty() {
+        return Ok(());
+    }
+    let ny = rlength(cx, y.bind(cx));
+    cx.scope(|cx, sc| {
+        // when array elements are permuted the RHS must be a copy
+        let y = if x.bind(cx) == y.bind(cx) { sc.capture(cx, |cx, o| cx.shallow_duplicate(y, o))? } else { y };
+        match which {
+            1010 | 1310 | 1313 | 1410 | 1413 | 1414 | 1510 | 1513 | 1514 | 1515 | 1610 | 1613 | 1614 | 1615 | 1616
+            | 1919 | 2424 => assign_elements(cx, which, x, y, &Subscript::of(flat), ny),
+            _ => {
+                let msg = format!(
+                    "incompatible types (from {} to {}) in {what} subset assignment",
+                    type_to_char(x.bind(cx)),
+                    type_to_char(y.bind(cx))
+                );
+                Err(cx.error(&msg))
+            }
+        }
+    })
+}
+
+/// `MatrixAssign(call, rho, x, s, y)`: `x[i, j] <- y` of the matrix in root
+/// `x` (made unique by the caller), each subscript along its extent.
+// R: subassign.c:MatrixAssign
+fn matrix_assign(cx: &mut Cx, call: Root<'_>, x: Root<'_>, subs: &[Root<'_>], y: Root<'_>) -> RResult<()> {
+    if !is_matrix(x.bind(cx)) {
+        return Err(cx.error("incorrect number of subscripts on matrix"));
+    }
+    let dims: Vec<i32> = attrib::dims(x.bind(cx)).unwrap().to_vec();
+    let ny = array_value_length(cx, y)?;
+    let sr = subscript::array_subscript(cx, 0, subs[0], &dims, x, Some(call))?;
+    let sc = subscript::array_subscript(cx, 1, subs[1], &dims, x, Some(call))?;
+    let any_na = sr.contains(&NA_IDX) || sc.contains(&NA_IDX);
+    let n = sr.len() * sc.len();
+    array_assign_checks(cx, n, ny, any_na, true)?;
+    let nr = dims[0].max(0) as i64;
+    let mut flat = Vec::with_capacity(n);
+    for &jj in &sc {
+        for &ii in &sr {
+            flat.push(if ii == NA_IDX || jj == NA_IDX { NA_IDX } else { ii + (jj - 1) * nr });
+        }
+    }
+    array_assign_elements(cx, call, x, y, flat, "matrix")
+}
+
+/// `ArrayAssign(call, rho, x, s, y)`: `x[i, j, k, ...] <- y` of the array
+/// in root `x` (made unique by the caller), the first subscript varying
+/// fastest.
+// R: subassign.c:ArrayAssign
+fn array_assign(cx: &mut Cx, call: Root<'_>, x: Root<'_>, subs: &[Root<'_>], y: Root<'_>) -> RResult<()> {
+    let Some(dims) = attrib::dims(x.bind(cx)).map(<[i32]>::to_vec).filter(|d| d.len() == subs.len()) else {
+        return Err(cx.error("incorrect number of subscripts"));
+    };
+    let k = dims.len();
+    let ny = array_value_length(cx, y)?;
+    let mut idx = Vec::with_capacity(k);
+    for (i, &s) in subs.iter().enumerate() {
+        idx.push(subscript::array_subscript(cx, i, s, &dims, x, Some(call))?);
+    }
+    let bound: Vec<usize> = idx.iter().map(Vec::len).collect();
+    let n: usize = bound.iter().product();
+    let any_na = idx.iter().any(|v| v.contains(&NA_IDX));
+    array_assign_checks(cx, n, ny, any_na, false)?;
+    let mut offset = vec![1i64; k];
+    for i in 1..k {
+        offset[i] = offset[i - 1] * dims[i - 1] as i64;
+    }
+    let mut flat = Vec::with_capacity(n);
+    let mut indx = vec![0usize; k];
+    for _ in 0..n {
+        let mut ii = 1i64;
+        for j in 0..k {
+            let jj = idx[j][indx[j]];
+            if jj == NA_IDX {
+                ii = NA_IDX;
+                break;
+            }
+            ii += (jj - 1) * offset[j];
+        }
+        flat.push(ii);
+        if n > 1 {
+            let mut j = 0;
+            loop {
+                indx[j] += 1;
+                if indx[j] < bound[j] {
+                    break;
+                }
+                indx[j] = 0;
+                j = (j + 1) % k;
+            }
+        }
+    }
+    array_assign_elements(cx, call, x, y, flat, "array")
 }
 
 /// `PairToVectorList(x)` into root `x`.
@@ -678,7 +866,11 @@ pub fn do_subassign_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root
                     vector_assign(cx, call, x, m, y)?
                 }
                 1 => vector_assign(cx, call, x, args.root(1), y)?,
-                _ => return Err(util::not_yet(cx, Some(call), "'[<-' with matrix or array subscripts")),
+                2 => matrix_assign(cx, call, x, &[args.root(1), args.root(2)], y)?,
+                _ => {
+                    let subs: Vec<Root<'_>> = (1..n - 1).map(|i| args.root(i)).collect();
+                    array_assign(cx, call, x, &subs, y)?
+                }
             },
             // errorNotSubsettable(x)
             _ => return Err(subscript::not_subsettable(cx, None, x)),

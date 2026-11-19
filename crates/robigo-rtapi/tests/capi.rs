@@ -585,3 +585,30 @@ fn rprintf_writes_a_long_text_whole() {
     assert_eq!(out.len(), 20000);
     assert!(out.iter().all(|&b| b == b'x'));
 }
+
+/// An index matrix that is a package ALTREP vector (integer, double or
+/// character) is refused before its elements are read, as `make_subscript`
+/// refuses any package ALTREP subscript: in `x[m]` and in `x[m] <- v`.
+#[test]
+fn a_package_altrep_index_matrix_is_not_implemented_yet() {
+    for p in PROFILES {
+        let mut s = Session::new(p);
+        // production identities: `dim<-` writes an unshared package ALTREP
+        // vector in place (under ROBIGO_NO_INPLACE it would copy it, through
+        // its Duplicate method, which robigo refuses)
+        s.cx().set_no_inplace(false);
+        s.val("x <- matrix(1:4, 2, dimnames = list(c(\"a\", \"b\"), c(\"c\", \"d\")))");
+        s.val("mi <- .Call(\"rt_altrep_int\", c(1L, 2L)); dim(mi) <- c(1L, 2L)");
+        s.val("mr <- .Call(\"rt_altrep_real\", c(1, 2)); dim(mr) <- c(1L, 2L)");
+        s.val("ms <- .Call(\"rt_altrep_str\", c(\"a\", \"d\")); dim(ms) <- c(1L, 2L)");
+        for m in ["mi", "mr", "ms"] {
+            for src in [format!("x[{m}]"), format!("y <- x; y[{m}] <- 0L")] {
+                let e = s.err(&src);
+                assert!(
+                    e.contains("robigo: subscripting with an ALTREP object is not implemented yet"),
+                    "{p:?} {src}: {e}"
+                );
+            }
+        }
+    }
+}
