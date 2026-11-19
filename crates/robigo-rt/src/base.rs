@@ -723,17 +723,55 @@ fn not_yet_primitive(cx: &mut Cx, call: Root<'_>, _: Args<'_>, _: Root<'_>, _: O
 }
 
 /// A special primitive of the bound that robigo-rt does not implement yet.
-fn not_yet_primitive_special(cx: &mut Cx, call: Root<'_>, _: Root<'_>, _: Root<'_>, out: Out<'_>) -> RResult<()> {
+fn not_yet_primitive_special(cx: &mut Cx, call: Root<'_>, _: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
     let _ = out;
+    eval_stub_args(cx, call, rho)?;
     let msg = format!("robigo: the primitive '{}' is not implemented yet", called_name(cx, call));
     Err(cx.error_call(Some(call), &msg))
 }
 
 /// A special `.Internal` of the bound that robigo-rt does not implement yet.
-fn not_yet_internal_special(cx: &mut Cx, call: Root<'_>, _: Root<'_>, _: Root<'_>, out: Out<'_>) -> RResult<()> {
+fn not_yet_internal_special(cx: &mut Cx, call: Root<'_>, _: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
     let _ = out;
+    eval_stub_args(cx, call, rho)?;
     let msg = format!("robigo: .Internal({}()) is not implemented yet", called_name(cx, call));
     Err(cx.error_call(Some(call), &msg))
+}
+
+/// Evaluate a special stub's argument expressions in `rho`, in order,
+/// discarding the values: a missing or unbound argument reports GNU R's
+/// error before the stub's not-implemented refusal. A special's stub
+/// cannot know which arguments its implementation would force, so it
+/// forces all but `...` (expanded by the callee, never forced here);
+/// argument evaluation may run arbitrary code, as reaching any error
+/// below already may. This is what the stubs did before they had
+/// names.c's kind (as builtins their arguments arrived evaluated), and
+/// what the recorded cases expect (`eapply` with its `env` missing
+/// errors that way instead of reporting the unported internal).
+fn eval_stub_args(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RResult<()> {
+    let dots = crate::prims::state(cx).syms.dots;
+    let exprs = {
+        let c = call.bind(cx);
+        let mut exprs = Vec::new();
+        let mut a = c.as_cons().and_then(|c| c.cdr().as_cons());
+        while let Some(cell) = a {
+            exprs.push(cell.car().sexp());
+            a = cell.cdr().as_cons();
+        }
+        exprs
+    };
+    cx.scope(|cx, s| {
+        for e in exprs {
+            if e == dots {
+                continue;
+            }
+            // SAFETY: `e` is an element of the rooted call; rooted at once.
+            let er = s.root(cx, unsafe { Ref::from_sexp(e, cx) });
+            let o = s.out(cx);
+            cx.eval(er, rho, o)?;
+        }
+        Ok(())
+    })
 }
 
 /// An `.Internal` of the bound that robigo-rt does not implement yet.
