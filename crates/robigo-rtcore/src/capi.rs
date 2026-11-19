@@ -114,16 +114,22 @@ pub static R_MB_CUR_MAX: std::sync::atomic::AtomicI32 = std::sync::atomic::Atomi
 const INITIAL_MBCSLOCALE: c_int = 0;
 const INITIAL_MB_CUR_MAX: c_int = 0;
 
+/// `(mbcslocale, R_MB_CUR_MAX)` for a locale, given the C library's
+/// `MB_CUR_MAX` in it (`max`). Without one (a C library without the locale,
+/// or Miri) glibc's, the oracle image's: 6 in a UTF-8 `LC_CTYPE`, 1 in `C`.
+// R: platform.c:R_check_locale (mbcslocale = MB_CUR_MAX > 1,
+// R_MB_CUR_MAX = MB_CUR_MAX: the Solaris correction is not Linux's)
+fn locale_pair(utf8: bool, max: Option<usize>) -> (c_int, c_int) {
+    let max = max.map_or(if utf8 { 6 } else { 1 }, |n| n as c_int);
+    ((max > 1) as c_int, max)
+}
+
 impl CGlobals {
     /// Set `mbcslocale` and `R_MB_CUR_MAX` from the locale: the C library's
-    /// `MB_CUR_MAX` in it ([`crate::clib::mb_cur_max`]). A C library
-    /// without the locale (or Miri) gets glibc's, the oracle image's: 6 in
-    /// a UTF-8 `LC_CTYPE` and 1 in `C`.
-    // R: platform.c:R_check_locale (mbcslocale = MB_CUR_MAX > 1,
-    // R_MB_CUR_MAX = MB_CUR_MAX: the Solaris correction is not Linux's)
+    /// `MB_CUR_MAX` in it ([`crate::clib::mb_cur_max`]), as [`locale_pair`]
+    /// makes them.
     pub(crate) fn set_locale(&self, l: crate::Locale) {
-        let max = crate::clib::mb_cur_max(l.utf8).map_or(if l.utf8 { 6 } else { 1 }, |n| n as c_int);
-        let mbcs = (max > 1) as c_int;
+        let (mbcs, max) = locale_pair(l.utf8, crate::clib::mb_cur_max(l.utf8));
         self.mbcslocale.set(mbcs);
         self.mb_cur_max.set(max);
         mbcslocale.store(mbcs, std::sync::atomic::Ordering::Relaxed);
@@ -592,6 +598,21 @@ pub(crate) fn logicals(core: &mut robigo_heap::Core) -> [Sexp; 3] {
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::Ordering::Relaxed;
+
+    /// The pair from the C library's `MB_CUR_MAX`, and glibc's where the C
+    /// library has none (the 6/1 that only Miri and a C library without the
+    /// locale objects reach otherwise).
+    #[test]
+    fn locale_pair_follows_mb_cur_max_and_falls_back_to_glibc() {
+        use super::locale_pair;
+        assert_eq!(locale_pair(true, None), (1, 6));
+        assert_eq!(locale_pair(false, None), (0, 1));
+        assert_eq!(locale_pair(true, Some(4)), (1, 4));
+        assert_eq!(locale_pair(false, Some(1)), (0, 1));
+        // the C library decides, not the flag (a non-UTF-8 multibyte locale)
+        assert_eq!(locale_pair(false, Some(2)), (1, 2));
+        assert_eq!(locale_pair(true, Some(1)), (0, 1));
+    }
 
     /// `set_locale` gives the isolate's block and the process statics one
     /// pair: `MB_CUR_MAX` in the locale, and `mbcslocale` as `MB_CUR_MAX > 1`
