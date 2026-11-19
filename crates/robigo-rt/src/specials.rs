@@ -613,15 +613,14 @@ pub fn do_subassign3(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, 
         let lx = link_root(x);
         if x.bind(cx).is_object() {
             let prom = ev_promise(cx, s, e, x)?;
-            // fixSubset3Args: (name as a string, value expression)
+            // fixSubset3Args: a shallow copy of the call's cells after the
+            // object, the name made a string; the tags (`value =`) kept
             let str = scalar_string(cx, s, input)?;
-            let ve = s.root(cx, arg(cx, call, 2).unwrap().0);
+            let after = s.root(cx, call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().cdr());
             let o = s.out(cx);
             let rest = o.root();
-            cx.build(o, |cx| {
-                let t = cx.cons(ve.bind(cx), cx.nil())?;
-                cx.cons(str.bind(cx), t)
-            })?;
+            cx.shallow_duplicate(after, o)?;
+            cx.set_car(rest, str);
             match crate::dispatch::dispatch_special(cx, "$<-", call, prom, rest, rho, &out) {
                 // no method: the default below, with the arguments
                 // evaluated (x still holds its link)
