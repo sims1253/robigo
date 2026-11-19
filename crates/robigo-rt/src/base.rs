@@ -748,27 +748,23 @@ fn not_yet_internal_special(cx: &mut Cx, call: Root<'_>, _: Root<'_>, rho: Root<
 /// names.c's kind (as builtins their arguments arrived evaluated), and
 /// what the recorded cases expect (`eapply` with its `env` missing
 /// errors that way instead of reporting the unported internal).
+///
+/// The walk keeps every not-yet-evaluated expression rooted: `eval` may
+/// collect (including under the moving debug collector), so no raw
+/// `Sexp` is held across a call.
 fn eval_stub_args(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RResult<()> {
     let dots = crate::prims::state(cx).syms.dots;
-    let exprs = {
-        let c = call.bind(cx);
-        let mut exprs = Vec::new();
-        let mut a = c.as_cons().and_then(|c| c.cdr().as_cons());
-        while let Some(cell) = a {
-            exprs.push(cell.car().sexp());
-            a = cell.cdr().as_cons();
-        }
-        exprs
-    };
     cx.scope(|cx, s| {
-        for e in exprs {
-            if e == dots {
-                continue;
+        let nil = cx.nil();
+        let mut a = s.root(cx, call.bind(cx).as_cons().map_or(nil, |c| c.cdr()));
+        while let Some(cell) = a.bind(cx).as_cons() {
+            let e = s.root(cx, cell.car());
+            let next = s.root(cx, cell.cdr());
+            if e.bind(cx).sexp() != dots {
+                let o = s.out(cx);
+                cx.eval(e, rho, o)?;
             }
-            // SAFETY: `e` is an element of the rooted call; rooted at once.
-            let er = s.root(cx, unsafe { Ref::from_sexp(e, cx) });
-            let o = s.out(cx);
-            cx.eval(er, rho, o)?;
+            a = next;
         }
         Ok(())
     })
