@@ -104,6 +104,43 @@ class Guards(unittest.TestCase):
             "guard `x`: named twice",
         ])
 
+    def test_rt_bars_measures_a_guard_on_both_binaries_and_fails_its_slowdown(self):
+        # cmd_rt_bars' wiring, with the measurements mocked: the guard is
+        # measured with the bars on robigo-rt and on main, shown as a guard,
+        # and 1% slower than main fails the command
+        guard = "guard-subset-dbl"
+        bars = (f'[gnur]\nversion = "{perf.pins()["rt"]}"\nsource = "x"\n[gnur.instr]\nplain = 1000.0\n'
+                '[gnur.rss]\n"p.R" = 50000\n[[bar]]\nrow = "plain"\nagainst = "gnur"\nmax = 0.6\n'
+                f'[[guard]]\nrow = "{guard}"\n[[rss]]\nprogram = "p.R"\nagainst = ["gnur"]\n')
+        measured = []
+
+        def instr(binary, rows, *_, **__):
+            measured.append((binary, list(rows)))
+            return {"plain": 500.0, guard: 101.0 if binary == "new-bin" else 100.0}
+
+        for slower, rc in ((True, 1), (False, 0)):
+            measured.clear()
+            with tempfile.TemporaryDirectory() as tmp:
+                Path(tmp, "bars.toml").write_text(bars)
+                a = SimpleNamespace(bars=str(Path(tmp, "bars.toml")), robigo_rt="new-bin",
+                                    main="main-bin" if slower else None, jobs=1, runs=1,
+                                    out=os.path.join(tmp, "out.json"), gnur=None, cycles=False)
+                buf = io.StringIO()
+                with patch.object(perf, "rt_instr", instr), \
+                        patch.object(perf, "rt_rss", lambda *_: {"p.R": 30000}), \
+                        patch.object(perf, "binary_identity", lambda *_: {}), \
+                        patch.object(perf, "report_identity", lambda *_, **__: None), \
+                        patch.object(perf, "cpu_signature", lambda: ("cpu", "0" * 16)), redirect_stdout(buf):
+                    self.assertEqual(perf.cmd_rt_bars(a), rc)
+            out = buf.getvalue()
+            self.assertEqual([r for _, r in measured], [["plain", guard]] * (2 if slower else 1))
+            self.assertRegex(out, rf"\| {guard} \| 101\.0 \|.*\| main \| \| guard \|")
+            if slower:
+                self.assertEqual([b for b, _ in measured], ["new-bin", "main-bin"])
+                self.assertIn(f"FAIL `{guard}`: +1.00% instructions against main (100.0 -> 101.0)", out)
+            else:
+                self.assertNotIn("FAIL", out)
+
     def test_the_committed_guards(self):
         import tomllib
         with open(perf.RT_ROWS, "rb") as f:
@@ -116,6 +153,7 @@ class Guards(unittest.TestCase):
             "guard-subset-dbl", "guard-subassign-dbl", "guard-subset-matrix",
             "grow-dbl", "scalars", "d0-attr", "d0-attributes", "d0-names",
             "d0-unlist", "d0-paste", "d0-paste0",
+            "guard-vec-arith", "guard-vec-sum", "guard-dots", "guard-dollar-assign", "guard-while", "guard-repeat",
         ])
         # every row of the guard group is one
         self.assertLessEqual({n for n, r in rows.items() if r["group"] == "guard"}, set(guards))

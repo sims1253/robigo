@@ -27,6 +27,9 @@ pub const NA_IDX: i64 = i64::MIN;
 /// GNU R's `NA_INTEGER`.
 const NA_INTEGER: i32 = i32::MIN;
 
+/// GNU R's `NA_REAL`.
+const NA_REAL: f64 = crate::kernel::arith::NA_REAL;
+
 /// A subscript made into positions ([`make_subscript`]).
 #[derive(Debug)]
 pub struct Subscript {
@@ -984,6 +987,12 @@ pub fn matrix_index(
     num_call: Option<Root<'_>>,
     out: Out<'_>,
 ) -> RResult<()> {
+    // a package class's elements are its methods' (strmat2intmat and
+    // mat2indsub read them): refused as make_subscript refuses one, against
+    // the call it reports to (`[`'s, or none for `[<-`)
+    if s.bind(cx).is_package_altrep() {
+        return Err(ecall(cx, num_call, "robigo: subscripting with an ALTREP object is not implemented yet"));
+    }
     cx.scope(|cx, sc| {
         let m = sc.root(cx, s.bind(cx));
         if m.bind(cx).sexptype() == STRSXP {
@@ -1078,7 +1087,9 @@ fn strmat2intmat(cx: &mut Cx, s: Root<'_>, x: Root<'_>, call: Option<Root<'_>>, 
 /// `mat2indsub(dim(x), s, call, x)`: each row of the numeric matrix `s` as
 /// the 1-based position of its element in `x` unravelled; a row with an NA
 /// (before any 0) is NA, with a 0 is 0. Negative values are an error, a
-/// value past its extent out of bounds (`x` is never a long vector here).
+/// value past its extent out of bounds. An array longer than
+/// `R_SHORT_LEN_MAX` gets a double index (a double `s` read truncated, as
+/// GNU R reads it, not coerced); any other an integer one.
 // R: subscript.c:mat2indsub
 fn mat2indsub(cx: &mut Cx, s: Root<'_>, x: Root<'_>, call: Option<Root<'_>>, out: Out<'_>) -> RResult<()> {
     let dims: Vec<i32> = attrib::dims(x.bind(cx)).unwrap().to_vec();
@@ -1092,44 +1103,80 @@ fn mat2indsub(cx: &mut Cx, s: Root<'_>, x: Root<'_>, call: Option<Root<'_>>, out
     }
     enum E {
         Negative,
-        Bounds(usize, i32),
+        Bounds(usize, f64),
     }
+    // LONG_VECTOR_SUPPORT: the length x would have
+    let len = dims.iter().fold(1i128, |n, &d| n * d.max(0) as i128);
+    let long = len > i32::MAX as i128;
     cx.scope(|cx, sc| {
-        let o = sc.out(cx);
-        let si = o.root();
-        crate::coerce::coerce_vector(cx, s, INTSXP, o)?;
+        let real_s = long && s.bind(cx).sexptype() == REALSXP;
+        let si = if real_s {
+            sc.root(cx, s.bind(cx))
+        } else {
+            let o = sc.out(cx);
+            let si = o.root();
+            crate::coerce::coerce_vector(cx, s, INTSXP, o)?;
+            si
+        };
         cx.materialize(si)?;
-        let r: Result<Vec<i32>, E> = (|| {
-            let ps = si.bind(cx).as_ints().unwrap();
-            let mut iv = vec![1i32; nrs];
-            for (i, v) in iv.iter_mut().enumerate() {
-                let mut tdim = 1i32;
+        let r: Result<Vec<f64>, E> = (|| {
+            let sv = si.bind(cx);
+            // element (i, j) of the matrix as a double: NaN for NA
+            let ints = if real_s { None } else { sv.as_ints() };
+            let reals = if real_s { sv.as_vector::<f64>().and_then(|v| v.as_slice()) } else { None };
+            let at = |k: usize| match (ints, reals) {
+                (Some(p), _) => {
+                    if p[k] == NA_INTEGER {
+                        f64::NAN
+                    } else {
+                        p[k] as f64
+                    }
+                }
+                (_, Some(p)) => p[k],
+                _ => unreachable!("robigo: a coerced matrix subscript"),
+            };
+            let mut rv = vec![1f64; nrs];
+            for (i, v) in rv.iter_mut().enumerate() {
+                let mut tdim = 1f64;
                 for (j, &dj) in dims.iter().enumerate() {
-                    let k = ps[i + j * nrs];
-                    if k == NA_INTEGER {
-                        *v = NA_INTEGER;
+                    let k = at(i + j * nrs);
+                    if k.is_nan() {
+                        *v = f64::NAN;
                         break;
                     }
-                    if k < 0 {
+                    // trunc(k): "as.integer(k)" for a large k
+                    let k = k.trunc();
+                    if k < 0.0 {
                         return Err(E::Negative);
                     }
-                    if k == 0 {
-                        *v = 0;
+                    if k == 0.0 {
+                        *v = 0.0;
                         break;
                     }
-                    if k > dj {
+                    if k > dj as f64 {
                         return Err(E::Bounds(j, k));
                     }
-                    *v = v.wrapping_add((k - 1).wrapping_mul(tdim));
-                    tdim = tdim.wrapping_mul(dj);
+                    *v += (k - 1.0) * tdim;
+                    tdim *= dj as f64;
                 }
             }
-            Ok(iv)
+            Ok(rv)
         })();
         match r {
             Err(E::Negative) => Err(ecall(cx, call, "negative values are not allowed in a matrix subscript")),
-            Err(E::Bounds(j, k)) => Err(out_of_bounds(cx, call, x, j as i32, Sindex::Real(k as f64), None)),
-            Ok(iv) => cx.build(out, |cx| Ok(cx.alloc_copy(&iv)?.finish().into())),
+            Err(E::Bounds(j, k)) => Err(out_of_bounds(cx, call, x, j as i32, Sindex::Real(k), None)),
+            // a double index (NA_REAL for NA) for a long array
+            Ok(mut rv) if long => {
+                for d in rv.iter_mut().filter(|d| d.is_nan()) {
+                    *d = NA_REAL;
+                }
+                cx.build(out, |cx| Ok(cx.alloc_copy(&rv)?.finish().into()))
+            }
+            // (each position fits an int: the array is not long)
+            Ok(rv) => {
+                let iv: Vec<i32> = rv.into_iter().map(|d| if d.is_nan() { NA_INTEGER } else { d as i32 }).collect();
+                cx.build(out, |cx| Ok(cx.alloc_copy(&iv)?.finish().into()))
+            }
         }
     })
 }

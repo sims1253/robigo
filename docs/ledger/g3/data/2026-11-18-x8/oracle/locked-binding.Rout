@@ -1,0 +1,1 @@
+locked: cannot change value of locked binding for 'x' | x = 1 2 3 | length 3 

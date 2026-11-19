@@ -1,0 +1,79 @@
+$exist
+[1] TRUE
+
+$len
+[1] 0
+
+$names
+NULL
+
+$types
+character(0)
+
+$exist
+[1] TRUE
+
+$len
+[1] 4
+
+$names
+[1] ""  "b" ""  "" 
+
+$types
+[1] "delayed" "delayed" "missing" "delayed"
+
+[1] "value"   "delayed" "missing" "value"  
+[1] "value"   "delayed" "missing" "value"  
+[[1]]
+[1] "forced"
+
+[[2]]
+1 + 1
+
+[[3]]
+[1] "delayed"
+
+[[4]]
+a * b
+
+[[5]]
+[1] TRUE
+
+[[6]]
+[1] "missing"
+
+error: not a delayed ... element | call: eval(k) 
+error: not a delayed ... element | call: eval(k) 
+error: not a forced ... element | call: eval(k) 
+error: not a delayed ... element | call: eval(k) 
+error: not a forced ... element | call: eval(k) 
+error: the ... list contains fewer than 9 elements | call: eval(k) 
+error: indexing '...' with non-positive index 0 | call: eval(k) 
+error: indexing '...' with non-positive index -1 | call: eval(k) 
+[1] 3
+[1] FALSE
+[1] FALSE
+error: incorrect context: the current call has no '...' to look in | call: doTryCatch(return(expr), name, parentenv, handler) 
+error: incorrect context: the current call has no '...' to look in | call: doTryCatch(return(expr), name, parentenv, handler) 
+error: ..1 used in an incorrect context, no ... to look in | call: doTryCatch(return(expr), name, parentenv, handler) 
+error: ..1 used in an incorrect context, no ... to look in | call: doTryCatch(return(expr), name, parentenv, handler) 
+[1] 10 20
+error: the ... list contains fewer than 1 element | call: m() 
+error: argument is missing, with no default | call: m(, 2) 
+u + v
+[[1]]
+[1] 1
+
+[[2]]
+[1] "delayed"
+
+error: indexing '...' with non-positive index 0 | call: doTryCatch(return(expr), name, parentenv, handler) 
+[1] 0
+error: bad ... value | call: doTryCatch(return(expr), name, parentenv, handler) 
+[1] 1
+[1] 0
+[1] 2
+[1] FALSE
+[1] 3
+[1] FALSE
+[1] 4

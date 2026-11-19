@@ -1,0 +1,35 @@
+# dir.create (platform.c do_dircreate); the temporary directory's name is
+# shown as <d> in messages. Every call gives an integer mode: the default,
+# "0777", goes through as.octmode's strtoi (#823)
+dc <- function(path, ..., mode = 511L) dir.create(path, ..., mode = mode)
+d <- paste0(Sys.getenv("TMPDIR", "/tmp"), "/robigo-rt-dircreate-", Sys.getpid())
+w <- function(e) withCallingHandlers(e, warning = function(c) {
+  cat("warning:", gsub(d, "<d>", conditionMessage(c), fixed = TRUE), "\n")
+  invokeRestart("muffleWarning")
+})
+print(dc(d))
+print(dir.exists(d))
+w(print(dc(d)))
+print(dc(d, showWarnings = FALSE))
+w(print(dc(paste0(d, "/a/b"))))
+w(print(dc(paste0(d, "/a/b/"), recursive = TRUE)))
+print(dir.exists(paste0(d, "/a/b")))
+w(print(dc(paste0(d, "/a//c"), recursive = TRUE)))
+print(dir.exists(paste0(d, "/a/c")))
+w(print(dc(paste0(d, "/a/b"), recursive = TRUE)))
+# a file in the way
+f <- paste0(d, "/file"); writeLines("x", f)
+w(print(dc(paste0(f, "/sub"), recursive = TRUE)))
+w(print(dc(paste0(f, "/sub"))))
+print(dc(NA_character_))
+v <- withVisible(dc(paste0(d, "/v"))); print(v$visible)
+# mode
+print(dc(paste0(d, "/m"), mode = 448L))
+print(file.remove(c(paste0(d, "/m"), paste0(d, "/v"), f, paste0(d, "/a/c"), paste0(d, "/a/b"), paste0(d, "/a"), d)))
+# errors
+r <- function(e) print(tryCatch(e, error = conditionMessage))
+r(dc(c("a", "b")))
+r(.Internal(dir.create("a", TRUE, FALSE)))
+r(dc(1))
+r(dc(""))
+r(dc(character(0)))

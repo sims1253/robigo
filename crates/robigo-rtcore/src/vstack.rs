@@ -294,24 +294,17 @@ impl ValueStack {
         unsafe { p.write(s) }
     }
 
-    /// Live slot `i` (an index from the base). Panics unless `i` is below
-    /// the depth.
-    pub(crate) fn slot_at(&self, i: usize) -> Slot {
-        assert!(i < self.depth(), "robigo: slot {i} of a stack of {}", self.depth());
-        // SAFETY: `i` is below the depth: a live slot of this stack.
-        unsafe { self.base.add(i).read() }
-    }
-
-    /// Every object in the live slots `from..to` (indices from the base).
+    /// The live slots `from..to` (indices from the base), read in place.
     /// Panics unless `from <= to <= depth`.
-    pub(crate) fn for_each_object_in(&self, from: usize, to: usize, f: &mut dyn FnMut(Sexp)) {
+    ///
+    /// # Safety
+    /// No slot of the range is written while the slice lives.
+    pub(crate) unsafe fn slots(&self, from: usize, to: usize) -> &[Slot] {
         assert!(from <= to && to <= self.depth(), "robigo: slots {from}..{to} of a stack of {}", self.depth());
-        for i in from..to {
-            // SAFETY: `i` is below the depth: a live slot of this stack.
-            if let Some(x) = unsafe { self.base.add(i).read() }.as_object() {
-                f(x);
-            }
-        }
+        // SAFETY: `from..to` lies below the depth: live, initialized slots
+        // of this reservation; the caller's contract keeps them unwritten
+        // while the slice lives.
+        unsafe { std::slice::from_raw_parts(self.base.add(from).as_ptr(), to - from) }
     }
 
     /// Every object in a live slot.
