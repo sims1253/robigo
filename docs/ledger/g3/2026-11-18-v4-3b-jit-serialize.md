@@ -29,7 +29,7 @@ and the closures it has called by the time it writes them are compiled.
 
 ### The fixtures
 
-- `tests/rt/serialize/jit-write.R`, recorded on GNU R 4.6.2, covers a
+- `tests/rt/jit/serialize-write.R`, recorded on GNU R 4.6.2, covers a
   closure in each JIT state, in versions 2 and 3:
   - a loop, compiled at its first call;
   - a small closure, MAYBEJIT (flags 0x0404) after one call and compiled
@@ -41,7 +41,7 @@ and the closures it has called by the time it writes them are compiled.
   It needs the compiler namespace to load (#860, L's `.AutoloadEnv`), so
   its marker lands with that PR. On a local merge with #860, robigo-rt's
   output is the same as GNU R's, byte for byte.
-- `tests/rt/serialize/jit-write-shadow.R`, recorded, not ratcheted: the
+- `tests/rt/jit/serialize-write-shadow.R`, recorded, not ratcheted: the
   first residual difference below.
 
 ### The two residual differences
