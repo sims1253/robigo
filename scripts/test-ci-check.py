@@ -13,7 +13,7 @@ spec = importlib.util.spec_from_file_location("ci_check", HERE / "ci-check.py")
 chk = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(chk)
 
-JOBS = ["select", "lint", "miri", "rdb-data", "rt", "base-subset", "build", "release-tests", "test", "bytecode-fidelity", "counters",
+JOBS = ["select", "lint", "miri", "rdb-data", "rt", "base-subset", "build", "perf-base", "release-tests", "test", "bytecode-fidelity", "counters",
         "corpora", "fuzz", "cran", "smoke", "package-gate", "perf", "perf-rt-build", "perf-rt", "rt-corpora"]
 
 
@@ -111,6 +111,14 @@ class Rule(unittest.TestCase):
         n = needs(package_gate="skipped")
         n["select"]["outputs"] = {}
         self.assertFalse(passes(n))
+
+    def test_perf_base_runs_with_perf_on_pull_requests(self):
+        # main measures no base; a light pull request runs no perf
+        self.assertTrue(passes(needs(perf_base="skipped"), pull_request=False))
+        self.assertTrue(passes(needs("false", "false", perf_base="skipped", package_gate="skipped", **SKIP_HEAVY)))
+        # a pull request with perf must have built its base
+        self.assertFalse(passes(needs(perf_base="skipped")))
+        self.assertFalse(passes(needs(perf_base="failure")))
 
     def test_cli(self):
         def run(n, *args):

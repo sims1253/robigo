@@ -503,8 +503,16 @@ from path globs to groups; the first rule matching a file wins).
 
 - **Paths.** The diff of GitHub's test merge commit against its first
   parent, main's commit (`git diff HEAD^1 HEAD`; the job checks out with
-  `fetch-depth: 2`). The same commit is the baseline
-  (`scripts/perf-baseline.py`), so the compared set is exactly the PR's.
+  `fetch-depth: 2`). The same commit is the baseline, so the compared set
+  is exactly the PR's. The `perf-base` job builds it, as `build` builds the
+  candidate, and `perf` measures both on one runner with the same filter.
+  It no longer waits for main's run of that commit (a median 23 minutes on
+  2026-11-18, cut off at 50 for 31 of 73 jobs, which were then compared
+  with an ancestor). GNU R's records, its answers and its counts for the
+  ratio, come from a cache per oracle image, CPU signature, libc6 and
+  valgrind packages and measurement inputs. Main's run saves it, and a
+  pull request measures GNU R itself when the cache is missing or does not
+  cover its selection (`scripts/perf-gnur.py`).
 - **What runs.** `perf.py run --filter <union of the selected groups>`. The
   gate is unchanged: instruction counts, 0.5%, paired confirmation. The
   compare steps treat baseline benchmarks outside the run's recorded
@@ -518,11 +526,11 @@ from path globs to groups; the first rule matching a file wins).
   bytecode VM and its compiler (every closure runs on it) and the numerics
   core (`%%`, long double sums, the RNG) are explicit `all` rules. Only paths that cannot change an instruction
   count (docs, tests, the other workflows) select `none`: the job then
-  records that in its summary, skips the baseline wait and the measurement,
-  and passes.
+  records that in its summary, skips both measurements, and passes.
 - **`main`** (and `workflow_dispatch`) always runs the full suite and
-  uploads `perf-main`, so every merge still records the full next baseline.
-  Narrowed pull-request runs upload `perf`, which nothing consumes.
+  uploads `perf-main`, the history's and the scoreboard's numbers, and saves
+  GNU R's records for its CPU signature. Narrowed pull-request runs upload
+  `perf`, which nothing consumes.
 - **Dry run.** Nothing needs CI to see a decision:
 
   ```sh
@@ -747,9 +755,9 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    (`.github/workflows/packages.yml`).
 10. **perf:** instruction counts of every benchmark; on pull requests only
     the benchmarks the changed paths can affect (§ Path-scoped perf gate),
-    compared with `main` (fails if slower by more than 0.5% or newly
-    wrong); on `main` all of them, and also GNU R's counts, saved as the
-    next baseline.
+    compared with the merge's base measured beside them (fails if slower by
+    more than 0.5% or newly wrong); on `main` all of them, and also GNU R's
+    counts.
     - **perf-rt** is the same gate for robigo-rt, on every pull request the
       `rt` job runs for, beside it: `scripts/perf.py rt-bars` measures the
       M1 bars' rows (callgrind instructions, N against 2N, as the bars tool
