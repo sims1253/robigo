@@ -48,6 +48,25 @@ fn arg<'g>(cx: &'g Cx, call: Root<'_>, i: usize) -> Option<(Ref<'g>, Option<Sym<
     c.map(|c| (c.car(), c.tag().as_sym()))
 }
 
+/// A copy of the cells of the pairlist `args` (their tags kept; GNU R's
+/// `shallow_duplicate`), the first one's value `first`.
+fn tagged_rest<'s>(cx: &mut Cx, s: Scope<'s>, args: Root<'_>, first: Root<'_>) -> RResult<Root<'s>> {
+    let o = s.out(cx);
+    let r = o.root();
+    cx.shallow_duplicate(args, o)?;
+    cx.set_car(r, first);
+    Ok(r)
+}
+
+/// Element `i` of the pairlist `args` (R_NilValue past its end).
+fn list_elt<'g>(cx: &'g Cx, args: Root<'_>, i: usize) -> Ref<'g> {
+    let mut c = args.bind(cx).as_cons();
+    for _ in 0..i {
+        c = c.and_then(|c| c.cdr().as_cons());
+    }
+    c.map_or(cx.nil(), |c| c.car())
+}
+
 /// The evaluated arguments: a window of value slots and tag slots of the
 /// caller's scope, filled in order (GNU R's `CONS_NR` list).
 pub(crate) struct Evaluated<'s> {
@@ -641,6 +660,194 @@ pub fn do_subassign3(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, 
             }
         };
         subassign::subassign3_dflt(cx, call, x, nlist, val, out)
+    })
+}
+
+// ---- ~, @, @<- --------------------------------------------------------------------
+
+/// `do_tilde`: `y ~ x` is its own call, duplicated, of class "formula" with
+/// the environment it was evaluated in as `.Environment` (a call that is
+/// already an object is only duplicated).
+// R: names.c:do_tilde
+pub fn do_tilde(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let o = s.out(cx);
+        let r = o.root();
+        cx.duplicate(call, o)?;
+        if !call.bind(cx).is_object() {
+            let klass = s.out(cx);
+            let k = klass.root();
+            cx.build(klass, |cx| cx.mk_string(b"formula", robigo_rtcore::Encoding::Native))?;
+            robigo_rtbuiltins::attrib::set_attrib(cx, r, b"class", k)?;
+            robigo_rtbuiltins::attrib::set_attrib(cx, r, b".Environment", rho)?;
+        }
+        out.set(cx, r.bind(cx));
+        Ok(())
+    })
+}
+
+/// `isMethodsDispatchOn()`: never, in robigo-rt yet (no methods package;
+/// [`do_s4on`]).
+// R: objects.c:R_isMethodsDispatchOn
+fn methods_dispatch_on() -> bool {
+    false
+}
+
+/// `do_AT`: `object@name`. An S3 object (not S4) dispatches on `@` first,
+/// the name made a string as `$`'s is; then, without the methods package,
+/// formal classes are an error.
+// R: attrib.c:do_AT
+pub fn do_at(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    check_arity(cx, call, "@", 2)?;
+    cx.scope(|cx, s| {
+        let e = s.root(cx, arg(cx, call, 0).unwrap().0);
+        let x = eval_root(cx, s, e, rho)?;
+        let xv = x.bind(cx);
+        if xv.is_object() && !xv.is_s4() {
+            // fixSubset3Args (its errors), the object as an evaluated
+            // promise, then DispatchOrEval
+            let (input, _) = subset3_name(cx, s, call, rho)?;
+            let lx = link_root(x);
+            let prom = ev_promise(cx, s, e, x)?;
+            let str = scalar_string(cx, s, input)?;
+            // shallow_duplicate(args), the name's cell holding the string
+            // (the arguments' tags kept)
+            let after = s.root(cx, call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().cdr());
+            let rest = tagged_rest(cx, s, after, str)?;
+            let r = crate::dispatch::dispatch_special(cx, "@", call, prom, rest, rho, &out);
+            lx.release();
+            if r? {
+                return Ok(());
+            }
+            // fall through to handle @.Data or signal an error
+        }
+        if !methods_dispatch_on() {
+            return Err(cx.error("formal classes cannot be used without the 'methods' package"));
+        }
+        // R_do_slot: only with the methods package
+        Err(cx.error("robigo: '@' with the methods package (R_do_slot) is not implemented yet"))
+    })
+}
+
+/// `do_attrgets` for `@<-` (`PRIMVAL(op)` 1): `` `@<-`(object, name,
+/// value) ``, the name a symbol or one string. An object dispatches on
+/// `@<-`; otherwise the slot assignment is checked by the methods package's
+/// `checkAtAssignment`, which needs `initMethodDispatch()` evaluated in its
+/// namespace first (the global environment until methods is loaded).
+// R: attrib.c:do_attrgets, check_slot_assign
+pub fn do_slot_gets(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    slot_gets(cx, call, None, rho, out)
+}
+
+/// [`do_slot_gets`] given its call and its arguments apart, as bcEval's
+/// `SETTER_CALL` calls a special (`PRIMFUN(fun)(call, fun, args, rho)`,
+/// `args` the call's arguments with evaluated promises of `*tmp*` and of
+/// the value): `None` for the call's own (`CDR(call)`). do_attrgets puts the
+/// name's string into `args`; when those are the call's own, the call
+/// dispatched with holds it too.
+// R: attrib.c:do_attrgets, eval.c:bcEval SETTER_CALL
+pub(crate) fn slot_gets(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let own = args.is_none();
+        let args = match args {
+            Some(a) => a,
+            None => s.root(cx, call.bind(cx).as_cons().unwrap().cdr()),
+        };
+        let n = args.bind(cx).len().unwrap_or(0);
+        crate::prims::check_arity(cx, call, n, "@<-", 3, false)?;
+        // the slot name as a string
+        let input = {
+            let nl = list_elt(cx, args, 1);
+            let c = match nl.sexptype() {
+                SYMSXP => nl.as_sym().unwrap().name(cx),
+                STRSXP => {
+                    let sv = nl.as_vector::<Char<'_>>().unwrap();
+                    if sv.len() != 1 {
+                        return Err(cx.error("invalid slot name length"));
+                    }
+                    sv.get(0)
+                }
+                _ => {
+                    let msg = format!("invalid type '{}' for slot name", robigo_rtbuiltins::util::type_to_char(nl));
+                    return Err(cx.error(&msg));
+                }
+            };
+            let c = s.root(cx, c.as_ref());
+            scalar_string(cx, s, c)?
+        };
+        // DispatchOrEval(call, op, "@<-", args, env, &ans, 0, 0), the
+        // second argument replaced by the string
+        let e = s.root(cx, list_elt(cx, args, 0));
+        if e.bind(cx).sexp() == prims::state(cx).syms.dots {
+            return Err(cx.error("robigo: '@<-' with '...' as its object is not implemented yet"));
+        }
+        let x = eval_root(cx, s, e, rho)?;
+        let lx = link_root(x);
+        if x.bind(cx).is_object() {
+            let prom = ev_promise(cx, s, e, x)?;
+            // the arguments after the object, their tags kept (`value =`),
+            // the name's cell holding the string
+            let after = s.root(cx, args.bind(cx).as_cons().unwrap().cdr());
+            let rest = tagged_rest(cx, s, after, input)?;
+            // SETCADR(args, input): the call's own arguments are the call's
+            let dcall = if own {
+                let o = s.out(cx);
+                let c = o.root();
+                cx.shallow_duplicate(call, o)?;
+                let second = s.root(cx, c.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().cdr());
+                cx.set_car(second, input);
+                c
+            } else {
+                call
+            };
+            match crate::dispatch::dispatch_special(cx, "@<-", dcall, prom, rest, rho, &out) {
+                Ok(false) => {}
+                r => {
+                    lx.release();
+                    r?;
+                    // SAFETY: raised above.
+                    unsafe { links::decrement_links(x.bind(cx).sexp()) };
+                    return Ok(());
+                }
+            }
+        }
+        // evalListKeepMissing of the rest: the name (a constant), then the
+        // value
+        let _ = eval_root(cx, s, input, rho)?;
+        let ve = s.root(cx, list_elt(cx, args, 2));
+        let vs = ve.bind(cx).sexp();
+        // SAFETY: a part of the rooted call and the rooted environment.
+        let is_missing = vs == cx.missing_arg().sexp()
+            || (unsafe { vs.typ() } == SYMSXP && unsafe { crate::missing::r_is_missing(cx, vs, rho.bind(cx).sexp()) }?);
+        let value = if is_missing { s.root(cx, cx.missing_arg()) } else { eval_root(cx, s, ve, rho)? };
+        lx.release();
+        // check_slot_assign(obj, input, value, env), after the classes of
+        // both (R_data_class: nothing to observe)
+        if !methods_dispatch_on() {
+            // eval(lang1(install("initMethodDispatch")), R_MethodsNamespace),
+            // which is R_GlobalEnv without methods
+            let f = subset::install_sym(cx, s, b"initMethodDispatch")?;
+            let o = s.out(cx);
+            let lang = o.root();
+            cx.build(o, |cx| cx.lang1(f.bind(cx)))?;
+            let g = s.root(cx, cx.global_env());
+            let _ = eval_root(cx, s, lang, g)?;
+        }
+        // findFun(install("checkAtAssignment"), R_MethodsNamespace)
+        let f = subset::install_sym(cx, s, b"checkAtAssignment")?;
+        let g = s.root(cx, cx.global_env());
+        let o = s.out(cx);
+        cx.find_fun3(f, g, None, o)?;
+        let _ = value;
+        Err(cx.error(
+            "robigo: '@<-' with the methods package (checkAtAssignment, R_do_slot_assign) is not implemented yet",
+        ))
     })
 }
 
