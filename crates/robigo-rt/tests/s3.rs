@@ -467,6 +467,20 @@ fn warnings_are_collected_and_printed() {
     }
 }
 
+/// `$`'s dispatch passes the call's own name cell (`fixSubset3Args`), so a
+/// tag on it reaches the method (GNU R 4.6.2: tests/rt/s3/dollar-name-tag.R).
+#[test]
+fn a_dollar_methods_name_keeps_its_tag() {
+    for mut s in both() {
+        s.r.val(r#"x <- setclass("a", "foo"); `$.foo` <- function(x, ..., nm = "untagged") nm"#);
+        for (src, want) in
+            [("x$b", "untagged"), ("`$`(x, nm = b)", "b"), ("f <- function(x) `$`(x, nm = c); f(x)", "c")]
+        {
+            assert_eq!(s.r.val(src), strs(&[want]), "{src}");
+        }
+    }
+}
+
 /// A replacement method whose `value` comes after `...` gets the value by
 /// name: `$<-`'s dispatch passes the call's own cells, their tags kept
 /// (`fixSubset3Args`); so do `[<-`, `[[<-` and `names<-` (GNU R 4.6.2:
