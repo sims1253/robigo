@@ -1,0 +1,9 @@
+Error in gc.time(foo = TRUE) : 
+  supplied argument name 'foo' does not match 'on'
+Error in gc.time(NA) : NA in coercion to boolean
+Error in gc.time(c(TRUE, FALSE)) : 
+  'length = 2' in coercion to 'logical(1)'
+Error in gctorture2(step, wait, inhibit_release) : 
+  NA in coercion to boolean
+Warning message:
+In mem.maxNSize(1) : a limit lower than current usage, so ignored

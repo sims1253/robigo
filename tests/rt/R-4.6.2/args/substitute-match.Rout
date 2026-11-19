@@ -1,0 +1,18 @@
+1 + b
+[1] 2
+<simpleError in substitute(e = a, list(a = 3)): argument 1 matches multiple formal arguments>
+substitute(e = a, list(a = 3))
+<simpleError in substitute(a, b, c): unused argument (c)>
+substitute(a, b, c)
+<simpleError in substitute(a, env = b, c, d): unused arguments (c, d)>
+substitute(a, env = b, c, d)
+<simpleError in substitute(a, foo = 1): unused argument (foo = 1)>
+substitute(a, foo = 1)
+<simpleError in substitute(e = 1, ex = 2): formal argument "expr" matched by multiple actual arguments>
+substitute(e = 1, ex = 2)
+<simpleError in substitute(a, env = 1, env = 2): formal argument "env" matched by multiple actual arguments>
+substitute(a, env = 1, env = 2)
+<simpleError in substitute(a, 1): invalid environment specified>
+substitute(a, 1)
+<simpleError in substitute(x, 1, 2): unused argument (2)>
+substitute(x, 1, 2)

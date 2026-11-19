@@ -1,0 +1,65 @@
+[1] 3
+[1] TRUE
+[1] FALSE
+error: no binding for "nope" | call: bindingIsActive("nope", e) 
+error: not a symbol | call: bindingIsActive(1, e) 
+error: use of NULL environment is defunct | call: bindingIsActive("a", NULL) 
+error: not an environment | call: bindingIsActive("a", 1) 
+[1] FALSE
+function () 
+42
+error: no active binding for "v" | call: activeBindingFunction("v", e) 
+error: no binding for "nope" | call: activeBindingFunction("nope", e) 
+error: not an environment | call: activeBindingFunction("a", list()) 
+stop("not forced")
+[1] TRUE
+1 + 2
+error: not a delayed binding | call: doTryCatch(return(expr), name, parentenv, handler) 
+error: not a forced binding | call: doTryCatch(return(expr), name, parentenv, handler) 
+error: not a delayed binding | call: doTryCatch(return(expr), name, parentenv, handler) 
+error: not a delayed binding | call: doTryCatch(return(expr), name, parentenv, handler) 
+error: not a delayed binding | call: doTryCatch(return(expr), name, parentenv, handler) 
+error: not a forced binding | call: doTryCatch(return(expr), name, parentenv, handler) 
+error: not a delayed binding | call: doTryCatch(return(expr), name, parentenv, handler) 
+error: unbound variable | call: doTryCatch(return(expr), name, parentenv, handler) 
+error: not a forced binding | call: doTryCatch(return(expr), name, parentenv, handler) 
+error: not a delayed binding | call: doTryCatch(return(expr), name, parentenv, handler) 
+error: BINDING_OR_SYMBOL_VALUE called on active binding | call: doTryCatch(return(expr), name, parentenv, handler) 
+error: not a symbol | call: doTryCatch(return(expr), name, parentenv, handler) 
+error: not an environment | call: doTryCatch(return(expr), name, parentenv, handler) 
+error: not an environment | call: doTryCatch(return(expr), name, parentenv, handler) 
+[[1]]
+1 + 1
+
+[[2]]
+[1] TRUE
+
+[[3]]
+z * 2
+
+[[4]]
+[1] TRUE
+
+[[5]]
+1 + 1
+
+[[1]]
+x
+
+[[2]]
+[1] TRUE
+
+[[3]]
+z * 2
+
+[[4]]
+[1] TRUE
+
+[[5]]
+x
+
+a + b
+u + w
+u + w
+error: 1 argument passed to .Internal(delayedBindingExpression) which requires 2 | call: doTryCatch(return(expr), name, parentenv, handler) 
+error: 1 argument passed to .Internal(bindingIsActive) which requires 2 | call: doTryCatch(return(expr), name, parentenv, handler) 

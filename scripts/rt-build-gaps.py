@@ -67,9 +67,13 @@ def main():
             if re.match(r"^(primitive|internal):", k):
                 by_key.setdefault(k, []).append(st)
     keys = sorted(by_key)
-    home = subprocess.run([str(ROOT / "scripts/rt-home.sh")], capture_output=True, text=True, check=True).stdout.strip()
-    env = dict(os.environ, R_HOME=str(ROOT / home) if not home.startswith("/") else home,
-               R_DEFAULT_PACKAGES="NULL", LANGUAGE="en", LC_ALL="C.UTF-8")
+    # the tree robigo-rt finds as its own R_HOME (its build checkout's): it
+    # ignores an inherited R_HOME with GNU R's warning
+    made = subprocess.run([str(ROOT / "scripts/rt-home.sh")], capture_output=True, text=True, check=False)
+    if made.returncode:
+        sys.exit(f"rt-build-gaps: scripts/rt-home.sh failed (status {made.returncode}):\n{made.stderr}")
+    env = {k: v for k, v in os.environ.items() if k != "R_HOME"}
+    env.update(R_DEFAULT_PACKAGES="NULL", LANGUAGE="en", LC_ALL="C.UTF-8")
     skip, crashed, missing = set(SKIP), [], []
     while True:
         script = (f"keys <- c({', '.join(rstr(k) for k in keys)})\n"

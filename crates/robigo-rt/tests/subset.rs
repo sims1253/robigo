@@ -185,6 +185,61 @@ fn subassignment_errors_report_gnu_rs_calls() {
     }
 }
 
+/// Bind `name` in the global environment to a fresh OBJSXP with the S4 bit
+/// (GNU R's `allocS4Object`).
+fn s4_object(s: &mut Session, name: &str) {
+    use robigo_rtcore::{Ref, types::OBJSXP};
+    let cx = s.cx();
+    cx.scope(|cx, sc| {
+        let o = sc.out(cx);
+        let obj = o.root();
+        cx.build(o, |cx| {
+            let nil = cx.nil().sexp();
+            // SAFETY: R_NilValue fields; the node is fresh, and `build` roots
+            // it in `obj` when the closure returns (a retry collects only
+            // after the closure has returned).
+            let x = unsafe { cx.alloc_node_raw(OBJSXP, nil, nil, nil)? };
+            // SAFETY: fresh.
+            Ok(unsafe { Ref::from_sexp(x, cx) })
+        })?;
+        cx.set_s4_bit(obj, true);
+        let o = sc.out(cx);
+        let sym = o.root();
+        cx.build(o, |cx| Ok(cx.install(name.as_bytes())?.as_ref()))?;
+        let g = sc.root(cx, cx.global_env());
+        cx.define_var(sym, obj, g)
+    })
+    .unwrap();
+}
+
+/// A primitive or an S4 object as the value of `x[i, j] <- v`: GNU R reads
+/// its length as a primitive's `R_FunTab` offset, which robigo's primitives
+/// do not carry, or an S4 object's unset word, so robigo says so (any other
+/// non-vector value is tests/rt/subset's cases).
+#[test]
+fn a_primitive_or_s4_object_as_a_matrix_assignment_value_is_not_implemented_yet() {
+    for mut s in sessions() {
+        s.val("m <- c(1, 1); dim(m) <- c(2L, 1L); a <- c(1, 1); dim(a) <- c(2L, 1L, 1L)");
+        for src in ["m[, 1] <- sum", "m[1, 1] <- `if`", "a[, 1, 1] <- sum"] {
+            let e = s.err(src);
+            assert!(
+                e.contains("robigo: a primitive as the value of a matrix or array assignment is not implemented yet"),
+                "{src}: {e}"
+            );
+        }
+        // an S4 object's length word is not set in GNU R (robigo-rt makes
+        // no OBJSXP from R code yet: one is bound here)
+        s4_object(&mut s, "o");
+        for src in ["m[, 1] <- o", "a[, 1, 1] <- o"] {
+            let e = s.err(src);
+            assert!(
+                e.contains("robigo: an S4 object as the value of a matrix or array assignment is not implemented yet"),
+                "{src}: {e}"
+            );
+        }
+    }
+}
+
 #[test]
 fn switch_selects_and_falls_through() {
     for mut s in sessions() {
