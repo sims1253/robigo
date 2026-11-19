@@ -493,7 +493,9 @@ fn install_first_at<'s>(cx: &mut Cx, s: Scope<'s>, v: Root<'_>, i: usize) -> RRe
     cx.install_rooted(s, &name)
 }
 
-/// `internalsID()`: `R_INTERNALS_UUID`.
+/// `internalsID()`: `R_INTERNALS_UUID`. GNU R's does not check its
+/// arguments (no checkArity, and `.Internal` checks none), so any are
+/// ignored.
 // R: version.c:do_internalsID
 pub fn do_internals_id(cx: &mut Cx, _call: Root<'_>, _args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     // (no checkArity: arguments are ignored)

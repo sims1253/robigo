@@ -11,10 +11,15 @@ on:
 
 # Every main commit gets its own group: its run publishes the perf baseline
 # that pull requests built on that commit compare with (a shared group would
-# cancel queued main runs). Pull requests cancel their superseded runs.
+# cancel queued main runs). Every other run has a group of its own, so no
+# run waits `pending` behind another: a pull request's superseded runs are
+# cancelled by `select`'s first step instead. (A shared group per pull
+# request did that at once, but a cancelled run still queues `Check`, which
+# runs `always()`, and held the group until a runner took it: the new
+# head's run waited behind it. 2026-11-18: 60 runs, 1,268 minutes.)
 concurrency:
-  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.run_id }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -52,11 +57,14 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # to cancel this pull request's superseded runs
+      actions: write
     outputs:
       heavy: ${{ steps.sel.outputs.heavy }}
       mode: ${{ steps.sel.outputs.mode }}
       runtime: ${{ steps.sel.outputs.runtime }}
       rt: ${{ steps.sel.outputs.rt }}
+      stacked: ${{ steps.sel.outputs.stacked }}
       image_base: ${{ steps.image.outputs.base }}
       image_rust: ${{ steps.image.outputs.rust }}
       image_packages: ${{ steps.image.outputs.packages }}
@@ -65,6 +73,42 @@ jobs:
       # `oracles=(...)`. A version added there needs its line here.
       image_oracle_4_6_2: ${{ steps.image.outputs.oracle_4_6_2 }}
     steps:
+      # First, before anything else: cancel this pull request's older `ci`
+      # runs that are still going (same head branch and repository, a lower
+      # run id). A plain cancel, so their `Check` still runs and is red on a
+      # commit nobody merges. Until this step runs, both runs are alive: the
+      # older one's jobs keep their runners for the new run's wait for its
+      # first runner (2026-11-18: median 10 min, about 1 job of the older
+      # run on a runner then). A fork's token cannot cancel: it warns, and
+      # both runs finish.
+      - name: Cancel this pull request's superseded runs
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          # one query per status that is not completed, every page (a
+          # re-run of an old run keeps its old id, however many runs came since)
+          ids=()
+          for status in queued in_progress waiting pending requested; do
+            page=$(gh api -X GET --paginate "repos/$REPO/actions/workflows/ci.yml/runs" -f event=pull_request \
+                     -f branch="$HEAD_REF" -f status="$status" -f per_page=100 --jq ".workflow_runs[]
+                     | select(.id < $RUN_ID and .head_repository.full_name == \"$HEAD_REPO\") | .id") ||
+              { echo "::warning::could not list this pull request's $status runs; superseded ones keep running"; continue; }
+            # (ids are numbers)
+            # shellcheck disable=SC2206
+            ids+=($page)
+          done
+          for id in "${ids[@]}"; do
+            if gh api -X POST "repos/$REPO/actions/runs/$id/cancel" > /dev/null; then
+              echo "cancelled superseded run $id"
+            else
+              echo "::warning::could not cancel superseded run $id (a fork's token is read-only)"
+            fi
+          done
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
@@ -102,15 +146,20 @@ jobs:
         run: cargo fmt --check
       - name: Clippy
         run: scripts/lint.sh
-      - name: Corpus, oracle and Sexp-check tooling
+      - name: Corpus, oracle, Sexp-check and wall-time tooling
         run: |
           python3 scripts/test_corpus.py
           python3 scripts/test-oracle-diff.py
           python3 scripts/test-check-sexp-safety.py
+          python3 scripts/test-wall13.py
+          python3 scripts/test-pgo-build.py
       - name: Target pruning
         run: python3 scripts/test-prune-target.py
 
   miri:
+    # (after select only for its `stacked`: a stacked pull request skips it)
+    needs: select
+    if: ${{ needs.select.outputs.stacked != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -264,7 +313,7 @@ jobs:
   # its Rscript directly. seccomp is off as in scripts/oracle-run.sh.
   base-subset:
     needs: select
-    if: ${{ needs.select.outputs.rt == 'true' }}
+    if: ${{ needs.select.outputs.rt == 'true' && needs.select.outputs.stacked != 'true' }}
     runs-on: ubuntu-24.04
     container:
       image: ${{ needs.select.outputs.image_oracle_4_6_2 }}
@@ -372,6 +421,61 @@ jobs:
           path: dist
           retention-days: 7
 
+  # perf's base on a pull request: robigo and the base-package natives built
+  # from the merge's base, HEAD^1, as `build` builds them, beside `build`.
+  # `perf` measures it on its own runner instead of waiting for main's run of
+  # that commit to publish `perf-main` (2026-11-18: a median 23 minutes on a
+  # runner, 31 of 73 jobs cut off at 50 and compared with an ancestor:
+  # docs/ledger/g3/2026-11-18-perf-base.md). Main does not run it.
+  perf-base:
+    needs: select
+    if: ${{ needs.select.outputs.heavy == 'true' && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.select.outputs.image_rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # the merge commit and its parents: the base is HEAD^1
+          fetch-depth: 2
+      - name: The merge's base
+        run: |
+          git config --global --add safe.directory '*'
+          git checkout -q --detach HEAD^1
+          git log -1 --format='base: %H %s' | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: ./.github/actions/setup
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          # build's cache: main's base is what it was built for
+          shared-key: release
+          key: ${{ hashFiles('Cargo.lock') }}
+          save-if: false
+      - name: Build
+        run: cargo build --release --locked --workspace
+      - uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/robigo-research/rsrc
+          key: r-4.5.0-sources
+      - name: Base-package natives
+        run: scripts/build-natives.sh stats splines tools parallel utils grDevices graphics grid
+      - name: Keep the binary for perf
+        run: |
+          mkdir -p dist/natives
+          cp "$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/robigo" dist/
+          for d in .robigo/natives/*/; do
+            p=$(basename "$d"); [ -f "$d$p.so" ] && mkdir -p "dist/natives/$p" && cp "$d"*.so "dist/natives/$p/"
+          done
+          git rev-parse HEAD > dist/BASELINE
+      - uses: actions/upload-artifact@v7
+        with:
+          name: robigo-base
+          path: dist
+          retention-days: 7
+
   # The conservative stack scan's tests depend on frame layout, which
   # differs between profiles: the test job runs them under `quick`, this job
   # under the profile that ships (docs/ledger/core.md 2026-11-11). A job of
@@ -461,6 +565,7 @@ jobs:
 
   bytecode-fidelity:
     needs: select
+    if: ${{ needs.select.outputs.stacked != 'true' }}
     runs-on: ubuntu-24.04
     container:
       image: ${{ needs.select.outputs.image_rust }}
@@ -781,7 +886,7 @@ jobs:
           if-no-files-found: ignore
 
   perf:
-    needs: [select, build]
+    needs: [select, build, perf-base]
     if: ${{ !cancelled() && !failure() && needs.select.outputs.heavy == 'true' }}
     runs-on: ubuntu-24.04
     container:
@@ -789,8 +894,9 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    # perf-baseline.py may wait 50 minutes for main's run, then this measures
-    timeout-minutes: 110
+    # the base and the candidate, each a filtered run (all of them on main),
+    # and on a cache miss GNU R too
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
         with:
@@ -815,20 +921,55 @@ jobs:
         run: |
           python3 scripts/test-callgrind-diff.py
           python3 scripts/test-perf-select.py
+          python3 scripts/test-perf-gnur.py
           python3 scripts/test-history.py
           python3 scripts/perf-select.py --github-output | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Fetch baseline from main
-        if: github.ref != 'refs/heads/main' && steps.select.outputs.run == 'true'
+      # The base, HEAD^1, built by perf-base and measured here, on this
+      # runner, with the same filter as the candidate below: the comparison
+      # never mixes runners and never waits for main's run. It sits at
+      # base/robigo, a path as long as dist/robigo's: robigo's counts move
+      # with the length of its own path (by up to 0.16%,
+      # docs/ledger/g3/2026-11-18-perf-base.md).
+      - uses: actions/download-artifact@v8
+        if: github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
+        with:
+          name: robigo-base
+          path: base
+      # GNU R's records (its answers, and its counts for the ratio) for this
+      # CPU signature: main's run saves them (below); a pull request measures
+      # GNU R itself when they are missing or do not cover its selection.
+      - name: GNU R's records' cache key
+        id: gnur
         env:
-          GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ needs.select.outputs.image_base }}
         run: |
-          # The PR's merge commit is built on main's commit HEAD^1 (its first
-          # parent, read from the commit object, which the shallow checkout
-          # has): compare with that commit's numbers, not with whichever main
-          # run finished last (main may have moved since, or that commit's
-          # run may still be going: perf-baseline.py waits for it).
-          base=$(git -c safe.directory='*' cat-file -p HEAD | awk '/^parent /{print $2; exit}')
-          python3 scripts/perf-baseline.py "$base" base --binary | tee -a "$GITHUB_STEP_SUMMARY"
+          sig=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import perf; print(perf.cpu_signature()[1])')
+          pkgs=$(dpkg-query -W -f '${Package}=${Version} ' libc6 valgrind 2> /dev/null || true)
+          image=$(printf '%s' "$IMAGE" | sha256sum | cut -c1-16)
+          echo "key=perf-gnur-1-$image-$sig-$(printf '%s' "$pkgs" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v6
+        if: github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
+        with:
+          path: gnur.json
+          key: ${{ steps.gnur.outputs.key }}-${{ hashFiles('benchmarks/**', 'scripts/perf.py') }}
+      - name: Measure the base (HEAD^1)
+        if: github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
+        env:
+          PERF_FILTER: ${{ steps.select.outputs.filter }}
+        run: |
+          chmod +x base/robigo
+          echo "baseline: $(cat base/BASELINE), built from the merge's base and measured on this runner" | tee -a "$GITHUB_STEP_SUMMARY"
+          export ROBIGO_NATIVES="$PWD/base/natives"
+          export ROBIGO_RDBFLAT=""
+          export VALGRIND=valgrind
+          filter_flag=()
+          if [ -n "$PERF_FILTER" ]; then filter_flag=(--filter "$PERF_FILTER"); fi
+          # every selected benchmark gets a GNU R record first: the cache's
+          # (main's, failures included), else measured here (and a failure
+          # once more), so the base and the candidate are both judged
+          python3 scripts/perf-gnur.py fill gnur.json "$PERF_FILTER" | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 scripts/perf.py run --metric instr --runtime robigo --oracle gnur.json \
+            --robigo base/robigo --jobs "$(nproc)" --out base/perf.json --quiet "${filter_flag[@]}"
       - name: Measure robigo (and GNU R on main)
         if: steps.select.outputs.run == 'true'
         env:
@@ -861,11 +1002,10 @@ jobs:
           export VALGRIND=valgrind
           python3 scripts/perf-paired.py --diagnostic-only --robigo dist/robigo --rdbflat dist/rdbflat | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Compare with main
-        if: github.ref != 'refs/heads/main' && steps.select.outputs.run == 'true'
+        if: github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
         run: |
           export ROBIGO_NATIVES="$PWD/dist/natives"
           export ROBIGO_RDBFLAT=""
-          if [ ! -f base/perf.json ]; then exit 0; fi
           python3 - <<'PY'
           import json
           # Ensure GNU R's counts and outputs come from baseline if not already attached.
@@ -884,13 +1024,20 @@ jobs:
           # measurements and profiles; the 0.5% threshold is unchanged.
           python3 scripts/test-perf-paired.py
           python3 scripts/perf-paired.py base/perf.json perf.json \
-            --base-robigo base/binary/robigo --robigo dist/robigo \
+            --base-robigo base/robigo --robigo dist/robigo \
             --rdbflat dist/rdbflat | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Report
         if: github.ref == 'refs/heads/main'
-        run: python3 scripts/perf.py report perf.json --markdown >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          python3 scripts/perf.py report perf.json --markdown >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/perf-gnur.py extract perf.json gnur.json
+      - uses: actions/cache/save@v6
+        if: github.ref == 'refs/heads/main' && steps.select.outputs.run == 'true'
+        with:
+          path: gnur.json
+          key: ${{ steps.gnur.outputs.key }}-${{ hashFiles('benchmarks/**', 'scripts/perf.py') }}
       - uses: actions/upload-artifact@v7
-        if: always() && github.ref != 'refs/heads/main' && steps.select.outputs.run == 'true'
+        if: always() && github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
         with:
           name: perf-paired-profiles
           path: .robigo/perf-paired
@@ -911,7 +1058,7 @@ jobs:
   # bar may mix CPUs (docs/ledger/g3/2026-11-16-a2-perf-rt-policy.md).
   perf-rt-build:
     needs: select
-    if: ${{ needs.select.outputs.rt == 'true' }}
+    if: ${{ needs.select.outputs.rt == 'true' && needs.select.outputs.stacked != 'true' }}
     runs-on: ubuntu-24.04
     container:
       image: ${{ needs.select.outputs.image_rust }}
@@ -963,7 +1110,7 @@ jobs:
   # on (docs/ledger/g3/2026-11-16-cycles-study.md).
   perf-rt:
     needs: [select, perf-rt-build]
-    if: ${{ needs.select.outputs.rt == 'true' }}
+    if: ${{ needs.select.outputs.rt == 'true' && needs.select.outputs.stacked != 'true' }}
     runs-on: ubuntu-24.04
     container:
       image: ${{ needs.select.outputs.image_oracle_4_6_2 }}
@@ -1063,7 +1210,7 @@ jobs:
   # with a build step wait for robigo-rt's natives.
   rt-corpora:
     needs: [select, perf-rt-build]
-    if: ${{ needs.select.outputs.rt == 'true' }}
+    if: ${{ needs.select.outputs.rt == 'true' && needs.select.outputs.stacked != 'true' }}
     runs-on: ubuntu-24.04
     container:
       image: ${{ needs.select.outputs.image_rust }}
@@ -1115,11 +1262,13 @@ jobs:
   # new gating job to `needs`. It passes when each job passed, or was skipped
   # because `select` said so; a failed, cancelled or unexplained skip fails
   # it. `always()`: a skipped required check counts as passing, so a
-  # cancelled run must still report a failure here.
+  # cancelled run must still report a failure here. (A superseded run's
+  # `Check` waits for a runner and is red on a commit nobody merges; it
+  # blocks nothing, since pull request runs share no concurrency group.)
   check:
     name: Check
     if: ${{ always() }}
-    needs: [select, lint, miri, rdb-data, rt, base-subset, build, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
+    needs: [select, lint, miri, rdb-data, rt, base-subset, build, perf-base, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
