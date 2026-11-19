@@ -1,0 +1,14 @@
+0 arguments passed to .Internal(ngettext) which requires 4 
+3 arguments passed to .Internal(ngettext) which requires 4 
+5 arguments passed to .Internal(ngettext) which requires 4 
+3 arguments passed to .Internal(ngettext) which requires 4 
+0 arguments passed to .Internal(make.names) which requires 2 
+1 argument passed to .Internal(make.names) which requires 2 
+3 arguments passed to .Internal(make.names) which requires 2 
+0 arguments passed to .Internal(make.unique) which requires 2 
+1 argument passed to .Internal(make.unique) which requires 2 
+0 arguments passed to .Internal(tolower) which requires 1 
+2 arguments passed to .Internal(toupper) which requires 1 
+0 arguments passed to .Internal(chartr) which requires 3 
+2 arguments passed to .Internal(chartr) which requires 3 
+4 arguments passed to .Internal(chartr) which requires 3 

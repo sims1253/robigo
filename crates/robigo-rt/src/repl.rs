@@ -91,13 +91,22 @@ pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
                 }
             }
             let text = robigo_syntax::lexable(&iob);
-            let source = robigo_syntax::Source::new(&text, &iob);
+            // known_to_be_utf8: the session's (mkString2's UTF-8 mark)
+            let source = robigo_syntax::Source::new(&text, &iob).known_to_be_utf8(cx.locale().utf8);
             let status = robigo_syntax::parse_console(&arena, source);
             incomplete = false;
             // PARSE_NULL, PARSE_OK and PARSE_ERROR start a new statement
             prompt_type = 1;
             let ok = match status {
-                robigo_syntax::ConsoleStatus::Null => true,
+                robigo_syntax::ConsoleStatus::Null => {
+                    // (white space GNU R's C-locale lexer does not skip)
+                    if crate::reader::non_ascii_refused(cx, &iob) {
+                        error_at_top(cx, crate::reader::NON_ASCII_REFUSED);
+                        false
+                    } else {
+                        true
+                    }
+                }
                 // the parser may not have seen all of the input (PR#15941):
                 // read on, as for an incomplete statement
                 robigo_syntax::ConsoleStatus::Eof => {
@@ -105,28 +114,42 @@ pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
                     continue;
                 }
                 robigo_syntax::ConsoleStatus::Incomplete(warnings) => {
+                    // the trial parse's warnings, raised at the top level
+                    // and printed before the next line is read
                     if !warnings.is_empty() {
-                        return parse_warnings_unsupported(cx);
+                        if !parse_warnings(cx, &warnings) {
+                            drop(text);
+                            iob.clear();
+                            if !check_session_exit(cx) {
+                                return false;
+                            }
+                            incomplete = false;
+                            prompt_type = 1;
+                            break;
+                        }
+                        print_warnings(cx);
                     }
                     incomplete = true;
                     prompt_type = 2;
                     continue;
                 }
                 robigo_syntax::ConsoleStatus::Error(e, warnings) => {
-                    if !warnings.is_empty() {
-                        return parse_warnings_unsupported(cx);
-                    }
                     // R: source.c:parseError, `error("%s", msg)` with no
-                    // call at the top level
+                    // call at the top level, after the warnings of the
+                    // tokens lexed up to the error ("In addition:")
                     let msg = parse_error_message(source, &e);
-                    error_at_top(cx, &msg);
+                    error_at_top_after(cx, &warnings, &msg);
                     false
                 }
                 robigo_syntax::ConsoleStatus::Ok(exprs, warnings) => {
-                    if !warnings.is_empty() {
-                        return parse_warnings_unsupported(cx);
+                    // (a non-ASCII statement GNU R's C-locale lexer refuses: a
+                    // parse error, after the warnings of what it lexed)
+                    if crate::reader::non_ascii_refused(cx, &iob) {
+                        error_at_top_after(cx, &warnings, crate::reader::NON_ASCII_REFUSED);
+                        false
+                    } else {
+                        eval_statement(cx, &exprs[0], &warnings, savestack)
                     }
-                    eval_statement(cx, &exprs[0], savestack)
                 }
             };
             drop(text);
@@ -208,11 +231,20 @@ fn console_at_end(cx: &mut Cx) -> bool {
 /// calling handlers among them.
 // R: errors.c:jump_to_top_ex, context.c:R_restore_globals
 fn error_at_top(cx: &mut Cx, msg: &str) {
+    error_at_top_after(cx, &[], msg)
+}
+
+/// [`error_at_top`] after the lexer's `warnings`, raised at the top level
+/// first ([`parse_warnings`]), so that the error report prints them.
+fn error_at_top_after(cx: &mut Cx, warnings: &[String], msg: &str) {
     cx.scope(|cx, s| {
         let g = s.root(cx, cx.global_env());
         let base = s.root(cx, cx.base_env());
         let landed = cx
-            .repl_toplevel(g, base, |cx| Err(cx.error_call(None, msg)))
+            .repl_toplevel(g, base, |cx| {
+                warnings.iter().try_for_each(|w| cx.warning(w))?;
+                Err(cx.error_call(None, msg))
+            })
             .expect("robigo: an exit that passed the top level");
         debug_assert!(!landed, "robigo: an error that returned");
     })
@@ -314,11 +346,18 @@ fn prompt_string(cx: &mut Cx, prompt_type: i32) -> RResult<Vec<u8>> {
     })
 }
 
-/// The lexer's warnings (signalled as R warnings by GNU R's parse) need
-/// the condition system to be raised at the top level.
-fn parse_warnings_unsupported(cx: &Cx) -> bool {
-    cx.reprintf(b"Error: robigo: the parser's warnings at the top level are not implemented yet\n");
-    false
+/// The lexer's warnings, raised as the parser raises them, `warning()` at
+/// the top level (R_Toplevel: no call); collected for `PrintWarnings`,
+/// or printed or made an error as `options(warn)` says. False when one
+/// became an error (reported at the top).
+// R: gram.y:NumericValue, mkString2 (warning), errors.c:warning
+fn parse_warnings(cx: &mut Cx, warnings: &[String]) -> bool {
+    cx.scope(|cx, s| {
+        let g = s.root(cx, cx.global_env());
+        let base = s.root(cx, cx.base_env());
+        cx.repl_toplevel(g, base, |cx| warnings.iter().try_for_each(|w| cx.warning(w)))
+            .expect("robigo: an exit that passed the top level")
+    })
 }
 
 /// A parse error as the console reports it (`parseError(R_NilValue, 0)`).
@@ -346,9 +385,9 @@ fn parse_error_message(src: robigo_syntax::Source<'_>, e: &robigo_syntax::ParseE
 /// environment at the top level, set `.Last.value`, print a visible value,
 /// then the deferred warnings. False when an error ended the statement.
 // R: main.c:Rf_ReplIteration
-fn eval_statement(cx: &mut Cx, expr: &robigo_syntax::Expr<'_>, savestack: i32) -> bool {
+fn eval_statement(cx: &mut Cx, expr: &robigo_syntax::Expr<'_>, warnings: &[String], savestack: i32) -> bool {
     // under PROTECT(thisExpr), then PROTECT(value) for the print
-    crate::base::repl_eval_toplevel(cx, expr, |cx| cx.global_env(), savestack, (1, 2)).is_ok()
+    crate::base::repl_eval_toplevel(cx, expr, warnings, |cx| cx.global_env(), savestack, (1, 2)).is_ok()
 }
 
 /// `R_dot_Last()`, which `R_CleanUp` runs when a session ends normally

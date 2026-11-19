@@ -1,0 +1,51 @@
+ok
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): 'fmt' is not a character vector>
+<simpleError in radixsort(): NA in coercion to boolean>
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): invalid 'na.last' value>
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): invalid 'na.rm' value>
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): invalid 'na.rm' value>
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+ok
+<simpleError in radixsort(TRUE): NA in coercion to boolean>
+<simpleError in radixsort(TRUE, FALSE): NA in coercion to boolean>
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): 'decreasing' must be TRUE or FALSE>
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): no arguments>
+<simpleError in radixsort(TRUE, FALSE, TRUE): NA in coercion to boolean>
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): 0 arguments passed to .Internal(dyn.load) which requires 4>
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): 1 argument passed to .Internal(dyn.load) which requires 4>
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): 0 arguments passed to .Internal(paste0) which requires 3>
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): 4 arguments passed to .Internal(paste0) which requires 3>
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): 1 argument passed to 'nchar' which requires 3 to 4>
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): 5 arguments passed to 'nchar' which requires 3 to 4>
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): 0 arguments passed to .Internal(Sys.getenv) which requires 2>
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): 1 arguments passed to .Internal(identical) which requires 8>
+<simpleError in gettext(NULL): either 2 or 3 arguments are required>
+<simpleError in gettext(NULL, "a", TRUE, 4): either 2 or 3 arguments are required>
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): 1 argument passed to .Internal(Version) which requires 0>
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): 1 argument passed to .Internal(R.home) which requires 0>
+[1] TRUE
+[1] FALSE
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): 1 argument passed to .Internal(is.unsorted) which requires 3>
+[1] FALSE  TRUE
+[1]  TRUE FALSE
+[1] 42
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): 1 argument passed to .Internal(as.vector) which requires 2>
+[1] "a-b"
+[1] "ab"
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): 1 argument passed to .Internal(paste0) which requires 3>
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): 2 arguments passed to .Internal(paste) which requires 4>
+<simpleError in radixsort(): NA in coercion to boolean>
+<simpleError in radixsort(): NA in coercion to boolean>
+<simpleError in radixsort(): NA in coercion to boolean>
+<simpleError in g2(): 0 arguments passed to .Internal(dyn.load) which requires 4>
+<simpleError in g2(): 0 arguments passed to .Internal(dyn.load) which requires 4>
+<simpleError in g2(): 0 arguments passed to .Internal(dyn.load) which requires 4>
+[1] 36
+<simpleError in g(): 0 arguments passed to .Internal(paste0) which requires 3>

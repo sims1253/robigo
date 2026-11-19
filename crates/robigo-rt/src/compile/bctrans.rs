@@ -1424,8 +1424,13 @@ impl<'g> Comp<'g> {
                 if let Some(e) = unsafe { t.expr_at(self.cx, i.at) }
                     && e != call
                 {
-                    let at = self.ins.len() - 1;
-                    self.ins[at].g = self.k(e);
+                    let ke = self.k(e);
+                    if internal {
+                        self.set_internal_site(ke);
+                    } else {
+                        let at = self.ins.len() - 1;
+                        self.ins[at].g = ke;
+                    }
                 }
                 self.push_at(t, f.dst, starts);
             }
@@ -2317,6 +2322,18 @@ impl<'g> Comp<'g> {
             // through CALL)
             self.bc_untranslated = Some("byte code calling a builtin with '...' or a missing argument".to_owned());
             return Err(Need::Fail);
+        }
+        // SAFETY: `prim` is a live primitive of this isolate (the frame's).
+        let off = unsafe { crate::prims::offset(prim) };
+        if internal && !crate::call::internal_arity_ok(&self.st.defs[off], n) {
+            // an .Internal of the wrong count: the VM's register call does
+            // not check it, so the arguments (evaluated above, as GNU R's
+            // frame holds them) are followed by checkArity's error, against
+            // the context as for every .Internal (Rf_checkArityCall's error())
+            // R: util.c:Rf_checkArityCall
+            let def = &self.st.defs[off];
+            let msg = crate::prims::arity_message(n, def.name, def.arity as usize, true);
+            return self.error_op(call, &msg, false);
         }
         let named = f.args.iter().any(|a| a.tag.is_some());
         if named {

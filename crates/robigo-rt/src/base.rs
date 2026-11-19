@@ -723,17 +723,51 @@ fn not_yet_primitive(cx: &mut Cx, call: Root<'_>, _: Args<'_>, _: Root<'_>, _: O
 }
 
 /// A special primitive of the bound that robigo-rt does not implement yet.
-fn not_yet_primitive_special(cx: &mut Cx, call: Root<'_>, _: Root<'_>, _: Root<'_>, out: Out<'_>) -> RResult<()> {
+fn not_yet_primitive_special(cx: &mut Cx, call: Root<'_>, _: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
     let _ = out;
+    eval_stub_args(cx, call, rho)?;
     let msg = format!("robigo: the primitive '{}' is not implemented yet", called_name(cx, call));
     Err(cx.error_call(Some(call), &msg))
 }
 
 /// A special `.Internal` of the bound that robigo-rt does not implement yet.
-fn not_yet_internal_special(cx: &mut Cx, call: Root<'_>, _: Root<'_>, _: Root<'_>, out: Out<'_>) -> RResult<()> {
+fn not_yet_internal_special(cx: &mut Cx, call: Root<'_>, _: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
     let _ = out;
+    eval_stub_args(cx, call, rho)?;
     let msg = format!("robigo: .Internal({}()) is not implemented yet", called_name(cx, call));
     Err(cx.error_call(Some(call), &msg))
+}
+
+/// Evaluate a special stub's argument expressions in `rho`, in order,
+/// discarding the values: a missing or unbound argument reports GNU R's
+/// error before the stub's not-implemented refusal. A special's stub
+/// cannot know which arguments its implementation would force, so it
+/// forces all but `...` (expanded by the callee, never forced here);
+/// argument evaluation may run arbitrary code, as reaching any error
+/// below already may. This is what the stubs did before they had
+/// names.c's kind (as builtins their arguments arrived evaluated), and
+/// what the recorded cases expect (`eapply` with its `env` missing
+/// errors that way instead of reporting the unported internal).
+///
+/// The walk keeps every not-yet-evaluated expression rooted: `eval` may
+/// collect (including under the moving debug collector), so no raw
+/// `Sexp` is held across a call.
+fn eval_stub_args(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RResult<()> {
+    let dots = crate::prims::state(cx).syms.dots;
+    cx.scope(|cx, s| {
+        let nil = cx.nil();
+        let mut a = s.root(cx, call.bind(cx).as_cons().map_or(nil, |c| c.cdr()));
+        while let Some(cell) = a.bind(cx).as_cons() {
+            let e = s.root(cx, cell.car());
+            let next = s.root(cx, cell.cdr());
+            if e.bind(cx).sexp() != dots {
+                let o = s.out(cx);
+                cx.eval(e, rho, o)?;
+            }
+            a = next;
+        }
+        Ok(())
+    })
 }
 
 /// An `.Internal` of the bound that robigo-rt does not implement yet.
@@ -852,7 +886,7 @@ pub fn repl_file(cx: &mut Cx, path: &Path, st: &mut Stage0) -> Result<(), String
     for e in &exprs {
         st.exprs += 1;
         // under PROTECT(R_CurrentExpr), unprotected before the print
-        let r = repl_eval_toplevel(cx, e, |cx| cx.base_namespace(), savestack, (1, 0));
+        let r = repl_eval_toplevel(cx, e, &[], |cx| cx.base_namespace(), savestack, (1, 0));
         if let Err(m) = r {
             let line = robigo_syntax::line_col(&text, e.span().start as usize).0;
             let m = m.unwrap_or_else(|| "lowering failed".into());
@@ -866,7 +900,8 @@ pub fn repl_file(cx: &mut Cx, path: &Path, st: &mut Stage0) -> Result<(), String
 /// parsed top-level expression: `R_PPStackTop = savestack`, then at the top
 /// level `R_Visible = FALSE`, `eval(expr, rho)`, `.Last.value`, the value
 /// printed by `PrintValueEnv(value, rho)` if visible, then the deferred
-/// warnings (`PrintWarnings`). `pp` is the protections GNU R's loop holds
+/// warnings (`PrintWarnings`). `warnings` are the parse's (the lexer's),
+/// raised first. `pp` is the protections GNU R's loop holds
 /// during the evaluation and during the print (robigo-rtcore's ppacct).
 /// The error, if one ended it, comes back as its report's text (written
 /// where it was raised); a failure to lower the expression as `None`.
@@ -874,6 +909,7 @@ pub fn repl_file(cx: &mut Cx, path: &Path, st: &mut Stage0) -> Result<(), String
 pub(crate) fn repl_eval_toplevel(
     cx: &mut Cx,
     expr: &robigo_syntax::Expr<'_>,
+    warnings: &[String],
     rho: for<'g> fn(&'g Cx) -> Ref<'g>,
     savestack: i32,
     pp: (i32, i32),
@@ -896,7 +932,13 @@ pub(crate) fn repl_eval_toplevel(
         let done = cx
             .repl_toplevel(g, base, |cx| {
                 // the parse's objects are made at the top level
-                // (R_Parse1Buffer, R_Parse1File), so an error there lands on it
+                // (R_Parse1Buffer, R_Parse1File), so an error there lands on it;
+                // so are the lexer's warnings (`warning()`, no call), which
+                // print with the statement's own
+                if let Err(err) = warnings.iter().try_for_each(|w| cx.warning(w)) {
+                    msg = Some(crate::repl::error_text(cx, &err));
+                    return Err(err);
+                }
                 if let Err(err) = crate::reader::lower_one(cx, expr, e) {
                     lowered = false;
                     return Err(err);

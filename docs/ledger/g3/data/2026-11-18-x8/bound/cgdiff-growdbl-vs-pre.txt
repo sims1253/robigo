@@ -1,0 +1,16 @@
+total 7318581446 7994308856
+ 333,454,515             0   333,454,515 robigo_rtbuiltins::subassign::enlarge_vector
+  77,000,000             0    77,000,000 robigo_rtbuiltins::subscript::integer_subscript
+  36,998,568             0    36,998,568 <robigo_rtcore::isolate::Capability<[()]>>::grow_in_place
+  33,007,484    66,606,914    99,614,398 free
+  30,001,824    56,304,923    86,306,747 malloc
+  26,999,958   212,000,000   238,999,958 robigo_rtbuiltins::subassign::vector_assign::{closure#1}
+  23,513,514   130,008,558   153,522,072  &Self) -> bool { *self <  *other }
+  22,513,972    92,119,026   114,632,998 :write_via_move(dst, src)
+  10,000,000             0    10,000,000  &mut Cx, x: Root<'_>, newlen: usize) -> RResult<()> {
+  10,000,000             0    10,000,000  &[i32], nx: usize, stretch: &mut usize) -> Result<Vec<i64>, IntErr> {
+   9,000,000    86,000,000    95,000,000 robigo_rtbuiltins::subassign::subassign_type_fix
+   9,000,000   125,000,000   134,000,000 robigo_rtbuiltins::subscript::make_subscript
+   8,014,063   209,027,872   217,041,935 :intrinsics::read_via_copy(src)
+   8,001,399    66,033,379    74,034,778 :intrinsics::write_via_move(dest, src);
+   7,021,504    61,007,699    68,029,203 :OFF_TYPE) }

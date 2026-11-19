@@ -155,8 +155,12 @@ static RT_PRIMS: &[PrimDef] = &[
     special_fn("@", crate::specials::do_at, 0, 2),
     special_fn("@<-", crate::specials::do_slot_gets, 0, 3),
     // eval.c
+    special_fn("Recall", crate::eval::do_recall, 210, -1),
     special_fn("withVisible", crate::eval::do_with_visible, 10, 1),
     special_fn("forceAndCall", crate::apply::do_force_and_call, 0, -1),
+    // bind.c: special .Internals (names.c eval 10)
+    special_fn("cbind", crate::bind::do_bind::<true>, 10, -1),
+    special_fn("rbind", crate::bind::do_bind::<false>, 10, -1),
     // arithmetic.c
     special_fn("log", crate::specials::do_log, 0, -1),
     // objects.c (S1)
@@ -189,6 +193,7 @@ static RT_PRIMS: &[PrimDef] = &[
     // print.c, deparse.c, builtin.c, connections.c (B3)
     builtin("invisible", crate::builtin::do_invisible, Inline::None, 101, 1),
     builtin("print.default", crate::print::do_printdefault, Inline::None, 111, 3),
+    builtin("prmatrix", crate::print::do_prmatrix, Inline::None, 111, 6),
     builtin("deparse", crate::builtin::do_deparse, Inline::None, 11, 5),
     builtin("dput", crate::builtin::do_dput, Inline::None, 111, 3),
     builtin("enableJIT", crate::jit::do_enablejit, Inline::None, 11, 1),
@@ -207,6 +212,13 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("gctorture", crate::memory::do_gctorture, Inline::None, 111, 1),
     // names.c: {"mem.maxVSize", do_maxVSize, 0, 11, 1, ...}
     builtin("mem.maxVSize", crate::memory::do_max_vsize, Inline::None, 11, 1),
+    // names.c: gc.time (a primitive), gcinfo, gctorture2, memory.profile,
+    // mem.maxNSize
+    builtin("gc.time", crate::memory::do_gctime, Inline::None, 1, -1),
+    builtin("gcinfo", crate::memory::do_gcinfo, Inline::None, 11, 1),
+    builtin("gctorture2", crate::memory::do_gctorture2, Inline::None, 11, 3),
+    builtin("memory.profile", crate::memory::do_memoryprofile, Inline::None, 11, 0),
+    builtin("mem.maxNSize", crate::memory::do_max_nsize, Inline::None, 11, 1),
     builtin("eval", crate::eval::do_eval, Inline::None, 211, 3),
     // names.c: {"returnValue", do_returnValue, 0, 11, 1, ...}
     builtin("returnValue", crate::eval::do_return_value, Inline::None, 11, 1),
@@ -251,6 +263,9 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("stdin", crate::builtin::do_stdin, Inline::None, 11, 0),
     builtin("writeLines", crate::connections::do_writelines, Inline::None, 111, 4),
     builtin("readLines", crate::connections::readers::do_readlines, Inline::None, 11, 6),
+    builtin("readDCF", crate::connections::readers::do_readdcf, Inline::None, 11, 3),
+    builtin("scan", crate::connections::scan::do_scan, Inline::None, 11, 19),
+    builtin("textConnection", crate::connections::readers::do_textconnection, Inline::None, 11, 5),
     builtin("isOpen", crate::connections::readers::do_isopen, Inline::None, 11, 2),
     builtin("isIncomplete", crate::connections::readers::do_isincomplete, Inline::None, 11, 1),
     builtin("pushBack", crate::connections::readers::do_pushback, Inline::None, 111, 4),
@@ -266,14 +281,24 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin(".isMethodsDispatchOn", crate::specials::do_s4on, Inline::None, 1, -1),
     builtin("R.home", crate::platform::do_rhome, Inline::None, 11, 0),
     builtin("dir.exists", crate::platform::do_direxists, Inline::None, 11, 1),
+    builtin("dir.create", crate::platform::do_dircreate, Inline::None, 111, 4),
     builtin("getwd", crate::util::do_getwd, Inline::None, 11, 0),
     builtin("basename", crate::util::do_basename, Inline::None, 11, 1),
     builtin("dirname", crate::util::do_dirname, Inline::None, 11, 1),
     builtin("normalizePath", crate::util::do_normalizepath, Inline::None, 11, 3),
     builtin("file.exists", crate::platform::do_fileexists, Inline::None, 11, 1),
     builtin("list.files", crate::platform::do_listfiles, Inline::None, 11, 9),
+    builtin("file.create", crate::platform::do_filecreate, Inline::None, 11, 2),
+    builtin("file.append", crate::platform::do_fileappend, Inline::None, 11, 2),
+    builtin("file.info", crate::platform::do_fileinfo, Inline::None, 11, 2),
+    builtin("Sys.chmod", crate::platform::do_syschmod, Inline::None, 111, 3),
+    builtin("path.expand", crate::platform::do_pathexpand, Inline::None, 11, 1),
     builtin("parent.env<-", crate::builtin::do_parentenvgets, Inline::None, 11, 2),
     builtin("pos.to.env", crate::builtin::do_pos2env, Inline::None, 1, 1),
+    // paste.c, util.c: format, format.info, formatC
+    builtin("format", crate::format::do_format, Inline::None, 11, 9),
+    builtin("format.info", crate::format::do_formatinfo, Inline::None, 11, 3),
+    builtin("formatC", crate::format::do_formatc, Inline::None, 11, 7),
 ];
 
 /// How the VM runs B1's builtin `name` inline, if it does.
