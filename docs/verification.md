@@ -742,8 +742,21 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    new case changes it only where it reaches a new name; for the same
    reason the committed files carry no counts, which the generator prints
    to the log, so two pull requests that each add a name merge to the file
-   the generator makes, or conflict where they add next to each other); the
-   modes of `docs/g3.md` §16 add steps here.
+   the generator makes, or conflict where they add next to each other). It
+   fails for one of two reasons, and says which:
+   - **a stale list:** the inputs now reach other names
+     (scripts/base-subset-stale.py lists those gained, with the inputs that
+     reach them, and those lost). Run `scripts/base-subset.sh` and commit
+     the three `proto/base-*.txt` files. `scripts/regen-expected.sh` warns
+     when it records a case that is such an input
+     (`Rscript scripts/base-subset.R --inputs` lists them);
+   - **a traced run that differs from the untraced one:** the case prints
+     something the tracer changes. Regenerating cannot fix that: change the
+     case, or leave it out of the inputs. The message names the first line
+     that differs.
+
+   The artifact keeps the full diffs and the two transcripts. The modes of
+   `docs/g3.md` §16 add steps here.
 3. **build:** release build, base-package natives, the binary the heavy
    jobs use; the ratchet markers, the parse-corpus ratchet and the builtin
    coverage baseline (`scripts/builtin-coverage.py --check`) are checked
