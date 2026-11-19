@@ -287,6 +287,11 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("normalizePath", crate::util::do_normalizepath, Inline::None, 11, 3),
     builtin("file.exists", crate::platform::do_fileexists, Inline::None, 11, 1),
     builtin("list.files", crate::platform::do_listfiles, Inline::None, 11, 9),
+    builtin("file.create", crate::platform::do_filecreate, Inline::None, 11, 2),
+    builtin("file.append", crate::platform::do_fileappend, Inline::None, 11, 2),
+    builtin("file.info", crate::platform::do_fileinfo, Inline::None, 11, 2),
+    builtin("Sys.chmod", crate::platform::do_syschmod, Inline::None, 111, 3),
+    builtin("path.expand", crate::platform::do_pathexpand, Inline::None, 11, 1),
     builtin("parent.env<-", crate::builtin::do_parentenvgets, Inline::None, 11, 2),
     builtin("pos.to.env", crate::builtin::do_pos2env, Inline::None, 1, 1),
 ];

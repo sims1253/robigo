@@ -349,6 +349,7 @@ pub static BUILTINS: &[Builtin] = &[
     op!("duplicated", 0, unique::do_duplicated, 11, 4, FUNCALL, Pure),
     op!("unique", 1, unique::do_duplicated, 11, 4, FUNCALL, Pure),
     op!("anyDuplicated", 2, unique::do_duplicated, 11, 3, FUNCALL, Pure),
+    row("make.unique", unique::do_make_unique, 0, 11, 2, FUNCALL, Pure),
     row("pmatch", unique::do_pmatch, 0, 11, 4, FUNCALL, Pure),
     row("match.call", unique::do_matchcall, 0, 11, 4, FUNCALL, Env),
     row("identical", identical::do_identical, 0, 11, 8, FUNCALL, Pure),
@@ -360,6 +361,8 @@ pub static BUILTINS: &[Builtin] = &[
     row("bindtextdomain", errors::do_bindtextdomain, 0, 11, 2, FUNCALL, External),
     row("interactive", sysutils::do_interactive, 0, 1, 0, FUNCALL, Pure),
     row("Sys.getenv", sysutils::do_getenv, 0, 11, 2, FUNCALL, External),
+    row("Sys.setenv", sysutils::do_setenv, 0, 111, 2, FUNCALL, External),
+    row("Sys.unsetenv", sysutils::do_unsetenv, 0, 111, 1, FUNCALL, External),
     row("l10n_info", sysutils::do_l10n_info, 0, 11, 0, FUNCALL, Pure),
     // summary.c, logic.c, arithmetic.c
     op!("sum", 0, summary::do_summary, 1, -1, FUNCALL, Pure),
@@ -560,6 +563,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("regexec", grep::do_regexec, 1, 11, 5, FUNCALL, Pure),
     row("nzchar", character::do_nzchar, 1, 1, -1, FUNCALL, Pure),
     row("encodeString", character::do_encode_string, 1, 11, 5, FUNCALL, Pure),
+    row("strtoi", character::do_strtoi, 0, 11, 2, FUNCALL, Pure),
     // raw.c, util.c's encodings
     row("charToRaw", raw::do_char_to_raw, 1, 11, 1, FUNCALL, Pure),
     row("rawToChar", raw::do_raw_to_char, 1, 11, 2, FUNCALL, Pure),
@@ -574,6 +578,10 @@ pub static BUILTINS: &[Builtin] = &[
     row("sprintf", sprintf::do_sprintf, 1, 11, -1, FUNCALL, Pure),
     op!("startsWith", 0, character::do_starts_with, 11, 2, FUNCALL, Pure),
     op!("endsWith", 1, character::do_starts_with, 11, 2, FUNCALL, Pure),
+    row("make.names", character::do_make_names, 0, 11, 2, FUNCALL, Pure),
+    op!("tolower", 0, character::do_tolower, 11, 1, FUNCALL, Pure),
+    op!("toupper", 1, character::do_tolower, 11, 1, FUNCALL, Pure),
+    row("chartr", character::do_chartr, 1, 11, 3, FUNCALL, Pure),
     // version.c, paste.c's file.path
     row("Version", version::do_version, 0, 11, 0, FUNCALL, Pure),
     row("file.path", paste::do_filepath, 0, 11, 2, FUNCALL, Pure),
