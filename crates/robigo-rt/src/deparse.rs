@@ -699,7 +699,7 @@ impl<'g> State<'g> {
         // a package class's length and elements are its C methods' (M5), and
         // so are its names' or dimnames' when they are one
         if let Some(at) = crate::print::package_altrep_in(s) {
-            return Err(format!("robigo: deparse of a package ALTREP vector ({at}) is not implemented yet"));
+            return Err(format!("robigo: deparse of a package ALTREP vector ({at}) is not implemented yet").into());
         }
         match s.sexptype() {
             NILSXP => self.print(b"NULL"),
