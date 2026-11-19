@@ -828,8 +828,11 @@ pub(crate) fn match_builtin_args<'s>(
     let mut m = Matched::new(formals.len());
     // SAFETY: the formals are symbols and the actuals' tags symbols or nil.
     if let Err(e) = unsafe { match_args(formals, acts.as_slice(), nil, dots, &mut m) } {
-        let msg = match_message(cx, e, acts.as_slice());
-        return Err(cx.error_call(Some(call), &msg));
+        // the partial-match warnings made so far, then the error (unused
+        // arguments deparsed, as for a closure's call)
+        let mut ftags: Buf<Sexp> = Buf::new();
+        formals.iter().for_each(|&f| ftags.push(f));
+        return Err(match_error(cx, s, call, e, &acts, &m, &ftags));
     }
     // the values rooted before a warning can run code (and collect)
     let vals: Vec<Root<'s>> = (0..formals.len())
