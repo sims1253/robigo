@@ -1,0 +1,42 @@
+<0 x 0 matrix>
+     [,1] [,2] [,3]
+    
+[1,]
+[2,]
+     a b
+ 
+x
+y
+z
+      C
+R      x y z
+   C
+R  
+  a
+  b
+     [,1] [,2] [,3] [,4] [,5]
+[1,]    1    5    9   13   17
+ [ reached 'max' / getOption("max.print") -- omitted 3 rows ]
+     [,1] [,2] [,3] [,4]
+[1,]    1    5    9   13
+ [ reached 'max' / getOption("max.print") -- omitted 3 rows and 1 column ]
+     [,1] [,2]
+[1,]    1    5
+ [ reached 'max' / getOption("max.print") -- omitted 3 rows and 3 columns ]
+     [,1]
+[1,]    1
+ [ reached 'max' / getOption("max.print") -- omitted 3 rows and 4 columns ]
+     [,1] [,2]
+[1,]    1    2
+ [ reached 'max' / getOption("max.print") -- omitted 1 column ]
+    
+[1,]
+[2,]
+[3,]
+[4,]
+ [ reached 'max' / getOption("max.print") -- omitted 3 rows and 5 columns ]
+     [,1] [,2] [,3] [,4] [,5]
+[1,]    1    5    9   13   17
+ [ reached 'max' / getOption("max.print") -- omitted 3 rows ]
+     [,1] [,2] [,3] [,4]
+[1,] "a"  "b"  "c"  "d" 

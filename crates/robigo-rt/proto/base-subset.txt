@@ -51,6 +51,7 @@ closure Sys.getpid getenv.R
 closure Sys.setenv getenv.R
 closure Sys.unsetenv getenv.R
 closure [.factor factor.R
+closure activeBindingFunction bindenv.R
 closure alist formals.R
 closure anyDuplicated duplicated.R
 closure anyDuplicated.default duplicated.R
@@ -68,6 +69,7 @@ closure as.vector as.R
 closure asNamespace namespace.R
 closure assign assign.R
 closure basename files.R
+closure bindingIsActive bindenv.R
 closure bindingIsLocked bindenv.R
 closure bindtextdomain stop.R
 closure body formals.R
@@ -334,7 +336,9 @@ primitive class
 primitive class<-
 primitive cumsum
 primitive dim
+primitive dim<-
 primitive dimnames
+primitive dimnames<-
 primitive emptyenv
 primitive environment<-
 primitive exp
@@ -409,6 +413,7 @@ internal Sys.getenv
 internal Sys.getpid
 internal Sys.setenv
 internal Sys.unsetenv
+internal activeBindingFunction
 internal anyDuplicated
 internal args
 internal as.vector
@@ -418,6 +423,7 @@ internal attach
 internal basename
 internal bcClose
 internal bcVersion
+internal bindingIsActive
 internal bindingIsLocked
 internal bindtextdomain
 internal body
@@ -428,6 +434,8 @@ internal compareNumericVersion
 internal compilePKGS
 internal complex
 internal delayedAssign
+internal delayedBindingEnvironment
+internal delayedBindingExpression
 internal deparse
 internal detach
 internal dir.exists
@@ -449,6 +457,7 @@ internal file
 internal file.exists
 internal file.path
 internal file.remove
+internal forcedBindingExpression
 internal formals
 internal gc
 internal gctorture

@@ -22,7 +22,7 @@ use std::mem::MaybeUninit;
 /// `HAVE_POSIX_SETJMP`, `Defn.h`), set with `sigsetjmp(x, 0)`: a context's
 /// jump record. Opaque; only the trampolines write it. Its size and
 /// alignment are the platform's, asserted against C in `shim.c` and by
-/// `jmpbuf_is_the_c_librarys`.
+/// `jmpbuf_is_the_c_library_one`.
 #[repr(C)]
 pub struct JmpBuf([MaybeUninit<JmpWord>; JMPBUF_WORDS]);
 

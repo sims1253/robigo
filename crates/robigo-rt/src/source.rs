@@ -88,6 +88,13 @@ pub fn do_parse(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
             // takes past that is given back (a file's)
             let partial = wasopen && num != i32::MIN && num >= 0;
             let give_back = wasopen && crate::connections::is_file(cx, ifile)?;
+            // (the give-back seeks the file: input that did not come from it,
+            // a pushback, cannot be given back so)
+            if partial && crate::connections::has_pending_input(cx, ifile)? {
+                return Err(cx.error(
+                    "robigo: parse(n = ) from an open connection with pushed-back input is not implemented yet",
+                ));
+            }
             if partial && !crate::connections::is_file(cx, ifile)? {
                 return Err(
                     cx.error("robigo: parse(n = ) from an open connection that is not a file is not implemented yet")
@@ -206,6 +213,7 @@ fn parse_text(
     let (exprs, end) = match parsed {
         Ok(r) => r,
         Err(e) => {
+            crate::reader::check_non_ascii_locale(cx, src)?;
             if !e.incomplete {
                 let end = e.end.max(e.offset);
                 *consumed = end + read_ahead(src, e.offset.min(end), end);
@@ -220,8 +228,9 @@ fn parse_text(
             });
         }
     };
+    crate::reader::check_non_ascii_locale(cx, src)?;
     // the lexer's warnings up to the last expression's terminator
     *consumed = if num < 0 { src.len() } else { end };
     signal(cx, if num < 0 { usize::MAX } else { end.saturating_sub(1) })?;
-    crate::reader::lower_all(cx, &exprs, out)
+    crate::reader::lower_all(cx, &exprs, known_utf8, out)
 }

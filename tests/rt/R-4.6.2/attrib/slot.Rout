@@ -1,0 +1,55 @@
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): formal classes cannot be used without the 'methods' package>
+doTryCatch(return(expr), name, parentenv, handler)
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): formal classes cannot be used without the 'methods' package>
+doTryCatch(return(expr), name, parentenv, handler)
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): formal classes cannot be used without the 'methods' package>
+doTryCatch(return(expr), name, parentenv, handler)
+<simpleError in f(): formal classes cannot be used without the 'methods' package>
+f()
+[1] "slot bar character"
+[1] "slot baz character"
+[1] "slot qux character"
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): formal classes cannot be used without the 'methods' package>
+doTryCatch(return(expr), name, parentenv, handler)
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): formal classes cannot be used without the 'methods' package>
+doTryCatch(return(expr), name, parentenv, handler)
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): formal classes cannot be used without the 'methods' package>
+doTryCatch(return(expr), name, parentenv, handler)
+<simpleError in `@`(y, 1): invalid subscript type 'double'>
+`@`(y, 1)
+<simpleError in `@`(y, c("a", "b")): invalid subscript type 'language'>
+`@`(y, c("a", "b"))
+<simpleError in `@`(y, NULL): invalid subscript type 'NULL'>
+`@`(y, NULL)
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): formal classes cannot be used without the 'methods' package>
+doTryCatch(return(expr), name, parentenv, handler)
+<simpleError in eval(as.call(list(as.name("@"), y, c("a", "b")))): invalid subscript length>
+eval(as.call(list(as.name("@"), y, c("a", "b"))))
+<simpleError in `@`(y): 1 argument passed to '@' which requires 2>
+`@`(y)
+<simpleError in `@`(1, 2, 3): 3 arguments passed to '@' which requires 2>
+`@`(1, 2, 3)
+[1] "character 3"
+[1] "character 4"
+<simpleError in z@a <- 2: could not find function "initMethodDispatch">
+z@a <- 2
+<simpleError in initMethodDispatch(): could not find function "initMethodDispatch">
+initMethodDispatch()
+<simpleError in initMethodDispatch(): could not find function "initMethodDispatch">
+initMethodDispatch()
+<simpleError in initMethodDispatch(): could not find function "initMethodDispatch">
+initMethodDispatch()
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): invalid type 'double' for slot name>
+doTryCatch(return(expr), name, parentenv, handler)
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): invalid type 'language' for slot name>
+doTryCatch(return(expr), name, parentenv, handler)
+<simpleError in doTryCatch(return(expr), name, parentenv, handler): invalid type 'NULL' for slot name>
+doTryCatch(return(expr), name, parentenv, handler)
+<simpleError in eval(as.call(list(as.name("@<-"), quote(z), c("a", "b"), 2))): invalid slot name length>
+eval(as.call(list(as.name("@<-"), quote(z), c("a", "b"), 2)))
+<simpleError in eval(as.call(list(as.name("@<-"), quote(z), character(), 2))): invalid slot name length>
+eval(as.call(list(as.name("@<-"), quote(z), character(), 2)))
+<simpleError in `@<-`(z, a): 2 arguments passed to '@<-' which requires 3>
+`@<-`(z, a)
+<simpleError in `@<-`(z, a, 2, 3): 4 arguments passed to '@<-' which requires 3>
+`@<-`(z, a, 2, 3)

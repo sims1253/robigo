@@ -152,9 +152,10 @@ pub fn do_utf8_to_int(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_
 }
 
 /// `inttomb(s, wc)`: the UTF-8 bytes of `wc` (none for 0), in the
-/// original UTF-8's up-to-six-byte forms.
-// R: raw.c:inttomb
-fn inttomb(wc: i32, out: &mut Vec<u8>) {
+/// original UTF-8's up-to-six-byte forms. Also util.c's `Rwcrtomb32`
+/// (`wcrtomb` in a UTF-8 locale), the same algorithm.
+// R: raw.c:inttomb, util.c:Rwcrtomb32
+pub(crate) fn inttomb(wc: i32, out: &mut Vec<u8>) {
     const TABLE1: [u32; 6] = [0x7f, 0x7ff, 0xffff, 0x1fffff, 0x3ffffff, 0x7fffffff];
     const TABLE2: [u8; 6] = [0, 0xc0, 0xe0, 0xf0, 0xf8, 0xfc];
     let mut cvalue = wc as u32;
