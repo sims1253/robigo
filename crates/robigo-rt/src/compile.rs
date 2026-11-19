@@ -80,9 +80,7 @@ fn attempt_rounds(
                 })?;
                 cx.set_visible(vis);
             }
-            Err(Need::Gc(e)) if retried == Some(e) => {
-                return Err(cx.error_call(None, "robigo: no room to compile an expression"));
-            }
+            Err(Need::Gc(e)) if retried == Some(e) => return Err(cx.refused_again(e)),
             Err(Need::Gc(e)) => {
                 cx.need_gc(e)?;
                 retried = Some(e);

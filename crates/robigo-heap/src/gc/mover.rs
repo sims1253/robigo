@@ -346,7 +346,7 @@ impl Core {
             let b = (p.0 as usize & !(BLOCK - 1)) as *mut Block;
             let q = if (*b).magic == 0x524f4249474f4241 {
                 let size = SIZES[(*b).class as usize];
-                let q = self.heap.alloc(size);
+                let q = self.heap.alloc_or_abort(size);
                 std::ptr::copy_nonoverlapping(p.0, q, size);
                 self.mark_copy(q);
                 self.young.moved.small.push(p.0);
@@ -493,7 +493,7 @@ impl Core {
             unsafe {
                 let b = (p as usize & !(BLOCK - 1)) as *mut Block;
                 let size = SIZES[(*b).class as usize];
-                let q = self.heap.alloc(size);
+                let q = self.heap.alloc_or_abort(size);
                 std::ptr::copy_nonoverlapping(p, q, size);
                 *q.add(header::OFF_FLAGS) |= OLD;
                 self.mark_copy(q);

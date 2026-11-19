@@ -76,6 +76,7 @@ impl Cx {
             // the isolate's roots (`x` among them), under `&mut Cx`.
             unsafe { iso.core().alloc_rooted(t, n, iso.roots_mut()) }
         };
+        self.flush_gc_report();
         let copy = match copy {
             Ok(c) => c,
             Err(e) => return Err(self.error_call(None, &e.message())),
