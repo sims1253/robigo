@@ -1,0 +1,2 @@
+handler sees length(x) = 3 x = 1 2 3 
+after: 1 2 3 7 8 
