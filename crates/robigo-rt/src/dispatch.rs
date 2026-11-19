@@ -1933,7 +1933,7 @@ fn invoke_builtin(
     // SAFETY: a rooted primitive of this isolate.
     let def = *unsafe { prims::def(cx, op.bind(cx).sexp()) };
     let Kind::Builtin(f, _) = def.kind else { unreachable!("robigo: a special applied as a builtin") };
-    crate::call::materialize_args(cx, &def, args)?;
+    crate::call::enter_builtin(cx, &def, args)?;
     let flag = def.print();
     // a builtin may change what an argument expression evaluates to or
     // look at an argument: values computed early are dropped (crate::early)

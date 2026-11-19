@@ -104,8 +104,8 @@ pub const REG_APPROX_MATCHER: i32 = 4;
 pub const REG_BACKTRACKING_MATCHER: i32 = 8;
 
 pub use approx::{AMatch, AParams};
-/// glibc's `iswspace`, `towupper` and `towlower` in a locale.
-pub use ctype::{iswspace, tolower as towlower, toupper as towupper};
+/// glibc's `wctype` classes, `iswspace`, `towupper` and `towlower` in a locale.
+pub use ctype::{Class, iswspace, tolower as towlower, toupper as towupper};
 pub use exec::Match;
 use exec::Mbs;
 

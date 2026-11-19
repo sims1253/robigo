@@ -1,0 +1,3 @@
+Warning message:
+In doTryCatch(return(expr), name, parentenv, handler) :
+  NAs introduced by coercion

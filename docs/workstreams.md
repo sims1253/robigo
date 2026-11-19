@@ -22,6 +22,10 @@ how it is measured, and the protocol every agent follows. Read
 5. **Ship** small: one topic per pull request, commits that explain why,
    the metric before and after in the description. Run `cargo fmt`. CI
    must be green. Merge conflicts are yours to resolve by rebasing.
+   - **Stacked pull requests** (a base other than `main`) run only select,
+     lint and rt, and their `Check` fails on purpose. Retarget to `main` as
+     soon as the base merges, or earlier: a retarget starts no run, so push,
+     or close and reopen the pull request, after it for the full run.
 6. **Stay in scope.** Edit only paths your track owns. Shared files
    (`crates/robigo-runtime/src/{value,interp,env,error}.rs`,
    `Cargo.toml`, `AGENTS.md`, `docs/architecture.md`) take minimal changes,
