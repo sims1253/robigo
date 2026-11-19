@@ -37,7 +37,7 @@ pub fn do_makelist(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>,
         if havenames {
             let mut names = cx.alloc_vector::<Char<'_>>(n)?;
             for i in 0..n {
-                names.set(i, args.name(cx, i).map_or(cx.blank_string(), |s| s.name()));
+                names.set(i, args.name(cx, i).map_or(cx.blank_string(), |s| s.name(cx)));
             }
             let mut a = Attrs::new();
             a.install(Attr { tag: cx.sym(RSym::Names), value: names.finish().into() });
@@ -158,12 +158,13 @@ pub fn do_dput(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
         let v = if x.bind(cx).sexptype() == CLOSXP {
             // a duplicate with CLOENV R_GlobalEnv (deparse reads no
             // environment of a closure: the duplicate is the closure's)
-            let clo = s.capture(cx, |cx, o| cx.duplicate(x, o))?;
-            clo.bind(cx)
+            s.capture(cx, |cx, o| cx.duplicate(x, o))?
         } else {
-            x.bind(cx)
+            x
         };
-        deparse::deparse1(cx, v, false, opts).map_err(|m| cx.error(&m))
+        // deparse1(x, FALSE, opts), forcing the promises it meets
+        let d = deparse::deparse1_with_cutoff_forcing(cx, v, false, deparse::DEFAULT_CUTOFF, true, opts, 0)?;
+        d.map_err(|m| cx.error(&m))
     })?;
     let file = args.get(cx, 1);
     if !robigo_rtbuiltins::attrib::inherits(file, b"connection") {
@@ -259,7 +260,7 @@ pub fn do_cat(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: 
     // (`list` leaves one of robigo's compact sequences as it is)
     cx.materialize_nested(args.root(0), Some(1))?;
     // Use standard printing defaults
-    let data = PrintData::init(cx, None);
+    let data = PrintData::init(cx, None)?;
     let ifile = as_integer(args.get(cx, 1));
     // getConnection(ifile): robigo-rt has the standard connections only
     let target = match ifile {
@@ -269,6 +270,11 @@ pub fn do_cat(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: 
         0 => return Err(cx.error("cannot write to this connection")),
         _ => return Err(cx.error("invalid connection")),
     };
+    // a package class's elements are its C methods' (M5): `sep` and `labels`
+    // are read as standard storage
+    if args.get(cx, 2).is_package_altrep() || args.get(cx, 4).is_package_altrep() {
+        return Err(cx.error("robigo: cat() of a package ALTREP vector is not implemented yet"));
+    }
     let sepr = args.get(cx, 2);
     let Some(seps) = sepr.as_vector::<Char<'_>>() else {
         return Err(cx.error("invalid 'sep' specification"));
@@ -363,6 +369,10 @@ fn cat(
             let View::List(elements) = objs.view() else {
                 return Err("robigo: cat()'s objects are not a list".into());
             };
+            // a package class's length and elements are its C methods' (M5)
+            if (0..elements.len()).any(|i| elements.get(i).is_package_altrep()) {
+                return Err("robigo: cat() of a package ALTREP vector is not implemented yet".into());
+            }
             let mut width = 0usize;
             let mut ntot = 0usize;
             let mut nlines = 0usize;
@@ -391,7 +401,7 @@ fn cat(
                 let elt = |i: usize| -> Result<Vec<u8>, String> {
                     match s.view() {
                         View::Str(v) => native(v.get(i)),
-                        View::Sym(sym) => Ok(sym.name().bytes().to_vec()),
+                        View::Sym(sym) => Ok(sym.name_bytes().to_vec()),
                         _ => {
                             let mut b = Vec::new();
                             deparse::encode_element(cx, s, i, 0, &pp, &mut b);
@@ -478,7 +488,8 @@ pub fn do_deparse(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
     if nlines == i32::MIN {
         nlines = -1;
     }
-    let d = deparse::deparse1_with_cutoff(cx, args.get(cx, 0), false, cut0, backtick, opts, nlines);
+    // (forcing the promises it meets, as deparse2buff does)
+    let d = deparse::deparse1_with_cutoff_forcing(cx, args.root(0), false, cut0, backtick, opts, nlines)?;
     let d = d.map_err(|m| cx.error(&m))?;
     cx.build(out, |cx| {
         let mut v = cx.alloc_vector::<Char<'_>>(d.lines.len())?;

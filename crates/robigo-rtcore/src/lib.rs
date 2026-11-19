@@ -248,6 +248,7 @@ mod native;
 mod outcome;
 mod ppacct;
 mod raw;
+mod records;
 mod root;
 mod sym;
 mod sys;
@@ -267,7 +268,7 @@ pub use context::{
 pub use edit::UniqueList;
 pub use env::{
     ArgLoc, ArgSlot, ArgValue, Binding, BindingType, BindingValue, HashProfile, Lookup, RawArg, RawBinding, Scalar,
-    SetVarTarget, SlotInit,
+    SetVarTarget, SlotInit, bytecode_expr,
 };
 pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
 pub use frames::{Frame, WalkError};
@@ -281,11 +282,13 @@ pub use hooks::{
 };
 pub use isolate::{
     Capability, CodeSource, Cx, Isolate, Locale, Options, OwnedIsolate, Reentry, ReportOptions, enter_raw,
+    live_isolate_count,
 };
 pub use limits::{CStackInfo, EXPR_SO, EXPR_SO_MSG, EvalDepth, NODE_SO, NODE_SO_MSG, note_sigint};
 pub use native::{Landing, NATIVE_MAX_ARGS, Native6, enter_export, enter_leaf, enter_leaf_mut};
 pub use outcome::{Built, Diag};
 pub use ppacct::PpSave;
+pub use records::{FILL_ALIGN, FILL_SIZE, Reserved};
 pub use robigo_heap::unwind::Ret6;
 pub use robigo_heap::{AllocError, NeedGc, Rcomplex, Sexp, types};
 pub use robigo_heap::{GcStats, LARGE, Safepoint, ScanSegment};

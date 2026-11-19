@@ -479,3 +479,78 @@ SEXP rt_altrep_one(void)
     R_set_altrep_Length_method(c, one_length);
     return R_new_altrep(c, R_NilValue, R_NilValue);
 }
+
+/* coerceVector to a type code from R (one too large for any SEXPTYPE) */
+SEXP rt_coerce_to(SEXP x, SEXP type)
+{
+    return coerceVector(x, (SEXPTYPE) asReal(type));
+}
+
+/* The package classes' Length method over data1; it counts its calls in
+   data2, an integer scalar (rt_altrep_length_calls: per object, so tests
+   running in parallel do not share the count). */
+/* A new instance of class `c` over `v`, its count at 0. */
+static SEXP new_counted(R_altrep_class_t c, SEXP v)
+{
+    SEXP n = PROTECT(ScalarInteger(0));
+    SEXP r = R_new_altrep(c, v, n);
+    UNPROTECT(1);
+    return r;
+}
+
+static R_xlen_t data1_length(SEXP x)
+{
+    SEXP n = R_altrep_data2(x);
+    INTEGER(n)[0]++;
+    return XLENGTH(R_altrep_data1(x));
+}
+static SEXP str_elt(SEXP x, R_xlen_t i) { return STRING_ELT(R_altrep_data1(x), i); }
+
+/* A package ALTSTRING over the character vector `v`, its Length and Elt
+   methods reading it (B's probe class). */
+SEXP rt_altrep_str(SEXP v)
+{
+    R_altrep_class_t c = R_make_altstring_class("rt_str", "rtcapi", NULL);
+    R_set_altrep_Length_method(c, data1_length);
+    R_set_altstring_Elt_method(c, str_elt);
+    return new_counted(c, v);
+}
+
+/* Package ALTINTEGER, ALTREAL and ALTLIST classes over the vector `v`, the
+   same way (the attribute setters' cases). */
+
+/* How many times `x`'s Length method ran since the last call. */
+SEXP rt_altrep_length_calls(SEXP x)
+{
+    SEXP n = R_altrep_data2(x);
+    int c = INTEGER(n)[0];
+    INTEGER(n)[0] = 0;
+    return ScalarInteger(c);
+}
+static int int_elt(SEXP x, R_xlen_t i) { return INTEGER_ELT(R_altrep_data1(x), i); }
+static double real_elt(SEXP x, R_xlen_t i) { return REAL_ELT(R_altrep_data1(x), i); }
+static SEXP list_elt(SEXP x, R_xlen_t i) { return VECTOR_ELT(R_altrep_data1(x), i); }
+
+SEXP rt_altrep_int(SEXP v)
+{
+    R_altrep_class_t c = R_make_altinteger_class("rt_int", "rtcapi", NULL);
+    R_set_altrep_Length_method(c, data1_length);
+    R_set_altinteger_Elt_method(c, int_elt);
+    return new_counted(c, v);
+}
+
+SEXP rt_altrep_real(SEXP v)
+{
+    R_altrep_class_t c = R_make_altreal_class("rt_real", "rtcapi", NULL);
+    R_set_altrep_Length_method(c, data1_length);
+    R_set_altreal_Elt_method(c, real_elt);
+    return new_counted(c, v);
+}
+
+SEXP rt_altrep_list(SEXP v)
+{
+    R_altrep_class_t c = R_make_altlist_class("rt_list", "rtcapi", NULL);
+    R_set_altrep_Length_method(c, data1_length);
+    R_set_altlist_Elt_method(c, list_elt);
+    return new_counted(c, v);
+}

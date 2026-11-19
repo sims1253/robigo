@@ -117,6 +117,26 @@ impl Cx {
         Ok(FreshVec { x, n: xs.len(), cx: self, _t: PhantomData })
     }
 
+    /// A vector of `n` plain elements, `xs`'s and then `fill` (`n` at least
+    /// `xs.len()`): a block copy and a fill, as `EnlargeVector` copies a
+    /// vector into its larger replacement.
+    pub fn alloc_copy_fill<'g, T: Plain>(&'g self, xs: &[T], n: usize, fill: T) -> Result<FreshVec<'g, T>, NeedGc> {
+        assert!(n >= xs.len(), "robigo: alloc_copy_fill of {} elements into {n}", xs.len());
+        let x = self.alloc_raw(T::SEXPTYPE, n)?;
+        // SAFETY: a fresh vector with room for `n` elements, which cannot
+        // overlap `xs`; the copy writes the first `xs.len()` and the loop
+        // the rest, each written once through a raw pointer and never read
+        // (no reference to the uninitialized tail is made).
+        unsafe {
+            let d = x.std_data() as *mut T;
+            std::ptr::copy_nonoverlapping(xs.as_ptr(), d, xs.len());
+            for i in xs.len()..n {
+                d.add(i).write(fill);
+            }
+        }
+        Ok(FreshVec { x, n, cx: self, _t: PhantomData })
+    }
+
     /// An EXPRSXP of `n` R_NilValue elements.
     pub fn alloc_expression<'g>(&'g self, n: usize) -> Result<FreshVec<'g, Ref<'g>>, NeedGc> {
         let x = self.alloc_raw(EXPRSXP, n)?;
@@ -319,6 +339,24 @@ impl Cx {
         // (DDVAL, names.c:mkSYMSXP's, comes with a new symbol: `sym::symbol_bits`)
         let s = unsafe { self.iso().core() }.install(name)?;
         // SAFETY: symbols are immortal in their heap.
+        Ok(unsafe { Ref::from_sexp(s, self) }.as_sym().unwrap())
+    }
+
+    /// Take `sym`, a symbol this isolate may not have installed (symbols
+    /// are the process's: another isolate's handle can carry one here), as
+    /// `install` of its name would: this isolate's PRINTNAME of it, from its
+    /// own cache. The one way besides `install` for an isolate to take a
+    /// symbol it did not make; the boundaries where one enters (a frozen
+    /// segment's attach, a hand-over between workers: docs/core.md §10,
+    /// A.2) call it. Its identity (bindings, tags, comparisons) needs no
+    /// adoption; its name ([`Sym::name`]) and a base binding of it do. A
+    /// symbol this isolate already has costs a table read. Never collects.
+    pub fn adopt_symbol<'g>(&'g self, sym: Sym<'_>) -> Result<Sym<'g>, NeedGc> {
+        let s = sym.as_ref().sexp();
+        // SAFETY: one call into the core, which calls nothing of ours; a
+        // live symbol (immortal, the process's).
+        unsafe { self.iso().core().adopt_symbol(s)? };
+        // SAFETY: symbols are immortal.
         Ok(unsafe { Ref::from_sexp(s, self) }.as_sym().unwrap())
     }
 

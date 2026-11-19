@@ -1,0 +1,26 @@
+[1] 120
+[1] 24
+[1] 7
+[1] 2
+[1] 9
+k(2) 
+k(2) 
+k(2) 
+[1] 0
+[1] "no b"
+[1] "anon"
+[1] "list"
+[1] "do.call"
+[1] 1 2 6
+[1] "hidden"
+[1] 3
+[1] 12
+[1] 17
+[1] "foo"
+<simpleError in Recall(1): 'Recall' called from outside a closure>
+Recall(1)
+<simpleError in q(): 'Recall' called from outside a closure>
+q()
+<simpleError in Recall(1): 'Recall' called from outside a closure>
+Recall(1)
+<simpleError in Recall(): 'Recall' called from outside a closure>

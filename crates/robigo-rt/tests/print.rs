@@ -170,7 +170,7 @@ fn structure2(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
         a.copy_all(x);
         for i in 1..args.len() {
             let tag = args.name(cx, i).expect("structure2: named attributes");
-            if tag.name().bytes() == b"class" {
+            if tag.name_bytes() == b"class" {
                 a.set_class(tag, Some(args.get(cx, i)));
             } else {
                 a.install(Attr { tag, value: args.get(cx, i) });
@@ -263,14 +263,15 @@ fn pointers_and_weak_references() {
 #[test]
 fn what_is_not_ported_says_so() {
     let mut iso = session();
-    for (src, msg) in [
-        ("structure2(1:4, dim = c2(2L, 2L))\n", "robigo: printing a matrix (printMatrix) is not implemented yet"),
-        ("structure2(1:8, dim = c2(2L, 2L, 2L))\n", "robigo: printing an array (printArray) is not implemented yet"),
-        ("list(sum)\n", "robigo: printing the primitive 'sum'"),
-    ] {
-        let (_, err, ok) = run(iso.cx(), src);
-        assert!(!ok && err.contains(msg), "{src}: {err}");
-    }
+    let (_, err, ok) = run(iso.cx(), "list(sum)\n");
+    assert!(!ok && err.contains("robigo: printing the primitive 'sum'"), "{err}");
+    // matrices and arrays print (printarray.rs; tests/rt/print has the cases)
+    let (out, err, ok) = run(iso.cx(), "structure2(1:4, dim = c2(2L, 2L))\n");
+    assert!(ok, "{err}");
+    assert_eq!(out, "     [,1] [,2]\n[1,]    1    3\n[2,]    2    4\n");
+    let (out, err, ok) = run(iso.cx(), "structure2(1:2, dim = c2(1L, 1L, 2L))\n");
+    assert!(ok, "{err}");
+    assert_eq!(out, ", , 1\n\n     [,1]\n[1,]    1\n\n, , 2\n\n     [,1]\n[1,]    2\n\n");
     // a closure prints through print.default (S1's UseMethod)
     let (out, err, ok) = run(iso.cx(), "f <- function() 1\nf\n");
     assert!(ok, "{err}");

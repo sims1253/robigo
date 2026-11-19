@@ -130,7 +130,7 @@ fn eval_stub(cx: &mut Cx, expr: Root<'_>, _env: Root<'_>, out: Out<'_>) -> RResu
         _ => panic!("not a call"),
     };
     let s = match (head.view(), arg.view()) {
-        (View::Sym(f), _) if f.name().bytes() == b"as.character" => b"obj".to_vec(),
+        (View::Sym(f), _) if f.name_bytes() == b"as.character" => b"obj".to_vec(),
         (_, View::Str(v)) => [b"nf:".as_slice(), v.get(0).bytes()].concat(),
         _ => panic!("unexpected call"),
     };

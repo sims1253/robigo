@@ -6,6 +6,9 @@
 #     g <- function() { for (i in 1:N) { BODY }; NULL }; g()
 #
 # at N and 2N under callgrind, so startup, base loading and SETUP cancel.
+# A row's SETUP is its `setup`, or with `setup_ref` the setup of that name
+# in the `[setups]` table at the end, which rows share (scripts/perf.py's
+# rows_with_setups resolves it for every reader).
 # That makes robigo-rt, which loads a base subset, comparable with today's
 # robigo and GNU R, which load all of base. No C floors (benchmarks/idioms.toml
 # has those). SETUP must not define `g`, the harness's loop function. These
@@ -33,11 +36,26 @@
 #          and `[<-` of a double vector, and `[` of a matrix, by scalar
 #          indices (docs/ledger/g3/2026-11-17-perf-subset-guard.md). Rows
 #          of other groups can be guards too: grow-dbl, scalars and d0-*.
+#          Also: arithmetic and sum() on long vectors, `...` forwarding,
+#          `$<-` on a list, while and repeat loops
+#          (docs/ledger/g3/2026-11-18-perf-guard-rows2.md).
 #   conditions
 #          the trycatch row split into its branches and neighbours, reported
 #          only (no bar cites them): what X9 (frames, argument matching), X7
 #          (D11) and S3x-d measure against
 #          (docs/ledger/g3/2026-11-17-s3x-d-trycatch-gap.md).
+#   jit    V4's JIT-cost bar (docs/ledger/g3/2026-11-17-v4-4-jit-cost.md):
+#          one JIT compile of a closure of benchmarks/suite/calls.R that GNU
+#          R's JIT compiles running it, as R_cmpfun1 makes it
+#          (`compiler:::tryCmpfun(f)`, eval.c:1828), per iteration, its
+#          result checked to be byte code (tryCmpfun returns the closure as
+#          it is when the compile fails, which would read as cheap), N = 400
+#          (at 40, the extra N compiles catch 0 or 1 of robigo-rt's full
+#          collections, ±0.65M per compile: X's profile). GNU R's
+#          side only until V4 step 3 lands: robigo-rt cannot load the
+#          compiler namespace yet, and idiom-vs-r.py stops at a row that
+#          fails, so measure them with --no-robigo, or keep them out of a
+#          run under both (--filter) until then.
 #
 # `address_sensitive = true` marks a row whose count follows where its strings
 # were allocated: GNU R's string hash, and robigo-rt's port of it, hashes a
@@ -561,3 +579,138 @@ s <- 0
 '''
 body = 's <- s + m[i, j]'
 n = 4000
+
+[[row]]
+name = "guard-vec-arith"
+group = "guard"
+note = "y <- x * 2 + x: arithmetic on a 1,000-element double vector (two new vectors per iteration)"
+setup = '''
+x <- seq_len(1000L) * 0.5
+'''
+body = 'y <- x * 2 + x'
+n = 4000
+
+[[row]]
+name = "guard-vec-sum"
+group = "guard"
+note = "s <- sum(x): a summary of a 1,000-element double vector"
+setup = '''
+x <- seq_len(1000L) * 0.5
+'''
+body = 's <- sum(x)'
+n = 4000
+
+[[row]]
+name = "guard-dots"
+group = "guard"
+note = "v <- f(i, 1): `...` forwarded through a wrapper, f <- function(...) h(...)"
+setup = '''
+h <- function(a, b) a + b
+f <- function(...) h(...)
+'''
+body = 'v <- f(i, 1)'
+n = 4000
+
+[[row]]
+name = "guard-dollar-assign"
+group = "guard"
+note = "l$a <- i: `$<-` on a list of two, in place (g's copy of l is made once)"
+setup = '''
+l <- list(a = 1, b = 2)
+'''
+body = 'l$a <- i'
+n = 4000
+
+[[row]]
+name = "guard-while"
+group = "guard"
+note = "a while loop of ten steps: k <- 0L; while (k < 10L) k <- k + 1L"
+setup = ""
+body = 'k <- 0L; while (k < 10L) k <- k + 1L'
+n = 4000
+
+[[row]]
+name = "guard-repeat"
+group = "guard"
+note = "a repeat loop of ten steps, left by break"
+setup = ""
+body = 'k <- 0L; repeat { k <- k + 1L; if (k >= 10L) break }'
+n = 4000
+
+# --- jit (V4's JIT-cost bar) ---------------------------------------------
+
+[[row]]
+name = "jit-scale_by"
+group = "jit"
+note = "one JIT compile of calls.R's `scale_by`: compiler:::tryCmpfun(scale_by), as R_cmpfun1 calls it, checked to be byte code"
+setup_ref = "calls"
+body = 'if (typeof(.Internal(bodyCode(compiler:::tryCmpfun(scale_by)))) != "bytecode") stop("tryCmpfun left scale_by uncompiled")'
+n = 400
+
+[[row]]
+name = "jit-weigh"
+group = "jit"
+note = "one JIT compile of calls.R's `weigh`: compiler:::tryCmpfun(weigh), as R_cmpfun1 calls it, checked to be byte code"
+setup_ref = "calls"
+body = 'if (typeof(.Internal(bodyCode(compiler:::tryCmpfun(weigh)))) != "bytecode") stop("tryCmpfun left weigh uncompiled")'
+n = 400
+
+[[row]]
+name = "jit-tag"
+group = "jit"
+note = "one JIT compile of calls.R's `tag`: compiler:::tryCmpfun(tag), as R_cmpfun1 calls it, checked to be byte code"
+setup_ref = "calls"
+body = 'if (typeof(.Internal(bodyCode(compiler:::tryCmpfun(tag)))) != "bytecode") stop("tryCmpfun left tag uncompiled")'
+n = 400
+
+[[row]]
+name = "jit-env-fn"
+group = "jit"
+note = "one JIT compile of calls.R's `e$f`: compiler:::tryCmpfun(e$f), as R_cmpfun1 calls it, checked to be byte code"
+setup_ref = "calls"
+body = 'if (typeof(.Internal(bodyCode(compiler:::tryCmpfun(e$f)))) != "bytecode") stop("tryCmpfun left e$f uncompiled")'
+n = 400
+
+[[row]]
+name = "jit-area"
+group = "jit"
+note = "one JIT compile of calls.R's `area`: compiler:::tryCmpfun(area), as R_cmpfun1 calls it, checked to be byte code"
+setup_ref = "calls"
+body = 'if (typeof(.Internal(bodyCode(compiler:::tryCmpfun(area)))) != "bytecode") stop("tryCmpfun left area uncompiled")'
+n = 400
+
+[[row]]
+name = "jit-area-sq"
+group = "jit"
+note = "one JIT compile of calls.R's `area.sq`: compiler:::tryCmpfun(area.sq), as R_cmpfun1 calls it, checked to be byte code"
+setup_ref = "calls"
+body = 'if (typeof(.Internal(bodyCode(compiler:::tryCmpfun(area.sq)))) != "bytecode") stop("tryCmpfun left area.sq uncompiled")'
+n = 400
+
+[[row]]
+name = "jit-safe"
+group = "jit"
+note = "one JIT compile of calls.R's `safe`: compiler:::tryCmpfun(safe), as R_cmpfun1 calls it, checked to be byte code"
+setup_ref = "calls"
+body = 'if (typeof(.Internal(bodyCode(compiler:::tryCmpfun(safe)))) != "bytecode") stop("tryCmpfun left safe uncompiled")'
+n = 400
+
+# The setups rows share (`setup_ref`): calls.R's definitions.
+[setups]
+calls = '''
+scale_by <- function(x, scale = 1, label = "a") { if (label == "zz") x else x * scale }
+weigh <- function(x, y) { z <- x * y; z + 1 }
+tag <- function(x, label) { if (label == "bc") x * 2 else x }
+e <- new.env()
+e$f <- function(x) x + 1
+acct <- function() {
+  bal <- 0
+  list(dep = function(x) { bal <<- bal + x; invisible(bal) }, get = function() bal)
+}
+a <- acct()
+area <- function(s) UseMethod("area")
+area.sq <- function(s) s$side^2
+area.default <- function(s) 0
+sq <- structure(list(side = 2), class = "sq")
+safe <- function(x) tryCatch(if (x > 0) x else stop("neg"), error = function(err) 0)
+'''

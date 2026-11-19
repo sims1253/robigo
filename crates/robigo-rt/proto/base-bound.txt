@@ -10,7 +10,7 @@
 # The union of base-subset.txt (the trace) and the static bound (the free
 # variables of the same inputs that name base functions, transitively through
 # base closures), so that a branch GNU R did not take still finds its function.
-# 434 closures, 148 primitives, 245 internals, 10 variables.
+# (No counts: see base-subset.txt.)
 closure %in% match.R
 closure %||% utils.R
 closure ..getNamespace namespace.R
@@ -66,6 +66,7 @@ closure Sys.setenv getenv.R
 closure Sys.time datetime.R
 closure Sys.unsetenv getenv.R
 closure [.factor factor.R
+closure activeBindingFunction bindenv.R
 closure alist formals.R
 closure all.vars allnames.R
 closure anyDuplicated duplicated.R
@@ -113,6 +114,7 @@ closure assign assign.R
 closure attach attach.R
 closure attachNamespace namespace.R
 closure basename files.R
+closure bindingIsActive bindenv.R
 closure bindingIsLocked bindenv.R
 closure bindtextdomain stop.R
 closure body formals.R
@@ -427,6 +429,7 @@ closure unique.default duplicated.R
 closure unlink files.R
 closure unlist unlist.R
 closure unloadNamespace namespace.R
+closure unlockBinding bindenv.R
 closure unname unname.R
 closure unserialize serialize.R
 closure validEnc raw.R
@@ -506,6 +509,7 @@ primitive attributes
 primitive attributes<-
 primitive baseenv
 primitive break
+primitive browser
 primitive c
 primitive call
 primitive ceiling
@@ -613,6 +617,7 @@ internal Sys.glob
 internal Sys.setenv
 internal Sys.time
 internal Sys.unsetenv
+internal activeBindingFunction
 internal all.names
 internal anyDuplicated
 internal aperm
@@ -630,6 +635,7 @@ internal bcVersion
 internal bcprofcounts
 internal bcprofstart
 internal bcprofstop
+internal bindingIsActive
 internal bindingIsLocked
 internal bindtextdomain
 internal body
@@ -643,6 +649,8 @@ internal compareNumericVersion
 internal compilePKGS
 internal complex
 internal delayedAssign
+internal delayedBindingEnvironment
+internal delayedBindingExpression
 internal deparse
 internal detach
 internal dir.create
@@ -672,6 +680,7 @@ internal file.info
 internal file.path
 internal file.remove
 internal file.show
+internal forcedBindingExpression
 internal formals
 internal format
 internal formatC
@@ -825,6 +834,7 @@ internal typeof
 internal unique
 internal unlink
 internal unlist
+internal unlockBinding
 internal unregisterNamespace
 internal unserialize
 internal unserializeFromConn

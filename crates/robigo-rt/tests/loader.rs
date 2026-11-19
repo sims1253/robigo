@@ -110,12 +110,9 @@ fn a_base_closure_runs_until_it_reaches_what_is_not_implemented() {
     assert!(ok, "{err}");
     assert_eq!(out, "[1] 1\n");
     // an .Internal that is not implemented yet
-    let (_, err, ok) = run(cx, ".Internal(rawToChar(as.raw(65), FALSE))\n");
+    let (_, err, ok) = run(cx, ".Internal(crc64(\"a\"))\n");
     assert!(!ok);
-    assert_eq!(
-        err,
-        "Error in rawToChar(as.raw(65), FALSE) : \n  robigo: .Internal(rawToChar()) is not implemented yet\n"
-    );
+    assert_eq!(err, "Error in crc64(\"a\") : robigo: .Internal(crc64()) is not implemented yet\n");
     // an .Internal outside it is GNU R's error
     let (_, err, _) = run(cx, ".Internal(nonesuch())\n");
     assert_eq!(err, "Error in .Internal(nonesuch()) : \n  there is no .Internal function 'nonesuch'\n");
@@ -271,4 +268,28 @@ fn a_name_defined_in_steps_reads_the_same_every_time() {
     let (out, err, ok) = run(cx, src);
     assert!(ok, "{err}");
     assert_eq!(out, "TRUE TRUE \n", "{err}");
+}
+
+/// An isolate the embedder gave no `clib::EnvWrites` (as here) refuses
+/// `Sys.setenv` and `Sys.unsetenv` before writing anything.
+#[test]
+fn sys_setenv_refuses_in_an_isolate_not_given_the_environment() {
+    let (mut iso, _) = session();
+    let cx = iso.cx();
+    assert!(std::env::var_os("ROBIGO_NO_GRANT_A").is_none());
+    let home = std::env::var_os("HOME");
+    assert!(home.is_some(), "the test needs HOME set");
+    let src = "r <- tryCatch(Sys.setenv(ROBIGO_NO_GRANT_A = 'x', ROBIGO_NO_GRANT_B = 'y'), error = conditionMessage)\n\
+               cat(r, '\\n')\n\
+               r <- tryCatch(Sys.unsetenv('HOME'), error = conditionMessage)\n\
+               cat(r, '\\n')\n";
+    let (out, err, ok) = run(cx, src);
+    assert!(ok, "{err}");
+    assert_eq!(
+        out,
+        "robigo: Sys.setenv() in an isolate that was not given the process environment is not implemented yet \n\
+         robigo: Sys.unsetenv() in an isolate that was not given the process environment is not implemented yet \n"
+    );
+    assert!(std::env::var_os("ROBIGO_NO_GRANT_A").is_none() && std::env::var_os("ROBIGO_NO_GRANT_B").is_none());
+    assert_eq!(std::env::var_os("HOME"), home, "Sys.unsetenv() unset HOME");
 }

@@ -9,18 +9,25 @@ use crate::prims;
 use crate::vm::Act;
 use robigo_heap::Sexp;
 use robigo_heap::types::*;
-use robigo_rtcore::{ArgValue, Cx, RResult, RawArg};
+use robigo_rtcore::{ArgValue, Cx, RResult, RawArg, bytecode_expr};
 
 /// `findRootPromise(p)`: the innermost promise of a chain of promises.
 ///
 /// # Safety
-/// `p` is live.
-unsafe fn root_promise(mut p: Sexp) -> Sexp {
-    // SAFETY: the caller's contract; PREXPR of a promise is its code.
+/// `p` is live; `nil` is R_NilValue.
+unsafe fn root_promise(mut p: Sexp, nil: Sexp) -> Sexp {
+    // SAFETY: the caller's contract; PREXPR of a promise is its code's
+    // expression (`bytecodeExpr`: byte code's first constant), which the
+    // walk tests and descends through, as GNU R's
+    // `while (TYPEOF(PREXPR(p)) == PROMSXP) p = PREXPR(p)`.
     unsafe {
         if p.typ() == PROMSXP {
-            while p.cdr().typ() == PROMSXP {
-                p = p.cdr();
+            loop {
+                let e = bytecode_expr(p.cdr(), nil);
+                if e.typ() != PROMSXP {
+                    break;
+                }
+                p = e;
             }
         }
     }
@@ -100,7 +107,30 @@ unsafe fn binding(cx: &mut Cx, rho: Sexp, var: Sexp) -> RResult<Option<Option<Se
 /// `var` is a live symbol of `cx`'s isolate.
 // R: envir.c:R_missing
 pub unsafe fn r_missing(cx: &mut Cx, act: &Act, var: Sexp) -> RResult<bool> {
-    let rho = act.rho();
+    // SAFETY: the caller's contract; the activation's environment is rooted.
+    unsafe { missing_in(cx, act.rho(), var) }
+}
+
+/// `R_missing(var, rho)` for an environment `rho` (`do_bind`'s
+/// `missing(deparse.level)`). Out of line: `vm::run` inlines
+/// [`r_missing`], whose code a second inlined caller would change.
+///
+/// # Safety
+/// `var` is a live symbol of `cx`'s isolate; `rho` a live, rooted
+/// environment.
+// R: envir.c:R_missing
+#[inline(never)]
+pub unsafe fn r_missing_in(cx: &mut Cx, rho: Sexp, var: Sexp) -> RResult<bool> {
+    // SAFETY: the caller's contract.
+    unsafe { missing_in(cx, rho, var) }
+}
+
+/// `R_missing(var, rho)`'s body, for [`r_missing`] and [`r_missing_in`].
+///
+/// # Safety
+/// As for [`r_missing_in`].
+#[inline(always)]
+unsafe fn missing_in(cx: &mut Cx, rho: Sexp, var: Sexp) -> RResult<bool> {
     // SAFETY: an immortal symbol and the rooted environment.
     let b = match unsafe { binding(cx, rho, var)? } {
         None => {
@@ -134,11 +164,12 @@ unsafe fn promise_missing(cx: &mut Cx, value: ArgValue, seen: &mut Vec<(usize, u
     unsafe {
         let (expr, env) = match value {
             ArgValue::Obj(p) if p.typ() == PROMSXP => {
-                let p = root_promise(p);
+                let p = root_promise(p, cx.nil().sexp());
                 // R_missing looks at any promise; R_isMissing at unforced
                 // ones only, which `R_isMissing(sym, R_NilValue)` (a forced
-                // promise's PRENV) also answers FALSE
-                (p.cdr(), p.tag())
+                // promise's PRENV) also answers FALSE; PREXPR, byte code's
+                // first constant for a promise of compiled code
+                (bytecode_expr(p.cdr(), cx.nil().sexp()), p.tag())
             }
             ArgValue::Delayed { expr, env } => (expr, env),
             ArgValue::Forced { expr } => (expr, cx.nil().sexp()),
@@ -184,7 +215,7 @@ unsafe fn is_missing(cx: &mut Cx, symbol: Sexp, rho: Sexp, seen: &mut Vec<(usize
         }
         let unforced = match b.value {
             ArgValue::Obj(p) => {
-                let p = root_promise(p);
+                let p = root_promise(p, cx.nil().sexp());
                 p.typ() == PROMSXP && p.car() == cx.unbound().sexp()
             }
             ArgValue::Delayed { .. } => true,

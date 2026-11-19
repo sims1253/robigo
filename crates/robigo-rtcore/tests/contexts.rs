@@ -105,6 +105,130 @@ fn a_panic_unwinds_the_chain() {
     assert_eq!(cx.stack_depth(), 0);
 }
 
+// ---- the record stack (X9-1c) ------------------------------------------------
+
+/// Push `n` loop records, one inside the other, each recorded in `ids`,
+/// then run `bottom` in the innermost.
+fn nest(
+    cx: &mut Cx,
+    rho: robigo_rtcore::Root<'_>,
+    n: usize,
+    ids: &mut Vec<ContextId>,
+    bottom: &mut dyn FnMut(&mut Cx),
+) {
+    if n == 0 {
+        bottom(cx);
+        return;
+    }
+    let r = cx.with_context(ctxt::LOOP, rho, rho, rho, None, |cx, id| -> RResult<()> {
+        ids.push(id);
+        assert_eq!(cx.global_context().id(), id);
+        nest(cx, rho, n - 1, ids, bottom);
+        Ok(())
+    });
+    assert!(r.is_ok());
+}
+
+/// The records are pushed and popped LIFO across chunks of the record
+/// stack: each its own address while it lives, the chain whole at every
+/// depth; past a chunk's slots the next chunk is used, and coming back
+/// uses the same slots again, the chunks kept (the high-water mark).
+#[test]
+fn records_nest_lifo_across_record_stack_chunks() {
+    let mut iso = iso();
+    let cx = iso.cx();
+    let (chunk, used) = cx.record_stack();
+    assert_eq!(used, 0);
+    let n = 2 * chunk + 5;
+    cx.scope(|cx, s| {
+        let rho = s.root(cx, env(cx));
+        let mut first = Vec::new();
+        nest(cx, rho, n, &mut first, &mut |cx| {
+            assert_eq!(cx.context_depth(), n + 1);
+            assert_eq!(cx.record_stack(), (3 * chunk, n));
+        });
+        let distinct: std::collections::HashSet<_> = first.iter().collect();
+        assert_eq!(distinct.len(), n, "each live record has its own address");
+        assert_eq!(cx.context_depth(), 1);
+        assert_eq!(cx.record_stack(), (3 * chunk, 0), "the chunks stay, the slots are free");
+        // the same depth again: the same slots, in the same order
+        let mut second = Vec::new();
+        nest(cx, rho, n, &mut second, &mut |_| {});
+        assert_eq!(first, second);
+        assert_eq!(cx.record_stack(), (3 * chunk, 0));
+    });
+}
+
+/// A recursion that goes back and forth over a chunk boundary takes no
+/// new chunk and keeps the chain whole on both sides.
+#[test]
+fn records_cross_a_chunk_boundary_both_ways() {
+    let mut iso = iso();
+    let cx = iso.cx();
+    let (chunk, _) = cx.record_stack();
+    cx.scope(|cx, s| {
+        let rho = s.root(cx, env(cx));
+        let mut ids = Vec::new();
+        nest(cx, rho, chunk - 1, &mut ids, &mut |cx| {
+            for k in 1..=3 {
+                let mut more = Vec::new();
+                nest(cx, rho, k, &mut more, &mut |cx| {
+                    assert_eq!(cx.context_depth(), chunk + k);
+                    assert_eq!(cx.record_stack(), (2 * chunk, chunk - 1 + k));
+                });
+                assert_eq!(cx.record_stack(), (2 * chunk, chunk - 1));
+                assert_eq!(cx.context_depth(), chunk);
+            }
+        });
+    });
+    assert_eq!(cx.record_stack(), (2 * chunk, 0));
+}
+
+/// A panic unwinding through records pushed past a chunk boundary pops
+/// every record and releases every slot (each guard's `Drop`), so the
+/// stack is usable again.
+#[test]
+fn a_panic_releases_the_record_slots() {
+    let mut iso = iso();
+    let cx = iso.cx();
+    let (chunk, _) = cx.record_stack();
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        cx.scope(|cx, s| {
+            let rho = s.root(cx, env(cx));
+            nest(cx, rho, chunk + 3, &mut Vec::new(), &mut |_| panic!("bottom"));
+        })
+    }));
+    assert!(r.is_err());
+    assert_eq!(cx.context_depth(), 1);
+    assert_eq!(cx.record_stack(), (2 * chunk, 0));
+    assert_eq!(cx.stack_depth(), 0);
+    // and records are pushed and popped as before
+    let r = run(cx, |cx| l!(cx, "fn", l!(cx, "catch", l!(cx, "stop", string(cx, "boom")))));
+    assert_eq!(r, Ok("boom".into()));
+    assert_eq!(cx.record_stack(), (2 * chunk, 0));
+}
+
+/// An isolate dropped after its record stack grew frees every chunk (Miri
+/// and LSan report a leak otherwise), and an isolate made after it starts
+/// with one chunk again.
+#[test]
+fn the_record_stack_is_freed_with_its_isolate() {
+    let fresh = iso().cx().record_stack();
+    let chunk = fresh.0;
+    for _ in 0..2 {
+        let mut iso = iso();
+        let cx = iso.cx();
+        assert_eq!(cx.record_stack(), fresh);
+        cx.scope(|cx, s| {
+            let rho = s.root(cx, env(cx));
+            nest(cx, rho, 3 * chunk, &mut Vec::new(), &mut |_| {});
+        });
+        assert_eq!(cx.record_stack(), (4 * chunk, 0));
+        drop(iso);
+    }
+    assert_eq!(iso().cx().record_stack(), fresh);
+}
+
 // ---- on.exit, return, superseding (E8 case 1) -------------------------------
 
 #[test]
@@ -771,13 +895,13 @@ fn the_raw_function_record_lands_returns() {
         };
         let out = s.out(cx);
         let res = out.root();
-        unsafe {
-            cx.function_context_raw(&spec, out, &mut eval_discard, |cx, _, out| {
+        cx.with_reserved::<(), _>(|cx, res| unsafe {
+            cx.function_context_raw(res, &spec, out, &mut eval_discard, |cx, _, out| {
                 cx.on_exit(rho, rho, code, None, None)?;
                 out.set(cx, cx.nil());
                 Err(cx.find_context(ctxt::FUNCTION, rho, Some(v)))
             })
-        }
+        })
         .unwrap();
         assert_eq!(text(res.bind(cx)), "returned");
     });

@@ -399,6 +399,7 @@ impl Cx {
         // live, and the collection reaches nothing of ours (finalizers are
         // only queued).
         let r = unsafe { iso.core().make_room(e, iso.roots_mut()) };
+        self.flush_gc_report();
         r.map_err(|a| self.error_call(None, &a.message()))
     }
 
@@ -480,7 +481,7 @@ fn maybe_closure_wrapper(cx: &Cx, e: Ref<'_>) -> bool {
     let Some(c) = e.as_cons() else { return false };
     let Some(s) = c.car().as_sym() else { return false };
     let wrapper = matches!(
-        s.name().bytes(),
+        s.name_bytes(),
         b".Internal"
             | b".External"
             | b".External2"

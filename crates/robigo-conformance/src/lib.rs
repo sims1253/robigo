@@ -55,12 +55,13 @@
 //!   ROBIGO_GCTORTURE=1          a collection at every allocation (with or
 //!                               without ROBIGO_GC_MOVE), passed on to the
 //!                               binary: the cases whose `.requires` names
-//!                               `volume` are not run
+//!                               `volume` or `collection-schedule` are not
+//!                               run
 //! The binary and the results file are the caller's (each test names its
 //! own variables), so one `cargo test --workspace` can run both columns.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -292,6 +293,19 @@ pub struct Column {
     /// with each failing case, which may fail for one of them
     /// (INTERIM(L5): robigo-rt's wide base, `crates/robigo-rt/src/base.rs`).
     pub boot_record: Option<&'static str>,
+    /// Environment variables each case's child runs without: robigo-rt
+    /// ignores an inherited `R_HOME` (GNU R's) with GNU R's warning on
+    /// stdout, which every compared output would carry. They seed
+    /// [`Options::env`] ([`Column::case_env`]), the one place a case's
+    /// environment changes.
+    pub env_remove: &'static [&'static str],
+}
+
+impl Column {
+    /// [`Options::env`]'s start: the column's [`Column::env_remove`].
+    pub fn case_env(&self) -> Vec<(OsString, Option<OsString>)> {
+        self.env_remove.iter().map(|v| (OsString::from(v), None)).collect()
+    }
 }
 
 /// The old runtime, `robigo`: `tests/r` against GNU R 4.5.0.
@@ -303,6 +317,7 @@ pub const OLD: Column = Column {
     corpus: "conformance",
     legacy_list: Some("tests/r/passing.txt"),
     boot_record: None,
+    env_remove: &[],
 };
 
 /// G3's runtime, `robigo-rt`: its own cases in `tests/rt`, and the cases
@@ -315,6 +330,7 @@ pub const RT: Column = Column {
     corpus: "conformance-rt",
     legacy_list: None,
     boot_record: Some("ROBIGO_BOOT_VERBOSE"),
+    env_remove: &["R_HOME"],
 };
 
 /// The feature requirements a `.requires` sidecar may name:
@@ -332,11 +348,28 @@ pub const RT: Column = Column {
 /// binary's `R_HOME` tree (`library/tools/libs/tools.so`, which
 /// `scripts/rt-home.sh` builds), so it runs where the caller found that
 /// tree, its stamp and the file (robigo-rtapi's conformance test).
-pub const KNOWN_FEATURES: &[&str] =
-    &["bytecode-fidelity", "inplace-identity", "promise-identity", "r-home-tools", "volume"];
+/// `collection-schedule`: the recording depends on where collections
+/// happen (a `gcinfo(TRUE)` report on stderr), so the case does not run
+/// under gctorture, which collects at every allocation, or under retry
+/// torture (`ROBIGO_RETRY_TORTURE=1`), which collects at every build.
+/// `default-vsize`: the recording depends on GNU R's default vector heap
+/// sizes (how far from its limit a heap starts), so the case does not run
+/// where `R_VSIZE` or `R_MAX_VSIZE` sets them (rt-ci's small vector limit).
+pub const KNOWN_FEATURES: &[&str] = &[
+    "bytecode-fidelity",
+    "collection-schedule",
+    "default-vsize",
+    "inplace-identity",
+    "promise-identity",
+    "r-home-tools",
+    "volume",
+];
 
 /// The production identities the environment's observation modes keep
-/// ([`KNOWN_FEATURES`]), and `volume` unless gctorture is on; and whether
+/// ([`KNOWN_FEATURES`]), `volume` unless gctorture is on,
+/// `collection-schedule` unless gctorture or retry torture is, and
+/// `default-vsize` unless the environment sets the vector heap's sizes; and
+/// whether
 /// an observation mode is on.
 pub fn identity_features() -> (Vec<&'static str>, bool) {
     let on = |name: &str| std::env::var(name).as_deref() == Ok("1");
@@ -350,6 +383,14 @@ pub fn identity_features() -> (Vec<&'static str>, bool) {
     }
     if !on("ROBIGO_GCTORTURE") {
         f.push("volume");
+    }
+    // both make collections GNU R's run does not have: gctorture at every
+    // allocation, retry torture at every build's refused first attempt
+    if !on("ROBIGO_GCTORTURE") && !on("ROBIGO_RETRY_TORTURE") {
+        f.push("collection-schedule");
+    }
+    if std::env::var_os("R_VSIZE").is_none() && std::env::var_os("R_MAX_VSIZE").is_none() {
+        f.push("default-vsize");
     }
     (f, inplace || materialize)
 }
@@ -379,6 +420,10 @@ pub struct Options {
     /// Cases that may run longer than `timeout` (`ROBIGO_CONF_TIMEOUTS`):
     /// repository-relative path -> timeout.
     pub case_timeouts: BTreeMap<String, Duration>,
+    /// Changes to each case's environment, after [`command`]'s: a variable
+    /// set (`Some`) or removed (`None`). The runner's own environment is
+    /// left alone, so a test sets these instead of `std::env::set_var`.
+    pub env: Vec<(OsString, Option<OsString>)>,
 }
 
 /// `ROBIGO_CONF_TIMEOUTS`'s value: `CASE=SECS` pairs, comma-separated.
@@ -440,6 +485,7 @@ impl Options {
             jobs,
             timeout,
             case_timeouts,
+            env: column.case_env(),
         })
     }
 }
@@ -505,7 +551,9 @@ pub fn scripts(dir: &Path, features: &[&str]) -> Vec<PathBuf> {
 /// packages only, `LANGUAGE=en`, `C.UTF-8`, UTC, in the script's directory.
 /// A `.tzdir` sidecar names a directory relative to the script, which also
 /// scripts/regen-expected.sh resolves before setting `TZDIR`; without one,
-/// an inherited `TZDIR` is cleared.
+/// an inherited `TZDIR` is cleared. A `.locale` sidecar names the `LC_ALL`
+/// the script runs under instead of `C.UTF-8` (regen-expected.sh records it
+/// so too).
 pub fn command(bin: &Path, script: &Path) -> Command {
     let mut command = Command::new(bin);
     command.arg(script);
@@ -519,6 +567,14 @@ pub fn command(bin: &Path, script: &Path) -> Command {
             let path = script.parent().unwrap().join(dir.trim()).canonicalize().expect("resolve .tzdir");
             assert!(path.is_dir(), ".tzdir must name a directory");
             command.env("TZDIR", path);
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => panic!("read {}: {}", sidecar.display(), err),
+    }
+    let sidecar = script.with_extension("locale");
+    match std::fs::read_to_string(&sidecar) {
+        Ok(loc) => {
+            command.env("LC_ALL", loc.trim());
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => panic!("read {}: {}", sidecar.display(), err),
@@ -645,8 +701,16 @@ impl Outcome {
     }
 }
 
-fn run_case(bin: &Path, script: &Path, timeout: Duration) -> (Vec<u8>, Vec<u8>, i32, bool) {
-    run_command(command(bin, script), bin, timeout)
+/// [`command`] with `o.env`'s changes.
+fn case_command(o: &Options, script: &Path) -> Command {
+    let mut cmd = command(&o.bin, script);
+    for (k, v) in &o.env {
+        match v {
+            Some(v) => cmd.env(k, v),
+            None => cmd.env_remove(k),
+        };
+    }
+    cmd
 }
 
 /// Run `cmd` (of the binary `bin`), killed after `timeout`: (stdout,
@@ -716,7 +780,7 @@ fn boot_record(column: &Column, o: &Options) -> String {
     let dir = scratch_dir("boot");
     let script = dir.join("empty.R");
     std::fs::write(&script, "invisible(NULL)\n").unwrap_or_else(|e| panic!("write {}: {e}", script.display()));
-    let mut cmd = command(&o.bin, &script);
+    let mut cmd = case_command(o, &script);
     cmd.env(var, "1");
     let (_, err, _, timed_out) = run_command(cmd, &o.bin, o.timeout);
     let _ = std::fs::remove_dir_all(&dir);
@@ -770,7 +834,7 @@ fn check(
         }
     };
     let timeout = o.case_timeouts.get(&id).copied().unwrap_or(o.timeout);
-    let (out, err, status, timed_out) = run_case(&o.bin, script, timeout);
+    let (out, err, status, timed_out) = run_command(case_command(o, script), &o.bin, timeout);
     let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
     let mut diff = String::new();
     if timed_out {
@@ -1124,8 +1188,10 @@ pub fn sha256_hex(data: &[u8]) -> String {
 
 #[cfg(test)]
 mod boot_record_tests {
-    use super::{Options, RT, boot_record, parse_case_timeouts};
+    use super::{Options, RT, boot_record, case_command, parse_case_timeouts};
     use std::collections::BTreeMap;
+    use std::ffi::OsStr;
+    use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -1137,6 +1203,23 @@ mod boot_record_tests {
         assert!(parse_case_timeouts("tests/r/a.R").unwrap_err().contains("is not CASE=SECS"));
         assert!(parse_case_timeouts("tests/r/a.R=soon").unwrap_err().contains("is not a number of seconds"));
         assert!(parse_case_timeouts("tests/r/a.R=1,tests/r/a.R=2").unwrap_err().contains("twice"));
+    }
+
+    /// `Options::env` reaches each case's command, set or removed, after
+    /// `command`'s own settings; nothing changes the runner's environment.
+    #[test]
+    fn options_env_sets_and_removes_per_case() {
+        let mut o = Options::from_env(&RT, PathBuf::from("/bin/true")).unwrap();
+        o.env.push(("ROBIGO_CONF_TEST_SET".into(), Some("x".into())));
+        o.env.push(("R_HOME".into(), None));
+        o.env.push(("TZ".into(), Some("Europe/Berlin".into())));
+        let cmd = case_command(&o, Path::new("/tmp/case.R"));
+        let envs: BTreeMap<_, _> = cmd.get_envs().map(|(k, v)| (k.to_owned(), v.map(|v| v.to_owned()))).collect();
+        assert_eq!(envs[OsStr::new("ROBIGO_CONF_TEST_SET")], Some("x".into()));
+        assert_eq!(envs[OsStr::new("R_HOME")], None);
+        assert_eq!(envs[OsStr::new("TZ")], Some("Europe/Berlin".into()));
+        assert_eq!(envs[OsStr::new("R_DEFAULT_PACKAGES")], Some("NULL".into()));
+        assert!(std::env::var_os("ROBIGO_CONF_TEST_SET").is_none());
     }
 
     /// A binary that hangs at startup: the probe is killed at the case
@@ -1161,6 +1244,7 @@ mod boot_record_tests {
             jobs: 1,
             timeout: Duration::from_secs(1),
             case_timeouts: BTreeMap::new(),
+            env: Vec::new(),
         };
         let t = Instant::now();
         let r = boot_record(&RT, &o);
