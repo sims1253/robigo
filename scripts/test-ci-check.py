@@ -130,6 +130,41 @@ class Rule(unittest.TestCase):
         self.assertEqual(p.returncode, 1)
         self.assertIn("not passed: fuzz", p.stdout)
 
+    def test_stacked_pull_request_skips_all_but_select_lint_and_rt_and_fails(self):
+        skip = {**SKIP_HEAVY, **{j.replace("-", "_"): "skipped" for j in chk.STACKED_SKIP}, "package_gate": "skipped"}
+        n = needs("false", "false", "true", **skip)
+        n["select"]["outputs"]["stacked"] = "true"
+        self.assertTrue(passes(n))                  # every skip is explained...
+        for job in ("rt", "lint", "rdb-data"):      # ...but not these
+            m = needs("false", "false", "true", **{**skip, job.replace("-", "_"): "skipped"})
+            m["select"]["outputs"]["stacked"] = "true"
+            self.assertFalse(passes(m), job)
+        p = subprocess.run([sys.executable, str(HERE / "ci-check.py"), "--pull-request"], capture_output=True,
+                           text=True, env={**os.environ, "NEEDS": json.dumps(n)})
+        self.assertEqual(p.returncode, 1)           # ...and Check still fails: a retarget starts no run
+        self.assertIn("stacked pull request", p.stdout)
+        # not stacked, the same skips are not explained
+        self.assertFalse(passes(needs("false", "false", "true", **skip)))
+
+    def test_a_cancelled_run_fails_check(self):
+        # every need cancelled (a run cancelled by hand, or superseded): red
+        n = {j: {"result": "cancelled", "outputs": {}} for j in JOBS}
+        self.assertFalse(passes(n))
+        self.assertFalse(passes(n, pull_request=False))
+        self.assertFalse(passes(needs(rt="cancelled")))
+
+    def test_check_runs_always_and_pull_requests_share_no_group(self):
+        # Check runs in a cancelled run too, so a hand-cancelled head run is
+        # red; then no shared group may make a new run wait behind it
+        wf = (HERE.parent / ".github/workflows/ci.yml").read_text()
+        self.assertIn("    name: Check\n    if: ${{ always() }}\n", wf)
+        self.assertIn("  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.run_id }}\n"
+                      "  cancel-in-progress: false\n", wf)
+        # select cancels the superseded runs, as its first step
+        steps = wf.split("\n  select:\n", 1)[1].split("\n    steps:\n", 1)[1].splitlines()
+        first = next(l.strip() for l in steps if not l.strip().startswith("#"))
+        self.assertEqual(first, "- name: Cancel this pull request's superseded runs")
+
     def test_workflow_needs_every_gating_job(self):
         import re
         wf = (HERE.parent / ".github/workflows/ci.yml").read_text()

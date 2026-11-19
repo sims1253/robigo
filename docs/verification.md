@@ -856,8 +856,14 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
     `agent-context`'s, below). `scripts/ci-check.py` passes when every job
     above passed or was skipped for a reason `select` gave, and fails on a
     failure, a cancel or any other skip (GitHub counts a skipped required
-    check as passing). A new gating job goes into its `needs`;
-    `scripts/test-ci-check.py` fails until it does.
+    check as passing), so it runs `always()`, in a cancelled run too. Pull
+    request runs share no concurrency group, so that `Check` blocks no
+    other run: `select`'s first step cancels the pull request's older runs
+    through the API instead. On a stacked pull request (base not `main`)
+    only select, lint and rt (with rdb-data) run, and `Check` fails: a
+    retarget starts no run. A new gating
+    job goes into its `needs`; `scripts/test-ci-check.py` fails until it
+    does.
 
 Caches are saved by `main` only (rust-cache `save-if`,
 `actions/cache/save`, `.github/actions/package-cache`); pull requests
