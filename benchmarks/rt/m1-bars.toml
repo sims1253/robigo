@@ -221,3 +221,18 @@ row = "d0-unlist" # unlist() of two integer vectors
 row = "d0-paste" # paste() of a string and an integer
 [[guard]]
 row = "d0-paste0" # paste0() of a string and an integer
+
+# New rows for paths no row reached (the foreman's item 2;
+# docs/ledger/g3/2026-11-18-perf-guard-rows2.md).
+[[guard]]
+row = "guard-vec-arith" # x * 2 + x on 1,000 doubles
+[[guard]]
+row = "guard-vec-sum" # sum() of 1,000 doubles
+[[guard]]
+row = "guard-dots" # `...` forwarded through a wrapper
+[[guard]]
+row = "guard-dollar-assign" # l$a <- i on a list
+[[guard]]
+row = "guard-while" # a while loop
+[[guard]]
+row = "guard-repeat" # a repeat loop left by break

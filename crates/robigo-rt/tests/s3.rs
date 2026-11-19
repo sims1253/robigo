@@ -466,3 +466,30 @@ fn warnings_are_collected_and_printed() {
         let _ = s.out.take();
     }
 }
+
+/// A replacement method whose `value` comes after `...` gets the value by
+/// name: `$<-`'s dispatch passes the call's own cells, their tags kept
+/// (`fixSubset3Args`); so do `[<-`, `[[<-` and `names<-` (GNU R 4.6.2:
+/// tests/rt/s3/replacement-value-tag.R).
+#[test]
+fn replacement_methods_get_value_by_name_after_dots() {
+    for mut s in both() {
+        s.r.val(
+            r#"x <- setclass("a", "foo")
+`$<-.foo` <- function(x, name, ..., value) join(name, value)
+`[<-.foo` <- function(x, ..., value) join("[", value)
+`[[<-.foo` <- function(x, ..., value) join("[[", value)
+`names<-.foo` <- function(x, ..., value) join("names", value)"#,
+        );
+        for (src, want) in [
+            ("x <- setclass(\"a\", \"foo\"); x$b <- \"2\"; x", "b 2"),
+            ("y <- setclass(\"a\", \"foo\"); `$<-`(y, \"c\", value = \"3\")", "c 3"),
+            ("f <- function(x) { x$d <- \"4\"; x }; f(setclass(\"a\", \"foo\"))", "d 4"),
+            ("y <- setclass(\"a\", \"foo\"); y[1] <- \"5\"; y", "[ 5"),
+            ("y <- setclass(\"a\", \"foo\"); y[[1]] <- \"6\"; y", "[[ 6"),
+            ("y <- setclass(\"a\", \"foo\"); names(y) <- \"n\"; y", "names n"),
+        ] {
+            assert_eq!(s.r.val(src), strs(&[want]), "{src}");
+        }
+    }
+}

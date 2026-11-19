@@ -205,6 +205,10 @@ pub struct Heap {
     pub reserved: usize,
     /// written into every block and large chunk header (see [`Remembered`])
     pub remembered: *mut Remembered,
+    /// Refuse every new chunk, as a system with no memory left would: a
+    /// test knob for the refusal paths (`Core::alloc_object`'s "memory
+    /// exhausted").
+    pub refuse_chunks: bool,
 }
 
 impl Default for Heap {
@@ -238,23 +242,21 @@ impl Heap {
             min_addr: usize::MAX,
             max_addr: 0,
             reserved: 0,
+            refuse_chunks: false,
             remembered: std::ptr::null_mut(),
         }
     }
 
-    /// Returns (base, index into `self.chunks`): the chunk list is sorted
-    /// by address and mmap does not hand out monotonic addresses, so the
-    /// new chunk is not necessarily the last one.
-    fn new_chunk(&mut self, large: bool, min_payload: usize) -> (*mut u8, usize) {
-        match self.try_new_chunk(large, min_payload) {
-            Some(r) => r,
-            None => handle_alloc_error(Layout::from_size_align(CHUNK_BYTES, BLOCK).unwrap()),
-        }
-    }
-
-    /// A new chunk, or None if the system has no memory for it (large
-    /// objects turn that into GNU R's allocation error).
+    /// A new chunk, or None if the system has no memory for it (GNU R's
+    /// "cannot allocate vector of size ..." for a large object, "memory
+    /// exhausted" for a small one's page). Returns (base, index into
+    /// `self.chunks`): the chunk list is sorted by address and mmap does
+    /// not hand out monotonic addresses, so the new chunk is not
+    /// necessarily the last one.
     fn try_new_chunk(&mut self, large: bool, min_payload: usize) -> Option<(*mut u8, usize)> {
+        if self.refuse_chunks {
+            return None;
+        }
         let total = if large { min_payload.div_ceil(BLOCK).checked_mul(BLOCK)? } else { CHUNK_BYTES };
         let layout = chunk_layout(total)?;
         // SAFETY: `total` is not zero: a block, or a positive number of them
@@ -302,20 +304,25 @@ impl Heap {
         Some((base as *mut u8, idx))
     }
 
-    fn fresh_block(&mut self) -> *mut Block {
+    /// An unclaimed block, from a new chunk if every chunk is claimed;
+    /// None if the system refuses the chunk.
+    fn fresh_block(&mut self) -> Option<*mut Block> {
         for ci in (0..self.chunks.len()).rev() {
             let c = &self.chunks[ci];
             if !c.large && (c.claimed as usize) < CHUNK_BLOCKS {
                 let b = (c.base + c.claimed as usize * BLOCK) as *mut Block;
                 self.chunks[ci].claimed += 1;
-                return b;
+                return Some(b);
             }
         }
-        let (base, idx) = self.new_chunk(false, 0);
+        let (base, idx) = self.try_new_chunk(false, 0)?;
         self.chunks[idx].claimed = 1;
-        base as *mut Block
+        Some(base as *mut Block)
     }
 
+    /// `size` bytes for an object; null if the system refuses the chunk a
+    /// small object needs (GNU R's refused page, `GetNewPage`). A refused
+    /// large chunk aborts: large requests go through `try_alloc_large`.
     #[inline(always)]
     pub fn alloc(&mut self, size: usize) -> *mut u8 {
         debug_assert!(size >= GRANULE);
@@ -326,6 +333,16 @@ impl Heap {
             Some(p) => p.as_ptr(),
             None => self.alloc_small(size),
         }
+    }
+
+    /// [`Heap::alloc`] where a refusal cannot be answered (the debug
+    /// mover's copies, during a collection): it aborts.
+    pub fn alloc_or_abort(&mut self, size: usize) -> *mut u8 {
+        let p = self.alloc(size);
+        if p.is_null() {
+            handle_alloc_error(Layout::from_size_align(CHUNK_BYTES, BLOCK).unwrap());
+        }
+        p
     }
 
     /// [`Heap::alloc`]'s fast path for a size of at most `MAX_MEDIUM`, with
@@ -431,7 +448,9 @@ impl Heap {
                 cs.cur = b;
                 continue;
             }
-            let b = self.fresh_block();
+            let Some(b) = self.fresh_block() else {
+                return std::ptr::null_mut();
+            };
             // SAFETY: `fresh_block` returns an initialized, unclaimed block.
             unsafe { (*b).class = ci as u8 };
             self.classes[ci].cur = b;

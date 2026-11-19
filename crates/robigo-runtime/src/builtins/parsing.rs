@@ -512,7 +512,7 @@ impl<'a> SourceRefs<'a> {
     fn convert(&self, expr: &robigo_syntax::Expr) -> Value {
         use robigo_syntax::Expr;
         match expr {
-            Expr::Call { fun, args, span } => {
+            Expr::Call { fun, args, span, .. } => {
                 let mut value = Value::lang(
                     self.convert(fun),
                     args.iter()

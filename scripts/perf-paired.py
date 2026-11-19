@@ -133,7 +133,10 @@ def main():
         if args.base_robigo:
             items.insert(0, ('base', args.base_robigo))
         for side, source in items:
-            target = Path(isolated) / side / 'bin' / 'robigo'
+            # (directories of one length: robigo's counts move with the
+            # length of its own path, by up to 0.16%,
+            # docs/ledger/g3/2026-11-18-perf-base.md)
+            target = Path(isolated) / {'base': 'base', 'candidate': 'cand'}[side] / 'bin' / 'robigo'
             target.parent.mkdir(parents=True)
             shutil.copy2(source, target)
             binaries[side] = str(target)

@@ -992,6 +992,15 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     // SAFETY: the call is a live constant.
                     let c = unsafe { act.scratch(R_SCRATCH, call) };
                     cx.error_call(Some(c), &msg)
+                } else if i.c != 0 && v.profile == Profile::Bc {
+                    // the expression bcEval is at, for error()
+                    // (R_getBCInterpreterExpression)
+                    // SAFETY: a constant of the rooted code object.
+                    unsafe { cx.set_bc_expression(v.k(i.c)) };
+                    let e = cx.error(&msg);
+                    // SAFETY: R_NilValue.
+                    unsafe { cx.set_bc_expression(cx.nil().sexp()) };
+                    e
                 } else {
                     cx.error(&msg)
                 });

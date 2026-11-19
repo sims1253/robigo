@@ -147,6 +147,18 @@ impl Col<'_> {
 /// `.Internal(radixsort(na.last, decreasing, retgrp, sortstr, ...))`.
 // R: radixsort.c:do_radixsort
 pub fn do_radixsort(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    // CAR, CADR, ... of the arguments: R_NilValue past the end (asLogical
+    // NA, asBool2's error)
+    if args.len() < 4 {
+        if args.len() >= 3 {
+            // nalast, decreasing and retGrp read
+            as_bool2(cx, call, args.root(2))?;
+        }
+        return cx.scope(|cx, s| {
+            let nil = s.root(cx, cx.nil());
+            as_bool2(cx, call, nil).map(drop)
+        });
+    }
     let nalast = match as_logical(cx, args.get(cx, 0)) {
         NA_INTEGER => 0,
         1 => 1,

@@ -88,6 +88,13 @@ pub fn do_parse(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
             // takes past that is given back (a file's)
             let partial = wasopen && num != i32::MIN && num >= 0;
             let give_back = wasopen && crate::connections::is_file(cx, ifile)?;
+            // (the give-back seeks the file: input that did not come from it,
+            // a pushback, cannot be given back so)
+            if partial && crate::connections::has_pending_input(cx, ifile)? {
+                return Err(cx.error(
+                    "robigo: parse(n = ) from an open connection with pushed-back input is not implemented yet",
+                ));
+            }
             if partial && !crate::connections::is_file(cx, ifile)? {
                 return Err(
                     cx.error("robigo: parse(n = ) from an open connection that is not a file is not implemented yet")

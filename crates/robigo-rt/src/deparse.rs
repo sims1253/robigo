@@ -10,7 +10,11 @@
 //! places where GNU R's deparse runs code are handled without it:
 //!
 //! - a promise (`case PROMSXP`, `eval(s, R_EmptyEnv)`): its value when it
-//!   is forced; an unforced promise says "not implemented";
+//!   is forced. An unforced one stops the deparse; the `*_forcing` entries
+//!   (deparse(), dput(), printing a language object, matchArgs' message)
+//!   force it and start again, so promises are forced in GNU R's order. A
+//!   caller under `&Cx` (an error's call, the deparse hook) says "not
+//!   implemented" instead;
 //! - `SYMVALUE(op)` of a call's function is read from base without
 //!   forcing; GNU R forces a lazy base binding only to see whether it is
 //!   the closure of `::` or `:::`, which are primitives in R 4.6.2, so the
@@ -71,7 +75,43 @@ pub struct Deparsed {
 /// robigo's "not implemented" for what is not ported).
 pub type Fail = String;
 
-type DResult = Result<(), Fail>;
+/// Why the deparser stopped: an error's message, or an unforced promise
+/// GNU R would force here (`eval(s, R_EmptyEnv)`), which only a caller with
+/// `&mut Cx` can do ([`deparse1_with_cutoff_forcing`]).
+enum Stop {
+    Msg(Fail),
+    /// (a handle the forcing caller releases)
+    Unforced(robigo_rtcore::Global),
+}
+
+impl From<String> for Stop {
+    fn from(m: String) -> Stop {
+        Stop::Msg(m)
+    }
+}
+
+impl From<&str> for Stop {
+    fn from(m: &str) -> Stop {
+        Stop::Msg(m.to_owned())
+    }
+}
+
+/// The message of a deparse that met an unforced promise where it cannot
+/// force one (a caller under `&Cx`: a call in an error message, a hook).
+const UNFORCED: &str = "robigo: deparse of an unforced promise (it forces it) is not implemented yet here";
+
+impl Stop {
+    /// The message, for a caller that does not force ([`State::forcing`]
+    /// off: never an `Unforced`).
+    fn message(self) -> Fail {
+        match self {
+            Stop::Msg(m) => m,
+            Stop::Unforced(_) => unreachable!("robigo: an Unforced stop of a deparse that does not force"),
+        }
+    }
+}
+
+type DResult = Result<(), Stop>;
 
 /// `deparse1WithCutoff(call, abbrev, cutoff, backtick, opts, nlines)`:
 /// `nlines > 0` keeps at most that many lines, otherwise all (nlines is
@@ -86,6 +126,58 @@ pub fn deparse1_with_cutoff(
     opts: i32,
     nlines: i32,
 ) -> Result<Deparsed, Fail> {
+    deparse_run(cx, call, abbrev, cutoff, backtick, opts, nlines, false).map_err(Stop::message)
+}
+
+/// [`deparse1_with_cutoff`] forcing the promises it meets, as GNU R's
+/// `deparse2buff` forces each (`eval(s, R_EmptyEnv)`): the deparse stops
+/// at the first unforced promise, which is forced here, and starts again;
+/// so promises are forced in the order GNU R's walk forces them, and the
+/// text is made once all of them are values. The outer error is one the
+/// forcing raised; the inner one the deparse's message, for the caller to
+/// raise as it raises it.
+// R: deparse.c:deparse2buff (case PROMSXP)
+#[allow(clippy::too_many_arguments)]
+pub fn deparse1_with_cutoff_forcing(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    abbrev: bool,
+    cutoff: i32,
+    backtick: bool,
+    opts: i32,
+    nlines: i32,
+) -> robigo_rtcore::RResult<Result<Deparsed, Fail>> {
+    loop {
+        let r = deparse_run(cx, call.bind(cx), abbrev, cutoff, backtick, opts, nlines, true);
+        match r {
+            Ok(d) => return Ok(Ok(d)),
+            Err(Stop::Msg(m)) => return Ok(Err(m)),
+            Err(Stop::Unforced(g)) => {
+                let forced = cx.scope(|cx, s| {
+                    let p = s.root(cx, g.bind(cx));
+                    let e = s.root(cx, cx.empty_env());
+                    let o = s.out(cx);
+                    // eval uses env of promise
+                    crate::eval(cx, p, e, o)
+                });
+                cx.release_global(g);
+                forced?;
+            }
+        }
+    }
+}
+
+/// The deparse itself ([`deparse1_with_cutoff`]).
+fn deparse_run(
+    cx: &Cx,
+    call: Ref<'_>,
+    abbrev: bool,
+    cutoff: i32,
+    backtick: bool,
+    opts: i32,
+    nlines: i32,
+    forcing: bool,
+) -> Result<Deparsed, Stop> {
     let maxlines = if nlines > 0 { nlines as usize } else { usize::MAX };
     let mut d = State {
         cx,
@@ -105,6 +197,7 @@ pub fn deparse1_with_cutoff(
         maxlines,
         active: true,
         fnarg: false,
+        forcing,
         // PrintDefaults(), then R_print.digits = DBL_DIG
         pp: PrintParams { digits: 15, locale: robigo_rtbuiltins::text::ctype(cx.locale()), ..PrintParams::DEFAULT },
     };
@@ -153,9 +246,25 @@ pub fn deparse1line(cx: &Cx, call: Ref<'_>, abbrev: bool, opts: i32) -> Result<V
     Ok(d.lines.join(&b'\n'))
 }
 
+/// [`deparse1line`] forcing the promises it meets
+/// ([`deparse1_with_cutoff_forcing`]).
+// R: deparse.c:deparse1line_ex
+pub fn deparse1line_forcing(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    abbrev: bool,
+    opts: i32,
+) -> robigo_rtcore::RResult<Result<Vec<u8>, Fail>> {
+    let d = deparse1_with_cutoff_forcing(cx, call, abbrev, MAX_CUTOFF, true, opts, -1)?;
+    Ok(d.map(|d| d.lines.join(&b'\n')))
+}
+
 /// `LocalParseData`.
 struct State<'g> {
     cx: &'g Cx,
+    /// Whether an unforced promise stops the deparse for the caller to
+    /// force it ([`deparse1_with_cutoff_forcing`]), or is an error.
+    forcing: bool,
     lines: Vec<Vec<u8>>,
     linenumber: usize,
     len: usize,
@@ -589,8 +698,8 @@ impl<'g> State<'g> {
         }
         // a package class's length and elements are its C methods' (M5), and
         // so are its names' or dimnames' when they are one
-        if crate::print::reads_package_altrep(s) {
-            return Err("robigo: deparse of a package ALTREP vector is not implemented yet".into());
+        if let Some(at) = crate::print::package_altrep_in(s) {
+            return Err(format!("robigo: deparse of a package ALTREP vector ({at}) is not implemented yet"));
         }
         match s.sexptype() {
             NILSXP => self.print(b"NULL"),
@@ -642,8 +751,12 @@ impl<'g> State<'g> {
                 } else if p.value().sexp() != cx.unbound().sexp() {
                     // eval uses env of promise: a forced one is its value
                     self.deparse2buff(p.value())?;
+                } else if self.forcing {
+                    // eval(s, R_EmptyEnv): the caller forces it and deparses
+                    // again (deparse1_with_cutoff_forcing)
+                    return Err(Stop::Unforced(cx.global(s)));
                 } else {
-                    return Err("robigo: deparse of an unforced promise (it forces it) is not implemented yet".into());
+                    return Err(UNFORCED.into());
                 }
             }
             CLOSXP => {
@@ -757,7 +870,7 @@ impl<'g> State<'g> {
                 // UNIMPLEMENTED_TYPE("deparse2buff", s)
                 let msg =
                     format!("unimplemented type '{}' in '{}'\n", robigo_rtbuiltins::util::type2char(t), "deparse2buff");
-                return Err(msg);
+                return Err(msg.into());
             }
         }
         self.left = prev_left;
