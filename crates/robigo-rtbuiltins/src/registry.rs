@@ -292,6 +292,10 @@ pub static BUILTINS: &[Builtin] = &[
     op!("^", POWOP, arith::do_arith, 1, 2, pp(Binary2, Prec::Power, true), Pure),
     op!("%%", MODOP, arith::do_arith, 1, 2, pp(Binary2, Prec::Percent, false), Pure),
     op!("%/%", IDIVOP, arith::do_arith, 1, 2, pp(Binary2, Prec::Percent, false), Pure),
+    // array.c's matrix products (primitives, the matrixOps group)
+    row("%*%", array::do_matprod::<0>, 0, 1, 2, pp(Binary, Prec::Percent, false), Pure),
+    row("crossprod", array::do_matprod::<1>, 1, 1, 1, FUNCALL, Pure),
+    row("tcrossprod", array::do_matprod::<2>, 2, 1, 1, FUNCALL, Pure),
     // relop.c
     op!("==", EQOP, relop::do_relop, 1, 2, pp(Binary, Prec::Compare, false), Pure),
     op!("!=", NEOP, relop::do_relop, 1, 2, pp(Binary, Prec::Compare, false), Pure),
@@ -308,6 +312,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("lengths", array::do_lengths, 0, 11, 2, FUNCALL, Pure),
     row("drop", array::do_drop, 0, 11, 1, FUNCALL, Pure),
     row("array", array::do_array, 0, 11, 3, FUNCALL, Pure),
+    row("t.default", array::do_transpose, 0, 11, 1, FUNCALL, Pure),
     // bind.c
     row("c", bind::do_c, 0, 1, -1, FUNCALL, Pure),
     row("unlist", bind::do_unlist, 0, 11, 3, FUNCALL, Pure),
