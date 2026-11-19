@@ -782,6 +782,126 @@ pub fn do_mk_active_bnd(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<
     Ok(())
 }
 
+/// `.Internal(bindingIsActive(sym, env))`.
+// R: envir.c:do_bndIsActive, R_BindingIsActive
+pub fn do_bnd_is_active(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("bindingIsActive", true).check_arity(cx, call, args)?;
+    let active = cx.binding_is_active(args.root(0), args.root(1))?;
+    out.set(cx, cx.logical_value(active as i32));
+    Ok(())
+}
+
+/// `.Internal(activeBindingFunction(sym, env))`.
+// R: envir.c:do_activeBndFun, R_ActiveBindingFunction
+pub fn do_active_bnd_fun(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("activeBindingFunction", true).check_arity(cx, call, args)?;
+    cx.active_binding_function(args.root(0), args.root(1), out)
+}
+
+/// The innermost promise of the chain `p` (`promiseUnwrap`: a promise
+/// whose code is a promise is followed; [`Cx::binding_type`] has checked
+/// the chain for a cycle).
+// R: envir.c:promiseUnwrap
+fn promise_unwrap(p: Ref<'_>) -> Ref<'_> {
+    let mut x = p;
+    while let View::Promise(pr) = x.view() {
+        let code = pr.code();
+        if code.sexptype() != PROMSXP {
+            break;
+        }
+        x = code;
+    }
+    x
+}
+
+/// What the binding accessors read of a delayed or forced binding.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Delayed {
+    /// `R_DelayedBindingExpression`
+    Expr,
+    /// `R_ForcedBindingExpression`
+    Forced,
+    /// `R_DelayedBindingEnvironment`
+    Env,
+}
+
+/// `R_DelayedBindingExpression`, `R_ForcedBindingExpression` and
+/// `R_DelayedBindingEnvironment` of `sym` in `env`'s own frame: the
+/// expression of the innermost promise of the binding's chain (its source,
+/// if it is byte code: `R_PromiseExpr`), or that promise's environment. An
+/// argument robigo holds as a slot is read as GNU R's promise.
+// R: envir.c:R_DelayedBindingExpression, R_ForcedBindingExpression, R_DelayedBindingEnvironment, R_GetVarLocExpression
+fn delayed_binding(cx: &mut Cx, sym: Root<'_>, env: Root<'_>, what: Delayed, out: Out<'_>) -> RResult<()> {
+    use robigo_rtcore::BindingType as B;
+    // R_findVarLocInFrameCheck's errors, then the binding's kind
+    let t = cx.binding_type(sym, env)?;
+    match (what, t) {
+        (Delayed::Expr, B::Delayed) | (Delayed::Forced, B::Forced) | (Delayed::Env, B::Delayed) => {}
+        (Delayed::Expr, _) => return Err(cx.error("not a delayed binding")),
+        (Delayed::Forced, _) => return Err(cx.error("not a forced binding")),
+        // BINDING_OR_SYMBOL_VALUE's and the value's checks
+        (Delayed::Env, B::Unbound) => return Err(cx.error("unbound variable")),
+        (Delayed::Env, B::Active) => return Err(cx.error("BINDING_OR_SYMBOL_VALUE called on active binding")),
+        (Delayed::Env, _) => return Err(cx.error("not a delayed binding")),
+    }
+    cx.scope(|cx, s| {
+        // the binding's value, a promise (not forced: a delayed or forced
+        // binding calls no function)
+        let o = s.out(cx);
+        let v = o.root();
+        cx.find_var_in_frame3(env, sym, true, o)?;
+        let inner = promise_unwrap(v.bind(cx));
+        let View::Promise(p) = inner.view() else {
+            unreachable!("robigo: a delayed or forced binding that is not a promise")
+        };
+        let r = match what {
+            Delayed::Env => p.env(),
+            _ => crate::bytecode::expr(cx, p.code()),
+        };
+        out.set(cx, r);
+        Ok(())
+    })
+}
+
+/// `.Internal(delayedBindingExpression(sym, env))`.
+// R: envir.c:do_delayedBindingExpr
+pub fn do_delayed_binding_expr(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: Args<'_>,
+    _env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    crate::row!("delayedBindingExpression", true).check_arity(cx, call, args)?;
+    delayed_binding(cx, args.root(0), args.root(1), Delayed::Expr, out)
+}
+
+/// `.Internal(delayedBindingEnvironment(sym, env))`.
+// R: envir.c:do_delayedBindingEnv
+pub fn do_delayed_binding_env(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: Args<'_>,
+    _env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    crate::row!("delayedBindingEnvironment", true).check_arity(cx, call, args)?;
+    delayed_binding(cx, args.root(0), args.root(1), Delayed::Env, out)
+}
+
+/// `.Internal(forcedBindingExpression(sym, env))`.
+// R: envir.c:do_forcedBindingExpr
+pub fn do_forced_binding_expr(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: Args<'_>,
+    _env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    crate::row!("forcedBindingExpression", true).check_arity(cx, call, args)?;
+    delayed_binding(cx, args.root(0), args.root(1), Delayed::Forced, out)
+}
+
 /// `.Internal(env.profile(env))`: a hashed environment's table as
 /// `list(size, nchains, counts)`; NULL for one without a table.
 // R: envir.c:do_envprofile, R_HashProfile
