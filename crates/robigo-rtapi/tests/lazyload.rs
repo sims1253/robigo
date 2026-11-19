@@ -39,7 +39,7 @@ const PACKAGES: [(&str, usize); 3] = [("base", 1179), ("compiler", 289), ("tools
 const SCRIPT: &str = r#"
 f <- Sys.getenv("RT_LAZYLOAD_FILE")
 pkg <- Sys.getenv("RT_LAZYLOAD_PKG")
-ck <- function(x) { b <- as.integer(serialize(x, NULL, version = 2L))[-(1:14)]
+ck <- function(x) { b <- as.numeric(as.integer(serialize(x, NULL, version = 2L))[-(1:14)])
                     paste(length(b), sum(b * seq_along(b)) %% 1000000007) }
 nz <- function(x, top = TRUE) if (is.function(x) && !is.primitive(x)) list(formals(x), body(x), attributes(x)) else
                   if (is.environment(x)) { if (top) list("env", nz(as.list(x, all.names = TRUE, sorted = TRUE), FALSE)) else "env" } else
@@ -84,12 +84,26 @@ fn oracle_databases_lazy_load() {
             .env("LC_ALL", "C")
             .env("R_DEFAULT_PACKAGES", "NULL")
             .env_remove("R_HOME")
+            // rt-ci runs the tests under its observation modes (scripts/rt-ci.py
+            // inherits the environment): this oracle run is not their subject
+            .env_remove("ROBIGO_GCTORTURE")
+            .env_remove("ROBIGO_GC_STATS")
+            .env_remove("ROBIGO_GC_MOVE")
+            .env_remove("ROBIGO_GC_PIN_REPORT")
+            .env_remove("ROBIGO_FRAME_QUARANTINE")
+            .env_remove("ROBIGO_FAIL_ALLOC_AT")
+            .env_remove("ROBIGO_RT_BOOT")
             .output()
             .unwrap_or_else(|e| panic!("running robigo-rt: {e}"));
         let out = String::from_utf8_lossy(&o.stdout).into_owned();
         assert!(o.status.success(), "{pkg}: robigo-rt failed: {out}{}", String::from_utf8_lossy(&o.stderr));
         let lines: Vec<Vec<&str>> = out.lines().map(|l| l.split_whitespace().collect()).collect();
-        let head = lines.iter().find(|l| l.first() == Some(&"variables")).expect("the variables line");
+        let head = lines.iter().find(|l| l.first() == Some(&"variables")).unwrap_or_else(|| {
+            panic!(
+                "the variables line (robigo-rt printed stdout:\n{out}\nstderr:\n{})",
+                String::from_utf8_lossy(&o.stderr)
+            )
+        });
         assert_eq!(
             (head[1].parse::<usize>().ok(), head[2]),
             (Some(count), "TRUE"),
