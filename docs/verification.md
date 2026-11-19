@@ -492,6 +492,28 @@ scripts/perf.py compare before.json after.json          # the gate
   warmed-up batch; only batches of 50 ms or more count, so programs that
   take microseconds are still timed to about 2%. This is the finish line
   of "the fastest R", which instruction counts against GNU R cannot be.
+- **robigo-rt's wall time, under docs/g3.md §13's rule** (A3):
+  - **The build:** robigo-rt's shipped build is profile-guided.
+    `scripts/pgo-build.sh -p robigo-rtapi profile` trains an instrumented
+    build on perf-rt's rows (`benchmarks/rt/calls-rows.toml`), E1's
+    programs, the boot and `tests/rt`, and writes
+    `.robigo/pgo-rt/robigo-rt.profdata`. `pgo-build.sh -p robigo-rtapi use
+    FILE` builds with it. Pull requests' perf gates stay without PGO, as
+    robigo's do.
+  - **The comparison:** `scripts/wall13.py --robigo-rt BIN` times that
+    binary against GNU R 4.6.2 (the oracle image) and, with `--impls`, Ř
+    and FastR, for each program `--filter` selects from
+    `benchmarks/benchmarks.toml`.
+  - **The rule:** each sample is a batch of processes run until they took
+    50 ms; at least 10 interleaved rounds, rotated; medians compared;
+    within 2% is a tie, which does not count as faster. Every runtime
+    starts with base alone (`R_DEFAULT_PACKAGES=NULL`), since robigo-rt
+    attaches none yet.
+  - **What it records:** the machine (CPU model and signature) and
+    robigo-rt's binary identity. `--report FILE [--markdown]` prints a run.
+  - **Where it runs:** by hand on the 5900X desktop and on m0pad. There is
+    no CI job: GitHub's runners vary too much for a 2% tie, and the
+    self-hosted runners were removed.
 
 ### Path-scoped perf gate
 
@@ -503,8 +525,16 @@ from path globs to groups; the first rule matching a file wins).
 
 - **Paths.** The diff of GitHub's test merge commit against its first
   parent, main's commit (`git diff HEAD^1 HEAD`; the job checks out with
-  `fetch-depth: 2`). The same commit is the baseline
-  (`scripts/perf-baseline.py`), so the compared set is exactly the PR's.
+  `fetch-depth: 2`). The same commit is the baseline, so the compared set
+  is exactly the PR's. The `perf-base` job builds it, as `build` builds the
+  candidate, and `perf` measures both on one runner with the same filter.
+  It no longer waits for main's run of that commit (a median 23 minutes on
+  2026-11-18, cut off at 50 for 31 of 73 jobs, which were then compared
+  with an ancestor). GNU R's records, its answers and its counts for the
+  ratio, come from a cache per oracle image, CPU signature, libc6 and
+  valgrind packages and measurement inputs. Main's run saves it, and a
+  pull request measures GNU R itself when the cache is missing or does not
+  cover its selection (`scripts/perf-gnur.py`).
 - **What runs.** `perf.py run --filter <union of the selected groups>`. The
   gate is unchanged: instruction counts, 0.5%, paired confirmation. The
   compare steps treat baseline benchmarks outside the run's recorded
@@ -518,11 +548,11 @@ from path globs to groups; the first rule matching a file wins).
   bytecode VM and its compiler (every closure runs on it) and the numerics
   core (`%%`, long double sums, the RNG) are explicit `all` rules. Only paths that cannot change an instruction
   count (docs, tests, the other workflows) select `none`: the job then
-  records that in its summary, skips the baseline wait and the measurement,
-  and passes.
+  records that in its summary, skips both measurements, and passes.
 - **`main`** (and `workflow_dispatch`) always runs the full suite and
-  uploads `perf-main`, so every merge still records the full next baseline.
-  Narrowed pull-request runs upload `perf`, which nothing consumes.
+  uploads `perf-main`, the history's and the scoreboard's numbers, and saves
+  GNU R's records for its CPU signature. Narrowed pull-request runs upload
+  `perf`, which nothing consumes.
 - **Dry run.** Nothing needs CI to see a decision:
 
   ```sh
@@ -589,7 +619,13 @@ scripts/counters.py check -v   # every fixture in the ast, vm and jit tiers
   marker to make a run pass; fix the regression.
 - New passes are added with `--update` (locally) or `scripts/corpus.py
   absorb` on CI's result files (artifacts `corpus-*`); both create
-  markers. `ROBIGO_CONF_UPDATE=1` marks conformance scripts.
+  markers. `absorb --from-run [ID]` fetches those artifacts itself with
+  `gh`: the newest completed push run on main that has any, or run ID,
+  which must be a push to main. It skips a profile's or a tier's results
+  and the conformance runner's. Run it with `--dry-run` first and run the
+  listed cases locally, because a CI pass can depend on CI's environment
+  (gnur-examples' `base/system.file` passes there, not on a workstation).
+  `ROBIGO_CONF_UPDATE=1` marks conformance scripts.
 - `scripts/ratchet.py check` lists the ratchets and fails if a marker
   names no case; `scripts/ratchet.py migrate` converts a legacy
   `passing.txt` (still read, for branches that predate the markers).
@@ -703,8 +739,11 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    (robigo-rt's checked-in base subset is what this tree traces: its
    names, kinds and defining files; which scripts reach each name is the
    job's artifact `base-subset-reached-by`, kept out of the file so that a
-   new case changes it only where it reaches a new name); the modes of `docs/g3.md` §16 add
-   steps here.
+   new case changes it only where it reaches a new name; for the same
+   reason the committed files carry no counts, which the generator prints
+   to the log, so two pull requests that each add a name merge to the file
+   the generator makes, or conflict where they add next to each other); the
+   modes of `docs/g3.md` §16 add steps here.
 3. **build:** release build, base-package natives, the binary the heavy
    jobs use; the ratchet markers, the parse-corpus ratchet and the builtin
    coverage baseline (`scripts/builtin-coverage.py --check`) are checked
@@ -738,9 +777,9 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    (`.github/workflows/packages.yml`).
 10. **perf:** instruction counts of every benchmark; on pull requests only
     the benchmarks the changed paths can affect (§ Path-scoped perf gate),
-    compared with `main` (fails if slower by more than 0.5% or newly
-    wrong); on `main` all of them, and also GNU R's counts, saved as the
-    next baseline.
+    compared with the merge's base measured beside them (fails if slower by
+    more than 0.5% or newly wrong); on `main` all of them, and also GNU R's
+    counts.
     - **perf-rt** is the same gate for robigo-rt, on every pull request the
       `rt` job runs for, beside it: `scripts/perf.py rt-bars` measures the
       M1 bars' rows (callgrind instructions, N against 2N, as the bars tool
@@ -817,8 +856,14 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
     `agent-context`'s, below). `scripts/ci-check.py` passes when every job
     above passed or was skipped for a reason `select` gave, and fails on a
     failure, a cancel or any other skip (GitHub counts a skipped required
-    check as passing). A new gating job goes into its `needs`;
-    `scripts/test-ci-check.py` fails until it does.
+    check as passing), so it runs `always()`, in a cancelled run too. Pull
+    request runs share no concurrency group, so that `Check` blocks no
+    other run: `select`'s first step cancels the pull request's older runs
+    through the API instead. On a stacked pull request (base not `main`)
+    only select, lint and rt (with rdb-data) run, and `Check` fails: a
+    retarget starts no run. A new gating
+    job goes into its `needs`; `scripts/test-ci-check.py` fails until it
+    does.
 
 Caches are saved by `main` only (rust-cache `save-if`,
 `actions/cache/save`, `.github/actions/package-cache`); pull requests

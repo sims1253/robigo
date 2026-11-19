@@ -1,0 +1,26 @@
+[1] "textConnection" "connection"    
+[1] TRUE
+[1] FALSE
+[1] "c(\"one\", \"two\", \"\", \"four\")"
+[1] "textConnection"
+[1] "r"
+[1] "text"
+[1] "one" "two"
+[1] "pushed" ""       "four"  
+character(0)
+[1] "x"
+character(0)
+[1] "NA"
+expression(x <- 1, y <- x + 1, print(y))
+expression(a <- 1, f(a), b <- 2)
+[1] 5
+[1] 5
+character(0)
+[1] TRUE
+[1] "invalid 'text' argument"
+[1] "unsupported mode"
+[1] "invalid 'description' argument"
+[1] "invalid 'open' argument"
+[1] "use of NULL environment is defunct"
+[1] "invalid 'environment' argument"
+[1] "invalid 'encoding' argument"
