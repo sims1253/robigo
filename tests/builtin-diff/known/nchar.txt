@@ -1,0 +1,7 @@
+# builtin-diff known failures: nchar, seed 0, key 3d3f731c278674efe5125781
+# nchar: 1476 / 1481 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
+55
+365
+543
+827
+1439
