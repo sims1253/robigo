@@ -330,6 +330,7 @@ primitive attributes
 primitive attributes<-
 primitive baseenv
 primitive break
+primitive browser
 primitive c
 primitive class
 primitive class<-
