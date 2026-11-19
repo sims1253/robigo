@@ -456,7 +456,16 @@ fn oracle_base_closures_crosscheck() {
                 }
                 closures += 1;
                 match robigo_rt::compile::crosscheck_installed(cx, v) {
-                    Ok(Some(c)) => *verdicts.entry(format!("{c:?}")).or_default() += 1,
+                    Ok(Some(c)) => {
+                        let verdict = match c {
+                            robigo_rt::compile::Verdict::Same => "Same",
+                            robigo_rt::compile::Verdict::Expected => "Expected",
+                            robigo_rt::compile::Verdict::Unexpected => "Unexpected",
+                            robigo_rt::compile::Verdict::Skipped => "Skipped",
+                            robigo_rt::compile::Verdict::Untranslated => "Untranslated",
+                        };
+                        *verdicts.entry(verdict.to_owned()).or_default() += 1;
+                    },
                     Ok(None) => *verdicts.entry("no byte code".to_owned()).or_default() += 1,
                     Err(e) => failures.push(format!("{name}: {}", common::message(cx, e))),
                 }
@@ -482,7 +491,7 @@ fn eval_src(cx: &mut Cx, src: &str) {
         let n = exr.bind(cx).as_vector::<Ref<'_>>().expect("parse() gives an expression").len();
         let g = s.root(cx, cx.global_env());
         for i in 0..n {
-            let e = s.root(cx, exr.bind(cx).as_vector::<Ref<'_>>().unwrap().get(i));
+            let e = s.root(cx, exr.bind(cx).as_vector::<Ref<'_>>().expect("parse() gives an expression").get(i));
             let o = s.out(cx);
             let _ = robigo_rt::eval(cx, e, g, o);
         }
