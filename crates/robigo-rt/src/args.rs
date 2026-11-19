@@ -348,7 +348,8 @@ pub(crate) struct Matched {
     src: Buf<u16>,
     /// The `...` formal (the first), or [`NO`].
     dots_formal: u16,
-    /// The actuals the `...` formal gobbles, in order.
+    /// The actuals the `...` formal gobbles, in order; after
+    /// [`MatchError::Unused`], the unused actuals (`!ARGUSED`), in order.
     dots: Buf<u16>,
     /// The partial matches made, (actual, formal), in the order
     /// `matchArgs` signals their warnings.
@@ -494,14 +495,15 @@ unsafe fn match_args(fs: &[Sexp], acts: &[Actual], nil: Sexp, dots: Sexp, m: &mu
             }
         }
     }
-    if m.dots_formal != NO {
-        // gobble up all unused actuals
-        for (bi, &u) in argused.iter().enumerate() {
-            if u == 0 {
-                m.dots.push(bi as u16);
-            }
+    // gobble up all unused actuals; with no `...` formal they are the
+    // unused-arguments error's (match.c:360-376: by ARGUSED, not by the
+    // final match, where a positional actual can replace a tagged empty one)
+    for (bi, &u) in argused.iter().enumerate() {
+        if u == 0 {
+            m.dots.push(bi as u16);
         }
-    } else if argused.iter().any(|&u| u == 0) {
+    }
+    if m.dots_formal == NO && !m.dots.is_empty() {
         return Err(MatchError::Unused);
     }
     Ok(())
@@ -1193,16 +1195,10 @@ fn unused_actuals<'s>(
     m: &Matched,
 ) -> Vec<(Option<Root<'s>>, Root<'s>)> {
     let nil = cx.nil().sexp();
-    let mut used = vec![false; acts.len()];
-    for &a in m.src.iter() {
-        if a != NO {
-            used[a as usize] = true;
-        }
-    }
-    acts.iter()
-        .zip(used)
-        .filter(|(_, u)| !u)
-        .map(|(a, _)| {
+    m.dots
+        .iter()
+        .map(|&bi| &acts[bi as usize])
+        .map(|a| {
             // SAFETY: the actual's value and tag, reachable from the rooted
             // call, list or `...` and read with nothing able to collect
             // since the match; PREXPR of a promise is its code's expression
