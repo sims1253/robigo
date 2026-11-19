@@ -1,0 +1,7 @@
+# Name;Unicode
+# another comment
+A;0041
+AE;00C6
+
+Aacute;00C1 # trailing comment
+zero;0030

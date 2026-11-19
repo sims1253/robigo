@@ -1,0 +1,80 @@
+$adobe
+[1] "A"      "AE"     "Aacute" "zero"  
+
+$unicode
+[1] "0041"  "00C6"  "00C1 " "0030" 
+
+[[1]]
+[1] "A"      "AE"     "Aacute" "zero"  
+
+[[2]]
+NULL
+
+[1] "A"      "0041"   "AE"     "00C6"   "Aacute" "00C1"   "zero"   "0030"  
+[1] "A"    "0041" "AE"  
+[1] "A"    "0041" "AE"   "00C6"
+[1] "# Name;Unicode"                 "# another comment"             
+[3] "A;0041"                         "AE;00C6"                       
+[5] "Aacute;00C1 # trailing comment" "zero;0030"                     
+[1] "A"      "AE"     "Aacute" "zero"  
+[1] "alpha"      "two words"  "say \"hi\"" "beta"       "gamma"     
+[6] "delta"      "last"      
+[1] "alpha"        "'two"         "words'"       "\"say"        "\\\"hi\\\"\""
+[6] "beta"         "gamma"        "delta"        "last"        
+[1] "alpha"      "two words"  "say \"hi\"" NA           "gamma"     
+[6] "delta"      "last"      
+[1] "  alpha 'two words' \"say \\\"hi\\\"\"\tbeta"
+[2] ""                                            
+[3] "gamma  delta"                                
+[4] "  last"                                      
+[[1]]
+[1] "alpha"      "say \"hi\"" "gamma"      "last"      
+
+[[2]]
+[1] "two words" "beta"      "delta"     ""         
+
+[[1]]
+[1] "alpha"      "say \"hi\"" "gamma"      "last"      
+
+[[2]]
+[1] "two words" "beta"      "delta"     ""         
+
+[1] "no error"
+[1] "x"   "y"   "z w"
+[1] "UTF-8"   "unknown"
+[1] "a"  "b"  "cA" "A" 
+[1] "a\\tb"
+[1] "open quote\n"
+[1] "a"   "b,c" ""    "d"  
+[1] "a"    "b\"c" "d"   
+character(0)
+[1] "a" "b" "d"
+[1] "a"  "bc" "d" 
+[1] "# Name"            "Unicode"           "# another comment"
+[4] "A"                 "0041"             
+[1] "AE;00C6"
+[[1]]
+NULL
+
+[[2]]
+[1] "c"
+
+[[1]]
+NULL
+
+[[2]]
+[1] "c"
+
+[1] "a" NA 
+[1] "(converted from warning) EOF within quoted string"
+[1] FALSE
+[1] "empty 'what' specified"
+[1] "invalid 'sep' value: must be one byte"
+[1] "invalid decimal separator: must be one byte"
+[1] "invalid 'strip.white' length"
+[1] "invalid 'comment.char' argument"
+[1] "invalid 'allowEscapes' argument"
+[1] "invalid quote symbol set"
+[1] "no error"
+[1] "invalid 'what' argument"
+[1] "invalid 'encoding' argument"

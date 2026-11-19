@@ -120,6 +120,7 @@ pub fn apply_special_args(
             };
             let named = names.iter().any(Option::is_some);
             let args = s.args(cx, &vals, named.then_some(&names[..]));
+            crate::call::check_internal_arity(cx, &def, args.len())?;
             let flag = def.print();
             cx.note_effect();
             if flag < 2 {

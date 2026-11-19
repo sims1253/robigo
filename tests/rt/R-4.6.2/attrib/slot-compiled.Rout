@@ -1,0 +1,11 @@
+`$<-.foo`(`*tmp*`, "slt", value = 3)
+`[<-.foo`(`*tmp*`, 1, value = 4)
+`@<-.foo`(`*tmp*`, "s", value = 5)
+`$<-.foo`(`*tmp*`, slt, value = 3)
+`[<-.foo`(`*tmp*`, 1, value = 4)
+`@<-.foo`(`*tmp*`, "s", value = 5)
+<simpleError in initMethodDispatch(): could not find function "initMethodDispatch">
+initMethodDispatch()
+<simpleError in initMethodDispatch(): could not find function "initMethodDispatch">
+initMethodDispatch()
+initMethodDispatch()
