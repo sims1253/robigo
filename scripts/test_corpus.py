@@ -566,5 +566,84 @@ class NetFixtureTests(unittest.TestCase):
             self.assertIn(shown, corpus.dec(exp["out"]).decode(), version)
 
 
+class FromRun(unittest.TestCase):
+    """`absorb --from-run`: a push run on main's corpus artifacts, fetched
+    with gh (stubbed here)."""
+
+    def fake_gh(self, runs, artifacts, view=None, files=None):
+        calls = []
+
+        def gh(*args):
+            calls.append(args)
+            if args[:2] == ("run", "list"):
+                return json.dumps(runs)
+            if args[0] == "api":
+                run = args[2].split("/runs/")[1].split("/")[0]
+                return "\n".join(artifacts.get(int(run), []))
+            if args[:2] == ("run", "view"):
+                return json.dumps(view)
+            if args[:2] == ("run", "download"):
+                d = args[args.index("-D") + 1]
+                os.makedirs(d, exist_ok=True)
+                for name, doc in (files or {}).get(args[args.index("-n") + 1], {}).items():
+                    Path(d, name).write_text(json.dumps(doc))
+                return ""
+            raise AssertionError(args)
+        return gh, calls
+
+    def test_the_newest_run_with_corpus_artifacts(self):
+        gh, _ = self.fake_gh([{"databaseId": 3, "headSha": "c" * 40}, {"databaseId": 2, "headSha": "b" * 40}],
+                             {3: ["perf-rt-bins"], 2: ["corpus-rt-fastr-1of1", "rdb-oracle-lib"]})
+        with patch.object(corpus, "gh", side_effect=gh):
+            self.assertEqual(corpus.main_run(None), ("2", "b" * 40))
+            self.assertEqual(corpus.corpus_artifacts(2), ["corpus-rt-fastr-1of1"])
+
+    def test_an_older_run_is_found_past_the_first_page(self):
+        runs = [{"databaseId": i, "headSha": f"{i:040d}"} for i in range(100, 60, -1)]
+        gh, calls = self.fake_gh(runs, {61: ["corpus-small-1of1"]})
+        with patch.object(corpus, "gh", side_effect=gh):
+            self.assertEqual(corpus.main_run(None)[0], "61")
+        listing = [c for c in calls if c[:2] == ("run", "list")][0]
+        self.assertEqual(listing[listing.index("--limit") + 1], str(corpus.RUNS_SEARCHED))
+
+    def test_a_pull_request_run_is_refused(self):
+        gh, _ = self.fake_gh([], {}, view={"headBranch": "g3/x", "event": "pull_request", "status": "completed",
+                                           "headSha": "a" * 40})
+        with patch.object(corpus, "gh", side_effect=gh), self.assertRaises(SystemExit) as e:
+            corpus.main_run(7)
+        self.assertIn("not a push to main", str(e.exception))
+
+    def test_only_default_runs_results_are_absorbed(self):
+        ok = {"summary": {"corpus": "fastr", "runtime": "rt"}, "results": []}
+        files = {"corpus-rt-fastr-1of1": {"fastr.rt.json": ok, "notes.json": {"x": 1},
+                                          "fastr.tier.json": {"summary": {"corpus": "fastr", "tier": "jit"},
+                                                              "results": []},
+                                          "conformance.json": {"summary": {"corpus": "conformance"}, "results": []}}}
+        gh, _ = self.fake_gh([], {5: list(files)}, files=files)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(corpus, "gh", side_effect=gh), \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            got = corpus.run_results("5", tmp)
+        self.assertEqual([os.path.basename(f) for f in got], ["fastr.rt.json"])
+        self.assertIn("tier run's results, skipped", out.getvalue())
+        self.assertIn("'conformance', which is no corpus, skipped", out.getvalue())
+
+    def test_a_dry_run_lists_and_writes_nothing(self):
+        doc = {"summary": {"corpus": "fastr", "runtime": "rt"},
+               "results": [{"id": "a/new", "pass": True}, {"id": "a/old", "pass": True}, {"id": "a/no", "pass": False}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp, "r.json")
+            f.write_text(json.dumps(doc))
+            with patch.object(corpus, "load_expected", return_value={"a/new": 1, "a/old": 1, "a/no": 1}), \
+                 patch.object(corpus, "load_passing", return_value={"a/old"}), \
+                 patch.object(corpus, "add_passing", side_effect=AssertionError("wrote")), \
+                 contextlib.redirect_stdout(io.StringIO()) as out:
+                corpus.cmd_absorb(argparse.Namespace(files=[str(f)], from_run=None, dry_run=True))
+        self.assertEqual(out.getvalue(), "fastr (rt): 1 new pass(es) would be added\n  a/new\n")
+
+    def test_files_and_from_run_do_not_mix(self):
+        with self.assertRaises(SystemExit):
+            corpus.cmd_absorb(argparse.Namespace(files=["x.json"], from_run="latest"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -25,7 +25,7 @@ fn main() {
 
 /// The `R_HOME` in effect, and where it came from.
 enum RHome {
-    /// One the environment names, or a default tree with base's files.
+    /// The install's or the checkout's tree, with base's files.
     Given(std::path::PathBuf),
     /// Neither an install's tree nor the checkout's has base's files: the
     /// checkout's, which `scripts/rt-home.sh` makes.
@@ -40,34 +40,27 @@ impl RHome {
     }
 }
 
-/// The front end's `R_HOME` (m2m3-plan F7b): robigo-rt's R_HOME tree, as
-/// GNU R's `R` script exports its own with `R_SHARE_DIR`, `R_INCLUDE_DIR`
-/// and `R_DOC_DIR` under it. An installed robigo-rt's is
+/// The front end's `R_HOME` (m2m3-plan F7b): robigo-rt's own R_HOME tree,
+/// as GNU R's `R` script exports its own `R_HOME_DIR` with `R_SHARE_DIR`,
+/// `R_INCLUDE_DIR` and `R_DOC_DIR` under it. An installed robigo-rt's is
 /// `<prefix>/lib/robigo` (the binary in `<prefix>/bin`); else the tree of
 /// the checkout it was built from, `.robigo/rt-home` (`scripts/rt-home.sh`),
-/// as an uninstalled GNU R's is its build directory. Unlike GNU R's script,
-/// which ignores an `R_HOME` the environment has ("WARNING: ignoring
-/// environment value of R_HOME"), a set `R_HOME` is kept, and so is each of
-/// the three directories that is set; those that are not (or are empty,
-/// as an empty `R_HOME` is for the script's `test -n`) are under the
-/// `R_HOME` in effect, as the script assigns all three. Returns that
-/// `R_HOME`.
+/// as an uninstalled GNU R's is its build directory. As the script does, an
+/// `R_HOME` the environment has that is another (GNU R's own, say) is
+/// ignored with GNU R's warning (to stdout: the script's `echo`), and the
+/// three directories are always the tree's. Returns that `R_HOME`.
 // R: scripts/R.sh.in
 fn init_r_home() -> RHome {
-    let mut vars = Vec::new();
-    let home = match std::env::var_os("R_HOME").filter(|h| !h.is_empty()) {
-        Some(h) => RHome::Given(std::path::PathBuf::from(h)),
-        None => {
-            let h = default_r_home();
-            vars.push(("R_HOME", h.path().to_path_buf()));
-            h
-        }
-    };
-    for (var, dir) in [("R_SHARE_DIR", "share"), ("R_INCLUDE_DIR", "include"), ("R_DOC_DIR", "doc")] {
-        if std::env::var_os(var).filter(|v| !v.is_empty()).is_none() {
-            vars.push((var, home.path().join(dir)));
-        }
+    let home = default_r_home();
+    if std::env::var_os("R_HOME").is_some_and(|h| !h.is_empty() && h != home.path().as_os_str()) {
+        println!("WARNING: ignoring environment value of R_HOME");
     }
+    let vars = [
+        ("R_HOME", home.path().to_path_buf()),
+        ("R_SHARE_DIR", home.path().join("share")),
+        ("R_INCLUDE_DIR", home.path().join("include")),
+        ("R_DOC_DIR", home.path().join("doc")),
+    ];
     for (var, value) in vars {
         // SAFETY: the first thing main does, before any other thread
         // exists to read the environment.
@@ -92,9 +85,14 @@ fn default_r_home() -> RHome {
     if let Some(h) = installed {
         return RHome::Given(std::path::absolute(&h).unwrap_or(h));
     }
-    let checkout = match option_env!("ROBIGO_WORKTREE") {
-        Some(w) if !w.is_empty() => std::path::PathBuf::from(w),
-        _ => std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
+    // the build checkout, or the one `ROBIGO_RT_CHECKOUT` names (robigo's
+    // own control, not GNU R's R_HOME: a relocated binary, a test)
+    let checkout = match std::env::var_os("ROBIGO_RT_CHECKOUT").filter(|c| !c.is_empty()) {
+        Some(c) => std::path::PathBuf::from(c),
+        None => match option_env!("ROBIGO_WORKTREE") {
+            Some(w) if !w.is_empty() => std::path::PathBuf::from(w),
+            _ => std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
+        },
     };
     let h = checkout.join(".robigo/rt-home");
     let h = std::path::absolute(&h).unwrap_or(h);
@@ -107,23 +105,20 @@ fn has_base(h: &std::path::Path) -> bool {
     h.join("library/base/R/base").is_file()
 }
 
-/// The start-up error for an `R_HOME` without base's tree, when stage 0
-/// is to read it: GNU R's script's "R_HOME ('...') not found" (it checks
-/// its own home at start-up; robigo-rt's M1 loader reads no tree, so the
-/// check waits for what does), with the way to make the tree.
+/// The start-up error when robigo-rt's tree is not there, when stage 0 is
+/// to read it: GNU R's script's "R_HOME ('...') not found" (it checks its
+/// own home at start-up; robigo-rt's M1 loader reads no tree, so the check
+/// waits for what does), with the way to make the tree.
 // R: scripts/R.sh.in ("R_HOME may have moved, so check")
 fn missing_tree(home: &RHome) -> Option<String> {
-    if has_base(home.path()) {
-        return None;
+    match home {
+        RHome::Given(_) => None,
+        RHome::MissingDefault(p) => Some(format!(
+            "R_HOME ('{}') not found: no installed tree (<prefix>/lib/robigo) has library/base/R/base, \
+             and the checkout's is not made (scripts/rt-home.sh)",
+            p.display()
+        )),
     }
-    let p = home.path().display();
-    Some(match home {
-        RHome::MissingDefault(_) => format!(
-            "R_HOME ('{p}') not found: no installed tree (<prefix>/lib/robigo) has library/base/R/base, \
-             and the checkout's is not made (scripts/rt-home.sh)"
-        ),
-        RHome::Given(_) => format!("R_HOME ('{p}') not found: it has no library/base/R/base"),
-    })
 }
 
 /// The front end over `args`, with `home` the `R_HOME` that
@@ -277,8 +272,40 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
         return 2;
     }
 
+    // setup_Rmainloop's setlocale(<category>, "") calls and R_check_locale:
+    // the isolate's locale is the environment's (the process's stays "C")
+    let env_loc = robigo_rtcore::clib::env_locale();
+    let utf8 = if env_loc.codeset.eq_ignore_ascii_case(b"UTF-8") {
+        true
+    } else if env_loc.codeset == b"ANSI_X3.4-1968" {
+        false
+    } else {
+        eprintln!(
+            "robigo-rt: a locale whose codeset is '{}' is not implemented yet",
+            String::from_utf8_lossy(&env_loc.codeset)
+        );
+        return 2;
+    };
     let mut iso = OwnedIsolate::new();
+    // The process environment is this isolate's to write (Sys.setenv,
+    // Sys.unsetenv), as it is GNU R's.
+    // SAFETY: EnvWrites::assume's contract holds for this binary. It runs
+    // this one isolate, on the main thread, and starts no threads of its
+    // own (the rt crates spawn none), so every write happens on that
+    // thread, and so do its own C readers of the environment outside clib,
+    // which are therefore sequential with the writes: RC_fopen's `fopen`
+    // with a `ccs=` mode reads GCONV_PATH (rtapi sysutils.rs); `dlerror`
+    // reads LANGUAGE through gettext, and `dlopen`, `dlclose` and `dlsym`
+    // run a library's constructors, destructors and IFUNC resolvers (rtapi
+    // rdynload.rs). On a glibc older than 2.41 it also assumes, as the
+    // contract asks, that no thread started by loaded native code reads the
+    // environment while this isolate may write: GNU R's rule that R's API
+    // belongs to the one R thread does not cover such threads, so this is
+    // an assumption about the packages it loads, not a consequence.
+    #[allow(unsafe_code)]
+    iso.grant_env_writes(unsafe { robigo_rtcore::clib::EnvWrites::assume() });
     let cx = iso.cx();
+    cx.set_locale(robigo_rtcore::Locale { utf8, collate_c: env_loc.collate_c });
     // R_NoEcho before InitOptions, whose `echo` is its negation
     cx.set_no_echo(!echo);
     robigo_rt::install(cx);
@@ -318,6 +345,20 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
         if let Err(e) = robigo_rt::base::load(cx, &dir) {
             eprintln!("robigo-rt: loading base: {e}");
             return 2;
+        }
+    }
+    // the setlocale failures setup_Rmainloop deferred, as warnings at its
+    // end (quiet when neither LANG nor LC_ALL is set and not empty), then
+    // "During startup - " and the warnings
+    // R: main.c:setup_Rmainloop
+    let set = |n: &str| std::env::var_os(n).is_some_and(|v| !v.is_empty());
+    if (set("LANG") || set("LC_ALL")) && !env_loc.failed.is_empty() {
+        for c in &env_loc.failed {
+            let _ = cx.warning(&format!("Setting {c} failed, using \"C\"\n"));
+        }
+        if !cx.collected_warnings().is_empty() {
+            cx.reprintf(b"During startup - ");
+            robigo_rt::repl::print_warnings(cx);
         }
     }
     // the isolate's console is the process's stdout and stderr
@@ -393,9 +434,6 @@ mod tests {
                  (<prefix>/lib/robigo) has library/base/R/base, and the checkout's is not made (scripts/rt-home.sh)"
             )
         );
-        assert_eq!(
-            missing_tree(&RHome::Given(h)).as_deref(),
-            Some("R_HOME ('/nonexistent/robigo/.robigo/rt-home') not found: it has no library/base/R/base")
-        );
+        assert_eq!(missing_tree(&RHome::Given(h)), None);
     }
 }

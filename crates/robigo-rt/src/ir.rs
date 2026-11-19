@@ -191,7 +191,10 @@ pub enum Op {
     EvalConst,
     /// Raise GNU R's error `consts[f]` (a CHARSXP) for the call `consts[e]`
     /// (`errorcall` if `g` != 0, else `error`): a static error of a
-    /// special's arguments, raised when the special runs.
+    /// special's arguments, raised when the special runs, or an `.Internal`'s
+    /// checkArity error. Under byte code an `error` is reported as at the
+    /// expression `consts[c]` when `c` is not 0 (the site's, as
+    /// [`Op::Internal`]'s `g`).
     ErrorCall,
     /// `for`'s end: `DECREMENT_LINKS` of the sequence (register `a`).
     ForDone,

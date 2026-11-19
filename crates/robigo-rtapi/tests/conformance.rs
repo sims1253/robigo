@@ -46,13 +46,11 @@ fn rt_conformance() {
     assert!(st.success(), "scripts/rt-capi-build.sh {}: {st}", libs.display());
     let mut o = conf::Options::from_env(&conf::RT, rt_bin()).unwrap_or_else(|e| panic!("{e}"));
     o.env.push(("RT_CAPI_LIBS".into(), Some(libs.into())));
-    // robigo-rt's R_HOME is its own tree, which its front end finds when the
-    // environment names none (the checkout's, scripts/rt-home.sh). An
-    // R_HOME inherited from an installed GNU R (the CI image's
-    // /usr/lib/R) would have the cases load that R's library, its tools.so
-    // among them, built for GNU R's objects. Each case's environment drops
-    // it; this process's is left alone.
-    o.env.push(("R_HOME".into(), None));
+    // (robigo-rt's R_HOME is its own tree, which its front end finds when
+    // the environment names none: the RT column drops an inherited one from
+    // each case's environment, `Column::env_remove`, so the CI image's
+    // /usr/lib/R and its tools.so, built for GNU R's objects, are never
+    // loaded; this process's environment is left alone)
     // the cases that load tools' native code from the binary's R_HOME tree
     // run where scripts/rt-home.sh built it (CI's rt job does)
     if has_rt_home_tools(&o.bin) {
