@@ -259,7 +259,7 @@ pub fn do_cat(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: 
     // (`list` leaves one of robigo's compact sequences as it is)
     cx.materialize_nested(args.root(0), Some(1))?;
     // Use standard printing defaults
-    let data = PrintData::init(cx, None);
+    let data = PrintData::init(cx, None)?;
     let ifile = as_integer(args.get(cx, 1));
     // getConnection(ifile): robigo-rt has the standard connections only
     let target = match ifile {

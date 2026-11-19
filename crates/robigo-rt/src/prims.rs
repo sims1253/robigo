@@ -193,6 +193,7 @@ static RT_PRIMS: &[PrimDef] = &[
     // print.c, deparse.c, builtin.c, connections.c (B3)
     builtin("invisible", crate::builtin::do_invisible, Inline::None, 101, 1),
     builtin("print.default", crate::print::do_printdefault, Inline::None, 111, 3),
+    builtin("prmatrix", crate::print::do_prmatrix, Inline::None, 111, 6),
     builtin("deparse", crate::builtin::do_deparse, Inline::None, 11, 5),
     builtin("dput", crate::builtin::do_dput, Inline::None, 111, 3),
     builtin("enableJIT", crate::jit::do_enablejit, Inline::None, 11, 1),
@@ -294,6 +295,10 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("path.expand", crate::platform::do_pathexpand, Inline::None, 11, 1),
     builtin("parent.env<-", crate::builtin::do_parentenvgets, Inline::None, 11, 2),
     builtin("pos.to.env", crate::builtin::do_pos2env, Inline::None, 1, 1),
+    // paste.c, util.c: format, format.info, formatC
+    builtin("format", crate::format::do_format, Inline::None, 11, 9),
+    builtin("format.info", crate::format::do_formatinfo, Inline::None, 11, 3),
+    builtin("formatC", crate::format::do_formatc, Inline::None, 11, 7),
 ];
 
 /// How the VM runs B1's builtin `name` inline, if it does.

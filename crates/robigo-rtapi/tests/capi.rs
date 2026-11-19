@@ -186,9 +186,9 @@ fn printing_a_package_altrep_vector_is_not_implemented_yet() {
         let mut s = Session::new(p);
         s.val("z <- .Call(\"rt_altrep_str\", c(\"ff\", \"10\"))");
         for (src, want) in [
-            ("print(z)", "printing a package ALTREP vector is not implemented yet"),
-            ("print(list(a = z))", "printing a package ALTREP vector is not implemented yet"),
-            ("deparse(z)", "deparse of a package ALTREP vector is not implemented yet"),
+            ("print(z)", "printing a package ALTREP vector (the object) is not implemented yet"),
+            ("print(list(a = z))", "printing a package ALTREP vector (the object) is not implemented yet"),
+            ("deparse(z)", "deparse of a package ALTREP vector (the object) is not implemented yet"),
             ("cat(z)", "cat() of a package ALTREP vector is not implemented yet"),
             ("cat(\"x\", fill = 20, labels = z)", "cat() of a package ALTREP vector is not implemented yet"),
             ("cat(\"x\", \"y\", sep = z)", "cat() of a package ALTREP vector is not implemented yet"),
@@ -198,11 +198,16 @@ fn printing_a_package_altrep_vector_is_not_implemented_yet() {
             ),
             // as an attribute's value (names and dimnames go through the same
             // check, print_value_rec's and deparse2buff's attribute walk)
-            ("x <- c(1, 2); attr(x, \"w\") <- z; print(x)", "printing a package ALTREP vector is not implemented yet"),
+            (
+                "x <- c(1, 2); attr(x, \"w\") <- z; print(x)",
+                "printing a package ALTREP vector (its attribute 'w') is not implemented yet",
+            ),
             (
                 "x <- c(1, 2); attr(x, \"w\") <- z; deparse(x)",
-                "deparse of a package ALTREP vector is not implemented yet",
+                "deparse of a package ALTREP vector (its attribute 'w') is not implemented yet",
             ),
+            // an S4 object's slots are not read: GNU R prints its line
+            // (below, not an error)
             // a function's source text (useSource)
             (
                 "f <- quote(function(x) x); f[[4]] <- z; deparse(f, control = \"useSource\")",
@@ -212,6 +217,20 @@ fn printing_a_package_altrep_vector_is_not_implemented_yet() {
             let m = s.err(src);
             assert!(m.contains(want), "{p:?} {src}: {m}");
         }
+        // an S4 object holding a package ALTREP vector in a slot prints as
+        // GNU R prints it, without reading the slot
+        // (robigo-rt has no asS4 yet: the bit is set from here)
+        s.val("o <- 1; attr(o, \"slot\") <- z");
+        s.cx()
+            .scope(|cx, sc| {
+                let sym = sc.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"o")?.as_ref())))?;
+                let g = sc.root(cx, cx.global_env());
+                let v = sc.capture(cx, |cx, o| cx.find_var(sym, g, o))?;
+                cx.set_s4_bit(v, true);
+                Ok::<_, robigo_rtcore::RError>(())
+            })
+            .unwrap();
+        s.val("print(o)");
     }
 }
 
@@ -248,19 +267,25 @@ fn the_attribute_setters_read_a_package_altrep_length() {
             (
                 "dn <- list(c(\"a\", \"b\")); names(dn) <- .Call(\"rt_altrep_str\", \"axis\"); \
                  x <- 1:2; dim(x) <- 2L; dimnames(x) <- dn; print(x)",
-                "printing a package ALTREP vector is not implemented yet",
+                "printing a package ALTREP vector (the attribute 'names' of its attribute 'dimnames') is not implemented yet",
             ),
             (
                 "dn <- list(c(\"a\", \"b\"), NULL); names(dn) <- z; \
                  m <- matrix(1:4, 2); dimnames(m) <- dn; print(m)",
-                "printing a package ALTREP vector is not implemented yet",
+                "printing a package ALTREP vector (the attribute 'names' of its attribute 'dimnames') is not implemented yet",
             ),
             ("x <- c(1, 2); attr(x, \"names\") <- pairlist(z)", "incompatible 'names' argument"),
-            ("x <- c(1, 2); names(x) <- z; print(x)", "printing a package ALTREP vector is not implemented yet"),
-            ("x <- c(1, 2); names(x) <- z; deparse(x)", "deparse of a package ALTREP vector is not implemented yet"),
+            (
+                "x <- c(1, 2); names(x) <- z; print(x)",
+                "printing a package ALTREP vector (its attribute 'names') is not implemented yet",
+            ),
+            (
+                "x <- c(1, 2); names(x) <- z; deparse(x)",
+                "deparse of a package ALTREP vector (its attribute 'names') is not implemented yet",
+            ),
             (
                 "m <- matrix(1:4, 2); dimnames(m) <- list(z, NULL); print(m)",
-                "printing a package ALTREP vector is not implemented yet",
+                "printing a package ALTREP vector (an element of its attribute 'dimnames') is not implemented yet",
             ),
             // GNU R reads the elements
             ("x <- c(1, 2); attr(x, \"names\") <- zi", "coercing a package ALTREP vector"),
