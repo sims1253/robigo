@@ -1,0 +1,100 @@
+[1] " TRUE" "   NA" "FALSE"
+[1] "  TRUE"
+[1] "TRUE"  "FALSE"
+[1] "  1" "-20" " NA"
+[1] "   5"
+[1] "1"   "100"
+[1] "3.141593"
+[1] "3.14"
+[1] "  1.00" " 10.00" "100.00"
+[1] "1e-20"
+[1] "123456789"
+[1] "1.234568e+08"
+[1] "0.0000000001"
+[1] "1234.568"
+[1] " 1.5" "  NA" " Inf" "-Inf" " NaN"
+[1] "2,5"
+[1] "       0.001" "     123.000"
+[1] "1.123"  "22.100"
+[1] "1+2i"
+[1] "1.5-3i" "    NA" "0.0+1i"
+[1] "1e+10-1i"
+[1] "a  " "bbb" "NA "
+[1] "a    " "bbb  "
+[1] "  a" "bbb"
+[1] " a  " "bbbb"
+[1] "a"   "bbb"
+[1] "x" NA 
+[1] "NA  "
+[1] "été " "中文" "ab  "
+[1] "a\\xff\\x01"
+   a    b 
+" 1" "22" 
+[1] 2 2
+[[1]]
+[1] "r" "s"
+
+[[2]]
+NULL
+
+[1] "1" "2" "3" "4"
+character(0)
+character(0)
+[1] "NULL"
+[1] "      1" "1000000"
+[1] "<environment: R_GlobalEnv>"
+[1] "<environment: base>"
+[1] "<environment: R_EmptyEnv>"
+[1] "invalid 'trim' argument"
+[1] "invalid value 30 for 'digits' argument"
+[1] "invalid 'nsmall' argument"
+[1] "invalid 'width' argument"
+[1] "invalid 'justify' argument"
+[1] "invalid 'na.encode' argument"
+[1] "invalid 'scientific' argument"
+[1] "invalid 'scientific' argument"
+[1] "invalid 'decimal.mark' argument"
+[1] "first argument must be atomic or environment"
+[1] "Impossible mode ( x )"
+warning: the decimal mark is more than one character wide; this will become an error 
+[1] "1::5"
+[1] 4
+[1] 4
+[1] 8 6 0
+[1] 5 0 1
+[1] 8 4 0
+[1] 4 2 0
+[1] 1 0 0 1 0 0
+[1] 2
+[1] 2
+[1] 0 0 0
+[1] "atomic vector arguments only"
+[1] "invalid 'digits' argument"
+[1] "invalid 'nsmall' argument"
+[1] "3.142"
+[1] "3.142"
+[1] "3.1416e+00"
+[1] "000001" "000010" "000100"
+[1] "1     " "10    " "100   "
+[1] "42"
+[1] "      42"
+[1] "-42"
+[1] "1   " "2   " "3   "
+[1] "123.5"
+[1] "1.234e-05"
+[1] "1,000,000"
+[1] "3.142"     "0.0001234" "123456"   
+[1] "1.00"  "0.500"
+[1] "0.000012" "0.000056"
+[1] "0"
+[1] "1.0000" " NA"    "Inf"   
+[1] "   abc"
+[1] "abc   "
+[1] "1.500000"
+         a          b 
+"1.50e+00" "2.00e+00" 
+[1] "   1"
+[1] "'type' must be \"integer\" for  \"d\"-format"
+[1] "'type' must be \"real\" for this format"
+[1] "'x' must be a vector"
+[1] "1234"

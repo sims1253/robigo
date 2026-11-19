@@ -782,6 +782,74 @@ pub fn do_with_visible(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>
     })
 }
 
+/// `.Internal(Recall(...))`, in `Recall <- function(...)`: the function
+/// that called `Recall` called again with `Recall`'s arguments (the
+/// promises of its record), from the environment that function was called
+/// from. A special: `rho` is `Recall`'s frame.
+// R: eval.c:do_recall
+pub fn do_recall(cx: &mut Cx, _call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    use robigo_rtcore::ctxt;
+    cx.scope(|cx, s| {
+        let outside = "'Recall' called from outside a closure";
+        // the record of the closure whose frame is rho (Recall's): its
+        // arguments
+        let me = {
+            let r = rho.bind(cx).sexp();
+            let mut c = Some(cx.global_context());
+            while let Some(x) = c {
+                if x.callflag() == ctxt::RETURN && x.cloenv().sexp() == r {
+                    break;
+                }
+                c = x.next();
+            }
+            c.map(|x| x.id())
+        };
+        // the env Recall was called from, and the record of the closure
+        // whose frame it is (searched from Recall's)
+        let sp = cx.global_context().sysparent().sexp();
+        let cptr = me.and_then(|me| {
+            let mut c = cx.context(me);
+            while let Some(x) = c {
+                if x.callflag() == ctxt::RETURN && x.cloenv().sexp() == sp {
+                    return Some(x.id());
+                }
+                c = x.next();
+            }
+            None
+        });
+        let (Some(me), Some(cptr)) = (me, cptr) else {
+            return Err(cx.error(outside));
+        };
+        cx.materialize_promargs(me)?;
+        let args = s.root(cx, cx.context(me).unwrap().promargs().unwrap_or(cx.nil()));
+        let (ccall, callfun, sysparent) = {
+            let c = cx.context(cptr).unwrap();
+            (c.call(), c.callfun(), c.sysparent())
+        };
+        let ccall = s.root(cx, ccall);
+        let sysparent = s.root(cx, sysparent);
+        // the function recorded in the record, else the call's function
+        // found by name or evaluated
+        let fun = if callfun != cx.nil() {
+            s.root(cx, callfun)
+        } else {
+            let head = s.root(cx, ccall.bind(cx).as_cons().unwrap().car());
+            let o = s.out(cx);
+            let f = o.root();
+            if head.bind(cx).sexptype() == SYMSXP {
+                cx.find_fun3(head, sysparent, None, o)?;
+            } else {
+                eval(cx, head, sysparent, o)?;
+            }
+            f
+        };
+        if fun.bind(cx).sexptype() != CLOSXP {
+            return Err(cx.error(outside));
+        }
+        crate::call::apply_closure(cx, ccall, fun, args, sysparent, None, out)
+    })
+}
+
 /// `.Internal(eval(expr, envir, enclos))`: `expr` (a call or symbol, or
 /// each element of an expression vector) evaluated in `envir` (an
 /// environment, a list or pairlist made into one under `enclos`, or a

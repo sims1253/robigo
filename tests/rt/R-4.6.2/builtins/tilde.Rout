@@ -1,0 +1,36 @@
+y ~ x + z
+attr(,"class")
+[1] "formula"
+attr(,".Environment")
+<environment: R_GlobalEnv>
+[1] "formula"
+[1] TRUE
+[1] "class"        ".Environment"
+[1] 3
+`~`
+x + z
+[1] "language"
+[1] 2
+x
+[1] TRUE
+[1] FALSE
+[1] "formula"
+[1] 4
+[1] "formula"
+[1] 1
+[1] "("
+[1] "call"
+[1] "formula"
+[1] "foo"
+[1] TRUE
+[1] "class"        ".Environment"
+[1] "formula"
+[1] TRUE
+[1] "formula"
+[1] "special"
+[[1]]
+[1] "formula"
+
+[[2]]
+[1] "formula"
+

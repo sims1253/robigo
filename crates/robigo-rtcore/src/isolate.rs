@@ -117,6 +117,10 @@ pub struct Isolate {
     /// The evaluator, dispatcher and condition system (`hooks.rs`).
     pub(crate) hooks: Cell<Hooks>,
     pub(crate) locale: Cell<Locale>,
+    /// The embedder's grant of the process environment's writes
+    /// (`clib::EnvWrites`, [`OwnedIsolate::grant_env_writes`]): without
+    /// it `Sys.setenv`/`Sys.unsetenv` refuse.
+    pub(crate) env_writes: std::cell::OnceCell<crate::clib::EnvWrites>,
     /// GNU R's `R_warn_partial_match_args` (`options(warnPartialMatchArgs)`).
     pub(crate) warn_partial_match_args: Cell<bool>,
     /// `ROBIGO_NO_INPLACE=1` (docs/g3.md §16): every in-place write copies.
@@ -556,6 +560,12 @@ impl Cx {
         }
     }
 
+    /// The embedder's grant of the process environment's writes, if it
+    /// gave this isolate one ([`OwnedIsolate::grant_env_writes`]).
+    pub fn env_writes(&self) -> Option<&crate::clib::EnvWrites> {
+        self.iso().env_writes.get()
+    }
+
     /// The locale GNU R reads ([`Locale`]).
     #[inline(always)]
     pub fn locale(&self) -> Locale {
@@ -981,9 +991,58 @@ impl Drop for EndCallback {
     }
 }
 
+/// The process's live isolates, counted under this lock (an isolate is
+/// counted from before its construction does anything fallible until its
+/// teardown is over: [`Registration`]). `clib::env_writer` holds it, with
+/// clib's environment lock, for a whole `Sys.setenv`/`Sys.unsetenv` call,
+/// so on a glibc older than `clib::MIN_GLIBC` no second isolate starts (and
+/// so no other robigo thread can be inside `getenv`) while the environment
+/// changes. Lock order: this, then clib's `ENV`, then std's environment
+/// lock.
+static LIVE_ISOLATES: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+
+/// [`LIVE_ISOLATES`] locked (a panic while it was held left a count that
+/// is still right: nothing panics between its reads and writes).
+pub(crate) fn live_isolates() -> std::sync::MutexGuard<'static, usize> {
+    LIVE_ISOLATES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// [`LIVE_ISOLATES`] if no one holds it (a test's probe).
+#[cfg(test)]
+pub(crate) fn live_isolates_try_lock() -> Option<std::sync::MutexGuard<'static, usize>> {
+    LIVE_ISOLATES.try_lock().ok()
+}
+
+/// How many isolates the process has now (constructions under way
+/// included).
+pub fn live_isolate_count() -> usize {
+    *live_isolates()
+}
+
+/// One isolate's place in [`LIVE_ISOLATES`]: made before the isolate's
+/// construction does anything that can fail and owned by the isolate, so
+/// that a panic in construction or teardown takes it out exactly once,
+/// and the isolate stays counted throughout its teardown.
+struct Registration(());
+
+impl Registration {
+    fn new() -> Registration {
+        *live_isolates() += 1;
+        Registration(())
+    }
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        *live_isolates() -= 1;
+    }
+}
+
 /// An isolate and its first capability: what an embedder (the `robigo-rt`
 /// binary, a test) creates. Dropping it frees the isolate and its heap.
 pub struct OwnedIsolate {
+    // dropped after `Drop::drop`'s teardown (or during its unwinding)
+    _registration: Registration,
     cx: Capability<[(); 0]>,
 }
 
@@ -993,6 +1052,9 @@ impl OwnedIsolate {
     }
 
     pub fn with_options(opts: Options) -> OwnedIsolate {
+        // counted before it can run anything (an environment write waits);
+        // a panic below takes the count back
+        let registration = Registration::new();
         // a new symbol's bits come from its name (H5): before any install
         robigo_heap::set_symbol_bits(crate::sym::symbol_bits);
         // The heap's allocation never collects (H2), and no C segment is open
@@ -1033,6 +1095,7 @@ impl OwnedIsolate {
             ext_index: UnsafeCell::new(Vec::new()),
             hooks: Cell::new(Hooks::default()),
             locale: Cell::new(opts.locale),
+            env_writes: std::cell::OnceCell::new(),
             warn_partial_match_args: Cell::new(false),
             no_inplace: Cell::new(false),
             retry_torture: Cell::new(false),
@@ -1070,7 +1133,15 @@ impl OwnedIsolate {
             let i = iso.as_ref();
             i.core().set_poll_word(NonNull::from(&i.poll));
         }
-        OwnedIsolate { cx: capability(iso) }
+        OwnedIsolate { _registration: registration, cx: capability(iso) }
+    }
+
+    /// Give this isolate the process environment's writes (`Sys.setenv`,
+    /// `Sys.unsetenv`): the embedder's [`crate::clib::EnvWrites`], whose
+    /// `assume` stated the contract. Once: a second grant is ignored.
+    pub fn grant_env_writes(&mut self, w: crate::clib::EnvWrites) {
+        let cx: &Cx = &self.cx;
+        let _ = cx.iso().env_writes.set(w);
     }
 
     /// The capability. One at a time: it is borrowed from the owner.
@@ -1093,5 +1164,6 @@ impl Drop for OwnedIsolate {
         // capability of the isolate was borrowed from this owner or lived
         // inside a callback of one that was: those have ended.
         drop(unsafe { Box::from_raw(self.cx.iso.as_ptr()) });
+        // (the registration is dropped after this, with the fields)
     }
 }

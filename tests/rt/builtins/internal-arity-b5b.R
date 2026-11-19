@@ -1,0 +1,18 @@
+# checkArity of the .Internals B5b ported, with no arguments and one
+# too few or too many; ngettext coerces its first argument before its
+# check (asInteger(CAR(args)), NULL when there is none)
+m <- function(e) tryCatch(e, error = function(c) cat(conditionMessage(c), "\n"))
+m(.Internal(ngettext()))
+m(.Internal(ngettext(1, "a", "b")))
+m(.Internal(ngettext(1, "a", "b", NULL, NULL)))
+m(.Internal(ngettext("x", "a", "b")))
+m(.Internal(make.names()))
+m(.Internal(make.names("a")))
+m(.Internal(make.names("a", TRUE, 1)))
+m(.Internal(make.unique()))
+m(.Internal(make.unique("a")))
+m(.Internal(tolower()))
+m(.Internal(toupper("a", "b")))
+m(.Internal(chartr()))
+m(.Internal(chartr("a", "b")))
+m(.Internal(chartr("a", "b", "c", "d")))

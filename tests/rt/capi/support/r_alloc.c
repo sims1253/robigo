@@ -18,7 +18,7 @@ SEXP rt_r_alloc_fill(SEXP sn)
     int n = asInteger(sn);
     unsigned char *p = (unsigned char *) R_alloc((size_t) n, 1);
     for (int i = 0; i < n; i++)
-        p[i] = (unsigned char) (i * 7 + 1);
+        p[i] = (unsigned char) ((unsigned) i * 7u + 1u); /* (no signed overflow for a large n) */
     SEXP ans = PROTECT(allocVector(RAWSXP, n));
     /* R_alloc(0, 1) is NULL, and memcpy's source must be valid even for 0 */
     if (n > 0)
