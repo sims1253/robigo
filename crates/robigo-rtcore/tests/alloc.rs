@@ -7,7 +7,7 @@
 #[cfg(not(miri))]
 use robigo_rtcore::Safepoint;
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Char, Cx, Encoding, ExitKind, OwnedIsolate, Ref};
+use robigo_rtcore::{Char, Cx, Encoding, ExitKind, OwnedIsolate, Ref, Slot};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 /// The message of the panic `f` raises.
@@ -138,6 +138,41 @@ fn alloc_rooted_refuses_with_gnu_rs_message() {
     let e = cx.alloc_rooted::<f64>(usize::MAX / 4).map(|_| ()).unwrap_err();
     let m = error_message(cx, e);
     assert!(m.starts_with("cannot allocate vector of size ") && m.ends_with(" Gb"), "{m}");
+}
+
+/// A page for small objects the system refuses, refused again after the
+/// build's collection, is GNU R's "memory exhausted" (`mem_err_malloc`),
+/// not "cannot allocate vector of size".
+#[cfg(not(miri))]
+#[test]
+fn a_build_refused_a_page_again_is_memory_exhausted() {
+    // (the mover's policy: unset, "" and "0" are off)
+    if std::env::var("ROBIGO_GC_MOVE").is_ok_and(|v| !v.is_empty() && v != "0") {
+        // the debug mover copies every object during the collection, and
+        // aborts when it cannot get a chunk (`Heap::alloc_or_abort`)
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr(),
+            "a_build_refused_a_page_again_is_memory_exhausted: skipped under ROBIGO_GC_MOVE"
+        );
+        return;
+    }
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    cx.set_refuse_chunks(true);
+    // medium vectors (8 KB), each kept in a root of the scope, until a
+    // page is needed: the build collects, and the page is refused again
+    let e = cx.scope(|cx, s| {
+        for _ in 0..20_000 {
+            let o = s.out(cx);
+            if let Err(e) = cx.build(o, |cx| Ok(cx.alloc_vector::<f64>(1000)?.finish().into())) {
+                return e;
+            }
+        }
+        panic!("no page was needed");
+    });
+    cx.set_refuse_chunks(false);
+    assert_eq!(error_message(cx, e), "memory exhausted");
 }
 
 // ---- duplicates and in-place writes (no collection: Miri runs these) ----
@@ -373,6 +408,43 @@ fn roots_and_stack_slots_count_nothing() {
         let _ = s.args(cx, &[r.bind(cx), r.bind(cx)], None);
         let _g = cx.global(r.bind(cx));
         assert_eq!(r.bind(cx).refcnt(), 0);
+    });
+}
+
+/// `Cx::stack_slots` reads the live slots in place, as robigo-rt's link walk
+/// does: a frame's marks and a root's object, whose count the walk raises
+/// and drops while the slice lives (a header field, not a slot).
+#[test]
+fn stack_slots_read_in_place() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    cx.scope(|cx, s| {
+        let x = cx.alloc_copy(&[1]).unwrap().finish();
+        let r = s.root(cx, x);
+        let f = s.frame(cx, 2);
+        // SAFETY: the first of two fresh empty slots of this scope; a mark
+        // is no object.
+        unsafe { f.write(Slot::mark(7)) };
+        let d = cx.stack_depth();
+        // SAFETY: nothing writes the slots while the slice lives.
+        let st = unsafe { cx.stack_slots(0, d) };
+        assert_eq!(st.len(), d);
+        assert_eq!(st[d - 2].as_mark(), Some(7));
+        assert_eq!(st[d - 1].as_mark(), None);
+        let objs: Vec<_> = st.iter().filter_map(|s| s.as_object()).collect();
+        assert!(objs.contains(&r.bind(cx).sexp()));
+        // SAFETY: live objects of this heap; each increment is undone.
+        unsafe {
+            objs.iter().for_each(|o| o.incref());
+            assert_eq!(r.bind(cx).refcnt(), 1);
+            objs.iter().for_each(|o| o.decref());
+        }
+        assert_eq!(r.bind(cx).refcnt(), 0);
+        // SAFETY: as above (an empty range).
+        assert!(unsafe { cx.stack_slots(d, d) }.is_empty());
+        // SAFETY: (panics before reading) a range past the depth.
+        let past = catch_unwind(AssertUnwindSafe(|| unsafe { cx.stack_slots(0, d + 1) }.len()));
+        assert!(past.is_err());
     });
 }
 

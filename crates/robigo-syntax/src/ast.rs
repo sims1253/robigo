@@ -79,6 +79,11 @@ pub enum Expr<'a> {
         fun: &'a Expr<'a>,
         args: &'a [Arg<'a>],
         span: Span,
+        /// Made by the native pipe `lhs |> f(args)`: gram.y's xxpipe builds
+        /// it as `lcons(fun, lcons(lhs, args))`, so the cell that holds the
+        /// first argument is a LANGSXP, not a LISTSXP (it shows in
+        /// `serialize` and `.Internal(inspect())`).
+        pipe: bool,
     },
     Function {
         formals: &'a [Formal<'a>],

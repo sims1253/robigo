@@ -80,9 +80,7 @@ fn attempt_rounds(
                 })?;
                 cx.set_visible(vis);
             }
-            Err(Need::Gc(e)) if retried == Some(e) => {
-                return Err(cx.error_call(None, "robigo: no room to compile an expression"));
-            }
+            Err(Need::Gc(e)) if retried == Some(e) => return Err(cx.refused_again(e)),
             Err(Need::Gc(e)) => {
                 cx.need_gc(e)?;
                 retried = Some(e);
@@ -1815,7 +1813,23 @@ impl<'g> Comp<'g> {
             };
             // acall: afun(`*tmp*`, args, value = vexpr); cexpr: the same on
             // the original object, the expression bcEval is at
-            let args = cenv::elements(cx, place.cdr().cdr(), false);
+            let mut args = cenv::elements(cx, place.cdr().cdr(), false);
+            // the setter handler of `@<-` (base's): a slot name that is a
+            // symbol becomes a string in the setter's call, not in cexpr
+            // R: cmp.R:setSetterInlineHandler("@<-")
+            if afun == cx.install(b"@<-")?.as_ref().sexp()
+                && self.bc.as_ref().unwrap().inline_info(cx, st, afun, false).is_some()
+                && args.len() == 1
+                && place.cdr().car() != st.syms.dots
+                && place.cdr().car() != cx.missing_arg().sexp()
+                && args[0].0.typ() == SYMSXP
+                && args[0].0 != st.syms.dots
+            {
+                let name = args[0].0.car();
+                let v = cx.alloc_vector_raw(STRSXP, 1)?;
+                v.set_elt(0, name);
+                args[0].0 = v;
+            }
             let with_value = |first: Sexp, second_tag: Sexp| -> Result<Sexp, Need> {
                 let mut l = cx.alloc_node_raw(LISTSXP, vexpr, nil, st.syms.value)?;
                 for &(a, t) in args.iter().rev() {

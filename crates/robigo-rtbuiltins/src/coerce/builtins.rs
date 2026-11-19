@@ -536,13 +536,23 @@ pub fn do_any_na(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out
     } else {
         // matchArgs_NR over the formals (x, recursive): exact names, then
         // partial, then by position
-        let names: Vec<Option<Vec<u8>>> = (0..2).map(|i| args.name(cx, i).map(|s| s.name_bytes().to_vec())).collect();
-        let is_rec = |n: &Option<Vec<u8>>| n.as_ref().is_some_and(|n| !n.is_empty() && b"recursive".starts_with(n));
-        let is_x = |n: &Option<Vec<u8>>| n.as_deref() == Some(b"x");
-        let ri = if is_rec(&names[1]) || is_x(&names[0]) || names[1].is_none() && !is_rec(&names[0]) { 1 } else { 0 };
+        // (each name classified in place: a symbol's name borrows from `cx`)
+        #[derive(Clone, Copy)]
+        struct Name {
+            none: bool,
+            rec: bool,
+            x: bool,
+            other: bool,
+        }
+        let names: [Name; 2] = std::array::from_fn(|i| {
+            let n = args.name(cx, i).map(|s| s.name_bytes());
+            let rec = n.is_some_and(|n| !n.is_empty() && b"recursive".starts_with(n));
+            let x = n == Some(&b"x"[..]);
+            Name { none: n.is_none(), rec, x, other: n.is_some_and(|n| !n.is_empty()) && !x && !rec }
+        });
+        let ri = if names[1].rec || names[0].x || names[1].none && !names[0].rec { 1 } else { 0 };
         let xi = 1 - ri;
-        let other = |n: &Option<Vec<u8>>| n.as_ref().is_some_and(|n| !n.is_empty()) && !is_x(n) && !is_rec(n);
-        if other(&names[0]) || other(&names[1]) || (is_x(&names[ri])) || is_rec(&names[xi]) {
+        if names[0].other || names[1].other || names[ri].x || names[xi].rec {
             return Err(not_yet(cx, Some(call), "anyNA() with these argument names"));
         }
         if xi != 0 {

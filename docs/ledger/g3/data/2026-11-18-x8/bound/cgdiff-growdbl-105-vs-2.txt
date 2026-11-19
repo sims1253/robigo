@@ -1,0 +1,8 @@
+total 7740204076 7994308856
+ 213,577,046   119,877,469   333,454,515 robigo_rtbuiltins::subassign::enlarge_vector
+  19,416,383   134,105,689   153,522,072  &Self) -> bool { *self <  *other }
+  19,416,247    95,216,751   114,632,998 :write_via_move(dst, src)
+     611,050             0       611,050 <robigo_heap::gc::Core>::trace
+     304,950             0       304,950 <robigo_heap::gc::Core>::collect_needing::<robigo_rtcore::isolate::Roots>
+     128,251             0       128,251 <robigo_heap::gc::Core>::finish_collection
+     107,859             0       107,859 :IMMORTAL != 0 {
