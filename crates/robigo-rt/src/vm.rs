@@ -1126,7 +1126,7 @@ fn math1(cx: &mut Cx, act: &mut Act, v: &View, i: &Ins, pc: usize) -> RResult<()
     // SAFETY: an unboxed value.
     unsafe { act.set(i.a, Slot::real(val)) };
     for r in i.b..i.b + i.c {
-        act.kill(r, u32::MAX);
+        act.kill(r, pc as u32);
     }
     cx.set_visible(true);
     Ok(())

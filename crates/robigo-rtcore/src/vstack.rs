@@ -148,9 +148,10 @@ impl Slot {
 #[inline(always)]
 pub fn poison_dead() -> bool {
     #[cfg(feature = "poison-dead")]
-    return poison::on();
+    let on = poison::on();
     #[cfg(not(feature = "poison-dead"))]
-    false
+    let on = false;
+    on
 }
 
 /// [`Slot::dead`]'s poison (`poison-dead` feature): tag word
@@ -162,6 +163,7 @@ mod poison {
     use std::sync::LazyLock;
 
     pub(super) const TAG: u64 = super::MARK + 1;
+    const _: () = assert!(TAG < 0x100, "robigo: a poison's tag word must fit the low byte `check_live` masks");
     /// [`Slot::dead`]'s `reg` for a slot a scope's restore freed (its
     /// index from the stack's base is in the pc field).
     pub(super) const RESTORED: u64 = 0xffffff;

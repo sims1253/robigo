@@ -744,7 +744,11 @@ impl<'g> Comp<'g> {
         // ROBIGO_POISON_PLANT=1: a planted early clear, the value register
         // emptied one instruction before the Ret that reads it
         #[cfg(feature = "poison-dead")]
-        if i.op == Op::Ret && i.b >= R_FIRST && std::env::var_os("ROBIGO_POISON_PLANT").is_some_and(|v| v == "1") {
+        if i.op == Op::Ret
+            && i.b >= R_FIRST
+            && robigo_rtcore::poison_dead()
+            && std::env::var_os("ROBIGO_POISON_PLANT").is_some_and(|v| v == "1")
+        {
             let mut c = Ins::new(Op::Clear);
             c.a = i.b;
             self.emit(c);
