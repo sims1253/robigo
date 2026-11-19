@@ -63,13 +63,14 @@ class Rule(unittest.TestCase):
 
     def test_rt_corpora_and_rdb_data_run_with_rt(self):
         # robigo-rt's corpus column and L1's rdb data: skipped only with rt
-        for job in ("rt_corpora", "rdb_data"):
+        for job in ("rt_corpora", "rdb_data", "builtin_diff_data"):
             self.assertFalse(passes(needs("false", "false", "true", package_gate="skipped", **{job: "skipped"},
                                           **SKIP_HEAVY)), job)
             self.assertFalse(passes(needs(**{job: "failure"})), job)
         self.assertTrue(passes(needs("false", "false", "false", rt="skipped", base_subset="skipped",
                                     perf_rt_build="skipped", perf_rt="skipped", rt_corpora="skipped",
-                                    rdb_data="skipped", package_gate="skipped", **SKIP_HEAVY)))
+                                    rdb_data="skipped", builtin_diff_data="skipped",
+                                    package_gate="skipped", **SKIP_HEAVY)))
 
     def test_base_subset_skips_with_rt_only(self):
         self.assertFalse(passes(needs("false", "false", "true", base_subset="skipped", package_gate="skipped",

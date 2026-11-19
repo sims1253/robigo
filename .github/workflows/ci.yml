@@ -266,7 +266,9 @@ jobs:
         run: scripts/r-src.sh
       - name: The records' cache key
         id: key
-        run: echo "key=builtin-diff-1-$(python3 scripts/builtin-diff.py key)" >> "$GITHUB_OUTPUT"
+        run: |
+          k=$(python3 scripts/builtin-diff.py key)
+          echo "key=builtin-diff-1-$k" >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@v6
         id: data
         with:
