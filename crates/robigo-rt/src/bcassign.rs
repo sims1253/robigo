@@ -774,7 +774,7 @@ fn generic(
             // (`*tmp*` in it); R_Visible as the special leaves it, no eval
             // around it
             // SAFETY: a rooted primitive of this isolate.
-            let name = prims::state(cx).defs[unsafe { prims::offset(fun.bind(cx).sexp()) }].name;
+            let name = unsafe { prims::def(cx, fun.bind(cx).sexp()) }.name;
             if name == "@<-" {
                 return crate::specials::slot_gets(cx, call, Some(args), rho, out);
             }
