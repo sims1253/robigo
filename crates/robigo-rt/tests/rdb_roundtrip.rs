@@ -465,7 +465,7 @@ fn oracle_base_closures_crosscheck() {
                             robigo_rt::compile::Verdict::Untranslated => "Untranslated",
                         };
                         *verdicts.entry(verdict.to_owned()).or_default() += 1;
-                    },
+                    }
                     Ok(None) => *verdicts.entry("no byte code".to_owned()).or_default() += 1,
                     Err(e) => failures.push(format!("{name}: {}", common::message(cx, e))),
                 }
