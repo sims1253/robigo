@@ -206,12 +206,15 @@ for (inp in inputs) {
   }
   want <- if (is.null(inp$status)) 0L else inp$status
   if (plain$status != want) {
-    rec <- if (startsWith(inp$file, "tests/rt/")) {
+    label <- if (is.null(inp$file)) "the self-test" else inp$file
+    # (only the areas' expectation comes from a recording: the capi and stress
+    # cases expect 0 regardless of theirs, and the benchmarks/self-test have none)
+    rec <- if (!is.null(inp$status)) {
       sprintf(" Its recording (tests/rt/R-4.6.2/%s.Rstatus) says %d: if the case changed, re-record it with\n  scripts/oracle-run.sh 4.6.2 scripts/regen-expected.sh %s\nand then run scripts/base-subset.sh.",
               sub("^tests/rt/(.*)[.]R$", "\\1", inp$file), want, inp$file)
     } else ""
     stop(sprintf("base-subset: %s exits with status %d under GNU R 4.6.2, not %d.%s\nIts stderr:\n%s",
-                 inp$file, plain$status, want, rec, rawToChar(plain$err)), call. = FALSE)
+                 label, plain$status, want, rec, rawToChar(plain$err)), call. = FALSE)
   }
   keys <- readLines(keys_file)
   if (is.null(inp$file)) {

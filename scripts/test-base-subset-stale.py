@@ -2,6 +2,7 @@
 """Check scripts/base-subset-stale.py, the report of base-subset.sh --check."""
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,7 @@ HEAD = ["# robigo-rt's base subset", "# 2 closures, 1 primitives, 0 internals."]
 class Report(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, ignore_errors=True)
 
     def f(self, name, lines):
         p = os.path.join(self.d, name)
