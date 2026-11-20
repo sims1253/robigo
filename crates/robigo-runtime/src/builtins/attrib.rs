@@ -58,14 +58,20 @@ fn do_attr(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     };
     let Some(want) = which.data[0].clone() else { return Ok(Value::Null) };
 
-    if exact {
-        if let Some(sym) = Sym::lookup(&want) {
-            if matches!(sym, s::ROW_NAMES | s::NAMES) {
-                return Ok(get_attrib(&x, sym));
-            }
-            if let Some(val) = x.get_attr(sym) {
-                return Ok(val);
-            }
+    // Exact hits, with or without exact=: GNU R (attrib.c:do_attr)
+    // prefix-scans the attributes with strncmp per entry on every call, and
+    // most lookups are by exact name. Interning makes that an integer
+    // compare: resolve the name once and read the attribute directly. A
+    // symbol-equal entry is the match the scan would return (the first full
+    // match wins, wherever a partial came first), so a miss, a partial
+    // match and the `names` special cases fall through to R's prefix rules
+    // below, unchanged.
+    if let Some(sym) = Sym::lookup(&want) {
+        if matches!(sym, s::ROW_NAMES | s::NAMES) {
+            return Ok(get_attrib(&x, sym));
+        }
+        if let Some(val) = x.get_attr(sym) {
+            return Ok(val);
         }
     }
 
