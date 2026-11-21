@@ -225,6 +225,13 @@ impl Cx {
         self.error_call_sexp(call, msg.as_bytes())
     }
 
+    /// The expression the running byte code last published
+    /// ([`Cx::set_bc_expression`]), as it was set: R_NilValue when none.
+    pub fn bc_expression(&self) -> Ref<'_> {
+        // (a traced root of the context state)
+        self.raw_ref(self.iso().contexts().bc_expr.get())
+    }
+
     /// `R_getBCInterpreterExpression()`: the expression the running byte
     /// code evaluates, as the AST interpreter would report it.
     // R: eval.c:R_getBCInterpreterExpression

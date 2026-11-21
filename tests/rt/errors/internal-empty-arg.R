@@ -50,3 +50,12 @@ mm <- function(x, ...) list(sys.call(), match.call(), .Internal(paste0(list(...)
 for (i in 1:2) print(mm(1, "c", "d"))
 ww <- function(...) .Internal(as.vector(c(...), "integer"))
 for (i in 1:2) print(withCallingHandlers(ww("10", "x"), warning = function(w) { print(conditionCall(w)); invokeRestart("muffleWarning") }))
+# the same with the JIT off (closures evaluated as they are): a literal
+# empty argument, one through `...`, an alias
+invisible(.Internal(enableJIT(0L)))
+f0 <- function() .Internal(paste0(list(side("j")), , FALSE))
+g0 <- function(...) .Internal(paste0(list(...), , FALSE))
+h0 <- function(...) .Internal(paste0(list("a"), ...))
+a0 <- function(...) ii(paste0(list("a"), ...))
+for (i in 1:2) print(list(tryCatch(f0(), error = cc), tryCatch(g0("k"), error = cc),
+    tryCatch(h0(, FALSE), error = cc), tryCatch(a0(, FALSE), error = cc), h0(NULL, FALSE)))
