@@ -188,10 +188,34 @@ impl Cx {
         if g.callflag() & crate::ctxt::BUILTIN != 0 {
             return g.next().map_or_else(|| self.nil(), |r| r.call());
         }
-        let ctx = self.iso().contexts();
-        if !ctx.bc_active.get() {
+        if !self.iso().contexts().bc_active.get() {
             return g.call();
         }
+        self.bc_interpreter_expression()
+    }
+
+    /// The call `error()` and `warning()` report under a `CTXT_CCODE`
+    /// context begun with the call R_NilValue (datetime.c's
+    /// `prepare_reset_tz`): `getCurrentCall` finds that context first, so
+    /// while byte code runs the expression it evaluates
+    /// (`R_getBCInterpreterExpression`), else NULL.
+    // R: errors.c:getCurrentCall
+    pub fn ccode_context_call(&self) -> Ref<'_> {
+        if self.iso().contexts().bc_active.get() { self.bc_interpreter_expression() } else { self.nil() }
+    }
+
+    /// [`Cx::error`] under such a context ([`Cx::ccode_context_call`]).
+    pub fn error_in_ccode_context(&mut self, msg: &str) -> RError {
+        let call = self.ccode_context_call().sexp();
+        self.error_call_sexp(call, msg.as_bytes())
+    }
+
+    /// `R_getBCInterpreterExpression()`: the expression the running byte
+    /// code evaluates, as the AST interpreter would report it.
+    // R: eval.c:R_getBCInterpreterExpression
+    fn bc_interpreter_expression(&self) -> Ref<'_> {
+        let g = self.global_context();
+        let ctx = self.iso().contexts();
         // (a traced root of the context state: a constant of the running
         // code object, live)
         let e = self.raw_ref(ctx.bc_expr.get());

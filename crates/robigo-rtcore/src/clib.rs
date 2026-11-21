@@ -511,6 +511,78 @@ unsafe extern "C" {
     static tzname: [*const libc::c_char; 2];
 }
 
+/// A locale object for one `LC_TIME` (`newlocale(LC_TIME_MASK, name)`):
+/// the month and day names, formats and AM/PM strings `strftime` reads,
+/// as the isolate's `LC_TIME` names them (robigo-rt's process stays in
+/// "C"). Freed when dropped.
+pub struct LcTime {
+    loc: libc::locale_t,
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+impl LcTime {
+    /// The C library's locale `name` for `LC_TIME`; `None` when it has no
+    /// such locale (or a name with a NUL). Not while this thread holds an
+    /// [`EnvWriter`] or a [`TzSession`]: newlocale reads `LOCPATH`.
+    pub fn new(name: &[u8]) -> Option<LcTime> {
+        let n = std::ffi::CString::new(name).ok()?;
+        let _env = env_read();
+        // SAFETY: a NUL-terminated name, no base object; the result is a
+        // new object (or null), freed once in Drop.
+        let loc = unsafe { libc::newlocale(libc::LC_TIME_MASK, n.as_ptr(), std::ptr::null_mut()) };
+        (!loc.is_null()).then_some(LcTime { loc, _not_send: std::marker::PhantomData })
+    }
+}
+
+impl Drop for LcTime {
+    fn drop(&mut self) {
+        // SAFETY: an object newlocale made, freed once, used by no thread
+        // now (it never left this handle, which is not Send).
+        unsafe { libc::freelocale(self.loc) };
+    }
+}
+
+/// What one `strftime` of datetime.c's `do_formatPOSIXlt` gives: the bytes
+/// written, and whether it returned 0 (which, but for formats that may give
+/// nothing, is GNU R's "output string exceeded 2048 bytes").
+pub struct Strftime {
+    pub bytes: Vec<u8>,
+    pub zero: bool,
+}
+
+/// `strftime(buff, 2049, fmt, &tm)` of `tm` with `tm_zone` = `zone` (None:
+/// a null pointer) and `tm_gmtoff` from `tm`, in `lc`'s `LC_TIME`; first
+/// `tm.tm_gmtoff = 0; mktime(&tm)` when `mktime_first` (datetime.c's fix of
+/// an NA gmtoff for "%z", which also sets `tm_zone`). The caller holds the
+/// environment (shared or as a writer): strftime and mktime read the time
+/// zone.
+fn strftime_raw(fmt: &[u8], tm: &Tm, zone: Option<&[u8]>, mktime_first: bool, lc: &LcTime) -> Strftime {
+    let f = std::ffi::CString::new(fmt).unwrap_or_default();
+    let z = zone.map(|z| std::ffi::CString::new(z).unwrap_or_default());
+    let mut c = tm.to_c();
+    c.tm_zone = z.as_ref().map_or(std::ptr::null(), |z| z.as_ptr());
+    if mktime_first {
+        c.tm_gmtoff = 0;
+        // SAFETY: a valid tm, written by mktime (tm_zone then points at
+        // glibc's own static name); the time zone is held by the caller.
+        unsafe { libc::mktime(&mut c) };
+    }
+    let mut buf = vec![0u8; 2049];
+    // SAFETY: a buffer of 2049 bytes, a NUL-terminated format, a valid tm
+    // whose tm_zone is null, `z` (alive until the end) or glibc's; `lc` a
+    // live locale object.
+    let n = unsafe { libc::strftime_l(buf.as_mut_ptr().cast(), buf.len(), f.as_ptr(), &c, lc.loc) };
+    buf.truncate(n);
+    Strftime { bytes: buf, zero: n == 0 }
+}
+
+/// [`strftime_raw`] in the process's time zone (`TZ` as it is), under the
+/// environment's shared lock.
+pub fn strftime(fmt: &[u8], tm: &Tm, zone: Option<&[u8]>, mktime_first: bool, lc: &LcTime) -> Strftime {
+    let _env = env_read();
+    strftime_raw(fmt, tm, zone, mktime_first, lc)
+}
+
 /// What `set_tz` found that GNU R reports.
 #[derive(Debug, PartialEq, Eq)]
 pub enum SetTzError {
@@ -609,6 +681,11 @@ impl TzSession<'_> {
         };
         *tm = Tm::from_c(&c);
         (r as f64, errno)
+    }
+
+    /// [`strftime`] in the session's time zone.
+    pub fn strftime(&self, fmt: &[u8], tm: &Tm, zone: Option<&[u8]>, mktime_first: bool, lc: &LcTime) -> Strftime {
+        strftime_raw(fmt, tm, zone, mktime_first, lc)
     }
 
     /// `tzname[0]` and `tzname[1]` (`R_tzname`): the zone's standard and
