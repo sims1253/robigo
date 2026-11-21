@@ -168,8 +168,14 @@ impl Cx {
     }
 
     /// [`Cx::error`] of a message in the native encoding's bytes
-    /// ([`Cx::error_call_bytes`]).
+    /// ([`Cx::error_call_bytes`]). GNU R formats `error()`'s message into
+    /// `min(BUFSIZE, R_WarnLength)` bytes, its NUL included, so a longer one
+    /// is cut there (999 bytes at `warning.length`'s default), short of a
+    /// character it would split.
+    // R: errors.c:Rf_error, errors.c:Rvsnprintf_mbcs
     pub fn error_bytes(&mut self, msg: &[u8]) -> RError {
+        let size = ERROR_BUFSIZE.min(self.report_options().warn_length.get());
+        let msg = vsnprintf_cut(msg, size, self.locale().utf8);
         let call = self.error_context_call().sexp();
         self.error_call_sexp(call, msg)
     }
@@ -514,5 +520,46 @@ fn maybe_primitive_call(cx: &Cx, e: Ref<'_>) -> bool {
             }
             _ => false,
         }
+    }
+}
+
+/// GNU R's `BUFSIZE` (errors.c): the size of `error()`'s buffer.
+const ERROR_BUFSIZE: usize = 8192;
+
+/// What `Rvsnprintf_mbcs(buf, size, "%s", msg)` leaves in `buf`: at most
+/// `size - 1` bytes, then (`mbcsTruncateToValid`, in a UTF-8 locale; the C
+/// locale is not multibyte) without a last character the cut left
+/// incomplete or invalid.
+// R: errors.c:Rvsnprintf_mbcs, util.c:mbcsTruncateToValid
+fn vsnprintf_cut(msg: &[u8], size: usize, utf8: bool) -> &[u8] {
+    if msg.len() < size {
+        return msg;
+    }
+    let b = &msg[..size.saturating_sub(1)];
+    if !utf8 || b.is_empty() {
+        return b;
+    }
+    // back to the last byte that is not a continuation byte
+    let mut good = b.len() - 1;
+    while good > 0 && (b[good] & 0xC0) == 0x80 {
+        good -= 1;
+    }
+    // mbrtowc of the rest: a whole character is kept
+    if std::str::from_utf8(&b[good..]).is_ok() { b } else { &b[..good] }
+}
+
+#[cfg(test)]
+mod cut_tests {
+    use super::vsnprintf_cut;
+
+    #[test]
+    fn error_buffer_cut() {
+        assert_eq!(vsnprintf_cut(b"abc", 4, true), b"abc");
+        assert_eq!(vsnprintf_cut(b"abcd", 4, true), b"abc");
+        // "a\u00e9" cut inside the 2-byte character drops it
+        assert_eq!(vsnprintf_cut("ab\u{e9}".as_bytes(), 4, true), b"ab");
+        assert_eq!(vsnprintf_cut("ab\u{e9}x".as_bytes(), 5, true), "ab\u{e9}".as_bytes());
+        // the C locale cuts bytes
+        assert_eq!(vsnprintf_cut("ab\u{e9}".as_bytes(), 4, false), b"ab\xc3");
     }
 }

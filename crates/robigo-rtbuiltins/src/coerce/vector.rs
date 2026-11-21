@@ -31,10 +31,19 @@ pub const WARN_INT_NA: u8 = 2;
 pub const WARN_IMAG: u8 = 4;
 pub const WARN_RAW: u8 = 8;
 
-/// The warnings a coercion gives, in GNU R's order: each entry is one
-/// `CoercionWarning(warn)` call's bits.
+/// The warnings a coercion gives, in GNU R's order.
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
-pub struct Warns(Vec<u8>);
+pub struct Warns(Vec<Warn>);
+
+/// One warning of a coercion's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Warn {
+    /// One `CoercionWarning(warn)` call's bits.
+    Bits(u8),
+    /// `installTrChar`'s "unable to translate '%s' to native encoding",
+    /// this text.
+    Untranslated(String),
+}
 
 impl Warns {
     pub fn new() -> Warns {
@@ -44,7 +53,7 @@ impl Warns {
     /// `CoercionWarning(warn)` at this point (nothing for 0).
     pub fn push(&mut self, warn: u8) {
         if warn != 0 {
-            self.0.push(warn);
+            self.0.push(Warn::Bits(warn));
         }
     }
 
@@ -59,8 +68,11 @@ impl Warns {
 
     /// Give the warnings, as `warning()` (the context's call).
     pub fn signal(&self, cx: &mut Cx) -> RResult<()> {
-        for &w in &self.0 {
-            coercion_warning(cx, w)?;
+        for w in &self.0 {
+            match w {
+                &Warn::Bits(b) => coercion_warning(cx, b)?,
+                Warn::Untranslated(t) => cx.warning(&format!("unable to translate '{t}' to native encoding"))?,
+            }
         }
         Ok(())
     }
@@ -766,10 +778,20 @@ fn coerce_to_symbol<'g>(cx: &'g Cx, v: Ref<'g>) -> Result<Coerced<'g>, NeedGc> {
     if v.len().unwrap_or(0) == 0 {
         return fail(format!("invalid data of mode '{}' (too short)", type_to_char(v)));
     }
+    let mut w = Warns::new();
     let s = string_elt(cx, v, 0, &mut Vec::new())?;
-    // installTrChar(NA_STRING) is the symbol `NA`
-    let sym = cx.install(s.bytes())?;
-    done(sym, Warns::new())
+    // installTrChar(ans) (of NA_STRING: the symbol `NA`)
+    let (name, untranslated) = match crate::text::install_tr_name(crate::coerce::text(s), cx.locale()) {
+        Ok(r) => r,
+        // (a name of more than 10000 bytes that could not all be
+        // translated: GNU R warns before this error, which drops it)
+        Err(m) => return fail(m),
+    };
+    if let Some(t) = untranslated {
+        w.0.push(Warn::Untranslated(t));
+    }
+    let sym = cx.install(&name)?;
+    done(sym, w)
 }
 
 /// GNU R's `isVectorizable(s)`: NULL, or a list or pairlist whose elements

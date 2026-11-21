@@ -26,10 +26,22 @@ pub fn do_getenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
         return Err(cx.error("wrong type for argument"));
     }
     let u = args.get(cx, 1);
+    if u.sexptype() == STRSXP && u.is_package_altrep() {
+        return Err(crate::util::not_yet(cx, Some(call), "Sys.getenv() of a package ALTREP 'unset'"));
+    }
     if u.sexptype() != STRSXP || u.len() != Some(1) {
         return Err(cx.error("wrong type for argument"));
     }
     let (x, unset) = (args.root(0), args.root(1));
+    if x.bind(cx).is_package_altrep() {
+        return Err(crate::util::not_yet(cx, Some(call), "Sys.getenv() of a package ALTREP vector"));
+    }
+    // getenv(translateChar(STRING_ELT(CAR(args), j))) (of NA_STRING: "NA")
+    let n = x.bind(cx).len().unwrap_or(0);
+    let mut tr: Vec<Vec<u8>> = Vec::with_capacity(n);
+    for j in 0..n {
+        tr.push(crate::text::native_elt(cx, x, j)?);
+    }
     let utf8 = cx.locale().utf8;
     cx.build(out, |cx| {
         let names = x.bind(cx).as_vector::<Char<'_>>().unwrap();
@@ -50,14 +62,11 @@ pub fn do_getenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
             return Ok(ans.finish().into());
         }
         let mut ans = cx.alloc_vector::<Char<'_>>(names.len())?;
-        for i in 0..names.len() {
-            let name = names.get(i);
-            let val = (name != cx.na_string() && !name.bytes().is_empty())
-                .then(|| {
-                    use std::os::unix::ffi::OsStrExt;
-                    std::env::var_os(std::ffi::OsStr::from_bytes(name.bytes()))
-                })
-                .flatten();
+        for (i, name) in tr.iter().enumerate() {
+            let val = {
+                use std::os::unix::ffi::OsStrExt;
+                std::env::var_os(std::ffi::OsStr::from_bytes(name))
+            };
             let c = match val {
                 None => unset.bind(cx).as_vector::<Char<'_>>().unwrap().get(0),
                 Some(v) => {

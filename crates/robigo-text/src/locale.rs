@@ -364,6 +364,21 @@ pub fn translate_char2<'a>(s: Str<'a>, loc: Locale) -> Result<Cow<'a, [u8]>, Unt
     }
 }
 
+/// `translateToNative(s, mustWork = 2)` as `installTrChar` calls it: `s`
+/// in the native encoding with what iconv cannot convert escaped, and the
+/// text of the warning R then gives ("unable to translate '%s' to native
+/// encoding"); [`TranslateError`] for a "bytes" string.
+// R: sysutils.c:installTrChar, translateToNative(mustWork = 2)
+pub fn translate_char_warn<'a>(s: Str<'a>, loc: Locale) -> Result<(Cow<'a, [u8]>, Option<String>), TranslateError> {
+    match to_native(s, loc)? {
+        (c, false) => Ok((c, None)),
+        (c, true) => {
+            let w = err_buff(c.to_vec(), loc);
+            Ok((c, Some(w)))
+        }
+    }
+}
+
 /// `trCharUTF82(s)`: `s` in UTF-8, or the text of R's warning when iconv
 /// could not convert all of it.
 // R: sysutils.c:trCharUTF82, needsTranslationUTF8, translateToUTF8(mustWork = 2)

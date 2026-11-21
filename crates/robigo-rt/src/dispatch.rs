@@ -2972,6 +2972,12 @@ pub(crate) fn promise_call_args(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out:
             let ds = s.root(cx, symref(cx, dots));
             let o = dv.reset(cx);
             cx.find_var(ds, rho, o)?;
+            // anything else bound to `...` (unbound included) is an error;
+            // R_MissingArg is skipped
+            let h = dv.bind(cx);
+            if !matches!(h.sexptype(), DOTSXP | NILSXP) && h.sexp() != missing {
+                return Err(cx.error("'...' used in an incorrect context"));
+            }
         }
         cx.build(out, |cx| {
             // (value or expr, tag, is_expr), inline for a call's few arguments
