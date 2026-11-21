@@ -21,8 +21,11 @@ import os
 import random
 import re
 import subprocess
-import tempfile
+import sys
 import threading
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from scratch import remove as remove_dir, scratch_dir  # noqa: E402
 
 HELPER = r"""
 con <- file("stdin"); open(con, blocking = TRUE)
@@ -170,7 +173,7 @@ class Parser:
     """GNU R's parser, one process for many queries (thread-safe)."""
 
     def __init__(self, rscript="Rscript"):
-        self.dir = tempfile.mkdtemp(prefix="robigo-rast-")
+        self.dir = scratch_dir("robigo-rast-")
         helper = os.path.join(self.dir, "helper.R")
         with open(helper, "w") as f:
             f.write(HELPER)
@@ -217,6 +220,7 @@ class Parser:
             self.proc.wait(timeout=10)
         except (OSError, subprocess.TimeoutExpired):
             self.proc.kill()
+        remove_dir(self.dir)
 
 
 def apply(src, edits):

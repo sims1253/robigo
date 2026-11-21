@@ -1,0 +1,403 @@
+#!/usr/bin/env python3
+"""scripts/scratch.py: a tool's temporary directories are gone after every
+way out (a normal exit, an exception, sys.exit, SIGTERM with children and a
+busy thread pool, SIGTERM during an early removal or the exit's), a
+forked child removes none of its parent's, the start-up sweep removes only
+this user's directories of its prefix whose own time is a day old, and each
+tool that makes them (builtin-diff, perf.py rt-bars and
+rt-gnur, rast.py, the C API bench) leaves none after a normal or a failing
+exit.
+
+    python3 scripts/test-scratch.py
+"""
+
+import importlib.util
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+import textwrap
+import time
+import unittest
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+spec = importlib.util.spec_from_file_location("scratch", HERE / "scratch.py")
+scratch = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(scratch)
+
+
+def run_py(code, tmp, timeout=60):
+    """`code` in a fresh python3 with TMPDIR=tmp and scripts/ importable:
+    (exit status, the lines it printed)."""
+    env = dict(os.environ, TMPDIR=tmp, PYTHONPATH=str(HERE))
+    p = subprocess.run([sys.executable, "-c", textwrap.dedent(code)], env=env, cwd=tmp,
+                       capture_output=True, text=True, timeout=timeout)
+    return p.returncode, p.stdout.split(), p.stderr
+
+
+class Module(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="test-scratch-")
+
+    def tearDown(self):
+        scratch.rmtree(self.tmp)
+
+    def made(self, tail, rc):
+        code, out, err = run_py("from scratch import scratch_dir\n"
+                                "d = scratch_dir('t-')\nopen(d + '/f', 'w').write('x')\nprint(d, flush=True)\n" + tail,
+                                self.tmp)
+        self.assertEqual(code, rc, err)
+        self.assertTrue(out and out[0].startswith(self.tmp), (out, err))
+        self.assertFalse(os.path.exists(out[0]), "the directory outlived its process")
+
+    def test_gone_after_a_normal_exit(self):
+        self.made("", 0)
+
+    def test_gone_after_an_exception(self):
+        self.made("raise RuntimeError('boom')", 1)
+
+    def test_gone_after_sys_exit(self):
+        self.made("import sys; sys.exit(3)", 3)
+
+    def test_kept_with_keep_and_removed_early_with_remove(self):
+        code, out, err = run_py("from scratch import scratch_dir, keep, remove\n"
+                                "a, b = scratch_dir('t-'), scratch_dir('t-')\nkeep(a); remove(b)\n"
+                                "import os; print(a, os.path.exists(b))", self.tmp)
+        self.assertEqual(code, 0, err)
+        self.assertTrue(os.path.isdir(out[0]))
+        self.assertEqual(out[1], "False")
+
+    def sigterm(self, body, first="d = scratch_dir('t-')\n", delay=0.0):
+        """Starts `body` (after `first`, which makes a directory on the main
+        thread; `body` prints a directory, a pid and READY), SIGTERMs it:
+        (exit status, seconds to exit, the directory, the pid)."""
+        env = dict(os.environ, TMPDIR=self.tmp, PYTHONPATH=str(HERE))
+        code = "import subprocess, sys, time\nfrom scratch import scratch_dir\n" + first + body
+        p = subprocess.Popen([sys.executable, "-c", code], env=env, stdout=subprocess.PIPE, text=True)
+        lines = []
+        while "READY" not in lines:
+            line = p.stdout.readline()
+            self.assertTrue(line, "the child exited before READY")
+            lines.append(line.strip())
+        time.sleep(delay)
+        t0 = time.monotonic()
+        p.send_signal(signal.SIGTERM)
+        rc = p.wait(timeout=60)
+        return rc, time.monotonic() - t0, lines[0], lines[1]
+
+    def alive(self, pid):
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                return f.read().rsplit(")", 1)[1].split()[0] != "Z"
+        except OSError:
+            return False
+
+    def test_sigterm_ends_the_children_and_removes_the_directory(self):
+        # a child with the directory as its working directory: its open
+        # files would keep the blocks in use
+        rc, secs, d, kid = self.sigterm(
+            "c = subprocess.Popen(['sleep', '300'], cwd=d)\nprint(d); print(c.pid); print('READY', flush=True)\n"
+            "c.wait()\ntime.sleep(300)\n")
+        self.assertEqual(rc, 128 + signal.SIGTERM)
+        self.assertLess(secs, 10)
+        self.assertFalse(os.path.exists(d))
+        self.assertFalse(self.alive(int(kid)), "the child outlived the tool")
+
+    def test_sigterm_with_a_thread_pool_waiting_on_workers_still_exits(self):
+        # builtin-diff's shape: workers in subprocess.run, the main thread in
+        # the executor's exit, which waits for them
+        rc, secs, d, kid = self.sigterm(
+            "import concurrent.futures, os\nprint(d); print(os.getpid()); print('READY', flush=True)\n"
+            "with concurrent.futures.ThreadPoolExecutor(2) as ex:\n"
+            "    list(ex.map(lambda _: subprocess.run(['sleep', '300'], cwd=d), range(4)))\n")
+        self.assertEqual(rc, 128 + signal.SIGTERM)
+        self.assertLess(secs, 15)
+        self.assertFalse(os.path.exists(d))
+
+    def test_sigterm_removes_a_directory_a_worker_thread_made_first(self):
+        # builtin-diff's rows: the first scratch_dir runs in a pool worker
+        rc, secs, d, kid = self.sigterm(
+            "import concurrent.futures, os\n"
+            "with concurrent.futures.ThreadPoolExecutor(1) as ex:\n"
+            "    w = ex.submit(scratch_dir, 'w-').result()\n"
+            "print(w); print(os.getpid()); print('READY', flush=True)\ntime.sleep(300)\n", first="")
+        self.assertEqual(rc, 128 + signal.SIGTERM)
+        self.assertFalse(os.path.exists(d))
+
+    def test_a_signal_while_the_main_thread_makes_a_directory_waits_for_it(self):
+        # the handler only notes it; scratch_dir runs it once the directory
+        # is registered, so the exit removes it
+        # sent by a thread that already ran (a pool worker's), so it can
+        # receive the signal whatever the main thread blocks
+        code, out, err = run_py("import os, signal, tempfile, threading, time, scratch\n"
+                                "go = threading.Event()\n"
+                                "threading.Thread(target=lambda: go.wait() and os.kill(os.getpid(), signal.SIGTERM)).start()\n"
+                                "real = tempfile.mkdtemp\n"
+                                "def mk(**k):\n"
+                                "    p = real(**k); print(p, flush=True)\n"
+                                "    go.set(); time.sleep(0.5); return p\n"
+                                "tempfile.mkdtemp = mk\nscratch.scratch_dir('t-')\nprint('NOT REACHED')", self.tmp)
+        self.assertEqual(code, 128 + signal.SIGTERM, err)
+        self.assertNotIn("NOT", out)
+        self.assertFalse(os.path.exists(out[0]))
+
+    def test_sigterm_during_the_exit_cleanup_waits_for_it(self):
+        # S17: the normal exit's remove_all waits on a child that ignores
+        # SIGTERM (end_children's grace); a SIGTERM then must not cut the
+        # cleanup short
+        rc, secs, d, kid = self.sigterm(
+            "import os\nc = subprocess.Popen(['sh', '-c', 'trap \"\" TERM; sleep 30'])\n"
+            "print(d); print(os.getpid()); print('READY', flush=True)\ntime.sleep(1)\n",
+            delay=2.0)
+        self.assertEqual(rc, 128 + signal.SIGTERM)
+        self.assertFalse(os.path.exists(d))
+
+    def test_a_forked_child_removes_none_of_its_parents_directories(self):
+        # S21: the child inherits the registry; it owns none of it
+        code, out, err = run_py("import os, sys\nfrom scratch import scratch_dir\nd = scratch_dir('t-')\n"
+                                "pid = os.fork()\n"
+                                "if pid == 0:\n    sys.exit(0)        # the child's exit handlers run\n"
+                                "os.waitpid(pid, 0)\nprint(d, os.path.isdir(d), flush=True)", self.tmp)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out[1], "True")         # still there after the child exited
+        self.assertFalse(os.path.exists(out[0]))  # and gone with its maker
+
+    def test_sigterm_during_an_early_removal_waits_for_it(self):
+        # S20: the signal lands inside remove(); the removal finishes, then
+        # the exit removes the rest
+        code, out, err = run_py("import os, signal, scratch\n"
+                                "a, b = scratch.scratch_dir('t-'), scratch.scratch_dir('t-')\nprint(a, b, flush=True)\n"
+                                "real = scratch.rmtree\n"
+                                "def rm(p):\n    os.kill(os.getpid(), signal.SIGTERM); real(p)\n"
+                                "scratch.rmtree = rm\nscratch.remove(a)\nprint('NOT REACHED')", self.tmp)
+        self.assertEqual(code, 128 + signal.SIGTERM, err)
+        self.assertNotIn("NOT", out)
+        self.assertFalse(os.path.exists(out[0]) or os.path.exists(out[1]))
+
+    def test_a_directory_that_cannot_be_removed_does_not_stop_the_others(self):
+        # S22
+        code, out, err = run_py("import scratch\n"
+                                "a, b = scratch.scratch_dir('t-'), scratch.scratch_dir('t-')\nprint(a, b, flush=True)\n"
+                                "real, failed = scratch.rmtree, []\n"
+                                "def rm(p):\n    if p == min(a, b) and not failed:\n        failed.append(p); raise PermissionError(p)\n"
+                                "    real(p)\nscratch.rmtree = rm", self.tmp)
+        self.assertEqual(code, 0, err)
+        stuck = min(out)
+        self.assertTrue(os.path.isdir(stuck))       # its one removal failed
+        self.assertFalse(os.path.exists(max(out)))  # the other went
+        scratch.rmtree(stuck)
+
+    def day_old(self, name, hours=25):
+        d = Path(self.tmp, name)
+        (d / "sub").mkdir(parents=True)
+        (d / "sub" / "f").write_text("x")
+        os.utime(d, (time.time() - hours * 3600,) * 2)
+        return d
+
+    def test_the_sweep_removes_a_day_old_directory_of_its_prefix_only(self):
+        old = self.day_old("t-old")
+        young = self.day_old("t-young", hours=23)
+        other = self.day_old("u-old")
+        f = Path(self.tmp, "t-file")
+        f.write_text("x")
+        os.utime(f, (time.time() - 48 * 3600,) * 2)
+        self.assertEqual(scratch.sweep("t-", self.tmp), [str(old)])
+        self.assertTrue(young.exists() and other.exists() and f.exists())
+
+    def test_the_sweep_reads_the_directorys_own_time_only(self):
+        # a day-old directory goes whatever is inside it (rule 2: no look
+        # inside); one written to directly is young again
+        d = self.day_old("t-old")
+        os.utime(d / "sub" / "f", None)            # inside: just now
+        self.assertEqual(scratch.sweep("t-", self.tmp), [str(d)])
+
+    def test_the_sweep_leaves_another_users_directory(self):
+        d = self.day_old("t-theirs")
+        real = scratch.os.getuid
+        scratch.os.getuid = lambda: real() + 1
+        try:
+            self.assertEqual(scratch.sweep("t-", self.tmp), [])
+        finally:
+            scratch.os.getuid = real
+        self.assertTrue(d.exists())
+
+    def test_the_sweep_removes_a_day_old_directory_that_took_its_permissions(self):
+        d = self.day_old("t-closed")
+        os.chmod(d / "sub", 0o000)
+        os.chmod(d, 0o000)
+        os.utime(d, (time.time() - 25 * 3600,) * 2)
+        self.assertEqual(scratch.sweep("t-", self.tmp), [str(d)])
+
+    def test_the_sweep_leaves_a_name_replaced_after_its_listing(self):
+        # the old directory moved away and a new one made at its name between
+        # the listing and the removal: the descriptor names the old one, the
+        # inode check sees the name holds another, and the new one stays
+        d = self.day_old("t-swap")
+        real = scratch.os.lstat
+        swapped = []
+
+        def lstat(name, *a, **k):
+            st = real(name, *a, **k)
+            if name == "t-swap" and not swapped:
+                swapped.append(1)
+                os.rename(d, str(d) + "-moved")
+                d.mkdir()
+                (d / "new").write_text("x")
+                os.utime(d, (time.time() - 25 * 3600,) * 2)
+            return st
+        scratch.os.lstat = lstat
+        try:
+            self.assertEqual(scratch.sweep("t-", self.tmp), [])
+        finally:
+            scratch.os.lstat = real
+        self.assertTrue((d / "new").exists())
+
+    def test_a_tools_own_sigterm_handler_stays(self):
+        code, out, err = run_py("import signal\nsignal.signal(signal.SIGTERM, lambda *a: None)\nh = signal.getsignal(signal.SIGTERM)\n"
+                                "from scratch import scratch_dir\nscratch_dir('t-')\nprint(signal.getsignal(signal.SIGTERM) is h)",
+                                self.tmp)
+        self.assertEqual(out, ["True"], err)
+
+    def test_a_directory_whose_case_took_its_permissions_is_removed(self):
+        for mode in (0o500, 0o000):
+            d = Path(self.tmp, "locked")
+            (d / "sub" / "deeper").mkdir(parents=True)
+            (d / "sub" / "deeper" / "f").write_text("x")
+            os.chmod(d / "sub" / "deeper", mode)
+            os.chmod(d / "sub", mode)
+            os.chmod(d, mode)
+            scratch.rmtree(str(d))
+            self.assertFalse(d.exists(), oct(mode))
+
+    def test_the_sweep_never_follows_a_link_of_its_prefix(self):
+        target = Path(self.tmp, "elsewhere")
+        target.mkdir()
+        os.utime(target, (time.time() - 3 * 86400,) * 2)
+        link = Path(self.tmp, "t-link")
+        link.symlink_to(target)
+        Path(self.tmp, "t-link2.lease").symlink_to(Path(self.tmp, "elsewhere-lease"))
+        Path(self.tmp, "elsewhere-lease").write_text("")
+        Path(self.tmp, "t-link2").symlink_to(target)
+        self.assertEqual(scratch.sweep("t-", self.tmp), [])
+        self.assertTrue(target.exists() and link.is_symlink())
+
+    def test_the_first_directory_of_a_prefix_sweeps_it(self):
+        d = Path(self.tmp, "t-left")
+        d.mkdir()
+        os.utime(d, (time.time() - 3 * 86400,) * 2)
+        code, out, err = run_py("from scratch import scratch_dir\nscratch_dir('t-')", self.tmp)
+        self.assertEqual(code, 0, err)
+        self.assertFalse(d.exists())
+
+class Tools(unittest.TestCase):
+    """Each tool's directory, made through its real code path with the
+    expensive parts mocked, is gone after a normal and after a failing exit.
+    Each snippet prints the directory the tool made as DIR=<path>."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="test-scratch-tools-")
+
+    def tearDown(self):
+        scratch.rmtree(self.tmp)
+
+    def both(self, code):
+        for fail, rc in ((False, 0), (True, 1)):
+            with self.subTest(fail=fail):
+                got, out, err = run_py(f"FAIL = {fail}\n" + textwrap.dedent(code), self.tmp)
+                self.assertEqual(got, rc, err)
+                dirs = [w[4:] for w in out if w.startswith("DIR=")]
+                self.assertTrue(dirs, err)
+                for d in dirs:
+                    self.assertFalse(os.path.exists(d), f"{d} outlived the tool")
+
+    def test_builtin_diff_robigo_rts_records(self):
+        self.both(f"""
+            import importlib.util, json, os, sys
+            from types import SimpleNamespace
+            from unittest import mock
+            s = importlib.util.spec_from_file_location("bd", {str(HERE / 'builtin-diff.py')!r})
+            bd = importlib.util.module_from_spec(s); s.loader.exec_module(bd)
+            d = os.path.join(os.environ["TMPDIR"], "oracle"); os.makedirs(d, exist_ok=True)
+            json.dump({{"lost": {{}}}}, open(os.path.join(d, "done"), "w"))
+            def batch(cmd, env, b, out, n, work):
+                print("DIR=" + os.path.dirname(out), flush=True)
+                if FAIL:
+                    raise RuntimeError("robigo-rt died")
+                return {{}}
+            with mock.patch.object(bd, "oracle_dir", lambda *a: d), mock.patch.object(bd, "read_cases", lambda d: []), \\
+                    mock.patch.object(bd, "run_batch", batch):
+                bd.run_rt(SimpleNamespace(data=d, seed=0, rsrc="x"), SimpleNamespace(isolated=False), "off", "rt", [])
+            """)
+
+    def perf(self, call):
+        return f"""
+            import importlib.util, os
+            from types import SimpleNamespace
+            from unittest import mock
+            s = importlib.util.spec_from_file_location("perf", {str(HERE / 'perf.py')!r})
+            perf = importlib.util.module_from_spec(s); s.loader.exec_module(perf)
+            tmp = os.environ["TMPDIR"]
+            def instr(binary, rows, jobs, work, *a, **k):
+                print("DIR=" + work, flush=True)
+                if FAIL:
+                    raise RuntimeError("callgrind died")
+                return ({{"plain": 500.0}}, {{"plain": 400.0}}) if k.get("cycles") else {{"plain": 500.0}}
+            with mock.patch.object(perf, "rt_instr", instr), mock.patch.object(perf, "rt_rss", lambda *a: {{"p.R": 1}}), \\
+                    mock.patch.object(perf, "binary_identity", lambda *_: {{}}), \\
+                    mock.patch.object(perf, "report_identity", lambda *_, **__: None), \\
+                    mock.patch.object(perf, "gnur_version", lambda: "4.6.2"), \\
+                    mock.patch.object(perf, "valgrind_path", lambda: "true"), \\
+                    mock.patch.object(perf, "cpu_signature", lambda: ("cpu", "0" * 16)):
+                {call}
+            """
+
+    BARS = ('[gnur]\nversion = "%s"\nsource = "x"\n[gnur.instr]\nplain = 1000.0\n[gnur.rss]\n"p.R" = 50000\n'
+            '[[bar]]\nrow = "plain"\nagainst = "gnur"\nmax = 0.6\n[[rss]]\nprogram = "p.R"\nagainst = ["gnur"]\n')
+
+    def test_perf_rt_bars(self):
+        self.both(self.perf(
+            f'b = os.path.join(tmp, "bars.toml"); open(b, "w").write({self.BARS!r} % perf.pins()["rt"]); '
+            'perf.cmd_rt_bars(SimpleNamespace(bars=b, robigo_rt="rt", main=None, jobs=1, runs=1, '
+            'out=os.path.join(tmp, "o.json"), gnur=None, cycles=False))'))
+
+    def test_perf_rt_gnur(self):
+        self.both(self.perf(
+            f'b = os.path.join(tmp, "bars.toml"); open(b, "w").write({self.BARS!r} % perf.pins()["rt"]); '
+            'perf.cmd_rt_gnur(SimpleNamespace(bars=b, jobs=1, runs=1, out=os.path.join(tmp, "g.json")))'))
+
+    def test_rast_parser(self):
+        # `true` stands in for Rscript: the helper process exits at once
+        self.both(f"""
+            import importlib.util
+            s = importlib.util.spec_from_file_location("rast", {str(HERE / 'rast.py')!r})
+            rast = importlib.util.module_from_spec(s); s.loader.exec_module(rast)
+            p = rast.Parser(rscript="true")
+            print("DIR=" + p.dir, flush=True)
+            if FAIL:
+                raise RuntimeError("the parse helper died")   # no close(): the exit handler removes it
+            p.close()
+            """)
+
+    def test_capi_bench(self):
+        self.both(f"""
+            import importlib.util, sys, subprocess
+            from unittest import mock
+            s = importlib.util.spec_from_file_location("bench", {str(ROOT / 'crates/robigo-capi/bench/bench.py')!r})
+            bench = importlib.util.module_from_spec(s); s.loader.exec_module(bench)
+            def docker(args, cwd):
+                print("DIR=" + cwd, flush=True)
+                return subprocess.CompletedProcess(args, 1 if FAIL else 0, "", "SHLIB failed")
+            sys.argv = ["bench.py"]
+            with mock.patch.object(bench, "docker", docker), mock.patch.object(bench, "run", lambda *a, **k: {{}}):
+                try:
+                    bench.main()
+                except SystemExit as e:
+                    sys.exit(1 if e.code else 0)
+            """)
+
+
+if __name__ == "__main__":
+    unittest.main()

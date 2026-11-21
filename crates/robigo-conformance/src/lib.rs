@@ -46,7 +46,8 @@
 //!                               case`, slowest first, tab-separated), even
 //!                               when the run fails: scripts/rt-ci.py's
 //!                               conformance steps list the cases over half
-//!                               their limit from it. Off when unset
+//!                               their limit from it. Off when unset or
+//!                               empty; its directory is made if missing
 //!   ROBIGO_R_VERSION=4.6.2      compare with that GNU R version's
 //!                               recordings (default: the column's gated
 //!                               version); a run against another version
@@ -515,6 +516,11 @@ pub fn write_times(path: &Path, times: &[(Duration, String, bool)], o: &Options)
     for (d, id, passed) in rows {
         let limit = o.case_timeouts.get(id).copied().unwrap_or(o.timeout).as_secs();
         text.push_str(&format!("{:.1}\t{limit}\t{}\t{id}\n", d.as_secs_f64(), if *passed { "pass" } else { "fail" }));
+    }
+    // (made if missing, as write_results does: a lost report would read as
+    // "no case over half its limit")
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        let _ = std::fs::create_dir_all(dir);
     }
     if let Err(e) = std::fs::write(path, text) {
         eprintln!("ROBIGO_CONF_TIMES_REPORT: writing {}: {e}", path.display());

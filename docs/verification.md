@@ -33,6 +33,18 @@ layouts. Run it by hand or from a timer. Never point `CARGO_TARGET_DIR` at
 a directory of your own: each holds several GB. If a task truly needs one
 (a build that must not mix with others), delete it before handing back.
 
+A tool's temporary directories come from `scripts/scratch.py`
+(`scratch_dir(prefix)`): builtin-diff's `a4-*`, perf.py's `rt-bars-` and
+`rt-gnur-`, rast.py's and the C API bench's. Two rules (at the module's
+top): a tool removes its own directories on every exit path, an exception
+or SIGTERM included (which first ends its children); and the first
+directory of a prefix sweeps that prefix's directories that this user owns
+and whose own time is more than a day old, what a SIGKILL or an OOM kill
+leaves. Nothing decides whether another run is alive.
+`scripts/test-scratch.py` checks the module and each tool; the conformance
+runner's test fakes live in cargo's `target/tmp` and are swept by process
+id.
+
 ## Correctness
 
 | check | command | what it compares |
