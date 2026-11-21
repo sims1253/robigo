@@ -21,3 +21,15 @@
   allows `detach("Autoloads")`, so robigo-rt does too.
 - Cases: `tests/rt/env/autoload-env.R`. Five `tests/rt/bytecode/*` cases
   now pass and are ratcheted: cmpfun-ops, cmpfun, compile, fidelity and jit.
+
+### 2026-11-21: with main merged (#856's compile-pkgs step)
+
+- #856 (V4 step 3a) added the cli test
+  `compiling_closures_on_serialize_when_the_compiler_cannot_load`. It held
+  only while the compiler could not load because of `.AutoloadEnv`, and
+  its doc said it would change once `.AutoloadEnv` was real and give way
+  to `tests/rt/serialize/compile-pkgs.R`. With this PR it is real: the
+  compiler loads, and the first `serialize()` writes byte code. That
+  failed CI's `rt` and `test` jobs on 50c4b9c70. The test is removed, and
+  `compile-pkgs.R` (recorded on 4.6.2, which compiles the closure) now
+  passes and is ratcheted.
