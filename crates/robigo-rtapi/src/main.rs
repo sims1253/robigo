@@ -12,6 +12,8 @@
 
 #![deny(unsafe_code)]
 
+mod renviron;
+
 use robigo_rt::repl::run_session;
 use robigo_rtcore::OwnedIsolate;
 use std::os::unix::ffi::OsStrExt;
@@ -101,6 +103,46 @@ fn default_r_home() -> RHome {
     if has_base(&h) { RHome::Given(h) } else { RHome::MissingDefault(h) }
 }
 
+/// What `R_common_command_line`'s start-up options leave for
+/// `Rf_initialize_R` and `setup_Rmainloop`: whether the site and user
+/// Renviron files are read (`NoRenviron`), the site and user profiles
+/// (`LoadSiteFile`, `LoadInitFile`), and the saved workspace restored
+/// (`RestoreAction`).
+#[derive(Clone, Copy)]
+struct Startup {
+    environ: bool,
+    site_file: bool,
+    init_file: bool,
+    restore: bool,
+}
+
+/// `R_ExpandFileName` as it is before R runs (no readline yet: the unix
+/// version): `~` and `~/...` from `HOME` (else the password database),
+/// `~user/...` from the password database, anything else as it is.
+// R: sys-unix.c:R_ExpandFileName_unix
+fn expand_tilde(s: &[u8]) -> Vec<u8> {
+    if s.first() != Some(&b'~') {
+        return s.to_vec();
+    }
+    let end = s.iter().position(|&b| b == b'/').unwrap_or(s.len());
+    let user = &s[1..end];
+    let home = if user.is_empty() {
+        std::env::var_os("HOME")
+            .map(|h| h.into_encoded_bytes())
+            .filter(|h| !h.is_empty())
+            .or_else(|| robigo_rtcore::clib::passwd_home(None))
+    } else {
+        robigo_rtcore::clib::passwd_home(Some(user))
+    };
+    match home {
+        Some(mut h) => {
+            h.extend_from_slice(&s[end..]);
+            h
+        }
+        None => s.to_vec(),
+    }
+}
+
 /// How base boots (`ROBIGO_RT_BOOT`): INTERIM(L5) M1's lazy loader of the
 /// pinned sources (unset), or GNU R's boot, `R_ReplFile` of R_HOME's
 /// `library/base/R/base`: of the checkout's source tree (`stage0`), or of
@@ -156,6 +198,9 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     // R_Quiet and R_NoEcho (R_common_command_line), and whether the save
     // action is given (SA_NOSAVE: --vanilla, --no-save, --no-echo)
     let (mut quiet, mut no_echo, mut save_given) = (false, false, false);
+    // R_common_command_line's NoRenviron, LoadSiteFile, LoadInitFile and
+    // RestoreAction (--vanilla is all four, with --no-save)
+    let mut st = Startup { environ: true, site_file: true, init_file: true, restore: true };
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         let b = a.as_encoded_bytes();
@@ -193,8 +238,16 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
                 return 2;
             }
             // start-up options that change nothing robigo-rt has
-            b"--vanilla" | b"--no-save" => save_given = true,
-            b"--no-restore" | b"--no-environ" | b"--no-site-file" | b"--no-init-file" | b"--verbose" => {}
+            b"--vanilla" => {
+                save_given = true;
+                st = Startup { environ: false, site_file: false, init_file: false, restore: false };
+            }
+            b"--no-save" => save_given = true,
+            b"--no-environ" => st.environ = false,
+            b"--no-site-file" => st.site_file = false,
+            b"--no-init-file" => st.init_file = false,
+            b"--no-restore" | b"--no-restore-data" => st.restore = false,
+            b"--verbose" => {}
             _ if b.starts_with(b"--default-packages=") => {}
             // R: the rest are commandArgs()'s, whatever the mode (an
             // Rscript's FILE ends the options before it)
@@ -296,6 +349,20 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
 
     // setup_Rmainloop's setlocale(<category>, "") calls and R_check_locale:
     // the isolate's locale is the environment's (the process's stays "C")
+    // Rscript runs R with --no-restore (a FILE or -e)
+    if !r_mode {
+        st.restore = false;
+    }
+    // Rf_initialize_R's Renviron files, before the locale: the system one,
+    // then the site's and the user's unless --no-environ (INTERIM(L5): GNU
+    // R's boot only; M1's loader gives the options their values itself)
+    if boot() != Boot::M1 {
+        renviron::process_system_renviron(home.path());
+        if st.environ {
+            renviron::process_site_renviron(home.path());
+            renviron::process_user_renviron(expand_tilde);
+        }
+    }
     let env_loc = robigo_rtcore::clib::env_locale();
     let utf8 = if env_loc.codeset.eq_ignore_ascii_case(b"UTF-8") {
         true
@@ -343,7 +410,25 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
             return 2;
         }
         match robigo_rt::base::stage0(cx, home.path()) {
-            Ok(st) => {
+            Ok(mut boot_st) => {
+                // setup_Rmainloop after the system profile: .OptRequireMethods,
+                // the site and user profiles, .RData, .First, .First.sys; an
+                // error there halts R (check_session_exit: R_CleanUp(SA_NOSAVE,
+                // 1, 0), no .Last)
+                let a = robigo_rt::base::AfterProfile {
+                    site_file: st.site_file,
+                    init_file: st.init_file,
+                    restore: st.restore,
+                    quiet,
+                };
+                if !robigo_rt::base::after_profile(cx, home.path(), a, &mut boot_st) {
+                    cx.reprintf(b"Execution halted\n");
+                    robigo_rt::fin::run_exit_finalizers(cx);
+                    robigo_rt::repl::print_warnings(cx);
+                    cx.flush_console();
+                    return 1;
+                }
+                let st = boot_st;
                 if std::env::var_os("ROBIGO_BOOT_VERBOSE").is_some() {
                     for (line, m) in &st.failed {
                         eprintln!("robigo-rt: stage 0: line {line}: {m}");

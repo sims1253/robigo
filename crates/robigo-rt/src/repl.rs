@@ -256,7 +256,7 @@ fn error_at_top_after(cx: &mut Cx, warnings: &[String], msg: &str) {
 /// caller writes "Execution halted" and quits with status 1, running no
 /// `.Last`). R_Interactive is FALSE.
 // R: main.c:check_session_exit
-fn check_session_exit(cx: &mut Cx) -> bool {
+pub(crate) fn check_session_exit(cx: &mut Cx) -> bool {
     cx.scope(|cx, s| {
         let go_on = (|| {
             let error = robigo_rtbuiltins::options::get_option(cx, s, b"error")?;
