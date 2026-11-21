@@ -86,7 +86,7 @@ fn bc_eval_inline(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RRes
     check_env(cx, rho.bind(cx).sexp())?;
     let depth = cx.eval_depth();
     let r = cx.scope(|cx, s| {
-        let code = crate::compile::bytecode_code(cx, e)?;
+        let code = crate::compile::bytecode_code(cx, e, rho)?;
         // SAFETY: a fresh or cached code object.
         let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
         let slot = out_slot(&out);
@@ -165,7 +165,7 @@ fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, promise: b
                 let src = s.root(cx, robigo_rtbuiltins::bytecode::expr(cx, e.bind(cx)));
                 return eval(cx, src, rho, out);
             }
-            let code = crate::compile::bytecode_code(cx, e)?;
+            let code = crate::compile::bytecode_code(cx, e, rho)?;
             // SAFETY: a fresh or cached code object.
             let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
             let slot = out_slot(&out);
@@ -772,7 +772,24 @@ pub fn do_return_value(
 /// `.Internal(withVisible(x))`, a special: `x` evaluated in `rho`, and
 /// `list(value =, visible =)` with `R_Visible` as that evaluation left it.
 // R: eval.c:do_withVisible
-pub fn do_with_visible(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub fn do_with_visible(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    // (applyMethod's promise list: the call over it, as before)
+    if args.is_some() {
+        return cx.scope(|cx, s| {
+            let ac = match crate::specials::arg_call(cx, s, call, args)? {
+                Some(a) => a,
+                None => call,
+            };
+            do_with_visible(cx, ac, _op, None, rho, out)
+        });
+    }
     use robigo_rtbuiltins::attrib::{Attr, Attrs};
     use robigo_rtcore::{Char, Encoding, Lgl, RSym};
     let n = call.bind(cx).len().unwrap_or(1).saturating_sub(1);
@@ -803,7 +820,14 @@ pub fn do_with_visible(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>
 /// promises of its record), from the environment that function was called
 /// from. A special: `rho` is `Recall`'s frame.
 // R: eval.c:do_recall
-pub fn do_recall(cx: &mut Cx, _call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub fn do_recall(
+    cx: &mut Cx,
+    _call: Root<'_>,
+    _op: Root<'_>,
+    _args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     use robigo_rtcore::ctxt;
     cx.scope(|cx, s| {
         let outside = "'Recall' called from outside a closure";

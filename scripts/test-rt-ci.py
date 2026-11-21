@@ -92,11 +92,47 @@ class RtCi(unittest.TestCase):
         self.assertLess(built, titles.index("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)"))
         self.assertTrue(all(c[2] != "--release" for t, _, c in rt.steps(crates)[:built] if c[:2] == ["cargo", "test"]))
         rel = rt.shard_steps(crates, "release-crate-tests")
-        self.assertEqual([c[2] for _, _, c in rel if c[:2] == ["cargo", "test"]], ["--release"])
+        self.assertEqual({c[2] for _, _, c in rel if c[:2] == ["cargo", "test"]}, {"--release"})
         self.assertEqual(rel[0][0], "the R_HOME tree, tools.so built (scripts/rt-home.sh)")
         plain = " ".join(t for t, _, _ in rt.steps(crates))
         self.assertNotIn("release profile", plain)
         self.assertEqual(set(rt.OWN_STEPS), {"debug-assertions", "release-crate-tests"})
+
+    def test_the_database_tree_comes_before_every_run_of_the_crates_tests(self):
+        # robigo-rtapi's boot_db tests read .robigo/rt-home-db: in every shard
+        # that runs the crates' tests the tree is made (rebuilt when stale)
+        # first, and each run says it must be there, so it never skips
+        from unittest import mock
+        crates = ["robigo-heap", "robigo-rt", "robigo-rtapi", "robigo-rtcore"]
+        with mock.patch.object(rt, "target_dir", return_value="/t/target"):
+            for shard in rt.SHARDS:
+                steps = rt.shard_steps(crates, shard)
+                # (the runs that include robigo-rtapi's tests, where boot_db is)
+                runs = [i for i, (_, _, c) in enumerate(steps) if c[:2] == ["cargo", "test"] and "--no-run" not in c
+                        and "--skip" in c and "--test" not in c and "robigo-rtapi" in c]
+                tree = [i for i, (t, _, _) in enumerate(steps) if t.startswith("base's database tree")]
+                if not runs:
+                    continue
+                self.assertEqual(len(tree), 1, shard)
+                self.assertLess(tree[0], runs[0], shard)
+                for i in runs:
+                    self.assertEqual(steps[i][1].get("ROBIGO_RT_HOME_DB"), "1", f"{shard}: {steps[i][0]}")
+                # the release binary that writes the tree is built before it
+                built = [i for i, (_, _, c) in enumerate(steps) if "--no-run" in c and "--release" in c]
+                self.assertTrue(built and built[0] < tree[0], shard)
+
+    def test_the_rdb_boot_runs_the_conformance_plain_and_crosschecked_after_its_tree(self):
+        steps = rt.steps(["robigo-rt", "robigo-rtapi"])
+        titles = [t for t, _, _ in steps]
+        rdb = [i for i, (_, e, c) in enumerate(steps) if e.get("ROBIGO_RT_BOOT") == "rdb" and rt.CONFORMANCE in c
+               and "--skip" not in c]
+        self.assertEqual(len(rdb), 2)
+        tree = titles.index("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)")
+        self.assertTrue(all(tree < i for i in rdb))
+        self.assertEqual({rt.shard_of(titles[i]) for i in rdb}, {"modes"})
+        self.assertEqual(sorted(sorted(steps[i][1]) for i in rdb),
+                         [["ROBIGO_BC_CROSSCHECK", "ROBIGO_BC_CROSSCHECK_REPORT", "ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT"],
+                          ["ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT"]])
 
     def test_every_crate_test_step_builds_what_the_first_built(self):
         # cargo turns a selected crate's dev-dependency features on, so a
@@ -128,7 +164,8 @@ class RtCi(unittest.TestCase):
         self.assertEqual(sorted(timeouts), sorted(rt.SHARDS), "each shard has one CI job")
         for shard, (budget, measured, where) in rt.BUDGETS.items():
             self.assertEqual(budget, math.ceil(measured * 1.2), f"{shard}: the measured time plus 20%, rounded up")
-            self.assertEqual(timeouts[shard], 2 * budget, f"{shard}: its job's timeout is twice its budget")
+            self.assertEqual(timeouts[shard], max(2 * budget, rt.TIMEOUT_FLOOR),
+                             f"{shard}: its job's timeout is twice its budget, at least the floor")
             self.assertRegex(where, r"^20\d\d-\d\d-\d\d", f"{shard}: when it was measured")
         self.assertEqual(rt.WARN_AT, 0.9)
 
@@ -140,9 +177,133 @@ class RtCi(unittest.TestCase):
         self.assertNotIn("::warning::", rt.timings_report([("release tests", below, True)], "modes"))
         report = rt.timings_report([("release tests", at, True)], "modes")
         self.assertIn("::warning::rt: shard modes took", report)
-        self.assertIn(f"{2 * budget}-minute timeout", report)
+        self.assertIn(f"{rt.timeout_of(budget)}-minute timeout", report)
         # a plain run has no budget
         self.assertNotIn("budget", rt.timings_report([("release tests", at * 3, True)]))
+
+    def test_the_case_times_report_lists_the_cases_over_half_their_limit(self):
+        import tempfile
+        path = os.path.join(tempfile.mkdtemp(), "t.tsv")
+        with open(path, "w") as f:
+            f.write("# secs\tlimit\tstatus\tcase\n"
+                    "503.0\t600\tpass\ttests/rt/jit/serialize-write.R\n"
+                    "301.0\t600\tfail\ttests/rt/a.R\n"
+                    "300.0\t600\tpass\ttests/rt/half.R\n"
+                    "11.0\t20\tpass\ttests/rt/b.R\n"
+                    "0.4\t20\tpass\ttests/rt/c.R\n")
+        self.assertEqual([r[3] for r in rt.slow_cases(path)],
+                         ["tests/rt/jit/serialize-write.R", "tests/rt/a.R", "tests/rt/b.R"])
+        report = rt.slow_cases_report("conformance under x", path)
+        self.assertIn("3 case(s) over 50% of their limit", report)
+        self.assertIn("  503.0 s of  600 s  pass  tests/rt/jit/serialize-write.R", report)
+        self.assertIn("no case over", rt.slow_cases_report("y", os.path.join(os.path.dirname(path), "none.tsv")))
+
+    def test_every_conformance_step_writes_its_case_times_and_lists_them_even_when_it_fails(self):
+        # the runner's ROBIGO_CONF_TIMES_REPORT, a file per step, for every
+        # conformance step rt-ci runs (the shards', the nightly's): not for
+        # a step that runs no conformance
+        from unittest import mock
+        import contextlib, io, tempfile
+        seen = []
+
+        def fake(cmd, cwd, env):
+            seen.append(env.get("ROBIGO_CONF_TIMES_REPORT"))
+            if env.get("ROBIGO_CONF_TIMES_REPORT"):
+                with open(env["ROBIGO_CONF_TIMES_REPORT"], "w") as f:
+                    f.write("# secs\tlimit\tstatus\tcase\n700.0\t600\tfail\ttests/rt/x.R\n")
+            return mock.Mock(returncode=0 if len(seen) == 1 else 1)
+        plan = [("crates' tests", {}, ["cargo", "test", "--", "--skip", rt.CONFORMANCE]),
+                ("conformance under gctorture (E3)", {}, rt.conformance_command())]
+        out = io.StringIO()
+        with mock.patch.object(rt, "TIMES_DIR", tempfile.mkdtemp()), mock.patch.object(rt.subprocess, "run", fake), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(rt.run_steps(plan, []), 1)
+        self.assertIsNone(seen[0])
+        self.assertTrue(seen[1] and seen[1].endswith("01-conformance-under-gctorture-E3.tsv"), seen)
+        # two titles that differ only in punctuation have one slug, so the
+        # step's index is what keeps their files apart
+        self.assertEqual(rt.times_file(3, "conformance under X=1"), rt.times_file(3, "conformance under X-1"))
+        self.assertNotEqual(rt.times_file(3, "conformance under X=1"), rt.times_file(4, "conformance under X-1"))
+        self.assertIn("1 case(s) over 50% of their limit", out.getvalue())
+        self.assertIn("tests/rt/x.R", out.getvalue())
+        # the nightly's full-move step is a conformance step like the others
+        for _, _, cmd in rt.full_move_steps():
+            self.assertTrue(rt.CONFORMANCE in cmd and "--exact" in cmd)
+
+    def test_the_free_space_floor_measures_a_path_that_does_not_exist_yet_at_its_ancestor(self):
+        # cargo's target directory does not exist on a fresh checkout (CI's
+        # first build): its volume is measured at the nearest ancestor
+        from unittest import mock
+        import collections, contextlib, io, tempfile
+        base = tempfile.mkdtemp()
+        missing = os.path.join(base, "target")
+        deeper = os.path.join(base, "no", "such", "target")
+        self.assertEqual(rt.existing_ancestor(missing), base)
+        self.assertEqual(rt.existing_ancestor(deeper), base)
+        self.assertIsNone(rt.free_space_problem([missing, deeper], 0.0))
+        usage = collections.namedtuple("usage", "total used free")
+        seen = []
+
+        def du(p):
+            seen.append(p)
+            return usage(100e9, 97e9, 3e9)
+        with mock.patch("shutil.disk_usage", du):
+            self.assertIn("3.0 GB free on the volume of " + deeper, rt.free_space_problem([deeper], 8))
+        self.assertEqual(seen, [base])
+        # a measurement that fails is a warning, never a crash
+        # (on stdout: Actions annotates only workflow commands there)
+        out = io.StringIO()
+        with mock.patch("shutil.disk_usage", side_effect=PermissionError("denied")), contextlib.redirect_stdout(out):
+            self.assertIsNone(rt.free_space_problem([missing], 8))
+        self.assertIn("::warning::rt-ci: cannot tell the free space", out.getvalue())
+        # and so is a path with no existing ancestor
+        out = io.StringIO()
+        with mock.patch.object(rt, "existing_ancestor", return_value=None), contextlib.redirect_stdout(out):
+            self.assertIsNone(rt.free_space_problem(["/nowhere"], 8))
+        self.assertIn("cannot tell", out.getvalue())
+
+    def test_a_run_stops_at_its_start_below_the_free_space_floor(self):
+        from unittest import mock
+        import collections, contextlib, io
+        usage = collections.namedtuple("usage", "total used free")
+        # main's premise mocked: no `cargo metadata` run, whatever the workspace
+        hermetic = contextlib.ExitStack()
+        hermetic.enter_context(mock.patch.object(rt, "metadata", return_value={"target_directory": "/x"}))
+        hermetic.enter_context(mock.patch.object(rt, "rt_crates", return_value=["robigo-rt"]))
+        hermetic.enter_context(mock.patch.object(rt, "leaks", return_value=[]))
+        hermetic.enter_context(mock.patch.object(rt, "steps", return_value=[]))
+        with hermetic, mock.patch("shutil.disk_usage", return_value=usage(100e9, 95e9, 5e9)):
+            self.assertIn("5.0 GB free", rt.free_space_problem(["/x"], 8))
+            self.assertIsNone(rt.free_space_problem(["/x"], 4))
+            for value, said in (("8", "free space first"), ("8GB", "is not a number of GB")):
+                out = io.StringIO()
+                with mock.patch.object(rt, "run_steps") as run, contextlib.redirect_stdout(out), \
+                        mock.patch.dict(os.environ, {"RT_CI_MIN_FREE_GB": value}):
+                    self.assertEqual(rt.main([]), 2, value)
+                run.assert_not_called()
+                self.assertIn("::error::", out.getvalue())
+                self.assertIn(said, out.getvalue())
+            # RT_CI_MIN_FREE_GB=0 turns the check off
+            with mock.patch.object(rt, "run_steps", return_value=0) as run, contextlib.redirect_stdout(io.StringIO()), \
+                    mock.patch.dict(os.environ, {"RT_CI_MIN_FREE_GB": "0"}):
+                self.assertEqual(rt.main([]), 0)
+            run.assert_called_once()
+
+    def test_a_crosscheck_that_compares_fewer_than_its_floor_fails(self):
+        # the rdb boot's report: a boot that stopped loading the compiler's
+        # namespace compares about half as many closures, without any error
+        import tempfile
+        path = os.path.join(tempfile.mkdtemp(), "bc.txt")
+        with open(path, "w") as f:
+            f.write("same: f\n" * 3 + "expected (a loop's shape (x)): g\n" + "skipped: h\n")
+        errors, counts = rt.bc_report_check(path, 4)
+        self.assertEqual((errors, counts["compared"]), ([], 4))
+        errors, _ = rt.bc_report_check(path, 5)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("compared 4 closures, fewer than the 5", errors[0])
+        # the plain report's floor is one comparison; the rdb one's is set
+        self.assertEqual(rt.BC_FLOORS.get(rt.BC_REPORT, 1), 1)
+        self.assertGreater(rt.BC_FLOORS[rt.BC_REPORT_RDB], 46000)
 
     def test_a_step_whose_report_fails_is_timed_as_failed(self):
         # the command passed, the crosscheck report did not (it compared
@@ -169,7 +330,7 @@ class RtCi(unittest.TestCase):
         for _, e, _ in steps:
             self.assertEqual(e["RUSTFLAGS"], "-C debug-assertions=on")
             self.assertEqual(e["CARGO_TARGET_DIR"], "/t/target-debug-assertions")
-        built = [(e, c) for _, e, c in steps[1:]]
+        built = [(e, c) for _, e, c in steps[1:] if c[:2] == ["cargo", "test"] and "--no-run" not in c]
         self.assertEqual(len(built), 2)
         self.assertEqual(built[0][1][:5], ["cargo", "test", "--profile", "quick", "--locked"])
         self.assertEqual(built[1][1][:4], ["cargo", "test", "--release", "--locked"])
@@ -239,14 +400,18 @@ class RtCi(unittest.TestCase):
             self.assertIn("--exact", cmd)
             if env:
                 self.assertTrue({"ROBIGO_GCTORTURE", "R_MAX_VSIZE", "ROBIGO_NO_INPLACE", "ROBIGO_MATERIALIZE", "ROBIGO_FRAME_QUARANTINE",
-                                 "ROBIGO_BC_CROSSCHECK", "ROBIGO_RETRY_TORTURE", "ROBIGO_POISON_DEAD"} & set(env), env)
+                                 "ROBIGO_BC_CROSSCHECK", "ROBIGO_RETRY_TORTURE", "ROBIGO_POISON_DEAD", "ROBIGO_RT_BOOT"} & set(env), env)
             # a crosscheck step writes its report, which `main` reads
             if "ROBIGO_BC_CROSSCHECK" in env:
                 self.assertIn("ROBIGO_BC_CROSSCHECK_REPORT", env)
         # the crosscheck step exists at all: dropping it from steps() would
         # leave every assertion above green, and V3's gate (`main` failing on
         # an unexpected or untranslated closure) would leave CI unnoticed
-        self.assertEqual(len([e for e, _ in own if "ROBIGO_BC_CROSSCHECK" in e]), 1)
+        cross = [e for e, _ in own if "ROBIGO_BC_CROSSCHECK" in e]
+        self.assertEqual(len(cross), 2)
+        # (one per boot, each with a report of its own)
+        self.assertEqual(sorted(e.get("ROBIGO_RT_BOOT", "") for e in cross), ["", "rdb"])
+        self.assertEqual(len({e["ROBIGO_BC_CROSSCHECK_REPORT"] for e in cross}), 2)
         for title, _, cmd in steps:
             # (a build-only step, --no-run, runs no test at all)
             if cmd[0] == "cargo" and rt.CONFORMANCE not in cmd[-1:] and "--exact" not in cmd and "--no-run" not in cmd:
@@ -329,12 +494,25 @@ class RtCi(unittest.TestCase):
         moving = [e for t, e, c in steps if "ROBIGO_GC_MOVE" in e and "--exact" in c]
         self.assertEqual(len(moving), 1)
         self.assertEqual(moving[0]["ROBIGO_GC_MOVE"], rt.GC_MOVE_YOUNG)
-        self.assertEqual([e for t, e, _ in steps if "ROBIGO_CONF_TIMEOUTS" in e], moving)
+        # (and the plain gctorture step, which names GCTORTURE_FIRST at its
+        # own limit: started first, not given longer)
+        plain = [e for t, e, c in steps if t == "conformance under gctorture (E3)"]
+        named = [t for t, e, _ in steps if "ROBIGO_CONF_TIMEOUTS" in e]
+        self.assertEqual(sorted(named), sorted(["conformance under gctorture (E3)",
+                                                f"conformance under ROBIGO_GC_MOVE={rt.GC_MOVE_YOUNG} with gctorture (E3)"]))
+        first = dict(item.rsplit("=", 1) for item in plain[0]["ROBIGO_CONF_TIMEOUTS"].split(","))
+        self.assertEqual(first, {c: str(s) for c, s in rt.GCTORTURE_FIRST.items()})
+        self.assertTrue(all(int(s) == int(plain[0]["ROBIGO_CONF_TIMEOUT"]) for s in first.values()))
         young = dict(item.rsplit("=", 1) for item in moving[0]["ROBIGO_CONF_TIMEOUTS"].split(","))
-        self.assertEqual(set(young), set(rt.YOUNG_MOVE_SLOW))
+        self.assertEqual(set(young), set(rt.YOUNG_MOVE_SLOW) | set(rt.GCTORTURE_FIRST) | set(rt.YOUNG_MOVE_FIRST))
         for case, secs in young.items():
             self.assertTrue((HERE.parent / case).is_file(), case)
-            self.assertGreater(int(secs), int(moving[0]["ROBIGO_CONF_TIMEOUT"]), case)
+            # YOUNG_MOVE_SLOW's get longer; GCTORTURE_FIRST's and
+            # YOUNG_MOVE_FIRST's are only started first
+            if case in rt.YOUNG_MOVE_SLOW:
+                self.assertGreater(int(secs), int(moving[0]["ROBIGO_CONF_TIMEOUT"]), case)
+            else:
+                self.assertEqual(int(secs), int(moving[0]["ROBIGO_CONF_TIMEOUT"]), case)
         # (the step's own limit stays: a hung case still fails in ten minutes)
         self.assertEqual(moving[0]["ROBIGO_CONF_TIMEOUT"], "600")
         self.assertTrue(rt.GC_MOVE_YOUNG.startswith("young:") and int(rt.GC_MOVE_YOUNG[6:]) >= 1)

@@ -284,8 +284,8 @@ jobs:
   # each (rt-ci.py's SHARDS, which says what each runs), built in each job
   # and run in parallel. One job ran them all until 2026-11-21, in 29-38
   # minutes against a 40-minute limit (docs/ledger/g3/2026-11-21-a1-rt-shards.md).
-  # Each job's timeout is twice its shard's budget (rt-ci.py's BUDGETS,
-  # pinned by scripts/test-rt-ci.py); each prints its steps' times at the
+  # Each job's timeout is max(2 × its shard's budget, 20) minutes
+  # (rt-ci.py's BUDGETS and TIMEOUT_FLOOR, pinned by scripts/test-rt-ci.py); each prints its steps' times at the
   # end of its log, with a warning at 90% of the budget. `Check` needs all.
   #
   # rt: the crates' tests (quick profile) and every mode they run under, the
@@ -300,7 +300,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 46
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
@@ -324,6 +324,8 @@ jobs:
           path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
           key: r-4.6.2-tarball
       - name: rt-ci.py, shard modes
+        env:
+          RT_CI_TIMES_DIR: ${{ runner.temp }}/rt-case-times
         run: |
           python3 scripts/test-rt-ci.py
           python3 scripts/rt-ci.py --shard modes
@@ -331,6 +333,15 @@ jobs:
       # record of GNU R's base, compiler and tools databases round-trips as
       # GNU R's does. The test fails when the variable is set and a file is
       # missing, and the artifact's download fails when neither has the data.
+      # each conformance case's wall time (rt-ci.py's TIMES_DIR), for the
+      # slow-case rule and the shards' balance; failed runs too
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: rt-case-times-modes
+          path: ${{ runner.temp }}/rt-case-times
+          if-no-files-found: ignore
+          retention-days: 14
       - uses: actions/cache/restore@v6
         id: rdb
         with:
@@ -372,7 +383,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 36
+    timeout-minutes: 54
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
@@ -392,7 +403,18 @@ jobs:
       - name: GNU R 4.6.2 sources
         run: scripts/r-src.sh
       - name: rt-ci.py, shard gctorture
+        env:
+          RT_CI_TIMES_DIR: ${{ runner.temp }}/rt-case-times
         run: python3 scripts/rt-ci.py --shard gctorture
+      # each conformance case's wall time (rt-ci.py's TIMES_DIR), for the
+      # slow-case rule and the shards' balance; failed runs too
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: rt-case-times-gctorture
+          path: ${{ runner.temp }}/rt-case-times
+          if-no-files-found: ignore
+          retention-days: 14
 
   # the crates' tests (quick profile) and the conformance (release) with
   # `-C debug-assertions=on` (heap's debug_assert!s seeing compiled code:
@@ -406,7 +428,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
@@ -428,7 +450,18 @@ jobs:
       - name: GNU R 4.6.2 sources
         run: scripts/r-src.sh
       - name: rt-ci.py, shard debug-assertions
+        env:
+          RT_CI_TIMES_DIR: ${{ runner.temp }}/rt-case-times
         run: python3 scripts/rt-ci.py --shard debug-assertions
+      # each conformance case's wall time (rt-ci.py's TIMES_DIR), for the
+      # slow-case rule and the shards' balance; failed runs too
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: rt-case-times-debug-assertions
+          path: ${{ runner.temp }}/rt-case-times
+          if-no-files-found: ignore
+          retention-days: 14
 
   # the crates' tests on the full release profile (thin LTO, one codegen
   # unit), the code users get: every other shard builds them in the quick
@@ -444,7 +477,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 30
+    timeout-minutes: 24
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
@@ -477,7 +510,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 54
+    timeout-minutes: 24
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
@@ -497,7 +530,18 @@ jobs:
       - name: GNU R 4.6.2 sources
         run: scripts/r-src.sh
       - name: rt-ci.py, shard feature-builds
+        env:
+          RT_CI_TIMES_DIR: ${{ runner.temp }}/rt-case-times
         run: python3 scripts/rt-ci.py --shard feature-builds
+      # each conformance case's wall time (rt-ci.py's TIMES_DIR), for the
+      # slow-case rule and the shards' balance; failed runs too
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: rt-case-times-feature-builds
+          path: ${{ runner.temp }}/rt-case-times
+          if-no-files-found: ignore
+          retention-days: 14
 
   # A4's builtin differential with its planted divergences
   # (robigo-rtbuiltins/diff-plant), against builtin-diff-data's GNU R records
@@ -510,7 +554,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 18
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup

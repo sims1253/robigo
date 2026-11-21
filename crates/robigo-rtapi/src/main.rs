@@ -15,6 +15,40 @@
 mod renviron;
 
 use robigo_rt::repl::run_session;
+
+/// The commit this binary was built from (build.rs's `ROBIGO_RT_COMMIT`), as
+/// a marker in the file that scripts/rt-builder.sh reads, so that a tree
+/// this binary builds records what built it. Nothing prints it. "unknown"
+/// when the build script that ran did not set it (checkouts sharing a
+/// target directory share its fingerprints, so an older checkout's build
+/// script can be the one cargo ran): rt-builder.sh then refuses the binary
+/// rather than record a wrong commit.
+#[used]
+static BUILD_COMMIT: [u8; 64] = build_commit(match option_env!("ROBIGO_RT_COMMIT") {
+    Some(c) => c,
+    None => "unknown",
+});
+
+/// `robigo-rt-commit:<commit>\n`, then NULs, in 64 bytes (a 40-digit
+/// commit fits; a longer value is cut).
+const fn build_commit(commit: &str) -> [u8; 64] {
+    let mut out = [0u8; 64];
+    let head = b"robigo-rt-commit:";
+    let c = commit.as_bytes();
+    let mut i = 0;
+    while i < head.len() {
+        out[i] = head[i];
+        i += 1;
+    }
+    let mut j = 0;
+    while j < c.len() && i < 63 {
+        out[i] = c[j];
+        i += 1;
+        j += 1;
+    }
+    out[i] = b'\n';
+    out
+}
 use robigo_rtcore::OwnedIsolate;
 use std::os::unix::ffi::OsStrExt;
 
@@ -515,7 +549,29 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
             robigo_rt::repl::print_warnings(cx);
         }
     }
-    // the boot is over (setup_Rmainloop's last step ran): its survivors are
+    // setup_Rmainloop's last step, GNU R's boot: R_init_jit_enabled (the
+    // compiler loaded when the JIT is on); M1's loader set the JIT up when
+    // the evaluator was installed
+    if boot() != Boot::M1 {
+        match robigo_rt::base::init_jit(cx) {
+            robigo_rt::base::JitStart::Done => {}
+            robigo_rt::base::JitStart::Halt => {
+                cx.reprintf(b"Execution halted\n");
+                robigo_rt::fin::run_exit_finalizers(cx);
+                robigo_rt::repl::print_warnings(cx);
+                cx.flush_console();
+                return 1;
+            }
+            robigo_rt::base::JitStart::Suicide => {
+                // R_CleanUp(SA_SUICIDE, 2, 0)
+                robigo_rt::fin::run_exit_finalizers(cx);
+                cx.flush_console();
+                return 2;
+            }
+        }
+    }
+    // the boot is over (setup_Rmainloop's last step, R_init_jit_enabled, ran
+    // above: the compiler's namespace is loaded when the JIT is on): its survivors are
     // frozen, so no later collection traces them (robigo-heap's freeze.rs,
     // docs/ledger/g3/2026-11-21-h-boot-freeze-bar.md); off under
     // ROBIGO_GC_MOVE's modes
