@@ -4,7 +4,9 @@
 //! may not implement yet (`is.builtin.internal`, which cmp.R asks to choose
 //! between CALLBUILTIN and CALLSPECIAL). Sorted by name's bytes.
 //! Generated from src/main/names.c (its rows whose `eval` has `Y = 1`; the
-//! commented-out rows are not rows).
+//! commented-out rows are not rows, nor are the `#ifdef Win32` ones:
+//! `shell.exec`, `Sys.which`, `mkjunction`, `tzone_name`, which GNU R on
+//! Linux does not have; `is.builtin.internal` of them is FALSE there).
 
 /// (name, eval), sorted by name's bytes.
 pub static INTERNALS: &[(&str, u16)] = &[
@@ -63,7 +65,6 @@ pub static INTERNALS: &[(&str, u16)] = &[
     ("Sys.time", 11),
     ("Sys.umask", 211),
     ("Sys.unsetenv", 111),
-    ("Sys.which", 11),
     ("Version", 11),
     ("abbreviate", 11),
     ("activeBindingFunction", 11),
@@ -321,7 +322,6 @@ pub static INTERNALS: &[(&str, u16)] = &[
     ("mget", 11),
     ("mkCode", 11),
     ("mkUnbound", 111),
-    ("mkjunction", 11),
     ("mmap_file", 11),
     ("munmap_file", 111),
     ("named", 11),
@@ -488,7 +488,6 @@ pub static INTERNALS: &[(&str, u16)] = &[
     ("setTimeLimit", 111),
     ("seterrmessage", 111),
     ("setwd", 111),
-    ("shell.exec", 111),
     ("shortRowNames", 11),
     ("sink", 111),
     ("sink.number", 11),
@@ -540,7 +539,6 @@ pub static INTERNALS: &[(&str, u16)] = &[
     ("truncate", 11),
     ("tryWrap", 11),
     ("typeof", 11),
-    ("tzone_name", 11),
     ("undebug", 111),
     ("unique", 11),
     ("unlink", 111),
