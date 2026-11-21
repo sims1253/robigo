@@ -282,7 +282,12 @@ fn handshake(so: &std::path::Path) -> std::thread::JoinHandle<bool> {
             assert!(t0.elapsed() < std::time::Duration::from_secs(60), "the object's code never signalled");
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        let held = !robigo_rtcore::clib::env_lock_is_free();
+        // held at each of 20 reads over about 20 ms: another test's brief
+        // hold cannot stand in for this one's
+        let held = (0..20).all(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            !robigo_rtcore::clib::env_lock_is_free()
+        });
         std::fs::write(&go, b"").unwrap();
         held
     });
