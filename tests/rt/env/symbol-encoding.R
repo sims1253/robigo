@@ -19,3 +19,12 @@ print(Encoding(names(attributes(y))))
 s <- serialize(n, NULL, ascii = TRUE)
 r <- strsplit(rawToChar(s), "\n")[[1]]
 print(r[-(1:7)])
+# unserialize installs a UTF-8 name it has not seen: the bytes of a
+# serialized `zq\u00e9` with its first byte changed name a new symbol
+b <- serialize(as.name("zq\u00e9"), NULL)
+i <- which(b == charToRaw("z"))
+i <- i[length(i)]
+b[i] <- charToRaw("y")
+y <- unserialize(b)
+print(as.character(y) == "yq\u00e9")
+print(Encoding(as.character(y)))

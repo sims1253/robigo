@@ -101,7 +101,7 @@ entry! {
             Ok(None) => x.bind(cx).as_char().unwrap().bytes().to_vec(),
             Err(m) => return Err(cx.error(&m)),
         };
-        crate::memory::alloc(cx, s, |cx| Ok(cx.install(&name)?.into()))
+        crate::memory::alloc(cx, s, |cx| Ok(cx.install_tr(x.bind(cx).as_char().unwrap(), &name)?.into()))
     }
 
     /// `Mbrtowc(wc, s, n, ps)`: one character of `s` (at most `n` bytes)

@@ -712,6 +712,13 @@ fn coerce_to_symbol<'g>(cx: &'g Cx, v: Ref<'g>) -> Result<Coerced<'g>, NeedGc> {
         Ok(b) => b,
         Err(e) => return fail(e.to_string()),
     };
+    // R: names.c:install's checks (installTrChar's translated name)
+    if name.is_empty() {
+        return fail("attempt to use zero-length variable name".to_owned());
+    }
+    if name.len() > 10000 {
+        return fail("variable names are limited to 10000 bytes".to_owned());
+    }
     let sym = cx.install_tr(s, &name)?;
     done(sym, Warns::new())
 }

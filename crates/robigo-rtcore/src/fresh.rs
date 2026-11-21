@@ -358,6 +358,8 @@ impl Cx {
         if !keep {
             return self.install(name);
         }
+        // the PRINTNAME this isolate keeps for good: never another's (Sol S1)
+        self.iso().check_owns(c.as_ref().sexp());
         // SAFETY: one call into the core, which calls nothing of ours; `c`
         // a live CHARSXP of this heap (checked above).
         let s = unsafe { self.iso().core().install_char(c.as_ref().sexp())? };
