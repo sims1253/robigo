@@ -130,9 +130,13 @@ pub fn do_assign(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
         {
             // PLANT(A4, env): a second binding GNU R does not make, only in
             // an environment that takes it (so never an error) and that is
-            // neither the global one (the globals field) nor the value
+            // neither the global one (the globals field) nor the value; and
+            // only a new one (an existing `a4plant` could be locked, or
+            // active and run its setter)
             let k = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"a4plant")?.into())))?;
-            cx.define_var(k, val, aenv)?;
+            if !cx.exists_var_in_frame(aenv, k)? {
+                cx.define_var(k, val, aenv)?;
+            }
         }
         out.set(cx, val.bind(cx));
         Ok(())
