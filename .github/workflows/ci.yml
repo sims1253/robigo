@@ -9,16 +9,28 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Every main commit gets its own group: its run publishes the perf baseline
-# that pull requests built on that commit compare with (a shared group would
-# cancel queued main runs). Every other run has a group of its own, so no
-# run waits `pending` behind another: a pull request's superseded runs are
-# cancelled by `select`'s first step instead. (A shared group per pull
-# request did that at once, but a cancelled run still queues `Check`, which
-# runs `always()`, and held the group until a runner took it: the new
-# head's run waited behind it. 2026-11-18: 60 runs, 1,268 minutes.)
+# Main's push runs share one group, `ci-main`. Without cancel-in-progress,
+# GitHub keeps the run in progress and at most one pending: a newer push
+# replaces the pending run, so a burst of merges runs the newest commit
+# next, and a started run always finishes. (Until 2026-11-21 every main
+# commit had a group of its own, because its run published the perf
+# baseline that pull requests compared with; since #901 a pull request's
+# perf measures its own base, and nothing reads that baseline. On
+# 2026-11-21 one merge every 15.5 minutes queued main runs hours behind.)
+# What still reads main's runs needs a recent completed run, not every
+# commit: the progress history (scripts/history.py records each completed
+# run), the nightly packages binary (the newest successful run's), and the
+# caches only main saves. What a skipped commit loses: its point in the
+# history, and a breakage on main names a range of commits, not one.
+# Every other run, a manual dispatch on main included, has a group of its
+# own, so no run waits `pending` behind another: a pull request's
+# superseded runs are cancelled by `select`'s first step instead. (A
+# shared group per pull request did that at once, but a cancelled run
+# still queues `Check`, which runs `always()`, and held the group until a
+# runner took it: the new head's run waited behind it. 2026-11-18: 60
+# runs, 1,268 minutes.)
 concurrency:
-  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.run_id }}
+  group: ci-${{ github.event_name == 'push' && 'main' || github.run_id }}
   cancel-in-progress: false
 
 permissions:

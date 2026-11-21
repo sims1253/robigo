@@ -174,8 +174,13 @@ class Rule(unittest.TestCase):
         # red; then no shared group may make a new run wait behind it
         wf = (HERE.parent / ".github/workflows/ci.yml").read_text()
         self.assertIn("    name: Check\n    if: ${{ always() }}\n", wf)
-        self.assertIn("  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.run_id }}\n"
+        # main's push runs share one group that never cancels a started run
+        # (a newer push replaces only the pending one); every other run,
+        # pull requests' included, has a group of its own
+        self.assertIn("  group: ci-${{ github.event_name == 'push' && 'main' || github.run_id }}\n"
                       "  cancel-in-progress: false\n", wf)
+        self.assertEqual(wf.split("\non:\n", 1)[1].split("\n  pull_request:", 1)[0],
+                         "  push:\n    branches: [main]", "push runs are main's alone")
         # select cancels the superseded runs, as its first step
         steps = wf.split("\n  select:\n", 1)[1].split("\n    steps:\n", 1)[1].splitlines()
         first = next(l.strip() for l in steps if not l.strip().startswith("#"))
