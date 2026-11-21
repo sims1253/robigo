@@ -30,8 +30,15 @@ over vendored libdeflate. The interpreter of `decompress1` is L's.
     replacing #958's flate2 one). GNU R's is a process static; ours is the
     isolate's because all mutable runtime state is (g3.md §11), and isolates
     run on threads of their own.
-  - The output buffer is zeroed, as before. An uninitialized one would save
-    about 0.09M of the boot and is not worth an extra unsafe invariant.
+  - The output buffer is zeroed (flate2's `decompress_vec` filled a
+    `Vec::with_capacity`; libdeflate's binding takes an initialized
+    `&mut [u8]`). An uninitialized one would save about 0.09M of the boot
+    and is not worth an extra unsafe invariant.
+  - A record shorter than its 4-byte header still gets the warning
+    "internal error 1" without calling libdeflate, as before. This is a
+    deliberate divergence: GNU R reads the header unchecked and its
+    `inlen - 4` underflows there, which is undefined behaviour, not a
+    result to port.
 
 ## What R sees
 
