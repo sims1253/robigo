@@ -30,12 +30,22 @@ pub fn do_getenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
         return Err(cx.error("wrong type for argument"));
     }
     let (x, unset) = (args.root(0), args.root(1));
+    if crate::util::a4_plant_case(cx, call) && x.bind(cx).len() == Some(3) {
+        // PLANT(A4, files): a file GNU R does not write (said on stderr when
+        // it cannot be, so that the plant check's failure is explained)
+        if let Err(e) = std::fs::write("a4plant", b"") {
+            eprintln!("robigo: the a4plant divergence was not planted: {e}");
+        }
+    }
     let utf8 = cx.locale().utf8;
     cx.build(out, |cx| {
         let names = x.bind(cx).as_vector::<Char<'_>>().unwrap();
         if names.is_empty() {
             use std::os::unix::ffi::OsStrExt;
-            let all: Vec<Vec<u8>> = std::env::vars_os()
+            // (under the environment's lock: a writer may run on another
+            // isolate's thread)
+            let all: Vec<Vec<u8>> = robigo_rtcore::clib::env_vars()
+                .into_iter()
                 .map(|(k, v)| {
                     let mut b = k.as_bytes().to_vec();
                     b.push(b'=');
@@ -211,6 +221,365 @@ pub fn do_l10n_info(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
         a.apply(cx, &mut ans)?;
         Ok(ans.finish().into())
     })
+}
+
+/// One `iconv` conversion of `do_iconv`, opened on first use: the
+/// descriptor and whether its input is UTF-8 (for `sub = "Unicode"` and
+/// `"c99"`).
+struct Conv {
+    cd: robigo_rtcore::clib::Iconv,
+    from_utf8: bool,
+}
+
+/// `Riconv_open(to, from)` for `do_iconv` (Linux: `iconv_open`, "utf8"
+/// as UTF-8). The C library reads "" as the process's charset; robigo-rt's
+/// process stays in "C" and the locale is the isolate's, so "" is the
+/// isolate's charset here, as GNU R's is its process's.
+// R: sysutils.c:Riconv_open
+fn riconv_open(cx: &mut Cx, to: &[u8], from: &[u8]) -> RResult<Option<robigo_rtcore::clib::Iconv>> {
+    let native: &[u8] = if cx.locale().utf8 { b"UTF-8" } else { b"ANSI_X3.4-1968" };
+    let fix = |e: &[u8]| -> Vec<u8> {
+        if e.is_empty() {
+            native.to_vec()
+        } else if e.eq_ignore_ascii_case(b"utf8") {
+            b"UTF-8".to_vec()
+        } else {
+            e.to_vec()
+        }
+    };
+    use robigo_rtcore::clib::{Iconv, IconvOpenError};
+    match Iconv::open(&fix(to), &fix(from), cx.locale().utf8) {
+        Ok(cd) => Ok(Some(cd)),
+        Err(IconvOpenError::Unsupported) => Ok(None),
+        Err(IconvOpenError::NoLocale) => {
+            Err(cx.error("robigo: the C library has no locale object for iconv()'s LC_CTYPE"))
+        }
+    }
+}
+
+/// `.Internal(iconv(x, from, to, sub, mark, toRaw))`: each string (or raw
+/// vector of a list) converted by the C library's `iconv`; what it cannot
+/// convert is NA (NULL with `toRaw`) unless `sub` says what to write
+/// instead: `"byte"` (`<xx>` per byte), `"Unicode"` (`<U+XXXX>`) and `"c99"`
+/// (`\uxxxx`, `\Uxxxxxxxx`) for UTF-8 input, or any string. `x = NULL`
+/// lists the conversions: NULL on Linux (glibc has no `iconvlist`).
+// R: sysutils.c:do_iconv
+pub fn do_iconv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("iconv", true).check_arity(cx, call, args)?;
+    let x = args.root(0);
+    if x.bind(cx).sexptype() == NILSXP {
+        // (HAVE_ICONVLIST is libiconv's)
+        out.set(cx, cx.nil());
+        return Ok(());
+    }
+    let one_string = |cx: &Cx, i: usize| -> Option<Option<Vec<u8>>> {
+        let v = args.get(cx, i);
+        if v.sexptype() != STRSXP || v.len() != Some(1) {
+            return None;
+        }
+        let c = v.as_vector::<Char<'_>>().unwrap().get(0);
+        Some((c != cx.na_string()).then(|| c.bytes().to_vec()))
+    };
+    for (i, name) in [(1, "from"), (2, "to"), (3, "sub")] {
+        if args.get(cx, i).is_package_altrep() {
+            return Err(crate::util::not_yet(cx, Some(call), "iconv() of a package ALTREP vector"));
+        }
+        if one_string(cx, i).is_none() {
+            return Err(cx.error(&format!("invalid '{name}' argument")));
+        }
+    }
+    // (ASCII: CHAR as is; NA reads as "NA")
+    let from = one_string(cx, 1).unwrap().unwrap_or_else(|| b"NA".to_vec());
+    let to = one_string(cx, 2).unwrap().unwrap_or_else(|| b"NA".to_vec());
+    let mut sub: Option<Vec<u8>> = match one_string(cx, 3).unwrap() {
+        None => None,
+        Some(_) => Some(crate::text::native_elt(cx, args.root(3), 0)?),
+    };
+    let mark = crate::util::as_logical(cx, args.get(cx, 4));
+    if mark == i32::MIN {
+        return Err(cx.error("invalid 'mark' argument"));
+    }
+    let to_raw = crate::util::as_logical(cx, args.get(cx, 5));
+    if to_raw == i32::MIN {
+        return Err(cx.error("invalid 'toRaw' argument"));
+    }
+    let (mark, to_raw) = (mark != 0, to_raw != 0);
+    // some iconv's allow "UTF8", but GNU libiconv does not
+    let from = if from.eq_ignore_ascii_case(b"UTF8") { b"UTF-8".to_vec() } else { from };
+    let mut to = if to.eq_ignore_ascii_case(b"UTF8") { b"UTF-8".to_vec() } else { to };
+    let utf8_locale = cx.locale().utf8;
+    let is_utf8 = to == b"UTF-8" || (to.is_empty() && utf8_locale);
+    let is_latin1 = [&b"latin1"[..], b"ISO_8859-1", b"CP1252"].iter().any(|e| to.eq_ignore_ascii_case(e));
+    let xv = x.bind(cx);
+    let raw_list = xv.sexptype() == VECSXP;
+    if !raw_list && xv.sexptype() != STRSXP {
+        return Err(cx.error("'x' must be a character vector"));
+    }
+    if xv.is_package_altrep() {
+        return Err(crate::util::not_yet(cx, Some(call), "iconv() of a package ALTREP vector"));
+    }
+    let n = xv.len().unwrap();
+    // each element's result: Some(bytes) converted, None failed or NA/NULL
+    // (the input's own value kept: see below)
+    let ienc = if !mark {
+        Encoding::Native
+    } else if is_latin1 {
+        Encoding::Latin1
+    } else if is_utf8 {
+        Encoding::Utf8
+    } else {
+        Encoding::Native
+    };
+    // cbuff's size (R_AllocStringBuffer(0, &cbuff))
+    let mut bufsize = string_buffer_size(0, 0);
+    let mut results: Vec<Option<Vec<u8>>> = Vec::with_capacity(n);
+    let (mut arg_obj, mut latin1_obj, mut utf8_obj): (Option<Conv>, Option<Conv>, Option<Conv>) = (None, None, None);
+    for i in 0..n {
+        // the input bytes and its mark, or None for NA / NULL
+        let elt: Option<(Vec<u8>, Encoding)> = {
+            let xv = x.bind(cx);
+            if raw_list {
+                let si = xv.as_vector::<Ref<'_>>().unwrap().get(i);
+                match si.sexptype() {
+                    NILSXP => None,
+                    RAWSXP if si.is_package_altrep() => {
+                        return Err(crate::util::not_yet(cx, Some(call), "iconv() of a package ALTREP vector"));
+                    }
+                    RAWSXP => Some((si.as_vector::<u8>().unwrap().as_slice().unwrap().to_vec(), Encoding::Native)),
+                    _ => {
+                        return Err(cx.error("'x' must be a character vector or a list of NULL or raw vectors"));
+                    }
+                }
+            } else {
+                let c = xv.as_vector::<Char<'_>>().unwrap().get(i);
+                (c != cx.na_string()).then(|| (c.bytes().to_vec(), c.enc()))
+            }
+        };
+        let Some((inp, enc)) = elt else {
+            results.push(None);
+            continue;
+        };
+        // With 'from = ""', encoding flags are used in preference of native
+        // encoding
+        let unsupported = |cx: &mut Cx, f: &[u8], t: &[u8]| {
+            let m = format!(
+                "unsupported conversion from '{}' to '{}'",
+                String::from_utf8_lossy(f),
+                String::from_utf8_lossy(t)
+            );
+            cx.error(&m)
+        };
+        let obj: &mut Conv = if !raw_list && enc == Encoding::Utf8 && from.is_empty() {
+            if utf8_obj.is_none() {
+                let mut cd = riconv_open(cx, &to, b"UTF-8")?;
+                if cd.is_none() && to == b"ASCII//TRANSLIT" {
+                    to = b"ASCII".to_vec();
+                    cd = riconv_open(cx, &to, b"UTF-8")?;
+                    if sub.is_none() {
+                        sub = Some(b"c99".to_vec());
+                    }
+                }
+                let Some(cd) = cd else { return Err(unsupported(cx, b"UTF-8", &to)) };
+                utf8_obj = Some(Conv { cd, from_utf8: true });
+            }
+            utf8_obj.as_mut().unwrap()
+        } else if !raw_list && enc == Encoding::Latin1 && from.is_empty() {
+            if latin1_obj.is_none() {
+                let mut cd = riconv_open(cx, &to, b"latin1")?;
+                if cd.is_none() && to == b"ASCII//TRANSLIT" {
+                    to = b"ASCII".to_vec();
+                    cd = riconv_open(cx, &to, b"latin1")?;
+                    if sub.is_none() {
+                        sub = Some(b"?".to_vec());
+                    }
+                }
+                let Some(cd) = cd else { return Err(unsupported(cx, b"latin1", &to)) };
+                latin1_obj = Some(Conv { cd, from_utf8: false });
+            }
+            latin1_obj.as_mut().unwrap()
+        } else {
+            if arg_obj.is_none() {
+                let mut cd = riconv_open(cx, &to, &from)?;
+                if cd.is_none() && to == b"ASCII//TRANSLIT" {
+                    to = b"ASCII".to_vec();
+                    cd = riconv_open(cx, &to, &from)?;
+                    if sub.is_none() {
+                        sub = Some(b"?".to_vec());
+                    }
+                }
+                let Some(cd) = cd else { return Err(unsupported(cx, &from, &to)) };
+                arg_obj = Some(Conv { cd, from_utf8: from == b"UTF-8" || (from.is_empty() && utf8_locale) });
+            }
+            arg_obj.as_mut().unwrap()
+        };
+        let r = match convert_one(obj, &inp, sub.as_deref(), &from, &mut bufsize) {
+            Ok(r) => r,
+            Err(what) => return Err(crate::util::not_yet(cx, Some(call), what)),
+        };
+        // mkCharLenCE as each element is done: its error for an embedded
+        // NUL comes before the next element is looked at
+        if !to_raw && let Some(b) = &r {
+            cx.scope(|cx, s| s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.mk_char(b, ienc)?.into()))).map(|_| ()))?;
+        }
+        results.push(r);
+    }
+    cx.build(out, |cx| {
+        let xv = x.bind(cx);
+        // SHALLOW_DUPLICATE_ATTRIB(ans, x) (or duplicate(x)): the attributes
+        let mut a = Attrs::new();
+        a.copy_all(xv);
+        if to_raw {
+            let mut ans = cx.alloc_vector::<Ref<'_>>(n)?;
+            for (i, r) in results.iter().enumerate() {
+                let v = match r {
+                    Some(b) => cx.alloc_copy(b)?.finish().into(),
+                    // (a raw list's duplicate keeps the input; a character
+                    // vector's new list has NULL)
+                    None if raw_list => xv.as_vector::<Ref<'_>>().unwrap().get(i),
+                    None => cx.nil(),
+                };
+                ans.set(i, v);
+            }
+            a.apply(cx, &mut ans)?;
+            Ok(ans.finish().into())
+        } else {
+            let mut ans = cx.alloc_vector::<Char<'_>>(n)?;
+            for (i, r) in results.iter().enumerate() {
+                ans.set(
+                    i,
+                    match r {
+                        Some(b) => cx.mk_char(b, ienc)?,
+                        None => cx.na_string(),
+                    },
+                );
+            }
+            a.apply(cx, &mut ans)?;
+            Ok(ans.finish().into())
+        }
+    })
+}
+
+/// `R_AllocStringBuffer(blen, &cbuff)`'s new size for a buffer of `cur`
+/// bytes (`MAXELTSIZE`, 8192, its default): unchanged if `blen` fits,
+/// else `blen + 1` rounded up to a multiple of 8192.
+// R: memory.c:R_AllocStringBuffer
+fn string_buffer_size(cur: usize, blen: usize) -> usize {
+    const BSIZE: usize = 8192;
+    if blen < cur {
+        return cur;
+    }
+    let blen1 = blen + 1;
+    let b = (blen1 / BSIZE) * BSIZE;
+    if b < blen1 { b + BSIZE } else { b }
+}
+
+/// One element through `obj`, do_iconv's loop from `top_of_loop` with its
+/// string buffer of `*bufsize` bytes (kept from element to element, as
+/// `cbuff` is): a full buffer is doubled and the element converted again
+/// from the start, after the reset of the descriptor's state (whose shift
+/// sequence then starts the output, as in GNU R). The converted bytes, None
+/// when the conversion stopped with no `sub`, or the not-implemented case
+/// GNU R loops on for ever.
+// R: sysutils.c:do_iconv
+fn convert_one(
+    obj: &mut Conv,
+    inp: &[u8],
+    sub: Option<&[u8]>,
+    from: &[u8],
+    bufsize: &mut usize,
+) -> Result<Option<Vec<u8>>, &'static str> {
+    use robigo_rtcore::clib::IconvStop;
+    'top_of_loop: loop {
+        let mut buf = vec![0u8; *bufsize];
+        let mut pos = 0;
+        let (mut o, mut outb) = (0usize, *bufsize - 1);
+        // First initialize output
+        let (_, w, _) = obj.cd.iconv(None, &mut buf[o..o + outb]);
+        o += w;
+        outb -= w;
+        // next_char:
+        loop {
+            // Then convert input
+            let (k, w, stop) = obj.cd.iconv(Some(&inp[pos..]), &mut buf[o..o + outb]);
+            pos += k;
+            o += w;
+            outb -= w;
+            let grow = |bufsize: &mut usize| *bufsize = string_buffer_size(*bufsize, 2 * *bufsize);
+            match (stop, sub) {
+                (None, _) => {
+                    buf.truncate(o);
+                    // (res != -1 && inb == 0)
+                    return Ok((pos == inp.len()).then_some(buf));
+                }
+                (Some(IconvStop::TooBig), _) => {
+                    grow(bufsize);
+                    continue 'top_of_loop;
+                }
+                (Some(_), None) => return Ok(None),
+                (Some(_), Some(sub)) => {
+                    // (EILSEQ or EINVAL: it seems this gets thrown for
+                    // non-convertible input too)
+                    let left = inp.len() - pos;
+                    if obj.from_utf8 && (sub == b"Unicode" || sub == b"c99") {
+                        if outb < if sub == b"Unicode" { 13 } else { 11 } {
+                            grow(bufsize);
+                            continue 'top_of_loop;
+                        }
+                        let (clen, wc) = robigo_text::utf8toucs(inp, pos);
+                        if !(clen > 0 && left >= clen as usize) {
+                            // (GNU R goes to next_char without consuming:
+                            // it loops for ever on what is not UTF-8)
+                            return Err("iconv() with sub = \"Unicode\" or \"c99\" of input that is not UTF-8");
+                        }
+                        let ucs = if robigo_text::is_high_surrogate(wc) {
+                            robigo_text::utf8toucs32(wc, inp, pos)
+                        } else {
+                            wc as u32
+                        };
+                        pos += clen as usize;
+                        let t = match (sub == b"Unicode", ucs < 65536) {
+                            (true, _) => format!("<U+{ucs:04X}>"),
+                            (false, true) => format!("\\u{ucs:04x}"),
+                            (false, false) => format!("\\U{ucs:08x}"),
+                        };
+                        buf[o..o + t.len()].copy_from_slice(t.as_bytes());
+                        o += t.len();
+                        outb -= t.len();
+                        continue;
+                    }
+                    let pick = |p: &[u8], n: usize| from.len() >= n && from[..n].eq_ignore_ascii_case(p);
+                    let unit = if pick(b"UTF-16", 6) || pick(b"UCS-2", 5) {
+                        2
+                    } else if pick(b"UTF-32", 6) || pick(b"UCS-4", 5) {
+                        4
+                    } else {
+                        1
+                    };
+                    let mut u = 0;
+                    while u < unit && pos < inp.len() {
+                        let t: Vec<u8> = if sub == b"byte" {
+                            if outb < 5 {
+                                grow(bufsize);
+                                continue 'top_of_loop;
+                            }
+                            format!("<{:02x}>", inp[pos]).into_bytes()
+                        } else {
+                            if outb < sub.len() {
+                                grow(bufsize);
+                                continue 'top_of_loop;
+                            }
+                            sub.to_vec()
+                        };
+                        buf[o..o + t.len()].copy_from_slice(&t);
+                        o += t.len();
+                        outb -= t.len();
+                        pos += 1;
+                        u += 1;
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// R's locale category numbers (`Sys.getlocale`'s `category` index):

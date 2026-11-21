@@ -1049,7 +1049,7 @@ pub fn do_usemethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, _
         }
         let ans = s.out(cx).root();
         let o = ans.reset(cx);
-        if cx.with_pp_excess(3, |cx| usemethod(cx, &gname, obj, call, env, callenv, defenv, cptr, o))? {
+        if cx.with_pp_excess(3, |cx| usemethod(cx, &gname, obj, call, env, callenv, defenv, cptr, None, o))? {
             return Err(cx.find_context(ctxt::RETURN, env, Some(ans)));
         }
         // no method found
@@ -1253,6 +1253,96 @@ fn get_object(cx: &mut Cx, cptr: ContextId, out: Out<'_>) -> RResult<()> {
     })
 }
 
+/// usemethod's methods for `generic` on an object's classes and the
+/// method R_LookupMethod finds first, when that can be told without
+/// running code ([`search_methods`]).
+pub(crate) struct Search<'s> {
+    /// The object's `R_data_class2`.
+    klass: Root<'s>,
+    /// The method found (its index, function and symbol), Some(None) for
+    /// none; None when only the full search can tell.
+    quick: Option<Option<(usize, Root<'s>, Sexp)>>,
+    /// The methods to try, for the full search (None when `quick` told).
+    methods: Option<Vec<Option<Sexp>>>,
+    /// `mkString(generic)`, the methods' `.Generic`.
+    gstr: Root<'s>,
+}
+
+impl Search<'_> {
+    /// Whether no method applies (told without running code). DispatchOrEval
+    /// (eval.c) then returns 0 having done only this, which nothing can
+    /// observe, so its callers skip it:
+    /// - `promiseArgs`: fresh promises of the argument expressions, none
+    ///   forced; with no `...` among them no binding is read (a `...` reads
+    ///   the caller's and may fail: such a call is not skipped).
+    ///   `promise_values` makes promises of values only.
+    /// - `NewEnvironment(R_NilValue, R_NilValue, rho)`: a fresh empty frame.
+    /// - `begincontext`/`endcontext`: a function record that no code runs
+    ///   under (sys.call, sys.function, sys.frames, parent.frame, on.exit
+    ///   and condition handlers see it only from code run inside it), with
+    ///   no on.exit (only code can register one) and the handler stacks
+    ///   restored as they were.
+    /// - usemethod: `R_data_class2`, the signatures and the lookups, which
+    ///   this search did (none forces a promise or reads an active binding:
+    ///   [`quick_search`] answers only when no lookup would), then
+    ///   `cptr->callflag = CTXT_RETURN` on a record about to end.
+    /// - `R_CleanupEnvir(rho1, val)` and `unpromiseArgs(pargs)`: writes to
+    ///   the fresh frame and promises, which nothing else holds.
+    ///
+    /// None of it evaluates, so no eval tick (no interrupt poll, no
+    /// finalizer: those run at eval ticks) and no evaluation depth. What
+    /// differs is allocation. robigo-rt's collections are its own
+    /// (g3.md §3); GNU R's collection observables (`gc()`'s counts,
+    /// `gcinfo(TRUE)`'s reports, under `gctorture(TRUE)` one per allocation)
+    /// are L7's logical account, which must count here what GNU R allocates
+    /// on this path, skipped or not: promiseArgs' promises and cells, the
+    /// environment, R_data_class2's and usemethod's.
+    fn misses(&self) -> bool {
+        matches!(self.quick, Some(None))
+    }
+}
+
+/// The start of usemethod: the object's classes, the methods to try (class
+/// by class, then the default) and the first R_LookupMethod finds, without
+/// running code when it can: the memo's entry searched under its borrow,
+/// its methods copied only for the full search. Nothing here runs R code,
+/// forces a promise or reads an active binding ([`quick_search`]).
+// R: objects.c:usemethod
+fn search_methods<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    generic: &[u8],
+    obj: Root<'_>,
+    callrho: Root<'_>,
+    defrho: Root<'_>,
+) -> RResult<Search<'s>> {
+    let klass = s.out(cx).root();
+    let o = klass.reset(cx);
+    data_class2(cx, obj, o)?;
+    let key = dispatch_key(generic, klass.bind(cx));
+    type Hit<'s> = Option<(usize, Root<'s>, Sexp)>;
+    let memoized: Option<(Result<Hit<'_>, Vec<Option<Sexp>>>, Root<'_>)> = {
+        let memo = prims::state(cx).cond.dispatch_memo.borrow();
+        memo.0.get(key, |e| same_dispatch(cx, e, generic, klass.bind(cx), defrho.bind(cx))).map(|e| {
+            let found = match quick_search(cx, &e.methods, Some(&e.shapes), callrho.bind(cx), defrho.bind(cx)) {
+                Some(f) => Ok(f.map(|(i, v, m)| (i, s.root(cx, v), m))),
+                None => Err(e.methods.clone()),
+            };
+            (found, s.root(cx, e.generic_str.bind(cx)))
+        })
+    };
+    let (quick, methods, gstr) = match memoized {
+        Some((Ok(f), g)) => (Some(f), None, g),
+        Some((Err(methods), g)) => (None, Some(methods), g),
+        None => {
+            let (methods, g) = dispatch_methods(cx, s, generic, klass, defrho, key)?;
+            let q = quick_search(cx, &methods, None, callrho.bind(cx), defrho.bind(cx));
+            (q.map(|f| f.map(|(i, v, m)| (i, s.root(cx, v), m))), Some(methods), g)
+        }
+    };
+    Ok(Search { klass, quick, methods, gstr })
+}
+
 /// `usemethod(generic, obj, call, args, rho, callrho, defrho, &ans)`: the
 /// first method of `obj`'s classes, else the default, dispatched to; false
 /// when there is none (the generic's record is a plain function record
@@ -1273,40 +1363,17 @@ fn usemethod(
     callrho: Root<'_>,
     defrho: Root<'_>,
     cptr: ContextId,
+    pre: Option<Search<'_>>,
     out: Out<'_>,
 ) -> RResult<bool> {
     let _ = call;
     cx.scope(|cx, s| {
         let op = s.root(cx, cx.context(cptr).unwrap().callfun());
-        let klass = s.out(cx).root();
-        let o = klass.reset(cx);
-        data_class2(cx, obj, o)?;
+        let Search { klass, quick, methods, gstr } = match pre {
+            Some(p) => p,
+            None => search_methods(cx, s, generic, obj, callrho, defrho)?,
+        };
         let nclass = klass.bind(cx).len().unwrap_or(0);
-        // the methods to try (class by class, then the default) and the
-        // first R_LookupMethod finds, without running code when it can: the
-        // memo's entry searched under its borrow, its methods copied only
-        // for the full search
-        let key = dispatch_key(generic, klass.bind(cx));
-        type Hit<'s> = Option<(usize, Root<'s>, Sexp)>;
-        let memoized: Option<(Result<Hit<'_>, Vec<Option<Sexp>>>, Root<'_>)> = {
-            let memo = prims::state(cx).cond.dispatch_memo.borrow();
-            memo.0.get(key, |e| same_dispatch(cx, e, generic, klass.bind(cx), defrho.bind(cx))).map(|e| {
-                let found = match quick_search(cx, &e.methods, Some(&e.shapes), callrho.bind(cx), defrho.bind(cx)) {
-                    Some(f) => Ok(f.map(|(i, v, m)| (i, s.root(cx, v), m))),
-                    None => Err(e.methods.clone()),
-                };
-                (found, s.root(cx, e.generic_str.bind(cx)))
-            })
-        };
-        let (quick, methods, gstr) = match memoized {
-            Some((Ok(f), g)) => (Some(f), None, g),
-            Some((Err(methods), g)) => (None, Some(methods), g),
-            None => {
-                let (methods, g) = dispatch_methods(cx, s, generic, klass, defrho, key)?;
-                let q = quick_search(cx, &methods, None, callrho.bind(cx), defrho.bind(cx));
-                (q.map(|f| f.map(|(i, v, m)| (i, s.root(cx, v), m))), Some(methods), g)
-            }
-        };
         let found = match quick {
             Some(f) => f,
             None => {
@@ -2618,6 +2685,18 @@ fn call_is_default(cx: &Cx, call: Root<'_>, last_dot: bool) -> bool {
     pos.is_some_and(|p| &n[p + 1..] == b"default")
 }
 
+/// Whether the argument expressions `args` (a pairlist) include `...`.
+fn has_dots(cx: &Cx, mut args: Ref<'_>) -> bool {
+    let dots = prims::state(cx).syms.dots;
+    while let Some(c) = args.as_cons() {
+        if c.car().sexp() == dots {
+            return true;
+        }
+        args = c.cdr();
+    }
+    false
+}
+
 /// The promise list `promiseArgs(args, rho)` makes of evaluated arguments:
 /// one promise per value (code the value, environment `rho`), tagged by
 /// the argument names; the first promise's value is the first argument.
@@ -2683,11 +2762,20 @@ fn dispatch_or_eval<'o>(
         return Ok(Dispatched::Default(out));
     }
     let dispatched = cx.scope(|cx, s| {
+        let x = args.root(0);
+        let b = s.root(cx, cx.base_env());
+        // usemethod's search first: when it finds no method without running
+        // code, DispatchOrEval's setup and teardown would be all it does,
+        // and nothing can see them ([`Search::misses`])
+        let found = search_methods(cx, s, generic.as_bytes(), x, rho, b)?;
+        if found.misses() {
+            return Ok(None);
+        }
+        let mut pre = Some(found);
         let pargs = promise_values(cx, s, args, rho, false)?;
         let rho1 = s.out(cx).root();
         let o = rho1.reset(cx);
         cx.build(o, |cx| cx.new_env(rho.bind(cx), false, 0))?;
-        let x = args.root(0);
         // the dispatcher's function record, the builtin as its function
         let op = s.root(cx, primitive_named(cx, generic));
         let spec = robigo_rtcore::FunctionContext {
@@ -2705,12 +2793,11 @@ fn dispatch_or_eval<'o>(
         let gname = generic.as_bytes().to_vec();
         cx.function_context(&spec, res, &mut no_on_exit, |cx, id, o| {
             cx.scope(|cx, s2| {
-                let b = s2.root(cx, cx.base_env());
                 let r = s2.out(cx).root();
                 let oo = r.reset(cx);
                 // under DispatchOrEval's PROTECT(x), PROTECT(pargs),
                 // PROTECT(rho1) (robigo_rtcore's ppacct)
-                hit = cx.with_pp_excess(3, |cx| usemethod(cx, &gname, x, call, rho1, rho, b, id, oo))?;
+                hit = cx.with_pp_excess(3, |cx| usemethod(cx, &gname, x, call, rho1, rho, b, id, pre.take(), oo))?;
                 if hit {
                     o.set(cx, r.bind(cx));
                 } else {
@@ -2954,13 +3041,32 @@ fn dispatch_group<'o>(
 /// `call` (`...` expanded into the caller's promises), tagged.
 // R: eval.c:promiseArgs
 pub(crate) fn promise_call_args(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    promise_args_of(cx, call, true, rho, out)
+}
+
+/// `promiseArgs(el, rho)` of the argument list `el` itself (no call around
+/// it).
+// R: eval.c:promiseArgs
+pub(crate) fn promise_args(cx: &mut Cx, el: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    promise_args_of(cx, el, false, rho, out)
+}
+
+/// [`promise_call_args`] (`skip_first`: `src` is a call, its arguments
+/// promised) or [`promise_args`] (`src` is the argument list).
+#[inline(always)]
+fn promise_args_of(cx: &mut Cx, src: Root<'_>, skip_first: bool, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let call = src;
+    #[inline(always)]
+    fn args_of(r: Ref<'_>, skip_first: bool) -> Ref<'_> {
+        if skip_first { r.as_cons().map_or(r, |c| c.cdr()) } else { r }
+    }
     let dots = prims::state(cx).syms.dots;
     let missing = cx.missing_arg().sexp();
     cx.scope(|cx, s| {
         // the `...` binding, if the call names it
         let dv = s.out(cx).root();
         let has_dots = {
-            let mut a = call.bind(cx).as_cons().unwrap().cdr();
+            let mut a = args_of(call.bind(cx), skip_first);
             let mut h = false;
             while let Some(c) = a.as_cons() {
                 h |= c.car().sexp() == dots;
@@ -2976,7 +3082,7 @@ pub(crate) fn promise_call_args(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out:
         cx.build(out, |cx| {
             // (value or expr, tag, is_expr), inline for a call's few arguments
             let mut items: Buf<(Sexp, Sexp, bool)> = Buf::new();
-            let mut a = call.bind(cx).as_cons().unwrap().cdr();
+            let mut a = args_of(call.bind(cx), skip_first);
             while let Some(c) = a.as_cons() {
                 let e = c.car().sexp();
                 if e == dots {
@@ -3062,14 +3168,25 @@ pub fn dispatch_special(
         if call_is_default(cx, call, true) {
             return Ok(None);
         }
+        let b = s.root(cx, cx.base_env());
+        // usemethod's search first: when it finds no method without running
+        // code, DispatchOrEval's setup and teardown would be all it does,
+        // and nothing can see them ([`Search::misses`]); promiseArgs of a `...`
+        // reads the caller's `...` (and may fail), so such a call takes the
+        // whole way
+        let mut pre = None;
+        if !has_dots(cx, rest.bind(cx)) {
+            let found = search_methods(cx, s, generic.as_bytes(), x, rho, b)?;
+            if found.misses() {
+                return Ok(None);
+            }
+            pre = Some(found);
+        }
         // pargs = promiseArgs(args, rho): the first a promise of the
         // promise, its value the object; the rest promised in turn
         let rest_p = s.out(cx).root();
         let o = rest_p.reset(cx);
-        let fake = s.out(cx).root();
-        let fo = fake.reset(cx);
-        cx.build(fo, |cx| cx.lcons(cx.nil(), rest.bind(cx)))?;
-        promise_call_args(cx, fake, rho, o)?;
+        promise_args(cx, rest, rho, o)?;
         let p0 = s.out(cx).root();
         let o = p0.reset(cx);
         cx.build(o, |cx| {
@@ -3101,13 +3218,12 @@ pub fn dispatch_special(
         let gname = generic.as_bytes().to_vec();
         cx.function_context(&spec, res, &mut no_on_exit, |cx, id, o| {
             cx.scope(|cx, s2| {
-                let b = s2.root(cx, cx.base_env());
                 let r = s2.out(cx).root();
                 let oo = r.reset(cx);
                 // under R_DispatchOrEvalSP's PROTECT(args), then
                 // DispatchOrEval's PROTECT(x), PROTECT(pargs), PROTECT(rho1)
                 // (robigo_rtcore's ppacct)
-                hit = cx.with_pp_excess(4, |cx| usemethod(cx, &gname, x, call, rho1, rho, b, id, oo))?;
+                hit = cx.with_pp_excess(4, |cx| usemethod(cx, &gname, x, call, rho1, rho, b, id, pre.take(), oo))?;
                 o.set(cx, if hit { r.bind(cx) } else { cx.nil() });
                 Ok(())
             })

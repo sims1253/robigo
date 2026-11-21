@@ -11,15 +11,22 @@
 //!   value replaced by its formals, body and attributes and every
 //!   environment by its sorted contents).
 //!
-//! One class of difference is expected, and only while its reason holds:
-//! **closures' environments** (and environments' enclosures). GNU R's
-//! closures of compiler and tools have the package's namespace as
-//! environment; robigo-rt's have `R_GlobalEnv`,
-//! because base's `..getNamespace` falls back to it while the namespace
-//! cannot load from source (`loadNamespace(PKG)` fails). A value whose
-//! checksum differs but whose closures-aside checksum agrees is that class
-//! when the namespace does not load; once it loads, the class is no longer
-//! allowed and such a value fails.
+//! One class of difference is expected, and only while one of its two
+//! reasons holds: **closures' environments** (and environments'
+//! enclosures). GNU R's closures of compiler and tools have the package's
+//! namespace, `c(name, "4.6.2")` in its reference, as environment.
+//! robigo-rt's have instead
+//! - `R_GlobalEnv`, while the namespace cannot load from source
+//!   (`loadNamespace(PKG)` fails: base's `..getNamespace` falls back to it);
+//! - a namespace whose spec is `c(name, R.version's strings)`, while the
+//!   tree lacks the package's `Meta/package.rds` (its mkdesc step, L4):
+//!   `loadNamespace` then never sets `version`, and `makeNamespace(name,
+//!   version = version)` finds base's `version`, `R.version`, as GNU R
+//!   does without that file.
+//!
+//! A value whose checksum differs but whose closures-aside checksum agrees
+//! is that class while either holds; once the namespace loads and the tree
+//! has the file, the class is no longer allowed and such a value fails.
 //!
 //! The databases and GNU R's checksums are not in the repository:
 //! `ROBIGO_ORACLE_LIBRARY` names the copy `scripts/rt-rdb-roundtrip.sh`
@@ -52,6 +59,7 @@ v <- names(map$variables)
 cat("variables", length(v), setequal(ls(e, all.names = TRUE), v), "\n")
 for (n in sort(ls(e, all.names = TRUE))) { x <- get(n, envir = e); cat(n, ck(x), ck(nz(x)), "\n") }
 cat("loadable", pkg == "base" || tryCatch({ loadNamespace(pkg); TRUE }, error = function(e) FALSE), "\n")
+cat("described", pkg == "base" || file.exists(file.path(R.home(), "library", pkg, "Meta", "package.rds")), "\n")
 "#
 );
 
@@ -112,6 +120,10 @@ fn oracle_databases_lazy_load() {
             "{pkg}: the .rdx's variables and the bindings lazyLoad made"
         );
         let loadable = lines.iter().any(|l| l.as_slice() == ["loadable", "TRUE"]);
+        let described = lines.iter().any(|l| l.as_slice() == ["described", "TRUE"]);
+        // the class's reasons: the namespace does not load, or its spec's
+        // version is R.version's (no Meta/package.rds)
+        let expected_class = !loadable || !described;
         let ours: std::collections::BTreeMap<&str, (&str, &str, &str, &str)> =
             lines.iter().filter(|l| l.len() == 5).map(|l| (l[0], (l[1], l[2], l[3], l[4]))).collect();
         let gnur = std::fs::read_to_string(file.with_extension("lazyload")).unwrap();
@@ -124,17 +136,23 @@ fn oracle_databases_lazy_load() {
             match ours.get(name) {
                 None => failures.push(format!("{pkg}: {name}: not bound by robigo-rt")),
                 Some(&(a, b, _, _)) if (a, b) == full => same += 1,
-                // closures' environments aside, while the namespace does
-                // not load from source
-                Some(&(_, _, c, d)) if (c, d) == norm && full != norm && !loadable => expected += 1,
+                // closures' environments aside, while a reason holds
+                Some(&(_, _, c, d)) if (c, d) == norm && full != norm && expected_class => expected += 1,
                 Some(_) => failures.push(format!(
                     "{pkg}: {name}: differs from GNU R's lazyLoad{}",
-                    if loadable { " (its namespace loads: closures' environments must agree)" } else { "" }
+                    if expected_class {
+                        ""
+                    } else {
+                        " (its namespace loads and the tree has Meta/package.rds: closures' environments must agree)"
+                    }
                 )),
             }
         }
         assert_eq!(seen, count, "{pkg}: GNU R's {pkg}.lazyload has {seen} variables, not {count}");
-        eprintln!("{pkg}: {same} the same, {expected} closures' environments aside (namespace loads: {loadable})");
+        eprintln!(
+            "{pkg}: {same} the same, {expected} closures' environments aside \
+             (namespace loads: {loadable}; Meta/package.rds: {described})"
+        );
     }
     assert!(failures.is_empty(), "{} variable(s) differ:\n{}", failures.len(), failures.join("\n"));
 }

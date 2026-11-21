@@ -882,6 +882,18 @@ impl<'g> Comp<'g> {
     }
 
     fn emit(&mut self, i: Ins) -> usize {
+        // ROBIGO_POISON_PLANT=1: a planted early clear, the value register
+        // emptied one instruction before the Ret that reads it
+        #[cfg(feature = "poison-dead")]
+        if i.op == Op::Ret
+            && i.b >= R_FIRST
+            && robigo_rtcore::poison_dead()
+            && std::env::var_os("ROBIGO_POISON_PLANT").is_some_and(|v| v == "1")
+        {
+            let mut c = Ins::new(Op::Clear);
+            c.a = i.b;
+            self.emit(c);
+        }
         if self.profile == Profile::Eval {
             // where the instruction calls out, GNU R's evaluator protections
             // minus R_EvalDepth there, less the root's: its node's offset at
@@ -2024,7 +2036,9 @@ impl<'g> Comp<'g> {
                 && args[0].0.typ() == SYMSXP
                 && args[0].0 != st.syms.dots
             {
-                let name = args[0].0.car();
+                // PRINTNAME(sym): the isolate's CHARSXP (a symbol's CAR is
+                // the arena's private copy, which no R value may hold)
+                let name = cx.printname_raw(args[0].0);
                 let v = cx.alloc_vector_raw(STRSXP, 1)?;
                 v.set_elt(0, name);
                 args[0].0 = v;

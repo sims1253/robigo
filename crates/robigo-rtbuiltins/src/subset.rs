@@ -958,9 +958,10 @@ pub fn subset3_dflt(cx: &mut Cx, x: Root<'_>, input: Root<'_>, call: Root<'_>, o
     };
     let inp = {
         let c = input.bind(cx).as_char().expect("robigo: '$' takes a CHARSXP name");
+        // (one copy: the name outlives the `&mut Cx` uses below)
         crate::text::to_native(crate::coerce::text(c), cx.locale())
             .map(|b| b.into_owned())
-            .unwrap_or(c.bytes().to_vec())
+            .unwrap_or_else(|_| c.bytes().to_vec())
     };
     match xt {
         OBJSXP if s4 => Err(util::not_yet(cx, Some(call), "'$' of an S4 object")),
@@ -1014,9 +1015,12 @@ pub fn subset3_dflt(cx: &mut Cx, x: Root<'_>, input: Root<'_>, call: Root<'_>, o
                 let (mut exact, mut first, mut nmatch) = (None, None, 0);
                 for i in 0..n {
                     let nm = names.unwrap().get(i);
-                    let b = crate::text::to_native(crate::coerce::text(nm), cx.locale())
-                        .map(|b| b.into_owned())
-                        .unwrap_or(nm.bytes().to_vec());
+                    // translateChar: a native name is read in place, not
+                    // copied (pstrmatch, subset.c:1194)
+                    let b = match crate::text::to_native(crate::coerce::text(nm), cx.locale()) {
+                        Ok(b) => b,
+                        Err(_) => std::borrow::Cow::Borrowed(nm.bytes()),
+                    };
                     match pstrmatch(Some(&b), &inp) {
                         2 => {
                             exact = Some(i);
