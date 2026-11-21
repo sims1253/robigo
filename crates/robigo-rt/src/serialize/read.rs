@@ -30,7 +30,6 @@ use robigo_rtcore::{Cx, Out, RResult, Ref, Root, Scope};
 const INITIAL_REFREAD_TABLE_SIZE: usize = 128;
 /// `R_CODESET_MAX`.
 const R_CODESET_MAX: i32 = 63;
-const MAXIDSIZE: usize = 10000;
 
 /// A codeset the reader can convert from and to (GNU R's `Riconv` on
 /// glibc converts between any; robigo has these).
@@ -560,12 +559,7 @@ impl<'r> Reader<'_, 'r> {
                 );
             }
         };
-        if name.is_empty() {
-            return Err(cx.error("attempt to use zero-length variable name"));
-        }
-        if name.len() > MAXIDSIZE {
-            return Err(cx.error(&format!("variable names are limited to {MAXIDSIZE} bytes")));
-        }
+        robigo_rtbuiltins::text::check_install_name(&name).map_err(|m| cx.error(&m))?;
         cx.install_rooted(s, &name)
     }
 
