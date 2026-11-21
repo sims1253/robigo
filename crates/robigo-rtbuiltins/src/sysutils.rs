@@ -224,7 +224,7 @@ struct Conv {
 /// process stays in "C" and the locale is the isolate's, so "" is the
 /// isolate's charset here, as GNU R's is its process's.
 // R: sysutils.c:Riconv_open
-fn riconv_open(cx: &Cx, to: &[u8], from: &[u8]) -> Option<robigo_rtcore::clib::Iconv> {
+fn riconv_open(cx: &mut Cx, to: &[u8], from: &[u8]) -> RResult<Option<robigo_rtcore::clib::Iconv>> {
     let native: &[u8] = if cx.locale().utf8 { b"UTF-8" } else { b"ANSI_X3.4-1968" };
     let fix = |e: &[u8]| -> Vec<u8> {
         if e.is_empty() {
@@ -235,7 +235,14 @@ fn riconv_open(cx: &Cx, to: &[u8], from: &[u8]) -> Option<robigo_rtcore::clib::I
             e.to_vec()
         }
     };
-    robigo_rtcore::clib::Iconv::open(&fix(to), &fix(from), cx.locale().utf8)
+    use robigo_rtcore::clib::{Iconv, IconvOpenError};
+    match Iconv::open(&fix(to), &fix(from), cx.locale().utf8) {
+        Ok(cd) => Ok(Some(cd)),
+        Err(IconvOpenError::Unsupported) => Ok(None),
+        Err(IconvOpenError::NoLocale) => {
+            Err(cx.error("robigo: the C library has no locale object for iconv()'s LC_CTYPE"))
+        }
+    }
 }
 
 /// `.Internal(iconv(x, from, to, sub, mark, toRaw))`: each string (or raw
@@ -352,10 +359,10 @@ pub fn do_iconv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
         };
         let obj: &mut Conv = if !raw_list && enc == Encoding::Utf8 && from.is_empty() {
             if utf8_obj.is_none() {
-                let mut cd = riconv_open(cx, &to, b"UTF-8");
+                let mut cd = riconv_open(cx, &to, b"UTF-8")?;
                 if cd.is_none() && to == b"ASCII//TRANSLIT" {
                     to = b"ASCII".to_vec();
-                    cd = riconv_open(cx, &to, b"UTF-8");
+                    cd = riconv_open(cx, &to, b"UTF-8")?;
                     if sub.is_none() {
                         sub = Some(b"c99".to_vec());
                     }
@@ -366,10 +373,10 @@ pub fn do_iconv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
             utf8_obj.as_mut().unwrap()
         } else if !raw_list && enc == Encoding::Latin1 && from.is_empty() {
             if latin1_obj.is_none() {
-                let mut cd = riconv_open(cx, &to, b"latin1");
+                let mut cd = riconv_open(cx, &to, b"latin1")?;
                 if cd.is_none() && to == b"ASCII//TRANSLIT" {
                     to = b"ASCII".to_vec();
-                    cd = riconv_open(cx, &to, b"latin1");
+                    cd = riconv_open(cx, &to, b"latin1")?;
                     if sub.is_none() {
                         sub = Some(b"?".to_vec());
                     }
@@ -380,10 +387,10 @@ pub fn do_iconv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
             latin1_obj.as_mut().unwrap()
         } else {
             if arg_obj.is_none() {
-                let mut cd = riconv_open(cx, &to, &from);
+                let mut cd = riconv_open(cx, &to, &from)?;
                 if cd.is_none() && to == b"ASCII//TRANSLIT" {
                     to = b"ASCII".to_vec();
-                    cd = riconv_open(cx, &to, &from);
+                    cd = riconv_open(cx, &to, &from)?;
                     if sub.is_none() {
                         sub = Some(b"?".to_vec());
                     }

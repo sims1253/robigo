@@ -578,9 +578,22 @@ pub fn env_locale() -> EnvLocale {
 pub struct Iconv {
     cd: libc::iconv_t,
     /// The `LC_CTYPE` the conversions run in (the isolate's: `C.UTF-8` or
-    /// `C`), which glibc's transliteration (`//TRANSLIT`) reads.
-    utf8: bool,
+    /// `C`), which glibc's transliteration (`//TRANSLIT`) reads: a locale
+    /// object made once and never freed.
+    loc: libc::locale_t,
     _not_send: std::marker::PhantomData<*const ()>,
+}
+
+/// Why [`Iconv::open`] made no descriptor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IconvOpenError {
+    /// `iconv_open` failed (any errno: GNU R's `Riconv_open` callers report
+    /// every failure as an unsupported conversion), or a name holds a NUL
+    /// (which no R string does).
+    Unsupported,
+    /// The C library has no locale object for the conversions' `LC_CTYPE`
+    /// (robigo's own failure: GNU R converts in its process's locale).
+    NoLocale,
 }
 
 /// Why a call of [`Iconv::iconv`] stopped before the end of its input.
@@ -600,23 +613,22 @@ impl Iconv {
     /// locale: None when the C library has no such conversion. (It may load
     /// a gconv module, whose search reads GCONV_PATH: under the
     /// environment's shared lock.)
-    pub fn open(to: &[u8], from: &[u8], utf8: bool) -> Option<Iconv> {
-        let (t, f) = (std::ffi::CString::new(to).ok()?, std::ffi::CString::new(from).ok()?);
+    pub fn open(to: &[u8], from: &[u8], utf8: bool) -> Result<Iconv, IconvOpenError> {
+        use IconvOpenError::*;
+        let cstr = |b: &[u8]| std::ffi::CString::new(b).map_err(|_| Unsupported);
+        let (t, f) = (cstr(to)?, cstr(from)?);
         // (the locale first: its one-time newlocale takes the environment's
         // lock itself, which does not nest)
-        let _loc = Self::locale(utf8)?;
+        let loc = if utf8 { c_utf8() } else { c_locale() }.ok_or(NoLocale)?;
+        let _loc = ThreadLocale::switch(loc).ok_or(NoLocale)?;
         let _env = env_read();
         // SAFETY: two NUL-terminated strings; iconv_open returns a new
         // descriptor or (iconv_t)-1.
         let cd = unsafe { libc::iconv_open(t.as_ptr(), f.as_ptr()) };
-        (cd as isize != -1).then_some(Iconv { cd, utf8, _not_send: std::marker::PhantomData })
-    }
-
-    /// The calling thread switched to the conversions' `LC_CTYPE` until the
-    /// guard drops.
-    fn locale(utf8: bool) -> Option<ThreadLocale> {
-        let loc = if utf8 { c_utf8()? } else { c_locale()? };
-        ThreadLocale::switch(loc)
+        if cd as isize == -1 {
+            return Err(Unsupported);
+        }
+        Ok(Iconv { cd, loc, _not_send: std::marker::PhantomData })
     }
 
     /// `iconv(cd, &inbuf, &inb, &outbuf, &outb)` with the input `input`
@@ -624,7 +636,9 @@ impl Iconv {
     /// it writes) and the output `out` (its length is `outb`): the bytes
     /// read and written, and why it stopped when it returned -1.
     pub fn iconv(&mut self, input: Option<&[u8]>, out: &mut [u8]) -> (usize, usize, Option<IconvStop>) {
-        let _loc = Self::locale(self.utf8);
+        // (uselocale fails only for an invalid locale object, and `open`
+        // switched to this one)
+        let _loc = ThreadLocale::switch(self.loc).expect("robigo: uselocale refused a locale it took before");
         let mut op = out.as_mut_ptr().cast::<libc::c_char>();
         let mut ol = out.len();
         let (r, read) = match input {
@@ -652,7 +666,12 @@ impl Iconv {
         let stop = match errno {
             libc::E2BIG => IconvStop::TooBig,
             libc::EILSEQ => IconvStop::Illegal,
-            _ => IconvStop::Incomplete,
+            libc::EINVAL => IconvStop::Incomplete,
+            // (iconv(3) documents only the three above)
+            _ => {
+                debug_assert!(false, "robigo: iconv() failed with errno {errno}");
+                IconvStop::Incomplete
+            }
         };
         (read, written, Some(stop))
     }
