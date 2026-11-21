@@ -353,13 +353,20 @@ impl Writer<'_> {
     /// code, no BCODESXP for its body): GNU R's JIT has installed
     /// `R_cmpfun1`'s byte code as its BODY by now (eval.c:R_cmpfun), and
     /// serialize writes that, `R_disable_bytecode` or not: that setting
-    /// stops byte code running, not an installed body being written.
+    /// stops byte code running, not an installed body being written. Not
+    /// one marked NOJIT: the compiler declined it (R_cmpfun), and GNU R
+    /// never offers a NOJIT closure to the JIT's compile again.
     ///
     /// # Safety
     /// As for [`Self::compile_on_write`].
     unsafe fn jit_compiled(s: Sexp) -> bool {
         // SAFETY: the caller's contract; a closure's body is its CDR.
-        unsafe { s.typ() == CLOSXP && crate::jit::compiled(s) && s.cdr().typ() != BCODESXP }
+        unsafe {
+            s.typ() == CLOSXP
+                && crate::jit::compiled(s)
+                && s.gp() & crate::jit::NOJIT_MASK == 0
+                && s.cdr().typ() != BCODESXP
+        }
     }
 
     /// `R_cmpfun1(s)` (an effect point: the compiler's R code runs): the
@@ -422,10 +429,25 @@ impl Writer<'_> {
             // has collected since it was read (an effect point that
             // collected restarts the walk).
             unsafe {
-                // (a JIT-compiled closure the compiler declines: written as
-                // its source)
-                let mut source = None;
                 loop {
+                    // a closure robigo-rt's JIT compiled: GNU R's JIT has made
+                    // its BODY R_cmpfun1's byte code (so WriteItem's compile
+                    // on write passes it over), and the same compile now
+                    // writes what GNU R writes (the closure cmpfun makes: the
+                    // formals, the code, the environment and attributes; no
+                    // JIT bits, as R_CheckJIT cleared MAYBEJIT)
+                    if Self::jit_compiled(s) {
+                        let new_s = self.cmpfun1(cx, s)?;
+                        if new_s.typ() == CLOSXP && new_s.cdr().typ() == BCODESXP {
+                            return self.item(cx, new_s);
+                        }
+                        // R_cmpfun: the compiler declined, so GNU R's JIT left
+                        // the source and set NOJIT, which no later write
+                        // offers to the compiler again (below, the source
+                        // as GNU R writes it: compiled on write under
+                        // R_compile_pkgs, as it is otherwise)
+                        s.set_gp(s.gp() | crate::jit::NOJIT_MASK);
+                    }
                     if Self::compile_on_write(cx, s) {
                         // R_compile_pkgs off while the compiled closure is
                         // written (its environment's closures are written
@@ -436,21 +458,6 @@ impl Writer<'_> {
                         self.item(cx, new_s)?;
                         crate::prims::state(cx).compile_pkgs.set(1);
                         return Ok(());
-                    }
-                    // a closure robigo-rt's JIT compiled: GNU R's JIT has made
-                    // its BODY R_cmpfun1's byte code, so the same compile now
-                    // writes what GNU R writes (the closure cmpfun makes: the
-                    // formals, the code, the environment and attributes; no
-                    // JIT bits, as R_CheckJIT cleared MAYBEJIT)
-                    if source != Some(s.addr()) && Self::jit_compiled(s) {
-                        let new_s = self.cmpfun1(cx, s)?;
-                        if new_s.typ() == CLOSXP && new_s.cdr().typ() == BCODESXP {
-                            return self.item(cx, new_s);
-                        }
-                        // R_cmpfun: the compiler declined, so GNU R's JIT left
-                        // the source and set NOJIT
-                        s.set_gp(s.gp() | crate::jit::NOJIT_MASK);
-                        source = Some(s.addr());
                     }
                     if s.is_altrep() {
                         if robigo_rtcore::altrep::own::own_class(s).is_none() {
