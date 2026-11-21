@@ -299,7 +299,8 @@ class Batches(unittest.TestCase):
                 with unittest.mock.patch.object(bd.time, "sleep", sleep):
                     bd.lock_row(waiting, path, first=0.0, every=60.0, step=1.0)
                 self.assertEqual(len(slept), 3)
-                self.assertIn(f"waiting 0 s for {path} (held by pid {os.getpid()}", err.getvalue())
+                self.assertIn(f"waiting 0 s for {path}, held by another run of this row "
+                              f"(last recorded holder: pid {os.getpid()})", err.getvalue())
                 self.assertEqual(err.getvalue().count("waiting"), 1, "it repeats sparsely")
             with open(path) as f:
                 self.assertEqual(f.read(), str(os.getpid()))
