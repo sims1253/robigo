@@ -96,6 +96,16 @@ class RtCi(unittest.TestCase):
         self.assertIn(rt.CONFORMANCE, built[1][1])
         self.assertNotIn("debug assertions", " ".join(t for t, _, _ in rt.steps(["robigo-rt"])))
 
+    def test_full_move_and_shard_are_refused_together(self):
+        # --full-move runs the nightly's one step: with --shard as well the
+        # shard would be dropped silently
+        import contextlib, io
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as e, contextlib.redirect_stderr(err):
+            rt.main(["--full-move", "--shard", "modes"])
+        self.assertEqual(e.exception.code, 2)
+        self.assertIn("--full-move and --shard select different steps", err.getvalue())
+
     def test_the_step_times_are_reported_slowest_first(self):
         r = rt.timings_report([("a", 60.0, True), ("b", 600.0, True), ("c", 30.0, False)])
         lines = r.splitlines()

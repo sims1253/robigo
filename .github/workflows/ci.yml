@@ -215,7 +215,7 @@ jobs:
           IMAGE: ${{ needs.select.outputs.image_oracle_4_6_2 }}
         run: |
           image=$(printf '%s' "$IMAGE" | sha256sum | cut -c1-16)
-          echo "key=rdb-oracle-1-$image-${{ hashFiles('scripts/rt-rdb-roundtrip.sh') }}" >> "$GITHUB_OUTPUT"
+          echo "key=rdb-oracle-1-$image-${{ hashFiles('scripts/rt-rdb-roundtrip.sh', 'scripts/lazyload-ck.R') }}" >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@v6
         id: data
         with:
@@ -299,7 +299,7 @@ jobs:
   #
   # rt: release tests, the conformance and its observation modes,
   # gctorture, quarantine, pin report, stress, overshoot, E9, the byte-code
-  # crosscheck (about 16 min); then L1's rdb round trip.
+  # crosscheck; then L1's rdb round trip (15.7 min, #910's first run).
   rt:
     needs: [select, rdb-data]
     if: ${{ needs.select.outputs.rt == 'true' }}
@@ -356,18 +356,21 @@ jobs:
       # (docs/ledger/g3/2026-11-17-v3-bcodesxp-ir.md)
       # (the classes' counts printed whether the test passes or not: they
       # matter most when it fails; the step keeps the test's status)
-      - name: GNU R's lazy-load databases round-trip (rdb_roundtrip), base.rdb's closures translated
+      - name: GNU R's lazy-load databases (rdb_roundtrip, base.rdb's closures translated; lazyload)
         run: |
           report="$RUNNER_TEMP/bc-crosscheck-base.txt"
           status=0
           ROBIGO_ORACLE_LIBRARY="$PWD/.robigo/oracle-lib" ROBIGO_BC_CROSSCHECK=1 ROBIGO_BC_CROSSCHECK_REPORT="$report" \
             cargo test --release --locked -p robigo-rt --test rdb_roundtrip -- --nocapture || status=$?
+          # (L4's makeLazy: base's lazyLoad of the same databases, through the binary)
+          ROBIGO_ORACLE_LIBRARY="$PWD/.robigo/oracle-lib" \
+            cargo test --release --locked -p robigo-rtapi --test lazyload -- --nocapture || status=$?
           if [ -f "$report" ]; then sed 's/: .*//' "$report" | sort | uniq -c; fi
           exit "$status"
 
 
   # the moving collector: its unit tests and the conformance under it with
-  # gctorture (about 19 min, 10 of them that conformance)
+  # gctorture (16.7 min, #910's first run)
   rt-gc-move:
     needs: select
     if: ${{ needs.select.outputs.rt == 'true' }}
@@ -377,7 +380,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 40
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
@@ -439,7 +442,8 @@ jobs:
   # the steps that build with a feature of their own: A4's builtin
   # differential with its planted divergences (robigo-rtbuiltins/diff-plant)
   # and the conformance under retry-torture (robigo-rtcore/retry-torture)
-  # (about 15 min)
+  # (9.1 min in #910's first run, with 23 builtin rows; #887's 87 rows and
+  # plant build add about 4)
   rt-feature-builds:
     needs: [select, builtin-diff-data]
     if: ${{ needs.select.outputs.rt == 'true' }}
@@ -449,7 +453,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 40
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup

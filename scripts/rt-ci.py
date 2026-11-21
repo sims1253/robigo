@@ -319,22 +319,23 @@ def steps(crates):
 # CI's three rt jobs (.github/workflows/ci.yml), each one shard of the
 # steps, built once and run in parallel: before 2026-11-21 one job ran them
 # all in 29-38 minutes, against a 40-minute limit. Each is named for what it
-# runs. Measured on main's 2f16dc4c (minutes, its 8.4-minute release build
-# included where the shard's first cargo step makes it):
+# runs. Their jobs' times in #910's first run (each with its release build,
+# 8.4 minutes of the one job's 35 on main's 2f16dc4c):
 #   modes         release tests, the conformance and its observation modes,
 #                 gctorture, quarantine, the pin report, stress, overshoot,
 #                 E9's small limit and failures, the byte-code crosscheck:
-#                 about 16
+#                 15.7
 #   gc-move       the moving collector, its unit tests and the conformance
-#                 under it with gctorture: about 19
+#                 under it with gctorture: 16.7
 #   feature-builds  the steps that build with a feature of their own: the
-#                 builtin differential's plants, and retry-torture: about 15
+#                 builtin differential's plants, and retry-torture: 9.1
 #   debug-assertions  the crates' release tests and the conformance on a
 #                 release build with `-C debug-assertions=on` (heap's
 #                 debug_assert!s see compiled code; not opt-level 0, where
 #                 conditions/eval-depth-limit.R fails only because debug C
-#                 frames are larger): about 9 (its own build), and only in
-#                 its own job: a plain local run does not build it
+#                 frames are larger): about 11 locally on a cold target
+#                 (its own build), and only in its own job: a plain local
+#                 run does not build it
 # The R_HOME tree (seconds) is made in every shard; every other step is in
 # exactly one (scripts/test-rt-ci.py checks both).
 SHARDS = ("modes", "gc-move", "feature-builds", "debug-assertions")
@@ -408,6 +409,9 @@ def main(argv):
                     help="only the conformance slice with every collection moving everything (the nightly's run)")
     ap.add_argument("--shard", choices=SHARDS, help="only this CI job's steps (default: every step)")
     a = ap.parse_args(argv)
+    if a.full_move and a.shard:
+        # (--full-move is the nightly's one step; a shard would be ignored)
+        ap.error("--full-move and --shard select different steps: give one")
 
     meta = metadata()
     crates = rt_crates(meta, rt_patterns(ci_select.load()))
