@@ -42,10 +42,36 @@ pub fn sexptype2char(t: u8) -> &'static str {
     }
 }
 
-/// GNU R's `type2char`: the first name `TypeTable` gives a type.
+/// GNU R's `type2char` without its warning: the first name `TypeTable`
+/// gives a type, and "unknown type #N" for a code it has no name for. Every
+/// object's type has a name; a code from outside (the C API's
+/// `allocVector`, `coerceVector`) is warned about where it comes in
+/// ([`type2char_warn`]).
 // R: util.c:TypeTable, util.c:type2char
 pub fn type2char(t: u8) -> &'static str {
-    match t {
+    static UNKNOWN: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    type_name(t).unwrap_or_else(|| {
+        &UNKNOWN.get_or_init(|| (0..=255).map(|t| format!("unknown type #{t}")).collect())[t as usize]
+    })
+}
+
+/// GNU R's `type2char` of a type code from outside, of any width: the
+/// type's name, or, for a code `Type2Table` has no name for, the warning
+/// "type N is unimplemented in 'type2char'" and "unknown type #N".
+// R: util.c:type2char
+pub fn type2char_warn(cx: &mut Cx, t: u32) -> robigo_rtcore::RResult<std::borrow::Cow<'static, str>> {
+    if let Some(n) = u8::try_from(t).ok().and_then(type_name) {
+        return Ok(n.into());
+    }
+    cx.warning(&format!("type {t} is unimplemented in 'type2char'"))?;
+    Ok(format!("unknown type #{t}").into())
+}
+
+/// `TypeTable`'s first name for a type, or None (util.c's `Type2Table`
+/// entry with no `cstrName`: 11, 12 and 26 to 31, and any code past it).
+// R: util.c:TypeTable
+pub fn type_name(t: u8) -> Option<&'static str> {
+    Some(match t {
         NILSXP => "NULL",
         SYMSXP => "symbol",
         LISTSXP => "pairlist",
@@ -70,8 +96,8 @@ pub fn type2char(t: u8) -> &'static str {
         WEAKREFSXP => "weakref",
         RAWSXP => "raw",
         OBJSXP => "S4",
-        _ => "unknown type",
-    }
+        _ => return None,
+    })
 }
 
 /// GNU R's `R_typeToChar(x)`: `type2char`, but an OBJSXP that is not S4 is
