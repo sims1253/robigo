@@ -14,7 +14,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 bin=
 if [ "${1:-}" = --robigo-rt ]; then
-  [ $# -ge 2 ] || { echo "usage: scripts/rt-home-db.sh [--robigo-rt BIN] [DIR]" >&2; exit 2; }
+  [ $# -ge 2 ] && [ -n "$2" ] || { echo "usage: scripts/rt-home-db.sh [--robigo-rt BIN] [DIR]" >&2; exit 2; }
   bin=$2
   shift 2
 fi
@@ -25,10 +25,16 @@ if [ -z "$bin" ]; then
 fi
 [ -x "$bin" ] || { echo "rt-home-db.sh: no robigo-rt at $bin (cargo build --release -p robigo-rtapi)" >&2; exit 2; }
 out=${1:-.robigo/rt-home-db}
-# (no trailing slash: the lock is the tree's sibling, whatever the spelling)
-while [ "$out" != / ] && [ "${out%/}" != "$out" ]; do out=${out%/}; done
+# (no trailing slash or /.: the lock is the tree's sibling, whatever the
+# spelling)
+while [ "$out" != / ] && { [ "${out%/}" != "$out" ] || [ "${out%/.}" != "$out" ]; }; do
+  out=${out%/}
+  out=${out%/.}
+done
+[ -n "$out" ] || out=.
 # one build of the tree at a time (another's rm and mv would interleave
-# with this one's), as scripts/build.sh locks its target
+# with this one's), as scripts/build.sh locks its target (the mkdir is
+# the mktemp's below too); scripts/rt-home.sh locks its own
 mkdir -p "$(dirname "$out")"
 exec 9> "$out.lock"
 flock 9
@@ -39,7 +45,6 @@ if [ -f "$out/.rt-home-db" ] && [ "$(cat "$out/.rt-home-db")" = "$stamp" ]; then
   echo "$out"
   exit 0
 fi
-mkdir -p "$(dirname "$out")"
 tmp=$(mktemp -d "$(dirname "$out")/.rt-home-db.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 # the install layout robigo-rt finds its R_HOME by: bin/robigo-rt, lib/robigo

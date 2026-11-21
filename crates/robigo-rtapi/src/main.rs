@@ -451,7 +451,7 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
             return 2;
         }
         match robigo_rt::base::stage0(cx, home.path()) {
-            Ok(mut boot_st) => {
+            Ok(boot_st) => {
                 // setup_Rmainloop after the system profile: .OptRequireMethods,
                 // the site and user profiles, .RData, .First, .First.sys; an
                 // error there halts R (check_session_exit: R_CleanUp(SA_NOSAVE,
@@ -462,7 +462,7 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
                     restore: st.restore,
                     quiet,
                 };
-                if !robigo_rt::base::after_profile(cx, home.path(), a, &mut boot_st) {
+                if !robigo_rt::base::after_profile(cx, home.path(), a) {
                     cx.reprintf(b"Execution halted\n");
                     robigo_rt::fin::run_exit_finalizers(cx);
                     robigo_rt::repl::print_warnings(cx);

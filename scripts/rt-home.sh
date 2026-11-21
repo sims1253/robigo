@@ -39,6 +39,16 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 out=${1:-.robigo/rt-home}
+# (no trailing slash or /.: the lock is the tree's sibling)
+while [ "$out" != / ] && { [ "${out%/}" != "$out" ] || [ "${out%/.}" != "$out" ]; }; do
+  out=${out%/}
+  out=${out%/.}
+done
+# one build of the tree at a time (another's rm and mv would interleave
+# with this one's, or swap the tree under scripts/rt-home-db.sh's copy)
+mkdir -p "$(dirname "$out")"
+exec 8> "$out.lock"
+flock 8
 src=$(scripts/r-src.sh)
 version=4.6.2
 # configure's WHICH on the oracle image (Sys.which's body there)
@@ -119,6 +129,14 @@ sed -e 's|@configure_input@|etc/Renviron.  Generated from Renviron.in by configu
   -e 's|@STRIP_SHARED_LIB@|strip --strip-unneeded|' -e 's|@STRIP_STATIC_LIB@|strip --strip-debug|' \
   -e "s|^R_LIBS_SITE=.*|R_LIBS_SITE=\${R_LIBS_SITE:-'/usr/local/lib/R/site-library:%S'}|" \
   "$src/etc/Renviron.in" > "$tmp/etc/Renviron"
+# every configure token substituted and Debian's line in place, or the
+# file is not the oracle's
+if grep -qE '@[A-Za-z_]+@' "$tmp/etc/Renviron"; then
+  grep -oE '@[A-Za-z_]+@' "$tmp/etc/Renviron" | sed 's/^/rt-home.sh: etc\/Renviron keeps /' >&2
+  exit 1
+fi
+grep -qxF "R_LIBS_SITE=\${R_LIBS_SITE:-'/usr/local/lib/R/site-library:%S'}" "$tmp/etc/Renviron" ||
+  { echo "rt-home.sh: Renviron.in's R_LIBS_SITE line is not where rt-home.sh expects it" >&2; exit 1; }
 mkdir -p "$tmp/include"
 sed -e "s/@PACKAGE_VERSION@/$version/" -e "s/@RMATH_HAVE_WORKING_LOG1P@/# define HAVE_WORKING_LOG1P 1/" \
   "$src/src/include/Rmath.h0.in" > "$tmp/include/Rmath.h"

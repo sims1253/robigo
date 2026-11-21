@@ -423,7 +423,7 @@ fn dot_last(cx: &mut Cx) -> bool {
 /// The lookup and the call both run in R_Toplevel (`R_dot_Last` sets it
 /// the global context), so an error in either lands on a REPL top-level
 /// record.
-fn call_if_closure(cx: &mut Cx, name: &[u8], from: Root<'_>, rho: Root<'_>) -> bool {
+pub(crate) fn call_if_closure(cx: &mut Cx, name: &[u8], from: Root<'_>, rho: Root<'_>) -> bool {
     cx.scope(|cx, s| {
         let sym = s.out(cx);
         let symr = sym.root();
