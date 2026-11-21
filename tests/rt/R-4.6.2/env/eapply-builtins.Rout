@@ -50,3 +50,5 @@ error: '...' used in an incorrect context | call: doTryCatch(return(expr), name,
 [1]  TRUE  TRUE  TRUE FALSE
 [1] TRUE
 error: 0 arguments passed to .Internal(builtins) which requires 1 | call: doTryCatch(return(expr), name, parentenv, handler) 
+error: argument "env" is missing, with no default | call: eapply(FUN = length) 
+error: argument "e" is missing, with no default | call: h2() 

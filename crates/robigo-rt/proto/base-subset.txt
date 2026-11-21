@@ -74,6 +74,7 @@ closure bindingIsActive bindenv.R
 closure bindingIsLocked bindenv.R
 closure bindtextdomain stop.R
 closure body formals.R
+closure builtins builtins.R
 closure cat cat.R
 closure character vector.R
 closure chkDots warnings.R
@@ -96,6 +97,7 @@ closure do.call New-Internal.R
 closure dput dput.R
 closure dyn.load dynload.R
 closure dynGet namespace.R
+closure eapply eapply.R
 closure encodeString New-Internal.R
 closure enquote backquote.R
 closure env.profile environment.R
@@ -431,6 +433,7 @@ internal bindingIsLocked
 internal bindtextdomain
 internal body
 internal bodyCode
+internal builtins
 internal cat
 internal close
 internal compareNumericVersion
@@ -447,6 +450,7 @@ internal disassemble
 internal do.call
 internal dput
 internal dyn.load
+internal eapply
 internal enableJIT
 internal encodeString
 internal env.profile

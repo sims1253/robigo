@@ -54,3 +54,7 @@ c("aperm", "Recall", "sum", "eapply") %in% bi
 c(".C", "sum", "aperm", "nope") %in% b
 identical(builtins(NA), b)
 show(.Internal(builtins()))
+# a missing env is evaluated first: R's missing-argument error
+show(eapply(FUN = length))
+h2 <- function(e) eapply(e, length)
+show(h2())
