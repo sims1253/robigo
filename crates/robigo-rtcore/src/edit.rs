@@ -546,7 +546,6 @@ const JIT_BITS: u16 = gp::closure::NOJIT | gp::closure::MAYBEJIT;
 /// GNU R's `ASSIGNMENT_PENDING_MASK`: on a call, `MARK_ASSIGNMENT_CALL`.
 use robigo_heap::gp::call::ASSIGNMENT_CALL;
 
-/// The types `duplicate1` returns as they are.
 /// Whether `duplicate1`'s per-cell work would change the pairlist copy `l`:
 /// a car of a type it copies, or a cell with attributes.
 fn cells_need_deep(cx: &Cx, l: Ref<'_>) -> bool {
@@ -561,6 +560,7 @@ fn cells_need_deep(cx: &Cx, l: Ref<'_>) -> bool {
     false
 }
 
+/// The types `duplicate1` returns as they are.
 fn shared_by_duplicate(t: u8) -> bool {
     matches!(
         t,
