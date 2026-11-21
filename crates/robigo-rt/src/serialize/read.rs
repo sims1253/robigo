@@ -551,16 +551,19 @@ impl<'r> Reader<'_, 'r> {
             let t = robigo_rtbuiltins::util::type_to_char(c);
             return Err(cx.error(&format!("'installTrChar' must be called on a CHARSXP, but got '{t}'")));
         };
-        let name = match robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(ch), cx.locale()) {
-            Ok(b) => b.into_owned(),
-            Err(_) => {
-                return Err(
-                    cx.error("robigo: a symbol name not representable in the native encoding is not implemented yet")
-                );
-            }
+        // installTrChar's translation, warning and name checks (Sol S1)
+        let (name, w) = match robigo_rtbuiltins::text::install_tr_name(robigo_rtbuiltins::coerce::text(ch), cx.locale())
+        {
+            Ok((n, w)) => (n.into_owned(), w),
+            Err(d) => return Err(cx.raise(d)),
         };
-        robigo_rtbuiltins::text::check_install_name(&name).map_err(|m| cx.error(&m))?;
-        cx.install_rooted(s, &name)
+        if let Some(w) = w {
+            cx.warning(&w)?;
+        }
+        let o = s.out(cx);
+        let r = o.root();
+        cx.build(o, |cx| Ok(cx.install_tr(pn.bind(cx).as_char().unwrap(), &name)?.into()))?;
+        Ok(r)
     }
 
     /// `ReadItem_Iterative`: a run of pairlist-like cells (LISTSXP,

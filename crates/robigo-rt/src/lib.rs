@@ -51,6 +51,7 @@ pub mod code;
 pub mod compile;
 pub mod conditions;
 pub mod connections;
+mod declare;
 pub mod deparse;
 pub mod dispatch;
 mod early;
