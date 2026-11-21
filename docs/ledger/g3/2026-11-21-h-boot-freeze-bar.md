@@ -19,6 +19,7 @@ The rdb boot alone triples a collection, because base's byte code and the compil
   - Under the interim loader that is after `stage0` (base's files, the system profile, `lock_base`) and `after_profile`: `.OptRequireMethods`, the site and user profiles, `.First.sys`, and the JIT setup that loads the compiler at startup when the JIT is on (`l5`: `loadedNamespaces()` is `c("compiler", "base")`).
   - Under the rdb boot it is the same point, after `..lazyLoad` has bound base from `base.rdb`.
   - Either way, the freeze runs after one full collection made at that point, so only the boot's survivors are frozen.
+  - **With default packages** (amendment 4): the freeze comes after `.First.sys`, so a start that loads the default packages there (`R_DEFAULT_PACKAGES` unset) freezes them too, with their namespaces and attached package environments. The rule is the same: everything reachable at that point from the roots listed below. Premise 1's 90% and premise 6's size are measured for the `R_DEFAULT_PACKAGES=NULL` start only, until the default packages load under robigo-rt. Then both are measured for that start as well, and recorded beside the NULL start's.
 - **What.** Every object reachable from the base environment, the base namespace, the symbols' base cells (`SymCells`), the namespace registry and each namespace loaded by then (the compiler's), and their environments' frames and hash tables. They are made immortal (`Core::make_immortal`, with `BARRIER` set).
 - **What is not frozen:**
   - the global environment's frame and what only it reaches: what the user's profile made is the user's data;
@@ -61,14 +62,20 @@ Premise 2 below has the test that this table is complete.
 - with `ROBIGO_GC_MOVE=1`;
 - with `ROBIGO_GC_MOVE=young:16`;
 
-each over the conformance slice and robigo-rtcore's and robigo-heap's tests. The move modes never move a frozen object: it is immortal, and its referents are pinned or forwarded through the remembered set's trace.
+each over the conformance slice and robigo-rtcore's and robigo-heap's tests.
+
+**The moving collector** (amendment 2):
+- A frozen object is immortal, and an immortal object never moves. With the freeze on, `ROBIGO_GC_MOVE=1` and `=young:N` would move only what the session made after the boot, and so test less: the move modes exist to find stale raw pointers across safepoints, and most raw pointers held at a safepoint point into base's code.
+- So **the freeze is off under both move modes:** the boot heap stays ordinary and moves as today.
+- The frozen-aware path is covered by `ROBIGO_GC_FREEZE_CHECK=1`, under gctorture without moving, and in the release tests.
+- The production collector does not move, so the freeze costs no compaction. A frozen object's referents need nothing special: the remembered set's entries are traced as roots, as an immortal object's are today.
 
 ### (d) What R can see
 
 - **`gc()`:** used cells and Mb drop by the frozen heap, unless the counts keep it. The L7 draft (#946) makes totals robigo's own and keeps exact only the shape, limits, `reset` and max-used semantics, trigger rules, report format and retained-data deltas. A freeze keeps all of those. If the lead does not sign #946, `gc()`'s totals must still count the frozen objects (`immortal` counts are kept per type today), and the bar adds that `gc()`'s used columns are unchanged by the freeze.
 - **`memory.profile()`:** counts by type include the frozen objects, which are still in the heap's blocks. The freeze changes no count.
 - **`object.size`:** unchanged; it reads the object, not its mark state.
-- **`reg.finalizer` on a base object after the freeze** (an environment of base's). The object is frozen, so it would never die and its finalizer would run only at exit with `onexit = TRUE`. GNU R would also never collect a base environment that base still reaches, so the finalizer behavior matches. A finalizer registered on a frozen object that base later drops (an environment that only a replaced binding reached) would never run in robigo, and would run in GNU R after the next full collection. That is an observable difference. The bar requires a case for it, and the freeze either unfreezes an object at `reg.finalizer` (it is logged and re-traced from then on) or the difference is documented. The default is to unfreeze, and premise 5 tests it.
+- **`reg.finalizer` on a base object after the freeze** (an environment of base's). The object is frozen, so it would never die and its finalizer would run only at exit with `onexit = TRUE`. GNU R would also never collect a base environment that base still reaches, so the finalizer behavior matches. A finalizer registered on a frozen object that base later drops (an environment that only a replaced binding reached) would never run in robigo, and would run in GNU R after the next full collection. That is an observable difference. The bar requires a case for it, and the freeze either unfreezes an object at `reg.finalizer` (it is logged and re-traced from then on) or the difference is documented. The default is to unfreeze, and premise 5 tests it. A finalizer registered on a base environment or namespace itself (`reg.finalizer(baseenv(), f, onexit = TRUE)`, or on `asNamespace("compiler")`): the environment is unfrozen and stays reachable from its root, so it never dies, and the finalizer runs only at exit with `onexit = TRUE`, as in GNU R. A case pins this.
 - **A base function replaced after the freeze** (`assignInNamespace("f", g, "base")`, or any reassignment in base). The old value stays frozen and is never freed. The leak is bounded by what the boot made: at most the frozen heap's own size (measured by premise 6 before the build), whatever the number of reassignments, because a frozen object is never copied. A session that reassigns base repeatedly leaks only the first replaced value of each binding; later values are unfrozen and collected as now.
 
 ### (e) The bar
@@ -90,7 +97,28 @@ each over the conformance slice and robigo-rtcore's and robigo-heap's tests. The
 4. **A frozen object never gets a payload pointer handed to C** (`DATAPTR` of a frozen STRSXP or VECSXP from a package's C after the freeze). If it can, C writes past the barrier. Test: the C API's `DATAPTR`, `STRING_PTR`, `VECTOR_PTR`, `STRING_PTR_RO` and `DATAPTR_RO` entries. Each mutable one either unfreezes its object first (logs it and clears `IMMORTAL`, as `SEEN_BY_C` does today for moves), or the bar names it.
 5. **Unfreezing an object is cheap and sound** (premise 4's and `reg.finalizer`'s case). Test: a design note showing that clearing `IMMORTAL` and logging the object restores ordinary tracing, before any code. A frozen object's children are frozen too, and they stay frozen and reachable from the now-traced object, so the invariant holds.
 6. **The leak in (d) is as stated.** Test: the frozen heap's size at the freeze point under the rdb boot (Ncells, Vcells, bytes), recorded in the PR's entry.
-7. **Nothing reads `IMMORTAL` to mean "a shared constant"** in a way the freeze would break (the C API's `MAYBE_SHARED`, refcount skipping, `mark_not_mutable`). Today, immortal objects skip reference counts, so a frozen object's `REFCNT` would freeze too. Test: list every reader of `flags::IMMORTAL` and of the refcount skip. A frozen object whose `REFCNT` matters to copy-on-modify (`MAYBE_SHARED` decides whether `x[i] <- v` copies) must either keep counting, or be treated as shared (always copied). The safe default is shared, which GNU R's `MARK_NOT_MUTABLE` on base's objects already implies for most of them.
+7. **In-place writes stay in place** (amendment 3). Immortal objects skip reference counts, so a frozen object's `REFCNT` would freeze at its value at the freeze. A count frozen at 1 would let `y <- base_value; y[1] <- 0` modify base's copy. So a frozen object is treated as shared (`MAYBE_SHARED` true), and every modify of a value held by base or a boot namespace copies. That must not move a steady-state path. What base and the compiler modify in place today, and where each stands:
+   - **`.Options`:** a pairlist in base. `options()` replaces cells' values through `SETCAR` (`set_car`, the barrier), and does not copy-on-modify a vector. Its cells stay frozen; a changed cell is logged once.
+   - **`.Random.seed`:** in the global environment, not frozen.
+   - **The compiler's state:** environments (`compiler:::compilerOptions` and the like) assigned through bindings, not vectors modified in place. Bindings are not copy-on-modify.
+   - **Condition handler stacks and restarts:** robigo-rtcore's context state (Rust), not heap values held by base.
+   - **`.Traceback`, `.Last.value`:** bindings replaced, not modified.
+   - **Anything a perf row touches:** the rows' own data lives in the global environment or in the row's frames, not frozen. A row that reads a base vector and modifies a copy already copies today.
+
+   The test, before the build:
+   - a debug counter of copies made because `MAYBE_SHARED` is true for an immortal object, run over every rt-bars row under the rdb boot with the freeze on; every row reads 0 copies, or each copy is listed and justified;
+   - with the freeze, the rows under the rdb boot are part of the bar (e). A row that starts copying is a failure, not an accepted cost.
+
+   Also: list every reader of `flags::IMMORTAL` and of the refcount skip (the C API's `MAYBE_SHARED`, `mark_not_mutable`, the move modes' pinning), and show that each is right for a frozen object.
+
+### Once generational collection exists (amendment 1)
+
+The frozen set becomes the oldest generation's permanent part, and the freeze stays as its boot-time shortcut. Base and the boot's namespaces are not garbage in any session that runs R code: a major collection would trace them only to keep them.
+- **Kept from this step:**
+  - the store table (b), which is the barrier inventory a generational collector needs anyway;
+  - the barrier's logging into the remembered set (the old-to-young check is added to the same slow path);
+  - the check mode (c), which becomes the minor-collection verifier: each minor collection's marks compared with a full trace's.
+- **What changes:** a major collection could unfreeze (re-trace) the frozen set if a later measurement shows frozen garbage worth reclaiming. That is a policy flag, not a redesign.
 
 ### The rows that make the cost visible now (item 3)
 
