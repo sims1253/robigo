@@ -677,8 +677,9 @@ pub enum EnvWriteRefused {
 /// takes [`ENV`] (the lock does not nest): only translation and its own
 /// methods.
 pub struct EnvWriter<'a> {
-    // dropped in this order: ENV, then the live isolates (the reverse of
-    // taking them)
+    // dropped in this order: the holder's note, ENV, then the live isolates
+    // (the reverse of taking them)
+    _holder: WriterHolder,
     _env: std::sync::RwLockWriteGuard<'static, ()>,
     _live: std::sync::MutexGuard<'static, usize>,
     // the isolate whose thread this is, which also makes the writer
@@ -704,12 +705,17 @@ pub fn env_writer(cx: &crate::Cx) -> Result<EnvWriter<'_>, EnvWriteRefused> {
     let env = ENV.write().unwrap_or_else(|e| e.into_inner());
     #[cfg(debug_assertions)]
     ENV_WRITER_HOLDER.store(this_thread_id(), std::sync::atomic::Ordering::SeqCst);
-    Ok(EnvWriter { _env: env, _live: live, _cx: cx })
+    Ok(EnvWriter { _holder: WriterHolder, _env: env, _live: live, _cx: cx })
 }
 
-impl Drop for EnvWriter<'_> {
+/// [`EnvWriter`]'s note of its thread in a debug build's
+/// `ENV_WRITER_HOLDER`, cleared when the writer drops (first of its
+/// fields: before ENV is released). A field of its own, with no lifetime, so
+/// the writer itself has no `Drop` that would keep its `Cx` borrowed.
+struct WriterHolder;
+
+impl Drop for WriterHolder {
     fn drop(&mut self) {
-        // (before the fields, ENV among them, are released)
         #[cfg(debug_assertions)]
         ENV_WRITER_HOLDER.store(0, std::sync::atomic::Ordering::SeqCst);
     }
@@ -877,6 +883,7 @@ fn tz_lock() -> std::sync::RwLockWriteGuard<'static, ()> {
 }
 
 /// The calling thread's id (`pthread_self`; never 0 on glibc).
+#[cfg(debug_assertions)]
 fn this_thread_id() -> usize {
     // SAFETY: no arguments; returns the calling thread's id.
     unsafe { libc::pthread_self() as usize }
