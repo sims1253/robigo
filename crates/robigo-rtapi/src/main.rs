@@ -623,6 +623,26 @@ fn io_reason(e: &std::io::Error) -> String {
 // target directory.
 const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
 
+/// check_session_exit's `R_CleanUp(SA_NOSAVE, 1, 0)`, its "Execution
+/// halted" written: the exit finalizers, the warnings, status 1.
+// R: main.c:check_session_exit
+fn halt(cx: &mut robigo_rtcore::Cx) -> ! {
+    match robigo_rt::repl::clean_up(cx, robigo_rt::repl::SaveAction::NoSave, 1, false) {
+        Ok(never) => match never {},
+        Err(_) => unreachable!("robigo: SA_NOSAVE saves nothing"),
+    }
+}
+
+/// R_Suicide's `R_CleanUp(SA_SUICIDE, 2, 0)`, its message written: the exit
+/// finalizers, no warnings, status 2.
+// R: unix/sys-std.c:Rstd_Suicide
+fn suicide(cx: &mut robigo_rtcore::Cx) -> ! {
+    match robigo_rt::repl::clean_up(cx, robigo_rt::repl::SaveAction::Suicide, 2, false) {
+        Ok(never) => match never {},
+        Err(_) => unreachable!("robigo: SA_SUICIDE saves nothing"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -643,25 +663,5 @@ mod tests {
             missing_tree(&RHome::MissingDefault(h.clone()), Boot::Rdb).unwrap().ends_with("(scripts/rt-home-db.sh)")
         );
         assert_eq!(missing_tree(&RHome::Given(h), Boot::Rdb), None);
-    }
-}
-
-/// check_session_exit's `R_CleanUp(SA_NOSAVE, 1, 0)`, its "Execution
-/// halted" written: the exit finalizers, the warnings, status 1.
-// R: main.c:check_session_exit
-fn halt(cx: &mut robigo_rtcore::Cx) -> ! {
-    match robigo_rt::repl::clean_up(cx, robigo_rt::repl::SaveAction::NoSave, 1, false) {
-        Ok(never) => match never {},
-        Err(_) => unreachable!("robigo: SA_NOSAVE saves nothing"),
-    }
-}
-
-/// R_Suicide's `R_CleanUp(SA_SUICIDE, 2, 0)`, its message written: the exit
-/// finalizers, no warnings, status 2.
-// R: unix/sys-std.c:Rstd_Suicide
-fn suicide(cx: &mut robigo_rtcore::Cx) -> ! {
-    match robigo_rt::repl::clean_up(cx, robigo_rt::repl::SaveAction::Suicide, 2, false) {
-        Ok(never) => match never {},
-        Err(_) => unreachable!("robigo: SA_SUICIDE saves nothing"),
     }
 }
