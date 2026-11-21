@@ -317,6 +317,9 @@ fn the_attribute_setters_read_a_package_altrep_length() {
                 ".Internal(as.POSIXlt(0, .Call(\"rt_altrep_str\", \"UTC\")))",
                 "a package ALTREP 'tz' is not implemented yet",
             ),
+            // isString first: a numeric one is invalid, its methods not run
+            (".Internal(as.POSIXlt(0, zi))", "invalid 'tz' value"),
+            (".Internal(Date2POSIXlt(0, zi))", "invalid 'tz' value"),
             (
                 ".Internal(strptime(.Call(\"rt_altrep_str\", \"2000-01-01\"), \"%Y-%m-%d\", \"UTC\"))",
                 "strptime() of a package ALTREP 'x' is not implemented yet",
