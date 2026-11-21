@@ -1,0 +1,2 @@
+# builtin-diff known failures: declare, seed 0, key 161c3bb34d9b0a6d313a9237
+# declare: 68 / 68 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
