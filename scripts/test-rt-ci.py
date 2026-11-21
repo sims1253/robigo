@@ -82,10 +82,15 @@ class RtCi(unittest.TestCase):
         for title, _, cmd in rt.steps(crates):
             if cmd[:2] != ["cargo", "test"]:
                 continue
-            if rt.CONFORMANCE in cmd and "--skip" not in cmd or "boot_db" in cmd:
+            if rt.CONFORMANCE in cmd and "--skip" not in cmd or "boot_db" in cmd or "--no-run" in cmd:
                 self.assertEqual(cmd[2], "--release", title)
             else:
                 self.assertEqual(cmd[2:4], ["--profile", "quick"], title)
+        # the release binary is built before the first step that runs it
+        titles = [t for t, _, _ in rt.steps(crates)]
+        built = titles.index("the release binary and the conformance, built (cargo test --release --no-run)")
+        self.assertLess(built, titles.index("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)"))
+        self.assertTrue(all(c[2] != "--release" for t, _, c in rt.steps(crates)[:built] if c[:2] == ["cargo", "test"]))
         rel = rt.shard_steps(crates, "release-crate-tests")
         self.assertEqual([c[2] for _, _, c in rel if c[:2] == ["cargo", "test"]], ["--release"])
         self.assertEqual(rel[0][0], "the R_HOME tree, tools.so built (scripts/rt-home.sh)")
@@ -215,7 +220,8 @@ class RtCi(unittest.TestCase):
         # an unexpected or untranslated closure) would leave CI unnoticed
         self.assertEqual(len([e for e, _ in own if "ROBIGO_BC_CROSSCHECK" in e]), 1)
         for title, _, cmd in steps:
-            if cmd[0] == "cargo" and rt.CONFORMANCE not in cmd[-1:] and "--exact" not in cmd:
+            # (a build-only step, --no-run, runs no test at all)
+            if cmd[0] == "cargo" and rt.CONFORMANCE not in cmd[-1:] and "--exact" not in cmd and "--no-run" not in cmd:
                 self.assertEqual(cmd[-2:], ["--skip", rt.CONFORMANCE], title)
         # The test exists under that name: after a rename the conformance step
         # would run nothing, and still pass.

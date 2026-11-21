@@ -849,8 +849,10 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    skip that job). **The crates' own tests build in the `quick` profile**
    (release's opt-level, no LTO, 256 codegen units: about 7 times faster to
    build, the same run time); everything that judges the binary users get
-   stays on `--release`: every conformance step and mode, boot_db, lazyload,
-   the scripts that run the binary, the builtin differential, perf. A
+   stays on `--release`: every conformance step and mode, the boot_db step,
+   lazyload, the scripts that run the binary, the builtin differential, perf
+   (the crate tests that spawn the binary, alloc, front_end, sigint, cli,
+   spawn the quick one). A
    crate-test failure that only release's codegen shows is found on main,
    within one main run of its merge. Each job builds what its steps need
    and prints its steps' times at the end of its log, against its budget

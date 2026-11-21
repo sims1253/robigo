@@ -219,8 +219,11 @@ def case_timeouts(slow):
 # each of the ~64 test binaries costs ~70-110 s to build (a cold build of all
 # of them: 766 s at -j6, against 106 s in `quick`; their run takes the same
 # time in both, 20 s). Everything that judges the binary users get stays on
-# release: every conformance step and mode, boot_db and the scripts that run
-# the binary, the differential, perf. The crates' tests on the full release
+# release: every conformance step and mode, the boot_db step and the
+# scripts that run the binary, the differential, perf. (The crates' tests
+# that spawn the binary through CARGO_BIN_EXE_robigo-rt, alloc, front_end,
+# sigint, cli, now spawn the quick one: they test the crates' code, and the
+# release binary keeps its own steps.) The crates' tests on the full release
 # profile run in the release-crate-tests shard, on main's push runs.
 CRATE_TEST = ["cargo", "test", "--profile", "quick", "--locked"]
 
@@ -275,6 +278,11 @@ def steps(crates):
         # robigo-rt's R_HOME tree with tools' native code (A5): the
         # conformance cases that load it (`.requires` r-home-tools) run
         ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", {}, ["scripts/rt-home.sh"]),
+        # the release binary users get, which the steps below run (base's
+        # database tree, boot_db, the scripts): built as the conformance step
+        # builds it (its features), since the crates' tests above build quick
+        ("the release binary and the conformance, built (cargo test --release --no-run)", {},
+         [*test, "-p", "robigo-rtapi", "--test", "conformance", "--no-run"]),
         # L5's boot beside M1's loader (ROBIGO_RT_BOOT=rdb): base's database,
         # written by this robigo-rt booted from base's source, then base
         # booted from it (crates/robigo-rtapi/tests/boot_db.rs)
