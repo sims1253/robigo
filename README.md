@@ -137,3 +137,5 @@ ROBIGO_CONF_FILTER=tests/r/basics ROBIGO_CONF_DIFF=1 \
 ## License
 
 GPL-2.0-or-later, like GNU R, whose sources robigo ports and vendors.
+The reference BLAS routines ported in `crates/robigo-numerics/src/blas.rs`
+are LAPACK's, under its modified BSD licence (`LICENSE-LAPACK`).

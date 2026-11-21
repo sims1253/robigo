@@ -742,6 +742,11 @@ fn generic(
                 let p = crate::assign::rhs_promise(cx, s, vexpr, rhs)?;
                 cx.set_car(l, p);
             }
+            // PRIMFUN(fun)(call, fun, args, rho): `@<-` takes the two apart
+            // (the call its methods see is the compiler's, `*tmp*` in it)
+            if prims::prim_name(cx, fun.bind(cx)) == Some("@<-") {
+                return crate::specials::slot_gets(cx, call, Some(args), rho, out);
+            }
             let o = s.out(cx);
             let ncall = o.root();
             let head = s.root(cx, call.bind(cx).as_cons().unwrap().car());
@@ -1030,7 +1035,7 @@ fn call_builtin(
     // SAFETY: a rooted primitive of this isolate.
     let def = *unsafe { prims::def(cx, fun.bind(cx).sexp()) };
     let Kind::Builtin(f, _) = def.kind else { unreachable!("robigo: a special called as a builtin") };
-    crate::call::materialize_args(cx, &def, args)?;
+    crate::call::enter_builtin(cx, &def, args)?;
     let flag = def.print();
     // a builtin may change what an argument expression evaluates to or
     // look at an argument: values computed early are dropped (crate::early)

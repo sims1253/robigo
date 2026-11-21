@@ -288,6 +288,14 @@ def steps(crates):
          {"ROBIGO_BC_CROSSCHECK": "1", "ROBIGO_BC_CROSSCHECK_REPORT": BC_REPORT}, conformance),
         ("injected allocation failures (E9, scripts/rt-fail-alloc.py)", {},
          ["python3", "scripts/rt-fail-alloc.py", "--points", "400"]),
+        # A4 (docs/g3.md §16, ROBIGO_BUILTIN_DIFF): every row of
+        # tests/builtin-diff/rows.toml against GNU R 4.6.2's records (CI's
+        # builtin-diff-data job; locally made with docker), the known/
+        # ratchet held, then the planted-divergence check on a build with
+        # robigo-rtbuiltins/diff-plant (before the retry-torture step, which
+        # rebuilds without it)
+        ("builtin differential and its planted divergences (A4, scripts/builtin-diff.py ci)", {},
+         ["python3", "scripts/builtin-diff.py", "ci"]),
         # E9 (docs/g3.md §16): every `&Cx` build's first allocation refused
         # once, so each build's retry runs. The mode is compiled in only
         # with robigo-rtcore's feature, built for this step alone and last:
@@ -309,6 +317,10 @@ def metadata():
 
 
 def main(argv):
+    # robigo-rt's R_HOME is its own tree; an inherited one (the CI image's
+    # GNU R, /usr/lib/R) it ignores with GNU R's warning on stdout, which
+    # every compared output would then carry: none for what this runs
+    os.environ.pop("R_HOME", None)
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--list", action="store_true", help="print the rt crates and stop")
     ap.add_argument("--check", action="store_true", help="check the premise and stop")

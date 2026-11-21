@@ -642,6 +642,14 @@ pub fn do_names(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out:
             Ok(v.finish().into())
         }),
         _ if is_vector(x.bind(cx)) || x.bind(cx).is_s4() => {
+            if cfg!(feature = "diff-plant") && t == STRSXP && x.bind(cx).len() == Some(3) {
+                // PLANT(A4, env): an attribute written on the (shared) argument itself
+                cx.scope(|cx, s| -> RResult<()> {
+                    let k = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"a4plant")?.into())))?;
+                    let v = s.capture(cx, |cx, o| cx.build_scalar(o, 1i32))?;
+                    cx.install_attrib(x, k, v)
+                })?;
+            }
             cx.scope(|cx, s| {
                 let n = names(x.bind(cx)).map(|n| s.root(cx, n));
                 match n {

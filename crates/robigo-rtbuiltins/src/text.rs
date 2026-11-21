@@ -60,6 +60,31 @@ pub fn to_native(s: Str<'_>, loc: Locale) -> Result<Cow<'_, [u8]>, TranslateErro
     translate_char(s, ctype(loc))
 }
 
+/// `translateChar(STRING_ELT(x, i))`: element `i` (below `x`'s length, the
+/// caller's part) of the character vector `x` in the native encoding, or
+/// GNU R's error for one it cannot be (a "bytes" string). An `x` that is
+/// not a character vector is `STRING_ELT`'s error, a package ALTREP one
+/// robigo's "not implemented" error: never a panic.
+// R: sysutils.c:translateChar
+pub fn native_elt(cx: &mut Cx, x: Root<'_>, i: usize) -> robigo_rtcore::RResult<Vec<u8>> {
+    let v = x.bind(cx);
+    if v.sexptype() != robigo_rtcore::types::STRSXP {
+        let msg = format!(
+            "STRING_ELT() can only be applied to a 'character vector', not a '{}'",
+            crate::util::type_to_char(v)
+        );
+        return Err(cx.error(&msg));
+    }
+    if v.is_package_altrep() {
+        return Err(crate::util::not_yet(cx, None, "translateChar() of a package ALTREP vector"));
+    }
+    let r = {
+        let ch = x.bind(cx).as_vector::<robigo_rtcore::Char<'_>>().unwrap().get(i);
+        to_native(crate::coerce::text(ch), cx.locale()).map(|b| b.into_owned())
+    };
+    r.map_err(|e| cx.error(&e.to_string()))
+}
+
 /// `translateCharFP(s)`: `s` in the native encoding, or the message of GNU
 /// R's `error()`: a "bytes" string, or what iconv could not convert.
 // R: sysutils.c:translateCharFP, translateToNative(mustWork = 1)
@@ -105,6 +130,9 @@ pub enum CollateError {
     NotFcd,
     /// `R_ICU_LOCALE` names an ICU locale: robigo has the root collation only.
     IcuLocale,
+    /// The environment's `LC_COLLATE` is a locale whose ICU collation may
+    /// tailor the root one (not C, `C.UTF-8` or English).
+    EnvLocale,
 }
 
 impl CollateError {
@@ -118,6 +146,9 @@ impl CollateError {
                 "ordering strings not in FCD form (ICU collates them unnormalized, ICU4X only normalized)"
             }
             CollateError::IcuLocale => "ICU collation in the locale R_ICU_LOCALE names",
+            CollateError::EnvLocale => {
+                "ICU collation in the locale LC_COLLATE names (other than C, C.UTF-8 and English)"
+            }
         };
         Diag::error_call(call, format!("robigo: {what} is not implemented yet"))
     }
@@ -136,8 +167,11 @@ enum Collation {
     C,
     /// ICU's root collator, `C.UTF-8`'s.
     Root,
-    /// ICU's collator of another locale.
+    /// ICU's collator of the locale `R_ICU_LOCALE` names.
     Other,
+    /// ICU's collator of the environment's `LC_COLLATE`, a locale that may
+    /// tailor the root collation.
+    OtherEnv,
 }
 
 /// The collation `Scollate` sets up at its first call (util.c): C when
@@ -148,19 +182,33 @@ enum Collation {
 /// `Sys.setlocale`, which robigo-rt does not have).
 // R: util.c:Scollate, getLocale
 fn collation(loc: Locale) -> Collation {
-    static ENV: OnceLock<(bool, Option<Vec<u8>>)> = OnceLock::new();
-    let (use_c, icu) = ENV.get_or_init(|| {
+    static ENV: OnceLock<(bool, Option<Vec<u8>>, bool)> = OnceLock::new();
+    let (use_c, icu, root) = ENV.get_or_init(|| {
         let get = |n: &str| std::env::var_os(n).filter(|v| !v.is_empty());
         let envl = get("LC_ALL").or_else(|| std::env::var_os("LC_COLLATE"));
         let use_c = envl.is_some_and(|v| v.as_encoded_bytes() == b"C");
-        (use_c, get("R_ICU_LOCALE").map(|v| v.as_encoded_bytes().to_vec()))
+        // setlocale(LC_COLLATE, NULL) as startup set it (LC_ALL, else
+        // LC_COLLATE, else LANG): the collations robigo has are root's,
+        // C.UTF-8's and English's (ICU's "en" has no tailoring)
+        let name = get("LC_ALL").or_else(|| get("LC_COLLATE")).or_else(|| get("LANG"));
+        let root = name.is_none_or(|v| {
+            let b = v.as_encoded_bytes();
+            b.starts_with(b"C.")
+                || b == b"C"
+                || b == b"POSIX"
+                || b == b"en"
+                || b.starts_with(b"en_")
+                || b.starts_with(b"en.")
+        });
+        (use_c, get("R_ICU_LOCALE").map(|v| v.as_encoded_bytes().to_vec()), root)
     });
     match icu {
         _ if *use_c => Collation::C,
         Some(l) if l.as_slice() == b"C" => Collation::C,
         Some(_) => Collation::Other,
         None if loc.collate_c => Collation::C,
-        None => Collation::Root,
+        None if *root => Collation::Root,
+        None => Collation::OtherEnv,
     }
 }
 
@@ -180,5 +228,6 @@ pub fn scollate(a: Str<'_>, b: Str<'_>, loc: Locale) -> Result<Ordering, Collate
             robigo_text::collate::root_strcoll(&p, &q).map_err(|_| CollateError::NotFcd)
         }
         Collation::Other => Err(CollateError::IcuLocale),
+        Collation::OtherEnv => Err(CollateError::EnvLocale),
     }
 }

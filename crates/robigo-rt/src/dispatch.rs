@@ -342,10 +342,67 @@ fn string_suffix(cx: &mut Cx, klass: Root<'_>, from: usize, out: Out<'_>) -> RRe
     })
 }
 
-/// The bytes of a class element as `translateChar` gives them.
-fn class_elt(cx: &Cx, klass: Root<'_>, i: usize) -> Vec<u8> {
-    let k = klass.bind(cx).as_vector::<Char<'_>>().unwrap();
-    robigo_rtbuiltins::coerce::text(k.get(i)).bytes().to_vec()
+/// The bytes of a class element as `translateChar` gives them: in the
+/// native encoding (a latin1 class name's UTF-8 bytes in a UTF-8 locale),
+/// or GNU R's error (a "bytes" string, one iconv cannot convert).
+// R: sysutils.c:translateChar
+#[inline(always)]
+fn class_elt(cx: &mut Cx, klass: Root<'_>, i: usize) -> RResult<Vec<u8>> {
+    // (an ASCII string is its own translation: needsTranslation's first
+    // test, inline on dispatch's path)
+    let k = klass.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
+    if k.is_ascii() {
+        return Ok(k.bytes().to_vec());
+    }
+    class_elt_slow(cx, klass, i)
+}
+
+/// The error of a method signature usemethod could not make: the class's
+/// translation, or `installS3Signature`'s (too long).
+#[cold]
+#[inline(never)]
+fn signature_error(cx: &mut Cx, generic: &[u8], klass: Root<'_>, i: usize, nclass: usize) -> robigo_rtcore::RError {
+    let class = if i == nclass {
+        b"default".to_vec()
+    } else {
+        match class_elt(cx, klass, i) {
+            Ok(c) => c,
+            Err(e) => return e,
+        }
+    };
+    let r = cx.scope(|cx, s| install_s3_signature(cx, s, generic, &class).map(drop));
+    match r {
+        Err(e) => e,
+        Ok(()) => unreachable!("robigo: a signature too long is an error"),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn class_elt_slow(cx: &mut Cx, klass: Root<'_>, i: usize) -> RResult<Vec<u8>> {
+    let r = class_elt_native(cx, klass, i);
+    r.map_err(|m| cx.error(&m))
+}
+
+/// [`class_elt`] under `&Cx`: the translation, or its error's message.
+#[inline(always)]
+fn class_elt_native(cx: &Cx, klass: Root<'_>, i: usize) -> Result<Vec<u8>, String> {
+    let k = klass.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
+    if k.is_ascii() {
+        return Ok(k.bytes().to_vec());
+    }
+    class_elt_translated(cx, k)
+}
+
+#[cold]
+#[inline(never)]
+fn class_elt_translated(cx: &Cx, k: Char<'_>) -> Result<Vec<u8>, String> {
+    if k == cx.na_string() {
+        return Ok(b"NA".to_vec());
+    }
+    robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(k), cx.locale())
+        .map(|b| b.into_owned())
+        .map_err(|e| e.to_string())
 }
 
 // ---- environments ---------------------------------------------------------------------
@@ -968,7 +1025,9 @@ pub fn do_usemethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, _
         cx.with_pp_excess(1, |cx| crate::eval(cx, arg_list[0], env, o))?;
         let g = generic.bind(cx);
         let gname = match g.as_vector::<Char<'_>>().filter(|v| g.sexptype() == STRSXP && v.len() == 1) {
-            Some(v) => robigo_rtbuiltins::coerce::text(v.get(0)).bytes().to_vec(),
+            // translateChar(STRING_ELT(generic, 0)): an ASCII name is its own
+            Some(v) if v.get(0).is_ascii() => v.get(0).bytes().to_vec(),
+            Some(_) => class_elt_slow(cx, generic, 0)?,
             None => return Err(cx.error_call(Some(call), "'generic' argument must be a character string")),
         };
         // the environments dispatch needs: callenv where the generic was
@@ -1039,7 +1098,12 @@ fn usemethod_positional<'s>(cx: &Cx, s: Scope<'s>, call: Root<'_>) -> Option<Vec
 fn class_list(cx: &Cx, klass: Root<'_>) -> String {
     const CLLEN: usize = 1024;
     let n = klass.bind(cx).len().unwrap_or(0);
-    let name = |i: usize| String::from_utf8_lossy(&class_elt(cx, klass, i)).into_owned();
+    // (for the message: a class that cannot be translated shows its bytes)
+    let name = |i: usize| {
+        let b = class_elt_native(cx, klass, i)
+            .unwrap_or_else(|_| klass.bind(cx).as_vector::<Char<'_>>().unwrap().get(i).bytes().to_vec());
+        String::from_utf8_lossy(&b).into_owned()
+    };
     if n == 1 {
         let mut c = name(0);
         if c.len() > CLLEN - 1 {
@@ -1250,10 +1314,9 @@ fn usemethod(
                 let mut found = None;
                 for (i, &m) in methods.iter().enumerate() {
                     let Some(m) = m else {
-                        // installS3Signature's error, where the search reaches it
-                        let class = if i == nclass { b"default".to_vec() } else { class_elt(cx, klass, i) };
-                        install_s3_signature(cx, s, generic, &class)?;
-                        unreachable!("robigo: a signature too long is an error");
+                        // translateChar's or installS3Signature's error,
+                        // where the search reaches it
+                        return Err(signature_error(cx, generic, klass, i, nclass));
                     };
                     let method = s.root(cx, symref(cx, m));
                     let sxp = s.out(cx).root();
@@ -1424,9 +1487,9 @@ fn frame_function<'g>(cx: &'g Cx, env: Ref<'g>, method: Sym<'g>) -> Option<Optio
 /// made and kept in the memo under `key`, with `mkString(generic)` (the
 /// method's `.Generic`, marked not mutable: shared by every dispatch of
 /// the entry, a method that changes its `.Generic` changes a copy). None
-/// for a signature
-/// `installS3Signature` refuses (too long): its error is raised where the
-/// search reaches it.
+/// for a signature `installS3Signature` refuses (too long) or a class
+/// `translateChar` refuses: its error is raised where the search reaches
+/// it.
 fn dispatch_methods<'s>(
     cx: &mut Cx,
     s: Scope<'s>,
@@ -1444,8 +1507,12 @@ fn dispatch_methods<'s>(
         Ok(Some(install_s3_signature(cx, s, generic, class)?.bind(cx).sexp()))
     };
     for i in 0..n {
-        let ss = class_elt(cx, klass, i);
-        methods.push(sig(cx, &ss)?);
+        // a class translateChar refuses: its error is raised where the
+        // search reaches it, as GNU R translates each class in turn
+        match class_elt_native(cx, klass, i) {
+            Ok(ss) => methods.push(sig(cx, &ss)?),
+            Err(_) => methods.push(None),
+        }
     }
     methods.push(sig(cx, b"default")?);
     // a copy of the class vector: its elements are the key
@@ -1866,7 +1933,7 @@ fn invoke_builtin(
     // SAFETY: a rooted primitive of this isolate.
     let def = *unsafe { prims::def(cx, op.bind(cx).sexp()) };
     let Kind::Builtin(f, _) = def.kind else { unreachable!("robigo: a special applied as a builtin") };
-    crate::call::materialize_args(cx, &def, args)?;
+    crate::call::enter_builtin(cx, &def, args)?;
     let flag = def.print();
     // a builtin may change what an argument expression evaluates to or
     // look at an argument: values computed early are dropped (crate::early)
@@ -2336,10 +2403,11 @@ pub fn do_nextmethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, 
         let Some(gstr) = gv.as_vector::<Char<'_>>().filter(|v| gv.sexptype() == STRSXP && v.len() == 1) else {
             return Err(cx.error("invalid generic argument to 'NextMethod'"));
         };
-        let sg = robigo_rtbuiltins::coerce::text(gstr.get(0)).bytes().to_vec();
-        if sg.is_empty() {
+        if gstr.get(0).bytes().is_empty() {
             return Err(cx.error("generic function not specified"));
         }
+        // sg = translateChar(STRING_ELT(generic, 0))
+        let sg = class_elt(cx, generic, 0)?;
         // determine whether we are in a Group dispatch
         let (group, basename) = if group.bind(cx).sexp() == unbound {
             (s.root(cx, cx.blank_scalar_string()), sg.clone())
@@ -2348,21 +2416,23 @@ pub fn do_nextmethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, 
             let Some(gs) = gr.as_vector::<Char<'_>>().filter(|v| gr.sexptype() == STRSXP && v.len() == 1) else {
                 return Err(cx.error("invalid 'group' argument found in 'NextMethod'"));
             };
-            let g = robigo_rtbuiltins::coerce::text(gs.get(0)).bytes().to_vec();
-            let base = if g.is_empty() { sg.clone() } else { g };
+            // sb = translateChar(STRING_ELT(basename, 0))
+            let base = if gs.get(0).bytes().is_empty() { sg.clone() } else { class_elt(cx, group, 0)? };
             (group, base)
         };
         // Find the method currently being invoked and jump over the
         // current call
         let b: Vec<u8> = if method.bind(cx).sexp() != unbound {
             let mv = method.bind(cx);
-            let Some(ms) = mv.as_vector::<Char<'_>>().filter(|_| mv.sexptype() == STRSXP) else {
+            if mv.sexptype() != STRSXP {
                 return Err(cx.error("wrong value for .Method"));
-            };
+            }
+            let nm = mv.len().unwrap_or(0);
+            // b = translateChar(STRING_ELT(method, i))
             let mut i = 0;
             let mut b = Vec::new();
-            while i < ms.len() {
-                b = robigo_rtbuiltins::coerce::text(ms.get(i)).bytes().to_vec();
+            while i < nm {
+                b = class_elt(cx, method, i)?;
                 if !b.is_empty() {
                     break;
                 }
@@ -2371,9 +2441,9 @@ pub fn do_nextmethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, 
             // for binary operators check that the second argument's
             // method is the same or absent
             let mut incompatible = false;
-            for j in i..ms.len() {
-                let bb = robigo_rtbuiltins::coerce::text(ms.get(j)).bytes();
-                if !bb.is_empty() && bb != &b[..] {
+            for j in i..nm {
+                let bb = class_elt(cx, method, j)?;
+                if !bb.is_empty() && bb != b {
                     incompatible = true;
                 }
             }
@@ -2388,7 +2458,7 @@ pub fn do_nextmethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, 
         let mut j = 0;
         let mut found = false;
         while j < nk {
-            let sk = class_elt(cx, klass, j);
+            let sk = class_elt(cx, klass, j)?;
             if equal_s3_signature(&b, &basename, &sk) {
                 found = true;
                 break;
@@ -2400,7 +2470,7 @@ pub fn do_nextmethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, 
         let mut sig: Option<Root<'_>> = None;
         let mut i = j;
         while i < nk {
-            let sk = class_elt(cx, klass, i);
+            let sk = class_elt(cx, klass, i)?;
             let ns = install_s3_signature(cx, s, &sg, &sk)?;
             let o = nextfun.reset(cx);
             lookup_method(cx, ns, env, callenv, defenv, o)?;
@@ -2450,7 +2520,31 @@ pub fn do_nextmethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, 
                         // SAFETY: a symbol's INTERNAL is an immortal primitive.
                         o.set(cx, unsafe { Ref::from_sexp(internal, cx) });
                     } else {
-                        return Err(cx.error("robigo: NextMethod's fall-back to a primitive's base binding (getPrimitive) is not implemented yet"));
+                        // getPrimitive(t): the symbol's base binding, a
+                        // promise forced in the global environment; a
+                        // primitive itself; a closure (base redefined) the
+                        // primitive table's entry of its name
+                        let v = s.out(cx).root();
+                        let base = s.root(cx, cx.base_env());
+                        let o = v.reset(cx);
+                        cx.find_var_in_frame3(base, t, true, o)?;
+                        if v.bind(cx).sexptype() == PROMSXP {
+                            let p = s.root(cx, v.bind(cx));
+                            let g = s.root(cx, cx.global_env());
+                            let o = v.reset(cx);
+                            crate::eval(cx, p, g, o)?;
+                        }
+                        let prim = match v.bind(cx).sexptype() {
+                            BUILTINSXP | SPECIALSXP => v.bind(cx),
+                            CLOSXP => primitive_named(cx, &String::from_utf8_lossy(&sg)),
+                            _ => cx.nil(),
+                        };
+                        if prim.sexptype() == NILSXP {
+                            return Err(cx.error("no method to invoke"));
+                        }
+                        let prim = s.root(cx, prim);
+                        let o = nextfun.reset(cx);
+                        o.set(cx, prim.bind(cx));
                     }
                 }
             }
@@ -2665,7 +2759,7 @@ fn findmethod<'s>(
     }
     let base = s.root(cx, cx.base_env());
     for which in 0..n {
-        let ss = class_elt(cx, klass, which);
+        let ss = class_elt(cx, klass, which)?;
         let meth = install_s3_signature(cx, s, generic.as_bytes(), &ss)?;
         let sxp = s.out(cx).root();
         let o = sxp.reset(cx);
@@ -2745,18 +2839,44 @@ fn dispatch_group<'o>(
             }
         };
         // we either have a group method or a class method
-        let dispatch_class = class_elt(cx, klass, which);
+        let dispatch_class = class_elt(cx, klass, which)?;
         let m = s.out(cx).root();
         let o = m.reset(cx);
         let mname = meth.bind(cx).as_sym().unwrap().name_bytes().to_vec();
+        // stringPositionTr(lclass, dispatchClassName) for each argument:
+        // its classes translated in turn up to the first equal one
+        let hits: Result<Vec<bool>, String> = {
+            let cx = &*cx;
+            (0..nargs)
+                .map(|i| {
+                    let t = class_for_group(cx, args.get(cx, i));
+                    let Some(tv) = t.as_vector::<Char<'_>>().filter(|_| t.sexptype() == STRSXP) else {
+                        return Ok(false);
+                    };
+                    for k in 0..tv.len() {
+                        let c = tv.get(k);
+                        let b = if c == cx.na_string() {
+                            std::borrow::Cow::Borrowed(&b"NA"[..])
+                        } else {
+                            robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(c), cx.locale())
+                                .map_err(|e| e.to_string())?
+                        };
+                        if *b == dispatch_class[..] {
+                            return Ok(true);
+                        }
+                    }
+                    Ok(false)
+                })
+                .collect()
+        };
+        let hits = match hits {
+            Ok(h) => h,
+            Err(m) => return Err(cx.error(&m)),
+        };
         cx.build(o, |cx| {
             let mut v = cx.alloc_vector::<Char<'_>>(nargs)?;
             let mn = cx.mk_char(&mname, Encoding::Native)?;
-            for i in 0..nargs {
-                let t = class_for_group(cx, args.get(cx, i));
-                let hit = t.as_vector::<Char<'_>>().filter(|_| t.sexptype() == STRSXP).is_some_and(|tv| {
-                    (0..tv.len()).any(|k| robigo_rtbuiltins::coerce::text(tv.get(k)).bytes() == &dispatch_class[..])
-                });
+            for (i, &hit) in hits.iter().enumerate() {
                 v.set(i, if hit { mn } else { cx.blank_string() });
             }
             Ok(v.finish().into())

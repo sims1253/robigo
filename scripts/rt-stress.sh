@@ -35,6 +35,9 @@ libs=$(mktemp -d)
 trap 'rm -rf "$libs"' EXIT
 scripts/rt-capi-build.sh "$libs"
 export RT_CAPI_LIBS=$libs
+# robigo-rt ignores an inherited R_HOME (GNU R's) with GNU R's warning on
+# stdout, which the comparison below would see
+unset R_HOME
 echo "rt-stress: $bin, $runs runs per profile ($profiles), ASLR $aslr"
 bad=0
 for p in $profiles; do

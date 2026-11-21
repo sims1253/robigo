@@ -30,5 +30,5 @@ fn every_case_has_its_record() {
             _ => {}
         }
     }
-    assert_eq!(cases, 8, "the compile-fail cases (update this count with a new case)");
+    assert_eq!(cases, 9, "the compile-fail cases (update this count with a new case)");
 }

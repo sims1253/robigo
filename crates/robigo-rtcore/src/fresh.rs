@@ -117,6 +117,26 @@ impl Cx {
         Ok(FreshVec { x, n: xs.len(), cx: self, _t: PhantomData })
     }
 
+    /// A vector of `n` plain elements, `xs`'s and then `fill` (`n` at least
+    /// `xs.len()`): a block copy and a fill, as `EnlargeVector` copies a
+    /// vector into its larger replacement.
+    pub fn alloc_copy_fill<'g, T: Plain>(&'g self, xs: &[T], n: usize, fill: T) -> Result<FreshVec<'g, T>, NeedGc> {
+        assert!(n >= xs.len(), "robigo: alloc_copy_fill of {} elements into {n}", xs.len());
+        let x = self.alloc_raw(T::SEXPTYPE, n)?;
+        // SAFETY: a fresh vector with room for `n` elements, which cannot
+        // overlap `xs`; the copy writes the first `xs.len()` and the loop
+        // the rest, each written once through a raw pointer and never read
+        // (no reference to the uninitialized tail is made).
+        unsafe {
+            let d = x.std_data() as *mut T;
+            std::ptr::copy_nonoverlapping(xs.as_ptr(), d, xs.len());
+            for i in xs.len()..n {
+                d.add(i).write(fill);
+            }
+        }
+        Ok(FreshVec { x, n, cx: self, _t: PhantomData })
+    }
+
     /// An EXPRSXP of `n` R_NilValue elements.
     pub fn alloc_expression<'g>(&'g self, n: usize) -> Result<FreshVec<'g, Ref<'g>>, NeedGc> {
         let x = self.alloc_raw(EXPRSXP, n)?;
