@@ -22,7 +22,7 @@
 #![allow(unsafe_code)]
 
 use crate::code::View;
-use crate::ir::{F_DEPTH, F_TICK, Ins, Op, Profile};
+use crate::ir::{F_CLR_B, F_CLR_C, F_DEPTH, F_NAMES, F_TICK, Ins, Op, Profile, SPECIAL_INTERNAL};
 use crate::ops;
 use crate::vm::num_slot;
 use robigo_heap::Sexp;
@@ -126,6 +126,45 @@ pub(crate) unsafe fn read(cx: &Cx, b: RawBinding) -> Option<Slot> {
     }
 }
 
+/// D9's deaths of instruction `i` (at `at`) in an evaluator's own
+/// registers `regs`, as `vm::run` makes them in an activation's, under
+/// `ROBIGO_POISON_DEAD` only (C1-PZ): its operands read for the last time
+/// (`F_CLR_B`, `F_CLR_C`, not its destination), a builtin call's or a
+/// default subset's register window, and `Clear`'s and `ClearRange`'s
+/// registers. The evaluators that run compiled code outside
+/// the VM ([`run`], `inline::pure`, `inline::body_loop`) apply it to the
+/// instruction they ran, before the next one reads, so a register read
+/// after its last use panics there too.
+#[inline(always)]
+pub fn poison_deaths(regs: &mut [Slot], i: &Ins, at: usize) {
+    if !robigo_rtcore::poison_dead() {
+        return;
+    }
+    let mut kill = |r: u16| {
+        if let Some(s) = regs.get_mut(r as usize) {
+            *s = Slot::dead(r, at as u32);
+        }
+    };
+    // a register-window operation's window, `n` arguments from `b` (and
+    // their names after them), dead after the call (`call_builtin_regs`,
+    // `dflt_subset` and its fast path's `clear_subset_operands`)
+    let window = |i: &Ins| i.b..i.b + if i.fl & F_NAMES != 0 { 2 * i.c } else { i.c };
+    match i.op {
+        Op::Clear => kill(i.a),
+        Op::ClearRange => (i.a..i.b).for_each(kill),
+        Op::CallBuiltin | Op::Internal if i.c != SPECIAL_INTERNAL && i.c != u16::MAX => window(i).for_each(kill),
+        Op::DfltSubset => window(i).for_each(kill),
+        _ => {
+            if i.fl & F_CLR_B != 0 && i.b != i.a {
+                kill(i.b);
+            }
+            if i.fl & F_CLR_C != 0 && i.c != i.a {
+                kill(i.c);
+            }
+        }
+    }
+}
+
 /// Run `code` in `rho` if every instruction is one that runs no code and
 /// has no effect: constant loads, variable reads ([`read`]) and arithmetic
 /// on its fast path (no warning), up to the code's `Ret`. None at anything
@@ -142,12 +181,22 @@ unsafe fn run(cx: &Cx, code: Sexp, rho: Sexp) -> Option<Slot> {
     }
     let mut regs = [Slot::EMPTY; MAX_REGS];
     for pc in 0..v.nins {
+        if pc > 0 {
+            // SAFETY: as below, the instruction just run.
+            poison_deaths(&mut regs, &unsafe { *v.ins.add(pc - 1) }, pc - 1);
+        }
         // SAFETY: `pc` is below the code's instruction count.
         let i: Ins = unsafe { *v.ins.add(pc) };
         if i.fl & (F_TICK | F_DEPTH) != 0 {
             return None;
         }
-        let r = |x: u16| regs.get(x as usize).copied();
+        let r = |x: u16| {
+            let s = regs.get(x as usize).copied();
+            if let Some(s) = s {
+                s.check_live();
+            }
+            s
+        };
         let w = match i.op {
             // SAFETY: a constant of the live code object.
             Op::LdConst => unsafe { Slot::object(v.k(i.e)) },

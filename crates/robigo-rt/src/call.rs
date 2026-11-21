@@ -34,8 +34,8 @@ pub unsafe fn find_fun(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp) ->
     // code, or the context's call).
     let (s, c) = unsafe { (act.scratch(R_SCRATCH, sym), act.scratch(R_SCRATCH2, ecall)) };
     let r = cx.find_fun3(s, act.root(R_ENV), Some(c), act.out(a));
-    act.clear(R_SCRATCH);
-    act.clear(R_SCRATCH2);
+    act.kill(R_SCRATCH, u32::MAX);
+    act.kill(R_SCRATCH2, u32::MAX);
     r
 }
 
@@ -406,7 +406,7 @@ pub unsafe fn call_builtin_regs(
     // R: eval.c:BUILTIN_CALL_FRAME_ARGS, eval.c:evalList
     let r = invoke_builtin(cx, act, dst, args, (base, if names { 2 * n } else { n }));
     for r in base..base + if names { 2 * n } else { n } as Reg {
-        act.clear(r);
+        act.kill(r, u32::MAX);
     }
     r
 }
@@ -451,9 +451,9 @@ pub unsafe fn call_fn_regs(
     });
     // SAFETY: as above.
     unsafe { crate::links::unskip_args(act.base()) };
-    act.clear(R_SCRATCH);
+    act.kill(R_SCRATCH, u32::MAX);
     for r in base..base + n as Reg {
-        act.clear(r);
+        act.kill(r, u32::MAX);
     }
     r
 }
@@ -481,8 +481,8 @@ fn invoke_builtin(cx: &mut Cx, act: &Act, dst: Reg, args: Args<'_>, regs: (Reg, 
     let r = run_builtin_unchecked(cx, &def, act.root(R_SCRATCH), args, act.root(R_ENV), act.out(dst));
     // SAFETY: as above.
     unsafe { crate::links::unskip_args(act.base()) };
-    act.clear(R_SCRATCH);
-    act.clear(R_SCRATCH2);
+    act.kill(R_SCRATCH, u32::MAX);
+    act.kill(R_SCRATCH2, u32::MAX);
     r
 }
 
@@ -944,7 +944,7 @@ pub fn loop_region(cx: &mut Cx, act: &mut Act, start: usize, regs: Reg, nregs: R
             Err(Left::Landed(info)) => info,
         };
         for r in regs..nregs {
-            act.clear(r);
+            act.kill(r, u32::MAX);
         }
         if landed.mask != ctxt::NEXT {
             return Ok(Flow::RegionEnd);

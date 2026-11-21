@@ -512,7 +512,7 @@ pub unsafe fn get_var(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: 
                 // rooted environment; the scratch register keeps it.
                 let f = unsafe { act.scratch(crate::ir::R_SCRATCH, loc.frame()) };
                 let r = cx.force_arg(f, loc.index(), act.out(a));
-                act.clear(crate::ir::R_SCRATCH);
+                act.kill(crate::ir::R_SCRATCH, u32::MAX);
                 return r;
             }
             // a promise object bound to the symbol: forced
@@ -522,7 +522,7 @@ pub unsafe fn get_var(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: 
                 // scratch register keeps it for the force.
                 let p = unsafe { act.scratch(crate::ir::R_SCRATCH, v) };
                 let r = force(cx, p, act.out(a));
-                act.clear(crate::ir::R_SCRATCH);
+                act.kill(crate::ir::R_SCRATCH, u32::MAX);
                 return r;
             }
             _ => {}

@@ -1,0 +1,2 @@
+# builtin-diff known failures: tabulate, seed 0, key f80d480a6091c67ee0a5f326
+# tabulate: 875 / 875 (not-implemented 0, crash 0, timeout 0, resource 12 excluded, oracle-crash 0 excluded)
