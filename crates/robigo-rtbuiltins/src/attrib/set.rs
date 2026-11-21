@@ -55,10 +55,7 @@ fn install_tr_char<'s>(cx: &mut Cx, s: Scope<'s>, c: Root<'_>, i: usize) -> RRes
     };
     match found {
         Some(y) => Ok(y),
-        None => {
-            let b = crate::text::native_elt(cx, c, i)?;
-            install_name(cx, s, &b)
-        }
+        None => crate::envir::install_tr(cx, s, c, i),
     }
 }
 

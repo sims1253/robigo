@@ -1272,7 +1272,7 @@ fn simple_list_assign(cx: &mut Cx, x: Root<'_>, sub: Root<'_>, y: Root<'_>, ind:
                             let name = crate::text::to_native(crate::coerce::text(c), cx.locale())
                                 .map(|b| b.into_owned())
                                 .unwrap_or_else(|_| c.bytes().to_vec());
-                            let tag = cx.install(&name)?;
+                            let tag = cx.install_tr(c, &name)?;
                             cx.cons_tagged(cx.nil(), l, tag)?
                         }
                         None => cx.cons(cx.nil(), l)?,

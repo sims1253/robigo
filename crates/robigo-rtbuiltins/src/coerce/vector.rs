@@ -708,7 +708,11 @@ fn coerce_to_symbol<'g>(cx: &'g Cx, v: Ref<'g>) -> Result<Coerced<'g>, NeedGc> {
     }
     let s = string_elt(cx, v, 0, &mut Vec::new())?;
     // installTrChar(NA_STRING) is the symbol `NA`
-    let sym = cx.install(s.bytes())?;
+    let name = match crate::text::to_native(crate::coerce::text(s), cx.locale()) {
+        Ok(b) => b,
+        Err(e) => return fail(e.to_string()),
+    };
+    let sym = cx.install_tr(s, &name)?;
     done(sym, Warns::new())
 }
 

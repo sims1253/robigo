@@ -41,6 +41,7 @@ closure .signalSimpleWarning conditions.R
 closure .standard_regexps utils.R
 closure .traceback traceback.R
 closure .valid.factor factor.R
+closure Encoding New-Internal.R
 closure Encoding<- New-Internal.R
 closure Filter funprog.R
 closure I dataframe.R
@@ -207,6 +208,7 @@ closure print.restart conditions.R
 closure print.warnings warnings.R
 closure rank rank.R
 closure raw raw.R
+closure rawToChar raw.R
 closure readRDS serialize.R
 closure reg.finalizer New-Internal.R
 closure regexec grep.R
@@ -411,6 +413,7 @@ internal .dfltWarn
 internal .getRestart
 internal .invokeRestart
 internal .signalCondition
+internal Encoding
 internal NextMethod
 internal Sys.getenv
 internal Sys.getpid
@@ -530,6 +533,7 @@ internal putconst
 internal qsort
 internal radixsort
 internal rank
+internal rawToChar
 internal reg.finalizer
 internal regexec
 internal regexpr

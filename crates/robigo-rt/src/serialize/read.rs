@@ -566,7 +566,10 @@ impl<'r> Reader<'_, 'r> {
         if name.len() > MAXIDSIZE {
             return Err(cx.error(&format!("variable names are limited to {MAXIDSIZE} bytes")));
         }
-        cx.install_rooted(s, &name)
+        let o = s.out(cx);
+        let r = o.root();
+        cx.build(o, |cx| Ok(cx.install_tr(pn.bind(cx).as_char().unwrap(), &name)?.into()))?;
+        Ok(r)
     }
 
     /// `ReadItem_Iterative`: a run of pairlist-like cells (LISTSXP,

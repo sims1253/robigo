@@ -342,6 +342,29 @@ impl Cx {
         Ok(unsafe { Ref::from_sexp(s, self) }.as_sym().unwrap())
     }
 
+    /// GNU R's `installTrChar(c)`, given `name`, `c`'s translation to the
+    /// native encoding: the symbol named `name`. When no translation was
+    /// needed (`name` is `c`'s bytes) and `c` is ASCII or UTF-8 in a UTF-8
+    /// locale, a new symbol's PRINTNAME is `c` itself, mark and all;
+    /// otherwise it is `install(name)`'s, unmarked. GNU R's name rules are
+    /// the caller's, as for [`Cx::install`].
+    // R: sysutils.c:installTrChar, names.c:installNoTrChar
+    pub fn install_tr<'g>(&'g self, c: Char<'_>, name: &[u8]) -> Result<Sym<'g>, NeedGc> {
+        let keep = name == c.bytes()
+            && (c.is_ascii() || (c.enc() == Encoding::Utf8 && self.locale().utf8))
+            // (a shared CHARSXP, NA_STRING's, is no heap's to make immortal)
+            // SAFETY: a live CHARSXP.
+            && !unsafe { c.as_ref().sexp().heap_id() }.is_shared();
+        if !keep {
+            return self.install(name);
+        }
+        // SAFETY: one call into the core, which calls nothing of ours; `c`
+        // a live CHARSXP of this heap (checked above).
+        let s = unsafe { self.iso().core().install_char(c.as_ref().sexp())? };
+        // SAFETY: symbols are immortal in their heap.
+        Ok(unsafe { Ref::from_sexp(s, self) }.as_sym().unwrap())
+    }
+
     /// Take `sym`, a symbol this isolate may not have installed (symbols
     /// are the process's: another isolate's handle can carry one here), as
     /// `install` of its name would: this isolate's PRINTNAME of it, from its

@@ -60,12 +60,6 @@ pub(crate) fn install_tr<'s>(cx: &mut Cx, s: Scope<'s>, c: Root<'_>, i: usize) -
             Err(e) => return Err(cx.error(&e.to_string())),
         }
     };
-    install(cx, s, &name)
-}
-
-/// `install(name)`, rooted, with its errors.
-// R: names.c:install
-fn install<'s>(cx: &mut Cx, s: Scope<'s>, name: &[u8]) -> RResult<Root<'s>> {
     if name.is_empty() {
         return Err(cx.error("attempt to use zero-length variable name"));
     }
@@ -74,7 +68,10 @@ fn install<'s>(cx: &mut Cx, s: Scope<'s>, name: &[u8]) -> RResult<Root<'s>> {
     }
     let o = s.out(cx);
     let r = o.root();
-    cx.build(o, |cx| Ok(cx.install(name)?.into()))?;
+    cx.build(o, |cx| {
+        let ch = c.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
+        Ok(cx.install_tr(ch, &name)?.into())
+    })?;
     Ok(r)
 }
 
