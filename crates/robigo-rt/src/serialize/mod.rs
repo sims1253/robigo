@@ -4,17 +4,19 @@
 //! hooks, byte code (`WriteBC`, `ReadBC`: the shared language cells as
 //! `BCREPDEF`/`BCREPREF`, L1b over C1-BC's BCODESXP) and ALTREP's
 //! serialized classes; `R_compile_pkgs`' compile of each closure as it
-//! is written (`R_cmpfun1`: the compiler package's `tryCmpfun`); and its
-//! builtins: `serialize`,
+//! is written (`R_cmpfun1`: the compiler package's `tryCmpfun`), and of a
+//! closure robigo-rt's JIT compiled, whose BODY GNU R's JIT has made that
+//! byte code; and its builtins: `serialize`,
 //! `serializeb`, `unserialize`, `serializeToConn`, `unserializeFromConn`,
 //! `serializeInfoFromConn`, and the lazy-load database's
 //! `lazyLoadDBinsertValue`, `lazyLoadDBfetch`, `lazyLoadDBflush` and
 //! `getVarsFromFrame`.
 //!
-//! Not yet, and saying so when reached (AGENTS rule 6): a closure or
-//! promise robigo-rt compiles itself where GNU R holds byte code (there is
-//! no BCODESXP of GNU R's to write; one whose body is a BCODESXP is written
-//! as it is), package ALTREP classes
+//! Not yet, and saying so when reached (AGENTS rule 6): a promise
+//! robigo-rt's compiled code made, where GNU R's holds the argument's byte
+//! code (MAKEPROM's, compiled with its closure: there is no BCODESXP of
+//! GNU R's to write; one whose code is a BCODESXP is written as it is),
+//! package ALTREP classes
 //! (robigo-rtapi's; base's compact sequences are robigo-rt's own,
 //! `robigo_rtcore::altrep::own`, written and read as GNU R writes them),
 //! bzip2 and xz compressed databases, and native encodings other than
@@ -31,6 +33,8 @@ use robigo_heap::Sexp;
 use robigo_heap::types::*;
 use robigo_rtcore::{Args, Char, Cx, Encoding, Out, RResult, Ref, Root, View};
 use stream::{InStream, OutStream};
+
+pub mod saveload;
 
 /// `R_pstream_format_t`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
