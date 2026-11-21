@@ -18,8 +18,10 @@
 //!    held while an isolate starts or ends and for a whole `Sys.setenv` /
 //!    `Sys.unsetenv`;
 //! 2. `ENV` (robigo-rtcore `clib.rs`): the process environment's lock,
-//!    shared for a C call that reads the environment, exclusive for a
-//!    write;
+//!    shared for a C call that reads the environment (`dyn.load`'s
+//!    `dlopen` and `dyn.unload`'s `dlclose` included, across the
+//!    library's initializers and finalizers: `clib::with_env_shared`),
+//!    exclusive for a write;
 //! 3. the symbol arena's lock (`arena.rs`);
 //! 4. std's stdout lock, then std's stderr lock: held by a thread while it
 //!    writes (an isolate's console, a warning, a panic's message). Without
@@ -65,7 +67,10 @@
 //!
 //! **What `prepare` waits for.** It blocks until every holder releases.
 //! - A reader holding `ENV` shared for a C call (`localtime`, the locale
-//!   calls) finishes that call first.
+//!   calls, a `dlopen` with its library's initializers) finishes that call
+//!   first. An initializer that forks on that same thread would wait on
+//!   its own hold, which deadlocks (`clib::with_env_shared` says why
+//!   nothing else in it can take `FORK` or `LIVE_ISOLATES`).
 //! - A thread writing to std's stdout or stderr finishes that write first.
 //!   A write blocked on a full pipe holds the fork until the pipe's reader
 //!   drains it, so the reader must not be waiting on this fork.

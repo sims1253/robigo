@@ -313,7 +313,9 @@ compile_error!(
 /// the environment holds it shared for that call ([`env_read`]:
 /// `localtime`, `gmtime`, the `C.UTF-8` locale's `newlocale`,
 /// `passwd_home`, `passwd_name`, `group_name`, `env_locale`, `c_locale`'s
-/// `newlocale`, `default_textdomain_dir`; and [`env_vars`]'s listing),
+/// `newlocale`, `default_textdomain_dir`; [`env_vars`]'s listing; and
+/// [`with_env_shared`]'s `dlopen` and `dlclose`, whose libraries'
+/// initializers and finalizers may read it),
 /// and an [`EnvWriter`] holds it
 /// exclusive. So robigo's own safe wrappers never read while it writes, on
 /// any glibc, with or without isolates. Its place in the process's lock
@@ -329,6 +331,34 @@ static ENV: std::sync::RwLock<()> = std::sync::RwLock::new(());
 pub fn env_vars() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
     let _r = env_read();
     std::env::vars_os().collect()
+}
+
+/// `f` with [`ENV`] held shared: for a C call that runs code which may read
+/// the environment, `dyn.load`'s `dlopen` and `dyn.unload`'s `dlclose`
+/// (rtapi's rdynload.rs), whose library's initializers and finalizers run
+/// inside the call. glibc's `dlopen` reads no variable itself
+/// (`LD_LIBRARY_PATH` was read at startup), but an initializer may call
+/// `getenv`, `setlocale(LC_ALL, "")` or walk `environ`, and another
+/// isolate's [`EnvWriter`] must not write meanwhile.
+///
+/// What `f` must not do, as for every holder of [`ENV`] (the lock does not
+/// nest, and comes after `FORK` and `LIVE_ISOLATES` in the process's order:
+/// robigo-heap's fork.rs):
+/// - take it again, or write the environment ([`env_writer`]);
+/// - fork. The fork's `prepare` takes [`ENV`] exclusive, and this thread
+///   holds it shared, so it deadlocks. A fork on another thread waits for
+///   `f` to return.
+///
+/// A library's initializer reaches robigo only through the C API, and none
+/// of it that an initializer can call takes `FORK` or `LIVE_ISOLATES`. Those
+/// are taken by an isolate's start and end, which are not R's API, by the
+/// lazy process-global initializers, which an isolate's start has run, and
+/// by `Sys.setenv`, which an initializer could reach only by evaluating R
+/// code before its package's DLL is registered. GNU R's place for that is
+/// `R_init_<pkg>`, which runs after `dlopen` returns, outside the lock.
+pub fn with_env_shared<R>(f: impl FnOnce() -> R) -> R {
+    let _r = env_read();
+    f()
 }
 
 /// [`ENV`] exclusive, for the fork handlers (`isolate::fork_take`): across
@@ -899,6 +929,18 @@ pub fn default_textdomain_dir() -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    /// `with_env_shared` holds ENV shared for its whole call: a writer
+    /// cannot take it meanwhile (dyn.load's dlopen with its
+    /// library's initializers, which may read the environment).
+    #[test]
+    fn with_env_shared_holds_the_environment_lock_for_the_call() {
+        let busy = super::with_env_shared(|| super::ENV.try_write().is_err());
+        assert!(busy, "a writer took ENV while with_env_shared held it");
+        // (not "free after": another test may hold it shared meanwhile)
+        // the call's value comes back
+        assert_eq!(super::with_env_shared(|| 7), 7);
+    }
+
     use super::wcstod_of;
 
     // (the C library's locale objects are not Miri's)
