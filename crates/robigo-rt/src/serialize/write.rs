@@ -81,6 +81,11 @@ pub(super) struct Writer<'h> {
     hook: Option<Root<'h>>,
     /// The effect points' results so far, by their position in the walk.
     effects: Vec<Global>,
+    /// This pass's closures robigo-rt's JIT compiled, by address, and the
+    /// position in `effects` of the R_cmpfun1 result written for each: a
+    /// closure the graph reaches again is written from it, not compiled
+    /// again (reset with each pass, as `refs` is: a restart may move them).
+    jit: HashMap<usize, usize>,
     seq: usize,
     depth: usize,
 }
@@ -88,7 +93,8 @@ pub(super) struct Writer<'h> {
 /// `R_Serialize(s, stream)`: the header and the object, into `out`.
 // R: serialize.c:R_Serialize
 pub(super) fn serialize(cx: &mut Cx, s: Root<'_>, out: OutStream, hook: Option<Root<'_>>) -> RResult<Vec<u8>> {
-    let mut w = Writer { out, refs: HashMap::new(), count: 0, hook, effects: Vec::new(), seq: 0, depth: 0 };
+    let mut w =
+        Writer { out, refs: HashMap::new(), count: 0, hook, effects: Vec::new(), jit: HashMap::new(), seq: 0, depth: 0 };
     // (a walk that starts over starts with `R_compile_pkgs` as the first
     // did: it is off while a closure compiled on write is written)
     let compile_pkgs = crate::prims::state(cx).compile_pkgs.get();
@@ -96,6 +102,7 @@ pub(super) fn serialize(cx: &mut Cx, s: Root<'_>, out: OutStream, hook: Option<R
         crate::prims::state(cx).compile_pkgs.set(compile_pkgs);
         w.out.buf.clear();
         w.refs.clear();
+        w.jit.clear();
         w.count = 0;
         w.seq = 0;
         w.depth = 0;
@@ -437,7 +444,15 @@ impl Writer<'_> {
                     // formals, the code, the environment and attributes; no
                     // JIT bits, as R_CheckJIT cleared MAYBEJIT)
                     if Self::jit_compiled(s) {
-                        let new_s = self.cmpfun1(cx, s)?;
+                        let new_s = match self.jit.get(&s.addr()) {
+                            Some(&k) => self.effects[k].bind(cx).sexp(),
+                            None => {
+                                let k = self.seq;
+                                let new_s = self.cmpfun1(cx, s)?;
+                                self.jit.insert(s.addr(), k);
+                                new_s
+                            }
+                        };
                         if new_s.typ() == CLOSXP && new_s.cdr().typ() == BCODESXP {
                             return self.item(cx, new_s);
                         }
