@@ -2258,14 +2258,6 @@ impl<'g> Comp<'g> {
         Ok(())
     }
 
-    /// The code of a promise the byte code makes (`MAKEPROM`'s BCODESXP),
-    /// translated with the code it runs in (its compile environment, its
-    /// frame's slot indices: `Comp::arg_codes`) and kept on the BCODESXP
-    /// itself ([`crate::code::cache_on`]), which the promise holds:
-    /// forcing it runs that ([`crate::compile::bytecode_code`]).
-    ///
-    /// # Safety
-    /// `code` is a live BCODESXP.
     /// The promise codes of a call's arguments, by argument
     /// (R_NilValue where an argument has none), as one VECSXP: a
     /// translated call's (`Op::CallCodes`'s `f`) or a step's (`S_CODES`).
@@ -2285,6 +2277,14 @@ impl<'g> Comp<'g> {
         Ok(Some(v))
     }
 
+    /// The code of a promise the byte code makes (`MAKEPROM`'s BCODESXP),
+    /// translated with the code it runs in (its compile environment, its
+    /// frame's slot indices: `Comp::arg_codes`) and kept on the BCODESXP
+    /// itself ([`crate::code::cache_on`]), which the promise holds:
+    /// forcing it runs that ([`crate::compile::bytecode_code`]).
+    ///
+    /// # Safety
+    /// `code` is a live BCODESXP.
     unsafe fn promise_code(&mut self, code: Sexp) -> Result<(), Need> {
         let cenv = self.bc.take().expect("robigo: byte code outside the Bc profile");
         let mut sub = Comp::new(self.cx, self.st, Profile::Bc, Some(cenv));
