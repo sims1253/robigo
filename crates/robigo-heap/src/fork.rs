@@ -139,6 +139,10 @@ std::thread_local! {
 ///
 /// `f` must not fork, and must take only the process's later locks
 /// (`LIVE_ISOLATES`, `ENV`, the arena): `FORK` comes first in the order.
+/// For the same reason, a cell that may not be initialized yet must not be
+/// read while the caller holds one of those later locks: read it first.
+/// `clib::env_writer` reads the glibc version before `LIVE_ISOLATES`, and
+/// `arena::install` makes the shared objects before the arena's lock.
 /// Every process-global lazy initializer that an isolate's start, an
 /// environment write or an install reaches goes through this.
 pub fn once_excluding_fork<T: Send + Sync>(cell: &'static std::sync::OnceLock<T>, f: impl FnOnce() -> T) -> &'static T {
@@ -162,6 +166,27 @@ pub fn once_excluding_fork<T: Send + Sync>(cell: &'static std::sync::OnceLock<T>
     HOLDS_FORK.set(true);
     let _held = Held;
     cell.get_or_init(f)
+}
+
+/// `FORK` held by the caller until the guard drops, as a fork's `prepare`
+/// holds it: a test's stand-in for a fork between its handlers. The guard is
+/// neither `Send` nor `Sync`.
+///
+/// # Safety
+/// The caller forks nothing, and starts no lazy initialization of its own,
+/// while it holds the guard; it drops it on this thread.
+#[cfg(feature = "test-support")]
+pub unsafe fn hold_fork_lock_for_test() -> impl Drop {
+    struct Held(std::marker::PhantomData<*const ()>);
+    impl Drop for Held {
+        fn drop(&mut self) {
+            // SAFETY: taken below by this thread.
+            unsafe { libc::pthread_mutex_unlock(FORK.0.get()) };
+        }
+    }
+    // SAFETY: the static mutex, initialized.
+    unsafe { libc::pthread_mutex_lock(FORK.0.get()) };
+    Held(std::marker::PhantomData)
 }
 
 /// How many forks have entered the `prepare` handler (a test's

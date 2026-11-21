@@ -469,8 +469,11 @@ pub struct EnvWriter<'a> {
 /// and the live isolates.
 pub fn env_writer(cx: &crate::Cx) -> Result<EnvWriter<'_>, EnvWriteRefused> {
     cx.env_writes().ok_or(EnvWriteRefused::NotGranted)?;
+    // read before `LIVE_ISOLATES`: its first read takes robigo-heap's `FORK`,
+    // which comes first in the process's lock order (Sol r5 S10)
+    let glibc = glibc_version();
     let live = crate::isolate::live_isolates();
-    if !env_write_allowed(glibc_version(), *live) {
+    if !env_write_allowed(glibc, *live) {
         return Err(EnvWriteRefused::SeveralIsolates);
     }
     let env = ENV.write().unwrap_or_else(|e| e.into_inner());

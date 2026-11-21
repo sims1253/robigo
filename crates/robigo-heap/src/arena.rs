@@ -204,6 +204,10 @@ impl Inner {
 /// The symbol named `name`, made if no heap of the process has made it;
 /// `bits` gives a new one its name's bits. Never collects.
 pub(crate) fn install(name: &[u8], bits: impl FnOnce() -> (u8, u16)) -> Sexp {
+    // the shared objects (`new_symbol` reads them) made before the arena's
+    // lock: their first making takes `FORK`, which comes first in the
+    // process's lock order (`fork.rs`)
+    let _ = crate::shared::shared();
     locked(|a| {
         if let Some(&s) = a.names.get(name) {
             return s;
