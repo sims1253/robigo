@@ -295,6 +295,24 @@ fn handshake(so: &std::path::Path) -> std::thread::JoinHandle<bool> {
     t
 }
 
+/// The object's markers, removed however the test ends: on a failed assert
+/// or an R error (`s.val` panics) the object stays loaded, and without its
+/// `.armed` its destructor returns at once at the process's exit instead of
+/// waiting 60 s for a `.go`; `.go` is written too, for a handshake still
+/// waiting.
+struct Disarm {
+    so: std::path::PathBuf,
+    dir: std::path::PathBuf,
+}
+
+impl Drop for Disarm {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(format!("{}.armed", self.so.display()));
+        let _ = std::fs::write(format!("{}.go", self.so.display()), b"");
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
 /// A library's initializers run inside `dyn.load`'s `dlopen`, and its
 /// finalizers inside `dyn.unload`'s `dlclose`, with the environment's lock
 /// held shared, so no isolate's `Sys.setenv` writes while they may read it
@@ -308,13 +326,17 @@ fn a_librarys_initializers_and_finalizers_hold_env() {
     std::fs::create_dir_all(&dir).unwrap();
     let so = dir.join("dl_init.so");
     std::fs::copy(&built, &so).unwrap();
+    let _disarm = Disarm { so: so.clone(), dir: dir.clone() };
     std::fs::write(format!("{}.armed", so.display()), b"").unwrap();
     let mut s = Session::new(Profile::Eval);
+    // The two phases cannot overlap: the constructor and the destructor run
+    // on this thread, inside `dlopen` and `dlclose`, and remove their
+    // markers before they return (dlinit_test.c), so once `s.val` returns
+    // the next `.ready` can only be the next phase's.
     let t = handshake(&so);
     s.val(&format!("invisible(dyn.load({}))", lit(&so)));
     assert!(t.join().unwrap(), "the constructor ran without the environment's lock");
     let t = handshake(&so);
     s.val(&format!("dyn.unload({})", lit(&so)));
     assert!(t.join().unwrap(), "the destructor ran without the environment's lock");
-    let _ = std::fs::remove_dir_all(&dir);
 }
