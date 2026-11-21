@@ -3088,6 +3088,11 @@ impl Cx {
     /// closure code object's frame, [`Cx::frame_slot_raw`]'s `shape`), or
     /// None for any other frame.
     ///
+    /// The result is unrooted: valid only until the next safepoint (a
+    /// collection may move it, like any object), so a caller that may
+    /// collect re-reads it from the rooted frame after every safepoint,
+    /// as each attempt of a retried build does.
+    ///
     /// # Safety
     /// `rho` is a live environment of this isolate.
     #[inline]

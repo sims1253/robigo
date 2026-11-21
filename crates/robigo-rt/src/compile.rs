@@ -301,7 +301,8 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
 /// closure's environment, the two compared ([`crosscheck`]). The
 /// from-source compile keeps its argument code on the source's expressions,
 /// the translation its own on the promises' byte code (`MAKEPROM`'s
-/// BCODESXPs), so neither replaces the other's. A compile that would force
+/// BCODESXPs, translated at their first force), so neither replaces the
+/// other's. A compile that would force
 /// a lazy binding, or that cmp.R declines, is skipped. `installed`: base's
 /// installed byte code (provenance, as for [`compile_closure_bc`]).
 ///
@@ -457,24 +458,24 @@ pub fn crosscheck_installed(cx: &mut Cx, f: Root<'_>) -> RResult<Option<crossche
 
 /// The code of the byte code `bc` evaluated as itself (`eval(bc, rho)`,
 /// bcEval at the top level, or a promise's code, `MAKEPROM`'s BCODESXP):
-/// its translation, kept on it. A translated call's promise code has its
-/// translation already, made with the code it runs in
-/// (`bctrans::promise_code`).
+/// its translation, kept on it. A promise's code is translated at its
+/// first force (its closure's translation leaves it), with the slot
+/// indices of the frame `rho` it runs in.
 pub(crate) fn bytecode_code(cx: &mut Cx, bc: Root<'_>, rho: Root<'_>) -> RResult<Sexp> {
     // SAFETY: a rooted BCODESXP: its 4th word is R_NilValue or a code
     // object this module stored.
     if let Some(c) = unsafe { crate::code::cached(cx, bc.bind(cx).sexp().aux(), Profile::Bc) } {
         return Ok(c);
     }
-    // a promise's code, translated at its first force (its closure's
-    // translation leaves it): with the slot indices of the frame it runs
-    // in, as the closure's own translation would index it
-    // SAFETY: a rooted environment.
-    let shape = unsafe { cx.frame_shape_raw(rho.bind(cx).sexp()) };
     let code = attempt(cx, |cx| {
-        // SAFETY: a rooted BCODESXP and a live shape; nothing collects in
-        // this interval.
-        unsafe { translate_code(cx, bc.bind(cx).sexp(), None, shape) }
+        // SAFETY: a rooted BCODESXP and a rooted environment, both read
+        // in this attempt: a collection between attempts (Need::Gc) may
+        // move the frame's shape, so the shape is never kept across one;
+        // nothing collects within the interval.
+        unsafe {
+            let shape = cx.frame_shape_raw(rho.bind(cx).sexp());
+            translate_code(cx, bc.bind(cx).sexp(), None, shape)
+        }
     })?
     .expect("robigo: a translation always makes code");
     // SAFETY: as above: a traced word, stored with the barrier.
@@ -489,7 +490,10 @@ pub(crate) fn bytecode_code(cx: &mut Cx, bc: Root<'_>, rho: Root<'_>) -> RResult
 /// runs (AGENTS rule 6), never runs the source instead.
 ///
 /// # Safety
-/// `bc` is a live BCODESXP of `cx`'s isolate, `formals` a live pairlist.
+/// `bc` is a live BCODESXP of `cx`'s isolate, `formals` a live pairlist,
+/// `index` None or a live shape (a VECSXP of symbols) of the frames the
+/// code runs in, read in the caller's current interval
+/// ([`crate::code::set_index_shape`]'s contract).
 unsafe fn translate_code(cx: &Cx, bc: Sexp, formals: Option<Sexp>, index: Option<Sexp>) -> Result<Sexp, Need> {
     // SAFETY: the caller's contract.
     unsafe {
@@ -799,18 +803,33 @@ unsafe fn index_arg_codes(cx: &Cx, code: Sexp, arg_codes: &[Sexp]) {
 /// `installTrChar(c)` for the compiler, which holds raw objects: the
 /// symbol named by CHARSXP `c`'s native translation, a new one's PRINTNAME
 /// `c` itself when no translation was needed (a UTF-8 name keeps its mark,
-/// [`Cx::install_tr`]). A name that does not translate is no compile
-/// ([`Need::Fail`]: cmp.R's `as.name` would fail there).
+/// [`Cx::install_tr`]); or GNU R's error for the name, which the caller
+/// compiles to be raised where GNU R raises it, at each evaluation (cmp.R's
+/// `as.name` fails there too, and the closure is then interpreted):
+/// translateToNative's for a non-ASCII "bytes" name, `install`'s for a name
+/// of no bytes or past MAXIDSIZE (`"" <- 1`, `missing("")`). Both are
+/// `error()`s, reported against the context call.
+///
+/// Not yet GNU R's: translateToNative's warning "unable to translate '%s'
+/// to native encoding" (`mustWork = 2`, outside a UTF-8 locale, the name
+/// installed with escapes after it). The name is installed with the same
+/// escapes, without the warning, which needs an instruction that warns and
+/// goes on. INTERIM(C1): that instruction, its own PR.
 ///
 /// # Safety
 /// `c` is a live CHARSXP of `cx`'s isolate.
-// R: sysutils.c:installTrChar
-unsafe fn install_tr_raw(cx: &Cx, c: Sexp) -> Result<Sexp, Need> {
+// R: sysutils.c:installTrChar, names.c:install
+unsafe fn install_tr_raw(cx: &Cx, c: Sexp) -> Result<Result<Sexp, String>, Need> {
     // SAFETY: the caller's contract.
     let ch = unsafe { Ref::from_sexp(c, cx) }.as_char().ok_or(Need::Fail)?;
-    let name =
-        robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(ch), cx.locale()).map_err(|_| Need::Fail)?;
-    Ok(cx.install_tr(ch, &name)?.as_ref().sexp())
+    let name = match robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(ch), cx.locale()) {
+        Ok(name) => name,
+        Err(e) => return Ok(Err(e.to_string())),
+    };
+    if let Err(msg) = robigo_rtbuiltins::text::check_install_name(&name) {
+        return Ok(Err(msg));
+    }
+    Ok(Ok(cx.install_tr(ch, &name)?.as_ref().sexp()))
 }
 
 /// What the `Bc` profile compiles for a call of a base function cmp.R
@@ -2749,7 +2768,10 @@ impl<'g> Comp<'g> {
                         SYMSXP => lhs,
                         STRSXP if lhs.std_len() >= 1 => {
                             // installTrChar(STRING_ELT(lhs, 0))
-                            install_tr_raw(self.cx, *(lhs.std_data() as *const Sexp))?
+                            match install_tr_raw(self.cx, *(lhs.std_data() as *const Sexp))? {
+                                Ok(sym) => sym,
+                                Err(msg) => return self.error_op(e, &msg, false),
+                            }
                         }
                         LANGSXP if self.bc.is_some() && crate::bcassign::check_assign(self.cx, lhs) => {
                             // cmp.R's cmpComplexAssign: the right-hand side,
@@ -2857,7 +2879,10 @@ impl<'g> Comp<'g> {
                     let sym = match x.typ() {
                         SYMSXP => x,
                         // installTrChar(STRING_ELT(x, 0))
-                        STRSXP if x.std_len() == 1 => install_tr_raw(self.cx, *(x.std_data() as *const Sexp))?,
+                        STRSXP if x.std_len() == 1 => match install_tr_raw(self.cx, *(x.std_data() as *const Sexp))? {
+                            Ok(sym) => sym,
+                            Err(msg) => return self.error_op(e, &msg, false),
+                        },
                         _ => return self.error_op(e, "invalid use of 'missing'", true),
                     };
                     let mut i = Ins::new(Op::Missing);

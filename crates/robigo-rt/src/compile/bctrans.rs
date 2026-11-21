@@ -20,8 +20,10 @@
 //! - **`RETURN`** at the end of each branch of a tail `if` becomes a jump
 //!   to the code's one `Ret`, the shape the from-source compiler emits.
 //! - **A promise's code** (`MAKEPROM`'s BCODESXP) is the promise's, as
-//!   GNU R's PRCODE: the call carries its arguments' codes (`Call`'s `f`),
-//!   each translated and kept on itself; what reads the promise's
+//!   GNU R's PRCODE: the call carries its arguments' codes (`Call`'s `f`)
+//!   untranslated, each translated at its promise's first force with that
+//!   frame's slot indices and kept on itself (`compile::bytecode_code`);
+//!   what reads the promise's
 //!   expression reads the code's first constant (`bytecodeExpr`). The
 //!   from-source compiler's promises hold their expressions, its code
 //!   cached on them.
@@ -1053,8 +1055,9 @@ impl<'g> Comp<'g> {
 
     /// The plan of the complex assignment `a` (what
     /// [`Comp::bc_assign_plan`] makes from source): its steps as their
-    /// opcodes say, each argument's code translated and kept on its
-    /// expression in the step's call.
+    /// opcodes say, each argument's code kept untranslated in the plan
+    /// (`S_CODES`), translated at its promise's first force
+    /// (`compile::bytecode_code`).
     ///
     /// # Safety
     /// `t`'s constants are live.
@@ -2194,8 +2197,8 @@ impl<'g> Comp<'g> {
     /// `CALL` of `GETFUN`'s function: the generic call of `call`
     /// ([`Comp::generic_call`]'s shape), with its arguments' promise codes
     /// (`MAKEPROM`'s BCODESXPs, by argument: [`Op::CallCodes`]'s `f`),
-    /// each translated and kept on itself. Pass 1 (`planning`) translates
-    /// none.
+    /// kept untranslated: each is translated at its promise's first force
+    /// (`compile::bytecode_code`). Pass 1 (`planning`) keeps none.
     ///
     /// # Safety
     /// `call` is a live call constant of the byte code.
