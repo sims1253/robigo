@@ -186,7 +186,9 @@ local({
         cases <- list(); seen <- new.env(hash = TRUE)
         nlarge <- 0L
         add <- function(kind, pick) {
-            key <- paste(pick, collapse = "\r")
+            ## (a "#" first: a row with no arguments has the empty pick, and
+            ## exists("") is an error)
+            key <- paste0("#", paste(pick, collapse = "\r"))
             if (kind != "wrapper" && exists(key, seen, inherits = FALSE)) return(FALSE)
             if (kind %in% c("pair", "random") && any(pick %in% large)) {
                 if (nlarge >= LARGE_CASES) return(FALSE)
