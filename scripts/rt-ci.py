@@ -57,6 +57,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -115,19 +116,29 @@ PIN_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-pin-report-{os.g
 # where the byte-code crosscheck step writes (V3: one line per translated
 # closure whose code differs from the from-source compiler's)
 BC_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-bc-crosscheck-{os.getpid()}.txt")
+# the same under the rdb boot (base's closures from base.rdb, so many more)
+BC_REPORT_RDB = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-bc-crosscheck-rdb-{os.getpid()}.txt")
+# The fewest closures each crosscheck report must compare. Under the rdb
+# boot base.rdb's closures and, since #942, the compiler namespace's: 95,302
+# compared on main ec22e65ba merged with #961 (A1, 2026-11-21; about 46k
+# before #942, so a boot that stops loading the compiler's namespace falls
+# below the floor). The plain crosscheck compares 191 (the cases' own
+# closures): any comparison at all is its floor.
+BC_FLOORS = {BC_REPORT_RDB: 90000}
 
 # the kinds of line the crosscheck writes (crates/robigo-rt/src/compile/crosscheck.rs),
 # each the line's first word, then ":" (or a class in parentheses, then ":")
 BC_KINDS = ("same", "expected", "unexpected", "untranslated", "skipped")
 
 
-def bc_report_check(path):
+def bc_report_check(path, floor=1):
     """The crosscheck report's errors and its counts, each kind's (and each
     expected class's) and "compared". An error is an unexpected difference,
     an untranslated closure, a line of no kind the crosscheck writes, or
-    nothing compared: every closure compared has its line (same, expected
-    or unexpected), so a step that expects comparisons and has none, or no
-    report at all, is a broken setup, never a pass."""
+    fewer than `floor` closures compared (BC_FLOORS): every closure compared
+    has its line (same, expected or unexpected), so a step that compares
+    fewer than it should, or has no report at all, is a broken setup, never
+    a pass."""
     try:
         with open(path) as f:
             lines = [line.rstrip("\n") for line in f if line.strip()]
@@ -149,8 +160,9 @@ def bc_report_check(path):
             errors.append(x)
         compared += kind in ("same", "expected", "unexpected")
         counts[head] = counts.get(head, 0) + 1
-    if compared == 0:
-        errors.append(f"compared 0 closures: the crosscheck report {path} names none")
+    if compared < floor:
+        errors.append(f"compared {compared} closures, fewer than the {floor} the crosscheck report {path} "
+                      f"must (BC_FLOORS)")
     counts["compared"] = compared
     return errors, counts
 
@@ -206,6 +218,51 @@ YOUNG_MOVE_SLOW = {
     # (run 44865825323's tree) and 822 G at main 6b5d719a8 (perf stat, two
     # runs each, 2026-11-21), so the spread on CI is the runner's
     "tests/r/conditions/c-stack-overflow.R": 1200,
+    # The three below, alone in this step (2026-11-21): each passed, and each
+    # timed out at 600 s in it for five delegates at load 45-130. B measured
+    # them on the workstation, A1 too (at load 18-24):
+    #   finalizers-self-ref-envs.R  346 s (B), 267 s (A1)
+    #   active-binding-read.R       302 s (B)
+    #   serialize-write.R           503 s (B), 185 s (A1); it loads the compiler
+    "tests/r/memory/finalizers-self-ref-envs.R": 1200,
+    "tests/rt/jit/active-binding-read.R": 1200,
+    "tests/rt/jit/serialize-write.R": 1200,
+    # it loads the compiler (#953): 347 s alone in this step (A1, merged
+    # head of #961 on main ec22e65ba, load 33), C1 266 s (load 40). Temporary:
+    # C1's next PR makes it a `volume` case with a small twin
+    "tests/rt/jit/lazy-promise-code.R": 1200,
+}
+
+# The cases the young:16 step also starts first, at its 600 s: under 300 s
+# alone there (A1, 2026-11-21, load 22-48), so they need no allowance, but
+# started in id order they ran alone at the step's end (#963's first run,
+# loaded: 416-453 s)
+YOUNG_MOVE_FIRST = {
+    "tests/rt/capi/closure-mutation.R": 600,     # 177 s alone
+    "tests/rt/bytecode/jit.R": 600,              # 111 s alone
+    "tests/r/lang/tailcall-frames.R": 600,       # 152 s alone
+}
+
+
+# The cases the two gctorture conformance steps start first, at the step's
+# own limit (600 s): each takes minutes under gctorture, and started in id
+# order it ran alone at the step's end. tests/rt/jit/shared-body.R (it loads
+# the compiler; temporary, as lazy-promise-code.R above: C1's next PR makes
+# it a `volume` case with a small twin): 177 s under gctorture, 200 s under GC_MOVE=young:16 on the
+# 24-CPU workstation (2026-11-21); in #952's run 44927530340 the two steps
+# took 2.7 and 3.1 minutes longer than in #941's, its 8 new cases' doing.
+# The longest cases alone under the plain gctorture step (A1, 2026-11-21,
+# load 20-34): serialize-write.R 256 s, active-binding-read.R 181 s,
+# finalizers-self-ref-envs.R 139 s, shared-body.R 76 s (177 s at load 45),
+# c-stack-overflow.R 72 s; under retry torture none is over 300 s
+# (serialize-write.R 269 s, active-binding-read.R 169 s, shared-body.R 161 s),
+# so neither step gives a case longer than its limit
+GCTORTURE_FIRST = {
+    "tests/rt/jit/shared-body.R": 600,
+    "tests/r/conditions/c-stack-overflow.R": 600,
+    "tests/rt/jit/serialize-write.R": 600,
+    "tests/rt/jit/active-binding-read.R": 600,
+    "tests/r/memory/finalizers-self-ref-envs.R": 600,
 }
 
 
@@ -226,6 +283,19 @@ def case_timeouts(slow):
 # release binary keeps its own steps.) The crates' tests on the full release
 # profile run in the release-crate-tests shard, on main's push runs.
 CRATE_TEST = ["cargo", "test", "--profile", "quick", "--locked"]
+
+# Every run of the crates' tests comes after base's database tree is made in
+# its shard, and says it must be there: robigo-rtapi's boot_db tests then run
+# instead of skipping, and a tree that is missing fails them
+TREE_RUNS = {"ROBIGO_RT_HOME_DB": "1"}
+
+
+def db_tree(binary, env=None):
+    """The step that writes base's database tree with `binary`, the release
+    robigo-rt its shard built first (rt_binary; scripts/rt-home-db.sh is
+    given it by name)."""
+    return ("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)", env or {},
+            ["scripts/rt-home-db.sh", "--robigo-rt", binary])
 
 
 def conformance_command():
@@ -265,11 +335,12 @@ def full_move_steps():
 CHECK_FEATURES = "robigo-rtcore/retry-torture,robigo-rt/poison-dead"
 
 
-def rt_binary():
-    """The release robigo-rt the release tests built (cargo's target
-    directory, as `metadata()` gives it), which scripts/rt-home-db.sh is
-    given by name."""
-    return os.path.join(metadata()["target_directory"], "release", "robigo-rt")
+def rt_binary(target=None):
+    """The release robigo-rt the release tests built in `target` (default:
+    cargo's target directory, as `metadata()` gives it), which
+    scripts/rt-home-db.sh is given by name. The one place that names the
+    binary's path in a target."""
+    return os.path.join(target or metadata()["target_directory"], "release", "robigo-rt")
 
 
 def steps(crates):
@@ -281,22 +352,35 @@ def steps(crates):
     conformance = conformance_command()
     slow = SLOW
     out = [
-        ("the crates' tests (quick profile)", {}, [*crate, *pkgs, *skip]),
         # robigo-rt's R_HOME tree with tools' native code (A5): the
         # conformance cases that load it (`.requires` r-home-tools) run
         ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", {}, ["scripts/rt-home.sh"]),
         # the release binary users get, which the steps below run (base's
         # database tree, boot_db, the scripts): built as the conformance step
-        # builds it (its features), since the crates' tests above build quick
+        # builds it (its features), since the crates' tests build quick
         ("the release binary and the conformance, built (cargo test --release --no-run)", {},
          [*test, "-p", "robigo-rtapi", "--test", "conformance", "--no-run"]),
         # L5's boot beside M1's loader (ROBIGO_RT_BOOT=rdb): base's database,
         # written by this robigo-rt booted from base's source, then base
-        # booted from it (crates/robigo-rtapi/tests/boot_db.rs)
-        ("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)", {},
-         ["scripts/rt-home-db.sh", "--robigo-rt", rt_binary()]),
+        # booted from it (crates/robigo-rtapi/tests/boot_db.rs). Before every
+        # step whose tests read it (robigo-rtapi's boot_db tests, in each run
+        # of the crates' tests), so a stale tree is rebuilt first (its stamp
+        # names the source tree, the script and the binary) and those tests
+        # run instead of skipping on a fresh checkout (TREE_RUNS)
+        db_tree(rt_binary()),
+        ("the crates' tests (quick profile)", TREE_RUNS, [*crate, *pkgs, *skip]),
         ("boot from base's database (ROBIGO_RT_BOOT=rdb)", {"ROBIGO_RT_HOME_DB": "1"},
          [*test, "-p", "robigo-rtapi", "--test", "boot_db", *skip]),
+        # the boot that replaces M1's (L5, ROBIGO_RT_BOOT=rdb: base from the
+        # tree's base.rdb, as GNU R boots): the ratcheted conformance under it,
+        # plain and with the byte-code crosscheck, each failing as its M1
+        # step does (a ratcheted case that fails; an unexpected or
+        # untranslated closure). Not yet the default anywhere (L's list)
+        ("conformance under the rdb boot (ROBIGO_RT_BOOT=rdb)", {"ROBIGO_RT_BOOT": "rdb"}, conformance),
+        ("conformance under the rdb boot with ROBIGO_BC_CROSSCHECK=1 (base.rdb's closures against the "
+         "from-source compiler's)",
+         {"ROBIGO_RT_BOOT": "rdb", "ROBIGO_BC_CROSSCHECK": "1", "ROBIGO_BC_CROSSCHECK_REPORT": BC_REPORT_RDB},
+         conformance),
         ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {}, conformance),
         # docs/g3.md §15.3 E5: the same cases and recordings under each
         # observation mode, but those whose `.requires` names the identity
@@ -308,14 +392,15 @@ def steps(crates):
         # the identity tests pin production and check the mode's side
         # themselves (tests/attrib.rs, tests/subset.rs)
         ("ROBIGO_NO_INPLACE=1 (every in-place write copies)",
-         {"ROBIGO_NO_INPLACE": "1"}, [*crate, *pkgs, *skip]),
+         {**TREE_RUNS, **{"ROBIGO_NO_INPLACE": "1"}}, [*crate, *pkgs, *skip]),
         # with a collection due almost always, the check makes any &Cx
         # request of LARGE bytes or more panic where it is made: such a
         # request goes through cx.alloc_rooted (docs/g3.md §3 item 3)
         ("gctorture (collect at every allocation) and the GC stats check",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check"}, [*crate, *pkgs, *skip]),
+         {**TREE_RUNS, **{"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check"}}, [*crate, *pkgs, *skip]),
         # docs/g3.md §15.3 E3: the rt slice under the collector modes
-        ("conformance under gctorture (E3)", {"ROBIGO_GCTORTURE": "1", **slow}, conformance),
+        ("conformance under gctorture (E3)",
+         {"ROBIGO_GCTORTURE": "1", **slow, "ROBIGO_CONF_TIMEOUTS": case_timeouts(GCTORTURE_FIRST)}, conformance),
         # every argument a PROMSXP at call entry (GNU R's representation,
         # through the same binding-kind transitions): docs/g3.md §16's
         # ROBIGO_MATERIALIZE=1. Every rt crate, as the steps above: cargo
@@ -323,27 +408,27 @@ def steps(crates):
         # robigo-heap/test-support), so `-p robigo-rt` alone rebuilt heap and
         # every crate above it (6 minutes in CI)
         ("ROBIGO_MATERIALIZE=1 (every argument slot materialized)",
-         {"ROBIGO_MATERIALIZE": "1"}, [*crate, *pkgs, *skip]),
+         {**TREE_RUNS, **{"ROBIGO_MATERIALIZE": "1"}}, [*crate, *pkgs, *skip]),
         # docs/g3.md §16 (H3): the debug moving collector, at every
         # collection gctorture makes due
         ("ROBIGO_GC_MOVE (move every movable object at every collection), with gctorture",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1"}, [*crate, *pkgs, *skip]),
+         {**TREE_RUNS, **{"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1"}}, [*crate, *pkgs, *skip]),
         # H8: the young objects at each collection, everything at every N-th;
         # the nightly runs it with every collection moving everything
         (f"conformance under ROBIGO_GC_MOVE={GC_MOVE_YOUNG} with gctorture (E3)",
          {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": GC_MOVE_YOUNG, **slow,
-          "ROBIGO_CONF_TIMEOUTS": case_timeouts(YOUNG_MOVE_SLOW)}, conformance),
+          "ROBIGO_CONF_TIMEOUTS": case_timeouts({**GCTORTURE_FIRST, **YOUNG_MOVE_FIRST, **YOUNG_MOVE_SLOW})}, conformance),
         # D5's frame recycling (docs/g3.md §16): every frame that would be recycled
         # is poisoned and held back instead, so a frame that escaped without
         # its ESCAPED bit panics where it is used next
         ("ROBIGO_FRAME_QUARANTINE=1 (recycled frames poisoned and held back)",
-         {"ROBIGO_FRAME_QUARANTINE": "1"}, [*crate, *pkgs, *skip]),
+         {**TREE_RUNS, **{"ROBIGO_FRAME_QUARANTINE": "1"}}, [*crate, *pkgs, *skip]),
         ("ROBIGO_FRAME_QUARANTINE=1, conformance",
          {"ROBIGO_FRAME_QUARANTINE": "1"},
          conformance),
         # docs/g3.md §16 (H3): the pin report; `main` fails the job on any line
         ("ROBIGO_GC_PIN_REPORT (no weak reference decided while a C word reaches its key)",
-         {"ROBIGO_GC_PIN_REPORT": PIN_REPORT}, [*crate, *pkgs, *skip]),
+         {**TREE_RUNS, **{"ROBIGO_GC_PIN_REPORT": PIN_REPORT}}, [*crate, *pkgs, *skip]),
         # docs/g3.md §15.3 E3 and E4, on the release binary the steps above
         # built: the stress script in fresh processes (the ledger's runs take
         # 30 per profile), and the overshoot of every slice against max(32
@@ -430,21 +515,32 @@ SHARDS = ("modes", "gctorture", "feature-builds", "builtin-diff", "debug-asserti
 OWN_STEPS = ("debug-assertions", "release-crate-tests")
 
 # Each shard's budget, in minutes: its steps' total in a CI run plus about
-# 20%, rounded up. Its job's timeout-minutes is twice the budget, and the
-# end-of-log table warns at WARN_AT of it, so a drift shows long before the
+# 20%, rounded up. Its job's timeout-minutes is twice the budget, but no
+# less than TIMEOUT_FLOOR (timeout_of), and the end-of-log table warns at
+# WARN_AT of the budget, so a drift shows long before the
 # timeout (scripts/test-rt-ci.py pins the three relations). When a warning
 # fires, rebalance or remeasure: the dates say how old each measurement is.
 BUDGETS = {  # shard: (budget, measured minutes, where measured)
-    "modes": (23, 18.40, "2026-11-21, run 44908057499 (#941)"),
-    "gctorture": (18, 14.81, "2026-11-21, run 44908057499 (#941)"),
-    # retry-torture's conformance 13.96 and the poison-dead steps 7.85: they
-    # share one feature build, so a split would build robigo-rt's test
-    # targets twice for about 2 minutes of wall
-    "feature-builds": (27, 21.94, "2026-11-21, run 44908057499 (#941)"),
-    "builtin-diff": (9, 6.67, "2026-11-21, run 44908057499 (#941)"),
-    "debug-assertions": (15, 11.67, "2026-11-21, run 44908057499 (#941)"),
-    "release-crate-tests": (15, 12.30, "2026-11-21, estimated: #941's release tests with the R_HOME tree"),
+    "modes": (9, 6.99, "2026-11-21, run 44927530340 (#952): 6.49, and the two rdb-boot steps' estimated 0.5"),
+    # the plain gctorture conformance moves into modes if GCTORTURE_FIRST
+    # does not bring this back near 15 minutes
+    "gctorture": (27, 21.87, "2026-11-21, run 44927530340 (#952): 20.62 before GCTORTURE_FIRST, and #959's "
+                  "estimated 1.25 (its freeze check at every 16th collection: about 1.3x of the plain gctorture "
+                  "conformance's 4.15, H's measurement)"),
+    "feature-builds": (12, 9.87, "2026-11-21, run 44927530340 (#952)"),
+    "builtin-diff": (9, 7.42, "2026-11-21, run 44927530340 (#952)"),
+    "debug-assertions": (5, 3.47, "2026-11-21, run 44927530340 (#952): 3.07, and the tree's estimated 0.4"),
+    "release-crate-tests": (12, 9.82, "2026-11-21, main's run 44931071167: 9.42, and the tree's estimated 0.4"),
 }
+# A job's timeout is twice its budget, but no less than this: a build from a
+# cold cache (a Cargo.lock change, an evicted entry) takes up to about 12
+# minutes on its own (rt-debug-assertions' first run, #941)
+TIMEOUT_FLOOR = 20
+
+
+def timeout_of(budget):
+    """A shard's job timeout, in minutes, for its budget."""
+    return max(2 * budget, TIMEOUT_FLOOR)
 WARN_AT = 0.9
 
 
@@ -458,7 +554,7 @@ def budget_warning(shard, minutes):
         return None
     return (f"::warning::rt: shard {shard} took {minutes:.1f} min, {100 * minutes / budget:.0f}% of its "
             f"{budget}-minute budget ({measured} min measured {where}); rebalance the shards or remeasure "
-            f"(scripts/rt-ci.py's BUDGETS) before it reaches the job's {2 * budget}-minute timeout")
+            f"(scripts/rt-ci.py's BUDGETS) before it reaches the job's {timeout_of(budget)}-minute timeout")
 
 
 def target_dir():
@@ -475,9 +571,15 @@ def debug_assertions_steps(crates):
     flags and target: nothing in this shard builds into the normal one."""
     pkgs = [x for c in crates for x in ("-p", c)]
     env = {"RUSTFLAGS": "-C debug-assertions=on", "CARGO_TARGET_DIR": target_dir() + "-debug-assertions"}
+    test = ["cargo", "test", "--release", "--locked"]
     return every_cpu([
         ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", env, ["scripts/rt-home.sh"]),
-        ("the crates' tests with debug assertions (-C debug-assertions=on, quick profile)", env,
+        # the conformance's build (with the flag) first: its release binary
+        # writes the database tree the crates' tests read
+        ("the release binary and the conformance with debug assertions, built (cargo test --release --no-run)", env,
+         [*test, "-p", "robigo-rtapi", "--test", "conformance", "--no-run"]),
+        db_tree(rt_binary(env["CARGO_TARGET_DIR"]), env),
+        ("the crates' tests with debug assertions (-C debug-assertions=on, quick profile)", {**env, **TREE_RUNS},
          [*CRATE_TEST, *pkgs, "--", "--skip", CONFORMANCE]),
         ("conformance with debug assertions (-C debug-assertions=on)", env, conformance_command()),
     ])
@@ -488,10 +590,14 @@ def release_crate_tests_steps(crates):
     the full release profile (thin LTO, one codegen unit), the code users get,
     which the other shards' quick-profile crate tests do not build."""
     pkgs = [x for c in crates for x in ("-p", c)]
+    test = ["cargo", "test", "--release", "--locked", *pkgs]
     return every_cpu([
         ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", {}, ["scripts/rt-home.sh"]),
-        ("the crates' tests (release profile)", {},
-         ["cargo", "test", "--release", "--locked", *pkgs, "--", "--skip", CONFORMANCE]),
+        # built first (the same command, so the run below builds nothing):
+        # its release binary writes the database tree the tests read
+        ("the crates' tests (release profile), built", {}, [*test, "--no-run"]),
+        db_tree(rt_binary()),
+        ("the crates' tests (release profile)", TREE_RUNS, [*test, "--", "--skip", CONFORMANCE]),
     ])
 
 
@@ -576,6 +682,18 @@ def main(argv):
     if a.check:
         return 0
 
+    raw = os.environ.get("RT_CI_MIN_FREE_GB", str(MIN_FREE_GB))
+    try:
+        min_gb = float(raw)
+    except ValueError:
+        print(f"::error::rt-ci: RT_CI_MIN_FREE_GB={raw!r} is not a number of GB (0 turns the check off)")
+        return 2
+    if min_gb > 0:
+        problem = free_space_problem([meta["target_directory"], tempfile.gettempdir()], min_gb)
+        if problem:
+            # (workflow commands on stdout: Actions annotates only those)
+            print(f"::error::{problem}")
+            return 2
     plan = full_move_steps() if a.full_move else shard_steps(crates, a.shard) if a.shard else steps(crates)
     done = []
     try:
@@ -584,21 +702,115 @@ def main(argv):
         print(timings_report(done, a.shard), flush=True)
 
 
+# Every conformance step writes each case's wall time (the runner's
+# ROBIGO_CONF_TIMES_REPORT) into this directory, one file per step, and its
+# end lists the cases over SLOW_FRACTION of their limit: report-only. The
+# rule (docs/ledger/g3/2026-11-21-a1-rt-shards.md): a case over half its
+# step's limit alone is named in that step with an allowance and its
+# measured time, or is made smaller. RT_CI_TIMES_DIR keeps the files where
+# CI can upload them, and they balance the shards.
+TIMES_DIR = os.environ.get("RT_CI_TIMES_DIR") or os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-times-{os.getpid()}")
+SLOW_FRACTION = 0.5
+
+
+def times_file(index, title):
+    """The times report of a plan's `index`-th step, titled `title`: the index
+    keeps two steps whose titles differ only in punctuation apart."""
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", title).strip("-")[:80]
+    return os.path.join(TIMES_DIR, f"{index:02d}-{slug}.tsv")
+
+
+def slow_cases(path, fraction=SLOW_FRACTION):
+    """A times report's cases over `fraction` of their limit, slowest first:
+    (secs, limit, status, case)."""
+    try:
+        with open(path) as f:
+            lines = [line.rstrip("\n").split("\t") for line in f if line.strip() and not line.startswith("#")]
+    except FileNotFoundError:
+        return []
+    rows = [(float(s), int(lim), status, case) for s, lim, status, case in lines]
+    return [r for r in rows if r[0] > fraction * r[1]]
+
+
+def slow_cases_report(title, path):
+    """The end of a conformance step's log: its cases over half their limit."""
+    rows = slow_cases(path)
+    if not rows:
+        return f"rt: case times: {title}: no case over {SLOW_FRACTION:.0%} of its limit ({path})"
+    lines = [f"rt: case times: {title}: {len(rows)} case(s) over {SLOW_FRACTION:.0%} of their limit "
+             f"(name each with an allowance and its time, or make it smaller; {path}):"]
+    lines += [f"  {s:7.1f} s of {lim:4d} s  {status}  {case}" for s, lim, status, case in rows]
+    return "\n".join(lines)
+
+
+# rt-ci stops at its start when cargo's target directory or TMPDIR has less
+# free space than this (GB): a release link of the test binaries needs about
+# 5 GB, and a full disk otherwise fails a run mid-link, where it reads as a
+# code failure (2026-11-21, the shared workstation's /). RT_CI_MIN_FREE_GB
+# overrides it (0: no check)
+MIN_FREE_GB = 8
+
+
+def existing_ancestor(path):
+    """`path`, or its nearest ancestor that exists (cargo's target directory
+    does not exist on a fresh checkout until the first build), or None."""
+    p = os.path.abspath(path)
+    while not os.path.exists(p):
+        parent = os.path.dirname(p)
+        if parent == p:
+            return None
+        p = parent
+    return p
+
+
+def free_space_problem(paths, min_gb):
+    """The message for the first of `paths` with under `min_gb` GB free, or
+    None. Each path's volume is measured at its nearest existing ancestor;
+    one that cannot be measured (no ancestor exists, or the measurement
+    fails) is reported on stderr and skipped: this check gives a clear
+    message, and must never be what fails a run."""
+    import shutil
+    for p in paths:
+        at = existing_ancestor(p)
+        try:
+            if at is None:
+                raise FileNotFoundError(p)
+            free = shutil.disk_usage(at).free / 1e9
+        except OSError as e:
+            print(f"::warning::rt-ci: cannot tell the free space for {p} ({e}): not checked")
+            continue
+        if free < min_gb:
+            return (f"rt-ci: {free:.1f} GB free on the volume of {p} (< {min_gb} GB): a release link of the "
+                    f"test binaries needs about 5 GB; free space first, or set RT_CI_MIN_FREE_GB "
+                    f"(docs/verification.md)")
+    return None
+
+
 def run_steps(plan, done):
     """Run `plan`'s steps in order, recording (title, seconds, ok) in `done`;
     stop at the first that fails."""
-    for title, env, cmd in plan:
+    for index, (title, env, cmd) in enumerate(plan):
         report = env.get("ROBIGO_GC_PIN_REPORT")
         if report and os.path.exists(report):
             os.remove(report)
         bc = env.get("ROBIGO_BC_CROSSCHECK_REPORT")
         if bc and os.path.exists(bc):
             os.remove(bc)
+        times = None
+        if CONFORMANCE in cmd and "--exact" in cmd:
+            times = times_file(index, title)
+            os.makedirs(TIMES_DIR, exist_ok=True)
+            if os.path.exists(times):
+                os.remove(times)
+            env = {**env, "ROBIGO_CONF_TIMES_REPORT": times}
         print(f"::group::{title}", flush=True)
         t0 = time.monotonic()
         r = subprocess.run(cmd, cwd=ROOT, env={**os.environ, **env})
         done.append((title, time.monotonic() - t0, r.returncode == 0))
         print("::endgroup::", flush=True)
+        if times:
+            # (also when the step failed: a timeout is when the times matter)
+            print(slow_cases_report(title, times), flush=True)
         if r.returncode != 0:
             print(f"::error::rt: {title} failed")
             return r.returncode
@@ -611,7 +823,7 @@ def run_steps(plan, done):
                 done[-1] = (title, done[-1][1], False)
                 return 1
         if bc:
-            errors, classes = bc_report_check(bc)
+            errors, classes = bc_report_check(bc, BC_FLOORS.get(bc, 1))
             for c, n in sorted(classes.items()):
                 print(f"rt: bc crosscheck: {n} x {c}")
             for line in errors:

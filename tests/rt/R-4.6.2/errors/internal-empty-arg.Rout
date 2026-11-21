@@ -1,0 +1,337 @@
+$call
+.Internal(paste0(list(side("a")), , FALSE))
+
+$msg
+[1] "argument 2 is empty"
+
+$call
+.Internal(paste0(list(side("b")), , FALSE))
+
+$msg
+[1] "argument 2 is empty"
+
+$call
+.Internal(paste0(list(side("b")), , FALSE))
+
+$msg
+[1] "argument 2 is empty"
+
+$call
+.Internal(paste0(list(side("b")), , FALSE))
+
+$msg
+[1] "argument 2 is empty"
+
+$call
+.Internal(paste0(list(...), , FALSE))
+
+$msg
+[1] "argument 2 is empty"
+
+$call
+.Internal(paste0(list(...), , FALSE))
+
+$msg
+[1] "argument 2 is empty"
+
+$call
+.Internal(paste0(list(...), , FALSE))
+
+$msg
+[1] "argument 2 is empty"
+
+[1] "a" "b" "b" "b" "c" "c" "c"
+$call
+.Internal(paste(list(...), " ", ))
+
+$msg
+[1] "argument 3 is empty"
+
+$call
+.Internal(paste(list(...), " ", ))
+
+$msg
+[1] "argument 3 is empty"
+
+$call
+c(1, , 2)
+
+$msg
+[1] "argument 2 is empty"
+
+$call
+c(1, , 2)
+
+$msg
+[1] "argument 2 is empty"
+
+[1] "a"
+[1] "a"
+$call
+ii(paste0(list("a"), , FALSE))
+
+$msg
+[1] "argument 2 is empty"
+
+$call
+(.Internal)(paste0(list("a"), , FALSE))
+
+$msg
+[1] "argument 2 is empty"
+
+[1] "b"
+[1] "b"
+[1] "a"
+[1] "a"
+[1] "a"
+$call
+pc("a")
+
+$msg
+[1] "invalid 'collapse' argument"
+
+$call
+pc("a")
+
+$msg
+[1] "invalid 'collapse' argument"
+
+ [1] "try(fr(\"b\"), silent = TRUE)"                      
+ [2] "tryCatch(expr, error = function(e) {"               
+ [3] "tryCatchList(expr, classes, parentenv, handlers)"   
+ [4] "tryCatchOne(expr, names, parentenv, handlers[[1L]])"
+ [5] "doTryCatch(return(expr), name, parentenv, handler)" 
+ [6] "fr(\"b\")"                                          
+ [7] "withCallingHandlers(pc(...), error = function(e) {" 
+ [8] "pc(...)"                                            
+ [9] ".handleSimpleError(function (e) "                   
+[10] "h(simpleError(msg, call))"                          
+pc(...)
+ [1] "try(fr(\"b\"), silent = TRUE)"                      
+ [2] "tryCatch(expr, error = function(e) {"               
+ [3] "tryCatchList(expr, classes, parentenv, handlers)"   
+ [4] "tryCatchOne(expr, names, parentenv, handlers[[1L]])"
+ [5] "doTryCatch(return(expr), name, parentenv, handler)" 
+ [6] "fr(\"b\")"                                          
+ [7] "withCallingHandlers(pc(...), error = function(e) {" 
+ [8] "pc(...)"                                            
+ [9] ".handleSimpleError(function (e) "                   
+[10] "h(simpleError(msg, call))"                          
+pc(...)
+[[1]]
+mm(1, "c", "d")
+
+[[2]]
+mm(x = 1, "c", "d")
+
+[[3]]
+[1] "cd"
+
+[[1]]
+mm(1, "c", "d")
+
+[[2]]
+mm(x = 1, "c", "d")
+
+[[3]]
+[1] "cd"
+
+ww("10", "x")
+[1] 10 NA
+ww("10", "x")
+[1] 10 NA
+[[1]]
+.Internal(paste0(list(hc()), , FALSE))
+
+[[2]]
+.Internal(paste0(list(...), , FALSE))
+
+[[3]]
+.Internal(paste0(list(kc()), , FALSE))
+
+[[4]]
+.Internal(paste0(length(xx), , FALSE))
+
+[[5]]
+.Internal(paste0((function() length(xx))(), , FALSE))
+
+[[6]]
+.Internal(paste0(sum(...), , FALSE))
+
+[[7]]
+.Internal(paste0(tryCatch(stop("u"), error = function(e) 1), 
+    , FALSE))
+
+[[8]]
+pd(hc(), )
+
+[[1]]
+.Internal(paste0(list(hc()), , FALSE))
+
+[[2]]
+.Internal(paste0(list(...), , FALSE))
+
+[[3]]
+.Internal(paste0(list(kc()), , FALSE))
+
+[[4]]
+.Internal(paste0(length(xx), , FALSE))
+
+[[5]]
+.Internal(paste0((function() length(xx))(), , FALSE))
+
+[[6]]
+.Internal(paste0(sum(...), , FALSE))
+
+[[7]]
+.Internal(paste0(tryCatch(stop("u"), error = function(e) 1), 
+    , FALSE))
+
+[[8]]
+pd(hc(), )
+
+[[1]]
+.Internal(paste0(list(hc()), , FALSE))
+
+[[2]]
+.Internal(paste0(list(...), , FALSE))
+
+[[3]]
+.Internal(paste0(list(kc()), , FALSE))
+
+[[4]]
+.Internal(paste0(length(xx), , FALSE))
+
+[[5]]
+.Internal(paste0((function() length(xx))(), , FALSE))
+
+[[6]]
+.Internal(paste0(sum(...), , FALSE))
+
+[[7]]
+.Internal(paste0(tryCatch(stop("u"), error = function(e) 1), 
+    , FALSE))
+
+[[8]]
+pd(hc(), )
+
+[[1]]
+[[1]]$call
+.Internal(paste0(list(side("j")), , FALSE))
+
+[[1]]$msg
+[1] "argument 2 is empty"
+
+
+[[2]]
+[[2]]$call
+.Internal(paste0(list(...), , FALSE))
+
+[[2]]$msg
+[1] "argument 2 is empty"
+
+
+[[3]]
+[[3]]$call
+h0(, FALSE)
+
+[[3]]$msg
+[1] "argument is missing, with no default"
+
+
+[[4]]
+[[4]]$call
+a0(, FALSE)
+
+[[4]]$msg
+[1] "argument is missing, with no default"
+
+
+[[5]]
+[1] "a"
+
+[[1]]
+[[1]]$call
+.Internal(paste0(list(side("j")), , FALSE))
+
+[[1]]$msg
+[1] "argument 2 is empty"
+
+
+[[2]]
+[[2]]$call
+.Internal(paste0(list(...), , FALSE))
+
+[[2]]$msg
+[1] "argument 2 is empty"
+
+
+[[3]]
+[[3]]$call
+h0(, FALSE)
+
+[[3]]$msg
+[1] "argument is missing, with no default"
+
+
+[[4]]
+[[4]]$call
+a0(, FALSE)
+
+[[4]]$msg
+[1] "argument is missing, with no default"
+
+
+[[5]]
+[1] "a"
+
+[[1]]
+.Internal(paste0(list(hc()), , FALSE))
+
+[[2]]
+.Internal(paste0(sum(...), , FALSE))
+
+[[3]]
+pd(hc(), )
+
+[[1]]
+.Internal(paste0(list(hc()), , FALSE))
+
+[[2]]
+.Internal(paste0(sum(...), , FALSE))
+
+[[3]]
+pd(hc(), )
+
+[[1]]
+[[1]]$call
+.Internal(paste0(, ...))
+
+[[1]]$msg
+[1] "argument 1 is empty"
+
+
+[[2]]
+[[2]]$call
+.Internal(paste0(..., , FALSE))
+
+[[2]]$msg
+[1] "argument 2 is empty"
+
+
+[[1]]
+[[1]]$call
+.Internal(paste0(, ...))
+
+[[1]]$msg
+[1] "argument 1 is empty"
+
+
+[[2]]
+[[2]]$call
+.Internal(paste0(..., , FALSE))
+
+[[2]]$msg
+[1] "argument 2 is empty"
+
+

@@ -404,10 +404,6 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
             eprintln!("Fatal error: you must specify '--save', '--no-save' or '--vanilla'");
             return 2;
         }
-        if !quiet {
-            eprintln!("robigo-rt: R's start-up greeting (R without --quiet) is not implemented yet");
-            return 2;
-        }
         // `-f -`: the console input is stdin
         let mut s = Vec::new();
         if let Err(e) = std::io::Read::read_to_end(&mut std::io::stdin(), &mut s) {
@@ -429,12 +425,8 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
         eprint!("{USAGE}");
         return 2;
     };
-    // setup_Rmainloop's greeting, unless R_Quiet (a FILE's open error, at
-    // the options, comes first)
-    if r_mode && !stdin && !quiet {
-        eprintln!("robigo-rt: R's start-up greeting (R without --quiet) is not implemented yet");
-        return 2;
-    }
+    // R_Quiet: --quiet, or --no-echo (which Rscript passes)
+    let r_quiet = quiet || !r_mode;
 
     // setup_Rmainloop's setlocale(<category>, "") calls and R_check_locale:
     // the isolate's locale is the environment's (the process's stays "C")
@@ -494,7 +486,7 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
                     site_file: st.site_file,
                     init_file: st.init_file,
                     restore: st.restore,
-                    quiet,
+                    quiet: r_quiet,
                 };
                 if !robigo_rt::base::after_profile(cx, home.path(), a) {
                     cx.reprintf(b"Execution halted\n");
@@ -530,6 +522,11 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
         if let Err(e) = robigo_rt::base::load(cx, &dir) {
             eprintln!("robigo-rt: loading base: {e}");
             return 2;
+        }
+        // INTERIM(L5): M1's loader runs no profiles; the greeting where
+        // setup_Rmainloop prints it, after base and before the session
+        if !r_quiet {
+            robigo_rt::base::print_greeting(cx);
         }
     }
     // the setlocale failures setup_Rmainloop deferred, as warnings at its

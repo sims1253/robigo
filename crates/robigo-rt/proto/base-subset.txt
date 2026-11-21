@@ -27,6 +27,7 @@
 closure %in% match.R
 closure %||% utils.R
 closure ..getNamespace namespace.R
+closure .Date dates.R
 closure .deparseOpts New-Internal.R
 closure .doSortWrap sort.R
 closure .getNamespace namespace.R
@@ -52,6 +53,7 @@ closure Sys.getenv getenv.R
 closure Sys.getpid getenv.R
 closure Sys.setenv getenv.R
 closure Sys.unsetenv getenv.R
+closure [.Date dates.R
 closure [.factor factor.R
 closure activeBindingFunction bindenv.R
 closure alist formals.R
