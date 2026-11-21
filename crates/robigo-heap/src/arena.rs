@@ -138,11 +138,25 @@ impl Inner {
                 std::alloc::handle_alloc_error(layout);
             }
             // SAFETY: inside the fresh segment. Only the pseudo header is
-            // zeroed, so its magic is not a block's: every object after it
-            // is written in full before it is published (a symbol's six
-            // words; a name record's header, hash, lengths, bytes and NUL,
-            // whose padding nothing reads), so zeroing the 64 KiB first
-            // only cost the time (H: the arena's segments).
+            // zeroed, so its magic is not a block's. The rest stays
+            // unwritten until `take` hands it out, which is sound because:
+            // - every object is written in full before it is published: a
+            //   symbol's six words (`new_symbol`), and a name record's header,
+            //   hash, lengths, bytes and NUL (`new_name`; its padding after
+            //   the NUL is never read);
+            // - only `install` and `new_marker` write a segment, under the
+            //   arena's lock, and they publish an object (into the arena's
+            //   table, and to the caller) only once it is complete;
+            // - no pointer into the unwritten tail exists: `take` hands out
+            //   memory below `next` only. Another thread or isolate reaches
+            //   an arena object through the table (under the lock) or as a
+            //   symbol it was handed, which was complete when published;
+            // - a forked child copies the segment while the fork handlers
+            //   hold the arena's lock (`fork.rs`), so no object is half
+            //   written there. Its unwritten tail is unreachable, as in the
+            //   parent.
+            // Zeroing the whole 64 KiB only cost the time: 65k instructions
+            // a segment, 1.1% of a base boot.
             unsafe {
                 std::ptr::write_bytes(base, 0, DATA_OFF);
                 *(base.add(REMEMBERED_OFF) as *mut *const u8) = crate::shared::id_word();

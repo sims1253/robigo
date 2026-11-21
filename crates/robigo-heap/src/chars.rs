@@ -17,7 +17,14 @@ pub(crate) struct CharTable {
     len: usize,
 }
 
-const MIN_SLOTS: usize = 1024;
+/// The slots a heap's CHARSXP cache starts with, and the least a prune
+/// leaves: room for 3,072 strings before it grows.
+/// - Measured: a base boot (`--vanilla -e 1`, `ROBIGO_RT_BOOT=rdb`, #922's
+///   head 2ca695862) makes 2,201 cached strings. From 1,024 slots the table
+///   grew twice during it, to 4,096.
+/// - Cost: 4,096 × 8 bytes = 32 KiB per heap, which a boot reached anyway
+///   (24 KiB more than before for a heap that never boots base).
+const MIN_SLOTS: usize = 4096;
 
 impl CharTable {
     pub fn new() -> CharTable {
