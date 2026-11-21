@@ -1116,10 +1116,8 @@ impl<'g> Comp<'g> {
                 codes.push(nil);
                 match *arg {
                     StepArg::Code(from, to) if e.typ() == LANGSXP => self.slice_code(t, from, to, e)?,
-                    StepArg::Prom(code) if code.typ() == BCODESXP => {
-                        self.promise_code(code)?;
-                        *codes.last_mut().unwrap() = code;
-                    }
+                    // (translated at its first force, as a call's)
+                    StepArg::Prom(code) if code.typ() == BCODESXP => *codes.last_mut().unwrap() = code,
                     _ => {}
                 }
                 cell = cell.cdr();
@@ -2225,12 +2223,10 @@ impl<'g> Comp<'g> {
                     return Err(Need::Fail);
                 }
                 codes.push(match a.kind {
-                    PKind::Prom(code) if code.typ() == BCODESXP => {
-                        if !planning {
-                            self.promise_code(code)?;
-                        }
-                        code
-                    }
+                    // the promise holds MAKEPROM's BCODESXP; its code is
+                    // translated at its first force (compile::bytecode_code),
+                    // as GNU R's bcEval runs it only then
+                    PKind::Prom(code) if code.typ() == BCODESXP => code,
                     _ => nil,
                 });
                 cell = cell.cdr();
@@ -2275,42 +2271,6 @@ impl<'g> Comp<'g> {
             unsafe { v.set_elt(j, c) };
         }
         Ok(Some(v))
-    }
-
-    /// The code of a promise the byte code makes (`MAKEPROM`'s BCODESXP),
-    /// translated with the code it runs in (its compile environment, its
-    /// frame's slot indices: `Comp::arg_codes`) and kept on the BCODESXP
-    /// itself ([`crate::code::cache_on`]), which the promise holds:
-    /// forcing it runs that ([`crate::compile::bytecode_code`]).
-    ///
-    /// # Safety
-    /// `code` is a live BCODESXP.
-    unsafe fn promise_code(&mut self, code: Sexp) -> Result<(), Need> {
-        let cenv = self.bc.take().expect("robigo: byte code outside the Bc profile");
-        let mut sub = Comp::new(self.cx, self.st, Profile::Bc, Some(cenv));
-        let r = sub.alloc();
-        // SAFETY: the caller's contract.
-        let res = unsafe { sub.translate(code, r) };
-        let res = res.map(|()| {
-            let mut i = Ins::new(Op::Ret);
-            i.b = r;
-            sub.emit(i);
-            sub.finish()
-        });
-        self.bc = sub.bc.take();
-        if res.is_err() && sub.bc_untranslated.is_some() {
-            self.bc_untranslated = sub.bc_untranslated.take();
-        }
-        let b = res?;
-        // SAFETY: as above; the source, the code's first constant, is live.
-        unsafe {
-            let source = robigo_rtcore::bytecode_expr(code, self.nil());
-            let built = crate::code::build(self.cx, &super::verified(b), source, None)?;
-            crate::code::cache_on(code, built);
-            self.arg_codes.push(built);
-            self.arg_codes.append(&mut sub.arg_codes);
-        }
-        Ok(())
     }
 
     /// `CALLBUILTIN`: the builtin `prim` on the frame's argument window.

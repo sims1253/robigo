@@ -242,7 +242,7 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
                     check = Some(crosscheck_closure(cx, f, installed)?);
                 }
                 // V3: GNU R's byte code, translated
-                return translate_code(cx, f.cdr(), Some(f.car()));
+                return translate_code(cx, f.cdr(), Some(f.car()), None);
             }
             let (formals, body) = (f.car(), source_body(cx, f));
             let mut cenv = Cenv::of_env(cx, f.tag(), installed)?;
@@ -428,15 +428,21 @@ pub fn crosscheck_installed(cx: &mut Cx, f: Root<'_>) -> RResult<Option<crossche
 /// its translation, kept on it. A translated call's promise code has its
 /// translation already, made with the code it runs in
 /// (`bctrans::promise_code`).
-pub(crate) fn bytecode_code(cx: &mut Cx, bc: Root<'_>) -> RResult<Sexp> {
+pub(crate) fn bytecode_code(cx: &mut Cx, bc: Root<'_>, rho: Root<'_>) -> RResult<Sexp> {
     // SAFETY: a rooted BCODESXP: its 4th word is R_NilValue or a code
     // object this module stored.
     if let Some(c) = unsafe { crate::code::cached(cx, bc.bind(cx).sexp().aux(), Profile::Bc) } {
         return Ok(c);
     }
+    // a promise's code, translated at its first force (its closure's
+    // translation leaves it): with the slot indices of the frame it runs
+    // in, as the closure's own translation would index it
+    // SAFETY: a rooted environment.
+    let shape = unsafe { cx.frame_shape_raw(rho.bind(cx).sexp()) };
     let code = attempt(cx, |cx| {
-        // SAFETY: a rooted BCODESXP; nothing collects in this interval.
-        unsafe { translate_code(cx, bc.bind(cx).sexp(), None) }
+        // SAFETY: a rooted BCODESXP and a live shape; nothing collects in
+        // this interval.
+        unsafe { translate_code(cx, bc.bind(cx).sexp(), None, shape) }
     })?
     .expect("robigo: a translation always makes code");
     // SAFETY: as above: a traced word, stored with the barrier.
@@ -452,7 +458,7 @@ pub(crate) fn bytecode_code(cx: &mut Cx, bc: Root<'_>) -> RResult<Sexp> {
 ///
 /// # Safety
 /// `bc` is a live BCODESXP of `cx`'s isolate, `formals` a live pairlist.
-unsafe fn translate_code(cx: &Cx, bc: Sexp, formals: Option<Sexp>) -> Result<Sexp, Need> {
+unsafe fn translate_code(cx: &Cx, bc: Sexp, formals: Option<Sexp>, index: Option<Sexp>) -> Result<Sexp, Need> {
     // SAFETY: the caller's contract.
     unsafe {
         let st = prims::state(cx);
@@ -482,7 +488,16 @@ unsafe fn translate_code(cx: &Cx, bc: Sexp, formals: Option<Sexp>) -> Result<Sex
         };
         let expr = robigo_rtbuiltins::bytecode::expr(cx, Ref::from_sexp(bc, cx)).sexp();
         let code = crate::code::build(cx, &verified(b), expr, formals)?;
-        index_arg_codes(cx, code, &c.arg_codes);
+        match index {
+            // a promise's code and its own: the slot indices of its frame
+            Some(shape) => {
+                crate::code::set_index_shape(cx, code, shape);
+                for &a in &c.arg_codes {
+                    crate::code::set_index_shape(cx, a, shape);
+                }
+            }
+            None => index_arg_codes(cx, code, &c.arg_codes),
+        }
         Ok(code)
     }
 }

@@ -86,7 +86,7 @@ fn bc_eval_inline(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RRes
     check_env(cx, rho.bind(cx).sexp())?;
     let depth = cx.eval_depth();
     let r = cx.scope(|cx, s| {
-        let code = crate::compile::bytecode_code(cx, e)?;
+        let code = crate::compile::bytecode_code(cx, e, rho)?;
         // SAFETY: a fresh or cached code object.
         let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
         let slot = out_slot(&out);
@@ -165,7 +165,7 @@ fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, promise: b
                 let src = s.root(cx, robigo_rtbuiltins::bytecode::expr(cx, e.bind(cx)));
                 return eval(cx, src, rho, out);
             }
-            let code = crate::compile::bytecode_code(cx, e)?;
+            let code = crate::compile::bytecode_code(cx, e, rho)?;
             // SAFETY: a fresh or cached code object.
             let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
             let slot = out_slot(&out);
