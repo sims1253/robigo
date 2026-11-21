@@ -372,7 +372,7 @@ jobs:
           report="$RUNNER_TEMP/bc-crosscheck-base.txt"
           status=0
           ROBIGO_ORACLE_LIBRARY="$PWD/.robigo/oracle-lib" ROBIGO_BC_CROSSCHECK=1 ROBIGO_BC_CROSSCHECK_REPORT="$report" \
-            cargo test --release --locked -p robigo-rt --test rdb_roundtrip -- --nocapture || status=$?
+            cargo test --profile quick --locked -p robigo-rt --test rdb_roundtrip -- --nocapture || status=$?
           # (L4's makeLazy: base's lazyLoad of the same databases, through the binary)
           ROBIGO_ORACLE_LIBRARY="$PWD/.robigo/oracle-lib" \
             cargo test --release --locked -p robigo-rtapi --test lazyload -- --nocapture || status=$?
@@ -414,7 +414,7 @@ jobs:
       - name: rt-ci.py, shard gctorture
         run: python3 scripts/rt-ci.py --shard gctorture
 
-  # the crates' release tests and the conformance on a release build with
+  # the crates' tests (quick profile) and the conformance (release) with
   # `-C debug-assertions=on` (heap's debug_assert!s seeing compiled code:
   # how H found compile.rs's `@<-` inline bug), a build of its own
   rt-debug-assertions:
@@ -449,6 +449,42 @@ jobs:
         run: scripts/r-src.sh
       - name: rt-ci.py, shard debug-assertions
         run: python3 scripts/rt-ci.py --shard debug-assertions
+
+  # the crates' tests on the full release profile (thin LTO, one codegen
+  # unit), the code users get: every other shard builds them in the quick
+  # profile. Not on pull requests: on main (and a manual dispatch), so a
+  # codegen-dependent crate-test failure shows within one main run of its
+  # merge (the accepted trade, docs/ledger/g3/2026-11-21-a1-rt-shards.md)
+  rt-release-crate-tests:
+    needs: select
+    if: ${{ needs.select.outputs.rt == 'true' && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.select.outputs.image_rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: rt
+          # (rt saves this cache; two jobs saving one key would race)
+          save-if: false
+      # GNU R 4.6.2's pinned sources: robigo-rt binds base's R code from
+      # them (crates/robigo-rt/src/base.rs). The tarball is cached;
+      # scripts/r-src.sh checks its sha256 and extracts it.
+      - uses: actions/cache/restore@v6
+        id: rsrc462
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
+      - name: rt-ci.py, shard release-crate-tests
+        run: python3 scripts/rt-ci.py --shard release-crate-tests
 
   # retry-torture's conformance (robigo-rtcore/retry-torture), then in its
   # build (CHECK_FEATURES) the poison-dead steps (robigo-rt/poison-dead)
@@ -1498,7 +1534,7 @@ jobs:
   check:
     name: Check
     if: ${{ always() }}
-    needs: [select, lint, miri, rdb-data, builtin-diff-data, rt, rt-gctorture, rt-feature-builds, rt-builtin-diff, rt-debug-assertions, base-subset, build, perf-base, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
+    needs: [select, lint, miri, rdb-data, builtin-diff-data, rt, rt-gctorture, rt-feature-builds, rt-builtin-diff, rt-debug-assertions, rt-release-crate-tests, base-subset, build, perf-base, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

@@ -44,7 +44,7 @@ class RtCi(unittest.TestCase):
         crates = ["robigo-rt", "robigo-rtcore"]
         everything = [s[0] for s in rt.steps(crates)]
         seen = {}
-        for shard in [s for s in rt.SHARDS if s != "debug-assertions"]:
+        for shard in [s for s in rt.SHARDS if s not in rt.OWN_STEPS]:
             titles = [s[0] for s in rt.shard_steps(crates, shard)]
             self.assertEqual(titles, [t for t in everything if t in titles], f"{shard}: steps' order")
             self.assertTrue(any(rt.shard_of(t) == shard for t in titles), f"{shard} runs nothing of its own")
@@ -53,13 +53,13 @@ class RtCi(unittest.TestCase):
         self.assertEqual(sorted(seen), sorted(everything))
         for t, shards in seen.items():
             if rt.shard_of(t) is None:
-                self.assertEqual(shards, [s for s in rt.SHARDS if s != "debug-assertions"], t)
+                self.assertEqual(shards, [s for s in rt.SHARDS if s not in rt.OWN_STEPS], t)
             else:
                 self.assertEqual(shards, [rt.shard_of(t)], t)
         # where each long step goes (the split's point): the crates' tests
         # where the crates' test build is, the long conformance runs apart
         where = {t: rt.shard_of(t) for t in everything}
-        self.assertEqual(where["release tests"], "modes")
+        self.assertEqual(where["the crates' tests (quick profile)"], "modes")
         self.assertEqual(where["ROBIGO_GC_MOVE (move every movable object at every collection), with gctorture"],
                          "modes")
         self.assertEqual(where["ROBIGO_MATERIALIZE=1 (every argument slot materialized)"], "modes")
@@ -73,10 +73,30 @@ class RtCi(unittest.TestCase):
                           "ROBIGO_POISON_DEAD=1 (dead slots poisoned), robigo-rt's tests and the planted early clear",
                           "ROBIGO_POISON_DEAD=1, conformance"])
 
-    def test_every_crate_test_step_builds_what_release_tests_built(self):
+    def test_each_step_builds_in_its_profile(self):
+        # the crates' tests in the quick profile; everything that runs the
+        # binary users get (each conformance step and mode, boot_db) on
+        # release; the release-crate-tests shard runs the crates' tests on
+        # release; neither shard of its own is in a plain run
+        crates = ["robigo-heap", "robigo-rt", "robigo-rtcore"]
+        for title, _, cmd in rt.steps(crates):
+            if cmd[:2] != ["cargo", "test"]:
+                continue
+            if rt.CONFORMANCE in cmd and "--skip" not in cmd or "boot_db" in cmd:
+                self.assertEqual(cmd[2], "--release", title)
+            else:
+                self.assertEqual(cmd[2:4], ["--profile", "quick"], title)
+        rel = rt.shard_steps(crates, "release-crate-tests")
+        self.assertEqual([c[2] for _, _, c in rel if c[:2] == ["cargo", "test"]], ["--release"])
+        self.assertEqual(rel[0][0], "the R_HOME tree, tools.so built (scripts/rt-home.sh)")
+        plain = " ".join(t for t, _, _ in rt.steps(crates))
+        self.assertNotIn("release profile", plain)
+        self.assertEqual(set(rt.OWN_STEPS), {"debug-assertions", "release-crate-tests"})
+
+    def test_every_crate_test_step_builds_what_the_first_built(self):
         # cargo turns a selected crate's dev-dependency features on, so a
         # step over fewer crates (no --features of its own) rebuilds what
-        # `release tests` built: the MATERIALIZE step did, for 6 minutes
+        # the crates' first step built: the MATERIALIZE step did, for 6 minutes
         crates = ["robigo-heap", "robigo-rt", "robigo-rtcore"]
         pkgs = [x for c in crates for x in ("-p", c)]
         for title, _, cmd in rt.steps(crates):
@@ -146,8 +166,8 @@ class RtCi(unittest.TestCase):
             self.assertEqual(e["CARGO_TARGET_DIR"], "/t/target-debug-assertions")
         built = [(e, c) for _, e, c in steps[1:]]
         self.assertEqual(len(built), 2)
-        for e, c in built:
-            self.assertEqual(c[:4], ["cargo", "test", "--release", "--locked"])
+        self.assertEqual(built[0][1][:5], ["cargo", "test", "--profile", "quick", "--locked"])
+        self.assertEqual(built[1][1][:4], ["cargo", "test", "--release", "--locked"])
         self.assertIn(rt.CONFORMANCE, built[1][1])
         self.assertNotIn("debug assertions", " ".join(t for t, _, _ in rt.steps(["robigo-rt"])))
 
