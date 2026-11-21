@@ -17,6 +17,7 @@ cc = "1"
 
 [dev-dependencies]
 trybuild = "1"
+robigo-heap = { path = "../robigo-heap", features = ["test-support"] }
 
 [features]
 # ROBIGO_RETRY_TORTURE=1 (Cx::retry_torture, docs/g3.md §16): compiled in only
