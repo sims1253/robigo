@@ -92,6 +92,7 @@ class RtCi(unittest.TestCase):
         for job in re.split(r"\n(?=  [a-z0-9-]+:\n)", yml):
             m = re.search(r"rt-ci\.py --shard ([a-z-]+)", job)
             if m:
+                self.assertNotIn(m.group(1), timeouts, f"two jobs run shard {m.group(1)}")
                 timeouts[m.group(1)] = int(re.search(r"timeout-minutes: (\d+)", job).group(1))
         return math, timeouts
 
