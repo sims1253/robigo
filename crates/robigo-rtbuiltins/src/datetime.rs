@@ -1670,8 +1670,9 @@ pub fn do_posixlt2d(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
 /// fit an int, where glibc's strftime overflows.
 // R: datetime.c:likely_strftime_overflow
 fn likely_strftime_overflow(tm: &Tm) -> bool {
+    // (SIZEOF_INT <= 4: the exact limits)
     let year = 1900.0 + tm.year as f64;
-    !(year < i32::MAX as f64 && year > i32::MIN as f64)
+    year > i32::MAX as f64 || year < i32::MIN as f64
 }
 
 /// `"%0*.*f"` of `s` with width `w` and `p` decimals, as C's printf.

@@ -34,3 +34,6 @@ format(.POSIXct(1e9, tz = "UTC")); format(.POSIXct(1e9, tz = "UTC"), usetz = TRU
 format(as.POSIXlt(.POSIXct(c(0, 1.5), tz = "Asia/Tokyo")), "%Y-%m-%d %H:%M:%OS1 %Z")
 print(.POSIXct(c(x = 1e9, y = NA), tz = "UTC"))
 format(.POSIXct(1719835200, tz = "Europe/Berlin"), usetz = TRUE)
+# likely_strftime_overflow: a year of INT_MAX is formatted, one more is NA
+x <- .Internal(as.POSIXlt(0, "UTC")); x$year <- 2147481747L; f(x, "%Y")
+x$year <- 2147481748L; f(x, "%Y"); x$year <- -2147483647L; f(x, "%Y")
