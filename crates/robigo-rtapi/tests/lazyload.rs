@@ -23,6 +23,7 @@
 //!   `loadNamespace` then never sets `version`, and `makeNamespace(name,
 //!   version = version)` finds base's `version`, `R.version`, as GNU R
 //!   does without that file.
+//!
 //! A value whose checksum differs but whose closures-aside checksum agrees
 //! is that class while either holds; once the namespace loads and the tree
 //! has the file, the class is no longer allowed and such a value fails.
