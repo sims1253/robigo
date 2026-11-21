@@ -160,3 +160,18 @@ af(n - 1)
 [[14]]
 [1] FALSE
 
+[1] "a"
+[1] 3
+[1] 3
+[[1]]
+[1] "argument \"expr\" is missing, with no default"
+
+[[2]]
+[1] "tailcallError"   "missingArgError" "error"           "condition"      
+
+[[3]]
+fw()
+
+[1] 2
+[1] 3
+[1] 3

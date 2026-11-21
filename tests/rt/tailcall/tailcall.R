@@ -78,3 +78,16 @@ run <- function() list(count(30, 0), ev(11), depth(10) == depth(0), outer()[[2]]
                        withVisible((function() Tailcall(invisible, 7))())$visible)
 for (k in 1:3) r <- run()
 print(r)
+# Exec's arguments are evaluated as evalListKeepMissing does: each value
+# referenced until both are, `...` expanded
+la <- function() "a"; lb <- function() "b"
+lk <- function() { x <- as.call(list(as.name("la"))); Exec(x, { x[[1]] <- as.name("lb"); environment() }) }
+print(lk())
+fw <- function(...) Exec(...)
+print(fw(quote(sum(1, 2))))
+print(fw(quote(sum(1, 2)), globalenv()))
+print(f(fw()))
+# an alias calls the same primitive: the compiled pool shares its call too
+tc <- Tailcall; gn <- function() sys.nframe()
+al <- function() { tc(gn); tc(gn) }
+for (k in 1:3) print(al())

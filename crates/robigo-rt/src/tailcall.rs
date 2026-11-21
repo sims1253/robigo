@@ -41,9 +41,9 @@ const FUN: usize = 2;
 /// `k`), and `code` is `BODY_EXPR`, the body's AST (a byte-code body's
 /// source: its constant 0, whose cells cmp.R's constants share too). Where
 /// GNU R's pool gives a call the first `identical()` constant
-/// (`do_putconst`), so does robigo-rt's for `Exec`/`Tailcall` calls under
-/// `Bc` (compile.rs's `Op::Call`): the same call text twice in a body is in
-/// tail position only at its first appearance there.
+/// (`do_putconst`), so does robigo-rt's under `Bc` (compile.rs's `kv`
+/// for a call's constant): the same call text twice in a compiled body is
+/// in tail position only at its first appearance there.
 // R: eval.c:checkTailPosition
 fn check_tail_position(cx: &Cx, call: Ref<'_>, code: Ref<'_>) -> bool {
     let st = prims::state(cx);
@@ -95,37 +95,22 @@ pub fn do_tailcall<const TAILCALL: bool>(
             // exec
             let formals = [prims::state(cx).syms.expr, prims::state(cx).syms.envir];
             let matched = crate::args::match_builtin_args(cx, s, call, &formals)?;
-            // evalListKeepMissing(args, rho)
-            let mut vals = Vec::with_capacity(2);
-            for m in matched {
-                let e = m.bind(cx).sexp();
-                if e == missing {
-                    vals.push(s.root(cx, cx.missing_arg()));
-                    continue;
-                }
-                if e == prims::state(cx).syms.dots {
-                    return Err(robigo_rtbuiltins::util::not_yet(
-                        cx,
-                        Some(call),
-                        "Exec() with '...' among its arguments",
-                    ));
-                }
-                if m.bind(cx).sexptype() == SYMSXP {
-                    let r = rho.bind(cx).sexp();
-                    // SAFETY: a rooted symbol and environment (r_is_missing's
-                    // contract: live objects of this isolate).
-                    #[allow(unsafe_code)]
-                    let gone = unsafe { crate::missing::r_is_missing(cx, e, r)? };
-                    if gone {
-                        vals.push(s.root(cx, cx.missing_arg()));
-                        continue;
+            // evalListKeepMissing(args, rho) of the matched list (expr,
+            // envir): each value linked until both are evaluated, `...`
+            // expanded
+            let margs = s.capture(cx, |cx, o| {
+                cx.build(o, |cx| {
+                    let mut l = cx.nil();
+                    for m in matched.iter().rev() {
+                        l = cx.cons(m.bind(cx), l)?;
                     }
-                }
-                let v = s.out(cx).root();
-                let o = v.reset(cx);
-                crate::eval(cx, m, rho, o)?;
-                vals.push(v);
-            }
+                    cx.lcons(cx.nil(), l)
+                })
+            })?;
+            let ev = crate::specials::eval_call_args_keep_missing(cx, s, margs, rho)?;
+            // CAR(args), CADR(args): R_NilValue past the list's end
+            let nil = s.root(cx, cx.nil());
+            let vals = [0, 1].map(|i| if i < ev.len() { ev.root(i) } else { nil });
             let mut expr = vals[0];
             if expr.bind(cx).sexp() == missing {
                 let lc = s.root(cx, cx.lexical_context(rho.bind(cx)).call());

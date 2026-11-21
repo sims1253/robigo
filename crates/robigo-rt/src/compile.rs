@@ -1371,12 +1371,12 @@ impl<'g> Comp<'g> {
                 Handler::Known(Known::Fn(_)) if f == self.st.syms.dollar && self.bc_dollar(e, dst, d)? => {}
                 Handler::Known(Known::Fn(off)) if self.st.defs[off].name == "log" && self.bc_log(e, dst, d)? => {}
                 Handler::Known(Known::Fn(off)) => {
-                    // (`cmpSpecial`; for `Exec` and `Tailcall`, the pool's
-                    // first `identical()` call: see `Op::Call` below)
+                    // (`cmpSpecial`: `ci <- cb$putconst(call)`, shared as
+                    // for `Op::Call` below)
                     let prim = self.st.objs[off].bind(self.cx).sexp();
                     let mut i = Ins::new(Op::SpecialFn);
                     i.a = dst;
-                    i.e = if f == self.st.syms.tailcall || f == self.st.syms.exec { self.kv(e) } else { self.k(e) };
+                    i.e = self.kv(e);
                     i.c = self.k(prim);
                     i.fl |= F_DEPTH;
                     i.d = d;
@@ -2322,14 +2322,12 @@ impl<'g> Comp<'g> {
         let mut i = Ins::new(Op::Call);
         i.a = dst;
         i.b = rf;
-        // cmp.R's `cb$putconst(call)` shares the first constant `identical()`
-        // to the call (do_putconst). Only `Exec` and `Tailcall` can see which
-        // cell they get: checkTailPosition compares the call with the
-        // closure's body by identity, so a call whose text appears earlier
-        // in the body is not in tail position under `Bc` (tailcall.rs). For
-        // them the pool's first identical call is used, as GNU R's is; every
-        // other call keeps its own cell (no scan at compile time).
-        i.e = if f == self.st.syms.tailcall || f == self.st.syms.exec { self.kv(e) } else { self.k(e) };
+        // cmp.R's `cb$putconst(call)`: under `Bc` the first constant
+        // `identical()` to the call (do_putconst). A special that compares
+        // its call with the closure's body by identity sees which cell it
+        // got: `Exec`/`Tailcall`'s checkTailPosition (tailcall.rs), however
+        // the function is named at the call.
+        i.e = self.kv(e);
         // a match-plan cache entry per site (none past the 16-bit range)
         i.c = if self.sites < NO_SITE {
             self.sites += 1;

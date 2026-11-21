@@ -461,9 +461,6 @@ pub struct Syms {
     /// `Exec`'s formals, `expr` and `envir` (eval.c's `do_tailcall`)
     pub expr: Sexp,
     pub envir: Sexp,
-    /// `Tailcall`, `Exec`: their calls' constants (compile.rs)
-    pub tailcall: Sexp,
-    pub exec: Sexp,
     pub dot_internal: Sexp,
     pub standard_generic: Sexp,
     pub srcref: Sexp,
@@ -507,8 +504,6 @@ impl Syms {
             brace: sym(b"{"),
             expr: sym(b"expr"),
             envir: sym(b"envir"),
-            tailcall: sym(b"Tailcall"),
-            exec: sym(b"Exec"),
             dot_internal: sym(b".Internal"),
             standard_generic: sym(b"standardGeneric"),
             srcref: sym(b"srcref"),
