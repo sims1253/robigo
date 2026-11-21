@@ -360,7 +360,25 @@ pub fn translate_char2<'a>(s: Str<'a>, loc: Locale) -> Result<Cow<'a, [u8]>, Unt
         Ok((c, false)) => Ok(c),
         // reEnc(cbuff, CE_UTF8, CE_NATIVE, 2) of a buffer already native:
         // ASCII in the C locale, as it was in a UTF-8 one
-        Ok((c, true)) => Err(Untranslatable::Failed(err_buff(c.into_owned(), loc))),
+        Ok((c, true)) => Err(Untranslatable::Failed(err_buff(&c, loc))),
+    }
+}
+
+/// `translateToNative(s, mustWork = 2)` as `installTrChar` calls it: `s`
+/// in the native encoding with what iconv cannot convert escaped, and the
+/// `%s` of the warning R then gives ("unable to translate '%s' to native
+/// encoding"): the escaped text, cut to 255 bytes (`err_buff`), not the
+/// whole warning, which the caller formats
+/// (`robigo_rtbuiltins::text::unable_to_translate`); [`TranslateError`]
+/// for a "bytes" string.
+// R: sysutils.c:installTrChar, translateToNative(mustWork = 2)
+pub fn translate_char_warn<'a>(s: Str<'a>, loc: Locale) -> Result<(Cow<'a, [u8]>, Option<String>), TranslateError> {
+    match to_native(s, loc)? {
+        (c, false) => Ok((c, None)),
+        (c, true) => {
+            let w = err_buff(&c, loc);
+            Ok((c, Some(w)))
+        }
     }
 }
 
@@ -385,19 +403,20 @@ pub fn translate_char_utf8_2<'a>(s: Str<'a>, loc: Locale) -> Result<Cow<'a, [u8]
     // reEnc(cbuff, CE_UTF8, CE_NATIVE, 2): what the native encoding lacks
     // as '.', byte by byte
     let msg = if loc.utf8() { out } else { out.iter().map(|&b| if b < 0x80 { b } else { b'.' }).collect() };
-    Err(Untranslatable::Failed(err_buff(msg, loc)))
+    Err(Untranslatable::Failed(err_buff(&msg, loc)))
 }
 
 /// The text of a "unable to translate" message: truncated to 252 bytes
 /// and "..." beyond 255.
 // R: sysutils.c:translateToNative (err_buff)
-fn err_buff(mut msg: Vec<u8>, loc: Locale) -> String {
+fn err_buff(msg: &[u8], loc: Locale) -> String {
     if msg.len() > 255 {
-        msg.truncate(252);
-        mbcs_truncate_to_valid(&mut msg, loc);
-        msg.extend_from_slice(b"...");
+        let mut m = msg[..252].to_vec();
+        mbcs_truncate_to_valid(&mut m, loc);
+        m.extend_from_slice(b"...");
+        return String::from_utf8_lossy(&m).into_owned();
     }
-    String::from_utf8_lossy(&msg).into_owned()
+    String::from_utf8_lossy(msg).into_owned()
 }
 
 /// translateToNative: the string in the native encoding, and whether iconv
@@ -558,7 +577,7 @@ pub fn wtrans_char2(s: Str<'_>, loc: Locale) -> Result<Vec<i32>, WideError> {
             _ => msg.extend_from_slice(format!("<U+{wc:08X}>").as_bytes()),
         }
     }
-    Err(WideError::Invalid(err_buff(msg, loc)))
+    Err(WideError::Invalid(err_buff(&msg, loc)))
 }
 
 /// `mbcsTruncateToValid(s)`: drops an incomplete or invalid character at
@@ -625,5 +644,27 @@ mod tests {
         assert_eq!(t(b"a\xf3\xa0\x80\x81b", Enc::Utf8, Locale::C), b"ab");
         assert_eq!(translate_char(Str::new(b"\xff", Enc::Bytes), Locale::Utf8), Err(TranslateError));
         assert!(matches!(translate_char(Str::new(b"\xc3\xa9", Enc::Utf8), Locale::Utf8), Ok(Cow::Borrowed(_))));
+    }
+}
+
+#[cfg(test)]
+mod translate_warn_tests {
+    use super::*;
+
+    #[test]
+    fn the_warning_text_is_cut_at_255_bytes() {
+        // 100 x "caf\u{e9}" in the C locale: each é escapes to <U+00E9>, so
+        // the text passes 255 bytes and is cut to 252 plus "..."
+        let b = "caf\u{e9}".repeat(100);
+        let (n, w) = translate_char_warn(Str::new(b.as_bytes(), Enc::Utf8), Locale::C).unwrap();
+        let w = w.unwrap();
+        assert_eq!(w.len(), 255);
+        assert!(w.ends_with("...") && w.is_ascii());
+        // the name itself is not cut
+        assert!(n.len() > 1000);
+        // a short one is whole, and a translatable one warns of nothing
+        let (_, w) = translate_char_warn(Str::new("caf\u{e9}".as_bytes(), Enc::Utf8), Locale::C).unwrap();
+        assert_eq!(w.as_deref(), Some("caf<U+00E9>"));
+        assert_eq!(translate_char_warn(Str::new("caf\u{e9}".as_bytes(), Enc::Utf8), Locale::Utf8).unwrap().1, None);
     }
 }
