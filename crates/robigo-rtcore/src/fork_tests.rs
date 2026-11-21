@@ -7,6 +7,7 @@
 #![allow(unsafe_code)]
 
 use crate::OwnedIsolate;
+use std::os::unix::ffi::OsStrExt;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -48,6 +49,13 @@ fn child_work(steps: i32) -> i32 {
         }
         step(b'N');
         let _ = cx.install(format!("robigo_fork_test_{}", std::process::id()).as_bytes()).unwrap();
+        // a session's temporary directory registered and forgotten (the
+        // registry's lock; no `rm` process: a child may not be allowed one)
+        step(b'T');
+        let d = crate::clib::mkdtemp(b"/tmp/robigo-fork-test-XXXXXX").expect("the child's mkdtemp");
+        cx.set_temp_dir(Some(d.clone()));
+        cx.set_temp_dir(None);
+        std::fs::remove_dir(std::ffi::OsStr::from_bytes(&d)).expect("the child's temporary directory removed");
         step(b'D');
         drop(iso);
         step(b'X');
@@ -65,7 +73,7 @@ fn hung_child_report(pid: i32, steps_rd: i32) -> String {
     let steps = if n > 0 { String::from_utf8_lossy(&buf[..n as usize]).into_owned() } else { String::new() };
     let proc = |f: &str| std::fs::read_to_string(format!("/proc/{pid}/{f}")).unwrap_or_else(|e| format!("({e})"));
     format!(
-        "steps {steps:?} (L live, E env, I isolate, G grant, W writer, S setenv, N install, D done, X dropped); \
+        "steps {steps:?} (L live, E env, I isolate, G grant, W writer, S setenv, N install, T temp dir, D done, X dropped); \
          syscall {:?}; wchan {:?}; locks: LIVE_ISOLATES {:p}, ENV {:p}",
         proc("syscall").trim(),
         proc("wchan"),
@@ -237,6 +245,41 @@ fn a_child_forked_while_the_live_isolate_lock_is_held_starts_an_isolate() {
 #[test]
 fn a_child_forked_while_the_environment_lock_is_held_writes_it() {
     fork_while_held("ENV", crate::clib::env_write_lock);
+}
+
+#[test]
+fn a_child_forked_while_the_temp_dir_registry_is_locked_makes_one() {
+    fork_while_held("TEMP_DIRS", crate::clib::temp_dirs_lock);
+}
+
+/// A forked child shares its parent's session directory (sysutils.c's note
+/// on R_tmpnam2): its isolate's end, or its exit, must not remove it.
+#[test]
+fn a_forked_childs_end_leaves_the_parents_temp_dir() {
+    let _one = one_at_a_time();
+    let _dog = watchdog("a forked child's temp dir", 60);
+    let mut iso = OwnedIsolate::new();
+    let d = crate::clib::mkdtemp(b"/tmp/robigo-fork-parent-XXXXXX").expect("mkdtemp");
+    iso.cx().set_temp_dir(Some(d.clone()));
+    // SAFETY: the child drops its copy of the isolate and leaves through
+    // `exit` (the atexit handler runs, as on a child's normal exit).
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0, "fork failed: {}", std::io::Error::last_os_error());
+    if pid == 0 {
+        drop(iso);
+        // SAFETY: ends the child, running the process's atexit handlers.
+        unsafe { libc::exit(0) };
+    }
+    let mut status = 0;
+    // SAFETY: waits for the child just forked.
+    unsafe { libc::waitpid(pid, &mut status, 0) };
+    assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "the child failed (status {status})");
+    assert!(
+        std::fs::metadata(std::ffi::OsStr::from_bytes(&d)).is_ok(),
+        "the parent's temporary directory is still there"
+    );
+    iso.cx().clean_temp_dir();
+    assert!(std::fs::metadata(std::ffi::OsStr::from_bytes(&d)).is_err(), "removed by its own process");
 }
 
 #[test]

@@ -122,7 +122,7 @@ pub struct Isolate {
     /// GNU R's `R_TempDir` (and `Sys_TempDir`): the session's temporary
     /// directory, made at startup (`InitTempDir`), removed at the end
     /// (`R_CleanTempDir`, [`Cx::clean_temp_dir`]).
-    pub(crate) temp_dir: std::cell::RefCell<Option<Vec<u8>>>,
+    pub(crate) temp_dir: std::cell::RefCell<Option<(u32, Vec<u8>)>>,
     /// The embedder's grant of the process environment's writes
     /// (`clib::EnvWrites`, [`OwnedIsolate::grant_env_writes`]): without
     /// it `Sys.setenv`/`Sys.unsetenv` refuse.
@@ -618,26 +618,36 @@ impl Cx {
 
     /// GNU R's `R_TempDir`: the session's temporary directory, if made.
     pub fn temp_dir(&self) -> Option<Vec<u8>> {
-        self.iso().temp_dir.borrow().clone()
+        self.iso().temp_dir.borrow().as_ref().map(|(_, d)| d.clone())
     }
 
-    /// Set `R_TempDir` (and `Sys_TempDir`) to the directory `dir` made, or
-    /// forget it (`R_TempDir = NULL`, for `tempdir(check = TRUE)`'s
-    /// remaking). A directory made is removed at the end
+    /// Set `R_TempDir` (and `Sys_TempDir`) to the directory `dir` this
+    /// process made, or forget it (`R_TempDir = NULL`, for
+    /// `tempdir(check = TRUE)`'s remaking: the old one is then left as it is,
+    /// as GNU R leaves it). The current one is removed at the end
     /// ([`Cx::clean_temp_dir`], or at process exit).
     pub fn set_temp_dir(&self, dir: Option<Vec<u8>>) {
-        if let Some(d) = &dir {
-            crate::clib::register_temp_dir(d);
+        let me = std::process::id();
+        let old = self.iso().temp_dir.borrow_mut().take();
+        if let Some((pid, d)) = old {
+            crate::clib::forget_temp_dir(pid, &d);
         }
-        *self.iso().temp_dir.borrow_mut() = dir;
+        if let Some(d) = dir {
+            crate::clib::register_temp_dir(&d);
+            *self.iso().temp_dir.borrow_mut() = Some((me, d));
+        }
     }
 
     /// `R_CleanTempDir()`: the session's temporary directory removed, once
-    /// (a second call does nothing).
+    /// (a second call does nothing), and only by the process that made it:
+    /// a forked child shares its parent's session directory
+    /// (sysutils.c's note on `R_tmpnam2`) and leaves it.
     // R: platform.c:R_CleanTempDir
     pub fn clean_temp_dir(&self) {
         let d = self.iso().temp_dir.borrow_mut().take();
-        if let Some(d) = d {
+        if let Some((pid, d)) = d
+            && pid == std::process::id()
+        {
             crate::clib::remove_temp_dir(&d);
         }
     }
@@ -1083,8 +1093,15 @@ pub(crate) fn live_isolates() -> std::sync::MutexGuard<'static, usize> {
 /// The guards `fork_take` holds across a fork, released by `fork_release`
 /// on both sides: only the forking thread touches them, between the two
 /// handlers.
+#[allow(clippy::type_complexity)]
 struct ForkGuards(
-    std::cell::UnsafeCell<Option<(std::sync::MutexGuard<'static, usize>, std::sync::RwLockWriteGuard<'static, ()>)>>,
+    std::cell::UnsafeCell<
+        Option<(
+            std::sync::MutexGuard<'static, usize>,
+            std::sync::RwLockWriteGuard<'static, ()>,
+            crate::clib::TempDirsGuard,
+        )>,
+    >,
 );
 
 // SAFETY: written by a fork's `prepare` handler and read by the same fork's
@@ -1103,13 +1120,16 @@ static FORK_GUARDS: ForkGuards = ForkGuards(std::cell::UnsafeCell::new(None));
 fn fork_take() {
     let live = live_isolates();
     let env = crate::clib::env_write_lock();
+    // (the temporary directories' registry: taken alone everywhere else, so
+    // last)
+    let dirs = crate::clib::temp_dirs_lock();
     // SAFETY: as for `ForkGuards`: this fork alone, under `FORK`; the slot
     // is empty (the previous fork's `fork_release` took it). That relies on
     // the C library running `parent` after every `prepare`, a fork that
     // fails included: glibc does (verified on 2.44: a fork refused with
     // EAGAIN runs prepare, then parent; `fork_tests`'
     // `a_failed_fork_releases_the_locks`).
-    unsafe { *FORK_GUARDS.0.get() = Some((live, env)) };
+    unsafe { *FORK_GUARDS.0.get() = Some((live, env, dirs)) };
 }
 
 /// The fork handlers' `parent` and `child` for this crate's locks: the
@@ -1117,7 +1137,8 @@ fn fork_take() {
 /// thread is the guards' owner, so unlocking is its own.
 fn fork_release() {
     // SAFETY: as for `ForkGuards`.
-    if let Some((live, env)) = unsafe { (*FORK_GUARDS.0.get()).take() } {
+    if let Some((live, env, dirs)) = unsafe { (*FORK_GUARDS.0.get()).take() } {
+        drop(dirs);
         drop(env);
         drop(live);
     }

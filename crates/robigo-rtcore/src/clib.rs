@@ -1354,6 +1354,20 @@ extern "C" fn remove_temp_dirs_at_exit() {
     }
 }
 
+/// [`TEMP_DIRS`] held, for the fork handlers (`isolate::fork_take`).
+pub(crate) type TempDirsGuard = std::sync::MutexGuard<'static, Vec<(u32, Vec<u8>)>>;
+
+/// [`TEMP_DIRS`]' lock (taken alone, or last of the fork handlers' locks).
+pub(crate) fn temp_dirs_lock() -> TempDirsGuard {
+    TEMP_DIRS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// No longer remove `dir` (made by the process `pid`) at exit: it is no
+/// longer the session's (`tempdir(check = TRUE)` made another).
+pub fn forget_temp_dir(pid: u32, dir: &[u8]) {
+    temp_dirs_lock().retain(|(p, d)| !(*p == pid && d == dir));
+}
+
 /// Note the temporary directory `dir` this process made, to remove it at
 /// exit if nothing removed it before.
 pub fn register_temp_dir(dir: &[u8]) {
@@ -1363,19 +1377,14 @@ pub fn register_temp_dir(dir: &[u8]) {
         // that exits, and touches only this module's statics.
         unsafe { libc::atexit(remove_temp_dirs_at_exit) };
     });
-    let mut dirs = TEMP_DIRS.lock().unwrap_or_else(|e| e.into_inner());
-    dirs.push((std::process::id(), dir.to_vec()));
+    temp_dirs_lock().push((std::process::id(), dir.to_vec()));
 }
 
 /// `R_CleanTempDir()`'s removal of `dir`, which [`register_temp_dir`]
 /// noted (and no longer does).
 // R: platform.c:R_CleanTempDir
 pub fn remove_temp_dir(dir: &[u8]) {
-    {
-        let mut dirs = TEMP_DIRS.lock().unwrap_or_else(|e| e.into_inner());
-        let me = std::process::id();
-        dirs.retain(|(p, d)| !(*p == me && d == dir));
-    }
+    forget_temp_dir(std::process::id(), dir);
     remove_tree(dir);
 }
 
