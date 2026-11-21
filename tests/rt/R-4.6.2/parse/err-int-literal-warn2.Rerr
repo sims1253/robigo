@@ -1,0 +1,12 @@
+Warning message:
+integer literal 1.0L contains unnecessary decimal point 
+Warning message:
+integer literal 1.5L contains decimal; using numeric value 
+Warning message:
+w2 
+Warning messages:
+1: non-integer value 1e-3L qualified with L; using numeric value 
+2: integer literal 2.0L contains unnecessary decimal point 
+Warning: integer literal 1.0L contains unnecessary decimal point
+Error: (converted from warning) integer literal 1.0L contains unnecessary decimal point
+Execution halted

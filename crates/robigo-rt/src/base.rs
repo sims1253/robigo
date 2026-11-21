@@ -417,11 +417,26 @@ fn form_bytes(cx: &Cx, form: Form) -> Result<Vec<u8>, String> {
         .and_then(|_| f.read_exact(&mut b))
         .map_err(|e| format!("{}: {e}", path.display()))?;
     for &(from, to) in &Wide::get().substs {
-        if let Some(k) = b.windows(from.len()).position(|w| w == from.as_bytes()) {
-            b.splice(k..k + from.len(), to.bytes());
-        }
+        b = sed_first_per_line(&b, from.as_bytes(), to.as_bytes());
     }
     Ok(b)
+}
+
+/// `sed -e "s:FROM:TO:"` (mkRbase's, share/make/basepkg.mk): the first
+/// occurrence of `from` on each line replaced by `to` (no `g` flag).
+fn sed_first_per_line(b: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(b.len());
+    for line in b.split_inclusive(|&c| c == b'\n') {
+        match line.windows(from.len()).position(|w| w == from) {
+            Some(k) => {
+                out.extend_from_slice(&line[..k]);
+                out.extend_from_slice(to);
+                out.extend_from_slice(&line[k + from.len()..]);
+            }
+            None => out.extend_from_slice(line),
+        }
+    }
+    out
 }
 
 /// Parse `form`, take the expression `pick` gives of its one top-level
@@ -468,7 +483,7 @@ fn base_fetch(cx: &mut Cx, call: Root<'_>, _: Root<'_>, _: Root<'_>, out: Out<'_
         .as_cons()
         .and_then(|c| c.cdr().as_cons())
         .and_then(|a| a.car().as_sym())
-        .map(|s| String::from_utf8_lossy(s.name().bytes()).into_owned());
+        .map(|s| String::from_utf8_lossy(s.name_bytes()).into_owned());
     let wide = Wide::get();
     let Some(w) = name.as_deref().and_then(|n| wide.find(n)) else {
         return Err(cx.error("robigo: a fetch of no name of base"));
@@ -661,29 +676,31 @@ fn failed(cx: &mut Cx, e: robigo_rtcore::RError) -> String {
 }
 
 /// Bind the primitives and internals of these that robigo-rt does not
-/// define to the not-implemented builtins; how many.
+/// define to the not-implemented builtins; how many. Each stub has names.c's
+/// `eval` column: a special's stub is a SPECIALSXP (its arguments not
+/// evaluated), as `typeof()` and cmp.R see it.
 fn stubs_for(cx: &mut Cx, primitives: &[&'static str], internals: &[&'static str]) -> usize {
+    use robigo_rtbuiltins::names::{internal_eval, primitive_eval};
     let st = crate::prims::state(cx);
     let have = |name: &str, internal: bool| st.defs.iter().any(|d| d.name == name && d.internal() == internal);
+    let stub = |name: &'static str, eval: i32, internal: bool| {
+        let kind = match (eval % 10 == 1, internal) {
+            (true, false) => Kind::Builtin(not_yet_primitive, crate::prims::Inline::None),
+            (true, true) => Kind::Builtin(not_yet_internal, crate::prims::Inline::None),
+            (false, false) => Kind::Fn(not_yet_primitive_special),
+            (false, true) => Kind::Fn(not_yet_internal_special),
+        };
+        PrimDef { name, kind, eval, arity: -1 }
+    };
     let mut defs = Vec::new();
     for &p in primitives {
         if !have(p, false) {
-            defs.push(PrimDef {
-                name: p,
-                kind: Kind::Builtin(not_yet_primitive, crate::prims::Inline::None),
-                eval: 1,
-                arity: -1,
-            });
+            defs.push(stub(p, primitive_eval(p.as_bytes()).map_or(1, i32::from), false));
         }
     }
     for &p in internals {
         if !have(p, true) {
-            defs.push(PrimDef {
-                name: p,
-                kind: Kind::Builtin(not_yet_internal, crate::prims::Inline::None),
-                eval: 11,
-                arity: -1,
-            });
+            defs.push(stub(p, internal_eval(p.as_bytes()).map_or(11, i32::from), true));
         }
     }
     let n = defs.len();
@@ -694,7 +711,7 @@ fn stubs_for(cx: &mut Cx, primitives: &[&'static str], internals: &[&'static str
 /// The name a stub was called by: the call's function when it is a symbol.
 fn called_name(cx: &Cx, call: Root<'_>) -> String {
     match call.bind(cx).as_cons().and_then(|c| c.car().as_sym()) {
-        Some(s) => String::from_utf8_lossy(s.name().bytes()).into_owned(),
+        Some(s) => String::from_utf8_lossy(s.name_bytes()).into_owned(),
         None => "?".into(),
     }
 }
@@ -703,6 +720,54 @@ fn called_name(cx: &Cx, call: Root<'_>) -> String {
 fn not_yet_primitive(cx: &mut Cx, call: Root<'_>, _: Args<'_>, _: Root<'_>, _: Out<'_>) -> RResult<()> {
     let msg = format!("robigo: the primitive '{}' is not implemented yet", called_name(cx, call));
     Err(cx.error_call(Some(call), &msg))
+}
+
+/// A special primitive of the bound that robigo-rt does not implement yet.
+fn not_yet_primitive_special(cx: &mut Cx, call: Root<'_>, _: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let _ = out;
+    eval_stub_args(cx, call, rho)?;
+    let msg = format!("robigo: the primitive '{}' is not implemented yet", called_name(cx, call));
+    Err(cx.error_call(Some(call), &msg))
+}
+
+/// A special `.Internal` of the bound that robigo-rt does not implement yet.
+fn not_yet_internal_special(cx: &mut Cx, call: Root<'_>, _: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let _ = out;
+    eval_stub_args(cx, call, rho)?;
+    let msg = format!("robigo: .Internal({}()) is not implemented yet", called_name(cx, call));
+    Err(cx.error_call(Some(call), &msg))
+}
+
+/// Evaluate a special stub's argument expressions in `rho`, in order,
+/// discarding the values: a missing or unbound argument reports GNU R's
+/// error before the stub's not-implemented refusal. A special's stub
+/// cannot know which arguments its implementation would force, so it
+/// forces all but `...` (expanded by the callee, never forced here);
+/// argument evaluation may run arbitrary code, as reaching any error
+/// below already may. This is what the stubs did before they had
+/// names.c's kind (as builtins their arguments arrived evaluated), and
+/// what the recorded cases expect (`eapply` with its `env` missing
+/// errors that way instead of reporting the unported internal).
+///
+/// The walk keeps every not-yet-evaluated expression rooted: `eval` may
+/// collect (including under the moving debug collector), so no raw
+/// `Sexp` is held across a call.
+fn eval_stub_args(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RResult<()> {
+    let dots = crate::prims::state(cx).syms.dots;
+    cx.scope(|cx, s| {
+        let nil = cx.nil();
+        let mut a = s.root(cx, call.bind(cx).as_cons().map_or(nil, |c| c.cdr()));
+        while let Some(cell) = a.bind(cx).as_cons() {
+            let e = s.root(cx, cell.car());
+            let next = s.root(cx, cell.cdr());
+            if e.bind(cx).sexp() != dots {
+                let o = s.out(cx);
+                cx.eval(e, rho, o)?;
+            }
+            a = next;
+        }
+        Ok(())
+    })
 }
 
 /// An `.Internal` of the bound that robigo-rt does not implement yet.
@@ -714,6 +779,18 @@ fn not_yet_internal(cx: &mut Cx, call: Root<'_>, _: Args<'_>, _: Root<'_>, _: Ou
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// mkRbase's `sed -e "s:@WHICH@:...:"` has no `g`: the first occurrence
+    /// on each line, every line.
+    #[test]
+    fn substitutions_replace_the_first_occurrence_on_each_line() {
+        let b = b"a <- \"@W@\"; b <- \"@W@\"\nc <- \"@W@\"\nnone\n@W@";
+        let r = sed_first_per_line(b, b"@W@", b"/usr/bin/which");
+        assert_eq!(
+            String::from_utf8(r).unwrap(),
+            "a <- \"/usr/bin/which\"; b <- \"@W@\"\nc <- \"/usr/bin/which\"\nnone\n/usr/bin/which"
+        );
+    }
 
     #[test]
     fn the_bound_parses_and_names_files_in_collation_order() {
@@ -809,7 +886,7 @@ pub fn repl_file(cx: &mut Cx, path: &Path, st: &mut Stage0) -> Result<(), String
     for e in &exprs {
         st.exprs += 1;
         // under PROTECT(R_CurrentExpr), unprotected before the print
-        let r = repl_eval_toplevel(cx, e, |cx| cx.base_namespace(), savestack, (1, 0));
+        let r = repl_eval_toplevel(cx, e, &[], |cx| cx.base_namespace(), savestack, (1, 0));
         if let Err(m) = r {
             let line = robigo_syntax::line_col(&text, e.span().start as usize).0;
             let m = m.unwrap_or_else(|| "lowering failed".into());
@@ -823,7 +900,8 @@ pub fn repl_file(cx: &mut Cx, path: &Path, st: &mut Stage0) -> Result<(), String
 /// parsed top-level expression: `R_PPStackTop = savestack`, then at the top
 /// level `R_Visible = FALSE`, `eval(expr, rho)`, `.Last.value`, the value
 /// printed by `PrintValueEnv(value, rho)` if visible, then the deferred
-/// warnings (`PrintWarnings`). `pp` is the protections GNU R's loop holds
+/// warnings (`PrintWarnings`). `warnings` are the parse's (the lexer's),
+/// raised first. `pp` is the protections GNU R's loop holds
 /// during the evaluation and during the print (robigo-rtcore's ppacct).
 /// The error, if one ended it, comes back as its report's text (written
 /// where it was raised); a failure to lower the expression as `None`.
@@ -831,6 +909,7 @@ pub fn repl_file(cx: &mut Cx, path: &Path, st: &mut Stage0) -> Result<(), String
 pub(crate) fn repl_eval_toplevel(
     cx: &mut Cx,
     expr: &robigo_syntax::Expr<'_>,
+    warnings: &[String],
     rho: for<'g> fn(&'g Cx) -> Ref<'g>,
     savestack: i32,
     pp: (i32, i32),
@@ -853,7 +932,13 @@ pub(crate) fn repl_eval_toplevel(
         let done = cx
             .repl_toplevel(g, base, |cx| {
                 // the parse's objects are made at the top level
-                // (R_Parse1Buffer, R_Parse1File), so an error there lands on it
+                // (R_Parse1Buffer, R_Parse1File), so an error there lands on it;
+                // so are the lexer's warnings (`warning()`, no call), which
+                // print with the statement's own
+                if let Err(err) = warnings.iter().try_for_each(|w| cx.warning(w)) {
+                    msg = Some(crate::repl::error_text(cx, &err));
+                    return Err(err);
+                }
                 if let Err(err) = crate::reader::lower_one(cx, expr, e) {
                     lowered = false;
                     return Err(err);

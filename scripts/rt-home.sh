@@ -13,6 +13,25 @@
 #   library/PKG/DESCRIPTION   DESCRIPTION.in with @VERSION@ (config.status)
 #   library/PKG/NAMESPACE     the package's NAMESPACE
 #   library/PKG/R/PKG         mkR1/mkRbase's all.R, for compiler and tools
+#   share/                    share/Makefile.in's install-sources: R/*.R,
+#                             bibliographies/*.R, dictionaries/*.txt,
+#                             encodings/*, java/*, licenses/*, make/*.mk,
+#                             Rd/macros/*, sh/*.sh, texmf/bibtex/{bib,bst}/*,
+#                             texmf/tex/latex/* (no zoneinfo: the oracle's
+#                             configure uses the system's; install-sources2's
+#                             .rds files are made by R, L4's build)
+#   include/Rmath.h           src/include/Makefile's Rmath.h: config.status's
+#                             Rmath.h0 from Rmath.h0.in (@PACKAGE_VERSION@, and
+#                             @RMATH_HAVE_WORKING_LOG1P@ as configure finds it
+#                             on the oracle image: glibc's log1p works)
+#   library/tools/libs/tools.so
+#                             tools' native code (src/library/tools/src, its
+#                             Makefile.in's flags: -DHAVE_CONFIG_H and
+#                             C_VISIBILITY), built against robigo's headers for
+#                             GNU R's natives (crates/robigo-rtapi/internal,
+#                             docs/g3.md §10) and the C API's, then the
+#                             tarball's public ones and the tree's include/:
+#                             nothing from an installed R
 # The tree is rebuilt when the tarball's tree or this script changes (the
 # stamp holds both hashes).
 set -euo pipefail
@@ -22,7 +41,33 @@ src=$(scripts/r-src.sh)
 version=4.6.2
 # configure's WHICH on the oracle image (Sys.which's body there)
 which_path=/usr/bin/which
-stamp="$(basename "$src") $(sha256sum "$0" | cut -c1-16)"
+# robigo_layout.h, which robigo-heap's build writes (its out_dir: the one
+# build script run of robigo-heap's; cargo's errors stay on stderr)
+layout=$(cargo build -q --release --locked -p robigo-heap --message-format=json | python3 -c '
+import json, sys
+dirs = []
+for line in sys.stdin:
+    m = json.loads(line)
+    if m.get("reason") == "build-script-executed" and "/robigo-heap#" in m.get("package_id", ""):
+        dirs.append(m["out_dir"] + "/include")
+if len(dirs) != 1:
+    sys.exit(f"rt-home.sh: {len(dirs)} build script runs of robigo-heap, not one")
+print(dirs[0])
+')
+[ -f "$layout/robigo_layout.h" ] || { echo "rt-home.sh: no robigo_layout.h from robigo-heap's build" >&2; exit 1; }
+cc=${CC:-cc}
+headers=(crates/robigo-rtapi/internal crates/robigo-rtapi/include crates/robigo-rtcore/include "$layout")
+# the natives' inputs: the headers, in C order whatever the caller's locale
+# (the stamp is their hash), and the compiler (the sources are the
+# tarball's, named by its directory)
+hfiles=()
+for d in "${headers[@]}"; do
+  mapfile -t hs < <(find "$d" -maxdepth 1 -name '*.h' -type f | LC_ALL=C sort)
+  [ "${#hs[@]}" -gt 0 ] || { echo "rt-home.sh: no headers in $d" >&2; exit 1; }
+  hfiles+=("${hs[@]}")
+done
+natives=$( (cat "${hfiles[@]}" && "$cc" --version) | sha256sum | cut -c1-16)
+stamp="$(basename "$src") $(sha256sum "$0" | cut -c1-16) $natives"
 if [ -f "$out/.rt-home" ] && [ "$(cat "$out/.rt-home")" = "$stamp" ]; then
   echo "$out"
   exit 0
@@ -44,6 +89,30 @@ for pkg in compiler tools; do
   # shellcheck disable=SC2046
   (cd "$lib/$pkg" && LC_COLLATE=C cat $(LC_COLLATE=C ls R/*.R)) > "$tmp/library/$pkg/R/$pkg"
 done
+# R: share/Makefile.in install-sources: each glob in its order, expanded once
+# against the tarball's share/ (installdirs makes each one's directory)
+share_globs=('R/*.R' 'bibliographies/*.R' 'dictionaries/*.txt' 'encodings/*' 'java/*' 'licenses/*'
+  'make/*.mk' 'Rd/macros/*' 'sh/*.sh' 'texmf/bibtex/bib/*' 'texmf/bibtex/bst/*' 'texmf/tex/latex/*')
+for g in "${share_globs[@]}"; do
+  mkdir -p "$tmp/share/${g%/*}"
+  # shellcheck disable=SC2206 # the glob, as the Makefile's `for f in $(srcdir)/$g`
+  files=("$src"/share/$g)
+  for f in "${files[@]}"; do
+    # (an unmatched glob stays itself, which is no file)
+    [ -f "$f" ] || { echo "rt-home.sh: share/$g: '${f#"$src"/}' is not a regular file of the tarball" >&2; exit 1; }
+  done
+  cp -p "${files[@]}" "$tmp/share/${g%/*}/"
+done
+mkdir -p "$tmp/include"
+sed -e "s/@PACKAGE_VERSION@/$version/" -e "s/@RMATH_HAVE_WORKING_LOG1P@/# define HAVE_WORKING_LOG1P 1/" \
+  "$src/src/include/Rmath.h0.in" > "$tmp/include/Rmath.h"
+mkdir -p "$tmp/build/tools" "$tmp/library/tools/libs"
+for f in "$lib/tools/src"/*.c; do
+  "$cc" -std=gnu11 -O2 -fPIC -fvisibility=hidden -DHAVE_CONFIG_H "${headers[@]/#/-I}" -I"$src/src/include" \
+    -I"$tmp/include" -I"$lib/tools/src" -c "$f" -o "$tmp/build/tools/$(basename "$f" .c).o"
+done
+"$cc" -shared -o "$tmp/library/tools/libs/tools.so" "$tmp/build/tools"/*.o
+rm -rf "$tmp/build"
 echo "$stamp" > "$tmp/.rt-home"
 rm -rf "$out"
 mv "$tmp" "$out"

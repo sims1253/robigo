@@ -38,7 +38,7 @@ pub(crate) fn install(cx: &mut Cx) {
 /// name, the usual case).
 // R: dotcode.c:pkgtrim, setDLLname
 fn pkgtrim(cx: &mut Cx, args: Args<'_>) -> RResult<(Option<String>, Option<Vec<usize>>)> {
-    let named = (1..args.len()).any(|i| args.name(cx, i).is_some_and(|n| n.name().bytes() == b"PACKAGE"));
+    let named = (1..args.len()).any(|i| args.name(cx, i).is_some_and(|n| n.name_bytes() == b"PACKAGE"));
     if !named {
         return Ok((None, None));
     }
@@ -46,7 +46,7 @@ fn pkgtrim(cx: &mut Cx, args: Args<'_>) -> RResult<(Option<String>, Option<Vec<u
     let mut used = 0;
     let mut keep = Vec::new();
     for i in 1..args.len() {
-        let is_pkg = args.name(cx, i).is_some_and(|n| n.name().bytes() == b"PACKAGE");
+        let is_pkg = args.name(cx, i).is_some_and(|n| n.name_bytes() == b"PACKAGE");
         if !is_pkg {
             keep.push(i);
             continue;
@@ -81,35 +81,40 @@ struct Resolved {
     keep: Option<Vec<usize>>,
 }
 
-/// `isValidString(x)`: a character vector whose first element is a string.
-fn is_valid_string(x: Ref<'_>) -> bool {
-    x.as_vector::<Char<'_>>().is_some_and(|v| !v.is_empty())
+/// What `.NAME` is (`checkValidSymbolId`).
+enum SymId {
+    /// A name: its first string in the native encoding (`translateChar`),
+    /// or the translation's error, which `resolveNativeRoutine` raises
+    /// where GNU R translates it (after `PACKAGE` and the namespace).
+    Name(Result<Vec<u8>, String>),
+    /// A native symbol reference: its routine and, for a registered one,
+    /// the routine's name.
+    Ref(*const c_void, Option<Vec<u8>>),
 }
 
-/// `checkValidSymbolId(op, call, &fun, &symbol, buf)`: nothing for a
-/// string; for a native symbol reference (an external pointer, or a
+/// `checkValidSymbolId(op, call, &fun, &symbol, buf)`: for a string, the
+/// name; for a native symbol reference (an external pointer, or a
 /// "NativeSymbolInfo" holding one) its routine, the registration it carries
 /// and the routine's name.
 // R: dotcode.c:checkValidSymbolId
-#[allow(clippy::type_complexity)]
-fn check_valid_symbol_id(
-    cx: &mut Cx,
-    call: Root<'_>,
-    op: Root<'_>,
-    symbol: &mut Found,
-) -> RResult<Option<(*const c_void, Option<Vec<u8>>)>> {
+fn check_valid_symbol_id(cx: &mut Cx, call: Root<'_>, op: Root<'_>, symbol: &mut Found) -> RResult<SymId> {
     enum Kind {
-        Str,
+        Str(Result<Vec<u8>, String>),
         Ptr(Option<Vec<u8>>, *mut c_void),
         Info,
         Other,
     }
     let kind = {
         let x = op.bind(cx);
-        if is_valid_string(x) {
-            Kind::Str
+        if let Some(c) = x.as_vector::<Char<'_>>().filter(|v| !v.is_empty()).map(|v| v.get(0)) {
+            // isValidString: the name, translated now and raised later
+            Kind::Str(
+                robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(c), cx.locale())
+                    .map(|b| b.into_owned())
+                    .map_err(|e| e.to_string()),
+            )
         } else if let View::ExtPtr(e) = x.view() {
-            Kind::Ptr(e.tag().as_sym().map(|t| t.name().bytes().to_vec()), e.addr())
+            Kind::Ptr(e.tag().as_sym().map(|t| t.name_bytes().to_vec()), e.addr())
         } else if x.as_vector::<Ref<'_>>().is_some_and(|v| v.len() >= 2 && v.get(1).sexptype() == EXTPTRSXP) {
             // isNativeSymbolInfo: a list of at least two whose second is a
             // pointer
@@ -119,7 +124,7 @@ fn check_valid_symbol_id(
         }
     };
     match kind {
-        Kind::Str => Ok(None),
+        Kind::Str(name) => Ok(SymId::Name(name)),
         Kind::Ptr(tag, addr) => {
             let mut fun = std::ptr::null::<c_void>();
             let mut name = None;
@@ -154,7 +159,7 @@ fn check_valid_symbol_id(
             {
                 return Err(cx.error(&format!("symbol '{}' is too long", String::from_utf8_lossy(n))));
             }
-            Ok(Some((fun, name)))
+            Ok(SymId::Ref(fun, name))
         }
         Kind::Info => cx.scope(|cx, s| {
             let a = op.bind(cx).as_vector::<Ref<'_>>().unwrap().get(1);
@@ -219,11 +224,12 @@ fn resolve_native_routine(
     ty: SymType,
 ) -> RResult<Resolved> {
     let mut symbol = Found::of(ty);
-    let by_ref = check_valid_symbol_id(cx, call, args.root(0), &mut symbol)?;
+    let id = check_valid_symbol_id(cx, call, args.root(0), &mut symbol)?;
     let (dll, keep) = pkgtrim(cx, args)?;
-    if let Some((fun, name)) = by_ref {
-        return Ok(Resolved { fun, symbol, name: name.unwrap_or_default(), keep });
-    }
+    let translated = match id {
+        SymId::Ref(fun, name) => return Ok(Resolved { fun, symbol, name: name.unwrap_or_default(), keep }),
+        SymId::Name(t) => t,
+    };
     if dll.as_deref() == Some("") {
         return Err(cx.error_call(Some(call), "PACKAGE = \"\" is invalid"));
     }
@@ -246,11 +252,7 @@ fn resolve_native_routine(
     })?;
     // the name, translated (MaxSymbolBytes)
     let name = {
-        let c = args.get(cx, 0).as_vector::<Char<'_>>().unwrap().get(0);
-        let b = robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(c), cx.locale())
-            .map(|b| b.into_owned())
-            .map_err(|e| e.to_string());
-        let b = match b {
+        let b = match translated {
             Ok(b) => b,
             Err(m) => return Err(cx.error(&m)),
         };

@@ -1,23 +1,24 @@
-//! Symbols and their per-isolate cells (docs/g3.md §5.3): the one module
-//! behind which M2's process-shared symbol arena swaps in.
+//! Symbols and their per-isolate cells (docs/g3.md §5.3).
 //!
-//! In M1 symbols are per heap (foreman's answer 1 to m1-plan §F): the heap
-//! interns them, gives each a dense id in the order it made them and stores
-//! GNU R's `R_Newhashpjw` of the name next to it (`robigo_heap::OFF_SYMID`).
-//! Everything an isolate binds to a symbol lives here, in a table indexed by
-//! that id, never in the symbol itself:
+//! Symbols are the process's (H5): robigo-heap's arena makes each name's
+//! symbol once, gives it a global id in the order the arena made them, and
+//! stores GNU R's `R_Newhashpjw` of the name next to it
+//! (`robigo_heap::OFF_SYMID`). A symbol never changes after it is made.
+//! What it carries: its name, its hash, its id, and the bits its name gives
+//! it ([`symbol_bits`]: GNU R's `SPECIAL_SYMBOL`, `DDVAL`, and no reference
+//! counting on `.Last.value`).
 //!
-//! - the base binding: GNU R's `SYMVALUE` and the two binding bits GNU R
-//!   keeps on the symbol for it (active, locked);
-//! - the symbol's entry of GNU R's `R_GlobalCache` (`envir.c:616-772`).
+//! Everything an isolate binds to a symbol lives here, in tables indexed by
+//! the id, never on the symbol:
 //!
-//! What stays on the symbol is what never changes after it is made: its
-//! name, its hash, its id, GNU R's `SPECIAL_SYMBOL` bit (names.c's
-//! `Spec_name`, set once per heap) and its TRACKREFS (off for
-//! `.Last.value` alone, [`install_rsyms`]). M2 replaces [`id_of`], [`hash_of`] and
-//! [`for_each_installed`] with the arena's arithmetic and walk; the tables
-//! below already grow on demand, since another isolate may install a symbol
-//! this one has never seen.
+//! - the base binding: GNU R's `SYMVALUE` and the binding bits GNU R keeps
+//!   on the symbol for it (active, locked, assignment pending);
+//! - the symbol's entry of GNU R's `R_GlobalCache` (`envir.c:616-772`);
+//! - its `INTERNAL`.
+//!
+//! The heap keeps the isolate's PRINTNAME of each symbol (`Core::printname`,
+//! [`crate::Sym::name`]). The tables grow on demand, since another isolate
+//! may have made a symbol this one has never seen.
 
 #![allow(unsafe_code)]
 
@@ -42,7 +43,7 @@ macro_rules! rsyms {
         impl RSym {
             /// Every symbol, in the order of the table (an index is its
             /// discriminant).
-            pub(crate) const ALL: [RSym; [$(RSym::$v),*].len()] = [$(RSym::$v),*];
+            pub const ALL: [RSym; [$(RSym::$v),*].len()] = [$(RSym::$v),*];
 
 
             /// The symbol's name.
@@ -84,6 +85,8 @@ rsyms! {
     Comment = b"comment",
     /// `srcref` (`R_SrcrefSymbol`)
     Srcref = b"srcref",
+    /// `srcfile` (`R_SrcfileSymbol`)
+    Srcfile = b"srcfile",
     /// `...` (`R_DotsSymbol`)
     Dots = b"...",
     /// `as.character` (`R_AsCharacterSymbol`)
@@ -239,12 +242,13 @@ pub(crate) unsafe fn is_special(s: Sexp) -> bool {
     unsafe { s.gp() & SPECIAL_SYMBOL != 0 }
 }
 
-/// Every installed symbol in the order GNU R's symbol table is walked
-/// (`envir.c:BuiltinNames`): chain `R_Newhashpjw(name) % HSIZE` ascending,
-/// and within a chain newest first, since `install` prepends. The ids are
-/// the heap's install order, so this is GNU R's order whenever the symbols
-/// were installed in GNU R's order. (`R_UnboundValue` and `R_MissingArg`
-/// are not installed, as in GNU R.)
+/// Every symbol this isolate installed, in the order GNU R's symbol table
+/// is walked (`envir.c:BuiltinNames`): chain `R_Newhashpjw(name) % HSIZE`
+/// ascending, and within a chain newest first, since `install` prepends.
+/// The ids are the order the process's arena made the symbols in, which is
+/// this isolate's install order when it is the only one, so this is GNU
+/// R's order whenever the symbols were installed in GNU R's order.
+/// (`R_UnboundValue` and `R_MissingArg` are not installed, as in GNU R.)
 pub(crate) fn for_each_installed(core: &Core, mut f: impl FnMut(Sexp)) {
     let mut syms: Vec<(u32, u32, Sexp)> = core
         .symbols()

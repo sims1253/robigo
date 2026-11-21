@@ -44,7 +44,7 @@ pub fn has_attrib(x: Ref<'_>) -> bool {
 
 /// The attribute named `name` (`getAttrib0` for an ordinary name).
 pub fn get<'g>(x: Ref<'g>, name: &[u8]) -> Option<Attr<'g>> {
-    attrs(x).find(|a| a.tag.name().bytes() == name)
+    attrs(x).find(|a| a.tag.name_bytes() == name)
 }
 
 /// The value of the attribute named `name`.
@@ -148,12 +148,12 @@ impl<'g> Attrs<'g> {
 
     /// `removeAttrib` for an ordinary name.
     pub fn remove(&mut self, name: &[u8]) {
-        self.list.retain(|a| a.tag.name().bytes() != name);
+        self.list.retain(|a| a.tag.name_bytes() != name);
     }
 
     /// The value installed under `name`.
     pub fn value(&self, name: &[u8]) -> Option<Ref<'g>> {
-        self.list.iter().find(|a| a.tag.name().bytes() == name).map(|a| a.value)
+        self.list.iter().find(|a| a.tag.name_bytes() == name).map(|a| a.value)
     }
 
     /// `copyMostAttrib(inp, ans)`: every attribute but names, dim and
@@ -162,7 +162,7 @@ impl<'g> Attrs<'g> {
     // R: attrib.c:copyMostAttrib
     pub fn copy_most(&mut self, inp: Ref<'g>) {
         for a in attrs(inp) {
-            if !matches!(a.tag.name().bytes(), b"names" | b"dim" | b"dimnames") {
+            if !matches!(a.tag.name_bytes(), b"names" | b"dim" | b"dimnames") {
                 self.install(a);
             }
         }
@@ -246,7 +246,7 @@ pub fn get_attrib<'g>(cx: &'g Cx, x: Ref<'g>, name: &[u8]) -> Result<Option<Ref<
         let mut tags = Vec::new();
         let mut c = x.as_cons();
         while let Some(cell) = c {
-            tags.push(cell.tag().as_sym().map(|s| s.name()));
+            tags.push(cell.tag().as_sym().map(|s| s.name(cx)));
             c = cell.cdr().as_cons();
         }
         if tags.iter().all(Option::is_none) {
@@ -303,9 +303,9 @@ pub fn do_attributes(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
             k = 1;
         }
         for a in &at {
-            let v = get_attrib(cx, xv, a.tag.name().bytes())?.unwrap_or(a.value);
+            let v = get_attrib(cx, xv, a.tag.name_bytes())?.unwrap_or(a.value);
             value.set(k, v);
-            nm.set(k, a.tag.name());
+            nm.set(k, a.tag.name(cx));
             k += 1;
         }
         let mut al = Attrs::new();
@@ -360,7 +360,7 @@ pub fn do_attr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
         let mut tag: Option<Vec<u8>> = None;
         let mut mt = M::None;
         for a in attrs(xv) {
-            let s = a.tag.name().bytes();
+            let s = a.tag.name_bytes();
             if s.starts_with(&str) {
                 if s.len() == str.len() {
                     tag = Some(s.to_vec());
@@ -431,7 +431,7 @@ pub fn data_class<'g>(cx: &'g Cx, obj: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
             let head = obj.as_cons().unwrap().car();
             let special = head
                 .as_sym()
-                .map(|s| s.name().bytes())
+                .map(|s| s.name_bytes())
                 .filter(|n| matches!(*n, b"if" | b"for" | b"while" | b"(" | b"{" | b"=" | b"<-"));
             match special {
                 Some(n) => one(cx, n),
@@ -627,7 +627,7 @@ pub fn do_names(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out:
             let mut any = false;
             let mut c = xv.as_cons();
             while let Some(cell) = c {
-                let tg = cell.tag().as_sym().map(|s| s.name());
+                let tg = cell.tag().as_sym().map(|s| s.name(cx));
                 any |= tg.is_some();
                 tags.push(tg);
                 c = cell.cdr().as_cons();
@@ -642,6 +642,14 @@ pub fn do_names(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out:
             Ok(v.finish().into())
         }),
         _ if is_vector(x.bind(cx)) || x.bind(cx).is_s4() => {
+            if cfg!(feature = "diff-plant") && t == STRSXP && x.bind(cx).len() == Some(3) {
+                // PLANT(A4, env): an attribute written on the (shared) argument itself
+                cx.scope(|cx, s| -> RResult<()> {
+                    let k = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"a4plant")?.into())))?;
+                    let v = s.capture(cx, |cx, o| cx.build_scalar(o, 1i32))?;
+                    cx.install_attrib(x, k, v)
+                })?;
+            }
             cx.scope(|cx, s| {
                 let n = names(x.bind(cx)).map(|n| s.root(cx, n));
                 match n {

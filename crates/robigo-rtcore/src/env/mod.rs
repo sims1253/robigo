@@ -73,7 +73,7 @@ pub(crate) mod recycle;
 mod restore;
 mod slotapi;
 
-pub use promise::{ArgLoc, BindingType};
+pub use promise::{ArgLoc, BindingType, bytecode_expr};
 pub use slotapi::{Scalar, SlotInit};
 
 use crate::exit::{RError, RResult};
@@ -440,7 +440,7 @@ fn env_error(cx: &mut Cx, msg: &str) -> RError {
 /// `s` is a live symbol.
 unsafe fn sym_name(s: Sexp) -> String {
     // SAFETY: the caller's contract: PRINTNAME is a live CHARSXP.
-    String::from_utf8_lossy(unsafe { s.car().char_bytes() }).into_owned()
+    String::from_utf8_lossy(unsafe { s.sym_name_bytes() }).into_owned()
 }
 
 /// Panics unless `x` is a symbol: the GNU R entry points that do not check
@@ -789,6 +789,11 @@ impl Loc {
                 }
                 At::Base(s) => {
                     let new = if v == iso.unbound { Sexp::NULL } else { v };
+                    if !new.is_null() {
+                        // a base binding is listed by this isolate's symbols
+                        // (`frame_bindings`), so it needs one it took
+                        iso.core().check_adopted(s);
+                    }
                     // (FIX_BINDING_REFCNT counts nothing for a symbol that
                     // tracks no references: `.Last.value`, sym::install_rsyms)
                     let tracks = s.tracks_refs();
@@ -1219,6 +1224,18 @@ impl Cx {
             let x = self.iso().envs().internal(sym.as_ref().sexp());
             if x.is_null() { self.nil() } else { Ref::from_sexp(x, self) }
         }
+    }
+
+    /// `PRINTNAME(sym)` for code that holds raw objects: the isolate's
+    /// CHARSXP of the name ([`crate::Sym::name`]).
+    ///
+    /// # Safety
+    ///
+    /// `sym` must be a live symbol.
+    pub unsafe fn printname_raw(&self, sym: Sexp) -> Sexp {
+        // SAFETY: one read of the core, which calls nothing of ours; a live
+        // symbol (the caller's contract).
+        unsafe { self.iso().core().printname(sym) }
     }
 
     /// `INTERNAL(sym)` for the compiler and the evaluator, which hold raw
@@ -2384,7 +2401,7 @@ impl Cx {
         let mut out = Vec::new();
         let mut push = |s: Sexp, l: Loc| {
             // SAFETY: a symbol of a binding of a live frame.
-            if all || unsafe { s.car().char_bytes() }.first() != Some(&b'.') {
+            if all || unsafe { s.sym_name_bytes() }.first() != Some(&b'.') {
                 // SAFETY: as above.
                 out.push((unsafe { Ref::from_sexp(s, self) }.as_sym().unwrap(), Binding::new(l)));
             }
@@ -2441,7 +2458,7 @@ impl Cx {
             let b = cx.frame_bindings(env.bind(cx).as_env(), all).unwrap();
             let mut ans = cx.alloc_vector::<crate::Char<'_>>(b.len())?;
             for (i, (s, _)) in b.iter().enumerate() {
-                ans.set(i, s.name());
+                ans.set(i, s.name(cx));
             }
             Ok(ans.finish().into())
         })
@@ -3387,9 +3404,10 @@ pub enum RawArg {
 /// An argument slot as [`Cx::arg_slot_raw`] reads it.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ArgSlot {
-    /// Not forced yet: its expression (`PRCODE`).
+    /// Not forced yet: its code (`PRCODE`: byte code for a promise of
+    /// compiled code; [`bytecode_expr`] reads its expression).
     Delayed { expr: Sexp },
-    /// Forced: the promise's value and expression.
+    /// Forced: the promise's value and code (`PRCODE`).
     Forced { value: Sexp, expr: Sexp },
     /// The argument's promise object (materialized, or made for an
     /// overwritten argument): what GNU R's argument list holds.
@@ -3404,9 +3422,11 @@ pub enum ArgValue {
     /// An unboxed scalar.
     Scalar,
     /// An unforced argument: its expression and the environment it is
-    /// evaluated in (GNU R's PREXPR and PRENV).
+    /// evaluated in (GNU R's PREXPR and PRENV: byte code's source
+    /// expression for a promise of compiled code).
     Delayed { expr: Sexp, env: Sexp },
-    /// A forced argument: its expression (GNU R's PRENV is R_NilValue).
+    /// A forced argument: its expression (PREXPR; GNU R's PRENV is
+    /// R_NilValue).
     Forced { expr: Sexp },
 }
 
@@ -3474,15 +3494,17 @@ impl Cx {
                     match s.kind() {
                         VALUE | ACTIVE => ArgValue::Obj(s.val()),
                         REAL | INT | LGL => ArgValue::Scalar,
+                        // (PREXPR: a promise of compiled code holds
+                        // byte code)
                         DELAYED => ArgValue::Delayed {
-                            expr: s.aux(),
+                            expr: promise::bytecode_expr(s.aux(), iso.nil),
                             env: if s.has(META_ORIGIN_SELF) {
                                 s.owner
                             } else {
                                 frame::layout::get(s.owner, frame::layout::OFF_CALLER)
                             },
                         },
-                        FORCED => ArgValue::Forced { expr: s.aux() },
+                        FORCED => ArgValue::Forced { expr: promise::bytecode_expr(s.aux(), iso.nil) },
                         k => unreachable!("robigo: a bound slot of kind {k}"),
                     }
                 }

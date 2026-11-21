@@ -104,6 +104,43 @@ class Guards(unittest.TestCase):
             "guard `x`: named twice",
         ])
 
+    def test_rt_bars_measures_a_guard_on_both_binaries_and_fails_its_slowdown(self):
+        # cmd_rt_bars' wiring, with the measurements mocked: the guard is
+        # measured with the bars on robigo-rt and on main, shown as a guard,
+        # and 1% slower than main fails the command
+        guard = "guard-subset-dbl"
+        bars = (f'[gnur]\nversion = "{perf.pins()["rt"]}"\nsource = "x"\n[gnur.instr]\nplain = 1000.0\n'
+                '[gnur.rss]\n"p.R" = 50000\n[[bar]]\nrow = "plain"\nagainst = "gnur"\nmax = 0.6\n'
+                f'[[guard]]\nrow = "{guard}"\n[[rss]]\nprogram = "p.R"\nagainst = ["gnur"]\n')
+        measured = []
+
+        def instr(binary, rows, *_, **__):
+            measured.append((binary, list(rows)))
+            return {"plain": 500.0, guard: 101.0 if binary == "new-bin" else 100.0}
+
+        for slower, rc in ((True, 1), (False, 0)):
+            measured.clear()
+            with tempfile.TemporaryDirectory() as tmp:
+                Path(tmp, "bars.toml").write_text(bars)
+                a = SimpleNamespace(bars=str(Path(tmp, "bars.toml")), robigo_rt="new-bin",
+                                    main="main-bin" if slower else None, jobs=1, runs=1,
+                                    out=os.path.join(tmp, "out.json"), gnur=None, cycles=False)
+                buf = io.StringIO()
+                with patch.object(perf, "rt_instr", instr), \
+                        patch.object(perf, "rt_rss", lambda *_: {"p.R": 30000}), \
+                        patch.object(perf, "binary_identity", lambda *_: {}), \
+                        patch.object(perf, "report_identity", lambda *_, **__: None), \
+                        patch.object(perf, "cpu_signature", lambda: ("cpu", "0" * 16)), redirect_stdout(buf):
+                    self.assertEqual(perf.cmd_rt_bars(a), rc)
+            out = buf.getvalue()
+            self.assertEqual([r for _, r in measured], [["plain", guard]] * (2 if slower else 1))
+            self.assertRegex(out, rf"\| {guard} \| 101\.0 \|.*\| main \| \| guard \|")
+            if slower:
+                self.assertEqual([b for b, _ in measured], ["new-bin", "main-bin"])
+                self.assertIn(f"FAIL `{guard}`: +1.00% instructions against main (100.0 -> 101.0)", out)
+            else:
+                self.assertNotIn("FAIL", out)
+
     def test_the_committed_guards(self):
         import tomllib
         with open(perf.RT_ROWS, "rb") as f:
@@ -116,9 +153,31 @@ class Guards(unittest.TestCase):
             "guard-subset-dbl", "guard-subassign-dbl", "guard-subset-matrix",
             "grow-dbl", "scalars", "d0-attr", "d0-attributes", "d0-names",
             "d0-unlist", "d0-paste", "d0-paste0",
+            "guard-vec-arith", "guard-vec-sum", "guard-dots", "guard-dollar-assign", "guard-while", "guard-repeat",
         ])
         # every row of the guard group is one
         self.assertLessEqual({n for n, r in rows.items() if r["group"] == "guard"}, set(guards))
+
+
+class Rows(unittest.TestCase):
+    """A rows file's `setup_ref`, and a bars file that names no program."""
+
+    def test_a_row_takes_its_own_setup_or_the_shared_one(self):
+        doc = {"row": [{"name": "a", "setup": "x <- 1"}, {"name": "jit-b", "setup_ref": "calls"}, {"name": "c"}],
+               "setups": {"calls": "f <- function() 1"}}
+        rows = perf.rows_with_setups(doc)
+        self.assertEqual([r.get("setup") for r in rows], ["x <- 1", "f <- function() 1", None])
+        # the parsed document is left as it was
+        self.assertNotIn("setup", doc["row"][1])
+
+    def test_an_unknown_setup_names_its_row(self):
+        with self.assertRaises(KeyError) as e:
+            perf.rows_with_setups({"row": [{"name": "jit-c", "setup_ref": "nope"}]})
+        self.assertEqual(e.exception.args[0], "row `jit-c`: no setup named `nope` in the [setups] table")
+
+    def test_no_program_means_no_rss_run(self):
+        # (rss.py refuses a call without files; /nonexistent would fail if run)
+        self.assertEqual(perf.rt_rss(None, [], 1, "/nonexistent", "gnur"), {})
 
 
 class AgainstMain(unittest.TestCase):
@@ -251,19 +310,26 @@ class Pin(unittest.TestCase):
 
     def test_the_committed_numbers_are_for_the_rt_pin(self):
         import tomllib
-        with open(perf.RT_BARS, "rb") as f:
-            spec = tomllib.load(f)
-        self.assertEqual(spec["gnur"]["version"], perf.pins()["rt"])
-        rows = {b["row"] for b in spec["bar"]}
-        for b in spec["bar"]:
-            self.assertIn(b["row"], spec[b["against"]]["instr"])
-            self.assertEqual(perf.rt_acceptance_errors(b), [])
-        for r in spec["rss"]:
-            for against in r["against"]:
-                self.assertIn(r["program"], spec[against]["rss"])
         with open(perf.RT_ROWS, "rb") as f:
             names = {r["name"] for r in tomllib.load(f)["row"]}
-        self.assertLessEqual(rows, names)
+        # m1-bars.toml, and V4's JIT-cost bars, not gated until V4 step 3
+        jit = os.path.join(perf.ROOT, "benchmarks", "rt", "jit-bars.toml")
+        specs = {}
+        for path in (perf.RT_BARS, jit):
+            with open(path, "rb") as f:
+                specs[path] = tomllib.load(f)
+        for path, spec in specs.items():
+            self.assertEqual(spec["gnur"]["version"], perf.pins()["rt"], path)
+            rows = {b["row"] for b in spec["bar"]}
+            for b in spec["bar"]:
+                self.assertIn(b["row"], spec[b["against"]]["instr"], path)
+                self.assertEqual(perf.rt_acceptance_errors(b), [], path)
+            for r in spec["rss"]:
+                for against in r["against"]:
+                    self.assertIn(r["program"], spec[against]["rss"], path)
+            self.assertLessEqual(rows, names, path)
+        # (robigo-rt is at about 1.9x GNU R's there: none is met yet)
+        self.assertTrue(all(b.get("met") is False for b in specs[jit]["bar"]))
 
 
     def test_committed_s3_is_unmet_and_still_held_to_main(self):

@@ -42,9 +42,10 @@ a directory of your own: each holds several GB. If a task truly needs one
 | text oracle | `cargo test -p robigo-text` | number and string formatting against GNU R 4.6.2's `format.info()`, `format()`, `encodeString()`, `print()` and `as.character()` in C.UTF-8 and C, and collation against its ICU root collator (`order()` of 10,000 generated strings and the signs of 20,000 pairs, recorded in the oracle image) (`crates/robigo-text/oracle/record.sh` records them) |
 | parse corpus | `scripts/parse-corpus.py check` | parse trees and parse errors of the fastr/gnur-tests/gnur-examples corpora and GNU R's own sources against GNU R's dumps (`tests/parse/passing/` ratchets) |
 | conformance | `cargo test --release -p robigo-cli --test conformance` | `tests/r/**/*.R`: stdout, stderr, exit status as bytes, under the interpreter, the VM and the VM with JIT |
-| rt conformance | `cargo test --release -p robigo-rtapi --test conformance` | `robigo-rt` on `tests/rt/**/*.R` and its ratcheted `tests/r` cases, against GNU R 4.6.2 (§ Oracles, "Ratchet columns") |
+| rt conformance | `cargo test --release -p robigo-rtapi --test conformance` | `robigo-rt` on `tests/rt/**/*.R` and its ratcheted `tests/r` cases, against GNU R 4.6.2 (§ Oracles, "Ratchet columns"). The cases that load tools' native code (`.requires` `r-home-tools`) run when `robigo-rt`'s `R_HOME` tree has it: `scripts/rt-home.sh` builds `library/tools/libs/tools.so` from GNU R's sources against robigo's headers for the natives (`crates/robigo-rtapi/internal`), as the rt job does before its conformance steps |
 | corpora | `scripts/corpus.py run NAME` | below |
 | fuzzing | `scripts/fuzz.py parse\|rds` | mutated scripts through `parse()` and mutated RDS files through `readRDS()`: a panic, failed allocation, stack overflow or fatal signal is a finding; reproducers land in `.robigo/fuzz/` |
+| builtin differential | `scripts/builtin-diff.py run [--only NAME]` | robigo-rt's builtins against GNU R 4.6.2 on generated inputs, out of process (§ Builtin differential) |
 | builtin coverage | `scripts/builtin-coverage.py --check BIN` | the names.c builtins robigo lacks or registers as the wrong kind, and the "not implemented yet" / "not supported" refusals in the sources, against `scripts/builtin-coverage.baseline`: one that is not listed fails (`--update` lists it, and the review sees the diff) |
 
 Everything beyond the gate — valgrind's other tools (memcheck, massif),
@@ -55,6 +56,120 @@ interpreter, the VM and the JIT, `--emi` for dead code), test-case reduction
 `docs/profiling.md`, with
 the local-machine setup and this round's findings in
 `docs/ledger/perf-tools.md`.
+
+### Builtin differential
+
+`scripts/builtin-diff.py` (A4; `docs/g3.md` §10, §16) compares
+robigo-rt's builtins with GNU R 4.6.2's on generated inputs, out of process.
+
+- **Rows:** `tests/builtin-diff/rows.toml` has one table per builtin, by its
+  names.c name. An empty table is a valid row; the file's header lists the
+  fields. `check-rows` reports a registry builtin that has neither a row nor
+  a reason under `[uncovered]`, so a newly ported builtin shows up, and an
+  `[uncovered]` name the registry lacks. For now both are warnings, listed
+  in the summary, so the builtin PRs queued before A4 still pass;
+  `UNLISTED_FAILS` in `scripts/builtin-diff.py` makes them failures once
+  that queue has drained. A builtin with both a row and a reason always
+  fails.
+- **Cases:** `scripts/builtin-diff/gen.R` makes them, in GNU R alone, from
+  one value lattice (version 1, about 70 values with their decorations).
+  The kinds are:
+  - every value alone in every position;
+  - a greedy pairwise covering set;
+  - 200 seeded random tuples;
+  - the row's `extra` expressions;
+  - for an `.Internal` with a base wrapper, up to 300 calls of the wrapper.
+
+  The primary calls are `.Internal(f(...))` itself, the boundary ports are
+  written against. At most 25 generated cases of a row hold a large value
+  (one whose serialization is over 64 KiB). The batch holds each value
+  once; a case names its values, and the driver gives each case its own
+  copy. The same row and seed give a byte-identical batch.
+- **Running:** `scripts/builtin-diff/driver.R` runs a batch in both runtimes.
+  Before each case it empties the global environment and sets the case's
+  RNG state: a Pure row's cases start from Mersenne-Twister seeded 42; an
+  Rng row's cycle through the kinds, an absent `.Random.seed` and a corrupt
+  one. Each case is a closure `a4case` over a fresh environment that binds
+  the arguments `a<i>` and an alias `alias<i>` of each. So `error()` reports
+  `a4case()` and `errorcall()` the builtin's call.
+- **Records:** each case's record (`saveRDS`, version 3, uncompressed) holds:
+  - the value and its visibility;
+  - each warning and message in order: message, class, call;
+  - the error;
+  - each binding after the call: `list(unchanged = TRUE)` when its
+    serialization is the same as before the call, else
+    `list(unchanged = FALSE, value)`;
+  - the global environment's names;
+  - `.Random.seed`.
+
+  The records are compared byte for byte. So is what each case printed: the
+  driver writes a marker line before each case, and the harness splits
+  stdout at them. A case counts as done when its `.ok` marker exists, which
+  the driver writes after the record, so a crash while writing the record
+  costs that case and no other. `render.R`, run in any R ≥ 4, names the
+  first field that differs, for display only.
+- **Environment:** both runtimes run in this environment, which is part of
+  the cache key:
+  - `LC_ALL=C.UTF-8`, `LANGUAGE=en`, `TZ=UTC`, `R_DEFAULT_PACKAGES=NULL`,
+    `--vanilla`;
+  - `R_ENABLE_JIT=0`, or 3 for a row with `jit = "both"`, run again as
+    `<name>@jit`;
+  - a 2 GiB address-space cap per process (`RLIMIT_AS`), 4 jobs;
+  - a scratch directory as the working, home and temporary directory;
+  - no network: `unshare -rn` where it is allowed, `--network none` for the
+    docker side. CI's oracle container refuses unshare, so there the job's
+    network is present.
+- **Classes:** a case is one of:
+  - `pass`;
+  - `mismatch`;
+  - `not-implemented`: robigo-rt's record has "is not implemented yet";
+  - `crash`;
+  - `timeout`: 10 s with no record. A crash or a hang costs that case, and
+    the driver restarts at the next;
+  - `resource`: GNU R reports an allocation failure under the cap.
+    Excluded;
+  - `oracle-crash`: GNU R itself died or hung, or its two runs of the
+    batch gave the case different records. GNU R's side runs every batch
+    twice: a raw `.Internal` call with an input its wrapper never passes can
+    read memory it should not. Excluded.
+
+  robigo-rt failing to allocate where GNU R did not is a `crash`. A driver
+  whose self-test fails stops the run with "driver unusable on <runtime>:
+  <what>", and so does a runtime that dies before its first case.
+- **The score:** `run --only NAME` prints
+  `NAME: pass / total (not-implemented k, crash c, timeout t, resource r excluded, oracle-crash o excluded)`,
+  then the mismatches by field and the failing calls (`--show N`, new ones
+  first). It exits non-zero on a failure not in the known list. `--seed N`
+  generates another set, to which no known list applies.
+- **The ratchet:** `tests/builtin-diff/known/<row>.txt` lists the failing
+  case ids at seed 0, under a header with the row's key. `run` fails on a
+  failure that is not listed. `--update` removes the ids that pass now, and
+  writes the list of a row that has none. It never adds to an existing
+  list. A changed generator, driver, lattice or row changes the key; the
+  lists are then refused until `--regen-known` rewrites them, in a PR
+  titled `builtin-diff:` that shows each row's pass/total before and after.
+- **The key:** a row's key hashes gen.R, driver.R, the row, the seed, the
+  environment above, the JIT setting, and the oracle image's content tag
+  (from `scripts/ci-image.sh refs`, so it is the same locally and in CI).
+  It also covers GNU R's side's version, which counts the double run.
+- **GNU R's side** is cached by key, under `~/.cache/robigo-research/builtin-diff`,
+  or `--data` / `ROBIGO_BUILTIN_DIFF_DATA`. A missing row is made in the
+  oracle image with docker. In CI, the `builtin-diff-data` job makes the
+  records in the oracle image (`oracle --all`) and caches them by
+  `builtin-diff.py key`; the rt job restores them.
+- **The bar:** `plant --plant-rt BIN` runs the planted rows and a control
+  with robigo-rt and with a build with `robigo-rtbuiltins/diff-plant`. That
+  build has one wrong behaviour per compared field:
+  - `nchar`: a value, and `errorcall` for `error`;
+  - `seq_len`: a warning's text;
+  - `names`: an attribute written on the shared argument;
+  - `abs`: a panic;
+  - `set.seed`: one more draw;
+  - `nzchar`: printed output.
+
+  Each must fail in its own field, the panic must cost only its own cases,
+  and the control must not change. `ci`, rt-ci.py's step, runs
+  `check-rows`, then `run`, then `plant`.
 
 ### Timezone fixtures
 
@@ -492,6 +607,28 @@ scripts/perf.py compare before.json after.json          # the gate
   warmed-up batch; only batches of 50 ms or more count, so programs that
   take microseconds are still timed to about 2%. This is the finish line
   of "the fastest R", which instruction counts against GNU R cannot be.
+- **robigo-rt's wall time, under docs/g3.md §13's rule** (A3):
+  - **The build:** robigo-rt's shipped build is profile-guided.
+    `scripts/pgo-build.sh -p robigo-rtapi profile` trains an instrumented
+    build on perf-rt's rows (`benchmarks/rt/calls-rows.toml`), E1's
+    programs, the boot and `tests/rt`, and writes
+    `.robigo/pgo-rt/robigo-rt.profdata`. `pgo-build.sh -p robigo-rtapi use
+    FILE` builds with it. Pull requests' perf gates stay without PGO, as
+    robigo's do.
+  - **The comparison:** `scripts/wall13.py --robigo-rt BIN` times that
+    binary against GNU R 4.6.2 (the oracle image) and, with `--impls`, Ř
+    and FastR, for each program `--filter` selects from
+    `benchmarks/benchmarks.toml`.
+  - **The rule:** each sample is a batch of processes run until they took
+    50 ms; at least 10 interleaved rounds, rotated; medians compared;
+    within 2% is a tie, which does not count as faster. Every runtime
+    starts with base alone (`R_DEFAULT_PACKAGES=NULL`), since robigo-rt
+    attaches none yet.
+  - **What it records:** the machine (CPU model and signature) and
+    robigo-rt's binary identity. `--report FILE [--markdown]` prints a run.
+  - **Where it runs:** by hand on the 5900X desktop and on m0pad. There is
+    no CI job: GitHub's runners vary too much for a 2% tie, and the
+    self-hosted runners were removed.
 
 ### Path-scoped perf gate
 
@@ -503,8 +640,16 @@ from path globs to groups; the first rule matching a file wins).
 
 - **Paths.** The diff of GitHub's test merge commit against its first
   parent, main's commit (`git diff HEAD^1 HEAD`; the job checks out with
-  `fetch-depth: 2`). The same commit is the baseline
-  (`scripts/perf-baseline.py`), so the compared set is exactly the PR's.
+  `fetch-depth: 2`). The same commit is the baseline, so the compared set
+  is exactly the PR's. The `perf-base` job builds it, as `build` builds the
+  candidate, and `perf` measures both on one runner with the same filter.
+  It no longer waits for main's run of that commit (a median 23 minutes on
+  2026-11-18, cut off at 50 for 31 of 73 jobs, which were then compared
+  with an ancestor). GNU R's records, its answers and its counts for the
+  ratio, come from a cache per oracle image, CPU signature, libc6 and
+  valgrind packages and measurement inputs. Main's run saves it, and a
+  pull request measures GNU R itself when the cache is missing or does not
+  cover its selection (`scripts/perf-gnur.py`).
 - **What runs.** `perf.py run --filter <union of the selected groups>`. The
   gate is unchanged: instruction counts, 0.5%, paired confirmation. The
   compare steps treat baseline benchmarks outside the run's recorded
@@ -518,11 +663,11 @@ from path globs to groups; the first rule matching a file wins).
   bytecode VM and its compiler (every closure runs on it) and the numerics
   core (`%%`, long double sums, the RNG) are explicit `all` rules. Only paths that cannot change an instruction
   count (docs, tests, the other workflows) select `none`: the job then
-  records that in its summary, skips the baseline wait and the measurement,
-  and passes.
+  records that in its summary, skips both measurements, and passes.
 - **`main`** (and `workflow_dispatch`) always runs the full suite and
-  uploads `perf-main`, so every merge still records the full next baseline.
-  Narrowed pull-request runs upload `perf`, which nothing consumes.
+  uploads `perf-main`, the history's and the scoreboard's numbers, and saves
+  GNU R's records for its CPU signature. Narrowed pull-request runs upload
+  `perf`, which nothing consumes.
 - **Dry run.** Nothing needs CI to see a decision:
 
   ```sh
@@ -589,7 +734,13 @@ scripts/counters.py check -v   # every fixture in the ast, vm and jit tiers
   marker to make a run pass; fix the regression.
 - New passes are added with `--update` (locally) or `scripts/corpus.py
   absorb` on CI's result files (artifacts `corpus-*`); both create
-  markers. `ROBIGO_CONF_UPDATE=1` marks conformance scripts.
+  markers. `absorb --from-run [ID]` fetches those artifacts itself with
+  `gh`: the newest completed push run on main that has any, or run ID,
+  which must be a push to main. It skips a profile's or a tier's results
+  and the conformance runner's. Run it with `--dry-run` first and run the
+  listed cases locally, because a CI pass can depend on CI's environment
+  (gnur-examples' `base/system.file` passes there, not on a workstation).
+  `ROBIGO_CONF_UPDATE=1` marks conformance scripts.
 - `scripts/ratchet.py check` lists the ratchets and fails if a marker
   names no case; `scripts/ratchet.py migrate` converts a legacy
   `passing.txt` (still read, for branches that predate the markers).
@@ -703,8 +854,24 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    (robigo-rt's checked-in base subset is what this tree traces: its
    names, kinds and defining files; which scripts reach each name is the
    job's artifact `base-subset-reached-by`, kept out of the file so that a
-   new case changes it only where it reaches a new name); the modes of `docs/g3.md` §16 add
-   steps here.
+   new case changes it only where it reaches a new name; for the same
+   reason the committed files carry no counts, which the generator prints
+   to the log, so two pull requests that each add a name merge to the file
+   the generator makes, or conflict where they add next to each other). It
+   fails for one of two reasons, and says which:
+   - **a stale list:** the inputs now reach other names
+     (scripts/base-subset-stale.py lists those gained, with the inputs that
+     reach them, and those lost). Run `scripts/base-subset.sh` and commit
+     the three `proto/base-*.txt` files. `scripts/regen-expected.sh` warns
+     when it records a case that is such an input
+     (`Rscript scripts/base-subset.R --inputs` lists them);
+   - **a traced run that differs from the untraced one:** the case prints
+     something the tracer changes. Regenerating cannot fix that: change the
+     case, or leave it out of the inputs. The message names the first line
+     that differs.
+
+   The artifact keeps the full diffs and the two transcripts. The modes of
+   `docs/g3.md` §16 add steps here.
 3. **build:** release build, base-package natives, the binary the heavy
    jobs use; the ratchet markers, the parse-corpus ratchet and the builtin
    coverage baseline (`scripts/builtin-coverage.py --check`) are checked
@@ -738,9 +905,9 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    (`.github/workflows/packages.yml`).
 10. **perf:** instruction counts of every benchmark; on pull requests only
     the benchmarks the changed paths can affect (§ Path-scoped perf gate),
-    compared with `main` (fails if slower by more than 0.5% or newly
-    wrong); on `main` all of them, and also GNU R's counts, saved as the
-    next baseline.
+    compared with the merge's base measured beside them (fails if slower by
+    more than 0.5% or newly wrong); on `main` all of them, and also GNU R's
+    counts.
     - **perf-rt** is the same gate for robigo-rt, on every pull request the
       `rt` job runs for, beside it: `scripts/perf.py rt-bars` measures the
       M1 bars' rows (callgrind instructions, N against 2N, as the bars tool
@@ -817,8 +984,14 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
     `agent-context`'s, below). `scripts/ci-check.py` passes when every job
     above passed or was skipped for a reason `select` gave, and fails on a
     failure, a cancel or any other skip (GitHub counts a skipped required
-    check as passing). A new gating job goes into its `needs`;
-    `scripts/test-ci-check.py` fails until it does.
+    check as passing), so it runs `always()`, in a cancelled run too. Pull
+    request runs share no concurrency group, so that `Check` blocks no
+    other run: `select`'s first step cancels the pull request's older runs
+    through the API instead. On a stacked pull request (base not `main`)
+    only select, lint and rt (with rdb-data) run, and `Check` fails: a
+    retarget starts no run. A new gating
+    job goes into its `needs`; `scripts/test-ci-check.py` fails until it
+    does.
 
 Caches are saved by `main` only (rust-cache `save-if`,
 `actions/cache/save`, `.github/actions/package-cache`); pull requests

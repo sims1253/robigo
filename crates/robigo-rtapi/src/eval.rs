@@ -9,15 +9,15 @@ use crate::entry::OrNull;
 use crate::errors::{not_yet, r_type_to_char};
 use crate::memory::{alloc, safepoint};
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Cx, RResult, Root, Scope, Sexp};
-use std::ffi::c_int;
+use robigo_rtcore::{Cx, RError, RResult, Root, Scope, Sexp};
+use std::ffi::{c_int, c_uint};
 
 /// A symbol argument's name (`GetOption1`'s tag, `setAttrib`'s name), or
 /// `installTrChar(STRING_ELT(name, 0))`'s for a string.
 fn name_bytes(cx: &Cx, x: Root<'_>) -> Option<Vec<u8>> {
     let r = x.bind(cx);
     if let Some(s) = r.as_sym() {
-        return Some(s.name().bytes().to_vec());
+        return Some(s.name_bytes().to_vec());
     }
     let v = r.as_vector::<robigo_rtcore::Char<'_>>()?;
     (!v.is_empty()).then(|| v.get(0).bytes().to_vec())
@@ -92,7 +92,7 @@ entry! {
     /// `GetOption1(tag)`: the option's value, or NULL; allocates nothing.
     // R: options.c:GetOption1
     [1] fn Rf_GetOption1(tag: Sexp) -> Sexp => |cx, s| {
-        let Some(name) = tag.bind(cx).as_sym().map(|y| y.name().bytes().to_vec()) else {
+        let Some(name) = tag.bind(cx).as_sym().map(|y| y.name_bytes().to_vec()) else {
             return Err(not_yet(cx, "GetOption1 of a tag that is not a symbol"));
         };
         Ok(robigo_rtbuiltins::options::get_option(cx, s, &name)?.bind(cx).sexp())
@@ -224,5 +224,73 @@ entry! {
                 Err(cx.error(&format!("LENGTH or similar applied to {t} object")))
             }
         }
+    }
+}
+
+/// `coerceVector(v, type)`'s COERCE_ERROR for a type code too large for any
+/// SEXPTYPE, with the code the caller gave: type2char's fallback, its
+/// warning and then "unknown type #N" (GNU R itself reads past its
+/// type table for such a code).
+// R: coerce.c:coerceVector (COERCE_ERROR), util.c:type2char
+#[cold]
+fn coerce_to_unknown(cx: &mut Cx, v: Root<'_>, t: c_uint) -> RError {
+    if let Err(e) = cx.warning(&format!("type {t} is unimplemented in 'type2char'")) {
+        return e;
+    }
+    let from = r_type_to_char(v.bind(cx));
+    cx.error(&format!("cannot coerce type '{from}' to vector of type 'unknown type #{t}'"))
+}
+
+entry! {
+    /// `coerceVector(v, type)`.
+    // R: coerce.c:coerceVector
+    [2] fn Rf_coerceVector(v: Sexp, t: c_uint) -> Sexp => |cx, s| {
+        let o = s.out(cx);
+        let r = o.root();
+        let Ok(t) = u8::try_from(t) else {
+            return Err(coerce_to_unknown(cx, v, t));
+        };
+        robigo_rtbuiltins::coerce::vector::coerce_vector(cx, v, t, o)?;
+        Ok(r.bind(cx).sexp())
+    }
+
+    /// `asBool(x)`.
+    // R: coerce.c:asBool
+    [1] fn Rf_asBool(x: Sexp) -> bool => |cx, _s| {
+        robigo_rtbuiltins::util::as_bool(cx, x)
+    }
+
+    /// `findVar(sym, rho)`: the value bound to `sym` in `rho` or an
+    /// enclosure (a promise as it is: unforced), R_UnboundValue if none.
+    // R: envir.c:findVar
+    [2] fn Rf_findVar(sym: Sexp, rho: Sexp) -> Sexp => |cx, s| {
+        let o = s.out(cx);
+        let r = o.root();
+        cx.find_var(sym, rho, o)?;
+        Ok(r.bind(cx).sexp())
+    }
+
+    /// `R_NewHashedEnv(enclos, size)`: a hashed environment (`size` the
+    /// table's initial size).
+    // R: envir.c:R_NewHashedEnv
+    [2] fn R_NewHashedEnv(enclos: Sexp, size: c_int) -> Sexp => |cx, s| {
+        alloc(cx, s, |cx| cx.new_env(enclos.bind(cx), true, size))
+    }
+}
+
+/// `isInteger(s)`: an integer vector that is not a factor.
+///
+/// # Safety
+/// Called from C code a native entry of the thread's isolate runs, with
+/// `s` a live object of that isolate (C's contract for the API).
+// R: Rinlinedfuns.h:isInteger
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Rf_isInteger(s: Sexp) -> c_int {
+    // SAFETY: the caller's contract; `s` is read without allocating.
+    unsafe {
+        robigo_rtcore::enter_leaf(|cx| {
+            let x = robigo_rtcore::Ref::from_sexp(s, cx);
+            (x.sexptype() == INTSXP && !robigo_rtbuiltins::attrib::inherits(x, b"factor")) as c_int
+        })
     }
 }

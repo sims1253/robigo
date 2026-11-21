@@ -8,6 +8,8 @@
     scripts/corpus.py show NAME ID            # source, expected and actual output
     scripts/corpus.py score [--markdown]      # pass counts of every corpus
     scripts/corpus.py absorb RESULTS.json...  # add passes from CI results to the ratchet
+    scripts/corpus.py absorb --from-run [ID]  # the same, fetching a main push run's corpus artifacts (gh)
+    scripts/corpus.py absorb ... --dry-run    # list what would be added (run those here first)
 
 `record`, `run` and `show` take `--r-version V` (default $ROBIGO_R_VERSION,
 else 4.5.0): the GNU R version whose recordings they write or compare with.
@@ -781,6 +783,9 @@ def cmd_run(a):
                  + ("build it with cargo build --release -p robigo-rtapi (the package of the robigo-rt binary)" if rt else "run scripts/build.sh"))
     if rt:
         rt_sources()
+        # robigo-rt ignores an inherited R_HOME (GNU R's) with GNU R's
+        # warning on stdout, in every case's output: none for its runs
+        os.environ.pop("R_HOME", None)
     fx = fixture_preflight(a.name, conf) if getattr(a, "net_fixture", False) else None
     # the build step (capi: robigo CMD SHLIB) uses the binary under test
     os.environ["ROBIGO"] = os.path.abspath(robigo)
@@ -873,6 +878,9 @@ def cmd_show(a):
         sys.exit("--tier selects the old runtime's execution tiers; robigo-rt has none")
     if rt:
         rt_sources()
+        # robigo-rt ignores an inherited R_HOME (GNU R's) with GNU R's
+        # warning on stdout, in every case's output: none for its runs
+        os.environ.pop("R_HOME", None)
     cases = dict(load_cases(a.name))
     if a.id not in cases:
         sys.exit(f"no case {a.id}")
@@ -921,8 +929,87 @@ def cmd_score(a):
             print(f"{n:16} {p:6}/{t:<6} {pct(p, t):>6}  {rt_s}  {d}")
 
 
+def gh(*args):
+    """`gh ARGS` (the GitHub CLI, for this checkout's repository): stdout."""
+    p = subprocess.run(["gh", *args], cwd=ROOT, stdout=subprocess.PIPE, text=True)
+    if p.returncode != 0:
+        sys.exit(f"corpus: gh {' '.join(args)} failed")
+    return p.stdout
+
+
+def corpus_artifacts(run):
+    """The names of a CI run's corpus result artifacts that have not expired."""
+    out = gh("api", "--paginate", f"repos/{{owner}}/{{repo}}/actions/runs/{run}/artifacts",
+             "-q", '.artifacts[] | select(.expired | not) | .name')
+    return sorted(n for n in out.split() if n.startswith("corpus-"))
+
+
+RUNS_SEARCHED = 200
+
+
+def main_run(run):
+    """The CI run to absorb: RUN, which must be a push run on main (a pull
+    request's results are of its own code), or the newest completed one
+    with corpus artifacts."""
+    if run is not None:
+        info = json.loads(gh("run", "view", str(run), "--json", "headBranch,event,status,headSha"))
+        if info["headBranch"] != "main" or info["event"] != "push":
+            sys.exit(f"corpus: run {run} is a {info['event']} run on {info['headBranch']}, not a push to main")
+        return str(run), info["headSha"]
+    # (gh pages through the API for --limit; artifacts live 14 days, so the
+    # newest RUNS_SEARCHED runs cover them unless main sees more pushes)
+    runs = json.loads(gh("run", "list", "--workflow", "ci.yml", "--branch", "main", "--event", "push",
+                         "--status", "completed", "--limit", str(RUNS_SEARCHED), "--json", "databaseId,headSha"))
+    for r in runs:
+        if corpus_artifacts(r["databaseId"]):
+            return str(r["databaseId"]), r["headSha"]
+    sys.exit(f"corpus: none of the newest {len(runs)} completed push runs on main has corpus artifacts")
+
+
+def run_results(run, into):
+    """Download a run's corpus artifacts into `into`: the result files among
+    them (default runs of a corpus only: a profile's or a tier's results
+    are not the ratchet's, and the conformance runner's are no corpus's)."""
+    corpora = manifest()
+    files = []
+    for name in corpus_artifacts(run):
+        d = os.path.join(into, name)
+        gh("run", "download", run, "-n", name, "-D", d)
+        for root, _, fs in os.walk(d):
+            for f in sorted(fs):
+                if not f.endswith(".json"):
+                    continue
+                fn = os.path.join(root, f)
+                with open(fn) as fh:
+                    doc = json.load(fh)
+                s = doc.get("summary") if isinstance(doc, dict) else None
+                if not s or "results" not in doc:
+                    continue
+                if s.get("corpus") not in corpora:
+                    print(f"{name}/{f}: results of {s.get('corpus')!r}, which is no corpus, skipped")
+                    continue
+                if s.get("profile") or s.get("tier"):
+                    print(f"{name}/{f}: a {'profile' if s.get('profile') else 'tier'} run's results, skipped")
+                    continue
+                files.append(fn)
+    return files
+
+
 def cmd_absorb(a):
     """Add the passes recorded in result files (e.g. CI artifacts) to the ratchets."""
+    if getattr(a, "from_run", None) is not None:
+        if a.files:
+            sys.exit("corpus: absorb takes result files or --from-run, not both")
+        run, sha = main_run(None if a.from_run == "latest" else a.from_run)
+        with tempfile.TemporaryDirectory(prefix="corpus-absorb-") as tmp:
+            a.files = run_results(run, tmp)
+            if not a.files:
+                sys.exit(f"corpus: run {run} has no corpus results")
+            print(f"absorbing run {run} (main at {sha[:9]}): {len(a.files)} result file(s)")
+            a.from_run = None
+            return cmd_absorb(a)
+    if not a.files:
+        sys.exit("corpus: absorb needs result files or --from-run")
     by = {}
     for fn in a.files:
         with open(fn) as f:
@@ -945,8 +1032,17 @@ def cmd_absorb(a):
         exp = load_expected(name, expected_file(conf, pins()[RUNTIMES[runtime]["pin"]]))
         ok = {i for i in ok if i in exp}
         old = load_passing(name, runtime)
+        label = f"{name}{' (rt)' if runtime == 'rt' else ''}"
+        if getattr(a, "dry_run", False):
+            # what would be added, to run here before ratcheting (a pass on CI
+            # can depend on CI's environment)
+            new = sorted(ok - old)
+            print(f"{label}: {len(new)} new pass(es) would be added")
+            for cid in new:
+                print(f"  {cid}")
+            continue
         added = add_passing(name, ok - old, runtime)
-        print(f"{name}{' (rt)' if runtime == 'rt' else ''}: {len(added)} new pass(es) added")
+        print(f"{label}: {len(added)} new pass(es) added")
 
 
 # --------------------------------------------------------------- import
@@ -1083,7 +1179,10 @@ def main():
     p = sub.add_parser("score")
     p.add_argument("--markdown", action="store_true")
     p = sub.add_parser("absorb")
-    p.add_argument("files", nargs="+")
+    p.add_argument("files", nargs="*")
+    p.add_argument("--from-run", nargs="?", const="latest", metavar="ID",
+                   help="absorb a CI push run on main's corpus artifacts (default: the newest with any)")
+    p.add_argument("--dry-run", action="store_true", help="list the passes that would be added; write nothing")
     a = ap.parse_args()
     fn = {"list": cmd_list, "import": cmd_import, "record": cmd_record, "run": cmd_run, "show": cmd_show,
           "score": cmd_score, "absorb": cmd_absorb}[a.cmd]

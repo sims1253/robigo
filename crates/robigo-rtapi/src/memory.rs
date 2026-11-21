@@ -235,11 +235,9 @@ pub(crate) fn new_weak_ref<'s>(
         match unsafe { cx.new_weak_ref_raw(k, v, f, onexit) } {
             Ok(w) => return Ok(w),
             // (need_gc raises GNU R's error when a collection cannot make
-            // the room; a second refusal after one that did is the same)
-            Err(e) if retried == Some(e) => {
-                cx.need_gc(e)?;
-                return Err(cx.error_call(None, "robigo: a weak reference the heap refused twice"));
-            }
+            // the room; a second refusal after one that did is GNU R's error
+            // for its cause)
+            Err(e) if retried == Some(e) => return Err(cx.refused_again(e)),
             Err(e) => {
                 cx.need_gc(e)?;
                 retried = Some(e);
@@ -274,6 +272,55 @@ pub(crate) fn register_c_finalizer(cx: &mut Cx, x: Root<'_>, fun: *const c_void)
 // R: memory.c:R_RegisterFinalizerEx
 fn register_finalizer(cx: &mut Cx, s: Root<'_>, fun: Root<'_>, onexit: bool) -> RResult<()> {
     robigo_rt::fin::register_finalizer(cx, s, fun, onexit)
+}
+
+/// `R_alloc(nelem, eltsize)` from Rust: a block of the R_alloc stack, which
+/// C keeps until `vmaxset` frees it. An empty request (`nelem * eltsize`
+/// not above 0) is null, as GNU R's is.
+// R: memory.c:R_alloc (LONG_VECTOR_SUPPORT)
+pub(crate) fn r_alloc(cx: &mut Cx, s: Scope<'_>, nelem: usize, eltsize: c_int) -> RResult<*mut c_void> {
+    // GNU R's dsize, in doubles against overflow
+    let size = (nelem as f64) * (eltsize as f64);
+    if size <= 0.0 {
+        return Ok(std::ptr::null_mut());
+    }
+    if size > R_XLEN_T_MAX as f64 {
+        let tb = size / 1024f64.powi(4);
+        return Err(cx.error(&format!("cannot allocate memory block of size {tb:.0} Tb")));
+    }
+    // a raw vector of size + 1 bytes
+    let bytes = size as usize + 1;
+    let x = if bytes >= LARGE {
+        cx.alloc_vector_rooted_raw(RAWSXP, bytes)?
+    } else {
+        safepoint(cx)?;
+        build(cx, s, |cx| fresh_vector(cx, RAWSXP, bytes))?
+    };
+    // C keeps the block's address, wherever it likes: under
+    // ROBIGO_GC_MOVE=1 the block must not move
+    // SAFETY: the fresh raw vector, rooted.
+    unsafe { cx.hand_to_c(x) };
+    // SAFETY: a fresh raw vector of this heap, with no attributes.
+    unsafe {
+        cx.push_vmax(x);
+        Ok(x.std_data().cast())
+    }
+}
+
+/// `bytes` with a NUL after them in a block of the R_alloc stack, as GNU R's
+/// `copyAndFreeStringBuffer` returns a translation.
+// R: sysutils.c:copyAndFreeStringBuffer
+pub(crate) fn r_alloc_cstr(cx: &mut Cx, s: Scope<'_>, bytes: &[u8]) -> RResult<*const c_char> {
+    let p = r_alloc(cx, s, bytes.len() + 1, 1)?.cast::<u8>();
+    // a request of at least one byte is never r_alloc's null
+    assert!(!p.is_null(), "R_alloc of {} bytes gave null", bytes.len() + 1);
+    // SAFETY: p is not null: a fresh block of bytes.len() + 2 bytes
+    // (r_alloc's + 1).
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len());
+        *p.add(bytes.len()) = 0;
+    }
+    Ok(p.cast_const().cast())
 }
 
 entry! {
@@ -459,32 +506,7 @@ entry! {
     /// `vmaxset` (a `.Call`'s end, an exit's stop).
     // R: memory.c:R_alloc
     [2] fn R_alloc(nelem: usize, eltsize: c_int) -> *mut c_void => |cx, s| {
-        let size = (nelem as f64) * (eltsize.max(0) as f64);
-        if size <= 0.0 {
-            return Ok(std::ptr::null_mut());
-        }
-        if size >= R_XLEN_T_MAX as f64 {
-            return Err(cx.error(&format!("cannot allocate memory block of size {:.1} Gb", size / 1024.0 / 1024.0 / 1024.0)));
-        }
-        // a raw vector of size + 1 bytes, or doubles for alignment past
-        // 8 bytes (GNU R: a REALSXP when size + 1 does not fit a raw
-        // vector's 8-byte alignment)
-        let bytes = size as usize + 1;
-        let x = if bytes >= LARGE {
-            cx.alloc_vector_rooted_raw(RAWSXP, bytes)?
-        } else {
-            safepoint(cx)?;
-            build(cx, s, |cx| fresh_vector(cx, RAWSXP, bytes))?
-        };
-        // C keeps the block's address, wherever it likes: under
-        // ROBIGO_GC_MOVE=1 the block must not move
-        // SAFETY: the fresh raw vector, rooted.
-        unsafe { cx.hand_to_c(x) };
-        // SAFETY: a fresh raw vector of this heap, with no attributes.
-        unsafe {
-            cx.push_vmax(x);
-            Ok(x.std_data().cast())
-        }
+        r_alloc(cx, s, nelem, eltsize)
     }
 
     /// `R_gc()`: a full collection, then `R_RunPendingFinalizers()`.

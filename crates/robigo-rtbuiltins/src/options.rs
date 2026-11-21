@@ -8,9 +8,11 @@
 //! value `Renviron` substitutes) and from `R_HOME`: the oracle build's
 //! values, as `.Platform`'s are (robigo-rt has no installation of its own).
 //!
-//! Options robigo-rt does not honor yet (`width`, `digits`, ...:
-//! [`UNHONORED`]) cannot be set: GNU R's checks of the value run, then
-//! "not implemented yet".
+//! Options robigo-rt does not honor yet ([`UNHONORED`]: `verbose` and
+//! the partial-match warnings) cannot be set: GNU R's checks of the value
+//! run, then "not implemented yet". `width`, `digits`, `max.print` and
+//! `deparse.cutoff` are read where GNU R reads them (robigo-rt's
+//! `PrintInit`).
 //!
 //! GNU R changes `.Options` in place (`SETCAR`, `SETCDR`); here an
 //! assignment rebinds `.Options` to an updated copy of the list, which
@@ -39,6 +41,8 @@ enum Init {
     Getenv(&'static str, &'static [u8]),
     /// `Rprofile.unix`'s `papersize`.
     Papersize,
+    /// `R_KeepSource`: `R_KEEP_PKG_SOURCE` is `yes`.
+    KeepPkgSource,
 }
 
 /// `InitOptions()`'s list, then `Common.R`'s and `Rprofile.unix`'s
@@ -56,8 +60,10 @@ const INIT: &[(&str, Init)] = &[
     ("quiet", Init::Lgl(1)),
     ("verbose", Init::Lgl(0)),
     ("check.bounds", Init::Lgl(0)),
+    // R_KeepSource, overridden by Common.R's keep.source = interactive()
+    // (FALSE: robigo-rt is never interactive)
     ("keep.source", Init::Lgl(0)),
-    ("keep.source.pkgs", Init::Lgl(0)),
+    ("keep.source.pkgs", Init::KeepPkgSource),
     ("keep.parse.data", Init::Lgl(1)),
     ("keep.parse.data.pkgs", Init::Lgl(0)),
     ("warning.length", Init::Int(1000)),
@@ -194,6 +200,10 @@ pub fn init_options(cx: &mut Cx) -> RResult<()> {
                         Init::Int(i) => cx.alloc_copy(&[*i])?.finish().into(),
                         Init::Lgl(i) => cx.alloc_copy(&[Lgl(*i)])?.finish().into(),
                         Init::Echo => cx.alloc_copy(&[Lgl(!cx.no_echo() as i32)])?.finish().into(),
+                        Init::KeepPkgSource => {
+                            let yes = std::env::var_os("R_KEEP_PKG_SOURCE").is_some_and(|v| v == "yes");
+                            cx.alloc_copy(&[Lgl(yes as i32)])?.finish().into()
+                        }
                         Init::DefaultPackages => {
                             let p = default_packages();
                             let mut v = cx.alloc_vector::<Char<'_>>(p.len())?;
@@ -232,7 +242,7 @@ fn find<'g>(cx: &'g Cx, l: Ref<'g>, name: &[u8]) -> Result<Option<Ref<'g>>, Stri
     let _ = cx;
     let mut c = l.as_cons();
     while let Some(cell) = c {
-        if cell.tag().as_sym().is_some_and(|t| t.name().bytes() == name) {
+        if cell.tag().as_sym().is_some_and(|t| t.name_bytes() == name) {
             if cell.car().sexptype() == NILSXP {
                 return Err(format!("option {} has NULL value", String::from_utf8_lossy(name)));
             }
@@ -279,7 +289,7 @@ fn set_option<'g>(cx: &'g Cx, l: Ref<'g>, name: &[u8], value: Option<Ref<'g>>) -
         items.push((cell.tag().as_sym().expect("robigo: a tagged option"), cell.car()));
         c = cell.cdr().as_cons();
     }
-    let pos = items.iter().position(|(t, _)| t.name().bytes() == name);
+    let pos = items.iter().position(|(t, _)| t.name_bytes() == name);
     let old = pos.map_or(cx.nil(), |p| items[p].1);
     match (pos, value) {
         (Some(p), None) => {
@@ -338,16 +348,7 @@ const MANDATORY: &[&str] = &[
 /// Options GNU R reads (or mirrors in C state) where robigo-rt does not
 /// yet: setting one would be accepted without effect, so it is refused
 /// (after GNU R's own checks of the value).
-const UNHONORED: &[&str] = &[
-    "width",
-    "digits",
-    "deparse.cutoff",
-    "max.print",
-    "keep.source",
-    "verbose",
-    "warnPartialMatchDollar",
-    "warnPartialMatchAttr",
-];
+const UNHONORED: &[&str] = &["verbose", "warnPartialMatchDollar", "warnPartialMatchAttr"];
 
 /// `.Internal(options(...))`: the sorted list with no arguments; else, per
 /// argument, a query (an unnamed string) or an assignment (`name =
@@ -386,7 +387,7 @@ pub fn do_options(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
                     let mut c = a.as_cons();
                     let mut elts = Vec::new();
                     while let Some(cell) = c {
-                        elts.push((cell.tag().as_sym().map(|t| t.name().bytes().to_vec()), cell.car()));
+                        elts.push((cell.tag().as_sym().map(|t| t.name_bytes().to_vec()), cell.car()));
                         c = cell.cdr().as_cons();
                     }
                     for (nm, e) in elts {
@@ -397,7 +398,7 @@ pub fn do_options(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
             }
         } else {
             for i in 0..args.len() {
-                items.push((args.name(cx, i).map(|t| t.name().bytes().to_vec()), args.root(i)));
+                items.push((args.name(cx, i).map(|t| t.name_bytes().to_vec()), args.root(i)));
             }
         }
         let n = items.len();
@@ -416,6 +417,17 @@ pub fn do_options(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
                     if v.is_some() && UNHONORED.contains(&std::str::from_utf8(nm).unwrap_or("")) {
                         let msg = format!("options({} = )", String::from_utf8_lossy(nm));
                         return Err(not_yet(cx, Some(call), &msg));
+                    }
+                    // keep.source: C reads it only where the console parses
+                    // (R_Parse1Buffer keeps source references when it is
+                    // TRUE, which robigo-rt's console cannot yet) and in
+                    // edit(); parse, source and sys.source read it in R.
+                    // FALSE is honoured as it is; TRUE is refused.
+                    if nm.as_slice() == b"keep.source"
+                        && let Some(k) = v
+                        && crate::util::as_logical(cx, k.bind(cx)) == 1
+                    {
+                        return Err(not_yet(cx, Some(call), "options(keep.source = TRUE) (source references)"));
                     }
                     if v.is_none() && MANDATORY.contains(&std::str::from_utf8(nm).unwrap_or("")) {
                         let msg = format!("option '{}' cannot be deleted", String::from_utf8_lossy(nm));
@@ -483,7 +495,7 @@ fn all_options<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, call: Root<'_>, l: 
     {
         let mut c = l.bind(cx).as_cons();
         while let Some(cell) = c {
-            let nm = cell.tag().as_sym().map(|t| t.name());
+            let nm = cell.tag().as_sym().map(|t| t.name(cx));
             names.push(nm.map_or((Vec::new(), Encoding::Native), |n| (n.bytes().to_vec(), n.enc())));
             values.push(s.root(cx, cell.car()));
             c = cell.cdr().as_cons();
@@ -568,8 +580,9 @@ fn check_option<'s>(
         }
         b"digits" => {
             let k = as_int(cx)?;
-            if !(0..=22).contains(&k) {
-                return Err(cx.error(&format!("invalid '{nm}' parameter, allowed 0...22")));
+            // R_MIN_DIGITS_OPT ... R_MAX_DIGITS_OPT (Print.h)
+            if !(1..=22).contains(&k) {
+                return Err(cx.error(&format!("invalid '{nm}' parameter, allowed 1...22")));
             }
             int(cx, s, k)?
         }
@@ -694,8 +707,46 @@ fn check_option<'s>(
         b"par.ask.default" => {
             return Err(cx.error("\"par.ask.default\" has been replaced by \"device.ask.default\""));
         }
-        b"scipen"
-        | b"OutDec"
+        // FixupScipen(argi, iWARN)
+        b"scipen" => {
+            let a = argi.bind(cx);
+            if !crate::util::is_numeric(a) || a.len() != Some(1) {
+                return Err(cx.error("invalid 'scipen'"));
+            }
+            let d = match a.view() {
+                // (preventing a warning + an error)
+                View::Real(v) => {
+                    let x = v.get(0);
+                    if x.is_nan() {
+                        i32::MIN
+                    } else if x >= i32::MAX as f64 + 1.0 || x <= i32::MIN as f64 {
+                        let mut g = Vec::new();
+                        robigo_text::printf::Spec::parse(b"%g").unwrap().double(&mut g, x);
+                        let msg = format!("setting scipen={} is out of range", String::from_utf8_lossy(&g));
+                        return Err(cx.error(&msg));
+                    } else {
+                        x as i32
+                    }
+                }
+                _ => as_int(cx)?,
+            };
+            // R_MIN_SCIPEN_OPT ... R_MAX_SCIPEN_OPT (Print.h)
+            let k = if d == i32::MIN || !(-9..=9999).contains(&d) {
+                let dnew = if d == i32::MIN {
+                    0
+                } else if d < -9 {
+                    -9
+                } else {
+                    9999
+                };
+                cx.warning(&format!("invalid 'scipen' {d}, used {dnew}"))?;
+                dnew
+            } else {
+                d
+            };
+            int(cx, s, k)?
+        }
+        b"OutDec"
         | b"prompt"
         | b"continue"
         | b"editor"

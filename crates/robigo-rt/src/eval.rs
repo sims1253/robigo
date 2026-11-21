@@ -42,14 +42,51 @@ pub fn eval_bytecode(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> R
 /// called by a complex assignment): no evaluation of its own, so the
 /// depth is the code's ([`vm::exec`] adds one level, taken off here).
 pub fn eval_bytecode_inline(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
-    if e.bind(cx).sexptype() != LANGSXP {
-        return eval_bytecode(cx, e, rho, out);
+    match e.bind(cx).sexptype() {
+        LANGSXP => {}
+        BCODESXP => return bc_eval_inline(cx, e, rho, out),
+        _ => return eval_bytecode(cx, e, rho, out),
     }
     let profile = prims::state(cx).forced.unwrap_or(Profile::Bc);
     check_env(cx, rho.bind(cx).sexp())?;
     let depth = cx.eval_depth();
     let r = cx.scope(|cx, s| {
         let code = expr_code(cx, e, rho, profile)?;
+        // SAFETY: a fresh or cached code object.
+        let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
+        let slot = out_slot(&out);
+        cx.set_eval_depth(depth - 1);
+        // SAFETY: rooted code and environment; an empty out slot.
+        unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false, false) }.map(drop)
+    });
+    cx.set_eval_depth(depth);
+    r
+}
+
+/// `bcEval(e, rho)` of byte code `e` called by compiled code itself, with
+/// no `eval` of its own: `MAKEPROM`'s for a builtin's argument (a
+/// translated call's promise code). The translation kept on `e`
+/// ([`crate::compile::bytecode_code`]) at the code's own depth
+/// ([`vm::exec`] adds one level, taken off here), bcEval's entry poll
+/// counted; byte code disabled, of a version bcEval does not run, or a
+/// forced `Eval` profile evaluates its source (bcEval's fallback,
+/// `eval(bytecodeExpr(body), rho)`).
+// R: eval.c:bcEval
+fn bc_eval_inline(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let st = prims::state(cx);
+    let source = st.forced == Some(Profile::Eval)
+        || st.jit.get().disable_bytecode
+        || !robigo_rtbuiltins::bytecode::version_ok(e.bind(cx));
+    if source {
+        return cx.scope(|cx, s| {
+            let src = s.root(cx, robigo_rtbuiltins::bytecode::expr(cx, e.bind(cx)));
+            eval(cx, src, rho, out)
+        });
+    }
+    check_env(cx, rho.bind(cx).sexp())?;
+    let depth = cx.eval_depth();
+    let r = cx.scope(|cx, s| {
+        let code = crate::compile::bytecode_code(cx, e)?;
         // SAFETY: a fresh or cached code object.
         let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
         let slot = out_slot(&out);
@@ -598,7 +635,7 @@ fn finish_value(
 pub unsafe fn sym_name(cx: &Cx, sym: Sexp) -> String {
     // SAFETY: a live symbol.
     let s = unsafe { Ref::from_sexp(sym, cx) }.as_sym().unwrap();
-    String::from_utf8_lossy(s.name().bytes()).into_owned()
+    String::from_utf8_lossy(s.name_bytes()).into_owned()
 }
 
 /// `ddfindVar(sym, rho)` and the rest of `eval`'s SYMSXP case.
@@ -716,6 +753,103 @@ pub fn do_return_value(
     })
 }
 
+/// `.Internal(withVisible(x))`, a special: `x` evaluated in `rho`, and
+/// `list(value =, visible =)` with `R_Visible` as that evaluation left it.
+// R: eval.c:do_withVisible
+pub fn do_with_visible(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    use robigo_rtbuiltins::attrib::{Attr, Attrs};
+    use robigo_rtcore::{Char, Encoding, Lgl, RSym};
+    let n = call.bind(cx).len().unwrap_or(1).saturating_sub(1);
+    crate::prims::check_arity(cx, call, n, "withVisible", 1, true)?;
+    cx.scope(|cx, s| {
+        let e = s.root(cx, call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().car());
+        let o = s.out(cx);
+        let x = o.root();
+        eval(cx, e, rho, o)?;
+        let visible = cx.visible();
+        cx.build(out, |cx| {
+            let mut ret = cx.alloc_vector::<Ref<'_>>(2)?;
+            let mut nm = cx.alloc_vector::<Char<'_>>(2)?;
+            nm.set(0, cx.mk_char(b"value", Encoding::Native)?);
+            nm.set(1, cx.mk_char(b"visible", Encoding::Native)?);
+            ret.set(0, x.bind(cx));
+            ret.set(1, cx.alloc_copy(&[Lgl(visible as i32)])?.finish().into());
+            let mut a = Attrs::new();
+            a.install(Attr { tag: cx.sym(RSym::Names), value: nm.finish().into() });
+            a.apply(cx, &mut ret)?;
+            Ok(ret.finish().into())
+        })
+    })
+}
+
+/// `.Internal(Recall(...))`, in `Recall <- function(...)`: the function
+/// that called `Recall` called again with `Recall`'s arguments (the
+/// promises of its record), from the environment that function was called
+/// from. A special: `rho` is `Recall`'s frame.
+// R: eval.c:do_recall
+pub fn do_recall(cx: &mut Cx, _call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    use robigo_rtcore::ctxt;
+    cx.scope(|cx, s| {
+        let outside = "'Recall' called from outside a closure";
+        // the record of the closure whose frame is rho (Recall's): its
+        // arguments
+        let me = {
+            let r = rho.bind(cx).sexp();
+            let mut c = Some(cx.global_context());
+            while let Some(x) = c {
+                if x.callflag() == ctxt::RETURN && x.cloenv().sexp() == r {
+                    break;
+                }
+                c = x.next();
+            }
+            c.map(|x| x.id())
+        };
+        // the env Recall was called from, and the record of the closure
+        // whose frame it is (searched from Recall's)
+        let sp = cx.global_context().sysparent().sexp();
+        let cptr = me.and_then(|me| {
+            let mut c = cx.context(me);
+            while let Some(x) = c {
+                if x.callflag() == ctxt::RETURN && x.cloenv().sexp() == sp {
+                    return Some(x.id());
+                }
+                c = x.next();
+            }
+            None
+        });
+        let (Some(me), Some(cptr)) = (me, cptr) else {
+            return Err(cx.error(outside));
+        };
+        cx.materialize_promargs(me)?;
+        let args = s.root(cx, cx.context(me).unwrap().promargs().unwrap_or(cx.nil()));
+        let (ccall, callfun, sysparent) = {
+            let c = cx.context(cptr).unwrap();
+            (c.call(), c.callfun(), c.sysparent())
+        };
+        let ccall = s.root(cx, ccall);
+        let sysparent = s.root(cx, sysparent);
+        // the function recorded in the record, else the call's function
+        // found by name or evaluated
+        let fun = if callfun != cx.nil() {
+            s.root(cx, callfun)
+        } else {
+            let head = s.root(cx, ccall.bind(cx).as_cons().unwrap().car());
+            let o = s.out(cx);
+            let f = o.root();
+            if head.bind(cx).sexptype() == SYMSXP {
+                cx.find_fun3(head, sysparent, None, o)?;
+            } else {
+                eval(cx, head, sysparent, o)?;
+            }
+            f
+        };
+        if fun.bind(cx).sexptype() != CLOSXP {
+            return Err(cx.error(outside));
+        }
+        crate::call::apply_closure(cx, ccall, fun, args, sysparent, None, out)
+    })
+}
+
 /// `.Internal(eval(expr, envir, enclos))`: `expr` (a call or symbol, or
 /// each element of an expression vector) evaluated in `envir` (an
 /// environment, a list or pairlist made into one under `enclos`, or a
@@ -768,7 +902,7 @@ pub fn do_eval(cx: &mut Cx, call: Root<'_>, args: robigo_rtcore::Args<'_>, rho: 
                         _ => {
                             let mut c = v.as_cons();
                             while let Some(cell) = c {
-                                pairs.push((cell.tag().as_sym().map(|t| t.name().bytes().to_vec()), cell.car()));
+                                pairs.push((cell.tag().as_sym().map(|t| t.name_bytes().to_vec()), cell.car()));
                                 c = cell.cdr().as_cons();
                             }
                         }

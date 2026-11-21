@@ -110,6 +110,50 @@ pub unsafe fn call(cx: &mut Cx, act: &Act, dst: Reg, rf: Reg, call: Sexp, site: 
     }
 }
 
+/// [`call`] by compiled code of a translated call whose promises hold
+/// their own code (`MAKEPROM`'s BCODESXPs, `codes`, by argument:
+/// [`args::arg_code`]): a closure's promises are made of them (not run
+/// inline yet), a builtin's arguments are their values (`MAKEPROM`'s
+/// `bcEval(code, rho)`), a special gets the call as it is. Its own
+/// functions all through, so that [`call`] and what the VM's `Call`
+/// inlines of it stay as they are. `codes_k`: the codes' pool index in
+/// `act`'s code (read from it where used: a collection may move them).
+///
+/// # Safety
+/// As for [`call`]; `codes_k` is a pool index of `act`'s code.
+// R: eval.c:bcEval CALL, MAKEPROM
+#[inline(never)]
+pub unsafe fn call_codes(
+    cx: &mut Cx,
+    act: &Act,
+    dst: Reg,
+    rf: Reg,
+    call: Sexp,
+    codes_k: u16,
+    site: u16,
+) -> RResult<()> {
+    let fun = act.obj(rf);
+    // SAFETY: a register's object is live; the caller's contract.
+    unsafe {
+        match fun.typ() {
+            CLOSXP => args::call_closure_codes(cx, act, dst, rf, call, codes_k, site),
+            BUILTINSXP => {
+                // (rooted at once by the callee: nothing collects before)
+                let codes = crate::code::View::of(act.obj(crate::ir::R_CODE)).k(codes_k);
+                call_builtin_list_codes(cx, act, dst, fun, call, codes)
+            }
+            SPECIALSXP => call_special(cx, act, dst, fun, call),
+            // R: eval.c:bcEval CHECKFUN (as in `call`)
+            _ => {
+                cx.set_bc_expression(call);
+                let e = cx.error("attempt to apply non-function");
+                cx.set_bc_expression(cx.nil().sexp());
+                Err(e)
+            }
+        }
+    }
+}
+
 /// GNU R's `applyClosure(call, op, arglist, rho, suppliedvars, TRUE)` for a
 /// promise list `arglist` (made by C, by `R_forceAndCall`, by the `apply`
 /// hook): matched and bound by `args::bind`, the body run in a function
@@ -430,7 +474,11 @@ fn invoke_builtin(cx: &mut Cx, act: &Act, dst: Reg, args: Args<'_>, regs: (Reg, 
     // R: eval.c:BUILTIN_CALL_FRAME_ARGS, eval.c:evalList
     // SAFETY: this running activation's registers.
     unsafe { crate::links::skip_args(act.base(), regs.0, regs.1) };
-    let r = run_builtin(cx, &def, act.root(R_SCRATCH), args, act.root(R_ENV), act.out(dst));
+    // (the compilers never emit a register call of an `.Internal` whose
+    // count its checkArity refuses: they evaluate the arguments and raise
+    // the error instead, see `internal_arity_ok`; a primitive's is not
+    // checked)
+    let r = run_builtin_unchecked(cx, &def, act.root(R_SCRATCH), args, act.root(R_ENV), act.out(dst));
     // SAFETY: as above.
     unsafe { crate::links::unskip_args(act.base()) };
     act.clear(R_SCRATCH);
@@ -487,6 +535,9 @@ fn call_special_args(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp, in
         if internal {
             cx.set_visible(true);
         }
+        // (a registry special called by compiled code checks its own count:
+        // `lapply` and `vapply` call checkArity first, `rep` takes any;
+        // the check here would cost the VM's loop, which inlines this)
         invoke_builtin(cx, act, dst, args, (0, 0))
     })
 }
@@ -502,7 +553,23 @@ pub unsafe fn call_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, cal
     cx.scope(|cx, s| {
         // SAFETY: constants of the rooted code (or a register's function).
         let (callr, funr) = unsafe { (s.root(cx, Ref::from_sexp(call, cx)), s.root(cx, Ref::from_sexp(fun, cx))) };
-        builtin_evallist(cx, callr, funr, act.root(R_ENV), act.out(dst), bc)
+        builtin_evallist(cx, callr, funr, act.root(R_ENV), act.out(dst), bc, None)
+    })
+}
+
+/// [`call_builtin_list`] by compiled code of a translated call whose
+/// arguments' code is `codes` ([`args::arg_code`]).
+///
+/// # Safety
+/// As for [`call_builtin_list`]; `codes` is a constant of `act`'s code.
+#[inline(never)]
+unsafe fn call_builtin_list_codes(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp, codes: Sexp) -> RResult<()> {
+    cx.scope(|cx, s| {
+        // SAFETY: constants of the rooted code (or a register's function).
+        let (callr, funr) = unsafe { (s.root(cx, Ref::from_sexp(call, cx)), s.root(cx, Ref::from_sexp(fun, cx))) };
+        // SAFETY: as above.
+        let codes = s.root(cx, unsafe { Ref::from_sexp(codes, cx) });
+        builtin_evallist(cx, callr, funr, act.root(R_ENV), act.out(dst), true, Some(codes))
     })
 }
 
@@ -515,9 +582,10 @@ pub unsafe fn call_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, cal
 ///
 /// With `bc`, as compiled code's generic call of a builtin evaluates them
 /// (bcEval's `MAKEPROM`, `DOMISSING`, `DODOTS`, then `checkForMissings`):
-/// an argument call by its compiled code (`bcEval(code, rho)`), an empty
-/// argument R_MissingArg, reported ("argument %d is empty") only once all
-/// are evaluated.
+/// an argument call by its compiled code (`bcEval(code, rho)`: a
+/// translated call's own promise code from `codes`), an empty argument
+/// R_MissingArg, reported ("argument %d is empty") only once all are
+/// evaluated.
 // R: eval.c:evalList, eval.c:eval (BUILTINSXP), eval.c:bcEval MAKEPROM, checkForMissings, signalMissingArgError
 pub fn builtin_evallist(
     cx: &mut Cx,
@@ -526,6 +594,7 @@ pub fn builtin_evallist(
     rho: Root<'_>,
     out: Out<'_>,
     bc: bool,
+    codes: Option<Root<'_>>,
 ) -> RResult<()> {
     let missing = cx.missing_arg().sexp();
     let dots = prims::state(cx).syms.dots;
@@ -594,9 +663,17 @@ pub fn builtin_evallist(
                     let ar = s2.root(cx, unsafe { Ref::from_sexp(a, cx) });
                     let o = s2.out(cx);
                     let or = o.root();
+                    // SAFETY: the rooted codes (R_NilValue or a VECSXP).
+                    let code = codes.map_or(Sexp::NULL, |c| unsafe { args::arg_code(c.bind(cx).sexp(), n - 1) });
                     if a == missing {
                         // DOMISSING
                         o.set(cx, cx.missing_arg());
+                    } else if bc && !code.is_null() {
+                        // MAKEPROM's bcEval(code, rho): the argument's own
+                        // promise code
+                        // SAFETY: a constant of the rooted caller's code.
+                        let c = s2.root(cx, unsafe { Ref::from_sexp(code, cx) });
+                        crate::eval::eval_bytecode_inline(cx, c, rho, o)?;
                     } else if bc && ar.bind(cx).sexptype() == LANGSXP {
                         crate::eval::eval_bytecode_inline(cx, ar, rho, o)?;
                     } else if bc {
@@ -695,6 +772,22 @@ pub(crate) fn run_builtin(
     rho: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
+    check_internal_arity(cx, def, args.len())?;
+    run_builtin_unchecked(cx, def, call, args, rho, out)
+}
+
+/// [`run_builtin`] without the arity check: the VM's register calls,
+/// whose `.Internal`s the compiler has checked. Inlined into its callers,
+/// as `run_builtin`'s body was into the VM's `invoke_builtin`.
+#[inline(always)]
+pub(crate) fn run_builtin_unchecked(
+    cx: &mut Cx,
+    def: &prims::PrimDef,
+    call: Root<'_>,
+    args: Args<'_>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     let Kind::Builtin(f, _) = def.kind else {
         unreachable!("robigo: a special called as a builtin");
     };
@@ -711,6 +804,77 @@ pub(crate) fn run_builtin(
         cx.set_visible(flag != 1);
     }
     cx.safepoint(Safepoint::Return)
+}
+
+/// The `.Internal`s with a fixed arity in names.c whose C does not start
+/// with `checkArity`: their own messages (`nchar`'s "which requires 3 to
+/// 4", `gettext`'s, `identical`'s), another error first (`recordGraphics`,
+/// `munmap_file`), extra arguments ignored (`internalsID`, which checks nothing,
+/// `mem.maxNSize`, `mem.maxVSize`), a dispatch first (`as.vector`) or a short form
+/// accepted (`is.unsorted(x, strictly)`, `na.rm` inserted; `paste` and
+/// `paste0` without `recycle0`, as R 4.0.0's code calls them). Found by
+/// calling every fixed-arity `.Internal` of GNU R 4.6.2 with one argument
+/// too many and one too few, and by reading what each one's C does before
+/// `checkArity`.
+const OWN_ARITY_CHECK: &[&str] = &[
+    "as.vector",
+    "gettext",
+    "identical",
+    "internalsID",
+    "is.unsorted",
+    "mem.maxNSize",
+    "mem.maxVSize",
+    "munmap_file",
+    "nchar",
+    "ngettext",
+    "paste",
+    "paste0",
+    "recordGraphics",
+];
+
+/// Whether an `.Internal` builtin called with `n` arguments passes its
+/// own `checkArity(op, args)`, the first thing it does: always for a
+/// primitive, a row of any arity, or a row of [`OWN_ARITY_CHECK`]. Both
+/// compilers (from source, and the byte-code translation) ask this for a
+/// call with a known count, and compile one that fails as its arguments
+/// followed by checkArity's error, so that the VM's register path needs no
+/// check.
+pub(crate) fn internal_arity_ok(def: &prims::PrimDef, n: usize) -> bool {
+    !(def.arity >= 0 && n != def.arity as usize && def.internal() && !OWN_ARITY_CHECK.contains(&def.name))
+}
+
+/// A builtin's entry on a path that calls its function at run time
+/// (`run_builtin`, compiled assignment steps, applyMethod, the registry's
+/// specials): its `.Internal` arity checked ([`check_internal_arity`]),
+/// then its arguments materialized ([`materialize_args`]).
+#[inline(always)]
+pub(crate) fn enter_builtin(cx: &mut Cx, def: &prims::PrimDef, args: Args<'_>) -> RResult<()> {
+    check_internal_arity(cx, def, args.len())?;
+    materialize_args(cx, def, args)
+}
+
+/// [`internal_arity_ok`]'s error where a builtin is called at run time:
+/// every path but the VM's register call, whose `.Internal` calls the
+/// compilers check ([`internal_arity_ok`]), and the VM's call of a registry
+/// special (`call_special_args`: `lapply` and `vapply` check their own
+/// count, `rep` takes any), so that no builtin reads past its arguments. `error()`, against the context. One compare on the hot
+/// path; the rest out of line.
+// R: util.c:Rf_checkArityCall
+#[inline(always)]
+pub(crate) fn check_internal_arity(cx: &mut Cx, def: &prims::PrimDef, n: usize) -> RResult<()> {
+    if def.arity >= 0 && n != def.arity as usize {
+        return arity_mismatch(cx, def, n);
+    }
+    Ok(())
+}
+
+#[cold]
+#[inline(never)]
+fn arity_mismatch(cx: &mut Cx, def: &prims::PrimDef, n: usize) -> RResult<()> {
+    if internal_arity_ok(def, n) {
+        return Ok(());
+    }
+    Err(cx.error(&prims::arity_message(n, def.name, def.arity as usize, true)))
 }
 
 /// Append `CONS_NR(value, R_NilValue)` with tag `tag` to the list
@@ -839,6 +1003,7 @@ fn reads_by_element(name: &str) -> bool {
         name,
         "length"
             | "seq_along"
+            | "seq.int"
             | "sum"
             | "min"
             | "max"

@@ -356,8 +356,7 @@ fn pop_handlers_to(cx: &mut Cx, list: Root<'_>) {
 /// (`verrorcall_dflt`). Returns the token of the exit that leaves.
 // R: errors.c:errorcall
 pub fn error_hook(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RError {
-    // a C string's message ends at a NUL
-    let msg = msg.split(|&b| b == 0).next().unwrap_or_default();
+    let msg = robigo_rtcore::c_str_bytes(msg);
     if let Some(e) = signal_error(cx, call, msg) {
         return e;
     }
@@ -375,8 +374,8 @@ pub fn error_hook(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RError {
 /// with the same value.
 // R: errors.c:R_signalErrorConditionEx, R_vmakeErrorCondition
 pub fn error_condition_hook(cx: &mut Cx, call: Option<Root<'_>>, c: &robigo_rtcore::ErrorCond<'_>) -> RError {
-    // Rvsnprintf_mbcs(emsg_buf, BUFSIZE, ...); a C string ends at a NUL
-    let msg = trunc(c.msg.split(|&b| b == 0).next().unwrap_or_default(), BUFSIZE - 1).to_vec();
+    // Rvsnprintf_mbcs(emsg_buf, BUFSIZE, ...)
+    let msg = trunc(robigo_rtcore::c_str_bytes(c.msg), BUFSIZE - 1).to_vec();
     let preset = matches!(c.subclass, Some("expressionStackOverflowError" | "nodeStackOverflowError"));
     cx.scope(|cx, s| {
         let cond = match make_error_condition(cx, s, if preset { None } else { call }, c, &msg) {
@@ -624,7 +623,7 @@ pub fn concise_traceback(cx: &Cx, call: Option<Ref<'_>>, mut skip: usize) -> Vec
             } else {
                 let fun = r.call().as_cons().map(|c| c.car());
                 let this: Vec<u8> = match fun.and_then(|f| f.as_sym()) {
-                    Some(s) => s.name().bytes().to_vec(),
+                    Some(s) => s.name_bytes().to_vec(),
                     None => b"<Anonymous>".to_vec(),
                 };
                 if matches!(&this[..], b"stop" | b"warning" | b"suppressWarnings" | b".signalSimpleWarning") {
@@ -667,7 +666,7 @@ pub fn concise_traceback(cx: &Cx, call: Option<Ref<'_>>, mut skip: usize) -> Vec
         && call.sexptype() == LANGSXP
     {
         let this: Vec<u8> = match cell.car().as_sym() {
-            Some(s) => s.name().bytes().to_vec(),
+            Some(s) => s.name_bytes().to_vec(),
             None => b"<Anonymous>".to_vec(),
         };
         if buf == this {
@@ -1148,7 +1147,7 @@ fn jump_to_toplevel(cx: &mut Cx) -> RError {
 /// base when base defines it, else the default handling.
 // R: errors.c:vsignalWarning
 pub fn warning_hook(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RResult<()> {
-    let msg = msg.split(|&b| b == 0).next().unwrap_or_default();
+    let msg = robigo_rtcore::c_str_bytes(msg);
     let hooked = cx.scope(|cx, s| -> RResult<bool> {
         let hooksym = sym(cx, s, b".signalSimpleWarning")?;
         let quote = sym(cx, s, b"quote")?;

@@ -28,7 +28,7 @@ use std::ffi::c_int;
 use std::ffi::{CStr, c_char};
 
 /// The symbol shortcuts' count (`ROBIGO_CAPI_SYMBOLS` in `robigo_capi.h`).
-pub const SYMBOLS: usize = 39;
+pub const SYMBOLS: usize = 41;
 
 /// GNU R's default protect stack size (`R_PPSSIZE`, Defn.h) and its red
 /// zone (`PP_REDZONE_SIZE`, memory.c): room the stack keeps past its size
@@ -57,8 +57,84 @@ pub struct CGlobals {
     pub(crate) ppsize: c_int,
     pub(crate) vstack: Cell<Sexp>,
     pub(crate) gc_move: Cell<c_int>,
+    /// GNU R's parser globals (Defn.h's `R_ParseError`,
+    /// `R_ParseContextLast`, `R_ParseContextLine`, `R_ParseErrorMsg`,
+    /// `R_ParseContext`, of GNU R's types and sizes): a native's parser
+    /// writes them, `parseError` reads them.
+    pub parse_error: Cell<c_int>,
+    pub parse_context_last: Cell<c_int>,
+    pub parse_context_line: Cell<c_int>,
+    pub parse_error_msg: std::cell::UnsafeCell<[u8; PARSE_ERROR_SIZE]>,
+    pub parse_context: std::cell::UnsafeCell<[u8; PARSE_CONTEXT_SIZE]>,
+    /// Defn.h's `mbcslocale` and `R_MB_CUR_MAX`: the isolate's `LC_CTYPE`'s
+    /// ([`CGlobals::set_locale`]).
+    pub(crate) mbcslocale: Cell<c_int>,
+    pub(crate) mb_cur_max: Cell<c_int>,
     /// the isolate (`*mut Isolate`, opaque to C)
     pub(crate) isolate: *mut std::ffi::c_void,
+}
+
+/// A copy of GNU R's parser globals (`Cx::c_parse_state`).
+#[derive(Clone, Copy, Debug)]
+pub struct CParseState {
+    pub error: c_int,
+    pub msg: [u8; PARSE_ERROR_SIZE],
+    pub context: [u8; PARSE_CONTEXT_SIZE],
+    pub context_last: c_int,
+    pub context_line: c_int,
+}
+
+/// Defn.h's `PARSE_ERROR_SIZE`.
+pub const PARSE_ERROR_SIZE: usize = 256;
+/// Defn.h's `PARSE_CONTEXT_SIZE`.
+pub const PARSE_CONTEXT_SIZE: usize = 256;
+
+// GNU R's sizes (Defn.h), as capi.c asserts them too
+const _: () = {
+    assert!(std::mem::size_of::<[u8; PARSE_ERROR_SIZE]>() == 256);
+    assert!(std::mem::size_of::<[u8; PARSE_CONTEXT_SIZE]>() == 256);
+};
+
+/// GNU R's `mbcslocale` and `R_MB_CUR_MAX` as process data, for a native
+/// that declares them itself rather than through `Defn.h` (tools' `text.c`:
+/// `LibExtern Rboolean mbcslocale;`), which cannot reach the isolate's
+/// block. [`CGlobals::set_locale`] sets them with the block's, so they are
+/// the locale of the isolate that set one last: per isolate only through
+/// `Defn.h`'s macros (L6's exception for unedited C declaring a global).
+#[unsafe(no_mangle)]
+#[allow(non_upper_case_globals)]
+pub static mbcslocale: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(INITIAL_MBCSLOCALE);
+/// See [`mbcslocale`].
+#[unsafe(no_mangle)]
+pub static R_MB_CUR_MAX: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(INITIAL_MB_CUR_MAX);
+
+/// `mbcslocale` and `R_MB_CUR_MAX` before `R_check_locale`, both
+/// `INI_as(FALSE)` in Defn.h: the first values of the statics and of each
+/// block, until [`CGlobals::set_locale`].
+const INITIAL_MBCSLOCALE: c_int = 0;
+const INITIAL_MB_CUR_MAX: c_int = 0;
+
+/// `(mbcslocale, R_MB_CUR_MAX)` for a locale, given the C library's
+/// `MB_CUR_MAX` in it (`max`). Without one (a C library without the locale,
+/// or Miri) glibc's, the oracle image's: 6 in a UTF-8 `LC_CTYPE`, 1 in `C`.
+// R: platform.c:R_check_locale (mbcslocale = MB_CUR_MAX > 1,
+// R_MB_CUR_MAX = MB_CUR_MAX: the Solaris correction is not Linux's)
+fn locale_pair(utf8: bool, max: Option<usize>) -> (c_int, c_int) {
+    let max = max.map_or(if utf8 { 6 } else { 1 }, |n| n as c_int);
+    ((max > 1) as c_int, max)
+}
+
+impl CGlobals {
+    /// Set `mbcslocale` and `R_MB_CUR_MAX` from the locale: the C library's
+    /// `MB_CUR_MAX` in it ([`crate::clib::mb_cur_max`]), as [`locale_pair`]
+    /// makes them.
+    pub(crate) fn set_locale(&self, l: crate::Locale) {
+        let (mbcs, max) = locale_pair(l.utf8, crate::clib::mb_cur_max(l.utf8));
+        self.mbcslocale.set(mbcs);
+        self.mb_cur_max.set(max);
+        mbcslocale.store(mbcs, std::sync::atomic::Ordering::Relaxed);
+        R_MB_CUR_MAX.store(max, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 #[cfg(not(miri))]
@@ -115,12 +191,14 @@ const CAPI_SYMBOLS: [RSym; SYMBOLS] = [
     RSym::DotPackageName,
     RSym::DotTarget,
     RSym::DotGeneric,
+    RSym::Srcfile,
+    RSym::Srcref,
 ];
 
 /// The layout table's length: size, alignment, the ten constants' offsets,
-/// the symbols', and the six fields after them (`capi.c` exports its own
+/// the symbols', and the thirteen fields after them (`capi.c` exports its own
 /// length, checked against this before the table is read).
-const LAYOUT_LEN: usize = 2 + 10 + SYMBOLS + 6;
+const LAYOUT_LEN: usize = 2 + 10 + SYMBOLS + 13;
 
 /// The layout `capi.c` exports: size, alignment, each field's offset.
 /// Miri runs no C: there the Rust table stands in.
@@ -159,6 +237,13 @@ fn rust_layout() -> Vec<usize> {
         offset_of!(CGlobals, ppsize),
         offset_of!(CGlobals, vstack),
         offset_of!(CGlobals, gc_move),
+        offset_of!(CGlobals, parse_error),
+        offset_of!(CGlobals, parse_context_last),
+        offset_of!(CGlobals, parse_context_line),
+        offset_of!(CGlobals, parse_error_msg),
+        offset_of!(CGlobals, parse_context),
+        offset_of!(CGlobals, mbcslocale),
+        offset_of!(CGlobals, mb_cur_max),
         offset_of!(CGlobals, isolate),
     ]);
     v
@@ -279,6 +364,13 @@ impl CApi {
                 ppsize: PPSTACK_SIZE as c_int,
                 vstack: Cell::new(nil),
                 gc_move: Cell::new(0),
+                parse_error: Cell::new(0),
+                parse_context_last: Cell::new(0),
+                parse_context_line: Cell::new(0),
+                parse_error_msg: std::cell::UnsafeCell::new([0; PARSE_ERROR_SIZE]),
+                parse_context: std::cell::UnsafeCell::new([0; PARSE_CONTEXT_SIZE]),
+                mbcslocale: Cell::new(INITIAL_MBCSLOCALE),
+                mb_cur_max: Cell::new(INITIAL_MB_CUR_MAX),
                 isolate: std::ptr::null_mut(),
             },
             stack,
@@ -341,6 +433,29 @@ impl Cx {
     #[inline(always)]
     pub(crate) fn cglobals(&self) -> &CGlobals {
         self.iso().capi_globals()
+    }
+
+    /// GNU R's parser globals as C left them (Defn.h's `R_ParseError`,
+    /// `R_ParseErrorMsg`, `R_ParseContext`, `R_ParseContextLast`,
+    /// `R_ParseContextLine`), for `parseError`.
+    pub fn c_parse_state(&self) -> CParseState {
+        let g = self.cglobals();
+        // SAFETY: C writes the buffers only while its code runs, and no C
+        // code runs while Rust holds the capability; one copy each.
+        let (msg, context) = unsafe { (*g.parse_error_msg.get(), *g.parse_context.get()) };
+        CParseState {
+            error: g.parse_error.get(),
+            msg,
+            context,
+            context_last: g.parse_context_last.get(),
+            context_line: g.parse_context_line.get(),
+        }
+    }
+
+    /// Set `R_ParseContextLine` (GNU R's `getParseContext` drops an empty
+    /// last line).
+    pub fn set_c_parse_context_line(&self, line: c_int) {
+        self.cglobals().parse_context_line.set(line);
     }
 
     /// The block's address, for the C side.
@@ -478,4 +593,48 @@ pub(crate) fn logicals(core: &mut robigo_heap::Core) -> [Sexp; 3] {
         }
         x
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::Ordering::Relaxed;
+
+    /// The pair from the C library's `MB_CUR_MAX`, and glibc's where the C
+    /// library has none (the 6/1 that only Miri and a C library without the
+    /// locale objects reach otherwise).
+    #[test]
+    fn locale_pair_follows_mb_cur_max_and_falls_back_to_glibc() {
+        use super::locale_pair;
+        assert_eq!(locale_pair(true, None), (1, 6));
+        assert_eq!(locale_pair(false, None), (0, 1));
+        assert_eq!(locale_pair(true, Some(4)), (1, 4));
+        assert_eq!(locale_pair(false, Some(1)), (0, 1));
+        // the C library decides, not the flag (a non-UTF-8 multibyte locale)
+        assert_eq!(locale_pair(false, Some(2)), (1, 2));
+        assert_eq!(locale_pair(true, Some(1)), (0, 1));
+    }
+
+    /// `set_locale` gives the isolate's block and the process statics one
+    /// pair: `MB_CUR_MAX` in the locale, and `mbcslocale` as `MB_CUR_MAX > 1`
+    /// (R_check_locale).
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn set_locale_writes_the_block_and_the_statics_alike() {
+        let mut iso = crate::OwnedIsolate::new();
+        let cx = iso.cx();
+        for utf8 in [false, true] {
+            cx.set_locale(crate::Locale { utf8, ..cx.locale() });
+            let g = cx.cglobals();
+            let (mbcs, max) = (g.mbcslocale.get(), g.mb_cur_max.get());
+            assert_eq!(mbcs, (max > 1) as std::ffi::c_int);
+            if cfg!(target_env = "gnu") {
+                assert_eq!((mbcs, max), if utf8 { (1, 6) } else { (0, 1) });
+            }
+            // (only the UTF-8 pair: another test's new isolate also sets
+            // the statics, always from the default UTF-8 locale)
+            if utf8 {
+                assert_eq!((super::mbcslocale.load(Relaxed), super::R_MB_CUR_MAX.load(Relaxed)), (mbcs, max));
+            }
+        }
+    }
 }

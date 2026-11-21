@@ -63,6 +63,20 @@ CACHE = os.environ.get("ROBIGO_BENCH_CACHE", os.path.expanduser("~/.cache/robigo
 BASE_ENV = {"LANGUAGE": "en", "LC_ALL": "C.UTF-8", "TZ": "UTC", "R_ENVIRON_USER": "", "R_PROFILE_USER": ""}
 
 
+def rows_with_setups(doc):
+    """The `[[row]]` tables of a rows file (benchmarks/rt/calls-rows.toml)
+    with each one's `setup` resolved: its own, or with `setup_ref` the
+    `[setups]` table's setup of that name, which rows share."""
+    setups = doc.get("setups", {})
+    out = []
+    for r in doc["row"]:
+        ref = r.get("setup_ref")
+        if ref is not None and ref not in setups:
+            raise KeyError(f"row `{r['name']}`: no setup named `{ref}` in the [setups] table")
+        out.append(r if ref is None else {**r, "setup": setups[ref]})
+    return out
+
+
 def env_pair(kv):
     """argparse type for K=V: a value without '=' is an error, not a crash later."""
     k, sep, v = kv.partition("=")
@@ -667,7 +681,11 @@ def rt_instr(binary, rows, jobs, outdir, tag, cycles=False, ranges=None):
 
 def rt_rss(binary, files, runs, outdir, tag):
     """Peak RSS of each program in KiB, scripts/rss.py's median of `runs`:
-    robigo-rt's (`binary`), or GNU R's (`binary` None)."""
+    robigo-rt's (`binary`), or GNU R's (`binary` None). A bars file may
+    name no program (jit-bars.toml): then there is nothing to run, and
+    rss.py refuses a call without files."""
+    if not files:
+        return {}
     out = os.path.join(outdir, f"{tag}-rss.json")
     side = ["--robigo", binary, "--no-r"] if binary else ["--no-robigo"]
     cmd = [sys.executable, os.path.join(ROOT, "scripts", "rss.py"), "--runs", str(runs), *side,

@@ -99,13 +99,15 @@ pub unsafe fn unskip_args(base: NonNull<Slot>) {
     unsafe { base.sub(1).write(Slot::EMPTY) };
 }
 
-/// The frame headed at slot `h` (whose head's word is `w`): its registers
-/// on the node stack, and those a running builtin's arguments occupy.
-fn frame_at(cx: &Cx, h: usize, w: u64) -> ((usize, usize), (usize, usize)) {
+/// The frame headed at slot `h` of `st` (whose head's word is `w`): its
+/// registers on the node stack, and those a running builtin's arguments
+/// occupy.
+#[inline(always)]
+fn frame_at(st: &[Slot], h: usize, w: u64) -> ((usize, usize), (usize, usize)) {
     let nregs = (w & !HEAD) as usize;
     let r0 = h + FRAME_HEAD;
     let regs = (r0 + (crate::ir::R_FIRST as usize).min(nregs), r0 + nregs);
-    let skip = match cx.stack_slot(h + 1).as_mark() {
+    let skip = match st[h + 1].as_mark() {
         Some(a) => {
             let first = r0 + (a & 0xffff_ffff) as usize;
             (first, first + (a >> 32) as usize)
@@ -115,21 +117,44 @@ fn frame_at(cx: &Cx, h: usize, w: u64) -> ((usize, usize), (usize, usize)) {
     (regs, skip)
 }
 
-/// `stack_links` of `lo..hi` less `skip`.
+/// The head's word if slot `s` heads an activation ([`mark_frame`]).
+#[inline(always)]
+fn head(s: Slot) -> Option<u64> {
+    s.as_mark().filter(|w| w & HEAD != 0)
+}
+
+/// `INCREMENT_LINKS` (`inc`) or `DECREMENT_LINKS` of the object in each of
+/// the slots `st` (unboxed, empty and marked slots hold none).
 ///
 /// # Safety
-/// As for [`walk`].
-unsafe fn links_less(cx: &Cx, (lo, hi): (usize, usize), (s0, s1): (usize, usize), inc: bool) {
+/// Each object slot holds a live object; for a decrement, an increment of
+/// the same objects raised their counts.
+#[inline(always)]
+unsafe fn links(st: &[Slot], inc: bool) {
+    for s in st {
+        if let Some(x) = s.as_object() {
+            // SAFETY: the caller's contract; the count is a header field.
+            unsafe { if inc { x.incref() } else { x.decref() } }
+        }
+    }
+}
+
+/// [`links`] of the slots `lo..hi` of `st` less `skip`.
+///
+/// # Safety
+/// As for [`links`].
+#[inline(always)]
+unsafe fn links_less(st: &[Slot], (lo, hi): (usize, usize), (s0, s1): (usize, usize), inc: bool) {
     // SAFETY: the caller's contract.
     unsafe {
         if s1 <= s0 || s1 <= lo || s0 >= hi {
-            cx.stack_links(lo, hi, inc);
+            links(&st[lo..hi], inc);
         } else {
             if lo < s0 {
-                cx.stack_links(lo, s0, inc);
+                links(&st[lo..s0], inc);
             }
             if s1 < hi {
-                cx.stack_links(s1, hi, inc);
+                links(&st[s1..hi], inc);
             }
         }
     }
@@ -140,7 +165,8 @@ unsafe fn links_less(cx: &Cx, (lo, hi): (usize, usize), (s0, s1): (usize, usize)
 /// below it and registers reach into it (less those a running builtin's
 /// arguments occupy), gain or lose a link per object. The frames do not
 /// nest: an inner activation's lies above its caller's registers, past the
-/// roots of what the caller runs.
+/// roots of what the caller runs. The slots are read in place, as GNU R's
+/// loop reads its node stack.
 ///
 /// # Safety
 /// `from..to` is below the stack's depth, and its slots hold what they held
@@ -148,36 +174,41 @@ unsafe fn links_less(cx: &Cx, (lo, hi): (usize, usize), (s0, s1): (usize, usize)
 // R: eval.c:INCLNK_stack_commit, eval.c:DECLNK_stack
 #[inline(never)]
 unsafe fn walk(cx: &Cx, from: usize, to: usize, inc: bool) {
+    // SAFETY: the slots below the depth are live, and nothing writes them
+    // while the walk runs: it changes link counts (header fields) only.
+    let st = unsafe { cx.stack_slots(0, cx.stack_depth()) };
+    debug_assert!(from <= to && to <= st.len());
     // the frame `from` lies in, if any: the nearest head below it
     let mut i = from;
-    let mut j = from;
-    while j > 0 {
-        j -= 1;
-        if let Some(w) = cx.stack_slot(j).as_mark().filter(|w| w & HEAD != 0) {
-            let (regs, skip) = frame_at(cx, j, w);
-            if regs.1 > from {
-                let r = (regs.0.max(from), regs.1.min(to));
-                if r.0 < r.1 {
-                    // SAFETY: the caller's contract.
-                    unsafe { links_less(cx, r, skip, inc) };
-                }
-                i = regs.1;
+    // (`position`, then one read of the slot found: `find_map` yielding the
+    // word compiles to a slower scan, +1% per cmp.R compile)
+    if let Some(j) = st[..from].iter().rposition(|&s| head(s).is_some()) {
+        let Some(w) = head(st[j]) else { unreachable!("robigo: a head scan found no head") };
+        let (regs, skip) = frame_at(st, j, w);
+        if regs.1 > from {
+            let r = (regs.0.max(from), regs.1.min(to));
+            if r.0 < r.1 {
+                // SAFETY: the caller's contract.
+                unsafe { links_less(st, r, skip, inc) };
             }
-            break;
+            i = regs.1;
         }
     }
     // then each head in the range, its registers, and the roots between
     while i < to {
-        if let Some(w) = cx.stack_slot(i).as_mark().filter(|w| w & HEAD != 0) {
-            let (regs, skip) = frame_at(cx, i, w);
-            let r = (regs.0, regs.1.min(to));
-            if r.0 < r.1 {
-                // SAFETY: the caller's contract.
-                unsafe { links_less(cx, r, skip, inc) };
+        match st[i..to].iter().position(|&s| head(s).is_some()) {
+            None => break,
+            Some(k) => {
+                let h = i + k;
+                let Some(w) = head(st[h]) else { unreachable!("robigo: a head scan found no head") };
+                let (regs, skip) = frame_at(st, h, w);
+                let r = (regs.0, regs.1.min(to));
+                if r.0 < r.1 {
+                    // SAFETY: the caller's contract.
+                    unsafe { links_less(st, r, skip, inc) };
+                }
+                i = regs.1.max(h + 1);
             }
-            i = regs.1.max(i + 1);
-        } else {
-            i += 1;
         }
     }
 }

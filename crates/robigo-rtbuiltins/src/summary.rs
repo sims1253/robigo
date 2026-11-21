@@ -24,7 +24,7 @@ fn split_na_rm(cx: &mut Cx, args: Args<'_>) -> RResult<(Vec<usize>, Option<usize
     let mut rest = Vec::new();
     let mut narm = None;
     for i in 0..args.len() {
-        if args.name(cx, i).is_some_and(|t| t.name().bytes() == b"na.rm") {
+        if args.name(cx, i).is_some_and(|t| t.name_bytes() == b"na.rm") {
             if narm.is_some() {
                 return Err(cx.error("formal argument \"na.rm\" matched by multiple actual arguments"));
             }
@@ -738,7 +738,8 @@ pub fn do_pmin<const CODE: i32>(
     out: Out<'_>,
 ) -> RResult<()> {
     let is_max = CODE == 1;
-    let narm = crate::util::as_logical(cx, args.get(cx, 0));
+    // CAR(args): R_NilValue (asLogical NA) when there is none
+    let narm = if args.is_empty() { NA_INTEGER } else { crate::util::as_logical(cx, args.get(cx, 0)) };
     if narm == NA_INTEGER {
         return Err(cx.error("invalid 'na.rm' value"));
     }

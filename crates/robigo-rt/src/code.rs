@@ -160,6 +160,7 @@ fn check(b: &Built) -> Result<(), Malformed> {
             Op::Guard => (i.a == 0 || reg(i.a)) && k(i.e) && k(i.c) && tgt(i.target()),
             Op::GetFun => reg(i.a) && k(i.e) && k(i.c),
             Op::Call => reg(i.a) && reg(i.b) && k(i.e) && (i.c < b.nsites || i.c == crate::ir::NO_SITE),
+            Op::CallCodes => reg(i.a) && reg(i.b) && k(i.e) && k(i.f) && (i.c < b.nsites || i.c == crate::ir::NO_SITE),
             Op::CallBuiltin | Op::Internal => {
                 reg(i.a)
                     && k(i.e)
@@ -182,7 +183,7 @@ fn check(b: &Built) -> Result<(), Malformed> {
             Op::ForDone | Op::Clear | Op::PpSave => reg(i.a),
             Op::ClearRange => i.a <= i.b && i.b as usize <= nregs,
             Op::Move => reg(i.a) && reg(i.b),
-            Op::ErrorCall => k(i.e) && k(i.f),
+            Op::ErrorCall => k(i.e) && k(i.f) && (i.c == 0 || k(i.c)),
             Op::SpecialFn => reg(i.a) && k(i.e) && k(i.c),
             Op::ComplexAssign | Op::BcAssign => reg(i.a) && reg(i.b) && k(i.e),
             Op::BaseGuard | Op::TopLoop => reg(i.a) && k(i.e) && tgt(i.target()),

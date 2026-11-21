@@ -2,12 +2,15 @@
 //! `.Internal(reg.finalizer(e, f, onexit))`, over the heap's collection and
 //! weak references ([`crate::fin`]).
 //!
-//! `gc()`'s numbers are the robigo heap's, in GNU R's units: nodes counted
-//! as `sizeof(SEXPREC)` = 56 bytes, the vector heap in 8-byte VECRECs. The
-//! verbose report (`gcinfo`) is not printed: `verbose = TRUE` says so.
+//! `gc()`'s numbers, `gcinfo`'s reports and `memory.profile()`'s counts are
+//! the robigo heap's, in GNU R's units and shape: nodes counted as
+//! `sizeof(SEXPREC)` = 56 bytes, the vector heap in 8-byte VECRECs, every
+//! collection a full one (GNU R's level 2). docs/g3.md's L7 asks for GNU
+//! R's own numbers, which need a logical account of GNU R's allocations
+//! that does not exist yet (docs/ledger/g3/2026-11-18-h-memory-internals.md).
 
 use robigo_heap::types::*;
-use robigo_rtcore::{Args, Cx, Out, RResult, Root};
+use robigo_rtcore::{Args, Char, Cx, Encoding, Out, RResult, Ref, Root};
 
 /// `sizeof(SEXPREC)` on a 64-bit build, and `Mega`.
 const SEXPREC: f64 = 56.0;
@@ -28,10 +31,10 @@ pub fn do_gc(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: O
     let verbose = robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 0));
     let reset_max = robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 1));
     let _full = robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 2));
-    if verbose != 0 && verbose != i32::MIN {
-        return Err(robigo_rtbuiltins::util::not_yet(cx, Some(call), "gc(verbose = TRUE) (gcinfo's report)"));
-    }
+    // gc_reporting = asLogical(verbose) for this collection: NA reports too
+    let ogc = cx.set_gc_reporting(verbose != 0);
     crate::fin::gc(cx);
+    cx.set_gc_reporting(ogc);
     if reset_max != 0 && reset_max != i32::MIN {
         cx.reset_maxused();
     }
@@ -125,4 +128,89 @@ pub fn do_gctorture(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
     cx.gc_torture(gap, 0);
     out.set(cx, cx.logical_value(old as i32));
     Ok(())
+}
+
+/// `.Internal(gcinfo(verbose))`: whether collections report from now on
+/// (NA changes nothing); the previous state.
+// R: memory.c:do_gcinfo
+pub fn do_gcinfo(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "gcinfo", 1, true)?;
+    let old = cx.gc_reporting();
+    let i = robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 0));
+    if i != i32::MIN {
+        cx.set_gc_reporting(i != 0);
+    }
+    out.set(cx, cx.logical_value(old as i32));
+    Ok(())
+}
+
+/// `gc.time(on = TRUE)` (a primitive): time collections from now on, or
+/// stop; the times spent in collections while it was on: user, system,
+/// elapsed, child user, child system.
+// R: memory.c:do_gctime
+pub fn do_gctime(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let on = if args.is_empty() {
+        true
+    } else {
+        robigo_rtbuiltins::util::check1arg(cx, args, call, "on")?;
+        robigo_rtbuiltins::util::as_bool2(cx, call, args.root(0))?
+    };
+    let t = cx.gc_time(on);
+    cx.build(out, |cx| Ok(cx.alloc_copy(&t)?.finish().into()))
+}
+
+/// `.Internal(gctorture2(step, wait, inhibit_release))`: torture every
+/// `step` allocations after `wait` of them; the previous step. GNU R reads
+/// `inhibit_release` only in a PROTECTCHECK build, but checks it always.
+// R: memory.c:do_gctorture2
+pub fn do_gctorture2(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "gctorture2", 3, true)?;
+    let old = cx.gc_torture_gap();
+    let gap = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(0))?;
+    let wait = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(1))?;
+    let _inhibit = robigo_rtbuiltins::util::as_bool2(cx, call, args.root(2))?;
+    cx.gc_torture(gap, wait);
+    cx.build_scalar(out, old)
+}
+
+/// `.Internal(memory.profile())`: after a full collection, the heap's
+/// objects counted by type, named by `type2str` (types 11 and 12 skipped).
+// R: memory.c:do_memoryprofile
+pub fn do_memoryprofile(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "memory.profile", 0, true)?;
+    // R_gc() (finalizers run after it, as R_gc's)
+    crate::fin::gc(cx);
+    let by = cx.census_by_type();
+    let ty = |i: usize| if i > LGLSXP as usize { i + 2 } else { i };
+    cx.build(out, |cx| {
+        let mut nms = cx.alloc_vector::<Char<'_>>(24)?;
+        for i in 0..24 {
+            nms.set(i, cx.mk_char(robigo_rtbuiltins::util::type2char(ty(i) as u8).as_bytes(), Encoding::Native)?);
+        }
+        let nms = nms.finish();
+        let counts: Vec<i32> = (0..24).map(|i| by[ty(i)] as i32).collect();
+        let mut ans = cx.alloc_copy(&counts)?;
+        let attrs = cx.cons_tagged(nms.as_ref(), cx.nil(), cx.sym(robigo_rtcore::RSym::Names))?;
+        ans.set_attrib(attrs);
+        Ok(Ref::from(ans.finish()))
+    })
+}
+
+/// `.Internal(mem.maxNSize(nsize))`: as `mem.maxVSize`, for the node
+/// limit, counted in nodes.
+// R: memory.c:do_maxNSize
+pub fn do_max_nsize(cx: &mut Cx, _call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let newval = cx.scope(|cx, s| {
+        let x = if args.is_empty() { s.root(cx, cx.nil()) } else { args.root(0) };
+        robigo_rtbuiltins::coerce::vector::as_real_warn(cx, x)
+    })?;
+    if newval > 0.0 {
+        if newval == f64::INFINITY || newval >= usize::MAX as f64 {
+            cx.set_max_nsize(None);
+        } else if !cx.set_max_nsize(Some(newval as usize)) {
+            cx.warning("a limit lower than current usage, so ignored")?;
+        }
+    }
+    let v = cx.max_nsize().map_or(f64::INFINITY, |n| n as f64);
+    cx.build_scalar(out, v)
 }

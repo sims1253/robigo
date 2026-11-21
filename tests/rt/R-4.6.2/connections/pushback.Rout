@@ -1,0 +1,31 @@
+[1] 2
+[1] "a"
+[1] 1
+[1] "cb"  "one"
+[1] 0
+[1] 3
+[1] 0
+[1] 0
+[1] 1
+[1] ""
+[1] "x"  "NA"
+[1] FALSE
+[1] "invalid 'data' argument"
+[1] "invalid 'newLine' argument"
+[1] "invalid connection"
+[1] "invalid connection"
+[1] "invalid connection"
+[1] "'con' is not a connection"
+[1] "can only push back on text-mode connections"
+[1] "no error"
+[1] "no error"
+[1] TRUE
+[1] "a"
+[1] TRUE
+[1] 1
+character(0)
+[1] TRUE
+[1] "a"
+[1] TRUE
+[1] 1
+[1] FALSE

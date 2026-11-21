@@ -37,7 +37,7 @@ fn has_domain(cx: &mut Cx, domain: Root<'_>, up: bool) -> RResult<bool> {
                         let a2 = a1.cdr().as_cons()?;
                         let t = a2.tag().as_sym()?;
                         let v = a2.car().as_sym()?;
-                        (t.name().bytes() == b"domain" && v.name().bytes() == b"domain").then_some(())
+                        (t.name_bytes() == b"domain" && v.name_bytes() == b"domain").then_some(())
                     })();
                     if shaped.is_some()
                         && let Some(p) = cx.parent_context(g, 1)
@@ -119,7 +119,9 @@ pub fn do_gettext(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
 /// `.Internal(ngettext(n, msg1, msg2, domain))`.
 // R: errors.c:do_ngettext
 pub fn do_ngettext(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    let n = crate::coerce::vector::as_integer_warn(cx, args.root(0))?;
+    // asInteger(CAR(args)) before checkArity: CAR of no arguments is NULL,
+    // whose asInteger is NA
+    let n = if !args.is_empty() { crate::coerce::vector::as_integer_warn(cx, args.root(0))? } else { i32::MIN };
     crate::row!("ngettext", true).check_arity(cx, call, args)?;
     if n == i32::MIN || n < 0 {
         return Err(cx.error("invalid 'n' argument"));
