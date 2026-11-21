@@ -702,7 +702,17 @@ pub fn env_writer(cx: &crate::Cx) -> Result<EnvWriter<'_>, EnvWriteRefused> {
         return Err(EnvWriteRefused::SeveralIsolates);
     }
     let env = ENV.write().unwrap_or_else(|e| e.into_inner());
+    #[cfg(debug_assertions)]
+    ENV_WRITER_HOLDER.store(this_thread_id(), std::sync::atomic::Ordering::SeqCst);
     Ok(EnvWriter { _env: env, _live: live, _cx: cx })
+}
+
+impl Drop for EnvWriter<'_> {
+    fn drop(&mut self) {
+        // (before the fields, ENV among them, are released)
+        #[cfg(debug_assertions)]
+        ENV_WRITER_HOLDER.store(0, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 unsafe extern "C" {
@@ -725,7 +735,8 @@ pub struct LcTime {
 impl LcTime {
     /// The C library's locale `name` for `LC_TIME`; `None` when it has no
     /// such locale (or a name with a NUL). Not while this thread holds an
-    /// [`EnvWriter`] or a [`TzSession`]: newlocale reads `LOCPATH`.
+    /// [`EnvWriter`]: newlocale reads `LOCPATH` under ENV shared, which does
+    /// not nest. (A [`TzSession`] holds no lock.)
     pub fn new(name: &[u8]) -> Option<LcTime> {
         let n = std::ffi::CString::new(name).ok()?;
         let _env = env_read();
@@ -756,8 +767,8 @@ pub struct Strftime {
 /// a null pointer) and `tm_gmtoff` from `tm`, in `lc`'s `LC_TIME`; first
 /// `tm.tm_gmtoff = 0; mktime(&tm)` when `mktime_first` (datetime.c's fix of
 /// an NA gmtoff for "%z", which also sets `tm_zone`). The caller holds the
-/// environment (shared or as a writer): strftime and mktime read the time
-/// zone.
+/// environment exclusive ([`tz_lock`]): strftime reads, and mktime (when
+/// `mktime_first`) writes, `tzname`.
 fn strftime_raw(fmt: &[u8], tm: &Tm, zone: Option<&[u8]>, mktime_first: bool, lc: &LcTime) -> Strftime {
     let f = std::ffi::CString::new(fmt).unwrap_or_default();
     let z = zone.map(|z| std::ffi::CString::new(z).unwrap_or_default());
@@ -787,17 +798,20 @@ pub fn strftime(fmt: &[u8], tm: &Tm, zone: Option<&[u8]>, mktime_first: bool, lc
 
 /// The process's time zone set to one for a conversion (datetime.c's
 /// `set_tz`), for the closure [`with_tz`] runs; `TZ` is put back when it
-/// returns (`reset_tz`). No lock is held in between: R code may run in the
-/// closure (a handler of a warning or an error), sees `TZ` as GNU R's would,
-/// and may change it. Each conversion holds the environment exclusive for
-/// itself (glibc rewrites `tzname` in a conversion), and keeps the `tzname`
-/// it left, which [`TzSession::tzname`] gives.
+/// returns or unwinds (`reset_tz`). No lock is held in between: R code may
+/// run in the closure (a handler of a warning or an error), sees `TZ` as
+/// GNU R's would, and may change it. Each conversion holds the environment
+/// exclusive for itself (glibc rewrites `tzname` in a conversion), and
+/// keeps the `tzname` it left, which [`TzSession::tzname`] gives.
 pub struct TzSession {
-    /// `tzname` as `set_tz`'s `tzset` or the last conversion left it.
-    names: std::cell::RefCell<[Vec<u8>; 2]>,
+    /// `tzname` as `set_tz`'s `tzset` or the last conversion left it, and
+    /// the two pointers it was copied from: glibc keeps each zone name it
+    /// reads for the process at one address, so the same pointers are the
+    /// same names, and a conversion copies them only when they changed.
+    names: [Vec<u8>; 2],
+    ptrs: [*const libc::c_char; 2],
     /// `setenv` failed ("problem with setting timezone").
     pub set_failed: bool,
-    _not_send: std::marker::PhantomData<*const ()>,
 }
 
 /// Why [`with_tz`] did not run its closure, or could not finish.
@@ -808,54 +822,136 @@ pub enum TzError {
     /// `TZ` is longer than 1000 bytes: "time zone specification is too
     /// long".
     TooLong,
-    /// The closure ran, but `TZ` could not be put back: [`env_writer`]
-    /// refused by then (an isolate started meanwhile on a glibc older
-    /// than [`MIN_GLIBC`]).
+    /// The closure ran, but `TZ` could not be put back: [`env_writer`]'s
+    /// check refused by then (an isolate started meanwhile on a glibc older
+    /// than [`MIN_GLIBC`]). The closure's result is dropped: the process's
+    /// time zone is now the conversion's for every isolate, which the caller
+    /// must report rather than carry on as if the call had ended as GNU R's
+    /// does.
     NotRestored(EnvWriteRefused),
 }
 
-/// `tzname[0]` and `tzname[1]`, read by a caller that holds [`ENV`]
-/// exclusive (no conversion or `tzset` of robigo's runs meanwhile).
-fn tzname_now() -> [Vec<u8>; 2] {
-    // SAFETY: tzname is written by tzset and by glibc's conversions; every
-    // one of robigo's runs under ENV exclusive, which the caller holds. The
-    // entries are NUL-terminated names glibc keeps for the process.
-    unsafe {
-        let names = std::ptr::addr_of!(tzname).read();
-        names.map(|p| if p.is_null() { Vec::new() } else { std::ffi::CStr::from_ptr(p).to_bytes().to_vec() })
+impl TzSession {
+    /// The `tzname` pointers glibc holds now copied, unless they are the
+    /// ones copied last. The caller holds [`ENV`] exclusive (no conversion
+    /// or `tzset` of robigo's runs meanwhile).
+    fn capture(&mut self) {
+        // SAFETY: tzname is written by tzset and by glibc's conversions;
+        // every one of robigo's runs under ENV exclusive, which the caller
+        // holds. Its entries are NUL-terminated names glibc keeps for the
+        // process (never freed or rewritten).
+        unsafe {
+            let cur = std::ptr::addr_of!(tzname).read();
+            if cur == self.ptrs {
+                return;
+            }
+            for (k, &p) in cur.iter().enumerate() {
+                self.names[k].clear();
+                if !p.is_null() {
+                    self.names[k].extend_from_slice(std::ffi::CStr::from_ptr(p).to_bytes());
+                }
+            }
+            self.ptrs = cur;
+        }
     }
 }
 
+/// The thread holding an [`EnvWriter`] (its `pthread_self`), 0 when none:
+/// in debug builds [`tz_lock`] refuses, with a message, what would
+/// otherwise deadlock (ENV does not nest).
+#[cfg(debug_assertions)]
+static ENV_WRITER_HOLDER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// [`ENV`] exclusive, for a call that reads or writes the C library's time
-/// zone state (`tzset`, a conversion, `tzname`). (Never while this thread
-/// holds an [`EnvWriter`]: the lock does not nest.)
+/// zone state (`tzset`, a conversion, `tzname`). Never while this thread
+/// holds an [`EnvWriter`]: the lock does not nest (a debug build panics
+/// saying so).
 fn tz_lock() -> std::sync::RwLockWriteGuard<'static, ()> {
+    #[cfg(debug_assertions)]
+    assert!(
+        ENV_WRITER_HOLDER.load(std::sync::atomic::Ordering::SeqCst) != this_thread_id(),
+        "robigo: a time zone conversion while this thread holds the environment's writer (ENV does not nest: \
+         this would deadlock)"
+    );
     ENV.write().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The calling thread's id (`pthread_self`; never 0 on glibc).
+fn this_thread_id() -> usize {
+    // SAFETY: no arguments; returns the calling thread's id.
+    unsafe { libc::pthread_self() as usize }
+}
+
+/// `reset_tz`'s state: what `TZ` was, and whether `set_tz` changed it. Its
+/// drop puts `TZ` back if [`TzReset::restore`] did not (a closure that
+/// unwinds), taking the locks an [`EnvWriter`] takes itself: the isolate's
+/// grant is still held (`with_tz` borrows its `Cx` for as long as this
+/// lives). There it cannot raise: a refused restore (an isolate started
+/// meanwhile on a glibc older than [`MIN_GLIBC`]) is said once on stderr.
+struct TzReset {
+    old: Option<Vec<u8>>,
+    settz: bool,
+}
+
+impl TzReset {
+    /// `reset_tz(&si)`: when `TZ` was set, the previous `TZ` back (or
+    /// unset), and `tzset`; refused when [`env_write_allowed`] says no now.
+    // R: datetime.c:reset_tz
+    fn restore(&mut self) -> Result<(), EnvWriteRefused> {
+        if !self.settz {
+            return Ok(());
+        }
+        self.settz = false;
+        // (the version read before LIVE_ISOLATES, as env_writer reads it)
+        let glibc = glibc_version();
+        let live = crate::isolate::live_isolates();
+        if !env_write_allowed(glibc, *live) {
+            return Err(EnvWriteRefused::SeveralIsolates);
+        }
+        let _env = ENV.write().unwrap_or_else(|e| e.into_inner());
+        match &self.old {
+            Some(p) => {
+                env_set_raw(b"TZ", p);
+            }
+            None => env_unset_raw(b"TZ"),
+        }
+        // SAFETY: tzset reads TZ and writes tzname, with ENV exclusive.
+        unsafe { tzset() };
+        Ok(())
+    }
+}
+
+impl Drop for TzReset {
+    fn drop(&mut self) {
+        if self.restore().is_err() {
+            static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !SAID.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                eprintln!("robigo: TZ could not be put back after a time zone conversion that unwound");
+            }
+        }
+    }
+}
+
 /// `set_tz(tz, &si)`, then `f`, then `reset_tz(&si)`, also when `f` returns
-/// an error (GNU R resets in its context's `cend` on a jump). `set_tz`:
-/// `TZ` set to `UTC` and `tzset` (so `tzname` is read again), then to `tz`,
-/// or for "" to the previous `TZ`, or unset when there was none; `tzset`
-/// after. Each write holds an [`EnvWriter`] for itself only; the session
-/// cannot outlive the isolate's grant (`cx` is borrowed throughout).
+/// an error (GNU R resets in its context's `cend` on a jump) or unwinds (a
+/// panic: the reset runs in a guard's drop). `set_tz`: `TZ` set to `UTC`
+/// and `tzset` (so `tzname` is read again), then to `tz`, or for "" to the
+/// previous `TZ`, or unset when there was none; `tzset` after. Each write
+/// holds the environment's locks for itself only; the session cannot
+/// outlive the isolate's grant (`cx` is borrowed throughout).
 // R: datetime.c:set_tz, reset_tz
 pub fn with_tz<R>(
     cx: &mut crate::Cx,
     tz: &[u8],
-    f: impl FnOnce(&mut crate::Cx, &TzSession) -> R,
+    f: impl FnOnce(&mut crate::Cx, &mut TzSession) -> R,
 ) -> Result<R, TzError> {
-    let (sess, old, settz) = {
+    let (mut sess, mut reset) = {
         let w = env_writer(cx).map_err(TzError::Refused)?;
         let old = w.get(b"TZ");
         if old.as_ref().is_some_and(|p| p.len() > 1000) {
             return Err(TzError::TooLong);
         }
-        let mut sess = TzSession {
-            names: std::cell::RefCell::new([Vec::new(), Vec::new()]),
-            set_failed: false,
-            _not_send: std::marker::PhantomData,
-        };
+        let mut sess = TzSession { names: [Vec::new(), Vec::new()], ptrs: [std::ptr::null(); 2], set_failed: false };
         let mut settz = false;
         // (setenv of TZ=UTC does not fail)
         w.set(b"TZ", b"UTC");
@@ -863,12 +959,12 @@ pub fn with_tz<R>(
         // conversion of robigo's or writes TZ meanwhile (ENV exclusive, held
         // by `w`).
         unsafe { tzset() };
-        let target = if tz.is_empty() { old.clone() } else { Some(tz.to_vec()) };
+        let target = if tz.is_empty() { old.as_deref() } else { Some(tz) };
         match target {
             // (unsetenv of TZ does not fail)
             None => w.unset(b"TZ"),
             Some(t) => {
-                if w.set(b"TZ", &t) {
+                if w.set(b"TZ", t) {
                     settz = true;
                 } else {
                     sess.set_failed = true;
@@ -877,29 +973,18 @@ pub fn with_tz<R>(
         }
         // SAFETY: as above.
         unsafe { tzset() };
-        *sess.names.get_mut() = tzname_now();
-        (sess, old, settz)
+        sess.capture();
+        (sess, TzReset { old, settz })
     };
-    let r = f(cx, &sess);
-    // reset_tz: when TZ was set, the previous TZ back (or unset), and tzset
-    if settz {
-        let w = env_writer(cx).map_err(TzError::NotRestored)?;
-        match &old {
-            Some(p) => {
-                w.set(b"TZ", p);
-            }
-            None => w.unset(b"TZ"),
-        }
-        // SAFETY: as above.
-        unsafe { tzset() };
-    }
+    let r = f(cx, &mut sess);
+    reset.restore().map_err(TzError::NotRestored)?;
     Ok(r)
 }
 
 impl TzSession {
     /// `localtime_r(&t, &tm)` in the time zone `TZ` names now (the
     /// session's, unless R code changed it), keeping the `tzname` it left.
-    pub fn localtime(&self, t: i64) -> Option<Tm> {
+    pub fn localtime(&mut self, t: i64) -> Option<Tm> {
         let _tz = tz_lock();
         // SAFETY: a zeroed tm is a valid out-argument; localtime_r reads the
         // time zone and writes tzname, with ENV exclusive.
@@ -907,14 +992,14 @@ impl TzSession {
             let mut tm: libc::tm = std::mem::zeroed();
             if libc::localtime_r(&t, &mut tm).is_null() { None } else { Some(Tm::from_c(&tm)) }
         };
-        *self.names.borrow_mut() = tzname_now();
+        self.capture();
         r
     }
 
     /// `mktime(tm)` in the time zone `TZ` names now: the time, `tm`
     /// normalized as mktime leaves it, and whether `errno` was set (`-1` is
     /// a time too); the `tzname` it left kept.
-    pub fn mktime(&self, tm: &mut Tm) -> (f64, bool) {
+    pub fn mktime(&mut self, tm: &mut Tm) -> (f64, bool) {
         let _tz = tz_lock();
         let mut c = tm.to_c();
         // SAFETY: errno is this thread's; mktime reads and writes `c`, the
@@ -925,22 +1010,22 @@ impl TzSession {
             (r, *libc::__errno_location() != 0)
         };
         *tm = Tm::from_c(&c);
-        *self.names.borrow_mut() = tzname_now();
+        self.capture();
         (r as f64, errno)
     }
 
     /// [`strftime`] in the time zone `TZ` names now.
-    pub fn strftime(&self, fmt: &[u8], tm: &Tm, zone: Option<&[u8]>, mktime_first: bool, lc: &LcTime) -> Strftime {
+    pub fn strftime(&mut self, fmt: &[u8], tm: &Tm, zone: Option<&[u8]>, mktime_first: bool, lc: &LcTime) -> Strftime {
         let _tz = tz_lock();
         let r = strftime_raw(fmt, tm, zone, mktime_first, lc);
-        *self.names.borrow_mut() = tzname_now();
+        self.capture();
         r
     }
 
     /// `R_tzname`: `tzname[0]` and `tzname[1]` as `set_tz`'s `tzset` or the
     /// session's last conversion left them.
-    pub fn tzname(&self) -> [Vec<u8>; 2] {
-        self.names.borrow().clone()
+    pub fn tzname(&self) -> [&[u8]; 2] {
+        [&self.names[0], &self.names[1]]
     }
 }
 

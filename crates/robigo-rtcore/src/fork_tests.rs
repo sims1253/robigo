@@ -239,6 +239,61 @@ fn a_child_forked_while_the_environment_lock_is_held_writes_it() {
     fork_while_held("ENV", crate::clib::env_write_lock);
 }
 
+/// A conversion whose closure panics still puts `TZ` back (the reset is a
+/// guard's drop), so the process's time zone is not left at the
+/// conversion's. In a child: the test writes the environment.
+#[test]
+fn a_panic_in_a_time_zone_conversion_puts_tz_back() {
+    let _one = one_at_a_time();
+    let _dog = watchdog("a panic in with_tz", 60);
+    // SAFETY: the child (one thread) runs the code below and ends with
+    // `_exit`.
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0, "fork failed: {}", std::io::Error::last_os_error());
+    if pid == 0 {
+        let code = (|| {
+            let mut iso = OwnedIsolate::new();
+            // SAFETY: the child has one thread, this one.
+            iso.grant_env_writes(unsafe { crate::clib::EnvWrites::assume() });
+            let cx = iso.cx();
+            match crate::clib::env_writer(cx) {
+                Ok(w) => {
+                    w.set(b"TZ", b"UTC");
+                }
+                // (another test's isolates count on an old glibc: nothing
+                // to test there)
+                Err(_) => return 0,
+            }
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::clib::with_tz(cx, b"Europe/Berlin", |_, s| {
+                    // in the zone: 1970-01-01 01:00 CET
+                    assert_eq!(s.localtime(0).map(|t| t.hour), Some(1));
+                    panic!("a conversion's panic");
+                })
+            }));
+            if r.is_ok() {
+                return 2;
+            }
+            if std::env::var_os("TZ").as_deref() != Some(std::ffi::OsStr::new("UTC")) {
+                return 3;
+            }
+            // and the C library's zone with it (tzset ran again)
+            if crate::clib::localtime(0).map(|t| t.hour) != Some(0) {
+                return 4;
+            }
+            0
+        })();
+        // SAFETY: ends the child at once.
+        unsafe { libc::_exit(code) };
+    }
+    let mut status = 0;
+    // SAFETY: waits for the child just forked.
+    unsafe { libc::waitpid(pid, &mut status, 0) };
+    assert!(libc::WIFEXITED(status), "the child did not exit (status {status})");
+    let code = libc::WEXITSTATUS(status);
+    assert_eq!(code, 0, "2: no panic; 3: TZ not put back; 4: localtime not back in UTC");
+}
+
 #[test]
 fn a_child_forked_while_the_environment_lock_is_read_writes_it() {
     fork_while_held("ENV shared", crate::clib::env_read_for_test);
