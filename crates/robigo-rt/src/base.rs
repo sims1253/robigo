@@ -843,19 +843,28 @@ pub struct Stage0 {
     pub failed: Vec<(usize, String)>,
 }
 
-/// L2's stage 0 (m2m3-plan §B L2): base evaluated from source, as GNU R's
-/// `setup_Rmainloop` does with the source `library/base/R/base` of a build
-/// that has no databases yet: `R_ReplFile(fp, R_BaseNamespace)`, each
-/// top-level expression evaluated in the base namespace at the top level,
-/// its value printed if visible. Eager, unlike [`load`]'s lazy bindings,
-/// and every name of base's files is bound, so it is the path L5's boot
-/// keeps. The file is `home/library/base/R/base` (`scripts/rt-home.sh`).
+/// GNU R's boot of base (m2m3-plan §B L2's stage 0, L5's boot):
+/// `setup_Rmainloop`'s `R_ReplFile(fp, R_BaseNamespace)` of
+/// `home/library/base/R/base`, each top-level expression evaluated in the
+/// base namespace at the top level, its value printed if visible. What the
+/// file is decides the boot, as in GNU R: a build that has no databases yet
+/// has base's whole source there (`scripts/rt-home.sh`: eager, every name
+/// of base's files bound); after base's database rule it is
+/// `baseloader.R`, whose `..lazyLoad` binds base from `base.rdb`
+/// (`scripts/rt-home-db.sh`). Before it, as `InitNames` and `InitGraphics`
+/// do: names.c's primitives and internals robigo-rt lacks bound to the
+/// not-implemented builtins, and `.Device`/`.Devices`.
 ///
 /// GNU R stops at an error (its base has none); robigo-rt records it and
 /// goes on, so one run lists every expression a missing builtin stops.
 // R: main.c:R_ReplFile, setup_Rmainloop
 pub fn stage0(cx: &mut Cx, home: &Path) -> Result<Stage0, String> {
     let mut st = Stage0::default();
+    // InitNames: every primitive and internal of names.c's table bound
+    let prims: Vec<&'static str> = robigo_rtbuiltins::names::PRIMITIVES.iter().map(|p| p.0).collect();
+    let internals: Vec<&'static str> = robigo_rtbuiltins::names::INTERNALS.iter().map(|p| p.0).collect();
+    stubs_for(cx, &prims, &internals);
+    init_graphics(cx)?;
     repl_file(cx, &home.join("library/base/R/base"), &mut st)?;
     // R_LoadProfile(R_OpenSysInitFile(), baseNSenv): the system profile,
     // in the base namespace, the same way (setup_Rmainloop's next steps,
