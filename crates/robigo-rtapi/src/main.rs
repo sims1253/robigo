@@ -188,6 +188,12 @@ fn missing_tree(home: &RHome) -> Option<String> {
 /// The front end over `args`, with `home` the `R_HOME` that
 /// [`init_r_home`] has put in the environment.
 fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
+    // Rf_initialize_R's system Renviron, before the options are read
+    // (INTERIM(L5): GNU R's boot only; M1's loader gives the options their
+    // values itself)
+    if boot() != Boot::M1 {
+        renviron::process_system_renviron(home.path());
+    }
     // Rscript's options: R's start-up options, then FILE or -e EXPR, then
     // the script's arguments (commandArgs(), not yet read by anything).
     // Or R's: start-up options with -f FILE among them, then --args.
@@ -201,6 +207,10 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     // R_common_command_line's NoRenviron, LoadSiteFile, LoadInitFile and
     // RestoreAction (--vanilla is all four, with --no-save)
     let mut st = Startup { environ: true, site_file: true, init_file: true, restore: true };
+    // the restore action as the options leave it, in their order (None:
+    // the mode's, R's restore or Rscript's --no-restore, which Rscript puts
+    // before the user's options)
+    let mut restore: Option<bool> = None;
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         let b = a.as_encoded_bytes();
@@ -241,12 +251,14 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
             b"--vanilla" => {
                 save_given = true;
                 st = Startup { environ: false, site_file: false, init_file: false, restore: false };
+                restore = Some(false);
             }
             b"--no-save" => save_given = true,
             b"--no-environ" => st.environ = false,
             b"--no-site-file" => st.site_file = false,
             b"--no-init-file" => st.init_file = false,
-            b"--no-restore" | b"--no-restore-data" => st.restore = false,
+            b"--no-restore" | b"--no-restore-data" => restore = Some(false),
+            b"--restore" => restore = Some(true),
             b"--verbose" => {}
             _ if b.starts_with(b"--default-packages=") => {}
             // R: the rest are commandArgs()'s, whatever the mode (an
@@ -296,6 +308,15 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
         }
         stdin = f.is_none();
         file = f;
+    }
+    // Rscript runs R with --no-restore before the user's options (a FILE or
+    // -e); R restores unless told not to
+    st.restore = restore.unwrap_or(r_mode);
+    // Rf_initialize_R's site and user Renviron, after the options and
+    // before any input is read, unless --no-environ
+    if boot() != Boot::M1 && st.environ {
+        renviron::process_site_renviron(home.path());
+        renviron::process_user_renviron(expand_tilde);
     }
     let src = if !exprs.is_empty() {
         // R -e: the expressions, one per line
@@ -349,20 +370,6 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
 
     // setup_Rmainloop's setlocale(<category>, "") calls and R_check_locale:
     // the isolate's locale is the environment's (the process's stays "C")
-    // Rscript runs R with --no-restore (a FILE or -e)
-    if !r_mode {
-        st.restore = false;
-    }
-    // Rf_initialize_R's Renviron files, before the locale: the system one,
-    // then the site's and the user's unless --no-environ (INTERIM(L5): GNU
-    // R's boot only; M1's loader gives the options their values itself)
-    if boot() != Boot::M1 {
-        renviron::process_system_renviron(home.path());
-        if st.environ {
-            renviron::process_site_renviron(home.path());
-            renviron::process_user_renviron(expand_tilde);
-        }
-    }
     let env_loc = robigo_rtcore::clib::env_locale();
     let utf8 = if env_loc.codeset.eq_ignore_ascii_case(b"UTF-8") {
         true

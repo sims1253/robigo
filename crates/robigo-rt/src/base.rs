@@ -855,8 +855,12 @@ pub struct Stage0 {
 /// do: names.c's primitives and internals robigo-rt lacks bound to the
 /// not-implemented builtins, and `.Device`/`.Devices`.
 ///
-/// GNU R stops at an error (its base has none); robigo-rt records it and
-/// goes on, so one run lists every expression a missing builtin stops.
+/// INTERIM(L5): GNU R stops at an error in either file (R_ReplFile has no
+/// jump of its own: `setup_Rmainloop`'s and `R_LoadProfile`'s SETJMP take
+/// it to `check_session_exit`, which halts a script); robigo-rt records it
+/// and goes on, so one run lists every expression a missing builtin stops
+/// (today the system profile's Sys.info and Sys.glob). The site and user
+/// profiles are GNU R's ([`after_profile`]).
 // R: main.c:R_ReplFile, setup_Rmainloop
 pub fn stage0(cx: &mut Cx, home: &Path) -> Result<Stage0, String> {
     let mut st = Stage0::default();
@@ -892,10 +896,11 @@ pub struct AfterProfile {
 /// `R_HOME/etc/Rprofile.site`) in the global environment, `.Library.site`
 /// removed from it, the user's profile (`R_PROFILE_USER`, else
 /// `./.Rprofile`, else `$HOME/.Rprofile`), `R_InitialData` (`.RData`
-/// restored), then `.First()` and `.First.sys()`. An error in a profile
-/// ends that file's expression only (R_ReplFile); one in the others is
-/// `check_session_exit`'s: false, R halts, unless `options(error)` or
-/// `options(catch.script.errors)` say go on. The greeting (not R_Quiet) is
+/// restored), then `.First()` and `.First.sys()`. Each runs inside its
+/// own `SETJMP`: an error (in a profile, its parse too: R_ReplFile has no
+/// jump of its own) is `check_session_exit`'s, false when R halts; with
+/// `options(error)` or `options(catch.script.errors)` R goes on to the next
+/// step, the rest of that profile not read. The greeting (not R_Quiet) is
 /// the front end's; the JIT's start (`R_init_jit_enabled`) is not run yet.
 // R: main.c:setup_Rmainloop, startup.c:R_OpenSiteFile, sys-unix.c:R_OpenInitFile,
 // startup.c:R_RestoreGlobalEnv, saveload.c:R_RestoreGlobalEnvFromFile
@@ -913,17 +918,19 @@ pub fn after_profile(cx: &mut Cx, home: &Path, a: AfterProfile, st: &mut Stage0)
         let e = crate::connections::r_expand_file_name(cx, v.as_bytes()).ok()?;
         Some(Some(std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&e))))
     };
-    let run = |cx: &mut Cx, f: Option<std::path::PathBuf>, st: &mut Stage0| {
-        if let Some(f) = f.filter(|f| std::fs::File::open(f).is_ok()) {
-            // (a file that does not parse is R_ReplFile's error at its end)
-            if let Err(m) = repl_file_in(cx, &f, st, |cx| cx.global_env()) {
-                st.failed.push((0, m));
-            }
+    let _ = st;
+    // R_LoadProfile(fp, R_GlobalEnv) of a file that opens
+    let run = |cx: &mut Cx, f: Option<std::path::PathBuf>| -> bool {
+        match f.and_then(|f| std::fs::read(&f).ok()) {
+            Some(bytes) => load_profile(cx, &bytes),
+            None => true,
         }
     };
     if a.site_file {
         let f = profile(cx, "R_PROFILE").unwrap_or_else(|| Some(home.join("etc/Rprofile.site")));
-        run(cx, f, st);
+        if !run(cx, f) {
+            return false;
+        }
     }
     // the system profile's active binding for .Library.site in the global
     // environment goes (its writes in the site profile reached base's)
@@ -942,14 +949,16 @@ pub fn after_profile(cx: &mut Cx, home: &Path, a: AfterProfile, st: &mut Stage0)
                 .filter(|f| f.is_file())
                 .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".Rprofile"))),
         };
-        run(cx, f, st);
+        if !run(cx, f) {
+            return false;
+        }
     }
     // R_InitialData: sys.load.image(".RData", R_Quiet) in the global
     // environment (base has sys.load.image, so GNU R calls it)
     if a.restore {
         let quiet = if a.quiet { "TRUE" } else { "FALSE" };
         let src = format!("sys.load.image(\".RData\", {quiet})\n");
-        if !eval_startup(cx, src.as_bytes(), |cx| cx.global_env()) {
+        if !eval_startup(cx, src.as_bytes(), None, |cx| cx.global_env()) {
             return false;
         }
     }
@@ -960,40 +969,31 @@ pub fn after_profile(cx: &mut Cx, home: &Path, a: AfterProfile, st: &mut Stage0)
 }
 
 /// `R_findVar(name, from)`, and when it is a closure `eval(lang1(name),
-/// rho)` at the top level: false when an error ended it and
-/// `check_session_exit` says R halts.
+/// rho)`, both inside one top-level `SETJMP`: false when an error ended it
+/// and `check_session_exit` says R halts.
 fn call_startup(
     cx: &mut Cx,
     name: &[u8],
     from: for<'g> fn(&'g Cx) -> Ref<'g>,
     rho: for<'g> fn(&'g Cx) -> Ref<'g>,
 ) -> bool {
-    let found = cx.scope(|cx, s| {
-        let sym = cx.install_rooted(s, name)?;
-        let env = s.root(cx, from(cx));
-        let o = s.out(cx);
-        let v = o.root();
-        cx.find_var(sym, env, o)?;
-        Ok::<bool, robigo_rtcore::RError>(v.bind(cx).sexptype() == CLOSXP)
-    });
-    match found {
-        Ok(true) => {}
-        Ok(false) => return true,
-        Err(e) => {
-            cx.resolve_exit(e, None);
-            return true;
-        }
-    }
     let mut src = b"`".to_vec();
     src.extend_from_slice(name);
     src.extend_from_slice(b"`()\n");
-    eval_startup(cx, &src, rho)
+    eval_startup(cx, &src, Some((name, from)), rho)
 }
 
 /// `src`'s one call evaluated in `rho` at the top level, its value not
-/// printed: false when an error ended it and `check_session_exit` says R
-/// halts (the error reported where it was raised).
-fn eval_startup(cx: &mut Cx, src: &[u8], rho: for<'g> fn(&'g Cx) -> Ref<'g>) -> bool {
+/// printed; with `only_if`, only when `R_findVar(name, from)` (inside the
+/// same top level) is a closure. False when an error ended it and
+/// `check_session_exit` says R halts (the error reported where it was
+/// raised).
+fn eval_startup(
+    cx: &mut Cx,
+    src: &[u8],
+    only_if: Option<(&[u8], for<'g> fn(&'g Cx) -> Ref<'g>)>,
+    rho: for<'g> fn(&'g Cx) -> Ref<'g>,
+) -> bool {
     let text = robigo_syntax::lexable(src);
     let source = robigo_syntax::Source::new(&text, src);
     let arena = robigo_syntax::Arena::new();
@@ -1005,16 +1005,65 @@ fn eval_startup(cx: &mut Cx, src: &[u8], rho: for<'g> fn(&'g Cx) -> Ref<'g>) -> 
         let base = s.root(cx, cx.base_env());
         let env = s.root(cx, rho(cx));
         cx.repl_toplevel(g, base, |cx| {
+            if let Some((name, from)) = only_if {
+                let closure = cx.scope(|cx, s| {
+                    let sym = cx.install_rooted(s, name)?;
+                    let fenv = s.root(cx, from(cx));
+                    let o = s.out(cx);
+                    let v = o.root();
+                    cx.find_var(sym, fenv, o)?;
+                    Ok::<bool, robigo_rtcore::RError>(v.bind(cx).sexptype() == CLOSXP)
+                })?;
+                if !closure {
+                    return Ok(());
+                }
+            }
             crate::reader::lower_one(cx, &exprs[0], e)?;
-            let o = cx.scope(|cx, s| {
+            cx.scope(|cx, s| {
                 let o = s.out(cx);
                 crate::eval(cx, er, env, o)
-            });
-            o
+            })
         })
         .expect("robigo: an exit that passed the top level")
     });
     ok || crate::repl::check_session_exit(cx)
+}
+
+/// `R_LoadProfile(fp, R_GlobalEnv)`: `R_ReplFile` of the profile's bytes,
+/// statement after statement as `R_Parse1File` reads them (those before a
+/// syntax error run), each evaluated in the global environment at the top
+/// level and printed if visible. An error, the parse's included, lands on
+/// `R_LoadProfile`'s `SETJMP`: the rest of the file is not read, and the
+/// result is `check_session_exit`'s (false: R halts).
+// R: main.c:R_LoadProfile, R_ReplFile
+fn load_profile(cx: &mut Cx, bytes: &[u8]) -> bool {
+    let text = robigo_syntax::lexable(bytes);
+    let source = robigo_syntax::Source::new(&text, bytes);
+    let arena = robigo_syntax::Arena::new();
+    let mut p = match robigo_syntax::parser::Parser::new(&arena, source) {
+        Ok(p) => p,
+        Err(e) => {
+            crate::repl::error_at_top(cx, &robigo_syntax::format_parse_error(source, "", &e));
+            return crate::repl::check_session_exit(cx);
+        }
+    };
+    let savestack = cx.pp_top();
+    loop {
+        // the statement's context starts where the last one ended
+        let start = p.consumed_end();
+        let e = match p.program_n(1) {
+            Ok(mut v) if !v.is_empty() => v.remove(0),
+            Ok(_) => return true,
+            Err(e) => {
+                // parseError(R_NilValue, R_ParseError)
+                crate::repl::error_at_top(cx, &robigo_syntax::format_parse_error_since(source, "", &e, start));
+                return crate::repl::check_session_exit(cx);
+            }
+        };
+        if repl_eval_toplevel(cx, &e, &[], |cx| cx.global_env(), savestack, (1, 0)).is_err() {
+            return crate::repl::check_session_exit(cx);
+        }
+    }
 }
 
 /// `setup_Rmainloop`'s locks right after the system profile: base's

@@ -230,7 +230,7 @@ fn console_at_end(cx: &mut Cx) -> bool {
 /// emptied, are restored from the top level's saved stacks, the global
 /// calling handlers among them.
 // R: errors.c:jump_to_top_ex, context.c:R_restore_globals
-fn error_at_top(cx: &mut Cx, msg: &str) {
+pub(crate) fn error_at_top(cx: &mut Cx, msg: &str) {
     error_at_top_after(cx, &[], msg)
 }
 

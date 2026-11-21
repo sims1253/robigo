@@ -188,8 +188,9 @@ pub fn process_renviron(filename: &[u8]) -> bool {
         let n = rest[..max].iter().position(|&b| b == b'\n').map_or(max, |i| i + 1);
         let piece = &rest[..n];
         *pos += n;
-        // feof(fp) once the piece reached the end; a piece with a newline
-        let complete = *pos >= data.len() || piece.contains(&b'\n');
+        // a piece with a newline, or feof(fp): fgets met the end, which a
+        // piece that filled its buffer has not (it stopped at the limit)
+        let complete = piece.contains(&b'\n') || (*pos >= data.len() && n < BUF_SIZE - 1);
         Some((piece, complete))
     };
     while let Some((piece, mut complete)) = next(&mut pos) {
@@ -308,5 +309,26 @@ mod tests {
         assert_eq!(findterm(b"${ROBIGO_RENVIRON_UNSET_X:-v}"), b"v");
         assert_eq!(findterm(b"${}x"), b"x");
         assert_eq!(findterm(b"no terms"), b"no terms");
+    }
+
+    /// A line of exactly fgets' limit at the end of the file, without a
+    /// newline, is not complete (fgets stopped at the limit, feof is not
+    /// set): too long, ignored. One byte shorter is a line.
+    #[test]
+    fn a_line_at_fgets_limit_is_too_long() {
+        let dir = std::env::temp_dir().join(format!("robigo-renviron-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("long");
+        let mut long = b"ROBIGO_RENVIRON_LONG=".to_vec();
+        long.resize(BUF_SIZE - 1, b'a');
+        std::fs::write(&f, &long).unwrap();
+        assert!(process_renviron(f.as_os_str().as_bytes()));
+        assert!(std::env::var_os("ROBIGO_RENVIRON_LONG").is_none());
+        let mut short = b"ROBIGO_RENVIRON_SHORT=".to_vec();
+        short.resize(BUF_SIZE - 2, b'a');
+        std::fs::write(&f, &short).unwrap();
+        assert!(process_renviron(f.as_os_str().as_bytes()));
+        assert_eq!(std::env::var_os("ROBIGO_RENVIRON_SHORT").map(|v| v.len()), Some(BUF_SIZE - 2 - 22));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
