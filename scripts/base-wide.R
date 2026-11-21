@@ -19,7 +19,8 @@
 # robigo-rt binds each name lazily to the form that defines it, evaluated in
 # the base namespace on first use. The index says which form that is, by its
 # byte range in its file (the srcref's), so that the loader reads and parses
-# nothing at startup. Every form that is not an assignment to a base name is
+# nothing at startup but the profile's `boot` forms, which it runs then (the
+# Autoloads environment and `boot_names`'). Every form that is not an assignment to a base name is
 # classified below; a form this script does not know fails it, so a new
 # tarball's base cannot be indexed silently wrong.
 args <- commandArgs(trailingOnly = TRUE)
@@ -101,7 +102,7 @@ block_names <- function(e) {
     sort(ls(scratch, all.names = TRUE), method = "radix")
 }
 
-defs <- list(); others <- list(); seen <- character()
+defs <- list(); others <- list(); seen <- character(); boot_found <- character()
 for (f in sources) {
     bytes <- readBin(f, "raw", file.info(f)$size)
     starts <- c(0L, which(bytes == as.raw(10L)))
@@ -112,6 +113,7 @@ for (f in sources) {
         r <- byte_range(srs[[i]], starts)
         key <- paste0(rel(f), "#", i)
         if (is_asg(e) && as.character(e[[2L]]) %in% boot_names) {
+            boot_found <- c(boot_found, as.character(e[[2L]]))
             others[[length(others) + 1L]] <- data.frame(kind = "boot", name = as.character(e[[2L]]), src = rel(f),
                                                         start = r[1L], end = r[2L], why = "", form = i)
             next
@@ -158,6 +160,9 @@ for (f in sources) {
 }
 stale <- setdiff(names(known), seen)
 if (length(stale)) stop("classified forms that are no longer there: ", paste(stale, collapse = ", "))
+# a boot name no form assigns would silently vanish from the index
+lost <- setdiff(boot_names, boot_found)
+if (length(lost)) stop("boot names no top-level form assigns: ", paste(lost, collapse = ", "))
 defs <- do.call(rbind, defs)
 others <- do.call(rbind, others)
 

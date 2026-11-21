@@ -247,13 +247,21 @@ class RtCi(unittest.TestCase):
 
     def test_the_moving_conformance_step_is_young_and_the_full_run_nightly(self):
         # H8: the job's GC_MOVE + gctorture conformance step moves the young
-        # objects (no per-case timeouts); the nightly's --full-move run moves
-        # everything, with the longer timeouts, each naming a case that exists
+        # objects, with YOUNG_MOVE_SLOW's longer timeouts and no other step's;
+        # the nightly's --full-move run moves everything, with
+        # FULL_MOVE_SLOW's; each names a case that exists
         steps = rt.steps(["robigo-rt"])
-        self.assertEqual([t for t, e, _ in steps if "ROBIGO_CONF_TIMEOUTS" in e], [])
         moving = [e for t, e, c in steps if "ROBIGO_GC_MOVE" in e and "--exact" in c]
         self.assertEqual(len(moving), 1)
         self.assertEqual(moving[0]["ROBIGO_GC_MOVE"], rt.GC_MOVE_YOUNG)
+        self.assertEqual([e for t, e, _ in steps if "ROBIGO_CONF_TIMEOUTS" in e], moving)
+        young = dict(item.rsplit("=", 1) for item in moving[0]["ROBIGO_CONF_TIMEOUTS"].split(","))
+        self.assertEqual(set(young), set(rt.YOUNG_MOVE_SLOW))
+        for case, secs in young.items():
+            self.assertTrue((HERE.parent / case).is_file(), case)
+            self.assertGreater(int(secs), int(moving[0]["ROBIGO_CONF_TIMEOUT"]), case)
+        # (the step's own limit stays: a hung case still fails in ten minutes)
+        self.assertEqual(moving[0]["ROBIGO_CONF_TIMEOUT"], "600")
         self.assertTrue(rt.GC_MOVE_YOUNG.startswith("young:") and int(rt.GC_MOVE_YOUNG[6:]) >= 1)
         full = rt.full_move_steps()
         self.assertEqual(len(full), 1)
