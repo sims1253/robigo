@@ -297,7 +297,8 @@ fn a_panic_in_a_time_zone_conversion_puts_tz_back() {
 /// In a child (the tests write the environment): `TZ=UTC`, two isolates
 /// built on two threads, then `first` in a Berlin session while `second`
 /// (on the other thread) runs its contested call. Berlin converts only once
-/// `second` is waiting for the session lock (`clib::TZ_SESSION_WAITS`); if
+/// `second` is waiting for the session lock (`clib::TZ_SESSION_WAITS`, and
+/// Berlin still the owner under the lock's mutex: `tz_session_still_mine`); if
 /// `second`'s call ends, or it enters a session of its own (`inside`, the
 /// second argument), before that, the two overlapped: a failure. No wait
 /// has a timeout (the watchdog bounds a hang). `second`'s third argument
@@ -339,7 +340,8 @@ fn two_isolates_in_a_child(
                         entered.store(true, SeqCst);
                         let contended = loop {
                             if crate::clib::TZ_SESSION_WAITS.load(SeqCst) > waits0 {
-                                break true;
+                                // (and it is waiting, not past its wait)
+                                break crate::clib::tz_session_still_mine();
                             }
                             if finished.load(SeqCst) || inside.load(SeqCst) {
                                 break false;

@@ -950,6 +950,17 @@ static TZ_SESSION_FREE: std::sync::Condvar = std::sync::Condvar::new();
 #[cfg(test)]
 pub(crate) static TZ_SESSION_WAITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// Whether this thread still holds the session, read under
+/// `TZ_SESSION_WAIT`: after a counted wait the waiter releases that mutex
+/// only inside the condition variable's wait, with the owner unchanged, so
+/// a waiter that took the session instead of waiting shows here (the fork
+/// tests' check, after [`TZ_SESSION_WAITS`] grew).
+#[cfg(test)]
+pub(crate) fn tz_session_still_mine() -> bool {
+    let _g = TZ_SESSION_WAIT.lock().unwrap_or_else(|e| e.into_inner());
+    TZ_SESSION_OWNER.load(std::sync::atomic::Ordering::SeqCst) == this_thread_id()
+}
+
 thread_local! {
     /// How many of [`TzSessionLock`] this thread holds (a session's R code
     /// may convert in a session of its own: a handler's `as.POSIXlt`).
