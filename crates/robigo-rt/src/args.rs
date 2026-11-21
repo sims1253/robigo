@@ -910,6 +910,41 @@ enum Went {
     Formal { formal: u16, pos: u16 },
 }
 
+/// [`FillData::each_actual`] of a call bound by plan `p` whose `...` formal
+/// took some of the call's arguments (the plan's dots, in order).
+///
+/// # Safety
+/// The first `p.nactuals` tags are written ([`plan_inits`]).
+#[inline(never)]
+unsafe fn each_actual_dots(
+    p: &Plan,
+    tags: &[MaybeUninit<Sexp>; PLAN_DOTS],
+    missing: u16,
+    f: &mut dyn FnMut(Sexp, Went) -> bool,
+) -> bool {
+    let mut dest = [NO; PLAN_DOTS];
+    for (fi, &a) in p.src[..p.nformals as usize].iter().enumerate() {
+        if a != PLAN_NO {
+            dest[a as usize] = fi as u16;
+        }
+    }
+    let dots = &p.dots[..p.ndots as usize];
+    for (j, (&formal, tag)) in dest.iter().zip(tags).take(p.nactuals as usize).enumerate() {
+        let went = if missing & (1 << j) != 0 {
+            Went::Missing
+        } else if let Some(k) = dots.iter().position(|&d| d as usize == j) {
+            Went::Dots(k as u16)
+        } else {
+            Went::Formal { formal, pos: j as u16 }
+        };
+        // SAFETY: the caller's contract.
+        if !f(unsafe { tag.assume_init() }, went) {
+            return false;
+        }
+    }
+    true
+}
+
 impl FillData {
     /// Each actual of the call, in order: its tag (a symbol or R_NilValue)
     /// and where the match put it, given to `f` until it returns false
@@ -945,25 +980,22 @@ impl FillData {
                 true
             }
             FillData::Plan { plan: p, tags, missing } => {
+                // (a plan whose `...` took actuals: out of line, so that
+                // this loop is the same for the calls without)
+                if p.ndots != 0 {
+                    // SAFETY: the caller's contract.
+                    return unsafe { each_actual_dots(p, tags, *missing, &mut f) };
+                }
                 let mut dest = [NO; PLAN_DOTS];
                 for (fi, &a) in p.src[..p.nformals as usize].iter().enumerate() {
                     if a != PLAN_NO {
                         dest[a as usize] = fi as u16;
                     }
                 }
-                // (none of the call's arguments is `...`; those the `...`
-                // formal took are the plan's dots, in order)
-                let dots = &p.dots[..p.ndots as usize];
+                // (none of the call's arguments is `...` or went there)
                 for (j, (&formal, tag)) in dest.iter().zip(tags).take(p.nactuals as usize).enumerate() {
-                    let went = if missing & (1 << j) != 0 {
-                        Went::Missing
-                    } else if p.ndots != 0
-                        && let Some(k) = dots.iter().position(|&d| d as usize == j)
-                    {
-                        Went::Dots(k as u16)
-                    } else {
-                        Went::Formal { formal, pos: j as u16 }
-                    };
+                    let went =
+                        if missing & (1 << j) != 0 { Went::Missing } else { Went::Formal { formal, pos: j as u16 } };
                     // SAFETY: the first `nactuals` tags are written
                     // ([`plan_inits`]).
                     if !f(unsafe { tag.assume_init() }, went) {
