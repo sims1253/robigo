@@ -51,6 +51,7 @@ pub mod code;
 pub mod compile;
 pub mod conditions;
 pub mod connections;
+mod declare;
 pub mod deparse;
 pub mod dispatch;
 mod early;
@@ -79,6 +80,7 @@ pub mod search;
 pub mod serialize;
 pub mod source;
 mod specials;
+mod tailcall;
 mod util;
 pub mod vm;
 

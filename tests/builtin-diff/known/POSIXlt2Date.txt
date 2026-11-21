@@ -1,0 +1,2 @@
+# builtin-diff known failures: POSIXlt2Date, seed 0, key 961d571c2bcc5c91113ae85c
+# POSIXlt2Date: 136 / 136 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)

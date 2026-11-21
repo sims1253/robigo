@@ -326,12 +326,40 @@ def run_isolated(cmd, env, batch, out, ncases, key, rsrc=None, timeout=CASE_TIME
     root = case_root(key)
     # the lock file stays: removing it would let a waiting run lock a file
     # that a third run no longer sees
-    with open(root + ".lock", "a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with open(root + ".lock", "a+") as lock:
+        lock_row(lock, root + ".lock")
         try:
             return run_cases(cmd, env, batch, out, ncases, root, rsrc, timeout)
         finally:
             remove_tree(root)
+
+
+def lock_row(lock, path, first=5.0, every=60.0, step=0.2):
+    """Take `lock` (the open lock file at `path`) exclusive, waiting as long
+    as another run of the row holds it. While it waits it says so on stderr
+    after `first` seconds and then every `every`, naming the last recorded
+    holder: each holder writes its pid into the file once it has the lock,
+    so in a handoff the file can still name the previous one (or none)."""
+    waited, said = 0.0, None
+    while True:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            pass
+        if waited >= first and (said is None or waited - said >= every):
+            lock.seek(0)
+            holder = lock.read().strip() or "none yet"
+            print(f"builtin-diff: waiting {waited:.0f} s for {path}, held by another run of this row "
+                  f"(last recorded holder: pid {holder})",
+                  file=sys.stderr, flush=True)
+            said = waited
+        time.sleep(step)
+        waited += step
+    lock.seek(0)
+    lock.truncate()
+    lock.write(str(os.getpid()))
+    lock.flush()
 
 
 def run_cases(cmd, env, batch, out, ncases, root, rsrc, timeout):

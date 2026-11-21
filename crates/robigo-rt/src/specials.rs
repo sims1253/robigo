@@ -124,6 +124,22 @@ impl<'s> Evaluated<'s> {
     }
 }
 
+/// `evalListKeepMissing(CDR(call), rho)` of the whole argument list of
+/// `call`: the values in a window of `s` (each linked until all are
+/// evaluated, `...` expanded, missing arguments kept as R_MissingArg).
+// R: eval.c:evalListKeepMissing
+pub(crate) fn eval_call_args_keep_missing<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    call: Root<'_>,
+    rho: Root<'_>,
+) -> RResult<Evaluated<'s>> {
+    let cap = count_args(cx, call, 0, rho)?;
+    let mut ev = Evaluated::new(cx, s, cap);
+    eval_list_keep_missing(cx, s, call, 0, rho, &mut ev, 0)?;
+    Ok(ev)
+}
+
 /// How many values `evalListKeepMissing` makes of the call's arguments
 /// from `first` on: `...` counts its elements (anything else it is bound
 /// to counts none: the evaluation raises its error).
