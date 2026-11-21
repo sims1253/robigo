@@ -536,6 +536,9 @@ pub struct Core {
     /// `ROBIGO_GC_FREEZE_CHECK=1`: the freeze's invariant checked at every
     /// collection.
     freeze_check: bool,
+    /// Under `freeze_check`, the ordinary objects the independent trace
+    /// reached at this collection's start.
+    freeze_reach: Vec<Sexp>,
     /// GNU R's `R_weak_refs`: the weak references (WEAKREFSXP) not yet
     /// finalized, ready ones (`READY_TO_FINALIZE`, their key dead or the
     /// session ending) included, oldest first (`R_weak_refs` reversed).
@@ -886,6 +889,7 @@ impl Core {
             frozen: Vec::new(),
             pending_unfreeze: Vec::new(),
             freeze_check: std::env::var_os("ROBIGO_GC_FREEZE_CHECK").is_some_and(|v| v == "1"),
+            freeze_reach: Vec::new(),
             weak_refs: Vec::new(),
             finalizers_pending: false,
             releases: Vec::new(),
@@ -2787,6 +2791,9 @@ impl Core {
             self.poisoned = true;
             // the batched unfreeze (`freeze.rs`) before anything is marked
             self.unfreeze_pending();
+            if self.freeze_check && !self.frozen.is_empty() {
+                self.freeze_reach = self.independent_reach(roots);
+            }
             if self.young_collection() {
                 // ROBIGO_GC_MOVE=young:N (mover.rs): the pins first, then a
                 // marking that copies the young objects as it reaches them

@@ -175,12 +175,14 @@ impl Roots {
         // the attached packages a start with default packages loaded)
         let base = self.envs.base_raw();
         let mut e = self.envs.global_raw();
+        // (a rewired chain may cycle: each environment once, Sol r3 S9)
+        let mut seen = std::collections::HashSet::new();
         loop {
             // SAFETY: the global environment and its enclosures are live
             // environments of this isolate (the search path's chain ends at
             // base, then the empty environment).
             e = unsafe { robigo_heap::env::enclos(e) };
-            if e.is_null() || e == base || e == self.envs.empty_raw() {
+            if e.is_null() || e == base || e == self.envs.empty_raw() || !seen.insert(e.addr()) {
                 break;
             }
             let mut x = e;
