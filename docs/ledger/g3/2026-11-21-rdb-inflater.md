@@ -37,45 +37,43 @@ for each record.
 
 ## Numbers
 
-Main dd648bb78 against 229fe89e7, this branch with that main merged in.
+Main 1f8cc8fbb against d0b75cd4c, this branch with that main merged in.
 Both were built into empty targets:
 
-- `robigo-rt-main-dd648bb7`, sha256 `aa2830cdd3e4109014dcf337b864e75407b88598060bf42176fc5de495e40604`;
-- `robigo-rt-dc-229fe89e`, sha256 `0af8fb1ce7f478eb1ecf09da35f4734ec79cc080550dec462902d51d59431877`.
+- `robigo-rt-main-1f8cc8fb`, sha256 `7a98e2dd117075af137375a042676d93f9e72dc4b3bf28e8573a67e204df94b6`;
+- `robigo-rt-dc-d0b75cd4`, sha256 `5d61cf6a30ae0afd746fa9ded9a20d4088f9fb23bb831ab7c9f08dda4262ba59`.
 
 The boot is `--vanilla -e 1` under callgrind:
 
 | boot | main | this | change |
 |---|---:|---:|---:|
-| `ROBIGO_RT_BOOT=rdb` | 57,600,217 | 56,316,660 | −1,283,557 (−2.2%) |
-| interim (M1) loader | 16,653,095 | 16,700,165 | +47,070 (+0.28%) |
+| `ROBIGO_RT_BOOT=rdb` | 57,423,056 | 56,326,637 | −1,096,419 (−1.9%) |
+| interim (M1) loader | 17,096,350 | 17,104,273 | +7,923 (+0.05%; no record is inflated) |
 
-- **rdb:** `Decompress::new` went from 75 calls and 1,112,220 instructions
-  to 1 call and 14,999. The inflating itself (`decompress_vec`, 78 calls)
+- **rdb:** `Decompress::new` went from 75 calls and 1,111,162 instructions
+  to 1 call and 14,788. The inflating itself (`decompress_vec`, 78 calls)
   went from 4.92M to 5.09M: about +2.3k a record, inside zlib-rs's inflate,
   after the reset. That is less than a sixth of the 14.8k a record saved.
 - **Interim loader:** it inflates no record and never reaches
-  `decompress1`. All of its +47k is inside glibc's unnamed internal routines
-  (memmove at 0x1b1220, the malloc routines at 0xbb…), with no robigo
-  function changed: heap and allocator layout, not code.
-- **Earlier measurements of this change.** They vary by about ±0.15M on the
-  same main, the same layout effect in glibc's `malloc` and `free`:
-  - the thread-local version (d7fd971f0) on main 88a0ec56b: −1,173,344;
-  - this version (7be989e96) on the same main: −1,024,303. Of the
-    difference, about 12k is the layer state's two lookups a record
-    (inlined in `do_lazyload_dbfetch`), and about 130k is in glibc's
-    allocator.
+  `decompress1`. What moves there is in glibc's unnamed internal routines:
+  heap and allocator layout, not code.
+- **Variation across measurements.** The same change measured −1.02M to
+  −1.28M on earlier mains (88a0ec56b, dd648bb78), and the interim boot from
+  −1k to +47k. Every difference was in glibc's `malloc`, `free` and memmove.
+  Against 7be989e96, about 12k of a difference was the layer state's two
+  lookups a record, which are inlined in `do_lazyload_dbfetch`.
 
 **Resident memory, read from `/proc/PID/status` after the boot.**
-- Anonymous memory: +8 KiB (interim) and +44 KiB (rdb). The rdb boot
+- Anonymous memory: −8 KiB (interim) and +16 KiB (rdb). The rdb boot
   keeps the inflater alive; the interim boot never makes it.
-- File-backed memory, the binary's pages: +396 KiB (interim) and +180 KiB
-  (rdb). That is code layout, which varies from build to build.
-- Peak RSS (`wait4`, median of 9): +376 KiB (interim) and +88 KiB (rdb).
+- File-backed memory, the binary's pages: +72 KiB (interim) and +64 KiB
+  (rdb). That is code layout, which varies from build to build: earlier
+  builds of this change measured +180 to +532 KiB.
+- Peak RSS (`wait4`, median of 9): +32 KiB (interim) and −64 KiB (rdb).
 
 **perf-rt (`scripts/rt-bars.sh`, median of two runs each).** Every row is
-within ±0.01% instructions under both boots, `superassign` included
-(4,590.6 → 4,590.2 under the default boot, 4,578.4 → 4,578.5 under rdb).
+within ±0.05% instructions under both boots, `superassign` included
+(4,590.1 → 4,589.7 under the default boot, 4,578.4 → 4,578.6 under rdb).
 The thread-local version had moved `superassign` by +0.19% under rdb, all
 of it in glibc's alignment-dependent `__memmove_avx_unaligned_erms`; that
 shift is gone.
