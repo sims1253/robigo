@@ -57,7 +57,7 @@ if [ -f "$out/.rt-home-db" ] && [ "$(cat "$out/.rt-home-db")" = "$stamp" ]; then
   exit 0
 fi
 mkdir -p "$(dirname "$out")"
-tmp=$(mktemp -d "$(dirname "$out")/.rt-home-db.XXXXXX")
+tmp=$(realpath "$(mktemp -d "$(dirname "$out")/.rt-home-db.XXXXXX")")
 trap 'rm -rf "$tmp"' EXIT
 # the install layout robigo-rt finds its R_HOME by: bin/robigo-rt, lib/robigo
 mkdir -p "$tmp/bin" "$tmp/lib/robigo"
@@ -92,9 +92,9 @@ for p in base tools; do
   echo "Built: R $version; ; $(TZ=UTC date); unix" >> "$lib/$p/DESCRIPTION"
 done
 # R: src/library/tools/Makefile.in all (its last command; tools' R_EXE is
-# `bin/R --vanilla --no-echo`)
+# `R_ENABLE_JIT=0 TZ=UTC bin/R --vanilla --no-echo`: no compiler yet)
 (cd "$tmp/src/tools" && echo "tools:::.install_package_description('.', '$lib/tools')" |
-  ROBIGO_RT_INTERIM=1 rexe stage0 R_DEFAULT_PACKAGES=NULL)
+  ROBIGO_RT_INTERIM=1 rexe stage0 R_DEFAULT_PACKAGES=NULL R_ENABLE_JIT=0 TZ=UTC)
 # R: src/library/compiler/Makefile.in (R_EXE = R_ENABLE_JIT=0 TZ=UTC bin/R
 # --vanilla --no-echo): all's mkdesc (share/make/basepkg.mk) then
 # mklazycomp (share/make/lazycomp.mk; mkR1's all.R is rt-home.sh's
@@ -115,10 +115,11 @@ for f in base.rdb base.rdx; do
   [ -s "$lib/base/R/$f" ] || { echo "rt-home-db.sh: makebasedb.R wrote no $f" >&2; exit 1; }
 done
 install -m 644 "$rsrc/src/library/base/baseloader.R" "$lib/base/R/base"
-# R: src/library/Makefile.in R: base's mkdesc, then the descriptions and
-# the parsed NAMESPACE files as RDS (R_EXE = bin/R --vanilla --no-echo)
+# R: src/library/Makefile.in R: base's mkdesc (base's R_EXE, `TZ=UTC
+# bin/R --vanilla --no-echo`), then the descriptions and the parsed
+# NAMESPACE files as RDS (its own, `bin/R --vanilla --no-echo`)
 (cd "$tmp/src/base" && echo "tools:::.install_package_description('.', '$lib/base')" |
-  ROBIGO_RT_INTERIM=1 rexe rdb R_DEFAULT_PACKAGES=NULL)
+  ROBIGO_RT_INTERIM=1 rexe rdb R_DEFAULT_PACKAGES=NULL TZ=UTC)
 echo "tools:::.vinstall_package_descriptions_as_RDS(\"$lib\", \"base tools compiler\")" |
   rexe rdb R_DEFAULT_PACKAGES=tools LC_ALL=C
 rm -f "$lib/tools/Meta/nsInfo.rds"

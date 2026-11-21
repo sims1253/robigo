@@ -1003,8 +1003,7 @@ pub fn init_jit(cx: &mut Cx) -> JitStart {
     let ok = cx.scope(|cx, s| {
         let g = s.root(cx, cx.global_env());
         let base = s.root(cx, cx.base_env());
-        cx.repl_toplevel(g, base, crate::jit::init_jit_enabled)
-            .expect("robigo: an exit that passed the top level")
+        cx.repl_toplevel(g, base, crate::jit::init_jit_enabled).expect("robigo: an exit that passed the top level")
     });
     if ok {
         JitStart::Done

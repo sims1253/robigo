@@ -288,6 +288,7 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         forced: st.forced,
         jit: st.jit.clone(),
         compile_pkgs: st.compile_pkgs.clone(),
+        gnu_boot: st.gnu_boot.clone(),
         jit_cache: std::cell::RefCell::new(st.jit_cache.borrow_mut().take()),
         shipped: std::cell::RefCell::new(shipped),
         syms: st.syms,
