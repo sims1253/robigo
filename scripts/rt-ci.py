@@ -208,6 +208,15 @@ YOUNG_MOVE_SLOW = {
     # (run 44865825323's tree) and 822 G at main 6b5d719a8 (perf stat, two
     # runs each, 2026-11-21), so the spread on CI is the runner's
     "tests/r/conditions/c-stack-overflow.R": 1200,
+    # The three below, alone in this step (2026-11-21): each passed, and each
+    # timed out at 600 s in it for five delegates at load 45-130. B measured
+    # them on the workstation, A1 too (at load 18-24):
+    #   finalizers-self-ref-envs.R  346 s (B), 267 s (A1)
+    #   active-binding-read.R       302 s (B)
+    #   serialize-write.R           503 s (B), 185 s (A1); it loads the compiler
+    "tests/r/memory/finalizers-self-ref-envs.R": 1200,
+    "tests/rt/jit/active-binding-read.R": 1200,
+    "tests/rt/jit/serialize-write.R": 1200,
 }
 
 
@@ -216,10 +225,19 @@ YOUNG_MOVE_SLOW = {
 # order it ran alone at the step's end. tests/rt/jit/shared-body.R (it loads
 # the compiler): 177 s under gctorture, 200 s under GC_MOVE=young:16 on the
 # 24-CPU workstation (2026-11-21); in #952's run 44927530340 the two steps
-# took 2.7 and 3.1 minutes longer than in #941's, its 8 new cases' doing
+# took 2.7 and 3.1 minutes longer than in #941's, its 8 new cases' doing.
+# The longest cases alone under the plain gctorture step (A1, 2026-11-21,
+# load 20-34): serialize-write.R 256 s, active-binding-read.R 181 s,
+# finalizers-self-ref-envs.R 139 s, shared-body.R 76 s (177 s at load 45),
+# c-stack-overflow.R 72 s; under retry torture none is over 300 s
+# (serialize-write.R 269 s, active-binding-read.R 169 s, shared-body.R 161 s),
+# so neither step gives a case longer than its limit
 GCTORTURE_FIRST = {
     "tests/rt/jit/shared-body.R": 600,
     "tests/r/conditions/c-stack-overflow.R": 600,
+    "tests/rt/jit/serialize-write.R": 600,
+    "tests/rt/jit/active-binding-read.R": 600,
+    "tests/r/memory/finalizers-self-ref-envs.R": 600,
 }
 
 
