@@ -164,7 +164,8 @@ class RtCi(unittest.TestCase):
         self.assertEqual(sorted(timeouts), sorted(rt.SHARDS), "each shard has one CI job")
         for shard, (budget, measured, where) in rt.BUDGETS.items():
             self.assertEqual(budget, math.ceil(measured * 1.2), f"{shard}: the measured time plus 20%, rounded up")
-            self.assertEqual(timeouts[shard], 2 * budget, f"{shard}: its job's timeout is twice its budget")
+            self.assertEqual(timeouts[shard], max(2 * budget, rt.TIMEOUT_FLOOR),
+                             f"{shard}: its job's timeout is twice its budget, at least the floor")
             self.assertRegex(where, r"^20\d\d-\d\d-\d\d", f"{shard}: when it was measured")
         self.assertEqual(rt.WARN_AT, 0.9)
 
@@ -176,7 +177,7 @@ class RtCi(unittest.TestCase):
         self.assertNotIn("::warning::", rt.timings_report([("release tests", below, True)], "modes"))
         report = rt.timings_report([("release tests", at, True)], "modes")
         self.assertIn("::warning::rt: shard modes took", report)
-        self.assertIn(f"{2 * budget}-minute timeout", report)
+        self.assertIn(f"{rt.timeout_of(budget)}-minute timeout", report)
         # a plain run has no budget
         self.assertNotIn("budget", rt.timings_report([("release tests", at * 3, True)]))
 
@@ -320,12 +321,24 @@ class RtCi(unittest.TestCase):
         moving = [e for t, e, c in steps if "ROBIGO_GC_MOVE" in e and "--exact" in c]
         self.assertEqual(len(moving), 1)
         self.assertEqual(moving[0]["ROBIGO_GC_MOVE"], rt.GC_MOVE_YOUNG)
-        self.assertEqual([e for t, e, _ in steps if "ROBIGO_CONF_TIMEOUTS" in e], moving)
+        # (and the plain gctorture step, which names GCTORTURE_FIRST at its
+        # own limit: started first, not given longer)
+        plain = [e for t, e, c in steps if t == "conformance under gctorture (E3)"]
+        named = [t for t, e, _ in steps if "ROBIGO_CONF_TIMEOUTS" in e]
+        self.assertEqual(sorted(named), sorted(["conformance under gctorture (E3)",
+                                                f"conformance under ROBIGO_GC_MOVE={rt.GC_MOVE_YOUNG} with gctorture (E3)"]))
+        first = dict(item.rsplit("=", 1) for item in plain[0]["ROBIGO_CONF_TIMEOUTS"].split(","))
+        self.assertEqual(first, {c: str(s) for c, s in rt.GCTORTURE_FIRST.items()})
+        self.assertTrue(all(int(s) == int(plain[0]["ROBIGO_CONF_TIMEOUT"]) for s in first.values()))
         young = dict(item.rsplit("=", 1) for item in moving[0]["ROBIGO_CONF_TIMEOUTS"].split(","))
-        self.assertEqual(set(young), set(rt.YOUNG_MOVE_SLOW))
+        self.assertEqual(set(young), set(rt.YOUNG_MOVE_SLOW) | set(rt.GCTORTURE_FIRST))
         for case, secs in young.items():
             self.assertTrue((HERE.parent / case).is_file(), case)
-            self.assertGreater(int(secs), int(moving[0]["ROBIGO_CONF_TIMEOUT"]), case)
+            # YOUNG_MOVE_SLOW's get longer; GCTORTURE_FIRST's are only started first
+            if case in rt.YOUNG_MOVE_SLOW:
+                self.assertGreater(int(secs), int(moving[0]["ROBIGO_CONF_TIMEOUT"]), case)
+            else:
+                self.assertEqual(int(secs), int(moving[0]["ROBIGO_CONF_TIMEOUT"]), case)
         # (the step's own limit stays: a hung case still fails in ten minutes)
         self.assertEqual(moving[0]["ROBIGO_CONF_TIMEOUT"], "600")
         self.assertTrue(rt.GC_MOVE_YOUNG.startswith("young:") and int(rt.GC_MOVE_YOUNG[6:]) >= 1)

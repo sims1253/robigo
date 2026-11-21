@@ -211,6 +211,18 @@ YOUNG_MOVE_SLOW = {
 }
 
 
+# The cases the two gctorture conformance steps start first, at the step's
+# own limit (600 s): each takes minutes under gctorture, and started in id
+# order it ran alone at the step's end. tests/rt/jit/shared-body.R (it loads
+# the compiler): 177 s under gctorture, 200 s under GC_MOVE=young:16 on the
+# 24-CPU workstation (2026-11-21); in #952's run 44927530340 the two steps
+# took 2.7 and 3.1 minutes longer than in #941's, its 8 new cases' doing
+GCTORTURE_FIRST = {
+    "tests/rt/jit/shared-body.R": 600,
+    "tests/r/conditions/c-stack-overflow.R": 600,
+}
+
+
 def case_timeouts(slow):
     """ROBIGO_CONF_TIMEOUTS's value for `slow` (case -> seconds)."""
     return ",".join(f"{c}={secs}" for c, secs in sorted(slow.items()))
@@ -329,7 +341,8 @@ def steps(crates):
         ("gctorture (collect at every allocation) and the GC stats check",
          {**TREE_RUNS, **{"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check"}}, [*crate, *pkgs, *skip]),
         # docs/g3.md §15.3 E3: the rt slice under the collector modes
-        ("conformance under gctorture (E3)", {"ROBIGO_GCTORTURE": "1", **slow}, conformance),
+        ("conformance under gctorture (E3)",
+         {"ROBIGO_GCTORTURE": "1", **slow, "ROBIGO_CONF_TIMEOUTS": case_timeouts(GCTORTURE_FIRST)}, conformance),
         # every argument a PROMSXP at call entry (GNU R's representation,
         # through the same binding-kind transitions): docs/g3.md §16's
         # ROBIGO_MATERIALIZE=1. Every rt crate, as the steps above: cargo
@@ -346,7 +359,7 @@ def steps(crates):
         # the nightly runs it with every collection moving everything
         (f"conformance under ROBIGO_GC_MOVE={GC_MOVE_YOUNG} with gctorture (E3)",
          {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": GC_MOVE_YOUNG, **slow,
-          "ROBIGO_CONF_TIMEOUTS": case_timeouts(YOUNG_MOVE_SLOW)}, conformance),
+          "ROBIGO_CONF_TIMEOUTS": case_timeouts({**GCTORTURE_FIRST, **YOUNG_MOVE_SLOW})}, conformance),
         # D5's frame recycling (docs/g3.md §16): every frame that would be recycled
         # is poisoned and held back instead, so a frame that escaped without
         # its ESCAPED bit panics where it is used next
@@ -449,16 +462,24 @@ OWN_STEPS = ("debug-assertions", "release-crate-tests")
 # timeout (scripts/test-rt-ci.py pins the three relations). When a warning
 # fires, rebalance or remeasure: the dates say how old each measurement is.
 BUDGETS = {  # shard: (budget, measured minutes, where measured)
-    "modes": (23, 18.40, "2026-11-21, run 44908057499 (#941)"),
-    "gctorture": (18, 14.81, "2026-11-21, run 44908057499 (#941)"),
-    # retry-torture's conformance 13.96 and the poison-dead steps 7.85: they
-    # share one feature build, so a split would build robigo-rt's test
-    # targets twice for about 2 minutes of wall
-    "feature-builds": (27, 21.94, "2026-11-21, run 44908057499 (#941)"),
-    "builtin-diff": (9, 6.67, "2026-11-21, run 44908057499 (#941)"),
-    "debug-assertions": (15, 11.67, "2026-11-21, run 44908057499 (#941)"),
-    "release-crate-tests": (15, 12.30, "2026-11-21, estimated: #941's release tests with the R_HOME tree"),
+    "modes": (9, 6.99, "2026-11-21, run 44927530340 (#952): 6.49, and the two rdb-boot steps' estimated 0.5"),
+    # the plain gctorture conformance moves into modes if GCTORTURE_FIRST
+    # does not bring this back near 15 minutes
+    "gctorture": (25, 20.62, "2026-11-21, run 44927530340 (#952), before GCTORTURE_FIRST"),
+    "feature-builds": (12, 9.87, "2026-11-21, run 44927530340 (#952)"),
+    "builtin-diff": (9, 7.42, "2026-11-21, run 44927530340 (#952)"),
+    "debug-assertions": (5, 3.47, "2026-11-21, run 44927530340 (#952): 3.07, and the tree's estimated 0.4"),
+    "release-crate-tests": (12, 9.82, "2026-11-21, main's run 44931071167: 9.42, and the tree's estimated 0.4"),
 }
+# A job's timeout is twice its budget, but no less than this: a build from a
+# cold cache (a Cargo.lock change, an evicted entry) takes up to about 12
+# minutes on its own (rt-debug-assertions' first run, #941)
+TIMEOUT_FLOOR = 20
+
+
+def timeout_of(budget):
+    """A shard's job timeout, in minutes, for its budget."""
+    return max(2 * budget, TIMEOUT_FLOOR)
 WARN_AT = 0.9
 
 
@@ -472,7 +493,7 @@ def budget_warning(shard, minutes):
         return None
     return (f"::warning::rt: shard {shard} took {minutes:.1f} min, {100 * minutes / budget:.0f}% of its "
             f"{budget}-minute budget ({measured} min measured {where}); rebalance the shards or remeasure "
-            f"(scripts/rt-ci.py's BUDGETS) before it reaches the job's {2 * budget}-minute timeout")
+            f"(scripts/rt-ci.py's BUDGETS) before it reaches the job's {timeout_of(budget)}-minute timeout")
 
 
 def target_dir():
