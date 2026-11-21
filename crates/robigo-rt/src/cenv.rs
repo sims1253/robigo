@@ -1641,7 +1641,8 @@ pub unsafe fn simple_internal(cx: &Cx, st: &RtState, def: Sexp) -> Option<Sexp> 
         if forms.iter().any(|&(d, _)| d != missing && not_simple(d.typ())) {
             return None;
         }
-        let mut b = def.cdr();
+        // body(def): R_ClosureExpr, a byte-code body's source
+        let mut b = robigo_rtbuiltins::bytecode::expr(cx, Ref::from_sexp(def.cdr(), cx)).sexp();
         if b.typ() == LANGSXP && b.car() == st.syms.brace {
             let a = elements(cx, b, true);
             if a.len() == 1 {
