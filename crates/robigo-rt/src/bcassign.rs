@@ -412,10 +412,12 @@ fn getter<'s>(cx: &mut Cx, s: Scope<'s>, step: Root<'_>, lhs: Root<'_>, rho: Roo
                 cx.set_visible(true);
                 return Ok(v);
             }
-            let ev = if matches!(k, K_SUB_PUNT | K_SUB2_PUNT) {
-                default_args::<false>(cx, s, call, lhs, rho, None)?
-            } else {
+            // an index bcEval loads (LDCONST) sets R_Visible; a punt step's
+            // (PUSHCONSTARG) does not
+            let ev = if matches!(k, K_SUB | K_SUB2) {
                 default_args::<true>(cx, s, call, lhs, rho, None)?
+            } else {
+                default_args::<false>(cx, s, call, lhs, rho, None)?
             };
             let args = ev.args(cx);
             cx.materialize_subset_args(args)?;
@@ -475,10 +477,12 @@ fn setter<'s>(
                     return Ok(v);
                 }
             }
-            let ev = if matches!(k, K_SUB_PUNT | K_SUB2_PUNT) {
-                default_args::<false>(cx, s, call, lhs, rho, Some(rhs))?
-            } else {
+            // an index bcEval loads (LDCONST) sets R_Visible; a punt step's
+            // (PUSHCONSTARG) does not
+            let ev = if matches!(k, K_SUB | K_SUB2) {
                 default_args::<true>(cx, s, call, lhs, rho, Some(rhs))?
+            } else {
+                default_args::<false>(cx, s, call, lhs, rho, Some(rhs))?
             };
             let args = ev.args(cx);
             cx.materialize_subset_args(args)?;
@@ -769,16 +773,24 @@ fn generic(
                 let p = crate::assign::rhs_promise(cx, s, vexpr, rhs)?;
                 cx.set_car(l, p);
             }
-            // PRIMFUN(fun)(call, fun, args, rho): `@<-` takes the two apart
-            // (the call its methods see is the compiler's, `*tmp*` in it)
-            if prims::prim_name(cx, fun.bind(cx)) == Some("@<-") {
+            // PRIMFUN(fun)(call, fun, args, rho): `@<-`, `[<-` and `[[<-` take
+            // the two apart, so their methods see the compiler's call
+            // (`*tmp*` in it); R_Visible as the special leaves it, no eval
+            // around it
+            // SAFETY: a rooted primitive of this isolate.
+            let name = unsafe { prims::def(cx, fun.bind(cx).sexp()) }.name;
+            if name == "@<-" {
                 return crate::specials::slot_gets(cx, call, Some(args), rho, out);
             }
             let o = s.out(cx);
             let ncall = o.root();
             let head = s.root(cx, call.bind(cx).as_cons().unwrap().car());
             cx.build(o, |cx| cx.lcons(head.bind(cx), args.bind(cx)))?;
-            crate::apply::apply_special(cx, ncall, fun, rho, out)
+            match name {
+                "[<-" => crate::specials::subassign_apart(cx, call, ncall, rho, out),
+                "[[<-" => crate::specials::subassign2_apart(cx, call, ncall, rho, out),
+                _ => crate::apply::apply_special(cx, ncall, fun, rho, out),
+            }
         }
         _ => {
             // a promise list: `*tmp*` and a setter's value evaluated
