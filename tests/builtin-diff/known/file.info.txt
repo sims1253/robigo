@@ -1,7 +1,2 @@
 # builtin-diff known failures: file.info, seed 0, key 3111f8ccc22dd8cac74cb535
-# file.info: 153 / 158 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 10 excluded)
-15
-101
-123
-129
-138
+# file.info: 158 / 158 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 10 excluded)
