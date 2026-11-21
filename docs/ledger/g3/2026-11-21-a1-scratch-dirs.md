@@ -25,6 +25,15 @@ that cannot be removed does not stop the others, and a child made by fork
 removes none of its parent's. This is what was broken, and where the 15 GB
 came from.
 
+**What still leaks, by design** (each a review finding not fixed, by the
+foreman's rule: only a wrong status, a tool that never exits, or touching
+what it did not make is fixed):
+- a SIGKILL or an OOM kill of the tool;
+- a directory a case locked itself out of, past repair;
+- a docker container that keeps writing after its client is killed;
+- A directory a worker re-creates after the signal's removal (writing under its old path, as builtin-diff's `os.makedirs(work)` can): it is a new directory, and only the one made is this process's to remove (Sol's F4 ownership rule), so it stays.
+- What is still there when the forced exit fires: a worker that holds the registry lock, or blocks, past `STOP_SECONDS` after a signal. The process exits on time (F2), and the rest of the removal does not happen.
+
 **What it does not cover.** A run killed by SIGKILL (an OOM kill) leaves its
 directories; until a separate sweep exists they are removed by hand
 (docs/verification.md gives the rule A1 used on 2026-11-21).

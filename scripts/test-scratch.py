@@ -12,6 +12,7 @@ exit.
 import importlib.util
 import os
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -169,7 +170,7 @@ class Module(unittest.TestCase):
         code, out, err = run_py("import os, signal, scratch\n"
                                 "a, b = scratch.scratch_dir('t-'), scratch.scratch_dir('t-')\nprint(a, b, flush=True)\n"
                                 "real = scratch.rmtree\n"
-                                "def rm(p):\n    os.kill(os.getpid(), signal.SIGTERM); real(p)\n"
+                                "def rm(p, *a):\n    os.kill(os.getpid(), signal.SIGTERM); real(p, *a)\n"
                                 "scratch.rmtree = rm\nscratch.remove(a)\nprint('NOT REACHED')", self.tmp)
         self.assertEqual(code, 128 + signal.SIGTERM, err)
         self.assertNotIn("NOT", out)
@@ -180,8 +181,8 @@ class Module(unittest.TestCase):
         code, out, err = run_py("import scratch\n"
                                 "a, b = scratch.scratch_dir('t-'), scratch.scratch_dir('t-')\nprint(a, b, flush=True)\n"
                                 "real, failed = scratch.rmtree, []\n"
-                                "def rm(p):\n    if p == min(a, b) and not failed:\n        failed.append(p); raise PermissionError(p)\n"
-                                "    real(p)\nscratch.rmtree = rm", self.tmp)
+                                "def rm(p, *rest):\n    if p == min(a, b) and not failed:\n        failed.append(p); raise PermissionError(p)\n"
+                                "    real(p, *rest)\nscratch.rmtree = rm", self.tmp)
         self.assertEqual(code, 0, err)
         stuck = min(out)
         self.assertTrue(os.path.isdir(stuck))       # its one removal failed
@@ -189,12 +190,13 @@ class Module(unittest.TestCase):
         scratch.rmtree(stuck)
 
     def test_ctrl_c_right_after_the_directory_is_made_leaves_nothing(self):
-        # S1: the name is registered before mkdir, so a KeyboardInterrupt at
-        # once after it still finds the directory at exit
-        code, out, err = run_py("import os, scratch\nreal = os.mkdir\n"
-                                "def mk(p, *a):\n    real(p, *a); print(p, flush=True); raise KeyboardInterrupt\n"
-                                "os.mkdir = mk\nscratch.scratch_dir('t-')", self.tmp)
-        self.assertNotEqual(code, 0)
+        # S1: a real Ctrl-C at once after mkdir waits for the registration,
+        # so the exit finds the directory
+        code, out, err = run_py("import os, signal, scratch\nreal = os.mkdir\n"
+                                "def mk(p, *a):\n    real(p, *a); print(p, flush=True); os.kill(os.getpid(), signal.SIGINT)\n"
+                                "os.mkdir = mk\nscratch.scratch_dir('t-')\nprint('NOT REACHED')", self.tmp)
+        self.assertEqual(code, 128 + signal.SIGINT, err)
+        self.assertNotIn("NOT", out)
         self.assertTrue(out, err)
         self.assertFalse(os.path.exists(out[0]))
 
@@ -223,15 +225,85 @@ class Module(unittest.TestCase):
                                 "import scratch\nscratch.scratch_dir('t-')", self.tmp)
         self.assertEqual(code, 128 + signal.SIGTERM, err)
 
-    def test_a_directory_a_worker_makes_again_after_the_removal_goes_at_exit(self):
-        # E1: a worker writes under its directory after SIGTERM removed it
-        rc, secs, d, kid = self.sigterm(
-            "import threading, os\nready = threading.Event()\n"
-            "def work():\n    w = scratch_dir('w-'); print(w); print(os.getpid()); print('READY', flush=True)\n"
-            "    time.sleep(1.5); os.makedirs(os.path.join(w, 'work'), exist_ok=True)\n"
-            "threading.Thread(target=work).start()\ntime.sleep(300)\n")
-        self.assertEqual(rc, 128 + signal.SIGTERM)
-        self.assertFalse(os.path.exists(d), "the directory made again survived")
+    def test_a_directory_moved_to_a_removed_path_is_not_this_processs(self):
+        # F4: after remove(d), another process puts its own directory at d
+        outside = Path(self.tmp, "theirs")
+        outside.mkdir()
+        (outside / "sentinel").write_text("x")
+        code, out, err = run_py("import os, scratch\nd = scratch.scratch_dir('t-')\nscratch.remove(d)\n"
+                                f"os.rename({str(outside)!r}, d)\nprint(d, flush=True)", self.tmp)
+        self.assertEqual(code, 0, err)
+        self.assertTrue(Path(out[0], "sentinel").exists())
+
+    def test_a_failed_mkdir_registers_nothing(self):
+        # F3: mkdir fails; the name is later made by someone else
+        code, out, err = run_py("import os, scratch\nreal = os.mkdir\nseen = []\n"
+                                "def mk(p, *a):\n    seen.append(p); raise FileNotFoundError(2, 'gone', p)\n"
+                                "os.mkdir = mk\n"
+                                "try:\n    scratch.scratch_dir('t-')\nexcept FileNotFoundError:\n    pass\n"
+                                "os.mkdir = real\nreal(seen[0]); open(seen[0] + '/sentinel', 'w').write('x')\n"
+                                "print(seen[0], flush=True)", self.tmp)
+        self.assertEqual(code, 0, err)
+        self.assertTrue(Path(out[0], "sentinel").exists())
+
+    def test_the_permission_repair_never_follows_a_name(self):
+        # F5: a directory under ours swapped for a link to an outside one
+        # just before the repair changes a mode
+        outside = Path(self.tmp, "outside")
+        outside.mkdir()
+        os.chmod(outside, 0o755)
+        code, out, err = run_py("import os, sys, scratch\nd = scratch.scratch_dir('t-')\n"
+                                "sub = os.path.join(d, 'sub'); os.mkdir(sub); open(sub + '/f', 'w').write('x')\n"
+                                "os.chmod(sub, 0o500)\ndone = []\n"
+                                "def hook(event, args):\n"
+                                "    if event == 'os.chmod' and args[0] == sub and not done:\n"
+                                "        done.append(1); os.chmod(sub, 0o700); os.unlink(sub + '/f'); os.rmdir(sub)\n"
+                                f"        os.symlink({str(outside)!r}, sub)\n"
+                                "sys.addaudithook(hook)\nprint(d, flush=True)", self.tmp)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(stat.S_IMODE(os.lstat(outside).st_mode), 0o755)
+
+    def test_a_child_signalled_while_the_parent_was_busy_keeps_the_status(self):
+        # F1: forked from a worker while the main thread is in scratch_dir;
+        # an earlier fork hook sends SIGHUP to the child
+        code, out, err = run_py("import os, signal, sys, threading, time\n"
+                                "os.register_at_fork(after_in_child=lambda: os.kill(os.getpid(), signal.SIGHUP))\n"
+                                "import scratch\nreal, st = os.mkdir, {}\n"
+                                "def fork():\n    pid = os.fork()\n"
+                                "    if pid == 0:\n        os._exit(0) if False else sys.exit(0)\n"
+                                "    st['code'] = os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1])\n"
+                                "def mk(p, *a):\n    real(p, *a); w = threading.Thread(target=fork); w.start(); w.join()\n"
+                                "os.mkdir = mk\nd = scratch.scratch_dir('t-')\nprint(d, st['code'], flush=True)", self.tmp)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out[1], str(128 + signal.SIGHUP))
+
+    def test_a_child_calling_remove_before_the_fork_hook_removes_nothing(self):
+        # F6
+        code, out, err = run_py("import os, sys\nholder = {}\n"
+                                "os.register_at_fork(after_in_child=lambda: holder['s'].remove(holder['d']))\n"
+                                "import scratch\nholder['s'] = scratch\nholder['d'] = d = scratch.scratch_dir('t-')\n"
+                                "pid = os.fork()\n"
+                                "if pid == 0:\n    sys.exit(0)\n"
+                                "os.waitpid(pid, 0)\nprint(d, os.path.isdir(d), flush=True)", self.tmp)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out[1], "True")
+        self.assertFalse(os.path.exists(out[0]))
+
+    def test_sigterm_exits_even_when_a_worker_holds_the_lock_forever(self):
+        # F2: the deadline is armed before the removal waits for the lock
+        env = dict(os.environ, TMPDIR=self.tmp, PYTHONPATH=str(HERE))
+        code = ("import threading, time, scratch\nscratch.STOP_SECONDS = 1\nscratch.scratch_dir('t-')\n"
+                "threading.Thread(target=lambda: (scratch._lock.acquire(), time.sleep(300)), daemon=True).start()\n"
+                "time.sleep(0.3)\nprint('READY', flush=True)\ntime.sleep(300)\n")
+        p = subprocess.Popen([sys.executable, "-c", code], env=env, stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(p.stdout.readline().strip(), "READY")
+            p.send_signal(signal.SIGTERM)
+            self.assertEqual(p.wait(timeout=20), 128 + signal.SIGTERM)
+        finally:
+            if p.poll() is None:
+                p.kill()
+                p.wait()
 
     def test_ctrl_c_with_a_worker_that_never_returns_removes_first_then_exits(self):
         # E2: the removal does not wait for the pool; the exit comes after
