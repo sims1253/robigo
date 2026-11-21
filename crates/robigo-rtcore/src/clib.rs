@@ -103,7 +103,9 @@ unsafe extern "C" {
 /// library has neither.
 fn c_utf8() -> Option<libc::locale_t> {
     static LOC: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    let l = *LOC.get_or_init(|| {
+    // (under robigo-heap's FORK: a fork mid-initialization would leave the
+    // child waiting)
+    let l = *robigo_heap::once_excluding_fork(&LOC, || {
         // newlocale reads LOCPATH through getenv
         let _env = env_read();
         for name in [c"C.UTF-8", c"C.utf8"] {
@@ -124,7 +126,9 @@ fn c_utf8() -> Option<libc::locale_t> {
 /// [`c_utf8`]'s.
 fn c_locale() -> Option<libc::locale_t> {
     static LOC: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    let l = *LOC.get_or_init(|| {
+    // (under robigo-heap's FORK: a fork mid-initialization would leave the
+    // child waiting)
+    let l = *robigo_heap::once_excluding_fork(&LOC, || {
         // (newlocale reads LOCPATH through getenv)
         let _env = env_read();
         // SAFETY: as in c_utf8.
@@ -309,12 +313,42 @@ compile_error!(
 /// the environment holds it shared for that call ([`env_read`]:
 /// `localtime`, `gmtime`, the `C.UTF-8` locale's `newlocale`,
 /// `passwd_home`, `passwd_name`, `group_name`, `env_locale`, `c_locale`'s
-/// `newlocale`, `default_textdomain_dir`),
+/// `newlocale`, `default_textdomain_dir`; and [`env_vars`]'s listing),
 /// and an [`EnvWriter`] holds it
 /// exclusive. So robigo's own safe wrappers never read while it writes, on
-/// any glibc, with or without isolates. Lock order: the live isolates
-/// (`isolate::LIVE_ISOLATES`), then this, then std's environment lock.
+/// any glibc, with or without isolates. Its place in the process's lock
+/// order, and the fork handlers that hold it across a `fork`: robigo-heap's
+/// `fork.rs`.
 static ENV: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+/// The whole environment, `std::env::vars_os()` read under [`ENV`]
+/// shared: `Sys.getenv()`'s listing, which walks `environ` and so must
+/// not overlap an [`EnvWriter`]'s `setenv` (glibc makes only `getenv` safe
+/// against it). Never while this thread holds an [`EnvWriter`]: the lock
+/// does not nest, and the thread would wait on itself.
+pub fn env_vars() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    let _r = env_read();
+    std::env::vars_os().collect()
+}
+
+/// [`ENV`] exclusive, for the fork handlers (`isolate::fork_take`): across
+/// a fork no reader is inside a C call and no [`EnvWriter`] inside the C
+/// library's `setenv`/`unsetenv`.
+/// [`ENV`]'s address, for a fork test's report of a hung child.
+#[cfg(test)]
+pub(crate) fn env_lock_addr() -> *const () {
+    (&raw const ENV).cast()
+}
+
+pub(crate) fn env_write_lock() -> std::sync::RwLockWriteGuard<'static, ()> {
+    ENV.write().unwrap_or_else(|e| e.into_inner())
+}
+
+/// [`ENV`] shared, held by a test as a reader in a C call would hold it.
+#[cfg(all(test, not(miri)))]
+pub(crate) fn env_read_for_test() -> std::sync::RwLockReadGuard<'static, ()> {
+    env_read()
+}
 
 /// [`ENV`] shared, for a C call that reads the environment. (Never while
 /// this thread holds an [`EnvWriter`]: the lock does not nest.)
@@ -344,13 +378,15 @@ fn parse_glibc_version(v: &[u8]) -> (u32, u32) {
 }
 
 /// The running C library's version (`gnu_get_libc_version`), read once.
-fn glibc_version() -> (u32, u32) {
+pub fn glibc_version() -> (u32, u32) {
     unsafe extern "C" {
         fn gnu_get_libc_version() -> *const libc::c_char;
     }
     static V: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
-    // SAFETY: glibc returns a static NUL-terminated string.
-    *V.get_or_init(|| parse_glibc_version(unsafe { std::ffi::CStr::from_ptr(gnu_get_libc_version()) }.to_bytes()))
+    *robigo_heap::once_excluding_fork(&V, || {
+        // SAFETY: glibc returns a static NUL-terminated string.
+        parse_glibc_version(unsafe { std::ffi::CStr::from_ptr(gnu_get_libc_version()) }.to_bytes())
+    })
 }
 
 /// The embedder's grant of the process environment's writes: what lets an
@@ -372,15 +408,22 @@ impl EnvWrites {
     /// so:
     /// - a read on that thread is sequential with the writes and allowed,
     ///   whatever reads it (C code included);
-    /// - a read on any other thread goes through `std::env`, through this
-    ///   module's guarded wrappers, or through a C library whose `getenv`
-    ///   tolerates a concurrent `setenv` (glibc [`MIN_GLIBC`] or later);
-    /// - nothing walks `environ` by hand on another thread meanwhile.
+    /// - a read on any other thread goes through this module's guarded
+    ///   wrappers, or reads one variable through a C library whose `getenv`
+    ///   tolerates a concurrent `setenv` (glibc [`MIN_GLIBC`] or later),
+    ///   as `std::env::var` does. The writer calls the C library's
+    ///   `setenv` directly and does not take std's lock, so std's lock
+    ///   gives no exclusion from it;
+    /// - nothing walks `environ` on another thread meanwhile: not by hand,
+    ///   and not through `std::env::vars`/`vars_os`, which walk it without
+    ///   this module's lock. robigo's own listing (`Sys.getenv()`) is
+    ///   [`env_vars`], which holds it.
     ///
     /// On a glibc older than [`MIN_GLIBC`] the embedder also assumes that
-    /// no other isolate runs native code while the holder writes, and that
-    /// no thread started by loaded native code reads the environment while
-    /// the isolate may write. (GNU R's rule that R's API belongs to the one
+    /// no other thread reads the environment at all while the isolate may
+    /// write, `std::env::var` included: no other isolate runs native code
+    /// meanwhile, and no thread started by loaded native code or by the
+    /// embedder reads it. (GNU R's rule that R's API belongs to the one
     /// R thread does not cover such threads: a worker can call `getenv`
     /// without touching R's API. This is an assumption, not a consequence.)
     pub unsafe fn assume() -> EnvWrites {
@@ -432,8 +475,11 @@ pub struct EnvWriter<'a> {
 /// and the live isolates.
 pub fn env_writer(cx: &crate::Cx) -> Result<EnvWriter<'_>, EnvWriteRefused> {
     cx.env_writes().ok_or(EnvWriteRefused::NotGranted)?;
+    // read before `LIVE_ISOLATES`: its first read takes robigo-heap's `FORK`,
+    // which comes first in the process's lock order (Sol r5 S10)
+    let glibc = glibc_version();
     let live = crate::isolate::live_isolates();
-    if !env_write_allowed(glibc_version(), *live) {
+    if !env_write_allowed(glibc, *live) {
         return Err(EnvWriteRefused::SeveralIsolates);
     }
     let env = ENV.write().unwrap_or_else(|e| e.into_inner());
@@ -453,37 +499,42 @@ impl EnvWriter<'_> {
     /// (`EINVAL`).
     ///
     /// The environment is process-wide: every isolate (each on its own
-    /// thread) sees the change, as every part of a GNU R process does. Its
-    /// readers are the embedder's to keep safe, as [`EnvWrites::assume`]
-    /// states; this writer adds what robigo itself can: std's readers take
-    /// std's lock, as `set_var` does; this module's C readers hold [`ENV`]
-    /// shared, which the writer holds exclusive; and on a glibc older than
-    /// [`MIN_GLIBC`] no other isolate lives or starts while it writes.
+    /// thread) sees the change, as every part of a GNU R process does.
+    /// - Its readers are the embedder's to keep safe, as
+    ///   [`EnvWrites::assume`] states.
+    /// - This module's C readers hold [`ENV`] shared, which the writer holds
+    ///   exclusive.
+    /// - std's readers (`std::env::var`, under std's own lock) read through
+    ///   glibc's `getenv`, which tolerates this concurrent `setenv` on glibc
+    ///   [`MIN_GLIBC`] and later. On an older one no other isolate lives or
+    ///   starts while the writer writes.
+    ///
+    /// The write is the C library's `setenv`, not `std::env::set_var`: std's
+    /// lock is never taken for writing, so a child forked while a std
+    /// reader held it still writes (robigo-heap's `fork.rs`).
     pub fn set(&self, name: &[u8], value: &[u8]) -> bool {
-        use std::os::unix::ffi::OsStrExt;
         if !env_name_ok(name) || value.contains(&0) {
             return false;
         }
-        // SAFETY: the name and value are ones `set_var` accepts (checked
-        // above). No thread reads the environment unsynchronized: the
-        // embedder's grant (`self._grant`, `EnvWrites::assume`'s contract)
-        // covers every reader of the process; robigo's own are std's (std's
-        // lock) and this module's (ENV, held exclusive by `self`).
-        unsafe { std::env::set_var(std::ffi::OsStr::from_bytes(name), std::ffi::OsStr::from_bytes(value)) };
-        true
+        let (n, v) = (std::ffi::CString::new(name).unwrap(), std::ffi::CString::new(value).unwrap());
+        // SAFETY: two NUL-terminated strings without inner NULs (checked
+        // above), the name without `=`. Concurrent readers as the doc above
+        // says: the grant's contract, ENV held exclusive by `self`, and
+        // glibc's getenv for std's.
+        unsafe { libc::setenv(n.as_ptr(), v.as_ptr(), 1) == 0 }
     }
 
     /// `unsetenv(name)`: remove the process's environment variable `name`;
     /// a name `unsetenv` refuses (`EINVAL`) changes nothing. Readers as for
     /// [`EnvWriter::set`].
     pub fn unset(&self, name: &[u8]) {
-        use std::os::unix::ffi::OsStrExt;
         if !env_name_ok(name) {
             return;
         }
-        // SAFETY: as for `set`: a name `remove_var` accepts; readers by the
-        // grant's contract and the locks `self` holds.
-        unsafe { std::env::remove_var(std::ffi::OsStr::from_bytes(name)) };
+        let n = std::ffi::CString::new(name).unwrap();
+        // SAFETY: as for `set`: a NUL-terminated name without `=`; readers as
+        // `set` says.
+        unsafe { libc::unsetenv(n.as_ptr()) };
     }
 
     /// `getenv(name) != NULL`: whether the environment has `name`, read
@@ -702,6 +753,118 @@ pub fn env_locale() -> EnvLocale {
     let collate_c =
         failed.contains(&"LC_COLLATE") || collate.is_none_or(|v| matches!(v.as_encoded_bytes(), b"C" | b"POSIX"));
     EnvLocale { codeset, collate_c, failed, names }
+}
+
+/// A conversion descriptor of the C library's `iconv(3)` (glibc's, which
+/// GNU R's `Riconv_open` and `Riconv` call on Linux). Closed when dropped.
+/// Not `Send`: a descriptor carries conversion state.
+pub struct Iconv {
+    cd: libc::iconv_t,
+    /// The `LC_CTYPE` the conversions run in (the isolate's: `C.UTF-8` or
+    /// `C`), which glibc's transliteration (`//TRANSLIT`) reads: a locale
+    /// object made once and never freed.
+    loc: libc::locale_t,
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+/// Why [`Iconv::open`] made no descriptor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IconvOpenError {
+    /// `iconv_open` failed (any errno: GNU R's `Riconv_open` callers report
+    /// every failure as an unsupported conversion), or a name holds a NUL
+    /// (which no R string does).
+    Unsupported,
+    /// The C library has no locale object for the conversions' `LC_CTYPE`
+    /// (robigo's own failure: GNU R converts in its process's locale).
+    NoLocale,
+}
+
+/// Why a call of [`Iconv::iconv`] stopped before the end of its input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IconvStop {
+    /// `E2BIG`: no room left in the output.
+    TooBig,
+    /// `EILSEQ`: an invalid sequence, or one the target cannot represent.
+    Illegal,
+    /// `EINVAL`: an incomplete sequence at the end of the input.
+    Incomplete,
+}
+
+impl Iconv {
+    /// `iconv_open(to, from)` with the calling thread in the `LC_CTYPE`
+    /// `utf8` names (`C.UTF-8`, else `C`), as GNU R's process is in its
+    /// locale: None when the C library has no such conversion. (It may load
+    /// a gconv module, whose search reads GCONV_PATH: under the
+    /// environment's shared lock.)
+    pub fn open(to: &[u8], from: &[u8], utf8: bool) -> Result<Iconv, IconvOpenError> {
+        use IconvOpenError::*;
+        let cstr = |b: &[u8]| std::ffi::CString::new(b).map_err(|_| Unsupported);
+        let (t, f) = (cstr(to)?, cstr(from)?);
+        // (the locale first: its one-time newlocale takes the environment's
+        // lock itself, which does not nest)
+        let loc = if utf8 { c_utf8() } else { c_locale() }.ok_or(NoLocale)?;
+        let _loc = ThreadLocale::switch(loc).ok_or(NoLocale)?;
+        let _env = env_read();
+        // SAFETY: two NUL-terminated strings; iconv_open returns a new
+        // descriptor or (iconv_t)-1.
+        let cd = unsafe { libc::iconv_open(t.as_ptr(), f.as_ptr()) };
+        if cd as isize == -1 {
+            return Err(Unsupported);
+        }
+        Ok(Iconv { cd, loc, _not_send: std::marker::PhantomData })
+    }
+
+    /// `iconv(cd, &inbuf, &inb, &outbuf, &outb)` with the input `input`
+    /// (None: NULL, the reset to the initial state, whose shift sequence
+    /// it writes) and the output `out` (its length is `outb`): the bytes
+    /// read and written, and why it stopped when it returned -1.
+    pub fn iconv(&mut self, input: Option<&[u8]>, out: &mut [u8]) -> (usize, usize, Option<IconvStop>) {
+        // (uselocale fails only for an invalid locale object, and `open`
+        // switched to this one)
+        let _loc = ThreadLocale::switch(self.loc).expect("robigo: uselocale refused a locale it took before");
+        let mut op = out.as_mut_ptr().cast::<libc::c_char>();
+        let mut ol = out.len();
+        let (r, read) = match input {
+            None => {
+                // SAFETY: a live descriptor; a NULL input asks for the
+                // reset; the output is `ol` writable bytes from `op`.
+                let r = unsafe { libc::iconv(self.cd, std::ptr::null_mut(), std::ptr::null_mut(), &mut op, &mut ol) };
+                (r, 0)
+            }
+            Some(inp) => {
+                let mut ip = inp.as_ptr().cast::<libc::c_char>().cast_mut();
+                let mut il = inp.len();
+                // SAFETY: a live descriptor; the input is `il` readable
+                // bytes from `ip` (iconv does not write through it), the
+                // output `ol` writable bytes from `op`.
+                let r = unsafe { libc::iconv(self.cd, &mut ip, &mut il, &mut op, &mut ol) };
+                (r, inp.len() - il)
+            }
+        };
+        let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        let written = out.len() - ol;
+        if r != usize::MAX {
+            return (read, written, None);
+        }
+        let stop = match errno {
+            libc::E2BIG => IconvStop::TooBig,
+            libc::EILSEQ => IconvStop::Illegal,
+            libc::EINVAL => IconvStop::Incomplete,
+            // (iconv(3) documents only the three above)
+            _ => {
+                debug_assert!(false, "robigo: iconv() failed with errno {errno}");
+                IconvStop::Incomplete
+            }
+        };
+        (read, written, Some(stop))
+    }
+}
+
+impl Drop for Iconv {
+    fn drop(&mut self) {
+        // SAFETY: a descriptor iconv_open made, closed once.
+        unsafe { libc::iconv_close(self.cd) };
+    }
 }
 
 unsafe extern "C" {

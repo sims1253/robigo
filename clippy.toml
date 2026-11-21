@@ -1,0 +1,9 @@
+# std's stdout and stderr locks come last in the process's lock order
+# (crates/robigo-heap/src/fork.rs): a thread holding one must not take FORK,
+# LIVE_ISOLATES, ENV or the symbol arena's lock, or a fork's `prepare`
+# deadlocks against it. Holding the guard is what breaks the rule, so it is
+# allowed only where a site shows it holds no robigo lock inside.
+disallowed-methods = [
+    { path = "std::io::Stdout::lock", reason = "std's stdout lock comes last in the fork lock order (robigo-heap fork.rs): hold no robigo lock inside it, and allow it here with a reason" },
+    { path = "std::io::Stderr::lock", reason = "std's stderr lock comes last in the fork lock order (robigo-heap fork.rs): hold no robigo lock inside it, and allow it here with a reason" },
+]

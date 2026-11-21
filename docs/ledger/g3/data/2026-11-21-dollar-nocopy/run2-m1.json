@@ -1,0 +1,58 @@
+{
+ "meta": {
+  "cycles": true,
+  "gnur": null,
+  "robigo": "/home/m0hawk/.cache/x1-bins/robigo-rt-dl-4512843f5",
+  "robigo_env": {
+   "ROBIGO_COMPILE": "1"
+  },
+  "robigo_identity": {
+   "build_id": "33bfed0c8412e1e6dacf2a3a32e1ab32b823680a",
+   "checkout": "nightly-2026-11-20-101-g4512843f5",
+   "mtime": "2026-11-21T03:47:48Z",
+   "path": "/home/m0hawk/.cache/x1-bins/robigo-rt-dl-4512843f5",
+   "sha256": "4146eae73c4de51133b1fd700f5cbfa383c1587497b933c6ff4293b6cc15c310",
+   "stale": null
+  },
+  "rows": "benchmarks/rt/calls-rows.toml",
+  "shifts": null,
+  "valgrind": "/home/m0hawk/.cache/rr-tools/bin/valgrind"
+ },
+ "rows": {
+  "s3": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": 21565.35125,
+   "robigo_instr": 18663.45375
+  },
+  "superassign": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 4000,
+   "robigo_est_cycles": 4683.1225,
+   "robigo_instr": 4589.4675
+  },
+  "trycatch": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 1000,
+   "robigo_est_cycles": 135272.888,
+   "robigo_instr": 113487.678
+  },
+  "trycatch-err": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 1000,
+   "robigo_est_cycles": 207572.181,
+   "robigo_instr": 173835.341
+  },
+  "trycatch-ok": {
+   "gnur_est_cycles": null,
+   "gnur_instr": null,
+   "n": 1000,
+   "robigo_est_cycles": 59851.644,
+   "robigo_instr": 51053.914
+  }
+ }
+}
