@@ -1068,17 +1068,9 @@ fn load_profile(cx: &mut Cx, bytes: &[u8]) -> bool {
             Ok(mut v) if !v.is_empty() => v.remove(0),
             Ok(_) => return true,
             Err(e) => {
-                // the warnings of every token lexed by then: a grammar error's
-                // frontier is the token it rejects (bison reads no further);
-                // a rule's check error (a condition: a repeated formal) comes
-                // after the rule's lookahead was read
-                // (an R error, a zero-length name, is raised after the last
-                // token consumed, with no lookahead read)
-                let frontier = match e.style {
-                    robigo_syntax::ErrorStyle::Grammar => e.end,
-                    robigo_syntax::ErrorStyle::RError => e.end.max(p.consumed_end()),
-                    robigo_syntax::ErrorStyle::Condition => e.end.max(p.lexed_end()),
-                };
+                // the warnings of the tokens lexed by then (the raise
+                // site's frontier, as the console's parse counts them)
+                let frontier = p.error_frontier(&e) + 1;
                 crate::repl::error_at_top_after(cx, &between(start, frontier), &message(&e, start));
                 return crate::repl::check_session_exit(cx);
             }
