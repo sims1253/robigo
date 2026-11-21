@@ -228,9 +228,9 @@ fn arg<'s>(cx: &mut Cx, s: Scope<'s>, call: Root<'_>, i: usize) -> Root<'s> {
 }
 
 /// `checkArity` for a special of two arguments: the call's argument count.
-fn check_arity2(cx: &mut Cx, call: Root<'_>, name: &str) -> RResult<()> {
+fn check_arity2(cx: &mut Cx, call: Root<'_>, ac: Root<'_>, name: &str) -> RResult<()> {
     let mut n = 0;
-    let mut a = call.bind(cx).as_cons().map(|c| c.cdr()).unwrap_or(cx.nil());
+    let mut a = ac.bind(cx).as_cons().map(|c| c.cdr()).unwrap_or(cx.nil());
     while let Some(c) = a.as_cons() {
         n += 1;
         a = c.cdr();
@@ -248,19 +248,14 @@ pub fn do_colon2(
     _rho: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
-    // (applyMethod's promise list: the call over it, as before)
-    if args.is_some() {
-        return cx.scope(|cx, s| {
-            let ac = match crate::specials::arg_call(cx, s, call, args)? {
-                Some(a) => a,
-                None => call,
-            };
-            do_colon2(cx, ac, _op, None, _rho, out)
-        });
-    }
-    check_arity2(cx, call, "::")?;
     cx.scope(|cx, s| {
-        let (ns, name) = (arg(cx, s, call, 0), arg(cx, s, call, 1));
+        // the arguments from `ac` (specials::arg_call), the messages naming `call`
+        let ac = match crate::specials::arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        check_arity2(cx, call, ac, "::")?;
+        let (ns, name) = (arg(cx, s, ac, 0), arg(cx, s, ac, 1));
         // "use R_NilValue for the call to avoid changing the error message"
         get_ns_value(cx, None, ns, name, true, out)
     })
@@ -276,19 +271,14 @@ pub fn do_colon3(
     _rho: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
-    // (applyMethod's promise list: the call over it, as before)
-    if args.is_some() {
-        return cx.scope(|cx, s| {
-            let ac = match crate::specials::arg_call(cx, s, call, args)? {
-                Some(a) => a,
-                None => call,
-            };
-            do_colon3(cx, ac, _op, None, _rho, out)
-        });
-    }
-    check_arity2(cx, call, ":::")?;
     cx.scope(|cx, s| {
-        let (ns, name) = (arg(cx, s, call, 0), arg(cx, s, call, 1));
+        // the arguments from `ac` (specials::arg_call), the messages naming `call`
+        let ac = match crate::specials::arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        check_arity2(cx, call, ac, ":::")?;
+        let (ns, name) = (arg(cx, s, ac, 0), arg(cx, s, ac, 1));
         get_ns_value(cx, Some(call), ns, name, false, out)
     })
 }

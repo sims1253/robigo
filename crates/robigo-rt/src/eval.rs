@@ -824,20 +824,10 @@ pub fn do_recall(
     cx: &mut Cx,
     _call: Root<'_>,
     _op: Root<'_>,
-    args: Option<Root<'_>>,
+    _args: Option<Root<'_>>,
     rho: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
-    // (applyMethod's promise list: the call over it, as before)
-    if args.is_some() {
-        return cx.scope(|cx, s| {
-            let ac = match crate::specials::arg_call(cx, s, _call, args)? {
-                Some(a) => a,
-                None => _call,
-            };
-            do_recall(cx, ac, _op, None, rho, out)
-        });
-    }
     use robigo_rtcore::ctxt;
     cx.scope(|cx, s| {
         let outside = "'Recall' called from outside a closure";

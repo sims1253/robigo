@@ -47,3 +47,6 @@ print(f(g(xf, k)))
 h <- function(x, ...) UseMethod("h"); h.foo <- .Primitive("substitute")
 xs <- structure(1, class = "foo"); k2 <- 2
 print(f(h(xs, expr = k2, expr = k2)))
+# call() and `::` as methods: their messages name the method's call
+gc2 <- function(x) UseMethod("gc2"); gc2.foo <- .Primitive("call")
+print(f(gc2(structure(1, class = "foo"))))

@@ -113,3 +113,9 @@ g.foo(xf, k)
 [[2]]
 h.foo(xs, expr = k2, expr = k2)
 
+[[1]]
+[1] "first argument must be a character string"
+
+[[2]]
+gc2.foo(structure(1, class = "foo"))
+

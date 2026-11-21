@@ -16,18 +16,13 @@ pub fn do_call(
     rho: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
-    // (applyMethod's promise list: the call over it, as before)
-    if args.is_some() {
-        return cx.scope(|cx, s| {
-            let ac = match crate::specials::arg_call(cx, s, call, args)? {
-                Some(a) => a,
-                None => call,
-            };
-            do_call(cx, ac, _op, None, rho, out)
-        });
-    }
     cx.scope(|cx, s| {
-        let args = s.root(cx, call.bind(cx).as_cons().map_or(cx.nil(), |c| c.cdr()));
+        // the arguments from `ac` (specials::arg_call), the messages naming `call`
+        let ac = match crate::specials::arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        let args = s.root(cx, ac.bind(cx).as_cons().map_or(cx.nil(), |c| c.cdr()));
         let Some((e0, tag, rest0)) = args.bind(cx).as_cons().map(|c| (c.car(), c.tag(), c.cdr())) else {
             return Err(cx.error_call(Some(call), "'name' is missing"));
         };

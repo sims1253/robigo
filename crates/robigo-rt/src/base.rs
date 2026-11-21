@@ -759,18 +759,14 @@ fn not_yet_primitive_special(
     rho: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
-    // (applyMethod's promise list: the call over it, as before)
-    if args.is_some() {
-        return cx.scope(|cx, s| {
-            let ac = match crate::specials::arg_call(cx, s, call, args)? {
-                Some(a) => a,
-                None => call,
-            };
-            not_yet_primitive_special(cx, ac, _op, None, rho, out)
-        });
-    }
     let _ = out;
-    eval_stub_args(cx, call, rho)?;
+    cx.scope(|cx, s| {
+        let ac = match crate::specials::arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        eval_stub_args(cx, ac, rho)
+    })?;
     let msg = format!("robigo: the primitive '{}' is not implemented yet", called_name(cx, call));
     Err(cx.error_call(Some(call), &msg))
 }
@@ -784,18 +780,14 @@ fn not_yet_internal_special(
     rho: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
-    // (applyMethod's promise list: the call over it, as before)
-    if args.is_some() {
-        return cx.scope(|cx, s| {
-            let ac = match crate::specials::arg_call(cx, s, call, args)? {
-                Some(a) => a,
-                None => call,
-            };
-            not_yet_internal_special(cx, ac, _op, None, rho, out)
-        });
-    }
     let _ = out;
-    eval_stub_args(cx, call, rho)?;
+    cx.scope(|cx, s| {
+        let ac = match crate::specials::arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        eval_stub_args(cx, ac, rho)
+    })?;
     let msg = format!("robigo: .Internal({}()) is not implemented yet", called_name(cx, call));
     Err(cx.error_call(Some(call), &msg))
 }
