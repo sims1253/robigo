@@ -33,3 +33,9 @@
   failed CI's `rt` and `test` jobs on 50c4b9c70. The test is removed, and
   `compile-pkgs.R` (recorded on 4.6.2, which compiles the closure) now
   passes and is ratcheted.
+- Under gctorture the case takes 492 s alone here (it loads the compiler
+  from source with a collection at every allocation; 0 s plain), so in
+  rt-ci's gctorture conformance steps it timed out against their 600 s.
+  It now requires `volume` (crates/robigo-conformance's KNOWN_FEATURES:
+  too many allocations for gctorture) and does not run there. No smaller
+  case covers loading the compiler under gctorture yet.
