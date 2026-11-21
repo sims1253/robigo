@@ -13,7 +13,7 @@ spec = importlib.util.spec_from_file_location("ci_check", HERE / "ci-check.py")
 chk = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(chk)
 
-JOBS = ["select", "lint", "miri", "rdb-data", "builtin-diff-data", "rt", "rt-gc-move", "rt-feature-builds", "base-subset", "build", "perf-base", "release-tests", "test", "bytecode-fidelity", "counters",
+JOBS = ["select", "lint", "miri", "rdb-data", "builtin-diff-data", "rt", "rt-gctorture", "rt-feature-builds", "rt-builtin-diff", "rt-debug-assertions", "base-subset", "build", "perf-base", "release-tests", "test", "bytecode-fidelity", "counters",
         "corpora", "fuzz", "cran", "smoke", "package-gate", "perf", "perf-rt-build", "perf-rt", "rt-corpora"]
 
 
@@ -125,13 +125,14 @@ class Rule(unittest.TestCase):
         # the rt job's parallel shards (scripts/rt-ci.py --shard): each is
         # required where rt is, may be skipped only where rt may (rt mode
         # false), and fails the check when it fails
-        for job in ("rt_gc_move", "rt_feature_builds"):
+        for job in ("rt_gctorture", "rt_feature_builds", "rt_builtin_diff", "rt_debug_assertions"):
             self.assertFalse(passes(needs("false", "false", "true", package_gate="skipped",
                                          **{job: "skipped"}, **SKIP_HEAVY)), job)
             self.assertFalse(passes(needs(**{job: "failure"})), job)
             self.assertFalse(passes(needs(**{job: "cancelled"})), job)
-        self.assertTrue(passes(needs("false", "false", "false", rt="skipped", rt_gc_move="skipped",
-                                    rt_feature_builds="skipped", base_subset="skipped",
+        self.assertTrue(passes(needs("false", "false", "false", rt="skipped", rt_gctorture="skipped",
+                                    rt_feature_builds="skipped", rt_builtin_diff="skipped", rt_debug_assertions="skipped",
+                                    base_subset="skipped",
                                     perf_rt_build="skipped", perf_rt="skipped", rt_corpora="skipped",
                                     rdb_data="skipped", builtin_diff_data="skipped",
                                     package_gate="skipped", **SKIP_HEAVY)))
@@ -151,7 +152,7 @@ class Rule(unittest.TestCase):
         n = needs("false", "false", "true", **skip)
         n["select"]["outputs"]["stacked"] = "true"
         self.assertTrue(passes(n))                  # every skip is explained...
-        for job in ("rt", "rt-gc-move", "rt-feature-builds", "lint", "rdb-data"):      # ...but not these
+        for job in ("rt", "rt-gctorture", "rt-feature-builds", "rt-builtin-diff", "rt-debug-assertions", "lint", "rdb-data"):      # ...but not these
             m = needs("false", "false", "true", **{**skip, job.replace("-", "_"): "skipped"})
             m["select"]["outputs"]["stacked"] = "true"
             self.assertFalse(passes(m), job)
@@ -174,8 +175,13 @@ class Rule(unittest.TestCase):
         # red; then no shared group may make a new run wait behind it
         wf = (HERE.parent / ".github/workflows/ci.yml").read_text()
         self.assertIn("    name: Check\n    if: ${{ always() }}\n", wf)
-        self.assertIn("  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.run_id }}\n"
+        # main's push runs share one group that never cancels a started run
+        # (a newer push replaces only the pending one); every other run,
+        # pull requests' included, has a group of its own
+        self.assertIn("  group: ci-${{ github.event_name == 'push' && 'main' || github.run_id }}\n"
                       "  cancel-in-progress: false\n", wf)
+        self.assertEqual(wf.split("\non:\n", 1)[1].split("\n  pull_request:", 1)[0],
+                         "  push:\n    branches: [main]", "push runs are main's alone")
         # select cancels the superseded runs, as its first step
         steps = wf.split("\n  select:\n", 1)[1].split("\n    steps:\n", 1)[1].splitlines()
         first = next(l.strip() for l in steps if not l.strip().startswith("#"))
