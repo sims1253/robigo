@@ -96,3 +96,12 @@ print(tryCatch(sa(), error = conditionMessage))
 invisible(.Call("rt_set_attr", ax, "a", 4))
 invisible(.Call("rt_set_attr", ax, "d", NULL))
 print(sa())
+# a closure compiled by cmpfun: its BODY is byte code, so R_ClosureExpr is
+# the byte code's expression (eval.c bytecodeExpr); a write into it shows in
+# body() but does not run
+cf <- compiler::cmpfun(function() { 1; "old" })
+print(.Call("rt_body", cf))
+invisible(.Call("rt_set_body_elt", cf, 2L, "new"))
+print(cf()); print(cf())
+print(.Call("rt_body", cf))
+print(body(cf))
