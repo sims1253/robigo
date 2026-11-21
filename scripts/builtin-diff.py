@@ -35,6 +35,7 @@ and a scratch directory as working, home and temporary directory.
 """
 import argparse
 import concurrent.futures
+import fcntl
 import hashlib
 import json
 import os
@@ -290,6 +291,9 @@ def remove_tree(d):
 
 
 def case_root(key):
+    """An External row's case directory. Its path is fixed (a case may print
+    it, and GNU R's record must match), so two runs of one row on a machine,
+    as other checkouts' `ci` runs, share it: run_isolated holds its lock."""
     return f"/tmp/robigo-a4-{os.getuid()}-{key}"
 
 
@@ -315,9 +319,23 @@ def tree(d):
 
 def run_isolated(cmd, env, batch, out, ncases, key, rsrc=None, timeout=CASE_TIMEOUT):
     """An External row: one process per case in its own directory, whose
-    files after the case go to `<id>.files`."""
+    files after the case go to `<id>.files`. The directory is the row's
+    alone for the whole run (an exclusive lock on `<root>.lock`: another run
+    of the row waits), and it is removed however the run ends."""
     os.makedirs(out, exist_ok=True)
     root = case_root(key)
+    # the lock file stays: removing it would let a waiting run lock a file
+    # that a third run no longer sees
+    with open(root + ".lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            return run_cases(cmd, env, batch, out, ncases, root, rsrc, timeout)
+        finally:
+            remove_tree(root)
+
+
+def run_cases(cmd, env, batch, out, ncases, root, rsrc, timeout):
+    """run_isolated's cases, in `root`, which its caller holds."""
     lost = {}
     base = {k: env[k] for k in (*ENV, "R_ENABLE_JIT", "A4_LABEL") if k in env}
     for i in range(1, ncases + 1):
@@ -340,7 +358,6 @@ def run_isolated(cmd, env, batch, out, ncases, key, rsrc=None, timeout=CASE_TIME
             note_lost(out, i, timed_out, text, status, lost)
         with open(os.path.join(out, f"{i:06d}.files"), "w") as f:
             json.dump(tree(cwd), f)
-    remove_tree(root)
     return lost
 
 
