@@ -485,6 +485,128 @@ pub fn error_text(cx: &Cx, e: &RError) -> String {
     buf
 }
 
+/// `.Internal(quit(save, status, runLast))`: `R_CleanUp(save, status,
+/// runLast)`, then the process ends, from inside the call (GNU R's `exit`:
+/// no `on.exit` or `finally` runs, the console is flushed; robigo-rt's file
+/// connections write through, so nothing else is left in a buffer).
+///
+/// The save action: `"default"` and non-interactive `"ask"` are the command
+/// line's `SaveAction`, which in robigo-rt is always `SA_NOSAVE` (it refuses
+/// `--save`, and R without a console needs `--no-save` or `--vanilla`, or
+/// implies them); `"yes"` saves the image as `R_SaveGlobalEnv` does, after
+/// `.Last`: `sys.save.image(".RData")` (the image is dirty by then in GNU
+/// R: the start removed `.Library.site` from the global environment).
+/// `.Last` and `.Last.sys` run as at the end of a session ([`dot_last`]:
+/// `R_dot_Last` makes the top level the context). An error in them, or in
+/// the save, lands on the top level: `check_session_exit` halts R, or GNU R
+/// goes back to the main loop (and, `.Last` failing again at the end, never
+/// ends), which robigo-rt refuses. No browser context can be active (robigo
+/// has no `browser`), so "cannot quit from browser" cannot arise; there is
+/// no session temporary directory to remove and no device to close.
+// R: main.c:do_quit, R_dot_Last; unix/sys-std.c:Rstd_CleanUp;
+// saveload.c:R_SaveGlobalEnvToFile
+pub fn do_quit(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: Root<'_>,
+    _out: robigo_rtcore::Out<'_>,
+) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "quit", 3, true)?;
+    let save = args.get(cx, 0);
+    if save.sexptype() != STRSXP {
+        return Err(cx.error("one of \"yes\", \"no\", \"ask\" or \"default\" expected."));
+    }
+    let Some(tmp) =
+        save.as_vector::<robigo_rtcore::Char<'_>>().filter(|v| v.len() > 0).map(|v| v.get(0).bytes().to_vec())
+    else {
+        // STRING_ELT's bounds check
+        return Err(cx.error("attempt access index 0/0 in STRING_ELT"));
+    };
+    let yes = match &tmp[..] {
+        b"ask" => {
+            // (R_Interactive is FALSE)
+            cx.warning("save=\"ask\" in non-interactive use: command-line default will be used")?;
+            false
+        }
+        b"no" | b"default" => false,
+        b"yes" => true,
+        _ => return Err(cx.error("unrecognized value of 'save'")),
+    };
+    let mut status = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(1))?;
+    if status == i32::MIN {
+        cx.warning("invalid 'status', 0 assumed")?;
+        status = 0;
+    }
+    let mut run_last = robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 2));
+    if run_last == i32::MIN {
+        cx.warning("invalid 'runLast', FALSE assumed")?;
+        run_last = 0;
+    }
+    // Rstd_CleanUp: SA_SAVE (.Last, then the image) or SA_NOSAVE (.Last)
+    let mut ok = run_last == 0 || dot_last(cx);
+    if ok && yes {
+        ok = save_global_env(cx);
+    }
+    if !ok {
+        if !check_session_exit(cx) {
+            // check_session_exit: R_CleanUp(SA_NOSAVE, 1, 0)
+            cx.reprintf(b"Execution halted\n");
+            exit(cx, 1);
+        }
+        return Err(cx.error(
+            "robigo: going back to the main loop after an error in quit()'s .Last or save is not implemented yet",
+        ));
+    }
+    exit(cx, status)
+}
+
+/// `R_SaveGlobalEnvToFile(".RData")` at the top level: `sys.save.image(
+/// ".RData")` evaluated in the global environment when the global
+/// environment finds it (base defines it); without it robigo-rt says so
+/// (GNU R's `R_SaveToFileV`). False when an error ended it (reported where
+/// it was raised).
+// R: saveload.c:R_SaveGlobalEnvToFile
+fn save_global_env(cx: &mut Cx) -> bool {
+    cx.scope(|cx, s| {
+        let g = s.root(cx, cx.global_env());
+        let base = s.root(cx, cx.base_env());
+        let f = s.out(cx);
+        let fr = f.root();
+        let call = s.out(cx);
+        let callr = call.root();
+        let o = s.out(cx);
+        cx.repl_toplevel(g, base, |cx| {
+            cx.scope(|cx, t| {
+                let sym = cx.install_rooted(t, b"sys.save.image")?;
+                cx.find_var(sym, g, f)?;
+                if fr.bind(cx).sexp() == cx.unbound().sexp() {
+                    return Err(cx.error("robigo: saving the workspace without base's sys.save.image (R_SaveToFileV) is not implemented yet"));
+                }
+                cx.build(call, |cx| {
+                    let name = cx.mk_string(b".RData", robigo_rtcore::Encoding::Native)?;
+                    let nil = cx.nil();
+                    let args = cx.lcons(name, nil)?;
+                    cx.lcons(sym.bind(cx), args)
+                })
+            })?;
+            crate::eval(cx, callr, g, o)
+        })
+        .expect("robigo: an exit that passed the top level")
+    })
+}
+
+/// The end of `Rstd_CleanUp` after its save action: the exit finalizers,
+/// the deferred warnings (`.Last`'s, `quit`'s own), the console flushed,
+/// then `exit(status)`.
+// R: unix/sys-std.c:Rstd_CleanUp
+fn exit(cx: &mut Cx, status: i32) -> ! {
+    crate::fin::run_exit_finalizers(cx);
+    print_warnings(cx);
+    cx.flush_console();
+    std::process::exit(status)
+}
+
 /// `PrintWarnings()`: the deferred warnings, then the list cleared
 /// ([`crate::conditions::print_warnings`]).
 pub fn print_warnings(cx: &mut Cx) {

@@ -196,6 +196,8 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("prmatrix", crate::print::do_prmatrix, Inline::None, 111, 6),
     builtin("deparse", crate::builtin::do_deparse, Inline::None, 11, 5),
     builtin("dput", crate::builtin::do_dput, Inline::None, 111, 3),
+    // main.c: {"quit", do_quit, 0, 111, 3, ...}
+    builtin("quit", crate::repl::do_quit, Inline::None, 111, 3),
     builtin("enableJIT", crate::jit::do_enablejit, Inline::None, 11, 1),
     builtin("compilePKGS", crate::jit::do_compilepkgs, Inline::None, 11, 1),
     builtin("args", crate::builtin::do_args, Inline::None, 11, 1),
