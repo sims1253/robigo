@@ -378,3 +378,26 @@ k_retsub_inv <- .Internal(bcClose(as.pairlist(alist(v = )),
  globalenv()))
 k_retsub_inv(3L)
 
+# k_retsub2_inv
+k_retsub2_inv <- .Internal(bcClose(as.pairlist(alist(v = )),
+ mk(c(12L, 123L, 1L, 12L, 26L, 2L, 34L, 3L, 34L, 4L, 39L, 1L, 22L, 5L, 4L, 123L, 7L, 25L, 26L, 8L, 20L, 9L, 33L, 39L, 7L, 61L, 5L, 111L, 11L, 34L, 16L, 3L, 108L, 11L, 62L, 5L, 1L), list(quote({
+    x <- list(1, 2)
+    return(x[[1]] <- invisible(v))
+}),
+  quote(list(1, 2)),
+  as.name("list"),
+  1,
+  2,
+  as.name("x"),
+  quote(x <- list(1, 2)),
+  quote(invisible(v)),
+  as.name("invisible"),
+  as.name("v"),
+  quote(x[[1]] <- invisible(v)),
+  quote(`[[<-`(`*tmp*`, 1, value = invisible(v))),
+  quote(`[[<-`(x, 1, value = invisible(v))),
+  quote(return(x[[1]] <- invisible(v))),
+  structure(c(NA, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 1L, 6L, 6L, 6L, 7L, 7L, 7L, 7L, 7L, 7L, 7L, 7L, 7L, 7L, 10L, 10L, 12L, 12L, 12L, 3L, 3L, 12L, 12L, 10L, 10L, 13L), class = "expressionsIndex"))),
+ globalenv()))
+k_retsub2_inv('one')
+

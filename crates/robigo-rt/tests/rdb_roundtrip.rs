@@ -399,6 +399,14 @@ fn oracle_base_closures_translate() {
 /// primitive is a gap it counts, not a stub that hides it.)
 const CROSSCHECK_COMPARED: usize = 1100;
 
+/// At most this many of base.rdb's closures are skipped (their compile would
+/// force a binding the forcing pass left a promise) or untranslated (today's
+/// counts, 2026-11-21). The forcing pass swallows each binding's error, so a
+/// regression there turns would-be differences into skips: these bounds
+/// make it fail loudly. Lower them as the counts fall.
+const CROSSCHECK_SKIPPED: usize = 6;
+const CROSSCHECK_UNTRANSLATED: usize = 0;
+
 #[test]
 fn oracle_base_closures_crosscheck() {
     let Some(lib) = std::env::var_os("ROBIGO_ORACLE_LIBRARY") else {
@@ -479,6 +487,11 @@ fn oracle_base_closures_crosscheck() {
     assert_eq!(n("Unexpected"), 0, "unexpected differences (the report has them): {verdicts:?}");
     let compared = n("Same") + n("Expected");
     assert!(compared >= CROSSCHECK_COMPARED, "{compared} compared, fewer than {CROSSCHECK_COMPARED}: {verdicts:?}");
+    assert!(n("Skipped") <= CROSSCHECK_SKIPPED, "more than {CROSSCHECK_SKIPPED} skipped: {verdicts:?}");
+    assert!(
+        n("Untranslated") <= CROSSCHECK_UNTRANSLATED,
+        "more than {CROSSCHECK_UNTRANSLATED} untranslated: {verdicts:?}"
+    );
 }
 
 /// Evaluate every expression of `src` in the global environment, each
