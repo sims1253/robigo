@@ -303,11 +303,11 @@ def steps(crates):
         ("builtin differential and its planted divergences (A4, scripts/builtin-diff.py ci)", {},
          ["python3", "scripts/builtin-diff.py", "ci"]),
         # E9 (docs/g3.md §16): every `&Cx` build's first allocation refused
-        # once, so each build's retry runs. The mode is compiled in only
-        # with robigo-rtcore's feature, built for this step alone and last:
-        # every step above tests the binary users get (cargo keeps both
-        # builds). With ROBIGO_GC_MOVE=1 as well it takes about 20 minutes,
-        # so that run is by hand (g3.md §16).
+        # once, so each build's retry runs. The mode is compiled in only with
+        # robigo-rtcore's feature, built for this step alone and last: every
+        # step above tests the binary users get (cargo keeps both builds). With
+        # ROBIGO_GC_MOVE=1 as well it takes about 20 minutes, so that run is by
+        # hand (g3.md §16).
         ("conformance under ROBIGO_RETRY_TORTURE=1 (E9: every build's retry runs once)",
          {"ROBIGO_RETRY_TORTURE": "1", **slow},
          [*test, "-p", "robigo-rtapi", "--features", RETRY_TORTURE_FEATURE, "--test", "conformance", "--",
