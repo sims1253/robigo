@@ -140,10 +140,14 @@ impl Inner {
             // SAFETY: inside the fresh segment. Only the pseudo header is
             // zeroed, so its magic is not a block's. The rest stays
             // unwritten until `take` hands it out, which is sound because:
-            // - every object is written in full before it is published: a
-            //   symbol's six words (`new_symbol`), and a name record's header,
-            //   hash, lengths, bytes and NUL (`new_name`; its padding after
-            //   the NUL is never read);
+            // - every byte a reader can reach is written before the object
+            //   is published: all six words of a symbol (`new_symbol`), and
+            //   a name record's header, hash, lengths, bytes and NUL
+            //   (`new_name`). Readers skip the record's alignment padding
+            //   and the segment's unused space. Every object starts in the
+            //   segment's first 64 KiB (an oversized name's own segment
+            //   too), so `heap_id` and `is_shared` read the zeroed pseudo
+            //   header;
             // - only `install` and `new_marker` write a segment, under the
             //   arena's lock, and they publish an object (into the arena's
             //   table, and to the caller) only once it is complete;

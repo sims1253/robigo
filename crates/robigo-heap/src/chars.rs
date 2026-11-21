@@ -22,8 +22,10 @@ pub(crate) struct CharTable {
 /// - Measured: a base boot (`--vanilla -e 1`, `ROBIGO_RT_BOOT=rdb`, #922's
 ///   head 2ca695862) makes 2,201 cached strings. From 1,024 slots the table
 ///   grew twice during it, to 4,096.
-/// - Cost: 4,096 × 8 bytes = 32 KiB per heap, which a boot reached anyway
-///   (24 KiB more than before for a heap that never boots base).
+/// - Cost: 4,096 × 8 bytes = 32 KiB per heap, which a boot reached anyway.
+///   A heap that never boots base pays 24 KiB more than before, and its
+///   collections scan four times as many slots (a prune at the floor, a
+///   moving collection's forwarding).
 const MIN_SLOTS: usize = 4096;
 
 impl CharTable {

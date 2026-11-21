@@ -3082,9 +3082,9 @@ fn the_probe_keeps_one_key_per_thread() {
     extern "C" fn nothing() {}
     let p = probe();
     (p.hooks)(nothing);
-    // SAFETY: the probe's routine takes no argument and returns its key; the
-    // keys are plain words, never read through.
-    let routine = unsafe { std::mem::transmute::<*const c_void, extern "C" fn() -> usize>(p.routine) };
+    // SAFETY: the probe's routine is `SX f(void)` (`void *`); the keys are
+    // plain words, never read through.
+    let routine = unsafe { std::mem::transmute::<*const c_void, extern "C" fn() -> *mut c_void>(p.routine) };
     (p.give)(unsafe { Sexp::from_word(0x10 as *mut u8) });
     std::thread::spawn(|| {
         let p = probe();
@@ -3093,7 +3093,8 @@ fn the_probe_keeps_one_key_per_thread() {
     })
     .join()
     .unwrap();
-    assert_eq!(routine(), 0x10, "another thread's give replaced this thread's key");
+    // (both threads install the same hook: what this checks is the key)
+    assert_eq!(routine() as usize, 0x10, "another thread's give replaced this thread's key");
 }
 
 /// `ROBIGO_GC_STRONG_DLL` confirms a report: the library's frames become
