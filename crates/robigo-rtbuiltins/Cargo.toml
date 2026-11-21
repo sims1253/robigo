@@ -14,5 +14,11 @@ robigo-rtcore = { path = "../robigo-rtcore" }
 robigo-text = { path = "../robigo-text" }
 pcre2 = "0.2.11"
 
+[features]
+# A4's planted divergences (scripts/builtin-diff.py plant): one deliberate
+# difference from GNU R per compared field, for the check that the
+# differential catches each. Never in a release or measured build.
+diff-plant = []
+
 [lints]
 workspace = true

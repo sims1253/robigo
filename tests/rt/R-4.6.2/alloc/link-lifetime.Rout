@@ -1,0 +1,8 @@
+[1] 0
+[1] 0
+no caller : in place 
+pending, no assignment : in place 
+pending, assignment before : copied 
+pending, assignment after : in place 
+pending, assignment in a returned callee : copied 
+pending, assignment before, in a loop : copied 

@@ -180,8 +180,10 @@ unsafe fn walk(cx: &Cx, from: usize, to: usize, inc: bool) {
     debug_assert!(from <= to && to <= st.len());
     // the frame `from` lies in, if any: the nearest head below it
     let mut i = from;
+    // (`position`, then one read of the slot found: `find_map` yielding the
+    // word compiles to a slower scan, +1% per cmp.R compile)
     if let Some(j) = st[..from].iter().rposition(|&s| head(s).is_some()) {
-        let w = head(st[j]).unwrap_or(0);
+        let Some(w) = head(st[j]) else { unreachable!("robigo: a head scan found no head") };
         let (regs, skip) = frame_at(st, j, w);
         if regs.1 > from {
             let r = (regs.0.max(from), regs.1.min(to));
@@ -198,7 +200,7 @@ unsafe fn walk(cx: &Cx, from: usize, to: usize, inc: bool) {
             None => break,
             Some(k) => {
                 let h = i + k;
-                let w = head(st[h]).unwrap_or(0);
+                let Some(w) = head(st[h]) else { unreachable!("robigo: a head scan found no head") };
                 let (regs, skip) = frame_at(st, h, w);
                 let r = (regs.0, regs.1.min(to));
                 if r.0 < r.1 {

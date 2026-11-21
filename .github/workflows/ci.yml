@@ -237,8 +237,61 @@ jobs:
           path: .robigo/oracle-lib
           retention-days: 1
 
+  # A4's GNU R side (scripts/builtin-diff.py): each row's cases, made and run
+  # by GNU R 4.6.2 in the oracle image, cached by a hash of everything they
+  # depend on (`builtin-diff.py key`), so the rt job compares robigo-rt's
+  # records with them. Each case runs under a 2 GiB address-space cap.
+  builtin-diff-data:
+    needs: select
+    if: ${{ needs.select.outputs.rt == 'true' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.select.outputs.image_oracle_4_6_2 }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 20
+    env:
+      ROBIGO_BUILTIN_DIFF_ORACLE: ${{ needs.select.outputs.image_oracle_4_6_2 }}
+    outputs:
+      key: ${{ steps.key.outputs.key }}
+    steps:
+      - uses: actions/checkout@v7
+      # names.c's columns: the rows' arity and kind come from GNU R's sources
+      - uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
+      - name: The records' cache key
+        id: key
+        run: |
+          k=$(python3 scripts/builtin-diff.py key)
+          echo "key=builtin-diff-1-$k" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v6
+        id: data
+        with:
+          path: .robigo/builtin-diff-data
+          key: ${{ steps.key.outputs.key }}
+          lookup-only: true
+      - name: GNU R's records for every row
+        if: steps.data.outputs.cache-hit != 'true'
+        run: python3 scripts/builtin-diff.py oracle --all --data .robigo/builtin-diff-data
+      - uses: actions/cache/save@v6
+        if: steps.data.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+        with:
+          path: .robigo/builtin-diff-data
+          key: ${{ steps.key.outputs.key }}
+      - uses: actions/upload-artifact@v7
+        if: steps.data.outputs.cache-hit != 'true' && github.ref != 'refs/heads/main'
+        with:
+          name: builtin-diff-data
+          path: .robigo/builtin-diff-data
+          retention-days: 1
+
   rt:
-    needs: [select, rdb-data]
+    needs: [select, rdb-data, builtin-diff-data]
     if: ${{ needs.select.outputs.rt == 'true' }}
     runs-on: ubuntu-24.04
     container:
@@ -274,9 +327,25 @@ jobs:
         with:
           path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
           key: r-4.6.2-tarball
+      # A4's GNU R records (builtin-diff-data): rt-ci.py's builtin
+      # differential step compares robigo-rt's with them
+      - uses: actions/cache/restore@v6
+        id: bdiff
+        with:
+          path: .robigo/builtin-diff-data
+          key: ${{ needs.builtin-diff-data.outputs.key }}
+      - uses: actions/download-artifact@v7
+        if: steps.bdiff.outputs.cache-hit != 'true'
+        with:
+          name: builtin-diff-data
+          path: .robigo/builtin-diff-data
       - name: rt crates (release, then gctorture)
+        env:
+          ROBIGO_BUILTIN_DIFF_DATA: ${{ github.workspace }}/.robigo/builtin-diff-data
+          ROBIGO_BUILTIN_DIFF_ORACLE: ${{ needs.select.outputs.image_oracle_4_6_2 }}
         run: |
           python3 scripts/test-rt-ci.py
+          python3 scripts/test-builtin-diff.py
           python3 scripts/rt-ci.py
       # L1's bar, outside rt-ci's gctorture modes (its 2,440 records): every
       # record of GNU R's base, compiler and tools databases round-trips as
@@ -1268,7 +1337,7 @@ jobs:
   check:
     name: Check
     if: ${{ always() }}
-    needs: [select, lint, miri, rdb-data, rt, base-subset, build, perf-base, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
+    needs: [select, lint, miri, rdb-data, builtin-diff-data, rt, base-subset, build, perf-base, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
