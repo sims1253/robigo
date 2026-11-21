@@ -284,8 +284,8 @@ jobs:
   # each (rt-ci.py's SHARDS, which says what each runs), built in each job
   # and run in parallel. One job ran them all until 2026-11-21, in 29-38
   # minutes against a 40-minute limit (docs/ledger/g3/2026-11-21-a1-rt-shards.md).
-  # Each job's timeout is twice its shard's budget (rt-ci.py's BUDGETS,
-  # pinned by scripts/test-rt-ci.py); each prints its steps' times at the
+  # Each job's timeout is max(2 × its shard's budget, 20) minutes
+  # (rt-ci.py's BUDGETS and TIMEOUT_FLOOR, pinned by scripts/test-rt-ci.py); each prints its steps' times at the
   # end of its log, with a warning at 90% of the budget. `Check` needs all.
   #
   # rt: the crates' tests (quick profile) and every mode they run under, the
@@ -383,7 +383,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 50
+    timeout-minutes: 54
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup

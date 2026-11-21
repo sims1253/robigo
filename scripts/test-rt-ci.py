@@ -220,14 +220,10 @@ class RtCi(unittest.TestCase):
             self.assertEqual(rt.run_steps(plan, []), 1)
         self.assertIsNone(seen[0])
         self.assertTrue(seen[1] and seen[1].endswith("01-conformance-under-gctorture-E3.tsv"), seen)
-        # two titles that differ only in punctuation get two files
+        # two titles that differ only in punctuation have one slug, so the
+        # step's index is what keeps their files apart
+        self.assertEqual(rt.times_file(3, "conformance under X=1"), rt.times_file(3, "conformance under X-1"))
         self.assertNotEqual(rt.times_file(3, "conformance under X=1"), rt.times_file(4, "conformance under X-1"))
-        # and every step of every shard has a file of its own
-        crates = ["robigo-heap", "robigo-rt", "robigo-rtapi", "robigo-rtcore"]
-        for shard in rt.SHARDS:
-            plan = rt.shard_steps(crates, shard)
-            files = [rt.times_file(i, t) for i, (t, _, _) in enumerate(plan)]
-            self.assertEqual(len(files), len(set(files)), shard)
         self.assertIn("1 case(s) over 50% of their limit", out.getvalue())
         self.assertIn("tests/rt/x.R", out.getvalue())
         # the nightly's full-move step is a conformance step like the others
@@ -255,33 +251,59 @@ class RtCi(unittest.TestCase):
             self.assertIn("3.0 GB free on the volume of " + deeper, rt.free_space_problem([deeper], 8))
         self.assertEqual(seen, [base])
         # a measurement that fails is a warning, never a crash
-        err = io.StringIO()
-        with mock.patch("shutil.disk_usage", side_effect=PermissionError("denied")), contextlib.redirect_stderr(err):
+        # (on stdout: Actions annotates only workflow commands there)
+        out = io.StringIO()
+        with mock.patch("shutil.disk_usage", side_effect=PermissionError("denied")), contextlib.redirect_stdout(out):
             self.assertIsNone(rt.free_space_problem([missing], 8))
-        self.assertIn("cannot tell the free space", err.getvalue())
+        self.assertIn("::warning::rt-ci: cannot tell the free space", out.getvalue())
         # and so is a path with no existing ancestor
-        err = io.StringIO()
-        with mock.patch.object(rt, "existing_ancestor", return_value=None), contextlib.redirect_stderr(err):
+        out = io.StringIO()
+        with mock.patch.object(rt, "existing_ancestor", return_value=None), contextlib.redirect_stdout(out):
             self.assertIsNone(rt.free_space_problem(["/nowhere"], 8))
-        self.assertIn("cannot tell", err.getvalue())
+        self.assertIn("cannot tell", out.getvalue())
 
     def test_a_run_stops_at_its_start_below_the_free_space_floor(self):
         from unittest import mock
         import collections, contextlib, io
         usage = collections.namedtuple("usage", "total used free")
-        with mock.patch("shutil.disk_usage", return_value=usage(100e9, 95e9, 5e9)):
+        # main's premise mocked: no `cargo metadata` run, whatever the workspace
+        hermetic = contextlib.ExitStack()
+        hermetic.enter_context(mock.patch.object(rt, "metadata", return_value={"target_directory": "/x"}))
+        hermetic.enter_context(mock.patch.object(rt, "rt_crates", return_value=["robigo-rt"]))
+        hermetic.enter_context(mock.patch.object(rt, "leaks", return_value=[]))
+        hermetic.enter_context(mock.patch.object(rt, "steps", return_value=[]))
+        with hermetic, mock.patch("shutil.disk_usage", return_value=usage(100e9, 95e9, 5e9)):
             self.assertIn("5.0 GB free", rt.free_space_problem(["/x"], 8))
             self.assertIsNone(rt.free_space_problem(["/x"], 4))
-            err = io.StringIO()
-            with mock.patch.object(rt, "run_steps") as run, contextlib.redirect_stderr(err), \
-                    mock.patch.dict(os.environ, {"RT_CI_MIN_FREE_GB": "8"}):
-                self.assertEqual(rt.main([]), 2)
-            run.assert_not_called()
-            self.assertIn("free space first", err.getvalue())
+            for value, said in (("8", "free space first"), ("8GB", "is not a number of GB")):
+                out = io.StringIO()
+                with mock.patch.object(rt, "run_steps") as run, contextlib.redirect_stdout(out), \
+                        mock.patch.dict(os.environ, {"RT_CI_MIN_FREE_GB": value}):
+                    self.assertEqual(rt.main([]), 2, value)
+                run.assert_not_called()
+                self.assertIn("::error::", out.getvalue())
+                self.assertIn(said, out.getvalue())
             # RT_CI_MIN_FREE_GB=0 turns the check off
-            with mock.patch.object(rt, "run_steps", return_value=0) as run, mock.patch.dict(os.environ, {"RT_CI_MIN_FREE_GB": "0"}):
+            with mock.patch.object(rt, "run_steps", return_value=0) as run, contextlib.redirect_stdout(io.StringIO()), \
+                    mock.patch.dict(os.environ, {"RT_CI_MIN_FREE_GB": "0"}):
                 self.assertEqual(rt.main([]), 0)
             run.assert_called_once()
+
+    def test_a_crosscheck_that_compares_fewer_than_its_floor_fails(self):
+        # the rdb boot's report: a boot that stopped loading the compiler's
+        # namespace compares about half as many closures, without any error
+        import tempfile
+        path = os.path.join(tempfile.mkdtemp(), "bc.txt")
+        with open(path, "w") as f:
+            f.write("same: f\n" * 3 + "expected (a loop's shape (x)): g\n" + "skipped: h\n")
+        errors, counts = rt.bc_report_check(path, 4)
+        self.assertEqual((errors, counts["compared"]), ([], 4))
+        errors, _ = rt.bc_report_check(path, 5)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("compared 4 closures, fewer than the 5", errors[0])
+        # the plain report's floor is one comparison; the rdb one's is set
+        self.assertEqual(rt.BC_FLOORS.get(rt.BC_REPORT, 1), 1)
+        self.assertGreater(rt.BC_FLOORS[rt.BC_REPORT_RDB], 46000)
 
     def test_a_step_whose_report_fails_is_timed_as_failed(self):
         # the command passed, the crosscheck report did not (it compared
@@ -433,10 +455,11 @@ class RtCi(unittest.TestCase):
         self.assertEqual(first, {c: str(s) for c, s in rt.GCTORTURE_FIRST.items()})
         self.assertTrue(all(int(s) == int(plain[0]["ROBIGO_CONF_TIMEOUT"]) for s in first.values()))
         young = dict(item.rsplit("=", 1) for item in moving[0]["ROBIGO_CONF_TIMEOUTS"].split(","))
-        self.assertEqual(set(young), set(rt.YOUNG_MOVE_SLOW) | set(rt.GCTORTURE_FIRST))
+        self.assertEqual(set(young), set(rt.YOUNG_MOVE_SLOW) | set(rt.GCTORTURE_FIRST) | set(rt.YOUNG_MOVE_FIRST))
         for case, secs in young.items():
             self.assertTrue((HERE.parent / case).is_file(), case)
-            # YOUNG_MOVE_SLOW's get longer; GCTORTURE_FIRST's are only started first
+            # YOUNG_MOVE_SLOW's get longer; GCTORTURE_FIRST's and
+            # YOUNG_MOVE_FIRST's are only started first
             if case in rt.YOUNG_MOVE_SLOW:
                 self.assertGreater(int(secs), int(moving[0]["ROBIGO_CONF_TIMEOUT"]), case)
             else:

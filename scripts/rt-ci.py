@@ -118,19 +118,27 @@ PIN_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-pin-report-{os.g
 BC_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-bc-crosscheck-{os.getpid()}.txt")
 # the same under the rdb boot (base's closures from base.rdb, so many more)
 BC_REPORT_RDB = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-bc-crosscheck-rdb-{os.getpid()}.txt")
+# The fewest closures each crosscheck report must compare. Under the rdb
+# boot base.rdb's closures and, since #942, the compiler namespace's: 95,302
+# compared on main ec22e65ba merged with #961 (A1, 2026-11-21; about 46k
+# before #942, so a boot that stops loading the compiler's namespace falls
+# below the floor). The plain crosscheck compares 191 (the cases' own
+# closures): any comparison at all is its floor.
+BC_FLOORS = {BC_REPORT_RDB: 90000}
 
 # the kinds of line the crosscheck writes (crates/robigo-rt/src/compile/crosscheck.rs),
 # each the line's first word, then ":" (or a class in parentheses, then ":")
 BC_KINDS = ("same", "expected", "unexpected", "untranslated", "skipped")
 
 
-def bc_report_check(path):
+def bc_report_check(path, floor=1):
     """The crosscheck report's errors and its counts, each kind's (and each
     expected class's) and "compared". An error is an unexpected difference,
     an untranslated closure, a line of no kind the crosscheck writes, or
-    nothing compared: every closure compared has its line (same, expected
-    or unexpected), so a step that expects comparisons and has none, or no
-    report at all, is a broken setup, never a pass."""
+    fewer than `floor` closures compared (BC_FLOORS): every closure compared
+    has its line (same, expected or unexpected), so a step that compares
+    fewer than it should, or has no report at all, is a broken setup, never
+    a pass."""
     try:
         with open(path) as f:
             lines = [line.rstrip("\n") for line in f if line.strip()]
@@ -152,8 +160,9 @@ def bc_report_check(path):
             errors.append(x)
         compared += kind in ("same", "expected", "unexpected")
         counts[head] = counts.get(head, 0) + 1
-    if compared == 0:
-        errors.append(f"compared 0 closures: the crosscheck report {path} names none")
+    if compared < floor:
+        errors.append(f"compared {compared} closures, fewer than the {floor} the crosscheck report {path} "
+                      f"must (BC_FLOORS)")
     counts["compared"] = compared
     return errors, counts
 
@@ -218,13 +227,28 @@ YOUNG_MOVE_SLOW = {
     "tests/r/memory/finalizers-self-ref-envs.R": 1200,
     "tests/rt/jit/active-binding-read.R": 1200,
     "tests/rt/jit/serialize-write.R": 1200,
+    # it loads the compiler (#953): 347 s alone in this step (A1, merged
+    # head of #961 on main ec22e65ba, load 33), C1 266 s (load 40). Temporary:
+    # C1's next PR makes it a `volume` case with a small twin
+    "tests/rt/jit/lazy-promise-code.R": 1200,
+}
+
+# The cases the young:16 step also starts first, at its 600 s: under 300 s
+# alone there (A1, 2026-11-21, load 22-48), so they need no allowance, but
+# started in id order they ran alone at the step's end (#963's first run,
+# loaded: 416-453 s)
+YOUNG_MOVE_FIRST = {
+    "tests/rt/capi/closure-mutation.R": 600,     # 177 s alone
+    "tests/rt/bytecode/jit.R": 600,              # 111 s alone
+    "tests/r/lang/tailcall-frames.R": 600,       # 152 s alone
 }
 
 
 # The cases the two gctorture conformance steps start first, at the step's
 # own limit (600 s): each takes minutes under gctorture, and started in id
 # order it ran alone at the step's end. tests/rt/jit/shared-body.R (it loads
-# the compiler): 177 s under gctorture, 200 s under GC_MOVE=young:16 on the
+# the compiler; temporary, as lazy-promise-code.R above: C1's next PR makes
+# it a `volume` case with a small twin): 177 s under gctorture, 200 s under GC_MOVE=young:16 on the
 # 24-CPU workstation (2026-11-21); in #952's run 44927530340 the two steps
 # took 2.7 and 3.1 minutes longer than in #941's, its 8 new cases' doing.
 # The longest cases alone under the plain gctorture step (A1, 2026-11-21,
@@ -393,7 +417,7 @@ def steps(crates):
         # the nightly runs it with every collection moving everything
         (f"conformance under ROBIGO_GC_MOVE={GC_MOVE_YOUNG} with gctorture (E3)",
          {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": GC_MOVE_YOUNG, **slow,
-          "ROBIGO_CONF_TIMEOUTS": case_timeouts({**GCTORTURE_FIRST, **YOUNG_MOVE_SLOW})}, conformance),
+          "ROBIGO_CONF_TIMEOUTS": case_timeouts({**GCTORTURE_FIRST, **YOUNG_MOVE_FIRST, **YOUNG_MOVE_SLOW})}, conformance),
         # D5's frame recycling (docs/g3.md §16): every frame that would be recycled
         # is poisoned and held back instead, so a frame that escaped without
         # its ESCAPED bit panics where it is used next
@@ -500,7 +524,9 @@ BUDGETS = {  # shard: (budget, measured minutes, where measured)
     "modes": (9, 6.99, "2026-11-21, run 44927530340 (#952): 6.49, and the two rdb-boot steps' estimated 0.5"),
     # the plain gctorture conformance moves into modes if GCTORTURE_FIRST
     # does not bring this back near 15 minutes
-    "gctorture": (25, 20.62, "2026-11-21, run 44927530340 (#952), before GCTORTURE_FIRST"),
+    "gctorture": (27, 21.87, "2026-11-21, run 44927530340 (#952): 20.62 before GCTORTURE_FIRST, and #959's "
+                  "estimated 1.25 (its freeze check at every 16th collection: about 1.3x of the plain gctorture "
+                  "conformance's 4.15, H's measurement)"),
     "feature-builds": (12, 9.87, "2026-11-21, run 44927530340 (#952)"),
     "builtin-diff": (9, 7.42, "2026-11-21, run 44927530340 (#952)"),
     "debug-assertions": (5, 3.47, "2026-11-21, run 44927530340 (#952): 3.07, and the tree's estimated 0.4"),
@@ -656,11 +682,17 @@ def main(argv):
     if a.check:
         return 0
 
-    min_gb = float(os.environ.get("RT_CI_MIN_FREE_GB", MIN_FREE_GB))
+    raw = os.environ.get("RT_CI_MIN_FREE_GB", str(MIN_FREE_GB))
+    try:
+        min_gb = float(raw)
+    except ValueError:
+        print(f"::error::rt-ci: RT_CI_MIN_FREE_GB={raw!r} is not a number of GB (0 turns the check off)")
+        return 2
     if min_gb > 0:
         problem = free_space_problem([meta["target_directory"], tempfile.gettempdir()], min_gb)
         if problem:
-            print(f"::error::{problem}", file=sys.stderr)
+            # (workflow commands on stdout: Actions annotates only those)
+            print(f"::error::{problem}")
             return 2
     plan = full_move_steps() if a.full_move else shard_steps(crates, a.shard) if a.shard else steps(crates)
     done = []
@@ -745,7 +777,7 @@ def free_space_problem(paths, min_gb):
                 raise FileNotFoundError(p)
             free = shutil.disk_usage(at).free / 1e9
         except OSError as e:
-            print(f"::warning::rt-ci: cannot tell the free space for {p} ({e}): not checked", file=sys.stderr)
+            print(f"::warning::rt-ci: cannot tell the free space for {p} ({e}): not checked")
             continue
         if free < min_gb:
             return (f"rt-ci: {free:.1f} GB free on the volume of {p} (< {min_gb} GB): a release link of the "
@@ -791,7 +823,7 @@ def run_steps(plan, done):
                 done[-1] = (title, done[-1][1], False)
                 return 1
         if bc:
-            errors, classes = bc_report_check(bc)
+            errors, classes = bc_report_check(bc, BC_FLOORS.get(bc, 1))
             for c, n in sorted(classes.items()):
                 print(f"rt: bc crosscheck: {n} x {c}")
             for line in errors:
