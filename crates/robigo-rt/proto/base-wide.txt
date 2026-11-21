@@ -7,6 +7,7 @@
 #                                       namespace on first use; `seq`: every such line runs, in order
 #   block NAME SRC START END            NAME's binding: what the form (a local()) assigns, run once
 #   after NAME SRC START END            run right after NAME's definition, on its first use
+#   boot SRC START END                  run at startup, in order, in the base namespace (before its locks)
 #   skip SRC START END WHY              not run
 #   unrun NAME SRC START END            NAME's definition needs that skipped form: raises when touched
 #   c NAME                              bound by GNU R's C at startup (robigo-rt's init binds it)
@@ -14,7 +15,7 @@
 #   primitive NAME                      a primitive; "not implemented yet" where robigo-rt has none
 #   internal NAME                       an .Internal; the same
 #
-# 1407 names: 1169 definitions, 23 of blocks, 7 from C, 210 primitives; 556 internals.
+# 1407 names: 1168 definitions, 23 of blocks, 7 from C, 210 primitives; 556 internals.
 def besselI base/R/Bessel.R 737 912 0
 def besselK base/R/Bessel.R 913 1024 0
 def besselJ base/R/Bessel.R 1025 1076 0
@@ -1185,7 +1186,6 @@ def .S3_methods_table base/R/zzz.R 13233 25590 0
 def system base/R/unix/system.unix.R 747 2446 0
 def system2 base/R/unix/system.unix.R 2448 4759 0
 def Sys.which base/R/unix/system.unix.R 4818 5826 0
-unrun .AutoloadEnv profile/Common.R 434 466
 def T profile/Common.R 551 560 0
 def F profile/Common.R 561 571 0
 def R.version profile/Common.R 572 630 0
@@ -1318,7 +1318,9 @@ after .GenericArgsEnv base/R/zzz.R 12869 12941
 after .__S3MethodsTable__. base/baseloader.R 4612 5107
 after .ArgsEnv base/baseloader.R 5312 5354
 after .GenericArgsEnv base/baseloader.R 5355 5404
-skip profile/Common.R 434 466 the Autoloads environment: robigo-rt's search path is its own
+boot profile/Common.R 434 466
+boot profile/Common.R 467 500
+boot profile/Common.R 501 550
 skip profile/Common.R 2154 2240 R_LIBS_SITE and R_LIBS_USER are not expanded
 skip profile/Common.R 2241 2327 R_LIBS_SITE and R_LIBS_USER are not expanded
 skip profile/Common.R 3845 4545 .Library.site is a value, not GNU R's active binding (in base and the global environment)
