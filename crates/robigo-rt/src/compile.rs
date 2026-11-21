@@ -2024,7 +2024,9 @@ impl<'g> Comp<'g> {
                 && args[0].0.typ() == SYMSXP
                 && args[0].0 != st.syms.dots
             {
-                let name = args[0].0.car();
+                // PRINTNAME(sym): the isolate's CHARSXP (a symbol's CAR is
+                // the arena's private copy, which no R value may hold)
+                let name = cx.printname_raw(args[0].0);
                 let v = cx.alloc_vector_raw(STRSXP, 1)?;
                 v.set_elt(0, name);
                 args[0].0 = v;
