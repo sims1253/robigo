@@ -46,7 +46,8 @@ for k in 'path: /.*' 'sha256: [0-9a-f]\{64\}' 'build-id: \([0-9a-f]\{2,\}\|none\
   [ "$(grep -c "^${k%%:*}:" "$builder" 2>/dev/null)" = 1 ] && grep -qx "$k" "$builder" ||
     { echo "error: $out does not record the robigo-rt that built it ($builder, its ${k%%:*}): rebuild it with scripts/rt-home-db.sh or scripts/rt-base-build.sh --robigo-rt BIN" >&2; exit 2; }
 done
-[ "$(wc -l < "$builder")" = 4 ] ||
+# (records, not newlines: an unterminated last line counts)
+[ "$(awk 'END { print NR }' "$builder")" = 4 ] ||
   { echo "error: $builder holds more than the robigo-rt's four fields" >&2; exit 2; }
 echo "== built by"
 sed 's/^/  /' "$builder"
