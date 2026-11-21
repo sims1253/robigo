@@ -464,8 +464,7 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
                 };
                 if !robigo_rt::base::after_profile(cx, home.path(), a) {
                     cx.reprintf(b"Execution halted\n");
-                    robigo_rt::repl::clean_up_tail(cx, false);
-                    return 1;
+                    halt(cx);
                 }
                 let st = boot_st;
                 if std::env::var_os("ROBIGO_BOOT_VERBOSE").is_some() {
@@ -524,10 +523,20 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     if !ok {
         // R: main.c:check_session_exit
         cx.reprintf(b"Execution halted\n");
+        halt(cx);
     }
-    // R_CleanUp: the exit finalizers, then the warnings .Last left
-    robigo_rt::repl::clean_up_tail(cx, false);
-    if ok { 0 } else { 1 }
+    // end_Rmainloop's R_CleanUp(SA_DEFAULT, 0, 1): .Last ran in run_session;
+    // the save action, the exit finalizers, the warnings .Last left
+    match robigo_rt::repl::clean_up(cx, robigo_rt::repl::SaveAction::Default, 0, false) {
+        Ok(never) => match never {},
+        Err(e) => {
+            // (an error saving the image, reported where it was raised:
+            // check_session_exit's halt)
+            cx.resolve_exit(e, None);
+            cx.reprintf(b"Execution halted\n");
+            halt(cx)
+        }
+    }
 }
 
 /// GNU R's `handleInterrupt` (main.c), the SIGINT handler:
@@ -587,5 +596,15 @@ mod tests {
             missing_tree(&RHome::MissingDefault(h.clone()), Boot::Rdb).unwrap().ends_with("(scripts/rt-home-db.sh)")
         );
         assert_eq!(missing_tree(&RHome::Given(h), Boot::Rdb), None);
+    }
+}
+
+/// check_session_exit's `R_CleanUp(SA_NOSAVE, 1, 0)`, its "Execution
+/// halted" written: the exit finalizers, the warnings, status 1.
+// R: main.c:check_session_exit
+fn halt(cx: &mut robigo_rtcore::Cx) -> ! {
+    match robigo_rt::repl::clean_up(cx, robigo_rt::repl::SaveAction::NoSave, 1, false) {
+        Ok(never) => match never {},
+        Err(_) => unreachable!("robigo: SA_NOSAVE saves nothing"),
     }
 }
