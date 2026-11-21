@@ -14,3 +14,11 @@ print(vapply(fs, function(f) f(0), 0))
 g <- mk(2)
 formals(g) <- alist(x = , y = 100, z = 0)
 print(c(g(1), f1(1), f10(1)))
+# body<- and environment<- on one closure: its own body (source, run as
+# GNU R runs it), the others unchanged
+h <- mk(3)
+body(h) <- quote(x * 1000)
+print(c(h(2), f1(1), f10(1)))
+k <- mk(4)
+environment(k) <- list2env(list(a = 50))
+print(c(k(1), f1(1), f10(1)))

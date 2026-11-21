@@ -232,28 +232,38 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
     // (the crosscheck's finding of the last attempt: an attempt a fold
     // retries compared code without the fold's value)
     let mut check = None;
+    // A byte-code body's translation is kept on the BCODESXP, and every
+    // closure `function` makes from it shares it, as GNU R's MKCLOSURE
+    // shares the body. It depends on the byte code, its constant pool and
+    // the frame shape of the formals only: the translation runs with no
+    // compiler environment (`Cenv::for_translation`), so it never reads the
+    // closure's environment, a binding's value, an option or the JIT state.
+    // A write into its sources through a setter (the C API's SETCAR among
+    // them) makes it stale (the code stamps), and other formals miss
+    // (`is_closure_code`). Looked up before `attempt`, kept after it: a
+    // fold's retry must not find the translation of an attempt it retries.
+    // SAFETY: a rooted closure; its body's 4th word is R_NilValue or a code
+    // object.
+    unsafe {
+        let f = op.bind(cx).sexp();
+        if f.cdr().typ() == BCODESXP
+            && let Some(c) = crate::code::cached(cx, f.cdr().aux(), Profile::Bc)
+            && crate::code::is_closure_code(cx, c, Profile::Bc, f.car())
+        {
+            return Ok(Some(c));
+        }
+    }
     let code = attempt(cx, |cx| {
         let f = op.bind(cx).sexp();
         // SAFETY: a rooted closure (and cache entry); nothing collects in
         // this interval.
         unsafe {
             if f.cdr().typ() == BCODESXP {
-                // the translation kept on the byte code: every closure that
-                // `function` makes from one BCODESXP shares it, as GNU R's
-                // MKCLOSURE shares the body (the translation reads the byte
-                // code and the formals, never the environment)
-                if let Some(c) = crate::code::cached(cx, f.cdr().aux(), Profile::Bc)
-                    && crate::code::is_closure_code(cx, c, Profile::Bc, f.car())
-                {
-                    return Ok(c);
-                }
                 if crosscheck::enabled() {
                     check = Some(crosscheck_closure(cx, f, installed)?);
                 }
                 // V3: GNU R's byte code, translated
-                let code = translate_code(cx, f.cdr(), Some(f.car()))?;
-                crate::code::cache_on(f.cdr(), code);
-                return Ok(code);
+                return translate_code(cx, f.cdr(), Some(f.car()));
             }
             let (formals, body) = (f.car(), source_body(cx, f));
             let mut cenv = Cenv::of_env(cx, f.tag(), installed)?;
@@ -271,6 +281,15 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
     });
     if let Some(c) = check {
         c.report();
+    }
+    if let Ok(Some(c)) = code {
+        let f = op.bind(cx).sexp();
+        // SAFETY: a rooted closure and its fresh code object.
+        unsafe {
+            if f.cdr().typ() == BCODESXP {
+                crate::code::cache_on(f.cdr(), c);
+            }
+        }
     }
     code
 }
