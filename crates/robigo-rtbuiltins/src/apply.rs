@@ -504,7 +504,7 @@ pub fn do_mapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
             };
             nindex.push(nj);
             let tag = if named && !vnames.bind(cx).as_vector::<Char<'_>>().unwrap().get(j).bytes().is_empty() {
-                Some(crate::envir::install_tr(cx, s, vnames, j)?)
+                Some(crate::text::install_tr_char(cx, s, vnames, j)?)
             } else {
                 None
             };

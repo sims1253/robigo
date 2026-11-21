@@ -144,7 +144,7 @@ pub(crate) fn ascommon<'g, 'r>(
         let (v, w) = if ty != ANYSXP && t != ty {
             match coerce(cx, u, ty, !clear)? {
                 Built::Done(v, w) => (v, w),
-                Built::Fail(d) => return Ok(Built::fail(Diag::error(d.message().to_owned()))),
+                Built::Fail(d) => return Ok(Built::fail(d.into_error())),
             }
         } else {
             (u, Warns::new())

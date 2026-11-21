@@ -23,6 +23,8 @@ use robigo_heap::{AllocError, NeedGc};
 pub struct Diag<'r> {
     call: DiagCall<'r>,
     msg: String,
+    /// `warning()`s GNU R gives before it raises the error, in order.
+    before: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,13 +39,26 @@ impl<'r> Diag<'r> {
     /// GNU R's `error(msg)`: reported against the context's call
     /// ([`Cx::error`]).
     pub fn error(msg: impl Into<String>) -> Diag<'r> {
-        Diag { call: DiagCall::Context, msg: msg.into() }
+        Diag { call: DiagCall::Context, msg: msg.into(), before: Vec::new() }
     }
 
     /// GNU R's `errorcall(call, msg)`; `None` is `errorcall(R_NilValue,
     /// msg)`, no call ([`Cx::error_call`]).
     pub fn error_call(call: Option<Root<'r>>, msg: impl Into<String>) -> Diag<'r> {
-        Diag { call: DiagCall::Call(call), msg: msg.into() }
+        Diag { call: DiagCall::Call(call), msg: msg.into(), before: Vec::new() }
+    }
+
+    /// The same error, raised after the warnings `before` (GNU R's
+    /// `warning(msg)` each, against the context's call).
+    pub fn after_warnings(mut self, before: Vec<String>) -> Diag<'r> {
+        self.before = before;
+        self
+    }
+
+    /// The same error as GNU R's `error(msg)` (the context's call), its
+    /// warnings kept.
+    pub fn into_error(self) -> Diag<'r> {
+        Diag { call: DiagCall::Context, ..self }
     }
 
     /// The message.
@@ -86,8 +101,15 @@ impl<'g, 'r, M> Built<'g, 'r, M> {
 }
 
 impl Cx {
-    /// Raise `d`: [`Cx::error`] or [`Cx::error_call`].
+    /// Raise `d`: its warnings first (one that is an error, under
+    /// `options(warn = 2)` or a handler's exit, is raised instead), then
+    /// [`Cx::error`] or [`Cx::error_call`].
     pub fn raise(&mut self, d: Diag<'_>) -> RError {
+        for w in &d.before {
+            if let Err(e) = self.warning(w) {
+                return e;
+            }
+        }
         match d.call {
             DiagCall::Context => self.error(&d.msg),
             DiagCall::Call(c) => self.error_call(c, &d.msg),

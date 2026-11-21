@@ -11,7 +11,7 @@ use crate::util::{not_yet, type_to_char};
 use robigo_numerics::ldouble::LDouble as LD;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{
-    Args, Built, Char, Cx, Diag, Dispatched, Encoding, Generic, Lgl, Out, RResult, Rcomplex, Ref, Root, View,
+    Args, Built, Char, Cx, Dispatched, Encoding, Generic, Lgl, Out, RResult, Rcomplex, Ref, Root, View,
 };
 
 const NA_INTEGER: i32 = i32::MIN;
@@ -794,7 +794,7 @@ pub fn do_pmin<const CODE: i32>(
         for i in 1..args.len() {
             match coerce(cx, args.get(cx, i), anstype, false)? {
                 Built::Done(v, _) => parts.push(v),
-                Built::Fail(d) => return Ok(Built::fail(Diag::error(d.message().to_owned()))),
+                Built::Fail(d) => return Ok(Built::fail(d.into_error())),
             }
         }
         if anstype == STRSXP {

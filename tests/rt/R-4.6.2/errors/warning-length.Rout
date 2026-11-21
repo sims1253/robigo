@@ -1,0 +1,12 @@
+98 bytes: error 98 warning 98 aaaaaaaaaa' not found 
+99 bytes: error 99 warning 99 aaaaaaaaaa' not found 
+100 bytes: error 99 warning 100 aaaaaaaaaa' not found 
+101 bytes: error 99 warning 116  foun [... truncated] 
+102 bytes: error 99 warning 116 t fou [... truncated] 
+89 : error 99 98 warning 116 115 
+90 : error 98 98 warning 116 115 
+91 : error 99 99 warning 115 115 
+92 : error 99 99 warning 116 116 
+[1] 999
+[1] 1016
+[1] "zzzzzzzzzzz [... truncated]"
