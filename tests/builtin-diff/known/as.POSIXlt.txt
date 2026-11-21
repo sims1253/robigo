@@ -1,0 +1,8 @@
+# builtin-diff known failures: as.POSIXlt, seed 0, key 7cd4d79826a6d1028ce2f4c9
+# as.POSIXlt: 421 / 427 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
+46
+162
+191
+196
+345
+396
