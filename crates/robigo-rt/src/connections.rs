@@ -1131,7 +1131,10 @@ enum Header {
 
 /// R_gzread: a gzip reader over `src` that takes a stream without the
 /// magic as uncompressed (`transparent`, when `allow`), concatenated members,
-/// and stops at trailing data that is not a member.
+/// and stops at trailing data that is not a member. When `seek` and `tell`
+/// on gz connections are ported: a seek drops the block buffer (`obuf`,
+/// `opos`, `oend`, `ahead`, `failed`), and `tell` subtracts the bytes not
+/// yet read from it (`oend - opos`) from what the inflater has produced.
 struct GzReader<R> {
     src: R,
     buf: Vec<u8>,
