@@ -513,11 +513,13 @@ pub(crate) struct Contexts {
     pub(crate) toplevel: Cell<*mut Context>,
     /// R_ExitContext (null: none)
     pub(crate) exit_context: Cell<*mut Context>,
-    /// The innermost record [`Cx::reset_to_session`] cut off the chain
-    /// (null: none): the records from it down to the base are no longer
-    /// walked as contexts but are still traced, since state the reset kept
-    /// (R_ExitContext, a parked exit) can still reach their fields.
-    detached: Cell<*mut Context>,
+    /// The innermost record of each segment [`Cx::reset_to_session`] cut
+    /// off the chain, in order (a `.Last` may call `quit()` again): the
+    /// records from each down to the base are no longer walked as contexts
+    /// but are still traced, since state the reset kept (R_ExitContext, a
+    /// parked exit) can still reach their fields. The segments are
+    /// disjoint: each holds records pushed after the one before was cut.
+    detached: std::cell::RefCell<Vec<*mut Context>>,
     /// R_Toplevel, the session's base record (freed with the isolate)
     base: NonNull<Context>,
     /// Where the Rust drivers' records live (`records.rs`): not traced
@@ -604,7 +606,7 @@ impl Contexts {
             global: Cell::new(base.as_ptr()),
             toplevel: Cell::new(base.as_ptr()),
             exit_context: Cell::new(null_mut()),
-            detached: Cell::new(null_mut()),
+            detached: std::cell::RefCell::new(Vec::new()),
             base,
             records: Records::new(),
             nil,
@@ -651,15 +653,18 @@ impl Contexts {
     /// [`Cx::reset_to_session`] cut off it, down to (not again) the base.
     fn traced(&self) -> impl Iterator<Item = Rec> + use<> {
         let base = self.base.as_ptr();
-        let mut c = self.detached.get();
-        self.chain().chain(std::iter::from_fn(move || {
-            if c == base {
-                return None;
-            }
-            let r = Rec(NonNull::new(c)?);
-            c = r.nextcontext();
-            Some(r)
-        }))
+        let heads = self.detached.borrow().clone();
+        let segments = heads.into_iter().flat_map(move |mut c| {
+            std::iter::from_fn(move || {
+                if c == base {
+                    return None;
+                }
+                let r = Rec(NonNull::new(c)?);
+                c = r.nextcontext();
+                Some(r)
+            })
+        });
+        self.chain().chain(segments)
     }
 
     /// Every record from the innermost to the base, hidden ones included.
@@ -1999,18 +2004,18 @@ impl Cx {
     ///
     /// # Safety
     /// The caller never lets an owner of a record that was above the base
-    /// run again (pop it, return to it) and calls this once: it ends the
-    /// process first (do_quit's `R_CleanUp` and `exit`). Records pushed
-    /// after the reset are pushed and popped as usual.
+    /// run again (pop it, return to it): it ends the process first
+    /// (do_quit's `R_CleanUp` and `exit`; a nested quit() resets again,
+    /// and ends it itself). Records pushed after the reset are pushed and
+    /// popped as usual.
     // R: main.c:R_dot_Last
     pub unsafe fn reset_to_session(&self) {
         let st = self.ctxs();
         let base = st.base().0.as_ptr();
-        // (a second reset cuts nothing new: the records it would are the
-        // chain's since the first, above the base, and the first's stay)
-        debug_assert!(st.detached.get().is_null(), "robigo: the context chain was cut twice");
+        // (a second reset, quit() from a .Last that quit() runs, cuts the
+        // records pushed since the first: a new segment, the first kept)
         if st.global.get() != base {
-            st.detached.set(st.global.get());
+            st.detached.borrow_mut().push(st.global.get());
         }
         st.global.set(base);
         st.toplevel.set(base);
