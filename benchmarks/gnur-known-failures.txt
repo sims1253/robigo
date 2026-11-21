@@ -1,0 +1,9 @@
+# Benchmarks GNU R fails (non-zero status) in CI's base image on every main
+# run, so they have no oracle answer: robigo's answer to them is not judged,
+# as before scripts/perf-gnur.py existed (the old perf job inherited main's
+# failed records). A pull request's perf job accepts a GNU R failure it
+# measured itself only for a benchmark named here; any other fails the job.
+# Main's run warns when its failures stop matching this list.
+rbench/real/flexclust          # the flexclust package is not in the image
+rbench/real/flexclust_no_s4    # the same
+rbench/real/volcano            # probably `volcano` from datasets, which the suite's default packages do not attach

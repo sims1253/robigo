@@ -1,0 +1,58 @@
+$<- name b value 2 dots 0 
+[<- value 3 dots 1 
+[<- value 4 dots 2 
+[[<- value 5 dots 1 
+[[<- value 6 dots 2 
+names<- value n 
+dim<- value 1 
+dimnames<- value d 
+levels<- value l 
+length<- value 7 
+$<- name b value 8 dots 0 
+$a
+[1] 1
+
+attr(,"class")
+[1] "foo"
+[<- value 9 dots 1 
+$a
+[1] 1
+
+attr(,"class")
+[1] "foo"
+[[<- value 10 dots 1 
+$a
+[1] 1
+
+attr(,"class")
+[1] "foo"
+names<- value m 
+$a
+[1] 1
+
+attr(,"class")
+[1] "foo"
+$<- name b value 11 dots 0 
+[<- value 12 dots 1 
+[[<- value 13 dots 1 
+names<- value o 
+dim<- value 1 
+dimnames<- value e 
+levels<- value k 
+length<- value 14 
+$<- name b value 11 dots 0 
+[<- value 12 dots 1 
+[[<- value 13 dots 1 
+names<- value o 
+dim<- value 1 
+dimnames<- value e 
+levels<- value k 
+length<- value 14 
+$<- name b value 11 dots 0 
+[<- value 12 dots 1 
+[[<- value 13 dots 1 
+names<- value o 
+dim<- value 1 
+dimnames<- value e 
+levels<- value k 
+length<- value 14 

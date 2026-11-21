@@ -1,0 +1,28 @@
+Read 4 records
+Read 8 items
+Read 3 items
+Read 4 items
+Read 6 items
+Read 4 items
+Read 7 items
+Read 9 items
+Read 7 items
+Read 4 items
+Read 4 records
+Read 4 records
+Warning message:
+In scan(w, what = list("", "")) :
+  number of items read is not a multiple of the number of columns
+Read 4 records
+Warning message:
+In scan(w, what = list("", ""), multi.line = FALSE) :
+  number of items read is not a multiple of the number of columns
+Warning message:
+In scan(text = "'open quote", what = character(), quiet = TRUE) :
+  EOF within quoted string
+Read 3 items
+Warning message:
+In scan(file.path(d, "nul.scan"), what = "") :
+  embedded nul(s) found in input
+Read 3 items
+Read 12 items

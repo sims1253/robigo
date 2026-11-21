@@ -1,0 +1,21 @@
+Package: foo
+Version: 1.0-2   
+Title: A title
+  continued here   
+Description: First line.
+    Second   line.
+   .
+    After a dot line.
+# a comment line
+Depends: R (>= 4.0),
+    bar
+
+Package: bar
+Version: 2.0
+Empty:   
+Imports: x,
+	y
+
+  
+
+Package: baz

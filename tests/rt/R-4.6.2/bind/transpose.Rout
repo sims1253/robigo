@@ -1,0 +1,70 @@
+integer | 3 2 
+NULL
+rows: x y z 
+cols: a b 
+[1] 1 3 5 2 4 6
+double | 2 2 
+no dimnames
+[1] 1.5 3.0 2.0 4.0
+integer | 1 3 
+no dimnames
+[1] 1 2 3
+double | 1 2 
+NULL
+rows: NULL 
+cols: p q 
+[1] 1 2
+character | 2 3 
+no dimnames
+[1] "a" "d" "b" "e" "c" "f"
+list | 2 2 
+no dimnames
+[[1]]
+[1] 1
+
+[[2]]
+[1] TRUE
+
+[[3]]
+[1] "a"
+
+[[4]]
+NULL
+
+logical | 2 2 
+no dimnames
+[1]  TRUE FALSE    NA  TRUE
+raw | 2 2 
+no dimnames
+[1] 01 03 02 04
+complex | 2 2 
+no dimnames
+[1] 0+1i 0+3i 0+2i 0+4i
+integer | 1 3 
+[1] ""  "k"
+rows: NULL 
+cols: u v w 
+[1] 1 2 3
+integer | 2 2 
+[1] "C" "R"
+rows: c d 
+cols: a b 
+[1] 1 3 2 4
+$dim
+[1] 2 2
+
+$class
+[1] "foo"
+
+$extra
+[1] "e"
+
+integer | 3 0 
+no dimnames
+integer(0)
+integer | 1 4 
+no dimnames
+[1] 1 2 3 4
+[1] "argument is not a matrix"
+[1] "argument is not a matrix"
+[1] "argument is not a matrix"

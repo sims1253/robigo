@@ -828,6 +828,7 @@ const OWN_ARITY_CHECK: &[&str] = &[
     "mem.maxVSize",
     "munmap_file",
     "nchar",
+    "ngettext",
     "paste",
     "paste0",
     "recordGraphics",

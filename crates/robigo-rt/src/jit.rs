@@ -81,6 +81,40 @@ fn check_compiler_options(cx: &mut Cx, jit_enabled: i32) -> RResult<()> {
     Ok(())
 }
 
+/// `R_cmpfun1(fun)`: `compiler:::tryCmpfun(fun)` evaluated in base, into
+/// `out` (the compiled closure, or `fun` itself where the compile failed),
+/// `R_Visible` kept; a full collection (`R_gc()`) when its body is not byte
+/// code (GNU R's remedy for a compile that failed for want of memory).
+/// What serialize's `R_compile_pkgs` compiles a closure by.
+// R: eval.c:R_cmpfun1
+pub fn cmpfun1(cx: &mut Cx, fun: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let vis = cx.visible();
+    let val = out.root();
+    cx.scope(|cx, s| {
+        let tc = cx.install_rooted(s, b":::")?;
+        let pk = cx.install_rooted(s, b"compiler")?;
+        let fs = cx.install_rooted(s, b"tryCmpfun")?;
+        let call = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| {
+                let f = cx.lang3(tc.bind(cx), pk.bind(cx), fs.bind(cx))?;
+                cx.lang2(f, fun.bind(cx))
+            })
+        })?;
+        let base = s.root(cx, cx.base_env());
+        crate::eval(cx, call, base, out)
+    })?;
+    // SAFETY: a rooted value; a closure's body is its CDR.
+    let bc = unsafe {
+        let v = val.bind(cx).sexp();
+        v.typ() == CLOSXP && v.cdr().typ() == BCODESXP
+    };
+    if !bc {
+        crate::fin::gc(cx);
+    }
+    cx.set_visible(vis);
+    Ok(())
+}
+
 /// `.Internal(enableJIT(level))`: the old level; a level of 0 or more is
 /// set (above 0 after loading the compiler) once the compiler's options
 /// allow it, a negative one only queries.

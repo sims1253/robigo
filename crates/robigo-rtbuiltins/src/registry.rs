@@ -97,10 +97,13 @@ pub struct PpInfo {
 }
 
 /// What a builtin can do besides compute its result: decides how
-/// differential mode (`ROBIGO_BUILTIN_DIFF=1`, docs/g3.md §10) compares two
-/// implementations. Only [`Effect::Pure`] runs both in one process, and
-/// only on inputs that cannot call back ([`Builtin::same_process_ok`]);
-/// every other class is compared out of process.
+/// differential mode (`ROBIGO_BUILTIN_DIFF`, docs/g3.md §10, §16) compares
+/// it with GNU R's. That comparison is out of process for every class
+/// (scripts/builtin-diff.py: generated cases run in GNU R 4.6.2 and in
+/// robigo-rt, their records compared byte for byte); which classes it runs
+/// yet, and what it records for each, is in docs/verification.md, "Builtin
+/// differential". D0 kept one implementation, so the same-process mode
+/// [`Builtin::same_process_ok`] gates has no second one to run.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Effect {
     /// The result, warnings and errors depend only on the argument values
@@ -292,6 +295,10 @@ pub static BUILTINS: &[Builtin] = &[
     op!("^", POWOP, arith::do_arith, 1, 2, pp(Binary2, Prec::Power, true), Pure),
     op!("%%", MODOP, arith::do_arith, 1, 2, pp(Binary2, Prec::Percent, false), Pure),
     op!("%/%", IDIVOP, arith::do_arith, 1, 2, pp(Binary2, Prec::Percent, false), Pure),
+    // array.c's matrix products (primitives, the matrixOps group)
+    row("%*%", array::do_matprod::<0>, 0, 1, 2, pp(Binary, Prec::Percent, false), Pure),
+    row("crossprod", array::do_matprod::<1>, 1, 1, 1, FUNCALL, Pure),
+    row("tcrossprod", array::do_matprod::<2>, 2, 1, 1, FUNCALL, Pure),
     // relop.c
     op!("==", EQOP, relop::do_relop, 1, 2, pp(Binary, Prec::Compare, false), Pure),
     op!("!=", NEOP, relop::do_relop, 1, 2, pp(Binary, Prec::Compare, false), Pure),
@@ -308,6 +315,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("lengths", array::do_lengths, 0, 11, 2, FUNCALL, Pure),
     row("drop", array::do_drop, 0, 11, 1, FUNCALL, Pure),
     row("array", array::do_array, 0, 11, 3, FUNCALL, Pure),
+    row("t.default", array::do_transpose, 0, 11, 1, FUNCALL, Pure),
     // bind.c
     row("c", bind::do_c, 0, 1, -1, FUNCALL, Pure),
     row("unlist", bind::do_unlist, 0, 11, 3, FUNCALL, Pure),
@@ -344,6 +352,7 @@ pub static BUILTINS: &[Builtin] = &[
     op!("duplicated", 0, unique::do_duplicated, 11, 4, FUNCALL, Pure),
     op!("unique", 1, unique::do_duplicated, 11, 4, FUNCALL, Pure),
     op!("anyDuplicated", 2, unique::do_duplicated, 11, 3, FUNCALL, Pure),
+    row("make.unique", unique::do_make_unique, 0, 11, 2, FUNCALL, Pure),
     row("pmatch", unique::do_pmatch, 0, 11, 4, FUNCALL, Pure),
     row("match.call", unique::do_matchcall, 0, 11, 4, FUNCALL, Env),
     row("identical", identical::do_identical, 0, 11, 8, FUNCALL, Pure),
@@ -355,6 +364,8 @@ pub static BUILTINS: &[Builtin] = &[
     row("bindtextdomain", errors::do_bindtextdomain, 0, 11, 2, FUNCALL, External),
     row("interactive", sysutils::do_interactive, 0, 1, 0, FUNCALL, Pure),
     row("Sys.getenv", sysutils::do_getenv, 0, 11, 2, FUNCALL, External),
+    row("Sys.setenv", sysutils::do_setenv, 0, 111, 2, FUNCALL, External),
+    row("Sys.unsetenv", sysutils::do_unsetenv, 0, 111, 1, FUNCALL, External),
     row("l10n_info", sysutils::do_l10n_info, 0, 11, 0, FUNCALL, Pure),
     // summary.c, logic.c, arithmetic.c
     op!("sum", 0, summary::do_summary, 1, -1, FUNCALL, Pure),
@@ -524,10 +535,23 @@ pub static BUILTINS: &[Builtin] = &[
     row("bindingIsLocked", envir::do_bnd_is_locked, 0, 11, 2, FUNCALL, Env),
     row("environmentIsLocked", envir::do_env_is_locked, 0, 11, 1, FUNCALL, Env),
     row("makeActiveBinding", envir::do_mk_active_bnd, 0, 111, 3, FUNCALL, Env),
+    row("bindingIsActive", envir::do_bnd_is_active, 0, 11, 2, FUNCALL, Env),
+    row("activeBindingFunction", envir::do_active_bnd_fun, 0, 11, 2, FUNCALL, Env),
+    row("delayedBindingExpression", envir::do_delayed_binding_expr, 0, 11, 2, FUNCALL, Env),
+    row("delayedBindingEnvironment", envir::do_delayed_binding_env, 0, 11, 2, FUNCALL, Env),
+    row("forcedBindingExpression", envir::do_forced_binding_expr, 0, 11, 2, FUNCALL, Env),
     row("env.profile", envir::do_envprofile, 0, 211, 1, FUNCALL, Env),
     row("...elt", envir::do_dots_elt, 0, 201, 1, FUNCALL, Env),
     row("...length", envir::do_dots_length, 0, 1, 0, FUNCALL, Env),
     row("...names", envir::do_dots_names, 0, 1, 0, FUNCALL, Env),
+    row("dotsExist", envir::do_dots_exist, 0, 11, 2, FUNCALL, Env),
+    row("getDotType", envir::do_dot_type, 0, 11, 3, FUNCALL, Env),
+    row("dotDelayedExpression", envir::do_dot_delayed_expr, 0, 11, 3, FUNCALL, Env),
+    row("dotDelayedEnvironment", envir::do_dot_delayed_env, 0, 11, 3, FUNCALL, Env),
+    row("dotForcedExpression", envir::do_dot_forced_expr, 0, 11, 3, FUNCALL, Env),
+    row("dotsLength", envir::do_cdots_length, 0, 11, 2, FUNCALL, Env),
+    row("dotsNames", envir::do_cdots_names, 0, 11, 2, FUNCALL, Env),
+    row("dotsElt", envir::do_cdots_elt, 0, 11, 3, FUNCALL, Calls),
     // paste.c, character.c
     op!("paste", 0, paste::do_paste, 11, 4, FUNCALL, Pure),
     op!("paste0", 1, paste::do_paste, 11, 3, FUNCALL, Pure),
@@ -542,6 +566,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("regexec", grep::do_regexec, 1, 11, 5, FUNCALL, Pure),
     row("nzchar", character::do_nzchar, 1, 1, -1, FUNCALL, Pure),
     row("encodeString", character::do_encode_string, 1, 11, 5, FUNCALL, Pure),
+    row("strtoi", character::do_strtoi, 0, 11, 2, FUNCALL, Pure),
     // raw.c, util.c's encodings
     row("charToRaw", raw::do_char_to_raw, 1, 11, 1, FUNCALL, Pure),
     row("rawToChar", raw::do_raw_to_char, 1, 11, 2, FUNCALL, Pure),
@@ -556,6 +581,10 @@ pub static BUILTINS: &[Builtin] = &[
     row("sprintf", sprintf::do_sprintf, 1, 11, -1, FUNCALL, Pure),
     op!("startsWith", 0, character::do_starts_with, 11, 2, FUNCALL, Pure),
     op!("endsWith", 1, character::do_starts_with, 11, 2, FUNCALL, Pure),
+    row("make.names", character::do_make_names, 0, 11, 2, FUNCALL, Pure),
+    op!("tolower", 0, character::do_tolower, 11, 1, FUNCALL, Pure),
+    op!("toupper", 1, character::do_tolower, 11, 1, FUNCALL, Pure),
+    row("chartr", character::do_chartr, 1, 11, 3, FUNCALL, Pure),
     // version.c, paste.c's file.path
     row("Version", version::do_version, 0, 11, 0, FUNCALL, Pure),
     row("file.path", paste::do_filepath, 0, 11, 2, FUNCALL, Pure),

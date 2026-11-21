@@ -37,6 +37,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 pub mod readers;
+pub mod scan;
 
 /// `NCONNECTIONS`.
 const NCONNECTIONS: usize = 128;
@@ -249,6 +250,7 @@ impl Conn {
 
 enum Imp {
     Std,
+    Text(TextConn),
     File(FileConn),
     Gz(GzFile),
     Gzcon(Box<GzconConn>),
@@ -259,6 +261,13 @@ struct FileConn {
     rpos: u64,
     wpos: u64,
     last_was_write: bool,
+}
+
+/// A text connection's input (`struct textconn`): every string followed
+/// by a newline, and the position.
+pub(crate) struct TextConn {
+    pub(crate) data: Vec<u8>,
+    pub(crate) cur: usize,
 }
 
 /// A gzfile's state once open.
@@ -645,6 +654,11 @@ fn gzcon_open(c: &mut Conn) -> Result<(), (String, bool)> {
 fn open_conn(c: &mut Conn) -> OpenResult {
     match c.imp {
         Imp::Std => Ok(()),
+        // text_open: nothing saved
+        Imp::Text(_) => {
+            c.c.save = crate::rconn::NO_SAVE;
+            Ok(())
+        }
         Imp::File(_) => file_open(c),
         Imp::Gz(_) => gzfile_open(c),
         Imp::Gzcon(_) => match gzcon_open(c) {
@@ -659,17 +673,17 @@ fn close_conn(c: &mut Conn) -> Option<String> {
     let mut err = None;
     buff_free(c);
     match &mut c.imp {
-        Imp::Std => {}
+        Imp::Std | Imp::Text(_) => {}
         Imp::File(f) => {
             // (c.c's fields: the file's private part stays borrowed)
+            // con->status = fclose(this->fp): the writes went to the file as
+            // they were made (no stdio buffer), so there is nothing left to
+            // flush, and fclose does not sync to the disk; closing it is
+            // dropping it (a close(2) error is not reported, as no write is
+            // pending)
             if c.c.isopen != 0 {
-                c.c.status = match f.fp.take() {
-                    Some(fp) => match fp.sync_all().or(Ok::<(), std::io::Error>(())) {
-                        Ok(()) => 0,
-                        Err(_) => -1,
-                    },
-                    None => 0,
-                };
+                drop(f.fp.take());
+                c.c.status = 0;
             }
         }
         Imp::Gz(g) => {
@@ -717,6 +731,8 @@ fn conn_read(c: &mut Conn, buf: &mut [u8]) -> std::io::Result<usize> {
 fn conn_read_raw(c: &mut Conn, buf: &mut [u8]) -> std::io::Result<usize> {
     match &mut c.imp {
         Imp::Std => Err(std::io::Error::other("robigo: reading the standard connections is not implemented yet")),
+        // null_read
+        Imp::Text(_) => Err(std::io::Error::other("'read' not enabled for this connection")),
         Imp::File(f) => {
             let fp = f.fp.as_mut().ok_or_else(|| std::io::Error::other("not open"))?;
             if f.last_was_write {
@@ -753,6 +769,8 @@ fn conn_write(c: &mut Conn, buf: &[u8]) -> std::io::Result<usize> {
     }
     match &mut c.imp {
         Imp::Std => Err(std::io::Error::other("robigo: writing the standard connections is not implemented yet")),
+        // null_write
+        Imp::Text(_) => Err(std::io::Error::other("'write' not enabled for this connection")),
         Imp::File(f) => {
             let fp = f.fp.as_mut().ok_or_else(|| std::io::Error::other("not open"))?;
             if !f.last_was_write {
@@ -850,6 +868,18 @@ fn fgetc_internal(c: &mut Conn) -> Result<c_int, String> {
 /// else `fgetc_internal`. robigo has no re-encoding (`inconv` is never set).
 // R: connections.c:dummy_fgetc
 fn dummy_fgetc(c: &mut Conn) -> Result<c_int, String> {
+    // a text connection's fgetc is text_fgetc: the byte as C's (signed)
+    // char, so 0xFF reads as R_EOF
+    // R: connections.c:text_fgetc
+    if let Imp::Text(t) = &mut c.imp {
+        return Ok(match t.data.get(t.cur) {
+            Some(&b) => {
+                t.cur += 1;
+                b as i8 as c_int
+            }
+            None => R_EOF,
+        });
+    }
     if !c.c.inconv.is_null() || c.reencode {
         return Err("robigo: re-encoding a connection is not implemented yet".to_owned());
     }
@@ -1960,8 +1990,21 @@ pub fn open(cx: &mut Cx, n: i32) -> RResult<bool> {
 /// cannot read yet) are errors.
 // R: connections.c:file_fgetc_internal, source.c:R_ParseConn
 pub fn read_to_end(cx: &mut Cx, n: i32) -> RResult<Vec<u8>> {
+    let ours = our_fgetc(cx);
     let r = with_conn(cx, n, |c| {
         let mut all = Vec::new();
+        // what Rconn_fgetc gives before the stream: a saved character, the
+        // pushback; a text connection has no stream but its fgetc
+        while c.c.save2 != crate::rconn::NO_SAVE
+            || c.push_back_len() > 0
+            || c.c.save != crate::rconn::NO_SAVE
+            || matches!(c.imp, Imp::Text(_))
+        {
+            match conn_fgetc(c, ours)? {
+                R_EOF => return Ok(all),
+                ch => all.push(ch as u8),
+            }
+        }
         let mut buf = vec![0u8; 65536];
         loop {
             match conn_read(c, &mut buf) {
@@ -2070,6 +2113,14 @@ pub fn unread(cx: &mut Cx, n: i32, k: usize) -> RResult<bool> {
             _ => false,
         },
         _ => false,
+    })
+}
+
+/// Whether connection `n` has input Rconn_fgetc gives before its stream
+/// (a saved character, the pushback).
+pub fn has_pending_input(cx: &mut Cx, n: i32) -> RResult<bool> {
+    with_conn(cx, n, |c| {
+        c.c.save2 != crate::rconn::NO_SAVE || c.push_back_len() > 0 || c.c.save != crate::rconn::NO_SAVE
     })
 }
 
