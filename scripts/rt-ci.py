@@ -303,9 +303,10 @@ def steps(crates):
          ["python3", "scripts/builtin-diff.py", "ci"]),
         # E9 (docs/g3.md §16): every `&Cx` build's first allocation refused
         # once, so each build's retry runs. The mode is compiled in only
-        # with robigo-rtcore's feature, built for this step alone and last:
-        # every step above tests the binary users get (cargo keeps both
-        # builds). With ROBIGO_GC_MOVE=1 as well it takes about 20 minutes,
+        # with robigo-rtcore's feature, in a build (CHECK_FEATURES, with
+        # robigo-rt's poison-dead) made for the last steps alone, this one
+        # and the two poison-dead steps after it: every step above tests the
+        # binary users get (cargo keeps both builds). With ROBIGO_GC_MOVE=1 as well it takes about 20 minutes,
         # so that run is by hand (g3.md §16).
         ("conformance under ROBIGO_RETRY_TORTURE=1 (E9: every build's retry runs once)",
          {"ROBIGO_RETRY_TORTURE": "1", **slow},
@@ -338,7 +339,9 @@ def steps(crates):
 #   gc-move       the moving collector, its unit tests and the conformance
 #                 under it with gctorture: 16.7
 #   feature-builds  the steps that build with a feature of their own: the
-#                 builtin differential's plants, and retry-torture: 9.1
+#                 builtin differential's plants, and retry-torture: 9.1;
+#                 then, in retry-torture's build (CHECK_FEATURES), the
+#                 poison-dead steps (C1-PZ)
 # The R_HOME tree (seconds) is made in every shard; every other step is in
 # exactly one (scripts/test-rt-ci.py checks both).
 SHARDS = ("modes", "gc-move", "feature-builds")
@@ -350,7 +353,7 @@ def shard_of(title):
         return None
     if "GC_MOVE" in title:
         return "gc-move"
-    if title.startswith("builtin differential") or "RETRY_TORTURE" in title:
+    if title.startswith("builtin differential") or "RETRY_TORTURE" in title or "POISON_DEAD" in title:
         return "feature-builds"
     return "modes"
 

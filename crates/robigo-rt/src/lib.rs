@@ -82,16 +82,11 @@ mod specials;
 mod util;
 pub mod vm;
 
-/// [`early::poison_deaths`], the D9 deaths the evaluators that run compiled
-/// code outside the VM make under `ROBIGO_POISON_DEAD`, for an instruction
-/// that writes register `a` and reads `b` for the last time (tests/poison.rs).
+/// The D9 deaths the evaluators that run compiled code outside the VM make
+/// under `ROBIGO_POISON_DEAD` (tests/poison.rs).
 #[cfg(feature = "poison-dead")]
 #[doc(hidden)]
-pub fn poison_deaths_of_last_read(regs: &mut [robigo_rtcore::Slot], a: ir::Reg, b: ir::Reg) {
-    let mut i = ir::Ins::new(ir::Op::Arith);
-    (i.a, i.b, i.fl) = (a, b, ir::F_CLR_B);
-    early::poison_deaths(regs, &i, 7);
-}
+pub use early::poison_deaths;
 
 use robigo_rtcore::Cx;
 

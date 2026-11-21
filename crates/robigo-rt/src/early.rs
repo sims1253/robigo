@@ -136,7 +136,7 @@ pub(crate) unsafe fn read(cx: &Cx, b: RawBinding) -> Option<Slot> {
 /// instruction they ran, before the next one reads, so a register read
 /// after its last use panics there too.
 #[inline(always)]
-pub(crate) fn poison_deaths(regs: &mut [Slot], i: &Ins, at: usize) {
+pub fn poison_deaths(regs: &mut [Slot], i: &Ins, at: usize) {
     if !robigo_rtcore::poison_dead() {
         return;
     }

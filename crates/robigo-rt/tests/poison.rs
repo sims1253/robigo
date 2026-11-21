@@ -79,7 +79,9 @@ fn a_planted_early_clear_is_caught() {
     // and the deaths themselves: an operand read for the last time is
     // poison to the next read
     let mut regs = [robigo_rtcore::Slot::int(1), robigo_rtcore::Slot::int(2)];
-    robigo_rt::poison_deaths_of_last_read(&mut regs, 1, 0);
+    let mut i = robigo_rt::ir::Ins::new(robigo_rt::ir::Op::Arith);
+    (i.a, i.b, i.fl) = (1, 0, robigo_rt::ir::F_CLR_B);
+    robigo_rt::poison_deaths(&mut regs, &i, 7);
     regs[1].check_live();
     let e = catch_unwind(|| regs[0].check_live()).expect_err("the dead operand's read was not caught");
     let msg = e.downcast_ref::<String>().cloned().unwrap_or_default();

@@ -65,7 +65,9 @@ class RtCi(unittest.TestCase):
                           f"conformance under ROBIGO_GC_MOVE={rt.GC_MOVE_YOUNG} with gctorture (E3)"])
         self.assertEqual([t for t, s in where.items() if s == "feature-builds"],
                          ["builtin differential and its planted divergences (A4, scripts/builtin-diff.py ci)",
-                          "conformance under ROBIGO_RETRY_TORTURE=1 (E9: every build's retry runs once)"])
+                          "conformance under ROBIGO_RETRY_TORTURE=1 (E9: every build's retry runs once)",
+                          "ROBIGO_POISON_DEAD=1 (dead slots poisoned), robigo-rt's tests and the planted early clear",
+                          "ROBIGO_POISON_DEAD=1, conformance"])
 
     def test_a_step_whose_report_fails_is_timed_as_failed(self):
         # the command passed, the crosscheck report did not (it compared
@@ -140,8 +142,9 @@ class RtCi(unittest.TestCase):
         for i in featured:
             cmd = steps[i][2]
             self.assertEqual(cmd[cmd.index("--features") + 1], rt.CHECK_FEATURES)
-        retry = [t for t, e, _ in steps if "ROBIGO_RETRY_TORTURE" in e]
+        retry = [t for t, e, _ in steps if e.get("ROBIGO_RETRY_TORTURE") == "1"]
         self.assertEqual(retry, [steps[featured[0]][0]])
+        self.assertEqual([t for t, e, _ in steps if "ROBIGO_RETRY_TORTURE" in e], retry)
         self.assertEqual(steps[featured[0]][1].get("ROBIGO_CONF_TIMEOUT"), "600")
         poison = [t for t, e, _ in steps if e.get("ROBIGO_POISON_DEAD") == "1"]
         self.assertEqual(poison, [steps[i][0] for i in featured[1:]])
