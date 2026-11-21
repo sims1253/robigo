@@ -1191,6 +1191,41 @@ unsafe fn plan_dots_list(
     }
 }
 
+/// The `...` formal's init of a call bound by its site's plan `p` (`p.ndots
+/// > 0`): the list [`plan_dots_list`] makes (allocates; every init is
+/// rooted), rooted in `s`, in place of `plan_inits`' R_MissingArg. Out of
+/// line, as the plan path's code for calls without such actuals.
+///
+/// # Safety
+/// `p` is valid now (read before anything can collect: it is copied first);
+/// `call` and `rho` rooted, the call's arguments the plan's.
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+unsafe fn plan_dots<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    p: &Plan,
+    call: Root<'_>,
+    rho: Root<'_>,
+    profile: Profile,
+    bytecode: bool,
+    codes_now: impl Fn() -> Sexp,
+    inits: &mut Buf<SlotInit<'s>>,
+) -> RResult<()> {
+    // (the site's plan may move when the list's allocation collects)
+    let plan = *p;
+    let d = cx.retry_alloc(|cx| {
+        let (c, r) = (call.bind(cx).sexp(), rho.bind(cx).sexp());
+        // SAFETY: the rooted call, whose arguments the plan bound, and
+        // environment.
+        unsafe { plan_dots_list(cx, c, &plan, r, profile, bytecode, codes_now()) }
+    })?;
+    // SAFETY: fresh, of this isolate.
+    let d = s.root(cx, unsafe { Ref::from_sexp(d, cx) });
+    inits.as_mut_slice()[plan.dots_formal as usize] = SlotInit::Bound { value: d, missing: 0 };
+    Ok(())
+}
+
 /// The formals of closure `op` as a vector of their tags and defaults.
 ///
 /// # Safety
@@ -1690,21 +1725,14 @@ fn prepare<'s: 'r, 'r, 'a, const GENERIC: bool>(
         // SAFETY: the plan of `site_plan`, nothing having collected since.
         Some((p, site, a)) => {
             // SAFETY: the plan of `site_plan`, nothing having collected
-            // since: copied before the `...` list's allocation may.
-            let plan = unsafe { *p };
-            if plan.ndots > 0 {
-                // the `...` list (allocates: every init is rooted)
-                let d = cx.retry_alloc(|cx| {
-                    let (c, r) = (call.bind(cx).sexp(), rho.bind(cx).sexp());
-                    // SAFETY: the rooted call, whose arguments the plan
-                    // bound, and environment.
-                    unsafe { plan_dots_list(cx, c, &plan, r, profile, bytecode, codes_now()) }
-                })?;
-                // SAFETY: fresh, of this isolate.
-                let d = s.root(cx, unsafe { Ref::from_sexp(d, cx) });
-                inits.as_mut_slice()[plan.dots_formal as usize] = SlotInit::Bound { value: d, missing: 0 };
+            // since (read before the `...` list's allocation may).
+            let no_early = unsafe { (*p).no_early };
+            // SAFETY: as above.
+            if unsafe { (*p).ndots } > 0 {
+                // SAFETY: as above; the rooted call and environment.
+                unsafe { plan_dots(cx, s, &*p, call, rho, profile, bytecode, codes_now, &mut inits)? };
             }
-            (plan.no_early, Some((site, a)), src, arglist)
+            (no_early, Some((site, a)), src, arglist)
         }
         None => {
             // (the matcher's actuals and match, read by the lazy
