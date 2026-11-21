@@ -487,11 +487,9 @@ fn oracle_base_closures_crosscheck() {
     assert_eq!(n("Unexpected"), 0, "unexpected differences (the report has them): {verdicts:?}");
     let compared = n("Same") + n("Expected");
     assert!(compared >= CROSSCHECK_COMPARED, "{compared} compared, fewer than {CROSSCHECK_COMPARED}: {verdicts:?}");
-    assert!(n("Skipped") <= CROSSCHECK_SKIPPED, "more than {CROSSCHECK_SKIPPED} skipped: {verdicts:?}");
-    assert!(
-        n("Untranslated") <= CROSSCHECK_UNTRANSLATED,
-        "more than {CROSSCHECK_UNTRANSLATED} untranslated: {verdicts:?}"
-    );
+    for (v, most) in [("Skipped", CROSSCHECK_SKIPPED), ("Untranslated", CROSSCHECK_UNTRANSLATED)] {
+        assert!(n(v) <= most, "more than {most} {v}: {verdicts:?}");
+    }
 }
 
 /// Evaluate every expression of `src` in the global environment, each
