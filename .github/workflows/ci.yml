@@ -9,11 +9,22 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A pull request's runs share one group, `ci-pr-<number>`, with
+# cancel-in-progress: a new push cancels the pull request's older run at
+# once, before any runner is free, so its heavy jobs stop taking runners.
+# (Until 2026-11-21 the cancel was `select`'s first step, which ran only when
+# the new run got its first runner: in a full pool both runs kept queueing
+# until then.) The cancelled run's `Check` still runs (`always()`) and fails
+# on its cancelled needs (what it certifies: the `check` job's comment), and
+# holds the group until it has had a runner: the new run waits that long, as
+# it waited for `select` before. A re-run of a superseded run re-enters
+# `ci-pr-<number>` and cancels the run in progress: re-run only the newest.
+#
 # Main's push runs share one group, `ci-main`. Without cancel-in-progress,
 # GitHub keeps the run in progress and at most one pending: a newer push
 # replaces the pending run, so a burst of merges runs the newest commit
-# next, and the group never cancels a started run. (Until 2026-11-21 every main
-# commit had a group of its own, because its run published the perf
+# next, and the group never cancels a started run. (Until 2026-11-21 every
+# main commit had a group of its own, because its run published the perf
 # baseline that pull requests compared with; since #901 a pull request's
 # perf measures its own base, and no pull request reads that baseline. On
 # 2026-11-21 one merge every 15.5 minutes queued main runs hours behind.)
@@ -22,16 +33,11 @@ on:
 # run), the nightly packages binary (the newest successful run's), and the
 # caches only main saves. What a skipped commit loses: its point in the
 # history, and a breakage on main names a range of commits, not one.
-# Every other run, a manual dispatch on main included, has a group of its
-# own, so no run waits `pending` behind another: a pull request's
-# superseded runs are cancelled by `select`'s first step instead. (A
-# shared group per pull request did that at once, but a cancelled run
-# still queues `Check`, which runs `always()`, and held the group until a
-# runner took it: the new head's run waited behind it. 2026-11-18: 60
-# runs, 1,268 minutes.)
+#
+# A manual dispatch has a group of its own.
 concurrency:
-  group: ci-${{ github.event_name == 'push' && 'main' || github.run_id }}
-  cancel-in-progress: false
+  group: ci-${{ github.event_name == 'push' && 'main' || github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -69,8 +75,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      # to cancel this pull request's superseded runs
-      actions: write
     outputs:
       heavy: ${{ steps.sel.outputs.heavy }}
       mode: ${{ steps.sel.outputs.mode }}
@@ -85,42 +89,6 @@ jobs:
       # `oracles=(...)`. A version added there needs its line here.
       image_oracle_4_6_2: ${{ steps.image.outputs.oracle_4_6_2 }}
     steps:
-      # First, before anything else: cancel this pull request's older `ci`
-      # runs that are still going (same head branch and repository, a lower
-      # run id). A plain cancel, so their `Check` still runs and is red on a
-      # commit nobody merges. Until this step runs, both runs are alive: the
-      # older one's jobs keep their runners for the new run's wait for its
-      # first runner (2026-11-18: median 10 min, about 1 job of the older
-      # run on a runner then). A fork's token cannot cancel: it warns, and
-      # both runs finish.
-      - name: Cancel this pull request's superseded runs
-        if: github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          HEAD_REF: ${{ github.head_ref }}
-          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
-          RUN_ID: ${{ github.run_id }}
-        run: |
-          # one query per status that is not completed, every page (a
-          # re-run of an old run keeps its old id, however many runs came since)
-          ids=()
-          for status in queued in_progress waiting pending requested; do
-            page=$(gh api -X GET --paginate "repos/$REPO/actions/workflows/ci.yml/runs" -f event=pull_request \
-                     -f branch="$HEAD_REF" -f status="$status" -f per_page=100 --jq ".workflow_runs[]
-                     | select(.id < $RUN_ID and .head_repository.full_name == \"$HEAD_REPO\") | .id") ||
-              { echo "::warning::could not list this pull request's $status runs; superseded ones keep running"; continue; }
-            # (ids are numbers)
-            # shellcheck disable=SC2206
-            ids+=($page)
-          done
-          for id in "${ids[@]}"; do
-            if gh api -X POST "repos/$REPO/actions/runs/$id/cancel" > /dev/null; then
-              echo "cancelled superseded run $id"
-            else
-              echo "::warning::could not cancel superseded run $id (a fork's token is read-only)"
-            fi
-          done
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
@@ -194,7 +162,7 @@ jobs:
       - name: Miri on the heap's layout and bitmaps
         run: cargo +nightly-2026-11-02 miri test --locked -p robigo-heap --lib -- 'layout::' 'heap::bitmap_tests' 'heap::medium_tests' 'arena::'
 
-  # G3's runtime crates (docs/g3.md §14.1, §16): release tests, then the
+  # G3's runtime crates (docs/g3.md §14.1, §16): their tests, then the
   # same under gctorture; the verification modes add steps as they land.
   # Every pull request but a docs-only one runs it. One that touches only
   # those crates (`rt` mode) runs this instead of the heavy jobs:
@@ -312,7 +280,7 @@ jobs:
           compression-level: 0
           retention-days: 1
 
-  # G3's runtime crates: scripts/rt-ci.py's steps in five jobs, one shard
+  # G3's runtime crates: scripts/rt-ci.py's steps in six jobs, one shard
   # each (rt-ci.py's SHARDS, which says what each runs), built in each job
   # and run in parallel. One job ran them all until 2026-11-21, in 29-38
   # minutes against a 40-minute limit (docs/ledger/g3/2026-11-21-a1-rt-shards.md).
@@ -320,7 +288,7 @@ jobs:
   # pinned by scripts/test-rt-ci.py); each prints its steps' times at the
   # end of its log, with a warning at 90% of the budget. `Check` needs all.
   #
-  # rt: the crates' release tests and every mode they run under, the
+  # rt: the crates' tests (quick profile) and every mode they run under, the
   # conformance and its short modes, stress, overshoot, E9, the byte-code
   # crosscheck; then L1's rdb round trip.
   rt:
@@ -384,7 +352,7 @@ jobs:
           report="$RUNNER_TEMP/bc-crosscheck-base.txt"
           status=0
           ROBIGO_ORACLE_LIBRARY="$PWD/.robigo/oracle-lib" ROBIGO_BC_CROSSCHECK=1 ROBIGO_BC_CROSSCHECK_REPORT="$report" \
-            cargo test --release --locked -p robigo-rt --test rdb_roundtrip -- --nocapture || status=$?
+            cargo test --profile quick --locked -p robigo-rt --test rdb_roundtrip -- --nocapture || status=$?
           # (L4's makeLazy: base's lazyLoad of the same databases, through the binary)
           ROBIGO_ORACLE_LIBRARY="$PWD/.robigo/oracle-lib" \
             cargo test --release --locked -p robigo-rtapi --test lazyload -- --nocapture || status=$?
@@ -426,7 +394,7 @@ jobs:
       - name: rt-ci.py, shard gctorture
         run: python3 scripts/rt-ci.py --shard gctorture
 
-  # the crates' release tests and the conformance on a release build with
+  # the crates' tests (quick profile) and the conformance (release) with
   # `-C debug-assertions=on` (heap's debug_assert!s seeing compiled code:
   # how H found compile.rs's `@<-` inline bug), a build of its own
   rt-debug-assertions:
@@ -461,6 +429,42 @@ jobs:
         run: scripts/r-src.sh
       - name: rt-ci.py, shard debug-assertions
         run: python3 scripts/rt-ci.py --shard debug-assertions
+
+  # the crates' tests on the full release profile (thin LTO, one codegen
+  # unit), the code users get: every other shard builds them in the quick
+  # profile. Not on pull requests: on main (and a manual dispatch), so a
+  # codegen-dependent crate-test failure shows within one main run of its
+  # merge (the accepted trade, docs/ledger/g3/2026-11-21-a1-rt-shards.md)
+  rt-release-crate-tests:
+    needs: select
+    if: ${{ needs.select.outputs.rt == 'true' && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.select.outputs.image_rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: rt
+          # (rt saves this cache; two jobs saving one key would race)
+          save-if: false
+      # GNU R 4.6.2's pinned sources: robigo-rt binds base's R code from
+      # them (crates/robigo-rt/src/base.rs). The tarball is cached;
+      # scripts/r-src.sh checks its sha256 and extracts it.
+      - uses: actions/cache/restore@v6
+        id: rsrc462
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
+      - name: rt-ci.py, shard release-crate-tests
+        run: python3 scripts/rt-ci.py --shard release-crate-tests
 
   # retry-torture's conformance (robigo-rtcore/retry-torture), then in its
   # build (CHECK_FEATURES) the poison-dead steps (robigo-rt/poison-dead)
@@ -1503,14 +1507,19 @@ jobs:
   # adding, splitting or resharding jobs needs no ruleset change: add every
   # new gating job to `needs`. It passes when each job passed, or was skipped
   # because `select` said so; a failed, cancelled or unexplained skip fails
-  # it. `always()`: a skipped required check counts as passing, so a
-  # cancelled run must still report a failure here. (A superseded run's
-  # `Check` waits for a runner and is red on a commit nobody merges; it
-  # blocks nothing, since pull request runs share no concurrency group.)
+  # it. `always()`: a skipped required check counts as passing, so a run
+  # cancelled before its evidence exists must still report a failure here.
+  # What `Check` certifies: every job it waits for passed, or was skipped as
+  # `select` said. A run cancelled before that (superseded, or by hand) has a
+  # cancelled or skipped need, which fails it; a run cancelled only after
+  # every need passed has produced that evidence, and its `Check` may pass,
+  # as before this group existed. A `Check` that ends cancelled itself is not
+  # a pass either. A superseded run's `Check` holds the pull request's group
+  # until it has had a runner, so the new run waits that long.
   check:
     name: Check
     if: ${{ always() }}
-    needs: [select, lint, miri, rdb-data, builtin-diff-data, rt, rt-gctorture, rt-feature-builds, rt-builtin-diff, rt-debug-assertions, base-subset, build, perf-base, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
+    needs: [select, lint, miri, rdb-data, builtin-diff-data, rt, rt-gctorture, rt-feature-builds, rt-builtin-diff, rt-debug-assertions, rt-release-crate-tests, base-subset, build, perf-base, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -1548,7 +1557,7 @@ jobs:
       id-token: write
     environment:
       name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
+      url: ${{ steps.deploy.outputs.page_url || steps.deploy_retry.outputs.page_url }}
     steps:
       - run: |
           apt-get update -qq
@@ -1612,5 +1621,22 @@ jobs:
       - uses: actions/upload-pages-artifact@v5
         with:
           path: site
+      # The history record above is what must succeed; the site deploy may
+      # fail on its own: deploy-pages lists the run's artifacts once, and that
+      # listing can lag the upload a moment before (2026-11-21, runs
+      # 44892798651 and 44913195873: "Found 17 artifact(s)", without
+      # `github-pages`). So it gets one retry after 30 s, and a warning, not a
+      # red main, if both fail: the next main run deploys the same history.
+      # (The retry uploads nothing: deploy-pages takes the one `github-pages`
+      # of the run, and fails, never picks, when it sees two.)
       - id: deploy
         uses: actions/deploy-pages@v5
+        continue-on-error: true
+      - if: steps.deploy.outcome == 'failure'
+        run: sleep 30
+      - id: deploy_retry
+        if: steps.deploy.outcome == 'failure'
+        uses: actions/deploy-pages@v5
+        continue-on-error: true
+      - if: steps.deploy.outcome == 'failure' && steps.deploy_retry.outcome == 'failure'
+        run: echo "::warning::the Pages deploy failed twice (the history record is written; the next main run deploys the site)"
