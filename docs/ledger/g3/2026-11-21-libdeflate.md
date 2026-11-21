@@ -73,7 +73,7 @@ base-database tree written by main's binary:
   11.95M.
 - **Anonymous memory after the boot:** −28 KiB under rdb, +36 KiB under the
   interim boot. Peak RSS and file-backed memory move with code layout. The
-  binary is about 250 KB larger.
+  binary is 173 KB larger.
 - **perf-rt (`scripts/rt-bars.sh`, median of two runs each):** every row is
   within ±0.01% instructions under both boots.
 - **CPU variants under valgrind:** callgrind runs `deflate_decompress_bmi2`
