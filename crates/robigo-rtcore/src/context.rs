@@ -1536,14 +1536,17 @@ impl Cx {
                     }
                     Err(e) => match cx.arrive(c, e) {
                         Arrival::Pass(e) => return Err(e),
-                        Arrival::Landed(e) if cx.exit_info(&e).kind == crate::ExitKind::Exec => {
-                            match cx.land_exec(c, e, eval, slot) {
-                                Ok(exec) => return Err(exec),
-                                Err(e) => res = Err(e),
-                            }
-                        }
                         Arrival::Landed(e) => {
                             let rec = cx.take_exit(e);
+                            if rec.info.kind == crate::ExitKind::Exec {
+                                match cx.land_exec(c, rec.value, eval, slot) {
+                                    Ok(exec) => return Err(exec),
+                                    Err(e) => {
+                                        res = Err(e);
+                                        continue;
+                                    }
+                                }
+                            }
                             c.set_return_value(rec.value);
                             res = Ok(());
                         }
@@ -1576,8 +1579,9 @@ impl Cx {
         }
     }
 
-    /// An [`crate::ExitKind::Exec`] exit `e` that landed in function record
-    /// `c`: the record ends as for a `return` of the continuation (its
+    /// An [`crate::ExitKind::Exec`] exit that landed in function record `c`
+    /// (taken: `value`, its continuation): the record ends as for a `return` of the
+    /// continuation (its
     /// `returnValue`; `do_tailcall` jumps only when the record has no
     /// `on.exit` code), and the exit is pending again, its continuation
     /// rooted in `slot`, the call's out slot, with no target: the record's
@@ -1585,9 +1589,8 @@ impl Cx {
     /// the record's end, which the record's loop handles as any other.
     #[cold]
     #[inline(never)]
-    fn land_exec(&mut self, c: Rec, e: RError, eval: &mut OnExitEval<'_>, slot: Root<'_>) -> RResult<RError> {
-        let rec = self.take_exit(e);
-        c.set_return_value(rec.value);
+    fn land_exec(&mut self, c: Rec, value: Sexp, eval: &mut OnExitEval<'_>, slot: Root<'_>) -> RResult<RError> {
+        c.set_return_value(value);
         self.ctxs().srcref.set(c.srcref());
         self.end_function(c, eval)?;
         let v = c.return_value();

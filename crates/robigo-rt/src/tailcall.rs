@@ -93,7 +93,9 @@ pub fn do_tailcall<const TAILCALL: bool>(
         let missing = cx.missing_arg().sexp();
         let (expr, env) = if !TAILCALL {
             // exec
-            let formals = [prims::state(cx).syms.expr, prims::state(cx).syms.envir];
+            // (installed here: a rare path, kept out of the shared symbols)
+            let formals = [cx.install_rooted(s, b"expr")?, cx.install_rooted(s, b"envir")?];
+            let formals = formals.map(|f| f.bind(cx).sexp());
             let matched = crate::args::match_builtin_args(cx, s, call, &formals)?;
             // evalListKeepMissing(args, rho) of the matched list (expr,
             // envir): each value linked until both are evaluated, `...`

@@ -458,9 +458,6 @@ pub struct Syms {
     pub browser: Sexp,
     /// `{`
     pub brace: Sexp,
-    /// `Exec`'s formals, `expr` and `envir` (eval.c's `do_tailcall`)
-    pub expr: Sexp,
-    pub envir: Sexp,
     pub dot_internal: Sexp,
     pub standard_generic: Sexp,
     pub srcref: Sexp,
@@ -502,8 +499,6 @@ impl Syms {
             quote: sym(b"quote"),
             browser: sym(b"browser"),
             brace: sym(b"{"),
-            expr: sym(b"expr"),
-            envir: sym(b"envir"),
             dot_internal: sym(b".Internal"),
             standard_generic: sym(b"standardGeneric"),
             srcref: sym(b"srcref"),

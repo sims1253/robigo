@@ -1588,18 +1588,9 @@ fn apply_reserved<'s, const GENERIC: bool, const EXEC: bool>(
     let unboxed = match r {
         Ok(u) => u,
         Err(e) => {
-            // R: eval.c:applyClosure, handle_exec_continuation: an Exec or
-            // Tailcall that landed in this call's record (out of line)
-            if cx.exit_info(&e).kind == robigo_rtcore::ExitKind::Exec {
-                let unpromise = match (a.unpromise, src, arglist) {
-                    (true, Source::List, Some(l)) => Some(l),
-                    _ => None,
-                };
-                return crate::tailcall::landed::<EXEC>(cx, e, newrho, unpromise, res);
-            }
-            // a jump past the call: GNU R's cleanup does not run
-            cx.end_call(newrho, false);
-            return Err(e);
+            // (the list `unpromiseArgs` would release, for an Exec landing)
+            let l = if a.unpromise && matches!(src, Source::List) { arglist } else { None };
+            return call_left::<EXEC>(cx, e, newrho, l, res);
         }
     };
     // R: eval.c:applyClosure_core (ADJUST_ENVIR_REFCNTS)
@@ -1628,6 +1619,29 @@ fn apply_reserved<'s, const GENERIC: bool, const EXEC: bool>(
     // D5: the frame to the pool, if nothing can reach it (env::recycle)
     cx.recycle_frame(newrho, if unboxed { None } else { Some(res) });
     Ok(())
+}
+
+/// The exit `e` left the call's record: an `Exec` or `Tailcall` that
+/// landed there (`applyClosure`'s `handle_exec_continuation`, run by
+/// [`crate::tailcall::landed`]), or a jump past the call, for which GNU R's
+/// cleanup does not run. Out of line: the error arm of every instance of
+/// [`apply_reserved`] is this one call.
+// R: eval.c:applyClosure, handle_exec_continuation
+#[cold]
+#[inline(never)]
+fn call_left<const EXEC: bool>(
+    cx: &mut Cx,
+    e: RError,
+    newrho: Root<'_>,
+    unpromise: Option<Root<'_>>,
+    res: Root<'_>,
+) -> RResult<()> {
+    if cx.exit_info(&e).kind == robigo_rtcore::ExitKind::Exec {
+        return crate::tailcall::landed::<EXEC>(cx, e, newrho, unpromise, res);
+    }
+    // a jump past the call: GNU R's cleanup does not run
+    cx.end_call(newrho, false);
+    Err(e)
 }
 
 /// Drops the [`FillData`] in a reserved slot's fill area on every path,

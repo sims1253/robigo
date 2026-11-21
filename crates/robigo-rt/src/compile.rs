@@ -692,9 +692,6 @@ struct Comp<'g> {
     ins: Vec<Ins>,
     consts: Vec<Sexp>,
     pool: PosMap<usize, u16>,
-    /// The pool indices of the value constants (`LdConst`'s, `LdScalar`'s)
-    /// under `Bc`, in order ([`Comp::kv`]).
-    values: Vec<u16>,
     next: Reg,
     max: Reg,
     max_depth: u16,
@@ -785,7 +782,6 @@ impl<'g> Comp<'g> {
             ins: Vec::new(),
             consts: Vec::new(),
             pool: PosMap::default(),
-            values: Vec::new(),
             next: R_FIRST,
             max: R_FIRST,
             max_depth: 0,
@@ -888,30 +884,27 @@ impl<'g> Comp<'g> {
         i
     }
 
-    /// The pool index of the value constant `x`. Under `Bc`, the first
-    /// value constant `identical()` to it, as `putconst` shares one
-    /// constant per value (`R_compute_identical(x, y, 16)`: 0 and -0 are
-    /// one).
+    /// The pool index of the constant `x` cmp.R `putconst`s (a value, a
+    /// call): under `Bc`, the first constant before it that is `x` or
+    /// `identical()` to it, whichever path put that one in (do_putconst
+    /// compares with every constant, `x == y || R_compute_identical(x, y,
+    /// 16)`: 0 and -0 are one); else a new one.
     // R: cmp.R:make.codeBuf putconst; eval.c:do_putconst
     fn kv(&mut self, x: Sexp) -> u16 {
         if self.profile != Profile::Bc {
             return self.k(x);
         }
-        // (an object `k` put in the pool first is shared by pointer there;
-        // here, as do_putconst compares with every constant before it, the
-        // first `identical()` value constant is the one used, and the object
-        // is one itself for those after it)
-        let at = self.pool.get(&(x.as_ptr() as usize)).copied();
         let cx = self.cx;
         // SAFETY: live constants: the source's, or folds rooted by the
         // compile's round.
         let xr = unsafe { robigo_rtcore::Ref::from_sexp(x, cx) };
-        for &i in &self.values {
-            if Some(i) == at {
+        for (j, &y) in self.consts.iter().enumerate() {
+            let i = u16::try_from(FIRST_CONST + j).expect("robigo: too many constants in one code object");
+            if y == x {
                 return i;
             }
             // SAFETY: as above.
-            let yr = unsafe { robigo_rtcore::Ref::from_sexp(self.consts[usize::from(i) - FIRST_CONST], cx) };
+            let yr = unsafe { robigo_rtcore::Ref::from_sexp(y, cx) };
             if yr.sexptype() == xr.sexptype()
                 && matches!(
                     robigo_rtbuiltins::identical::compute_identical(
@@ -926,9 +919,7 @@ impl<'g> Comp<'g> {
                 return i;
             }
         }
-        let i = at.unwrap_or_else(|| self.k(x));
-        self.values.push(i);
-        i
+        self.k(x)
     }
 
     fn emit(&mut self, i: Ins) -> usize {
