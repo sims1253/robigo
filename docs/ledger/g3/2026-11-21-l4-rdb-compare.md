@@ -10,11 +10,12 @@
     too), decompressed as `lazyLoadDBfetch` does (R_decompress1/2/3;
     compression 3's raw LZMA2 is refused), byte for byte;
   - each differing record unserialized on both sides (a reference to
-    another record kept as a marker no value can equal) and classed, all
-    with identical()'s num.eq = FALSE: the same value,
+    another record kept as one object per key, which no value can equal)
+    and classed, all with identical()'s num.eq = FALSE: the same value,
     byte-code only, build paths only (our source and install trees mapped
     to GNU R's in-place build tree), closures' environments only
-    (formals, body and attributes, kept apart from lists), different, or
+    (each closure as its formals, body, attributes and byte code, behind a
+    mark no value can hold; containers keep their types), different, or
     unreadable by GNU R (counted by the reason). Missing or extra keys and
     a different compression count as differences.
 - Checked: GNU R's own library against itself is all the same bytes (tools
@@ -24,8 +25,8 @@
   iconv with an INTERIM sub = "byte"):
   - **tools/sysdata**: 3 of 3 records the same bytes.
   - **tools/tools**: the maps agree (915 variables, 39 references).
-    Records: 94 the same bytes, 853 the same value, 2 build paths only,
-    4 closures' environments only, 1 different. The 853, and the
+    Records: 94 the same bytes, 857 the same value, 2 build paths only,
+    1 different. The 857, and the
     remaining one (`env::1`, the namespace's info), come from one
     difference: the namespace reference holds `c("tools", <R.version's 13
     strings>)` where GNU R's holds `c("tools", "4.6.2")`. tools' mkdesc

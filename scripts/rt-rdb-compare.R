@@ -19,17 +19,18 @@
 #    to another record kept as its key, so a record is compared by itself)
 #    and put in a class:
 #    every comparison is identical() with num.eq = FALSE (0 and -0, the
-#    NaN payloads apart), and a reference is a marker no value can equal;
+#    NaN payloads apart), and a reference is one object per key, which no
+#    value can equal;
 #    - "value": identical(), byte code and srcrefs included (the bytes
 #      are not: the writer's flags, order or reference numbering differ);
 #    - "bytecode": identical() but for byte code (or srcrefs): one side's
 #      closures are compiled and the other's are not, or differently;
 #    - "path": identical(), byte code and srcrefs included, once each
 #      --map's FROM (a directory of our build: its source or install tree)
-#      is replaced by its TO (GNU R's) in our strings;
-#    - "env": identical() once every closure is taken as its formals, body
-#      and attributes, kept apart from a list by a class: closures'
-#      environments aside;
+#      is replaced by its TO (GNU R's) in our strings, closures' bodies and
+#      attributes included (norm);
+#    - "env": identical(), byte code and srcrefs included, once every
+#      closure is taken without its environment (norm);
 #    - "differ": anything else;
 #    - "unreadable": GNU R cannot unserialize ours (a promise as the
 #      record's value, an internal GNU R does not have), counted by the
@@ -95,14 +96,6 @@ entries <- function(map) {
 same <- function(x, y, ...) identical(x, y, num.eq = FALSE, ...)
 strict <- function(x, y) same(x, y, ignore.bytecode = FALSE, ignore.srcref = FALSE)
 
-# every closure as its formals, body and attributes, apart from a list
-nzt <- function(x) {
-    if (is.function(x) && !is.primitive(x))
-        structure(list(formals(x), body(x), lapply(attributes(x), nzt)), class = "rt-rdb-closure")
-    else if (is.list(x)) { a <- attributes(x); r <- lapply(x, nzt); attributes(r) <- a; r }
-    else x
-}
-
 # a database: its map, and a reader of its records by key
 open_db <- function(lib, db) {
     parts <- strsplit(db, "/", fixed = TRUE)[[1L]]
@@ -117,26 +110,53 @@ open_db <- function(lib, db) {
     list(map = map, rec = rec, close = function() close(con))
 }
 
-# our value with our build's directories replaced by GNU R's (strings, in
-# lists and attributes)
-mapped <- function(x) {
+# A value for comparison: every closure as a list headed by `closure_mark`
+# (an environment no value can hold) with its formals, body, attributes,
+# environment (unless `env` is FALSE) and byte code; containers keep their
+# type (list, pairlist, expression, call) and attributes; with `map`, our
+# build's directories replaced by GNU R's in every string, attributes
+# included. With map = FALSE and env = TRUE it loses nothing identical()
+# compares (identical.c: a closure's formals, body, attributes, environment
+# by pointer; byte code by its code, expression and constants).
+closure_mark <- new.env()
+# the empty argument (in a call like x[, 1], a formal with no default)
+empty <- unname(alist(x = ))
+# each element of a list, pairlist or call through f, the empty argument
+# kept as it is
+elements <- function(xs, f) {
+    r <- as.list(xs)
+    for (i in seq_along(r)) if (!identical(unname(r[i]), empty)) r[i] <- list(f(r[[i]]))
+    r
+}
+norm <- function(x, map = FALSE, env = TRUE) {
+    n <- function(y) norm(y, map, env)
+    with_attrs <- function(r, a) { if (!is.null(a)) attributes(r) <- lapply(a, n); r }
+    if (is.function(x) && !is.primitive(x)) {
+        bc <- .Internal(bodyCode(x))
+        return(list(closure_mark, n(formals(x)), n(body(x)), lapply(attributes(x), n),
+                    if (env) environment(x), if (typeof(bc) == "bytecode") bc))
+    }
+    a <- attributes(x)
     if (is.character(x)) {
-        a <- attributes(x)
-        for (m in maps) x <- gsub(m[[1L]], m[[2L]], x, fixed = TRUE)
-        attributes(x) <- a
-        x
-    } else if (is.list(x)) {
-        a <- attributes(x)
-        x <- lapply(x, mapped)
-        attributes(x) <- a
-        x
-    } else x
+        if (map) for (m in maps) x <- gsub(m[[1L]], m[[2L]], x, fixed = TRUE)
+        return(with_attrs(x, a))
+    }
+    if (is.call(x)) return(with_attrs(as.call(elements(x, n)), a))
+    if (is.pairlist(x) && !is.null(x)) return(with_attrs(as.pairlist(elements(x, n)), a))
+    if (is.expression(x)) return(with_attrs(as.expression(elements(x, n)), a))
+    if (is.list(x)) return(with_attrs(elements(x, n), a))
+    if (!is.null(a) && !is.environment(x)) return(with_attrs(x, a))
+    x
 }
 
-# a reference to another record: its key, marked with this run's token (a
-# value cannot hold it by chance)
-token <- paste(sample(c(0:9, letters[1:6]), 32L, TRUE), collapse = "")
-ref <- function(key) structure(key, class = "rt-rdb-reference", token = token)
+# a reference to another record: one environment per key, shared by both
+# sides' readers (identical() compares environments by pointer: the same
+# key is the same object, and no value read from a record can be it)
+refs <- new.env()
+ref <- function(key) {
+    if (is.null(refs[[key]])) assign(key, new.env(), envir = refs)
+    refs[[key]]
+}
 
 # a record's object, its references to others kept as their keys; an
 # unreadable record's reason instead (a character with class "unreadable")
@@ -190,8 +210,8 @@ for (db in dbs) {
                 bc <- function(f) is.function(f) && !is.primitive(f) && typeof(.Internal(bodyCode(f))) == "bytecode"
                 compiled <- compiled + c(bc(va), bc(vb))
                 "bytecode"
-            } else if (length(maps) && strict(mapped(va), vb)) "path"
-            else if (same(nzt(va), nzt(vb))) "env" else "differ"
+            } else if (length(maps) && same(norm(va, map = TRUE), norm(vb))) "path"
+            else if (same(norm(va, env = FALSE), norm(vb, env = FALSE))) "env" else "differ"
             classes[[cls]] <- classes[[cls]] + 1L
             if (cls == "differ" && shown < 20L) {
                 shown <- shown + 1L
