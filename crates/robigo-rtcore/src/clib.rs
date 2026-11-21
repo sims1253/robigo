@@ -704,6 +704,118 @@ pub fn env_locale() -> EnvLocale {
     EnvLocale { codeset, collate_c, failed, names }
 }
 
+/// A conversion descriptor of the C library's `iconv(3)` (glibc's, which
+/// GNU R's `Riconv_open` and `Riconv` call on Linux). Closed when dropped.
+/// Not `Send`: a descriptor carries conversion state.
+pub struct Iconv {
+    cd: libc::iconv_t,
+    /// The `LC_CTYPE` the conversions run in (the isolate's: `C.UTF-8` or
+    /// `C`), which glibc's transliteration (`//TRANSLIT`) reads: a locale
+    /// object made once and never freed.
+    loc: libc::locale_t,
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+/// Why [`Iconv::open`] made no descriptor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IconvOpenError {
+    /// `iconv_open` failed (any errno: GNU R's `Riconv_open` callers report
+    /// every failure as an unsupported conversion), or a name holds a NUL
+    /// (which no R string does).
+    Unsupported,
+    /// The C library has no locale object for the conversions' `LC_CTYPE`
+    /// (robigo's own failure: GNU R converts in its process's locale).
+    NoLocale,
+}
+
+/// Why a call of [`Iconv::iconv`] stopped before the end of its input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IconvStop {
+    /// `E2BIG`: no room left in the output.
+    TooBig,
+    /// `EILSEQ`: an invalid sequence, or one the target cannot represent.
+    Illegal,
+    /// `EINVAL`: an incomplete sequence at the end of the input.
+    Incomplete,
+}
+
+impl Iconv {
+    /// `iconv_open(to, from)` with the calling thread in the `LC_CTYPE`
+    /// `utf8` names (`C.UTF-8`, else `C`), as GNU R's process is in its
+    /// locale: None when the C library has no such conversion. (It may load
+    /// a gconv module, whose search reads GCONV_PATH: under the
+    /// environment's shared lock.)
+    pub fn open(to: &[u8], from: &[u8], utf8: bool) -> Result<Iconv, IconvOpenError> {
+        use IconvOpenError::*;
+        let cstr = |b: &[u8]| std::ffi::CString::new(b).map_err(|_| Unsupported);
+        let (t, f) = (cstr(to)?, cstr(from)?);
+        // (the locale first: its one-time newlocale takes the environment's
+        // lock itself, which does not nest)
+        let loc = if utf8 { c_utf8() } else { c_locale() }.ok_or(NoLocale)?;
+        let _loc = ThreadLocale::switch(loc).ok_or(NoLocale)?;
+        let _env = env_read();
+        // SAFETY: two NUL-terminated strings; iconv_open returns a new
+        // descriptor or (iconv_t)-1.
+        let cd = unsafe { libc::iconv_open(t.as_ptr(), f.as_ptr()) };
+        if cd as isize == -1 {
+            return Err(Unsupported);
+        }
+        Ok(Iconv { cd, loc, _not_send: std::marker::PhantomData })
+    }
+
+    /// `iconv(cd, &inbuf, &inb, &outbuf, &outb)` with the input `input`
+    /// (None: NULL, the reset to the initial state, whose shift sequence
+    /// it writes) and the output `out` (its length is `outb`): the bytes
+    /// read and written, and why it stopped when it returned -1.
+    pub fn iconv(&mut self, input: Option<&[u8]>, out: &mut [u8]) -> (usize, usize, Option<IconvStop>) {
+        // (uselocale fails only for an invalid locale object, and `open`
+        // switched to this one)
+        let _loc = ThreadLocale::switch(self.loc).expect("robigo: uselocale refused a locale it took before");
+        let mut op = out.as_mut_ptr().cast::<libc::c_char>();
+        let mut ol = out.len();
+        let (r, read) = match input {
+            None => {
+                // SAFETY: a live descriptor; a NULL input asks for the
+                // reset; the output is `ol` writable bytes from `op`.
+                let r = unsafe { libc::iconv(self.cd, std::ptr::null_mut(), std::ptr::null_mut(), &mut op, &mut ol) };
+                (r, 0)
+            }
+            Some(inp) => {
+                let mut ip = inp.as_ptr().cast::<libc::c_char>().cast_mut();
+                let mut il = inp.len();
+                // SAFETY: a live descriptor; the input is `il` readable
+                // bytes from `ip` (iconv does not write through it), the
+                // output `ol` writable bytes from `op`.
+                let r = unsafe { libc::iconv(self.cd, &mut ip, &mut il, &mut op, &mut ol) };
+                (r, inp.len() - il)
+            }
+        };
+        let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        let written = out.len() - ol;
+        if r != usize::MAX {
+            return (read, written, None);
+        }
+        let stop = match errno {
+            libc::E2BIG => IconvStop::TooBig,
+            libc::EILSEQ => IconvStop::Illegal,
+            libc::EINVAL => IconvStop::Incomplete,
+            // (iconv(3) documents only the three above)
+            _ => {
+                debug_assert!(false, "robigo: iconv() failed with errno {errno}");
+                IconvStop::Incomplete
+            }
+        };
+        (read, written, Some(stop))
+    }
+}
+
+impl Drop for Iconv {
+    fn drop(&mut self) {
+        // SAFETY: a descriptor iconv_open made, closed once.
+        unsafe { libc::iconv_close(self.cd) };
+    }
+}
+
 unsafe extern "C" {
     fn bindtextdomain(domainname: *const libc::c_char, dirname: *const libc::c_char) -> *mut libc::c_char;
 }
