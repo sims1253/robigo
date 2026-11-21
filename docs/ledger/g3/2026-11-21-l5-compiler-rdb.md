@@ -174,9 +174,9 @@ Contains #933's head (bef8b1644) and #925's (6d33c8b93, `Sys.time`,
 
   The database tree (`scripts/rt-home-db.sh`, 23 s): base.rdb 1186 + 3,
   compiler.rdb 296 + 1, the same classes.
-- **At the pushed head** (main dd648bb78 merged: #941's shards, C1's #943,
-  X's #951):
-  - conformance under `ROBIGO_RT_BOOT=rdb`: 684/686, no ratcheted case
+- **At the pushed head** (main 3062db07b merged: #941's shards, C1's #943,
+  X's #951, #952's step order, #955, #949, #956):
+  - conformance under `ROBIGO_RT_BOOT=rdb`: 687/689, no ratcheted case
     regressed against M1's loader (the seven of before are fixed by #951;
     the two failures, alloc/link-lifetime and jit/serialize-write-shadow,
     fail the same under M1's loader and are not ratcheted);
@@ -184,41 +184,51 @@ Contains #933's head (bef8b1644) and #925's (6d33c8b93, `Sys.time`,
 
     | row | M1 loader | rdb boot | change |
     |---|---:|---:|---:|
-    | binarytrees | 3,501,349.2 | 3,499,751.2 | -0.05% |
-    | d0-attr | 1,975.3 | 1,975.3 | +0.00% |
-    | d0-attributes | 2,245.0 | 2,244.9 | -0.00% |
-    | d0-names | 4,748.4 | 4,748.3 | -0.00% |
-    | d0-paste | 13,588.1 | 13,532.5 | -0.41% |
-    | d0-paste0 | 12,564.4 | 12,508.0 | -0.45% |
-    | d0-unlist | 11,066.5 | 11,083.5 | +0.15% |
-    | defaults | 1,982.2 | 1,982.0 | -0.01% |
-    | e7-match | 91,841.4 | 91,935.7 | +0.10% |
-    | e7-paste | 95,420.6 | 95,282.7 | -0.14% |
-    | e7-unique | 117,890.4 | 118,002.0 | +0.09% |
-    | env-fn | 1,935.4 | 1,935.4 | +0.00% |
-    | fib | 10,712,322.3 | 10,711,886.3 | -0.00% |
+    | binarytrees | 3,492,964.9 | 3,491,466.4 | -0.04% |
+    | d0-attr | 1,975.5 | 1,975.2 | -0.02% |
+    | d0-attributes | 2,244.7 | 2,244.9 | +0.01% |
+    | d0-names | 4,740.2 | 4,740.2 | -0.00% |
+    | d0-paste | 13,572.1 | 13,516.4 | -0.41% |
+    | d0-paste0 | 12,548.0 | 12,491.9 | -0.45% |
+    | d0-unlist | 11,050.6 | 11,067.7 | +0.15% |
+    | defaults | 1,981.8 | 1,981.7 | -0.01% |
+    | e7-match | 91,845.7 | 91,893.8 | +0.05% |
+    | e7-paste | 95,408.7 | 95,276.3 | -0.14% |
+    | e7-unique | 117,861.3 | 117,993.1 | +0.11% |
+    | env-fn | 1,935.7 | 1,935.4 | -0.01% |
+    | fib | 10,710,263.1 | 10,709,758.6 | -0.00% |
     | grow-dbl | 5,528.3 | 5,528.2 | -0.00% |
-    | guard-dollar-assign | 3,854.8 | 3,855.1 | +0.01% |
-    | guard-dots | 8,568.2 | 8,562.3 | -0.07% |
-    | guard-repeat | 8,257.9 | 8,257.9 | +0.00% |
-    | guard-subassign-dbl | 4,450.4 | 4,450.2 | -0.00% |
-    | guard-subset-dbl | 1,732.3 | 1,732.2 | -0.01% |
-    | guard-subset-matrix | 3,187.7 | 3,188.0 | +0.01% |
-    | guard-vec-arith | 88,192.3 | 89,296.8 | +1.25% |
-    | guard-vec-sum | 19,874.1 | 19,873.8 | -0.00% |
-    | guard-while | 8,126.0 | 8,125.9 | -0.00% |
-    | named | 1,839.7 | 1,840.0 | +0.02% |
-    | plain | 1,898.0 | 1,897.7 | -0.02% |
-    | s3 | 16,316.7 | 16,379.4 | +0.38% |
-    | scalars | 6,030.9 | 6,031.6 | +0.01% |
-    | superassign | 4,591.3 | 4,578.9 | -0.27% |
+    | guard-dollar-assign | 3,854.9 | 3,854.9 | -0.00% |
+    | guard-dots | 8,541.1 | 8,535.3 | -0.07% |
+    | guard-repeat | 8,257.6 | 8,257.8 | +0.00% |
+    | guard-subassign-dbl | 4,450.0 | 4,450.2 | +0.01% |
+    | guard-subset-dbl | 1,732.5 | 1,732.4 | -0.01% |
+    | guard-subset-matrix | 3,188.1 | 3,188.0 | -0.00% |
+    | guard-vec-arith | 88,186.0 | 89,295.4 | +1.26% |
+    | guard-vec-sum | 19,874.2 | 19,873.7 | -0.00% |
+    | guard-while | 8,126.0 | 8,125.6 | -0.00% |
+    | named | 1,839.9 | 1,840.0 | +0.01% |
+    | plain | 1,898.0 | 1,898.0 | -0.00% |
+    | s3 | 16,292.1 | 16,370.3 | +0.48% |
+    | scalars | 6,031.8 | 6,031.5 | -0.00% |
+    | superassign | 4,590.4 | 4,579.0 | -0.25% |
 
     | program | M1 loader peak RSS KiB | rdb boot | change |
     |---|---:|---:|---:|
-    | benchmarks/rt/mem/churn.R | 80,192 | 86,028 | +7.3% |
-    | benchmarks/rt/mem/listgrow.R | 46,744 | 52,320 | +11.9% |
-    | benchmarks/suite/binarytrees.R | 26,456 | 28,600 | +8.1% |
+    | benchmarks/rt/mem/churn.R | 80,244 | 86,120 | +7.3% |
+    | benchmarks/rt/mem/listgrow.R | 46,492 | 52,372 | +12.6% |
+    | benchmarks/suite/binarytrees.R | 26,392 | 28,784 | +9.1% |
 
-    Above 0.5% now only `guard-vec-arith` (+1.25%), and peak RSS +7-12%
-    (the compiler loaded at start).
-
+    Above 0.5% only `guard-vec-arith` (+1.26%), and peak RSS +7-13% (the
+    compiler loaded at start).
+- **CI's first run of the head failed** in rt-home-db.sh: its binary
+  carried `robigo-rt-commit:unknown`. CI's `rt` job runs in a container
+  as root over a checkout the runner user owns; actions/checkout registers
+  safe.directory only in a temporary HOME, so build.rs's `git rev-parse
+  HEAD` was refused ("dubious ownership"). build.rs now reads the commit
+  from the checkout's git files ($GIT_DIR, else .git or the worktree it
+  names; HEAD, symbolic refs five levels deep, loose refs, packed-refs):
+  no git process, nothing a caller must set. Reproduced with CI's
+  `cargo test --release -p robigo-rtapi --test conformance --no-run` and a
+  git on PATH that refuses: the old build.rs gives CI's error, the new one
+  the commit.
