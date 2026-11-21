@@ -497,6 +497,11 @@ fn invoke_builtin(cx: &mut Cx, act: &Act, dst: Reg, args: Args<'_>, regs: (Reg, 
 /// (constants of `act`'s code, or rooted).
 // R: names.c:do_internal
 pub unsafe fn call_special_internal(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
+    // SAFETY: a live primitive (the caller's contract).
+    if unsafe { fun.typ() } == BUILTINSXP {
+        // SAFETY: the caller's contract.
+        return unsafe { internal_builtin_list(cx, act, dst, fun, call) };
+    }
     // SAFETY: a live primitive of this isolate.
     let name = unsafe { prims::def(cx, fun) }.name;
     let save = cx.pp_save(0);
@@ -504,6 +509,31 @@ pub unsafe fn call_special_internal(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp,
     cx.with_pp_excess(1, |cx| call_special_args(cx, act, dst, fun, call, true))?;
     cx.check_stack_balance(name.as_bytes(), save);
     Ok(())
+}
+
+/// `.Internal(f(...))` of a builtin internal whose arguments are evaluated
+/// at run time (`...` or an empty argument: the compiler sends it here, as
+/// [`SPECIAL_INTERNAL`](crate::ir::SPECIAL_INTERNAL) with the builtin as
+/// `fun` and the `.Internal` call as `call`): [`builtin_evallist`] of the
+/// inner call, the builtin called for it, and an empty argument reported
+/// against the `.Internal` call (do_internal's `evalList(args, env, call,
+/// 0)`).
+///
+/// # Safety
+/// `fun` is a live BUILTINSXP and `call` a live `.Internal` call whose
+/// argument is a call or a pairlist (the compiler's check), of `cx`'s
+/// isolate (constants of `act`'s code).
+// R: names.c:do_internal
+#[cold]
+#[inline(never)]
+unsafe fn internal_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
+    // SAFETY: the running activation's code object.
+    let bc = unsafe { crate::code::View::of(act.obj(crate::ir::R_CODE)) }.profile == Profile::Bc;
+    cx.scope(|cx, s| {
+        // SAFETY: constants of the rooted code.
+        let (w, funr) = unsafe { (s.root(cx, Ref::from_sexp(call, cx)), s.root(cx, Ref::from_sexp(fun, cx))) };
+        evallist_for::<true>(cx, w, funr, act.root(R_ENV), act.out(dst), bc, None)
+    })
 }
 
 /// A special of the builtin registry, primitive or `.Internal`
@@ -550,17 +580,6 @@ fn call_special_args(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp, in
 /// `fun` is a live BUILTINSXP and `call` a live call of `cx`'s isolate
 /// (constants of `act`'s code, or rooted).
 pub unsafe fn call_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp, bc: bool) -> RResult<()> {
-    // `.Internal(f(...))` of `Eval` code: the compiler's call constant is a
-    // pairlist cell, the `.Internal` call (a call) over `f(...)` (a call or
-    // a pairlist). No call R makes is a pairlist whose head is a call; `Bc`
-    // code has no cell: its VM publishes the `.Internal` call as the
-    // expression it is at.
-    // R: names.c:do_internal
-    // SAFETY: a live call of this isolate (the caller's contract).
-    if !bc && unsafe { call.typ() } == LISTSXP && unsafe { call.car().typ() } == LANGSXP {
-        // SAFETY: as above.
-        return unsafe { internal_evallist(cx, act, dst, fun, call) };
-    }
     cx.scope(|cx, s| {
         // SAFETY: constants of the rooted code (or a register's function).
         let (callr, funr) = unsafe { (s.root(cx, Ref::from_sexp(call, cx)), s.root(cx, Ref::from_sexp(fun, cx))) };
@@ -608,6 +627,22 @@ pub fn builtin_evallist(
     bc: bool,
     codes: Option<Root<'_>>,
 ) -> RResult<()> {
+    evallist_for::<false>(cx, callr, funr, rho, out, bc, codes)
+}
+
+/// [`builtin_evallist`] of the call `callr`; with `WRAPPED`, `callr` is an
+/// `.Internal` call: of its inner call (its argument), an empty argument
+/// reported against `callr`.
+#[inline(always)]
+fn evallist_for<const WRAPPED: bool>(
+    cx: &mut Cx,
+    callr: Root<'_>,
+    funr: Root<'_>,
+    rho: Root<'_>,
+    out: Out<'_>,
+    bc: bool,
+    codes: Option<Root<'_>>,
+) -> RResult<()> {
     debug_assert!(codes.is_none() || bc, "robigo: promise codes without the Bc profile's evaluation");
     let missing = cx.missing_arg().sexp();
     let dots = prims::state(cx).syms.dots;
@@ -619,8 +654,15 @@ pub fn builtin_evallist(
         // the values' links, dropped before the call, or on an early exit
         // SAFETY: `head` is a slot of this scope, which outlives the guard.
         let linked = unsafe { crate::links::Linked::list(head) };
+        // (the evaluated call: `callr`, or the `.Internal` call's argument)
+        let call = if WRAPPED {
+            // SAFETY: the rooted `.Internal` call's argument (the compiler's check).
+            s.root(cx, unsafe { Ref::from_sexp(callr.bind(cx).sexp().cdr().car(), cx) })
+        } else {
+            callr
+        };
         // SAFETY: the rest of the rooted call.
-        let el = s.root(cx, unsafe { Ref::from_sexp(callr.bind(cx).sexp().cdr(), cx) });
+        let el = s.root(cx, unsafe { Ref::from_sexp(call.bind(cx).sexp().cdr(), cx) });
         let mut n = 0;
         let mut count = 0usize;
         loop {
@@ -668,8 +710,7 @@ pub fn builtin_evallist(
                 })?;
             } else if a == missing && !bc {
                 let msg = format!("argument {n} is empty");
-                let ec = s.root(cx, empty_arg_call(cx, callr));
-                return Err(cx.error_call(Some(ec), &msg));
+                return Err(cx.error_call(Some(if WRAPPED { callr } else { call }), &msg));
             } else {
                 let t = cell.tag().sexp();
                 cx.scope(|cx, s2| {
@@ -740,13 +781,12 @@ pub fn builtin_evallist(
             }
             if found {
                 let mut k = 0;
-                let mut c = callr.bind(cx).as_cons().unwrap().cdr();
+                let mut c = call.bind(cx).as_cons().unwrap().cdr();
                 while let Some(cell) = c.as_cons() {
                     k += 1;
                     if cell.car().sexp() == missing {
                         let msg = format!("argument {k} is empty");
-                        let ec = s.root(cx, empty_arg_call(cx, callr));
-                        return Err(cx.error_call(Some(ec), &msg));
+                        return Err(cx.error_call(Some(if WRAPPED { callr } else { call }), &msg));
                     }
                     c = cell.cdr();
                 }
@@ -754,49 +794,15 @@ pub fn builtin_evallist(
         }
         // SAFETY: `count` object slots and `count` name slots of this scope.
         let args = unsafe { Args::from_raw(values, Some(names), count as u32, any_alt) };
-        invoke_builtin_root(cx, funr, callr, args, rho, out)
+        invoke_builtin_root(cx, funr, call, args, rho, out)
     })
-}
-
-/// [`call_builtin_list`] of `cell`, the `Eval` compiler's `(.Internal call
-/// . inner call)`: [`builtin_evallist`] of the inner call, the builtin
-/// called for it, with the `.Internal` call published as the expression
-/// evaluated (which `Eval` code otherwise leaves unread: it reports no
-/// byte-code expression) for [`empty_arg_call`], the previous one put back.
-///
-/// # Safety
-/// As for [`call_builtin_list`]; `cell` is such a cell.
-#[cold]
-#[inline(never)]
-unsafe fn internal_evallist(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, cell: Sexp) -> RResult<()> {
-    let saved = cx.bc_expression().sexp();
-    let r = cx.scope(|cx, s| {
-        // SAFETY: the cell's parts and the builtin: constants of the rooted code.
-        let (wrapper, inner, funr) =
-            unsafe { (cell.car(), s.root(cx, Ref::from_sexp(cell.cdr(), cx)), s.root(cx, Ref::from_sexp(fun, cx))) };
-        // SAFETY: a constant of the running code.
-        unsafe { cx.set_bc_expression(wrapper) };
-        builtin_evallist(cx, inner, funr, act.root(R_ENV), act.out(dst), false, None)
-    });
-    // SAFETY: the expression published before, a live constant of its code.
-    unsafe { cx.set_bc_expression(saved) };
-    r
-}
-
-/// The call "argument N is empty" names for `callr`: the `.Internal` call
-/// published as the expression evaluated when `callr` is its inner call
-/// (do_internal's `evalList(args, env, call, 0)`), else `callr`.
-#[cold]
-#[inline(never)]
-fn empty_arg_call<'g>(cx: &'g Cx, callr: Root<'_>) -> Ref<'g> {
-    let e = cx.bc_expression();
-    let wraps = e.sexptype() == LANGSXP
-        && e.as_cons().and_then(|c| c.cdr().as_cons()).is_some_and(|a| a.car().sexp() == callr.bind(cx).sexp());
-    if wraps { e } else { callr.bind(cx) }
 }
 
 /// Call the builtin `fun` with `args` (rooted) for `call`, the value into
 /// `out`, `R_Visible` as `PRIMPRINT` says; a safepoint on return.
+// (inlined into both instantiations of `evallist_for`, as into its one
+// caller on main: an outlined copy costs every list-path builtin call)
+#[inline(always)]
 fn invoke_builtin_root(
     cx: &mut Cx,
     fun: Root<'_>,

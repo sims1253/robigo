@@ -2937,15 +2937,16 @@ impl<'g> Comp<'g> {
                         // builtin's (evalList), for the inner call
                         self.builtin_args_call(Op::Internal, internal, inner, inner.cdr(), dst, d, tail)?;
                         let at = self.ins.len() - 1;
-                        if self.bc.is_none() && self.ins[at].op == Op::Internal && self.ins[at].c == u16::MAX {
-                            // evaluated at run time by `Eval` code, whose VM
-                            // publishes no expression: the call constant is
-                            // a pairlist cell, the `.Internal` call (which
-                            // evalList's errors name) over the inner call
-                            // (call::builtin_evallist; no call R makes is a
-                            // pairlist). `g` holds the `.Internal` call too.
-                            let cell = self.cx.alloc_node_raw(LISTSXP, e, inner, self.nil())?;
-                            self.ins[at].e = self.k(cell);
+                        if self.ins[at].op == Op::Internal && self.ins[at].c == u16::MAX {
+                            // evaluated at run time (`...` or an empty
+                            // argument): through call_special_internal, over
+                            // the `.Internal` call itself, which evalList's
+                            // errors name (do_internal's `evalList(args, env,
+                            // call, 0)`); the builtin `f` tells it from a
+                            // special. (Its protect weight was taken when it
+                            // was emitted, as a builtin internal's.)
+                            self.ins[at].c = SPECIAL_INTERNAL;
+                            self.ins[at].e = self.k(e);
                         }
                     }
                     if !fn_special {

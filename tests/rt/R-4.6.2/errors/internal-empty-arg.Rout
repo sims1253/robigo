@@ -141,6 +141,81 @@ ww("10", "x")
 ww("10", "x")
 [1] 10 NA
 [[1]]
+.Internal(paste0(list(hc()), , FALSE))
+
+[[2]]
+.Internal(paste0(list(...), , FALSE))
+
+[[3]]
+.Internal(paste0(list(kc()), , FALSE))
+
+[[4]]
+.Internal(paste0(length(xx), , FALSE))
+
+[[5]]
+.Internal(paste0((function() length(xx))(), , FALSE))
+
+[[6]]
+.Internal(paste0(sum(...), , FALSE))
+
+[[7]]
+.Internal(paste0(tryCatch(stop("u"), error = function(e) 1), 
+    , FALSE))
+
+[[8]]
+pd(hc(), )
+
+[[1]]
+.Internal(paste0(list(hc()), , FALSE))
+
+[[2]]
+.Internal(paste0(list(...), , FALSE))
+
+[[3]]
+.Internal(paste0(list(kc()), , FALSE))
+
+[[4]]
+.Internal(paste0(length(xx), , FALSE))
+
+[[5]]
+.Internal(paste0((function() length(xx))(), , FALSE))
+
+[[6]]
+.Internal(paste0(sum(...), , FALSE))
+
+[[7]]
+.Internal(paste0(tryCatch(stop("u"), error = function(e) 1), 
+    , FALSE))
+
+[[8]]
+pd(hc(), )
+
+[[1]]
+.Internal(paste0(list(hc()), , FALSE))
+
+[[2]]
+.Internal(paste0(list(...), , FALSE))
+
+[[3]]
+.Internal(paste0(list(kc()), , FALSE))
+
+[[4]]
+.Internal(paste0(length(xx), , FALSE))
+
+[[5]]
+.Internal(paste0((function() length(xx))(), , FALSE))
+
+[[6]]
+.Internal(paste0(sum(...), , FALSE))
+
+[[7]]
+.Internal(paste0(tryCatch(stop("u"), error = function(e) 1), 
+    , FALSE))
+
+[[8]]
+pd(hc(), )
+
+[[1]]
 [[1]]$call
 .Internal(paste0(list(side("j")), , FALSE))
 
@@ -209,4 +284,22 @@ a0(, FALSE)
 
 [[5]]
 [1] "a"
+
+[[1]]
+.Internal(paste0(list(hc()), , FALSE))
+
+[[2]]
+.Internal(paste0(sum(...), , FALSE))
+
+[[3]]
+pd(hc(), )
+
+[[1]]
+.Internal(paste0(list(hc()), , FALSE))
+
+[[2]]
+.Internal(paste0(sum(...), , FALSE))
+
+[[3]]
+pd(hc(), )
 

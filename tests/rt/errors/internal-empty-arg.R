@@ -50,6 +50,25 @@ mm <- function(x, ...) list(sys.call(), match.call(), .Internal(paste0(list(...)
 for (i in 1:2) print(mm(1, "c", "d"))
 ww <- function(...) .Internal(as.vector(c(...), "integer"))
 for (i in 1:2) print(withCallingHandlers(ww("10", "x"), warning = function(w) { print(conditionCall(w)); invokeRestart("muffleWarning") }))
+# an earlier argument that runs compiled code (a compiled closure, a
+# promise forced through `...`, a closure that itself calls .Internal, a
+# builtin evaluated directly, a caught error) does not change the call
+# reported; an empty argument through `...` is the closure's ("argument is
+# missing"), as GNU R's evalList forces the dots element
+hc <- function() length(1:3)
+for (i in 1:2) hc()
+kc <- function() .Internal(paste0(list("z"), NULL, FALSE))
+xx <- 1:3
+p1 <- function() .Internal(paste0(list(hc()), , FALSE))
+p2 <- function(...) .Internal(paste0(list(...), , FALSE))
+p3 <- function() .Internal(paste0(list(kc()), , FALSE))
+p4 <- function() .Internal(paste0(length(xx), , FALSE))
+p5 <- function() .Internal(paste0((function() length(xx))(), , FALSE))
+p6 <- function(...) .Internal(paste0(sum(...), , FALSE))
+p7 <- function() .Internal(paste0(tryCatch(stop("u"), error = function(e) 1), , FALSE))
+pd <- function(...) .Internal(sprintf("%d %d", ...))
+for (i in 1:3) print(lapply(list(quote(p1()), quote(p2(hc())), quote(p3()), quote(p4()), quote(p5()),
+    quote(p6(1, 2)), quote(p7()), quote(pd(hc(), ))), function(e) conditionCall(tryCatch(eval(e), error = identity))))
 # the same with the JIT off (closures evaluated as they are): a literal
 # empty argument, one through `...`, an alias
 invisible(.Internal(enableJIT(0L)))
@@ -59,3 +78,7 @@ h0 <- function(...) .Internal(paste0(list("a"), ...))
 a0 <- function(...) ii(paste0(list("a"), ...))
 for (i in 1:2) print(list(tryCatch(f0(), error = cc), tryCatch(g0("k"), error = cc),
     tryCatch(h0(, FALSE), error = cc), tryCatch(a0(, FALSE), error = cc), h0(NULL, FALSE)))
+p0 <- function() .Internal(paste0(list(hc()), , FALSE))
+q0 <- function(...) .Internal(paste0(sum(...), , FALSE))
+for (i in 1:2) print(lapply(list(quote(p0()), quote(q0(1, 2)), quote(pd(hc(), ))),
+    function(e) conditionCall(tryCatch(eval(e), error = identity))))
