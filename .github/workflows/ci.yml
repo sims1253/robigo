@@ -12,10 +12,10 @@ on:
 # Main's push runs share one group, `ci-main`. Without cancel-in-progress,
 # GitHub keeps the run in progress and at most one pending: a newer push
 # replaces the pending run, so a burst of merges runs the newest commit
-# next, and a started run always finishes. (Until 2026-11-21 every main
+# next, and the group never cancels a started run. (Until 2026-11-21 every main
 # commit had a group of its own, because its run published the perf
 # baseline that pull requests compared with; since #901 a pull request's
-# perf measures its own base, and nothing reads that baseline. On
+# perf measures its own base, and no pull request reads that baseline. On
 # 2026-11-21 one merge every 15.5 minutes queued main runs hours behind.)
 # What still reads main's runs needs a recent completed run, not every
 # commit: the progress history (scripts/history.py records each completed
