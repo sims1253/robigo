@@ -857,7 +857,14 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    within one main run of its merge. Each job builds what its steps need
    and prints its steps' times at the end of its log, against its budget
    (rt-ci.py's `BUDGETS`: a measured time plus 20%, with a warning at 90%);
-   its timeout is twice the budget, and `Check` needs all six. Together
+   its timeout is twice the budget, and `Check` needs all six. Every
+   conformance step also writes each case's wall time (the runner's
+   `ROBIGO_CONF_TIMES_REPORT`, a file per step under `RT_CI_TIMES_DIR`, kept
+   as the job's `rt-case-times-*` artifact) and lists the cases over half
+   their limit, report-only: such a case is named with an allowance and its
+   time, or made smaller. rt-ci.py stops at its start, exit 2, when cargo's
+   target directory or TMPDIR has under 8 GB free (`RT_CI_MIN_FREE_GB`
+   overrides it; 0 turns it off). Together
    they run every step: rt-ci.py checks that no other
    workspace member depends on them (the premise of `rt` mode; it fails at
    the flip, when the rule must go), then runs their `cargo test`

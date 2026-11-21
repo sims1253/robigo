@@ -197,6 +197,24 @@ class RtCi(unittest.TestCase):
         for _, _, cmd in rt.full_move_steps():
             self.assertTrue(rt.CONFORMANCE in cmd and "--exact" in cmd)
 
+    def test_a_run_stops_at_its_start_below_the_free_space_floor(self):
+        from unittest import mock
+        import collections, contextlib, io
+        usage = collections.namedtuple("usage", "total used free")
+        with mock.patch("shutil.disk_usage", return_value=usage(100e9, 95e9, 5e9)):
+            self.assertIn("5.0 GB free", rt.free_space_problem(["/x"], 8))
+            self.assertIsNone(rt.free_space_problem(["/x"], 4))
+            err = io.StringIO()
+            with mock.patch.object(rt, "run_steps") as run, contextlib.redirect_stderr(err), \
+                    mock.patch.dict(os.environ, {"RT_CI_MIN_FREE_GB": "8"}):
+                self.assertEqual(rt.main([]), 2)
+            run.assert_not_called()
+            self.assertIn("free space first", err.getvalue())
+            # RT_CI_MIN_FREE_GB=0 turns the check off
+            with mock.patch.object(rt, "run_steps", return_value=0) as run, mock.patch.dict(os.environ, {"RT_CI_MIN_FREE_GB": "0"}):
+                self.assertEqual(rt.main([]), 0)
+            run.assert_called_once()
+
     def test_a_step_whose_report_fails_is_timed_as_failed(self):
         # the command passed, the crosscheck report did not (it compared
         # nothing: there is none), so the job fails and its time row says so

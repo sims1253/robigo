@@ -569,6 +569,12 @@ def main(argv):
     if a.check:
         return 0
 
+    min_gb = float(os.environ.get("RT_CI_MIN_FREE_GB", MIN_FREE_GB))
+    if min_gb > 0:
+        problem = free_space_problem([meta["target_directory"], tempfile.gettempdir()], min_gb)
+        if problem:
+            print(f"::error::{problem}", file=sys.stderr)
+            return 2
     plan = full_move_steps() if a.full_move else shard_steps(crates, a.shard) if a.shard else steps(crates)
     done = []
     try:
@@ -616,6 +622,27 @@ def slow_cases_report(title, path):
              f"(name each with an allowance and its time, or make it smaller; {path}):"]
     lines += [f"  {s:7.1f} s of {lim:4d} s  {status}  {case}" for s, lim, status, case in rows]
     return "\n".join(lines)
+
+
+# rt-ci stops at its start when cargo's target directory or TMPDIR has less
+# free space than this (GB): a release link of the test binaries needs about
+# 5 GB, and a full disk otherwise fails a run mid-link, where it reads as a
+# code failure (2026-11-21, the shared workstation's /). RT_CI_MIN_FREE_GB
+# overrides it (0: no check)
+MIN_FREE_GB = 8
+
+
+def free_space_problem(paths, min_gb):
+    """The message for the first of `paths` with under `min_gb` GB free, or
+    None."""
+    import shutil
+    for p in paths:
+        free = shutil.disk_usage(p).free / 1e9
+        if free < min_gb:
+            return (f"rt-ci: {free:.1f} GB free on the volume of {p} (< {min_gb} GB): a release link of the "
+                    f"test binaries needs about 5 GB; free space first, or set RT_CI_MIN_FREE_GB "
+                    f"(docs/verification.md)")
+    return None
 
 
 def run_steps(plan, done):
