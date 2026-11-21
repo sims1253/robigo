@@ -493,6 +493,26 @@ pub unsafe fn get_var_missok(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sex
     unsafe { get_var(cx, act, a, sym, dd, bc) }
 }
 
+/// A formal's first read by `GETVAR` (`bc`, byte code: bcEval's inlined
+/// force, `setup_bcframe_prom`, [`Cx::force_arg_inline`]) or by the AST
+/// interpreter's `eval` of the symbol (`forcePromise`, [`Cx::force_arg`]).
+/// Out of line, so that `vm::run` calls one function as before.
+// R: eval.c:DO_GETVAR, eval.c:getvar
+#[inline(never)]
+pub fn force_formal(cx: &mut Cx, frame: Root<'_>, index: usize, out: Out<'_>, bc: bool) -> RResult<()> {
+    if bc { cx.force_arg_inline(frame, index, out) } else { cx.force_arg(frame, index, out) }
+}
+
+/// `GETVAR`'s first read of the formal at `index` of the activation's
+/// frame into register `a`: [`force_formal`] under the profile of the
+/// activation's code (read here, off `vm::run`'s path).
+#[inline(never)]
+pub fn force_formal_getvar(cx: &mut Cx, act: &Act, index: usize, a: crate::ir::Reg) -> RResult<()> {
+    // SAFETY: the running activation's code object.
+    let bc = unsafe { crate::code::View::of(act.obj(crate::ir::R_CODE)) }.profile == Profile::Bc;
+    force_formal(cx, act.root(crate::ir::R_ENV), index, act.out(a), bc)
+}
+
 /// `eval(sym, rho)` into register `a` (`..N` when `dd`), the slow path:
 /// active bindings, promises to force, GNU R's errors.
 ///
@@ -511,12 +531,7 @@ pub unsafe fn get_var(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: 
                 // SAFETY: the frame holding the slot, reachable from the
                 // rooted environment; the scratch register keeps it.
                 let f = unsafe { act.scratch(crate::ir::R_SCRATCH, loc.frame()) };
-                // (byte code's GETVAR forces in place: setup_bcframe_prom)
-                let r = if bc {
-                    cx.force_arg_inline(f, loc.index(), act.out(a))
-                } else {
-                    cx.force_arg(f, loc.index(), act.out(a))
-                };
+                let r = force_formal(cx, f, loc.index(), act.out(a), bc);
                 act.kill(crate::ir::R_SCRATCH, u32::MAX);
                 return r;
             }
