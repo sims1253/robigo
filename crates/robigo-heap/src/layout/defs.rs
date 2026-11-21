@@ -730,8 +730,9 @@ const _: () = {
     assert!(offset_of!(NodeView, tag) == node::OFF_TAG);
     assert!(offset_of!(NodeView, aux) == node::OFF_AUX);
     assert!(size_of::<NodeView>() == node::SIZE);
-    // a CHARSXP's hash is a u32 where ATTRIB would be
-    assert!(charsxp::OFF_HASH + 4 <= header::SIZE);
+    // a CHARSXP's hash is a u64 word (the u32 hash, widened) where ATTRIB
+    // would be
+    assert!(charsxp::OFF_HASH + size_of::<u64>() <= header::SIZE);
     // every body and field boundary is granule- or word-aligned
     assert!(header::SIZE.is_multiple_of(GRANULE) && node::SIZE.is_multiple_of(GRANULE));
     assert!(vector::OFF_DATA.is_multiple_of(WORD) && charsxp::OFF_DATA.is_multiple_of(WORD));
