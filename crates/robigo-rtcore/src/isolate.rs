@@ -162,6 +162,18 @@ pub(crate) struct Roots {
     capi: crate::capi::CApi,
 }
 
+impl Roots {
+    /// The freeze roots (`Cx::freeze_boot_heap`): the environments' state,
+    /// the `Globals` and the C API's globals; not the value stack, the
+    /// contexts, the pending exits or the warnings, which are the session's.
+    pub(crate) fn trace_freeze_roots<V: robigo_heap::Visitor + ?Sized>(&mut self, v: &mut V) {
+        use robigo_heap::Trace;
+        self.envs.trace(v);
+        self.globals.trace(v);
+        self.capi.trace(v);
+    }
+}
+
 /// What a frame (a scope, a native call, a callback) restores when it ends,
 /// on every path: the value-stack top and the innermost scope.
 #[derive(Clone, Copy)]

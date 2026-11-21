@@ -89,6 +89,40 @@ impl Cx {
         self.flush_gc_report();
     }
 
+    /// Log `x` as a root, once (robigo-heap's `Core::remember`): a frozen
+    /// object whose fields C may write without the barrier.
+    ///
+    /// # Safety
+    /// `x` is a live object of this isolate.
+    pub unsafe fn remember_raw(&self, x: Sexp) {
+        // SAFETY: the caller's contract; one call into the core, which
+        // calls nothing of ours.
+        unsafe { self.iso().core().remember(x) }
+    }
+
+    /// The boot heap's freeze (robigo-heap's `freeze.rs`, and
+    /// docs/ledger/g3/2026-11-21-h-boot-freeze-bar.md): one full collection,
+    /// then every object reachable from the freeze roots (the base
+    /// environment and namespace, the symbols' cells, the namespace
+    /// registry, the `Globals`, the C API's constants) made immortal, the
+    /// global environment and its frame left out. The front end calls it
+    /// once, at the end of the boot. Returns how many objects it froze (0
+    /// under the moving collector's modes, which leave it off).
+    pub fn freeze_boot_heap(&mut self) -> usize {
+        self.collect();
+        let iso = self.iso();
+        let global = iso.envs().global_raw();
+        struct FreezeRoots<'a>(&'a mut crate::isolate::Roots);
+        impl robigo_heap::Trace for FreezeRoots<'_> {
+            fn trace<V: robigo_heap::Visitor + ?Sized>(&mut self, v: &mut V) {
+                self.0.trace_freeze_roots(v);
+            }
+        }
+        // SAFETY: as for `collect`: `&mut Cx` ended every `Ref`, and the
+        // freeze roots are a part of the isolate's precise roots.
+        unsafe { iso.core().freeze(&mut FreezeRoots(iso.roots_mut()), |x| x == global) }
+    }
+
     /// Move every movable object at every collection from now on, or stop
     /// (`ROBIGO_GC_MOVE=1` sets it for every isolate: docs/g3.md §3
     /// "Checks"). A debug check: a raw `Sexp` kept across a safepoint

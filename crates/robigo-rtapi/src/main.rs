@@ -515,6 +515,11 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
             robigo_rt::repl::print_warnings(cx);
         }
     }
+    // the boot is over (setup_Rmainloop's last step ran): its survivors are
+    // frozen, so no later collection traces them (robigo-heap's freeze.rs,
+    // docs/ledger/g3/2026-11-21-h-boot-freeze-bar.md); off under
+    // ROBIGO_GC_MOVE's modes
+    cx.freeze_boot_heap();
     // the isolate's console is the process's stdout and stderr
     // E9's ROBIGO_FAIL_ALLOC_AT counts the script's allocations, not base's
     cx.arm_fail_alloc();

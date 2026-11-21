@@ -122,6 +122,8 @@ static inline SEXP seen(SEXP x)
 
 /* the heap's barrier store into a traced field of x (cannot collect) */
 void robigo_rtapi_store(SEXP x, SEXP *slot, SEXP v);
+/* log a frozen object as a root, once (cannot collect) */
+void robigo_rtapi_remember(SEXP x);
 /* errors, with machine entries: they never return */
 __attribute__((noreturn)) void robigo_rtapi_error(const char *msg);
 __attribute__((noreturn)) void robigo_rtapi_errorcall(SEXP call, const char *msg);
@@ -299,6 +301,12 @@ void *(DATAPTR)(SEXP x)
     chkvec(x);
     if (!RB_IS_ALTREP(x) && RB_TYPE(x) == CHARSXP)
         return RB_DATA(x); /* (a CHARSXP's trailing zero byte) */
+    /* a frozen vector of objects (robigo-heap's freeze.rs) not yet logged:
+     * C may write its elements without the barrier, so it is a root from
+     * now on, traced at every collection */
+    if ((RB_TYPE(x) == STRSXP || RB_TYPE(x) == VECSXP || RB_TYPE(x) == EXPRSXP)
+        && (RB_FLAGS(x) & (ROBIGO_FLAG_IMMORTAL | ROBIGO_FLAG_BARRIER)) == (ROBIGO_FLAG_IMMORTAL | ROBIGO_FLAG_BARRIER))
+        robigo_rtapi_remember(x);
     return dataptr(x);
 }
 

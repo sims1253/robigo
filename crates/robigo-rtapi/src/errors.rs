@@ -196,6 +196,19 @@ pub unsafe extern "C" fn robigo_rtapi_print(to_stderr: c_int, buf: *const c_char
 /// # Safety
 /// `x` is a live object, `slot` one of its traced pointer fields, `v` null
 /// or a live object of the same heap.
+/// C's first writable `DATAPTR` of a frozen vector of objects (api.c): the
+/// object is logged as a root, once, so that C's raw writes into its
+/// elements are traced (robigo-heap's `freeze.rs`).
+///
+/// # Safety
+/// `x` is a live object of the thread's isolate.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn robigo_rtapi_remember(x: Sexp) {
+    // SAFETY: called from C code of the thread's isolate, with `x` a live
+    // object of its heap (the caller's contract).
+    unsafe { robigo_rtcore::enter_leaf(|cx| cx.remember_raw(x)) };
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn robigo_rtapi_store(x: Sexp, slot: *mut Sexp, v: Sexp) {
     // SAFETY: the caller's contract: a live object's header.

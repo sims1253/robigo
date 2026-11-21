@@ -132,6 +132,13 @@ pub(crate) struct EnvState {
     building_base: Cell<u32>,
 }
 
+impl EnvState {
+    /// The global environment, raw: the freeze leaves it out.
+    pub(crate) fn global_raw(&self) -> Sexp {
+        self.global
+    }
+}
+
 const INIT: &str = "robigo: the isolate's environments";
 
 impl EnvState {

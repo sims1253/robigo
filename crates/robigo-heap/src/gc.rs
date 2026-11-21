@@ -32,6 +32,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 
 mod diag;
+mod freeze;
 mod mover;
 pub use diag::PinReportTo;
 pub use mover::POISON_TYPE;
@@ -528,6 +529,13 @@ pub struct Core {
     quarantine: Vec<crate::heap::Chunk>,
     /// `ROBIGO_GC_PIN_REPORT`, `ROBIGO_GC_STRONG_DLL` (`diag.rs`)
     diag: Option<Box<diag::Diag>>,
+    /// The boot heap's freeze (`freeze.rs`): the frozen objects, by address.
+    frozen: Vec<Sexp>,
+    /// Frozen objects to become ordinary at the next collection.
+    pending_unfreeze: Vec<Sexp>,
+    /// `ROBIGO_GC_FREEZE_CHECK=1`: the freeze's invariant checked at every
+    /// collection.
+    freeze_check: bool,
     /// GNU R's `R_weak_refs`: the weak references (WEAKREFSXP) not yet
     /// finalized, ready ones (`READY_TO_FINALIZE`, their key dead or the
     /// session ending) included, oldest first (`R_weak_refs` reversed).
@@ -875,6 +883,9 @@ impl Core {
             young: Box::new(mover::Young::new(mover::policy_from_env().unwrap_or(0))),
             quarantine: Vec::new(),
             diag: diag::Diag::from_env(),
+            frozen: Vec::new(),
+            pending_unfreeze: Vec::new(),
+            freeze_check: std::env::var_os("ROBIGO_GC_FREEZE_CHECK").is_some_and(|v| v == "1"),
             weak_refs: Vec::new(),
             finalizers_pending: false,
             releases: Vec::new(),
@@ -2005,6 +2016,11 @@ impl Core {
         // newest first where its order shows (a finalizer pass,
         // [`Core::pop_finalizable_before`])
         self.weak_refs.push(w);
+        // a frozen key must be able to die (`freeze.rs`): ordinary from the
+        // next collection on
+        // SAFETY: the caller's contract: element 0 is the key.
+        let key = unsafe { Self::weak_field(w, 0) };
+        self.request_unfreeze(key);
     }
 
     /// The references ready for their finalizer (tests, statistics).
@@ -2767,6 +2783,8 @@ impl Core {
             // end, so an unwinding panic leaves it set and the heap is
             // never collected again
             self.poisoned = true;
+            // the batched unfreeze (`freeze.rs`) before anything is marked
+            self.unfreeze_pending();
             if self.young_collection() {
                 // ROBIGO_GC_MOVE=young:N (mover.rs): the pins first, then a
                 // marking that copies the young objects as it reaches them
@@ -2783,6 +2801,9 @@ impl Core {
                 self.mark_heap_roots();
                 roots.trace(&mut Mark(self));
                 self.mark_rest();
+                if self.freeze_check {
+                    self.check_frozen();
+                }
                 if self.gc_move {
                     let moved = self.evacuate();
                     Self::forward_roots(roots);
