@@ -82,3 +82,7 @@ p0 <- function() .Internal(paste0(list(hc()), , FALSE))
 q0 <- function(...) .Internal(paste0(sum(...), , FALSE))
 for (i in 1:2) print(lapply(list(quote(p0()), quote(q0(1, 2)), quote(pd(hc(), ))),
     function(e) conditionCall(tryCatch(eval(e), error = identity))))
+# the empty argument's number counts `...` as one argument, before or after it
+e1 <- function(...) .Internal(paste0(, ...))
+e2 <- function(...) .Internal(paste0(..., , FALSE))
+for (i in 1:2) print(list(tryCatch(e1(NULL, FALSE), error = cc), tryCatch(e2(list("a"), NULL), error = cc)))
