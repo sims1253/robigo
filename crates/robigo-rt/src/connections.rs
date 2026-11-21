@@ -1153,16 +1153,18 @@ struct GzReader<R> {
     /// An error found while inflating ahead ([`Ahead`]): raised by the read
     /// that would have met it inflating in place, as before the buffer.
     ahead: Option<Ahead>,
+    /// The error a read met: every later read meets it again, as the
+    /// stream left in its error state made them before the buffer.
+    failed: Option<(std::io::ErrorKind, String)>,
 }
 
 /// An error a [`GzReader`] found inflating a block ahead of the reads: the
-/// block holds the bytes inflated before it, and `oend` is its boundary.
+/// block holds the bytes inflated before it, and `oend` is its boundary,
+/// which the read that reaches it meets: a member's trailer is checked when
+/// its last byte comes out, and inflate goes on to the next block header or
+/// symbol, and so to a bad one, with the output full.
 struct Ahead {
     err: std::io::Error,
-    /// A member's end (its trailer's CRC-32 or length): met by the read
-    /// that reaches the boundary. Else a bad deflate stream: met by a read
-    /// that needs a byte past it.
-    at_end: bool,
 }
 
 /// What one [`GzReader::inflate_into`] step made: the bytes, and an error
@@ -1190,6 +1192,7 @@ impl<R: Read> GzReader<R> {
             opos: 0,
             oend: 0,
             ahead: None,
+            failed: None,
         }
     }
 
@@ -1296,8 +1299,17 @@ impl<R: Read> GzReader<R> {
         Header::Ok
     }
 
+    /// Record `e` as the error every later read meets ([`GzReader::failed`]).
+    fn fail(&mut self, e: std::io::Error) -> std::io::Error {
+        self.failed = Some((e.kind(), e.to_string()));
+        e
+    }
+
     /// Read up to `out.len()` bytes, as many as there are.
     fn read_full(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if let Some((kind, msg)) = &self.failed {
+            return Err(std::io::Error::new(*kind, msg.clone()));
+        }
         if !self.started {
             match self.check_header() {
                 Header::Ok => {}
@@ -1330,7 +1342,7 @@ impl<R: Read> GzReader<R> {
                 // a large read: inflated in place, an error met at once
                 let st = self.inflate_into(&mut out[n..])?;
                 if let Some(a) = st.err {
-                    return Err(a.err);
+                    return Err(self.fail(a.err));
                 }
                 n += st.made;
             } else {
@@ -1350,17 +1362,14 @@ impl<R: Read> GzReader<R> {
     /// Copy what the block holds into `out[n..]`; the new count. An error
     /// found ahead ([`Ahead`]) is raised, with nothing copied, by the read
     /// that would have met it inflating in place: one that reaches the
-    /// block's boundary for a member's end, one that needs a byte past it
-    /// for a bad stream.
+    /// block's boundary.
     fn from_block(&mut self, out: &mut [u8], n: usize) -> std::io::Result<usize> {
         let left = self.oend - self.opos;
         let want = out.len() - n;
-        if let Some(a) = &self.ahead
-            && (if a.at_end { want >= left } else { want > left })
-        {
+        if self.ahead.is_some() && want > 0 && want >= left {
             let a = self.ahead.take().expect("robigo: an error ahead");
             self.opos = self.oend;
-            return Err(a.err);
+            return Err(self.fail(a.err));
         }
         let k = left.min(want);
         out[n..n + k].copy_from_slice(&self.obuf[self.opos..self.opos + k]);
@@ -1388,7 +1397,7 @@ impl<R: Read> GzReader<R> {
             Err(e) => {
                 self.done = true;
                 let err = std::io::Error::new(std::io::ErrorKind::InvalidData, e);
-                return Ok(Step { made, err: Some(Ahead { err, at_end: false }) });
+                return Ok(Step { made, err: Some(Ahead { err }) });
             }
         };
         match st {
@@ -1402,7 +1411,7 @@ impl<R: Read> GzReader<R> {
                 if crc != self.crc.sum() {
                     self.done = true;
                     let err = std::io::Error::new(std::io::ErrorKind::InvalidData, "crc error");
-                    return Ok(Step { made, err: Some(Ahead { err, at_end: true }) });
+                    return Ok(Step { made, err: Some(Ahead { err }) });
                 }
                 match self.check_header() {
                     Header::Ok => {
