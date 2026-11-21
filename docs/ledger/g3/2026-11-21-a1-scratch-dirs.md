@@ -15,33 +15,31 @@ killed delegate left everything.
 (1,001,603,231 bytes; the other 4,400 records' median is 35 bytes), with two
 GNU R twins in the oracle cache. The digest-instead-of-value PR is next.
 
-**The fix** (`scripts/scratch.py`, two rules):
-1. A tool removes its own directories on every exit path: a normal return,
-   an exception, `sys.exit`, Ctrl-C, SIGTERM and SIGHUP. The two signals end
-   the tool's children first, and wait while a directory is being made or
-   removed. A directory that cannot be removed does not stop the others. A
-   child made by fork removes none of its parent's.
-2. At a tool's start, a sweep by age alone: that tool's prefix, this user's,
-   the directory's own time more than 24 hours old. No gate runs for a day,
-   so a live run is never a candidate. It deletes through a descriptor of
-   the directory it judged, and, with that descriptor still open (so its
-   inode cannot be reused), re-checks the inode at the name before removing
-   the entry. It changes nothing: a day-old directory whose case took its
-   own permissions away (builtin-diff's `Sys.chmod` cases) stays, in part or
-   whole, until removed by hand.
+**The fix** (`scripts/scratch.py`): a tool removes its own directories on
+every exit path: a normal return, an exception, `sys.exit`, Ctrl-C, SIGTERM
+and SIGHUP. The two signals end the tool's descendants first (every one,
+again for any a worker starts meanwhile, SIGKILL after 5 s: perf.py's
+valgrind runs under a Python of its own) and wait while a directory is made
+or removed. A name is registered before its directory exists, a directory
+that cannot be removed does not stop the others, and a child made by fork
+removes none of its parent's. This is what was broken, and where the 15 GB
+came from.
 
-What rule 2 gives up: a killed run's leftovers stay for up to a day instead
-of until the next run. With the digest PR a leftover stops being a gigabyte,
-so a day of them is small.
+**What it does not cover.** A run killed by SIGKILL (an OOM kill) leaves its
+directories; until a separate sweep exists they are removed by hand
+(docs/verification.md gives the rule A1 used on 2026-11-21).
 
-**How it got here.** The first design swept by "not in use", from the
-outside: /proc, modification times, modes, then an flock lease. Seven Sol
-rounds each found a real hole, every one since round 3 in the same place:
-deciding at a given moment that a directory in a shared `/tmp` belongs to
-nobody. That is a distributed protocol, and the task did not need it. The
-foreman took the lease out. The exit-path findings (handlers installed at
-import, signals deferred during creation and removal, the fork rule, a
-failed removal not stopping the rest) stayed.
+**Why there is no sweep.** Removing another run's leftovers means deciding,
+from outside, that a directory in a shared `/tmp` is no longer anyone's.
+The first design decided it from /proc, times and modes, the second with an
+flock lease, the third by age alone (a day, through directory descriptors).
+Each Sol round found a real hole; the last one, in the age sweep alone,
+found four: a name renamed and recreated between the final check and the
+`rmdir` (S8), a directory reparented while it is emptied through its
+descriptor (S9), a write that makes the directory young after its age check
+(S10), and a bind mount placed inside it (S11). The ordinary calls cannot
+exclude a process that can still write there. By the foreman's stop rule
+the sweep left this PR; if one comes back, it starts from those four.
 
 **The local gate's three profile trees.** `scripts/rt-ci.py` builds
 `quick` (the crates' tests) and `release` (the binary, the conformance);

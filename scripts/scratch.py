@@ -3,49 +3,37 @@
     from scratch import scratch_dir
     work = scratch_dir("rt-bars-")      # removed when the process exits
 
-Two rules, and nothing here decides whether another run is alive:
+A tool removes its own directories on every exit path: a normal return, an
+exception, sys.exit, Ctrl-C, and SIGTERM or SIGHUP (a CI job's cancel,
+`timeout`, a killed delegate). Those two signals, while at their default
+action, end this process's descendants (robigo-rt, GNU R, docker, valgrind
+under a Python of its own), remove the directories and raise SystemExit,
+so the tool's own `finally`s and exit handlers run; a process still there
+STOP_SECONDS after the removal (a thread pool waiting on its workers) exits
+then. Signals wait while the main thread makes or removes a directory, a
+name is registered before its directory is made, a directory leaves the
+registry only once it is gone, and one that cannot be removed does not stop
+the others. A child made by fork owns none of its parent's directories, so
+a process removes only what it made. keep(path) exempts a directory (a
+tool's --keep), remove(path) removes one early.
 
-1. A tool removes its own directories on every exit path: a normal return,
-   an exception, sys.exit, Ctrl-C, and SIGTERM or SIGHUP (a CI job's cancel,
-   `timeout`, a killed delegate). Those two signals, while at their default
-   action, end this process's children (robigo-rt, GNU R, docker), remove
-   the directories and raise SystemExit, so the tool's own `finally`s and
-   exit handlers run; a process still there STOP_SECONDS later (a thread
-   pool waiting on its workers) exits then. The signals wait while a
-   directory is being made or any removal runs, a directory leaves the
-   registry only once it is gone, and one that cannot be removed does not
-   stop the others. A child made by fork owns none of its parent's
-   directories, so a process removes only what it made. keep(path) exempts
-   a directory (a tool's --keep), remove(path) removes one early.
-2. A sweep by age alone, for what a SIGKILL or an OOM kill leaves: the first
-   scratch_dir call for a prefix removes that prefix's directories in the
-   same parent that this user owns and whose own modification time is more
-   than SWEEP_HOURS old. No gate runs for a day, so a live run is never a
-   candidate, whatever happens meanwhile. The sweep removes through a
-   descriptor of the directory it judged (an entry renamed or replaced after
-   the listing is not followed), and, with that descriptor still open,
-   checks that the name holds that directory before removing the entry. It
-   changes nothing: a directory whose case took its own permissions away
-   stays, in part or whole.
+What this does not cover: a run killed by SIGKILL (an OOM kill) or a machine
+that went down leaves its directories. Nothing here decides whether another
+run's directory is still in use: a sweep that does is a later, separate
+change. Until then such leftovers are removed by hand (docs/verification.md).
 
 Before this, /tmp collected 28 GB of these on the shared workstation
 (2026-11-21): the tools removed their directories on success only, and none
-on a signal. What rule 2 gives up: a killed run's directories stay for up to
-a day.
-"""
+on a signal. """
 
 import atexit
 import os
 import secrets
 import shutil
 import signal
-import stat
 import tempfile
 import threading
 import time
-
-# rule 2: a directory this much older than now is a killed run's
-SWEEP_HOURS = 24
 
 # How long the process may take to exit after SIGTERM or SIGHUP before it
 # is ended without its remaining exit handlers (its directories are gone by
@@ -55,7 +43,6 @@ STOP_SECONDS = 30
 # reentrant: the signal handler runs on the main thread, which may hold it
 _lock = threading.RLock()
 _live = set()       # the directories this process removes at exit
-_swept = set()      # (parent, prefix) pairs already swept by this process
 _installed = False
 _closing = False
 _busy = 0           # a directory is being made or removed: signals wait
@@ -102,9 +89,6 @@ def scratch_dir(prefix, dir=None):
             # a worker thread starting new work after a SIGTERM
             raise SystemExit(1)
         _install()
-        if (parent, prefix) not in _swept:
-            _swept.add((parent, prefix))
-            sweep(prefix, parent)
         # the name is registered before the directory exists, so no moment
         # has a directory this process made and would not remove (a Ctrl-C
         # included); a name that is not made leaves the registry at exit
@@ -119,8 +103,7 @@ def scratch_dir(prefix, dir=None):
 
 
 def keep(path):
-    """Leave `path` in place at exit (a sweep removes it once it is
-    SWEEP_HOURS old)."""
+    """Leave `path` in place at exit."""
     with _lock:
         _live.discard(path)
 
@@ -261,7 +244,7 @@ def _at_exit():
 
 
 def _forked_child():
-    # a child made by fork owns none of its parent's directories (rule 1)
+    # a child made by fork owns none of its parent's directories
     global _lock, _busy, _pending, _exiting, _exit_done
     _live.clear()
     _lock = threading.RLock()
@@ -285,99 +268,6 @@ def _install():
     # Ctrl-C: still KeyboardInterrupt, but not inside a creation or a removal
     if signal.getsignal(signal.SIGINT) is signal.default_int_handler:
         signal.signal(signal.SIGINT, _on_signal)
-
-
-def sweep(prefix, parent=None, now=None):
-    """Remove `parent`'s `<prefix>*` directories that this user owns and
-    whose own modification time is more than SWEEP_HOURS old (rule 2). The
-    directories removed."""
-    parent = parent or tempfile.gettempdir()
-    cutoff = (now if now is not None else time.time()) - SWEEP_HOURS * 3600
-    try:
-        pfd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
-    except OSError:
-        return []
-    gone = []
-    try:
-        for name in sorted(os.listdir(pfd)):
-            if name.startswith(prefix) and _sweep_one(pfd, name, cutoff):
-                gone.append(os.path.join(parent, name))
-    finally:
-        os.close(pfd)
-    return gone
-
-
-def _old_mine(st, cutoff):
-    return stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid() and st.st_mtime < cutoff
-
-
-def _same(a, b):
-    return (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)
-
-
-def _sweep_one(pfd, name, cutoff):
-    """Remove `name` in `pfd` if it is a directory of this user's whose own
-    time is before `cutoff`; nothing else is removed or changed."""
-    try:
-        st = os.lstat(name, dir_fd=pfd)
-    except OSError:
-        return False
-    if not _old_mine(st, cutoff):
-        return False        # a link, a file, another user's, or young
-    dfd = _open_dir(name, pfd)
-    if dfd is None:
-        return False        # (one whose case took its permissions stays)
-    try:
-        # the directory opened is the one judged: a name replaced since the
-        # listing is left alone
-        now = os.fstat(dfd)
-        if not (_same(now, st) and _old_mine(now, cutoff)):
-            return False
-        _empty(dfd)
-        # the entry, if the name still holds that directory. The descriptor
-        # is still open, so its inode cannot be given to a directory made at
-        # the name meanwhile; rmdir removes only an empty directory
-        if not _same(os.lstat(name, dir_fd=pfd), now):
-            return False
-        os.rmdir(name, dir_fd=pfd)
-        return True
-    except OSError:
-        return False
-    finally:
-        os.close(dfd)
-
-
-def _open_dir(name, pfd):
-    """A descriptor of directory `name` in `pfd`, not following a link, or
-    None (also when its permissions refuse it: the sweep changes nothing)."""
-    try:
-        return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=pfd)
-    except OSError:
-        return None
-
-
-def _empty(dfd):
-    """Remove what can be removed in the directory `dfd` names, through
-    descriptors only: nothing is reached by a path from outside it, and a
-    link is removed, never followed."""
-    for name in os.listdir(dfd):
-        try:
-            st = os.lstat(name, dir_fd=dfd)
-            if not stat.S_ISDIR(st.st_mode):
-                os.unlink(name, dir_fd=dfd)
-                continue
-            sub = _open_dir(name, dfd)
-            if sub is None:
-                continue
-            try:
-                if _same(os.fstat(sub), st):
-                    _empty(sub)
-                    if _same(os.lstat(name, dir_fd=dfd), st):
-                        os.rmdir(name, dir_fd=dfd)
-            finally:
-                os.close(sub)
-        except OSError:
-            continue
 
 
 # at import, on the main thread: the first directory is often made by a

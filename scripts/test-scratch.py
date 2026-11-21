@@ -2,9 +2,7 @@
 """scripts/scratch.py: a tool's temporary directories are gone after every
 way out (a normal exit, an exception, sys.exit, SIGTERM with children and a
 busy thread pool, SIGTERM during an early removal or the exit's), a
-forked child removes none of its parent's, the start-up sweep removes only
-this user's directories of its prefix whose own time is a day old, and each
-tool that makes them (builtin-diff, perf.py rt-bars and
+forked child removes none of its parent's, and each tool that makes them (builtin-diff, perf.py rt-bars and
 rt-gnur, rast.py, the C API bench) leaves none after a normal or a failing
 exit.
 
@@ -190,85 +188,6 @@ class Module(unittest.TestCase):
         self.assertFalse(os.path.exists(max(out)))  # the other went
         scratch.rmtree(stuck)
 
-    def day_old(self, name, hours=25):
-        d = Path(self.tmp, name)
-        (d / "sub").mkdir(parents=True)
-        (d / "sub" / "f").write_text("x")
-        os.utime(d, (time.time() - hours * 3600,) * 2)
-        return d
-
-    def test_the_sweep_removes_a_day_old_directory_of_its_prefix_only(self):
-        old = self.day_old("t-old")
-        young = self.day_old("t-young", hours=23)
-        other = self.day_old("u-old")
-        f = Path(self.tmp, "t-file")
-        f.write_text("x")
-        os.utime(f, (time.time() - 48 * 3600,) * 2)
-        self.assertEqual(scratch.sweep("t-", self.tmp), [str(old)])
-        self.assertTrue(young.exists() and other.exists() and f.exists())
-
-    def test_the_sweep_reads_the_directorys_own_time_only(self):
-        # a day-old directory goes whatever is inside it (rule 2: no look
-        # inside); one written to directly is young again
-        d = self.day_old("t-old")
-        os.utime(d / "sub" / "f", None)            # inside: just now
-        self.assertEqual(scratch.sweep("t-", self.tmp), [str(d)])
-
-    def test_the_sweep_leaves_another_users_directory(self):
-        d = self.day_old("t-theirs")
-        real = scratch.os.getuid
-        scratch.os.getuid = lambda: real() + 1
-        try:
-            self.assertEqual(scratch.sweep("t-", self.tmp), [])
-        finally:
-            scratch.os.getuid = real
-        self.assertTrue(d.exists())
-
-    def test_the_sweep_changes_nothing_it_cannot_remove(self):
-        # S6/S7: a directory whose case took its permissions stays, with
-        # the modes it had; a writable part of one is removed
-        import stat as st_
-        closed = self.day_old("t-closed")
-        os.chmod(closed, 0o000)
-        os.utime(closed, (time.time() - 25 * 3600,) * 2)
-        part = self.day_old("t-part")
-        os.chmod(part / "sub", 0o500)
-        (part / "loose").write_text("x")
-        os.utime(part, (time.time() - 25 * 3600,) * 2)
-        try:
-            self.assertEqual(scratch.sweep("t-", self.tmp), [])
-            self.assertEqual(st_.S_IMODE(os.lstat(closed).st_mode), 0o000)
-            self.assertEqual(st_.S_IMODE(os.lstat(part / "sub").st_mode), 0o500)
-            self.assertTrue((part / "sub" / "f").exists())
-            self.assertFalse((part / "loose").exists())
-        finally:
-            os.chmod(closed, 0o700)
-            os.chmod(part / "sub", 0o700)
-
-    def test_the_sweep_leaves_a_name_replaced_after_its_listing(self):
-        # the old directory moved away and a new one made at its name between
-        # the listing and the removal: the descriptor names the old one, the
-        # inode check sees the name holds another, and the new one stays
-        d = self.day_old("t-swap")
-        real = scratch.os.lstat
-        swapped = []
-
-        def lstat(name, *a, **k):
-            st = real(name, *a, **k)
-            if name == "t-swap" and not swapped:
-                swapped.append(1)
-                os.rename(d, str(d) + "-moved")
-                d.mkdir()
-                (d / "new").write_text("x")
-                os.utime(d, (time.time() - 25 * 3600,) * 2)
-            return st
-        scratch.os.lstat = lstat
-        try:
-            self.assertEqual(scratch.sweep("t-", self.tmp), [])
-        finally:
-            scratch.os.lstat = real
-        self.assertTrue((d / "new").exists())
-
     def test_ctrl_c_right_after_the_directory_is_made_leaves_nothing(self):
         # S1: the name is registered before mkdir, so a KeyboardInterrupt at
         # once after it still finds the directory at exit
@@ -321,25 +240,6 @@ class Module(unittest.TestCase):
             scratch.rmtree(str(d))
             self.assertFalse(d.exists(), oct(mode))
 
-    def test_the_sweep_never_follows_a_link_of_its_prefix(self):
-        target = Path(self.tmp, "elsewhere")
-        target.mkdir()
-        os.utime(target, (time.time() - 3 * 86400,) * 2)
-        link = Path(self.tmp, "t-link")
-        link.symlink_to(target)
-        Path(self.tmp, "t-link2.lease").symlink_to(Path(self.tmp, "elsewhere-lease"))
-        Path(self.tmp, "elsewhere-lease").write_text("")
-        Path(self.tmp, "t-link2").symlink_to(target)
-        self.assertEqual(scratch.sweep("t-", self.tmp), [])
-        self.assertTrue(target.exists() and link.is_symlink())
-
-    def test_the_first_directory_of_a_prefix_sweeps_it(self):
-        d = Path(self.tmp, "t-left")
-        d.mkdir()
-        os.utime(d, (time.time() - 3 * 86400,) * 2)
-        code, out, err = run_py("from scratch import scratch_dir\nscratch_dir('t-')", self.tmp)
-        self.assertEqual(code, 0, err)
-        self.assertFalse(d.exists())
 
 class Tools(unittest.TestCase):
     """Each tool's directory, made through its real code path with the
