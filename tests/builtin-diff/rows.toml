@@ -713,6 +713,18 @@ args = ["x", "from", "to", "sub", "mark", "toRaw"]
 typical = { x = "=c(\"a\", \"\\u00e9\", NA)", from = "=\"UTF-8\"", to = "=\"latin1\"", sub = "=NA_character_", mark = "=TRUE", toRaw = "=FALSE" }
 domain = { x = ["=c(\"a\", \"\\u00e9\", NA)", "utf8", "latin1", "bytes", "chr0", "=list(as.raw(c(0x61, 0xe9)))", "1.5"], from = ["=\"UTF-8\"", "=\"latin1\"", "=\"\"", "=\"nope\"", "=NA_character_"], to = ["=\"latin1\"", "=\"ASCII\"", "=\"UTF-8\"", "=\"ASCII//TRANSLIT\"", "=\"nope\""], sub = ["=NA_character_", "=\"byte\"", "=\"?\"", "=\"Unicode\"", "=\"c99\""], mark = ["=TRUE", "=FALSE"], toRaw = ["=FALSE", "=TRUE"] }
 
+["as.POSIXlt"]
+typical = { x = "=c(0, 1e9 + 0.25, -1.5)", tz = "=\"UTC\"" }
+domain = { x = ["=c(0, 1e9 + 0.25, -1.5)", "=c(a = 1719835200, b = NA, c = Inf)", "=-775526400", "=numeric(0)", "=TRUE", "=\"x\"", "@any"], tz = ["=\"UTC\"", "=\"GMT\"", "=\"Europe/Berlin\"", "=\"America/New_York\"", "=\"\"", "=c(\"UTC\", \"GMT\")", "=1", "=NA_character_"] }
+
+["Date2POSIXlt"]
+typical = { x = "=c(0, 19000.75, -719528)", tz = "=\"UTC\"" }
+domain = { x = ["=c(0, 19000.75, -719528)", "=c(x = 1, y = NA, z = 1e12)", "=numeric(0)", "=TRUE", "@any"], tz = ["=\"UTC\"", "=\"\"", "=\"Europe/Paris\"", "=1", "=c(\"a\", \"b\")"] }
+
+["POSIXlt2Date"]
+typical = { x = "=.Internal(as.POSIXlt(c(p = 1e9, q = -1e9, r = NA), \"UTC\"))" }
+domain = { x = ["=.Internal(as.POSIXlt(c(p = 1e9, q = -1e9, r = NA), \"UTC\"))", "=local({lt <- .Internal(as.POSIXlt(0, \"UTC\")); lt$mday <- 40L; lt$hour <- 30L; lt})", "=local({lt <- .Internal(as.POSIXlt(0, \"UTC\")); lt$sec <- c(0, 1); names(lt$year) <- \"a\"; lt})", "=list(1)", "@any"] }
+
 [uncovered]
 "special: a VM op or a special (tests/rt covers it)" = [
   "rep"
