@@ -10,8 +10,9 @@
 //! the process environment around the conversion (`set_tz`/`reset_tz`):
 //! here a [`clib::TzSession`], which holds the environment for the
 //! conversions, and needs the embedder's grant of environment writes.
-//! `strptime` in such a zone is not implemented yet (its warnings would
-//! have to wait for the session's end).
+//! No R code runs while a session holds the environment: `strptime`'s
+//! warnings (and the error that stops its loop) are raised after it, in
+//! GNU R's order.
 
 use crate::attrib::{Attr, Attrs};
 use crate::util::not_yet;
@@ -212,13 +213,6 @@ fn timegm00(tm: &mut Tm) -> f64 {
     tm.sec as f64 + (tm.min as f64 * 60.0) + (tm.hour as f64 * 3600.0) + day * 86400.0
 }
 
-/// `mktime0(tm, local = 0)` (`PATH 1`): `-1` (and `errno` set, the `true`)
-/// when `tm` cannot be validated, else `timegm00`'s result.
-// R: datetime.c:mktime0
-fn mktime0_utc(tm: &mut Tm) -> (f64, bool) {
-    mktime0(tm, None)
-}
-
 /// `mktime0(tm, local)` (`PATH 1`, every `HAVE_WORKING_MKTIME_*` and
 /// `HAVE_POSIX_LEAPSECONDS`): `-1` and `errno` set when `tm` cannot be
 /// validated; else `timegm00` (UTC, `local` None) or the C library's
@@ -264,8 +258,14 @@ fn gmtime0(d: f64) -> Option<Tm> {
 /// `glibc_fix(tm, &invalid)`: the current local date's year, and month and
 /// day when neither is known; an unknown day with a known month is invalid.
 // R: datetime.c:glibc_fix
-fn glibc_fix(tm: &mut Tm, invalid: &mut bool) {
-    let tm0 = clib::localtime(clib::time_now()).unwrap_or_default();
+fn glibc_fix(tm: &mut Tm, invalid: &mut bool, local: Option<&clib::TzSession<'_>>) {
+    // localtime_r(time(NULL)): in the time zone set_tz set, if any
+    let now = clib::time_now();
+    let tm0 = match local {
+        Some(s) => s.localtime(now),
+        None => clib::localtime(now),
+    }
+    .unwrap_or_default();
     if tm.year == NA_INTEGER {
         tm.year = tm0.year;
     }
@@ -1029,11 +1029,9 @@ pub fn do_strptime(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
     if sformat.sexptype() != STRSXP || sformat.len() == Some(0) {
         return Err(cx.error("invalid 'format' argument"));
     }
+    // GET_tz_CHECK_n_TZONE
     let (tz, is_utc) = get_tz(cx, args.root(2))?;
-    if !is_utc {
-        let shown = if tz.is_empty() { "the system's".to_owned() } else { String::from_utf8_lossy(&tz).into_owned() };
-        return Err(not_yet(cx, None, &format!("strptime() in a time zone other than UTC or GMT ({shown})")));
-    }
+    set_tz_check(cx, is_utc)?;
     // XLENGTH(x)
     refuse_altrep(cx, args.root(0), "strptime() of a package ALTREP 'x'")?;
     let n = args.get(cx, 0).len().unwrap_or(0);
@@ -1041,105 +1039,164 @@ pub fn do_strptime(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
     let nn = if n > 0 { m.max(n) } else { 0 };
     let loc = cx.locale();
     let wide = loc.utf8;
-    let mut rows: Vec<(Tm, bool, f64)> = Vec::with_capacity(nn);
-    for i in 0..nn {
-        // (the strings, translated, before anything can collect)
-        let tr = {
-            let x = args.get(cx, 0).as_vector::<Char<'_>>().unwrap().get(i % n);
-            let f = args.get(cx, 1).as_vector::<Char<'_>>().unwrap().get(i % m);
-            if x == cx.na_string() {
-                None
-            } else {
-                let tr = |c: Char<'_>| crate::text::to_native(crate::coerce::text(c), loc).map(|b| b.into_owned());
-                Some((tr(x), tr(f)))
-            }
-        };
-        let (na, xs, fs) = match tr {
-            None => (true, Vec::new(), Vec::new()),
-            Some((Ok(a), Ok(b))) => (false, a, b),
-            Some(_) => return Err(tz_error(cx, "translating strings with \"bytes\" encoding is not allowed")),
-        };
-        let mut tm = Tm {
-            sec: 0,
-            min: 0,
-            hour: 0,
-            year: NA_INTEGER,
-            mon: NA_INTEGER,
-            mday: NA_INTEGER,
-            yday: NA_INTEGER,
-            wday: NA_INTEGER,
-            gmtoff: NA_INTEGER as i64,
-            isdst: -1,
-        };
-        let mut psecs = 0.0f64;
-        let mut offset = NA_INTEGER;
-        let mut invalid = na;
-        if !na {
-            let mut p = Strptime {
-                tm: &mut tm,
-                psecs: &mut psecs,
-                poffset: &mut offset,
-                wide,
-                loc: crate::text::ctype(loc),
-                warnings: Vec::new(),
-            };
-            let r = r_strptime(&mut p, &xs, &fs);
-            let warnings = std::mem::take(&mut p.warnings);
-            for w in warnings {
-                // (warning() under prepare_reset_tz's context)
-                cx.warning_in_ccode_context(&w)?;
-            }
-            match r {
-                Ok(ok) => invalid = !ok,
-                Err(StrptimeError(m)) => return Err(tz_error(cx, &m)),
-            }
-        }
-        let mut ptm: Option<Tm> = None; // ptm = &tm2 when set
-        if !invalid {
-            // Solaris sets missing fields to 0
-            if tm.mday == 0 {
-                tm.mday = NA_INTEGER;
-            }
-            if tm.mon == NA_INTEGER || tm.mday == NA_INTEGER || tm.year == NA_INTEGER {
-                glibc_fix(&mut tm, &mut invalid);
-            }
-            tm.isdst = -1;
-            if offset != NA_INTEGER {
-                // the offset is known but not the time zone: to time_t,
-                // adjusted, and back
-                // (GNU R's `invalid = true` when mktime0 fails is overwritten
-                // by validate_tm's verdict below, so it is not set here)
-                let mut tm2 = tm.clone();
-                let (t0, _) = mktime0_utc(&mut tm2);
-                if t0 != -1.0 {
-                    // localtime0(&t0, !isUTC = 0, &tm2): gmtime_r. A failed
-                    // one leaves `ptm` NULL in GNU R; a validated tm_year
-                    // always fits, and the year was validated
-                    if let Some(t) = gmtime0(t0 - offset as f64) {
-                        ptm = Some(t);
+    // The conversions run in the session's time zone, which holds the
+    // environment: R code (a warning's handler) must not run meanwhile, so
+    // the warnings, and the error that stops the loop, are raised after it,
+    // in GNU R's order. (The conversions change nothing R code could see.)
+    let converted = {
+        let cx: &Cx = cx;
+        match open_tz(cx, &tz, is_utc) {
+            Err(e) => Err(e),
+            Ok(sess) => {
+                // SET_TZONE: now, in case the conversions change it
+                let tzone: Vec<Vec<u8>> = match &sess {
+                    None => vec![tz.clone()],
+                    Some(s) => {
+                        let [a, b] = s.tzname();
+                        vec![tz.clone(), a, b]
                     }
+                };
+                let mut warnings: Vec<String> = Vec::new();
+                let mut stop: Option<String> = None;
+                let mut rows: Vec<LtRow> = Vec::with_capacity(nn);
+                for i in 0..nn {
+                    let tr = {
+                        let x = args.get(cx, 0).as_vector::<Char<'_>>().unwrap().get(i % n);
+                        let f = args.get(cx, 1).as_vector::<Char<'_>>().unwrap().get(i % m);
+                        if x == cx.na_string() {
+                            None
+                        } else {
+                            let tr = |c: Char<'_>| {
+                                crate::text::to_native(crate::coerce::text(c), loc).map(|b| b.into_owned())
+                            };
+                            Some((tr(x), tr(f)))
+                        }
+                    };
+                    let (na, xs, fs) = match tr {
+                        None => (true, Vec::new(), Vec::new()),
+                        Some((Ok(a), Ok(b))) => (false, a, b),
+                        Some(_) => {
+                            stop = Some("translating strings with \"bytes\" encoding is not allowed".into());
+                            break;
+                        }
+                    };
+                    let mut tm = Tm {
+                        sec: 0,
+                        min: 0,
+                        hour: 0,
+                        year: NA_INTEGER,
+                        mon: NA_INTEGER,
+                        mday: NA_INTEGER,
+                        yday: NA_INTEGER,
+                        wday: NA_INTEGER,
+                        gmtoff: NA_INTEGER as i64,
+                        isdst: -1,
+                    };
+                    let mut psecs = 0.0f64;
+                    let mut offset = NA_INTEGER;
+                    let mut invalid = na;
+                    if !na {
+                        let mut p = Strptime {
+                            tm: &mut tm,
+                            psecs: &mut psecs,
+                            poffset: &mut offset,
+                            wide,
+                            loc: crate::text::ctype(loc),
+                            warnings: Vec::new(),
+                        };
+                        let r = r_strptime(&mut p, &xs, &fs);
+                        warnings.append(&mut p.warnings);
+                        match r {
+                            Ok(ok) => invalid = !ok,
+                            Err(StrptimeError(msg)) => {
+                                stop = Some(msg);
+                                break;
+                            }
+                        }
+                    }
+                    let mut ptm: Option<Tm> = None; // ptm = &tm2 when set
+                    if !invalid {
+                        // Solaris sets missing fields to 0
+                        if tm.mday == 0 {
+                            tm.mday = NA_INTEGER;
+                        }
+                        if tm.mon == NA_INTEGER || tm.mday == NA_INTEGER || tm.year == NA_INTEGER {
+                            glibc_fix(&mut tm, &mut invalid, sess.as_ref());
+                        }
+                        tm.isdst = -1;
+                        if offset != NA_INTEGER {
+                            // the offset is known but not the time zone: to
+                            // time_t, adjusted, and back
+                            // (GNU R's `invalid = true` when mktime0 fails is
+                            // overwritten by validate_tm's verdict below)
+                            let mut tm2 = tm.clone();
+                            let (t0, _) = mktime0(&mut tm2, None);
+                            if t0 != -1.0 {
+                                // offset = -0800 is Seattle; a failed
+                                // localtime0 leaves ptm NULL in GNU R
+                                if let Some(t) = localtime0(t0 - offset as f64, sess.as_ref()) {
+                                    ptm = Some(t);
+                                }
+                            }
+                        } else {
+                            // wday, yday, isdst set, without adjusting the
+                            // structure at DST boundaries
+                            let mut tm2 = tm.clone();
+                            if is_utc {
+                                tm.isdst = 0;
+                            }
+                            // (mktime may fail, e.g. in the spring-forward gap)
+                            if mktime0(&mut tm2, sess.as_ref()).0 != -1.0 {
+                                tm.wday = tm2.wday;
+                                tm.yday = tm2.yday;
+                                // not when the hours or minutes were moved
+                                // across a gap (PR#18581)
+                                if !is_utc && tm.hour == tm2.hour && tm.min == tm2.min {
+                                    tm.isdst = tm2.isdst;
+                                }
+                            }
+                        }
+                        invalid = validate_tm(&mut tm) != 0;
+                    }
+                    let frac = if invalid { NA_REAL } else { psecs - psecs.floor() };
+                    let (zone, gmtoff) = if is_utc {
+                        (tz.clone(), 0)
+                    } else {
+                        // tm.tm_zone (none: strptime sets none), else
+                        // R_tzname[tm.tm_isdst] as the conversions left it
+                        let zone = match &sess {
+                            Some(s) if !invalid && tm.isdst >= 0 => {
+                                let [a, b] = s.tzname();
+                                if tm.isdst == 0 { a } else { b }
+                            }
+                            _ => Vec::new(),
+                        };
+                        (zone, if invalid { NA_INTEGER } else { tm.gmtoff as i32 })
+                    };
+                    rows.push(LtRow { tm: ptm.unwrap_or(tm), valid: !invalid, frac, zone, gmtoff });
                 }
-            } else {
-                // wday, yday, isdst set, without adjusting at DST boundaries
-                let mut tm2 = tm.clone();
-                tm.isdst = 0; // isUTC
-                if mktime0_utc(&mut tm2).0 != -1.0 {
-                    tm.wday = tm2.wday;
-                    tm.yday = tm2.yday;
-                }
+                let set_failed = sess.as_ref().is_some_and(|s| s.set_failed);
+                // reset_tz
+                drop(sess);
+                Ok((tzone, rows, warnings, stop, set_failed))
             }
-            invalid = validate_tm(&mut tm) != 0;
         }
-        let frac = if invalid { NA_REAL } else { psecs - psecs.floor() };
-        rows.push((ptm.unwrap_or(tm), !invalid, frac));
+    };
+    let (tzone, rows, warnings, stop, set_failed) = match converted {
+        Ok(v) => v,
+        Err(e) => return Err(tz_open_error(cx, e, "strptime()")),
+    };
+    tz_warn(cx, set_failed)?;
+    for w in warnings {
+        // (warning() under prepare_reset_tz's context)
+        cx.warning_in_ccode_context(&w)?;
+    }
+    if let Some(msg) = stop {
+        return Err(tz_error(cx, &msg));
     }
     let x = args.root(0);
-    let rows: Vec<LtRow> = rows
-        .into_iter()
-        .map(|(tm, valid, frac)| LtRow { tm, valid, frac, zone: tz.clone(), gmtoff: 0 }) // isUTC
-        .collect();
     cx.scope(|cx, s| {
-        let ans = s.capture(cx, |cx, o| cx.build(o, |cx| make_lt(cx, &rows, std::slice::from_ref(&tz))))?;
+        let ans = s.capture(cx, |cx, o| cx.build(o, |cx| make_lt(cx, &rows, &tzone)))?;
         // END_MAKElt: the year's names are x's, then recycled when N > n
         let nm = names_of(cx, s, x);
         let year = year_of(cx, s, ans);

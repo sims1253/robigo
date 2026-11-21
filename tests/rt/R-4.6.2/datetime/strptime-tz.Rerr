@@ -1,0 +1,3 @@
+Warning message:
+In sp(c("2024 060", "2023 366"), "%Y %j", "Europe/Berlin") :
+  day-of-year 366 in year 2023 is invalid

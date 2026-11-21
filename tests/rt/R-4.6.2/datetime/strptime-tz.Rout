@@ -1,0 +1,129 @@
+$sec
+[1]  0  0  0 NA NA
+
+$min
+[1]  0 30  0 NA NA
+
+$hour
+[1] 12  0  3 NA NA
+
+$mday
+[1]  1  1  5 NA NA
+
+$mon
+[1]  6  0  5 NA NA
+
+$year
+  a   b   c   d   e 
+124 124  45  NA  NA 
+
+$wday
+[1]  1  1  2 NA NA
+
+$yday
+[1] 182   0 155  NA  NA
+
+$isdst
+[1]  1  0  1 -1 -1
+
+$zone
+[1] "CEST" "CET"  "CEMT" ""     ""    
+
+$gmtoff
+[1] NA NA NA NA NA
+
+attr(,"tzone")
+[1] "Europe/Berlin" "CET"           "CEST"         
+attr(,"balanced")
+[1] TRUE
+$sec
+[1] 0 0 0
+
+$min
+[1] 30 30 30
+
+$hour
+[1] 2 1 3
+
+$mday
+[1] 10  3 10
+
+$mon
+[1]  2 10  2
+
+$year
+[1] 124 124 124
+
+$wday
+[1] 0 0 0
+
+$yday
+[1]  69 307  69
+
+$isdst
+[1] -1  0  1
+
+$zone
+[1] ""    "EST" "EDT"
+
+$gmtoff
+[1] NA NA NA
+
+attr(,"tzone")
+[1] "America/New_York" "EST"              "EDT"             
+attr(,"balanced")
+[1] TRUE
+$sec
+[1] 0 0
+
+$min
+[1] 30  0
+
+$hour
+[1]  8 22
+
+$mday
+[1] 1 1
+
+$mon
+[1] 6 6
+
+$year
+[1] 124 124
+
+$wday
+[1] 1 1
+
+$yday
+[1] 182 182
+
+$isdst
+[1] 1 1
+
+$zone
+[1] "" ""
+
+$gmtoff
+[1] NA NA
+
+attr(,"tzone")
+[1] "Europe/Berlin" "CET"           "CEST"         
+attr(,"balanced")
+[1] TRUE
+[1] 56.75
+[1] "JST"
+[1] NA
+[1] "Asia/Tokyo" "JST"        "JDT"       
+[1]  1 NA
+[1] 29 NA
+[1] "ACDT"
+[1] 1
+[1] "Australia/Adelaide" "ACST"               "ACDT"              
+[1] "day-of-year 366 in year 2023 is invalid"
+[1] "day-of-year 366 in year 2022 is invalid"
+[1] "use of %Z for input is not supported"
+[1] "(converted from warning) day-of-year 366 in year 2023 is invalid"
+[1] "day-of-year 366 in year 2023 is invalid"
+[1] "<unset>"
+[1] "2024-07-01 12:00:00 CEST"
+[1] "2024-07-01 12:00 EDT"
