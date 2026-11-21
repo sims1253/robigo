@@ -167,7 +167,15 @@ pub fn install_tr_char<'s>(
     if let Some(w) = w {
         cx.warning(&w)?;
     }
-    cx.install_rooted(s, &name)
+    // (a new symbol's PRINTNAME is the string itself, mark and all, when
+    // no translation was needed: `Cx::install_tr`, names.c:installNoTrChar)
+    let o = s.out(cx);
+    let r = o.root();
+    cx.build(o, |cx| {
+        let ch = c.bind(cx).as_vector::<robigo_rtcore::Char<'_>>().unwrap().get(i);
+        Ok(cx.install_tr(ch, &name)?.into())
+    })?;
+    Ok(r)
 }
 
 /// `translateCharFP(s)`: `s` in the native encoding, or the message of GNU
