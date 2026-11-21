@@ -335,6 +335,8 @@ extra = [
   "call(\"f\", a = 1, b = \"x\")",
   "call(name = \"f\", 1)",
   "call(nme = \"f\")",
+  "call(na = \"f\", 1)",
+  "call(\"f\", nme = 2)",
   "call(\".Internal\", 1)",
   "call(\"\")",
   "call(NA_character_)",

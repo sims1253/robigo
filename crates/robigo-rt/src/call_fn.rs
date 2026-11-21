@@ -15,17 +15,23 @@ pub fn do_call(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: O
             return Err(cx.error_call(Some(call), "'name' is missing"));
         };
         let (e0, tag, rest0) = (s.root(cx, e0), s.root(cx, tag), s.root(cx, rest0));
-        // R: util.c:Rf_check1arg
-        let supplied = tag.bind(cx).as_sym().map(|t| String::from_utf8_lossy(t.name_bytes()).into_owned());
-        if let Some(supplied) = supplied {
-            if !"name".starts_with(&supplied) {
-                let msg = format!("supplied argument name '{supplied}' does not match 'name'");
+        // R: util.c:Rf_check1arg (the tag's bytes compared; a string is made
+        // only for a message)
+        let partial = match tag.bind(cx).as_sym().map(|t| t.name_bytes()) {
+            None => None,
+            Some(b) if !b"name".starts_with(b) => {
+                let msg = format!("supplied argument name '{}' does not match 'name'", String::from_utf8_lossy(b));
                 return Err(cx.error_call(Some(call), &msg));
             }
-            if cx.warn_partial_match_args() && !supplied.is_empty() && supplied.len() < "name".len() {
-                let msg = format!("partial argument match of '{supplied}' to 'name'");
-                cx.warning_call(Some(call), &msg)?;
-            }
+            Some(b) => Some(!b.is_empty() && b.len() < 4),
+        };
+        if partial == Some(true) && cx.warn_partial_match_args() {
+            let supplied = tag
+                .bind(cx)
+                .as_sym()
+                .map_or_else(String::new, |t| String::from_utf8_lossy(t.name_bytes()).into_owned());
+            let msg = format!("partial argument match of '{supplied}' to 'name'");
+            cx.warning_call(Some(call), &msg)?;
         }
         let rfun = s.out(cx).root();
         let o = rfun.reset(cx);
