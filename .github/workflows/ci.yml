@@ -299,7 +299,7 @@ jobs:
   #
   # rt: release tests, the conformance and its observation modes,
   # gctorture, quarantine, pin report, stress, overshoot, E9, the byte-code
-  # crosscheck (about 16 min); then L1's rdb round trip.
+  # crosscheck; then L1's rdb round trip (15.7 min, #910's first run).
   rt:
     needs: [select, rdb-data]
     if: ${{ needs.select.outputs.rt == 'true' }}
@@ -370,7 +370,7 @@ jobs:
 
 
   # the moving collector: its unit tests and the conformance under it with
-  # gctorture (about 19 min, 10 of them that conformance)
+  # gctorture (16.7 min, #910's first run)
   rt-gc-move:
     needs: select
     if: ${{ needs.select.outputs.rt == 'true' }}
@@ -380,7 +380,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 40
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
@@ -405,7 +405,8 @@ jobs:
   # the steps that build with a feature of their own: A4's builtin
   # differential with its planted divergences (robigo-rtbuiltins/diff-plant)
   # and the conformance under retry-torture (robigo-rtcore/retry-torture)
-  # (about 15 min)
+  # (9.1 min in #910's first run, with 23 builtin rows; #887's 87 rows and
+  # plant build add about 4)
   rt-feature-builds:
     needs: [select, builtin-diff-data]
     if: ${{ needs.select.outputs.rt == 'true' }}
@@ -415,7 +416,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 40
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup

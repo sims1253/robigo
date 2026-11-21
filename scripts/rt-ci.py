@@ -315,16 +315,16 @@ def steps(crates):
 # CI's three rt jobs (.github/workflows/ci.yml), each one shard of the
 # steps, built once and run in parallel: before 2026-11-21 one job ran them
 # all in 29-38 minutes, against a 40-minute limit. Each is named for what it
-# runs. Measured on main's 2f16dc4c (minutes, its 8.4-minute release build
-# included where the shard's first cargo step makes it):
+# runs. Their jobs' times in #910's first run (each with its release build,
+# 8.4 minutes of the one job's 35 on main's 2f16dc4c):
 #   modes         release tests, the conformance and its observation modes,
 #                 gctorture, quarantine, the pin report, stress, overshoot,
 #                 E9's small limit and failures, the byte-code crosscheck:
-#                 about 16
+#                 15.7
 #   gc-move       the moving collector, its unit tests and the conformance
-#                 under it with gctorture: about 19
+#                 under it with gctorture: 16.7
 #   feature-builds  the steps that build with a feature of their own: the
-#                 builtin differential's plants, and retry-torture: about 15
+#                 builtin differential's plants, and retry-torture: 9.1
 # The R_HOME tree (seconds) is made in every shard; every other step is in
 # exactly one (scripts/test-rt-ci.py checks both).
 SHARDS = ("modes", "gc-move", "feature-builds")
