@@ -103,7 +103,9 @@ unsafe extern "C" {
 /// library has neither.
 fn c_utf8() -> Option<libc::locale_t> {
     static LOC: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    let l = *LOC.get_or_init(|| {
+    // (under robigo-heap's FORK: a fork mid-initialization would leave the
+    // child waiting)
+    let l = *robigo_heap::once_excluding_fork(&LOC, || {
         // newlocale reads LOCPATH through getenv
         let _env = env_read();
         for name in [c"C.UTF-8", c"C.utf8"] {
@@ -124,7 +126,9 @@ fn c_utf8() -> Option<libc::locale_t> {
 /// [`c_utf8`]'s.
 fn c_locale() -> Option<libc::locale_t> {
     static LOC: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    let l = *LOC.get_or_init(|| {
+    // (under robigo-heap's FORK: a fork mid-initialization would leave the
+    // child waiting)
+    let l = *robigo_heap::once_excluding_fork(&LOC, || {
         // (newlocale reads LOCPATH through getenv)
         let _env = env_read();
         // SAFETY: as in c_utf8.
@@ -309,12 +313,42 @@ compile_error!(
 /// the environment holds it shared for that call ([`env_read`]:
 /// `localtime`, `gmtime`, the `C.UTF-8` locale's `newlocale`,
 /// `passwd_home`, `passwd_name`, `group_name`, `env_locale`, `c_locale`'s
-/// `newlocale`, `default_textdomain_dir`),
+/// `newlocale`, `default_textdomain_dir`; and [`env_vars`]'s listing),
 /// and an [`EnvWriter`] holds it
 /// exclusive. So robigo's own safe wrappers never read while it writes, on
-/// any glibc, with or without isolates. Lock order: the live isolates
-/// (`isolate::LIVE_ISOLATES`), then this, then std's environment lock.
+/// any glibc, with or without isolates. Its place in the process's lock
+/// order, and the fork handlers that hold it across a `fork`: robigo-heap's
+/// `fork.rs`.
 static ENV: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+/// The whole environment, `std::env::vars_os()` read under [`ENV`]
+/// shared: `Sys.getenv()`'s listing, which walks `environ` and so must
+/// not overlap an [`EnvWriter`]'s `setenv` (glibc makes only `getenv` safe
+/// against it). Never while this thread holds an [`EnvWriter`]: the lock
+/// does not nest, and the thread would wait on itself.
+pub fn env_vars() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    let _r = env_read();
+    std::env::vars_os().collect()
+}
+
+/// [`ENV`] exclusive, for the fork handlers (`isolate::fork_take`): across
+/// a fork no reader is inside a C call and no [`EnvWriter`] inside the C
+/// library's `setenv`/`unsetenv`.
+/// [`ENV`]'s address, for a fork test's report of a hung child.
+#[cfg(test)]
+pub(crate) fn env_lock_addr() -> *const () {
+    (&raw const ENV).cast()
+}
+
+pub(crate) fn env_write_lock() -> std::sync::RwLockWriteGuard<'static, ()> {
+    ENV.write().unwrap_or_else(|e| e.into_inner())
+}
+
+/// [`ENV`] shared, held by a test as a reader in a C call would hold it.
+#[cfg(all(test, not(miri)))]
+pub(crate) fn env_read_for_test() -> std::sync::RwLockReadGuard<'static, ()> {
+    env_read()
+}
 
 /// [`ENV`] shared, for a C call that reads the environment. (Never while
 /// this thread holds an [`EnvWriter`]: the lock does not nest.)
@@ -344,13 +378,15 @@ fn parse_glibc_version(v: &[u8]) -> (u32, u32) {
 }
 
 /// The running C library's version (`gnu_get_libc_version`), read once.
-fn glibc_version() -> (u32, u32) {
+pub fn glibc_version() -> (u32, u32) {
     unsafe extern "C" {
         fn gnu_get_libc_version() -> *const libc::c_char;
     }
     static V: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
-    // SAFETY: glibc returns a static NUL-terminated string.
-    *V.get_or_init(|| parse_glibc_version(unsafe { std::ffi::CStr::from_ptr(gnu_get_libc_version()) }.to_bytes()))
+    *robigo_heap::once_excluding_fork(&V, || {
+        // SAFETY: glibc returns a static NUL-terminated string.
+        parse_glibc_version(unsafe { std::ffi::CStr::from_ptr(gnu_get_libc_version()) }.to_bytes())
+    })
 }
 
 /// The embedder's grant of the process environment's writes: what lets an
@@ -372,15 +408,22 @@ impl EnvWrites {
     /// so:
     /// - a read on that thread is sequential with the writes and allowed,
     ///   whatever reads it (C code included);
-    /// - a read on any other thread goes through `std::env`, through this
-    ///   module's guarded wrappers, or through a C library whose `getenv`
-    ///   tolerates a concurrent `setenv` (glibc [`MIN_GLIBC`] or later);
-    /// - nothing walks `environ` by hand on another thread meanwhile.
+    /// - a read on any other thread goes through this module's guarded
+    ///   wrappers, or reads one variable through a C library whose `getenv`
+    ///   tolerates a concurrent `setenv` (glibc [`MIN_GLIBC`] or later),
+    ///   as `std::env::var` does. The writer calls the C library's
+    ///   `setenv` directly and does not take std's lock, so std's lock
+    ///   gives no exclusion from it;
+    /// - nothing walks `environ` on another thread meanwhile: not by hand,
+    ///   and not through `std::env::vars`/`vars_os`, which walk it without
+    ///   this module's lock. robigo's own listing (`Sys.getenv()`) is
+    ///   [`env_vars`], which holds it.
     ///
     /// On a glibc older than [`MIN_GLIBC`] the embedder also assumes that
-    /// no other isolate runs native code while the holder writes, and that
-    /// no thread started by loaded native code reads the environment while
-    /// the isolate may write. (GNU R's rule that R's API belongs to the one
+    /// no other thread reads the environment at all while the isolate may
+    /// write, `std::env::var` included: no other isolate runs native code
+    /// meanwhile, and no thread started by loaded native code or by the
+    /// embedder reads it. (GNU R's rule that R's API belongs to the one
     /// R thread does not cover such threads: a worker can call `getenv`
     /// without touching R's API. This is an assumption, not a consequence.)
     pub unsafe fn assume() -> EnvWrites {
@@ -432,8 +475,11 @@ pub struct EnvWriter<'a> {
 /// and the live isolates.
 pub fn env_writer(cx: &crate::Cx) -> Result<EnvWriter<'_>, EnvWriteRefused> {
     cx.env_writes().ok_or(EnvWriteRefused::NotGranted)?;
+    // read before `LIVE_ISOLATES`: its first read takes robigo-heap's `FORK`,
+    // which comes first in the process's lock order (Sol r5 S10)
+    let glibc = glibc_version();
     let live = crate::isolate::live_isolates();
-    if !env_write_allowed(glibc_version(), *live) {
+    if !env_write_allowed(glibc, *live) {
         return Err(EnvWriteRefused::SeveralIsolates);
     }
     let env = ENV.write().unwrap_or_else(|e| e.into_inner());
@@ -453,37 +499,42 @@ impl EnvWriter<'_> {
     /// (`EINVAL`).
     ///
     /// The environment is process-wide: every isolate (each on its own
-    /// thread) sees the change, as every part of a GNU R process does. Its
-    /// readers are the embedder's to keep safe, as [`EnvWrites::assume`]
-    /// states; this writer adds what robigo itself can: std's readers take
-    /// std's lock, as `set_var` does; this module's C readers hold [`ENV`]
-    /// shared, which the writer holds exclusive; and on a glibc older than
-    /// [`MIN_GLIBC`] no other isolate lives or starts while it writes.
+    /// thread) sees the change, as every part of a GNU R process does.
+    /// - Its readers are the embedder's to keep safe, as
+    ///   [`EnvWrites::assume`] states.
+    /// - This module's C readers hold [`ENV`] shared, which the writer holds
+    ///   exclusive.
+    /// - std's readers (`std::env::var`, under std's own lock) read through
+    ///   glibc's `getenv`, which tolerates this concurrent `setenv` on glibc
+    ///   [`MIN_GLIBC`] and later. On an older one no other isolate lives or
+    ///   starts while the writer writes.
+    ///
+    /// The write is the C library's `setenv`, not `std::env::set_var`: std's
+    /// lock is never taken for writing, so a child forked while a std
+    /// reader held it still writes (robigo-heap's `fork.rs`).
     pub fn set(&self, name: &[u8], value: &[u8]) -> bool {
-        use std::os::unix::ffi::OsStrExt;
         if !env_name_ok(name) || value.contains(&0) {
             return false;
         }
-        // SAFETY: the name and value are ones `set_var` accepts (checked
-        // above). No thread reads the environment unsynchronized: the
-        // embedder's grant (`self._grant`, `EnvWrites::assume`'s contract)
-        // covers every reader of the process; robigo's own are std's (std's
-        // lock) and this module's (ENV, held exclusive by `self`).
-        unsafe { std::env::set_var(std::ffi::OsStr::from_bytes(name), std::ffi::OsStr::from_bytes(value)) };
-        true
+        let (n, v) = (std::ffi::CString::new(name).unwrap(), std::ffi::CString::new(value).unwrap());
+        // SAFETY: two NUL-terminated strings without inner NULs (checked
+        // above), the name without `=`. Concurrent readers as the doc above
+        // says: the grant's contract, ENV held exclusive by `self`, and
+        // glibc's getenv for std's.
+        unsafe { libc::setenv(n.as_ptr(), v.as_ptr(), 1) == 0 }
     }
 
     /// `unsetenv(name)`: remove the process's environment variable `name`;
     /// a name `unsetenv` refuses (`EINVAL`) changes nothing. Readers as for
     /// [`EnvWriter::set`].
     pub fn unset(&self, name: &[u8]) {
-        use std::os::unix::ffi::OsStrExt;
         if !env_name_ok(name) {
             return;
         }
-        // SAFETY: as for `set`: a name `remove_var` accepts; readers by the
-        // grant's contract and the locks `self` holds.
-        unsafe { std::env::remove_var(std::ffi::OsStr::from_bytes(name)) };
+        let n = std::ffi::CString::new(name).unwrap();
+        // SAFETY: as for `set`: a NUL-terminated name without `=`; readers as
+        // `set` says.
+        unsafe { libc::unsetenv(n.as_ptr()) };
     }
 
     /// `getenv(name) != NULL`: whether the environment has `name`, read
@@ -508,28 +559,156 @@ pub struct EnvLocale {
     /// The categories whose locale the C library does not have, in GNU R's
     /// order (main.c's `setlocale` calls): `LC_CTYPE`, `LC_COLLATE`, ...
     pub failed: Vec<&'static str>,
+    /// The names `setlocale(category, NULL)` then gives.
+    pub names: LocaleNames,
+}
+
+/// The C library's locale category numbers (`LocaleNames` takes them).
+pub mod category {
+    pub use libc::{
+        LC_ALL, LC_COLLATE, LC_CTYPE, LC_MEASUREMENT, LC_MESSAGES, LC_MONETARY, LC_NUMERIC, LC_PAPER, LC_TIME, c_int,
+    };
+}
+
+/// The C library's category numbers (glibc's `__LC_LAST` of them, `LC_ALL`
+/// among them) and names, in its order.
+const CATEGORIES: [(libc::c_int, &str); 13] = [
+    (libc::LC_CTYPE, "LC_CTYPE"),
+    (libc::LC_NUMERIC, "LC_NUMERIC"),
+    (libc::LC_TIME, "LC_TIME"),
+    (libc::LC_COLLATE, "LC_COLLATE"),
+    (libc::LC_MONETARY, "LC_MONETARY"),
+    (libc::LC_MESSAGES, "LC_MESSAGES"),
+    (libc::LC_ALL, "LC_ALL"),
+    (libc::LC_PAPER, "LC_PAPER"),
+    (libc::LC_NAME, "LC_NAME"),
+    (libc::LC_ADDRESS, "LC_ADDRESS"),
+    (libc::LC_TELEPHONE, "LC_TELEPHONE"),
+    (libc::LC_MEASUREMENT, "LC_MEASUREMENT"),
+    (libc::LC_IDENTIFICATION, "LC_IDENTIFICATION"),
+];
+
+/// The locale's name per category, as the C library's `setlocale` keeps
+/// them (`_nl_global_locale.__names`): what `setlocale(category, NULL)`
+/// answers. robigo-rt never sets the process's locale; each isolate keeps
+/// the names its R session would have set, and asks the C library to
+/// resolve a new one ([`LocaleNames::set`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocaleNames {
+    /// By the C library's category number (the `LC_ALL` slot unused).
+    names: Vec<Vec<u8>>,
+}
+
+impl Default for LocaleNames {
+    /// GNU R's on the oracle (`LANG=C.UTF-8`): `C.UTF-8` for the
+    /// categories its startup sets, `C` for the rest.
+    fn default() -> LocaleNames {
+        let mut n = LocaleNames::c();
+        for cat in STARTUP_CATEGORIES {
+            n.names[cat.1 as usize] = b"C.UTF-8".to_vec();
+        }
+        n
+    }
+}
+
+/// The categories GNU R's startup sets from the environment, in its
+/// order (main.c's `setlocale(<category>, "")` calls).
+const STARTUP_CATEGORIES: [(&str, libc::c_int, libc::c_int); 7] = [
+    ("LC_CTYPE", libc::LC_CTYPE, libc::LC_CTYPE_MASK),
+    ("LC_COLLATE", libc::LC_COLLATE, libc::LC_COLLATE_MASK),
+    ("LC_TIME", libc::LC_TIME, libc::LC_TIME_MASK),
+    ("LC_MESSAGES", libc::LC_MESSAGES, libc::LC_MESSAGES_MASK),
+    ("LC_MONETARY", libc::LC_MONETARY, libc::LC_MONETARY_MASK),
+    ("LC_PAPER", libc::LC_PAPER, libc::LC_PAPER_MASK),
+    ("LC_MEASUREMENT", libc::LC_MEASUREMENT, libc::LC_MEASUREMENT_MASK),
+];
+
+/// glibc's `_NL_LOCALE_NAME(category)`: the `nl_langinfo` item of a
+/// locale object's name for the category.
+fn nl_locale_name(cat: libc::c_int) -> libc::nl_item {
+    (cat << 16) | 0xffff
+}
+
+impl LocaleNames {
+    /// Every category "C" (a process's names before any `setlocale`).
+    pub fn c() -> LocaleNames {
+        LocaleNames { names: vec![b"C".to_vec(); CATEGORIES.len()] }
+    }
+
+    /// `setlocale(cat, NULL)`: the category's name; for `LC_ALL` the one
+    /// name when every category has it, else glibc's composite
+    /// `LC_CTYPE=...;LC_NUMERIC=...;...`.
+    // (glibc: setlocale.c:new_composite_name)
+    pub fn get(&self, cat: libc::c_int) -> Vec<u8> {
+        assert!(CATEGORIES.iter().any(|c| c.0 == cat), "robigo: locale category {cat} is not the C library's");
+        if cat != libc::LC_ALL {
+            return self.names[cat as usize].clone();
+        }
+        let first = &self.names[libc::LC_CTYPE as usize];
+        let same = CATEGORIES.iter().filter(|c| c.0 != libc::LC_ALL).all(|c| self.names[c.0 as usize] == *first);
+        if same {
+            return if first == b"POSIX" { b"C".to_vec() } else { first.clone() };
+        }
+        let mut s = Vec::new();
+        for (c, name) in CATEGORIES.iter().filter(|c| c.0 != libc::LC_ALL) {
+            s.extend_from_slice(name.as_bytes());
+            s.push(b'=');
+            s.extend_from_slice(&self.names[*c as usize]);
+            s.push(b';');
+        }
+        s.pop();
+        s
+    }
+
+    /// `setlocale(cat, name)` for one category (not `LC_ALL`): the name the
+    /// C library resolves `name` to (the environment's for "", "C" for
+    /// "POSIX"), set and returned; `None`, nothing set, when it has no such
+    /// locale.
+    pub fn set(&mut self, cat: libc::c_int, name: &[u8]) -> Option<Vec<u8>> {
+        let new = resolve(cat, name)?;
+        self.names[cat as usize] = new.clone();
+        Some(new)
+    }
+}
+
+/// The name a `newlocale` of the category for `name` has (`None` when the
+/// C library has no such locale).
+fn resolve(cat: libc::c_int, name: &[u8]) -> Option<Vec<u8>> {
+    // one category (the mask is its bit, glibc's LC_*_MASK)
+    assert!(
+        cat != libc::LC_ALL && CATEGORIES.iter().any(|c| c.0 == cat),
+        "robigo: locale category {cat} is not one of the C library's"
+    );
+    let name = std::ffi::CString::new(name).ok()?;
+    // newlocale(mask, "") reads the environment
+    let _env = env_read();
+    // SAFETY: newlocale makes a new object from a NUL-terminated name and no
+    // base; nl_langinfo_l reads its name, copied before the object is freed.
+    unsafe {
+        let l = libc::newlocale(1 << cat, name.as_ptr(), std::ptr::null_mut());
+        if l.is_null() {
+            return None;
+        }
+        let p = libc::nl_langinfo_l(nl_locale_name(cat), l);
+        let r = (!p.is_null()).then(|| std::ffi::CStr::from_ptr(p).to_bytes().to_vec());
+        libc::freelocale(l);
+        r
+    }
 }
 
 /// [`EnvLocale`] of the process's environment.
 // R: main.c:setup_Rmainloop (the setlocale calls), platform.c:R_check_locale
 pub fn env_locale() -> EnvLocale {
-    let cats: [(&'static str, libc::c_int); 7] = [
-        ("LC_CTYPE", libc::LC_CTYPE_MASK),
-        ("LC_COLLATE", libc::LC_COLLATE_MASK),
-        ("LC_TIME", libc::LC_TIME_MASK),
-        ("LC_MESSAGES", libc::LC_MESSAGES_MASK),
-        ("LC_MONETARY", libc::LC_MONETARY_MASK),
-        ("LC_PAPER", libc::LC_PAPER_MASK),
-        ("LC_MEASUREMENT", libc::LC_MEASUREMENT_MASK),
-    ];
     let mut failed = Vec::new();
     let mut codeset = None;
+    let mut names = LocaleNames::c();
     // newlocale(mask, "") reads LC_ALL, LC_* and LANG through getenv
     let _env = env_read();
-    for (name, mask) in cats {
+    for (name, cat, mask) in STARTUP_CATEGORIES {
         // SAFETY: newlocale makes a new object from a NUL-terminated name
-        // (the environment's, "") and no base; nl_langinfo_l reads it, its
-        // string copied before the object is freed, once.
+        // (the environment's, "") and no base; nl_langinfo_l reads its
+        // codeset and name, each string copied before the object is freed,
+        // once.
         unsafe {
             let l = libc::newlocale(mask, c"".as_ptr(), std::ptr::null_mut());
             if l.is_null() {
@@ -541,6 +720,10 @@ pub fn env_locale() -> EnvLocale {
                 if !p.is_null() {
                     codeset = Some(std::ffi::CStr::from_ptr(p).to_bytes().to_vec());
                 }
+            }
+            let p = libc::nl_langinfo_l(nl_locale_name(cat), l);
+            if !p.is_null() {
+                names.names[cat as usize] = std::ffi::CStr::from_ptr(p).to_bytes().to_vec();
             }
             libc::freelocale(l);
         }
@@ -569,7 +752,7 @@ pub fn env_locale() -> EnvLocale {
     let collate = get("LC_ALL").or_else(|| get("LC_COLLATE")).or_else(|| get("LANG"));
     let collate_c =
         failed.contains(&"LC_COLLATE") || collate.is_none_or(|v| matches!(v.as_encoded_bytes(), b"C" | b"POSIX"));
-    EnvLocale { codeset, collate_c, failed }
+    EnvLocale { codeset, collate_c, failed, names }
 }
 
 unsafe extern "C" {
@@ -605,6 +788,27 @@ pub fn default_textdomain_dir() -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::wcstod_of;
+
+    // (the C library's locale objects are not Miri's)
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn locale_names_are_glibc_s() {
+        use super::{LocaleNames, category as lc};
+        let mut n = LocaleNames::c();
+        assert_eq!(n.get(lc::LC_ALL), b"C");
+        // POSIX is C, and every category the same is the one name
+        assert_eq!(n.set(lc::LC_TIME, b"POSIX"), Some(b"C".to_vec()));
+        assert_eq!(n.get(lc::LC_ALL), b"C");
+        assert_eq!(n.set(lc::LC_TIME, b"xx_NOWHERE"), None);
+        assert_eq!(n.get(lc::LC_TIME), b"C");
+        if n.set(lc::LC_TIME, b"C.UTF-8").is_some() {
+            assert_eq!(
+                n.get(lc::LC_ALL),
+                b"LC_CTYPE=C;LC_NUMERIC=C;LC_TIME=C.UTF-8;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;\
+                  LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C"
+            );
+        }
+    }
 
     // the rule setenv/unsetenv keep, on both sides of the glibc floor
     // and with one isolate or several

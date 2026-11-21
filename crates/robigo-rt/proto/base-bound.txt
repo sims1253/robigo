@@ -119,9 +119,11 @@ closure bindingIsLocked bindenv.R
 closure bindtextdomain stop.R
 closure body formals.R
 closure body<- formals.R
+closure builtins builtins.R
 closure bzfile connections.R
 closure cat cat.R
 closure cbind New-Internal.R
+closure charToRaw raw.R
 closure character vector.R
 closure chkDots warnings.R
 closure close connections.R
@@ -152,6 +154,7 @@ closure duplicated duplicated.R
 closure duplicated.default duplicated.R
 closure dyn.load dynload.R
 closure dynGet namespace.R
+closure eapply eapply.R
 closure encodeString New-Internal.R
 closure endsWith character.R
 closure enquote backquote.R
@@ -443,6 +446,7 @@ closure which which.R
 closure which.max which.R
 closure withCallingHandlers conditions.R
 closure withRestarts conditions.R
+closure withVisible withVisible.R
 closure writeLines connections.R
 closure xtfrm.AsIs sort.R
 closure xtfrm.default sort.R
@@ -641,9 +645,11 @@ internal bindingIsLocked
 internal bindtextdomain
 internal body
 internal bodyCode
+internal builtins
 internal bzfile
 internal cat
 internal cbind
+internal charToRaw
 internal close
 internal colSums
 internal compareNumericVersion
@@ -662,6 +668,7 @@ internal do.call
 internal dput
 internal duplicated
 internal dyn.load
+internal eapply
 internal enableJIT
 internal encodeString
 internal endsWith
@@ -729,6 +736,7 @@ internal list2env
 internal load
 internal load.from.file
 internal loadFromConn2
+internal loadInfoFromConn2
 internal lockBinding
 internal lockEnvironment
 internal ls
@@ -845,6 +853,7 @@ internal vector
 internal warning
 internal which
 internal which.max
+internal withVisible
 internal wrap_meta
 internal writeLines
 internal xzfile

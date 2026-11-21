@@ -399,6 +399,66 @@ fn coerce_error(v: Ref<'_>, ty: u8) -> String {
 /// false skips the `SHALLOW_DUPLICATE_ATTRIB` of the atomic conversions,
 /// for a caller that clears them after (`CLEAR_ATTRIB`).
 // R: coerce.c:coerceVector
+/// allocVector's `intCHARSXP` (memory.c), a type it allocates although no
+/// object has it.
+const INTCHARSXP: u8 = 73;
+
+/// The error of `coercePairList`'s and `coerceVectorList`'s vectorizable
+/// branch (`fun`) for a target other than the atomic types it fills, or None
+/// for those. GNU R allocates `allocVector(type, n)` first, so:
+/// - a type it cannot allocate gets its "invalid type/length" error (an
+///   unnamed code's name is type2char's "unknown type #N");
+/// - CHARSXP gets its defunct error;
+/// - a type it allocates but the switch does not fill (a call, NULL,
+///   intCHARSXP) gets UNIMPLEMENTED_TYPE.
+// R: coerce.c:coercePairList, coerce.c:coerceVectorList, memory.c:allocVector3
+fn vectorizable_refusal(ty: u8, n: usize, fun: &str, v: Ref<'_>) -> Option<String> {
+    Some(match ty {
+        LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP => return None,
+        CHARSXP => "use of allocVector(CHARSXP ...) is defunct\n".into(),
+        LANGSXP | NILSXP | INTCHARSXP => unimplemented_type(fun, v),
+        _ => format!("invalid type/length ({}/{n}) in vector allocation", type2char(ty)),
+    })
+}
+
+/// Whether [`coerce`]`(v, ty)` ends in an error that names `ty` through
+/// `type2char`, as GNU R's does for a target no type names: the C API's
+/// `coerceVector` then gives type2char's warning before it. It follows
+/// [`coerce`]'s dispatch, and is false where that returns or errors before
+/// naming the target:
+/// - a source of that type;
+/// - a package ALTREP vector or an S4 object, which robigo-rt does not
+///   coerce yet;
+/// - an environment ("environments cannot be coerced to other types");
+/// - a vectorizable pairlist or list to a type allocVector accepts but
+///   coercePairList/coerceVectorList does not fill: UNIMPLEMENTED_TYPE.
+///
+/// (compact ALTREP coerces only to types with a name.)
+// R: coerce.c:coerceVector, coerce.c:coercePairList, memory.c:allocVector3
+pub fn error_names_target(v: Ref<'_>, ty: u8) -> bool {
+    let t = v.sexptype();
+    if t == ty || v.is_package_altrep() || (v.is_s4() && t == OBJSXP) || t == ENVSXP {
+        return false;
+    }
+    if matches!(ty, LANGSXP | NILSXP | INTCHARSXP) {
+        let mut items = Vec::new();
+        if matches!(t, NILSXP | LISTSXP) {
+            let mut c = v.as_cons();
+            while let Some(cell) = c {
+                items.push(cell.car());
+                c = cell.cdr().as_cons();
+            }
+        } else if t == VECSXP {
+            let l = v.as_vector::<Ref<'_>>().unwrap();
+            items.extend((0..l.len()).map(|i| l.get(i)));
+        } else {
+            return true;
+        }
+        return !vectorizable(&items);
+    }
+    true
+}
+
 pub fn coerce<'g>(cx: &'g Cx, v: Ref<'g>, ty: u8, keep_attrs: bool) -> Result<Coerced<'g>, NeedGc> {
     let t = v.sexptype();
     if t == ty {
@@ -836,8 +896,8 @@ fn coerce_pairlist<'g>(cx: &'g Cx, v: Ref<'g>, ty: u8) -> Result<Coerced<'g>, Ne
             Err(m) => return fail(m),
         }
     } else if pairs && vectorizable(&items) {
-        if !matches!(ty, LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP) {
-            return fail(unimplemented_type("coercePairList", v));
+        if let Some(m) = vectorizable_refusal(ty, items.len(), "coercePairList", v) {
+            return fail(m);
         }
         from_scalars(cx, &items, ty, &a, &mut w)?
     } else {
@@ -888,8 +948,8 @@ fn coerce_vector_list<'g>(cx: &'g Cx, v: Ref<'g>, ty: u8) -> Result<Coerced<'g>,
             Err(m) => return fail(m),
         }
     } else if v.sexptype() == VECSXP && vectorizable(&items) {
-        if !matches!(ty, LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP) {
-            return fail(unimplemented_type("coerceVectorList", v));
+        if let Some(m) = vectorizable_refusal(ty, items.len(), "coerceVectorList", v) {
+            return fail(m);
         }
         from_scalars(cx, &items, ty, &a, &mut w)?
     } else {

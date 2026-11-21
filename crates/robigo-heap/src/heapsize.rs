@@ -259,7 +259,8 @@ fn atof(s: &str) -> f64 {
 
 fn settings() -> &'static Settings {
     static S: std::sync::OnceLock<Settings> = std::sync::OnceLock::new();
-    S.get_or_init(|| {
+    // (under FORK: a fork mid-initialization would leave the child waiting)
+    crate::fork::once_excluding_fork(&S, || {
         let (vsize, nsize, max_vsize) = size_from_env();
         // (grow fraction, node and vector grow increment fractions)
         let mut grow_frac = 0.70;

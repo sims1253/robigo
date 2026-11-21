@@ -132,6 +132,8 @@ fn main() {
     let manifest = std::fs::read_to_string(rest[0]).expect("read manifest");
     let stdout = std::io::stdout();
     let file = std::fs::File::create(rest[1]).ok();
+    // the parser's batch tool: one thread, no runtime and no robigo lock
+    #[allow(clippy::disallowed_methods)]
     let mut out: Box<dyn Write> = if rest[1] == "-" {
         Box::new(BufWriter::new(stdout.lock()))
     } else {

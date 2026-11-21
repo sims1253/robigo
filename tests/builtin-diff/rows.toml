@@ -107,7 +107,7 @@ domain = { f = ["@any", "=factor(c(1, 2, 1, 2, 1, 2, 1, 2, 1, 2))"] }
   "lapply", "rep", "vapply"
 ]
 "Env, Calls or External: A4's second PR" = [
-  "...elt", "...length", "...names", "Sys.getenv", "as.POSIXct", "as.environment", "assign",
+  "...elt", "...length", "...names", "Sys.getenv", "Sys.getlocale", "Sys.setlocale", "as.POSIXct", "as.environment", "assign",
   "bindingIsLocked", "bindtextdomain", "copyDFattr", "delayedAssign", "do.call", "env.profile",
   "env2list", "environment", "environmentIsLocked", "exists", "get", "get0", "getBindingType",
   "getOption", "list2env", "lockBinding", "lockEnvironment", "ls", "makeActiveBinding", "mapply",

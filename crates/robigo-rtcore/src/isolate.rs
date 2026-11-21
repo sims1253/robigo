@@ -117,6 +117,8 @@ pub struct Isolate {
     /// The evaluator, dispatcher and condition system (`hooks.rs`).
     pub(crate) hooks: Cell<Hooks>,
     pub(crate) locale: Cell<Locale>,
+    /// The locale's names per category (`Sys.getlocale`).
+    pub(crate) locale_names: std::cell::RefCell<crate::clib::LocaleNames>,
     /// The embedder's grant of the process environment's writes
     /// (`clib::EnvWrites`, [`OwnedIsolate::grant_env_writes`]): without
     /// it `Sys.setenv`/`Sys.unsetenv` refuse.
@@ -578,6 +580,23 @@ impl Cx {
         self.cglobals().set_locale(l);
     }
 
+    /// The locale's names per category, as `setlocale(category, NULL)`
+    /// gives them (`Sys.getlocale`).
+    pub fn locale_names(&self) -> crate::clib::LocaleNames {
+        self.iso().locale_names.borrow().clone()
+    }
+
+    /// One category's locale name, `setlocale(cat, NULL)`
+    /// ([`crate::clib::LocaleNames::get`]).
+    pub fn locale_name(&self, cat: crate::clib::category::c_int) -> Vec<u8> {
+        self.iso().locale_names.borrow().get(cat)
+    }
+
+    /// Set the locale's names (startup's, `Sys.setlocale`'s).
+    pub fn set_locale_names(&mut self, n: crate::clib::LocaleNames) {
+        *self.iso().locale_names.borrow_mut() = n;
+    }
+
     /// GNU R's `R_warn_partial_match_args`: argument matching warns of
     /// partial matches (`options(warnPartialMatchArgs = TRUE)`).
     #[inline(always)]
@@ -996,15 +1015,79 @@ impl Drop for EndCallback {
 /// clib's environment lock, for a whole `Sys.setenv`/`Sys.unsetenv` call,
 /// so on a glibc older than `clib::MIN_GLIBC` no second isolate starts (and
 /// so no other robigo thread can be inside `getenv`) while the environment
-/// changes. Lock order: this, then clib's `ENV`, then std's environment
-/// lock.
+/// changes. It is first in the process's lock order, and the fork handlers
+/// hold it across a `fork` (robigo-heap's `fork.rs`). In a forked child
+/// the count still includes the other threads' isolates, which the child
+/// does not have; on an older glibc that only refuses environment writes
+/// there.
 static LIVE_ISOLATES: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
 
 /// [`LIVE_ISOLATES`] locked (a panic while it was held left a count that
 /// is still right: nothing panics between its reads and writes).
+/// [`LIVE_ISOLATES`]' address, for a fork test's report of a hung child.
+#[cfg(test)]
+pub(crate) fn live_isolates_addr() -> *const () {
+    (&raw const LIVE_ISOLATES).cast()
+}
+
 pub(crate) fn live_isolates() -> std::sync::MutexGuard<'static, usize> {
     LIVE_ISOLATES.lock().unwrap_or_else(|e| e.into_inner())
 }
+
+/// The guards `fork_take` holds across a fork, released by `fork_release`
+/// on both sides: only the forking thread touches them, between the two
+/// handlers.
+struct ForkGuards(
+    std::cell::UnsafeCell<Option<(std::sync::MutexGuard<'static, usize>, std::sync::RwLockWriteGuard<'static, ()>)>>,
+);
+
+// SAFETY: written by a fork's `prepare` handler and read by the same fork's
+// `parent` or `child` handler, on the forking thread (the C library runs
+// them around `fork`). Two forks on two threads never overlap here:
+// robigo-heap's `FORK` lock, taken first in `prepare` and released last
+// after `parent`/`child`, serializes whole forks, so one fork's handlers
+// alone reach the slot at a time.
+unsafe impl Sync for ForkGuards {}
+
+static FORK_GUARDS: ForkGuards = ForkGuards(std::cell::UnsafeCell::new(None));
+
+/// The fork handlers' `prepare` for this crate's locks, in the process's
+/// order (robigo-heap's `fork.rs`): the live isolates, then the
+/// environment's lock exclusive.
+fn fork_take() {
+    let live = live_isolates();
+    let env = crate::clib::env_write_lock();
+    // SAFETY: as for `ForkGuards`: this fork alone, under `FORK`; the slot
+    // is empty (the previous fork's `fork_release` took it).
+    unsafe { *FORK_GUARDS.0.get() = Some((live, env)) };
+}
+
+/// The fork handlers' `parent` and `child` for this crate's locks: the
+/// reverse order (`ENV`, then the live isolates). In the child the forking
+/// thread is the guards' owner, so unlocking is its own.
+fn fork_release() {
+    // SAFETY: as for `ForkGuards`.
+    if let Some((live, env)) = unsafe { (*FORK_GUARDS.0.get()).take() } {
+        drop(env);
+        drop(live);
+    }
+}
+
+/// The constructor: this crate's locks given to the fork handlers before
+/// `main`, while the process has one thread, so no fork can see one held
+/// before the handlers know it.
+#[cfg(all(target_os = "linux", not(miri)))]
+extern "C" fn set_fork_locks_at_load() {
+    robigo_heap::set_fork_locks(fork_take, fork_release);
+}
+
+// SAFETY: an `.init_array` entry is a function of no arguments that the
+// loader calls once, before `main`; `set_fork_locks_at_load` stores two
+// atomics and needs nothing of std's runtime.
+#[cfg(all(target_os = "linux", not(miri)))]
+#[used]
+#[unsafe(link_section = ".init_array")]
+static SET_FORK_LOCKS_AT_LOAD: extern "C" fn() = set_fork_locks_at_load;
 
 /// [`LIVE_ISOLATES`] if no one holds it (a test's probe).
 #[cfg(test)]
@@ -1051,6 +1134,12 @@ impl OwnedIsolate {
     }
 
     pub fn with_options(opts: Options) -> OwnedIsolate {
+        // the fork handlers know this crate's locks before this isolate
+        // takes one. The constructor did it before `main`; this repeats it
+        // in case a linker dropped the constructor. That fallback is
+        // best-effort: another thread that already held one of these locks
+        // before this first call could still be caught by a fork.
+        robigo_heap::set_fork_locks(fork_take, fork_release);
         // counted before it can run anything (an environment write waits);
         // a panic below takes the count back
         let registration = Registration::new();
@@ -1094,6 +1183,7 @@ impl OwnedIsolate {
             ext_index: UnsafeCell::new(Vec::new()),
             hooks: Cell::new(Hooks::default()),
             locale: Cell::new(opts.locale),
+            locale_names: Default::default(),
             env_writes: std::cell::OnceCell::new(),
             warn_partial_match_args: Cell::new(false),
             no_inplace: Cell::new(false),

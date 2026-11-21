@@ -1205,12 +1205,18 @@ fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: 
             _ => None,
         };
         // a local of the running closure: its slot, directly
-        if let Some(x) = scalar
-            && slot != 0
-        {
+        if slot != 0 {
             // SAFETY: an immortal symbol, the rooted environment and the
-            // code's shape; the slot index was compiled for that shape.
-            if unsafe { cx.frame_store_scalar_raw(act.rho(), shape, slot as usize - 1, sym, x) } {
+            // code's shape; the slot index was compiled for that shape; a
+            // register's object is live.
+            let stored = unsafe {
+                match (scalar, v.as_object()) {
+                    (Some(x), _) => cx.frame_store_scalar_raw(act.rho(), shape, slot as usize - 1, sym, x),
+                    (None, Some(o)) => store_object_slot(cx, act.rho(), shape, slot as usize - 1, sym, o),
+                    (None, None) => false,
+                }
+            };
+            if stored {
                 return Ok(());
             }
         }
@@ -1239,6 +1245,17 @@ fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: 
     act.clear(R_SCRATCH2);
     res?;
     Ok(())
+}
+
+/// [`Cx::frame_store_object_raw`] for [`set_var`], out of `run`'s way (an
+/// inline object store cost every call row two instructions).
+///
+/// # Safety
+/// As for [`Cx::frame_store_object_raw`].
+#[inline(never)]
+unsafe fn store_object_slot(cx: &Cx, rho: Sexp, shape: Sexp, index: usize, sym: Sexp, o: Sexp) -> bool {
+    // SAFETY: the caller's contract.
+    unsafe { cx.frame_store_object_raw(rho, shape, index, sym, o) }
 }
 
 /// `asLogicalNoNA(s, call)` for register `r`: the condition of `if` and
