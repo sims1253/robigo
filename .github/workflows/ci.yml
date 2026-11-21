@@ -9,18 +9,32 @@ on:
   pull_request:
   workflow_dispatch:
 
-# One group per pull request, `ci-pr-<number>`, with cancel-in-progress: a
-# new push cancels the pull request's older run at once, before any runner
-# is free, so its heavy jobs stop taking runners. (Until 2026-11-21 the
-# cancel was `select`'s first step, which ran only when the new run got its
-# first runner: in a full pool both runs kept queueing until then.) The
-# cancelled run's `Check` still runs (`always()`) and fails on its cancelled
-# needs (what it certifies: the `check` job's comment), and holds the group
-# until it has had a runner: the new run waits that long, as it waited for
-# `select` before.
-# Main's push runs share one group, `ci-main`, without cancel-in-progress
-# (#927): a started run always finishes, a newer push replaces the pending
-# one. A manual dispatch has a group of its own.
+# A pull request's runs share one group, `ci-pr-<number>`, with
+# cancel-in-progress: a new push cancels the pull request's older run at
+# once, before any runner is free, so its heavy jobs stop taking runners.
+# (Until 2026-11-21 the cancel was `select`'s first step, which ran only when
+# the new run got its first runner: in a full pool both runs kept queueing
+# until then.) The cancelled run's `Check` still runs (`always()`) and fails
+# on its cancelled needs (what it certifies: the `check` job's comment), and
+# holds the group until it has had a runner: the new run waits that long, as
+# it waited for `select` before. A re-run of a superseded run re-enters
+# `ci-pr-<number>` and cancels the run in progress: re-run only the newest.
+#
+# Main's push runs share one group, `ci-main`. Without cancel-in-progress,
+# GitHub keeps the run in progress and at most one pending: a newer push
+# replaces the pending run, so a burst of merges runs the newest commit
+# next, and the group never cancels a started run. (Until 2026-11-21 every
+# main commit had a group of its own, because its run published the perf
+# baseline that pull requests compared with; since #901 a pull request's
+# perf measures its own base, and no pull request reads that baseline. On
+# 2026-11-21 one merge every 15.5 minutes queued main runs hours behind.)
+# What still reads main's runs needs a recent completed run, not every
+# commit: the progress history (scripts/history.py records each completed
+# run), the nightly packages binary (the newest successful run's), and the
+# caches only main saves. What a skipped commit loses: its point in the
+# history, and a breakage on main names a range of commits, not one.
+#
+# A manual dispatch has a group of its own.
 concurrency:
   group: ci-${{ github.event_name == 'push' && 'main' || github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

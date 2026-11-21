@@ -77,25 +77,59 @@ fn hung_child_report(pid: i32, steps_rd: i32) -> String {
 /// Abort the whole test process if `done` is not set within `secs`: a fork
 /// that never returns (a `prepare` handler stuck on a lock) hangs before any
 /// deadline of the caller's could run.
-pub(crate) fn watchdog(what: &'static str, secs: u64) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+/// The watchdog is disarmed when its guard drops, so a test that fails
+/// (rather than hangs) ends with its own panic, not an abort later on.
+pub(crate) fn watchdog(what: &'static str, secs: u64) -> Watchdog {
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let d = std::sync::Arc::clone(&done);
     std::thread::spawn(move || {
         let until = Instant::now() + Duration::from_secs(secs);
-        while Instant::now() < until {
-            if d.load(std::sync::atomic::Ordering::SeqCst) {
-                return;
+        // (the flag read after the last sleep too: a guard dropped during
+        // it disarms)
+        while !d.load(std::sync::atomic::Ordering::SeqCst) {
+            if Instant::now() >= until {
+                abort_saying(&format!("{what}: no progress in {secs} s (a fork or its handlers hung)\n"));
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        // raw `write(2)`, not `eprintln!`: std's stderr lock may be the one
-        // that is stuck, and the abort must not wait on it
-        let msg = format!("{what}: no progress in {secs} s (a fork or its handlers hung)\n");
+    });
+    Watchdog(done)
+}
+
+/// Abort the process, saying why on fd 2 if that does not block: the raw
+/// `write(2)` (not `eprintln!`: std's stderr lock may be the stuck one)
+/// runs on a thread of its own, and the abort follows a short wait whether
+/// or not it finished (a full stderr pipe can block it).
+pub(crate) fn abort_saying(msg: &str) -> ! {
+    let msg = msg.to_owned();
+    // the message from a thread of its own, the abort after a short wait
+    // whether or not the write finished (a full stderr pipe can block it
+    // even after `poll` said there was room; Sol S4)
+    // (a thread the system refuses only loses the message)
+    let _ = std::thread::Builder::new().spawn(move || {
         // SAFETY: a live buffer to fd 2.
         unsafe { libc::write(2, msg.as_ptr().cast(), msg.len()) };
-        std::process::abort();
     });
-    done
+    std::thread::sleep(Duration::from_millis(200));
+    std::process::abort();
+}
+
+/// [`watchdog`]'s guard: dropping it disarms the watchdog.
+pub(crate) struct Watchdog(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for Watchdog {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Wait for a killed child to end (`waitpid`, again after a signal).
+pub(crate) fn reap(pid: i32) {
+    let mut status = 0;
+    // SAFETY: our own child; `status` is writable.
+    while unsafe { libc::waitpid(pid, &mut status, 0) } == -1
+        && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR)
+    {}
 }
 
 /// The fork tests, one at a time: each forks while its own lock is held,
@@ -104,6 +138,48 @@ pub(crate) fn watchdog(what: &'static str, secs: u64) -> std::sync::Arc<std::syn
 fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
     static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     ONE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Wait up to 20 s for the child `pid` (which reports its steps to the
+/// pipe `fds`), close the pipe, and give its status. A child that never
+/// finishes is killed and reaped, and the test fails, saying where it hung.
+fn wait_for_child(what: &str, pid: i32, fds: [i32; 2]) -> i32 {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut status = 0;
+    loop {
+        // SAFETY: `pid` is this process's child; `status` is writable.
+        let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+        if r == pid {
+            break;
+        }
+        assert!(r == 0, "{what}: waitpid failed: {}", std::io::Error::last_os_error());
+        if Instant::now() > deadline {
+            let report = hung_child_report(pid, fds[0]);
+            // SAFETY: our own child, killed and reaped; the pipe's ends, ours.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+                reap(pid);
+                libc::close(fds[0]);
+                libc::close(fds[1]);
+            }
+            panic!("{what}: the child never finished: {report}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // SAFETY: the pipe's two ends, ours.
+    unsafe {
+        libc::close(fds[0]);
+        libc::close(fds[1]);
+    }
+    status
+}
+
+/// A pipe for a child's step reports (`child_work`).
+fn step_pipe(what: &str) -> [i32; 2] {
+    let mut fds = [0i32; 2];
+    // SAFETY: a two-int array for the pipe's ends.
+    assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_NONBLOCK | libc::O_CLOEXEC) }, 0, "{what}: pipe");
+    fds
 }
 
 /// Fork while another thread holds a lock (`hold` returns its guard), and
@@ -125,7 +201,7 @@ fn fork_while_held<G: 'static>(what: &'static str, hold: fn() -> G) {
     // (`with_options` repeats the constructor's `set_fork_locks`), so the
     // test means the same if a linker dropped the constructor
     drop(OwnedIsolate::new());
-    let done = watchdog(what, 60);
+    let _dog = watchdog(what, 60);
     let (held_tx, held_rx) = mpsc::channel();
     let before = robigo_heap::fork_prepares();
     let holder = std::thread::spawn(move || {
@@ -138,9 +214,7 @@ fn fork_while_held<G: 'static>(what: &'static str, hold: fn() -> G) {
         drop(g);
     });
     held_rx.recv().unwrap();
-    let mut fds = [0i32; 2];
-    // SAFETY: a two-int array for the pipe's ends.
-    assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_NONBLOCK | libc::O_CLOEXEC) }, 0, "{what}: pipe");
+    let fds = step_pipe(what);
     // SAFETY: the child runs `child_work` and exits without returning into
     // the test harness (`_exit`).
     let pid = unsafe { libc::fork() };
@@ -151,35 +225,7 @@ fn fork_while_held<G: 'static>(what: &'static str, hold: fn() -> G) {
         unsafe { libc::_exit(s) };
     }
     holder.join().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let mut status = 0;
-    loop {
-        // SAFETY: `pid` is this process's child; `status` is writable.
-        let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
-        if r == pid {
-            break;
-        }
-        assert!(r == 0, "{what}: waitpid failed: {}", std::io::Error::last_os_error());
-        if Instant::now() > deadline {
-            // SAFETY: our own child.
-            let report = hung_child_report(pid, fds[0]);
-            // SAFETY: our own child, killed and reaped; the pipe's ends, ours.
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
-                libc::waitpid(pid, &mut status, 0);
-                libc::close(fds[0]);
-                libc::close(fds[1]);
-            }
-            panic!("{what}: the child forked while another thread held it never finished: {report}");
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    done.store(true, std::sync::atomic::Ordering::SeqCst);
-    // SAFETY: the pipe's two ends, ours.
-    unsafe {
-        libc::close(fds[0]);
-        libc::close(fds[1]);
-    }
+    let status = wait_for_child(what, pid, fds);
     assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "{what}: the child failed (status {status})");
 }
 
@@ -203,6 +249,62 @@ fn a_child_forked_while_the_symbol_arena_is_locked_interns() {
     // SAFETY: the holder thread interns nothing while it holds the lock and
     // drops the guard on its own thread.
     fork_while_held("the arena", || unsafe { robigo_heap::hold_arena_lock_for_test() });
+}
+
+/// A fork that fails still runs the `parent` handler, which releases every
+/// lock `prepare` took (glibc: `fork` returning EAGAIN runs prepare, then
+/// parent). A process limited to no processes (RLIMIT_NPROC 0; a root
+/// process drops to `nobody` first, root being exempt) fails a fork and
+/// then must still start an isolate, write the environment and intern.
+#[test]
+fn a_failed_fork_releases_the_locks() {
+    let _one = one_at_a_time();
+    drop(OwnedIsolate::new());
+    let _dog = watchdog("a failed fork", 60);
+    let fds = step_pipe("a failed fork");
+    // SAFETY: the child (one thread) runs the code below and exits without
+    // returning into the test harness.
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0, "a failed fork: the outer fork failed: {}", std::io::Error::last_os_error());
+    if pid == 0 {
+        // SAFETY: plain system calls in a one-thread child; `_exit` ends it.
+        unsafe {
+            if libc::geteuid() == 0 && (libc::setgid(65534) != 0 || libc::setuid(65534) != 0) {
+                libc::_exit(3);
+            }
+            let none = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+            // the handlers must have run around the failed fork: `prepare`
+            // took every lock and `parent` released it
+            let before = robigo_heap::fork_prepares();
+            if libc::setrlimit(libc::RLIMIT_NPROC, &none) != 0 {
+                libc::_exit(4);
+            }
+            match libc::fork() {
+                // (the fork was to fail: a grandchild ends at once)
+                0 => libc::_exit(5),
+                p if p > 0 => libc::_exit(6),
+                _ => {}
+            }
+            if std::io::Error::last_os_error().raw_os_error() != Some(libc::EAGAIN) {
+                libc::_exit(7);
+            }
+            if robigo_heap::fork_prepares() != before + 1 {
+                libc::_exit(8);
+            }
+        }
+        let s = child_work(fds[1]);
+        // SAFETY: ends the child at once.
+        unsafe { libc::_exit(s) };
+    }
+    let status = wait_for_child("a failed fork", pid, fds);
+    // 3, 4: the child could not drop its rights or set the limit; 5, 6: the
+    // fork it meant to fail succeeded; 7: it failed for another reason; 8:
+    // no `prepare` ran around it
+    assert!(
+        libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+        "a failed fork: the child failed (status {status}, exit {})",
+        libc::WEXITSTATUS(status)
+    );
 }
 
 /// std's stdout lock, held by a thread that writes (another isolate's
@@ -234,7 +336,7 @@ fn a_child_forked_while_stderr_is_locked_tears_its_isolate_down() {
 fn a_fork_during_a_lazy_initializer_waits_for_it() {
     static CELL: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     let _one = one_at_a_time();
-    let done = watchdog("a lazy initializer", 60);
+    let _dog = watchdog("a lazy initializer", 60);
     let (inside_tx, inside_rx) = mpsc::channel();
     let initer = std::thread::spawn(move || {
         robigo_heap::once_excluding_fork(&CELL, || {
@@ -268,12 +370,11 @@ fn a_fork_during_a_lazy_initializer_waits_for_it() {
             // SAFETY: our own child, killed and reaped.
             unsafe {
                 libc::kill(pid, libc::SIGKILL);
-                libc::waitpid(pid, &mut status, 0);
+                reap(pid);
             }
             panic!("the child forked during a lazy initializer never finished");
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    done.store(true, std::sync::atomic::Ordering::SeqCst);
     assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "the child failed (status {status})");
 }

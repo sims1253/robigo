@@ -176,8 +176,9 @@ class Rule(unittest.TestCase):
         wf = (HERE.parent / ".github/workflows/ci.yml").read_text()
         self.assertIn("    name: Check\n    if: ${{ always() }}\n", wf)
         # a pull request's runs share one group that cancels the older run at
-        # once; main's push runs share one that never cancels a started run;
-        # a manual dispatch has its own
+        # once; main's push runs share one that never cancels a started run
+        # (a newer push replaces only the pending one); a manual dispatch has
+        # its own
         self.assertIn("  group: ci-${{ github.event_name == 'push' && 'main' || github.event_name == 'pull_request' "
                       "&& format('pr-{0}', github.event.pull_request.number) || github.run_id }}\n"
                       "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n", wf)

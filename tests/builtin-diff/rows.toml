@@ -319,6 +319,12 @@ extra = ["(function(n) if (n <= 1) 1 else n * Recall(n - 1))(5)", "(function(...
 special = true
 effect = "Pure"
 
+# (E's eval.c PR: evaluates nothing, returns NULL invisibly)
+[declare]
+special = true
+effect = "Pure"
+extra = ["declare(stop(\"not evaluated\"))", "withVisible(declare(x = 1))", "(function(...) declare(...))(stop(\"no\"))"]
+
 ["@"]
 special = true
 effect = "Pure"
@@ -339,6 +345,25 @@ domain = { "#1" = ["@any"], "#2" = ["@any", "<missing>", "=c(TRUE, FALSE)", "=\"
 [enc2native]
 
 [enc2utf8]
+
+# ---- E's eval.c PR: the isolate's math thread counts (1 and 1 at startup;
+# each case is a fresh process, so a case sees only its own calls) ---------
+# Known failure, #48 of each (latin1): GNU R's asInteger errors in
+# isBlankString's Mbrtowc ("invalid multibyte string at '<e9>'"), robigo-rt's
+# shared coercion (robigo-text strtod's is_blank) reads bytes and warns.
+[setNumMathThreads]
+args = ["n"]
+domain = { n = ["=4L", "=0L", "=1L", "=-1L", "intNA", "=6.9", "=TRUE", "a", "NULL", "=list(2L)", "=1:3", "@any"] }
+extra = [
+  "c(.Internal(setMaxNumMathThreads(8L)), .Internal(setNumMathThreads(4L)), .Internal(setNumMathThreads(9L)), .Internal(setNumMathThreads(0L)))",
+]
+
+[setMaxNumMathThreads]
+args = ["n"]
+domain = { n = ["=8L", "=0L", "=1L", "=-2L", "intNA", "=6.9", "=\"2\"", "a", "NULL", "=list(2L)", "=1:3", "@any"] }
+extra = [
+  "c(.Internal(setMaxNumMathThreads(8L)), .Internal(setNumMathThreads(6L)), .Internal(setMaxNumMathThreads(3L)), .Internal(setNumMathThreads(1L)))",
+]
 
 # ---- registry builtins with no row yet, by reason (check-rows) ----------------
 
