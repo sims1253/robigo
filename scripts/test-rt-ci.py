@@ -144,6 +144,108 @@ class RtCi(unittest.TestCase):
         # a plain run has no budget
         self.assertNotIn("budget", rt.timings_report([("release tests", at * 3, True)]))
 
+    def test_the_case_times_report_lists_the_cases_over_half_their_limit(self):
+        import tempfile
+        path = os.path.join(tempfile.mkdtemp(), "t.tsv")
+        with open(path, "w") as f:
+            f.write("# secs\tlimit\tstatus\tcase\n"
+                    "503.0\t600\tpass\ttests/rt/jit/serialize-write.R\n"
+                    "301.0\t600\tfail\ttests/rt/a.R\n"
+                    "300.0\t600\tpass\ttests/rt/half.R\n"
+                    "11.0\t20\tpass\ttests/rt/b.R\n"
+                    "0.4\t20\tpass\ttests/rt/c.R\n")
+        self.assertEqual([r[3] for r in rt.slow_cases(path)],
+                         ["tests/rt/jit/serialize-write.R", "tests/rt/a.R", "tests/rt/b.R"])
+        report = rt.slow_cases_report("conformance under x", path)
+        self.assertIn("3 case(s) over 50% of their limit", report)
+        self.assertIn("  503.0 s of  600 s  pass  tests/rt/jit/serialize-write.R", report)
+        self.assertIn("no case over", rt.slow_cases_report("y", os.path.join(os.path.dirname(path), "none.tsv")))
+
+    def test_every_conformance_step_writes_its_case_times_and_lists_them_even_when_it_fails(self):
+        # the runner's ROBIGO_CONF_TIMES_REPORT, a file per step, for every
+        # conformance step rt-ci runs (the shards', the nightly's): not for
+        # a step that runs no conformance
+        from unittest import mock
+        import contextlib, io, tempfile
+        seen = []
+
+        def fake(cmd, cwd, env):
+            seen.append(env.get("ROBIGO_CONF_TIMES_REPORT"))
+            if env.get("ROBIGO_CONF_TIMES_REPORT"):
+                with open(env["ROBIGO_CONF_TIMES_REPORT"], "w") as f:
+                    f.write("# secs\tlimit\tstatus\tcase\n700.0\t600\tfail\ttests/rt/x.R\n")
+            return mock.Mock(returncode=0 if len(seen) == 1 else 1)
+        plan = [("crates' tests", {}, ["cargo", "test", "--", "--skip", rt.CONFORMANCE]),
+                ("conformance under gctorture (E3)", {}, rt.conformance_command())]
+        out = io.StringIO()
+        with mock.patch.object(rt, "TIMES_DIR", tempfile.mkdtemp()), mock.patch.object(rt.subprocess, "run", fake), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(rt.run_steps(plan, []), 1)
+        self.assertIsNone(seen[0])
+        self.assertTrue(seen[1] and seen[1].endswith("01-conformance-under-gctorture-E3.tsv"), seen)
+        # two titles that differ only in punctuation get two files
+        self.assertNotEqual(rt.times_file(3, "conformance under X=1"), rt.times_file(4, "conformance under X-1"))
+        # and every step of every shard has a file of its own
+        crates = ["robigo-heap", "robigo-rt", "robigo-rtapi", "robigo-rtcore"]
+        for shard in rt.SHARDS:
+            plan = rt.shard_steps(crates, shard)
+            files = [rt.times_file(i, t) for i, (t, _, _) in enumerate(plan)]
+            self.assertEqual(len(files), len(set(files)), shard)
+        self.assertIn("1 case(s) over 50% of their limit", out.getvalue())
+        self.assertIn("tests/rt/x.R", out.getvalue())
+        # the nightly's full-move step is a conformance step like the others
+        for _, _, cmd in rt.full_move_steps():
+            self.assertTrue(rt.CONFORMANCE in cmd and "--exact" in cmd)
+
+    def test_the_free_space_floor_measures_a_path_that_does_not_exist_yet_at_its_ancestor(self):
+        # cargo's target directory does not exist on a fresh checkout (CI's
+        # first build): its volume is measured at the nearest ancestor
+        from unittest import mock
+        import collections, contextlib, io, tempfile
+        base = tempfile.mkdtemp()
+        missing = os.path.join(base, "target")
+        deeper = os.path.join(base, "no", "such", "target")
+        self.assertEqual(rt.existing_ancestor(missing), base)
+        self.assertEqual(rt.existing_ancestor(deeper), base)
+        self.assertIsNone(rt.free_space_problem([missing, deeper], 0.0))
+        usage = collections.namedtuple("usage", "total used free")
+        seen = []
+
+        def du(p):
+            seen.append(p)
+            return usage(100e9, 97e9, 3e9)
+        with mock.patch("shutil.disk_usage", du):
+            self.assertIn("3.0 GB free on the volume of " + deeper, rt.free_space_problem([deeper], 8))
+        self.assertEqual(seen, [base])
+        # a measurement that fails is a warning, never a crash
+        err = io.StringIO()
+        with mock.patch("shutil.disk_usage", side_effect=PermissionError("denied")), contextlib.redirect_stderr(err):
+            self.assertIsNone(rt.free_space_problem([missing], 8))
+        self.assertIn("cannot tell the free space", err.getvalue())
+        # and so is a path with no existing ancestor
+        err = io.StringIO()
+        with mock.patch.object(rt, "existing_ancestor", return_value=None), contextlib.redirect_stderr(err):
+            self.assertIsNone(rt.free_space_problem(["/nowhere"], 8))
+        self.assertIn("cannot tell", err.getvalue())
+
+    def test_a_run_stops_at_its_start_below_the_free_space_floor(self):
+        from unittest import mock
+        import collections, contextlib, io
+        usage = collections.namedtuple("usage", "total used free")
+        with mock.patch("shutil.disk_usage", return_value=usage(100e9, 95e9, 5e9)):
+            self.assertIn("5.0 GB free", rt.free_space_problem(["/x"], 8))
+            self.assertIsNone(rt.free_space_problem(["/x"], 4))
+            err = io.StringIO()
+            with mock.patch.object(rt, "run_steps") as run, contextlib.redirect_stderr(err), \
+                    mock.patch.dict(os.environ, {"RT_CI_MIN_FREE_GB": "8"}):
+                self.assertEqual(rt.main([]), 2)
+            run.assert_not_called()
+            self.assertIn("free space first", err.getvalue())
+            # RT_CI_MIN_FREE_GB=0 turns the check off
+            with mock.patch.object(rt, "run_steps", return_value=0) as run, mock.patch.dict(os.environ, {"RT_CI_MIN_FREE_GB": "0"}):
+                self.assertEqual(rt.main([]), 0)
+            run.assert_called_once()
+
     def test_a_step_whose_report_fails_is_timed_as_failed(self):
         # the command passed, the crosscheck report did not (it compared
         # nothing: there is none), so the job fails and its time row says so
