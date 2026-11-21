@@ -55,5 +55,7 @@ cases <- list(
   list(name = "k_retdollar", fun = function(v) { x <- list(a = 1); invisible(v); return(x$a <- v) },
        calls = "k_retdollar(2)"),
   list(name = "k_retsub_inv", fun = function(v) { x <- 1:2; return(x[1] <- invisible(v)) },
-       calls = "k_retsub_inv(3L)")
+       calls = "k_retsub_inv(3L)"),
+  list(name = "k_retsub2_inv", fun = function(v) { x <- list(1, 2); return(x[[1]] <- invisible(v)) },
+       calls = "k_retsub2_inv('one')")
 )

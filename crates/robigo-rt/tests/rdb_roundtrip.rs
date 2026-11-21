@@ -406,7 +406,7 @@ fn oracle_base_closures_crosscheck() {
         return;
     };
     if std::env::var_os("ROBIGO_BC_CROSSCHECK").is_none_or(|v| v.is_empty() || v == "0") {
-        eprintln!("ROBIGO_BC_CROSSCHECK is not set: skipped");
+        eprintln!("ROBIGO_BC_CROSSCHECK is off (unset, empty or 0): skipped");
         return;
     }
     let dir = std::path::PathBuf::from(lib).join("base").join("R");

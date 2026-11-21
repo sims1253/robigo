@@ -412,10 +412,12 @@ fn getter<'s>(cx: &mut Cx, s: Scope<'s>, step: Root<'_>, lhs: Root<'_>, rho: Roo
                 cx.set_visible(true);
                 return Ok(v);
             }
-            let ev = if matches!(k, K_SUB_PUNT | K_SUB2_PUNT) {
-                default_args::<false>(cx, s, call, lhs, rho, None)?
-            } else {
+            // an index bcEval loads (LDCONST) sets R_Visible; a punt step's
+            // (PUSHCONSTARG) does not
+            let ev = if matches!(k, K_SUB | K_SUB2) {
                 default_args::<true>(cx, s, call, lhs, rho, None)?
+            } else {
+                default_args::<false>(cx, s, call, lhs, rho, None)?
             };
             let args = ev.args(cx);
             cx.materialize_subset_args(args)?;
@@ -475,10 +477,12 @@ fn setter<'s>(
                     return Ok(v);
                 }
             }
-            let ev = if matches!(k, K_SUB_PUNT | K_SUB2_PUNT) {
-                default_args::<false>(cx, s, call, lhs, rho, Some(rhs))?
-            } else {
+            // an index bcEval loads (LDCONST) sets R_Visible; a punt step's
+            // (PUSHCONSTARG) does not
+            let ev = if matches!(k, K_SUB | K_SUB2) {
                 default_args::<true>(cx, s, call, lhs, rho, Some(rhs))?
+            } else {
+                default_args::<false>(cx, s, call, lhs, rho, Some(rhs))?
             };
             let args = ev.args(cx);
             cx.materialize_subset_args(args)?;
