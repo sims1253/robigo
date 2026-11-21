@@ -71,8 +71,11 @@ same amounts.
 `GzReader` (connections.rs) inflates ahead into a block buffer (#937).
 When `seek` and `tell` on gz connections are ported:
 - a seek drops the buffer (`obuf`, `opos`, `oend`, `ahead`, `failed`);
-- `tell` subtracts the bytes not yet read from it (`oend − opos`) from what
-  the inflater has produced.
+- `tell` is a position counted across members and transparent reads
+  (gzio.h's `s->out`, which `R_gztell` returns), less the bytes not yet
+  read from the buffer (`oend − opos`). It is not the inflater's
+  `total_out`, which a new member resets and a transparent read never
+  moves.
 
 The same note is on the struct.
 
