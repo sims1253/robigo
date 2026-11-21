@@ -583,8 +583,9 @@ impl Plan {
     }
 
     /// Fill `m` (made for `nformals` formals) with the match this plan
-    /// memoizes: for a call the plan alone does not bind ([`site_plan`]:
-    /// partial matches to warn of, actuals for `...`).
+    /// memoizes: for a site's call the plan alone does not bind
+    /// ([`site_plan`]: partial matches to warn of), and for an S3 method's
+    /// call (`method_plan_get`, `...` actuals included).
     #[inline(always)]
     fn fill(&self, m: &mut Matched) {
         for i in 0..self.nformals as usize {
@@ -669,9 +670,10 @@ fn method_plan_put(cx: &Cx, stamp: u64, m: &Matched, acts: &[Actual]) {
 
 /// Call site `site`'s plan of the callee code stamped `stamp`, when it
 /// binds the call alone ([`plan_inits`], and [`plan_dots_list`] for the
-/// actuals its `...` formal takes): no partial match whose warning is due. The pointer is valid until the next safepoint
-/// (the plans' RAWSXP may move then); a call keeps a copy (the site's plan
-/// may be replaced while it runs).
+/// actuals its `...` formal takes): no partial match whose warning is due.
+/// The pointer is valid until the next safepoint (the plans' RAWSXP may
+/// move then); a call keeps a copy (the site's plan may be replaced while
+/// it runs).
 ///
 /// # Safety
 /// `a` is the caller's activation, its code object live.
@@ -1226,9 +1228,10 @@ unsafe fn plan_dots_list(
 }
 
 /// The `...` formal's init of a call bound by its site's plan `p`, whose
-/// `...` takes some of the call's arguments: the list [`plan_dots_list`] makes (allocates; every init is
-/// rooted), rooted in `s`, in place of `plan_inits`' R_MissingArg. Out of
-/// line, as the plan path's code for calls without such actuals.
+/// `...` takes some of the call's arguments: the list [`plan_dots_list`]
+/// makes (allocates; every init is rooted), rooted in `s`, in place of
+/// `plan_inits`' R_MissingArg. Out of line, as the plan path's code for
+/// calls without such actuals.
 ///
 /// # Safety
 /// `p` is valid now (read before anything can collect: it is copied first);
