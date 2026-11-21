@@ -1584,7 +1584,7 @@ jobs:
       id-token: write
     environment:
       name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
+      url: ${{ steps.deploy.outputs.page_url || steps.deploy_retry.outputs.page_url }}
     steps:
       - run: |
           apt-get update -qq
@@ -1648,5 +1648,22 @@ jobs:
       - uses: actions/upload-pages-artifact@v5
         with:
           path: site
+      # The history record above is what must succeed; the site deploy may
+      # fail on its own: deploy-pages lists the run's artifacts once, and that
+      # listing can lag the upload a moment before (2026-11-21, runs
+      # 44892798651 and 44913195873: "Found 17 artifact(s)", without
+      # `github-pages`). So it gets one retry after 30 s, and a warning, not a
+      # red main, if both fail: the next main run deploys the same history.
+      # (The retry uploads nothing: deploy-pages takes the one `github-pages`
+      # of the run, and fails, never picks, when it sees two.)
       - id: deploy
         uses: actions/deploy-pages@v5
+        continue-on-error: true
+      - if: steps.deploy.outcome == 'failure'
+        run: sleep 30
+      - id: deploy_retry
+        if: steps.deploy.outcome == 'failure'
+        uses: actions/deploy-pages@v5
+        continue-on-error: true
+      - if: steps.deploy.outcome == 'failure' && steps.deploy_retry.outcome == 'failure'
+        run: echo "::warning::the Pages deploy failed twice (the history record is written; the next main run deploys the site)"
