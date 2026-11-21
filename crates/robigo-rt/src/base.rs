@@ -31,8 +31,11 @@
 //! namespace on first use: it reads that form's bytes from the tree,
 //! parses and evaluates its right-hand side there (for a function literal,
 //! the closure GNU R stored, its environment the base namespace), and runs
-//! the forms that follow the definition. Loading reads no R file and runs
-//! no R code: the cost of a binding is paid by the process that uses it.
+//! the forms that follow the definition. Loading runs only the profile's
+//! forms whose effect depends on when they run (`boot`: the Autoloads
+//! environment GNU R's profile attaches, and `.AutoloadEnv`, at the point
+//! R_LoadProfile runs them); the cost of every binding is paid by the
+//! process that uses it.
 //!
 //! Every primitive and `.Internal` of GNU R 4.6.2 that robigo-rt does not
 //! implement is bound to a builtin that raises "robigo: ... is not
@@ -154,6 +157,9 @@ pub struct Wide {
     pub names: Vec<WideName>,
     /// The forms that are not run, and why (the skip record).
     pub skips: Vec<(Form, &'static str)>,
+    /// The forms run at startup, in order, in the base namespace before
+    /// its locks (the profile's Autoloads environment and `.AutoloadEnv`).
+    pub boot: Vec<Form>,
     /// The names GNU R's C binds at startup.
     pub from_c: Vec<&'static str>,
     /// configure's substitutions in base's sources (mkRbase's sed).
@@ -175,6 +181,7 @@ impl Wide {
         let mut w = Wide {
             names: Vec::new(),
             skips: Vec::new(),
+            boot: Vec::new(),
             from_c: Vec::new(),
             substs: Vec::new(),
             primitives: Vec::new(),
@@ -220,6 +227,7 @@ impl Wide {
                 }
                 // SRC START END WHY (the rest of the line)
                 "skip" if f.len() == 5 => w.skips.push((form(f[1], f[2], f[3])?, f[4])),
+                "boot" if f.len() == 4 => w.boot.push(form(f[1], f[2], f[3])?),
                 "c" if f.len() == 2 => w.from_c.push(f[1]),
                 "subst" if f.len() == 3 => w.substs.push((f[1], f[2])),
                 "primitive" if f.len() == 2 => w.primitives.push(f[1]),
@@ -256,6 +264,7 @@ impl Wide {
             };
             v.extend(forms.iter().chain(n.after.iter()).map(|f| f.src));
         }
+        v.extend(self.boot.iter().map(|f| f.src));
         v.sort_unstable();
         v.dedup();
         v
@@ -314,8 +323,8 @@ const FETCH: &str = "..robigo_base_fetch";
 /// INTERIM(L5): bind the wide base into `cx`'s base environment from the
 /// tree `dir` ([`source_dir`]), each name lazily ([`Wide`]). Run after
 /// [`crate::install`]: the stubs go only where no primitive or internal of
-/// that name is defined. Reads no R file: an error names a file the tree
-/// lacks. `ROBIGO_BOOT_VERBOSE=1` prints the forms that are not run.
+/// that name is defined. Reads only the `boot` forms' file: an error names
+/// a file the tree lacks. `ROBIGO_BOOT_VERBOSE=1` prints the forms that are not run.
 pub fn load(cx: &mut Cx, dir: &Path) -> Result<Loaded, String> {
     let wide = Wide::get();
     let lib = dir.join("src/library");
@@ -333,8 +342,18 @@ pub fn load(cx: &mut Cx, dir: &Path) -> Result<Loaded, String> {
     }
     init_graphics(cx).map_err(|e| format!("binding .Device: {e}"))?;
     let stubs = bind_stubs_wide(cx, wide);
-    // the profile's bindings are among the lazy ones: this is the point
-    // after R_LoadProfile
+    // the profile's forms that cannot wait (R_LoadProfile runs them all at
+    // this point; the rest are among the lazy bindings)
+    for &form in &wide.boot {
+        cx.building_base(|cx| {
+            cx.scope(|cx, s| {
+                let o = s.out(cx);
+                eval_form(cx, form, o, |e| Some(e))
+            })
+        })
+        .map_err(|e| format!("{}: {}", where_is(&lib, form), failed(cx, e)))?;
+    }
+    // this is the point after R_LoadProfile
     lock_base(cx).map_err(|e| failed(cx, e))?;
     if std::env::var_os("ROBIGO_BOOT_VERBOSE").is_some_and(|v| !v.is_empty() && v != "0") {
         for (f, why) in &wide.skips {
@@ -824,19 +843,28 @@ pub struct Stage0 {
     pub failed: Vec<(usize, String)>,
 }
 
-/// L2's stage 0 (m2m3-plan §B L2): base evaluated from source, as GNU R's
-/// `setup_Rmainloop` does with the source `library/base/R/base` of a build
-/// that has no databases yet: `R_ReplFile(fp, R_BaseNamespace)`, each
-/// top-level expression evaluated in the base namespace at the top level,
-/// its value printed if visible. Eager, unlike [`load`]'s lazy bindings,
-/// and every name of base's files is bound, so it is the path L5's boot
-/// keeps. The file is `home/library/base/R/base` (`scripts/rt-home.sh`).
+/// GNU R's boot of base (m2m3-plan §B L2's stage 0, L5's boot):
+/// `setup_Rmainloop`'s `R_ReplFile(fp, R_BaseNamespace)` of
+/// `home/library/base/R/base`, each top-level expression evaluated in the
+/// base namespace at the top level, its value printed if visible. What the
+/// file is decides the boot, as in GNU R: a build that has no databases yet
+/// has base's whole source there (`scripts/rt-home.sh`: eager, every name
+/// of base's files bound); after base's database rule it is
+/// `baseloader.R`, whose `..lazyLoad` binds base from `base.rdb`
+/// (`scripts/rt-home-db.sh`). Before it, as `InitNames` and `InitGraphics`
+/// do: names.c's primitives and internals robigo-rt lacks bound to the
+/// not-implemented builtins, and `.Device`/`.Devices`.
 ///
 /// GNU R stops at an error (its base has none); robigo-rt records it and
 /// goes on, so one run lists every expression a missing builtin stops.
 // R: main.c:R_ReplFile, setup_Rmainloop
 pub fn stage0(cx: &mut Cx, home: &Path) -> Result<Stage0, String> {
     let mut st = Stage0::default();
+    // InitNames: every primitive and internal of names.c's table bound
+    let prims: Vec<&'static str> = robigo_rtbuiltins::names::PRIMITIVES.iter().map(|p| p.0).collect();
+    let internals: Vec<&'static str> = robigo_rtbuiltins::names::INTERNALS.iter().map(|p| p.0).collect();
+    stubs_for(cx, &prims, &internals);
+    init_graphics(cx)?;
     repl_file(cx, &home.join("library/base/R/base"), &mut st)?;
     // R_LoadProfile(R_OpenSysInitFile(), baseNSenv): the system profile,
     // in the base namespace, the same way (setup_Rmainloop's next steps,

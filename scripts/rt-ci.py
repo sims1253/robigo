@@ -237,6 +237,12 @@ def steps(crates):
         # robigo-rt's R_HOME tree with tools' native code (A5): the
         # conformance cases that load it (`.requires` r-home-tools) run
         ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", {}, ["scripts/rt-home.sh"]),
+        # L5's boot beside M1's loader (ROBIGO_RT_BOOT=rdb): base's database,
+        # written by this robigo-rt booted from base's source, then base
+        # booted from it (crates/robigo-rtapi/tests/boot_db.rs)
+        ("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)", {}, ["scripts/rt-home-db.sh"]),
+        ("boot from base's database (ROBIGO_RT_BOOT=rdb)", {"ROBIGO_RT_HOME_DB": "1"},
+         [*test, "-p", "robigo-rtapi", "--test", "boot_db", *skip]),
         ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {}, conformance),
         # docs/g3.md §15.3 E5: the same cases and recordings under each
         # observation mode, but those whose `.requires` names the identity

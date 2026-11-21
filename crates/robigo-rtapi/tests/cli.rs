@@ -365,25 +365,3 @@ fn an_empty_r_translations_is_fatal() {
     assert_eq!(String::from_utf8_lossy(&err), "");
     assert_eq!(status, 2);
 }
-
-/// With `_R_COMPILE_PKGS_` set, each closure is byte-compiled as it is
-/// serialized (serialize.c's WriteItem, `R_cmpfun1`: `compiler:::tryCmpfun`).
-/// Where the compiler namespace cannot load, the load's error comes out of
-/// `serialize()` and `R_compile_pkgs` stays off, so the next closure is
-/// written uncompiled. That is GNU R 4.6.2's order, checked on the oracle with
-/// an R_HOME without the compiler package ("package ‘compiler’ does not have
-/// a namespace", then an uncompiled write). On robigo-rt today, the
-/// compiler's cmp.R stops on base's `.AutoloadEnv` (INTERIM(L5)), so that is
-/// the error. Once `.AutoloadEnv` is real, the closure compiles: that case
-/// is `tests/rt/serialize/compile-pkgs.R`, and this test changes with it.
-#[test]
-fn compiling_closures_on_serialize_when_the_compiler_cannot_load() {
-    let expr = "x <- tryCatch(serialize(function(a) a, NULL), error = function(e) e); \
-                cat(inherits(x, 'error'), startsWith(conditionMessage(x), \"robigo: '.AutoloadEnv' needs\"), '\\n'); \
-                y <- serialize(function(a) a, NULL); \
-                cat(is.raw(y), typeof(.Internal(bodyCode(unserialize(y)))), '\\n')";
-    let env = [("_R_COMPILE_PKGS_", "1"), ("R_ENABLE_JIT", "0")];
-    let (out, err, status) = run_env(&std::env::temp_dir(), &["--vanilla", "-e", expr], None, &env);
-    assert_eq!(String::from_utf8_lossy(&out), "TRUE TRUE \nTRUE symbol \n");
-    assert_eq!((String::from_utf8_lossy(&err).as_ref(), status), ("", 0));
-}
