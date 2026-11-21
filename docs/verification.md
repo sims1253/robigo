@@ -852,9 +852,14 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    under `ROBIGO_RETRY_TORTURE=1` (E9's refusal at every build: the first
    allocation of every `&Cx` build refused once, so each build's retry
    runs), in a build with robigo-rtcore's `retry-torture` feature made for
-   that step alone, so every step before it tests the binary users get
+   the last steps alone, so every step before them tests the binary users get
    (`docs/ledger/g3/2026-11-17-retry-torture-ci.md`; with the moving
-   collector as well it is a run by hand, `docs/g3.md` §16). Every pull
+   collector as well it is a run by hand, `docs/g3.md` §16); in the same
+   build, robigo-rt's tests and the conformance under
+   `ROBIGO_POISON_DEAD=1` (C1-PZ: a dead slot, a register after its last
+   use or a slot a scope's restore freed, holds a poison naming where it
+   died, and a read of it panics; `tests/poison.rs` plants an early clear
+   and checks that it is caught). Every pull
    request but a docs-only one runs it, and with it **base-subset**:
    `scripts/base-subset.sh --check` inside the GNU R 4.6.2 oracle image
    (robigo-rt's checked-in base subset is what this tree traces: its
