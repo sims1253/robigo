@@ -569,7 +569,9 @@ OWN_STEPS = ("debug-assertions", "release-crate-tests")
 # timeout (scripts/test-rt-ci.py pins the three relations). When a warning
 # fires, rebalance or remeasure: the dates say how old each measurement is.
 BUDGETS = {  # shard: (budget, measured minutes, where measured)
-    "modes": (9, 6.99, "2026-11-21, run 44927530340 (#952): 6.49, and the two rdb-boot steps' estimated 0.5"),
+    "modes": (9, 7.11, "2026-11-21, run 44927530340 (#952): 6.49, the two rdb-boot steps' estimated 0.5, and "
+              "#959's estimated 0.12 (its freeze check at every collection in the crates' gctorture step: "
+              "about 1.27x of that step's 0.45, H's measurement)"),
     # the plain gctorture conformance moves into modes if GCTORTURE_FIRST
     # does not bring this back near 15 minutes
     "gctorture": (27, 21.87, "2026-11-21, run 44927530340 (#952): 20.62 before GCTORTURE_FIRST, and #959's "
