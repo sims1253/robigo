@@ -521,7 +521,13 @@ fn slice_at(d: &[u8], offset: i64, len: usize) -> Option<Vec<u8>> {
 
 thread_local! {
     /// The lazy-load databases' zlib inflater, reused from record to record
-    /// ([`decompress1`]).
+    /// ([`decompress1`]). A `Cell` taken for the use and put back after it,
+    /// not a `RefCell`: no use can overlap another on a thread, since
+    /// between the take and the put-back only `reset` and `decompress_vec`
+    /// run (no R code, no allocation of R objects, no safepoint, no
+    /// warning: the warning comes after the put-back). Were one to nest, it
+    /// would find the cell empty and make its own inflater; no borrow can
+    /// panic.
     static INFLATE: std::cell::Cell<Option<flate2::Decompress>> = const { std::cell::Cell::new(None) };
 }
 
