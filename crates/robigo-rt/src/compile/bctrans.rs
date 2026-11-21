@@ -30,6 +30,7 @@
 
 #![allow(unsafe_code)]
 
+use super::PosMap;
 use super::{Comp, Tail};
 use crate::bcassign as ba;
 use crate::cenv::{Cenv, Need};
@@ -38,7 +39,6 @@ use crate::prims::Kind;
 use robigo_heap::Sexp;
 use robigo_heap::types::*;
 use robigo_rtcore::Cx;
-use std::collections::HashMap;
 
 /// GNU R 4.6.2's opcodes (eval.c's enum, C1-BC's table), by number.
 #[allow(dead_code)]
@@ -425,11 +425,11 @@ type Lab = (Vec<Item>, Reg, Vec<usize>);
 struct Plan {
     /// The consumers whose value register each instruction reserves,
     /// outermost (lowest register) first.
-    res_at: HashMap<usize, Vec<usize>>,
+    res_at: PosMap<usize, Vec<usize>>,
     /// The stack's depth at each instruction: pass 2 meets the same.
     depth: Vec<Option<usize>>,
     /// The complex assignments, by their `STARTASSIGN`.
-    assigns: HashMap<usize, Assign>,
+    assigns: PosMap<usize, Assign>,
 }
 
 /// The translation state of one code object, in one pass.
@@ -438,12 +438,12 @@ struct Tr {
     /// The code's constants (a VECSXP).
     consts: Sexp,
     /// The state at a label a jump reached.
-    labels: HashMap<usize, Lab>,
+    labels: PosMap<usize, Lab>,
     /// Jumps to patch: the IR instruction and the code position.
     patches: Vec<(usize, usize)>,
     /// IR position of each translated code position (its first
     /// instruction).
-    at_ir: HashMap<usize, usize>,
+    at_ir: PosMap<usize, usize>,
     /// `RETURN`s that jump to the code's end.
     returns: Vec<usize>,
     /// Base guards waiting for their label: (label, the guard's IR index,
@@ -458,11 +458,11 @@ struct Tr {
     /// Pass 2's plan (`None` in pass 1).
     plan: Option<Plan>,
     /// Pass 1: each consumer's first operand's starts.
-    cons: HashMap<usize, Starts>,
+    cons: PosMap<usize, Starts>,
     /// Pass 1: the stack's depth at each instruction.
     depth: Vec<Option<usize>>,
     /// Pass 2: each consumer's reserved value register.
-    res: HashMap<usize, Reg>,
+    res: PosMap<usize, Reg>,
     /// The `_N` subsets begun (`STARTSUBSET_N`), innermost last.
     subsets: Vec<Sub>,
     /// Where the code toward the slot at each depth begins (an
@@ -472,7 +472,7 @@ struct Tr {
     /// Pass 1: the complex assignments begun, innermost last (by their
     /// `STARTASSIGN`), and those ended.
     assigning: Vec<(usize, Assign)>,
-    assigned: HashMap<usize, Assign>,
+    assigned: PosMap<usize, Assign>,
     /// Pass 2: the last instruction of a complex assignment translated
     /// whole.
     skip_to: Option<usize>,
@@ -506,7 +506,7 @@ impl Tr {
     /// Pass 1's findings: each consumer's register reserved at each of
     /// its first operand's starts.
     fn plan(self) -> Plan {
-        let mut res_at: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut res_at: PosMap<usize, Vec<usize>> = PosMap::default();
         for (c, starts) in self.cons {
             for s in starts {
                 res_at.entry(s).or_default().push(c);
@@ -689,7 +689,7 @@ unsafe fn successors(i: &BcIns, next: Option<usize>, consts: Sexp) -> Result<Vec
 /// # Safety
 /// `consts` are the code's live constants.
 unsafe fn reachable(dec: &[BcIns], consts: Sexp) -> Result<Vec<bool>, Need> {
-    let index: HashMap<usize, usize> = dec.iter().enumerate().map(|(k, i)| (i.at, k)).collect();
+    let index: PosMap<usize, usize> = dec.iter().enumerate().map(|(k, i)| (i.at, k)).collect();
     let mut live = vec![false; dec.len()];
     let mut todo = vec![0usize];
     while let Some(k) = todo.pop() {
@@ -815,22 +815,22 @@ impl<'g> Comp<'g> {
         let mut t = Tr {
             code: dec.to_vec(),
             consts,
-            labels: HashMap::new(),
+            labels: PosMap::default(),
             patches: Vec::new(),
-            at_ir: HashMap::new(),
+            at_ir: PosMap::default(),
             returns: Vec::new(),
             guards: Vec::new(),
             stack: Vec::new(),
             cur: 0,
             pending: None,
             plan,
-            cons: HashMap::new(),
+            cons: PosMap::default(),
             depth: vec![None; dec.len()],
-            res: HashMap::new(),
+            res: PosMap::default(),
             subsets: Vec::new(),
             open: vec![0],
             assigning: Vec::new(),
-            assigned: HashMap::new(),
+            assigned: PosMap::default(),
             skip_to: None,
         };
         // `dst` is the code's value (the first register)

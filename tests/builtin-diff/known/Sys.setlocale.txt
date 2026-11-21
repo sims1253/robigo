@@ -1,5 +1,5 @@
 # builtin-diff known failures: Sys.setlocale, seed 0, key 46e4c9bf8c437a5b2bace5b1
-# Sys.setlocale: 304 / 325 (not-implemented 9, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
+# Sys.setlocale: 310 / 325 (not-implemented 9, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 1
 2
 3
@@ -7,17 +7,11 @@
 14
 16
 26
-32
 43
 60
-72
-89
 102
-132
 189
 231
-264
-277
 322
 323
 325

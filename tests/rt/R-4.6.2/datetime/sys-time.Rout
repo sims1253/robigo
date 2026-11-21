@@ -1,0 +1,11 @@
+[1] "POSIXct" "POSIXt" 
+[1] "double"
+[1] 1
+[1] TRUE
+[1] TRUE
+[1] "double"
+[1] 1
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] "1 argument passed to .Internal(Sys.time) which requires 0"
