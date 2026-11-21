@@ -34,6 +34,7 @@ a day.
 
 import atexit
 import os
+import secrets
 import shutil
 import signal
 import stat
@@ -58,6 +59,7 @@ _closing = False
 _busy = 0           # a directory is being made or removed: signals wait
 _pending = None     # a signal that arrived meanwhile
 _exiting = False    # the exit handler runs: a signal waits for its end
+_exit_done = False  # the exit handler's removal is done: a signal ends the process now
 _SIGNALS = {signal.SIGTERM, signal.SIGHUP}
 
 
@@ -101,9 +103,17 @@ def scratch_dir(prefix, dir=None):
         if (parent, prefix) not in _swept:
             _swept.add((parent, prefix))
             sweep(prefix, parent)
-        path = tempfile.mkdtemp(prefix=prefix, dir=parent)
-        _live.add(path)
-        return path
+        # the name is registered before the directory exists, so no moment
+        # has a directory this process made and would not remove (a Ctrl-C
+        # included); a name that is not made leaves the registry at exit
+        while True:
+            path = os.path.join(parent, prefix + secrets.token_hex(6))
+            _live.add(path)
+            try:
+                os.mkdir(path, 0o700)
+                return os.path.abspath(path)
+            except FileExistsError:
+                _live.discard(path)
 
 
 def keep(path):
@@ -163,9 +173,11 @@ def rmtree(path):
     shutil.rmtree(path, ignore_errors=True)
 
 
-def children():
-    """The pids whose parent is this process (none known without /proc)."""
-    me, out = os.getpid(), []
+def descendants():
+    """The pids of this process's children, theirs, and so on (none known
+    without /proc): a tool may start a command through another process
+    (perf.py's valgrind under a Python of its own)."""
+    parent = {}
     try:
         pids = [p for p in os.listdir("/proc") if p.isdigit()]
     except OSError:
@@ -174,56 +186,73 @@ def children():
         try:
             with open(f"/proc/{pid}/stat") as f:
                 # the command is in parentheses and may hold spaces
-                ppid = int(f.read().rsplit(")", 1)[1].split()[1])
+                fields = f.read().rsplit(")", 1)[1].split()
+            if fields[0] != "Z":
+                parent[int(pid)] = int(fields[1])
         except (OSError, IndexError, ValueError):
             continue
-        if ppid == me:
-            out.append(int(pid))
+    out, frontier = [], {os.getpid()}
+    while frontier:
+        frontier = {p for p, pp in parent.items() if pp in frontier and p not in out}
+        out.extend(sorted(frontier))
     return out
 
 
 def end_children(grace=5.0):
-    """SIGTERM this process's children, and SIGKILL the ones still there
-    `grace` seconds later."""
-    kids = children()
-    for pid in kids:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
-            pass
+    """SIGTERM this process's descendants, again for any that appear (a
+    worker thread starting the next command), and SIGKILL the ones still
+    there `grace` seconds later."""
     deadline = time.monotonic() + grace
-    while kids and time.monotonic() < deadline:
+    signalled = set()
+    while True:
+        kids = descendants()
+        if not kids:
+            return
+        if time.monotonic() >= deadline:
+            for pid in kids:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+            return
+        for pid in kids:
+            if pid not in signalled:
+                signalled.add(pid)
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except OSError:
+                    pass
         time.sleep(0.05)
-        kids = [k for k in kids if k in children()]
-    for pid in kids:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except OSError:
-            pass
 
 
 def _on_signal(signum, frame):
     global _closing, _pending
+    code = 128 + signum      # the shell's convention for a death by signal
+    if _exit_done:
+        os._exit(code)       # after the exit handler's removal: nothing is left to remove
     if _busy or _exiting:
         _pending = signum    # handled once the creation or removal is done
         return
-    code = 128 + signum      # the shell's convention for a death by signal
-    # the deadline first: the removal may wait for a worker holding the lock
+    if signum == signal.SIGINT:
+        raise KeyboardInterrupt
+    _closing = True
+    remove_all()
+    # the directories are gone; a process still there this much later (a
+    # thread pool's exit waiting on its workers) is ended
     t = threading.Timer(STOP_SECONDS, os._exit, (code,))
     t.daemon = True
     t.start()
-    _closing = True
-    remove_all()
     # unwinds the main thread through its `finally`s to the exit handlers
     raise SystemExit(code)
 
 
 def _at_exit():
-    global _exiting
+    global _exiting, _exit_done
     # (an exception raised in an exit handler is dropped, so a signal that
     # comes during this removal is honoured here, not by raising)
     _exiting = True
     remove_all()
+    _exit_done = True
     if _pending and not _closing:
         # a signal during the normal exit's removal: honoured once it is done
         os._exit(128 + _pending)
@@ -231,10 +260,10 @@ def _at_exit():
 
 def _forked_child():
     # a child made by fork owns none of its parent's directories (rule 1)
-    global _lock, _busy, _pending, _exiting
+    global _lock, _busy, _pending, _exiting, _exit_done
     _live.clear()
     _lock = threading.RLock()
-    _busy, _pending, _exiting = 0, None, False
+    _busy, _pending, _exiting, _exit_done = 0, None, False, False
 
 
 def _install():
@@ -251,6 +280,9 @@ def _install():
         # exit handlers) is replaced
         if signal.getsignal(s) is signal.SIG_DFL:
             signal.signal(s, _on_signal)
+    # Ctrl-C: still KeyboardInterrupt, but not inside a creation or a removal
+    if signal.getsignal(signal.SIGINT) is signal.default_int_handler:
+        signal.signal(signal.SIGINT, _on_signal)
 
 
 def sweep(prefix, parent=None, now=None):

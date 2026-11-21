@@ -135,11 +135,11 @@ class Module(unittest.TestCase):
         code, out, err = run_py("import os, signal, tempfile, threading, time, scratch\n"
                                 "go = threading.Event()\n"
                                 "threading.Thread(target=lambda: go.wait() and os.kill(os.getpid(), signal.SIGTERM)).start()\n"
-                                "real = tempfile.mkdtemp\n"
-                                "def mk(**k):\n"
-                                "    p = real(**k); print(p, flush=True)\n"
-                                "    go.set(); time.sleep(0.5); return p\n"
-                                "tempfile.mkdtemp = mk\nscratch.scratch_dir('t-')\nprint('NOT REACHED')", self.tmp)
+                                "real = os.mkdir\n"
+                                "def mk(p, *a):\n"
+                                "    real(p, *a); print(p, flush=True)\n"
+                                "    go.set(); time.sleep(0.5)\n"
+                                "os.mkdir = mk\nscratch.scratch_dir('t-')\nprint('NOT REACHED')", self.tmp)
         self.assertEqual(code, 128 + signal.SIGTERM, err)
         self.assertNotIn("NOT", out)
         self.assertFalse(os.path.exists(out[0]))
@@ -254,6 +254,41 @@ class Module(unittest.TestCase):
         finally:
             scratch.os.lstat = real
         self.assertTrue((d / "new").exists())
+
+    def test_ctrl_c_right_after_the_directory_is_made_leaves_nothing(self):
+        # S1: the name is registered before mkdir, so a KeyboardInterrupt at
+        # once after it still finds the directory at exit
+        code, out, err = run_py("import os, scratch\nreal = os.mkdir\n"
+                                "def mk(p, *a):\n    real(p, *a); print(p, flush=True); raise KeyboardInterrupt\n"
+                                "os.mkdir = mk\nscratch.scratch_dir('t-')", self.tmp)
+        self.assertNotEqual(code, 0)
+        self.assertTrue(out, err)
+        self.assertFalse(os.path.exists(out[0]))
+
+    def test_sigterm_ends_a_child_started_after_the_first_was_ended(self):
+        # S2: a worker that reaps its child and starts the next one; each
+        # child notes its pid outside the directory
+        pids = os.path.join(self.tmp, "pids")
+        rc, secs, d, kid = self.sigterm(
+            "import threading, os\n"
+            "def work():\n    for _ in range(50):\n"
+            f"        subprocess.run(['sh', '-c', 'echo $$ >> {pids}; exec sleep 300'])\n"
+            "threading.Thread(target=work, daemon=True).start()\n"
+            "print(d); print(os.getpid()); print('READY', flush=True)\ntime.sleep(300)\n", delay=1.0)
+        self.assertEqual(rc, 128 + signal.SIGTERM)
+        time.sleep(0.5)
+        started = open(pids).read().split()
+        self.assertTrue(started)
+        self.assertEqual([p for p in started if self.alive(int(p))], [], "a later child outlived the tool")
+        self.assertFalse(os.path.exists(d))
+
+    def test_a_signal_after_the_exit_removal_still_ends_the_process(self):
+        # S4: an exit handler registered before scratch's runs after it; a
+        # SIGTERM there comes after the removal's last look at signals
+        code, out, err = run_py("import atexit, os, signal, time\n"
+                                "atexit.register(lambda: (os.kill(os.getpid(), signal.SIGTERM), time.sleep(2)))\n"
+                                "import scratch\nscratch.scratch_dir('t-')", self.tmp)
+        self.assertEqual(code, 128 + signal.SIGTERM, err)
 
     def test_a_tools_own_sigterm_handler_stays(self):
         code, out, err = run_py("import signal\nsignal.signal(signal.SIGTERM, lambda *a: None)\nh = signal.getsignal(signal.SIGTERM)\n"
