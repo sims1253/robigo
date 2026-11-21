@@ -96,16 +96,17 @@ pub(crate) fn watchdog(what: &'static str, secs: u64) -> Watchdog {
     Watchdog(done)
 }
 
-/// Abort the process, saying why on fd 2 only if that cannot block: raw
-/// `write(2)`, not `eprintln!` (std's stderr lock may be the stuck one), and
-/// only when `poll` finds room (a full stderr pipe may be what stalled the
-/// fork). A message shorter than `PIPE_BUF` then goes in one write.
+/// Abort the process, saying why on fd 2 if that does not block: the raw
+/// `write(2)` (not `eprintln!`: std's stderr lock may be the stuck one)
+/// runs on a thread of its own, and the abort follows a short wait whether
+/// or not it finished (a full stderr pipe can block it).
 pub(crate) fn abort_saying(msg: &str) -> ! {
     let msg = msg.to_owned();
     // the message from a thread of its own, the abort after a short wait
     // whether or not the write finished (a full stderr pipe can block it
     // even after `poll` said there was room; Sol S4)
-    std::thread::spawn(move || {
+    // (a thread the system refuses only loses the message)
+    let _ = std::thread::Builder::new().spawn(move || {
         // SAFETY: a live buffer to fd 2.
         unsafe { libc::write(2, msg.as_ptr().cast(), msg.len()) };
     });

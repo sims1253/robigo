@@ -38,7 +38,8 @@ fn forks_overlapping_the_first_isolate_start_give_working_children() {
                     // raw write(2) from a thread of its own, and the abort
                     // after a short wait whether or not it finished: std's
                     // stderr lock, or a full stderr pipe, may be what is stuck
-                    std::thread::spawn(|| {
+                    // (a thread the system refuses only loses the message)
+                    let _ = std::thread::Builder::new().spawn(|| {
                         let msg = b"fork_first_isolate: no progress in 90 s (a fork or its handlers hung)\n";
                         // SAFETY: a live buffer to fd 2.
                         unsafe { libc::write(2, msg.as_ptr().cast(), msg.len()) };
