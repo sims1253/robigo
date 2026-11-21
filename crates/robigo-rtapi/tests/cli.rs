@@ -50,7 +50,7 @@ fn cases(long_src: &[u8]) -> Vec<Case> {
     // the first 4095 bytes, then the rest of the line after a continuation prompt
     let first = long_src.iter().position(|&b| b == b'\n').unwrap() + 1;
     let long = [b"> ", &long_src[..4095], b"+ ", &long_src[4095..first], b"> length(x)\n[1] 2100\n> \n"].concat();
-    vec![
+    let mut v: Vec<Case> = vec![
         ("echo", q("echo.R"), None, ECHO.to_vec(), b"", 0),
         ("nonl", q("nonl.R"), None, b"> cat(\"no newline\")\nno newline> \n".to_vec(), b"", 0),
         ("crlf", q("crlf.R"), None, b"> x <- 1\n> x\n[1] 1\n> \n".to_vec(), b"", 0),
@@ -80,23 +80,6 @@ fn cases(long_src: &[u8]) -> Vec<Case> {
             0,
         ),
         ("file-eq", vec!["--vanilla", "--quiet", "--file=echo.R"], None, ECHO.to_vec(), b"", 0),
-        // R without --quiet: the greeting first (the -f file's, and stdin's)
-        (
-            "greeting-f",
-            vec!["--vanilla", "--no-save", "-f", "stdin.R"],
-            None,
-            [GREETING, b"> 1 + 1\n[1] 2\n> \n"].concat(),
-            b"",
-            0,
-        ),
-        (
-            "greeting-stdin",
-            vec!["--vanilla", "--no-save"],
-            Some("stdin.R"),
-            [GREETING, b"> 1 + 1\n[1] 2\n> \n"].concat(),
-            b"",
-            0,
-        ),
         (
             "file-stdin",
             vec!["--vanilla", "--quiet", "--file=-"],
@@ -179,7 +162,31 @@ fn cases(long_src: &[u8]) -> Vec<Case> {
             b"",
             2,
         ),
-    ]
+    ];
+    // R without --quiet: the greeting first (the -f file's, and stdin's),
+    // recorded on x86_64 (its Platform line)
+    if cfg!(target_arch = "x86_64") {
+        let greet: [Case; 2] = [
+            (
+                "greeting-f",
+                vec!["--vanilla", "--no-save", "-f", "stdin.R"],
+                None,
+                [GREETING, b"> 1 + 1\n[1] 2\n> \n"].concat(),
+                b"",
+                0,
+            ),
+            (
+                "greeting-stdin",
+                vec!["--vanilla", "--no-save"],
+                Some("stdin.R"),
+                [GREETING, b"> 1 + 1\n[1] 2\n> \n"].concat(),
+                b"",
+                0,
+            ),
+        ];
+        v.extend(greet);
+    }
+    v
 }
 
 /// `robigo-rt ARGS` in `dir`: (stdout, stderr, status). The child inherits
