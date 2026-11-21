@@ -121,6 +121,19 @@ class RtCi(unittest.TestCase):
                 built = [i for i, (_, _, c) in enumerate(steps) if "--no-run" in c and "--release" in c]
                 self.assertTrue(built and built[0] < tree[0], shard)
 
+    def test_the_rdb_boot_runs_the_conformance_plain_and_crosschecked_after_its_tree(self):
+        steps = rt.steps(["robigo-rt", "robigo-rtapi"])
+        titles = [t for t, _, _ in steps]
+        rdb = [i for i, (_, e, c) in enumerate(steps) if e.get("ROBIGO_RT_BOOT") == "rdb" and rt.CONFORMANCE in c
+               and "--skip" not in c]
+        self.assertEqual(len(rdb), 2)
+        tree = titles.index("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)")
+        self.assertTrue(all(tree < i for i in rdb))
+        self.assertEqual({rt.shard_of(titles[i]) for i in rdb}, {"modes"})
+        self.assertEqual(sorted(sorted(steps[i][1]) for i in rdb),
+                         [["ROBIGO_BC_CROSSCHECK", "ROBIGO_BC_CROSSCHECK_REPORT", "ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT"],
+                          ["ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT"]])
+
     def test_every_crate_test_step_builds_what_the_first_built(self):
         # cargo turns a selected crate's dev-dependency features on, so a
         # step over fewer crates (no --features of its own) rebuilds what
@@ -234,14 +247,18 @@ class RtCi(unittest.TestCase):
             self.assertIn("--exact", cmd)
             if env:
                 self.assertTrue({"ROBIGO_GCTORTURE", "R_MAX_VSIZE", "ROBIGO_NO_INPLACE", "ROBIGO_MATERIALIZE", "ROBIGO_FRAME_QUARANTINE",
-                                 "ROBIGO_BC_CROSSCHECK", "ROBIGO_RETRY_TORTURE", "ROBIGO_POISON_DEAD"} & set(env), env)
+                                 "ROBIGO_BC_CROSSCHECK", "ROBIGO_RETRY_TORTURE", "ROBIGO_POISON_DEAD", "ROBIGO_RT_BOOT"} & set(env), env)
             # a crosscheck step writes its report, which `main` reads
             if "ROBIGO_BC_CROSSCHECK" in env:
                 self.assertIn("ROBIGO_BC_CROSSCHECK_REPORT", env)
         # the crosscheck step exists at all: dropping it from steps() would
         # leave every assertion above green, and V3's gate (`main` failing on
         # an unexpected or untranslated closure) would leave CI unnoticed
-        self.assertEqual(len([e for e, _ in own if "ROBIGO_BC_CROSSCHECK" in e]), 1)
+        cross = [e for e, _ in own if "ROBIGO_BC_CROSSCHECK" in e]
+        self.assertEqual(len(cross), 2)
+        # (one per boot, each with a report of its own)
+        self.assertEqual(sorted(e.get("ROBIGO_RT_BOOT", "") for e in cross), ["", "rdb"])
+        self.assertEqual(len({e["ROBIGO_BC_CROSSCHECK_REPORT"] for e in cross}), 2)
         for title, _, cmd in steps:
             # (a build-only step, --no-run, runs no test at all)
             if cmd[0] == "cargo" and rt.CONFORMANCE not in cmd[-1:] and "--exact" not in cmd and "--no-run" not in cmd:

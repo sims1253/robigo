@@ -115,6 +115,8 @@ PIN_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-pin-report-{os.g
 # where the byte-code crosscheck step writes (V3: one line per translated
 # closure whose code differs from the from-source compiler's)
 BC_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-bc-crosscheck-{os.getpid()}.txt")
+# the same under the rdb boot (base's closures from base.rdb, so many more)
+BC_REPORT_RDB = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-bc-crosscheck-rdb-{os.getpid()}.txt")
 
 # the kinds of line the crosscheck writes (crates/robigo-rt/src/compile/crosscheck.rs),
 # each the line's first word, then ":" (or a class in parentheses, then ":")
@@ -299,6 +301,16 @@ def steps(crates):
         ("the crates' tests (quick profile)", TREE_RUNS, [*crate, *pkgs, *skip]),
         ("boot from base's database (ROBIGO_RT_BOOT=rdb)", {"ROBIGO_RT_HOME_DB": "1"},
          [*test, "-p", "robigo-rtapi", "--test", "boot_db", *skip]),
+        # the boot that replaces M1's (L5, ROBIGO_RT_BOOT=rdb: base from the
+        # tree's base.rdb, as GNU R boots): the ratcheted conformance under it,
+        # plain and with the byte-code crosscheck, each failing as its M1
+        # step does (a ratcheted case that fails; an unexpected or
+        # untranslated closure). Not yet the default anywhere (L's list)
+        ("conformance under the rdb boot (ROBIGO_RT_BOOT=rdb)", {"ROBIGO_RT_BOOT": "rdb"}, conformance),
+        ("conformance under the rdb boot with ROBIGO_BC_CROSSCHECK=1 (base.rdb's closures against the "
+         "from-source compiler's)",
+         {"ROBIGO_RT_BOOT": "rdb", "ROBIGO_BC_CROSSCHECK": "1", "ROBIGO_BC_CROSSCHECK_REPORT": BC_REPORT_RDB},
+         conformance),
         ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {}, conformance),
         # docs/g3.md §15.3 E5: the same cases and recordings under each
         # observation mode, but those whose `.requires` names the identity
