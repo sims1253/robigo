@@ -1536,6 +1536,12 @@ impl Cx {
                     }
                     Err(e) => match cx.arrive(c, e) {
                         Arrival::Pass(e) => return Err(e),
+                        Arrival::Landed(e) if cx.exit_info(&e).kind == crate::ExitKind::Exec => {
+                            match cx.land_exec(c, e, eval, slot) {
+                                Ok(exec) => return Err(exec),
+                                Err(e) => res = Err(e),
+                            }
+                        }
                         Arrival::Landed(e) => {
                             let rec = cx.take_exit(e);
                             c.set_return_value(rec.value);
@@ -1568,6 +1574,29 @@ impl Cx {
             Some(res) => self.with_record_in(res, &init, run),
             None => self.with_record(&init, run),
         }
+    }
+
+    /// An [`crate::ExitKind::Exec`] exit `e` that landed in function record
+    /// `c`: the record ends as for a `return` of the continuation (its
+    /// `returnValue`; `do_tailcall` jumps only when the record has no
+    /// `on.exit` code), and the exit is pending again, its continuation
+    /// rooted in `slot`, the call's out slot, with no target: the record's
+    /// caller runs it (robigo-rt's `args::apply`). `Err` is an exit out of
+    /// the record's end, which the record's loop handles as any other.
+    #[cold]
+    #[inline(never)]
+    fn land_exec(&mut self, c: Rec, e: RError, eval: &mut OnExitEval<'_>, slot: Root<'_>) -> RResult<RError> {
+        let rec = self.take_exit(e);
+        c.set_return_value(rec.value);
+        self.ctxs().srcref.set(c.srcref());
+        self.end_function(c, eval)?;
+        let v = c.return_value();
+        let out = slot.reset(self);
+        // SAFETY: the record's returnValue is traced and nothing collected
+        // since it was read.
+        out.set(self, unsafe { Ref::from_sexp(v, self) });
+        let info = crate::ExitInfo { kind: crate::ExitKind::Exec, mask: 0, target: 0 };
+        Ok(self.exit(crate::Exit { info, value: Some(slot), condition: None, call: None }))
     }
 
     /// Box the unboxed scalar in slot `slot` (a double, integer or logical)
@@ -1843,6 +1872,16 @@ impl Cx {
         let kind = if mask & ctxt::RESTART != 0 { crate::ExitKind::Restart } else { crate::ExitKind::Jump };
         let info = crate::ExitInfo { kind, mask, target: target.addr() };
         self.exit(crate::Exit { info, value, condition: None, call: None })
+    }
+
+    /// `Exec`/`Tailcall`'s jump to the function record `target`, carrying
+    /// the continuation `value` (eval.c's `do_tailcall`: `R_jumpctxt(
+    /// R_GlobalContext, CTXT_FUNCTION, val)`): an [`crate::ExitKind::Exec`]
+    /// exit, which lands there as a `return` does and is then pending again
+    /// for the record's caller ([`Cx::function_context_raw`]).
+    pub fn exec_to(&mut self, target: ContextId, value: Root<'_>) -> RError {
+        let info = crate::ExitInfo { kind: crate::ExitKind::Exec, mask: ctxt::FUNCTION, target: target.addr() };
+        self.exit(crate::Exit { info, value: Some(value), condition: None, call: None })
     }
 
     /// GNU R's `findcontext(mask, env, val)`: `break`/`next` (a `LOOP`

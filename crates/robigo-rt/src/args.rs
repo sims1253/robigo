@@ -1420,8 +1420,10 @@ pub(crate) fn apply(
     // (a method called with its generic's arguments has its own instance:
     // every other call's has none of that code)
     match src {
-        Source::Generic(_) => apply_with::<true>(cx, call, op, src, arglist, rho, caller, supplied, unpromise, out),
-        _ => apply_with::<false>(cx, call, op, src, arglist, rho, caller, supplied, unpromise, out),
+        Source::Generic(_) => {
+            apply_with::<true, false>(cx, call, op, src, arglist, rho, caller, supplied, unpromise, out)
+        }
+        _ => apply_with::<false, false>(cx, call, op, src, arglist, rho, caller, supplied, unpromise, out),
     }
 }
 
@@ -1434,7 +1436,7 @@ pub(crate) fn apply(
 /// whose records take the slots after it).
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
-fn apply_with<const GENERIC: bool>(
+fn apply_with<const GENERIC: bool, const EXEC: bool>(
     cx: &mut Cx,
     call: Root<'_>,
     op: Root<'_>,
@@ -1456,7 +1458,13 @@ fn apply_with<const GENERIC: bool>(
     cx.scope(move |cx, s| {
         // (a method's call stays inline in its one caller, `dispatch_method`:
         // out of line it cost `s3` 11 instructions more an iteration, X9-1c)
-        if GENERIC { apply_in::<GENERIC>(cx, s, a, out) } else { apply_out_of_line(cx, s, a, out) }
+        if GENERIC {
+            apply_in::<GENERIC, false>(cx, s, a, out)
+        } else if EXEC {
+            apply_exec_out_of_line(cx, s, a, out)
+        } else {
+            apply_out_of_line(cx, s, a, out)
+        }
     })
 }
 
@@ -1466,19 +1474,47 @@ fn apply_with<const GENERIC: bool>(
 /// an iteration although it makes no call through here, X9-1c).
 #[inline(never)]
 fn apply_out_of_line(cx: &mut Cx, s: Scope<'_>, a: CallIn<'_, '_>, out: Out<'_>) -> RResult<()> {
-    apply_in::<false>(cx, s, a, out)
+    apply_in::<false, false>(cx, s, a, out)
+}
+
+/// [`apply_out_of_line`] for a call [`apply_exec`] makes: its own instance,
+/// so that the code every other call runs is unchanged by it.
+#[inline(never)]
+fn apply_exec_out_of_line(cx: &mut Cx, s: Scope<'_>, a: CallIn<'_, '_>, out: Out<'_>) -> RResult<()> {
+    apply_in::<false, true>(cx, s, a, out)
+}
+
+/// `applyClosure_core(call, op, arglist, rho, R_NilValue, TRUE)` for
+/// `handle_exec_continuation`'s loop ([`crate::tailcall`]): as [`apply`] of
+/// the promise list `arglist`, except that an `Exec`/`Tailcall` landing in
+/// the call's record comes back as the pending [`robigo_rtcore::ExitKind::Exec`] exit, for
+/// the loop to run, instead of being run by this call.
+pub(crate) fn apply_exec(
+    cx: &mut Cx,
+    call: Root<'_>,
+    op: Root<'_>,
+    arglist: Root<'_>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    apply_with::<false, true>(cx, call, op, Source::List, Some(arglist), rho, None, None, true, out)
 }
 
 /// [`apply_with`] in the scope `s`: the record slot reserved, the call
 /// prepared and made.
 #[inline(always)]
-fn apply_in<const GENERIC: bool>(cx: &mut Cx, s: Scope<'_>, a: CallIn<'_, '_>, out: Out<'_>) -> RResult<()> {
-    cx.with_reserved(move |cx, rec_slot| apply_reserved::<GENERIC>(cx, s, a, rec_slot, out))
+fn apply_in<const GENERIC: bool, const EXEC: bool>(
+    cx: &mut Cx,
+    s: Scope<'_>,
+    a: CallIn<'_, '_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    cx.with_reserved(move |cx, rec_slot| apply_reserved::<GENERIC, EXEC>(cx, s, a, rec_slot, out))
 }
 
 /// [`apply_in`] in the record slot `rec_slot` reserved.
 #[inline(always)]
-fn apply_reserved<'s, const GENERIC: bool>(
+fn apply_reserved<'s, const GENERIC: bool, const EXEC: bool>(
     cx: &mut Cx,
     s: Scope<'s>,
     a: CallIn<'_, '_>,
@@ -1552,6 +1588,15 @@ fn apply_reserved<'s, const GENERIC: bool>(
     let unboxed = match r {
         Ok(u) => u,
         Err(e) => {
+            // R: eval.c:applyClosure, handle_exec_continuation: an Exec or
+            // Tailcall that landed in this call's record (out of line)
+            if cx.exit_info(&e).kind == robigo_rtcore::ExitKind::Exec {
+                let unpromise = match (a.unpromise, src, arglist) {
+                    (true, Source::List, Some(l)) => Some(l),
+                    _ => None,
+                };
+                return crate::tailcall::landed::<EXEC>(cx, e, newrho, unpromise, res);
+            }
             // a jump past the call: GNU R's cleanup does not run
             cx.end_call(newrho, false);
             return Err(e);

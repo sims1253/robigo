@@ -897,14 +897,19 @@ impl<'g> Comp<'g> {
         if self.profile != Profile::Bc {
             return self.k(x);
         }
-        if let Some(&i) = self.pool.get(&(x.as_ptr() as usize)) {
-            return i;
-        }
+        // (an object `k` put in the pool first is shared by pointer there;
+        // here, as do_putconst compares with every constant before it, the
+        // first `identical()` value constant is the one used, and the object
+        // is one itself for those after it)
+        let at = self.pool.get(&(x.as_ptr() as usize)).copied();
         let cx = self.cx;
         // SAFETY: live constants: the source's, or folds rooted by the
         // compile's round.
         let xr = unsafe { robigo_rtcore::Ref::from_sexp(x, cx) };
         for &i in &self.values {
+            if Some(i) == at {
+                return i;
+            }
             // SAFETY: as above.
             let yr = unsafe { robigo_rtcore::Ref::from_sexp(self.consts[usize::from(i) - FIRST_CONST], cx) };
             if yr.sexptype() == xr.sexptype()
@@ -921,7 +926,7 @@ impl<'g> Comp<'g> {
                 return i;
             }
         }
-        let i = self.k(x);
+        let i = at.unwrap_or_else(|| self.k(x));
         self.values.push(i);
         i
     }
@@ -1366,11 +1371,12 @@ impl<'g> Comp<'g> {
                 Handler::Known(Known::Fn(_)) if f == self.st.syms.dollar && self.bc_dollar(e, dst, d)? => {}
                 Handler::Known(Known::Fn(off)) if self.st.defs[off].name == "log" && self.bc_log(e, dst, d)? => {}
                 Handler::Known(Known::Fn(off)) => {
-                    // (`cmpSpecial`)
+                    // (`cmpSpecial`; for `Exec` and `Tailcall`, the pool's
+                    // first `identical()` call: see `Op::Call` below)
                     let prim = self.st.objs[off].bind(self.cx).sexp();
                     let mut i = Ins::new(Op::SpecialFn);
                     i.a = dst;
-                    i.e = self.k(e);
+                    i.e = if f == self.st.syms.tailcall || f == self.st.syms.exec { self.kv(e) } else { self.k(e) };
                     i.c = self.k(prim);
                     i.fl |= F_DEPTH;
                     i.d = d;
@@ -2316,7 +2322,14 @@ impl<'g> Comp<'g> {
         let mut i = Ins::new(Op::Call);
         i.a = dst;
         i.b = rf;
-        i.e = self.k(e);
+        // cmp.R's `cb$putconst(call)` shares the first constant `identical()`
+        // to the call (do_putconst). Only `Exec` and `Tailcall` can see which
+        // cell they get: checkTailPosition compares the call with the
+        // closure's body by identity, so a call whose text appears earlier
+        // in the body is not in tail position under `Bc` (tailcall.rs). For
+        // them the pool's first identical call is used, as GNU R's is; every
+        // other call keeps its own cell (no scan at compile time).
+        i.e = if f == self.st.syms.tailcall || f == self.st.syms.exec { self.kv(e) } else { self.k(e) };
         // a match-plan cache entry per site (none past the 16-bit range)
         i.c = if self.sites < NO_SITE {
             self.sites += 1;

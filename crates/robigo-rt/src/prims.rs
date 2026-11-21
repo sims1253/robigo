@@ -158,6 +158,8 @@ static RT_PRIMS: &[PrimDef] = &[
     special_fn("Recall", crate::eval::do_recall, 210, -1),
     special_fn("withVisible", crate::eval::do_with_visible, 10, 1),
     special_fn("forceAndCall", crate::apply::do_force_and_call, 0, -1),
+    special_fn("Exec", crate::tailcall::do_tailcall::<false>, 200, -1),
+    special_fn("Tailcall", crate::tailcall::do_tailcall::<true>, 200, -1),
     // bind.c: special .Internals (names.c eval 10)
     special_fn("cbind", crate::bind::do_bind::<true>, 10, -1),
     special_fn("rbind", crate::bind::do_bind::<false>, 10, -1),
@@ -456,6 +458,12 @@ pub struct Syms {
     pub browser: Sexp,
     /// `{`
     pub brace: Sexp,
+    /// `Exec`'s formals, `expr` and `envir` (eval.c's `do_tailcall`)
+    pub expr: Sexp,
+    pub envir: Sexp,
+    /// `Tailcall`, `Exec`: their calls' constants (compile.rs)
+    pub tailcall: Sexp,
+    pub exec: Sexp,
     pub dot_internal: Sexp,
     pub standard_generic: Sexp,
     pub srcref: Sexp,
@@ -497,6 +505,10 @@ impl Syms {
             quote: sym(b"quote"),
             browser: sym(b"browser"),
             brace: sym(b"{"),
+            expr: sym(b"expr"),
+            envir: sym(b"envir"),
+            tailcall: sym(b"Tailcall"),
+            exec: sym(b"Exec"),
             dot_internal: sym(b".Internal"),
             standard_generic: sym(b"standardGeneric"),
             srcref: sym(b"srcref"),

@@ -56,6 +56,13 @@ pub enum ExitKind {
     Restart,
     /// A user interrupt (`onintr`).
     Interrupt,
+    /// `Exec` or `Tailcall`'s jump to the function record of the closure
+    /// that called it (eval.c's `do_tailcall`), carrying the continuation:
+    /// a list of the call, its environment and its function. Where it lands
+    /// the record ends as for a `return`, and the exit is pending again,
+    /// with no target, for the closure call that made the record to run
+    /// (robigo-rt's `tailcall`, GNU R's `handle_exec_continuation`).
+    Exec,
 }
 
 pub(crate) fn kind_from_u8(k: u8) -> ExitKind {
@@ -63,7 +70,8 @@ pub(crate) fn kind_from_u8(k: u8) -> ExitKind {
         0 => ExitKind::Error,
         1 => ExitKind::Jump,
         2 => ExitKind::Restart,
-        _ => ExitKind::Interrupt,
+        3 => ExitKind::Interrupt,
+        _ => ExitKind::Exec,
     }
 }
 
