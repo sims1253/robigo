@@ -6,14 +6,19 @@
   `scripts/rt-rdb-compare.R`). Not in CI. Per database:
   - the `.rdx` maps: the compression, and the variables' and references'
     keys;
-  - each record by GNU R's key, decompressed as `lazyLoadDBfetch` does
-    (R_decompress1/2/3), byte for byte;
+  - each record both maps name (a reference's eager record and lazy ones
+    too), decompressed as `lazyLoadDBfetch` does (R_decompress1/2/3;
+    compression 3's raw LZMA2 is refused), byte for byte;
   - each differing record unserialized on both sides (a reference to
-    another record kept as its key) and classed: the same value,
+    another record kept as a marker no value can equal) and classed, all
+    with identical()'s num.eq = FALSE: the same value,
     byte-code only, build paths only (our source and install trees mapped
     to GNU R's in-place build tree), closures' environments only
-    (`scripts/lazyload-ck.R`'s `nz`), different, or unreadable by GNU R
-    (counted by the reason).
+    (formals, body and attributes, kept apart from lists), different, or
+    unreadable by GNU R (counted by the reason). Missing or extra keys and
+    a different compression count as differences.
+- Checked: GNU R's own library against itself is all the same bytes (tools
+  954 records, sysdata 3); nothing to compare exits 2.
 - First run: main a8e08fdd9 + #860 (9e051ff73), the stand-ins of
   `~/.cache/robigo-research/l/shim-main-2026-11-21.R` (split, Sys.time,
   iconv with an INTERIM sub = "byte"):

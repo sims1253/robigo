@@ -15,6 +15,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 out=${1:-.robigo/rt-base-build}
 [ $# -gt 0 ] && shift
+[ -d "$out" ] || { echo "error: $out does not exist (run scripts/rt-base-build.sh)" >&2; exit 2; }
 out=$(cd "$out" && pwd)
 src=$("$root/scripts/r-src.sh")
 [ -d "$out/build/library" ] || { echo "error: $out/build/library does not exist (run scripts/rt-base-build.sh)" >&2; exit 2; }
