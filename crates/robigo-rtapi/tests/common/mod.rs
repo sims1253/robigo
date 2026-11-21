@@ -148,7 +148,7 @@ fn build_support(src: &Path, extra: &[String], out: &Path) {
 /// dates the object it uses, under the lock, before loading it, so an
 /// object another checkout uses stays. A directory of [`support_object`]'s
 /// goes with its object.
-fn remove_stale_objects(dir: &Path, keep: &Path) {
+pub fn remove_stale_objects(dir: &Path, keep: &Path) {
     let day = std::time::Duration::from_secs(24 * 60 * 60);
     let old = |p: &Path| {
         std::fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|a| a > day)
@@ -165,29 +165,14 @@ fn remove_stale_objects(dir: &Path, keep: &Path) {
                 std::fs::read_dir(&p).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
             // (an empty directory is dated by itself: `all` of none is true,
             // and a directory made a moment ago must stay)
-            if if objects.is_empty() { old(&p) } else { objects.iter().all(|o| old(o)) } {
+            let stale = if objects.is_empty() { old(&p) } else { objects.iter().all(|o| old(o)) };
+            if stale {
                 let _ = std::fs::remove_dir_all(&p);
             }
         } else if old(&p) {
             let _ = std::fs::remove_file(&p);
         }
     }
-}
-
-/// A directory another test has just made for its object, still empty, is
-/// not stale: the cleanup a build runs keeps it (CI's cold runs lost such a
-/// directory to a parallel test's cleanup, and the compiler then had nowhere
-/// to write).
-#[test]
-fn a_new_empty_support_directory_survives_the_cleanup() {
-    let base = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("cleanup-test-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
-    let fresh = base.join("capi_test-fresh-0");
-    std::fs::create_dir_all(&fresh).unwrap();
-    let keep = base.join("capi_test-keep-0").join("keep.so");
-    remove_stale_objects(&base, &keep);
-    assert!(fresh.is_dir(), "the cleanup removed a directory made a moment ago");
-    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// A described value.

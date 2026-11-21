@@ -23,9 +23,20 @@ pub fn do_bind<const CBIND: bool>(
     cx: &mut Cx,
     call: Root<'_>,
     _op: Root<'_>,
+    args: Option<Root<'_>>,
     env: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
+    // (applyMethod's promise list: the call over it, as before)
+    if args.is_some() {
+        return cx.scope(|cx, s| {
+            let ac = match crate::specials::arg_call(cx, s, call, args)? {
+                Some(a) => a,
+                None => call,
+            };
+            do_bind::<CBIND>(cx, ac, _op, None, env, out)
+        });
+    }
     let generic: &[u8] = if CBIND { b"cbind" } else { b"rbind" };
     cx.scope(|cx, s| {
         // CAR(args): R_NilValue for no arguments
