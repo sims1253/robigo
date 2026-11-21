@@ -8,7 +8,24 @@ use robigo_rtcore::{Cx, Out, RResult, Ref, Root};
 /// and the call of it with the remaining arguments' values, their tags
 /// kept (`...` among them is evaluated as a symbol, as GNU R does).
 // R: coerce.c:do_call
-pub fn do_call(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub fn do_call(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    // (applyMethod's promise list: the call over it, as before)
+    if args.is_some() {
+        return cx.scope(|cx, s| {
+            let ac = match crate::specials::arg_call(cx, s, call, args)? {
+                Some(a) => a,
+                None => call,
+            };
+            do_call(cx, ac, _op, None, rho, out)
+        });
+    }
     cx.scope(|cx, s| {
         let args = s.root(cx, call.bind(cx).as_cons().map_or(cx.nil(), |c| c.cdr()));
         let Some((e0, tag, rest0)) = args.bind(cx).as_cons().map(|c| (c.car(), c.tag(), c.cdr())) else {

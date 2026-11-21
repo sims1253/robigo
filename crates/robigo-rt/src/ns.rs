@@ -240,7 +240,24 @@ fn check_arity2(cx: &mut Cx, call: Root<'_>, name: &str) -> RResult<()> {
 
 /// `pkg::name`: `R_getNSValue(R_NilValue, pkg, name, TRUE)`.
 // R: envir.c:do_colon2
-pub fn do_colon2(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, _rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub fn do_colon2(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    _rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    // (applyMethod's promise list: the call over it, as before)
+    if args.is_some() {
+        return cx.scope(|cx, s| {
+            let ac = match crate::specials::arg_call(cx, s, call, args)? {
+                Some(a) => a,
+                None => call,
+            };
+            do_colon2(cx, ac, _op, None, _rho, out)
+        });
+    }
     check_arity2(cx, call, "::")?;
     cx.scope(|cx, s| {
         let (ns, name) = (arg(cx, s, call, 0), arg(cx, s, call, 1));
@@ -251,7 +268,24 @@ pub fn do_colon2(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, _rho: Root<'_>, out
 
 /// `pkg:::name`: `R_getNSValue(call, pkg, name, FALSE)`.
 // R: envir.c:do_colon3
-pub fn do_colon3(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, _rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub fn do_colon3(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    _rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    // (applyMethod's promise list: the call over it, as before)
+    if args.is_some() {
+        return cx.scope(|cx, s| {
+            let ac = match crate::specials::arg_call(cx, s, call, args)? {
+                Some(a) => a,
+                None => call,
+            };
+            do_colon3(cx, ac, _op, None, _rho, out)
+        });
+    }
     check_arity2(cx, call, ":::")?;
     cx.scope(|cx, s| {
         let (ns, name) = (arg(cx, s, call, 0), arg(cx, s, call, 1));

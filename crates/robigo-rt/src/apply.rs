@@ -67,7 +67,7 @@ pub fn apply_special_args(
             let flag = def.print();
             cx.note_effect();
             cx.set_visible(flag != 1);
-            f(cx, c, fun, rho, out)?;
+            f(cx, c, fun, None, rho, out)?;
             if flag < 2 {
                 cx.set_visible(flag != 1);
             }
@@ -81,7 +81,7 @@ pub fn apply_special_args(
             // look at an argument: values computed early are dropped (crate::early)
             cx.note_effect();
             cx.set_visible(flag != 1);
-            f(cx, call, fun, rho, out)?;
+            f(cx, call, fun, None, rho, out)?;
             if flag < 2 {
                 cx.set_visible(flag != 1);
             }
@@ -211,7 +211,24 @@ pub fn force_and_call(cx: &mut Cx, call: Root<'_>, n: i32, rho: Root<'_>, out: O
 /// `forceAndCall(n, FUN, ...)`: the call `FUN(...)` made of the rest of
 /// the call, its first `n` arguments forced before a closure's body runs.
 // R: eval.c:do_forceAndCall
-pub fn do_force_and_call(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub fn do_force_and_call(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    // (applyMethod's promise list: the call over it, as before)
+    if args.is_some() {
+        return cx.scope(|cx, s| {
+            let ac = match crate::specials::arg_call(cx, s, call, args)? {
+                Some(a) => a,
+                None => call,
+            };
+            do_force_and_call(cx, ac, _op, None, rho, out)
+        });
+    }
     cx.scope(|cx, s| {
         let (nexpr, rest) = {
             let args = call.bind(cx).as_cons().map_or(cx.nil(), |c| c.cdr());
