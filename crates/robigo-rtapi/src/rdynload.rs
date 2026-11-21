@@ -959,8 +959,11 @@ fn do_dynload(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: 
                 Err(m) => Err(m),
                 Ok(cpath) => {
                     // SAFETY: a NUL-terminated path; the library's
-                    // initializers run as GNU R's dlopen runs them.
-                    let h = unsafe { libc::dlopen(cpath.as_ptr(), flags) };
+                    // initializers run as GNU R's dlopen runs them, with
+                    // the environment's lock held shared, since they may
+                    // read it (clib::with_env_shared says what they must
+                    // not do); R_init_<pkg> runs after, outside it
+                    let h = robigo_rtcore::clib::with_env_shared(|| unsafe { libc::dlopen(cpath.as_ptr(), flags) });
                     if h.is_null() {
                         // SAFETY: dlerror returns the thread's message.
                         let e = unsafe { libc::dlerror() };
@@ -1064,8 +1067,10 @@ fn delete_dll(cx: &mut Cx, path: &str) -> RResult<bool> {
         }
     };
     if !info.handle.is_null() {
-        // SAFETY: the handle dlopen gave this record, closed once.
-        unsafe { libc::dlclose(info.handle) };
+        // SAFETY: the handle dlopen gave this record, closed once; its
+        // finalizers run with the environment's lock held shared, as the
+        // initializers did (clib::with_env_shared).
+        robigo_rtcore::clib::with_env_shared(|| unsafe { libc::dlclose(info.handle) });
     }
     // zero the pointers to the record and its handle: its DLLInfoReference,
     // then each reference SymbolEptrs holds for it
