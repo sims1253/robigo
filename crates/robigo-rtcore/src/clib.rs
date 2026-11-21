@@ -1343,8 +1343,9 @@ pub fn default_textdomain_dir() -> Option<Vec<u8>> {
 static TEMP_DIRS: std::sync::Mutex<Vec<(u32, Vec<u8>)>> = std::sync::Mutex::new(Vec::new());
 
 extern "C" fn remove_temp_dirs_at_exit() {
-    // (try_lock: a child forked while another thread held it must not wait)
-    let Ok(mut dirs) = TEMP_DIRS.try_lock() else { return };
+    // (a child never inherits it held: the fork handlers take it; and no
+    // code of robigo's exits while holding it)
+    let mut dirs = temp_dirs_lock();
     let me = std::process::id();
     let mine: Vec<Vec<u8>> = dirs.iter().filter(|(p, _)| *p == me).map(|(_, d)| d.clone()).collect();
     dirs.retain(|(p, _)| *p != me);
@@ -1399,7 +1400,16 @@ fn remove_tree(dir: &[u8]) {
         let mut cmd = b"rm -Rf '".to_vec();
         cmd.extend_from_slice(dir);
         cmd.push(b'\'');
-        let _ = std::process::Command::new("/bin/sh").arg("-c").arg(std::ffi::OsStr::from_bytes(&cmd)).status();
+        // the child's environment read under ENV (another isolate may write
+        // it), then spawned with that copy and no lock held (a spawn that
+        // forks runs the fork handlers, which take ENV)
+        let env = env_vars();
+        let _ = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(std::ffi::OsStr::from_bytes(&cmd))
+            .env_clear()
+            .envs(env)
+            .status();
     } else {
         r_unlink(std::path::Path::new(std::ffi::OsStr::from_bytes(dir)), true, true);
     }
