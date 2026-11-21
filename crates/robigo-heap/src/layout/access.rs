@@ -571,6 +571,18 @@ impl Sexp {
         // arena's name, or the shared "").
         unsafe { self.sexp_at(sym::OFF_PRINTNAME).char_bytes() }
     }
+    /// The hash of a symbol's name, [`crate::hash_bytes`] of its bytes, as
+    /// the arena wrote it in its name record before publishing the symbol:
+    /// the symbol tables' key (`symtab.rs`).
+    ///
+    /// # Safety
+    /// `self` must be a live SYMSXP.
+    #[inline(always)]
+    pub unsafe fn sym_name_hash(self) -> u32 {
+        // SAFETY: as for `sym_name_bytes`: a symbol's CAR is a CHARSXP-shaped
+        // record whose header has the hash word.
+        unsafe { self.sexp_at(sym::OFF_PRINTNAME).char_hash() }
+    }
     /// Whether a symbol's name is ASCII: the ASCII bit of its PRINTNAME in
     /// every isolate (each makes it from the same bytes), read from the
     /// arena's name (one load less than the isolate's PRINTNAME).

@@ -4,7 +4,7 @@
 
 use robigo_heap::Core;
 
-const N: usize = 4096;
+const N: usize = 1024;
 
 #[inline(never)]
 fn hits(c: &mut Core, names: &[Vec<u8>]) -> usize {
