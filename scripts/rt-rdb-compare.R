@@ -127,6 +127,9 @@ bcdiff <- function(a, b, path = "") {
     ca <- code(a); cb <- code(b)
     if (typeof(ca) == "bytecode" && typeof(cb) == "bytecode")
         return(bcdiff_code(.Internal(disassemble(ca)), .Internal(disassemble(cb)), path))
+    if (!is.null(ca) && !is.null(cb) && (typeof(ca) == "bytecode") != (typeof(cb) == "bytecode"))
+        return(paste0(path, "the body: ours ", if (typeof(ca) == "bytecode") "byte code" else "not compiled",
+                      ", GNU R ", if (typeof(cb) == "bytecode") "byte code" else "not compiled"))
     if (is.list(a) && is.list(b) && length(a) == length(b))
         for (i in seq_along(a))
             if (!same(a[[i]], b[[i]], ignore.bytecode = FALSE, ignore.srcref = FALSE)) {
@@ -242,7 +245,6 @@ for (db in dbs) {
     compiled <- c(ours = 0L, gnur = 0L)
     reasons <- list()
     shown <- 0L
-    shown_bc <- 0L
     {
         for (k in intersect(names(eg), names(eo))) {
             a <- ours$rec(eo[[k]])
@@ -258,10 +260,11 @@ for (db in dbs) {
             else if (same(va, vb)) {
                 bc <- function(f) is.function(f) && !is.primitive(f) && typeof(.Internal(bodyCode(f))) == "bytecode"
                 compiled <- compiled + c(bc(va), bc(vb))
-                if (shown_bc < 60L) {
-                    shown_bc <- shown_bc + 1L
-                    cat("bytecode: ", k, ": ", bcdiff(va, vb), "\n", sep = "")
-                }
+                # every one, by key (a closure inside a list found by path;
+                # none found: said so)
+                d <- bcdiff(va, vb)
+                cat("bytecode: ", k, ": ", if (is.null(d)) "no closure of both differs (a srcref aside)" else d,
+                    "\n", sep = "")
                 "bytecode"
             } else if (length(maps) && same(norm(va, map = TRUE), norm(vb))) "path"
             else if (same(norm(va, env = FALSE), norm(vb, env = FALSE))) "env" else "differ"

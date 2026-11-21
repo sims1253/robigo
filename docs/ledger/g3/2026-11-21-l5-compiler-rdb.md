@@ -94,4 +94,48 @@ Contains #933's head (bef8b1644) and #925's (6d33c8b93, `Sys.time`,
   conformance suite runs M1's loader, which still makes the compiler from
   source, so their cost is the 599-601 s of #933. They move back when the
   suite runs on GNU R's boot (the interim loader's deletion).
-- perf rows, the rdb boot against M1's loader (the same binary): PERFTABLE
+- perf rows, the rdb boot against M1's loader (`scripts/perf.py rt-bars`, callgrind instructions per iteration, the
+  same binary run under each; the M1 loader as the base):
+
+  | row | M1 loader | rdb boot | change |
+  |---|---:|---:|---:|
+  | binarytrees | 3,499,264.1 | 3,497,589.5 | -0.05% |
+  | d0-attr | 1,975.9 | 1,978.9 | +0.15% |
+  | d0-attributes | 2,245.2 | 2,244.4 | -0.03% |
+  | d0-names | 4,798.7 | 4,801.0 | +0.05% |
+  | d0-paste | 13,877.3 | 13,820.7 | -0.41% |
+  | d0-paste0 | 12,798.6 | 12,754.6 | -0.34% |
+  | d0-unlist | 11,064.3 | 11,086.6 | +0.20% |
+  | defaults | 1,981.7 | 1,976.8 | -0.25% |
+  | e7-match | 91,804.7 | 96,434.1 | +5.04% |
+  | e7-paste | 95,708.2 | 94,527.8 | -1.23% |
+  | e7-unique | 117,847.8 | 118,074.2 | +0.19% |
+  | env-fn | 1,935.3 | 1,938.0 | +0.14% |
+  | fib | 10,711,701.3 | 10,715,232.2 | +0.03% |
+  | grow-dbl | 5,535.2 | 5,530.3 | -0.09% |
+  | guard-dollar-assign | 3,852.1 | 3,848.7 | -0.09% |
+  | guard-dots | 8,688.3 | 8,676.4 | -0.14% |
+  | guard-repeat | 8,258.0 | 8,260.9 | +0.03% |
+  | guard-subassign-dbl | 4,452.1 | 4,438.5 | -0.31% |
+  | guard-subset-dbl | 1,733.8 | 1,714.9 | -1.09% |
+  | guard-subset-matrix | 3,189.9 | 3,203.4 | +0.42% |
+  | guard-vec-arith | 88,182.1 | 89,308.5 | +1.28% |
+  | guard-vec-sum | 19,875.1 | 19,880.4 | +0.03% |
+  | guard-while | 8,126.5 | 8,120.5 | -0.07% |
+  | named | 1,840.2 | 1,840.3 | +0.00% |
+  | plain | 1,897.5 | 1,879.9 | -0.93% |
+  | s3 | 16,394.8 | 17,257.9 | +5.26% |
+  | scalars | 6,044.7 | 6,056.5 | +0.20% |
+  | superassign | 4,589.8 | 4,573.8 | -0.35% |
+
+  | program | M1 loader peak RSS KiB | rdb boot | change |
+  |---|---:|---:|---:|
+  | benchmarks/rt/mem/churn.R | 80,040 | 86,228 | +7.7% |
+  | benchmarks/rt/mem/listgrow.R | 46,648 | 52,548 | +12.6% |
+  | benchmarks/suite/binarytrees.R | 26,364 | 28,760 | +9.1% |
+
+  Above 0.5%: `s3` (+5.26%), `e7-match` (+5.04%), `guard-vec-arith`
+  (+1.28%); peak RSS +8-13% (the compiler loaded at start, which M1's
+  loader does at its first use). Not analysed here: the bar for
+  deleting the interim loader (at or below it, like for like) is that
+  PR's; X and C1 have the breakdowns above.
