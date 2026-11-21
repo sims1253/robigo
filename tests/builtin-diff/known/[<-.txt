@@ -1,6 +1,5 @@
-# builtin-diff known failures: [<-, seed 0, key 2f32421c736c060a4df64dc8
-# [<-: 2036 / 2174 (not-implemented 3, crash 0, timeout 0, resource 26 excluded, oracle-crash 0 excluded)
-1
+# builtin-diff known failures: [<-, seed 0, key eb4aa19863ee5634dfcbb00c
+# [<-: 2042 / 2174 (not-implemented 0, crash 0, timeout 0, resource 26 excluded, oracle-crash 0 excluded)
 60
 210
 218
@@ -26,7 +25,6 @@
 417
 437
 444
-447
 448
 451
 454
@@ -56,9 +54,7 @@
 846
 879
 886
-892
 896
-908
 909
 912
 939
@@ -114,7 +110,6 @@
 1857
 1871
 1883
-1942
 1963
 1983
 2003
@@ -122,7 +117,6 @@
 2017
 2020
 2031
-2034
 2055
 2091
 2095

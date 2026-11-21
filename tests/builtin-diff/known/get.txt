@@ -1,4 +1,4 @@
-# builtin-diff known failures: get, seed 0, key 9970256ae866f48a8ccd973c
+# builtin-diff known failures: get, seed 0, key 75b731e6d2b2f036675a24b3
 # get: 486 / 529 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 19 excluded)
 13
 32

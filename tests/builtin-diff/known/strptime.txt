@@ -1,4 +1,4 @@
-# builtin-diff known failures: strptime, seed 0, key d79fa8de8fe26051638c9b0a
+# builtin-diff known failures: strptime, seed 0, key 06169c2993e504e1b7155b30
 # strptime: 225 / 390 (not-implemented 142, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 10
 15

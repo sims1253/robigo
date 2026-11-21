@@ -1,5 +1,5 @@
-# builtin-diff known failures: env2list, seed 0, key 6f5b75bda62b29d5ec557f23
-# env2list: 310 / 343 (not-implemented 17, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
+# builtin-diff known failures: env2list, seed 0, key f9c4ae244540788c1fe0a850
+# env2list: 310 / 343 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 6
 27
 49
