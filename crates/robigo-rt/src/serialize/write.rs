@@ -93,8 +93,16 @@ pub(super) struct Writer<'h> {
 /// `R_Serialize(s, stream)`: the header and the object, into `out`.
 // R: serialize.c:R_Serialize
 pub(super) fn serialize(cx: &mut Cx, s: Root<'_>, out: OutStream, hook: Option<Root<'_>>) -> RResult<Vec<u8>> {
-    let mut w =
-        Writer { out, refs: HashMap::new(), count: 0, hook, effects: Vec::new(), jit: HashMap::new(), seq: 0, depth: 0 };
+    let mut w = Writer {
+        out,
+        refs: HashMap::new(),
+        count: 0,
+        hook,
+        effects: Vec::new(),
+        jit: HashMap::new(),
+        seq: 0,
+        depth: 0,
+    };
     // (a walk that starts over starts with `R_compile_pkgs` as the first
     // did: it is off while a closure compiled on write is written)
     let compile_pkgs = crate::prims::state(cx).compile_pkgs.get();
