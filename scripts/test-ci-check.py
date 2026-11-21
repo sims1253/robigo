@@ -13,7 +13,7 @@ spec = importlib.util.spec_from_file_location("ci_check", HERE / "ci-check.py")
 chk = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(chk)
 
-JOBS = ["select", "lint", "miri", "rdb-data", "builtin-diff-data", "rt", "rt-gc-move", "rt-feature-builds", "base-subset", "build", "perf-base", "release-tests", "test", "bytecode-fidelity", "counters",
+JOBS = ["select", "lint", "miri", "rdb-data", "builtin-diff-data", "rt", "rt-gc-move", "rt-feature-builds", "rt-debug-assertions", "base-subset", "build", "perf-base", "release-tests", "test", "bytecode-fidelity", "counters",
         "corpora", "fuzz", "cran", "smoke", "package-gate", "perf", "perf-rt-build", "perf-rt", "rt-corpora"]
 
 

@@ -3,6 +3,10 @@
 
     scripts/rt-ci.py            # premise check, release tests, gctorture: every step
     scripts/rt-ci.py --shard NAME  # one CI job's steps (SHARDS); CI runs each in parallel
+    scripts/rt-ci.py --shard debug-assertions  # the crates' tests and the conformance with
+                                # debug assertions on (a build of their own, in
+                                # the target directory + "-debug-assertions";
+                                # the plain run above does not include it)
     scripts/rt-ci.py --list     # the rt crates, one per line
     scripts/rt-ci.py --check    # the premise check alone
     scripts/rt-ci.py --full-move  # the nightly's run: every collection moves everything
@@ -325,9 +329,36 @@ def steps(crates):
 #                 under it with gctorture: about 19
 #   feature-builds  the steps that build with a feature of their own: the
 #                 builtin differential's plants, and retry-torture: about 15
+#   debug-assertions  the crates' release tests and the conformance on a
+#                 release build with `-C debug-assertions=on` (heap's
+#                 debug_assert!s see compiled code; not opt-level 0, where
+#                 conditions/eval-depth-limit.R fails only because debug C
+#                 frames are larger): about 9 (its own build), and only in
+#                 its own job: a plain local run does not build it
 # The R_HOME tree (seconds) is made in every shard; every other step is in
 # exactly one (scripts/test-rt-ci.py checks both).
-SHARDS = ("modes", "gc-move", "feature-builds")
+SHARDS = ("modes", "gc-move", "feature-builds", "debug-assertions")
+
+
+def target_dir():
+    """cargo's target directory for this checkout (CARGO_TARGET_DIR, the
+    configs' build.target-dir, else ROOT/target)."""
+    return metadata()["target_directory"]
+
+
+def debug_assertions_steps(crates):
+    """The debug-assertions shard: the R_HOME tree, the crates' release tests
+    and the conformance, all on one release build with debug assertions on,
+    in a target directory of its own (the normal build stays as it is)."""
+    pkgs = [x for c in crates for x in ("-p", c)]
+    test = ["cargo", "test", "--release", "--locked"]
+    env = {"RUSTFLAGS": "-C debug-assertions=on", "CARGO_TARGET_DIR": target_dir() + "-debug-assertions"}
+    return every_cpu([
+        ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", {}, ["scripts/rt-home.sh"]),
+        ("release tests with debug assertions (-C debug-assertions=on)", env,
+         [*test, *pkgs, "--", "--skip", CONFORMANCE]),
+        ("conformance with debug assertions (-C debug-assertions=on)", env, conformance_command()),
+    ])
 
 
 def shard_of(title):
@@ -342,7 +373,10 @@ def shard_of(title):
 
 
 def shard_steps(crates, shard):
-    """The steps of one shard, in `steps`' order."""
+    """The steps of one shard, in `steps`' order (debug-assertions: its own,
+    which `steps` does not have)."""
+    if shard == "debug-assertions":
+        return debug_assertions_steps(crates)
     return [s for s in steps(crates) if shard_of(s[0]) in (None, shard)]
 
 

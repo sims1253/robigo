@@ -26,7 +26,7 @@ def allowed_skip(job, sel, pull_request):
         return True
     if job in HEAVY:
         return sel.get("heavy") == "false"
-    if job in ("rt", "rt-gc-move", "rt-feature-builds", "rdb-data", "builtin-diff-data", "base-subset",
+    if job in ("rt", "rt-gc-move", "rt-feature-builds", "rt-debug-assertions", "rdb-data", "builtin-diff-data", "base-subset",
                "perf-rt-build", "perf-rt", "rt-corpora"):
         # G3's runtime crates (with L1's rdb data and A4's GNU R records for
         # their tests), robigo-rt's base subset, its M1 bars and its corpus

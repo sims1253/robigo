@@ -44,7 +44,7 @@ class RtCi(unittest.TestCase):
         crates = ["robigo-rt", "robigo-rtcore"]
         everything = [s[0] for s in rt.steps(crates)]
         seen = {}
-        for shard in rt.SHARDS:
+        for shard in [s for s in rt.SHARDS if s != "debug-assertions"]:
             titles = [s[0] for s in rt.shard_steps(crates, shard)]
             self.assertEqual(titles, [t for t in everything if t in titles], f"{shard}: steps' order")
             self.assertTrue(any(rt.shard_of(t) == shard for t in titles), f"{shard} runs nothing of its own")
@@ -53,7 +53,7 @@ class RtCi(unittest.TestCase):
         self.assertEqual(sorted(seen), sorted(everything))
         for t, shards in seen.items():
             if rt.shard_of(t) is None:
-                self.assertEqual(shards, list(rt.SHARDS), t)
+                self.assertEqual(shards, [s for s in rt.SHARDS if s != "debug-assertions"], t)
             else:
                 self.assertEqual(shards, [rt.shard_of(t)], t)
         # where each long step goes (the split's point)
@@ -79,6 +79,22 @@ class RtCi(unittest.TestCase):
             r = rt.run_steps([("crosscheck", {"ROBIGO_BC_CROSSCHECK_REPORT": missing}, ["true"])], done)
         self.assertEqual(r, 1)
         self.assertEqual([(t, ok_) for t, _, ok_ in done], [("crosscheck", False)])
+
+    def test_the_debug_assertions_shard_builds_apart(self):
+        # its own build (RUSTFLAGS) in its own target directory, never in the
+        # plain run, and the conformance and the crates' tests both on it
+        from unittest import mock
+        with mock.patch.object(rt, "target_dir", return_value="/t/target"):
+            steps = rt.shard_steps(["robigo-rt"], "debug-assertions")
+        self.assertEqual([t for t, _, _ in steps][0], "the R_HOME tree, tools.so built (scripts/rt-home.sh)")
+        built = [(e, c) for _, e, c in steps[1:]]
+        self.assertEqual(len(built), 2)
+        for e, c in built:
+            self.assertEqual(e["RUSTFLAGS"], "-C debug-assertions=on")
+            self.assertEqual(e["CARGO_TARGET_DIR"], "/t/target-debug-assertions")
+            self.assertEqual(c[:4], ["cargo", "test", "--release", "--locked"])
+        self.assertIn(rt.CONFORMANCE, built[1][1])
+        self.assertNotIn("debug assertions", " ".join(t for t, _, _ in rt.steps(["robigo-rt"])))
 
     def test_the_step_times_are_reported_slowest_first(self):
         r = rt.timings_report([("a", 60.0, True), ("b", 600.0, True), ("c", 30.0, False)])

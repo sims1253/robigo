@@ -399,6 +399,43 @@ jobs:
       - name: rt-ci.py, shard gc-move
         run: python3 scripts/rt-ci.py --shard gc-move
 
+  # the crates' release tests and the conformance on a release build with
+  # `-C debug-assertions=on` (heap's debug_assert!s seeing compiled code:
+  # how H found compile.rs's `@<-` inline bug), a build of its own (about 9
+  # min, its run about 30 s)
+  rt-debug-assertions:
+    needs: select
+    if: ${{ needs.select.outputs.rt == 'true' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.select.outputs.image_rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          # its own build (RUSTFLAGS) in its own target directory
+          # (rt-ci.py's debug_assertions_steps), so a cache of its own
+          key: rt-debug-assertions
+          workspaces: ". -> target-debug-assertions"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # GNU R 4.6.2's pinned sources: robigo-rt binds base's R code from
+      # them (crates/robigo-rt/src/base.rs). The tarball is cached;
+      # scripts/r-src.sh checks its sha256 and extracts it.
+      - uses: actions/cache/restore@v6
+        id: rsrc462
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
+      - name: rt-ci.py, shard debug-assertions
+        run: python3 scripts/rt-ci.py --shard debug-assertions
+
   # the steps that build with a feature of their own: A4's builtin
   # differential with its planted divergences (robigo-rtbuiltins/diff-plant)
   # and the conformance under retry-torture (robigo-rtcore/retry-torture)
@@ -1412,7 +1449,7 @@ jobs:
   check:
     name: Check
     if: ${{ always() }}
-    needs: [select, lint, miri, rdb-data, builtin-diff-data, rt, rt-gc-move, rt-feature-builds, base-subset, build, perf-base, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
+    needs: [select, lint, miri, rdb-data, builtin-diff-data, rt, rt-gc-move, rt-feature-builds, rt-debug-assertions, base-subset, build, perf-base, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
