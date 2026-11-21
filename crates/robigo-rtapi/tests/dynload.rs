@@ -260,3 +260,56 @@ fn dyn_unload_calls_r_unload_and_clears_the_references() {
         assert_eq!(s.val(".Call(\"dl_add1\", 1L, PACKAGE = \"dl_plain\")"), int(2), "{p:?}");
     }
 }
+
+/// `so`'s handshake (tests/support/dlinit_test.c) on another thread: wait
+/// (60 s at most) for the object's constructor or destructor to signal from
+/// inside `dlopen` or `dlclose`, read whether the environment's lock is held
+/// then, and let it go on. Neither side waits without a bound, so a failure
+/// on either never hangs the test.
+///
+/// It returns once the thread runs: a thread that starts while `dlopen` runs
+/// a constructor waits for it, since a new thread registers its
+/// thread-locals' destructors with glibc's `__cxa_thread_atexit_impl`, which
+/// takes the loader's lock that `dlopen` holds across the constructors.
+fn handshake(so: &std::path::Path) -> std::thread::JoinHandle<bool> {
+    let ready = std::path::PathBuf::from(format!("{}.ready", so.display()));
+    let go = std::path::PathBuf::from(format!("{}.go", so.display()));
+    let (started, running) = std::sync::mpsc::channel();
+    let t = std::thread::spawn(move || {
+        started.send(()).unwrap();
+        let t0 = std::time::Instant::now();
+        while !ready.exists() {
+            assert!(t0.elapsed() < std::time::Duration::from_secs(60), "the object's code never signalled");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let held = !robigo_rtcore::clib::env_lock_is_free();
+        std::fs::write(&go, b"").unwrap();
+        held
+    });
+    running.recv().unwrap();
+    t
+}
+
+/// A library's initializers run inside `dyn.load`'s `dlopen`, and its
+/// finalizers inside `dyn.unload`'s `dlclose`, with the environment's lock
+/// held shared, so no isolate's `Sys.setenv` writes while they may read it
+/// (clib::with_env_shared).
+#[test]
+fn a_librarys_initializers_and_finalizers_hold_env() {
+    // a copy of its own, so that its marker files are this process's
+    let built = support_object("dlinit_test.c", "dl_init", &[]);
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("dlinit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let so = dir.join("dl_init.so");
+    std::fs::copy(&built, &so).unwrap();
+    std::fs::write(format!("{}.armed", so.display()), b"").unwrap();
+    let mut s = Session::new(Profile::Eval);
+    let t = handshake(&so);
+    s.val(&format!("invisible(dyn.load({}))", lit(&so)));
+    assert!(t.join().unwrap(), "the constructor ran without the environment's lock");
+    let t = handshake(&so);
+    s.val(&format!("dyn.unload({})", lit(&so)));
+    assert!(t.join().unwrap(), "the destructor ran without the environment's lock");
+    let _ = std::fs::remove_dir_all(&dir);
+}

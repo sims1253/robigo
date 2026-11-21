@@ -347,29 +347,56 @@ pub fn env_vars() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
 /// - take it again, or write the environment ([`env_writer`]);
 /// - fork. The fork's `prepare` takes [`ENV`] exclusive, and this thread
 ///   holds it shared, so it deadlocks. A fork on another thread waits for
-///   `f` to return.
+///   `f` to return (unless that thread holds the loader's lock: below).
 ///
-/// A library's initializer reaches robigo only through the C API, and none
-/// of it that an initializer can call takes `FORK` or `LIVE_ISOLATES`. Those
-/// are taken by an isolate's start and end, which are not R's API, by the
-/// lazy process-global initializers, which an isolate's start has run, and
-/// by `Sys.setenv`, which an initializer could reach only by evaluating R
-/// code before its package's DLL is registered. GNU R's place for that is
-/// `R_init_<pkg>`, which runs after `dlopen` returns, outside the lock.
+/// **The loader's locks come after [`ENV`].** `dlopen` and `dlclose` take
+/// glibc's loader locks inside `f`, with [`ENV`] held. So code that runs
+/// holding a loader lock must not take [`ENV`] or fork: a library's
+/// initializers and finalizers (whichever thread's `dlopen` or `dlclose`
+/// runs them, wrapped here or not: glibc's own `iconv` and NSS loads are
+/// not), a `dl_iterate_phdr` callback (an unwinder's), a TLS initializer.
+/// Otherwise a thread holding the loader lock waits for [`ENV`] while this
+/// one, holding [`ENV`], waits for the loader lock. glibc's `fork` itself
+/// takes no loader lock (posix/fork.c: the atfork `prepare` handlers, then
+/// NSS's, stdio's and malloc's locks; the child re-initializes
+/// `dl_load_lock`), so it does not invert the order.
+///
+/// **Nothing of robigo's can run inside `f`.** An initializer reaches
+/// robigo only through the C API, and every export of it refuses a call
+/// that no native entry of an isolate on this thread made: it aborts
+/// (rtcore's native.rs, `enter_export`: `no_isolate` on a thread without
+/// an isolate, `no_native_entry` outside a native call; and
+/// `isolate::enter_raw`'s `reentered_while_active` for a callback into an
+/// isolate already running). `dyn.load` and `dyn.unload` call `dlopen` and
+/// `dlclose` from Rust, outside every native entry. So an initializer
+/// cannot take `FORK` or `LIVE_ISOLATES` through robigo (an isolate's start
+/// or end, `Sys.setenv`, a lazy process global such as the glibc version
+/// or the C locales); only its own native code could, by forking. GNU R's
+/// place for R code is `R_init_<pkg>`, which runs after `dlopen` returns,
+/// outside the lock, as `R_unload_<pkg>` runs before `dlclose`.
 pub fn with_env_shared<R>(f: impl FnOnce() -> R) -> R {
     let _r = env_read();
     f()
 }
 
-/// [`ENV`] exclusive, for the fork handlers (`isolate::fork_take`): across
-/// a fork no reader is inside a C call and no [`EnvWriter`] inside the C
-/// library's `setenv`/`unsetenv`.
 /// [`ENV`]'s address, for a fork test's report of a hung child.
 #[cfg(test)]
 pub(crate) fn env_lock_addr() -> *const () {
     (&raw const ENV).cast()
 }
 
+/// Whether [`ENV`] is free at this moment (taken exclusive and released at
+/// once): for tests that check a call holds it, as rtapi's dynload test
+/// checks [`with_env_shared`]'s `dlopen` from inside a library's
+/// initializer. Never a way to decide whether to write.
+#[doc(hidden)]
+pub fn env_lock_is_free() -> bool {
+    ENV.try_write().is_ok()
+}
+
+/// [`ENV`] exclusive, for the fork handlers (`isolate::fork_take`): across
+/// a fork no reader is inside a C call and no [`EnvWriter`] inside the C
+/// library's `setenv`/`unsetenv`.
 pub(crate) fn env_write_lock() -> std::sync::RwLockWriteGuard<'static, ()> {
     ENV.write().unwrap_or_else(|e| e.into_inner())
 }

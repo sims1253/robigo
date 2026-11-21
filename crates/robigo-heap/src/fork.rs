@@ -21,7 +21,10 @@
 //!    shared for a C call that reads the environment (`dyn.load`'s
 //!    `dlopen` and `dyn.unload`'s `dlclose` included, across the
 //!    library's initializers and finalizers: `clib::with_env_shared`),
-//!    exclusive for a write;
+//!    exclusive for a write. glibc's loader locks come after it, since
+//!    those calls take them with `ENV` held: code run under a loader lock
+//!    (an initializer, a `dl_iterate_phdr` callback) takes no `ENV` and
+//!    does not fork. glibc's `fork` takes no loader lock;
 //! 3. the symbol arena's lock (`arena.rs`);
 //! 4. std's stdout lock, then std's stderr lock: held by a thread while it
 //!    writes (an isolate's console, a warning, a panic's message). Without
@@ -69,8 +72,11 @@
 //! - A reader holding `ENV` shared for a C call (`localtime`, the locale
 //!   calls, a `dlopen` with its library's initializers) finishes that call
 //!   first. An initializer that forks on that same thread would wait on
-//!   its own hold, which deadlocks (`clib::with_env_shared` says why
-//!   nothing else in it can take `FORK` or `LIVE_ISOLATES`).
+//!   its own hold, which deadlocks, as a fork from a thread holding a
+//!   loader lock that the `dlopen` waits for would (`clib::with_env_shared`
+//!   says why nothing of robigo's in it can take `FORK` or
+//!   `LIVE_ISOLATES`: every C API export refuses a call made outside a
+//!   native entry).
 //! - A thread writing to std's stdout or stderr finishes that write first.
 //!   A write blocked on a full pipe holds the fork until the pipe's reader
 //!   drains it, so the reader must not be waiting on this fork.
