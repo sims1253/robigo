@@ -46,6 +46,7 @@ mod bcassign;
 mod bind;
 pub mod builtin;
 mod call;
+mod call_fn;
 pub mod cenv;
 pub mod code;
 pub mod compile;
