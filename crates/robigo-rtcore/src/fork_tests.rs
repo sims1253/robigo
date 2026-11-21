@@ -315,7 +315,7 @@ fn two_isolates_in_a_child(
     let pid = unsafe { libc::fork() };
     assert!(pid >= 0, "fork failed: {}", std::io::Error::last_os_error());
     if pid == 0 {
-        let code = (|| {
+        let code = {
             use std::sync::Arc;
             use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
             // SAFETY: the child's environment, before its threads start.
@@ -391,7 +391,7 @@ fn two_isolates_in_a_child(
                 code = 3;
             }
             code
-        })();
+        };
         // SAFETY: ends the child at once.
         unsafe { libc::_exit(code) };
     }
@@ -610,7 +610,7 @@ fn a_child_forked_inside_its_threads_session_keeps_it() {
     let pid = unsafe { libc::fork() };
     assert!(pid >= 0, "fork failed: {}", std::io::Error::last_os_error());
     if pid == 0 {
-        let code = (|| {
+        let code = {
             // SAFETY: the child has one thread, this one.
             unsafe { libc::setenv(c"TZ".as_ptr(), c"UTC".as_ptr(), 1) };
             let mut iso = OwnedIsolate::new();
@@ -645,11 +645,8 @@ fn a_child_forked_inside_its_threads_session_keeps_it() {
                 unsafe { libc::waitpid(gpid, &mut status, 0) };
                 if libc::WIFEXITED(status) { libc::WEXITSTATUS(status) } else { 6 }
             });
-            match r {
-                Ok(code) => code,
-                Err(_) => 7,
-            }
-        })();
+            r.unwrap_or(7)
+        };
         // SAFETY: ends the child at once.
         unsafe { libc::_exit(code) };
     }

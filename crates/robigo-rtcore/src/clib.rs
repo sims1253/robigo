@@ -961,11 +961,12 @@ pub(crate) fn tz_session_still_mine() -> bool {
     TZ_SESSION_OWNER.load(std::sync::atomic::Ordering::SeqCst) == this_thread_id()
 }
 
-thread_local! {
-    /// How many of [`TzSessionLock`] this thread holds (a session's R code
-    /// may convert in a session of its own: a handler's `as.POSIXlt`).
-    static TZ_SESSION_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-}
+/// How many of [`TzSessionLock`] the owner holds (a session's R code may
+/// convert in a session of its own: a handler's `as.POSIXlt`). Read and
+/// written only by the owner ([`TZ_SESSION_OWNER`]), or set before a new
+/// owner is stored under `TZ_SESSION_WAIT` (the mutex orders it for the
+/// next owner).
+static TZ_SESSION_DEPTH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// The process's time zone session, held by one thread at a time and
 /// again by that thread (it nests), from before `set_tz` to after
@@ -992,20 +993,19 @@ impl TzSessionLock {
             while TZ_SESSION_OWNER.load(std::sync::atomic::Ordering::SeqCst) != 0 {
                 g = TZ_SESSION_FREE.wait(g).unwrap_or_else(|e| e.into_inner());
             }
+            TZ_SESSION_DEPTH.store(1, std::sync::atomic::Ordering::SeqCst);
             TZ_SESSION_OWNER.store(me, std::sync::atomic::Ordering::SeqCst);
+        } else {
+            TZ_SESSION_DEPTH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
-        TZ_SESSION_DEPTH.with(|d| d.set(d.get() + 1));
         TzSessionLock { _not_send: std::marker::PhantomData }
     }
 }
 
 impl Drop for TzSessionLock {
     fn drop(&mut self) {
-        let last = TZ_SESSION_DEPTH.with(|d| {
-            d.set(d.get() - 1);
-            d.get() == 0
-        });
-        if last {
+        // (this thread is the owner: it holds this lock)
+        if TZ_SESSION_DEPTH.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1 {
             let g = TZ_SESSION_WAIT.lock().unwrap_or_else(|e| e.into_inner());
             TZ_SESSION_OWNER.store(0, std::sync::atomic::Ordering::SeqCst);
             drop(g);
@@ -1049,6 +1049,7 @@ pub(crate) fn tz_session_fork_release(g: std::sync::MutexGuard<'static, ()>, par
     if unsafe { libc::getpid() } != parent {
         let me = this_thread_id();
         if TZ_SESSION_OWNER.load(std::sync::atomic::Ordering::SeqCst) != me {
+            TZ_SESSION_DEPTH.store(0, std::sync::atomic::Ordering::SeqCst);
             TZ_SESSION_OWNER.store(0, std::sync::atomic::Ordering::SeqCst);
         }
     }
