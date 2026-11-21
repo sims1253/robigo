@@ -11,14 +11,19 @@ new `flate2::Decompress` for every record it inflated. A new one costs its
 window's allocation and set-up: about 14.9k instructions a record, from H's
 split of the boot profile. The rdb boot inflates 75 records.
 
-The inflater is now kept in a thread-local `Cell` and reset for each
-record.
+The inflater is now kept in a `Cell` in an isolate layer state of its own
+(`RdbInflater`, installed with `Cx::set_ext` on the first record) and reset
+for each record.
 
-- **Why a thread-local, not a field.** The first version put it in a new
-  `RtState` field. That reordered the struct and moved `superassign` by
-  +8.5 instructions (+0.19%), the RtState layout trap. A thread-local
-  leaves `RtState` alone. The inflater holds no R object, so it does not
-  need to belong to the isolate.
+- **Why a layer state of its own, not an `RtState` field.** The first
+  version put it in a new `RtState` field. That reordered the struct and
+  moved `superassign` by +8.5 instructions (+0.19%), the RtState layout
+  trap. A second version used a thread-local, which g3.md §11 forbids (all
+  mutable runtime state is the isolate's; `tests/isolate_state.rs` checks
+  it). A layer state of its own leaves `RtState`'s layout alone. Layer
+  states are found by a search that stops at the first match, and
+  `RtState` is installed before any record is read, so `prims::state`
+  costs the same.
 - **Why two uses cannot overlap.** Between taking the inflater out of the
   cell and putting it back, only `reset` and `decompress_vec` run. No R
   code runs, no R object is allocated, no safepoint is reached, and the
