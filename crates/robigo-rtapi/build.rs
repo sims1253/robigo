@@ -47,40 +47,56 @@ fn main() {
     }
 }
 
-/// `ROBIGO_RT_COMMIT`: the commit checked out when the binary was built
-/// (`git rev-parse HEAD`; "unknown" outside a checkout), which the binary
-/// carries as a marker string (src/main.rs) so that the trees built by it
-/// can say what built them (scripts/rt-builder.sh). An edit not committed
-/// shows only in the binary's sha256. As robigo-cli's build ID: rerun when
-/// HEAD, or the branch it names, moves.
+/// `ROBIGO_RT_COMMIT`: the commit checked out when the binary was built,
+/// which the binary carries as a marker string (src/main.rs) so that the
+/// trees built by it can say what built them (scripts/rt-builder.sh); an
+/// edit not committed shows only in the binary's sha256. Read from the
+/// checkout's git files, not by running git: git refuses a checkout another
+/// user owns ("dubious ownership"), as CI's container jobs are, and the
+/// marker must not depend on the caller's git configuration. "unknown"
+/// outside a git checkout. Rerun when HEAD, the ref it names, or
+/// packed-refs moves.
 fn commit() {
-    let git = |args: &[&str]| {
-        std::process::Command::new("git")
-            .args(args)
-            .output()
-            .ok()
-            .and_then(|o| o.status.success().then(|| String::from_utf8_lossy(&o.stdout).trim().to_string()))
-            .filter(|s| !s.is_empty())
+    use std::path::{Path, PathBuf};
+    let watch = |path: &Path| println!("cargo:rerun-if-changed={}", path.display());
+    let read = |p: &Path| std::fs::read_to_string(p).ok().map(|s| s.trim().to_string());
+    let is_sha = |s: &str| s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit());
+    // the checkout's root: this package's crates/robigo-rtapi, two up
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dot = root.join(".git");
+    // a worktree's .git is a file naming its git directory ("gitdir: X")
+    let gitdir: Option<PathBuf> = if dot.is_dir() {
+        Some(dot.clone())
+    } else {
+        read(&dot).and_then(|s| s.strip_prefix("gitdir:").map(|g| root.join(g.trim())))
     };
-    let watch = |path: &str| println!("cargo:rerun-if-changed={path}");
-    if let Some(head) = git(&["rev-parse", "--git-path", "HEAD"]) {
-        watch(&head);
-    }
-    if let Some(loose) = git(&["symbolic-ref", "-q", "HEAD"]).and_then(|b| git(&["rev-parse", "--git-path", &b])) {
-        let loose = std::path::Path::new(&loose);
-        if loose.exists() {
-            watch(&loose.to_string_lossy());
-        } else {
-            // a packed branch: packed-refs, and the directory its next
-            // commit writes the loose file into
-            if let Some(packed) = git(&["rev-parse", "--git-path", "packed-refs"]) {
-                watch(&packed);
-            }
-            if let Some(dir) = loose.ancestors().skip(1).find(|d| d.is_dir()) {
-                watch(&dir.to_string_lossy());
+    let sha = gitdir.and_then(|gd| {
+        watch(&gd.join("HEAD"));
+        // the shared directory of the refs (a worktree's commondir)
+        let common = read(&gd.join("commondir")).map(|c| gd.join(c)).unwrap_or_else(|| gd.clone());
+        let head = read(&gd.join("HEAD"))?;
+        let Some(name) = head.strip_prefix("ref:").map(str::trim) else {
+            // a detached HEAD holds the commit
+            return Some(head).filter(|h| is_sha(h));
+        };
+        for d in [&gd, &common] {
+            let loose = d.join(name);
+            if let Some(s) = read(&loose).filter(|s| is_sha(s)) {
+                watch(&loose);
+                return Some(s);
             }
         }
-    }
-    let sha = git(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
-    println!("cargo:rustc-env=ROBIGO_RT_COMMIT={sha}");
+        // a packed ref: packed-refs' "<sha> <name>" line, and the
+        // directory the branch's next commit writes the loose file into
+        let packed = common.join("packed-refs");
+        watch(&packed);
+        if let Some(dir) = common.join(name).ancestors().skip(1).find(|d| d.is_dir()) {
+            watch(dir);
+        }
+        read(&packed)?.lines().find_map(|l| {
+            let (s, n) = l.split_once(' ')?;
+            (n == name && is_sha(s)).then(|| s.to_string())
+        })
+    });
+    println!("cargo:rustc-env=ROBIGO_RT_COMMIT={}", sha.unwrap_or_else(|| "unknown".to_string()));
 }
