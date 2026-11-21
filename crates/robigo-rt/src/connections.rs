@@ -1144,6 +1144,16 @@ struct GzReader<R> {
     done: bool,
     allow: bool,
     started: bool,
+    /// Inflated bytes not yet read, `obuf[opos..oend]`: a small read is
+    /// served from here, and the stream inflated a `Z_BUFSIZE` block at a
+    /// time (gzio.h reads its input through a buffer of that size too).
+    obuf: Vec<u8>,
+    opos: usize,
+    oend: usize,
+    /// A member's CRC-32 did not match, found while inflating ahead: the
+    /// error comes when a read asks for more than the bytes inflated
+    /// before it, as it did before the buffer.
+    crc_bad: bool,
 }
 
 impl<R: Read> GzReader<R> {
@@ -1160,6 +1170,10 @@ impl<R: Read> GzReader<R> {
             done: false,
             allow,
             started: false,
+            obuf: Vec::new(),
+            opos: 0,
+            oend: 0,
+            crc_bad: false,
         }
     }
 
@@ -1281,6 +1295,16 @@ impl<R: Read> GzReader<R> {
             }
         }
         let mut n = 0;
+        // what the last block left
+        if self.opos < self.oend {
+            let k = (self.oend - self.opos).min(out.len());
+            out[..k].copy_from_slice(&self.obuf[self.opos..self.opos + k]);
+            self.opos += k;
+            n = k;
+        }
+        if self.crc_bad && n < out.len() {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "crc error"));
+        }
         while n < out.len() && !self.done {
             if self.transparent {
                 let k = (self.end - self.pos).min(out.len() - n);
@@ -1296,49 +1320,74 @@ impl<R: Read> GzReader<R> {
                 }
                 continue;
             }
-            self.fill()?;
-            let before_in = self.inflate.total_in();
-            let before_out = self.inflate.total_out();
-            let st = self
-                .inflate
-                .decompress(&self.buf[self.pos..self.end], &mut out[n..], FlushDecompress::None)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-            let used = (self.inflate.total_in() - before_in) as usize;
-            let made = (self.inflate.total_out() - before_out) as usize;
-            self.pos += used;
-            self.crc.update(&out[n..n + made]);
-            n += made;
-            match st {
-                Status::StreamEnd => {
-                    // the trailer: CRC-32 and length, little-endian
-                    let mut t = [0u8; 8];
-                    for x in t.iter_mut() {
-                        *x = self.byte()?.unwrap_or(0);
-                    }
-                    let crc = u32::from_le_bytes([t[0], t[1], t[2], t[3]]);
-                    if crc != self.crc.sum() {
-                        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "crc error"));
-                    }
-                    match self.check_header() {
-                        Header::Ok => {
-                            self.inflate.reset(false);
-                            self.crc = Crc::new();
-                        }
-                        _ => {
-                            self.transparent = false;
-                            self.done = true;
-                        }
-                    }
+            if out.len() - n >= Z_BUFSIZE {
+                // a large read: inflated in place
+                n += self.inflate_into(&mut out[n..])?;
+            } else {
+                // a small one: a block into the buffer, then from there
+                let mut ob = std::mem::take(&mut self.obuf);
+                ob.resize(Z_BUFSIZE, 0);
+                let made = self.inflate_into(&mut ob);
+                self.obuf = ob;
+                let made = made?;
+                let k = made.min(out.len() - n);
+                out[n..n + k].copy_from_slice(&self.obuf[..k]);
+                (self.opos, self.oend) = (k, made);
+                n += k;
+            }
+        }
+        Ok(n)
+    }
+
+    /// One step of the stream into `dst`: inflate what the input buffer
+    /// holds (refilled when empty), the CRC-32 over what came out; at a
+    /// member's end its trailer checked and the next member's header read.
+    /// How many bytes came out (0 at the end, `done` then set).
+    fn inflate_into(&mut self, dst: &mut [u8]) -> std::io::Result<usize> {
+        self.fill()?;
+        let before_in = self.inflate.total_in();
+        let before_out = self.inflate.total_out();
+        let st = self
+            .inflate
+            .decompress(&self.buf[self.pos..self.end], dst, FlushDecompress::None)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let used = (self.inflate.total_in() - before_in) as usize;
+        let made = (self.inflate.total_out() - before_out) as usize;
+        self.pos += used;
+        self.crc.update(&dst[..made]);
+        match st {
+            Status::StreamEnd => {
+                // the trailer: CRC-32 and length, little-endian
+                let mut t = [0u8; 8];
+                for x in t.iter_mut() {
+                    *x = self.byte()?.unwrap_or(0);
                 }
-                _ => {
-                    if used == 0 && made == 0 && self.src_eof {
-                        // truncated
+                let crc = u32::from_le_bytes([t[0], t[1], t[2], t[3]]);
+                if crc != self.crc.sum() {
+                    // (the bytes made now are read first)
+                    self.crc_bad = true;
+                    self.done = true;
+                    return Ok(made);
+                }
+                match self.check_header() {
+                    Header::Ok => {
+                        self.inflate.reset(false);
+                        self.crc = Crc::new();
+                    }
+                    _ => {
+                        self.transparent = false;
                         self.done = true;
                     }
                 }
             }
+            _ => {
+                if used == 0 && made == 0 && self.src_eof {
+                    // truncated
+                    self.done = true;
+                }
+            }
         }
-        Ok(n)
+        Ok(made)
     }
 }
 
