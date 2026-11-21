@@ -8,7 +8,7 @@
 use crate::{
     apply, arith, array, attrib, bind, builtin, bytecode, character, coerce, complex, context, cum, datetime, envir,
     errors, grep, identical, is, logic, math, options, paste, raw, relop, rng, seq, sort, sprintf, subset, summary,
-    sysutils, unique, util, version,
+    sysutils, times, unique, util, version,
 };
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
@@ -381,6 +381,8 @@ pub static BUILTINS: &[Builtin] = &[
     op!("which.max", 1, summary::do_first_min, 11, 1, FUNCALL, Pure),
     row("as.POSIXct", datetime::do_as_posixct, 0, 11, 2, FUNCALL, External),
     row("strptime", datetime::do_strptime, 0, 11, 3, FUNCALL, External),
+    // times.c
+    row("Sys.time", times::do_systime, 0, 11, 0, FUNCALL, External),
     op!("min", 2, summary::do_summary, 1, -1, FUNCALL, Pure),
     op!("max", 3, summary::do_summary, 1, -1, FUNCALL, Pure),
     // cum.c

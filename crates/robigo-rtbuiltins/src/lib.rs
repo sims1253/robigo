@@ -65,6 +65,7 @@ pub mod subset;
 pub mod summary;
 pub mod sysutils;
 pub mod text;
+pub mod times;
 pub mod unique;
 pub mod util;
 pub mod version;
