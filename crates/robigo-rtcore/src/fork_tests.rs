@@ -88,10 +88,22 @@ pub(crate) fn watchdog(what: &'static str, secs: u64) -> std::sync::Arc<std::syn
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        eprintln!("{what}: no progress in {secs} s (a fork or its handlers hung)");
+        // raw `write(2)`, not `eprintln!`: std's stderr lock may be the one
+        // that is stuck, and the abort must not wait on it
+        let msg = format!("{what}: no progress in {secs} s (a fork or its handlers hung)\n");
+        // SAFETY: a live buffer to fd 2.
+        unsafe { libc::write(2, msg.as_ptr().cast(), msg.len()) };
         std::process::abort();
     });
     done
+}
+
+/// The fork tests, one at a time: each forks while its own lock is held,
+/// and another test's fork would enter `prepare` and release this one's
+/// holder before this test's fork does.
+fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ONE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Fork while another thread holds a lock (`hold` returns its guard), and
@@ -108,10 +120,7 @@ pub(crate) fn watchdog(what: &'static str, secs: u64) -> std::sync::Arc<std::syn
 /// the child blocks for ever (the negative control: with registration
 /// disabled, every one of these tests times out).
 fn fork_while_held<G: 'static>(what: &'static str, hold: fn() -> G) {
-    // serialized: each test forks while its own lock is held, and another
-    // test's fork would enter `prepare` and release this one's holder
-    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let _one = one_at_a_time();
     // load-bearing: starting an isolate publishes this crate's fork locks
     // (`with_options` repeats the constructor's `set_fork_locks`), so the
     // test means the same if a linker dropped the constructor
@@ -154,8 +163,13 @@ fn fork_while_held<G: 'static>(what: &'static str, hold: fn() -> G) {
         if Instant::now() > deadline {
             // SAFETY: our own child.
             let report = hung_child_report(pid, fds[0]);
-            // SAFETY: our own child.
-            unsafe { libc::kill(pid, libc::SIGKILL) };
+            // SAFETY: our own child, killed and reaped; the pipe's ends, ours.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+                libc::waitpid(pid, &mut status, 0);
+                libc::close(fds[0]);
+                libc::close(fds[1]);
+            }
             panic!("{what}: the child forked while another thread held it never finished: {report}");
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -215,8 +229,7 @@ fn a_child_forked_while_stderr_is_locked_tears_its_isolate_down() {
 #[test]
 fn a_fork_during_a_lazy_initializer_waits_for_it() {
     static CELL: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let _one = one_at_a_time();
     let done = watchdog("a lazy initializer", 60);
     let (inside_tx, inside_rx) = mpsc::channel();
     let initer = std::thread::spawn(move || {
@@ -248,8 +261,11 @@ fn a_fork_during_a_lazy_initializer_waits_for_it() {
         }
         assert!(r == 0, "waitpid failed: {}", std::io::Error::last_os_error());
         if Instant::now() > deadline {
-            // SAFETY: our own child.
-            unsafe { libc::kill(pid, libc::SIGKILL) };
+            // SAFETY: our own child, killed and reaped.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+                libc::waitpid(pid, &mut status, 0);
+            }
             panic!("the child forked during a lazy initializer never finished");
         }
         std::thread::sleep(Duration::from_millis(10));

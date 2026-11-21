@@ -25,7 +25,8 @@
 //!    writes (an isolate's console, a warning, a panic's message). Without
 //!    them a child forked while another thread writes blocks on its own
 //!    first write, or on its isolate's teardown, which flushes the console.
-//!    glibc's `fork` takes the C library's stdio locks for the same reason.
+//!    (glibc's `fork` makes the C library's own stdio locks usable in the
+//!    child by resetting them there; std's cannot be reset from outside.)
 //!
 //! A thread takes them in this order and never the other way: in
 //! particular, it takes none of 0–3 while it holds std's stdout or stderr
@@ -63,6 +64,9 @@
 //! **What `prepare` waits for.** It blocks until every holder releases.
 //! - A reader holding `ENV` shared for a C call (`localtime`, the locale
 //!   calls) finishes that call first.
+//! - A thread writing to std's stdout or stderr finishes that write first.
+//!   A write blocked on a full pipe holds the fork until the pipe's reader
+//!   drains it, so the reader must not be waiting on this fork.
 //! - A thread blocked waiting for one of these locks across the fork stays
 //!   blocked in the parent until `parent` releases it, and does not exist
 //!   in the child.
@@ -250,7 +254,11 @@ static STD_IO: StdIo = StdIo(UnsafeCell::new(None));
 
 extern "C" fn release() {
     // SAFETY: as in `prepare`: under `FORK`, which this fork's handlers hold.
-    drop(unsafe { (*STD_IO.0.get()).take() });
+    if let Some((out, err)) = unsafe { (*STD_IO.0.get()).take() } {
+        // the reverse of `prepare`'s order
+        drop(err);
+        drop(out);
+    }
     crate::arena::unlock_after_fork();
     if TOOK_EMBEDDER.swap(false, Ordering::Relaxed) {
         // `release` was stored before `take`, which this fork's `prepare`
