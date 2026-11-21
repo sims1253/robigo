@@ -43,10 +43,15 @@ STOP_SECONDS = 30
 # reentrant: the signal handler runs on the main thread, which may hold it
 _lock = threading.RLock()
 _live = set()       # the directories this process removes at exit
+_made = set()       # every directory it made and did not keep(): one a
+                    # worker made again after a removal is removed at exit
+_owner = os.getpid()  # the process these are for (not a child made by fork)
 _installed = False
-_closing = False
-_busy = 0           # a directory is being made or removed: signals wait
+_signals_installed = False
+_closing = False    # no new directory (after a signal, or once exit began)
+_busy = 0           # the main thread makes or removes a directory: signals wait
 _pending = None     # a signal that arrived meanwhile
+_exit_code = None   # the status a signal asked for, honoured at exit
 _exiting = False    # the exit handler runs: a signal waits for its end
 _exit_done = False  # the exit handler's removal is done: a signal ends the process now
 _SIGNALS = {signal.SIGTERM, signal.SIGHUP}
@@ -55,23 +60,31 @@ _SIGNALS = {signal.SIGTERM, signal.SIGHUP}
 class _Deferring:
     """A creation or removal: it holds the lock, so the handler's removal
     waits for a worker thread's to finish; and while the main thread is in
-    one, where Python runs the handler, SIGTERM and SIGHUP only note
-    themselves, and are handled when the outermost one ends."""
+    one, where Python runs the handler, SIGINT, SIGTERM and SIGHUP only note
+    themselves, and are handled when the outermost one ends. The main
+    thread counts itself busy before it takes the lock, so a signal can
+    never find it holding the lock outside a counted section."""
 
     def __enter__(self):
         global _busy
-        _lock.acquire()
-        if threading.current_thread() is threading.main_thread():
+        main = threading.current_thread() is threading.main_thread()
+        if main:
             _busy += 1
+        try:
+            _lock.acquire()
+        except BaseException:
+            if main:
+                _busy -= 1
+            raise
 
     def __exit__(self, *exc):
         global _busy, _pending
+        _lock.release()
         signum = None
         if threading.current_thread() is threading.main_thread():
             _busy -= 1
             if _busy == 0 and not _exiting:
                 signum, _pending = _pending, None
-        _lock.release()
         if signum:
             _on_signal(signum, None)
         return False
@@ -82,11 +95,12 @@ _deferring = _Deferring()
 
 def scratch_dir(prefix, dir=None):
     """A new directory `<dir>/<prefix>XXXXXXXX` (dir: the temporary
-    directory), removed when this process exits."""
-    parent = dir or tempfile.gettempdir()
+    directory), removed when this process exits. Its absolute path."""
+    parent = os.path.abspath(dir or tempfile.gettempdir())
     with _deferring:
         if _closing:
-            # a worker thread starting new work after a SIGTERM
+            # a worker thread starting new work after a signal, or an exit
+            # handler after this module's removal began
             raise SystemExit(1)
         _install()
         # the name is registered before the directory exists, so no moment
@@ -94,18 +108,23 @@ def scratch_dir(prefix, dir=None):
         # included); a name that is not made leaves the registry at exit
         while True:
             path = os.path.join(parent, prefix + secrets.token_hex(6))
+            if path in _live or path in _made:
+                continue
             _live.add(path)
+            _made.add(path)
             try:
                 os.mkdir(path, 0o700)
-                return os.path.abspath(path)
+                return path
             except FileExistsError:
                 _live.discard(path)
+                _made.discard(path)
 
 
 def keep(path):
     """Leave `path` in place at exit."""
     with _lock:
         _live.discard(path)
+        _made.discard(path)
 
 
 def remove(path):
@@ -117,9 +136,15 @@ def remove(path):
 
 
 def remove_all():
-    """Remove every directory this process still holds (the exit handler,
-    and SIGTERM's)."""
+    """Remove every directory this process made and still has (the exit
+    handler, and a signal's), and nothing in a child made by fork."""
     with _deferring:
+        if os.getpid() != _owner:
+            _live.clear()
+            _made.clear()
+            return
+        # (one a worker made again after its removal: made, and there)
+        _live.update(p for p in _made if os.path.lexists(p))
         if _live:
             end_children()
         for path in sorted(_live):
@@ -211,61 +236,73 @@ def end_children(grace=5.0):
 
 
 def _on_signal(signum, frame):
-    global _closing, _pending
+    global _closing, _pending, _exit_code
     code = 128 + signum      # the shell's convention for a death by signal
     if _exit_done:
         os._exit(code)       # after the exit handler's removal: nothing is left to remove
     if _busy or _exiting:
         _pending = signum    # handled once the creation or removal is done
         return
-    if signum == signal.SIGINT:
-        raise KeyboardInterrupt
+    # recorded first: an exception raised where CPython drops it (an exit
+    # handler, a thread pool's shutdown) still ends with this status
+    if _exit_code is None:
+        _exit_code = code
     _closing = True
     remove_all()
     # the directories are gone; a process still there this much later (a
-    # thread pool's exit waiting on its workers) is ended
+    # thread pool's exit waiting on a worker that does not return) is ended
     t = threading.Timer(STOP_SECONDS, os._exit, (code,))
     t.daemon = True
     t.start()
+    if signum == signal.SIGINT:
+        raise KeyboardInterrupt
     # unwinds the main thread through its `finally`s to the exit handlers
     raise SystemExit(code)
 
 
 def _at_exit():
-    global _exiting, _exit_done
+    global _exiting, _exit_done, _closing
     # (an exception raised in an exit handler is dropped, so a signal that
     # comes during this removal is honoured here, not by raising)
     _exiting = True
+    _closing = True          # an exit handler that runs after this one makes nothing
     remove_all()
     _exit_done = True
-    if _pending and not _closing:
-        # a signal during the normal exit's removal: honoured once it is done
-        os._exit(128 + _pending)
+    code = _exit_code or (128 + _pending if _pending else None)
+    if code and os.getpid() == _owner:
+        os._exit(code)
 
 
 def _forked_child():
-    # a child made by fork owns none of its parent's directories
-    global _lock, _busy, _pending, _exiting, _exit_done
+    # a child made by fork owns none of its parent's directories, and the
+    # new ones it makes are its own (a status a signal asked for in the
+    # child before this ran, from an earlier fork hook, is kept)
+    global _lock, _busy, _pending, _exiting, _exit_done, _owner, _closing
     _live.clear()
+    _made.clear()
+    _owner = os.getpid()
     _lock = threading.RLock()
-    _busy, _pending, _exiting, _exit_done = 0, None, False, False
+    _busy, _pending, _exiting, _exit_done, _closing = 0, None, False, False, False
 
 
 def _install():
-    global _installed
-    if _installed:
+    global _installed, _signals_installed
+    if not _installed:
+        _installed = True
+        atexit.register(_at_exit)
+        os.register_at_fork(after_in_child=_forked_child)
+    # the handlers need the main thread: a worker that made the first
+    # directory leaves them to the main thread's first call (or the import)
+    if _signals_installed or threading.current_thread() is not threading.main_thread():
         return
-    _installed = True
-    atexit.register(_at_exit)
-    os.register_at_fork(after_in_child=_forked_child)
-    if threading.current_thread() is not threading.main_thread():
-        return
+    _signals_installed = True
     for s in _SIGNALS:
         # a tool's own handler stays; only the default (die without the
         # exit handlers) is replaced
         if signal.getsignal(s) is signal.SIG_DFL:
             signal.signal(s, _on_signal)
-    # Ctrl-C: still KeyboardInterrupt, but not inside a creation or a removal
+    # Ctrl-C: KeyboardInterrupt after the same removal, never inside a
+    # creation or a removal
     if signal.getsignal(signal.SIGINT) is signal.default_int_handler:
         signal.signal(signal.SIGINT, _on_signal)
 

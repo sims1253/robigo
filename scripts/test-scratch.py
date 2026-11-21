@@ -223,6 +223,105 @@ class Module(unittest.TestCase):
                                 "import scratch\nscratch.scratch_dir('t-')", self.tmp)
         self.assertEqual(code, 128 + signal.SIGTERM, err)
 
+    def test_a_directory_a_worker_makes_again_after_the_removal_goes_at_exit(self):
+        # E1: a worker writes under its directory after SIGTERM removed it
+        rc, secs, d, kid = self.sigterm(
+            "import threading, os\nready = threading.Event()\n"
+            "def work():\n    w = scratch_dir('w-'); print(w); print(os.getpid()); print('READY', flush=True)\n"
+            "    time.sleep(1.5); os.makedirs(os.path.join(w, 'work'), exist_ok=True)\n"
+            "threading.Thread(target=work).start()\ntime.sleep(300)\n")
+        self.assertEqual(rc, 128 + signal.SIGTERM)
+        self.assertFalse(os.path.exists(d), "the directory made again survived")
+
+    def test_ctrl_c_with_a_worker_that_never_returns_removes_first_then_exits(self):
+        # E2: the removal does not wait for the pool; the exit comes after
+        # STOP_SECONDS (shortened here)
+        env = dict(os.environ, TMPDIR=self.tmp, PYTHONPATH=str(HERE))
+        code = ("import threading, time, scratch\nscratch.STOP_SECONDS = 2\nd = scratch.scratch_dir('t-')\n"
+                "threading.Thread(target=threading.Event().wait).start()\n"
+                "print(d, flush=True)\ntime.sleep(300)\n")
+        p = subprocess.Popen([sys.executable, "-c", code], env=env, stdout=subprocess.PIPE, text=True)
+        try:
+            d = p.stdout.readline().strip()
+            p.send_signal(signal.SIGINT)
+            time.sleep(1)
+            self.assertFalse(os.path.exists(d), "not removed before the pool's wait")
+            self.assertEqual(p.wait(timeout=30), 128 + signal.SIGINT)
+        finally:
+            if p.poll() is None:
+                p.kill()        # (a failing run never leaves the process)
+                p.wait()
+
+    def test_a_signal_raised_where_cpython_drops_it_keeps_its_status(self):
+        # E4: SIGTERM during an exit handler that runs before scratch's
+        code, out, err = run_py("import atexit, os, signal, time, scratch\nd = scratch.scratch_dir('t-')\n"
+                                "print(d, flush=True)\n"
+                                "atexit.register(lambda: (os.kill(os.getpid(), signal.SIGTERM), time.sleep(1)))", self.tmp)
+        self.assertEqual(code, 128 + signal.SIGTERM, err)
+        self.assertFalse(os.path.exists(out[0]))
+
+    def test_a_child_signalled_before_the_fork_hook_removes_nothing(self):
+        # E5: an earlier fork hook signals the child while it still holds
+        # the parent's registry
+        code, out, err = run_py("import os, signal, sys\n"
+                                "os.register_at_fork(after_in_child=lambda: os.kill(os.getpid(), signal.SIGHUP))\n"
+                                "import scratch\nd = scratch.scratch_dir('t-')\npid = os.fork()\n"
+                                "if pid == 0:\n    sys.exit(0)\n"
+                                "_, status = os.waitpid(pid, 0)\n"
+                                "print(d, os.path.isdir(d), os.waitstatus_to_exitcode(status), flush=True)", self.tmp)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out[1:], ["True", str(128 + signal.SIGHUP)])
+        self.assertFalse(os.path.exists(out[0]))
+
+    def test_signals_are_installed_by_the_main_thread_after_a_worker_first_import(self):
+        # E6: the module first imported (and its first directory made) in a
+        # worker thread; the main thread's first call installs the handlers
+        env = dict(os.environ, TMPDIR=self.tmp, PYTHONPATH=str(HERE))
+        code = ("import threading, time, sys\n"
+                "t = threading.Thread(target=lambda: __import__('scratch').scratch_dir('w-'))\nt.start(); t.join()\n"
+                "import scratch\nscratch.scratch_dir('t-')\nprint('READY', flush=True)\ntime.sleep(300)\n")
+        p = subprocess.Popen([sys.executable, "-c", code], env=env, stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(p.stdout.readline().strip(), "READY")
+            p.send_signal(signal.SIGTERM)
+            self.assertEqual(p.wait(timeout=30), 128 + signal.SIGTERM)
+        finally:
+            if p.poll() is None:
+                p.kill()
+                p.wait()
+        self.assertEqual([n for n in os.listdir(self.tmp) if n.startswith(("t-", "w-"))], [])
+
+    def test_no_directory_is_made_after_the_exit_removal(self):
+        # E7: an exit handler that runs after scratch's
+        code, out, err = run_py("import atexit, os\n"
+                                "def late():\n    import scratch\n"
+                                "    try:\n        print(scratch.scratch_dir('t-'), flush=True)\n"
+                                "    except SystemExit:\n        print('refused', flush=True)\n"
+                                "atexit.register(late)\nimport scratch\nscratch.scratch_dir('t-')", self.tmp)
+        self.assertEqual(out, ["refused"], err)
+        self.assertEqual([n for n in os.listdir(self.tmp) if n.startswith("t-")], [])
+
+    def test_a_relative_parent_is_registered_as_returned(self):
+        # E8
+        code, out, err = run_py("import os, scratch\nos.mkdir('rel')\n"
+                                "a, b, c = (scratch.scratch_dir('t-', dir='rel') for _ in range(3))\n"
+                                "scratch.remove(a); scratch.keep(b); os.chdir('rel')\n"
+                                "print(a, b, c, os.path.isabs(c), os.path.exists(a), flush=True)", self.tmp)
+        self.assertEqual(code, 0, err)
+        a, b, c, absolute, a_there = out
+        self.assertEqual((absolute, a_there), ("True", "False"))
+        self.assertTrue(os.path.isdir(b))          # kept
+        self.assertFalse(os.path.exists(c))        # removed at exit, after the chdir
+
+    def test_a_name_collision_does_not_unregister_a_live_directory(self):
+        # E9
+        code, out, err = run_py("import secrets, scratch\nnames = iter(['same', 'same', 'other'])\n"
+                                "secrets.token_hex = lambda n: next(names)\n"
+                                "print(scratch.scratch_dir('t-'), scratch.scratch_dir('t-'), flush=True)", self.tmp)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(set(out)), 2)
+        self.assertFalse(any(os.path.exists(p) for p in out))
+
     def test_a_tools_own_sigterm_handler_stays(self):
         code, out, err = run_py("import signal\nsignal.signal(signal.SIGTERM, lambda *a: None)\nh = signal.getsignal(signal.SIGTERM)\n"
                                 "from scratch import scratch_dir\nscratch_dir('t-')\nprint(signal.getsignal(signal.SIGTERM) is h)",
