@@ -20,10 +20,17 @@
 //! 2. `ENV` (robigo-rtcore `clib.rs`): the process environment's lock,
 //!    shared for a C call that reads the environment, exclusive for a
 //!    write;
-//! 3. the symbol arena's lock (`arena.rs`).
+//! 3. the symbol arena's lock (`arena.rs`);
+//! 4. std's stdout lock, then std's stderr lock: held by a thread while it
+//!    writes (an isolate's console, a warning, a panic's message). Without
+//!    them a child forked while another thread writes blocks on its own
+//!    first write, or on its isolate's teardown, which flushes the console.
+//!    glibc's `fork` takes the C library's stdio locks for the same reason.
 //!
-//! A thread takes them in this order and never the other way. `prepare`
-//! takes 0, 1, 2 (exclusive) and 3, in that order. `parent` and `child`
+//! A thread takes them in this order and never the other way: in
+//! particular, it takes none of 0–3 while it holds std's stdout or stderr
+//! lock (a `stdout().lock()` held across a robigo call breaks that).
+//! `prepare` takes 0, 1, 2 (exclusive), 3 and 4, in that order. `parent` and `child`
 //! release them in the reverse order, and release only what that `prepare`
 //! took. robigo-rtcore, which owns 1 and 2, gives their take and release to
 //! [`set_fork_locks`]. A heap used without it (robigo-heap's own tests) has
@@ -39,6 +46,11 @@
 //! - `std::process::Command`'s fork fallback holds it shared across `fork`.
 //!   robigo-rt does not spawn through it, and when an embedder does,
 //!   `prepare` waits for nothing that waits on std's lock.
+//!
+//! **std's stdin lock** is not one of them: a thread reading the console
+//! holds it for as long as the read blocks, and a fork would wait for the
+//! input. A child forked while another thread reads std's stdin must not
+//! read it.
 //!
 //! **Lazy process-global state.** A `OnceLock` caught mid-initialization by
 //! a fork would stay "running" in the child. So the process-global
@@ -218,9 +230,27 @@ extern "C" fn prepare() {
         TOOK_EMBEDDER.store(true, Ordering::Relaxed);
     }
     crate::arena::lock_for_fork();
+    let std_io = (std::io::stdout().lock(), std::io::stderr().lock());
+    // SAFETY: the stash is this fork's alone: `FORK`, held, serializes the
+    // forks' handlers, and `release` empties it.
+    unsafe { *STD_IO.0.get() = Some(std_io) };
 }
 
+/// std's stdout and stderr locks, taken by `prepare` and dropped by
+/// `release` on the same thread (the forking thread, or its copy in the
+/// child: std's lock is reentrant per thread, and the child's thread keeps
+/// the forking thread's identity).
+struct StdIo(UnsafeCell<Option<(std::io::StdoutLock<'static>, std::io::StderrLock<'static>)>>);
+
+// SAFETY: read and written only by a fork's handlers, under `FORK`, on the
+// forking thread.
+unsafe impl Sync for StdIo {}
+
+static STD_IO: StdIo = StdIo(UnsafeCell::new(None));
+
 extern "C" fn release() {
+    // SAFETY: as in `prepare`: under `FORK`, which this fork's handlers hold.
+    drop(unsafe { (*STD_IO.0.get()).take() });
     crate::arena::unlock_after_fork();
     if TOOK_EMBEDDER.swap(false, Ordering::Relaxed) {
         // `release` was stored before `take`, which this fork's `prepare`

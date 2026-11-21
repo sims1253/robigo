@@ -334,6 +334,12 @@ pub fn env_vars() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
 /// [`ENV`] exclusive, for the fork handlers (`isolate::fork_take`): across
 /// a fork no reader is inside a C call and no [`EnvWriter`] inside the C
 /// library's `setenv`/`unsetenv`.
+/// [`ENV`]'s address, for a fork test's report of a hung child.
+#[cfg(test)]
+pub(crate) fn env_lock_addr() -> *const () {
+    (&raw const ENV).cast()
+}
+
 pub(crate) fn env_write_lock() -> std::sync::RwLockWriteGuard<'static, ()> {
     ENV.write().unwrap_or_else(|e| e.into_inner())
 }

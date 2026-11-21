@@ -1005,6 +1005,12 @@ static LIVE_ISOLATES: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
 
 /// [`LIVE_ISOLATES`] locked (a panic while it was held left a count that
 /// is still right: nothing panics between its reads and writes).
+/// [`LIVE_ISOLATES`]' address, for a fork test's report of a hung child.
+#[cfg(test)]
+pub(crate) fn live_isolates_addr() -> *const () {
+    (&raw const LIVE_ISOLATES).cast()
+}
+
 pub(crate) fn live_isolates() -> std::sync::MutexGuard<'static, usize> {
     LIVE_ISOLATES.lock().unwrap_or_else(|e| e.into_inner())
 }
