@@ -113,6 +113,12 @@ CONFORMANCE = "rt_conformance"
 PIN_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-pin-report-{os.getpid()}.txt")
 
 
+# where the freeze's check writes a failure (appended to by every process):
+# a step with a line in it fails, whatever the case's own output (an
+# unratcheted case's panic would otherwise pass: Sol r7 S14)
+FREEZE_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-freeze-check-{os.getpid()}.txt")
+
+
 # where the byte-code crosscheck step writes (V3: one line per translated
 # closure whose code differs from the from-source compiler's)
 BC_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-bc-crosscheck-{os.getpid()}.txt")
@@ -284,9 +290,11 @@ def freeze_check_steps():
     to #948 (c), docs/ledger/g3/2026-11-21-h-boot-freeze-check.md); this run
     keeps the every-collection check, moved, not lost."""
     return every_cpu([
+        # (the tools cases need the tree: without it they skip, Sol r7 S13)
+        ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", {}, ["scripts/rt-home.sh"]),
         ("conformance under gctorture, the freeze checked at every collection",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_FREEZE_CHECK": "1", **SLOW,
-          "ROBIGO_CONF_TIMEOUTS": case_timeouts(FREEZE_CHECK_SLOW)},
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_FREEZE_CHECK": "1", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
+          **SLOW, "ROBIGO_CONF_TIMEOUTS": case_timeouts(FREEZE_CHECK_SLOW)},
          conformance_command()),
     ])
 
@@ -346,7 +354,8 @@ def steps(crates):
         # the heap twice per allocation (tests/rt/bytecode/jit.R: 536 s
         # against 97 s without it, past the case timeout; about 1.3x at 16)
         ("conformance under gctorture (E3)",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_FREEZE_CHECK": "16", **slow}, conformance),
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_FREEZE_CHECK": "16", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
+          **slow}, conformance),
         # every argument a PROMSXP at call entry (GNU R's representation,
         # through the same binding-kind transitions): docs/g3.md §16's
         # ROBIGO_MATERIALIZE=1. Every rt crate, as the steps above: cargo
@@ -630,6 +639,9 @@ def run_steps(plan, done):
         bc = env.get("ROBIGO_BC_CROSSCHECK_REPORT")
         if bc and os.path.exists(bc):
             os.remove(bc)
+        freeze = env.get("ROBIGO_GC_FREEZE_CHECK_REPORT")
+        if freeze and os.path.exists(freeze):
+            os.remove(freeze)
         print(f"::group::{title}", flush=True)
         t0 = time.monotonic()
         r = subprocess.run(cmd, cwd=ROOT, env={**os.environ, **env})
@@ -638,6 +650,15 @@ def run_steps(plan, done):
         if r.returncode != 0:
             print(f"::error::rt: {title} failed")
             return r.returncode
+        if freeze and os.path.exists(freeze):
+            with open(freeze) as f:
+                lines = [l.rstrip("\n") for l in f if l.strip()]
+            for line in lines:
+                print(f"::error::rt: {line}")
+            if lines:
+                print(f"::error::rt: {title}: the freeze's check failed {len(lines)} time(s)")
+                done[-1] = (title, done[-1][1], False)
+                return 1
         if report:
             hits = pin_report_hits(report)
             for line in hits:

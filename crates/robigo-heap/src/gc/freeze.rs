@@ -450,11 +450,11 @@ impl Core {
             // SAFETY: the caller's contract; reached at this collection's start.
             unsafe {
                 if x.flags() & flags::IMMORTAL == 0 && !self.is_marked(x) {
-                    panic!(
+                    check_failed(format!(
                         "robigo: ROBIGO_GC_FREEZE_CHECK: {:#x} (type {}) is reachable but the frozen-aware trace left it unmarked",
                         x.addr(),
                         x.typ()
-                    );
+                    ));
                 }
             }
         }
@@ -465,11 +465,24 @@ impl Core {
 fn frozen_panic(f: Sexp, k: Sexp, what: &str) -> ! {
     // SAFETY: both live (the callers' contracts).
     let (ft, kt) = unsafe { (f.typ(), k.typ()) };
-    panic!(
+    check_failed(format!(
         "robigo: ROBIGO_GC_FREEZE_CHECK: frozen {:#x} (type {ft}) points to the ordinary {:#x} (type {kt}) {what}",
         f.addr(),
         k.addr()
-    )
+    ))
+}
+
+/// A failed check: the message appended to `ROBIGO_GC_FREEZE_CHECK_REPORT`
+/// when it names a file (scripts/rt-ci.py fails a step whose report has a
+/// line, whatever the case's own output: Sol r7 S14), then a panic.
+fn check_failed(msg: String) -> ! {
+    if let Some(path) = std::env::var_os("ROBIGO_GC_FREEZE_CHECK_REPORT").filter(|p| !p.is_empty()) {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(f, "{msg}");
+        }
+    }
+    panic!("{msg}")
 }
 
 #[cfg(test)]

@@ -195,9 +195,14 @@ class RtCi(unittest.TestCase):
         tests = [e for t, e, _ in rt.steps(["robigo-rt"]) if t.startswith("gctorture (collect at every allocation)")]
         self.assertEqual(tests[0]["ROBIGO_GC_FREEZE_CHECK"], "1")
         night = rt.freeze_check_steps()
-        self.assertEqual(len(night), 1)
-        _, env, cmd = night[0]
+        self.assertEqual(len(night), 2)
+        # the R_HOME tree first: the tools cases skip without it (Sol r7 S13)
+        self.assertEqual(night[0][2], ["scripts/rt-home.sh"])
+        _, env, cmd = night[1]
         self.assertEqual((env["ROBIGO_GC_FREEZE_CHECK"], env["ROBIGO_GCTORTURE"]), ("1", "1"))
+        # a failed check fails the step, whatever the case's output (S14)
+        self.assertEqual(env["ROBIGO_GC_FREEZE_CHECK_REPORT"], rt.FREEZE_REPORT)
+        self.assertEqual(e3[0]["ROBIGO_GC_FREEZE_CHECK_REPORT"], rt.FREEZE_REPORT)
         self.assertNotIn("ROBIGO_GC_MOVE", env)
         self.assertIn(rt.CONFORMANCE, cmd)
         named = dict(item.rsplit("=", 1) for item in env["ROBIGO_CONF_TIMEOUTS"].split(","))
@@ -250,6 +255,27 @@ class RtCi(unittest.TestCase):
         # would run nothing, and still pass.
         src = (HERE.parent / "crates/robigo-rtapi/tests/conformance.rs").read_text()
         self.assertIn(f"fn {rt.CONFORMANCE}()", src)
+
+    def test_a_step_with_a_failed_freeze_check_fails(self):
+        # the cases passed or failed as the ratchet allows, but a process
+        # wrote a check failure: the step fails (Sol r7 S14)
+        from unittest import mock
+        import tempfile
+        report = os.path.join(tempfile.mkdtemp(), "freeze.txt")
+
+        def run(cmd, **kw):
+            with open(report, "a") as f:
+                f.write("robigo: ROBIGO_GC_FREEZE_CHECK: frozen 0x1 (type 4) points to the ordinary 0x2\n")
+            return mock.Mock(returncode=0)
+        done = []
+        with mock.patch.object(rt.subprocess, "run", side_effect=run):
+            r = rt.run_steps([("e3", {"ROBIGO_GC_FREEZE_CHECK_REPORT": report}, ["true"])], done)
+        self.assertEqual(r, 1)
+        self.assertEqual([(t, ok_) for t, _, ok_ in done], [("e3", False)])
+        # a report left from an earlier run is removed first
+        done = []
+        with mock.patch.object(rt.subprocess, "run", return_value=mock.Mock(returncode=0)):
+            self.assertEqual(rt.run_steps([("e3", {"ROBIGO_GC_FREEZE_CHECK_REPORT": report}, ["true"])], done), 0)
 
     def test_the_r_home_tree_is_made_before_any_conformance_step(self):
         # the cases that load tools' native code need it (r-home-tools)
