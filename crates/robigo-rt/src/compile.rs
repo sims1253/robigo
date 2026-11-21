@@ -36,6 +36,8 @@ use std::collections::HashMap;
 
 mod bctrans;
 mod crosscheck;
+#[doc(hidden)]
+pub use crosscheck::Verdict;
 
 /// Run one compile attempt under `&Cx` until it succeeds: a refused
 /// allocation collects and compiles again (the same request refused twice
@@ -182,14 +184,17 @@ unsafe fn source_body(cx: &Cx, f: Sexp) -> Sexp {
 /// `browser()`, a compiler error).
 // R: cmp.R:cmpfun, make.functionContext, funEnv
 pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> RResult<Option<Sexp>> {
-    attempt(cx, |cx| {
+    // (the crosscheck's finding of the last attempt: an attempt a fold
+    // retries compared code without the fold's value)
+    let mut check = None;
+    let code = attempt(cx, |cx| {
         let f = op.bind(cx).sexp();
         // SAFETY: a rooted closure (and cache entry); nothing collects in
         // this interval.
         unsafe {
             if f.cdr().typ() == BCODESXP {
                 if crosscheck::enabled() {
-                    crosscheck_closure(cx, f, installed)?;
+                    check = Some(crosscheck_closure(cx, f, installed)?);
                 }
                 // V3: GNU R's byte code, translated
                 return translate_code(cx, f.cdr(), Some(f.car()));
@@ -207,7 +212,11 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
             index_arg_codes(cx, code, &c.arg_codes);
             Ok(code)
         }
-    })
+    });
+    if let Some(c) = check {
+        c.report();
+    }
+    code
 }
 
 /// `ROBIGO_BC_CROSSCHECK`: closure `f`'s byte code translated and its
@@ -216,13 +225,13 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
 /// from-source compile keeps its argument code on the source's expressions,
 /// the translation its own on the promises' byte code (`MAKEPROM`'s
 /// BCODESXPs), so neither replaces the other's. A compile that would force
-/// a lazy binding, or that cmp.R declines, is skipped (reported).
-/// `installed`: base's installed byte code (provenance, as for
-/// [`compile_closure_bc`]).
+/// a lazy binding, or that cmp.R declines, is skipped. `installed`: base's
+/// installed byte code (provenance, as for [`compile_closure_bc`]).
 ///
 /// # Safety
 /// `f` is a live closure whose body is a BCODESXP; nothing collects.
-unsafe fn crosscheck_closure(cx: &Cx, f: Sexp, installed: bool) -> Result<(), Need> {
+unsafe fn crosscheck_closure(cx: &Cx, f: Sexp, installed: bool) -> Result<crosscheck::Finding, Need> {
+    use crosscheck::{Finding, Verdict};
     // SAFETY: the caller's contract.
     unsafe {
         let (formals, bc) = (f.car(), f.cdr());
@@ -247,12 +256,16 @@ unsafe fn crosscheck_closure(cx: &Cx, f: Sexp, installed: bool) -> Result<(), Ne
         let source = match source {
             Ok(Some(b)) => b,
             Ok(None) | Err(Need::Fail) => {
-                crosscheck::report(&format!("skipped: {what}: the from-source compiler leaves it uncompiled"));
-                return Ok(());
+                let line = format!("skipped: {what}: the from-source compiler leaves it uncompiled");
+                return Ok(Finding::new(Verdict::Skipped, line));
             }
-            Err(Need::Force(_)) => {
-                crosscheck::report(&format!("skipped: {what}: the from-source compile would force a binding"));
-                return Ok(());
+            Err(Need::Force(p)) => {
+                // (the promise's code, for triage)
+                let code = crate::deparse::deparse1line(cx, Ref::from_sexp(p.cdr(), cx), false, 0)
+                    .map(|d| String::from_utf8_lossy(&d).chars().take(60).collect::<String>())
+                    .unwrap_or_default();
+                let line = format!("skipped: {what}: the from-source compile would force a binding ({code})");
+                return Ok(Finding::new(Verdict::Skipped, line));
             }
             Err(e) => return Err(e),
         };
@@ -264,16 +277,15 @@ unsafe fn crosscheck_closure(cx: &Cx, f: Sexp, installed: bool) -> Result<(), Ne
                 i.b = r;
                 c.emit(i);
                 let t = c.finish();
-                crosscheck::compare(cx, &what, &t, &source);
+                Ok(crosscheck::compare(cx, &what, &t, &source))
             }
             Err(Need::Fail) => {
                 let why =
                     c.bc_untranslated.take().unwrap_or_else(|| "byte code the translation cannot follow".to_owned());
-                crosscheck::report(&format!("untranslated: {what}: {why}"));
+                Ok(Finding::new(Verdict::Untranslated, format!("untranslated: {what}: {why}")))
             }
-            Err(e) => return Err(e),
+            Err(e) => Err(e),
         }
-        Ok(())
     }
 }
 
@@ -282,8 +294,8 @@ unsafe fn crosscheck_closure(cx: &Cx, f: Sexp, installed: bool) -> Result<(), Ne
 /// running any; each translation through the [`crate::code::Verified`]
 /// gate. What each one stopped at (an opcode or a primitive robigo-rt does
 /// not have, code the translation cannot follow, a refusal of the gate);
-/// none when all of them translate. Under `ROBIGO_BC_CROSSCHECK` the
-/// closure is compared too, as base's installed code.
+/// none when all of them translate. (The crosscheck has its own entry,
+/// [`crosscheck_installed`], in a session with base loaded.)
 #[doc(hidden)]
 pub fn translation_gaps(cx: &mut Cx, f: Root<'_>) -> RResult<Vec<String>> {
     let mut gaps = Vec::new();
@@ -293,9 +305,6 @@ pub fn translation_gaps(cx: &mut Cx, f: Root<'_>) -> RResult<Vec<String>> {
         // from it; nothing collects in this interval.
         unsafe {
             let f = f.bind(cx).sexp();
-            if crosscheck::enabled() && f.cdr().typ() == BCODESXP {
-                crosscheck_closure(cx, f, true)?;
-            }
             let st = prims::state(cx);
             let mut todo = vec![f.cdr()];
             while let Some(bc) = todo.pop() {
@@ -338,6 +347,35 @@ pub fn translation_gaps(cx: &mut Cx, f: Root<'_>) -> RResult<Vec<String>> {
         }
     })?;
     Ok(gaps)
+}
+
+/// For the base.rdb crosscheck test: under `ROBIGO_BC_CROSSCHECK`, closure
+/// `f`'s byte code (base's installed code) compared with what the
+/// from-source compiler makes of its source ([`crosscheck`]), reported,
+/// and the verdict. The session has base loaded with every binding
+/// forced, as GNU R's build had when it compiled base (makebasedb.R), so
+/// the compile decides on base's definitions as cmp.R did. None for a
+/// closure without byte code, or without the variable.
+#[doc(hidden)]
+pub fn crosscheck_installed(cx: &mut Cx, f: Root<'_>) -> RResult<Option<crosscheck::Verdict>> {
+    if !crosscheck::enabled() {
+        return Ok(None);
+    }
+    let mut check = None;
+    attempt(cx, |cx| {
+        // SAFETY: a rooted closure; nothing collects in this interval.
+        unsafe {
+            let f = f.bind(cx).sexp();
+            if f.cdr().typ() == BCODESXP {
+                check = Some(crosscheck_closure(cx, f, true)?);
+            }
+        }
+        Ok(cx.nil().sexp())
+    })?;
+    Ok(check.map(|c| {
+        c.report();
+        c.verdict
+    }))
 }
 
 /// The code of the byte code `bc` evaluated as itself (`eval(bc, rho)`,
@@ -426,7 +464,7 @@ unsafe fn function_context(
         elist.push(body);
         let locals = cenv.find_locals(cx, st, &elist)?;
         cenv.add_unit_vars(&locals);
-        Ok(!cenv::may_call_browser(cx, st, cenv, body))
+        Ok(!cenv::may_call_browser(cx, st, cenv, body)?)
     }
 }
 
@@ -478,7 +516,7 @@ pub(crate) fn compile_special_with(
             let mut c = Comp::new(cx, st, Profile::Eval, None);
             let dst = c.alloc();
             match st.defs[off].kind {
-                Kind::Special(s) => c.special(s, call, args.unwrap_or_else(|| call.cdr()), dst, 0, true)?,
+                Kind::Special(s) => c.special(s, call, args.unwrap_or_else(|| call.cdr()), dst, 0, Tail::Yes)?,
                 Kind::Builtin(..) | Kind::Fn(_) => unreachable!("robigo: only a language special is compiled"),
             }
             let mut i = Ins::new(Op::Ret);
@@ -504,6 +542,102 @@ struct LoopLabels {
     /// The first register the loop's body allocates: a `break` or `next`
     /// leaves every register from here on dead.
     regs: Reg,
+}
+
+/// Where a value is compiled (cmp.R's context): in the tail (`tailcall`,
+/// the shapes that RETURN and set visibility), as `return()`'s operand
+/// (`make.nonTailCallContext`: non-tail shapes, the value's visibility what
+/// bcEval leaves at RETURN), or neither. `Live`: under `Eval`, a `{`'s
+/// statement before its last while the `{` is in the tail, compiled as the
+/// tail (a write that cuts the list there makes it the last), but when
+/// the statement is an assignment its invisibility is left to its `Resume`
+/// (`c` 1), which sets it only when that cut happens.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Tail {
+    No,
+    Yes,
+    Ret,
+    Live,
+}
+
+impl Tail {
+    /// cmp.R's tail shapes (INVISIBLE, a jump to the end, RETURN).
+    fn is_tail(self) -> bool {
+        matches!(self, Tail::Yes | Tail::Live)
+    }
+
+    /// A value op sets visibility (F_VIS): bcEval's loads and operators set
+    /// R_Visible, observed in the tail and at `return()`.
+    fn vis(self) -> bool {
+        self != Tail::No
+    }
+
+    /// `return()`'s operand: an LDNULL (a missing `else`, a switch's miss, a
+    /// loop's value) sets R_Visible, and an assignment leaves it as its
+    /// value's (bcEval's SETVAR, ENDASSIGN).
+    fn ret(self) -> bool {
+        self == Tail::Ret
+    }
+
+    /// An assignment's value: `return()`'s context carries into it, the
+    /// tail's does not (cmp.R compiles the value non-tail).
+    fn value(self) -> Tail {
+        if self == Tail::Ret { Tail::Ret } else { Tail::No }
+    }
+}
+
+impl From<bool> for Tail {
+    fn from(tail: bool) -> Tail {
+        if tail { Tail::Yes } else { Tail::No }
+    }
+}
+
+/// A `SetVis` that falls into a `Ret` no jump lands on, through `Move`s and
+/// `Clear`s only (`moves`: under `Eval`, whose instructions keep offsets of
+/// their own, none), gives the `Ret` its visibility (`g`; cmp.R's INVISIBLE,
+/// then RETURN): the instructions after it move up one, the `Ret` with
+/// them, and the old `Ret` is left unreached.
+fn fold_vis_into_ret(ins: &mut [Ins], moves: bool) {
+    let mut targets = std::collections::HashSet::new();
+    for i in ins.iter() {
+        match i.op {
+            Op::Jmp
+            | Op::BackJmp
+            | Op::BrFalse
+            | Op::Guard
+            | Op::AndOr1
+            | Op::ForStep
+            | Op::BaseGuard
+            | Op::TopLoop
+            | Op::StartSubset
+            | Op::Resume => {
+                targets.insert(i.target());
+            }
+            // (a region's end, and the instruction after it)
+            Op::Loop | Op::LoopResume => {
+                targets.insert(i.target());
+                targets.insert(i.target() + 1);
+            }
+            _ => {}
+        }
+    }
+    let mut j = 0;
+    while j < ins.len() {
+        if ins[j].op == Op::SetVis {
+            let mut m = j + 1;
+            while moves && m < ins.len() && matches!(ins[m].op, Op::Move | Op::Clear | Op::ClearRange) {
+                m += 1;
+            }
+            if m < ins.len() && ins[m].op == Op::Ret && ins[m].g == 0 && !(j + 1..=m).any(|k| targets.contains(&k)) {
+                let g = if ins[j].g != 0 { 1 } else { 2 };
+                ins.copy_within(j + 1..=m, j);
+                ins[m - 1].g = g;
+                j = m;
+                continue;
+            }
+        }
+        j += 1;
+    }
 }
 
 struct Comp<'g> {
@@ -546,6 +680,12 @@ struct Comp<'g> {
     /// What a byte-code translation stopped at ([`bctrans`]): the code
     /// raises "not implemented yet" for it.
     bc_untranslated: Option<String>,
+    /// The assignment just compiled as a `{`'s earlier statement
+    /// ([`Tail::Live`]): its invisibility is its Resume's. Only one that is
+    /// the statement itself (`live_stmt`); one inside it (an `if`'s
+    /// branch) sets it as the tail does.
+    cut_assign: Option<Sexp>,
+    live_stmt: Option<Sexp>,
 }
 
 /// Give the argument codes compiled with closure code `code` (`arg_codes`)
@@ -613,6 +753,8 @@ impl<'g> Comp<'g> {
             site_save: 0,
             arg_codes: Vec::new(),
             bc_untranslated: None,
+            cut_assign: None,
+            live_stmt: None,
         }
     }
 
@@ -637,7 +779,7 @@ impl<'g> Comp<'g> {
     unsafe fn root(&mut self, expr: Sexp) -> Result<Built, Need> {
         let r = self.alloc();
         // SAFETY: the caller's contract.
-        unsafe { self.expr(expr, r, 1, true)? };
+        unsafe { self.expr(expr, r, 1, Tail::Yes)? };
         let mut i = Ins::new(Op::Ret);
         i.b = r;
         self.emit(i);
@@ -647,6 +789,7 @@ impl<'g> Comp<'g> {
     /// The compiled code. Under the `Bc` profile no instruction is an
     /// evaluation point: bcEval counts and nests once per code object.
     fn finish(&mut self) -> Built {
+        fold_vis_into_ret(&mut self.ins, self.profile == Profile::Bc);
         if self.profile == Profile::Bc {
             for i in &mut self.ins {
                 i.fl &= !(F_TICK | F_DEPTH);
@@ -878,7 +1021,7 @@ impl<'g> Comp<'g> {
     ///
     /// # Safety
     /// `e` is a live object reachable from the source.
-    unsafe fn expr(&mut self, e: Sexp, dst: Reg, d: u16, tail: bool) -> Result<(), Need> {
+    unsafe fn expr(&mut self, e: Sexp, dst: Reg, d: u16, tail: Tail) -> Result<(), Need> {
         // SAFETY: the caller's contract.
         let t = unsafe { e.typ() };
         if self.bc.is_some()
@@ -899,7 +1042,7 @@ impl<'g> Comp<'g> {
                 i.a = dst;
                 i.e = self.k(e);
                 let mut i = self.at_depth(i, d, false);
-                if tail {
+                if tail.vis() {
                     i.fl |= F_VIS;
                 }
                 self.emit(i);
@@ -936,7 +1079,7 @@ impl<'g> Comp<'g> {
     ///
     /// # Safety
     /// As for [`Comp::expr`].
-    unsafe fn expr_at(&mut self, e: Sexp, dst: Reg, d: u16, p: i32, tail: bool) -> Result<(), Need> {
+    unsafe fn expr_at(&mut self, e: Sexp, dst: Reg, d: u16, p: i32, tail: Tail) -> Result<(), Need> {
         let save = std::mem::replace(&mut self.pp, p);
         // SAFETY: the caller's contract.
         let r = unsafe { self.expr(e, dst, d, tail) };
@@ -952,7 +1095,7 @@ impl<'g> Comp<'g> {
     ///
     /// # Safety
     /// `v` is a live constant of the source or a fold.
-    unsafe fn const_value(&mut self, v: Sexp, dst: Reg, d: u16, tail: bool) {
+    unsafe fn const_value(&mut self, v: Sexp, dst: Reg, d: u16, tail: Tail) {
         let k = self.kv(v);
         let v = self.consts[usize::from(k) - FIRST_CONST];
         // SAFETY: the caller's contract.
@@ -964,7 +1107,7 @@ impl<'g> Comp<'g> {
         i.a = dst;
         i.e = k;
         let mut i = self.at_depth(i, d, true);
-        if tail {
+        if tail.vis() {
             i.fl |= F_VIS;
         }
         self.emit(i);
@@ -986,14 +1129,14 @@ impl<'g> Comp<'g> {
         unsafe {
             match e.typ() {
                 SYMSXP => {
-                    if !cenv::is_const_name(cx, e) || !cenv.is_base_var(cx, st, e) {
+                    if !cenv::is_const_name(cx, e) || !cenv.is_base_var(cx, st, e)? {
                         return Ok(None);
                     }
                     Ok(cenv::base_value(cx, e)?.filter(|&v| cenv::check_const(cx, v)))
                 }
                 LANGSXP => {
                     let fun = e.car();
-                    if fun.typ() != SYMSXP || !cenv::is_fold_fun(cx, fun) || !cenv.is_base_var(cx, st, fun) {
+                    if fun.typ() != SYMSXP || !cenv::is_fold_fun(cx, fun) || !cenv.is_base_var(cx, st, fun)? {
                         return Ok(None);
                     }
                     let Some(ffun) = cenv::base_value(cx, fun)? else { return Ok(None) };
@@ -1052,7 +1195,7 @@ impl<'g> Comp<'g> {
     ///
     /// # Safety
     /// As for [`Comp::expr`].
-    unsafe fn call(&mut self, e: Sexp, dst: Reg, d: u16, tail: bool) -> Result<(), Need> {
+    unsafe fn call(&mut self, e: Sexp, dst: Reg, d: u16, tail: Tail) -> Result<(), Need> {
         if self.bc.is_some() {
             // SAFETY: the caller's contract.
             return unsafe { self.bc_call(e, dst, d, tail) };
@@ -1135,12 +1278,16 @@ impl<'g> Comp<'g> {
     /// # Safety
     /// As for [`Comp::expr`].
     // R: cmp.R:cmpCall, tryInline
-    unsafe fn bc_call(&mut self, e: Sexp, dst: Reg, d: u16, tail: bool) -> Result<(), Need> {
+    unsafe fn bc_call(&mut self, e: Sexp, dst: Reg, d: u16, tail: Tail) -> Result<(), Need> {
         // SAFETY: the caller's contract: a live call.
         let (f, args) = unsafe { (e.car(), e.cdr()) };
         // SAFETY: as above; the compile environment's frames are live.
         let info = unsafe {
-            if f.typ() == SYMSXP { self.bc.as_ref().unwrap().inline_info(self.cx, self.st, f, true) } else { None }
+            if f.typ() == SYMSXP {
+                self.bc.as_ref().unwrap().inline_info(self.cx, self.st, f, true, cenv::Table::Inline)?
+            } else {
+                None
+            }
         };
         let Some(info) = info else {
             // SAFETY: as above.
@@ -1222,6 +1369,39 @@ impl<'g> Comp<'g> {
         let st = self.st;
         let missing = self.cx.missing_arg().sexp();
         let dots = st.syms.dots;
+        // `::` and `:::` (closures of GNU R's base, robigo-rt's specials):
+        // cmpMultiColon calls the function with the two names as strings
+        // (cmpCallSymFun: GETFUN, the constant arguments, CALL of the call),
+        // or declines and the call is the generic one; either way the IR's
+        // generic call of the call (whose arguments it reads from the call)
+        // R: cmp.R:cmpMultiColon, cmpCallSymFun
+        if f == st.syms.double_colon || f == st.syms.triple_colon {
+            return Ok(None);
+        }
+        // `.Internal` of a builtin internal: cmpDotInternalCall's cmpBuiltin,
+        // which declines for `...` or an empty argument of the inner call
+        // (then the call is the generic one)
+        // R: cmp.R:cmpDotInternalCall, cmpBuiltin
+        if f == st.syms.dot_internal {
+            // SAFETY: the caller's contract: a live call.
+            let inner = unsafe { cenv::elements(self.cx, e, true) };
+            // (a builtin internal by names.c, whatever robigo-rt's object:
+            // `cbind`'s is a special there, eval 10)
+            if let [(ic, _)] = inner[..]
+                // SAFETY: a live part of the call; a symbol's internal is
+                // R_NilValue or a primitive of this isolate.
+                && unsafe {
+                    ic.typ() == LANGSXP
+                        && ic.car().typ() == SYMSXP
+                        && matches!(self.cx.internal_raw(ic.car()).typ(), BUILTINSXP | SPECIALSXP)
+                        && st.defs[crate::prims::offset(self.cx.internal_raw(ic.car()))].eval % 10 == 1
+                }
+                // SAFETY: as above.
+                && unsafe { cenv::elements(self.cx, ic, true) }.iter().any(|&(a, _)| a == dots || a == missing)
+            {
+                return Ok(None);
+            }
+        }
         // the primitives the VM inlines: cmp.R's handlers of the language
         // functions, `cmpSpecial`'s and `cmpBuiltin`'s for the others
         let off = st.by_sym.get(&(f.as_ptr() as usize)).copied().filter(|&o| !st.defs[o].internal());
@@ -1256,14 +1436,33 @@ impl<'g> Comp<'g> {
             // SAFETY: as above.
             return unsafe { self.simple_internal(f, e, &args) };
         }
-        // `cmpBuiltin`: base's binding is a builtin (it declines for `...`
-        // or an empty argument)
-        if let Some(off) = off
-            && st.defs[off].eval % 10 == 1
-        {
-            let prim = st.objs[off].bind(self.cx).sexp();
-            // SAFETY: base's frame and a symbol.
-            if unsafe { self.base_binding(f) } == Some(prim) {
+        // cmp.R's default handlers, set for every name of base by the type
+        // of its binding in GNU R's base when the compiler was built:
+        // `cmpSpecial` for a special (a row of the registry's table that
+        // names.c makes one: `rep`), `cmpBuiltin` for a builtin (declining
+        // for `...` or an empty argument). A name bound to a primitive of
+        // another name is that primitive's ([`cenv::PRIMITIVE_ALIASES`]:
+        // `as.numeric`, base's `as.double`).
+        // R: cmp.R:local() (setInlineHandler(s, cmpSpecial), setInlineHandler(b, cmpBuiltin)), cmpBuiltin
+        // SAFETY: a symbol.
+        let alias = unsafe { cenv::alias_of(self.cx, f) }.and_then(|t| st.defs.iter().position(|d| d.name == t));
+        // (an alias is its primitive's, before a row of its own name:
+        // robigo-rt's table has an `is.name`, GNU R's base binds
+        // `is.symbol` to the name)
+        if let Some(o) = alias.or(off) {
+            let prim = st.objs[o].bind(self.cx).sexp();
+            // SAFETY: a live primitive of this isolate.
+            let t = unsafe { prim.typ() };
+            if t == SPECIALSXP && matches!(st.defs[o].kind, Kind::Builtin(..)) {
+                return Ok(Some(Handler::Known(Known::Fn(o))));
+            }
+            // (a name of its own: base's binding is the builtin itself)
+            let own = || {
+                // SAFETY: base's frame and a symbol.
+                let b = unsafe { self.base_binding(f) };
+                b == Some(prim)
+            };
+            if t == BUILTINSXP && st.defs[o].eval % 10 == 1 && (alias.is_some() || own()) {
                 if args.iter().any(|&(a, _)| a == dots || a == missing) {
                     return Ok(None);
                 }
@@ -1284,7 +1483,7 @@ impl<'g> Comp<'g> {
     /// # Safety
     /// As for [`Comp::expr`]; `e` is a call of `switch`.
     // R: cmp.R:setInlineHandler("switch"), findActionIndex
-    unsafe fn bc_switch(&mut self, e: Sexp, dst: Reg, d: u16, tail: bool) -> Result<bool, Need> {
+    unsafe fn bc_switch(&mut self, e: Sexp, dst: Reg, d: u16, tail: Tail) -> Result<bool, Need> {
         let (cx, st) = (self.cx, self.st);
         let (nil, missing) = (self.nil(), cx.missing_arg().sexp());
         // SAFETY: the caller's contract.
@@ -1354,7 +1553,7 @@ impl<'g> Comp<'g> {
         // EXPR
         let r = self.alloc();
         // SAFETY: the caller's contract.
-        unsafe { self.expr(args[0].0, r, d + 1, false)? };
+        unsafe { self.expr(args[0].0, r, d + 1, Tail::No)? };
         let names = if table.is_empty() {
             nil
         } else {
@@ -1398,13 +1597,13 @@ impl<'g> Comp<'g> {
             unsafe { self.expr(call, dst, d + 1, tail)? };
             // (it does not return: the default follows, as in cmp.R; in
             // tail position cmp.R's call RETURNs, a jump to the end)
-            if tail {
+            if tail.is_tail() {
                 ends.push(self.emit(Ins::new(Op::Jmp)));
             }
         }
         at[dflt] = self.pc();
-        self.ld_nil(dst, false);
-        if tail {
+        self.ld_nil(dst, tail.ret());
+        if tail.is_tail() {
             self.set_vis(false);
         }
         ends.push(self.emit(Ins::new(Op::Jmp)));
@@ -1454,7 +1653,7 @@ impl<'g> Comp<'g> {
         let base = self.alloc_n(if named { 2 * n } else { n });
         // (cmp(oe, cb, ncntxt))
         // SAFETY: the caller's contract.
-        unsafe { self.expr(args[0].0, base, d + 1, false)? };
+        unsafe { self.expr(args[0].0, base, d + 1, Tail::No)? };
         let mut start = Ins::new(Op::StartSubset);
         start.a = dst;
         start.b = base;
@@ -1518,7 +1717,7 @@ impl<'g> Comp<'g> {
                 self.emit(i);
                 return Ok(());
             }
-            self.expr(a, r, d, false)
+            self.expr(a, r, d, Tail::No)
         }
     }
 
@@ -1543,7 +1742,7 @@ impl<'g> Comp<'g> {
         let r = self.alloc_n(n);
         for (j, &(a, _)) in args.iter().enumerate() {
             // SAFETY: the caller's contract.
-            unsafe { self.expr(a, r + j as Reg, d + 1, false)? };
+            unsafe { self.expr(a, r + j as Reg, d + 1, Tail::No)? };
         }
         let kind = if n == 1 { crate::ir::MATH_LOG } else { crate::ir::MATH_LOGBASE };
         self.math1_op(e, None, dst, r, n as u16, kind, d);
@@ -1603,7 +1802,7 @@ impl<'g> Comp<'g> {
         }
         let r = self.alloc();
         // SAFETY: the caller's contract.
-        unsafe { self.expr(args[0].0, r, d + 1, false)? };
+        unsafe { self.expr(args[0].0, r, d + 1, Tail::No)? };
         let mut i = Ins::new(Op::Dollar);
         i.a = dst;
         i.b = r;
@@ -1778,7 +1977,7 @@ impl<'g> Comp<'g> {
             let mut kind = ba::K_GENERIC;
             let mut what = fun;
             if fun.typ() == SYMSXP
-                && self.bc.as_ref().unwrap().inline_info(self.cx, self.st, fun, false).is_some()
+                && self.bc.as_ref().unwrap().inline_info(self.cx, self.st, fun, false, cenv::Table::Getter)?.is_some()
                 && let Some((k, w)) = self.subset_handler(fun, place, false)?
             {
                 kind = k;
@@ -1830,7 +2029,7 @@ impl<'g> Comp<'g> {
             // symbol becomes a string in the setter's call, not in cexpr
             // R: cmp.R:setSetterInlineHandler("@<-")
             if afun == cx.install(b"@<-")?.as_ref().sexp()
-                && self.bc.as_ref().unwrap().inline_info(cx, st, afun, false).is_some()
+                && self.bc.as_ref().unwrap().inline_info(cx, st, afun, false, cenv::Table::Setter)?.is_some()
                 && args.len() == 1
                 && place.cdr().car() != st.syms.dots
                 && place.cdr().car() != cx.missing_arg().sexp()
@@ -1860,7 +2059,7 @@ impl<'g> Comp<'g> {
             let mut kind = ba::K_GENERIC;
             let mut what = afun;
             if afun.typ() == SYMSXP
-                && self.bc.as_ref().unwrap().inline_info(cx, st, afun, false).is_some()
+                && self.bc.as_ref().unwrap().inline_info(cx, st, afun, false, cenv::Table::Setter)?.is_some()
                 && let Some((k, w)) = self.subset_handler(afun, place, true)?
             {
                 kind = k;
@@ -2065,7 +2264,7 @@ impl<'g> Comp<'g> {
             }
             // R: eval.c:eval, `op = eval(CAR(e), rho)`
             // SAFETY: as above.
-            unsafe { self.expr(f, rf, d + 1, false)? };
+            unsafe { self.expr(f, rf, d + 1, Tail::No)? };
         }
         let mut i = Ins::new(Op::Call);
         i.a = dst;
@@ -2109,7 +2308,7 @@ impl<'g> Comp<'g> {
     /// # Safety
     /// As for [`Comp::expr`].
     #[allow(clippy::too_many_arguments)]
-    unsafe fn special(&mut self, s: Special, e: Sexp, args: Sexp, dst: Reg, d: u16, tail: bool) -> Result<(), Need> {
+    unsafe fn special(&mut self, s: Special, e: Sexp, args: Sexp, dst: Reg, d: u16, tail: Tail) -> Result<(), Need> {
         let nil = self.nil();
         // (the call's own: compiling its operands replaces the field's)
         let mut site_save = std::mem::replace(&mut self.site_save, 0);
@@ -2133,7 +2332,7 @@ impl<'g> Comp<'g> {
                         resumes.push(self.resume(e, NO_REG, dst, d + 1));
                     }
                     if n == 0 {
-                        self.ld_nil(dst, tail);
+                        self.ld_nil(dst, tail.vis());
                     }
                     // each statement under PROTECT(op), PROTECT(e),
                     // PROTECT(srcrefs), PROTECT(R_Srcref)
@@ -2149,10 +2348,22 @@ impl<'g> Comp<'g> {
                             let r = self.alloc();
                             // under `Eval`, a write that cuts the list after
                             // this statement makes it the last, so its
-                            // visibility is kept as the last one's is
-                            self.expr_at(st, r, d + 1, p, live && tail)?;
+                            // visibility is kept as the last one's is (an
+                            // assignment's by its Resume)
+                            let ctx = match tail {
+                                Tail::Yes if live => Tail::Live,
+                                _ if live => tail,
+                                _ => Tail::No,
+                            };
+                            self.cut_assign = None;
+                            self.live_stmt = Some(st);
+                            self.expr_at(st, r, d + 1, p, ctx)?;
                             if live {
-                                resumes.push(self.resume(cell, r, dst, d + 1));
+                                let at = self.resume(cell, r, dst, d + 1);
+                                if self.cut_assign == Some(st) {
+                                    self.ins[at].c = 1;
+                                }
+                                resumes.push(at);
                             }
                             self.clear(r);
                             self.free_to(r);
@@ -2192,8 +2403,8 @@ impl<'g> Comp<'g> {
                         } else if n == 3 {
                             self.expr(a[2].0, dst, d + 1, tail)?;
                         } else {
-                            self.ld_nil(dst, false);
-                            if tail {
+                            self.ld_nil(dst, tail.ret());
+                            if tail.is_tail() {
                                 self.set_vis(false);
                             }
                         }
@@ -2202,7 +2413,7 @@ impl<'g> Comp<'g> {
                     // the test and the branch under PROTECT(op), PROTECT(e)
                     let p = self.pp + 2;
                     let r = self.alloc();
-                    self.expr_at(a[0].0, r, d + 1, p, false)?;
+                    self.expr_at(a[0].0, r, d + 1, p, Tail::No)?;
                     let mut br = Ins::new(Op::BrFalse);
                     br.b = r;
                     br.fl |= F_CLR_B;
@@ -2216,8 +2427,8 @@ impl<'g> Comp<'g> {
                     if n == 3 {
                         self.expr_at(a[2].0, dst, d + 1, p, tail)?;
                     } else {
-                        self.ld_nil(dst, false);
-                        if tail {
+                        self.ld_nil(dst, tail.ret());
+                        if tail.is_tail() {
                             // "case of no 'else' so return invisible NULL"
                             self.set_vis(false);
                         }
@@ -2242,7 +2453,7 @@ impl<'g> Comp<'g> {
                     let state = self.alloc_n(FOR_STATE);
                     // the sequence under PROTECT(op), PROTECT(e), then
                     // do_for's PROTECT(args), PROTECT(rho)
-                    self.expr_at(a[1].0, state, d + 1, self.pp + 4, false)?;
+                    self.expr_at(a[1].0, state, d + 1, self.pp + 4, Tail::No)?;
                     let mut prep = Ins::new(Op::ForPrep);
                     prep.a = state;
                     prep.e = self.k(sym);
@@ -2285,7 +2496,7 @@ impl<'g> Comp<'g> {
                     let lp = self.loop_begin(e);
                     let r = self.alloc();
                     let resume = self.loop_resume(a[1].0, Some((e, r)), d);
-                    self.expr_at(a[0].0, r, d + 1, self.pp + 2, false)?;
+                    self.expr_at(a[0].0, r, d + 1, self.pp + 2, Tail::No)?;
                     let mut br = Ins::new(Op::BrFalse);
                     br.b = r;
                     br.fl |= F_CLR_B;
@@ -2363,11 +2574,15 @@ impl<'g> Comp<'g> {
                         return self.error_op(e, "multi-argument returns are not permitted", true);
                     }
                     // the returned value's visibility is the function's:
-                    // `eval` of the `return` call sets R_Visible, then
-                    // `eval` of its operand does
+                    // under `Eval`, `eval` of the `return` call sets
+                    // R_Visible, then `eval` of its operand does; under `Bc`,
+                    // cmp.R compiles the operand in a non-tail context
+                    // (make.nonTailCallContext), so it is visible as bcEval
+                    // leaves it at RETURN
                     let r = self.alloc();
+                    let ctx = if self.profile == Profile::Bc { Tail::Ret } else { Tail::Yes };
                     if n == 1 {
-                        self.expr_at(a[0].0, r, d + 1, self.pp + 2, true)?;
+                        self.expr_at(a[0].0, r, d + 1, self.pp + 2, ctx)?;
                     } else {
                         self.ld_nil(r, true);
                     }
@@ -2402,7 +2617,7 @@ impl<'g> Comp<'g> {
                         // a closure of base's installed byte code
                         i.g = 1;
                     }
-                    if tail {
+                    if tail.vis() {
                         i.fl |= F_VIS;
                     }
                     self.emit(i);
@@ -2431,13 +2646,21 @@ impl<'g> Comp<'g> {
                             // cmp.R's cmpComplexAssign: the right-hand side,
                             // then the getter and setter calls of its plan
                             let plan = self.bc_assign_plan(lhs, a[1].0)?;
-                            self.expr(a[1].0, dst, d + 1, false)?;
+                            // (in `return()`'s operand the value's
+                            // visibility stands where no step sets it:
+                            // `x$a <- 2`)
+                            self.expr(a[1].0, dst, d + 1, tail.value())?;
                             let mut i = Ins::new(Op::BcAssign);
                             i.a = dst;
                             i.b = dst;
                             i.e = self.k(plan);
                             i.g = (s == Special::Assign2) as u16;
                             self.emit(i);
+                            // cmp.R's INVISIBLE after a tail assignment
+                            // (bcEval's ENDASSIGN leaves R_Visible)
+                            if tail.is_tail() {
+                                self.set_vis(false);
+                            }
                             return Ok(());
                         }
                         LANGSXP => {
@@ -2445,7 +2668,7 @@ impl<'g> Comp<'g> {
                             // the assignment through `*tmp*` (a target
                             // cmp.R's checkAssign refuses runs the special,
                             // do_set, in compiled code too)
-                            self.expr_at(a[1].0, dst, d + 1, self.pp + 2, false)?;
+                            self.expr_at(a[1].0, dst, d + 1, self.pp + 2, Tail::No)?;
                             let mut i = Ins::new(Op::ComplexAssign);
                             i.a = dst;
                             i.b = dst;
@@ -2477,7 +2700,7 @@ impl<'g> Comp<'g> {
                     };
                     // do_set's `eval(CADR(args), rho)` under PROTECT(op),
                     // PROTECT(e)
-                    self.expr_at(a[1].0, dst, d + 1, self.pp + 2, false)?;
+                    self.expr_at(a[1].0, dst, d + 1, self.pp + 2, tail.value())?;
                     let mut i = Ins::new(if s == Special::Assign2 { Op::SetVar2 } else { Op::SetVar });
                     i.a = dst;
                     i.e = self.k(sym);
@@ -2485,6 +2708,15 @@ impl<'g> Comp<'g> {
                         self.locals.push(sym);
                     }
                     self.emit(i);
+                    // do_set's R_Visible = FALSE, and cmp.R's INVISIBLE after
+                    // a tail assignment: observed only in the tail (bcEval's
+                    // SETVAR leaves R_Visible, so does `return()`'s operand);
+                    // a `{`'s earlier statement, on its Resume
+                    match tail {
+                        Tail::Live if self.live_stmt == Some(e) => self.cut_assign = Some(e),
+                        Tail::Yes | Tail::Live => self.set_vis(false),
+                        _ => {}
+                    }
                 }
                 Special::Quote => {
                     // R: eval.c:do_quote
@@ -2498,7 +2730,7 @@ impl<'g> Comp<'g> {
                     let mut i = Ins::new(Op::Quote);
                     i.a = dst;
                     i.e = self.k(a[0].0);
-                    if tail {
+                    if tail.vis() {
                         i.fl |= F_VIS;
                     }
                     self.emit(i);
@@ -2525,7 +2757,7 @@ impl<'g> Comp<'g> {
                     i.a = dst;
                     i.e = self.k(sym);
                     i.f = self.k(e);
-                    if tail {
+                    if tail.vis() {
                         i.fl |= F_VIS;
                     }
                     self.emit(i);
@@ -2538,28 +2770,30 @@ impl<'g> Comp<'g> {
                         return self.error_op(e, &msg, false);
                     }
                     // both operands under PROTECT(op), PROTECT(e)
-                    self.expr_at(a[0].0, dst, d + 1, self.pp + 2, false)?;
+                    self.expr_at(a[0].0, dst, d + 1, self.pp + 2, Tail::No)?;
+                    // in the tail, the value visible on both paths (bcEval's
+                    // AND1ST and AND2ND set R_Visible), the second operand
+                    // reached or not (`a && return(x)`)
+                    let vis = if tail.vis() { F_VIS } else { 0 };
                     let mut i1 = Ins::new(Op::AndOr1);
                     i1.a = dst;
                     i1.b = dst;
                     i1.c = op;
                     i1.e = self.k(e);
+                    i1.fl |= vis;
                     let i1 = self.emit(i1);
                     let r = self.alloc();
-                    self.expr_at(a[1].0, r, d + 1, self.pp + 2, false)?;
+                    self.expr_at(a[1].0, r, d + 1, self.pp + 2, Tail::No)?;
                     let mut i2 = Ins::new(Op::AndOr2);
                     i2.a = dst;
                     i2.b = r;
                     i2.c = op;
                     i2.e = self.k(e);
-                    i2.fl |= F_CLR_B;
+                    i2.fl |= F_CLR_B | vis;
                     self.emit(i2);
                     self.free_to(r);
                     let end = self.pc();
                     self.patch(i1, end);
-                    if tail {
-                        self.set_vis(true);
-                    }
                 }
                 Special::Internal => {
                     // R: names.c:do_internal
@@ -2753,7 +2987,7 @@ impl<'g> Comp<'g> {
     unsafe fn loop_body(&mut self, body: Sexp, d: u16, p: i32) -> Result<(), Need> {
         let r = self.alloc();
         // SAFETY: the caller's contract.
-        unsafe { self.expr_at(body, r, d + 1, p, false)? };
+        unsafe { self.expr_at(body, r, d + 1, p, Tail::No)? };
         self.clear(r);
         self.free_to(r);
         let start = self.loops.last().unwrap().start;
@@ -2774,9 +3008,10 @@ impl<'g> Comp<'g> {
 
     /// A loop's value: invisible NULL (`for`, `while`, `repeat` are
     /// `PRIMPRINT` 1).
-    fn loop_value(&mut self, dst: Reg, tail: bool) {
-        self.ld_nil(dst, false);
-        if tail {
+    fn loop_value(&mut self, dst: Reg, tail: Tail) {
+        // (`return()`'s operand: cmp.R's non-tail LDNULL sets R_Visible)
+        self.ld_nil(dst, tail.ret());
+        if tail.is_tail() {
             self.set_vis(false);
         }
     }
@@ -2796,7 +3031,7 @@ impl<'g> Comp<'g> {
         args: Sexp,
         dst: Reg,
         d: u16,
-        tail: bool,
+        tail: Tail,
     ) -> Result<(), Need> {
         // SAFETY: the caller's contract.
         let a = unsafe { self.arglist(args) };
@@ -2829,7 +3064,7 @@ impl<'g> Comp<'g> {
             // cmp.R's cmpMath1 / cmpPrim1: the operand, then the op
             let r = self.alloc();
             // SAFETY: as above.
-            unsafe { self.expr(a[0].0, r, d + 1, false)? };
+            unsafe { self.expr(a[0].0, r, d + 1, Tail::No)? };
             self.math1_op(e, Some(prim), dst, r, 1, kind, d);
             self.free_to(r);
             return Ok(());
@@ -2837,8 +3072,8 @@ impl<'g> Comp<'g> {
         if inl == Inline::Paren {
             // evalList's first argument, under eval's PROTECT(op)
             // SAFETY: as above.
-            unsafe { self.expr_at(a[0].0, dst, d + 1, self.pp + 1, false)? };
-            if tail {
+            unsafe { self.expr_at(a[0].0, dst, d + 1, self.pp + 1, Tail::No)? };
+            if tail.vis() {
                 self.set_vis(true);
             }
             return Ok(());
@@ -2869,7 +3104,7 @@ impl<'g> Comp<'g> {
         i.f = self.k(prim);
         i.fl |= F_DEPTH | F_CLR_B | if a.len() == 2 { F_CLR_C } else { 0 };
         i.d = d;
-        if tail {
+        if tail.vis() {
             i.fl |= F_VIS;
         }
         self.emit(i);
@@ -2898,7 +3133,7 @@ impl<'g> Comp<'g> {
             // SAFETY: a live constant of the pool.
             if unsafe { plain_scalar_const(self.consts[usize::from(k) - FIRST_CONST]) }.is_none() {
                 // SAFETY: as above.
-                unsafe { self.const_value(c, r, d, false) };
+                unsafe { self.const_value(c, r, d, Tail::No) };
                 return Ok(());
             }
             // (an unboxed constant is no object: nothing is marked, as
@@ -2911,7 +3146,7 @@ impl<'g> Comp<'g> {
             return Ok(());
         }
         // SAFETY: as above.
-        unsafe { self.expr(v, r, d, false) }
+        unsafe { self.expr(v, r, d, Tail::No) }
     }
 
     /// A builtin (or a builtin `.Internal`, `op`) called with its arguments
@@ -2927,7 +3162,7 @@ impl<'g> Comp<'g> {
         args: Sexp,
         dst: Reg,
         d: u16,
-        tail: bool,
+        tail: Tail,
     ) -> Result<(), Need> {
         let nil = self.nil();
         // SAFETY: the caller's contract.
@@ -2974,7 +3209,7 @@ impl<'g> Comp<'g> {
         let base = self.pp + if op == Op::Internal { 2 } else { 1 };
         for (j, &(v, _)) in a.iter().enumerate() {
             // SAFETY: as above.
-            unsafe { self.expr_at(v, r + j as Reg, d + 1, base + (j > 0) as i32, false)? };
+            unsafe { self.expr_at(v, r + j as Reg, d + 1, base + (j > 0) as i32, Tail::No)? };
         }
         if let Some(msg) = refused {
             // against the context, as for every .Internal

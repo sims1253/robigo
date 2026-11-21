@@ -836,6 +836,12 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 }
                 // SAFETY: an unboxed value.
                 unsafe { act.set(i.a, Slot::logical(r)) };
+                // R_Visible = TRUE whatever the flag, as bcEval's AND1ST,
+                // AND2ND, OR1ST and OR2ND set it (the AST's do_logic2 is
+                // visible too); the IR's F_VIS says where it is observed. A
+                // store, not a test: a branch here shifted vm::run's code
+                // (~1% on perf-rt's closure-call rows)
+                cx.set_visible(true);
             }
             Op::MkClosure => {
                 mk_closure(cx, act, i.a, i.e, i.f, i.c, i.g == 1)?;
@@ -1205,8 +1211,11 @@ fn slow_builtin(cx: &mut Cx, act: &mut Act, v: &View, i: &Ins, pc: usize, n: usi
 }
 
 /// `defineVar(sym, value, rho)` (`<-`) or `setVar(sym, value, ENCLOS(rho))`
-/// (`<<-`), with register `r` (boxed) the value; `R_Visible = FALSE`.
-// R: eval.c:do_set
+/// (`<<-`), with register `r` (boxed) the value: bcEval's SETVAR and
+/// SETVAR2, which leave R_Visible as the value left it. do_set's and a tail
+/// assignment's invisibility is the code's: a SetVis, or its Ret's (cmp.R's
+/// INVISIBLE).
+// R: eval.c:bcEval SETVAR, SETVAR2; eval.c:do_set
 fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: u16, shape: Sexp) -> RResult<()> {
     if !super_assign {
         let v = act.get(r);
@@ -1223,7 +1232,6 @@ fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: 
             // SAFETY: an immortal symbol, the rooted environment and the
             // code's shape; the slot index was compiled for that shape.
             if unsafe { cx.frame_store_scalar_raw(act.rho(), shape, slot as usize - 1, sym, x) } {
-                cx.set_visible(false);
                 return Ok(());
             }
         }
@@ -1235,7 +1243,6 @@ fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: 
             let res = cx.define_scalar(s, x, act.root(R_ENV));
             act.kill(R_SCRATCH, u32::MAX);
             res?;
-            cx.set_visible(false);
             return Ok(());
         }
     }
@@ -1252,7 +1259,6 @@ fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: 
     act.kill(R_SCRATCH, u32::MAX);
     act.kill(R_SCRATCH2, u32::MAX);
     res?;
-    cx.set_visible(false);
     Ok(())
 }
 
@@ -1271,7 +1277,7 @@ fn boundary(cx: &mut Cx, act: &Act, i: Ins) -> RResult<usize> {
     if i.op == Op::Resume {
         // SAFETY: a constant of the code.
         let prev = unsafe { v.k(i.e) };
-        resume_begin(cx, act, prev, i.b, i.a)?;
+        resume_begin(cx, act, prev, i.b, i.a, i.c == 1)?;
         return Ok(i.target());
     }
     // SAFETY: constants of the code.
@@ -1282,11 +1288,17 @@ fn boundary(cx: &mut Cx, act: &Act, i: Ins) -> RResult<usize> {
 /// [`Op::Resume`]: the rest of a `{` as GNU R's `do_begin` runs it, from
 /// the cell after `prev` (re-read after each statement: the list is live),
 /// the value so far in register `val` ([`NO_REG`]: NULL); the last value
-/// into `dst`.
+/// into `dst`. `assign`: the statement done was an assignment, so when no
+/// statement follows its value is invisible (do_set's; the code leaves it
+/// to this point).
 // R: eval.c:do_begin
 #[cold]
 #[inline(never)]
-fn resume_begin(cx: &mut Cx, act: &Act, prev: Sexp, val: Reg, dst: Reg) -> RResult<()> {
+fn resume_begin(cx: &mut Cx, act: &Act, prev: Sexp, val: Reg, dst: Reg, assign: bool) -> RResult<()> {
+    // SAFETY: `prev` is a cell of the source, a constant of the rooted code.
+    if assign && unsafe { prev.cdr().typ() } != LISTSXP {
+        cx.set_visible(false);
+    }
     if val == NO_REG {
         let nil = cx.nil().sexp();
         // SAFETY: R_NilValue into a register of this activation.

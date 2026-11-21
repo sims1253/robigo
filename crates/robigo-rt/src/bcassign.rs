@@ -248,7 +248,7 @@ fn kind(cx: &Cx, step: Root<'_>) -> u8 {
 
 /// The complex assignment of `plan` (`super_`: `<<-`), the right-hand
 /// side's value in register `rhs`: bcEval's `STARTASSIGN`, the getter
-/// calls, the setter calls and `ENDASSIGN`; the value in `dst`, invisible.
+/// calls, the setter calls and `ENDASSIGN`; the value in `dst`.
 ///
 /// # Safety
 /// `plan` is a live assignment plan of `act`'s code (one of its constants).
@@ -271,7 +271,8 @@ pub unsafe fn run(cx: &mut Cx, act: &Act, dst: Reg, rhs: Reg, plan: Sexp, super_
         let r = body(cx, s, plan, rho, saverhs, super_);
         links::release(cx, old);
         r?;
-        cx.set_visible(false);
+        // (R_Visible as the setter calls left it: bcEval's ENDASSIGN; a
+        // tail assignment's invisibility is the code's, cmp.R's INVISIBLE)
         act.out(dst).set(cx, saverhs.bind(cx));
         Ok(())
     })
@@ -411,7 +412,13 @@ fn getter<'s>(cx: &mut Cx, s: Scope<'s>, step: Root<'_>, lhs: Root<'_>, rho: Roo
                 cx.set_visible(true);
                 return Ok(v);
             }
-            let ev = default_args(cx, s, call, lhs, rho, None)?;
+            // an index bcEval loads (LDCONST) sets R_Visible; a punt step's
+            // (PUSHCONSTARG) does not
+            let ev = if matches!(k, K_SUB | K_SUB2) {
+                default_args::<true>(cx, s, call, lhs, rho, None)?
+            } else {
+                default_args::<false>(cx, s, call, lhs, rho, None)?
+            };
             let args = ev.args(cx);
             cx.materialize_subset_args(args)?;
             if sub2 {
@@ -470,7 +477,13 @@ fn setter<'s>(
                     return Ok(v);
                 }
             }
-            let ev = default_args(cx, s, call, lhs, rho, Some(rhs))?;
+            // an index bcEval loads (LDCONST) sets R_Visible; a punt step's
+            // (PUSHCONSTARG) does not
+            let ev = if matches!(k, K_SUB | K_SUB2) {
+                default_args::<true>(cx, s, call, lhs, rho, Some(rhs))?
+            } else {
+                default_args::<false>(cx, s, call, lhs, rho, Some(rhs))?
+            };
             let args = ev.args(cx);
             cx.materialize_subset_args(args)?;
             if sub2 {
@@ -599,8 +612,11 @@ fn dollar_call<'s>(
 /// evaluated as compiled code evaluates them (`cmpIndices`,
 /// `cmpBuiltinArgs(missingOK = TRUE)`: an empty argument, or a symbol
 /// bound to the missing argument, is R_MissingArg; tags kept), then the
-/// setter's value tagged `value`.
-fn default_args<'s>(
+/// setter's value tagged `value`. `LOAD_CONST`: a constant index is a
+/// load that sets R_Visible (cmpIndices' LDCONST); not on a punt step
+/// (empty or named arguments: cmpBuiltinArgs' PUSHCONSTARG). One instance
+/// each, so the common one has no test.
+fn default_args<'s, const LOAD_CONST: bool>(
     cx: &mut Cx,
     s: Scope<'s>,
     call: Root<'_>,
@@ -615,7 +631,7 @@ fn default_args<'s>(
     ev.next(nil).set(cx, x.bind(cx));
     for (a, tag) in args {
         let o = ev.next(tag);
-        eval_arg(cx, a, rho, true, o)?;
+        eval_arg::<LOAD_CONST>(cx, a, rho, true, o)?;
     }
     if let Some(v) = value {
         ev.next(st_value).set(cx, v.bind(cx));
@@ -642,8 +658,16 @@ fn args_of<'s>(cx: &Cx, s: Scope<'s>, call: Root<'_>, setter: bool) -> Vec<(Root
 /// a call by its code (compiled with the assignment), at the code's own
 /// depth; a symbol looked up (`GETVAR`, or `GETVAR_MISSOK` with
 /// `missing_ok`: a binding to the missing argument is R_MissingArg); an
-/// empty argument R_MissingArg; a constant itself.
-fn eval_arg(cx: &mut Cx, a: Root<'_>, rho: Root<'_>, missing_ok: bool, out: Out<'_>) -> RResult<()> {
+/// empty argument R_MissingArg; a constant itself. R_Visible as bcEval
+/// leaves it: a symbol's GETVAR sets it, a constant's LDCONST with
+/// `LOAD_CONST` (PUSHCONSTARG does not), a call's code sets its own.
+fn eval_arg<const LOAD_CONST: bool>(
+    cx: &mut Cx,
+    a: Root<'_>,
+    rho: Root<'_>,
+    missing_ok: bool,
+    out: Out<'_>,
+) -> RResult<()> {
     let e = a.bind(cx);
     let missing = cx.missing_arg();
     if e == missing {
@@ -654,6 +678,8 @@ fn eval_arg(cx: &mut Cx, a: Root<'_>, rho: Root<'_>, missing_ok: bool, out: Out<
         LANGSXP => crate::eval::eval_bytecode_inline(cx, a, rho, out),
         SYMSXP => {
             let sym = e.sexp();
+            // (GETVAR and GETVAR_MISSOK set R_Visible, before the lookup)
+            cx.set_visible(true);
             // SAFETY: `e` is a rooted symbol.
             if missing_ok && unsafe { crate::eval::keepmiss_missing(cx, sym, rho) }? {
                 out.set(cx, cx.missing_arg());
@@ -663,7 +689,12 @@ fn eval_arg(cx: &mut Cx, a: Root<'_>, rho: Root<'_>, missing_ok: bool, out: Out<
             unsafe { crate::eval::symbol_value(cx, sym, rho, out) }
         }
         _ => {
+            // (an index's LDCONST sets R_Visible; a builtin's argument is
+            // PUSHCONSTARG, which does not)
             out.set(cx, e);
+            if LOAD_CONST {
+                cx.set_visible(true);
+            }
             Ok(())
         }
     }
@@ -742,16 +773,24 @@ fn generic(
                 let p = crate::assign::rhs_promise(cx, s, vexpr, rhs)?;
                 cx.set_car(l, p);
             }
-            // PRIMFUN(fun)(call, fun, args, rho): `@<-` takes the two apart
-            // (the call its methods see is the compiler's, `*tmp*` in it)
-            if prims::prim_name(cx, fun.bind(cx)) == Some("@<-") {
+            // PRIMFUN(fun)(call, fun, args, rho): `@<-`, `[<-` and `[[<-` take
+            // the two apart, so their methods see the compiler's call
+            // (`*tmp*` in it); R_Visible as the special leaves it, no eval
+            // around it
+            // SAFETY: a rooted primitive of this isolate.
+            let name = unsafe { prims::def(cx, fun.bind(cx).sexp()) }.name;
+            if name == "@<-" {
                 return crate::specials::slot_gets(cx, call, Some(args), rho, out);
             }
             let o = s.out(cx);
             let ncall = o.root();
             let head = s.root(cx, call.bind(cx).as_cons().unwrap().car());
             cx.build(o, |cx| cx.lcons(head.bind(cx), args.bind(cx)))?;
-            crate::apply::apply_special(cx, ncall, fun, rho, out)
+            match name {
+                "[<-" => crate::specials::subassign_apart(cx, call, ncall, rho, out),
+                "[[<-" => crate::specials::subassign2_apart(cx, call, ncall, rho, out),
+                _ => crate::apply::apply_special(cx, ncall, fun, rho, out),
+            }
         }
         _ => {
             // a promise list: `*tmp*` and a setter's value evaluated
@@ -864,7 +903,7 @@ fn builtin_args(
             })?;
             continue;
         }
-        eval_arg(cx, a, rho, false, o)?;
+        eval_arg::<false>(cx, a, rho, false, o)?;
     }
     Ok(())
 }
