@@ -39,20 +39,30 @@ fn check_arity(cx: &mut Cx, call: Root<'_>, ac: Root<'_>, name: &str, arity: usi
 /// messages name `call`, the method's `newcall`.
 // R: objects.c:applyMethod (SPECIALSXP)
 /// `None`: the arguments are `call`'s own (the caller reads `call`).
+#[inline(always)]
 pub(crate) fn arg_call<'s>(
     cx: &mut Cx,
     s: Scope<'s>,
     call: Root<'_>,
     args: Option<Root<'_>>,
 ) -> RResult<Option<Root<'s>>> {
-    let Some(a) = args else { return Ok(None) };
+    match args {
+        None => Ok(None),
+        Some(a) => arg_call_over(cx, s, call, a).map(Some),
+    }
+}
+
+/// [`arg_call`]'s call over the promise list `a` (out of line: only
+/// `applyMethod` passes one).
+#[cold]
+#[inline(never)]
+fn arg_call_over<'s>(cx: &mut Cx, s: Scope<'s>, call: Root<'_>, a: Root<'_>) -> RResult<Root<'s>> {
     s.capture(cx, |cx, o| {
         cx.build(o, |cx| {
             let head = call.bind(cx).as_cons().map_or(cx.nil(), |c| c.car());
             cx.lcons(head, a.bind(cx))
         })
     })
-    .map(Some)
 }
 
 fn eval_root<'s>(cx: &mut Cx, s: Scope<'s>, e: Root<'_>, rho: Root<'_>) -> RResult<Root<'s>> {
