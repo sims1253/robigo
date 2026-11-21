@@ -178,7 +178,7 @@ class Rule(unittest.TestCase):
         self.assertFalse(passes(n, pull_request=False))
         self.assertFalse(passes(needs(rt="cancelled")))
 
-    def test_check_runs_always_and_a_pull_requests_runs_share_one_group(self):
+    def test_check_runs_always_and_pull_request_runs_share_one_group(self):
         # Check runs in a cancelled run too (never skipped: a skipped required
         # check passes), so a run cancelled before every need passed
         # (superseded or by hand) is red on its cancelled needs
@@ -193,8 +193,11 @@ class Rule(unittest.TestCase):
                       "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n", wf)
         self.assertEqual(wf.split("\non:\n", 1)[1].split("\n  pull_request:", 1)[0],
                          "  push:\n    branches: [main]", "push runs are main's alone")
-        # (the group cancels: no job of the run does it any more)
+        # (the group cancels: no job of the run does it any more, by the API,
+        # by gh, or with the permission it would need)
         self.assertNotIn("/cancel", wf)
+        self.assertNotIn("gh run cancel", wf)
+        self.assertNotIn("actions: write", wf)
 
     def test_workflow_needs_every_gating_job(self):
         import re
