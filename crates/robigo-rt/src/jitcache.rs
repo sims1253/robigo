@@ -295,6 +295,38 @@ pub fn cmpfun(cx: &mut Cx, op: Root<'_>, strategy: i32) -> RResult<()> {
             Hit::None => {}
         }
     }
+    // PROBE (V4 step 3 premises, never filed): R_cmpfun1's BCODESXP as
+    // BODY; a compile inside cmpfun1 (the compiler's own closures, built
+    // from source until L's compiler.rdb boot: P6) takes V2's as before
+    thread_local!(static IN_CMPFUN1: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+    if std::env::var_os("ROBIGO_V4_PROBE").is_some() && !IN_CMPFUN1.with(|c| c.get()) {
+        IN_CMPFUN1.with(|c| c.set(true));
+        let r = cx.scope(|cx, s| {
+            let o = s.out(cx);
+            let v = o.root();
+            let r = crate::jit::cmpfun1(cx, op, o);
+            r.map(|()| {
+                // SAFETY: a rooted value; a closure's body is its CDR.
+                let bc = unsafe {
+                    let x = v.bind(cx).sexp();
+                    x.typ() == CLOSXP && x.cdr().typ() == BCODESXP
+                };
+                if bc {
+                    // SAFETY: a closure's body.
+                    let body = s.root(cx, unsafe { Ref::from_sexp(v.bind(cx).sexp().cdr(), cx) });
+                    // SAFETY: a rooted closure and its new body: BODY is
+                    // its cdr, the store keeps counts and the barrier.
+                    unsafe { op.bind(cx).sexp().set_cdr(body.bind(cx).sexp()) };
+                }
+                bc
+            })
+        });
+        IN_CMPFUN1.with(|c| c.set(false));
+        if !r? {
+            set_nojit(cx, op);
+        }
+        return Ok(());
+    }
     let Some(code) = crate::compile::compile_closure_bc(cx, op, false)? else {
         set_nojit(cx, op);
         return Ok(());
