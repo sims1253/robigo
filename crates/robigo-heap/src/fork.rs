@@ -119,10 +119,18 @@ pub fn set_fork_locks(take: fn(), release: fn()) {
     unsafe { libc::pthread_mutex_unlock(FORK.0.get()) };
 }
 
-std::thread_local! {
-    /// Whether this thread holds `FORK` for [`once_excluding_fork`] (one
-    /// initializer that reaches another must not take it twice).
-    static HOLDS_FORK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+/// The thread that holds `FORK` for [`once_excluding_fork`] (its
+/// `pthread_self`), 0 when none: one initializer that reaches another must
+/// not take it twice. An atomic, not a thread-local: L6 allows the process
+/// one thread-local, the isolate's. Only the holder ever reads its own id
+/// here: it stores it after taking `FORK` and clears it before releasing.
+static FORK_HOLDER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// This thread's id for [`FORK_HOLDER`] (never 0 on glibc: a thread
+/// descriptor's address).
+fn this_thread() -> usize {
+    // SAFETY: no arguments; returns the calling thread's id.
+    unsafe { libc::pthread_self() as usize }
 }
 
 /// `cell.get_or_init(f)` with no fork between `f`'s start and the value's
@@ -135,7 +143,7 @@ std::thread_local! {
 ///   waits until that fork is over.
 /// - The fast path, an initialized cell, takes no lock.
 /// - An initializer that reaches another one takes `FORK` once (it is not
-///   recursive).
+///   recursive; [`FORK_HOLDER`] says whether this thread holds it).
 ///
 /// `f` must not fork, and must take only the process's later locks
 /// (`LIVE_ISOLATES`, `ENV`, the arena): `FORK` comes first in the order.
@@ -149,13 +157,13 @@ pub fn once_excluding_fork<T: Send + Sync>(cell: &'static std::sync::OnceLock<T>
     if let Some(v) = cell.get() {
         return v;
     }
-    if HOLDS_FORK.get() {
+    if FORK_HOLDER.load(Ordering::SeqCst) == this_thread() {
         return cell.get_or_init(f);
     }
     struct Held;
     impl Drop for Held {
         fn drop(&mut self) {
-            HOLDS_FORK.set(false);
+            FORK_HOLDER.store(0, Ordering::SeqCst);
             // SAFETY: taken below by this thread.
             unsafe { libc::pthread_mutex_unlock(FORK.0.get()) };
         }
@@ -163,7 +171,7 @@ pub fn once_excluding_fork<T: Send + Sync>(cell: &'static std::sync::OnceLock<T>
     // SAFETY: the static mutex, initialized; released by `Held`'s drop, on
     // this thread, also if `f` unwinds.
     unsafe { libc::pthread_mutex_lock(FORK.0.get()) };
-    HOLDS_FORK.set(true);
+    FORK_HOLDER.store(this_thread(), Ordering::SeqCst);
     let _held = Held;
     cell.get_or_init(f)
 }

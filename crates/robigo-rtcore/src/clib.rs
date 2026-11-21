@@ -377,8 +377,8 @@ pub fn glibc_version() -> (u32, u32) {
         fn gnu_get_libc_version() -> *const libc::c_char;
     }
     static V: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
-    // SAFETY: glibc returns a static NUL-terminated string.
     *robigo_heap::once_excluding_fork(&V, || {
+        // SAFETY: glibc returns a static NUL-terminated string.
         parse_glibc_version(unsafe { std::ffi::CStr::from_ptr(gnu_get_libc_version()) }.to_bytes())
     })
 }
