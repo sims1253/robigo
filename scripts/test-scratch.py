@@ -224,12 +224,26 @@ class Module(unittest.TestCase):
             scratch.os.getuid = real
         self.assertTrue(d.exists())
 
-    def test_the_sweep_removes_a_day_old_directory_that_took_its_permissions(self):
-        d = self.day_old("t-closed")
-        os.chmod(d / "sub", 0o000)
-        os.chmod(d, 0o000)
-        os.utime(d, (time.time() - 25 * 3600,) * 2)
-        self.assertEqual(scratch.sweep("t-", self.tmp), [str(d)])
+    def test_the_sweep_changes_nothing_it_cannot_remove(self):
+        # S6/S7: a directory whose case took its permissions stays, with
+        # the modes it had; a writable part of one is removed
+        import stat as st_
+        closed = self.day_old("t-closed")
+        os.chmod(closed, 0o000)
+        os.utime(closed, (time.time() - 25 * 3600,) * 2)
+        part = self.day_old("t-part")
+        os.chmod(part / "sub", 0o500)
+        (part / "loose").write_text("x")
+        os.utime(part, (time.time() - 25 * 3600,) * 2)
+        try:
+            self.assertEqual(scratch.sweep("t-", self.tmp), [])
+            self.assertEqual(st_.S_IMODE(os.lstat(closed).st_mode), 0o000)
+            self.assertEqual(st_.S_IMODE(os.lstat(part / "sub").st_mode), 0o500)
+            self.assertTrue((part / "sub" / "f").exists())
+            self.assertFalse((part / "loose").exists())
+        finally:
+            os.chmod(closed, 0o700)
+            os.chmod(part / "sub", 0o700)
 
     def test_the_sweep_leaves_a_name_replaced_after_its_listing(self):
         # the old directory moved away and a new one made at its name between

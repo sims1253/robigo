@@ -24,8 +24,11 @@ GNU R twins in the oracle cache. The digest-instead-of-value PR is next.
 2. At a tool's start, a sweep by age alone: that tool's prefix, this user's,
    the directory's own time more than 24 hours old. No gate runs for a day,
    so a live run is never a candidate. It deletes through a descriptor of
-   the directory it judged, and re-checks the inode at the name before
-   removing the entry.
+   the directory it judged, and, with that descriptor still open (so its
+   inode cannot be reused), re-checks the inode at the name before removing
+   the entry. It changes nothing: a day-old directory whose case took its
+   own permissions away (builtin-diff's `Sys.chmod` cases) stays, in part or
+   whole, until removed by hand.
 
 What rule 2 gives up: a killed run's leftovers stay for up to a day instead
 of until the next run. With the digest PR a leftover stops being a gigabyte,

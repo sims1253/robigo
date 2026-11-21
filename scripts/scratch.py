@@ -23,8 +23,10 @@ Two rules, and nothing here decides whether another run is alive:
    than SWEEP_HOURS old. No gate runs for a day, so a live run is never a
    candidate, whatever happens meanwhile. The sweep removes through a
    descriptor of the directory it judged (an entry renamed or replaced after
-   the listing is not followed), and checks that the name still holds that
-   directory before removing the entry itself.
+   the listing is not followed), and, with that descriptor still open,
+   checks that the name holds that directory before removing the entry. It
+   changes nothing: a directory whose case took its own permissions away
+   stays, in part or whole.
 
 Before this, /tmp collected 28 GB of these on the shared workstation
 (2026-11-21): the tools removed their directories on success only, and none
@@ -309,7 +311,13 @@ def _old_mine(st, cutoff):
     return stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid() and st.st_mtime < cutoff
 
 
+def _same(a, b):
+    return (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)
+
+
 def _sweep_one(pfd, name, cutoff):
+    """Remove `name` in `pfd` if it is a directory of this user's whose own
+    time is before `cutoff`; nothing else is removed or changed."""
     try:
         st = os.lstat(name, dir_fd=pfd)
     except OSError:
@@ -318,62 +326,56 @@ def _sweep_one(pfd, name, cutoff):
         return False        # a link, a file, another user's, or young
     dfd = _open_dir(name, pfd)
     if dfd is None:
-        return False
+        return False        # (one whose case took its permissions stays)
     try:
         # the directory opened is the one judged: a name replaced since the
         # listing is left alone
         now = os.fstat(dfd)
-        if (now.st_dev, now.st_ino) != (st.st_dev, st.st_ino) or not _old_mine(now, cutoff):
+        if not (_same(now, st) and _old_mine(now, cutoff)):
             return False
         _empty(dfd)
-    finally:
-        os.close(dfd)
-    try:
-        # the entry, if the name still holds that directory (rmdir removes
-        # only an empty one, so a directory made at the name in between and
-        # written to is never removed)
-        last = os.lstat(name, dir_fd=pfd)
-        if (last.st_dev, last.st_ino) != (st.st_dev, st.st_ino):
+        # the entry, if the name still holds that directory. The descriptor
+        # is still open, so its inode cannot be given to a directory made at
+        # the name meanwhile; rmdir removes only an empty directory
+        if not _same(os.lstat(name, dir_fd=pfd), now):
             return False
         os.rmdir(name, dir_fd=pfd)
+        return True
     except OSError:
         return False
-    return True
+    finally:
+        os.close(dfd)
 
 
 def _open_dir(name, pfd):
-    """A descriptor of directory `name` in `pfd`, not following a link;
-    given back to its owner first when a case took its permissions."""
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    """A descriptor of directory `name` in `pfd`, not following a link, or
+    None (also when its permissions refuse it: the sweep changes nothing)."""
     try:
-        return os.open(name, flags, dir_fd=pfd)
-    except PermissionError:
-        try:
-            os.chmod(name, 0o700, dir_fd=pfd, follow_symlinks=False)
-            return os.open(name, flags, dir_fd=pfd)
-        except (OSError, NotImplementedError):
-            return None
+        return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=pfd)
     except OSError:
         return None
 
 
 def _empty(dfd):
-    """Remove everything in the directory `dfd` names, through descriptors
-    only (nothing is reached by a path from outside it)."""
+    """Remove what can be removed in the directory `dfd` names, through
+    descriptors only: nothing is reached by a path from outside it, and a
+    link is removed, never followed."""
     for name in os.listdir(dfd):
         try:
             st = os.lstat(name, dir_fd=dfd)
-            if stat.S_ISDIR(st.st_mode):
-                sub = _open_dir(name, dfd)
-                if sub is None:
-                    continue
-                try:
-                    _empty(sub)
-                finally:
-                    os.close(sub)
-                os.rmdir(name, dir_fd=dfd)
-            else:
+            if not stat.S_ISDIR(st.st_mode):
                 os.unlink(name, dir_fd=dfd)
+                continue
+            sub = _open_dir(name, dfd)
+            if sub is None:
+                continue
+            try:
+                if _same(os.fstat(sub), st):
+                    _empty(sub)
+                    if _same(os.lstat(name, dir_fd=dfd), st):
+                        os.rmdir(name, dir_fd=dfd)
+            finally:
+                os.close(sub)
         except OSError:
             continue
 
