@@ -77,65 +77,68 @@ Contains #933's head (bef8b1644) and #925's (6d33c8b93, `Sys.time`,
     code first differs (`bytecode: KEY: ...`), so the next run says.
 - **The compiler's load at start** (callgrind, `--vanilla -e 1`,
   `R_DEFAULT_PACKAGES=NULL`; GNU R in the oracle, collected inside
-  R_init_jit_enabled; ours inside `load_compiler_namespace`):
+  R_init_jit_enabled; ours inside `load_compiler_namespace`; with main
+  347d462c3, after #930's cheaper translation; before it, 69.0M with the
+  translation 34.5M):
 
   | part | robigo-rt | GNU R |
   |---|---:|---:|
-  | the load | 69.0M | 34.3M |
-  | records fetched (lazyLoadDBfetch) | 25.5M (128) | 28.4M (129) |
-  | – unserialize | 22.0M (133) | 26.7M (133) |
+  | the load | 55.1M | 34.3M |
+  | records fetched (lazyLoadDBfetch) | 25.2M (128) | 28.4M (129) |
+  | – unserialize | 21.6M (133) | 26.7M (133) |
   | – inflate | 7.2M (9,445 calls) | 3.8M (R_decompress1; 9,309 inflate calls) |
-  | closures translated at first call | 34.5M (155, 223k each) | none (byte code run as read) |
-  | the rest (loadNamespace's R code, the hooks) | ~9.0M | ~5.9M |
+  | closures translated at first call | 21.4M (155, 138k each) | none (byte code run as read) |
+  | the rest (loadNamespace's R code, the hooks) | ~8.6M | ~5.9M |
 
-  The start: JIT on 145.4M, 15.9 MiB (GNU R 88.9M, 20.7 MiB); JIT off
-  74.4M, 13.7 MiB (GNU R 54.3M).
+  The start: JIT on 121.4M, 15.8 MiB (GNU R 88.9M, 20.7 MiB); JIT off
+  64.9M, 15.0 MiB (GNU R 54.3M). Peak RSS the median of 5.
 - `volume`'s compiler-loading cases stay out of the torture steps: the
   conformance suite runs M1's loader, which still makes the compiler from
   source, so their cost is the 599-601 s of #933. They move back when the
   suite runs on GNU R's boot (the interim loader's deletion).
-- perf rows, the rdb boot against M1's loader (`scripts/perf.py rt-bars`, callgrind instructions per iteration, the
-  same binary run under each; the M1 loader as the base):
+- perf rows, the rdb boot against M1's loader (`scripts/perf.py
+  rt-bars`, callgrind instructions per iteration, the same binary run
+  under each, at the gated head; the M1 loader as the base):
 
   | row | M1 loader | rdb boot | change |
   |---|---:|---:|---:|
-  | binarytrees | 3,499,264.1 | 3,497,589.5 | -0.05% |
-  | d0-attr | 1,975.9 | 1,978.9 | +0.15% |
-  | d0-attributes | 2,245.2 | 2,244.4 | -0.03% |
-  | d0-names | 4,798.7 | 4,801.0 | +0.05% |
-  | d0-paste | 13,877.3 | 13,820.7 | -0.41% |
-  | d0-paste0 | 12,798.6 | 12,754.6 | -0.34% |
-  | d0-unlist | 11,064.3 | 11,086.6 | +0.20% |
-  | defaults | 1,981.7 | 1,976.8 | -0.25% |
-  | e7-match | 91,804.7 | 96,434.1 | +5.04% |
-  | e7-paste | 95,708.2 | 94,527.8 | -1.23% |
-  | e7-unique | 117,847.8 | 118,074.2 | +0.19% |
-  | env-fn | 1,935.3 | 1,938.0 | +0.14% |
-  | fib | 10,711,701.3 | 10,715,232.2 | +0.03% |
-  | grow-dbl | 5,535.2 | 5,530.3 | -0.09% |
-  | guard-dollar-assign | 3,852.1 | 3,848.7 | -0.09% |
-  | guard-dots | 8,688.3 | 8,676.4 | -0.14% |
-  | guard-repeat | 8,258.0 | 8,260.9 | +0.03% |
-  | guard-subassign-dbl | 4,452.1 | 4,438.5 | -0.31% |
-  | guard-subset-dbl | 1,733.8 | 1,714.9 | -1.09% |
-  | guard-subset-matrix | 3,189.9 | 3,203.4 | +0.42% |
-  | guard-vec-arith | 88,182.1 | 89,308.5 | +1.28% |
-  | guard-vec-sum | 19,875.1 | 19,880.4 | +0.03% |
-  | guard-while | 8,126.5 | 8,120.5 | -0.07% |
-  | named | 1,840.2 | 1,840.3 | +0.00% |
-  | plain | 1,897.5 | 1,879.9 | -0.93% |
-  | s3 | 16,394.8 | 17,257.9 | +5.26% |
-  | scalars | 6,044.7 | 6,056.5 | +0.20% |
-  | superassign | 4,589.8 | 4,573.8 | -0.35% |
+  | binarytrees | 3,499,269.0 | 3,497,740.1 | -0.04% |
+  | d0-attr | 1,975.2 | 1,975.3 | +0.01% |
+  | d0-attributes | 2,244.8 | 2,244.7 | -0.00% |
+  | d0-names | 4,744.4 | 4,744.3 | -0.00% |
+  | d0-paste | 13,875.4 | 13,819.5 | -0.40% |
+  | d0-paste0 | 12,797.0 | 12,740.8 | -0.44% |
+  | d0-unlist | 11,064.9 | 11,081.7 | +0.15% |
+  | defaults | 1,981.9 | 1,982.0 | +0.00% |
+  | e7-match | 91,764.9 | 96,513.1 | +5.17% |
+  | e7-paste | 95,707.9 | 95,579.7 | -0.13% |
+  | e7-unique | 117,847.6 | 118,550.0 | +0.60% |
+  | env-fn | 1,934.9 | 1,935.4 | +0.02% |
+  | fib | 10,711,747.5 | 10,711,334.4 | -0.00% |
+  | grow-dbl | 5,535.2 | 5,535.2 | +0.00% |
+  | guard-dollar-assign | 3,852.1 | 3,852.1 | -0.00% |
+  | guard-dots | 8,688.4 | 8,682.2 | -0.07% |
+  | guard-repeat | 8,257.9 | 8,257.5 | -0.00% |
+  | guard-subassign-dbl | 4,452.1 | 4,452.3 | +0.00% |
+  | guard-subset-dbl | 1,733.3 | 1,733.2 | -0.00% |
+  | guard-subset-matrix | 3,190.0 | 3,190.1 | +0.00% |
+  | guard-vec-arith | 88,185.8 | 89,287.7 | +1.25% |
+  | guard-vec-sum | 19,874.6 | 19,874.8 | +0.00% |
+  | guard-while | 8,126.2 | 8,125.8 | -0.00% |
+  | named | 1,839.4 | 1,839.9 | +0.03% |
+  | plain | 1,897.7 | 1,897.9 | +0.01% |
+  | s3 | 16,383.6 | 17,244.3 | +5.25% |
+  | scalars | 6,044.0 | 6,044.7 | +0.01% |
+  | superassign | 4,599.3 | 4,579.1 | -0.44% |
 
   | program | M1 loader peak RSS KiB | rdb boot | change |
   |---|---:|---:|---:|
-  | benchmarks/rt/mem/churn.R | 80,040 | 86,228 | +7.7% |
-  | benchmarks/rt/mem/listgrow.R | 46,648 | 52,548 | +12.6% |
-  | benchmarks/suite/binarytrees.R | 26,364 | 28,760 | +9.1% |
+  | benchmarks/rt/mem/churn.R | 80,256 | 86,164 | +7.4% |
+  | benchmarks/rt/mem/listgrow.R | 46,780 | 52,296 | +11.8% |
+  | benchmarks/suite/binarytrees.R | 26,388 | 28,620 | +8.5% |
 
-  Above 0.5%: `s3` (+5.26%), `e7-match` (+5.04%), `guard-vec-arith`
-  (+1.28%); peak RSS +8-13% (the compiler loaded at start, which M1's
-  loader does at its first use). Not analysed here: the bar for
-  deleting the interim loader (at or below it, like for like) is that
-  PR's; X and C1 have the breakdowns above.
+  Above 0.5%: `s3` (+5.25%), `e7-match` (+5.17%), `guard-vec-arith`
+  (+1.25%), `e7-unique` (+0.60%); peak RSS +7-12% (the compiler loaded
+  at start). Not analysed here: the bar for deleting the interim loader
+  (at or below it, like for like) is that PR's; X and C1 have the
+  breakdowns above.
