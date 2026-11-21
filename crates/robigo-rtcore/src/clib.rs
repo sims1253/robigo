@@ -43,6 +43,23 @@ pub struct Tm {
 }
 
 impl Tm {
+    /// The C `struct tm` (no `tm_zone`).
+    fn to_c(&self) -> libc::tm {
+        // SAFETY: a zeroed tm is valid (tm_zone a null pointer).
+        let mut t: libc::tm = unsafe { std::mem::zeroed() };
+        t.tm_sec = self.sec;
+        t.tm_min = self.min;
+        t.tm_hour = self.hour;
+        t.tm_mday = self.mday;
+        t.tm_mon = self.mon;
+        t.tm_year = self.year;
+        t.tm_wday = self.wday;
+        t.tm_yday = self.yday;
+        t.tm_isdst = self.isdst;
+        t.tm_gmtoff = self.gmtoff;
+        t
+    }
+
     fn from_c(t: &libc::tm) -> Tm {
         Tm {
             sec: t.tm_sec,
@@ -452,8 +469,10 @@ compile_error!(
 /// the environment holds it shared for that call ([`env_read`]:
 /// `localtime`, `gmtime`, the `C.UTF-8` locale's `newlocale`,
 /// `passwd_home`, `passwd_name`, `group_name`, `login_name`,
-/// `Glob::append`, `env_locale`, `c_locale`'s `newlocale`,
-/// `default_textdomain_dir`; and [`env_vars`]'s listing),
+/// `Glob::append` (`glob(3)`), `env_locale`, `c_locale`'s `newlocale`,
+/// `default_textdomain_dir`; [`env_vars`]'s listing; and
+/// [`with_env_shared`]'s `dlopen` and `dlclose`, whose libraries'
+/// initializers and finalizers may read it),
 /// and an [`EnvWriter`] holds it
 /// exclusive. So robigo's own safe wrappers never read while it writes, on
 /// any glibc, with or without isolates. Its place in the process's lock
@@ -471,15 +490,72 @@ pub fn env_vars() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
     std::env::vars_os().collect()
 }
 
-/// [`ENV`] exclusive, for the fork handlers (`isolate::fork_take`): across
-/// a fork no reader is inside a C call and no [`EnvWriter`] inside the C
-/// library's `setenv`/`unsetenv`.
+/// `f` with [`ENV`] held shared: for a C call that runs code which may read
+/// the environment, `dyn.load`'s `dlopen` and `dyn.unload`'s `dlclose`
+/// (rtapi's rdynload.rs), whose library's initializers and finalizers run
+/// inside the call. glibc's `dlopen` reads no variable itself
+/// (`LD_LIBRARY_PATH` was read at startup), but an initializer may call
+/// `getenv`, `setlocale(LC_ALL, "")` or walk `environ`, and another
+/// isolate's [`EnvWriter`] must not write meanwhile.
+///
+/// What `f` must not do, as for every holder of [`ENV`] (the lock does not
+/// nest, and comes after `FORK` and `LIVE_ISOLATES` in the process's order:
+/// robigo-heap's fork.rs):
+/// - take it again, or write the environment ([`env_writer`]);
+/// - fork. The fork's `prepare` takes [`ENV`] exclusive, and this thread
+///   holds it shared, so it deadlocks. A fork on another thread waits for
+///   `f` to return (unless that thread holds the loader's lock: below).
+///
+/// **The loader's locks come after [`ENV`].** `dlopen` and `dlclose` take
+/// glibc's loader locks inside `f`, with [`ENV`] held, so code that runs
+/// under a loader lock must not take [`ENV`] or fork: a library's
+/// initializer or finalizer (whichever thread's `dlopen` or `dlclose` runs
+/// it, wrapped here or not), a `dl_iterate_phdr` callback, a TLS
+/// initializer. The process's lock order, of which this is one edge, and
+/// why glibc's own calls keep it, is written in one place: robigo-heap's
+/// fork.rs.
+///
+/// **Its scope:** robigo-rt's loads, rtapi's `dyn.load` and `dyn.unload`.
+/// The old runtime's C API bridge (robigo-capi's `robigo_dll_open` and
+/// `robigo_dll_close`) calls `dlopen` and `dlclose` bare; no rt crate
+/// depends on it, so no robigo-rt path reaches that loader.
+///
+/// **Nothing of robigo's can run inside `f`.** An initializer reaches
+/// robigo only through the C API, and every export of it refuses a call
+/// that no native entry of an isolate on this thread made: it aborts
+/// (rtcore's native.rs, `enter_export`: `no_isolate` on a thread without
+/// an isolate, `no_native_entry` outside a native call; and
+/// `isolate::enter_raw`'s `reentered_while_active` for a callback into an
+/// isolate already running). `dyn.load` and `dyn.unload` call `dlopen` and
+/// `dlclose` from Rust, outside every native entry. So an initializer
+/// cannot take `FORK` or `LIVE_ISOLATES` through robigo (an isolate's start
+/// or end, `Sys.setenv`, a lazy process global such as the glibc version
+/// or the C locales); only its own native code could, by forking. GNU R's
+/// place for R code is `R_init_<pkg>`, which runs after `dlopen` returns,
+/// outside the lock, as `R_unload_<pkg>` runs before `dlclose`.
+pub fn with_env_shared<R>(f: impl FnOnce() -> R) -> R {
+    let _r = env_read();
+    f()
+}
+
 /// [`ENV`]'s address, for a fork test's report of a hung child.
 #[cfg(test)]
 pub(crate) fn env_lock_addr() -> *const () {
     (&raw const ENV).cast()
 }
 
+/// Whether [`ENV`] is free at this moment (taken exclusive and released at
+/// once): for tests that check a call holds it, as rtapi's dynload test
+/// checks [`with_env_shared`]'s `dlopen` from inside a library's
+/// initializer. Never a way to decide whether to write.
+#[doc(hidden)]
+pub fn env_lock_is_free() -> bool {
+    ENV.try_write().is_ok()
+}
+
+/// [`ENV`] exclusive, for the fork handlers (`isolate::fork_take`): across
+/// a fork no reader is inside a C call and no [`EnvWriter`] inside the C
+/// library's `setenv`/`unsetenv`.
 pub(crate) fn env_write_lock() -> std::sync::RwLockWriteGuard<'static, ()> {
     ENV.write().unwrap_or_else(|e| e.into_inner())
 }
@@ -624,6 +700,225 @@ pub fn env_writer(cx: &crate::Cx) -> Result<EnvWriter<'_>, EnvWriteRefused> {
     }
     let env = ENV.write().unwrap_or_else(|e| e.into_inner());
     Ok(EnvWriter { _env: env, _live: live, _cx: cx })
+}
+
+unsafe extern "C" {
+    /// glibc's `tzset(3)`: the time zone read again from `TZ`.
+    fn tzset();
+    /// glibc's `tzname`: the standard and daylight-saving abbreviations of
+    /// the time zone `tzset` last read.
+    static tzname: [*const libc::c_char; 2];
+}
+
+/// A locale object for one `LC_TIME` (`newlocale(LC_TIME_MASK, name)`):
+/// the month and day names, formats and AM/PM strings `strftime` reads,
+/// as the isolate's `LC_TIME` names them (robigo-rt's process stays in
+/// "C"). Freed when dropped.
+pub struct LcTime {
+    loc: libc::locale_t,
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+impl LcTime {
+    /// The C library's locale `name` for `LC_TIME`; `None` when it has no
+    /// such locale (or a name with a NUL). Not while this thread holds an
+    /// [`EnvWriter`] or a [`TzSession`]: newlocale reads `LOCPATH`.
+    pub fn new(name: &[u8]) -> Option<LcTime> {
+        let n = std::ffi::CString::new(name).ok()?;
+        let _env = env_read();
+        // SAFETY: a NUL-terminated name, no base object; the result is a
+        // new object (or null), freed once in Drop.
+        let loc = unsafe { libc::newlocale(libc::LC_TIME_MASK, n.as_ptr(), std::ptr::null_mut()) };
+        (!loc.is_null()).then_some(LcTime { loc, _not_send: std::marker::PhantomData })
+    }
+}
+
+impl Drop for LcTime {
+    fn drop(&mut self) {
+        // SAFETY: an object newlocale made, freed once, used by no thread
+        // now (it never left this handle, which is not Send).
+        unsafe { libc::freelocale(self.loc) };
+    }
+}
+
+/// What one `strftime` of datetime.c's `do_formatPOSIXlt` gives: the bytes
+/// written, and whether it returned 0 (which, but for formats that may give
+/// nothing, is GNU R's "output string exceeded 2048 bytes").
+pub struct Strftime {
+    pub bytes: Vec<u8>,
+    pub zero: bool,
+}
+
+/// `strftime(buff, 2049, fmt, &tm)` of `tm` with `tm_zone` = `zone` (None:
+/// a null pointer) and `tm_gmtoff` from `tm`, in `lc`'s `LC_TIME`; first
+/// `tm.tm_gmtoff = 0; mktime(&tm)` when `mktime_first` (datetime.c's fix of
+/// an NA gmtoff for "%z", which also sets `tm_zone`). The caller holds the
+/// environment (shared or as a writer): strftime and mktime read the time
+/// zone.
+fn strftime_raw(fmt: &[u8], tm: &Tm, zone: Option<&[u8]>, mktime_first: bool, lc: &LcTime) -> Strftime {
+    let f = std::ffi::CString::new(fmt).unwrap_or_default();
+    let z = zone.map(|z| std::ffi::CString::new(z).unwrap_or_default());
+    let mut c = tm.to_c();
+    c.tm_zone = z.as_ref().map_or(std::ptr::null(), |z| z.as_ptr());
+    if mktime_first {
+        c.tm_gmtoff = 0;
+        // SAFETY: a valid tm, written by mktime (tm_zone then points at
+        // glibc's own static name); the time zone is held by the caller.
+        unsafe { libc::mktime(&mut c) };
+    }
+    let mut buf = vec![0u8; 2049];
+    // SAFETY: a buffer of 2049 bytes, a NUL-terminated format, a valid tm
+    // whose tm_zone is null, `z` (alive until the end) or glibc's; `lc` a
+    // live locale object.
+    let n = unsafe { libc::strftime_l(buf.as_mut_ptr().cast(), buf.len(), f.as_ptr(), &c, lc.loc) };
+    buf.truncate(n);
+    Strftime { bytes: buf, zero: n == 0 }
+}
+
+/// [`strftime_raw`] in the process's time zone (`TZ` as it is), under the
+/// environment's shared lock.
+pub fn strftime(fmt: &[u8], tm: &Tm, zone: Option<&[u8]>, mktime_first: bool, lc: &LcTime) -> Strftime {
+    let _env = env_read();
+    strftime_raw(fmt, tm, zone, mktime_first, lc)
+}
+
+/// What `set_tz` found that GNU R reports.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SetTzError {
+    /// `TZ` is longer than 1000 bytes: "time zone specification is too
+    /// long".
+    TooLong,
+}
+
+/// The process's time zone set to one for a conversion (datetime.c's
+/// `set_tz`), with this thread holding the environment exclusive until it
+/// drops, which puts `TZ` back (`reset_tz`). Its conversions read the time
+/// zone it set: every reader of the environment here waits meanwhile.
+pub struct TzSession<'a> {
+    w: EnvWriter<'a>,
+    /// The previous `TZ` (`hadtz`, `oldtz`).
+    old: Option<Vec<u8>>,
+    /// `settz`: `TZ` was set to the zone asked for (so `reset_tz` restores it).
+    settz: bool,
+    /// `setenv` failed ("problem with setting timezone").
+    pub set_failed: bool,
+}
+
+impl<'a> EnvWriter<'a> {
+    /// `set_tz(tz, &si)`: `TZ` set to `UTC` and `tzset` (so `tzname` is
+    /// read again), then to `tz`, or for "" to the previous `TZ`, or unset
+    /// when there was none; `tzset` after.
+    // R: datetime.c:set_tz
+    pub fn set_tz(self, tz: &[u8]) -> Result<TzSession<'a>, SetTzError> {
+        let old = self.get(b"TZ");
+        if old.as_ref().is_some_and(|p| p.len() > 1000) {
+            return Err(SetTzError::TooLong);
+        }
+        let mut s = TzSession { w: self, old, settz: false, set_failed: false };
+        // (setenv of TZ=UTC does not fail)
+        s.w.set(b"TZ", b"UTC");
+        // SAFETY: tzset reads TZ, which no thread writes meanwhile (ENV
+        // exclusive).
+        unsafe { tzset() };
+        let tz = if tz.is_empty() {
+            match &s.old {
+                Some(p) => p.clone(),
+                None => {
+                    // (unsetenv of TZ does not fail)
+                    s.w.unset(b"TZ");
+                    // SAFETY: as above.
+                    unsafe { tzset() };
+                    return Ok(s);
+                }
+            }
+        } else {
+            tz.to_vec()
+        };
+        if s.w.set(b"TZ", &tz) {
+            s.settz = true;
+        } else {
+            s.set_failed = true;
+        }
+        // SAFETY: as above.
+        unsafe { tzset() };
+        Ok(s)
+    }
+
+    /// `getenv(name)`, read while this writer holds the environment.
+    fn get(&self, name: &[u8]) -> Option<Vec<u8>> {
+        use std::os::unix::ffi::OsStrExt;
+        if name.contains(&0) {
+            return None;
+        }
+        std::env::var_os(std::ffi::OsStr::from_bytes(name)).map(|v| v.as_bytes().to_vec())
+    }
+}
+
+impl TzSession<'_> {
+    /// `localtime_r(&t, &tm)` in the session's time zone: `None` when the
+    /// C library fails (a year that does not fit).
+    pub fn localtime(&self, t: i64) -> Option<Tm> {
+        // SAFETY: a zeroed tm is a valid out-argument; localtime_r reads the
+        // time zone tzset read (TZ unwritten meanwhile: ENV exclusive).
+        unsafe {
+            let mut tm: libc::tm = std::mem::zeroed();
+            if libc::localtime_r(&t, &mut tm).is_null() { None } else { Some(Tm::from_c(&tm)) }
+        }
+    }
+
+    /// `mktime(tm)` in the session's time zone: the time, `tm` normalized
+    /// as mktime leaves it, and whether `errno` was set (`-1` is a time
+    /// too).
+    pub fn mktime(&self, tm: &mut Tm) -> (f64, bool) {
+        let mut c = tm.to_c();
+        // SAFETY: errno is this thread's; mktime reads and writes `c` and
+        // the time zone (TZ unwritten meanwhile: ENV exclusive).
+        let (r, errno) = unsafe {
+            *libc::__errno_location() = 0;
+            let r = libc::mktime(&mut c);
+            (r, *libc::__errno_location() != 0)
+        };
+        *tm = Tm::from_c(&c);
+        (r as f64, errno)
+    }
+
+    /// [`strftime`] in the session's time zone.
+    pub fn strftime(&self, fmt: &[u8], tm: &Tm, zone: Option<&[u8]>, mktime_first: bool, lc: &LcTime) -> Strftime {
+        strftime_raw(fmt, tm, zone, mktime_first, lc)
+    }
+
+    /// `tzname[0]` and `tzname[1]` (`R_tzname`): the zone's standard and
+    /// daylight-saving abbreviations as `tzset` set them.
+    pub fn tzname(&self) -> [Vec<u8>; 2] {
+        // SAFETY: tzname is written by tzset only, which runs under ENV
+        // exclusive (this session's); its entries are NUL-terminated
+        // strings glibc keeps.
+        unsafe {
+            let names = std::ptr::addr_of!(tzname).read();
+            names.map(|p| if p.is_null() { Vec::new() } else { std::ffi::CStr::from_ptr(p).to_bytes().to_vec() })
+        }
+    }
+}
+
+impl Drop for TzSession<'_> {
+    /// `reset_tz(&si)`: when `TZ` was set, the previous `TZ` back (or
+    /// unset), and `tzset`. (A failed `setenv` of a value it held before
+    /// cannot happen.)
+    // R: datetime.c:reset_tz
+    fn drop(&mut self) {
+        if !self.settz {
+            return;
+        }
+        self.settz = false;
+        match &self.old {
+            Some(p) => {
+                self.w.set(b"TZ", p);
+            }
+            None => self.w.unset(b"TZ"),
+        }
+        // SAFETY: as in set_tz.
+        unsafe { tzset() };
+    }
 }
 
 /// Whether `name` is one the C library's `setenv`/`unsetenv` accept: not
@@ -1039,6 +1334,18 @@ pub fn default_textdomain_dir() -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    /// `with_env_shared` holds ENV shared for its whole call: a writer
+    /// cannot take it meanwhile (dyn.load's dlopen with its
+    /// library's initializers, which may read the environment).
+    #[test]
+    fn with_env_shared_holds_the_environment_lock_for_the_call() {
+        let busy = super::with_env_shared(|| super::ENV.try_write().is_err());
+        assert!(busy, "a writer took ENV while with_env_shared held it");
+        // (not "free after": another test may hold it shared meanwhile)
+        // the call's value comes back
+        assert_eq!(super::with_env_shared(|| 7), 7);
+    }
+
     use super::wcstod_of;
 
     // (the C library's locale objects are not Miri's)
