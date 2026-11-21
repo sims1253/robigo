@@ -119,6 +119,41 @@ jobs:
       - name: rt conformance, every collection moving everything (gctorture)
         run: python3 scripts/rt-ci.py --full-move
 
+  # the boot heap's freeze: CI's E3 checks its invariant at every 16th
+  # collection (docs/ledger/g3/2026-11-21-h-boot-freeze-check.md); here at
+  # every collection, the cases that need it given longer
+  # (scripts/rt-ci.py's FREEZE_CHECK_SLOW)
+  rt-freeze-check:
+    needs: [check, rt-image]
+    if: needs.check.outputs.proceed == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ${{ needs.rt-image.outputs.rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+      - uses: ./.github/actions/setup
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: rt
+          save-if: false
+      - uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
+      - name: rt conformance under gctorture, the freeze checked at every collection
+        run: python3 scripts/rt-ci.py --freeze-check
+
   # Profile-guided optimization needs GNU R 4.5.0's library to train on, and
   # the oracle's container has it. Its newer glibc must not reach the binaries,
   # so only the profile leaves this job. macOS has no such R and stays without

@@ -186,6 +186,29 @@ class RtCi(unittest.TestCase):
         self.assertEqual(e.exception.code, 2)
         self.assertIn("--full-move and --shard select different steps", err.getvalue())
 
+    def test_the_freeze_check_runs_at_every_collection_in_the_nightly_only(self):
+        # CI's E3 checks every 16th collection; the nightly's --freeze-check
+        # every one, its slow cases named and given longer (the ledger's
+        # amendment to #948 (c))
+        e3 = [e for t, e, _ in rt.steps(["robigo-rt"]) if t == "conformance under gctorture (E3)"]
+        self.assertEqual(e3[0]["ROBIGO_GC_FREEZE_CHECK"], "16")
+        tests = [e for t, e, _ in rt.steps(["robigo-rt"]) if t.startswith("gctorture (collect at every allocation)")]
+        self.assertEqual(tests[0]["ROBIGO_GC_FREEZE_CHECK"], "1")
+        night = rt.freeze_check_steps()
+        self.assertEqual(len(night), 1)
+        _, env, cmd = night[0]
+        self.assertEqual((env["ROBIGO_GC_FREEZE_CHECK"], env["ROBIGO_GCTORTURE"]), ("1", "1"))
+        self.assertNotIn("ROBIGO_GC_MOVE", env)
+        self.assertIn(rt.CONFORMANCE, cmd)
+        named = dict(item.rsplit("=", 1) for item in env["ROBIGO_CONF_TIMEOUTS"].split(","))
+        self.assertEqual(set(named), set(rt.FREEZE_CHECK_SLOW))
+        for case, secs in named.items():
+            self.assertTrue((HERE.parent / case).is_file(), case)
+            self.assertGreater(int(secs), int(env["ROBIGO_CONF_TIMEOUT"]), case)
+        import contextlib, io
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            rt.main(["--freeze-check", "--full-move"])
+
     def test_the_step_times_are_reported_slowest_first(self):
         r = rt.timings_report([("a", 60.0, True), ("b", 600.0, True), ("c", 30.0, False)])
         lines = r.splitlines()

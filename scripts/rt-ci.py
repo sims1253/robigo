@@ -13,6 +13,7 @@
     scripts/rt-ci.py --list     # the rt crates, one per line
     scripts/rt-ci.py --check    # the premise check alone
     scripts/rt-ci.py --full-move  # the nightly's run: every collection moves everything
+    scripts/rt-ci.py --freeze-check  # the nightly's run: gctorture, the freeze checked at every collection
 
 The rt crates are the workspace members under the `rt` rule of
 scripts/ci-selection.toml, so the selection and this job cannot drift apart.
@@ -255,6 +256,37 @@ def full_move_steps():
     return every_cpu([
         ("conformance under ROBIGO_GC_MOVE=1 with gctorture (every collection moves everything)",
          {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **SLOW, "ROBIGO_CONF_TIMEOUTS": full_slow},
+         conformance_command()),
+    ])
+
+
+# The cases that need longer than the slow modes' 600 s in the nightly's
+# every-collection freeze check (`--freeze-check`), and how long they get:
+# there every allocation traces the heap three times (the collection, the
+# check's independent trace, its comparison). Measured under gctorture at
+# ROBIGO_GC_FREEZE_CHECK=1 on the 24-CPU workstation, the seven at once
+# (load 35-40, 2026-11-21; jit.R alone: 536 s), each given about twice that:
+FREEZE_CHECK_SLOW = {
+    "tests/r/jit/loop-closed-form-super.R": 1500,  # 719 s
+    "tests/rt/bytecode/jit.R": 2400,  # 1,150 s
+    "tests/rt/capi/closure-mutation.R": 2400,  # 1,160 s
+    "tests/r/conditions/c-stack-overflow.R": 2800,  # 1,387 s
+    "tests/rt/jit/active-binding-read.R": 2900,  # 1,431 s
+    "tests/rt/jit/serialize-write.R": 3600,  # 1,795 s
+    "tests/r/memory/finalizers-self-ref-envs.R": 4400,  # 2,180 s
+}
+
+
+def freeze_check_steps():
+    """The nightly's every-collection freeze check (`--freeze-check`): the
+    conformance slice under gctorture with the freeze's invariant checked at
+    every collection. CI's E3 step checks every 16th (the ledger's amendment
+    to #948 (c), docs/ledger/g3/2026-11-21-h-boot-freeze-check.md); this run
+    keeps the every-collection check, moved, not lost."""
+    return every_cpu([
+        ("conformance under gctorture, the freeze checked at every collection",
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_FREEZE_CHECK": "1", **SLOW,
+          "ROBIGO_CONF_TIMEOUTS": case_timeouts(FREEZE_CHECK_SLOW)},
          conformance_command()),
     ])
 
@@ -551,11 +583,16 @@ def main(argv):
     ap.add_argument("--check", action="store_true", help="check the premise and stop")
     ap.add_argument("--full-move", action="store_true",
                     help="only the conformance slice with every collection moving everything (the nightly's run)")
+    ap.add_argument("--freeze-check", action="store_true",
+                    help="only the conformance slice under gctorture with the freeze checked at every collection "
+                         "(the nightly's run)")
     ap.add_argument("--shard", choices=SHARDS, help="only this CI job's steps (default: every step)")
     a = ap.parse_args(argv)
     if a.full_move and a.shard:
         # (--full-move is the nightly's one step; a shard would be ignored)
         ap.error("--full-move and --shard select different steps: give one")
+    if a.freeze_check and (a.shard or a.full_move):
+        ap.error("--freeze-check, --full-move and --shard select different steps: give one")
 
     meta = metadata()
     crates = rt_crates(meta, rt_patterns(ci_select.load()))
@@ -575,7 +612,7 @@ def main(argv):
     if a.check:
         return 0
 
-    plan = full_move_steps() if a.full_move else shard_steps(crates, a.shard) if a.shard else steps(crates)
+    plan = (full_move_steps() if a.full_move else freeze_check_steps() if a.freeze_check else shard_steps(crates, a.shard) if a.shard else steps(crates))
     done = []
     try:
         return run_steps(plan, done)
