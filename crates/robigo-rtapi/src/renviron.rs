@@ -92,8 +92,7 @@ fn findterm(s: &[u8]) -> Vec<u8> {
     let orig = s;
     let mut s = s;
     let mut ans = Vec::new();
-    loop {
-        let Some(p) = s.iter().position(|&b| b == b'$') else { break };
+    while let Some(p) = s.iter().position(|&b| b == b'$') {
         if s.get(p + 1) != Some(&b'{') {
             break;
         }
@@ -160,10 +159,12 @@ fn setenv(name: &[u8], value: &[u8]) -> bool {
 /// newline, on stdout this early.
 fn warn(msg: &[u8]) {
     use std::io::Write;
-    let mut e = std::io::stdout().lock();
-    let _ = e.write_all(msg);
-    let _ = e.write_all(b"\n");
-    let _ = e.flush();
+    let mut line = Vec::with_capacity(msg.len() + 1);
+    line.extend_from_slice(msg);
+    line.push(b'\n');
+    let mut out = std::io::stdout();
+    let _ = out.write_all(&line);
+    let _ = out.flush();
 }
 
 /// `process_Renviron(filename)`: each line of the file put in the
