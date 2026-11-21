@@ -439,6 +439,13 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     cx.set_locale_names(env_loc.names);
     // R_NoEcho before InitOptions, whose `echo` is its negation
     cx.set_no_echo(!echo);
+    // srand(TimeToSeed()), then InitTempDir, before the rest of the boot;
+    // its failure is R_Suicide's (R_CleanUp(SA_SUICIDE, 2, 0))
+    robigo_rtbuiltins::sysutils::seed_rand();
+    if let Err(m) = robigo_rtbuiltins::sysutils::init_temp_dir(cx, true) {
+        eprintln!("Fatal error: {m}");
+        std::process::exit(2);
+    }
     robigo_rt::install(cx);
     // `.Call` and `dyn.load`, before base binds its stubs
     robigo_rtapi::install(cx);

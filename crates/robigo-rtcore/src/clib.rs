@@ -1332,6 +1332,164 @@ pub fn default_textdomain_dir() -> Option<Vec<u8>> {
     }
 }
 
+// ---- the session's temporary directory (R_TempDir) --------------------------
+
+/// The temporary directories made in this process and not yet removed,
+/// with the process that made each: [`remove_temp_dir`] takes one out, and
+/// an `atexit` handler removes what is left when the process that made it
+/// exits (a robigo-rt binary leaves through `exit` on paths that do not
+/// drop the isolate). A forked child's exit removes nothing of its
+/// parent's.
+static TEMP_DIRS: std::sync::Mutex<Vec<(u32, Vec<u8>)>> = std::sync::Mutex::new(Vec::new());
+
+extern "C" fn remove_temp_dirs_at_exit() {
+    // (try_lock: a child forked while another thread held it must not wait)
+    let Ok(mut dirs) = TEMP_DIRS.try_lock() else { return };
+    let me = std::process::id();
+    let mine: Vec<Vec<u8>> = dirs.iter().filter(|(p, _)| *p == me).map(|(_, d)| d.clone()).collect();
+    dirs.retain(|(p, _)| *p != me);
+    drop(dirs);
+    for d in mine {
+        remove_tree(&d);
+    }
+}
+
+/// Note the temporary directory `dir` this process made, to remove it at
+/// exit if nothing removed it before.
+pub fn register_temp_dir(dir: &[u8]) {
+    static AT_EXIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    robigo_heap::once_excluding_fork(&AT_EXIT, || {
+        // SAFETY: registers a handler that takes no arguments, calls nothing
+        // that exits, and touches only this module's statics.
+        unsafe { libc::atexit(remove_temp_dirs_at_exit) };
+    });
+    let mut dirs = TEMP_DIRS.lock().unwrap_or_else(|e| e.into_inner());
+    dirs.push((std::process::id(), dir.to_vec()));
+}
+
+/// `R_CleanTempDir()`'s removal of `dir`, which [`register_temp_dir`]
+/// noted (and no longer does).
+// R: platform.c:R_CleanTempDir
+pub fn remove_temp_dir(dir: &[u8]) {
+    {
+        let mut dirs = TEMP_DIRS.lock().unwrap_or_else(|e| e.into_inner());
+        let me = std::process::id();
+        dirs.retain(|(p, d)| !(*p == me && d == dir));
+    }
+    remove_tree(dir);
+}
+
+/// `rm -Rf '<dir>'` run by `/bin/sh` (`R_system`), or, for a name a
+/// single-quoted shell word cannot hold, `R_unlink(dir, recursive = TRUE,
+/// force = TRUE)`.
+// R: platform.c:R_CleanTempDir
+fn remove_tree(dir: &[u8]) {
+    use std::os::unix::ffi::OsStrExt;
+    let special = b"'\\`$\"\n";
+    if !dir.iter().any(|c| special.contains(c)) {
+        let mut cmd = b"rm -Rf '".to_vec();
+        cmd.extend_from_slice(dir);
+        cmd.push(b'\'');
+        let _ = std::process::Command::new("/bin/sh").arg("-c").arg(std::ffi::OsStr::from_bytes(&cmd)).status();
+    } else {
+        r_unlink(std::path::Path::new(std::ffi::OsStr::from_bytes(dir)), true, true);
+    }
+}
+
+/// `R_unlink(name, recursive, force)`: the number of entries it could not
+/// remove (0 also when `name` did not exist).
+// R: platform.c:R_unlink
+pub fn r_unlink(name: &std::path::Path, recursive: bool, force: bool) -> usize {
+    use std::os::unix::fs::PermissionsExt;
+    if name.as_os_str() == "." || name.as_os_str() == ".." {
+        return 0;
+    }
+    // lstat: a broken symbolic link is still removed
+    let md = std::fs::symlink_metadata(name);
+    if let Ok(m) = &md
+        && force
+    {
+        let _ = std::fs::set_permissions(name, std::fs::Permissions::from_mode(m.permissions().mode() | 0o200));
+    }
+    if let Ok(m) = &md
+        && recursive
+        && m.file_type().is_dir()
+    {
+        let mut ans = 0;
+        match std::fs::read_dir(name) {
+            Ok(entries) => {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    match std::fs::symlink_metadata(&p) {
+                        Ok(sm) if sm.file_type().is_dir() => {
+                            if force {
+                                let mode = sm.permissions().mode() | 0o300;
+                                let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode));
+                            }
+                            ans += r_unlink(&p, recursive, force);
+                        }
+                        sm => {
+                            if force && let Ok(sm) = sm {
+                                let mode = sm.permissions().mode() | 0o200;
+                                let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode));
+                            }
+                            ans += std::fs::remove_file(&p).is_err() as usize;
+                        }
+                    }
+                }
+            }
+            // we were unable to read a dir
+            Err(_) => ans += 1,
+        }
+        ans += std::fs::remove_dir(name).is_err() as usize;
+        return ans;
+    }
+    // (unlink: 0 if it succeeded or `name` did not exist)
+    let r = std::fs::remove_file(name);
+    (r.is_err() && md.is_ok()) as usize
+}
+
+/// `R_isWriteableDir(path)`: an existing directory this user may write
+/// (`stat`, then `access(path, W_OK)`); false for None.
+// R: sysutils.c:R_isWriteableDir
+pub fn is_writeable_dir(path: Option<&[u8]>) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Some(p) = path else { return false };
+    let Ok(m) = std::fs::metadata(std::ffi::OsStr::from_bytes(p)) else { return false };
+    if !m.is_dir() {
+        return false;
+    }
+    let Ok(c) = std::ffi::CString::new(p) else { return false };
+    // SAFETY: a NUL-terminated path; access only reads it.
+    unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
+}
+
+/// `mkdtemp(template)`: the directory made from `template` (its trailing
+/// `XXXXXX` replaced), or None when it could not be.
+pub fn mkdtemp(template: &[u8]) -> Option<Vec<u8>> {
+    let mut buf = std::ffi::CString::new(template).ok()?.into_bytes_with_nul();
+    // SAFETY: a writable NUL-terminated buffer, which mkdtemp rewrites in
+    // place (the same length).
+    let r = unsafe { libc::mkdtemp(buf.as_mut_ptr().cast()) };
+    if r.is_null() {
+        return None;
+    }
+    buf.pop();
+    Some(buf)
+}
+
+/// The C library's `srand(seed)`: the process's `rand()` sequence seeded.
+pub fn srand(seed: u32) {
+    // SAFETY: srand takes the C library's own lock for its state.
+    unsafe { libc::srand(seed) }
+}
+
+/// The C library's `rand()` (its lock held for its state).
+pub fn rand() -> i32 {
+    // SAFETY: as for srand.
+    unsafe { libc::rand() }
+}
+
 #[cfg(test)]
 mod tests {
     /// `with_env_shared` holds ENV shared for its whole call: a writer
