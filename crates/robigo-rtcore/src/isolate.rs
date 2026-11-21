@@ -1058,7 +1058,11 @@ fn fork_take() {
     let live = live_isolates();
     let env = crate::clib::env_write_lock();
     // SAFETY: as for `ForkGuards`: this fork alone, under `FORK`; the slot
-    // is empty (the previous fork's `fork_release` took it).
+    // is empty (the previous fork's `fork_release` took it). That relies on
+    // the C library running `parent` after every `prepare`, a fork that
+    // fails included: glibc does (verified on 2.44: a fork refused with
+    // EAGAIN runs prepare, then parent; `fork_tests`'
+    // `a_failed_fork_releases_the_locks`).
     unsafe { *FORK_GUARDS.0.get() = Some((live, env)) };
 }
 

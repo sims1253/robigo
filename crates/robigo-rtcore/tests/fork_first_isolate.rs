@@ -20,6 +20,13 @@ fn forks_overlapping_the_first_isolate_start_give_working_children() {
     use std::time::{Duration, Instant};
     // a fork whose handlers hang never returns, before any deadline below
     // could run: abort the process instead
+    // disarmed when the test ends, a failing one too (its guard drops)
+    struct Disarm(Arc<AtomicBool>);
+    impl Drop for Disarm {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
     let done = Arc::new(AtomicBool::new(false));
     {
         let done = Arc::clone(&done);
@@ -38,6 +45,7 @@ fn forks_overlapping_the_first_isolate_start_give_working_children() {
             std::process::abort();
         });
     }
+    let _disarm = Disarm(Arc::clone(&done));
     let starter = std::thread::spawn(|| {
         let mut iso = robigo_rtcore::OwnedIsolate::new();
         let cx = iso.cx();
@@ -99,5 +107,4 @@ fn forks_overlapping_the_first_isolate_start_give_working_children() {
         }
         assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "child {k} failed (status {status})");
     }
-    done.store(true, Ordering::SeqCst);
 }
