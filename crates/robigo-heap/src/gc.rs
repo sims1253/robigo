@@ -2791,6 +2791,8 @@ impl Core {
             self.poisoned = true;
             // the batched unfreeze (`freeze.rs`) before anything is marked
             self.unfreeze_pending();
+            // (this collection's snapshot only: r4 S10)
+            self.freeze_reach.clear();
             if self.freeze_check && !self.frozen.is_empty() {
                 self.freeze_reach = self.independent_reach(roots);
             }

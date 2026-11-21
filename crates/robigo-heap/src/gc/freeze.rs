@@ -163,7 +163,11 @@ impl Core {
     /// Frozen objects are live and their fields null or live; outside
     /// marking.
     unsafe fn thaw_with_referrers(&mut self, targets: &mut Vec<Sexp>) {
-        if targets.is_empty() {
+        // (with no target the walk below still runs while anything is
+        // logged: it finds the external-data vectors behind ordinary objects,
+        // r4 S3)
+        // SAFETY: outside marking, the log is not borrowed elsewhere.
+        if targets.is_empty() && unsafe { &*self.remembered.0.get() }.is_empty() {
             return;
         }
         let mut parents: HashMap<usize, Vec<Sexp>, BuildFx> = HashMap::default();
@@ -413,7 +417,19 @@ impl Core {
     /// # Safety
     /// During a collection, after marking and before the sweep.
     pub(super) unsafe fn check_frozen_marked(&self) {
-        // the independent trace's objects are all marked (the bar's (c))
+        let mut kids = Vec::new();
+        for &f in &self.frozen {
+            kids.clear();
+            // SAFETY: the caller's contract.
+            unsafe {
+                f.trace_fields(&mut Edges(&mut kids));
+                if let Some(k) = kids.iter().find(|k| k.flags() & flags::IMMORTAL == 0 && !self.is_marked(**k)) {
+                    frozen_panic(f, *k, "unmarked after marking");
+                }
+            }
+        }
+        // then the independent trace's objects are all marked (the bar's
+        // (c)); the direct check above names the frozen referrer first (r4 S5)
         for &x in &self.freeze_reach {
             // SAFETY: the caller's contract; reached at this collection's start.
             unsafe {
@@ -423,17 +439,6 @@ impl Core {
                         x.addr(),
                         x.typ()
                     );
-                }
-            }
-        }
-        let mut kids = Vec::new();
-        for &f in &self.frozen {
-            kids.clear();
-            // SAFETY: the caller's contract.
-            unsafe {
-                f.trace_fields(&mut Edges(&mut kids));
-                if let Some(k) = kids.iter().find(|k| k.flags() & flags::IMMORTAL == 0 && !self.is_marked(**k)) {
-                    frozen_panic(f, *k, "unmarked after marking");
                 }
             }
         }
@@ -561,6 +566,36 @@ mod tests {
             assert!(c.is_frozen(other), "the rest is frozen");
             let log = &*c.remembered.0.get();
             assert!(!log.contains(&container), "the container is not logged");
+            c.check_frozen();
+        }
+    }
+
+    /// An external-data vector that only a frozen container reaches, through
+    /// an excluded ordinary object, with no weak reference anywhere (Sol r4
+    /// S3): the container comes out of the freeze ordinary, unlogged, so the
+    /// vector's release waits only for its reachability.
+    #[test]
+    fn the_freeze_thaws_a_container_reaching_external_data_through_an_ordinary_object() {
+        let mut c = Core::new();
+        if !c.freeze_enabled() {
+            return;
+        }
+        let nil = c.nil();
+        let mut buf = [0.0f64; 2];
+        // SAFETY: fresh objects of this heap; `buf` outlives the heap's use
+        // of it (no release callback; nothing collects).
+        unsafe {
+            let ext = c.alloc_extdata(REALSXP, buf.as_mut_ptr() as *mut u8, 2, 0, None).unwrap();
+            let mid = c.alloc_node(LISTSXP, ext, nil, nil).unwrap();
+            let container = c.alloc_node(LISTSXP, mid, nil, nil).unwrap();
+            let other = c.alloc_vector(INTSXP, 1).unwrap();
+            let rest = c.alloc_node(LISTSXP, other, nil, nil).unwrap();
+            let root = c.alloc_node(LISTSXP, container, rest, nil).unwrap();
+            c.freeze(&mut One(root), |x| x == mid);
+            assert!(!c.is_frozen(container) && container.flags() & flags::IMMORTAL == 0, "the container is ordinary");
+            assert!(c.is_frozen(other));
+            let log = &*c.remembered.0.get();
+            assert!(!log.contains(&container));
             c.check_frozen();
         }
     }
