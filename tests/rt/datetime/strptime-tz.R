@@ -24,3 +24,17 @@ Sys.getenv("TZ", "<unset>")
 # through base R
 as.POSIXct("2024-07-01 12:00:00", tz = "Europe/Berlin")
 format(strptime("2024-07-01 12:00", "%Y-%m-%d %H:%M", tz = "America/New_York"), "%Y-%m-%d %H:%M %Z")
+# conditions are signalled in the zone set_tz set: a handler sees TZ, and a
+# change it makes holds for the next conversion until reset_tz
+Sys.setenv(TZ = "UTC")
+x <- withCallingHandlers(
+  .Internal(strptime(c("2023 366", "2024-07-01 12:00"), c("%Y %j", "%Y-%m-%d %H:%M"), "Europe/Berlin")),
+  warning = function(w) { print(Sys.getenv("TZ")); Sys.setenv(TZ = "Asia/Tokyo"); invokeRestart("muffleWarning") })
+print(x$zone); print(Sys.getenv("TZ"))
+r <- tryCatch(withCallingHandlers(.Internal(strptime("2001 x", "%Y %Z", "Europe/Berlin")),
+  error = function(e) print(Sys.getenv("TZ"))), error = function(e) conditionMessage(e))
+r; Sys.getenv("TZ")
+z <- .Internal(as.POSIXlt(0, "UTC")); z$year <- 2147483647L
+withCallingHandlers(tryCatch(.Internal(format.POSIXlt(z, strrep("%Y", 300), FALSE, 0L)), error = function(e) conditionMessage(e)),
+  error = function(e) print(Sys.getenv("TZ")))
+Sys.unsetenv("TZ")

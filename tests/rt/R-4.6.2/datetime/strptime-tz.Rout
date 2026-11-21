@@ -127,3 +127,10 @@ attr(,"balanced")
 [1] "<unset>"
 [1] "2024-07-01 12:00:00 CEST"
 [1] "2024-07-01 12:00 EDT"
+[1] "Europe/Berlin"
+[1] ""    "JST"
+[1] "UTC"
+[1] "Europe/Berlin"
+[1] "use of %Z for input is not supported"
+[1] "UTC"
+[1] NA

@@ -218,7 +218,7 @@ fn timegm00(tm: &mut Tm) -> f64 {
 /// validated; else `timegm00` (UTC, `local` None) or the C library's
 /// `mktime` in the session's zone, with whether it set `errno`.
 // R: datetime.c:mktime0
-fn mktime0(tm: &mut Tm, local: Option<&clib::TzSession<'_>>) -> (f64, bool) {
+fn mktime0(tm: &mut Tm, local: Option<&clib::TzSession>) -> (f64, bool) {
     if validate_tm(tm) < 0 {
         return (-1.0, true); // errno = EOVERFLOW
     }
@@ -231,7 +231,7 @@ fn mktime0(tm: &mut Tm, local: Option<&clib::TzSession<'_>>) -> (f64, bool) {
 /// `localtime0(&d, local, ltm)` (`PATH 1`): `localtime_r` in the session's
 /// zone, or `gmtime_r` (`local` None), of `d` floored (`LOCALTIME_MK_`).
 // R: datetime.c:localtime0, LOCALTIME_MK_
-fn localtime0(d: f64, local: Option<&clib::TzSession<'_>>) -> Option<Tm> {
+fn localtime0(d: f64, local: Option<&clib::TzSession>) -> Option<Tm> {
     match local {
         None => gmtime0(d),
         Some(s) => s.localtime(time_t_of(d)),
@@ -258,7 +258,7 @@ fn gmtime0(d: f64) -> Option<Tm> {
 /// `glibc_fix(tm, &invalid)`: the current local date's year, and month and
 /// day when neither is known; an unknown day with a known month is invalid.
 // R: datetime.c:glibc_fix
-fn glibc_fix(tm: &mut Tm, invalid: &mut bool, local: Option<&clib::TzSession<'_>>) {
+fn glibc_fix(tm: &mut Tm, invalid: &mut bool, local: Option<&clib::TzSession>) {
     // localtime_r(time(NULL)): in the time zone set_tz set, if any
     let now = clib::time_now();
     let tm0 = match local {
@@ -952,7 +952,7 @@ fn year_of<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, ans: Root<'_>) -> Root<
 /// `GET_tz_n_CHECK`'s `set_tz(tz, &tzsi)` when the zone is not UTC: the
 /// session the conversions run in, or None for UTC (gmtime, timegm00).
 // R: datetime.c:GET_tz_n_CHECK, set_tz
-fn open_tz<'c>(cx: &'c Cx, tz: &[u8], is_utc: bool) -> Result<Option<clib::TzSession<'c>>, TzOpenError> {
+fn open_tz(cx: &Cx, tz: &[u8], is_utc: bool) -> Result<Option<clib::TzSession>, TzOpenError> {
     if is_utc {
         return Ok(None);
     }
@@ -1039,15 +1039,16 @@ pub fn do_strptime(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
     let nn = if n > 0 { m.max(n) } else { 0 };
     let loc = cx.locale();
     let wide = loc.utf8;
-    // The conversions run in the session's time zone, which holds the
-    // environment: R code (a warning's handler) must not run meanwhile, so
-    // the warnings, and the error that stops the loop, are raised after it,
-    // in GNU R's order. (The conversions change nothing R code could see.)
-    let converted = {
-        let cx: &Cx = cx;
-        match open_tz(cx, &tz, is_utc) {
-            Err(e) => Err(e),
-            Ok(sess) => {
+    // the conversions run in the zone set_tz set; their warnings and errors
+    // are raised there, as R_strptime raises them (R code may see TZ)
+    let sess = match open_tz(cx, &tz, is_utc) {
+        Ok(s) => s,
+        Err(e) => return Err(tz_open_error(cx, e, "strptime()")),
+    };
+    tz_warn(cx, sess.as_ref().is_some_and(|s| s.set_failed))?;
+    let (tzone, rows) = {
+        {
+            {
                 // SET_TZONE: now, in case the conversions change it
                 let tzone: Vec<Vec<u8>> = match &sess {
                     None => vec![tz.clone()],
@@ -1056,8 +1057,6 @@ pub fn do_strptime(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
                         vec![tz.clone(), a, b]
                     }
                 };
-                let mut warnings: Vec<String> = Vec::new();
-                let mut stop: Option<String> = None;
                 let mut rows: Vec<LtRow> = Vec::with_capacity(nn);
                 for i in 0..nn {
                     let tr = {
@@ -1076,8 +1075,7 @@ pub fn do_strptime(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
                         None => (true, Vec::new(), Vec::new()),
                         Some((Ok(a), Ok(b))) => (false, a, b),
                         Some(_) => {
-                            stop = Some("translating strings with \"bytes\" encoding is not allowed".into());
-                            break;
+                            return Err(tz_error(cx, "translating strings with \"bytes\" encoding is not allowed"));
                         }
                     };
                     let mut tm = Tm {
@@ -1105,13 +1103,14 @@ pub fn do_strptime(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
                             warnings: Vec::new(),
                         };
                         let r = r_strptime(&mut p, &xs, &fs);
-                        warnings.append(&mut p.warnings);
+                        let warnings = std::mem::take(&mut p.warnings);
+                        for w in warnings {
+                            // (warning() under prepare_reset_tz's context)
+                            cx.warning_in_ccode_context(&w)?;
+                        }
                         match r {
                             Ok(ok) => invalid = !ok,
-                            Err(StrptimeError(msg)) => {
-                                stop = Some(msg);
-                                break;
-                            }
+                            Err(StrptimeError(msg)) => return Err(tz_error(cx, &msg)),
                         }
                     }
                     let mut ptm: Option<Tm> = None; // ptm = &tm2 when set
@@ -1175,25 +1174,12 @@ pub fn do_strptime(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
                     };
                     rows.push(LtRow { tm: ptm.unwrap_or(tm), valid: !invalid, frac, zone, gmtoff });
                 }
-                let set_failed = sess.as_ref().is_some_and(|s| s.set_failed);
-                // reset_tz
-                drop(sess);
-                Ok((tzone, rows, warnings, stop, set_failed))
+                (tzone, rows)
             }
         }
     };
-    let (tzone, rows, warnings, stop, set_failed) = match converted {
-        Ok(v) => v,
-        Err(e) => return Err(tz_open_error(cx, e, "strptime()")),
-    };
-    tz_warn(cx, set_failed)?;
-    for w in warnings {
-        // (warning() under prepare_reset_tz's context)
-        cx.warning_in_ccode_context(&w)?;
-    }
-    if let Some(msg) = stop {
-        return Err(tz_error(cx, &msg));
-    }
+    // reset_tz
+    drop(sess);
     let x = args.root(0);
     cx.scope(|cx, s| {
         let ans = s.capture(cx, |cx, o| cx.build(o, |cx| make_lt(cx, &rows, &tzone)))?;
@@ -1415,11 +1401,15 @@ pub fn do_as_posixct(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
                 }
             }
         }
-        let converted = {
+        let sess = match open_tz(cx, &tz, is_utc) {
+            Ok(s) => s,
+            Err(e) => return Err(tz_open_error(cx, e, "as.POSIXct()")),
+        };
+        tz_warn(cx, sess.as_ref().is_some_and(|s| s.set_failed))?;
+        let ans = {
             let cx: &Cx = cx;
-            match open_tz(cx, &tz, is_utc) {
-                Err(e) => Err(e),
-                Ok(sess) => {
+            {
+                {
                     let mut ans = Vec::with_capacity(n);
                     for i in 0..n {
                         let real = |cx: &Cx, k: usize| match comps[k].bind(cx).view() {
@@ -1455,18 +1445,12 @@ pub fn do_as_posixct(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
                         };
                         ans.push(v);
                     }
-                    let set_failed = sess.as_ref().is_some_and(|s| s.set_failed);
-                    // reset_tz
-                    drop(sess);
-                    Ok((ans, set_failed))
+                    ans
                 }
             }
         };
-        let (ans, set_failed) = match converted {
-            Ok(v) => v,
-            Err(e) => return Err(tz_open_error(cx, e, "as.POSIXct()")),
-        };
-        tz_warn(cx, set_failed)?;
+        // reset_tz
+        drop(sess);
         // names() and class()
         let v = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_copy(&ans)?.finish().into())))?;
         let nm = names_of(cx, s, comps[5]);
@@ -1508,12 +1492,15 @@ pub fn do_as_posixlt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
         // GET_tz_CHECK_n_TZONE
         let (tz, is_utc) = get_tz(cx, args.root(1))?;
         set_tz_check(cx, is_utc)?;
+        let sess = match open_tz(cx, &tz, is_utc) {
+            Ok(s) => s,
+            Err(e) => return Err(tz_open_error(cx, e, "as.POSIXlt()")),
+        };
+        tz_warn(cx, sess.as_ref().is_some_and(|s| s.set_failed))?;
         let xs = reals(cx, None, x, "as.POSIXlt()")?;
-        let converted = {
-            let cx: &Cx = cx;
-            match open_tz(cx, &tz, is_utc) {
-                Err(e) => Err(e),
-                Ok(sess) => {
+        let (tzone, rows) = {
+            {
+                {
                     // SET_TZONE: now, in case the conversions change it
                     let tzone: Vec<Vec<u8>> = match &sess {
                         None => vec![tz.clone()],
@@ -1547,18 +1534,12 @@ pub fn do_as_posixlt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
                             LtRow { tm, valid, frac, zone, gmtoff }
                         })
                         .collect();
-                    let set_failed = sess.as_ref().is_some_and(|s| s.set_failed);
-                    // reset_tz
-                    drop(sess);
-                    Ok(((tzone, rows), set_failed))
+                    (tzone, rows)
                 }
             }
         };
-        let ((tzone, rows), set_failed) = match converted {
-            Ok(v) => v,
-            Err(e) => return Err(tz_open_error(cx, e, "as.POSIXlt()")),
-        };
-        tz_warn(cx, set_failed)?;
+        // reset_tz (END_MAKElt's, after the tzone attribute)
+        drop(sess);
         let ans = s.capture(cx, |cx, o| cx.build(o, |cx| make_lt(cx, &rows, &tzone)))?;
         let (nm, year) = (names_of(cx, s, x), year_of(cx, s, ans));
         set_names_from(cx, s, year, nm)?;
@@ -1859,16 +1840,19 @@ pub fn do_format_posixlt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root
             Text(Vec<u8>),
         }
         enum Stop {
-            Tz(TzOpenError),
             Overflow,
             Untranslatable(String),
         }
+        let tz1 = tz.as_ref().and_then(|t| t.first().cloned()).unwrap_or_default();
+        let sess = match open_tz(cx, &tz1, !need_tz) {
+            Ok(s) => s,
+            Err(e) => return Err(tz_open_error(cx, e, "format.POSIXlt()")),
+        };
+        tz_warn(cx, sess.as_ref().is_some_and(|s| s.set_failed))?;
         let converted = {
             let cx: &Cx = cx;
-            let tz1 = tz.as_ref().and_then(|t| t.first().cloned()).unwrap_or_default();
-            match open_tz(cx, &tz1, !need_tz) {
-                Err(e) => Err(Stop::Tz(e)),
-                Ok(sess) => {
+            {
+                {
                     let real = |k: usize, i: usize| match comps[k].bind(cx).view() {
                         View::Real(v) => v.get(i % nlen[k]),
                         _ => unreachable!("coerced"),
@@ -1984,24 +1968,22 @@ pub fn do_format_posixlt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root
                         };
                         cells.push(cell);
                     }
-                    let set_failed = sess.as_ref().is_some_and(|s| s.set_failed);
-                    // reset_tz
-                    drop(sess);
                     match stop {
                         Some(e) => Err(e),
-                        None => Ok((cells, set_failed)),
+                        None => Ok(cells),
                     }
                 }
             }
         };
         drop(lc);
-        let (cells, set_failed) = match converted {
+        // (raised in the zone, before reset_tz, as GNU R raises them)
+        let cells = match converted {
             Ok(v) => v,
-            Err(Stop::Tz(e)) => return Err(tz_open_error(cx, e, "format.POSIXlt()")),
             Err(Stop::Overflow) => return Err(tz_error(cx, "output string exceeded 2048 bytes")),
             Err(Stop::Untranslatable(m)) => return Err(tz_error(cx, &m)),
         };
-        tz_warn(cx, set_failed)?;
+        // reset_tz
+        drop(sess);
         let ans = s.capture(cx, |cx, o| {
             cx.build(o, |cx| {
                 let mut ans = cx.alloc_vector::<Char<'_>>(cells.len())?;
