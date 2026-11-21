@@ -258,3 +258,11 @@ attr(,"balanced")
 [1] "time zone specification is too long"
 [1] "time zone specification is too long"
 [1] "zero-length component [[1]] in non-empty \"POSIXlt\" structure"
+[1] "a" NA 
+[1] "a" NA 
+$names
+[1] "a" NA 
+
+$class
+[1] "Date"
+

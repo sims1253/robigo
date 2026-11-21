@@ -38,3 +38,6 @@ tryCatch(.Internal(as.POSIXct(x, "Europe/Berlin")), error = function(e) conditio
 tryCatch(.Internal(as.POSIXlt(0, "Europe/Berlin")), error = function(e) conditionMessage(e))
 tryCatch(.Internal(as.POSIXct(x, "UTC")), error = function(e) conditionMessage(e))
 Sys.unsetenv("TZ")
+# names go through setAttrib: short ones are padded
+x <- .Internal(as.POSIXlt(0, "UTC")); x$sec <- c(0, 1); names(x$year) <- "a"
+names(.Internal(POSIXlt2Date(x))); names(.Internal(as.POSIXct(x, "UTC"))); attributes(.Internal(POSIXlt2Date(x)))

@@ -310,6 +310,27 @@ fn the_attribute_setters_read_a_package_altrep_length() {
                 "as.POSIXct() of a \"POSIXlt\" list with a package ALTREP component is not implemented yet",
             ),
             (
+                ".Internal(Date2POSIXlt(0, .Call(\"rt_altrep_str\", \"UTC\")))",
+                "Date2POSIXlt() of a package ALTREP 'tz' is not implemented yet",
+            ),
+            (
+                ".Internal(as.POSIXlt(0, .Call(\"rt_altrep_str\", \"UTC\")))",
+                "a package ALTREP 'tz' is not implemented yet",
+            ),
+            (
+                ".Internal(strptime(.Call(\"rt_altrep_str\", \"2000-01-01\"), \"%Y-%m-%d\", \"UTC\"))",
+                "strptime() of a package ALTREP 'x' is not implemented yet",
+            ),
+            (
+                ".Internal(strptime(\"2000-01-01\", .Call(\"rt_altrep_str\", \"%Y-%m-%d\"), \"UTC\"))",
+                "strptime() of a package ALTREP 'format' is not implemented yet",
+            ),
+            (
+                "lt <- .Internal(as.POSIXlt(0, \"UTC\")); attr(lt, \"tzone\") <- .Call(\"rt_altrep_str\", \"UTC\"); \
+                 .Internal(as.POSIXct(lt, \"UTC\"))",
+                "a \"POSIXlt\" list whose 'tzone' is a package ALTREP vector is not implemented yet",
+            ),
+            (
                 "d <- list(1:2); attr(d, \"row.names\") <- .Call(\"rt_altrep_real\", c(NA, -2))",
                 "row names from a package ALTREP double vector is not implemented yet",
             ),

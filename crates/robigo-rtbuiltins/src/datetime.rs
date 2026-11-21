@@ -882,6 +882,7 @@ fn r_strptime(p: &mut Strptime<'_>, buf: &[u8], format: &[u8]) -> Result<bool, S
 /// whether it is UTC (`isUTC`).
 // R: datetime.c:GET_tz_n_CHECK
 fn get_tz(cx: &mut Cx, stz: Root<'_>) -> RResult<(Vec<u8>, bool)> {
+    refuse_altrep(cx, stz, "a package ALTREP 'tz'")?;
     let tz = match stz.bind(cx).as_vector::<Char<'_>>() {
         Some(v) if v.len() == 1 => v.get(0).bytes().to_vec(),
         _ => return Err(cx.error("invalid 'tz' value")),
@@ -894,6 +895,55 @@ fn get_tz(cx: &mut Cx, stz: Root<'_>) -> RResult<(Vec<u8>, bool)> {
     };
     let is_utc = tz == b"GMT" || tz == b"UTC";
     Ok((tz, is_utc))
+}
+
+/// robigo's "not implemented" error for a package ALTREP `v`, whose
+/// methods GNU R runs where this is called.
+fn refuse_altrep(cx: &mut Cx, v: Root<'_>, what: &str) -> RResult<()> {
+    if v.bind(cx).is_package_altrep() {
+        return Err(not_yet(cx, None, what));
+    }
+    Ok(())
+}
+
+/// `setAttrib(to, R_NamesSymbol, names)` (`namesgets`: short names padded
+/// with NA, a package ALTREP vector's Length method run) when `names` is
+/// not NULL.
+// R: attrib.c:setAttrib
+fn set_names_from<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, to: Root<'_>, names: Option<Root<'_>>) -> RResult<()> {
+    match names {
+        Some(nm) => crate::attrib::set::namesgets(cx, to, nm),
+        None => {
+            let _ = s;
+            Ok(())
+        }
+    }
+}
+
+/// `getAttrib(x, R_NamesSymbol)`, rooted in `s`; None for NULL.
+fn names_of<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, x: Root<'_>) -> Option<Root<'s>> {
+    let nm = crate::attrib::names(x.bind(cx))?;
+    Some(s.root(cx, nm))
+}
+
+/// `classgets(x, c(classes))`.
+fn set_class_of(cx: &mut Cx, s: robigo_rtcore::Scope<'_>, x: Root<'_>, classes: &[&[u8]]) -> RResult<()> {
+    let k = s.capture(cx, |cx, o| {
+        cx.build(o, |cx| {
+            let mut k = cx.alloc_vector::<Char<'_>>(classes.len())?;
+            for (i, c) in classes.iter().enumerate() {
+                k.set(i, cx.mk_char(c, Encoding::Native)?);
+            }
+            Ok(k.finish().into())
+        })
+    })?;
+    crate::attrib::set::classgets(cx, x, k)
+}
+
+/// The year component (`VECTOR_ELT(ans, 5)`) of a "POSIXlt" list, rooted.
+fn year_of<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, ans: Root<'_>) -> Root<'s> {
+    let y = ans.bind(cx).as_vector::<Ref<'_>>().unwrap().get(5);
+    s.root(cx, y)
 }
 
 /// `GET_tz_n_CHECK`'s `set_tz(tz, &tzsi)` when the zone is not UTC: the
@@ -960,6 +1010,11 @@ pub fn do_strptime(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
         return Err(cx.error("invalid 'x' argument"));
     }
     let sformat = args.get(cx, 1);
+    if sformat.sexptype() == STRSXP {
+        // XLENGTH(sformat)
+        refuse_altrep(cx, args.root(1), "strptime() of a package ALTREP 'format'")?;
+    }
+    let sformat = args.get(cx, 1);
     if sformat.sexptype() != STRSXP || sformat.len() == Some(0) {
         return Err(cx.error("invalid 'format' argument"));
     }
@@ -968,6 +1023,8 @@ pub fn do_strptime(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
         let shown = if tz.is_empty() { "the system's".to_owned() } else { String::from_utf8_lossy(&tz).into_owned() };
         return Err(not_yet(cx, None, &format!("strptime() in a time zone other than UTC or GMT ({shown})")));
     }
+    // XLENGTH(x)
+    refuse_altrep(cx, args.root(0), "strptime() of a package ALTREP 'x'")?;
     let n = args.get(cx, 0).len().unwrap_or(0);
     let m = args.get(cx, 1).len().unwrap_or(0);
     let nn = if n > 0 { m.max(n) } else { 0 };
@@ -1069,20 +1126,31 @@ pub fn do_strptime(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
         .into_iter()
         .map(|(tm, valid, frac)| LtRow { tm, valid, frac, zone: tz.clone(), gmtoff: 0 }) // isUTC
         .collect();
-    cx.build(out, |cx| {
-        // END_MAKElt: the year's names are x's (recycled when N > n)
-        let year_names = match crate::attrib::names(x.bind(cx)).and_then(|v| v.as_vector::<Char<'_>>()) {
-            Some(nm) if nn > n => {
-                let mut nm3 = cx.alloc_vector::<Char<'_>>(nn)?;
-                for j in 0..nn {
-                    nm3.set(j, nm.get(j % n));
-                }
-                Some(Ref::from(nm3.finish()))
-            }
-            Some(_) => crate::attrib::names(x.bind(cx)),
-            None => None,
-        };
-        make_lt(cx, &rows, std::slice::from_ref(&tz), year_names)
+    cx.scope(|cx, s| {
+        let ans = s.capture(cx, |cx, o| cx.build(o, |cx| make_lt(cx, &rows, std::slice::from_ref(&tz))))?;
+        // END_MAKElt: the year's names are x's, then recycled when N > n
+        let nm = names_of(cx, s, x);
+        let year = year_of(cx, s, ans);
+        set_names_from(cx, s, year, nm)?;
+        if let Some(nm) = nm
+            && nn > n
+        {
+            // STRING_ELT(nm, j % n)
+            refuse_altrep(cx, nm, "strptime() of names that are a package ALTREP vector")?;
+            let nm3 = s.capture(cx, |cx, o| {
+                cx.build(o, |cx| {
+                    let v = nm.bind(cx).as_vector::<Char<'_>>().unwrap();
+                    let mut nm3 = cx.alloc_vector::<Char<'_>>(nn)?;
+                    for j in 0..nn {
+                        nm3.set(j, v.get(j % n));
+                    }
+                    Ok(nm3.finish().into())
+                })
+            })?;
+            crate::attrib::set::set_attrib(cx, year, b"names", nm3)?;
+        }
+        out.set(cx, ans.bind(cx));
+        Ok(())
     })
 }
 
@@ -1098,15 +1166,10 @@ struct LtRow {
 
 /// The "POSIXlt" list of `rows` (`makelt` for each, the zone and gmtoff
 /// components), then `END_MAKElt`: its names, class `c("POSIXlt",
-/// "POSIXt")`, the `tzone` attribute, the year component named
-/// `year_names`, and `balanced = TRUE`.
+/// "POSIXt")`, the `tzone` attribute and `balanced = TRUE`. (The year's
+/// names, which `END_MAKElt` sets through `setAttrib`, are the caller's.)
 // R: datetime.c:makelt, END_MAKElt
-fn make_lt<'g>(
-    cx: &'g Cx,
-    rows: &[LtRow],
-    tzone: &[Vec<u8>],
-    year_names: Option<Ref<'g>>,
-) -> Result<Ref<'g>, robigo_rtcore::NeedGc> {
+fn make_lt<'g>(cx: &'g Cx, rows: &[LtRow], tzone: &[Vec<u8>]) -> Result<Ref<'g>, robigo_rtcore::NeedGc> {
     let nn = rows.len();
     let mut sec = cx.alloc_vector::<f64>(nn)?;
     let mut ints: Vec<_> = (0..8).map(|_| cx.alloc_vector::<i32>(nn)).collect::<Result<Vec<_>, _>>()?;
@@ -1131,18 +1194,8 @@ fn make_lt<'g>(
     }
     let mut comps: Vec<Ref<'_>> = Vec::with_capacity(11);
     comps.push(sec.finish().into());
-    for (k, v) in ints.into_iter().enumerate() {
-        if k == 4
-            && let Some(nm) = year_names
-        {
-            let mut v = v;
-            let mut a = Attrs::new();
-            a.install(Attr { tag: cx.sym(RSym::Names), value: nm });
-            a.apply(cx, &mut v)?;
-            comps.push(v.finish().into());
-        } else {
-            comps.push(v.finish().into());
-        }
+    for v in ints {
+        comps.push(v.finish().into());
     }
     comps.push(zone.finish().into());
     comps.push(gmtoff.finish().into());
@@ -1174,6 +1227,16 @@ fn make_lt<'g>(
 /// coerces them (`sec` to double, the next ones to integer).
 // R: datetime.c:valid_POSIXlt
 fn valid_posixlt<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, x: Root<'_>, nm: usize) -> RResult<Vec<Root<'s>>> {
+    // LENGTH(x)
+    refuse_altrep(cx, x, "a package ALTREP \"POSIXlt\" list")?;
+    if x.bind(cx).sexptype() == VECSXP && x.bind(cx).len().unwrap_or(0) >= 9 {
+        // LENGTH(nms)
+        if let Some(nms) = crate::attrib::names(x.bind(cx))
+            && nms.is_package_altrep()
+        {
+            return Err(not_yet(cx, None, "a \"POSIXlt\" list whose names are a package ALTREP vector"));
+        }
+    }
     let xv = x.bind(cx);
     let n_comp = xv.len().unwrap_or(0);
     let n_check = n_comp.min(nm);
@@ -1229,6 +1292,9 @@ fn valid_posixlt<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, x: Root<'_>, nm: 
         }
     }
     if let Some(tz) = crate::attrib::get_value(x.bind(cx), b"tzone") {
+        if tz.sexptype() == STRSXP && tz.is_package_altrep() {
+            return Err(not_yet(cx, None, "a \"POSIXlt\" list whose 'tzone' is a package ALTREP vector"));
+        }
         if tz.sexptype() != STRSXP {
             return Err(cx.error("invalid 'attr(x, \"tzone\")'"));
         }
@@ -1325,19 +1391,13 @@ pub fn do_as_posixct(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
             Err(e) => return Err(tz_open_error(cx, e, "as.POSIXct()")),
         };
         tz_warn(cx, set_failed)?;
-        cx.build(out, |cx| {
-            let mut v = cx.alloc_copy(&ans)?;
-            let mut a = Attrs::new();
-            if let Some(nm) = crate::attrib::names(comps[5].bind(cx)) {
-                a.install(Attr { tag: cx.sym(RSym::Names), value: nm });
-            }
-            let mut class = cx.alloc_vector::<Char<'_>>(2)?;
-            class.set(0, cx.mk_char(b"POSIXct", Encoding::Native)?);
-            class.set(1, cx.mk_char(b"POSIXt", Encoding::Native)?);
-            a.set_class(cx.sym(RSym::Class), Some(class.finish().into())); // classgets
-            a.apply(cx, &mut v)?;
-            Ok(v.finish().into())
-        })
+        // names() and class()
+        let v = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_copy(&ans)?.finish().into())))?;
+        let nm = names_of(cx, s, comps[5]);
+        set_names_from(cx, s, v, nm)?;
+        set_class_of(cx, s, v, &[b"POSIXct", b"POSIXt"])?;
+        out.set(cx, v.bind(cx));
+        Ok(())
     })
 }
 
@@ -1423,7 +1483,11 @@ pub fn do_as_posixlt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
             Err(e) => return Err(tz_open_error(cx, e, "as.POSIXlt()")),
         };
         tz_warn(cx, set_failed)?;
-        cx.build(out, |cx| make_lt(cx, &rows, &tzone, crate::attrib::names(x.bind(cx))))
+        let ans = s.capture(cx, |cx, o| cx.build(o, |cx| make_lt(cx, &rows, &tzone)))?;
+        let (nm, year) = (names_of(cx, s, x), year_of(cx, s, ans));
+        set_names_from(cx, s, year, nm)?;
+        out.set(cx, ans.bind(cx));
+        Ok(())
     })
 }
 
@@ -1434,6 +1498,7 @@ pub fn do_d2posixlt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
     crate::row!("Date2POSIXlt", true).check_arity(cx, call, args)?;
     cx.scope(|cx, s| {
         let x = coerce_real(cx, s, args.root(0))?;
+        refuse_altrep(cx, args.root(1), "Date2POSIXlt() of a package ALTREP 'tz'")?;
         let stz = args.get(cx, 1);
         let tz: Vec<u8> = match stz.as_vector::<Char<'_>>() {
             Some(v) if v.len() == 1 => v.get(0).bytes().to_vec(),
@@ -1499,7 +1564,11 @@ pub fn do_d2posixlt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
                 LtRow { tm, valid, frac: if valid { 0.0 } else { x_i }, zone: tz.clone(), gmtoff: 0 }
             })
             .collect();
-        cx.build(out, |cx| make_lt(cx, &rows, std::slice::from_ref(&tz), crate::attrib::names(x.bind(cx))))
+        let ans = s.capture(cx, |cx, o| cx.build(o, |cx| make_lt(cx, &rows, std::slice::from_ref(&tz))))?;
+        let (nm, year) = (names_of(cx, s, x), year_of(cx, s, ans));
+        set_names_from(cx, s, year, nm)?;
+        out.set(cx, ans.bind(cx));
+        Ok(())
     })
 }
 
@@ -1567,17 +1636,11 @@ pub fn do_posixlt2d(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
             };
             ans.push(v);
         }
-        cx.build(out, |cx| {
-            let mut v = cx.alloc_copy(&ans)?;
-            let mut a = Attrs::new();
-            if let Some(nm) = crate::attrib::names(comps[5].bind(cx)) {
-                a.install(Attr { tag: cx.sym(RSym::Names), value: nm });
-            }
-            let mut class = cx.alloc_vector::<Char<'_>>(1)?;
-            class.set(0, cx.mk_char(b"Date", Encoding::Native)?);
-            a.set_class(cx.sym(RSym::Class), Some(class.finish().into())); // classgets
-            a.apply(cx, &mut v)?;
-            Ok(v.finish().into())
-        })
+        let v = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_copy(&ans)?.finish().into())))?;
+        let nm = names_of(cx, s, comps[5]);
+        set_names_from(cx, s, v, nm)?;
+        set_class_of(cx, s, v, &[b"Date"])?;
+        out.set(cx, v.bind(cx));
+        Ok(())
     })
 }
