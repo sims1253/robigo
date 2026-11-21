@@ -37,5 +37,15 @@
   from source with a collection at every allocation; 0 s plain), so in
   rt-ci's gctorture conformance steps it timed out against their 600 s.
   It now requires `volume` (crates/robigo-conformance's KNOWN_FEATURES:
-  too many allocations for gctorture) and does not run there. No smaller
-  case covers loading the compiler under gctorture yet.
+  too many allocations for gctorture) and does not run there.
+- The five bytecode cases this PR ratchets load the compiler from source
+  too. Alone under `ROBIGO_GC_MOVE=young:16` with gctorture, here at load
+  20-38 on 24 CPUs: cmpfun-ops 362 s, cmpfun 282 s, fidelity 256 s,
+  compile 246 s, jit 119 s. Two timed out in rt-ci's step against its
+  600 s. cmpfun-ops, cmpfun, fidelity and compile require `volume`; jit
+  stays in both gctorture steps and covers loading and running the
+  compiler under them (`volume`'s rule: a smaller case covers its paths
+  there).
+- `tests/r/conditions/c-stack-overflow.R` (main's) also timed out in that
+  step during the run: 225 s alone with this PR, 262 s with main's binary,
+  so it is the machine's load, not this PR.
