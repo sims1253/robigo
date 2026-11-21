@@ -77,7 +77,7 @@ fn a_frozen_container_does_not_keep_an_unfrozen_object_alive() {
         cx.build(o, |cx| cx.new_env(cx.base_env(), true, 0))?;
         let o = s.out(cx);
         let l = o.root();
-        cx.build(o, |cx| Ok(cx.cons(e.bind(cx), cx.nil())?))?;
+        cx.build(o, |cx| cx.cons(e.bind(cx), cx.nil()))?;
         cx.define_var(sym, l, base)?;
         cx.freeze_boot_heap();
         assert!(cx.is_frozen(e.bind(cx)) && cx.is_frozen(l.bind(cx)));
