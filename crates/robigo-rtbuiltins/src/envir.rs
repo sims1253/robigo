@@ -1127,7 +1127,7 @@ pub fn do_builtins(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
         // INTERIM(L5): the wide base loader's fetch (robigo-rt's base.rs,
         // `..robigo_base_fetch`) is an `.Internal` GNU R has not; it goes
         // with that loader
-        let mut order: Vec<usize> = (0..names.len()).filter(|&i| !names[i].0.starts_with(b"..robigo_")).collect();
+        let mut order: Vec<usize> = (0..names.len()).filter(|&i| names[i].0 != b"..robigo_base_fetch").collect();
         let loc = cx.locale();
         let mut err = None;
         order.sort_by(|&i, &j| {
