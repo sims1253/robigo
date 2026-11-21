@@ -30,7 +30,7 @@
 
 #![allow(unsafe_code)]
 
-use super::Comp;
+use super::{Comp, Tail};
 use crate::bcassign as ba;
 use crate::cenv::{Cenv, Need};
 use crate::ir::*;
@@ -181,6 +181,48 @@ struct BcIns {
     at: usize,
     op: u8,
     a: [i32; 4],
+}
+
+/// Whether control at instruction `j` of `code` reaches a `RETURN` or
+/// `RETURNJMP` at once or through `GOTO`s and assignments (`SETVAR`,
+/// `SETVAR2`, a complex assignment from `STARTASSIGN` to its `ENDASSIGN`)
+/// only.
+fn returns_after(code: &[BcIns], mut j: usize) -> bool {
+    for _ in 0..code.len() {
+        match code.get(j) {
+            Some(n) if matches!(n.op, RETURN | RETURNJMP) => return true,
+            // (an assignment of `return()`'s operand: bcEval's SETVAR keeps
+            // the value on the stack and R_Visible as its load set it)
+            Some(n) if matches!(n.op, SETVAR | SETVAR2) => j += 1,
+            // (a complex assignment of it: past its ENDASSIGN, which keeps
+            // the value; a step that sets R_Visible after the value's load
+            // sets it at run time)
+            Some(n) if matches!(n.op, STARTASSIGN | STARTASSIGN2) => {
+                let mut depth = 0;
+                loop {
+                    match code.get(j).map(|c| c.op) {
+                        Some(STARTASSIGN | STARTASSIGN2) => depth += 1,
+                        Some(ENDASSIGN | ENDASSIGN2) => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        Some(_) => {}
+                        None => return false,
+                    }
+                    j += 1;
+                }
+                j += 1;
+            }
+            Some(n) if n.op == GOTO => match code.binary_search_by_key(&(n.a[0] as usize), |c| c.at) {
+                Ok(p) => j = p,
+                Err(_) => return false,
+            },
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// Decode the portable code `code` (the version word first) into
@@ -434,9 +476,6 @@ struct Tr {
     /// Pass 2: the last instruction of a complex assignment translated
     /// whole.
     skip_to: Option<usize>,
-    /// A tail `&&` or `||` ended: its value is visible on every path to
-    /// the RETURN (or RETURNJMP) after it, the jumps' too (set there).
-    vis_at_return: bool,
 }
 
 impl Tr {
@@ -793,7 +832,6 @@ impl<'g> Comp<'g> {
             assigning: Vec::new(),
             assigned: HashMap::new(),
             skip_to: None,
-            vis_at_return: false,
         };
         // `dst` is the code's value (the first register)
         self.free_to(dst);
@@ -874,9 +912,13 @@ impl<'g> Comp<'g> {
                     }
                 }
             }
-            // (a value `RETURN` or `RETURNJMP` returns: `return`'s operand
-            // is evaluated in tail position, its visibility the function's)
-            let tail = t.code.get(k + 1).is_some_and(|n| matches!(n.op, RETURN | RETURNJMP));
+            // (a value `RETURN` or `RETURNJMP` returns, next or through
+            // GOTOs: `return(x)`'s operand is in tail position, its
+            // visibility the function's, though cmp.R compiles it outside
+            // the tail (make.nonTailCallContext), so a branch of
+            // `return(if ...)` jumps to the RETURN; bcEval's loads set
+            // R_Visible either way)
+            let tail = returns_after(&t.code, k + 1);
             // SAFETY: constants of the live byte code.
             unsafe { self.op(&mut t, i, tail)? };
             fell = falls_through(i.op);
@@ -1185,9 +1227,6 @@ impl<'g> Comp<'g> {
         let planning = t.plan.is_none();
         match i.op {
             RETURN => {
-                if std::mem::take(&mut t.vis_at_return) {
-                    self.set_vis(true);
-                }
                 let r = self.top(t)?;
                 if r != R_FIRST {
                     let mut m = Ins::new(Op::Move);
@@ -1222,17 +1261,12 @@ impl<'g> Comp<'g> {
                 let r = self.pop(t)?;
                 self.clear(r);
             }
-            // (after an assignment, which leaves its value invisible, and
-            // where no jump lands: nothing to do)
-            INVISIBLE
-                if !t.labels.contains_key(&i.at)
-                    && matches!(self.ins.last().map(|l| l.op), Some(Op::SetVar | Op::SetVar2 | Op::BcAssign)) => {}
             INVISIBLE => self.set_vis(false),
             VISIBLE => self.set_vis(true),
             LDCONST => {
                 let r = self.push(t);
                 // SAFETY: a constant of the byte code.
-                unsafe { self.const_value(k(i.a[0]), r, 0, tail) };
+                unsafe { self.const_value(k(i.a[0]), r, 0, tail.into()) };
             }
             LDNULL => {
                 let r = self.push(t);
@@ -1242,7 +1276,7 @@ impl<'g> Comp<'g> {
                 let r = self.push(t);
                 let v = self.cx.logical_value((i.op == LDTRUE) as i32).sexp();
                 // SAFETY: an immortal constant.
-                unsafe { self.const_value(v, r, 0, tail) };
+                unsafe { self.const_value(v, r, 0, tail.into()) };
             }
             GETVAR | DDVAL | GETVAR_MISSOK | DDVAL_MISSOK => {
                 let r = self.push(t);
@@ -1289,7 +1323,14 @@ impl<'g> Comp<'g> {
                     // SAFETY: a live symbol: its INTERNAL.
                     unsafe { robigo_rtcore::Ref::from_sexp(sym, self.cx) }.as_sym().map(|s| self.cx.internal(s).sexp())
                 } else {
-                    self.prim_of(sym).map(|off| self.st.objs[off].bind(self.cx).sexp())
+                    // getPrimitive: the symbol's value, which for a name base
+                    // binds to a primitive of another name is that one's
+                    // (`as.numeric`, base's `as.double`: robigo-rt's table
+                    // has a row of the name too)
+                    // SAFETY: a live symbol.
+                    let alias = unsafe { crate::cenv::alias_of(self.cx, sym) }
+                        .and_then(|t| self.st.defs.iter().position(|d| d.name == t && !d.internal()));
+                    alias.or_else(|| self.prim_of(sym)).map(|off| self.st.objs[off].bind(self.cx).sexp())
                 };
                 // SAFETY: a live primitive.
                 let Some(prim) = prim.filter(|p| unsafe { p.typ() } == BUILTINSXP) else {
@@ -1328,7 +1369,7 @@ impl<'g> Comp<'g> {
                             self.emit(l);
                         } else {
                             // SAFETY: a constant of the byte code.
-                            unsafe { self.const_value(v, r, 0, false) };
+                            unsafe { self.const_value(v, r, 0, Tail::No) };
                         }
                         PKind::Val
                     }
@@ -1408,7 +1449,7 @@ impl<'g> Comp<'g> {
                     Some((o, _)) if planning && special(o) => {}
                     // a language special: what its PRIMFUN does, compiled
                     // SAFETY: as above.
-                    Some((_, Kind::Special(s))) => unsafe { self.special(s, call, call.cdr(), r, 0, tail)? },
+                    Some((_, Kind::Special(s))) => unsafe { self.special(s, call, call.cdr(), r, 0, tail.into())? },
                     // getPrimitive(symbol, SPECIALSXP) on the call
                     Some((o, _)) if special(o) => {
                         let prim = self.st.objs[o].bind(self.cx).sexp();
@@ -1984,9 +2025,6 @@ impl<'g> Comp<'g> {
             }
             RETURNJMP => {
                 // `return` in a promise: out of the function's context
-                if std::mem::take(&mut t.vis_at_return) {
-                    self.set_vis(true);
-                }
                 let r = self.pop(t)?;
                 let mut ret = Ins::new(Op::Return);
                 ret.b = r;
@@ -2000,6 +2038,14 @@ impl<'g> Comp<'g> {
                 a.b = r;
                 a.c = if i.op == AND1ST { 1 } else { 2 };
                 a.e = self.k(call);
+                // a tail `&&` (its join a way to the RETURN): bcEval's
+                // AND1ST sets R_Visible on the path it jumps too, which is
+                // the only one when its AND2ND is unreachable
+                // (`a && return(x)`)
+                let join = t.code.binary_search_by_key(&(i.a[1] as usize), |c| c.at);
+                if join.is_ok_and(|j| returns_after(&t.code, j)) {
+                    a.fl |= F_VIS;
+                }
                 self.jump(t, a, i.a[1] as usize)?;
             }
             AND2ND | OR2ND => {
@@ -2014,11 +2060,12 @@ impl<'g> Comp<'g> {
                 a.c = if i.op == AND2ND { 1 } else { 2 };
                 a.e = self.k(call);
                 a.fl |= F_CLR_B;
-                self.emit(a);
+                // (bcEval's AND2ND sets R_Visible; its AND1ST's jump the
+                // same, above)
                 if tail {
-                    // (at the RETURN, where AND1ST's jump lands too)
-                    t.vis_at_return = true;
+                    a.fl |= F_VIS;
                 }
+                self.emit(a);
             }
             BASEGUARD => {
                 let call = k(i.a[0]);

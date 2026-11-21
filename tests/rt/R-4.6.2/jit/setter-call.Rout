@@ -1,0 +1,23 @@
+`[<-.foo`(`*tmp*`, ..., value = 9)
+`[<-.foo`(x = `*tmp*`, 1, value = 9)
+`[<-.foo`(`*tmp*`, j, drop = FALSE, value = 8)
+`[<-.foo`(x = `*tmp*`, j, drop = FALSE, value = 8)
+`[[<-.foo`(`*tmp*`, k, value = 7)
+`[[<-.foo`(x = `*tmp*`, i = k, value = 7)
+`[[<-.foo`(`*tmp*`, ..., value = 6)
+`[[<-.foo`(x = `*tmp*`, i = 2, value = 6)
+`$<-.foo`(`*tmp*`, "nm", value = 5)
+`$<-.foo`(x = `*tmp*`, name = "nm", value = 5)
+`[<-.foo`(`*tmp*`, , value = 4)
+`[<-.foo`(x = `*tmp*`, , value = 4)
+`[<-.foo`(`*tmp*`, ..., value = 9)
+`[<-.foo`(x = `*tmp*`, 1, value = 9)
+`[[<-.foo`(`*tmp*`, k, value = 7)
+`[[<-.foo`(x = `*tmp*`, i = k, value = 7)
+`$<-.foo`(`*tmp*`, nm, value = 5)
+`$<-.foo`(x = `*tmp*`, name = nm, value = 5)
+[1] 5
+[1] 5
+`[<-.foo`(`*tmp*`, ..., value = 3)
+`[<-.foo`(x = `*tmp*`, 1, value = 3)
+[1] 3
