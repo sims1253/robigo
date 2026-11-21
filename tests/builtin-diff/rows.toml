@@ -289,7 +289,11 @@ domain = { domain = ["=\"R\"", "=\"R-base\"", "@chr"], dirname = ["=\"/nope\"", 
 [strptime]
 args = ["x", "format", "tz"]
 typical = { x = "=\"2026-11-18 12:30:00\"", format = "=\"%Y-%m-%d %H:%M:%S\"", tz = "=\"UTC\"" }
-domain = { x = ["=\"2026-11-18 12:30:00\"", "=\"2026-02-30 00:00:00\"", "@chr"], format = ["=\"%Y-%m-%d %H:%M:%S\"", "=\"%Y-%m-%d\"", "@chr"], tz = ["=\"UTC\"", "=\"\"", "=\"Europe/Berlin\"", "@chr"] }
+# (every format has a full date: a format without one, "" or "TRUE" say,
+# fills in today's date, from time(NULL), so GNU R's record of 11-18 is not
+# robigo-rt's answer on 11-21; NA, a zero-length and a non-character format
+# give NA or an error, the same on any day)
+domain = { x = ["=\"2026-11-18 12:30:00\"", "=\"2026-02-30 00:00:00\"", "@chr"], format = ["=\"%Y-%m-%d %H:%M:%S\"", "=\"%Y-%m-%d\"", "=\"%d.%m.%Y %H:%M\"", "=\"%Y%m%d\"", "=c(\"%Y-%m-%d\", \"%d.%m.%Y\")", "chrNA", "chr0", "1.5", "NULL"], tz = ["=\"UTC\"", "=\"\"", "=\"Europe/Berlin\"", "@chr"] }
 
 ["as.POSIXct"]
 typical = { x = "=as.POSIXlt(\"2026-11-18 12:30:00\", tz = \"UTC\")", tz = "=\"UTC\"" }
@@ -523,6 +527,87 @@ extra = [
   "(function(x) .Internal(dotsElt(1L, environment(), FALSE)))(1)",
   "(function(...) .Internal(dotsElt(3L, environment(), FALSE)))(1, 2)",
   "(function(...) .Internal(dotsElt(NA, environment(), FALSE)))(1, 2)",
+]
+
+# ---- matrix products, merged during the pause (#875 and the batch of 11-19) ----
+["%*%"]
+budget = 600
+extra = [
+  "matrix(1:6, 2) %*% matrix(1:6, 3)",
+  "1:3 %*% 1:3",
+  "1:3 %*% t(1:3)",
+  "matrix(1:4, 2) %*% c(1, NA)",
+  "matrix(c(1+1i, 2), 1) %*% matrix(1:2, 2)",
+  "matrix(1:6, 2, dimnames = list(c('a', 'b'), NULL)) %*% matrix(1:6, 3, dimnames = list(NULL, c('x', 'y')))",
+  "matrix(numeric(0), 0, 3) %*% matrix(numeric(0), 3, 0)",
+  "matrix(1:6, 2) %*% matrix(1:6, 2)",
+]
+
+[crossprod]
+budget = 600
+extra = [
+  "crossprod(matrix(1:6, 3))",
+  "crossprod(matrix(1:6, 3), matrix(1:3, 3))",
+  "crossprod(1:3)",
+  "crossprod(matrix(1:6, 3), matrix(1:4, 2))",
+  "crossprod(matrix(c(TRUE, FALSE, NA, TRUE), 2))",
+]
+
+[tcrossprod]
+budget = 600
+extra = [
+  "tcrossprod(matrix(1:6, 3))",
+  "tcrossprod(matrix(1:6, 2), matrix(1:3, 1))",
+  "tcrossprod(1:3)",
+  "tcrossprod(matrix(1:6, 3), matrix(1:4, 2))",
+]
+
+# ---- the builtins open PRs add to the registry (E's #896, L's #900) ----------
+# (rows ahead of the registry, so `effect` is the PR's class)
+[aperm]
+effect = "Pure"
+budget = 600
+typical = { a = "=array(1:24, 2:4)", perm = "=c(3L, 1L, 2L)", resize = "=TRUE" }
+domain = { a = ["=array(1:24, 2:4)", "=matrix(1:6, 2)", "=array(1:24, 2:4, dimnames = list(c('a', 'b'), NULL, letters[1:4]))", "@any"], perm = ["=c(3L, 1L, 2L)", "=3:1", "=c(\"c\", \"a\", \"b\")", "NULL", "=c(1L, 1L, 2L)", "@count"], resize = ["@lgl"] }
+
+[row]
+effect = "Pure"
+args = ["dim"]
+domain = { dim = ["=c(2L, 3L)", "=c(0L, 3L)", "=c(2, 3)", "=3L", "=c(2L, 3L, 4L)", "@count", "@any"] }
+
+[col]
+effect = "Pure"
+args = ["dim"]
+domain = { dim = ["=c(2L, 3L)", "=c(0L, 3L)", "=c(2, 3)", "=3L", "=c(2L, 3L, 4L)", "@count", "@any"] }
+
+[asplit]
+effect = "Pure"
+budget = 600
+extra = [
+  "asplit(matrix(1:6, 2), 1)",
+  "asplit(matrix(1:6, 2), 2)",
+  "asplit(array(1:24, 2:4), c(1, 3))",
+  "asplit(matrix(1:6, 2, dimnames = list(c('a', 'b'), NULL)), 1)",
+  "asplit(matrix(1:6, 2), 1, drop = TRUE)",
+  "asplit(1:3, 1)",
+]
+
+["Sys.getlocale"]
+effect = "External"
+args = ["category"]
+domain = { category = ["=1L", "=2L", "=3L", "=4L", "=5L", "=6L", "=0L", "=99L", "@count"] }
+
+["Sys.setlocale"]
+effect = "External"
+args = ["category", "locale"]
+typical = { category = "=1L", locale = "=\"C\"" }
+domain = { category = ["=1L", "=2L", "=3L", "=0L", "=99L", "@count"], locale = ["=\"C\"", "=\"C.UTF-8\"", "=\"\"", "=\"nope\"", "@chr"] }
+# (the record does not hold the process locale: these read it back)
+extra = [
+  "{ .Internal(Sys.setlocale(1L, 'C')); Sys.getlocale() }",
+  "{ .Internal(Sys.setlocale(3L, 'C')); Sys.getlocale('LC_CTYPE') }",
+  "{ r <- .Internal(Sys.setlocale(1L, 'nope')); list(r, Sys.getlocale()) }",
+  "{ Sys.setlocale('LC_COLLATE', 'C'); sort(c('b', 'A', 'a')) }",
 ]
 
 [uncovered]

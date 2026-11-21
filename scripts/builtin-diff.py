@@ -852,11 +852,10 @@ def cmd_plant(a):
 # ---- coverage ----------------------------------------------------------------
 
 # Whether a registry builtin with neither a row nor a reason, or an
-# [uncovered] name the registry lacks, fails check-rows. False while the
-# builtin PRs queued before A4 landed drain: they are then warnings, listed
-# in the summary. A later PR sets it to True once the foreman says that
-# queue has drained.
-UNLISTED_FAILS = False
+# [uncovered] name the registry lacks, fails check-rows (it was a warning
+# while the builtin PRs queued before A4 drained; 2026-11-21: rows for
+# every builtin on main and in the open PRs).
+UNLISTED_FAILS = True
 
 
 def cmd_check_rows(a):

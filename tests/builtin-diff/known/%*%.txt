@@ -1,0 +1,2 @@
+# builtin-diff known failures: %*%, seed 0, key 2f8a474c6814d027f50a267b
+# %*%: 808 / 808 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)

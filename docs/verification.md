@@ -66,10 +66,9 @@ robigo-rt's builtins with GNU R 4.6.2's on generated inputs, out of process.
   names.c name. An empty table is a valid row; the file's header lists the
   fields. `check-rows` reports a registry builtin that has neither a row nor
   a reason under `[uncovered]`, so a newly ported builtin shows up, and an
-  `[uncovered]` name the registry lacks. For now both are warnings, listed
-  in the summary, so the builtin PRs queued before A4 still pass;
-  `UNLISTED_FAILS` in `scripts/builtin-diff.py` makes them failures once
-  that queue has drained. A builtin with both a row and a reason always
+  `[uncovered]` name the registry lacks. Both fail (`UNLISTED_FAILS`; they
+  were warnings while the builtin PRs queued before A4 drained), so a pull
+  request that registers a builtin gives it a row or a reason. A builtin with both a row and a reason always
   fails. A row's `domain` or `typical` key must name one of its arguments
   (gen.R stops otherwise). A wrapper that passes `as.character(x)` names
   nothing, so such a row gives `args`. A special runs when its row says
