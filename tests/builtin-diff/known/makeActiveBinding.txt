@@ -1,6 +1,4 @@
 # builtin-diff known failures: makeActiveBinding, seed 0, key ce5a1f06aafed8c7bcab08f3
-# makeActiveBinding: 383 / 387 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
-359
+# makeActiveBinding: 385 / 387 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 363
 364
-365

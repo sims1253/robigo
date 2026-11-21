@@ -105,7 +105,7 @@ _Static_assert(ROBIGO_CHAR_OFF_LEN == ROBIGO_VEC_OFF_LEN, "a CHARSXP's LENGTH is
 enum { NILSXP = 0, SYMSXP = 1, LISTSXP = 2, CLOSXP = 3, ENVSXP = 4, PROMSXP = 5, LANGSXP = 6, SPECIALSXP = 7,
        BUILTINSXP = 8, CHARSXP = 9,
        LGLSXP = 10, INTSXP = 13, REALSXP = 14, CPLXSXP = 15, STRSXP = 16, DOTSXP = 17, VECSXP = 19,
-       EXPRSXP = 20, EXTPTRSXP = 22, WEAKREFSXP = 23, RAWSXP = 24 };
+       EXPRSXP = 20, BCODESXP = 21, EXTPTRSXP = 22, WEAKREFSXP = 23, RAWSXP = 24 };
 #endif
 
 /* An object C is handed from here on is C's: under ROBIGO_GC_MOVE=1 it is
@@ -475,14 +475,27 @@ SEXP (SET_VECTOR_ELT)(SEXP x, R_xlen_t i, SEXP v)
 #define TAG_(e) RB_WORD(e, RB_OFF_TAG)
 
 /* memory.c's R_ClosureFormals, R_ClosureBody, R_ClosureEnv and eval.c's
- * R_ClosureExpr: a closure's FORMALS (car), BODY (cdr) and CLOENV (tag).
- * robigo never stores byte code in BODY (its code hangs off the closure's
- * 4th word), so BODY is always the expression bytecodeExpr would return.
- * Writing into the cells they reach is tracked (robigo_rtapi_store). */
+ * R_ClosureExpr: a closure's FORMALS (car), BODY (cdr) and CLOENV (tag),
+ * and the expression of its body. BODY is a BCODESXP for a closure compiled
+ * by cmpfun or read from a database (robigo's own code hangs off the
+ * closure's 4th word, but GNU R's byte code is BODY there too), so
+ * R_ClosureExpr is bytecodeExpr(BODY): the byte code's first constant, the
+ * source expression. Writing into the cells they reach is tracked
+ * (robigo_rtapi_store). */
 SEXP (R_ClosureFormals)(SEXP x) { return seen(CAR_(x)); }
 SEXP (R_ClosureBody)(SEXP x) { return seen(CDR_(x)); }
 SEXP (R_ClosureEnv)(SEXP x) { return seen(TAG_(x)); }
-SEXP (R_ClosureExpr)(SEXP x) { return seen(CDR_(x)); }
+/* R: eval.c:bytecodeExpr (BCODE_CONSTS is a BCODESXP's cdr) */
+static SEXP bytecode_expr(SEXP e)
+{
+    if (e != NULL && RB_TYPE(e) == BCODESXP) {
+        SEXP consts = CDR_(e);
+        return XLENGTH(consts) > 0 ? VECTOR_ELT(consts, 0) : R_NilValue;
+    }
+    return seen(e);
+}
+/* R: eval.c:R_ClosureExpr */
+SEXP (R_ClosureExpr)(SEXP x) { return bytecode_expr(CDR_(x)); }
 
 /* Rinlinedfuns.h's ALTREP accessors: an ALTREP object's data1 is its car,
  * data2 its cdr, its class its tag (robigo-heap's layout too) */
