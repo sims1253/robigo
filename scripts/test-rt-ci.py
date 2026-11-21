@@ -92,11 +92,34 @@ class RtCi(unittest.TestCase):
         self.assertLess(built, titles.index("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)"))
         self.assertTrue(all(c[2] != "--release" for t, _, c in rt.steps(crates)[:built] if c[:2] == ["cargo", "test"]))
         rel = rt.shard_steps(crates, "release-crate-tests")
-        self.assertEqual([c[2] for _, _, c in rel if c[:2] == ["cargo", "test"]], ["--release"])
+        self.assertEqual({c[2] for _, _, c in rel if c[:2] == ["cargo", "test"]}, {"--release"})
         self.assertEqual(rel[0][0], "the R_HOME tree, tools.so built (scripts/rt-home.sh)")
         plain = " ".join(t for t, _, _ in rt.steps(crates))
         self.assertNotIn("release profile", plain)
         self.assertEqual(set(rt.OWN_STEPS), {"debug-assertions", "release-crate-tests"})
+
+    def test_the_database_tree_comes_before_every_run_of_the_crates_tests(self):
+        # robigo-rtapi's boot_db tests read .robigo/rt-home-db: in every shard
+        # that runs the crates' tests the tree is made (rebuilt when stale)
+        # first, and each run says it must be there, so it never skips
+        from unittest import mock
+        crates = ["robigo-heap", "robigo-rt", "robigo-rtapi", "robigo-rtcore"]
+        with mock.patch.object(rt, "target_dir", return_value="/t/target"):
+            for shard in rt.SHARDS:
+                steps = rt.shard_steps(crates, shard)
+                # (the runs that include robigo-rtapi's tests, where boot_db is)
+                runs = [i for i, (_, _, c) in enumerate(steps) if c[:2] == ["cargo", "test"] and "--no-run" not in c
+                        and "--skip" in c and "--test" not in c and "robigo-rtapi" in c]
+                tree = [i for i, (t, _, _) in enumerate(steps) if t.startswith("base's database tree")]
+                if not runs:
+                    continue
+                self.assertEqual(len(tree), 1, shard)
+                self.assertLess(tree[0], runs[0], shard)
+                for i in runs:
+                    self.assertEqual(steps[i][1].get("ROBIGO_RT_HOME_DB"), "1", f"{shard}: {steps[i][0]}")
+                # the release binary that writes the tree is built before it
+                built = [i for i, (_, _, c) in enumerate(steps) if "--no-run" in c and "--release" in c]
+                self.assertTrue(built and built[0] < tree[0], shard)
 
     def test_every_crate_test_step_builds_what_the_first_built(self):
         # cargo turns a selected crate's dev-dependency features on, so a
@@ -169,7 +192,7 @@ class RtCi(unittest.TestCase):
         for _, e, _ in steps:
             self.assertEqual(e["RUSTFLAGS"], "-C debug-assertions=on")
             self.assertEqual(e["CARGO_TARGET_DIR"], "/t/target-debug-assertions")
-        built = [(e, c) for _, e, c in steps[1:]]
+        built = [(e, c) for _, e, c in steps[1:] if c[:2] == ["cargo", "test"] and "--no-run" not in c]
         self.assertEqual(len(built), 2)
         self.assertEqual(built[0][1][:5], ["cargo", "test", "--profile", "quick", "--locked"])
         self.assertEqual(built[1][1][:4], ["cargo", "test", "--release", "--locked"])

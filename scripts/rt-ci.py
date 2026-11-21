@@ -227,6 +227,12 @@ def case_timeouts(slow):
 # profile run in the release-crate-tests shard, on main's push runs.
 CRATE_TEST = ["cargo", "test", "--profile", "quick", "--locked"]
 
+# Every run of the crates' tests comes after base's database tree is made in
+# its shard, and says it must be there: robigo-rtapi's boot_db tests then run
+# instead of skipping, and a tree that is missing fails them
+TREE_RUNS = {"ROBIGO_RT_HOME_DB": "1"}
+DB_TREE = ("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)", ["scripts/rt-home-db.sh"])
+
 
 def conformance_command():
     test = ["cargo", "test", "--release", "--locked"]
@@ -274,19 +280,23 @@ def steps(crates):
     conformance = conformance_command()
     slow = SLOW
     out = [
-        ("the crates' tests (quick profile)", {}, [*crate, *pkgs, *skip]),
         # robigo-rt's R_HOME tree with tools' native code (A5): the
         # conformance cases that load it (`.requires` r-home-tools) run
         ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", {}, ["scripts/rt-home.sh"]),
         # the release binary users get, which the steps below run (base's
         # database tree, boot_db, the scripts): built as the conformance step
-        # builds it (its features), since the crates' tests above build quick
+        # builds it (its features), since the crates' tests build quick
         ("the release binary and the conformance, built (cargo test --release --no-run)", {},
          [*test, "-p", "robigo-rtapi", "--test", "conformance", "--no-run"]),
         # L5's boot beside M1's loader (ROBIGO_RT_BOOT=rdb): base's database,
         # written by this robigo-rt booted from base's source, then base
-        # booted from it (crates/robigo-rtapi/tests/boot_db.rs)
+        # booted from it (crates/robigo-rtapi/tests/boot_db.rs). Before every
+        # step whose tests read it (robigo-rtapi's boot_db tests, in each run
+        # of the crates' tests), so a stale tree is rebuilt first (its stamp
+        # names the source tree, the script and the binary) and those tests
+        # run instead of skipping on a fresh checkout (TREE_RUNS)
         ("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)", {}, ["scripts/rt-home-db.sh"]),
+        ("the crates' tests (quick profile)", TREE_RUNS, [*crate, *pkgs, *skip]),
         ("boot from base's database (ROBIGO_RT_BOOT=rdb)", {"ROBIGO_RT_HOME_DB": "1"},
          [*test, "-p", "robigo-rtapi", "--test", "boot_db", *skip]),
         ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {}, conformance),
@@ -300,12 +310,12 @@ def steps(crates):
         # the identity tests pin production and check the mode's side
         # themselves (tests/attrib.rs, tests/subset.rs)
         ("ROBIGO_NO_INPLACE=1 (every in-place write copies)",
-         {"ROBIGO_NO_INPLACE": "1"}, [*crate, *pkgs, *skip]),
+         {**TREE_RUNS, **{"ROBIGO_NO_INPLACE": "1"}}, [*crate, *pkgs, *skip]),
         # with a collection due almost always, the check makes any &Cx
         # request of LARGE bytes or more panic where it is made: such a
         # request goes through cx.alloc_rooted (docs/g3.md §3 item 3)
         ("gctorture (collect at every allocation) and the GC stats check",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check"}, [*crate, *pkgs, *skip]),
+         {**TREE_RUNS, **{"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check"}}, [*crate, *pkgs, *skip]),
         # docs/g3.md §15.3 E3: the rt slice under the collector modes
         ("conformance under gctorture (E3)", {"ROBIGO_GCTORTURE": "1", **slow}, conformance),
         # every argument a PROMSXP at call entry (GNU R's representation,
@@ -315,11 +325,11 @@ def steps(crates):
         # robigo-heap/test-support), so `-p robigo-rt` alone rebuilt heap and
         # every crate above it (6 minutes in CI)
         ("ROBIGO_MATERIALIZE=1 (every argument slot materialized)",
-         {"ROBIGO_MATERIALIZE": "1"}, [*crate, *pkgs, *skip]),
+         {**TREE_RUNS, **{"ROBIGO_MATERIALIZE": "1"}}, [*crate, *pkgs, *skip]),
         # docs/g3.md §16 (H3): the debug moving collector, at every
         # collection gctorture makes due
         ("ROBIGO_GC_MOVE (move every movable object at every collection), with gctorture",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1"}, [*crate, *pkgs, *skip]),
+         {**TREE_RUNS, **{"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1"}}, [*crate, *pkgs, *skip]),
         # H8: the young objects at each collection, everything at every N-th;
         # the nightly runs it with every collection moving everything
         (f"conformance under ROBIGO_GC_MOVE={GC_MOVE_YOUNG} with gctorture (E3)",
@@ -329,13 +339,13 @@ def steps(crates):
         # is poisoned and held back instead, so a frame that escaped without
         # its ESCAPED bit panics where it is used next
         ("ROBIGO_FRAME_QUARANTINE=1 (recycled frames poisoned and held back)",
-         {"ROBIGO_FRAME_QUARANTINE": "1"}, [*crate, *pkgs, *skip]),
+         {**TREE_RUNS, **{"ROBIGO_FRAME_QUARANTINE": "1"}}, [*crate, *pkgs, *skip]),
         ("ROBIGO_FRAME_QUARANTINE=1, conformance",
          {"ROBIGO_FRAME_QUARANTINE": "1"},
          conformance),
         # docs/g3.md §16 (H3): the pin report; `main` fails the job on any line
         ("ROBIGO_GC_PIN_REPORT (no weak reference decided while a C word reaches its key)",
-         {"ROBIGO_GC_PIN_REPORT": PIN_REPORT}, [*crate, *pkgs, *skip]),
+         {**TREE_RUNS, **{"ROBIGO_GC_PIN_REPORT": PIN_REPORT}}, [*crate, *pkgs, *skip]),
         # docs/g3.md §15.3 E3 and E4, on the release binary the steps above
         # built: the stress script in fresh processes (the ledger's runs take
         # 30 per profile), and the overshoot of every slice against max(32
@@ -467,9 +477,15 @@ def debug_assertions_steps(crates):
     flags and target: nothing in this shard builds into the normal one."""
     pkgs = [x for c in crates for x in ("-p", c)]
     env = {"RUSTFLAGS": "-C debug-assertions=on", "CARGO_TARGET_DIR": target_dir() + "-debug-assertions"}
+    test = ["cargo", "test", "--release", "--locked"]
     return every_cpu([
         ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", env, ["scripts/rt-home.sh"]),
-        ("the crates' tests with debug assertions (-C debug-assertions=on, quick profile)", env,
+        # the conformance's build (with the flag) first: its release binary
+        # writes the database tree the crates' tests read
+        ("the release binary and the conformance with debug assertions, built (cargo test --release --no-run)", env,
+         [*test, "-p", "robigo-rtapi", "--test", "conformance", "--no-run"]),
+        (DB_TREE[0] + " (with debug assertions)", env, DB_TREE[1]),
+        ("the crates' tests with debug assertions (-C debug-assertions=on, quick profile)", {**env, **TREE_RUNS},
          [*CRATE_TEST, *pkgs, "--", "--skip", CONFORMANCE]),
         ("conformance with debug assertions (-C debug-assertions=on)", env, conformance_command()),
     ])
@@ -480,10 +496,14 @@ def release_crate_tests_steps(crates):
     the full release profile (thin LTO, one codegen unit), the code users get,
     which the other shards' quick-profile crate tests do not build."""
     pkgs = [x for c in crates for x in ("-p", c)]
+    test = ["cargo", "test", "--release", "--locked", *pkgs]
     return every_cpu([
         ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", {}, ["scripts/rt-home.sh"]),
-        ("the crates' tests (release profile)", {},
-         ["cargo", "test", "--release", "--locked", *pkgs, "--", "--skip", CONFORMANCE]),
+        # built first (the same command, so the run below builds nothing):
+        # its release binary writes the database tree the tests read
+        ("the crates' tests (release profile), built", {}, [*test, "--no-run"]),
+        DB_TREE[:1] + ({},) + DB_TREE[1:],
+        ("the crates' tests (release profile)", TREE_RUNS, [*test, "--", "--skip", CONFORMANCE]),
     ])
 
 
