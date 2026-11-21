@@ -1,0 +1,12 @@
+name s value 42 dots 0 
+name s value 44 dots 0 
+name s value 44 dots 0 
+name s value 46 dots 0 
+[1] "invalid type 'double' for slot name"
+doTryCatch(return(expr), name, parentenv, handler)
+name a dots 0 
+NULL
+name b dots 0 
+NULL
+name c dots 0 
+NULL

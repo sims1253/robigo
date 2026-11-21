@@ -1,0 +1,2 @@
+outer setter sees x$a = 1 2 3 
+after: 1 2 3 NA 9 

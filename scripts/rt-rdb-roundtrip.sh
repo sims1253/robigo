@@ -30,6 +30,7 @@ dir=$(cd "$dir" && pwd)
 # the data's maker, run by the oracle's sh with OUT the output directory
 # shellcheck disable=SC2016 # single quotes on purpose: the inner sh expands it
 make_data='
+  set -eu
   for p in base compiler tools; do
     mkdir -p "$OUT/$p/R" && cp "$(R RHOME)/library/$p/R/$p.rdb" "$(R RHOME)/library/$p/R/$p.rdx" "$OUT/$p/R/"
   done
@@ -64,7 +65,7 @@ make_data='
     # environment) replaced by its formals, body and attributes, and the
     # top-level environment by its sorted contents (nested ones by a mark): closures and environments
     # enclosures aside (tests/lazyload.rs computes the same two)
-    ck <- function(x) { b <- as.integer(serialize(x, NULL, version = 2L))[-(1:14)]
+    ck <- function(x) { b <- as.numeric(as.integer(serialize(x, NULL, version = 2L))[-(1:14)])
                         paste(length(b), sum(b * seq_along(b)) %% 1000000007) }
     nz <- function(x, top = TRUE) if (is.function(x) && !is.primitive(x)) list(formals(x), body(x), attributes(x)) else
                       if (is.environment(x)) { if (top) list(\"env\", nz(as.list(x, all.names = TRUE, sorted = TRUE), FALSE)) else \"env\" } else

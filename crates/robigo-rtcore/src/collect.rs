@@ -71,7 +71,26 @@ impl Cx {
         // into the core or the roots is live, and the collection reaches
         // nothing of ours (finalizers are only queued).
         unsafe { iso.core().safepoint(kind, iso.roots_mut()) };
+        self.flush_gc_report();
         Ok(())
+    }
+
+    /// Print the reports of the collections that just ran (`gcinfo(TRUE)`),
+    /// as GNU R's `REprintf` does during them.
+    #[inline]
+    pub(crate) fn flush_gc_report(&self) {
+        // SAFETY: one read of the core.
+        if unsafe { self.iso().core() }.has_gc_report() {
+            self.print_gc_report();
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn print_gc_report(&self) {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        let r = unsafe { self.iso().core() }.take_gc_report();
+        self.reprintf(&r);
     }
 
     /// The poll of a Rust loop whose allocation is not bounded by a constant
@@ -119,6 +138,7 @@ impl Cx {
             // isolate's roots, while `&mut Cx` has ended every `Ref`.
             unsafe { iso.core().alloc_rooted(T::SEXPTYPE, n, iso.roots_mut()) }
         };
+        self.flush_gc_report();
         match r {
             // SAFETY: fresh, of this heap, a vector of `T`'s type and length `n`.
             Ok(x) => Ok(unsafe { FreshVec::from_fresh(x, n, &*self) }),
@@ -204,6 +224,67 @@ impl Cx {
     pub(crate) fn fail_alloc_set(&self) -> bool {
         // SAFETY: one read of the core.
         unsafe { self.iso().core() }.fail_at() != 0
+    }
+
+    /// Why the last refusal was made, if it was a limit or a page the
+    /// system refused (then cleared): [`Cx::refused_again`]'s error.
+    pub(crate) fn take_refusal(&mut self) -> Option<robigo_heap::AllocError> {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.take_refusal()
+    }
+
+    /// Refuse every new heap chunk from now on (`on`), as a system with no
+    /// memory left would: a test knob for the refusal paths.
+    pub fn set_refuse_chunks(&mut self, on: bool) {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.set_refuse_chunks(on)
+    }
+
+    /// `gcinfo(on)`: whether collections report from now on; the previous
+    /// state.
+    pub fn set_gc_reporting(&mut self, on: bool) -> bool {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.set_gc_reporting(on)
+    }
+
+    /// Whether collections report (`gcinfo`).
+    pub fn gc_reporting(&self) -> bool {
+        // SAFETY: one read of the core.
+        unsafe { self.iso().core() }.gc_reporting()
+    }
+
+    /// `gc.time(on)`: time collections from now on, or stop; the times so
+    /// far (user, system, elapsed, child user, child system).
+    pub fn gc_time(&mut self, on: bool) -> [f64; 5] {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.gc_time(on)
+    }
+
+    /// The heap's objects by type (`memory.profile()`'s count); collect
+    /// first for GNU R's "after a full collection".
+    pub fn census_by_type(&self) -> [u64; 32] {
+        // SAFETY: one read of the core.
+        unsafe { self.iso().core() }.census_by_type()
+    }
+
+    /// `mem.maxNSize()`: the node limit, None if unlimited.
+    pub fn max_nsize(&self) -> Option<usize> {
+        // SAFETY: one read of the core.
+        unsafe { self.iso().core() }.max_nsize()
+    }
+
+    /// Set the node limit (None: unlimited); false (unchanged) below the
+    /// current node heap size, as `R_SetMaxNSize`.
+    pub fn set_max_nsize(&mut self, n: Option<usize>) -> bool {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.set_max_nsize(n)
+    }
+
+    /// GNU R's `gc_force_gap`: collections every this many allocations
+    /// under torture (0: off).
+    pub fn gc_torture_gap(&self) -> i32 {
+        // SAFETY: one read of the core.
+        unsafe { self.iso().core() }.torture_counters().1
     }
 
     /// Whether gctorture is on (`gctorture()`'s result).

@@ -1,0 +1,6 @@
+growdbl 6,000,294,599
+growdbl-2 5,785,362,538
+growdbl-pre 5,442,939,324
+listgrow 1,501,331,415
+listgrow-2 1,192,047,270
+listgrow-pre 1,137,953,902

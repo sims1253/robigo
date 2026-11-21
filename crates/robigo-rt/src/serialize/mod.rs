@@ -3,7 +3,9 @@
 //! `ReadItem` ([`read`]) with the reference table, the persistent-name
 //! hooks, byte code (`WriteBC`, `ReadBC`: the shared language cells as
 //! `BCREPDEF`/`BCREPREF`, L1b over C1-BC's BCODESXP) and ALTREP's
-//! serialized classes; and its builtins: `serialize`,
+//! serialized classes; `R_compile_pkgs`' compile of each closure as it
+//! is written (`R_cmpfun1`: the compiler package's `tryCmpfun`); and its
+//! builtins: `serialize`,
 //! `serializeb`, `unserialize`, `serializeToConn`, `unserializeFromConn`,
 //! `serializeInfoFromConn`, and the lazy-load database's
 //! `lazyLoadDBinsertValue`, `lazyLoadDBfetch`, `lazyLoadDBflush` and
@@ -12,7 +14,7 @@
 //! Not yet, and saying so when reached (AGENTS rule 6): a closure or
 //! promise robigo-rt compiles itself where GNU R holds byte code (there is
 //! no BCODESXP of GNU R's to write; one whose body is a BCODESXP is written
-//! as it is), the `R_compile_pkgs` compile on write, package ALTREP classes
+//! as it is), package ALTREP classes
 //! (robigo-rtapi's; base's compact sequences are robigo-rt's own,
 //! `robigo_rtcore::altrep::own`, written and read as GNU R writes them),
 //! bzip2 and xz compressed databases, and native encodings other than
