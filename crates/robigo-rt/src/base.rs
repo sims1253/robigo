@@ -1072,9 +1072,12 @@ fn load_profile(cx: &mut Cx, bytes: &[u8]) -> bool {
                 // frontier is the token it rejects (bison reads no further);
                 // a rule's check error (a condition: a repeated formal) comes
                 // after the rule's lookahead was read
+                // (an R error, a zero-length name, is raised after the last
+                // token consumed, with no lookahead read)
                 let frontier = match e.style {
                     robigo_syntax::ErrorStyle::Grammar => e.end,
-                    _ => e.end.max(p.lexed_end()),
+                    robigo_syntax::ErrorStyle::RError => e.end.max(p.consumed_end()),
+                    robigo_syntax::ErrorStyle::Condition => e.end.max(p.lexed_end()),
                 };
                 crate::repl::error_at_top_after(cx, &between(start, frontier), &message(&e, start));
                 return crate::repl::check_session_exit(cx);

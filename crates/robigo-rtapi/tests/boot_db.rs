@@ -193,6 +193,9 @@ fn a_user_profile_s_errors_end_it_as_in_gnu_r() {
     // a grammar error's frontier is the token it rejects: the literal after
     // it is not lexed, so its warning does not fire
     let reject = run("reject", "options(warn = 2)\n) 1.1L\n");
+    // an R error raised with no lookahead read (a zero-length name): the
+    // literal after it is not lexed either
+    let zero = run("zero", "options(warn = 2)\n\"\"() 1.1L\n");
     let _ = std::fs::remove_dir_all(&dir);
     let lex_err = format!(
         "{PROFILE_STOPS}Error: '\\q' is an unrecognized escape in character string (<input>:2:8)\nExecution halted\n"
@@ -214,6 +217,8 @@ fn a_user_profile_s_errors_end_it_as_in_gnu_r() {
     assert_eq!((formal.0.as_str(), formal.1.as_str(), formal.2), ("", formal_err.as_str(), Some(1)));
     let reject_err = format!("{PROFILE_STOPS}Error: 2:1: unexpected ')'\n2: )\n    ^\nExecution halted\n");
     assert_eq!((reject.0.as_str(), reject.1.as_str(), reject.2), ("", reject_err.as_str(), Some(1)));
+    let zero_err = format!("{PROFILE_STOPS}Error: attempt to use zero-length variable name\nExecution halted\n");
+    assert_eq!((zero.0.as_str(), zero.1.as_str(), zero.2), ("", zero_err.as_str(), Some(1)));
     let parse_err = format!("{PROFILE_STOPS}Error: 2:1: unexpected ')'\n2: )\n    ^\nExecution halted\n");
     assert_eq!((parse.0.as_str(), parse.1.as_str(), parse.2), ("before\n", parse_err.as_str(), Some(1)));
     let error_err = format!("{PROFILE_STOPS}Error: boom\nExecution halted\n");
