@@ -564,6 +564,10 @@ pub struct RtState {
     pub assign_fns: std::cell::RefCell<std::collections::HashMap<robigo_rtcore::SymId, Sexp>>,
     /// cmp.R's constant folds of the compile under way ([`crate::fold`]).
     pub folds: crate::fold::Folds,
+    /// The warnings cmp.R's R code gives in the compile under way (its
+    /// `assign` and `as.name` of a name that does not translate), raised
+    /// once the compile is over ([`crate::cenv::CompileWarnings`]).
+    pub compile_warnings: crate::cenv::CompileWarnings,
     /// INTERIM(L5): the pinned GNU R tree the wide base loader reads its
     /// definitions from on first use ([`crate::base::load`]).
     pub base_src: std::cell::RefCell<Option<std::path::PathBuf>>,

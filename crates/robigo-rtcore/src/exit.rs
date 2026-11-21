@@ -237,7 +237,16 @@ impl Cx {
         if ctx.bc_expr_final.get() {
             return e;
         }
-        // (an assignment call is not inflated: robigo-rt sets none)
+        // an assignment call is shown: `x <<- v` as itself, where
+        // inflateAssignmentCall leaves it as it is (its last argument is
+        // not tagged `value`). INTERIM(C1): one it would inflate (a direct
+        // `` `f<-`(x, value = v) ``, GNU R's `f(x) <- v`) is not made here,
+        // under `&Cx` on an error's path; it falls through to the
+        // function's call, as before this check (robigo-rt's complex
+        // assignments set theirs inflated, `set_bc_expression_final`)
+        if maybe_assignment_call(e) && !inflates(e) {
+            return e;
+        }
         if e.sexptype() == robigo_heap::types::LANGSXP
             && !maybe_closure_wrapper(self, e)
             && !maybe_primitive_call(self, e)
@@ -531,6 +540,35 @@ fn maybe_closure_wrapper(cx: &Cx, e: Ref<'_>) -> bool {
             | b".Call.graphics"
     );
     wrapper && c.cdr().as_cons().is_some_and(|a| a.car() != cx.nil())
+}
+
+/// `maybeAssignmentCall(expr)`: a call whose function is a symbol of more
+/// than two bytes ending in `<-` (`<<-`, `names<-`; not `<-` itself).
+// R: eval.c:maybeAssignmentCall
+fn maybe_assignment_call(e: Ref<'_>) -> bool {
+    let Some(c) = e.as_cons() else { return false };
+    if e.sexptype() != robigo_heap::types::LANGSXP {
+        return false;
+    }
+    let Some(s) = c.car().as_sym() else { return false };
+    let name = s.name_bytes();
+    name.len() > 2 && name.ends_with(b"<-")
+}
+
+/// Whether `inflateAssignmentCall(expr)` makes a new call of `expr`, an
+/// assignment call: it has two arguments or more and its last is tagged
+/// `value`.
+// R: eval.c:inflateAssignmentCall
+fn inflates(e: Ref<'_>) -> bool {
+    let mut args = e.as_cons().map(|c| c.cdr());
+    let mut n = 0;
+    let mut last_value = false;
+    while let Some(a) = args.and_then(|a| a.as_cons()) {
+        n += 1;
+        last_value = a.tag().as_sym().is_some_and(|t| t.name_bytes() == b"value");
+        args = Some(a.cdr());
+    }
+    n >= 2 && last_value
 }
 
 /// `maybePrimitiveCall(expr)`: a call whose function symbol's value in base
