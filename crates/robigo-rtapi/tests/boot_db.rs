@@ -20,17 +20,35 @@ use std::process::Command;
 /// `.expand_R_libs_env_var` and `.libPaths`, are builtins now).
 const PROFILE_STOPS: &str = "";
 
-/// Whether the tree is made (else the test is skipped, unless
-/// `ROBIGO_RT_HOME_DB` says it must be).
+/// Whether the tree is made by this checkout's scripts/rt-home-db.sh (else
+/// the test is skipped, unless `ROBIGO_RT_HOME_DB` says it must be there):
+/// the script's hash is its stamp's second field from the end, so a tree an
+/// older script made is stale and says so, rather than failing on what it
+/// lacks (an older tree has no etc/Renviron).
 fn tree_made() -> bool {
-    let tree = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.robigo/rt-home-db");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let tree = root.join(".robigo/rt-home-db");
+    let must = std::env::var_os("ROBIGO_RT_HOME_DB").is_some();
     if !tree.join("library/base/R/base.rdb").is_file() {
         assert!(
-            std::env::var_os("ROBIGO_RT_HOME_DB").is_none(),
+            !must,
             "ROBIGO_RT_HOME_DB is set, but {} has no base.rdb: make it with scripts/rt-home-db.sh",
             tree.display()
         );
         eprintln!("{} is not made: skipped (scripts/rt-home-db.sh makes it)", tree.display());
+        return false;
+    }
+    let script = root.join("scripts/rt-home-db.sh");
+    let o = Command::new("sha256sum").arg(&script).output().unwrap_or_else(|e| panic!("running sha256sum: {e}"));
+    let want = String::from_utf8_lossy(&o.stdout).chars().take(16).collect::<String>();
+    let stamp = std::fs::read_to_string(tree.join(".rt-home-db")).unwrap_or_default();
+    if stamp.split_whitespace().rev().nth(1) != Some(want.as_str()) {
+        assert!(
+            !must,
+            "{} is stale (made by another scripts/rt-home-db.sh): rebuild it with scripts/rt-home-db.sh --robigo-rt BIN",
+            tree.display()
+        );
+        eprintln!("{} is stale: skipped (rebuild it with scripts/rt-home-db.sh --robigo-rt BIN)", tree.display());
         return false;
     }
     true
@@ -67,6 +85,12 @@ fn boot(args: &[&std::ffi::OsStr], env: &[(&str, &std::ffi::OsStr)]) -> (String,
         .env_remove("R_BROWSER")
         .env_remove("R_PAPERSIZE")
         .env_remove("ROBIGO_T_UNSET")
+        // R_init_jit_enabled's and R_CheckJIT's
+        .env_remove("R_ENABLE_JIT")
+        .env_remove("R_JIT_STRATEGY")
+        .env_remove("R_MIN_JIT_SCORE")
+        .env_remove("R_DISABLE_BYTECODE")
+        .env_remove("_R_COMPILE_PKGS_")
         // rt-ci runs the tests under its observation modes (scripts/rt-ci.py
         // inherits the environment): the boot under them is not this test's
         .env_remove("ROBIGO_GCTORTURE")
@@ -240,6 +264,54 @@ fn an_unknown_boot_is_an_error() {
         (String::from_utf8_lossy(&o.stdout).as_ref(), String::from_utf8_lossy(&o.stderr).as_ref(), o.status.code()),
         ("", "robigo-rt: ROBIGO_RT_BOOT is 'rbd': it is 'stage0', 'rdb' or unset (M1's loader)\n", Some(2))
     );
+}
+
+#[test]
+fn the_jit_starts_as_setup_rmainloop_ends() {
+    if !tree_made() {
+        return;
+    }
+    // GNU R 4.6.2's (R_DEFAULT_PACKAGES=NULL R --vanilla --no-echo -e ...):
+    // the compiler loaded at the end of the start when the JIT is on, its
+    // closures byte code from compiler.rdb; the JIT's level, then
+    // _R_COMPILE_PKGS_ and R_DISABLE_BYTECODE read there
+    // (a closure the JIT compiled is not yet byte code to bodyCode: C1's
+    // V4 step 3, #931; then add GNU R's `f <- function(x) x + 1; for (i in
+    // 1:3) f(i)` giving "bytecode", "language" with R_ENABLE_JIT=0 or
+    // R_DISABLE_BYTECODE=1, and R_JIT_STRATEGY's default read at base's
+    // first closure call, the JIT still off: with R_ENABLE_JIT=1 `g <-
+    // function() 1` is byte code after its second call, TOP_SMALL_MAYBE)
+    let state = "cat(loadedNamespaces(), typeof(.Internal(bodyCode(compiler::cmpfun))), \
+                 compiler::enableJIT(-1), compiler::compilePKGS(FALSE), '\\n')";
+    let cases: &[(&[(&str, &str)], &str)] = &[
+        (&[], "compiler base bytecode 3 FALSE \n"),
+        (&[("R_ENABLE_JIT", "0")], "base bytecode 0 FALSE \n"),
+        (&[("R_ENABLE_JIT", "1")], "compiler base bytecode 1 FALSE \n"),
+        (&[("_R_COMPILE_PKGS_", "1")], "compiler base bytecode 3 TRUE \n"),
+    ];
+    for (env, want) in cases {
+        let env: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(k, v)| (*k, v.as_ref())).collect();
+        let (out, err, status) =
+            boot(&["--vanilla".as_ref(), "--no-echo".as_ref(), "-e".as_ref(), state.as_ref()], &env);
+        assert_eq!((out.as_str(), err.as_str(), status), (*want, "", Some(0)), "{env:?}");
+    }
+    // the JIT is off while the profiles run
+    let dir = std::env::temp_dir().join(format!("robigo-boot-db-jit-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let prof = dir.join("profile.R");
+    std::fs::write(&prof, "cat('prof', compiler::enableJIT(-1), '\\n')\n").unwrap();
+    let (out, _, status) = boot(
+        &[
+            "--no-save".as_ref(),
+            "--no-restore".as_ref(),
+            "--no-echo".as_ref(),
+            "-e".as_ref(),
+            "cat(compiler::enableJIT(-1), '\\n')".as_ref(),
+        ],
+        &[("R_PROFILE_USER", prof.as_os_str())],
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!((out.as_str(), status), ("prof 0 \n3 \n", Some(0)));
 }
 
 #[test]

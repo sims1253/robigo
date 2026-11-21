@@ -65,6 +65,7 @@ closure Sys.setFileTime files.R
 closure Sys.setenv getenv.R
 closure Sys.time datetime.R
 closure Sys.unsetenv getenv.R
+closure [.Date dates.R
 closure [.factor factor.R
 closure activeBindingFunction bindenv.R
 closure alist formals.R

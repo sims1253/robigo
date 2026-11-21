@@ -57,6 +57,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -265,6 +266,13 @@ def full_move_steps():
 CHECK_FEATURES = "robigo-rtcore/retry-torture,robigo-rt/poison-dead"
 
 
+def rt_binary():
+    """The release robigo-rt the release tests built (cargo's target
+    directory, as `metadata()` gives it), which scripts/rt-home-db.sh is
+    given by name."""
+    return os.path.join(metadata()["target_directory"], "release", "robigo-rt")
+
+
 def steps(crates):
     """(title, extra environment, command) for each step of the job."""
     pkgs = [x for c in crates for x in ("-p", c)]
@@ -286,7 +294,8 @@ def steps(crates):
         # L5's boot beside M1's loader (ROBIGO_RT_BOOT=rdb): base's database,
         # written by this robigo-rt booted from base's source, then base
         # booted from it (crates/robigo-rtapi/tests/boot_db.rs)
-        ("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)", {}, ["scripts/rt-home-db.sh"]),
+        ("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)", {},
+         ["scripts/rt-home-db.sh", "--robigo-rt", rt_binary()]),
         ("boot from base's database (ROBIGO_RT_BOOT=rdb)", {"ROBIGO_RT_HOME_DB": "1"},
          [*test, "-p", "robigo-rtapi", "--test", "boot_db", *skip]),
         ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {}, conformance),
@@ -568,6 +577,12 @@ def main(argv):
     if a.check:
         return 0
 
+    min_gb = float(os.environ.get("RT_CI_MIN_FREE_GB", MIN_FREE_GB))
+    if min_gb > 0:
+        problem = free_space_problem([meta["target_directory"], tempfile.gettempdir()], min_gb)
+        if problem:
+            print(f"::error::{problem}", file=sys.stderr)
+            return 2
     plan = full_move_steps() if a.full_move else shard_steps(crates, a.shard) if a.shard else steps(crates)
     done = []
     try:
@@ -576,21 +591,115 @@ def main(argv):
         print(timings_report(done, a.shard), flush=True)
 
 
+# Every conformance step writes each case's wall time (the runner's
+# ROBIGO_CONF_TIMES_REPORT) into this directory, one file per step, and its
+# end lists the cases over SLOW_FRACTION of their limit: report-only. The
+# rule (docs/ledger/g3/2026-11-21-a1-rt-shards.md): a case over half its
+# step's limit alone is named in that step with an allowance and its
+# measured time, or is made smaller. RT_CI_TIMES_DIR keeps the files where
+# CI can upload them, and they balance the shards.
+TIMES_DIR = os.environ.get("RT_CI_TIMES_DIR") or os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-times-{os.getpid()}")
+SLOW_FRACTION = 0.5
+
+
+def times_file(index, title):
+    """The times report of a plan's `index`-th step, titled `title`: the index
+    keeps two steps whose titles differ only in punctuation apart."""
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", title).strip("-")[:80]
+    return os.path.join(TIMES_DIR, f"{index:02d}-{slug}.tsv")
+
+
+def slow_cases(path, fraction=SLOW_FRACTION):
+    """A times report's cases over `fraction` of their limit, slowest first:
+    (secs, limit, status, case)."""
+    try:
+        with open(path) as f:
+            lines = [line.rstrip("\n").split("\t") for line in f if line.strip() and not line.startswith("#")]
+    except FileNotFoundError:
+        return []
+    rows = [(float(s), int(lim), status, case) for s, lim, status, case in lines]
+    return [r for r in rows if r[0] > fraction * r[1]]
+
+
+def slow_cases_report(title, path):
+    """The end of a conformance step's log: its cases over half their limit."""
+    rows = slow_cases(path)
+    if not rows:
+        return f"rt: case times: {title}: no case over {SLOW_FRACTION:.0%} of its limit ({path})"
+    lines = [f"rt: case times: {title}: {len(rows)} case(s) over {SLOW_FRACTION:.0%} of their limit "
+             f"(name each with an allowance and its time, or make it smaller; {path}):"]
+    lines += [f"  {s:7.1f} s of {lim:4d} s  {status}  {case}" for s, lim, status, case in rows]
+    return "\n".join(lines)
+
+
+# rt-ci stops at its start when cargo's target directory or TMPDIR has less
+# free space than this (GB): a release link of the test binaries needs about
+# 5 GB, and a full disk otherwise fails a run mid-link, where it reads as a
+# code failure (2026-11-21, the shared workstation's /). RT_CI_MIN_FREE_GB
+# overrides it (0: no check)
+MIN_FREE_GB = 8
+
+
+def existing_ancestor(path):
+    """`path`, or its nearest ancestor that exists (cargo's target directory
+    does not exist on a fresh checkout until the first build), or None."""
+    p = os.path.abspath(path)
+    while not os.path.exists(p):
+        parent = os.path.dirname(p)
+        if parent == p:
+            return None
+        p = parent
+    return p
+
+
+def free_space_problem(paths, min_gb):
+    """The message for the first of `paths` with under `min_gb` GB free, or
+    None. Each path's volume is measured at its nearest existing ancestor;
+    one that cannot be measured (no ancestor exists, or the measurement
+    fails) is reported on stderr and skipped: this check gives a clear
+    message, and must never be what fails a run."""
+    import shutil
+    for p in paths:
+        at = existing_ancestor(p)
+        try:
+            if at is None:
+                raise FileNotFoundError(p)
+            free = shutil.disk_usage(at).free / 1e9
+        except OSError as e:
+            print(f"::warning::rt-ci: cannot tell the free space for {p} ({e}): not checked", file=sys.stderr)
+            continue
+        if free < min_gb:
+            return (f"rt-ci: {free:.1f} GB free on the volume of {p} (< {min_gb} GB): a release link of the "
+                    f"test binaries needs about 5 GB; free space first, or set RT_CI_MIN_FREE_GB "
+                    f"(docs/verification.md)")
+    return None
+
+
 def run_steps(plan, done):
     """Run `plan`'s steps in order, recording (title, seconds, ok) in `done`;
     stop at the first that fails."""
-    for title, env, cmd in plan:
+    for index, (title, env, cmd) in enumerate(plan):
         report = env.get("ROBIGO_GC_PIN_REPORT")
         if report and os.path.exists(report):
             os.remove(report)
         bc = env.get("ROBIGO_BC_CROSSCHECK_REPORT")
         if bc and os.path.exists(bc):
             os.remove(bc)
+        times = None
+        if CONFORMANCE in cmd and "--exact" in cmd:
+            times = times_file(index, title)
+            os.makedirs(TIMES_DIR, exist_ok=True)
+            if os.path.exists(times):
+                os.remove(times)
+            env = {**env, "ROBIGO_CONF_TIMES_REPORT": times}
         print(f"::group::{title}", flush=True)
         t0 = time.monotonic()
         r = subprocess.run(cmd, cwd=ROOT, env={**os.environ, **env})
         done.append((title, time.monotonic() - t0, r.returncode == 0))
         print("::endgroup::", flush=True)
+        if times:
+            # (also when the step failed: a timeout is when the times matter)
+            print(slow_cases_report(title, times), flush=True)
         if r.returncode != 0:
             print(f"::error::rt: {title} failed")
             return r.returncode

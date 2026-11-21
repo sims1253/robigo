@@ -69,6 +69,16 @@ pub struct Parser<'a> {
     /// The lexing frontier of a trial-parse error raised by an action
     /// (`xxpipebind`), which lies past the error's reported position.
     trial_frontier: Option<usize>,
+    /// The next [`Parser::expr`] is gram.y's `expr` or `expr_or_help`
+    /// rather than `expr_or_assign_or_help`: an argument's value, a
+    /// formal's default, an `if`/`while` condition or a `for` sequence,
+    /// where `=` is not an assignment (`f(NA = 1)` is a syntax error; only a symbol, a string
+    /// or NULL names an argument). Read and cleared on entry, so only that
+    /// expression's own operator loop refuses `=`, and the right side of a
+    /// `?` in it (`expr '?' expr`). Prefixes and constructs (`?x`,
+    /// parentheses, braces, `function`, `if`, the loops) parse
+    /// `expr_or_assign_or_help` and allow it.
+    no_eq_next: bool,
 }
 
 const BP_QUESTION: u8 = 2;
@@ -172,6 +182,7 @@ pub fn parse_console<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) -> Consol
         defer_codegen: true,
         codegen_err: None,
         trial_frontier: None,
+        no_eq_next: false,
     };
     if matches!(p.toks[p.pos].tok, Tok::Newline) {
         return ConsoleStatus::Null;
@@ -415,6 +426,7 @@ impl<'a> Parser<'a> {
             defer_codegen: false,
             codegen_err: None,
             trial_frontier: None,
+            no_eq_next: false,
         })
     }
 
@@ -586,7 +598,7 @@ impl<'a> Parser<'a> {
 
     /// The start of the last token GNU R's lexer had read when `e` was
     /// raised: the raise site's frontier for an action's error (the
-    /// lookahead it reduced with, or none: [`Parser::codegen`]), else the
+    /// lookahead it reduced with, or none: `Parser::codegen`), else the
     /// rejected token. A token's warnings (NumericValue's) have fired once
     /// it is read, so those of the tokens starting at or before this one
     /// precede the error (as the console's [`parse_console`] counts them).
@@ -686,6 +698,7 @@ impl<'a> Parser<'a> {
     /// Parse an expression whose operators all bind tighter than `min_bp`.
     fn expr(&mut self, min_bp: u8) -> Result<Expr<'a>, ParseError> {
         let arena = self.arena;
+        let no_eq = std::mem::take(&mut self.no_eq_next);
         self.skip_newlines();
         let mut lhs = self.prefix()?;
         loop {
@@ -707,6 +720,10 @@ impl<'a> Parser<'a> {
                 break;
             }
             if lbp <= min_bp {
+                break;
+            }
+            if no_eq && lbp == BP_EQ_ASSIGN {
+                // (an argument's value: the caller reports the `=`)
                 break;
             }
             let t = self.bump();
@@ -761,6 +778,9 @@ impl<'a> Parser<'a> {
                     call2(arena, "=>", t.span, vec![Arg::positional(lhs), Arg::positional(rhs)], span)
                 }
                 _ => {
+                    // `expr '?' expr`: in an argument, its right side is no
+                    // assignment either
+                    self.no_eq_next = no_eq && t.tok == Tok::Question;
                     let rhs = self.expr(rbp)?;
                     let span = lhs.span().to(rhs.span());
                     let (name, a, b) = match &t.tok {
@@ -954,6 +974,8 @@ impl<'a> Parser<'a> {
                     let Token { tok: Tok::Sym(s), span: sym_span } = self.bump() else { unreachable!("checked above") };
                     let var = Expr::Sym(sym_name(arena, &s), sym_span);
                     self.expect(Tok::In)?;
+                    // `forcond`'s sequence is `expr_or_help`: no `=`
+                    self.no_eq_next = true;
                     let seq = self.expr(0)?;
                     self.expect(Tok::RParen)?;
                     Ok((var, seq))
@@ -992,6 +1014,8 @@ impl<'a> Parser<'a> {
         self.ctx.push(Ctx::Paren);
         let r = (|| {
             self.expect(Tok::LParen)?;
+            // `ifcond` and `cond` are `'(' expr_or_help ')'`: no `=`
+            self.no_eq_next = true;
             let c = self.expr(0)?;
             self.expect(Tok::RParen)?;
             Ok(c)
@@ -1057,7 +1081,9 @@ impl<'a> Parser<'a> {
             self.skip_newlines();
             let default = if matches!(self.toks[self.pos].tok, Tok::EqAssign) {
                 self.bump();
-                Some(self.expr(BP_EQ_ASSIGN)?)
+                // `SYMBOL EQ_ASSIGN expr_or_help`: `?`, but no `=`
+                self.no_eq_next = true;
+                Some(self.expr(0)?)
             } else {
                 None
             };
@@ -1225,7 +1251,8 @@ impl<'a> Parser<'a> {
                     let arg = if self.at_close(bracket) || matches!(self.toks[self.pos].tok, Tok::Comma) {
                         Arg { name: Some(name), value: None }
                     } else {
-                        Arg { name: Some(name), value: Some(self.expr(BP_EQ_ASSIGN)?) }
+                        self.no_eq_next = true;
+                        Arg { name: Some(name), value: Some(self.expr(0)?) }
                     };
                     // A string tag installs as a symbol (`TagArg`, from
                     // `xxsymsub0`/`xxsymsub1` with GenerateCode on), so the
@@ -1236,6 +1263,7 @@ impl<'a> Parser<'a> {
                     }
                     arg
                 } else {
+                    self.no_eq_next = true;
                     Arg { name: None, value: Some(self.expr(0)?) }
                 }
             };
