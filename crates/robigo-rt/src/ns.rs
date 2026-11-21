@@ -579,15 +579,16 @@ pub fn find_namespace(cx: &mut Cx, name: &[u8], out: Out<'_>) -> RResult<()> {
 
 /// `loadNamespace(package)` where GNU R's C calls it, the namespace to
 /// `out`: GNU R's `callR1(R_loadNamespaceSymbol, pkg)`, base's
-/// `loadNamespace`, except that robigo-rt makes the compiler package's
-/// namespace from source itself ([`load_compiler`]). INTERIM(L2): the
-/// compiler goes through `loadNamespace` too once that runs from source
-/// (it waits on B5a's file builtins).
+/// `loadNamespace`. Under M1's loader robigo-rt makes the compiler
+/// package's namespace from source itself ([`load_compiler`]); booted GNU
+/// R's way, the compiler is the installed package (`compiler.rdb`, from
+/// scripts/rt-home-db.sh) that `loadNamespace` lazy-loads. INTERIM(L5):
+/// `load_compiler` goes with M1's loader.
 // R: namespace.R:loadNamespace
 pub fn load_namespace(cx: &mut Cx, pkg: Root<'_>, out: Out<'_>) -> RResult<()> {
     let name = pkg.bind(cx).as_sym().unwrap().name_bytes().to_vec();
-    if name == b"compiler" {
-        // INTERIM(L2): replaced by loadNamespace
+    if name == b"compiler" && !crate::prims::state(cx).gnu_boot.get() {
+        // INTERIM(L5): M1's loader only
         return load_compiler(cx, pkg, out);
     }
     // GNU R's callR1(R_loadNamespaceSymbol, pkg): base's loadNamespace
@@ -599,7 +600,7 @@ pub fn load_namespace(cx: &mut Cx, pkg: Root<'_>, out: Out<'_>) -> RResult<()> {
 /// package's R code (the pinned tarball's `cmp.R`, unmodified) evaluated
 /// into it as `sys.source` does; `.onLoad`; NAMESPACE's exports; then
 /// `sealNamespace`. The library is the tarball's `src/library` (no R_HOME
-/// tree before L4). INTERIM(L2): replaced by loadNamespace.
+/// tree before L4). INTERIM(L5): M1's loader only; goes with it.
 // R: namespace.R:loadNamespace, makeNamespace, sealNamespace, runHook
 fn load_compiler(cx: &mut Cx, pkg: Root<'_>, out: Out<'_>) -> RResult<()> {
     let dir = crate::base::source_dir().map_err(|m| cx.error(&format!("robigo: loading the compiler package: {m}")))?;

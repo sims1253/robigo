@@ -37,7 +37,8 @@ use std::hash::BuildHasherDefault;
 
 /// The hasher of the translator's maps, whose keys are byte-code positions,
 /// pool indices and object addresses (`usize`s it makes itself, never
-/// chosen by R code): rustc-hash's multiply-rotate, not the standard
+/// chosen by R code), and of `base::stubs_for`'s set of names.c's names:
+/// rustc-hash's multiply-rotate, not the standard
 /// library's SipHash, which was about a third of translating a closure at
 /// its first call (about 180k instructions each in the rdb boot's profile).
 #[derive(Default, Clone, Copy)]
