@@ -131,6 +131,10 @@ impl Cx {
     /// once, at the end of the boot. Returns how many objects it froze (0
     /// under the moving collector's modes, which leave it off).
     pub fn freeze_boot_heap(&mut self) -> usize {
+        // (decided before the collection, so an ineligible heap pays none)
+        if !self.freeze_enabled() {
+            return 0;
+        }
         self.collect();
         let iso = self.iso();
         let global = iso.envs().global_raw();
