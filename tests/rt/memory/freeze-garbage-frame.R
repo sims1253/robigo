@@ -1,0 +1,22 @@
+# The boot heap's freeze: a binding that exists at the freeze in an
+# unlocked frame (base's S3 methods table), given a finalizable
+# environment after it, then removed with rm (the removed cell is cleared,
+# as GNU R's RemoveFromList does), or reassigned (the cell overwritten)
+tbl <- get(".__S3MethodsTable__.", envir = baseenv())
+nms <- ls(tbl, all.names = TRUE)
+old <- mget(nms[1:2], envir = tbl)
+e <- new.env()
+reg.finalizer(e, function(x) cat("finalized: removed\n"))
+assign(nms[1], e, envir = tbl)
+rm(e)
+rm(list = nms[1], envir = tbl)
+invisible(gc())
+cat("after rm\n")
+e <- new.env()
+reg.finalizer(e, function(x) cat("finalized: reassigned\n"))
+assign(nms[2], e, envir = tbl)
+rm(e)
+assign(nms[2], old[[2]], envir = tbl)
+invisible(gc())
+cat("after reassignment\n")
+assign(nms[1], old[[1]], envir = tbl)

@@ -146,7 +146,28 @@ fn a_search_path_led_back_to_the_global_environment_does_not_freeze_it() {
         let o = s.out(cx);
         let e = o.root();
         cx.build(o, |cx| cx.new_env(cx.global_env(), true, 0))?;
+        // the search-path walk itself (Sol r6 S12): the global environment
+        // is offered as often after the rewiring as before it (the C API's
+        // constants offer it, and the freeze's predicate refuses it there)
+        let offered = |cx: &mut crate::Cx| {
+            struct Count(robigo_heap::Sexp, usize);
+            impl robigo_heap::Visitor for Count {
+                fn edge(&mut self, x: &mut robigo_heap::Sexp) {
+                    if *x == self.0 {
+                        self.1 += 1;
+                    }
+                }
+            }
+            let iso = cx.iso();
+            let mut c = Count(iso.envs().global_raw(), 0);
+            // SAFETY: `&mut Cx`: no other reference into the roots is live,
+            // and the visitor only reads.
+            unsafe { iso.roots_mut() }.trace_freeze_roots(&mut c);
+            c.1
+        };
+        let before = offered(cx);
         cx.set_enclos(global, e);
+        assert_eq!(offered(cx), before, "the walk offers the global environment again");
         cx.freeze_boot_heap();
         assert!(cx.is_frozen(e.bind(cx)), "the attached environment is a freeze root");
         assert!(!cx.is_frozen(global.bind(cx)), "the global environment is not frozen");
