@@ -60,34 +60,35 @@ over vendored libdeflate. The interpreter of `decompress1` is L's.
 
 ## Numbers
 
-Main 60f1f4fd1 against 88dc28387 (this branch, main merged in). Both were
-built into empty targets:
+Main ec22e65ba (with #942: the rdb boot loads the compiler's namespace, as
+GNU R does, so it reads 135 records) against 4d181748c (this branch, that
+main merged in). Both were built into empty targets:
 
-- `robigo-rt-main-60f1f4fd`, sha256 `fecdb14084a350b6011cb682e49f483ef8f51a93b2fa630f35e74b961543c967`;
-- `robigo-rt-ld-88dc2838`, sha256 `92a4c14b1f66fe0950f082078785b5eba00d7ffa165b60cfb5920f710c0050ef`.
+- `robigo-rt-main-ec22e65b`, sha256 `21b0d6c07e3fa112a865b0acc0fb4bc3d0fdc715aeba3ca0505b2f038ace1c90`;
+- `robigo-rt-ld-4d181748`, sha256 `b171c42923457ab6649c7c765037be010212c6d65bea2c2d1d2fe93f5fd9909e`.
 
 The boot is `--vanilla -e 1` under callgrind, the rdb boot from one
 base-database tree written by main's binary:
 
 | boot | main | this | change |
 |---|---:|---:|---:|
-| `ROBIGO_RT_BOOT=rdb` | 54,757,662 | 52,430,557 | −2,327,105 (−4.25%) |
-| interim (M1) loader | 17,112,576 | 17,113,309 | +733 (no record is inflated) |
+| `ROBIGO_RT_BOOT=rdb` | 100,823,898 | 95,129,600 | −5,694,298 (−5.6%) |
+| interim (M1) loader | 15,424,586 | 15,351,219 | −73,367 (no record is inflated: layout) |
 
-- **The decoding:** 4.42M in zlib-rs's `decompress_vec` became 2.02M in
-  `libdeflate_zlib_decompress` for the 75 records (about 59k → 27k a record).
-  `do_lazyload_dbfetch` with everything it calls went from 14.24M to
-  11.95M.
-- **Anonymous memory after the boot:** −28 KiB under rdb, +36 KiB under the
+- **The decoding:** 10.94M in zlib-rs's `decompress_vec` became 5.06M in
+  `libdeflate_zlib_decompress` for the 135 records (about 81k → 38k a
+  record). `do_lazyload_dbfetch` with everything it calls went from 39.79M
+  to 34.04M.
+- **Anonymous memory after the boot:** −48 KiB under rdb, +4 KiB under the
   interim boot. Peak RSS and file-backed memory move with code layout. The
-  binary is 173 KB larger.
+  binary is 173 KB larger (measured on the pre-#942 pair).
 - **perf-rt (`scripts/rt-bars.sh`, median of two runs each):** every row is
-  within ±0.01% instructions under both boots.
+  within ±0.05% instructions under both boots.
 - **CPU variants under valgrind:** callgrind runs `deflate_decompress_bmi2`
   and `adler32_x86_avx2`. Valgrind's CPU has neither AVX-512 nor AVX-VNNI,
   so any AVX2 host picks that pair (vendor/libdeflate/README.md).
-- **The earlier prototype** over the `libdeflater` crate measured −2.34M on
-  the same main, the same decoder.
+- **Before #942** (main 60f1f4fd1, 75 records): −2.33M (−4.25%), and the
+  prototype over the `libdeflater` crate −2.34M, the same decoder.
 
 ## Build, CI, Miri
 
