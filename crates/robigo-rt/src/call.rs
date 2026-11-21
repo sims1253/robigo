@@ -597,24 +597,59 @@ pub fn builtin_evallist(
     bc: bool,
     codes: Option<Root<'_>>,
 ) -> RResult<()> {
+    // `.Internal(f(...))` whose arguments are evaluated here: the compiler's
+    // call constant is a pairlist cell, the `.Internal` call over `f(...)`.
+    // The arguments and the builtin's call are the inner call's; evalList
+    // reports an empty argument against the `.Internal` call (do_internal's
+    // `evalList(args, env, call, 0)`). No call R makes is a pairlist.
+    // R: names.c:do_internal
+    if callr.bind(cx).sexptype() == LISTSXP {
+        return internal_evallist(cx, callr, funr, rho, out, bc, codes);
+    }
+    evallist_for(cx, callr, callr, funr, rho, out, bc, codes)
+}
+
+/// [`builtin_evallist`] of `cell`, the compiler's `(.Internal call . inner
+/// call)`.
+#[cold]
+#[inline(never)]
+fn internal_evallist(
+    cx: &mut Cx,
+    cell: Root<'_>,
+    funr: Root<'_>,
+    rho: Root<'_>,
+    out: Out<'_>,
+    bc: bool,
+    codes: Option<Root<'_>>,
+) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let c = cell.bind(cx).as_cons().expect("robigo: the compiler's .Internal cell");
+        let (wrapper, inner) = (s.root(cx, c.car()), s.root(cx, c.cdr()));
+        evallist_for(cx, inner, wrapper, funr, rho, out, bc, codes)
+    })
+}
+
+/// [`builtin_evallist`] of the call `callr`, its empty arguments reported
+/// against `errcall`.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn evallist_for(
+    cx: &mut Cx,
+    callr: Root<'_>,
+    errcall: Root<'_>,
+    funr: Root<'_>,
+    rho: Root<'_>,
+    out: Out<'_>,
+    bc: bool,
+    codes: Option<Root<'_>>,
+) -> RResult<()> {
     debug_assert!(codes.is_none() || bc, "robigo: promise codes without the Bc profile's evaluation");
     let missing = cx.missing_arg().sexp();
     let dots = prims::state(cx).syms.dots;
     cx.scope(|cx, s| {
-        // `.Internal(f(...))` evaluated here (its arguments evaluated at run
-        // time): `callr` is the `.Internal` call. The arguments and the
-        // builtin's call are the inner call's; evalList reports an empty
-        // argument against the `.Internal` call (do_internal's
-        // `evalList(args, env, call, 0)`)
-        // R: names.c:do_internal
-        let errcall = callr;
         // (the builtin's row, read once: the call below takes it too)
         // SAFETY: a rooted primitive of this isolate.
         let def = *unsafe { prims::def(cx, funr.bind(cx).sexp()) };
-        let callr = match def.internal().then(|| internal_inner(callr.bind(cx))).flatten() {
-            Some(inner) => s.root(cx, inner),
-            None => callr,
-        };
         // the values so far (head, tail), and the cursor over the call's
         // arguments
         let head = s.out(cx).root();
@@ -757,19 +792,6 @@ pub fn builtin_evallist(
         let args = unsafe { Args::from_raw(values, Some(names), count as u32, any_alt) };
         run_builtin(cx, &def, callr, args, rho, out)
     })
-}
-
-/// The inner call of `call`, a call of an `.Internal` builtin: as no R
-/// value is an `.Internal` builtin, only `.Internal(f(...))` (however
-/// `.Internal` was reached: `ii <- .Internal; ii(f(...))`, or a call made
-/// at run time) calls one with its arguments evaluated here, and its
-/// argument is the inner call (a call, or a pairlist, which do_internal
-/// takes too).
-#[cold]
-#[inline(never)]
-fn internal_inner(call: Ref<'_>) -> Option<Ref<'_>> {
-    let inner = call.as_cons()?.cdr().as_cons()?.car();
-    matches!(inner.sexptype(), LANGSXP | LISTSXP).then_some(inner)
 }
 
 /// `eval`'s call of a builtin: `R_Visible` set from `PRIMPRINT` before and

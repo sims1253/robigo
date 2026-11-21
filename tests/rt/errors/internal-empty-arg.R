@@ -28,3 +28,10 @@ print(tryCatch((.Internal)(paste0(list("a"), , FALSE)), error = cc))
 x <- as.call(list(as.name(".Internal"), as.pairlist(as.list(quote(paste0(...))))))
 fp <- function(...) eval(x)
 for (i in 1:2) print(fp(list("b"), NULL, FALSE))
+# an .Internal builtin as an R value (unserialize makes one): an ordinary
+# call of it, not an .Internal wrapper
+p <- unserialize(charToRaw(sub("3\nsum\n", "6\npaste0\n",
+    rawToChar(serialize(.Primitive("sum"), NULL, ascii = TRUE)), fixed = TRUE)))
+pf <- function() p(list("a"), NULL, FALSE)
+for (i in 1:2) print(pf())
+print(forceAndCall(0, p, list("a"), NULL, FALSE))
