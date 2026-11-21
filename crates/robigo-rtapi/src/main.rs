@@ -94,9 +94,30 @@ fn default_r_home() -> RHome {
             _ => std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
         },
     };
-    let h = checkout.join(".robigo/rt-home");
+    // the source tree (scripts/rt-home.sh), or with ROBIGO_RT_BOOT=rdb the
+    // one with base's database (scripts/rt-home-db.sh)
+    let h = checkout.join(if boot() == Boot::Rdb { ".robigo/rt-home-db" } else { ".robigo/rt-home" });
     let h = std::path::absolute(&h).unwrap_or(h);
     if has_base(&h) { RHome::Given(h) } else { RHome::MissingDefault(h) }
+}
+
+/// How base boots (`ROBIGO_RT_BOOT`): INTERIM(L5) M1's lazy loader of the
+/// pinned sources (unset), or GNU R's boot, `R_ReplFile` of R_HOME's
+/// `library/base/R/base`: of the checkout's source tree (`stage0`), or of
+/// its tree with base's database (`rdb`). An installed tree is what it is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Boot {
+    M1,
+    Stage0,
+    Rdb,
+}
+
+fn boot() -> Boot {
+    match std::env::var_os("ROBIGO_RT_BOOT") {
+        Some(v) if v == "stage0" => Boot::Stage0,
+        Some(v) if v == "rdb" => Boot::Rdb,
+        _ => Boot::M1,
+    }
 }
 
 /// Whether `h` holds base's tree: the file stage 0 reads first,
@@ -115,8 +136,9 @@ fn missing_tree(home: &RHome) -> Option<String> {
         RHome::Given(_) => None,
         RHome::MissingDefault(p) => Some(format!(
             "R_HOME ('{}') not found: no installed tree (<prefix>/lib/robigo) has library/base/R/base, \
-             and the checkout's is not made (scripts/rt-home.sh)",
-            p.display()
+             and the checkout's is not made ({})",
+            p.display(),
+            if boot() == Boot::Rdb { "scripts/rt-home-db.sh" } else { "scripts/rt-home.sh" }
         )),
     }
 }
@@ -312,10 +334,10 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     robigo_rt::install(cx);
     // `.Call` and `dyn.load`, before base binds its stubs
     robigo_rtapi::install(cx);
-    // L2's stage 0 (base evaluated from source, ROBIGO_RT_BOOT=stage0, from
-    // R_HOME's library/base/R/base: scripts/rt-home.sh) beside M1's loader
-    // until L5 boots from the databases
-    if std::env::var_os("ROBIGO_RT_BOOT").is_some_and(|v| v == "stage0") {
+    // GNU R's boot of base (R_ReplFile of R_HOME's library/base/R/base: the
+    // source tree's, ROBIGO_RT_BOOT=stage0, or baseloader.R's ..lazyLoad
+    // from base.rdb, ROBIGO_RT_BOOT=rdb) beside M1's loader until L5's bar
+    if boot() != Boot::M1 {
         if let Some(e) = missing_tree(home) {
             eprintln!("robigo-rt: {e}");
             return 2;
