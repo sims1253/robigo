@@ -45,6 +45,7 @@ a directory of your own: each holds several GB. If a task truly needs one
 | rt conformance | `cargo test --release -p robigo-rtapi --test conformance` | `robigo-rt` on `tests/rt/**/*.R` and its ratcheted `tests/r` cases, against GNU R 4.6.2 (§ Oracles, "Ratchet columns"). The cases that load tools' native code (`.requires` `r-home-tools`) run when `robigo-rt`'s `R_HOME` tree has it: `scripts/rt-home.sh` builds `library/tools/libs/tools.so` from GNU R's sources against robigo's headers for the natives (`crates/robigo-rtapi/internal`), as the rt job does before its conformance steps |
 | corpora | `scripts/corpus.py run NAME` | below |
 | fuzzing | `scripts/fuzz.py parse\|rds` | mutated scripts through `parse()` and mutated RDS files through `readRDS()`: a panic, failed allocation, stack overflow or fatal signal is a finding; reproducers land in `.robigo/fuzz/` |
+| builtin differential | `scripts/builtin-diff.py run [--only NAME]` | robigo-rt's builtins against GNU R 4.6.2 on generated inputs, out of process (§ Builtin differential) |
 | builtin coverage | `scripts/builtin-coverage.py --check BIN` | the names.c builtins robigo lacks or registers as the wrong kind, and the "not implemented yet" / "not supported" refusals in the sources, against `scripts/builtin-coverage.baseline`: one that is not listed fails (`--update` lists it, and the review sees the diff) |
 
 Everything beyond the gate — valgrind's other tools (memcheck, massif),
@@ -55,6 +56,120 @@ interpreter, the VM and the JIT, `--emi` for dead code), test-case reduction
 `docs/profiling.md`, with
 the local-machine setup and this round's findings in
 `docs/ledger/perf-tools.md`.
+
+### Builtin differential
+
+`scripts/builtin-diff.py` (A4; `docs/g3.md` §10, §16) compares
+robigo-rt's builtins with GNU R 4.6.2's on generated inputs, out of process.
+
+- **Rows:** `tests/builtin-diff/rows.toml` has one table per builtin, by its
+  names.c name. An empty table is a valid row; the file's header lists the
+  fields. `check-rows` reports a registry builtin that has neither a row nor
+  a reason under `[uncovered]`, so a newly ported builtin shows up, and an
+  `[uncovered]` name the registry lacks. For now both are warnings, listed
+  in the summary, so the builtin PRs queued before A4 still pass;
+  `UNLISTED_FAILS` in `scripts/builtin-diff.py` makes them failures once
+  that queue has drained. A builtin with both a row and a reason always
+  fails.
+- **Cases:** `scripts/builtin-diff/gen.R` makes them, in GNU R alone, from
+  one value lattice (version 1, about 70 values with their decorations).
+  The kinds are:
+  - every value alone in every position;
+  - a greedy pairwise covering set;
+  - 200 seeded random tuples;
+  - the row's `extra` expressions;
+  - for an `.Internal` with a base wrapper, up to 300 calls of the wrapper.
+
+  The primary calls are `.Internal(f(...))` itself, the boundary ports are
+  written against. At most 25 generated cases of a row hold a large value
+  (one whose serialization is over 64 KiB). The batch holds each value
+  once; a case names its values, and the driver gives each case its own
+  copy. The same row and seed give a byte-identical batch.
+- **Running:** `scripts/builtin-diff/driver.R` runs a batch in both runtimes.
+  Before each case it empties the global environment and sets the case's
+  RNG state: a Pure row's cases start from Mersenne-Twister seeded 42; an
+  Rng row's cycle through the kinds, an absent `.Random.seed` and a corrupt
+  one. Each case is a closure `a4case` over a fresh environment that binds
+  the arguments `a<i>` and an alias `alias<i>` of each. So `error()` reports
+  `a4case()` and `errorcall()` the builtin's call.
+- **Records:** each case's record (`saveRDS`, version 3, uncompressed) holds:
+  - the value and its visibility;
+  - each warning and message in order: message, class, call;
+  - the error;
+  - each binding after the call: `list(unchanged = TRUE)` when its
+    serialization is the same as before the call, else
+    `list(unchanged = FALSE, value)`;
+  - the global environment's names;
+  - `.Random.seed`.
+
+  The records are compared byte for byte. So is what each case printed: the
+  driver writes a marker line before each case, and the harness splits
+  stdout at them. A case counts as done when its `.ok` marker exists, which
+  the driver writes after the record, so a crash while writing the record
+  costs that case and no other. `render.R`, run in any R ≥ 4, names the
+  first field that differs, for display only.
+- **Environment:** both runtimes run in this environment, which is part of
+  the cache key:
+  - `LC_ALL=C.UTF-8`, `LANGUAGE=en`, `TZ=UTC`, `R_DEFAULT_PACKAGES=NULL`,
+    `--vanilla`;
+  - `R_ENABLE_JIT=0`, or 3 for a row with `jit = "both"`, run again as
+    `<name>@jit`;
+  - a 2 GiB address-space cap per process (`RLIMIT_AS`), 4 jobs;
+  - a scratch directory as the working, home and temporary directory;
+  - no network: `unshare -rn` where it is allowed, `--network none` for the
+    docker side. CI's oracle container refuses unshare, so there the job's
+    network is present.
+- **Classes:** a case is one of:
+  - `pass`;
+  - `mismatch`;
+  - `not-implemented`: robigo-rt's record has "is not implemented yet";
+  - `crash`;
+  - `timeout`: 10 s with no record. A crash or a hang costs that case, and
+    the driver restarts at the next;
+  - `resource`: GNU R reports an allocation failure under the cap.
+    Excluded;
+  - `oracle-crash`: GNU R itself died or hung, or its two runs of the
+    batch gave the case different records. GNU R's side runs every batch
+    twice: a raw `.Internal` call with an input its wrapper never passes can
+    read memory it should not. Excluded.
+
+  robigo-rt failing to allocate where GNU R did not is a `crash`. A driver
+  whose self-test fails stops the run with "driver unusable on <runtime>:
+  <what>", and so does a runtime that dies before its first case.
+- **The score:** `run --only NAME` prints
+  `NAME: pass / total (not-implemented k, crash c, timeout t, resource r excluded, oracle-crash o excluded)`,
+  then the mismatches by field and the failing calls (`--show N`, new ones
+  first). It exits non-zero on a failure not in the known list. `--seed N`
+  generates another set, to which no known list applies.
+- **The ratchet:** `tests/builtin-diff/known/<row>.txt` lists the failing
+  case ids at seed 0, under a header with the row's key. `run` fails on a
+  failure that is not listed. `--update` removes the ids that pass now, and
+  writes the list of a row that has none. It never adds to an existing
+  list. A changed generator, driver, lattice or row changes the key; the
+  lists are then refused until `--regen-known` rewrites them, in a PR
+  titled `builtin-diff:` that shows each row's pass/total before and after.
+- **The key:** a row's key hashes gen.R, driver.R, the row, the seed, the
+  environment above, the JIT setting, and the oracle image's content tag
+  (from `scripts/ci-image.sh refs`, so it is the same locally and in CI).
+  It also covers GNU R's side's version, which counts the double run.
+- **GNU R's side** is cached by key, under `~/.cache/robigo-research/builtin-diff`,
+  or `--data` / `ROBIGO_BUILTIN_DIFF_DATA`. A missing row is made in the
+  oracle image with docker. In CI, the `builtin-diff-data` job makes the
+  records in the oracle image (`oracle --all`) and caches them by
+  `builtin-diff.py key`; the rt job restores them.
+- **The bar:** `plant --plant-rt BIN` runs the planted rows and a control
+  with robigo-rt and with a build with `robigo-rtbuiltins/diff-plant`. That
+  build has one wrong behaviour per compared field:
+  - `nchar`: a value, and `errorcall` for `error`;
+  - `seq_len`: a warning's text;
+  - `names`: an attribute written on the shared argument;
+  - `abs`: a panic;
+  - `set.seed`: one more draw;
+  - `nzchar`: printed output.
+
+  Each must fail in its own field, the panic must cost only its own cases,
+  and the control must not change. `ci`, rt-ci.py's step, runs
+  `check-rows`, then `run`, then `plant`.
 
 ### Timezone fixtures
 
@@ -747,8 +862,21 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    new case changes it only where it reaches a new name; for the same
    reason the committed files carry no counts, which the generator prints
    to the log, so two pull requests that each add a name merge to the file
-   the generator makes, or conflict where they add next to each other); the
-   modes of `docs/g3.md` §16 add steps here.
+   the generator makes, or conflict where they add next to each other). It
+   fails for one of two reasons, and says which:
+   - **a stale list:** the inputs now reach other names
+     (scripts/base-subset-stale.py lists those gained, with the inputs that
+     reach them, and those lost). Run `scripts/base-subset.sh` and commit
+     the three `proto/base-*.txt` files. `scripts/regen-expected.sh` warns
+     when it records a case that is such an input
+     (`Rscript scripts/base-subset.R --inputs` lists them);
+   - **a traced run that differs from the untraced one:** the case prints
+     something the tracer changes. Regenerating cannot fix that: change the
+     case, or leave it out of the inputs. The message names the first line
+     that differs.
+
+   The artifact keeps the full diffs and the two transcripts. The modes of
+   `docs/g3.md` §16 add steps here.
 3. **build:** release build, base-package natives, the binary the heavy
    jobs use; the ratchet markers, the parse-corpus ratchet and the builtin
    coverage baseline (`scripts/builtin-coverage.py --check`) are checked
