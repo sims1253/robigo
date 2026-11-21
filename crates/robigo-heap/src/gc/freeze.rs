@@ -360,7 +360,7 @@ impl Core {
         }
     }
 
-    /// `ROBIGO_GC_FREEZE_CHECK=1`'s independent trace (the bar's (c)), before
+    /// `ROBIGO_GC_FREEZE_CHECK`'s independent trace (the bar's (c)), before
     /// marking: every ordinary object reachable from the precise roots (the
     /// embedder's, the precious list, the weak references, the remembered
     /// log) when frozen objects are walked as if ordinary. The production
@@ -409,7 +409,7 @@ impl Core {
         ordinary
     }
 
-    /// `ROBIGO_GC_FREEZE_CHECK=1`, at every collection after marking: every
+    /// `ROBIGO_GC_FREEZE_CHECK`, at a checked collection after marking: every
     /// ordinary object a frozen object points to is marked, which is what
     /// the invariant must give the collector (Sol S5: the marks, not the
     /// log's bookkeeping). Panics, naming both, otherwise.

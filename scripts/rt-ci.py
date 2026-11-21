@@ -282,9 +282,12 @@ def steps(crates):
         # (the move modes below leave the freeze off)
         ("gctorture (collect at every allocation) and the GC stats check",
          {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check", "ROBIGO_GC_FREEZE_CHECK": "1"}, [*test, *pkgs, *skip]),
-        # docs/g3.md §15.3 E3: the rt slice under the collector modes
+        # docs/g3.md §15.3 E3: the rt slice under the collector modes. The
+        # freeze's check at every 16th collection: at every one it traces
+        # the heap twice per allocation (tests/rt/bytecode/jit.R: 536 s
+        # against 97 s without it, past the case timeout; about 1.3x at 16)
         ("conformance under gctorture (E3)",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_FREEZE_CHECK": "1", **slow}, conformance),
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_FREEZE_CHECK": "16", **slow}, conformance),
         # every argument a PROMSXP at call entry (GNU R's representation,
         # through the same binding-kind transitions): docs/g3.md §16's
         # ROBIGO_MATERIALIZE=1

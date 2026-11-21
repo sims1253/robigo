@@ -533,9 +533,15 @@ pub struct Core {
     frozen: Vec<Sexp>,
     /// Frozen objects to become ordinary at the next collection.
     pending_unfreeze: Vec<Sexp>,
-    /// `ROBIGO_GC_FREEZE_CHECK=1`: the freeze's invariant checked at every
-    /// collection.
-    freeze_check: bool,
+    /// `ROBIGO_GC_FREEZE_CHECK=N`: the freeze's invariant checked at every
+    /// N-th collection (1: every one; 0: never). The check traces the whole
+    /// heap twice, so under gctorture a period keeps a run's cost near a
+    /// plain one's, as `ROBIGO_GC_MOVE=young:N`'s does.
+    freeze_check: u32,
+    /// Collections since the last checked one.
+    freeze_check_count: u32,
+    /// Whether this collection is checked.
+    freeze_checking: bool,
     /// Under `freeze_check`, the ordinary objects the independent trace
     /// reached at this collection's start.
     freeze_reach: Vec<Sexp>,
@@ -830,6 +836,20 @@ fn spill_callee_saved(buf: &mut [usize; 12]) {
 /// is empty and unlimited but for `R_MAX_VSIZE`, whose minimum fits them).
 const CONSTANTS: &str = "robigo: cannot allocate R's constants";
 
+/// `ROBIGO_GC_FREEZE_CHECK`'s period: unset or empty is 0 (off), `N` checks
+/// every N-th collection. Anything else is refused, so a typo never turns
+/// the check off unseen.
+fn freeze_check_from_env() -> u32 {
+    match std::env::var("ROBIGO_GC_FREEZE_CHECK") {
+        Err(std::env::VarError::NotPresent) => 0,
+        Ok(v) if v.is_empty() => 0,
+        Ok(v) => v.parse().unwrap_or_else(|_| {
+            panic!("robigo: ROBIGO_GC_FREEZE_CHECK must be a collection period (1: every collection), not {v:?}")
+        }),
+        Err(e) => panic!("robigo: ROBIGO_GC_FREEZE_CHECK: {e}"),
+    }
+}
+
 impl Core {
     /// A new heap. The calling thread's stack is the one whose C segments
     /// are scanned.
@@ -888,7 +908,9 @@ impl Core {
             diag: diag::Diag::from_env(),
             frozen: Vec::new(),
             pending_unfreeze: Vec::new(),
-            freeze_check: std::env::var_os("ROBIGO_GC_FREEZE_CHECK").is_some_and(|v| v == "1"),
+            freeze_check: freeze_check_from_env(),
+            freeze_check_count: 0,
+            freeze_checking: false,
             freeze_reach: Vec::new(),
             weak_refs: Vec::new(),
             finalizers_pending: false,
@@ -2793,8 +2815,14 @@ impl Core {
             self.unfreeze_pending();
             // (this collection's snapshot only: r4 S10)
             self.freeze_reach.clear();
-            if self.freeze_check && !self.frozen.is_empty() {
-                self.freeze_reach = self.independent_reach(roots);
+            self.freeze_checking = false;
+            if self.freeze_check != 0 && !self.frozen.is_empty() {
+                self.freeze_check_count += 1;
+                if self.freeze_check_count >= self.freeze_check {
+                    self.freeze_check_count = 0;
+                    self.freeze_checking = true;
+                    self.freeze_reach = self.independent_reach(roots);
+                }
             }
             if self.young_collection() {
                 // ROBIGO_GC_MOVE=young:N (mover.rs): the pins first, then a
@@ -2911,7 +2939,7 @@ impl Core {
             self.trace_y::<Y>();
             // ROBIGO_GC_FREEZE_CHECK: after the strong trace, before weak
             // references and C segments can mark what it missed (Sol r2 S5)
-            if self.freeze_check && !Y {
+            if self.freeze_checking && !Y {
                 self.check_frozen_marked();
             }
             // docs/g3.md §3, "What a collection marks" (L8): precise roots
