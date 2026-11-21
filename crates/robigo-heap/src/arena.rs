@@ -61,14 +61,16 @@ unsafe impl Sync for Lock {}
 
 static LOCK: Lock = Lock(UnsafeCell::new(libc::PTHREAD_MUTEX_INITIALIZER));
 
-/// The fork handlers' hold on the lock (`fork.rs`, the process's lock
-/// order): taken by `prepare`, after every other lock of the process.
+/// The lock taken outside `locked`: by the fork handlers' `prepare`, after
+/// every other lock of the process (`fork.rs`), and by
+/// [`hold_lock_for_test`].
 pub(crate) fn lock_for_fork() {
     // SAFETY: the static mutex, initialized.
     unsafe { libc::pthread_mutex_lock(LOCK.0.get()) };
 }
 
-/// Released by `parent` and `child`.
+/// The release of [`lock_for_fork`]'s lock: by the fork handlers' `parent`
+/// and `child`, and by [`hold_lock_for_test`]'s guard.
 pub(crate) fn unlock_after_fork() {
     // SAFETY: the mutex `lock_for_fork` took, in this process (the parent)
     // or its copy (the child, where the forking thread owns it).
@@ -83,7 +85,7 @@ pub(crate) fn unlock_after_fork() {
 /// # Safety
 /// The caller interns nothing (no `install`, no new heap) while it holds the
 /// guard, and drops it on this thread.
-#[doc(hidden)]
+#[cfg(feature = "test-support")]
 pub unsafe fn hold_lock_for_test() -> impl Drop {
     struct Held(std::marker::PhantomData<*const ()>);
     impl Drop for Held {
@@ -98,8 +100,9 @@ pub unsafe fn hold_lock_for_test() -> impl Drop {
 /// Run `f` with the arena's state, under the lock (`fork.rs` registers
 /// the fork handlers that keep a forked child's copy of it free).
 fn locked<R>(f: impl FnOnce(&mut Inner) -> R) -> R {
-    // SAFETY: the static mutex, initialized; taken and released here only,
-    // so `Inner` has one user at a time.
+    // SAFETY: the static mutex, initialized. Whoever holds it is the one
+    // user of `Inner`: here, and the fork handlers and the test guard, which
+    // hold it without touching `Inner`.
     unsafe {
         let r = libc::pthread_mutex_lock(LOCK.0.get());
         assert_eq!(r, 0, "robigo: the symbol arena's lock");

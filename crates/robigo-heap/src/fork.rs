@@ -1,8 +1,15 @@
-//! The process's `fork` handlers: one `pthread_atfork` triple, registered
-//! before `main` (an `.init_array` constructor, while the process has one
-//! thread), so that a child forked while another thread holds one of the
-//! process's locks does not inherit it held by a thread the child does not
-//! have.
+//! The process's `fork` handlers: one `pthread_atfork` triple, so that a
+//! child forked while another thread holds one of the process's locks does
+//! not inherit it held by a thread the child does not have.
+//!
+//! **Registration.** On Linux an `.init_array` constructor registers the
+//! handlers before `main`, while the process has one thread. Linux with
+//! glibc is the only target robigo-rtcore builds for (`clib.rs`'s
+//! `compile_error!`). Elsewhere (robigo-heap alone, on another unix) the
+//! first `Core::new` registers them. There a fork racing that first
+//! registration on another thread is not covered: a second thread's heap
+//! may take the arena's lock before the first thread's `pthread_atfork`
+//! returns.
 //!
 //! **The process's locks and their order**, the one place it is written:
 //! 0. `FORK` (here): held by a fork's handlers from `prepare` to `parent` /
@@ -43,6 +50,8 @@
 //!   thread would wait on itself.
 
 #![allow(unsafe_code)]
+// (Miri runs no fork: the handlers and their state are compiled, unused)
+#![cfg_attr(miri, allow(dead_code))]
 
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
@@ -74,20 +83,37 @@ static PREPARES: AtomicU64 = AtomicU64::new(0);
 
 static REGISTERED: AtomicBool = AtomicBool::new(false);
 
+// The callbacks travel as data pointers: a `fn()` is one on every target
+// this crate builds for, and the conversion back is a transmute.
+const _: () = assert!(std::mem::size_of::<fn()>() == std::mem::size_of::<*mut ()>());
+
 /// Give the fork handlers the embedder's locks, taken before the arena's
 /// in `prepare` and released after it. The embedder calls it before any of
 /// its locks can be held: robigo-rtcore from a constructor of its own
-/// (before `main`), and again before an isolate's first lock (a later call
-/// with the same functions changes nothing). A fork in progress when it is
-/// called releases what its own `prepare` took.
+/// (before `main`), and again before an isolate's first lock.
+///
+/// What the handlers need of the two functions:
+/// - `take` takes the embedder's locks in the process's order (the module
+///   doc), all of them before the arena's;
+/// - `release` releases exactly what `take` took, on the same thread;
+/// - neither allocates from a robigo heap, forks, or panics.
+///
+/// The stores are made under `FORK`, so no fork is between `prepare` and
+/// `parent`/`child` while the pair changes: each fork releases with the
+/// pair it took with.
 pub fn set_fork_locks(take: fn(), release: fn()) {
-    EMBEDDER_RELEASE.store(release as *mut (), Ordering::SeqCst);
-    EMBEDDER_TAKE.store(take as *mut (), Ordering::SeqCst);
+    // SAFETY: the static mutex, initialized; the stores below need no other
+    // lock, and nothing here can unwind while it is held.
+    unsafe { libc::pthread_mutex_lock(FORK.0.get()) };
+    EMBEDDER_RELEASE.store(release as *const () as *mut (), Ordering::SeqCst);
+    EMBEDDER_TAKE.store(take as *const () as *mut (), Ordering::SeqCst);
+    // SAFETY: taken above by this thread.
+    unsafe { libc::pthread_mutex_unlock(FORK.0.get()) };
 }
 
 /// How many forks have entered the `prepare` handler (a test's
 /// handshake).
-#[doc(hidden)]
+#[cfg(feature = "test-support")]
 pub fn fork_prepares() -> u64 {
     PREPARES.load(Ordering::SeqCst)
 }
@@ -99,7 +125,8 @@ extern "C" fn prepare() {
     PREPARES.fetch_add(1, Ordering::SeqCst);
     let take = EMBEDDER_TAKE.load(Ordering::SeqCst);
     if !take.is_null() {
-        // SAFETY: stored by `set_fork_locks` from a `fn()`.
+        // SAFETY: stored by `set_fork_locks` from a `fn()` of the same size
+        // (the assertion above).
         let take: fn() = unsafe { std::mem::transmute::<*mut (), fn()>(take) };
         take();
         TOOK_EMBEDDER.store(true, Ordering::Relaxed);
@@ -133,7 +160,12 @@ pub(crate) fn register() {
         // SAFETY: three `extern "C"` functions of no arguments, as
         // pthread_atfork takes them; `release` serves parent and child.
         let r = unsafe { libc::pthread_atfork(Some(prepare), Some(release), Some(release)) };
-        assert_eq!(r, 0, "robigo: pthread_atfork");
+        if r != 0 {
+            // not registered: a later caller (the next `Core::new`) tries
+            // again
+            REGISTERED.store(false, Ordering::SeqCst);
+            panic!("robigo: pthread_atfork failed ({r})");
+        }
     }
 }
 

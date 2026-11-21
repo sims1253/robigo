@@ -3,11 +3,38 @@
 //! one forks again and again, and every child must start an isolate and
 //! write the environment. Its own test binary, so that the isolate the
 //! other thread starts is the process's first.
+//!
+//! Coverage, not proof of overlap: the forks may land before the other
+//! thread's start gets far. The window this case is about is closed by
+//! construction instead: robigo-rtcore's constructor publishes its fork
+//! locks before `main`, and `with_options` publishes them again before
+//! `Registration::new` takes the first lock (`isolate.rs`), so no
+//! interleaving lets a fork find one of them held before the handlers know
+//! it. The sibling tests in `src/fork_tests.rs` observe their overlap.
 
 #[test]
 #[cfg(all(target_os = "linux", not(miri)))]
 fn forks_overlapping_the_first_isolate_start_give_working_children() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
+    // a fork whose handlers hang never returns, before any deadline below
+    // could run: abort the process instead
+    let done = Arc::new(AtomicBool::new(false));
+    {
+        let done = Arc::clone(&done);
+        std::thread::spawn(move || {
+            let until = Instant::now() + Duration::from_secs(90);
+            while Instant::now() < until {
+                if done.load(Ordering::SeqCst) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            eprintln!("fork_first_isolate: no progress in 90 s (a fork or its handlers hung)");
+            std::process::abort();
+        });
+    }
     let starter = std::thread::spawn(|| {
         let mut iso = robigo_rtcore::OwnedIsolate::new();
         let cx = iso.cx();
@@ -16,11 +43,11 @@ fn forks_overlapping_the_first_isolate_start_give_working_children() {
         }
     });
     let mut children = Vec::new();
-    for _ in 0..40 {
+    for k in 0..40 {
         // SAFETY: the child runs the code below and exits without returning
         // into the test harness.
         let pid = unsafe { libc::fork() };
-        assert!(pid >= 0, "fork");
+        assert!(pid >= 0, "fork {k} failed: {}", std::io::Error::last_os_error());
         if pid == 0 {
             let ok = std::panic::catch_unwind(|| {
                 let mut iso = robigo_rtcore::OwnedIsolate::new();
@@ -31,21 +58,21 @@ fn forks_overlapping_the_first_isolate_start_give_working_children() {
                 // a glibc older than MIN_GLIBC that is the writer's
                 // documented refusal, on a newer one a write
                 match robigo_rtcore::clib::env_writer(cx) {
-                    Ok(w) => assert!(w.set(b"ROBIGO_FORK_FIRST", b"1")),
+                    Ok(w) => assert!(w.set(b"ROBIGO_FORK_FIRST", b"1"), "child {k}: setenv"),
                     Err(robigo_rtcore::clib::EnvWriteRefused::SeveralIsolates)
                         if robigo_rtcore::clib::glibc_version() < robigo_rtcore::clib::MIN_GLIBC => {}
-                    Err(e) => panic!("{e:?}"),
+                    Err(e) => panic!("child {k}: the environment writer: {e:?}"),
                 }
             })
             .is_ok();
             // SAFETY: ends the child at once.
             unsafe { libc::_exit(if ok { 0 } else { 1 }) };
         }
-        children.push(pid);
+        children.push((k, pid));
     }
     starter.join().unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
-    for pid in children {
+    for (k, pid) in children {
         let mut status = 0;
         loop {
             // SAFETY: our own child; `status` is writable.
@@ -53,13 +80,15 @@ fn forks_overlapping_the_first_isolate_start_give_working_children() {
             if r == pid {
                 break;
             }
+            assert!(r == 0, "child {k}: waitpid failed: {}", std::io::Error::last_os_error());
             if Instant::now() > deadline {
                 // SAFETY: our own child.
                 unsafe { libc::kill(pid, libc::SIGKILL) };
-                panic!("a child forked during the first isolate's start never finished");
+                panic!("child {k}, forked during the first isolate's start, never finished");
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "a child failed (status {status})");
+        assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "child {k} failed (status {status})");
     }
+    done.store(true, Ordering::SeqCst);
 }

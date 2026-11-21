@@ -1016,9 +1016,12 @@ struct ForkGuards(
     std::cell::UnsafeCell<Option<(std::sync::MutexGuard<'static, usize>, std::sync::RwLockWriteGuard<'static, ()>)>>,
 );
 
-// SAFETY: written by the forking thread's `prepare` handler and read by the
-// same thread's `parent` or `child` handler, which the C library runs
-// around `fork`; no other thread reaches it.
+// SAFETY: written by a fork's `prepare` handler and read by the same fork's
+// `parent` or `child` handler, on the forking thread (the C library runs
+// them around `fork`). Two forks on two threads never overlap here:
+// robigo-heap's `FORK` lock, taken first in `prepare` and released last
+// after `parent`/`child`, serializes whole forks, so one fork's handlers
+// alone reach the slot at a time.
 unsafe impl Sync for ForkGuards {}
 
 static FORK_GUARDS: ForkGuards = ForkGuards(std::cell::UnsafeCell::new(None));
@@ -1029,7 +1032,8 @@ static FORK_GUARDS: ForkGuards = ForkGuards(std::cell::UnsafeCell::new(None));
 fn fork_take() {
     let live = live_isolates();
     let env = crate::clib::env_write_lock();
-    // SAFETY: as for `ForkGuards`: the forking thread alone.
+    // SAFETY: as for `ForkGuards`: this fork alone, under `FORK`; the slot
+    // is empty (the previous fork's `fork_release` took it).
     unsafe { *FORK_GUARDS.0.get() = Some((live, env)) };
 }
 
@@ -1105,9 +1109,11 @@ impl OwnedIsolate {
     }
 
     pub fn with_options(opts: Options) -> OwnedIsolate {
-        // the fork handlers know this crate's locks before one is first
-        // taken (the constructor below did it before `main`; this is the
-        // same call again, in case a linker dropped the constructor)
+        // the fork handlers know this crate's locks before this isolate
+        // takes one. The constructor did it before `main`; this repeats it
+        // in case a linker dropped the constructor. That fallback is
+        // best-effort: another thread that already held one of these locks
+        // before this first call could still be caught by a fork.
         robigo_heap::set_fork_locks(fork_take, fork_release);
         // counted before it can run anything (an environment write waits);
         // a panic below takes the count back

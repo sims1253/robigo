@@ -65,9 +65,9 @@ pub struct HeapId(usize);
 pub mod types;
 use types::*;
 
-#[doc(hidden)]
+#[cfg(feature = "test-support")]
 pub use arena::hold_lock_for_test as hold_arena_lock_for_test;
-#[doc(hidden)]
+#[cfg(feature = "test-support")]
 pub use fork::fork_prepares;
 pub use fork::set_fork_locks;
 /// The allocator's block size and the header a block or large chunk keeps

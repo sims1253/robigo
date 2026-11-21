@@ -14,6 +14,11 @@ use std::time::{Duration, Instant};
 /// locks. Exit status 0 if it all worked.
 fn child_work() -> i32 {
     let r = std::panic::catch_unwind(|| {
+        // the two locks of this crate, taken directly: free in the child on
+        // any glibc (the writer below refuses before it takes `ENV` when an
+        // older glibc counts several isolates)
+        drop(crate::isolate::live_isolates());
+        drop(crate::clib::env_write_lock());
         let mut iso = OwnedIsolate::new();
         // SAFETY: the child has one thread, this one: no other reads the
         // environment while it writes.
@@ -22,31 +27,59 @@ fn child_work() -> i32 {
         // other tests' isolates still count in the child: on a glibc older
         // than MIN_GLIBC that is the writer's documented refusal
         match crate::clib::env_writer(cx) {
-            Ok(w) => assert!(w.set(b"ROBIGO_FORK_TEST", b"1")),
+            Ok(w) => assert!(w.set(b"ROBIGO_FORK_TEST", b"1"), "the child's setenv"),
             Err(crate::clib::EnvWriteRefused::SeveralIsolates)
                 if crate::clib::glibc_version() < crate::clib::MIN_GLIBC => {}
-            Err(e) => panic!("{e:?}"),
+            Err(e) => panic!("the child's environment writer: {e:?}"),
         }
         let _ = cx.install(format!("robigo_fork_test_{}", std::process::id()).as_bytes()).unwrap();
     });
     if r.is_ok() { 0 } else { 1 }
 }
 
+/// Abort the whole test process if `done` is not set within `secs`: a fork
+/// that never returns (a `prepare` handler stuck on a lock) hangs before any
+/// deadline of the caller's could run.
+pub(crate) fn watchdog(what: &'static str, secs: u64) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let d = std::sync::Arc::clone(&done);
+    std::thread::spawn(move || {
+        let until = Instant::now() + Duration::from_secs(secs);
+        while Instant::now() < until {
+            if d.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        eprintln!("{what}: no progress in {secs} s (a fork or its handlers hung)");
+        std::process::abort();
+    });
+    done
+}
+
 /// Fork while another thread holds a lock (`hold` returns its guard), and
 /// check that the child finishes `child_work`.
 ///
 /// The overlap is observed, not timed: the holder releases only once a fork
-/// has entered the `prepare` handler (`robigo_heap::fork_prepares`), so the
-/// lock is held when the handlers run. Without the handlers no `prepare`
-/// runs: the holder gives up after 2 s, by which time the fork has happened
-/// with the lock held, and the child blocks for ever (the negative control:
-/// with registration disabled, every one of these tests times out).
-fn fork_while_held<G: 'static>(what: &str, hold: fn() -> G) {
+/// has entered the `prepare` handler (`robigo_heap::fork_prepares`). The
+/// counter is bumped before `prepare` takes its locks. `prepare` takes
+/// every one of them, so it must wait until the holder releases this one,
+/// and the fork happens only once `prepare` holds it. The child therefore
+/// starts with the lock owned by its own (forking) thread, which `child`
+/// releases. Without the handlers no `prepare` runs: the holder gives up
+/// after 2 s, by which time the fork has happened with the lock held, and
+/// the child blocks for ever (the negative control: with registration
+/// disabled, every one of these tests times out).
+fn fork_while_held<G: 'static>(what: &'static str, hold: fn() -> G) {
     // serialized: each test forks while its own lock is held, and another
     // test's fork would enter `prepare` and release this one's holder
     static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    // load-bearing: starting an isolate publishes this crate's fork locks
+    // (`with_options` repeats the constructor's `set_fork_locks`), so the
+    // test means the same if a linker dropped the constructor
     drop(OwnedIsolate::new());
+    let done = watchdog(what, 60);
     let (held_tx, held_rx) = mpsc::channel();
     let before = robigo_heap::fork_prepares();
     let holder = std::thread::spawn(move || {
@@ -62,7 +95,7 @@ fn fork_while_held<G: 'static>(what: &str, hold: fn() -> G) {
     // SAFETY: the child runs `child_work` and exits without returning into
     // the test harness (`_exit`).
     let pid = unsafe { libc::fork() };
-    assert!(pid >= 0, "fork");
+    assert!(pid >= 0, "{what}: fork failed: {}", std::io::Error::last_os_error());
     if pid == 0 {
         let s = child_work();
         // SAFETY: ends the child at once, running no handler of the parent's.
@@ -77,6 +110,7 @@ fn fork_while_held<G: 'static>(what: &str, hold: fn() -> G) {
         if r == pid {
             break;
         }
+        assert!(r == 0, "{what}: waitpid failed: {}", std::io::Error::last_os_error());
         if Instant::now() > deadline {
             // SAFETY: our own child.
             unsafe { libc::kill(pid, libc::SIGKILL) };
@@ -84,6 +118,7 @@ fn fork_while_held<G: 'static>(what: &str, hold: fn() -> G) {
         }
         std::thread::sleep(Duration::from_millis(10));
     }
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
     assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "{what}: the child failed (status {status})");
 }
 

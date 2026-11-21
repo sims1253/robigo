@@ -309,7 +309,7 @@ compile_error!(
 /// the environment holds it shared for that call ([`env_read`]:
 /// `localtime`, `gmtime`, the `C.UTF-8` locale's `newlocale`,
 /// `passwd_home`, `passwd_name`, `group_name`, `env_locale`, `c_locale`'s
-/// `newlocale`, `default_textdomain_dir`),
+/// `newlocale`, `default_textdomain_dir`; and [`env_vars`]'s listing),
 /// and an [`EnvWriter`] holds it
 /// exclusive. So robigo's own safe wrappers never read while it writes, on
 /// any glibc, with or without isolates. Its place in the process's lock
@@ -320,20 +320,22 @@ static ENV: std::sync::RwLock<()> = std::sync::RwLock::new(());
 /// The whole environment, `std::env::vars_os()` read under [`ENV`]
 /// shared: `Sys.getenv()`'s listing, which walks `environ` and so must
 /// not overlap an [`EnvWriter`]'s `setenv` (glibc makes only `getenv` safe
-/// against it).
+/// against it). Never while this thread holds an [`EnvWriter`]: the lock
+/// does not nest, and the thread would wait on itself.
 pub fn env_vars() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
     let _r = env_read();
     std::env::vars_os().collect()
 }
 
-/// [`ENV`] exclusive, for the fork handlers (`isolate::fork_take`): no
-/// reader is inside a C call and no writer inside `set_var` across a fork.
+/// [`ENV`] exclusive, for the fork handlers (`isolate::fork_take`): across
+/// a fork no reader is inside a C call and no [`EnvWriter`] inside the C
+/// library's `setenv`/`unsetenv`.
 pub(crate) fn env_write_lock() -> std::sync::RwLockWriteGuard<'static, ()> {
     ENV.write().unwrap_or_else(|e| e.into_inner())
 }
 
 /// [`ENV`] shared, held by a test as a reader in a C call would hold it.
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 pub(crate) fn env_read_for_test() -> std::sync::RwLockReadGuard<'static, ()> {
     env_read()
 }

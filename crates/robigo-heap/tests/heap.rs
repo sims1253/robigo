@@ -3365,7 +3365,8 @@ fn a_new_symbol_gets_its_names_bits_when_it_is_made() {
 /// with the result.
 ///
 /// What it covers: the arena's lock with heap-only users, the handlers
-/// registered by the first `Core::new` (`fork.rs`). What it does not cover:
+/// registered before `main` by `fork.rs`'s constructor (on Linux; the
+/// first `Core::new` registers them only where there is none). What it does not cover:
 /// whether the fork lands while the other thread holds the lock. The
 /// interleaving is left to the scheduler, so a pass may never have
 /// overlapped. robigo-rtcore's `fork_tests` hold each of the process's
