@@ -1,0 +1,75 @@
+@59784d7a5960 00 NILSXP g0c0 [REF(65535)] 
+@59784ddea478 10 LGLSXP g0c1 [REF(2)] (len=1, tl=0) 1
+@59784ddde2c8 13 INTSXP g0c2 [] (len=3, tl=0) 1,-2147483648,3
+@59784dde3c68 14 REALSXP g0c4 [] (len=6, tl=0) 1.5,nan,inf,-0,1e-20,...
+@59784ddea1a0 24 RAWSXP g0c1 [] (len=2, tl=0) 01,ff
+@59784ddfee70 13 INTSXP g0c0 [REF(65535)]  1 : 3 (compact)
+@59784ddfe8c0 13 INTSXP g0c0 [REF(65535)]  1 : 10 (compact)
+@59784ddc41c8 16 STRSXP g0c3 [] (len=3, tl=0)
+  @59784daa4848 09 CHARSXP g0c1 [REF(6),gp=0x60] [ASCII] [cached] "a"
+  @59784d7a77a0 09 CHARSXP g0c1 [REF(29),gp=0x20] [cached] "NA" [NA]
+  @59784dde9fa8 09 CHARSXP g0c1 [REF(4),gp=0x28] [UTF8] [cached] "é"
+@59784ddc4178 19 VECSXP g0c3 [] (len=3, tl=0)
+  @59784dde9e58 14 REALSXP g0c1 [REF(3)] (len=1, tl=0) 1
+  @59784dde9e20 16 STRSXP g0c1 [REF(3)] (len=1, tl=0)
+    @59784dc8cc78 09 CHARSXP g0c1 [REF(10),gp=0x60] [ASCII] [cached] "b"
+  @59784dde9db0 19 VECSXP g0c1 [REF(1)] (len=1, tl=0)
+    @59784dde9de8 13 INTSXP g0c1 [REF(3)] (len=1, tl=0) 2
+@59784d80b9d8 01 SYMSXP g0c0 [REF(1602)] "x"
+@59784d894d58 01 SYMSXP g0c0 [REF(1),LCK,gp=0x4000] "pi" (has value)
+@59784de02b38 06 LANGSXP g0c0 [REF(2)] 
+  @59784d918118 01 SYMSXP g0c0 [REF(11)] "f"
+  @59784d80b9d8 01 SYMSXP g0c0 [REF(1607)] "x"
+  TAG: @59784d91f038 01 SYMSXP g0c0 [REF(37)] "y"
+  @59784dde9c98 14 REALSXP g0c1 [REF(2)] (len=1, tl=0) 2
+@59784de016e0 02 LISTSXP g0c0 [] 
+  TAG: @59784de026a0 01 SYMSXP g0c0 [REF(6)] "a"
+  @59784dde9c60 14 REALSXP g0c1 [REF(4)] (len=1, tl=0) 1
+  @59784dde9c28 14 REALSXP g0c1 [REF(4)] (len=1, tl=0) 2
+@59784dde97c8 13 INTSXP g0c1 [OBJ,ATT] (len=2, tl=0) 1,2
+ATTRIB:
+  @59784de054b0 02 LISTSXP g0c0 [REF(1)] 
+    TAG: @59784d7a5650 01 SYMSXP g0c0 [REF(1649),LCK,gp=0x4000] "class" (has value)
+    @59784dde99c0 16 STRSXP g0c1 [REF(5)] (len=1, tl=0)
+      @59784dc0b678 09 CHARSXP g0c1 [REF(10),gp=0x61] [ASCII] [cached] "foo"
+    TAG: @59784d7a50a0 01 SYMSXP g0c0 [REF(294),LCK,gp=0x4000] "names" (has value)
+    @59784ddde148 16 STRSXP g0c2 [REF(3)] (len=2, tl=0)
+      @59784d849f48 09 CHARSXP g0c1 [REF(7),gp=0x61] [ASCII] [cached] "p"
+      @59784d83b6f0 09 CHARSXP g0c1 [REF(6),gp=0x61] [ASCII] [cached] "q"
+@59784de04f00 03 CLOSXP g0c0 [] 
+FORMALS:
+  @59784de053d0 02 LISTSXP g0c0 [REF(4)] 
+    TAG: @59784de026a0 01 SYMSXP g0c0 [REF(8)] "a"
+    @59784dde9790 14 REALSXP g0c1 [REF(1)] (len=1, tl=0) 1
+BODY:
+  @59784de05328 06 LANGSXP g0c0 [REF(2)] 
+    @59784d7b08e0 01 SYMSXP g0c0 [REF(18),LCK,gp=0x5000] "+" (has value)
+    @59784de026a0 01 SYMSXP g0c0 [REF(8)] "a"
+    @59784dde9758 14 REALSXP g0c1 [REF(1)] (len=1, tl=0) 1
+CLOENV:
+  @59784d7dc138 04 ENVSXP g0c0 [REF(65535),GL,gp=0x8000] <R_GlobalEnv>
+@59784de04918 04 ENVSXP g0c0 [REF(1)] <0x59784de04918>
+ENCLOS:
+  @59784d7dc138 04 ENVSXP g0c0 [REF(65535),GL,gp=0x8000] <R_GlobalEnv>
+HASHTAB:
+  @59784de06130 19 VECSXP g0c7 [REF(1)] (len=29, tl=1)
+    @59784d7a5960 00 NILSXP g0c0 [REF(65535)] 
+    @59784d7a5960 00 NILSXP g0c0 [REF(65535)] 
+    @59784de08050 02 LISTSXP g0c0 [REF(1)] 
+      TAG: @59784da8a758 01 SYMSXP g0c0 [REF(62)] "v"
+      @59784dde96b0 14 REALSXP g0c1 [REF(3)] (len=1, tl=0) 1
+    @59784d7a5960 00 NILSXP g0c0 [REF(65535)] 
+    @59784d7a5960 00 NILSXP g0c0 [REF(65535)] 
+    ...
+@59784d7dc138 04 ENVSXP g0c0 [REF(65535),GL,gp=0x8000] <R_GlobalEnv>
+@59784d7a58f0 04 ENVSXP g0c0 [REF(17),LCK,gp=0x4000] <base>
+@59784d7a5928 04 ENVSXP g0c0 [REF(1622)] <R_EmptyEnv>
+@59784de06488 14 REALSXP g0c0 [] (len=0, tl=0)
+@59784ddc22f8 13 INTSXP g0c5 [] (len=17, tl=0) 0,0,0,0,0,...
+@59784ddc3ef8 16 STRSXP g0c3 [] (len=3, tl=0)
+  @59784d7a77d8 09 CHARSXP g0c1 [gp=0x60] [ASCII] [cached] ""
+  @59784d7a77d8 09 CHARSXP g0c1 [gp=0x60] [ASCII] [cached] ""
+  @59784d7a77d8 09 CHARSXP g0c1 [gp=0x60] [ASCII] [cached] ""
+@59784de09948 13 INTSXP g0c0 [REF(65535)]  1 : 6 (compact)
+@59784ddddec8 16 STRSXP g0c2 [] (len=2, tl=0)
+[1] TRUE

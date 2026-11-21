@@ -75,6 +75,7 @@ pub use fork::{once_excluding_fork, set_fork_locks};
 /// before its objects (`heap.rs`): what a test that places an object at a
 /// chunk's end computes with.
 pub use heap::{BLOCK, DATA_OFF};
+pub use heapsize::node_class;
 pub use layout::{elt_size, extra, flags, gp};
 
 /// GNU R's `cetype_t`.

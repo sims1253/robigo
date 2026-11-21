@@ -1332,6 +1332,22 @@ impl Cx {
 
     // ---- lookups that run no code -----------------------------------------
 
+    /// GNU R's `HASHTAB(rho)`: a hashed frame's table, R_NilValue for any
+    /// other environment (a slot frame, base, the empty one), as GNU R's
+    /// unhashed frames have none.
+    // R: memory.c:HASHTAB
+    pub fn hash_table<'g>(&'g self, rho: EnvRef<'g>) -> Ref<'g> {
+        let iso = self.iso();
+        let r = rho.as_ref().sexp();
+        iso.check_owns(r);
+        // SAFETY: a live environment of this isolate (checked above).
+        match unsafe { kind(iso, r) } {
+            // SAFETY: the table of a live hashed frame.
+            Kind::Hashed(t) => unsafe { Ref::from_sexp(t, self) },
+            _ => self.nil(),
+        }
+    }
+
     /// `findVarLocInFrame(rho, sym)`: `sym`'s binding in `rho`'s frame.
     pub fn frame_binding<'g>(&'g self, rho: EnvRef<'g>, sym: Sym<'g>) -> Lookup<'g> {
         let iso = self.iso();

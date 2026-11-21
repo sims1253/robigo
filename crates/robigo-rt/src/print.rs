@@ -595,6 +595,14 @@ pub fn namespace_spec(cx: &mut Cx, rho: Root<'_>) -> RResult<Option<Vec<u8>>> {
     })
 }
 
+/// [`encode_char`] with the print parameters of the options in effect
+/// (`PrintDefaults`): for callers outside printing (`inspect`).
+pub fn encode_char_now(cx: &mut Cx, c: Root<'_>) -> RResult<Vec<u8>> {
+    let data = PrintData::init(cx, None)?;
+    let pp = data.params(cx);
+    Ok(encode_char(c.bind(cx).as_char().unwrap(), &pp))
+}
+
 /// `EncodeChar(x)`: `EncodeString(x, 0, 0, Rprt_adj_left)`.
 // R: printutils.c:EncodeChar
 fn encode_char(c: Char<'_>, pp: &PrintParams) -> Vec<u8> {

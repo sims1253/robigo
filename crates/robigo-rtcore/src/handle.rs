@@ -142,6 +142,44 @@ impl<'g> Ref<'g> {
         unsafe { self.sexp().refcnt() }
     }
 
+    /// GNU R's LEVELS: the header's gp bits.
+    #[inline(always)]
+    pub fn levels(self) -> u16 {
+        // SAFETY: live.
+        unsafe { self.sexp().gp() }
+    }
+
+    /// GNU R's RDEBUG, RTRACE and RSTEP, in that order. A closure keeps
+    /// all three; a vector keeps RTRACE (`tracemem`); other types none.
+    pub fn debug_bits(self) -> (bool, bool, bool) {
+        use robigo_heap::extra::{closure, vector};
+        // SAFETY: live; `extra` is header state, read by the type that set it.
+        let e = unsafe { self.sexp().extra() };
+        match self.sexptype() {
+            CLOSXP => (e & closure::DEBUG != 0, e & closure::TRACE != 0, e & closure::STEP != 0),
+            t if t != CHARSXP && robigo_heap::is_vector_type(t) => (false, e & vector::TRACE != 0, false),
+            _ => (false, false, false),
+        }
+    }
+
+    /// The node class GNU R would give this object (`sxpinfo.gccls`, which
+    /// `inspect` prints): 0 for a node or an ALTREP instance, 6 for a vector
+    /// whose data is outside the heap (GNU R's custom allocator), otherwise
+    /// its length's class ([`robigo_heap::node_class`]). robigo's own
+    /// allocation is not GNU R's, so this is computed, not read.
+    pub fn gnu_node_class(self) -> u8 {
+        let t = self.sexptype();
+        if !robigo_heap::is_vector_type(t) || self.is_altrep() {
+            return 0;
+        }
+        // SAFETY: live; `flags` is header state.
+        if unsafe { self.sexp().flags() } & robigo_heap::flags::EXTDATA != 0 {
+            return 6;
+        }
+        // SAFETY: a standard vector (checked above): its length is in place.
+        robigo_heap::node_class(t, unsafe { self.sexp().std_len() } as usize)
+    }
+
     /// GNU R's MAYBE_SHARED.
     #[inline(always)]
     pub fn maybe_shared(self) -> bool {

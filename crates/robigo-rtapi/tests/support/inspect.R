@@ -1,0 +1,30 @@
+# .Internal(inspect()) against GNU R 4.6.2's (inspect.gnur.out, recorded with
+# R_DEFAULT_PACKAGES=NULL, LC_ALL=C.UTF-8). tests/inspect.rs compares them
+# with addresses and REF(n) masked: an address is never compared, and a
+# reference count includes references from GNU R's own objects (a
+# symbol's thousands), which are robigo's own.
+x <- .Internal(inspect(NULL))
+x <- .Internal(inspect(TRUE))
+x <- .Internal(inspect(c(1L, NA, 3L)))
+x <- .Internal(inspect(c(1.5, NA, Inf, -0, 1e-20, 123456789)))
+x <- .Internal(inspect(as.raw(c(1, 255))))
+x <- .Internal(inspect(1:3))
+x <- .Internal(inspect(1:10, 0, 3))
+x <- .Internal(inspect(c("a", NA, "é")))
+x <- .Internal(inspect(list(1, "b", list(2L))))
+x <- .Internal(inspect(as.name("x")))
+x <- .Internal(inspect(as.name("pi")))
+x <- .Internal(inspect(quote(f(x, y = 2))))
+x <- .Internal(inspect(pairlist(a = 1, 2)))
+x <- .Internal(inspect(structure(1:2, class = "foo", names = c("p", "q"))))
+x <- .Internal(inspect(function(a = 1) a + 1))
+e <- new.env(); assign("v", 1, e)
+x <- .Internal(inspect(e))
+x <- .Internal(inspect(globalenv(), 0))
+x <- .Internal(inspect(baseenv(), 0))
+x <- .Internal(inspect(emptyenv(), 0))
+x <- .Internal(inspect(numeric(0)))
+x <- .Internal(inspect(integer(17)))
+x <- .Internal(inspect(character(3), 1))
+x <- .Internal(inspect(1:6, -1, 2))
+print(identical(.Internal(inspect(letters[1:2], 0)), letters[1:2]))

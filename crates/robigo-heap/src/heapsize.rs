@@ -70,6 +70,25 @@ pub fn vec_cells(t: u8, n: usize) -> usize {
     NODE_CLASS_SIZE[2..].iter().copied().find(|&c| size <= c).unwrap_or(size)
 }
 
+/// GNU R's node class (`sxpinfo.gccls`) of a standard vector of type `t`
+/// and length `n` from the standard allocator: 1 to 5 for the small classes
+/// (1, 2, 4, 8 and 16 VECRECs), 7 for a large vector (`LARGE_NODE_CLASS`).
+/// A node, and an ALTREP instance, is class 0; a vector of a custom
+/// allocator is 6 (`CUSTOM_NODE_CLASS`): the caller's cases.
+// R: memory.c:allocVector3 (node_class), memory.c:NodeClassSize
+pub fn node_class(t: u8, n: usize) -> u8 {
+    // a vector of no VECRECs is made by allocSExpNonCons: class 0 (a
+    // CHARSXP always has its NUL)
+    if n == 0 && t != CHARSXP {
+        return 0;
+    }
+    let c = vec_cells(t, n);
+    match NODE_CLASS_SIZE[1..].iter().position(|&s| s == c) {
+        Some(i) => (i + 1) as u8,
+        None => 7,
+    }
+}
+
 /// The vector heap a live object takes: what its allocation counted (a
 /// slot frame's too, which GNU R does not have). External data (zero-copy vectors) and ALTREP instances
 /// are nodes without heap data (GNU R's custom allocator is not counted

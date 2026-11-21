@@ -59,6 +59,7 @@ pub mod fin;
 pub mod fold;
 mod format;
 mod inline;
+pub mod inspect;
 pub mod ir;
 pub mod jit;
 pub mod jitcache;
