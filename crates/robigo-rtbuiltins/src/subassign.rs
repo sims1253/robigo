@@ -1258,23 +1258,22 @@ fn simple_list_assign(cx: &mut Cx, x: Root<'_>, sub: Root<'_>, y: Root<'_>, ind:
             // allocList(stretch - nx), tagged by a character subscript of
             // that length, appended (listAppend)
             let extra = stretch - nx;
+            // the tags first, with installTrChar's warnings and errors (a
+            // "bytes" name is refused, as in GNU R; Sol S2)
+            let tagged = sub.bind(cx).as_vector::<Char<'_>>().is_some_and(|v| v.len() == extra);
+            let mut tags = Vec::new();
+            if tagged {
+                for i in 0..extra {
+                    tags.push(crate::text::install_tr_char(cx, s, sub, i)?);
+                }
+            }
             let o = s.out(cx);
             let yi = o.root();
             cx.build(o, |cx| {
-                let t = sub.bind(cx);
-                let tags = t.as_vector::<Char<'_>>().filter(|v| v.len() == extra);
                 let mut l = cx.nil();
                 for i in (0..extra).rev() {
-                    l = match tags {
-                        Some(v) => {
-                            // installTrChar
-                            let c = v.get(i);
-                            let name = crate::text::to_native(crate::coerce::text(c), cx.locale())
-                                .map(|b| b.into_owned())
-                                .unwrap_or_else(|_| c.bytes().to_vec());
-                            let tag = cx.install_tr(c, &name)?;
-                            cx.cons_tagged(cx.nil(), l, tag)?
-                        }
+                    l = match tags.get(i) {
+                        Some(t) => cx.cons_tagged(cx.nil(), l, t.bind(cx).as_sym().unwrap())?,
                         None => cx.cons(cx.nil(), l)?,
                     };
                 }

@@ -101,13 +101,15 @@ pub(crate) fn watchdog(what: &'static str, secs: u64) -> Watchdog {
 /// only when `poll` finds room (a full stderr pipe may be what stalled the
 /// fork). A message shorter than `PIPE_BUF` then goes in one write.
 pub(crate) fn abort_saying(msg: &str) -> ! {
-    let mut p = libc::pollfd { fd: 2, events: libc::POLLOUT, revents: 0 };
-    // SAFETY: one pollfd, no wait; a live buffer to fd 2.
-    unsafe {
-        if libc::poll(&mut p, 1, 0) == 1 && p.revents & libc::POLLOUT != 0 {
-            libc::write(2, msg.as_ptr().cast(), msg.len().min(libc::PIPE_BUF));
-        }
-    }
+    let msg = msg.to_owned();
+    // the message from a thread of its own, the abort after a short wait
+    // whether or not the write finished (a full stderr pipe can block it
+    // even after `poll` said there was room; Sol S4)
+    std::thread::spawn(move || {
+        // SAFETY: a live buffer to fd 2.
+        unsafe { libc::write(2, msg.as_ptr().cast(), msg.len()) };
+    });
+    std::thread::sleep(Duration::from_millis(200));
     std::process::abort();
 }
 

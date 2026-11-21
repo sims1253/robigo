@@ -96,11 +96,16 @@ entry! {
     // R: sysutils.c:installTrChar
     [1] fn Rf_installTrChar(x: Sexp) -> Sexp => |cx, s| {
         check_charsxp(cx, x, "installTrChar")?;
-        let name: Vec<u8> = match translated(cx, x, native) {
-            Ok(Some(b)) => b,
-            Ok(None) => x.bind(cx).as_char().unwrap().bytes().to_vec(),
-            Err(m) => return Err(cx.error(&m)),
+        // installTrChar's translation, warning and name checks (Sol S3)
+        let r = {
+            let c = x.bind(cx).as_char().unwrap();
+            robigo_rtbuiltins::text::install_tr_name(robigo_rtbuiltins::coerce::text(c), cx.locale())
+                .map(|(n, w)| (n.into_owned(), w))
         };
+        let (name, w) = r.map_err(|d| cx.raise(d))?;
+        if let Some(w) = w {
+            cx.warning(&w)?;
+        }
         crate::memory::alloc(cx, s, |cx| Ok(cx.install_tr(x.bind(cx).as_char().unwrap(), &name)?.into()))
     }
 
