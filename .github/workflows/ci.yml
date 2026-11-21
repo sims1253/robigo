@@ -9,17 +9,35 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Every main commit gets its own group: its run publishes the perf baseline
-# that pull requests built on that commit compare with (a shared group would
-# cancel queued main runs). Every other run has a group of its own, so no
-# run waits `pending` behind another: a pull request's superseded runs are
-# cancelled by `select`'s first step instead. (A shared group per pull
-# request did that at once, but a cancelled run still queues `Check`, which
-# runs `always()`, and held the group until a runner took it: the new
-# head's run waited behind it. 2026-11-18: 60 runs, 1,268 minutes.)
+# A pull request's runs share one group, `ci-pr-<number>`, with
+# cancel-in-progress: a new push cancels the pull request's older run at
+# once, before any runner is free, so its heavy jobs stop taking runners.
+# (Until 2026-11-21 the cancel was `select`'s first step, which ran only when
+# the new run got its first runner: in a full pool both runs kept queueing
+# until then.) The cancelled run's `Check` still runs (`always()`) and fails
+# on its cancelled needs (what it certifies: the `check` job's comment), and
+# holds the group until it has had a runner: the new run waits that long, as
+# it waited for `select` before. A re-run of a superseded run re-enters
+# `ci-pr-<number>` and cancels the run in progress: re-run only the newest.
+#
+# Main's push runs share one group, `ci-main`. Without cancel-in-progress,
+# GitHub keeps the run in progress and at most one pending: a newer push
+# replaces the pending run, so a burst of merges runs the newest commit
+# next, and the group never cancels a started run. (Until 2026-11-21 every
+# main commit had a group of its own, because its run published the perf
+# baseline that pull requests compared with; since #901 a pull request's
+# perf measures its own base, and no pull request reads that baseline. On
+# 2026-11-21 one merge every 15.5 minutes queued main runs hours behind.)
+# What still reads main's runs needs a recent completed run, not every
+# commit: the progress history (scripts/history.py records each completed
+# run), the nightly packages binary (the newest successful run's), and the
+# caches only main saves. What a skipped commit loses: its point in the
+# history, and a breakage on main names a range of commits, not one.
+#
+# A manual dispatch has a group of its own.
 concurrency:
-  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.run_id }}
-  cancel-in-progress: false
+  group: ci-${{ github.event_name == 'push' && 'main' || github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -57,8 +75,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      # to cancel this pull request's superseded runs
-      actions: write
     outputs:
       heavy: ${{ steps.sel.outputs.heavy }}
       mode: ${{ steps.sel.outputs.mode }}
@@ -73,42 +89,6 @@ jobs:
       # `oracles=(...)`. A version added there needs its line here.
       image_oracle_4_6_2: ${{ steps.image.outputs.oracle_4_6_2 }}
     steps:
-      # First, before anything else: cancel this pull request's older `ci`
-      # runs that are still going (same head branch and repository, a lower
-      # run id). A plain cancel, so their `Check` still runs and is red on a
-      # commit nobody merges. Until this step runs, both runs are alive: the
-      # older one's jobs keep their runners for the new run's wait for its
-      # first runner (2026-11-18: median 10 min, about 1 job of the older
-      # run on a runner then). A fork's token cannot cancel: it warns, and
-      # both runs finish.
-      - name: Cancel this pull request's superseded runs
-        if: github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          HEAD_REF: ${{ github.head_ref }}
-          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
-          RUN_ID: ${{ github.run_id }}
-        run: |
-          # one query per status that is not completed, every page (a
-          # re-run of an old run keeps its old id, however many runs came since)
-          ids=()
-          for status in queued in_progress waiting pending requested; do
-            page=$(gh api -X GET --paginate "repos/$REPO/actions/workflows/ci.yml/runs" -f event=pull_request \
-                     -f branch="$HEAD_REF" -f status="$status" -f per_page=100 --jq ".workflow_runs[]
-                     | select(.id < $RUN_ID and .head_repository.full_name == \"$HEAD_REPO\") | .id") ||
-              { echo "::warning::could not list this pull request's $status runs; superseded ones keep running"; continue; }
-            # (ids are numbers)
-            # shellcheck disable=SC2206
-            ids+=($page)
-          done
-          for id in "${ids[@]}"; do
-            if gh api -X POST "repos/$REPO/actions/runs/$id/cancel" > /dev/null; then
-              echo "cancelled superseded run $id"
-            else
-              echo "::warning::could not cancel superseded run $id (a fork's token is read-only)"
-            fi
-          done
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
@@ -300,16 +280,17 @@ jobs:
           compression-level: 0
           retention-days: 1
 
-  # G3's runtime crates: scripts/rt-ci.py's steps in three jobs, one shard
-  # each (rt-ci.py's SHARDS), built once per job and run in parallel. One
-  # job ran them all until 2026-11-21, in 29-38 minutes against a 40-minute
-  # limit (docs/ledger/g3/2026-11-21-a1-rt-shards.md). Each shard's
-  # timeout is about twice its measured time; each prints its steps' times
-  # at the end of its log. `Check` needs all three.
+  # G3's runtime crates: scripts/rt-ci.py's steps in five jobs, one shard
+  # each (rt-ci.py's SHARDS, which says what each runs), built in each job
+  # and run in parallel. One job ran them all until 2026-11-21, in 29-38
+  # minutes against a 40-minute limit (docs/ledger/g3/2026-11-21-a1-rt-shards.md).
+  # Each job's timeout is twice its shard's budget (rt-ci.py's BUDGETS,
+  # pinned by scripts/test-rt-ci.py); each prints its steps' times at the
+  # end of its log, with a warning at 90% of the budget. `Check` needs all.
   #
-  # rt: release tests, the conformance and its observation modes,
-  # gctorture, quarantine, pin report, stress, overshoot, E9, the byte-code
-  # crosscheck; then L1's rdb round trip (15.7 min, #910's first run).
+  # rt: the crates' release tests and every mode they run under, the
+  # conformance and its short modes, stress, overshoot, E9, the byte-code
+  # crosscheck; then L1's rdb round trip.
   rt:
     needs: [select, rdb-data]
     if: ${{ needs.select.outputs.rt == 'true' }}
@@ -319,9 +300,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    # 29.2 min on 2026-11-21 (#887's rows and #899's steps on main): a
-    # stopgap until the rebalance with the fourth shard
-    timeout-minutes: 60
+    timeout-minutes: 46
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
@@ -381,9 +360,10 @@ jobs:
           exit "$status"
 
 
-  # the moving collector: its unit tests and the conformance under it with
-  # gctorture (16.7 min, #910's first run)
-  rt-gc-move:
+  # the two long conformance runs under gctorture, plain and with
+  # GC_MOVE=young:16: a conformance build only (the crates' tests, GC_MOVE's
+  # included, run in rt, which builds them anyway)
+  rt-gctorture:
     needs: select
     if: ${{ needs.select.outputs.rt == 'true' }}
     runs-on: ubuntu-24.04
@@ -392,7 +372,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 35
+    timeout-minutes: 36
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
@@ -411,15 +391,81 @@ jobs:
           key: r-4.6.2-tarball
       - name: GNU R 4.6.2 sources
         run: scripts/r-src.sh
-      - name: rt-ci.py, shard gc-move
-        run: python3 scripts/rt-ci.py --shard gc-move
+      - name: rt-ci.py, shard gctorture
+        run: python3 scripts/rt-ci.py --shard gctorture
 
-  # the steps that build with a feature of their own: A4's builtin
-  # differential with its planted divergences (robigo-rtbuiltins/diff-plant)
-  # and the conformance under retry-torture (robigo-rtcore/retry-torture)
-  # (9.1 min in #910's first run, with 23 builtin rows; #887's 87 rows and
-  # plant build add about 4)
+  # the crates' release tests and the conformance on a release build with
+  # `-C debug-assertions=on` (heap's debug_assert!s seeing compiled code:
+  # how H found compile.rs's `@<-` inline bug), a build of its own
+  rt-debug-assertions:
+    needs: select
+    if: ${{ needs.select.outputs.rt == 'true' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.select.outputs.image_rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          # its own build (RUSTFLAGS) in its own target directory
+          # (rt-ci.py's debug_assertions_steps), so a cache of its own
+          key: rt-debug-assertions
+          workspaces: ". -> target-debug-assertions"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # GNU R 4.6.2's pinned sources: robigo-rt binds base's R code from
+      # them (crates/robigo-rt/src/base.rs). The tarball is cached;
+      # scripts/r-src.sh checks its sha256 and extracts it.
+      - uses: actions/cache/restore@v6
+        id: rsrc462
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
+      - name: rt-ci.py, shard debug-assertions
+        run: python3 scripts/rt-ci.py --shard debug-assertions
+
+  # retry-torture's conformance (robigo-rtcore/retry-torture), then in its
+  # build (CHECK_FEATURES) the poison-dead steps (robigo-rt/poison-dead)
   rt-feature-builds:
+    needs: select
+    if: ${{ needs.select.outputs.rt == 'true' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.select.outputs.image_rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 54
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: rt
+          # (rt saves this cache; two jobs saving one key would race)
+          save-if: false
+      # GNU R 4.6.2's pinned sources: robigo-rt binds base's R code from
+      # them (crates/robigo-rt/src/base.rs). The tarball is cached;
+      # scripts/r-src.sh checks its sha256 and extracts it.
+      - uses: actions/cache/restore@v6
+        id: rsrc462
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
+      - name: rt-ci.py, shard feature-builds
+        run: python3 scripts/rt-ci.py --shard feature-builds
+
+  # A4's builtin differential with its planted divergences
+  # (robigo-rtbuiltins/diff-plant), against builtin-diff-data's GNU R records
+  rt-builtin-diff:
     needs: [select, builtin-diff-data]
     if: ${{ needs.select.outputs.rt == 'true' }}
     runs-on: ubuntu-24.04
@@ -428,9 +474,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    # 25.3 min on 2026-11-21 (#887's 90 rows, #899's poison-dead steps): a
-    # stopgap until the rebalance with the fourth shard
-    timeout-minutes: 60
+    timeout-minutes: 18
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
@@ -465,13 +509,13 @@ jobs:
       - name: Unpack A4's GNU R records
         if: steps.bdiff.outputs.cache-hit != 'true'
         run: tar -C .robigo -xf .robigo/builtin-diff-data.tar && rm .robigo/builtin-diff-data.tar
-      - name: rt-ci.py, shard feature-builds
+      - name: rt-ci.py, shard builtin-diff
         env:
           ROBIGO_BUILTIN_DIFF_DATA: ${{ github.workspace }}/.robigo/builtin-diff-data
           ROBIGO_BUILTIN_DIFF_ORACLE: ${{ needs.select.outputs.image_oracle_4_6_2 }}
         run: |
           python3 scripts/test-builtin-diff.py
-          python3 scripts/rt-ci.py --shard feature-builds
+          python3 scripts/rt-ci.py --shard builtin-diff
 
   # robigo-rt's base subset (crates/robigo-rt/proto/base-subset.txt and
   # base-bound.txt) is what scripts/base-subset.sh traces from this tree's
@@ -1427,14 +1471,19 @@ jobs:
   # adding, splitting or resharding jobs needs no ruleset change: add every
   # new gating job to `needs`. It passes when each job passed, or was skipped
   # because `select` said so; a failed, cancelled or unexplained skip fails
-  # it. `always()`: a skipped required check counts as passing, so a
-  # cancelled run must still report a failure here. (A superseded run's
-  # `Check` waits for a runner and is red on a commit nobody merges; it
-  # blocks nothing, since pull request runs share no concurrency group.)
+  # it. `always()`: a skipped required check counts as passing, so a run
+  # cancelled before its evidence exists must still report a failure here.
+  # What `Check` certifies: every job it waits for passed, or was skipped as
+  # `select` said. A run cancelled before that (superseded, or by hand) has a
+  # cancelled or skipped need, which fails it; a run cancelled only after
+  # every need passed has produced that evidence, and its `Check` may pass,
+  # as before this group existed. A `Check` that ends cancelled itself is not
+  # a pass either. A superseded run's `Check` holds the pull request's group
+  # until it has had a runner, so the new run waits that long.
   check:
     name: Check
     if: ${{ always() }}
-    needs: [select, lint, miri, rdb-data, builtin-diff-data, rt, rt-gc-move, rt-feature-builds, base-subset, build, perf-base, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
+    needs: [select, lint, miri, rdb-data, builtin-diff-data, rt, rt-gctorture, rt-feature-builds, rt-builtin-diff, rt-debug-assertions, base-subset, build, perf-base, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

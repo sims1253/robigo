@@ -1,0 +1,39 @@
+# .Internal(format.POSIXlt(x, format, usetz, digits))
+f <- function(x, fmt = "%Y-%m-%d %H:%M:%S", usetz = FALSE, digits = 0L) .Internal(format.POSIXlt(x, fmt, usetz, digits))
+u <- .Internal(as.POSIXlt(c(a = 0, b = 1e9 + 0.256789, c = -1.5, d = NA, e = Inf, f = -Inf, g = NaN), "UTC"))
+f(u); f(u, usetz = TRUE)
+f(u, "%OS3"); f(u, "%OS"); f(u, "%OS", digits = 2L); f(u, "%OS9 and %OS1"); f(u, "%H:%M:%OS6")
+f(u, c("%d.%m.%Y", "%j %U %u %w")); u2 <- .Internal(as.POSIXlt(c(0, 1e9), "UTC")); f(u2, "%A %a %B %b %p %I %y %C %e %D %F %R %T %n%t%%")
+b <- .Internal(as.POSIXlt(c(1719835200, 1704067200, -775526400), "Europe/Berlin"))
+f(b, usetz = TRUE); f(b, "%Z %z"); f(b, "%Y %Z", usetz = TRUE)
+ny <- .Internal(as.POSIXlt(c(1710054000, 4102444800), "America/New_York"))
+f(ny, "%H:%M %Z %z", usetz = TRUE)
+# gmtoff NA with %z: mktime in the object's zone
+b2 <- b; b2$gmtoff <- NA_integer_; f(b2, "%z %Z"); f(b2, "%H")
+# a tzone of length 3 and no zone component: the name by isdst
+x <- unclass(u)[1:9]; attributes(x) <- NULL; names(x) <- names(unclass(u))[1:9]
+class(x) <- c("POSIXlt", "POSIXt"); attr(x, "tzone") <- c("", "EST", "EDT")
+x$isdst <- c(0L, 1L, -1L, 0L, 0L, 0L, 0L); f(x, usetz = TRUE)
+attr(x, "tzone") <- "UTC"; f(x, usetz = TRUE)
+# names padded and recycled
+y <- .Internal(as.POSIXlt(c(p = 0, q = 86400), "UTC")); f(y, c("%d", "%m", "%Y"))
+# invalid and out of range
+z <- .Internal(as.POSIXlt(0, "UTC")); z$mday <- 40L; z$hour <- 30L; f(z)
+z$year <- .Machine$integer.max; f(z)
+tryCatch(f(u, character(0)), error = function(e) conditionMessage(e))
+tryCatch(f(u, 1), error = function(e) conditionMessage(e))
+tryCatch(f(u, usetz = NA), error = function(e) conditionMessage(e))
+tryCatch(f(u, digits = "x"), warning = function(w) conditionMessage(w))
+tryCatch(f(list(1)), error = function(e) conditionMessage(e))
+z <- .Internal(as.POSIXlt(0, "UTC")); z$sec <- numeric(0); tryCatch(f(z), error = function(e) conditionMessage(e))
+tryCatch(f(u, strrep("x", 3000)), error = function(e) conditionMessage(e))
+u1 <- .Internal(as.POSIXlt(0, "UTC")); f(u1, "%p"); tryCatch(f(u1, ""), error = function(e) conditionMessage(e))
+tryCatch(.Internal(format.POSIXlt(u, "%Y", FALSE)), error = function(e) conditionMessage(e))
+# through base R
+format(.POSIXct(1e9, tz = "UTC")); format(.POSIXct(1e9, tz = "UTC"), usetz = TRUE)
+format(as.POSIXlt(.POSIXct(c(0, 1.5), tz = "Asia/Tokyo")), "%Y-%m-%d %H:%M:%OS1 %Z")
+print(.POSIXct(c(x = 1e9, y = NA), tz = "UTC"))
+format(.POSIXct(1719835200, tz = "Europe/Berlin"), usetz = TRUE)
+# likely_strftime_overflow: a year of INT_MAX is formatted, one more is NA
+x <- .Internal(as.POSIXlt(0, "UTC")); x$year <- 2147481747L; f(x, "%Y")
+x$year <- 2147481748L; f(x, "%Y"); x$year <- -2147483647L; f(x, "%Y")
