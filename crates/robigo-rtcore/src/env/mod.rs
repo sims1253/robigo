@@ -2479,6 +2479,36 @@ impl Cx {
         })
     }
 
+    /// GNU R's `BuiltinNames(1, intern, ...)`: the installed symbols, in the
+    /// symbol table's walk order ([`sym::for_each_installed`]), that have a
+    /// base binding (`intern` false) or an `.Internal` (`intern` true), as a
+    /// list of the symbols.
+    // R: envir.c:BuiltinNames, BuiltinSize
+    pub fn builtin_symbols(&mut self, intern: bool, out: Out<'_>) -> RResult<()> {
+        self.build(out, |cx| {
+            let iso = cx.iso();
+            let mut syms = Vec::new();
+            // SAFETY: the core is reached for this walk only (the closure
+            // reads the isolate's symbol cells, not the core); each `s` is
+            // an installed (immortal, live) symbol of this heap.
+            unsafe {
+                sym::for_each_installed(iso.core(), |s| {
+                    let keep =
+                        if intern { !iso.envs().internal(s).is_null() } else { !iso.envs().cell(s).value.is_null() };
+                    if keep {
+                        syms.push(s);
+                    }
+                });
+            }
+            let mut ans = cx.alloc_vector::<Ref<'_>>(syms.len())?;
+            for (i, &s) in syms.iter().enumerate() {
+                // SAFETY: as above.
+                ans.set(i, unsafe { Ref::from_sexp(s, cx) });
+            }
+            Ok(ans.finish().into())
+        })
+    }
+
     /// `env.profile()`'s numbers for a hashed environment (`R_HashProfile`):
     /// the table's size, `HASHPRI`, and each chain's length. None for an
     /// environment without a table.

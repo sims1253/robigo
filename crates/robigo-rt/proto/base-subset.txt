@@ -75,6 +75,7 @@ closure bindingIsActive bindenv.R
 closure bindingIsLocked bindenv.R
 closure bindtextdomain stop.R
 closure body formals.R
+closure builtins builtins.R
 closure cat cat.R
 closure character vector.R
 closure chkDots warnings.R
@@ -98,6 +99,7 @@ closure do.call New-Internal.R
 closure dput dput.R
 closure dyn.load dynload.R
 closure dynGet namespace.R
+closure eapply eapply.R
 closure encodeString New-Internal.R
 closure enquote backquote.R
 closure env.profile environment.R
@@ -151,6 +153,7 @@ closure is.vector is.R
 closure isBaseNamespace namespace.R
 closure isFALSE identical.R
 closure isNamespace namespace.R
+closure isOpen connections.R
 closure isRestart conditions.R
 closure isTRUE identical.R
 closure isa New-Internal.R
@@ -162,6 +165,7 @@ closure lengths New-Internal.R
 closure levels factor.R
 closure levels.default factor.R
 closure list2env assign.R
+closure load load.R
 closure loadNamespace namespace.R
 closure loadingNamespaceInfo namespace.R
 closure local eval.R
@@ -209,6 +213,7 @@ closure print.restart conditions.R
 closure print.warnings warnings.R
 closure rank rank.R
 closure raw raw.R
+closure readChar connections.R
 closure readRDS serialize.R
 closure reg.finalizer New-Internal.R
 closure regexec grep.R
@@ -279,6 +284,7 @@ closure warnings warnings.R
 closure which which.R
 closure withCallingHandlers conditions.R
 closure withRestarts conditions.R
+closure withVisible withVisible.R
 closure writeLines connections.R
 closure xtfrm.AsIs sort.R
 closure xtfrm.default sort.R
@@ -434,6 +440,7 @@ internal bindingIsLocked
 internal bindtextdomain
 internal body
 internal bodyCode
+internal builtins
 internal cat
 internal close
 internal compareNumericVersion
@@ -450,6 +457,7 @@ internal disassemble
 internal do.call
 internal dput
 internal dyn.load
+internal eapply
 internal enableJIT
 internal encodeString
 internal env.profile
@@ -492,6 +500,7 @@ internal is.builtin.internal
 internal is.unsorted
 internal is.vector
 internal isNamespaceEnv
+internal isOpen
 internal isRegisteredNamespace
 internal islistfactor
 internal l10n_info
@@ -500,6 +509,9 @@ internal lazyLoadDBflush
 internal lazyLoadDBinsertValue
 internal lengths
 internal list2env
+internal load.from.file
+internal loadFromConn2
+internal loadInfoFromConn2
 internal lockBinding
 internal lockEnvironment
 internal ls
@@ -533,6 +545,7 @@ internal putconst
 internal qsort
 internal radixsort
 internal rank
+internal readChar
 internal reg.finalizer
 internal regexec
 internal regexpr
@@ -542,6 +555,7 @@ internal rep.int
 internal rep_len
 internal returnValue
 internal rowSums
+internal save.to.file
 internal search
 internal serialize
 internal serializeInfoFromConn
@@ -578,5 +592,6 @@ internal vapply
 internal vector
 internal warning
 internal which
+internal withVisible
 internal wrap_meta
 internal writeLines
