@@ -103,7 +103,9 @@ unsafe extern "C" {
 /// library has neither.
 fn c_utf8() -> Option<libc::locale_t> {
     static LOC: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    let l = *LOC.get_or_init(|| {
+    // (under robigo-heap's FORK: a fork mid-initialization would leave the
+    // child waiting)
+    let l = *robigo_heap::once_excluding_fork(&LOC, || {
         // newlocale reads LOCPATH through getenv
         let _env = env_read();
         for name in [c"C.UTF-8", c"C.utf8"] {
@@ -124,7 +126,9 @@ fn c_utf8() -> Option<libc::locale_t> {
 /// [`c_utf8`]'s.
 fn c_locale() -> Option<libc::locale_t> {
     static LOC: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    let l = *LOC.get_or_init(|| {
+    // (under robigo-heap's FORK: a fork mid-initialization would leave the
+    // child waiting)
+    let l = *robigo_heap::once_excluding_fork(&LOC, || {
         // (newlocale reads LOCPATH through getenv)
         let _env = env_read();
         // SAFETY: as in c_utf8.
@@ -374,7 +378,9 @@ pub fn glibc_version() -> (u32, u32) {
     }
     static V: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
     // SAFETY: glibc returns a static NUL-terminated string.
-    *V.get_or_init(|| parse_glibc_version(unsafe { std::ffi::CStr::from_ptr(gnu_get_libc_version()) }.to_bytes()))
+    *robigo_heap::once_excluding_fork(&V, || {
+        parse_glibc_version(unsafe { std::ffi::CStr::from_ptr(gnu_get_libc_version()) }.to_bytes())
+    })
 }
 
 /// The embedder's grant of the process environment's writes: what lets an

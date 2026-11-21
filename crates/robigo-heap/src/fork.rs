@@ -40,6 +40,14 @@
 //!   robigo-rt does not spawn through it, and when an embedder does,
 //!   `prepare` waits for nothing that waits on std's lock.
 //!
+//! **Lazy process-global state.** A `OnceLock` caught mid-initialization by
+//! a fork would stay "running" in the child. So the process-global
+//! initializers an isolate's start, an environment write or an install
+//! reaches run under `FORK` ([`once_excluding_fork`]):
+//! - robigo-heap: `heapsize::settings`, `shared::shared`,
+//!   `set_symbol_bits`, `gc.time`'s start instant;
+//! - robigo-rtcore: `clib`'s two C locales and the glibc version.
+//!
 //! **What `prepare` waits for.** It blocks until every holder releases.
 //! - A reader holding `ENV` shared for a C call (`localtime`, the locale
 //!   calls) finishes that call first.
@@ -109,6 +117,51 @@ pub fn set_fork_locks(take: fn(), release: fn()) {
     EMBEDDER_TAKE.store(take as *const () as *mut (), Ordering::SeqCst);
     // SAFETY: taken above by this thread.
     unsafe { libc::pthread_mutex_unlock(FORK.0.get()) };
+}
+
+std::thread_local! {
+    /// Whether this thread holds `FORK` for [`once_excluding_fork`] (one
+    /// initializer that reaches another must not take it twice).
+    static HOLDS_FORK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `cell.get_or_init(f)` with no fork between `f`'s start and the value's
+/// publication. A process-global `OnceLock` caught by a fork mid-initialization
+/// stays "running" in the child, where no thread will finish it, and the
+/// child's first use of it then waits for ever (Sol r4 S9).
+/// - Holding `FORK` for the initialization keeps every fork out until it
+///   is published.
+/// - A fork already between its handlers holds `FORK`, so the initialization
+///   waits until that fork is over.
+/// - The fast path, an initialized cell, takes no lock.
+/// - An initializer that reaches another one takes `FORK` once (it is not
+///   recursive).
+///
+/// `f` must not fork, and must take only the process's later locks
+/// (`LIVE_ISOLATES`, `ENV`, the arena): `FORK` comes first in the order.
+/// Every process-global lazy initializer that an isolate's start, an
+/// environment write or an install reaches goes through this.
+pub fn once_excluding_fork<T: Send + Sync>(cell: &'static std::sync::OnceLock<T>, f: impl FnOnce() -> T) -> &'static T {
+    if let Some(v) = cell.get() {
+        return v;
+    }
+    if HOLDS_FORK.get() {
+        return cell.get_or_init(f);
+    }
+    struct Held;
+    impl Drop for Held {
+        fn drop(&mut self) {
+            HOLDS_FORK.set(false);
+            // SAFETY: taken below by this thread.
+            unsafe { libc::pthread_mutex_unlock(FORK.0.get()) };
+        }
+    }
+    // SAFETY: the static mutex, initialized; released by `Held`'s drop, on
+    // this thread, also if `f` unwinds.
+    unsafe { libc::pthread_mutex_lock(FORK.0.get()) };
+    HOLDS_FORK.set(true);
+    let _held = Held;
+    cell.get_or_init(f)
 }
 
 /// How many forks have entered the `prepare` handler (a test's

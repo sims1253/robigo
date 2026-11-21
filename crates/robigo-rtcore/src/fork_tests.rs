@@ -143,3 +143,55 @@ fn a_child_forked_while_the_symbol_arena_is_locked_interns() {
     // drops the guard on its own thread.
     fork_while_held("the arena", || unsafe { robigo_heap::hold_arena_lock_for_test() });
 }
+
+/// A process-global lazy initializer caught mid-way by a fork (Sol r4 S9):
+/// one thread is inside `once_excluding_fork`'s initializer, paused, when
+/// this one forks. The fork waits until the initializer is published (it
+/// holds `FORK`), so the child finds the cell initialized instead of
+/// "running" with no thread to finish it. A plain `get_or_init` here (the
+/// negative control) leaves the child waiting for ever.
+#[test]
+fn a_fork_during_a_lazy_initializer_waits_for_it() {
+    static CELL: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let done = watchdog("a lazy initializer", 60);
+    let (inside_tx, inside_rx) = mpsc::channel();
+    let initer = std::thread::spawn(move || {
+        robigo_heap::once_excluding_fork(&CELL, || {
+            inside_tx.send(()).unwrap();
+            // long enough for the fork below to be attempted meanwhile
+            std::thread::sleep(Duration::from_millis(300));
+            7
+        });
+    });
+    inside_rx.recv().unwrap();
+    // SAFETY: the child reads the cell and exits without returning into the
+    // test harness.
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0, "fork failed: {}", std::io::Error::last_os_error());
+    if pid == 0 {
+        let v = *robigo_heap::once_excluding_fork(&CELL, || 0);
+        // SAFETY: ends the child at once.
+        unsafe { libc::_exit(if v == 7 { 0 } else { 1 }) };
+    }
+    initer.join().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut status = 0;
+    loop {
+        // SAFETY: our own child; `status` is writable.
+        let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+        if r == pid {
+            break;
+        }
+        assert!(r == 0, "waitpid failed: {}", std::io::Error::last_os_error());
+        if Instant::now() > deadline {
+            // SAFETY: our own child.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+            panic!("the child forked during a lazy initializer never finished");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "the child failed (status {status})");
+}

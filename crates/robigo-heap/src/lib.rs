@@ -69,7 +69,7 @@ use types::*;
 pub use arena::hold_lock_for_test as hold_arena_lock_for_test;
 #[cfg(feature = "test-support")]
 pub use fork::fork_prepares;
-pub use fork::set_fork_locks;
+pub use fork::{once_excluding_fork, set_fork_locks};
 /// The allocator's block size and the header a block or large chunk keeps
 /// before its objects (`heap.rs`): what a test that places an object at a
 /// chunk's end computes with.

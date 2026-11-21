@@ -64,7 +64,8 @@ pub(crate) const FIRST_SYMBOL_ID: u32 = 2;
 /// The shared objects, made on first use.
 #[inline]
 pub(crate) fn shared() -> &'static Shared {
-    SHARED.get_or_init(make)
+    // (under FORK: a fork mid-initialization would leave the child waiting)
+    crate::fork::once_excluding_fork(&SHARED, make)
 }
 
 /// The heap id of every shared object.
