@@ -2,13 +2,11 @@
 """The `Check` job of .github/workflows/ci.yml: pass only when every job passed
 or was skipped for a reason `select` gave (docs/verification.md, CI).
 
-    NEEDS='${{ toJSON(needs) }}' CANCELLED='${{ cancelled() }}' scripts/ci-check.py [--pull-request]
+    NEEDS='${{ toJSON(needs) }}' scripts/ci-check.py [--pull-request]
 
 Branch protection requires `Check` alone, so splitting or adding jobs needs
 no ruleset change. A failed or cancelled job fails it, and so does a skip
-nobody asked for: GitHub counts a skipped required check as passing. So
-does a cancelled run (CANCELLED=true), even when every job it waited for
-had passed: the run was cancelled before it ended.
+nobody asked for: GitHub counts a skipped required check as passing.
 """
 import json
 import os
@@ -55,11 +53,6 @@ def verdicts(needs, pull_request):
 
 def main(argv):
     pull_request = "--pull-request" in argv
-    if os.environ.get("CANCELLED") == "true":
-        # (superseded by a newer push, or cancelled by hand: either way not a
-        # run that may pass, whatever its jobs' results)
-        print("::error::the run was cancelled")
-        return 1
     rows = verdicts(json.loads(os.environ["NEEDS"]), pull_request)
     for job, result, ok in rows:
         print(f"{'ok ' if ok else 'BAD'} {job}: {result}")

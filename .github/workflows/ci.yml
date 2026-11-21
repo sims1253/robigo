@@ -1405,15 +1405,24 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      # a cancelled run fails, even when every job it waited for passed
+      # (cancelled while this job waited for a runner); every step runs in a
+      # cancelled run too (`always()`), so nothing is skipped into a pass
+      - name: Fail a cancelled run
+        if: ${{ cancelled() }}
+        run: |
+          echo "::error::the run was cancelled (superseded by a newer push, or by hand)"
+          exit 1
       - uses: actions/checkout@v7
+        if: ${{ always() }}
         with:
           sparse-checkout: |
             scripts
             .github/workflows
       - name: Require every job to pass
+        if: ${{ always() }}
         env:
           NEEDS: ${{ toJSON(needs) }}
-          CANCELLED: ${{ cancelled() }}
           PULL_REQUEST: ${{ github.event_name == 'pull_request' && '--pull-request' || '' }}
         run: |
           python3 scripts/test-ci-check.py 2>&1 | tail -1
