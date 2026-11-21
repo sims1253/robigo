@@ -1103,7 +1103,13 @@ pub fn do_seq_len(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
     crate::row!("seq_len").check_arity(cx, call, args)?;
     crate::util::check1arg(cx, args, call, "length.out")?;
     if crate::coerce::xlength(args.get(cx, 0)) != 1 {
-        cx.warning_call(Some(call), "first element used of 'length.out' argument")?;
+        // PLANT(A4, warnings): the message changed by one character
+        let m = if cfg!(feature = "diff-plant") {
+            "first element used of 'length.out' argument!"
+        } else {
+            "first element used of 'length.out' argument"
+        };
+        cx.warning_call(Some(call), m)?;
     }
     let (d, w) = as_real_w(cx, args.get(cx, 0));
     crate::coerce::vector::coercion_warning(cx, w)?;

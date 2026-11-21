@@ -41,6 +41,7 @@ closure .signalSimpleWarning conditions.R
 closure .standard_regexps utils.R
 closure .traceback traceback.R
 closure .valid.factor factor.R
+closure Encoding<- New-Internal.R
 closure Filter funprog.R
 closure I dataframe.R
 closure NROW matrix.R
@@ -200,6 +201,7 @@ closure path.expand files.R
 closure pmatch match.R
 closure pmin pmax.R
 closure print print.R
+closure print.condition conditions.R
 closure print.default print.R
 closure print.factor factor.R
 closure print.function print.R
@@ -212,6 +214,7 @@ closure readRDS serialize.R
 closure reg.finalizer New-Internal.R
 closure regexec grep.R
 closure regexpr grep.R
+closure registerS3method namespace.R
 closure registerS3methods namespace.R
 closure rep.int rep.R
 closure rep_len rep.R
@@ -550,6 +553,7 @@ internal search
 internal serialize
 internal serializeInfoFromConn
 internal serializeToConn
+internal setEncoding
 internal seterrmessage
 internal sort
 internal sorted_fpass
