@@ -38,6 +38,56 @@ class RtCi(unittest.TestCase):
         m["packages"][2]["dependencies"] = [{"name": "robigo-runtime"}]
         self.assertEqual(rt.leaks(m, crates), [])
 
+    def test_the_shards_cover_every_step_once(self):
+        # CI's three rt jobs run the shards; together they are every step,
+        # each in one shard (the R_HOME tree, seconds, in all of them)
+        crates = ["robigo-rt", "robigo-rtcore"]
+        everything = [s[0] for s in rt.steps(crates)]
+        seen = {}
+        for shard in rt.SHARDS:
+            titles = [s[0] for s in rt.shard_steps(crates, shard)]
+            self.assertEqual(titles, [t for t in everything if t in titles], f"{shard}: steps' order")
+            self.assertTrue(any(rt.shard_of(t) == shard for t in titles), f"{shard} runs nothing of its own")
+            for t in titles:
+                seen.setdefault(t, []).append(shard)
+        self.assertEqual(sorted(seen), sorted(everything))
+        for t, shards in seen.items():
+            if rt.shard_of(t) is None:
+                self.assertEqual(shards, list(rt.SHARDS), t)
+            else:
+                self.assertEqual(shards, [rt.shard_of(t)], t)
+        # where each long step goes (the split's point)
+        where = {t: rt.shard_of(t) for t in everything}
+        self.assertEqual(where["release tests"], "modes")
+        self.assertEqual(where["conformance under gctorture (E3)"], "modes")
+        self.assertEqual([t for t, s in where.items() if s == "gc-move"],
+                         ["ROBIGO_GC_MOVE (move every movable object at every collection), with gctorture",
+                          f"conformance under ROBIGO_GC_MOVE={rt.GC_MOVE_YOUNG} with gctorture (E3)"])
+        self.assertEqual([t for t, s in where.items() if s == "feature-builds"],
+                         ["builtin differential and its planted divergences (A4, scripts/builtin-diff.py ci)",
+                          "conformance under ROBIGO_RETRY_TORTURE=1 (E9: every build's retry runs once)"])
+
+    def test_a_step_whose_report_fails_is_timed_as_failed(self):
+        # the command passed, the crosscheck report did not (it compared
+        # nothing: there is none), so the job fails and its time row says so
+        from unittest import mock
+        import tempfile
+        missing = os.path.join(tempfile.mkdtemp(), "none.txt")
+        done = []
+        ok = mock.Mock(returncode=0)
+        with mock.patch.object(rt.subprocess, "run", return_value=ok):
+            r = rt.run_steps([("crosscheck", {"ROBIGO_BC_CROSSCHECK_REPORT": missing}, ["true"])], done)
+        self.assertEqual(r, 1)
+        self.assertEqual([(t, ok_) for t, _, ok_ in done], [("crosscheck", False)])
+
+    def test_the_step_times_are_reported_slowest_first(self):
+        r = rt.timings_report([("a", 60.0, True), ("b", 600.0, True), ("c", 30.0, False)])
+        lines = r.splitlines()
+        self.assertEqual(lines[0], "rt: step times (wall), slowest first:")
+        self.assertIn("10.00 min  b", lines[1])
+        self.assertIn("FAILED  c", lines[3])
+        self.assertIn("11.50 min  in all", lines[4])
+
     def test_conformance_runs_alone_in_its_own_steps(self):
         steps = rt.steps(["robigo-rt", "robigo-rtcore"])
         # (a step's mode is its environment but the runner's job count)

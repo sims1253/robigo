@@ -13,7 +13,7 @@ spec = importlib.util.spec_from_file_location("ci_check", HERE / "ci-check.py")
 chk = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(chk)
 
-JOBS = ["select", "lint", "miri", "rdb-data", "builtin-diff-data", "rt", "base-subset", "build", "perf-base", "release-tests", "test", "bytecode-fidelity", "counters",
+JOBS = ["select", "lint", "miri", "rdb-data", "builtin-diff-data", "rt", "rt-gc-move", "rt-feature-builds", "base-subset", "build", "perf-base", "release-tests", "test", "bytecode-fidelity", "counters",
         "corpora", "fuzz", "cran", "smoke", "package-gate", "perf", "perf-rt-build", "perf-rt", "rt-corpora"]
 
 
@@ -121,6 +121,21 @@ class Rule(unittest.TestCase):
         self.assertFalse(passes(needs(perf_base="skipped")))
         self.assertFalse(passes(needs(perf_base="failure")))
 
+    def test_rt_shards_follow_rt(self):
+        # the rt job's parallel shards (scripts/rt-ci.py --shard): each is
+        # required where rt is, may be skipped only where rt may (rt mode
+        # false), and fails the check when it fails
+        for job in ("rt_gc_move", "rt_feature_builds"):
+            self.assertFalse(passes(needs("false", "false", "true", package_gate="skipped",
+                                         **{job: "skipped"}, **SKIP_HEAVY)), job)
+            self.assertFalse(passes(needs(**{job: "failure"})), job)
+            self.assertFalse(passes(needs(**{job: "cancelled"})), job)
+        self.assertTrue(passes(needs("false", "false", "false", rt="skipped", rt_gc_move="skipped",
+                                    rt_feature_builds="skipped", base_subset="skipped",
+                                    perf_rt_build="skipped", perf_rt="skipped", rt_corpora="skipped",
+                                    rdb_data="skipped", builtin_diff_data="skipped",
+                                    package_gate="skipped", **SKIP_HEAVY)))
+
     def test_cli(self):
         def run(n, *args):
             return subprocess.run([sys.executable, str(HERE / "ci-check.py"), *args], capture_output=True,
@@ -136,7 +151,7 @@ class Rule(unittest.TestCase):
         n = needs("false", "false", "true", **skip)
         n["select"]["outputs"]["stacked"] = "true"
         self.assertTrue(passes(n))                  # every skip is explained...
-        for job in ("rt", "lint", "rdb-data"):      # ...but not these
+        for job in ("rt", "rt-gc-move", "rt-feature-builds", "lint", "rdb-data"):      # ...but not these
             m = needs("false", "false", "true", **{**skip, job.replace("-", "_"): "skipped"})
             m["select"]["outputs"]["stacked"] = "true"
             self.assertFalse(passes(m), job)
