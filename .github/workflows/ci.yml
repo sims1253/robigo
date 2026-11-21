@@ -250,7 +250,9 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 20
+    # (measured: about 8 minutes cold here, most of it the External rows'
+    # one process per case, each batch run twice)
+    timeout-minutes: 40
     env:
       ROBIGO_BUILTIN_DIFF_ORACLE: ${{ needs.select.outputs.image_oracle_4_6_2 }}
     outputs:
@@ -283,11 +285,19 @@ jobs:
         with:
           path: .robigo/builtin-diff-data
           key: ${{ steps.key.outputs.key }}
+      # One file, not the records themselves: the artifact client zips its
+      # files on the fly, and with 76 rows' 84,770 records it stalled
+      # ("Upload progress stalled", run 44263394134). The records are
+      # compressed RDS already, so the tar is stored as it is.
+      - name: Pack the records
+        if: steps.data.outputs.cache-hit != 'true' && github.ref != 'refs/heads/main'
+        run: tar -C .robigo -cf builtin-diff-data.tar builtin-diff-data
       - uses: actions/upload-artifact@v7
         if: steps.data.outputs.cache-hit != 'true' && github.ref != 'refs/heads/main'
         with:
           name: builtin-diff-data
-          path: .robigo/builtin-diff-data
+          path: builtin-diff-data.tar
+          compression-level: 0
           retention-days: 1
 
   # G3's runtime crates: scripts/rt-ci.py's steps in three jobs, one shard
@@ -446,7 +456,11 @@ jobs:
         if: steps.bdiff.outputs.cache-hit != 'true'
         with:
           name: builtin-diff-data
-          path: .robigo/builtin-diff-data
+          path: .robigo
+      # (builtin-diff-data hands the records over as one tar)
+      - name: Unpack A4's GNU R records
+        if: steps.bdiff.outputs.cache-hit != 'true'
+        run: tar -C .robigo -xf .robigo/builtin-diff-data.tar && rm .robigo/builtin-diff-data.tar
       - name: rt-ci.py, shard feature-builds
         env:
           ROBIGO_BUILTIN_DIFF_DATA: ${{ github.workspace }}/.robigo/builtin-diff-data

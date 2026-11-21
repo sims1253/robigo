@@ -36,6 +36,13 @@ pub fn do_getenv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
     if x.bind(cx).is_package_altrep() {
         return Err(crate::util::not_yet(cx, Some(call), "Sys.getenv() of a package ALTREP vector"));
     }
+    if crate::util::a4_plant_case(cx, call) && x.bind(cx).len() == Some(3) {
+        // PLANT(A4, files): a file GNU R does not write (said on stderr when
+        // it cannot be, so that the plant check's failure is explained)
+        if let Err(e) = std::fs::write("a4plant", b"") {
+            eprintln!("robigo: the a4plant divergence was not planted: {e}");
+        }
+    }
     // getenv(translateChar(STRING_ELT(CAR(args), j))) (of NA_STRING: "NA")
     let n = x.bind(cx).len().unwrap_or(0);
     let mut tr: Vec<Vec<u8>> = Vec::with_capacity(n);

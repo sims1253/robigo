@@ -17,7 +17,7 @@
 ##   wrapper the base closure that calls the .Internal, with the same tuples
 ##           (rows of .Internal builtins that have one)
 local({
-    LATTICE_VERSION <- "1"
+    LATTICE_VERSION <- "2"   # 2: the @env and @fun fixtures
     args <- commandArgs(TRUE)
     spec <- args[[1L]]; outdir <- args[[2L]]
     rows <- local({ source(spec, local = TRUE); rows })
@@ -61,6 +61,36 @@ local({
         c(v, dec)
     }
     L <- lattice()
+    any_names <- names(L)
+    ## Env and Calls rows' fixtures (not in @any: a Pure row's inputs stay as
+    ## they were). Every function's environment is base's, so a record never
+    ## drags this frame (the lattice) along.
+    fixtures <- local({
+        b <- function(f) { environment(f) <- baseenv(); f }
+        mk <- function() { e <- new.env(parent = baseenv()); assign("a", 1, envir = e); assign("b", "x", envir = e); e }
+        ## a fixture closure appends its arguments to .a4log in the global
+        ## environment (the driver records it, in order)
+        logged <- function(ret) b(eval(bquote(function(...) {
+            assign(".a4log", c(get0(".a4log", globalenv(), inherits = FALSE), list(list(...))), envir = globalenv())
+            .(ret)
+        })))
+        list(
+            "env" = mk(),
+            "env.lockedbinding" = local({ e <- mk(); lockBinding("a", e); e }),
+            "env.locked" = local({ e <- mk(); lockEnvironment(e); e }),
+            "env.active" = local({ e <- new.env(parent = baseenv()); makeActiveBinding("act", b(function() 42), e); e }),
+            "env.empty" = emptyenv(),
+            "env.base" = baseenv(),
+            "env.global" = globalenv(),
+            "fun.id" = logged(quote(..1)),
+            "fun.warn" = logged(quote({ warning("a4 warning"); 1 })),
+            "fun.error" = logged(quote(stop("a4 error"))),
+            "fun.invisible" = logged(quote(invisible(NULL))),
+            "fun.length" = logged(quote(length(..1))),
+            "fun.sum" = sum
+        )
+    })
+    L <- c(L, fixtures)
     ## the values whose serialization is large: at most LARGE_CASES generated
     ## cases (beyond the single ones) may hold one, so that they do not
     ## dominate a row through the pairs
@@ -82,7 +112,9 @@ local({
         list("Mersenne-Twister", "Inversion", "Rejection", "corrupt")
     )
     domains <- list(
-        any = names(L),
+        any = any_names,
+        env = grep("^env", names(fixtures), value = TRUE),
+        fun = grep("^fun", names(fixtures), value = TRUE),
         count = c("0L", "-1L", "intNA", "intmax", "1.5", "dblNA", "Inf", "dbl0", "int3", "\"1e3\"", "T"),
         num = c("0L", "-1L", "intNA", "int3", "1:10", "0", "-0", "1.5", "-2.5", "dblNA", "NaN",
                 "Inf", "-Inf", "1e308", "5e-324", "2^53+1", "dbl4", "dbl0", "int0", "1+2i"),
@@ -135,19 +167,28 @@ local({
         argn <- row$args
         if (is.null(argn)) {
             if (!is.null(w)) argn <- vapply(as.list(w$call)[-1L], function(e) if (is.name(e)) as.character(e) else "", "")
-            else if (is.function(prim)) { f <- formals(args(prim)); argn <- setdiff(names(f), "...") }
+            else if (is.function(prim) && is.function(args(prim))) argn <- setdiff(names(formals(args(prim))), "...")
             else argn <- character()
         }
         k <- if (row$arity >= 0L) row$arity else max(length(argn), 1L)
         if (length(argn) < k) argn <- c(argn, rep("", k - length(argn)))
         argn <- argn[seq_len(k)]
+        ## a domain or typical value for no argument is the row's mistake (the
+        ## lattice would silently stand in for it)
+        keys <- c(names(row$domain), names(row$typical))
+        bad <- setdiff(keys, c(argn[nzchar(argn)], paste0("#", seq_len(k))))
+        if (length(bad))
+            stop(sprintf("row [%s]: %s names no argument (its arguments: %s; or #1..#%d); give `args`",
+                         row$name, paste(bad, collapse = ", "), paste(argn, collapse = ", "), k), call. = FALSE)
         dom <- lapply(seq_len(k), function(i) resolve(row$domain[[argn[[i]]]] %||% row$domain[[paste0("#", i)]]))
         if (!row$internal) for (i in seq_len(k)) if (!"<missing>" %in% names(dom[[i]])) dom[[i]]["<missing>"] <- list(quote(expr = ))
         named <- !row$internal && all(nzchar(argn))
         cases <- list(); seen <- new.env(hash = TRUE)
         nlarge <- 0L
         add <- function(kind, pick) {
-            key <- paste(pick, collapse = "\r")
+            ## (a "#" first: a row with no arguments has the empty pick, and
+            ## exists("") is an error)
+            key <- paste0("#", paste(pick, collapse = "\r"))
             if (kind != "wrapper" && exists(key, seen, inherits = FALSE)) return(FALSE)
             if (kind %in% c("pair", "random") && any(pick %in% large)) {
                 if (nlarge >= LARGE_CASES) return(FALSE)
