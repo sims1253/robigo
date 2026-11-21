@@ -382,6 +382,10 @@ pub static BUILTINS: &[Builtin] = &[
     op!("which.max", 1, summary::do_first_min, 11, 1, FUNCALL, Pure),
     row("as.POSIXct", datetime::do_as_posixct, 0, 11, 2, FUNCALL, External),
     row("strptime", datetime::do_strptime, 0, 11, 3, FUNCALL, External),
+    row("as.POSIXlt", datetime::do_as_posixlt, 0, 11, 2, FUNCALL, External),
+    row("Date2POSIXlt", datetime::do_d2posixlt, 0, 11, 2, FUNCALL, Pure),
+    row("POSIXlt2Date", datetime::do_posixlt2d, 0, 11, 1, FUNCALL, Pure),
+    row("format.POSIXlt", datetime::do_format_posixlt, 0, 11, 4, FUNCALL, External),
     // times.c
     row("Sys.time", times::do_systime, 0, 11, 0, FUNCALL, External),
     // sys-unix.c
