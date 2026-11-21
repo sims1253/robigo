@@ -3,3 +3,8 @@
 [1] "unable to translate 'caf<e9>' to native encoding"
 [1] "unable to translate 'caf<e9>' to native encoding"
 [1] "unable to translate 'caf<e9>' to native encoding"
+[1] "latin1"
+[1] "unable to translate 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...' to native encoding"
+[1] "unable to translate 'aaaaaaaaa"
+[1] "variable names are limited to 10000 bytes"
+[1] "(converted from warning) unable to trans"

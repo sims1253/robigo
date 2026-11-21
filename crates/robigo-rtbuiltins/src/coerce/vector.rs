@@ -40,9 +40,9 @@ pub struct Warns(Vec<Warn>);
 enum Warn {
     /// One `CoercionWarning(warn)` call's bits.
     Bits(u8),
-    /// `installTrChar`'s "unable to translate '%s' to native encoding",
-    /// this text.
-    Untranslated(String),
+    /// A `warning(msg)` of its own (`installTrChar`'s "unable to translate
+    /// '%s' to native encoding").
+    Message(String),
 }
 
 impl Warns {
@@ -71,7 +71,7 @@ impl Warns {
         for w in &self.0 {
             match w {
                 &Warn::Bits(b) => coercion_warning(cx, b)?,
-                Warn::Untranslated(t) => cx.warning(&format!("unable to translate '{t}' to native encoding"))?,
+                Warn::Message(m) => cx.warning(m)?,
             }
         }
         Ok(())
@@ -783,12 +783,10 @@ fn coerce_to_symbol<'g>(cx: &'g Cx, v: Ref<'g>) -> Result<Coerced<'g>, NeedGc> {
     // installTrChar(ans) (of NA_STRING: the symbol `NA`)
     let (name, untranslated) = match crate::text::install_tr_name(crate::coerce::text(s), cx.locale()) {
         Ok(r) => r,
-        // (a name of more than 10000 bytes that could not all be
-        // translated: GNU R warns before this error, which drops it)
-        Err(m) => return fail(m),
+        Err(d) => return Ok(Built::fail(d)),
     };
-    if let Some(t) = untranslated {
-        w.0.push(Warn::Untranslated(t));
+    if let Some(m) = untranslated {
+        w.0.push(Warn::Message(m));
     }
     let sym = cx.install(&name)?;
     done(sym, w)

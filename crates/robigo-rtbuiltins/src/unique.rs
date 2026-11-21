@@ -666,7 +666,7 @@ pub fn do_duplicated<const CODE: i32>(
                     warns = w;
                     Some(v)
                 }
-                Built::Fail(d) => return Ok(Built::fail(Diag::error(d.message().to_owned()))),
+                Built::Fail(d) => return Ok(Built::fail(d.into_error())),
             }
         } else {
             None

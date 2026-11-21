@@ -87,13 +87,15 @@ pub fn native_elt(cx: &mut Cx, x: Root<'_>, i: usize) -> robigo_rtcore::RResult<
 
 /// `installTrChar(c)`'s name: `c` in the native encoding
 /// (`translateToNative(mustWork = 2)`: what iconv cannot convert escaped,
-/// with the text of the warning GNU R then gives), or the message of the
-/// error it raises: a "bytes" string, or (`install`, `installNoTrChar`) a
+/// with the warning GNU R then gives), or the error it raises (after that
+/// warning): a "bytes" string, or (`install`, `installNoTrChar`) a
 /// name of no bytes or of more than 10000.
 // R: sysutils.c:installTrChar, names.c:installNoTrChar, names.c:install
-pub fn install_tr_name(s: Str<'_>, loc: Locale) -> Result<(Cow<'_, [u8]>, Option<String>), String> {
-    let (n, w) = robigo_text::translate_char_warn(s, ctype(loc)).map_err(|e| e.to_string())?;
-    check_install_name(&n)?;
+pub fn install_tr_name(s: Str<'_>, loc: Locale) -> Result<(Cow<'_, [u8]>, Option<String>), Diag<'static>> {
+    let (n, w) = robigo_text::translate_char_warn(s, ctype(loc)).map_err(|e| Diag::error(e.to_string()))?;
+    let w = w.map(|t| format!("unable to translate '{t}' to native encoding"));
+    // (translateToNative's warning comes before install's error)
+    check_install_name(&n).map_err(|m| Diag::error(m).after_warnings(w.iter().cloned().collect()))?;
     Ok((n, w))
 }
 

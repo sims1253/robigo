@@ -151,7 +151,7 @@ pub fn namesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
                 {
                     let sv = match coerce(cx, cell.car(), STRSXP, true)? {
                         Built::Done(sv, _) => sv,
-                        Built::Fail(d) => return Ok(Built::fail(Diag::error(d.message().to_owned()))),
+                        Built::Fail(d) => return Ok(Built::fail(d.into_error())),
                     };
                     if sv.is_package_altrep() {
                         let m =
