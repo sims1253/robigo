@@ -584,6 +584,16 @@ impl<'a> Parser<'a> {
         self.program_n(usize::MAX)
     }
 
+    /// The start of the last token GNU R's lexer had read when `e` was
+    /// raised: the raise site's frontier for an action's error (the
+    /// lookahead it reduced with, or none: [`Parser::codegen`]), else the
+    /// rejected token. A token's warnings (NumericValue's) have fired once
+    /// it is read, so those of the tokens starting at or before this one
+    /// precede the error (as the console's [`parse_console`] counts them).
+    pub fn error_frontier(&self, e: &ParseError) -> usize {
+        self.trial_frontier.unwrap_or(e.offset)
+    }
+
     /// End of input consumed by `program_n`, including its terminator.
     pub fn consumed_end(&self) -> usize {
         if matches!(self.toks[self.pos].tok, Tok::Eof) {

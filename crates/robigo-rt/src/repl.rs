@@ -230,13 +230,13 @@ fn console_at_end(cx: &mut Cx) -> bool {
 /// emptied, are restored from the top level's saved stacks, the global
 /// calling handlers among them.
 // R: errors.c:jump_to_top_ex, context.c:R_restore_globals
-fn error_at_top(cx: &mut Cx, msg: &str) {
+pub(crate) fn error_at_top(cx: &mut Cx, msg: &str) {
     error_at_top_after(cx, &[], msg)
 }
 
 /// [`error_at_top`] after the lexer's `warnings`, raised at the top level
 /// first ([`parse_warnings`]), so that the error report prints them.
-fn error_at_top_after(cx: &mut Cx, warnings: &[String], msg: &str) {
+pub(crate) fn error_at_top_after(cx: &mut Cx, warnings: &[String], msg: &str) {
     cx.scope(|cx, s| {
         let g = s.root(cx, cx.global_env());
         let base = s.root(cx, cx.base_env());
@@ -256,7 +256,7 @@ fn error_at_top_after(cx: &mut Cx, warnings: &[String], msg: &str) {
 /// caller writes "Execution halted" and quits with status 1, running no
 /// `.Last`). R_Interactive is FALSE.
 // R: main.c:check_session_exit
-fn check_session_exit(cx: &mut Cx) -> bool {
+pub(crate) fn check_session_exit(cx: &mut Cx) -> bool {
     cx.scope(|cx, s| {
         let go_on = (|| {
             let error = robigo_rtbuiltins::options::get_option(cx, s, b"error")?;
@@ -362,7 +362,7 @@ fn parse_warnings(cx: &mut Cx, warnings: &[String]) -> bool {
 
 /// A parse error as the console reports it (`parseError(R_NilValue, 0)`).
 // R: source.c:parseError, getParseContext
-fn parse_error_message(src: robigo_syntax::Source<'_>, e: &robigo_syntax::ParseError) -> String {
+pub(crate) fn parse_error_message(src: robigo_syntax::Source<'_>, e: &robigo_syntax::ParseError) -> String {
     use robigo_syntax::ErrorStyle;
     match e.style {
         ErrorStyle::Condition => match e.call {
@@ -423,7 +423,7 @@ fn dot_last(cx: &mut Cx) -> bool {
 /// The lookup and the call both run in R_Toplevel (`R_dot_Last` sets it
 /// the global context), so an error in either lands on a REPL top-level
 /// record.
-fn call_if_closure(cx: &mut Cx, name: &[u8], from: Root<'_>, rho: Root<'_>) -> bool {
+pub(crate) fn call_if_closure(cx: &mut Cx, name: &[u8], from: Root<'_>, rho: Root<'_>) -> bool {
     cx.scope(|cx, s| {
         let sym = s.out(cx);
         let symr = sym.root();
