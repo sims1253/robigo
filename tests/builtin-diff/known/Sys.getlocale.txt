@@ -1,0 +1,2 @@
+# builtin-diff known failures: Sys.getlocale, seed 0, key d43691df641acc6e4fc5464e
+# Sys.getlocale: 38 / 38 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)

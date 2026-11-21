@@ -125,10 +125,14 @@ impl Act {
         unsafe { self.base.add(base as usize) }
     }
 
+    /// Read register `r` (a panic on a dead register's poison under
+    /// `ROBIGO_POISON_DEAD`: [`Act::kill`]).
     #[inline(always)]
     pub fn get(&self, r: Reg) -> Slot {
         // SAFETY: a live slot of this activation.
-        unsafe { self.slot(r).read() }
+        let s = unsafe { self.slot(r).read() };
+        s.check_live();
+        s
     }
 
     /// Write register `r`.
@@ -141,10 +145,26 @@ impl Act {
         unsafe { self.slot(r).write(s) }
     }
 
+    /// Empty register `r`, to be written again (an `Out`, a window).
     #[inline(always)]
     pub fn clear(&self, r: Reg) {
         // SAFETY: EMPTY holds no object.
         unsafe { self.set(r, Slot::EMPTY) }
+    }
+
+    /// Register `r` is dead (D9): its last use was instruction `pc`
+    /// (`u32::MAX` where no one instruction is). Empty, or under
+    /// robigo-rtcore's `poison-dead` feature with `ROBIGO_POISON_DEAD=1` a
+    /// poison naming `r`, `pc` and the caller's line, which a checked read
+    /// panics on ([`Slot::dead`]): [`Act::get`], every `Root`, `Args` and
+    /// `Out` read (`ValueStack::read`), `Slot::tag`, `as_real` and `as_int`.
+    /// A raw read of the slot's memory (the collector's, the link walk's) is
+    /// not checked.
+    #[inline(always)]
+    #[track_caller]
+    pub fn kill(&self, r: Reg, pc: u32) {
+        // SAFETY: a dead slot holds no object.
+        unsafe { self.set(r, Slot::dead(r, pc)) }
     }
 
     /// The object in register `r`. Panics if it holds an unboxed value.
@@ -504,7 +524,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 // SAFETY: constants of the live code object.
                 let (call, names) = unsafe { (v.k(i.e), v.k(i.c)) };
                 let at = switch_entry(cx, act, i.b, call, names, i.f as usize);
-                act.clear(i.b);
+                act.kill(i.b, pc as u32 - 1);
                 reload!();
                 pc += at?;
             }
@@ -521,7 +541,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     }
                 };
                 if i.fl & F_CLR_B != 0 {
-                    act.clear(i.b);
+                    act.kill(i.b, pc as u32 - 1);
                 }
                 if !c {
                     pc = i.target();
@@ -569,7 +589,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 // SAFETY: the running code's constants (or rooted values): live, of this isolate.
                 unsafe { crate::call::call(cx, act, i.a, i.b, call, i.c, v.profile == Profile::Bc) }?;
                 if i.fl & F_CLR_B != 0 && i.b != i.a {
-                    act.clear(i.b);
+                    act.kill(i.b, pc as u32 - 1);
                 }
                 reload!();
             }
@@ -584,7 +604,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 // SAFETY: the running code's constants (or rooted values): live, of this isolate.
                 unsafe { crate::call::call_codes(cx, act, i.a, i.b, call, i.f, i.c) }?;
                 if i.fl & F_CLR_B != 0 && i.b != i.a {
-                    act.clear(i.b);
+                    act.kill(i.b, pc as u32 - 1);
                 }
                 reload!();
             }
@@ -690,7 +710,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     Some(r) => {
                         // SAFETY: an unboxed value.
                         unsafe { act.set(i.a, num_slot(r)) };
-                        clear_operands(act, &i);
+                        clear_operands(act, &i, pc);
                         if i.fl & F_VIS != 0 {
                             cx.set_visible(true);
                         }
@@ -706,7 +726,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 Some(x) => {
                     // SAFETY: an unboxed value.
                     unsafe { act.set(i.a, num_slot(ops::arith1(i.g as u8, x))) };
-                    clear_operands(act, &i);
+                    clear_operands(act, &i, pc);
                     if i.fl & F_VIS != 0 {
                         cx.set_visible(true);
                     }
@@ -739,7 +759,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     Some(r) => {
                         // SAFETY: an unboxed value.
                         unsafe { act.set(i.a, Slot::logical(r)) };
-                        clear_operands(act, &i);
+                        clear_operands(act, &i, pc);
                         if i.fl & F_VIS != 0 {
                             cx.set_visible(true);
                         }
@@ -755,7 +775,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 Some(x) => {
                     // SAFETY: an unboxed value.
                     unsafe { act.set(i.a, Slot::logical(ops::not1(x))) };
-                    clear_operands(act, &i);
+                    clear_operands(act, &i, pc);
                     if i.fl & F_VIS != 0 {
                         cx.set_visible(true);
                     }
@@ -771,7 +791,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     let r = ops::logic2(i.g, x, y);
                     // SAFETY: an unboxed value.
                     unsafe { act.set(i.a, Slot::logical(r)) };
-                    clear_operands(act, &i);
+                    clear_operands(act, &i, pc);
                     if i.fl & F_VIS != 0 {
                         cx.set_visible(true);
                     }
@@ -812,7 +832,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     }
                 };
                 if i.op == Op::AndOr2 && i.fl & F_CLR_B != 0 {
-                    act.clear(i.b);
+                    act.kill(i.b, pc as u32 - 1);
                 }
                 // SAFETY: an unboxed value.
                 unsafe { act.set(i.a, Slot::logical(r)) };
@@ -862,7 +882,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     // reader takes it so (`Act::unboxed`).
                     unsafe { act.out.write(act.get(i.b)) };
                     act.left_unboxed = true;
-                    act.clear(i.b);
+                    act.kill(i.b, pc as u32 - 1);
                     return Ok(Flow::Return);
                 }
                 let x = boxed(cx, act, i.b)?;
@@ -870,7 +890,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     // SAFETY: a live object (rooted in register b) into the
                     // empty out slot.
                     unsafe { act.out.write(Slot::object(x)) };
-                    act.clear(i.b);
+                    act.kill(i.b, pc as u32 - 1);
                     return Ok(Flow::Return);
                 }
                 // R: eval.c:do_return, findcontext(CTXT_BROWSER | CTXT_FUNCTION, rho, v)
@@ -887,7 +907,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     // SAFETY: as above.
                     unsafe { act.out.write(Slot::object(x)) };
                 }
-                act.clear(i.b);
+                act.kill(i.b, pc as u32 - 1);
                 match i.g {
                     1 => cx.set_visible(true),
                     2 => cx.set_visible(false),
@@ -955,10 +975,10 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 let mask = if i.g == 2 { ctxt::BREAK } else { ctxt::NEXT };
                 return Err(cx.find_context(mask, act.root(R_ENV), None));
             }
-            Op::Clear => act.clear(i.a),
+            Op::Clear => act.kill(i.a, pc as u32 - 1),
             Op::ClearRange => {
                 for r in i.a..i.b {
-                    act.clear(r);
+                    act.kill(r, pc as u32 - 1);
                 }
             }
             Op::Move => {
@@ -974,7 +994,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 cx.set_eval_depth(base);
                 pp_point(cx, act, &v, pc - 1);
                 let r = crate::eval::eval(cx, e, act.root(R_ENV), act.out(i.a));
-                act.clear(R_SCRATCH);
+                act.kill(R_SCRATCH, pc as u32 - 1);
                 r?;
                 reload!();
             }
@@ -1029,12 +1049,13 @@ fn pp_imbalance(cx: &Cx, act: &Act, prim: Sexp, off: i32, cpp: i32) {
 
 /// Clear the operand registers an instruction reads for the last time.
 #[inline(always)]
-fn clear_operands(act: &Act, i: &Ins) {
+#[track_caller]
+fn clear_operands(act: &Act, i: &Ins, pc: usize) {
     if i.fl & F_CLR_B != 0 && i.b != i.a {
-        act.clear(i.b);
+        act.kill(i.b, pc as u32 - 1);
     }
     if i.fl & F_CLR_C != 0 && i.c != i.a {
-        act.clear(i.c);
+        act.kill(i.c, pc as u32 - 1);
     }
 }
 
@@ -1114,7 +1135,7 @@ fn math1(cx: &mut Cx, act: &mut Act, v: &View, i: &Ins, pc: usize) -> RResult<()
     // SAFETY: an unboxed value.
     unsafe { act.set(i.a, Slot::real(val)) };
     for r in i.b..i.b + i.c {
-        act.clear(r);
+        act.kill(r, pc as u32);
     }
     cx.set_visible(true);
     Ok(())
@@ -1142,7 +1163,7 @@ fn math1_warnings(cx: &mut Cx, act: &Act, call: Sexp, queued: &[String], nan: bo
         }
         Ok(())
     })();
-    act.clear(R_SCRATCH);
+    act.kill(R_SCRATCH, u32::MAX);
     r
 }
 
@@ -1226,7 +1247,7 @@ fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: 
             // SAFETY: an immortal symbol.
             let s = unsafe { act.scratch(R_SCRATCH, sym) };
             let res = cx.define_scalar(s, x, act.root(R_ENV));
-            act.clear(R_SCRATCH);
+            act.kill(R_SCRATCH, u32::MAX);
             res?;
             return Ok(());
         }
@@ -1241,8 +1262,8 @@ fn set_var(cx: &mut Cx, act: &Act, r: Reg, sym: Sexp, super_assign: bool, slot: 
     } else {
         cx.define_var(s, act.root(r), act.root(R_ENV))
     };
-    act.clear(R_SCRATCH);
-    act.clear(R_SCRATCH2);
+    act.kill(R_SCRATCH, u32::MAX);
+    act.kill(R_SCRATCH2, u32::MAX);
     res?;
     Ok(())
 }
@@ -1302,7 +1323,7 @@ fn resume_begin(cx: &mut Cx, act: &Act, prev: Sexp, val: Reg, dst: Reg, assign: 
     } else if val != dst {
         // SAFETY: a copy of a register of this activation.
         unsafe { act.set(dst, act.get(val)) };
-        act.clear(val);
+        act.kill(val, u32::MAX);
     }
     cx.scope(|cx, s| {
         // SAFETY: `prev` is a cell of the source, a constant of the rooted
@@ -1344,13 +1365,13 @@ fn resume_iteration(cx: &mut Cx, act: &Act, body: Sexp, cond: Option<(Sexp, Sexp
                 crate::eval::eval(cx, cond, act.root(R_ENV), act.out(r))
                     .and_then(|()| as_logical_no_na(cx, act, r, call.bind(cx).sexp()))
             });
-            act.clear(r);
+            act.kill(r, u32::MAX);
             if !go? {
                 return Ok(false);
             }
         }
         let res = crate::eval::eval(cx, body, act.root(R_ENV), act.out(r));
-        act.clear(r);
+        act.kill(r, u32::MAX);
         res.map(|()| true)
     })
 }
@@ -1571,7 +1592,7 @@ fn base_guard(cx: &mut Cx, act: &Act, r: Reg, call: Sexp) -> RResult<bool> {
         unsafe { crate::eval::symbol_value(cx, sym, base, o) }?;
         Ok(v.bind(cx).sexp() == act.obj(r))
     });
-    act.clear(r);
+    act.kill(r, u32::MAX);
     same
 }
 
@@ -1586,7 +1607,7 @@ fn start_subset(cx: &mut Cx, act: &Act, dst: Reg, r: Reg, call: Sexp, sub2: bool
     let x = boxed(cx, act, r)?;
     // SAFETY: a register's object is live.
     if !unsafe { Ref::from_sexp(x, cx) }.is_object() {
-        act.clear(R_SCRATCH);
+        act.kill(R_SCRATCH, u32::MAX);
         return Ok(false);
     }
     let generic = if sub2 { "[[" } else { "[" };
@@ -1594,9 +1615,9 @@ fn start_subset(cx: &mut Cx, act: &Act, dst: Reg, r: Reg, call: Sexp, sub2: bool
         let out = act.out(dst);
         crate::bcassign::dispatch(cx, s, generic, act.root(R_SCRATCH), act.root(r), act.root(R_ENV), &out)
     });
-    act.clear(R_SCRATCH);
+    act.kill(R_SCRATCH, u32::MAX);
     if matches!(done, Ok(true)) {
-        act.clear(r);
+        act.kill(r, u32::MAX);
     }
     done
 }
@@ -1731,8 +1752,8 @@ fn vec_subset_fast(cx: &mut Cx, act: &Act, dst: Reg, base: Reg, sub2: bool) -> R
 /// The two operand registers of a subset cleared, `R_Visible` on: what
 /// `DFVE_NEXT` leaves (`R_BCNodeStackTop--`, `R_Visible = TRUE`).
 fn clear_subset_operands(cx: &mut Cx, act: &Act, base: Reg) {
-    act.clear(base);
-    act.clear(base + 1);
+    act.kill(base, u32::MAX);
+    act.kill(base + 1, u32::MAX);
     cx.set_visible(true);
 }
 
@@ -1791,9 +1812,9 @@ fn dflt_subset(
     // SAFETY: R_NilValue.
     unsafe { cx.set_bc_expression(cx.nil().sexp()) };
     for r in base..base + if names { 2 * n } else { n } as Reg {
-        act.clear(r);
+        act.kill(r, u32::MAX);
     }
-    act.clear(R_SCRATCH);
+    act.kill(R_SCRATCH, u32::MAX);
     cx.set_visible(true);
     r
 }
@@ -1814,9 +1835,9 @@ fn dollar(cx: &mut Cx, act: &Act, dst: Reg, r: Reg, call: Sexp, sym: Sexp) -> RR
             crate::bcassign::dollar(cx, s, call, sym, x, rho, act.out(dst))
         })
     });
-    act.clear(R_SCRATCH);
-    act.clear(R_SCRATCH2);
-    act.clear(r);
+    act.kill(R_SCRATCH, u32::MAX);
+    act.kill(R_SCRATCH2, u32::MAX);
+    act.kill(r, u32::MAX);
     res
 }
 
@@ -1920,8 +1941,8 @@ fn for_prep(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp) -> RResult<()
         let s = act.scratch(R_SCRATCH, sym);
         let v = act.scratch(R_SCRATCH2, nil);
         let r = cx.define_var(s, v, act.root(R_ENV));
-        act.clear(R_SCRATCH);
-        act.clear(R_SCRATCH2);
+        act.kill(R_SCRATCH, u32::MAX);
+        act.kill(R_SCRATCH2, u32::MAX);
         r?;
     }
     // cell = GET_BINDING_CELL(sym, rho): R_findVarLocInFrame (a slot
@@ -1931,7 +1952,7 @@ fn for_prep(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp) -> RResult<()
     let found = unsafe {
         let s = act.scratch(R_SCRATCH, sym);
         let r = cx.find_var_loc_in_frame(act.root(R_ENV), s, act.out(a + 4));
-        act.clear(R_SCRATCH);
+        act.kill(R_SCRATCH, u32::MAX);
         r?
     };
     let cell = match act.get(a + 4).as_object() {
@@ -2199,8 +2220,8 @@ fn define_loop_var(cx: &mut Cx, act: &Act, sym: Sexp, value: Sexp) -> RResult<()
         let s = act.scratch(R_SCRATCH, sym);
         let v = act.scratch(R_SCRATCH2, value);
         let r = cx.define_var(s, v, act.root(R_ENV));
-        act.clear(R_SCRATCH);
-        act.clear(R_SCRATCH2);
+        act.kill(R_SCRATCH, u32::MAX);
+        act.kill(R_SCRATCH2, u32::MAX);
         r
     }
 }

@@ -884,6 +884,8 @@ fn parse_cmd(args: &[String]) -> ExitCode {
     match robigo_syntax::parse_program(&arena, &src) {
         Ok(exprs) => {
             use std::io::Write;
+            // a parse dump: no isolate and no robigo lock while it is held
+            #[allow(clippy::disallowed_methods)]
             let mut out = std::io::stdout().lock();
             for e in &exprs {
                 out.write_all(&robigo_syntax::dump::dump(e)).unwrap();

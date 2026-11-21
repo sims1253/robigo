@@ -256,6 +256,8 @@ mod vstack;
 // R1b: collection points and in-place writes
 mod collect;
 mod edit;
+#[cfg(all(test, not(miri)))]
+mod fork_tests;
 
 pub use capi::{
     CGlobals, CParseState, PARSE_CONTEXT_SIZE, PARSE_ERROR_SIZE, PP_REDZONE, PPSTACK_SIZE, R_MB_CUR_MAX, mbcslocale,
@@ -294,7 +296,7 @@ pub use robigo_heap::{AllocError, NeedGc, Rcomplex, Sexp, types};
 pub use robigo_heap::{GcStats, LARGE, Safepoint, ScanSegment};
 pub use root::{Args, Global, Out, Root, Scope};
 pub use sym::{RSym, SymId};
-pub use vstack::{Slot, Tag};
+pub use vstack::{Slot, Tag, poison_dead};
 
 // The sizes the hot paths rely on (docs/g3.md §2.2, §6.5, §9.2).
 const _: () = {
