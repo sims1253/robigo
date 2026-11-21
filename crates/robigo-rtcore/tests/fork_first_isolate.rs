@@ -31,7 +31,10 @@ fn forks_overlapping_the_first_isolate_start_give_working_children() {
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-            eprintln!("fork_first_isolate: no progress in 90 s (a fork or its handlers hung)");
+            // raw write(2): std's stderr lock may be the stuck one
+            let msg = b"fork_first_isolate: no progress in 90 s (a fork or its handlers hung)\n";
+            // SAFETY: a live buffer to fd 2.
+            unsafe { libc::write(2, msg.as_ptr().cast(), msg.len()) };
             std::process::abort();
         });
     }
@@ -82,8 +85,14 @@ fn forks_overlapping_the_first_isolate_start_give_working_children() {
             }
             assert!(r == 0, "child {k}: waitpid failed: {}", std::io::Error::last_os_error());
             if Instant::now() > deadline {
-                // SAFETY: our own child.
-                unsafe { libc::kill(pid, libc::SIGKILL) };
+                // SAFETY: our own child, killed and reaped (again after a
+                // signal).
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                    while libc::waitpid(pid, &mut status, 0) == -1
+                        && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR)
+                    {}
+                }
                 panic!("child {k}, forked during the first isolate's start, never finished");
             }
             std::thread::sleep(Duration::from_millis(10));

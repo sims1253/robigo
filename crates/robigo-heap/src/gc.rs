@@ -3330,6 +3330,10 @@ fn not_adopted(id: u32) -> ! {
 /// registered stays; the runtime is the one caller. (Function pointers
 /// cannot be compared to check that a later call gives the same rule: one
 /// function may have several addresses.)
+///
+/// The rule runs under the symbol arena's lock (`arena::install`): it must
+/// take no lock and must not reach a cold `once_excluding_fork` cell, whose
+/// `FORK` comes before the arena's lock in the process's order (`fork.rs`).
 pub fn set_symbol_bits(bits: SymbolBits) {
     crate::fork::once_excluding_fork(&SYMBOL_BITS, || bits);
 }

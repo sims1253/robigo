@@ -98,6 +98,15 @@ pub(crate) fn watchdog(what: &'static str, secs: u64) -> std::sync::Arc<std::syn
     done
 }
 
+/// Wait for a killed child to end (`waitpid`, again after a signal).
+pub(crate) fn reap(pid: i32) {
+    let mut status = 0;
+    // SAFETY: our own child; `status` is writable.
+    while unsafe { libc::waitpid(pid, &mut status, 0) } == -1
+        && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR)
+    {}
+}
+
 /// The fork tests, one at a time: each forks while its own lock is held,
 /// and another test's fork would enter `prepare` and release this one's
 /// holder before this test's fork does.
@@ -166,7 +175,7 @@ fn fork_while_held<G: 'static>(what: &'static str, hold: fn() -> G) {
             // SAFETY: our own child, killed and reaped; the pipe's ends, ours.
             unsafe {
                 libc::kill(pid, libc::SIGKILL);
-                libc::waitpid(pid, &mut status, 0);
+                reap(pid);
                 libc::close(fds[0]);
                 libc::close(fds[1]);
             }
@@ -268,7 +277,7 @@ fn a_fork_during_a_lazy_initializer_waits_for_it() {
             // SAFETY: our own child, killed and reaped.
             unsafe {
                 libc::kill(pid, libc::SIGKILL);
-                libc::waitpid(pid, &mut status, 0);
+                reap(pid);
             }
             panic!("the child forked during a lazy initializer never finished");
         }
