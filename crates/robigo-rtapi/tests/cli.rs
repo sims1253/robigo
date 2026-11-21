@@ -40,6 +40,10 @@ fn inputs() -> Vec<(&'static str, Vec<u8>)> {
 /// What GNU R 4.6.2 does: (name, arguments, stdin, stdout, stderr, status).
 type Case = (&'static str, Vec<&'static str>, Option<&'static str>, Vec<u8>, &'static [u8], i32);
 
+/// `PrintGreeting` as GNU R 4.6.2 prints it on x86_64 Linux (setup_Rmainloop,
+/// R without `--quiet`), recorded in the oracle image.
+const GREETING: &[u8] = b"\nR version 4.6.2 (2026-10-29) -- \"Diversified Portfolio\"\nCopyright (C) 2026 The R Foundation for Statistical Computing\nPlatform: x86_64-pc-linux-gnu\n\nR is free software and comes with ABSOLUTELY NO WARRANTY.\nYou are welcome to redistribute it under certain conditions.\nType 'license()' or 'licence()' for distribution details.\n\nR is a collaborative project with many contributors.\nType 'contributors()' for more information and\n'citation()' on how to cite R or R packages in publications.\n\nType 'demo()' for some demos, 'help()' for on-line help, or\n'help.start()' for an HTML browser interface to help.\nType 'q()' to quit R.\n\n";
+
 fn cases(long_src: &[u8]) -> Vec<Case> {
     const ECHO: &[u8] = b"> x <- 1; y <- 2\n> x +\n+   y\n[1] 3\n> # a comment\n> \n> f <- function() {\n+   1\n+ }\n> f()\n[1] 1\n> print(\"a\"); 3\n[1] \"a\"\n[1] 3\n> \n";
     let q = |f: &'static str| vec!["--vanilla", "--quiet", "--no-save", "-f", f];
@@ -76,6 +80,23 @@ fn cases(long_src: &[u8]) -> Vec<Case> {
             0,
         ),
         ("file-eq", vec!["--vanilla", "--quiet", "--file=echo.R"], None, ECHO.to_vec(), b"", 0),
+        // R without --quiet: the greeting first (the -f file's, and stdin's)
+        (
+            "greeting-f",
+            vec!["--vanilla", "--no-save", "-f", "stdin.R"],
+            None,
+            [GREETING, b"> 1 + 1\n[1] 2\n> \n"].concat(),
+            b"",
+            0,
+        ),
+        (
+            "greeting-stdin",
+            vec!["--vanilla", "--no-save"],
+            Some("stdin.R"),
+            [GREETING, b"> 1 + 1\n[1] 2\n> \n"].concat(),
+            b"",
+            0,
+        ),
         (
             "file-stdin",
             vec!["--vanilla", "--quiet", "--file=-"],
@@ -239,8 +260,6 @@ fn the_command_line_and_transcript_are_gnu_rs() {
     assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
 
-/// R's start-up greeting (`PrintGreeting`, R without `--quiet`) is not
-/// ported: robigo-rt says so rather than printing another.
 /// A locale the C library does not have: setup_Rmainloop's deferred
 /// warnings, one per category, "During startup - " (GNU R 4.6.2's, on the
 /// oracle), and the C locale; quiet when neither LANG nor LC_ALL is set.
@@ -275,20 +294,6 @@ fn a_c_locale_refuses_non_ascii_outside_strings_whatever_n() {
         let (out, _, status) = run_env(&std::env::temp_dir(), &["--vanilla", "-e", &expr], None, &[("LC_ALL", "C")]);
         assert_eq!((String::from_utf8_lossy(&out).as_ref(), status), (format!("{refused} \n").as_str(), 0), "{bytes}");
     }
-}
-
-#[test]
-fn the_greeting_is_refused() {
-    let dir: PathBuf = std::env::temp_dir().join(format!("robigo-rt-cli-greeting-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("one.R"), b"1\n").unwrap();
-    let (out, err, status) = run(&dir, &["--vanilla", "--no-save", "-f", "one.R"], None);
-    let _ = std::fs::remove_dir_all(&dir);
-    assert_eq!((out, status), (Vec::new(), 2));
-    assert_eq!(
-        String::from_utf8_lossy(&err),
-        "robigo-rt: R's start-up greeting (R without --quiet) is not implemented yet\n"
-    );
 }
 
 /// Without a save action, R on stdin stops at once: it does not wait for

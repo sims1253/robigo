@@ -895,6 +895,29 @@ pub fn stage0(cx: &mut Cx, home: &Path) -> Result<Stage0, String> {
     Ok(st)
 }
 
+/// `PrintGreeting`: a blank line, `PrintVersion_part_1`, and the notices on
+/// the licence, the contributors and help, to stdout (`Rprintf`). robigo
+/// translates no message, so these are GNU R's in English.
+// R: version.c:PrintGreeting
+pub fn print_greeting(cx: &mut Cx) {
+    let Some(v) = robigo_rtbuiltins::version::print_version_part_1() else {
+        return;
+    };
+    let text = format!(
+        "\n{v}\n\
+R is free software and comes with ABSOLUTELY NO WARRANTY.\n\
+You are welcome to redistribute it under certain conditions.\n\
+Type 'license()' or 'licence()' for distribution details.\n\n\
+R is a collaborative project with many contributors.\n\
+Type 'contributors()' for more information and\n\
+'citation()' on how to cite R or R packages in publications.\n\n\
+Type 'demo()' for some demos, 'help()' for on-line help, or\n\
+'help.start()' for an HTML browser interface to help.\n\
+Type 'q()' to quit R.\n\n"
+    );
+    cx.rprintf(text.as_bytes());
+}
+
 /// What `setup_Rmainloop` does after the system profile and the locks,
 /// as R_common_command_line's options leave it: whether to read the site
 /// profile (`LoadSiteFile`) and the user's (`LoadInitFile`), to restore
@@ -916,8 +939,9 @@ pub struct AfterProfile {
 /// own `SETJMP`: an error (in a profile, its parse too: R_ReplFile has no
 /// jump of its own) is `check_session_exit`'s, false when R halts; with
 /// `options(error)` or `options(catch.script.errors)` R goes on to the next
-/// step, the rest of that profile not read. The greeting (not R_Quiet) is
-/// the front end's; the JIT's start (`R_init_jit_enabled`) is not run yet.
+/// step, the rest of that profile not read. The greeting (unless
+/// `R_Quiet`) comes before the site profile; the JIT's start
+/// (`R_init_jit_enabled`) is not run yet.
 // R: main.c:setup_Rmainloop, startup.c:R_OpenSiteFile, sys-unix.c:R_OpenInitFile,
 // startup.c:R_RestoreGlobalEnv, saveload.c:R_RestoreGlobalEnvFromFile
 pub fn after_profile(cx: &mut Cx, home: &Path, a: AfterProfile) -> bool {
@@ -925,6 +949,10 @@ pub fn after_profile(cx: &mut Cx, home: &Path, a: AfterProfile) -> bool {
     // .OptRequireMethods: found from the global environment, called in base
     if !call_startup(cx, b".OptRequireMethods", |cx| cx.global_env(), |cx| cx.base_env()) {
         return false;
+    }
+    // R: main.c:setup_Rmainloop, `if(!R_Quiet) PrintGreeting();`
+    if !a.quiet {
+        print_greeting(cx);
     }
     // the file a set R_PROFILE or R_PROFILE_USER names (None: unset; an
     // empty value is no file): R_ExpandFileName's, whose warning, an error
