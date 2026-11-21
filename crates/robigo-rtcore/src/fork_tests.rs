@@ -84,20 +84,31 @@ pub(crate) fn watchdog(what: &'static str, secs: u64) -> Watchdog {
     let d = std::sync::Arc::clone(&done);
     std::thread::spawn(move || {
         let until = Instant::now() + Duration::from_secs(secs);
-        while Instant::now() < until {
-            if d.load(std::sync::atomic::Ordering::SeqCst) {
-                return;
+        // (the flag read after the last sleep too: a guard dropped during
+        // it disarms)
+        while !d.load(std::sync::atomic::Ordering::SeqCst) {
+            if Instant::now() >= until {
+                abort_saying(&format!("{what}: no progress in {secs} s (a fork or its handlers hung)\n"));
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        // raw `write(2)`, not `eprintln!`: std's stderr lock may be the one
-        // that is stuck, and the abort must not wait on it
-        let msg = format!("{what}: no progress in {secs} s (a fork or its handlers hung)\n");
-        // SAFETY: a live buffer to fd 2.
-        unsafe { libc::write(2, msg.as_ptr().cast(), msg.len()) };
-        std::process::abort();
     });
     Watchdog(done)
+}
+
+/// Abort the process, saying why on fd 2 only if that cannot block: raw
+/// `write(2)`, not `eprintln!` (std's stderr lock may be the stuck one), and
+/// only when `poll` finds room (a full stderr pipe may be what stalled the
+/// fork). A message shorter than `PIPE_BUF` then goes in one write.
+pub(crate) fn abort_saying(msg: &str) -> ! {
+    let mut p = libc::pollfd { fd: 2, events: libc::POLLOUT, revents: 0 };
+    // SAFETY: one pollfd, no wait; a live buffer to fd 2.
+    unsafe {
+        if libc::poll(&mut p, 1, 0) == 1 && p.revents & libc::POLLOUT != 0 {
+            libc::write(2, msg.as_ptr().cast(), msg.len().min(libc::PIPE_BUF));
+        }
+    }
+    std::process::abort();
 }
 
 /// [`watchdog`]'s guard: dropping it disarms the watchdog.
@@ -259,6 +270,9 @@ fn a_failed_fork_releases_the_locks() {
                 libc::_exit(3);
             }
             let none = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+            // the handlers must have run around the failed fork: `prepare`
+            // took every lock and `parent` released it
+            let before = robigo_heap::fork_prepares();
             if libc::setrlimit(libc::RLIMIT_NPROC, &none) != 0 {
                 libc::_exit(4);
             }
@@ -271,6 +285,9 @@ fn a_failed_fork_releases_the_locks() {
             if std::io::Error::last_os_error().raw_os_error() != Some(libc::EAGAIN) {
                 libc::_exit(7);
             }
+            if robigo_heap::fork_prepares() != before + 1 {
+                libc::_exit(8);
+            }
         }
         let s = child_work(fds[1]);
         // SAFETY: ends the child at once.
@@ -278,7 +295,8 @@ fn a_failed_fork_releases_the_locks() {
     }
     let status = wait_for_child("a failed fork", pid, fds);
     // 3, 4: the child could not drop its rights or set the limit; 5, 6: the
-    // fork it meant to fail succeeded; 7: it failed for another reason
+    // fork it meant to fail succeeded; 7: it failed for another reason; 8:
+    // no `prepare` ran around it
     assert!(
         libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
         "a failed fork: the child failed (status {status}, exit {})",

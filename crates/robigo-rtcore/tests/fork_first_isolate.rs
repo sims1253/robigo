@@ -32,17 +32,23 @@ fn forks_overlapping_the_first_isolate_start_give_working_children() {
         let done = Arc::clone(&done);
         std::thread::spawn(move || {
             let until = Instant::now() + Duration::from_secs(90);
-            while Instant::now() < until {
-                if done.load(Ordering::SeqCst) {
-                    return;
+            // (the flag read after the last sleep too)
+            while !done.load(Ordering::SeqCst) {
+                if Instant::now() >= until {
+                    // raw write(2), and only when it cannot block: std's
+                    // stderr lock, or a full stderr pipe, may be what is stuck
+                    let msg = b"fork_first_isolate: no progress in 90 s (a fork or its handlers hung)\n";
+                    let mut p = libc::pollfd { fd: 2, events: libc::POLLOUT, revents: 0 };
+                    // SAFETY: one pollfd, no wait; a live buffer to fd 2.
+                    unsafe {
+                        if libc::poll(&mut p, 1, 0) == 1 && p.revents & libc::POLLOUT != 0 {
+                            libc::write(2, msg.as_ptr().cast(), msg.len());
+                        }
+                    }
+                    std::process::abort();
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-            // raw write(2): std's stderr lock may be the stuck one
-            let msg = b"fork_first_isolate: no progress in 90 s (a fork or its handlers hung)\n";
-            // SAFETY: a live buffer to fd 2.
-            unsafe { libc::write(2, msg.as_ptr().cast(), msg.len()) };
-            std::process::abort();
         });
     }
     let _disarm = Disarm(Arc::clone(&done));
