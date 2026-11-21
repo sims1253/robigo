@@ -933,7 +933,13 @@ impl Drop for TzReset {
         if self.restore().is_err() {
             static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
             if !SAID.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                eprintln!("robigo: TZ could not be put back after a time zone conversion that unwound");
+                // (writeln, not eprintln: a failed write must not panic again
+                // during an unwind, which would abort)
+                use std::io::Write;
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "robigo: TZ could not be put back after a time zone conversion that unwound"
+                );
             }
         }
     }
