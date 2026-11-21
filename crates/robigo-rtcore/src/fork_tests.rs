@@ -210,6 +210,8 @@ fn a_child_forked_while_the_symbol_arena_is_locked_interns() {
 /// its console, which takes it (#894's `rt` failure on CI).
 #[test]
 fn a_child_forked_while_stdout_is_locked_tears_its_isolate_down() {
+    // the holder takes no robigo lock while it holds it
+    #[allow(clippy::disallowed_methods)]
     fork_while_held("stdout", || std::io::stdout().lock());
 }
 
@@ -217,6 +219,8 @@ fn a_child_forked_while_stdout_is_locked_tears_its_isolate_down() {
 /// message.
 #[test]
 fn a_child_forked_while_stderr_is_locked_tears_its_isolate_down() {
+    // the holder takes no robigo lock while it holds it
+    #[allow(clippy::disallowed_methods)]
     fork_while_held("stderr", || std::io::stderr().lock());
 }
 

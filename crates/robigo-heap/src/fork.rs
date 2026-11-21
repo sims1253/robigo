@@ -30,7 +30,9 @@
 //!
 //! A thread takes them in this order and never the other way: in
 //! particular, it takes none of 0–3 while it holds std's stdout or stderr
-//! lock (a `stdout().lock()` held across a robigo call breaks that).
+//! lock (a `stdout().lock()` held across a robigo call breaks that; clippy's
+//! `disallowed-methods`, in the workspace's `clippy.toml`, refuses std's
+//! `Stdout::lock` and `Stderr::lock` except at sites allowed with a reason).
 //! `prepare` takes 0, 1, 2 (exclusive), 3 and 4, in that order. `parent` and `child`
 //! release them in the reverse order, and release only what that `prepare`
 //! took. robigo-rtcore, which owns 1 and 2, gives their take and release to
@@ -234,6 +236,8 @@ extern "C" fn prepare() {
         TOOK_EMBEDDER.store(true, Ordering::Relaxed);
     }
     crate::arena::lock_for_fork();
+    // the order's last two: every robigo lock is already held
+    #[allow(clippy::disallowed_methods)]
     let std_io = (std::io::stdout().lock(), std::io::stderr().lock());
     // SAFETY: the stash is this fork's alone: `FORK`, held, serializes the
     // forks' handlers, and `release` empties it.
