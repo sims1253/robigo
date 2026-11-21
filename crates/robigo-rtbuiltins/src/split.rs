@@ -75,7 +75,7 @@ fn split<'s>(cx: &mut Cx, s: Scope<'s>, x: Root<'_>, f: Root<'_>, out: Out<'_>) 
     if nfac == 0 && nobs > 0 {
         return Err(cx.error("group length is 0 but data length > 0"));
     }
-    if nfac > 0 && nobs % nfac != 0 {
+    if nfac > 0 && !nobs.is_multiple_of(nfac) {
         cx.warning("data length is not a multiple of split variable")?;
     }
     // the first pass: each level's elements (MOD_ITERATE1: f recycled)
