@@ -957,7 +957,9 @@ impl FillData {
                 for (j, (&formal, tag)) in dest.iter().zip(tags).take(p.nactuals as usize).enumerate() {
                     let went = if missing & (1 << j) != 0 {
                         Went::Missing
-                    } else if let Some(k) = dots.iter().position(|&d| d as usize == j) {
+                    } else if p.ndots != 0
+                        && let Some(k) = dots.iter().position(|&d| d as usize == j)
+                    {
                         Went::Dots(k as u16)
                     } else {
                         Went::Formal { formal, pos: j as u16 }
@@ -1191,8 +1193,8 @@ unsafe fn plan_dots_list(
     }
 }
 
-/// The `...` formal's init of a call bound by its site's plan `p` (`p.ndots
-/// > 0`): the list [`plan_dots_list`] makes (allocates; every init is
+/// The `...` formal's init of a call bound by its site's plan `p`, whose
+/// `...` takes some of the call's arguments: the list [`plan_dots_list`] makes (allocates; every init is
 /// rooted), rooted in `s`, in place of `plan_inits`' R_MissingArg. Out of
 /// line, as the plan path's code for calls without such actuals.
 ///
