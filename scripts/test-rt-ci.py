@@ -67,6 +67,19 @@ class RtCi(unittest.TestCase):
                          ["builtin differential and its planted divergences (A4, scripts/builtin-diff.py ci)",
                           "conformance under ROBIGO_RETRY_TORTURE=1 (E9: every build's retry runs once)"])
 
+    def test_a_step_whose_report_fails_is_timed_as_failed(self):
+        # the command passed, the crosscheck report did not (it compared
+        # nothing: there is none), so the job fails and its time row says so
+        from unittest import mock
+        import tempfile
+        missing = os.path.join(tempfile.mkdtemp(), "none.txt")
+        done = []
+        ok = mock.Mock(returncode=0)
+        with mock.patch.object(rt.subprocess, "run", return_value=ok):
+            r = rt.run_steps([("crosscheck", {"ROBIGO_BC_CROSSCHECK_REPORT": missing}, ["true"])], done)
+        self.assertEqual(r, 1)
+        self.assertEqual([(t, ok_) for t, _, ok_ in done], [("crosscheck", False)])
+
     def test_the_step_times_are_reported_slowest_first(self):
         r = rt.timings_report([("a", 60.0, True), ("b", 600.0, True), ("c", 30.0, False)])
         lines = r.splitlines()

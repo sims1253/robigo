@@ -425,6 +425,7 @@ def run_steps(plan, done):
                 print(f"::error::rt: {line}")
             if hits:
                 print(f"::error::rt: {title}: {len(hits)} report(s)")
+                done[-1] = (title, done[-1][1], False)
                 return 1
         if bc:
             errors, classes = bc_report_check(bc)
@@ -436,6 +437,7 @@ def run_steps(plan, done):
                 # (an error is a closure's line, a malformed line or a
                 # report that compared nothing: bc_report_check)
                 print(f"::error::rt: {title}: {len(errors)} report problem(s)")
+                done[-1] = (title, done[-1][1], False)
                 return 1
     return 0
 
