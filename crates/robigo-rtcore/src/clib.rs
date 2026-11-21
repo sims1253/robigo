@@ -944,6 +944,11 @@ static TZ_SESSION_OWNER: std::sync::atomic::AtomicUsize = std::sync::atomic::Ato
 /// taking another lock: a leaf, which the fork handlers take last.
 static TZ_SESSION_WAIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static TZ_SESSION_FREE: std::sync::Condvar = std::sync::Condvar::new();
+/// How many [`TzSessionLock::take`]s found the session held by another
+/// thread and waited (counted before the wait): the fork tests' proof that
+/// a call contended for the session rather than ran beside it.
+#[cfg(test)]
+pub(crate) static TZ_SESSION_WAITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 thread_local! {
     /// How many of [`TzSessionLock`] this thread holds (a session's R code
@@ -969,6 +974,10 @@ impl TzSessionLock {
         let me = this_thread_id();
         if TZ_SESSION_OWNER.load(std::sync::atomic::Ordering::SeqCst) != me {
             let mut g = TZ_SESSION_WAIT.lock().unwrap_or_else(|e| e.into_inner());
+            #[cfg(test)]
+            if TZ_SESSION_OWNER.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+                TZ_SESSION_WAITS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             while TZ_SESSION_OWNER.load(std::sync::atomic::Ordering::SeqCst) != 0 {
                 g = TZ_SESSION_FREE.wait(g).unwrap_or_else(|e| e.into_inner());
             }
