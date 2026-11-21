@@ -85,6 +85,10 @@ pub(super) struct Writer<'h> {
     /// position in `effects` of the R_cmpfun1 result written for each: a
     /// closure the graph reaches again is written from it, not compiled
     /// again (reset with each pass, as `refs` is: a restart may move them).
+    /// Only compiles that gave byte code are kept. The position is valid
+    /// because [`Writer::cmpfun1`] is exactly one [`Writer::effect`], whose
+    /// result `effects` keeps at the walk's position (`seq`) for the whole
+    /// call, across restarts (a debug assertion checks the one).
     jit: HashMap<usize, usize>,
     seq: usize,
     depth: usize,
@@ -455,9 +459,16 @@ impl Writer<'_> {
                         let new_s = match self.jit.get(&s.addr()) {
                             Some(&k) => self.effects[k].bind(cx).sexp(),
                             None => {
+                                // (cmpfun1 is one effect point: its result is
+                                // kept at the position the walk is at now)
                                 let k = self.seq;
                                 let new_s = self.cmpfun1(cx, s)?;
-                                self.jit.insert(s.addr(), k);
+                                debug_assert_eq!(self.seq, k + 1, "robigo: R_cmpfun1 is not one effect point");
+                                // (a decline is not kept: the closure is NOJIT
+                                // from here, so the walk never asks again)
+                                if new_s.typ() == CLOSXP && new_s.cdr().typ() == BCODESXP {
+                                    self.jit.insert(s.addr(), k);
+                                }
                                 new_s
                             }
                         };
