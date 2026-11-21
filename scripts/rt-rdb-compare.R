@@ -127,7 +127,8 @@ bcdiff <- function(a, b, path = "") {
     ca <- code(a); cb <- code(b)
     if (typeof(ca) == "bytecode" && typeof(cb) == "bytecode")
         return(bcdiff_code(.Internal(disassemble(ca)), .Internal(disassemble(cb)), path))
-    if (!is.null(ca) && !is.null(cb) && (typeof(ca) == "bytecode") != (typeof(cb) == "bytecode"))
+    clo <- function(f) is.function(f) && !is.primitive(f)
+    if (clo(a) && clo(b) && (typeof(ca) == "bytecode") != (typeof(cb) == "bytecode"))
         return(paste0(path, "the body: ours ", if (typeof(ca) == "bytecode") "byte code" else "not compiled",
                       ", GNU R ", if (typeof(cb) == "bytecode") "byte code" else "not compiled"))
     if (is.list(a) && is.list(b) && length(a) == length(b))
