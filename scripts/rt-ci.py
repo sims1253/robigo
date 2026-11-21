@@ -185,16 +185,19 @@ FULL_MOVE_SLOW = {
 
 
 # The cases that need longer than the slow modes' 600 s in the job's
-# GC_MOVE=young:16 gctorture step, and how long they get (each case still
-# runs, and every other case keeps the 600 s, so a hung case still fails in
-# ten minutes; the runner starts these first, so the step does not end with
-# one running alone):
+# GC_MOVE=young:16 gctorture step, and how long they get. Each still runs;
+# every other case keeps the 600 s, so a hung unlisted case still fails in
+# ten minutes (a listed one in its own time). The runner starts the listed
+# cases first, so they do not start late:
 YOUNG_MOVE_SLOW = {
     # a C stack overflow's deep recursion, each frame under gctorture with
     # the moving collector. In that step on CI: about 360 s (run
     # 44865825323, 2026-11-21 04:22), about 600 s (run 44883150235, 08:27,
     # passed at the limit), over 600 s (run 44896845237, #927: failed);
-    # 225-270 s alone on the 24-CPU workstation
+    # 134-248 s on the 24-CPU workstation, with its load. Not a regression:
+    # the step's settings count 832-839 G user instructions at dc404c7da
+    # (run 44865825323's tree) and 822 G at main 6b5d719a8 (perf stat, two
+    # runs each, 2026-11-21), so the spread on CI is the runner's
     "tests/r/conditions/c-stack-overflow.R": 1200,
 }
 
