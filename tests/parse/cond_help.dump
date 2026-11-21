@@ -1,0 +1,6 @@
+(`function` (pairlist x=(`?` `a` `b`)) `x` NULL)
+(`function` (pairlist x=(`?` (`=` `y` dbl:1))) `x` NULL)
+(`function` (pairlist x=(`(` (`=` `y` dbl:1))) `x` NULL)
+(`if` (`?` `a` `b`) `c`)
+(`for` `i` (`?` `a` `b`) `c`)
+(`while` (`(` (`=` `a` `b`)) `c`)
