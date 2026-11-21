@@ -486,7 +486,7 @@ pub struct Core {
     chars: crate::chars::CharTable,
     /// the symbols this heap has installed, by name: the process's
     /// (`arena.rs`), cached here so that a known name takes no lock
-    syms: HashMap<Box<[u8]>, Sexp, BuildFx>,
+    syms: crate::symtab::SymTable,
     /// each symbol's PRINTNAME in this heap, by its (global) id: a CHARSXP
     /// of this heap's cache, immortal (null: not installed here). Symbols
     /// are shared and immutable, a PRINTNAME is what R code sees of a name,
@@ -860,7 +860,7 @@ impl Core {
             unbound: Sexp::NULL,
             missing_arg: Sexp::NULL,
             chars: crate::chars::CharTable::new(),
-            syms: HashMap::default(),
+            syms: crate::symtab::SymTable::with_slots(crate::symtab::SLOTS),
             printnames: Vec::new(),
             arena_nodes: 0,
             precious: Vec::new(),
@@ -1838,12 +1838,25 @@ impl Core {
         encbits: u16,
         on_miss: impl FnOnce(),
     ) -> Result<Sexp, NeedGc> {
+        self.mk_char_hashed(bytes, ascii, encbits, hash_bytes(bytes), on_miss)
+    }
+
+    /// `mk_char_ascii` for bytes whose [`hash_bytes`] the caller has.
+    #[inline]
+    fn mk_char_hashed(
+        &mut self,
+        bytes: &[u8],
+        ascii: bool,
+        encbits: u16,
+        h: u32,
+        on_miss: impl FnOnce(),
+    ) -> Result<Sexp, NeedGc> {
+        debug_assert_eq!(h, hash_bytes(bytes));
         let bits = if ascii {
             gp::charsxp::ASCII
         } else {
             encbits & (gp::charsxp::UTF8 | gp::charsxp::LATIN1 | gp::charsxp::BYTES)
         } | gp::charsxp::CACHED;
-        let h = hash_bytes(bytes);
         if let Some(c) = self.find_char_hashed(bytes, bits & !gp::charsxp::CACHED, h) {
             return Ok(c);
         }
@@ -1892,15 +1905,18 @@ impl Core {
     /// a native CHARSXP of `name`.
     #[inline(never)]
     fn install_named(&mut self, name: &[u8], printname: Sexp) -> Result<Sexp, NeedGc> {
-        if let Some(&s) = self.syms.get(name) {
+        // one hash for the heap's table, the arena's, its name record and
+        // this heap's PRINTNAME
+        let h = hash_bytes(name);
+        if let Some(s) = self.syms.find(h, name) {
             return Ok(s);
         }
         // this heap's PRINTNAME, then the symbol, the process's (made by
         // the arena if no heap has made it, with the bits its name gives
         // it: nothing writes a symbol after it is made)
-        let c = if printname.is_null() { self.mk_char(name, 0)? } else { printname };
+        let c = if printname.is_null() { self.mk_char_hashed(name, name.is_ascii(), 0, h, || {})? } else { printname };
         self.count_symbol()?;
-        let s = crate::arena::install(name, || SYMBOL_BITS.get().map_or((0, 0), |bits| bits(name)));
+        let s = crate::arena::install(name, h, || SYMBOL_BITS.get().map_or((0, 0), |bits| bits(name)));
         // SAFETY: `c` is live (nothing collected since it was made or
         // passed), and a CHARSXP has no children. The immortal symbol is
         // not traced, so its name must be immortal too. HASHASH and
@@ -1918,13 +1934,14 @@ impl Core {
         }
         // SAFETY: a symbol, and an immortal CHARSXP of this heap (or "").
         unsafe { self.set_printname(s, c) };
-        self.syms.insert(name.into(), s);
+        // SAFETY: published by the arena's install.
+        unsafe { self.syms.insert(s) };
         Ok(s)
     }
 
     /// The symbol for a CHARSXP's bytes, or None if not installed.
     pub fn find_symbol(&self, name: &[u8]) -> Option<Sexp> {
-        self.syms.get(name).copied()
+        self.syms.find(hash_bytes(name), name)
     }
 
     /// How many CHARSXPs the cache contains, dead ones not yet pruned included.
@@ -1939,7 +1956,7 @@ impl Core {
 
     /// Every symbol (R_lsInternal-style walks, `ls(baseenv())`).
     pub fn symbols(&self) -> impl Iterator<Item = Sexp> + '_ {
-        self.syms.values().copied()
+        self.syms.iter()
     }
 
     // ---- roots ---------------------------------------------------------
