@@ -457,8 +457,9 @@ SHARDS = ("modes", "gctorture", "feature-builds", "builtin-diff", "debug-asserti
 OWN_STEPS = ("debug-assertions", "release-crate-tests")
 
 # Each shard's budget, in minutes: its steps' total in a CI run plus about
-# 20%, rounded up. Its job's timeout-minutes is twice the budget, and the
-# end-of-log table warns at WARN_AT of it, so a drift shows long before the
+# 20%, rounded up. Its job's timeout-minutes is twice the budget, but no
+# less than TIMEOUT_FLOOR (timeout_of), and the end-of-log table warns at
+# WARN_AT of the budget, so a drift shows long before the
 # timeout (scripts/test-rt-ci.py pins the three relations). When a warning
 # fires, rebalance or remeasure: the dates say how old each measurement is.
 BUDGETS = {  # shard: (budget, measured minutes, where measured)
