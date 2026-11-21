@@ -588,10 +588,11 @@ TIMES_DIR = os.environ.get("RT_CI_TIMES_DIR") or os.path.join(tempfile.gettempdi
 SLOW_FRACTION = 0.5
 
 
-def times_file(title):
-    """The times report of the step titled `title`."""
+def times_file(index, title):
+    """The times report of a plan's `index`-th step, titled `title`: the index
+    keeps two steps whose titles differ only in punctuation apart."""
     slug = re.sub(r"[^A-Za-z0-9]+", "-", title).strip("-")[:80]
-    return os.path.join(TIMES_DIR, f"{slug}.tsv")
+    return os.path.join(TIMES_DIR, f"{index:02d}-{slug}.tsv")
 
 
 def slow_cases(path, fraction=SLOW_FRACTION):
@@ -620,7 +621,7 @@ def slow_cases_report(title, path):
 def run_steps(plan, done):
     """Run `plan`'s steps in order, recording (title, seconds, ok) in `done`;
     stop at the first that fails."""
-    for title, env, cmd in plan:
+    for index, (title, env, cmd) in enumerate(plan):
         report = env.get("ROBIGO_GC_PIN_REPORT")
         if report and os.path.exists(report):
             os.remove(report)
@@ -629,7 +630,7 @@ def run_steps(plan, done):
             os.remove(bc)
         times = None
         if CONFORMANCE in cmd and "--exact" in cmd:
-            times = times_file(title)
+            times = times_file(index, title)
             os.makedirs(TIMES_DIR, exist_ok=True)
             if os.path.exists(times):
                 os.remove(times)

@@ -12,6 +12,20 @@ use std::sync::OnceLock;
 
 /// The fake binaries, written once before any test spawns one: a binary
 /// written while another thread forks can fail to exec ("text file busy").
+/// A runtime that fails every case at once, and whose boot probe (the
+/// runner's record of what it does not run, ROBIGO_BOOT_VERBOSE) takes 3 s.
+fn slow_probe() -> PathBuf {
+    static P: OnceLock<PathBuf> = OnceLock::new();
+    P.get_or_init(|| {
+        use std::os::unix::fs::PermissionsExt;
+        let p = fakes().0.parent().unwrap().join("slow-probe");
+        std::fs::write(&p, "#!/bin/sh\n[ -n \"$ROBIGO_BOOT_VERBOSE\" ] && sleep 3\nexit 1\n").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    })
+    .clone()
+}
+
 fn fakes() -> &'static (PathBuf, PathBuf, PathBuf, PathBuf) {
     static FAKES: OnceLock<(PathBuf, PathBuf, PathBuf, PathBuf)> = OnceLock::new();
     FAKES.get_or_init(|| {
@@ -353,6 +367,23 @@ fn the_times_report_lists_every_case_run_with_its_limit() {
     let text = std::fs::read_to_string(&report).unwrap();
     assert_eq!(text.lines().filter(|l| l.ends_with(".R")).count(), 2, "{text}");
     assert!(text.lines().skip(1).all(|l| l.split('\t').nth(2) == Some("fail")), "{text}");
+}
+
+/// A case's time is its own run: the boot probe the first failure starts
+/// (which the other failing cases wait for) is not counted in any case's.
+#[test]
+fn a_case_time_leaves_out_the_boot_probe() {
+    let f = rt_tree("times-probe");
+    f.case("tests/rt/smoke/two.R", "2\n").record("tests/rt", "tests/rt/smoke/two.R", "4.6.2", "2\n");
+    let report = f.root().join("times.tsv");
+    let mut o = opts(&RT, slow_probe());
+    o.filter = Some("tests/rt/smoke".into());
+    o.times = Some(report.clone());
+    let _ = run(f.root(), &RT, &o);
+    let text = std::fs::read_to_string(&report).unwrap();
+    let secs: Vec<f64> = text.lines().skip(1).map(|l| l.split('\t').next().unwrap().parse().unwrap()).collect();
+    assert_eq!(secs.len(), 2, "{text}");
+    assert!(secs.iter().all(|s| *s < 2.0), "the 3 s probe counted in a case's time: {text}");
 }
 
 /// `ROBIGO_CONF_TIMEOUTS` gives the case it names its own timeout. It names

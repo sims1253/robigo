@@ -854,18 +854,25 @@ fn check(
     script: &Path,
     o: &Options,
     record: &std::sync::OnceLock<String>,
-) -> Outcome {
+) -> (Outcome, Option<Duration>) {
     let id = case_id(root, script);
     let base = expected_base(root, suite, script, &o.version);
     let exp = match read_recording(&base, script, &o.version) {
         Ok(r) => r,
         Err(why) => {
             let diff = format!("    {why} for GNU R {}\n", o.version);
-            return Outcome { id, unrecorded: Some(why), stdout_ok: false, stderr_ok: false, status_ok: false, diff };
+            return (
+                Outcome { id, unrecorded: Some(why), stdout_ok: false, stderr_ok: false, status_ok: false, diff },
+                None,
+            );
         }
     };
     let timeout = o.case_timeouts.get(&id).copied().unwrap_or(o.timeout);
+    // the case's own run, timed alone: the boot probe below (the first
+    // failure's, which other failing cases wait for) is not its time
+    let start = Instant::now();
     let (out, err, status, timed_out) = run_command(case_command(o, script), &o.bin, timeout);
+    let ran = start.elapsed();
     let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
     let mut diff = String::new();
     if timed_out {
@@ -894,7 +901,7 @@ fn check(
         // probed once, by the first case that fails
         diff.push_str(record.get_or_init(|| boot_record(column, o)));
     }
-    Outcome { id, unrecorded: None, stdout_ok, stderr_ok, status_ok, diff }
+    (Outcome { id, unrecorded: None, stdout_ok, stderr_ok, status_ok, diff }, Some(ran))
 }
 
 /// What a run found.
@@ -987,9 +994,11 @@ pub fn run(root: &Path, column: &Column, o: &Options) -> Result<Report, String> 
                 loop {
                     let next = queue.lock().unwrap().pop();
                     let Some((suite, p)) = next else { break };
-                    let start = Instant::now();
-                    let r = check(root, column, suite, &p, o, &record);
-                    times.lock().unwrap().push((start.elapsed(), r.id.clone(), r.passed()));
+                    let (r, ran) = check(root, column, suite, &p, o, &record);
+                    // (a case with no recording did not run: it has no time)
+                    if let Some(ran) = ran {
+                        times.lock().unwrap().push((ran, r.id.clone(), r.passed()));
+                    }
                     results.lock().unwrap().push(r);
                 }
             });

@@ -182,7 +182,15 @@ class RtCi(unittest.TestCase):
                 contextlib.redirect_stdout(out):
             self.assertEqual(rt.run_steps(plan, []), 1)
         self.assertIsNone(seen[0])
-        self.assertTrue(seen[1] and seen[1].endswith("conformance-under-gctorture-E3.tsv"), seen)
+        self.assertTrue(seen[1] and seen[1].endswith("01-conformance-under-gctorture-E3.tsv"), seen)
+        # two titles that differ only in punctuation get two files
+        self.assertNotEqual(rt.times_file(3, "conformance under X=1"), rt.times_file(4, "conformance under X-1"))
+        # and every step of every shard has a file of its own
+        crates = ["robigo-heap", "robigo-rt", "robigo-rtapi", "robigo-rtcore"]
+        for shard in rt.SHARDS:
+            plan = rt.shard_steps(crates, shard)
+            files = [rt.times_file(i, t) for i, (t, _, _) in enumerate(plan)]
+            self.assertEqual(len(files), len(set(files)), shard)
         self.assertIn("1 case(s) over 50% of their limit", out.getvalue())
         self.assertIn("tests/rt/x.R", out.getvalue())
         # the nightly's full-move step is a conformance step like the others
