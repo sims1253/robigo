@@ -42,14 +42,17 @@ pub fn sexptype2char(t: u8) -> &'static str {
     }
 }
 
-/// GNU R's `type2char` of a type robigo-rt's objects have: the first name
-/// `TypeTable` gives it. Every object's type is one of them; a code from
-/// outside (the C API's `allocVector`, `coerceVector`) goes through
-/// [`type2char_warn`], which has GNU R's warning and "unknown type #N" for
-/// a code no type names.
+/// GNU R's `type2char` without its warning: the first name `TypeTable`
+/// gives a type, and "unknown type #N" for a code it has no name for. Every
+/// object's type has a name; a code from outside (the C API's
+/// `allocVector`, `coerceVector`) is warned about where it comes in
+/// ([`type2char_warn`]).
 // R: util.c:TypeTable, util.c:type2char
 pub fn type2char(t: u8) -> &'static str {
-    type_name(t).unwrap_or("unknown type")
+    static UNKNOWN: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    type_name(t).unwrap_or_else(|| {
+        &UNKNOWN.get_or_init(|| (0..=255).map(|t| format!("unknown type #{t}")).collect())[t as usize]
+    })
 }
 
 /// GNU R's `type2char` of a type code from outside, of any width: the
@@ -65,9 +68,9 @@ pub fn type2char_warn(cx: &mut Cx, t: u32) -> robigo_rtcore::RResult<std::borrow
 }
 
 /// `TypeTable`'s first name for a type, or None (util.c's `Type2Table`
-/// entry with no `cstrName`).
+/// entry with no `cstrName`: 11, 12 and 26 to 31, and any code past it).
 // R: util.c:TypeTable
-fn type_name(t: u8) -> Option<&'static str> {
+pub fn type_name(t: u8) -> Option<&'static str> {
     Some(match t {
         NILSXP => "NULL",
         SYMSXP => "symbol",

@@ -825,8 +825,17 @@ fn coerce_pairlist<'g>(cx: &'g Cx, v: Ref<'g>, ty: u8) -> Result<Coerced<'g>, Ne
             Err(m) => return fail(m),
         }
     } else if pairs && vectorizable(&items) {
-        if !matches!(ty, LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP) {
-            return fail(unimplemented_type("coercePairList", v));
+        // GNU R allocates `allocVector(type, n)` first: its errors for a
+        // type it cannot allocate, else UNIMPLEMENTED_TYPE for a type it
+        // allocates but does not fill (a call, NULL)
+        // R: coerce.c:coercePairList, memory.c:allocVector3
+        match ty {
+            LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP => {}
+            CHARSXP => return fail("use of allocVector(CHARSXP ...) is defunct\n".into()),
+            LANGSXP | NILSXP => return fail(unimplemented_type("coercePairList", v)),
+            _ => {
+                return fail(format!("invalid type/length ({}/{}) in vector allocation", type2char(ty), items.len()));
+            }
         }
         from_scalars(cx, &items, ty, &a, &mut w)?
     } else {

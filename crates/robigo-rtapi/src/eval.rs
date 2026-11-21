@@ -248,10 +248,17 @@ entry! {
     [2] fn Rf_coerceVector(v: Sexp, t: c_uint) -> Sexp => |cx, s| {
         let o = s.out(cx);
         let r = o.root();
-        let Ok(t) = u8::try_from(t) else {
+        let Ok(t8) = u8::try_from(t) else {
             return Err(coerce_to_unknown(cx, v, t));
         };
-        robigo_rtbuiltins::coerce::vector::coerce_vector(cx, v, t, o)?;
+        // A code no type names: GNU R's type2char warns wherever the
+        // coercion's error names the target, which every branch but the
+        // environment's does; the error itself says "unknown type #N"
+        // (type2char's text), so the warning comes first, here.
+        if robigo_rtbuiltins::util::type_name(t8).is_none() && v.bind(cx).sexptype() != ENVSXP {
+            robigo_rtbuiltins::util::type2char_warn(cx, t)?;
+        }
+        robigo_rtbuiltins::coerce::vector::coerce_vector(cx, v, t8, o)?;
         Ok(r.bind(cx).sexp())
     }
 

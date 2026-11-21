@@ -533,6 +533,45 @@ fn accessor_errors_are_gnu_rs() {
     assert_eq!(s.val(&format!(".Call(\"rt_noop3\", {})", vec!["1"; 65].join(", "))), Val::Null);
 }
 
+/// `coerceVector` to a code no type names, below 256 too (30 is NEWSXP):
+/// type2char's warning first wherever the error names the target, not for
+/// an environment, whose error does not; and a pairlist that GNU R
+/// allocates the target for first (allocVector's error, a named target's
+/// too).
+// R: coerce.c:coerceVector, coerce.c:coercePairList, memory.c:allocVector3
+#[test]
+fn coerce_vector_to_an_unnamed_type_warns_as_type2char_does() {
+    let mut s = Session::new(Profile::Eval);
+    s.stderr();
+    let run = |s: &mut Session, x: &str, t: u32| {
+        s.val(&format!(
+            "w <- character(); tryCatch(withCallingHandlers(.Call(\"rt_coerce_to\", {x}, {t}), \
+             warning = function(c) {{ w <<- c(w, conditionMessage(c)); invokeRestart(\"muffleWarning\") }}), \
+             error = function(e) c(w, conditionMessage(e)))"
+        ))
+    };
+    assert_eq!(
+        run(&mut s, "1:2", 30),
+        Val::Str(vec![
+            "type 30 is unimplemented in 'type2char'".into(),
+            "cannot coerce type 'integer' to vector of type 'unknown type #30'".into(),
+        ])
+    );
+    assert_eq!(run(&mut s, "new.env()", 30), Val::Str(vec!["environments cannot be coerced to other types".into()]));
+    assert_eq!(
+        run(&mut s, "pairlist(1, 2)", 30),
+        Val::Str(vec![
+            "type 30 is unimplemented in 'type2char'".into(),
+            "invalid type/length (unknown type #30/2) in vector allocation".into(),
+        ])
+    );
+    // a named type GNU R cannot allocate: allocVector's error, no warning
+    assert_eq!(
+        run(&mut s, "pairlist(1)", 3),
+        Val::Str(vec!["invalid type/length (closure/1) in vector allocation".into()])
+    );
+}
+
 /// `allocVector` of a code no type names: type2char's warning, then GNU
 /// R's "invalid type/length" naming the caller's code (30 is NEWSXP, in the
 /// table without a name; 999 is past it, named as given).
