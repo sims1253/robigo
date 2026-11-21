@@ -57,6 +57,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -576,6 +577,46 @@ def main(argv):
         print(timings_report(done, a.shard), flush=True)
 
 
+# Every conformance step writes each case's wall time (the runner's
+# ROBIGO_CONF_TIMES_REPORT) into this directory, one file per step, and its
+# end lists the cases over SLOW_FRACTION of their limit: report-only. The
+# rule (docs/ledger/g3/2026-11-21-a1-rt-shards.md): a case over half its
+# step's limit alone is named in that step with an allowance and its
+# measured time, or is made smaller. RT_CI_TIMES_DIR keeps the files where
+# CI can upload them, and they balance the shards.
+TIMES_DIR = os.environ.get("RT_CI_TIMES_DIR") or os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-times-{os.getpid()}")
+SLOW_FRACTION = 0.5
+
+
+def times_file(title):
+    """The times report of the step titled `title`."""
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", title).strip("-")[:80]
+    return os.path.join(TIMES_DIR, f"{slug}.tsv")
+
+
+def slow_cases(path, fraction=SLOW_FRACTION):
+    """A times report's cases over `fraction` of their limit, slowest first:
+    (secs, limit, status, case)."""
+    try:
+        with open(path) as f:
+            lines = [line.rstrip("\n").split("\t") for line in f if line.strip() and not line.startswith("#")]
+    except FileNotFoundError:
+        return []
+    rows = [(float(s), int(lim), status, case) for s, lim, status, case in lines]
+    return [r for r in rows if r[0] > fraction * r[1]]
+
+
+def slow_cases_report(title, path):
+    """The end of a conformance step's log: its cases over half their limit."""
+    rows = slow_cases(path)
+    if not rows:
+        return f"rt: case times: {title}: no case over {SLOW_FRACTION:.0%} of its limit ({path})"
+    lines = [f"rt: case times: {title}: {len(rows)} case(s) over {SLOW_FRACTION:.0%} of their limit "
+             f"(name each with an allowance and its time, or make it smaller; {path}):"]
+    lines += [f"  {s:7.1f} s of {lim:4d} s  {status}  {case}" for s, lim, status, case in rows]
+    return "\n".join(lines)
+
+
 def run_steps(plan, done):
     """Run `plan`'s steps in order, recording (title, seconds, ok) in `done`;
     stop at the first that fails."""
@@ -586,11 +627,21 @@ def run_steps(plan, done):
         bc = env.get("ROBIGO_BC_CROSSCHECK_REPORT")
         if bc and os.path.exists(bc):
             os.remove(bc)
+        times = None
+        if CONFORMANCE in cmd and "--exact" in cmd:
+            times = times_file(title)
+            os.makedirs(TIMES_DIR, exist_ok=True)
+            if os.path.exists(times):
+                os.remove(times)
+            env = {**env, "ROBIGO_CONF_TIMES_REPORT": times}
         print(f"::group::{title}", flush=True)
         t0 = time.monotonic()
         r = subprocess.run(cmd, cwd=ROOT, env={**os.environ, **env})
         done.append((title, time.monotonic() - t0, r.returncode == 0))
         print("::endgroup::", flush=True)
+        if times:
+            # (also when the step failed: a timeout is when the times matter)
+            print(slow_cases_report(title, times), flush=True)
         if r.returncode != 0:
             print(f"::error::rt: {title} failed")
             return r.returncode

@@ -40,6 +40,13 @@
 //!                               (repository-relative paths), each of which
 //!                               must exist: scripts/rt-ci.py's table of
 //!                               cases a collector mode makes too slow
+//!   ROBIGO_CONF_TIMES_REPORT=file
+//!                               write each case's wall time there, one
+//!                               line per case run (`secs limit status
+//!                               case`, slowest first, tab-separated), even
+//!                               when the run fails: scripts/rt-ci.py's
+//!                               conformance steps list the cases over half
+//!                               their limit from it. Off when unset
 //!   ROBIGO_R_VERSION=4.6.2      compare with that GNU R version's
 //!                               recordings (default: the column's gated
 //!                               version); a run against another version
@@ -424,6 +431,8 @@ pub struct Options {
     /// Cases that may run longer than `timeout` (`ROBIGO_CONF_TIMEOUTS`):
     /// repository-relative path -> timeout.
     pub case_timeouts: BTreeMap<String, Duration>,
+    /// Where to write each case's wall time (`ROBIGO_CONF_TIMES_REPORT`).
+    pub times: Option<PathBuf>,
     /// Changes to each case's environment, after [`command`]'s: a variable
     /// set (`Some`) or removed (`None`). The runner's own environment is
     /// left alone, so a test sets these instead of `std::env::set_var`.
@@ -489,8 +498,26 @@ impl Options {
             jobs,
             timeout,
             case_timeouts,
+            times: std::env::var_os("ROBIGO_CONF_TIMES_REPORT").filter(|p| !p.is_empty()).map(PathBuf::from),
             env: column.case_env(),
         })
+    }
+}
+
+/// `ROBIGO_CONF_TIMES_REPORT`'s file: one line per case run, slowest first,
+/// `secs limit status case` tab-separated (secs to the tenth; the limit
+/// the case ran under, in whole seconds; `pass` or `fail`), after a `#`
+/// header line.
+pub fn write_times(path: &Path, times: &[(Duration, String, bool)], o: &Options) {
+    let mut rows: Vec<&(Duration, String, bool)> = times.iter().collect();
+    rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let mut text = String::from("# secs\tlimit\tstatus\tcase\n");
+    for (d, id, passed) in rows {
+        let limit = o.case_timeouts.get(id).copied().unwrap_or(o.timeout).as_secs();
+        text.push_str(&format!("{:.1}\t{limit}\t{}\t{id}\n", d.as_secs_f64(), if *passed { "pass" } else { "fail" }));
+    }
+    if let Err(e) = std::fs::write(path, text) {
+        eprintln!("ROBIGO_CONF_TIMES_REPORT: writing {}: {e}", path.display());
     }
 }
 
@@ -953,13 +980,16 @@ pub fn run(root: &Path, column: &Column, o: &Options) -> Result<Report, String> 
     let record = std::sync::OnceLock::new();
     let queue = std::sync::Mutex::new(jobs);
     let results = std::sync::Mutex::new(Vec::new());
+    let times = std::sync::Mutex::new(Vec::new());
     std::thread::scope(|s| {
         for _ in 0..workers {
             s.spawn(|| {
                 loop {
                     let next = queue.lock().unwrap().pop();
                     let Some((suite, p)) = next else { break };
+                    let start = Instant::now();
                     let r = check(root, column, suite, &p, o, &record);
+                    times.lock().unwrap().push((start.elapsed(), r.id.clone(), r.passed()));
                     results.lock().unwrap().push(r);
                 }
             });
@@ -967,6 +997,11 @@ pub fn run(root: &Path, column: &Column, o: &Options) -> Result<Report, String> 
     });
     let mut outcomes: Vec<Outcome> = results.into_inner().unwrap();
     outcomes.sort_by(|a, b| a.id.cmp(&b.id));
+    // (before any check below can end the run: a run that fails on a
+    // timeout is the one whose times matter)
+    if let Some(path) = &o.times {
+        write_times(path, &times.into_inner().unwrap(), o);
+    }
 
     let ran: BTreeSet<&str> = outcomes.iter().map(|r| r.id.as_str()).collect();
     let all_listed: BTreeSet<&String> = listed.values().flatten().collect();
@@ -1248,6 +1283,7 @@ mod boot_record_tests {
             jobs: 1,
             timeout: Duration::from_secs(1),
             case_timeouts: BTreeMap::new(),
+            times: None,
             env: Vec::new(),
         };
         let t = Instant::now();

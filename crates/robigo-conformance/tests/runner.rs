@@ -133,6 +133,7 @@ fn opts(column: &Column, bin: PathBuf) -> Options {
         jobs: 2,
         timeout: std::time::Duration::from_secs(20),
         case_timeouts: Default::default(),
+        times: None,
         env: Vec::new(),
     }
 }
@@ -318,6 +319,40 @@ fn the_cases_with_a_longer_timeout_start_first() {
     assert_eq!(first(&o), "two.R", "the workers take the last case first");
     o.case_timeouts.insert("tests/rt/smoke/one.R".into(), std::time::Duration::from_secs(30));
     assert_eq!(first(&o), "one.R");
+}
+
+/// `ROBIGO_CONF_TIMES_REPORT`: one line per case run, slowest first, with
+/// the limit it ran under and whether it passed, also when the run fails.
+#[test]
+fn the_times_report_lists_every_case_run_with_its_limit() {
+    let f = rt_tree("times");
+    f.case("tests/rt/smoke/two.R", "2\n").record("tests/rt", "tests/rt/smoke/two.R", "4.6.2", "2\n");
+    let report = f.root().join("times.tsv");
+    let mut o = opts(&RT, cat());
+    o.filter = Some("tests/rt/smoke".into());
+    o.case_timeouts.insert("tests/rt/smoke/one.R".into(), std::time::Duration::from_secs(30));
+    o.times = Some(report.clone());
+    let _ = run(f.root(), &RT, &o);
+    let text = std::fs::read_to_string(&report).unwrap();
+    let mut lines = text.lines();
+    assert_eq!(lines.next(), Some("# secs\tlimit\tstatus\tcase"));
+    let rows: Vec<Vec<&str>> = lines.map(|l| l.split('\t').collect()).collect();
+    assert_eq!(rows.len(), 2, "{text}");
+    let secs: Vec<f64> = rows.iter().map(|r| r[0].parse().unwrap()).collect();
+    assert!(secs[0] >= secs[1], "slowest first: {text}");
+    let by_case: std::collections::BTreeMap<&str, (&str, &str)> = rows.iter().map(|r| (r[3], (r[1], r[2]))).collect();
+    assert_eq!(by_case["tests/rt/smoke/one.R"].0, "30");
+    assert_eq!(by_case["tests/rt/smoke/two.R"].0, "20");
+    assert!(by_case.values().all(|(_, s)| *s == "pass" || *s == "fail"));
+    // a runtime that fails every case still writes it
+    let _ = std::fs::remove_file(&report);
+    let mut o = opts(&RT, stub());
+    o.filter = Some("tests/rt/smoke".into());
+    o.times = Some(report.clone());
+    let _ = run(f.root(), &RT, &o);
+    let text = std::fs::read_to_string(&report).unwrap();
+    assert_eq!(text.lines().filter(|l| l.ends_with(".R")).count(), 2, "{text}");
+    assert!(text.lines().skip(1).all(|l| l.split('\t').nth(2) == Some("fail")), "{text}");
 }
 
 /// `ROBIGO_CONF_TIMEOUTS` gives the case it names its own timeout. It names

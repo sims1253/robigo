@@ -144,6 +144,51 @@ class RtCi(unittest.TestCase):
         # a plain run has no budget
         self.assertNotIn("budget", rt.timings_report([("release tests", at * 3, True)]))
 
+    def test_the_case_times_report_lists_the_cases_over_half_their_limit(self):
+        import tempfile
+        path = os.path.join(tempfile.mkdtemp(), "t.tsv")
+        with open(path, "w") as f:
+            f.write("# secs\tlimit\tstatus\tcase\n"
+                    "503.0\t600\tpass\ttests/rt/jit/serialize-write.R\n"
+                    "301.0\t600\tfail\ttests/rt/a.R\n"
+                    "300.0\t600\tpass\ttests/rt/half.R\n"
+                    "11.0\t20\tpass\ttests/rt/b.R\n"
+                    "0.4\t20\tpass\ttests/rt/c.R\n")
+        self.assertEqual([r[3] for r in rt.slow_cases(path)],
+                         ["tests/rt/jit/serialize-write.R", "tests/rt/a.R", "tests/rt/b.R"])
+        report = rt.slow_cases_report("conformance under x", path)
+        self.assertIn("3 case(s) over 50% of their limit", report)
+        self.assertIn("  503.0 s of  600 s  pass  tests/rt/jit/serialize-write.R", report)
+        self.assertIn("no case over", rt.slow_cases_report("y", os.path.join(os.path.dirname(path), "none.tsv")))
+
+    def test_every_conformance_step_writes_its_case_times_and_lists_them_even_when_it_fails(self):
+        # the runner's ROBIGO_CONF_TIMES_REPORT, a file per step, for every
+        # conformance step rt-ci runs (the shards', the nightly's): not for
+        # a step that runs no conformance
+        from unittest import mock
+        import contextlib, io, tempfile
+        seen = []
+
+        def fake(cmd, cwd, env):
+            seen.append(env.get("ROBIGO_CONF_TIMES_REPORT"))
+            if env.get("ROBIGO_CONF_TIMES_REPORT"):
+                with open(env["ROBIGO_CONF_TIMES_REPORT"], "w") as f:
+                    f.write("# secs\tlimit\tstatus\tcase\n700.0\t600\tfail\ttests/rt/x.R\n")
+            return mock.Mock(returncode=0 if len(seen) == 1 else 1)
+        plan = [("crates' tests", {}, ["cargo", "test", "--", "--skip", rt.CONFORMANCE]),
+                ("conformance under gctorture (E3)", {}, rt.conformance_command())]
+        out = io.StringIO()
+        with mock.patch.object(rt, "TIMES_DIR", tempfile.mkdtemp()), mock.patch.object(rt.subprocess, "run", fake), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(rt.run_steps(plan, []), 1)
+        self.assertIsNone(seen[0])
+        self.assertTrue(seen[1] and seen[1].endswith("conformance-under-gctorture-E3.tsv"), seen)
+        self.assertIn("1 case(s) over 50% of their limit", out.getvalue())
+        self.assertIn("tests/rt/x.R", out.getvalue())
+        # the nightly's full-move step is a conformance step like the others
+        for _, _, cmd in rt.full_move_steps():
+            self.assertTrue(rt.CONFORMANCE in cmd and "--exact" in cmd)
+
     def test_a_step_whose_report_fails_is_timed_as_failed(self):
         # the command passed, the crosscheck report did not (it compared
         # nothing: there is none), so the job fails and its time row says so
