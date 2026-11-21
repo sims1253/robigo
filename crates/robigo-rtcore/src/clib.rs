@@ -2,7 +2,9 @@
 //! with it (robigo-rtbuiltins forbids `unsafe`): the clock and broken-down
 //! time (`time`, `localtime_r`, `gmtime_r`, which datetime.c calls on Linux),
 //! `wcstod` (Rstrptime.h's `%OS`), the password database's home
-//! directories (sys-unix.c's `R_ExpandFileName_unix`), libintl's default
+//! directories (sys-unix.c's `R_ExpandFileName_unix`), `uname`, the login
+//! and user names (sys-unix.c's `Sys.info`), `glob` (sysutils.c's
+//! `Sys.glob`), libintl's default
 //! message directory (errors.c's `bindtextdomain`) and `MB_CUR_MAX`
 //! (platform.c's `R_check_locale`). None of them changes the process. The
 //! time and number functions read the environment's `TZ` and the C library's
@@ -289,6 +291,143 @@ pub fn group_name(gid: u32) -> Option<Vec<u8>> {
     }
 }
 
+/// `uname(&name)`'s `sysname`, `release`, `version`, `nodename` and
+/// `machine` (sys-unix.c's `do_sysinfo` order), `None` when it fails.
+pub fn uname() -> Option<[Vec<u8>; 5]> {
+    // SAFETY: a zeroed utsname is a valid out-argument; uname writes
+    // NUL-terminated strings into its arrays.
+    unsafe {
+        let mut u: libc::utsname = std::mem::zeroed();
+        if libc::uname(&mut u) == -1 {
+            return None;
+        }
+        let s = |f: &[libc::c_char]| std::ffi::CStr::from_ptr(f.as_ptr()).to_bytes().to_vec();
+        Some([s(&u.sysname), s(&u.release), s(&u.version), s(&u.nodename), s(&u.machine)])
+    }
+}
+
+/// The name of the user logged in on the process's controlling terminal
+/// (`getlogin()`, here its reentrant `getlogin_r`, which glibc's `getlogin`
+/// calls), `None` when there is none.
+pub fn login_name() -> Option<Vec<u8>> {
+    let mut buf = vec![0 as libc::c_char; 256];
+    // (glibc looks the login uid up in the password database, whose name
+    // service modules may read the environment)
+    let _env = env_read();
+    loop {
+        // SAFETY: getlogin_r writes at most `buf.len()` bytes, NUL included,
+        // into `buf`.
+        let rc = unsafe { getlogin_r(buf.as_mut_ptr(), buf.len()) };
+        if rc == libc::ERANGE {
+            let n = buf.len().checked_mul(2)?;
+            buf.resize(n, 0);
+            continue;
+        }
+        if rc != 0 {
+            return None;
+        }
+        // SAFETY: on success `buf` holds a NUL-terminated name.
+        return Some(unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }.to_bytes().to_vec());
+    }
+}
+
+// (POSIX's, in glibc's libc; the libc crate does not declare it)
+unsafe extern "C" {
+    fn getlogin_r(name: *mut libc::c_char, size: libc::size_t) -> libc::c_int;
+}
+
+/// The process's real user id (`getuid()`).
+pub fn uid() -> u32 {
+    // SAFETY: getuid has no preconditions and cannot fail.
+    unsafe { libc::getuid() }
+}
+
+/// The process's effective user id (`geteuid()`).
+pub fn euid() -> u32 {
+    // SAFETY: as for getuid.
+    unsafe { libc::geteuid() }
+}
+
+/// What `glob(3)` returned for one pattern.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GlobRes {
+    /// 0, or `GLOB_NOMATCH`
+    Ok,
+    /// `GLOB_ABORTED`: a read error
+    Aborted,
+    /// `GLOB_NOSPACE`: out of memory
+    NoSpace,
+}
+
+/// A `glob_t` that patterns are matched into, one `glob(3)` call each
+/// (`GLOB_APPEND` after the first), as sysutils.c's `do_glob` does; freed
+/// (`globfree`) on drop. No flag here expands `~` (`GLOB_TILDE`), so glob
+/// reads no password database; its `fnmatch` reads the environment
+/// (`POSIXLY_CORRECT`, for a bracket expression).
+pub struct Glob {
+    buf: libc::glob_t,
+    initialized: bool,
+}
+
+impl Default for Glob {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Glob {
+    pub fn new() -> Glob {
+        // SAFETY: a zeroed glob_t (null gl_pathv, counts 0) is the value
+        // glob's first call (no GLOB_APPEND) overwrites.
+        Glob { buf: unsafe { std::mem::zeroed() }, initialized: false }
+    }
+
+    /// Match `pattern` (`GLOB_MARK`: a `/` after each directory, for
+    /// `mark`), appending to the earlier matches.
+    pub fn append(&mut self, pattern: &[u8], mark: bool) -> GlobRes {
+        // a pattern with a NUL in it is C's pattern up to the NUL
+        let end = pattern.iter().position(|&b| b == 0).unwrap_or(pattern.len());
+        let pat = std::ffi::CString::new(&pattern[..end]).expect("no NUL before end");
+        let flags = if mark { libc::GLOB_MARK } else { 0 } | if self.initialized { libc::GLOB_APPEND } else { 0 };
+        let res = {
+            // (fnmatch reads POSIXLY_CORRECT)
+            let _env = env_read();
+            // SAFETY: `pat` is NUL-terminated; `buf` is zeroed or what
+            // earlier calls left (GLOB_APPEND then); no error callback.
+            unsafe { libc::glob(pat.as_ptr(), flags, None, &mut self.buf) }
+        };
+        self.initialized = true;
+        match res {
+            libc::GLOB_ABORTED => GlobRes::Aborted,
+            libc::GLOB_NOSPACE => GlobRes::NoSpace,
+            _ => GlobRes::Ok,
+        }
+    }
+
+    /// The matches so far, in glob's order (`gl_pathv`).
+    pub fn paths(&self) -> Vec<Vec<u8>> {
+        if !self.initialized || self.buf.gl_pathv.is_null() {
+            return Vec::new();
+        }
+        (0..self.buf.gl_pathc)
+            .map(|i| {
+                // SAFETY: gl_pathv holds gl_pathc NUL-terminated strings
+                // (after gl_offs, 0 here), alive until globfree.
+                unsafe { std::ffi::CStr::from_ptr(*self.buf.gl_pathv.add(i)) }.to_bytes().to_vec()
+            })
+            .collect()
+    }
+}
+
+impl Drop for Glob {
+    fn drop(&mut self) {
+        if self.initialized {
+            // SAFETY: `buf` is what glob filled in.
+            unsafe { libc::globfree(&mut self.buf) };
+        }
+    }
+}
+
 /// The process's file mode creation mask, read as GNU R reads it: `um =
 /// umask(0); umask(um)` (a process global: another thread creating a file
 /// in between is created with no mask, as in GNU R).
@@ -312,8 +451,9 @@ compile_error!(
 /// The process environment's lock: every wrapper here whose C call reads
 /// the environment holds it shared for that call ([`env_read`]:
 /// `localtime`, `gmtime`, the `C.UTF-8` locale's `newlocale`,
-/// `passwd_home`, `passwd_name`, `group_name`, `env_locale`, `c_locale`'s
-/// `newlocale`, `default_textdomain_dir`; [`env_vars`]'s listing; and
+/// `passwd_home`, `passwd_name`, `group_name`, `login_name`,
+/// `Glob::append` (`glob(3)`), `env_locale`, `c_locale`'s `newlocale`,
+/// `default_textdomain_dir`; [`env_vars`]'s listing; and
 /// [`with_env_shared`]'s `dlopen` and `dlclose`, whose libraries'
 /// initializers and finalizers may read it),
 /// and an [`EnvWriter`] holds it
@@ -350,16 +490,18 @@ pub fn env_vars() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
 ///   `f` to return (unless that thread holds the loader's lock: below).
 ///
 /// **The loader's locks come after [`ENV`].** `dlopen` and `dlclose` take
-/// glibc's loader locks inside `f`, with [`ENV`] held. So code that runs
-/// holding a loader lock must not take [`ENV`] or fork: a library's
-/// initializers and finalizers (whichever thread's `dlopen` or `dlclose`
-/// runs them, wrapped here or not: glibc's own `iconv` and NSS loads are
-/// not), a `dl_iterate_phdr` callback (an unwinder's), a TLS initializer.
-/// Otherwise a thread holding the loader lock waits for [`ENV`] while this
-/// one, holding [`ENV`], waits for the loader lock. glibc's `fork` itself
-/// takes no loader lock (posix/fork.c: the atfork `prepare` handlers, then
-/// NSS's, stdio's and malloc's locks; the child re-initializes
-/// `dl_load_lock`), so it does not invert the order.
+/// glibc's loader locks inside `f`, with [`ENV`] held, so code that runs
+/// under a loader lock must not take [`ENV`] or fork: a library's
+/// initializer or finalizer (whichever thread's `dlopen` or `dlclose` runs
+/// it, wrapped here or not), a `dl_iterate_phdr` callback, a TLS
+/// initializer. The process's lock order, of which this is one edge, and
+/// why glibc's own calls keep it, is written in one place: robigo-heap's
+/// fork.rs.
+///
+/// **Its scope:** robigo-rt's loads, rtapi's `dyn.load` and `dyn.unload`.
+/// The old runtime's C API bridge (robigo-capi's `robigo_dll_open` and
+/// `robigo_dll_close`) calls `dlopen` and `dlclose` bare; no rt crate
+/// depends on it, so no robigo-rt path reaches that loader.
 ///
 /// **Nothing of robigo's can run inside `f`.** An initializer reaches
 /// robigo only through the C API, and every export of it refuses a call

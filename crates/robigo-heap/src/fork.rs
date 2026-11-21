@@ -23,8 +23,15 @@
 //!    library's initializers and finalizers: `clib::with_env_shared`),
 //!    exclusive for a write. glibc's loader locks come after it, since
 //!    those calls take them with `ENV` held: code run under a loader lock
-//!    (an initializer, a `dl_iterate_phdr` callback) takes no `ENV` and
-//!    does not fork. glibc's `fork` takes no loader lock;
+//!    (an initializer or finalizer, a `dl_iterate_phdr` callback, a TLS
+//!    initializer) takes no `ENV` and does not fork, or it waits for `ENV`
+//!    while the `dlopen` holding `ENV` waits for the loader lock. glibc's
+//!    own calls keep the order (glibc 2.41's and master's sources): `fork`
+//!    takes no loader lock (posix/fork.c: the atfork `prepare` handlers,
+//!    then NSS's, stdio's and malloc's locks; the child re-initializes
+//!    `dl_load_lock`), `posix_spawn` and `system` clone with `CLONE_VFORK`
+//!    without either, and `__cxa_thread_atexit_impl` takes the loader lock
+//!    but never `ENV`;
 //! 3. the symbol arena's lock (`arena.rs`);
 //! 4. std's stdout lock, then std's stderr lock: held by a thread while it
 //!    writes (an isolate's console, a warning, a panic's message). Without

@@ -264,14 +264,16 @@ fn dyn_unload_calls_r_unload_and_clears_the_references() {
 /// `so`'s handshake (tests/support/dlinit_test.c) on another thread: wait
 /// (60 s at most) for the object's constructor or destructor to signal from
 /// inside `dlopen` or `dlclose`, read whether the environment's lock is held
-/// then, and let it go on. Neither side waits without a bound, so a failure
-/// on either never hangs the test.
+/// then, and let it go on: `Some(held)`, or None when nothing signalled.
+/// Neither side waits without a bound, so a failure on either never hangs
+/// the test, and the thread never panics: one the test left behind (after
+/// it failed elsewhere and its `Disarm` removed the markers) stays quiet.
 ///
 /// It returns once the thread runs: a thread that starts while `dlopen` runs
 /// a constructor waits for it, since a new thread registers its
 /// thread-locals' destructors with glibc's `__cxa_thread_atexit_impl`, which
 /// takes the loader's lock that `dlopen` holds across the constructors.
-fn handshake(so: &std::path::Path) -> std::thread::JoinHandle<bool> {
+fn handshake(so: &std::path::Path) -> std::thread::JoinHandle<Option<bool>> {
     let ready = std::path::PathBuf::from(format!("{}.ready", so.display()));
     let go = std::path::PathBuf::from(format!("{}.go", so.display()));
     let (started, running) = std::sync::mpsc::channel();
@@ -279,17 +281,21 @@ fn handshake(so: &std::path::Path) -> std::thread::JoinHandle<bool> {
         started.send(()).unwrap();
         let t0 = std::time::Instant::now();
         while !ready.exists() {
-            assert!(t0.elapsed() < std::time::Duration::from_secs(60), "the object's code never signalled");
+            if t0.elapsed() > std::time::Duration::from_secs(60) {
+                return None;
+            }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        // held at each of 20 reads over about 20 ms: another test's brief
-        // hold cannot stand in for this one's
-        let held = (0..20).all(|_| {
+        // held at each of 200 reads over about 200 ms: the object's code
+        // holds it as long as this thread waits, and another test's brief
+        // hold (this binary's tests share the process) is unlikely to
+        // cover every read
+        let held = (0..200).all(|_| {
             std::thread::sleep(std::time::Duration::from_millis(1));
             !robigo_rtcore::clib::env_lock_is_free()
         });
-        std::fs::write(&go, b"").unwrap();
-        held
+        let _ = std::fs::write(&go, b"");
+        Some(held)
     });
     running.recv().unwrap();
     t
@@ -326,17 +332,22 @@ fn a_librarys_initializers_and_finalizers_hold_env() {
     std::fs::create_dir_all(&dir).unwrap();
     let so = dir.join("dl_init.so");
     std::fs::copy(&built, &so).unwrap();
-    let _disarm = Disarm { so: so.clone(), dir: dir.clone() };
+    let _disarm = Disarm { so: so.clone(), dir };
     std::fs::write(format!("{}.armed", so.display()), b"").unwrap();
     let mut s = Session::new(Profile::Eval);
     // The two phases cannot overlap: the constructor and the destructor run
     // on this thread, inside `dlopen` and `dlclose`, and remove their
     // markers before they return (dlinit_test.c), so once `s.val` returns
     // the next `.ready` can only be the next phase's.
+    let joined = |t: std::thread::JoinHandle<Option<bool>>, what: &str| {
+        let held = t.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
+        assert!(held.is_some(), "the {what} never signalled (60 s)");
+        assert!(held.unwrap(), "the {what} ran without the environment's lock");
+    };
     let t = handshake(&so);
     s.val(&format!("invisible(dyn.load({}))", lit(&so)));
-    assert!(t.join().unwrap(), "the constructor ran without the environment's lock");
+    joined(t, "constructor");
     let t = handshake(&so);
     s.val(&format!("dyn.unload({})", lit(&so)));
-    assert!(t.join().unwrap(), "the destructor ran without the environment's lock");
+    joined(t, "destructor");
 }
