@@ -599,10 +599,7 @@ pub fn builtin_evallist(
 ) -> RResult<()> {
     debug_assert!(codes.is_none() || bc, "robigo: promise codes without the Bc profile's evaluation");
     let missing = cx.missing_arg().sexp();
-    let (dots, dot_internal) = {
-        let syms = &prims::state(cx).syms;
-        (syms.dots, syms.dot_internal)
-    };
+    let dots = prims::state(cx).syms.dots;
     cx.scope(|cx, s| {
         // `.Internal(f(...))` evaluated here (its arguments evaluated at run
         // time): `callr` is the `.Internal` call. The arguments and the
@@ -611,9 +608,10 @@ pub fn builtin_evallist(
         // `evalList(args, env, call, 0)`)
         // R: names.c:do_internal
         let errcall = callr;
-        // SAFETY: the rooted call's head.
-        let head = unsafe { callr.bind(cx).sexp().car() };
-        let callr = match (head == dot_internal).then(|| internal_inner(cx, callr.bind(cx), funr.bind(cx))).flatten() {
+        // (the builtin's row, read once: the call below takes it too)
+        // SAFETY: a rooted primitive of this isolate.
+        let def = *unsafe { prims::def(cx, funr.bind(cx).sexp()) };
+        let callr = match def.internal().then(|| internal_inner(callr.bind(cx))).flatten() {
             Some(inner) => s.root(cx, inner),
             None => callr,
         };
@@ -757,39 +755,21 @@ pub fn builtin_evallist(
         }
         // SAFETY: `count` object slots and `count` name slots of this scope.
         let args = unsafe { Args::from_raw(values, Some(names), count as u32, any_alt) };
-        invoke_builtin_root(cx, funr, callr, args, rho, out)
+        run_builtin(cx, &def, callr, args, rho, out)
     })
 }
 
-/// The inner call of `call`, whose head is `.Internal`, when it is
-/// `.Internal(f(...))` with `f`'s
-/// internal the builtin `fun` (what the compiler emits for an `.Internal`
-/// whose arguments are evaluated at run time); None for any other call. A
-/// call of something else bound to `.Internal` does not have the internal
-/// builtin as its function, as no R value is one.
+/// The inner call of `call`, a call of an `.Internal` builtin: as no R
+/// value is an `.Internal` builtin, only `.Internal(f(...))` (however
+/// `.Internal` was reached: `ii <- .Internal; ii(f(...))`, or a call made
+/// at run time) calls one with its arguments evaluated here, and its
+/// argument is the inner call (a call, or a pairlist, which do_internal
+/// takes too).
 #[cold]
 #[inline(never)]
-fn internal_inner<'g>(cx: &'g Cx, call: Ref<'g>, fun: Ref<'g>) -> Option<Ref<'g>> {
-    let c = call.as_cons()?;
-    let inner = c.cdr().as_cons()?.car();
-    let f = inner.as_cons().filter(|_| inner.sexptype() == LANGSXP)?.car();
-    // SAFETY: a live symbol of this isolate.
-    (f.sexptype() == SYMSXP && unsafe { cx.internal_raw(f.sexp()) } == fun.sexp()).then_some(inner)
-}
-
-/// Call the builtin `fun` with `args` (rooted) for `call`, the value into
-/// `out`, `R_Visible` as `PRIMPRINT` says; a safepoint on return.
-fn invoke_builtin_root(
-    cx: &mut Cx,
-    fun: Root<'_>,
-    call: Root<'_>,
-    args: Args<'_>,
-    rho: Root<'_>,
-    out: Out<'_>,
-) -> RResult<()> {
-    // SAFETY: a rooted primitive of this isolate.
-    let def = *unsafe { prims::def(cx, fun.bind(cx).sexp()) };
-    run_builtin(cx, &def, call, args, rho, out)
+fn internal_inner(call: Ref<'_>) -> Option<Ref<'_>> {
+    let inner = call.as_cons()?.cdr().as_cons()?.car();
+    matches!(inner.sexptype(), LANGSXP | LISTSXP).then_some(inner)
 }
 
 /// `eval`'s call of a builtin: `R_Visible` set from `PRIMPRINT` before and

@@ -65,3 +65,19 @@ c(1, , 2)
 $msg
 [1] "argument 2 is empty"
 
+[1] "a"
+[1] "a"
+$call
+ii(paste0(list("a"), , FALSE))
+
+$msg
+[1] "argument 2 is empty"
+
+$call
+(.Internal)(paste0(list("a"), , FALSE))
+
+$msg
+[1] "argument 2 is empty"
+
+[1] "b"
+[1] "b"

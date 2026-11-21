@@ -18,3 +18,13 @@ for (i in 1:2) print(tryCatch(h("x"), error = cc))
 # a builtin's own empty argument still names the builtin's call
 k <- function() c(1, , 2)
 for (i in 1:2) print(tryCatch(k(), error = cc))
+# `.Internal` reached through another name, or an inner pairlist (do_internal
+# takes one): the arguments are still the inner call's
+ii <- .Internal
+fa <- function(...) ii(paste0(...))
+for (i in 1:2) print(fa(list("a"), NULL, FALSE))
+print(tryCatch(ii(paste0(list("a"), , FALSE)), error = cc))
+print(tryCatch((.Internal)(paste0(list("a"), , FALSE)), error = cc))
+x <- as.call(list(as.name(".Internal"), as.pairlist(as.list(quote(paste0(...))))))
+fp <- function(...) eval(x)
+for (i in 1:2) print(fp(list("b"), NULL, FALSE))
