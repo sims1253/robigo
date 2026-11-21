@@ -764,6 +764,23 @@ unsafe fn index_arg_codes(cx: &Cx, code: Sexp, arg_codes: &[Sexp]) {
     }
 }
 
+/// `installTrChar(c)` for the compiler, which holds raw objects: the
+/// symbol named by CHARSXP `c`'s native translation, a new one's PRINTNAME
+/// `c` itself when no translation was needed (a UTF-8 name keeps its mark,
+/// [`Cx::install_tr`]). A name that does not translate is no compile
+/// ([`Need::Fail`]: cmp.R's `as.name` would fail there).
+///
+/// # Safety
+/// `c` is a live CHARSXP of `cx`'s isolate.
+// R: sysutils.c:installTrChar
+unsafe fn install_tr_raw(cx: &Cx, c: Sexp) -> Result<Sexp, Need> {
+    // SAFETY: the caller's contract.
+    let ch = unsafe { Ref::from_sexp(c, cx) }.as_char().ok_or(Need::Fail)?;
+    let name =
+        robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(ch), cx.locale()).map_err(|_| Need::Fail)?;
+    Ok(cx.install_tr(ch, &name)?.as_ref().sexp())
+}
+
 /// What the `Bc` profile compiles for a call of a base function cmp.R
 /// inlines (its inline handler).
 #[derive(Clone, Copy)]
@@ -2699,10 +2716,8 @@ impl<'g> Comp<'g> {
                     let sym = match lhs.typ() {
                         SYMSXP => lhs,
                         STRSXP if lhs.std_len() >= 1 => {
-                            // installTrChar(STRING_ELT(lhs, 0)): a UTF-8
-                            // session's translation is the bytes
-                            let c = *(lhs.std_data() as *const Sexp);
-                            self.cx.install(c.char_bytes())?.as_ref().sexp()
+                            // installTrChar(STRING_ELT(lhs, 0))
+                            install_tr_raw(self.cx, *(lhs.std_data() as *const Sexp))?
                         }
                         LANGSXP if self.bc.is_some() && crate::bcassign::check_assign(self.cx, lhs) => {
                             // cmp.R's cmpComplexAssign: the right-hand side,
@@ -2809,10 +2824,8 @@ impl<'g> Comp<'g> {
                     let x = a[0].0;
                     let sym = match x.typ() {
                         SYMSXP => x,
-                        STRSXP if x.std_len() == 1 => {
-                            let c = *(x.std_data() as *const Sexp);
-                            self.cx.install(c.char_bytes())?.as_ref().sexp()
-                        }
+                        // installTrChar(STRING_ELT(x, 0))
+                        STRSXP if x.std_len() == 1 => install_tr_raw(self.cx, *(x.std_data() as *const Sexp))?,
                         _ => return self.error_op(e, "invalid use of 'missing'", true),
                     };
                     let mut i = Ins::new(Op::Missing);
