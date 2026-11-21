@@ -523,7 +523,7 @@ pub fn do_quit(
         return Err(cx.error("one of \"yes\", \"no\", \"ask\" or \"default\" expected."));
     }
     let Some(tmp) =
-        save.as_vector::<robigo_rtcore::Char<'_>>().filter(|v| v.len() > 0).map(|v| v.get(0).bytes().to_vec())
+        save.as_vector::<robigo_rtcore::Char<'_>>().filter(|v| !v.is_empty()).map(|v| v.get(0).bytes().to_vec())
     else {
         // STRING_ELT's bounds check
         return Err(cx.error("attempt access index 0/0 in STRING_ELT"));
