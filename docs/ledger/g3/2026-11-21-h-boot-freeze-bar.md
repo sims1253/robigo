@@ -20,7 +20,23 @@ The rdb boot alone triples a collection, because base's byte code and the compil
   - Under the rdb boot it is the same point, after `..lazyLoad` has bound base from `base.rdb`.
   - Either way, the freeze runs after one full collection made at that point, so only the boot's survivors are frozen.
   - **With default packages** (amendment 4): the freeze comes after `.First.sys`, so a start that loads the default packages there (`R_DEFAULT_PACKAGES` unset) freezes them too, with their namespaces and attached package environments. The rule is the same: everything reachable at that point from the roots listed below. Premise 1's 90% and premise 6's size are measured for the `R_DEFAULT_PACKAGES=NULL` start only, until the default packages load under robigo-rt. Then both are measured for that start as well, and recorded beside the NULL start's.
-- **What.** Every object reachable from the base environment, the base namespace, the symbols' base cells (`SymCells`), the namespace registry and each namespace loaded by then (the compiler's), and their environments' frames and hash tables. They are made immortal (`Core::make_immortal`, with `BARRIER` set).
+- **What.** Every object reachable at that point from the freeze roots, made immortal (`Core::make_immortal`, with `BARRIER` set). The freeze roots are (decided 2026-11-21 on premise 1):
+  - the base environment and the base namespace;
+  - the symbols' base cells (`SymCells`);
+  - the namespace registry, and each namespace loaded by then (the compiler's), with their frames and hash tables;
+  - robigo-rt's `Globals`: the Rust-held handles of the dispatch and method caches, the JIT cache, the fold constants, the boot's stage-0 objects, the ALTREP classes, the loaded DLLs' info, the connections and the condition token;
+  - the C API's constants and symbols (`capi.rs`).
+- **The containers written after the boot** (decision 1), and how each is handled:
+  - **left out by rule:** the global environment and its frame; `.Random.seed`, which lives there;
+  - **not heap values held by a freeze root:** the warnings (robigo-rtcore's `Warnings` root), the handler and restart stacks (context state), and `.Last.value`, `.Traceback` and `.Options` as bindings (each a `SymCells` value, a Rust root: replacing the binding stores nothing into a frozen object);
+  - **frozen, and logged as a root at the first store:**
+    - `.Options`' pairlist cells: `options()` writes a cell's CAR, which logs that cell once;
+    - the search path's package environments' ENCLOS words, written when a package attaches (rare);
+    - the namespace registry's table, written when a namespace loads;
+    - base's BCODESXPs and closures, which the JIT caches code on (`code::cache_on`, `set_aux`), once each;
+    - base's lazy-load promises, which forcing writes once each.
+
+    None of these is written by every script on a hot path. Measured (premise 7's survivor bit, a store counter): over every perf row at N and 2N under the rdb boot, no row stores into a boot survivor per iteration. The counts are constant in N: from 5 to 21 for most rows, 3,318 for `jit-safe`, all one-time stores of the kinds listed. So the wider root set puts no frozen object on a hot store path (decision 2).
 - **What is not frozen:**
   - the global environment's frame and what only it reaches: what the user's profile made is the user's data;
   - weak references, and their keys and values where only a weak reference reaches them: their death is observable;
@@ -48,6 +64,7 @@ It holds by construction if every store of an object pointer into a frozen objec
 | attribute writes on a frozen object (`attr<-`, `class<-` on a base object, `SET_ATTRIB`) | `set_attrib` | `Sexp::store` |
 | the C API: `SETCAR`, `SETCDR`, `SET_TAG`, `SET_ATTRIB`, `SET_VECTOR_ELT`, `SET_STRING_ELT`, `SET_PRVALUE`, `SET_FORMALS`, `SET_BODY`, `SET_CLOENV`, `SET_ENCLOS`, `R_SetExternalPtrProtected`, `R_SetExternalPtrTag` | the matching heap setters | each through `Sexp::store` (no raw setter outside robigo-heap: `set_*_raw` has no caller in rtcore, rt, rtbuiltins or rtapi, checked 2026-11-21) |
 | C writing an element through `DATAPTR`, `STRING_PTR_RO` cast away, `VECTOR_PTR` | a raw word | **none.** Such objects are `SEEN_BY_C` and not frozen (above), and an object that becomes `SEEN_BY_C` after the freeze is a frozen object getting a pointer handed to C: premise 4 |
+| C's first writable `DATAPTR` of a frozen STRSXP, VECSXP or EXPRSXP (premise 4's hardening) | the object's elements, raw, from then on | `DATAPTR` logs the object as a root once (a flag test on the call). It stays immortal, and is traced at every collection from then on, so raw pointer writes into it are seen |
 | a code object cached on a BCODESXP (C1's #943: `code::cache_on`, the body's 4th word, and the code object's `OTHER` element) | `set_aux`, `set_elt` | `Sexp::store`: a heap store through the barrier (`crates/robigo-rt/src/code.rs:632`) |
 | a closure's cached code (`compile`'s code on the closure's 4th word; the JIT's) | `set_aux` | `Sexp::store` |
 | vectors filled in place (`FreshVec::put`'s raw element write, `crates/robigo-rtcore/src/fresh.rs:621`) | a raw word | only on a fresh, unpublished vector, which is never frozen |
@@ -75,7 +92,16 @@ each over the conformance slice and robigo-rtcore's and robigo-heap's tests.
 - **`gc()`:** used cells and Mb drop by the frozen heap, unless the counts keep it. The L7 draft (#946) makes totals robigo's own and keeps exact only the shape, limits, `reset` and max-used semantics, trigger rules, report format and retained-data deltas. A freeze keeps all of those. If the lead does not sign #946, `gc()`'s totals must still count the frozen objects (`immortal` counts are kept per type today), and the bar adds that `gc()`'s used columns are unchanged by the freeze.
 - **`memory.profile()`:** counts by type include the frozen objects, which are still in the heap's blocks. The freeze changes no count.
 - **`object.size`:** unchanged; it reads the object, not its mark state.
-- **`reg.finalizer` on a base object after the freeze** (an environment of base's). The object is frozen, so it would never die and its finalizer would run only at exit with `onexit = TRUE`. GNU R would also never collect a base environment that base still reaches, so the finalizer behavior matches. A finalizer registered on a frozen object that base later drops (an environment that only a replaced binding reached) would never run in robigo, and would run in GNU R after the next full collection. That is an observable difference. The bar requires a case for it, and the freeze either unfreezes an object at `reg.finalizer` (it is logged and re-traced from then on) or the difference is documented. The default is to unfreeze, and premise 5 tests it. A finalizer registered on a base environment or namespace itself (`reg.finalizer(baseenv(), f, onexit = TRUE)`, or on `asNamespace("compiler")`): the environment is unfrozen and stays reachable from its root, so it never dies, and the finalizer runs only at exit with `onexit = TRUE`, as in GNU R. A case pins this.
+- **`reg.finalizer` on a base object after the freeze** (an environment of base's). The object is frozen, so it would never die and its finalizer would run only at exit with `onexit = TRUE`. GNU R would also never collect a base environment that base still reaches, so the finalizer behavior matches. A finalizer registered on a frozen object that base later drops (an environment that only a replaced binding reached) would never run in robigo, and would run in GNU R after the next full collection. That is an observable difference. The bar requires a case for it, and the freeze either unfreezes an object at `reg.finalizer` (it is logged and re-traced from then on) or the difference is documented. Decided 2026-11-21 (premise 5): unfreeze, batched. **No object is ever unfrozen between collections.**
+  - **Events:** `reg.finalizer` on a frozen object; a weak reference keyed on one (`R_MakeWeakRef`, `new.env`'s finalizers, `reg.finalizer`'s weak reference); a C API `R_RegisterCFinalizer*` on one. Each puts the object on a pending list and returns; nothing can free it before a collection anyway.
+  - **At the next collection,** if the list is not empty, one pass over the frozen heap logs as a root every frozen object that refers to a pending one. Then it clears `IMMORTAL` on the pending objects, and the collection proceeds. One pass covers the whole list: 10,000 finalizers registered on base's environments cost one pass.
+  - **Invariant:** every frozen referrer of an unfrozen object is a logged root. The unfrozen object's own references to frozen objects need nothing (a frozen object is never freed).
+  - **The unfrozen object's children that were frozen stay frozen.** Only the pending objects change.
+  - **`gc()`'s counts:** an unfrozen object moves from the immortal counts to the ordinary ones, and is counted where it would have been without the freeze.
+  - **The check mode** covers it: after an unfreeze pass, the debug traversal (c) verifies that no frozen object that is not logged refers to an ordinary one.
+  - **Oracle cases** (GNU R 4.6.2):
+    - a finalizer on a boot object whose last reference is then dropped (an environment base held, released by `rm` of an unlocked base binding), then `gc()` and the finalizer's output;
+    - a weak reference keyed on a boot object, the key dropped, `gc()`, and the weak reference's value. A finalizer registered on a base environment or namespace itself (`reg.finalizer(baseenv(), f, onexit = TRUE)`, or on `asNamespace("compiler")`): the environment is unfrozen and stays reachable from its root, so it never dies, and the finalizer runs only at exit with `onexit = TRUE`, as in GNU R. A case pins this.
 - **A base function replaced after the freeze** (`assignInNamespace("f", g, "base")`, or any reassignment in base). The old value stays frozen and is never freed. The leak is bounded by what the boot made: at most the frozen heap's own size (measured by premise 6 before the build), whatever the number of reassignments, because a frozen object is never copied. A session that reassigns base repeatedly leaks only the first replaced value of each binding; later values are unfrozen and collected as now.
 
 ### (e) The bar
@@ -110,6 +136,21 @@ each over the conformance slice and robigo-rtcore's and robigo-heap's tests.
    - with the freeze, the rows under the rdb boot are part of the bar (e). A row that starts copying is a failure, not an accepted cost.
 
    Also: list every reader of `flags::IMMORTAL` and of the refcount skip (the C API's `MAYBE_SHARED`, `mark_not_mutable`, the move modes' pinning), and show that each is right for a frozen object.
+
+### The premises, run (2026-11-21, before any build)
+
+These were measured with scratch builds that were never committed (`H.md` §25).
+1. **Frozen share of the live heap** (`--vanilla`, `R_DEFAULT_PACKAGES=NULL`):
+   - from base's roots only: 82.0% (rdb boot), 60.0% (interim loader);
+   - with `Globals` and the C API's constants: **93.9% (rdb, judged: holds)**, 73.5% (interim loader: recorded, not judged, since that loader is to be deleted).
+
+   The rest is mostly already-immortal objects (PRINTNAMEs, symbols, builtins).
+2. **The store table:** holds. Every raw write outside robigo-heap is into a fresh object, an immortal fill, plain data, or a read.
+3. **The objects left out are found in one pass:** holds (Core's weak, finalizer and release lists; the `SEEN_BY_C` bit).
+4. **C's `DATAPTR`:** holds by GNU R's write-barrier contract, hardened (the store table's row).
+5. **Unfreezing:** batched, as decided in (d).
+6. **Frozen size:** about 1.7–1.9 MB per isolate under the rdb boot (NULL start), and 0.27 MB under the interim loader. This bounds the leak from replaced base values.
+7. **In-place writes:** a survivor bit after a full collection, counted at `Ref::maybe_shared`, `Ref::maybe_referenced` and the VM's in-place path. 70 of 70 perf rows read 0 under the interim loader, and 69 of 70 under the rdb boot. `source5k` is not runnable under the rdb boot for lack of `tempdir()`, which has no owner yet (B's notes call it a trial delegate's).
 
 ### Once generational collection exists (amendment 1)
 
