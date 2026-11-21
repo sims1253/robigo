@@ -277,8 +277,14 @@ impl Core {
     }
 
     /// Whether `x` is one of the freeze's objects.
-    pub fn is_frozen(&self, x: Sexp) -> bool {
-        self.frozen.binary_search_by_key(&x.addr(), |f| f.addr()).is_ok()
+    pub(crate) fn is_frozen(&self, x: Sexp) -> bool {
+        self.is_frozen_at(x.addr())
+    }
+
+    /// Whether the object at `addr` is one of the freeze's objects (an
+    /// address compared, nothing read: any address may be asked).
+    pub fn is_frozen_at(&self, addr: usize) -> bool {
+        self.frozen.binary_search_by_key(&addr, |f| f.addr()).is_ok()
     }
 
     /// Queue a frozen object to become ordinary at the next collection (a
