@@ -1,0 +1,103 @@
+[[1]]
+[1] "incorrect number of dimensions"
+
+[[2]]
+`[.default`(a1, , )
+
+[[1]]
+[1] "incorrect number of dimensions"
+
+[[2]]
+`[.default`(d, , )
+
+[[1]]
+[1] "incorrect number of dimensions"
+
+[[2]]
+`[.default`(x, , )
+
+[[1]]
+[1] "incorrect number of dimensions"
+
+[[2]]
+`[.default`(x, 5, 6)
+
+[[1]]
+[1] "incorrect number of dimensions"
+
+[[2]]
+`[.default`(x, i, j)
+
+[[1]]
+[1] "subscript out of bounds"
+
+[[2]]
+`[[.default`(x, 5)
+
+[[1]]
+[1] "incorrect number of subscripts"
+
+[[2]]
+`[[.default`(x, i, j)
+
+$a
+[1] 1
+
+$b
+[1] 2
+
+[[1]]
+[1] "unused argument (3)"
+
+[[2]]
+`[<-.bar`(l, 1, 2, 3)
+
+$a
+[1] 9
+
+$b
+[1] 2
+
+[[1]]
+[1] "unused argument (7)"
+
+[[2]]
+`[[<-.bar`(l, 5, 6, 7)
+
+`[.qux`(q, 2)
+`[.qux`(x = q, 2)
+[1] 2
+`[.qux`(q, , )
+`[.qux`(x = q, , )
+[[1]]
+[1] "incorrect number of dimensions"
+
+[[2]]
+`[.default`(q, , )
+
+`$.qux`(q, abc)
+[1] "dollar"
+[[1]]
+[1] "subscript out of bounds"
+
+[[2]]
+`[<-.default`(`*tmp*`, 3, 3, value = 1L)
+
+[[1]]
+[1] "[[ ]] subscript out of bounds"
+
+[[2]]
+NextMethod()
+
+[[1]]
+[1] "incorrect number of subscripts"
+
+[[2]]
+NextMethod()
+
+[[1]]
+[1] "[[ ]] subscript out of bounds"
+
+[[2]]
+NextMethod()
+

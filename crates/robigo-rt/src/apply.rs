@@ -52,36 +52,17 @@ pub fn apply_special_args(
     // SAFETY: a rooted primitive of this isolate.
     let off = unsafe { prims::offset(fun.bind(cx).sexp()) };
     let def = prims::state(cx).defs[off];
-    if let (Some(a), Kind::Fn(f)) = (args, def.kind) {
-        // a function over its call gets a call over the promises: the method
-        // name at its head (no dispatch again), each argument a promise its
-        // `eval` forces. Its messages name that call, whose deparse shows
-        // the arguments' values where GNU R's shows their expressions.
-        return cx.scope(|cx, s| {
-            let c = s.capture(cx, |cx, o| {
-                cx.build(o, |cx| {
-                    let head = call.bind(cx).as_cons().map_or(cx.nil(), |c| c.car());
-                    cx.lcons(head, a.bind(cx))
-                })
-            })?;
-            let flag = def.print();
-            cx.note_effect();
-            cx.set_visible(flag != 1);
-            f(cx, c, fun, None, rho, out)?;
-            if flag < 2 {
-                cx.set_visible(flag != 1);
-            }
-            Ok(())
-        });
-    }
     match def.kind {
+        // PRIMFUN(op)(call, op, args, rho): `args` the method's promises
+        // (`applyMethod`), `call` the method's `newcall`, which its messages
+        // name; None for the call's own arguments
         Kind::Fn(f) => {
             let flag = def.print();
             // a builtin may change what an argument expression evaluates to or
             // look at an argument: values computed early are dropped (crate::early)
             cx.note_effect();
             cx.set_visible(flag != 1);
-            f(cx, call, fun, None, rho, out)?;
+            f(cx, call, fun, args, rho, out)?;
             if flag < 2 {
                 cx.set_visible(flag != 1);
             }
