@@ -41,6 +41,7 @@ pub struct Scope<'s> {
 impl Cx {
     /// Open a root scope for `f`: roots pushed into it live until `f`
     /// returns, unwinds or errs, and cannot be named after that.
+    #[cfg_attr(feature = "poison-dead", track_caller)]
     pub fn scope<R>(&mut self, f: impl for<'s> FnOnce(&mut Cx, Scope<'s>) -> R) -> R {
         let iso = self.iso();
         let frame = iso.frame();
@@ -486,6 +487,7 @@ impl<'a> Args<'a> {
             // SAFETY: the window has `n` live object slots from `base`
             // (`from_raw`'s and `Scope::args`'s contract), each read once.
             let s = unsafe { *self.base.add(i).as_ptr() };
+            s.check_live();
             // SAFETY: a live object of the window's isolate.
             s.as_object().is_some_and(|x| unsafe { x.is_altrep() && crate::altrep::own::own_class(x).is_none() })
         })
