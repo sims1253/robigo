@@ -172,7 +172,7 @@ pub(crate) fn install_rsyms(core: &mut Core) -> [Sexp; RSym::ALL.len()] {
 // R: names.c:InitNames, names.c:mkSYMSXP, names.c:R_initAssignSymbols
 pub(crate) fn symbol_bits(name: &[u8]) -> (u8, u16) {
     let mut gp = 0;
-    if SPEC_NAME.iter().any(|n| n.as_bytes() == name) {
+    if is_spec_name(name) {
         gp |= SPECIAL_SYMBOL;
     }
     if crate::fresh::is_dd_name(name) {
@@ -181,6 +181,34 @@ pub(crate) fn symbol_bits(name: &[u8]) -> (u8, u16) {
     let flags = if name == b".Last.value" { robigo_heap::flags::NO_TRACKREFS } else { 0 };
     (flags, gp)
 }
+
+/// Whether `name` is one of [`SPEC_NAME`]. The arena calls the symbol-bits
+/// rule under its lock for every new symbol, so the common answer, no, is
+/// one table load: [`SPEC_SHAPES`] has, per first byte, the lengths of the
+/// special names that start with it. Only a name of such a shape is
+/// compared with the list. Exact by construction (both come from
+/// `SPEC_NAME`).
+#[inline]
+pub(crate) fn is_spec_name(name: &[u8]) -> bool {
+    let (Some(&b), n @ 1..16) = (name.first(), name.len()) else {
+        return false;
+    };
+    SPEC_SHAPES[b as usize] & (1 << n) != 0 && SPEC_NAME.iter().any(|s| s.as_bytes() == name)
+}
+
+/// Per first byte, a bit per length (below 16) of the [`SPEC_NAME`]s that
+/// start with it.
+const SPEC_SHAPES: [u16; 256] = {
+    let mut t = [0u16; 256];
+    let mut i = 0;
+    while i < SPEC_NAME.len() {
+        let n = SPEC_NAME[i].as_bytes();
+        assert!(!n.is_empty() && n.len() < 16, "a special name's length is a bit of SPEC_SHAPES");
+        t[n[0] as usize] |= 1 << n.len();
+        i += 1;
+    }
+    t
+};
 
 /// GNU R's symbol table size (`Defn.h:HSIZE`): the base environment lists
 /// its bindings in the order of a walk over that many chains.
@@ -342,5 +370,43 @@ impl SymCells {
     /// Cell `i < len()`.
     pub(crate) fn at(&self, i: usize) -> SymCell {
         self.cells[i]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SPEC_NAME, is_spec_name};
+
+    /// The filter answers as the linear compare it replaced, over every
+    /// special name and its near misses: the same first byte and length
+    /// with another byte changed (each position, each byte value), and one
+    /// byte longer or shorter.
+    #[test]
+    fn the_special_name_filter_is_the_linear_compare() {
+        let linear = |name: &[u8]| SPEC_NAME.iter().any(|n| n.as_bytes() == name);
+        let mut checked = 0;
+        let mut check = |name: &[u8]| {
+            assert_eq!(is_spec_name(name), linear(name), "{:?}", String::from_utf8_lossy(name));
+            checked += 1;
+        };
+        for n in SPEC_NAME {
+            let n = n.as_bytes();
+            check(n);
+            for i in 0..n.len() {
+                for b in 0..=255u8 {
+                    let mut m = n.to_vec();
+                    m[i] = b;
+                    check(&m);
+                }
+            }
+            check(&n[..n.len() - 1]);
+            check(&[n, b"x"].concat());
+        }
+        for other in
+            [&b""[..], b"is.na", b"iff", b"function2", b"repeat_", b"[[<-.data.frame", &[b'i'; 15], &[b'i'; 16]]
+        {
+            check(other);
+        }
+        assert!(checked > SPEC_NAME.len() * 256);
     }
 }
