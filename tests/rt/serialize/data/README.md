@@ -8,5 +8,5 @@ serialized after an RDX3 magic number.
 `lazyload-corrupt.R` (robigo-rt has no `writeBin` yet): one good, one whose
 stream is bad data, one whose header promises 10 bytes fewer than the
 stream inflates to, and one whose header promises 100 more. It is written by
-`make-corrupt-rdb.R`, run by GNU R 4.6.2 in this directory, which prints the
-records' keys.
+`scripts/make-corrupt-rdb.R`, run by GNU R 4.6.2 from the checkout, which
+prints the records' keys.

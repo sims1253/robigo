@@ -1,5 +1,5 @@
 # R_decompress1 (libdeflate) on corrupted records of a lazy-load database
-# (data/corrupt.rdb, written by data/make-corrupt-rdb.R on GNU R 4.6.2):
+# (data/corrupt.rdb, written by scripts/make-corrupt-rdb.R on GNU R 4.6.2):
 # libdeflate's result in the warning and lazyLoadDBfetch's error for bad
 # data (1) and for a header that promises too few bytes (3,
 # LIBDEFLATE_INSUFFICIENT_SPACE); a header that promises too many is no

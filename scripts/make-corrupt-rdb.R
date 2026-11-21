@@ -1,4 +1,5 @@
-# Writes corrupt.rdb (run by GNU R 4.6.2 in this directory): four records of
+# Writes tests/rt/serialize/data/corrupt.rdb (run by GNU R 4.6.2 from the
+# checkout: Rscript scripts/make-corrupt-rdb.R): four records of
 # lazyLoadDBinsertValue's compressed form (type 1: a 4-byte big-endian
 # length, then a zlib stream), for tests/rt/serialize/lazyload-corrupt.R:
 #   1. good: the length and the stream of one serialized value;
@@ -13,5 +14,5 @@ recs <- list(c(be(length(p)), z),
              c(be(length(p)), as.raw(c(0x78, 0x9c, rep(0xff, 20)))),
              c(be(length(p) - 10L), z),
              c(be(length(p) + 100L), z))
-writeBin(do.call(c, recs), "corrupt.rdb")
+writeBin(do.call(c, recs), "tests/rt/serialize/data/corrupt.rdb")
 print(rbind(offset = cumsum(c(0L, lengths(recs)))[seq_along(recs)], length = lengths(recs)))

@@ -56,7 +56,7 @@ over vendored libdeflate. The interpreter of `decompress1` is L's.
     goes with flate2 on this path.
 - `tests/rt/serialize/lazyload-corrupt.R` checks all three, plus a good
   record before and after, against GNU R 4.6.2's recording. It reads
-  `data/corrupt.rdb`, which `data/make-corrupt-rdb.R` wrote on GNU R.
+  `data/corrupt.rdb`, which `scripts/make-corrupt-rdb.R` wrote on GNU R.
 
 ## Numbers
 
