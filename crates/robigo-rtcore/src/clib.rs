@@ -358,7 +358,8 @@ pub enum GlobRes {
 /// A `glob_t` that patterns are matched into, one `glob(3)` call each
 /// (`GLOB_APPEND` after the first), as sysutils.c's `do_glob` does; freed
 /// (`globfree`) on drop. No flag here expands `~` (`GLOB_TILDE`), so glob
-/// reads directories, not the environment or the password database.
+/// reads no password database; its `fnmatch` reads the environment
+/// (`POSIXLY_CORRECT`, for a bracket expression).
 pub struct Glob {
     buf: libc::glob_t,
     initialized: bool,
@@ -384,9 +385,13 @@ impl Glob {
         let end = pattern.iter().position(|&b| b == 0).unwrap_or(pattern.len());
         let pat = std::ffi::CString::new(&pattern[..end]).expect("no NUL before end");
         let flags = if mark { libc::GLOB_MARK } else { 0 } | if self.initialized { libc::GLOB_APPEND } else { 0 };
-        // SAFETY: `pat` is NUL-terminated; `buf` is zeroed or what earlier
-        // calls left (GLOB_APPEND then); no error callback.
-        let res = unsafe { libc::glob(pat.as_ptr(), flags, None, &mut self.buf) };
+        let res = {
+            // (fnmatch reads POSIXLY_CORRECT)
+            let _env = env_read();
+            // SAFETY: `pat` is NUL-terminated; `buf` is zeroed or what
+            // earlier calls left (GLOB_APPEND then); no error callback.
+            unsafe { libc::glob(pat.as_ptr(), flags, None, &mut self.buf) }
+        };
         self.initialized = true;
         match res {
             libc::GLOB_ABORTED => GlobRes::Aborted,
@@ -442,7 +447,7 @@ compile_error!(
 /// The process environment's lock: every wrapper here whose C call reads
 /// the environment holds it shared for that call ([`env_read`]:
 /// `localtime`, `gmtime`, the `C.UTF-8` locale's `newlocale`,
-/// `passwd_home`, `passwd_name`, `group_name`, `login_name`, `env_locale`, `c_locale`'s
+/// `passwd_home`, `passwd_name`, `group_name`, `login_name`, `Glob::append`, `env_locale`, `c_locale`'s
 /// `newlocale`, `default_textdomain_dir`),
 /// and an [`EnvWriter`] holds it
 /// exclusive. So robigo's own safe wrappers never read while it writes, on
