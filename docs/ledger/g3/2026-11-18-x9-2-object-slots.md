@@ -111,3 +111,37 @@ it, and is a low.
 
 Sol (gpt-6.1-sol, high): round 1 found S1 (`R_UnboundValue`), which is
 fixed; round 2 approved.
+
+## Re-measured on main `2f16dc4c` (2026-11-21), and the store out of `vm::run`
+
+The 31-PR batch moved main under this branch. Merged with it, the inline
+object store cost the call rows +0.10 to +0.12% (about 2 instructions, all in
+`vm::run`, which inlines `set_var`). `vm.rs` now calls
+`frame_store_object_raw` through `#[inline(never)] store_object_slot`. It
+costs a call only on an object store, and about 280 instructions are saved
+per store.
+
+Measured against the same tree without X9-2, both binaries built from
+their exact trees into empty targets: base `a336aa64` (5d plus main
+`2f16dc4c`), against `2db831df`. perf-rt ran twice per binary:
+
+| row | ÷ |
+|---|---:|
+| plain | 0.9995 |
+| defaults | 0.9993 |
+| named | 0.9997 |
+| env-fn | 0.9994 |
+| superassign | 1.0001 |
+| s3 | 0.9999 |
+| fib | 1.0000 |
+| binarytrees | 0.9998 |
+| trycatch | 0.9689 |
+| trycatch-err | 0.9703 |
+| trycatch-ok | 0.9627 |
+| geomean | 0.9908 |
+
+Per cmp.R compile: `jit-scale_by` 9,909,566 → 9,767,938 (0.9857) and
+`jit-safe` 14,746,459 → 14,490,305 (0.9826).
+
+Then main `5e5a27d2` (#886, which brings 5d onto main) was merged. The
+branch's diff against main is X9-2's two files alone.
