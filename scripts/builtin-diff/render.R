@@ -16,7 +16,9 @@ local({
     same <- function(a, b) identical(serialize(a, NULL), serialize(b, NULL))
     first_diff <- function(a, b) {
         for (f in union(names(a), names(b))) if (!same(a[[f]], b[[f]])) return(f)
-        "(attributes)"
+        ## every field the same once read back: the bytes differ in how they
+        ## were written (a hashed environment's table, a reference's order)
+        "(serialization only)"
     }
     if (identical(args[[1L]], "--full")) {
         a <- rd(args[[2L]]); b <- rd(args[[3L]])
