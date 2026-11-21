@@ -823,6 +823,8 @@ impl Core {
     /// A new heap. The calling thread's stack is the one whose C segments
     /// are scanned.
     pub fn new() -> Box<Core> {
+        // the process's fork handlers, before this heap can take a lock
+        crate::fork::register();
         let (stack_lo, stack_top) = thread_stack();
         let mut c = Box::new(Core {
             heap: Heap::new(),
@@ -3300,7 +3302,7 @@ static SYMBOL_BITS: std::sync::OnceLock<SymbolBits> = std::sync::OnceLock::new()
 // R: sys-unix.c:R_getProcTime
 fn proc_times() -> [f64; 5] {
     static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-    let et = START.get_or_init(Instant::now).elapsed().as_secs_f64();
+    let et = crate::fork::once_excluding_fork(&START, Instant::now).elapsed().as_secs_f64();
     let ms = |t: libc::timeval| t.tv_sec as f64 + 1e-3 * (t.tv_usec / 1000) as f64;
     // SAFETY: getrusage writes the struct it is given.
     let (me, ch) = unsafe {
@@ -3329,7 +3331,7 @@ fn not_adopted(id: u32) -> ! {
 /// cannot be compared to check that a later call gives the same rule: one
 /// function may have several addresses.)
 pub fn set_symbol_bits(bits: SymbolBits) {
-    SYMBOL_BITS.get_or_init(|| bits);
+    crate::fork::once_excluding_fork(&SYMBOL_BITS, || bits);
 }
 
 /// SEXPTYPE names for the statistics (Rinternals.h).

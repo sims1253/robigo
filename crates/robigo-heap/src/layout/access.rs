@@ -582,8 +582,8 @@ impl Sexp {
         // SAFETY: as for `sym_name_bytes`.
         unsafe { self.sexp_at(sym::OFF_PRINTNAME).gp() & crate::gp::charsxp::ASCII != 0 }
     }
-    /// A symbol's id ([`sym::OFF_ID`]): dense, in the order this heap made
-    /// its symbols.
+    /// A symbol's id ([`sym::OFF_ID`]): the process's, dense, in the order
+    /// the symbol arena made its symbols (`arena.rs`; H5).
     ///
     /// # Safety
     /// `self` must be a live SYMSXP.
