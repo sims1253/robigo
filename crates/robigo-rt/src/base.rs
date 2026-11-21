@@ -1040,12 +1040,25 @@ fn load_profile(cx: &mut Cx, bytes: &[u8]) -> bool {
     let text = robigo_syntax::lexable(bytes);
     let source = robigo_syntax::Source::new(&text, bytes);
     let arena = robigo_syntax::Arena::new();
+    // parseError(R_NilValue, R_ParseError) of a grammar error, with the
+    // failing statement's context; raiseLexError's condition (its
+    // `(<input>:line:col)` suffix) and an R error as they are
+    let message = |e: &robigo_syntax::ParseError, start: usize| match e.style {
+        robigo_syntax::ErrorStyle::Grammar => robigo_syntax::format_parse_error_since(source, "", e, start),
+        _ => crate::repl::parse_error_message(source, e),
+    };
     let mut p = match robigo_syntax::parser::Parser::new(&arena, source) {
         Ok(p) => p,
         Err(e) => {
-            crate::repl::error_at_top(cx, &robigo_syntax::format_parse_error(source, "", &e));
+            crate::repl::error_at_top(cx, &message(&e, 0));
             return crate::repl::check_session_exit(cx);
         }
+    };
+    // the lexer's warnings (R_Parse1File generates code: all of them), each
+    // raised with the statement whose tokens it came from
+    let lexed: Vec<(usize, String)> = p.warnings.iter().map(|w| (w.at as usize, w.message.clone())).collect();
+    let between = |from: usize, to: usize| -> Vec<String> {
+        lexed.iter().filter(|(at, _)| *at >= from && *at < to).map(|(_, m)| m.clone()).collect()
     };
     let savestack = cx.pp_top();
     loop {
@@ -1055,12 +1068,12 @@ fn load_profile(cx: &mut Cx, bytes: &[u8]) -> bool {
             Ok(mut v) if !v.is_empty() => v.remove(0),
             Ok(_) => return true,
             Err(e) => {
-                // parseError(R_NilValue, R_ParseError)
-                crate::repl::error_at_top(cx, &robigo_syntax::format_parse_error_since(source, "", &e, start));
+                crate::repl::error_at_top_after(cx, &between(start, e.end), &message(&e, start));
                 return crate::repl::check_session_exit(cx);
             }
         };
-        if repl_eval_toplevel(cx, &e, &[], |cx| cx.global_env(), savestack, (1, 0)).is_err() {
+        let ws = between(start, p.consumed_end());
+        if repl_eval_toplevel(cx, &e, &ws, |cx| cx.global_env(), savestack, (1, 0)).is_err() {
             return crate::repl::check_session_exit(cx);
         }
     }

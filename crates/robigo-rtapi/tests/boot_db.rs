@@ -44,7 +44,10 @@ fn tree_made() -> bool {
 /// robigo-rt booted from the tree with `args` and the extra environment
 /// `env`: (stdout, stderr, status).
 fn boot(args: &[&std::ffi::OsStr], env: &[(&str, &std::ffi::OsStr)]) -> (String, String, Option<i32>) {
-    let home = std::env::temp_dir().join(format!("robigo-boot-db-home-{}", std::process::id()));
+    // one directory per run (the tests run in parallel)
+    static RUN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let home = std::env::temp_dir().join(format!("robigo-boot-db-home-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
     let o = Command::new(env!("CARGO_BIN_EXE_robigo-rt"))
         .args(args)
@@ -178,7 +181,24 @@ fn a_user_profile_s_errors_end_it_as_in_gnu_r() {
     let error = run("error", "cat(\"one\\n\")\nstop(\"boom\")\ncat(\"continued\\n\")\n");
     let caught =
         run("caught", "options(catch.script.errors = TRUE)\ncat(\"one\\n\")\nstop(\"boom\")\ncat(\"continued\\n\")\n");
+    // a lexical error is raiseLexError's condition; the lexer's warnings go
+    // with their statement (an error under warn = 2, else printed after it)
+    let lex = run("lex", "cat(\"a\\n\")\nx <- \"\\q\"\ncat(\"b\\n\")\n");
+    let warn2 = run("warn2", "options(warn = 2)\nx <- 1.1L\ncat(\"continued\\n\")\n");
+    let warn = run("warn", "x <- 1.1L\ncat(\"continued\\n\")\n");
     let _ = std::fs::remove_dir_all(&dir);
+    let lex_err = format!(
+        "{PROFILE_STOPS}Error: '\\q' is an unrecognized escape in character string (<input>:2:8)\nExecution halted\n"
+    );
+    assert_eq!((lex.0.as_str(), lex.1.as_str(), lex.2), ("a\n", lex_err.as_str(), Some(1)));
+    let warn2_err = format!(
+        "{PROFILE_STOPS}Error: (converted from warning) integer literal 1.1L contains decimal; using numeric value\n\
+         Execution halted\n"
+    );
+    assert_eq!((warn2.0.as_str(), warn2.1.as_str(), warn2.2), ("", warn2_err.as_str(), Some(1)));
+    let warn_err =
+        format!("{PROFILE_STOPS}Warning message:\ninteger literal 1.1L contains decimal; using numeric value \n");
+    assert_eq!((warn.0.as_str(), warn.1.as_str(), warn.2), ("continued\nscript ran\n", warn_err.as_str(), Some(0)));
     let parse_err = format!("{PROFILE_STOPS}Error: 2:1: unexpected ')'\n2: )\n    ^\nExecution halted\n");
     assert_eq!((parse.0.as_str(), parse.1.as_str(), parse.2), ("before\n", parse_err.as_str(), Some(1)));
     let error_err = format!("{PROFILE_STOPS}Error: boom\nExecution halted\n");

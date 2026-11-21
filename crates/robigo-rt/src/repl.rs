@@ -236,7 +236,7 @@ pub(crate) fn error_at_top(cx: &mut Cx, msg: &str) {
 
 /// [`error_at_top`] after the lexer's `warnings`, raised at the top level
 /// first ([`parse_warnings`]), so that the error report prints them.
-fn error_at_top_after(cx: &mut Cx, warnings: &[String], msg: &str) {
+pub(crate) fn error_at_top_after(cx: &mut Cx, warnings: &[String], msg: &str) {
     cx.scope(|cx, s| {
         let g = s.root(cx, cx.global_env());
         let base = s.root(cx, cx.base_env());
@@ -362,7 +362,7 @@ fn parse_warnings(cx: &mut Cx, warnings: &[String]) -> bool {
 
 /// A parse error as the console reports it (`parseError(R_NilValue, 0)`).
 // R: source.c:parseError, getParseContext
-fn parse_error_message(src: robigo_syntax::Source<'_>, e: &robigo_syntax::ParseError) -> String {
+pub(crate) fn parse_error_message(src: robigo_syntax::Source<'_>, e: &robigo_syntax::ParseError) -> String {
     use robigo_syntax::ErrorStyle;
     match e.style {
         ErrorStyle::Condition => match e.call {
