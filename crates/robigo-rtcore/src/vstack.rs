@@ -69,6 +69,7 @@ impl Slot {
         Slot { tag: Tag::Logical as u64, word: std::ptr::without_provenance_mut(v as u32 as usize) }
     }
     #[inline(always)]
+    #[cfg_attr(feature = "poison-dead", track_caller)]
     pub fn tag(self) -> Tag {
         match self.tag {
             0 => Tag::Empty,
@@ -84,12 +85,16 @@ impl Slot {
     }
     /// The unboxed double, if the slot holds one.
     #[inline(always)]
+    #[cfg_attr(feature = "poison-dead", track_caller)]
     pub fn as_real(self) -> Option<f64> {
+        self.check_live();
         (self.tag == Tag::Real as u64).then(|| f64::from_bits(self.word.addr() as u64))
     }
     /// The unboxed integer or logical, if the slot holds one.
     #[inline(always)]
+    #[cfg_attr(feature = "poison-dead", track_caller)]
     pub fn as_int(self) -> Option<i32> {
+        self.check_live();
         matches!(self.tag, 3 | 4).then(|| self.word.addr() as u32 as i32)
     }
     /// The object, if the slot holds one.

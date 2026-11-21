@@ -155,8 +155,11 @@ impl Act {
     /// Register `r` is dead (D9): its last use was instruction `pc`
     /// (`u32::MAX` where no one instruction is). Empty, or under
     /// robigo-rtcore's `poison-dead` feature with `ROBIGO_POISON_DEAD=1` a
-    /// poison naming `r`, `pc` and the caller's line, which a read panics
-    /// on ([`Slot::dead`]).
+    /// poison naming `r`, `pc` and the caller's line, which a checked read
+    /// panics on ([`Slot::dead`]): [`Act::get`], every `Root`, `Args` and
+    /// `Out` read (`ValueStack::read`), `Slot::tag`, `as_real` and `as_int`.
+    /// A raw read of the slot's memory (the collector's, the link walk's) is
+    /// not checked.
     #[inline(always)]
     #[track_caller]
     pub fn kill(&self, r: Reg, pc: u32) {
