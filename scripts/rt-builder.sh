@@ -6,15 +6,18 @@
 # `robigo-rt-commit:<sha>`, the commit checked out at the build; an edit
 # not committed shows only in the sha256). Fails when the binary carries
 # no commit (built before the marker, or not a robigo-rt).
-#   scripts/rt-builder.sh BIN > FILE
+#   scripts/rt-builder.sh BIN [AS] > FILE
+# BIN is the executable that ran (a tree's build runs its own copy: the one
+# identified); AS the path to record (default BIN's), the binary as given.
 set -euo pipefail
-[ $# -eq 1 ] && [ -n "$1" ] || { echo "usage: scripts/rt-builder.sh BIN" >&2; exit 2; }
+[ $# -ge 1 ] && [ $# -le 2 ] && [ -n "$1" ] || { echo "usage: scripts/rt-builder.sh BIN [AS]" >&2; exit 2; }
 bin=$(realpath "$1")
 [ -x "$bin" ] || { echo "rt-builder.sh: no executable at $1" >&2; exit 2; }
+as=${2:-$bin}
 commit=$(grep -a -o -m1 'robigo-rt-commit:[0-9a-f]\{40\}' "$bin" | head -1 | cut -d: -f2) || true
 [ -n "$commit" ] || { echo "rt-builder.sh: $bin carries no robigo-rt-commit marker: not a robigo-rt this checkout can identify" >&2; exit 1; }
 build_id=$(readelf -n "$bin" 2>/dev/null | sed -n 's/^ *Build ID: *//p' | head -1)
-echo "path: $bin"
+echo "path: $as"
 echo "sha256: $(sha256sum "$bin" | cut -d' ' -f1)"
 echo "build-id: ${build_id:-none}"
 echo "commit: $commit"

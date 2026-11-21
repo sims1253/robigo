@@ -40,10 +40,14 @@ else
 fi
 # what built the databases (scripts/rt-builder.sh's record), in the
 # report; a tree that does not say is not compared
-for k in path sha256 build-id commit; do
-  grep -q "^$k: ." "$builder" 2>/dev/null ||
-    { echo "error: $out does not record the robigo-rt that built it ($builder, its $k): rebuild it with scripts/rt-home-db.sh or scripts/rt-base-build.sh --robigo-rt BIN" >&2; exit 2; }
+# (each field once and whole: a path, a 64-digit sha256, a build ID in
+# hex or none, a 40-digit commit)
+for k in 'path: /.*' 'sha256: [0-9a-f]\{64\}' 'build-id: \([0-9a-f]\{2,\}\|none\)' 'commit: [0-9a-f]\{40\}'; do
+  [ "$(grep -c "^${k%%:*}:" "$builder" 2>/dev/null)" = 1 ] && grep -qx "$k" "$builder" ||
+    { echo "error: $out does not record the robigo-rt that built it ($builder, its ${k%%:*}): rebuild it with scripts/rt-home-db.sh or scripts/rt-base-build.sh --robigo-rt BIN" >&2; exit 2; }
 done
+[ "$(wc -l < "$builder")" = 4 ] ||
+  { echo "error: $builder holds more than the robigo-rt's four fields" >&2; exit 2; }
 echo "== built by"
 sed 's/^/  /' "$builder"
 # (after the checks: it may download the tarball)

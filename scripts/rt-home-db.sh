@@ -84,6 +84,10 @@ cp -a "$src_tree/." "$tmp/lib/robigo/"
 exec 8>&-
 rm -f "$tmp/lib/robigo/.rt-home"
 cp "$bin" "$tmp/bin/robigo-rt"
+# (the copy is what builds the tree: the binary the stamp names, or the
+# build stops)
+[ "$(sha256sum "$tmp/bin/robigo-rt" | cut -c1-16)" = "${stamp##* }" ] ||
+  { echo "rt-home-db.sh: $bin changed while the tree was being built" >&2; exit 1; }
 lib=$tmp/lib/robigo/library
 version=4.6.2
 # each package's configured DESCRIPTION (DESCRIPTION.in, config.status's),
@@ -182,7 +186,7 @@ echo 'tools:::.vinstall_package_namespaces_as_RDS(Sys.getenv("RT_OUT"), "base to
 # scripts/rt-rdb-compare.sh's path mapping
 echo "$tmp/lib/robigo" > "$tmp/lib/robigo/.rt-home-db-built-at"
 # what built it (scripts/rt-builder.sh), for scripts/rt-rdb-compare.sh
-scripts/rt-builder.sh "$bin" > "$tmp/lib/robigo/.rt-home-db-builder"
+scripts/rt-builder.sh "$tmp/bin/robigo-rt" "$(realpath "$bin")" > "$tmp/lib/robigo/.rt-home-db-builder"
 echo "$stamp" > "$tmp/lib/robigo/.rt-home-db"
 rm -rf "$out"
 mv "$tmp/lib/robigo" "$out"

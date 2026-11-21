@@ -67,7 +67,7 @@ mkdir -p "$B/bin" "$B/library" "$out/inst/bin" "$out/inst/lib" "$out/logs"
 cp "$bin" "$out/inst/bin/robigo-rt"
 ln -s "$B" "$out/inst/lib/robigo"
 echo "$(sha256sum "$bin" | cut -c1-16) $(basename "$src")" > "$out/stamp"
-scripts/rt-builder.sh "$bin" > "$out/builder"
+scripts/rt-builder.sh "$out/inst/bin/robigo-rt" "$(realpath "$bin")" > "$out/builder"
 
 # R: Makeconf.in, share/make/vars.mk (the variables read)
 cat > "$B/Makeconf" << EOF
