@@ -243,3 +243,34 @@ later by `history.py sync`, not by their own run. perf-baseline.py reads
 the `perf-main` artifact, not the run's conclusion, so pull requests are not
 affected. No change proposed; noted so that nobody reads those runs as
 failures.
+
+## 2026-11-21: the pool is full; one concurrency group per pull request
+
+Measured from the job records of every run created on 2026-11-21 until
+15:00 UTC, in all of the account's repositories (robigo 467 runs; grotto 3,
+ry 3, Sepalith 17). Only jobs that got a runner are counted.
+
+| what | runner-minutes | runs |
+|---|---:|---:|
+| `ci`, pull requests | 10,217 | 91 |
+| `ci`, main's pushes | 4,114 | 40 |
+| OpenCodeReview | 1,140 | 85 |
+| nightly, packages, pr-delta, agent-context | about 130 | |
+
+- **The pool ran at 20 jobs, its usual cap.** For 7.8 of the 12.9 hours
+  exactly 20 jobs ran; 18–19 for 2.7 hours and 21–27 for 1.6 (the levels that
+  each cover over 1% of the span: 12.1 of its 12.9 hours). The 15,587
+  runner-minutes used equal 20 runners for the whole span (15,444).
+- **About 4 PR runs can be in flight before everything queues.** A full `ci`
+  run is about 37 jobs, so one run alone cannot have all its jobs running. At
+  about 200 runner-minutes over a 35–45-minute critical path, a run needs
+  about 5 runners on average, so 20 runners keep about 4 runs at full speed.
+- **What changes:**
+  - #927: main's push runs share one group, so a burst of merges runs the
+    newest commit next, not every commit.
+  - #941: the rt jobs' rebalance; one test build fewer per run.
+  - This PR: a pull request's runs share one group with cancel-in-progress,
+    so a new push cancels the older run at once. Before, `select`'s first
+    step cancelled it, but only once the new run got its first runner, so in
+    a full pool both runs queued until then.
+  - Main's runs and the superseded PR runs are most of what can be saved.
