@@ -292,6 +292,11 @@ pub fn cmpfun(cx: &mut Cx, op: Root<'_>, strategy: i32) -> RResult<()> {
                 set_nojit(cx, op);
                 return Ok(());
             }
+            Hit::Bytecode(code) => {
+                // SAFETY: a rooted closure and a cache entry's BCODESXP.
+                unsafe { op.bind(cx).sexp().set_cdr(code) };
+                return Ok(());
+            }
             Hit::None => {}
         }
     }
@@ -324,6 +329,8 @@ pub fn cmpfun(cx: &mut Cx, op: Root<'_>, strategy: i32) -> RResult<()> {
         IN_CMPFUN1.with(|c| c.set(false));
         if !r? {
             set_nojit(cx, op);
+        } else if let Some(h) = hash {
+            enter(cx, op, h)?;
         }
         return Ok(());
     }
@@ -355,6 +362,8 @@ enum Hit {
     Reshape(Sexp),
     /// An entry of this hash whose environment does not match.
     EnvMismatch,
+    /// (PROBE) the entry's BCODESXP.
+    Bytecode(Sexp),
 }
 
 /// The cache's answer for closure `op` with hash `h`
@@ -406,7 +415,9 @@ fn lookup(cx: &mut Cx, op: Root<'_>, h: u64) -> Hit {
             }
         }
         let code = el(E_CODE);
-        if crate::code::is_closure_code(cx, code, crate::ir::Profile::Bc, f.car()) {
+        if code.typ() == BCODESXP {
+            Hit::Bytecode(code)
+        } else if crate::code::is_closure_code(cx, code, crate::ir::Profile::Bc, f.car()) {
             Hit::Code(code)
         } else {
             Hit::Reshape(code)
@@ -462,8 +473,16 @@ unsafe fn make_entry(cx: &Cx, f: Sexp) -> Result<Sexp, NeedGc> {
             None => nil,
         };
         let e = cx.alloc_vector_raw(VECSXP, E_LEN)?;
-        e.set_elt(E_BODY, f.cdr());
-        e.set_elt(E_CODE, f.aux());
+        // (PROBE: a BCODESXP body is cached as GNU R's entry is, its
+        // expression the source)
+        if f.cdr().typ() == BCODESXP {
+            let src = robigo_rtbuiltins::bytecode::expr(cx, Ref::from_sexp(f.cdr(), cx)).sexp();
+            e.set_elt(E_BODY, src);
+            e.set_elt(E_CODE, f.cdr());
+        } else {
+            e.set_elt(E_BODY, f.cdr());
+            e.set_elt(E_CODE, f.aux());
+        }
         e.set_elt(E_TOP, top);
         e.set_elt(E_LOCALS, locals);
         e.set_elt(E_SRCREF, srcref(cx, f).unwrap_or(nil));
