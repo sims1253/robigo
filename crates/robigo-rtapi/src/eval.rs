@@ -234,11 +234,12 @@ entry! {
 // R: coerce.c:coerceVector (COERCE_ERROR), util.c:type2char
 #[cold]
 fn coerce_to_unknown(cx: &mut Cx, v: Root<'_>, t: c_uint) -> RError {
-    if let Err(e) = cx.warning(&format!("type {t} is unimplemented in 'type2char'")) {
-        return e;
-    }
+    let to = match robigo_rtbuiltins::util::type2char_warn(cx, t) {
+        Ok(to) => to,
+        Err(e) => return e,
+    };
     let from = r_type_to_char(v.bind(cx));
-    cx.error(&format!("cannot coerce type '{from}' to vector of type 'unknown type #{t}'"))
+    cx.error(&format!("cannot coerce type '{from}' to vector of type '{to}'"))
 }
 
 entry! {
@@ -247,10 +248,19 @@ entry! {
     [2] fn Rf_coerceVector(v: Sexp, t: c_uint) -> Sexp => |cx, s| {
         let o = s.out(cx);
         let r = o.root();
-        let Ok(t) = u8::try_from(t) else {
+        let Ok(t8) = u8::try_from(t) else {
             return Err(coerce_to_unknown(cx, v, t));
         };
-        robigo_rtbuiltins::coerce::vector::coerce_vector(cx, v, t, o)?;
+        // A code no type names: GNU R's type2char warns where the
+        // coercion's error names the target (the error itself says
+        // "unknown type #N", type2char's text), so the warning comes first,
+        // here, for the coercions whose error does name it.
+        if robigo_rtbuiltins::util::type_name(t8).is_none()
+            && robigo_rtbuiltins::coerce::vector::error_names_target(v.bind(cx), t8)
+        {
+            robigo_rtbuiltins::util::type2char_warn(cx, t)?;
+        }
+        robigo_rtbuiltins::coerce::vector::coerce_vector(cx, v, t8, o)?;
         Ok(r.bind(cx).sexp())
     }
 

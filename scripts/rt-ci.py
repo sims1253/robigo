@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """CI's `rt` job: G3's runtime crates (docs/g3.md §14.1, §16).
 
-    scripts/rt-ci.py            # premise check, release tests, gctorture
+    scripts/rt-ci.py            # premise check, release tests, gctorture: every step
+    scripts/rt-ci.py --shard NAME  # one CI job's steps (SHARDS); CI runs each in parallel
     scripts/rt-ci.py --list     # the rt crates, one per line
     scripts/rt-ci.py --check    # the premise check alone
     scripts/rt-ci.py --full-move  # the nightly's run: every collection moves everything
@@ -50,6 +51,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -310,6 +312,50 @@ def steps(crates):
     return every_cpu(out)
 
 
+# CI's three rt jobs (.github/workflows/ci.yml), each one shard of the
+# steps, built once and run in parallel: before 2026-11-21 one job ran them
+# all in 29-38 minutes, against a 40-minute limit. Each is named for what it
+# runs. Their jobs' times in #910's first run (each with its release build,
+# 8.4 minutes of the one job's 35 on main's 2f16dc4c):
+#   modes         release tests, the conformance and its observation modes,
+#                 gctorture, quarantine, the pin report, stress, overshoot,
+#                 E9's small limit and failures, the byte-code crosscheck:
+#                 15.7
+#   gc-move       the moving collector, its unit tests and the conformance
+#                 under it with gctorture: 16.7
+#   feature-builds  the steps that build with a feature of their own: the
+#                 builtin differential's plants, and retry-torture: 9.1
+# The R_HOME tree (seconds) is made in every shard; every other step is in
+# exactly one (scripts/test-rt-ci.py checks both).
+SHARDS = ("modes", "gc-move", "feature-builds")
+
+
+def shard_of(title):
+    """The shard a step of `steps` runs in, or None for every shard."""
+    if title.startswith("the R_HOME tree"):
+        return None
+    if "GC_MOVE" in title:
+        return "gc-move"
+    if title.startswith("builtin differential") or "RETRY_TORTURE" in title:
+        return "feature-builds"
+    return "modes"
+
+
+def shard_steps(crates, shard):
+    """The steps of one shard, in `steps`' order."""
+    return [s for s in steps(crates) if shard_of(s[0]) in (None, shard)]
+
+
+def timings_report(done):
+    """Each step's wall time, slowest first, for the end of the log: the next
+    drift shows here before it becomes a timeout."""
+    lines = ["rt: step times (wall), slowest first:"]
+    for title, secs, ok in sorted(done, key=lambda d: -d[1]):
+        lines.append(f"  {secs / 60:6.2f} min  {'' if ok else 'FAILED  '}{title}")
+    lines.append(f"  {sum(d[1] for d in done) / 60:6.2f} min  in all")
+    return "\n".join(lines)
+
+
 def metadata():
     p = subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"],
                        cwd=ROOT, stdout=subprocess.PIPE, text=True, check=True)
@@ -326,6 +372,7 @@ def main(argv):
     ap.add_argument("--check", action="store_true", help="check the premise and stop")
     ap.add_argument("--full-move", action="store_true",
                     help="only the conformance slice with every collection moving everything (the nightly's run)")
+    ap.add_argument("--shard", choices=SHARDS, help="only this CI job's steps (default: every step)")
     a = ap.parse_args(argv)
 
     meta = metadata()
@@ -346,7 +393,18 @@ def main(argv):
     if a.check:
         return 0
 
-    for title, env, cmd in full_move_steps() if a.full_move else steps(crates):
+    plan = full_move_steps() if a.full_move else shard_steps(crates, a.shard) if a.shard else steps(crates)
+    done = []
+    try:
+        return run_steps(plan, done)
+    finally:
+        print(timings_report(done), flush=True)
+
+
+def run_steps(plan, done):
+    """Run `plan`'s steps in order, recording (title, seconds, ok) in `done`;
+    stop at the first that fails."""
+    for title, env, cmd in plan:
         report = env.get("ROBIGO_GC_PIN_REPORT")
         if report and os.path.exists(report):
             os.remove(report)
@@ -354,7 +412,9 @@ def main(argv):
         if bc and os.path.exists(bc):
             os.remove(bc)
         print(f"::group::{title}", flush=True)
+        t0 = time.monotonic()
         r = subprocess.run(cmd, cwd=ROOT, env={**os.environ, **env})
+        done.append((title, time.monotonic() - t0, r.returncode == 0))
         print("::endgroup::", flush=True)
         if r.returncode != 0:
             print(f"::error::rt: {title} failed")
@@ -365,6 +425,7 @@ def main(argv):
                 print(f"::error::rt: {line}")
             if hits:
                 print(f"::error::rt: {title}: {len(hits)} report(s)")
+                done[-1] = (title, done[-1][1], False)
                 return 1
         if bc:
             errors, classes = bc_report_check(bc)
@@ -376,6 +437,7 @@ def main(argv):
                 # (an error is a closure's line, a malformed line or a
                 # report that compared nothing: bc_report_check)
                 print(f"::error::rt: {title}: {len(errors)} report problem(s)")
+                done[-1] = (title, done[-1][1], False)
                 return 1
     return 0
 
