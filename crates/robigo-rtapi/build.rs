@@ -51,11 +51,12 @@ fn main() {
 /// which the binary carries as a marker string (src/main.rs) so that the
 /// trees built by it can say what built them (scripts/rt-builder.sh); an
 /// edit not committed shows only in the binary's sha256. Read from the
-/// checkout's git files, not by running git: git refuses a checkout another
-/// user owns ("dubious ownership"), as CI's container jobs are, and the
-/// marker must not depend on the caller's git configuration. "unknown"
-/// outside a git checkout. Rerun when HEAD, the ref it names, or
-/// packed-refs moves.
+/// checkout's git files ($GIT_DIR, else .git or the worktree it names), not
+/// by running git: git refuses a checkout another user owns ("dubious
+/// ownership"), as CI's container jobs are, and the marker must not depend
+/// on the caller's git configuration. Symbolic refs are followed, five
+/// levels as git does. "unknown" outside a git checkout. Rerun when HEAD,
+/// a ref it leads to, packed-refs or GIT_DIR changes.
 fn commit() {
     use std::path::{Path, PathBuf};
     let watch = |path: &Path| println!("cargo:rerun-if-changed={}", path.display());
@@ -63,40 +64,51 @@ fn commit() {
     let is_sha = |s: &str| s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit());
     // the checkout's root: this package's crates/robigo-rtapi, two up
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    // the git directory: $GIT_DIR when set (relative to the root, where
+    // cargo is run from), else .git, which in a worktree is a file naming
+    // it ("gitdir: X")
+    println!("cargo:rerun-if-env-changed=GIT_DIR");
     let dot = root.join(".git");
-    // a worktree's .git is a file naming its git directory ("gitdir: X")
-    let gitdir: Option<PathBuf> = if dot.is_dir() {
-        Some(dot.clone())
-    } else {
-        read(&dot).and_then(|s| s.strip_prefix("gitdir:").map(|g| root.join(g.trim())))
+    let gitdir: Option<PathBuf> = match std::env::var_os("GIT_DIR") {
+        Some(g) => Some(root.join(g)),
+        None if dot.is_dir() => Some(dot.clone()),
+        None => read(&dot).and_then(|s| s.strip_prefix("gitdir:").map(|g| root.join(g.trim()))),
     };
     let sha = gitdir.and_then(|gd| {
-        watch(&gd.join("HEAD"));
         // the shared directory of the refs (a worktree's commondir)
         let common = read(&gd.join("commondir")).map(|c| gd.join(c)).unwrap_or_else(|| gd.clone());
-        let head = read(&gd.join("HEAD"))?;
-        let Some(name) = head.strip_prefix("ref:").map(str::trim) else {
-            // a detached HEAD holds the commit
-            return Some(head).filter(|h| is_sha(h));
+        // a ref's value: a loose file (the worktree's own, then the shared
+        // one) or packed-refs' "<sha> <name>" line; watched either way
+        let lookup = |name: &str| -> Option<String> {
+            for d in [&gd, &common] {
+                let loose = d.join(name);
+                if let Some(s) = read(&loose) {
+                    watch(&loose);
+                    return Some(s);
+                }
+            }
+            // packed: packed-refs, and the directory the ref's next commit
+            // writes the loose file into
+            let packed = common.join("packed-refs");
+            watch(&packed);
+            if let Some(dir) = common.join(name).ancestors().skip(1).find(|d| d.is_dir()) {
+                watch(dir);
+            }
+            read(&packed)?.lines().find_map(|l| {
+                let (s, n) = l.split_once(' ')?;
+                (n == name && is_sha(s)).then(|| s.to_string())
+            })
         };
-        for d in [&gd, &common] {
-            let loose = d.join(name);
-            if let Some(s) = read(&loose).filter(|s| is_sha(s)) {
-                watch(&loose);
-                return Some(s);
+        watch(&gd.join("HEAD"));
+        let mut v = read(&gd.join("HEAD"))?;
+        // a symbolic ref may name another (git follows five levels)
+        for _ in 0..5 {
+            match v.strip_prefix("ref:").map(str::trim) {
+                Some(name) => v = lookup(name)?,
+                None => return Some(v).filter(|h| is_sha(h)),
             }
         }
-        // a packed ref: packed-refs' "<sha> <name>" line, and the
-        // directory the branch's next commit writes the loose file into
-        let packed = common.join("packed-refs");
-        watch(&packed);
-        if let Some(dir) = common.join(name).ancestors().skip(1).find(|d| d.is_dir()) {
-            watch(dir);
-        }
-        read(&packed)?.lines().find_map(|l| {
-            let (s, n) = l.split_once(' ')?;
-            (n == name && is_sha(s)).then(|| s.to_string())
-        })
+        None
     });
     println!("cargo:rustc-env=ROBIGO_RT_COMMIT={}", sha.unwrap_or_else(|| "unknown".to_string()));
 }
