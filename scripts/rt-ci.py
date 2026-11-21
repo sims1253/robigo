@@ -221,6 +221,13 @@ def full_move_steps():
 CHECK_FEATURES = "robigo-rtcore/retry-torture,robigo-rt/poison-dead"
 
 
+def rt_binary():
+    """The release robigo-rt the release tests built (cargo's target
+    directory, as `metadata()` gives it), which scripts/rt-home-db.sh is
+    given by name."""
+    return os.path.join(metadata()["target_directory"], "release", "robigo-rt")
+
+
 def steps(crates):
     """(title, extra environment, command) for each step of the job."""
     pkgs = [x for c in crates for x in ("-p", c)]
@@ -236,7 +243,8 @@ def steps(crates):
         # L5's boot beside M1's loader (ROBIGO_RT_BOOT=rdb): base's database,
         # written by this robigo-rt booted from base's source, then base
         # booted from it (crates/robigo-rtapi/tests/boot_db.rs)
-        ("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)", {}, ["scripts/rt-home-db.sh"]),
+        ("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)", {},
+         ["scripts/rt-home-db.sh", "--robigo-rt", rt_binary()]),
         ("boot from base's database (ROBIGO_RT_BOOT=rdb)", {"ROBIGO_RT_HOME_DB": "1"},
          [*test, "-p", "robigo-rtapi", "--test", "boot_db", *skip]),
         ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {}, conformance),

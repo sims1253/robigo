@@ -586,7 +586,7 @@ impl<'a> Parser<'a> {
 
     /// The start of the last token GNU R's lexer had read when `e` was
     /// raised: the raise site's frontier for an action's error (the
-    /// lookahead it reduced with, or none: [`Parser::codegen`]), else the
+    /// lookahead it reduced with, or none: `Parser::codegen`), else the
     /// rejected token. A token's warnings (NumericValue's) have fired once
     /// it is read, so those of the tokens starting at or before this one
     /// precede the error (as the console's [`parse_console`] counts them).

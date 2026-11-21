@@ -142,3 +142,19 @@ Contains #933's head (bef8b1644) and #925's (6d33c8b93, `Sys.time`,
   at start). Not analysed here: the bar for deleting the interim loader
   (at or below it, like for like) is that PR's; X and C1 have the
   breakdowns above.
+- **What built a tree** (the 33 must not recur unexplained): robigo-rt
+  carries the commit it was built from (robigo-rtapi's build.rs, the
+  marker `robigo-rt-commit:<sha>`, read by `scripts/rt-builder.sh`; an edit
+  not committed shows in the sha256 only). `scripts/rt-home-db.sh` and
+  `scripts/rt-base-build.sh` take `--robigo-rt BIN` only (no default
+  target's binary) and record it in the tree (`.rt-home-db-builder`,
+  `OUT/builder`: path, sha256, GNU build ID, commit);
+  `scripts/rt-rdb-compare.sh` prints it in its report and refuses a tree
+  that does not record it.
+- #933's five late script lows (deferred here): rt-home-db.sh holds a
+  shared lock on rt-home.sh's tree while it reads it (a rebuild takes it
+  exclusively) and refuses rt-home.sh's own tree as its DIR (the same lock
+  file would deadlock); rt-home.sh's path normalization cannot leave it
+  empty; Debian's `R_LIBS_SITE` line is one string, written and checked;
+  `Parser::error_frontier`'s doc names the private `codegen` without a
+  link.

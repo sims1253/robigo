@@ -5,7 +5,10 @@
 # the Makefiles call. The package Makefiles and share/make/*.mk run as they
 # are; what configure would substitute into them is substituted here, and
 # only what they read.
-#   scripts/rt-base-build.sh [--robigo-rt BIN] [--shim FILE] [OUT]   # default OUT .robigo/rt-base-build
+#   scripts/rt-base-build.sh --robigo-rt BIN [--shim FILE] [OUT]   # default OUT .robigo/rt-base-build
+# BIN is required (never a default target's binary, which another build may
+# have written); OUT/builder records it (scripts/rt-builder.sh), which
+# scripts/rt-rdb-compare.sh reports.
 # The R target's steps, in its order (src/library/Makefile.in), each run
 # whatever the step before it did, so that each reports what stops it:
 #   profile-all translations-all base-all tools-all compiler-all
@@ -36,14 +39,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 root=$PWD
-# cargo's target directory, as scripts/build.sh finds it (a checkout's
-# .cargo/config.toml may set it)
-target=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
-bin=$target/release/robigo-rt
+bin=
 shim=
 while [ $# -gt 0 ]; do
   case "$1" in
-    --robigo-rt) bin=$2; shift 2 ;;
+    --robigo-rt) bin=${2:-}; shift $(( $# >= 2 ? 2 : 1 )) ;;
     --shim) shim=$(realpath "$2"); shift 2 ;;
     -*) echo "rt-base-build.sh: unknown option $1" >&2; exit 2 ;;
     *) break ;;
@@ -51,7 +51,9 @@ while [ $# -gt 0 ]; do
 done
 out=${1:-.robigo/rt-base-build}
 case "$out" in /*) ;; *) out=$root/$out ;; esac
+[ -n "$bin" ] || { echo "usage: scripts/rt-base-build.sh --robigo-rt BIN [--shim FILE] [OUT]" >&2; exit 2; }
 [ -x "$bin" ] || { echo "rt-base-build.sh: no robigo-rt binary at $bin (cargo build --release -p robigo-rtapi)" >&2; exit 1; }
+scripts/rt-builder.sh "$bin" > /dev/null
 src=$(scripts/r-src.sh)
 home=$(scripts/rt-home.sh)
 version=4.6.2
@@ -65,6 +67,7 @@ mkdir -p "$B/bin" "$B/library" "$out/inst/bin" "$out/inst/lib" "$out/logs"
 cp "$bin" "$out/inst/bin/robigo-rt"
 ln -s "$B" "$out/inst/lib/robigo"
 echo "$(sha256sum "$bin" | cut -c1-16) $(basename "$src")" > "$out/stamp"
+scripts/rt-builder.sh "$bin" > "$out/builder"
 
 # R: Makeconf.in, share/make/vars.mk (the variables read)
 cat > "$B/Makeconf" << EOF

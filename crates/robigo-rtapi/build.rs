@@ -3,6 +3,7 @@
 // binaries: packages loaded with dlopen resolve GNU R's symbols against the
 // executable (docs/g3.md §14.1).
 fn main() {
+    commit();
     // Rerun when another checkout built last (.cargo/config.toml).
     println!("cargo:rerun-if-env-changed=ROBIGO_WORKTREE");
     println!("cargo:rerun-if-changed=src/api.c");
@@ -44,4 +45,42 @@ fn main() {
             "cargo:warning=robigo-rtapi: no flag to export the C API from executables on this target; packages will not load"
         ),
     }
+}
+
+/// `ROBIGO_RT_COMMIT`: the commit checked out when the binary was built
+/// (`git rev-parse HEAD`; "unknown" outside a checkout), which the binary
+/// carries as a marker string (src/main.rs) so that the trees built by it
+/// can say what built them (scripts/rt-builder.sh). An edit not committed
+/// shows only in the binary's sha256. As robigo-cli's build ID: rerun when
+/// HEAD, or the branch it names, moves.
+fn commit() {
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .output()
+            .ok()
+            .and_then(|o| o.status.success().then(|| String::from_utf8_lossy(&o.stdout).trim().to_string()))
+            .filter(|s| !s.is_empty())
+    };
+    let watch = |path: &str| println!("cargo:rerun-if-changed={path}");
+    if let Some(head) = git(&["rev-parse", "--git-path", "HEAD"]) {
+        watch(&head);
+    }
+    if let Some(loose) = git(&["symbolic-ref", "-q", "HEAD"]).and_then(|b| git(&["rev-parse", "--git-path", &b])) {
+        let loose = std::path::Path::new(&loose);
+        if loose.exists() {
+            watch(&loose.to_string_lossy());
+        } else {
+            // a packed branch: packed-refs, and the directory its next
+            // commit writes the loose file into
+            if let Some(packed) = git(&["rev-parse", "--git-path", "packed-refs"]) {
+                watch(&packed);
+            }
+            if let Some(dir) = loose.ancestors().skip(1).find(|d| d.is_dir()) {
+                watch(&dir.to_string_lossy());
+            }
+        }
+    }
+    let sha = git(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
+    println!("cargo:rustc-env=ROBIGO_RT_COMMIT={sha}");
 }

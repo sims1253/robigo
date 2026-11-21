@@ -15,6 +15,12 @@
 mod renviron;
 
 use robigo_rt::repl::run_session;
+
+/// The commit this binary was built from (build.rs's `ROBIGO_RT_COMMIT`), as
+/// a marker in the file that scripts/rt-builder.sh reads, so that a tree
+/// this binary builds records what built it. Nothing prints it.
+#[used]
+static BUILD_COMMIT: &[u8] = concat!("robigo-rt-commit:", env!("ROBIGO_RT_COMMIT"), "\n").as_bytes();
 use robigo_rtcore::OwnedIsolate;
 use std::os::unix::ffi::OsStrExt;
 

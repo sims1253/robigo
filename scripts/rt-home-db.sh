@@ -26,22 +26,21 @@
 # the robigo-rt it runs implements .Internal(as.POSIXlt()).
 # The tree is rebuilt when the source tree, this script, the stand-ins or
 # the binary changes (the stamp holds the four).
-#   scripts/rt-home-db.sh [--robigo-rt BIN] [DIR]   # default .robigo/rt-home-db
-# BIN defaults to cargo's release robigo-rt.
+#   scripts/rt-home-db.sh --robigo-rt BIN [DIR]   # default .robigo/rt-home-db
+# BIN is required (never a default target's binary, which another build may
+# have written): the tree records what built it in .rt-home-db-builder
+# (scripts/rt-builder.sh: path, sha256, build ID, commit), which
+# scripts/rt-rdb-compare.sh reports.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-bin=
-if [ "${1:-}" = --robigo-rt ]; then
-  [ $# -ge 2 ] && [ -n "$2" ] || { echo "usage: scripts/rt-home-db.sh [--robigo-rt BIN] [DIR]" >&2; exit 2; }
-  bin=$2
-  shift 2
-fi
-if [ -z "$bin" ]; then
-  # cargo's target directory, as scripts/build.sh finds it
-  target=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
-  bin=$target/release/robigo-rt
-fi
+usage() { echo "usage: scripts/rt-home-db.sh --robigo-rt BIN [DIR]" >&2; exit 2; }
+[ "${1:-}" = --robigo-rt ] && [ $# -ge 2 ] && [ -n "$2" ] || usage
+bin=$2
+shift 2
+[ $# -le 1 ] || usage
 [ -x "$bin" ] || { echo "rt-home-db.sh: no robigo-rt at $bin (cargo build --release -p robigo-rtapi)" >&2; exit 2; }
+# (it must carry its commit: checked before anything is built)
+scripts/rt-builder.sh "$bin" > /dev/null
 out=${1:-.robigo/rt-home-db}
 # (no trailing slash or /.: the lock is the tree's sibling, whatever the
 # spelling)
@@ -49,14 +48,24 @@ while [ "$out" != / ] && { [ "${out%/}" != "$out" ] || [ "${out%/.}" != "$out" ]
   out=${out%/}
   out=${out%/.}
 done
-[ -n "$out" ] || out=.
+[ -n "$out" ] || out=/
+# not scripts/rt-home.sh's tree, which this one is copied from (and whose
+# lock rt-home.sh takes below: the same file would deadlock)
+if [ "$(realpath -m "$out")" = "$(realpath -m .robigo/rt-home)" ]; then
+  echo "rt-home-db.sh: $out is scripts/rt-home.sh's tree, the source of this one" >&2
+  exit 2
+fi
 # one build of the tree at a time (another's rm and mv would interleave
 # with this one's), as scripts/build.sh locks its target (the mkdir is
-# the mktemp's below too); scripts/rt-home.sh locks its own
+# the mktemp's below too)
 mkdir -p "$(dirname "$out")"
 exec 9> "$out.lock"
 flock 9
 src_tree=$(scripts/rt-home.sh)
+# the source tree held while it is read (its stamp, the copy below): a
+# shared lock on rt-home.sh's, which a rebuild of it takes exclusively
+exec 8> "$src_tree.lock"
+flock -s 8
 rsrc=$(scripts/r-src.sh)
 interim=$PWD/scripts/rt-home-db-interim.R
 stamp="$(cat "$src_tree/.rt-home") $(sha256sum "$0" | cut -c1-16) $(sha256sum "$interim" | cut -c1-16) $(sha256sum "$bin" | cut -c1-16)"
@@ -71,6 +80,8 @@ mkdir -p "$tmp/bin" "$tmp/lib/robigo"
 # (the tree's contents into a fresh directory: a symlinked tree is read,
 # never written)
 cp -a "$src_tree/." "$tmp/lib/robigo/"
+# (copied: the source tree's lock released)
+exec 8>&-
 rm -f "$tmp/lib/robigo/.rt-home"
 cp "$bin" "$tmp/bin/robigo-rt"
 lib=$tmp/lib/robigo/library
@@ -170,6 +181,8 @@ echo 'tools:::.vinstall_package_namespaces_as_RDS(Sys.getenv("RT_OUT"), "base to
 # namespaces' path) as GNU R's record its build tree: for
 # scripts/rt-rdb-compare.sh's path mapping
 echo "$tmp/lib/robigo" > "$tmp/lib/robigo/.rt-home-db-built-at"
+# what built it (scripts/rt-builder.sh), for scripts/rt-rdb-compare.sh
+scripts/rt-builder.sh "$bin" > "$tmp/lib/robigo/.rt-home-db-builder"
 echo "$stamp" > "$tmp/lib/robigo/.rt-home-db"
 rm -rf "$out"
 mv "$tmp/lib/robigo" "$out"

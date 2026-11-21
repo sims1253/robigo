@@ -31,11 +31,21 @@ esac
 if [ -f "$out/.rt-home-db-built-at" ]; then
   lib=$out/library
   inst=$(cat "$out/.rt-home-db-built-at")
+  builder=$out/.rt-home-db-builder
 else
   [ -d "$out/build/library" ] || { echo "error: $out/build/library does not exist (run scripts/rt-base-build.sh)" >&2; exit 2; }
   lib=$out/build/library
   inst=$out/inst/lib/robigo
+  builder=$out/builder
 fi
+# what built the databases (scripts/rt-builder.sh's record), in the
+# report; a tree that does not say is not compared
+for k in path sha256 build-id commit; do
+  grep -q "^$k: ." "$builder" 2>/dev/null ||
+    { echo "error: $out does not record the robigo-rt that built it ($builder, its $k): rebuild it with scripts/rt-home-db.sh or scripts/rt-base-build.sh --robigo-rt BIN" >&2; exit 2; }
+done
+echo "== built by"
+sed 's/^/  /' "$builder"
 # (after the checks: it may download the tarball)
 src=$("$root/scripts/r-src.sh")
 cd "$root"
