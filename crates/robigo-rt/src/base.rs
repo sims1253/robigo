@@ -505,7 +505,7 @@ fn eval_form(
 /// base namespace ([`Def`]), then the forms that follow it; the value into
 /// `out`, which the promise keeps. GNU R's lazy-load promise fetches a
 /// value its build computed; this computes it on first use.
-fn base_fetch(cx: &mut Cx, call: Root<'_>, _: Root<'_>, _: Root<'_>, out: Out<'_>) -> RResult<()> {
+fn base_fetch(cx: &mut Cx, call: Root<'_>, _: Root<'_>, _: Option<Root<'_>>, _: Root<'_>, out: Out<'_>) -> RResult<()> {
     let name = call
         .bind(cx)
         .as_cons()
@@ -755,17 +755,43 @@ fn not_yet_primitive(cx: &mut Cx, call: Root<'_>, _: Args<'_>, _: Root<'_>, _: O
 }
 
 /// A special primitive of the bound that robigo-rt does not implement yet.
-fn not_yet_primitive_special(cx: &mut Cx, call: Root<'_>, _: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+fn not_yet_primitive_special(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     let _ = out;
-    eval_stub_args(cx, call, rho)?;
+    cx.scope(|cx, s| {
+        let ac = match crate::specials::arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        eval_stub_args(cx, ac, rho)
+    })?;
     let msg = format!("robigo: the primitive '{}' is not implemented yet", called_name(cx, call));
     Err(cx.error_call(Some(call), &msg))
 }
 
 /// A special `.Internal` of the bound that robigo-rt does not implement yet.
-fn not_yet_internal_special(cx: &mut Cx, call: Root<'_>, _: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+fn not_yet_internal_special(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     let _ = out;
-    eval_stub_args(cx, call, rho)?;
+    cx.scope(|cx, s| {
+        let ac = match crate::specials::arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        eval_stub_args(cx, ac, rho)
+    })?;
     let msg = format!("robigo: .Internal({}()) is not implemented yet", called_name(cx, call));
     Err(cx.error_call(Some(call), &msg))
 }

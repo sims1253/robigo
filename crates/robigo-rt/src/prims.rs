@@ -73,7 +73,11 @@ pub enum Inline {
 /// A special that is a function over its call: GNU R's `do_*` of a
 /// SPECIALSXP, `PRIMFUN(op)(call, op, CDR(call), rho)`; the arguments are
 /// the call's, unevaluated. `op` is the primitive object.
-pub type SpecialFn = for<'a, 'b, 'c, 'd> fn(&mut Cx, Root<'a>, Root<'b>, Root<'c>, Out<'d>) -> RResult<()>;
+/// A special that is a function over its call: GNU R's `PRIMFUN(op)(call,
+/// op, args, rho)`, `args` None for `CDR(call)` (every call but one) or
+/// `applyMethod`'s promise list, `call` then the method's `newcall`.
+pub type SpecialFn =
+    for<'a, 'b, 'c, 'd, 'e> fn(&mut Cx, Root<'a>, Root<'b>, Option<Root<'e>>, Root<'c>, Out<'d>) -> RResult<()>;
 
 #[derive(Clone, Copy)]
 pub enum Kind {
