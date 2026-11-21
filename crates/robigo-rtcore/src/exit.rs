@@ -70,8 +70,9 @@ pub(crate) fn kind_from_u8(k: u8) -> ExitKind {
         0 => ExitKind::Error,
         1 => ExitKind::Jump,
         2 => ExitKind::Restart,
-        3 => ExitKind::Interrupt,
-        _ => ExitKind::Exec,
+        4 => ExitKind::Exec,
+        // (an unknown byte decodes as the inert Interrupt, never as Exec)
+        _ => ExitKind::Interrupt,
     }
 }
 
