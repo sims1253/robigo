@@ -319,6 +319,23 @@ extra = ["(function(n) if (n <= 1) 1 else n * Recall(n - 1))(5)", "(function(...
 special = true
 effect = "Pure"
 
+# (E's coerce.c PR: the call of the named function, the other arguments
+# evaluated, their tags kept)
+[call]
+special = true
+effect = "Pure"
+extra = [
+  "call(\"round\", 10.5)",
+  "call(\"f\", a = 1, b = \"x\")",
+  "call(name = \"f\", 1)",
+  "call(nme = \"f\")",
+  "call(\".Internal\", 1)",
+  "call(\"\")",
+  "call(NA_character_)",
+  "call(c(\"a\", \"b\"))",
+  "call()",
+]
+
 ["@"]
 special = true
 effect = "Pure"

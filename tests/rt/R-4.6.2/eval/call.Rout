@@ -1,0 +1,79 @@
+round(10.5)
+f(a = 1, b = "x", 1:3)
+g(5, 6)
+[1] 6
+paste("a", "b")
+f()
+[1] "call"
+[1] "language"
+[1] 2
+[1] TRUE
+list(a)
+[[1]]
+[1] 7
+
+[1] 1 2 3
+f(1)
+f(1)
+`\`odd name\``(1)
+[[1]]
+[1] "'name' is missing"
+
+[[2]]
+call()
+
+[[1]]
+[1] "first argument must be a character string"
+
+[[2]]
+call(1)
+
+[[1]]
+[1] "first argument must be a character string"
+
+[[2]]
+call(c("a", "b"))
+
+`NA`()
+[[1]]
+[1] "attempt to use zero-length variable name"
+
+[[2]]
+doTryCatch(return(expr), name, parentenv, handler)
+
+[[1]]
+[1] "illegal usage"
+
+[[2]]
+doTryCatch(return(expr), name, parentenv, handler)
+
+[[1]]
+[1] "supplied argument name 'nme' does not match 'name'"
+
+[[2]]
+call(nme = "f")
+
+[[1]]
+[1] "variable names are limited to 10000 bytes"
+
+[[2]]
+doTryCatch(return(expr), name, parentenv, handler)
+
+[[1]]
+[1] "evaluated"
+
+[[2]]
+doTryCatch(return(expr), name, parentenv, handler)
+
+[[1]]
+[1] "'...' used in an incorrect context"
+
+[[2]]
+g2(1)
+
+[[1]]
+[1] "first"
+
+[[2]]
+doTryCatch(return(expr), name, parentenv, handler)
+

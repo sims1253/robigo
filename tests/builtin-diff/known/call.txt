@@ -1,0 +1,2 @@
+# builtin-diff known failures: call, seed 0, key 90a1ef3bdcc3f452c616653c
+# call: 74 / 74 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
