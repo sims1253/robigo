@@ -365,4 +365,3 @@ fn an_empty_r_translations_is_fatal() {
     assert_eq!(String::from_utf8_lossy(&err), "");
     assert_eq!(status, 2);
 }
-
