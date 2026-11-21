@@ -1395,14 +1395,13 @@ jobs:
   # because `select` said so; a failed, cancelled or unexplained skip fails
   # it. `always()`: a skipped required check counts as passing, so a run
   # cancelled before its evidence exists must still report a failure here.
-  # What `Check` certifies:
-  # every job it waits for passed, or was skipped as `select` said. A run
-  # cancelled before that (superseded, or by hand) has a cancelled or
-  # skipped need, which fails it; a run cancelled only after every need
-  # passed has produced that evidence, and its `Check` may pass, as before
-  # this group existed. A `Check` that ends cancelled itself is not a pass
-  # either. A superseded run's `Check` holds the pull request's group until
-  # it has had a runner, so the new run waits that long.
+  # What `Check` certifies: every job it waits for passed, or was skipped as
+  # `select` said. A run cancelled before that (superseded, or by hand) has a
+  # cancelled or skipped need, which fails it; a run cancelled only after
+  # every need passed has produced that evidence, and its `Check` may pass,
+  # as before this group existed. A `Check` that ends cancelled itself is not
+  # a pass either. A superseded run's `Check` holds the pull request's group
+  # until it has had a runner, so the new run waits that long.
   check:
     name: Check
     if: ${{ always() }}
