@@ -258,7 +258,7 @@ mod collect;
 mod edit;
 #[cfg(all(test, not(miri)))]
 mod fork_tests;
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod freeze_tests;
 
 pub use capi::{

@@ -305,8 +305,11 @@ void *(DATAPTR)(SEXP x)
      * elements without the barrier (robigo-heap's freeze.rs). An ordinary
      * one is marked C's (sticky), so a later freeze leaves it out; a frozen
      * one not yet logged is a root from now on, traced at every
-     * collection (Sol S1) */
-    if (RB_TYPE(x) == STRSXP || RB_TYPE(x) == VECSXP || RB_TYPE(x) == EXPRSXP) {
+     * collection (Sol S1). Not for an empty one: C gets dataptr's
+     * (void *) 1 and can write nothing (an ALTREP's length is its class's,
+     * so it is marked whatever its header says) */
+    if ((RB_TYPE(x) == STRSXP || RB_TYPE(x) == VECSXP || RB_TYPE(x) == EXPRSXP)
+        && (RB_IS_ALTREP(x) || RB_LEN(x) != 0)) {
         if (!(RB_FLAGS(x) & ROBIGO_FLAG_IMMORTAL))
             RB_EXTRA(x) |= RB_SEEN_BY_C;
         else if (RB_FLAGS(x) & ROBIGO_FLAG_BARRIER)

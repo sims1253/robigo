@@ -128,3 +128,30 @@ fn a_global_cache_entry_does_not_freeze_the_global_environment() {
     })
     .unwrap();
 }
+
+/// A profile's `parent.env(globalenv()) <- e`, with e's parent the global
+/// environment, leads the search path back to the global environment before
+/// the freeze: the walk stops there, and the global environment is not
+/// frozen (#959's review).
+#[test]
+#[cfg(not(miri))]
+fn a_search_path_led_back_to_the_global_environment_does_not_freeze_it() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    if !cx.freeze_enabled() {
+        return;
+    }
+    cx.scope(|cx, s| {
+        let global = s.root(cx, cx.global_env());
+        let o = s.out(cx);
+        let e = o.root();
+        cx.build(o, |cx| cx.new_env(cx.global_env(), true, 0))?;
+        cx.set_enclos(global, e);
+        cx.freeze_boot_heap();
+        assert!(cx.is_frozen(e.bind(cx)), "the attached environment is a freeze root");
+        assert!(!cx.is_frozen(global.bind(cx)), "the global environment is not frozen");
+        cx.check_frozen();
+        Ok::<(), crate::RError>(())
+    })
+    .unwrap();
+}

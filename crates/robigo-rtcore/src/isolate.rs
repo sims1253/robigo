@@ -166,6 +166,9 @@ impl Roots {
     /// The freeze roots (`Cx::freeze_boot_heap`): the environments' state,
     /// the `Globals` and the C API's globals; not the value stack, the
     /// contexts, the pending exits or the warnings, which are the session's.
+    /// The search path's environments reach the visitor as copies: an
+    /// edge it writes back is not stored (a debug assertion refuses one),
+    /// so the visitor must only read, as the freeze's does.
     pub(crate) fn trace_freeze_roots<V: robigo_heap::Visitor + ?Sized>(&mut self, v: &mut V) {
         use robigo_heap::Trace;
         self.envs.trace_freeze_roots(v);
@@ -175,8 +178,11 @@ impl Roots {
         // the attached packages a start with default packages loaded)
         let base = self.envs.base_raw();
         let mut e = self.envs.global_raw();
-        // (a rewired chain may cycle: each environment once, Sol r3 S9)
-        let mut seen = std::collections::HashSet::new();
+        // (a rewired chain may cycle: each environment once, Sol r3 S9; the
+        // global environment itself is seen from the start, so a chain led
+        // back to it, `parent.env(globalenv()) <- e` with e's parent the
+        // global one in a profile, never offers it as a root)
+        let mut seen = std::collections::HashSet::from([e.addr()]);
         loop {
             // SAFETY: the global environment and its enclosures are live
             // environments of this isolate (the search path's chain ends at
@@ -185,8 +191,12 @@ impl Roots {
             if e.is_null() || e == base || e == self.envs.empty_raw() || !seen.insert(e.addr()) {
                 break;
             }
+            // the visitor gets a copy: the chain is walked, never rewritten
+            // (the freeze's visitor reads; a moving one would be refused,
+            // the freeze being off under ROBIGO_GC_MOVE)
             let mut x = e;
             v.edge(&mut x);
+            debug_assert_eq!(x, e, "robigo: the freeze roots' search-path walk does not take a moved edge");
         }
     }
 }

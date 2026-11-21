@@ -42,6 +42,14 @@
 //!
 //! The moving collector's modes (`ROBIGO_GC_MOVE`) leave the freeze off,
 //! so that they still move the whole heap.
+//!
+//! INTERIM(H): **frozen garbage stays a root.** A logged frozen object
+//! whose last reference is cut (a detached environment attached at the
+//! freeze, its hash table logged) keeps its ordinary children as of its
+//! death for the rest of the session, and they are never finalized
+//! (tests/rt/memory/freeze-garbage-detach.R differs from GNU R). The owner
+//! is the frozen-reachability pass, H's next PR
+//! (docs/ledger/g3/2026-11-21-h-boot-freeze-check.md).
 
 use super::*;
 use std::collections::HashSet;
@@ -75,7 +83,9 @@ impl Core {
 
     /// Freeze every object reachable from `roots` (see the module's doc),
     /// stopping at the objects `exclude` names and at the kinds that are
-    /// never frozen. Returns how many objects it froze. Run once, after a
+    /// never frozen. Returns how many objects are frozen when it ends: those
+    /// it froze less those the thaw at its end made ordinary again (the
+    /// weak keys' and external data's frozen referrers). Run once, after a
     /// full collection, so that only survivors are frozen. Nothing under
     /// the moving collector's modes.
     ///

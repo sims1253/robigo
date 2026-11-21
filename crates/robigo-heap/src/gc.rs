@@ -2840,7 +2840,6 @@ impl Core {
                 self.mark_heap_roots();
                 roots.trace(&mut Mark(self));
                 self.mark_rest();
-
                 if self.gc_move {
                     let moved = self.evacuate();
                     Self::forward_roots(roots);
