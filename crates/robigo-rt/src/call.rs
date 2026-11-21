@@ -601,6 +601,17 @@ pub fn builtin_evallist(
     let missing = cx.missing_arg().sexp();
     let dots = prims::state(cx).syms.dots;
     cx.scope(|cx, s| {
+        // `.Internal(f(...))` evaluated here (its arguments evaluated at run
+        // time): `callr` is the `.Internal` call. The arguments and the
+        // builtin's call are the inner call's; evalList reports an empty
+        // argument against the `.Internal` call (do_internal's
+        // `evalList(args, env, call, 0)`)
+        // R: names.c:do_internal
+        let errcall = callr;
+        let callr = match internal_inner(cx, callr.bind(cx), funr.bind(cx)) {
+            Some(inner) => s.root(cx, inner),
+            None => callr,
+        };
         // the values so far (head, tail), and the cursor over the call's
         // arguments
         let head = s.out(cx).root();
@@ -657,7 +668,7 @@ pub fn builtin_evallist(
                 })?;
             } else if a == missing && !bc {
                 let msg = format!("argument {n} is empty");
-                return Err(cx.error_call(Some(callr), &msg));
+                return Err(cx.error_call(Some(errcall), &msg));
             } else {
                 let t = cell.tag().sexp();
                 cx.scope(|cx, s2| {
@@ -733,7 +744,7 @@ pub fn builtin_evallist(
                     k += 1;
                     if cell.car().sexp() == missing {
                         let msg = format!("argument {k} is empty");
-                        return Err(cx.error_call(Some(callr), &msg));
+                        return Err(cx.error_call(Some(errcall), &msg));
                     }
                     c = cell.cdr();
                 }
@@ -743,6 +754,22 @@ pub fn builtin_evallist(
         let args = unsafe { Args::from_raw(values, Some(names), count as u32, any_alt) };
         invoke_builtin_root(cx, funr, callr, args, rho, out)
     })
+}
+
+/// The inner call of `call` when it is `.Internal(f(...))` with `f`'s
+/// internal the builtin `fun` (what the compiler emits for an `.Internal`
+/// whose arguments are evaluated at run time); None for any other call. A
+/// call of something else bound to `.Internal` does not have the internal
+/// builtin as its function, as no R value is one.
+fn internal_inner<'g>(cx: &'g Cx, call: Ref<'g>, fun: Ref<'g>) -> Option<Ref<'g>> {
+    let c = call.as_cons()?;
+    if c.car().sexp() != prims::state(cx).syms.dot_internal {
+        return None;
+    }
+    let inner = c.cdr().as_cons()?.car();
+    let f = inner.as_cons().filter(|_| inner.sexptype() == LANGSXP)?.car();
+    // SAFETY: a live symbol of this isolate.
+    (f.sexptype() == SYMSXP && unsafe { cx.internal_raw(f.sexp()) } == fun.sexp()).then_some(inner)
 }
 
 /// Call the builtin `fun` with `args` (rooted) for `call`, the value into
