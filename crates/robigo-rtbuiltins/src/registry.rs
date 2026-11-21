@@ -371,6 +371,8 @@ pub static BUILTINS: &[Builtin] = &[
     row("Sys.setenv", sysutils::do_setenv, 0, 111, 2, FUNCALL, External),
     row("Sys.unsetenv", sysutils::do_unsetenv, 0, 111, 1, FUNCALL, External),
     row("l10n_info", sysutils::do_l10n_info, 0, 11, 0, FUNCALL, Pure),
+    row("Sys.getlocale", sysutils::do_getlocale, 0, 11, 1, FUNCALL, External),
+    row("Sys.setlocale", sysutils::do_setlocale, 0, 11, 2, FUNCALL, External),
     // summary.c, logic.c, arithmetic.c
     op!("sum", 0, summary::do_summary, 1, -1, FUNCALL, Pure),
     op!("prod", 4, summary::do_summary, 1, -1, FUNCALL, Pure),
@@ -578,6 +580,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("rawToChar", raw::do_raw_to_char, 1, 11, 2, FUNCALL, Pure),
     row("utf8ToInt", raw::do_utf8_to_int, 1, 11, 1, FUNCALL, Pure),
     row("intToUtf8", raw::do_int_to_utf8, 1, 11, 3, FUNCALL, Pure),
+    row("tabulate", util::do_tabulate, 0, 11, 2, FUNCALL, Pure),
     row("validUTF8", util::do_valid_utf8, 1, 11, 1, FUNCALL, Pure),
     row("validEnc", util::do_valid_enc, 1, 11, 1, FUNCALL, Pure),
     op!("enc2native", 0, util::do_enc2, 1, 1, FUNCALL, Pure),

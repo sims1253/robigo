@@ -34,6 +34,8 @@ use robigo_heap::types::*;
 use robigo_rtcore::{Args, Char, Cx, Encoding, Out, RResult, Ref, Root, View};
 use stream::{InStream, OutStream};
 
+pub mod saveload;
+
 /// `R_pstream_format_t`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Format {
