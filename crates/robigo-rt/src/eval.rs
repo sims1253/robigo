@@ -525,6 +525,22 @@ pub unsafe fn get_var(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: 
                 act.kill(crate::ir::R_SCRATCH, u32::MAX);
                 return r;
             }
+            // byte code reads an active binding twice: bcEval's inlined
+            // GETVAR looks the variable up (findVarEX: the binding's function
+            // runs) to see whether it is a promise of byte code to force in
+            // place, and then reads it again through getvar(), which runs the
+            // function again for its value. (Only an unforced promise would
+            // make the first read's value matter; an active binding's
+            // function returns a value.)
+            // R: eval.c:DO_GETVAR (INLINE_GETVAR), eval.c:getvar
+            RawBinding::Active(_) if bc => {
+                cx.scope(|cx, s| {
+                    // SAFETY: an immortal symbol.
+                    let sr = s.root(cx, unsafe { Ref::from_sexp(sym, cx) });
+                    let o = s.out(cx);
+                    cx.find_var(sr, act.root(crate::ir::R_ENV), o)
+                })?;
+            }
             _ => {}
         }
     }
