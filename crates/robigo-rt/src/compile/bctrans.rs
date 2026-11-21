@@ -189,7 +189,7 @@ struct BcIns {
 /// position where no instruction starts, or outside them, is None: up to one
 /// past the last start (a target at the code's end) the table says so, and
 /// beyond it the lookup does.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct PosIndex {
     base: usize,
     ix: Vec<u32>,
@@ -452,16 +452,36 @@ enum StepArg {
 /// toward each depth's slot begins (`Tr::open`).
 type Lab = (Vec<Item>, Reg, Vec<usize>);
 
+/// What one instruction's translation keeps, by instruction index (one
+/// record per instruction, one past the last too: an `open` start can be
+/// the code's end), in one allocation per pass.
+#[derive(Default)]
+struct At {
+    /// The state at a label a jump reached.
+    label: Option<Lab>,
+    /// The IR position of the instruction's translation (its first IR
+    /// instruction).
+    ir: Option<usize>,
+    /// Pass 1: the consumer's first operand's starts.
+    cons: Option<Starts>,
+    /// Pass 2: the consumer's reserved value register.
+    res: Option<Reg>,
+    /// Pass 1: the complex assignment this `STARTASSIGN` begins.
+    assigned: Option<Assign>,
+    /// The plan: the consumers whose value registers this instruction
+    /// reserves, outermost (lowest register) first ([`reserve_at`]).
+    res_at: Vec<usize>,
+}
+
 /// What pass 1 learned for pass 2.
 struct Plan {
-    /// The consumers whose value register each instruction reserves,
-    /// outermost (lowest register) first, by instruction index (one past
-    /// the last too: an `open` start can be the code's end).
-    res_at: Vec<Vec<usize>>,
+    /// Pass 1's records, their reservations made ([`reserve_at`]) and
+    /// their complex assignments.
+    at: Vec<At>,
     /// The stack's depth at each instruction: pass 2 meets the same.
     depth: Vec<Option<usize>>,
-    /// The complex assignments, by their `STARTASSIGN`'s index.
-    assigns: Vec<Option<Assign>>,
+    /// The code's positions' instruction indices, for pass 2.
+    ix: PosIndex,
 }
 
 /// The translation state of one code object, in one pass.
@@ -471,13 +491,10 @@ struct Tr {
     consts: Sexp,
     /// The code's positions' instruction indices.
     ix: PosIndex,
-    /// The state at a label a jump reached, by instruction index.
-    labels: Vec<Option<Lab>>,
+    /// Each instruction's record.
+    at: Vec<At>,
     /// Jumps to patch: the IR instruction and the code position.
     patches: Vec<(usize, usize)>,
-    /// IR position of each translated instruction (its first IR
-    /// instruction), by instruction index.
-    at_ir: Vec<Option<usize>>,
     /// `RETURN`s that jump to the code's end.
     returns: Vec<usize>,
     /// Base guards waiting for their label: (label, the guard's IR index,
@@ -491,12 +508,8 @@ struct Tr {
     pending: Option<(usize, Starts)>,
     /// Pass 2's plan (`None` in pass 1).
     plan: Option<Plan>,
-    /// Pass 1: each consumer's first operand's starts, by its index.
-    cons: Vec<Option<Starts>>,
     /// Pass 1: the stack's depth at each instruction.
     depth: Vec<Option<usize>>,
-    /// Pass 2: each consumer's reserved value register, by its index.
-    res: Vec<Option<Reg>>,
     /// The `_N` subsets begun (`STARTSUBSET_N`), innermost last.
     subsets: Vec<Sub>,
     /// Where the code toward the slot at each depth begins (an
@@ -506,7 +519,6 @@ struct Tr {
     /// Pass 1: the complex assignments begun, innermost last (by their
     /// `STARTASSIGN`), and those ended.
     assigning: Vec<(usize, Assign)>,
-    assigned: Vec<Option<Assign>>,
     /// Pass 2: the last instruction of a complex assignment translated
     /// whole.
     skip_to: Option<usize>,
@@ -540,29 +552,29 @@ impl Tr {
     /// Pass 1's findings: each consumer's register reserved at each of
     /// its first operand's starts.
     fn plan(self) -> Plan {
-        Plan { res_at: reservations(self.cons), depth: self.depth, assigns: self.assigned }
+        let mut at = self.at;
+        reserve_at(&mut at);
+        Plan { at, depth: self.depth, ix: self.ix }
     }
 }
 
-/// Pass 1's consumers by the instructions their first operands begin at
-/// (`cons`, by consumer index, one past the last instruction included):
-/// at each instruction, the consumers whose value registers it reserves,
-/// outermost (the highest index) first.
-fn reservations(cons: Vec<Option<Starts>>) -> Vec<Vec<usize>> {
-    let mut res_at: Vec<Vec<usize>> = vec![Vec::new(); cons.len()];
+/// Pass 1's consumers (each record's `cons`, by consumer index) by the
+/// instructions their first operands begin at: at each instruction, the
+/// consumers whose value registers it reserves, outermost (the highest
+/// index) first, into its `res_at`.
+fn reserve_at(at: &mut [At]) {
     // (in index order: each vector is sorted below, its consumers distinct,
     // so the order of the pushes does not matter)
-    for (c, starts) in cons.into_iter().enumerate() {
-        for s in starts.into_iter().flatten() {
-            res_at[s].push(c);
+    for c in 0..at.len() {
+        for s in at[c].cons.take().into_iter().flatten() {
+            at[s].res_at.push(c);
         }
     }
     // of two consumers whose operands begin at one instruction, the later
     // one's encloses the other's: its register is the lower
-    for v in &mut res_at {
-        v.sort_unstable_by(|a, b| b.cmp(a));
+    for a in at.iter_mut() {
+        a.res_at.sort_unstable_by(|a, b| b.cmp(a));
     }
-    res_at
 }
 
 /// Meet the stack `from` (a path's, at a label) with `into` (the label's):
@@ -595,14 +607,14 @@ fn meet(t: &mut Tr, to: usize, st: Vec<Item>, next: Reg) -> Result<(), Need> {
     // (a jump's target is one of its instruction's successors, which
     // `reachable` found to be an instruction's start)
     let k = t.ix.get(to).ok_or(Need::Fail)?;
-    if let Some((have, n, open)) = t.labels[k].as_mut() {
+    if let Some((have, n, open)) = t.at[k].label.as_mut() {
         if *n != next {
             return Err(mismatch());
         }
         join_open(open, &t.open);
         merge(have, &st)
     } else {
-        t.labels[k] = Some((st, next, t.open.clone()));
+        t.at[k].label = Some((st, next, t.open.clone()));
         Ok(())
     }
 }
@@ -790,9 +802,15 @@ impl<'g> Comp<'g> {
         let live = unsafe { reachable(dec, &ix, consts)? };
         debug_assert_eq!(dst, R_FIRST);
         let mut p = Comp::new(self.cx, self.st, Profile::Bc, Some(Cenv::for_translation()));
+        // (the constants pool sized for the byte code's constants at once,
+        // so it does not rehash while each pass fills it)
+        // SAFETY: the caller's contract: a VECSXP.
+        let nk = unsafe { consts.std_len() } as usize;
+        p.pool.reserve(nk);
+        self.pool.reserve(nk);
         let r = p.alloc();
         // SAFETY: the caller's contract.
-        let plan = match unsafe { p.pass(dec, &live, consts, ix.clone(), None, r) } {
+        let plan = match unsafe { p.pass(dec, &live, consts, ix, None, r) } {
             Ok(t) => t.plan(),
             Err(e) => {
                 self.bc_untranslated = p.bc_untranslated.take();
@@ -800,7 +818,7 @@ impl<'g> Comp<'g> {
             }
         };
         // SAFETY: as above.
-        unsafe { self.pass(dec, &live, consts, ix, Some(plan), dst) }.map(drop)
+        unsafe { self.pass(dec, &live, consts, PosIndex::default(), Some(plan), dst) }.map(drop)
     }
 
     /// The code of instructions `from..to` of `t`'s code (an argument's,
@@ -854,9 +872,14 @@ impl<'g> Comp<'g> {
         live: &[bool],
         consts: Sexp,
         ix: PosIndex,
-        plan: Option<Plan>,
+        mut plan: Option<Plan>,
         dst: Reg,
     ) -> Result<Tr, Need> {
+        // (pass 2's index is pass 1's, carried by the plan)
+        let ix = match plan.as_mut() {
+            Some(p) => std::mem::take(&mut p.ix),
+            None => ix,
+        };
         // (by instruction index; one past the last for what an `open`
         // start, the code's end, can key)
         let n = dec.len();
@@ -864,22 +887,18 @@ impl<'g> Comp<'g> {
             code: dec.to_vec(),
             consts,
             ix,
-            labels: (0..n).map(|_| None).collect(),
+            at: (0..=n).map(|_| At::default()).collect(),
             patches: Vec::new(),
-            at_ir: vec![None; n],
             returns: Vec::new(),
             guards: Vec::new(),
             stack: Vec::new(),
             cur: 0,
             pending: None,
             plan,
-            cons: vec![None; n + 1],
             depth: vec![None; dec.len()],
-            res: vec![None; n + 1],
             subsets: Vec::new(),
             open: vec![0],
             assigning: Vec::new(),
-            assigned: (0..=n).map(|_| None).collect(),
             skip_to: None,
         };
         // `dst` is the code's value (the first register)
@@ -900,7 +919,7 @@ impl<'g> Comp<'g> {
             let i = t.code[k];
             t.cur = k;
             // a label: the stack a jump left there, met by control falling in
-            match (t.labels[k].clone(), fell) {
+            match (t.at[k].label.clone(), fell) {
                 // a path falling in with values the label's state lacks: a
                 // non-tail numeric switch's empty alternative, whose stop()
                 // call cmp.R lets fall into the default. Should `stop`
@@ -941,7 +960,7 @@ impl<'g> Comp<'g> {
                 // the jump into its loop): the stack the jump before left
                 // there, which that back-edge meets
                 (None, false) => {
-                    t.labels[k] = Some((t.stack.clone(), self.next, t.open.clone()));
+                    t.at[k].label = Some((t.stack.clone(), self.next, t.open.clone()));
                 }
             }
             match &t.plan {
@@ -951,12 +970,12 @@ impl<'g> Comp<'g> {
             }
             // base guards whose label this is: their fallbacks
             self.guard_joins(&mut t, i.at)?;
-            t.at_ir[k] = Some(self.pc());
+            t.at[k].ir = Some(self.pc());
             // the value registers of the operations whose operands begin here
-            if let Some(cs) = t.plan.as_ref().and_then(|p| p.res_at.get(k)).filter(|v| !v.is_empty()).cloned() {
+            if let Some(cs) = t.plan.as_ref().map(|p| &p.at[k].res_at).filter(|v| !v.is_empty()).cloned() {
                 for c in cs {
                     let r = self.alloc();
-                    if *t.res[c].get_or_insert(r) != r {
+                    if *t.at[c].res.get_or_insert(r) != r {
                         return Err(mismatch());
                     }
                 }
@@ -990,7 +1009,7 @@ impl<'g> Comp<'g> {
             self.patch(j, end);
         }
         for &(at, pos) in &t.patches {
-            let target = t.ix.get(pos).and_then(|k| t.at_ir[k]).ok_or(Need::Fail)?;
+            let target = t.ix.get(pos).and_then(|k| t.at[k].ir).ok_or(Need::Fail)?;
             self.patch(at, target);
         }
         Ok(t)
@@ -1215,10 +1234,10 @@ impl<'g> Comp<'g> {
     fn reserve(&mut self, t: &mut Tr, x: Reg, starts: &Starts) -> Result<Reg, Need> {
         match &t.plan {
             None => {
-                t.cons[t.cur] = Some(starts.clone());
+                t.at[t.cur].cons = Some(starts.clone());
                 Ok(x)
             }
-            Some(_) => match t.res[t.cur] {
+            Some(_) => match t.at[t.cur].res {
                 Some(r) if r < x => Ok(r),
                 _ => Err(mismatch()),
             },
@@ -1914,7 +1933,7 @@ impl<'g> Comp<'g> {
             STARTASSIGN | STARTASSIGN2 if !planning => {
                 // pass 2: the assignment whole, `BcAssign` of the plan its
                 // opcodes make, the right-hand side's register its value
-                let a = t.plan.as_ref().and_then(|p| p.assigns.get(t.cur).cloned().flatten()).ok_or_else(mismatch)?;
+                let a = t.plan.as_ref().and_then(|p| p.at[t.cur].assigned.clone()).ok_or_else(mismatch)?;
                 let r = self.top(t)?;
                 // SAFETY: the code's live constants.
                 let plan = unsafe { self.assign_plan(t, &a)? };
@@ -1949,7 +1968,7 @@ impl<'g> Comp<'g> {
                     return self.untranslated(i, "a complex assignment of a shape cmp.R does not make");
                 }
                 a.end = t.cur;
-                t.assigned[start] = Some(a);
+                t.at[start].assigned = Some(a);
             }
             DUP2ND if !t.assigning.is_empty() && self.top_slot(t, 1) => self.push_slot(t),
             SWAP if !t.assigning.is_empty() && t.stack.len() >= 2 => {
@@ -2375,7 +2394,7 @@ impl<'g> Comp<'g> {
 #[cfg(test)]
 mod tests {
     use super::opc::*;
-    use super::{BcIns, PosIndex, decode, reachable, reservations};
+    use super::{At, BcIns, PosIndex, decode, reachable, reserve_at};
 
     /// A jump to the code's end position (one past its last word) or into
     /// an operand is no instruction's start: `reachable` fails as the
@@ -2412,8 +2431,12 @@ mod tests {
     #[test]
     fn a_start_at_the_codes_end_is_reserved_there() {
         // three instructions: consumers 0 and 2 begin at 3 (the end), 1 at 1
-        let cons = vec![Some(vec![3]), Some(vec![1]), Some(vec![3]), None];
-        let r = reservations(cons);
+        let mut at: Vec<At> = (0..4).map(|_| At::default()).collect();
+        for (c, s) in [(0, 3), (1, 1), (2, 3)] {
+            at[c].cons = Some(vec![s]);
+        }
+        reserve_at(&mut at);
+        let r: Vec<Vec<usize>> = at.iter().map(|a| a.res_at.clone()).collect();
         assert_eq!(r, vec![vec![], vec![1], vec![], vec![2, 0]]);
     }
 
