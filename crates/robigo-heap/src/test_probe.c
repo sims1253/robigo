@@ -5,8 +5,12 @@
 
 typedef void *SX;
 
-static void (*probe_collect)(void);
-static SX probe_key;
+/* Per thread: libtest runs the tests that use the probe on parallel
+ * threads, and a key or hook shared between them let one test's `give`
+ * replace another's key before its routine read it (the rare failure of
+ * `the_strong_library_keeps_what_its_frames_name`). */
+static _Thread_local void (*probe_collect)(void);
+static _Thread_local SX probe_key;
 
 /* The export the routine calls (the test's stand-in, which collects). */
 void robigo_heap_probe_hooks(void (*collect)(void))

@@ -342,9 +342,10 @@ pub const RT: Column = Column {
 /// being PROMSXPs from the start (their REFCNT, `inspect` fields), so it
 /// does not run under `ROBIGO_MATERIALIZE=1`. `volume`: it makes so many
 /// allocations that a collection at each (`ROBIGO_GCTORTURE=1`, whose
-/// cost is allocations times the heap) does not finish it in the case
-/// timeout, so it does not run under gctorture; a smaller case covers its
-/// paths there. `r-home-tools`: it loads tools' native code from the
+/// cost is allocations times the heap) or at each build (retry torture,
+/// `ROBIGO_RETRY_TORTURE=1`) does not finish it in the case timeout, so it
+/// does not run under either; a smaller case covers its paths there.
+/// `r-home-tools`: it loads tools' native code from the
 /// binary's `R_HOME` tree (`library/tools/libs/tools.so`, which
 /// `scripts/rt-home.sh` builds), so it runs where the caller found that
 /// tree, its stamp and the file (robigo-rtapi's conformance test).
@@ -366,7 +367,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
 ];
 
 /// The production identities the environment's observation modes keep
-/// ([`KNOWN_FEATURES`]), `volume` unless gctorture is on,
+/// ([`KNOWN_FEATURES`]), `volume` unless gctorture or retry torture is on,
 /// `collection-schedule` unless gctorture or retry torture is, and
 /// `default-vsize` unless the environment sets the vector heap's sizes; and
 /// whether
@@ -381,7 +382,10 @@ pub fn identity_features() -> (Vec<&'static str>, bool) {
     if !materialize {
         f.push("promise-identity");
     }
-    if !on("ROBIGO_GCTORTURE") {
+    // (each collects so often that a case of many allocations outlasts the
+    // case timeout: gctorture at every allocation, retry torture at every
+    // build's refused first attempt)
+    if !on("ROBIGO_GCTORTURE") && !on("ROBIGO_RETRY_TORTURE") {
         f.push("volume");
     }
     // both make collections GNU R's run does not have: gctorture at every
