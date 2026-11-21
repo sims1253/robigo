@@ -257,8 +257,9 @@ ry 3, Sepalith 17). Only jobs that got a runner are counted.
 | OpenCodeReview | 1,140 | 85 |
 | nightly, packages, pr-delta, agent-context | about 130 | |
 
-- **The pool holds 20 jobs at once.** For 7.8 of the 12.9 hours, exactly 20
-  jobs ran. Under 20 or over 20 ran for about 2.7 and 1.6 hours. The 15,587
+- **The pool ran at 20 jobs, its usual cap.** For 7.8 of the 12.9 hours
+  exactly 20 jobs ran; 18–19 for 2.7 hours and 21–27 for 1.6 (the levels that
+  each cover over 1% of the span: 12.1 of its 12.9 hours). The 15,587
   runner-minutes used equal 20 runners for the whole span (15,444).
 - **About 4 PR runs can be in flight before everything queues.** A full `ci`
   run is about 37 jobs, so one run alone cannot have all its jobs running. At

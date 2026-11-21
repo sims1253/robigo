@@ -1393,9 +1393,11 @@ jobs:
   # new gating job to `needs`. It passes when each job passed, or was skipped
   # because `select` said so; a failed, cancelled or unexplained skip fails
   # it. `always()`: a skipped required check counts as passing, so a
-  # cancelled run must still report a failure here. (A superseded run's
-  # `Check` waits for a runner and is red on a commit nobody merges; it
-  # blocks nothing, since pull request runs share no concurrency group.)
+  # cancelled run must still report a failure here, and does
+  # (`cancelled()`: also when every job it waited for had passed). A
+  # superseded run's `Check` is red on a commit nobody merges; it holds the
+  # pull request's group until it has had a runner, so the new run waits
+  # that long (the workflow's `concurrency`).
   check:
     name: Check
     if: ${{ always() }}
@@ -1411,6 +1413,7 @@ jobs:
       - name: Require every job to pass
         env:
           NEEDS: ${{ toJSON(needs) }}
+          CANCELLED: ${{ cancelled() }}
           PULL_REQUEST: ${{ github.event_name == 'pull_request' && '--pull-request' || '' }}
         run: |
           python3 scripts/test-ci-check.py 2>&1 | tail -1

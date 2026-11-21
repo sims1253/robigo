@@ -162,6 +162,18 @@ class Rule(unittest.TestCase):
         # not stacked, the same skips are not explained
         self.assertFalse(passes(needs("false", "false", "true", **skip)))
 
+    def test_a_cancelled_run_fails_check_even_with_every_job_passed(self):
+        # cancelled while Check waited for a runner, after its needs passed
+        p = subprocess.run([sys.executable, str(HERE / "ci-check.py"), "--pull-request"], capture_output=True,
+                           text=True, env={**os.environ, "NEEDS": json.dumps(needs()), "CANCELLED": "true"})
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("the run was cancelled", p.stdout)
+        p = subprocess.run([sys.executable, str(HERE / "ci-check.py"), "--pull-request"], capture_output=True,
+                           text=True, env={**os.environ, "NEEDS": json.dumps(needs()), "CANCELLED": "false"})
+        self.assertEqual(p.returncode, 0, p.stdout)
+        wf = (HERE.parent / ".github/workflows/ci.yml").read_text()
+        self.assertIn("          CANCELLED: ${{ cancelled() }}\n", wf)
+
     def test_a_cancelled_run_fails_check(self):
         # every need cancelled (a run cancelled by hand, or superseded): red
         n = {j: {"result": "cancelled", "outputs": {}} for j in JOBS}
