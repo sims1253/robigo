@@ -2,6 +2,7 @@
 """Tests of scripts/builtin-diff.py's harness, with no R: the rows' sources,
 the case classes, the batch runner's crash, hang and start handling, and the
 known/ ratchet's key check."""
+import fcntl
 import importlib.util
 import json
 import os
@@ -264,8 +265,15 @@ class Batches(unittest.TestCase):
         outs = [os.path.join(d, f"out{k}") for k in (1, 2)]
         ps = [subprocess.Popen([sys.executable, run, o], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
               for o in outs]
-        for p, o in zip(ps, outs):
-            sout, serr = p.communicate(timeout=120)
+        try:
+            results = [p.communicate(timeout=120) for p in ps]
+        finally:
+            # (a run that hangs must not keep holding the row's lock)
+            for p in ps:
+                if p.poll() is None:
+                    p.kill()
+                    p.wait()
+        for p, o, (sout, serr) in zip(ps, outs, results):
             self.assertEqual(p.returncode, 0, serr)
             self.assertEqual(json.loads(sout), {}, f"{o}: cases lost")
             for i in range(1, 5):
@@ -273,6 +281,28 @@ class Batches(unittest.TestCase):
                     self.assertEqual([x[0] for x in json.load(f)], [".", f"made-{i}"])
         self.assertFalse(os.path.lexists(bd.case_root(key)))
         os.remove(bd.case_root(key) + ".lock")
+
+    def test_a_run_waiting_for_the_rows_lock_names_its_holder(self):
+        import io
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "row.lock")
+        with open(path, "a+") as held:
+            bd.lock_row(held, path)
+            with open(path, "a+") as waiting, unittest.mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+                slept = []
+
+                def sleep(s):
+                    # the holder lets go after the waiter's third wait
+                    slept.append(s)
+                    if len(slept) == 3:
+                        fcntl.flock(held, fcntl.LOCK_UN)
+                with unittest.mock.patch.object(bd.time, "sleep", sleep):
+                    bd.lock_row(waiting, path, first=0.0, every=60.0, step=1.0)
+                self.assertEqual(len(slept), 3)
+                self.assertIn(f"waiting 0 s for {path} (held by pid {os.getpid()}", err.getvalue())
+                self.assertEqual(err.getvalue().count("waiting"), 1, "it repeats sparsely")
+            with open(path) as f:
+                self.assertEqual(f.read(), str(os.getpid()))
 
     def test_the_case_directory_is_removed_when_a_run_fails(self):
         d = tempfile.mkdtemp()
