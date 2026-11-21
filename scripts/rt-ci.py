@@ -45,7 +45,9 @@ the overshoot of every slice (E4, scripts/rt-overshoot.py), and E9: the
 conformance under a small vector limit, allocations refused once after
 visible effects (scripts/rt-fail-alloc.py), and, last, the conformance with
 every `&Cx` build's retry run once (`ROBIGO_RETRY_TORTURE=1`), in a build with
-robigo-rtcore's `retry-torture` feature made for that step alone. The
+robigo-rtcore's `retry-torture` feature made for the last steps alone, and in
+the same build robigo-rt's tests and the conformance with every dead slot
+poisoned (`ROBIGO_POISON_DEAD=1`, robigo-rt's `poison-dead` feature). The
 verification modes of g3.md §16 add their steps here as they land.
 """
 import argparse
@@ -217,9 +219,10 @@ def full_move_steps():
     ])
 
 
-# The cargo feature that compiles ROBIGO_RETRY_TORTURE in (robigo-rtcore's
-# Cargo.toml): only its step builds with it.
-RETRY_TORTURE_FEATURE = "robigo-rtcore/retry-torture"
+# The cargo features that compile ROBIGO_RETRY_TORTURE and ROBIGO_POISON_DEAD
+# in (robigo-rtcore's and robigo-rt's Cargo.toml): only the last steps build
+# with them, all with both, so that they share one build.
+CHECK_FEATURES = "robigo-rtcore/retry-torture,robigo-rt/poison-dead"
 
 
 def steps(crates):
@@ -304,13 +307,25 @@ def steps(crates):
          ["python3", "scripts/builtin-diff.py", "ci"]),
         # E9 (docs/g3.md §16): every `&Cx` build's first allocation refused
         # once, so each build's retry runs. The mode is compiled in only with
-        # robigo-rtcore's feature, built for this step alone and last: every
-        # step above tests the binary users get (cargo keeps both builds). With
-        # ROBIGO_GC_MOVE=1 as well it takes about 20 minutes, so that run is by
-        # hand (g3.md §16).
+        # robigo-rtcore's feature, in a build (CHECK_FEATURES, with robigo-rt's
+        # poison-dead) made for the last steps alone, this one and the two
+        # poison-dead steps after it: every step above tests the binary users
+        # get (cargo keeps both builds). With ROBIGO_GC_MOVE=1 as well it takes
+        # about 20 minutes, so that run is by hand (g3.md §16).
         ("conformance under ROBIGO_RETRY_TORTURE=1 (E9: every build's retry runs once)",
          {"ROBIGO_RETRY_TORTURE": "1", **slow},
-         [*test, "-p", "robigo-rtapi", "--features", RETRY_TORTURE_FEATURE, "--test", "conformance", "--",
+         [*test, "-p", "robigo-rtapi", "--features", CHECK_FEATURES, "--test", "conformance", "--",
+          "--exact", CONFORMANCE, "--nocapture"]),
+        # C1-PZ (docs/g3.md §16): a dead slot (a register's last use, D9's
+        # clears; the slots a scope's restore frees) holds a poison naming
+        # where it died, and a read of it panics: robigo-rt's tests, with
+        # tests/poison.rs's planted early clear, then the conformance
+        ("ROBIGO_POISON_DEAD=1 (dead slots poisoned), robigo-rt's tests and the planted early clear",
+         {"ROBIGO_POISON_DEAD": "1"},
+         [*test, "-p", "robigo-rt", "--features", CHECK_FEATURES, *skip]),
+        ("ROBIGO_POISON_DEAD=1, conformance",
+         {"ROBIGO_POISON_DEAD": "1"},
+         [*test, "-p", "robigo-rtapi", "--features", CHECK_FEATURES, "--test", "conformance", "--",
           "--exact", CONFORMANCE, "--nocapture"]),
     ]
     return every_cpu(out)
@@ -328,7 +343,9 @@ def steps(crates):
 #   gc-move       the moving collector, its unit tests and the conformance
 #                 under it with gctorture: 16.7
 #   feature-builds  the steps that build with a feature of their own: the
-#                 builtin differential's plants, and retry-torture: 9.1
+#                 builtin differential's plants, and retry-torture: 9.1;
+#                 then, in retry-torture's build (CHECK_FEATURES), the
+#                 poison-dead steps (C1-PZ)
 #   debug-assertions  the crates' release tests and the conformance on a
 #                 release build with `-C debug-assertions=on` (heap's
 #                 debug_assert!s see compiled code; not opt-level 0, where
@@ -370,7 +387,7 @@ def shard_of(title):
         return None
     if "GC_MOVE" in title:
         return "gc-move"
-    if title.startswith("builtin differential") or "RETRY_TORTURE" in title:
+    if title.startswith("builtin differential") or "RETRY_TORTURE" in title or "POISON_DEAD" in title:
         return "feature-builds"
     return "modes"
 

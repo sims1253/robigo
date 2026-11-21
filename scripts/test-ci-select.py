@@ -80,6 +80,13 @@ class Selection(unittest.TestCase):
                   "tests/r/R-4.6.2/strings/x.Rout"):
             mode, runtime, rows = pick(p)
             self.assertEqual((mode, runtime, rows[0][1]), ("rt", False, "rt"), p)
+        # A4's builtin differential: rt-ci.py's step, which the binary never
+        # reads; ahead of the generic tests/** and scripts/** rules (full)
+        for p in ("scripts/builtin-diff.py", "scripts/builtin-diff/gen.R", "scripts/builtin-diff/driver.R",
+                  "scripts/test-builtin-diff.py", "tests/builtin-diff/rows.toml",
+                  "tests/builtin-diff/known/nchar.txt"):
+            mode, runtime, rows = pick(p)
+            self.assertEqual((mode, runtime, rows[0][1]), ("rt", False, "rt"), p)
         # docs alongside stay rt; anything that can change the binary wins
         self.assertEqual(pick("crates/robigo-rt/src/lib.rs", "docs/g3.md")[:2], ("rt", False))
         self.assertEqual(pick("crates/robigo-rt/src/lib.rs", "Cargo.toml")[:2], ("full", True))

@@ -46,6 +46,12 @@ paths = [
   # The 4.6.2 recordings of tests/r: only robigo-rt is gated on them (the
   # old runtime's runs against them only report).
   "tests/r/R-4.6.2/**",
+  # A4's builtin differential (scripts/builtin-diff.py): it diffs robigo-rt
+  # against GNU R 4.6.2 in rt-ci.py's step, and the binary never reads it
+  "tests/builtin-diff/**",
+  "scripts/builtin-diff.py",
+  "scripts/builtin-diff/**",
+  "scripts/test-builtin-diff.py",
 ]
 planned = [
   # robigo-rt's ratchet column in tests/r (its first marker comes with L1).

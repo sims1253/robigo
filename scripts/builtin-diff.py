@@ -76,8 +76,11 @@ ENV = {"LC_ALL": "C.UTF-8", "LANGUAGE": "en", "TZ": "UTC", "R_DEFAULT_PACKAGES":
 JIT = {"off": "0", "on": "3"}
 MEM_CAP = 2 << 30
 # what GNU R's side is made of beyond gen.R and driver.R (part of the key):
-# 2, two runs per batch (a case whose records differ is unstable)
-ORACLE_VERSION = 2
+# 2, two runs per batch (a case whose records differ is unstable); 3, the
+# umask below and the case directory's own entry in `<id>.files`
+ORACLE_VERSION = 3
+# every runtime process's umask (file modes are compared; part of the key)
+UMASK = 0o022
 CASE_TIMEOUT = 10.0
 RESOURCE = [b"cannot allocate vector of size", b"memory exhausted", b"vector memory limit of",
             b"cannot allocate memory block", b"vector memory exhausted"]
@@ -135,16 +138,20 @@ class Row:
         if name not in nc:
             sys.exit(f"builtin-diff: row [{name}] is not in GNU R's names.c")
         ev, self.arity = nc[name]
-        if ev % 10 == 0:
-            sys.exit(f"builtin-diff: row [{name}] is a special (names.c eval {ev}); specials are 'uncovered'")
+        if ev % 10 == 0 and not spec.get("special"):
+            # (its arguments reach it as the case's symbols a1, a2, ...: the
+            # same expressions in both runtimes, which a row opts into)
+            sys.exit(f"builtin-diff: row [{name}] is a special (names.c eval {ev}): `special = true` runs it")
         self.internal = (ev // 10) % 10 == 1
         self.effect = reg.get(name) or spec.get("effect")
         if reg.get(name) and spec.get("effect") and spec["effect"] != reg[name]:
             sys.exit(f"builtin-diff: row [{name}] says effect {spec['effect']}, the registry {reg[name]}")
         if self.effect is None:
             sys.exit(f"builtin-diff: row [{name}] is not in the registry yet, so it needs `effect`")
-        if self.effect not in ("Pure", "Rng"):
-            sys.exit(f"builtin-diff: row [{name}] is {self.effect}; only Pure and Rng rows run yet")
+        if self.effect not in ("Pure", "Rng", "Env", "Calls", "External"):
+            sys.exit(f"builtin-diff: row [{name}] has an unknown effect {self.effect}")
+        # External cases each run in a process and directory of their own
+        self.isolated = self.effect == "External"
         self.jits = ["off", "on"] if spec.get("jit") == "both" else ["off"]
 
     def r_spec(self, seed):
@@ -154,7 +161,7 @@ class Row:
         return (f"list(name = {r_str(self.name)}, internal = {'TRUE' if self.internal else 'FALSE'}, "
                 f"arity = {self.arity}L, effect = {r_str(self.effect)}, "
                 f"args = {r_chr(s['args']) if 'args' in s else 'NULL'}, typical = list({typ}), domain = list({dom}), "
-                f"extra = {r_chr(s.get('extra', []))}, budget = {int(s.get('budget', 2000))}L, "
+                f"extra = {r_chr(s.get('extra', []))}, budget = {int(s.get('budget', 150 if self.effect == 'External' else 2000))}L, "
                 f"wrapper_budget = {int(s.get('wrapper_budget', 300))}L, seed = {int(seed)}L)")
 
     def key(self, seed, jit):
@@ -163,7 +170,7 @@ class Row:
             with open(p, "rb") as f:
                 h.update(f.read())
         h.update(self.r_spec(seed).encode())
-        h.update(json.dumps([ENV, JIT[jit], oracle_id(), ORACLE_VERSION, MEM_CAP], sort_keys=True).encode())
+        h.update(json.dumps([ENV, JIT[jit], oracle_id(), ORACLE_VERSION, MEM_CAP, UMASK], sort_keys=True).encode())
         return h.hexdigest()[:24]
 
     def variant(self, jit):
@@ -188,10 +195,58 @@ def unshare_works():
 
 def cap():
     resource.setrlimit(resource.RLIMIT_AS, (MEM_CAP, MEM_CAP))
+    os.umask(UMASK)
 
 
 class Unusable(Exception):
     pass
+
+
+def one_run(cmd, e, cwd, out, start, ncases, timeout):
+    """One driver process from case `start` on: the next case without a
+    record, whether it was killed for a hang, its stderr and exit status.
+    Raises Unusable when the driver refused the runtime or the runtime died
+    before its first case (no case is to blame)."""
+    # a case is done when its marker is: the driver writes it after the
+    # record, so a crash while writing the record leaves the case lost
+    have = lambda i: os.path.exists(os.path.join(out, f"{i:06d}.ok"))
+    started = os.path.join(out, "started")
+    if os.path.exists(started):
+        os.remove(started)
+    err = tempfile.TemporaryFile()
+    sout = open(os.path.join(out, f"stdout.{start}"), "wb")
+    p = subprocess.Popen(cmd, env=e, cwd=cwd, stdout=sout, stderr=err, preexec_fn=cap)
+    nxt, since = start, time.monotonic()
+    timed_out = False
+    while p.poll() is None:
+        time.sleep(0.05)
+        while nxt <= ncases and have(nxt):
+            nxt, since = nxt + 1, time.monotonic()
+        if time.monotonic() - since > timeout:
+            p.kill()
+            p.wait()
+            timed_out = True
+    while nxt <= ncases and have(nxt):
+        nxt += 1
+    sout.close()
+    split_stdout(os.path.join(out, f"stdout.{start}"), out)
+    err.seek(0)
+    text = err.read().decode("utf-8", "replace")
+    err.close()
+    m = re.search(r"^Error: (driver unusable on .*)$", text, re.M)
+    if m:
+        raise Unusable(m.group(1))
+    if not os.path.exists(started) and not timed_out:
+        raise Unusable(f"{cmd[-3] if len(cmd) >= 3 else cmd[0]} did not start (exit status {p.returncode}): "
+                       + " | ".join(text.strip().splitlines()[-3:]))
+    return nxt, timed_out, text, p.returncode
+
+
+def note_lost(out, i, timed_out, text, status, lost):
+    lost[i] = "timeout" if timed_out else "crash"
+    tail = "\n".join(text.splitlines()[-20:])
+    with open(os.path.join(out, f"{i:06d}.lost"), "w") as f:
+        f.write(f"{lost[i]} (exit status {status})\n{tail}\n")
 
 
 def run_batch(cmd, env, batch, out, ncases, scratch, timeout=CASE_TIMEOUT):
@@ -200,49 +255,92 @@ def run_batch(cmd, env, batch, out, ncases, scratch, timeout=CASE_TIMEOUT):
     os.makedirs(out, exist_ok=True)
     lost = {}
     start = 1
-    # a case is done when its marker is: the driver writes it after the
-    # record, so a crash while writing the record leaves the case lost
-    have = lambda i: os.path.exists(os.path.join(out, f"{i:06d}.ok"))
     while start <= ncases:
         e = {**env, "A4_BATCH": batch, "A4_OUT": out, "A4_FROM": str(start),
              "HOME": scratch, "TMPDIR": scratch}
-        started = os.path.join(out, "started")
-        if os.path.exists(started):
-            os.remove(started)
-        err = open(os.path.join(scratch, "stderr.txt"), "w+b")
-        sout = open(os.path.join(out, f"stdout.{start}"), "wb")
-        p = subprocess.Popen(cmd, env=e, cwd=scratch, stdout=sout, stderr=err, preexec_fn=cap)
-        nxt, since = start, time.monotonic()
-        timed_out = False
-        while p.poll() is None:
-            time.sleep(0.05)
-            while nxt <= ncases and have(nxt):
-                nxt, since = nxt + 1, time.monotonic()
-            if time.monotonic() - since > timeout:
-                p.kill()
-                p.wait()
-                timed_out = True
-        while nxt <= ncases and have(nxt):
-            nxt += 1
-        sout.close()
-        split_stdout(os.path.join(out, f"stdout.{start}"), out)
-        err.seek(0)
-        text = err.read().decode("utf-8", "replace")
-        err.close()
-        m = re.search(r"^Error: (driver unusable on .*)$", text, re.M)
-        if m:
-            raise Unusable(m.group(1))
-        if not os.path.exists(started) and not timed_out:
-            # it died before its first case: no case is to blame
-            raise Unusable(f"{cmd[-3] if len(cmd) >= 3 else cmd[0]} did not start (exit status {p.returncode}): "
-                           + " | ".join(text.strip().splitlines()[-3:]))
+        nxt, timed_out, text, status = one_run(cmd, e, scratch, out, start, ncases, timeout)
         if nxt > ncases:
             break
-        lost[nxt] = "timeout" if timed_out else "crash"
-        tail = "\n".join(text.splitlines()[-20:])
-        with open(os.path.join(out, f"{nxt:06d}.lost"), "w") as f:
-            f.write(f"{lost[nxt]} (exit status {p.returncode})\n{tail}\n")
+        note_lost(out, nxt, timed_out, text, status, lost)
         start = nxt + 1
+    return lost
+
+
+# An External row's cases each run in a process of their own, in a fresh
+# directory at the same absolute path in GNU R's container and on the host,
+# under an environment made from nothing but ENV and these (so Sys.getenv()
+# and the paths a case sees are the same for both runtimes).
+CLEAN_PATH = "/usr/local/bin:/usr/bin:/bin"
+
+
+def remove_tree(d):
+    """rm -rf, after giving the owner back every permission a case's
+    Sys.chmod may have taken (each directory's before it is listed)."""
+    def unlock(p):
+        os.chmod(p, 0o700)
+        for x in os.listdir(p):
+            q = os.path.join(p, x)
+            if os.path.isdir(q) and not os.path.islink(q):
+                unlock(q)
+    if not os.path.lexists(d):
+        return
+    if os.path.isdir(d) and not os.path.islink(d):
+        unlock(d)
+    shutil.rmtree(d)
+
+
+def case_root(key):
+    return f"/tmp/robigo-a4-{os.getuid()}-{key}"
+
+
+def tree(d):
+    """A directory's files: [path, kind, mode, size, sha256], sorted, the
+    directory itself first as "." (Sys.chmod("."))."""
+    out = [[".", "dir", os.lstat(d).st_mode & 0o7777, 0, ""]]
+    for root, dirs, files in os.walk(d):
+        for name in sorted(dirs) + sorted(files):
+            p = os.path.join(root, name)
+            rel = os.path.relpath(p, d)
+            st = os.lstat(p)
+            if os.path.islink(p):
+                out.append([rel, "link", 0, 0, os.readlink(p)])
+            elif os.path.isdir(p):
+                out.append([rel, "dir", st.st_mode & 0o7777, 0, ""])
+            else:
+                with open(p, "rb") as f:
+                    h = hashlib.sha256(f.read()).hexdigest()
+                out.append([rel, "file", st.st_mode & 0o7777, st.st_size, h])
+    return out[:1] + sorted(out[1:])
+
+
+def run_isolated(cmd, env, batch, out, ncases, key, rsrc=None, timeout=CASE_TIMEOUT):
+    """An External row: one process per case in its own directory, whose
+    files after the case go to `<id>.files`."""
+    os.makedirs(out, exist_ok=True)
+    root = case_root(key)
+    lost = {}
+    base = {k: env[k] for k in (*ENV, "R_ENABLE_JIT", "A4_LABEL") if k in env}
+    for i in range(1, ncases + 1):
+        remove_tree(root)
+        cwd, home, tmp = (os.path.join(root, x) for x in ("case", "home", "tmp"))
+        for d in (cwd, home, tmp):
+            os.makedirs(d)
+        # the modes UMASK gives, whatever the harness's own umask (the
+        # directory's mode is part of `<id>.files`)
+        for d in (root, cwd, home, tmp):
+            os.chmod(d, 0o777 & ~UMASK)
+        if rsrc:
+            # robigo-rt finds GNU R's sources under HOME (no ROBIGO_RSRC in Sys.getenv())
+            os.makedirs(os.path.join(home, ".cache", "robigo-research"))
+            os.symlink(os.path.dirname(rsrc), os.path.join(home, ".cache", "robigo-research", "rsrc"))
+        e = {**base, "PATH": CLEAN_PATH, "HOME": home, "TMPDIR": tmp, "A4_BATCH": batch, "A4_OUT": out,
+             "A4_FROM": str(i), "A4_TO": str(i)}
+        nxt, timed_out, text, status = one_run(cmd, e, cwd, out, i, i, timeout)
+        if nxt <= i:
+            note_lost(out, i, timed_out, text, status, lost)
+        with open(os.path.join(out, f"{i:06d}.files"), "w") as f:
+            json.dump(tree(cwd), f)
+    remove_tree(root)
     return lost
 
 
@@ -261,6 +359,15 @@ def split_stdout(path, out):
         if end > m.end():
             with open(os.path.join(out, f"{int(m.group(1)):06d}.out"), "wb") as f:
                 f.write(data[m.end():end])
+
+
+def made(rds):
+    """The files an External case left in its directory (empty otherwise)."""
+    p = rds[:-4] + ".files"
+    if not os.path.exists(p):
+        return []
+    with open(p) as f:
+        return json.load(f)
 
 
 def printed(rds):
@@ -284,8 +391,20 @@ def read_cases(d):
 
 # ---- GNU R's side ------------------------------------------------------------
 
+# The characters an Actions artifact refuses in a path (CI's
+# builtin-diff-data job uploads the records): a row named `[<-` is stored
+# under `[%3C-` instead, and every other name as it is.
+ARTIFACT_REFUSES = set('"\':<>|*?\r\n')
+
+
+def data_name(variant):
+    """`variant` as a directory name an artifact may hold: each refused
+    character, and `%` itself, as %XX."""
+    return "".join(f"%{ord(c):02X}" if c in ARTIFACT_REFUSES or c == "%" else c for c in variant)
+
+
 def oracle_dir(data, row, seed, jit):
-    return os.path.join(data, row.variant(jit), row.key(seed, jit))
+    return os.path.join(data, data_name(row.variant(jit)), row.key(seed, jit))
 
 
 def have_oracle(data, row, seed, jit):
@@ -326,16 +445,24 @@ def cmd_oracle(a):
         n = len(read_cases(d))
         env = {**os.environ, **ENV, "R_ENABLE_JIT": JIT[j], "A4_LABEL": "GNU R"}
         cmd = [*prefix, "Rscript", "--vanilla", DRIVER]
-        lost = run_batch(cmd, env, os.path.join(d, "batch.rds"), os.path.join(d, "records"), n, scratch)
+        batch = os.path.join(d, "batch.rds")
+
+        def go(out):
+            if r.isolated:
+                return run_isolated(cmd, env, batch, out, n, r.key(a.seed, j))
+            return run_batch(cmd, env, batch, out, n, scratch)
+        lost = go(os.path.join(d, "records"))
         # a second run: a case whose two records differ (GNU R reading memory
-        # it should not, on an input its wrapper never passes) has no answer
+        # it should not, on an input its wrapper never passes; a clock or a
+        # process id) has no answer
         again = os.path.join(scratch, "again")
-        lost2 = run_batch(cmd, env, os.path.join(d, "batch.rds"), again, n, scratch)
+        lost2 = go(again)
         for i in range(1, n + 1):
             if i in lost:
                 continue
             a_, b_ = (os.path.join(x, f"{i:06d}.rds") for x in (os.path.join(d, "records"), again))
-            if i in lost2 or not os.path.exists(b_) or open(a_, "rb").read() != open(b_, "rb").read():
+            if i in lost2 or not os.path.exists(b_) or open(a_, "rb").read() != open(b_, "rb").read() \
+                    or printed(a_) != printed(b_) or made(a_) != made(b_):
                 lost[i] = "unstable"
         shutil.rmtree(scratch, ignore_errors=True)
         with open(os.path.join(d, "done"), "w") as f:
@@ -381,7 +508,7 @@ def classify(o, r, lost_o, lost_r, i):
     if i in lost_r or not os.path.exists(r):
         return lost_r.get(i, "crash")
     rb = open(r, "rb").read()
-    if ob == rb and printed(o) == printed(r):
+    if ob == rb and printed(o) == printed(r) and made(o) == made(r):
         return "pass"
     if NOT_YET in rb:
         return "not-implemented"
@@ -400,8 +527,12 @@ def run_rt(a, row, jit, rt_bin, prefix):
     work = os.path.join(scratch, "cwd")
     os.makedirs(work)
     t0 = time.monotonic()
-    lost_r = run_batch([*prefix, rt_bin, "--vanilla", DRIVER], env, os.path.join(d, "batch.rds"), out,
-                       len(cases), work)
+    if row.isolated:
+        lost_r = run_isolated([*prefix, rt_bin, "--vanilla", DRIVER], env, os.path.join(d, "batch.rds"), out,
+                              len(cases), row.key(a.seed, jit), rsrc=a.rsrc)
+    else:
+        lost_r = run_batch([*prefix, rt_bin, "--vanilla", DRIVER], env, os.path.join(d, "batch.rds"), out,
+                           len(cases), work)
     timed("robigo-rt: the driver over the batch", t0)
     t0 = time.monotonic()
     res = {}
@@ -431,7 +562,10 @@ def diff_fields(pairs):
     for i, o, x in pairs:
         with open(o, "rb") as f1, open(x, "rb") as f2:
             if f1.read() == f2.read():
-                out[i] = ("stdout", repr(printed(o)[:150]), repr(printed(x)[:150]))
+                if printed(o) != printed(x):
+                    out[i] = ("stdout", repr(printed(o)[:150]), repr(printed(x)[:150]))
+                else:
+                    out[i] = ("files", json.dumps(made(o))[:150], json.dumps(made(x))[:150])
     return out
 
 
@@ -603,7 +737,9 @@ def cmd_run(a):
             new = fails
         if new:
             status = 1
-        if not a.keep:
+        if getattr(a, "reuse", None) is not None and r["row"].name in PLANT_ROWS and r["jit"] == "off":
+            a.reuse[r["row"].name] = r    # the plant check's runs on this binary (ci)
+        elif not a.keep:
             shutil.rmtree(r["scratch"], ignore_errors=True)
         else:
             print(f"  robigo-rt's records: {r['rt']}")
@@ -614,7 +750,7 @@ def cmd_run(a):
             print(f"timing:   {k}: {v:.1f} s")
     if a.seed == 0 and not a.only:
         stale = [f[:-4] for f in os.listdir(KNOWN) if f.endswith(".txt")] if os.path.isdir(KNOWN) else []
-        gone = [v for v in stale if v.split("@")[0] not in doc]
+        gone = [v for v in stale if v.removesuffix("@jit") not in doc]
         if gone:
             print("builtin-diff: known lists without a row: " + ", ".join(gone))
             status = 1
@@ -658,8 +794,12 @@ PLANTS = {
     "abs": ("crash", None),
     "set.seed": ("mismatch", {"seed"}),
     "nzchar": ("mismatch", {"stdout"}),
+    "assign": ("mismatch", {"env"}),
+    "do.call": ("mismatch", {"log", "conds"}),
+    "Sys.getenv": ("mismatch", {"files"}),
 }
 CONTROL = ["rep_len"]
+PLANT_ROWS = {*PLANTS, *CONTROL}
 
 
 def cmd_plant(a):
@@ -676,7 +816,7 @@ def cmd_plant(a):
     ok = True
     try:
         for row in rows:
-            base = run_rt(a, row, "off", base_rt, prefix)
+            base = (getattr(a, "reuse", None) or {}).get(row.name) or run_rt(a, row, "off", base_rt, prefix)
             plant = run_rt(a, row, "off", a.plant_rt, prefix)
             changed = sorted(i for i in base["res"] if base["res"][i] != plant["res"][i])
             if row.name in CONTROL:
@@ -712,10 +852,10 @@ def cmd_plant(a):
 # ---- coverage ----------------------------------------------------------------
 
 # Whether a registry builtin with neither a row nor a reason, or an
-# [uncovered] name the registry lacks, fails check-rows. False while the
-# builtin PRs queued before A4 landed drain: they are then warnings, listed
-# in the summary. A4's second PR sets it to True.
-UNLISTED_FAILS = False
+# [uncovered] name the registry lacks, fails check-rows (it was a warning
+# while the builtin PRs queued before A4 drained; 2026-11-21: rows for
+# every builtin on main and in the open PRs).
+UNLISTED_FAILS = True
 
 
 def cmd_check_rows(a):
@@ -767,6 +907,7 @@ def cmd_ci(a):
     base = os.path.join(work, "robigo-rt")
     shutil.copy2(rel, base)
     a.robigo_rt, a.only, a.show, a.update, a.regen_known, a.keep, a.timing = base, None, 5, False, False, False, True
+    a.reuse = {}    # run's results for the plant rows, so plant need not run them again
     status = cmd_check_rows(a)
     status = cmd_run(a) or status
     if subprocess.run([*build, "--features", PLANT_FEATURE], cwd=ROOT).returncode != 0:
