@@ -30,6 +30,9 @@ local({
   g(1)
   show("nojit", g)
 })
+# a compiled closure reached twice in one call: written twice, from one
+# compile (GNU R writes its one installed BODY at each occurrence)
+show("twice", list(f_loop, f_loop))
 # read back, the compiled one runs
 h <- unserialize(serialize(f_loop, NULL))
 print(h(4))
