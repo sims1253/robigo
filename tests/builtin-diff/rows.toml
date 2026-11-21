@@ -325,6 +325,25 @@ special = true
 effect = "Pure"
 extra = ["declare(stop(\"not evaluated\"))", "withVisible(declare(x = 1))", "(function(...) declare(...))(stop(\"no\"))"]
 
+# (E's coerce.c PR: the call of the named function, the other arguments
+# evaluated, their tags kept)
+[call]
+special = true
+effect = "Pure"
+extra = [
+  "call(\"round\", 10.5)",
+  "call(\"f\", a = 1, b = \"x\")",
+  "call(name = \"f\", 1)",
+  "call(nme = \"f\")",
+  "call(na = \"f\", 1)",
+  "call(\"f\", nme = 2)",
+  "call(\".Internal\", 1)",
+  "call(\"\")",
+  "call(NA_character_)",
+  "call(c(\"a\", \"b\"))",
+  "call()",
+]
+
 ["@"]
 special = true
 effect = "Pure"

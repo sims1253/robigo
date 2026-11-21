@@ -1,0 +1,69 @@
+NA: ERR <text>:1:6: unexpected '=' | 1: f(NA = |          ^ 
+TRUE: ERR <text>:1:8: unexpected '=' | 1: f(TRUE = |            ^ 
+FALSE: ERR <text>:1:9: unexpected '=' | 1: f(FALSE = |             ^ 
+NULL: OK names= c("", "NULL")  deparse= f(`NULL` = 1) 
+Inf: ERR <text>:1:7: unexpected '=' | 1: f(Inf = |           ^ 
+NaN: ERR <text>:1:7: unexpected '=' | 1: f(NaN = |           ^ 
+NA_integer_: ERR <text>:1:15: unexpected '=' | 1: f(NA_integer_ = |                   ^ 
+NA_real_: ERR <text>:1:12: unexpected '=' | 1: f(NA_real_ = |                ^ 
+NA_character_: ERR <text>:1:17: unexpected '=' | 1: f(NA_character_ = |                     ^ 
+NA_complex_: ERR <text>:1:15: unexpected '=' | 1: f(NA_complex_ = |                   ^ 
+T: OK names= c("", "T")  deparse= f(T = 1) 
+1: ERR <text>:1:5: unexpected '=' | 1: f(1 = |         ^ 
+1L: ERR <text>:1:6: unexpected '=' | 1: f(1L = |          ^ 
+"s": OK names= c("", "s")  deparse= f(s = 1) 
+`NA`: OK names= c("", "NA")  deparse= f(`NA` = 1) 
+function: ERR <text>:1:12: unexpected '=' | 1: f(function = |                ^ 
+if: ERR <text>:1:6: unexpected '=' | 1: f(if = |          ^ 
+for: ERR <text>:1:7: unexpected '=' | 1: f(for = |           ^ 
+x: OK names= c("", "x")  deparse= f(x = 1) 
+...: OK names= c("", "...")  deparse= f(... = 1) 
+..1: OK names= c("", "..1")  deparse= f(..1 = 1) 
+1i: ERR <text>:1:6: unexpected '=' | 1: f(1i = |          ^ 
+0x10: ERR <text>:1:8: unexpected '=' | 1: f(0x10 = |            ^ 
+g(x): ERR <text>:1:8: unexpected '=' | 1: f(g(x) = |            ^ 
+x[1]: ERR <text>:1:8: unexpected '=' | 1: f(x[1] = |            ^ 
+a+b: ERR <text>:1:7: unexpected '=' | 1: f(a+b = |           ^ 
+(x): ERR <text>:1:7: unexpected '=' | 1: f((x) = |           ^ 
+-x: ERR <text>:1:6: unexpected '=' | 1: f(-x = |          ^ 
+x$y: ERR <text>:1:7: unexpected '=' | 1: f(x$y = |           ^ 
+{x}: ERR <text>:1:7: unexpected '=' | 1: f({x} = |           ^ 
+x <- y: ERR <text>:1:10: unexpected '=' | 1: f(x <- y = |              ^ 
+!x: ERR <text>:1:6: unexpected '=' | 1: f(!x = |          ^ 
+x == y: ERR <text>:1:10: unexpected '=' | 1: f(x == y = |              ^ 
+~x: ERR <text>:1:6: unexpected '=' | 1: f(~x = |          ^ 
+?x: OK names= NULL  deparse= f(`?`((x = 1))) 
+x ? y: ERR <text>:1:9: unexpected '=' | 1: f(x ? y = |             ^ 
+\(x) x: OK names= NULL  deparse= f(function(x) x = 1) 
+[1] "<text>:1:9: unexpected '='\n1: f(x = 1 =\n            ^"
+[1] "<text>:1:12: unexpected '='\n1: f(x, y = z =\n               ^"
+[1] "<text>:1:6: unexpected '='\n1: x[NA =\n         ^"
+[1] "<text>:1:9: unexpected '='\n1: x[[TRUE =\n            ^"
+if (a) b = 1: OK f(if (a) b = 1) 
+if (a) b else c = 1: OK f(if (a) b else c = 1) 
+for (i in x) b = 1: OK f(for (i in x) b = 1) 
+while (a) b = 1: OK f(while (a) b = 1) 
+repeat b = 1: OK f(repeat b = 1) 
+function(x) x = 1: OK f(function(x) x = 1) 
+(a = 1): OK f((a = 1)) 
+{a = 1}: OK f({     a = 1 }) 
+-?x = 1: OK f(-`?`((x = 1))) 
+a ~ b = 1: ERR <text>:1:9: unexpected '=' | 1: f(a ~ b = |             ^ 
+!a = 1: ERR <text>:1:6: unexpected '=' | 1: f(!a = |          ^ 
+x |> g() = 1: ERR <text>:1:12: unexpected '=' | 1: f(x |> g() = |                ^ 
+f(x = a ? b) :  f(x = `?`(a, b)) 
+f(x = a ? b = 1) :  <text>:1:13: unexpected '=' | 1: f(x = a ? b = |                 ^ 
+f(a ? b) :  f(`?`(a, b)) 
+f(x = ?y = 1) :  f(x = `?`((y = 1))) 
+f(x = function() y = 1) :  f(x = function() y = 1) 
+if (a = b) c :  <text>:1:7: unexpected '=' | 1: if (a = |           ^ 
+f(if (a = b) c) :  <text>:1:9: unexpected '=' | 1: f(if (a = |             ^ 
+while (a = b) c :  <text>:1:10: unexpected '=' | 1: while (a = |              ^ 
+for (i in a = b) c :  <text>:1:13: unexpected '=' | 1: for (i in a = |                 ^ 
+if (a ? b) c :  if (`?`(a, b)) c 
+for (i in a ? b) c :  for (i in `?`(a, b)) c 
+function(x = a ? b) x :  function(x = `?`(a, b)) x 
+function(x = y = 1) x :  <text>:1:16: unexpected '=' | 1: function(x = y = |                    ^ 
+function(x = ?y = 1) x :  function(x = `?`((y = 1))) x 
+function(x = (y = 1)) x :  function(x = (y = 1)) x 
+if ((a = b)) c :  if ((a = b)) c 
