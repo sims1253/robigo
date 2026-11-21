@@ -54,6 +54,9 @@ is_asg <- function(e) {
 #                   (found by running it on a scratch environment): it is
 #                   their definition, run once on the first fetch of any
 #   skip WHY        not run (the record the loader keeps and reports)
+#   boot            runs at startup, eagerly, in the base namespace, where
+#                   R_LoadProfile runs it (before the locks on base): what
+#                   depends on when it runs, as the search path does
 known <- list(
     "base/R/parse.R#2" = "none",  # if (FALSE) { ... }
     "base/R/zzz.R#114" = "block",  # the deprecated as.data.frame.<class> methods
@@ -63,8 +66,8 @@ known <- list(
     "base/baseloader.R#8" = "none", "base/baseloader.R#9" = "none",  # force()s
     "base/baseloader.R#10" = "after .__S3MethodsTable__.",  # base's S3 methods registered
     "base/baseloader.R#11" = "after .ArgsEnv", "base/baseloader.R#12" = "after .GenericArgsEnv",
-    "profile/Common.R#2" = "skip the Autoloads environment: robigo-rt's search path is its own",
-    "profile/Common.R#4" = "after .AutoloadEnv",  # assign(".Autoloaded", NULL, envir = .AutoloadEnv)
+    "profile/Common.R#2" = "boot",  # attach(NULL, name = "Autoloads")
+    "profile/Common.R#4" = "boot",  # assign(".Autoloaded", NULL, envir = .AutoloadEnv)
     "profile/Common.R#10" = "none", "profile/Common.R#11" = "none", "profile/Common.R#12" = "none",
     "profile/Common.R#13" = "none", "profile/Common.R#14" = "none", "profile/Common.R#15" = "none",
     "profile/Common.R#16" = "none", "profile/Common.R#17" = "none", "profile/Common.R#18" = "none",
@@ -83,7 +86,12 @@ known <- list(
 
 # Names whose definition needs a form that is not run: bound to raise, with
 # that form's record, when touched.
-unrun <- c(.AutoloadEnv = "profile/Common.R#2")
+unrun <- character()
+
+# Names whose definition runs at startup with the `boot` forms, in source
+# order: `.AutoloadEnv <- as.environment(2)` is the environment the profile
+# attached just before, which a lazy binding would look up too late.
+boot_names <- ".AutoloadEnv"
 
 # The names a block assigns into the base namespace, found by running it with
 # .BaseNamespaceEnv bound to a scratch environment.
@@ -103,6 +111,11 @@ for (f in sources) {
         e <- ex[[i]]
         r <- byte_range(srs[[i]], starts)
         key <- paste0(rel(f), "#", i)
+        if (is_asg(e) && as.character(e[[2L]]) %in% boot_names) {
+            others[[length(others) + 1L]] <- data.frame(kind = "boot", name = as.character(e[[2L]]), src = rel(f),
+                                                        start = r[1L], end = r[2L], why = "", form = i)
+            next
+        }
         if (is_asg(e)) {
             depth <- 0L
             while (is_asg(e)) {
@@ -134,6 +147,9 @@ for (f in sources) {
         } else if (startsWith(k, "after ")) {
             others[[length(others) + 1L]] <- data.frame(kind = "after", name = substring(k, 7L), src = rel(f),
                                                         start = r[1L], end = r[2L], why = "", form = i)
+        } else if (k == "boot") {
+            others[[length(others) + 1L]] <- data.frame(kind = "boot", name = "", src = rel(f), start = r[1L],
+                                                        end = r[2L], why = "", form = i)
         } else if (startsWith(k, "skip ")) {
             others[[length(others) + 1L]] <- data.frame(kind = "skip", name = "", src = rel(f), start = r[1L],
                                                         end = r[2L], why = substring(k, 6L), form = i)
@@ -182,11 +198,14 @@ for (n in unique(c(defs$name, blocks$name))) {
 }
 for (k in which(others$kind == "after" & !others$name %in% names(unrun)))
     lines <- c(lines, sprintf("after %s %s %d %d", others$name[k], others$src[k], others$start[k], others$end[k]))
+# (`others` is in source order: the boot forms run as the profile has them)
+for (k in which(others$kind == "boot"))
+    lines <- c(lines, sprintf("boot %s %d %d", others$src[k], others$start[k], others$end[k]))
 for (k in which(others$kind == "skip"))
     lines <- c(lines, sprintf("skip %s %d %d %s", others$src[k], others$start[k], others$end[k], others$why[k]))
 
 # what GNU R's C binds at startup
-bound <- unique(c(defs$name, blocks$name))
+bound <- unique(c(defs$name, blocks$name, boot_names))
 from_c <- setdiff(base_names[!is_prim], bound)
 for (n in from_c) lines <- c(lines, sprintf("c %s", n))
 
@@ -217,6 +236,7 @@ header <- c(
     "#                                       namespace on first use; `seq`: every such line runs, in order",
     "#   block NAME SRC START END            NAME's binding: what the form (a local()) assigns, run once",
     "#   after NAME SRC START END            run right after NAME's definition, on its first use",
+    "#   boot SRC START END                  run at startup, in order, in the base namespace (before its locks)",
     "#   skip SRC START END WHY              not run",
     "#   unrun NAME SRC START END            NAME's definition needs that skipped form: raises when touched",
     "#   c NAME                              bound by GNU R's C at startup (robigo-rt's init binds it)",
