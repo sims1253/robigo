@@ -105,6 +105,26 @@ fn split<'s>(cx: &mut Cx, s: Scope<'s>, x: Root<'_>, f: Root<'_>, out: Out<'_>) 
     let x_levels = crate::attrib::get_value(x.bind(cx), b"levels").map(|l| s.root(cx, l));
     // getAttrib(x, R_NamesSymbol): a one-dimensional array's dimnames[[1]]
     let names = crate::attrib::names(x.bind(cx)).map(|n| s.root(cx, n));
+    // the second pass's STRING_ELT(nm, i), at the first element it copies:
+    // its checks (names<-, dimnames<- and setAttrib make names character of
+    // x's length; a raw attribute write need not)
+    // R: memory.c:STRING_ELT
+    if let Some(nm) = names
+        && idx.iter().any(|v| !v.is_empty())
+    {
+        let nmv = nm.bind(cx);
+        if nmv.sexptype() != STRSXP {
+            let msg = format!(
+                "STRING_ELT() can only be applied to a 'character vector', not a '{}'",
+                crate::util::type_to_char(nmv)
+            );
+            return Err(cx.error(&msg));
+        }
+        let len = crate::coerce::xlength(nmv);
+        if let Some(i) = idx.iter().flatten().copied().filter(|&i| i >= len).min() {
+            return Err(cx.error(&format!("attempt access index {i}/{len} in STRING_ELT")));
+        }
+    }
     let vec = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_vector::<Ref<'_>>(nlevs)?.finish().into())))?;
     for (j, ix) in idx.iter().enumerate() {
         let piece = s.capture(cx, |cx, o| {
@@ -124,7 +144,8 @@ fn split<'s>(cx: &mut Cx, s: Scope<'s>, x: Root<'_>, f: Root<'_>, out: Out<'_>) 
         if let Some(nm) = names {
             let nmj = s.capture(cx, |cx, o| {
                 cx.build(o, |cx| {
-                    let src = nm.bind(cx).as_vector::<Char<'_>>().unwrap();
+                    // (a character vector reaching every copied element: checked above)
+                    let src = nm.bind(cx).as_vector::<Char<'_>>().expect("robigo: checked: character names");
                     let mut r = cx.alloc_vector::<Char<'_>>(ix.len())?;
                     for (k, &i) in ix.iter().enumerate() {
                         r.set(k, src.get(i));
@@ -144,4 +165,41 @@ fn split<'s>(cx: &mut Cx, s: Scope<'s>, x: Root<'_>, f: Root<'_>, out: Out<'_>) 
     }
     out.set(cx, vec.bind(cx));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use robigo_rtcore::{Encoding, OwnedIsolate};
+
+    /// Names that are not character (a raw attribute write: R code's
+    /// `names<-`, `dimnames<-` and the C API's setAttrib all coerce) are
+    /// STRING_ELT's error, as in GNU R, not a panic.
+    #[test]
+    fn non_character_names_are_string_elts_error() {
+        let mut iso = OwnedIsolate::new();
+        let cx = iso.cx();
+        cx.scope(|cx, s| {
+            let x = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_copy(&[1i32, 2])?.finish().into()))).unwrap();
+            let bad = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_copy(&[7i32, 8])?.finish().into()))).unwrap();
+            let nm = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"names")?.into()))).unwrap();
+            cx.install_attrib(x, nm, bad).unwrap();
+            let f = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_copy(&[1i32, 1])?.finish().into()))).unwrap();
+            let lv = s.capture(cx, |cx, o| cx.build(o, |cx| cx.mk_string(b"a", Encoding::Native))).unwrap();
+            let cl = s.capture(cx, |cx, o| cx.build(o, |cx| cx.mk_string(b"factor", Encoding::Native))).unwrap();
+            crate::attrib::set::set_attrib(cx, f, b"levels", lv).unwrap();
+            crate::attrib::set::set_attrib(cx, f, b"class", cl).unwrap();
+            let nil = s.root(cx, cx.nil());
+            let args = s.args(cx, &[x.bind(cx), f.bind(cx)], None);
+            let out = s.out(cx);
+            let e = do_split(cx, nil, args, nil, out).unwrap_err();
+            let (msg, _, _) = cx.exit_objects(&e);
+            let text = msg.as_vector::<Char<'_>>().unwrap().get(0).bytes().to_vec();
+            assert_eq!(
+                String::from_utf8(text).unwrap(),
+                "STRING_ELT() can only be applied to a 'character vector', not a 'integer'"
+            );
+            cx.resolve_exit(e, None);
+        });
+    }
 }
