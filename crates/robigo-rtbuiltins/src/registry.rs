@@ -316,6 +316,10 @@ pub static BUILTINS: &[Builtin] = &[
     row("drop", array::do_drop, 0, 11, 1, FUNCALL, Pure),
     row("array", array::do_array, 0, 11, 3, FUNCALL, Pure),
     row("t.default", array::do_transpose, 0, 11, 1, FUNCALL, Pure),
+    row("aperm", array::do_aperm, 0, 11, 3, FUNCALL, Pure),
+    op!("row", 1, array::do_rowscols, 11, 1, FUNCALL, Pure),
+    op!("col", 2, array::do_rowscols, 11, 1, FUNCALL, Pure),
+    row("asplit", array::do_asplit, 0, 11, 8, FUNCALL, Pure),
     // bind.c
     row("c", bind::do_c, 0, 1, -1, FUNCALL, Pure),
     row("unlist", bind::do_unlist, 0, 11, 3, FUNCALL, Pure),
