@@ -132,14 +132,19 @@ impl Inner {
         if (self.end as usize).saturating_sub(self.next as usize) < size {
             let bytes = segment_bytes(size);
             let layout = std::alloc::Layout::from_size_align(bytes, BLOCK).expect("robigo: an arena segment's layout");
-            // SAFETY: a non-zero size; zeroed, so the pseudo header's magic
-            // is not a block's.
-            let base = unsafe { std::alloc::alloc_zeroed(layout) };
+            // SAFETY: a non-zero size.
+            let base = unsafe { std::alloc::alloc(layout) };
             if base.is_null() {
                 std::alloc::handle_alloc_error(layout);
             }
-            // SAFETY: inside the fresh segment.
+            // SAFETY: inside the fresh segment. Only the pseudo header is
+            // zeroed, so its magic is not a block's: every object after it
+            // is written in full before it is published (a symbol's six
+            // words; a name record's header, hash, lengths, bytes and NUL,
+            // whose padding nothing reads), so zeroing the 64 KiB first
+            // only cost the time (H: the arena's segments).
             unsafe {
+                std::ptr::write_bytes(base, 0, DATA_OFF);
                 *(base.add(REMEMBERED_OFF) as *mut *const u8) = crate::shared::id_word();
                 self.next = base.add(DATA_OFF);
                 self.end = base.add(bytes);

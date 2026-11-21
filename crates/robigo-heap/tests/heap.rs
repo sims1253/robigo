@@ -3070,6 +3070,32 @@ fn the_pin_report_names_an_unprotected_c_local() {
     }
 }
 
+/// The probe's key and hook are per thread: another thread's `give` does
+/// not replace this thread's key before its routine reads it (the race that
+/// made `the_strong_library_keeps_what_its_frames_name` fail, rarely, when
+/// the pin report's test ran beside it).
+#[test]
+fn the_probe_keeps_one_key_per_thread() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    extern "C" fn nothing() {}
+    let p = probe();
+    (p.hooks)(nothing);
+    // SAFETY: the probe's routine takes no argument and returns its key; the
+    // keys are plain words, never read through.
+    let routine = unsafe { std::mem::transmute::<*const c_void, extern "C" fn() -> usize>(p.routine) };
+    (p.give)(unsafe { Sexp::from_word(0x10 as *mut u8) });
+    std::thread::spawn(|| {
+        let p = probe();
+        (p.hooks)(nothing);
+        (p.give)(unsafe { Sexp::from_word(0x20 as *mut u8) });
+    })
+    .join()
+    .unwrap();
+    assert_eq!(routine(), 0x10, "another thread's give replaced this thread's key");
+}
+
 /// `ROBIGO_GC_STRONG_DLL` confirms a report: the library's frames become
 /// strong roots, its local keeps the key, nothing is finalized, nothing is
 /// reported.
