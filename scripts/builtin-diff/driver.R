@@ -7,7 +7,8 @@
 ##   call); error: list(message, class, call) or NULL; env: the case
 ##   environment's bindings after the call (the arguments a<i> and their
 ##   aliases alias<i>, bound to the same objects before it); globals: the
-##   global environment's names; seed: .Random.seed after the call, or NULL.
+##   global environment's names; seed: .Random.seed after the call, or NULL;
+##   log: what the fixture closures of a Calls row logged (.a4log), in order.
 ## A binding the call left as it was (its serialization unchanged) is
 ## recorded as list(unchanged = TRUE), any other as list(unchanged = FALSE,
 ## value). Each case's printed output follows a marker line on stdout,
@@ -16,6 +17,7 @@
 ## Parameters come from the environment (robigo-rt has no commandArgs yet):
 ##   A4_BATCH  the batch.rds gen.R wrote    A4_OUT    the records' directory
 ##   A4_FROM   the first case's index (1)    A4_LABEL  the runtime's name
+##   A4_TO     the last case's index (an External row runs one per process)
 ##
 ## The driver uses only: readRDS, saveRDS, tryCatch, withCallingHandlers,
 ## withVisible, eval, as.call, as.name, new.env, assign, get0, ls, rm,
@@ -129,10 +131,11 @@ local({
         })
         names(env) <- en
         list(value = res$value, visible = res$visible, conds = conds, error = err, env = env,
-             globals = sort(ls(globalenv(), all.names = TRUE)), seed = seed)
+             globals = sort(ls(globalenv(), all.names = TRUE)), seed = seed,
+             log = get0(".a4log", globalenv(), inherits = FALSE))
     }
 
-    n <- length(b$cases)
+    n <- min(length(b$cases), as.integer(Sys.getenv("A4_TO", length(b$cases))))
     if (from <= n) for (i in from:n) {
         c <- b$cases[[i]]
         cat("\001A4 ", c$id, "\001\n", sep = "")

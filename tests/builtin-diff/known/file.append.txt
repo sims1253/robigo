@@ -1,0 +1,30 @@
+# builtin-diff known failures: file.append, seed 0, key effe2ce6067f12c00ad68c01
+# file.append: 249 / 277 (not-implemented 1, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
+14
+29
+33
+40
+45
+64
+75
+77
+88
+103
+104
+113
+114
+135
+140
+158
+171
+172
+174
+180
+200
+210
+211
+218
+223
+254
+269
+277

@@ -24,6 +24,10 @@ robigo-heap = { path = "../robigo-heap", features = ["test-support"] }
 # with this feature, as GNU R's --enable-strict-barrier is, since its check in
 # every build costs about 0.2-0.7% of the perf rows' instructions
 retry-torture = []
+# ROBIGO_POISON_DEAD=1 (docs/g3.md §16, C1-PZ): compiled in only with this
+# feature. A dead slot (a VM register's last use, a scope's restore) then
+# holds a poison that names where it died, and a read of it panics.
+poison-dead = []
 
 [lints]
 workspace = true

@@ -1,0 +1,16 @@
+# builtin-diff known failures: asplit, seed 0, key 046c7e0ddcc5546dbaa33443
+# asplit: 1088 / 1102 (not-implemented 0, crash 0, timeout 0, resource 4 excluded, oracle-crash 0 excluded)
+103
+252
+355
+418
+517
+528
+601
+639
+656
+688
+689
+706
+752
+786

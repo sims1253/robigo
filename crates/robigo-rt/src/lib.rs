@@ -82,6 +82,12 @@ mod specials;
 mod util;
 pub mod vm;
 
+/// The D9 deaths the evaluators that run compiled code outside the VM make
+/// under `ROBIGO_POISON_DEAD` (tests/poison.rs).
+#[cfg(feature = "poison-dead")]
+#[doc(hidden)]
+pub use early::poison_deaths;
+
 use robigo_rtcore::Cx;
 
 // (the apply hook by name: E6's cost probe, tests/hook_cost.rs)
