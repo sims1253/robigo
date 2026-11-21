@@ -170,8 +170,9 @@ class Rule(unittest.TestCase):
         self.assertFalse(passes(needs(rt="cancelled")))
 
     def test_check_runs_always_and_a_pull_requests_runs_share_one_group(self):
-        # Check runs in a cancelled run too, so a cancelled run (superseded
-        # or by hand) is red, never skipped (a skipped required check passes)
+        # Check runs in a cancelled run too (never skipped: a skipped required
+        # check passes), so a run cancelled before every need passed
+        # (superseded or by hand) is red on its cancelled needs
         wf = (HERE.parent / ".github/workflows/ci.yml").read_text()
         self.assertIn("    name: Check\n    if: ${{ always() }}\n", wf)
         # a pull request's runs share one group that cancels the older run at
