@@ -35,3 +35,18 @@ p <- unserialize(charToRaw(sub("3\nsum\n", "6\npaste0\n",
 pf <- function() p(list("a"), NULL, FALSE)
 for (i in 1:2) print(pf())
 print(forceAndCall(0, p, list("a"), NULL, FALSE))
+# the compiler's call constant for such an .Internal never shows: the
+# builtin's own errors and warnings name the inner call, a calling
+# handler's sys.calls() and conditionCall see the closure's frames and the
+# inner call, and the closure's sys.call() and match.call() are its own
+pc <- function(...) .Internal(paste0(list(...), 1, FALSE))
+for (i in 1:2) print(tryCatch(pc("a"), error = cc))
+fr <- function(...) withCallingHandlers(pc(...), error = function(e) {
+    print(vapply(sys.calls(), function(cl) deparse(cl)[1L], ""))
+    print(conditionCall(e))
+})
+for (i in 1:2) try(fr("b"), silent = TRUE)
+mm <- function(x, ...) list(sys.call(), match.call(), .Internal(paste0(list(...), NULL, FALSE)))
+for (i in 1:2) print(mm(1, "c", "d"))
+ww <- function(...) .Internal(as.vector(c(...), "integer"))
+for (i in 1:2) print(withCallingHandlers(ww("10", "x"), warning = function(w) { print(conditionCall(w)); invokeRestart("muffleWarning") }))
