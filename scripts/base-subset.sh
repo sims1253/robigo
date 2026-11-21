@@ -75,8 +75,18 @@ fi
 # (before --check's diffs: a failing check is when the report helps)
 echo "which scripts reach each name: $work/reached-by.txt"
 if [ "${1:-}" = --check ]; then
-  diff -u "$file" "$out" || { echo "error: $file is not what scripts/base-subset.sh generates" >&2; exit 1; }
-  diff -u "$bound" "$bout" || { echo "error: $bound is not what scripts/base-subset.sh generates" >&2; exit 1; }
-  diff -u "$wide" "$wout" || { echo "error: $wide is not what scripts/base-subset.sh generates" >&2; exit 1; }
+  # every file, then one verdict; the full diffs go to $work/*.diff
+  stale=0
+  committed=("$file" "$bound" "$wide")
+  generated=("$out" "$bout" "$wout")
+  for i in 0 1 2; do
+    if ! python3 scripts/base-subset-stale.py "${committed[i]}" "${generated[i]}" "$work/reached-by.txt"; then
+      stale=1
+      d=$work/$(basename "${committed[i]}" .txt).diff
+      diff -u "${committed[i]}" "${generated[i]}" > "$d" || true   # (1 when they differ: set -e)
+      echo "the full diff: $d" >&2
+    fi
+  done
+  [ "$stale" = 0 ] || exit 1
   echo "$file, $bound and $wide are up to date"
 fi

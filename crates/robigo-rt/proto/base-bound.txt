@@ -312,6 +312,7 @@ closure pmax pmax.R
 closure pmin pmax.R
 closure prettyNum format.R
 closure print print.R
+closure print.condition conditions.R
 closure print.default print.R
 closure print.factor factor.R
 closure print.function print.R
