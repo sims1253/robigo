@@ -1230,7 +1230,14 @@ fn make_lt<'g>(cx: &'g Cx, rows: &[LtRow], tzone: &[Vec<u8>]) -> Result<Ref<'g>,
 /// coerces them (`sec` to double, the next ones to integer).
 // R: datetime.c:valid_POSIXlt
 fn valid_posixlt<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, x: Root<'_>, nm: usize) -> RResult<Vec<Root<'s>>> {
-    // LENGTH(x)
+    // LENGTH(x): of anything but a vector, the bytes where a vector keeps
+    // its length (a pointer, here) read as one too long (R_BadLongVector)
+    if !matches!(
+        x.bind(cx).sexptype(),
+        NILSXP | LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | VECSXP | EXPRSXP | RAWSXP | CHARSXP
+    ) {
+        return Err(cx.error("long vectors not supported yet: datetime.c:1066"));
+    }
     refuse_altrep(cx, x, "a package ALTREP \"POSIXlt\" list")?;
     if x.bind(cx).sexptype() == VECSXP && x.bind(cx).len().unwrap_or(0) >= 9 {
         // LENGTH(nms)

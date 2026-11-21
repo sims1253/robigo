@@ -41,3 +41,8 @@ Sys.unsetenv("TZ")
 # names go through setAttrib: short ones are padded
 x <- .Internal(as.POSIXlt(0, "UTC")); x$sec <- c(0, 1); names(x$year) <- "a"
 names(.Internal(POSIXlt2Date(x))); names(.Internal(as.POSIXct(x, "UTC"))); attributes(.Internal(POSIXlt2Date(x)))
+# valid_POSIXlt's LENGTH(x) of what is not a vector
+tryCatch(.Internal(POSIXlt2Date(quote(x))), error = function(e) conditionMessage(e))
+tryCatch(.Internal(as.POSIXct(quote(f(x)), "UTC")), error = function(e) conditionMessage(e))
+tryCatch(.Internal(POSIXlt2Date(y ~ x)), error = function(e) conditionMessage(e))
+tryCatch(.Internal(POSIXlt2Date(NULL)), error = function(e) conditionMessage(e))

@@ -266,3 +266,7 @@ $names
 $class
 [1] "Date"
 
+[1] "long vectors not supported yet: datetime.c:1066"
+[1] "long vectors not supported yet: datetime.c:1066"
+[1] "long vectors not supported yet: datetime.c:1066"
+[1] "a valid \"POSIXlt\" object is a list of at least 9 elements"
