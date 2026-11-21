@@ -1620,11 +1620,12 @@ pub unsafe fn may_call_browser(cx: &Cx, st: &RtState, cenv: &Cenv<'_>, e: Sexp) 
 /// `is.simpleInternal(def)` (with `simpleFormals` and `simpleArgs`): `def`
 /// is a closure without `...` whose defaults are constants, and whose body
 /// is one `.Internal` call of a builtin internal with formals or constants
-/// as its arguments. The internal call when it is.
+/// as its arguments. The internal call when it is. The body is `body(def)`
+/// as cmp.R reads it, through R_ClosureExpr: byte code's source.
 ///
 /// # Safety
 /// `def` is live.
-// R: cmp.R:is.simpleInternal, simpleFormals, simpleArgs
+// R: cmp.R:is.simpleInternal, simpleFormals, simpleArgs; eval.c:R_ClosureExpr
 pub unsafe fn simple_internal(cx: &Cx, st: &RtState, def: Sexp) -> Option<Sexp> {
     let missing = cx.missing_arg().sexp();
     let not_simple = |t: u8| matches!(t, SYMSXP | LANGSXP | PROMSXP | BCODESXP);
@@ -1641,7 +1642,10 @@ pub unsafe fn simple_internal(cx: &Cx, st: &RtState, def: Sexp) -> Option<Sexp> 
         if forms.iter().any(|&(d, _)| d != missing && not_simple(d.typ())) {
             return None;
         }
-        let mut b = def.cdr();
+        // cmp.R reads `body(def)`, R_ClosureExpr: a byte-code body (base's
+        // closures as the lazy-load database installs them) is judged by
+        // its source, its first constant (tests/simple_internal.rs)
+        let mut b = robigo_rtbuiltins::bytecode::expr(cx, Ref::from_sexp(def.cdr(), cx)).sexp();
         if b.typ() == LANGSXP && b.car() == st.syms.brace {
             let a = elements(cx, b, true);
             if a.len() == 1 {

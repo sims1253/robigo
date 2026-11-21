@@ -473,8 +473,14 @@ pub fn topenv<'g>(cx: &'g Cx, target: Option<Ref<'g>>, envir: Ref<'g>) -> Ref<'g
     cx.global_env()
 }
 
-/// How many shapes [`passed_by_shape`] remembers.
+/// How many shapes [`passed_by_shape`] remembers. The list stops adding when
+/// full (releasing a global takes `&mut Cx`, which `topenv` has not): the
+/// first long shapes a session meets, its boot's first, stay, and a long
+/// shape met later is searched for and read at every call.
 const TOPENV_SHAPES: usize = 16;
+
+/// The longest shape [`passed_by_shape`] reads rather than remembers.
+const TOPENV_SHORT_SHAPE: usize = 8;
 
 /// Whether `topenv` passes over `env` for its shape: a slot frame with no
 /// overflow block and no attributes, whose shape has neither
@@ -487,12 +493,18 @@ fn passed_by_shape(cx: &Cx, env: Ref<'_>) -> bool {
     if overflow || env.attrib().is_some_and(|a| a.sexptype() != NILSXP) {
         return false;
     }
+    let sy = syms(cx);
+    let lacks = |shape| shape_lacks(shape, |x| x == sy.package_name || x == sy.namespace);
+    // (a short shape is read at once: fewer words than a search of the
+    // remembered ones, which a boot may have filled with its own)
+    if shape.as_vector::<Ref<'_>>().is_some_and(|v| v.len() <= TOPENV_SHORT_SHAPE) {
+        return lacks(shape);
+    }
     let st = &prims::state(cx).cond;
     if st.topenv_shapes.borrow().iter().any(|g| g.bind(cx).sexp() == shape.sexp()) {
         return true;
     }
-    let sy = syms(cx);
-    if !shape_lacks(shape, |x| x == sy.package_name || x == sy.namespace) {
+    if !lacks(shape) {
         return false;
     }
     let mut l = st.topenv_shapes.borrow_mut();
