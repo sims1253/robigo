@@ -572,6 +572,103 @@ pub fn env_locale() -> EnvLocale {
     EnvLocale { codeset, collate_c, failed }
 }
 
+/// A conversion descriptor of the C library's `iconv(3)` (glibc's, which
+/// GNU R's `Riconv_open` and `Riconv` call on Linux). Closed when dropped.
+/// Not `Send`: a descriptor carries conversion state.
+pub struct Iconv {
+    cd: libc::iconv_t,
+    /// The `LC_CTYPE` the conversions run in (the isolate's: `C.UTF-8` or
+    /// `C`), which glibc's transliteration (`//TRANSLIT`) reads.
+    utf8: bool,
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+/// Why [`Iconv::convert`] stopped before the end of its input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IconvStop {
+    /// `EILSEQ`: an invalid sequence, or one the target cannot represent.
+    Illegal,
+    /// `EINVAL`: an incomplete sequence at the end of the input.
+    Incomplete,
+}
+
+impl Iconv {
+    /// `iconv_open(to, from)` with the calling thread in the `LC_CTYPE`
+    /// `utf8` names (`C.UTF-8`, else `C`), as GNU R's process is in its
+    /// locale: None when the C library has no such conversion. (It may load
+    /// a gconv module, whose search reads GCONV_PATH: under the
+    /// environment's shared lock.)
+    pub fn open(to: &[u8], from: &[u8], utf8: bool) -> Option<Iconv> {
+        let (t, f) = (std::ffi::CString::new(to).ok()?, std::ffi::CString::new(from).ok()?);
+        let _env = env_read();
+        let _loc = Self::locale(utf8)?;
+        // SAFETY: two NUL-terminated strings; iconv_open returns a new
+        // descriptor or (iconv_t)-1.
+        let cd = unsafe { libc::iconv_open(t.as_ptr(), f.as_ptr()) };
+        (cd as isize != -1).then_some(Iconv { cd, utf8, _not_send: std::marker::PhantomData })
+    }
+
+    /// The calling thread switched to the conversions' `LC_CTYPE` until the
+    /// guard drops.
+    fn locale(utf8: bool) -> Option<ThreadLocale> {
+        let loc = if utf8 { c_utf8()? } else { c_locale()? };
+        ThreadLocale::switch(loc)
+    }
+
+    /// `iconv(cd, NULL, NULL, &outbuf, &outb)`: the initial state, its
+    /// shift sequence (for a stateful target) appended to `out`.
+    pub fn reset(&mut self, out: &mut Vec<u8>) {
+        let _loc = Self::locale(self.utf8);
+        let mut buf = [0u8; 64];
+        let mut op = buf.as_mut_ptr().cast::<libc::c_char>();
+        let mut ol = buf.len();
+        // SAFETY: a live descriptor; a NULL input asks for the reset; the
+        // output is `buf`, `ol` bytes from `op`.
+        unsafe { libc::iconv(self.cd, std::ptr::null_mut(), std::ptr::null_mut(), &mut op, &mut ol) };
+        out.extend_from_slice(&buf[..buf.len() - ol]);
+    }
+
+    /// `iconv(cd, &inbuf, &inb, &outbuf, &outb)` over all of `inp`, the
+    /// output appended to `out` (grown as `E2BIG` asks): the bytes of `inp`
+    /// consumed, and why it stopped if before the end.
+    pub fn convert(&mut self, inp: &[u8], out: &mut Vec<u8>) -> (usize, Option<IconvStop>) {
+        let _loc = Self::locale(self.utf8);
+        let mut done = 0;
+        let mut buf = vec![0u8; (inp.len() * 4).max(64)];
+        loop {
+            let mut ip = inp[done..].as_ptr().cast::<libc::c_char>().cast_mut();
+            let mut il = inp.len() - done;
+            let mut op = buf.as_mut_ptr().cast::<libc::c_char>();
+            let mut ol = buf.len();
+            // SAFETY: a live descriptor; the input is `il` readable bytes
+            // from `ip` (iconv does not write through it), the output `ol`
+            // writable bytes from `op`.
+            let r = unsafe { libc::iconv(self.cd, &mut ip, &mut il, &mut op, &mut ol) };
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            out.extend_from_slice(&buf[..buf.len() - ol]);
+            done = inp.len() - il;
+            if r != usize::MAX {
+                return (done, None);
+            }
+            match errno {
+                libc::E2BIG => {
+                    let n = buf.len() * 2;
+                    buf.resize(n, 0);
+                }
+                libc::EILSEQ => return (done, Some(IconvStop::Illegal)),
+                _ => return (done, Some(IconvStop::Incomplete)),
+            }
+        }
+    }
+}
+
+impl Drop for Iconv {
+    fn drop(&mut self) {
+        // SAFETY: a descriptor iconv_open made, closed once.
+        unsafe { libc::iconv_close(self.cd) };
+    }
+}
+
 unsafe extern "C" {
     fn bindtextdomain(domainname: *const libc::c_char, dirname: *const libc::c_char) -> *mut libc::c_char;
 }

@@ -1,0 +1,63 @@
+[1] "café"
+[1] "UTF-8"
+[1] "café"
+[1] "latin1"
+[1] "caf\xe9"
+[1] "unknown"
+[1] "café"
+[1] "UTF-8"
+[1] "café"
+[1] "UTF-8"
+[1] "ab"   NA     "café"
+[1] "unknown" "unknown" "UTF-8"  
+[1] NA
+            a             b 
+"caf<c3><a9>"           "x" 
+[1] "caf<U+00E9>"
+[1] "<U+1F600>x"
+[1] "caf\\u00e9"         "\\u4e2d\\U0001f600"
+[1] "caf??"
+[1] "caf"
+[1] "caf<bad><bad>"
+[1] NA
+[1] "a<ff>b"
+[1] "aUnicodeb"
+[1] "a<ff>b"
+[1] "a<e9>"
+[1] "cafe"
+[1] "cafe"
+[[1]]
+[1] 63 00 61 00 66 00 e9 00
+
+[1] "cé" NA  
+[1] "ab"
+[1] "a<00><d8>"
+[[1]]
+[1] c3 a9
+
+[[2]]
+NULL
+
+[[1]]
+[1] ff
+
+[[1]]
+NULL
+
+[[2]]
+[1] 78
+
+character(0)
+character(0)
+[1] "1" "2" "3"
+[1] "a" "b"
+[1] "unsupported conversion from 'UTF-8' to 'NOT-AN-ENCODING'"
+[1] "unsupported conversion from 'NOPE' to 'UTF-8'"
+[1] "invalid 'from' argument"
+[1] "invalid 'to' argument"
+[1] "invalid 'sub' argument"
+[1] "invalid 'mark' argument"
+[1] "invalid 'toRaw' argument"
+[1] "'x' must be a character vector"
+[1] "'x' must be a character vector or a list of NULL or raw vectors"
+[1] "embedded nul in string: 'a\\0'"
