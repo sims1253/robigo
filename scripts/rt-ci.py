@@ -277,10 +277,14 @@ def steps(crates):
         # with a collection due almost always, the check makes any &Cx
         # request of LARGE bytes or more panic where it is made: such a
         # request goes through cx.alloc_rooted (docs/g3.md §3 item 3)
+        # the boot heap's freeze (robigo-heap's freeze.rs): its invariant
+        # checked at every collection here, where every allocation collects
+        # (the move modes below leave the freeze off)
         ("gctorture (collect at every allocation) and the GC stats check",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check"}, [*test, *pkgs, *skip]),
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check", "ROBIGO_GC_FREEZE_CHECK": "1"}, [*test, *pkgs, *skip]),
         # docs/g3.md §15.3 E3: the rt slice under the collector modes
-        ("conformance under gctorture (E3)", {"ROBIGO_GCTORTURE": "1", **slow}, conformance),
+        ("conformance under gctorture (E3)",
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_FREEZE_CHECK": "1", **slow}, conformance),
         # every argument a PROMSXP at call entry (GNU R's representation,
         # through the same binding-kind transitions): docs/g3.md §16's
         # ROBIGO_MATERIALIZE=1

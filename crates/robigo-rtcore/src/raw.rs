@@ -89,6 +89,28 @@ impl Cx {
         self.flush_gc_report();
     }
 
+    /// Whether the boot heap's freeze runs here (not under ROBIGO_GC_MOVE's
+    /// modes).
+    pub fn freeze_enabled(&self) -> bool {
+        // SAFETY: one read of the core.
+        unsafe { self.iso().core() }.freeze_enabled()
+    }
+
+    /// Whether `x` is one of the freeze's objects.
+    pub fn is_frozen(&self, x: crate::Ref<'_>) -> bool {
+        // SAFETY: one read of the core.
+        unsafe { self.iso().core() }.is_frozen(x.sexp())
+    }
+
+    /// The freeze's invariant, checked (`ROBIGO_GC_FREEZE_CHECK`'s check):
+    /// panics if a frozen object that is not logged points to an ordinary
+    /// one.
+    pub fn check_frozen(&self) {
+        // SAFETY: outside a collection, frozen objects and their fields are
+        // live; one read of the core.
+        unsafe { self.iso().core().check_frozen() }
+    }
+
     /// Log `x` as a root, once (robigo-heap's `Core::remember`): a frozen
     /// object whose fields C may write without the barrier.
     ///

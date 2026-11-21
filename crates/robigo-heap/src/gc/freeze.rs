@@ -267,3 +267,50 @@ impl Core {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct One(Sexp);
+    impl Trace for One {
+        fn trace<V: Visitor + ?Sized>(&mut self, v: &mut V) {
+            v.edge(&mut self.0);
+        }
+    }
+
+    /// Under Miri as well (no collection): what a root reaches is frozen,
+    /// an excluded object is not, the invariant holds, and a store of an
+    /// ordinary object into a frozen one logs it.
+    #[test]
+    fn a_frozen_graph_keeps_the_invariant_through_a_store() {
+        let mut c = Core::new();
+        if !c.freeze_enabled() {
+            return;
+        }
+        let nil = c.nil();
+        // SAFETY: fresh objects of this heap; nothing collects.
+        unsafe {
+            let leaf = c.alloc_vector(INTSXP, 3).unwrap();
+            let keep = c.alloc_vector(REALSXP, 1).unwrap();
+            let cell = c.alloc_node(LISTSXP, leaf, nil, nil).unwrap();
+            let head = c.alloc_node(LISTSXP, keep, cell, nil).unwrap();
+            let n = c.freeze(&mut One(head), |x| x == keep);
+            assert_eq!(n, 3, "head, cell and leaf");
+            assert!(c.is_frozen(head) && c.is_frozen(cell) && c.is_frozen(leaf));
+            assert!(!c.is_frozen(keep) && keep.flags() & flags::IMMORTAL == 0, "excluded");
+            // head points to the excluded `keep`: logged at the freeze
+            assert_eq!(head.flags() & flags::BARRIER, 0, "a frozen object with an ordinary child is logged");
+            assert_ne!(cell.flags() & flags::BARRIER, 0, "one with frozen children only is not");
+            assert_eq!(head.refcnt(), FROZEN_REFCNT, "a frozen object reads as shared");
+            c.check_frozen();
+            // a store of an ordinary object into a frozen one passes the barrier
+            let young = c.alloc_vector(INTSXP, 1).unwrap();
+            cell.store(cell.as_ptr().add(crate::layout::node::OFF_CAR) as *mut Sexp, young);
+            assert_eq!(cell.flags() & flags::BARRIER, 0, "the store logged it");
+            c.check_frozen();
+            // a second freeze does nothing
+            assert_eq!(c.freeze(&mut One(young), |_| false), 0);
+        }
+    }
+}
