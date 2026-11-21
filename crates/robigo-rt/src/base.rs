@@ -711,8 +711,9 @@ fn stubs_for(cx: &mut Cx, primitives: &[&'static str], internals: &[&'static str
     use robigo_rtbuiltins::names::{internal_eval, primitive_eval};
     let st = crate::prims::state(cx);
     // (the defined names once, not a scan of the definitions per name:
-    // names.c has some 1,500 entries)
-    let defined: std::collections::HashSet<(&str, bool)> = st.defs.iter().map(|d| (d.name, d.internal())).collect();
+    // names.c has some 1,500 entries; hashed with the translator's hasher,
+    // not SipHash: the keys are names.c's compiled-in names, never R's)
+    let defined: crate::compile::PosSet<(&str, bool)> = st.defs.iter().map(|d| (d.name, d.internal())).collect();
     let have = |name: &str, internal: bool| defined.contains(&(name, internal));
     let stub = |name: &'static str, eval: i32, internal: bool| {
         let kind = match (eval % 10 == 1, internal) {
