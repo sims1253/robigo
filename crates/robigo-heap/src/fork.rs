@@ -7,9 +7,10 @@
 //! glibc is the only target robigo-rtcore builds for (`clib.rs`'s
 //! `compile_error!`). Elsewhere (robigo-heap alone, on another unix) the
 //! first `Core::new` registers them. There a fork racing that first
-//! registration on another thread is not covered: a second thread's heap
-//! may take the arena's lock before the first thread's `pthread_atfork`
-//! returns.
+//! registration on another thread is not covered: when two threads' first
+//! `Core::new`s race, the swap's loser returns before the winner's
+//! `pthread_atfork` has returned (or failed), so the loser's heap may take
+//! the arena's lock while no handlers are registered yet.
 //!
 //! **The process's locks and their order**, the one place it is written:
 //! 0. `FORK` (here): held by a fork's handlers from `prepare` to `parent` /
@@ -98,7 +99,7 @@
 #![cfg_attr(miri, allow(dead_code))]
 
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 /// The embedder's locks: take them, release them (functions of no
 /// arguments), in the order above; null until [`set_fork_locks`]. Plain
@@ -122,8 +123,10 @@ unsafe impl Sync for ForkLock {}
 static FORK: ForkLock = ForkLock(UnsafeCell::new(libc::PTHREAD_MUTEX_INITIALIZER));
 
 /// How many forks have entered `prepare`: a test's evidence that a fork
-/// reached the handlers while it held a lock.
-static PREPARES: AtomicU64 = AtomicU64::new(0);
+/// reached the handlers while it held a lock (test-support only: the hooks
+/// never ship).
+#[cfg(feature = "test-support")]
+static PREPARES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 static REGISTERED: AtomicBool = AtomicBool::new(false);
 
@@ -244,6 +247,7 @@ extern "C" fn prepare() {
     // SAFETY: the static mutex, initialized; released by `release` in the
     // parent, or in the child by the same (forking) thread's copy.
     unsafe { libc::pthread_mutex_lock(FORK.0.get()) };
+    #[cfg(feature = "test-support")]
     PREPARES.fetch_add(1, Ordering::SeqCst);
     let take = EMBEDDER_TAKE.load(Ordering::SeqCst);
     if !take.is_null() {
@@ -307,8 +311,9 @@ pub(crate) fn register() {
         // pthread_atfork takes them; `release` serves parent and child.
         let r = unsafe { libc::pthread_atfork(Some(prepare), Some(release), Some(release)) };
         if r != 0 {
-            // not registered: a later caller (the next `Core::new`) tries
-            // again
+            // not registered. On the `Core::new` path a later `Core::new`
+            // tries again; on the constructor's path the panic aborts the
+            // process before `main` (a panic cannot unwind out of it)
             REGISTERED.store(false, Ordering::SeqCst);
             panic!("robigo: pthread_atfork failed ({r})");
         }
