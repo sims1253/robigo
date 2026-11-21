@@ -399,6 +399,41 @@ fn coerce_error(v: Ref<'_>, ty: u8) -> String {
 /// false skips the `SHALLOW_DUPLICATE_ATTRIB` of the atomic conversions,
 /// for a caller that clears them after (`CLEAR_ATTRIB`).
 // R: coerce.c:coerceVector
+/// allocVector's `intCHARSXP` (memory.c), a type it allocates although no
+/// object has it.
+const INTCHARSXP: u8 = 73;
+
+/// Whether [`coerce`]`(v, ty)` ends in an error that names `ty` through
+/// `type2char`, as GNU R's does for a target no type names: the C API's
+/// `coerceVector` then gives type2char's warning before it. It follows
+/// [`coerce`]'s dispatch, and is false where that returns or errors before
+/// naming the target:
+/// - a source of that type;
+/// - a package ALTREP vector or an S4 object, which robigo-rt does not
+///   coerce yet;
+/// - an environment ("environments cannot be coerced to other types");
+/// - a vectorizable pairlist to a type allocVector accepts but
+///   coercePairList does not fill: UNIMPLEMENTED_TYPE.
+///
+/// (compact ALTREP coerces only to types with a name.)
+// R: coerce.c:coerceVector, coerce.c:coercePairList, memory.c:allocVector3
+pub fn error_names_target(v: Ref<'_>, ty: u8) -> bool {
+    let t = v.sexptype();
+    if t == ty || v.is_package_altrep() || (v.is_s4() && t == OBJSXP) || t == ENVSXP {
+        return false;
+    }
+    if matches!(t, NILSXP | LISTSXP) && matches!(ty, LANGSXP | NILSXP | INTCHARSXP) {
+        let mut items = Vec::new();
+        let mut c = v.as_cons();
+        while let Some(cell) = c {
+            items.push(cell.car());
+            c = cell.cdr().as_cons();
+        }
+        return !vectorizable(&items);
+    }
+    true
+}
+
 pub fn coerce<'g>(cx: &'g Cx, v: Ref<'g>, ty: u8, keep_attrs: bool) -> Result<Coerced<'g>, NeedGc> {
     let t = v.sexptype();
     if t == ty {
@@ -832,7 +867,7 @@ fn coerce_pairlist<'g>(cx: &'g Cx, v: Ref<'g>, ty: u8) -> Result<Coerced<'g>, Ne
         match ty {
             LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP => {}
             CHARSXP => return fail("use of allocVector(CHARSXP ...) is defunct\n".into()),
-            LANGSXP | NILSXP => return fail(unimplemented_type("coercePairList", v)),
+            LANGSXP | NILSXP | INTCHARSXP => return fail(unimplemented_type("coercePairList", v)),
             _ => {
                 return fail(format!("invalid type/length ({}/{}) in vector allocation", type2char(ty), items.len()));
             }

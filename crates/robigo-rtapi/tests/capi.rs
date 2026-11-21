@@ -565,6 +565,19 @@ fn coerce_vector_to_an_unnamed_type_warns_as_type2char_does() {
             "invalid type/length (unknown type #30/2) in vector allocation".into(),
         ])
     );
+    // intCHARSXP (73): allocVector allocates it, so coercePairList's own
+    // error, without a warning; an atomic source still names it
+    assert_eq!(
+        run(&mut s, "pairlist(1)", 73),
+        Val::Str(vec!["unimplemented type 'pairlist' in 'coercePairList'\n".into()])
+    );
+    assert_eq!(
+        run(&mut s, "1:2", 73),
+        Val::Str(vec![
+            "type 73 is unimplemented in 'type2char'".into(),
+            "cannot coerce type 'integer' to vector of type 'unknown type #73'".into(),
+        ])
+    );
     // a named type GNU R cannot allocate: allocVector's error, no warning
     assert_eq!(
         run(&mut s, "pairlist(1)", 3),
