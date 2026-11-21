@@ -117,6 +117,8 @@ pub struct Isolate {
     /// The evaluator, dispatcher and condition system (`hooks.rs`).
     pub(crate) hooks: Cell<Hooks>,
     pub(crate) locale: Cell<Locale>,
+    /// The locale's names per category (`Sys.getlocale`).
+    pub(crate) locale_names: std::cell::RefCell<crate::clib::LocaleNames>,
     /// The embedder's grant of the process environment's writes
     /// (`clib::EnvWrites`, [`OwnedIsolate::grant_env_writes`]): without
     /// it `Sys.setenv`/`Sys.unsetenv` refuse.
@@ -576,6 +578,23 @@ impl Cx {
         self.iso().locale.set(l);
         // the C globals that read it (Defn.h's mbcslocale, R_MB_CUR_MAX)
         self.cglobals().set_locale(l);
+    }
+
+    /// The locale's names per category, as `setlocale(category, NULL)`
+    /// gives them (`Sys.getlocale`).
+    pub fn locale_names(&self) -> crate::clib::LocaleNames {
+        self.iso().locale_names.borrow().clone()
+    }
+
+    /// One category's locale name, `setlocale(cat, NULL)`
+    /// ([`crate::clib::LocaleNames::get`]).
+    pub fn locale_name(&self, cat: crate::clib::category::c_int) -> Vec<u8> {
+        self.iso().locale_names.borrow().get(cat)
+    }
+
+    /// Set the locale's names (startup's, `Sys.setlocale`'s).
+    pub fn set_locale_names(&mut self, n: crate::clib::LocaleNames) {
+        *self.iso().locale_names.borrow_mut() = n;
     }
 
     /// GNU R's `R_warn_partial_match_args`: argument matching warns of
@@ -1164,6 +1183,7 @@ impl OwnedIsolate {
             ext_index: UnsafeCell::new(Vec::new()),
             hooks: Cell::new(Hooks::default()),
             locale: Cell::new(opts.locale),
+            locale_names: Default::default(),
             env_writes: std::cell::OnceCell::new(),
             warn_partial_match_args: Cell::new(false),
             no_inplace: Cell::new(false),

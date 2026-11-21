@@ -215,7 +215,7 @@ jobs:
           IMAGE: ${{ needs.select.outputs.image_oracle_4_6_2 }}
         run: |
           image=$(printf '%s' "$IMAGE" | sha256sum | cut -c1-16)
-          echo "key=rdb-oracle-1-$image-${{ hashFiles('scripts/rt-rdb-roundtrip.sh') }}" >> "$GITHUB_OUTPUT"
+          echo "key=rdb-oracle-1-$image-${{ hashFiles('scripts/rt-rdb-roundtrip.sh', 'scripts/lazyload-ck.R') }}" >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@v6
         id: data
         with:
@@ -300,11 +300,12 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     # Measured (docs/ledger/g3/2026-11-17-rt-job-capacity.md and
-    # 2026-11-17-retry-torture-ci.md): the slowest hosted runners take ~20 min
-    # with a case per CPU, ~9 of them the release tests, and the retry-torture
-    # step (rt-ci.py's last: its feature rebuild and run) adds ~4; 40 keeps
-    # 1.6x the ~24. A step that adds minutes moves this number with data.
-    timeout-minutes: 40
+    # 2026-11-17-retry-torture-ci.md): the job took ~24 min on 2026-11-17 and
+    # 29-38 min by 2026-11-21 (main's 2f16dc4c: 36.5), as the cases grew; a
+    # run at 40 was cancelled inside its last step (retry-torture's
+    # conformance, reached at minute 31). 60 is a stopgap, 1.6x the 38: the
+    # fix is splitting rt-ci.py's steps over parallel jobs (A1, queued).
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
@@ -367,12 +368,15 @@ jobs:
       # (docs/ledger/g3/2026-11-17-v3-bcodesxp-ir.md)
       # (the classes' counts printed whether the test passes or not: they
       # matter most when it fails; the step keeps the test's status)
-      - name: GNU R's lazy-load databases round-trip (rdb_roundtrip), base.rdb's closures translated
+      - name: GNU R's lazy-load databases (rdb_roundtrip, base.rdb's closures translated; lazyload)
         run: |
           report="$RUNNER_TEMP/bc-crosscheck-base.txt"
           status=0
           ROBIGO_ORACLE_LIBRARY="$PWD/.robigo/oracle-lib" ROBIGO_BC_CROSSCHECK=1 ROBIGO_BC_CROSSCHECK_REPORT="$report" \
             cargo test --release --locked -p robigo-rt --test rdb_roundtrip -- --nocapture || status=$?
+          # (L4's makeLazy: base's lazyLoad of the same databases, through the binary)
+          ROBIGO_ORACLE_LIBRARY="$PWD/.robigo/oracle-lib" \
+            cargo test --release --locked -p robigo-rtapi --test lazyload -- --nocapture || status=$?
           if [ -f "$report" ]; then sed 's/: .*//' "$report" | sort | uniq -c; fi
           exit "$status"
 
