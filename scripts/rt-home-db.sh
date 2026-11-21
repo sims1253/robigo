@@ -14,6 +14,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 bin=
 if [ "${1:-}" = --robigo-rt ]; then
+  [ $# -ge 2 ] || { echo "usage: scripts/rt-home-db.sh [--robigo-rt BIN] [DIR]" >&2; exit 2; }
   bin=$2
   shift 2
 fi
@@ -24,6 +25,11 @@ if [ -z "$bin" ]; then
 fi
 [ -x "$bin" ] || { echo "rt-home-db.sh: no robigo-rt at $bin (cargo build --release -p robigo-rtapi)" >&2; exit 2; }
 out=${1:-.robigo/rt-home-db}
+# one build of the tree at a time (another's rm and mv would interleave
+# with this one's), as scripts/build.sh locks its target
+mkdir -p "$(dirname "$out")"
+exec 9> "$out.lock"
+flock 9
 src_tree=$(scripts/rt-home.sh)
 rsrc=$(scripts/r-src.sh)
 stamp="$(cat "$src_tree/.rt-home") $(sha256sum "$0" | cut -c1-16) $(sha256sum "$bin" | cut -c1-16)"

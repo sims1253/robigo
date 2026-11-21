@@ -254,7 +254,9 @@ impl Wide {
         self.by_name.get(name).map(|&i| &self.names[i])
     }
 
-    /// The files the definitions are read from, each once.
+    /// The files the definitions are read from (lazily, on a name's first
+    /// use) and the profile's `boot` forms (read and run at load), each
+    /// once.
     pub fn files(&self) -> Vec<&'static str> {
         let mut v: Vec<&'static str> = Vec::new();
         for n in &self.names {
@@ -308,7 +310,8 @@ pub fn source_dir() -> Result<PathBuf, String> {
 /// What [`load`] did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Loaded {
-    /// The files the lazy bindings read their definitions from.
+    /// The files the lazy bindings read their definitions from, and the
+    /// boot forms' (read at load).
     pub files: usize,
     /// The names bound lazily.
     pub closures: usize,
@@ -427,8 +430,14 @@ fn where_is(lib: &Path, form: Form) -> String {
 /// The bytes of `form`, read from the tree, with configure's substitutions
 /// made.
 fn form_bytes(cx: &Cx, form: Form) -> Result<Vec<u8>, String> {
-    use std::io::{Read, Seek, SeekFrom};
     let lib = crate::prims::state(cx).base_src.borrow().clone().ok_or("the base sources are not loaded")?;
+    form_text(&lib, form)
+}
+
+/// The bytes of `form` in the tree `lib` (its `src/library`), with
+/// configure's substitutions made: what the loader evaluates.
+pub fn form_text(lib: &Path, form: Form) -> Result<Vec<u8>, String> {
+    use std::io::{Read, Seek, SeekFrom};
     let path = lib.join(form.src);
     let mut f = std::fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut b = vec![0u8; form.end - form.start];
@@ -841,6 +850,9 @@ mod tests {
 pub struct Stage0 {
     pub exprs: usize,
     pub failed: Vec<(usize, String)>,
+    /// names.c's primitives and internals bound to the not-implemented
+    /// builtins (as [`Loaded::stubs`]).
+    pub stubs: usize,
 }
 
 /// GNU R's boot of base (m2m3-plan §B L2's stage 0, L5's boot):
@@ -867,8 +879,8 @@ pub fn stage0(cx: &mut Cx, home: &Path) -> Result<Stage0, String> {
     // InitNames: every primitive and internal of names.c's table bound
     let prims: Vec<&'static str> = robigo_rtbuiltins::names::PRIMITIVES.iter().map(|p| p.0).collect();
     let internals: Vec<&'static str> = robigo_rtbuiltins::names::INTERNALS.iter().map(|p| p.0).collect();
-    stubs_for(cx, &prims, &internals);
-    init_graphics(cx)?;
+    st.stubs = stubs_for(cx, &prims, &internals);
+    init_graphics(cx).map_err(|e| format!("binding .Device: {e}"))?;
     repl_file(cx, &home.join("library/base/R/base"), &mut st)?;
     // R_LoadProfile(R_OpenSysInitFile(), baseNSenv): the system profile,
     // in the base namespace, the same way (setup_Rmainloop's next steps,
