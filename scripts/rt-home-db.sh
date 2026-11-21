@@ -25,6 +25,8 @@ if [ -z "$bin" ]; then
 fi
 [ -x "$bin" ] || { echo "rt-home-db.sh: no robigo-rt at $bin (cargo build --release -p robigo-rtapi)" >&2; exit 2; }
 out=${1:-.robigo/rt-home-db}
+# (no trailing slash: the lock is the tree's sibling, whatever the spelling)
+while [ "$out" != / ] && [ "${out%/}" != "$out" ]; do out=${out%/}; done
 # one build of the tree at a time (another's rm and mv would interleave
 # with this one's), as scripts/build.sh locks its target
 mkdir -p "$(dirname "$out")"

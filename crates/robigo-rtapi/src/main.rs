@@ -21,10 +21,16 @@ use std::os::unix::ffi::OsStrExt;
 const USAGE: &str = "Usage: robigo-rt [--vanilla] [options] file [args]\n   or: robigo-rt [--vanilla] [options] -e expr [-e expr2 ...] [args]\n   or: robigo-rt --quiet [options] -f file [--args args]\n";
 
 fn main() {
-    // an unknown boot is a mistake, not M1's loader by default
-    if let Err(m) = boot_checked() {
-        eprintln!("robigo-rt: {m}");
-        std::process::exit(2);
+    // an unknown boot is a mistake, not M1's loader by default; read once,
+    // before anything (an Renviron's ROBIGO_RT_BOOT changes nothing)
+    match boot_checked() {
+        Ok(b) => {
+            let _ = BOOT.set(b);
+        }
+        Err(m) => {
+            eprintln!("robigo-rt: {m}");
+            std::process::exit(2);
+        }
     }
     let home = init_r_home();
     std::process::exit(run(std::env::args_os().skip(1).collect(), &home));
@@ -176,9 +182,12 @@ fn boot_checked() -> Result<Boot, String> {
     }
 }
 
-/// [`boot_checked`]'s boot (`main` has refused an unknown one).
+/// The boot `main` read at the start ([`boot_checked`]).
+static BOOT: std::sync::OnceLock<Boot> = std::sync::OnceLock::new();
+
+/// The boot `main` read at the start.
 fn boot() -> Boot {
-    boot_checked().unwrap_or(Boot::M1)
+    *BOOT.get().expect("robigo: the boot is read first in main")
 }
 
 /// Whether `h` holds base's tree: the file stage 0 reads first,
