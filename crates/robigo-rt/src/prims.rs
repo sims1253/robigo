@@ -159,6 +159,8 @@ static RT_PRIMS: &[PrimDef] = &[
     special_fn("withVisible", crate::eval::do_with_visible, 10, 1),
     special_fn("forceAndCall", crate::apply::do_force_and_call, 0, -1),
     special_fn("declare", crate::declare::do_declare, 100, -1),
+    special_fn("Exec", crate::tailcall::do_tailcall::<false>, 200, -1),
+    special_fn("Tailcall", crate::tailcall::do_tailcall::<true>, 200, -1),
     // bind.c: special .Internals (names.c eval 10)
     special_fn("cbind", crate::bind::do_bind::<true>, 10, -1),
     special_fn("rbind", crate::bind::do_bind::<false>, 10, -1),

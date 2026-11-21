@@ -80,6 +80,7 @@ pub mod search;
 pub mod serialize;
 pub mod source;
 mod specials;
+mod tailcall;
 mod util;
 pub mod vm;
 

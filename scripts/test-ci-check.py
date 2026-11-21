@@ -13,7 +13,7 @@ spec = importlib.util.spec_from_file_location("ci_check", HERE / "ci-check.py")
 chk = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(chk)
 
-JOBS = ["select", "lint", "miri", "rdb-data", "builtin-diff-data", "rt", "rt-gctorture", "rt-feature-builds", "rt-builtin-diff", "rt-debug-assertions", "base-subset", "build", "perf-base", "release-tests", "test", "bytecode-fidelity", "counters",
+JOBS = ["select", "lint", "miri", "rdb-data", "builtin-diff-data", "rt", "rt-gctorture", "rt-feature-builds", "rt-builtin-diff", "rt-debug-assertions", "rt-release-crate-tests", "base-subset", "build", "perf-base", "release-tests", "test", "bytecode-fidelity", "counters",
         "corpora", "fuzz", "cran", "smoke", "package-gate", "perf", "perf-rt-build", "perf-rt", "rt-corpora"]
 
 
@@ -163,6 +163,14 @@ class Rule(unittest.TestCase):
         # not stacked, the same skips are not explained
         self.assertFalse(passes(needs("false", "false", "true", **skip)))
 
+    def test_the_release_crate_tests_run_on_main_and_may_be_skipped_on_pull_requests(self):
+        skipped = needs(rt_release_crate_tests="skipped")
+        self.assertTrue(passes(skipped, pull_request=True))
+        self.assertFalse(passes(skipped, pull_request=False))       # main: it must run
+        self.assertTrue(passes(needs("true", "true", "false", rt_release_crate_tests="skipped"), pull_request=False))
+        self.assertFalse(passes(needs(rt_release_crate_tests="failure"), pull_request=False))
+        self.assertFalse(passes(needs(rt_release_crate_tests="failure"), pull_request=True))
+
     def test_a_cancelled_run_fails_check(self):
         # every need cancelled (a run cancelled by hand, or superseded): red
         n = {j: {"result": "cancelled", "outputs": {}} for j in JOBS}
@@ -170,22 +178,23 @@ class Rule(unittest.TestCase):
         self.assertFalse(passes(n, pull_request=False))
         self.assertFalse(passes(needs(rt="cancelled")))
 
-    def test_check_runs_always_and_pull_requests_share_no_group(self):
-        # Check runs in a cancelled run too, so a hand-cancelled head run is
-        # red; then no shared group may make a new run wait behind it
+    def test_check_runs_always_and_a_pull_requests_runs_share_one_group(self):
+        # Check runs in a cancelled run too (never skipped: a skipped required
+        # check passes), so a run cancelled before every need passed
+        # (superseded or by hand) is red on its cancelled needs
         wf = (HERE.parent / ".github/workflows/ci.yml").read_text()
         self.assertIn("    name: Check\n    if: ${{ always() }}\n", wf)
-        # main's push runs share one group that never cancels a started run
-        # (a newer push replaces only the pending one); every other run,
-        # pull requests' included, has a group of its own
-        self.assertIn("  group: ci-${{ github.event_name == 'push' && 'main' || github.run_id }}\n"
-                      "  cancel-in-progress: false\n", wf)
+        # a pull request's runs share one group that cancels the older run at
+        # once; main's push runs share one that never cancels a started run
+        # (a newer push replaces only the pending one); a manual dispatch has
+        # its own
+        self.assertIn("  group: ci-${{ github.event_name == 'push' && 'main' || github.event_name == 'pull_request' "
+                      "&& format('pr-{0}', github.event.pull_request.number) || github.run_id }}\n"
+                      "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n", wf)
         self.assertEqual(wf.split("\non:\n", 1)[1].split("\n  pull_request:", 1)[0],
                          "  push:\n    branches: [main]", "push runs are main's alone")
-        # select cancels the superseded runs, as its first step
-        steps = wf.split("\n  select:\n", 1)[1].split("\n    steps:\n", 1)[1].splitlines()
-        first = next(l.strip() for l in steps if not l.strip().startswith("#"))
-        self.assertEqual(first, "- name: Cancel this pull request's superseded runs")
+        # (the group cancels: no job of the run does it any more)
+        self.assertNotIn("/cancel", wf)
 
     def test_workflow_needs_every_gating_job(self):
         import re

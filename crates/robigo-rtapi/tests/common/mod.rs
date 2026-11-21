@@ -56,7 +56,8 @@ pub fn support_object(src: &str, name: &str, defines: &[&str]) -> PathBuf {
     let defines: Vec<String> = defines.iter().map(|d| d.to_string()).collect();
     let key = support_key(&src, &defines);
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("capi_test-{name}-{key:016x}"));
-    std::fs::create_dir_all(&dir).expect("making a support object's directory");
+    // (made in build_support, under the lock: another test's cleanup, made
+    // under it too, would otherwise see the new directory empty and remove it)
     let out = dir.join(format!("{name}.so"));
     build_support(&src, &defines, &out);
     out
@@ -108,6 +109,8 @@ fn build_support(src: &Path, extra: &[String], out: &Path) {
         .open(dir.join("capi_test.lock"))
         .expect("opening the support objects' lock");
     lock.lock().expect("locking the support objects");
+    std::fs::create_dir_all(out.parent().expect("a support object's directory"))
+        .expect("making a support object's directory");
     if out.exists() {
         // each use dates the object (before it is loaded): the cleanup
         // below removes only what no run has used for a day
@@ -160,13 +163,31 @@ fn remove_stale_objects(dir: &Path, keep: &Path) {
         if p.is_dir() {
             let objects: Vec<PathBuf> =
                 std::fs::read_dir(&p).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
-            if objects.iter().all(|o| old(o)) {
+            // (an empty directory is dated by itself: `all` of none is true,
+            // and a directory made a moment ago must stay)
+            if if objects.is_empty() { old(&p) } else { objects.iter().all(|o| old(o)) } {
                 let _ = std::fs::remove_dir_all(&p);
             }
         } else if old(&p) {
             let _ = std::fs::remove_file(&p);
         }
     }
+}
+
+/// A directory another test has just made for its object, still empty, is
+/// not stale: the cleanup a build runs keeps it (CI's cold runs lost such a
+/// directory to a parallel test's cleanup, and the compiler then had nowhere
+/// to write).
+#[test]
+fn a_new_empty_support_directory_survives_the_cleanup() {
+    let base = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("cleanup-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let fresh = base.join("capi_test-fresh-0");
+    std::fs::create_dir_all(&fresh).unwrap();
+    let keep = base.join("capi_test-keep-0").join("keep.so");
+    remove_stale_objects(&base, &keep);
+    assert!(fresh.is_dir(), "the cleanup removed a directory made a moment ago");
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// A described value.
