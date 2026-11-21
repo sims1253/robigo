@@ -3363,6 +3363,14 @@ fn a_new_symbol_gets_its_names_bits_when_it_is_made() {
 /// child never finds it held by a thread it does not have. The child
 /// installs a name the parent has (the same symbol) and a new one, and exits
 /// with the result.
+///
+/// What it covers: the arena's lock with heap-only users, the handlers
+/// registered before `main` by `fork.rs`'s constructor (on Linux; the
+/// first `Core::new` registers them only where there is none). What it does not cover:
+/// whether the fork lands while the other thread holds the lock. The
+/// interleaving is left to the scheduler, so a pass may never have
+/// overlapped. robigo-rtcore's `fork_tests` hold each of the process's
+/// locks across the fork deterministically, and fail without the handlers.
 #[test]
 fn a_fork_child_interns_while_another_thread_interns() {
     use std::sync::atomic::AtomicBool;

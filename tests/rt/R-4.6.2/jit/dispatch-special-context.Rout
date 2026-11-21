@@ -1,0 +1,84 @@
+[[1]]
+[[1]]$call
+`$.ctx`(x, "a")
+
+[[1]]$fn
+[1] "function (x, name) "
+
+[[1]]$n
+[1] 3
+
+[[1]]$pf
+[1] FALSE
+
+[[1]]$calls
+[1] 3
+
+
+[[2]]
+[[2]]$call
+`[.ctx`(x, 2)
+
+[[2]]$n
+[1] 3
+
+[[2]]$i
+[1] 2
+
+
+[[3]]
+[[3]]$call
+`$.ctx`(x, "b")
+
+[[3]]$fn
+[1] "function (x, name) "
+
+[[3]]$n
+[1] 4
+
+[[3]]$pf
+[1] FALSE
+
+[[3]]$calls
+[1] 4
+
+
+[1] "exit a"   "exit [ 2" "exit b"   "exit a"   "exit [ 2" "exit b"   "exit a"  
+[8] "exit [ 2" "exit b"  
+[[1]]
+[[1]]$call
+`$.ctx`(x, a)
+
+[[1]]$fn
+[1] "function (x, name) "
+
+[[1]]$n
+[1] 4
+
+[[1]]$pf
+[1] TRUE
+
+[[1]]$calls
+[1] 4
+
+
+[[2]]
+[[2]]$call
+`[.ctx`(x, 3)
+
+[[2]]$n
+[1] 4
+
+[[2]]$i
+[1] 3
+
+
+[1] "exit a"   "exit [ 3"
+`$.ctx`(x, boom)
+`$.ctx`(x, "boom")
+[1] "index too big"
+[1] "index too big"
+[1] "exit boom" "exit boom" "exit [ 11" "exit [ 11"
+[1] "print(k())"       "k()"              "y$q"              "`$.frames`(y, q)"
+[1] "print(k())"           "k()"                  "y$q"                 
+[4] "`$.frames`(y, \"q\")"
