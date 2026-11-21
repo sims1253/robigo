@@ -170,7 +170,22 @@ impl Roots {
         use robigo_heap::Trace;
         self.envs.trace_freeze_roots(v);
         self.globals.trace(v);
-        self.capi.trace(v);
+        self.capi.trace_freeze_constants(v);
+        // the search path's environments after the global one (amendment 4:
+        // the attached packages a start with default packages loaded)
+        let base = self.envs.base_raw();
+        let mut e = self.envs.global_raw();
+        loop {
+            // SAFETY: the global environment and its enclosures are live
+            // environments of this isolate (the search path's chain ends at
+            // base, then the empty environment).
+            e = unsafe { robigo_heap::env::enclos(e) };
+            if e.is_null() || e == base || e == self.envs.empty_raw() {
+                break;
+            }
+            let mut x = e;
+            v.edge(&mut x);
+        }
     }
 }
 

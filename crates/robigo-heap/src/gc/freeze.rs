@@ -169,17 +169,46 @@ impl Core {
                 parents.entry(k.addr()).or_default().push(f);
             }
         }
+        // and through the ordinary objects the logged ones reach: a frozen
+        // container can reach a target through an ordinary one (Sol r2 S3)
+        // SAFETY: outside marking, the log is not borrowed elsewhere.
+        let mut work: Vec<Sexp> = unsafe { &*self.remembered.0.get() }.clone();
+        let mut seen: HashSet<usize, BuildFx> = HashSet::default();
+        while let Some(o) = work.pop() {
+            kids.clear();
+            // SAFETY: the log's objects and what they reach are live.
+            unsafe { o.trace_fields(&mut Edges(&mut kids)) };
+            for &k in &kids {
+                // SAFETY: as above.
+                let ordinary = unsafe { k.flags() } & flags::IMMORTAL == 0;
+                if ordinary {
+                    parents.entry(k.addr()).or_default().push(o);
+                    if seen.insert(k.addr()) {
+                        work.push(k);
+                    }
+                } else if self.is_frozen(k) && !self.is_frozen(o) {
+                    // an ordinary object's edge into the frozen set
+                    parents.entry(k.addr()).or_default().push(o);
+                }
+            }
+        }
+        // walk up from the targets through frozen and ordinary referrers;
+        // the frozen ones on the way thaw
         let mut thaw: HashSet<usize, BuildFx> = HashSet::default();
+        let mut up: HashSet<usize, BuildFx> = HashSet::default();
+        for t in targets.iter() {
+            up.insert(t.addr());
+        }
         while let Some(t) = targets.pop() {
+            if self.is_frozen(t) {
+                thaw.insert(t.addr());
+            }
             if let Some(ps) = parents.get(&t.addr()) {
                 for &p in ps {
-                    if thaw.insert(p.addr()) {
+                    if up.insert(p.addr()) {
                         targets.push(p);
                     }
                 }
-            }
-            if self.is_frozen(t) {
-                thaw.insert(t.addr());
             }
         }
         for i in 0..self.frozen.len() {
@@ -238,9 +267,12 @@ impl Core {
     /// Queue a frozen object to become ordinary at the next collection (a
     /// weak reference keyed on it is being made). Nothing for any other
     /// object.
-    pub fn request_unfreeze(&mut self, x: Sexp) {
+    ///
+    /// # Safety
+    /// `x` is null or a live object of this heap (`register_weak_ref`'s key).
+    pub(super) unsafe fn request_unfreeze(&mut self, x: Sexp) {
         // an ordinary key pays one header test (Sol S7)
-        // SAFETY: the caller's key is a live object.
+        // SAFETY: the caller's contract.
         if x.is_null() || unsafe { x.flags() } & flags::IMMORTAL == 0 {
             return;
         }
@@ -387,6 +419,41 @@ mod tests {
             c.check_frozen();
             // a second freeze does nothing
             assert_eq!(c.freeze(&mut One(young), |_| false), 0);
+        }
+    }
+
+    /// A weak reference made after the freeze on a key that a frozen
+    /// container reaches through an ordinary object (Sol r2 S3): the unfreeze
+    /// thaws the key and that container, which leaves the log, so only
+    /// reachability decides.
+    #[test]
+    fn the_unfreeze_thaws_a_container_reaching_the_key_through_an_ordinary_object() {
+        let mut c = Core::new();
+        if !c.freeze_enabled() {
+            return;
+        }
+        let nil = c.nil();
+        // SAFETY: fresh objects of this heap; nothing collects.
+        unsafe {
+            let key = c.alloc_node(ENVSXP, nil, nil, nil).unwrap();
+            let mid = c.alloc_node(LISTSXP, key, nil, nil).unwrap();
+            let container = c.alloc_node(LISTSXP, mid, nil, nil).unwrap();
+            let rest = c.alloc_node(LISTSXP, key, nil, nil).unwrap();
+            let root = c.alloc_node(LISTSXP, container, rest, nil).unwrap();
+            c.freeze(&mut One(root), |x| x == mid);
+            assert!(c.is_frozen(key) && c.is_frozen(container) && !c.is_frozen(mid));
+            assert_eq!(container.flags() & flags::BARRIER, 0, "the container reaches the ordinary `mid`: logged");
+            let w = c.alloc_vector(WEAKREFSXP, 4).unwrap();
+            w.set_elt(0, key);
+            w.set_elt(1, nil);
+            w.set_elt(2, nil);
+            c.register_weak_ref(w);
+            c.unfreeze_pending();
+            assert!(!c.is_frozen(key) && key.flags() & flags::IMMORTAL == 0, "the key thawed");
+            assert!(!c.is_frozen(container) && container.flags() & flags::IMMORTAL == 0, "and its container");
+            let log = &*c.remembered.0.get();
+            assert!(!log.contains(&container), "which left the log");
+            c.check_frozen();
         }
     }
 

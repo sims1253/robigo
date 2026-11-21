@@ -391,6 +391,35 @@ impl CApi {
     }
 }
 
+impl CApi {
+    /// The freeze roots of the C API (robigo-rtcore's `trace_freeze_roots`):
+    /// its constants, symbols and logicals; not the protect stack or
+    /// `R_VStack`, which are the session's (Sol S2).
+    pub(crate) fn trace_freeze_constants<V: Visitor + ?Sized>(&mut self, v: &mut V) {
+        let g = &mut self.g;
+        for x in [
+            &mut g.nil,
+            &mut g.global_env,
+            &mut g.empty_env,
+            &mut g.base_env,
+            &mut g.base_namespace,
+            &mut g.unbound,
+            &mut g.missing_arg,
+            &mut g.na_string,
+            &mut g.blank_string,
+            &mut g.blank_scalar_string,
+        ] {
+            v.edge(x);
+        }
+        for s in g.symbols.iter_mut() {
+            v.edge(s);
+        }
+        for l in self.logicals.iter_mut() {
+            v.edge(l);
+        }
+    }
+}
+
 /// The block's objects, the live protect-stack slots and `R_VStack`.
 impl Trace for CApi {
     fn trace<V: Visitor + ?Sized>(&mut self, v: &mut V) {

@@ -2019,8 +2019,10 @@ impl Core {
         // a frozen key must be able to die (`freeze.rs`): ordinary from the
         // next collection on
         // SAFETY: the caller's contract: element 0 is the key.
-        let key = unsafe { Self::weak_field(w, 0) };
-        self.request_unfreeze(key);
+        unsafe {
+            let key = Self::weak_field(w, 0);
+            self.request_unfreeze(key);
+        }
     }
 
     /// The references ready for their finalizer (tests, statistics).
@@ -2801,9 +2803,7 @@ impl Core {
                 self.mark_heap_roots();
                 roots.trace(&mut Mark(self));
                 self.mark_rest();
-                if self.freeze_check {
-                    self.check_frozen_marked();
-                }
+
                 if self.gc_move {
                     let moved = self.evacuate();
                     Self::forward_roots(roots);
@@ -2900,6 +2900,11 @@ impl Core {
         // context of matching types, on the core's thread.
         unsafe {
             self.trace_y::<Y>();
+            // ROBIGO_GC_FREEZE_CHECK: after the strong trace, before weak
+            // references and C segments can mark what it missed (Sol r2 S5)
+            if self.freeze_check && !Y {
+                self.check_frozen_marked();
+            }
             // docs/g3.md §3, "What a collection marks" (L8): precise roots
             // (above), weak references and finalizers decided on them alone,
             // then the C segments as pins: what a C word reaches stays

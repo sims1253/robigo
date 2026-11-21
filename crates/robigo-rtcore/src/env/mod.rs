@@ -138,6 +138,16 @@ impl EnvState {
         self.global
     }
 
+    /// The base environment, raw.
+    pub(crate) fn base_raw(&self) -> Sexp {
+        self.base
+    }
+
+    /// The empty environment, raw.
+    pub(crate) fn empty_raw(&self) -> Sexp {
+        self.empty
+    }
+
     /// The freeze roots this state holds (robigo-heap's `freeze.rs`): the
     /// fixed environments, the namespace registry, and each symbol's base
     /// value and `.Internal`. Not a symbol's global cache, which can point
