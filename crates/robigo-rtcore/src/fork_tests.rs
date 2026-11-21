@@ -282,6 +282,42 @@ fn a_forked_childs_end_leaves_the_parents_temp_dir() {
     assert!(std::fs::metadata(std::ffi::OsStr::from_bytes(&d)).is_err(), "removed by its own process");
 }
 
+/// A process that exits holding the environment's writer still removes its
+/// temporary directory, and does not hang (the exit handler takes no
+/// environment lock).
+#[test]
+fn an_exit_holding_the_environment_writer_removes_the_temp_dir() {
+    let _one = one_at_a_time();
+    let _dog = watchdog("an exit holding ENV", 60);
+    let d = crate::clib::mkdtemp(b"/tmp/robigo-fork-exit-XXXXXX").expect("mkdtemp");
+    // SAFETY: the child (one thread) registers the directory, takes the
+    // writer and exits through `exit`, running the atexit handlers.
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0, "fork failed: {}", std::io::Error::last_os_error());
+    if pid == 0 {
+        let mut iso = OwnedIsolate::new();
+        // SAFETY: the child has one thread, this one.
+        iso.grant_env_writes(unsafe { crate::clib::EnvWrites::assume() });
+        let cx = iso.cx();
+        cx.set_temp_dir(Some(d.clone()));
+        let w = crate::clib::env_writer(cx);
+        // SAFETY: ends the child with the writer (and ENV) held.
+        unsafe { libc::exit(if w.is_ok() { 0 } else { 9 }) };
+    }
+    let mut status = 0;
+    // SAFETY: waits for the child just forked.
+    unsafe { libc::waitpid(pid, &mut status, 0) };
+    let gone = std::fs::metadata(std::ffi::OsStr::from_bytes(&d)).is_err();
+    if !gone {
+        let _ = std::fs::remove_dir(std::ffi::OsStr::from_bytes(&d));
+    }
+    assert!(libc::WIFEXITED(status), "the child did not exit (status {status})");
+    // (9: another test's isolates make the writer refuse on an old glibc)
+    if libc::WEXITSTATUS(status) == 0 {
+        assert!(gone, "the temporary directory removed at exit");
+    }
+}
+
 #[test]
 fn a_child_forked_while_the_environment_lock_is_read_writes_it() {
     fork_while_held("ENV shared", crate::clib::env_read_for_test);
