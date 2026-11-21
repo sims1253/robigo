@@ -139,7 +139,8 @@ pub fn install_tr_char<'s>(
     c: Root<'_>,
     i: usize,
 ) -> robigo_rtcore::RResult<Root<'s>> {
-    if c.bind(cx).is_package_altrep() {
+    // (STRING_ELT tests the type before it runs a class's method)
+    if c.bind(cx).sexptype() == robigo_rtcore::types::STRSXP && c.bind(cx).is_package_altrep() {
         return Err(crate::util::not_yet(cx, None, "installTrChar() of a package ALTREP vector"));
     }
     let r = {

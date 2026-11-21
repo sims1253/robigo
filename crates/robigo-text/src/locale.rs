@@ -366,8 +366,11 @@ pub fn translate_char2<'a>(s: Str<'a>, loc: Locale) -> Result<Cow<'a, [u8]>, Unt
 
 /// `translateToNative(s, mustWork = 2)` as `installTrChar` calls it: `s`
 /// in the native encoding with what iconv cannot convert escaped, and the
-/// text of the warning R then gives ("unable to translate '%s' to native
-/// encoding"); [`TranslateError`] for a "bytes" string.
+/// `%s` of the warning R then gives ("unable to translate '%s' to native
+/// encoding"): the escaped text, cut to 255 bytes (`err_buff`), not the
+/// whole warning, which the caller formats
+/// (`robigo_rtbuiltins::text::unable_to_translate`); [`TranslateError`]
+/// for a "bytes" string.
 // R: sysutils.c:installTrChar, translateToNative(mustWork = 2)
 pub fn translate_char_warn<'a>(s: Str<'a>, loc: Locale) -> Result<(Cow<'a, [u8]>, Option<String>), TranslateError> {
     match to_native(s, loc)? {
@@ -641,5 +644,27 @@ mod tests {
         assert_eq!(t(b"a\xf3\xa0\x80\x81b", Enc::Utf8, Locale::C), b"ab");
         assert_eq!(translate_char(Str::new(b"\xff", Enc::Bytes), Locale::Utf8), Err(TranslateError));
         assert!(matches!(translate_char(Str::new(b"\xc3\xa9", Enc::Utf8), Locale::Utf8), Ok(Cow::Borrowed(_))));
+    }
+}
+
+#[cfg(test)]
+mod translate_warn_tests {
+    use super::*;
+
+    #[test]
+    fn the_warning_text_is_cut_at_255_bytes() {
+        // 100 x "caf\u{e9}" in the C locale: each é escapes to <U+00E9>, so
+        // the text passes 255 bytes and is cut to 252 plus "..."
+        let b = "caf\u{e9}".repeat(100);
+        let (n, w) = translate_char_warn(Str::new(b.as_bytes(), Enc::Utf8), Locale::C).unwrap();
+        let w = w.unwrap();
+        assert_eq!(w.len(), 255);
+        assert!(w.ends_with("...") && w.is_ascii());
+        // the name itself is not cut
+        assert!(n.len() > 1000);
+        // a short one is whole, and a translatable one warns of nothing
+        let (_, w) = translate_char_warn(Str::new("caf\u{e9}".as_bytes(), Enc::Utf8), Locale::C).unwrap();
+        assert_eq!(w.as_deref(), Some("caf<U+00E9>"));
+        assert_eq!(translate_char_warn(Str::new("caf\u{e9}".as_bytes(), Enc::Utf8), Locale::Utf8).unwrap().1, None);
     }
 }

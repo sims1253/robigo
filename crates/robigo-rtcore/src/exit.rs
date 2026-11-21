@@ -524,14 +524,14 @@ fn maybe_primitive_call(cx: &Cx, e: Ref<'_>) -> bool {
 }
 
 /// GNU R's `BUFSIZE` (errors.c): the size of `error()`'s buffer.
-const ERROR_BUFSIZE: usize = 8192;
+pub(crate) const ERROR_BUFSIZE: usize = 8192;
 
 /// What `Rvsnprintf_mbcs(buf, size, "%s", msg)` leaves in `buf`: at most
 /// `size - 1` bytes, then (`mbcsTruncateToValid`, in a UTF-8 locale; the C
 /// locale is not multibyte) without a last character the cut left
 /// incomplete or invalid.
 // R: errors.c:Rvsnprintf_mbcs, util.c:mbcsTruncateToValid
-fn vsnprintf_cut(msg: &[u8], size: usize, utf8: bool) -> &[u8] {
+pub(crate) fn vsnprintf_cut(msg: &[u8], size: usize, utf8: bool) -> &[u8] {
     if msg.len() < size {
         return msg;
     }
@@ -544,8 +544,13 @@ fn vsnprintf_cut(msg: &[u8], size: usize, utf8: bool) -> &[u8] {
     while good > 0 && (b[good] & 0xC0) == 0x80 {
         good -= 1;
     }
-    // mbrtowc of the rest: a whole character is kept
-    if std::str::from_utf8(&b[good..]).is_ok() { b } else { &b[..good] }
+    // mbrtowc of the rest, character by character: up to the first that is
+    // incomplete or invalid
+    let used = match std::str::from_utf8(&b[good..]) {
+        Ok(_) => b.len() - good,
+        Err(e) => e.valid_up_to(),
+    };
+    &b[..good + used]
 }
 
 #[cfg(test)]
@@ -559,6 +564,10 @@ mod cut_tests {
         // "a\u00e9" cut inside the 2-byte character drops it
         assert_eq!(vsnprintf_cut("ab\u{e9}".as_bytes(), 4, true), b"ab");
         assert_eq!(vsnprintf_cut("ab\u{e9}x".as_bytes(), 5, true), "ab\u{e9}".as_bytes());
+        // from the last lead byte only, as mbcsTruncateToValid scans: an
+        // invalid byte before it stays, one after a whole character goes
+        assert_eq!(vsnprintf_cut(b"a\x80bcd", 5, true), b"a\x80bc");
+        assert_eq!(vsnprintf_cut(b"ab\x80d", 4, true), b"ab");
         // the C locale cuts bytes
         assert_eq!(vsnprintf_cut("ab\u{e9}".as_bytes(), 4, false), b"ab\xc3");
     }
