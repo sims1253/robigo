@@ -1153,9 +1153,11 @@ struct GzReader<R> {
     /// An error found while inflating ahead ([`Ahead`]): raised by the read
     /// that would have met it inflating in place, as before the buffer.
     ahead: Option<Ahead>,
-    /// The error a read met: every later read meets it again, as the
-    /// stream left in its error state made them before the buffer.
-    failed: Option<(std::io::ErrorKind, String)>,
+    /// The error a read met: every later read meets one again, as the
+    /// stream left in its error state made them before the buffer. A bad
+    /// deflate stream's later reads ask the inflater again (its message
+    /// for a repeated call); a trailer's error is given again as it was.
+    failed: Option<(std::io::ErrorKind, String, bool)>,
 }
 
 /// An error a [`GzReader`] found inflating a block ahead of the reads: the
@@ -1165,6 +1167,8 @@ struct GzReader<R> {
 /// symbol, and so to a bad one, with the output full.
 struct Ahead {
     err: std::io::Error,
+    /// A bad deflate stream (else a member's trailer).
+    deflate: bool,
 }
 
 /// What one [`GzReader::inflate_into`] step made: the bytes, and an error
@@ -1300,14 +1304,24 @@ impl<R: Read> GzReader<R> {
     }
 
     /// Record `e` as the error every later read meets ([`GzReader::failed`]).
-    fn fail(&mut self, e: std::io::Error) -> std::io::Error {
-        self.failed = Some((e.kind(), e.to_string()));
+    fn fail(&mut self, e: std::io::Error, deflate: bool) -> std::io::Error {
+        self.failed = Some((e.kind(), e.to_string(), deflate));
         e
     }
 
     /// Read up to `out.len()` bytes, as many as there are.
     fn read_full(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
-        if let Some((kind, msg)) = &self.failed {
+        if out.is_empty() {
+            return Ok(0);
+        }
+        if let Some((kind, msg, deflate)) = &self.failed {
+            if *deflate {
+                // (the inflater's own answer to a call after its error)
+                let mut one = [0u8; 1];
+                if let Err(e) = self.inflate.decompress(&[], &mut one, FlushDecompress::None) {
+                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e));
+                }
+            }
             return Err(std::io::Error::new(*kind, msg.clone()));
         }
         if !self.started {
@@ -1342,7 +1356,7 @@ impl<R: Read> GzReader<R> {
                 // a large read: inflated in place, an error met at once
                 let st = self.inflate_into(&mut out[n..])?;
                 if let Some(a) = st.err {
-                    return Err(self.fail(a.err));
+                    return Err(self.fail(a.err, a.deflate));
                 }
                 n += st.made;
             } else {
@@ -1369,7 +1383,7 @@ impl<R: Read> GzReader<R> {
         if self.ahead.is_some() && want > 0 && want >= left {
             let a = self.ahead.take().expect("robigo: an error ahead");
             self.opos = self.oend;
-            return Err(self.fail(a.err));
+            return Err(self.fail(a.err, a.deflate));
         }
         let k = left.min(want);
         out[n..n + k].copy_from_slice(&self.obuf[self.opos..self.opos + k]);
@@ -1397,7 +1411,7 @@ impl<R: Read> GzReader<R> {
             Err(e) => {
                 self.done = true;
                 let err = std::io::Error::new(std::io::ErrorKind::InvalidData, e);
-                return Ok(Step { made, err: Some(Ahead { err }) });
+                return Ok(Step { made, err: Some(Ahead { err, deflate: true }) });
             }
         };
         match st {
@@ -1411,7 +1425,7 @@ impl<R: Read> GzReader<R> {
                 if crc != self.crc.sum() {
                     self.done = true;
                     let err = std::io::Error::new(std::io::ErrorKind::InvalidData, "crc error");
-                    return Ok(Step { made, err: Some(Ahead { err }) });
+                    return Ok(Step { made, err: Some(Ahead { err, deflate: false }) });
                 }
                 match self.check_header() {
                     Header::Ok => {
@@ -2389,6 +2403,9 @@ mod gz_reader_tests {
         // a zero-length read meets nothing
         let mut r = reader(stored_then_bad(&data));
         assert_eq!(r.read_full(&mut [0u8; 39]).unwrap(), 39);
+        assert_eq!(r.read_full(&mut []).unwrap(), 0);
+        // nor after the error
+        assert!(r.read_full(&mut [0u8; 1]).is_err());
         assert_eq!(r.read_full(&mut []).unwrap(), 0);
     }
 }
