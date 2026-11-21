@@ -14,9 +14,10 @@ on:
 # is free, so its heavy jobs stop taking runners. (Until 2026-11-21 the
 # cancel was `select`'s first step, which ran only when the new run got its
 # first runner: in a full pool both runs kept queueing until then.) The
-# cancelled run's `Check` still runs (`always()`) and fails, as a cancelled
-# run's must, and holds the group until it has had a runner: the new run
-# waits that long, as it waited for `select` before.
+# cancelled run's `Check` still runs (`always()`) and fails on its cancelled
+# needs (what it certifies: the `check` job's comment), and holds the group
+# until it has had a runner: the new run waits that long, as it waited for
+# `select` before.
 # Main's push runs share one group, `ci-main`, without cancel-in-progress
 # (#927): a started run always finishes, a newer push replaces the pending
 # one. A manual dispatch has a group of its own.
@@ -1393,11 +1394,14 @@ jobs:
   # new gating job to `needs`. It passes when each job passed, or was skipped
   # because `select` said so; a failed, cancelled or unexplained skip fails
   # it. `always()`: a skipped required check counts as passing, so a
-  # cancelled run must still report a failure here, and does
-  # (`cancelled()`: also when every job it waited for had passed). A
-  # superseded run's `Check` is red on a commit nobody merges; it holds the
-  # pull request's group until it has had a runner, so the new run waits
-  # that long (the workflow's `concurrency`).
+  # cancelled run must still report a failure here. What `Check` certifies:
+  # every job it waits for passed, or was skipped as `select` said. A run
+  # cancelled before that (superseded, or by hand) has a cancelled or
+  # skipped need, which fails it; a run cancelled only after every need
+  # passed has produced that evidence, and its `Check` may pass, as before
+  # this group existed. A `Check` that ends cancelled itself is not a pass
+  # either. A superseded run's `Check` holds the pull request's group until
+  # it has had a runner, so the new run waits that long.
   check:
     name: Check
     if: ${{ always() }}
@@ -1405,22 +1409,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      # a cancelled run fails, even when every job it waited for passed
-      # (cancelled while this job waited for a runner); every step runs in a
-      # cancelled run too (`always()`), so nothing is skipped into a pass
-      - name: Fail a cancelled run
-        if: ${{ cancelled() }}
-        run: |
-          echo "::error::the run was cancelled (superseded by a newer push, or by hand)"
-          exit 1
       - uses: actions/checkout@v7
-        if: ${{ always() }}
         with:
           sparse-checkout: |
             scripts
             .github/workflows
       - name: Require every job to pass
-        if: ${{ always() }}
         env:
           NEEDS: ${{ toJSON(needs) }}
           PULL_REQUEST: ${{ github.event_name == 'pull_request' && '--pull-request' || '' }}

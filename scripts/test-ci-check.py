@@ -162,19 +162,6 @@ class Rule(unittest.TestCase):
         # not stacked, the same skips are not explained
         self.assertFalse(passes(needs("false", "false", "true", **skip)))
 
-    def test_check_fails_a_cancelled_run_and_skips_none_of_its_steps(self):
-        # cancelled while Check waited for a runner, after its needs passed:
-        # its first step fails on cancelled(), and every other step runs
-        # (always()), so a cancelled run cannot end in a skipped-into-green Check
-        wf = (HERE.parent / ".github/workflows/ci.yml").read_text()
-        steps = wf.split("\n    name: Check\n", 1)[1].split("\n  progress:", 1)[0].split("\n    steps:\n", 1)[1]
-        items = steps.split("\n      - ")[1:]
-        self.assertTrue(items[0].startswith("name: Fail a cancelled run\n        if: ${{ cancelled() }}\n"), items[0])
-        self.assertIn("exit 1", items[0])
-        self.assertEqual(len(items), 3)
-        for s in items[1:]:
-            self.assertIn("\n        if: ${{ always() }}\n", s, s)
-
     def test_a_cancelled_run_fails_check(self):
         # every need cancelled (a run cancelled by hand, or superseded): red
         n = {j: {"result": "cancelled", "outputs": {}} for j in JOBS}
