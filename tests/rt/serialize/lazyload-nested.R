@@ -9,7 +9,7 @@ e <- new.env()
 assign("v", 42, envir = e)
 inner <- .Internal(lazyLoadDBinsertValue(as.list(e), path, FALSE, TRUE, NULL))
 outer <- .Internal(lazyLoadDBinsertValue(list(x = 1:3, env = e, y = "after"), path, FALSE, TRUE,
-                                         function(x) if (is.environment(x)) "env::1" else NULL))
+                                         function(x) "env::1"))
 .Internal(lazyLoadDBflush(path))
 fetches <- 0L
 hook <- function(n) {
