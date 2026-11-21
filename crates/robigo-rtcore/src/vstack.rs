@@ -33,7 +33,11 @@ pub enum Tag {
     Logical = 4,
 }
 
-/// One value-stack slot: a tag word and a payload word.
+/// One value-stack slot: a tag word and a payload word. Only this module
+/// makes slots (the fields are private), so a slot's tag word is one of
+/// [`Tag`]'s, [`Slot::mark`]'s, or (the `poison-dead` feature) a poison's,
+/// whose payload is a `&'static Location` with its low bit set: a new kind
+/// of slot takes a tag word past the poison's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C, align(16))]
 pub struct Slot {
@@ -141,7 +145,7 @@ impl Slot {
     #[cfg_attr(feature = "poison-dead", track_caller)]
     pub fn check_live(self) {
         #[cfg(feature = "poison-dead")]
-        if self.tag & 0xff == poison::TAG {
+        if poison::is(self.tag, self.word) {
             poison::read(self.tag, self.word)
         }
     }
@@ -173,8 +177,25 @@ mod poison {
     /// index from the stack's base is in the pc field).
     pub(super) const RESTORED: u64 = 0xffffff;
 
-    static ON: LazyLock<bool> =
-        LazyLock::new(|| std::env::var("ROBIGO_POISON_DEAD").is_ok_and(|v| !v.is_empty() && v != "0"));
+    /// `ROBIGO_POISON_DEAD`: "1" on, unset, empty or "0" off, anything else
+    /// refused (as robigo-rt's other `ROBIGO_*` switches are).
+    static ON: LazyLock<bool> = LazyLock::new(|| match std::env::var("ROBIGO_POISON_DEAD").as_deref() {
+        Ok("1") => true,
+        Ok("0") | Ok("") | Err(_) => false,
+        Ok(other) => panic!("robigo: ROBIGO_POISON_DEAD={other:?} is neither \"0\" nor \"1\""),
+    });
+
+    /// The low bit of a poison's payload: a `Location` is aligned past it,
+    /// so a poison names itself twice (its tag byte and this bit) before
+    /// [`read`] takes the payload for a `Location`.
+    pub(super) const PAYLOAD: usize = 1;
+    const _: () = assert!(align_of::<Location<'static>>() > PAYLOAD, "robigo: a Location must leave its low bit free");
+
+    /// Whether the slot words `tag` and `word` are a poison [`slot`] made.
+    #[inline(always)]
+    pub(super) fn is(tag: u64, word: *mut u8) -> bool {
+        tag & 0xff == TAG && word.addr() & PAYLOAD != 0
+    }
 
     #[inline(always)]
     pub(super) fn on() -> bool {
@@ -184,7 +205,7 @@ mod poison {
     pub(super) fn slot(reg: u64, pc: u32, at: &'static Location<'static>) -> super::Slot {
         super::Slot {
             tag: TAG | (reg & 0xffffff) << 8 | u64::from(pc) << 32,
-            word: std::ptr::from_ref(at).cast_mut().cast(),
+            word: std::ptr::from_ref(at).cast_mut().cast::<u8>().map_addr(|a| a | PAYLOAD),
         }
     }
 
@@ -192,11 +213,13 @@ mod poison {
     #[inline(never)]
     #[track_caller]
     pub(super) fn read(tag: u64, word: *mut u8) -> ! {
-        // SAFETY: a poison's payload is the `&'static Location` `slot` stored.
-        let at: &Location<'static> = unsafe { &*word.cast::<Location<'static>>() };
+        // SAFETY: a poison (`is`: only `slot` writes its tag byte, and with
+        // this bit set) holds the `&'static Location` `slot` stored, its
+        // low bit set.
+        let at: &Location<'static> = unsafe { &*word.map_addr(|a| a & !PAYLOAD).cast::<Location<'static>>() };
         let (reg, pc) = ((tag >> 8) & 0xffffff, (tag >> 32) as u32);
         let what = if reg == RESTORED {
-            format!("value-stack slot {pc}, freed by a scope's restore")
+            format!("value-stack slot {pc}, freed by the end of the frame opened")
         } else if pc == u32::MAX {
             format!("register {reg}, cleared")
         } else {
@@ -292,12 +315,18 @@ impl ValueStack {
     /// Restore the top to `t`, which an earlier [`ValueStack::top`] of this
     /// stack returned: every slot from `t` up dies.
     #[inline(always)]
-    #[cfg_attr(feature = "poison-dead", track_caller)]
+    #[cfg(not(feature = "poison-dead"))]
     pub(crate) fn restore(&self, t: NonNull<Slot>) {
         debug_assert!(self.base <= t && t <= self.limit);
-        #[cfg(feature = "poison-dead")]
+        self.top.set(t);
+    }
+
+    /// [`ValueStack::restore`] (`poison-dead` feature): the slots freed are
+    /// poisons naming `at`, the line that opened the frame ending here.
+    #[cfg(feature = "poison-dead")]
+    pub(crate) fn restore_at(&self, t: NonNull<Slot>, at: &'static std::panic::Location<'static>) {
+        debug_assert!(self.base <= t && t <= self.limit);
         if poison::on() {
-            let at = std::panic::Location::caller();
             let mut p = t;
             while p < self.top.get() {
                 // SAFETY: a slot of the reservation (from `t` to the top);

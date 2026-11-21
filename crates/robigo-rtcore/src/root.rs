@@ -41,6 +41,7 @@ pub struct Scope<'s> {
 impl Cx {
     /// Open a root scope for `f`: roots pushed into it live until `f`
     /// returns, unwinds or errs, and cannot be named after that.
+    #[cfg_attr(feature = "poison-dead", track_caller)]
     pub fn scope<R>(&mut self, f: impl for<'s> FnOnce(&mut Cx, Scope<'s>) -> R) -> R {
         let iso = self.iso();
         let frame = iso.frame();

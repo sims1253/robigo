@@ -166,17 +166,30 @@ pub(crate) struct Roots {
 pub(crate) struct Frame {
     pub(crate) top: NonNull<Slot>,
     pub(crate) innermost: u64,
+    /// Where the frame was opened (`poison-dead` feature): the line its
+    /// restore's poisons name (`Cx::scope`'s, `call_out`'s and
+    /// `enter_raw`'s callers), not the line of the guard that ends it.
+    #[cfg(feature = "poison-dead")]
+    pub(crate) at: &'static std::panic::Location<'static>,
 }
 
 impl Isolate {
     #[inline(always)]
+    #[cfg_attr(feature = "poison-dead", track_caller)]
     pub(crate) fn frame(&self) -> Frame {
-        Frame { top: self.stack().top(), innermost: self.innermost.get() }
+        Frame {
+            top: self.stack().top(),
+            innermost: self.innermost.get(),
+            #[cfg(feature = "poison-dead")]
+            at: std::panic::Location::caller(),
+        }
     }
 
     #[inline(always)]
-    #[cfg_attr(feature = "poison-dead", track_caller)]
     pub(crate) fn restore(&self, f: Frame) {
+        #[cfg(feature = "poison-dead")]
+        self.stack().restore_at(f.top, f.at);
+        #[cfg(not(feature = "poison-dead"))]
         self.stack().restore(f.top);
         self.innermost.set(f.innermost);
     }
@@ -483,6 +496,7 @@ impl Cx {
     /// [`Reentry`] it is given. Like every native dispatch, the value-stack
     /// top and the innermost scope are restored when `f` returns or
     /// unwinds, so a callback's roots die with it.
+    #[cfg_attr(feature = "poison-dead", track_caller)]
     pub fn call_out<R>(&mut self, f: impl FnOnce(Reentry<'_>) -> R) -> R {
         let iso = self.iso();
         debug_assert!(iso.active.get(), "robigo: a suspended capability in use");
@@ -953,6 +967,7 @@ impl Reentry<'_> {
 /// # Safety
 /// `iso` comes from [`Reentry::as_ptr`] of a capability that stays
 /// suspended for this whole call (so the isolate is live), on this thread.
+#[cfg_attr(feature = "poison-dead", track_caller)]
 pub unsafe fn enter_raw<R>(iso: *mut Isolate, f: impl FnOnce(&mut Cx) -> R) -> R {
     // SAFETY: the caller's contract: `iso` is a live isolate.
     let iso = unsafe { NonNull::new_unchecked(iso) };
