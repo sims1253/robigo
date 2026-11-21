@@ -302,6 +302,17 @@ pub fn do_iconv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
     let n = xv.len().unwrap();
     // each element's result: Some(bytes) converted, None failed or NA/NULL
     // (the input's own value kept: see below)
+    let ienc = if !mark {
+        Encoding::Native
+    } else if is_latin1 {
+        Encoding::Latin1
+    } else if is_utf8 {
+        Encoding::Utf8
+    } else {
+        Encoding::Native
+    };
+    // cbuff's size (R_AllocStringBuffer(0, &cbuff))
+    let mut bufsize = string_buffer_size(0, 0);
     let mut results: Vec<Option<Vec<u8>>> = Vec::with_capacity(n);
     let (mut arg_obj, mut latin1_obj, mut utf8_obj): (Option<Conv>, Option<Conv>, Option<Conv>) = (None, None, None);
     for i in 0..n {
@@ -382,20 +393,17 @@ pub fn do_iconv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
             }
             arg_obj.as_mut().unwrap()
         };
-        match convert_one(obj, &inp, sub.as_deref(), &from) {
-            Ok(r) => results.push(r),
+        let r = match convert_one(obj, &inp, sub.as_deref(), &from, &mut bufsize) {
+            Ok(r) => r,
             Err(what) => return Err(crate::util::not_yet(cx, Some(call), what)),
+        };
+        // mkCharLenCE as each element is done: its error for an embedded
+        // NUL comes before the next element is looked at
+        if !to_raw && let Some(b) = &r {
+            cx.scope(|cx, s| s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.mk_char(b, ienc)?.into()))).map(|_| ()))?;
         }
+        results.push(r);
     }
-    let ienc = if !mark {
-        Encoding::Native
-    } else if is_latin1 {
-        Encoding::Latin1
-    } else if is_utf8 {
-        Encoding::Utf8
-    } else {
-        Encoding::Native
-    };
     cx.build(out, |cx| {
         let xv = x.bind(cx);
         // SHALLOW_DUPLICATE_ATTRIB(ans, x) (or duplicate(x)): the attributes
@@ -432,60 +440,125 @@ pub fn do_iconv(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
     })
 }
 
-/// One element through `obj` (do_iconv's loop from `top_of_loop`): the
-/// converted bytes, None when the conversion stopped with no `sub`, or the
-/// not-implemented case GNU R loops on for ever (no progress).
+/// `R_AllocStringBuffer(blen, &cbuff)`'s new size for a buffer of `cur`
+/// bytes (`MAXELTSIZE`, 8192, its default): unchanged if `blen` fits,
+/// else `blen + 1` rounded up to a multiple of 8192.
+// R: memory.c:R_AllocStringBuffer
+fn string_buffer_size(cur: usize, blen: usize) -> usize {
+    const BSIZE: usize = 8192;
+    if blen < cur {
+        return cur;
+    }
+    let blen1 = blen + 1;
+    let b = (blen1 / BSIZE) * BSIZE;
+    if b < blen1 { b + BSIZE } else { b }
+}
+
+/// One element through `obj`, do_iconv's loop from `top_of_loop` with its
+/// string buffer of `*bufsize` bytes (kept from element to element, as
+/// `cbuff` is): a full buffer is doubled and the element converted again
+/// from the start, after the reset of the descriptor's state (whose shift
+/// sequence then starts the output, as in GNU R). The converted bytes, None
+/// when the conversion stopped with no `sub`, or the not-implemented case
+/// GNU R loops on for ever.
 // R: sysutils.c:do_iconv
-fn convert_one(obj: &mut Conv, inp: &[u8], sub: Option<&[u8]>, from: &[u8]) -> Result<Option<Vec<u8>>, &'static str> {
-    let mut out = Vec::with_capacity(inp.len() + 16);
-    // First initialize output
-    obj.cd.reset(&mut out);
-    let mut pos = 0;
-    loop {
-        // Then convert input
-        let (k, stop) = obj.cd.convert(&inp[pos..], &mut out);
-        pos += k;
-        let Some(_) = stop else { return Ok(Some(out)) };
-        // (EILSEQ or EINVAL: it seems this gets thrown for non-convertible
-        // input too)
-        let Some(sub) = sub else { return Ok(None) };
-        let left = inp.len() - pos;
-        if obj.from_utf8 && (sub == b"Unicode" || sub == b"c99") {
-            let (clen, wc) = robigo_text::utf8toucs(inp, pos);
-            if clen > 0 && left >= clen as usize {
-                let ucs =
-                    if robigo_text::is_high_surrogate(wc) { robigo_text::utf8toucs32(wc, inp, pos) } else { wc as u32 };
-                pos += clen as usize;
-                let s = match (sub == b"Unicode", ucs < 65536) {
-                    (true, _) => format!("<U+{ucs:04X}>"),
-                    (false, true) => format!("\\u{ucs:04x}"),
-                    (false, false) => format!("\\U{ucs:08x}"),
-                };
-                out.extend_from_slice(s.as_bytes());
-            } else {
-                // (GNU R goes to next_char without consuming: it loops for
-                // ever on what is not UTF-8)
-                return Err("iconv() with sub = \"Unicode\" or \"c99\" of input that is not UTF-8");
+fn convert_one(
+    obj: &mut Conv,
+    inp: &[u8],
+    sub: Option<&[u8]>,
+    from: &[u8],
+    bufsize: &mut usize,
+) -> Result<Option<Vec<u8>>, &'static str> {
+    use robigo_rtcore::clib::IconvStop;
+    'top_of_loop: loop {
+        let mut buf = vec![0u8; *bufsize];
+        let mut pos = 0;
+        let (mut o, mut outb) = (0usize, *bufsize - 1);
+        // First initialize output
+        let (_, w, _) = obj.cd.iconv(None, &mut buf[o..o + outb]);
+        o += w;
+        outb -= w;
+        // next_char:
+        loop {
+            // Then convert input
+            let (k, w, stop) = obj.cd.iconv(Some(&inp[pos..]), &mut buf[o..o + outb]);
+            pos += k;
+            o += w;
+            outb -= w;
+            let grow = |bufsize: &mut usize| *bufsize = string_buffer_size(*bufsize, 2 * *bufsize);
+            match (stop, sub) {
+                (None, _) => {
+                    buf.truncate(o);
+                    // (res != -1 && inb == 0)
+                    return Ok((pos == inp.len()).then_some(buf));
+                }
+                (Some(IconvStop::TooBig), _) => {
+                    grow(bufsize);
+                    continue 'top_of_loop;
+                }
+                (Some(_), None) => return Ok(None),
+                (Some(_), Some(sub)) => {
+                    // (EILSEQ or EINVAL: it seems this gets thrown for
+                    // non-convertible input too)
+                    let left = inp.len() - pos;
+                    if obj.from_utf8 && (sub == b"Unicode" || sub == b"c99") {
+                        if outb < if sub == b"Unicode" { 13 } else { 11 } {
+                            grow(bufsize);
+                            continue 'top_of_loop;
+                        }
+                        let (clen, wc) = robigo_text::utf8toucs(inp, pos);
+                        if !(clen > 0 && left >= clen as usize) {
+                            // (GNU R goes to next_char without consuming:
+                            // it loops for ever on what is not UTF-8)
+                            return Err("iconv() with sub = \"Unicode\" or \"c99\" of input that is not UTF-8");
+                        }
+                        let ucs = if robigo_text::is_high_surrogate(wc) {
+                            robigo_text::utf8toucs32(wc, inp, pos)
+                        } else {
+                            wc as u32
+                        };
+                        pos += clen as usize;
+                        let t = match (sub == b"Unicode", ucs < 65536) {
+                            (true, _) => format!("<U+{ucs:04X}>"),
+                            (false, true) => format!("\\u{ucs:04x}"),
+                            (false, false) => format!("\\U{ucs:08x}"),
+                        };
+                        buf[o..o + t.len()].copy_from_slice(t.as_bytes());
+                        o += t.len();
+                        outb -= t.len();
+                        continue;
+                    }
+                    let pick = |p: &[u8], n: usize| from.len() >= n && from[..n].eq_ignore_ascii_case(p);
+                    let unit = if pick(b"UTF-16", 6) || pick(b"UCS-2", 5) {
+                        2
+                    } else if pick(b"UTF-32", 6) || pick(b"UCS-4", 5) {
+                        4
+                    } else {
+                        1
+                    };
+                    let mut u = 0;
+                    while u < unit && pos < inp.len() {
+                        let t: Vec<u8> = if sub == b"byte" {
+                            if outb < 5 {
+                                grow(bufsize);
+                                continue 'top_of_loop;
+                            }
+                            format!("<{:02x}>", inp[pos]).into_bytes()
+                        } else {
+                            if outb < sub.len() {
+                                grow(bufsize);
+                                continue 'top_of_loop;
+                            }
+                            sub.to_vec()
+                        };
+                        buf[o..o + t.len()].copy_from_slice(&t);
+                        o += t.len();
+                        outb -= t.len();
+                        pos += 1;
+                        u += 1;
+                    }
+                }
             }
-            continue;
-        }
-        let pick = |p: &[u8], n: usize| from.len() >= n && from[..n].eq_ignore_ascii_case(p);
-        let unit = if pick(b"UTF-16", 6) || pick(b"UCS-2", 5) {
-            2
-        } else if pick(b"UTF-32", 6) || pick(b"UCS-4", 5) {
-            4
-        } else {
-            1
-        };
-        let mut u = 0;
-        while u < unit && pos < inp.len() {
-            if sub == b"byte" {
-                out.extend_from_slice(format!("<{:02x}>", inp[pos]).as_bytes());
-            } else {
-                out.extend_from_slice(sub);
-            }
-            pos += 1;
-            u += 1;
         }
     }
 }

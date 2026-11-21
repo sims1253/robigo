@@ -23,3 +23,11 @@ r(iconv(u, "UTF-8", "NOT-AN-ENCODING")); r(iconv(u, "NOPE", "UTF-8")); r(iconv("
 r(iconv("a", "UTF-8", 1)); r(.Internal(iconv("a", "UTF-8", "latin1", 1, TRUE, FALSE))); r(iconv("a", "UTF-8", "latin1", mark = NA))
 r(iconv("a", "UTF-8", "latin1", toRaw = NA)); r(.Internal(iconv(1, "UTF-8", "latin1", NA_character_, TRUE, FALSE)))
 r(iconv(list(1), "UTF-8", "latin1")); r(iconv("a", "UTF-8", "UTF-16LE"))
+# a stateful target past the first buffer: GNU R doubles cbuff and starts
+# the element again after the descriptor's reset (its shift sequence first)
+j <- iconv(strrep("中", 5000), "UTF-8", "ISO-2022-JP", toRaw = TRUE)[[1]]
+p(length(j)); p(j[1:8]); p(j[length(j) - 2:0])
+k <- iconv(c(strrep("中", 5000), "中"), "UTF-8", "ISO-2022-JP", toRaw = TRUE); p(lengths(k)); p(k[[2]])
+p(nchar(iconv(strrep("é", 9000), "UTF-8", "ASCII", sub = "byte")))
+# mkCharLenCE's embedded-NUL error comes at its element
+r(iconv(list(as.raw(0), 1), "UTF-8", "UTF-8"))

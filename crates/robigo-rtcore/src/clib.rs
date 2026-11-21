@@ -583,9 +583,11 @@ pub struct Iconv {
     _not_send: std::marker::PhantomData<*const ()>,
 }
 
-/// Why [`Iconv::convert`] stopped before the end of its input.
+/// Why a call of [`Iconv::iconv`] stopped before the end of its input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IconvStop {
+    /// `E2BIG`: no room left in the output.
+    TooBig,
     /// `EILSEQ`: an invalid sequence, or one the target cannot represent.
     Illegal,
     /// `EINVAL`: an incomplete sequence at the end of the input.
@@ -600,8 +602,10 @@ impl Iconv {
     /// environment's shared lock.)
     pub fn open(to: &[u8], from: &[u8], utf8: bool) -> Option<Iconv> {
         let (t, f) = (std::ffi::CString::new(to).ok()?, std::ffi::CString::new(from).ok()?);
-        let _env = env_read();
+        // (the locale first: its one-time newlocale takes the environment's
+        // lock itself, which does not nest)
         let _loc = Self::locale(utf8)?;
+        let _env = env_read();
         // SAFETY: two NUL-terminated strings; iconv_open returns a new
         // descriptor or (iconv_t)-1.
         let cd = unsafe { libc::iconv_open(t.as_ptr(), f.as_ptr()) };
@@ -615,50 +619,42 @@ impl Iconv {
         ThreadLocale::switch(loc)
     }
 
-    /// `iconv(cd, NULL, NULL, &outbuf, &outb)`: the initial state, its
-    /// shift sequence (for a stateful target) appended to `out`.
-    pub fn reset(&mut self, out: &mut Vec<u8>) {
+    /// `iconv(cd, &inbuf, &inb, &outbuf, &outb)` with the input `input`
+    /// (None: NULL, the reset to the initial state, whose shift sequence
+    /// it writes) and the output `out` (its length is `outb`): the bytes
+    /// read and written, and why it stopped when it returned -1.
+    pub fn iconv(&mut self, input: Option<&[u8]>, out: &mut [u8]) -> (usize, usize, Option<IconvStop>) {
         let _loc = Self::locale(self.utf8);
-        let mut buf = [0u8; 64];
-        let mut op = buf.as_mut_ptr().cast::<libc::c_char>();
-        let mut ol = buf.len();
-        // SAFETY: a live descriptor; a NULL input asks for the reset; the
-        // output is `buf`, `ol` bytes from `op`.
-        unsafe { libc::iconv(self.cd, std::ptr::null_mut(), std::ptr::null_mut(), &mut op, &mut ol) };
-        out.extend_from_slice(&buf[..buf.len() - ol]);
-    }
-
-    /// `iconv(cd, &inbuf, &inb, &outbuf, &outb)` over all of `inp`, the
-    /// output appended to `out` (grown as `E2BIG` asks): the bytes of `inp`
-    /// consumed, and why it stopped if before the end.
-    pub fn convert(&mut self, inp: &[u8], out: &mut Vec<u8>) -> (usize, Option<IconvStop>) {
-        let _loc = Self::locale(self.utf8);
-        let mut done = 0;
-        let mut buf = vec![0u8; (inp.len() * 4).max(64)];
-        loop {
-            let mut ip = inp[done..].as_ptr().cast::<libc::c_char>().cast_mut();
-            let mut il = inp.len() - done;
-            let mut op = buf.as_mut_ptr().cast::<libc::c_char>();
-            let mut ol = buf.len();
-            // SAFETY: a live descriptor; the input is `il` readable bytes
-            // from `ip` (iconv does not write through it), the output `ol`
-            // writable bytes from `op`.
-            let r = unsafe { libc::iconv(self.cd, &mut ip, &mut il, &mut op, &mut ol) };
-            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-            out.extend_from_slice(&buf[..buf.len() - ol]);
-            done = inp.len() - il;
-            if r != usize::MAX {
-                return (done, None);
+        let mut op = out.as_mut_ptr().cast::<libc::c_char>();
+        let mut ol = out.len();
+        let (r, read) = match input {
+            None => {
+                // SAFETY: a live descriptor; a NULL input asks for the
+                // reset; the output is `ol` writable bytes from `op`.
+                let r = unsafe { libc::iconv(self.cd, std::ptr::null_mut(), std::ptr::null_mut(), &mut op, &mut ol) };
+                (r, 0)
             }
-            match errno {
-                libc::E2BIG => {
-                    let n = buf.len() * 2;
-                    buf.resize(n, 0);
-                }
-                libc::EILSEQ => return (done, Some(IconvStop::Illegal)),
-                _ => return (done, Some(IconvStop::Incomplete)),
+            Some(inp) => {
+                let mut ip = inp.as_ptr().cast::<libc::c_char>().cast_mut();
+                let mut il = inp.len();
+                // SAFETY: a live descriptor; the input is `il` readable
+                // bytes from `ip` (iconv does not write through it), the
+                // output `ol` writable bytes from `op`.
+                let r = unsafe { libc::iconv(self.cd, &mut ip, &mut il, &mut op, &mut ol) };
+                (r, inp.len() - il)
             }
+        };
+        let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        let written = out.len() - ol;
+        if r != usize::MAX {
+            return (read, written, None);
         }
+        let stop = match errno {
+            libc::E2BIG => IconvStop::TooBig,
+            libc::EILSEQ => IconvStop::Illegal,
+            _ => IconvStop::Incomplete,
+        };
+        (read, written, Some(stop))
     }
 }
 

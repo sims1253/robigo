@@ -61,3 +61,10 @@ character(0)
 [1] "'x' must be a character vector"
 [1] "'x' must be a character vector or a list of NULL or raw vectors"
 [1] "embedded nul in string: 'a\\0'"
+[1] 10006
+[1] 1b 28 42 1b 24 42 43 66
+[1] 66 43 66
+[1] 10006     8
+[1] 1b 28 42 1b 24 42 43 66
+[1] 72000
+[1] "embedded nul in string: '\\0'"
