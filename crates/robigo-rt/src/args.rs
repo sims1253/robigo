@@ -920,7 +920,7 @@ unsafe fn each_actual_dots(
     p: &Plan,
     tags: &[MaybeUninit<Sexp>; PLAN_DOTS],
     missing: u16,
-    f: &mut dyn FnMut(Sexp, Went) -> bool,
+    f: &mut impl FnMut(Sexp, Went) -> bool,
 ) -> bool {
     let mut dest = [NO; PLAN_DOTS];
     for (fi, &a) in p.src[..p.nformals as usize].iter().enumerate() {
