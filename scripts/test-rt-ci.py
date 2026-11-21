@@ -197,6 +197,37 @@ class RtCi(unittest.TestCase):
         for _, _, cmd in rt.full_move_steps():
             self.assertTrue(rt.CONFORMANCE in cmd and "--exact" in cmd)
 
+    def test_the_free_space_floor_measures_a_path_that_does_not_exist_yet_at_its_ancestor(self):
+        # cargo's target directory does not exist on a fresh checkout (CI's
+        # first build): its volume is measured at the nearest ancestor
+        from unittest import mock
+        import collections, contextlib, io, tempfile
+        base = tempfile.mkdtemp()
+        missing = os.path.join(base, "target")
+        deeper = os.path.join(base, "no", "such", "target")
+        self.assertEqual(rt.existing_ancestor(missing), base)
+        self.assertEqual(rt.existing_ancestor(deeper), base)
+        self.assertIsNone(rt.free_space_problem([missing, deeper], 0.0))
+        usage = collections.namedtuple("usage", "total used free")
+        seen = []
+
+        def du(p):
+            seen.append(p)
+            return usage(100e9, 97e9, 3e9)
+        with mock.patch("shutil.disk_usage", du):
+            self.assertIn("3.0 GB free on the volume of " + deeper, rt.free_space_problem([deeper], 8))
+        self.assertEqual(seen, [base])
+        # a measurement that fails is a warning, never a crash
+        err = io.StringIO()
+        with mock.patch("shutil.disk_usage", side_effect=PermissionError("denied")), contextlib.redirect_stderr(err):
+            self.assertIsNone(rt.free_space_problem([missing], 8))
+        self.assertIn("cannot tell the free space", err.getvalue())
+        # and so is a path with no existing ancestor
+        err = io.StringIO()
+        with mock.patch.object(rt, "existing_ancestor", return_value=None), contextlib.redirect_stderr(err):
+            self.assertIsNone(rt.free_space_problem(["/nowhere"], 8))
+        self.assertIn("cannot tell", err.getvalue())
+
     def test_a_run_stops_at_its_start_below_the_free_space_floor(self):
         from unittest import mock
         import collections, contextlib, io

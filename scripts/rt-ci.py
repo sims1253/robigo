@@ -632,12 +632,34 @@ def slow_cases_report(title, path):
 MIN_FREE_GB = 8
 
 
+def existing_ancestor(path):
+    """`path`, or its nearest ancestor that exists (cargo's target directory
+    does not exist on a fresh checkout until the first build), or None."""
+    p = os.path.abspath(path)
+    while not os.path.exists(p):
+        parent = os.path.dirname(p)
+        if parent == p:
+            return None
+        p = parent
+    return p
+
+
 def free_space_problem(paths, min_gb):
     """The message for the first of `paths` with under `min_gb` GB free, or
-    None."""
+    None. Each path's volume is measured at its nearest existing ancestor;
+    one that cannot be measured (no ancestor exists, or the measurement
+    fails) is reported on stderr and skipped: this check gives a clear
+    message, and must never be what fails a run."""
     import shutil
     for p in paths:
-        free = shutil.disk_usage(p).free / 1e9
+        at = existing_ancestor(p)
+        try:
+            if at is None:
+                raise FileNotFoundError(p)
+            free = shutil.disk_usage(at).free / 1e9
+        except OSError as e:
+            print(f"::warning::rt-ci: cannot tell the free space for {p} ({e}): not checked", file=sys.stderr)
+            continue
         if free < min_gb:
             return (f"rt-ci: {free:.1f} GB free on the volume of {p} (< {min_gb} GB): a release link of the "
                     f"test binaries needs about 5 GB; free space first, or set RT_CI_MIN_FREE_GB "
