@@ -37,12 +37,14 @@ fn the_wide_base_binds_every_name_lazily_m1_s_bound_among_them() {
     assert_eq!(st.files, w.files().len());
     assert!(st.stubs > 0);
     // the index's own shape: chains' inner names, blocks, forms after a
-    // definition, the profile's sequence, the unrun name
+    // definition, the profile's sequence, the profile's forms run at boot
     let def = |n: &str| w.find(n).unwrap_or_else(|| panic!("{n}")).def.clone();
     assert!(matches!(def("license"), Def::Assign(v) if v.len() == 1 && v[0].1 == 1));
     assert!(matches!(def("as.data.frame.raw"), Def::Block(f) if f.src == "base/R/zzz.R"));
     assert!(matches!(def(".Library.site"), Def::Assign(v) if v.len() == 3));
-    assert!(matches!(def(".AutoloadEnv"), Def::Unrun(_)));
+    // the Autoloads environment: attach, .AutoloadEnv, .Autoloaded
+    assert!(w.find(".AutoloadEnv").is_none());
+    assert_eq!(w.boot.iter().map(|f| f.src).collect::<Vec<_>>(), ["profile/Common.R"; 3]);
     assert_eq!(w.find(".ArgsEnv").unwrap().after.len(), 88);
     let b = Bound::get();
     for c in &b.closures {
