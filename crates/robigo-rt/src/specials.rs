@@ -644,10 +644,7 @@ pub fn do_subassign3(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, 
             // object, the name made a string; the tags (`value =`) kept
             let str = scalar_string(cx, s, input)?;
             let after = s.root(cx, call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().cdr());
-            let o = s.out(cx);
-            let rest = o.root();
-            cx.shallow_duplicate(after, o)?;
-            cx.set_car(rest, str);
+            let rest = tagged_rest(cx, s, after, str)?;
             match crate::dispatch::dispatch_special(cx, "$<-", call, prom, rest, rho, &out) {
                 // no method: the default below, with the arguments
                 // evaluated (x still holds its link)

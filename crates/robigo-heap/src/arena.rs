@@ -18,9 +18,9 @@
 //!   is published.
 //! - **The lock.** One `pthread_mutex_t` guards the name table and the
 //!   segments. A heap takes it only when a name is new to it: its own
-//!   table caches every symbol it has installed. `pthread_atfork` takes it
-//!   before a fork and releases it on both sides, so a child forked while
-//!   another thread interns can intern too.
+//!   table caches every symbol it has installed. The process's fork
+//!   handlers (`fork.rs`) take it before a fork and release it on both
+//!   sides, so a child forked while another thread interns can intern too.
 
 use crate::heap::{BLOCK, DATA_OFF, REMEMBERED_OFF};
 use crate::layout::{GRANULE, charsxp, charsxp_bytes, flags, gp, header, node, sym};
@@ -61,34 +61,48 @@ unsafe impl Sync for Lock {}
 
 static LOCK: Lock = Lock(UnsafeCell::new(libc::PTHREAD_MUTEX_INITIALIZER));
 
-static AT_FORK: std::sync::Once = std::sync::Once::new();
-
-extern "C" fn lock_before_fork() {
+/// The lock taken outside `locked`: by the fork handlers' `prepare`, after
+/// every other lock of the process (`fork.rs`), and by
+/// [`hold_lock_for_test`].
+pub(crate) fn lock_for_fork() {
     // SAFETY: the static mutex, initialized.
     unsafe { libc::pthread_mutex_lock(LOCK.0.get()) };
 }
 
-extern "C" fn unlock_after_fork() {
-    // SAFETY: the mutex `lock_before_fork` took, in this process (the parent)
+/// The release of [`lock_for_fork`]'s lock: by the fork handlers' `parent`
+/// and `child`, and by [`hold_lock_for_test`]'s guard.
+pub(crate) fn unlock_after_fork() {
+    // SAFETY: the mutex `lock_for_fork` took, in this process (the parent)
     // or its copy (the child, where the forking thread owns it).
     unsafe { libc::pthread_mutex_unlock(LOCK.0.get()) };
 }
 
-/// Run `f` with the arena's state, under the lock.
+/// The arena's lock, held by the caller until the guard drops: a fork
+/// test's stand-in for a thread inside `install` (not for other uses). The
+/// guard is neither `Send` nor `Sync`, so it unlocks on the thread that
+/// locked.
+///
+/// # Safety
+/// The caller interns nothing (no `install`, no new heap) while it holds the
+/// guard, and drops it on this thread.
+#[cfg(feature = "test-support")]
+pub unsafe fn hold_lock_for_test() -> impl Drop {
+    struct Held(std::marker::PhantomData<*const ()>);
+    impl Drop for Held {
+        fn drop(&mut self) {
+            unlock_after_fork();
+        }
+    }
+    lock_for_fork();
+    Held(std::marker::PhantomData)
+}
+
+/// Run `f` with the arena's state, under the lock (`fork.rs` registers
+/// the fork handlers that keep a forked child's copy of it free).
 fn locked<R>(f: impl FnOnce(&mut Inner) -> R) -> R {
-    // (Miri runs no fork)
-    #[cfg(not(miri))]
-    AT_FORK.call_once(|| {
-        // SAFETY: three `extern "C"` functions of no arguments, as
-        // pthread_atfork takes them.
-        let r =
-            unsafe { libc::pthread_atfork(Some(lock_before_fork), Some(unlock_after_fork), Some(unlock_after_fork)) };
-        assert_eq!(r, 0, "robigo: pthread_atfork for the symbol arena");
-    });
-    #[cfg(miri)]
-    let _ = &AT_FORK;
-    // SAFETY: the static mutex, initialized; taken and released here only,
-    // so `Inner` has one user at a time.
+    // SAFETY: the static mutex, initialized. Whoever holds it is the one
+    // user of `Inner`: here, and the fork handlers and the test guard, which
+    // hold it without touching `Inner`.
     unsafe {
         let r = libc::pthread_mutex_lock(LOCK.0.get());
         assert_eq!(r, 0, "robigo: the symbol arena's lock");
@@ -190,6 +204,10 @@ impl Inner {
 /// The symbol named `name`, made if no heap of the process has made it;
 /// `bits` gives a new one its name's bits. Never collects.
 pub(crate) fn install(name: &[u8], bits: impl FnOnce() -> (u8, u16)) -> Sexp {
+    // the shared objects (`new_symbol` reads them) made before the arena's
+    // lock: their first making takes `FORK`, which comes first in the
+    // process's lock order (`fork.rs`)
+    let _ = crate::shared::shared();
     locked(|a| {
         if let Some(&s) = a.names.get(name) {
             return s;

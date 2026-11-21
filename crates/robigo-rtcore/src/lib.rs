@@ -256,6 +256,8 @@ mod vstack;
 // R1b: collection points and in-place writes
 mod collect;
 mod edit;
+#[cfg(all(test, not(miri)))]
+mod fork_tests;
 
 pub use capi::{
     CGlobals, CParseState, PARSE_CONTEXT_SIZE, PARSE_ERROR_SIZE, PP_REDZONE, PPSTACK_SIZE, R_MB_CUR_MAX, mbcslocale,

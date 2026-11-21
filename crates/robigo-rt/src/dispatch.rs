@@ -2954,13 +2954,32 @@ fn dispatch_group<'o>(
 /// `call` (`...` expanded into the caller's promises), tagged.
 // R: eval.c:promiseArgs
 pub(crate) fn promise_call_args(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    promise_args_of(cx, call, true, rho, out)
+}
+
+/// `promiseArgs(el, rho)` of the argument list `el` itself (no call around
+/// it).
+// R: eval.c:promiseArgs
+pub(crate) fn promise_args(cx: &mut Cx, el: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    promise_args_of(cx, el, false, rho, out)
+}
+
+/// [`promise_call_args`] (`skip_first`: `src` is a call, its arguments
+/// promised) or [`promise_args`] (`src` is the argument list).
+#[inline(always)]
+fn promise_args_of(cx: &mut Cx, src: Root<'_>, skip_first: bool, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let call = src;
+    #[inline(always)]
+    fn args_of(r: Ref<'_>, skip_first: bool) -> Ref<'_> {
+        if skip_first { r.as_cons().map_or(r, |c| c.cdr()) } else { r }
+    }
     let dots = prims::state(cx).syms.dots;
     let missing = cx.missing_arg().sexp();
     cx.scope(|cx, s| {
         // the `...` binding, if the call names it
         let dv = s.out(cx).root();
         let has_dots = {
-            let mut a = call.bind(cx).as_cons().unwrap().cdr();
+            let mut a = args_of(call.bind(cx), skip_first);
             let mut h = false;
             while let Some(c) = a.as_cons() {
                 h |= c.car().sexp() == dots;
@@ -2976,7 +2995,7 @@ pub(crate) fn promise_call_args(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, out:
         cx.build(out, |cx| {
             // (value or expr, tag, is_expr), inline for a call's few arguments
             let mut items: Buf<(Sexp, Sexp, bool)> = Buf::new();
-            let mut a = call.bind(cx).as_cons().unwrap().cdr();
+            let mut a = args_of(call.bind(cx), skip_first);
             while let Some(c) = a.as_cons() {
                 let e = c.car().sexp();
                 if e == dots {
@@ -3066,10 +3085,7 @@ pub fn dispatch_special(
         // promise, its value the object; the rest promised in turn
         let rest_p = s.out(cx).root();
         let o = rest_p.reset(cx);
-        let fake = s.out(cx).root();
-        let fo = fake.reset(cx);
-        cx.build(fo, |cx| cx.lcons(cx.nil(), rest.bind(cx)))?;
-        promise_call_args(cx, fake, rho, o)?;
+        promise_args(cx, rest, rho, o)?;
         let p0 = s.out(cx).root();
         let o = p0.reset(cx);
         cx.build(o, |cx| {

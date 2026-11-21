@@ -21,5 +21,10 @@ robigo-heap-derive = { path = "../robigo-heap-derive" }
 [build-dependencies]
 cc = "1"
 
+[features]
+# Hooks for other crates' tests (the fork handlers' handshake, a hold on
+# the arena's lock): never in a build that ships.
+test-support = []
+
 [lints]
 workspace = true
