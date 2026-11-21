@@ -289,10 +289,13 @@ domain = { domain = ["=\"R\"", "=\"R-base\"", "@chr"], dirname = ["=\"/nope\"", 
 [strptime]
 args = ["x", "format", "tz"]
 typical = { x = "=\"2026-11-18 12:30:00\"", format = "=\"%Y-%m-%d %H:%M:%S\"", tz = "=\"UTC\"" }
-# (every format has a full date: a format without one, "" or "TRUE" say,
-# fills in today's date, from time(NULL), so GNU R's record of 11-18 is not
-# robigo-rt's answer on 11-21; NA, a zero-length and a non-character format
-# give NA or an error, the same on any day)
+# A KNOWN GAP of this row: it does not cover formats without a full date.
+# Such a format ("", "TRUE", "%H:%M", ...) fills in today's date, from
+# time(NULL), so GNU R's record of one day is not robigo-rt's answer on the
+# next (2026-11-21: 9 cases recorded on 11-18). Every format here carries a
+# full date; NA, a zero-length and a non-character format give NA or an
+# error, the same on any day. Date-less formats need a fixed clock in both
+# runtimes, which the harness has not.
 domain = { x = ["=\"2026-11-18 12:30:00\"", "=\"2026-02-30 00:00:00\"", "@chr"], format = ["=\"%Y-%m-%d %H:%M:%S\"", "=\"%Y-%m-%d\"", "=\"%d.%m.%Y %H:%M\"", "=\"%Y%m%d\"", "=c(\"%Y-%m-%d\", \"%d.%m.%Y\")", "chrNA", "chr0", "1.5", "NULL"], tz = ["=\"UTC\"", "=\"\"", "=\"Europe/Berlin\"", "@chr"] }
 
 ["as.POSIXct"]
@@ -608,6 +611,30 @@ extra = [
   "{ .Internal(Sys.setlocale(3L, 'C')); Sys.getlocale('LC_CTYPE') }",
   "{ r <- .Internal(Sys.setlocale(1L, 'nope')); list(r, Sys.getlocale()) }",
   "{ Sys.setlocale('LC_COLLATE', 'C'); sort(c('b', 'A', 'a')) }",
+]
+
+# ---- the builtins E's eapply PR (g3/e-eapply) registers --------------------
+[eapply]
+effect = "Calls"
+special = true
+budget = 600
+typical = { env = "env", FUN = "fun.id", "all.names" = "=FALSE", "USE.NAMES" = "=TRUE" }
+domain = { env = ["@env", "NULL", "list2"], FUN = ["@fun", "NULL"], "all.names" = ["@lgl"], "USE.NAMES" = ["@lgl"] }
+
+# builtins() is every symbol GNU R knows (internal = TRUE: the symbol
+# table), so a generated case compares robigo-rt's whole base with GNU R's
+# and stays a mismatch until they are the same: one such case, and the
+# extras ask what can be compared now.
+[builtins]
+effect = "Env"
+domain = { internal = ["=FALSE"] }
+extra = [
+  "is.character(.Internal(builtins(FALSE)))",
+  "all(c('sum', 'c', 'list', 'builtins', 'eapply', '+', 'if') %in% .Internal(builtins(FALSE)))",
+  "all(c('sum', 'c', 'list') %in% .Internal(builtins(TRUE)))",
+  "anyDuplicated(.Internal(builtins(FALSE))) == 0L",
+  "is.character(.Internal(builtins(NA)))",
+  "is.character(builtins())",
 ]
 
 [uncovered]

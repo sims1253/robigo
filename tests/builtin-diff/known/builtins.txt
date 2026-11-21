@@ -1,0 +1,10 @@
+# builtin-diff known failures: builtins, seed 0, key 529c79ab1496c522e98f4f88
+# builtins: 0 / 8 (not-implemented 8, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
+1
+2
+3
+4
+5
+6
+7
+8
