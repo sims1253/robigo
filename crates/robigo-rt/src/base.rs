@@ -880,6 +880,8 @@ pub struct Stage0 {
 // R: main.c:R_ReplFile, setup_Rmainloop
 pub fn stage0(cx: &mut Cx, home: &Path) -> Result<Stage0, String> {
     let mut st = Stage0::default();
+    // the JIT off while R starts (R_init_jit_enabled, at the end, sets it)
+    crate::jit::at_startup(cx);
     // InitNames: every primitive and internal of names.c's table bound
     let prims: Vec<&'static str> = robigo_rtbuiltins::names::PRIMITIVES.iter().map(|p| p.0).collect();
     let internals: Vec<&'static str> = robigo_rtbuiltins::names::INTERNALS.iter().map(|p| p.0).collect();
@@ -917,7 +919,8 @@ pub struct AfterProfile {
 /// jump of its own) is `check_session_exit`'s, false when R halts; with
 /// `options(error)` or `options(catch.script.errors)` R goes on to the next
 /// step, the rest of that profile not read. The greeting (not R_Quiet) is
-/// the front end's; the JIT's start (`R_init_jit_enabled`) is not run yet.
+/// the front end's; the JIT's start is [`init_jit`], after the deferred
+/// warnings.
 // R: main.c:setup_Rmainloop, startup.c:R_OpenSiteFile, sys-unix.c:R_OpenInitFile,
 // startup.c:R_RestoreGlobalEnv, saveload.c:R_RestoreGlobalEnvFromFile
 pub fn after_profile(cx: &mut Cx, home: &Path, a: AfterProfile) -> bool {
@@ -1000,6 +1003,39 @@ pub fn after_profile(cx: &mut Cx, home: &Path, a: AfterProfile) -> bool {
     // found in base's namespace, called in base
     call_startup(cx, b".First", |cx| cx.global_env(), |cx| cx.global_env())
         && call_startup(cx, b".First.sys", |cx| cx.base_namespace(), |cx| cx.base_env())
+}
+
+/// How `setup_Rmainloop`'s last step ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JitStart {
+    /// The JIT is set up.
+    Done,
+    /// An error, and `check_session_exit` halted R.
+    Halt,
+    /// An error that `check_session_exit` let pass: `R_Suicide("unable
+    /// to initialize the JIT\n")`, its message printed here (the caller
+    /// exits with status 2, R_CleanUp(SA_SUICIDE, 2, 0): no warnings).
+    Suicide,
+}
+
+/// The last step of `setup_Rmainloop`: `R_init_jit_enabled()` inside its
+/// own top-level `SETJMP` ([`crate::jit::init_jit_enabled`]).
+// R: main.c:setup_Rmainloop
+pub fn init_jit(cx: &mut Cx) -> JitStart {
+    let ok = cx.scope(|cx, s| {
+        let g = s.root(cx, cx.global_env());
+        let base = s.root(cx, cx.base_env());
+        cx.repl_toplevel(g, base, crate::jit::init_jit_enabled).expect("robigo: an exit that passed the top level")
+    });
+    if ok {
+        JitStart::Done
+    } else if !crate::repl::check_session_exit(cx) {
+        JitStart::Halt
+    } else {
+        // R: unix/sys-std.c:Rstd_Suicide
+        cx.reprintf(b"Fatal error: unable to initialize the JIT\n\n");
+        JitStart::Suicide
+    }
 }
 
 /// `R_findVar(name, from)`, and when it is a closure `eval(lang1(name),

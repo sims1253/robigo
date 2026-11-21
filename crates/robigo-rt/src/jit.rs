@@ -34,10 +34,13 @@
 //!
 //! # Settings
 //!
-//! Read once, when the evaluator is installed, from the variables GNU R
-//! reads: `R_ENABLE_JIT` (the JIT level, default 3; 0 is off), `R_JIT_STRATEGY`
-//! (0-4), `R_MIN_JIT_SCORE` (default 50) and `R_DISABLE_BYTECODE` (no byte
-//! code at all, installed code included), each parsed as C's `atoi`.
+//! From the variables GNU R reads: `R_ENABLE_JIT` (the JIT level, default
+//! 3; 0 is off), `R_JIT_STRATEGY` (0-4), `R_MIN_JIT_SCORE` (default 50) and
+//! `R_DISABLE_BYTECODE` (no byte code at all, installed code included),
+//! each parsed as C's `atoi`. Booted GNU R's way, the JIT is off while R
+//! starts ([`at_startup`]) and set up at the end of `setup_Rmainloop`
+//! ([`init_jit_enabled`]); under M1's loader they are read once, when the
+//! evaluator is installed.
 
 #![allow(unsafe_code)]
 
@@ -112,6 +115,59 @@ pub fn cmpfun1(cx: &mut Cx, fun: Root<'_>, out: Out<'_>) -> RResult<()> {
         crate::fin::gc(cx);
     }
     cx.set_visible(vis);
+    Ok(())
+}
+
+/// The settings while R starts, GNU R's way (`ROBIGO_RT_BOOT` stage0 or
+/// rdb): `R_jit_enabled` 0 ("has to be 0 during R startup"),
+/// `R_compile_pkgs` and `R_disable_bytecode` 0; the strategy and minimum
+/// score as `R_CheckJIT`'s first call reads them, at base's first closure
+/// call, the JIT still off (so `R_ENABLE_JIT=1` does not pick
+/// `STRATEGY_NO_SMALL`). [`init_jit_enabled`] sets the rest at the end of
+/// `setup_Rmainloop`.
+// R: Defn.h (R_jit_enabled, R_compile_pkgs, R_disable_bytecode); eval.c:R_CheckJIT
+pub fn at_startup(cx: &mut Cx) {
+    let get = |n: &str| std::env::var_os(n).map(|v| atoi(v.as_encoded_bytes()));
+    let st = prims::state(cx);
+    st.jit.set(Config::from_vars(Some(0), get("R_JIT_STRATEGY"), get("R_MIN_JIT_SCORE"), None));
+    st.compile_pkgs.set(0);
+    st.gnu_boot.set(true);
+}
+
+/// `R_init_jit_enabled()`, the last step of `setup_Rmainloop`: base's
+/// `.ArgsEnv` promise forced; `R_ENABLE_JIT` (default 3) read, and when it
+/// is not 0 the compiler's namespace loaded and `checkCompilerOptions`
+/// called before the level is set; then `_R_COMPILE_PKGS_` (unless
+/// `compilePKGS` set it) and `R_DISABLE_BYTECODE`. (`R_CHECK_CONSTANTS`:
+/// robigo-rt does not check byte-code constants.)
+// R: eval.c:R_init_jit_enabled
+pub fn init_jit_enabled(cx: &mut Cx) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let sym = cx.install_rooted(s, b".ArgsEnv")?;
+        let base = s.root(cx, cx.base_env());
+        let o = s.out(cx);
+        crate::eval(cx, sym, base, o)
+    })?;
+    let get = |n: &str| std::env::var_os(n).map(|v| atoi(v.as_encoded_bytes()));
+    let val = get("R_ENABLE_JIT").unwrap_or(3);
+    if val != 0 {
+        load_compiler_namespace(cx)?;
+        check_compiler_options(cx, val)?;
+    }
+    let st = prims::state(cx);
+    let mut cfg = st.jit.get();
+    cfg.level = val;
+    if st.compile_pkgs.get() <= 0
+        && let Some(v) = get("_R_COMPILE_PKGS_")
+    {
+        st.compile_pkgs.set((v > 0) as i32);
+    }
+    if !cfg.disable_bytecode
+        && let Some(v) = get("R_DISABLE_BYTECODE")
+    {
+        cfg.disable_bytecode = v > 0;
+    }
+    st.jit.set(cfg);
     Ok(())
 }
 
