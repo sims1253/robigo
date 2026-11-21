@@ -238,9 +238,11 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
     // the frame shape of the formals only: the translation runs with no
     // compiler environment (`Cenv::for_translation`), so it never reads the
     // closure's environment, a binding's value, an option or the JIT state.
-    // A write into its sources through a setter (the C API's SETCAR among
-    // them) makes it stale (the code stamps), and other formals miss
-    // (`is_closure_code`). Looked up before `attempt`, kept after it: a
+    // A write into the body's expression (its first constant, R_ClosureExpr
+    // of every closure made from it) does not change it, as it does not
+    // change GNU R's byte code; a write into the formals makes it stale (the
+    // code stamps: `is_closure_code`), and other formals miss. Looked up
+    // before `attempt`, kept after it: a
     // fold's retry must not find the translation of an attempt it retries.
     // SAFETY: a rooted closure; its body's 4th word is R_NilValue or a code
     // object.
