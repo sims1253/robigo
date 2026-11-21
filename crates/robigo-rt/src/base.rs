@@ -919,22 +919,37 @@ pub struct AfterProfile {
 /// warnings.
 // R: main.c:setup_Rmainloop, startup.c:R_OpenSiteFile, sys-unix.c:R_OpenInitFile,
 // startup.c:R_RestoreGlobalEnv, saveload.c:R_RestoreGlobalEnvFromFile
-pub fn after_profile(cx: &mut Cx, home: &Path, a: AfterProfile, st: &mut Stage0) -> bool {
+pub fn after_profile(cx: &mut Cx, home: &Path, a: AfterProfile) -> bool {
     use std::os::unix::ffi::OsStrExt;
     // .OptRequireMethods: found from the global environment, called in base
     if !call_startup(cx, b".OptRequireMethods", |cx| cx.global_env(), |cx| cx.base_env()) {
         return false;
     }
-    let profile = |cx: &mut Cx, var: &str| -> Option<Option<std::path::PathBuf>> {
-        let v = std::env::var_os(var)?;
+    // the file a set R_PROFILE or R_PROFILE_USER names (None: unset; an
+    // empty value is no file): R_ExpandFileName's, whose warning, an error
+    // under options(warn = 2), lands outside R_LoadProfile's SETJMP on the
+    // one before it, check_session_exit's (Err(halts) when it does; going
+    // on, that profile is not read)
+    enum Named {
+        Unset,
+        File(Option<std::path::PathBuf>),
+        Halt,
+    }
+    let named = |cx: &mut Cx, var: &str| -> Named {
+        let Some(v) = std::env::var_os(var) else { return Named::Unset };
         if v.is_empty() {
-            return Some(None);
+            return Named::File(None);
         }
-        let e = crate::connections::r_expand_file_name(cx, v.as_bytes()).ok()?;
-        Some(Some(std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&e))))
+        match crate::connections::r_expand_file_name(cx, v.as_bytes()) {
+            Ok(e) => Named::File(Some(std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&e)))),
+            Err(e) => {
+                cx.resolve_exit(e, None);
+                if crate::repl::check_session_exit(cx) { Named::File(None) } else { Named::Halt }
+            }
+        }
     };
-    let _ = st;
-    // R_LoadProfile(fp, R_GlobalEnv) of a file that opens
+    // R_LoadProfile(fp, R_GlobalEnv) of a file that opens (R_fopen's NULL
+    // is no profile, startup.c:115, sys-unix.c:77, main.c:723)
     let run = |cx: &mut Cx, f: Option<std::path::PathBuf>| -> bool {
         match f.and_then(|f| std::fs::read(&f).ok()) {
             Some(bytes) => load_profile(cx, &bytes),
@@ -942,7 +957,11 @@ pub fn after_profile(cx: &mut Cx, home: &Path, a: AfterProfile, st: &mut Stage0)
         }
     };
     if a.site_file {
-        let f = profile(cx, "R_PROFILE").unwrap_or_else(|| Some(home.join("etc/Rprofile.site")));
+        let f = match named(cx, "R_PROFILE") {
+            Named::Unset => Some(home.join("etc/Rprofile.site")),
+            Named::File(f) => f,
+            Named::Halt => return false,
+        };
         if !run(cx, f) {
             return false;
         }
@@ -956,26 +975,25 @@ pub fn after_profile(cx: &mut Cx, home: &Path, a: AfterProfile, st: &mut Stage0)
     });
     if let Err(e) = removed {
         cx.resolve_exit(e, None);
+        if !crate::repl::check_session_exit(cx) {
+            return false;
+        }
     }
     if a.init_file {
-        let f = match profile(cx, "R_PROFILE_USER") {
-            Some(f) => f,
-            None => Some(std::path::PathBuf::from(".Rprofile"))
+        let f = match named(cx, "R_PROFILE_USER") {
+            Named::Unset => Some(std::path::PathBuf::from(".Rprofile"))
                 .filter(|f| f.is_file())
                 .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".Rprofile"))),
+            Named::File(f) => f,
+            Named::Halt => return false,
         };
         if !run(cx, f) {
             return false;
         }
     }
-    // R_InitialData: sys.load.image(".RData", R_Quiet) in the global
-    // environment (base has sys.load.image, so GNU R calls it)
-    if a.restore {
-        let quiet = if a.quiet { "TRUE" } else { "FALSE" };
-        let src = format!("sys.load.image(\".RData\", {quiet})\n");
-        if !eval_startup(cx, src.as_bytes(), None, |cx| cx.global_env()) {
-            return false;
-        }
+    // R_InitialData: R_RestoreGlobalEnvFromFile(".RData", R_Quiet)
+    if a.restore && !restore_global_env(cx, a.quiet) {
+        return false;
     }
     // .First: found from and called in the global environment; .First.sys:
     // found in base's namespace, called in base
@@ -1017,60 +1035,56 @@ pub fn init_jit(cx: &mut Cx) -> JitStart {
 }
 
 /// `R_findVar(name, from)`, and when it is a closure `eval(lang1(name),
-/// rho)`, both inside one top-level `SETJMP`: false when an error ended it
-/// and `check_session_exit` says R halts.
+/// rho)`, both inside one top-level `SETJMP` (repl.rs's `call_if_closure`,
+/// `R_dot_Last`'s step): false when an error ended it and
+/// `check_session_exit` says R halts.
 fn call_startup(
     cx: &mut Cx,
     name: &[u8],
     from: for<'g> fn(&'g Cx) -> Ref<'g>,
     rho: for<'g> fn(&'g Cx) -> Ref<'g>,
 ) -> bool {
-    let mut src = b"`".to_vec();
-    src.extend_from_slice(name);
-    src.extend_from_slice(b"`()\n");
-    eval_startup(cx, &src, Some((name, from)), rho)
+    let ok = cx.scope(|cx, s| {
+        let f = s.root(cx, from(cx));
+        let r = s.root(cx, rho(cx));
+        crate::repl::call_if_closure(cx, name, f, r)
+    });
+    ok || crate::repl::check_session_exit(cx)
 }
 
-/// `src`'s one call evaluated in `rho` at the top level, its value not
-/// printed; with `only_if`, only when `R_findVar(name, from)` (inside the
-/// same top level) is a closure. False when an error ended it and
-/// `check_session_exit` says R halts (the error reported where it was
-/// raised).
-fn eval_startup(
-    cx: &mut Cx,
-    src: &[u8],
-    only_if: Option<(&[u8], for<'g> fn(&'g Cx) -> Ref<'g>)>,
-    rho: for<'g> fn(&'g Cx) -> Ref<'g>,
-) -> bool {
-    let text = robigo_syntax::lexable(src);
-    let source = robigo_syntax::Source::new(&text, src);
-    let arena = robigo_syntax::Arena::new();
-    let Ok(exprs) = robigo_syntax::parse_program(&arena, source) else { return true };
+/// `R_RestoreGlobalEnvFromFile(".RData", quiet)` inside its top-level
+/// `SETJMP`: `sys.load.image(".RData", quiet)` evaluated in the global
+/// environment, the call built as saveload.c builds it (base binds
+/// `sys.load.image`, so GNU R's `R_LoadSavedData` branch is not taken
+/// here; without it robigo-rt says so). False when an error ended it and
+/// `check_session_exit` says R halts.
+// R: saveload.c:R_RestoreGlobalEnvFromFile
+fn restore_global_env(cx: &mut Cx, quiet: bool) -> bool {
     let ok = cx.scope(|cx, s| {
-        let e = s.out(cx);
-        let er = e.root();
         let g = s.root(cx, cx.global_env());
         let base = s.root(cx, cx.base_env());
-        let env = s.root(cx, rho(cx));
+        let call = s.out(cx);
+        let callr = call.root();
+        let f = s.out(cx);
+        let fr = f.root();
+        let o = s.out(cx);
         cx.repl_toplevel(g, base, |cx| {
-            if let Some((name, from)) = only_if {
-                let closure = cx.scope(|cx, s| {
-                    let sym = cx.install_rooted(s, name)?;
-                    let fenv = s.root(cx, from(cx));
-                    let o = s.out(cx);
-                    let v = o.root();
-                    cx.find_var(sym, fenv, o)?;
-                    Ok::<bool, robigo_rtcore::RError>(v.bind(cx).sexptype() == CLOSXP)
-                })?;
-                if !closure {
-                    return Ok(());
+            cx.scope(|cx, t| {
+                let sym = cx.install_rooted(t, b"sys.load.image")?;
+                cx.find_var(sym, g, f)?;
+                if fr.bind(cx).sexp() == cx.unbound().sexp() {
+                    return Err(cx.error("robigo: restoring .RData without base's sys.load.image (R_LoadSavedData) is not implemented yet"));
                 }
-            }
-            crate::reader::lower_one(cx, &exprs[0], e)?;
-            cx.scope(|cx, s| {
-                let o = s.out(cx);
-                crate::eval(cx, er, env, o)
-            })
+                cx.build(call, |cx| {
+                    let q = cx.alloc_copy(&[robigo_rtcore::Lgl(quiet as i32)])?.finish().into();
+                    let nil = cx.nil();
+                    let args = cx.lcons(q, nil)?;
+                    let name = cx.mk_string(b".RData", robigo_rtcore::Encoding::Native)?;
+                    let args = cx.lcons(name, args)?;
+                    cx.lcons(sym.bind(cx), args)
+                })
+            })?;
+            crate::eval(cx, callr, g, o)
         })
         .expect("robigo: an exit that passed the top level")
     });
@@ -1155,17 +1169,7 @@ pub fn lock_base(cx: &mut Cx) -> RResult<()> {
 /// ([`repl_eval_toplevel`], `Rf_ReplIteration`'s too).
 // R: main.c:R_ReplFile
 pub fn repl_file(cx: &mut Cx, path: &Path, st: &mut Stage0) -> Result<(), String> {
-    repl_file_in(cx, path, st, |cx| cx.base_namespace())
-}
-
-/// [`repl_file`] in the environment `rho` gives (the site's and the user's
-/// profiles run in the global environment).
-pub fn repl_file_in(
-    cx: &mut Cx,
-    path: &Path,
-    st: &mut Stage0,
-    rho: for<'g> fn(&'g Cx) -> Ref<'g>,
-) -> Result<(), String> {
+    let rho: for<'g> fn(&'g Cx) -> Ref<'g> = |cx| cx.base_namespace();
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let file = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
     // R_Parse1File, expression after expression: robigo-syntax parses the

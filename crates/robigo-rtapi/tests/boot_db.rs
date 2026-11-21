@@ -294,3 +294,19 @@ fn the_jit_starts_as_setup_rmainloop_ends() {
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!((out.as_str(), status), ("prof 0 \n3 \n", Some(0)));
 }
+
+#[test]
+fn a_named_profile_that_does_not_open_is_no_profile() {
+    if !tree_made() {
+        return;
+    }
+    // R_OpenSiteFile and R_OpenInitFile return R_fopen's NULL, which
+    // R_LoadProfile skips (startup.c:115, sys-unix.c:77, main.c:723); GNU R
+    // 4.6.2 runs on, as here
+    let missing = std::ffi::OsStr::new("/nonexistent/robigo-profile.R");
+    let (out, err, status) = boot(
+        &["--no-save".as_ref(), "--no-restore".as_ref(), "--no-echo".as_ref(), "-e".as_ref(), "cat('ran\\n')".as_ref()],
+        &[("R_PROFILE", missing), ("R_PROFILE_USER", missing)],
+    );
+    assert_eq!((out.as_str(), err.as_str(), status), ("ran\n", PROFILE_STOPS, Some(0)));
+}
