@@ -949,38 +949,42 @@ fn year_of<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, ans: Root<'_>) -> Root<
     s.root(cx, y)
 }
 
-/// `GET_tz_n_CHECK`'s `set_tz(tz, &tzsi)` when the zone is not UTC: the
-/// session the conversions run in, or None for UTC (gmtime, timegm00).
-// R: datetime.c:GET_tz_n_CHECK, set_tz
-fn open_tz(cx: &Cx, tz: &[u8], is_utc: bool) -> Result<Option<clib::TzSession>, TzOpenError> {
+/// `GET_tz_n_CHECK`'s `set_tz(tz, &tzsi)`, `f`, then `reset_tz`: `f` runs
+/// in the zone (with the session; None for UTC, which needs none), after
+/// `set_tz`'s warning. R code may run in `f` (a handler of its warnings and
+/// errors) and sees `TZ` set, as in GNU R.
+// R: datetime.c:GET_tz_n_CHECK, set_tz, reset_tz
+fn in_tz<R>(
+    cx: &mut Cx,
+    tz: &[u8],
+    is_utc: bool,
+    what: &str,
+    f: impl FnOnce(&mut Cx, Option<&clib::TzSession>) -> RResult<R>,
+) -> RResult<R> {
     if is_utc {
-        return Ok(None);
+        return f(cx, None);
     }
-    let w = clib::env_writer(cx).map_err(TzOpenError::Refused)?;
-    match w.set_tz(tz) {
-        Ok(s) => Ok(Some(s)),
-        Err(clib::SetTzError::TooLong) => Err(TzOpenError::TooLong),
-    }
-}
-
-/// Why [`open_tz`] made no session.
-enum TzOpenError {
-    Refused(clib::EnvWriteRefused),
-    TooLong,
-}
-
-/// [`open_tz`]'s failure as the error GNU R raises (`set_tz`'s), or
-/// robigo's when the process environment may not be written.
-fn tz_open_error(cx: &mut Cx, e: TzOpenError, what: &str) -> robigo_rtcore::RError {
-    match e {
-        TzOpenError::TooLong => tz_error(cx, "time zone specification is too long"),
-        TzOpenError::Refused(r) => not_yet(
+    let r = clib::with_tz(cx, tz, |cx, s| {
+        tz_warn(cx, s.set_failed)?;
+        f(cx, Some(s))
+    });
+    match r {
+        Ok(r) => r,
+        Err(clib::TzError::TooLong) => Err(tz_error(cx, "time zone specification is too long")),
+        Err(clib::TzError::Refused(r)) => Err(not_yet(
             cx,
             None,
             &format!(
                 "{what} in a time zone other than UTC or GMT without the process environment's writes ({r:?}): GNU R sets TZ"
             ),
-        ),
+        )),
+        Err(clib::TzError::NotRestored(r)) => Err(not_yet(
+            cx,
+            None,
+            &format!(
+                "{what} putting TZ back after the conversion when the process environment may no longer be written ({r:?})"
+            ),
+        )),
     }
 }
 
@@ -1041,145 +1045,141 @@ pub fn do_strptime(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
     let wide = loc.utf8;
     // the conversions run in the zone set_tz set; their warnings and errors
     // are raised there, as R_strptime raises them (R code may see TZ)
-    let sess = match open_tz(cx, &tz, is_utc) {
-        Ok(s) => s,
-        Err(e) => return Err(tz_open_error(cx, e, "strptime()")),
-    };
-    tz_warn(cx, sess.as_ref().is_some_and(|s| s.set_failed))?;
-    let (tzone, rows) = {
-        {
+    let (tzone, rows) = in_tz(cx, &tz, is_utc, "strptime()", |cx, sess| {
+        let (tzone, rows) = {
             {
-                // SET_TZONE: now, in case the conversions change it
-                let tzone: Vec<Vec<u8>> = match &sess {
-                    None => vec![tz.clone()],
-                    Some(s) => {
-                        let [a, b] = s.tzname();
-                        vec![tz.clone(), a, b]
-                    }
-                };
-                let mut rows: Vec<LtRow> = Vec::with_capacity(nn);
-                for i in 0..nn {
-                    let tr = {
-                        let x = args.get(cx, 0).as_vector::<Char<'_>>().unwrap().get(i % n);
-                        let f = args.get(cx, 1).as_vector::<Char<'_>>().unwrap().get(i % m);
-                        if x == cx.na_string() {
-                            None
-                        } else {
-                            let tr = |c: Char<'_>| {
-                                crate::text::to_native(crate::coerce::text(c), loc).map(|b| b.into_owned())
+                {
+                    // SET_TZONE: now, in case the conversions change it
+                    let tzone: Vec<Vec<u8>> = match sess {
+                        None => vec![tz.clone()],
+                        Some(s) => {
+                            let [a, b] = s.tzname();
+                            vec![tz.clone(), a, b]
+                        }
+                    };
+                    let mut rows: Vec<LtRow> = Vec::with_capacity(nn);
+                    for i in 0..nn {
+                        let tr = {
+                            let x = args.get(cx, 0).as_vector::<Char<'_>>().unwrap().get(i % n);
+                            let f = args.get(cx, 1).as_vector::<Char<'_>>().unwrap().get(i % m);
+                            if x == cx.na_string() {
+                                None
+                            } else {
+                                let tr = |c: Char<'_>| {
+                                    crate::text::to_native(crate::coerce::text(c), loc).map(|b| b.into_owned())
+                                };
+                                Some((tr(x), tr(f)))
+                            }
+                        };
+                        let (na, xs, fs) = match tr {
+                            None => (true, Vec::new(), Vec::new()),
+                            Some((Ok(a), Ok(b))) => (false, a, b),
+                            Some(_) => {
+                                return Err(tz_error(cx, "translating strings with \"bytes\" encoding is not allowed"));
+                            }
+                        };
+                        let mut tm = Tm {
+                            sec: 0,
+                            min: 0,
+                            hour: 0,
+                            year: NA_INTEGER,
+                            mon: NA_INTEGER,
+                            mday: NA_INTEGER,
+                            yday: NA_INTEGER,
+                            wday: NA_INTEGER,
+                            gmtoff: NA_INTEGER as i64,
+                            isdst: -1,
+                        };
+                        let mut psecs = 0.0f64;
+                        let mut offset = NA_INTEGER;
+                        let mut invalid = na;
+                        if !na {
+                            let mut p = Strptime {
+                                tm: &mut tm,
+                                psecs: &mut psecs,
+                                poffset: &mut offset,
+                                wide,
+                                loc: crate::text::ctype(loc),
+                                warnings: Vec::new(),
                             };
-                            Some((tr(x), tr(f)))
+                            let r = r_strptime(&mut p, &xs, &fs);
+                            let warnings = std::mem::take(&mut p.warnings);
+                            for w in warnings {
+                                // (warning() under prepare_reset_tz's context)
+                                cx.warning_in_ccode_context(&w)?;
+                            }
+                            match r {
+                                Ok(ok) => invalid = !ok,
+                                Err(StrptimeError(msg)) => return Err(tz_error(cx, &msg)),
+                            }
                         }
-                    };
-                    let (na, xs, fs) = match tr {
-                        None => (true, Vec::new(), Vec::new()),
-                        Some((Ok(a), Ok(b))) => (false, a, b),
-                        Some(_) => {
-                            return Err(tz_error(cx, "translating strings with \"bytes\" encoding is not allowed"));
-                        }
-                    };
-                    let mut tm = Tm {
-                        sec: 0,
-                        min: 0,
-                        hour: 0,
-                        year: NA_INTEGER,
-                        mon: NA_INTEGER,
-                        mday: NA_INTEGER,
-                        yday: NA_INTEGER,
-                        wday: NA_INTEGER,
-                        gmtoff: NA_INTEGER as i64,
-                        isdst: -1,
-                    };
-                    let mut psecs = 0.0f64;
-                    let mut offset = NA_INTEGER;
-                    let mut invalid = na;
-                    if !na {
-                        let mut p = Strptime {
-                            tm: &mut tm,
-                            psecs: &mut psecs,
-                            poffset: &mut offset,
-                            wide,
-                            loc: crate::text::ctype(loc),
-                            warnings: Vec::new(),
-                        };
-                        let r = r_strptime(&mut p, &xs, &fs);
-                        let warnings = std::mem::take(&mut p.warnings);
-                        for w in warnings {
-                            // (warning() under prepare_reset_tz's context)
-                            cx.warning_in_ccode_context(&w)?;
-                        }
-                        match r {
-                            Ok(ok) => invalid = !ok,
-                            Err(StrptimeError(msg)) => return Err(tz_error(cx, &msg)),
-                        }
-                    }
-                    let mut ptm: Option<Tm> = None; // ptm = &tm2 when set
-                    if !invalid {
-                        // Solaris sets missing fields to 0
-                        if tm.mday == 0 {
-                            tm.mday = NA_INTEGER;
-                        }
-                        if tm.mon == NA_INTEGER || tm.mday == NA_INTEGER || tm.year == NA_INTEGER {
-                            glibc_fix(&mut tm, &mut invalid, sess.as_ref());
-                        }
-                        tm.isdst = -1;
-                        if offset != NA_INTEGER {
-                            // the offset is known but not the time zone: to
-                            // time_t, adjusted, and back
-                            // (GNU R's `invalid = true` when mktime0 fails is
-                            // overwritten by validate_tm's verdict below)
-                            let mut tm2 = tm.clone();
-                            let (t0, _) = mktime0(&mut tm2, None);
-                            if t0 != -1.0 {
-                                // offset = -0800 is Seattle; a failed
-                                // localtime0 leaves ptm NULL in GNU R
-                                if let Some(t) = localtime0(t0 - offset as f64, sess.as_ref()) {
-                                    ptm = Some(t);
+                        let mut ptm: Option<Tm> = None; // ptm = &tm2 when set
+                        if !invalid {
+                            // Solaris sets missing fields to 0
+                            if tm.mday == 0 {
+                                tm.mday = NA_INTEGER;
+                            }
+                            if tm.mon == NA_INTEGER || tm.mday == NA_INTEGER || tm.year == NA_INTEGER {
+                                glibc_fix(&mut tm, &mut invalid, sess);
+                            }
+                            tm.isdst = -1;
+                            if offset != NA_INTEGER {
+                                // the offset is known but not the time zone: to
+                                // time_t, adjusted, and back
+                                // (GNU R's `invalid = true` when mktime0 fails is
+                                // overwritten by validate_tm's verdict below)
+                                let mut tm2 = tm.clone();
+                                let (t0, _) = mktime0(&mut tm2, None);
+                                if t0 != -1.0 {
+                                    // offset = -0800 is Seattle; a failed
+                                    // localtime0 leaves ptm NULL in GNU R
+                                    if let Some(t) = localtime0(t0 - offset as f64, sess) {
+                                        ptm = Some(t);
+                                    }
+                                }
+                            } else {
+                                // wday, yday, isdst set, without adjusting the
+                                // structure at DST boundaries
+                                let mut tm2 = tm.clone();
+                                if is_utc {
+                                    tm.isdst = 0;
+                                }
+                                // (mktime may fail, e.g. in the spring-forward gap)
+                                if mktime0(&mut tm2, sess).0 != -1.0 {
+                                    tm.wday = tm2.wday;
+                                    tm.yday = tm2.yday;
+                                    // not when the hours or minutes were moved
+                                    // across a gap (PR#18581)
+                                    if !is_utc && tm.hour == tm2.hour && tm.min == tm2.min {
+                                        tm.isdst = tm2.isdst;
+                                    }
                                 }
                             }
+                            invalid = validate_tm(&mut tm) != 0;
+                        }
+                        let frac = if invalid { NA_REAL } else { psecs - psecs.floor() };
+                        let (zone, gmtoff) = if is_utc {
+                            (tz.clone(), 0)
                         } else {
-                            // wday, yday, isdst set, without adjusting the
-                            // structure at DST boundaries
-                            let mut tm2 = tm.clone();
-                            if is_utc {
-                                tm.isdst = 0;
-                            }
-                            // (mktime may fail, e.g. in the spring-forward gap)
-                            if mktime0(&mut tm2, sess.as_ref()).0 != -1.0 {
-                                tm.wday = tm2.wday;
-                                tm.yday = tm2.yday;
-                                // not when the hours or minutes were moved
-                                // across a gap (PR#18581)
-                                if !is_utc && tm.hour == tm2.hour && tm.min == tm2.min {
-                                    tm.isdst = tm2.isdst;
+                            // tm.tm_zone (none: strptime sets none), else
+                            // R_tzname[tm.tm_isdst] as the conversions left it
+                            let zone = match sess {
+                                Some(s) if !invalid && tm.isdst >= 0 => {
+                                    let [a, b] = s.tzname();
+                                    if tm.isdst == 0 { a } else { b }
                                 }
-                            }
-                        }
-                        invalid = validate_tm(&mut tm) != 0;
-                    }
-                    let frac = if invalid { NA_REAL } else { psecs - psecs.floor() };
-                    let (zone, gmtoff) = if is_utc {
-                        (tz.clone(), 0)
-                    } else {
-                        // tm.tm_zone (none: strptime sets none), else
-                        // R_tzname[tm.tm_isdst] as the conversions left it
-                        let zone = match &sess {
-                            Some(s) if !invalid && tm.isdst >= 0 => {
-                                let [a, b] = s.tzname();
-                                if tm.isdst == 0 { a } else { b }
-                            }
-                            _ => Vec::new(),
+                                _ => Vec::new(),
+                            };
+                            (zone, if invalid { NA_INTEGER } else { tm.gmtoff as i32 })
                         };
-                        (zone, if invalid { NA_INTEGER } else { tm.gmtoff as i32 })
-                    };
-                    rows.push(LtRow { tm: ptm.unwrap_or(tm), valid: !invalid, frac, zone, gmtoff });
+                        rows.push(LtRow { tm: ptm.unwrap_or(tm), valid: !invalid, frac, zone, gmtoff });
+                    }
+                    (tzone, rows)
                 }
-                (tzone, rows)
             }
-        }
-    };
-    // reset_tz
-    drop(sess);
+        };
+        Ok((tzone, rows))
+    })?;
     let x = args.root(0);
     cx.scope(|cx, s| {
         let ans = s.capture(cx, |cx, o| cx.build(o, |cx| make_lt(cx, &rows, &tzone)))?;
@@ -1401,56 +1401,52 @@ pub fn do_as_posixct(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
                 }
             }
         }
-        let sess = match open_tz(cx, &tz, is_utc) {
-            Ok(s) => s,
-            Err(e) => return Err(tz_open_error(cx, e, "as.POSIXct()")),
-        };
-        tz_warn(cx, sess.as_ref().is_some_and(|s| s.set_failed))?;
-        let ans = {
-            let cx: &Cx = cx;
-            {
+        let ans = in_tz(cx, &tz, is_utc, "as.POSIXct()", |cx, sess| {
+            let ans = {
+                let cx: &Cx = cx;
                 {
-                    let mut ans = Vec::with_capacity(n);
-                    for i in 0..n {
-                        let real = |cx: &Cx, k: usize| match comps[k].bind(cx).view() {
-                            View::Real(v) => v.as_slice().unwrap()[i % nlen[k]],
-                            _ => unreachable!("coerced"),
-                        };
-                        let int = |cx: &Cx, k: usize| match comps[k].bind(cx).view() {
-                            View::Int(v) => v.as_slice().unwrap()[i % nlen[k]],
-                            _ => unreachable!("coerced"),
-                        };
-                        let secs = real(cx, 0);
-                        let fsecs = secs.floor();
-                        let mut tm = Tm {
-                            // avoid (int) NAN
-                            sec: if secs.is_finite() { c_int(fsecs) } else { NA_INTEGER },
-                            min: int(cx, 1),
-                            hour: int(cx, 2),
-                            mday: int(cx, 3),
-                            mon: int(cx, 4),
-                            year: int(cx, 5),
-                            // mktime ignores tm.tm_wday and tm.tm_yday
-                            isdst: if is_utc { 0 } else { int(cx, 8) },
-                            ..Tm::default()
-                        };
-                        let v = if !secs.is_finite() {
-                            secs
-                        } else if [tm.min, tm.hour, tm.mday, tm.mon, tm.year].contains(&NA_INTEGER) {
-                            NA_REAL
-                        } else {
-                            // MKTIME_SETS_ERRNO: -1 is an error only with errno set
-                            let (tmp, errno) = mktime0(&mut tm, sess.as_ref());
-                            if tmp == -1.0 && errno { NA_REAL } else { tmp + (secs - fsecs) }
-                        };
-                        ans.push(v);
+                    {
+                        let mut ans = Vec::with_capacity(n);
+                        for i in 0..n {
+                            let real = |cx: &Cx, k: usize| match comps[k].bind(cx).view() {
+                                View::Real(v) => v.as_slice().unwrap()[i % nlen[k]],
+                                _ => unreachable!("coerced"),
+                            };
+                            let int = |cx: &Cx, k: usize| match comps[k].bind(cx).view() {
+                                View::Int(v) => v.as_slice().unwrap()[i % nlen[k]],
+                                _ => unreachable!("coerced"),
+                            };
+                            let secs = real(cx, 0);
+                            let fsecs = secs.floor();
+                            let mut tm = Tm {
+                                // avoid (int) NAN
+                                sec: if secs.is_finite() { c_int(fsecs) } else { NA_INTEGER },
+                                min: int(cx, 1),
+                                hour: int(cx, 2),
+                                mday: int(cx, 3),
+                                mon: int(cx, 4),
+                                year: int(cx, 5),
+                                // mktime ignores tm.tm_wday and tm.tm_yday
+                                isdst: if is_utc { 0 } else { int(cx, 8) },
+                                ..Tm::default()
+                            };
+                            let v = if !secs.is_finite() {
+                                secs
+                            } else if [tm.min, tm.hour, tm.mday, tm.mon, tm.year].contains(&NA_INTEGER) {
+                                NA_REAL
+                            } else {
+                                // MKTIME_SETS_ERRNO: -1 is an error only with errno set
+                                let (tmp, errno) = mktime0(&mut tm, sess);
+                                if tmp == -1.0 && errno { NA_REAL } else { tmp + (secs - fsecs) }
+                            };
+                            ans.push(v);
+                        }
+                        ans
                     }
-                    ans
                 }
-            }
-        };
-        // reset_tz
-        drop(sess);
+            };
+            Ok(ans)
+        })?;
         // names() and class()
         let v = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_copy(&ans)?.finish().into())))?;
         let nm = names_of(cx, s, comps[5]);
@@ -1492,54 +1488,50 @@ pub fn do_as_posixlt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
         // GET_tz_CHECK_n_TZONE
         let (tz, is_utc) = get_tz(cx, args.root(1))?;
         set_tz_check(cx, is_utc)?;
-        let sess = match open_tz(cx, &tz, is_utc) {
-            Ok(s) => s,
-            Err(e) => return Err(tz_open_error(cx, e, "as.POSIXlt()")),
-        };
-        tz_warn(cx, sess.as_ref().is_some_and(|s| s.set_failed))?;
-        let xs = reals(cx, None, x, "as.POSIXlt()")?;
-        let (tzone, rows) = {
-            {
+        let (tzone, rows) = in_tz(cx, &tz, is_utc, "as.POSIXlt()", |cx, sess| {
+            let xs = reals(cx, None, x, "as.POSIXlt()")?;
+            let (tzone, rows) = {
                 {
-                    // SET_TZONE: now, in case the conversions change it
-                    let tzone: Vec<Vec<u8>> = match &sess {
-                        None => vec![tz.clone()],
-                        Some(s) => {
-                            let [a, b] = s.tzname();
-                            vec![tz.clone(), a, b]
-                        }
-                    };
-                    let rows: Vec<LtRow> = xs
-                        .iter()
-                        .map(|&d| {
-                            let ptm = if d.is_finite() { localtime0(d, sess.as_ref()) } else { None };
-                            let valid = ptm.is_some();
-                            let frac = if valid { d - d.floor() } else { d };
-                            let tm = ptm.unwrap_or_default();
-                            let (zone, gmtoff) = if is_utc {
-                                (tz.clone(), 0)
-                            } else {
-                                // R_tzname[tm_isdst] as this conversion left it (glibc's
-                                // localtime_r sets tzname for the time converted); or
-                                // ptm->tm_zone, which POSIX does not specify
-                                let zone = match &sess {
-                                    Some(s) if valid && tm.isdst >= 0 => {
-                                        let [a, b] = s.tzname();
-                                        if tm.isdst == 0 { a } else { b }
-                                    }
-                                    _ => Vec::new(),
+                    {
+                        // SET_TZONE: now, in case the conversions change it
+                        let tzone: Vec<Vec<u8>> = match sess {
+                            None => vec![tz.clone()],
+                            Some(s) => {
+                                let [a, b] = s.tzname();
+                                vec![tz.clone(), a, b]
+                            }
+                        };
+                        let rows: Vec<LtRow> = xs
+                            .iter()
+                            .map(|&d| {
+                                let ptm = if d.is_finite() { localtime0(d, sess) } else { None };
+                                let valid = ptm.is_some();
+                                let frac = if valid { d - d.floor() } else { d };
+                                let tm = ptm.unwrap_or_default();
+                                let (zone, gmtoff) = if is_utc {
+                                    (tz.clone(), 0)
+                                } else {
+                                    // R_tzname[tm_isdst] as this conversion left it (glibc's
+                                    // localtime_r sets tzname for the time converted); or
+                                    // ptm->tm_zone, which POSIX does not specify
+                                    let zone = match sess {
+                                        Some(s) if valid && tm.isdst >= 0 => {
+                                            let [a, b] = s.tzname();
+                                            if tm.isdst == 0 { a } else { b }
+                                        }
+                                        _ => Vec::new(),
+                                    };
+                                    (zone, if valid { tm.gmtoff as i32 } else { NA_INTEGER })
                                 };
-                                (zone, if valid { tm.gmtoff as i32 } else { NA_INTEGER })
-                            };
-                            LtRow { tm, valid, frac, zone, gmtoff }
-                        })
-                        .collect();
-                    (tzone, rows)
+                                LtRow { tm, valid, frac, zone, gmtoff }
+                            })
+                            .collect();
+                        (tzone, rows)
+                    }
                 }
-            }
-        };
-        // reset_tz (END_MAKElt's, after the tzone attribute)
-        drop(sess);
+            };
+            Ok((tzone, rows))
+        })?;
         let ans = s.capture(cx, |cx, o| cx.build(o, |cx| make_lt(cx, &rows, &tzone)))?;
         let (nm, year) = (names_of(cx, s, x), year_of(cx, s, ans));
         set_names_from(cx, s, year, nm)?;
@@ -1844,146 +1836,142 @@ pub fn do_format_posixlt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root
             Untranslatable(String),
         }
         let tz1 = tz.as_ref().and_then(|t| t.first().cloned()).unwrap_or_default();
-        let sess = match open_tz(cx, &tz1, !need_tz) {
-            Ok(s) => s,
-            Err(e) => return Err(tz_open_error(cx, e, "format.POSIXlt()")),
-        };
-        tz_warn(cx, sess.as_ref().is_some_and(|s| s.set_failed))?;
-        let converted = {
-            let cx: &Cx = cx;
-            {
+        let cells = in_tz(cx, &tz1, !need_tz, "format.POSIXlt()", |cx, sess| {
+            let converted = {
+                let cx: &Cx = cx;
                 {
-                    let real = |k: usize, i: usize| match comps[k].bind(cx).view() {
-                        View::Real(v) => v.get(i % nlen[k]),
-                        _ => unreachable!("coerced"),
-                    };
-                    let int = |k: usize, i: usize| match comps[k].bind(cx).view() {
-                        View::Int(v) => v.get(i % nlen[k]),
-                        _ => unreachable!("coerced"),
-                    };
-                    let zone_of = |i: usize| -> Vec<u8> {
-                        comps[9].bind(cx).as_vector::<Char<'_>>().unwrap().get(i % nlen[9]).bytes().to_vec()
-                    };
-                    let mut ns0 = -1;
-                    let mut cells = Vec::with_capacity(nn_out);
-                    let mut stop = None;
-                    // (memset once: tm_gmtoff stays 0 without a gmtoff component)
-                    let mut gmtoff_prev: i64 = 0;
-                    for i in 0..nn_out {
-                        let secs = real(0, i);
-                        let fsecs = secs.floor();
-                        let mut tm = Tm {
-                            // avoid (int) NAN
-                            sec: if secs.is_finite() && fsecs >= i32::MIN as f64 && fsecs <= i32::MAX as f64 {
-                                fsecs as i32
-                            } else {
-                                NA_INTEGER
-                            },
-                            min: int(1, i),
-                            hour: int(2, i),
-                            mday: int(3, i),
-                            mon: int(4, i),
-                            year: int(5, i),
-                            wday: int(6, i),
-                            yday: int(7, i),
-                            isdst: int(8, i),
-                            gmtoff: gmtoff_prev,
+                    {
+                        let real = |k: usize, i: usize| match comps[k].bind(cx).view() {
+                            View::Real(v) => v.get(i % nlen[k]),
+                            _ => unreachable!("coerced"),
                         };
-                        // strncpy(tm_zone, CHAR(zone), 19)
-                        let tm_zone: Option<Vec<u8>> = have_zone.then(|| {
-                            let z = zone_of(i);
-                            z[..z.len().min(19)].to_vec()
-                        });
-                        let cell = if !secs.is_finite() {
-                            if robigo_text::is_na(secs) {
+                        let int = |k: usize, i: usize| match comps[k].bind(cx).view() {
+                            View::Int(v) => v.get(i % nlen[k]),
+                            _ => unreachable!("coerced"),
+                        };
+                        let zone_of = |i: usize| -> Vec<u8> {
+                            comps[9].bind(cx).as_vector::<Char<'_>>().unwrap().get(i % nlen[9]).bytes().to_vec()
+                        };
+                        let mut ns0 = -1;
+                        let mut cells = Vec::with_capacity(nn_out);
+                        let mut stop = None;
+                        // (memset once: tm_gmtoff stays 0 without a gmtoff component)
+                        let mut gmtoff_prev: i64 = 0;
+                        for i in 0..nn_out {
+                            let secs = real(0, i);
+                            let fsecs = secs.floor();
+                            let mut tm = Tm {
+                                // avoid (int) NAN
+                                sec: if secs.is_finite() && fsecs >= i32::MIN as f64 && fsecs <= i32::MAX as f64 {
+                                    fsecs as i32
+                                } else {
+                                    NA_INTEGER
+                                },
+                                min: int(1, i),
+                                hour: int(2, i),
+                                mday: int(3, i),
+                                mon: int(4, i),
+                                year: int(5, i),
+                                wday: int(6, i),
+                                yday: int(7, i),
+                                isdst: int(8, i),
+                                gmtoff: gmtoff_prev,
+                            };
+                            // strncpy(tm_zone, CHAR(zone), 19)
+                            let tm_zone: Option<Vec<u8>> = have_zone.then(|| {
+                                let z = zone_of(i);
+                                z[..z.len().min(19)].to_vec()
+                            });
+                            let cell = if !secs.is_finite() {
+                                if robigo_text::is_na(secs) {
+                                    Cell::Na
+                                } else if secs.is_nan() {
+                                    Cell::Text(b"NaN".to_vec())
+                                } else if secs > 0.0 {
+                                    Cell::Text(b"Inf".to_vec())
+                                } else {
+                                    Cell::Text(b"-Inf".to_vec())
+                                }
+                            } else if [tm.min, tm.hour, tm.mday, tm.mon, tm.year].contains(&NA_INTEGER) {
                                 Cell::Na
-                            } else if secs.is_nan() {
-                                Cell::Text(b"NaN".to_vec())
-                            } else if secs > 0.0 {
-                                Cell::Text(b"Inf".to_vec())
+                            } else if validate_tm(&mut tm) < 0 || likely_strftime_overflow(&tm) {
+                                Cell::Na
                             } else {
-                                Cell::Text(b"-Inf".to_vec())
-                            }
-                        } else if [tm.min, tm.hour, tm.mday, tm.mon, tm.year].contains(&NA_INTEGER) {
-                            Cell::Na
-                        } else if validate_tm(&mut tm) < 0 || likely_strftime_overflow(&tm) {
-                            Cell::Na
-                        } else {
-                            let q = match tr_format(cx, i % m) {
-                                Ok(q) => q,
-                                Err(msg) => {
-                                    stop = Some(Stop::Untranslatable(msg));
+                                let q = match tr_format(cx, i % m) {
+                                    Ok(q) => q,
+                                    Err(msg) => {
+                                        stop = Some(Stop::Untranslatable(msg));
+                                        break;
+                                    }
+                                };
+                                let buf2 = os_format(&q, &tm, secs, fsecs, digits, &mut ns0);
+                                let mut mktime_first = false;
+                                if have_zone {
+                                    // (so not in UTC; coerced above)
+                                    let tmp = int(10, i);
+                                    if tmp == NA_INTEGER && buf2.windows(2).any(|w| w == b"%z") {
+                                        // at least on glibc mktime corrects it
+                                        mktime_first = true;
+                                    } else {
+                                        tm.gmtoff = tmp as i64;
+                                    }
+                                }
+                                gmtoff_prev = tm.gmtoff;
+                                let r = match sess {
+                                    Some(s) => s.strftime(&buf2, &tm, tm_zone.as_deref(), mktime_first, &lc),
+                                    None => clib::strftime(&buf2, &tm, tm_zone.as_deref(), mktime_first, &lc),
+                                };
+                                if r.zero && !matches!(&buf2[..], b"%Z" | b"%z" | b"%P" | b"%p") {
+                                    stop = Some(Stop::Overflow);
                                     break;
                                 }
-                            };
-                            let buf2 = os_format(&q, &tm, secs, fsecs, digits, &mut ns0);
-                            let mut mktime_first = false;
-                            if have_zone {
-                                // (so not in UTC; coerced above)
-                                let tmp = int(10, i);
-                                if tmp == NA_INTEGER && buf2.windows(2).any(|w| w == b"%z") {
-                                    // at least on glibc mktime corrects it
-                                    mktime_first = true;
-                                } else {
-                                    tm.gmtoff = tmp as i64;
-                                }
-                            }
-                            gmtoff_prev = tm.gmtoff;
-                            let r = match &sess {
-                                Some(s) => s.strftime(&buf2, &tm, tm_zone.as_deref(), mktime_first, &lc),
-                                None => clib::strftime(&buf2, &tm, tm_zone.as_deref(), mktime_first, &lc),
-                            };
-                            if r.zero && !matches!(&buf2[..], b"%Z" | b"%z" | b"%P" | b"%p") {
-                                stop = Some(Stop::Overflow);
-                                break;
-                            }
-                            let mut buff = r.bytes;
-                            if use_tz != 0 {
-                                if have_zone {
-                                    let p = zone_of(i);
-                                    if !p.is_empty() {
-                                        buff.push(b' ');
-                                        buff.extend_from_slice(&p);
-                                    }
-                                } else if let Some(t) = &tz {
-                                    let ii = if t.len() == 3 {
-                                        if tm.isdst > 0 {
-                                            2
-                                        } else if tm.isdst == 0 {
-                                            1
-                                        } else {
-                                            0 // the base time zone name
+                                let mut buff = r.bytes;
+                                if use_tz != 0 {
+                                    if have_zone {
+                                        let p = zone_of(i);
+                                        if !p.is_empty() {
+                                            buff.push(b' ');
+                                            buff.extend_from_slice(&p);
                                         }
-                                    } else {
-                                        0
-                                    };
-                                    let p = &t[ii];
-                                    if !p.is_empty() {
-                                        buff.push(b' ');
-                                        buff.extend_from_slice(p);
+                                    } else if let Some(t) = &tz {
+                                        let ii = if t.len() == 3 {
+                                            if tm.isdst > 0 {
+                                                2
+                                            } else if tm.isdst == 0 {
+                                                1
+                                            } else {
+                                                0 // the base time zone name
+                                            }
+                                        } else {
+                                            0
+                                        };
+                                        let p = &t[ii];
+                                        if !p.is_empty() {
+                                            buff.push(b' ');
+                                            buff.extend_from_slice(p);
+                                        }
                                     }
                                 }
-                            }
-                            Cell::Text(buff)
-                        };
-                        cells.push(cell);
-                    }
-                    match stop {
-                        Some(e) => Err(e),
-                        None => Ok(cells),
+                                Cell::Text(buff)
+                            };
+                            cells.push(cell);
+                        }
+                        match stop {
+                            Some(e) => Err(e),
+                            None => Ok(cells),
+                        }
                     }
                 }
-            }
-        };
-        drop(lc);
-        // (raised in the zone, before reset_tz, as GNU R raises them)
-        let cells = match converted {
-            Ok(v) => v,
-            Err(Stop::Overflow) => return Err(tz_error(cx, "output string exceeded 2048 bytes")),
-            Err(Stop::Untranslatable(m)) => return Err(tz_error(cx, &m)),
-        };
-        // reset_tz
-        drop(sess);
+            };
+            drop(lc);
+            // (raised in the zone, before reset_tz, as GNU R raises them)
+            let cells = match converted {
+                Ok(v) => v,
+                Err(Stop::Overflow) => return Err(tz_error(cx, "output string exceeded 2048 bytes")),
+                Err(Stop::Untranslatable(m)) => return Err(tz_error(cx, &m)),
+            };
+            Ok(cells)
+        })?;
         let ans = s.capture(cx, |cx, o| {
             cx.build(o, |cx| {
                 let mut ans = cx.alloc_vector::<Char<'_>>(cells.len())?;
