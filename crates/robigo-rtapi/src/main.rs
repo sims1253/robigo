@@ -554,17 +554,9 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
             robigo_rt::base::JitStart::Done => {}
             robigo_rt::base::JitStart::Halt => {
                 cx.reprintf(b"Execution halted\n");
-                robigo_rt::fin::run_exit_finalizers(cx);
-                robigo_rt::repl::print_warnings(cx);
-                cx.flush_console();
-                return 1;
+                halt(cx);
             }
-            robigo_rt::base::JitStart::Suicide => {
-                // R_CleanUp(SA_SUICIDE, 2, 0)
-                robigo_rt::fin::run_exit_finalizers(cx);
-                cx.flush_console();
-                return 2;
-            }
+            robigo_rt::base::JitStart::Suicide => suicide(cx),
         }
     }
     // the isolate's console is the process's stdout and stderr
@@ -661,5 +653,15 @@ fn halt(cx: &mut robigo_rtcore::Cx) -> ! {
     match robigo_rt::repl::clean_up(cx, robigo_rt::repl::SaveAction::NoSave, 1, false) {
         Ok(never) => match never {},
         Err(_) => unreachable!("robigo: SA_NOSAVE saves nothing"),
+    }
+}
+
+/// R_Suicide's `R_CleanUp(SA_SUICIDE, 2, 0)`, its message written: the exit
+/// finalizers, no warnings, status 2.
+// R: unix/sys-std.c:Rstd_Suicide
+fn suicide(cx: &mut robigo_rtcore::Cx) -> ! {
+    match robigo_rt::repl::clean_up(cx, robigo_rt::repl::SaveAction::Suicide, 2, false) {
+        Ok(never) => match never {},
+        Err(_) => unreachable!("robigo: SA_SUICIDE saves nothing"),
     }
 }

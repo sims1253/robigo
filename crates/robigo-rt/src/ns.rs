@@ -560,10 +560,28 @@ fn sym<'s>(cx: &mut Cx, s: Scope<'s>, name: &[u8]) -> RResult<Root<'s>> {
     cx.install_rooted(s, name)
 }
 
-/// `R_FindNamespace(info)`: `getNamespace(info)`, the registered namespace
-/// of that name, else [`load_namespace`]'s.
+/// `R_FindNamespace(info)`: `getNamespace(info)` evaluated in base, the
+/// registered namespace of that name, else base's `loadNamespace`'s (an
+/// error in it shows the R calls, `getNamespace -> %||% -> loadNamespace`,
+/// as in GNU R). Under M1's loader the registered namespace, else
+/// [`load_namespace`]'s (the compiler made from source).
 // R: envir.c:R_FindNamespace; namespace.R:getNamespace
 pub fn find_namespace(cx: &mut Cx, name: &[u8], out: Out<'_>) -> RResult<()> {
+    if crate::prims::state(cx).gnu_boot.get() {
+        return cx.scope(|cx, s| {
+            let f = cx.install_rooted(s, b"getNamespace")?;
+            let call = s.capture(cx, |cx, o| {
+                cx.build(o, |cx| {
+                    let info = cx.mk_string(name, robigo_rtcore::Encoding::Native)?;
+                    let nil = cx.nil();
+                    let args = cx.lcons(info, nil)?;
+                    cx.lcons(f.bind(cx), args)
+                })
+            })?;
+            let base = s.root(cx, cx.base_env());
+            crate::eval(cx, call, base, out)
+        });
+    }
     cx.scope(|cx, s| {
         let pkg = sym(cx, s, name)?;
         let reg = s.root(cx, cx.namespace_registry());
