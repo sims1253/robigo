@@ -234,11 +234,12 @@ entry! {
 // R: coerce.c:coerceVector (COERCE_ERROR), util.c:type2char
 #[cold]
 fn coerce_to_unknown(cx: &mut Cx, v: Root<'_>, t: c_uint) -> RError {
-    if let Err(e) = cx.warning(&format!("type {t} is unimplemented in 'type2char'")) {
-        return e;
-    }
+    let to = match robigo_rtbuiltins::util::type2char_warn(cx, t) {
+        Ok(to) => to,
+        Err(e) => return e,
+    };
     let from = r_type_to_char(v.bind(cx));
-    cx.error(&format!("cannot coerce type '{from}' to vector of type 'unknown type #{t}'"))
+    cx.error(&format!("cannot coerce type '{from}' to vector of type '{to}'"))
 }
 
 entry! {

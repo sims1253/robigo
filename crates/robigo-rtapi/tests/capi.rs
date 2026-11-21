@@ -533,6 +533,34 @@ fn accessor_errors_are_gnu_rs() {
     assert_eq!(s.val(&format!(".Call(\"rt_noop3\", {})", vec!["1"; 65].join(", "))), Val::Null);
 }
 
+/// `allocVector` of a code no type names: type2char's warning, then GNU
+/// R's "invalid type/length" naming the caller's code (30 is NEWSXP, in the
+/// table without a name; 999 is past it, named as given).
+// R: memory.c:allocVector3, util.c:type2char
+#[test]
+fn alloc_vector_of_an_unknown_type_names_the_callers_code() {
+    let mut s = Session::new(Profile::Eval);
+    s.stderr();
+    for t in [30, 999] {
+        assert_eq!(
+            s.val(&format!(
+                "w <- NULL; tryCatch(withCallingHandlers(.Call(\"rt_alloc_type\", {t}, 1), \
+                 warning = function(c) {{ w <<- conditionMessage(c); invokeRestart(\"muffleWarning\") }}), \
+                 error = function(e) c(w, conditionMessage(e)))"
+            )),
+            Val::Str(vec![
+                format!("type {t} is unimplemented in 'type2char'"),
+                format!("invalid type/length (unknown type #{t}/1) in vector allocation"),
+            ])
+        );
+    }
+    // a type that has a name keeps it, without a warning
+    assert_eq!(
+        s.val("tryCatch(.Call(\"rt_alloc_type\", 8, 1), error = function(e) conditionMessage(e))"),
+        Val::Str(vec!["invalid type/length (builtin/1) in vector allocation".into()])
+    );
+}
+
 /// `coerceVector` to a type code no SEXPTYPE has, past robigo's `u8`
 /// codes: COERCE_ERROR names the code the caller gave, after type2char's
 /// warning (GNU R reads past its type table for such a code, so no oracle
