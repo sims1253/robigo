@@ -190,6 +190,9 @@ fn a_user_profile_s_errors_end_it_as_in_gnu_r() {
     // fired first (an error under warn = 2, else "In addition")
     let formal2 = run("formal2", "options(warn = 2)\nf <- function(x, x = 1.1L) {}\n");
     let formal = run("formal", "f <- function(x, x = 1.1L) {}\n");
+    // a grammar error's frontier is the token it rejects: the literal after
+    // it is not lexed, so its warning does not fire
+    let reject = run("reject", "options(warn = 2)\n) 1.1L\n");
     let _ = std::fs::remove_dir_all(&dir);
     let lex_err = format!(
         "{PROFILE_STOPS}Error: '\\q' is an unrecognized escape in character string (<input>:2:8)\nExecution halted\n"
@@ -209,6 +212,8 @@ fn a_user_profile_s_errors_end_it_as_in_gnu_r() {
          integer literal 1.1L contains decimal; using numeric value \nExecution halted\n"
     );
     assert_eq!((formal.0.as_str(), formal.1.as_str(), formal.2), ("", formal_err.as_str(), Some(1)));
+    let reject_err = format!("{PROFILE_STOPS}Error: 2:1: unexpected ')'\n2: )\n    ^\nExecution halted\n");
+    assert_eq!((reject.0.as_str(), reject.1.as_str(), reject.2), ("", reject_err.as_str(), Some(1)));
     let parse_err = format!("{PROFILE_STOPS}Error: 2:1: unexpected ')'\n2: )\n    ^\nExecution halted\n");
     assert_eq!((parse.0.as_str(), parse.1.as_str(), parse.2), ("before\n", parse_err.as_str(), Some(1)));
     let error_err = format!("{PROFILE_STOPS}Error: boom\nExecution halted\n");
