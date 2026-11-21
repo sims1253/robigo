@@ -1,0 +1,7 @@
+jit-scale_by main-19886a17 per-compile 9920092
+jit-scale_by dl-4512843f5 per-compile 9711088
+jit-safe main-19886a17 per-compile 14748764
+jit-safe dl-4512843f5 per-compile 14478700
+sha256 main-19886a17 24b84ac473dd849e887e35419fd88409738c31858337576e27febabd05a0a0a5
+sha256 dl-4512843f5 4146eae73c4de51133b1fd700f5cbfa383c1587497b933c6ff4293b6cc15c310
+malloc calls per run (jit-scale_by): main 400 2000327, 800 3567161; this 400 1221067, 800 2009101

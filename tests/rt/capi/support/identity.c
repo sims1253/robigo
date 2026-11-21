@@ -24,3 +24,9 @@ SEXP rt_assign_copies(SEXP sym, SEXP expr, SEXP rho) {
     UNPROTECT(1);
     return ScalarLogical(now != old);
 }
+
+// R_UnboundValue as a .Call result (tests/rt/capi/unbound-store.R): what a
+// compiled local assignment of it does.
+SEXP rt_unbound(void) {
+    return R_UnboundValue;
+}
