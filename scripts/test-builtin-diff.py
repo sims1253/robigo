@@ -179,6 +179,12 @@ FAKE = textwrap.dedent("""\
         open(os.path.join(out, "%06d.ok" % i), "w").close()
         if os.environ.get("MAKE_FILES"):
             open("made-%d" % i, "w").write(os.environ.get("A4_LEAK", "clean"))
+        if os.environ.get("CHECK_HOME"):
+            # the case's tree is still its own after a pause
+            time.sleep(0.2)
+            link = os.path.join(os.environ["HOME"], ".cache", "robigo-research", "rsrc")
+            if not (os.path.lexists(link) and os.path.exists("made-%d" % i)):
+                sys.stderr.write("the case's directory went away\\n"); os._exit(101)
     """)
 
 
@@ -229,6 +235,51 @@ class Batches(unittest.TestCase):
             # its own directory: only this case's file, and no leaked variable
             self.assertEqual([x[0] for x in files], [".", f"made-{i}"])
             self.assertEqual(files[1][3], len("clean"))
+
+    def test_two_runs_of_one_external_row_at_once_both_pass(self):
+        # as two checkouts' `ci` runs on one machine: the row's case
+        # directory is one path for both (case_root), and neither run may
+        # remove the other's tree mid-case (the driver checks its HOME's
+        # link to GNU R's sources and its own file after a pause)
+        d = tempfile.mkdtemp()
+        drv = os.path.join(d, "fake.py")
+        with open(drv, "w") as f:
+            f.write(FAKE)
+        run = os.path.join(d, "run.py")
+        with open(run, "w") as f:
+            f.write(textwrap.dedent(f"""\
+                import importlib.util, json, os, sys, unittest.mock
+                spec = importlib.util.spec_from_file_location("bd", {os.path.join(HERE, "builtin-diff.py")!r})
+                bd = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(bd)
+                keep = {{"N": "4", "MAKE_FILES": "1", "CHECK_HOME": "1"}}
+                with unittest.mock.patch.object(bd, "ENV", {{**bd.ENV, **keep}}):
+                    lost = bd.run_isolated([sys.executable, {drv!r}], {{**os.environ, **keep}}, "batch", sys.argv[1], 4,
+                                           "test-concurrent", rsrc={os.path.join(d, "rsrc", "R")!r})
+                print(json.dumps({{str(k): v for k, v in lost.items()}}))
+                """))
+        outs = [os.path.join(d, f"out{k}") for k in (1, 2)]
+        ps = [subprocess.Popen([sys.executable, run, o], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+              for o in outs]
+        for p, o in zip(ps, outs):
+            sout, serr = p.communicate(timeout=120)
+            self.assertEqual(p.returncode, 0, serr)
+            self.assertEqual(json.loads(sout), {}, f"{o}: cases lost")
+            for i in range(1, 5):
+                with open(os.path.join(o, f"{i:06d}.files")) as f:
+                    self.assertEqual([x[0] for x in json.load(f)], [".", f"made-{i}"])
+        self.assertFalse(os.path.lexists(bd.case_root("test-concurrent")))
+
+    def test_the_case_directory_is_removed_when_a_run_fails(self):
+        d = tempfile.mkdtemp()
+        drv = os.path.join(d, "fake.py")
+        with open(drv, "w") as f:
+            f.write(FAKE)
+        with unittest.mock.patch.object(bd, "ENV", {**bd.ENV, "N": "2", "UNUSABLE": "1"}):
+            with self.assertRaises(bd.Unusable):
+                bd.run_isolated([sys.executable, drv], {**os.environ, "N": "2", "UNUSABLE": "1"}, "batch",
+                                os.path.join(d, "out"), 2, "test-unusable")
+        self.assertFalse(os.path.lexists(bd.case_root("test-unusable")))
 
     def test_the_case_directory_mode_does_not_follow_the_harness_umask(self):
         d = tempfile.mkdtemp()
