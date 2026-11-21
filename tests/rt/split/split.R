@@ -36,6 +36,8 @@ show(split(1:4, g, drop = TRUE))
 lx <- structure(1:4, levels = c("L1", "L2"))
 show(split(lx, factor(c(1, 2, 1, 2))))
 show(split(factor(c("u", "v", "u", "w")), factor(c(1, 1, 2, 2))))
+# a one-dimensional array's names are its dimnames[[1]]
+show(split(array(1:4, 4L, dimnames = list(letters[1:4])), c(1, 2, 1, 2)))
 # a compact sequence, as split.default makes for a classed x
 show(.Internal(split(seq_along(letters[1:6]), factor(rep(c("e", "o"), 3)))))
 show(.Internal(split(1:6, factor(rep(c("e", "o"), 3)))))

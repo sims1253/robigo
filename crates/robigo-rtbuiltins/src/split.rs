@@ -103,7 +103,8 @@ fn split<'s>(cx: &mut Cx, s: Scope<'s>, x: Root<'_>, f: Root<'_>, out: Out<'_>) 
         return Err(cx.error(&msg));
     }
     let x_levels = crate::attrib::get_value(x.bind(cx), b"levels").map(|l| s.root(cx, l));
-    let names = crate::attrib::get_value(x.bind(cx), b"names").map(|n| s.root(cx, n));
+    // getAttrib(x, R_NamesSymbol): a one-dimensional array's dimnames[[1]]
+    let names = crate::attrib::names(x.bind(cx)).map(|n| s.root(cx, n));
     let vec = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_vector::<Ref<'_>>(nlevs)?.finish().into())))?;
     for (j, ix) in idx.iter().enumerate() {
         let piece = s.capture(cx, |cx, o| {
