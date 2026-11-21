@@ -18,9 +18,37 @@ use robigo_rt::repl::run_session;
 
 /// The commit this binary was built from (build.rs's `ROBIGO_RT_COMMIT`), as
 /// a marker in the file that scripts/rt-builder.sh reads, so that a tree
-/// this binary builds records what built it. Nothing prints it.
+/// this binary builds records what built it. Nothing prints it. "unknown"
+/// when the build script that ran did not set it (checkouts sharing a
+/// target directory share its fingerprints, so an older checkout's build
+/// script can be the one cargo ran): rt-builder.sh then refuses the binary
+/// rather than record a wrong commit.
 #[used]
-static BUILD_COMMIT: &[u8] = concat!("robigo-rt-commit:", env!("ROBIGO_RT_COMMIT"), "\n").as_bytes();
+static BUILD_COMMIT: [u8; 64] = build_commit(match option_env!("ROBIGO_RT_COMMIT") {
+    Some(c) => c,
+    None => "unknown",
+});
+
+/// `robigo-rt-commit:<commit>\n`, then NULs, in 64 bytes (a 40-digit
+/// commit fits; a longer value is cut).
+const fn build_commit(commit: &str) -> [u8; 64] {
+    let mut out = [0u8; 64];
+    let head = b"robigo-rt-commit:";
+    let c = commit.as_bytes();
+    let mut i = 0;
+    while i < head.len() {
+        out[i] = head[i];
+        i += 1;
+    }
+    let mut j = 0;
+    while j < c.len() && i < 63 {
+        out[i] = c[j];
+        i += 1;
+        j += 1;
+    }
+    out[i] = b'\n';
+    out
+}
 use robigo_rtcore::OwnedIsolate;
 use std::os::unix::ffi::OsStrExt;
 
