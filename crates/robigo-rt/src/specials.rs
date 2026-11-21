@@ -1287,7 +1287,24 @@ fn list_env<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>) -> RResult<Root<'s>> {
                 };
                 t.root(cx, x)
             };
-            let sym = cx.install_rooted(t, &name)?;
+            // installTrChar: a new symbol's PRINTNAME is the name's
+            // CHARSXP when no translation was needed (Cx::install_tr); a
+            // pairlist's tag is a symbol already
+            let y = cx.retry_alloc(|cx| {
+                let v = env.bind(cx);
+                let ch = match v.view() {
+                    View::List(_) => {
+                        robigo_rtbuiltins::attrib::names(v).and_then(|n| n.as_vector::<Char<'_>>()).map(|n| n.get(i))
+                    }
+                    _ => None,
+                };
+                match ch {
+                    Some(ch) => cx.install_tr(ch, &name).map(|s| s.as_ref().sexp()),
+                    None => cx.install(&name).map(|s| s.as_ref().sexp()),
+                }
+            })?;
+            // SAFETY: a symbol: immortal in its heap.
+            let sym = t.root(cx, unsafe { Ref::from_sexp(y, cx) });
             cx.define_var(sym, val, e)
         })?;
     }
