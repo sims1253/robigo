@@ -519,6 +519,12 @@ fn slice_at(d: &[u8], offset: i64, len: usize) -> Option<Vec<u8>> {
     d.get(o..o.checked_add(len)?).map(|s| s.to_vec())
 }
 
+thread_local! {
+    /// The lazy-load databases' zlib inflater, reused from record to record
+    /// ([`decompress1`]).
+    static INFLATE: std::cell::Cell<Option<flate2::Decompress>> = const { std::cell::Cell::new(None) };
+}
+
 /// `R_decompress1(in, &err)`: a 4-byte big-endian length, then a zlib
 /// stream (libdeflate's, in GNU R's build: its error numbers).
 // R: connections.c:R_decompress1
@@ -528,10 +534,10 @@ fn decompress1(cx: &mut Cx, data: &[u8]) -> RResult<Option<Vec<u8>>> {
         return Ok(None);
     }
     let outlen = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
-    // (the isolate's inflater, reset for this record; the output written
-    // into the buffer's capacity, not over zeros first)
-    let st = crate::prims::state(cx);
-    let mut d = st.inflate.borrow_mut().take().unwrap_or_else(|| flate2::Decompress::new(true));
+    // (the thread's inflater, reset for this record: a new one costs its
+    // window's allocation and set-up; it holds no R object, so it need not
+    // be the isolate's)
+    let mut d = INFLATE.with(|c| c.take()).unwrap_or_else(|| flate2::Decompress::new(true));
     d.reset(true);
     let mut buf = Vec::with_capacity(outlen);
     let r = d.decompress_vec(&data[4..], &mut buf, flate2::FlushDecompress::Finish);
@@ -540,7 +546,7 @@ fn decompress1(cx: &mut Cx, data: &[u8]) -> RResult<Option<Vec<u8>>> {
         Ok(_) if d.total_out() as usize == outlen => 3,
         _ => 1,
     };
-    *st.inflate.borrow_mut() = Some(d);
+    INFLATE.with(|c| c.set(Some(d)));
     if code != 0 {
         cx.warning(&format!("internal error {code} in R_decompress1 with libdeflate"))?;
         return Ok(None);
