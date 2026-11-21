@@ -28,4 +28,8 @@ print(msg(.Internal(makeLazy(1, keys, quote(f(key)), environment(), e))))
 print(msg(.Internal(makeLazy("a", keys, quote(f(key)), 1, e))))
 print(msg(.Internal(makeLazy("a", keys, quote(f(key)), environment(), NULL))))
 print(msg(.Internal(makeLazy("a", 1:3, quote(f(key)), environment(), e))))
+# more names than values (VECTOR_ELT's bounds), and an expression with no
+# second element to put the value in (SETCAR's "bad value")
+print(msg(.Internal(makeLazy(c("a", "b"), list(1), quote(f(key)), environment(), new.env()))))
+print(msg(.Internal(makeLazy("a", list(1), quote(f()), environment(), new.env()))))
 print(file.remove(db))

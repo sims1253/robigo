@@ -306,7 +306,7 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     iso.grant_env_writes(unsafe { robigo_rtcore::clib::EnvWrites::assume() });
     let cx = iso.cx();
     cx.set_locale(robigo_rtcore::Locale { utf8, collate_c: env_loc.collate_c });
-    cx.set_locale_names(env_loc.names.clone());
+    cx.set_locale_names(env_loc.names);
     // R_NoEcho before InitOptions, whose `echo` is its negation
     cx.set_no_echo(!echo);
     robigo_rt::install(cx);

@@ -215,7 +215,7 @@ jobs:
           IMAGE: ${{ needs.select.outputs.image_oracle_4_6_2 }}
         run: |
           image=$(printf '%s' "$IMAGE" | sha256sum | cut -c1-16)
-          echo "key=rdb-oracle-1-$image-${{ hashFiles('scripts/rt-rdb-roundtrip.sh') }}" >> "$GITHUB_OUTPUT"
+          echo "key=rdb-oracle-1-$image-${{ hashFiles('scripts/rt-rdb-roundtrip.sh', 'scripts/lazyload-ck.R') }}" >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@v6
         id: data
         with:
@@ -367,7 +367,7 @@ jobs:
       # (docs/ledger/g3/2026-11-17-v3-bcodesxp-ir.md)
       # (the classes' counts printed whether the test passes or not: they
       # matter most when it fails; the step keeps the test's status)
-      - name: GNU R's lazy-load databases round-trip (rdb_roundtrip), base.rdb's closures translated
+      - name: GNU R's lazy-load databases (rdb_roundtrip, base.rdb's closures translated; lazyload)
         run: |
           report="$RUNNER_TEMP/bc-crosscheck-base.txt"
           status=0

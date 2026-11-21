@@ -65,11 +65,8 @@ make_data='
     # environment) replaced by its formals, body and attributes, and the
     # top-level environment by its sorted contents (nested ones by a mark): closures and environments
     # enclosures aside (tests/lazyload.rs computes the same two)
-    ck <- function(x) { b <- as.numeric(as.integer(serialize(x, NULL, version = 2L))[-(1:14)])
-                        paste(length(b), sum(b * seq_along(b)) %% 1000000007) }
-    nz <- function(x, top = TRUE) if (is.function(x) && !is.primitive(x)) list(formals(x), body(x), attributes(x)) else
-                      if (is.environment(x)) { if (top) list(\"env\", nz(as.list(x, all.names = TRUE, sorted = TRUE), FALSE)) else \"env\" } else
-                      if (is.list(x)) { a <- attributes(x); r <- lapply(x, nz, top = top); attributes(r) <- a; r } else x
+    # ck and nz: scripts/lazyload-ck.R, copied beside the data
+    source(file.path(Sys.getenv(\"OUT\"), \"lazyload-ck.R\"))
     for (p in c(\"base\", \"compiler\", \"tools\")) {
       d <- file.path(Sys.getenv(\"OUT\"), p, \"R\")
       e <- new.env()
@@ -82,6 +79,8 @@ make_data='
       writeLines(lines, paste0(f, \".tmp\"))
       if (!file.rename(paste0(f, \".tmp\"), f)) stop(\"cannot rename \", f, \".tmp\")
     }"'
+# the checksums' one copy (the oracle container sees only the data's directory)
+cp "$(dirname "$0")/lazyload-ck.R" "$dir/lazyload-ck.R"
 # captured first: a pipeline into head or grep -q could end R with SIGPIPE,
 # which pipefail would report as a failure
 rv=$(R --version 2> /dev/null) || rv=

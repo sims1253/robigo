@@ -589,6 +589,7 @@ impl LocaleNames {
     /// `LC_CTYPE=...;LC_NUMERIC=...;...`.
     // (glibc: setlocale.c:new_composite_name)
     pub fn get(&self, cat: libc::c_int) -> Vec<u8> {
+        assert!(CATEGORIES.iter().any(|c| c.0 == cat), "robigo: locale category {cat} is not the C library's");
         if cat != libc::LC_ALL {
             return self.names[cat as usize].clone();
         }
@@ -613,7 +614,6 @@ impl LocaleNames {
     /// "POSIX"), set and returned; `None`, nothing set, when it has no such
     /// locale.
     pub fn set(&mut self, cat: libc::c_int, name: &[u8]) -> Option<Vec<u8>> {
-        debug_assert!(cat != libc::LC_ALL);
         let new = resolve(cat, name)?;
         self.names[cat as usize] = new.clone();
         Some(new)
@@ -623,6 +623,11 @@ impl LocaleNames {
 /// The name a `newlocale` of the category for `name` has (`None` when the
 /// C library has no such locale).
 fn resolve(cat: libc::c_int, name: &[u8]) -> Option<Vec<u8>> {
+    // one category (the mask is its bit, glibc's LC_*_MASK)
+    assert!(
+        cat != libc::LC_ALL && CATEGORIES.iter().any(|c| c.0 == cat),
+        "robigo: locale category {cat} is not one of the C library's"
+    );
     let name = std::ffi::CString::new(name).ok()?;
     // newlocale(mask, "") reads the environment
     let _env = env_read();
@@ -650,8 +655,9 @@ pub fn env_locale() -> EnvLocale {
     let _env = env_read();
     for (name, cat, mask) in STARTUP_CATEGORIES {
         // SAFETY: newlocale makes a new object from a NUL-terminated name
-        // (the environment's, "") and no base; nl_langinfo_l reads it, its
-        // string copied before the object is freed, once.
+        // (the environment's, "") and no base; nl_langinfo_l reads its
+        // codeset and name, each string copied before the object is freed,
+        // once.
         unsafe {
             let l = libc::newlocale(mask, c"".as_ptr(), std::ptr::null_mut());
             if l.is_null() {

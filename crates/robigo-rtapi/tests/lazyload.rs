@@ -30,20 +30,21 @@
 use std::process::Command;
 
 /// The packages and how many variables their oracle databases hold.
+// GNU R 4.6.2's (the oracle image's) counts, on purpose: a tripwire that
+// fails a truncated or empty map on either side, PKG.lazyload's included;
+// they move with the oracle image
 const PACKAGES: [(&str, usize); 3] = [("base", 1179), ("compiler", 289), ("tools", 915)];
 
 /// robigo-rt's side, as rt-rdb-roundtrip.sh's GNU R side computes it: the
 /// database (RT_LAZYLOAD_FILE, without its extension) lazy-loaded, then per
 /// variable in sorted order its name and the two checksums; then whether
 /// the package's namespace loads.
-const SCRIPT: &str = r#"
+/// `ck` and `nz` come from scripts/lazyload-ck.R, the GNU R side's too.
+const SCRIPT: &str = concat!(
+    include_str!("../../../scripts/lazyload-ck.R"),
+    r#"
 f <- Sys.getenv("RT_LAZYLOAD_FILE")
 pkg <- Sys.getenv("RT_LAZYLOAD_PKG")
-ck <- function(x) { b <- as.numeric(as.integer(serialize(x, NULL, version = 2L))[-(1:14)])
-                    paste(length(b), sum(b * seq_along(b)) %% 1000000007) }
-nz <- function(x, top = TRUE) if (is.function(x) && !is.primitive(x)) list(formals(x), body(x), attributes(x)) else
-                  if (is.environment(x)) { if (top) list("env", nz(as.list(x, all.names = TRUE, sorted = TRUE), FALSE)) else "env" } else
-                  if (is.list(x)) { a <- attributes(x); r <- lapply(x, nz, top = top); attributes(r) <- a; r } else x
 e <- new.env()
 invisible(lazyLoad(f, envir = e))
 map <- .Internal(unserializeFromConn(gzcon(file(paste0(f, ".rdx"), "rb")), NULL))
@@ -51,7 +52,8 @@ v <- names(map$variables)
 cat("variables", length(v), setequal(ls(e, all.names = TRUE), v), "\n")
 for (n in sort(ls(e, all.names = TRUE))) { x <- get(n, envir = e); cat(n, ck(x), ck(nz(x)), "\n") }
 cat("loadable", pkg == "base" || tryCatch({ loadNamespace(pkg); TRUE }, error = function(e) FALSE), "\n")
-"#;
+"#
+);
 
 #[test]
 fn oracle_databases_lazy_load() {

@@ -316,7 +316,7 @@ fn read_fixed_string(
     utf8: bool,
     warn_on_nul: &mut bool,
 ) -> RResult<Option<Vec<u8>>> {
-    let mut buf = Vec::new();
+    let mut buf = Vec::with_capacity(len.min(1 << 16));
     if utf8 {
         for i in 0..len {
             let mut b = [0u8; 1];
@@ -329,13 +329,12 @@ fn read_fixed_string(
             let clen = utf8clen(b[0]);
             buf.push(b[0]);
             if clen > 1 {
-                let mut rest = vec![0u8; clen - 1];
-                let m = read_bytes(cx, ncon, &mut rest)?;
+                let q = buf.len() - 1;
+                buf.resize(q + clen, 0);
+                let m = read_bytes(cx, ncon, &mut buf[q + 1..])?;
                 if m < clen - 1 {
                     return Err(cx.error("invalid UTF-8 input in readChar()"));
                 }
-                let q = buf.len() - 1;
-                buf.extend_from_slice(&rest);
                 // NB: this only checks validity of multi-byte characters
                 if robigo_text::mbrtowc_utf8(&buf[q..], 0).0 < 0 {
                     return Err(cx.error("invalid UTF-8 input in readChar()"));
@@ -466,6 +465,8 @@ pub fn do_readchar(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
     let body = (|| -> RResult<Vec<Vec<u8>>> {
         if raw.is_none() {
             let (canread, warn) = with_conn(cx, ncon, |c| {
+                // (nPushBack starts at 0 in GNU R too, connections.c:init_con: the
+                // condition holds for every text connection)
                 (c.canread(), c.text() && (!c.c.buff.is_null() || c.c.n_push_back >= 0 || !c.c.inconv.is_null()))
             })?;
             if !canread {

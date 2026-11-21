@@ -37,6 +37,10 @@ pub fn do_makelazy(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
                 let t = robigo_rtbuiltins::util::type2char(v.sexptype());
                 return Err(cx.error(&format!("VECTOR_ELT() can only be applied to a 'list', not a '{t}'")));
             };
+            if i >= elt.len() {
+                let len = elt.len();
+                return Err(cx.error(&format!("attempt access index {i}/{len} in VECTOR_ELT")));
+            }
             let e = s.root(cx, elt.get(i));
             let vo = s.out(cx);
             let val = vo.root();
@@ -44,11 +48,13 @@ pub fn do_makelazy(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
             let d = s.out(cx);
             let expr0 = d.root();
             cx.duplicate(expr, d)?;
-            // SETCAR(CDR(expr0), val)
-            let Some(cell) = expr0.bind(cx).as_cons().map(|c| c.cdr()).filter(|c| c.as_cons().is_some()) else {
-                return Err(
-                    cx.error("robigo: makeLazy() of an expression with no second element is not implemented yet")
-                );
+            // SETCAR(CDR(expr0), val): SETCAR's "bad value" for a call with no
+            // second element (CDR is R_NilValue)
+            let Some(rest) = expr0.bind(cx).as_cons().map(|c| c.cdr()) else {
+                return Err(cx.error("robigo: makeLazy() of an 'expr' that is not a call is not implemented yet"));
+            };
+            let Some(cell) = Some(rest).filter(|c| c.as_cons().is_some()) else {
+                return Err(cx.error("bad value"));
             };
             let cell = s.root(cx, cell);
             cx.set_car(cell, val);
@@ -158,17 +164,15 @@ fn restore_to_env(cx: &mut Cx, ans: Root<'_>, aenv: Root<'_>, out: Out<'_>) -> R
         }
         get_value(x, b"class").is_some_and(|k| k.len() == Some(1) && get_value(k, b"package").is_some())
     }
-    let old_style = |cx: &mut Cx, obj: Root<'_>, name: &[u8]| -> RResult<()> {
-        if old_style_s4(obj.bind(cx)) {
-            let n = String::from_utf8_lossy(name).into_owned();
-            cx.warning_call(None, &format!("'{n}' looks like a pre-2.4.0 S4 object: please recreate it"))?;
-        }
-        Ok(())
+    let old_style = |cx: &mut Cx, name: &[u8]| -> RResult<()> {
+        let n = String::from_utf8_lossy(name).into_owned();
+        cx.warning_call(None, &format!("'{n}' looks like a pre-2.4.0 S4 object: please recreate it"))
     };
     // allow ans to be a vector-style list
     if ans.bind(cx).sexptype() == VECSXP {
         return cx.scope(|cx, s| {
-            let nm = robigo_rtbuiltins::attrib::get_value(ans.bind(cx), b"names").unwrap_or(cx.nil());
+            // getAttrib(ans, R_NamesSymbol): a 1-d array's dimnames[[1]] too
+            let nm = robigo_rtbuiltins::attrib::names(ans.bind(cx)).unwrap_or(cx.nil());
             let names = s.root(cx, nm);
             let len = ans.bind(cx).len().unwrap_or(0);
             if names.bind(cx).sexptype() != STRSXP || names.bind(cx).len() != Some(len) {
@@ -179,8 +183,12 @@ fn restore_to_env(cx: &mut Cx, ans: Root<'_>, aenv: Root<'_>, out: Out<'_>) -> R
                     let sym = robigo_rtbuiltins::envir::install_tr(cx, s, names, i)?;
                     let obj = s.root(cx, ans.bind(cx).as_vector::<Ref<'_>>().unwrap().get(i));
                     cx.define_var(sym, obj, aenv)?;
+                    if !old_style_s4(obj.bind(cx)) {
+                        return Ok(());
+                    }
+                    // CHAR(STRING_ELT(names, i))
                     let name = names.bind(cx).as_vector::<Char<'_>>().unwrap().get(i).bytes().to_vec();
-                    old_style(cx, obj, &name)
+                    old_style(cx, &name)
                 })?;
             }
             out.set(cx, names.bind(cx));
@@ -190,19 +198,19 @@ fn restore_to_env(cx: &mut Cx, ans: Root<'_>, aenv: Root<'_>, out: Out<'_>) -> R
     if !matches!(ans.bind(cx).sexptype(), NILSXP | LISTSXP) {
         return Err(cx.error("loaded data is not in pair list form"));
     }
-    let mut cells = Vec::new();
+    let mut cells = 0;
     let mut a = ans.bind(cx);
     while let Some(c) = a.as_cons() {
-        let Some(t) = c.tag().as_sym() else {
+        if c.tag().as_sym().is_none() {
             return Err(cx.error("robigo: load() of a pairlist with an untagged element is not implemented yet"));
-        };
-        cells.push(t.name(cx).bytes().to_vec());
+        }
+        cells += 1;
         a = c.cdr();
     }
     cx.build(out, |cx| {
-        let mut v = cx.alloc_vector::<Char<'_>>(cells.len())?;
+        let mut v = cx.alloc_vector::<Char<'_>>(cells)?;
         let mut a = ans.bind(cx);
-        for i in 0..cells.len() {
+        for i in 0..cells {
             let c = a.as_cons().unwrap();
             v.set(i, c.tag().as_sym().unwrap().name(cx));
             a = c.cdr();
@@ -211,11 +219,14 @@ fn restore_to_env(cx: &mut Cx, ans: Root<'_>, aenv: Root<'_>, out: Out<'_>) -> R
     })?;
     cx.scope(|cx, s| {
         let mut cell = ans;
-        for name in &cells {
+        for _ in 0..cells {
             let c = cell.bind(cx).as_cons().unwrap();
             let (tag, car, next) = (s.root(cx, c.tag()), s.root(cx, c.car()), s.root(cx, c.cdr()));
             cx.define_var(tag, car, aenv)?;
-            old_style(cx, car, name)?;
+            if old_style_s4(car.bind(cx)) {
+                let name = tag.bind(cx).as_sym().unwrap().name(cx).bytes().to_vec();
+                old_style(cx, &name)?;
+            }
             cell = next;
         }
         Ok(())
@@ -282,13 +293,14 @@ pub fn do_savefile(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
     if version == i32::MIN || version <= 0 {
         return Err(cx.error("invalid 'version' argument"));
     }
+    // (refused before the open, which would empty the file)
+    if version == 1 {
+        return Err(cx.error("robigo: save.to.file(version = 1) is not implemented yet"));
+    }
     let path = rc_name(cx, args.root(1))?;
     let Some(Ok(mut fp)) = path.map(std::fs::File::create) else {
         return Err(cx.error("unable to open 'file'"));
     };
-    if version == 1 {
-        return Err(cx.error("robigo: save.to.file(version = 1) is not implemented yet"));
-    }
     let (magic, fmt) = match (ascii, version == 2) {
         (true, true) => (b"RDA2\n", Format::Ascii),
         (true, false) => (b"RDA3\n", Format::Ascii),
@@ -315,7 +327,7 @@ pub fn do_loadfile(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
             return Err(cx.error("bad file name"));
         }
         let path = rc_name(cx, file)?;
-        let Some(Ok(data)) = path.map(std::fs::read) else {
+        let Some(Ok(mut data)) = path.map(std::fs::read) else {
             return Err(cx.error("unable to open 'file'"));
         };
         if data.len() < 5 {
@@ -347,7 +359,8 @@ pub fn do_loadfile(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
                 return Err(cx.error("bad restore file magic number (file may be corrupted) -- no data loaded"));
             }
         };
-        let mut st = super::stream::InStream::memory(data[5..].to_vec());
+        data.drain(..5);
+        let mut st = super::stream::InStream::memory(data);
         st.fmt = fmt;
         read::unserialize(cx, st, None, out)
     })

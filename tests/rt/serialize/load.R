@@ -17,6 +17,10 @@ for (file in c("xyf-v2.rda", "xyf-v3.rda", "xy-ascii.rda", "xy-plain.rda")) {
     if (exists("y", envir = e)) print(e$y)
     if (exists("f", envir = e)) { print(formals(e$f)); print(body(e$f)); print(identical(environment(e$f), globalenv())) }
 }
+# a list whose names are its 1-d dimnames (getAttrib's names)
+e <- new.env()
+print(load(file.path(d, "dimnames-list.rda"), envir = e))
+print(mget(c("p", "q"), envir = e))
 e <- new.env()
 print(load(file.path(d, "none.rda"), envir = e))
 print(ls(e))

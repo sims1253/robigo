@@ -586,6 +586,12 @@ impl Cx {
         self.iso().locale_names.borrow().clone()
     }
 
+    /// One category's locale name, `setlocale(cat, NULL)`
+    /// ([`crate::clib::LocaleNames::get`]).
+    pub fn locale_name(&self, cat: crate::clib::category::c_int) -> Vec<u8> {
+        self.iso().locale_names.borrow().get(cat)
+    }
+
     /// Set the locale's names (startup's, `Sys.setlocale`'s).
     pub fn set_locale_names(&mut self, n: crate::clib::LocaleNames) {
         *self.iso().locale_names.borrow_mut() = n;

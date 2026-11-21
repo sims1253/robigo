@@ -66,6 +66,13 @@ f(z)
 [[3]]
 f(z)
 
+[1] "p" "q"
+$p
+[1] 1
+
+$q
+[1] "two"
+
 character(0)
 character(0)
 [1] FALSE

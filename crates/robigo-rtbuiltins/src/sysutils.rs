@@ -230,16 +230,23 @@ fn r_category(cat: i32) -> Option<lc::c_int> {
     })
 }
 
+/// `asInteger(category)`, an error for NA or a negative number (both
+/// builtins' first check).
+fn category_number(cx: &mut Cx, args: Args<'_>) -> RResult<i32> {
+    let cat = crate::coerce::vector::as_integer_warn(cx, args.root(0))?;
+    if cat == i32::MIN || cat < 0 {
+        return Err(cx.error("invalid 'category' argument"));
+    }
+    Ok(cat)
+}
+
 /// `.Internal(Sys.getlocale(category))`: the category's locale name
 /// (`LC_ALL`'s composite), "" for a number that names none.
 // R: platform.c:do_getlocale
 pub fn do_getlocale(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::row!("Sys.getlocale", true).check_arity(cx, call, args)?;
-    let cat = crate::coerce::vector::as_integer_warn(cx, args.root(0))?;
-    if cat == i32::MIN || cat < 0 {
-        return Err(cx.error("invalid 'category' argument"));
-    }
-    let p = r_category(cat).map(|c| cx.locale_names().get(c)).unwrap_or_default();
+    let cat = category_number(cx, args)?;
+    let p = r_category(cat).map(|c| cx.locale_name(c)).unwrap_or_default();
     cx.build(out, |cx| cx.mk_string(&p, Encoding::Native))
 }
 
@@ -258,10 +265,7 @@ fn c_like(name: &[u8]) -> bool {
 // R: platform.c:do_setlocale
 pub fn do_setlocale(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::row!("Sys.setlocale", true).check_arity(cx, call, args)?;
-    let cat = crate::coerce::vector::as_integer_warn(cx, args.root(0))?;
-    if cat == i32::MIN || cat < 0 {
-        return Err(cx.error("invalid 'category' argument"));
-    }
+    let cat = category_number(cx, args)?;
     let l = match args.get(cx, 1).as_vector::<Char<'_>>() {
         Some(v) if v.len() == 1 => v.get(0).bytes().to_vec(),
         _ => return Err(cx.error("invalid 'locale' argument")),
