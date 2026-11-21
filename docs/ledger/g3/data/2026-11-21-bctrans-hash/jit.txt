@@ -1,0 +1,7 @@
+jit-scale_by main-386a0358 per-compile 9653481
+jit-scale_by bc-79736736 per-compile 9625028
+jit-safe main-386a0358 per-compile 14519839
+jit-safe bc-79736736 per-compile 14485424
+sha256 main-386a0358 a9e001ac849ba8352f90e41501fc1089723730edff8f0d22b5c2fa3c69718ffb
+sha256 bc-79736736 da8dd5eb9e90962384cc9513bf9ca65b8b85ceed78b8d726ab5b3271224d0312
+rdb boot (#922 2ca69586, ROBIGO_RT_BOOT=rdb --vanilla -e 1): 66,841,525 -> 61,589,667 (patch applied to #922 locally; boot-2ca69586 a699671f..., boot-hash-67f406c68 749eaf71...)
