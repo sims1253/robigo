@@ -25,6 +25,14 @@ show(lengths(list(el("neg"), 1)))
 show(lengths(list(el("chr"))))
 show(lengths(list(el("na"))))
 show(lengths(list(el("big"))))
+# a double count or length is C's (R_xlen_t) cast: NaN and values past
+# 2^63 are INT64_MIN (a negative count; 0 as an int element)
+length.nan <- function(x) NA_real_
+length.huge <- function(x) 1e300
+show(lengths(el("nan")))
+show(lengths(structure(list(1), class = "huge")))
+show(lengths(list(el("nan"), 1)))
+show(lengths(list(el("big"), el("nan"), el("huge"))))
 show(lengths(list(a = el("three")), use.names = FALSE))
 # a classed list: its length method for the count, `[[` for each element
 k <- structure(list(1:2, letters), class = "kl")

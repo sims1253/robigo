@@ -280,6 +280,15 @@ pub fn do_lengths(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
     })
 }
 
+/// C's `(R_xlen_t) d` as GNU R's x86-64 builds compute it (`cvttsd2si`):
+/// truncation toward zero, and `INT64_MIN` for NaN or a value outside the
+/// 64-bit range (where Rust's `as` would give 0 or saturate).
+fn c_double_to_xlen(d: f64) -> i64 {
+    // 2^63, exactly representable
+    const LIM: f64 = 9_223_372_036_854_775_808.0;
+    if d.is_nan() || d >= LIM || d < -LIM { i64::MIN } else { d as i64 }
+}
+
 /// `dispatch_xlength(x, call, rho)`: an object's length through its
 /// `length` method (`DispatchOrEval` on `length`; a double result
 /// truncated, anything else `asInteger`'d with its warnings), else
@@ -297,7 +306,7 @@ pub fn dispatch_xlength(cx: &mut Cx, x: Root<'_>, call: Root<'_>, rho: Root<'_>)
                     let v = res.bind(cx);
                     Ok(Some(if v.sexptype() == REALSXP {
                         // (R_xlen_t) REAL(len)[0]
-                        v.as_vector::<f64>().unwrap().get(0) as i64
+                        c_double_to_xlen(v.as_vector::<f64>().unwrap().get(0))
                     } else {
                         as_integer_warn(cx, res)? as i64
                     }))

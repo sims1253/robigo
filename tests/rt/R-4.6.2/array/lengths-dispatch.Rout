@@ -4,6 +4,10 @@ integer : -1 1
 integer : 7 
 integer : NA 
 double : 3e+09 
+error: negative length vectors are not allowed | call: lengths(el("nan")) 
+error: negative length vectors are not allowed | call: lengths(structure(list(1), class = "huge")) 
+integer : 0 1 
+double : 3e+09 -9.223372e+18 -9.223372e+18 
 integer : 3 
 [[  1 
 [[  2 
