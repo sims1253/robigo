@@ -132,14 +132,37 @@ impl Inner {
         if (self.end as usize).saturating_sub(self.next as usize) < size {
             let bytes = segment_bytes(size);
             let layout = std::alloc::Layout::from_size_align(bytes, BLOCK).expect("robigo: an arena segment's layout");
-            // SAFETY: a non-zero size; zeroed, so the pseudo header's magic
-            // is not a block's.
-            let base = unsafe { std::alloc::alloc_zeroed(layout) };
+            // SAFETY: a non-zero size.
+            let base = unsafe { std::alloc::alloc(layout) };
             if base.is_null() {
                 std::alloc::handle_alloc_error(layout);
             }
-            // SAFETY: inside the fresh segment.
+            // SAFETY: inside the fresh segment. Only the pseudo header is
+            // zeroed, so its magic is not a block's. The rest stays
+            // unwritten until `take` hands it out, which is sound because:
+            // - every byte a reader can reach is written before the object
+            //   is published: all six words of a symbol (`new_symbol`), and
+            //   a name record's header, hash, lengths, bytes and NUL
+            //   (`new_name`). Readers skip the record's alignment padding
+            //   and the segment's unused space. Every object starts in the
+            //   segment's first 64 KiB (an oversized name's own segment
+            //   too), so `heap_id` and `is_shared` read the zeroed pseudo
+            //   header;
+            // - only `install` and `new_marker` write a segment, under the
+            //   arena's lock, and they publish an object (into the arena's
+            //   table, and to the caller) only once it is complete;
+            // - no pointer into the unwritten tail exists: `take` hands out
+            //   memory below `next` only. Another thread or isolate reaches
+            //   an arena object through the table (under the lock) or as a
+            //   symbol it was handed, which was complete when published;
+            // - a forked child copies the segment while the fork handlers
+            //   hold the arena's lock (`fork.rs`), so no object is half
+            //   written there. Its unwritten tail is unreachable, as in the
+            //   parent.
+            // Zeroing the whole 64 KiB only cost the time: 65k instructions
+            // a segment, 1.1% of a base boot.
             unsafe {
+                std::ptr::write_bytes(base, 0, DATA_OFF);
                 *(base.add(REMEMBERED_OFF) as *mut *const u8) = crate::shared::id_word();
                 self.next = base.add(DATA_OFF);
                 self.end = base.add(bytes);

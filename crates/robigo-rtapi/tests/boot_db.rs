@@ -15,8 +15,9 @@
 
 use std::process::Command;
 
-/// What base's boot gives on stderr: nothing (the system profile runs to
-/// its end since E's Sys.info and Sys.glob, #925).
+/// What base's boot gives on stderr: nothing. The system profile runs to
+/// its end (its `Sys.info` and `Sys.glob` calls, through
+/// `.expand_R_libs_env_var` and `.libPaths`, are builtins now).
 const PROFILE_STOPS: &str = "";
 
 /// Whether the tree is made (else the test is skipped, unless

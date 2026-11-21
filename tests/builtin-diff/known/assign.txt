@@ -1,5 +1,5 @@
 # builtin-diff known failures: assign, seed 0, key 6311a5ab2be3278f9d999252
-# assign: 1149 / 1207 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
+# assign: 1150 / 1207 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 6
 7
 97
@@ -52,7 +52,6 @@
 1044
 1046
 1073
-1082
 1087
 1091
 1106
