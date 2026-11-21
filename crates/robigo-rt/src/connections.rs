@@ -676,14 +676,14 @@ fn close_conn(c: &mut Conn) -> Option<String> {
         Imp::Std | Imp::Text(_) => {}
         Imp::File(f) => {
             // (c.c's fields: the file's private part stays borrowed)
+            // con->status = fclose(this->fp): the writes went to the file as
+            // they were made (no stdio buffer), so there is nothing left to
+            // flush, and fclose does not sync to the disk; closing it is
+            // dropping it (a close(2) error is not reported, as no write is
+            // pending)
             if c.c.isopen != 0 {
-                c.c.status = match f.fp.take() {
-                    Some(fp) => match fp.sync_all().or(Ok::<(), std::io::Error>(())) {
-                        Ok(()) => 0,
-                        Err(_) => -1,
-                    },
-                    None => 0,
-                };
+                drop(f.fp.take());
+                c.c.status = 0;
             }
         }
         Imp::Gz(g) => {
