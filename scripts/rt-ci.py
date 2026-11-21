@@ -263,7 +263,14 @@ CRATE_TEST = ["cargo", "test", "--profile", "quick", "--locked"]
 # its shard, and says it must be there: robigo-rtapi's boot_db tests then run
 # instead of skipping, and a tree that is missing fails them
 TREE_RUNS = {"ROBIGO_RT_HOME_DB": "1"}
-DB_TREE = ("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)", ["scripts/rt-home-db.sh"])
+
+
+def db_tree(binary, env=None):
+    """The step that writes base's database tree with `binary`, the release
+    robigo-rt its shard built first (rt_binary; scripts/rt-home-db.sh is
+    given it by name)."""
+    return ("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)", env or {},
+            ["scripts/rt-home-db.sh", "--robigo-rt", binary])
 
 
 def conformance_command():
@@ -303,6 +310,14 @@ def full_move_steps():
 CHECK_FEATURES = "robigo-rtcore/retry-torture,robigo-rt/poison-dead"
 
 
+def rt_binary(target=None):
+    """The release robigo-rt the release tests built in `target` (default:
+    cargo's target directory, as `metadata()` gives it), which
+    scripts/rt-home-db.sh is given by name. The one place that names the
+    binary's path in a target."""
+    return os.path.join(target or metadata()["target_directory"], "release", "robigo-rt")
+
+
 def steps(crates):
     """(title, extra environment, command) for each step of the job."""
     pkgs = [x for c in crates for x in ("-p", c)]
@@ -327,7 +342,7 @@ def steps(crates):
         # of the crates' tests), so a stale tree is rebuilt first (its stamp
         # names the source tree, the script and the binary) and those tests
         # run instead of skipping on a fresh checkout (TREE_RUNS)
-        ("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)", {}, ["scripts/rt-home-db.sh"]),
+        db_tree(rt_binary()),
         ("the crates' tests (quick profile)", TREE_RUNS, [*crate, *pkgs, *skip]),
         ("boot from base's database (ROBIGO_RT_BOOT=rdb)", {"ROBIGO_RT_HOME_DB": "1"},
          [*test, "-p", "robigo-rtapi", "--test", "boot_db", *skip]),
@@ -536,7 +551,7 @@ def debug_assertions_steps(crates):
         # writes the database tree the crates' tests read
         ("the release binary and the conformance with debug assertions, built (cargo test --release --no-run)", env,
          [*test, "-p", "robigo-rtapi", "--test", "conformance", "--no-run"]),
-        (DB_TREE[0] + " (with debug assertions)", env, DB_TREE[1]),
+        db_tree(rt_binary(env["CARGO_TARGET_DIR"]), env),
         ("the crates' tests with debug assertions (-C debug-assertions=on, quick profile)", {**env, **TREE_RUNS},
          [*CRATE_TEST, *pkgs, "--", "--skip", CONFORMANCE]),
         ("conformance with debug assertions (-C debug-assertions=on)", env, conformance_command()),
@@ -554,7 +569,7 @@ def release_crate_tests_steps(crates):
         # built first (the same command, so the run below builds nothing):
         # its release binary writes the database tree the tests read
         ("the crates' tests (release profile), built", {}, [*test, "--no-run"]),
-        DB_TREE[:1] + ({},) + DB_TREE[1:],
+        db_tree(rt_binary()),
         ("the crates' tests (release profile)", TREE_RUNS, [*test, "--", "--skip", CONFORMANCE]),
     ])
 
