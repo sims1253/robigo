@@ -1150,10 +1150,26 @@ struct GzReader<R> {
     obuf: Vec<u8>,
     opos: usize,
     oend: usize,
-    /// A member's CRC-32 did not match, found while inflating ahead: the
-    /// error comes when a read asks for more than the bytes inflated
-    /// before it, as it did before the buffer.
-    crc_bad: bool,
+    /// An error found while inflating ahead ([`Ahead`]): raised by the read
+    /// that would have met it inflating in place, as before the buffer.
+    ahead: Option<Ahead>,
+}
+
+/// An error a [`GzReader`] found inflating a block ahead of the reads: the
+/// block holds the bytes inflated before it, and `oend` is its boundary.
+struct Ahead {
+    err: std::io::Error,
+    /// A member's end (its trailer's CRC-32 or length): met by the read
+    /// that reaches the boundary. Else a bad deflate stream: met by a read
+    /// that needs a byte past it.
+    at_end: bool,
+}
+
+/// What one [`GzReader::inflate_into`] step made: the bytes, and an error
+/// met after them.
+struct Step {
+    made: usize,
+    err: Option<Ahead>,
 }
 
 impl<R: Read> GzReader<R> {
@@ -1173,7 +1189,7 @@ impl<R: Read> GzReader<R> {
             obuf: Vec::new(),
             opos: 0,
             oend: 0,
-            crc_bad: false,
+            ahead: None,
         }
     }
 
@@ -1294,17 +1310,7 @@ impl<R: Read> GzReader<R> {
                 }
             }
         }
-        let mut n = 0;
-        // what the last block left
-        if self.opos < self.oend {
-            let k = (self.oend - self.opos).min(out.len());
-            out[..k].copy_from_slice(&self.obuf[self.opos..self.opos + k]);
-            self.opos += k;
-            n = k;
-        }
-        if self.crc_bad && n < out.len() {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "crc error"));
-        }
+        let mut n = self.from_block(out, 0)?;
         while n < out.len() && !self.done {
             if self.transparent {
                 let k = (self.end - self.pos).min(out.len() - n);
@@ -1321,40 +1327,70 @@ impl<R: Read> GzReader<R> {
                 continue;
             }
             if out.len() - n >= Z_BUFSIZE {
-                // a large read: inflated in place
-                n += self.inflate_into(&mut out[n..])?;
+                // a large read: inflated in place, an error met at once
+                let st = self.inflate_into(&mut out[n..])?;
+                if let Some(a) = st.err {
+                    return Err(a.err);
+                }
+                n += st.made;
             } else {
                 // a small one: a block into the buffer, then from there
                 let mut ob = std::mem::take(&mut self.obuf);
                 ob.resize(Z_BUFSIZE, 0);
-                let made = self.inflate_into(&mut ob);
+                let st = self.inflate_into(&mut ob);
                 self.obuf = ob;
-                let made = made?;
-                let k = made.min(out.len() - n);
-                out[n..n + k].copy_from_slice(&self.obuf[..k]);
-                (self.opos, self.oend) = (k, made);
-                n += k;
+                let st = st?;
+                (self.opos, self.oend, self.ahead) = (0, st.made, st.err);
+                n = self.from_block(out, n)?;
             }
         }
         Ok(n)
     }
 
+    /// Copy what the block holds into `out[n..]`; the new count. An error
+    /// found ahead ([`Ahead`]) is raised, with nothing copied, by the read
+    /// that would have met it inflating in place: one that reaches the
+    /// block's boundary for a member's end, one that needs a byte past it
+    /// for a bad stream.
+    fn from_block(&mut self, out: &mut [u8], n: usize) -> std::io::Result<usize> {
+        let left = self.oend - self.opos;
+        let want = out.len() - n;
+        if let Some(a) = &self.ahead
+            && (if a.at_end { want >= left } else { want > left })
+        {
+            let a = self.ahead.take().expect("robigo: an error ahead");
+            self.opos = self.oend;
+            return Err(a.err);
+        }
+        let k = left.min(want);
+        out[n..n + k].copy_from_slice(&self.obuf[self.opos..self.opos + k]);
+        self.opos += k;
+        Ok(n + k)
+    }
+
     /// One step of the stream into `dst`: inflate what the input buffer
     /// holds (refilled when empty), the CRC-32 over what came out; at a
     /// member's end its trailer checked and the next member's header read.
-    /// How many bytes came out (0 at the end, `done` then set).
-    fn inflate_into(&mut self, dst: &mut [u8]) -> std::io::Result<usize> {
+    /// What came out (0 at the end, `done` then set), and an error met after
+    /// it: a bad deflate stream, or a member's trailer that does not match
+    /// (`done` set). An error of the source is returned as such.
+    fn inflate_into(&mut self, dst: &mut [u8]) -> std::io::Result<Step> {
         self.fill()?;
         let before_in = self.inflate.total_in();
         let before_out = self.inflate.total_out();
-        let st = self
-            .inflate
-            .decompress(&self.buf[self.pos..self.end], dst, FlushDecompress::None)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let r = self.inflate.decompress(&self.buf[self.pos..self.end], dst, FlushDecompress::None);
         let used = (self.inflate.total_in() - before_in) as usize;
         let made = (self.inflate.total_out() - before_out) as usize;
         self.pos += used;
         self.crc.update(&dst[..made]);
+        let st = match r {
+            Ok(st) => st,
+            Err(e) => {
+                self.done = true;
+                let err = std::io::Error::new(std::io::ErrorKind::InvalidData, e);
+                return Ok(Step { made, err: Some(Ahead { err, at_end: false }) });
+            }
+        };
         match st {
             Status::StreamEnd => {
                 // the trailer: CRC-32 and length, little-endian
@@ -1364,10 +1400,9 @@ impl<R: Read> GzReader<R> {
                 }
                 let crc = u32::from_le_bytes([t[0], t[1], t[2], t[3]]);
                 if crc != self.crc.sum() {
-                    // (the bytes made now are read first)
-                    self.crc_bad = true;
                     self.done = true;
-                    return Ok(made);
+                    let err = std::io::Error::new(std::io::ErrorKind::InvalidData, "crc error");
+                    return Ok(Step { made, err: Some(Ahead { err, at_end: true }) });
                 }
                 match self.check_header() {
                     Header::Ok => {
@@ -1387,7 +1422,7 @@ impl<R: Read> GzReader<R> {
                 }
             }
         }
-        Ok(made)
+        Ok(Step { made, err: None })
     }
 }
 
