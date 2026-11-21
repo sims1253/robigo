@@ -58,6 +58,7 @@ pub mod relop;
 pub mod rng;
 pub mod seq;
 pub mod sort;
+pub mod split;
 pub mod sprintf;
 pub mod subassign;
 pub mod subscript;

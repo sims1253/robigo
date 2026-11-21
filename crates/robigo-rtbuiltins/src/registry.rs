@@ -7,8 +7,8 @@
 
 use crate::{
     apply, arith, array, attrib, bind, builtin, bytecode, character, coerce, complex, context, cum, datetime, envir,
-    errors, grep, identical, is, logic, math, options, paste, raw, relop, rng, seq, sort, sprintf, subset, summary,
-    sysutils, unique, util, version,
+    errors, grep, identical, is, logic, math, options, paste, raw, relop, rng, seq, sort, split, sprintf, subset,
+    summary, sysutils, unique, util, version,
 };
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
@@ -368,6 +368,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("bindtextdomain", errors::do_bindtextdomain, 0, 11, 2, FUNCALL, External),
     row("interactive", sysutils::do_interactive, 0, 1, 0, FUNCALL, Pure),
     row("Sys.getenv", sysutils::do_getenv, 0, 11, 2, FUNCALL, External),
+    row("iconv", sysutils::do_iconv, 0, 11, 6, FUNCALL, External),
     row("Sys.setenv", sysutils::do_setenv, 0, 111, 2, FUNCALL, External),
     row("Sys.unsetenv", sysutils::do_unsetenv, 0, 111, 1, FUNCALL, External),
     row("l10n_info", sysutils::do_l10n_info, 0, 11, 0, FUNCALL, Pure),
@@ -611,6 +612,8 @@ pub static BUILTINS: &[Builtin] = &[
     row("order", sort::do_order, 0, 11, -1, FUNCALL, Pure),
     row("rank", sort::do_rank, 0, 11, 3, FUNCALL, Pure),
     row("xtfrm", sort::do_xtfrm, 0, 1, 1, FUNCALL, Calls),
+    // split.c
+    row("split", split::do_split, 0, 11, 2, FUNCALL, Pure),
     row("wrap_meta", sort::do_wrap_meta, 0, 11, 3, FUNCALL, Pure),
 ];
 
