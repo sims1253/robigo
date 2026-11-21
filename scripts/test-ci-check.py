@@ -169,17 +169,21 @@ class Rule(unittest.TestCase):
         self.assertFalse(passes(n, pull_request=False))
         self.assertFalse(passes(needs(rt="cancelled")))
 
-    def test_check_runs_always_and_pull_requests_share_no_group(self):
-        # Check runs in a cancelled run too, so a hand-cancelled head run is
-        # red; then no shared group may make a new run wait behind it
+    def test_check_runs_always_and_a_pull_requests_runs_share_one_group(self):
+        # Check runs in a cancelled run too, so a cancelled run (superseded
+        # or by hand) is red, never skipped (a skipped required check passes)
         wf = (HERE.parent / ".github/workflows/ci.yml").read_text()
         self.assertIn("    name: Check\n    if: ${{ always() }}\n", wf)
-        self.assertIn("  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.run_id }}\n"
-                      "  cancel-in-progress: false\n", wf)
-        # select cancels the superseded runs, as its first step
-        steps = wf.split("\n  select:\n", 1)[1].split("\n    steps:\n", 1)[1].splitlines()
-        first = next(l.strip() for l in steps if not l.strip().startswith("#"))
-        self.assertEqual(first, "- name: Cancel this pull request's superseded runs")
+        # a pull request's runs share one group that cancels the older run at
+        # once; main's push runs share one that never cancels a started run;
+        # a manual dispatch has its own
+        self.assertIn("  group: ci-${{ github.event_name == 'push' && 'main' || github.event_name == 'pull_request' "
+                      "&& format('pr-{0}', github.event.pull_request.number) || github.run_id }}\n"
+                      "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n", wf)
+        self.assertEqual(wf.split("\non:\n", 1)[1].split("\n  pull_request:", 1)[0],
+                         "  push:\n    branches: [main]", "push runs are main's alone")
+        # (the group cancels: no job of the run does it any more)
+        self.assertNotIn("/cancel", wf)
 
     def test_workflow_needs_every_gating_job(self):
         import re
