@@ -319,6 +319,12 @@ extra = ["(function(n) if (n <= 1) 1 else n * Recall(n - 1))(5)", "(function(...
 special = true
 effect = "Pure"
 
+# (E's eval.c PR: evaluates nothing, returns NULL invisibly)
+[declare]
+special = true
+effect = "Pure"
+extra = ["declare(stop(\"not evaluated\"))", "withVisible(declare(x = 1))", "(function(...) declare(...))(stop(\"no\"))"]
+
 ["@"]
 special = true
 effect = "Pure"
@@ -339,6 +345,25 @@ domain = { "#1" = ["@any"], "#2" = ["@any", "<missing>", "=c(TRUE, FALSE)", "=\"
 [enc2native]
 
 [enc2utf8]
+
+# ---- E's eval.c PR: the isolate's math thread counts (1 and 1 at startup;
+# each case is a fresh process, so a case sees only its own calls) ---------
+# Known failure, #48 of each (latin1): GNU R's asInteger errors in
+# isBlankString's Mbrtowc ("invalid multibyte string at '<e9>'"), robigo-rt's
+# shared coercion (robigo-text strtod's is_blank) reads bytes and warns.
+[setNumMathThreads]
+args = ["n"]
+domain = { n = ["=4L", "=0L", "=1L", "=-1L", "intNA", "=6.9", "=TRUE", "a", "NULL", "=list(2L)", "=1:3", "@any"] }
+extra = [
+  "c(.Internal(setMaxNumMathThreads(8L)), .Internal(setNumMathThreads(4L)), .Internal(setNumMathThreads(9L)), .Internal(setNumMathThreads(0L)))",
+]
+
+[setMaxNumMathThreads]
+args = ["n"]
+domain = { n = ["=8L", "=0L", "=1L", "=-2L", "intNA", "=6.9", "=\"2\"", "a", "NULL", "=list(2L)", "=1:3", "@any"] }
+extra = [
+  "c(.Internal(setMaxNumMathThreads(8L)), .Internal(setNumMathThreads(6L)), .Internal(setMaxNumMathThreads(3L)), .Internal(setNumMathThreads(1L)))",
+]
 
 # ---- registry builtins with no row yet, by reason (check-rows) ----------------
 
@@ -663,6 +688,31 @@ extra = [
   "class(Sys.time())",
 ]
 
+# (Sys.info's values are the machine's, the container's for GNU R and the
+# host's for robigo-rt: its two generated cases (nodename, login) are known
+# failures off CI's one machine, so the extras ask what can be compared,
+# the names and the shape.)
+["Sys.info"]
+effect = "External"
+extra = [
+  "names(.Internal(Sys.info()))",
+  "typeof(.Internal(Sys.info()))",
+  "names(attributes(.Internal(Sys.info())))",
+  "all(nzchar(.Internal(Sys.info())))",
+  ".Internal(Sys.info())[[\"sysname\"]]",
+]
+
+# (Sys.glob reads the file system, the container's for GNU R and the host's
+# for robigo-rt: only paths both have, the root and names neither has.
+# Known failure: the `long` path's path.expand warning, which GNU R's
+# warning buffer cuts at R_WarnLength with " [... truncated]" and
+# robigo-rt's does not.)
+["Sys.glob"]
+args = ["paths", "dirmark"]
+effect = "External"
+typical = { paths = "=\"/\"", dirmark = "=FALSE" }
+domain = { paths = ["=\"/\"", "=\"/robigo-no-such*\"", "=c(\"/\", NA, \"/robigo-no-such\")", "=NA_character_", "=character(0)", "@any"], dirmark = ["@lgl", "=1", "=\"a\"", "NULL"] }
+
 # ---- B's #908, merged ------------------------------------------------------
 # (no NULL x: iconv(NULL, ...) is iconvlist(), the platform's list of
 # encodings, which GNU R's container and robigo-rt cannot share)
@@ -670,6 +720,23 @@ extra = [
 args = ["x", "from", "to", "sub", "mark", "toRaw"]
 typical = { x = "=c(\"a\", \"\\u00e9\", NA)", from = "=\"UTF-8\"", to = "=\"latin1\"", sub = "=NA_character_", mark = "=TRUE", toRaw = "=FALSE" }
 domain = { x = ["=c(\"a\", \"\\u00e9\", NA)", "utf8", "latin1", "bytes", "chr0", "=list(as.raw(c(0x61, 0xe9)))", "1.5"], from = ["=\"UTF-8\"", "=\"latin1\"", "=\"\"", "=\"nope\"", "=NA_character_"], to = ["=\"latin1\"", "=\"ASCII\"", "=\"UTF-8\"", "=\"ASCII//TRANSLIT\"", "=\"nope\""], sub = ["=NA_character_", "=\"byte\"", "=\"?\"", "=\"Unicode\"", "=\"c99\""], mark = ["=TRUE", "=FALSE"], toRaw = ["=FALSE", "=TRUE"] }
+
+["as.POSIXlt"]
+typical = { x = "=c(0, 1e9 + 0.25, -1.5)", tz = "=\"UTC\"" }
+domain = { x = ["=c(0, 1e9 + 0.25, -1.5)", "=c(a = 1719835200, b = NA, c = Inf)", "=-775526400", "=numeric(0)", "=TRUE", "=\"x\"", "@any"], tz = ["=\"UTC\"", "=\"GMT\"", "=\"Europe/Berlin\"", "=\"America/New_York\"", "=\"\"", "=c(\"UTC\", \"GMT\")", "=1", "=NA_character_"] }
+
+["Date2POSIXlt"]
+typical = { x = "=c(0, 19000.75, -719528)", tz = "=\"UTC\"" }
+domain = { x = ["=c(0, 19000.75, -719528)", "=c(x = 1, y = NA, z = 1e12)", "=numeric(0)", "=TRUE", "@any"], tz = ["=\"UTC\"", "=\"\"", "=\"Europe/Paris\"", "=1", "=c(\"a\", \"b\")"] }
+
+["POSIXlt2Date"]
+typical = { x = "=.Internal(as.POSIXlt(c(p = 1e9, q = -1e9, r = NA), \"UTC\"))" }
+domain = { x = ["=.Internal(as.POSIXlt(c(p = 1e9, q = -1e9, r = NA), \"UTC\"))", "=local({lt <- .Internal(as.POSIXlt(0, \"UTC\")); lt$mday <- 40L; lt$hour <- 30L; lt})", "=local({lt <- .Internal(as.POSIXlt(0, \"UTC\")); lt$sec <- c(0, 1); names(lt$year) <- \"a\"; lt})", "=list(1)", "@any"] }
+
+["format.POSIXlt"]
+args = ["x", "format", "usetz", "digits"]
+typical = { x = "=.Internal(as.POSIXlt(c(0, 1e9 + 0.25, NA), \"UTC\"))", format = "=\"%Y-%m-%d %H:%M:%S\"", usetz = "=FALSE", digits = "=0L" }
+domain = { x = ["=.Internal(as.POSIXlt(c(0, 1e9 + 0.25, NA), \"UTC\"))", "=.Internal(as.POSIXlt(c(1719835200, -775526400), \"Europe/Berlin\"))", "=local({b <- .Internal(as.POSIXlt(1719835200, \"Europe/Berlin\")); b$gmtoff <- NA_integer_; b})", "=local({z <- .Internal(as.POSIXlt(0, \"UTC\")); z$mday <- 40L; z})", "=list(1)", "@any"], format = ["=\"%Y-%m-%d %H:%M:%S\"", "=\"%OS3\"", "=\"%OS\"", "=\"%Z %z\"", "=c(\"%d\", \"%m\", \"%Y\")", "=\"%p\"", "=\"\"", "=character(0)", "=1"], usetz = ["=FALSE", "=TRUE", "=NA"], digits = ["=0L", "=3L", "=NA_integer_", "=\"x\""] }
 
 [uncovered]
 "special: a VM op or a special (tests/rt covers it)" = [

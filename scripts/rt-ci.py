@@ -3,6 +3,10 @@
 
     scripts/rt-ci.py            # premise check, release tests, gctorture: every step
     scripts/rt-ci.py --shard NAME  # one CI job's steps (SHARDS); CI runs each in parallel
+    scripts/rt-ci.py --shard debug-assertions  # the crates' tests and the conformance with
+                                # debug assertions on (a build of their own, in
+                                # the target directory + "-debug-assertions";
+                                # the plain run above does not include it)
     scripts/rt-ci.py --list     # the rt crates, one per line
     scripts/rt-ci.py --check    # the premise check alone
     scripts/rt-ci.py --full-move  # the nightly's run: every collection moves everything
@@ -184,6 +188,29 @@ FULL_MOVE_SLOW = {
 }
 
 
+# The cases that need longer than the slow modes' 600 s in the job's
+# GC_MOVE=young:16 gctorture step, and how long they get. Each still runs;
+# every other case keeps the 600 s, so a hung unlisted case still fails in
+# ten minutes (a listed one in its own time). The runner starts the listed
+# cases first, so they do not start late:
+YOUNG_MOVE_SLOW = {
+    # a C stack overflow's deep recursion, each frame under gctorture with
+    # the moving collector. In that step on CI: about 360 s (run
+    # 44865825323, 2026-11-21 04:22), about 600 s (run 44883150235, 08:27,
+    # passed at the limit), over 600 s (run 44896845237, #927: failed);
+    # 134-248 s on the 24-CPU workstation, with its load. Not a regression:
+    # the step's settings count 832-839 G user instructions at dc404c7da
+    # (run 44865825323's tree) and 822 G at main 6b5d719a8 (perf stat, two
+    # runs each, 2026-11-21), so the spread on CI is the runner's
+    "tests/r/conditions/c-stack-overflow.R": 1200,
+}
+
+
+def case_timeouts(slow):
+    """ROBIGO_CONF_TIMEOUTS's value for `slow` (case -> seconds)."""
+    return ",".join(f"{c}={secs}" for c, secs in sorted(slow.items()))
+
+
 def conformance_command():
     test = ["cargo", "test", "--release", "--locked"]
     return [*test, "-p", "robigo-rtapi", "--test", "conformance", "--", "--exact", CONFORMANCE, "--nocapture"]
@@ -207,7 +234,7 @@ def every_cpu(steps):
 def full_move_steps():
     """The nightly's full run (`--full-move`): the conformance slice under
     gctorture, every collection moving everything it may."""
-    full_slow = ",".join(f"{c}={secs}" for c, secs in sorted(FULL_MOVE_SLOW.items()))
+    full_slow = case_timeouts(FULL_MOVE_SLOW)
     return every_cpu([
         ("conformance under ROBIGO_GC_MOVE=1 with gctorture (every collection moves everything)",
          {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **SLOW, "ROBIGO_CONF_TIMEOUTS": full_slow},
@@ -260,9 +287,12 @@ def steps(crates):
         ("conformance under gctorture (E3)", {"ROBIGO_GCTORTURE": "1", **slow}, conformance),
         # every argument a PROMSXP at call entry (GNU R's representation,
         # through the same binding-kind transitions): docs/g3.md §16's
-        # ROBIGO_MATERIALIZE=1
+        # ROBIGO_MATERIALIZE=1. Every rt crate, as the steps above: cargo
+        # turns a selected crate's dev-dependency features on (robigo-rtcore's
+        # robigo-heap/test-support), so `-p robigo-rt` alone rebuilt heap and
+        # every crate above it (6 minutes in CI)
         ("ROBIGO_MATERIALIZE=1 (every argument slot materialized)",
-         {"ROBIGO_MATERIALIZE": "1"}, [*test, "-p", "robigo-rt", *skip]),
+         {"ROBIGO_MATERIALIZE": "1"}, [*test, *pkgs, *skip]),
         # docs/g3.md §16 (H3): the debug moving collector, at every
         # collection gctorture makes due
         ("ROBIGO_GC_MOVE (move every movable object at every collection), with gctorture",
@@ -270,7 +300,8 @@ def steps(crates):
         # H8: the young objects at each collection, everything at every N-th;
         # the nightly runs it with every collection moving everything
         (f"conformance under ROBIGO_GC_MOVE={GC_MOVE_YOUNG} with gctorture (E3)",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": GC_MOVE_YOUNG, **slow}, conformance),
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": GC_MOVE_YOUNG, **slow,
+          "ROBIGO_CONF_TIMEOUTS": case_timeouts(YOUNG_MOVE_SLOW)}, conformance),
         # D5's frame recycling (docs/g3.md §16): every frame that would be recycled
         # is poisoned and held back instead, so a frame that escaped without
         # its ESCAPED bit panics where it is used next
@@ -308,12 +339,12 @@ def steps(crates):
         ("builtin differential and its planted divergences (A4, scripts/builtin-diff.py ci)", {},
          ["python3", "scripts/builtin-diff.py", "ci"]),
         # E9 (docs/g3.md §16): every `&Cx` build's first allocation refused
-        # once, so each build's retry runs. The mode is compiled in only
-        # with robigo-rtcore's feature, in a build (CHECK_FEATURES, with
-        # robigo-rt's poison-dead) made for the last steps alone, this one
-        # and the two poison-dead steps after it: every step above tests the
-        # binary users get (cargo keeps both builds). With ROBIGO_GC_MOVE=1 as well it takes about 20 minutes,
-        # so that run is by hand (g3.md §16).
+        # once, so each build's retry runs. The mode is compiled in only with
+        # robigo-rtcore's feature, in a build (CHECK_FEATURES, with robigo-rt's
+        # poison-dead) made for the last steps alone, this one and the two
+        # poison-dead steps after it: every step above tests the binary users
+        # get (cargo keeps both builds). With ROBIGO_GC_MOVE=1 as well it takes
+        # about 20 minutes, so that run is by hand (g3.md §16).
         ("conformance under ROBIGO_RETRY_TORTURE=1 (E9: every build's retry runs once)",
          {"ROBIGO_RETRY_TORTURE": "1", **slow},
          [*test, "-p", "robigo-rtapi", "--features", CHECK_FEATURES, "--test", "conformance", "--",
@@ -333,49 +364,123 @@ def steps(crates):
     return every_cpu(out)
 
 
-# CI's three rt jobs (.github/workflows/ci.yml), each one shard of the
-# steps, built once and run in parallel: before 2026-11-21 one job ran them
-# all in 29-38 minutes, against a 40-minute limit. Each is named for what it
-# runs. Their jobs' times in #910's first run (each with its release build,
-# 8.4 minutes of the one job's 35 on main's 2f16dc4c):
-#   modes         release tests, the conformance and its observation modes,
-#                 gctorture, quarantine, the pin report, stress, overshoot,
-#                 E9's small limit and failures, the byte-code crosscheck:
-#                 15.7
-#   gc-move       the moving collector, its unit tests and the conformance
-#                 under it with gctorture: 16.7
-#   feature-builds  the steps that build with a feature of their own: the
-#                 builtin differential's plants, and retry-torture: 9.1;
-#                 then, in retry-torture's build (CHECK_FEATURES), the
-#                 poison-dead steps (C1-PZ)
+# CI's rt jobs (.github/workflows/ci.yml), each one shard of the steps,
+# built in each job and run in parallel. Each is named for what it runs.
+# Before 2026-11-21 one job ran them all (29-38 minutes against a 40-minute
+# limit); #910 split them in three; with the fourth job they were rebalanced
+# from run 44883150235's step times, so that the crates' test build (11.6
+# minutes) is paid where crate tests run and nowhere else:
+#   modes         the crates' release tests and every mode they run under
+#                 (no-inplace, gctorture with the stats check, materialize,
+#                 GC_MOVE, quarantine, the pin report), the conformance and
+#                 its short modes, stress, overshoot, E9's small limit and
+#                 failures, the byte-code crosscheck
+#   gctorture     the two long conformance runs under gctorture: plain, and
+#                 with GC_MOVE=young:16 (a conformance build only)
+#   feature-builds  retry-torture's conformance, then, in its build
+#                 (CHECK_FEATURES), the poison-dead steps
+#   builtin-diff  A4's builtin differential with its planted divergences
+#                 (their own build), against builtin-diff-data's GNU R records
+#   debug-assertions  the crates' release tests and the conformance on a
+#                 release build with `-C debug-assertions=on` (heap's
+#                 debug_assert!s see compiled code; not opt-level 0, where
+#                 conditions/eval-depth-limit.R fails only because debug C
+#                 frames are larger), in a target of its own; only in its
+#                 own job: a plain local run does not build it
 # The R_HOME tree (seconds) is made in every shard; every other step is in
 # exactly one (scripts/test-rt-ci.py checks both).
-SHARDS = ("modes", "gc-move", "feature-builds")
+SHARDS = ("modes", "gctorture", "feature-builds", "builtin-diff", "debug-assertions")
+
+# Each shard's budget, in minutes: its steps' total in a CI run plus about
+# 20%, rounded up. Its job's timeout-minutes is twice the budget, and the
+# end-of-log table warns at WARN_AT of it, so a drift shows long before the
+# timeout (scripts/test-rt-ci.py pins the three relations). When a warning
+# fires, rebalance or remeasure: the dates say how old each measurement is.
+BUDGETS = {  # shard: (budget, measured minutes, where measured)
+    "modes": (23, 18.40, "2026-11-21, run 44908057499 (#941)"),
+    "gctorture": (18, 14.81, "2026-11-21, run 44908057499 (#941)"),
+    # retry-torture's conformance 13.96 and the poison-dead steps 7.85: they
+    # share one feature build, so a split would build robigo-rt's test
+    # targets twice for about 2 minutes of wall
+    "feature-builds": (27, 21.94, "2026-11-21, run 44908057499 (#941)"),
+    "builtin-diff": (9, 6.67, "2026-11-21, run 44908057499 (#941)"),
+    "debug-assertions": (15, 11.67, "2026-11-21, run 44908057499 (#941)"),
+}
+WARN_AT = 0.9
+
+
+def budget_warning(shard, minutes):
+    """The warning for a shard whose steps took `minutes`, or None below
+    WARN_AT of its budget."""
+    if shard not in BUDGETS:
+        return None
+    budget, measured, where = BUDGETS[shard]
+    if minutes < WARN_AT * budget:
+        return None
+    return (f"::warning::rt: shard {shard} took {minutes:.1f} min, {100 * minutes / budget:.0f}% of its "
+            f"{budget}-minute budget ({measured} min measured {where}); rebalance the shards or remeasure "
+            f"(scripts/rt-ci.py's BUDGETS) before it reaches the job's {2 * budget}-minute timeout")
+
+
+def target_dir():
+    """cargo's target directory for this checkout (CARGO_TARGET_DIR, the
+    configs' build.target-dir, else ROOT/target)."""
+    return metadata()["target_directory"]
+
+
+def debug_assertions_steps(crates):
+    """The debug-assertions shard: the R_HOME tree, the crates' release tests
+    and the conformance, all on one release build with debug assertions on,
+    in a target directory of its own (the normal build stays as it is). The
+    R_HOME step builds robigo-heap for its headers, so it gets the same
+    flags and target: nothing in this shard builds into the normal one."""
+    pkgs = [x for c in crates for x in ("-p", c)]
+    test = ["cargo", "test", "--release", "--locked"]
+    env = {"RUSTFLAGS": "-C debug-assertions=on", "CARGO_TARGET_DIR": target_dir() + "-debug-assertions"}
+    return every_cpu([
+        ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", env, ["scripts/rt-home.sh"]),
+        ("release tests with debug assertions (-C debug-assertions=on)", env,
+         [*test, *pkgs, "--", "--skip", CONFORMANCE]),
+        ("conformance with debug assertions (-C debug-assertions=on)", env, conformance_command()),
+    ])
 
 
 def shard_of(title):
     """The shard a step of `steps` runs in, or None for every shard."""
     if title.startswith("the R_HOME tree"):
         return None
-    if "GC_MOVE" in title:
-        return "gc-move"
-    if title.startswith("builtin differential") or "RETRY_TORTURE" in title or "POISON_DEAD" in title:
+    if title.startswith("conformance under gctorture") or title.startswith("conformance under ROBIGO_GC_MOVE"):
+        return "gctorture"
+    if title.startswith("builtin differential"):
+        return "builtin-diff"
+    if "RETRY_TORTURE" in title or "POISON_DEAD" in title:
         return "feature-builds"
     return "modes"
 
 
 def shard_steps(crates, shard):
-    """The steps of one shard, in `steps`' order."""
+    """The steps of one shard, in `steps`' order (debug-assertions: its own,
+    which `steps` does not have)."""
+    if shard == "debug-assertions":
+        return debug_assertions_steps(crates)
     return [s for s in steps(crates) if shard_of(s[0]) in (None, shard)]
 
 
-def timings_report(done):
-    """Each step's wall time, slowest first, for the end of the log: the next
-    drift shows here before it becomes a timeout."""
+def timings_report(done, shard=None):
+    """Each step's wall time, slowest first, for the end of the log, and for
+    a shard its budget's warning: the next drift shows here before it
+    becomes a timeout."""
     lines = ["rt: step times (wall), slowest first:"]
     for title, secs, ok in sorted(done, key=lambda d: -d[1]):
         lines.append(f"  {secs / 60:6.2f} min  {'' if ok else 'FAILED  '}{title}")
-    lines.append(f"  {sum(d[1] for d in done) / 60:6.2f} min  in all")
+    total = sum(d[1] for d in done) / 60
+    lines.append(f"  {total:6.2f} min  in all")
+    if shard in BUDGETS:
+        budget = BUDGETS[shard][0]
+        lines.append(f"  {total:6.2f} min of shard {shard}'s {budget}-minute budget ({100 * total / budget:.0f}%)")
+        w = budget_warning(shard, total)
+        if w:
+            lines.append(w)
     return "\n".join(lines)
 
 
@@ -397,6 +502,9 @@ def main(argv):
                     help="only the conformance slice with every collection moving everything (the nightly's run)")
     ap.add_argument("--shard", choices=SHARDS, help="only this CI job's steps (default: every step)")
     a = ap.parse_args(argv)
+    if a.full_move and a.shard:
+        # (--full-move is the nightly's one step; a shard would be ignored)
+        ap.error("--full-move and --shard select different steps: give one")
 
     meta = metadata()
     crates = rt_crates(meta, rt_patterns(ci_select.load()))
@@ -421,7 +529,7 @@ def main(argv):
     try:
         return run_steps(plan, done)
     finally:
-        print(timings_report(done), flush=True)
+        print(timings_report(done, a.shard), flush=True)
 
 
 def run_steps(plan, done):

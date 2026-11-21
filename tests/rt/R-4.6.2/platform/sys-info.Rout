@@ -1,0 +1,10 @@
+[1] "character"
+[1] 8
+[1] "sysname"        "release"        "version"        "nodename"      
+[5] "machine"        "login"          "user"           "effective_user"
+[1] "names"
+[1] TRUE
+[1] TRUE
+[1] "Linux"
+[1] TRUE
+[1] "1 argument passed to .Internal(Sys.info) which requires 0"
