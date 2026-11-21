@@ -518,6 +518,11 @@ pub struct RtState {
     /// `R_compile_pkgs` (`compilePKGS`, `_R_COMPILE_PKGS_`): a logical,
     /// NA included.
     pub compile_pkgs: std::cell::Cell<i32>,
+    /// Whether R starts GNU R's way (`ROBIGO_RT_BOOT` stage0 or rdb,
+    /// [`crate::jit::at_startup`]): the compiler's namespace then comes from
+    /// base's `loadNamespace`, M1's loader making it otherwise
+    /// ([`crate::ns::load_namespace`]).
+    pub gnu_boot: std::cell::Cell<bool>,
     /// GNU R's JIT cache ([`crate::jitcache`]).
     pub jit_cache: std::cell::RefCell<crate::jitcache::Cache>,
     /// Base's shipped bindings of cmp.R's `safeBaseInternals`, by their

@@ -515,6 +515,27 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
             robigo_rt::repl::print_warnings(cx);
         }
     }
+    // setup_Rmainloop's last step, GNU R's boot: R_init_jit_enabled (the
+    // compiler loaded when the JIT is on); M1's loader set the JIT up when
+    // the evaluator was installed
+    if boot() != Boot::M1 {
+        match robigo_rt::base::init_jit(cx) {
+            robigo_rt::base::JitStart::Done => {}
+            robigo_rt::base::JitStart::Halt => {
+                cx.reprintf(b"Execution halted\n");
+                robigo_rt::fin::run_exit_finalizers(cx);
+                robigo_rt::repl::print_warnings(cx);
+                cx.flush_console();
+                return 1;
+            }
+            robigo_rt::base::JitStart::Suicide => {
+                // R_CleanUp(SA_SUICIDE, 2, 0)
+                robigo_rt::fin::run_exit_finalizers(cx);
+                cx.flush_console();
+                return 2;
+            }
+        }
+    }
     // the isolate's console is the process's stdout and stderr
     // E9's ROBIGO_FAIL_ALLOC_AT counts the script's allocations, not base's
     cx.arm_fail_alloc();

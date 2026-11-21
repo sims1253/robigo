@@ -145,6 +145,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         forced,
         jit: std::cell::Cell::new(jit::Config::from_env()),
         compile_pkgs: std::cell::Cell::new(jit::compile_pkgs_from_env()),
+        gnu_boot: std::cell::Cell::new(false),
         jit_cache: Default::default(),
         shipped: Default::default(),
         syms,
