@@ -291,38 +291,53 @@ mod tests {
     /// A table of one thread probes name records another thread made
     /// (Miri checks the reads against the writes): thread A makes the
     /// symbols, thread B takes them from the arena as a heap's install
-    /// would, puts them in its own table, and finds each by name.
+    /// would, puts them in its own table, and finds each by name. The two
+    /// run at once, and B learns that A is done from a relaxed flag, so only
+    /// the arena's lock orders A's writes of the records before B's reads
+    /// (Sol S2).
     #[test]
     fn a_table_probes_records_another_thread_made() {
+        use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
         const NAMES: usize = 40;
         let name = |k: usize| format!("symtab_test_{k}");
-        let made: Vec<usize> = std::thread::spawn(move || {
-            (0..NAMES).map(|k| install(name(k).as_bytes(), hash_bytes(name(k).as_bytes()), || (0, 0)).addr()).collect()
-        })
-        .join()
-        .unwrap();
-        std::thread::spawn(move || {
+        let made = std::sync::Arc::new(AtomicBool::new(false));
+        let a = {
+            let made = std::sync::Arc::clone(&made);
+            std::thread::spawn(move || {
+                let ids: Vec<usize> = (0..NAMES)
+                    .map(|k| install(name(k).as_bytes(), hash_bytes(name(k).as_bytes()), || (0, 0)).addr())
+                    .collect();
+                made.store(true, Relaxed);
+                ids
+            })
+        };
+        let b = std::thread::spawn(move || {
+            while !made.load(Relaxed) {
+                std::thread::yield_now();
+            }
             // (a small table, so that it grows and re-places the symbols)
             let mut t = SymTable::with_slots(8);
+            let mut got = Vec::new();
             for k in 0..NAMES {
                 let n = name(k);
                 let h = hash_bytes(n.as_bytes());
                 assert!(t.find(h, n.as_bytes()).is_none());
                 let s = install(n.as_bytes(), h, || unreachable!("made by the other thread"));
-                assert_eq!(s.addr(), made[k]);
                 // SAFETY: published by the arena's install.
                 unsafe { t.insert(s) };
+                got.push(s.addr());
             }
             assert_eq!(t.len(), NAMES);
             for k in 0..NAMES {
                 let n = name(k);
-                assert_eq!(t.find(hash_bytes(n.as_bytes()), n.as_bytes()).map(|s| s.addr()), Some(made[k]));
+                assert_eq!(t.find(hash_bytes(n.as_bytes()), n.as_bytes()).map(|s| s.addr()), Some(got[k]));
             }
             assert!(t.find(hash_bytes(b"symtab_test_none"), b"symtab_test_none").is_none());
             assert_eq!(t.iter().count(), NAMES);
-        })
-        .join()
-        .unwrap();
+            got
+        });
+        let (made_ids, got) = (a.join().unwrap(), b.join().unwrap());
+        assert_eq!(made_ids, got, "one symbol per name");
     }
 
     /// A name longer than a segment's room gets a segment of its own.

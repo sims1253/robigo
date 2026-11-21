@@ -720,7 +720,9 @@ impl Sexp {
     #[inline(always)]
     pub unsafe fn char_hash(self) -> u32 {
         // SAFETY: the hash word is in the header of every object, and 8-byte aligned.
-        unsafe { *(self.0.add(charsxp::OFF_HASH) as *const u32) }
+        // (written as a u64 word: read as one, so the low half is the hash
+        // whatever the byte order; Sol S1)
+        unsafe { *(self.0.add(charsxp::OFF_HASH) as *const u64) as u32 }
     }
     /// The bytes of a CHARSXP (without the terminating NUL).
     ///

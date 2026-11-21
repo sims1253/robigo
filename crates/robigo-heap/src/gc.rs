@@ -1857,11 +1857,6 @@ impl Core {
         } else {
             encbits & (gp::charsxp::UTF8 | gp::charsxp::LATIN1 | gp::charsxp::BYTES)
         } | gp::charsxp::CACHED;
-        self.mk_char_bits(bytes, bits, h, on_miss)
-    }
-
-    #[inline]
-    fn mk_char_bits(&mut self, bytes: &[u8], bits: u16, h: u32, on_miss: impl FnOnce()) -> Result<Sexp, NeedGc> {
         if let Some(c) = self.find_char_hashed(bytes, bits & !gp::charsxp::CACHED, h) {
             return Ok(c);
         }
