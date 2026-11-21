@@ -174,3 +174,51 @@ Contains #933's head (bef8b1644) and #925's (6d33c8b93, `Sys.time`,
 
   The database tree (`scripts/rt-home-db.sh`, 23 s): base.rdb 1186 + 3,
   compiler.rdb 296 + 1, the same classes.
+- **At the pushed head** (main dd648bb78 merged: #941's shards, C1's #943,
+  X's #951):
+  - conformance under `ROBIGO_RT_BOOT=rdb`: 684/686, no ratcheted case
+    regressed against M1's loader (the seven of before are fixed by #951;
+    the two failures, alloc/link-lifetime and jit/serialize-write-shadow,
+    fail the same under M1's loader and are not ratcheted);
+  - perf rows, the rdb boot against M1's loader (the same binary):
+
+    | row | M1 loader | rdb boot | change |
+    |---|---:|---:|---:|
+    | binarytrees | 3,501,349.2 | 3,499,751.2 | -0.05% |
+    | d0-attr | 1,975.3 | 1,975.3 | +0.00% |
+    | d0-attributes | 2,245.0 | 2,244.9 | -0.00% |
+    | d0-names | 4,748.4 | 4,748.3 | -0.00% |
+    | d0-paste | 13,588.1 | 13,532.5 | -0.41% |
+    | d0-paste0 | 12,564.4 | 12,508.0 | -0.45% |
+    | d0-unlist | 11,066.5 | 11,083.5 | +0.15% |
+    | defaults | 1,982.2 | 1,982.0 | -0.01% |
+    | e7-match | 91,841.4 | 91,935.7 | +0.10% |
+    | e7-paste | 95,420.6 | 95,282.7 | -0.14% |
+    | e7-unique | 117,890.4 | 118,002.0 | +0.09% |
+    | env-fn | 1,935.4 | 1,935.4 | +0.00% |
+    | fib | 10,712,322.3 | 10,711,886.3 | -0.00% |
+    | grow-dbl | 5,528.3 | 5,528.2 | -0.00% |
+    | guard-dollar-assign | 3,854.8 | 3,855.1 | +0.01% |
+    | guard-dots | 8,568.2 | 8,562.3 | -0.07% |
+    | guard-repeat | 8,257.9 | 8,257.9 | +0.00% |
+    | guard-subassign-dbl | 4,450.4 | 4,450.2 | -0.00% |
+    | guard-subset-dbl | 1,732.3 | 1,732.2 | -0.01% |
+    | guard-subset-matrix | 3,187.7 | 3,188.0 | +0.01% |
+    | guard-vec-arith | 88,192.3 | 89,296.8 | +1.25% |
+    | guard-vec-sum | 19,874.1 | 19,873.8 | -0.00% |
+    | guard-while | 8,126.0 | 8,125.9 | -0.00% |
+    | named | 1,839.7 | 1,840.0 | +0.02% |
+    | plain | 1,898.0 | 1,897.7 | -0.02% |
+    | s3 | 16,316.7 | 16,379.4 | +0.38% |
+    | scalars | 6,030.9 | 6,031.6 | +0.01% |
+    | superassign | 4,591.3 | 4,578.9 | -0.27% |
+
+    | program | M1 loader peak RSS KiB | rdb boot | change |
+    |---|---:|---:|---:|
+    | benchmarks/rt/mem/churn.R | 80,192 | 86,028 | +7.3% |
+    | benchmarks/rt/mem/listgrow.R | 46,744 | 52,320 | +11.9% |
+    | benchmarks/suite/binarytrees.R | 26,456 | 28,600 | +8.1% |
+
+    Above 0.5% now only `guard-vec-arith` (+1.25%), and peak RSS +7-12%
+    (the compiler loaded at start).
+
