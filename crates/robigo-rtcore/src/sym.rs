@@ -210,6 +210,16 @@ const SPEC_SHAPES: [u16; 256] = {
     t
 };
 
+/// The cells a heap's first symbol cell makes: one per symbol id, made at
+/// once instead of growing through the boot.
+/// - Measured: a base boot (`--vanilla -e 1`, `ROBIGO_RT_BOOT=rdb`, #922's
+///   head 2ca695862) makes 1,970 symbols, whose ids stay below 2,048. From
+///   1,024 cells it grew twice, for 74,583 instructions.
+/// - Cost: 2,048 × 24 bytes = 48 KiB per isolate, which a boot reached
+///   anyway. Ids are the process's (the arena's), so a later isolate's
+///   are as large as the first's.
+const CELLS: usize = 2048;
+
 /// GNU R's symbol table size (`Defn.h:HSIZE`): the base environment lists
 /// its bindings in the order of a walk over that many chains.
 pub(crate) const HSIZE: u32 = 49157;
@@ -312,6 +322,8 @@ impl SymCell {
 
 /// The isolate's symbol cells, indexed by [`SymId`]. A symbol without a
 /// cell yet is unbound in base, uncached and has no bits.
+///
+/// The first growth makes [`CELLS`] cells at once.
 #[derive(Default, Trace)]
 pub(crate) struct SymCells {
     cells: Vec<SymCell>,
@@ -339,7 +351,7 @@ impl SymCells {
     #[cold]
     #[inline(never)]
     fn grow(&mut self, i: usize) {
-        let n = (i + 1).max(self.cells.len() * 2).max(1024);
+        let n = (i + 1).max(self.cells.len() * 2).max(CELLS);
         self.cells.resize(n, SymCell::EMPTY);
     }
 
