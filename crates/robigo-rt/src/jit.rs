@@ -525,7 +525,7 @@ pub fn closure_profile(cx: &mut Cx, op: Root<'_>) -> RResult<Profile> {
     }
     crate::jitcache::cmpfun(cx, op, cfg.strategy)?;
     // SAFETY: as above.
-    Ok(if unsafe { compiled(op.bind(cx).sexp()) } { Profile::Bc } else { Profile::Eval })
+    Ok(if unsafe { compiled(op.bind(cx).sexp()) } || bytecode_body(op.bind(cx)) { Profile::Bc } else { Profile::Eval })
 }
 
 /// Whether a top-level loop `do_for`, `do_while` or `do_repeat` meets in
