@@ -1355,8 +1355,8 @@ fn this_thread() -> usize {
 }
 
 /// The exit handler: what the exiting process made and nothing removed,
-/// removed with `R_unlink` (no process spawned and no lock of the
-/// environment's taken: `exit` may come from a thread that holds one).
+/// removed ([`remove_tree`]: no process spawned and no lock of the
+/// environment's taken, as `exit` may come from a thread that holds one).
 /// Skipped when this thread holds the registry (an `exit` from a fork
 /// handler).
 extern "C" fn remove_temp_dirs_at_exit() {
@@ -1371,8 +1371,7 @@ extern "C" fn remove_temp_dirs_at_exit() {
         mine
     };
     for d in mine {
-        use std::os::unix::ffi::OsStrExt;
-        r_unlink(std::path::Path::new(std::ffi::OsStr::from_bytes(&d)), true, true);
+        remove_tree(&d);
     }
 }
 
@@ -1419,30 +1418,16 @@ pub fn remove_temp_dir(dir: &[u8]) {
     remove_tree(dir);
 }
 
-/// `rm -Rf '<dir>'` run by `/bin/sh` (`R_system`), or, for a name a
-/// single-quoted shell word cannot hold, `R_unlink(dir, recursive = TRUE,
-/// force = TRUE)`.
+/// `R_CleanTempDir`'s removal of `dir`: `R_unlink(dir, recursive = TRUE,
+/// force = TRUE)`. (GNU R runs `rm -Rf '<dir>'` through `/bin/sh` when the
+/// name allows, for the speed some file systems give it; the result is the
+/// same, and a shell would add its own messages on stderr, which depend on
+/// which shell `/bin/sh` is: bash warns of an `LC_ALL` it cannot set, dash
+/// does not.)
 // R: platform.c:R_CleanTempDir
 fn remove_tree(dir: &[u8]) {
     use std::os::unix::ffi::OsStrExt;
-    let special = b"'\\`$\"\n";
-    if !dir.iter().any(|c| special.contains(c)) {
-        let mut cmd = b"rm -Rf '".to_vec();
-        cmd.extend_from_slice(dir);
-        cmd.push(b'\'');
-        // the child's environment read under ENV (another isolate may write
-        // it), then spawned with that copy and no lock held (a spawn that
-        // forks runs the fork handlers, which take ENV)
-        let env = env_vars();
-        let _ = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg(std::ffi::OsStr::from_bytes(&cmd))
-            .env_clear()
-            .envs(env)
-            .status();
-    } else {
-        r_unlink(std::path::Path::new(std::ffi::OsStr::from_bytes(dir)), true, true);
-    }
+    r_unlink(std::path::Path::new(std::ffi::OsStr::from_bytes(dir)), true, true);
 }
 
 /// `R_unlink(name, recursive, force)`: the number of entries it could not
