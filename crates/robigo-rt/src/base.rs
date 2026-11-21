@@ -505,7 +505,7 @@ fn eval_form(
 /// base namespace ([`Def`]), then the forms that follow it; the value into
 /// `out`, which the promise keeps. GNU R's lazy-load promise fetches a
 /// value its build computed; this computes it on first use.
-fn base_fetch(cx: &mut Cx, call: Root<'_>, _: Root<'_>, _: Root<'_>, out: Out<'_>) -> RResult<()> {
+fn base_fetch(cx: &mut Cx, call: Root<'_>, _: Root<'_>, _: Option<Root<'_>>, _: Root<'_>, out: Out<'_>) -> RResult<()> {
     let name = call
         .bind(cx)
         .as_cons()
@@ -755,17 +755,43 @@ fn not_yet_primitive(cx: &mut Cx, call: Root<'_>, _: Args<'_>, _: Root<'_>, _: O
 }
 
 /// A special primitive of the bound that robigo-rt does not implement yet.
-fn not_yet_primitive_special(cx: &mut Cx, call: Root<'_>, _: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+fn not_yet_primitive_special(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     let _ = out;
-    eval_stub_args(cx, call, rho)?;
+    cx.scope(|cx, s| {
+        let ac = match crate::specials::arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        eval_stub_args(cx, ac, rho)
+    })?;
     let msg = format!("robigo: the primitive '{}' is not implemented yet", called_name(cx, call));
     Err(cx.error_call(Some(call), &msg))
 }
 
 /// A special `.Internal` of the bound that robigo-rt does not implement yet.
-fn not_yet_internal_special(cx: &mut Cx, call: Root<'_>, _: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+fn not_yet_internal_special(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     let _ = out;
-    eval_stub_args(cx, call, rho)?;
+    cx.scope(|cx, s| {
+        let ac = match crate::specials::arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        eval_stub_args(cx, ac, rho)
+    })?;
     let msg = format!("robigo: .Internal({}()) is not implemented yet", called_name(cx, call));
     Err(cx.error_call(Some(call), &msg))
 }
@@ -880,6 +906,8 @@ pub struct Stage0 {
 // R: main.c:R_ReplFile, setup_Rmainloop
 pub fn stage0(cx: &mut Cx, home: &Path) -> Result<Stage0, String> {
     let mut st = Stage0::default();
+    // the JIT off while R starts (R_init_jit_enabled, at the end, sets it)
+    crate::jit::at_startup(cx);
     // InitNames: every primitive and internal of names.c's table bound
     let prims: Vec<&'static str> = robigo_rtbuiltins::names::PRIMITIVES.iter().map(|p| p.0).collect();
     let internals: Vec<&'static str> = robigo_rtbuiltins::names::INTERNALS.iter().map(|p| p.0).collect();
@@ -940,8 +968,8 @@ pub struct AfterProfile {
 /// jump of its own) is `check_session_exit`'s, false when R halts; with
 /// `options(error)` or `options(catch.script.errors)` R goes on to the next
 /// step, the rest of that profile not read. The greeting (unless
-/// `R_Quiet`) comes before the site profile; the JIT's start
-/// (`R_init_jit_enabled`) is not run yet.
+/// `R_Quiet`) comes before the site profile; the JIT's start is
+/// [`init_jit`], after the deferred warnings.
 // R: main.c:setup_Rmainloop, startup.c:R_OpenSiteFile, sys-unix.c:R_OpenInitFile,
 // startup.c:R_RestoreGlobalEnv, saveload.c:R_RestoreGlobalEnvFromFile
 pub fn after_profile(cx: &mut Cx, home: &Path, a: AfterProfile) -> bool {
@@ -1028,6 +1056,39 @@ pub fn after_profile(cx: &mut Cx, home: &Path, a: AfterProfile) -> bool {
     // found in base's namespace, called in base
     call_startup(cx, b".First", |cx| cx.global_env(), |cx| cx.global_env())
         && call_startup(cx, b".First.sys", |cx| cx.base_namespace(), |cx| cx.base_env())
+}
+
+/// How `setup_Rmainloop`'s last step ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JitStart {
+    /// The JIT is set up.
+    Done,
+    /// An error, and `check_session_exit` halted R.
+    Halt,
+    /// An error that `check_session_exit` let pass: `R_Suicide("unable
+    /// to initialize the JIT\n")`, its message printed here (the caller
+    /// exits with status 2, R_CleanUp(SA_SUICIDE, 2, 0): no warnings).
+    Suicide,
+}
+
+/// The last step of `setup_Rmainloop`: `R_init_jit_enabled()` inside its
+/// own top-level `SETJMP` ([`crate::jit::init_jit_enabled`]).
+// R: main.c:setup_Rmainloop
+pub fn init_jit(cx: &mut Cx) -> JitStart {
+    let ok = cx.scope(|cx, s| {
+        let g = s.root(cx, cx.global_env());
+        let base = s.root(cx, cx.base_env());
+        cx.repl_toplevel(g, base, crate::jit::init_jit_enabled).expect("robigo: an exit that passed the top level")
+    });
+    if ok {
+        JitStart::Done
+    } else if !crate::repl::check_session_exit(cx) {
+        JitStart::Halt
+    } else {
+        // R: unix/sys-std.c:Rstd_Suicide
+        cx.reprintf(b"Fatal error: unable to initialize the JIT\n\n");
+        JitStart::Suicide
+    }
 }
 
 /// `R_findVar(name, from)`, and when it is a closure `eval(lang1(name),

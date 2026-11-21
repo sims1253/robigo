@@ -43,7 +43,7 @@ a directory of your own: each holds several GB. If a task truly needs one
 | parse corpus | `scripts/parse-corpus.py check` | parse trees and parse errors of the fastr/gnur-tests/gnur-examples corpora and GNU R's own sources against GNU R's dumps (`tests/parse/passing/` ratchets) |
 | conformance | `cargo test --release -p robigo-cli --test conformance` | `tests/r/**/*.R`: stdout, stderr, exit status as bytes, under the interpreter, the VM and the VM with JIT |
 | rt conformance | `cargo test --release -p robigo-rtapi --test conformance` | `robigo-rt` on `tests/rt/**/*.R` and its ratcheted `tests/r` cases, against GNU R 4.6.2 (§ Oracles, "Ratchet columns"). The cases that load tools' native code (`.requires` `r-home-tools`) run when `robigo-rt`'s `R_HOME` tree has it: `scripts/rt-home.sh` builds `library/tools/libs/tools.so` from GNU R's sources against robigo's headers for the natives (`crates/robigo-rtapi/internal`), as the rt job does before its conformance steps |
-| rt boot from base's database | `scripts/rt-home-db.sh && ROBIGO_RT_HOME_DB=1 cargo test --release -p robigo-rtapi --test boot_db` | L5's boot beside M1's loader (`ROBIGO_RT_BOOT=rdb`): `scripts/rt-home-db.sh` runs base's database rule (`makebasedb.R`, robigo-rt booted from base's source) into a copy of the `R_HOME` tree and installs `baseloader.R` as its base file; the test boots from it (byte-code closures, baseloader.R's symbols and S3 table, base's 1407 names) and pins the system profile's lines that still stop. The rt job runs both after the `R_HOME` tree |
+| rt boot from base's database | `scripts/rt-home-db.sh --robigo-rt "$(cargo metadata --format-version 1 --no-deps | jq -r .target_directory)/release/robigo-rt" && ROBIGO_RT_HOME_DB=1 cargo test --release -p robigo-rtapi --test boot_db` | L5's boot beside M1's loader (`ROBIGO_RT_BOOT=rdb`): `scripts/rt-home-db.sh` runs base's database rule (`makebasedb.R`, robigo-rt booted from base's source) into a copy of the `R_HOME` tree and installs `baseloader.R` as its base file; the test boots from it (byte-code closures, baseloader.R's symbols and S3 table, base's 1407 names) and pins the system profile's lines that still stop. The rt job runs both after the `R_HOME` tree |
 | corpora | `scripts/corpus.py run NAME` | below |
 | fuzzing | `scripts/fuzz.py parse\|rds` | mutated scripts through `parse()` and mutated RDS files through `readRDS()`: a panic, failed allocation, stack overflow or fatal signal is a finding; reproducers land in `.robigo/fuzz/` |
 | builtin differential | `scripts/builtin-diff.py run [--only NAME]` | robigo-rt's builtins against GNU R 4.6.2 on generated inputs, out of process (§ Builtin differential) |
@@ -857,7 +857,14 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    within one main run of its merge. Each job builds what its steps need
    and prints its steps' times at the end of its log, against its budget
    (rt-ci.py's `BUDGETS`: a measured time plus 20%, with a warning at 90%);
-   its timeout is twice the budget, and `Check` needs all six. Together
+   its timeout is twice the budget, and `Check` needs all six. Every
+   conformance step also writes each case's wall time (the runner's
+   `ROBIGO_CONF_TIMES_REPORT`, a file per step under `RT_CI_TIMES_DIR`, kept
+   as the job's `rt-case-times-*` artifact) and lists the cases over half
+   their limit, report-only: such a case is named with an allowance and its
+   time, or made smaller. rt-ci.py stops at its start, exit 2, when cargo's
+   target directory or TMPDIR has under 8 GB free (`RT_CI_MIN_FREE_GB`
+   overrides it; 0 turns it off). Together
    they run every step: rt-ci.py checks that no other
    workspace member depends on them (the premise of `rt` mode; it fails at
    the flip, when the rule must go), then runs their `cargo test`
