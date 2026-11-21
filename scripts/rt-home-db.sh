@@ -35,8 +35,10 @@ mkdir -p "$(dirname "$out")"
 tmp=$(mktemp -d "$(dirname "$out")/.rt-home-db.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 # the install layout robigo-rt finds its R_HOME by: bin/robigo-rt, lib/robigo
-mkdir -p "$tmp/bin" "$tmp/lib"
-cp -a "$src_tree" "$tmp/lib/robigo"
+mkdir -p "$tmp/bin" "$tmp/lib/robigo"
+# (the tree's contents into a fresh directory: a symlinked tree is read,
+# never written)
+cp -a "$src_tree/." "$tmp/lib/robigo/"
 rm -f "$tmp/lib/robigo/.rt-home"
 cp "$bin" "$tmp/bin/robigo-rt"
 # R: src/library/base/Makefile.in ($(top_builddir)/library/$(pkg)/R/$(pkg).rdb)

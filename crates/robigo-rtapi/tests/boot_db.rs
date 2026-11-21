@@ -48,6 +48,10 @@ fn base_boots_from_its_database() {
         .env("LC_ALL", "C.UTF-8")
         .env_remove("R_HOME")
         .env_remove("ROBIGO_RT_CHECKOUT")
+        // the profile's own controls (Common.R's .Last.sys under R_BATCH,
+        // Rprofile.unix's R_TESTS file): not the boot under test
+        .env_remove("R_BATCH")
+        .env_remove("R_TESTS")
         // rt-ci runs the tests under its observation modes (scripts/rt-ci.py
         // inherits the environment): the boot under them is not this test's
         .env_remove("ROBIGO_GCTORTURE")
