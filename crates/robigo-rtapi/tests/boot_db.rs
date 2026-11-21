@@ -20,17 +20,35 @@ use std::process::Command;
 /// `.expand_R_libs_env_var` and `.libPaths`, are builtins now).
 const PROFILE_STOPS: &str = "";
 
-/// Whether the tree is made (else the test is skipped, unless
-/// `ROBIGO_RT_HOME_DB` says it must be).
+/// Whether the tree is made by this checkout's scripts/rt-home-db.sh (else
+/// the test is skipped, unless `ROBIGO_RT_HOME_DB` says it must be there):
+/// the script's hash is its stamp's second field from the end, so a tree an
+/// older script made is stale and says so, rather than failing on what it
+/// lacks (an older tree has no etc/Renviron).
 fn tree_made() -> bool {
-    let tree = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.robigo/rt-home-db");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let tree = root.join(".robigo/rt-home-db");
+    let must = std::env::var_os("ROBIGO_RT_HOME_DB").is_some();
     if !tree.join("library/base/R/base.rdb").is_file() {
         assert!(
-            std::env::var_os("ROBIGO_RT_HOME_DB").is_none(),
+            !must,
             "ROBIGO_RT_HOME_DB is set, but {} has no base.rdb: make it with scripts/rt-home-db.sh",
             tree.display()
         );
         eprintln!("{} is not made: skipped (scripts/rt-home-db.sh makes it)", tree.display());
+        return false;
+    }
+    let script = root.join("scripts/rt-home-db.sh");
+    let o = Command::new("sha256sum").arg(&script).output().unwrap_or_else(|e| panic!("running sha256sum: {e}"));
+    let want = String::from_utf8_lossy(&o.stdout).chars().take(16).collect::<String>();
+    let stamp = std::fs::read_to_string(tree.join(".rt-home-db")).unwrap_or_default();
+    if stamp.split_whitespace().rev().nth(1) != Some(want.as_str()) {
+        assert!(
+            !must,
+            "{} is stale (made by another scripts/rt-home-db.sh): rebuild it with scripts/rt-home-db.sh --robigo-rt BIN",
+            tree.display()
+        );
+        eprintln!("{} is stale: skipped (rebuild it with scripts/rt-home-db.sh --robigo-rt BIN)", tree.display());
         return false;
     }
     true
