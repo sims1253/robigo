@@ -49,6 +49,7 @@ pub mod is;
 pub mod kernel;
 pub mod logic;
 pub mod math;
+pub mod maththreads;
 pub mod names;
 pub mod options;
 pub mod paste;
