@@ -1124,15 +1124,7 @@ impl<'g> Comp<'g> {
                 }
                 cell = cell.cdr();
             }
-            let codes = if codes.iter().any(|&c| c != nil) {
-                let v = cx.alloc_vector_raw(VECSXP, codes.len())?;
-                for (j, &c) in codes.iter().enumerate() {
-                    v.set_elt(j, c);
-                }
-                Some(v)
-            } else {
-                None
-            };
+            let codes = self.codes_vector(&codes)?;
             if let Some((from, to)) = s.fun_code
                 && s.what.typ() == LANGSXP
             {
@@ -2243,11 +2235,8 @@ impl<'g> Comp<'g> {
                 });
                 cell = cell.cdr();
             }
-            if codes.iter().any(|&c| c != nil) {
-                let v = self.cx.alloc_vector_raw(VECSXP, codes.len())?;
-                for (j, &c) in codes.iter().enumerate() {
-                    v.set_elt(j, c);
-                }
+            // (pass 1's code and pool are discarded: no vector for them)
+            if !planning && let Some(v) = self.codes_vector(&codes)? {
                 codes_k = self.k(v);
             }
         }
@@ -2267,6 +2256,25 @@ impl<'g> Comp<'g> {
         i.fl |= F_DEPTH | F_CLR_B;
         self.emit(i);
         Ok(())
+    }
+
+    /// The promise codes of a call's arguments, by argument
+    /// (R_NilValue where an argument has none), as one VECSXP: a
+    /// translated call's (`Op::CallCodes`'s `f`) or a step's (`S_CODES`).
+    /// None when no argument has one.
+    fn codes_vector(&self, codes: &[Sexp]) -> Result<Option<Sexp>, Need> {
+        let nil = self.nil();
+        if codes.iter().all(|&c| c == nil) {
+            return Ok(None);
+        }
+        let v = self.cx.alloc_vector_raw(VECSXP, codes.len())?;
+        for (j, &c) in codes.iter().enumerate() {
+            // SAFETY: element `j` of a fresh vector of `codes.len()`, each a
+            // live code object or R_NilValue (no collection since: the
+            // allocation does not collect).
+            unsafe { v.set_elt(j, c) };
+        }
+        Ok(Some(v))
     }
 
     /// The code of a promise the byte code makes (`MAKEPROM`'s BCODESXP),
