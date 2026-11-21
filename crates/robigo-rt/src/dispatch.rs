@@ -473,7 +473,10 @@ pub fn topenv<'g>(cx: &'g Cx, target: Option<Ref<'g>>, envir: Ref<'g>) -> Ref<'g
     cx.global_env()
 }
 
-/// How many shapes [`passed_by_shape`] remembers.
+/// How many shapes [`passed_by_shape`] remembers. The list stops adding when
+/// full (releasing a global takes `&mut Cx`, which `topenv` has not): the
+/// first long shapes a session meets, its boot's first, stay, and a long
+/// shape met later is searched for and read at every call.
 const TOPENV_SHAPES: usize = 16;
 
 /// The longest shape [`passed_by_shape`] reads rather than remembers.
