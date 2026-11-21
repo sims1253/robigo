@@ -32,6 +32,10 @@ def allowed_skip(job, sel, pull_request):
         # their tests), robigo-rt's base subset, its M1 bars and its corpus
         # column: skipped only when nothing but docs changed
         return sel.get("rt") == "false"
+    if job == "rt-release-crate-tests":
+        # the crates' tests on the full release profile: main's runs (and a
+        # manual dispatch) only, where rt's other rules hold
+        return pull_request or sel.get("rt") == "false"
     if job == "package-gate":
         return not pull_request or sel.get("runtime") == "false"
     if job == "perf-base":
