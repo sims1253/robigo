@@ -186,6 +186,10 @@ fn a_user_profile_s_errors_end_it_as_in_gnu_r() {
     let lex = run("lex", "cat(\"a\\n\")\nx <- \"\\q\"\ncat(\"b\\n\")\n");
     let warn2 = run("warn2", "options(warn = 2)\nx <- 1.1L\ncat(\"continued\\n\")\n");
     let warn = run("warn", "x <- 1.1L\ncat(\"continued\\n\")\n");
+    // a code-generation error after the lookahead was lexed: its warning
+    // fired first (an error under warn = 2, else "In addition")
+    let formal2 = run("formal2", "options(warn = 2)\nf <- function(x, x = 1.1L) {}\n");
+    let formal = run("formal", "f <- function(x, x = 1.1L) {}\n");
     let _ = std::fs::remove_dir_all(&dir);
     let lex_err = format!(
         "{PROFILE_STOPS}Error: '\\q' is an unrecognized escape in character string (<input>:2:8)\nExecution halted\n"
@@ -199,6 +203,12 @@ fn a_user_profile_s_errors_end_it_as_in_gnu_r() {
     let warn_err =
         format!("{PROFILE_STOPS}Warning message:\ninteger literal 1.1L contains decimal; using numeric value \n");
     assert_eq!((warn.0.as_str(), warn.1.as_str(), warn.2), ("continued\nscript ran\n", warn_err.as_str(), Some(0)));
+    assert_eq!((formal2.0.as_str(), formal2.1.as_str(), formal2.2), ("", warn2_err.as_str(), Some(1)));
+    let formal_err = format!(
+        "{PROFILE_STOPS}Error: repeated formal argument 'x' (<input>:1:18)\nIn addition: Warning message:\n\
+         integer literal 1.1L contains decimal; using numeric value \nExecution halted\n"
+    );
+    assert_eq!((formal.0.as_str(), formal.1.as_str(), formal.2), ("", formal_err.as_str(), Some(1)));
     let parse_err = format!("{PROFILE_STOPS}Error: 2:1: unexpected ')'\n2: )\n    ^\nExecution halted\n");
     assert_eq!((parse.0.as_str(), parse.1.as_str(), parse.2), ("before\n", parse_err.as_str(), Some(1)));
     let error_err = format!("{PROFILE_STOPS}Error: boom\nExecution halted\n");

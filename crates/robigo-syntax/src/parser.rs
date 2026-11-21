@@ -584,6 +584,15 @@ impl<'a> Parser<'a> {
         self.program_n(usize::MAX)
     }
 
+    /// How far the lexer has read: the end of the current (lookahead)
+    /// token. GNU R lexes on demand, so a token's warnings (NumericValue's)
+    /// have fired by the time a rule reduces with it as lookahead, before
+    /// a code-generation error (CheckFormalArgs) that the rule raises.
+    pub fn lexed_end(&self) -> usize {
+        let i = self.pos.min(self.toks.len().saturating_sub(1));
+        self.toks.get(i).map_or(0, |t| t.span.end as usize)
+    }
+
     /// End of input consumed by `program_n`, including its terminator.
     pub fn consumed_end(&self) -> usize {
         if matches!(self.toks[self.pos].tok, Tok::Eof) {
