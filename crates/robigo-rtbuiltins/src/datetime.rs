@@ -882,7 +882,10 @@ fn r_strptime(p: &mut Strptime<'_>, buf: &[u8], format: &[u8]) -> Result<bool, S
 /// whether it is UTC (`isUTC`).
 // R: datetime.c:GET_tz_n_CHECK
 fn get_tz(cx: &mut Cx, stz: Root<'_>) -> RResult<(Vec<u8>, bool)> {
-    refuse_altrep(cx, stz, "a package ALTREP 'tz'")?;
+    // (isString first: LENGTH only of a character vector)
+    if stz.bind(cx).sexptype() == STRSXP {
+        refuse_altrep(cx, stz, "a package ALTREP 'tz'")?;
+    }
     let tz = match stz.bind(cx).as_vector::<Char<'_>>() {
         Some(v) if v.len() == 1 => v.get(0).bytes().to_vec(),
         _ => return Err(cx.error("invalid 'tz' value")),
@@ -1498,7 +1501,9 @@ pub fn do_d2posixlt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
     crate::row!("Date2POSIXlt", true).check_arity(cx, call, args)?;
     cx.scope(|cx, s| {
         let x = coerce_real(cx, s, args.root(0))?;
-        refuse_altrep(cx, args.root(1), "Date2POSIXlt() of a package ALTREP 'tz'")?;
+        if args.get(cx, 1).sexptype() == STRSXP {
+            refuse_altrep(cx, args.root(1), "Date2POSIXlt() of a package ALTREP 'tz'")?;
+        }
         let stz = args.get(cx, 1);
         let tz: Vec<u8> = match stz.as_vector::<Char<'_>>() {
             Some(v) if v.len() == 1 => v.get(0).bytes().to_vec(),
