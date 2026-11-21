@@ -24,6 +24,7 @@ pub mod arith;
 pub mod bessel;
 pub mod beta;
 pub mod binom;
+pub mod blas;
 pub mod dist;
 pub mod fdist;
 pub mod fround;

@@ -1,0 +1,9 @@
+Warning message:
+unpaired surrogate Unicode point d800 
+Warning messages:
+1: unpaired surrogate Unicode point d800 
+2: unpaired surrogate Unicode point d800 
+Error: unexpected '*' in "y <- "\ud800" +*"
+In addition: Warning message:
+unpaired surrogate Unicode point d800 
+Execution halted
