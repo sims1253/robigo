@@ -124,16 +124,23 @@ empty <- unname(alist(x = ))
 # each element of a list, pairlist or call through f, the empty argument
 # kept as it is
 elements <- function(xs, f) {
-    r <- as.list(xs)
+    # (no method dispatch: as.list.POSIXlt, for one, gives POSIXlt elements)
+    r <- if (is.call(xs) || is.pairlist(xs)) as.list(xs) else unclass(xs)
     for (i in seq_along(r)) if (!identical(unname(r[i]), empty)) r[i] <- list(f(r[[i]]))
     r
 }
 norm <- function(x, map = FALSE, env = TRUE) {
     n <- function(y) norm(y, map, env)
-    with_attrs <- function(r, a) { if (!is.null(a)) attributes(r) <- lapply(a, n); r }
+    # the attributes, and the S4 bit (identical.c compares IS_S4_OBJECT)
+    s4 <- isS4(x)
+    with_attrs <- function(r, a) {
+        if (!is.null(a)) attributes(r) <- lapply(a, n)
+        if (s4) r <- asS4(r)
+        r
+    }
     if (is.function(x) && !is.primitive(x)) {
         bc <- .Internal(bodyCode(x))
-        return(list(closure_mark, n(formals(x)), n(body(x)), lapply(attributes(x), n),
+        return(list(closure_mark, s4, n(formals(x)), n(body(x)), lapply(attributes(x), n),
                     if (env) environment(x), if (typeof(bc) == "bytecode") bc))
     }
     a <- attributes(x)
