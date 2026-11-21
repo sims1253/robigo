@@ -38,7 +38,7 @@ fn check_spine(x: Ref<'_>, d: Ref<'_>) {
     let (xc, dc) = (cells(x), cells(d));
     assert_eq!(xc.len(), dc.len());
     for (i, (a, b)) in xc.iter().zip(&dc).enumerate() {
-        assert_ne!(a, b, "cell {i} is a new cell");
+        assert_ne!(a, b, "cell {i} must be a new cell, not the source's");
         let (ac, bc) = (a.as_cons().unwrap(), b.as_cons().unwrap());
         assert_eq!(ac.tag(), bc.tag(), "cell {i}'s tag");
         if i > 0 {
@@ -54,9 +54,7 @@ fn a_call_of_symbols_is_a_new_spine_with_the_same_cars() {
     let cx = iso.cx();
     cx.scope(|cx, s| {
         // f(a, n = b)
-        let tail = cx.cons(sym(cx, b"b"), cx.nil()).unwrap();
-        // SAFETY: a fresh cell.
-        unsafe { tail.sexp().set_tag(sym(cx, b"n").sexp()) };
+        let tail = cx.cons_tagged(sym(cx, b"b"), cx.nil(), cx.install(b"n").unwrap()).unwrap();
         let mid = cx.cons(sym(cx, b"a"), tail).unwrap();
         let call = s.root(cx, cx.lcons(sym(cx, b"f"), mid).unwrap());
         let before: Vec<u16> = cells(call.bind(cx)).iter().map(|c| c.refcnt()).collect();
@@ -104,11 +102,11 @@ fn a_call_with_a_call_and_a_vector_among_its_cars_copies_them() {
         check_spine(x, y);
         let (xc, yc) = (cells(x), cells(y));
         let (xi, yi) = (xc[1].as_cons().unwrap().car(), yc[1].as_cons().unwrap().car());
-        assert_ne!(xi, yi, "the inner call is duplicated");
+        assert_ne!(xi, yi, "the inner call must be duplicated, not shared");
         assert_eq!(yi.sexptype(), LANGSXP);
         check_spine(xi, yi);
         let (xv, yv) = (xc[2].as_cons().unwrap().car(), yc[2].as_cons().unwrap().car());
-        assert_ne!(xv, yv, "the vector is duplicated");
+        assert_ne!(xv, yv, "the vector must be duplicated, not shared");
         assert_eq!(yv.as_vector::<f64>().unwrap().as_slice(), Some(&[1.0][..]));
     });
 }
@@ -116,12 +114,9 @@ fn a_call_with_a_call_and_a_vector_among_its_cars_copies_them() {
 /// `attr` cells hold one attribute, `name = value`, `value` a new vector.
 fn with_attrib(cx: &Cx, cell: Ref<'_>, name: &[u8], value: f64) {
     let v = cx.alloc_copy(&[value]).unwrap().finish().as_ref();
-    let a = cx.cons(v, cx.nil()).unwrap();
-    // SAFETY: fresh cells and a live cell of the list being built.
-    unsafe {
-        a.sexp().set_tag(sym(cx, name).sexp());
-        cell.sexp().set_attrib(a.sexp());
-    }
+    let a = cx.cons_tagged(v, cx.nil(), cx.install(name).unwrap()).unwrap();
+    // SAFETY: `a` is a fresh cell; `cell` a live cell of the list being built.
+    unsafe { cell.sexp().set_attrib(a.sexp()) };
 }
 
 fn attrib_value<'g>(cell: Ref<'g>) -> Ref<'g> {
@@ -141,9 +136,9 @@ fn attributes_on_a_calls_head_are_copied_deeply() {
         let d = dup(cx, s, call);
         let (x, y) = (call.bind(cx), d.bind(cx));
         check_spine(x, y);
-        assert_ne!(x.attrib().unwrap(), y.attrib().unwrap(), "a new attribute cell");
+        assert_ne!(x.attrib().unwrap(), y.attrib().unwrap(), "the attribute cell must be new, not shared");
         let (xa, ya) = (attrib_value(x), attrib_value(y));
-        assert_ne!(xa, ya, "the attribute's value is duplicated");
+        assert_ne!(xa, ya, "the attribute's value must be duplicated, not shared");
         assert_eq!(ya.as_vector::<f64>().unwrap().as_slice(), Some(&[2.0][..]));
         assert_eq!(y.attrib().unwrap().as_cons().unwrap().tag(), x.attrib().unwrap().as_cons().unwrap().tag());
     });
@@ -163,7 +158,7 @@ fn attributes_on_a_later_cell_are_copied_deeply() {
         check_spine(x, y);
         let (xt, yt) = (cells(x)[1], cells(y)[1]);
         let (xa, ya) = (attrib_value(xt), attrib_value(yt));
-        assert_ne!(xa, ya, "the later cell's attribute value is duplicated");
+        assert_ne!(xa, ya, "the later cell's attribute value must be duplicated, not shared");
         assert_eq!(ya.as_vector::<f64>().unwrap().as_slice(), Some(&[3.0][..]));
         assert_eq!(cells(y)[0].attrib().map(|a| a.sexptype()), Some(NILSXP), "the head has none");
     });
@@ -184,5 +179,23 @@ fn a_shared_car_gains_the_copys_reference() {
         check_spine(l.bind(cx), d.bind(cx));
         assert_eq!(cells(d.bind(cx))[1].as_cons().unwrap().car(), e.bind(cx), "shared, not copied");
         assert_eq!(e.bind(cx).refcnt(), 2, "and the copy's cell");
+    });
+}
+
+#[test]
+fn a_shared_promise_car_is_kept_and_counted() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    cx.scope(|cx, s| {
+        // a promise is shared by duplicate1 (not forced, not copied), and
+        // counted like the environment above
+        let p = s.root(cx, cx.mk_promise(sym(cx, b"a"), cx.base_env()).unwrap());
+        let tail = cx.cons(p.bind(cx), cx.nil()).unwrap();
+        let l = s.root(cx, cx.cons(sym(cx, b"x"), tail).unwrap());
+        assert_eq!(p.bind(cx).refcnt(), 1, "the source's cell");
+        let d = dup(cx, s, l);
+        check_spine(l.bind(cx), d.bind(cx));
+        assert_eq!(cells(d.bind(cx))[1].as_cons().unwrap().car(), p.bind(cx), "the promise must be shared, not copied");
+        assert_eq!(p.bind(cx).refcnt(), 2, "and the copy's cell");
     });
 }
