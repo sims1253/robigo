@@ -1,0 +1,19 @@
+# builtin-diff known failures: set.seed, seed 0, key e709f46d5352381e47bb0634
+# set.seed: 959 / 976 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 26 excluded)
+40
+85
+205
+271
+319
+399
+423
+480
+508
+565
+617
+699
+771
+812
+845
+850
+958

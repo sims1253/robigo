@@ -1,0 +1,6 @@
+# builtin-diff known failures: abs, seed 0, key d9448f5b930717e80fcbe724
+# abs: 61 / 65 (not-implemented 4, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
+30
+31
+32
+33

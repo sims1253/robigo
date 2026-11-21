@@ -97,10 +97,13 @@ pub struct PpInfo {
 }
 
 /// What a builtin can do besides compute its result: decides how
-/// differential mode (`ROBIGO_BUILTIN_DIFF=1`, docs/g3.md §10) compares two
-/// implementations. Only [`Effect::Pure`] runs both in one process, and
-/// only on inputs that cannot call back ([`Builtin::same_process_ok`]);
-/// every other class is compared out of process.
+/// differential mode (`ROBIGO_BUILTIN_DIFF`, docs/g3.md §10, §16) compares
+/// it with GNU R's. That comparison is out of process for every class
+/// (scripts/builtin-diff.py: generated cases run in GNU R 4.6.2 and in
+/// robigo-rt, their records compared byte for byte); which classes it runs
+/// yet, and what it records for each, is in docs/verification.md, "Builtin
+/// differential". D0 kept one implementation, so the same-process mode
+/// [`Builtin::same_process_ok`] gates has no second one to run.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Effect {
     /// The result, warnings and errors depend only on the argument values

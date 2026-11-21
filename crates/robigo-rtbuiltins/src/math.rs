@@ -593,6 +593,11 @@ pub fn do_abs(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: O
     if x.bind(cx).is_package_altrep() {
         return Err(not_yet(cx, Some(call), "abs() of a package ALTREP vector"));
     }
+    // PLANT(A4, crash): a panic on one input class, which must cost one case
+    assert!(
+        !(cfg!(feature = "diff-plant") && x.bind(cx).sexptype() == INTSXP && x.bind(cx).len() == Some(3)),
+        "robigo: A4 planted crash"
+    );
     cx.build(out, |cx| {
         let xv = x.bind(cx);
         let mut a = Attrs::new();
