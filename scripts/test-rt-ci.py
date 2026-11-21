@@ -56,18 +56,67 @@ class RtCi(unittest.TestCase):
                 self.assertEqual(shards, [s for s in rt.SHARDS if s != "debug-assertions"], t)
             else:
                 self.assertEqual(shards, [rt.shard_of(t)], t)
-        # where each long step goes (the split's point)
+        # where each long step goes (the split's point): the crates' tests
+        # where the crates' test build is, the long conformance runs apart
         where = {t: rt.shard_of(t) for t in everything}
         self.assertEqual(where["release tests"], "modes")
-        self.assertEqual(where["conformance under gctorture (E3)"], "modes")
-        self.assertEqual([t for t, s in where.items() if s == "gc-move"],
-                         ["ROBIGO_GC_MOVE (move every movable object at every collection), with gctorture",
+        self.assertEqual(where["ROBIGO_GC_MOVE (move every movable object at every collection), with gctorture"],
+                         "modes")
+        self.assertEqual(where["ROBIGO_MATERIALIZE=1 (every argument slot materialized)"], "modes")
+        self.assertEqual([t for t, s in where.items() if s == "gctorture"],
+                         ["conformance under gctorture (E3)",
                           f"conformance under ROBIGO_GC_MOVE={rt.GC_MOVE_YOUNG} with gctorture (E3)"])
+        self.assertEqual([t for t, s in where.items() if s == "builtin-diff"],
+                         ["builtin differential and its planted divergences (A4, scripts/builtin-diff.py ci)"])
         self.assertEqual([t for t, s in where.items() if s == "feature-builds"],
-                         ["builtin differential and its planted divergences (A4, scripts/builtin-diff.py ci)",
-                          "conformance under ROBIGO_RETRY_TORTURE=1 (E9: every build's retry runs once)",
+                         ["conformance under ROBIGO_RETRY_TORTURE=1 (E9: every build's retry runs once)",
                           "ROBIGO_POISON_DEAD=1 (dead slots poisoned), robigo-rt's tests and the planted early clear",
                           "ROBIGO_POISON_DEAD=1, conformance"])
+
+    def test_every_crate_test_step_builds_what_release_tests_built(self):
+        # cargo turns a selected crate's dev-dependency features on, so a
+        # step over fewer crates (no --features of its own) rebuilds what
+        # `release tests` built: the MATERIALIZE step did, for 6 minutes
+        crates = ["robigo-heap", "robigo-rt", "robigo-rtcore"]
+        pkgs = [x for c in crates for x in ("-p", c)]
+        for title, _, cmd in rt.steps(crates):
+            if cmd[:2] == ["cargo", "test"] and "--features" not in cmd and "--test" not in cmd:
+                self.assertEqual([x for x in cmd if x == "-p" or x.startswith("robigo")], pkgs, title)
+
+    def budgets(self):
+        import math
+        import re
+        with open(os.path.join(HERE, "..", ".github", "workflows", "ci.yml")) as f:
+            yml = f.read()
+        timeouts = {}
+        for job in re.split(r"\n(?=  [a-z0-9-]+:\n)", yml):
+            m = re.search(r"rt-ci\.py --shard ([a-z-]+)", job)
+            if m:
+                timeouts[m.group(1)] = int(re.search(r"timeout-minutes: (\d+)", job).group(1))
+        return math, timeouts
+
+    def test_each_shard_has_a_budget_its_timeout_doubles(self):
+        # the three relations; the numbers are the measurements'
+        math, timeouts = self.budgets()
+        self.assertEqual(sorted(rt.BUDGETS), sorted(rt.SHARDS))
+        self.assertEqual(sorted(timeouts), sorted(rt.SHARDS), "each shard has one CI job")
+        for shard, (budget, measured, where) in rt.BUDGETS.items():
+            self.assertEqual(budget, math.ceil(measured * 1.2), f"{shard}: the measured time plus 20%, rounded up")
+            self.assertEqual(timeouts[shard], 2 * budget, f"{shard}: its job's timeout is twice its budget")
+            self.assertRegex(where, r"^20\d\d-\d\d-\d\d", f"{shard}: when it was measured")
+        self.assertEqual(rt.WARN_AT, 0.9)
+
+    def test_the_timing_table_warns_at_90_percent_of_the_budget(self):
+        budget = rt.BUDGETS["modes"][0]
+        below = budget * 0.9 * 60 - 6
+        at = budget * 0.9 * 60 + 6
+        self.assertIsNone(rt.budget_warning("modes", below / 60))
+        self.assertNotIn("::warning::", rt.timings_report([("release tests", below, True)], "modes"))
+        report = rt.timings_report([("release tests", at, True)], "modes")
+        self.assertIn("::warning::rt: shard modes took", report)
+        self.assertIn(f"{2 * budget}-minute timeout", report)
+        # a plain run has no budget
+        self.assertNotIn("budget", rt.timings_report([("release tests", at * 3, True)]))
 
     def test_a_step_whose_report_fails_is_timed_as_failed(self):
         # the command passed, the crosscheck report did not (it compared

@@ -300,16 +300,17 @@ jobs:
           compression-level: 0
           retention-days: 1
 
-  # G3's runtime crates: scripts/rt-ci.py's steps in three jobs, one shard
-  # each (rt-ci.py's SHARDS), built once per job and run in parallel. One
-  # job ran them all until 2026-11-21, in 29-38 minutes against a 40-minute
-  # limit (docs/ledger/g3/2026-11-21-a1-rt-shards.md). Each shard's
-  # timeout is about twice its measured time; each prints its steps' times
-  # at the end of its log. `Check` needs all three.
+  # G3's runtime crates: scripts/rt-ci.py's steps in five jobs, one shard
+  # each (rt-ci.py's SHARDS, which says what each runs), built in each job
+  # and run in parallel. One job ran them all until 2026-11-21, in 29-38
+  # minutes against a 40-minute limit (docs/ledger/g3/2026-11-21-a1-rt-shards.md).
+  # Each job's timeout is twice its shard's budget (rt-ci.py's BUDGETS,
+  # pinned by scripts/test-rt-ci.py); each prints its steps' times at the
+  # end of its log, with a warning at 90% of the budget. `Check` needs all.
   #
-  # rt: release tests, the conformance and its observation modes,
-  # gctorture, quarantine, pin report, stress, overshoot, E9, the byte-code
-  # crosscheck; then L1's rdb round trip (15.7 min, #910's first run).
+  # rt: the crates' release tests and every mode they run under, the
+  # conformance and its short modes, stress, overshoot, E9, the byte-code
+  # crosscheck; then L1's rdb round trip.
   rt:
     needs: [select, rdb-data]
     if: ${{ needs.select.outputs.rt == 'true' }}
@@ -319,7 +320,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 35
+    timeout-minutes: 46
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
@@ -379,9 +380,10 @@ jobs:
           exit "$status"
 
 
-  # the moving collector: its unit tests and the conformance under it with
-  # gctorture (16.7 min, #910's first run)
-  rt-gc-move:
+  # the two long conformance runs under gctorture, plain and with
+  # GC_MOVE=young:16: a conformance build only (the crates' tests, GC_MOVE's
+  # included, run in rt, which builds them anyway)
+  rt-gctorture:
     needs: select
     if: ${{ needs.select.outputs.rt == 'true' }}
     runs-on: ubuntu-24.04
@@ -390,7 +392,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 35
+    timeout-minutes: 42
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
@@ -409,13 +411,12 @@ jobs:
           key: r-4.6.2-tarball
       - name: GNU R 4.6.2 sources
         run: scripts/r-src.sh
-      - name: rt-ci.py, shard gc-move
-        run: python3 scripts/rt-ci.py --shard gc-move
+      - name: rt-ci.py, shard gctorture
+        run: python3 scripts/rt-ci.py --shard gctorture
 
   # the crates' release tests and the conformance on a release build with
   # `-C debug-assertions=on` (heap's debug_assert!s seeing compiled code:
-  # how H found compile.rs's `@<-` inline bug), a build of its own (about 9
-  # min, its run about 30 s)
+  # how H found compile.rs's `@<-` inline bug), a build of its own
   rt-debug-assertions:
     needs: select
     if: ${{ needs.select.outputs.rt == 'true' }}
@@ -425,7 +426,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
@@ -449,12 +450,42 @@ jobs:
       - name: rt-ci.py, shard debug-assertions
         run: python3 scripts/rt-ci.py --shard debug-assertions
 
-  # the steps that build with a feature of their own: A4's builtin
-  # differential with its planted divergences (robigo-rtbuiltins/diff-plant)
-  # and the conformance under retry-torture (robigo-rtcore/retry-torture)
-  # (9.1 min in #910's first run, with 23 builtin rows; #887's 87 rows and
-  # plant build add about 4)
+  # retry-torture's conformance (robigo-rtcore/retry-torture), then in its
+  # build (CHECK_FEATURES) the poison-dead steps (robigo-rt/poison-dead)
   rt-feature-builds:
+    needs: select
+    if: ${{ needs.select.outputs.rt == 'true' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.select.outputs.image_rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 44
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: rt
+          # (rt saves this cache; two jobs saving one key would race)
+          save-if: false
+      # GNU R 4.6.2's pinned sources: robigo-rt binds base's R code from
+      # them (crates/robigo-rt/src/base.rs). The tarball is cached;
+      # scripts/r-src.sh checks its sha256 and extracts it.
+      - uses: actions/cache/restore@v6
+        id: rsrc462
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
+      - name: rt-ci.py, shard feature-builds
+        run: python3 scripts/rt-ci.py --shard feature-builds
+
+  # A4's builtin differential with its planted divergences
+  # (robigo-rtbuiltins/diff-plant), against builtin-diff-data's GNU R records
+  rt-builtin-diff:
     needs: [select, builtin-diff-data]
     if: ${{ needs.select.outputs.rt == 'true' }}
     runs-on: ubuntu-24.04
@@ -463,7 +494,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 30
+    timeout-minutes: 18
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
@@ -498,13 +529,13 @@ jobs:
       - name: Unpack A4's GNU R records
         if: steps.bdiff.outputs.cache-hit != 'true'
         run: tar -C .robigo -xf .robigo/builtin-diff-data.tar && rm .robigo/builtin-diff-data.tar
-      - name: rt-ci.py, shard feature-builds
+      - name: rt-ci.py, shard builtin-diff
         env:
           ROBIGO_BUILTIN_DIFF_DATA: ${{ github.workspace }}/.robigo/builtin-diff-data
           ROBIGO_BUILTIN_DIFF_ORACLE: ${{ needs.select.outputs.image_oracle_4_6_2 }}
         run: |
           python3 scripts/test-builtin-diff.py
-          python3 scripts/rt-ci.py --shard feature-builds
+          python3 scripts/rt-ci.py --shard builtin-diff
 
   # robigo-rt's base subset (crates/robigo-rt/proto/base-subset.txt and
   # base-bound.txt) is what scripts/base-subset.sh traces from this tree's
@@ -1467,7 +1498,7 @@ jobs:
   check:
     name: Check
     if: ${{ always() }}
-    needs: [select, lint, miri, rdb-data, builtin-diff-data, rt, rt-gc-move, rt-feature-builds, rt-debug-assertions, base-subset, build, perf-base, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
+    needs: [select, lint, miri, rdb-data, builtin-diff-data, rt, rt-gctorture, rt-feature-builds, rt-builtin-diff, rt-debug-assertions, base-subset, build, perf-base, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

@@ -836,12 +836,16 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    skips the heavy jobs.
    **counters:** its own quick build with `--features counters` and the
    counter gate (§ Counter gate); a heavy job, skipped with the others.
-   **rt, rt-gc-move, rt-feature-builds:** G3's runtime crates
-   (`scripts/rt-ci.py`), its steps in three parallel jobs, one shard each
-   (`--shard modes|gc-move|feature-builds`, rt-ci.py's `SHARDS`; without
-   `--shard` a local run is every step, as before). Each job builds once,
-   prints its steps' times at the end of its log, and has its own timeout
-   of about twice its measured time; `Check` needs all three. Together
+   **rt, rt-gctorture, rt-feature-builds, rt-builtin-diff,
+   rt-debug-assertions:** G3's runtime crates (`scripts/rt-ci.py`), its
+   steps in five parallel jobs, one shard each (`--shard
+   modes|gctorture|feature-builds|builtin-diff|debug-assertions`, rt-ci.py's
+   `SHARDS`, which says what each runs; without `--shard` a local run is
+   every step but debug-assertions', which needs a build of its own). Each
+   job builds what its steps need and prints its steps' times at the end of
+   its log, against its budget (rt-ci.py's `BUDGETS`: a measured time plus
+   20%, with a warning at 90%); its timeout is twice the budget, and `Check`
+   needs all five. Together
    they run every step: rt-ci.py checks that no other
    workspace member depends on them (the premise of `rt` mode; it fails at
    the flip, when the rule must go), then runs their `cargo test --release`
