@@ -9,7 +9,7 @@ use std::cell::Cell;
 /// `R_num_math_threads`, `R_max_num_math_threads`.
 struct MathThreads(Cell<(i32, i32)>);
 
-fn get(cx: &mut Cx) -> (i32, i32) {
+fn get(cx: &Cx) -> (i32, i32) {
     match cx.ext::<MathThreads>() {
         Some(t) => t.0.get(),
         // R: Defn.h, INI_as(1)

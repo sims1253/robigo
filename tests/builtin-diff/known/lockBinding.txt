@@ -1,6 +1,2 @@
 # builtin-diff known failures: lockBinding, seed 0, key c4294b25cd3bcc5f5a7246b2
-# lockBinding: 138 / 142 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
-122
-127
-128
-133
+# lockBinding: 142 / 142 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)

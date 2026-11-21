@@ -688,6 +688,31 @@ extra = [
   "class(Sys.time())",
 ]
 
+# (Sys.info's values are the machine's, the container's for GNU R and the
+# host's for robigo-rt: its two generated cases (nodename, login) are known
+# failures off CI's one machine, so the extras ask what can be compared,
+# the names and the shape.)
+["Sys.info"]
+effect = "External"
+extra = [
+  "names(.Internal(Sys.info()))",
+  "typeof(.Internal(Sys.info()))",
+  "names(attributes(.Internal(Sys.info())))",
+  "all(nzchar(.Internal(Sys.info())))",
+  ".Internal(Sys.info())[[\"sysname\"]]",
+]
+
+# (Sys.glob reads the file system, the container's for GNU R and the host's
+# for robigo-rt: only paths both have, the root and names neither has.
+# Known failure: the `long` path's path.expand warning, which GNU R's
+# warning buffer cuts at R_WarnLength with " [... truncated]" and
+# robigo-rt's does not.)
+["Sys.glob"]
+args = ["paths", "dirmark"]
+effect = "External"
+typical = { paths = "=\"/\"", dirmark = "=FALSE" }
+domain = { paths = ["=\"/\"", "=\"/robigo-no-such*\"", "=c(\"/\", NA, \"/robigo-no-such\")", "=NA_character_", "=character(0)", "@any"], dirmark = ["@lgl", "=1", "=\"a\"", "NULL"] }
+
 # ---- B's #908, merged ------------------------------------------------------
 # (no NULL x: iconv(NULL, ...) is iconvlist(), the platform's list of
 # encodings, which GNU R's container and robigo-rt cannot share)
