@@ -2308,3 +2308,87 @@ mod expand_tests {
         assert_eq!(expand_file_name(b"~root/x").0, [&home[..], b"/x"].concat());
     }
 }
+
+#[cfg(test)]
+mod gz_reader_tests {
+    //! `GzReader`'s output buffer: the bytes are those of reading in
+    //! place, and an error found inflating ahead is met by the read that
+    //! would have met it in place (the read reaching its boundary), then by
+    //! every later read.
+    use super::{GzReader, Z_BUFSIZE};
+    use std::io::{Cursor, Write};
+
+    fn gz(data: &[u8]) -> Vec<u8> {
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(data).unwrap();
+        e.finish().unwrap()
+    }
+
+    /// A member of one stored, non-final block holding `data`, then an
+    /// invalid block type.
+    fn stored_then_bad(data: &[u8]) -> Vec<u8> {
+        let mut v = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3, 0];
+        v.extend_from_slice(&(data.len() as u16).to_le_bytes());
+        v.extend_from_slice(&(!(data.len() as u16)).to_le_bytes());
+        v.extend_from_slice(data);
+        v.push(0x07);
+        v.extend_from_slice(&[0; 16]);
+        v
+    }
+
+    fn reader(bytes: Vec<u8>) -> GzReader<Cursor<Vec<u8>>> {
+        GzReader::new(Cursor::new(bytes), true)
+    }
+
+    #[test]
+    fn small_and_large_reads_give_the_data() {
+        let data: Vec<u8> = (0..3 * Z_BUFSIZE as u32 + 17).map(|i| (i * 7 % 251) as u8).collect();
+        for pattern in [&[1usize, 3, 4][..], &[4], &[Z_BUFSIZE], &[5, Z_BUFSIZE + 3, 2]] {
+            let mut r = reader([gz(&data[..1000]), gz(&data[1000..])].concat());
+            let mut got = Vec::new();
+            let mut i = 0;
+            loop {
+                let mut b = vec![0; pattern[i % pattern.len()]];
+                i += 1;
+                let n = r.read_full(&mut b).unwrap();
+                if n == 0 {
+                    break;
+                }
+                got.extend_from_slice(&b[..n]);
+            }
+            assert_eq!(got, data, "{pattern:?}");
+        }
+    }
+
+    #[test]
+    fn a_bad_crc_is_met_by_the_read_reaching_the_end_and_sticks() {
+        let mut bytes = gz(b"abcdef");
+        let k = bytes.len() - 8;
+        bytes[k] ^= 0xff;
+        let mut r = reader(bytes.clone());
+        let mut b = [0u8; 4];
+        assert_eq!(r.read_full(&mut b).unwrap(), 4);
+        assert!(r.read_full(&mut b[..2]).is_err(), "the read reaching the end");
+        assert!(r.read_full(&mut b).is_err(), "and every later one");
+        let mut r = reader(bytes);
+        assert!(r.read_full(&mut [0u8; 6]).is_err());
+    }
+
+    #[test]
+    fn a_bad_block_is_met_at_its_boundary_not_before() {
+        let data = [9u8; 40];
+        // before the boundary: fine
+        let mut r = reader(stored_then_bad(&data));
+        let mut b = [0u8; 39];
+        assert_eq!(r.read_full(&mut b).unwrap(), 39);
+        // a read reaching it exactly, or past it: the error, then always
+        assert!(r.read_full(&mut [0u8; 1]).is_err());
+        assert!(r.read_full(&mut [0u8; 1]).is_err());
+        let mut r = reader(stored_then_bad(&data));
+        assert!(r.read_full(&mut [0u8; 40]).is_err());
+        // a zero-length read meets nothing
+        let mut r = reader(stored_then_bad(&data));
+        assert_eq!(r.read_full(&mut [0u8; 39]).unwrap(), 39);
+        assert_eq!(r.read_full(&mut []).unwrap(), 0);
+    }
+}
