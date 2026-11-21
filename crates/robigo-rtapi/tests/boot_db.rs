@@ -369,7 +369,15 @@ fn a_broken_compiler_database_ends_the_start_as_in_gnu_r() {
     };
     let ran: &[&std::ffi::OsStr] =
         &["--vanilla".as_ref(), "--no-echo".as_ref(), "-e".as_ref(), "cat('ran\\n')".as_ref()];
+    // (removed when the test ends, an assertion's panic included)
+    struct Gone(std::path::PathBuf);
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
     let dir = copy("removed");
+    let _gone = Gone(dir.clone());
     let bin = dir.join("bin/robigo-rt");
     let home = std::fs::canonicalize(dir.join("lib/robigo")).unwrap();
     std::fs::remove_file(home.join("library/compiler/R/compiler.rdb")).unwrap();
@@ -398,5 +406,4 @@ fn a_broken_compiler_database_ends_the_start_as_in_gnu_r() {
     // the JIT off: no compiler at the start
     let (out, err, status) = boot_bin(&bin, ran, &[("R_ENABLE_JIT", "0".as_ref())]);
     assert_eq!((out.as_str(), err.as_str(), status), ("ran\n", PROFILE_STOPS, Some(0)));
-    let _ = std::fs::remove_dir_all(&dir);
 }
