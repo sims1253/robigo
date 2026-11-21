@@ -475,6 +475,95 @@ impl Cx {
         })
     }
 
+    /// bcEval's inlined `GETVAR`/`DDVAL` force of the promise GNU R's
+    /// binding in slot `index` of `frame` would hold: [`Cx::force_arg`],
+    /// except that when the promise is one bcEval forces in place (not
+    /// evaluated, of byte code, PRSEEN 0) and the evaluation's depth step
+    /// overflows, the promise is left PRSEEN 1. `setup_bcframe_prom` marks
+    /// it before `INCREMENT_EVAL_DEPTH` and puts it on the pending stack
+    /// only after, so `R_restore_globals` never marks it interrupted: a
+    /// later force is "promise already under evaluation", not the restart
+    /// warning. Only the `Bc` profile's `GETVAR` and `DDVAL` force so; the
+    /// AST interpreter's `eval` and `getvar` go through `forcePromise`.
+    // R: eval.c:DO_GETVAR, eval.c:setup_bcframe_prom
+    #[inline]
+    pub fn force_arg_inline(&mut self, frame: Root<'_>, index: usize, out: Out<'_>) -> RResult<()> {
+        if self.eval_depth() >= self.expressions() {
+            let f = frame.bind(self).sexp();
+            // SAFETY: a slot of a rooted slot frame (force_arg's checks
+            // follow on the other path).
+            if let Some(e) = unsafe { self.inline_force_overflow(SlotRef { owner: f, index }) } {
+                return Err(e);
+            }
+        }
+        self.force_arg(frame, index, out)
+    }
+
+    /// [`Cx::force_arg_inline`] of a PROMSXP (a materialized argument, an
+    /// element of `...`): [`Cx::force_promise`], or PRSEEN 1 and the
+    /// depth overflow when its depth step overflows.
+    // R: eval.c:DO_GETVAR, eval.c:setup_bcframe_prom
+    #[inline]
+    pub fn force_promise_inline(&mut self, p: Root<'_>, out: Out<'_>) -> RResult<()> {
+        if self.eval_depth() >= self.expressions() {
+            let ps = p.bind(self).sexp();
+            // SAFETY: a rooted promise.
+            if let Some(e) = unsafe { self.inline_promise_overflow(ps) } {
+                return Err(e);
+            }
+        }
+        self.force_promise(p, out)
+    }
+
+    /// The overflow of [`Cx::force_arg_inline`]: `None` when the slot is
+    /// not one bcEval forces in place (then `force_arg` forces it as
+    /// `getvar` does).
+    ///
+    /// # Safety
+    /// `s` is a slot of a live slot frame of this isolate.
+    #[cold]
+    #[inline(never)]
+    unsafe fn inline_force_overflow(&mut self, s: SlotRef) -> Option<RError> {
+        // SAFETY: the caller's contract.
+        unsafe {
+            match s.kind() {
+                DELAYED if s.prseen() == 0 && s.has(layout::META_BYTECODE) => {
+                    set_prseen(s, PRSEEN_EVALUATING);
+                    Some(self.inline_depth_overflow())
+                }
+                VALUE if s.val().typ() == PROMSXP => self.inline_promise_overflow(s.val()),
+                _ => None,
+            }
+        }
+    }
+
+    /// The overflow of [`Cx::force_promise_inline`], `None` when `p` is
+    /// not a promise bcEval forces in place.
+    ///
+    /// # Safety
+    /// `p` is a live promise of this isolate.
+    #[cold]
+    #[inline(never)]
+    unsafe fn inline_promise_overflow(&mut self, p: Sexp) -> Option<RError> {
+        // SAFETY: the caller's contract; PRSEEN is the gp field.
+        unsafe {
+            if is_evaluated(self.iso(), p) || p.gp() != 0 || p.extra() & robigo_heap::extra::promise::BYTECODE == 0 {
+                return None;
+            }
+            p.set_gp(PRSEEN_EVALUATING);
+        }
+        Some(self.inline_depth_overflow())
+    }
+
+    /// `setup_bcframe_prom`'s `INCREMENT_EVAL_DEPTH()` past the limit:
+    /// one level deeper and `handle_eval_depth_overflow`'s error.
+    fn inline_depth_overflow(&mut self) -> RError {
+        match self.eval_depth_enter() {
+            Err(e) => e,
+            Ok(_) => unreachable!("robigo: an inline promise force past the limit that did not overflow"),
+        }
+    }
+
     /// `forcePromise` of the promise GNU R's binding in slot `index` of the
     /// slot frame `frame` would hold, in place (docs/g3.md §6.3, "first
     /// read"): a delayed slot's expression is evaluated in its environment
