@@ -162,16 +162,21 @@ fn a_build_refused_a_page_again_is_memory_exhausted() {
     cx.set_refuse_chunks(true);
     // medium vectors (8 KB), each kept in a root of the scope, until a
     // page is needed: the build collects, and the page is refused again
-    let e = cx.scope(|cx, s| {
-        for _ in 0..20_000 {
-            let o = s.out(cx);
-            if let Err(e) = cx.build(o, |cx| Ok(cx.alloc_vector::<f64>(1000)?.finish().into())) {
-                return e;
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        cx.scope(|cx, s| {
+            for _ in 0..20_000 {
+                let o = s.out(cx);
+                if let Err(e) = cx.build(o, |cx| Ok(cx.alloc_vector::<f64>(1000)?.finish().into())) {
+                    return e;
+                }
             }
-        }
-        panic!("no page was needed");
-    });
+            panic!("no page was needed");
+        })
+    }));
+    // the knob off on every path, a panic's too: the isolate's teardown
+    // must not run with its pages refused
     cx.set_refuse_chunks(false);
+    let e = r.unwrap_or_else(|p| std::panic::resume_unwind(p));
     assert_eq!(error_message(cx, e), "memory exhausted");
 }
 
