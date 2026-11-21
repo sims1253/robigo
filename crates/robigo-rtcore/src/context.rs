@@ -1965,6 +1965,27 @@ impl Cx {
         CtxRef { rec, cx: self }
     }
 
+    /// `R_GlobalContext = R_ToplevelContext = R_SessionContext =
+    /// &R_Toplevel` (R_dot_Last's first line, main.c, as `quit()` runs it):
+    /// the chain cut back to the session's base record. The records above
+    /// it leave the chain but stay in their owners' slots: no walk sees
+    /// them (`sys.calls`, an exit's search for its target: an exiting
+    /// handler whose function is among them finds "no function to return
+    /// from"), and no collection traces them. The condition stacks are
+    /// kept, as in GNU R.
+    ///
+    /// # Safety
+    /// The caller never lets an owner of a record that was above the base
+    /// run again (pop it, read it, return to it), nor uses a value only
+    /// such a record kept alive: it ends the process first (do_quit's
+    /// `R_CleanUp` and `exit`).
+    // R: main.c:R_dot_Last
+    pub unsafe fn reset_to_session(&self) {
+        let base = self.ctxs().base().0.as_ptr();
+        self.ctxs().global.set(base);
+        self.ctxs().toplevel.set(base);
+    }
+
     /// The session's base record (`R_Toplevel`, `R_SessionContext`).
     pub fn session_context(&self) -> CtxRef<'_> {
         CtxRef { rec: self.ctxs().base(), cx: self }

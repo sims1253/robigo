@@ -496,15 +496,20 @@ pub fn error_text(cx: &Cx, e: &RError) -> String {
 /// implies them); `"yes"` saves the image as `R_SaveGlobalEnv` does, after
 /// `.Last`: `sys.save.image(".RData")` (the image is dirty by then in GNU
 /// R: the start removed `.Library.site` from the global environment).
-/// `.Last` and `.Last.sys` run as at the end of a session ([`dot_last`]:
-/// `R_dot_Last` makes the top level the context). An error in them, or in
-/// the save, lands on the top level: `check_session_exit` halts R, or GNU R
-/// goes back to the main loop (and, `.Last` failing again at the end, never
-/// ends), which robigo-rt refuses. No browser context can be active (robigo
+/// With `runLast`, the context is cut back to the session's base record
+/// first (`R_dot_Last`'s `R_GlobalContext = &R_Toplevel`): `.Last`,
+/// `.Last.sys` and the save then see no frame of quit()'s callers
+/// (`sys.calls()`), and an exiting handler around quit() finds "no function
+/// to return from"; an error lands on the top level, where
+/// `check_session_exit` halts R, or GNU R goes back to the main loop (and,
+/// `.Last` failing again at the end, never ends), which robigo-rt refuses
+/// (and halts). Without it the save runs in quit()'s context, its error
+/// quit()'s. No browser context can be active (robigo
 /// has no `browser`), so "cannot quit from browser" cannot arise; there is
 /// no session temporary directory to remove and no device to close.
 // R: main.c:do_quit, R_dot_Last; unix/sys-std.c:Rstd_CleanUp;
 // saveload.c:R_SaveGlobalEnvToFile
+#[allow(unsafe_code)] // R_dot_Last's context reset (Cx::reset_to_session)
 pub fn do_quit(
     cx: &mut Cx,
     call: Root<'_>,
@@ -544,55 +549,73 @@ pub fn do_quit(
         run_last = 0;
     }
     // Rstd_CleanUp: SA_SAVE (.Last, then the image) or SA_NOSAVE (.Last)
-    let mut ok = run_last == 0 || dot_last(cx);
-    if ok && yes {
-        ok = save_global_env(cx);
-    }
-    if !ok {
-        if !check_session_exit(cx) {
-            // check_session_exit: R_CleanUp(SA_NOSAVE, 1, 0)
-            cx.reprintf(b"Execution halted\n");
-            exit(cx, 1);
+    if run_last == 0 {
+        // the image saved in quit()'s own context: an error in it is an
+        // error of this call, which a handler around quit() can catch
+        if yes {
+            save_global_env(cx)?;
         }
-        return Err(cx.error(
-            "robigo: going back to the main loop after an error in quit()'s .Last or save is not implemented yet",
-        ));
+        exit(cx, status)
+    }
+    // R_dot_Last: the top level the context from here on; this call ends
+    // the process below, on every path
+    // SAFETY: no record above the session's base is used again: every
+    // path ends in `exit`.
+    unsafe { cx.reset_to_session() };
+    let ok = dot_last(cx) && (!yes || at_top(cx, save_global_env));
+    if !ok {
+        // the error landed on the top level: check_session_exit
+        if check_session_exit(cx) {
+            // GNU R goes back to the main loop (and, .Last failing again at
+            // the end, never ends); robigo-rt cannot from here
+            error_at_top(
+                cx,
+                "robigo: going back to the main loop after an error in quit()'s .Last or save is not implemented yet",
+            );
+        }
+        // check_session_exit's R_CleanUp(SA_NOSAVE, 1, 0)
+        cx.reprintf(b"Execution halted\n");
+        exit(cx, 1);
     }
     exit(cx, status)
 }
 
-/// `R_SaveGlobalEnvToFile(".RData")` at the top level: `sys.save.image(
-/// ".RData")` evaluated in the global environment when the global
-/// environment finds it (base defines it); without it robigo-rt says so
-/// (GNU R's `R_SaveToFileV`). False when an error ended it (reported where
-/// it was raised).
-// R: saveload.c:R_SaveGlobalEnvToFile
-fn save_global_env(cx: &mut Cx) -> bool {
+/// `f` at a REPL top-level record: false when an error ended it (reported
+/// where it was raised).
+fn at_top(cx: &mut Cx, f: fn(&mut Cx) -> RResult<()>) -> bool {
     cx.scope(|cx, s| {
         let g = s.root(cx, cx.global_env());
         let base = s.root(cx, cx.base_env());
+        cx.repl_toplevel(g, base, f).expect("robigo: an exit that passed the top level")
+    })
+}
+
+/// `R_SaveGlobalEnvToFile(".RData")`: `sys.save.image(".RData")` evaluated
+/// in the global environment when the global environment finds it (base
+/// defines it); without it robigo-rt says so (GNU R's `R_SaveToFileV`).
+// R: saveload.c:R_SaveGlobalEnvToFile
+fn save_global_env(cx: &mut Cx) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let g = s.root(cx, cx.global_env());
         let f = s.out(cx);
         let fr = f.root();
         let call = s.out(cx);
         let callr = call.root();
         let o = s.out(cx);
-        cx.repl_toplevel(g, base, |cx| {
-            cx.scope(|cx, t| {
-                let sym = cx.install_rooted(t, b"sys.save.image")?;
-                cx.find_var(sym, g, f)?;
-                if fr.bind(cx).sexp() == cx.unbound().sexp() {
-                    return Err(cx.error("robigo: saving the workspace without base's sys.save.image (R_SaveToFileV) is not implemented yet"));
-                }
-                cx.build(call, |cx| {
-                    let name = cx.mk_string(b".RData", robigo_rtcore::Encoding::Native)?;
-                    let nil = cx.nil();
-                    let args = cx.lcons(name, nil)?;
-                    cx.lcons(sym.bind(cx), args)
-                })
-            })?;
-            crate::eval(cx, callr, g, o)
-        })
-        .expect("robigo: an exit that passed the top level")
+        let sym = cx.install_rooted(s, b"sys.save.image")?;
+        cx.find_var(sym, g, f)?;
+        if fr.bind(cx).sexp() == cx.unbound().sexp() {
+            return Err(cx.error(
+                "robigo: saving the workspace without base's sys.save.image (R_SaveToFileV) is not implemented yet",
+            ));
+        }
+        cx.build(call, |cx| {
+            let name = cx.mk_string(b".RData", robigo_rtcore::Encoding::Native)?;
+            let nil = cx.nil();
+            let args = cx.lcons(name, nil)?;
+            cx.lcons(sym.bind(cx), args)
+        })?;
+        crate::eval(cx, callr, g, o)
     })
 }
 
