@@ -7,6 +7,8 @@ use robigo_rtcore::{Cx, Out, RResult, Ref, Root};
 /// `call(name, ...)`: `name` evaluated to a character string, installed,
 /// and the call of it with the remaining arguments' values, their tags
 /// kept (`...` among them is evaluated as a symbol, as GNU R does).
+/// `args` is GNU R's: None for the call's own arguments, or `applyMethod`'s
+/// promise list, read through `specials::arg_call` (the messages name `call`).
 // R: coerce.c:do_call
 pub fn do_call(
     cx: &mut Cx,

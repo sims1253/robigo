@@ -27,15 +27,9 @@ pub fn do_bind<const CBIND: bool>(
     env: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
-    // (applyMethod's promise list: the call over it, as before)
+    // (applyMethod's promise list: run again on the call over it)
     if args.is_some() {
-        return cx.scope(|cx, s| {
-            let ac = match crate::specials::arg_call(cx, s, call, args)? {
-                Some(a) => a,
-                None => call,
-            };
-            do_bind::<CBIND>(cx, ac, _op, None, env, out)
-        });
+        return crate::specials::rerun_apart(cx, call, _op, args, env, out, do_bind::<CBIND>);
     }
     let generic: &[u8] = if CBIND { b"cbind" } else { b"rbind" };
     cx.scope(|cx, s| {
