@@ -271,8 +271,9 @@ pub enum Op {
     /// `consts[e]` (the `{` call at its start, else the cell of the
     /// statement just done), with the value so far in `b` ([`NO_REG`]:
     /// none, NULL), each statement evaluated by `eval` at depth `d`: `a <-`
-    /// its value, and a jump to `(f, g)`, past the `{`'s own code. Byte
-    /// code has none: GNU R's keeps running.
+    /// its value, and a jump to `(f, g)`, past the `{`'s own code; `c` 1:
+    /// the statement done was an assignment, invisible should it be the
+    /// last. Byte code has none: GNU R's keeps running.
     Resume,
     /// A loop iteration boundary in the `Eval` profile (§9.3): when a write
     /// into the code's source has made this code stale, the iteration is

@@ -399,6 +399,14 @@ fn oracle_base_closures_translate() {
 /// primitive is a gap it counts, not a stub that hides it.)
 const CROSSCHECK_COMPARED: usize = 1100;
 
+/// At most this many of base.rdb's closures are skipped (their compile would
+/// force a binding the forcing pass left a promise) or untranslated (today's
+/// counts, 2026-11-21). The forcing pass swallows each binding's error, so a
+/// regression there turns would-be differences into skips: these bounds
+/// make it fail loudly. Lower them as the counts fall.
+const CROSSCHECK_SKIPPED: usize = 6;
+const CROSSCHECK_UNTRANSLATED: usize = 0;
+
 #[test]
 fn oracle_base_closures_crosscheck() {
     let Some(lib) = std::env::var_os("ROBIGO_ORACLE_LIBRARY") else {
@@ -406,7 +414,7 @@ fn oracle_base_closures_crosscheck() {
         return;
     };
     if std::env::var_os("ROBIGO_BC_CROSSCHECK").is_none_or(|v| v.is_empty() || v == "0") {
-        eprintln!("ROBIGO_BC_CROSSCHECK is not set: skipped");
+        eprintln!("ROBIGO_BC_CROSSCHECK is off (unset, empty or 0): skipped");
         return;
     }
     let dir = std::path::PathBuf::from(lib).join("base").join("R");
@@ -456,7 +464,16 @@ fn oracle_base_closures_crosscheck() {
                 }
                 closures += 1;
                 match robigo_rt::compile::crosscheck_installed(cx, v) {
-                    Ok(Some(c)) => *verdicts.entry(format!("{c:?}")).or_default() += 1,
+                    Ok(Some(c)) => {
+                        let verdict = match c {
+                            robigo_rt::compile::Verdict::Same => "Same",
+                            robigo_rt::compile::Verdict::Expected => "Expected",
+                            robigo_rt::compile::Verdict::Unexpected => "Unexpected",
+                            robigo_rt::compile::Verdict::Skipped => "Skipped",
+                            robigo_rt::compile::Verdict::Untranslated => "Untranslated",
+                        };
+                        *verdicts.entry(verdict.to_owned()).or_default() += 1;
+                    }
                     Ok(None) => *verdicts.entry("no byte code".to_owned()).or_default() += 1,
                     Err(e) => failures.push(format!("{name}: {}", common::message(cx, e))),
                 }
@@ -470,6 +487,9 @@ fn oracle_base_closures_crosscheck() {
     assert_eq!(n("Unexpected"), 0, "unexpected differences (the report has them): {verdicts:?}");
     let compared = n("Same") + n("Expected");
     assert!(compared >= CROSSCHECK_COMPARED, "{compared} compared, fewer than {CROSSCHECK_COMPARED}: {verdicts:?}");
+    for (v, most) in [("Skipped", CROSSCHECK_SKIPPED), ("Untranslated", CROSSCHECK_UNTRANSLATED)] {
+        assert!(n(v) <= most, "more than {most} {v}: {verdicts:?}");
+    }
 }
 
 /// Evaluate every expression of `src` in the global environment, each
@@ -482,7 +502,7 @@ fn eval_src(cx: &mut Cx, src: &str) {
         let n = exr.bind(cx).as_vector::<Ref<'_>>().expect("parse() gives an expression").len();
         let g = s.root(cx, cx.global_env());
         for i in 0..n {
-            let e = s.root(cx, exr.bind(cx).as_vector::<Ref<'_>>().unwrap().get(i));
+            let e = s.root(cx, exr.bind(cx).as_vector::<Ref<'_>>().expect("parse() gives an expression").get(i));
             let o = s.out(cx);
             let _ = robigo_rt::eval(cx, e, g, o);
         }

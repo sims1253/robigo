@@ -30,7 +30,7 @@
 
 #![allow(unsafe_code)]
 
-use super::Comp;
+use super::{Comp, Tail};
 use crate::bcassign as ba;
 use crate::cenv::{Cenv, Need};
 use crate::ir::*;
@@ -184,11 +184,37 @@ struct BcIns {
 }
 
 /// Whether control at instruction `j` of `code` reaches a `RETURN` or
-/// `RETURNJMP` at once or through `GOTO`s only.
+/// `RETURNJMP` at once or through `GOTO`s and assignments (`SETVAR`,
+/// `SETVAR2`, a complex assignment from `STARTASSIGN` to its `ENDASSIGN`)
+/// only.
 fn returns_after(code: &[BcIns], mut j: usize) -> bool {
     for _ in 0..code.len() {
         match code.get(j) {
             Some(n) if matches!(n.op, RETURN | RETURNJMP) => return true,
+            // (an assignment of `return()`'s operand: bcEval's SETVAR keeps
+            // the value on the stack and R_Visible as its load set it)
+            Some(n) if matches!(n.op, SETVAR | SETVAR2) => j += 1,
+            // (a complex assignment of it: past its ENDASSIGN, which keeps
+            // the value; a step that sets R_Visible after the value's load
+            // sets it at run time)
+            Some(n) if matches!(n.op, STARTASSIGN | STARTASSIGN2) => {
+                let mut depth = 0;
+                loop {
+                    match code.get(j).map(|c| c.op) {
+                        Some(STARTASSIGN | STARTASSIGN2) => depth += 1,
+                        Some(ENDASSIGN | ENDASSIGN2) => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        Some(_) => {}
+                        None => return false,
+                    }
+                    j += 1;
+                }
+                j += 1;
+            }
             Some(n) if n.op == GOTO => match code.binary_search_by_key(&(n.a[0] as usize), |c| c.at) {
                 Ok(p) => j = p,
                 Err(_) => return false,
@@ -1235,17 +1261,12 @@ impl<'g> Comp<'g> {
                 let r = self.pop(t)?;
                 self.clear(r);
             }
-            // (after an assignment, which leaves its value invisible, and
-            // where no jump lands: nothing to do)
-            INVISIBLE
-                if !t.labels.contains_key(&i.at)
-                    && matches!(self.ins.last().map(|l| l.op), Some(Op::SetVar | Op::SetVar2 | Op::BcAssign)) => {}
             INVISIBLE => self.set_vis(false),
             VISIBLE => self.set_vis(true),
             LDCONST => {
                 let r = self.push(t);
                 // SAFETY: a constant of the byte code.
-                unsafe { self.const_value(k(i.a[0]), r, 0, tail) };
+                unsafe { self.const_value(k(i.a[0]), r, 0, tail.into()) };
             }
             LDNULL => {
                 let r = self.push(t);
@@ -1255,7 +1276,7 @@ impl<'g> Comp<'g> {
                 let r = self.push(t);
                 let v = self.cx.logical_value((i.op == LDTRUE) as i32).sexp();
                 // SAFETY: an immortal constant.
-                unsafe { self.const_value(v, r, 0, tail) };
+                unsafe { self.const_value(v, r, 0, tail.into()) };
             }
             GETVAR | DDVAL | GETVAR_MISSOK | DDVAL_MISSOK => {
                 let r = self.push(t);
@@ -1348,7 +1369,7 @@ impl<'g> Comp<'g> {
                             self.emit(l);
                         } else {
                             // SAFETY: a constant of the byte code.
-                            unsafe { self.const_value(v, r, 0, false) };
+                            unsafe { self.const_value(v, r, 0, Tail::No) };
                         }
                         PKind::Val
                     }
@@ -1428,7 +1449,7 @@ impl<'g> Comp<'g> {
                     Some((o, _)) if planning && special(o) => {}
                     // a language special: what its PRIMFUN does, compiled
                     // SAFETY: as above.
-                    Some((_, Kind::Special(s))) => unsafe { self.special(s, call, call.cdr(), r, 0, tail)? },
+                    Some((_, Kind::Special(s))) => unsafe { self.special(s, call, call.cdr(), r, 0, tail.into())? },
                     // getPrimitive(symbol, SPECIALSXP) on the call
                     Some((o, _)) if special(o) => {
                         let prim = self.st.objs[o].bind(self.cx).sexp();

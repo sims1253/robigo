@@ -889,8 +889,10 @@ unsafe fn base_guard(cx: &Cx, log: &WriteLog, call: Sexp, rho: Sexp) -> Option<b
 
 /// `setVar(sym, x, rho)` (`<<-`, `rho` the frame's enclosure), buffered:
 /// `x` boxed as the VM's `set_var` boxes it (no collection: a box refused
-/// gives up), the binding found, the write logged ([`WriteLog`]); then
-/// R_Visible off. The box, which the register holds from then on.
+/// gives up), the binding found, the write logged ([`WriteLog`]);
+/// R_Visible as the value left it (bcEval's SETVAR2: a tail `<<-`'s
+/// invisibility is the code's `SetVis` or `Ret`). The box, which the
+/// register holds from then on.
 ///
 /// # Safety
 /// `sym` is a symbol constant of live code and `rho` a live environment.
@@ -904,7 +906,6 @@ unsafe fn super_assign(cx: &mut Cx, log: &WriteLog, sym: Sexp, x: Slot, rho: Sex
     // SAFETY: the caller's contract; the box is fresh, and nothing
     // collects.
     unsafe { log.write(cx, sym, rho, obj)? };
-    cx.set_visible(false);
     Some(obj)
 }
 
@@ -1382,9 +1383,8 @@ unsafe fn body_loop<const FUSED: bool>(
             }
             Op::SetVar => {
                 // `defineVar` into the frame's slot (the VM's `set_var`: a
-                // scalar stays unboxed there), then R_Visible off
+                // scalar stays unboxed there), R_Visible as it was
                 fr.args[i.f as usize - 1] = Arg::Value(r(i.a)?);
-                cx.set_visible(false);
                 continue;
             }
             Op::Jmp => {

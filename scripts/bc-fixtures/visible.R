@@ -34,5 +34,28 @@ cases <- list(
   # a tail `&&` or `||` whose AND2ND no path reaches: AND1ST's path is
   # visible, after an assignment left it invisible
   list(name = "k_and_return", fun = function() { a <- FALSE; a && return(TRUE) }, calls = "k_and_return()"),
-  list(name = "k_or_return", fun = function() { a <- TRUE; a || return(FALSE) }, calls = "k_or_return()")
+  list(name = "k_or_return", fun = function() { a <- TRUE; a || return(FALSE) }, calls = "k_or_return()"),
+  # return()'s operand outside the tail: an assignment leaves its value's
+  # visibility (bcEval's SETVAR and ENDASSIGN do not touch R_Visible), a
+  # missing else and a loop a visible NULL (LDNULL)
+  list(name = "k_retassign", fun = function(v) { invisible(v); return(x <- v) },
+       calls = "k_retassign(1)"),
+  list(name = "k_retassign_inv", fun = function(v) return(x <- invisible(v)),
+       calls = "k_retassign_inv(1)"),
+  list(name = "k_retnames", fun = function(v) { x <- 1:2; invisible(v); return(names(x) <- v) },
+       calls = "k_retnames(c('a', 'b'))"),
+  list(name = "k_retsuper", fun = function(v) { invisible(v); return(zz <<- v) },
+       calls = "k_retsuper(2)"),
+  list(name = "k_retifnull", fun = function(c) { invisible(c); return(if (c) 1) },
+       calls = c("k_retifnull(FALSE)", "k_retifnull(TRUE)")),
+  list(name = "k_retloop", fun = function(n) { invisible(n); return(for (i in seq_len(n)) i) },
+       calls = "k_retloop(2)"),
+  list(name = "k_tailassign", fun = function(v) { invisible(v); x <- v },
+       calls = "k_tailassign(3)"),
+  list(name = "k_retdollar", fun = function(v) { x <- list(a = 1); invisible(v); return(x$a <- v) },
+       calls = "k_retdollar(2)"),
+  list(name = "k_retsub_inv", fun = function(v) { x <- 1:2; return(x[1] <- invisible(v)) },
+       calls = "k_retsub_inv(3L)"),
+  list(name = "k_retsub2_inv", fun = function(v) { x <- list(1, 2); return(x[[1]] <- invisible(v)) },
+       calls = "k_retsub2_inv('one')")
 )
