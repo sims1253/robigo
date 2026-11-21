@@ -27,8 +27,9 @@ fn run(cx: &mut Cx, src: &str) -> (String, String, bool) {
 }
 
 /// INTERIM(L5): the wide base binds every name GNU R 4.6.2 binds in base
-/// lazily, M1's bound among them: the index has each, and nothing is read
-/// or run at load.
+/// lazily, M1's bound among them: the index has each, and only the
+/// profile's three `boot` forms (the Autoloads environment) are read and
+/// run at load.
 #[test]
 fn the_wide_base_binds_every_name_lazily_m1_s_bound_among_them() {
     let (mut iso, st) = session();
@@ -44,7 +45,27 @@ fn the_wide_base_binds_every_name_lazily_m1_s_bound_among_them() {
     assert!(matches!(def(".Library.site"), Def::Assign(v) if v.len() == 3));
     // the Autoloads environment: attach, .AutoloadEnv, .Autoloaded
     assert!(w.find(".AutoloadEnv").is_none());
-    assert_eq!(w.boot.iter().map(|f| f.src).collect::<Vec<_>>(), ["profile/Common.R"; 3]);
+    // the forms, in their order (Common.R's: attach, then .AutoloadEnv,
+    // then .Autoloaded in it)
+    // (their text as the loader evaluates it: configure's substitutions made)
+    let dir = robigo_rt::base::source_dir().unwrap_or_else(|e| panic!("{e}"));
+    let texts: Vec<String> = w
+        .boot
+        .iter()
+        .map(|f| {
+            assert_eq!(f.src, "profile/Common.R");
+            let t = robigo_rt::base::form_text(&dir.join("src/library"), *f).unwrap_or_else(|e| panic!("{e}"));
+            String::from_utf8_lossy(&t).into_owned()
+        })
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "attach(NULL, name = \"Autoloads\")",
+            ".AutoloadEnv <- as.environment(2)",
+            "assign(\".Autoloaded\", NULL, envir = .AutoloadEnv)"
+        ]
+    );
     assert_eq!(w.find(".ArgsEnv").unwrap().after.len(), 88);
     let b = Bound::get();
     for c in &b.closures {
@@ -294,4 +315,19 @@ fn sys_setenv_refuses_in_an_isolate_not_given_the_environment() {
     );
     assert!(std::env::var_os("ROBIGO_NO_GRANT_A").is_none() && std::env::var_os("ROBIGO_NO_GRANT_B").is_none());
     assert_eq!(std::env::var_os("HOME"), home, "Sys.unsetenv() unset HOME");
+}
+
+/// The `boot` forms' effect once the wide base is loaded: the Autoloads
+/// environment is attached second, `.AutoloadEnv` is it, and it has
+/// `.Autoloaded` (`NULL`), as Common.R leaves them in GNU R.
+#[test]
+fn the_boot_forms_attach_the_autoloads_environment() {
+    let (mut iso, _) = session();
+    let cx = iso.cx();
+    let (out, err, ok) = run(
+        cx,
+        "cat(search()[2], identical(.AutoloadEnv, as.environment(2)), \
+         exists('.Autoloaded', envir = .AutoloadEnv, inherits = FALSE), is.null(.AutoloadEnv$.Autoloaded), '\\n')\n",
+    );
+    assert_eq!((out.as_str(), err.as_str(), ok), ("Autoloads TRUE TRUE TRUE \n", "", true));
 }

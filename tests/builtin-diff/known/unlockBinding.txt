@@ -1,6 +1,2 @@
 # builtin-diff known failures: unlockBinding, seed 0, key f60360b65695d27ac5c82fc0
-# unlockBinding: 138 / 142 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
-122
-127
-128
-133
+# unlockBinding: 142 / 142 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)

@@ -46,6 +46,7 @@ mod heapsize;
 pub mod layout;
 mod shared;
 pub mod slots;
+mod symtab;
 mod trace;
 pub mod unwind;
 

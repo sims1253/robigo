@@ -525,6 +525,22 @@ pub unsafe fn get_var(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: 
                 act.kill(crate::ir::R_SCRATCH, u32::MAX);
                 return r;
             }
+            // byte code reads an active binding twice: bcEval's inlined
+            // GETVAR looks the variable up (findVarEX: the binding's function
+            // runs) to see whether it is a promise of byte code to force in
+            // place, and then reads it again through getvar(), which runs the
+            // function again for its value. (Only an unforced promise would
+            // make the first read's value matter; an active binding's
+            // function returns a value.)
+            // R: eval.c:DO_GETVAR (INLINE_GETVAR), eval.c:getvar
+            RawBinding::Active(_) if bc => {
+                cx.scope(|cx, s| {
+                    // SAFETY: an immortal symbol.
+                    let sr = s.root(cx, unsafe { Ref::from_sexp(sym, cx) });
+                    let o = s.out(cx);
+                    cx.find_var(sr, act.root(crate::ir::R_ENV), o)
+                })?;
+            }
             _ => {}
         }
     }
@@ -821,9 +837,10 @@ pub fn do_recall(cx: &mut Cx, _call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out
             return Err(cx.error(outside));
         };
         cx.materialize_promargs(me)?;
-        let args = s.root(cx, cx.context(me).unwrap().promargs().unwrap_or(cx.nil()));
+        let args =
+            s.root(cx, cx.context(me).expect("robigo: Recall's record, found above").promargs().unwrap_or(cx.nil()));
         let (ccall, callfun, sysparent) = {
-            let c = cx.context(cptr).unwrap();
+            let c = cx.context(cptr).expect("robigo: the record of the closure Recall was called from, found above");
             (c.call(), c.callfun(), c.sysparent())
         };
         let ccall = s.root(cx, ccall);
@@ -833,7 +850,8 @@ pub fn do_recall(cx: &mut Cx, _call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out
         let fun = if callfun != cx.nil() {
             s.root(cx, callfun)
         } else {
-            let head = s.root(cx, ccall.bind(cx).as_cons().unwrap().car());
+            // CAR(cptr->call), as GNU R reads it (R_NilValue's CAR is itself)
+            let head = s.root(cx, ccall.bind(cx).as_cons().map_or(cx.nil(), |c| c.car()));
             let o = s.out(cx);
             let f = o.root();
             if head.bind(cx).sexptype() == SYMSXP {
