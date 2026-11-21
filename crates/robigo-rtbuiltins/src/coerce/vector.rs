@@ -50,6 +50,11 @@ impl Warns {
         Warns(Vec::new())
     }
 
+    /// A `warning(msg)` of its own at this point.
+    pub fn push_message(&mut self, msg: String) {
+        self.0.push(Warn::Message(msg));
+    }
+
     /// `CoercionWarning(warn)` at this point (nothing for 0).
     pub fn push(&mut self, warn: u8) {
         if warn != 0 {
@@ -786,7 +791,7 @@ fn coerce_to_symbol<'g>(cx: &'g Cx, v: Ref<'g>) -> Result<Coerced<'g>, NeedGc> {
         Err(d) => return Ok(Built::fail(d)),
     };
     if let Some(m) = untranslated {
-        w.0.push(Warn::Message(m));
+        w.push_message(m);
     }
     let sym = cx.install(&name)?;
     done(sym, w)

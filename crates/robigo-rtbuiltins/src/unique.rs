@@ -897,22 +897,22 @@ fn match5<'g>(
     };
     let (tx, tt) = (x.sexptype(), table.sexptype());
     let ty = if tx >= STRSXP || tt >= STRSXP { STRSXP } else { tx.max(tt) };
-    let coerced = |v: Ref<'g>, warns: &mut Warns| -> Result<Result<Ref<'g>, String>, NeedGc> {
+    let coerced = |v: Ref<'g>, warns: &mut Warns| -> Result<Result<Ref<'g>, Diag<'static>>, NeedGc> {
         Ok(match coerce(cx, v, ty, true)? {
             Built::Done(r, w) => {
                 warns.extend(w);
                 Ok(r)
             }
-            Built::Fail(d) => Err(d.message().to_owned()),
+            Built::Fail(d) => Err(d.into_error()),
         })
     };
     let x = match coerced(x, &mut warns)? {
         Ok(v) => v,
-        Err(m) => return Ok(Built::fail(Diag::error(m))),
+        Err(d) => return Ok(Built::fail(d)),
     };
     let table = match coerced(table, &mut warns)? {
         Ok(v) => v,
-        Err(m) => return Ok(Built::fail(Diag::error(m))),
+        Err(d) => return Ok(Built::fail(d)),
     };
     if x.sexptype() == NILSXP {
         // both NULL-typed (lengths checked above): nothing to match
@@ -927,7 +927,7 @@ fn match5<'g>(
         None => None,
         Some(i) => match coerced(i, &mut warns)? {
             Ok(v) => Some(v),
-            Err(m) => return Ok(Built::fail(Diag::error(m))),
+            Err(d) => return Ok(Built::fail(d)),
         },
     };
     // useBytes / useUTF8 over x, then the table

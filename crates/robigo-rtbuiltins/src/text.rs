@@ -85,18 +85,28 @@ pub fn native_elt(cx: &mut Cx, x: Root<'_>, i: usize) -> robigo_rtcore::RResult<
     r.map_err(|e| cx.error(&e.to_string()))
 }
 
+/// GNU R's "unable to translate '%s' to native encoding", of the text
+/// [`robigo_text::translate_char_warn`] and its siblings give.
+// R: sysutils.c:translateToNative
+pub fn unable_to_translate(text: &str) -> String {
+    format!("unable to translate '{text}' to native encoding")
+}
+
 /// `installTrChar(c)`'s name: `c` in the native encoding
-/// (`translateToNative(mustWork = 2)`: what iconv cannot convert escaped,
-/// with the warning GNU R then gives), or the error it raises (after that
-/// warning): a "bytes" string, or (`install`, `installNoTrChar`) a
-/// name of no bytes or of more than 10000.
+/// (`translateToNative(mustWork = 2)`: what iconv cannot convert escaped),
+/// with the complete text of the warning GNU R then gives
+/// ([`unable_to_translate`], not `translate_char_warn`'s fragment); or the
+/// error it raises, after that warning: a "bytes" string, or (`install`,
+/// `installNoTrChar`) a name of no bytes or of more than 10000.
 // R: sysutils.c:installTrChar, names.c:installNoTrChar, names.c:install
 pub fn install_tr_name(s: Str<'_>, loc: Locale) -> Result<(Cow<'_, [u8]>, Option<String>), Diag<'static>> {
     let (n, w) = robigo_text::translate_char_warn(s, ctype(loc)).map_err(|e| Diag::error(e.to_string()))?;
-    let w = w.map(|t| format!("unable to translate '{t}' to native encoding"));
+    let w = w.map(|t| unable_to_translate(&t));
     // (translateToNative's warning comes before install's error)
-    check_install_name(&n).map_err(|m| Diag::error(m).after_warnings(w.iter().cloned().collect()))?;
-    Ok((n, w))
+    match check_install_name(&n) {
+        Err(m) => Err(Diag::error(m).after_warnings(w.into_iter().collect())),
+        Ok(()) => Ok((n, w)),
+    }
 }
 
 /// `install(name)`'s checks of a name.
@@ -117,9 +127,11 @@ pub const MAXIDSIZE: usize = 10000;
 /// `installTrChar(STRING_ELT(c, i))`, rooted in `s`: the symbol named by
 /// the native translation of element `i` of the character vector `c`,
 /// with GNU R's warning for what could not be translated (given before an
-/// error of `install`'s) and its errors. A name the isolate has already is
-/// found in place. A package ALTREP `c` is robigo's "not implemented"
-/// error (`STRING_ELT` would run its method).
+/// error of `install`'s) and its errors ([`install_tr_name`]). A name the
+/// isolate has already is found in place. A package ALTREP `c` is robigo's
+/// "not implemented" error (`STRING_ELT` would run its method); a `c` that
+/// is not a character vector, or an `i` past its end, `STRING_ELT`'s
+/// error.
 // R: sysutils.c:installTrChar
 pub fn install_tr_char<'s>(
     cx: &mut Cx,
@@ -132,22 +144,28 @@ pub fn install_tr_char<'s>(
     }
     let r = {
         let cx = &*cx;
-        let ch = c.bind(cx).as_vector::<robigo_rtcore::Char<'_>>().unwrap().get(i);
-        let t = robigo_text::translate_char_warn(crate::coerce::text(ch), ctype(cx.locale()));
-        match t {
-            Ok((n, None)) if check_install_name(&n).is_ok() => match cx.find_symbol(&n) {
-                Some(y) => return Ok(s.root(cx, y.as_ref())),
-                None => Ok((n.into_owned(), None)),
+        let x = c.bind(cx);
+        match x.as_vector::<robigo_rtcore::Char<'_>>() {
+            // R: memory.c:STRING_ELT
+            None => Err(Diag::error(format!(
+                "STRING_ELT() can only be applied to a 'character vector', not a '{}'",
+                crate::util::type_to_char(x)
+            ))),
+            Some(v) if i >= v.len() => Err(Diag::error(format!("attempt access index {i}/{} in STRING_ELT", v.len()))),
+            Some(v) => match install_tr_name(crate::coerce::text(v.get(i)), cx.locale()) {
+                Ok((n, None)) => match cx.find_symbol(&n) {
+                    Some(y) => return Ok(s.root(cx, y.as_ref())),
+                    None => Ok((n.into_owned(), None)),
+                },
+                Ok((n, w)) => Ok((n.into_owned(), w)),
+                Err(d) => Err(d),
             },
-            Ok((n, w)) => Ok((n.into_owned(), w)),
-            Err(e) => Err(e.to_string()),
         }
     };
-    let (name, w) = r.map_err(|m| cx.error(&m))?;
+    let (name, w) = r.map_err(|d| cx.raise(d))?;
     if let Some(w) = w {
-        cx.warning(&format!("unable to translate '{w}' to native encoding"))?;
+        cx.warning(&w)?;
     }
-    check_install_name(&name).map_err(|m| cx.error(&m))?;
     cx.install_rooted(s, &name)
 }
 
@@ -160,7 +178,7 @@ pub fn to_native_fp(s: Str<'_>, loc: Locale) -> Result<Cow<'_, [u8]>, String> {
         Err(robigo_text::Untranslatable::Bytes) => {
             Err("translating strings with \"bytes\" encoding is not allowed".to_owned())
         }
-        Err(robigo_text::Untranslatable::Failed(m)) => Err(format!("unable to translate '{m}' to native encoding")),
+        Err(robigo_text::Untranslatable::Failed(m)) => Err(unable_to_translate(&m)),
     }
 }
 

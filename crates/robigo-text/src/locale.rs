@@ -360,7 +360,7 @@ pub fn translate_char2<'a>(s: Str<'a>, loc: Locale) -> Result<Cow<'a, [u8]>, Unt
         Ok((c, false)) => Ok(c),
         // reEnc(cbuff, CE_UTF8, CE_NATIVE, 2) of a buffer already native:
         // ASCII in the C locale, as it was in a UTF-8 one
-        Ok((c, true)) => Err(Untranslatable::Failed(err_buff(c.into_owned(), loc))),
+        Ok((c, true)) => Err(Untranslatable::Failed(err_buff(&c, loc))),
     }
 }
 
@@ -373,7 +373,7 @@ pub fn translate_char_warn<'a>(s: Str<'a>, loc: Locale) -> Result<(Cow<'a, [u8]>
     match to_native(s, loc)? {
         (c, false) => Ok((c, None)),
         (c, true) => {
-            let w = err_buff(c.to_vec(), loc);
+            let w = err_buff(&c, loc);
             Ok((c, Some(w)))
         }
     }
@@ -400,19 +400,20 @@ pub fn translate_char_utf8_2<'a>(s: Str<'a>, loc: Locale) -> Result<Cow<'a, [u8]
     // reEnc(cbuff, CE_UTF8, CE_NATIVE, 2): what the native encoding lacks
     // as '.', byte by byte
     let msg = if loc.utf8() { out } else { out.iter().map(|&b| if b < 0x80 { b } else { b'.' }).collect() };
-    Err(Untranslatable::Failed(err_buff(msg, loc)))
+    Err(Untranslatable::Failed(err_buff(&msg, loc)))
 }
 
 /// The text of a "unable to translate" message: truncated to 252 bytes
 /// and "..." beyond 255.
 // R: sysutils.c:translateToNative (err_buff)
-fn err_buff(mut msg: Vec<u8>, loc: Locale) -> String {
+fn err_buff(msg: &[u8], loc: Locale) -> String {
     if msg.len() > 255 {
-        msg.truncate(252);
-        mbcs_truncate_to_valid(&mut msg, loc);
-        msg.extend_from_slice(b"...");
+        let mut m = msg[..252].to_vec();
+        mbcs_truncate_to_valid(&mut m, loc);
+        m.extend_from_slice(b"...");
+        return String::from_utf8_lossy(&m).into_owned();
     }
-    String::from_utf8_lossy(&msg).into_owned()
+    String::from_utf8_lossy(msg).into_owned()
 }
 
 /// translateToNative: the string in the native encoding, and whether iconv
@@ -573,7 +574,7 @@ pub fn wtrans_char2(s: Str<'_>, loc: Locale) -> Result<Vec<i32>, WideError> {
             _ => msg.extend_from_slice(format!("<U+{wc:08X}>").as_bytes()),
         }
     }
-    Err(WideError::Invalid(err_buff(msg, loc)))
+    Err(WideError::Invalid(err_buff(&msg, loc)))
 }
 
 /// `mbcsTruncateToValid(s)`: drops an incomplete or invalid character at
