@@ -637,6 +637,32 @@ extra = [
   "is.character(builtins())",
 ]
 
+# ---- B's #913, merged ------------------------------------------------------
+[tabulate]
+budget = 600
+typical = { bin = "=c(2L, 3L, 3L, 5L)", nbins = "=5L" }
+domain = { bin = ["=c(2L, 3L, 3L, 5L)", "=c(1L, NA, -1L, 0L, 7L)", "=integer(0)", "int3", "1:10", "@any"], nbins = ["=5L", "=0L", "=-1L", "=NA_integer_", "=3", "=c(2L, 9L)", "@count"] }
+extra = [
+  "tabulate(c(2, 3, 3, 5), nbins = 3)",
+  "tabulate(c(-2, 0, 2, 3, 3, 5))",
+  "tabulate(factor(c('a', 'b', 'a')))",
+  "tabulate(integer(0))",
+]
+
+# ---- the builtins E's g3/e-tools-stops registers ---------------------------
+# (ahead of the registry. Its one generated case is the clock, which GNU
+# R's two runs of a batch cannot agree on, so it is excluded as unstable;
+# the extras ask what can be compared.)
+["Sys.time"]
+effect = "External"
+extra = [
+  "is.double(.Internal(Sys.time()))",
+  "length(.Internal(Sys.time())) == 1L",
+  "is.null(attributes(.Internal(Sys.time())))",
+  ".Internal(Sys.time()) > 1.7e9",
+  "class(Sys.time())",
+]
+
 [uncovered]
 "special: a VM op or a special (tests/rt covers it)" = [
   "rep"

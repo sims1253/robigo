@@ -127,7 +127,8 @@ pub enum Op {
     Logic,
     /// `&&` (`c` = 1) / `||` (2), first operand: `a <- asLogical2(b)` with
     /// do_logic2's checks for the call `consts[e]`; jump to `(f, g)` when it
-    /// decides the result (`&&` FALSE, `||` TRUE).
+    /// decides the result (`&&` FALSE, `||` TRUE). [`F_VIS`] on either
+    /// path, as bcEval's AND1ST sets R_Visible jumping or not.
     AndOr1,
     /// `&&` / `||`, second operand `b`: `a <- combine(a, b)`.
     AndOr2,
@@ -270,8 +271,9 @@ pub enum Op {
     /// `consts[e]` (the `{` call at its start, else the cell of the
     /// statement just done), with the value so far in `b` ([`NO_REG`]:
     /// none, NULL), each statement evaluated by `eval` at depth `d`: `a <-`
-    /// its value, and a jump to `(f, g)`, past the `{`'s own code. Byte
-    /// code has none: GNU R's keeps running.
+    /// its value, and a jump to `(f, g)`, past the `{`'s own code; `c` 1:
+    /// the statement done was an assignment, invisible should it be the
+    /// last. Byte code has none: GNU R's keeps running.
     Resume,
     /// A loop iteration boundary in the `Eval` profile (§9.3): when a write
     /// into the code's source has made this code stale, the iteration is

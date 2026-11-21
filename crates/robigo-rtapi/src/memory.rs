@@ -84,9 +84,9 @@ fn alloc_vector(cx: &mut Cx, s: Scope<'_>, t: c_uint, n: isize) -> RResult<Sexp>
         CPLXSXP => 16,
         STRSXP | EXPRSXP | VECSXP => 8,
         _ => {
-            let msg =
-                format!("invalid type/length ({}/{n}) in vector allocation", robigo_rtbuiltins::util::type2char(t8));
-            return Err(cx.error(&msg));
+            // (the caller's code, not t8: a code over 255 is named as given)
+            let name = robigo_rtbuiltins::util::type2char_warn(cx, t)?;
+            return Err(cx.error(&format!("invalid type/length ({name}/{n}) in vector allocation")));
         }
     };
     let n = n as usize;
