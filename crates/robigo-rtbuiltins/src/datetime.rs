@@ -931,6 +931,18 @@ fn tz_open_error(cx: &mut Cx, e: TzOpenError, what: &str) -> robigo_rtcore::RErr
     }
 }
 
+/// `set_tz`'s one error, where `GET_tz_n_CHECK` calls it: a previous `TZ`
+/// longer than 1000 bytes, when the zone is not UTC (before anything
+/// later in the builtin is checked).
+// R: datetime.c:set_tz
+fn set_tz_check(cx: &mut Cx, is_utc: bool) -> RResult<()> {
+    use std::os::unix::ffi::OsStrExt;
+    if !is_utc && std::env::var_os("TZ").is_some_and(|p| p.as_bytes().len() > 1000) {
+        return Err(cx.error("time zone specification is too long"));
+    }
+    Ok(())
+}
+
 /// `set_tz`'s warning, once the session has ended.
 fn tz_warn(cx: &mut Cx, set_failed: bool) -> RResult<()> {
     if set_failed {
@@ -1236,6 +1248,7 @@ pub fn do_as_posixct(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
     cx.scope(|cx, s| {
         let comps = valid_posixlt(cx, s, args.root(0), 9)?;
         let (tz, is_utc) = get_tz(cx, args.root(1))?;
+        set_tz_check(cx, is_utc)?;
         let len = |cx: &Cx, i: usize| comps[i].bind(cx).len().unwrap_or(0);
         let mut nlen = [0usize; 9];
         let mut n = 0;
@@ -1319,16 +1332,24 @@ pub fn do_as_posixct(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
     })
 }
 
-/// `coerceVector(x, REALSXP)` (its warnings given) as plain doubles, and
-/// `x`'s names (`getAttrib(x, R_NamesSymbol)`, which the coercion keeps).
-fn coerce_real<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, x: Root<'_>) -> RResult<(Vec<f64>, Root<'s>)> {
-    let xr = s.capture(cx, |cx, o| crate::coerce::vector::coerce_vector(cx, x, REALSXP, o))?;
-    let v = xr.bind(cx).as_vector::<f64>().unwrap();
-    let xs: Vec<f64> = match v.dataptr_or_null() {
+/// `coerceVector(x, REALSXP)`, its warnings given (a double vector is
+/// itself, a package ALTREP one included).
+fn coerce_real<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, x: Root<'_>) -> RResult<Root<'s>> {
+    s.capture(cx, |cx, o| crate::coerce::vector::coerce_vector(cx, x, REALSXP, o))
+}
+
+/// `XLENGTH(x)` and `REAL(x)` of [`coerce_real`]'s double vector, as plain
+/// doubles: robigo's "not implemented" error for a package ALTREP one
+/// (whose Length method GNU R runs here).
+fn reals(cx: &mut Cx, call: Root<'_>, x: Root<'_>, what: &str) -> RResult<Vec<f64>> {
+    if x.bind(cx).is_package_altrep() {
+        return Err(not_yet(cx, Some(call), &format!("{what} of a package ALTREP vector")));
+    }
+    let v = x.bind(cx).as_vector::<f64>().unwrap();
+    Ok(match v.dataptr_or_null() {
         Some(sl) => sl.to_vec(),
         None => (0..v.len()).map(|i| v.get(i)).collect(),
-    };
-    Ok((xs, xr))
+    })
 }
 
 /// `.Internal(as.POSIXlt(x, tz))`: seconds since the epoch as a "POSIXlt"
@@ -1338,9 +1359,11 @@ fn coerce_real<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, x: Root<'_>) -> RRe
 pub fn do_as_posixlt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::row!("as.POSIXlt", true).check_arity(cx, call, args)?;
     cx.scope(|cx, s| {
-        let (xs, x) = coerce_real(cx, s, args.root(0))?;
+        let x = coerce_real(cx, s, args.root(0))?;
         // GET_tz_CHECK_n_TZONE
         let (tz, is_utc) = get_tz(cx, args.root(1))?;
+        set_tz_check(cx, is_utc)?;
+        let xs = reals(cx, call, x, "as.POSIXlt()")?;
         let converted = {
             let cx: &Cx = cx;
             match open_tz(cx, &tz, is_utc) {
@@ -1401,13 +1424,14 @@ pub fn do_as_posixlt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
 pub fn do_d2posixlt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::row!("Date2POSIXlt", true).check_arity(cx, call, args)?;
     cx.scope(|cx, s| {
-        let (xs, x) = coerce_real(cx, s, args.root(0))?;
+        let x = coerce_real(cx, s, args.root(0))?;
         let stz = args.get(cx, 1);
         let tz: Vec<u8> = match stz.as_vector::<Char<'_>>() {
             Some(v) if v.len() == 1 => v.get(0).bytes().to_vec(),
             _ => return Err(cx.error("invalid 'tz' value")),
         };
         let tz = if tz.is_empty() { b"UTC".to_vec() } else { tz };
+        let xs = reals(cx, call, x, "Date2POSIXlt()")?;
         let rows: Vec<LtRow> = xs
             .iter()
             .map(|&x_i| {

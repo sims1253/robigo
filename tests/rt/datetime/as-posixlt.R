@@ -31,3 +31,10 @@ d <- .Internal(POSIXlt2Date(.Internal(as.POSIXlt(c(p = 1e9, q = -1e9, r = NA), "
 lt <- .Internal(as.POSIXlt(0, "UTC")); lt$mday <- 40L; lt$hour <- 30L; unclass(.Internal(POSIXlt2Date(lt)))
 tryCatch(.Internal(POSIXlt2Date(list(1))), error = function(e) conditionMessage(e))
 tryCatch(.Internal(Date2POSIXlt(1, NULL)), error = function(e) conditionMessage(e))
+# set_tz's error comes before as.POSIXct's component checks
+x <- .Internal(as.POSIXlt(0, "UTC")); x$sec <- numeric()
+Sys.setenv(TZ = strrep("x", 1001))
+tryCatch(.Internal(as.POSIXct(x, "Europe/Berlin")), error = function(e) conditionMessage(e))
+tryCatch(.Internal(as.POSIXlt(0, "Europe/Berlin")), error = function(e) conditionMessage(e))
+tryCatch(.Internal(as.POSIXct(x, "UTC")), error = function(e) conditionMessage(e))
+Sys.unsetenv("TZ")

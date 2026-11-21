@@ -295,6 +295,12 @@ fn the_attribute_setters_read_a_package_altrep_length() {
             ("x <- c(1, 2); class(x) <- z", "a package ALTREP class attribute is not implemented yet"),
             ("m <- matrix(1:4, 2); dimnames(m) <- zl", "a package ALTREP list as dimnames is not implemented yet"),
             ("x <- 1:3; attr(x, \"tsp\") <- zr", "a package ALTREP 'tsp' attribute is not implemented yet"),
+            // datetime.c's XLENGTH(x) after the time zone's checks
+            (".Internal(as.POSIXlt(zr, \"UTC\"))", "as.POSIXlt() of a package ALTREP vector is not implemented yet"),
+            (
+                ".Internal(Date2POSIXlt(zr, \"UTC\"))",
+                "Date2POSIXlt() of a package ALTREP vector is not implemented yet",
+            ),
             (
                 "d <- list(1:2); attr(d, \"row.names\") <- .Call(\"rt_altrep_real\", c(NA, -2))",
                 "row names from a package ALTREP double vector is not implemented yet",

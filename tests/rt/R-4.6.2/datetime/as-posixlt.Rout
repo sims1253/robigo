@@ -255,3 +255,6 @@ attr(,"balanced")
 [1] 40
 [1] "a valid \"POSIXlt\" object is a list of at least 9 elements"
 [1] "invalid 'tz' value"
+[1] "time zone specification is too long"
+[1] "time zone specification is too long"
+[1] "zero-length component [[1]] in non-empty \"POSIXlt\" structure"
