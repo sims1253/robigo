@@ -95,6 +95,47 @@ entries <- function(map) {
 
 same <- function(x, y, ...) identical(x, y, num.eq = FALSE, ...)
 strict <- function(x, y) same(x, y, ignore.bytecode = FALSE, ignore.srcref = FALSE)
+# where two values' byte code first differs: the first closure found in
+# both (depth first through lists) whose code or constants differ, by its
+# path; then the code (its length, the first differing word) or the first
+# differing constant, deparsed (a constant that is byte code itself, a
+# nested function's or a promise's, followed into)
+# (disassemble's form: list(.Code, code, constants, ...), a constant that
+# is byte code itself in the same form)
+is_dis <- function(x) is.list(x) && length(x) >= 3L && identical(x[[1L]], quote(.Code))
+bcdiff_code <- function(da, db, path) {
+    if (!identical(da[[2L]], db[[2L]])) {
+        n <- min(length(da[[2L]]), length(db[[2L]]))
+        at <- which(da[[2L]][seq_len(n)] != db[[2L]][seq_len(n)])[1L]
+        return(paste0(path, "code ", length(da[[2L]]), " vs ", length(db[[2L]]), " words, first differing at ",
+                      if (is.na(at)) n + 1L else at))
+    }
+    ka <- da[[3L]]; kb <- db[[3L]]
+    if (length(ka) != length(kb))
+        return(paste0(path, "constants ", length(ka), " vs ", length(kb)))
+    for (i in seq_along(ka)) {
+        if (same(ka[[i]], kb[[i]], ignore.bytecode = FALSE, ignore.srcref = FALSE)) next
+        if (is_dis(ka[[i]]) && is_dis(kb[[i]]))
+            return(bcdiff_code(ka[[i]], kb[[i]], paste0(path, "const ", i, " > ")))
+        one <- function(v) substr(paste(deparse(v, nlines = 2L), collapse = " "), 1L, 120L)
+        return(paste0(path, "const ", i, ": ours ", one(ka[[i]]), " | GNU R ", one(kb[[i]])))
+    }
+    paste0(path, "the same code and constants (a srcref or an attribute)")
+}
+bcdiff <- function(a, b, path = "") {
+    code <- function(f) if (is.function(f) && !is.primitive(f)) .Internal(bodyCode(f))
+    ca <- code(a); cb <- code(b)
+    if (typeof(ca) == "bytecode" && typeof(cb) == "bytecode")
+        return(bcdiff_code(.Internal(disassemble(ca)), .Internal(disassemble(cb)), path))
+    if (is.list(a) && is.list(b) && length(a) == length(b))
+        for (i in seq_along(a))
+            if (!same(a[[i]], b[[i]], ignore.bytecode = FALSE, ignore.srcref = FALSE)) {
+                r <- bcdiff(a[[i]], b[[i]], paste0(path, "[[", i, "]] > "))
+                if (!is.null(r)) return(r)
+            }
+    NULL
+}
+
 
 # a database: its map, and a reader of its records by key
 open_db <- function(lib, db) {
@@ -201,6 +242,7 @@ for (db in dbs) {
     compiled <- c(ours = 0L, gnur = 0L)
     reasons <- list()
     shown <- 0L
+    shown_bc <- 0L
     {
         for (k in intersect(names(eg), names(eo))) {
             a <- ours$rec(eo[[k]])
@@ -216,6 +258,10 @@ for (db in dbs) {
             else if (same(va, vb)) {
                 bc <- function(f) is.function(f) && !is.primitive(f) && typeof(.Internal(bodyCode(f))) == "bytecode"
                 compiled <- compiled + c(bc(va), bc(vb))
+                if (shown_bc < 60L) {
+                    shown_bc <- shown_bc + 1L
+                    cat("bytecode: ", k, ": ", bcdiff(va, vb), "\n", sep = "")
+                }
                 "bytecode"
             } else if (length(maps) && same(norm(va, map = TRUE), norm(vb))) "path"
             else if (same(norm(va, env = FALSE), norm(vb, env = FALSE))) "env" else "differ"

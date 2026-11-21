@@ -1,12 +1,15 @@
-# INTERIM(B, datetime.c): stand-ins for scripts/rt-home-db.sh's steps that
-# install a package description by R (tools:::.install_package_description,
-# whose Built field is format(Sys.time(), "%Y-%m-%d %H:%M:%S", tz = "UTC",
-# usetz = TRUE)), read before each such step's script: as.POSIXlt.POSIXct
-# and format.POSIXlt in UTC, what that call needs (E's build walk,
-# 2026-11-21). Never read at robigo-rt's start, never in a database: the
-# steps that write base.rdb and compiler.rdb run without it. Delete this
-# file, and rt-home-db.sh's ROBIGO_RT_INTERIM, when B's port of
-# do_asPOSIXlt and do_formatPOSIXlt merges.
+# INTERIM(B, datetime.c). Owner: B (the port of do_asPOSIXlt and
+# do_formatPOSIXlt).
+# Read only by scripts/rt-home-db.sh's three steps that write a `Built:`
+# field (tools:::.install_package_description for tools, compiler and
+# base; Built is format(Sys.time(), "%Y-%m-%d %H:%M:%S", tz = "UTC",
+# usetz = TRUE)), before each step's script. Never read at robigo-rt's
+# start and never in a database: the steps that write compiler.rdb and
+# base.rdb run without it.
+# Stand-ins, UTC only, for what that call needs: as.POSIXlt.POSIXct and
+# format.POSIXlt (E's build walk, 2026-11-21).
+# It expires by itself: rt-home-db.sh stops, saying to delete this file,
+# once the robigo-rt it runs implements .Internal(as.POSIXlt()).
 .rt_shim <- function(name, f) {
     e <- baseenv()
     environment(f) <- .BaseNamespaceEnv

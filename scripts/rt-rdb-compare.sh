@@ -6,6 +6,8 @@
 # decompressed, then each differing record's class). Runs in the oracle
 # image robigo-oracle:4.6.2 (scripts/oracle-run.sh); not in CI.
 #   scripts/rt-rdb-compare.sh [OUT] [PKG/NAME ...]
+# OUT is scripts/rt-base-build.sh's or a tree of scripts/rt-home-db.sh's
+# (.robigo/rt-home-db).
 # Build paths differ by construction: our source tree (the pinned R
 # sources) and install tree are mapped to GNU R's build tree (the oracle
 # built in place; its tools records name the directory, which is not its
@@ -23,7 +25,17 @@ case "$out/" in
   "$root"/*) ;;
   *) echo "error: $out is not under the checkout, which is all the oracle container mounts (scripts/oracle-run.sh)" >&2; exit 2 ;;
 esac
-[ -d "$out/build/library" ] || { echo "error: $out/build/library does not exist (run scripts/rt-base-build.sh)" >&2; exit 2; }
+# OUT is rt-base-build.sh's (OUT/build/library, installed as
+# OUT/inst/lib/robigo) or a tree of scripts/rt-home-db.sh's (OUT/library,
+# built at the path its .rt-home-db-built-at holds)
+if [ -f "$out/.rt-home-db-built-at" ]; then
+  lib=$out/library
+  inst=$(cat "$out/.rt-home-db-built-at")
+else
+  [ -d "$out/build/library" ] || { echo "error: $out/build/library does not exist (run scripts/rt-base-build.sh)" >&2; exit 2; }
+  lib=$out/build/library
+  inst=$out/inst/lib/robigo
+fi
 # (after the checks: it may download the tarball)
 src=$("$root/scripts/r-src.sh")
 cd "$root"
@@ -33,4 +45,4 @@ exec scripts/oracle-run.sh 4.6.2 sh -c 'set -eu; h=$(R RHOME); lib=$1; src=$2; i
   top=$(Rscript --vanilla -e "cat(tools:::.R_top_srcdir_default)")
   [ -n "$h" ] && [ -n "$top" ] || { echo "error: no R_HOME or build tree from the oracle" >&2; exit 2; }
   exec Rscript --vanilla scripts/rt-rdb-compare.R --map "$inst=$top" --map "$src=$top" "$lib" "$h/library" "$@"' \
-  sh "$out/build/library" "$src" "$out/inst/lib/robigo" "$@"
+  sh "$lib" "$src" "$inst" "$@"

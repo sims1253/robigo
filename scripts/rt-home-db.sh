@@ -5,6 +5,7 @@
 # the compiler package, in their order, each run by the robigo-rt that
 # boots from the tree (its R_EXE; the tree's base the source until base's
 # database is written, ROBIGO_RT_BOOT=stage0, then the database):
+#   translations-all     the message catalogues and DESCRIPTION
 #   base-all, tools-all  mkdesc2: DESCRIPTION with the shell's Built line;
 #                        tools' description installed by R
 #   compiler-all         mkdesc (DESCRIPTION, Meta/package.rds), then
@@ -21,7 +22,8 @@
 # INTERIM(B, datetime.c): the steps that install a description by R
 # (`Built:` is format(Sys.time(), ..., tz = "UTC", usetz = TRUE)) read
 # scripts/rt-home-db-interim.R first, stand-ins for as.POSIXlt.POSIXct
-# and format.POSIXlt in UTC; delete it when B's datetime.c port merges.
+# and format.POSIXlt in UTC; the build stops, saying to delete them, once
+# the robigo-rt it runs implements .Internal(as.POSIXlt()).
 # The tree is rebuilt when the source tree, this script, the stand-ins or
 # the binary changes (the stamp holds the four).
 #   scripts/rt-home-db.sh [--robigo-rt BIN] [DIR]   # default .robigo/rt-home-db
@@ -76,16 +78,39 @@ for p in base tools compiler; do
 done
 # R_EXE: `[VAR=VALUE...] bin/R --vanilla --no-echo`, the script on stdin,
 # the boot the tree's base (`rexe BOOT VAR=VALUE... < script`); with
-# ROBIGO_RT_INTERIM=1 the stand-ins read first
+# ROBIGO_RT_INTERIM=1 the stand-ins read first. HOME is an empty
+# directory, as in the oracle image's build: the system profile's
+# .libPaths() (whose environment base.rdb holds) adds R_LIBS_USER's
+# directory when it exists, which on a developer's machine it may
+mkdir -p "$tmp/home"
 rexe() {
   local boot=$1
   shift
   if [ "${ROBIGO_RT_INTERIM:-}" = 1 ]; then
-    { cat "$interim"; cat; } | env -u R_HOME -u ROBIGO_RT_INTERIM ROBIGO_RT_BOOT="$boot" "$@" "$tmp/bin/robigo-rt" --vanilla --no-echo > /dev/null
+    { cat "$interim"; cat; } | env -u R_HOME -u ROBIGO_RT_INTERIM -u R_LIBS -u R_LIBS_USER -u R_LIBS_SITE HOME="$tmp/home" \
+      ROBIGO_RT_BOOT="$boot" "$@" "$tmp/bin/robigo-rt" --vanilla --no-echo > /dev/null
   else
-    env -u R_HOME ROBIGO_RT_BOOT="$boot" "$@" "$tmp/bin/robigo-rt" --vanilla --no-echo > /dev/null
+    env -u R_HOME -u R_LIBS -u R_LIBS_USER -u R_LIBS_SITE HOME="$tmp/home" \
+      ROBIGO_RT_BOOT="$boot" "$@" "$tmp/bin/robigo-rt" --vanilla --no-echo > /dev/null
   fi
 }
+# R: src/library/translations/Makefile.in all (its mkdesc runs no R: the
+# Makefile sets no R_EXE): the message catalogues (inst/*) and the
+# configured DESCRIPTION; base's .popath names the directory when it is
+# there as makebasedb.R runs
+mkdir -p "$lib/translations"
+cp -R "$rsrc/src/library/translations/inst/." "$lib/translations/"
+sed -e "s/@VERSION@/$version/g" "$rsrc/src/library/translations/DESCRIPTION.in" > "$lib/translations/DESCRIPTION"
+# INTERIM(B): the stand-ins expire with B's port. Once robigo-rt
+# implements .Internal(as.POSIXlt()), the build stops here until they are
+# deleted, so they cannot outlive the port
+lt=$(echo 'r <- tryCatch(.Internal(as.POSIXlt(.POSIXct(0, "UTC"), "UTC")), error = function(e) conditionMessage(e)); cat(is.character(r) && grepl("is not implemented yet", r, fixed = TRUE))' |
+  env -u R_HOME ROBIGO_RT_BOOT=stage0 R_DEFAULT_PACKAGES=NULL R_ENABLE_JIT=0 "$tmp/bin/robigo-rt" --vanilla --no-echo) || true
+if [ "$lt" != TRUE ]; then
+  echo "rt-home-db.sh: robigo-rt implements .Internal(as.POSIXlt()) now (B's datetime.c port; the probe gave: $lt):" >&2
+  echo "  delete scripts/rt-home-db-interim.R and this script's ROBIGO_RT_INTERIM, its stand-ins' use" >&2
+  exit 1
+fi
 # R: share/make/basepkg.mk mkdesc2 (base-all and tools-all; PKG_BUILT_STAMP
 # empty, R_OSTYPE unix)
 for p in base tools; do
@@ -125,6 +150,10 @@ echo "tools:::.vinstall_package_descriptions_as_RDS(\"$lib\", \"base tools compi
 rm -f "$lib/tools/Meta/nsInfo.rds"
 echo "tools:::.vinstall_package_namespaces_as_RDS(\"$lib\", \"base tools compiler\")" |
   rexe rdb R_DEFAULT_PACKAGES=tools LC_ALL=C
+# where the tree was built, which its databases record (.Library, the
+# namespaces' path) as GNU R's record its build tree: for
+# scripts/rt-rdb-compare.sh's path mapping
+echo "$tmp/lib/robigo" > "$tmp/lib/robigo/.rt-home-db-built-at"
 echo "$stamp" > "$tmp/lib/robigo/.rt-home-db"
 rm -rf "$out"
 mv "$tmp/lib/robigo" "$out"
