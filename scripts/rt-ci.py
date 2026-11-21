@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """CI's `rt` job: G3's runtime crates (docs/g3.md §14.1, §16).
 
-    scripts/rt-ci.py            # premise check, release tests, gctorture: every step
+    scripts/rt-ci.py            # premise check, the crates' tests, the conformance and its
+                                # modes: every step (the crates' tests in the quick profile)
     scripts/rt-ci.py --shard NAME  # one CI job's steps (SHARDS); CI runs each in parallel
     scripts/rt-ci.py --shard debug-assertions  # the crates' tests and the conformance with
                                 # debug assertions on (a build of their own, in
                                 # the target directory + "-debug-assertions";
                                 # the plain run above does not include it)
+    scripts/rt-ci.py --shard release-crate-tests  # the crates' tests on the full release
+                                # profile, as main's push runs do (not in the plain run)
     scripts/rt-ci.py --list     # the rt crates, one per line
     scripts/rt-ci.py --check    # the premise check alone
     scripts/rt-ci.py --full-move  # the nightly's run: every collection moves everything
@@ -211,6 +214,20 @@ def case_timeouts(slow):
     return ",".join(f"{c}={secs}" for c, secs in sorted(slow.items()))
 
 
+# The crates' own tests build in the `quick` profile (release's opt-level,
+# no LTO, 256 codegen units): with release's thin LTO and one codegen unit
+# each of the ~64 test binaries costs ~70-110 s to build (a cold build of all
+# of them: 766 s at -j6, against 106 s in `quick`; their run takes the same
+# time in both, 20 s). Everything that judges the binary users get stays on
+# release: every conformance step and mode, the boot_db step and the
+# scripts that run the binary, the differential, perf. (The crates' tests
+# that spawn the binary through CARGO_BIN_EXE_robigo-rt, alloc, front_end,
+# sigint, cli, now spawn the quick one: they test the crates' code, and the
+# release binary keeps its own steps.) The crates' tests on the full release
+# profile run in the release-crate-tests shard, on main's push runs.
+CRATE_TEST = ["cargo", "test", "--profile", "quick", "--locked"]
+
+
 def conformance_command():
     test = ["cargo", "test", "--release", "--locked"]
     return [*test, "-p", "robigo-rtapi", "--test", "conformance", "--", "--exact", CONFORMANCE, "--nocapture"]
@@ -252,14 +269,20 @@ def steps(crates):
     """(title, extra environment, command) for each step of the job."""
     pkgs = [x for c in crates for x in ("-p", c)]
     test = ["cargo", "test", "--release", "--locked"]
+    crate = CRATE_TEST
     skip = ["--", "--skip", CONFORMANCE]
     conformance = conformance_command()
     slow = SLOW
     out = [
-        ("release tests", {}, [*test, *pkgs, *skip]),
+        ("the crates' tests (quick profile)", {}, [*crate, *pkgs, *skip]),
         # robigo-rt's R_HOME tree with tools' native code (A5): the
         # conformance cases that load it (`.requires` r-home-tools) run
         ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", {}, ["scripts/rt-home.sh"]),
+        # the release binary users get, which the steps below run (base's
+        # database tree, boot_db, the scripts): built as the conformance step
+        # builds it (its features), since the crates' tests above build quick
+        ("the release binary and the conformance, built (cargo test --release --no-run)", {},
+         [*test, "-p", "robigo-rtapi", "--test", "conformance", "--no-run"]),
         # L5's boot beside M1's loader (ROBIGO_RT_BOOT=rdb): base's database,
         # written by this robigo-rt booted from base's source, then base
         # booted from it (crates/robigo-rtapi/tests/boot_db.rs)
@@ -277,12 +300,12 @@ def steps(crates):
         # the identity tests pin production and check the mode's side
         # themselves (tests/attrib.rs, tests/subset.rs)
         ("ROBIGO_NO_INPLACE=1 (every in-place write copies)",
-         {"ROBIGO_NO_INPLACE": "1"}, [*test, *pkgs, *skip]),
+         {"ROBIGO_NO_INPLACE": "1"}, [*crate, *pkgs, *skip]),
         # with a collection due almost always, the check makes any &Cx
         # request of LARGE bytes or more panic where it is made: such a
         # request goes through cx.alloc_rooted (docs/g3.md §3 item 3)
         ("gctorture (collect at every allocation) and the GC stats check",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check"}, [*test, *pkgs, *skip]),
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check"}, [*crate, *pkgs, *skip]),
         # docs/g3.md §15.3 E3: the rt slice under the collector modes
         ("conformance under gctorture (E3)", {"ROBIGO_GCTORTURE": "1", **slow}, conformance),
         # every argument a PROMSXP at call entry (GNU R's representation,
@@ -292,11 +315,11 @@ def steps(crates):
         # robigo-heap/test-support), so `-p robigo-rt` alone rebuilt heap and
         # every crate above it (6 minutes in CI)
         ("ROBIGO_MATERIALIZE=1 (every argument slot materialized)",
-         {"ROBIGO_MATERIALIZE": "1"}, [*test, *pkgs, *skip]),
+         {"ROBIGO_MATERIALIZE": "1"}, [*crate, *pkgs, *skip]),
         # docs/g3.md §16 (H3): the debug moving collector, at every
         # collection gctorture makes due
         ("ROBIGO_GC_MOVE (move every movable object at every collection), with gctorture",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1"}, [*test, *pkgs, *skip]),
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1"}, [*crate, *pkgs, *skip]),
         # H8: the young objects at each collection, everything at every N-th;
         # the nightly runs it with every collection moving everything
         (f"conformance under ROBIGO_GC_MOVE={GC_MOVE_YOUNG} with gctorture (E3)",
@@ -306,13 +329,13 @@ def steps(crates):
         # is poisoned and held back instead, so a frame that escaped without
         # its ESCAPED bit panics where it is used next
         ("ROBIGO_FRAME_QUARANTINE=1 (recycled frames poisoned and held back)",
-         {"ROBIGO_FRAME_QUARANTINE": "1"}, [*test, *pkgs, *skip]),
+         {"ROBIGO_FRAME_QUARANTINE": "1"}, [*crate, *pkgs, *skip]),
         ("ROBIGO_FRAME_QUARANTINE=1, conformance",
          {"ROBIGO_FRAME_QUARANTINE": "1"},
          conformance),
         # docs/g3.md §16 (H3): the pin report; `main` fails the job on any line
         ("ROBIGO_GC_PIN_REPORT (no weak reference decided while a C word reaches its key)",
-         {"ROBIGO_GC_PIN_REPORT": PIN_REPORT}, [*test, *pkgs, *skip]),
+         {"ROBIGO_GC_PIN_REPORT": PIN_REPORT}, [*crate, *pkgs, *skip]),
         # docs/g3.md §15.3 E3 and E4, on the release binary the steps above
         # built: the stress script in fresh processes (the ledger's runs take
         # 30 per profile), and the overshoot of every slice against max(32
@@ -355,7 +378,7 @@ def steps(crates):
         # tests/poison.rs's planted early clear, then the conformance
         ("ROBIGO_POISON_DEAD=1 (dead slots poisoned), robigo-rt's tests and the planted early clear",
          {"ROBIGO_POISON_DEAD": "1"},
-         [*test, "-p", "robigo-rt", "--features", CHECK_FEATURES, *skip]),
+         [*crate, "-p", "robigo-rt", "--features", CHECK_FEATURES, *skip]),
         ("ROBIGO_POISON_DEAD=1, conformance",
          {"ROBIGO_POISON_DEAD": "1"},
          [*test, "-p", "robigo-rtapi", "--features", CHECK_FEATURES, "--test", "conformance", "--",
@@ -368,9 +391,10 @@ def steps(crates):
 # built in each job and run in parallel. Each is named for what it runs.
 # Before 2026-11-21 one job ran them all (29-38 minutes against a 40-minute
 # limit); #910 split them in three; with the fourth job they were rebalanced
-# from run 44883150235's step times, so that the crates' test build (11.6
-# minutes) is paid where crate tests run and nowhere else:
-#   modes         the crates' release tests and every mode they run under
+# from run 44883150235's step times, so that the crates' test build is paid
+# where crate tests run and nowhere else, and since then that build is in the
+# quick profile (CRATE_TEST):
+#   modes         the crates' tests and every mode they run under
 #                 (no-inplace, gctorture with the stats check, materialize,
 #                 GC_MOVE, quarantine, the pin report), the conformance and
 #                 its short modes, stress, overshoot, E9's small limit and
@@ -381,15 +405,21 @@ def steps(crates):
 #                 (CHECK_FEATURES), the poison-dead steps
 #   builtin-diff  A4's builtin differential with its planted divergences
 #                 (their own build), against builtin-diff-data's GNU R records
-#   debug-assertions  the crates' release tests and the conformance on a
-#                 release build with `-C debug-assertions=on` (heap's
+#   debug-assertions  the crates' tests (quick) and the conformance (release)
+#                 with `-C debug-assertions=on` (heap's
 #                 debug_assert!s see compiled code; not opt-level 0, where
 #                 conditions/eval-depth-limit.R fails only because debug C
 #                 frames are larger), in a target of its own; only in its
 #                 own job: a plain local run does not build it
+#   release-crate-tests  the crates' tests on the full release profile, the
+#                 code users get (main's push runs only, so a codegen-dependent
+#                 failure of a crate test shows within one main run of its
+#                 merge); a plain local run does not build it either
 # The R_HOME tree (seconds) is made in every shard; every other step is in
 # exactly one (scripts/test-rt-ci.py checks both).
-SHARDS = ("modes", "gctorture", "feature-builds", "builtin-diff", "debug-assertions")
+SHARDS = ("modes", "gctorture", "feature-builds", "builtin-diff", "debug-assertions", "release-crate-tests")
+# the shards whose steps are their own, not a part of a plain run's
+OWN_STEPS = ("debug-assertions", "release-crate-tests")
 
 # Each shard's budget, in minutes: its steps' total in a CI run plus about
 # 20%, rounded up. Its job's timeout-minutes is twice the budget, and the
@@ -405,6 +435,7 @@ BUDGETS = {  # shard: (budget, measured minutes, where measured)
     "feature-builds": (27, 21.94, "2026-11-21, run 44908057499 (#941)"),
     "builtin-diff": (9, 6.67, "2026-11-21, run 44908057499 (#941)"),
     "debug-assertions": (15, 11.67, "2026-11-21, run 44908057499 (#941)"),
+    "release-crate-tests": (15, 12.30, "2026-11-21, estimated: #941's release tests with the R_HOME tree"),
 }
 WARN_AT = 0.9
 
@@ -429,19 +460,30 @@ def target_dir():
 
 
 def debug_assertions_steps(crates):
-    """The debug-assertions shard: the R_HOME tree, the crates' release tests
-    and the conformance, all on one release build with debug assertions on,
-    in a target directory of its own (the normal build stays as it is). The
+    """The debug-assertions shard: the R_HOME tree, the crates' tests (quick
+    profile) and the conformance (release), all with debug assertions on, in
+    a target directory of its own (the normal build stays as it is). The
     R_HOME step builds robigo-heap for its headers, so it gets the same
     flags and target: nothing in this shard builds into the normal one."""
     pkgs = [x for c in crates for x in ("-p", c)]
-    test = ["cargo", "test", "--release", "--locked"]
     env = {"RUSTFLAGS": "-C debug-assertions=on", "CARGO_TARGET_DIR": target_dir() + "-debug-assertions"}
     return every_cpu([
         ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", env, ["scripts/rt-home.sh"]),
-        ("release tests with debug assertions (-C debug-assertions=on)", env,
-         [*test, *pkgs, "--", "--skip", CONFORMANCE]),
+        ("the crates' tests with debug assertions (-C debug-assertions=on, quick profile)", env,
+         [*CRATE_TEST, *pkgs, "--", "--skip", CONFORMANCE]),
         ("conformance with debug assertions (-C debug-assertions=on)", env, conformance_command()),
+    ])
+
+
+def release_crate_tests_steps(crates):
+    """The release-crate-tests shard (main's push runs): the crates' tests on
+    the full release profile (thin LTO, one codegen unit), the code users get,
+    which the other shards' quick-profile crate tests do not build."""
+    pkgs = [x for c in crates for x in ("-p", c)]
+    return every_cpu([
+        ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", {}, ["scripts/rt-home.sh"]),
+        ("the crates' tests (release profile)", {},
+         ["cargo", "test", "--release", "--locked", *pkgs, "--", "--skip", CONFORMANCE]),
     ])
 
 
@@ -459,10 +501,12 @@ def shard_of(title):
 
 
 def shard_steps(crates, shard):
-    """The steps of one shard, in `steps`' order (debug-assertions: its own,
-    which `steps` does not have)."""
+    """The steps of one shard, in `steps`' order (debug-assertions and
+    release-crate-tests: their own, which `steps` does not have)."""
     if shard == "debug-assertions":
         return debug_assertions_steps(crates)
+    if shard == "release-crate-tests":
+        return release_crate_tests_steps(crates)
     return [s for s in steps(crates) if shard_of(s[0]) in (None, shard)]
 
 

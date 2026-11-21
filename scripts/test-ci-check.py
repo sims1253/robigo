@@ -13,7 +13,7 @@ spec = importlib.util.spec_from_file_location("ci_check", HERE / "ci-check.py")
 chk = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(chk)
 
-JOBS = ["select", "lint", "miri", "rdb-data", "builtin-diff-data", "rt", "rt-gctorture", "rt-feature-builds", "rt-builtin-diff", "rt-debug-assertions", "base-subset", "build", "perf-base", "release-tests", "test", "bytecode-fidelity", "counters",
+JOBS = ["select", "lint", "miri", "rdb-data", "builtin-diff-data", "rt", "rt-gctorture", "rt-feature-builds", "rt-builtin-diff", "rt-debug-assertions", "rt-release-crate-tests", "base-subset", "build", "perf-base", "release-tests", "test", "bytecode-fidelity", "counters",
         "corpora", "fuzz", "cran", "smoke", "package-gate", "perf", "perf-rt-build", "perf-rt", "rt-corpora"]
 
 
@@ -162,6 +162,14 @@ class Rule(unittest.TestCase):
         self.assertIn("stacked pull request", p.stdout)
         # not stacked, the same skips are not explained
         self.assertFalse(passes(needs("false", "false", "true", **skip)))
+
+    def test_the_release_crate_tests_run_on_main_and_may_be_skipped_on_pull_requests(self):
+        skipped = needs(rt_release_crate_tests="skipped")
+        self.assertTrue(passes(skipped, pull_request=True))
+        self.assertFalse(passes(skipped, pull_request=False))       # main: it must run
+        self.assertTrue(passes(needs("true", "true", "false", rt_release_crate_tests="skipped"), pull_request=False))
+        self.assertFalse(passes(needs(rt_release_crate_tests="failure"), pull_request=False))
+        self.assertFalse(passes(needs(rt_release_crate_tests="failure"), pull_request=True))
 
     def test_a_cancelled_run_fails_check(self):
         # every need cancelled (a run cancelled by hand, or superseded): red
