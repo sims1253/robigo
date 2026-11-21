@@ -513,6 +513,11 @@ pub(crate) struct Contexts {
     pub(crate) toplevel: Cell<*mut Context>,
     /// R_ExitContext (null: none)
     pub(crate) exit_context: Cell<*mut Context>,
+    /// The innermost record [`Cx::reset_to_session`] cut off the chain
+    /// (null: none): the records from it down to the base are no longer
+    /// walked as contexts but are still traced, since state the reset kept
+    /// (R_ExitContext, a parked exit) can still reach their fields.
+    detached: Cell<*mut Context>,
     /// R_Toplevel, the session's base record (freed with the isolate)
     base: NonNull<Context>,
     /// Where the Rust drivers' records live (`records.rs`): not traced
@@ -599,6 +604,7 @@ impl Contexts {
             global: Cell::new(base.as_ptr()),
             toplevel: Cell::new(base.as_ptr()),
             exit_context: Cell::new(null_mut()),
+            detached: Cell::new(null_mut()),
             base,
             records: Records::new(),
             nil,
@@ -641,6 +647,21 @@ impl Contexts {
         Rec(self.base)
     }
 
+    /// Every record a collection traces: the chain's, then those
+    /// [`Cx::reset_to_session`] cut off it, down to (not again) the base.
+    fn traced(&self) -> impl Iterator<Item = Rec> + use<> {
+        let base = self.base.as_ptr();
+        let mut c = self.detached.get();
+        self.chain().chain(std::iter::from_fn(move || {
+            if c == base {
+                return None;
+            }
+            let r = Rec(NonNull::new(c)?);
+            c = r.nextcontext();
+            Some(r)
+        }))
+    }
+
     /// Every record from the innermost to the base, hidden ones included.
     pub(crate) fn chain(&self) -> impl Iterator<Item = Rec> + use<> {
         let mut c = self.global.get();
@@ -667,7 +688,7 @@ impl Contexts {
         f(self.srcref.get());
         f(self.bc_expr.get());
         f(self.early_frame.get());
-        for r in self.chain() {
+        for r in self.traced() {
             let mut v = Collect(&mut f);
             // SAFETY: nothing else touches the record during the call (the
             // collector only uses the edges it is shown, and `f` cannot pop
@@ -715,7 +736,7 @@ impl Trace for Contexts {
         let mut x = self.early_frame.get();
         v.edge(&mut x);
         self.early_frame.set(x);
-        for r in self.chain() {
+        for r in self.traced() {
             // SAFETY: a collection has the isolate's roots exclusively, and
             // records are read and written only by their owners, C code and
             // collections, never at the same time as one (no record is
@@ -1968,22 +1989,31 @@ impl Cx {
     /// `R_GlobalContext = R_ToplevelContext = R_SessionContext =
     /// &R_Toplevel` (R_dot_Last's first line, main.c, as `quit()` runs it):
     /// the chain cut back to the session's base record. The records above
-    /// it leave the chain but stay in their owners' slots: no walk sees
-    /// them (`sys.calls`, an exit's search for its target: an exiting
-    /// handler whose function is among them finds "no function to return
-    /// from"), and no collection traces them. The condition stacks are
-    /// kept, as in GNU R.
+    /// it leave the chain but stay in their owners' slots, still traced (a
+    /// collection keeps their objects and rewrites their fields): no
+    /// context walk sees them (`sys.calls`, an exit's search for its
+    /// target: an exiting handler whose function is among them finds "no
+    /// function to return from"), but what GNU R keeps pointing at them
+    /// still reads them (`R_ExitContext`: `returnValue()` in a `.Last` that
+    /// `on.exit(quit())` runs). The condition stacks are kept, as in GNU R.
     ///
     /// # Safety
     /// The caller never lets an owner of a record that was above the base
-    /// run again (pop it, read it, return to it), nor uses a value only
-    /// such a record kept alive: it ends the process first (do_quit's
-    /// `R_CleanUp` and `exit`).
+    /// run again (pop it, return to it) and calls this once: it ends the
+    /// process first (do_quit's `R_CleanUp` and `exit`). Records pushed
+    /// after the reset are pushed and popped as usual.
     // R: main.c:R_dot_Last
     pub unsafe fn reset_to_session(&self) {
-        let base = self.ctxs().base().0.as_ptr();
-        self.ctxs().global.set(base);
-        self.ctxs().toplevel.set(base);
+        let st = self.ctxs();
+        let base = st.base().0.as_ptr();
+        // (a second reset cuts nothing new: the records it would are the
+        // chain's since the first, above the base, and the first's stay)
+        debug_assert!(st.detached.get().is_null(), "robigo: the context chain was cut twice");
+        if st.global.get() != base {
+            st.detached.set(st.global.get());
+        }
+        st.global.set(base);
+        st.toplevel.set(base);
     }
 
     /// The session's base record (`R_Toplevel`, `R_SessionContext`).
