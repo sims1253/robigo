@@ -319,7 +319,9 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 35
+    # 29.2 min on 2026-11-21 (#887's rows and #899's steps on main): a
+    # stopgap until the rebalance with the fourth shard
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
@@ -426,7 +428,9 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 30
+    # 25.3 min on 2026-11-21 (#887's 90 rows, #899's poison-dead steps): a
+    # stopgap until the rebalance with the fourth shard
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup

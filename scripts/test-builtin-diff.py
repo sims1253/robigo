@@ -242,6 +242,9 @@ class Batches(unittest.TestCase):
         # remove the other's tree mid-case (the driver checks its HOME's
         # link to GNU R's sources and its own file after a pause)
         d = tempfile.mkdtemp()
+        # a key of this invocation's own, shared by its two runs: another
+        # copy of this suite running at once has its own row
+        key = f"test-concurrent-{os.path.basename(d)}"
         drv = os.path.join(d, "fake.py")
         with open(drv, "w") as f:
             f.write(FAKE)
@@ -255,7 +258,7 @@ class Batches(unittest.TestCase):
                 keep = {{"N": "4", "MAKE_FILES": "1", "CHECK_HOME": "1"}}
                 with unittest.mock.patch.object(bd, "ENV", {{**bd.ENV, **keep}}):
                     lost = bd.run_isolated([sys.executable, {drv!r}], {{**os.environ, **keep}}, "batch", sys.argv[1], 4,
-                                           "test-concurrent", rsrc={os.path.join(d, "rsrc", "R")!r})
+                                           {key!r}, rsrc={os.path.join(d, "rsrc", "R")!r})
                 print(json.dumps({{str(k): v for k, v in lost.items()}}))
                 """))
         outs = [os.path.join(d, f"out{k}") for k in (1, 2)]
@@ -268,18 +271,21 @@ class Batches(unittest.TestCase):
             for i in range(1, 5):
                 with open(os.path.join(o, f"{i:06d}.files")) as f:
                     self.assertEqual([x[0] for x in json.load(f)], [".", f"made-{i}"])
-        self.assertFalse(os.path.lexists(bd.case_root("test-concurrent")))
+        self.assertFalse(os.path.lexists(bd.case_root(key)))
+        os.remove(bd.case_root(key) + ".lock")
 
     def test_the_case_directory_is_removed_when_a_run_fails(self):
         d = tempfile.mkdtemp()
         drv = os.path.join(d, "fake.py")
         with open(drv, "w") as f:
             f.write(FAKE)
+        key = f"test-unusable-{os.path.basename(d)}"
         with unittest.mock.patch.object(bd, "ENV", {**bd.ENV, "N": "2", "UNUSABLE": "1"}):
             with self.assertRaises(bd.Unusable):
                 bd.run_isolated([sys.executable, drv], {**os.environ, "N": "2", "UNUSABLE": "1"}, "batch",
-                                os.path.join(d, "out"), 2, "test-unusable")
-        self.assertFalse(os.path.lexists(bd.case_root("test-unusable")))
+                                os.path.join(d, "out"), 2, key)
+        self.assertFalse(os.path.lexists(bd.case_root(key)))
+        os.remove(bd.case_root(key) + ".lock")
 
     def test_the_case_directory_mode_does_not_follow_the_harness_umask(self):
         d = tempfile.mkdtemp()
