@@ -350,12 +350,14 @@ def target_dir():
 def debug_assertions_steps(crates):
     """The debug-assertions shard: the R_HOME tree, the crates' release tests
     and the conformance, all on one release build with debug assertions on,
-    in a target directory of its own (the normal build stays as it is)."""
+    in a target directory of its own (the normal build stays as it is). The
+    R_HOME step builds robigo-heap for its headers, so it gets the same
+    flags and target: nothing in this shard builds into the normal one."""
     pkgs = [x for c in crates for x in ("-p", c)]
     test = ["cargo", "test", "--release", "--locked"]
     env = {"RUSTFLAGS": "-C debug-assertions=on", "CARGO_TARGET_DIR": target_dir() + "-debug-assertions"}
     return every_cpu([
-        ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", {}, ["scripts/rt-home.sh"]),
+        ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", env, ["scripts/rt-home.sh"]),
         ("release tests with debug assertions (-C debug-assertions=on)", env,
          [*test, *pkgs, "--", "--skip", CONFORMANCE]),
         ("conformance with debug assertions (-C debug-assertions=on)", env, conformance_command()),

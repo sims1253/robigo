@@ -87,11 +87,14 @@ class RtCi(unittest.TestCase):
         with mock.patch.object(rt, "target_dir", return_value="/t/target"):
             steps = rt.shard_steps(["robigo-rt"], "debug-assertions")
         self.assertEqual([t for t, _, _ in steps][0], "the R_HOME tree, tools.so built (scripts/rt-home.sh)")
+        # every step, the R_HOME tree included (rt-home.sh builds robigo-heap
+        # for its headers), builds with the flag into the shard's target
+        for _, e, _ in steps:
+            self.assertEqual(e["RUSTFLAGS"], "-C debug-assertions=on")
+            self.assertEqual(e["CARGO_TARGET_DIR"], "/t/target-debug-assertions")
         built = [(e, c) for _, e, c in steps[1:]]
         self.assertEqual(len(built), 2)
         for e, c in built:
-            self.assertEqual(e["RUSTFLAGS"], "-C debug-assertions=on")
-            self.assertEqual(e["CARGO_TARGET_DIR"], "/t/target-debug-assertions")
             self.assertEqual(c[:4], ["cargo", "test", "--release", "--locked"])
         self.assertIn(rt.CONFORMANCE, built[1][1])
         self.assertNotIn("debug assertions", " ".join(t for t, _, _ in rt.steps(["robigo-rt"])))
