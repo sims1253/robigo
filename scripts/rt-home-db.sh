@@ -19,13 +19,8 @@
 #                        tools and compiler
 # Not run: tools-mklazycomp (tools stays source, loadNamespace's
 # sys.source), the R target's bibliographies and dictionaries (utils).
-# INTERIM(B, datetime.c): the steps that install a description by R
-# (`Built:` is format(Sys.time(), ..., tz = "UTC", usetz = TRUE)) read
-# scripts/rt-home-db-interim.R first, stand-ins for as.POSIXlt.POSIXct
-# and format.POSIXlt in UTC; the build stops, saying to delete them, once
-# the robigo-rt it runs implements .Internal(as.POSIXlt()).
-# The tree is rebuilt when the source tree, this script, the stand-ins or
-# the binary changes (the stamp holds the four).
+# The tree is rebuilt when the source tree, this script or the binary
+# changes (the stamp holds the three).
 #   scripts/rt-home-db.sh --robigo-rt BIN [DIR]   # default .robigo/rt-home-db
 # BIN is required (never a default target's binary, which another build may
 # have written): the tree records what built it in .rt-home-db-builder
@@ -67,8 +62,7 @@ src_tree=$(scripts/rt-home.sh)
 exec 8> "$src_tree.lock"
 flock -s 8
 rsrc=$(scripts/r-src.sh)
-interim=$PWD/scripts/rt-home-db-interim.R
-stamp="$(cat "$src_tree/.rt-home") $(sha256sum "$0" | cut -c1-16) $(sha256sum "$interim" | cut -c1-16) $(sha256sum "$bin" | cut -c1-16)"
+stamp="$(cat "$src_tree/.rt-home") $(sha256sum "$0" | cut -c1-16) $(sha256sum "$bin" | cut -c1-16)"
 if [ -f "$out/.rt-home-db" ] && [ "$(cat "$out/.rt-home-db")" = "$stamp" ]; then
   echo "$out"
   exit 0
@@ -97,9 +91,8 @@ for p in base tools compiler; do
   cp "$lib/$p/DESCRIPTION" "$tmp/src/$p/DESCRIPTION"
 done
 # R_EXE: `[VAR=VALUE...] bin/R --vanilla --no-echo`, the script on stdin,
-# the boot the tree's base (`rexe BOOT VAR=VALUE... < script`); with
-# ROBIGO_RT_INTERIM=1 the stand-ins read first. A path the script needs
-# comes in RT_OUT (Sys.getenv), never inside the R text. HOME is an empty
+# the boot the tree's base (`rexe BOOT VAR=VALUE... < script`). A path
+# the script needs comes in RT_OUT (Sys.getenv), never inside the R text. HOME is an empty
 # directory, as in the oracle image's build: the system profile's
 # .libPaths() (whose environment base.rdb holds) adds R_LIBS_USER's
 # directory when it exists, which on a developer's machine it may
@@ -107,13 +100,8 @@ mkdir -p "$tmp/home"
 rexe() {
   local boot=$1
   shift
-  if [ "${ROBIGO_RT_INTERIM:-}" = 1 ]; then
-    { cat "$interim"; cat; } | env -u R_HOME -u ROBIGO_RT_INTERIM -u R_LIBS -u R_LIBS_USER -u R_LIBS_SITE HOME="$tmp/home" \
-      ROBIGO_RT_BOOT="$boot" "$@" "$tmp/bin/robigo-rt" --vanilla --no-echo > /dev/null
-  else
-    env -u R_HOME -u R_LIBS -u R_LIBS_USER -u R_LIBS_SITE HOME="$tmp/home" \
-      ROBIGO_RT_BOOT="$boot" "$@" "$tmp/bin/robigo-rt" --vanilla --no-echo > /dev/null
-  fi
+  env -u R_HOME -u R_LIBS -u R_LIBS_USER -u R_LIBS_SITE HOME="$tmp/home" \
+    ROBIGO_RT_BOOT="$boot" "$@" "$tmp/bin/robigo-rt" --vanilla --no-echo > /dev/null
 }
 # R: src/library/translations/Makefile.in all (its mkdesc runs no R: the
 # Makefile sets no R_EXE): the message catalogues (inst/*) and the
@@ -122,26 +110,6 @@ rexe() {
 mkdir -p "$lib/translations"
 cp -R "$rsrc/src/library/translations/inst/." "$lib/translations/"
 sed -e "s/@VERSION@/$version/g" "$rsrc/src/library/translations/DESCRIPTION.in" > "$lib/translations/DESCRIPTION"
-# INTERIM(B): the stand-ins expire with B's port. Once robigo-rt
-# implements .Internal(as.POSIXlt()), the build stops here until they are
-# deleted, so they cannot outlive the port
-# (the probe prints `missing` while the internal says it is not
-# implemented, `implemented` once it returns; anything else, or the run
-# failing, is a failed probe, not the port)
-probe='r <- tryCatch(.Internal(as.POSIXlt(.POSIXct(0, "UTC"), "UTC")), error = function(e) e)
-cat(if (!inherits(r, "error")) "implemented" else if (grepl("is not implemented yet", conditionMessage(r), fixed = TRUE)) "missing" else paste("error:", conditionMessage(r)))'
-st=0
-lt=$(echo "$probe" | env -u R_HOME -u R_LIBS -u R_LIBS_USER -u R_LIBS_SITE HOME="$tmp/home" \
-  ROBIGO_RT_BOOT=stage0 R_DEFAULT_PACKAGES=NULL R_ENABLE_JIT=0 "$tmp/bin/robigo-rt" --vanilla --no-echo) || st=$?
-if [ "$st" != 0 ] || { [ "$lt" != missing ] && [ "$lt" != implemented ]; }; then
-  echo "rt-home-db.sh: the probe for .Internal(as.POSIXlt()) failed (status $st, output: $lt)" >&2
-  exit 1
-fi
-if [ "$lt" = implemented ]; then
-  echo "rt-home-db.sh: robigo-rt implements .Internal(as.POSIXlt()) now (B's datetime.c port):" >&2
-  echo "  delete scripts/rt-home-db-interim.R and this script's ROBIGO_RT_INTERIM, its stand-ins' use" >&2
-  exit 1
-fi
 # R: share/make/basepkg.mk mkdesc2 (base-all and tools-all; PKG_BUILT_STAMP
 # empty, R_OSTYPE unix)
 for p in base tools; do
@@ -150,13 +118,13 @@ done
 # R: src/library/tools/Makefile.in all (its last command; tools' R_EXE is
 # `R_ENABLE_JIT=0 TZ=UTC bin/R --vanilla --no-echo`: no compiler yet)
 (cd "$tmp/src/tools" && echo "tools:::.install_package_description('.', Sys.getenv('RT_OUT'))" |
-  ROBIGO_RT_INTERIM=1 rexe stage0 RT_OUT="$lib/tools" R_DEFAULT_PACKAGES=NULL R_ENABLE_JIT=0 TZ=UTC)
+  rexe stage0 RT_OUT="$lib/tools" R_DEFAULT_PACKAGES=NULL R_ENABLE_JIT=0 TZ=UTC)
 # R: src/library/compiler/Makefile.in (R_EXE = R_ENABLE_JIT=0 TZ=UTC bin/R
 # --vanilla --no-echo): all's mkdesc (share/make/basepkg.mk) then
 # mklazycomp (share/make/lazycomp.mk; mkR1's all.R is rt-home.sh's
 # library/compiler/R/compiler already)
 (cd "$tmp/src/compiler" && echo "tools:::.install_package_description('.', Sys.getenv('RT_OUT'))" |
-  ROBIGO_RT_INTERIM=1 rexe stage0 RT_OUT="$lib/compiler" R_DEFAULT_PACKAGES=NULL R_ENABLE_JIT=0 TZ=UTC)
+  rexe stage0 RT_OUT="$lib/compiler" R_DEFAULT_PACKAGES=NULL R_ENABLE_JIT=0 TZ=UTC)
 echo 'tools:::makeLazyLoading("compiler")' |
   rexe stage0 _R_COMPILE_PKGS_=1 R_COMPILER_SUPPRESS_ALL=1 R_DEFAULT_PACKAGES=NULL LC_ALL=C R_ENABLE_JIT=0 TZ=UTC
 for f in compiler.rdb compiler.rdx; do
@@ -175,7 +143,7 @@ install -m 644 "$rsrc/src/library/base/baseloader.R" "$lib/base/R/base"
 # bin/R --vanilla --no-echo`), then the descriptions and the parsed
 # NAMESPACE files as RDS (its own, `bin/R --vanilla --no-echo`)
 (cd "$tmp/src/base" && echo "tools:::.install_package_description('.', Sys.getenv('RT_OUT'))" |
-  ROBIGO_RT_INTERIM=1 rexe rdb RT_OUT="$lib/base" R_DEFAULT_PACKAGES=NULL TZ=UTC)
+  rexe rdb RT_OUT="$lib/base" R_DEFAULT_PACKAGES=NULL TZ=UTC)
 echo 'tools:::.vinstall_package_descriptions_as_RDS(Sys.getenv("RT_OUT"), "base tools compiler")' |
   rexe rdb RT_OUT="$lib" R_DEFAULT_PACKAGES=tools LC_ALL=C
 rm -f "$lib/tools/Meta/nsInfo.rds"

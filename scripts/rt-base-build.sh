@@ -110,8 +110,11 @@ cp -a "$home/share" "$B/share"
 
 cat > "$B/bin/R" << EOF
 #!/bin/bash
-# the build's R: robigo-rt, its R_HOME the build tree (install layout)
+# the build's R: robigo-rt, its R_HOME the build tree (install layout),
+# booted GNU R's way (R_ReplFile of the tree's library/base/R/base: the
+# source until base-mklazycomp installs baseloader.R), not M1's loader
 unset R_HOME R_SHARE_DIR R_INCLUDE_DIR R_DOC_DIR
+export ROBIGO_RT_BOOT=stage0
 if [ -n "$shim" ]; then
   { cat "$shim"; cat; } | exec "$out/inst/bin/robigo-rt" "\$@"
 else

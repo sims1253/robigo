@@ -23,12 +23,10 @@ Contains #933's head (bef8b1644) and #925's (6d33c8b93, `Sys.time`,
   `scripts/rt-rdb-compare.sh` takes the tree and maps that path to GNU R's
   build tree (E's `path` finding): a database records its build path in
   GNU R too (`.Library`, a namespace's `path`).
-- **INTERIM(B, datetime.c)**: the three steps that write `Built:`
-  (`format(Sys.time(), ..., tz = "UTC", usetz = TRUE)`) first read
-  `scripts/rt-home-db-interim.R`, E's UTC stand-ins for
-  `as.POSIXlt.POSIXct` and `format.POSIXlt`; the steps that write
-  compiler.rdb and base.rdb do not. The build stops, saying to delete the
-  file, once the robigo-rt it runs implements `.Internal(as.POSIXlt())`.
+- **No stand-ins**: B's #935 (`as.POSIXlt`) and #947 (`format.POSIXlt`)
+  give the three steps that write `Built:` what they need, so the tree
+  is built with nothing standing in. (The INTERIM stand-ins this PR first
+  carried, with their self-expiring check, are deleted with them.)
 - **The JIT** (crates/robigo-rt/src/jit.rs): off while R starts
   (`at_startup`: `R_jit_enabled`, `R_compile_pkgs`, `R_disable_bytecode`
   0, Defn.h's "has to be 0 during R startup"; the strategy and minimum
@@ -158,3 +156,21 @@ Contains #933's head (bef8b1644) and #925's (6d33c8b93, `Sys.time`,
   empty; Debian's `R_LIBS_SITE` line is one string, written and checked;
   `Parser::error_frontier`'s doc names the private `codegen` without a
   link.
+- **L4: GNU R's own build, run by robigo-rt, no stand-ins** (with B's
+  #935 and #947; `scripts/rt-base-build.sh --robigo-rt BIN`, whose R now
+  boots GNU R's way, `ROBIGO_RT_BOOT=stage0`, not M1's loader): all ten
+  steps of src/library/Makefile.in's R target run to the end (profile,
+  translations, base, tools and compiler `all`, base and tools
+  `mklazycomp`, base `mkdesc`, vdesc, vns), 51 s. Its databases against
+  the oracle's (`scripts/rt-rdb-compare.sh`, which now maps both spellings
+  of the walk's tree, its build tree and the install link to it):
+
+  | database | records | the same bytes | the same but for build paths | other |
+  |---|---:|---:|---:|---:|
+  | base.rdb | 1189 | 1186 | 3 | 0 |
+  | compiler.rdb | 297 | 296 | 1 | 0 |
+  | tools.rdb | 954 | 951 | 3 | 0 |
+  | tools' sysdata.rdb | 3 | 3 | 0 | 0 |
+
+  The database tree (`scripts/rt-home-db.sh`, 23 s): base.rdb 1186 + 3,
+  compiler.rdb 296 + 1, the same classes.

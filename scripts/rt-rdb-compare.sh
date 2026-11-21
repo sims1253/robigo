@@ -31,11 +31,14 @@ esac
 if [ -f "$out/.rt-home-db-built-at" ]; then
   lib=$out/library
   inst=$(cat "$out/.rt-home-db-built-at")
+  inst2=$inst
   builder=$out/.rt-home-db-builder
 else
   [ -d "$out/build/library" ] || { echo "error: $out/build/library does not exist (run scripts/rt-base-build.sh)" >&2; exit 2; }
   lib=$out/build/library
+  # (its R_HOME is a link to the build tree: the records name either)
   inst=$out/inst/lib/robigo
+  inst2=$out/build
   builder=$out/builder
 fi
 # what built the databases (scripts/rt-builder.sh's record), in the
@@ -56,8 +59,8 @@ src=$("$root/scripts/r-src.sh")
 cd "$root"
 # (the paths go to the container's sh as arguments)
 # shellcheck disable=SC2016 # the inner sh expands them
-exec scripts/oracle-run.sh 4.6.2 sh -c 'set -eu; h=$(R RHOME); lib=$1; src=$2; inst=$3; shift 3
+exec scripts/oracle-run.sh 4.6.2 sh -c 'set -eu; h=$(R RHOME); lib=$1; src=$2; inst=$3; inst2=$4; shift 4
   top=$(Rscript --vanilla -e "cat(tools:::.R_top_srcdir_default)")
   [ -n "$h" ] && [ -n "$top" ] || { echo "error: no R_HOME or build tree from the oracle" >&2; exit 2; }
-  exec Rscript --vanilla scripts/rt-rdb-compare.R --map "$inst=$top" --map "$src=$top" "$lib" "$h/library" "$@"' \
-  sh "$lib" "$src" "$inst" "$@"
+  exec Rscript --vanilla scripts/rt-rdb-compare.R --map "$inst=$top" --map "$inst2=$top" --map "$src=$top" "$lib" "$h/library" "$@"' \
+  sh "$lib" "$src" "$inst" "$inst2" "$@"
