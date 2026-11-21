@@ -56,9 +56,11 @@ pub(super) struct Diag {
     /// `None`: no report (the strong library only); `Some(None)`: stderr
     report: Option<Option<std::fs::File>>,
     strong: Option<String>,
-    seen: HashSet<(usize, usize, usize)>,
+    // (BuildFx, not std's RandomState: seeding that can reach a process-global
+    // lazy cell, `/dev/urandom`'s, that a fork could catch mid-way; Sol r8 S14)
+    seen: HashSet<(usize, usize, usize), BuildFx>,
     /// `dladdr` per routine: (library, symbol)
-    names: HashMap<usize, (String, String)>,
+    names: HashMap<usize, (String, String), BuildFx>,
     // this collection's
     /// scanning only the strong library's segments
     strong_phase: bool,
@@ -94,8 +96,8 @@ impl Diag {
             to,
             report,
             strong,
-            seen: HashSet::new(),
-            names: HashMap::new(),
+            seen: HashSet::default(),
+            names: HashMap::default(),
             strong_phase: false,
             cand: Vec::new(),
             open: 0,

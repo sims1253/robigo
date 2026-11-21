@@ -20,21 +20,38 @@ fn forks_overlapping_the_first_isolate_start_give_working_children() {
     use std::time::{Duration, Instant};
     // a fork whose handlers hang never returns, before any deadline below
     // could run: abort the process instead
+    // disarmed when the test ends, a failing one too (its guard drops)
+    struct Disarm(Arc<AtomicBool>);
+    impl Drop for Disarm {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
     let done = Arc::new(AtomicBool::new(false));
     {
         let done = Arc::clone(&done);
         std::thread::spawn(move || {
             let until = Instant::now() + Duration::from_secs(90);
-            while Instant::now() < until {
-                if done.load(Ordering::SeqCst) {
-                    return;
+            // (the flag read after the last sleep too)
+            while !done.load(Ordering::SeqCst) {
+                if Instant::now() >= until {
+                    // raw write(2) from a thread of its own, and the abort
+                    // after a short wait whether or not it finished: std's
+                    // stderr lock, or a full stderr pipe, may be what is stuck
+                    // (a thread the system refuses only loses the message)
+                    let _ = std::thread::Builder::new().spawn(|| {
+                        let msg = b"fork_first_isolate: no progress in 90 s (a fork or its handlers hung)\n";
+                        // SAFETY: a live buffer to fd 2.
+                        unsafe { libc::write(2, msg.as_ptr().cast(), msg.len()) };
+                    });
+                    std::thread::sleep(Duration::from_millis(200));
+                    std::process::abort();
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-            eprintln!("fork_first_isolate: no progress in 90 s (a fork or its handlers hung)");
-            std::process::abort();
         });
     }
+    let _disarm = Disarm(Arc::clone(&done));
     let starter = std::thread::spawn(|| {
         let mut iso = robigo_rtcore::OwnedIsolate::new();
         let cx = iso.cx();
@@ -82,13 +99,18 @@ fn forks_overlapping_the_first_isolate_start_give_working_children() {
             }
             assert!(r == 0, "child {k}: waitpid failed: {}", std::io::Error::last_os_error());
             if Instant::now() > deadline {
-                // SAFETY: our own child.
-                unsafe { libc::kill(pid, libc::SIGKILL) };
+                // SAFETY: our own child, killed and reaped (again after a
+                // signal).
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                    while libc::waitpid(pid, &mut status, 0) == -1
+                        && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR)
+                    {}
+                }
                 panic!("child {k}, forked during the first isolate's start, never finished");
             }
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "child {k} failed (status {status})");
     }
-    done.store(true, Ordering::SeqCst);
 }

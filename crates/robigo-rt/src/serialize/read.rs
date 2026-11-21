@@ -30,7 +30,6 @@ use robigo_rtcore::{Cx, Out, RResult, Ref, Root, Scope};
 const INITIAL_REFREAD_TABLE_SIZE: usize = 128;
 /// `R_CODESET_MAX`.
 const R_CODESET_MAX: i32 = 63;
-const MAXIDSIZE: usize = 10000;
 
 /// A codeset the reader can convert from and to (GNU R's `Riconv` on
 /// glibc converts between any; robigo has these).
@@ -552,21 +551,19 @@ impl<'r> Reader<'_, 'r> {
             let t = robigo_rtbuiltins::util::type_to_char(c);
             return Err(cx.error(&format!("'installTrChar' must be called on a CHARSXP, but got '{t}'")));
         };
-        let name = match robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(ch), cx.locale()) {
-            Ok(b) => b.into_owned(),
-            Err(_) => {
-                return Err(
-                    cx.error("robigo: a symbol name not representable in the native encoding is not implemented yet")
-                );
-            }
+        // installTrChar's translation, warning and name checks (Sol S1)
+        let (name, w) = match robigo_rtbuiltins::text::install_tr_name(robigo_rtbuiltins::coerce::text(ch), cx.locale())
+        {
+            Ok((n, w)) => (n.into_owned(), w),
+            Err(d) => return Err(cx.raise(d)),
         };
-        if name.is_empty() {
-            return Err(cx.error("attempt to use zero-length variable name"));
+        if let Some(w) = w {
+            cx.warning(&w)?;
         }
-        if name.len() > MAXIDSIZE {
-            return Err(cx.error(&format!("variable names are limited to {MAXIDSIZE} bytes")));
-        }
-        cx.install_rooted(s, &name)
+        let o = s.out(cx);
+        let r = o.root();
+        cx.build(o, |cx| Ok(cx.install_tr(pn.bind(cx).as_char().unwrap(), &name)?.into()))?;
+        Ok(r)
     }
 
     /// `ReadItem_Iterative`: a run of pairlist-like cells (LISTSXP,

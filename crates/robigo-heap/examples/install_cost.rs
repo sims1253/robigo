@@ -6,6 +6,9 @@ use robigo_heap::Core;
 
 const N: usize = 1024;
 
+// `hits` and `misses` have the same body on purpose: callgrind's
+// `--toggle-collect` tells the two measurements apart by function name, and
+// `#[inline(never)]` keeps each a function of its own.
 #[inline(never)]
 fn hits(c: &mut Core, names: &[Vec<u8>]) -> usize {
     let mut k = 0;

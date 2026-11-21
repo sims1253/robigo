@@ -15,15 +15,10 @@
 
 use std::process::Command;
 
-/// What base's boot gives today on stderr: the system profile's three
-/// expressions that call internals robigo-rt lacks (Sys.info and Sys.glob,
-/// E's). When they land, this is empty and the test changes with it.
-const PROFILE_STOPS: &str = "Error in Sys.info() : \n  robigo: .Internal(Sys.info()) is not implemented yet\n\
-Calls: Sys.setenv -> .expand_R_libs_env_var -> Sys.info\n\
-Error in Sys.info() : \n  robigo: .Internal(Sys.info()) is not implemented yet\n\
-Calls: Sys.setenv -> .expand_R_libs_env_var -> Sys.info\n\
-Error in Sys.glob(path.expand(paths), dirmark) : \n  robigo: .Internal(Sys.glob()) is not implemented yet\n\
-Calls: local ... eval -> eval -> eval -> eval -> .libPaths -> Sys.glob\n";
+/// What base's boot gives on stderr: nothing. The system profile runs to
+/// its end (its `Sys.info` and `Sys.glob` calls, through
+/// `.expand_R_libs_env_var` and `.libPaths`, are builtins now).
+const PROFILE_STOPS: &str = "";
 
 /// Whether the tree is made (else the test is skipped, unless
 /// `ROBIGO_RT_HOME_DB` says it must be).
