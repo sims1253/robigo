@@ -72,11 +72,24 @@ fn commit() {
     let gitdir: Option<PathBuf> = match std::env::var_os("GIT_DIR") {
         Some(g) => Some(root.join(g)),
         None if dot.is_dir() => Some(dot.clone()),
-        None => read(&dot).and_then(|s| s.strip_prefix("gitdir:").map(|g| root.join(g.trim()))),
+        None => {
+            // (the pointer watched: retargeted, it names another git dir)
+            if dot.is_file() {
+                watch(&dot);
+            }
+            read(&dot).and_then(|s| s.strip_prefix("gitdir:").map(|g| root.join(g.trim())))
+        }
     };
     let sha = gitdir.and_then(|gd| {
         // the shared directory of the refs (a worktree's commondir)
-        let common = read(&gd.join("commondir")).map(|c| gd.join(c)).unwrap_or_else(|| gd.clone());
+        // (watched where it exists, a worktree's; where it does not, the git
+        // dir is its own and nothing makes one appear: a watched path that
+        // is absent makes cargo rerun this script on every build)
+        let cd = gd.join("commondir");
+        if cd.is_file() {
+            watch(&cd);
+        }
+        let common = read(&cd).map(|c| gd.join(c)).unwrap_or_else(|| gd.clone());
         // a ref's value: a loose file (the worktree's own, then the shared
         // one) or packed-refs' "<sha> <name>" line; watched either way
         let lookup = |name: &str| -> Option<String> {
