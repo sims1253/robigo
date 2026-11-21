@@ -373,11 +373,14 @@ SHARDS = ("modes", "gctorture", "feature-builds", "builtin-diff", "debug-asserti
 # timeout (scripts/test-rt-ci.py pins the three relations). When a warning
 # fires, rebalance or remeasure: the dates say how old each measurement is.
 BUDGETS = {  # shard: (budget, measured minutes, where measured)
-    "modes": (23, 18.8, "2026-11-21, run 44883150235's steps re-sharded"),
-    "gctorture": (21, 16.8, "2026-11-21, run 44883150235's steps re-sharded"),
-    "feature-builds": (22, 18.1, "2026-11-21, run 44883150235's steps re-sharded"),
-    "builtin-diff": (9, 7.3, "2026-11-21, run 44883150235's steps re-sharded"),
-    "debug-assertions": (20, 16.5, "2026-11-21, estimated from a local run"),
+    "modes": (23, 18.40, "2026-11-21, run 44908057499 (#941)"),
+    "gctorture": (18, 14.81, "2026-11-21, run 44908057499 (#941)"),
+    # retry-torture's conformance 13.96 and the poison-dead steps 7.85: they
+    # share one feature build, so a split would build robigo-rt's test
+    # targets twice for about 2 minutes of wall
+    "feature-builds": (27, 21.94, "2026-11-21, run 44908057499 (#941)"),
+    "builtin-diff": (9, 6.67, "2026-11-21, run 44908057499 (#941)"),
+    "debug-assertions": (15, 11.67, "2026-11-21, run 44908057499 (#941)"),
 }
 WARN_AT = 0.9
 
