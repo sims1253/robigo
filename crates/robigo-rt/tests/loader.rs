@@ -47,14 +47,15 @@ fn the_wide_base_binds_every_name_lazily_m1_s_bound_among_them() {
     assert!(w.find(".AutoloadEnv").is_none());
     // the forms, in their order (Common.R's: attach, then .AutoloadEnv,
     // then .Autoloaded in it)
+    // (their text as the loader evaluates it: configure's substitutions made)
     let dir = robigo_rt::base::source_dir().unwrap_or_else(|e| panic!("{e}"));
-    let common = std::fs::read(dir.join("src/library/profile/Common.R")).unwrap();
     let texts: Vec<String> = w
         .boot
         .iter()
         .map(|f| {
             assert_eq!(f.src, "profile/Common.R");
-            String::from_utf8_lossy(&common[f.start..f.end]).into_owned()
+            let t = robigo_rt::base::form_text(&dir.join("src/library"), *f).unwrap_or_else(|e| panic!("{e}"));
+            String::from_utf8_lossy(&t).into_owned()
         })
         .collect();
     assert_eq!(
