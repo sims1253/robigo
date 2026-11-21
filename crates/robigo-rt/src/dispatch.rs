@@ -1290,8 +1290,13 @@ impl Search<'_> {
     ///   the fresh frame and promises, which nothing else holds.
     ///
     /// None of it evaluates, so no eval tick (no interrupt poll, no
-    /// finalizer: those run at eval ticks) and no evaluation depth. Only
-    /// allocation differs, which no R code can tell apart.
+    /// finalizer: those run at eval ticks) and no evaluation depth. What
+    /// differs is allocation. robigo-rt's collections are its own
+    /// (g3.md §3); GNU R's collection observables (`gc()`'s counts,
+    /// `gcinfo(TRUE)`'s reports, under `gctorture(TRUE)` one per allocation)
+    /// are L7's logical account, which must count here what GNU R allocates
+    /// on this path, skipped or not: promiseArgs' promises and cells, the
+    /// environment, R_data_class2's and usemethod's.
     fn misses(&self) -> bool {
         matches!(self.quick, Some(None))
     }
