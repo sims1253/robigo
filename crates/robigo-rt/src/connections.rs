@@ -1144,6 +1144,38 @@ struct GzReader<R> {
     done: bool,
     allow: bool,
     started: bool,
+    /// Inflated bytes not yet read, `obuf[opos..oend]`: a small read is
+    /// served from here, and the stream inflated a `Z_BUFSIZE` block at a
+    /// time (gzio.h reads its input through a buffer of that size too).
+    obuf: Vec<u8>,
+    opos: usize,
+    oend: usize,
+    /// An error found while inflating ahead ([`Ahead`]): raised by the read
+    /// that would have met it inflating in place, as before the buffer.
+    ahead: Option<Ahead>,
+    /// The error a read met: every later read meets one again, as the
+    /// stream left in its error state made them before the buffer. A bad
+    /// deflate stream's later reads ask the inflater again (its message
+    /// for a repeated call); a trailer's error is given again as it was.
+    failed: Option<(std::io::ErrorKind, String, bool)>,
+}
+
+/// An error a [`GzReader`] found inflating a block ahead of the reads: the
+/// block holds the bytes inflated before it, and `oend` is its boundary,
+/// which the read that reaches it meets: a member's trailer is checked when
+/// its last byte comes out, and inflate goes on to the next block header or
+/// symbol, and so to a bad one, with the output full.
+struct Ahead {
+    err: std::io::Error,
+    /// A bad deflate stream (else a member's trailer).
+    deflate: bool,
+}
+
+/// What one [`GzReader::inflate_into`] step made: the bytes, and an error
+/// met after them.
+struct Step {
+    made: usize,
+    err: Option<Ahead>,
 }
 
 impl<R: Read> GzReader<R> {
@@ -1160,6 +1192,11 @@ impl<R: Read> GzReader<R> {
             done: false,
             allow,
             started: false,
+            obuf: Vec::new(),
+            opos: 0,
+            oend: 0,
+            ahead: None,
+            failed: None,
         }
     }
 
@@ -1266,8 +1303,27 @@ impl<R: Read> GzReader<R> {
         Header::Ok
     }
 
+    /// Record `e` as the error every later read meets ([`GzReader::failed`]).
+    fn fail(&mut self, e: std::io::Error, deflate: bool) -> std::io::Error {
+        self.failed = Some((e.kind(), e.to_string(), deflate));
+        e
+    }
+
     /// Read up to `out.len()` bytes, as many as there are.
     fn read_full(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if out.is_empty() {
+            return Ok(0);
+        }
+        if let Some((kind, msg, deflate)) = &self.failed {
+            if *deflate {
+                // (the inflater's own answer to a call after its error)
+                let mut one = [0u8; 1];
+                if let Err(e) = self.inflate.decompress(&[], &mut one, FlushDecompress::None) {
+                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e));
+                }
+            }
+            return Err(std::io::Error::new(*kind, msg.clone()));
+        }
         if !self.started {
             match self.check_header() {
                 Header::Ok => {}
@@ -1280,7 +1336,7 @@ impl<R: Read> GzReader<R> {
                 }
             }
         }
-        let mut n = 0;
+        let mut n = self.from_block(out, 0)?;
         while n < out.len() && !self.done {
             if self.transparent {
                 let k = (self.end - self.pos).min(out.len() - n);
@@ -1296,49 +1352,100 @@ impl<R: Read> GzReader<R> {
                 }
                 continue;
             }
-            self.fill()?;
-            let before_in = self.inflate.total_in();
-            let before_out = self.inflate.total_out();
-            let st = self
-                .inflate
-                .decompress(&self.buf[self.pos..self.end], &mut out[n..], FlushDecompress::None)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-            let used = (self.inflate.total_in() - before_in) as usize;
-            let made = (self.inflate.total_out() - before_out) as usize;
-            self.pos += used;
-            self.crc.update(&out[n..n + made]);
-            n += made;
-            match st {
-                Status::StreamEnd => {
-                    // the trailer: CRC-32 and length, little-endian
-                    let mut t = [0u8; 8];
-                    for x in t.iter_mut() {
-                        *x = self.byte()?.unwrap_or(0);
-                    }
-                    let crc = u32::from_le_bytes([t[0], t[1], t[2], t[3]]);
-                    if crc != self.crc.sum() {
-                        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "crc error"));
-                    }
-                    match self.check_header() {
-                        Header::Ok => {
-                            self.inflate.reset(false);
-                            self.crc = Crc::new();
-                        }
-                        _ => {
-                            self.transparent = false;
-                            self.done = true;
-                        }
-                    }
+            if out.len() - n >= Z_BUFSIZE {
+                // a large read: inflated in place, an error met at once
+                let st = self.inflate_into(&mut out[n..])?;
+                if let Some(a) = st.err {
+                    return Err(self.fail(a.err, a.deflate));
                 }
-                _ => {
-                    if used == 0 && made == 0 && self.src_eof {
-                        // truncated
+                n += st.made;
+            } else {
+                // a small one: a block into the buffer, then from there
+                let mut ob = std::mem::take(&mut self.obuf);
+                ob.resize(Z_BUFSIZE, 0);
+                let st = self.inflate_into(&mut ob);
+                self.obuf = ob;
+                let st = st?;
+                (self.opos, self.oend, self.ahead) = (0, st.made, st.err);
+                n = self.from_block(out, n)?;
+            }
+        }
+        Ok(n)
+    }
+
+    /// Copy what the block holds into `out[n..]`; the new count. An error
+    /// found ahead ([`Ahead`]) is raised, with nothing copied, by the read
+    /// that would have met it inflating in place: one that reaches the
+    /// block's boundary.
+    fn from_block(&mut self, out: &mut [u8], n: usize) -> std::io::Result<usize> {
+        let left = self.oend - self.opos;
+        let want = out.len() - n;
+        if self.ahead.is_some() && want > 0 && want >= left {
+            let a = self.ahead.take().expect("robigo: an error ahead");
+            self.opos = self.oend;
+            return Err(self.fail(a.err, a.deflate));
+        }
+        let k = left.min(want);
+        out[n..n + k].copy_from_slice(&self.obuf[self.opos..self.opos + k]);
+        self.opos += k;
+        Ok(n + k)
+    }
+
+    /// One step of the stream into `dst`: inflate what the input buffer
+    /// holds (refilled when empty), the CRC-32 over what came out; at a
+    /// member's end its trailer checked and the next member's header read.
+    /// What came out (0 at the end, `done` then set), and an error met after
+    /// it: a bad deflate stream, or a member's trailer that does not match
+    /// (`done` set). An error of the source is returned as such.
+    fn inflate_into(&mut self, dst: &mut [u8]) -> std::io::Result<Step> {
+        self.fill()?;
+        let before_in = self.inflate.total_in();
+        let before_out = self.inflate.total_out();
+        let r = self.inflate.decompress(&self.buf[self.pos..self.end], dst, FlushDecompress::None);
+        let used = (self.inflate.total_in() - before_in) as usize;
+        let made = (self.inflate.total_out() - before_out) as usize;
+        self.pos += used;
+        self.crc.update(&dst[..made]);
+        let st = match r {
+            Ok(st) => st,
+            Err(e) => {
+                self.done = true;
+                let err = std::io::Error::new(std::io::ErrorKind::InvalidData, e);
+                return Ok(Step { made, err: Some(Ahead { err, deflate: true }) });
+            }
+        };
+        match st {
+            Status::StreamEnd => {
+                // the trailer: CRC-32 and length, little-endian
+                let mut t = [0u8; 8];
+                for x in t.iter_mut() {
+                    *x = self.byte()?.unwrap_or(0);
+                }
+                let crc = u32::from_le_bytes([t[0], t[1], t[2], t[3]]);
+                if crc != self.crc.sum() {
+                    self.done = true;
+                    let err = std::io::Error::new(std::io::ErrorKind::InvalidData, "crc error");
+                    return Ok(Step { made, err: Some(Ahead { err, deflate: false }) });
+                }
+                match self.check_header() {
+                    Header::Ok => {
+                        self.inflate.reset(false);
+                        self.crc = Crc::new();
+                    }
+                    _ => {
+                        self.transparent = false;
                         self.done = true;
                     }
                 }
             }
+            _ => {
+                if used == 0 && made == 0 && self.src_eof {
+                    // truncated
+                    self.done = true;
+                }
+            }
         }
-        Ok(n)
+        Ok(Step { made, err: None })
     }
 }
 
@@ -2213,5 +2320,92 @@ mod expand_tests {
         assert!(v.starts_with(&home));
         assert_eq!(w.len(), 1);
         assert_eq!(expand_file_name(b"~root/x").0, [&home[..], b"/x"].concat());
+    }
+}
+
+#[cfg(test)]
+mod gz_reader_tests {
+    //! `GzReader`'s output buffer: the bytes are those of reading in
+    //! place, and an error found inflating ahead is met by the read that
+    //! would have met it in place (the read reaching its boundary), then by
+    //! every later read.
+    use super::{GzReader, Z_BUFSIZE};
+    use std::io::{Cursor, Write};
+
+    fn gz(data: &[u8]) -> Vec<u8> {
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(data).unwrap();
+        e.finish().unwrap()
+    }
+
+    /// A member of one stored, non-final block holding `data`, then an
+    /// invalid block type.
+    fn stored_then_bad(data: &[u8]) -> Vec<u8> {
+        let mut v = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3, 0];
+        v.extend_from_slice(&(data.len() as u16).to_le_bytes());
+        v.extend_from_slice(&(!(data.len() as u16)).to_le_bytes());
+        v.extend_from_slice(data);
+        v.push(0x07);
+        v.extend_from_slice(&[0; 16]);
+        v
+    }
+
+    fn reader(bytes: Vec<u8>) -> GzReader<Cursor<Vec<u8>>> {
+        GzReader::new(Cursor::new(bytes), true)
+    }
+
+    #[test]
+    fn small_and_large_reads_give_the_data() {
+        let data: Vec<u8> = (0..3 * Z_BUFSIZE as u32 + 17).map(|i| (i * 7 % 251) as u8).collect();
+        for pattern in [&[1usize, 3, 4][..], &[4], &[Z_BUFSIZE], &[5, Z_BUFSIZE + 3, 2]] {
+            let mut r = reader([gz(&data[..1000]), gz(&data[1000..])].concat());
+            let mut got = Vec::new();
+            let mut i = 0;
+            loop {
+                let mut b = vec![0; pattern[i % pattern.len()]];
+                i += 1;
+                let n = r.read_full(&mut b).unwrap();
+                if n == 0 {
+                    break;
+                }
+                got.extend_from_slice(&b[..n]);
+            }
+            assert_eq!(got, data, "{pattern:?}");
+        }
+    }
+
+    #[test]
+    fn a_bad_crc_is_met_by_the_read_reaching_the_end_and_sticks() {
+        let mut bytes = gz(b"abcdef");
+        let k = bytes.len() - 8;
+        bytes[k] ^= 0xff;
+        let mut r = reader(bytes.clone());
+        let mut b = [0u8; 4];
+        assert_eq!(r.read_full(&mut b).unwrap(), 4);
+        assert!(r.read_full(&mut b[..2]).is_err(), "the read reaching the end");
+        assert!(r.read_full(&mut b).is_err(), "and every later one");
+        let mut r = reader(bytes);
+        assert!(r.read_full(&mut [0u8; 6]).is_err());
+    }
+
+    #[test]
+    fn a_bad_block_is_met_at_its_boundary_not_before() {
+        let data = [9u8; 40];
+        // before the boundary: fine
+        let mut r = reader(stored_then_bad(&data));
+        let mut b = [0u8; 39];
+        assert_eq!(r.read_full(&mut b).unwrap(), 39);
+        // a read reaching it exactly, or past it: the error, then always
+        assert!(r.read_full(&mut [0u8; 1]).is_err());
+        assert!(r.read_full(&mut [0u8; 1]).is_err());
+        let mut r = reader(stored_then_bad(&data));
+        assert!(r.read_full(&mut [0u8; 40]).is_err());
+        // a zero-length read meets nothing
+        let mut r = reader(stored_then_bad(&data));
+        assert_eq!(r.read_full(&mut [0u8; 39]).unwrap(), 39);
+        assert_eq!(r.read_full(&mut []).unwrap(), 0);
+        // nor after the error
+        assert!(r.read_full(&mut [0u8; 1]).is_err());
+        assert_eq!(r.read_full(&mut []).unwrap(), 0);
     }
 }

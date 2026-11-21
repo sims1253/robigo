@@ -429,13 +429,26 @@ impl Cx {
     /// the one below a `CTXT_BUILTIN` record), one trailing newline removed.
     // R: errors.c:Rf_warning
     pub fn warning(&mut self, msg: &str) -> RResult<()> {
+        // Rvsnprintf_mbcs(buf, psize = min(BUFSIZE, R_WarnLength + 1), ...)
+        let psize = crate::exit::ERROR_BUFSIZE.min(self.report_options().warn_length.get() + 1);
+        let mut buf = crate::exit::vsnprintf_cut(msg.as_bytes(), psize, self.locale().utf8).to_vec();
         // a message ending in a newline loses it
-        let msg = msg.strip_suffix('\n').unwrap_or(msg);
+        if buf.last() == Some(&b'\n') {
+            buf.pop();
+        }
+        // RprintTrunc(buf, pval >= psize)
+        if msg.len() >= psize {
+            let t = b"[... truncated]";
+            if buf.len() + 1 + t.len() < crate::exit::ERROR_BUFSIZE {
+                buf.push(b' ');
+                buf.extend_from_slice(t);
+            }
+        }
         let call = self.error_context_call().sexp();
         self.scope(|cx, s| {
             // SAFETY: a field of a live record, read in this interval.
             let c = s.root(cx, unsafe { Ref::from_sexp(call, cx) });
-            cx.warning_call(Some(c), msg)
+            cx.warning_call_bytes(Some(c), &buf)
         })
     }
 

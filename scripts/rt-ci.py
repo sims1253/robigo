@@ -184,6 +184,29 @@ FULL_MOVE_SLOW = {
 }
 
 
+# The cases that need longer than the slow modes' 600 s in the job's
+# GC_MOVE=young:16 gctorture step, and how long they get. Each still runs;
+# every other case keeps the 600 s, so a hung unlisted case still fails in
+# ten minutes (a listed one in its own time). The runner starts the listed
+# cases first, so they do not start late:
+YOUNG_MOVE_SLOW = {
+    # a C stack overflow's deep recursion, each frame under gctorture with
+    # the moving collector. In that step on CI: about 360 s (run
+    # 44865825323, 2026-11-21 04:22), about 600 s (run 44883150235, 08:27,
+    # passed at the limit), over 600 s (run 44896845237, #927: failed);
+    # 134-248 s on the 24-CPU workstation, with its load. Not a regression:
+    # the step's settings count 832-839 G user instructions at dc404c7da
+    # (run 44865825323's tree) and 822 G at main 6b5d719a8 (perf stat, two
+    # runs each, 2026-11-21), so the spread on CI is the runner's
+    "tests/r/conditions/c-stack-overflow.R": 1200,
+}
+
+
+def case_timeouts(slow):
+    """ROBIGO_CONF_TIMEOUTS's value for `slow` (case -> seconds)."""
+    return ",".join(f"{c}={secs}" for c, secs in sorted(slow.items()))
+
+
 def conformance_command():
     test = ["cargo", "test", "--release", "--locked"]
     return [*test, "-p", "robigo-rtapi", "--test", "conformance", "--", "--exact", CONFORMANCE, "--nocapture"]
@@ -207,7 +230,7 @@ def every_cpu(steps):
 def full_move_steps():
     """The nightly's full run (`--full-move`): the conformance slice under
     gctorture, every collection moving everything it may."""
-    full_slow = ",".join(f"{c}={secs}" for c, secs in sorted(FULL_MOVE_SLOW.items()))
+    full_slow = case_timeouts(FULL_MOVE_SLOW)
     return every_cpu([
         ("conformance under ROBIGO_GC_MOVE=1 with gctorture (every collection moves everything)",
          {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **SLOW, "ROBIGO_CONF_TIMEOUTS": full_slow},
@@ -270,7 +293,8 @@ def steps(crates):
         # H8: the young objects at each collection, everything at every N-th;
         # the nightly runs it with every collection moving everything
         (f"conformance under ROBIGO_GC_MOVE={GC_MOVE_YOUNG} with gctorture (E3)",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": GC_MOVE_YOUNG, **slow}, conformance),
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": GC_MOVE_YOUNG, **slow,
+          "ROBIGO_CONF_TIMEOUTS": case_timeouts(YOUNG_MOVE_SLOW)}, conformance),
         # D5's frame recycling (docs/g3.md §16): every frame that would be recycled
         # is poisoned and held back instead, so a frame that escaped without
         # its ESCAPED bit panics where it is used next

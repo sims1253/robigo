@@ -1,6 +1,2 @@
 # builtin-diff known failures: activeBindingFunction, seed 0, key f3f6eaa8258bc53b8fdf2d73
-# activeBindingFunction: 156 / 160 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
-140
-145
-146
-151
+# activeBindingFunction: 160 / 160 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
