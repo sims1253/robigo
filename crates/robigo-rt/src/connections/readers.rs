@@ -10,6 +10,7 @@ use super::{
 use robigo_heap::types::STRSXP;
 use robigo_rtbuiltins::coerce::vector::as_integer_warn;
 use robigo_rtbuiltins::util::as_logical;
+use robigo_rtcore::View;
 use robigo_rtcore::{Args, Char, Cx, Encoding, Lgl, Out, RResult, Root};
 use std::ffi::c_int;
 
@@ -292,6 +293,234 @@ pub fn do_readlines(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
     })
 }
 
+/// One `con->read(p, 1, buf.len(), con)` of connection `ncon`: how many
+/// bytes it read (a read the system fails reads none, as the C's fread
+/// does). The connection's own read, past its text buffer and pushback.
+fn read_bytes(cx: &mut Cx, ncon: i32, buf: &mut [u8]) -> RResult<usize> {
+    let r = with_conn(cx, ncon, |c| match super::conn_read_raw(c, buf) {
+        Ok(k) => Ok(k),
+        Err(e) if e.raw_os_error().is_none() => Err(e.to_string()),
+        Err(_) => Ok(0),
+    })?;
+    r.map_err(|m| cx.error(&m))
+}
+
+/// `readFixedString(con, len, useBytes)`: `len` characters (bytes when
+/// `!utf8`) from the connection, cut at the first NUL (the warning given
+/// as the NUL is read, once per call); `None` when nothing could be read.
+// R: connections.c:readFixedString
+fn read_fixed_string(
+    cx: &mut Cx,
+    ncon: i32,
+    len: usize,
+    utf8: bool,
+    warn_on_nul: &mut bool,
+) -> RResult<Option<Vec<u8>>> {
+    let mut buf = Vec::with_capacity(len.min(1 << 16));
+    if utf8 {
+        for i in 0..len {
+            let mut b = [0u8; 1];
+            if read_bytes(cx, ncon, &mut b)? == 0 {
+                if i == 0 {
+                    return Ok(None);
+                }
+                break;
+            }
+            let clen = utf8clen(b[0]);
+            buf.push(b[0]);
+            if clen > 1 {
+                let q = buf.len() - 1;
+                buf.resize(q + clen, 0);
+                let m = read_bytes(cx, ncon, &mut buf[q + 1..])?;
+                if m < clen - 1 {
+                    return Err(cx.error("invalid UTF-8 input in readChar()"));
+                }
+                // NB: this only checks validity of multi-byte characters
+                if robigo_text::mbrtowc_utf8(&buf[q..], 0).0 < 0 {
+                    return Err(cx.error("invalid UTF-8 input in readChar()"));
+                }
+            } else if b[0] == 0 && *warn_on_nul {
+                *warn_on_nul = false;
+                cx.warning("truncating string with embedded nuls")?;
+            }
+        }
+    } else {
+        buf.resize(len, 0);
+        let m = read_bytes(cx, ncon, &mut buf)?;
+        if len > 0 && m == 0 {
+            return Ok(None);
+        }
+        buf.truncate(m);
+        if buf.contains(&0) && *warn_on_nul {
+            *warn_on_nul = false;
+            cx.warning("truncating string with embedded nuls")?;
+        }
+    }
+    // the string ends at its first NUL (R >= 2.8.0 takes NULs to be padding)
+    if let Some(z) = buf.iter().position(|&b| b == 0) {
+        buf.truncate(z);
+    }
+    Ok(Some(buf))
+}
+
+/// `rawFixedString(bytes, len, nbytes, &np, useBytes)`: the next `len`
+/// characters (bytes when `!utf8`) of `bytes` from `*np`; `None` at the end.
+// R: connections.c:rawFixedString
+fn raw_fixed_string(bytes: &[u8], len: usize, np: &mut usize, utf8: bool) -> Result<Option<Vec<u8>>, String> {
+    let nbytes = bytes.len();
+    let mut len = len;
+    if *np + len > nbytes {
+        len = nbytes - *np;
+        if len == 0 {
+            return Ok(None);
+        }
+    }
+    if utf8 {
+        let mut iread = *np;
+        for _ in 0..len {
+            if iread >= nbytes {
+                break;
+            }
+            let clen = utf8clen(bytes[iread]);
+            if iread + clen > nbytes {
+                return Err("invalid UTF-8 input in readChar()".into());
+            }
+            iread += clen;
+        }
+        let r = bytes[*np..iread].to_vec();
+        *np = iread;
+        Ok(Some(r))
+    } else {
+        let r = bytes[*np..*np + len].to_vec();
+        *np += len;
+        Ok(Some(r))
+    }
+}
+
+/// `utf8clen(c)`: the length of the UTF-8 character `c` starts (1 for a
+/// byte that starts none).
+// R: util.c:utf8clen
+fn utf8clen(c: u8) -> usize {
+    if c & 0xc0 != 0xc0 {
+        return 1;
+    }
+    const T4: [u8; 64] = [
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2,
+        2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5,
+    ];
+    1 + T4[(c & 0x3f) as usize] as usize
+}
+
+/// `readChar(con, nchars, useBytes)`: per element of `nchars` that many
+/// characters (bytes with `useBytes`) of the connection or raw vector, as
+/// long as there are any.
+// R: connections.c:do_readchar
+pub fn do_readchar(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "readChar", 3, true)?;
+    let raw: Option<Vec<u8>> = match args.get(cx, 0).view() {
+        View::Raw(v) => match v.as_slice() {
+            Some(b) => Some(b.to_vec()),
+            None => return Err(cx.error("robigo: readChar() of a package ALTREP raw vector is not implemented yet")),
+        },
+        _ => None,
+    };
+    let ncon = if raw.is_none() {
+        let n = as_integer_warn(cx, args.root(0))?;
+        if !with_conn(cx, n, |c| c.canread())? {
+            return Err(cx.error("cannot read from this connection"));
+        }
+        n
+    } else {
+        0
+    };
+    // We did as.integer in the wrapper
+    // (XLENGTH, then INTEGER: an integer vector)
+    let nchars: Vec<i32> = match args.get(cx, 1).view() {
+        View::Int(v) => match v.as_slice() {
+            Some(b) => b.to_vec(),
+            None => return Err(cx.error("robigo: readChar() of a package ALTREP 'nchars' is not implemented yet")),
+        },
+        _ if args.get(cx, 1).len() == Some(0) => Vec::new(),
+        _ => return Err(cx.error("robigo: readChar() with a non-integer 'nchars' is not implemented yet")),
+    };
+    if nchars.is_empty() {
+        cx.build(out, |cx| Ok(cx.alloc_vector::<Char<'_>>(0)?.finish().into()))?;
+        return Ok(());
+    }
+    let use_bytes = as_logical(cx, args.get(cx, 2));
+    if use_bytes == NA_INTEGER {
+        return Err(cx.error("invalid 'useBytes' argument"));
+    }
+    let utf8 = cx.locale().utf8 && use_bytes == 0;
+    let wasopen = raw.is_some() || flags(cx, ncon)?.isopen;
+    if !wasopen {
+        // Documented behaviour
+        if !open_with_mode(cx, ncon, "rb")? {
+            return Err(cx.error("cannot open the connection"));
+        }
+    }
+    // (mbcslocale && !utf8locale: robigo-rt's locales are UTF-8 or ASCII)
+    // the loop; an error in it closes a connection readChar opened (the
+    // context's cend, con_cleanup's checkClose)
+    let body = (|| -> RResult<Vec<Vec<u8>>> {
+        if raw.is_none() {
+            let (canread, warn) = with_conn(cx, ncon, |c| {
+                // (nPushBack starts at 0 in GNU R too, connections.c:init_con: the
+                // condition holds for every text connection)
+                (c.canread(), c.text() && (!c.c.buff.is_null() || c.c.n_push_back >= 0 || !c.c.inconv.is_null()))
+            })?;
+            if !canread {
+                return Err(cx.error("cannot read from this connection"));
+            }
+            if warn {
+                // could be turned into runtime error
+                cx.warning("text connection used with readChar(), results may be incorrect")?;
+            }
+        }
+        let mut res = Vec::new();
+        let (mut np, mut warn_on_nul) = (0usize, true);
+        for &len in &nchars {
+            if len == NA_INTEGER || len < 0 {
+                return Err(cx.error("invalid 'nchars' argument"));
+            }
+            let one = match &raw {
+                Some(b) => raw_fixed_string(b, len as usize, &mut np, utf8).map_err(|m| cx.error(&m))?,
+                None => read_fixed_string(cx, ncon, len as usize, utf8, &mut warn_on_nul)?,
+            };
+            let Some(one) = one else { break };
+            if one.contains(&0) {
+                // mkCharLenCE's error, at this element
+                let s = cx.scope(|cx, s| {
+                    let o = s.out(cx);
+                    cx.build(o, |cx| {
+                        let mut v = cx.alloc_vector::<Char<'_>>(1)?;
+                        v.set(0, cx.mk_char(&one, Encoding::Native)?);
+                        Ok(v.finish().into())
+                    })
+                });
+                s?;
+            }
+            res.push(one);
+        }
+        Ok(res)
+    })();
+    if !wasopen {
+        let err = with_conn(cx, ncon, close_conn)?;
+        if body.is_err()
+            && let Some(e) = err
+        {
+            cx.warning(&format!("Problem closing connection:  {e}"))?;
+        }
+    }
+    let res = body?;
+    cx.build(out, |cx| {
+        let mut v = cx.alloc_vector::<Char<'_>>(res.len())?;
+        for (i, s) in res.iter().enumerate() {
+            v.set(i, cx.mk_char(s, Encoding::Native)?);
+        }
+        Ok(v.finish().into())
+    })
+}
 // ---- dcf.c ---------------------------------------------------------------------
 
 /// dcf.c's patterns (TRE, on bytes), as the byte tests they are.
