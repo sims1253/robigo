@@ -562,6 +562,10 @@ pub struct RtState {
     /// INTERIM(L5): the pinned GNU R tree the wide base loader reads its
     /// definitions from on first use ([`crate::base::load`]).
     pub base_src: std::cell::RefCell<Option<std::path::PathBuf>>,
+    /// The lazy-load databases' zlib inflater, reused from record to record
+    /// (reset for each, [`crate::serialize`]'s `decompress1`): a new one
+    /// costs its window's allocation and set-up every time.
+    pub inflate: std::cell::RefCell<Option<flate2::Decompress>>,
 }
 
 impl RtState {

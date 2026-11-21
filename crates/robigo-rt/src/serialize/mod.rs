@@ -528,19 +528,23 @@ fn decompress1(cx: &mut Cx, data: &[u8]) -> RResult<Option<Vec<u8>>> {
         return Ok(None);
     }
     let outlen = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
-    let mut buf = vec![0u8; outlen];
-    let mut d = flate2::Decompress::new(true);
-    let r = d.decompress(&data[4..], &mut buf, flate2::FlushDecompress::Finish);
+    // (the isolate's inflater, reset for this record; the output written
+    // into the buffer's capacity, not over zeros first)
+    let st = crate::prims::state(cx);
+    let mut d = st.inflate.borrow_mut().take().unwrap_or_else(|| flate2::Decompress::new(true));
+    d.reset(true);
+    let mut buf = Vec::with_capacity(outlen);
+    let r = d.decompress_vec(&data[4..], &mut buf, flate2::FlushDecompress::Finish);
     let code = match r {
         Ok(flate2::Status::StreamEnd) => 0,
         Ok(_) if d.total_out() as usize == outlen => 3,
         _ => 1,
     };
+    *st.inflate.borrow_mut() = Some(d);
     if code != 0 {
         cx.warning(&format!("internal error {code} in R_decompress1 with libdeflate"))?;
         return Ok(None);
     }
-    buf.truncate(d.total_out() as usize);
     Ok(Some(buf))
 }
 
