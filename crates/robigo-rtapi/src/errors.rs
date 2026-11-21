@@ -21,16 +21,8 @@ pub(crate) unsafe fn text(p: *const c_char) -> String {
     String::from_utf8_lossy(unsafe { CStr::from_ptr(p) }.to_bytes()).into_owned()
 }
 
-/// GNU R's `R_typeToChar(x)`: "S4" or "object" for an `OBJSXP`, else the
-/// type's name.
-// R: util.c:R_typeToChar
-pub(crate) fn r_type_to_char(x: Ref<'_>) -> &'static str {
-    if x.sexptype() == OBJSXP {
-        if x.is_s4() { "S4" } else { "object" }
-    } else {
-        robigo_rtbuiltins::util::type2char(x.sexptype())
-    }
-}
+/// GNU R's `R_typeToChar(x)` (one copy, robigo-rtbuiltins').
+pub(crate) use robigo_rtbuiltins::util::type_to_char as r_type_to_char;
 
 /// `errorcall(call, msg)`'s exit: R_NilValue is no call.
 pub(crate) fn errorcall(cx: &mut Cx, call: Root<'_>, msg: &str) -> RError {
