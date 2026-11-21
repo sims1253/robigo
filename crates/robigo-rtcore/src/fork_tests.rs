@@ -298,12 +298,14 @@ fn a_panic_in_a_time_zone_conversion_puts_tz_back() {
 /// on one thread in a Berlin session, which tells `second` (on another
 /// thread, its own isolate) that it is in, then waits up to 500ms for
 /// `second` to say it is about to do the contested call (`go`), 50ms more,
-/// converts and checks its zone. `second` returns its own check. The
+/// converts and checks its zone, then says so (`second`'s third argument
+/// tells, for a call that must stay open across that conversion if it
+/// could overlap it). `second` returns its own check. The
 /// child's exit status: 0 all well, 2 a check failed (said on stderr), 3
 /// `TZ` not UTC after both unless `tz_after` says otherwise.
 fn two_isolates_in_a_child(
     what: &'static str,
-    second: fn(&mut crate::Cx, &dyn Fn()) -> Result<(), String>,
+    second: fn(&mut crate::Cx, &dyn Fn(), &dyn Fn() -> bool) -> Result<(), String>,
     tz_after: &'static str,
 ) {
     let _one = one_at_a_time();
@@ -318,6 +320,7 @@ fn two_isolates_in_a_child(
             unsafe { libc::setenv(c"TZ".as_ptr(), c"UTC".as_ptr(), 1) };
             let entered = std::sync::Arc::new(AtomicBool::new(false));
             let going = std::sync::Arc::new(AtomicBool::new(false));
+            let done = std::sync::Arc::new(AtomicBool::new(false));
             let isolate = || {
                 let mut iso = OwnedIsolate::new();
                 // SAFETY: the test's isolates read the environment only
@@ -326,7 +329,7 @@ fn two_isolates_in_a_child(
                 iso
             };
             let a = {
-                let (entered, going) = (entered.clone(), going.clone());
+                let (entered, going, done) = (entered.clone(), going.clone(), done.clone());
                 std::thread::spawn(move || -> Result<(), String> {
                     let mut iso = isolate();
                     let r = crate::clib::with_tz(iso.cx(), b"Europe/Berlin", |_, s| {
@@ -338,7 +341,9 @@ fn two_isolates_in_a_child(
                         // the other's call under way (it cannot finish
                         // before this session's reset)
                         std::thread::sleep(Duration::from_millis(50));
-                        (s.localtime(0).map(|t| t.hour), s.tzname().map(|n| n.to_vec()), going.load(SeqCst))
+                        let r = (s.localtime(0).map(|t| t.hour), s.tzname().map(|n| n.to_vec()), going.load(SeqCst));
+                        done.store(true, SeqCst);
+                        r
                     });
                     match r {
                         Ok((Some(1), names, true)) if names[0] == b"CET" => Ok(()),
@@ -351,13 +356,13 @@ fn two_isolates_in_a_child(
                 })
             };
             let b = {
-                let (entered, going) = (entered.clone(), going.clone());
+                let (entered, going, done) = (entered.clone(), going.clone(), done.clone());
                 std::thread::spawn(move || -> Result<(), String> {
                     let mut iso = isolate();
                     while !entered.load(SeqCst) {
                         std::thread::sleep(Duration::from_millis(1));
                     }
-                    second(iso.cx(), &|| going.store(true, SeqCst))
+                    second(iso.cx(), &|| going.store(true, SeqCst), &|| done.load(SeqCst))
                 })
             };
             let joined = |t: std::thread::JoinHandle<Result<(), String>>| t.join().unwrap_or(Err("panicked".into()));
@@ -392,11 +397,19 @@ fn two_isolates_in_a_child(
 fn two_isolates_converting_in_two_zones_at_once_each_keep_theirs() {
     two_isolates_in_a_child(
         "two time zone sessions",
-        |cx, go| {
+        |cx, go, berlin_done| {
             go();
-            match crate::clib::with_tz(cx, b"Asia/Tokyo", |_, s| {
+            let r = crate::clib::with_tz(cx, b"Asia/Tokyo", |_, s| {
+                // open until Berlin converted: at once when the sessions
+                // run one after the other; across Berlin's conversion if
+                // they overlapped (which it would then make in Tokyo)
+                let until = Instant::now() + Duration::from_millis(500);
+                while !berlin_done() && Instant::now() < until {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
                 (s.localtime(0).map(|t| t.hour), s.tzname()[0].to_vec())
-            }) {
+            });
+            match r {
                 Ok((Some(9), n)) if n == b"JST" => Ok(()),
                 r => Err(format!("Tokyo: {r:?}")),
             }
@@ -411,7 +424,7 @@ fn two_isolates_converting_in_two_zones_at_once_each_keep_theirs() {
 fn a_conversion_during_another_isolates_session_is_in_the_process_zone() {
     two_isolates_in_a_child(
         "a conversion during a time zone session",
-        |_, go| {
+        |_, go, _| {
             go();
             match crate::clib::localtime(0).map(|t| t.hour) {
                 Some(0) => Ok(()),
@@ -429,7 +442,7 @@ fn a_conversion_during_another_isolates_session_is_in_the_process_zone() {
 fn a_tz_write_during_another_isolates_session_waits_for_its_reset() {
     two_isolates_in_a_child(
         "a TZ write during a time zone session",
-        |cx, go| {
+        |cx, go, _| {
             go();
             match crate::clib::env_writer(cx) {
                 Ok(w) if w.set(b"TZ", b"Asia/Tokyo") => Ok(()),
