@@ -385,6 +385,7 @@ pub static BUILTINS: &[Builtin] = &[
     row("as.POSIXlt", datetime::do_as_posixlt, 0, 11, 2, FUNCALL, External),
     row("Date2POSIXlt", datetime::do_d2posixlt, 0, 11, 2, FUNCALL, Pure),
     row("POSIXlt2Date", datetime::do_posixlt2d, 0, 11, 1, FUNCALL, Pure),
+    row("format.POSIXlt", datetime::do_format_posixlt, 0, 11, 4, FUNCALL, External),
     // times.c
     row("Sys.time", times::do_systime, 0, 11, 0, FUNCALL, External),
     // sys-unix.c

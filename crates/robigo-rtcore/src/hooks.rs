@@ -452,6 +452,19 @@ impl Cx {
         })
     }
 
+    /// [`Cx::warning`] under a `CTXT_CCODE` context begun with the call
+    /// R_NilValue ([`Cx::ccode_context_call`]).
+    pub fn warning_in_ccode_context(&mut self, msg: &str) -> RResult<()> {
+        let msg = msg.strip_suffix('\n').unwrap_or(msg);
+        let call = self.ccode_context_call().sexp();
+        self.scope(|cx, s| {
+            // SAFETY: the nil value or a live call of the context state, read
+            // in this interval.
+            let c = s.root(cx, unsafe { Ref::from_sexp(call, cx) });
+            cx.warning_call(Some(c), msg)
+        })
+    }
+
     /// Add a warning to the deferred list (GNU R's `vwarningcall_dflt` with
     /// `warn = 0`): its call and message, unless the list already holds
     /// [`Cx::nwarnings`]. The message's allocation is retried after a
