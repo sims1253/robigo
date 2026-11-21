@@ -624,10 +624,23 @@ fn save_global_env(cx: &mut Cx) -> RResult<()> {
 /// then `exit(status)`.
 // R: unix/sys-std.c:Rstd_CleanUp
 fn exit(cx: &mut Cx, status: i32) -> ! {
-    crate::fin::run_exit_finalizers(cx);
-    print_warnings(cx);
-    cx.flush_console();
+    clean_up_tail(cx, false);
     std::process::exit(status)
+}
+
+/// What `Rstd_CleanUp` does after its save action, on every way R ends
+/// (quit(), the session's end, check_session_exit's halt, R_Suicide): the
+/// exit finalizers, then (`R_CleanTempDir`: robigo-rt has no session
+/// temporary directory yet, B's tempdir() port adds it here), then the
+/// deferred warnings unless it is R_Suicide's (SA_SUICIDE), then the
+/// console flushed. The caller ends the process with its status.
+// R: unix/sys-std.c:Rstd_CleanUp
+pub fn clean_up_tail(cx: &mut Cx, suicide: bool) {
+    crate::fin::run_exit_finalizers(cx);
+    if !suicide {
+        print_warnings(cx);
+    }
+    cx.flush_console();
 }
 
 /// `PrintWarnings()`: the deferred warnings, then the list cleared

@@ -464,9 +464,7 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
                 };
                 if !robigo_rt::base::after_profile(cx, home.path(), a) {
                     cx.reprintf(b"Execution halted\n");
-                    robigo_rt::fin::run_exit_finalizers(cx);
-                    robigo_rt::repl::print_warnings(cx);
-                    cx.flush_console();
+                    robigo_rt::repl::clean_up_tail(cx, false);
                     return 1;
                 }
                 let st = boot_st;
@@ -528,10 +526,7 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
         cx.reprintf(b"Execution halted\n");
     }
     // R_CleanUp: the exit finalizers, then the warnings .Last left
-    // R: unix/sys-std.c:Rstd_CleanUp
-    robigo_rt::fin::run_exit_finalizers(cx);
-    robigo_rt::repl::print_warnings(cx);
-    cx.flush_console();
+    robigo_rt::repl::clean_up_tail(cx, false);
     if ok { 0 } else { 1 }
 }
 
