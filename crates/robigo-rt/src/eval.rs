@@ -840,7 +840,7 @@ pub fn do_recall(cx: &mut Cx, _call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out
         let args =
             s.root(cx, cx.context(me).expect("robigo: Recall's record, found above").promargs().unwrap_or(cx.nil()));
         let (ccall, callfun, sysparent) = {
-            let c = cx.context(cptr).expect("robigo: the record of Recall's closure, found above");
+            let c = cx.context(cptr).expect("robigo: the record of the closure Recall was called from, found above");
             (c.call(), c.callfun(), c.sysparent())
         };
         let ccall = s.root(cx, ccall);
@@ -850,7 +850,8 @@ pub fn do_recall(cx: &mut Cx, _call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out
         let fun = if callfun != cx.nil() {
             s.root(cx, callfun)
         } else {
-            let head = s.root(cx, ccall.bind(cx).as_cons().expect("robigo: a closure record's call is a call").car());
+            // CAR(cptr->call), as GNU R reads it (R_NilValue's CAR is itself)
+            let head = s.root(cx, ccall.bind(cx).as_cons().map_or(cx.nil(), |c| c.car()));
             let o = s.out(cx);
             let f = o.root();
             if head.bind(cx).sexptype() == SYMSXP {
