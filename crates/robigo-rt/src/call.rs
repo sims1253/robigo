@@ -599,7 +599,10 @@ pub fn builtin_evallist(
 ) -> RResult<()> {
     debug_assert!(codes.is_none() || bc, "robigo: promise codes without the Bc profile's evaluation");
     let missing = cx.missing_arg().sexp();
-    let dots = prims::state(cx).syms.dots;
+    let (dots, dot_internal) = {
+        let syms = &prims::state(cx).syms;
+        (syms.dots, syms.dot_internal)
+    };
     cx.scope(|cx, s| {
         // `.Internal(f(...))` evaluated here (its arguments evaluated at run
         // time): `callr` is the `.Internal` call. The arguments and the
@@ -608,7 +611,9 @@ pub fn builtin_evallist(
         // `evalList(args, env, call, 0)`)
         // R: names.c:do_internal
         let errcall = callr;
-        let callr = match internal_inner(cx, callr.bind(cx), funr.bind(cx)) {
+        // SAFETY: the rooted call's head.
+        let head = unsafe { callr.bind(cx).sexp().car() };
+        let callr = match (head == dot_internal).then(|| internal_inner(cx, callr.bind(cx), funr.bind(cx))).flatten() {
             Some(inner) => s.root(cx, inner),
             None => callr,
         };
@@ -756,16 +761,16 @@ pub fn builtin_evallist(
     })
 }
 
-/// The inner call of `call` when it is `.Internal(f(...))` with `f`'s
+/// The inner call of `call`, whose head is `.Internal`, when it is
+/// `.Internal(f(...))` with `f`'s
 /// internal the builtin `fun` (what the compiler emits for an `.Internal`
 /// whose arguments are evaluated at run time); None for any other call. A
 /// call of something else bound to `.Internal` does not have the internal
 /// builtin as its function, as no R value is one.
+#[cold]
+#[inline(never)]
 fn internal_inner<'g>(cx: &'g Cx, call: Ref<'g>, fun: Ref<'g>) -> Option<Ref<'g>> {
     let c = call.as_cons()?;
-    if c.car().sexp() != prims::state(cx).syms.dot_internal {
-        return None;
-    }
     let inner = c.cdr().as_cons()?.car();
     let f = inner.as_cons().filter(|_| inner.sexptype() == LANGSXP)?.car();
     // SAFETY: a live symbol of this isolate.
