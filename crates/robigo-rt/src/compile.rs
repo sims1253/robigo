@@ -2992,6 +2992,18 @@ impl<'g> Comp<'g> {
                         // the internal's arguments are evaluated as a
                         // builtin's (evalList), for the inner call
                         self.builtin_args_call(Op::Internal, internal, inner, inner.cdr(), dst, d, tail)?;
+                        let at = self.ins.len() - 1;
+                        if self.ins[at].op == Op::Internal && self.ins[at].c == u16::MAX {
+                            // evaluated at run time (`...` or an empty
+                            // argument): through call_special_internal, over
+                            // the `.Internal` call itself, which evalList's
+                            // errors name (do_internal's `evalList(args, env,
+                            // call, 0)`); the builtin `f` tells it from a
+                            // special. (Its protect weight was taken when it
+                            // was emitted, as a builtin internal's.)
+                            self.ins[at].c = SPECIAL_INTERNAL;
+                            self.ins[at].e = self.k(e);
+                        }
                     }
                     if !fn_special {
                         // the expression bcEval is at: the `.Internal` call
