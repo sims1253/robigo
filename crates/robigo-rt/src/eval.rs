@@ -512,7 +512,7 @@ pub unsafe fn get_var(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: 
                 // rooted environment; the scratch register keeps it.
                 let f = unsafe { act.scratch(crate::ir::R_SCRATCH, loc.frame()) };
                 let r = cx.force_arg(f, loc.index(), act.out(a));
-                act.clear(crate::ir::R_SCRATCH);
+                act.kill(crate::ir::R_SCRATCH, u32::MAX);
                 return r;
             }
             // a promise object bound to the symbol: forced
@@ -522,8 +522,24 @@ pub unsafe fn get_var(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: 
                 // scratch register keeps it for the force.
                 let p = unsafe { act.scratch(crate::ir::R_SCRATCH, v) };
                 let r = force(cx, p, act.out(a));
-                act.clear(crate::ir::R_SCRATCH);
+                act.kill(crate::ir::R_SCRATCH, u32::MAX);
                 return r;
+            }
+            // byte code reads an active binding twice: bcEval's inlined
+            // GETVAR looks the variable up (findVarEX: the binding's function
+            // runs) to see whether it is a promise of byte code to force in
+            // place, and then reads it again through getvar(), which runs the
+            // function again for its value. (Only an unforced promise would
+            // make the first read's value matter; an active binding's
+            // function returns a value.)
+            // R: eval.c:DO_GETVAR (INLINE_GETVAR), eval.c:getvar
+            RawBinding::Active(_) if bc => {
+                cx.scope(|cx, s| {
+                    // SAFETY: an immortal symbol.
+                    let sr = s.root(cx, unsafe { Ref::from_sexp(sym, cx) });
+                    let o = s.out(cx);
+                    cx.find_var(sr, act.root(crate::ir::R_ENV), o)
+                })?;
             }
             _ => {}
         }

@@ -32,7 +32,52 @@ use crate::prims::{self, Inline, Kind, RtState, Special};
 use robigo_heap::Sexp;
 use robigo_heap::types::*;
 use robigo_rtcore::{Cx, RResult, Ref, Root};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::hash::BuildHasherDefault;
+
+/// The hasher of the translator's maps, whose keys are byte-code positions,
+/// pool indices and object addresses (`usize`s it makes itself, never
+/// chosen by R code): rustc-hash's multiply-rotate, not the standard
+/// library's SipHash, which was about a third of translating a closure at
+/// its first call (about 180k instructions each in the rdb boot's profile).
+#[derive(Default, Clone, Copy)]
+pub(crate) struct PosHasher(u64);
+
+impl std::hash::Hasher for PosHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        // (the low bits pick the bucket: the rotate brings the multiply's
+        // well-mixed high bits down, as rustc-hash 2 does)
+        self.0.rotate_left(26)
+    }
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u64(b as u64);
+        }
+    }
+    #[inline]
+    fn write_u64(&mut self, n: u64) {
+        self.0 = (self.0 ^ n).wrapping_mul(0xf135_7aea_2e62_a9c5);
+    }
+    #[inline]
+    fn write_usize(&mut self, n: usize) {
+        self.write_u64(n as u64);
+    }
+    #[inline]
+    fn write_u16(&mut self, n: u16) {
+        self.write_u64(n as u64);
+    }
+    #[inline]
+    fn write_u32(&mut self, n: u32) {
+        self.write_u64(n as u64);
+    }
+}
+
+/// A map of the translator's ([`PosHasher`]).
+pub(crate) type PosMap<K, V> = HashMap<K, V, BuildHasherDefault<PosHasher>>;
+/// A set of the translator's ([`PosHasher`]).
+pub(crate) type PosSet<K> = HashSet<K, BuildHasherDefault<PosHasher>>;
 
 mod bctrans;
 mod crosscheck;
@@ -598,7 +643,7 @@ impl From<bool> for Tail {
 /// then RETURN): the instructions after it move up one, the `Ret` with
 /// them, and the old `Ret` is left unreached.
 fn fold_vis_into_ret(ins: &mut [Ins], moves: bool) {
-    let mut targets = std::collections::HashSet::new();
+    let mut targets = PosSet::default();
     for i in ins.iter() {
         match i.op {
             Op::Jmp
@@ -646,7 +691,7 @@ struct Comp<'g> {
     profile: Profile,
     ins: Vec<Ins>,
     consts: Vec<Sexp>,
-    pool: HashMap<usize, u16>,
+    pool: PosMap<usize, u16>,
     /// The pool indices of the value constants (`LdConst`'s, `LdScalar`'s)
     /// under `Bc`, in order ([`Comp::kv`]).
     values: Vec<u16>,
@@ -739,7 +784,7 @@ impl<'g> Comp<'g> {
             profile,
             ins: Vec::new(),
             consts: Vec::new(),
-            pool: HashMap::new(),
+            pool: PosMap::default(),
             values: Vec::new(),
             next: R_FIRST,
             max: R_FIRST,
@@ -882,6 +927,18 @@ impl<'g> Comp<'g> {
     }
 
     fn emit(&mut self, i: Ins) -> usize {
+        // ROBIGO_POISON_PLANT=1: a planted early clear, the value register
+        // emptied one instruction before the Ret that reads it
+        #[cfg(feature = "poison-dead")]
+        if i.op == Op::Ret
+            && i.b >= R_FIRST
+            && robigo_rtcore::poison_dead()
+            && std::env::var_os("ROBIGO_POISON_PLANT").is_some_and(|v| v == "1")
+        {
+            let mut c = Ins::new(Op::Clear);
+            c.a = i.b;
+            self.emit(c);
+        }
         if self.profile == Profile::Eval {
             // where the instruction calls out, GNU R's evaluator protections
             // minus R_EvalDepth there, less the root's: its node's offset at

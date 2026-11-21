@@ -43,6 +43,7 @@ a directory of your own: each holds several GB. If a task truly needs one
 | parse corpus | `scripts/parse-corpus.py check` | parse trees and parse errors of the fastr/gnur-tests/gnur-examples corpora and GNU R's own sources against GNU R's dumps (`tests/parse/passing/` ratchets) |
 | conformance | `cargo test --release -p robigo-cli --test conformance` | `tests/r/**/*.R`: stdout, stderr, exit status as bytes, under the interpreter, the VM and the VM with JIT |
 | rt conformance | `cargo test --release -p robigo-rtapi --test conformance` | `robigo-rt` on `tests/rt/**/*.R` and its ratcheted `tests/r` cases, against GNU R 4.6.2 (§ Oracles, "Ratchet columns"). The cases that load tools' native code (`.requires` `r-home-tools`) run when `robigo-rt`'s `R_HOME` tree has it: `scripts/rt-home.sh` builds `library/tools/libs/tools.so` from GNU R's sources against robigo's headers for the natives (`crates/robigo-rtapi/internal`), as the rt job does before its conformance steps |
+| rt boot from base's database | `scripts/rt-home-db.sh && ROBIGO_RT_HOME_DB=1 cargo test --release -p robigo-rtapi --test boot_db` | L5's boot beside M1's loader (`ROBIGO_RT_BOOT=rdb`): `scripts/rt-home-db.sh` runs base's database rule (`makebasedb.R`, robigo-rt booted from base's source) into a copy of the `R_HOME` tree and installs `baseloader.R` as its base file; the test boots from it (byte-code closures, baseloader.R's symbols and S3 table, base's 1407 names) and pins the system profile's lines that still stop. The rt job runs both after the `R_HOME` tree |
 | corpora | `scripts/corpus.py run NAME` | below |
 | fuzzing | `scripts/fuzz.py parse\|rds` | mutated scripts through `parse()` and mutated RDS files through `readRDS()`: a panic, failed allocation, stack overflow or fatal signal is a finding; reproducers land in `.robigo/fuzz/` |
 | builtin differential | `scripts/builtin-diff.py run [--only NAME]` | robigo-rt's builtins against GNU R 4.6.2 on generated inputs, out of process (§ Builtin differential) |
@@ -66,13 +67,21 @@ robigo-rt's builtins with GNU R 4.6.2's on generated inputs, out of process.
   names.c name. An empty table is a valid row; the file's header lists the
   fields. `check-rows` reports a registry builtin that has neither a row nor
   a reason under `[uncovered]`, so a newly ported builtin shows up, and an
-  `[uncovered]` name the registry lacks. For now both are warnings, listed
-  in the summary, so the builtin PRs queued before A4 still pass;
-  `UNLISTED_FAILS` in `scripts/builtin-diff.py` makes them failures once
-  that queue has drained. A builtin with both a row and a reason always
-  fails.
+  `[uncovered]` name the registry lacks. Both fail (`UNLISTED_FAILS`; they
+  were warnings while the builtin PRs queued before A4 drained), so a pull
+  request that registers a builtin gives it a row or a reason. A builtin with both a row and a reason always
+  fails. A row's `domain` or `typical` key must name one of its arguments
+  (gen.R stops otherwise). A wrapper that passes `as.character(x)` names
+  nothing, so such a row gives `args`. A special runs when its row says
+  `special = true`: its arguments reach it as the case's symbols `a1`,
+  `a2`, ..., the same expressions in both runtimes.
 - **Cases:** `scripts/builtin-diff/gen.R` makes them, in GNU R alone, from
-  one value lattice (version 1, about 70 values with their decorations).
+  one value lattice (version 2, about 70 values with their decorations).
+  Two fixture pools are outside `@any`, for the rows that name them:
+  - `@env`: environments with bindings, a locked binding, locked, with an
+    active binding, empty, base and global;
+  - `@fun`: closures that append their arguments to `.a4log` in the global
+    environment, plus `sum`.
   The kinds are:
   - every value alone in every position;
   - a greedy pairwise covering set;
@@ -100,13 +109,26 @@ robigo-rt's builtins with GNU R 4.6.2's on generated inputs, out of process.
     serialization is the same as before the call, else
     `list(unchanged = FALSE, value)`;
   - the global environment's names;
-  - `.Random.seed`.
+  - `.Random.seed`;
+  - `.a4log`: what the fixture closures were called with, in order.
 
   The records are compared byte for byte. So is what each case printed: the
   driver writes a marker line before each case, and the harness splits
   stdout at them. A case counts as done when its `.ok` marker exists, which
   the driver writes after the record, so a crash while writing the record
-  costs that case and no other. `render.R`, run in any R ≥ 4, names the
+  costs that case and no other.
+
+  An External row's cases each run in a process of their own, in a fresh
+  directory at the same absolute path (`/tmp/robigo-a4-<uid>-<key>`) in
+  GNU R's container and on the host. The environment is made from nothing
+  but the one below plus `PATH`, `HOME` and `TMPDIR`, so `Sys.getenv()` and
+  the paths a case sees are the same for both runtimes. The files a case
+  leaves in its directory are compared too: path, kind, mode, size and
+  sha256, the directory's own mode first. Every runtime process runs under
+  umask 022, which is part of the key. The record does not hold the process
+  environment, so `Sys.setenv` and `Sys.unsetenv` rows read it back in
+  their `extra` cases; a zero-length `Sys.getenv` (the whole environment)
+  is not generated, because the R_* and harness variables differ. Such rows default to 150 cases. `render.R`, run in any R ≥ 4, names the
   first field that differs, for display only.
 - **Environment:** both runtimes run in this environment, which is part of
   the cache key:
@@ -165,11 +187,21 @@ robigo-rt's builtins with GNU R 4.6.2's on generated inputs, out of process.
   - `names`: an attribute written on the shared argument;
   - `abs`: a panic;
   - `set.seed`: one more draw;
-  - `nzchar`: printed output.
+  - `nzchar`: printed output;
+  - `assign`: a second binding in an environment that is neither the
+    global one nor the value;
+  - `do.call`: one more call of the function (the log, and the warnings
+    a warning fixture gives);
+  - `Sys.getenv`: a file left in the working directory.
+
+  A plant on a builtin the driver itself calls (`assign`, `do.call`,
+  `Sys.getenv`) trips only on a case's own call, whose first argument is
+  the symbol `a1`.
 
   Each must fail in its own field, the panic must cost only its own cases,
   and the control must not change. `ci`, rt-ci.py's step, runs
-  `check-rows`, then `run`, then `plant`.
+  `check-rows`, then `run`, then `plant`; `plant` reuses `run`'s results
+  for the planted and control rows, so only the plant binary runs them again.
 
 ### Timezone fixtures
 
@@ -852,9 +884,14 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    under `ROBIGO_RETRY_TORTURE=1` (E9's refusal at every build: the first
    allocation of every `&Cx` build refused once, so each build's retry
    runs), in a build with robigo-rtcore's `retry-torture` feature made for
-   that step alone, so every step before it tests the binary users get
+   the last steps alone, so every step before them tests the binary users get
    (`docs/ledger/g3/2026-11-17-retry-torture-ci.md`; with the moving
-   collector as well it is a run by hand, `docs/g3.md` §16). Every pull
+   collector as well it is a run by hand, `docs/g3.md` §16); in the same
+   build, robigo-rt's tests and the conformance under
+   `ROBIGO_POISON_DEAD=1` (C1-PZ: a dead slot, a register after its last
+   use or a slot a scope's restore freed, holds a poison naming where it
+   died, and a read of it panics; `tests/poison.rs` plants an early clear
+   and checks that it is caught). Every pull
    request but a docs-only one runs it, and with it **base-subset**:
    `scripts/base-subset.sh --check` inside the GNU R 4.6.2 oracle image
    (robigo-rt's checked-in base subset is what this tree traces: its

@@ -3,7 +3,10 @@
 the case classes, the batch runner's crash, hang and start handling, and the
 known/ ratchet's key check."""
 import importlib.util
+import json
 import os
+import subprocess
+import unittest.mock
 import sys
 import tempfile
 import textwrap
@@ -34,7 +37,7 @@ class Sources(unittest.TestCase):
     def test_rows_refuse_what_cannot_run(self):
         nc = {"if": (200, -1), "lapply": (11, 2), "nchar": (11, 4), "x": (11, 1)}
         reg = {"lapply": "Calls", "nchar": "Pure"}
-        for name, spec, msg in [("if", {}, "special"), ("lapply", {}, "only Pure and Rng"),
+        for name, spec, msg in [("if", {}, "`special = true` runs it"), ("lapply", {"effect": "Nope"}, "the registry Calls"),
                                 ("nchar", {"effect": "Rng"}, "the registry Pure"), ("x", {}, "needs `effect`"),
                                 ("nope", {}, "not in GNU R's names.c")]:
             with self.assertRaises(SystemExit) as e:
@@ -44,6 +47,9 @@ class Sources(unittest.TestCase):
         self.assertTrue(r.internal)
         self.assertEqual((r.arity, r.effect, r.jits), (4, "Pure", ["off"]))
         self.assertEqual(bd.Row("nchar", {"jit": "both"}, nc, reg).jits, ["off", "on"])
+        self.assertTrue(bd.Row("if", {"special": True, "effect": "Pure"}, nc, reg).internal is False)
+        self.assertFalse(bd.Row("lapply", {}, nc, reg).isolated)
+        self.assertTrue(bd.Row("x", {"effect": "External"}, nc, reg).isolated)
 
     def test_keys_follow_the_row_and_seed(self):
         nc, reg = {"nchar": (11, 4)}, {"nchar": "Pure"}
@@ -99,6 +105,46 @@ class Classes(unittest.TestCase):
         self.assertEqual(bd.classify(o, gone, {}, {1: "timeout"}, 1), "timeout")
         self.assertEqual(bd.classify(o, gone, {}, {1: "crash"}, 1), "crash")
 
+    def test_files_left_behind_are_compared(self):
+        o = self.f("o.rds", b"r")
+        r = self.f("r.rds", b"r")
+        self.f("o.files", b"[]")
+        self.f("r.files", b'[["a4plant", "file", 420, 0, "e3b0"]]')
+        self.assertEqual(bd.classify(o, r, {}, {}, 1), "mismatch")
+
+    def test_tree_lists_files_dirs_and_links(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "sub"))
+            with open(os.path.join(d, "sub", "f"), "w") as f:
+                f.write("x")
+            os.symlink("sub/f", os.path.join(d, "l"))
+            t = bd.tree(d)
+        self.assertEqual([x[:2] for x in t], [[".", "dir"], ["l", "link"], ["sub", "dir"], ["sub/f", "file"]])
+        self.assertEqual(t[3][3], 1)
+
+    def test_tree_sees_the_directory_own_mode(self):
+        # Sys.chmod(".") must show even when the directory is empty
+        with tempfile.TemporaryDirectory() as d:
+            os.chmod(d, 0o755)
+            a = bd.tree(d)
+            os.chmod(d, 0o700)
+            self.assertNotEqual(a, bd.tree(d))
+
+    def test_runtimes_run_under_a_fixed_umask(self):
+        r = subprocess.run(["sh", "-c", "umask"], preexec_fn=bd.cap, capture_output=True, text=True)
+        self.assertEqual(int(r.stdout, 8), bd.UMASK)
+
+    def test_data_directories_are_artifact_paths(self):
+        # CI's builtin-diff-data job uploads the records as an artifact,
+        # which refuses " : < > | * ? CR LF in paths: row `[<-` failed it
+        doc, _ = bd.load_rows()
+        for name in doc:
+            for v in (name, name + "@jit"):
+                self.assertFalse(set(bd.data_name(v)) & bd.ARTIFACT_REFUSES, v)
+        self.assertEqual(bd.data_name("[<-"), "[%3C-")
+        self.assertEqual(bd.data_name("nchar"), "nchar")
+        self.assertNotEqual(bd.data_name("a%3C"), bd.data_name("a<"))   # % is escaped too
+
     def test_score_line(self):
         c = {"pass": 5, "mismatch": 1, "not-implemented": 2, "crash": 1, "timeout": 0, "resource": 3,
              "oracle-crash": 4}
@@ -117,7 +163,7 @@ FAKE = textwrap.dedent("""\
     if os.environ.get("NOSTART"):
         sys.stderr.write("cannot boot\\n"); sys.exit(1)
     open(os.path.join(out, "started"), "w").close()
-    for i in range(start, int(os.environ["N"]) + 1):
+    for i in range(start, min(int(os.environ["N"]), int(os.environ.get("A4_TO", "999999"))) + 1):
         if i == int(os.environ.get("CRASH_AT", "0")):
             sys.stderr.write("thread 'main' panicked\\n"); os._exit(101)
         if i == int(os.environ.get("HANG_AT", "0")):
@@ -131,6 +177,14 @@ FAKE = textwrap.dedent("""\
             if i == int(os.environ.get("TORN_AT", "0")):
                 f.flush(); os._exit(101)
         open(os.path.join(out, "%06d.ok" % i), "w").close()
+        if os.environ.get("MAKE_FILES"):
+            open("made-%d" % i, "w").write(os.environ.get("A4_LEAK", "clean"))
+        if os.environ.get("CHECK_HOME"):
+            # the case's tree is still its own after a pause
+            time.sleep(0.2)
+            link = os.path.join(os.environ["HOME"], ".cache", "robigo-research", "rsrc")
+            if not (os.path.lexists(link) and os.path.exists("made-%d" % i)):
+                sys.stderr.write("the case's directory went away\\n"); os._exit(101)
     """)
 
 
@@ -163,6 +217,94 @@ class Batches(unittest.TestCase):
         got = {f: open(os.path.join(out, f)).read() for f in sorted(os.listdir(out)) if f.endswith(".out")}
         self.assertEqual(got, {"000001.out": "printed by 1\n", "000003.out": "printed by 3\n"})
         self.assertFalse([f for f in os.listdir(out) if f.startswith("stdout.")])
+
+    def test_an_external_row_runs_each_case_alone_and_records_its_files(self):
+        d = tempfile.mkdtemp()
+        drv = os.path.join(d, "fake.py")
+        with open(drv, "w") as f:
+            f.write(FAKE)
+        out = os.path.join(d, "out")
+        env = {**os.environ, "N": "3", "MAKE_FILES": "1", "A4_LEAK": "leaked", "A4_LABEL": "x"}
+        # (the fake driver reads N and MAKE_FILES: pass them as ENV-like keys)
+        with unittest.mock.patch.object(bd, "ENV", {**bd.ENV, "N": "3", "MAKE_FILES": "1"}):
+            lost = bd.run_isolated([sys.executable, drv], env, "batch", out, 3, "test-key")
+        self.assertEqual(lost, {})
+        for i in (1, 2, 3):
+            with open(os.path.join(out, f"{i:06d}.files")) as f:
+                files = json.load(f)
+            # its own directory: only this case's file, and no leaked variable
+            self.assertEqual([x[0] for x in files], [".", f"made-{i}"])
+            self.assertEqual(files[1][3], len("clean"))
+
+    def test_two_runs_of_one_external_row_at_once_both_pass(self):
+        # as two checkouts' `ci` runs on one machine: the row's case
+        # directory is one path for both (case_root), and neither run may
+        # remove the other's tree mid-case (the driver checks its HOME's
+        # link to GNU R's sources and its own file after a pause)
+        d = tempfile.mkdtemp()
+        # a key of this invocation's own, shared by its two runs: another
+        # copy of this suite running at once has its own row
+        key = f"test-concurrent-{os.path.basename(d)}"
+        drv = os.path.join(d, "fake.py")
+        with open(drv, "w") as f:
+            f.write(FAKE)
+        run = os.path.join(d, "run.py")
+        with open(run, "w") as f:
+            f.write(textwrap.dedent(f"""\
+                import importlib.util, json, os, sys, unittest.mock
+                spec = importlib.util.spec_from_file_location("bd", {os.path.join(HERE, "builtin-diff.py")!r})
+                bd = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(bd)
+                keep = {{"N": "4", "MAKE_FILES": "1", "CHECK_HOME": "1"}}
+                with unittest.mock.patch.object(bd, "ENV", {{**bd.ENV, **keep}}):
+                    lost = bd.run_isolated([sys.executable, {drv!r}], {{**os.environ, **keep}}, "batch", sys.argv[1], 4,
+                                           {key!r}, rsrc={os.path.join(d, "rsrc", "R")!r})
+                print(json.dumps({{str(k): v for k, v in lost.items()}}))
+                """))
+        outs = [os.path.join(d, f"out{k}") for k in (1, 2)]
+        ps = [subprocess.Popen([sys.executable, run, o], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+              for o in outs]
+        for p, o in zip(ps, outs):
+            sout, serr = p.communicate(timeout=120)
+            self.assertEqual(p.returncode, 0, serr)
+            self.assertEqual(json.loads(sout), {}, f"{o}: cases lost")
+            for i in range(1, 5):
+                with open(os.path.join(o, f"{i:06d}.files")) as f:
+                    self.assertEqual([x[0] for x in json.load(f)], [".", f"made-{i}"])
+        self.assertFalse(os.path.lexists(bd.case_root(key)))
+        os.remove(bd.case_root(key) + ".lock")
+
+    def test_the_case_directory_is_removed_when_a_run_fails(self):
+        d = tempfile.mkdtemp()
+        drv = os.path.join(d, "fake.py")
+        with open(drv, "w") as f:
+            f.write(FAKE)
+        key = f"test-unusable-{os.path.basename(d)}"
+        with unittest.mock.patch.object(bd, "ENV", {**bd.ENV, "N": "2", "UNUSABLE": "1"}):
+            with self.assertRaises(bd.Unusable):
+                bd.run_isolated([sys.executable, drv], {**os.environ, "N": "2", "UNUSABLE": "1"}, "batch",
+                                os.path.join(d, "out"), 2, key)
+        self.assertFalse(os.path.lexists(bd.case_root(key)))
+        os.remove(bd.case_root(key) + ".lock")
+
+    def test_the_case_directory_mode_does_not_follow_the_harness_umask(self):
+        d = tempfile.mkdtemp()
+        drv = os.path.join(d, "fake.py")
+        with open(drv, "w") as f:
+            f.write(FAKE)
+        modes = []
+        for mask in (0o022, 0o077):
+            out = os.path.join(d, f"out{mask}")
+            old = os.umask(mask)
+            try:
+                with unittest.mock.patch.object(bd, "ENV", {**bd.ENV, "N": "1"}):
+                    bd.run_isolated([sys.executable, drv], {**os.environ, "N": "1"}, "batch", out, 1, "test-umask")
+            finally:
+                os.umask(old)
+            with open(os.path.join(out, "000001.files")) as f:
+                modes.append(json.load(f)[0])
+        self.assertEqual(modes[0], modes[1])
+        self.assertEqual(modes[0][2], 0o755)
 
     def test_no_losses(self):
         lost, recs, _ = self.run_fake(4)

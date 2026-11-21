@@ -361,7 +361,7 @@ pub unsafe fn applydefine(cx: &mut Cx, act: &Act, dst: Reg, rhs: Reg, call: Sexp
             // SAFETY: a register's live object.
             s.root(cx, unsafe { Ref::from_sexp(v, cx) })
         };
-        act.clear(rhs);
+        act.kill(rhs, u32::MAX);
         // the stack's values hold links meanwhile (R_BCProtTop as it was)
         let old = links::commit(cx);
         let r = applydefine_body(cx, s, callr, rho, saverhs, code);

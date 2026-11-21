@@ -25,38 +25,8 @@ use robigo_rtcore::{Args, Built, Char, Cx, Diag, Dispatched, Generic, Out, RResu
 /// `installTrChar` of a name the caller translated).
 // R: names.c:install
 fn install_name<'s>(cx: &mut Cx, s: Scope<'s>, name: &[u8]) -> RResult<Root<'s>> {
-    check_name(cx, name)?;
+    crate::text::check_install_name(name).map_err(|m| cx.error(&m))?;
     cx.install_rooted(s, name)
-}
-
-/// `installTrChar`'s checks of a name to install.
-fn check_name(cx: &mut Cx, name: &[u8]) -> RResult<()> {
-    if name.is_empty() {
-        return Err(cx.error("attempt to use zero-length variable name"));
-    }
-    if name.len() > 10000 {
-        return Err(cx.error("variable names are limited to 10000 bytes"));
-    }
-    Ok(())
-}
-
-/// `installTrChar(STRING_ELT(c, i))` with its errors, rooted in `s`. A
-/// name the isolate has already is found from the string's bytes in place;
-/// any other is translated and installed.
-// R: sysutils.c:installTrChar
-fn install_tr_char<'s>(cx: &mut Cx, s: Scope<'s>, c: Root<'_>, i: usize) -> RResult<Root<'s>> {
-    let found = {
-        let cx = &*cx;
-        let ch = c.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
-        match crate::text::to_native(crate::coerce::text(ch), cx.locale()) {
-            Ok(b) if !b.is_empty() && b.len() <= 10000 => cx.find_symbol(&b).map(|y| s.root(cx, y.as_ref())),
-            _ => None,
-        }
-    };
-    match found {
-        Some(y) => Ok(y),
-        None => crate::envir::install_tr(cx, s, c, i),
-    }
 }
 
 // ---- setAttrib --------------------------------------------------------------
@@ -181,7 +151,7 @@ pub fn namesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
                 {
                     let sv = match coerce(cx, cell.car(), STRSXP, true)? {
                         Built::Done(sv, _) => sv,
-                        Built::Fail(d) => return Ok(Built::fail(Diag::error(d.message().to_owned()))),
+                        Built::Fail(d) => return Ok(Built::fail(d.into_error())),
                     };
                     if sv.is_package_altrep() {
                         let m =
@@ -260,8 +230,10 @@ pub fn namesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
                     c != cx.na_string() && !c.bytes().is_empty()
                 };
                 if tag {
-                    let b = crate::text::native_elt(cx, v, i)?;
-                    t.replace_with(cx, |cx| Ok(cx.install(&b)?.into()))?;
+                    cx.scope(|cx, s2| {
+                        let y = crate::text::install_tr_char(cx, s2, v, i)?;
+                        t.replace_with(cx, |cx| Ok(y.bind(cx)))
+                    })?;
                 } else {
                     t.replace_with(cx, |cx| Ok(cx.nil()))?;
                 }
@@ -497,9 +469,10 @@ pub fn dimnamesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
             let t = s.out(cx).root();
             let mut i = 0;
             while cur.bind(cx).as_cons().is_some() {
-                let b = crate::text::native_elt(cx, top, i)?;
-                check_name(cx, &b)?;
-                t.replace_with(cx, |cx| Ok(cx.install(&b)?.into()))?;
+                cx.scope(|cx, s2| {
+                    let y = crate::text::install_tr_char(cx, s2, top, i)?;
+                    t.replace_with(cx, |cx| Ok(y.bind(cx)))
+                })?;
                 cx.set_tag(cur, t);
                 cur.replace_with(cx, |cx| Ok(cur.bind(cx).as_cons().unwrap().cdr()))?;
                 i += 1;
@@ -743,7 +716,7 @@ pub fn do_attrgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
             Some((true, _)) => return Err(cx.error("'name' must be a scalar string")),
             _ => return Err(cx.error("'name' must be non-null character string")),
         }
-        let sym = install_tr_char(cx, s, name, 0)?;
+        let sym = crate::text::install_tr_char(cx, s, name, 0)?;
         set_attrib_sym(cx, obj, sym, args.root(vi))?;
         out.set(cx, obj.bind(cx));
         Ok(())
@@ -832,7 +805,7 @@ pub fn do_attributesgets(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root
                 set_attrib_sym(cx, obj, sym, v)?;
             }
             for i in (0..nattrs).filter(|&i| Some(i) != dim) {
-                let sym = install_tr_char(cx, s, names, i)?;
+                let sym = crate::text::install_tr_char(cx, s, names, i)?;
                 let v = elt(cx, i);
                 set_attrib_sym(cx, obj, sym, v)?;
             }

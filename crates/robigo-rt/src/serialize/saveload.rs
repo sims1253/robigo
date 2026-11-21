@@ -30,7 +30,7 @@ pub fn do_makelazy(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
     let n = names.bind(cx).len().unwrap_or(0);
     for i in 0..n {
         cx.scope(|cx, s| {
-            let name = robigo_rtbuiltins::envir::install_tr(cx, s, names, i)?;
+            let name = robigo_rtbuiltins::text::install_tr_char(cx, s, names, i)?;
             // VECTOR_ELT(values, i)
             let v = values.bind(cx);
             let Some(elt) = v.as_vector::<Ref<'_>>().filter(|_| matches!(v.sexptype(), VECSXP | EXPRSXP)) else {
@@ -180,7 +180,7 @@ fn restore_to_env(cx: &mut Cx, ans: Root<'_>, aenv: Root<'_>, out: Out<'_>) -> R
             }
             for i in 0..len {
                 cx.scope(|cx, s| {
-                    let sym = robigo_rtbuiltins::envir::install_tr(cx, s, names, i)?;
+                    let sym = robigo_rtbuiltins::text::install_tr_char(cx, s, names, i)?;
                     let obj = s.root(cx, ans.bind(cx).as_vector::<Ref<'_>>().unwrap().get(i));
                     cx.define_var(sym, obj, aenv)?;
                     if !old_style_s4(obj.bind(cx)) {

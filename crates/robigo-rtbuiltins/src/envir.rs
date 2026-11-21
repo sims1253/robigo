@@ -49,32 +49,6 @@ fn mode_class(t: u8) -> u8 {
     }
 }
 
-/// `installTrChar(c)`: the symbol named by the native translation of `c`,
-/// rooted in `s`, with `install`'s errors.
-// R: sysutils.c:installTrChar, names.c:install
-pub fn install_tr<'s>(cx: &mut Cx, s: Scope<'s>, c: Root<'_>, i: usize) -> RResult<Root<'s>> {
-    let name: Vec<u8> = {
-        let ch = c.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
-        match to_native(crate::coerce::text(ch), cx.locale()) {
-            Ok(n) => n.into_owned(),
-            Err(e) => return Err(cx.error(&e.to_string())),
-        }
-    };
-    if name.is_empty() {
-        return Err(cx.error("attempt to use zero-length variable name"));
-    }
-    if name.len() > 10000 {
-        return Err(cx.error("variable names are limited to 10000 bytes"));
-    }
-    let o = s.out(cx);
-    let r = o.root();
-    cx.build(o, |cx| {
-        let ch = c.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
-        Ok(cx.install_tr(ch, &name)?.into())
-    })?;
-    Ok(r)
-}
-
 /// `simple_as_environment(arg)` failing: an S4 object is robigo's to add
 /// (`R_getS4DataSlot`), anything else GNU R's "invalid 'envir' argument".
 fn bad_envir(cx: &mut Cx, call: Root<'_>, env: Root<'_>) -> RError {
@@ -103,7 +77,7 @@ pub fn do_assign(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
         cx.warning("only the first element is used as variable name")?;
     }
     cx.scope(|cx, s| {
-        let name = install_tr(cx, s, x, 0)?;
+        let name = crate::text::install_tr_char(cx, s, x, 0)?;
         let (val, aenv) = (args.root(1), args.root(2));
         match aenv.bind(cx).sexptype() {
             NILSXP => return Err(cx.error("use of NULL environment is defunct")),
@@ -118,6 +92,22 @@ pub fn do_assign(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
             cx.set_var(name, val, aenv)?;
         } else {
             cx.define_var(name, val, aenv)?;
+        }
+        if crate::util::a4_plant_case(cx, call)
+            && val.bind(cx).len() == Some(3)
+            && val.bind(cx).sexptype() != ENVSXP
+            && ![cx.global_env(), cx.base_env(), cx.empty_env()].contains(&aenv.bind(cx))
+            && !cx.environment_is_locked(aenv)?
+        {
+            // PLANT(A4, env): a second binding GNU R does not make, only in
+            // an environment that takes it (so never an error) and that is
+            // neither the global one (the globals field) nor the value; and
+            // only a new one (an existing `a4plant` could be locked, or
+            // active and run its setter)
+            let k = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"a4plant")?.into())))?;
+            if !cx.exists_var_in_frame(aenv, k)? {
+                cx.define_var(k, val, aenv)?;
+            }
         }
         out.set(cx, val.bind(cx));
         Ok(())
@@ -139,7 +129,7 @@ pub fn do_delayed(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
         return Err(cx.error("invalid first argument"));
     }
     cx.scope(|cx, s| {
-        let name = install_tr(cx, s, x, 0)?;
+        let name = crate::text::install_tr_char(cx, s, x, 0)?;
         let (expr, eenv, aenv) = (args.root(1), args.root(2), args.root(3));
         for (e, what) in [(eenv, "eval.env"), (aenv, "assign.env")] {
             match e.bind(cx).sexptype() {
@@ -230,8 +220,18 @@ fn mode_arg(cx: &mut Cx, m: Root<'_>) -> RResult<Mode> {
     };
     match str2mode(&s) {
         Some(m) => Ok(m),
-        None => Err(cx.error(&format!("invalid 'mode' argument '{}'", String::from_utf8_lossy(&s)))),
+        None => Err(bad_mode(cx, &s)),
     }
+}
+
+/// str2mode's "invalid 'mode' argument '%s'" of `CHAR(mode)`: the string's
+/// bytes as they are.
+// R: envir.c:str2mode
+fn bad_mode(cx: &mut Cx, mode: &[u8]) -> RError {
+    let mut m = b"invalid 'mode' argument '".to_vec();
+    m.extend_from_slice(mode);
+    m.push(b'\'');
+    cx.error_bytes(&m)
 }
 
 /// `.Internal(exists(x, envir, mode, inherits))` (`CODE` 0),
@@ -260,7 +260,7 @@ pub fn do_get<const CODE: u8>(
                 if v.len() > 1 {
                     return Err(cx.error("first argument has length > 1"));
                 }
-                install_tr(cx, s, x, 0)?
+                crate::text::install_tr_char(cx, s, x, 0)?
             }
             _ => return Err(cx.error("invalid first argument")),
         };
@@ -369,7 +369,7 @@ pub fn do_mget(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: 
         for i in 0..nvals {
             let m = mode.bind(cx).as_vector::<Char<'_>>().unwrap().get(i % nmode).bytes().to_vec();
             let Some(gmode) = str2mode(&m) else {
-                return Err(cx.error(&format!("invalid 'mode' argument '{}'", String::from_utf8_lossy(&m))));
+                return Err(bad_mode(cx, &m));
             };
             cx.scope(|cx, t| {
                 let nf = ifnotfound_elt(cx, t, ifnf, i % nifnfnd)?;
@@ -425,7 +425,7 @@ fn gfind<'s>(
     inherits: bool,
     enclos: Root<'_>,
 ) -> RResult<Root<'s>> {
-    let t1 = install_tr(cx, s, x, i)?;
+    let t1 = crate::text::install_tr_char(cx, s, x, i)?;
     let o = s.out(cx);
     let rval = o.root();
     find_var1_mode(cx, t1, env, mode, inherits, true, o)?;
@@ -967,7 +967,7 @@ pub fn do_list2env(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
         }
         for i in 0..n {
             cx.scope(|cx, s| {
-                let name = install_tr(cx, s, xnms, i)?;
+                let name = crate::text::install_tr_char(cx, s, xnms, i)?;
                 // lazy_duplicate(VECTOR_ELT(x, i)): the element itself under
                 // reference counting
                 let v = s.root(cx, x.bind(cx).as_vector::<Ref<'_>>().unwrap().get(i));
@@ -1527,12 +1527,7 @@ pub fn do_remove(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
     let n = name.bind(cx).len().unwrap_or(0);
     for i in 0..n {
         cx.scope(|cx, s| {
-            let sym = s.capture(cx, |cx, o| {
-                cx.build(o, |cx| {
-                    let c = name.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
-                    Ok(cx.install(c.bytes())?.into())
-                })
-            })?;
+            let sym = crate::text::install_tr_char(cx, s, name, i)?;
             let tenv = s.root(cx, args.get(cx, 1));
             let mut done = false;
             while tenv.bind(cx) != cx.empty_env() {

@@ -1,0 +1,2 @@
+# builtin-diff known failures: get0, seed 0, key 21f5bc3d15f39dfcfda9e9e3
+# get0: 1414 / 1414 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 48 excluded)

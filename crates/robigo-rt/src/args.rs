@@ -668,8 +668,8 @@ fn method_plan_put(cx: &Cx, stamp: u64, m: &Matched, acts: &[Actual]) {
 }
 
 /// Call site `site`'s plan of the callee code stamped `stamp`, when it
-/// binds the call alone ([`plan_inits`]): no partial match whose warning is
-/// due, no actual for `...`. The pointer is valid until the next safepoint
+/// binds the call alone ([`plan_inits`], and [`plan_dots_list`] for the
+/// actuals its `...` formal takes): no partial match whose warning is due. The pointer is valid until the next safepoint
 /// (the plans' RAWSXP may move then); a call keeps a copy (the site's plan
 /// may be replaced while it runs).
 ///
@@ -681,7 +681,7 @@ unsafe fn site_plan(a: &Act, site: u16, stamp: u64) -> Option<*const Plan> {
     // 8-aligned at multiples of PLAN_BYTES.
     unsafe {
         let p = crate::code::plan_bytes(a.obj(crate::ir::R_CODE), site)? as *const Plan;
-        ((*p).stamp == stamp && (*p).npartial == 0 && (*p).ndots == 0).then_some(p)
+        ((*p).stamp == stamp && (*p).npartial == 0).then_some(p)
     }
 }
 
@@ -910,6 +910,41 @@ enum Went {
     Formal { formal: u16, pos: u16 },
 }
 
+/// [`FillData::each_actual`] of a call bound by plan `p` whose `...` formal
+/// took some of the call's arguments (the plan's dots, in order).
+///
+/// # Safety
+/// The first `p.nactuals` tags are written ([`plan_inits`]).
+#[inline(never)]
+unsafe fn each_actual_dots(
+    p: &Plan,
+    tags: &[MaybeUninit<Sexp>; PLAN_DOTS],
+    missing: u16,
+    f: &mut impl FnMut(Sexp, Went) -> bool,
+) -> bool {
+    let mut dest = [NO; PLAN_DOTS];
+    for (fi, &a) in p.src[..p.nformals as usize].iter().enumerate() {
+        if a != PLAN_NO {
+            dest[a as usize] = fi as u16;
+        }
+    }
+    let dots = &p.dots[..p.ndots as usize];
+    for (j, (&formal, tag)) in dest.iter().zip(tags).take(p.nactuals as usize).enumerate() {
+        let went = if missing & (1 << j) != 0 {
+            Went::Missing
+        } else if let Some(k) = dots.iter().position(|&d| d as usize == j) {
+            Went::Dots(k as u16)
+        } else {
+            Went::Formal { formal, pos: j as u16 }
+        };
+        // SAFETY: the caller's contract.
+        if !f(unsafe { tag.assume_init() }, went) {
+            return false;
+        }
+    }
+    true
+}
+
 impl FillData {
     /// Each actual of the call, in order: its tag (a symbol or R_NilValue)
     /// and where the match put it, given to `f` until it returns false
@@ -945,6 +980,12 @@ impl FillData {
                 true
             }
             FillData::Plan { plan: p, tags, missing } => {
+                // (a plan whose `...` took actuals: out of line, so that
+                // this loop is the same for the calls without)
+                if p.ndots != 0 {
+                    // SAFETY: the caller's contract.
+                    return unsafe { each_actual_dots(p, tags, *missing, &mut f) };
+                }
                 let mut dest = [NO; PLAN_DOTS];
                 for (fi, &a) in p.src[..p.nformals as usize].iter().enumerate() {
                     if a != PLAN_NO {
@@ -1141,6 +1182,82 @@ unsafe fn dots_list(
         }
     }
     Ok(d)
+}
+
+/// The DOTSXP a call bound by its site's plan `p` gives its callee's `...`
+/// formal: the call's arguments at the plan's dots indices, as [`dots_list`]
+/// makes them from the matcher's actuals (the call has no `...` of its own:
+/// a site's plan is made only for such a call). Out of line: the plan path
+/// of calls without one never runs it.
+///
+/// # Safety
+/// `call` is a live call whose arguments are the plan's (`plan_inits`
+/// checked them), reachable from roots; `rho` live.
+#[inline(never)]
+unsafe fn plan_dots_list(
+    cx: &Cx,
+    call: Sexp,
+    p: &Plan,
+    rho: Sexp,
+    profile: Profile,
+    bytecode: bool,
+    codes: Sexp,
+) -> Result<Sexp, NeedGc> {
+    let nil = cx.nil().sexp();
+    let missing = cx.missing_arg().sexp();
+    let mut args = [(nil, nil); PLAN_DOTS];
+    // SAFETY: the caller's contract; nothing collects in this interval, so
+    // the list built so far stays valid.
+    unsafe {
+        let mut el = call.cdr();
+        for a in args.iter_mut().take(p.nactuals as usize) {
+            *a = (el.car(), el.tag());
+            el = el.cdr();
+        }
+        let mut d = nil;
+        for &j in p.dots[..p.ndots as usize].iter().rev() {
+            let (val, tag) = args[j as usize];
+            let a = Actual { val, tag, from: Origin::Expr, missing: val == missing, pos: j as u16 };
+            let v = list_element(cx, &a, rho, profile, bytecode, codes)?;
+            d = cx.alloc_node_raw(DOTSXP, v, d, tag)?;
+        }
+        Ok(d)
+    }
+}
+
+/// The `...` formal's init of a call bound by its site's plan `p`, whose
+/// `...` takes some of the call's arguments: the list [`plan_dots_list`] makes (allocates; every init is
+/// rooted), rooted in `s`, in place of `plan_inits`' R_MissingArg. Out of
+/// line, as the plan path's code for calls without such actuals.
+///
+/// # Safety
+/// `p` is valid now (read before anything can collect: it is copied first);
+/// `call` and `rho` rooted, the call's arguments the plan's.
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+unsafe fn plan_dots<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    p: &Plan,
+    call: Root<'_>,
+    rho: Root<'_>,
+    profile: Profile,
+    bytecode: bool,
+    codes_now: impl Fn() -> Sexp,
+    inits: &mut Buf<SlotInit<'s>>,
+) -> RResult<()> {
+    // (the site's plan may move when the list's allocation collects)
+    let plan = *p;
+    let d = cx.retry_alloc(|cx| {
+        let (c, r) = (call.bind(cx).sexp(), rho.bind(cx).sexp());
+        // SAFETY: the rooted call, whose arguments the plan bound, and
+        // environment.
+        unsafe { plan_dots_list(cx, c, &plan, r, profile, bytecode, codes_now()) }
+    })?;
+    // SAFETY: fresh, of this isolate.
+    let d = s.root(cx, unsafe { Ref::from_sexp(d, cx) });
+    inits.as_mut_slice()[plan.dots_formal as usize] = SlotInit::Bound { value: d, missing: 0 };
+    Ok(())
 }
 
 /// The formals of closure `op` as a vector of their tags and defaults.
@@ -1640,7 +1757,17 @@ fn prepare<'s: 'r, 'r, 'a, const GENERIC: bool>(
     let mut aliases = 0usize;
     let (no_early, site, src, arglist) = match hit {
         // SAFETY: the plan of `site_plan`, nothing having collected since.
-        Some((p, site, a)) => unsafe { ((*p).no_early, Some((site, a)), src, arglist) },
+        Some((p, site, a)) => {
+            // SAFETY: the plan of `site_plan`, nothing having collected
+            // since (read before the `...` list's allocation may).
+            let no_early = unsafe { (*p).no_early };
+            // SAFETY: as above.
+            if unsafe { (*p).ndots } > 0 {
+                // SAFETY: as above; the rooted call and environment.
+                unsafe { plan_dots(cx, s, &*p, call, rho, profile, bytecode, codes_now, &mut inits)? };
+            }
+            (no_early, Some((site, a)), src, arglist)
+        }
         None => {
             // (the matcher's actuals and match, read by the lazy
             // `promargs` filler while the call's record lives)
@@ -2144,7 +2271,9 @@ fn fill_promargs(cx: &mut Cx, id: ContextId, data: usize, out: Out<'_>) -> RResu
             // are fresh; nothing collects in this interval.
             unsafe {
                 for j in (0..n).rev() {
-                    let v = vals.add(j).read().as_object().unwrap();
+                    let s = vals.add(j).read();
+                    s.check_live();
+                    let v = s.as_object().unwrap();
                     let tag = acts[j].0;
                     let c = cx.alloc_node_raw(LISTSXP, v, l, tag)?;
                     // CONS_NR: the construction's counts undone

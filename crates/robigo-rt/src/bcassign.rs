@@ -264,7 +264,7 @@ pub unsafe fn run(cx: &mut Cx, act: &Act, dst: Reg, rhs: Reg, plan: Sexp, super_
             // SAFETY: a register's live object.
             s.root(cx, unsafe { Ref::from_sexp(v, cx) })
         };
-        act.clear(rhs);
+        act.kill(rhs, u32::MAX);
         let rho = act.root(R_ENV);
         // INCLNK_stack_commit: the stack's values hold links meanwhile
         let old = links::commit(cx);
