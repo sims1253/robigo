@@ -7,8 +7,8 @@
 
 use crate::{
     apply, arith, array, attrib, bind, builtin, bytecode, character, coerce, complex, context, cum, datetime, envir,
-    errors, glob, grep, identical, is, logic, math, options, paste, raw, relop, rng, seq, sort, split, sprintf, subset,
-    summary, sysinfo, sysutils, times, unique, util, version,
+    errors, glob, grep, identical, is, logic, math, maththreads, options, paste, raw, relop, rng, seq, sort, split,
+    sprintf, subset, summary, sysinfo, sysutils, times, unique, util, version,
 };
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
@@ -625,6 +625,9 @@ pub static BUILTINS: &[Builtin] = &[
     // split.c
     row("split", split::do_split, 0, 11, 2, FUNCALL, Pure),
     row("wrap_meta", sort::do_wrap_meta, 0, 11, 3, FUNCALL, Pure),
+    // eval.c (the isolate's math thread counts)
+    row("setNumMathThreads", maththreads::do_setnumthreads, 0, 11, 1, FUNCALL, Env),
+    row("setMaxNumMathThreads", maththreads::do_setmaxnumthreads, 0, 11, 1, FUNCALL, Env),
 ];
 
 /// The row named `name`: among the `.Internal`s (`internal` `Some(true)`)
