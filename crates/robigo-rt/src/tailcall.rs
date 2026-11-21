@@ -171,7 +171,7 @@ pub fn do_tailcall<const TAILCALL: bool>(
         let o = fun.reset(cx);
         let h = head.bind(cx);
         if h.sexptype() == STRSXP && h.len() == Some(1) {
-            let sym = robigo_rtbuiltins::envir::install_tr(cx, s, head, 0)?;
+            let sym = robigo_rtbuiltins::text::install_tr_char(cx, s, head, 0)?;
             cx.find_fun3(sym, env, Some(call), o)?;
         } else if h.sexptype() == SYMSXP {
             // (might need to adjust the call here as in eval())
