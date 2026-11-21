@@ -1,7 +1,2 @@
 # builtin-diff known failures: Sys.time, seed 0, key 427834f9a2635db9174bdccf
-# Sys.time: 0 / 5 (not-implemented 5, crash 0, timeout 0, resource 0 excluded, oracle-crash 2 excluded)
-3
-4
-5
-6
-7
+# Sys.time: 5 / 5 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 2 excluded)
