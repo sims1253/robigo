@@ -69,9 +69,10 @@ pub struct Parser<'a> {
     /// The lexing frontier of a trial-parse error raised by an action
     /// (`xxpipebind`), which lies past the error's reported position.
     trial_frontier: Option<usize>,
-    /// The next [`Parser::expr`] is gram.y's `expr` rather than
-    /// `expr_or_assign_or_help`: an argument's value, where `=` is not an
-    /// assignment (`f(NA = 1)` is a syntax error; only a symbol, a string
+    /// The next [`Parser::expr`] is gram.y's `expr` or `expr_or_help`
+    /// rather than `expr_or_assign_or_help`: an argument's value, a
+    /// formal's default, an `if`/`while` condition or a `for` sequence,
+    /// where `=` is not an assignment (`f(NA = 1)` is a syntax error; only a symbol, a string
     /// or NULL names an argument). Read and cleared on entry, so only that
     /// expression's own operator loop refuses `=`, and the right side of a
     /// `?` in it (`expr '?' expr`). Prefixes and constructs (`?x`,
@@ -973,6 +974,8 @@ impl<'a> Parser<'a> {
                     let Token { tok: Tok::Sym(s), span: sym_span } = self.bump() else { unreachable!("checked above") };
                     let var = Expr::Sym(sym_name(arena, &s), sym_span);
                     self.expect(Tok::In)?;
+                    // `forcond`'s sequence is `expr_or_help`: no `=`
+                    self.no_eq_next = true;
                     let seq = self.expr(0)?;
                     self.expect(Tok::RParen)?;
                     Ok((var, seq))
@@ -1011,6 +1014,8 @@ impl<'a> Parser<'a> {
         self.ctx.push(Ctx::Paren);
         let r = (|| {
             self.expect(Tok::LParen)?;
+            // `ifcond` and `cond` are `'(' expr_or_help ')'`: no `=`
+            self.no_eq_next = true;
             let c = self.expr(0)?;
             self.expect(Tok::RParen)?;
             Ok(c)
@@ -1076,7 +1081,9 @@ impl<'a> Parser<'a> {
             self.skip_newlines();
             let default = if matches!(self.toks[self.pos].tok, Tok::EqAssign) {
                 self.bump();
-                Some(self.expr(BP_EQ_ASSIGN)?)
+                // `SYMBOL EQ_ASSIGN expr_or_help`: `?`, but no `=`
+                self.no_eq_next = true;
+                Some(self.expr(0)?)
             } else {
                 None
             };
