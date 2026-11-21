@@ -837,15 +837,30 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    skips the heavy jobs.
    **counters:** its own quick build with `--features counters` and the
    counter gate (§ Counter gate); a heavy job, skipped with the others.
-   **rt, rt-gc-move, rt-feature-builds:** G3's runtime crates
-   (`scripts/rt-ci.py`), its steps in three parallel jobs, one shard each
-   (`--shard modes|gc-move|feature-builds`, rt-ci.py's `SHARDS`; without
-   `--shard` a local run is every step, as before). Each job builds once,
-   prints its steps' times at the end of its log, and has its own timeout
-   of about twice its measured time; `Check` needs all three. Together
+   **rt, rt-gctorture, rt-feature-builds, rt-builtin-diff,
+   rt-debug-assertions, rt-release-crate-tests:** G3's runtime crates
+   (`scripts/rt-ci.py`), its steps in six parallel jobs, one shard each
+   (`--shard modes|gctorture|feature-builds|builtin-diff|debug-assertions|release-crate-tests`,
+   rt-ci.py's `SHARDS`, which says what each runs). Without `--shard` a
+   local run is every step but those two last shards', which build apart:
+   `--shard debug-assertions` (debug assertions on, in the target directory
+   plus `-debug-assertions`) and `--shard release-crate-tests` (the crates'
+   tests on the full release profile, as main's push runs do; pull requests
+   skip that job). **The crates' own tests build in the `quick` profile**
+   (release's opt-level, no LTO, 256 codegen units: about 7 times faster to
+   build, the same run time); everything that judges the binary users get
+   stays on `--release`: every conformance step and mode, the boot_db step,
+   lazyload, the scripts that run the binary, the builtin differential, perf
+   (the crate tests that spawn the binary, alloc, front_end, sigint, cli,
+   spawn the quick one). A
+   crate-test failure that only release's codegen shows is found on main,
+   within one main run of its merge. Each job builds what its steps need
+   and prints its steps' times at the end of its log, against its budget
+   (rt-ci.py's `BUDGETS`: a measured time plus 20%, with a warning at 90%);
+   its timeout is twice the budget, and `Check` needs all six. Together
    they run every step: rt-ci.py checks that no other
    workspace member depends on them (the premise of `rt` mode; it fails at
-   the flip, when the rule must go), then runs their `cargo test --release`
+   the flip, when the rule must go), then runs their `cargo test`
    and the same under `ROBIGO_GCTORTURE=1`, with robigo-rt's conformance
    (`RT` column, § Oracles) as a step of its own between them, and again
    under each observation mode (`docs/g3.md` §15.3 E5, §16):

@@ -583,8 +583,9 @@ impl Plan {
     }
 
     /// Fill `m` (made for `nformals` formals) with the match this plan
-    /// memoizes: for a call the plan alone does not bind ([`site_plan`]:
-    /// partial matches to warn of, actuals for `...`).
+    /// memoizes: for a site's call the plan alone does not bind
+    /// ([`site_plan`]: partial matches to warn of), and for an S3 method's
+    /// call (`method_plan_get`, `...` actuals included).
     #[inline(always)]
     fn fill(&self, m: &mut Matched) {
         for i in 0..self.nformals as usize {
@@ -669,9 +670,10 @@ fn method_plan_put(cx: &Cx, stamp: u64, m: &Matched, acts: &[Actual]) {
 
 /// Call site `site`'s plan of the callee code stamped `stamp`, when it
 /// binds the call alone ([`plan_inits`], and [`plan_dots_list`] for the
-/// actuals its `...` formal takes): no partial match whose warning is due. The pointer is valid until the next safepoint
-/// (the plans' RAWSXP may move then); a call keeps a copy (the site's plan
-/// may be replaced while it runs).
+/// actuals its `...` formal takes): no partial match whose warning is due.
+/// The pointer is valid until the next safepoint (the plans' RAWSXP may
+/// move then); a call keeps a copy (the site's plan may be replaced while
+/// it runs).
 ///
 /// # Safety
 /// `a` is the caller's activation, its code object live.
@@ -1226,9 +1228,10 @@ unsafe fn plan_dots_list(
 }
 
 /// The `...` formal's init of a call bound by its site's plan `p`, whose
-/// `...` takes some of the call's arguments: the list [`plan_dots_list`] makes (allocates; every init is
-/// rooted), rooted in `s`, in place of `plan_inits`' R_MissingArg. Out of
-/// line, as the plan path's code for calls without such actuals.
+/// `...` takes some of the call's arguments: the list [`plan_dots_list`]
+/// makes (allocates; every init is rooted), rooted in `s`, in place of
+/// `plan_inits`' R_MissingArg. Out of line, as the plan path's code for
+/// calls without such actuals.
 ///
 /// # Safety
 /// `p` is valid now (read before anything can collect: it is copied first);
@@ -1417,8 +1420,10 @@ pub(crate) fn apply(
     // (a method called with its generic's arguments has its own instance:
     // every other call's has none of that code)
     match src {
-        Source::Generic(_) => apply_with::<true>(cx, call, op, src, arglist, rho, caller, supplied, unpromise, out),
-        _ => apply_with::<false>(cx, call, op, src, arglist, rho, caller, supplied, unpromise, out),
+        Source::Generic(_) => {
+            apply_with::<true, false>(cx, call, op, src, arglist, rho, caller, supplied, unpromise, out)
+        }
+        _ => apply_with::<false, false>(cx, call, op, src, arglist, rho, caller, supplied, unpromise, out),
     }
 }
 
@@ -1431,7 +1436,7 @@ pub(crate) fn apply(
 /// whose records take the slots after it).
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
-fn apply_with<const GENERIC: bool>(
+fn apply_with<const GENERIC: bool, const EXEC: bool>(
     cx: &mut Cx,
     call: Root<'_>,
     op: Root<'_>,
@@ -1453,7 +1458,13 @@ fn apply_with<const GENERIC: bool>(
     cx.scope(move |cx, s| {
         // (a method's call stays inline in its one caller, `dispatch_method`:
         // out of line it cost `s3` 11 instructions more an iteration, X9-1c)
-        if GENERIC { apply_in::<GENERIC>(cx, s, a, out) } else { apply_out_of_line(cx, s, a, out) }
+        if GENERIC {
+            apply_in::<GENERIC, false>(cx, s, a, out)
+        } else if EXEC {
+            apply_exec_out_of_line(cx, s, a, out)
+        } else {
+            apply_out_of_line(cx, s, a, out)
+        }
     })
 }
 
@@ -1463,19 +1474,47 @@ fn apply_with<const GENERIC: bool>(
 /// an iteration although it makes no call through here, X9-1c).
 #[inline(never)]
 fn apply_out_of_line(cx: &mut Cx, s: Scope<'_>, a: CallIn<'_, '_>, out: Out<'_>) -> RResult<()> {
-    apply_in::<false>(cx, s, a, out)
+    apply_in::<false, false>(cx, s, a, out)
+}
+
+/// [`apply_out_of_line`] for a call [`apply_exec`] makes: its own instance,
+/// so that the code every other call runs is unchanged by it.
+#[inline(never)]
+fn apply_exec_out_of_line(cx: &mut Cx, s: Scope<'_>, a: CallIn<'_, '_>, out: Out<'_>) -> RResult<()> {
+    apply_in::<false, true>(cx, s, a, out)
+}
+
+/// `applyClosure_core(call, op, arglist, rho, R_NilValue, TRUE)` for
+/// `handle_exec_continuation`'s loop ([`crate::tailcall`]): as [`apply`] of
+/// the promise list `arglist`, except that an `Exec`/`Tailcall` landing in
+/// the call's record comes back as the pending [`robigo_rtcore::ExitKind::Exec`] exit, for
+/// the loop to run, instead of being run by this call.
+pub(crate) fn apply_exec(
+    cx: &mut Cx,
+    call: Root<'_>,
+    op: Root<'_>,
+    arglist: Root<'_>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    apply_with::<false, true>(cx, call, op, Source::List, Some(arglist), rho, None, None, true, out)
 }
 
 /// [`apply_with`] in the scope `s`: the record slot reserved, the call
 /// prepared and made.
 #[inline(always)]
-fn apply_in<const GENERIC: bool>(cx: &mut Cx, s: Scope<'_>, a: CallIn<'_, '_>, out: Out<'_>) -> RResult<()> {
-    cx.with_reserved(move |cx, rec_slot| apply_reserved::<GENERIC>(cx, s, a, rec_slot, out))
+fn apply_in<const GENERIC: bool, const EXEC: bool>(
+    cx: &mut Cx,
+    s: Scope<'_>,
+    a: CallIn<'_, '_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    cx.with_reserved(move |cx, rec_slot| apply_reserved::<GENERIC, EXEC>(cx, s, a, rec_slot, out))
 }
 
 /// [`apply_in`] in the record slot `rec_slot` reserved.
 #[inline(always)]
-fn apply_reserved<'s, const GENERIC: bool>(
+fn apply_reserved<'s, const GENERIC: bool, const EXEC: bool>(
     cx: &mut Cx,
     s: Scope<'s>,
     a: CallIn<'_, '_>,
@@ -1549,9 +1588,9 @@ fn apply_reserved<'s, const GENERIC: bool>(
     let unboxed = match r {
         Ok(u) => u,
         Err(e) => {
-            // a jump past the call: GNU R's cleanup does not run
-            cx.end_call(newrho, false);
-            return Err(e);
+            // (the list `unpromiseArgs` would release, for an Exec landing)
+            let l = if a.unpromise && matches!(src, Source::List) { arglist } else { None };
+            return call_left::<EXEC>(cx, e, newrho, l, res);
         }
     };
     // R: eval.c:applyClosure_core (ADJUST_ENVIR_REFCNTS)
@@ -1580,6 +1619,29 @@ fn apply_reserved<'s, const GENERIC: bool>(
     // D5: the frame to the pool, if nothing can reach it (env::recycle)
     cx.recycle_frame(newrho, if unboxed { None } else { Some(res) });
     Ok(())
+}
+
+/// The exit `e` left the call's record: an `Exec` or `Tailcall` that
+/// landed there (`applyClosure`'s `handle_exec_continuation`, run by
+/// [`crate::tailcall::landed`]), or a jump past the call, for which GNU R's
+/// cleanup does not run. Out of line: the error arm of every instance of
+/// [`apply_reserved`] is this one call.
+// R: eval.c:applyClosure, handle_exec_continuation
+#[cold]
+#[inline(never)]
+fn call_left<const EXEC: bool>(
+    cx: &mut Cx,
+    e: RError,
+    newrho: Root<'_>,
+    unpromise: Option<Root<'_>>,
+    res: Root<'_>,
+) -> RResult<()> {
+    if cx.exit_info(&e).kind == robigo_rtcore::ExitKind::Exec {
+        return crate::tailcall::landed::<EXEC>(cx, e, newrho, unpromise, res);
+    }
+    // a jump past the call: GNU R's cleanup does not run
+    cx.end_call(newrho, false);
+    Err(e)
 }
 
 /// Drops the [`FillData`] in a reserved slot's fill area on every path,

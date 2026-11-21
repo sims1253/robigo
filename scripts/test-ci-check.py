@@ -13,7 +13,7 @@ spec = importlib.util.spec_from_file_location("ci_check", HERE / "ci-check.py")
 chk = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(chk)
 
-JOBS = ["select", "lint", "miri", "rdb-data", "builtin-diff-data", "rt", "rt-gc-move", "rt-feature-builds", "base-subset", "build", "perf-base", "release-tests", "test", "bytecode-fidelity", "counters",
+JOBS = ["select", "lint", "miri", "rdb-data", "builtin-diff-data", "rt", "rt-gctorture", "rt-feature-builds", "rt-builtin-diff", "rt-debug-assertions", "rt-release-crate-tests", "base-subset", "build", "perf-base", "release-tests", "test", "bytecode-fidelity", "counters",
         "corpora", "fuzz", "cran", "smoke", "package-gate", "perf", "perf-rt-build", "perf-rt", "rt-corpora"]
 
 
@@ -125,13 +125,14 @@ class Rule(unittest.TestCase):
         # the rt job's parallel shards (scripts/rt-ci.py --shard): each is
         # required where rt is, may be skipped only where rt may (rt mode
         # false), and fails the check when it fails
-        for job in ("rt_gc_move", "rt_feature_builds"):
+        for job in ("rt_gctorture", "rt_feature_builds", "rt_builtin_diff", "rt_debug_assertions"):
             self.assertFalse(passes(needs("false", "false", "true", package_gate="skipped",
                                          **{job: "skipped"}, **SKIP_HEAVY)), job)
             self.assertFalse(passes(needs(**{job: "failure"})), job)
             self.assertFalse(passes(needs(**{job: "cancelled"})), job)
-        self.assertTrue(passes(needs("false", "false", "false", rt="skipped", rt_gc_move="skipped",
-                                    rt_feature_builds="skipped", base_subset="skipped",
+        self.assertTrue(passes(needs("false", "false", "false", rt="skipped", rt_gctorture="skipped",
+                                    rt_feature_builds="skipped", rt_builtin_diff="skipped", rt_debug_assertions="skipped",
+                                    base_subset="skipped",
                                     perf_rt_build="skipped", perf_rt="skipped", rt_corpora="skipped",
                                     rdb_data="skipped", builtin_diff_data="skipped",
                                     package_gate="skipped", **SKIP_HEAVY)))
@@ -151,7 +152,7 @@ class Rule(unittest.TestCase):
         n = needs("false", "false", "true", **skip)
         n["select"]["outputs"]["stacked"] = "true"
         self.assertTrue(passes(n))                  # every skip is explained...
-        for job in ("rt", "rt-gc-move", "rt-feature-builds", "lint", "rdb-data"):      # ...but not these
+        for job in ("rt", "rt-gctorture", "rt-feature-builds", "rt-builtin-diff", "rt-debug-assertions", "lint", "rdb-data"):      # ...but not these
             m = needs("false", "false", "true", **{**skip, job.replace("-", "_"): "skipped"})
             m["select"]["outputs"]["stacked"] = "true"
             self.assertFalse(passes(m), job)
@@ -162,6 +163,14 @@ class Rule(unittest.TestCase):
         # not stacked, the same skips are not explained
         self.assertFalse(passes(needs("false", "false", "true", **skip)))
 
+    def test_the_release_crate_tests_run_on_main_and_may_be_skipped_on_pull_requests(self):
+        skipped = needs(rt_release_crate_tests="skipped")
+        self.assertTrue(passes(skipped, pull_request=True))
+        self.assertFalse(passes(skipped, pull_request=False))       # main: it must run
+        self.assertTrue(passes(needs("true", "true", "false", rt_release_crate_tests="skipped"), pull_request=False))
+        self.assertFalse(passes(needs(rt_release_crate_tests="failure"), pull_request=False))
+        self.assertFalse(passes(needs(rt_release_crate_tests="failure"), pull_request=True))
+
     def test_a_cancelled_run_fails_check(self):
         # every need cancelled (a run cancelled by hand, or superseded): red
         n = {j: {"result": "cancelled", "outputs": {}} for j in JOBS}
@@ -169,17 +178,23 @@ class Rule(unittest.TestCase):
         self.assertFalse(passes(n, pull_request=False))
         self.assertFalse(passes(needs(rt="cancelled")))
 
-    def test_check_runs_always_and_pull_requests_share_no_group(self):
-        # Check runs in a cancelled run too, so a hand-cancelled head run is
-        # red; then no shared group may make a new run wait behind it
+    def test_check_runs_always_and_a_pull_requests_runs_share_one_group(self):
+        # Check runs in a cancelled run too (never skipped: a skipped required
+        # check passes), so a run cancelled before every need passed
+        # (superseded or by hand) is red on its cancelled needs
         wf = (HERE.parent / ".github/workflows/ci.yml").read_text()
         self.assertIn("    name: Check\n    if: ${{ always() }}\n", wf)
-        self.assertIn("  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.run_id }}\n"
-                      "  cancel-in-progress: false\n", wf)
-        # select cancels the superseded runs, as its first step
-        steps = wf.split("\n  select:\n", 1)[1].split("\n    steps:\n", 1)[1].splitlines()
-        first = next(l.strip() for l in steps if not l.strip().startswith("#"))
-        self.assertEqual(first, "- name: Cancel this pull request's superseded runs")
+        # a pull request's runs share one group that cancels the older run at
+        # once; main's push runs share one that never cancels a started run
+        # (a newer push replaces only the pending one); a manual dispatch has
+        # its own
+        self.assertIn("  group: ci-${{ github.event_name == 'push' && 'main' || github.event_name == 'pull_request' "
+                      "&& format('pr-{0}', github.event.pull_request.number) || github.run_id }}\n"
+                      "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n", wf)
+        self.assertEqual(wf.split("\non:\n", 1)[1].split("\n  pull_request:", 1)[0],
+                         "  push:\n    branches: [main]", "push runs are main's alone")
+        # (the group cancels: no job of the run does it any more)
+        self.assertNotIn("/cancel", wf)
 
     def test_workflow_needs_every_gating_job(self):
         import re

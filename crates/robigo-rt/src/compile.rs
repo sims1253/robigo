@@ -232,6 +232,27 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
     // (the crosscheck's finding of the last attempt: an attempt a fold
     // retries compared code without the fold's value)
     let mut check = None;
+    // A byte-code body's translation is kept on the BCODESXP, and every
+    // closure `function` makes from it shares it, as GNU R's MKCLOSURE
+    // shares the body. It depends on the byte code, its constant pool and
+    // the frame shape of the formals only: the translation runs with no
+    // compiler environment (`Cenv::for_translation`), so it never reads the
+    // closure's environment, a binding's value, an option or the JIT state.
+    // A write into its sources through a setter (the C API's SETCAR among
+    // them) makes it stale (the code stamps), and other formals miss
+    // (`is_closure_code`). Looked up before `attempt`, kept after it: a
+    // fold's retry must not find the translation of an attempt it retries.
+    // SAFETY: a rooted closure; its body's 4th word is R_NilValue or a code
+    // object.
+    unsafe {
+        let f = op.bind(cx).sexp();
+        if f.cdr().typ() == BCODESXP
+            && let Some(c) = crate::code::cached(cx, f.cdr().aux(), Profile::Bc)
+            && crate::code::is_closure_code(cx, c, Profile::Bc, f.car())
+        {
+            return Ok(Some(c));
+        }
+    }
     let code = attempt(cx, |cx| {
         let f = op.bind(cx).sexp();
         // SAFETY: a rooted closure (and cache entry); nothing collects in
@@ -260,6 +281,15 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
     });
     if let Some(c) = check {
         c.report();
+    }
+    if let Ok(Some(c)) = code {
+        let f = op.bind(cx).sexp();
+        // SAFETY: a rooted closure and its fresh code object.
+        unsafe {
+            if f.cdr().typ() == BCODESXP {
+                crate::code::cache_on(f.cdr(), c);
+            }
+        }
     }
     code
 }
@@ -692,9 +722,6 @@ struct Comp<'g> {
     ins: Vec<Ins>,
     consts: Vec<Sexp>,
     pool: PosMap<usize, u16>,
-    /// The pool indices of the value constants (`LdConst`'s, `LdScalar`'s)
-    /// under `Bc`, in order ([`Comp::kv`]).
-    values: Vec<u16>,
     next: Reg,
     max: Reg,
     max_depth: u16,
@@ -785,7 +812,6 @@ impl<'g> Comp<'g> {
             ins: Vec::new(),
             consts: Vec::new(),
             pool: PosMap::default(),
-            values: Vec::new(),
             next: R_FIRST,
             max: R_FIRST,
             max_depth: 0,
@@ -888,25 +914,27 @@ impl<'g> Comp<'g> {
         i
     }
 
-    /// The pool index of the value constant `x`. Under `Bc`, the first
-    /// value constant `identical()` to it, as `putconst` shares one
-    /// constant per value (`R_compute_identical(x, y, 16)`: 0 and -0 are
-    /// one).
+    /// The pool index of the constant `x` cmp.R `putconst`s (a value, a
+    /// call): under `Bc`, the first constant before it that is `x` or
+    /// `identical()` to it, whichever path put that one in (do_putconst
+    /// compares with every constant, `x == y || R_compute_identical(x, y,
+    /// 16)`: 0 and -0 are one); else a new one.
     // R: cmp.R:make.codeBuf putconst; eval.c:do_putconst
     fn kv(&mut self, x: Sexp) -> u16 {
         if self.profile != Profile::Bc {
             return self.k(x);
         }
-        if let Some(&i) = self.pool.get(&(x.as_ptr() as usize)) {
-            return i;
-        }
         let cx = self.cx;
         // SAFETY: live constants: the source's, or folds rooted by the
         // compile's round.
         let xr = unsafe { robigo_rtcore::Ref::from_sexp(x, cx) };
-        for &i in &self.values {
+        for (j, &y) in self.consts.iter().enumerate() {
+            let i = u16::try_from(FIRST_CONST + j).expect("robigo: too many constants in one code object");
+            if y == x {
+                return i;
+            }
             // SAFETY: as above.
-            let yr = unsafe { robigo_rtcore::Ref::from_sexp(self.consts[usize::from(i) - FIRST_CONST], cx) };
+            let yr = unsafe { robigo_rtcore::Ref::from_sexp(y, cx) };
             if yr.sexptype() == xr.sexptype()
                 && matches!(
                     robigo_rtbuiltins::identical::compute_identical(
@@ -921,9 +949,7 @@ impl<'g> Comp<'g> {
                 return i;
             }
         }
-        let i = self.k(x);
-        self.values.push(i);
-        i
+        self.k(x)
     }
 
     fn emit(&mut self, i: Ins) -> usize {
@@ -1366,11 +1392,12 @@ impl<'g> Comp<'g> {
                 Handler::Known(Known::Fn(_)) if f == self.st.syms.dollar && self.bc_dollar(e, dst, d)? => {}
                 Handler::Known(Known::Fn(off)) if self.st.defs[off].name == "log" && self.bc_log(e, dst, d)? => {}
                 Handler::Known(Known::Fn(off)) => {
-                    // (`cmpSpecial`)
+                    // (`cmpSpecial`: `ci <- cb$putconst(call)`, shared as
+                    // for `Op::Call` below)
                     let prim = self.st.objs[off].bind(self.cx).sexp();
                     let mut i = Ins::new(Op::SpecialFn);
                     i.a = dst;
-                    i.e = self.k(e);
+                    i.e = self.kv(e);
                     i.c = self.k(prim);
                     i.fl |= F_DEPTH;
                     i.d = d;
@@ -2316,7 +2343,12 @@ impl<'g> Comp<'g> {
         let mut i = Ins::new(Op::Call);
         i.a = dst;
         i.b = rf;
-        i.e = self.k(e);
+        // cmp.R's `cb$putconst(call)`: under `Bc` the first constant
+        // `identical()` to the call (do_putconst). A special that compares
+        // its call with the closure's body by identity sees which cell it
+        // got: `Exec`/`Tailcall`'s checkTailPosition (tailcall.rs), however
+        // the function is named at the call.
+        i.e = self.kv(e);
         // a match-plan cache entry per site (none past the 16-bit range)
         i.c = if self.sites < NO_SITE {
             self.sites += 1;
