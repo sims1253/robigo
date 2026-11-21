@@ -3084,6 +3084,23 @@ impl Cx {
         }
     }
 
+    /// The frame shape slot frame `rho` was made with (the symbols of a
+    /// closure code object's frame, [`Cx::frame_slot_raw`]'s `shape`), or
+    /// None for any other frame.
+    ///
+    /// The result is unrooted: valid only until the next safepoint (a
+    /// collection may move it, like any object), so a caller that may
+    /// collect re-reads it from the rooted frame after every safepoint,
+    /// as each attempt of a retried build does.
+    ///
+    /// # Safety
+    /// `rho` is a live environment of this isolate.
+    #[inline]
+    pub unsafe fn frame_shape_raw(&self, rho: Sexp) -> Option<Sexp> {
+        // SAFETY: the caller's contract; a slot frame's shape word.
+        unsafe { (layout::is_slots(rho) && !rho.is_object()).then(|| layout::get(rho, layout::OFF_SHAPE)) }
+    }
+
     /// The binding of slot `index` of `rho`'s own frame, read directly
     /// when `rho` is a slot frame of shape `shape` (the frame of the
     /// closure whose code was compiled for that shape), or of another
