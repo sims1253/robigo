@@ -571,8 +571,15 @@ pub fn do_subset2(
 /// one-element character vector; a promise is forced first), and the
 /// symbol when the argument was one.
 // R: subset.c:fixSubset3Args
-fn subset3_name<'s>(cx: &mut Cx, s: Scope<'s>, call: Root<'_>, rho: Root<'_>) -> RResult<(Root<'s>, Option<Root<'s>>)> {
-    let mut nl = s.root(cx, arg(cx, call, 1).map_or(cx.nil(), |(e, _)| e));
+fn subset3_name<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    call: Root<'_>,
+    ac: Root<'_>,
+    rho: Root<'_>,
+) -> RResult<(Root<'s>, Option<Root<'s>>)> {
+    // (the argument read from `ac`, the error against `call`)
+    let mut nl = s.root(cx, arg(cx, ac, 1).map_or(cx.nil(), |(e, _)| e));
     if nl.bind(cx).sexptype() == PROMSXP {
         nl = eval_root(cx, s, nl, rho)?;
     }
@@ -640,7 +647,7 @@ pub fn do_subset3(
             None => call,
         };
         check_arity(cx, call, ac, "$", 2)?;
-        let (input, _) = subset3_name(cx, s, ac, rho)?;
+        let (input, _) = subset3_name(cx, s, call, ac, rho)?;
         let e = s.root(cx, arg(cx, ac, 0).unwrap().0);
         if e.bind(cx).sexp() == prims::state(cx).syms.dots {
             return Err(cx.error("robigo: '$' with '...' as its object is not implemented yet"));
@@ -764,7 +771,7 @@ pub fn do_subassign3(
             None => call,
         };
         check_arity(cx, call, ac, "$<-", 3)?;
-        let (input, sym) = subset3_name(cx, s, ac, rho)?;
+        let (input, sym) = subset3_name(cx, s, call, ac, rho)?;
         let e = s.root(cx, arg(cx, ac, 0).unwrap().0);
         if e.bind(cx).sexp() == prims::state(cx).syms.dots {
             return Err(cx.error("robigo: '$<-' with '...' as its object is not implemented yet"));
@@ -881,7 +888,7 @@ pub fn do_at(
         if xv.is_object() && !xv.is_s4() {
             // fixSubset3Args (its errors), the object as an evaluated
             // promise, then DispatchOrEval
-            let (input, _) = subset3_name(cx, s, ac, rho)?;
+            let (input, _) = subset3_name(cx, s, call, ac, rho)?;
             let lx = link_root(x);
             let prom = ev_promise(cx, s, e, x)?;
             let str = scalar_string(cx, s, input)?;
@@ -1237,11 +1244,17 @@ fn switch_in(cx: &mut Cx, call: Root<'_>, ac: Root<'_>, rho: Root<'_>, out: Out<
 
 /// `matchArgs_NR(formals, args, call)` for a special's formals (no `...`):
 /// each formal's expression, `R_MissingArg` when not supplied.
-fn match_formals<'s>(cx: &mut Cx, s: Scope<'s>, call: Root<'_>, formals: &[&[u8]]) -> RResult<Vec<Root<'s>>> {
+fn match_formals<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    call: Root<'_>,
+    ac: Root<'_>,
+    formals: &[&[u8]],
+) -> RResult<Vec<Root<'s>>> {
     let syms: Vec<Root<'s>> = formals.iter().map(|f| subset::install_sym(cx, s, f)).collect::<RResult<_>>()?;
     // (symbols are immortal)
     let fs: Vec<Sexp> = syms.iter().map(|r| r.bind(cx).sexp()).collect();
-    crate::args::match_builtin_args(cx, s, call, &fs)
+    crate::args::match_builtin_args_apart(cx, s, call, ac, &fs)
 }
 
 /// `do_onexit`: `on.exit(expr, add, after)` attached to the function
@@ -1267,7 +1280,7 @@ pub fn do_onexit(
 /// [`do_onexit`] with its arguments read from `ac` ([`arg_call`]).
 fn onexit_in(cx: &mut Cx, call: Root<'_>, ac: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
     cx.scope(|cx, s| {
-        let a = match_formals(cx, s, ac, &[b"expr", b"add", b"after"])?;
+        let a = match_formals(cx, s, call, ac, &[b"expr", b"add", b"after"])?;
         let missing = cx.missing_arg();
         let code = if a[0].bind(cx) == missing { s.root(cx, cx.nil()) } else { a[0] };
         let flag = |cx: &mut Cx, r: Root<'_>| -> RResult<Option<i32>> {
@@ -1495,7 +1508,7 @@ pub fn do_substitute(
 /// [`do_substitute`] with its arguments read from `ac` ([`arg_call`]).
 fn substitute_in(cx: &mut Cx, call: Root<'_>, ac: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
     cx.scope(|cx, s| {
-        let a = match_formals(cx, s, ac, &[b"expr", b"env"])?;
+        let a = match_formals(cx, s, call, ac, &[b"expr", b"env"])?;
         let env = if a[1].bind(cx) == cx.missing_arg() { rho } else { eval_root(cx, s, a[1], rho)? };
         let ev = env.bind(cx);
         let env = if ev == cx.global_env() {

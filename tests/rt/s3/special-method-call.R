@@ -39,3 +39,11 @@ print(f(m[[3, 3]] <- 1L))
 print(f(m[1, 2, 3] <- 1L))
 k <- 3
 print(f(m[[k, k]] <- 1L))
+# a special method's own errors name the method's call, its arguments the
+# expressions: $'s name check, substitute's argument matching
+g <- function(x, name) UseMethod("g"); g.foo <- .Primitive("$")
+xf <- structure(list(a = 1), class = "foo"); k <- 1
+print(f(g(xf, k)))
+h <- function(x, ...) UseMethod("h"); h.foo <- .Primitive("substitute")
+xs <- structure(1, class = "foo"); k2 <- 2
+print(f(h(xs, expr = k2, expr = k2)))

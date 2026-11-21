@@ -101,3 +101,15 @@ NextMethod()
 [[2]]
 NextMethod()
 
+[[1]]
+[1] "invalid subscript type 'double'"
+
+[[2]]
+g.foo(xf, k)
+
+[[1]]
+[1] "formal argument \"expr\" matched by multiple actual arguments"
+
+[[2]]
+h.foo(xs, expr = k2, expr = k2)
+
