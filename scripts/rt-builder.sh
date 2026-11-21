@@ -11,12 +11,14 @@
 # identified); AS the path to record (default BIN's), the binary as given.
 set -euo pipefail
 [ $# -ge 1 ] && [ $# -le 2 ] && [ -n "$1" ] || { echo "usage: scripts/rt-builder.sh BIN [AS]" >&2; exit 2; }
+[ -x "$1" ] && [ -f "$1" ] || { echo "rt-builder.sh: no executable at $1" >&2; exit 2; }
 bin=$(realpath "$1")
-[ -x "$bin" ] || { echo "rt-builder.sh: no executable at $1" >&2; exit 2; }
 as=${2:-$bin}
 commit=$(grep -a -o -m1 'robigo-rt-commit:[0-9a-f]\{40\}' "$bin" | head -1 | cut -d: -f2) || true
 [ -n "$commit" ] || { echo "rt-builder.sh: $bin carries no robigo-rt-commit marker: not a robigo-rt this checkout can identify" >&2; exit 1; }
-build_id=$(readelf -n "$bin" 2>/dev/null | sed -n 's/^ *Build ID: *//p' | head -1)
+# (best effort: no readelf, or no note, is "none")
+build_id=$( { readelf -n "$bin" 2>/dev/null || true; } | sed -n 's/^ *Build ID: *//p' | head -1)
+case "$build_id" in *[!0-9a-f]* | ?) build_id= ;; esac
 echo "path: $as"
 echo "sha256: $(sha256sum "$bin" | cut -d' ' -f1)"
 echo "build-id: ${build_id:-none}"

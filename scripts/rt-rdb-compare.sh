@@ -31,6 +31,12 @@ esac
 if [ -f "$out/.rt-home-db-built-at" ]; then
   lib=$out/library
   inst=$(cat "$out/.rt-home-db-built-at")
+  # (one absolute path, or the map would rewrite nothing or everything)
+  case "$inst" in
+    /*) [ "$(awk 'END { print NR }' "$out/.rt-home-db-built-at")" = 1 ] ||
+          { echo "error: $out/.rt-home-db-built-at holds more than one path" >&2; exit 2; } ;;
+    *) echo "error: $out/.rt-home-db-built-at holds no absolute path ('$inst'): rebuild the tree with scripts/rt-home-db.sh" >&2; exit 2 ;;
+  esac
   inst2=$inst
   builder=$out/.rt-home-db-builder
 else
@@ -44,9 +50,9 @@ fi
 # what built the databases (scripts/rt-builder.sh's record), in the
 # report; a tree that does not say is not compared
 # (each field once and whole: a path, a 64-digit sha256, a build ID in
-# hex or none, a 40-digit commit)
-for k in 'path: /.*' 'sha256: [0-9a-f]\{64\}' 'build-id: \([0-9a-f]\{2,\}\|none\)' 'commit: [0-9a-f]\{40\}'; do
-  [ "$(grep -c "^${k%%:*}:" "$builder" 2>/dev/null)" = 1 ] && grep -qx "$k" "$builder" ||
+# hex or none, a 40-digit commit; POSIX extended expressions)
+for k in 'path: /.*' 'sha256: [0-9a-f]{64}' 'build-id: ([0-9a-f]{2,}|none)' 'commit: [0-9a-f]{40}'; do
+  [ "$(grep -c "^${k%%:*}:" "$builder" 2>/dev/null)" = 1 ] && grep -Eqx "$k" "$builder" ||
     { echo "error: $out does not record the robigo-rt that built it ($builder, its ${k%%:*}): rebuild it with scripts/rt-home-db.sh or scripts/rt-base-build.sh --robigo-rt BIN" >&2; exit 2; }
 done
 # (records, not newlines: an unterminated last line counts)
