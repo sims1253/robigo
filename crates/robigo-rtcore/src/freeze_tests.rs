@@ -56,3 +56,75 @@ fn a_frozen_object_with_a_finalizer_dies_after_its_last_reference_goes() {
     })
     .unwrap();
 }
+
+/// A frozen list that base binds holds an environment, a finalizer is put
+/// on the environment, and the list's binding goes: the environment dies at
+/// a collection (Sol S3). Its frozen referrer, the list, was made ordinary
+/// with it, so only reachability decides; a log entry would have kept it.
+#[test]
+#[cfg(not(miri))]
+fn a_frozen_container_does_not_keep_an_unfrozen_object_alive() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    if !cx.freeze_enabled() {
+        return;
+    }
+    cx.scope(|cx, s| {
+        let base = s.root(cx, cx.base_env());
+        let sym = cx.install_rooted(s, b"freeze_test_list")?;
+        let o = s.out(cx);
+        let e = o.root();
+        cx.build(o, |cx| cx.new_env(cx.base_env(), true, 0))?;
+        let o = s.out(cx);
+        let l = o.root();
+        cx.build(o, |cx| Ok(cx.cons(e.bind(cx), cx.nil())?))?;
+        cx.define_var(sym, l, base)?;
+        cx.freeze_boot_heap();
+        assert!(cx.is_frozen(e.bind(cx)) && cx.is_frozen(l.bind(cx)));
+        let nil = cx.nil().sexp();
+        // SAFETY: `e` is rooted; the reference is rooted by the collector.
+        unsafe { cx.new_weak_ref_raw(e.bind(cx).sexp(), nil, cx.base_env().sexp(), false) }.expect("room");
+        cx.collect();
+        assert!(!cx.is_frozen(e.bind(cx)) && !cx.is_frozen(l.bind(cx)), "the key and its frozen referrer thawed");
+        cx.check_frozen();
+        let nilr = s.root(cx, cx.nil());
+        cx.define_var(sym, nilr, base)?;
+        let o = e.reset(cx);
+        o.set(cx, cx.nil());
+        let o = l.reset(cx);
+        o.set(cx, cx.nil());
+        cx.collect();
+        assert!(cx.finalizers_pending(), "the environment died with its list");
+        Ok::<(), crate::RError>(())
+    })
+    .unwrap();
+}
+
+/// A global lookup fills a symbol's global cache with a binding cell of the
+/// global environment before the freeze: the cell is not frozen (Sol S2).
+#[test]
+#[cfg(not(miri))]
+fn a_global_cache_entry_does_not_freeze_the_global_environment() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    if !cx.freeze_enabled() {
+        return;
+    }
+    cx.scope(|cx, s| {
+        let global = s.root(cx, cx.global_env());
+        let sym = cx.install_rooted(s, b"freeze_test_cached")?;
+        let o = s.out(cx);
+        let v = o.root();
+        cx.build(o, |cx| cx.new_env(cx.base_env(), true, 0))?;
+        cx.define_var(sym, v, global)?;
+        let o = s.out(cx);
+        let found = o.root();
+        cx.find_var(sym, global, o)?;
+        assert_eq!(found.bind(cx).sexp(), v.bind(cx).sexp());
+        cx.freeze_boot_heap();
+        assert!(!cx.is_frozen(v.bind(cx)), "a value only the global environment binds is not frozen");
+        cx.check_frozen();
+        Ok::<(), crate::RError>(())
+    })
+    .unwrap();
+}

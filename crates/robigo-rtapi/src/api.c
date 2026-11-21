@@ -301,12 +301,17 @@ void *(DATAPTR)(SEXP x)
     chkvec(x);
     if (!RB_IS_ALTREP(x) && RB_TYPE(x) == CHARSXP)
         return RB_DATA(x); /* (a CHARSXP's trailing zero byte) */
-    /* a frozen vector of objects (robigo-heap's freeze.rs) not yet logged:
-     * C may write its elements without the barrier, so it is a root from
-     * now on, traced at every collection */
-    if ((RB_TYPE(x) == STRSXP || RB_TYPE(x) == VECSXP || RB_TYPE(x) == EXPRSXP)
-        && (RB_FLAGS(x) & (ROBIGO_FLAG_IMMORTAL | ROBIGO_FLAG_BARRIER)) == (ROBIGO_FLAG_IMMORTAL | ROBIGO_FLAG_BARRIER))
-        robigo_rtapi_remember(x);
+    /* a vector of objects whose payload C now holds: C may write its
+     * elements without the barrier (robigo-heap's freeze.rs). An ordinary
+     * one is marked C's (sticky), so a later freeze leaves it out; a frozen
+     * one not yet logged is a root from now on, traced at every
+     * collection (Sol S1) */
+    if (RB_TYPE(x) == STRSXP || RB_TYPE(x) == VECSXP || RB_TYPE(x) == EXPRSXP) {
+        if (!(RB_FLAGS(x) & ROBIGO_FLAG_IMMORTAL))
+            RB_EXTRA(x) |= RB_SEEN_BY_C;
+        else if (RB_FLAGS(x) & ROBIGO_FLAG_BARRIER)
+            robigo_rtapi_remember(x);
+    }
     return dataptr(x);
 }
 

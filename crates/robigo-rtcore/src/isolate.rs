@@ -168,7 +168,7 @@ impl Roots {
     /// contexts, the pending exits or the warnings, which are the session's.
     pub(crate) fn trace_freeze_roots<V: robigo_heap::Visitor + ?Sized>(&mut self, v: &mut V) {
         use robigo_heap::Trace;
-        self.envs.trace(v);
+        self.envs.trace_freeze_roots(v);
         self.globals.trace(v);
         self.capi.trace(v);
     }

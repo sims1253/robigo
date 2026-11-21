@@ -137,6 +137,19 @@ impl EnvState {
     pub(crate) fn global_raw(&self) -> Sexp {
         self.global
     }
+
+    /// The freeze roots this state holds (robigo-heap's `freeze.rs`): the
+    /// fixed environments, the namespace registry, and each symbol's base
+    /// value and `.Internal`. Not a symbol's global cache, which can point
+    /// at a binding cell of the global environment (Sol S2), and not the
+    /// session's state: the global environment, the pending forces, the
+    /// call residues, the frame pool.
+    pub(crate) fn trace_freeze_roots<V: robigo_heap::Visitor + ?Sized>(&mut self, v: &mut V) {
+        for x in [&mut self.base, &mut self.empty, &mut self.base_ns, &mut self.ns_registry] {
+            v.edge(x);
+        }
+        self.cells.get_mut().trace_freeze_values(v);
+    }
 }
 
 const INIT: &str = "robigo: the isolate's environments";

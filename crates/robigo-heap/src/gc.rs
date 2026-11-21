@@ -2802,7 +2802,7 @@ impl Core {
                 roots.trace(&mut Mark(self));
                 self.mark_rest();
                 if self.freeze_check {
-                    self.check_frozen();
+                    self.check_frozen_marked();
                 }
                 if self.gc_move {
                     let moved = self.evacuate();
