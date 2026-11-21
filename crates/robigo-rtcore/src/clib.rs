@@ -696,6 +696,11 @@ pub struct EnvWriter<'a> {
     // isolates (the reverse of taking them)
     _env: EnvExclusive,
     _live: std::sync::MutexGuard<'static, usize>,
+    // the process's time zone session, taken first and released last: a
+    // write (of `TZ` or any other) never lands inside another isolate's
+    // session, between its `set_tz` and its `reset_tz` (which would
+    // convert in the written zone, then overwrite the write)
+    _session: TzSessionLock,
     // the isolate whose thread this is, which also makes the writer
     // neither Send nor Sync (`Cx` is neither): the writes stay on that
     // thread, which EnvWrites::assume's contract counts on
@@ -706,9 +711,13 @@ pub struct EnvWriter<'a> {
 /// An [`EnvWriter`] for the isolate `cx` (the caller is on its thread:
 /// `cx` is its capability), or why not: the isolate holds no
 /// [`EnvWrites`], or [`env_write_allowed`] says no for the running glibc
-/// and the live isolates.
+/// and the live isolates. Waits while another isolate is in a time zone
+/// session ([`with_tz`]; this thread's own nests).
 pub fn env_writer(cx: &crate::Cx) -> Result<EnvWriter<'_>, EnvWriteRefused> {
     cx.env_writes().ok_or(EnvWriteRefused::NotGranted)?;
+    // first, with no lock held (it may wait for another isolate's session,
+    // whose reset takes the locks below)
+    let session = TzSessionLock::take();
     // read before `LIVE_ISOLATES`: its first read takes robigo-heap's `FORK`,
     // which comes first in the process's lock order (Sol r5 S10)
     let glibc = glibc_version();
@@ -716,7 +725,7 @@ pub fn env_writer(cx: &crate::Cx) -> Result<EnvWriter<'_>, EnvWriteRefused> {
     if !env_write_allowed(glibc, *live) {
         return Err(EnvWriteRefused::SeveralIsolates);
     }
-    Ok(EnvWriter { _env: env_exclusive(), _live: live, _cx: cx })
+    Ok(EnvWriter { _env: env_exclusive(), _live: live, _session: session, _cx: cx })
 }
 
 /// [`ENV`] exclusive, for an [`EnvWriter`] or a time zone call
@@ -948,6 +957,8 @@ thread_local! {
 /// process's zone meanwhile. Taken with no lock held, and waited for
 /// without one; its holder takes the others (`FORK`, the live isolates,
 /// [`ENV`]) as any thread does, so a wait for it never blocks one of them.
+/// Every [`EnvWriter`] holds it too (a write of `TZ` must not land inside
+/// another thread's session).
 /// Not `Send`: released on the thread that took it.
 struct TzSessionLock {
     _not_send: std::marker::PhantomData<*const ()>,
@@ -1098,8 +1109,9 @@ impl Drop for TzReset {
 ///
 /// **The session's lock** ([`TzSessionLock`]) is held from before `set_tz`
 /// to after `reset_tz`, also across `f`, so two isolates' sessions run one
-/// after the other, and conversions outside a session wait for one on
-/// another thread ([`in_process_zone`]). Its cost: `f` runs R code when a
+/// after the other, conversions outside a session wait for one on another
+/// thread ([`in_process_zone`]), and so do other isolates' environment
+/// writes ([`env_writer`]). Its cost: `f` runs R code when a
 /// warning or an error is signalled, so while one isolate's handler runs
 /// (however long: a handler may wait for input), other isolates' date-time
 /// conversions wait. It cannot deadlock through robigo's locks: it is taken
