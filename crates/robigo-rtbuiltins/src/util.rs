@@ -716,3 +716,62 @@ pub fn do_enc2<const CODE: i32>(
         Ok(())
     })
 }
+
+/// `.Internal(tabulate(bin, nbins))`: how often each of `1..nbins` occurs
+/// in the integer vector `bin` (NA and values outside the range are
+/// skipped); a double result for a long `bin`.
+// R: util.c:do_tabulate
+pub fn do_tabulate(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: robigo_rtcore::Root<'_>,
+    out: robigo_rtcore::Out<'_>,
+) -> robigo_rtcore::RResult<()> {
+    crate::row!("tabulate", true).check_arity(cx, call, args)?;
+    let (input, nbin) = (args.root(0), args.root(1));
+    if input.bind(cx).sexptype() != INTSXP {
+        return Err(cx.error("invalid input"));
+    }
+    // XLENGTH(in)
+    if input.bind(cx).is_package_altrep() {
+        return Err(not_yet(cx, Some(call), "tabulate() of a package ALTREP vector"));
+    }
+    if nbin.bind(cx).is_package_altrep() {
+        return Err(not_yet(cx, Some(call), "tabulate() with a package ALTREP 'nbins'"));
+    }
+    let nb = crate::coerce::vector::as_integer_warn(cx, nbin)?;
+    if nb == crate::coerce::vector::NA_INTEGER || nb < 0 {
+        return Err(cx.error("invalid 'nbin' argument"));
+    }
+    let nb = nb as usize;
+    cx.build(out, |cx| {
+        let x = input.bind(cx).as_vector::<i32>().unwrap();
+        let n = x.len();
+        // each x[i] that is not NA and in 1..=nb counts in y[x[i] - 1]
+        fn count<Y: Copy + std::ops::AddAssign>(y: &mut [Y], one: Y, xs: impl Iterator<Item = i32>) {
+            let nb = y.len();
+            for v in xs {
+                // (NA_INTEGER is negative)
+                if v > 0 && v as usize <= nb {
+                    y[v as usize - 1] += one;
+                }
+            }
+        }
+        if n > i32::MAX as usize {
+            let mut ans = cx.alloc_vector::<f64>(nb)?;
+            match x.dataptr_or_null() {
+                Some(s) => count(ans.as_mut_slice(), 1.0, s.iter().copied()),
+                None => count(ans.as_mut_slice(), 1.0, (0..n).map(|i| x.get(i))),
+            }
+            Ok(ans.finish().into())
+        } else {
+            let mut ans = cx.alloc_vector::<i32>(nb)?;
+            match x.dataptr_or_null() {
+                Some(s) => count(ans.as_mut_slice(), 1, s.iter().copied()),
+                None => count(ans.as_mut_slice(), 1, (0..n).map(|i| x.get(i))),
+            }
+            Ok(ans.finish().into())
+        }
+    })
+}
