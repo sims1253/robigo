@@ -302,6 +302,14 @@ fn the_attribute_setters_read_a_package_altrep_length() {
                 "Date2POSIXlt() of a package ALTREP vector is not implemented yet",
             ),
             (
+                "lt <- .Internal(as.POSIXlt(0, \"UTC\")); lt$min <- zi; .Internal(POSIXlt2Date(lt))",
+                "POSIXlt2Date() of a \"POSIXlt\" list with a package ALTREP component is not implemented yet",
+            ),
+            (
+                "lt <- .Internal(as.POSIXlt(0, \"UTC\")); lt$isdst <- zi; .Internal(as.POSIXct(lt, \"UTC\"))",
+                "as.POSIXct() of a \"POSIXlt\" list with a package ALTREP component is not implemented yet",
+            ),
+            (
                 "d <- list(1:2); attr(d, \"row.names\") <- .Call(\"rt_altrep_real\", c(NA, -2))",
                 "row names from a package ALTREP double vector is not implemented yet",
             ),

@@ -1240,6 +1240,16 @@ fn valid_posixlt<'s>(cx: &mut Cx, s: robigo_rtcore::Scope<'s>, x: Root<'_>, nm: 
     Ok(comps)
 }
 
+/// `XLENGTH(VECTOR_ELT(x, i))` of a "POSIXlt" component: robigo's "not
+/// implemented" error for a package ALTREP one (its Length method, and the
+/// reads of its elements after).
+fn comp_xlength(cx: &mut Cx, call: Root<'_>, c: Root<'_>, what: &str) -> RResult<usize> {
+    if c.bind(cx).is_package_altrep() {
+        return Err(not_yet(cx, Some(call), &format!("{what} of a \"POSIXlt\" list with a package ALTREP component")));
+    }
+    Ok(crate::coerce::xlength(c.bind(cx)))
+}
+
 /// `.Internal(as.POSIXct(x, tz))`: a "POSIXlt" list as seconds since the
 /// epoch, of class "POSIXct".
 // R: datetime.c:do_asPOSIXct
@@ -1249,11 +1259,10 @@ pub fn do_as_posixct(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
         let comps = valid_posixlt(cx, s, args.root(0), 9)?;
         let (tz, is_utc) = get_tz(cx, args.root(1))?;
         set_tz_check(cx, is_utc)?;
-        let len = |cx: &Cx, i: usize| comps[i].bind(cx).len().unwrap_or(0);
         let mut nlen = [0usize; 9];
         let mut n = 0;
         for i in (0..6).chain([8]) {
-            nlen[i] = len(cx, i);
+            nlen[i] = comp_xlength(cx, call, comps[i], "as.POSIXct()")?;
             n = n.max(nlen[i]);
         }
         if n > 0 {
@@ -1504,18 +1513,15 @@ pub fn do_posixlt2d(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
         let mut nlen = [0usize; 9];
         let mut n = 0;
         for i in 0..6 {
-            nlen[i] = comps[i].bind(cx).len().unwrap_or(0);
+            nlen[i] = comp_xlength(cx, call, comps[i], "POSIXlt2Date()")?;
             n = n.max(nlen[i]);
         }
         // isdst, not coerced (valid_POSIXlt(x, 6) checked it is numeric)
         let isdst = {
-            let x = args.get(cx, 0);
-            x.as_vector::<Ref<'_>>().unwrap().get(8)
+            let e = args.get(cx, 0).as_vector::<Ref<'_>>().unwrap().get(8);
+            s.root(cx, e)
         };
-        if isdst.is_package_altrep() {
-            return Err(not_yet(cx, Some(call), "POSIXlt2Date() of a package ALTREP 'isdst'"));
-        }
-        nlen[8] = crate::coerce::xlength(isdst);
+        nlen[8] = comp_xlength(cx, call, isdst, "POSIXlt2Date()")?;
         n = n.max(nlen[8]);
         if n > 0 {
             for i in (0..6).chain([8]) {
