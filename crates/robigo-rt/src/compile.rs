@@ -238,11 +238,22 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
         // this interval.
         unsafe {
             if f.cdr().typ() == BCODESXP {
+                // the translation kept on the byte code: every closure that
+                // `function` makes from one BCODESXP shares it, as GNU R's
+                // MKCLOSURE shares the body (the translation reads the byte
+                // code and the formals, never the environment)
+                if let Some(c) = crate::code::cached(cx, f.cdr().aux(), Profile::Bc)
+                    && crate::code::is_closure_code(cx, c, Profile::Bc, f.car())
+                {
+                    return Ok(c);
+                }
                 if crosscheck::enabled() {
                     check = Some(crosscheck_closure(cx, f, installed)?);
                 }
                 // V3: GNU R's byte code, translated
-                return translate_code(cx, f.cdr(), Some(f.car()));
+                let code = translate_code(cx, f.cdr(), Some(f.car()))?;
+                crate::code::cache_on(f.cdr(), code);
+                return Ok(code);
             }
             let (formals, body) = (f.car(), source_body(cx, f));
             let mut cenv = Cenv::of_env(cx, f.tag(), installed)?;
