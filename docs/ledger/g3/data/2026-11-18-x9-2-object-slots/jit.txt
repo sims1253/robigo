@@ -1,0 +1,6 @@
+jit-scale_by base5d-05c31ee8 per-compile 10351793
+jit-scale_by x92-b8282e4f per-compile 10205131
+jit-safe base5d-05c31ee8 per-compile 15524781
+jit-safe x92-b8282e4f per-compile 15259495
+sha256 base5d-05c31ee8 145a1c207dee1d7d90ec1ad4377f5898b30f3cb2db3df8886ffe9da56947a35e
+sha256 x92-b8282e4f 1113056d01fc41cd5055dc117cd6990e76873b5902e1dd373c4218efe0a75b22
