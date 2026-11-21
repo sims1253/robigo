@@ -43,6 +43,23 @@ pub struct Tm {
 }
 
 impl Tm {
+    /// The C `struct tm` (no `tm_zone`).
+    fn to_c(&self) -> libc::tm {
+        // SAFETY: a zeroed tm is valid (tm_zone a null pointer).
+        let mut t: libc::tm = unsafe { std::mem::zeroed() };
+        t.tm_sec = self.sec;
+        t.tm_min = self.min;
+        t.tm_hour = self.hour;
+        t.tm_mday = self.mday;
+        t.tm_mon = self.mon;
+        t.tm_year = self.year;
+        t.tm_wday = self.wday;
+        t.tm_yday = self.yday;
+        t.tm_isdst = self.isdst;
+        t.tm_gmtoff = self.gmtoff;
+        t
+    }
+
     fn from_c(t: &libc::tm) -> Tm {
         Tm {
             sec: t.tm_sec,
@@ -624,6 +641,148 @@ pub fn env_writer(cx: &crate::Cx) -> Result<EnvWriter<'_>, EnvWriteRefused> {
     }
     let env = ENV.write().unwrap_or_else(|e| e.into_inner());
     Ok(EnvWriter { _env: env, _live: live, _cx: cx })
+}
+
+unsafe extern "C" {
+    /// glibc's `tzset(3)`: the time zone read again from `TZ`.
+    fn tzset();
+    /// glibc's `tzname`: the standard and daylight-saving abbreviations of
+    /// the time zone `tzset` last read.
+    static tzname: [*const libc::c_char; 2];
+}
+
+/// What `set_tz` found that GNU R reports.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SetTzError {
+    /// `TZ` is longer than 1000 bytes: "time zone specification is too
+    /// long".
+    TooLong,
+}
+
+/// The process's time zone set to one for a conversion (datetime.c's
+/// `set_tz`), with this thread holding the environment exclusive until it
+/// drops, which puts `TZ` back (`reset_tz`). Its conversions read the time
+/// zone it set: every reader of the environment here waits meanwhile.
+pub struct TzSession<'a> {
+    w: EnvWriter<'a>,
+    /// The previous `TZ` (`hadtz`, `oldtz`).
+    old: Option<Vec<u8>>,
+    /// `settz`: `TZ` was set to the zone asked for (so `reset_tz` restores it).
+    settz: bool,
+    /// `setenv` failed ("problem with setting timezone").
+    pub set_failed: bool,
+}
+
+impl<'a> EnvWriter<'a> {
+    /// `set_tz(tz, &si)`: `TZ` set to `UTC` and `tzset` (so `tzname` is
+    /// read again), then to `tz`, or for "" to the previous `TZ`, or unset
+    /// when there was none; `tzset` after.
+    // R: datetime.c:set_tz
+    pub fn set_tz(self, tz: &[u8]) -> Result<TzSession<'a>, SetTzError> {
+        let old = self.get(b"TZ");
+        if old.as_ref().is_some_and(|p| p.len() > 1000) {
+            return Err(SetTzError::TooLong);
+        }
+        let mut s = TzSession { w: self, old, settz: false, set_failed: false };
+        // (setenv of TZ=UTC does not fail)
+        s.w.set(b"TZ", b"UTC");
+        // SAFETY: tzset reads TZ, which no thread writes meanwhile (ENV
+        // exclusive).
+        unsafe { tzset() };
+        let tz = if tz.is_empty() {
+            match &s.old {
+                Some(p) => p.clone(),
+                None => {
+                    // (unsetenv of TZ does not fail)
+                    s.w.unset(b"TZ");
+                    // SAFETY: as above.
+                    unsafe { tzset() };
+                    return Ok(s);
+                }
+            }
+        } else {
+            tz.to_vec()
+        };
+        if s.w.set(b"TZ", &tz) {
+            s.settz = true;
+        } else {
+            s.set_failed = true;
+        }
+        // SAFETY: as above.
+        unsafe { tzset() };
+        Ok(s)
+    }
+
+    /// `getenv(name)`, read while this writer holds the environment.
+    fn get(&self, name: &[u8]) -> Option<Vec<u8>> {
+        use std::os::unix::ffi::OsStrExt;
+        if name.contains(&0) {
+            return None;
+        }
+        std::env::var_os(std::ffi::OsStr::from_bytes(name)).map(|v| v.as_bytes().to_vec())
+    }
+}
+
+impl TzSession<'_> {
+    /// `localtime_r(&t, &tm)` in the session's time zone: `None` when the
+    /// C library fails (a year that does not fit).
+    pub fn localtime(&self, t: i64) -> Option<Tm> {
+        // SAFETY: a zeroed tm is a valid out-argument; localtime_r reads the
+        // time zone tzset read (TZ unwritten meanwhile: ENV exclusive).
+        unsafe {
+            let mut tm: libc::tm = std::mem::zeroed();
+            if libc::localtime_r(&t, &mut tm).is_null() { None } else { Some(Tm::from_c(&tm)) }
+        }
+    }
+
+    /// `mktime(tm)` in the session's time zone: the time, `tm` normalized
+    /// as mktime leaves it, and whether `errno` was set (`-1` is a time
+    /// too).
+    pub fn mktime(&self, tm: &mut Tm) -> (f64, bool) {
+        let mut c = tm.to_c();
+        // SAFETY: errno is this thread's; mktime reads and writes `c` and
+        // the time zone (TZ unwritten meanwhile: ENV exclusive).
+        let (r, errno) = unsafe {
+            *libc::__errno_location() = 0;
+            let r = libc::mktime(&mut c);
+            (r, *libc::__errno_location() != 0)
+        };
+        *tm = Tm::from_c(&c);
+        (r as f64, errno)
+    }
+
+    /// `tzname[0]` and `tzname[1]` (`R_tzname`): the zone's standard and
+    /// daylight-saving abbreviations as `tzset` set them.
+    pub fn tzname(&self) -> [Vec<u8>; 2] {
+        // SAFETY: tzname is written by tzset only, which runs under ENV
+        // exclusive (this session's); its entries are NUL-terminated
+        // strings glibc keeps.
+        unsafe {
+            let names = std::ptr::addr_of!(tzname).read();
+            names.map(|p| if p.is_null() { Vec::new() } else { std::ffi::CStr::from_ptr(p).to_bytes().to_vec() })
+        }
+    }
+}
+
+impl Drop for TzSession<'_> {
+    /// `reset_tz(&si)`: when `TZ` was set, the previous `TZ` back (or
+    /// unset), and `tzset`. (A failed `setenv` of a value it held before
+    /// cannot happen.)
+    // R: datetime.c:reset_tz
+    fn drop(&mut self) {
+        if !self.settz {
+            return;
+        }
+        self.settz = false;
+        match &self.old {
+            Some(p) => {
+                self.w.set(b"TZ", p);
+            }
+            None => self.w.unset(b"TZ"),
+        }
+        // SAFETY: as in set_tz.
+        unsafe { tzset() };
+    }
 }
 
 /// Whether `name` is one the C library's `setenv`/`unsetenv` accept: not
