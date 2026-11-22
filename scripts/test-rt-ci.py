@@ -530,5 +530,53 @@ class RtCi(unittest.TestCase):
         self.assertEqual(rt.leaks(m, crates), [])
 
 
+def rust_src_snippets(root):
+    """The places where the crates' compile-fail expectations (trybuild's
+    tests/**/*.stderr) quote the standard library's source. rustc prints a
+    location in std (`--> $RUST/core/src/marker.rs`, or `::: $RUST/...`)
+    either way, but the source lines under it (the `|` gutter and the code)
+    only where the rust-src component is installed; an expectation blessed
+    there fails on CI's minimal toolchain (#954: robigo-rtcore's
+    env_writer_not_sync.stderr, CI run 45063956014)."""
+    import re
+    location = re.compile(r"^\s*(-->|:::)\s+\$RUST/")
+    out = []
+    for path in sorted(root.glob("crates/*/tests/**/*.stderr")):
+        lines = path.read_text(errors="replace").splitlines()
+        for n, line in enumerate(lines, 1):
+            if location.match(line) and n < len(lines) and lines[n].lstrip().startswith("|"):
+                out.append(f"{path.relative_to(root)}:{n}: {line.strip()} (and the source under it)")
+    return out
+
+
+class CompileFailExpectations(unittest.TestCase):
+    def test_no_expectation_depends_on_rust_src(self):
+        found = rust_src_snippets(HERE.parent)
+        self.assertEqual(found, [], "a compile-fail expectation quotes the standard library's source under a "
+                         "$RUST/ location, which rustc shows only with the rust-src component: CI's toolchain has "
+                         "none, so the test fails there. Keep the location line and drop the `|` lines under it "
+                         "(or re-bless without rust-src: `rustup component remove rust-src`, then "
+                         "TRYBUILD=overwrite):\n  " + "\n  ".join(found))
+
+    def test_a_quoted_std_source_is_found_and_a_bare_location_is_not(self):
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        ui = root / "crates/x/tests/ui"
+        ui.mkdir(parents=True)
+        # what B's machine wrote (#954), and what CI prints
+        (ui / "with-rust-src.stderr").write_text(
+            "note: required because it appears within the type `PhantomData<*const ()>`\n"
+            " --> $RUST/core/src/marker.rs\n  |\n  | pub struct PhantomData<T: PointeeSized>;\n"
+            "  |            ^^^^^^^^^^^\nnote: next\n")
+        (ui / "without.stderr").write_text(
+            "note: required because it appears within the type `PhantomData<*const ()>`\n"
+            " --> $RUST/core/src/marker.rs\nnote: required because it appears within the type `X`\n"
+            " --> src/clib.rs\n  |\n  | struct X {\n")
+        self.assertEqual(rust_src_snippets(root),
+                         ["crates/x/tests/ui/with-rust-src.stderr:2: --> $RUST/core/src/marker.rs "
+                          "(and the source under it)"])
+
 if __name__ == "__main__":
     unittest.main()
