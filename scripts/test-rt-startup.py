@@ -126,6 +126,16 @@ class Memory(unittest.TestCase):
             self.assertIn("thread", str(e.exception))
             self.no_child_left()
 
+    def test_consecutive_threads_do_not_outrun_the_cleanup(self):
+        # the refusal kills the child before it is resumed: no thread made
+        # after the first is left stopped (it would hold the exit up)
+        prog = "import threading, time\nts = [threading.Thread(target=time.sleep, args=(0.2,)) for _ in range(20)]\n" \
+               "[t.start() for t in ts]\n[t.join() for t in ts]\n"
+        for _ in range(5):
+            with self.assertRaises(SystemExit):
+                su.memory([self.PY, "-c", prog], dict(os.environ))
+            self.no_child_left()
+
     def test_a_run_over_its_time_is_killed(self):
         with self.assertRaises(SystemExit) as e:
             su.memory([self.PY, "-c", "import time; time.sleep(30)"], dict(os.environ), timeout=1)

@@ -258,18 +258,20 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
 
 def reap(pid, threads=()):
     """Kill the traced child `pid` and wait it and its traced `threads` out.
-    It may sit in a stop already consumed (a reading that failed at its exit
-    stop, where a SIGKILL is dropped), so it is resumed first; it may stop
-    again (its exit event) before it is gone, and is resumed until it is."""
+    The kill comes first, so that no thread can run on to make another; then
+    each is resumed, since one may sit in a stop already consumed (a reading
+    that failed at its exit stop, where the SIGKILL is dropped and only a
+    resume lets the exit finish); each may stop again (its exit event)
+    before it is gone, and is resumed until it is."""
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
     for t in (pid, *threads):
         try:
             ptrace(PTRACE_CONT, t)
         except OSError:
             pass
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
     for t in (*threads, pid):
         while True:
             try:
