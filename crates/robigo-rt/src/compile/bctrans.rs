@@ -851,7 +851,7 @@ impl<'g> Comp<'g> {
         let b = res?;
         // SAFETY: as above.
         unsafe {
-            let built = crate::code::build(self.cx, &super::verified(b), arg, None)?;
+            let built = sub.build(b, arg, None)?;
             crate::code::cache_on(arg, built);
             self.arg_codes.push(built);
             self.arg_codes.append(&mut sub.arg_codes);
@@ -1272,7 +1272,8 @@ impl<'g> Comp<'g> {
     /// The primitive named by symbol `sym` (a builtin or special of the
     /// table), its `PRIMOFFSET`.
     fn prim_of(&self, sym: Sexp) -> Option<usize> {
-        self.st.by_sym.get(&(sym.as_ptr() as usize)).copied()
+        // SAFETY: `sym` is a live object of the byte code's pool.
+        unsafe { self.st.by_sym.get(sym) }
     }
 
     /// Translate one instruction.

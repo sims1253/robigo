@@ -547,8 +547,8 @@ pub struct RtState {
     pub objs: Vec<Global>,
     /// The symbol of each primitive (`install(name)`), by `PRIMOFFSET`.
     pub names: Vec<Sexp>,
-    /// `PRIMOFFSET` by the address of its symbol (the compiler's lookup).
-    pub by_sym: std::collections::HashMap<usize, usize>,
+    /// `PRIMOFFSET` by its symbol (the compiler's lookup).
+    pub by_sym: BySym,
     /// `RunFinalizers`' guard ("Prevent this function from running again
     /// when already in progress").
     pub running_finalizers: std::cell::Cell<bool>,
@@ -572,9 +572,14 @@ pub struct RtState {
     /// `R_ReplaceFunsTable`: each function symbol's assignment function
     /// symbol (`names` to `names<-`), keyed by the symbol's id; the values
     /// are symbols (immortal).
-    pub assign_fns: std::cell::RefCell<std::collections::HashMap<robigo_rtcore::SymId, Sexp>>,
+    /// (Fixed-seed hashing: a lookup costs the same every run. The values
+    /// are symbols, immortal, so the table roots nothing.)
+    pub assign_fns: std::cell::RefCell<std::collections::HashMap<robigo_rtcore::SymId, Sexp, robigo_heap::BuildFx>>,
     /// cmp.R's constant folds of the compile under way ([`crate::fold`]).
     pub folds: crate::fold::Folds,
+    /// The compiles' spare buffers ([`crate::compile`]'s `Scratch`): empty,
+    /// holding no `Sexp`.
+    pub(crate) scratch: crate::compile::Scratch,
     /// The warnings cmp.R's R code gives in the compile under way (its
     /// `assign` and `as.name` of a name that does not translate), raised
     /// once the compile is over ([`crate::cenv::CompileWarnings`]).
@@ -582,6 +587,47 @@ pub struct RtState {
     /// INTERIM(L5): the pinned GNU R tree the wide base loader reads its
     /// definitions from on first use ([`crate::base::load`]).
     pub base_src: std::cell::RefCell<Option<std::path::PathBuf>>,
+}
+
+/// `PRIMOFFSET` by symbol: a table indexed by the symbol's id (dense per
+/// heap; the primitives' names are among the first symbols made), so a
+/// lookup is a bounds check and a load, with no hashing and no dependence
+/// on where the symbol lives.
+#[derive(Clone, Default)]
+pub struct BySym(Vec<u32>);
+
+/// [`BySym`]'s empty entry.
+const NO_PRIM: u32 = u32::MAX;
+
+impl BySym {
+    /// The primitive named by `x`, if `x` is a symbol that names one.
+    ///
+    /// # Safety
+    /// `x` is a live object.
+    #[inline]
+    pub unsafe fn get(&self, x: Sexp) -> Option<usize> {
+        // SAFETY: the caller's contract; a symbol's id is read only from a
+        // symbol.
+        unsafe {
+            if x.typ() != SYMSXP {
+                return None;
+            }
+            let o = *self.0.get(x.sym_id() as usize)?;
+            (o != NO_PRIM).then_some(o as usize)
+        }
+    }
+
+    /// Enter `off` for the symbol whose id is `id`: replacing what is
+    /// there when `replace`, else only where there is nothing.
+    pub fn set(&mut self, id: u32, off: usize, replace: bool) {
+        let i = id as usize;
+        if self.0.len() <= i {
+            self.0.resize(i + 1, NO_PRIM);
+        }
+        if replace || self.0[i] == NO_PRIM {
+            self.0[i] = u32::try_from(off).expect("robigo: a primitive offset past u32");
+        }
+    }
 }
 
 impl RtState {
@@ -648,7 +694,13 @@ pub fn prim_name(cx: &Cx, op: Ref<'_>) -> Option<&'static str> {
 /// Make the primitive objects of `defs` and bind them: a primitive in the
 /// base environment, an `.Internal` as its symbol's INTERNAL (names.c's
 /// `R_initFunTab`/`mkPRIMSXP`).
-pub(crate) fn make_prims(cx: &mut Cx, defs: &[PrimDef], first: usize) -> (Vec<Global>, Vec<Sexp>) {
+pub(crate) fn make_prims(
+    cx: &mut Cx,
+    defs: &[PrimDef],
+    first: usize,
+    by_sym: &mut BySym,
+    internal_keeps: bool,
+) -> (Vec<Global>, Vec<Sexp>) {
     let mut objs = Vec::with_capacity(defs.len());
     let mut names = Vec::with_capacity(defs.len());
     for (i, d) in defs.iter().enumerate() {
@@ -691,6 +743,10 @@ pub(crate) fn make_prims(cx: &mut Cx, defs: &[PrimDef], first: usize) -> (Vec<Gl
                 cx.set_symvalue(sr, v);
             });
         }
+        // the compiler's lookup by symbol; with `internal_keeps` an
+        // `.Internal` never hides a primitive of the same name
+        // SAFETY: an immortal symbol of this heap.
+        unsafe { by_sym.set(sym.sym_id(), first + i, !(internal_keeps && d.internal())) };
         objs.push(g);
         names.push(sym);
     }

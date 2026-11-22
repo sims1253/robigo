@@ -109,6 +109,12 @@ impl Verified {
         Ok(Verified(b))
     }
 
+    /// The code, its buffers back to the caller (a compile reuses them,
+    /// [`crate::compile`]'s scratch).
+    pub fn into_built(self) -> Built {
+        self.0
+    }
+
     /// The checked code.
     pub fn built(&self) -> &Built {
         &self.0

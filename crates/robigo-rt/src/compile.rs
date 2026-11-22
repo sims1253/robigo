@@ -224,7 +224,7 @@ pub fn compile(cx: &mut Cx, expr: Root<'_>, rho: Root<'_>, profile: Profile) -> 
                 let st = prims::state(cx);
                 let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
                 let b = c.root(e)?;
-                let code = crate::code::build(cx, &verified(b), e, None)?;
+                let code = c.build(b, e, None)?;
                 // the code runs in `env`'s frames: their shape's slot
                 // indices, for it and the arguments compiled with it
                 if env.typ() == ENVSXP && env.has_flag(robigo_heap::flags::SLOTS) {
@@ -250,7 +250,7 @@ pub fn compile(cx: &mut Cx, expr: Root<'_>, rho: Root<'_>, profile: Profile) -> 
             let st = prims::state(cx);
             let mut c = Comp::new(cx, st, Profile::Eval, None);
             let b = c.root(e)?;
-            Ok(crate::code::build(cx, &verified(b), e, None)?)
+            Ok(c.build(b, e, None)?)
         }
     })
     .map(|c| c.expect("robigo: the Eval profile always compiles"))
@@ -271,7 +271,7 @@ pub unsafe fn compile_closure(cx: &mut Cx, op: Root<'_>) -> RResult<Sexp> {
             let st = prims::state(cx);
             let mut c = Comp::new(cx, st, Profile::Eval, None);
             let b = c.root(body)?;
-            Ok(crate::code::build(cx, &verified(b), body, Some(formals))?)
+            Ok(c.build(b, body, Some(formals))?)
         }
     })
     .map(|c| c.expect("robigo: the Eval profile always compiles"))
@@ -352,7 +352,7 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
                 let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
                 let mut b = c.root(body)?;
                 c.add_unit_locals(&mut b);
-                let code = crate::code::build(cx, &verified(b), body, Some(formals))?;
+                let code = c.build(b, body, Some(formals))?;
                 index_codes(cx, code, &c.arg_codes, None);
                 Ok(code)
             }
@@ -629,7 +629,7 @@ unsafe fn translate_code(cx: &Cx, bc: Sexp, formals: Option<Sexp>, index: Option
             Err(e) => return Err(e),
         };
         let expr = robigo_rtbuiltins::bytecode::expr(cx, Ref::from_sexp(bc, cx)).sexp();
-        let code = crate::code::build(cx, &verified(b), expr, formals)?;
+        let code = c.build(b, expr, formals)?;
         index_codes(cx, code, &c.arg_codes, index);
         Ok(code)
     }
@@ -696,7 +696,7 @@ pub fn compile_top_loop(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RResult<O
                 cenv.add_top_vars(locals);
                 let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
                 let b = c.root(e)?;
-                Ok(crate::code::build(cx, &verified(b), e, None)?)
+                Ok(c.build(b, e, None)?)
             }
         });
         if matches!(code, Ok(None)) && !prelude.raised && prims::state(cx).compile_warnings.prelude() > 0 {
@@ -826,7 +826,7 @@ pub(crate) fn compile_special_with(
             i.b = dst;
             c.emit(i);
             let b = c.finish();
-            Ok(crate::code::build(cx, &verified(b), call, None)?)
+            Ok(c.build(b, call, None)?)
         }
     })
     .map(|c| c.expect("robigo: the Eval profile always compiles"))
@@ -949,6 +949,77 @@ fn fold_vis_into_ret(ins: &mut [Ins], moves: bool) {
     }
 }
 
+/// The buffers one compile works in ([`Comp`]'s vectors and pool map).
+/// Between compiles they wait in the isolate's [`Scratch`] empty, so a
+/// compile does not allocate and grow them afresh.
+#[derive(Default)]
+pub(crate) struct Bufs {
+    ins: Vec<Ins>,
+    consts: Vec<Sexp>,
+    pool: PosMap<usize, u16>,
+    loops: Vec<LoopLabels>,
+    locals: Vec<Sexp>,
+    ppk: Vec<i32>,
+    arg_codes: Vec<Sexp>,
+}
+
+/// The isolate's spare [`Bufs`] ([`RtState::scratch`]): one set per
+/// compile under way takes one (a compile nests one for an argument's or a
+/// promise's code), and gives it back when it ends. A set waits cleared,
+/// so it holds no `Sexp` (nothing in it is a root across a collection),
+/// and keeps at most [`SCRATCH_CAP`] elements' capacity per buffer: an
+/// unusually large compile's buffers are freed, not kept.
+#[derive(Default)]
+pub(crate) struct Scratch(std::cell::RefCell<Vec<Bufs>>);
+
+/// The spare sets [`Scratch`] keeps: the depth of nested compiles that
+/// reuse buffers (a deeper one allocates its own, as before).
+const SCRATCH_SETS: usize = 4;
+
+/// The capacity, in elements, a spare buffer keeps (2048 instructions are
+/// 32 KiB).
+const SCRATCH_CAP: usize = 2048;
+
+impl Scratch {
+    fn take(&self) -> Bufs {
+        let b = self.0.borrow_mut().pop().unwrap_or_default();
+        debug_assert!(
+            b.ins.is_empty()
+                && b.consts.is_empty()
+                && b.pool.is_empty()
+                && b.loops.is_empty()
+                && b.locals.is_empty()
+                && b.ppk.is_empty()
+                && b.arg_codes.is_empty(),
+            "robigo: a compile's spare buffers were given back uncleared"
+        );
+        b
+    }
+
+    fn give(&self, mut b: Bufs) {
+        fn keep<T>(v: &mut Vec<T>) {
+            v.clear();
+            if v.capacity() > SCRATCH_CAP {
+                *v = Vec::new();
+            }
+        }
+        keep(&mut b.ins);
+        keep(&mut b.consts);
+        keep(&mut b.loops);
+        keep(&mut b.locals);
+        keep(&mut b.ppk);
+        keep(&mut b.arg_codes);
+        b.pool.clear();
+        if b.pool.capacity() > SCRATCH_CAP {
+            b.pool = PosMap::default();
+        }
+        let mut sets = self.0.borrow_mut();
+        if sets.len() < SCRATCH_SETS {
+            sets.push(b);
+        }
+    }
+}
+
 struct Comp<'g> {
     cx: &'g Cx,
     st: &'g RtState,
@@ -992,6 +1063,23 @@ struct Comp<'g> {
     /// branch) sets it as the tail does.
     cut_assign: Option<Sexp>,
     live_stmt: Option<Sexp>,
+}
+
+impl Drop for Comp<'_> {
+    /// The compile's buffers back to the isolate's [`Scratch`], cleared
+    /// (also for an attempt abandoned midway: `Need::Gc`, `Need::Force`).
+    fn drop(&mut self) {
+        let b = Bufs {
+            ins: std::mem::take(&mut self.ins),
+            consts: std::mem::take(&mut self.consts),
+            pool: std::mem::take(&mut self.pool),
+            loops: std::mem::take(&mut self.loops),
+            locals: std::mem::take(&mut self.locals),
+            ppk: std::mem::take(&mut self.ppk),
+            arg_codes: std::mem::take(&mut self.arg_codes),
+        };
+        self.st.scratch.give(b);
+    }
 }
 
 /// Give code `code` and the argument codes compiled with it (`arg_codes`)
@@ -1049,24 +1137,25 @@ enum Known {
 impl<'g> Comp<'g> {
     fn new(cx: &'g Cx, st: &'g RtState, profile: Profile, bc: Option<Cenv<'g>>) -> Comp<'g> {
         debug_assert_eq!(bc.is_some(), profile == Profile::Bc);
+        let b = st.scratch.take();
         Comp {
             cx,
             st,
             profile,
-            ins: Vec::new(),
-            consts: Vec::new(),
-            pool: PosMap::default(),
+            ins: b.ins,
+            consts: b.consts,
+            pool: b.pool,
             next: R_FIRST,
             max: R_FIRST,
             max_depth: 0,
-            loops: Vec::new(),
-            locals: Vec::new(),
+            loops: b.loops,
+            locals: b.locals,
             sites: 0,
             bc,
             pp: 0,
-            ppk: Vec::new(),
+            ppk: b.ppk,
             site_save: 0,
-            arg_codes: Vec::new(),
+            arg_codes: b.arg_codes,
             bc_untranslated: None,
             cut_assign: None,
             live_stmt: None,
@@ -1088,6 +1177,32 @@ impl<'g> Comp<'g> {
 
     fn nil(&self) -> Sexp {
         self.cx.nil().sexp()
+    }
+
+    /// The code object of `b` (this compile's [`Comp::root`]):
+    /// [`crate::code::build`] of it verified, its buffers then kept for the
+    /// isolate's next compile ([`Scratch`]).
+    ///
+    /// # Safety
+    /// As [`crate::code::build`]'s: `source` and `formals` are live.
+    unsafe fn build(&mut self, b: Built, source: Sexp, formals: Option<Sexp>) -> Result<Sexp, robigo_heap::NeedGc> {
+        let v = verified(b);
+        // SAFETY: the caller's contract.
+        let r = unsafe { crate::code::build(self.cx, &v, source, formals) };
+        // (finish took these out of this compile: they go back cleared, to
+        // be given to the scratch when it ends)
+        let b = v.into_built();
+        fn back<T>(slot: &mut Vec<T>, mut v: Vec<T>) {
+            if v.capacity() > slot.capacity() {
+                v.clear();
+                *slot = v;
+            }
+        }
+        back(&mut self.ins, b.ins);
+        back(&mut self.consts, b.consts);
+        back(&mut self.locals, b.locals);
+        back(&mut self.ppk, b.ppk);
+        r
     }
 
     /// Compile the whole expression: its value is the code object's result.
@@ -1495,7 +1610,8 @@ impl<'g> Comp<'g> {
         if unsafe { f.typ() } != SYMSXP {
             return None;
         }
-        let off = *self.st.by_sym.get(&(f.as_ptr() as usize))?;
+        // SAFETY: a live symbol (checked above).
+        let off = unsafe { self.st.by_sym.get(f) }?;
         match self.st.defs[off].kind {
             Kind::Special(s) => Some(Known::Special(s, off)),
             // (bcEval's scalar math is the `Bc` profile's alone: `eval` calls
@@ -1720,7 +1836,8 @@ impl<'g> Comp<'g> {
         }
         // the primitives the VM inlines: cmp.R's handlers of the language
         // functions, `cmpSpecial`'s and `cmpBuiltin`'s for the others
-        let off = st.by_sym.get(&(f.as_ptr() as usize)).copied().filter(|&o| !st.defs[o].internal());
+        // SAFETY: `f` is a live object of the source.
+        let off = unsafe { st.by_sym.get(f) }.filter(|&o| !st.defs[o].internal());
         if let Some(off) = off {
             match st.defs[off].kind {
                 Kind::Special(s) => return Ok(Some(Handler::Known(Known::Special(s, off)))),
@@ -2475,7 +2592,7 @@ impl<'g> Comp<'g> {
         let b = r?;
         // SAFETY: as above.
         unsafe {
-            let code = crate::code::build(self.cx, &verified(b), a, None)?;
+            let code = sub.build(b, a, None)?;
             crate::code::cache_on(a, code);
             // (its promises, and those of the arguments inside it, run in
             // this code's frame)
@@ -2540,7 +2657,7 @@ impl<'g> Comp<'g> {
         // SAFETY: as above; the constants are the source's, immortal or
         // made in this interval.
         unsafe {
-            let code = crate::code::build(self.cx, &verified(b), body, Some(formals))?;
+            let code = sub.build(b, body, Some(formals))?;
             index_codes(self.cx, code, &sub.arg_codes, None);
             Ok(Some(code))
         }
@@ -3744,6 +3861,31 @@ unsafe fn check_formals(mut ls: Sexp, nil: Sexp) -> bool {
 mod tests {
     use super::fold_vis_into_ret;
     use crate::ir::{Ins, Op};
+
+    /// A compile's buffers go back to the isolate's spares cleared (no
+    /// entry survives into the next compile, or across a collection), a
+    /// buffer past `SCRATCH_CAP` is freed rather than kept, and at most
+    /// `SCRATCH_SETS` sets wait.
+    #[test]
+    fn spare_buffers_come_back_cleared_and_capped() {
+        use super::{Bufs, SCRATCH_CAP, SCRATCH_SETS, Scratch};
+        let s = Scratch::default();
+        let mut b = s.take();
+        b.ins.resize(10, Ins::new(Op::Ret));
+        b.ppk.resize(SCRATCH_CAP + 1, 0);
+        b.pool.insert(1, 2);
+        let kept = b.ins.capacity();
+        s.give(b);
+        // (take's debug assertion: the set is empty)
+        let b = s.take();
+        assert!(b.ins.is_empty() && b.ins.capacity() >= kept, "a small buffer is kept, empty");
+        assert!(b.pool.is_empty());
+        assert_eq!(b.ppk.capacity(), 0, "a buffer past the cap is not kept");
+        for _ in 0..SCRATCH_SETS + 2 {
+            s.give(Bufs::default());
+        }
+        assert_eq!(s.0.borrow().len(), SCRATCH_SETS);
+    }
 
     /// A jump whose target is the code's end, and a loop's region ending
     /// there (whose "instruction after" is one past it), mark positions

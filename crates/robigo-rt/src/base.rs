@@ -166,7 +166,9 @@ pub struct Wide {
     pub substs: Vec<(&'static str, &'static str)>,
     pub primitives: Vec<&'static str>,
     pub internals: Vec<&'static str>,
-    by_name: std::collections::HashMap<&'static str, usize>,
+    /// `names`' index by name (fixed-seed hashing: the keys are this
+    /// binary's own, and a start's instructions do not vary run to run).
+    by_name: std::collections::HashMap<&'static str, usize, robigo_heap::BuildFx>,
 }
 
 impl Wide {
@@ -186,7 +188,7 @@ impl Wide {
             substs: Vec::new(),
             primitives: Vec::new(),
             internals: Vec::new(),
-            by_name: std::collections::HashMap::new(),
+            by_name: Default::default(),
         };
         let num = |s: &str, i: usize| s.parse::<usize>().map_err(|_| format!("line {}: not a number: {s:?}", i + 1));
         let mut after: Vec<(&'static str, Form)> = Vec::new();
@@ -235,6 +237,7 @@ impl Wide {
                 _ => return Err(bad()),
             }
         }
+        w.by_name.reserve(w.names.len());
         for (i, n) in w.names.iter().enumerate() {
             if w.by_name.insert(n.name, i).is_some() {
                 return Err(format!("'{}' is defined twice", n.name));
