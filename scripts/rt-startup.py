@@ -99,8 +99,10 @@ PTRACE_O_TRACESYSGOOD, PTRACE_O_TRACECLONE, PTRACE_O_TRACEEXEC, PTRACE_O_TRACEEX
 PTRACE_EVENT_CLONE, PTRACE_EVENT_EXEC, PTRACE_EVENT_EXIT = 3, 4, 6
 # waitpid's flag for a traced thread as well as a process
 WALL = 0x40000000
-# a run's limit in seconds: a start that loops is killed, not waited on
+# a run's limit in seconds: a start that loops is killed, not waited on;
+# under callgrind, which runs a start some 50 times slower, its own
 TIMEOUT = 300
+CALLGRIND_TIMEOUT = 1800
 # personality(2)'s flag that turns address-space randomization off (setarch -R)
 ADDR_NO_RANDOMIZE = 0x0040000
 libc = ctypes.CDLL(None, use_errno=True)
@@ -304,11 +306,15 @@ def instructions(cmd, env, valgrind):
     """callgrind's total instructions of one run of `cmd`."""
     with tempfile.TemporaryDirectory(prefix="rt-startup-") as d:
         out = os.path.join(d, "cg")
-        p = subprocess.run([valgrind, "--tool=callgrind", f"--callgrind-out-file={out}", *cmd], env=env,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        try:
+            p = subprocess.run([valgrind, "--tool=callgrind", f"--callgrind-out-file={out}", *cmd], env=env,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                               timeout=CALLGRIND_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            raise SystemExit(f"rt-startup: {' '.join(cmd)} ran over {CALLGRIND_TIMEOUT} s under callgrind")
         if p.returncode:
             raise SystemExit(f"rt-startup: {' '.join(cmd)} under callgrind exited {p.returncode}:\n{p.stderr[-2000:]}")
-        with open(out) as f:
+        with open(out, errors="replace") as f:
             for ln in f:
                 if ln.startswith("summary:") or ln.startswith("totals:"):
                     return int(ln.split()[1])
@@ -441,11 +447,12 @@ def run(binary, starts=None, checkout=ROOT, runs=9, trees=False, valgrind=None):
 
 
 def run_gnur(runs=9, valgrind=None):
-    """GNU R's starts (GNUR_STARTS) of RSCRIPT_BIN in R_HOME_DIR."""
-    exe = os.environ.get("RSCRIPT_BIN")
-    home = os.environ.get("R_HOME_DIR")
-    if not exe or not home:
-        raise SystemExit("rt-startup: GNU R's starts need RSCRIPT_BIN (GNU R's exec/R) and R_HOME_DIR")
+    """GNU R's starts (GNUR_STARTS) of RSCRIPT_BIN in R_HOME_DIR, with the
+    defaults the repo's other GNU R entry points use (perf.py, idiom-vs-r.py)."""
+    exe = os.environ.get("RSCRIPT_BIN", "/usr/lib/R/bin/exec/R")
+    home = os.environ.get("R_HOME_DIR", "/usr/lib/R")
+    if not os.path.exists(exe):
+        raise SystemExit(f"rt-startup: no GNU R at {exe} (set RSCRIPT_BIN to its exec/R and R_HOME_DIR)")
     res = {}
     for n, extra in GNUR_STARTS.items():
         env = dict(clean_env(), R_HOME=home, **extra)
@@ -524,7 +531,8 @@ def main():
     side = ap.add_mutually_exclusive_group(required=True)
     side.add_argument("--robigo-rt", help="robigo-rt's binary")
     side.add_argument("--gnur", action="store_true",
-                      help="GNU R's starts: RSCRIPT_BIN (exec/R) and R_HOME_DIR, as idiom-vs-r.py")
+                      help="GNU R's starts: RSCRIPT_BIN (exec/R) and R_HOME_DIR, as idiom-vs-r.py "
+                           "(default /usr/lib/R's)")
     ap.add_argument("--checkout", default=ROOT,
                     help="ROBIGO_RT_CHECKOUT for robigo-rt: its .robigo/rt-home and rt-home-db trees")
     t = ap.add_mutually_exclusive_group()

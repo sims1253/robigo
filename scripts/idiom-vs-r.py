@@ -252,7 +252,9 @@ def follows_heap(row, allocs):
 def allocator_calls(cg):
     """Calls of ALLOCATOR's functions in the callgrind file `cg`."""
     names, cfn, n = {}, None, 0
-    with open(cg) as f:
+    # (as perf.py's cache_counters: a compressed name can hold a locale's
+    # bytes from a path)
+    with open(cg, errors="replace") as f:
         for ln in f:
             if ln.startswith("cfn="):
                 m = re.match(r"cfn=\((\d+)\)(?: (.*))?", ln)
