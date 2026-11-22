@@ -446,7 +446,7 @@ impl Cx {
         // owner-checked). No other reference into the core or the roots is
         // live, and the collection reaches nothing of ours (finalizers are
         // only queued).
-        let r = unsafe { iso.core().make_room(e, &mut iso.gc_roots()) };
+        let r = unsafe { iso.core().make_room(e, iso.roots_mut()) };
         self.flush_gc_report();
         r.map_err(|a| self.error_call(None, &a.message()))
     }

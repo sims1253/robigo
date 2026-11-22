@@ -85,7 +85,7 @@ impl Cx {
         // SAFETY: as in `Cx::safepoint`: `&mut Cx` has ended every `Ref`,
         // view and slice, so everything still needed is in a root of this
         // isolate; the collection reaches nothing of ours.
-        unsafe { iso.core().collect(&mut iso.gc_roots()) };
+        unsafe { iso.core().collect(iso.roots_mut()) };
         self.flush_gc_report();
     }
 
@@ -271,7 +271,7 @@ impl Cx {
             let iso = self.iso();
             // SAFETY: as in `Cx::alloc_rooted`: a collection may run here,
             // with the isolate's roots, while `&mut Cx` has ended every `Ref`.
-            unsafe { iso.core().alloc_rooted(t, n, &mut iso.gc_roots()) }
+            unsafe { iso.core().alloc_rooted(t, n, iso.roots_mut()) }
         };
         self.flush_gc_report();
         r.map_err(|e| self.error_call(None, &e.message()))

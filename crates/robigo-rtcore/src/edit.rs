@@ -74,7 +74,7 @@ impl Cx {
             let iso = self.iso();
             // SAFETY: as in `Cx::alloc_rooted`: a collection may run here, with
             // the isolate's roots (`x` among them), under `&mut Cx`.
-            unsafe { iso.core().alloc_rooted(t, n, &mut iso.gc_roots()) }
+            unsafe { iso.core().alloc_rooted(t, n, iso.roots_mut()) }
         };
         self.flush_gc_report();
         let copy = match copy {

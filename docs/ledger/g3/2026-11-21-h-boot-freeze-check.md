@@ -114,3 +114,20 @@ Main makes no collection on that script, so the freeze point's collection replac
 
 - **The freeze off is not instruction-identical to main.** It is within 0.2% either way, the branch's other code included. With the freeze off, the startup runs none of the freeze's functions: one more environment variable read, `ROBIGO_GC_FREEZE`, and a call that returns.
 - **The first-collection clause fails, as the foreman expected:** that collection pays the referrer thaw and the sort, which the pass PR removes by design. If it still fails with both gone, the walk's cost and folding the walk into that collection's marking go to the foreman before any build.
+
+**The default users get (the freeze off), against main b0c49e869** (this PR's head; `--vanilla -e 1`, `R_DEFAULT_PACKAGES=NULL`):
+
+| | interim loader | rdb, JIT on | rdb, JIT off |
+|---|---|---|---|
+| instructions, main → #959 (no extra variable set) | 15,530,764 → 15,550,565 (+0.13%) | 95,330,830 → 95,230,938 (−0.10%) | 50,760,669 → 50,948,155 (+0.37%) |
+| the same with one more environment variable set (median of 8 lengths) | 15,528,810 → 15,549,745 (+0.13%) | 95,175,350 → 95,362,040 (+0.20%) | 50,846,203 → 50,742,056 (−0.20%) |
+| anonymous memory (median of 15) | 1.91 → 1.94 MB (+1.2%) | 6.69 → 6.68 MB (−0.1%) | 4.53 → 4.54 MB (+0.2%) |
+| peak RSS (`VmHWM`, median of 15) | 9.69 → 10.10 MB | 15.43 → 15.66 MB | 13.27 → 13.49 MB |
+| file-backed pages | 7.78 → 8.17 MB | 8.75 → 8.98 MB | 8.73 → 8.95 MB |
+
+- **What the freeze itself costs, switched off:** 19–112 instructions in its own functions (`freeze_boot_heap` returns at once), and about 500–1,080 for the one more `getenv` (`ROBIGO_GC_FREEZE`). A run is deterministic to about ±1k.
+- **The rest is layout, not work:**
+  - Under the rdb boot, the sign of the difference flips between the two rows with one environment variable added: the count depends on the environment's layout by about ±0.2–0.4%.
+  - Under the interim loader, the +20k is glibc's `realloc` (Vec growth) copying more: the same 2,276 calls, but about 16k more instructions in the copy beneath it. Whether `realloc` grows in place depends on the malloc arena's layout, which the branch's slightly different allocations shift.
+  - A first version of the lazy freeze handed the heap its roots through a wrapper type (`GcRoots`); that cost 55–152k instructions of codegen. `Roots` now carries its freeze roots itself (`#[trace(freeze = "trace_freeze_roots")]`, a form the derive gained for this).
+- **Peak RSS:** the anonymous memory, the heap and every other data, is unchanged within noise. The peak's growth is file-backed: the binary's code pages a start touches. `.text` is 45.8 KB larger (the freeze and its check, compiled in with the switch off), which moves code across pages and readahead windows. On main alone that varies by about 0.3 MB from run to run.

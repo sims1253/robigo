@@ -9,8 +9,12 @@
 //! Each type parameter gets a `Trace` bound, also one that only a skipped
 //! field uses: implement `Trace` by hand for such a type. Unions are
 //! rejected: the derive cannot know which field is live. `#[trace(...)]`
-//! belongs on fields only, and is rejected on the type, on an enum variant,
-//! and when empty: an annotation that does nothing is a compile error.
+//! belongs on fields, but for one form on a struct:
+//! `#[trace(freeze = "method")]` makes the derived `trace_freeze` call
+//! `self.method(visitor)` (the embedder's freeze roots, a part of its
+//! roots: robigo-heap's `gc/freeze.rs`). It is rejected on an enum variant,
+//! in any other form on the type, and when empty: an annotation that does
+//! nothing is a compile error.
 //!
 //! The generated names cannot collide with the input's: the visitor and the
 //! tuple-field bindings are local variables with `Span::mixed_site()`
@@ -39,7 +43,7 @@ pub fn derive_trace(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 }
 
 fn expand(mut input: DeriveInput) -> syn::Result<TokenStream> {
-    no_trace_attribute(&input.attrs, "a type")?;
+    let freeze = freeze_method(&input)?;
     let v = visitor();
     let body = match &input.data {
         Data::Struct(s) => {
@@ -80,6 +84,14 @@ fn expand(mut input: DeriveInput) -> syn::Result<TokenStream> {
     }
     let name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let freeze = freeze.map(|m| {
+        quote! {
+            fn trace_freeze<#vt: ::robigo_heap::Visitor + ?::core::marker::Sized>(&mut self, #v: &mut #vt) -> bool {
+                self.#m(#v);
+                true
+            }
+        }
+    });
     Ok(quote! {
         impl #impl_generics ::robigo_heap::Trace for #name #ty_generics #where_clause {
             #[inline]
@@ -88,8 +100,40 @@ fn expand(mut input: DeriveInput) -> syn::Result<TokenStream> {
                 let _ = &#v;
                 #body
             }
+            #freeze
         }
     })
+}
+
+/// The type's `#[trace(freeze = "method")]`, on a struct only: the method
+/// that shows the freeze roots. Any other `#[trace(...)]` on the type is
+/// an error, as before.
+fn freeze_method(input: &DeriveInput) -> syn::Result<Option<Ident>> {
+    let mut method = None;
+    for a in input.attrs.iter().filter(|a| a.path().is_ident("trace")) {
+        if !matches!(input.data, Data::Struct(_)) || !matches!(a.meta, syn::Meta::List(_)) {
+            return no_trace_attribute(&input.attrs, "a type").map(|_| None);
+        }
+        let mut items = 0;
+        a.parse_nested_meta(|meta| {
+            items += 1;
+            if !meta.path.is_ident("freeze") {
+                return Err(meta.error(
+                    "`#[trace(...)]` goes on fields, not on a type, but for `#[trace(freeze = \"method\")]` on a struct",
+                ));
+            }
+            let m: LitStr = meta.value()?.parse()?;
+            if method.is_some() {
+                return Err(syn::Error::new(m.span(), "one freeze method"));
+            }
+            method = Some(Ident::new(&m.value(), m.span()));
+            Ok(())
+        })?;
+        if items == 0 {
+            return Err(syn::Error::new(a.span(), "an empty `#[trace()]` does nothing"));
+        }
+    }
+    Ok(method)
 }
 
 /// The visitor's name in the generated body: a local variable with

@@ -149,7 +149,11 @@ pub struct Isolate {
 /// environments, base bindings and the global cache) and the deferred
 /// warnings. Only [`Cx::need_gc`] takes `&mut` of it, for the collection it
 /// hands it to; everything else reads it through the accessors below.
+// (the freeze roots, [`Roots::trace_freeze_roots`], are a part of these: the
+// boot heap's lazy freeze walks them inside the first collection after the
+// boot boundary, robigo-heap's `freeze.rs`)
 #[derive(Trace)]
+#[trace(freeze = "trace_freeze_roots")]
 pub(crate) struct Roots {
     stack: ValueStack,
     globals: Globals,
@@ -160,23 +164,6 @@ pub(crate) struct Roots {
     /// the C API's globals: the protect stack, R_alloc's stack, the
     /// constants and symbols C reads (`capi.rs`)
     capi: crate::capi::CApi,
-}
-
-/// The roots every collection of the isolate is given: [`Roots`], whose
-/// freeze roots ([`Roots::trace_freeze_roots`]) the boot heap's lazy freeze
-/// walks inside the first collection after the boot boundary
-/// (robigo-heap's `freeze.rs`).
-pub(crate) struct GcRoots<'a>(pub(crate) &'a mut Roots);
-
-impl robigo_heap::Trace for GcRoots<'_> {
-    #[inline]
-    fn trace<V: robigo_heap::Visitor + ?Sized>(&mut self, v: &mut V) {
-        self.0.trace(v);
-    }
-    fn trace_freeze<V: robigo_heap::Visitor + ?Sized>(&mut self, v: &mut V) -> bool {
-        self.0.trace_freeze_roots(v);
-        true
-    }
 }
 
 impl Roots {
@@ -321,15 +308,6 @@ impl Isolate {
     pub(crate) unsafe fn roots_mut(&self) -> &mut Roots {
         // SAFETY: the caller's contract.
         unsafe { &mut *self.roots.get() }
-    }
-
-    /// The isolate's roots as a collection is given them ([`GcRoots`]).
-    ///
-    /// # Safety
-    /// As for [`Isolate::roots_mut`].
-    pub(crate) unsafe fn gc_roots(&self) -> GcRoots<'_> {
-        // SAFETY: the caller's contract.
-        GcRoots(unsafe { self.roots_mut() })
     }
 
     // The global table and the pending-exit stack: each method borrows its
