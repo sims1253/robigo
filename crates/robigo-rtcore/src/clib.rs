@@ -386,25 +386,31 @@ pub fn wait_readable_or(fd: i32, mut pending: impl FnMut() -> bool) -> std::io::
         libc::sigaddset(&mut int, libc::SIGINT);
         libc::pthread_sigmask(libc::SIG_BLOCK, &int, &mut old);
     }
-    let r = loop {
+    // (the mask comes back on every way out, a panic in `pending` included)
+    struct Restore(libc::sigset_t);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            // SAFETY: `self.0` is the mask pthread_sigmask returned above.
+            unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &self.0, std::ptr::null_mut()) };
+        }
+    }
+    let _restore = Restore(old);
+    loop {
         if pending() {
-            break Ok(true);
+            return Ok(true);
         }
         let mut p = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
         // SAFETY: one valid pollfd, its count 1, no timeout, and the mask
         // from before the block (SIGINT open unless the caller blocked it).
         let r = unsafe { libc::ppoll(&mut p, 1, std::ptr::null(), &old) };
         if r >= 0 {
-            break Ok(false);
+            return Ok(false);
         }
         let e = std::io::Error::last_os_error();
         if e.kind() != std::io::ErrorKind::Interrupted {
-            break Err(e);
+            return Err(e);
         }
-    };
-    // SAFETY: `old` is the mask pthread_sigmask returned above.
-    unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &old, std::ptr::null_mut()) };
-    r
+    }
 }
 
 /// `read(fd, buf, buf.len())`: the bytes read (0 at the end), or the
@@ -1759,6 +1765,15 @@ mod tests {
         );
         assert!(checks >= 1);
         t.join().unwrap();
+        // a panicking check: the thread's mask comes back all the same
+        let r = std::panic::catch_unwind(|| super::wait_readable_or(fds[0], || panic!("check")));
+        assert!(r.is_err());
+        // SAFETY: a sigset_t for pthread_sigmask to fill in.
+        let mut now: libc::sigset_t = unsafe { std::mem::zeroed() };
+        // SAFETY: a null new mask only reads the current one into `now`.
+        unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, std::ptr::null(), &mut now) };
+        // SAFETY: `now` was filled in above.
+        assert_eq!(unsafe { libc::sigismember(&now, libc::SIGINT) }, 0);
         // SAFETY: both fds are open and ours.
         unsafe {
             libc::close(fds[0]);
