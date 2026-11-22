@@ -457,20 +457,30 @@ class RtCi(unittest.TestCase):
 
     def list_name_problems(self, plans, root):
         """For every step that names cases in ROBIGO_CONF_TIMEOUTS, each name
-        the runner would refuse at its start ("names X, which is no case's
-        id ... of an enabled case"): no such case, a tests/r case without its
-        passing-rt marker, or a case whose .requires names a feature the
-        step's environment turns off."""
+        the runner refuses at its start ("names X, which is no case's id ...
+        of an enabled case"): not exactly a case id (a `*.R` under tests/rt
+        or tests/r, as the runner discovers them, named from the repository
+        root), or a case whose .requires names a feature the step's
+        environment turns off. And one more than the runner's start checks:
+        a tests/r case without its passing-rt marker, which the runner
+        accepts but never runs in CI, so the step's timeout for it would
+        apply to nothing."""
+        ids = {str(p.relative_to(root)) for suite in ("tests/rt", "tests/r") for p in (root / suite).rglob("*.R")
+               if p.is_file()}
         problems = []
         for title, env, _ in plans:
             if "ROBIGO_CONF_TIMEOUTS" not in env:
                 continue
             kept = self.kept_features(env)
+            # (parsed as the runner's parse_case_timeouts: blank items
+            # skipped, names trimmed)
             for item in env["ROBIGO_CONF_TIMEOUTS"].split(","):
-                case = item.rsplit("=", 1)[0]
+                if not item.strip():
+                    continue
+                case = item.rsplit("=", 1)[0].strip()
                 path = root / case
-                if not path.is_file():
-                    problems.append(f"{title}: {case}: no such case")
+                if case not in ids:
+                    problems.append(f"{title}: {case}: no case has this id")
                     continue
                 if case.startswith("tests/r/"):
                     marker = root / "tests/r/passing-rt" / (case[len("tests/r/"):] + ".pass")
@@ -511,7 +521,14 @@ class RtCi(unittest.TestCase):
         self.assertIn("conformance under gctorture (E3): tests/rt/jit/big.R: requires volume, which this step turns off",
                       problems)
         self.assertTrue(any("unmarked.R: not ratcheted" in p for p in problems), problems)
-        self.assertTrue(any("tests/rt/gone.R: no such case" in p for p in problems), problems)
+        self.assertTrue(any("tests/rt/gone.R: no case has this id" in p for p in problems), problems)
+        # not ids, though the files exist; and an empty list names nothing
+        (root / "tests/rt/R-4.6.2").mkdir(parents=True)
+        (root / "tests/rt/R-4.6.2/ok.Rout").write_text("1\n")
+        odd = [("step", {"ROBIGO_CONF_TIMEOUTS": "./tests/rt/jit/ok.R=600,tests/rt/R-4.6.2/ok.Rout=600"}, ["cargo"]),
+               ("empty", {"ROBIGO_CONF_TIMEOUTS": rt.case_timeouts({})}, ["cargo"]),
+               ("spaced", {"ROBIGO_CONF_TIMEOUTS": " tests/rt/jit/ok.R =600, "}, ["cargo"])]
+        self.assertEqual(len(self.list_name_problems(odd, root)), 2, self.list_name_problems(odd, root))
 
     def test_the_moving_conformance_step_is_young_and_the_full_run_nightly(self):
         # H8: the job's GC_MOVE + gctorture conformance step moves the young
