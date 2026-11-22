@@ -388,6 +388,7 @@ struct Strptime<'a> {
 }
 
 /// What stopped a conversion: GNU R's `error()`.
+#[derive(Clone)]
 struct StrptimeError(String);
 
 impl Strptime<'_> {
@@ -848,33 +849,48 @@ impl Strptime<'_> {
 
 /// `R_strptime(buf, format, tm, psecs, poffset)`: whether `buf` matched
 /// `format`. In a multibyte locale both are converted to wide characters
-/// first (`mbstowcs`, at most 1000 of them).
+/// first (`mbstowcs`, at most 1000 of them): `buf` here, into `chars` (a
+/// buffer the caller keeps across elements), `format` once for every
+/// element it serves ([`strptime_format`]), its error raised after
+/// `buf`'s, as GNU R converts `buf` first.
 // R: Rstrptime.h:R_strptime
-fn r_strptime(p: &mut Strptime<'_>, buf: &[u8], format: &[u8]) -> Result<bool, StrptimeError> {
-    let (b, f): (Vec<u32>, Vec<u32>) = if p.wide {
-        let wide = |x: &[u8], invalid: &str, long: &str| -> Result<Vec<u32>, StrptimeError> {
-            let s = std::str::from_utf8(x).map_err(|_| StrptimeError(invalid.to_owned()))?;
-            let w: Vec<u32> = s.chars().map(|c| c as u32).collect();
-            if w.len() > 1000 {
-                return Err(StrptimeError(long.to_owned()));
-            }
-            Ok(w)
-        };
-        let b = wide(buf, "invalid multibyte input string", "input string is too long")?;
-        let f = wide(format, "invalid multibyte format string", "format string is too long")?;
-        (b, f)
-    } else {
-        (buf.iter().map(|&c| c as u32).collect(), format.iter().map(|&c| c as u32).collect())
-    };
-    // (a C string ends at its first NUL)
-    let cut = |v: Vec<u32>| -> Vec<u32> {
-        match v.iter().position(|&c| c == 0) {
-            Some(k) => v[..k].to_vec(),
-            None => v,
+fn r_strptime(
+    p: &mut Strptime<'_>,
+    buf: &[u8],
+    format: &Result<Vec<u32>, StrptimeError>,
+    chars: &mut Vec<u32>,
+) -> Result<bool, StrptimeError> {
+    to_chars(p.wide, buf, chars, "invalid multibyte input string", "input string is too long")?;
+    let f = format.as_ref().map_err(|e| e.clone())?;
+    Ok(p.internal(chars, 0, f)?.is_some())
+}
+
+/// A `strptime` format as [`r_strptime`] reads it, or its error.
+fn strptime_format(wide: bool, format: &[u8]) -> Result<Vec<u32>, StrptimeError> {
+    let mut f = Vec::new();
+    to_chars(wide, format, &mut f, "invalid multibyte format string", "format string is too long")?;
+    Ok(f)
+}
+
+/// `x`'s characters into `out` (its bytes, or in a multibyte locale its
+/// wide characters, at most 1000, else `long`; `invalid` for bytes that
+/// are not UTF-8), ending at the first NUL as a C string does.
+// R: Rstrptime.h:R_strptime (mbstowcs)
+fn to_chars(wide: bool, x: &[u8], out: &mut Vec<u32>, invalid: &str, long: &str) -> Result<(), StrptimeError> {
+    out.clear();
+    if wide {
+        let s = std::str::from_utf8(x).map_err(|_| StrptimeError(invalid.to_owned()))?;
+        out.extend(s.chars().map(|c| c as u32));
+        if out.len() > 1000 {
+            return Err(StrptimeError(long.to_owned()));
         }
-    };
-    let (b, f) = (cut(b), cut(f));
-    Ok(p.internal(&b, 0, &f)?.is_some())
+    } else {
+        out.extend(x.iter().map(|&c| c as u32));
+    }
+    if let Some(k) = out.iter().position(|&c| c == 0) {
+        out.truncate(k);
+    }
+    Ok(())
 }
 
 // --- the builtins -------------------------------------------------------
@@ -1057,20 +1073,40 @@ pub fn do_strptime(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
             }
         };
         let mut rows: Vec<LtRow> = Vec::with_capacity(nn);
+        let mut zones = Zones::default();
+        // kept across elements: x's bytes and characters, and the format of
+        // element `fj` as r_strptime reads it
+        let (mut xs, mut chars) = (Vec::new(), Vec::new());
+        let mut fmt: Option<(usize, Result<Vec<u32>, StrptimeError>)> = None;
         for i in 0..nn {
             let tr = {
                 let x = args.get(cx, 0).as_vector::<Char<'_>>().unwrap().get(i % n);
-                let f = args.get(cx, 1).as_vector::<Char<'_>>().unwrap().get(i % m);
                 if x == cx.na_string() {
                     None
                 } else {
-                    let tr = |c: Char<'_>| crate::text::to_native(crate::coerce::text(c), loc).map(|b| b.into_owned());
-                    Some((tr(x), tr(f)))
+                    fn tr(
+                        c: Char<'_>,
+                        loc: robigo_rtcore::Locale,
+                    ) -> Result<std::borrow::Cow<'_, [u8]>, robigo_text::TranslateError> {
+                        crate::text::to_native(crate::coerce::text(c), loc)
+                    }
+                    let xr = tr(x, loc).map(|b| {
+                        xs.clear();
+                        xs.extend_from_slice(&b);
+                    });
+                    let fr = match &fmt {
+                        Some((j, _)) if *j == i % m => Ok(()),
+                        _ => {
+                            let f = args.get(cx, 1).as_vector::<Char<'_>>().unwrap().get(i % m);
+                            tr(f, loc).map(|b| fmt = Some((i % m, strptime_format(wide, &b))))
+                        }
+                    };
+                    Some((xr, fr))
                 }
             };
-            let (na, xs, fs) = match tr {
-                None => (true, Vec::new(), Vec::new()),
-                Some((Ok(a), Ok(b))) => (false, a, b),
+            let na = match tr {
+                None => true,
+                Some((Ok(()), Ok(()))) => false,
                 Some(_) => {
                     return Err(tz_error(cx, "translating strings with \"bytes\" encoding is not allowed"));
                 }
@@ -1099,7 +1135,8 @@ pub fn do_strptime(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
                     loc: crate::text::ctype(loc),
                     warnings: Vec::new(),
                 };
-                let r = r_strptime(&mut p, &xs, &fs);
+                let format = &fmt.as_ref().expect("the format of a non-NA element").1;
+                let r = r_strptime(&mut p, &xs, format, &mut chars);
                 let warnings = std::mem::take(&mut p.warnings);
                 for w in warnings {
                     // (warning() under prepare_reset_tz's context)
@@ -1156,26 +1193,27 @@ pub fn do_strptime(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
             }
             let frac = if invalid { NA_REAL } else { psecs - psecs.floor() };
             let (zone, gmtoff) = if is_utc {
-                (tz.clone(), 0)
+                (zones.id(&tz), 0)
             } else {
                 // tm.tm_zone (none: strptime sets none), else
                 // R_tzname[tm.tm_isdst] as the conversions left it
                 let zone = match sess.as_deref() {
                     Some(s) if !invalid && tm.isdst >= 0 => {
                         let [a, b] = s.tzname();
-                        (if tm.isdst == 0 { a } else { b }).to_vec()
+                        zones.id(if tm.isdst == 0 { a } else { b })
                     }
-                    _ => Vec::new(),
+                    _ => zones.id(b""),
                 };
                 (zone, if invalid { NA_INTEGER } else { tm.gmtoff as i32 })
             };
             rows.push(LtRow { tm: ptm.unwrap_or(tm), valid: !invalid, frac, zone, gmtoff });
         }
-        Ok((tzone, rows))
+        Ok((tzone, (zones, rows)))
     })?;
+    let (zones, rows) = rows;
     let x = args.root(0);
     cx.scope(|cx, s| {
-        let ans = s.capture(cx, |cx, o| cx.build(o, |cx| make_lt(cx, &rows, &tzone)))?;
+        let ans = s.capture(cx, |cx, o| cx.build(o, |cx| make_lt(cx, &rows, &zones, &tzone)))?;
         // END_MAKElt: the year's names are x's, then recycled when N > n
         let nm = names_of(cx, s, x);
         let year = year_of(cx, s, ans);
@@ -1208,8 +1246,29 @@ struct LtRow {
     tm: Tm,
     valid: bool,
     frac: f64,
-    zone: Vec<u8>,
+    /// the zone name's place in the result's [`Zones`]
+    zone: u32,
     gmtoff: i32,
+}
+
+/// The zone names of a "POSIXlt" result's rows, each kept once (the rows
+/// name a few: the zone and its two `tzname`s), so a row stores its place
+/// and [`make_lt`] makes each name's CHARSXP once (GNU R's `mkChar` per
+/// row finds the same CHARSXP in its cache each time).
+#[derive(Default)]
+struct Zones(Vec<Vec<u8>>);
+
+impl Zones {
+    /// `z`'s place, added when new.
+    fn id(&mut self, z: &[u8]) -> u32 {
+        match self.0.iter().position(|n| n.as_slice() == z) {
+            Some(k) => k as u32,
+            None => {
+                self.0.push(z.to_vec());
+                (self.0.len() - 1) as u32
+            }
+        }
+    }
 }
 
 /// The "POSIXlt" list of `rows` (`makelt` for each, the zone and gmtoff
@@ -1217,8 +1276,11 @@ struct LtRow {
 /// "POSIXt")`, the `tzone` attribute and `balanced = TRUE`. (The year's
 /// names, which `END_MAKElt` sets through `setAttrib`, are the caller's.)
 // R: datetime.c:makelt, END_MAKElt
-fn make_lt<'g>(cx: &'g Cx, rows: &[LtRow], tzone: &[Vec<u8>]) -> Result<Ref<'g>, robigo_rtcore::NeedGc> {
+fn make_lt<'g>(cx: &'g Cx, rows: &[LtRow], zones: &Zones, tzone: &[Vec<u8>]) -> Result<Ref<'g>, robigo_rtcore::NeedGc> {
     let nn = rows.len();
+    // each zone's CHARSXP, made at its first row (no collection runs
+    // within this `&Cx`: an allocation that needs one fails instead)
+    let mut made: Vec<Option<Char<'g>>> = vec![None; zones.0.len()];
     let mut sec = cx.alloc_vector::<f64>(nn)?;
     let mut ints: Vec<_> = (0..8).map(|_| cx.alloc_vector::<i32>(nn)).collect::<Result<Vec<_>, _>>()?;
     let mut zone = cx.alloc_vector::<Char<'_>>(nn)?;
@@ -1237,7 +1299,15 @@ fn make_lt<'g>(cx: &'g Cx, rows: &[LtRow], tzone: &[Vec<u8>]) -> Result<Ref<'g>,
             }
             ints[7].as_mut_slice()[i] = -1; // isdst
         }
-        zone.set(i, cx.mk_char(&r.zone, Encoding::Native)?);
+        let z = match made[r.zone as usize] {
+            Some(z) => z,
+            None => {
+                let z = cx.mk_char(&zones.0[r.zone as usize], Encoding::Native)?;
+                made[r.zone as usize] = Some(z);
+                z
+            }
+        };
+        zone.set(i, z);
         gmtoff.as_mut_slice()[i] = r.gmtoff;
     }
     let mut comps: Vec<Ref<'_>> = Vec::with_capacity(11);
@@ -1397,15 +1467,24 @@ pub fn do_as_posixct(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
         let ans = in_tz(cx, &tz, is_utc, "as.POSIXct()", |cx, mut sess| {
             let cx: &Cx = cx;
             let mut ans = Vec::with_capacity(n);
+            // the components' data, read once (valid_posixlt coerced them;
+            // nothing in the loop allocates or runs R code)
+            let secs_of = match comps[0].bind(cx).view() {
+                View::Real(v) => v.as_slice().unwrap(),
+                _ => unreachable!("coerced"),
+            };
+            let ints_of: [&[i32]; 9] = std::array::from_fn(|k| match k {
+                1..=5 | 8 => match comps[k].bind(cx).view() {
+                    View::Int(v) => v.as_slice().unwrap(),
+                    _ => unreachable!("coerced"),
+                },
+                _ => &[],
+            });
             for i in 0..n {
-                let real = |cx: &Cx, k: usize| match comps[k].bind(cx).view() {
-                    View::Real(v) => v.as_slice().unwrap()[i % nlen[k]],
-                    _ => unreachable!("coerced"),
-                };
-                let int = |cx: &Cx, k: usize| match comps[k].bind(cx).view() {
-                    View::Int(v) => v.as_slice().unwrap()[i % nlen[k]],
-                    _ => unreachable!("coerced"),
-                };
+                // element i % nlen[k] (no division for a full-length one)
+                let at = |k: usize| if nlen[k] == n { i } else { i % nlen[k] };
+                let real = |_: &Cx, k: usize| secs_of[at(k)];
+                let int = |_: &Cx, k: usize| ints_of[k][at(k)];
                 let secs = real(cx, 0);
                 let fsecs = secs.floor();
                 let mut tm = Tm {
@@ -1484,6 +1563,7 @@ pub fn do_as_posixlt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
                     vec![tz.clone(), a.to_vec(), b.to_vec()]
                 }
             };
+            let mut zones = Zones::default();
             let rows: Vec<LtRow> = xs
                 .iter()
                 .map(|&d| {
@@ -1492,7 +1572,7 @@ pub fn do_as_posixlt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
                     let frac = if valid { d - d.floor() } else { d };
                     let tm = ptm.unwrap_or_default();
                     let (zone, gmtoff) = if is_utc {
-                        (tz.clone(), 0)
+                        (zones.id(&tz), 0)
                     } else {
                         // R_tzname[tm_isdst] as this conversion left it (glibc's
                         // localtime_r sets tzname for the time converted); or
@@ -1500,18 +1580,19 @@ pub fn do_as_posixlt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
                         let zone = match sess.as_deref() {
                             Some(s) if valid && tm.isdst >= 0 => {
                                 let [a, b] = s.tzname();
-                                (if tm.isdst == 0 { a } else { b }).to_vec()
+                                zones.id(if tm.isdst == 0 { a } else { b })
                             }
-                            _ => Vec::new(),
+                            _ => zones.id(b""),
                         };
                         (zone, if valid { tm.gmtoff as i32 } else { NA_INTEGER })
                     };
                     LtRow { tm, valid, frac, zone, gmtoff }
                 })
                 .collect();
-            Ok((tzone, rows))
+            Ok((tzone, (zones, rows)))
         })?;
-        let ans = s.capture(cx, |cx, o| cx.build(o, |cx| make_lt(cx, &rows, &tzone)))?;
+        let (zones, rows) = rows;
+        let ans = s.capture(cx, |cx, o| cx.build(o, |cx| make_lt(cx, &rows, &zones, &tzone)))?;
         let (nm, year) = (names_of(cx, s, x), year_of(cx, s, ans));
         set_names_from(cx, s, year, nm)?;
         out.set(cx, ans.bind(cx));
@@ -1591,10 +1672,12 @@ pub fn do_d2posixlt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
                         tm.isdst = 0; // no dst in GMT
                     }
                 }
-                LtRow { tm, valid, frac: if valid { 0.0 } else { x_i }, zone: tz.clone(), gmtoff: 0 }
+                LtRow { tm, valid, frac: if valid { 0.0 } else { x_i }, zone: 0, gmtoff: 0 }
             })
             .collect();
-        let ans = s.capture(cx, |cx, o| cx.build(o, |cx| make_lt(cx, &rows, std::slice::from_ref(&tz))))?;
+        let ans = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| make_lt(cx, &rows, &Zones(vec![tz.clone()]), std::slice::from_ref(&tz)))
+        })?;
         let (nm, year) = (names_of(cx, s, x), year_of(cx, s, ans));
         set_names_from(cx, s, year, nm)?;
         out.set(cx, ans.bind(cx));
