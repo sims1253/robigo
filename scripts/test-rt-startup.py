@@ -294,6 +294,15 @@ calls=2 0
 cfn=(9)
 calls=4 0
 1 4
+cfn=(10) (2)'(5)
+calls=3 0
+1 3
+cfn=(11) malloc'worker'(1)
+calls=6 0
+1 6
+cfn=(12) (99)'2
+calls=7 0
+1 7
 """
 
     def test_which_rows_are_measured_over_the_shifts(self):
@@ -314,10 +323,11 @@ calls=4 0
             f.write(self.CG)
         try:
             # malloc 3 + 4 (named once, then by number), free 2, a recursive
-            # free'2 5, __libc_malloc 1, and free'3 written as a reference
-            # with a suffix (--compress-mangled=yes) 2 + 4; not freelist_push
-            # or strlen
-            self.assertEqual(iv.allocator_calls(f.name), 21)
+            # free'2 5, __libc_malloc 1, free'3 written as a reference with a
+            # suffix (--compress-mangled=yes) 2 + 4, malloc under a caller
+            # (--separate-callers), referenced 3 and named 6; not
+            # freelist_push or strlen, nor a reference to a name never given
+            self.assertEqual(iv.allocator_calls(f.name), 30)
         finally:
             os.unlink(f.name)
 

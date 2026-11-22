@@ -249,15 +249,23 @@ def follows_heap(row, allocs):
 
 
 def allocator_calls(cg):
-    """Calls of ALLOCATOR's functions in the callgrind file `cg`, recursive
-    ones too (callgrind names them `free'2`; with --compress-mangled=yes a
-    name can itself be a reference with a suffix, `(7)'2`)."""
+    """Calls of ALLOCATOR's functions in the callgrind file `cg`, under any
+    of callgrind's name decorations. A name is the function's own, then any
+    number of `'` segments (a recursion depth, `free'2`; a caller under
+    --separate-callers, `malloc'worker`), and with --compress-mangled=yes
+    the function's part, or a segment, is a reference to a name given
+    before, `(7)'2`. The function is the part before the first `'`, a
+    reference resolved."""
     names, cfn, n = {}, None, 0
 
-    def resolve(name):
-        # "(7)'2": name 7 with the suffix
-        m = re.fullmatch(r"\((\d+)\)('\d+)?", name)
-        return names.get(m.group(1), name) + (m.group(2) or "") if m else name
+    def function(name):
+        for _ in range(8):
+            head = name.split("'", 1)[0]
+            m = re.fullmatch(r"\((\d+)\)", head)
+            if not m or m.group(1) not in names:
+                return head
+            name = names[m.group(1)]
+        return head
 
     # (as perf.py's cache_counters: a compressed name can hold a locale's
     # bytes from a path)
@@ -267,13 +275,13 @@ def allocator_calls(cg):
                 m = re.match(r"c?fn=\((\d+)\)(?: (.*))?", ln)
                 if m:
                     if m.group(2):
-                        names[m.group(1)] = resolve(m.group(2).strip())
-                    name = names.get(m.group(1))
+                        names[m.group(1)] = m.group(2).strip()
+                    name = names.get(m.group(1), "")
                 else:
-                    name = resolve(ln.split("=", 1)[1].strip())
+                    name = ln.split("=", 1)[1].strip()
                 if ln.startswith("cfn="):
-                    cfn = name
-            elif ln.startswith("calls=") and cfn and re.sub(r"'\d+$", "", cfn) in ALLOCATOR:
+                    cfn = function(name)
+            elif ln.startswith("calls=") and cfn in ALLOCATOR:
                 n += int(ln[6:].split()[0])
     return n
 
