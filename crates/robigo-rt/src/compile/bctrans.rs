@@ -805,9 +805,12 @@ impl<'g> Comp<'g> {
         // (the constants pool sized for the byte code's constants at once,
         // so it does not rehash while each pass fills it; `mkCode` takes
         // any constants, NULL or an ALTREP list among them: a hint only for
-        // a plain list, whose length is its header's)
+        // a plain list, whose length is its header's, and never more than a
+        // pool can hold (its indices are u16s: `Comp::k`), for a code that may use
+        // few of a long list's constants)
         // SAFETY: the caller's contract: live constants; a plain VECSXP's length.
-        let nk = unsafe { if consts.typ() == VECSXP && !consts.is_altrep() { consts.std_len() as usize } else { 0 } };
+        let nk = unsafe { if consts.typ() == VECSXP && !consts.is_altrep() { consts.std_len() as usize } else { 0 } }
+            .min(u16::MAX as usize);
         p.pool.reserve(nk);
         self.pool.reserve(nk);
         let r = p.alloc();
