@@ -219,6 +219,40 @@ class Trees(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 su.unpack_trees(tar, os.path.join(self.d, "co"))
 
+    def test_a_tarball_with_a_link_is_refused(self):
+        # a tree's root a symlink to ../scripts: a later member would land there
+        import tarfile
+        path = os.path.join(self.d, "link.tar")
+        with tarfile.open(path, "w") as t:
+            info = tarfile.TarInfo(".robigo/rt-home")
+            info.type = tarfile.SYMTYPE
+            info.linkname = "../scripts"
+            t.addfile(info)
+        co = os.path.join(self.d, "co")
+        with self.assertRaises(SystemExit) as e:
+            su.unpack_trees(path, co)
+        self.assertIn("links", str(e.exception))
+        self.assertFalse(os.path.lexists(os.path.join(co, ".robigo", "rt-home")))
+
+    def test_packing_is_allowed_in_ci(self):
+        # perf-rt-build packs under GITHUB_ACTIONS: the refusal is a measurement's
+        os.environ["GITHUB_ACTIONS"] = "true"
+        co = os.path.join(self.d, "co")
+        made = []
+
+        def fake(binary, checkout):
+            made.append(binary)
+            os.makedirs(os.path.join(checkout, ".robigo", "rt-home", "library"))
+        saved = su.make_trees
+        su.make_trees = fake
+        try:
+            out = os.path.join(self.d, "out.tar")
+            self.assertEqual(su.pack_trees("/bin/true", co, out), [".robigo/rt-home"])
+            self.assertEqual(made, ["/bin/true"])
+            self.assertTrue(os.path.isfile(out))
+        finally:
+            su.make_trees = saved
+
     def test_building_is_refused_in_ci(self):
         os.environ["GITHUB_ACTIONS"] = "true"
         with self.assertRaises(SystemExit) as e:

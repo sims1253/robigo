@@ -368,7 +368,9 @@ def pack_trees(binary, checkout, out):
     """Build the checkout's trees afresh with `binary` and pack them into
     the tarball `out` (paths relative to the checkout)."""
     clear_trees(checkout)
-    build_trees(binary, checkout)
+    # (packing is what CI's build job does: not refused there, as
+    # build_trees is for a measurement)
+    make_trees(binary, checkout)
     trees = tree_dirs(checkout)
     if not trees:
         raise SystemExit(f"rt-startup: no .robigo/rt-home* tree in {checkout} after building")
@@ -390,17 +392,28 @@ def unpack_trees(tar, checkout):
                or os.path.isabs(n) or ".." in n.split("/")]
         if bad:
             raise SystemExit(f"rt-startup: {tar} holds more than .robigo/rt-home* trees: {bad[:3]}")
+        # regular files and directories only: a link (a tree's root a
+        # symlink to ../scripts, say) would let a later member land outside
+        links = [m.name for m in t.getmembers() if not (m.isfile() or m.isdir())]
+        if links:
+            raise SystemExit(f"rt-startup: {tar} holds links or special files: {links[:3]}")
         t.extractall(checkout, filter="tar")
     if not tree_dirs(checkout):
         raise SystemExit(f"rt-startup: {tar} holds no .robigo/rt-home* tree")
 
 
 def build_trees(binary, checkout):
-    """The checkout's R_HOME trees, the database one written by `binary`.
-    Refused in CI (in_ci()): there the trees come built (--trees-from)."""
+    """The checkout's R_HOME trees for a measurement, the database one
+    written by `binary`. Refused in CI (in_ci()): there the measuring job has
+    no toolchain, and the trees come built (--trees-from)."""
     if in_ci():
         raise SystemExit("rt-startup: not building R_HOME trees in CI: perf-rt-build packs them "
                          "(--pack-trees), and the measurement takes them (--trees-from)")
+    make_trees(binary, checkout)
+
+
+def make_trees(binary, checkout):
+    """build_trees' work, wherever it runs (pack_trees' too)."""
     for cmd in (["scripts/rt-home.sh"], ["scripts/rt-home-db.sh", "--robigo-rt", os.path.abspath(binary)]):
         p = subprocess.run(cmd, cwd=checkout, capture_output=True, text=True)
         if p.returncode:
