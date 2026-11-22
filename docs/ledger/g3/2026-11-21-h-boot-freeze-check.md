@@ -79,6 +79,7 @@ Main makes no collection on that script, so the freeze point's collection replac
 
 **What changed.**
 - **`ROBIGO_GC_FREEZE=1` turns the freeze on.** Unset, empty or `0`, the default, it is off, and none of it runs. `ROBIGO_GC_FREEZE_CHECK` is read only with the freeze on. The default flips in the frozen-reachability pass PR, when the four clauses of (e) below hold with the pass in, measured on its head, together with case (d) ratcheted and the pass's own bar.
+  - **Not on the performance clauses alone (the foreman, 2026-11-22):** `tests/rt/memory/freeze-garbage-detach.R` differs from GNU R 4.6.2 with the freeze on. That is an observable difference, fine behind the switch. The default cannot flip while the case differs, unless the pass PR makes it match or Max signs the divergence.
 - **"The freeze point" is now two moments:**
   - **The boot boundary,** at the end of the boot, where the eager freeze ran (after `R_init_jit_enabled`). It only marks the blocks that hold objects as boot blocks: O(blocks), no object visited. Each records its bump position and sets its free list aside, so an object allocated afterwards is carved above that position or in another block. Large chunks are listed by base.
   - **The freeze,** inside the first collection after the boundary, before it marks. It freezes every boot object reachable from the freeze roots. An object allocated after the boundary is not frozen: it stays ordinary, and a frozen object that points to it is logged. Then the boot blocks' free lists are given back, before that collection's sweep adds to them.

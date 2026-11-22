@@ -190,3 +190,42 @@ fn a_search_path_led_back_to_the_global_environment_does_not_freeze_it() {
     })
     .unwrap();
 }
+
+/// A frame pooled before the boot boundary is not handed out after it
+/// (Sol r9 S15): it would be a session's frame at a boot object's address,
+/// and the lazy freeze would make it immortal.
+#[test]
+#[cfg(not(miri))]
+fn a_frame_pooled_before_the_boundary_is_not_reused_after_it() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    if !freeze_on(cx) {
+        return;
+    }
+    cx.scope(|cx, s| {
+        let sh = s.root(cx, cx.new_shape(&[]).expect("room"));
+        let g = s.root(cx, cx.global_env());
+        // the pool works: a recycled frame is the next one of its capacity
+        let out = s.out(cx);
+        let a = out.root();
+        cx.new_closure_frame(sh, g, g, &[], out)?;
+        let a_addr = a.bind(cx).sexp().addr();
+        cx.cleanup_envir(a, None);
+        cx.recycle_frame(a, None);
+        let out = s.out(cx);
+        let b = out.root();
+        cx.new_closure_frame(sh, g, g, &[], out)?;
+        let b_addr = b.bind(cx).sexp().addr();
+        assert_eq!(b_addr, a_addr, "the pool hands the recycled frame out again");
+        cx.cleanup_envir(b, None);
+        cx.recycle_frame(b, None);
+        // across the boundary it does not
+        cx.freeze_boot_heap();
+        let out = s.out(cx);
+        let c = out.root();
+        cx.new_closure_frame(sh, g, g, &[], out)?;
+        assert_ne!(c.bind(cx).sexp().addr(), b_addr, "a frame pooled before the boundary was reused after it");
+        Ok::<(), crate::RError>(())
+    })
+    .unwrap();
+}

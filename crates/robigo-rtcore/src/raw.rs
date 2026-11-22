@@ -150,6 +150,14 @@ impl Cx {
     /// under the moving collector's modes.
     pub fn freeze_boot_heap(&mut self) {
         let iso = self.iso();
+        // SAFETY: one read of the core.
+        if !unsafe { iso.core() }.freeze_enabled() {
+            return;
+        }
+        // a frame pooled before the boundary and taken after it would be a
+        // session's frame at a boot object's address (Sol r9 S15): the pool
+        // is emptied, as a collection empties it
+        iso.envs().clear_frame_pool();
         let global = iso.envs().global_raw();
         // SAFETY: one call on the core, no collection: it marks blocks.
         unsafe { iso.core() }.freeze_boundary(global.addr());

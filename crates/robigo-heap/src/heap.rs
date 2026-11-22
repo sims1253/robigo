@@ -565,6 +565,10 @@ impl Heap {
         // SAFETY: the caller's contract: `p` is in a block with a class.
         let ci = unsafe { (*b).class as usize };
         debug_assert!(ci < SIZES.len());
+        // a slot freed into a boot block before the lazy freeze would be
+        // reused below its boot position and read as a boot object
+        // SAFETY: as above.
+        debug_assert_eq!(unsafe { (*b).boot }, 0, "robigo: an immediate free inside the boot boundary");
         // SAFETY: as above, and the slot at `p` is no longer an object, so
         // its link word is ours to write.
         unsafe {

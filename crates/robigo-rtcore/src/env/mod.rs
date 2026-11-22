@@ -290,6 +290,12 @@ impl EnvState {
         unsafe { (*self.cells.get()).set_internal(sym::id_of(s), x) }
     }
 
+    /// Drop the frame pool's frames (the boot heap's lazy freeze's
+    /// boundary: [`super::recycle::FramePool::clear_pool`]).
+    pub(crate) fn clear_frame_pool(&self) {
+        self.pool.clear_pool();
+    }
+
     /// Every object this state roots directly ([`Cx::for_each_root`]): the
     /// fixed environments and symbols, then each symbol cell's value and
     /// cache entry.
