@@ -162,6 +162,23 @@ pub(crate) struct Roots {
     capi: crate::capi::CApi,
 }
 
+/// The roots every collection of the isolate is given: [`Roots`], whose
+/// freeze roots ([`Roots::trace_freeze_roots`]) the boot heap's lazy freeze
+/// walks inside the first collection after the boot boundary
+/// (robigo-heap's `freeze.rs`).
+pub(crate) struct GcRoots<'a>(pub(crate) &'a mut Roots);
+
+impl robigo_heap::Trace for GcRoots<'_> {
+    #[inline]
+    fn trace<V: robigo_heap::Visitor + ?Sized>(&mut self, v: &mut V) {
+        self.0.trace(v);
+    }
+    fn trace_freeze<V: robigo_heap::Visitor + ?Sized>(&mut self, v: &mut V) -> bool {
+        self.0.trace_freeze_roots(v);
+        true
+    }
+}
+
 impl Roots {
     /// The freeze roots (`Cx::freeze_boot_heap`): the environments' state,
     /// the `Globals` and the C API's globals; not the value stack, the
@@ -304,6 +321,15 @@ impl Isolate {
     pub(crate) unsafe fn roots_mut(&self) -> &mut Roots {
         // SAFETY: the caller's contract.
         unsafe { &mut *self.roots.get() }
+    }
+
+    /// The isolate's roots as a collection is given them ([`GcRoots`]).
+    ///
+    /// # Safety
+    /// As for [`Isolate::roots_mut`].
+    pub(crate) unsafe fn gc_roots(&self) -> GcRoots<'_> {
+        // SAFETY: the caller's contract.
+        GcRoots(unsafe { self.roots_mut() })
     }
 
     // The global table and the pending-exit stack: each method borrows its

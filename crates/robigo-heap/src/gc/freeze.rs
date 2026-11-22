@@ -1,11 +1,22 @@
-//! The boot heap's freeze (docs/ledger/g3/2026-11-21-h-boot-freeze-bar.md).
+//! The boot heap's freeze (docs/ledger/g3/2026-11-21-h-boot-freeze-bar.md
+//! and its amendment, 2026-11-21-h-boot-freeze-check.md).
 //!
-//! After the embedder's boot and one full collection, [`Core::freeze`]
-//! makes every object reachable from the roots it is given immortal, so
-//! that no later collection traces it again. An immortal object is never
-//! marked (marking stops at it) and never swept (the sweep keeps it by its
-//! flag, and a block whose objects are all marked or immortal skips its
-//! bitmap walk).
+//! **Off by default:** `ROBIGO_GC_FREEZE=1` turns it on
+//! ([`Core::freeze_enabled`]), until the frozen-reachability pass lands and
+//! the default flips. Off, none of it runs.
+//!
+//! **Lazy:** the embedder draws the boot boundary at the end of its boot
+//! ([`Core::freeze_boundary`]): a flag, and the blocks in use marked, no
+//! object visited, so a session that never collects pays nothing. The first
+//! collection after it, before it marks ([`Core::freeze_at_boundary`]),
+//! makes every boot object reachable from the roots' freeze roots
+//! ([`Trace::trace_freeze`]) immortal, so that no later collection traces it
+//! again. A boot object is one allocated before the boundary: a later one
+//! (`options(x = <1e8 doubles>)` stored under base before that collection)
+//! stays ordinary, so that replacing it frees it. An immortal object is
+//! never marked (marking stops at it) and never swept (the sweep keeps it by
+//! its flag, and a block whose objects are all marked or immortal skips its
+//! bitmap walk). [`Core::freeze`] freezes at once (the heap's tests).
 //!
 //! **The invariant:** at every collection, every ordinary (not immortal)
 //! object that a frozen object points to is reachable from a root. It holds
@@ -68,17 +79,124 @@ impl Visitor for Edges<'_> {
     }
 }
 
+/// The boot boundary's state, between [`Core::freeze_boundary`] and the
+/// lazy freeze.
+pub(super) struct BootBoundary {
+    /// The address of what the embedder leaves out (its global
+    /// environment): compared, never read.
+    exclude: usize,
+    /// The large chunks' bases at the boundary (their objects are boot
+    /// objects; a small one's block says it: [`Block::boot`]).
+    large: HashSet<usize, BuildFx>,
+    /// The boot blocks' free lists, set aside for the boundary.
+    lists: Vec<(usize, usize)>,
+}
+
+/// A root set's freeze roots, as a root set (`Trace::trace_freeze`).
+struct FreezeView<'a, R: ?Sized>(&'a mut R);
+
+impl<R: Trace + ?Sized> Trace for FreezeView<'_, R> {
+    fn trace<V: Visitor + ?Sized>(&mut self, v: &mut V) {
+        self.0.trace_freeze(v);
+    }
+}
+
 impl Core {
-    /// Whether the freeze runs in this heap: not under the moving
-    /// collector's modes, which the heap selected when it was made or by
-    /// its setters (both set `gc_move`).
+    /// Whether the freeze runs in this heap: `ROBIGO_GC_FREEZE=1` (off by
+    /// default), and not under the moving collector's modes, which the heap
+    /// selected when it was made or by its setters (both set `gc_move`).
     pub fn freeze_enabled(&self) -> bool {
-        !self.gc_move
+        self.freeze_on && !self.gc_move
+    }
+
+    /// Turn the freeze on or off for this heap, as `ROBIGO_GC_FREEZE` does
+    /// when it is made (the tests' switch). Its check's period is the
+    /// environment's, read now when turning it on.
+    ///
+    /// # Panics
+    /// Once the boot boundary is drawn or anything is frozen.
+    pub fn set_freeze_enabled(&mut self, on: bool) {
+        assert!(
+            self.boot_boundary.is_none() && self.frozen.is_empty(),
+            "robigo: the freeze is switched before the boot boundary"
+        );
+        if on && !self.freeze_on {
+            self.freeze_check = freeze_check_from_env();
+        }
+        self.freeze_on = on;
+    }
+
+    /// The boot boundary (the lazy freeze): the end of the boot, where
+    /// #959's eager freeze ran. Only a flag and the boot blocks marked
+    /// ([`Heap::mark_boot_blocks`]: O(blocks), no object visited), so a
+    /// session that never collects pays nothing more. The first collection
+    /// after it freezes, before it marks: every object reachable from the
+    /// roots' freeze roots ([`Trace::trace_freeze`]) that was allocated
+    /// before this boundary, the kinds that are never frozen and `exclude`
+    /// left out (an address compared, nothing read: any address may be
+    /// given). Nothing when the freeze is off or has run.
+    pub fn freeze_boundary(&mut self, exclude: usize) {
+        if !self.freeze_enabled() || self.boot_boundary.is_some() || !self.frozen.is_empty() {
+            return;
+        }
+        let (large, lists) = self.heap.mark_boot_blocks();
+        self.boot_boundary = Some(Box::new(BootBoundary { exclude, large: large.into_iter().collect(), lists }));
+    }
+
+    /// The lazy freeze, at the start of the first collection after the
+    /// boot boundary (`collect_needing`), before it marks: the boundary's
+    /// rule, then the boundary ends (the boot blocks take allocations
+    /// again, from this collection's sweep on). A root set without freeze
+    /// roots freezes nothing, and the boundary ends all the same.
+    ///
+    /// # Safety
+    /// As for [`Core::collect`]: every edge `roots` shows is null or live.
+    pub(super) unsafe fn freeze_at_boundary<R: Trace + ?Sized>(&mut self, roots: &mut R) {
+        let Some(b) = self.boot_boundary.take() else { return };
+        let exclude = b.exclude;
+        // SAFETY: the caller's contract; the freeze roots are a part of the roots.
+        unsafe { self.freeze_from(&mut FreezeView(roots), |x| x.addr() == exclude, Some(&b.large)) };
+        self.heap.end_boot_blocks(&b.lists);
+    }
+
+    /// Whether `x` was allocated before the boot boundary: its block is a
+    /// boot block, or it is the object of a large chunk `large` lists.
+    ///
+    /// # Safety
+    /// `x` is a live object of this heap, at the boundary.
+    unsafe fn is_boot_object(&self, x: Sexp, large: &HashSet<usize, BuildFx>) -> bool {
+        let b = self.heap.block_of(x.0);
+        // SAFETY: the caller's contract: `x`'s block (or large chunk) header
+        // is readable; a large chunk's first word is 0, not the magic.
+        unsafe {
+            if (*b).magic == 0x524f4249474f4241 {
+                (*b).boot != 0
+                    && ((x.addr() - Block::data_ptr(b) as usize) / crate::layout::GRANULE) < (*b).boot_bump as usize
+            } else {
+                large.contains(&(b as usize))
+            }
+        }
     }
 
     /// How many objects the freeze made immortal and are still frozen.
     pub fn frozen_count(&self) -> usize {
         self.frozen.len()
+    }
+
+    /// The bytes the frozen objects take: their slots' class sizes, and a
+    /// large one's chunk (`ROBIGO_GC_STATS`'s report; premise 6's bound).
+    pub fn frozen_bytes(&self) -> usize {
+        let large: HashMap<usize, usize, BuildFx> =
+            self.heap.chunks.iter().filter(|c| c.large).map(|c| (c.base, c.end - c.base)).collect();
+        self.frozen
+            .iter()
+            .map(|f| {
+                let b = self.heap.block_of(f.0);
+                // SAFETY: a frozen object is live: its block (or large
+                // chunk) header is readable.
+                large.get(&(b as usize)).copied().unwrap_or_else(|| unsafe { SIZES[(*b).class as usize] })
+            })
+            .sum()
     }
 
     /// Freeze every object reachable from `roots` (see the module's doc),
@@ -93,6 +211,22 @@ impl Core {
     /// Every edge `roots` shows is null or a live object of this heap, as
     /// for [`Core::collect`]; nothing else runs on the heap meanwhile.
     pub unsafe fn freeze<R: Trace + ?Sized>(&mut self, roots: &mut R, exclude: impl Fn(Sexp) -> bool) -> usize {
+        // SAFETY: the caller's contract.
+        unsafe { self.freeze_from(roots, exclude, None) }
+    }
+
+    /// [`Core::freeze`], and with `boot` the lazy freeze's rule: only the
+    /// objects allocated before the boot boundary (the others stay
+    /// ordinary, and a frozen object that points to one is logged).
+    ///
+    /// # Safety
+    /// As for [`Core::freeze`].
+    unsafe fn freeze_from<R: Trace + ?Sized>(
+        &mut self,
+        roots: &mut R,
+        exclude: impl Fn(Sexp) -> bool,
+        boot: Option<&HashSet<usize, BuildFx>>,
+    ) -> usize {
         if !self.freeze_enabled() || !self.frozen.is_empty() {
             return 0;
         }
@@ -117,8 +251,11 @@ impl Core {
                     continue;
                 }
                 let observable = keys.contains(&x.addr()) || x.flags() & flags::EXTDATA != 0;
-                let never =
-                    observable || x.typ() == WEAKREFSXP || x.extra() & crate::extra::SEEN_BY_C != 0 || exclude(x);
+                let never = observable
+                    || x.typ() == WEAKREFSXP
+                    || x.extra() & crate::extra::SEEN_BY_C != 0
+                    || exclude(x)
+                    || boot.is_some_and(|l| !self.is_boot_object(x, l));
                 if never {
                     stopped.insert(x.addr());
                     if observable {
@@ -496,12 +633,121 @@ mod tests {
         }
     }
 
+    /// A root set whose freeze roots are a part of it, as the embedder's.
+    struct WithFreeze {
+        all: Vec<Sexp>,
+        freeze: Sexp,
+    }
+    impl Trace for WithFreeze {
+        fn trace<V: Visitor + ?Sized>(&mut self, v: &mut V) {
+            for x in &mut self.all {
+                v.edge(x);
+            }
+        }
+        fn trace_freeze<V: Visitor + ?Sized>(&mut self, v: &mut V) -> bool {
+            v.edge(&mut self.freeze);
+            true
+        }
+    }
+
+    /// The freeze is off unless `ROBIGO_GC_FREEZE=1` says otherwise: off,
+    /// the boundary marks nothing and no collection freezes.
+    #[test]
+    fn the_freeze_is_off_by_default() {
+        let mut c = Core::new();
+        if std::env::var_os("ROBIGO_GC_FREEZE").is_some() {
+            c.set_freeze_enabled(false);
+        }
+        assert!(!c.freeze_enabled());
+        let nil = c.nil();
+        // SAFETY: fresh objects of this heap; nothing collects.
+        unsafe {
+            let x = c.alloc_node(LISTSXP, nil, nil, nil).unwrap();
+            c.freeze_boundary(nil.addr());
+            assert!(c.boot_boundary.is_none(), "no boundary drawn");
+            assert_eq!((*c.heap.block_of(x.0)).boot, 0, "no block marked");
+        }
+    }
+
+    /// Under Miri as well (no collection): the boot boundary marks the
+    /// blocks in use, an object allocated after it lands in a block that is
+    /// not one, and ending it makes the boot blocks ordinary again.
+    #[test]
+    fn the_boundary_puts_later_objects_outside_the_boot_blocks() {
+        let mut c = Core::new();
+        c.set_freeze_enabled(true);
+        if !c.freeze_enabled() {
+            return;
+        }
+        let nil = c.nil();
+        // SAFETY: fresh objects of this heap; nothing collects.
+        unsafe {
+            let before = c.alloc_node(LISTSXP, nil, nil, nil).unwrap();
+            let big = c.alloc_vector(REALSXP, 100_000).unwrap();
+            c.freeze_boundary(nil.addr());
+            let b = c.boot_boundary.take().unwrap();
+            let after = c.alloc_node(LISTSXP, nil, nil, nil).unwrap();
+            let big_after = c.alloc_vector(REALSXP, 100_000).unwrap();
+            assert!(c.is_boot_object(before, &b.large) && c.is_boot_object(big, &b.large));
+            assert!(!c.is_boot_object(after, &b.large), "a later object is carved above the boundary's mark");
+            assert!(
+                !c.is_boot_object(big_after, &b.large),
+                "and a later large one in a chunk the boundary did not list"
+            );
+            c.heap.end_boot_blocks(&b.lists);
+            assert_eq!((*c.heap.block_of(before.0)).boot, 0, "the boundary ended");
+        }
+    }
+
+    /// The lazy freeze: nothing is frozen at the boundary; the next
+    /// collection freezes what the freeze roots reach of the boot objects,
+    /// and a later object they reach stays ordinary, its frozen referrer
+    /// logged (the boundary's `options(x = <1e8 doubles>)` case).
+    #[test]
+    #[cfg(not(miri))]
+    fn the_first_collection_after_the_boundary_freezes_the_boot_objects_only() {
+        let mut c = Core::new();
+        c.set_freeze_enabled(true);
+        if !c.freeze_enabled() {
+            return;
+        }
+        let nil = c.nil();
+        // SAFETY: fresh objects of this heap, rooted by `roots`.
+        unsafe {
+            let leaf = c.alloc_vector(INTSXP, 3).unwrap();
+            let cell = c.alloc_node(LISTSXP, leaf, nil, nil).unwrap();
+            let head = c.alloc_node(LISTSXP, cell, nil, nil).unwrap();
+            c.freeze_boundary(nil.addr());
+            assert_eq!(c.frozen_count(), 0, "nothing frozen at the boundary");
+            // the session stores a later object under the freeze roots
+            let later = c.alloc_vector(REALSXP, 1_000).unwrap();
+            head.store(
+                head.as_ptr().add(crate::layout::node::OFF_CDR) as *mut Sexp,
+                c.alloc_node(LISTSXP, later, nil, nil).unwrap(),
+            );
+            let mut roots = WithFreeze { all: vec![head], freeze: head };
+            c.collect(&mut roots);
+            assert!(c.is_frozen(head) && c.is_frozen(cell) && c.is_frozen(leaf), "the boot objects froze");
+            let spine = head.cdr();
+            assert!(!c.is_frozen(spine) && !c.is_frozen(later), "the later ones did not");
+            assert_eq!(head.flags() & flags::BARRIER, 0, "their frozen referrer is logged");
+            assert!(c.boot_boundary.is_none(), "the boundary ended");
+            c.check_frozen();
+            // the later objects die when the session drops them
+            head.store(head.as_ptr().add(crate::layout::node::OFF_CDR) as *mut Sexp, nil);
+            c.collect(&mut roots);
+            c.check_frozen();
+            assert!(c.is_frozen(head));
+        }
+    }
+
     /// Under Miri as well (no collection): what a root reaches is frozen,
     /// an excluded object is not, the invariant holds, and a store of an
     /// ordinary object into a frozen one logs it.
     #[test]
     fn a_frozen_graph_keeps_the_invariant_through_a_store() {
         let mut c = Core::new();
+        c.set_freeze_enabled(true);
         if !c.freeze_enabled() {
             return;
         }
@@ -538,6 +784,7 @@ mod tests {
     #[test]
     fn the_unfreeze_thaws_a_container_reaching_the_key_through_an_ordinary_object() {
         let mut c = Core::new();
+        c.set_freeze_enabled(true);
         if !c.freeze_enabled() {
             return;
         }
@@ -572,6 +819,7 @@ mod tests {
     #[test]
     fn the_freeze_thaws_a_container_reaching_an_earlier_weak_key_through_an_ordinary_object() {
         let mut c = Core::new();
+        c.set_freeze_enabled(true);
         if !c.freeze_enabled() {
             return;
         }
@@ -606,6 +854,7 @@ mod tests {
     #[test]
     fn the_freeze_thaws_a_container_reaching_external_data_through_an_ordinary_object() {
         let mut c = Core::new();
+        c.set_freeze_enabled(true);
         if !c.freeze_enabled() {
             return;
         }
@@ -634,6 +883,7 @@ mod tests {
     #[test]
     fn a_weak_key_and_its_referrers_stay_ordinary() {
         let mut c = Core::new();
+        c.set_freeze_enabled(true);
         if !c.freeze_enabled() {
             return;
         }

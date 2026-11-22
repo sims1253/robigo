@@ -568,9 +568,11 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
         }
     }
     // the boot is over (setup_Rmainloop's last step, R_init_jit_enabled, ran
-    // above: the compiler's namespace is loaded when the JIT is on): its survivors are
-    // frozen, so no later collection traces them (robigo-heap's freeze.rs,
-    // docs/ledger/g3/2026-11-21-h-boot-freeze-bar.md); off under
+    // above: the compiler's namespace is loaded when the JIT is on). With
+    // ROBIGO_GC_FREEZE=1 (off by default) this is the boot boundary: the
+    // first collection after it freezes what the boot left reachable, so no
+    // later collection traces it (robigo-heap's freeze.rs,
+    // docs/ledger/g3/2026-11-21-h-boot-freeze-check.md); off under
     // ROBIGO_GC_MOVE's modes
     cx.freeze_boot_heap();
     // the isolate's console is the process's stdout and stderr

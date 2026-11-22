@@ -126,12 +126,14 @@ class RtCi(unittest.TestCase):
         titles = [t for t, _, _ in steps]
         rdb = [i for i, (_, e, c) in enumerate(steps) if e.get("ROBIGO_RT_BOOT") == "rdb" and rt.CONFORMANCE in c
                and "--skip" not in c]
-        self.assertEqual(len(rdb), 2)
+        # plain, crosschecked, and with the boot heap's freeze on
+        self.assertEqual(len(rdb), 3)
         tree = titles.index("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)")
         self.assertTrue(all(tree < i for i in rdb))
         self.assertEqual({rt.shard_of(titles[i]) for i in rdb}, {"modes"})
         self.assertEqual(sorted(sorted(steps[i][1]) for i in rdb),
                          [["ROBIGO_BC_CROSSCHECK", "ROBIGO_BC_CROSSCHECK_REPORT", "ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT"],
+                          ["ROBIGO_CONF_JOBS", "ROBIGO_GC_FREEZE", "ROBIGO_RT_BOOT"],
                           ["ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT"]])
 
     def test_every_crate_test_step_builds_what_the_first_built(self):
@@ -337,6 +339,19 @@ class RtCi(unittest.TestCase):
         self.assertIn(rt.CONFORMANCE, built[1][1])
         self.assertNotIn("debug assertions", " ".join(t for t, _, _ in rt.steps(["robigo-rt"])))
 
+    def test_the_freeze_on_is_tested_under_each_boot(self):
+        # the freeze is off by default; the mode users turn on is the
+        # conformance under each boot with it on and its check off
+        on = [(e, c) for t, e, c in rt.steps(["robigo-rt"]) if e.get("ROBIGO_GC_FREEZE") == "1"
+              and rt.CONFORMANCE in c and "ROBIGO_GCTORTURE" not in e]
+        boots = sorted(e.get("ROBIGO_RT_BOOT", "M1") for e, _ in on)
+        self.assertEqual(boots, ["M1", "rdb"])
+        self.assertTrue(all("ROBIGO_GC_FREEZE_CHECK" not in e for e, _ in on))
+        # and no step that is not the freeze's turns it on
+        for t, e, _ in rt.steps(["robigo-rt"]):
+            if e.get("ROBIGO_GC_FREEZE") == "1":
+                self.assertTrue("freeze" in t or "FREEZE" in t or "E3" in t or t.startswith("gctorture (collect"), t)
+
     def test_full_move_and_shard_are_refused_together(self):
         # --full-move runs the nightly's one step: with --shard as well the
         # shard would be dropped silently
@@ -353,14 +368,17 @@ class RtCi(unittest.TestCase):
         # amendment to #948 (c))
         e3 = [e for t, e, _ in rt.steps(["robigo-rt"]) if t == "conformance under gctorture (E3)"]
         self.assertEqual(e3[0]["ROBIGO_GC_FREEZE_CHECK"], "16")
+        # the check runs on the freeze, which is off by default
+        self.assertEqual(e3[0]["ROBIGO_GC_FREEZE"], "1")
         tests = [e for t, e, _ in rt.steps(["robigo-rt"]) if t.startswith("gctorture (collect at every allocation)")]
         self.assertEqual(tests[0]["ROBIGO_GC_FREEZE_CHECK"], "1")
+        self.assertEqual(tests[0]["ROBIGO_GC_FREEZE"], "1")
         night = rt.freeze_check_steps()
         self.assertEqual(len(night), 2)
         # the R_HOME tree first: the tools cases skip without it (Sol r7 S13)
         self.assertEqual(night[0][2], ["scripts/rt-home.sh"])
         _, env, cmd = night[1]
-        self.assertEqual((env["ROBIGO_GC_FREEZE_CHECK"], env["ROBIGO_GCTORTURE"]), ("1", "1"))
+        self.assertEqual((env["ROBIGO_GC_FREEZE_CHECK"], env["ROBIGO_GCTORTURE"], env["ROBIGO_GC_FREEZE"]), ("1", "1", "1"))
         # a failed check fails the step, whatever the case's output (S14)
         self.assertEqual(env["ROBIGO_GC_FREEZE_CHECK_REPORT"], rt.FREEZE_REPORT)
         self.assertEqual(e3[0]["ROBIGO_GC_FREEZE_CHECK_REPORT"], rt.FREEZE_REPORT)
@@ -400,7 +418,8 @@ class RtCi(unittest.TestCase):
             self.assertIn("--exact", cmd)
             if env:
                 self.assertTrue({"ROBIGO_GCTORTURE", "R_MAX_VSIZE", "ROBIGO_NO_INPLACE", "ROBIGO_MATERIALIZE", "ROBIGO_FRAME_QUARANTINE",
-                                 "ROBIGO_BC_CROSSCHECK", "ROBIGO_RETRY_TORTURE", "ROBIGO_POISON_DEAD", "ROBIGO_RT_BOOT"} & set(env), env)
+                                 "ROBIGO_BC_CROSSCHECK", "ROBIGO_RETRY_TORTURE", "ROBIGO_POISON_DEAD", "ROBIGO_RT_BOOT",
+                                 "ROBIGO_GC_FREEZE"} & set(env), env)
             # a crosscheck step writes its report, which `main` reads
             if "ROBIGO_BC_CROSSCHECK" in env:
                 self.assertIn("ROBIGO_BC_CROSSCHECK_REPORT", env)

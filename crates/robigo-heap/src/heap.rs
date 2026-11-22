@@ -72,7 +72,11 @@ pub struct Block {
     /// ever been on a class block list; guards chunk deallocation (a stale
     /// list entry must never point at returned memory).
     pub sticky_listed: u8,
-    _pad: u8,
+    /// 1: a boot block ([`Heap::mark_boot_blocks`]), until the lazy freeze
+    /// ends the boundary: its objects below [`Block::boot_bump`] are boot
+    /// objects. Large chunks do not use it (their +8 word is the mark
+    /// epoch): the core keeps their bases instead.
+    pub boot: u8,
     pub live_objects: u32,
     pub bump_next: u32, // next granule to carve (data-relative)
     pub granules: u32,
@@ -98,7 +102,11 @@ pub struct Block {
     /// in every block and large chunk: the store barrier's slow path
     /// finds it from the object's address alone
     pub remembered: *mut Remembered,
-    _rsv: [u8; 8],
+    /// A boot block's `bump_next` at the boundary: an object at a granule
+    /// below it was allocated before the boundary (the free list is set
+    /// aside meanwhile, so a later one is carved above it).
+    pub boot_bump: u32,
+    _rsv: [u8; 4],
     /// one bit per granule: this granule starts an object.
     pub starts: [u64; START_WORDS],
     /// one bit per granule: the object starting here was marked by the
@@ -281,7 +289,7 @@ impl Heap {
                             class: CLASS_NONE,
                             owner: OWNER_NONE,
                             sticky_listed: 0,
-                            _pad: 0,
+                            boot: 0,
                             live_objects: 0,
                             bump_next: 0,
                             granules: BLOCK_GRANULES,
@@ -290,7 +298,8 @@ impl Heap {
                             marked: 0,
                             immortals: 0,
                             remembered: self.remembered,
-                            _rsv: [0; 8],
+                            boot_bump: 0,
+                            _rsv: [0; 4],
                             starts: [0; START_WORDS],
                             marks: [0; START_WORDS],
                         },
@@ -454,6 +463,71 @@ impl Heap {
             // SAFETY: `fresh_block` returns an initialized, unclaimed block.
             unsafe { (*b).class = ci as u8 };
             self.classes[ci].cur = b;
+        }
+    }
+
+    /// The boot boundary (the lazy freeze, `gc/freeze.rs`): every block
+    /// that holds objects becomes a boot block, its bump position recorded
+    /// and its free list set aside until [`Heap::end_boot_blocks`]. An
+    /// object allocated from now on is carved above that position or in
+    /// another block, so the block and the position tell a boot object from
+    /// a later one; the blocks stay in use (retiring them made each class
+    /// start a fresh block: +5% of the interim loader's peak RSS at start).
+    /// Returns the large chunks' bases, which have no block header to mark,
+    /// and the free lists set aside. O(blocks), no object visited.
+    pub fn mark_boot_blocks(&mut self) -> (Vec<usize>, Vec<(usize, usize)>) {
+        let mut large = Vec::new();
+        let mut lists = Vec::new();
+        for c in &self.chunks {
+            if c.large {
+                large.push(c.base);
+                continue;
+            }
+            for bi in 0..c.claimed as usize {
+                let b = (c.base + bi * BLOCK) as *mut Block;
+                // SAFETY: a claimed block of a live chunk: its header is
+                // initialized, and no reference to it is held.
+                let bb = unsafe { &mut *b };
+                if bb.class != CLASS_NONE && bb.owner != OWNER_EMPTY {
+                    bb.boot = 1;
+                    bb.boot_bump = bb.bump_next;
+                    if !bb.freelist.is_null() {
+                        lists.push((b as usize, bb.freelist as usize));
+                        bb.freelist = std::ptr::null_mut();
+                    }
+                }
+            }
+        }
+        (large, lists)
+    }
+
+    /// End the boot boundary: the boot blocks are ordinary again, their free
+    /// lists given back (after any slot freed meanwhile), before the sweep
+    /// that follows adds to them.
+    pub fn end_boot_blocks(&mut self, lists: &[(usize, usize)]) {
+        for c in &self.chunks {
+            if c.large {
+                continue;
+            }
+            for bi in 0..c.claimed as usize {
+                let b = (c.base + bi * BLOCK) as *mut Block;
+                // SAFETY: as in `mark_boot_blocks`.
+                unsafe { (*b).boot = 0 };
+            }
+        }
+        for &(b, head) in lists {
+            let b = b as *mut Block;
+            // SAFETY: a block `mark_boot_blocks` found, of a chunk no sweep
+            // has released since (the boundary ends before the first sweep);
+            // its free-list entries are free slots whose link words hold the
+            // next link.
+            unsafe {
+                let mut tail = &mut (*b).freelist as *mut *mut u8;
+                while !(*tail).is_null() {
+                    tail = (*tail).add(header::OFF_LINK) as *mut *mut u8;
+                }
+                *tail = head as *mut u8;
+            }
         }
     }
 

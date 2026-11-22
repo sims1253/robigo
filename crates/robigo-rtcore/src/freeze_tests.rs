@@ -8,12 +8,26 @@
 
 use crate::OwnedIsolate;
 
+/// The freeze on for this isolate (`ROBIGO_GC_FREEZE` is off by default),
+/// unless a moving mode leaves it off.
+fn freeze_on(cx: &mut crate::Cx) -> bool {
+    cx.set_freeze_enabled(true);
+    cx.freeze_enabled()
+}
+
+/// The boot boundary, then the collection that freezes (the lazy freeze).
+fn freeze_now(cx: &mut crate::Cx) -> usize {
+    cx.freeze_boot_heap();
+    cx.collect();
+    cx.frozen_count()
+}
+
 #[test]
 #[cfg(not(miri))]
 fn a_frozen_object_with_a_finalizer_dies_after_its_last_reference_goes() {
     let mut iso = OwnedIsolate::new();
     let cx = iso.cx();
-    if !cx.freeze_enabled() {
+    if !freeze_on(cx) {
         // (ROBIGO_GC_MOVE's modes leave the freeze off)
         return;
     }
@@ -32,7 +46,7 @@ fn a_frozen_object_with_a_finalizer_dies_after_its_last_reference_goes() {
         let g = o.root();
         cx.build(o, |cx| cx.new_env(cx.base_env(), true, 0))?;
         cx.define_var(gsym, g, global)?;
-        let n = cx.freeze_boot_heap();
+        let n = freeze_now(cx);
         assert!(n > 0, "the freeze froze nothing");
         assert!(cx.is_frozen(e.bind(cx)), "an environment base binds is frozen");
         assert!(!cx.is_frozen(g.bind(cx)), "the global environment's are not");
@@ -66,7 +80,7 @@ fn a_frozen_object_with_a_finalizer_dies_after_its_last_reference_goes() {
 fn a_frozen_container_does_not_keep_an_unfrozen_object_alive() {
     let mut iso = OwnedIsolate::new();
     let cx = iso.cx();
-    if !cx.freeze_enabled() {
+    if !freeze_on(cx) {
         return;
     }
     cx.scope(|cx, s| {
@@ -79,7 +93,7 @@ fn a_frozen_container_does_not_keep_an_unfrozen_object_alive() {
         let l = o.root();
         cx.build(o, |cx| cx.cons(e.bind(cx), cx.nil()))?;
         cx.define_var(sym, l, base)?;
-        cx.freeze_boot_heap();
+        freeze_now(cx);
         assert!(cx.is_frozen(e.bind(cx)) && cx.is_frozen(l.bind(cx)));
         let nil = cx.nil().sexp();
         // SAFETY: `e` is rooted; the reference is rooted by the collector.
@@ -107,7 +121,7 @@ fn a_frozen_container_does_not_keep_an_unfrozen_object_alive() {
 fn a_global_cache_entry_does_not_freeze_the_global_environment() {
     let mut iso = OwnedIsolate::new();
     let cx = iso.cx();
-    if !cx.freeze_enabled() {
+    if !freeze_on(cx) {
         return;
     }
     cx.scope(|cx, s| {
@@ -121,7 +135,7 @@ fn a_global_cache_entry_does_not_freeze_the_global_environment() {
         let found = o.root();
         cx.find_var(sym, global, o)?;
         assert_eq!(found.bind(cx).sexp(), v.bind(cx).sexp());
-        cx.freeze_boot_heap();
+        freeze_now(cx);
         assert!(!cx.is_frozen(v.bind(cx)), "a value only the global environment binds is not frozen");
         cx.check_frozen();
         Ok::<(), crate::RError>(())
@@ -138,7 +152,7 @@ fn a_global_cache_entry_does_not_freeze_the_global_environment() {
 fn a_search_path_led_back_to_the_global_environment_does_not_freeze_it() {
     let mut iso = OwnedIsolate::new();
     let cx = iso.cx();
-    if !cx.freeze_enabled() {
+    if !freeze_on(cx) {
         return;
     }
     cx.scope(|cx, s| {
@@ -168,7 +182,7 @@ fn a_search_path_led_back_to_the_global_environment_does_not_freeze_it() {
         let before = offered(cx);
         cx.set_enclos(global, e);
         assert_eq!(offered(cx), before, "the walk offers the global environment again");
-        cx.freeze_boot_heap();
+        freeze_now(cx);
         assert!(cx.is_frozen(e.bind(cx)), "the attached environment is a freeze root");
         assert!(!cx.is_frozen(global.bind(cx)), "the global environment is not frozen");
         cx.check_frozen();

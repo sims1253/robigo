@@ -137,6 +137,14 @@ pub trait Visitor {
 /// root set cannot allocate or collect while it is traced.
 pub trait Trace {
     fn trace<V: Visitor + ?Sized>(&mut self, v: &mut V);
+    /// The embedder's freeze roots, a part of [`Trace::trace`]'s (the boot
+    /// heap's lazy freeze, `gc/freeze.rs`, walks from them inside the first
+    /// collection after the boot boundary). Whether there are any: a root
+    /// set without them (every one but the embedder's, by default) shows
+    /// nothing, and the freeze then freezes nothing.
+    fn trace_freeze<V: Visitor + ?Sized>(&mut self, _v: &mut V) -> bool {
+        false
+    }
 }
 
 impl Trace for Sexp {

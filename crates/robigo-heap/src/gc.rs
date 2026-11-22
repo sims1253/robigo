@@ -529,6 +529,12 @@ pub struct Core {
     quarantine: Vec<crate::heap::Chunk>,
     /// `ROBIGO_GC_PIN_REPORT`, `ROBIGO_GC_STRONG_DLL` (`diag.rs`)
     diag: Option<Box<diag::Diag>>,
+    /// `ROBIGO_GC_FREEZE=1` (or [`Core::set_freeze_enabled`]): the boot
+    /// heap's freeze runs. Off by default: then nothing of it runs.
+    freeze_on: bool,
+    /// The boot boundary, between [`Core::freeze_boundary`] and the lazy
+    /// freeze inside the next collection (`freeze.rs`).
+    boot_boundary: Option<Box<freeze::BootBoundary>>,
     /// The boot heap's freeze (`freeze.rs`): the frozen objects, by address.
     frozen: Vec<Sexp>,
     /// Frozen objects to become ordinary at the next collection.
@@ -836,7 +842,19 @@ fn spill_callee_saved(buf: &mut [usize; 12]) {
 /// is empty and unlimited but for `R_MAX_VSIZE`, whose minimum fits them).
 const CONSTANTS: &str = "robigo: cannot allocate R's constants";
 
-/// `ROBIGO_GC_FREEZE_CHECK`'s period: unset or empty is 0 (off), `N` checks
+/// `ROBIGO_GC_FREEZE`: the boot heap's freeze (`gc/freeze.rs`), off by
+/// default (unset, empty or `0`), on with `1`. Anything else is refused.
+fn freeze_from_env() -> bool {
+    match std::env::var("ROBIGO_GC_FREEZE") {
+        Err(std::env::VarError::NotPresent) => false,
+        Ok(v) if v.is_empty() || v == "0" => false,
+        Ok(v) if v == "1" => true,
+        Ok(v) => panic!("robigo: ROBIGO_GC_FREEZE is 1 (the boot heap's freeze on) or 0, not {v:?}"),
+        Err(e) => panic!("robigo: ROBIGO_GC_FREEZE: {e}"),
+    }
+}
+
+/// `ROBIGO_GC_FREEZE_CHECK`'s period (read only with the freeze on): unset or empty is 0 (off), `N` checks
 /// every N-th collection. Anything else is refused, so a typo never turns
 /// the check off unseen.
 fn freeze_check_from_env() -> u32 {
@@ -857,6 +875,7 @@ impl Core {
         // the process's fork handlers, before this heap can take a lock
         crate::fork::register();
         let (stack_lo, stack_top) = thread_stack();
+        let freeze_on = freeze_from_env();
         let mut c = Box::new(Core {
             heap: Heap::new(),
             mark_stack: Vec::new(),
@@ -906,9 +925,11 @@ impl Core {
             young: Box::new(mover::Young::new(mover::policy_from_env().unwrap_or(0))),
             quarantine: Vec::new(),
             diag: diag::Diag::from_env(),
+            freeze_on,
+            boot_boundary: None,
             frozen: Vec::new(),
             pending_unfreeze: Vec::new(),
-            freeze_check: freeze_check_from_env(),
+            freeze_check: if freeze_on { freeze_check_from_env() } else { 0 },
             freeze_check_count: 0,
             freeze_checking: false,
             freeze_reach: Vec::new(),
@@ -2810,6 +2831,11 @@ impl Core {
             // (forwarded objects, `collecting` set): poisoned until both
             // end, so an unwinding panic leaves it set and the heap is
             // never collected again
+            // the lazy freeze (`freeze.rs`): the first collection after the
+            // boot boundary freezes, before anything is marked
+            if self.boot_boundary.is_some() {
+                self.freeze_at_boundary(roots);
+            }
             self.poisoned = true;
             // the batched unfreeze (`freeze.rs`) before anything is marked
             self.unfreeze_pending();
@@ -3501,6 +3527,15 @@ impl Core {
                 r,
                 "robigo gc: due at exit: {pending} bytes since (live {} bytes), over max(32 MiB, 10% live) {over}",
                 st.live_bytes
+            );
+        }
+        if self.freeze_on {
+            let state = if self.boot_boundary.is_some() { ", the boundary drawn, no collection since" } else { "" };
+            let _ = writeln!(
+                r,
+                "robigo gc: the boot heap's freeze (ROBIGO_GC_FREEZE): {} objects frozen, {} bytes{state}",
+                self.frozen.len(),
+                self.frozen_bytes()
             );
         }
         let _ = writeln!(

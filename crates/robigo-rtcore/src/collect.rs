@@ -70,7 +70,7 @@ impl Cx {
         // this heap (writes into roots are owner-checked); no other reference
         // into the core or the roots is live, and the collection reaches
         // nothing of ours (finalizers are only queued).
-        unsafe { iso.core().safepoint(kind, iso.roots_mut()) };
+        unsafe { iso.core().safepoint(kind, &mut iso.gc_roots()) };
         self.flush_gc_report();
         Ok(())
     }
@@ -136,7 +136,7 @@ impl Cx {
             let iso = self.iso();
             // SAFETY: as in `serve_poll`: a collection may run here, with the
             // isolate's roots, while `&mut Cx` has ended every `Ref`.
-            unsafe { iso.core().alloc_rooted(T::SEXPTYPE, n, iso.roots_mut()) }
+            unsafe { iso.core().alloc_rooted(T::SEXPTYPE, n, &mut iso.gc_roots()) }
         };
         self.flush_gc_report();
         match r {

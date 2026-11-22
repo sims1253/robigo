@@ -2,6 +2,9 @@
 # unlocked frame (base's S3 methods table), given a finalizable
 # environment after it, then removed with rm (the removed cell is cleared,
 # as GNU R's RemoveFromList does), or reassigned (the cell overwritten)
+# (with ROBIGO_GC_FREEZE=1 the freeze is the first collection after the
+# boot: this one, so that what follows is stored into frozen objects)
+invisible(gc())
 tbl <- get(".__S3MethodsTable__.", envir = baseenv())
 nms <- ls(tbl, all.names = TRUE)
 old <- mget(nms[1:2], envir = tbl)

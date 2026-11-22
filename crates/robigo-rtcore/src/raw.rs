@@ -85,15 +85,31 @@ impl Cx {
         // SAFETY: as in `Cx::safepoint`: `&mut Cx` has ended every `Ref`,
         // view and slice, so everything still needed is in a root of this
         // isolate; the collection reaches nothing of ours.
-        unsafe { iso.core().collect(iso.roots_mut()) };
+        unsafe { iso.core().collect(&mut iso.gc_roots()) };
         self.flush_gc_report();
     }
 
-    /// Whether the boot heap's freeze runs here (not under ROBIGO_GC_MOVE's
-    /// modes).
+    /// Whether the boot heap's freeze runs here: `ROBIGO_GC_FREEZE=1`, and
+    /// not under ROBIGO_GC_MOVE's modes.
     pub fn freeze_enabled(&self) -> bool {
         // SAFETY: one read of the core.
         unsafe { self.iso().core() }.freeze_enabled()
+    }
+
+    /// Turn the boot heap's freeze on or off before the boot boundary, as
+    /// `ROBIGO_GC_FREEZE` does (the tests' switch).
+    ///
+    /// # Panics
+    /// Once the boundary is drawn or anything is frozen.
+    pub fn set_freeze_enabled(&mut self, on: bool) {
+        // SAFETY: one call on the core, no collection.
+        unsafe { self.iso().core() }.set_freeze_enabled(on)
+    }
+
+    /// How many objects are frozen.
+    pub fn frozen_count(&self) -> usize {
+        // SAFETY: one read of the core.
+        unsafe { self.iso().core() }.frozen_count()
     }
 
     /// Whether `x` is one of the freeze's objects.
@@ -122,31 +138,21 @@ impl Cx {
         unsafe { self.iso().core().remember(x) }
     }
 
-    /// The boot heap's freeze (robigo-heap's `freeze.rs`, and
-    /// docs/ledger/g3/2026-11-21-h-boot-freeze-bar.md): one full collection,
-    /// then every object reachable from the freeze roots (the base
-    /// environment and namespace, the symbols' cells, the namespace
-    /// registry, the `Globals`, the C API's constants) made immortal, the
-    /// global environment and its frame left out. The front end calls it
-    /// once, at the end of the boot. Returns how many objects it froze (0
-    /// under the moving collector's modes, which leave it off).
-    pub fn freeze_boot_heap(&mut self) -> usize {
-        // (decided before the collection, so an ineligible heap pays none)
-        if !self.freeze_enabled() {
-            return 0;
-        }
-        self.collect();
+    /// The boot heap's freeze (robigo-heap's `freeze.rs`,
+    /// docs/ledger/g3/2026-11-21-h-boot-freeze-bar.md and its amendments),
+    /// when `ROBIGO_GC_FREEZE=1` turns it on: the boot boundary, drawn by
+    /// the front end once, at the end of the boot. Only the boot's blocks
+    /// are marked here; the first collection after it freezes every boot
+    /// object reachable from the freeze roots (the base environment and
+    /// namespace, the symbols' cells, the namespace registry, the
+    /// `Globals`, the C API's constants), the global environment and its
+    /// frame left out. Nothing when the freeze is off (the default) or
+    /// under the moving collector's modes.
+    pub fn freeze_boot_heap(&mut self) {
         let iso = self.iso();
         let global = iso.envs().global_raw();
-        struct FreezeRoots<'a>(&'a mut crate::isolate::Roots);
-        impl robigo_heap::Trace for FreezeRoots<'_> {
-            fn trace<V: robigo_heap::Visitor + ?Sized>(&mut self, v: &mut V) {
-                self.0.trace_freeze_roots(v);
-            }
-        }
-        // SAFETY: as for `collect`: `&mut Cx` ended every `Ref`, and the
-        // freeze roots are a part of the isolate's precise roots.
-        unsafe { iso.core().freeze(&mut FreezeRoots(iso.roots_mut()), |x| x == global) }
+        // SAFETY: one call on the core, no collection: it marks blocks.
+        unsafe { iso.core() }.freeze_boundary(global.addr());
     }
 
     /// Move every movable object at every collection from now on, or stop
@@ -257,7 +263,7 @@ impl Cx {
             let iso = self.iso();
             // SAFETY: as in `Cx::alloc_rooted`: a collection may run here,
             // with the isolate's roots, while `&mut Cx` has ended every `Ref`.
-            unsafe { iso.core().alloc_rooted(t, n, iso.roots_mut()) }
+            unsafe { iso.core().alloc_rooted(t, n, &mut iso.gc_roots()) }
         };
         self.flush_gc_report();
         r.map_err(|e| self.error_call(None, &e.message()))

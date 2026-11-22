@@ -60,3 +60,56 @@ Each number below is beside its value before #942. Collector totals are callgrin
 - **Carried into the pass PR, retaken on its head and not here:**
   - The unfreeze count and the cliff were measured with the compiler outside the frozen set. With it frozen, part of H's L5 condition is due now for the compiler's namespace: anything in the conformance or in the pinned packages that puts a finalizer or a weak reference on it, or on what only it reaches.
   - The dirty-event counts for forced promises now include the compiler's lazy-load promises.
+
+### The freeze is lazy and off by default (the foreman's decision, 2026-11-22)
+
+**Why.** The eager freeze above (one full collection, then the walk, at the end of every boot) cost every start, and no gate measured that. Main 9b812ab47 against 380ab42ce, `--vanilla -e 1`, `R_DEFAULT_PACKAGES=NULL`:
+
+| | main | the eager freeze | its cost | peak RSS |
+|---|---|---|---|---|
+| interim loader | 15.41M | 23.62M (+53%) | 8.12M | 9.7 → 10.1 MB |
+| rdb boot, JIT on | 100.71M | 166.59M (+65%) | 66.12M | 15.4 → 20.7 MB |
+| rdb boot, JIT off | 53.21M | 85.38M (+60%) | 32.47M | 13.3 → 16.0 MB |
+
+Main makes no collection on that script, so the freeze point's collection replaced nothing. Under the rdb boot with the JIT on, the 66.12M splits into:
+- the referrer thaw at the freeze's end (`thaw_with_referrers`, Sol S3): 39.43M, 60%;
+- sorting the frozen list for `is_frozen_at`: 6.05M, 9%;
+- the collection: 5.04M, 8%;
+- the walk that sets the flags, and the logging: about 15.6M, 24%.
+
+**What changed.**
+- **`ROBIGO_GC_FREEZE=1` turns the freeze on.** Unset, empty or `0`, the default, it is off, and none of it runs. `ROBIGO_GC_FREEZE_CHECK` is read only with the freeze on. The default flips in the frozen-reachability pass PR, when the four clauses of (e) below hold with the pass in, measured on its head, together with case (d) ratcheted and the pass's own bar.
+- **"The freeze point" is now two moments:**
+  - **The boot boundary,** at the end of the boot, where the eager freeze ran (after `R_init_jit_enabled`). It only marks the blocks that hold objects as boot blocks: O(blocks), no object visited. Each records its bump position and sets its free list aside, so an object allocated afterwards is carved above that position or in another block. Large chunks are listed by base.
+  - **The freeze,** inside the first collection after the boundary, before it marks. It freezes every boot object reachable from the freeze roots. An object allocated after the boundary is not frozen: it stays ordinary, and a frozen object that points to it is logged. Then the boot blocks' free lists are given back, before that collection's sweep adds to them.
+- **Why the boundary exists:** without it, the first collection would also freeze what the session stored under the freeze roots before then. `options(x = <1e8 doubles>)` followed by `options(x = NULL)` would keep the 800 MB for the session (until the pass). With it, the frozen set is "boot-allocated, and still reachable from the freeze roots at the first collection", so boot objects that died before that collection are collected as usual.
+- **A first boundary that retired the allocation blocks** (every class starting a fresh block) cost +5% of the interim loader's peak RSS at start. Keeping the blocks in use, with the bump mark and the free lists set aside, removed it.
+- **The leak rule, (d) and the `SetOption` warning above** apply to the mode (`ROBIGO_GC_FREEZE=1`), not to the default.
+- **The four frozen-garbage cases** now begin with `invisible(gc())`, so that with the freeze on, what follows is stored into frozen objects. GNU R 4.6.2's output is unchanged (re-recorded: only the `.Rsha` files changed).
+  - `freeze-garbage-detach.R` matches with the freeze off and differs with it on. It stays unratcheted, because the freeze-on steps would fail on a marker.
+  - Without the initial `gc()`, the lazy freeze would run at the case's own `gc()`. The freeze's referrer thaw then makes Autoloads ordinary (it reaches the finalizer's key through the new binding), so the case passed without testing anything.
+- **CI runs the switch on** in:
+  - the freeze's own tests (they turn it on: `set_freeze_enabled`);
+  - the crates' gctorture step (check at every collection);
+  - E3 (check at every 16th);
+  - the nightly's every-collection run;
+  - one conformance step under each boot with the freeze on and its check off: the mode users would turn on. Those two steps add about 0.3 min to `modes` (CI's plain conformance step takes 0.15 min).
+- **`ROBIGO_GC_STATS`'s report** names the frozen set's objects and bytes.
+
+**(e) amended, signed by the foreman:**
+
+> **Cost, judged with the freeze on.** `--vanilla -e 1`'s total instructions and peak RSS are within 1% of main's under the interim loader and under the rdb boot with the JIT on and off. With `young.R` under the rdb boot, the collector's cost per collection after the first is within 10% of the interim loader's per collection on main. The first collection, the one that freezes, costs at most twice main's first collection under the same boot. `young.R`'s collector total, the first collection included, is reported beside main's.
+
+**Measured on the lazy freeze** (this PR's last commit; release binaries of it and of main 9b812ab47; callgrind instructions; peak RSS the median of 21 runs, interleaved):
+
+| clause | interim loader | rdb, JIT on | rdb, JIT off |
+|---|---|---|---|
+| `--vanilla -e 1`, freeze off, against main | +0.17% (15.43M / 15.40M); RSS +0.3% | −0.16% (100.72M / 100.88M); RSS −1.1% | −0.07% (53.17M / 53.21M); RSS −1.4% |
+| `--vanilla -e 1`, freeze on, against main: **holds** | +0.19% (15.43M); RSS +0.8% | −0.12% (100.76M); RSS −1.2% | −0.05% (53.18M); RSS −1.4% |
+| per collection after the first (`young.R` after a freezing `gc()`), against the interim loader's 2.45M on main: **holds** | 2.07M | **2.30M (−6%)** | 2.08M |
+| the first collection (`invisible(gc())` alone), against main's: **does not hold** (at most 2×) | 8.11M against 0.78M (10.4×) | **63.55M against 5.06M (12.6×)** | 31.22M against 2.78M (11.2×) |
+| `young.R`'s collector total, reported | 18.45M (main 12.35M) | 74.61M (main 29.23M) | 41.22M (main 19.09M) |
+| frozen set | 5,288 objects, 270 KB | 42,395 objects, 2.48 MB | 20,504 objects, 1.16 MB |
+
+- **The freeze off is not instruction-identical to main.** It is within 0.2% either way, the branch's other code included. With the freeze off, the startup runs none of the freeze's functions: one more environment variable read, `ROBIGO_GC_FREEZE`, and a call that returns.
+- **The first-collection clause fails, as the foreman expected:** that collection pays the referrer thaw and the sort, which the pass PR removes by design. If it still fails with both gone, the walk's cost and folding the walk into that collection's marking go to the foreman before any build.

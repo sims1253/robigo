@@ -114,6 +114,11 @@ CONFORMANCE = "rt_conformance"
 PIN_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-pin-report-{os.getpid()}.txt")
 
 
+# the boot heap's freeze, off by default (robigo-heap's freeze.rs): on in
+# its checked steps and in its own conformance steps
+FREEZE_ON = {"ROBIGO_GC_FREEZE": "1"}
+
+
 # where the freeze's check writes a failure (appended to by every process):
 # a step with a line in it fails, whatever the case's own output (an
 # unratcheted case's panic would otherwise pass: Sol r7 S14)
@@ -363,7 +368,7 @@ def freeze_check_steps():
         # (the tools cases need the tree: without it they skip, Sol r7 S13)
         ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", {}, ["scripts/rt-home.sh"]),
         ("conformance under gctorture, the freeze checked at every collection",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_FREEZE_CHECK": "1", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
+         {"ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "1", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
           **SLOW, "ROBIGO_CONF_TIMEOUTS": case_timeouts(FREEZE_CHECK_SLOW)},
          conformance_command()),
     ])
@@ -422,6 +427,12 @@ def steps(crates):
          {"ROBIGO_RT_BOOT": "rdb", "ROBIGO_BC_CROSSCHECK": "1", "ROBIGO_BC_CROSSCHECK_REPORT": BC_REPORT_RDB},
          conformance),
         ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {}, conformance),
+        # the boot heap's freeze as users turn it on (ROBIGO_GC_FREEZE=1, off
+        # by default until the frozen-reachability pass: the ledger's
+        # 2026-11-21-h-boot-freeze-check.md), under each boot, its check off
+        ("conformance with the boot heap's freeze on (ROBIGO_GC_FREEZE=1)", FREEZE_ON, conformance),
+        ("conformance under the rdb boot with the boot heap's freeze on (ROBIGO_RT_BOOT=rdb, ROBIGO_GC_FREEZE=1)",
+         {"ROBIGO_RT_BOOT": "rdb", **FREEZE_ON}, conformance),
         # docs/g3.md §15.3 E5: the same cases and recordings under each
         # observation mode, but those whose `.requires` names the identity
         # the mode gives up (robigo-conformance's KNOWN_FEATURES)
@@ -440,14 +451,14 @@ def steps(crates):
         # checked at every collection here, where every allocation collects
         # (the move modes below leave the freeze off)
         ("gctorture (collect at every allocation) and the GC stats check",
-         {**TREE_RUNS, **{"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check", "ROBIGO_GC_FREEZE_CHECK": "1"}},
+         {**TREE_RUNS, **{"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "1"}},
          [*crate, *pkgs, *skip]),
         # docs/g3.md §15.3 E3: the rt slice under the collector modes. The
         # freeze's check at every 16th collection: at every one it traces
         # the heap twice per allocation (tests/rt/bytecode/jit.R: 536 s
         # against 97 s without it, past the case timeout; about 1.3x at 16)
         ("conformance under gctorture (E3)",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_FREEZE_CHECK": "16", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
+         {"ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "16", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
           **slow, "ROBIGO_CONF_TIMEOUTS": case_timeouts(GCTORTURE_FIRST)}, conformance),
         # every argument a PROMSXP at call entry (GNU R's representation,
         # through the same binding-kind transitions): docs/g3.md §16's
@@ -569,9 +580,10 @@ OWN_STEPS = ("debug-assertions", "release-crate-tests")
 # timeout (scripts/test-rt-ci.py pins the three relations). When a warning
 # fires, rebalance or remeasure: the dates say how old each measurement is.
 BUDGETS = {  # shard: (budget, measured minutes, where measured)
-    "modes": (9, 7.11, "2026-11-21, run 44927530340 (#952): 6.49, the two rdb-boot steps' estimated 0.5, and "
-              "#959's estimated 0.12 (its freeze check at every collection in the crates' gctorture step: "
-              "about 1.27x of that step's 0.45, H's measurement)"),
+    "modes": (9, 7.41, "2026-11-21, run 44927530340 (#952): 6.49, the two rdb-boot steps' estimated 0.5, and "
+              "#959's estimated 0.42 (its freeze check at every collection in the crates' gctorture step: "
+              "about 1.27x of that step's 0.45, H's measurement; and its two freeze-on conformance steps, "
+              "about the plain conformance's 0.15 each)"),
     # the plain gctorture conformance moves into modes if GCTORTURE_FIRST
     # does not bring this back near 15 minutes
     "gctorture": (27, 21.87, "2026-11-21, run 44927530340 (#952): 20.62 before GCTORTURE_FIRST, and #959's "
