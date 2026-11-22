@@ -199,6 +199,14 @@ pub trait Trace {
     fn trace_freeze<V: Visitor + ?Sized>(&mut self, _v: &mut V) -> bool {
         false
     }
+    /// The search path's environments, a part of [`Trace::trace_freeze`]'s:
+    /// the frozen-reachability pass compares their frozen members at a
+    /// collection after an ENCLOS was written (`gc/freeze.rs`). The freeze
+    /// roots' own walk of the search path must be this one. Whether there
+    /// is one: none by default.
+    fn trace_search_path<V: Visitor + ?Sized>(&mut self, _v: &mut V) -> bool {
+        false
+    }
 }
 
 impl Trace for Sexp {

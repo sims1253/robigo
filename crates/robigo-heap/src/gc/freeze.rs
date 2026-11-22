@@ -421,7 +421,7 @@ impl Core {
             if x.flags() & (flags::IMMORTAL | flags::BARRIER) == flags::IMMORTAL | flags::BARRIER
                 && !crate::shared::is_shared(x)
             {
-                super::barrier_only(x);
+                super::log_once(x);
             }
         }
     }

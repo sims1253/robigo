@@ -589,20 +589,69 @@ pub struct Core {
 #[cold]
 #[inline(never)]
 pub(crate) unsafe fn store_slow(x: Sexp, slot: *mut Sexp, v: Sexp) {
-    // SAFETY: the caller's contract (`Sexp::store`'s).
+    // SAFETY: the caller's contract (`Sexp::store`'s): the old value is
+    // null or live.
     unsafe {
-        barrier_slow(x);
+        if x.flags() & flags::FROZEN != 0 {
+            note_overwritten(*slot);
+        }
+        if x.flags() & flags::BARRIER != 0 {
+            barrier_slow(x);
+        } else if crate::shared::is_shared(x) {
+            shared_store();
+        }
         x.store_counted(slot, v);
     }
 }
 
-/// The barrier of [`crate::Sexp::store_uncounted`].
+/// The barrier of [`crate::Sexp::store_uncounted`]. Its old word may hold
+/// raw bits (an argument alias's slot), so it is not read: a store into a
+/// frozen object through it is noted as dirty whatever it overwrites.
 ///
 /// # Safety
 /// As for [`store_slow`].
+#[cold]
+#[inline(never)]
 pub(crate) unsafe fn barrier_only(x: Sexp) {
     // SAFETY: the caller's contract.
+    unsafe {
+        if x.flags() & flags::FROZEN != 0 {
+            (*remembered_of(x.0)).note(Remembered::DIRTY);
+        }
+        if x.flags() & flags::BARRIER != 0 {
+            barrier_slow(x);
+        } else if crate::shared::is_shared(x) {
+            shared_store();
+        }
+    }
+}
+
+/// Log `x` once in its heap's remembered set (C's first writable `DATAPTR`
+/// of a frozen vector of objects: `Core::remember`).
+///
+/// # Safety
+/// As for [`store_slow`]; `x` has `BARRIER`.
+pub(crate) unsafe fn log_once(x: Sexp) {
+    // SAFETY: the caller's contract.
     unsafe { barrier_slow(x) }
+}
+
+/// A frozen value `old` was overwritten (in a frozen object, or in a freeze
+/// root: a base binding, a `Globals` slot): an edge left the frozen graph,
+/// so the next collection runs the frozen-reachability pass. Nothing for
+/// any other value (an ordinary or immortal one removes no frozen edge).
+///
+/// # Safety
+/// `old` is null or a live object.
+#[inline]
+pub unsafe fn note_overwritten(old: Sexp) {
+    // SAFETY: the caller's contract; a frozen object is in a block or large
+    // chunk of its heap, whose header names its remembered set.
+    unsafe {
+        if !old.is_null() && old.flags() & flags::FROZEN != 0 {
+            (*remembered_of(old.0)).note(Remembered::DIRTY);
+        }
+    }
 }
 
 #[cold]
@@ -936,7 +985,7 @@ impl Core {
             weak_refs: Vec::new(),
             finalizers_pending: false,
             releases: Vec::new(),
-            remembered: Box::new(Remembered(Default::default())),
+            remembered: Box::new(Remembered(Default::default(), Default::default())),
         });
         // every block and large chunk header points at the log, before the
         // first allocation makes one
