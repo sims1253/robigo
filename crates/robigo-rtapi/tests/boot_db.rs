@@ -397,8 +397,16 @@ fn a_start_falls_back_silently_without_a_valid_translation_cache() {
     }
     let (out, err, st) = run();
     assert_eq!((out.as_str(), st, hits(&err)), ("55 \n", Some(0), 0), "stale: {err}");
-    // unreadable (not to root, which reads a file of mode 000: CI's
-    // containers run the tests as root)
+    // unreadable, everywhere: a directory where each file is (its read
+    // fails with EISDIR, to root as to anyone; CI's containers run as root)
+    std::fs::remove_dir_all(&mine).unwrap();
+    std::fs::create_dir_all(&mine).unwrap();
+    for f in ["base.rtc", "compiler.rtc"] {
+        std::fs::create_dir(mine.join(f)).unwrap();
+    }
+    let (out, err, st) = run();
+    assert_eq!((out.as_str(), st, hits(&err)), ("55 \n", Some(0), 0), "unreadable (a directory): {err}");
+    // and a file of mode 000, where that is unreadable (not to root)
     // SAFETY: geteuid has no preconditions.
     if unsafe { libc::geteuid() } != 0 {
         std::fs::remove_dir_all(&mine).unwrap();
@@ -407,12 +415,10 @@ fn a_start_falls_back_silently_without_a_valid_translation_cache() {
             std::fs::set_permissions(mine.join(f), std::fs::Permissions::from_mode(0o000)).unwrap();
         }
         let (out, err, st) = run();
-        assert_eq!((out.as_str(), st, hits(&err)), ("55 \n", Some(0), 0), "unreadable: {err}");
+        assert_eq!((out.as_str(), st, hits(&err)), ("55 \n", Some(0), 0), "unreadable (mode 000): {err}");
         for f in ["base.rtc", "compiler.rtc"] {
             std::fs::set_permissions(mine.join(f), std::fs::Permissions::from_mode(0o644)).unwrap();
         }
-    } else {
-        eprintln!("running as root: the unreadable-cache case is skipped (root reads a file of mode 000)");
     }
     // absent
     std::fs::remove_dir_all(&mine).unwrap();
