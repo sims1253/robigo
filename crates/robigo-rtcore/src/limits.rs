@@ -250,16 +250,10 @@ impl Cx {
     /// `Ok` when a handler invoked the `resume` restart.
     pub fn check_user_interrupt(&mut self) -> RResult<()> {
         self.check_c_stack()?;
-        let st = self.ctxs();
-        // handleInterrupt's R_interrupts_pending = 1, from the signal
-        if SIGINT.load(Ordering::Relaxed) && SIGINT.swap(false, Ordering::Relaxed) {
-            st.intr_pending.set(true);
-        }
         // R: errors.c:R_CheckUserInterrupt, onintrEx
-        if st.intr_suspended.get() || !st.intr_pending.get() {
+        if !self.take_user_interrupt() {
             return Ok(());
         }
-        st.intr_pending.set(false);
         let hook = self.iso().hooks.get().interrupt;
         hook(self)
     }
@@ -268,8 +262,10 @@ impl Cx {
     /// [`Cx::set_interrupt_pending`]) unless interrupts are suspended,
     /// without running the hook: true when there was one. The console's
     /// read takes it so (sys-std.c's `handleInterrupt`, `onintrNoResume`).
+    #[inline]
     pub fn take_user_interrupt(&mut self) -> bool {
         let st = self.ctxs();
+        // handleInterrupt's R_interrupts_pending = 1, from the signal
         if SIGINT.load(Ordering::Relaxed) && SIGINT.swap(false, Ordering::Relaxed) {
             st.intr_pending.set(true);
         }

@@ -11,20 +11,18 @@ use robigo_rtcore::{Args, Char, Cx, Encoding, Lgl, Out, RResult, Ref, Root};
 
 /// The session's `R_Interactive`, which the front end sets
 /// ([`set_interactive`]) as `Rf_initialize_R` computes it; FALSE until then.
-pub struct Interactive(pub std::cell::Cell<bool>);
+struct Interactive(bool);
 
 /// Whether R is interactive (`R_Interactive`).
 pub fn interactive(cx: &Cx) -> bool {
-    cx.ext::<Interactive>().is_some_and(|i| i.0.get())
+    cx.ext::<Interactive>().is_some_and(|i| i.0)
 }
 
 /// Set `R_Interactive` (the front end, from `--interactive`, a terminal
 /// on stdin, and a FILE or `-e`, as unix/system.c's `Rf_initialize_R`).
 pub fn set_interactive(cx: &mut Cx, on: bool) {
-    match cx.ext::<Interactive>() {
-        Some(i) => i.0.set(on),
-        None => cx.set_ext(Interactive(std::cell::Cell::new(on))),
-    }
+    // (set_ext replaces the state of its type)
+    cx.set_ext(Interactive(on));
 }
 
 /// `interactive()`: `R_Interactive`.

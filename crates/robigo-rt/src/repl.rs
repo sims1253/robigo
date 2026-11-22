@@ -430,7 +430,7 @@ fn read_console(cx: &mut Cx, input: &mut Input<'_>, prompt_type: i32) -> RResult
         && let Input::Stdin(r) = input
         && !r.buffered()
         && !r.eof
-        && r_wait(cx)?
+        && r_wait(cx)
     {
         return Ok(Read::Reset);
     }
@@ -464,16 +464,16 @@ fn read_console(cx: &mut Cx, input: &mut Input<'_>, prompt_type: i32) -> RResult
 /// came while it waited, taken (`onintrNoResume`) and landed at the top
 /// level; false when input (or its end) is there to read.
 // R: unix/sys-std.c:Rstd_ReadConsole, R_checkActivityEx, handleInterrupt
-fn r_wait(cx: &mut Cx) -> RResult<bool> {
+fn r_wait(cx: &mut Cx) -> bool {
     // (a SIGINT noted before the wait, or during it; the check and the
     // wait leave no gap between them)
     match robigo_rtcore::clib::wait_readable_or(0, || cx.take_user_interrupt()) {
         Ok(true) => {
             interrupt_at_top(cx);
-            Ok(true)
+            true
         }
         // (a read error: fgets's NULL, the end, follows)
-        Ok(false) | Err(_) => Ok(false),
+        Ok(false) | Err(_) => false,
     }
 }
 
