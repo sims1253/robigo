@@ -767,8 +767,10 @@ fn a_package_altrep_index_matrix_is_not_implemented_yet() {
 
 /// Byte code whose constants are a package ALTREP list translates without
 /// reading them where its instructions do not (`LDNULL; RETURN`): the
-/// translator's pool sizing reads a plain list's length only, never an
-/// ALTREP one's header (whose length is its class's Length method).
+/// translator reads a constant only where an instruction names it, never the
+/// list's length from its header (an ALTREP list's is its class's Length
+/// method). A guard against a constants-pool capacity hint, which a review
+/// found unsafe for NULL, ALTREP and long lists, and which was dropped.
 #[test]
 fn byte_code_with_altrep_constants_translates() {
     for p in PROFILES {
