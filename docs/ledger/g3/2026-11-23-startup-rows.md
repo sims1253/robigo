@@ -36,32 +36,48 @@ read the plan first.
     | rdb, JIT on | 0.13% (92.47M–92.59M) |
     | rdb, JIT off | 0.13% |
 
-  - **peak anonymous memory:** Linux keeps a high-water mark of the whole
-    RSS (VmHWM) but none of its anonymous part, and a 20 ms start is too
-    short to sample /proc. The process is stopped at its exit by ptrace
-    (`PTRACE_EVENT_EXIT`, before the kernel tears its memory down), and the
-    peak is VmHWM less the file-backed and shared pages mapped there.
-    - The file-backed pages are the binary's and libraries'. They stay
-      mapped and only grow, so the difference is the anonymous part at the
-      moment of the total peak; a page faulted in after the peak makes it
-      read low, never high.
-    - RssAnon itself is no measure at the exit stop: robigo-rt has freed
-      most of its heap by then (1.3–1.7 MB left of a 4.6–6.8 MB peak).
-  - **peak RSS:** VmHWM at the exit stop.
+  - **peak anonymous memory**, exactly:
+    - Linux keeps a high-water mark of the whole RSS (VmHWM) but none of
+      its anonymous part, and a 20 ms start is too short to sample /proc.
+    - Anonymous memory grows only by page faults and shrinks only by system
+      calls (munmap, madvise, brk, mremap, exit). So the child is stopped at
+      every system call under ptrace (`PTRACE_SYSCALL`) and its RssAnon read
+      there; the largest reading is the peak.
+    - A start makes a few thousand system calls; the stops cost well under
+      a second per run.
+    - Two readings were tried and rejected first:
+      - RssAnon at the exit stop is no measure, because robigo-rt has freed
+        most of its heap by then (1.3–1.7 MB left).
+      - VmHWM less the file-backed pages at exit reads high when file pages
+        are reclaimed or unmapped after the peak (Sol, round 1).
+
+      The exact peak is above both (main's interim 1,884 KiB against 1,548
+      by the second).
+  - **peak RSS:** VmHWM at the exit stop (`PTRACE_EVENT_EXIT`, before the
+    kernel tears the memory down), from separate runs stopped only there.
+    The system-call stops change which file pages are faulted in: VmHWM
+    spread up to 7% under them, and repeats without them.
 - **Address randomization is off** for the measured child
   (`personality(ADDR_NO_RANDOMIZE)`, as `setarch -R`). With it on, the
-  readings spread widely over 15 runs of one binary; with it off, they were
-  identical across runs:
+  readings spread widely (the older VmHWM-less-file reading over 15 runs of
+  one binary: interim 13.6%, rdb JIT on 5.3%, rdb JIT off 4.7%). With it
+  off and the method above, main 90cab787a's 15 runs of each kind gave:
 
-  | start | anonymous, randomization on | anonymous, off | peak RSS, off |
-  |---|---:|---:|---:|
-  | interim | 1,456–1,668 KiB (13.6%) | 1,504 every run | 9,828 every run |
-  | rdb, JIT on | 6,400–6,752 KiB (5.3%) | 6,624 every run | 15,440 every run |
-  | rdb, JIT off | 4,340–4,548 KiB (4.7%) | 4,428, one run 4,192 | 13,224, one run 12,988 |
+  | start | anonymous peak | peak RSS |
+  |---|---:|---:|
+  | interim | 1,884 KiB every run | 9,228–9,336 KiB |
+  | rdb, JIT on | 6,928 KiB every run | 15,372 KiB every run |
+  | rdb, JIT off | 4,632 KiB every run | 13,068 KiB every run |
 
-  GNU R's starts behaved the same way. The reading is the median of 9 runs
-  (`--startup-runs`). The child fails loudly if the kernel refuses the
-  personality; perf-rt's container runs with `seccomp=unconfined`.
+  Each number is the median of `--startup-runs` runs (default 9) of its
+  kind. The child fails loudly if the kernel refuses the personality;
+  perf-rt's container runs with `seccomp=unconfined`.
+- **The harness's own safety** (Sol, round 1):
+  - the child's output goes to a temporary file, never a pipe, so a start
+    that prints much cannot block before its exit;
+  - the parent's side is in `try/finally`, which kills and reaps a child
+    still traced on any exception;
+  - a main or GNU R record without one of the three numbers is not judged.
 - **The gate against main's binary** (the foreman's decision):
   - instructions +0.5%, as the rows;
   - peak anonymous memory +1%, at least 64 KiB;
@@ -79,21 +95,25 @@ read the plan first.
 
 ### Numbers
 
-Local, the dense-tables binary (#974) against main 90cab787a, by
-`perf.py rt-bars`, 0 failures:
+The dense-tables binary (#974) against main 90cab787a by `perf.py rt-bars`,
+0 failures; measured with the earlier anonymous reading, the instructions
+and the change being what the method change leaves as they were:
 
-| start | instructions | main | anon KiB | main | peak RSS KiB | main |
-|---|---:|---:|---:|---:|---:|---:|
-| interim | 15,431,037 | 15,437,814 | 1,548 | 1,548 | 9,416 | 9,732 |
-| rdb-jit | 92,591,129 | 95,330,880 | 6,708 | 6,796 | 15,296 | 15,620 |
-| rdb-nojit | 49,985,536 | 50,830,497 | 4,364 | 4,492 | 12,888 | 13,316 |
+| start | instructions | main | change |
+|---|---:|---:|---:|
+| interim | 15,431,037 | 15,437,814 | −0.04% |
+| rdb-jit | 92,591,129 | 95,330,880 | −2.87% |
+| rdb-nojit | 49,985,536 | 50,830,497 | −1.66% |
+
+Main 90cab787a by the final method: the table above (anonymous peak and
+peak RSS), with instructions 15,434,183, 95,327,128 and 50,828,824.
 
 GNU R 4.6.2, the local build (`rt-startup.py --gnur`):
 
 | start | instructions | anon KiB | peak RSS KiB |
 |---|---:|---:|---:|
-| JIT on | 87,633,417 | 10,048 | 22,420 |
-| JIT off | 55,066,604 | 6,796 | 19,168 |
+| JIT on | 87,633,359 | 10,056 | 22,452 |
+| JIT off | 55,066,605 | 6,804 | 19,200 |
 
 ## The heap-shift median for allocating rows
 
@@ -121,9 +141,13 @@ GNU R 4.6.2, the local build (`rt-startup.py --gnur`):
 ## Tests
 
 `scripts/test-rt-startup.py`, run by perf-rt before the bars:
+- `memory()` on small programs:
+  - a 2 MB output comes back whole and does not block the child;
+  - 64 MB touched and freed before exit still reads as the peak;
+  - an exit status comes back and no child is left;
 - the gate's three limits at and over their edges, including the
   anonymous floor;
-- that a start main lacks is not judged;
+- that a start main lacks, wholly or in part, is not judged;
 - that the reserved starts refuse to run;
 - the table;
 - the allocator count from callgrind's compressed names.

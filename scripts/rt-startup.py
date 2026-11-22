@@ -23,19 +23,17 @@ row's count over its heap shifts, below).
 
 **Anonymous memory.** Linux keeps a high-water mark of the whole RSS
 (VmHWM) but none of its anonymous part, and a 20 ms start is too short to
-sample /proc. The process is stopped at its exit, before the kernel tears
-its memory down (ptrace's PTRACE_EVENT_EXIT), and the peak anonymous memory
-is VmHWM less the file-backed and shared pages mapped there. RssAnon itself
-is no measure at that point: robigo-rt has freed most of its heap by then
-(1.3-1.7 MB left of a 4.6-6.8 MB peak). The file-backed pages are the
-binary's and its libraries', which stay mapped and only grow, so the
-difference is the anonymous part at the moment of the total peak; a page
-faulted in after the peak makes it read low, never high
-(docs/ledger/g3/2026-11-23-startup-rows.md has the spread).
+sample /proc. Anonymous memory grows only by page faults and shrinks only by
+system calls, so the process is stopped at each system call under ptrace and
+its RssAnon read there: the largest reading is the peak, exactly (memory()).
+Peak RSS (VmHWM) comes from other runs, stopped only at their exit: the
+system-call stops move it by up to 7%.
 The file-backed part of the RSS is the binary's and its libraries' pages,
 faulted in around the code that ran. It follows code layout (#959: 45.8 KB
-more code, +0.2–0.4 MB of RSS, anonymous memory unchanged), so it is
-reported but gated loosely.
+more code, +0.2–0.4 MB of RSS, anonymous memory unchanged), so peak RSS is
+reported but gated loosely. Address randomization is off for the measured
+process (personality(ADDR_NO_RANDOMIZE), as setarch -R): with it on, the
+pages a start touches vary by run.
 
 **Environment shifts.** A start's instruction count can follow the
 process's initial heap and stack, which the environment's size moves, as
@@ -83,8 +81,8 @@ ANON_LIMIT = 1.0
 ANON_FLOOR_KIB = 64
 RSS_LIMIT = 5.0
 
-PTRACE_TRACEME, PTRACE_CONT, PTRACE_SETOPTIONS = 0, 7, 0x4200
-PTRACE_O_TRACEEXIT, PTRACE_EVENT_EXIT = 0x40, 6
+PTRACE_TRACEME, PTRACE_CONT, PTRACE_SYSCALL, PTRACE_SETOPTIONS = 0, 7, 24, 0x4200
+PTRACE_O_TRACESYSGOOD, PTRACE_O_TRACEEXIT, PTRACE_EVENT_EXIT = 0x1, 0x40, 6
 # personality(2)'s flag that turns address-space randomization off (setarch -R)
 ADDR_NO_RANDOMIZE = 0x0040000
 libc = ctypes.CDLL(None, use_errno=True)
@@ -109,62 +107,76 @@ def status_kib(pid):
     return out
 
 
-def memory(cmd, env):
-    """(peak anonymous KiB, VmHWM KiB, exit status, stdout) of one run of
-    `cmd`, stopped at PTRACE_EVENT_EXIT to read /proc: the anonymous peak
-    is VmHWM less the file-backed and shared pages still mapped there."""
-    r, w = os.pipe()
-    pid = os.fork()
-    if pid == 0:
-        try:
-            os.close(r)
-            os.dup2(w, 1)
-            fd = os.open(os.devnull, os.O_WRONLY)
-            os.dup2(fd, 2)
-            ptrace(PTRACE_TRACEME, 0)
-            # one layout for every run: with randomized addresses the pages a
-            # start touches, and so its peak RSS, vary by run
-            if libc.personality(ADDR_NO_RANDOMIZE) == -1:
-                os.write(w, b"rt-startup: personality(ADDR_NO_RANDOMIZE) refused\n")
-                os._exit(126)
-            os.execve(cmd[0], cmd, env)
-        finally:
-            os._exit(127)
-    os.close(w)
-    # the stop at exec
-    _, st = os.waitpid(pid, 0)
-    if not os.WIFSTOPPED(st):
-        msg = os.read(r, 4096).decode(errors="replace").strip()
-        raise SystemExit(f"rt-startup: {cmd[0]} did not start under ptrace" + (f": {msg}" if msg else ""))
-    ptrace(PTRACE_SETOPTIONS, pid, PTRACE_O_TRACEEXIT)
-    ptrace(PTRACE_CONT, pid)
-    seen = None
-    chunks = []
-    os.set_blocking(r, False)
-    while True:
-        try:
-            while (b := os.read(r, 65536)):
-                chunks.append(b)
-        except BlockingIOError:
-            pass
+def memory(cmd, env, syscalls=True):
+    """(peak anonymous KiB, peak RSS KiB, exit status, stdout) of one run of
+    `cmd` under ptrace.
+
+    Anonymous memory grows only by page faults and shrinks only by system
+    calls (munmap, madvise, brk, mremap, exit). So with `syscalls` the child
+    is stopped at every system call (PTRACE_SYSCALL) and its RssAnon read
+    there: the largest reading is the peak. Peak RSS is VmHWM, read at the
+    exit stop (PTRACE_EVENT_EXIT, before the kernel tears the memory down);
+    take it from a run without `syscalls`, whose stops do not change which
+    file pages are faulted in (measure()). Only the thread that runs `cmd`
+    is traced: robigo-rt's and GNU R's starts start no other."""
+    out = tempfile.TemporaryFile()
+    pid = None
+    try:
+        pid = os.fork()
+        if pid == 0:
+            try:
+                os.dup2(out.fileno(), 1)
+                fd = os.open(os.devnull, os.O_WRONLY)
+                os.dup2(fd, 2)
+                ptrace(PTRACE_TRACEME, 0)
+                # one layout for every run: with randomized addresses the pages
+                # a start touches, and so its peak RSS, vary by run
+                if libc.personality(ADDR_NO_RANDOMIZE) == -1:
+                    os._exit(126)
+                os.execve(cmd[0], cmd, env)
+            finally:
+                os._exit(127)
+        # the stop at exec
         _, st = os.waitpid(pid, 0)
-        if os.WIFEXITED(st) or os.WIFSIGNALED(st):
-            break
-        sig = os.WSTOPSIG(st)
-        if sig == signal.SIGTRAP and st >> 16 == PTRACE_EVENT_EXIT:
-            seen = status_kib(pid)
-            ptrace(PTRACE_CONT, pid)
-        else:
-            # pass any other signal on
-            ptrace(PTRACE_CONT, pid, 0 if sig == signal.SIGTRAP else sig)
-    os.set_blocking(r, True)
-    while (b := os.read(r, 65536)):
-        chunks.append(b)
-    os.close(r)
-    if seen is None:
-        raise SystemExit(f"rt-startup: no exit stop for {cmd[0]}")
-    anon = seen["VmHWM"] - seen["RssFile"] - seen.get("RssShmem", 0)
-    return anon, seen["VmHWM"], os.waitstatus_to_exitcode(st), b"".join(chunks)
+        if not os.WIFSTOPPED(st):
+            code = os.waitstatus_to_exitcode(st)
+            pid = None
+            why = "personality(ADDR_NO_RANDOMIZE) refused" if code == 126 else f"exit status {code}"
+            raise SystemExit(f"rt-startup: {cmd[0]} did not start under ptrace: {why}")
+        ptrace(PTRACE_SETOPTIONS, pid, PTRACE_O_TRACEEXIT | PTRACE_O_TRACESYSGOOD)
+        anon, hwm = 0, None
+        go = PTRACE_SYSCALL if syscalls else PTRACE_CONT
+        ptrace(go, pid)
+        while True:
+            _, st = os.waitpid(pid, 0)
+            if os.WIFEXITED(st) or os.WIFSIGNALED(st):
+                pid = None
+                break
+            sig = os.WSTOPSIG(st)
+            if sig == signal.SIGTRAP | 0x80:
+                # a system call's entry or exit
+                anon = max(anon, status_kib(pid)["RssAnon"])
+                ptrace(PTRACE_SYSCALL, pid)
+            elif sig == signal.SIGTRAP and st >> 16 == PTRACE_EVENT_EXIT:
+                m = status_kib(pid)
+                anon, hwm = max(anon, m["RssAnon"]), m["VmHWM"]
+                ptrace(PTRACE_CONT, pid)
+            else:
+                # any other signal goes on to the child
+                ptrace(go, pid, 0 if sig == signal.SIGTRAP else sig)
+        if hwm is None:
+            raise SystemExit(f"rt-startup: no exit stop for {cmd[0]}")
+        out.seek(0)
+        return anon, hwm, os.waitstatus_to_exitcode(st), out.read()
+    finally:
+        if pid:
+            # an exception with the child still traced: it goes, and is reaped
+            try:
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
+            except OSError:
+                pass
+        out.close()
 
 
 def instructions(cmd, env, valgrind):
@@ -192,16 +204,18 @@ def measure(cmd, env, runs, valgrind):
         shifts = dict(ex.map(one, ENV_SHIFTS))
     anon, rss = [], []
     want = None
-    for _ in range(runs):
-        a, h, status, out = memory(cmd, env)
-        if status != 0:
-            raise SystemExit(f"rt-startup: {' '.join(cmd)} exited {status}")
-        if want is None:
-            want = out
-        elif out != want:
-            raise SystemExit(f"rt-startup: {' '.join(cmd)} printed differently between runs")
-        anon.append(a)
-        rss.append(h)
+    # the anonymous peak from runs stopped at each system call, peak RSS from
+    # runs stopped only at exit (memory())
+    for syscalls in (True, False):
+        for _ in range(runs):
+            a, h, status, out = memory(cmd, env, syscalls)
+            if status != 0:
+                raise SystemExit(f"rt-startup: {' '.join(cmd)} exited {status}")
+            if want is None:
+                want = out
+            elif out != want:
+                raise SystemExit(f"rt-startup: {' '.join(cmd)} printed differently between runs")
+            (anon if syscalls else rss).append(a if syscalls else h)
     return {"instr": statistics.median(shifts.values()), "instr_shifts": shifts,
             "anon_kib": statistics.median(anon), "rss_kib": statistics.median(rss),
             "anon_runs": anon, "rss_runs": rss}
@@ -267,7 +281,8 @@ def verdict(new, main):
     fails = []
     for n, v in new.items():
         m = main.get(n)
-        if not m:
+        # (a start main did not measure, or not wholly: nothing to hold it to)
+        if not m or any(k not in m for k in ("instr", "anon_kib", "rss_kib")):
             continue
         if v["instr"] > m["instr"] * (1 + INSTR_LIMIT / 100):
             fails.append(f"start {n}: {v['instr']:,.0f} instructions, {pct(v['instr'], m['instr']):+.2f}% against "
@@ -298,6 +313,10 @@ def table(entries, new, main=None, gnur=None):
         v = new[n]
         m = (main or {}).get(n)
         g = (gnur or {}).get(e.get("gnur", ""))
+        if m and any(k not in m for k in ("instr", "anon_kib", "rss_kib")):
+            m = None
+        if g and any(k not in g for k in ("instr", "anon_kib", "rss_kib")):
+            g = None
         cells = [n, f"{v['instr']:,.0f}"]
         for k in ("instr", "anon_kib", "rss_kib"):
             if k != "instr":

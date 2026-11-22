@@ -4,6 +4,7 @@ idiom-vs-r.py's count of a loop's allocator calls, which decides the heap
 shifts. Run by the perf-rt job before the bars."""
 import importlib.util
 import os
+import sys
 import tempfile
 import unittest
 
@@ -60,6 +61,9 @@ class Verdict(unittest.TestCase):
     def test_a_start_main_lacks_is_not_judged(self):
         self.assertEqual(su.verdict({"rdb-nojit": start(1, 1, 1)}, self.MAIN), [])
         self.assertEqual(su.verdict({"interim": start(10**12, 10**9, 10**9)}, {}), [])
+        # a record main has only in part
+        self.assertEqual(su.verdict({"interim": start(10**12, 10**9, 10**9)}, {"interim": {"instr": 1}}), [])
+        self.assertEqual(len(su.table([{"name": "interim"}], {"interim": start(1, 2, 3)}, {"interim": {"instr": 1}})), 3)
 
     def test_only_defined_starts_run(self):
         self.assertNotIn("rdb-pkgs", su.defined())
@@ -71,6 +75,32 @@ class Verdict(unittest.TestCase):
                          {"interim": start(1, 2, 3)}, {"jit": start(4, 5, 6)})
         self.assertEqual(len(lines), 3)
         self.assertIn("(jit)", lines[2])
+
+
+class Memory(unittest.TestCase):
+    """memory() on small programs: its readings, and that it cannot hang."""
+    PY = sys.executable
+
+    def test_a_large_output_does_not_block_the_child(self):
+        # far more than a pipe's buffer, printed before the exit stop
+        a, h, status, out = su.memory([self.PY, "-c", "import sys; sys.stdout.write('x' * 2_000_000)"],
+                                      dict(os.environ))
+        self.assertEqual(status, 0)
+        self.assertEqual(len(out), 2_000_000)
+
+    def test_the_anonymous_peak_survives_a_free_before_exit(self):
+        # 64 MB touched, then freed: at the exit stop little is left
+        prog = "b = bytearray(64 << 20)\nfor i in range(0, len(b), 4096): b[i] = 1\ndel b\n"
+        a, h, status, _ = su.memory([self.PY, "-c", prog], dict(os.environ))
+        self.assertEqual(status, 0)
+        self.assertGreaterEqual(a, 64 << 10)
+        self.assertGreaterEqual(h, a)
+
+    def test_an_exit_status_comes_back_and_no_child_is_left(self):
+        _, _, status, _ = su.memory([self.PY, "-c", "import sys; sys.exit(3)"], dict(os.environ))
+        self.assertEqual(status, 3)
+        with self.assertRaises(ChildProcessError):
+            os.waitpid(-1, os.WNOHANG)
 
 
 class AllocatorCalls(unittest.TestCase):
