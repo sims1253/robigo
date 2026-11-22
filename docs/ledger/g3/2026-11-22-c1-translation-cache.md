@@ -44,11 +44,17 @@ measured with and without its cache. Main 24f3fd36a has the dense tables
   translations, 0 differing. Before #974 merged, its translator wrote
   byte-identical entries for all 1,731.
 - **rt-ci:** the full run passes on the branch's head, the rdb crosscheck
-  comparing 97,776 closures. Two new steps go in the `modes` shard, whose
-  budget is now 10 minutes, up from 9:
-  - the rdb boot's conformance without the cache, 0.18 minutes;
+  comparing 97,776 closures. Two new steps go in the `modes` shard:
+  - the rdb boot's conformance without the cache, 0.18 minutes here;
   - the cache as damaged input (`scripts/rt-tcache-mutate.py`, 300
-    corrupted files of each package), 0.38 minutes.
+    corrupted files of each package), 0.38 minutes here.
+
+  The shard's budget is 13 minutes, up from main's 11, and its job's
+  timeout is 26. The basis is #959's run 45072863916, a slow runner, at
+  9.15 minutes for main's steps. The two steps are scaled to that run by
+  1.6: on the five conformance steps that both it and the local run made,
+  the run took 1.34 minutes against 0.84 here. That makes 0.29 and 0.61
+  minutes, 10.05 in all, plus 20%, rounded up.
 - **The cargo-fuzz target** (`fuzz/fuzz_targets/rtc.rs`) runs locally:
   8×60 s, about 60k inputs, no finding. CI's fuzz job runs
   `scripts/fuzz.py` against the old runtime's binary, not cargo-fuzz
@@ -88,8 +94,9 @@ measured with and without its cache. Main 24f3fd36a has the dense tables
 - When `file` is `<R_HOME>/library/<pkg>/R/<pkg>.rdb` of the running R_HOME
   and that package's cache matched, the record's reader numbers the
   BCODESXPs it makes, in order.
-- It marks one that has an entry with a 16-byte RAWSXP stub in its fourth
-  word (`aux`), naming the database, the record's offset and the ordinal.
+- It marks one that has an entry with a 24-byte RAWSXP stub in its fourth
+  word (`aux`), naming the database, the record's offset, the ordinal and
+  a checksum of the record's stored bytes.
 - A promise code is keyed with a hash of its forcing frame's shape too.
 - The key context belongs to that one reader. Anything a refhook
   unserializes is read with none, so other byte code is never mistaken for
@@ -130,6 +137,12 @@ The checks, in order:
 - A file is ignored whole unless its header's build ID is the running
   binary's (read from `/proc/self/exe`'s GNU note) and its stamp is the
   tree's `.rt-home-db`. Nothing is hashed at start.
+- An entry applies only to the record it was written from. It carries a
+  checksum of that record's stored (compressed) bytes, and the reader
+  hashes the record it just read. A mismatch is a miss (`StaleRecord`):
+  a `.rdb` replaced under a valid stamp, with a record at the same offset,
+  gets fresh translations. This costs 0.063M instructions a start (L's P3;
+  a hash of the decompressed bytes cost 0.45M).
 - Each entry carries a checksum, so damage makes it a miss. Without one, a
   damaged entry that still passes the checks could run, and the mutation test
   found one that looped forever.
@@ -207,8 +220,13 @@ established what each operation reads unchecked:
   under "What the checks guarantee": the tree is one artifact, and whoever
   can write its `.rtc` can write its base.rdb. `ROBIGO_TRANSLATION_CACHE=verify`
   is the full comparison, and #976 is the verifier work.
-- **A `.rdb` replaced by hand** under a valid stamp, with records of the same
-  offsets, is not detected at start.
+- **A `.rdb` replaced by hand** under a valid stamp is detected record by
+  record: an entry whose record's stored bytes differ is a miss. Nothing
+  is checked at start, and the file as a whole is not.
+- **Installing (L):** L5 installs and replaces R_HOME and its `-cache`
+  sibling as a pair. The stamp covers everything that determines the
+  `.rdb` bytes, so a tree rebuilt from other sources has a new stamp, and
+  the old cache is ignored as a whole.
 - **tools** has no cache while it stays source in robigo-rt's tree. It gains
   one with no change here when L's "tools from tools.rdb" item lands.
 - **Promise codes** are cached for the frame shapes that the writer's start

@@ -23,6 +23,16 @@ def meta(*pkgs):
 
 
 class RtCi(unittest.TestCase):
+    def test_the_cache_mutation_starts_are_memory_capped(self):
+        # every robigo-rt start of scripts/rt-tcache-mutate.py goes through
+        # its capped `start` (RLIMIT_AS), and the script checks at its own
+        # start that the cap is in force
+        src = (HERE / "rt-tcache-mutate.py").read_text()
+        self.assertEqual(src.count("subprocess.run("), 1)
+        self.assertIn("preexec_fn=cap_memory", src)
+        self.assertIn("resource.RLIMIT_AS", src)
+        self.assertIn("check_cap(cmd, home, env)", src)
+
     def test_crates_follow_the_selection_rule(self):
         m = meta(pkg("robigo-rt", "crates/robigo-rt"), pkg("robigo-rtcore", "crates/robigo-rtcore"),
                  pkg("robigo-heap", "crates/robigo-heap"), pkg("robigo-heap-derive", "crates/robigo-heap-derive"),

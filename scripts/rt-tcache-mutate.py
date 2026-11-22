@@ -22,12 +22,39 @@ outcome.
 import argparse
 import os
 import random
+import resource
 import shutil
 import subprocess
 import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Every start's address space is capped, by this script for each start it
+# makes (not left to the caller): mutated input that makes robigo-rt
+# allocate without end (a forged entry, or hostile byte code: #976's seed
+# 300014 grew by 0.8 GB a second) then ends in an R allocation error, not
+# in the shared machine's OOM killer. robigo-rt starts in well under 1 GB.
+MEM_CAP = 2 << 30
+
+
+def cap_memory():
+    resource.setrlimit(resource.RLIMIT_AS, (MEM_CAP, MEM_CAP))
+
+
+def start(cmd, home, env):
+    """One robigo-rt start under the memory cap, its output captured; a
+    start that does not end in two minutes raises TimeoutExpired."""
+    return subprocess.run(cmd, cwd=home, env=env, capture_output=True, timeout=120, preexec_fn=cap_memory)
+
+
+def check_cap(cmd, home, env):
+    """Fail unless the cap is in force: an allocation of more than it must
+    be an R error."""
+    p = start(cmd[:2] + ["-e", f"x <- numeric({2 * MEM_CAP // 8})"], home, dict(env, ROBIGO_TRANSLATION_CACHE="0"))
+    if p.returncode != 1 or b"cannot allocate" not in p.stderr:
+        sys.exit(f"rt-tcache-mutate: the memory cap is not in force (exit {p.returncode}): "
+                 f"{p.stderr.decode(errors='replace')[-300:]}")
 
 # a start that runs translated base code: closures, promises, a JIT compile
 SCRIPT = """
@@ -110,9 +137,9 @@ def swap_runs(a, rng, tmp, home, env, cmd):
     entries, start, and require the start to see stale records (a miss for
     each entry of the swapped records) and to end as a start ends."""
     rdb = os.path.join(tmp, ".robigo", "rt-home-db", "library", "base", "R", "base.rdb")
-    keys = subprocess.run(cmd[:2] + ["-e", 'k <- readRDS(file.path(R.home(), "library/base/R/base.rdx"))$variables; '
-                                     'for (x in k) cat(x[1], x[2], "\\n")'],
-                          cwd=home, env=dict(env, ROBIGO_TRANSLATION_CACHE="0"), capture_output=True, timeout=120)
+    keys = start(cmd[:2] + ["-e", 'k <- readRDS(file.path(R.home(), "library/base/R/base.rdx"))$variables; '
+                            'for (x in k) cat(x[1], x[2], "\\n")'],
+                 home, dict(env, ROBIGO_TRANSLATION_CACHE="0"))
     recs = sorted({tuple(map(int, l.split())) for l in keys.stdout.decode().splitlines() if l.strip()})
     cache = open(os.path.join(tmp, ".robigo", "rt-home-db-cache", "base.rtc"), "rb").read()
     keyed = {int.from_bytes(cache[r:r + 8], "little") for r, _, _ in rows(cache)}
@@ -131,8 +158,7 @@ def swap_runs(a, rng, tmp, home, env, cmd):
         b[x:x + n], b[y:y + n] = orig[y:y + n], orig[x:x + n]
         open(rdb, "wb").write(bytes(b))
         try:
-            p = subprocess.run(cmd, cwd=home, env=dict(env, ROBIGO_TRANSLATION_CACHE_STATS="1"), capture_output=True,
-                               timeout=120)
+            p = start(cmd, home, dict(env, ROBIGO_TRANSLATION_CACHE_STATS="1"))
         except subprocess.TimeoutExpired:
             bad.append((k, "a hang"))
             continue
@@ -190,13 +216,13 @@ def main():
         with open(script, "w") as f:
             f.write(SCRIPT)
         cmd = [a.robigo_rt, "--vanilla", script]
-        ref = subprocess.run(cmd, cwd=home, env=env, capture_output=True, timeout=120)
+        check_cap(cmd, home, env)
+        ref = start(cmd, home, env)
         if ref.returncode != 0:
             sys.exit(f"rt-tcache-mutate: the unmutated start failed:\n{ref.stderr.decode(errors='replace')}")
         # the unmutated start must use the cache: a run that never reads it
         # (a stale tree, another build's binary) would prove nothing
-        stats = subprocess.run(cmd, cwd=home, env=dict(env, ROBIGO_TRANSLATION_CACHE_STATS="1"), capture_output=True,
-                               timeout=120).stderr.decode(errors="replace")
+        stats = start(cmd, home, dict(env, ROBIGO_TRANSLATION_CACHE_STATS="1")).stderr.decode(errors="replace")
         hit = [l for l in stats.splitlines() if l.startswith("translation cache: hit ")]
         if not hit or hit[-1].startswith("translation cache: hit 0,"):
             sys.exit(f"rt-tcache-mutate: the unmutated start does not use the cache (rebuild the tree with this "
@@ -210,7 +236,7 @@ def main():
             with open(os.path.join(cache, f"{a.pkg}.rtc"), "wb") as f:
                 f.write(m)
             try:
-                p = subprocess.run(cmd, cwd=home, env=env, capture_output=True, timeout=120)
+                p = start(cmd, home, env)
             except subprocess.TimeoutExpired:
                 if a.rehash:
                     outcomes["hang"] += 1
