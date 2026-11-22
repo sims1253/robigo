@@ -614,12 +614,33 @@ pub fn compare(cx: &Cx, what: &str, t: &Built, s: &Built) -> Finding {
     Finding::new(verdict, line)
 }
 
-/// A line of the report.
+/// A line of the report. The conformance runner's parallel cases append to
+/// one file: `writeln!` on an unbuffered `File` wrote the record and its
+/// newline apart, another process's record landed between them, and two
+/// lines merged into one (rt-ci counted 87,318 closures compared instead of
+/// 97,485 with 24 jobs). So the whole record, newline and DUMP lines
+/// included, is written under the file's exclusive lock: a short write's
+/// remainder still follows it at once. A record that cannot be written
+/// leaves `<report>.lost` (an empty file, which a full disk still allows),
+/// which rt-ci's check of the report fails on whatever case lost it, and
+/// is said on stderr.
 pub fn report(line: &str) {
     match std::env::var_os("ROBIGO_BC_CROSSCHECK_REPORT") {
         Some(p) => {
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
-                let _ = writeln!(f, "{line}");
+            let mut record = String::with_capacity(line.len() + 1);
+            record.push_str(line);
+            record.push('\n');
+            let written = std::fs::OpenOptions::new().create(true).append(true).open(&p).and_then(|mut f| {
+                f.lock()?;
+                let r = f.write_all(record.as_bytes());
+                let _ = f.unlock();
+                r
+            });
+            if let Err(e) = written {
+                let mut lost = p.clone();
+                lost.push(".lost");
+                let _ = std::fs::OpenOptions::new().create(true).append(true).open(lost);
+                eprintln!("robigo: bc crosscheck: cannot write the report {}: {e}", p.to_string_lossy());
             }
         }
         None => eprintln!("robigo: bc crosscheck: {line}"),
