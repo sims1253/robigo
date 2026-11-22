@@ -620,9 +620,10 @@ pub fn compare(cx: &Cx, what: &str, t: &Built, s: &Built) -> Finding {
 /// lines merged into one (rt-ci counted 87,318 closures compared instead of
 /// 97,485 with 24 jobs). So the whole record, newline and DUMP lines
 /// included, is written under the file's exclusive lock: a short write's
-/// remainder still follows it at once. A record that cannot be written is
-/// said on stderr, which the conformance compares, so its case fails
-/// instead of the report quietly losing it.
+/// remainder still follows it at once. A record that cannot be written
+/// leaves `<report>.lost` (an empty file, which a full disk still allows),
+/// which rt-ci's check of the report fails on whatever case lost it, and
+/// is said on stderr.
 pub fn report(line: &str) {
     match std::env::var_os("ROBIGO_BC_CROSSCHECK_REPORT") {
         Some(p) => {
@@ -636,6 +637,9 @@ pub fn report(line: &str) {
                 r
             });
             if let Err(e) = written {
+                let mut lost = p.clone();
+                lost.push(".lost");
+                let _ = std::fs::OpenOptions::new().create(true).append(true).open(lost);
                 eprintln!("robigo: bc crosscheck: cannot write the report {}: {e}", p.to_string_lossy());
             }
         }

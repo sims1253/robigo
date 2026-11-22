@@ -515,6 +515,13 @@ class RtCi(unittest.TestCase):
         self.assertEqual(counts["compared"], 2)       # what a merge does to the count
         self.assertIn("2 empty line(s)", errors[0])
         self.assertEqual(sum(e.startswith("two records in one line: ") for e in errors), 2, errors)
+        # a record a case could not write: its marker fails the report,
+        # whatever the count
+        open(clean + ".lost", "w").close()
+        errors, counts = rt.bc_report_check(clean, 5)
+        self.assertEqual(counts["compared"], 5)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("could not write a record", errors[0])
 
     def test_the_crosscheck_report_passes_only_with_every_difference_classed(self):
         import tempfile

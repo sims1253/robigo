@@ -147,18 +147,24 @@ def bc_report_check(path, floor=1):
     fewer than `floor` closures compared (BC_FLOORS): every closure compared
     has its line (same, expected or unexpected), so a step that compares
     fewer than it should, or has no report at all, is a broken setup, never
-    a pass. And a report whose records were merged: the conformance's
-    parallel cases append to one file, and a record written in two parts
-    let another process's land between them, giving one line with two
-    records and an empty line (crosscheck.rs writes each in one write now).
-    Each empty line, and each line in which a second record starts, is an
-    error, so a merge can never lower the count silently."""
+    a pass. And a report that lost or merged records:
+    - the conformance's parallel cases append to one file; a record written
+      in two parts let another process's land between them, giving one line
+      with two records and an empty line. crosscheck.rs now writes each
+      record whole under the file's lock, and each empty line is an error
+      (once there is one, the lines where a second record starts are named);
+    - a record that could not be written leaves `<path>.lost` (crosscheck.rs
+      makes it when the write fails), which is an error whatever case lost it:
+      a case without a ratchet marker fails without failing the run.
+    So neither can lower the count silently."""
+    errors = []
+    if os.path.exists(path + ".lost"):
+        errors.append(f"the crosscheck could not write a record to {path} ({path}.lost): the report is incomplete")
     try:
         with open(path) as f:
             raw = [line.rstrip("\n") for line in f]
     except FileNotFoundError:
         raw = []
-    errors = []
     empty = sum(1 for x in raw if not x.strip())
     if empty:
         errors.append(f"{empty} empty line(s) in the crosscheck report {path}: records were merged")
@@ -816,8 +822,9 @@ def run_steps(plan, done):
         if report and os.path.exists(report):
             os.remove(report)
         bc = env.get("ROBIGO_BC_CROSSCHECK_REPORT")
-        if bc and os.path.exists(bc):
-            os.remove(bc)
+        for stale in (bc, bc and bc + ".lost"):
+            if stale and os.path.exists(stale):
+                os.remove(stale)
         times = None
         if CONFORMANCE in cmd and "--exact" in cmd:
             times = times_file(index, title)
