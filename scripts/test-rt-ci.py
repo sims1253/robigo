@@ -304,6 +304,7 @@ class RtCi(unittest.TestCase):
         # the plain report's floor is one comparison; the rdb one's is set
         self.assertEqual(rt.BC_FLOORS.get(rt.BC_REPORT, 1), 1)
         self.assertGreater(rt.BC_FLOORS[rt.BC_REPORT_RDB], 46000)
+        self.assertLessEqual(rt.BC_FLOORS[rt.BC_REPORT_RDB], 97485)   # the count on b0c49e869
 
     def test_a_step_whose_report_fails_is_timed_as_failed(self):
         # the command passed, the crosscheck report did not (it compared
@@ -502,9 +503,10 @@ class RtCi(unittest.TestCase):
         clean = os.path.join(tmp.name, "clean.txt")
         with open(clean, "w") as f:
             f.write(good * 3 + "skipped: { x }: the from-source compile would force a binding (y)\n"
-                    + "same: g(\"same: inside a string\")\n")
-        errors, counts = rt.bc_report_check(clean, 4)
-        self.assertEqual((errors, counts["compared"]), ([], 4))
+                    + "same: g(\"same: inside a string\")\n"
+                    + "same: h(\"notsame: a kind's name after a letter\")\n")
+        errors, counts = rt.bc_report_check(clean, 5)
+        self.assertEqual((errors, counts["compared"]), ([], 5))
         merged = os.path.join(tmp.name, "merged.txt")
         with open(merged, "w") as f:
             f.write(good + "same: f: at 1: translated B; from source Bsame: g: at 0: translated C; from source C\n\n"

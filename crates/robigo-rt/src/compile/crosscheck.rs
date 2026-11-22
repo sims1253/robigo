@@ -615,19 +615,28 @@ pub fn compare(cx: &Cx, what: &str, t: &Built, s: &Built) -> Finding {
 }
 
 /// A line of the report. The conformance runner's parallel cases append to
-/// one file, so the record and its newline go in one `write` on an
-/// `O_APPEND` file: `writeln!` on an unbuffered `File` writes the two
-/// apart, and another process's record then lands between them, merging two
-/// lines into one (rt-ci counted 87,318 closures compared instead of about
-/// 95,000 with 24 jobs).
+/// one file: `writeln!` on an unbuffered `File` wrote the record and its
+/// newline apart, another process's record landed between them, and two
+/// lines merged into one (rt-ci counted 87,318 closures compared instead of
+/// 97,485 with 24 jobs). So the whole record, newline and DUMP lines
+/// included, is written under the file's exclusive lock: a short write's
+/// remainder still follows it at once. A record that cannot be written is
+/// said on stderr, which the conformance compares, so its case fails
+/// instead of the report quietly losing it.
 pub fn report(line: &str) {
     match std::env::var_os("ROBIGO_BC_CROSSCHECK_REPORT") {
         Some(p) => {
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
-                let mut record = String::with_capacity(line.len() + 1);
-                record.push_str(line);
-                record.push('\n');
-                let _ = f.write_all(record.as_bytes());
+            let mut record = String::with_capacity(line.len() + 1);
+            record.push_str(line);
+            record.push('\n');
+            let written = std::fs::OpenOptions::new().create(true).append(true).open(&p).and_then(|mut f| {
+                f.lock()?;
+                let r = f.write_all(record.as_bytes());
+                let _ = f.unlock();
+                r
+            });
+            if let Err(e) = written {
+                eprintln!("robigo: bc crosscheck: cannot write the report {}: {e}", p.to_string_lossy());
             }
         }
         None => eprintln!("robigo: bc crosscheck: {line}"),

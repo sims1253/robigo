@@ -119,12 +119,15 @@ BC_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-bc-crosscheck-{os
 # the same under the rdb boot (base's closures from base.rdb, so many more)
 BC_REPORT_RDB = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-bc-crosscheck-rdb-{os.getpid()}.txt")
 # The fewest closures each crosscheck report must compare. Under the rdb
-# boot base.rdb's closures and, since #942, the compiler namespace's: 95,302
-# compared on main ec22e65ba merged with #961 (A1, 2026-11-21; about 46k
-# before #942, so a boot that stops loading the compiler's namespace falls
-# below the floor). The plain crosscheck compares 191 (the cases' own
-# closures): any comparison at all is its floor.
-BC_FLOORS = {BC_REPORT_RDB: 90000}
+# boot base.rdb's closures and, since #942, the compiler namespace's: 97,485
+# on main b0c49e869, the same with 24 conformance jobs and with 1, so the
+# count is fixed for a given tree. The floor catches lost coverage (a boot
+# that stops loading the compiler's namespace compares about half), not
+# noise. Counts recorded before the report's records were written whole
+# (95,302 on #961, CI's 93,591) were low by merged lines. The plain
+# crosscheck compares 191 (the cases' own closures): any comparison at all
+# is its floor.
+BC_FLOORS = {BC_REPORT_RDB: 96000}
 
 # the kinds of line the crosscheck writes (crates/robigo-rt/src/compile/crosscheck.rs),
 # each the line's first word, then ":" (or a class in parentheses, then ":")
@@ -133,7 +136,7 @@ BC_KINDS = ("same", "expected", "unexpected", "untranslated", "skipped")
 # where a second record begins in a merged line ("...; from source Bsame:
 # ..."), not a kind's name inside an R string in a deparsed body. Every
 # merge also leaves an empty line, which bc_report_check counts: that is the
-# complete check, this one names the lines
+# complete check; this one only names the suspect lines once it fired
 BC_SECOND_RECORD = re.compile(r"[^\s\"'`](?:same|unexpected|untranslated|skipped|expected \(.+?\)): ")
 
 
@@ -159,7 +162,9 @@ def bc_report_check(path, floor=1):
     empty = sum(1 for x in raw if not x.strip())
     if empty:
         errors.append(f"{empty} empty line(s) in the crosscheck report {path}: records were merged")
-    merged = [x for x in raw if x.strip() and not x.startswith("    ") and BC_SECOND_RECORD.search(x)]
+    # (only where empty lines show a merge: a clean record's closure may
+    # hold a kind's name, "notsame: ...", which the pattern would match)
+    merged = [x for x in raw if empty and x.strip() and not x.startswith("    ") and BC_SECOND_RECORD.search(x)]
     for x in merged[:5]:
         errors.append(f"two records in one line: {x[:300]}")
     if len(merged) > 5:
