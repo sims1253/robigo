@@ -35,7 +35,55 @@ const CONSOLE_BUFFER_SIZE: usize = 4096;
 /// session runs (and its prompts show) before the input ends.
 pub enum Input<'a> {
     Bytes(&'a [u8]),
-    Stdin(std::io::StdinLock<'static>),
+    Stdin(StdinBuf),
+}
+
+/// The console's own buffer over fd 0 (stdio's `stdin`, which `fgets`
+/// reads), so that the interactive wait knows whether input is already
+/// buffered before it waits.
+#[derive(Default)]
+pub struct StdinBuf {
+    buf: Vec<u8>,
+    pos: usize,
+    eof: bool,
+}
+
+impl StdinBuf {
+    pub fn new() -> StdinBuf {
+        StdinBuf::default()
+    }
+
+    fn buffered(&self) -> bool {
+        self.pos < self.buf.len()
+    }
+
+    /// More bytes from fd 0 (a signal's interruption retried); false at the
+    /// end or on an error (stdio's EOF and error flags).
+    fn refill(&mut self) -> bool {
+        if self.eof {
+            return false;
+        }
+        let mut b = [0u8; 4096];
+        loop {
+            match robigo_rtcore::clib::read_fd(0, &mut b) {
+                Ok(0) => {
+                    self.eof = true;
+                    return false;
+                }
+                Ok(n) => {
+                    self.buf.drain(..self.pos);
+                    self.pos = 0;
+                    self.buf.extend_from_slice(&b[..n]);
+                    return true;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => {
+                    self.eof = true;
+                    return false;
+                }
+            }
+        }
+    }
 }
 
 impl Input<'_> {
@@ -57,24 +105,19 @@ impl Input<'_> {
                 Some(read.to_vec())
             }
             Input::Stdin(r) => {
-                use std::io::BufRead;
                 let mut line = Vec::new();
                 loop {
-                    let buf = match r.fill_buf() {
-                        Ok(b) => b,
-                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                        Err(_) => break,
-                    };
-                    if buf.is_empty() {
+                    if !r.buffered() && !r.refill() {
                         break;
                     }
+                    let avail = &r.buf[r.pos..];
                     let room = len - 1 - line.len();
-                    let take = match buf.iter().take(room).position(|&c| c == b'\n') {
+                    let take = match avail.iter().take(room).position(|&c| c == b'\n') {
                         Some(i) => i + 1,
-                        None => buf.len().min(room),
+                        None => avail.len().min(room),
                     };
-                    line.extend_from_slice(&buf[..take]);
-                    r.consume(take);
+                    line.extend_from_slice(&avail[..take]);
+                    r.pos += take;
                     if line.ends_with(b"\n") || line.len() == len - 1 {
                         break;
                     }
@@ -83,6 +126,15 @@ impl Input<'_> {
             }
         }
     }
+}
+
+/// What a console read gives: a line, the end of the input, or a user
+/// interrupt while it waited, after which the console starts a new
+/// statement at a new prompt (its jump landed at the top level).
+enum Read {
+    Line(Vec<u8>),
+    End,
+    Reset,
 }
 
 /// Run `src` as R runs console input that is not interactive: true when it
@@ -120,8 +172,16 @@ pub fn run_console(cx: &mut Cx, input: &mut Input<'_>) -> bool {
     // Rf_ReplIteration: the next line is read once the last is used up
     loop {
         let line = match read_console(cx, input, prompt_type) {
-            Ok(Some(line)) => line,
-            Ok(None) => break,
+            Ok(Read::Line(line)) => line,
+            Ok(Read::End) => break,
+            Ok(Read::Reset) => {
+                // run_Rmainloop's longjmp target: R_ReplConsole again, its
+                // state reset
+                iob.clear();
+                incomplete = false;
+                prompt_type = 1;
+                continue;
+            }
             Err(err) => {
                 // (reported where it was raised)
                 cx.resolve_exit(err, None);
@@ -351,7 +411,7 @@ pub(crate) fn check_session_exit(cx: &mut Cx) -> bool {
 /// (`--no-readline`; robigo-rt has no readline): the prompt written and
 /// flushed (unless `R_NoEcho`), then the line `fgets` reads, as it is.
 // R: unix/sys-std.c:Rstd_ReadConsole
-fn read_console(cx: &mut Cx, input: &mut Input<'_>, prompt_type: i32) -> RResult<Option<Vec<u8>>> {
+fn read_console(cx: &mut Cx, input: &mut Input<'_>, prompt_type: i32) -> RResult<Read> {
     let interactive = robigo_rtbuiltins::sysutils::interactive(cx);
     // the prompt unless R_NoEcho (R_PromptString's ""); interactive,
     // without readline, the line is not written back (the terminal shows
@@ -364,9 +424,21 @@ fn read_console(cx: &mut Cx, input: &mut Input<'_>, prompt_type: i32) -> RResult
         cx.flush_console();
     }
     let len = CONSOLE_BUFFER_SIZE;
-    let Some(read) = input.fgets(len) else { return Ok(None) };
+    // interactive: the wait for input takes a user interrupt (sys-std.c's
+    // R_checkActivityEx with handleInterrupt)
+    if interactive
+        && let Input::Stdin(r) = input
+        && !r.buffered()
+        && !r.eof
+        && r_wait(cx)?
+    {
+        return Ok(Read::Reset);
+    }
+    let Some(read) = input.fgets(len) else { return Ok(Read::End) };
     if interactive {
-        return Ok(Some(read));
+        // Rf_ReplIteration takes the buffer up to its first NUL
+        let ll = read.iter().position(|&b| b == 0).unwrap_or(read.len());
+        return Ok(Read::Line(read[..ll].to_vec()));
     }
     // feof: fgets stopped at the end of the input, not at a newline or the
     // end of the buffer
@@ -385,7 +457,40 @@ fn read_console(cx: &mut Cx, input: &mut Input<'_>, prompt_type: i32) -> RResult
     if echo {
         cx.rprintf(&buf);
     }
-    Ok(Some(buf))
+    Ok(Read::Line(buf))
+}
+
+/// The interactive console's wait for stdin: true when a user interrupt
+/// came while it waited, taken (`onintrNoResume`) and landed at the top
+/// level; false when input (or its end) is there to read.
+// R: unix/sys-std.c:Rstd_ReadConsole, R_checkActivityEx, handleInterrupt
+fn r_wait(cx: &mut Cx) -> RResult<bool> {
+    loop {
+        match robigo_rtcore::clib::wait_readable(0) {
+            Ok(()) => return Ok(false),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                if cx.take_user_interrupt() {
+                    interrupt_at_top(cx);
+                    return Ok(true);
+                }
+            }
+            // (a read error: fgets's NULL, the end, follows)
+            Err(_) => return Ok(false),
+        }
+    }
+}
+
+/// `onintrNoResume()` at the top level: its jump lands on a REPL top-level
+/// record, as [`error_at_top`]'s.
+fn interrupt_at_top(cx: &mut Cx) {
+    cx.scope(|cx, s| {
+        let g = s.root(cx, cx.global_env());
+        let base = s.root(cx, cx.base_env());
+        let landed = cx
+            .repl_toplevel(g, base, |cx| Err(crate::conditions::onintr_no_resume(cx)))
+            .expect("robigo: an exit that passed the top level");
+        debug_assert!(!landed, "robigo: an interrupt that returned");
+    })
 }
 
 /// `R_PromptString(0, prompt_type)` with echo: `getOption("prompt")` for a

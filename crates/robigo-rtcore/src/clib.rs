@@ -367,6 +367,25 @@ unsafe extern "C" {
     fn getlogin_r(name: *mut libc::c_char, size: libc::size_t) -> libc::c_int;
 }
 
+/// Wait until `fd` has input (or its end, or an error) to read: `poll` with
+/// no timeout, as `R_checkActivityEx` waits with `select` on the console.
+/// A signal ends the wait as `Err` of kind `Interrupted` (`poll` is never
+/// restarted), so the caller can take a SIGINT that arrived meanwhile.
+pub fn wait_readable(fd: i32) -> std::io::Result<()> {
+    let mut p = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+    // SAFETY: one valid pollfd, its count 1.
+    let r = unsafe { libc::poll(&mut p, 1, -1) };
+    if r < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
+}
+
+/// `read(fd, buf, buf.len())`: the bytes read (0 at the end), or the
+/// error (`Interrupted` for a signal, which the caller may retry).
+pub fn read_fd(fd: i32, buf: &mut [u8]) -> std::io::Result<usize> {
+    // SAFETY: `buf` is valid for `buf.len()` bytes of writes.
+    let r = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+    if r < 0 { Err(std::io::Error::last_os_error()) } else { Ok(r as usize) }
+}
+
 /// The process's real user id (`getuid()`).
 pub fn uid() -> u32 {
     // SAFETY: getuid has no preconditions and cannot fail.

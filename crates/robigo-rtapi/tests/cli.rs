@@ -36,6 +36,10 @@ fn inputs() -> Vec<(&'static str, Vec<u8>)> {
         ("stdin.R", b"1 + 1\n".to_vec()),
         // the interactive console (`R --no-readline --interactive`): the
         // prompts, no echo, an error that does not end the session, warnings
+        // interactive: the line taken up to its first NUL (Rf_ReplIteration)
+        ("interactive-nul.R", b"1;\x00junk\n2\n".to_vec()),
+        // interactive: the error's traceback saved (jump_to_top_ex, R_Interactive)
+        ("interactive-tb.R", b"options(keep.source = FALSE)\nf <- function() stop(\"boom\")\nf()\ntraceback()\n".to_vec()),
         ("interactive.R", b"1 + 1\ninteractive()\nx <- 2; x * 3\nstop(\"boom\")\nx\nf <- function(a) {\n  a + 1\n}\nf(1)\nwarning(\"careful\")\nlog(-1)\n\"after\"\n".to_vec()),
     ]
 }
@@ -83,6 +87,22 @@ fn cases(long_src: &[u8]) -> Vec<Case> {
             0,
         ),
         ("file-eq", vec!["--vanilla", "--quiet", "--file=echo.R"], None, ECHO.to_vec(), b"", 0),
+        (
+            "interactive-nul",
+            vec!["--no-readline", "--interactive", "--no-save", "--quiet"],
+            Some("interactive-nul.R"),
+            b"> [1] 1\n> [1] 2\n> \n".to_vec(),
+            b"",
+            0,
+        ),
+        (
+            "interactive-tb",
+            vec!["--no-readline", "--interactive", "--no-save", "--quiet"],
+            Some("interactive-tb.R"),
+            b"> > > > 2: stop(\"boom\")\n1: f()\n> \n".to_vec(),
+            b"Error in f() : boom\n",
+            0,
+        ),
         (
             "interactive",
             vec!["--no-readline", "--interactive", "--no-save", "--quiet"],

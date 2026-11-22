@@ -584,7 +584,7 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     // error, check_session_exit's R_CleanUp(SA_NOSAVE, 1, 0) does not
     // (end_Rmainloop's newline unless R_NoEcho, then .Last: run_session)
     let ok = if stdin {
-        run_session(cx, &mut robigo_rt::repl::Input::Stdin(std::io::stdin().lock()))
+        run_session(cx, &mut robigo_rt::repl::Input::Stdin(robigo_rt::repl::StdinBuf::new()))
     } else {
         run_session(cx, &mut robigo_rt::repl::Input::Bytes(&src))
     };

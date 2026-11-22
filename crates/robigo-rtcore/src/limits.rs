@@ -264,6 +264,22 @@ impl Cx {
         hook(self)
     }
 
+    /// Take a pending user interrupt (a SIGINT [`note_sigint`] noted, or
+    /// [`Cx::set_interrupt_pending`]) unless interrupts are suspended,
+    /// without running the hook: true when there was one. The console's
+    /// read takes it so (sys-std.c's `handleInterrupt`, `onintrNoResume`).
+    pub fn take_user_interrupt(&mut self) -> bool {
+        let st = self.ctxs();
+        if SIGINT.load(Ordering::Relaxed) && SIGINT.swap(false, Ordering::Relaxed) {
+            st.intr_pending.set(true);
+        }
+        if st.intr_suspended.get() || !st.intr_pending.get() {
+            return false;
+        }
+        st.intr_pending.set(false);
+        true
+    }
+
     /// The interrupt hook's default ([`crate::Hooks::interrupt`]): an exit
     /// of kind [`ExitKind::Interrupt`] to the top level, with no condition
     /// signalled.
