@@ -436,6 +436,83 @@ class RtCi(unittest.TestCase):
         others = [t for t, e, c in steps if "ROBIGO_CONF_JOBS" in e and not (rt.CONFORMANCE in c and "--exact" in c)]
         self.assertEqual(others, [])
 
+    # The production identities a step's environment keeps, as the runner
+    # decides them (crates/robigo-conformance/src/lib.rs, identity_features;
+    # this mirrors it: keep the two in step). r-home-tools and
+    # bytecode-fidelity depend on the build, not the environment, so a named
+    # case may not need them.
+    @staticmethod
+    def kept_features(env):
+        on = lambda name: env.get(name) == "1"
+        kept = set()
+        if not on("ROBIGO_NO_INPLACE"):
+            kept.add("inplace-identity")
+        if not on("ROBIGO_MATERIALIZE"):
+            kept.add("promise-identity")
+        if not on("ROBIGO_GCTORTURE") and not on("ROBIGO_RETRY_TORTURE"):
+            kept |= {"volume", "collection-schedule"}
+        if "R_VSIZE" not in env and "R_MAX_VSIZE" not in env:
+            kept.add("default-vsize")
+        return kept
+
+    def list_name_problems(self, plans, root):
+        """For every step that names cases in ROBIGO_CONF_TIMEOUTS, each name
+        the runner would refuse at its start ("names X, which is no case's
+        id ... of an enabled case"): no such case, a tests/r case without its
+        passing-rt marker, or a case whose .requires names a feature the
+        step's environment turns off."""
+        problems = []
+        for title, env, _ in plans:
+            if "ROBIGO_CONF_TIMEOUTS" not in env:
+                continue
+            kept = self.kept_features(env)
+            for item in env["ROBIGO_CONF_TIMEOUTS"].split(","):
+                case = item.rsplit("=", 1)[0]
+                path = root / case
+                if not path.is_file():
+                    problems.append(f"{title}: {case}: no such case")
+                    continue
+                if case.startswith("tests/r/"):
+                    marker = root / "tests/r/passing-rt" / (case[len("tests/r/"):] + ".pass")
+                    if not marker.is_file():
+                        problems.append(f"{title}: {case}: not ratcheted for robigo-rt ({marker.relative_to(root)})")
+                req = path.with_suffix(".requires")
+                need = set(req.read_text().split()) if req.is_file() else set()
+                off = sorted(need - kept)
+                if off:
+                    problems.append(f"{title}: {case}: requires {', '.join(off)}, which this step turns off")
+        return problems
+
+    def test_every_case_a_step_names_is_one_it_runs(self):
+        # (#961's lists named shared-body.R and lazy-promise-code.R, which
+        # #966 made `volume`: the gctorture shard's runner refused to start,
+        # ten minutes into its build. This finds it in seconds.)
+        crates = ["robigo-heap", "robigo-rt", "robigo-rtapi", "robigo-rtcore"]
+        plans = rt.steps(crates) + rt.full_move_steps()
+        for shard in rt.SHARDS:
+            plans += rt.shard_steps(crates, shard)
+        self.assertEqual(self.list_name_problems(plans, HERE.parent), [])
+
+    def test_a_named_case_its_step_turns_off_is_found(self):
+        import tempfile
+        root = Path(tempfile.mkdtemp())
+        for case, requires in (("tests/rt/jit/big.R", "volume"), ("tests/rt/jit/ok.R", None),
+                               ("tests/r/memory/unmarked.R", None)):
+            (root / case).parent.mkdir(parents=True, exist_ok=True)
+            (root / case).write_text("1\n")
+            if requires:
+                (root / case).with_suffix(".requires").write_text(requires + "\n")
+        plans = [("conformance under gctorture (E3)", {"ROBIGO_GCTORTURE": "1", "ROBIGO_CONF_TIMEOUTS":
+                  "tests/rt/jit/big.R=600,tests/rt/jit/ok.R=600,tests/r/memory/unmarked.R=600,tests/rt/gone.R=600"},
+                  ["cargo"]),
+                 ("conformance (plain)", {"ROBIGO_CONF_TIMEOUTS": "tests/rt/jit/big.R=600"}, ["cargo"])]
+        problems = self.list_name_problems(plans, root)
+        self.assertEqual(len(problems), 3, problems)
+        self.assertIn("conformance under gctorture (E3): tests/rt/jit/big.R: requires volume, which this step turns off",
+                      problems)
+        self.assertTrue(any("unmarked.R: not ratcheted" in p for p in problems), problems)
+        self.assertTrue(any("tests/rt/gone.R: no such case" in p for p in problems), problems)
+
     def test_the_moving_conformance_step_is_young_and_the_full_run_nightly(self):
         # H8: the job's GC_MOVE + gctorture conformance step moves the young
         # objects, with YOUNG_MOVE_SLOW's longer timeouts and no other step's;
