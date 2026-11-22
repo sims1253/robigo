@@ -772,6 +772,8 @@ pub fn do_return_value(
 /// `.Internal(withVisible(x))`, a special: `x` evaluated in `rho`, and
 /// `list(value =, visible =)` with `R_Visible` as that evaluation left it.
 // R: eval.c:do_withVisible
+/// `args` is GNU R's: None for the call's own arguments, or `applyMethod`'s
+/// promise list (run again on the call over it, [`crate::specials::rerun_apart`]).
 pub fn do_with_visible(
     cx: &mut Cx,
     call: Root<'_>,
@@ -780,15 +782,9 @@ pub fn do_with_visible(
     rho: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
-    // (applyMethod's promise list: the call over it, as before)
+    // (applyMethod's promise list: run again on the call over it)
     if args.is_some() {
-        return cx.scope(|cx, s| {
-            let ac = match crate::specials::arg_call(cx, s, call, args)? {
-                Some(a) => a,
-                None => call,
-            };
-            do_with_visible(cx, ac, _op, None, rho, out)
-        });
+        return crate::specials::rerun_apart(cx, call, _op, args, rho, out, do_with_visible);
     }
     use robigo_rtbuiltins::attrib::{Attr, Attrs};
     use robigo_rtcore::{Char, Encoding, Lgl, RSym};
@@ -824,6 +820,8 @@ pub fn do_recall(
     cx: &mut Cx,
     _call: Root<'_>,
     _op: Root<'_>,
+    // (unread: GNU R's do_recall calls again with the closure's own
+    // promargs, never the special's `args`)
     _args: Option<Root<'_>>,
     rho: Root<'_>,
     out: Out<'_>,
