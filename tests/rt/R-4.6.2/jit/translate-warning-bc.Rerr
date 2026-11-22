@@ -1,0 +1,59 @@
+f 1
+Warning in f() : unable to translate '<U+4E2D>' to native encoding
+f 2
+Warning in assign(v, 1, envir = vars) :
+  unable to translate '<U+4E2D>' to native encoding
+Warning in assign(v, 1, envir = vars) :
+  unable to translate '<U+4E2D>' to native encoding
+Warning in as.name(getAssignedVar(e, cntxt)) :
+  unable to translate '<U+4E2D>' to native encoding
+f 3
+g 1
+Warning in g() : unable to translate '<U+4E2D>' to native encoding
+g 2
+Warning in g() : unable to translate '<U+4E2D>' to native encoding
+g 3
+Warning in g() : unable to translate '<U+4E2D>' to native encoding
+h
+Warning in assign(v, 1, envir = vars) :
+  unable to translate '<U+4E2D>' to native encoding
+Warning in assign(v, 1, envir = vars) :
+  unable to translate '<U+4E2D>' to native encoding
+Warning in as.name(getAssignedVar(e, cntxt)) :
+  unable to translate '<U+4E2D>' to native encoding
+k
+Warning in assign(v, 1, envir = vars) :
+  unable to translate '<U+4E2D>' to native encoding
+Warning in assign(v, 1, envir = vars) :
+  unable to translate '<U+4E2D>' to native encoding
+Warning in assign(v, 1, envir = vars) :
+  unable to translate '<U+4E2D>' to native encoding
+Warning in assign(v, 1, envir = vars) :
+  unable to translate '<U+4E2D>' to native encoding
+Warning in as.name(getAssignedVar(e, cntxt)) :
+  unable to translate '<U+4E2D>' to native encoding
+Warning in as.name(getAssignedVar(e, cntxt)) :
+  unable to translate '<U+4E2D>' to native encoding
+Warning in assign("<U+4E2D>", 3) :
+  unable to translate '<U+4E2D>' to native encoding
+Warning in assign("<U+4E2D>", 3) :
+  unable to translate '<U+4E2D>' to native encoding
+m
+Warning in assign(v, 1, envir = vars) :
+  unable to translate '<U+4E2D>' to native encoding
+Warning in assign(v, 1, envir = vars) :
+  unable to translate '<U+4E2D>' to native encoding
+Warning in as.name(getAssignedVar(e, cntxt)) :
+  unable to translate '<U+4E2D>' to native encoding
+Warning in g() : unable to translate '<U+4E2D>' to native encoding
+jit 0
+jit 0
+jit 0
+jit 3
+loop
+Warning in assign(v, 1, envir = vars) :
+  unable to translate '<U+4E2D>' to native encoding
+Warning in assign(v, 1, envir = vars) :
+  unable to translate '<U+4E2D>' to native encoding
+Warning in as.name(getAssignedVar(e, cntxt)) :
+  unable to translate '<U+4E2D>' to native encoding

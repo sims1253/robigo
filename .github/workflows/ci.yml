@@ -135,6 +135,8 @@ jobs:
           python3 scripts/test-pgo-build.py
       - name: Target pruning
         run: python3 scripts/test-prune-target.py
+      - name: Temporary directories (scripts/scratch.py and its tools)
+        run: python3 scripts/test-scratch.py
 
   miri:
     # (after select only for its `stacked`: a stacked pull request skips it)

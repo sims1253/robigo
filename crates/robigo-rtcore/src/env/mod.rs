@@ -3115,8 +3115,9 @@ impl Cx {
     }
 
     /// The frame shape slot frame `rho` was made with (the symbols of a
-    /// closure code object's frame, [`Cx::frame_slot_raw`]'s `shape`), or
-    /// None for any other frame.
+    /// closure code object's frame, [`Cx::frame_slot_raw`]'s `shape`): Some
+    /// only for a live shape vector, None for any other frame (one with no
+    /// shape, R_NilValue, among them).
     ///
     /// The result is unrooted: valid only until the next safepoint (a
     /// collection may move it, like any object), so a caller that may
@@ -3128,7 +3129,13 @@ impl Cx {
     #[inline]
     pub unsafe fn frame_shape_raw(&self, rho: Sexp) -> Option<Sexp> {
         // SAFETY: the caller's contract; a slot frame's shape word.
-        unsafe { (layout::is_slots(rho) && !rho.is_object()).then(|| layout::get(rho, layout::OFF_SHAPE)) }
+        unsafe {
+            if !layout::is_slots(rho) || rho.is_object() {
+                return None;
+            }
+            let shape = layout::get(rho, layout::OFF_SHAPE);
+            (shape.typ() == robigo_heap::types::VECSXP).then_some(shape)
+        }
     }
 
     /// The binding of slot `index` of `rho`'s own frame, read directly

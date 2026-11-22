@@ -1025,7 +1025,10 @@ pub fn do_usemethod(
     env: Root<'_>,
     _out: Out<'_>,
 ) -> RResult<()> {
-    // (applyMethod's promise list: the call over it, as before)
+    // (applyMethod's promise list: the call over it, run again. Kept inline
+    // here, not specials::rerun_apart: the out-of-line call shifts this
+    // function's register allocation, +6 instructions on every S3 dispatch;
+    // the recursion must pass None)
     if args.is_some() {
         return cx.scope(|cx, s| {
             let ac = match crate::specials::arg_call(cx, s, call, args)? {
@@ -2356,15 +2359,9 @@ pub fn do_nextmethod(
     env: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
-    // (applyMethod's promise list: the call over it, as before)
+    // (applyMethod's promise list: run again on the call over it)
     if args.is_some() {
-        return cx.scope(|cx, s| {
-            let ac = match crate::specials::arg_call(cx, s, call, args)? {
-                Some(a) => a,
-                None => call,
-            };
-            do_nextmethod(cx, ac, _op, None, env, out)
-        });
+        return crate::specials::rerun_apart(cx, call, _op, args, env, out, do_nextmethod);
     }
     let unbound = cx.unbound().sexp();
     cx.scope(|cx, s| {
