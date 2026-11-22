@@ -9,12 +9,30 @@ use robigo_rtcore::clib::category as lc;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Char, Cx, Encoding, Lgl, Out, RResult, Ref, Root};
 
-/// `interactive()`: robigo-rt runs scripts as Rscript does (`R_Interactive`
-/// is FALSE).
+/// The session's `R_Interactive`, which the front end sets
+/// ([`set_interactive`]) as `Rf_initialize_R` computes it; FALSE until then.
+pub struct Interactive(pub std::cell::Cell<bool>);
+
+/// Whether R is interactive (`R_Interactive`).
+pub fn interactive(cx: &Cx) -> bool {
+    cx.ext::<Interactive>().is_some_and(|i| i.0.get())
+}
+
+/// Set `R_Interactive` (the front end, from `--interactive`, a terminal
+/// on stdin, and a FILE or `-e`, as unix/system.c's `Rf_initialize_R`).
+pub fn set_interactive(cx: &mut Cx, on: bool) {
+    match cx.ext::<Interactive>() {
+        Some(i) => i.0.set(on),
+        None => cx.set_ext(Interactive(std::cell::Cell::new(on))),
+    }
+}
+
+/// `interactive()`: `R_Interactive`.
 // R: sysutils.c:do_interactive
 pub fn do_interactive(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::row!("interactive").check_arity(cx, call, args)?;
-    cx.build_scalar(out, Lgl::FALSE)
+    let on = interactive(cx);
+    cx.build_scalar(out, Lgl(on as i32))
 }
 
 /// `.Internal(Sys.getenv(x, unset))`: each variable's value (`unset` if it
