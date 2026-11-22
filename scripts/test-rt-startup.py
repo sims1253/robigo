@@ -303,6 +303,14 @@ calls=6 0
 cfn=(12) (99)'2
 calls=7 0
 1 7
+frfn=(13) realloc
+jfn=(14) calloc
+cfn=(13)
+calls=2 0
+1 2
+cfn=(14)
+calls=1 0
+1 1
 """
 
     def test_which_rows_are_measured_over_the_shifts(self):
@@ -326,8 +334,9 @@ calls=7 0
             # free'2 5, __libc_malloc 1, free'3 written as a reference with a
             # suffix (--compress-mangled=yes) 2 + 4, malloc under a caller
             # (--separate-callers), referenced 3 and named 6; not
-            # freelist_push or strlen, nor a reference to a name never given
-            self.assertEqual(iv.allocator_calls(f.name), 30)
+            # freelist_push or strlen, nor a reference to a name never given;
+            # realloc and calloc first named on frfn= and jfn= lines, 2 + 1
+            self.assertEqual(iv.allocator_calls(f.name), 33)
         finally:
             os.unlink(f.name)
 

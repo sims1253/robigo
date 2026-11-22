@@ -271,8 +271,10 @@ def allocator_calls(cg):
     # bytes from a path)
     with open(cg, errors="replace") as f:
         for ln in f:
-            if ln.startswith(("cfn=", "fn=")):
-                m = re.match(r"c?fn=\((\d+)\)(?: (.*))?", ln)
+            # (a name may be given on any function tag: fn=, cfn=, and frfn=
+            # and jfn= under some options; only cfn= names the callee)
+            if ln.startswith(("cfn=", "fn=", "frfn=", "jfn=")):
+                m = re.match(r"(?:c|fr|j)?fn=\((\d+)\)(?: (.*))?", ln)
                 if m:
                     if m.group(2):
                         names[m.group(1)] = m.group(2).strip()
