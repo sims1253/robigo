@@ -803,9 +803,10 @@ impl<'g> Comp<'g> {
         debug_assert_eq!(dst, R_FIRST);
         let mut p = Comp::new(self.cx, self.st, Profile::Bc, Some(Cenv::for_translation()));
         // (the constants pool sized for the byte code's constants at once,
-        // so it does not rehash while each pass fills it)
-        // SAFETY: the caller's contract: a VECSXP.
-        let nk = unsafe { consts.std_len() } as usize;
+        // so it does not rehash while each pass fills it; `mkCode` takes
+        // any constants, NULL among them: a hint only for a list)
+        // SAFETY: the caller's contract: live constants; a VECSXP's length.
+        let nk = unsafe { if consts.typ() == VECSXP { consts.std_len() as usize } else { 0 } };
         p.pool.reserve(nk);
         self.pool.reserve(nk);
         let r = p.alloc();
