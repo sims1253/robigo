@@ -144,7 +144,11 @@ class Meter:
         return ir, c["est_cycles"]
 
     def per_iteration(self, name, n, run):
-        counts = [run(k, os.path.join(self.tmp, f"{name}-{k}.cg")) for k in (n, 2 * n)]
+        files = [os.path.join(self.tmp, f"{name}-{k}.cg") for k in (n, 2 * n)]
+        counts = [run(k, f) for k, f in zip((n, 2 * n), files)]
+        # the loop's calls of the C library's allocator, per iteration
+        # (cmd_rows' heap shifts)
+        self.last_alloc_calls = (allocator_calls(files[1]) - allocator_calls(files[0])) / n
         if isinstance(counts[0], tuple):
             return tuple((b - a) / n for a, b in zip(*counts))
         return (counts[1] - counts[0]) / n
@@ -229,6 +233,32 @@ def load_rows(path, rx=None):
     return [r for r in rows if not rx or re.search(rx, r["name"])]
 
 
+# the C library's allocator: a loop that calls it follows the initial heap
+ALLOCATOR = frozenset(("malloc", "calloc", "realloc", "free"))
+
+
+def allocator_calls(cg):
+    """Calls of ALLOCATOR's functions in the callgrind file `cg`."""
+    names, cfn, n = {}, None, 0
+    with open(cg) as f:
+        for ln in f:
+            if ln.startswith("cfn="):
+                m = re.match(r"cfn=\((\d+)\)(?: (.*))?", ln)
+                if m:
+                    if m.group(2):
+                        names[m.group(1)] = m.group(2).strip()
+                    cfn = names.get(m.group(1))
+                else:
+                    cfn = ln[4:].strip()
+            elif ln.startswith("fn="):
+                m = re.match(r"fn=\((\d+)\) (.*)", ln)
+                if m:
+                    names[m.group(1)] = m.group(2).strip()
+            elif ln.startswith("calls=") and cfn in ALLOCATOR:
+                n += int(ln[6:].split()[0])
+    return n
+
+
 def shifted(setup, k):
     """A row's setup after `k` unrelated strings: the heap shift of
     --shifts. k = 0 is the row as written."""
@@ -244,11 +274,17 @@ def median(xs):
 def cmd_rows(a, m):
     """Each row's instructions (and estimated cycles) per iteration; no floors.
 
-    With --shifts, a row marked `address_sensitive` (one whose count follows
-    where its strings were allocated: GNU R's and robigo-rt's string hash is
-    an address hash, unique.c:cshash) is measured once per heap shift, after
-    k unrelated strings, and reports the median, with every shift's count in
-    the JSON (docs/ledger/g3/2026-11-17-address-rows.md)."""
+    With --shifts, a row is measured once per heap shift, after k unrelated
+    strings, and reports the median, with every shift's count in the JSON
+    (docs/ledger/g3/2026-11-17-address-rows.md), when its count can follow
+    the initial heap:
+    - a row marked `address_sensitive`, whose count follows where its
+      strings were allocated (GNU R's and robigo-rt's string hash is an
+      address hash, unique.c:cshash);
+    - a row whose loop calls the C library's allocator (ALLOCATOR, counted
+      in its first measurement): malloc's paths follow the heap's initial
+      state, which the binary's layout and the script's path length move
+      (#974's s3, docs/ledger/g3/2026-11-23-startup-rows.md)."""
     both = not a.no_r and not a.no_robigo
     cols = ["row", "group"]
     if not a.no_robigo:
@@ -259,14 +295,26 @@ def cmd_rows(a, m):
     out = {}
     for d in load_rows(a.rows, a.filter):
         tag = f"{d['name']}-"
-        ks = a.shifts if a.shifts and d.get("address_sensitive") else [0]
         rs, gs = [], []
-        for k in ks:
+        allocs = {}
+
+        def one(k):
             setup = shifted(d["setup"], k)
-            r = None if a.no_robigo else m.robigo_iter(setup, d["body"], d["n"], f"{tag}{k}-")
-            g = None if a.no_r else m.gnur_iter(setup, d["body"], d["n"], f"{tag}{k}-")
+            r = g = None
+            if not a.no_robigo:
+                r = m.robigo_iter(setup, d["body"], d["n"], f"{tag}{k}-")
+                allocs.setdefault("robigo", getattr(m, "last_alloc_calls", 0))
+            if not a.no_r:
+                g = m.gnur_iter(setup, d["body"], d["n"], f"{tag}{k}-")
+                allocs.setdefault("gnur", getattr(m, "last_alloc_calls", 0))
             rs.append((r if a.cycles else (r, None)) if r is not None else (None, None))
             gs.append((g if a.cycles else (g, None)) if g is not None else (None, None))
+        one(0)
+        # the other shifts, for a row whose count can follow the initial heap
+        shift = a.shifts and (d.get("address_sensitive") or any(v > 0 for v in allocs.values()))
+        ks = [0] + [k for k in a.shifts if k != 0] if shift else [0]
+        for k in ks[1:]:
+            one(k)
 
         def mid(xs, i):
             v = [x[i] for x in xs if x[i] is not None]
@@ -279,7 +327,9 @@ def cmd_rows(a, m):
             cells += [f"{gi:,.0f}"] + ([f"{gc:,.0f}"] if a.cycles else []) + ([ratio(ri, gi)] if both else [])
         print("| " + " | ".join(cells) + " |", flush=True)
         out[d["name"]] = {"n": d["n"], "robigo_instr": ri, "robigo_est_cycles": rc,
-                          "gnur_instr": gi, "gnur_est_cycles": gc}
+                          "gnur_instr": gi, "gnur_est_cycles": gc,
+                          # the loop's allocator calls per iteration, at k = 0
+                          "allocator_calls": allocs}
         if len(ks) > 1:
             # every shift's count: the median above is what the row reports
             out[d["name"]]["shifts"] = {str(k): {"robigo_instr": r[0], "robigo_est_cycles": r[1],
@@ -340,7 +390,8 @@ def main():
                     help="with --cycles: callgrind's cache model, the host's or the pinned 32 MB 16-way one "
                          "(docs/ledger/g3/2026-11-16-cycles-study.md)")
     ap.add_argument("--shifts", type=lambda v: [int(k) for k in v.split(",")], metavar="K,K,...",
-                    help="with --rows: measure address_sensitive rows after each of these heap shifts "
+                    help="with --rows: measure a row whose count can follow the initial heap (address_sensitive, "
+                         "or its loop calls the C library's allocator) after each of these heap shifts "
                          "(k unrelated strings; 0 = as written) and report the median")
     ap.add_argument("--allocs", action="store_true",
                     help="with --rows: allocations per iteration (robigo-rt's ROBIGO_GC_STATS), no callgrind")

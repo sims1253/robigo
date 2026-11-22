@@ -1454,7 +1454,7 @@ jobs:
           path: rt-gnur.json
           # the measurement's inputs: the rows, the bars and their programs, the
           # scripts, and the rival's build (gnur-stock.sh, the tarball pin in r-src.sh)
-          key: ${{ steps.cpu.outputs.key }}-${{ hashFiles('benchmarks/rt/calls-rows.toml', 'benchmarks/rt/m1-bars.toml', 'benchmarks/rt/mem/*.R', 'benchmarks/suite/binarytrees.R', 'scripts/idiom-vs-r.py', 'scripts/rss.py', 'scripts/perf.py', 'scripts/gnur-stock.sh', 'scripts/r-src.sh') }}
+          key: ${{ steps.cpu.outputs.key }}-${{ hashFiles('benchmarks/rt/calls-rows.toml', 'benchmarks/rt/m1-bars.toml', 'benchmarks/rt/mem/*.R', 'benchmarks/suite/binarytrees.R', 'scripts/idiom-vs-r.py', 'scripts/rss.py', 'scripts/perf.py', 'scripts/rt-startup.py', 'scripts/gnur-stock.sh', 'scripts/r-src.sh') }}
       # The rival, GNU R's literal default build in this image's toolchain, is
       # needed only to measure GNU R: it does not depend on the CPU, so it is
       # cached per image and build script.
@@ -1488,6 +1488,9 @@ jobs:
       - name: M1 bars
         run: |
           python3 scripts/test-perf-rt-bars.py
+          python3 scripts/test-rt-startup.py
+          # (the starts, [[startup]], build .robigo/rt-home and rt-home-db
+          # with each binary in turn: scripts/rt-startup.py)
           main_flag=()
           if [ -f dist/robigo-rt-main ]; then main_flag=(--main dist/robigo-rt-main); fi
           python3 scripts/perf.py rt-bars --robigo-rt dist/robigo-rt "${main_flag[@]}" --gnur rt-gnur.json \
