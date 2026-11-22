@@ -978,7 +978,10 @@ static TZ_SESSION_DEPTH: std::sync::atomic::AtomicU32 = std::sync::atomic::Atomi
 /// another thread's session).
 /// Not `Send`: released on the thread that took it.
 struct TzSessionLock {
-    _not_send: std::marker::PhantomData<*const ()>,
+    // a raw pointer, not `PhantomData<*const ()>`: the type is not `Send`,
+    // and a compile-fail test's diagnostic names no std source (which
+    // rustc prints only where `rust-src` is installed)
+    _not_send: *const (),
 }
 
 impl TzSessionLock {
@@ -998,7 +1001,7 @@ impl TzSessionLock {
         } else {
             TZ_SESSION_DEPTH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
-        TzSessionLock { _not_send: std::marker::PhantomData }
+        TzSessionLock { _not_send: std::ptr::null() }
     }
 }
 
