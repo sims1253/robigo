@@ -115,7 +115,7 @@ impl Cx {
     /// Whether `x` is one of the freeze's objects.
     pub fn is_frozen(&self, x: crate::Ref<'_>) -> bool {
         // SAFETY: one read of the core.
-        unsafe { self.iso().core() }.is_frozen_at(x.sexp().addr())
+        unsafe { self.iso().core().is_frozen(x.sexp()) }
     }
 
     /// The freeze's invariant, checked (`ROBIGO_GC_FREEZE_CHECK`'s check):

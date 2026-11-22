@@ -264,6 +264,7 @@ impl Core {
                     continue;
                 }
                 self.make_immortal(x);
+                x.set_flag_raw(flags::FROZEN, true);
                 if x.typ() != CHARSXP {
                     x.set_refcnt(FROZEN_REFCNT);
                 }
@@ -273,7 +274,7 @@ impl Core {
                 work.extend_from_slice(&kids);
             }
         }
-        frozen.sort_unstable_by_key(|x| x.addr());
+        // (unsorted: membership is the header's FROZEN bit)
         self.frozen = frozen;
         // a frozen object with an ordinary child is a root from now on (the
         // global environment's referrers, a weak reference's, C's objects')
@@ -350,7 +351,8 @@ impl Core {
                             targets.push(k);
                         }
                     }
-                } else if self.is_frozen(k) && !self.is_frozen(o) {
+                // SAFETY: both reached from the log or the frozen set: live.
+                } else if unsafe { self.is_frozen(k) && !self.is_frozen(o) } {
                     // an ordinary object's edge into the frozen set
                     parents.entry(k.addr()).or_default().push(o);
                 }
@@ -364,7 +366,8 @@ impl Core {
             up.insert(t.addr());
         }
         while let Some(t) = targets.pop() {
-            if self.is_frozen(t) {
+            // SAFETY: a target is live (the caller's contract).
+            if unsafe { self.is_frozen(t) } {
                 thaw.insert(t.addr());
             }
             if let Some(ps) = parents.get(&t.addr()) {
@@ -423,15 +426,14 @@ impl Core {
         }
     }
 
-    /// Whether `x` is one of the freeze's objects.
-    pub(crate) fn is_frozen(&self, x: Sexp) -> bool {
-        self.is_frozen_at(x.addr())
-    }
-
-    /// Whether the object at `addr` is one of the freeze's objects (an
-    /// address compared, nothing read: any address may be asked).
-    pub fn is_frozen_at(&self, addr: usize) -> bool {
-        self.frozen.binary_search_by_key(&addr, |f| f.addr()).is_ok()
+    /// Whether `x` is one of the freeze's objects: its [`flags::FROZEN`]
+    /// bit (the frozen list is not searched, nor kept sorted for it).
+    ///
+    /// # Safety
+    /// `x` is a live object of this heap.
+    pub unsafe fn is_frozen(&self, x: Sexp) -> bool {
+        // SAFETY: the caller's contract.
+        unsafe { x.flags() & flags::FROZEN != 0 }
     }
 
     /// Queue a frozen object to become ordinary at the next collection (a
@@ -446,7 +448,8 @@ impl Core {
         if x.is_null() || unsafe { x.flags() } & flags::IMMORTAL == 0 {
             return;
         }
-        if self.is_frozen(x) {
+        // SAFETY: the caller's contract: `x` is live.
+        if unsafe { self.is_frozen(x) } {
             self.pending_unfreeze.push(x);
         }
     }
@@ -477,7 +480,7 @@ impl Core {
     unsafe fn make_mortal(&mut self, x: Sexp) {
         // SAFETY: the caller's contract.
         unsafe {
-            x.set_flag_raw(flags::IMMORTAL | flags::BARRIER, false);
+            x.set_flag_raw(flags::IMMORTAL | flags::BARRIER | flags::FROZEN, false);
             if x.typ() == CHARSXP && x.gp() & gp::charsxp::CACHED != 0 {
                 self.immortal_chars -= 1;
             }
