@@ -37,19 +37,95 @@ struct Loop<'s> {
     pp: i32,
 }
 
+/// Which builtin's call a [`Loop`] evaluates: each keeps its own
+/// [`BaseCalls`] entry.
+#[derive(Clone, Copy)]
+enum Which {
+    Lapply,
+    Vapply,
+}
+
+/// The call `FUN(X[[i]], ...)` of base's `lapply` and of its `vapply`, one
+/// each per isolate, built at the first invocation and kept (rooted as
+/// globals) for every later one. GNU R builds `R_fcall` afresh on each
+/// invocation, and evaluates it by the AST interpreter, which compiles
+/// nothing; robigo-rt's first evaluation of a call compiles it and caches
+/// the code on it (`X[[i]]`'s, when its promise is forced), so a fresh
+/// call cost every invocation one compile (docs/ledger/g3/
+/// 2026-11-23-apply-fcall.md). The kept call is not mutable
+/// (MARK_NOT_MUTABLE, its `X[[i]]` too): R code sees it only through
+/// `sys.call()`, and a change to what that returns copies it first.
+///
+/// Kept only for a call evaluated in a frame of a closure of the base
+/// namespace (base's own `lapply`/`vapply`, which name `X` and `FUN`): the
+/// code compiled on it under the `Bc` profile (`ROBIGO_RT_PROFILE`) takes
+/// cmp.R's decisions from that environment, the same for every invocation
+/// there. Any other `.Internal(lapply(...))` builds its call afresh, as
+/// before.
+#[derive(Default)]
+struct BaseCalls {
+    lapply: std::cell::RefCell<Option<robigo_rtcore::Global>>,
+    vapply: std::cell::RefCell<Option<robigo_rtcore::Global>>,
+}
+
+/// [`BaseCalls`]' call for `which`, if one is kept and is `fun(x[[i]],
+/// ...)` and `rho` a frame of a base namespace closure: rooted in `s`.
+fn kept_call<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    which: Which,
+    x: Root<'_>,
+    fun: Root<'_>,
+    rho: Root<'_>,
+) -> Option<Root<'s>> {
+    let st = cx.ext::<BaseCalls>()?;
+    let slot = match which {
+        Which::Lapply => st.lapply.borrow(),
+        Which::Vapply => st.vapply.borrow(),
+    };
+    let c = slot.as_ref()?.bind(cx);
+    let fc = c.as_cons()?;
+    let tmp = fc.cdr().as_cons()?.car().as_cons()?;
+    let same = fc.car() == fun.bind(cx) && tmp.cdr().as_cons()?.car() == x.bind(cx);
+    (same && in_base_closure(cx, rho)).then(|| s.root(cx, c))
+}
+
+/// Whether `rho` is the frame of a closure of the base namespace.
+fn in_base_closure(cx: &Cx, rho: Root<'_>) -> bool {
+    match rho.bind(cx).view() {
+        View::Env(e) => e.enclos() == cx.base_namespace(),
+        _ => false,
+    }
+}
+
 impl<'s> Loop<'s> {
-    fn new(cx: &mut Cx, s: Scope<'s>, x: Root<'_>, fun: Root<'_>, rho: Root<'_>, pp: i32) -> RResult<Loop<'s>> {
+    fn new(
+        cx: &mut Cx,
+        s: Scope<'s>,
+        which: Which,
+        x: Root<'_>,
+        fun: Root<'_>,
+        rho: Root<'_>,
+        pp: i32,
+    ) -> RResult<Loop<'s>> {
         let isym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"i")?.into())))?;
-        let fcall = s.capture(cx, |cx, o| {
-            cx.build(o, |cx| {
-                let b2 = cx.install(b"[[")?;
-                let dots = cx.sym(RSym::Dots);
-                let tmp = cx.lang3(b2.into(), x.bind(cx), isym.bind(cx))?;
-                cx.lang3(fun.bind(cx), tmp, dots.into())
-            })
-        })?;
-        // MARK_NOT_MUTABLE(R_fcall): the call is not handed to R code to
-        // modify; nothing here writes it
+        let fcall = match kept_call(cx, s, which, x, fun, rho) {
+            Some(c) => c,
+            None => {
+                let fcall = s.capture(cx, |cx, o| {
+                    cx.build(o, |cx| {
+                        let b2 = cx.install(b"[[")?;
+                        let dots = cx.sym(RSym::Dots);
+                        let tmp = cx.lang3(b2.into(), x.bind(cx), isym.bind(cx))?;
+                        cx.lang3(fun.bind(cx), tmp, dots.into())
+                    })
+                })?;
+                if in_base_closure(cx, rho) {
+                    keep_call(cx, s, which, fcall);
+                }
+                fcall
+            }
+        };
         let ind = s.capture(cx, |cx, o| cx.build_scalar(o, 0i32))?;
         let rho = s.root(cx, rho.bind(cx));
         cx.define_var(isym, ind, rho)?;
@@ -58,7 +134,38 @@ impl<'s> Loop<'s> {
         cx.find_var_loc_in_frame(rho, isym, loc)?;
         Ok(Loop { fcall, isym, ind, loc: locr, rho, pp })
     }
+}
 
+/// `fcall` kept as `which`'s [`BaseCalls`] call, unless one is kept already
+/// (another shape: that one stays), made not mutable with its `X[[i]]`.
+fn keep_call(cx: &mut Cx, s: Scope<'_>, which: Which, fcall: Root<'_>) {
+    if cx.ext::<BaseCalls>().is_none() {
+        cx.set_ext(BaseCalls::default());
+    }
+    let taken = {
+        let st = cx.ext::<BaseCalls>().unwrap();
+        match which {
+            Which::Lapply => st.lapply.borrow().is_some(),
+            Which::Vapply => st.vapply.borrow().is_some(),
+        }
+    };
+    if taken {
+        return;
+    }
+    // MARK_NOT_MUTABLE(R_fcall), and its X[[i]]: no writer changes the
+    // call for the next invocation
+    let tmp = s.root(cx, fcall.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().car());
+    cx.mark_not_mutable(fcall);
+    cx.mark_not_mutable(tmp);
+    let g = cx.global(fcall.bind(cx));
+    let st = cx.ext::<BaseCalls>().unwrap();
+    match which {
+        Which::Lapply => *st.lapply.borrow_mut() = Some(g),
+        Which::Vapply => *st.vapply.borrow_mut() = Some(g),
+    }
+}
+
+impl<'s> Loop<'s> {
     /// Element `i`'s value (`R_forceAndCall(R_fcall, 1, rho)`), written to
     /// `out`; then `i`'s vector made fresh again if the callee captured or
     /// replaced it.
@@ -115,7 +222,7 @@ pub fn do_lapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
         })?;
         // PROTECT(XX), PROTECT(ans), PROTECT(tmp), PROTECT(R_fcall),
         // PROTECT_WITH_INDEX(ind), PROTECT_WITH_INDEX(loc.cell)
-        let lp = Loop::new(cx, s, x, fun, rho, 6)?;
+        let lp = Loop::new(cx, s, Which::Lapply, x, fun, rho, 6)?;
         for i in 0..n {
             cx.scope(|cx, t| {
                 let r = t.capture(cx, |cx, o| lp.call(cx, i, o))?;
@@ -197,7 +304,7 @@ pub fn do_vapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
         // PROTECT(X), PROTECT(XX), PROTECT(value), PROTECT(ans), with
         // names PROTECT(names) and PROTECT_WITH_INDEX(rowNames), then
         // PROTECT(ind), PROTECT(tmp), PROTECT(R_fcall)
-        let lp = Loop::new(cx, s, x, fun_sym, rho, 7 + 2 * use_names as i32)?;
+        let lp = Loop::new(cx, s, Which::Vapply, x, fun_sym, rho, 7 + 2 * use_names as i32)?;
         // each value goes into `ans` as FUN returns it: its data copied, its
         // elements linked (SET_STRING_ELT, SET_VECTOR_ELT), so a later call
         // of FUN that writes a value an earlier one returned writes an
