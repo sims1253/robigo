@@ -115,13 +115,16 @@ class Memory(unittest.TestCase):
         self.assertEqual(status, -signal.SIGTRAP)
         self.no_child_left()
 
-    def test_a_child_with_another_thread_is_refused(self):
-        prog = "import threading, time\nt = threading.Thread(target=time.sleep, args=(0.2,))\nt.start()\n" \
-               "import os\nos._exit(0)\n"
-        with self.assertRaises(SystemExit) as e:
-            su.memory([self.PY, "-c", prog], dict(os.environ))
-        self.assertIn("threads", str(e.exception))
-        self.no_child_left()
+    def test_a_child_that_starts_a_thread_is_refused(self):
+        # alive at exit, or started and joined long before it
+        for prog in ("import threading, time, os\nthreading.Thread(target=time.sleep, args=(0.2,)).start()\n"
+                     "os._exit(0)\n",
+                     "import threading\nt = threading.Thread(target=lambda: bytearray(8 << 20))\nt.start()\n"
+                     "t.join()\n"):
+            with self.assertRaises(SystemExit) as e:
+                su.memory([self.PY, "-c", prog], dict(os.environ))
+            self.assertIn("thread", str(e.exception))
+            self.no_child_left()
 
     def test_a_run_over_its_time_is_killed(self):
         with self.assertRaises(SystemExit) as e:
@@ -130,15 +133,18 @@ class Memory(unittest.TestCase):
         self.no_child_left()
 
     def test_an_exception_while_traced_reaps_the_child(self):
-        # the reading fails at the first stop: the child must not be left behind
-        saved = su.anon_kib
-        su.anon_kib = lambda pid: (_ for _ in ()).throw(OSError("no /proc"))
-        try:
-            with self.assertRaises(OSError):
-                su.memory([self.PY, "-c", "print(1)"], dict(os.environ))
-        finally:
-            su.anon_kib = saved
-        self.no_child_left()
+        # a reading that fails at a system-call stop, and one that fails at
+        # the exit stop (where a SIGKILL is dropped): no child is left
+        fail = lambda pid: (_ for _ in ()).throw(OSError("no /proc"))  # noqa: E731
+        for name in ("anon_kib", "status_kib"):
+            saved = getattr(su, name)
+            setattr(su, name, fail)
+            try:
+                with self.assertRaises(OSError):
+                    su.memory([self.PY, "-c", "print(1)"], dict(os.environ))
+            finally:
+                setattr(su, name, saved)
+            self.no_child_left()
 
 
 class AllocatorCalls(unittest.TestCase):

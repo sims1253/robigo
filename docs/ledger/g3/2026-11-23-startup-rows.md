@@ -52,8 +52,9 @@ read the plan first.
       - memory the kernel takes back by itself between two stops (swapping
         out, splitting an underused huge page) makes it read low; perf-rt's
         runners have no swap;
-      - a start with more than one thread is refused, since an untraced
-        thread's memory could be missed.
+      - a start that starts a thread is refused when the thread is made
+        (`PTRACE_O_TRACECLONE`), since its memory would be missed even if it
+        were joined before exit. robigo-rt's and GNU R's starts start none.
     - A start makes a few thousand system calls; the stops cost well under
       a second per run.
     - Two readings were tried and rejected first:
@@ -83,14 +84,18 @@ read the plan first.
   Each number is the median of `--startup-runs` runs (default 9) of its
   kind. The child fails loudly if the kernel refuses the personality;
   perf-rt's container runs with `seccomp=unconfined`.
-- **The harness's own safety** (Sol, rounds 1 and 2):
+- **The harness's own safety** (Sol, rounds 1–3):
   - the child's output goes to a temporary file, never a pipe, so a start
     that prints much cannot block before its exit;
-  - the parent's side is in `try/finally`. It kills a child still traced on
-    any exception and resumes it through its exit stop until it is reaped;
+  - the parent's side is in `try/finally`. On any exception it resumes a
+    child still traced (it may sit in a stop already consumed, where a
+    SIGKILL is dropped), kills it, and resumes it through its exit stop
+    until it and any traced thread are reaped;
   - an exec has its own event stop (`PTRACE_O_TRACEEXEC`), so a real
     SIGTRAP is passed on to the child, as every other signal is;
-  - a run over 300 s is killed and reported;
+  - a run over 300 s is killed through a pidfd, so never a process that
+    reused the pid, and the timeout is recorded under a lock rather than
+    inferred;
   - a main or GNU R record without one of the three numbers is not judged.
 - **The gate against main's binary** (the foreman's decision):
   - instructions +0.5%, as the rows;
@@ -161,9 +166,11 @@ GNU R 4.6.2, the local build (`rt-startup.py --gnur`):
   - an exit status comes back, with and without the system-call stops, and
     no child is left;
   - a real SIGTRAP ends the child, as its default action does;
-  - a child with a second thread is refused;
+  - a child that starts a thread is refused, whether the thread is alive
+    at exit or was joined long before it;
   - a run over its time is killed;
-  - an exception while the child is traced leaves no child behind;
+  - a reading that fails at a system-call stop, or at the exit stop, leaves
+    no child behind;
 - the gate's three limits at and over their edges, including the
   anonymous floor;
 - that a start main lacks, wholly or in part, is not judged;

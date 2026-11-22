@@ -83,9 +83,11 @@ ANON_LIMIT = 1.0
 ANON_FLOOR_KIB = 64
 RSS_LIMIT = 5.0
 
-PTRACE_TRACEME, PTRACE_CONT, PTRACE_SYSCALL, PTRACE_SETOPTIONS = 0, 7, 24, 0x4200
-PTRACE_O_TRACESYSGOOD, PTRACE_O_TRACEEXEC, PTRACE_O_TRACEEXIT = 0x1, 0x10, 0x40
-PTRACE_EVENT_EXEC, PTRACE_EVENT_EXIT = 4, 6
+PTRACE_TRACEME, PTRACE_CONT, PTRACE_SYSCALL, PTRACE_SETOPTIONS, PTRACE_GETEVENTMSG = 0, 7, 24, 0x4200, 0x4201
+PTRACE_O_TRACESYSGOOD, PTRACE_O_TRACECLONE, PTRACE_O_TRACEEXEC, PTRACE_O_TRACEEXIT = 0x1, 0x8, 0x10, 0x40
+PTRACE_EVENT_CLONE, PTRACE_EVENT_EXEC, PTRACE_EVENT_EXIT = 3, 4, 6
+# waitpid's flag for a traced thread as well as a process
+WALL = 0x40000000
 # a run's limit in seconds: a start that loops is killed, not waited on
 TIMEOUT = 300
 # personality(2)'s flag that turns address-space randomization off (setarch -R)
@@ -93,6 +95,15 @@ ADDR_NO_RANDOMIZE = 0x0040000
 libc = ctypes.CDLL(None, use_errno=True)
 libc.ptrace.argtypes = [ctypes.c_long, ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p]
 libc.ptrace.restype = ctypes.c_long
+
+
+def event_msg(pid):
+    """PTRACE_GETEVENTMSG: at a clone stop, the new thread's id."""
+    msg = ctypes.c_ulong()
+    if libc.ptrace(PTRACE_GETEVENTMSG, pid, None, ctypes.byref(msg)) == -1:
+        e = ctypes.get_errno()
+        raise OSError(e, f"ptrace(GETEVENTMSG): {os.strerror(e)}")
+    return msg.value
 
 
 def ptrace(req, pid, data=0):
@@ -137,18 +148,35 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
     - memory the kernel takes back by itself between two stops (swapping
       out, splitting an underused huge page) makes the reading low, by what
       it missed; perf-rt's runners have no swap;
-    - a thread the child starts is not traced, so a start with more than
-      one thread is refused.
+    - a thread the child starts would not be seen, so a start that starts
+      one is refused at the thread's creation (PTRACE_O_TRACECLONE).
 
     Peak RSS is VmHWM, read at the exit stop (PTRACE_EVENT_EXIT, before the
     kernel tears the memory down). Take it from a run without `syscalls`,
     whose stops do not change which file pages are faulted in (measure()).
     Signals other than ptrace's own go on to the child (a group-stop is
     resumed: a start has no job control). A run longer than `timeout`
-    seconds is killed."""
+    seconds is killed, through a pidfd, and reported."""
     out = tempfile.TemporaryFile()
     pid = None
+    pidfd = None
     timer = None
+    threads = []
+    # the timer's state, under its lock: whether it fired, whether the run is
+    # over (then it sends nothing)
+    clock = {"lock": threading.Lock(), "fired": False, "over": False}
+
+    def expire():
+        with clock["lock"]:
+            if clock["over"]:
+                return
+            clock["fired"] = True
+            try:
+                # through a pidfd: never another process that took the pid
+                signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
     try:
         pid = os.fork()
         if pid == 0:
@@ -164,6 +192,7 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
                 os.execve(cmd[0], cmd, env)
             finally:
                 os._exit(127)
+        pidfd = os.pidfd_open(pid)
         # the stop at the first exec (a SIGTRAP, before the options are set)
         _, st = os.waitpid(pid, 0)
         if not os.WIFSTOPPED(st):
@@ -171,10 +200,11 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
             pid = None
             why = "personality(ADDR_NO_RANDOMIZE) refused" if code == 126 else f"exit status {code}"
             raise SystemExit(f"rt-startup: {cmd[0]} did not start under ptrace: {why}")
-        ptrace(PTRACE_SETOPTIONS, pid, PTRACE_O_TRACEEXIT | PTRACE_O_TRACEEXEC | PTRACE_O_TRACESYSGOOD)
-        timer = threading.Timer(timeout, lambda p=pid: os.kill(p, signal.SIGKILL))
+        ptrace(PTRACE_SETOPTIONS, pid,
+               PTRACE_O_TRACEEXIT | PTRACE_O_TRACEEXEC | PTRACE_O_TRACECLONE | PTRACE_O_TRACESYSGOOD)
+        timer = threading.Timer(timeout, expire)
         timer.start()
-        anon, hwm, threads = 0, None, 1
+        anon, hwm = 0, None
         go = PTRACE_SYSCALL if syscalls else PTRACE_CONT
         ptrace(go, pid)
         while True:
@@ -187,9 +217,14 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
                 # a system call's entry or exit
                 anon = max(anon, anon_kib(pid))
                 ptrace(go, pid)
+            elif sig == signal.SIGTRAP and event == PTRACE_EVENT_CLONE:
+                # a second thread, refused as it is made: its memory would not
+                # be seen (the new thread, traced too, is reaped with the child)
+                threads.append(event_msg(pid))
+                raise SystemExit(f"rt-startup: {cmd[0]} started a thread; the anonymous peak is measured "
+                                 "for one (memory())")
             elif sig == signal.SIGTRAP and event == PTRACE_EVENT_EXIT:
-                m = status_kib(pid)
-                hwm, threads = m["VmHWM"], m.get("Threads", 1)
+                hwm = status_kib(pid)["VmHWM"]
                 if syscalls:
                     anon = max(anon, anon_kib(pid))
                 ptrace(PTRACE_CONT, pid)
@@ -199,42 +234,54 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
             else:
                 # a signal for the child (a real SIGTRAP among them): it goes on
                 ptrace(go, pid, sig)
-        if os.WIFSIGNALED(st) and os.WTERMSIG(st) == signal.SIGKILL and not timer.is_alive():
+        with clock["lock"]:
+            clock["over"] = True
+            fired = clock["fired"]
+        if fired:
             raise SystemExit(f"rt-startup: {' '.join(cmd)} ran over {timeout} s")
         if hwm is None:
             raise SystemExit(f"rt-startup: no exit stop for {cmd[0]}")
-        if threads != 1:
-            raise SystemExit(f"rt-startup: {cmd[0]} ran {threads} threads; the anonymous peak is measured "
-                             "for one (memory())")
         out.seek(0)
         return anon, hwm, os.waitstatus_to_exitcode(st), out.read()
     finally:
+        with clock["lock"]:
+            clock["over"] = True
         if timer:
             timer.cancel()
             timer.join()
         if pid:
-            reap(pid)
+            reap(pid, threads)
+        if pidfd is not None:
+            os.close(pidfd)
         out.close()
 
 
-def reap(pid):
-    """Kill the traced child `pid` and wait it out: it may stop again (its
-    exit event) before it is gone, and is resumed until it is."""
+def reap(pid, threads=()):
+    """Kill the traced child `pid` and wait it and its traced `threads` out.
+    It may sit in a stop already consumed (a reading that failed at its exit
+    stop, where a SIGKILL is dropped), so it is resumed first; it may stop
+    again (its exit event) before it is gone, and is resumed until it is."""
+    for t in (pid, *threads):
+        try:
+            ptrace(PTRACE_CONT, t)
+        except OSError:
+            pass
     try:
         os.kill(pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
-    while True:
-        try:
-            _, st = os.waitpid(pid, 0)
-        except ChildProcessError:
-            return
-        if os.WIFEXITED(st) or os.WIFSIGNALED(st):
-            return
-        try:
-            ptrace(PTRACE_CONT, pid)
-        except OSError:
-            pass
+    for t in (*threads, pid):
+        while True:
+            try:
+                _, st = os.waitpid(t, WALL)
+            except ChildProcessError:
+                break
+            if os.WIFEXITED(st) or os.WIFSIGNALED(st):
+                break
+            try:
+                ptrace(PTRACE_CONT, t)
+            except OSError:
+                pass
 
 
 def instructions(cmd, env, valgrind):
