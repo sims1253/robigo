@@ -727,6 +727,25 @@ pub fn force(cx: &mut Cx, p: Root<'_>, out: Out<'_>) -> RResult<()> {
     cx.force_promise(p, out)
 }
 
+/// `eval(p, rho)` of a promise `p` (C code's evaluation of a promise):
+/// eval's `case PROMSXP` alone, without its dispatch on the type:
+/// `R_Visible`, the evaluation count, one level deeper (with
+/// `R_CheckStack`), byte code inactive, `forcePromise`. The isolate's
+/// `eval_promise` hook.
+// R: eval.c:eval (PROMSXP)
+pub fn eval_promise(cx: &mut Cx, p: Root<'_>, out: Out<'_>) -> RResult<()> {
+    cx.set_visible(true);
+    tick(cx)?;
+    let depthsave = cx.eval_depth();
+    cx.eval_depth_at(depthsave + 1)?;
+    let bc = cx.bc_inactive();
+    // (one level deeper, no protection more: robigo_rtcore's ppacct)
+    let r = cx.with_pp_excess(-1, |cx| cx.force_promise(p, out));
+    cx.bc_restore(bc);
+    cx.set_eval_depth(depthsave);
+    r
+}
+
 /// `eval(p, rho)` of the promise GNU R's binding in slot `index` of
 /// `frame` holds (the `force_arg` hook: `findFun3` forcing an argument):
 /// `eval`'s evaluation count and depth for the promise, then the slot
@@ -739,7 +758,9 @@ pub fn force_arg_eval(cx: &mut Cx, frame: Root<'_>, index: usize, out: Out<'_>) 
     cx.eval_depth_at(depthsave + 1)?;
     // (one level deeper, no protection more: robigo_rtcore's ppacct;
     // byte code inactive, as `eval` runs it)
-    let r = cx.without_bc(|cx| cx.with_pp_excess(-1, |cx| cx.force_arg(frame, index, out)));
+    let bc = cx.bc_inactive();
+    let r = cx.with_pp_excess(-1, |cx| cx.force_arg(frame, index, out));
+    cx.bc_restore(bc);
     cx.set_eval_depth(depthsave);
     r
 }

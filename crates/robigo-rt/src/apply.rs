@@ -172,7 +172,8 @@ pub fn force_and_call(cx: &mut Cx, call: Root<'_>, n: i32, rho: Root<'_>, out: O
                             // SAFETY: as above; rooted at once.
                             let pr = s2.root(cx, unsafe { Ref::from_sexp(p, cx) });
                             let o = s2.out(cx);
-                            cx.eval(pr, rho, o)
+                            // R: eval(p, rho)
+                            crate::eval::eval_promise(cx, pr, o)
                         })?;
                     } else if p == cx.missing_arg().sexp() {
                         let msg = format!("argument {} is empty", i + 1);

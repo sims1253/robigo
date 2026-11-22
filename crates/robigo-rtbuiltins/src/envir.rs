@@ -187,7 +187,7 @@ fn find_var1_mode(
                     p.replace_with(cx, |cx| Ok(vl.bind(cx)))?;
                     let o = vl.reset(cx);
                     // R: vl = eval(vl, rho)
-                    cx.eval(p, at, o)?;
+                    cx.eval_promise(p, o)?;
                 }
                 let v = vl.bind(cx);
                 if mode_class(v.sexptype()) == want && (want != OBJSXP || v.is_s4() == mode.s4) {
@@ -302,15 +302,15 @@ pub fn do_get<const CODE: u8>(
                 };
                 Err(cx.error(&msg))
             }
-            _ => get_value(cx, rval, genv, out),
+            _ => get_value(cx, rval, out),
         }
     })
 }
 
 /// `GET_VALUE`: a promise is evaluated (`eval(rval, genv)`).
-fn get_value(cx: &mut Cx, rval: Root<'_>, genv: Root<'_>, out: Out<'_>) -> RResult<()> {
+fn get_value(cx: &mut Cx, rval: Root<'_>, out: Out<'_>) -> RResult<()> {
     if rval.bind(cx).sexptype() == PROMSXP {
-        return cx.eval(rval, genv, out);
+        return cx.eval_promise(rval, out);
     }
     out.set(cx, rval.bind(cx));
     Ok(())
@@ -455,7 +455,7 @@ fn gfind<'s>(
         let p = s.root(cx, rval.bind(cx));
         let o = rval.reset(cx);
         // R: rval = eval(rval, env)
-        cx.eval(p, env, o)?;
+        cx.eval_promise(p, o)?;
     }
     Ok(rval)
 }
@@ -616,8 +616,7 @@ pub fn do_env2list(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
                     let p = t.root(cx, v.bind(cx));
                     let o = v.reset(cx);
                     // R: FrameValues's value = eval(value, R_GlobalEnv)
-                    let g = t.root(cx, cx.global_env());
-                    cx.eval(p, g, o)?;
+                    cx.eval_promise(p, o)?;
                 }
                 cx.owned_list(ans)?.set(i, v);
                 Ok(())
@@ -1402,8 +1401,7 @@ pub fn do_eapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
                     let p = t.root(cx, v.bind(cx));
                     let o = v.reset(cx);
                     // R: FrameValues's value = eval(value, R_GlobalEnv)
-                    let g = t.root(cx, cx.global_env());
-                    cx.eval(p, g, o)?;
+                    cx.eval_promise(p, o)?;
                 }
                 cx.owned_list(tmp2)?.set(i, v);
                 Ok(())
