@@ -255,6 +255,33 @@ fn missing_tree(home: &RHome, boot: Boot) -> Option<String> {
 
 /// The front end over `args`, with `home` the `R_HOME` that
 /// [`init_r_home`] has put in the environment.
+/// Whether `b` is one of R_common_command_line's options that robigo-rt
+/// reads (those it processes wherever they stand), or `--default-packages=`,
+/// which the R script reads before the front end runs.
+// R: CommandLineArgs.c:R_common_command_line; unix/R.sh.in
+fn common_option(b: &[u8]) -> bool {
+    matches!(
+        b,
+        b"--quiet"
+            | b"--silent"
+            | b"-q"
+            | b"--no-echo"
+            | b"--slave"
+            | b"-s"
+            | b"--save"
+            | b"--no-save"
+            | b"--vanilla"
+            | b"--no-environ"
+            | b"--no-site-file"
+            | b"--no-init-file"
+            | b"--no-restore"
+            | b"--no-restore-data"
+            | b"--restore"
+            | b"--verbose"
+            | b"--args"
+    ) || b.starts_with(b"--default-packages=")
+}
+
 fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     // Rf_initialize_R's system Renviron, before the options are read
     // (INTERIM(L5): GNU R's boot only; M1's loader gives the options their
@@ -282,9 +309,17 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     // the mode's, R's restore or Rscript's --no-restore, which Rscript puts
     // before the user's options)
     let mut restore: Option<bool> = None;
+    // after --interactive only R_common_command_line's options count: the
+    // unix front end's own loop stops there (`-f`, `--file=`, `-e` and a
+    // FILE after it are not seen, and R reads stdin)
+    // R: unix/system.c:Rf_initialize_R ("--interactive": force_interactive, break)
+    let mut after_interactive = false;
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         let b = a.as_encoded_bytes();
+        if after_interactive && !common_option(b) {
+            continue;
+        }
         match b {
             b"-e" => match it.next() {
                 Some(e) => exprs.push(e.as_encoded_bytes().to_vec()),
@@ -331,7 +366,7 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
             b"--no-restore" | b"--no-restore-data" => restore = Some(false),
             b"--restore" => restore = Some(true),
             b"--verbose" => {}
-            b"--interactive" => force_interactive = true,
+            b"--interactive" => (force_interactive, after_interactive) = (true, true),
             b"--no-readline" => {}
             _ if b.starts_with(b"--default-packages=") => {}
             // R: the rest are commandArgs()'s, whatever the mode (an
@@ -418,7 +453,10 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
         }
         // the console input is stdin, read as the session goes (below)
         Vec::new()
-    } else if let Some(f) = file {
+    } else {
+        // (a start with neither -e nor a FILE reads stdin: the console
+        // branch above made it `stdin`)
+        let f = file.expect("robigo: a start with no -e and no FILE is the console's");
         match std::fs::read(&f) {
             Ok(s) => s,
             Err(e) => {
@@ -428,9 +466,6 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
                 return 2;
             }
         }
-    } else {
-        eprint!("{USAGE}");
-        return 2;
     };
     // R_Quiet: --quiet, or --no-echo (which Rscript passes)
     let r_quiet = quiet || !r_mode;

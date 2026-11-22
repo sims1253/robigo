@@ -468,12 +468,12 @@ fn r_wait(cx: &mut Cx) -> bool {
     // (a SIGINT noted before the wait, or during it; the check and the
     // wait leave no gap between them)
     match robigo_rtcore::clib::wait_readable_or(0, || cx.take_user_interrupt()) {
-        Ok(true) => {
+        Ok(robigo_rtcore::clib::Ready::Interrupt) => {
             interrupt_at_top(cx);
             true
         }
         // (a read error: fgets's NULL, the end, follows)
-        Ok(false) | Err(_) => false,
+        Ok(robigo_rtcore::clib::Ready::Input) | Err(_) => false,
     }
 }
 

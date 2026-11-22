@@ -34,6 +34,9 @@ fn inputs() -> Vec<(&'static str, Vec<u8>)> {
         ("optna.R", b"options(echo = NA)\n3\n".to_vec()),
         ("last.R", b".Last <- function() cat(\"bye\\n\")\n1\n".to_vec()),
         ("stdin.R", b"1 + 1\n".to_vec()),
+        // --interactive against -f and -e, in either order
+        ("fi-file.R", b"cat(\"file\", interactive(), \"\\n\")\nstop(\"boom\")\ncat(\"after file\\n\")\n".to_vec()),
+        ("fi-stdin.R", b"cat(\"stdin\", interactive(), \"\\n\")\nstop(\"boom2\")\ncat(\"after stdin\\n\")\n".to_vec()),
         // the interactive console (`R --no-readline --interactive`): the
         // prompts, no echo, an error that does not end the session, warnings
         // interactive: the line taken up to its first NUL (Rf_ReplIteration)
@@ -109,6 +112,42 @@ fn cases(long_src: &[u8]) -> Vec<Case> {
             Some("interactive.R"),
             b"> [1] 2\n> [1] TRUE\n> [1] 6\n> > [1] 2\n> + + > [1] 2\n> > [1] NaN\n> [1] \"after\"\n> \n".to_vec(),
             b"Error: boom\nWarning message:\ncareful \nWarning message:\nIn log(-1) : NaNs produced\n",
+            0,
+        ),
+        // --interactive ends the unix front end's own options: a -f or -e
+        // after it is not seen, and R reads stdin interactively; one before
+        // it makes R not interactive (system.c: R_Interactive && ...).
+        // R_common_command_line's options count wherever they stand.
+        (
+            "interactive-then-f",
+            vec!["--no-save", "--no-readline", "--quiet", "--interactive", "-f", "fi-file.R"],
+            Some("fi-stdin.R"),
+            b"> stdin TRUE \n> > after stdin\n> \n".to_vec(),
+            b"Error: boom2\n",
+            0,
+        ),
+        (
+            "f-then-interactive",
+            vec!["--no-save", "--no-readline", "--quiet", "-f", "fi-file.R", "--interactive"],
+            Some("fi-stdin.R"),
+            b"> cat(\"file\", interactive(), \"\\n\")\nfile FALSE \n> stop(\"boom\")\n".to_vec(),
+            b"Error: boom\nExecution halted\n",
+            1,
+        ),
+        (
+            "interactive-then-e",
+            vec!["--no-save", "--no-readline", "--quiet", "--interactive", "-e", "1"],
+            Some("fi-stdin.R"),
+            b"> stdin TRUE \n> > after stdin\n> \n".to_vec(),
+            b"Error: boom2\n",
+            0,
+        ),
+        (
+            "interactive-then-quiet",
+            vec!["--no-save", "--no-readline", "--interactive", "--quiet"],
+            Some("fi-stdin.R"),
+            b"> stdin TRUE \n> > after stdin\n> \n".to_vec(),
+            b"Error: boom2\n",
             0,
         ),
         (
@@ -403,12 +442,18 @@ fn the_console_answers_before_stdin_ends() {
                 }
                 got.extend_from_slice(&b[..n]);
                 if got.windows(6).any(|w| w == b"[1] 2\n") {
-                    let _ = tx.send(got.clone());
+                    let _ = tx.send(got);
+                    return;
                 }
             }
+            // (the sender dropped here ends the wait at once: no value)
         });
         let got = rx.recv_timeout(std::time::Duration::from_secs(60));
         drop(stdin);
+        if got.is_err() {
+            // (a console that never answered may never end either)
+            let _ = child.kill();
+        }
         let _ = child.wait();
         assert!(got.is_ok(), "{args:?}: no value before stdin ended");
     }

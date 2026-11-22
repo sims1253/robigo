@@ -208,7 +208,22 @@ fn an_interrupt_at_the_interactive_prompt_starts_a_new_statement() {
     wait_for(b"> + > ");
     stdin.write_all(b"2\nx <- 5; x\n").unwrap();
     drop(stdin);
-    let status = child.wait().unwrap();
+    // bounded: a console that hangs after the interrupt fails the test,
+    // with what it wrote, instead of holding the job to its timeout
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "robigo-rt did not end after the console's input; it wrote {:?}",
+                String::from_utf8_lossy(&out.lock().unwrap())
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
     reader.join().unwrap();
     let err: Vec<u8> = err_reader
         .join()

@@ -119,9 +119,14 @@ fn boot_reading(
         .spawn()
         .unwrap_or_else(|e| panic!("running robigo-rt: {e}"));
     if let Some(bytes) = stdin {
-        // (all of it, then the end: the console reads it as it goes)
+        // (all of it, then the end: the console reads it as it goes; a run
+        // that halts first, as a script at a start-up error does, may close
+        // the pipe before the write lands: cli.rs's `run` allows that too)
         let mut w = o.stdin.take().unwrap();
-        std::io::Write::write_all(&mut w, bytes).unwrap();
+        match std::io::Write::write_all(&mut w, bytes) {
+            Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => panic!("writing robigo-rt's stdin: {e}"),
+            _ => {}
+        }
     }
     let o = o.wait_with_output().unwrap_or_else(|e| panic!("running robigo-rt: {e}"));
     let _ = std::fs::remove_dir_all(&home);
