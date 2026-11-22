@@ -633,8 +633,11 @@ pub fn clean_up(cx: &mut Cx, save: SaveAction, status: i32, run_last: bool) -> R
     match guarded {
         Ok(never) => match never {},
         Err(_) => {
-            // (the panic's message was printed by the hook)
-            eprintln!("robigo: a panic after quit()'s context reset: aborting");
+            // (the panic's message was printed by the hook; this line's
+            // write cannot panic, as eprintln! would on a stderr it cannot
+            // write: nothing between here and abort may unwind)
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(b"robigo: a panic after quit()'s context reset: aborting\n");
             std::process::abort()
         }
     }

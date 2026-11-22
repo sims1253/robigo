@@ -137,3 +137,16 @@ fn a_panic_after_quit_s_context_reset_aborts_without_returning() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "");
     assert!(err.contains("robigo: a panic after quit()'s context reset: aborting"), "{err}");
 }
+
+#[test]
+fn a_panic_after_quit_s_context_reset_aborts_with_stderr_unwritable() {
+    use std::os::unix::process::ExitStatusExt;
+    // the same with stderr on /dev/full: the guard's own report cannot be
+    // written, and still nothing unwinds (f()'s on.exit writes to stdout)
+    let mut cmd = front_end(&[("ROBIGO_PANIC_AFTER_RESET", "1")]);
+    cmd.args(["-e", "f <- function() { on.exit(cat('on.exit\\n')); quit('no', 3) }; f()"]);
+    cmd.stderr(std::fs::File::options().write(true).open("/dev/full").expect("opening /dev/full"));
+    let out = cmd.output().expect("running robigo-rt");
+    assert_eq!(out.status.signal(), Some(libc::SIGABRT), "{:?}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+}
