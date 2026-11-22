@@ -170,6 +170,64 @@ class Memory(unittest.TestCase):
             self.no_child_left()
 
 
+class Trees(unittest.TestCase):
+    """The starts' R_HOME trees: given as perf-rt-build's tarball, missing,
+    or to be built (refused in CI)."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp(prefix="rt-trees-")
+        self.env = {k: os.environ.get(k) for k in ("GITHUB_ACTIONS", "CI")}
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.d, ignore_errors=True)
+        for k, v in self.env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def tarball(self, members):
+        import io
+        import tarfile
+        path = os.path.join(self.d, "trees.tar")
+        with tarfile.open(path, "w") as t:
+            for name in members:
+                data = b"x"
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                t.addfile(info, io.BytesIO(data))
+        return path
+
+    def test_given_trees_replace_the_checkouts(self):
+        co = os.path.join(self.d, "co")
+        os.makedirs(os.path.join(co, ".robigo", "rt-home-db", "old"))
+        tar = self.tarball([".robigo/rt-home/library/base/R/base", ".robigo/rt-home-db/library/base/R/base.rdb"])
+        su.unpack_trees(tar, co)
+        self.assertEqual(su.tree_dirs(co), [".robigo/rt-home", ".robigo/rt-home-db"])
+        self.assertTrue(os.path.isfile(os.path.join(co, ".robigo/rt-home-db/library/base/R/base.rdb")))
+        self.assertFalse(os.path.exists(os.path.join(co, ".robigo/rt-home-db/old")))
+
+    def test_missing_trees_are_refused(self):
+        with self.assertRaises(SystemExit) as e:
+            su.unpack_trees(os.path.join(self.d, "none.tar"), self.d)
+        self.assertIn("no trees", str(e.exception))
+
+    def test_a_tarball_with_more_than_trees_is_refused(self):
+        for bad in ("etc/passwd", ".robigo/other/x", "../escape"):
+            tar = self.tarball([".robigo/rt-home/x", bad])
+            with self.assertRaises(SystemExit):
+                su.unpack_trees(tar, os.path.join(self.d, "co"))
+
+    def test_building_is_refused_in_ci(self):
+        os.environ["GITHUB_ACTIONS"] = "true"
+        with self.assertRaises(SystemExit) as e:
+            su.build_trees("/nonexistent", self.d)
+        self.assertIn("perf-rt-build", str(e.exception))
+        with self.assertRaises(SystemExit):
+            su.run("/nonexistent", ["interim"], self.d, trees=True)
+
+
 class AllocatorCalls(unittest.TestCase):
     CG = """events: Ir
 fn=(1) main

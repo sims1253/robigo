@@ -24,6 +24,33 @@ read the plan first.
   binary, measures it, then does the same for main's. A1 confirmed that one
   tree shared by two binaries is wrong: a rebuild for the other binary moves
   base.rdb's offsets. Building both trees takes about 32 s per binary.
+- **The trees in CI.** perf-rt runs in the oracle image, which has no Rust
+  toolchain, and `rt-home.sh` builds with cargo (the first run failed so:
+  "cargo: command not found"). So the trees are build products:
+  - `perf-rt-build`, which has the toolchain and now GNU R's sources, packs
+    each binary's trees (`rt-startup.py --pack-trees`): the PR's in its
+    checkout, main's in main's, by this checkout's rt-startup.py (main may
+    not have it);
+  - they ship as `dist/rt-trees.tar` and `rt-trees-main.tar`, about 20 MB
+    each, and perf-rt unpacks each one before measuring that binary
+    (`--trees`, `--main-trees`);
+  - in CI `rt-startup.py` refuses to build trees.
+- **Whether a tree travels:**
+  - boot checks only that the tree has base (`has_base`, `has_base_db`);
+  - the only absolute paths inside a tree are two informational records
+    (`.rt-home-db-builder`, `.rt-home-db-built-at`), which nothing reads at
+    boot;
+  - both jobs check out to the same workspace path, and the two images share
+    their Debian trixie base, so `tools.so` links the same;
+  - checked locally: main's trees, packed in one checkout and unpacked into
+    a bare directory, boot all three starts;
+  - the pack takes every `.robigo/rt-home*` directory, so C1's translation
+    cache (`<R_HOME>-cache`) will travel with its tree for `rdb-cache`.
+- **A start's count follows its tree's path:** from that bare directory,
+  whose path is longer, rdb with the JIT off counted 51.34M where the
+  checkout gave 50.83M (+1.0%), JIT on +0.3%, interim +0.05%. Both binaries
+  are measured from the same checkout path, so the gate compares like with
+  like; GNU R's numbers beside them are from another path, report only.
 - **Three numbers per start:**
   - **instructions:** callgrind's total for the whole process, the median
     over three environment shifts (a padding variable of 0, 100 and 1,000

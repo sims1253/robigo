@@ -1369,21 +1369,36 @@ jobs:
           key: rt
           # the rt job saves this cache; two jobs saving one key would race
           save-if: false
+      # the starts' R_HOME trees (perf-rt's [[startup]]) are build products:
+      # made here, with the toolchain and GNU R's sources, each binary's in
+      # its own checkout, and shipped beside the binaries (perf-rt runs in
+      # the oracle image, which has no cargo)
+      - uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
       - name: Build robigo-rt
         run: |
           cargo build --release --locked -p robigo-rtapi
           mkdir -p dist
           cp target/release/robigo-rt dist/robigo-rt
+          python3 scripts/rt-startup.py --robigo-rt dist/robigo-rt --pack-trees dist/rt-trees.tar
       - name: Build main's robigo-rt
         # the merge's base, HEAD^1, on the same cache: only the crates that
-        # differ rebuild
+        # differ rebuild. Its trees are main's checkout's, packed by this
+        # checkout's rt-startup.py (main's may not have it)
         if: github.ref != 'refs/heads/main'
         run: |
           git config --global --add safe.directory '*'
+          cp scripts/rt-startup.py "$RUNNER_TEMP/rt-startup.py"
           head=$(git rev-parse HEAD)
           git checkout -q --detach HEAD^1
           cargo build --release --locked -p robigo-rtapi
           cp target/release/robigo-rt dist/robigo-rt-main
+          python3 "$RUNNER_TEMP/rt-startup.py" --robigo-rt dist/robigo-rt-main --checkout . \
+            --pack-trees dist/rt-trees-main.tar
           git checkout -q --detach "$head"
       - uses: actions/upload-artifact@v7
         with:
@@ -1489,11 +1504,14 @@ jobs:
         run: |
           python3 scripts/test-perf-rt-bars.py
           python3 scripts/test-rt-startup.py
-          # (the starts, [[startup]], build .robigo/rt-home and rt-home-db
-          # with each binary in turn: scripts/rt-startup.py)
+          # (the starts, [[startup]], boot each binary from the trees
+          # perf-rt-build packed for it: scripts/rt-startup.py)
           main_flag=()
-          if [ -f dist/robigo-rt-main ]; then main_flag=(--main dist/robigo-rt-main); fi
-          python3 scripts/perf.py rt-bars --robigo-rt dist/robigo-rt "${main_flag[@]}" --gnur rt-gnur.json \
+          if [ -f dist/robigo-rt-main ]; then
+            main_flag=(--main dist/robigo-rt-main --main-trees dist/rt-trees-main.tar)
+          fi
+          python3 scripts/perf.py rt-bars --robigo-rt dist/robigo-rt --trees dist/rt-trees.tar \
+            "${main_flag[@]}" --gnur rt-gnur.json \
             --cycles --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
 
   # robigo-rt's corpus column (`corpus.py run --runtime rt`, against the rt

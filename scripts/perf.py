@@ -954,8 +954,12 @@ def cmd_rt_bars(a):
     starts = [e["name"] for e in spec.get("startup", [])] if not getattr(a, "no_startup", False) else []
     su = rt_startup() if starts else None
     runs = getattr(a, "startup_runs", 9)
-    s_new = su.run(a.robigo_rt, starts, ROOT, runs, trees=True, valgrind=valgrind_path()) if su else {}
-    s_main = su.run(a.main, starts, ROOT, runs, trees=True, valgrind=valgrind_path()) \
+    # (the trees packed by perf-rt-build in CI, --trees and --main-trees; built
+    # here otherwise, which rt-startup.py refuses in CI)
+    t_new = getattr(a, "trees", None) or True
+    t_main = getattr(a, "main_trees", None) or True
+    s_new = su.run(a.robigo_rt, starts, ROOT, runs, trees=t_new, valgrind=valgrind_path()) if su else {}
+    s_main = su.run(a.main, starts, ROOT, runs, trees=t_main, valgrind=valgrind_path()) \
         if su and a.main else {}
     out = a.out or os.path.join(STATE, "perf", "rt-bars.json")
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
@@ -1075,6 +1079,9 @@ def main():
     p.add_argument("--gnur", help="GNU R's side, measured on this machine by `rt-gnur` (default: the bars file's)")
     p.add_argument("--cycles", action="store_true", help="also estimated cycles (PINNED_CACHE), reported only")
     p.add_argument("--startup-runs", type=int, default=9, help="the starts' memory runs per start (default 9)")
+    p.add_argument("--trees", help="the R_HOME trees robigo-rt's build wrote, a tarball (rt-startup.py "
+                                   "--pack-trees); built here when not given (not in CI)")
+    p.add_argument("--main-trees", help="the same for main's binary")
     p.add_argument("--no-startup", action="store_true",
                    help="skip the starts (they rebuild the checkout's .robigo/rt-home-db per binary)")
     p = sub.add_parser("rt-gnur", help="GNU R's side of the M1 bars, measured on this machine")
