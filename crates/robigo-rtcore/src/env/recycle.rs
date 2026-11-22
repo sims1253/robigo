@@ -102,6 +102,18 @@ impl FramePool {
         }
     }
 
+    /// Drop every pooled frame, as a collection does: the boot heap's lazy
+    /// freeze's boundary, after which no frame allocated before it may be
+    /// handed out as a new one (it would read as a boot object: Sol r9 S15).
+    /// The quarantined frames stay (they are roots, and never reused).
+    pub(crate) fn clear_pool(&self) {
+        // SAFETY: a borrow that ends with this call, which calls nothing of
+        // ours.
+        for l in unsafe { &mut *self.lists.get() } {
+            l.clear();
+        }
+    }
+
     /// A pooled frame of `capacity` slots, if any (LIFO).
     pub(crate) fn take(&self, capacity: usize) -> Option<Sexp> {
         if capacity > MAX_CAPACITY {

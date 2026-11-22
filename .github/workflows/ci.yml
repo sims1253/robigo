@@ -162,7 +162,7 @@ jobs:
       # bitmaps, the size classes, and the symbol arena's threads interning
       # at once (H5). The collector's tests need the C shim.
       - name: Miri on the heap's layout and bitmaps
-        run: cargo +nightly-2026-11-02 miri test --locked -p robigo-heap --lib -- 'layout::' 'heap::bitmap_tests' 'heap::medium_tests' 'arena::'
+        run: cargo +nightly-2026-11-02 miri test --locked -p robigo-heap --lib -- 'layout::' 'heap::bitmap_tests' 'heap::medium_tests' 'arena::' 'gc::freeze'
 
   # G3's runtime crates (docs/g3.md §14.1, §16): their tests, then the
   # same under gctorture; the verification modes add steps as they land.
@@ -302,7 +302,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 20
+    timeout-minutes: 22
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
