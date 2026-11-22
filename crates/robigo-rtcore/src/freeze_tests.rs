@@ -216,7 +216,14 @@ fn a_frame_pooled_before_the_boundary_is_not_reused_after_it() {
         let b = out.root();
         cx.new_closure_frame(sh, g, g, &[], out)?;
         let b_addr = b.bind(cx).sexp().addr();
-        assert_eq!(b_addr, a_addr, "the pool hands the recycled frame out again");
+        // (ROBIGO_FRAME_QUARANTINE=1 holds every recycled frame back: none
+        // is reused, before the boundary or after it)
+        let quarantine = std::env::var("ROBIGO_FRAME_QUARANTINE").is_ok_and(|v| !v.is_empty() && v != "0");
+        if quarantine {
+            assert_ne!(b_addr, a_addr, "a quarantined frame was handed out again");
+        } else {
+            assert_eq!(b_addr, a_addr, "the pool hands the recycled frame out again");
+        }
         cx.cleanup_envir(b, None);
         cx.recycle_frame(b, None);
         // across the boundary it does not
