@@ -1074,10 +1074,11 @@ pub fn do_strptime(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
         };
         let mut rows: Vec<LtRow> = Vec::with_capacity(nn);
         let mut zones = Zones::default();
-        // kept across elements: x's bytes and characters, and the format of
-        // element `fj` as r_strptime reads it
+        // kept across elements: x's bytes and characters, and each format
+        // element as r_strptime reads it, made at its first use (a format
+        // that only NA elements would use is never translated, as in GNU R)
         let (mut xs, mut chars) = (Vec::new(), Vec::new());
-        let mut fmt: Option<(usize, Result<Vec<u32>, StrptimeError>)> = None;
+        let mut fmts: Vec<Option<Result<Vec<u32>, StrptimeError>>> = vec![None; m];
         for i in 0..nn {
             let tr = {
                 let x = args.get(cx, 0).as_vector::<Char<'_>>().unwrap().get(i % n);
@@ -1094,11 +1095,11 @@ pub fn do_strptime(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
                         xs.clear();
                         xs.extend_from_slice(&b);
                     });
-                    let fr = match &fmt {
-                        Some((j, _)) if *j == i % m => Ok(()),
-                        _ => {
+                    let fr = match &fmts[i % m] {
+                        Some(_) => Ok(()),
+                        None => {
                             let f = args.get(cx, 1).as_vector::<Char<'_>>().unwrap().get(i % m);
-                            tr(f, loc).map(|b| fmt = Some((i % m, strptime_format(wide, &b))))
+                            tr(f, loc).map(|b| fmts[i % m] = Some(strptime_format(wide, &b)))
                         }
                     };
                     Some((xr, fr))
@@ -1135,7 +1136,7 @@ pub fn do_strptime(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
                     loc: crate::text::ctype(loc),
                     warnings: Vec::new(),
                 };
-                let format = &fmt.as_ref().expect("the format of a non-NA element").1;
+                let format = fmts[i % m].as_ref().expect("the format of a non-NA element");
                 let r = r_strptime(&mut p, &xs, format, &mut chars);
                 let warnings = std::mem::take(&mut p.warnings);
                 for w in warnings {
@@ -1473,30 +1474,29 @@ pub fn do_as_posixct(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
                 View::Real(v) => v.as_slice().unwrap(),
                 _ => unreachable!("coerced"),
             };
-            let ints_of: [&[i32]; 9] = std::array::from_fn(|k| match k {
-                1..=5 | 8 => match comps[k].bind(cx).view() {
-                    View::Int(v) => v.as_slice().unwrap(),
-                    _ => unreachable!("coerced"),
-                },
-                _ => &[],
-            });
+            // the integer components mktime reads, with their positions
+            // (wday and yday, 6 and 7, it ignores)
+            let int_of = |k: usize| match comps[k].bind(cx).view() {
+                View::Int(v) => (v.as_slice().unwrap(), k),
+                _ => unreachable!("coerced"),
+            };
+            let [min_of, hour_of, mday_of, mon_of, year_of, isdst_of] = [1, 2, 3, 4, 5, 8].map(int_of);
             for i in 0..n {
                 // element i % nlen[k] (no division for a full-length one)
                 let at = |k: usize| if nlen[k] == n { i } else { i % nlen[k] };
-                let real = |_: &Cx, k: usize| secs_of[at(k)];
-                let int = |_: &Cx, k: usize| ints_of[k][at(k)];
-                let secs = real(cx, 0);
+                let int = |(v, k): (&[i32], usize)| v[at(k)];
+                let secs = secs_of[at(0)];
                 let fsecs = secs.floor();
                 let mut tm = Tm {
                     // avoid (int) NAN
                     sec: if secs.is_finite() { c_int(fsecs) } else { NA_INTEGER },
-                    min: int(cx, 1),
-                    hour: int(cx, 2),
-                    mday: int(cx, 3),
-                    mon: int(cx, 4),
-                    year: int(cx, 5),
+                    min: int(min_of),
+                    hour: int(hour_of),
+                    mday: int(mday_of),
+                    mon: int(mon_of),
+                    year: int(year_of),
                     // mktime ignores tm.tm_wday and tm.tm_yday
-                    isdst: if is_utc { 0 } else { int(cx, 8) },
+                    isdst: if is_utc { 0 } else { int(isdst_of) },
                     ..Tm::default()
                 };
                 let v = if !secs.is_finite() {
