@@ -54,10 +54,29 @@ impl Deref for NameBuf {
     }
 }
 
+impl AsRef<[u8]> for NameBuf {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+
+impl std::fmt::Debug for NameBuf {
+    /// The name's bytes, escaped as a byte string.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NameBuf(b\"{}\")", self.escape_ascii())
+    }
+}
+
 impl From<Vec<u8>> for NameBuf {
-    /// A name a slow path already copied (a translated one).
+    /// A name a slow path already copied (a translated one): a long one
+    /// keeps the Vec's buffer.
     fn from(v: Vec<u8>) -> NameBuf {
-        NameBuf::new(&v)
+        if v.len() <= NameBuf::INLINE {
+            NameBuf::new(&v)
+        } else {
+            NameBuf { len: v.len(), inline: [0; NameBuf::INLINE], heap: Some(v.into_boxed_slice()) }
+        }
     }
 }
 
@@ -70,6 +89,9 @@ mod tests {
         for n in [0, 1, NameBuf::INLINE, NameBuf::INLINE + 1, 300] {
             let b: Vec<u8> = (0..n).map(|i| (i % 251) as u8).collect();
             assert_eq!(&*NameBuf::new(&b), &b[..]);
+            assert_eq!(&*NameBuf::from(b.clone()), &b[..]);
+            assert_eq!(NameBuf::new(&b).as_ref(), &b[..]);
         }
+        assert_eq!(format!("{:?}", NameBuf::new(b"a\xe9")), "NameBuf(b\"a\\xe9\")");
     }
 }

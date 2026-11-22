@@ -7,7 +7,8 @@
 show <- function(expr) print(tryCatch(expr, error = function(e) conditionMessage(e)))
 long <- strrep("g", 70L)
 u <- "café"
-l <- iconv(u, "UTF-8", "latin1")
+l <- "caf\xe9"
+Encoding(l) <- "latin1"
 cat(Encoding(u), Encoding(l), nchar(long), "\n")
 x <- structure(1, class = "k")
 assign(paste0(long, ".k"), function(x) "the long name's method")
@@ -24,10 +25,10 @@ names(lst) <- c(long, u, "ab", "abc")
 e <- new.env()
 assign(long, "long in e", envir = e)
 assign(u, "u in e", envir = e)
-for (nm in list(long, u, l, "ab", substr(long, 1L, 66L))) {
-    show(eval(call("$", quote(lst), nm)))
-    show(eval(call("$", quote(lst), as.name(nm))))
-    show(eval(call("$", quote(e), nm)))
+for (nm in list(long, u, l, "ab", strrep("g", 66L))) {
+    show(eval(as.call(list(as.name("$"), quote(lst), nm))))
+    show(eval(as.call(list(as.name("$"), quote(lst), as.name(nm)))))
+    show(eval(as.call(list(as.name("$"), quote(e), nm))))
 }
 # install's checks on an environment's name (installTrChar)
 show(do.call("$", list(e, "")))
