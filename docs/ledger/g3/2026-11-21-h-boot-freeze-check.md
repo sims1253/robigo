@@ -101,6 +101,26 @@ Main makes no collection on that script, so the freeze point's collection replac
 
 > **Cost, judged with the freeze on.** `--vanilla -e 1`'s total instructions and peak RSS are within 1% of main's under the interim loader and under the rdb boot with the JIT on and off. With `young.R` under the rdb boot, the collector's cost per collection after the first is within 10% of the interim loader's per collection on main. The first collection, the one that freezes, costs at most twice main's first collection under the same boot. `young.R`'s collector total, the first collection included, is reported beside main's.
 
+**The startup clause's memory, as the foreman decided (2026-11-22):** it is judged on anonymous memory (peak `RssAnon`), within 1% of main's. Total peak RSS (`VmHWM`) is reported beside it, and may not grow by more than 5%.
+- **Why:** the file-backed part of the peak is the binary's pages that fault-around makes resident. It moves with code layout and size (+0.4 MB here for 45.8 KB of code), is shared page cache, and says nothing about what a session allocates. The 5% keeps code bloat visible.
+- **Scope:** the startup rows only (X's perf-rt startup rows). perf-rt's 2% peak-RSS rule on the N/2N rows stays as it is.
+
+Measured on this PR's head (4112b9af4) against main b0c49e869, `--vanilla -e 1`, `R_DEFAULT_PACKAGES=NULL`, the median of 61 interleaved runs, with the interquartile range:
+
+| | anonymous (`RssAnon`), freeze off | freeze on | total peak (`VmHWM`), freeze off | freeze on |
+|---|---|---|---|---|
+| interim loader (main 1,964 kB [1,960–1,984]) | 1,984 kB [1,984–1,988] (+1.0%) | 1,984 kB (+1.0%) | 9,864 against 10,172 kB (−3.0%) | 9,844 kB (−3.2%) |
+| rdb, JIT on (main 6,840 kB) | 6,840 kB (+0.0%) | 6,848 kB (+0.1%) | 15,832 against 15,980 kB (−0.9%) | 15,836 kB (−0.9%) |
+| rdb, JIT off (main 4,648 kB) | 4,652 kB (+0.1%) | 4,652 kB (+0.1%) | 13,620 against 13,780 kB (−1.2%) | 13,600 kB (−1.3%) |
+
+- **The interim loader's anonymous memory is +20 kB (five pages), at the 1% limit,** with the freeze off and on alike, so it is not the freeze's work. Where it is not:
+  - malloc: DHAT counts the same allocations, +654 bytes in all and +271 at the peak;
+  - the stack: `VmStk` is the same 132 kB;
+  - `Core`'s size: main with 112 bytes of padding in `Core` reads 1,960 kB;
+  - the writable sections: the same sizes, placed so that they span at most one more page.
+- **Address randomisation moves a single run by about ±20 kB** (main alone: 1,952–1,988 kB over 25 runs).
+- **Under the rdb boot** anonymous memory is within 0.1%, and total peak RSS is below main's under every boot.
+
 **Measured on the lazy freeze** (this PR's last commit; release binaries of it and of main 9b812ab47; callgrind instructions; peak RSS the median of 21 runs, interleaved):
 
 | clause | interim loader | rdb, JIT on | rdb, JIT off |
