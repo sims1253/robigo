@@ -105,8 +105,10 @@ PTRACE_O_TRACESYSGOOD, PTRACE_O_TRACECLONE, PTRACE_O_TRACEEXEC, PTRACE_O_TRACEEX
 PTRACE_EVENT_CLONE, PTRACE_EVENT_EXEC, PTRACE_EVENT_EXIT = 3, 4, 6
 # waitpid's flag for a traced thread as well as a process
 WALL = 0x40000000
-# a run's limit in seconds: a start that loops is killed, not waited on;
-# under callgrind, which runs a start some 50 times slower, its own
+# a run's limit in seconds: a start that loops is killed, not waited on.
+# Under callgrind, which runs a start some 50 times slower, a limit of its
+# own: an rdb start takes tens of seconds there, so 1,800 s is a hang, not a
+# slow runner
 TIMEOUT = 300
 CALLGRIND_TIMEOUT = 1800
 # personality(2)'s flag that turns address-space randomization off (setarch -R)
@@ -173,8 +175,9 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
     Peak RSS is VmHWM, read at the exit stop (PTRACE_EVENT_EXIT, before the
     kernel tears the memory down). Take it from a run without `syscalls`,
     whose stops do not change which file pages are faulted in (measure()).
-    Signals other than ptrace's own go on to the child (a group-stop is
-    resumed: a start has no job control). A run longer than `timeout`
+    Signals other than ptrace's own go on to the child; a stop signal then
+    group-stops it, and the group-stop is resumed (the restart's signal is
+    ignored there, ptrace(2)): a start has no job control. A run longer than `timeout`
     seconds is killed, through a pidfd, and reported."""
     out = tempfile.TemporaryFile()
     pid = None
@@ -252,7 +255,12 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
                 # a later exec: ptrace's stop, not a signal
                 ptrace(go, pid)
             else:
-                # a signal for the child (a real SIGTRAP among them): it goes on
+                # a signal for the child (a real SIGTRAP among them): it goes
+                # on. A stop signal delivered so group-stops the child, which
+                # reports as this same kind of stop; restarting it with the
+                # signal again resumes it, because a restart's signal is
+                # ignored in any stop but a signal's delivery (ptrace(2),
+                # "Signal injection and suppression")
                 ptrace(go, pid, sig)
         with clock["lock"]:
             clock["over"] = True

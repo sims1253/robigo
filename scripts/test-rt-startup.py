@@ -149,6 +149,17 @@ class Memory(unittest.TestCase):
             su.memory([self.PY, "-c", prog], dict(os.environ), timeout=20)
         self.no_child_left()
 
+    def test_a_stop_signal_is_resumed_not_held(self):
+        # the child stops itself (SIGSTOP and a terminal's SIGTSTP): delivered,
+        # then its group-stop resumed (a restart's signal is ignored there,
+        # ptrace(2)), so it runs on to its exit in time
+        for sig in ("SIGSTOP", "SIGTSTP"):
+            prog = f"import os, signal\nos.kill(os.getpid(), signal.{sig})\nprint('after')\n"
+            for syscalls in (True, False):
+                _, _, status, out = su.memory([self.PY, "-c", prog], dict(os.environ), syscalls, timeout=20)
+                self.assertEqual((status, out), (0, b"after\n"), (sig, syscalls))
+                self.no_child_left()
+
     def test_a_run_over_its_time_is_killed(self):
         with self.assertRaises(SystemExit) as e:
             su.memory([self.PY, "-c", "import time; time.sleep(30)"], dict(os.environ), timeout=1)
