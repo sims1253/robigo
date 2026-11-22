@@ -290,10 +290,12 @@ calls=9 0
         self.assertTrue(iv.follows_heap({}, {"robigo": 6.0}))
         # either side's loop is enough
         self.assertTrue(iv.follows_heap({}, {"robigo": 0.0, "gnur": 2.0}))
-        # s3 after #975: one call per 2,000 iterations, and plain's none
-        self.assertFalse(iv.follows_heap({}, {"robigo": 0.0005}))
+        # s3 after #975, one call per 2,000 iterations: still shifted (a
+        # rare realloc can copy in another layout), and plain's none: not
+        self.assertTrue(iv.follows_heap({}, {"robigo": 0.0005}))
         self.assertFalse(iv.follows_heap({}, {"robigo": 0.0}))
-        self.assertTrue(iv.follows_heap({}, {"robigo": iv.ALLOCATOR_FLOOR}))
+        # a side not measured is not in `allocs`
+        self.assertFalse(iv.follows_heap({}, {}))
 
     def test_counts_the_allocator_by_compressed_name(self):
         with tempfile.NamedTemporaryFile("w", suffix=".cg", delete=False) as f:

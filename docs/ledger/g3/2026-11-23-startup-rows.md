@@ -170,12 +170,13 @@ GNU R 4.6.2, the local build (`rt-startup.py --gnur`):
   slower malloc path.
 - **The rule now:** a row whose loop calls the C library's allocator
   (`malloc`, `calloc`, `realloc`, `free` calls in the 2N run minus the N
-  run, read from its k = 0 callgrind files) at least 0.1 times per
-  iteration is measured over the heap shifts and reports the median, as an
-  `address_sensitive` row always was (`idiom-vs-r.py`'s `follows_heap`).
-  - The floor keeps out a call now and then, such as a buffer's amortized
-    growth, which cannot move a per-iteration count the way a call every
-    iteration does.
+  run, read from its k = 0 callgrind files) at all is measured over the heap
+  shifts and reports the median, as an `address_sensitive` row always was
+  (`idiom-vs-r.py`'s `follows_heap`).
+  - There is no floor on how often (Sol): one rare `realloc` that extends in
+    place in one heap can copy a large buffer in another. One call per
+    2,000 iterations copying 200,000 instructions is 100 per iteration, 0.6%
+    of a 16,000-instruction row. So one layout's count cannot exempt a row.
   - The JSON records each row's `allocator_calls`.
 - **Checked:**
   - s3 at the harness's own path on the dense-tables binary: shift 0 is
@@ -195,8 +196,10 @@ GNU R 4.6.2, the local build (`rt-startup.py --gnur`):
   | main b84740012 (#975 in), interim | 0.0005 | 16,103.6, the shifts within 0.6 |
   | main b84740012 (#975 in), rdb | 0.0005 | 16,174.0, the shifts within 8 |
 
-  After #975, s3's loop calls the allocator once per 2,000 iterations, under
-  the floor, so it is one measurement again.
+  After #975, s3's loop calls the allocator once per 2,000 iterations and
+  stays measured over the shifts, at the cost of four more measurements of
+  it. Its shifts agree to within 0.6 and 8 instructions, which is the
+  evidence that it no longer follows the heap, not an exemption.
 
 ## Tests
 
