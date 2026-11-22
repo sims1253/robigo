@@ -409,6 +409,58 @@ def split_stdout(path, out):
                 f.write(data[m.end():end])
 
 
+def seal_big(out):
+    """Replace each big value's sidecar the driver wrote (`<id>.big<k>.rds`,
+    its saveRDS version 2 bytes) by `<id>.big<k>.sha256`: a record keeps a
+    big value's summary, and the comparison its digest (driver.R,
+    A4_BIG_BYTES)."""
+    try:
+        names = [n for n in os.listdir(out) if re.fullmatch(r"\d{6}\.big\d+\.rds", n)]
+    except FileNotFoundError:
+        return
+    for n in names:
+        p = os.path.join(out, n)
+        h = hashlib.sha256()
+        with open(p, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        with open(p[:-4] + ".sha256", "w") as f:
+            f.write(h.hexdigest() + "\n")
+        os.remove(p)
+
+
+def big_digests(rds):
+    """The digests of a record's big values (seal_big), by their k. Only a
+    record holding a summary (its uncompressed bytes name `a4_big`) has
+    any, so the directory is listed for those few records only."""
+    try:
+        with open(rds, "rb") as f:
+            if BIG_MARK not in f.read():
+                return []
+    except FileNotFoundError:
+        return []
+    d, base = os.path.split(rds)
+    stem = base[:-4]
+    out = []
+    for n in sorted(x for x in os.listdir(d) if x.startswith(stem + ".big") and x.endswith(".sha256")):
+        with open(os.path.join(d, n)) as f:
+            out.append((n[len(stem):], f.read().strip()))
+    return out
+
+
+# the name a big value's summary carries in a record (driver.R, a4big)
+BIG_MARK = b"a4_big"
+
+
+def same_record(a, b):
+    """Two cases' records alike: their bytes, their big values' digests,
+    what they printed and the files they made."""
+    with open(a, "rb") as f1, open(b, "rb") as f2:
+        if f1.read() != f2.read():
+            return False
+    return big_digests(a) == big_digests(b) and printed(a) == printed(b) and made(a) == made(b)
+
+
 def made(rds):
     """The files an External case left in its directory (empty otherwise)."""
     p = rds[:-4] + ".files"
@@ -497,8 +549,11 @@ def cmd_oracle(a):
 
         def go(out):
             if r.isolated:
-                return run_isolated(cmd, env, batch, out, n, r.key(a.seed, j))
-            return run_batch(cmd, env, batch, out, n, scratch)
+                lost = run_isolated(cmd, env, batch, out, n, r.key(a.seed, j))
+            else:
+                lost = run_batch(cmd, env, batch, out, n, scratch)
+            seal_big(out)
+            return lost
         lost = go(os.path.join(d, "records"))
         # a second run: a case whose two records differ (GNU R reading memory
         # it should not, on an input its wrapper never passes; a clock or a
@@ -509,8 +564,7 @@ def cmd_oracle(a):
             if i in lost:
                 continue
             a_, b_ = (os.path.join(x, f"{i:06d}.rds") for x in (os.path.join(d, "records"), again))
-            if i in lost2 or not os.path.exists(b_) or open(a_, "rb").read() != open(b_, "rb").read() \
-                    or printed(a_) != printed(b_) or made(a_) != made(b_):
+            if i in lost2 or not os.path.exists(b_) or not same_record(a_, b_):
                 lost[i] = "unstable"
         remove_dir(scratch)
         with open(os.path.join(d, "done"), "w") as f:
@@ -556,7 +610,7 @@ def classify(o, r, lost_o, lost_r, i):
     if i in lost_r or not os.path.exists(r):
         return lost_r.get(i, "crash")
     rb = open(r, "rb").read()
-    if ob == rb and printed(o) == printed(r) and made(o) == made(r):
+    if same_record(o, r):
         return "pass"
     if NOT_YET in rb:
         return "not-implemented"
@@ -581,6 +635,7 @@ def run_rt(a, row, jit, rt_bin, prefix):
     else:
         lost_r = run_batch([*prefix, rt_bin, "--vanilla", DRIVER], env, os.path.join(d, "batch.rds"), out,
                            len(cases), work)
+    seal_big(out)
     timed("robigo-rt: the driver over the batch", t0)
     t0 = time.monotonic()
     res = {}
@@ -604,13 +659,17 @@ def rscript():
 
 
 def diff_fields(pairs):
-    """render(), with "stdout" for the pairs whose records are equal (what
-    differs is what the case printed)."""
+    """render(), with "digest" for the pairs whose records are equal but a
+    big value's digest is not (their summaries agree: what differs is past
+    the first and last elements), else "stdout" (what the case printed),
+    else "files"."""
     out = render(pairs)
     for i, o, x in pairs:
         with open(o, "rb") as f1, open(x, "rb") as f2:
             if f1.read() == f2.read():
-                if printed(o) != printed(x):
+                if big_digests(o) != big_digests(x):
+                    out[i] = ("digest", str(big_digests(o))[:150], str(big_digests(x))[:150])
+                elif printed(o) != printed(x):
                     out[i] = ("stdout", repr(printed(o)[:150]), repr(printed(x)[:150]))
                 else:
                     out[i] = ("files", json.dumps(made(o))[:150], json.dumps(made(x))[:150])

@@ -113,6 +113,38 @@ class Classes(unittest.TestCase):
         self.f("r.files", b'[["a4plant", "file", 420, 0, "e3b0"]]')
         self.assertEqual(bd.classify(o, r, {}, {}, 1), "mismatch")
 
+    def test_a_big_value_is_compared_by_its_digest(self):
+        # driver.R records a value over A4_BIG_BYTES as its summary and
+        # writes the value to <id>.big<k>.rds; seal_big replaces that by
+        # its sha256, and the comparison takes both
+        go, rt = (os.path.join(self.d, x) for x in ("o", "r"))
+        for d, value in ((go, b"one gigabyte"), (rt, b"one gigabyte")):
+            os.makedirs(d)
+            with open(os.path.join(d, "000951.rds"), "wb") as f:
+                f.write(b"a4_big summary: character, 100000")
+            with open(os.path.join(d, "000951.big1.rds"), "wb") as f:
+                f.write(value)
+        bd.seal_big(go)
+        bd.seal_big(rt)
+        self.assertEqual(sorted(os.listdir(go)), ["000951.big1.sha256", "000951.rds"])
+        o, r = os.path.join(go, "000951.rds"), os.path.join(rt, "000951.rds")
+        self.assertEqual(bd.big_digests(o), bd.big_digests(r))
+        self.assertEqual(bd.classify(o, r, {}, {}, 951), "pass")
+        # the same summary, another value past its first and last elements
+        with open(os.path.join(rt, "000951.big1.sha256"), "w") as f:
+            f.write("0" * 64 + "\n")
+        self.assertEqual(bd.classify(o, r, {}, {}, 951), "mismatch")
+        with unittest.mock.patch.object(bd, "render", return_value={}):
+            field = bd.diff_fields([(951, o, r)])[951][0]
+        self.assertEqual(field, "digest")
+        # a big value on one side only
+        os.remove(os.path.join(rt, "000951.big1.sha256"))
+        self.assertEqual(bd.classify(o, r, {}, {}, 951), "mismatch")
+        # and a case's digests never mix with another case's
+        with open(os.path.join(go, "000095.rds"), "wb") as f:
+            f.write(b"x")
+        self.assertEqual(bd.big_digests(os.path.join(go, "000095.rds")), [])
+
     def test_tree_lists_files_dirs_and_links(self):
         with tempfile.TemporaryDirectory() as d:
             os.makedirs(os.path.join(d, "sub"))

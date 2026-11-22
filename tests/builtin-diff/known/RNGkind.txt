@@ -1,2 +1,2 @@
-# builtin-diff known failures: RNGkind, seed 0, key 33e9745e6c16cdf447e7f67e
+# builtin-diff known failures: RNGkind, seed 0, key e4dcd70a19d4b674c35ce765
 # RNGkind: 285 / 285 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 23 excluded)

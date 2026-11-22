@@ -11,7 +11,17 @@
 ##   log: what the fixture closures of a Calls row logged (.a4log), in order.
 ## A binding the call left as it was (its serialization unchanged) is
 ## recorded as list(unchanged = TRUE), any other as list(unchanged = FALSE,
-## value). Each case's printed output follows a marker line on stdout,
+## value).
+## A value (the call's, or a changed binding's) whose serialization would
+## be over A4_BIG_BYTES is recorded as its summary,
+##   list(a4_big = k, type, length, attributes (their names), head, tail)
+## (head and tail: its first and last 3 elements, of an atomic vector), and
+## the whole value goes to `<id>.big<k>.rds` (saveRDS version 2: plain
+## vectors, never an ALTREP or compact form, so the same bytes on both
+## runtimes), which the harness replaces by its sha256 at once; a value the
+## runtime cannot write that way (too big expanded) stays in the record. One case
+## (`[<-`(a4cls, 1:1e5, long): 100,000 copies of a 10,000-byte string,
+## shared in memory, each written out by serialize) recorded 1 GB. Each case's printed output follows a marker line on stdout,
 ## "\001A4 <id>\001", which the harness compares too.
 ##
 ## Parameters come from the environment (robigo-rt has no commandArgs yet):
@@ -21,10 +31,12 @@
 ##
 ## The driver uses only: readRDS, saveRDS, tryCatch, withCallingHandlers,
 ## withVisible, eval, as.call, as.name, new.env, assign, get0, ls, rm,
-## serialize, unserialize, identical, RNGkind, set.seed, sprintf, Sys.getenv, stop. The self-test checks them
+## serialize, unserialize, identical, RNGkind, set.seed, sprintf, Sys.getenv, stop;
+## for a big value nchar(type = "bytes"), typeof, attributes, .subset. The self-test checks them
 ## first; a runtime that fails it gets "driver unusable on <label>: <what>"
 ## and no records, never a wrong comparison.
 local({
+    A4_BIG_BYTES <- 16 * 1024^2
     batch_path <- Sys.getenv("A4_BATCH")
     out <- Sys.getenv("A4_OUT")
     from <- as.integer(Sys.getenv("A4_FROM", "1"))
@@ -57,12 +69,45 @@ local({
         f <- eval(as.call(list(as.name("function"), NULL, quote(.Internal(nchar(a1, "chars", FALSE, NA))))), e)
         identical(f(), 1L)
     })
+    check("nchar(type = \"bytes\")/.subset", {
+        identical(nchar(c("ab", "\u00e9", NA), type = "bytes", keepNA = FALSE), c(2L, 2L, 2L)) &&
+            identical(.subset(structure(1:4, class = "a4x"), 2:3), 2:3)
+    })
     check("readRDS of the batch", { b <- readRDS(batch_path); is.list(b$cases) })
     b <- readRDS(batch_path)
     invisible(file.remove(file.path(out, "selftest.rds")))
     saveRDS(TRUE, file.path(out, "started"), version = 3L, compress = FALSE)   # the harness's sign that it ran
 
     muffle <- function(expr) withCallingHandlers(expr, warning = function(w) invokeRestart("muffleWarning"))
+
+    ## about the bytes serialize writes for v (each string's bytes; a list's
+    ## elements; attributes, which stay small, left out)
+    a4size <- function(v) {
+        if (is.character(v)) return(sum(nchar(v, type = "bytes", keepNA = FALSE)) + 8 * length(v))
+        if (is.list(v)) { s <- 0; for (x in v) s <- s + a4size(x); return(s) }
+        if (is.atomic(v)) return(length(v) * switch(typeof(v), logical = , integer = 4, double = 8,
+                                                     complex = 16, raw = 1, 0))
+        0
+    }
+    ## v, or for a value over A4_BIG_BYTES its summary, the value itself in
+    ## the case's k-th sidecar
+    a4big <- function(v, id, k) {
+        ## (isTRUE: no estimate, whatever v holds, may stop the case)
+        if (!isTRUE(tryCatch(a4size(v) > A4_BIG_BYTES, error = function(e) FALSE))) return(v)
+        ## a value its runtime holds compactly (seq.int(intmax): 8 GB as a
+        ## plain vector) may not be expandable under the address-space cap:
+        ## then it stays in the record as before, as its runtime serializes it
+        side <- file.path(out, sprintf("%06d.big%d.rds", id, k))
+        if (!isTRUE(tryCatch({ saveRDS(v, side, version = 2L, compress = FALSE); TRUE },
+                             error = function(e) FALSE))) {
+            if (file.exists(side)) file.remove(side)
+            return(v)
+        }
+        n <- length(v); h <- min(n, 3L)
+        ends <- is.atomic(v) && h > 0L
+        list(a4_big = k, type = typeof(v), length = n, attributes = names(attributes(v)),
+             head = if (ends) .subset(v, seq_len(h)), tail = if (ends) .subset(v, (n - h + 1L):n))
+    }
 
     run1 <- function(c) {
         ## the RNG state the case starts from
@@ -140,6 +185,14 @@ local({
         c <- b$cases[[i]]
         cat("\001A4 ", c$id, "\001\n", sep = "")
         rec <- run1(c)
+        if (is.null(rec$setup_error) && is.null(rec$driver_error)) {
+            rec$value <- a4big(rec$value, c$id, 1L)
+            k <- 1L
+            for (n in names(rec$env)) if (!isTRUE(rec$env[[n]]$unchanged)) {
+                k <- k + 1L
+                rec$env[[n]]$value <- a4big(rec$env[[n]]$value, c$id, k)
+            }
+        }
         f <- file.path(out, sprintf("%06d.rds", c$id))
         tryCatch(saveRDS(rec, f, version = 3L, compress = FALSE),
                  error = function(x) saveRDS(list(driver_error = conditionMessage(x)), f, version = 3L, compress = FALSE))

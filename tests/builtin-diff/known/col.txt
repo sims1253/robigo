@@ -1,3 +1,3 @@
-# builtin-diff known failures: col, seed 0, key f916874d1dc3654b3feec313
+# builtin-diff known failures: col, seed 0, key 73328393851b1b4bfa8ccb13
 # col: 137 / 138 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 46
