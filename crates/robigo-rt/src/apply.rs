@@ -200,15 +200,9 @@ pub fn do_force_and_call(
     rho: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
-    // (applyMethod's promise list: the call over it, as before)
+    // (applyMethod's promise list: run again on the call over it)
     if args.is_some() {
-        return cx.scope(|cx, s| {
-            let ac = match crate::specials::arg_call(cx, s, call, args)? {
-                Some(a) => a,
-                None => call,
-            };
-            do_force_and_call(cx, ac, _op, None, rho, out)
-        });
+        return crate::specials::rerun_apart(cx, call, _op, args, rho, out, do_force_and_call);
     }
     cx.scope(|cx, s| {
         let (nexpr, rest) = {

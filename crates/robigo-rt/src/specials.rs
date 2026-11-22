@@ -52,6 +52,32 @@ pub(crate) fn arg_call<'s>(
     }
 }
 
+/// A special `f` run again on [`arg_call`]'s call over `applyMethod`'s
+/// promises (`args` Some), its own arguments then: `f(cx, ac, op, None,
+/// rho, out)`. For the specials that read their arguments from their call
+/// and name it in their messages (`withVisible`, `forceAndCall`, `cbind`,
+/// `UseMethod`, ...): their body stays in `f`, inline as before, and this
+/// cold path passes `None` for them, so the promises cannot be handed twice.
+#[cold]
+#[inline(never)]
+pub(crate) fn rerun_apart(
+    cx: &mut Cx,
+    call: Root<'_>,
+    op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+    f: crate::prims::SpecialFn,
+) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let ac = match arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        f(cx, ac, op, None, rho, out)
+    })
+}
+
 /// [`arg_call`]'s call over the promise list `a` (out of line: only
 /// `applyMethod` passes one).
 #[cold]

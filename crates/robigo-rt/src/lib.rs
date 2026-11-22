@@ -166,6 +166,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         links: Default::default(),
         assign_fns: Default::default(),
         folds: Default::default(),
+        compile_warnings: Default::default(),
         base_src: Default::default(),
     });
     // the connection table and the lazy-load databases' cache (L1)
@@ -309,6 +310,7 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         links: st.links.clone(),
         assign_fns: st.assign_fns.clone(),
         folds: st.folds.copy(cx),
+        compile_warnings: Default::default(),
         base_src: std::cell::RefCell::new(st.base_src.borrow().clone()),
     }
 }

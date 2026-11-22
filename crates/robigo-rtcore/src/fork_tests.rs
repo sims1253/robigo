@@ -239,6 +239,428 @@ fn a_child_forked_while_the_environment_lock_is_held_writes_it() {
     fork_while_held("ENV", crate::clib::env_write_lock);
 }
 
+/// A conversion whose closure panics still puts `TZ` back (the reset is a
+/// guard's drop), so the process's time zone is not left at the
+/// conversion's. In a child: the test writes the environment.
+#[test]
+fn a_panic_in_a_time_zone_conversion_puts_tz_back() {
+    let _one = one_at_a_time();
+    let _dog = watchdog("a panic in with_tz", 60);
+    // SAFETY: the child (one thread) runs the code below and ends with
+    // `_exit`.
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0, "fork failed: {}", std::io::Error::last_os_error());
+    if pid == 0 {
+        let code = (|| {
+            let mut iso = OwnedIsolate::new();
+            // SAFETY: the child has one thread, this one.
+            iso.grant_env_writes(unsafe { crate::clib::EnvWrites::assume() });
+            let cx = iso.cx();
+            match crate::clib::env_writer(cx) {
+                Ok(w) => {
+                    w.set(b"TZ", b"UTC");
+                }
+                // (another test's isolates count on an old glibc: nothing
+                // to test there)
+                Err(_) => return 0,
+            }
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::clib::with_tz(cx, b"Europe/Berlin", |_, s| {
+                    // in the zone: 1970-01-01 01:00 CET
+                    assert_eq!(s.localtime(0).map(|t| t.hour), Some(1));
+                    panic!("a conversion's panic");
+                })
+            }));
+            if r.is_ok() {
+                return 2;
+            }
+            if std::env::var_os("TZ").as_deref() != Some(std::ffi::OsStr::new("UTC")) {
+                return 3;
+            }
+            // and the C library's zone with it (tzset ran again)
+            if crate::clib::localtime(0).map(|t| t.hour) != Some(0) {
+                return 4;
+            }
+            0
+        })();
+        // SAFETY: ends the child at once.
+        unsafe { libc::_exit(code) };
+    }
+    let mut status = 0;
+    // SAFETY: waits for the child just forked.
+    unsafe { libc::waitpid(pid, &mut status, 0) };
+    assert!(libc::WIFEXITED(status), "the child did not exit (status {status})");
+    let code = libc::WEXITSTATUS(status);
+    assert_eq!(code, 0, "2: no panic; 3: TZ not put back; 4: localtime not back in UTC");
+}
+
+/// In a child (the tests write the environment): `TZ=UTC`, two isolates
+/// built on two threads, then `first` in a Berlin session while `second`
+/// (on the other thread) runs its contested call. Berlin converts only once
+/// `second` is waiting for the session lock (`clib::TZ_SESSION_WAITS`, and
+/// Berlin still the owner under the lock's mutex: `tz_session_still_mine`); if
+/// `second`'s call ends, or it enters a session of its own (`inside`, the
+/// second argument), before that, the two overlapped: a failure. No wait
+/// has a timeout (the watchdog bounds a hang). `second`'s third argument
+/// tells whether Berlin converted. The child's exit status: 0 all well, 2
+/// a check failed (said on stderr), 3 `TZ` after both not `tz_after`.
+fn two_isolates_in_a_child(
+    what: &'static str,
+    second: fn(&mut crate::Cx, &dyn Fn(), &dyn Fn() -> bool) -> Result<(), String>,
+    tz_after: &'static str,
+) {
+    let _one = one_at_a_time();
+    let _dog = watchdog(what, 120);
+    // SAFETY: the child runs the threads below and ends with `_exit`.
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0, "fork failed: {}", std::io::Error::last_os_error());
+    if pid == 0 {
+        let code = {
+            use std::sync::Arc;
+            use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+            // SAFETY: the child's environment, before its threads start.
+            unsafe { libc::setenv(c"TZ".as_ptr(), c"UTC".as_ptr(), 1) };
+            let waits0 = crate::clib::TZ_SESSION_WAITS.load(SeqCst);
+            let ready = Arc::new(std::sync::Barrier::new(2));
+            let [entered, inside, finished, done] = std::array::from_fn(|_| Arc::new(AtomicBool::new(false)));
+            let isolate = || {
+                let mut iso = OwnedIsolate::new();
+                // SAFETY: the test's isolates read the environment only
+                // through clib's wrappers.
+                iso.grant_env_writes(unsafe { crate::clib::EnvWrites::assume() });
+                iso
+            };
+            let a = {
+                let (ready, entered, inside, finished, done) =
+                    (ready.clone(), entered.clone(), inside.clone(), finished.clone(), done.clone());
+                std::thread::spawn(move || -> Result<(), String> {
+                    let mut iso = isolate();
+                    ready.wait();
+                    let r = crate::clib::with_tz(iso.cx(), b"Europe/Berlin", |_, s| {
+                        entered.store(true, SeqCst);
+                        let contended = loop {
+                            if crate::clib::TZ_SESSION_WAITS.load(SeqCst) > waits0 {
+                                // (and it is waiting, not past its wait)
+                                break crate::clib::tz_session_still_mine();
+                            }
+                            if finished.load(SeqCst) || inside.load(SeqCst) {
+                                break false;
+                            }
+                            std::thread::sleep(Duration::from_millis(1));
+                        };
+                        let r = (s.localtime(0).map(|t| t.hour), s.tzname().map(|n| n.to_vec()), contended);
+                        done.store(true, SeqCst);
+                        r
+                    });
+                    match r {
+                        Ok((Some(1), names, true)) if names[0] == b"CET" => Ok(()),
+                        Ok((h, names, contended)) => Err(format!(
+                            "Berlin: hour {h:?}, tzname {:?}, the other's call waited for the session: {contended}",
+                            names.map(|n| String::from_utf8_lossy(&n).into_owned())
+                        )),
+                        Err(e) => Err(format!("Berlin: {e:?}")),
+                    }
+                })
+            };
+            let b = {
+                let (ready, entered, inside, finished, done) =
+                    (ready.clone(), entered.clone(), inside.clone(), finished.clone(), done.clone());
+                std::thread::spawn(move || -> Result<(), String> {
+                    let mut iso = isolate();
+                    ready.wait();
+                    while !entered.load(SeqCst) {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    let r = second(iso.cx(), &|| inside.store(true, SeqCst), &|| done.load(SeqCst));
+                    finished.store(true, SeqCst);
+                    r
+                })
+            };
+            let joined = |t: std::thread::JoinHandle<Result<(), String>>| t.join().unwrap_or(Err("panicked".into()));
+            let (ra, rb) = (joined(a), joined(b));
+            let mut code = 0;
+            for r in [&ra, &rb] {
+                if let Err(e) = r {
+                    eprintln!("{e}");
+                    code = 2;
+                }
+            }
+            let tz = std::env::var_os("TZ");
+            if tz.as_deref() != Some(std::ffi::OsStr::new(tz_after)) {
+                eprintln!("TZ after both: {tz:?}");
+                code = 3;
+            }
+            code
+        };
+        // SAFETY: ends the child at once.
+        unsafe { libc::_exit(code) };
+    }
+    let mut status = 0;
+    // SAFETY: waits for the child just forked.
+    unsafe { libc::waitpid(pid, &mut status, 0) };
+    assert!(libc::WIFEXITED(status), "the child did not exit (status {status})");
+    assert_eq!(
+        libc::WEXITSTATUS(status),
+        0,
+        "2: the calls overlapped or converted wrong (above); 3: TZ wrong after both"
+    );
+}
+
+/// Two isolates' sessions at once, in two zones: the second waits for the
+/// first's reset, and each converts in its own zone and sees its names.
+#[test]
+fn two_isolates_converting_in_two_zones_at_once_each_keep_theirs() {
+    two_isolates_in_a_child(
+        "two time zone sessions",
+        |cx, inside, berlin_done| {
+            let r = crate::clib::with_tz(cx, b"Asia/Tokyo", |_, s| {
+                inside();
+                // (if the sessions overlapped, stay in across Berlin's
+                // conversion, which then converts in Tokyo)
+                while !berlin_done() {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                (s.localtime(0).map(|t| t.hour), s.tzname()[0].to_vec())
+            });
+            match r {
+                Ok((Some(9), n)) if n == b"JST" => Ok(()),
+                r => Err(format!("Tokyo: {r:?}")),
+            }
+        },
+        "UTC",
+    );
+}
+
+/// A conversion in the process's zone during another isolate's session:
+/// it waits for the reset, and converts in UTC.
+#[test]
+fn a_conversion_during_another_isolates_session_is_in_the_process_zone() {
+    two_isolates_in_a_child(
+        "a conversion during a time zone session",
+        |_, _, _| match crate::clib::localtime(0).map(|t| t.hour) {
+            Some(0) => Ok(()),
+            h => Err(format!("the process's zone: hour {h:?}")),
+        },
+        "UTC",
+    );
+}
+
+/// `Sys.setenv(TZ = ...)` from another isolate during a session: the write
+/// waits for the session's reset (the session converts in its own zone),
+/// and is not undone by it.
+#[test]
+fn a_tz_write_during_another_isolates_session_waits_for_its_reset() {
+    two_isolates_in_a_child(
+        "a TZ write during a time zone session",
+        |cx, _, _| match crate::clib::env_writer(cx) {
+            Ok(w) if w.set(b"TZ", b"Asia/Tokyo") => Ok(()),
+            Ok(_) => Err("setenv failed".into()),
+            Err(e) => Err(format!("the writer: {e:?}")),
+        },
+        "Asia/Tokyo",
+    );
+}
+
+/// A session inside a session on one thread (a handler's `as.POSIXlt`): the
+/// lock nests, and each reset puts back the zone of the one outside.
+#[test]
+fn a_session_in_a_session_puts_back_the_outer_zone() {
+    let _one = one_at_a_time();
+    let _dog = watchdog("nested time zone sessions", 60);
+    // SAFETY: the child ends with `_exit`.
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0, "fork failed: {}", std::io::Error::last_os_error());
+    if pid == 0 {
+        let code = (|| {
+            // SAFETY: the child has one thread, this one.
+            unsafe { libc::setenv(c"TZ".as_ptr(), c"UTC".as_ptr(), 1) };
+            let mut iso = OwnedIsolate::new();
+            // SAFETY: the child has one thread, this one.
+            iso.grant_env_writes(unsafe { crate::clib::EnvWrites::assume() });
+            let cx = iso.cx();
+            let r = crate::clib::with_tz(cx, b"Europe/Berlin", |cx, s| {
+                let inner = crate::clib::with_tz(cx, b"Asia/Tokyo", |_, s| s.localtime(0).map(|t| t.hour));
+                (
+                    inner,
+                    s.localtime(0).map(|t| t.hour),
+                    crate::clib::localtime(0).map(|t| t.hour),
+                    std::env::var_os("TZ"),
+                )
+            });
+            match r {
+                Ok((Ok(Some(9)), Some(1), Some(1), Some(tz))) if tz == "Europe/Berlin" => {}
+                Ok(r) => {
+                    eprintln!("{r:?}");
+                    return 2;
+                }
+                Err(_) => return 0,
+            }
+            if std::env::var_os("TZ").as_deref() != Some(std::ffi::OsStr::new("UTC")) {
+                return 3;
+            }
+            if crate::clib::localtime(0).map(|t| t.hour) != Some(0) {
+                return 4;
+            }
+            0
+        })();
+        // SAFETY: ends the child at once.
+        unsafe { libc::_exit(code) };
+    }
+    let mut status = 0;
+    // SAFETY: waits for the child just forked.
+    unsafe { libc::waitpid(pid, &mut status, 0) };
+    assert!(libc::WIFEXITED(status), "the child did not exit (status {status})");
+    assert_eq!(libc::WEXITSTATUS(status), 0, "2: a zone wrong inside; 3: TZ not put back; 4: not back in UTC");
+}
+
+/// A fork while another thread is in a time zone session: the child (which
+/// has not that thread) starts a session of its own instead of waiting
+/// forever, and converts in the process's zone.
+#[test]
+fn a_child_forked_during_another_threads_session_converts() {
+    let _one = one_at_a_time();
+    let _dog = watchdog("a fork during a time zone session", 120);
+    // SAFETY: the child runs the thread below and ends with `_exit`.
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0, "fork failed: {}", std::io::Error::last_os_error());
+    if pid == 0 {
+        let code = (|| {
+            // SAFETY: the child's environment, before its thread starts.
+            unsafe { libc::setenv(c"TZ".as_ptr(), c"UTC".as_ptr(), 1) };
+            let (in_tx, in_rx) = mpsc::channel::<()>();
+            let (end_tx, end_rx) = mpsc::channel::<()>();
+            let t = std::thread::spawn(move || {
+                let mut iso = OwnedIsolate::new();
+                // SAFETY: the test's isolates read the environment only
+                // through clib's wrappers.
+                iso.grant_env_writes(unsafe { crate::clib::EnvWrites::assume() });
+                let _ = crate::clib::with_tz(iso.cx(), b"Europe/Berlin", |_, _| {
+                    let _ = in_tx.send(());
+                    let _ = end_rx.recv();
+                });
+            });
+            if in_rx.recv().is_err() {
+                return 5;
+            }
+            // SAFETY: the grandchild converts and ends with `_exit`.
+            let gpid = unsafe { libc::fork() };
+            if gpid == 0 {
+                let code = (|| {
+                    // the other thread's session was dropped: in Berlin's
+                    // TZ (the child's environment), without waiting
+                    if crate::clib::localtime(0).map(|t| t.hour) != Some(1) {
+                        return 2;
+                    }
+                    let mut iso = OwnedIsolate::new();
+                    // SAFETY: the grandchild has one thread, this one.
+                    iso.grant_env_writes(unsafe { crate::clib::EnvWrites::assume() });
+                    match crate::clib::with_tz(iso.cx(), b"Asia/Tokyo", |_, s| s.localtime(0).map(|t| t.hour)) {
+                        Ok(Some(9)) | Err(crate::clib::TzError::Refused(_)) => 0,
+                        _ => 3,
+                    }
+                })();
+                // SAFETY: ends the grandchild at once.
+                unsafe { libc::_exit(code) };
+            }
+            let until = Instant::now() + Duration::from_secs(30);
+            let mut status = 0;
+            let done = loop {
+                // SAFETY: polls the grandchild just forked.
+                let r = unsafe { libc::waitpid(gpid, &mut status, libc::WNOHANG) };
+                if r == gpid {
+                    break true;
+                }
+                if Instant::now() > until {
+                    // SAFETY: the grandchild this child forked.
+                    unsafe { libc::kill(gpid, libc::SIGKILL) };
+                    break false;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            let _ = end_tx.send(());
+            let _ = t.join();
+            if !done {
+                return 4;
+            }
+            if !libc::WIFEXITED(status) { 6 } else { libc::WEXITSTATUS(status) }
+        })();
+        // SAFETY: ends the child at once.
+        unsafe { libc::_exit(code) };
+    }
+    let mut status = 0;
+    // SAFETY: waits for the child just forked.
+    unsafe { libc::waitpid(pid, &mut status, 0) };
+    assert!(libc::WIFEXITED(status), "the child did not exit (status {status})");
+    assert_eq!(
+        libc::WEXITSTATUS(status),
+        0,
+        "2: the grandchild's process zone not the session's TZ; 3: its session failed; 4: it hung"
+    );
+}
+
+/// A fork inside the forking thread's own session (`system()` in a
+/// handler): the child is still in that session (its lock held by the
+/// thread it has), converts in its zone, nests a session of its own, and
+/// writes the environment without waiting for itself.
+#[test]
+fn a_child_forked_inside_its_threads_session_keeps_it() {
+    let _one = one_at_a_time();
+    let _dog = watchdog("a fork inside a time zone session", 120);
+    // SAFETY: the child ends with `_exit`.
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0, "fork failed: {}", std::io::Error::last_os_error());
+    if pid == 0 {
+        let code = {
+            // SAFETY: the child has one thread, this one.
+            unsafe { libc::setenv(c"TZ".as_ptr(), c"UTC".as_ptr(), 1) };
+            let mut iso = OwnedIsolate::new();
+            // SAFETY: the child has one thread, this one.
+            iso.grant_env_writes(unsafe { crate::clib::EnvWrites::assume() });
+            let r = crate::clib::with_tz(iso.cx(), b"Europe/Berlin", |cx, _| {
+                // SAFETY: the grandchild converts and ends with `_exit`.
+                let gpid = unsafe { libc::fork() };
+                if gpid == 0 {
+                    let code = (|| {
+                        if crate::clib::localtime(0).map(|t| t.hour) != Some(1) {
+                            return 2;
+                        }
+                        match crate::clib::with_tz(cx, b"Asia/Tokyo", |_, s| s.localtime(0).map(|t| t.hour)) {
+                            Ok(Some(9)) => {}
+                            _ => return 3,
+                        }
+                        match crate::clib::env_writer(cx) {
+                            Ok(w) if w.set(b"ROBIGO_FORK_TEST", b"1") => {}
+                            _ => return 4,
+                        }
+                        if std::env::var_os("TZ").as_deref() != Some(std::ffi::OsStr::new("Europe/Berlin")) {
+                            return 5;
+                        }
+                        0
+                    })();
+                    // SAFETY: ends the grandchild at once.
+                    unsafe { libc::_exit(code) };
+                }
+                let mut status = 0;
+                // SAFETY: waits for the grandchild just forked.
+                unsafe { libc::waitpid(gpid, &mut status, 0) };
+                if libc::WIFEXITED(status) { libc::WEXITSTATUS(status) } else { 6 }
+            });
+            r.unwrap_or(7)
+        };
+        // SAFETY: ends the child at once.
+        unsafe { libc::_exit(code) };
+    }
+    let mut status = 0;
+    // SAFETY: waits for the child just forked.
+    unsafe { libc::waitpid(pid, &mut status, 0) };
+    assert!(libc::WIFEXITED(status), "the child did not exit (status {status})");
+    assert_eq!(
+        libc::WEXITSTATUS(status),
+        0,
+        "2: not in the session's zone; 3: a nested session failed; 4: the write failed; 5: TZ not the session's"
+    );
+}
+
 #[test]
 fn a_child_forked_while_the_environment_lock_is_read_writes_it() {
     fork_while_held("ENV shared", crate::clib::env_read_for_test);
