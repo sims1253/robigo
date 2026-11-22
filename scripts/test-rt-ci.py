@@ -436,11 +436,15 @@ class RtCi(unittest.TestCase):
         others = [t for t, e, c in steps if "ROBIGO_CONF_JOBS" in e and not (rt.CONFORMANCE in c and "--exact" in c)]
         self.assertEqual(others, [])
 
-    # The production identities a step's environment keeps, as the runner
-    # decides them (crates/robigo-conformance/src/lib.rs, identity_features;
-    # this mirrors it: keep the two in step). r-home-tools and
-    # bytecode-fidelity depend on the build, not the environment, so a named
-    # case may not need them.
+    # The runner's KNOWN_FEATURES, and those of them the environment decides
+    # (crates/robigo-conformance/src/lib.rs, identity_features; this mirrors
+    # them: keep the two in step). r-home-tools and bytecode-fidelity depend
+    # on the build, not the environment, so a step neither keeps nor turns
+    # them off.
+    KNOWN = {"bytecode-fidelity", "collection-schedule", "default-vsize", "inplace-identity", "promise-identity",
+             "r-home-tools", "volume"}
+    BY_ENVIRONMENT = {"collection-schedule", "default-vsize", "inplace-identity", "promise-identity", "volume"}
+
     @staticmethod
     def kept_features(env):
         on = lambda name: env.get(name) == "1"
@@ -488,7 +492,10 @@ class RtCi(unittest.TestCase):
                         problems.append(f"{title}: {case}: not ratcheted for robigo-rt ({marker.relative_to(root)})")
                 req = path.with_suffix(".requires")
                 need = set(req.read_text().split()) if req.is_file() else set()
-                off = sorted(need - kept)
+                unknown = sorted(need - self.KNOWN)
+                if unknown:
+                    problems.append(f"{title}: {case}: requires {', '.join(unknown)}, which the runner does not know")
+                off = sorted((need & self.BY_ENVIRONMENT) - kept)
                 if off:
                     problems.append(f"{title}: {case}: requires {', '.join(off)}, which this step turns off")
         return problems
@@ -505,9 +512,12 @@ class RtCi(unittest.TestCase):
 
     def test_a_named_case_its_step_turns_off_is_found(self):
         import tempfile
-        root = Path(tempfile.mkdtemp())
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
         for case, requires in (("tests/rt/jit/big.R", "volume"), ("tests/rt/jit/ok.R", None),
-                               ("tests/r/memory/unmarked.R", None)):
+                               ("tests/r/memory/unmarked.R", None), ("tests/rt/dynload/tools.R", "r-home-tools"),
+                               ("tests/rt/jit/odd.R", "no-such-feature")):
             (root / case).parent.mkdir(parents=True, exist_ok=True)
             (root / case).write_text("1\n")
             if requires:
@@ -522,6 +532,13 @@ class RtCi(unittest.TestCase):
                       problems)
         self.assertTrue(any("unmarked.R: not ratcheted" in p for p in problems), problems)
         self.assertTrue(any("tests/rt/gone.R: no case has this id" in p for p in problems), problems)
+        # a build-dependent requirement is not the step's to turn off; an
+        # unknown one the runner itself refuses
+        build = [("conformance under gctorture (E3)", {"ROBIGO_GCTORTURE": "1", "ROBIGO_CONF_TIMEOUTS":
+                  "tests/rt/dynload/tools.R=600,tests/rt/jit/odd.R=600"}, ["cargo"])]
+        self.assertEqual(self.list_name_problems(build, root),
+                         ["conformance under gctorture (E3): tests/rt/jit/odd.R: requires no-such-feature, "
+                          "which the runner does not know"])
         # not ids, though the files exist; and an empty list names nothing
         (root / "tests/rt/R-4.6.2").mkdir(parents=True)
         (root / "tests/rt/R-4.6.2/ok.Rout").write_text("1\n")
