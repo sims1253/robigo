@@ -1261,7 +1261,12 @@ fn get_object(cx: &mut Cx, cptr: ContextId, out: Out<'_>) -> RResult<()> {
                 // SAFETY: the generic's frame, live (its record roots it).
                 let f = s.root(cx, unsafe { Ref::from_sexp(frame, cx) });
                 let o = res.reset(cx);
-                cx.force_arg(f, index, o)?;
+                // R: if (PRVALUE(s) == R_UnboundValue) s = eval(s, R_BaseEnv)
+                if cx.arg_unevaluated(f, index) {
+                    cx.force_arg_eval(f, index, o)?;
+                } else {
+                    cx.force_arg(f, index, o)?;
+                }
             }
             Some(GenericArg::Obj(v)) => {
                 // SAFETY: a promargs element, live (the record roots it).
