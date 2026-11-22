@@ -240,9 +240,9 @@ class Trees(unittest.TestCase):
         co = os.path.join(self.d, "co")
         made = []
 
-        def fake(binary, checkout):
+        def fake(binary, checkout, home):
             made.append(binary)
-            os.makedirs(os.path.join(checkout, ".robigo", "rt-home", "library"))
+            os.makedirs(os.path.join(home, ".robigo", "rt-home", "library"))
         saved = su.make_trees
         su.make_trees = fake
         try:
@@ -252,6 +252,32 @@ class Trees(unittest.TestCase):
             self.assertTrue(os.path.isfile(out))
         finally:
             su.make_trees = saved
+
+    def test_a_local_run_leaves_the_checkouts_trees_alone(self):
+        # built (or unpacked) in a scratch home: the checkout's .robigo is
+        # not written, so a developer's tree or an rt-ci beside it is safe
+        os.environ.pop("GITHUB_ACTIONS", None)
+        os.environ.pop("CI", None)
+        co = os.path.join(self.d, "co")
+        os.makedirs(os.path.join(co, ".robigo", "rt-home-db", "mine"))
+        seen = []
+
+        def fake(binary, checkout, home):
+            seen.append((checkout, home))
+            os.makedirs(os.path.join(home, ".robigo", "rt-home-db", "library"))
+        saved = su.make_trees
+        su.make_trees = fake
+        try:
+            home = su.build_trees("/bin/true", co)
+        finally:
+            su.make_trees = saved
+        self.assertEqual(seen, [(co, home)])
+        self.assertNotEqual(os.path.realpath(home), os.path.realpath(co))
+        self.assertEqual(os.listdir(os.path.join(co, ".robigo", "rt-home-db")), ["mine"])
+        tar = self.tarball([".robigo/rt-home/x"])
+        home2 = su.new_home()
+        su.unpack_trees(tar, home2)
+        self.assertEqual(os.listdir(os.path.join(co, ".robigo")), ["rt-home-db"])
 
     def test_building_is_refused_in_ci(self):
         os.environ["GITHUB_ACTIONS"] = "true"

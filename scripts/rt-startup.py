@@ -7,8 +7,11 @@ robigo-rt and of GNU R.
     scripts/rt-startup.py --gnur [--runs K] [--json OUT]
 
 Each binary boots from the R_HOME trees its own build writes, as it ships
-(the checkout's .robigo/rt-home and rt-home-db, and a translation cache
-beside the latter: every .robigo/rt-home* directory):
+(.robigo/rt-home and rt-home-db, and a translation cache beside the
+latter: every .robigo/rt-home* directory). They are built from the
+checkout's scripts and sources but never in its .robigo: each run's go in a
+scratch directory of their own (scratch.py, removed on exit), so neither a
+developer's tree nor an rt-ci in the same checkout sees one rebuilt.
 - --trees builds them first with BIN (scripts/rt-home.sh,
   scripts/rt-home-db.sh --robigo-rt BIN), which needs cargo and GNU R's
   sources: locally only. In CI, where the measuring job (perf-rt) runs in
@@ -16,7 +19,8 @@ beside the latter: every .robigo/rt-home* directory):
 - --pack-trees OUT builds them with BIN and packs them into the tarball
   OUT, and measures nothing: what CI's perf-rt-build does for the PR's
   binary and for main's, in their own checkouts.
-- --trees-from TAR unpacks such a tarball into the checkout first.
+- --trees-from TAR unpacks such a tarball (into a scratch directory) first.
+- with neither, the starts boot from the checkout's own .robigo trees.
 
 perf.py rt-bars gates robigo-rt's starts against main's binary (the
 [[startup]] entries of benchmarks/rt/m1-bars.toml), and perf.py rt-gnur
@@ -68,6 +72,8 @@ import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+from scratch import scratch_dir  # noqa: E402
 
 # a start by name: the environment it runs with, over BASE
 STARTS = {
@@ -365,33 +371,42 @@ def tree_dirs(checkout):
                   if n.startswith("rt-home") and os.path.isdir(os.path.join(d, n)))
 
 
-def clear_trees(checkout):
-    for t in tree_dirs(checkout):
-        shutil.rmtree(os.path.join(checkout, t))
+def clear_trees(home):
+    for t in tree_dirs(home):
+        shutil.rmtree(os.path.join(home, t))
+
+
+def new_home():
+    """A scratch directory to hold one binary's trees (as a checkout's
+    .robigo holds them), removed when this process exits (scratch.py): the
+    checkout's own .robigo is never written, so neither a developer's tree
+    nor an rt-ci running in the same checkout sees it rebuilt."""
+    return scratch_dir("rt-startup-trees-")
 
 
 def pack_trees(binary, checkout, out):
-    """Build the checkout's trees afresh with `binary` and pack them into
-    the tarball `out` (paths relative to the checkout)."""
-    clear_trees(checkout)
+    """Build `binary`'s trees afresh, from the checkout's sources, in a
+    scratch home, and pack them into the tarball `out` (paths relative to
+    the home: .robigo/rt-home*)."""
+    home = new_home()
     # (packing is what CI's build job does: not refused there, as
     # build_trees is for a measurement)
-    make_trees(binary, checkout)
-    trees = tree_dirs(checkout)
+    make_trees(binary, checkout, home)
+    trees = tree_dirs(home)
     if not trees:
-        raise SystemExit(f"rt-startup: no .robigo/rt-home* tree in {checkout} after building")
+        raise SystemExit(f"rt-startup: no .robigo/rt-home* tree in {home} after building")
     with tarfile.open(out, "w") as t:
         for d in trees:
-            t.add(os.path.join(checkout, d), arcname=d)
+            t.add(os.path.join(home, d), arcname=d)
     return trees
 
 
-def unpack_trees(tar, checkout):
-    """The trees of the tarball `tar` (pack_trees') in place of the
-    checkout's."""
+def unpack_trees(tar, home):
+    """The trees of the tarball `tar` (pack_trees') into the home `home`
+    (a scratch directory, new_home())."""
     if not os.path.isfile(tar):
         raise SystemExit(f"rt-startup: no trees at {tar} (perf-rt-build packs them: --pack-trees)")
-    clear_trees(checkout)
+    clear_trees(home)
     with tarfile.open(tar) as t:
         names = t.getnames()
         bad = [n for n in names if not (n == ".robigo" or n.startswith(".robigo/rt-home"))
@@ -403,45 +418,57 @@ def unpack_trees(tar, checkout):
         links = [m.name for m in t.getmembers() if not (m.isfile() or m.isdir())]
         if links:
             raise SystemExit(f"rt-startup: {tar} holds links or special files: {links[:3]}")
-        t.extractall(checkout, filter="tar")
-    if not tree_dirs(checkout):
+        t.extractall(home, filter="tar")
+    if not tree_dirs(home):
         raise SystemExit(f"rt-startup: {tar} holds no .robigo/rt-home* tree")
 
 
 def build_trees(binary, checkout):
-    """The checkout's R_HOME trees for a measurement, the database one
-    written by `binary`. Refused in CI (in_ci()): there the measuring job has
-    no toolchain, and the trees come built (--trees-from)."""
+    """`binary`'s R_HOME trees for a measurement, built from the checkout's
+    sources in a scratch home (new_home()), which it returns. Refused in CI
+    (in_ci()): there the measuring job has no toolchain, and the trees come
+    built (--trees-from)."""
     if in_ci():
         raise SystemExit("rt-startup: not building R_HOME trees in CI: perf-rt-build packs them "
                          "(--pack-trees), and the measurement takes them (--trees-from)")
-    make_trees(binary, checkout)
+    home = new_home()
+    make_trees(binary, checkout, home)
+    return home
 
 
-def make_trees(binary, checkout):
-    """build_trees' work, wherever it runs (pack_trees' too)."""
-    for cmd in (["scripts/rt-home.sh"], ["scripts/rt-home-db.sh", "--robigo-rt", os.path.abspath(binary)]):
-        p = subprocess.run(cmd, cwd=checkout, capture_output=True, text=True)
+def make_trees(binary, checkout, home):
+    """build_trees' work, wherever it runs (pack_trees' too): the checkout's
+    scripts and sources, the trees written under `home`/.robigo."""
+    src = os.path.join(home, ".robigo", "rt-home")
+    db = os.path.join(home, ".robigo", "rt-home-db")
+    for cmd, extra in ((["scripts/rt-home.sh", src], {}),
+                       (["scripts/rt-home-db.sh", "--robigo-rt", os.path.abspath(binary), db],
+                        {"RT_HOME_TREE": src})):
+        p = subprocess.run(cmd, cwd=checkout, capture_output=True, text=True, env=dict(os.environ, **extra))
         if p.returncode:
             raise SystemExit(f"rt-startup: {' '.join(cmd)} failed:\n{(p.stdout + p.stderr)[-3000:]}")
 
 
 def run(binary, starts=None, checkout=ROOT, runs=9, trees=False, valgrind=None):
     """robigo-rt's starts (`starts`, default every defined one) of `binary`:
-    {start: measure()'s numbers}. `trees` True builds the checkout's trees
-    with `binary` first (build_trees), a path unpacks them from that tarball
-    (unpack_trees), False takes the checkout's as they are."""
+    {start: measure()'s numbers}. `trees` True builds `binary`'s trees from
+    the checkout's sources (build_trees), a path unpacks them from that
+    tarball (unpack_trees), both into a scratch home the starts boot from;
+    False boots from the checkout's own .robigo trees as they are."""
     names = starts or defined()
     for n in names:
         if STARTS.get(n) is None:
             raise SystemExit(f"rt-startup: no start '{n}' (defined: {', '.join(defined())})")
     if isinstance(trees, str):
-        unpack_trees(trees, checkout)
+        home = new_home()
+        unpack_trees(trees, home)
     elif trees:
-        build_trees(binary, checkout)
+        home = build_trees(binary, checkout)
+    else:
+        home = checkout
     env0 = clean_env()
     return {n: measure([os.path.abspath(binary), "--vanilla", "-e", "1"],
-                       dict(env0, ROBIGO_RT_CHECKOUT=os.path.abspath(checkout), **STARTS[n]), runs,
+                       dict(env0, ROBIGO_RT_CHECKOUT=os.path.abspath(home), **STARTS[n]), runs,
                        valgrind or os.environ.get("VALGRIND", "valgrind"))
             for n in names}
 

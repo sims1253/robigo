@@ -1392,7 +1392,7 @@ jobs:
         if: github.ref != 'refs/heads/main'
         run: |
           git config --global --add safe.directory '*'
-          cp scripts/rt-startup.py "$RUNNER_TEMP/rt-startup.py"
+          cp scripts/rt-startup.py scripts/scratch.py "$RUNNER_TEMP/"
           head=$(git rev-parse HEAD)
           git checkout -q --detach HEAD^1
           cargo build --release --locked -p robigo-rtapi
