@@ -99,6 +99,9 @@ impl<R: Trace + ?Sized> Trace for FreezeView<'_, R> {
     fn trace<V: Visitor + ?Sized>(&mut self, v: &mut V) {
         self.0.trace_freeze(v);
     }
+    fn trace_search_path<V: Visitor + ?Sized>(&mut self, v: &mut V) -> bool {
+        self.0.trace_search_path(v)
+    }
 }
 
 impl Core {
@@ -239,9 +242,6 @@ impl Core {
             keys.insert(unsafe { Self::weak_field(w, 0) }.addr());
         }
         let mut stopped: HashSet<usize, BuildFx> = HashSet::default();
-        // the stopped objects whose death is observable: a weak reference's
-        // key, an external-data vector (its release callback)
-        let mut mortal_targets = Vec::new();
         let mut frozen = Vec::new();
         let mut kids = Vec::new();
         while let Some(x) = work.pop() {
@@ -258,9 +258,6 @@ impl Core {
                     || boot.is_some_and(|l| !self.is_boot_object(x, l));
                 if never {
                     stopped.insert(x.addr());
-                    if observable {
-                        mortal_targets.push(x);
-                    }
                     continue;
                 }
                 self.make_immortal(x);
@@ -287,110 +284,16 @@ impl Core {
                 }
             }
         }
-        // then what can reach an object whose death is observable stays
-        // ordinary, so that its reachability, not a log entry, decides (Sol
-        // S3): every weak reference's key, whether the walk met it or not,
-        // and the external-data vectors (the thaw finds those behind an
-        // ordinary object too: r3)
-        for &w in &self.weak_refs {
-            // SAFETY: a registered weak reference: element 0 is its key.
-            mortal_targets.push(unsafe { Self::weak_field(w, 0) });
-        }
-        // SAFETY: as above; the log is complete.
-        unsafe { self.thaw_with_referrers(&mut mortal_targets) };
+        // A weak key or an external-data vector stays ordinary (the walk
+        // stopped at it), and a frozen referrer of one is logged above. Its
+        // reachability decides its death (Sol S3) because a referrer that
+        // becomes garbage is thawed by the next frozen-reachability pass:
+        // the edge that made it garbage was a dirty event.
+        // SAFETY: the caller's contract.
+        self.path_snapshot = unsafe { self.search_path_frozen(roots) };
+        // (notes made before the freeze name no frozen object)
+        self.remembered.1.set(0);
         self.frozen.len()
-    }
-
-    /// Make `targets` (frozen or not) and every frozen object that reaches
-    /// one of them ordinary: one pass over the frozen set builds its
-    /// reverse edges, and a walk up from the targets finds the referrers.
-    /// No frozen object then points to one of them, so no log entry is
-    /// needed and ordinary reachability decides their death.
-    ///
-    /// # Safety
-    /// Frozen objects are live and their fields null or live; outside
-    /// marking.
-    unsafe fn thaw_with_referrers(&mut self, targets: &mut Vec<Sexp>) {
-        // (with no target the walk below still runs while anything is
-        // logged: it finds the external-data vectors behind ordinary objects,
-        // r4 S3)
-        // SAFETY: outside marking, the log is not borrowed elsewhere.
-        if targets.is_empty() && unsafe { &*self.remembered.0.get() }.is_empty() {
-            return;
-        }
-        let mut parents: HashMap<usize, Vec<Sexp>, BuildFx> = HashMap::default();
-        let mut kids = Vec::new();
-        for &f in &self.frozen {
-            kids.clear();
-            // SAFETY: the caller's contract.
-            unsafe { f.trace_fields(&mut Edges(&mut kids)) };
-            for k in &kids {
-                parents.entry(k.addr()).or_default().push(f);
-            }
-        }
-        // and through the ordinary objects the logged ones reach: a frozen
-        // container can reach a target through an ordinary one (Sol r2 S3)
-        // SAFETY: outside marking, the log is not borrowed elsewhere.
-        let mut work: Vec<Sexp> = unsafe { &*self.remembered.0.get() }.clone();
-        let mut seen: HashSet<usize, BuildFx> = HashSet::default();
-        while let Some(o) = work.pop() {
-            kids.clear();
-            // SAFETY: the log's objects and what they reach are live.
-            unsafe { o.trace_fields(&mut Edges(&mut kids)) };
-            for &k in &kids {
-                // SAFETY: as above.
-                let ordinary = unsafe { k.flags() } & flags::IMMORTAL == 0;
-                if ordinary {
-                    parents.entry(k.addr()).or_default().push(o);
-                    if seen.insert(k.addr()) {
-                        work.push(k);
-                        // an external-data vector behind an ordinary object:
-                        // its release callback is observable too (r3 S3)
-                        // SAFETY: as above.
-                        if unsafe { k.flags() } & flags::EXTDATA != 0 {
-                            targets.push(k);
-                        }
-                    }
-                // SAFETY: both reached from the log or the frozen set: live.
-                } else if unsafe { self.is_frozen(k) && !self.is_frozen(o) } {
-                    // an ordinary object's edge into the frozen set
-                    parents.entry(k.addr()).or_default().push(o);
-                }
-            }
-        }
-        // walk up from the targets through frozen and ordinary referrers;
-        // the frozen ones on the way thaw
-        let mut thaw: HashSet<usize, BuildFx> = HashSet::default();
-        let mut up: HashSet<usize, BuildFx> = HashSet::default();
-        for t in targets.iter() {
-            up.insert(t.addr());
-        }
-        while let Some(t) = targets.pop() {
-            // SAFETY: a target is live (the caller's contract).
-            if unsafe { self.is_frozen(t) } {
-                thaw.insert(t.addr());
-            }
-            if let Some(ps) = parents.get(&t.addr()) {
-                for &p in ps {
-                    if up.insert(p.addr()) {
-                        targets.push(p);
-                    }
-                }
-            }
-        }
-        for i in 0..self.frozen.len() {
-            let f = self.frozen[i];
-            if thaw.contains(&f.addr()) {
-                // SAFETY: a live frozen object.
-                unsafe { self.make_mortal(f) };
-            }
-        }
-        self.frozen.retain(|f| !thaw.contains(&f.addr()));
-        // a thawed object leaves the log (a logged object is a root, and an
-        // ordinary one must be able to die), in one filter
-        // SAFETY: outside marking, the log is not borrowed elsewhere.
-        let log = unsafe { &mut *self.remembered.0.get() };
-        log.retain(|r| !thaw.contains(&r.addr()));
     }
 
     /// Whether `f` points to an object that is not immortal.
@@ -426,6 +329,24 @@ impl Core {
         }
     }
 
+    /// C's first writable `DATAPTR` of a frozen vector of objects (api.c):
+    /// it is logged now, so that C's raw writes into its elements are traced
+    /// until the next collection, and queued to become ordinary there, so
+    /// that the frozen graph no longer follows edges C may rewrite without
+    /// a barrier (the pass's bar, table (b)). Nothing for another object.
+    ///
+    /// # Safety
+    /// As for [`Core::remember`].
+    pub unsafe fn exposed_to_c(&mut self, x: Sexp) {
+        // SAFETY: the caller's contract.
+        unsafe {
+            self.remember(x);
+            if self.is_frozen(x) {
+                self.pending_unfreeze.push(x);
+            }
+        }
+    }
+
     /// Whether `x` is one of the freeze's objects: its [`flags::FROZEN`]
     /// bit (the frozen list is not searched, nor kept sorted for it).
     ///
@@ -454,21 +375,99 @@ impl Core {
         }
     }
 
-    /// The batched unfreeze: the queued objects and every frozen object
-    /// that reaches one of them become ordinary. One pass over the frozen
-    /// set, however long the queue.
+    /// The frozen environments on the search path that `roots` shows
+    /// ([`Trace::trace_search_path`]), by address: the deferred search-path
+    /// test's snapshot.
     ///
     /// # Safety
-    /// At a collection's start, before marking.
-    pub(super) unsafe fn unfreeze_pending(&mut self) {
-        if self.pending_unfreeze.is_empty() {
+    /// Every edge `roots` shows is null or live.
+    unsafe fn search_path_frozen<R: Trace + ?Sized>(&self, roots: &mut R) -> Vec<usize> {
+        let mut envs = Vec::new();
+        roots.trace_search_path(&mut Edges(&mut envs));
+        // SAFETY: the caller's contract.
+        envs.into_iter().filter(|e| unsafe { self.is_frozen(*e) }).map(|e| e.addr()).collect()
+    }
+
+    /// The frozen-reachability pass (docs/ledger/g3/ the pass's bar), at a
+    /// collection's start, before marking: when an edge into a frozen
+    /// object left the frozen graph since the last pass (the heap's
+    /// [`Remembered::DIRTY`] note, the search path's frozen members
+    /// changed, or an object queued to unfreeze), one walk from the roots'
+    /// freeze roots through frozen objects decides what stays frozen:
+    /// - the queued objects become ordinary first, so the walk does not
+    ///   follow them;
+    /// - every frozen object the walk does not reach becomes ordinary (its
+    ///   count stays at the frozen maximum) and leaves the log;
+    /// - every frozen object it reaches that points to an ordinary one is
+    ///   logged (a root), as at the freeze.
+    ///
+    /// Marking then runs as before: an object made ordinary that is still
+    /// reachable is traced from now on, and one that is not is swept.
+    ///
+    /// # Safety
+    /// As for [`Core::collect`]: every edge `roots` shows is null or live;
+    /// outside marking.
+    pub(super) unsafe fn frozen_pass<R: Trace + ?Sized>(&mut self, roots: &mut R) {
+        let notes = self.remembered.1.replace(0);
+        if self.frozen.is_empty() {
+            self.pending_unfreeze.clear();
             return;
         }
-        let mut pending = std::mem::take(&mut self.pending_unfreeze);
-        pending.sort_unstable_by_key(|x| x.addr());
-        pending.dedup();
-        // SAFETY: the caller's contract.
-        unsafe { self.thaw_with_referrers(&mut pending) };
+        let mut dirty = notes & Remembered::DIRTY != 0 || !self.pending_unfreeze.is_empty();
+        if notes & Remembered::PATH_WRITTEN != 0 {
+            // SAFETY: the caller's contract.
+            let now = unsafe { self.search_path_frozen(roots) };
+            dirty |= self.path_snapshot.iter().any(|a| !now.contains(a));
+            self.path_snapshot = now;
+        }
+        if !dirty {
+            return;
+        }
+        self.frozen_passes += 1;
+        // SAFETY: the caller's contract: frozen objects and every edge the
+        // roots show are live; outside marking, the log is not borrowed.
+        unsafe {
+            for x in std::mem::take(&mut self.pending_unfreeze) {
+                if self.is_frozen(x) {
+                    self.make_mortal(x);
+                }
+            }
+            let mut work = Vec::new();
+            roots.trace_freeze(&mut Edges(&mut work));
+            let mut reached: HashSet<usize, BuildFx> = HashSet::default();
+            reached.reserve(self.frozen.len());
+            let mut kids = Vec::new();
+            while let Some(x) = work.pop() {
+                if x.is_null() || !self.is_frozen(x) || !reached.insert(x.addr()) {
+                    continue;
+                }
+                kids.clear();
+                x.trace_fields(&mut Edges(&mut kids));
+                work.extend_from_slice(&kids);
+            }
+            let mut kept = Vec::with_capacity(reached.len());
+            for f in std::mem::take(&mut self.frozen) {
+                if !self.is_frozen(f) {
+                    // (made ordinary above, from the queue)
+                } else if reached.contains(&f.addr()) {
+                    kept.push(f);
+                } else {
+                    self.make_mortal(f);
+                }
+            }
+            self.frozen = kept;
+            // an object made ordinary leaves the log (it is traced if it is
+            // reachable, and must die if it is not); the other immortal
+            // objects' entries stay
+            (*self.remembered.0.get()).retain(|l| l.flags() & flags::IMMORTAL != 0);
+            for i in 0..self.frozen.len() {
+                let f = self.frozen[i];
+                if f.flags() & flags::BARRIER != 0 && self.has_ordinary_child(f, &mut kids) {
+                    self.remember(f);
+                }
+            }
+            self.path_snapshot = self.search_path_frozen(roots);
+        }
     }
 
     /// Undo [`Core::make_immortal`] for a frozen object: an ordinary object
@@ -780,12 +779,23 @@ mod tests {
         }
     }
 
+    /// Cut `head`'s CAR (a frozen cell's), through the barrier.
+    ///
+    /// # Safety
+    /// `head` is a live cell; `nil` is R_NilValue.
+    unsafe fn cut_car(head: Sexp, nil: Sexp) {
+        // SAFETY: the caller's contract.
+        unsafe { head.store(head.as_ptr().add(crate::layout::node::OFF_CAR) as *mut Sexp, nil) }
+    }
+
     /// A weak reference made after the freeze on a key that a frozen
-    /// container reaches through an ordinary object (Sol r2 S3): the unfreeze
-    /// thaws the key and that container, which leaves the log, so only
+    /// container reaches through an ordinary object (Sol r2 S3): the pass
+    /// thaws the key; the container stays frozen and logged while it is
+    /// reachable (the key is then reachable in GNU R too), and once its last
+    /// edge is cut the next pass thaws it and drops it from the log, so only
     /// reachability decides.
     #[test]
-    fn the_unfreeze_thaws_a_container_reaching_the_key_through_an_ordinary_object() {
+    fn a_weak_key_after_the_freeze_thaws_and_its_container_thaws_when_cut_off() {
         let mut c = Core::new();
         c.set_freeze_enabled(true);
         if !c.freeze_enabled() {
@@ -799,7 +809,8 @@ mod tests {
             let container = c.alloc_node(LISTSXP, mid, nil, nil).unwrap();
             let rest = c.alloc_node(LISTSXP, key, nil, nil).unwrap();
             let root = c.alloc_node(LISTSXP, container, rest, nil).unwrap();
-            c.freeze(&mut One(root), |x| x == mid);
+            let mut roots = WithFreeze { all: vec![root], freeze: root };
+            c.freeze(&mut roots, |x| x == mid);
             assert!(c.is_frozen(key) && c.is_frozen(container) && !c.is_frozen(mid));
             assert_eq!(container.flags() & flags::BARRIER, 0, "the container reaches the ordinary `mid`: logged");
             let w = c.alloc_vector(WEAKREFSXP, 4).unwrap();
@@ -807,20 +818,31 @@ mod tests {
             w.set_elt(1, nil);
             w.set_elt(2, nil);
             c.register_weak_ref(w);
-            c.unfreeze_pending();
+            c.frozen_pass(&mut roots);
             assert!(!c.is_frozen(key) && key.flags() & flags::IMMORTAL == 0, "the key thawed");
-            assert!(!c.is_frozen(container) && container.flags() & flags::IMMORTAL == 0, "and its container");
-            let log = &*c.remembered.0.get();
-            assert!(!log.contains(&container), "which left the log");
+            assert!(c.is_frozen(container) && c.is_frozen(rest), "its referrers stay frozen");
+            assert_eq!(rest.flags() & flags::BARRIER, 0, "and the one that now points to an ordinary key is logged");
+            c.check_frozen();
+            // the container's last edge cut: dirty, and the next pass thaws it
+            cut_car(root, nil);
+            assert_ne!(c.remembered.1.get() & Remembered::DIRTY, 0, "a frozen value overwritten in a frozen object");
+            c.frozen_pass(&mut roots);
+            assert!(
+                !c.is_frozen(container) && container.flags() & flags::IMMORTAL == 0,
+                "the cut-off container thawed"
+            );
+            assert!(!(*c.remembered.0.get()).contains(&container), "and left the log");
+            assert!(c.is_frozen(root) && c.is_frozen(rest), "what the roots still reach stays frozen");
             c.check_frozen();
         }
     }
 
-    /// A weak reference registered before the freeze on a key that only a
-    /// frozen container reaches, through an excluded ordinary object (Sol r3
-    /// S3): the container comes out of the freeze ordinary, unlogged.
+    /// A weak reference registered before the freeze on a key that a frozen
+    /// container reaches through an excluded ordinary object (Sol r3 S3):
+    /// the key stays ordinary and the container is logged; cut off, the
+    /// container thaws at the next pass.
     #[test]
-    fn the_freeze_thaws_a_container_reaching_an_earlier_weak_key_through_an_ordinary_object() {
+    fn an_earlier_weak_key_stays_ordinary_and_its_cut_off_container_thaws() {
         let mut c = Core::new();
         c.set_freeze_enabled(true);
         if !c.freeze_enabled() {
@@ -840,22 +862,27 @@ mod tests {
             let other = c.alloc_vector(INTSXP, 1).unwrap();
             let rest = c.alloc_node(LISTSXP, other, nil, nil).unwrap();
             let root = c.alloc_node(LISTSXP, container, rest, nil).unwrap();
-            c.freeze(&mut One(root), |x| x == mid);
-            assert!(!c.is_frozen(container) && container.flags() & flags::IMMORTAL == 0, "the container is ordinary");
-            assert!(!c.is_frozen(root), "and what reaches it");
-            assert!(c.is_frozen(other), "the rest is frozen");
-            let log = &*c.remembered.0.get();
-            assert!(!log.contains(&container), "the container is not logged");
+            let mut roots = WithFreeze { all: vec![root], freeze: root };
+            c.freeze(&mut roots, |x| x == mid);
+            assert!(!c.is_frozen(key), "the weak key is never frozen");
+            assert!(c.is_frozen(container) && (*c.remembered.0.get()).contains(&container), "the container is logged");
+            assert!(c.is_frozen(other));
+            c.check_frozen();
+            cut_car(root, nil);
+            c.frozen_pass(&mut roots);
+            assert!(!c.is_frozen(container) && !(*c.remembered.0.get()).contains(&container));
+            assert!(c.is_frozen(other), "the rest stays frozen");
             c.check_frozen();
         }
     }
 
-    /// An external-data vector that only a frozen container reaches, through
-    /// an excluded ordinary object, with no weak reference anywhere (Sol r4
-    /// S3): the container comes out of the freeze ordinary, unlogged, so the
-    /// vector's release waits only for its reachability.
+    /// An external-data vector that a frozen container reaches through an
+    /// excluded ordinary object, with no weak reference anywhere (Sol r4
+    /// S3): the vector stays ordinary and the container is logged; cut off,
+    /// the container thaws at the next pass, so the vector's release waits
+    /// only for its reachability.
     #[test]
-    fn the_freeze_thaws_a_container_reaching_external_data_through_an_ordinary_object() {
+    fn external_data_stays_ordinary_and_its_cut_off_container_thaws() {
         let mut c = Core::new();
         c.set_freeze_enabled(true);
         if !c.freeze_enabled() {
@@ -872,19 +899,23 @@ mod tests {
             let other = c.alloc_vector(INTSXP, 1).unwrap();
             let rest = c.alloc_node(LISTSXP, other, nil, nil).unwrap();
             let root = c.alloc_node(LISTSXP, container, rest, nil).unwrap();
-            c.freeze(&mut One(root), |x| x == mid);
-            assert!(!c.is_frozen(container) && container.flags() & flags::IMMORTAL == 0, "the container is ordinary");
+            let mut roots = WithFreeze { all: vec![root], freeze: root };
+            c.freeze(&mut roots, |x| x == mid);
+            assert!(!c.is_frozen(ext), "external data is never frozen");
+            assert!(c.is_frozen(container) && (*c.remembered.0.get()).contains(&container));
+            cut_car(root, nil);
+            c.frozen_pass(&mut roots);
+            assert!(!c.is_frozen(container) && !(*c.remembered.0.get()).contains(&container));
             assert!(c.is_frozen(other));
-            let log = &*c.remembered.0.get();
-            assert!(!log.contains(&container));
             c.check_frozen();
         }
     }
 
-    /// A weak reference's key at the freeze: neither it nor any frozen
-    /// object that reaches it is frozen, so its death stays observable.
+    /// A weak reference's key at the freeze is never frozen, so its death
+    /// stays observable; the frozen objects on the path to it are logged,
+    /// and its reachability through them is the key's, as in GNU R.
     #[test]
-    fn a_weak_key_and_its_referrers_stay_ordinary() {
+    fn a_weak_key_stays_ordinary_and_its_referrers_are_logged() {
         let mut c = Core::new();
         c.set_freeze_enabled(true);
         if !c.freeze_enabled() {
@@ -905,11 +936,40 @@ mod tests {
             let rest = c.alloc_node(LISTSXP, other, nil, nil).unwrap();
             let root = c.alloc_node(LISTSXP, top, rest, nil).unwrap();
             c.freeze(&mut One(root), |_| false);
-            for x in [key, mid, top, root] {
-                assert!(!c.is_frozen(x) && x.flags() & flags::IMMORTAL == 0, "on the path to the key");
-            }
-            assert!(c.is_frozen(other), "off it");
+            assert!(!c.is_frozen(key) && key.flags() & flags::IMMORTAL == 0, "the key is ordinary");
+            assert!(c.is_frozen(mid) && c.is_frozen(top) && c.is_frozen(other));
+            assert!((*c.remembered.0.get()).contains(&mid), "the key's frozen referrer is logged");
             c.check_frozen();
+        }
+    }
+
+    /// A store into a frozen object over an ordinary value, and a store into
+    /// an ordinary object over a frozen value, note nothing: neither removes
+    /// an edge of the frozen graph. A frozen value overwritten in a frozen
+    /// object does (the pass's bar, table (b)).
+    #[test]
+    fn only_a_frozen_value_overwritten_in_a_frozen_object_is_dirty() {
+        let mut c = Core::new();
+        c.set_freeze_enabled(true);
+        if !c.freeze_enabled() {
+            return;
+        }
+        let nil = c.nil();
+        // SAFETY: fresh objects of this heap; nothing collects.
+        unsafe {
+            let leaf = c.alloc_vector(INTSXP, 1).unwrap();
+            let cell = c.alloc_node(LISTSXP, nil, nil, nil).unwrap();
+            let head = c.alloc_node(LISTSXP, leaf, cell, nil).unwrap();
+            c.freeze(&mut One(head), |_| false);
+            assert_eq!(c.remembered.1.get(), 0);
+            let young = c.alloc_vector(INTSXP, 1).unwrap();
+            cell.store(cell.as_ptr().add(crate::layout::node::OFF_CAR) as *mut Sexp, young);
+            assert_eq!(c.remembered.1.get() & Remembered::DIRTY, 0, "over nil (not frozen): no note");
+            let other = c.alloc_node(LISTSXP, leaf, nil, nil).unwrap();
+            other.store(other.as_ptr().add(crate::layout::node::OFF_CAR) as *mut Sexp, nil);
+            assert_eq!(c.remembered.1.get() & Remembered::DIRTY, 0, "in an ordinary object: no note");
+            head.store(head.as_ptr().add(crate::layout::node::OFF_CAR) as *mut Sexp, young);
+            assert_ne!(c.remembered.1.get() & Remembered::DIRTY, 0, "a frozen value overwritten in a frozen object");
         }
     }
 }

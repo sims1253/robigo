@@ -73,8 +73,11 @@ fn a_frozen_object_with_a_finalizer_dies_after_its_last_reference_goes() {
 
 /// A frozen list that base binds holds an environment, a finalizer is put
 /// on the environment, and the list's binding goes: the environment dies at
-/// a collection (Sol S3). Its frozen referrer, the list, was made ordinary
-/// with it, so only reachability decides; a log entry would have kept it.
+/// a collection (Sol S3). The next collection's frozen-reachability pass
+/// thaws the environment; the list stays frozen and logged while base binds
+/// it (the environment is reachable then, in GNU R too). Rebinding the base
+/// binding is a dirty event, so the next pass thaws the list, and only
+/// reachability decides: no log entry keeps the environment.
 #[test]
 #[cfg(not(miri))]
 fn a_frozen_container_does_not_keep_an_unfrozen_object_alive() {
@@ -99,7 +102,8 @@ fn a_frozen_container_does_not_keep_an_unfrozen_object_alive() {
         // SAFETY: `e` is rooted; the reference is rooted by the collector.
         unsafe { cx.new_weak_ref_raw(e.bind(cx).sexp(), nil, cx.base_env().sexp(), false) }.expect("room");
         cx.collect();
-        assert!(!cx.is_frozen(e.bind(cx)) && !cx.is_frozen(l.bind(cx)), "the key and its frozen referrer thawed");
+        assert!(!cx.is_frozen(e.bind(cx)), "the key thawed");
+        assert!(cx.is_frozen(l.bind(cx)), "its referrer stays frozen (logged) while base binds it");
         cx.check_frozen();
         let nilr = s.root(cx, cx.nil());
         cx.define_var(sym, nilr, base)?;

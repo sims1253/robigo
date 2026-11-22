@@ -844,8 +844,8 @@ impl Loc {
                     // a base binding is a freeze root: a frozen value
                     // rebound away leaves the frozen graph (the
                     // frozen-reachability pass, robigo-heap's freeze.rs)
-                    // SAFETY: the old value is null or live.
-                    unsafe { robigo_heap::note_overwritten(old) };
+                    // (the old value is null or live)
+                    robigo_heap::note_overwritten(old);
                     if tracks && old != new {
                         if !old.is_null() && !pending {
                             old.decref();

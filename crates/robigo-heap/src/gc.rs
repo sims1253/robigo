@@ -539,6 +539,11 @@ pub struct Core {
     frozen: Vec<Sexp>,
     /// Frozen objects to become ordinary at the next collection.
     pending_unfreeze: Vec<Sexp>,
+    /// The frozen environments on the search path at the last pass (or the
+    /// freeze), by address: the deferred search-path test's snapshot.
+    path_snapshot: Vec<usize>,
+    /// How many frozen-reachability passes ran (`ROBIGO_GC_STATS`).
+    frozen_passes: u64,
     /// `ROBIGO_GC_FREEZE_CHECK=N`: the freeze's invariant checked at every
     /// N-th collection (1: every one; 0: never). The check traces the whole
     /// heap twice, so under gctorture a period keeps a run's cost near a
@@ -978,6 +983,8 @@ impl Core {
             boot_boundary: None,
             frozen: Vec::new(),
             pending_unfreeze: Vec::new(),
+            path_snapshot: Vec::new(),
+            frozen_passes: 0,
             freeze_check: if freeze_on { freeze_check_from_env() } else { 0 },
             freeze_check_count: 0,
             freeze_checking: false,
@@ -2886,8 +2893,9 @@ impl Core {
                 self.freeze_at_boundary(roots);
             }
             self.poisoned = true;
-            // the batched unfreeze (`freeze.rs`) before anything is marked
-            self.unfreeze_pending();
+            // the frozen-reachability pass (`freeze.rs`) before anything is
+            // marked: what the frozen graph no longer reaches thaws
+            self.frozen_pass(roots);
             // (this collection's snapshot only: r4 S10)
             self.freeze_reach.clear();
             self.freeze_checking = false;
@@ -3582,9 +3590,10 @@ impl Core {
             let state = if self.boot_boundary.is_some() { ", the boundary drawn, no collection since" } else { "" };
             let _ = writeln!(
                 r,
-                "robigo gc: the boot heap's freeze (ROBIGO_GC_FREEZE): {} objects frozen, {} bytes{state}",
+                "robigo gc: the boot heap's freeze (ROBIGO_GC_FREEZE): {} objects frozen, {} bytes, {} frozen-reachability passes{state}",
                 self.frozen.len(),
-                self.frozen_bytes()
+                self.frozen_bytes(),
+                self.frozen_passes
             );
         }
         let _ = writeln!(
