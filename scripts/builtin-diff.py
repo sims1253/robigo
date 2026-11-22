@@ -453,12 +453,18 @@ BIG_MARK = b"a4_big"
 
 
 def same_record(a, b):
-    """Two cases' records alike: their bytes, their big values' digests,
-    what they printed and the files they made."""
+    """Two cases' records alike: their bytes, their big values' digests
+    (each summary's digest there on both sides: a missing one never
+    passes), what they printed and the files they made."""
     with open(a, "rb") as f1, open(b, "rb") as f2:
-        if f1.read() != f2.read():
+        ab = f1.read()
+        if ab != f2.read():
             return False
-    return big_digests(a) == big_digests(b) and printed(a) == printed(b) and made(a) == made(b)
+    da, db = big_digests(a), big_digests(b)
+    want = ab.count(BIG_MARK)
+    if len(da) != want or len(db) != want:
+        return False
+    return da == db and printed(a) == printed(b) and made(a) == made(b)
 
 
 def made(rds):

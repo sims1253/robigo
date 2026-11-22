@@ -13,13 +13,16 @@
 ## recorded as list(unchanged = TRUE), any other as list(unchanged = FALSE,
 ## value).
 ## A value (the call's, or a changed binding's) whose serialization would
-## be over A4_BIG_BYTES is recorded as its summary,
+## be over A4_BIG_BYTES, made only of vectors and lists (no reference
+## object, which a separate serialization could not share with the rest of
+## the record), is recorded as its summary,
 ##   list(a4_big = k, type, length, attributes (their names), head, tail)
-## (head and tail: its first and last 3 elements, of an atomic vector), and
-## the whole value goes to `<id>.big<k>.rds` (saveRDS version 2: plain
-## vectors, never an ALTREP or compact form, so the same bytes on both
-## runtimes), which the harness replaces by its sha256 at once; a value the
-## runtime cannot write that way (too big expanded) stays in the record. One case
+## (head and tail: its first and last 3 elements, of a vector or a list,
+## when they are small), and the whole value goes to `<id>.big<k>.rds`
+## (saveRDS version 2: plain vectors, never an ALTREP or compact form, so
+## the same bytes on both runtimes), which the harness replaces by its
+## sha256 at once. A value over A4_BIG_MAX_BYTES, or one the runtime cannot
+## write that way, stays in the record. One case
 ## (`[<-`(a4cls, 1:1e5, long): 100,000 copies of a 10,000-byte string,
 ## shared in memory, each written out by serialize) recorded 1 GB. Each case's printed output follows a marker line on stdout,
 ## "\001A4 <id>\001", which the harness compares too.
@@ -36,7 +39,9 @@
 ## first; a runtime that fails it gets "driver unusable on <label>: <what>"
 ## and no records, never a wrong comparison.
 local({
-    A4_BIG_BYTES <- 16 * 1024^2
+    A4_BIG_BYTES <- 16 * 1024^2       # a value over this goes to a sidecar, as its digest
+    A4_BIG_MAX_BYTES <- 1024^3        # one over this stays whole (it may not expand under the cap)
+    A4_ENDS_BYTES <- 1024^2           # a summary's first and last elements, at most
     batch_path <- Sys.getenv("A4_BATCH")
     out <- Sys.getenv("A4_OUT")
     from <- as.integer(Sys.getenv("A4_FROM", "1"))
@@ -80,23 +85,39 @@ local({
 
     muffle <- function(expr) withCallingHandlers(expr, warning = function(w) invokeRestart("muffleWarning"))
 
-    ## about the bytes serialize writes for v (each string's bytes; a list's
-    ## elements; attributes, which stay small, left out)
+    ## about the bytes serialize writes for v: each string's bytes, each
+    ## element's size and an 8-byte header per element of a list, and the
+    ## attributes' (a scalar with a big attribute is big)
     a4size <- function(v) {
-        if (is.character(v)) return(sum(nchar(v, type = "bytes", keepNA = FALSE)) + 8 * length(v))
-        if (is.list(v)) { s <- 0; for (x in v) s <- s + a4size(x); return(s) }
-        if (is.atomic(v)) return(length(v) * switch(typeof(v), logical = , integer = 4, double = 8,
-                                                     complex = 16, raw = 1, 0))
-        0
+        ## (the attributes' values, not the pairlist's own names, which have
+        ## names of their own: no recursion into those)
+        s <- 0
+        for (x in attributes(v)) s <- s + a4size(x)
+        if (is.character(v)) return(s + sum(nchar(v, type = "bytes", keepNA = FALSE)) + 8 * length(v))
+        if (is.list(v)) { for (x in v) s <- s + 8 + a4size(x); return(s) }
+        if (is.atomic(v)) return(s + length(v) * switch(typeof(v), logical = , integer = 4, double = 8,
+                                                         complex = 16, raw = 1, 0))
+        s
     }
-    ## v, or for a value over A4_BIG_BYTES its summary, the value itself in
-    ## the case's k-th sidecar
+    ## whether v holds no reference object (an environment, a closure, an
+    ## external pointer...) anywhere, attributes included: only such a
+    ## value goes to a sidecar of its own, whose serialization cannot share
+    ## a reference with the rest of the record
+    a4plain <- function(v) {
+        for (x in attributes(v)) if (!a4plain(x)) return(FALSE)
+        if (is.null(v) || is.atomic(v)) return(TRUE)
+        if (is.list(v)) { for (x in v) if (!a4plain(x)) return(FALSE); return(TRUE) }
+        FALSE
+    }
+    ## v, or for a plain value over A4_BIG_BYTES (and not over
+    ## A4_BIG_MAX_BYTES, which an expanded copy might not fit in the
+    ## harness's address-space cap) its summary, the value itself in the
+    ## case's k-th sidecar; any other value stays in the record as before
     a4big <- function(v, id, k) {
         ## (isTRUE: no estimate, whatever v holds, may stop the case)
-        if (!isTRUE(tryCatch(a4size(v) > A4_BIG_BYTES, error = function(e) FALSE))) return(v)
-        ## a value its runtime holds compactly (seq.int(intmax): 8 GB as a
-        ## plain vector) may not be expandable under the address-space cap:
-        ## then it stays in the record as before, as its runtime serializes it
+        size <- tryCatch(a4size(v), error = function(e) NA)
+        if (!isTRUE(size > A4_BIG_BYTES) || !isTRUE(size <= A4_BIG_MAX_BYTES) ||
+            !isTRUE(tryCatch(a4plain(v), error = function(e) FALSE))) return(v)
         side <- file.path(out, sprintf("%06d.big%d.rds", id, k))
         if (!isTRUE(tryCatch({ saveRDS(v, side, version = 2L, compress = FALSE); TRUE },
                              error = function(e) FALSE))) {
@@ -104,9 +125,13 @@ local({
             return(v)
         }
         n <- length(v); h <- min(n, 3L)
-        ends <- is.atomic(v) && h > 0L
-        list(a4_big = k, type = typeof(v), length = n, attributes = names(attributes(v)),
-             head = if (ends) .subset(v, seq_len(h)), tail = if (ends) .subset(v, (n - h + 1L):n))
+        ## the first and last elements, of a vector or a list, unless they
+        ## are big themselves
+        ends <- h > 0L && (is.atomic(v) || is.list(v))
+        head <- if (ends) .subset(v, seq_len(h))
+        tail <- if (ends) .subset(v, (n - h + 1L):n)
+        if (ends && !isTRUE(a4size(head) + a4size(tail) <= A4_ENDS_BYTES)) head <- tail <- NULL
+        list(a4_big = k, type = typeof(v), length = n, attributes = names(attributes(v)), head = head, tail = tail)
     }
 
     run1 <- function(c) {

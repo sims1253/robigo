@@ -140,6 +140,10 @@ class Classes(unittest.TestCase):
         # a big value on one side only
         os.remove(os.path.join(rt, "000951.big1.sha256"))
         self.assertEqual(bd.classify(o, r, {}, {}, 951), "mismatch")
+        # and on neither (a summary always has its digest: missing on both
+        # sides never passes)
+        os.remove(os.path.join(go, "000951.big1.sha256"))
+        self.assertEqual(bd.classify(o, r, {}, {}, 951), "mismatch")
         # and a case's digests never mix with another case's
         with open(os.path.join(go, "000095.rds"), "wb") as f:
             f.write(b"x")
