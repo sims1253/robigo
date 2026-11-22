@@ -711,10 +711,12 @@ fn stubs_for(cx: &mut Cx, primitives: &[&'static str], internals: &[&'static str
     use robigo_rtbuiltins::names::{internal_eval, primitive_eval};
     let st = crate::prims::state(cx);
     // (the defined names once, not a scan of the definitions per name:
-    // names.c has some 1,500 entries; hashed with the translator's hasher,
-    // not SipHash: the keys are names.c's compiled-in names, never R's)
-    let defined: crate::compile::PosSet<(&str, bool)> = st.defs.iter().map(|d| (d.name, d.internal())).collect();
-    let have = |name: &str, internal: bool| defined.contains(&(name, internal));
+    // names.c has some 1,500 entries; a NameSet, not SipHash: the keys are
+    // compiled-in names, never R's; sized at once, so it does not rehash
+    // while it fills)
+    let mut defined = crate::compile::NameSet::with_capacity_and_hasher(st.defs.len(), Default::default());
+    defined.extend(st.defs.iter().map(|d| (crate::compile::Name(d.name), d.internal())));
+    let have = |name: &'static str, internal: bool| defined.contains(&(crate::compile::Name(name), internal));
     let stub = |name: &'static str, eval: i32, internal: bool| {
         let kind = match (eval % 10 == 1, internal) {
             (true, false) => Kind::Builtin(not_yet_primitive, crate::prims::Inline::None),
