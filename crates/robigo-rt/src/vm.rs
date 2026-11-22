@@ -462,7 +462,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                         matches!(b, Some(robigo_rtcore::RawBinding::Thunk(_)))
                     };
                     if thunk {
-                        crate::eval::force_formal_getvar(cx, act, at - 1, i.a)?;
+                        cx.force_arg(act.root(R_ENV), at - 1, act.out(i.a))?;
                     } else {
                         // SAFETY: the running code's constants (or rooted values): live, of this isolate.
                         unsafe { crate::eval::get_var(cx, act, i.a, sym, false, v.profile == Profile::Bc) }?;

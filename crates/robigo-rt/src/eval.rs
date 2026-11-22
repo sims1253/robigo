@@ -493,26 +493,6 @@ pub unsafe fn get_var_missok(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sex
     unsafe { get_var(cx, act, a, sym, dd, bc) }
 }
 
-/// A formal's first read by `GETVAR` (`bc`, byte code: bcEval's inlined
-/// force, `setup_bcframe_prom`, [`Cx::force_arg_inline`]) or by the AST
-/// interpreter's `eval` of the symbol (`forcePromise`, [`Cx::force_arg`]).
-/// Out of line, so that `vm::run` calls one function as before.
-// R: eval.c:DO_GETVAR, eval.c:getvar
-#[inline(never)]
-pub fn force_formal(cx: &mut Cx, frame: Root<'_>, index: usize, out: Out<'_>, bc: bool) -> RResult<()> {
-    if bc { cx.force_arg_inline(frame, index, out) } else { cx.force_arg(frame, index, out) }
-}
-
-/// `GETVAR`'s first read of the formal at `index` of the activation's
-/// frame into register `a`: [`force_formal`] under the profile of the
-/// activation's code (read here, off `vm::run`'s path).
-#[inline(never)]
-pub fn force_formal_getvar(cx: &mut Cx, act: &Act, index: usize, a: crate::ir::Reg) -> RResult<()> {
-    // SAFETY: the running activation's code object.
-    let bc = unsafe { crate::code::View::of(act.obj(crate::ir::R_CODE)) }.profile == Profile::Bc;
-    force_formal(cx, act.root(crate::ir::R_ENV), index, act.out(a), bc)
-}
-
 /// `eval(sym, rho)` into register `a` (`..N` when `dd`), the slow path:
 /// active bindings, promises to force, GNU R's errors.
 ///
@@ -531,7 +511,7 @@ pub unsafe fn get_var(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: 
                 // SAFETY: the frame holding the slot, reachable from the
                 // rooted environment; the scratch register keeps it.
                 let f = unsafe { act.scratch(crate::ir::R_SCRATCH, loc.frame()) };
-                let r = force_formal(cx, f, loc.index(), act.out(a), bc);
+                let r = cx.force_arg(f, loc.index(), act.out(a));
                 act.kill(crate::ir::R_SCRATCH, u32::MAX);
                 return r;
             }
@@ -541,7 +521,7 @@ pub unsafe fn get_var(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: 
                 // SAFETY: the promise is bound in a rooted frame; the
                 // scratch register keeps it for the force.
                 let p = unsafe { act.scratch(crate::ir::R_SCRATCH, v) };
-                let r = if bc { cx.force_promise_inline(p, act.out(a)) } else { force(cx, p, act.out(a)) };
+                let r = force(cx, p, act.out(a));
                 act.kill(crate::ir::R_SCRATCH, u32::MAX);
                 return r;
             }
@@ -565,7 +545,7 @@ pub unsafe fn get_var(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: 
         }
     }
     if dd {
-        dd_value(cx, sym, act.root(crate::ir::R_ENV), act.out(a), subclass, bc)
+        dd_value(cx, sym, act.root(crate::ir::R_ENV), act.out(a), subclass)
     } else {
         // SAFETY: the caller's contract: a live symbol.
         unsafe { symbol_value_as(cx, sym, act.root(crate::ir::R_ENV), act.out(a), subclass) }
@@ -602,7 +582,7 @@ pub unsafe fn symbol_value_as(
     }
     // SAFETY: a live symbol.
     if unsafe { sym.gp() } & robigo_rtcore::DDVAL != 0 {
-        return dd_value(cx, sym, rho, out, subclass, false);
+        return dd_value(cx, sym, rho, out, subclass);
     }
     // an argument not yet read: its slot forced in place
     // SAFETY: an immortal symbol and a rooted environment.
@@ -618,7 +598,7 @@ pub unsafe fn symbol_value_as(
         // SAFETY: an immortal symbol.
         let sr = s.root(cx, unsafe { Ref::from_sexp(sym, cx) });
         cx.find_var(sr, rho, out)?;
-        finish_value(cx, sym, rho, res, s, subclass, false)
+        finish_value(cx, sym, rho, res, s, subclass)
     })
 }
 
@@ -631,7 +611,6 @@ fn finish_value(
     res: Root<'_>,
     s: robigo_rtcore::Scope<'_>,
     subclass: &'static str,
-    inline: bool,
 ) -> RResult<()> {
     let mut v = res.bind(cx).sexp();
     if v == cx.unbound().sexp() && sym == cx.missing_arg().sexp() {
@@ -659,12 +638,7 @@ fn finish_value(
     if unsafe { v.typ() } == PROMSXP {
         let p = s.root(cx, res.bind(cx));
         let o = res.reset(cx);
-        // (byte code's DDVAL forces in place: setup_bcframe_prom)
-        if inline {
-            cx.force_promise_inline(p, o)?
-        } else {
-            force(cx, p, o)?
-        };
+        force(cx, p, o)?;
     }
     Ok(())
 }
@@ -682,11 +656,11 @@ pub unsafe fn sym_name(cx: &Cx, sym: Sexp) -> String {
 
 /// `ddfindVar(sym, rho)` and the rest of `eval`'s SYMSXP case.
 // R: envir.c:ddfindVar
-fn dd_value(cx: &mut Cx, sym: Sexp, rho: Root<'_>, out: Out<'_>, subclass: &'static str, inline: bool) -> RResult<()> {
+fn dd_value(cx: &mut Cx, sym: Sexp, rho: Root<'_>, out: Out<'_>, subclass: &'static str) -> RResult<()> {
     let res = out.root();
     cx.scope(|cx, s| {
         dd_find(cx, sym, rho, out)?;
-        finish_value(cx, sym, rho, res, s, subclass, inline)
+        finish_value(cx, sym, rho, res, s, subclass)
     })
 }
 

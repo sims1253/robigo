@@ -409,6 +409,12 @@ impl Cx {
             self.promise_value(p, out)?;
             return Ok(());
         }
+        if self.inline_force_due() {
+            // SAFETY: a rooted promise.
+            if let Some(e) = unsafe { self.inline_promise_overflow(p.bind(self).sexp()) } {
+                return Err(e);
+            }
+        }
         self.safepoint(robigo_heap::Safepoint::Entry)?;
         let ps = p.bind(self).sexp();
         // SAFETY: as above; PRSEEN is the gp field.
@@ -475,49 +481,24 @@ impl Cx {
         })
     }
 
-    /// bcEval's inlined `GETVAR`/`DDVAL` force of the promise GNU R's
-    /// binding in slot `index` of `frame` would hold: [`Cx::force_arg`],
-    /// except that when the promise is one bcEval forces in place (not
-    /// evaluated, of byte code, PRSEEN 0) and the evaluation's depth step
-    /// overflows, the promise is left PRSEEN 1. `setup_bcframe_prom` marks
-    /// it before `INCREMENT_EVAL_DEPTH` and puts it on the pending stack
-    /// only after, so `R_restore_globals` never marks it interrupted: a
-    /// later force is "promise already under evaluation", not the restart
-    /// warning. Only the `Bc` profile's `GETVAR` and `DDVAL` force so; the
-    /// AST interpreter's `eval` and `getvar` go through `forcePromise`.
+    /// bcEval's inlined `GETVAR`/`DDVAL` force: a promise bcEval forces in
+    /// place (not evaluated, of byte code, PRSEEN 0) whose evaluation's
+    /// depth step overflows is left PRSEEN 1. `setup_bcframe_prom` marks it
+    /// before `INCREMENT_EVAL_DEPTH` and puts it on the pending stack only
+    /// after, so `R_restore_globals` never marks it interrupted: a later
+    /// force is "promise already under evaluation", not the restart
+    /// warning. Taken while byte code is active (`R_BCIntActive`); the AST
+    /// interpreter's `eval` goes through `forcePromise`. The check is
+    /// on the overflow's side only: the common path pays the depth compare.
     // R: eval.c:DO_GETVAR, eval.c:setup_bcframe_prom
-    #[inline]
-    pub fn force_arg_inline(&mut self, frame: Root<'_>, index: usize, out: Out<'_>) -> RResult<()> {
-        if self.eval_depth() >= self.expressions() {
-            let f = frame.bind(self).sexp();
-            // SAFETY: a slot of a rooted slot frame (force_arg's checks
-            // follow on the other path).
-            if let Some(e) = unsafe { self.inline_force_overflow(SlotRef { owner: f, index }) } {
-                return Err(e);
-            }
-        }
-        self.force_arg(frame, index, out)
+    #[inline(always)]
+    fn inline_force_due(&self) -> bool {
+        self.eval_depth() >= self.expressions() && self.iso().contexts().bc_active.get()
     }
 
-    /// [`Cx::force_arg_inline`] of a PROMSXP (a materialized argument, an
-    /// element of `...`): [`Cx::force_promise`], or PRSEEN 1 and the
-    /// depth overflow when its depth step overflows.
-    // R: eval.c:DO_GETVAR, eval.c:setup_bcframe_prom
-    #[inline]
-    pub fn force_promise_inline(&mut self, p: Root<'_>, out: Out<'_>) -> RResult<()> {
-        if self.eval_depth() >= self.expressions() {
-            let ps = p.bind(self).sexp();
-            // SAFETY: a rooted promise.
-            if let Some(e) = unsafe { self.inline_promise_overflow(ps) } {
-                return Err(e);
-            }
-        }
-        self.force_promise(p, out)
-    }
-
-    /// The overflow of [`Cx::force_arg_inline`]: `None` when the slot is
-    /// not one bcEval forces in place (then `force_arg` forces it as
-    /// `getvar` does).
+    /// The overflow of bcEval's inlined force of a slot: `None` when the
+    /// slot is not one bcEval forces in place (then `force_arg` forces it
+    /// as `getvar` does).
     ///
     /// # Safety
     /// `s` is a slot of a live slot frame of this isolate.
@@ -537,8 +518,8 @@ impl Cx {
         }
     }
 
-    /// The overflow of [`Cx::force_promise_inline`], `None` when `p` is
-    /// not a promise bcEval forces in place.
+    /// The overflow of bcEval's inlined force of a PROMSXP, `None` when `p`
+    /// is not a promise bcEval forces in place.
     ///
     /// # Safety
     /// `p` is a live promise of this isolate.
@@ -600,6 +581,12 @@ impl Cx {
             }
             // (a method's argument, an alias, out of line)
             _ => return self.force_alias(s, out),
+        }
+        if self.inline_force_due() {
+            // SAFETY: a delayed slot of a rooted frame.
+            if let Some(e) = unsafe { self.inline_force_overflow(s) } {
+                return Err(e);
+            }
         }
         // a value the caller computed early (§6.2): present only while no
         // effect has happened since (`note_effect` drops it), so it is the

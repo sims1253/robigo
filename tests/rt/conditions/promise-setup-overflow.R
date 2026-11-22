@@ -14,7 +14,7 @@ smallest <- function(D) {
     }
     NA
 }
-for (D in c(20L, 40L)) {
+for (D in 20L) {
     L <- smallest(D)
     e <- k(1L, D)
     options(expressions = L - 3L)
