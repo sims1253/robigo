@@ -1,4 +1,4 @@
-# builtin-diff known failures: asplit, seed 0, key d06c7cda809355383f5b78b4
+# builtin-diff known failures: asplit, seed 0, key fa7ab9c7b6cd305a4a608ffd
 # asplit: 1088 / 1102 (not-implemented 0, crash 0, timeout 0, resource 4 excluded, oracle-crash 0 excluded)
 103
 252

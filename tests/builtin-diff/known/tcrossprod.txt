@@ -1,2 +1,2 @@
-# builtin-diff known failures: tcrossprod, seed 0, key 818d6a28b5acc5bb5e3e45c9
+# builtin-diff known failures: tcrossprod, seed 0, key 0b77d397ca28f73abee88a43
 # tcrossprod: 67 / 67 (not-implemented 0, crash 0, timeout 0, resource 2 excluded, oracle-crash 0 excluded)
