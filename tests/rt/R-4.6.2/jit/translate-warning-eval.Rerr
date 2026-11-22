@@ -1,0 +1,6 @@
+Warning in f() : unable to translate '<U+4E2D>' to native encoding
+Warning in fe() : unable to translate '<U+4E2D>' to native encoding
+Warning in fs() : unable to translate '<U+4E2D>' to native encoding
+Warning in g() : unable to translate '<U+4E2D>' to native encoding
+Warning in fv() : unable to translate '<U+4E2D>' to native encoding
+Warning: unable to translate '<U+4E2D>' to native encoding
