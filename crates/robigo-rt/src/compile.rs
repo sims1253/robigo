@@ -326,35 +326,53 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
             return Ok(Some(c));
         }
     }
-    let code = attempt(cx, |cx| {
-        let f = op.bind(cx).sexp();
-        // SAFETY: a rooted closure (and cache entry); nothing collects in
-        // this interval.
-        unsafe {
-            if f.cdr().typ() == BCODESXP {
-                if crosscheck::enabled() {
-                    check = Some(crosscheck_closure(cx, f, installed)?);
+    // (findLocals' warnings raised, and the compile made again after them)
+    let mut prelude = Prelude::default();
+    let code = loop {
+        let code = attempt(cx, |cx| {
+            let f = op.bind(cx).sexp();
+            // (a retried attempt gives cmp.R's warnings again)
+            prims::state(cx).compile_warnings.clear();
+            // SAFETY: a rooted closure (and cache entry); nothing collects in
+            // this interval.
+            unsafe {
+                if f.cdr().typ() == BCODESXP {
+                    if crosscheck::enabled() {
+                        check = Some(crosscheck_closure(cx, f, installed)?);
+                    }
+                    // V3: GNU R's byte code, translated
+                    return translate_code(cx, f.cdr(), Some(f.car()), None);
                 }
-                // V3: GNU R's byte code, translated
-                return translate_code(cx, f.cdr(), Some(f.car()), None);
+                let (formals, body) = (f.car(), source_body(cx, f));
+                let mut cenv = Cenv::of_env(cx, f.tag(), installed)?;
+                let st = prims::state(cx);
+                if !function_context(cx, st, &mut cenv, formals, body, Some(&mut prelude))? {
+                    return Err(Need::Fail);
+                }
+                let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
+                let mut b = c.root(body)?;
+                c.add_unit_locals(&mut b);
+                let code = crate::code::build(cx, &verified(b), body, Some(formals))?;
+                index_codes(cx, code, &c.arg_codes, None);
+                Ok(code)
             }
-            let (formals, body) = (f.car(), source_body(cx, f));
-            let mut cenv = Cenv::of_env(cx, f.tag(), installed)?;
-            let st = prims::state(cx);
-            if !function_context(cx, st, &mut cenv, formals, body)? {
-                return Err(Need::Fail);
-            }
-            let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
-            let mut b = c.root(body)?;
-            c.add_unit_locals(&mut b);
-            let code = crate::code::build(cx, &verified(b), body, Some(formals))?;
-            index_arg_codes(cx, code, &c.arg_codes);
-            Ok(code)
+        });
+        if matches!(code, Ok(None)) && !prelude.raised && prims::state(cx).compile_warnings.prelude() > 0 {
+            cenv::raise_prelude(cx)?;
+            prelude.raised = true;
+            continue;
         }
-    });
+        break code;
+    };
     if let Some(c) = check {
         c.report();
     }
+    // cmp.R's warnings, given in the compile whether it compiled or not
+    // (tryCmpfun's error comes after them)
+    let code = match code {
+        Ok(c) => Ok(raise_compile_warnings(cx, c)?),
+        e => e,
+    };
     if let Ok(Some(c)) = code {
         let f = op.bind(cx).sexp();
         // SAFETY: a rooted closure and its fresh code object.
@@ -380,6 +398,21 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
 /// # Safety
 /// `f` is a live closure whose body is a BCODESXP; nothing collects.
 unsafe fn crosscheck_closure(cx: &Cx, f: Sexp, installed: bool) -> Result<crosscheck::Finding, Need> {
+    // (its compile from source is no compile of GNU R's: cmp.R's warnings
+    // there are not given)
+    let warnings = &prims::state(cx).compile_warnings;
+    let mark = warnings.len();
+    // SAFETY: the caller's contract.
+    let r = unsafe { crosscheck_closure_in(cx, f, installed) };
+    warnings.truncate(mark);
+    r
+}
+
+/// [`crosscheck_closure`]'s comparison.
+///
+/// # Safety
+/// As for [`crosscheck_closure`].
+unsafe fn crosscheck_closure_in(cx: &Cx, f: Sexp, installed: bool) -> Result<crosscheck::Finding, Need> {
     use crosscheck::{Finding, Verdict};
     // SAFETY: the caller's contract.
     unsafe {
@@ -394,7 +427,7 @@ unsafe fn crosscheck_closure(cx: &Cx, f: Sexp, installed: bool) -> Result<crossc
             .unwrap_or_else(|_| "<a closure>".to_owned());
         let source = (|| -> Result<Option<Built>, Need> {
             let mut cenv = Cenv::of_env(cx, f.tag(), installed)?;
-            if !function_context(cx, st, &mut cenv, formals, body)? {
+            if !function_context(cx, st, &mut cenv, formals, body, None)? {
                 return Ok(None);
             }
             let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
@@ -531,7 +564,9 @@ pub fn crosscheck_installed(cx: &mut Cx, f: Root<'_>) -> RResult<Option<crossche
 /// bcEval at the top level, or a promise's code, `MAKEPROM`'s BCODESXP):
 /// its translation, kept on it. A promise's code is translated at its
 /// first force (its closure's translation leaves it), with the slot
-/// indices of the frame `rho` it runs in.
+/// indices of the frame `rho` that force runs in; every later force runs
+/// that translation, and a frame of another shape has its slots read by
+/// name (`Cx::frame_slot_raw` checks the shape, then the slot's symbol).
 pub(crate) fn bytecode_code(cx: &mut Cx, bc: Root<'_>, rho: Root<'_>) -> RResult<Sexp> {
     // SAFETY: a rooted BCODESXP: its 4th word is R_NilValue or a code
     // object this module stored.
@@ -595,16 +630,7 @@ unsafe fn translate_code(cx: &Cx, bc: Sexp, formals: Option<Sexp>, index: Option
         };
         let expr = robigo_rtbuiltins::bytecode::expr(cx, Ref::from_sexp(bc, cx)).sexp();
         let code = crate::code::build(cx, &verified(b), expr, formals)?;
-        match index {
-            // a promise's code and its own: the slot indices of its frame
-            Some(shape) => {
-                crate::code::set_index_shape(cx, code, shape);
-                for &a in &c.arg_codes {
-                    crate::code::set_index_shape(cx, a, shape);
-                }
-            }
-            None => index_arg_codes(cx, code, &c.arg_codes),
-        }
+        index_codes(cx, code, &c.arg_codes, index);
         Ok(code)
     }
 }
@@ -612,7 +638,11 @@ unsafe fn translate_code(cx: &Cx, bc: Sexp, formals: Option<Sexp>, index: Option
 /// `make.functionContext(cntxt, forms, body)` on `cenv`: a frame of the
 /// formals, then the locals of their defaults and the body; false when
 /// the body may call `browser()` (cmp.R does not compile it). The frame is
-/// left on `cenv` (popped by the caller when it is done).
+/// left on `cenv` (popped by the caller when it is done). With `prelude`
+/// (a closure's own compile), findLocals runs through it
+/// ([`Prelude::found`]): when its warnings are still to be raised, the
+/// attempt stops ([`Need::Fail`]) before `mayCallBrowser`, which may force
+/// a promise.
 ///
 /// # Safety
 /// `formals` (a pairlist) and `body` are live.
@@ -622,6 +652,7 @@ unsafe fn function_context(
     cenv: &mut Cenv<'_>,
     formals: Sexp,
     body: Sexp,
+    prelude: Option<&mut Prelude>,
 ) -> Result<bool, Need> {
     // SAFETY: the caller's contract.
     unsafe {
@@ -629,7 +660,14 @@ unsafe fn function_context(
         cenv.push_unit(forms.iter().map(|f| f.1).collect());
         let mut elist: Vec<Sexp> = forms.iter().map(|f| f.0).collect();
         elist.push(body);
-        let locals = cenv.find_locals(cx, st, &elist)?;
+        let locals = match prelude {
+            Some(p) => match p.found(cx, st, cenv, &elist)? {
+                Some(l) => l,
+                // (raised before anything else of the compile)
+                None => return Err(Need::Fail),
+            },
+            None => cenv.find_locals(cx, st, &elist)?,
+        };
         cenv.add_unit_vars(&locals);
         Ok(!cenv::may_call_browser(cx, st, cenv, body)?)
     }
@@ -640,18 +678,116 @@ unsafe fn function_context(
 /// fails (`tryCompile` returns the call; it runs uncompiled).
 // R: eval.c:R_compileExpr; cmp.R:compile
 pub fn compile_top_loop(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RResult<Option<Sexp>> {
-    attempt(cx, |cx| {
-        let (e, env) = (call.bind(cx).sexp(), rho.bind(cx).sexp());
-        // SAFETY: rooted objects; nothing collects in this interval.
-        unsafe {
-            let mut cenv = Cenv::of_env(cx, env, false)?;
-            let st = prims::state(cx);
-            let locals = cenv.find_locals(cx, st, &[e])?;
-            cenv.add_top_vars(locals);
-            let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
-            let b = c.root(e)?;
-            Ok(crate::code::build(cx, &verified(b), e, None)?)
+    let mut prelude = Prelude::default();
+    let code = loop {
+        let code = attempt(cx, |cx| {
+            let (e, env) = (call.bind(cx).sexp(), rho.bind(cx).sexp());
+            // (a retried attempt gives cmp.R's warnings again)
+            prims::state(cx).compile_warnings.clear();
+            // SAFETY: rooted objects; nothing collects in this interval.
+            unsafe {
+                let mut cenv = Cenv::of_env(cx, env, false)?;
+                let st = prims::state(cx);
+                let locals = match prelude.found(cx, st, &cenv, &[e])? {
+                    Some(l) => l,
+                    // (raised before anything of the loop is compiled)
+                    None => return Err(Need::Fail),
+                };
+                cenv.add_top_vars(locals);
+                let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
+                let b = c.root(e)?;
+                Ok(crate::code::build(cx, &verified(b), e, None)?)
+            }
+        });
+        if matches!(code, Ok(None)) && !prelude.raised && prims::state(cx).compile_warnings.prelude() > 0 {
+            cenv::raise_prelude(cx)?;
+            prelude.raised = true;
+            continue;
         }
+        break code;
+    };
+    match code {
+        Ok(c) => raise_compile_warnings(cx, c),
+        e => e,
+    }
+}
+
+/// A compile's findLocals (`make.functionContext`'s, `compile`'s) across its
+/// attempts. Its warnings are the compile's prelude, which GNU R gives
+/// before anything else of the compile, so before it forces a promise or
+/// decides anything: the first attempt stops at the end of findLocals when
+/// there are any ([`Prelude::found`]), the caller raises them
+/// ([`cenv::raise_prelude`]: a handler they run may change the
+/// environment) and compiles again. That compile keeps findLocals' locals
+/// as GNU R's one findLocals found them, before the handlers ran, and
+/// gives no warning of its own.
+///
+/// INTERIM(C1), until V4 step 3 (cmp.R's own code compiling): what cmp.R
+/// gives later (cmpAssign's `as.name`) is raised after the compile, so a
+/// handler of one does not change the rest of the compile, where in GNU R
+/// it can (`tests/rt/jit/translate-warning-asname.R`, not ratcheted).
+#[derive(Default)]
+struct Prelude {
+    /// Whether the warnings were raised (the compile made again).
+    raised: bool,
+    /// The locals findLocals found (symbols, which are never collected).
+    locals: Vec<Sexp>,
+}
+
+impl Prelude {
+    /// findLocals of `elist` on `cenv`: its locals, or None when the attempt
+    /// stops for its warnings to be raised.
+    ///
+    /// # Safety
+    /// The elements of `elist` are live.
+    unsafe fn found(
+        &mut self,
+        cx: &Cx,
+        st: &RtState,
+        cenv: &Cenv<'_>,
+        elist: &[Sexp],
+    ) -> Result<Option<Vec<Sexp>>, Need> {
+        if self.raised {
+            return Ok(Some(self.locals.clone()));
+        }
+        // SAFETY: the caller's contract.
+        let locals = unsafe { cenv.find_locals(cx, st, elist)? };
+        let w = &st.compile_warnings;
+        w.mark_prelude();
+        if w.prelude() > 0 {
+            self.locals = locals;
+            return Ok(None);
+        }
+        Ok(Some(locals))
+    }
+}
+
+/// cmp.R's warnings of the compile just made ([`cenv::raise_compile_warnings`]),
+/// with its code `code` rooted across them (a warning runs R code: a
+/// handler, `options(warn = 2)`'s error): the code, read again after them.
+///
+/// INTERIM(C1), until V4 step 3 (cmp.R's own code compiling), or #964's
+/// handler for the first:
+/// - an error among them (a warning `options(warn = 2)` makes one, a
+///   handler's `stop()`) is an error inside cmp.R, which GNU R's
+///   `tryCmpfun` takes with its own handler, the innermost: the compile
+///   fails, the closure runs uncompiled (NOJIT) and raises its own error.
+///   Here the error leaves the compile, reported with cmp.R's call
+///   (`tests/rt/jit/translate-warning-warn2.R`, not ratcheted);
+/// - no R frame is on the stack while they run, where GNU R's has the
+///   called function's and cmp.R's (`tryCmpfun` ... `addVar`, `assign`):
+///   a handler's `sys.calls()` and an error's traceback differ
+///   (`tests/rt/jit/translate-warning-frames.R`, not ratcheted).
+// R: cmp.R:tryCmpfun, tryCompile
+fn raise_compile_warnings(cx: &mut Cx, code: Option<Sexp>) -> RResult<Option<Sexp>> {
+    if prims::state(cx).compile_warnings.is_empty() {
+        return Ok(code);
+    }
+    cx.scope(|cx, s| {
+        // SAFETY: the compile's fresh code object, rooted at once.
+        let r = code.map(|c| s.root(cx, unsafe { Ref::from_sexp(c, cx) }));
+        cenv::raise_compile_warnings(cx)?;
+        Ok(r.map(|r| r.bind(cx).sexp()))
     })
 }
 
@@ -844,7 +980,7 @@ struct Comp<'g> {
     site_save: Reg,
     /// The code objects of the arguments compiled with this code (and
     /// theirs): their promises run in this code's frame, so they take its
-    /// shape's slot indices once it exists ([`index_arg_codes`]). Raw: an
+    /// shape's slot indices once it exists ([`index_codes`]). Raw: an
     /// attempt collects nothing.
     arg_codes: Vec<Sexp>,
     /// What a byte-code translation stopped at ([`bctrans`]): the code
@@ -858,52 +994,30 @@ struct Comp<'g> {
     live_stmt: Option<Sexp>,
 }
 
-/// Give the argument codes compiled with closure code `code` (`arg_codes`)
-/// its frame shape's slot indices ([`crate::code::set_index_shape`]).
+/// Give code `code` and the argument codes compiled with it (`arg_codes`)
+/// their slot indices ([`crate::code::set_index_shape`]): with `shape`,
+/// that frame shape's for all of them (a promise's code, translated for
+/// the frame it is forced in); without, the argument codes take closure
+/// code `code`'s own frame shape (which its build indexed it with).
 ///
 /// # Safety
-/// `code` is a live closure code object and `arg_codes` live code objects
-/// that have not run, of `cx`'s isolate.
-unsafe fn index_arg_codes(cx: &Cx, code: Sexp, arg_codes: &[Sexp]) {
+/// `code` is a live code object and `arg_codes` live code objects that
+/// have not run, of `cx`'s isolate; `shape` is None or a live shape (a
+/// VECSXP of symbols) read in the caller's current interval.
+unsafe fn index_codes(cx: &Cx, code: Sexp, arg_codes: &[Sexp], shape: Option<Sexp>) {
     // SAFETY: the caller's contract.
     unsafe {
-        let shape = crate::code::shape(code);
+        let shape = match shape {
+            Some(s) => {
+                crate::code::set_index_shape(cx, code, s);
+                s
+            }
+            None => crate::code::shape(code),
+        };
         for &a in arg_codes {
             crate::code::set_index_shape(cx, a, shape);
         }
     }
-}
-
-/// `installTrChar(c)` for the compiler, which holds raw objects: the
-/// symbol named by CHARSXP `c`'s native translation, a new one's PRINTNAME
-/// `c` itself when no translation was needed (a UTF-8 name keeps its mark,
-/// [`Cx::install_tr`]); or GNU R's error for the name, which the caller
-/// compiles to be raised where GNU R raises it, at each evaluation (cmp.R's
-/// `as.name` fails there too, and the closure is then interpreted):
-/// translateToNative's for a non-ASCII "bytes" name, `install`'s for a name
-/// of no bytes or past MAXIDSIZE (`"" <- 1`, `missing("")`). Both are
-/// `error()`s, reported against the context call.
-///
-/// Not yet GNU R's: translateToNative's warning "unable to translate '%s'
-/// to native encoding" (`mustWork = 2`, outside a UTF-8 locale, the name
-/// installed with escapes after it). The name is installed with the same
-/// escapes, without the warning, which needs an instruction that warns and
-/// goes on. INTERIM(C1): that instruction, its own PR.
-///
-/// # Safety
-/// `c` is a live CHARSXP of `cx`'s isolate.
-// R: sysutils.c:installTrChar, names.c:install
-unsafe fn install_tr_raw(cx: &Cx, c: Sexp) -> Result<Result<Sexp, String>, Need> {
-    // SAFETY: the caller's contract.
-    let ch = unsafe { Ref::from_sexp(c, cx) }.as_char().ok_or(Need::Fail)?;
-    let name = match robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(ch), cx.locale()) {
-        Ok(name) => name,
-        Err(e) => return Ok(Err(e.to_string())),
-    };
-    if let Err(msg) = robigo_rtbuiltins::text::check_install_name(&name) {
-        return Ok(Err(msg));
-    }
-    Ok(Ok(cx.install_tr(ch, &name)?.as_ref().sexp()))
 }
 
 /// What the `Bc` profile compiles for a call of a base function cmp.R
@@ -2411,7 +2525,7 @@ impl<'g> Comp<'g> {
     unsafe fn nested_function(&mut self, formals: Sexp, body: Sexp) -> Result<Option<Sexp>, Need> {
         let mut cenv = self.bc.take().expect("robigo: a nested function outside the Bc profile");
         // SAFETY: the caller's contract.
-        if !unsafe { function_context(self.cx, self.st, &mut cenv, formals, body)? } {
+        if !unsafe { function_context(self.cx, self.st, &mut cenv, formals, body, None)? } {
             cenv.pop_unit();
             self.bc = Some(cenv);
             return Ok(None);
@@ -2427,7 +2541,7 @@ impl<'g> Comp<'g> {
         // made in this interval.
         unsafe {
             let code = crate::code::build(self.cx, &verified(b), body, Some(formals))?;
-            index_arg_codes(self.cx, code, &sub.arg_codes);
+            index_codes(self.cx, code, &sub.arg_codes, None);
             Ok(Some(code))
         }
     }
@@ -2847,9 +2961,42 @@ impl<'g> Comp<'g> {
                         SYMSXP => lhs,
                         STRSXP if lhs.std_len() >= 1 => {
                             // installTrChar(STRING_ELT(lhs, 0))
-                            match install_tr_raw(self.cx, *(lhs.std_data() as *const Sexp))? {
-                                Ok(sym) => sym,
-                                Err(msg) => return self.error_op(e, &msg, false),
+                            // (under `Bc` a target of one string is cmpAssign's,
+                            // which names it at the compile; checkAssign leaves
+                            // any other to cmpSpecial, the special at run time)
+                            let compiled = self.bc.is_some() && lhs.std_len() == 1;
+                            match cenv::install_tr(self.cx, *(lhs.std_data() as *const Sexp))? {
+                                Ok((sym, warning)) => {
+                                    if let Some(w) = warning {
+                                        if compiled {
+                                            // cmpAssign's as.name(getAssignedVar(e,
+                                            // cntxt)): at the compile, the code
+                                            // silent
+                                            let at = cenv::CompileWarning::AsName;
+                                            self.st.compile_warnings.push(at, w);
+                                        } else {
+                                            // do_set's, before the value
+                                            self.translate_warning(e, lhs, d)?;
+                                        }
+                                    }
+                                    sym
+                                }
+                                Err((msg, warning)) => {
+                                    // (install's error after the warning)
+                                    if compiled {
+                                        // cmpAssign's as.name fails: an error
+                                        // inside cmp.R, so no compile (run
+                                        // uncompiled, it raises both again)
+                                        if let Some(w) = warning {
+                                            self.st.compile_warnings.push(cenv::CompileWarning::AsName, w);
+                                        }
+                                        return Err(Need::Fail);
+                                    }
+                                    if warning.is_some() {
+                                        self.translate_warning(e, lhs, d)?;
+                                    }
+                                    return self.error_op(e, &msg, false);
+                                }
                             }
                         }
                         LANGSXP if self.bc.is_some() && crate::bcassign::check_assign(self.cx, lhs) => {
@@ -2958,10 +3105,26 @@ impl<'g> Comp<'g> {
                     let sym = match x.typ() {
                         SYMSXP => x,
                         // installTrChar(STRING_ELT(x, 0))
-                        STRSXP if x.std_len() == 1 => match install_tr_raw(self.cx, *(x.std_data() as *const Sexp))? {
-                            Ok(sym) => sym,
-                            Err(msg) => return self.error_op(e, &msg, false),
-                        },
+                        STRSXP if x.std_len() == 1 => {
+                            match cenv::install_tr(self.cx, *(x.std_data() as *const Sexp))? {
+                                Ok((sym, warning)) => {
+                                    if warning.is_some() {
+                                        // do_missing's, at each evaluation in
+                                        // both profiles (cmp.R leaves `missing`
+                                        // to it)
+                                        self.translate_warning(e, x, d)?;
+                                    }
+                                    sym
+                                }
+                                Err((msg, warning)) => {
+                                    // (install's error after the warning)
+                                    if warning.is_some() {
+                                        self.translate_warning(e, x, d)?;
+                                    }
+                                    return self.error_op(e, &msg, false);
+                                }
+                            }
+                        }
                         _ => return self.error_op(e, "invalid use of 'missing'", true),
                     };
                     let mut i = Ins::new(Op::Missing);
@@ -3116,6 +3279,51 @@ impl<'g> Comp<'g> {
     fn unimplemented(&mut self, e: Sexp, what: &str) -> Result<(), Need> {
         let msg = format!("robigo: {what} is not implemented yet");
         self.error_op(e, &msg, false)
+    }
+
+    /// translateToNative's warning for a name given as a string (`"x" <-
+    /// v`, `missing("x")`) that does not translate, raised when the code
+    /// runs, as GNU R's special raises it at each evaluation: the internal
+    /// `as.vector(name, "symbol")` of `names`' first element alone, whose
+    /// installTrChar gives that warning (`warning()`: the context's call),
+    /// its value dropped. A builtin call of the existing kind ([`Op::Internal`]),
+    /// so no instruction of its own; the symbol the code uses is the one
+    /// made now, with the same escapes. The expression bcEval is at is the
+    /// special's call `site`, so under `Bc` the warning names the
+    /// function's call, as GNU R's names it inside the special.
+    ///
+    /// # Safety
+    /// `site` and `names` are live parts of the source, `names` a character
+    /// vector.
+    // R: envir.c:do_set, do_missing; sysutils.c:installTrChar
+    unsafe fn translate_warning(&mut self, site: Sexp, names: Sexp, d: u16) -> Result<(), Need> {
+        let nil = self.nil();
+        let cx = self.cx;
+        let asvec = cx.install(b"as.vector")?.as_ref().sexp();
+        // SAFETY: fresh nodes holding live objects; nothing collects in
+        // this interval, and the call is kept in the code's pool.
+        unsafe {
+            let internal = cx.internal_raw(asvec);
+            if internal == nil {
+                return Err(Need::Fail);
+            }
+            let mode = cx.mk_string(b"symbol", robigo_rtcore::Encoding::Utf8)?.sexp();
+            // the first name alone, with no attributes: do_set and
+            // do_missing read STRING_ELT(x, 0) and never dispatch, where
+            // as.vector would on a classed `x`
+            let name = cx.alloc_vector_raw(STRSXP, 1)?;
+            name.set_elt(0, *(names.std_data() as *const Sexp));
+            let l = cx.alloc_node_raw(LISTSXP, mode, nil, nil)?;
+            let args = cx.alloc_node_raw(LISTSXP, name, l, nil)?;
+            let inner = cx.alloc_node_raw(LANGSXP, asvec, args, nil)?;
+            let mark = self.next;
+            let r = self.alloc();
+            self.builtin_args_call(Op::Internal, internal, inner, args, r, d, Tail::No)?;
+            let k = self.k(site);
+            self.set_internal_site(k);
+            self.free_to(mark);
+        }
+        Ok(())
     }
 
     /// Under `Eval`, a loop evaluated in the global environment is

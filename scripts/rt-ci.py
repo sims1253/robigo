@@ -227,10 +227,8 @@ YOUNG_MOVE_SLOW = {
     "tests/r/memory/finalizers-self-ref-envs.R": 1200,
     "tests/rt/jit/active-binding-read.R": 1200,
     "tests/rt/jit/serialize-write.R": 1200,
-    # it loads the compiler (#953): 347 s alone in this step (A1, merged
-    # head of #961 on main ec22e65ba, load 33), C1 266 s (load 40). Temporary:
-    # C1's next PR makes it a `volume` case with a small twin
-    "tests/rt/jit/lazy-promise-code.R": 1200,
+    # (tests/rt/jit/lazy-promise-code.R, 347 s here, is `volume` since #966:
+    # its small twin runs in this step instead, in about a second)
 }
 
 # The cases the young:16 step also starts first, at its 600 s: under 300 s
@@ -246,10 +244,9 @@ YOUNG_MOVE_FIRST = {
 
 # The cases the two gctorture conformance steps start first, at the step's
 # own limit (600 s): each takes minutes under gctorture, and started in id
-# order it ran alone at the step's end. tests/rt/jit/shared-body.R (it loads
-# the compiler; temporary, as lazy-promise-code.R above: C1's next PR makes
-# it a `volume` case with a small twin): 177 s under gctorture, 200 s under GC_MOVE=young:16 on the
-# 24-CPU workstation (2026-11-21); in #952's run 44927530340 the two steps
+# order it ran alone at the step's end. (tests/rt/jit/shared-body.R, 177 s
+# under gctorture and 200 s under GC_MOVE=young:16, is `volume` since #966:
+# its small twin runs in these steps instead.) In #952's run 44927530340 the two steps
 # took 2.7 and 3.1 minutes longer than in #941's, its 8 new cases' doing.
 # The longest cases alone under the plain gctorture step (A1, 2026-11-21,
 # load 20-34): serialize-write.R 256 s, active-binding-read.R 181 s,
@@ -258,7 +255,6 @@ YOUNG_MOVE_FIRST = {
 # (serialize-write.R 269 s, active-binding-read.R 169 s, shared-body.R 161 s),
 # so neither step gives a case longer than its limit
 GCTORTURE_FIRST = {
-    "tests/rt/jit/shared-body.R": 600,
     "tests/r/conditions/c-stack-overflow.R": 600,
     "tests/rt/jit/serialize-write.R": 600,
     "tests/rt/jit/active-binding-read.R": 600,
@@ -782,7 +778,8 @@ def free_space_problem(paths, min_gb):
         if free < min_gb:
             return (f"rt-ci: {free:.1f} GB free on the volume of {p} (< {min_gb} GB): a release link of the "
                     f"test binaries needs about 5 GB; free space first, or set RT_CI_MIN_FREE_GB "
-                    f"(docs/verification.md)")
+                    f"(docs/verification.md; killed tools' leftovers in /tmp: its rule under \"A tool's "
+                    f"temporary directories\")")
     return None
 
 

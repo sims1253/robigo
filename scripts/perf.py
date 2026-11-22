@@ -87,6 +87,7 @@ def env_pair(kv):
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from corpus import pins, robigo_path  # noqa: E402
+from scratch import scratch_dir  # noqa: E402
 
 # The gate's threshold: a benchmark with more than this many percent more
 # instructions than main's fails (`compare`, `recheck`, `rt-bars`).
@@ -747,7 +748,7 @@ def cmd_rt_gnur(a):
         spec = tomllib.load(f)
     rows = sorted({b["row"] for b in spec["bar"] if b["against"] == "gnur"})
     files = sorted({r["program"] for r in spec["rss"] if "gnur" in r["against"]})
-    work = tempfile.mkdtemp(prefix="rt-gnur-")
+    work = scratch_dir("rt-gnur-")
     version = gnur_version()
     instr, cycles = rt_instr(None, rows, a.jobs, work, "gnur", cycles=True)
     rss = rt_rss(None, files, a.runs, work, "gnur")
@@ -911,7 +912,7 @@ def cmd_rt_bars(a):
         gnur_source = f"GNU R {doc['version']} measured on this CPU signature ({a.gnur})"
     rows = [b["row"] for b in spec["bar"]] + [g["row"] for g in spec.get("guard", [])]
     files = [r["program"] for r in spec["rss"]]
-    work = tempfile.mkdtemp(prefix="rt-bars-")
+    work = scratch_dir("rt-bars-")
 
     ranges = {"new": {}, "main": {}}
 

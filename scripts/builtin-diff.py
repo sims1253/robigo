@@ -49,6 +49,9 @@ import time
 import tomllib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+from scratch import keep as keep_dir, remove as remove_dir, scratch_dir  # noqa: E402
+
 HERE = os.path.join(ROOT, "scripts", "builtin-diff")
 GEN, DRIVER, RENDER = (os.path.join(HERE, f) for f in ("gen.R", "driver.R", "render.R"))
 ROWS = os.path.join(ROOT, "tests", "builtin-diff", "rows.toml")
@@ -465,7 +468,7 @@ def cmd_oracle(a):
     todo = [(r, j) for r in rows for j in r.jits if not have_oracle(a.data, r, a.seed, j)]
     if not todo:
         return 0
-    work = tempfile.mkdtemp(prefix="a4-oracle-")
+    work = scratch_dir("a4-oracle-")
     spec = os.path.join(work, "spec.R")
     gens = {}
     for r, j in todo:
@@ -486,7 +489,7 @@ def cmd_oracle(a):
         os.makedirs(d)
         for f in ("batch.rds", "cases.tsv"):
             shutil.copy(os.path.join(gen_out, r.name, f), d)
-        scratch = tempfile.mkdtemp(prefix="a4-scratch-")
+        scratch = scratch_dir("a4-scratch-")
         n = len(read_cases(d))
         env = {**os.environ, **ENV, "R_ENABLE_JIT": JIT[j], "A4_LABEL": "GNU R"}
         cmd = [*prefix, "Rscript", "--vanilla", DRIVER]
@@ -509,7 +512,7 @@ def cmd_oracle(a):
             if i in lost2 or not os.path.exists(b_) or open(a_, "rb").read() != open(b_, "rb").read() \
                     or printed(a_) != printed(b_) or made(a_) != made(b_):
                 lost[i] = "unstable"
-        shutil.rmtree(scratch, ignore_errors=True)
+        remove_dir(scratch)
         with open(os.path.join(d, "done"), "w") as f:
             json.dump({"lost": lost}, f)
         return r.variant(j), n, len(lost)
@@ -517,7 +520,7 @@ def cmd_oracle(a):
     with concurrent.futures.ThreadPoolExecutor(a.jobs) as ex:
         for v, n, nl in ex.map(one, todo):
             print(f"oracle: {v}: {n} cases, {nl} lost", flush=True)
-    shutil.rmtree(work, ignore_errors=True)
+    remove_dir(work)
     return 0
 
 
@@ -565,7 +568,7 @@ def run_rt(a, row, jit, rt_bin, prefix):
     cases = read_cases(d)
     with open(os.path.join(d, "done")) as f:
         lost_o = {int(k): v for k, v in json.load(f)["lost"].items()}
-    scratch = tempfile.mkdtemp(prefix="a4-rt-")
+    scratch = scratch_dir("a4-rt-")
     out = os.path.join(scratch, "records")
     env = {k: v for k, v in os.environ.items() if k != "R_HOME"}
     env.update(ENV, R_ENABLE_JIT=JIT[jit], A4_LABEL="robigo-rt", ROBIGO_RSRC=a.rsrc)
@@ -770,6 +773,9 @@ def cmd_run(a):
             # a new row starts with the failures it has (or a builtin-diff: PR rewrites them)
             write_known(variant, key, r, fails)
             print(f"  wrote {rel} ({len(fails)} failures)")
+            if a.keep:
+                keep_dir(r["scratch"])
+                print(f"  robigo-rt's records: {r['rt']}")
             continue
         if a.update and known is not None and known - set(fails):
             # the ratchet only shrinks: fixed cases leave, new ones never enter
@@ -785,8 +791,9 @@ def cmd_run(a):
         if getattr(a, "reuse", None) is not None and r["row"].name in PLANT_ROWS and r["jit"] == "off":
             a.reuse[r["row"].name] = r    # the plant check's runs on this binary (ci)
         elif not a.keep:
-            shutil.rmtree(r["scratch"], ignore_errors=True)
+            remove_dir(r["scratch"])
         else:
+            keep_dir(r["scratch"])
             print(f"  robigo-rt's records: {r['rt']}")
     if a.timing:
         n = sum(len(r["cases"]) for r in results)
@@ -825,7 +832,7 @@ def cmd_show(a):
     rs = rscript()
     if rs:
         subprocess.run([*rs, RENDER, "--full", o, x])
-    shutil.rmtree(r["scratch"], ignore_errors=True)
+    remove_dir(r["scratch"])
     return 0
 
 
@@ -887,7 +894,7 @@ def cmd_plant(a):
             print(f"{'ok  ' if good else 'FAIL'} {row.name}: {msg}")
             ok &= good
             for r in (base, plant):
-                shutil.rmtree(r["scratch"], ignore_errors=True)
+                remove_dir(r["scratch"])
     except Unusable as e:
         print(f"builtin-diff: {e}", file=sys.stderr)
         return 3

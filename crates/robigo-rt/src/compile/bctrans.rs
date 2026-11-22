@@ -20,7 +20,8 @@
 //! - **`RETURN`** at the end of each branch of a tail `if` becomes a jump
 //!   to the code's one `Ret`, the shape the from-source compiler emits.
 //! - **A promise's code** (`MAKEPROM`'s BCODESXP) is the promise's, as
-//!   GNU R's PRCODE: the call carries its arguments' codes (`Call`'s `f`)
+//!   GNU R's PRCODE: the call carries its arguments' codes
+//!   ([`Op::CallCodes`]'s `f`)
 //!   untranslated, each translated at its promise's first force with that
 //!   frame's slot indices and kept on itself (`compile::bytecode_code`);
 //!   what reads the promise's
@@ -1118,8 +1119,10 @@ impl<'g> Comp<'g> {
 
     /// The plan of the complex assignment `a` (what
     /// [`Comp::bc_assign_plan`] makes from source): its steps as their
-    /// opcodes say, each argument's code kept untranslated in the plan
-    /// (`S_CODES`), translated at its promise's first force
+    /// opcodes say: an argument's inline code (`StepArg::Code`) translated
+    /// now, a code object kept on its expression ([`Tr::slice_code`]); a
+    /// promise's code (`StepArg::Prom`, `MAKEPROM`'s) kept untranslated in
+    /// the plan (`S_CODES`), translated at its first force
     /// (`compile::bytecode_code`).
     ///
     /// # Safety
@@ -2261,7 +2264,8 @@ impl<'g> Comp<'g> {
     /// ([`Comp::generic_call`]'s shape), with its arguments' promise codes
     /// (`MAKEPROM`'s BCODESXPs, by argument: [`Op::CallCodes`]'s `f`),
     /// kept untranslated: each is translated at its promise's first force
-    /// (`compile::bytecode_code`). Pass 1 (`planning`) keeps none.
+    /// (`compile::bytecode_code`). Pass 1 (`planning`), whose code and pool
+    /// are discarded, makes no vector of them.
     ///
     /// # Safety
     /// `call` is a live call constant of the byte code.
