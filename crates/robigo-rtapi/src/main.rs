@@ -574,7 +574,17 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     // end_Rmainloop's R_CleanUp(SA_DEFAULT, 0, 1) runs .Last; after an
     // error, check_session_exit's R_CleanUp(SA_NOSAVE, 1, 0) does not
     // (end_Rmainloop's newline unless R_NoEcho, then .Last: run_session)
-    let ok = run_session(cx, &src);
+    let mut ok = run_session(cx, &src);
+    // the translation cache's writer (scripts/rt-home-db.sh): every closure
+    // of base's and the compiler's databases translated, then the files
+    if ok && robigo_rt::writing_translation_cache() {
+        ok = robigo_rt::compile::translate_for_cache(cx).is_ok() && robigo_rt::write_translation_cache(cx);
+    }
+    // its verify pass: every closure's cached translation compared with a
+    // fresh one (each hit verified); any difference fails the run
+    if ok && robigo_rt::verifying_translation_cache() {
+        ok = robigo_rt::compile::translate_for_cache(cx).is_ok() && robigo_rt::translation_cache_mismatches() == 0;
+    }
     if !ok {
         // R: main.c:check_session_exit
         cx.reprintf(b"Execution halted\n");
@@ -584,6 +594,7 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     robigo_rt::fin::run_exit_finalizers(cx);
     robigo_rt::repl::print_warnings(cx);
     cx.flush_console();
+    robigo_rt::report_translation_cache();
     if ok { 0 } else { 1 }
 }
 

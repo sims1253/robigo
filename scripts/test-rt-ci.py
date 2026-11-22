@@ -122,17 +122,21 @@ class RtCi(unittest.TestCase):
                 self.assertTrue(built and built[0] < tree[0], shard)
 
     def test_the_rdb_boot_runs_the_conformance_plain_and_crosschecked_after_its_tree(self):
+        # plain, crosschecked, and with the translation cache off (the tree's
+        # cache must change nothing a case sees)
         steps = rt.steps(["robigo-rt", "robigo-rtapi"])
         titles = [t for t, _, _ in steps]
         rdb = [i for i, (_, e, c) in enumerate(steps) if e.get("ROBIGO_RT_BOOT") == "rdb" and rt.CONFORMANCE in c
                and "--skip" not in c]
-        self.assertEqual(len(rdb), 2)
+        self.assertEqual(len(rdb), 3)
         tree = titles.index("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)")
         self.assertTrue(all(tree < i for i in rdb))
         self.assertEqual({rt.shard_of(titles[i]) for i in rdb}, {"modes"})
         self.assertEqual(sorted(sorted(steps[i][1]) for i in rdb),
                          [["ROBIGO_BC_CROSSCHECK", "ROBIGO_BC_CROSSCHECK_REPORT", "ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT"],
-                          ["ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT"]])
+                          ["ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT"],
+                          ["ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT", "ROBIGO_TRANSLATION_CACHE"]])
+        self.assertEqual(sum(steps[i][1].get("ROBIGO_TRANSLATION_CACHE") == "0" for i in rdb), 1)
 
     def test_every_crate_test_step_builds_what_the_first_built(self):
         # cargo turns a selected crate's dev-dependency features on, so a

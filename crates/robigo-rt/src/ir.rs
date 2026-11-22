@@ -332,6 +332,133 @@ pub enum Effect {
 }
 
 impl Op {
+    /// Every operation, in discriminant order: [`Op::from_u8`]'s table.
+    pub const ALL: [Op; 56] = [
+        Op::LdConst,
+        Op::LdScalar,
+        Op::GetVar,
+        Op::GetDdVar,
+        Op::SetVar,
+        Op::SetVar2,
+        Op::Jmp,
+        Op::BrFalse,
+        Op::Guard,
+        Op::GetFun,
+        Op::Call,
+        Op::CallBuiltin,
+        Op::Arith,
+        Op::Arith1,
+        Op::Relop,
+        Op::Not,
+        Op::Logic,
+        Op::AndOr1,
+        Op::AndOr2,
+        Op::MkClosure,
+        Op::Quote,
+        Op::Missing,
+        Op::Internal,
+        Op::Return,
+        Op::Ret,
+        Op::Loop,
+        Op::LoopEnd,
+        Op::ForPrep,
+        Op::ForStep,
+        Op::BackJmp,
+        Op::BreakJump,
+        Op::Clear,
+        Op::ClearRange,
+        Op::Move,
+        Op::SetVis,
+        Op::Nop,
+        Op::EvalConst,
+        Op::ErrorCall,
+        Op::ForDone,
+        Op::SpecialFn,
+        Op::ComplexAssign,
+        Op::BaseGuard,
+        Op::BcAssign,
+        Op::Switch,
+        Op::StartSubset,
+        Op::DfltSubset,
+        Op::Dollar,
+        Op::GetVarMissOk,
+        Op::TopLoop,
+        Op::PpCheck,
+        Op::PpRestore,
+        Op::PpSave,
+        Op::Resume,
+        Op::LoopResume,
+        Op::Math1,
+        Op::CallCodes,
+    ];
+
+    /// The operation whose discriminant is `x`, or None: how an
+    /// instruction read from outside the process (the translation cache,
+    /// `crate::tcache`) is decoded, never by reinterpreting its bytes.
+    pub const fn from_u8(x: u8) -> Option<Op> {
+        Some(match x {
+            0 => Op::LdConst,
+            1 => Op::LdScalar,
+            2 => Op::GetVar,
+            3 => Op::GetDdVar,
+            4 => Op::SetVar,
+            5 => Op::SetVar2,
+            6 => Op::Jmp,
+            7 => Op::BrFalse,
+            8 => Op::Guard,
+            9 => Op::GetFun,
+            10 => Op::Call,
+            11 => Op::CallBuiltin,
+            12 => Op::Arith,
+            13 => Op::Arith1,
+            14 => Op::Relop,
+            15 => Op::Not,
+            16 => Op::Logic,
+            17 => Op::AndOr1,
+            18 => Op::AndOr2,
+            19 => Op::MkClosure,
+            20 => Op::Quote,
+            21 => Op::Missing,
+            22 => Op::Internal,
+            23 => Op::Return,
+            24 => Op::Ret,
+            25 => Op::Loop,
+            26 => Op::LoopEnd,
+            27 => Op::ForPrep,
+            28 => Op::ForStep,
+            29 => Op::BackJmp,
+            30 => Op::BreakJump,
+            31 => Op::Clear,
+            32 => Op::ClearRange,
+            33 => Op::Move,
+            34 => Op::SetVis,
+            35 => Op::Nop,
+            36 => Op::EvalConst,
+            37 => Op::ErrorCall,
+            38 => Op::ForDone,
+            39 => Op::SpecialFn,
+            40 => Op::ComplexAssign,
+            41 => Op::BaseGuard,
+            42 => Op::BcAssign,
+            43 => Op::Switch,
+            44 => Op::StartSubset,
+            45 => Op::DfltSubset,
+            46 => Op::Dollar,
+            47 => Op::GetVarMissOk,
+            48 => Op::TopLoop,
+            49 => Op::PpCheck,
+            50 => Op::PpRestore,
+            51 => Op::PpSave,
+            52 => Op::Resume,
+            53 => Op::LoopResume,
+            54 => Op::Math1,
+            55 => Op::CallCodes,
+            _ => return None,
+        })
+    }
+}
+
+impl Op {
     /// The operation's effect class (docs/g3.md §9.2).
     pub const fn effect(self) -> Effect {
         match self {
@@ -433,3 +560,20 @@ const _: () = assert!(size_of::<Header>() == 32 && size_of::<Header>() <= INS_OF
 
 /// The instructions start at this byte offset of the blob (16-aligned).
 pub const INS_OFFSET: usize = 32;
+
+#[cfg(test)]
+mod op_tests {
+    use super::Op;
+
+    // Op::from_u8 decodes every discriminant, in order, and nothing past
+    // the last
+    #[test]
+    fn from_u8_round_trips() {
+        for (i, &op) in Op::ALL.iter().enumerate() {
+            assert_eq!(op as u8 as usize, i);
+            assert_eq!(Op::from_u8(i as u8), Some(op));
+        }
+        assert_eq!(Op::from_u8(Op::ALL.len() as u8), None);
+        assert_eq!(Op::from_u8(u8::MAX), None);
+    }
+}

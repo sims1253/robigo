@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""The translation cache as untrusted input (C1, crates/robigo-rt/src/tcache.rs).
+
+Copies this checkout's rdb tree and its cache (.robigo/rt-home-db and
+.robigo/rt-home-db-cache) into a scratch checkout, corrupts one package's
+cache file at random positions (bit flips, overwritten bytes, a cut end), and
+starts robigo-rt from the copied tree (ROBIGO_RT_CHECKOUT, which points the
+binary at a checkout's whole tree: the cache is read only beside R_HOME). Every start must end as a start ends: by exit
+status 0 or 1 (an R error), never by a signal or a Rust panic. Damage, which
+breaks an entry's keyed checksum, makes that entry a miss: it is translated as
+with no cache. A start that does not end in two minutes counts as failed
+too. --rehash fixes the checksum after damaging an entry, which is forgery,
+not damage: a forged entry carries no safety guarantee (the cache is trusted
+as the tree's base.rdb is; issue #976 is the verifier work that would add
+one). So in that mode a crash or a panic is reported, not a failure of the
+cache's contract. The script's own output is the count of starts by
+outcome.
+
+    scripts/rt-tcache-mutate.py --robigo-rt BIN [--runs N] [--seed S] [--pkg base]
+"""
+
+import argparse
+import os
+import random
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# a start that runs translated base code: closures, promises, a JIT compile
+SCRIPT = """
+f <- function(x, y = x * 2) { s <- 0; for (i in seq_len(x)) s <- s + i * y; s }
+print(f(10)); print(f(3, 1))
+print(paste0("a", 1:3, collapse = "+"))
+print(sapply(list(1:3, 4:6), function(v) sum(v^2)))
+g <- compiler::cmpfun(function(a) if (a > 1) a else -a)
+print(g(-2))
+print(tryCatch(stop("boom"), error = function(e) conditionMessage(e)))
+"""
+
+
+def mutate(data, rng):
+    """One corruption of `data` (bytes): a bit flip, a few overwritten
+    bytes, or a cut end."""
+    b = bytearray(data)
+    kind = rng.choice(["flip", "flip", "bytes", "cut"])
+    if kind == "flip":
+        i = rng.randrange(len(b))
+        b[i] ^= 1 << rng.randrange(8)
+    elif kind == "bytes":
+        i = rng.randrange(len(b))
+        for j in range(i, min(len(b), i + rng.randrange(1, 9))):
+            b[j] = rng.randrange(256)
+    else:
+        b = b[: rng.randrange(len(b))]
+    return bytes(b), kind
+
+
+MASK = (1 << 64) - 1
+
+
+def checksum(b):
+    """format.rs's `checksum`: a 64-bit multiply-rotate hash (a row's is over its
+    key, the row's first 20 bytes, then the entry's data: `keyed_checksum`)."""
+    k = 0x9E3779B97F4A7C15
+    h = (len(b) * k) & MASK
+    n = len(b) // 8 * 8
+    for i in range(0, n, 8):
+        h = ((h ^ int.from_bytes(b[i:i + 8], "little")) * k) & MASK
+        h = ((h << 29) | (h >> 35)) & MASK
+    h = ((h ^ int.from_bytes(b[n:].ljust(8, b"\0"), "little")) * k) & MASK
+    return h ^ (h >> 32)
+
+
+def rows(data):
+    """The entry table: per entry (row offset, data offset, data length)."""
+    at = 8
+    at += 1 + data[at]
+    at += 4 + int.from_bytes(data[at:at + 4], "little")
+    n = int.from_bytes(data[at:at + 4], "little")
+    at += 4
+    out = []
+    for i in range(n):
+        r = at + i * 36
+        out.append((r, int.from_bytes(data[r + 20:r + 24], "little"), int.from_bytes(data[r + 24:r + 28], "little")))
+    return out
+
+
+def mutate_rehashed(data, table, rng):
+    """One entry's data damaged, its checksum made to match again: the
+    entry is then decoded and checked, as hostile input would be."""
+    b = bytearray(data)
+    r, at, n = rng.choice(table)
+    kind = rng.choice(["flip", "flip", "bytes"])
+    if kind == "flip":
+        i = at + rng.randrange(n)
+        b[i] ^= 1 << rng.randrange(8)
+    else:
+        i = at + rng.randrange(n)
+        for j in range(i, min(at + n, i + rng.randrange(1, 9))):
+            b[j] = rng.randrange(256)
+    b[r + 28:r + 36] = checksum(bytes(b[r:r + 20]) + bytes(b[at:at + n])).to_bytes(8, "little")
+    return bytes(b), kind + " rehashed"
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--robigo-rt", required=True)
+    ap.add_argument("--pkg", default="base")
+    ap.add_argument("--runs", type=int, default=200)
+    ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--rehash", action="store_true",
+                    help="damage one entry and fix its checksum: forgery, not damage. A forged entry has no "
+                         "safety guarantee (the cache is trusted as base.rdb is, issue #976), so this mode "
+                         "reports crashes, panics and hangs without failing")
+    a = ap.parse_args()
+    tree = os.path.join(ROOT, ".robigo", "rt-home-db")
+    src = os.path.join(tree + "-cache", f"{a.pkg}.rtc")
+    with open(src, "rb") as f:
+        data = f.read()
+    rng = random.Random(a.seed)
+    table = rows(data)
+    assert all(checksum(data[r:r + 20] + data[at:at + n]) == int.from_bytes(data[r + 28:r + 36], "little")
+               for r, at, n in table[:50]), \
+        "rt-tcache-mutate: the checksum does not match format.rs's"
+    env = dict(os.environ, ROBIGO_RT_BOOT="rdb", R_DEFAULT_PACKAGES="NULL")
+    env.pop("R_HOME", None)
+    with tempfile.TemporaryDirectory(prefix="rt-tcache-mutate-") as tmp:
+        shutil.copytree(tree, os.path.join(tmp, ".robigo", "rt-home-db"), symlinks=True)
+        cache = os.path.join(tmp, ".robigo", "rt-home-db-cache")
+        shutil.copytree(tree + "-cache", cache)
+        home = os.path.join(tmp, "home")
+        os.mkdir(home)
+        env["ROBIGO_RT_CHECKOUT"] = tmp
+        env["HOME"] = home
+        script = os.path.join(tmp, "s.R")
+        with open(script, "w") as f:
+            f.write(SCRIPT)
+        cmd = [a.robigo_rt, "--vanilla", script]
+        ref = subprocess.run(cmd, cwd=home, env=env, capture_output=True, timeout=120)
+        if ref.returncode != 0:
+            sys.exit(f"rt-tcache-mutate: the unmutated start failed:\n{ref.stderr.decode(errors='replace')}")
+        # the unmutated start must use the cache: a run that never reads it
+        # (a stale tree, another build's binary) would prove nothing
+        stats = subprocess.run(cmd, cwd=home, env=dict(env, ROBIGO_TRANSLATION_CACHE_STATS="1"), capture_output=True,
+                               timeout=120).stderr.decode(errors="replace")
+        hit = [l for l in stats.splitlines() if l.startswith("translation cache: hit ")]
+        if not hit or hit[-1].startswith("translation cache: hit 0,"):
+            sys.exit(f"rt-tcache-mutate: the unmutated start does not use the cache (rebuild the tree with this "
+                     f"binary: scripts/rt-home-db.sh): {hit[-1] if hit else stats[-300:]}")
+        outcomes = {"same": 0, "other output": 0, "R error": 0, "hang": 0}
+        bad = []
+        for n in range(a.runs):
+            m, kind = mutate_rehashed(data, table, rng) if a.rehash else mutate(data, rng)
+            with open(os.path.join(cache, f"{a.pkg}.rtc"), "wb") as f:
+                f.write(m)
+            try:
+                p = subprocess.run(cmd, cwd=home, env=env, capture_output=True, timeout=120)
+            except subprocess.TimeoutExpired:
+                if a.rehash:
+                    outcomes["hang"] += 1
+                else:
+                    bad.append((n, kind, "a hang (120 s)", ""))
+                continue
+            err = p.stderr.decode(errors="replace")
+            if p.returncode < 0 or p.returncode > 1 or "panicked" in err:
+                bad.append((n, kind, p.returncode, err[-600:]))
+            elif p.returncode == 1:
+                outcomes["R error"] += 1
+            elif p.stdout == ref.stdout:
+                outcomes["same"] += 1
+            else:
+                outcomes["other output"] += 1
+        print(f"rt-tcache-mutate: {a.runs} corrupted {a.pkg}.rtc (seed {a.seed}): "
+              + ", ".join(f"{k} {v}" for k, v in outcomes.items()) + f", crashed {len(bad)}")
+        for n, kind, rc, err in bad[:5]:
+            print(f"  run {n} ({kind}): exit {rc}\n{err}")
+        # forgery (--rehash) has no guarantee to fail: its crashes are reported
+        return 1 if bad and not a.rehash else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

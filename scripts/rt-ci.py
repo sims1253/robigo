@@ -403,7 +403,19 @@ def steps(crates):
         # plain and with the byte-code crosscheck, each failing as its M1
         # step does (a ratcheted case that fails; an unexpected or
         # untranslated closure). Not yet the default anywhere (L's list)
+        # The tree has its translation cache (C1, crates/robigo-rt/src/tcache.rs,
+        # beside it: rt-home-db.sh), so these steps run with it; the crosscheck
+        # step compares every cached translation with a fresh one too. The
+        # same cases with the cache off must pass as well: the cache changes
+        # nothing a case sees
         ("conformance under the rdb boot (ROBIGO_RT_BOOT=rdb)", {"ROBIGO_RT_BOOT": "rdb"}, conformance),
+        ("conformance under the rdb boot without the translation cache (ROBIGO_TRANSLATION_CACHE=0)",
+         {"ROBIGO_RT_BOOT": "rdb", "ROBIGO_TRANSLATION_CACHE": "0"}, conformance),
+        # the cache as damaged input: a corrupted file's entries are misses,
+        # every start ends as a start does (no signal, no panic, no hang)
+        ("the translation cache as damaged input (scripts/rt-tcache-mutate.py)", {},
+         ["sh", "-c", f"for p in base compiler; do python3 scripts/rt-tcache-mutate.py --robigo-rt {rt_binary()} "
+                      "--pkg $p --runs 300 --seed 1 || exit 1; done"]),
         ("conformance under the rdb boot with ROBIGO_BC_CROSSCHECK=1 (base.rdb's closures against the "
          "from-source compiler's)",
          {"ROBIGO_RT_BOOT": "rdb", "ROBIGO_BC_CROSSCHECK": "1", "ROBIGO_BC_CROSSCHECK_REPORT": BC_REPORT_RDB},
@@ -548,7 +560,9 @@ OWN_STEPS = ("debug-assertions", "release-crate-tests")
 # timeout (scripts/test-rt-ci.py pins the three relations). When a warning
 # fires, rebalance or remeasure: the dates say how old each measurement is.
 BUDGETS = {  # shard: (budget, measured minutes, where measured)
-    "modes": (9, 6.99, "2026-11-21, run 44927530340 (#952): 6.49, and the two rdb-boot steps' estimated 0.5"),
+    "modes": (10, 7.55, "2026-11-21, run 44927530340 (#952): 6.49, the two rdb-boot steps' estimated 0.5, the rdb "
+              "boot's conformance without the translation cache, 0.18 here (C1, 2026-11-23), and the cache's "
+              "damaged-input step, 0.38 here"),
     # the plain gctorture conformance moves into modes if GCTORTURE_FIRST
     # does not bring this back near 15 minutes
     "gctorture": (27, 21.87, "2026-11-21, run 44927530340 (#952): 20.62 before GCTORTURE_FIRST, and #959's "

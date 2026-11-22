@@ -155,7 +155,28 @@ echo 'tools:::.vinstall_package_namespaces_as_RDS(Sys.getenv("RT_OUT"), "base to
 echo "$tmp/lib/robigo" > "$tmp/lib/robigo/.rt-home-db-built-at"
 # what built it (scripts/rt-builder.sh), for scripts/rt-rdb-compare.sh
 scripts/rt-builder.sh "$tmp/bin/robigo-rt" "$(realpath "$bin")" > "$tmp/lib/robigo/.rt-home-db-builder"
+# robigo-rt's translation cache (C1, crates/robigo-rt/src/tcache.rs): every
+# closure of base's and the compiler's databases translated by this binary,
+# and the promise codes this start forces, written beside the tree, never
+# inside R_HOME: <prefix>/lib/robigo-cache, R_HOME's path with "-cache"
+# (.robigo/rt-home-db-cache for this checkout's tree), so the .rdb files
+# stay GNU R's bytes. Then its verify pass: each entry against a fresh
+# translation, after the stamp a start checks the cache against is
+# written; a difference fails the tree. A start never writes the cache. The
+# writer takes the place and the stamp from the tree (R_HOME, its
+# .rt-home-db), so the stamp is written first; a failure removes the tree.
+cache=$tmp/lib/robigo-cache
+mkdir -p "$cache"
 echo "$stamp" > "$tmp/lib/robigo/.rt-home-db"
-rm -rf "$out"
+force='for (p in c("base", "compiler")) { ns <- asNamespace(p); for (n in ls(ns, all.names = TRUE)) tryCatch(get(n, envir = ns), error = function(e) NULL) }'
+echo "$force" | rexe rdb ROBIGO_TRANSLATION_CACHE_WRITE=1 R_DEFAULT_PACKAGES=NULL ||
+  { echo "rt-home-db.sh: writing the translation cache failed" >&2; exit 1; }
+for f in base.rtc compiler.rtc; do
+  [ -s "$cache/$f" ] || { echo "rt-home-db.sh: the translation cache has no $f" >&2; exit 1; }
+done
+echo "$force" | rexe rdb ROBIGO_TRANSLATION_CACHE=verify R_DEFAULT_PACKAGES=NULL ||
+  { echo "rt-home-db.sh: the translation cache differs from fresh translations" >&2; exit 1; }
+rm -rf "$out" "$out-cache"
 mv "$tmp/lib/robigo" "$out"
+mv "$cache" "$out-cache"
 echo "$out"
