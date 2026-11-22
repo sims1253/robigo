@@ -778,7 +778,8 @@ def free_space_problem(paths, min_gb):
         if free < min_gb:
             return (f"rt-ci: {free:.1f} GB free on the volume of {p} (< {min_gb} GB): a release link of the "
                     f"test binaries needs about 5 GB; free space first, or set RT_CI_MIN_FREE_GB "
-                    f"(docs/verification.md)")
+                    f"(docs/verification.md; killed tools' leftovers in /tmp: its rule under \"A tool's "
+                    f"temporary directories\")")
     return None
 
 
