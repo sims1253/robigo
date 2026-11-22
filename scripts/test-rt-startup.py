@@ -282,6 +282,12 @@ calls=4 0
 cfn=(6) freelist_push
 calls=9 0
 1 9
+cfn=(7) free'2
+calls=5 0
+1 5
+cfn=(8) __libc_malloc
+calls=1 0
+1 1
 """
 
     def test_which_rows_are_measured_over_the_shifts(self):
@@ -301,8 +307,9 @@ calls=9 0
         with tempfile.NamedTemporaryFile("w", suffix=".cg", delete=False) as f:
             f.write(self.CG)
         try:
-            # malloc 3 + 4 (named once, then by number), free 2
-            self.assertEqual(iv.allocator_calls(f.name), 9)
+            # malloc 3 + 4 (named once, then by number), free 2, a recursive
+            # free'2 5, __libc_malloc 1; not freelist_push or strlen
+            self.assertEqual(iv.allocator_calls(f.name), 15)
         finally:
             os.unlink(f.name)
 

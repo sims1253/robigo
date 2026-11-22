@@ -9,6 +9,9 @@
     scripts/perf.py recheck BASE.json NEW.json [--robigo BIN]   # compare, re-measuring what is slower
     scripts/perf.py report FILE.json [--markdown]
     scripts/perf.py rt-bars --robigo-rt BIN [--main BIN] [--gnur FILE] [--cycles] [--out FILE]  # the M1 bars
+        (its starts, [[startup]], rebuild this checkout's .robigo/rt-home* trees for each binary in turn
+        unless --trees/--main-trees give them, leaving main's: not beside an rt-ci in the same checkout;
+        --no-startup skips them)
     scripts/perf.py rt-gnur --out FILE    # GNU R's side of the bars, measured on this machine
 
 Suites are listed in benchmarks/benchmarks.toml. Every program runs in the

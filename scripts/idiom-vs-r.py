@@ -234,7 +234,8 @@ def load_rows(path, rx=None):
 
 
 # the C library's allocator: a loop that calls it follows the initial heap
-ALLOCATOR = frozenset(("malloc", "calloc", "realloc", "free"))
+ALLOCATOR = frozenset(("malloc", "calloc", "realloc", "free",
+                       "__libc_malloc", "__libc_calloc", "__libc_realloc", "__libc_free"))
 
 
 def follows_heap(row, allocs):
@@ -248,7 +249,8 @@ def follows_heap(row, allocs):
 
 
 def allocator_calls(cg):
-    """Calls of ALLOCATOR's functions in the callgrind file `cg`."""
+    """Calls of ALLOCATOR's functions in the callgrind file `cg`, recursive
+    ones too (callgrind names them `free'2`)."""
     names, cfn, n = {}, None, 0
     # (as perf.py's cache_counters: a compressed name can hold a locale's
     # bytes from a path)
@@ -266,7 +268,7 @@ def allocator_calls(cg):
                 m = re.match(r"fn=\((\d+)\) (.*)", ln)
                 if m:
                     names[m.group(1)] = m.group(2).strip()
-            elif ln.startswith("calls=") and cfn in ALLOCATOR:
+            elif ln.startswith("calls=") and cfn and re.sub(r"'\d+$", "", cfn) in ALLOCATOR:
                 n += int(ln[6:].split()[0])
     return n
 
