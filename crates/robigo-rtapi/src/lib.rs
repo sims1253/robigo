@@ -237,7 +237,7 @@ exports! {
         R_withCallingErrorHandler;
     // Rust leaves: no collection, no exit
     (leaf), false =>
-        robigo_rtapi_store robigo_rtapi_print robigo_rtapi_warn_length R_ReleaseObject vmaxget vmaxset
+        robigo_rtapi_store robigo_rtapi_remember robigo_rtapi_print robigo_rtapi_warn_length R_ReleaseObject vmaxget vmaxset
         R_altrep_inherits
         R_set_altrep_UnserializeEX_method R_set_altrep_Unserialize_method R_set_altrep_Serialized_state_method
         R_set_altrep_DuplicateEX_method R_set_altrep_Duplicate_method R_set_altrep_Coerce_method

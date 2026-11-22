@@ -64,7 +64,8 @@ class RtCi(unittest.TestCase):
                          "modes")
         self.assertEqual(where["ROBIGO_MATERIALIZE=1 (every argument slot materialized)"], "modes")
         self.assertEqual([t for t, s in where.items() if s == "gctorture"],
-                         ["conformance under gctorture (E3)",
+                         ["conformance with the boot heap's freeze on (ROBIGO_GC_FREEZE=1)",
+                          "conformance under gctorture (E3)",
                           f"conformance under ROBIGO_GC_MOVE={rt.GC_MOVE_YOUNG} with gctorture (E3)"])
         self.assertEqual([t for t, s in where.items() if s == "builtin-diff"],
                          ["builtin differential and its planted divergences (A4, scripts/builtin-diff.py ci)"])
@@ -128,12 +129,15 @@ class RtCi(unittest.TestCase):
         titles = [t for t, _, _ in steps]
         rdb = [i for i, (_, e, c) in enumerate(steps) if e.get("ROBIGO_RT_BOOT") == "rdb" and rt.CONFORMANCE in c
                and "--skip" not in c]
-        self.assertEqual(len(rdb), 3)
+        # plain, crosschecked, with the boot heap's freeze on, and without
+        # the translation cache
+        self.assertEqual(len(rdb), 4)
         tree = titles.index("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)")
         self.assertTrue(all(tree < i for i in rdb))
         self.assertEqual({rt.shard_of(titles[i]) for i in rdb}, {"modes"})
         self.assertEqual(sorted(sorted(steps[i][1]) for i in rdb),
                          [["ROBIGO_BC_CROSSCHECK", "ROBIGO_BC_CROSSCHECK_REPORT", "ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT"],
+                          ["ROBIGO_CONF_JOBS", "ROBIGO_GC_FREEZE", "ROBIGO_RT_BOOT"],
                           ["ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT"],
                           ["ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT", "ROBIGO_TRANSLATION_CACHE"]])
         self.assertEqual(sum(steps[i][1].get("ROBIGO_TRANSLATION_CACHE") == "0" for i in rdb), 1)
@@ -342,6 +346,19 @@ class RtCi(unittest.TestCase):
         self.assertIn(rt.CONFORMANCE, built[1][1])
         self.assertNotIn("debug assertions", " ".join(t for t, _, _ in rt.steps(["robigo-rt"])))
 
+    def test_the_freeze_on_is_tested_under_each_boot(self):
+        # the freeze is off by default; the mode users turn on is the
+        # conformance under each boot with it on and its check off
+        on = [(e, c) for t, e, c in rt.steps(["robigo-rt"]) if e.get("ROBIGO_GC_FREEZE") == "1"
+              and rt.CONFORMANCE in c and "ROBIGO_GCTORTURE" not in e]
+        boots = sorted(e.get("ROBIGO_RT_BOOT", "M1") for e, _ in on)
+        self.assertEqual(boots, ["M1", "rdb"])
+        self.assertTrue(all("ROBIGO_GC_FREEZE_CHECK" not in e for e, _ in on))
+        # and no step that is not the freeze's turns it on
+        for t, e, _ in rt.steps(["robigo-rt"]):
+            if e.get("ROBIGO_GC_FREEZE") == "1":
+                self.assertTrue("freeze" in t or "FREEZE" in t or "E3" in t or t.startswith("gctorture (collect"), t)
+
     def test_full_move_and_shard_are_refused_together(self):
         # --full-move runs the nightly's one step: with --shard as well the
         # shard would be dropped silently
@@ -351,6 +368,37 @@ class RtCi(unittest.TestCase):
             rt.main(["--full-move", "--shard", "modes"])
         self.assertEqual(e.exception.code, 2)
         self.assertIn("--full-move and --shard select different steps", err.getvalue())
+
+    def test_the_freeze_check_runs_at_every_collection_in_the_nightly_only(self):
+        # CI's E3 checks every 16th collection; the nightly's --freeze-check
+        # every one, its slow cases named and given longer (the ledger's
+        # amendment to #948 (c))
+        e3 = [e for t, e, _ in rt.steps(["robigo-rt"]) if t == "conformance under gctorture (E3)"]
+        self.assertEqual(e3[0]["ROBIGO_GC_FREEZE_CHECK"], "16")
+        # the check runs on the freeze, which is off by default
+        self.assertEqual(e3[0]["ROBIGO_GC_FREEZE"], "1")
+        tests = [e for t, e, _ in rt.steps(["robigo-rt"]) if t.startswith("gctorture (collect at every allocation)")]
+        self.assertEqual(tests[0]["ROBIGO_GC_FREEZE_CHECK"], "1")
+        self.assertEqual(tests[0]["ROBIGO_GC_FREEZE"], "1")
+        night = rt.freeze_check_steps()
+        self.assertEqual(len(night), 2)
+        # the R_HOME tree first: the tools cases skip without it (Sol r7 S13)
+        self.assertEqual(night[0][2], ["scripts/rt-home.sh"])
+        _, env, cmd = night[1]
+        self.assertEqual((env["ROBIGO_GC_FREEZE_CHECK"], env["ROBIGO_GCTORTURE"], env["ROBIGO_GC_FREEZE"]), ("1", "1", "1"))
+        # a failed check fails the step, whatever the case's output (S14)
+        self.assertEqual(env["ROBIGO_GC_FREEZE_CHECK_REPORT"], rt.FREEZE_REPORT)
+        self.assertEqual(e3[0]["ROBIGO_GC_FREEZE_CHECK_REPORT"], rt.FREEZE_REPORT)
+        self.assertNotIn("ROBIGO_GC_MOVE", env)
+        self.assertIn(rt.CONFORMANCE, cmd)
+        named = dict(item.rsplit("=", 1) for item in env["ROBIGO_CONF_TIMEOUTS"].split(","))
+        self.assertEqual(set(named), set(rt.FREEZE_CHECK_SLOW))
+        for case, secs in named.items():
+            self.assertTrue((HERE.parent / case).is_file(), case)
+            self.assertGreater(int(secs), int(env["ROBIGO_CONF_TIMEOUT"]), case)
+        import contextlib, io
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            rt.main(["--freeze-check", "--full-move"])
 
     def test_the_step_times_are_reported_slowest_first(self):
         r = rt.timings_report([("a", 60.0, True), ("b", 600.0, True), ("c", 30.0, False)])
@@ -377,7 +425,8 @@ class RtCi(unittest.TestCase):
             self.assertIn("--exact", cmd)
             if env:
                 self.assertTrue({"ROBIGO_GCTORTURE", "R_MAX_VSIZE", "ROBIGO_NO_INPLACE", "ROBIGO_MATERIALIZE", "ROBIGO_FRAME_QUARANTINE",
-                                 "ROBIGO_BC_CROSSCHECK", "ROBIGO_RETRY_TORTURE", "ROBIGO_POISON_DEAD", "ROBIGO_RT_BOOT"} & set(env), env)
+                                 "ROBIGO_BC_CROSSCHECK", "ROBIGO_RETRY_TORTURE", "ROBIGO_POISON_DEAD", "ROBIGO_RT_BOOT",
+                                 "ROBIGO_GC_FREEZE"} & set(env), env)
             # a crosscheck step writes its report, which `main` reads
             if "ROBIGO_BC_CROSSCHECK" in env:
                 self.assertIn("ROBIGO_BC_CROSSCHECK_REPORT", env)
@@ -397,6 +446,27 @@ class RtCi(unittest.TestCase):
         # would run nothing, and still pass.
         src = (HERE.parent / "crates/robigo-rtapi/tests/conformance.rs").read_text()
         self.assertIn(f"fn {rt.CONFORMANCE}()", src)
+
+    def test_a_step_with_a_failed_freeze_check_fails(self):
+        # the cases passed or failed as the ratchet allows, but a process
+        # wrote a check failure: the step fails (Sol r7 S14)
+        from unittest import mock
+        import tempfile
+        report = os.path.join(tempfile.mkdtemp(), "freeze.txt")
+
+        def run(cmd, **kw):
+            with open(report, "a") as f:
+                f.write("robigo: ROBIGO_GC_FREEZE_CHECK: frozen 0x1 (type 4) points to the ordinary 0x2\n")
+            return mock.Mock(returncode=0)
+        done = []
+        with mock.patch.object(rt.subprocess, "run", side_effect=run):
+            r = rt.run_steps([("e3", {"ROBIGO_GC_FREEZE_CHECK_REPORT": report}, ["true"])], done)
+        self.assertEqual(r, 1)
+        self.assertEqual([(t, ok_) for t, _, ok_ in done], [("e3", False)])
+        # a report left from an earlier run is removed first
+        done = []
+        with mock.patch.object(rt.subprocess, "run", return_value=mock.Mock(returncode=0)):
+            self.assertEqual(rt.run_steps([("e3", {"ROBIGO_GC_FREEZE_CHECK_REPORT": report}, ["true"])], done), 0)
 
     def test_the_r_home_tree_is_made_before_any_conformance_step(self):
         # the cases that load tools' native code need it (r-home-tools)
