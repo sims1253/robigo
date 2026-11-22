@@ -59,7 +59,7 @@ use std::sync::{Mutex, OnceLock};
 /// A stub's first two bytes.
 const STUB_MAGIC: u16 = 0x5243;
 /// A stub's length: magic (2), database (2), ordinal (4), offset (8).
-pub(crate) const STUB_BYTES: usize = 16;
+pub(crate) const STUB_BYTES: usize = 24;
 
 /// What a stub names: the database, and the BCODESXP's key in it (its
 /// shape not yet known).
@@ -68,6 +68,8 @@ pub(crate) struct Stub {
     pub db: u16,
     pub offset: u64,
     pub ordinal: u32,
+    /// The checksum of the record's bytes as fetched ([`format::Entry::source`]).
+    pub source: u64,
 }
 
 impl Stub {
@@ -78,6 +80,7 @@ impl Stub {
         b[2..4].copy_from_slice(&self.db.to_le_bytes());
         b[4..8].copy_from_slice(&self.ordinal.to_le_bytes());
         b[8..16].copy_from_slice(&self.offset.to_le_bytes());
+        b[16..24].copy_from_slice(&self.source.to_le_bytes());
         b
     }
 
@@ -88,7 +91,12 @@ impl Stub {
     pub(crate) unsafe fn of(x: Sexp) -> Option<Stub> {
         // SAFETY: the caller's contract; a RAWSXP's data is its length.
         unsafe {
-            if x.typ() != RAWSXP || x.std_len() != STUB_BYTES as isize {
+            // (the NO_FREEZE bit is set on stubs only: the identity; the
+            // magic is the check)
+            if x.typ() != RAWSXP
+                || x.std_len() != STUB_BYTES as isize
+                || x.extra() & robigo_heap::extra::vector::NO_FREEZE == 0
+            {
                 return None;
             }
             let b = std::slice::from_raw_parts(x.std_data() as *const u8, STUB_BYTES);
@@ -96,6 +104,7 @@ impl Stub {
                 db: u16::from_le_bytes([b[2], b[3]]),
                 ordinal: u32::from_le_bytes(b[4..8].try_into().unwrap()),
                 offset: u64::from_le_bytes(b[8..16].try_into().unwrap()),
+                source: u64::from_le_bytes(b[16..24].try_into().unwrap()),
             })
         }
     }
@@ -107,6 +116,7 @@ pub(crate) struct RecordKey {
     db: u16,
     offset: u64,
     next: u32,
+    source: u64,
 }
 
 impl RecordKey {
@@ -115,7 +125,7 @@ impl RecordKey {
     pub(crate) fn next_stub(&mut self) -> Option<Stub> {
         let ordinal = self.next;
         self.next = self.next.saturating_add(1);
-        let s = Stub { db: self.db, offset: self.offset, ordinal };
+        let s = Stub { db: self.db, offset: self.offset, ordinal, source: self.source };
         let wanted = writing() || db(self.db).is_some_and(|d| d.header.has(d.bytes, s.offset, s.ordinal));
         wanted.then_some(s)
     }
@@ -124,9 +134,21 @@ impl RecordKey {
 /// The key context for a fetch of the record at `offset` of `file` (a
 /// `lazyLoadDBfetch`'s), if `file` is one of the tree's own databases with
 /// a cache (or the writer runs).
-pub(crate) fn record_key(file: &[u8], offset: u64) -> Option<RecordKey> {
+pub(crate) fn record_key(file: &[u8], offset: u64, data: &[u8]) -> Option<RecordKey> {
     let db = db_of_file(file)?;
-    Some(RecordKey { db, offset, next: 0 })
+    // the record is hashed only when the cache has its translations (or
+    // the writer runs): what an entry checks it was written from
+    if !writing() && !self::db(db).is_some_and(|d| d.header.has_record(d.bytes, offset)) {
+        return None;
+    }
+    Some(RecordKey { db, offset, next: 0, source: record_checksum(data) })
+}
+
+/// A record's checksum (its stored bytes), out of line so a profile shows
+/// what keying a record costs.
+#[inline(never)]
+fn record_checksum(data: &[u8]) -> u64 {
+    format::checksum(data)
 }
 
 // ---- the databases' caches -------------------------------------------------------
@@ -408,9 +430,10 @@ pub(crate) enum Outcome {
     Unverified,
     Verified,
     Mismatch,
+    StaleRecord,
 }
 
-const OUTCOMES: [&str; 9] = [
+const OUTCOMES: [&str; 10] = [
     "hit",
     "no stub",
     "no database",
@@ -420,9 +443,10 @@ const OUTCOMES: [&str; 9] = [
     "unverified",
     "verified",
     "differing",
+    "stale record",
 ];
 
-static COUNTS: [std::sync::atomic::AtomicUsize; 9] = [const { std::sync::atomic::AtomicUsize::new(0) }; 9];
+static COUNTS: [std::sync::atomic::AtomicUsize; 10] = [const { std::sync::atomic::AtomicUsize::new(0) }; 10];
 
 /// Whether this process verifies the whole cache
 /// (`ROBIGO_TRANSLATION_CACHE=verify`: scripts/rt-home-db.sh's pass).
@@ -484,6 +508,10 @@ pub(crate) unsafe fn lookup(cx: &Cx, bc: Sexp, index: Option<Sexp>) -> Result<Op
         let key = Key { offset: stub.offset, ordinal: stub.ordinal, shape: shape_key(index) };
         let Some(i) = d.header.find(d.bytes, key) else { return miss(Outcome::NoEntry) };
         let Some(e) = d.read(i) else { return miss(Outcome::Undecodable) };
+        // written for other byte code: the database changed under its stamp
+        if e.source != stub.source {
+            return miss(Outcome::StaleRecord);
+        }
         let Some(built) = resolve_entry(cx, bc, &e)? else { return miss(Outcome::Unresolved) };
         let mut args = Vec::with_capacity(e.args.len());
         for (k, a) in &e.args {
@@ -889,6 +917,15 @@ pub(crate) unsafe fn writer_begin(cx: &Cx, bc: Sexp) -> bool {
     true
 }
 
+/// The translation under way was abandoned (an attempt that returned a
+/// `Need`): forget its argument codes, so no Sexp stays in the capture
+/// across the collection that may follow.
+pub(crate) fn writer_abort(cx: &Cx) {
+    if let Some(w) = state(cx).writer.borrow_mut().as_mut() {
+        w.args.clear();
+    }
+}
+
 /// An argument code built for the call `arg` in the translation under way.
 pub(crate) fn writer_arg(cx: &Cx, arg: Sexp, b: &Built) {
     if !capturing(cx) {
@@ -922,7 +959,7 @@ pub(crate) unsafe fn writer_end(cx: &Cx, bc: Sexp, index: Option<Sexp>, b: &Buil
         let Some(stub) = stub else { return };
         if state(cx).verifying.get() {
             // SAFETY: the caller's contract.
-            w.verified = Some(unsafe { to_entry(cx, imm, bc, b, &args) });
+            w.verified = Some(unsafe { to_entry(cx, imm, bc, stub.source, b, &args) });
             return;
         }
         // what the reader would refuse is not written: the typed check is
@@ -933,7 +970,7 @@ pub(crate) unsafe fn writer_end(cx: &Cx, bc: Sexp, index: Option<Sexp>, b: &Buil
             return;
         }
         // SAFETY: as above.
-        let made = unsafe { to_entry(cx, imm, bc, b, &args) };
+        let made = unsafe { to_entry(cx, imm, bc, stub.source, b, &args) };
         match made {
             Ok(e) => {
                 let mut bytes = Vec::new();
@@ -961,6 +998,7 @@ unsafe fn to_entry(
     cx: &Cx,
     imm: &[(Sexp, Imm)],
     bc: Sexp,
+    source: u64,
     b: &Built,
     args: &[(Sexp, Built)],
 ) -> Result<Entry, &'static str> {
@@ -985,6 +1023,7 @@ unsafe fn to_entry(
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Entry {
+            source: 0,
             ins: b.ins.clone(),
             consts,
             nregs: b.nregs,
@@ -996,6 +1035,7 @@ unsafe fn to_entry(
         })
     };
     let mut e = one(b)?;
+    e.source = source;
     for (arg, a) in args {
         let Some(p) = paths.get(&(arg.as_ptr() as usize)) else {
             return Err("an argument code of a call not in the pool");

@@ -24,7 +24,7 @@ use crate::ir::{Ins, Op};
 /// The file's magic.
 pub const MAGIC: [u8; 4] = *b"RTC1";
 /// The format's version: a file of another version is ignored whole.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 /// The most bytes of a build ID kept (GNU's are 20).
 pub const BUILD_ID_MAX: usize = 32;
 /// The most bytes of a tree stamp.
@@ -114,6 +114,13 @@ impl Imm {
 /// the call it is cached on).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
+    /// The checksum of the record the translated byte code was read from
+    /// (its bytes as stored in the `.rdb`, which `lazyLoadDBfetch` reads
+    /// before it decompresses them): an entry applies
+    /// to that record's byte code only, so a database changed under an
+    /// unchanged stamp makes it a miss, never other code. 0 in an argument
+    /// code (its entry's own record is the one).
+    pub source: u64,
     pub ins: Vec<Ins>,
     pub consts: Vec<KRef>,
     pub nregs: u16,
@@ -128,6 +135,7 @@ pub struct Entry {
 
 /// Append `e`'s encoding to `out`.
 pub fn encode_entry(e: &Entry, out: &mut Vec<u8>) {
+    out.extend_from_slice(&e.source.to_le_bytes());
     out.extend_from_slice(&e.nregs.to_le_bytes());
     out.extend_from_slice(&e.max_depth.to_le_bytes());
     out.extend_from_slice(&e.nsites.to_le_bytes());
@@ -277,6 +285,7 @@ pub fn encode_file(build_id: &[u8], stamp: &[u8], entries: &[(Key, Vec<u8>)]) ->
 /// a miss; a forged entry with a matching sum has no safety guarantee
 /// (`code::Verified::from_cached_translation`'s contract): the cache is
 /// trusted as the tree's base.rdb is.
+#[inline(never)]
 pub fn checksum(b: &[u8]) -> u64 {
     const K: u64 = 0x9e37_79b9_7f4a_7c15;
     let mut h = (b.len() as u64).wrapping_mul(K);
@@ -358,6 +367,7 @@ fn entry(r: &mut Rd<'_>, depth: usize) -> Option<Entry> {
     if depth > MAX_DEPTH {
         return None;
     }
+    let source = r.u64()?;
     let (nregs, max_depth, nsites) = (r.u16()?, r.u16()?, r.u16()?);
     let n = r.count(16)?;
     let mut ins = Vec::with_capacity(n);
@@ -379,7 +389,7 @@ fn entry(r: &mut Rd<'_>, depth: usize) -> Option<Entry> {
         let k = kref(r, depth)?;
         args.push((k, entry(r, depth + 1)?));
     }
-    Some(Entry { ins, consts, nregs, max_depth, nsites, locals, ppk, args })
+    Some(Entry { source, ins, consts, nregs, max_depth, nsites, locals, ppk, args })
 }
 
 fn kref(r: &mut Rd<'_>, depth: usize) -> Option<KRef> {
@@ -525,6 +535,22 @@ impl Header<'_> {
         None
     }
 
+    /// Whether some entry's key is in the record at `offset` (any ordinal
+    /// and shape): the reader keys a record, and hashes it, only then.
+    pub fn has_record(&self, b: &[u8], offset: u64) -> bool {
+        let first = Key { offset, ordinal: 0, shape: 0 };
+        let (mut lo, mut hi) = (0usize, self.n);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            match self.key_at(b, mid) {
+                Some(m) if m < first => lo = mid + 1,
+                Some(_) => hi = mid,
+                None => return false,
+            }
+        }
+        self.key_at(b, lo).is_some_and(|k| k.offset == offset)
+    }
+
     /// Whether some entry's key is the BCODESXP `ordinal` of the record at
     /// `offset`, for any shape: the reader marks that BCODESXP only then.
     pub fn has(&self, b: &[u8], offset: u64, ordinal: u32) -> bool {
@@ -585,6 +611,7 @@ mod tests {
         let mut r = Ins::new(Op::Ret);
         r.b = 3;
         let nested = Entry {
+            source: 0,
             ins: vec![r],
             consts: vec![],
             nregs: 4,
@@ -595,6 +622,7 @@ mod tests {
             args: vec![],
         };
         Entry {
+            source: 0x1234_5678_9abc_def0,
             ins: vec![i, r],
             consts: vec![
                 KRef::Pool(vec![Step::Elt(2), Step::Cdr, Step::Car]),
@@ -647,10 +675,10 @@ mod tests {
                 let _ = decode_entry(&m);
             }
         }
-        // the first instruction's operation byte (after nregs, max_depth,
-        // nsites and the count): past the last operation, a miss
+        // the first instruction's operation byte (after the source, nregs,
+        // max_depth, nsites and the count): past the last operation, a miss
         let mut m = b.clone();
-        m[10] = Op::ALL.len() as u8;
+        m[18] = Op::ALL.len() as u8;
         assert_eq!(decode_entry(&m), None);
     }
 

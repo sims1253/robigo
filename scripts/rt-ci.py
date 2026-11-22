@@ -412,10 +412,13 @@ def steps(crates):
         ("conformance under the rdb boot without the translation cache (ROBIGO_TRANSLATION_CACHE=0)",
          {"ROBIGO_RT_BOOT": "rdb", "ROBIGO_TRANSLATION_CACHE": "0"}, conformance),
         # the cache as damaged input: a corrupted file's entries are misses,
-        # every start ends as a start does (no signal, no panic, no hang)
+        # every start ends as a start does (no signal, no panic, no hang); and
+        # a database changed under its stamp (two records swapped) makes its
+        # entries stale-record misses, never other code
         ("the translation cache as damaged input (scripts/rt-tcache-mutate.py)", {},
          ["sh", "-c", f"for p in base compiler; do python3 scripts/rt-tcache-mutate.py --robigo-rt {rt_binary()} "
-                      "--pkg $p --runs 300 --seed 1 || exit 1; done"]),
+                      "--pkg $p --runs 300 --seed 1 || exit 1; done && python3 scripts/rt-tcache-mutate.py "
+                      f"--robigo-rt {rt_binary()} --swap --runs 40 --seed 1"]),
         ("conformance under the rdb boot with ROBIGO_BC_CROSSCHECK=1 (base.rdb's closures against the "
          "from-source compiler's)",
          {"ROBIGO_RT_BOOT": "rdb", "ROBIGO_BC_CROSSCHECK": "1", "ROBIGO_BC_CROSSCHECK_REPORT": BC_REPORT_RDB},

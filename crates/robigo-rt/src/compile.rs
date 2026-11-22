@@ -627,6 +627,20 @@ unsafe fn translate_code(cx: &Cx, bc: Sexp, formals: Option<Sexp>, index: Option
 /// As [`translate_code`]'s.
 unsafe fn translate_uncached(cx: &Cx, bc: Sexp, formals: Option<Sexp>, index: Option<Sexp>) -> Result<Sexp, Need> {
     // SAFETY: the caller's contract.
+    let r = unsafe { translate_uncached_in(cx, bc, formals, index) };
+    if r.is_err() {
+        // (an abandoned attempt leaves no Sexp in the writer's capture)
+        crate::tcache::writer_abort(cx);
+    }
+    r
+}
+
+/// [`translate_uncached`]'s body.
+///
+/// # Safety
+/// As [`translate_code`]'s.
+unsafe fn translate_uncached_in(cx: &Cx, bc: Sexp, formals: Option<Sexp>, index: Option<Sexp>) -> Result<Sexp, Need> {
+    // SAFETY: the caller's contract.
     unsafe {
         let writing = crate::tcache::writer_begin(cx, bc);
         let st = prims::state(cx);

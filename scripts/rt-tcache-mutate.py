@@ -105,12 +105,63 @@ def mutate_rehashed(data, table, rng):
     return bytes(b), kind + " rehashed"
 
 
+def swap_runs(a, rng, tmp, home, env, cmd):
+    """--swap: swap two records of equal stored length that both have
+    entries, start, and require the start to see stale records (a miss for
+    each entry of the swapped records) and to end as a start ends."""
+    rdb = os.path.join(tmp, ".robigo", "rt-home-db", "library", "base", "R", "base.rdb")
+    keys = subprocess.run(cmd[:2] + ["-e", 'k <- readRDS(file.path(R.home(), "library/base/R/base.rdx"))$variables; '
+                                     'for (x in k) cat(x[1], x[2], "\\n")'],
+                          cwd=home, env=dict(env, ROBIGO_TRANSLATION_CACHE="0"), capture_output=True, timeout=120)
+    recs = sorted({tuple(map(int, l.split())) for l in keys.stdout.decode().splitlines() if l.strip()})
+    cache = open(os.path.join(tmp, ".robigo", "rt-home-db-cache", "base.rtc"), "rb").read()
+    keyed = {int.from_bytes(cache[r:r + 8], "little") for r, _, _ in rows(cache)}
+    by_len = {}
+    for off, n in recs:
+        if off in keyed:
+            by_len.setdefault(n, []).append(off)
+    pairs = [(v[i], v[j], n) for n, v in by_len.items() for i in range(len(v)) for j in range(i + 1, len(v))]
+    if not pairs:
+        sys.exit("rt-tcache-mutate: no two keyed records of equal length to swap")
+    orig = open(rdb, "rb").read()
+    stale_runs, bad = 0, []
+    for k in range(a.runs):
+        x, y, n = rng.choice(pairs)
+        b = bytearray(orig)
+        b[x:x + n], b[y:y + n] = orig[y:y + n], orig[x:x + n]
+        open(rdb, "wb").write(bytes(b))
+        try:
+            p = subprocess.run(cmd, cwd=home, env=dict(env, ROBIGO_TRANSLATION_CACHE_STATS="1"), capture_output=True,
+                               timeout=120)
+        except subprocess.TimeoutExpired:
+            bad.append((k, "a hang"))
+            continue
+        err = p.stderr.decode(errors="replace")
+        if p.returncode < 0 or p.returncode > 1 or "panicked" in err:
+            bad.append((k, f"exit {p.returncode}: {err[-300:]}"))
+        line = [l for l in err.splitlines() if l.startswith("translation cache: hit ")]
+        if line and " stale record 0" not in line[-1]:
+            stale_runs += 1
+    open(rdb, "wb").write(orig)
+    print(f"rt-tcache-mutate: {a.runs} starts with two records of base.rdb swapped ({len(pairs)} pairs to choose "
+          f"from): {stale_runs} saw stale records, crashed {len(bad)}")
+    for k, why in bad[:5]:
+        print(f"  run {k}: {why}")
+    if stale_runs == 0:
+        print("  no start saw a stale record: the swap reached no record a start fetches (raise --runs)")
+    return 1 if bad or stale_runs == 0 else 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--robigo-rt", required=True)
     ap.add_argument("--pkg", default="base")
     ap.add_argument("--runs", type=int, default=200)
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--swap", action="store_true",
+                    help="leave the cache as it is and swap two records of the same stored length in the copy's "
+                         "base.rdb (each key position then holds another, well-formed function): every entry "
+                         "for them must miss as a stale record, never run")
     ap.add_argument("--rehash", action="store_true",
                     help="damage one entry and fix its checksum: forgery, not damage. A forged entry has no "
                          "safety guarantee (the cache is trusted as base.rdb is, issue #976), so this mode "
@@ -151,6 +202,8 @@ def main():
             sys.exit(f"rt-tcache-mutate: the unmutated start does not use the cache (rebuild the tree with this "
                      f"binary: scripts/rt-home-db.sh): {hit[-1] if hit else stats[-300:]}")
         outcomes = {"same": 0, "other output": 0, "R error": 0, "hang": 0}
+        if a.swap:
+            return swap_runs(a, rng, tmp, home, env, cmd)
         bad = []
         for n in range(a.runs):
             m, kind = mutate_rehashed(data, table, rng) if a.rehash else mutate(data, rng)

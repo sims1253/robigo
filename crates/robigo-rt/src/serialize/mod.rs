@@ -600,6 +600,13 @@ pub fn do_lazyload_dbfetch(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Ro
     let compressed = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(2))?;
     let hook = hook_arg(cx, args.root(3));
     let raw = read_raw_from_file(cx, file, key)?;
+    // the translation cache's key: the record of one of the tree's own
+    // databases, by its offset, with a checksum of its bytes as stored (they
+    // determine what it decompresses to, and are a third the size)
+    let tkey = record_offset(cx, key).and_then(|off| match file.bind(cx).view() {
+        View::Str(f) if f.len() == 1 => crate::tcache::record_key(f.get(0).bytes(), off, &raw),
+        _ => None,
+    });
     let data = match compressed {
         0 => Some(raw),
         2 | 3 => {
@@ -618,12 +625,6 @@ pub fn do_lazyload_dbfetch(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Ro
     cx.scope(|cx, s| {
         let o = s.out(cx);
         let v = o.root();
-        // the translation cache's key: the record of one of the tree's own
-        // databases, by its offset
-        let tkey = record_offset(cx, key).and_then(|off| match file.bind(cx).view() {
-            View::Str(f) if f.len() == 1 => crate::tcache::record_key(f.get(0).bytes(), off),
-            _ => None,
-        });
         read::unserialize_keyed(cx, InStream::memory(data), hook, tkey, o)?;
         if v.bind(cx).sexptype() == PROMSXP {
             let g = s.root(cx, cx.global_env());
