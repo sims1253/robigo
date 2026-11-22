@@ -491,6 +491,29 @@ class RtCi(unittest.TestCase):
             os.unlink(f.name)
         self.assertEqual(rt.pin_report_hits(f.name + ".missing"), [])
 
+    def test_a_crosscheck_report_with_merged_records_fails(self):
+        # two processes' appends interleaved: a record, then another's, then
+        # both newlines; the merged line counts once by its first word, so
+        # the count fell under the floor on a 24-core box with no error
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        good = "same: f: at 0: translated A; from source A\n"
+        clean = os.path.join(tmp.name, "clean.txt")
+        with open(clean, "w") as f:
+            f.write(good * 3 + "skipped: { x }: the from-source compile would force a binding (y)\n"
+                    + "same: g(\"same: inside a string\")\n")
+        errors, counts = rt.bc_report_check(clean, 4)
+        self.assertEqual((errors, counts["compared"]), ([], 4))
+        merged = os.path.join(tmp.name, "merged.txt")
+        with open(merged, "w") as f:
+            f.write(good + "same: f: at 1: translated B; from source Bsame: g: at 0: translated C; from source C\n\n"
+                    + "skipped: { y }: force (z)expected (a loop's shape (x)): h: at 2: translated D; from source D\n\n")
+        errors, counts = rt.bc_report_check(merged, 1)
+        self.assertEqual(counts["compared"], 2)       # what a merge does to the count
+        self.assertIn("2 empty line(s)", errors[0])
+        self.assertEqual(sum(e.startswith("two records in one line: ") for e in errors), 2, errors)
+
     def test_the_crosscheck_report_passes_only_with_every_difference_classed(self):
         import tempfile
 

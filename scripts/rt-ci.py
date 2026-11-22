@@ -129,6 +129,12 @@ BC_FLOORS = {BC_REPORT_RDB: 90000}
 # the kinds of line the crosscheck writes (crates/robigo-rt/src/compile/crosscheck.rs),
 # each the line's first word, then ":" (or a class in parentheses, then ":")
 BC_KINDS = ("same", "expected", "unexpected", "untranslated", "skipped")
+# a record's start straight after other text (no space or quote before it):
+# where a second record begins in a merged line ("...; from source Bsame:
+# ..."), not a kind's name inside an R string in a deparsed body. Every
+# merge also leaves an empty line, which bc_report_check counts: that is the
+# complete check, this one names the lines
+BC_SECOND_RECORD = re.compile(r"[^\s\"'`](?:same|unexpected|untranslated|skipped|expected \(.+?\)): ")
 
 
 def bc_report_check(path, floor=1):
@@ -138,13 +144,27 @@ def bc_report_check(path, floor=1):
     fewer than `floor` closures compared (BC_FLOORS): every closure compared
     has its line (same, expected or unexpected), so a step that compares
     fewer than it should, or has no report at all, is a broken setup, never
-    a pass."""
+    a pass. And a report whose records were merged: the conformance's
+    parallel cases append to one file, and a record written in two parts
+    let another process's land between them, giving one line with two
+    records and an empty line (crosscheck.rs writes each in one write now).
+    Each empty line, and each line in which a second record starts, is an
+    error, so a merge can never lower the count silently."""
     try:
         with open(path) as f:
-            lines = [line.rstrip("\n") for line in f if line.strip()]
+            raw = [line.rstrip("\n") for line in f]
     except FileNotFoundError:
-        lines = []
+        raw = []
     errors = []
+    empty = sum(1 for x in raw if not x.strip())
+    if empty:
+        errors.append(f"{empty} empty line(s) in the crosscheck report {path}: records were merged")
+    merged = [x for x in raw if x.strip() and not x.startswith("    ") and BC_SECOND_RECORD.search(x)]
+    for x in merged[:5]:
+        errors.append(f"two records in one line: {x[:300]}")
+    if len(merged) > 5:
+        errors.append(f"... and {len(merged) - 5} more line(s) holding two records")
+    lines = [x for x in raw if x.strip()]
     counts = {}
     compared = 0
     for x in lines:
