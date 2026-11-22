@@ -367,15 +367,44 @@ unsafe extern "C" {
     fn getlogin_r(name: *mut libc::c_char, size: libc::size_t) -> libc::c_int;
 }
 
-/// Wait until `fd` has input (or its end, or an error) to read: `poll` with
-/// no timeout, as `R_checkActivityEx` waits with `select` on the console.
-/// A signal ends the wait as `Err` of kind `Interrupted` (`poll` is never
-/// restarted), so the caller can take a SIGINT that arrived meanwhile.
-pub fn wait_readable(fd: i32) -> std::io::Result<()> {
-    let mut p = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-    // SAFETY: one valid pollfd, its count 1.
-    let r = unsafe { libc::poll(&mut p, 1, -1) };
-    if r < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
+/// Wait until `fd` has input (or its end, or an error) to read, as
+/// `R_checkActivityEx` waits with `select` on the console, unless `pending`
+/// says there is an interrupt to take: `Ok(true)` then, `Ok(false)` when
+/// `fd` is ready. `pending` runs with SIGINT blocked, and `ppoll` unblocks
+/// it only for the wait itself. So a SIGINT that arrives after the last
+/// check ends the wait (`EINTR`, then `pending` again) and is not left
+/// until the next input. (GNU R's handler jumps out of the `select`; ours
+/// only notes the signal, so no gap may separate the check from the wait.)
+pub fn wait_readable_or(fd: i32, mut pending: impl FnMut() -> bool) -> std::io::Result<bool> {
+    // SAFETY: sigset_t is plain data, initialised by sigemptyset.
+    let mut int: libc::sigset_t = unsafe { std::mem::zeroed() };
+    // SAFETY: as above; pthread_sigmask fills it in.
+    let mut old: libc::sigset_t = unsafe { std::mem::zeroed() };
+    // SAFETY: valid sigset_t pointers; SIGINT is a valid signal number.
+    unsafe {
+        libc::sigemptyset(&mut int);
+        libc::sigaddset(&mut int, libc::SIGINT);
+        libc::pthread_sigmask(libc::SIG_BLOCK, &int, &mut old);
+    }
+    let r = loop {
+        if pending() {
+            break Ok(true);
+        }
+        let mut p = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        // SAFETY: one valid pollfd, its count 1, no timeout, and the mask
+        // from before the block (SIGINT open unless the caller blocked it).
+        let r = unsafe { libc::ppoll(&mut p, 1, std::ptr::null(), &old) };
+        if r >= 0 {
+            break Ok(false);
+        }
+        let e = std::io::Error::last_os_error();
+        if e.kind() != std::io::ErrorKind::Interrupted {
+            break Err(e);
+        }
+    };
+    // SAFETY: `old` is the mask pthread_sigmask returned above.
+    unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &old, std::ptr::null_mut()) };
+    r
 }
 
 /// `read(fd, buf, buf.len())`: the bytes read (0 at the end), or the
@@ -1700,6 +1729,41 @@ mod tests {
         // (not "free after": another test may hold it shared meanwhile)
         // the call's value comes back
         assert_eq!(super::with_env_shared(|| 7), 7);
+    }
+
+    /// `wait_readable_or` takes a pending interrupt without waiting, and
+    /// otherwise waits for input, checking again after a signal.
+    #[test]
+    #[cfg_attr(miri, ignore)] // (ppoll and the signal mask are not Miri's)
+    fn wait_readable_or_checks_before_it_waits() {
+        let mut fds = [0; 2];
+        // SAFETY: a valid array of two fds for pipe to fill.
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        // nothing to read: a pending interrupt is taken, not waited past
+        assert!(super::wait_readable_or(fds[0], || true).unwrap());
+        // input: the wait ends with it, after at least one check
+        let w = fds[1];
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            // SAFETY: `w` is the pipe's open write end; one byte from a
+            // valid buffer.
+            assert_eq!(unsafe { libc::write(w, b"x".as_ptr().cast(), 1) }, 1);
+        });
+        let mut checks = 0;
+        assert!(
+            !super::wait_readable_or(fds[0], || {
+                checks += 1;
+                false
+            })
+            .unwrap()
+        );
+        assert!(checks >= 1);
+        t.join().unwrap();
+        // SAFETY: both fds are open and ours.
+        unsafe {
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
     }
 
     use super::wcstod_of;

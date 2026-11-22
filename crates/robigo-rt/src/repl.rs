@@ -465,18 +465,15 @@ fn read_console(cx: &mut Cx, input: &mut Input<'_>, prompt_type: i32) -> RResult
 /// level; false when input (or its end) is there to read.
 // R: unix/sys-std.c:Rstd_ReadConsole, R_checkActivityEx, handleInterrupt
 fn r_wait(cx: &mut Cx) -> RResult<bool> {
-    loop {
-        match robigo_rtcore::clib::wait_readable(0) {
-            Ok(()) => return Ok(false),
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
-                if cx.take_user_interrupt() {
-                    interrupt_at_top(cx);
-                    return Ok(true);
-                }
-            }
-            // (a read error: fgets's NULL, the end, follows)
-            Err(_) => return Ok(false),
+    // (a SIGINT noted before the wait, or during it; the check and the
+    // wait leave no gap between them)
+    match robigo_rtcore::clib::wait_readable_or(0, || cx.take_user_interrupt()) {
+        Ok(true) => {
+            interrupt_at_top(cx);
+            Ok(true)
         }
+        // (a read error: fgets's NULL, the end, follows)
+        Ok(false) | Err(_) => Ok(false),
     }
 }
 
