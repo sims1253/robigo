@@ -1074,11 +1074,16 @@ pub fn do_strptime(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
         };
         let mut rows: Vec<LtRow> = Vec::with_capacity(nn);
         let mut zones = Zones::default();
-        // kept across elements: x's bytes and characters, and each format
-        // element as r_strptime reads it, made at its first use (a format
-        // that only NA elements would use is never translated, as in GNU R)
+        // kept across elements: x's bytes and characters, and the formats as
+        // r_strptime reads them, each made at its first use (a format that
+        // only NA elements would use is never translated, as in GNU R).
+        // A short format that recycles keeps each element's (`per_index`);
+        // any other keeps the last one, reused while the next element's
+        // bytes are the same (`rep(f, n)`), so what is kept stays bounded.
         let (mut xs, mut chars) = (Vec::new(), Vec::new());
-        let mut fmts: Vec<Option<Result<Vec<u32>, StrptimeError>>> = vec![None; m];
+        let per_index = m <= 64 && m < nn;
+        let mut fmts: Vec<Option<Result<Vec<u32>, StrptimeError>>> = if per_index { vec![None; m] } else { Vec::new() };
+        let mut last: Option<(Vec<u8>, Result<Vec<u32>, StrptimeError>)> = None;
         for i in 0..nn {
             let tr = {
                 let x = args.get(cx, 0).as_vector::<Char<'_>>().unwrap().get(i % n);
@@ -1095,12 +1100,18 @@ pub fn do_strptime(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
                         xs.clear();
                         xs.extend_from_slice(&b);
                     });
-                    let fr = match &fmts[i % m] {
-                        Some(_) => Ok(()),
-                        None => {
-                            let f = args.get(cx, 1).as_vector::<Char<'_>>().unwrap().get(i % m);
-                            tr(f, loc).map(|b| fmts[i % m] = Some(strptime_format(wide, &b)))
+                    let f = || args.get(cx, 1).as_vector::<Char<'_>>().unwrap().get(i % m);
+                    let fr = if per_index {
+                        match &fmts[i % m] {
+                            Some(_) => Ok(()),
+                            None => tr(f(), loc).map(|b| fmts[i % m] = Some(strptime_format(wide, &b))),
                         }
+                    } else {
+                        tr(f(), loc).map(|b| {
+                            if !last.as_ref().is_some_and(|(src, _)| src.as_slice() == &*b) {
+                                last = Some((b.to_vec(), strptime_format(wide, &b)));
+                            }
+                        })
                     };
                     Some((xr, fr))
                 }
@@ -1136,7 +1147,11 @@ pub fn do_strptime(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
                     loc: crate::text::ctype(loc),
                     warnings: Vec::new(),
                 };
-                let format = fmts[i % m].as_ref().expect("the format of a non-NA element");
+                let format = if per_index {
+                    fmts[i % m].as_ref().expect("the format of a non-NA element")
+                } else {
+                    &last.as_ref().expect("the format of a non-NA element").1
+                };
                 let r = r_strptime(&mut p, &xs, format, &mut chars);
                 let warnings = std::mem::take(&mut p.warnings);
                 for w in warnings {
