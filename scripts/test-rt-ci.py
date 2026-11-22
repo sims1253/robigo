@@ -528,7 +528,9 @@ class RtCi(unittest.TestCase):
         odd = [("step", {"ROBIGO_CONF_TIMEOUTS": "./tests/rt/jit/ok.R=600,tests/rt/R-4.6.2/ok.Rout=600"}, ["cargo"]),
                ("empty", {"ROBIGO_CONF_TIMEOUTS": rt.case_timeouts({})}, ["cargo"]),
                ("spaced", {"ROBIGO_CONF_TIMEOUTS": " tests/rt/jit/ok.R =600, "}, ["cargo"])]
-        self.assertEqual(len(self.list_name_problems(odd, root)), 2, self.list_name_problems(odd, root))
+        self.assertEqual(sorted(self.list_name_problems(odd, root)),
+                         ["step: ./tests/rt/jit/ok.R: no case has this id",
+                          "step: tests/rt/R-4.6.2/ok.Rout: no case has this id"])
 
     def test_the_moving_conformance_step_is_young_and_the_full_run_nightly(self):
         # H8: the job's GC_MOVE + gctorture conformance step moves the young
