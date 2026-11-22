@@ -504,8 +504,9 @@ impl Rec {
 /// The isolate's context state: the chain's ends and the globals GNU R
 /// saves in a record when it is pushed and restores when an exit stops at
 /// it (`begincontext`, `R_restore_globals`). Part of the isolate's roots
-/// (its `Trace` walks the chain); every field is a `Cell`, read and written
-/// one call at a time.
+/// (its `Trace` walks the chain); every field is a `Cell` (the detached
+/// segments' list a `RefCell`, borrowed for a push or a copy, never across
+/// a call), read and written one call at a time.
 pub(crate) struct Contexts {
     /// R_GlobalContext
     pub(crate) global: Cell<*mut Context>,
@@ -654,12 +655,19 @@ impl Contexts {
     fn traced(&self) -> impl Iterator<Item = Rec> + use<> {
         let base = self.base.as_ptr();
         let heads = self.detached.borrow().clone();
+        // (each segment ends where it links to the base, as the chain
+        // does; a null link before it is a corrupted segment)
         let segments = heads.into_iter().flat_map(move |mut c| {
             std::iter::from_fn(move || {
                 if c == base {
                     return None;
                 }
-                let r = Rec(NonNull::new(c)?);
+                let Some(p) = NonNull::new(c) else {
+                    debug_assert!(false, "robigo: a detached context segment does not reach the base");
+                    return None;
+                };
+                let r = Rec(p);
+                debug_assert!(!r.poisoned(), "robigo: a popped context record is in a detached segment");
                 c = r.nextcontext();
                 Some(r)
             })
@@ -2046,10 +2054,12 @@ impl Cx {
     ///
     /// # Safety
     /// The caller never lets an owner of a record that was above the base
-    /// run again (pop it, return to it): it ends the process first
-    /// (do_quit's `R_CleanUp` and `exit`; a nested quit() resets again,
-    /// and ends it itself). Records pushed after the reset are pushed and
-    /// popped as usual.
+    /// run again (pop it, return to it) on any path out of what it does
+    /// after the reset, unwinding included: it ends the process first
+    /// (`repl::clean_up` runs everything after the reset under a guard
+    /// whose normal end is `exit` and which turns a panic into `abort`; a
+    /// nested quit() resets again inside it and ends the process itself).
+    /// Records pushed after the reset are pushed and popped as usual.
     // R: main.c:R_dot_Last
     pub unsafe fn reset_to_session(&self) {
         let st = self.ctxs();

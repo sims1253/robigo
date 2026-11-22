@@ -121,3 +121,19 @@ fn stage0_says_a_missing_tree_is_missing() {
         )
     );
 }
+
+#[test]
+fn a_panic_after_quit_s_context_reset_aborts_without_returning() {
+    use std::os::unix::process::ExitStatusExt;
+    // quit()'s R_CleanUp after R_dot_Last's context reset runs under a
+    // guard: a panic there (ROBIGO_PANIC_AFTER_RESET=1 makes one) ends the
+    // process with abort, never unwinding into the frames the reset
+    // abandoned: f()'s on.exit does not run
+    let mut cmd = front_end(&[("ROBIGO_PANIC_AFTER_RESET", "1")]);
+    cmd.args(["-e", "f <- function() { on.exit(cat('on.exit\\n')); quit('no', 3) }; f()"]);
+    let out = cmd.output().expect("running robigo-rt");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.signal(), Some(libc::SIGABRT), "{:?} {err}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    assert!(err.contains("robigo: a panic after quit()'s context reset: aborting"), "{err}");
+}

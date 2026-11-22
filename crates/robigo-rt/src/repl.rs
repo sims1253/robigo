@@ -509,7 +509,6 @@ pub fn error_text(cx: &Cx, e: &RError) -> String {
 /// no session temporary directory to remove and no device to close.
 // R: main.c:do_quit, R_dot_Last; unix/sys-std.c:Rstd_CleanUp;
 // saveload.c:R_SaveGlobalEnvToFile
-#[allow(unsafe_code)] // R_dot_Last's context reset (Cx::reset_to_session)
 pub fn do_quit(
     cx: &mut Cx,
     call: Root<'_>,
@@ -619,11 +618,37 @@ pub fn clean_up(cx: &mut Cx, save: SaveAction, status: i32, run_last: bool) -> R
         }
         exit(cx, status, sa == SaveAction::Suicide)
     }
-    // R_dot_Last: the top level the context from here on; this call ends
-    // the process below, on every path
+    // R_dot_Last: the top level the context from here on. Nothing below may
+    // come back into a frame the reset abandons, so it all runs under one
+    // guard: its normal end is `exit`; an R error lands on a top-level
+    // record pushed on the base (dot_last's, at_top's), and from there
+    // check_session_exit's halt is `exit` too; a panic is caught at the
+    // guard and ends the process with `abort`, before it could unwind
+    // into the abandoned frames (do_quit's caller and up).
     // SAFETY: no record above the session's base is used again: every
-    // path ends in `exit`.
+    // way out of the guard below ends the process (exit or abort), and the
+    // guard is entered right after the reset.
     unsafe { cx.reset_to_session() };
+    let guarded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| after_reset(cx, yes, status)));
+    match guarded {
+        Ok(never) => match never {},
+        Err(_) => {
+            // (the panic's message was printed by the hook)
+            eprintln!("robigo: a panic after quit()'s context reset: aborting");
+            std::process::abort()
+        }
+    }
+}
+
+/// `R_CleanUp` after R_dot_Last's context reset ([`clean_up`]): `.Last`,
+/// `.Last.sys` and the save at the top level, then `exit`. Never returns;
+/// its caller catches a panic.
+fn after_reset(cx: &mut Cx, yes: bool, status: i32) -> std::convert::Infallible {
+    // ROBIGO_PANIC_AFTER_RESET=1: a panic here, for the guard's test
+    // (tests/boot_db.rs has none to make; read only on this path)
+    if std::env::var_os("ROBIGO_PANIC_AFTER_RESET").is_some_and(|v| v == "1") {
+        panic!("robigo: ROBIGO_PANIC_AFTER_RESET");
+    }
     let ok = dot_last(cx) && (!yes || at_top(cx, save_global_env));
     if !ok {
         // the error landed on the top level: check_session_exit

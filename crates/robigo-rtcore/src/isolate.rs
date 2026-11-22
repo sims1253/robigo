@@ -223,7 +223,8 @@ impl Isolate {
     }
 
     /// The context chain and its globals. Every field is a `Cell` (as the
-    /// value stack's), so shared references may coexist.
+    /// value stack's), the detached segments' list a `RefCell` borrowed only
+    /// for a push or a copy, so shared references may coexist.
     #[inline(always)]
     pub(crate) fn contexts(&self) -> &Contexts {
         // SAFETY: as in `stack`.
