@@ -35,14 +35,38 @@ use robigo_rtcore::{Cx, RResult, Ref, Root};
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
 
-/// The hasher of the translator's maps, whose keys are byte-code positions,
-/// pool indices and object addresses (`usize`s it makes itself, never
-/// chosen by R code), and of `base::stubs_for`'s set of names.c's names:
-/// rustc-hash's multiply-rotate, not the standard
+/// The hasher of the translator's maps ([`PosMap`]), whose keys
+/// are fixed-width integers it makes itself (object addresses, positions),
+/// never chosen by R code: rustc-hash's multiply-rotate, not the standard
 /// library's SipHash, which was about a third of translating a closure at
 /// its first call (about 180k instructions each in the rdb boot's profile).
+/// Not collision-resistant, so only for keys no program supplies: a byte
+/// string reaching [`std::hash::Hasher::write`] here is a debug-assertion
+/// failure (strings of compiled-in names go in a [`NameSet`]).
 #[derive(Default, Clone, Copy)]
 pub(crate) struct PosHasher(u64);
+
+/// The multiply of [`PosHasher`] and [`NameHasher`].
+#[inline]
+fn mix(h: u64, n: u64) -> u64 {
+    (h ^ n).wrapping_mul(0xf135_7aea_2e62_a9c5)
+}
+
+/// `bytes` into `h`, eight at a time, then the tail (zero-padded).
+#[inline]
+fn mix_bytes(mut h: u64, bytes: &[u8]) -> u64 {
+    let mut chunks = bytes.chunks_exact(8);
+    for c in &mut chunks {
+        h = mix(h, u64::from_le_bytes(c.try_into().expect("an 8-byte chunk")));
+    }
+    let tail = chunks.remainder();
+    if !tail.is_empty() {
+        let mut b = [0u8; 8];
+        b[..tail.len()].copy_from_slice(tail);
+        h = mix(h, u64::from_le_bytes(b));
+    }
+    h
+}
 
 impl std::hash::Hasher for PosHasher {
     #[inline]
@@ -53,13 +77,16 @@ impl std::hash::Hasher for PosHasher {
     }
     #[inline]
     fn write(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            self.write_u64(b as u64);
-        }
+        debug_assert!(false, "robigo: a byte-string key in a PosMap (integer keys only; a NameSet for names)");
+        self.0 = mix_bytes(self.0, bytes);
     }
     #[inline]
     fn write_u64(&mut self, n: u64) {
-        self.0 = (self.0 ^ n).wrapping_mul(0xf135_7aea_2e62_a9c5);
+        self.0 = mix(self.0, n);
+    }
+    #[inline]
+    fn write_u8(&mut self, n: u8) {
+        self.write_u64(n as u64);
     }
     #[inline]
     fn write_usize(&mut self, n: usize) {
@@ -75,10 +102,53 @@ impl std::hash::Hasher for PosHasher {
     }
 }
 
-/// A map of the translator's ([`PosHasher`]).
+/// A map of the translator's ([`PosHasher`]): fixed-width integer keys only.
 pub(crate) type PosMap<K, V> = HashMap<K, V, BuildHasherDefault<PosHasher>>;
-/// A set of the translator's ([`PosHasher`]).
-pub(crate) type PosSet<K> = HashSet<K, BuildHasherDefault<PosHasher>>;
+
+/// A compiled-in name (names.c's table, a builtin's `PrimDef::name`): a
+/// `&'static str` of the binary, never a string a program supplies, so a
+/// fast hash that is not collision-resistant serves it ([`NameSet`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Name(pub &'static str);
+
+impl std::hash::Hash for Name {
+    // (the bytes in one write, the length folded in first, not `str`'s
+    // write and its 0xff terminator: one multiply fewer per name; equal
+    // names hash equal, which is all a set needs)
+    #[inline]
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        h.write_usize(self.0.len());
+        h.write(self.0.as_bytes());
+    }
+}
+
+/// The hasher of a [`NameSet`]: [`PosHasher`]'s multiply over the name's
+/// bytes, eight per multiply.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct NameHasher(u64);
+
+impl std::hash::Hasher for NameHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0.rotate_left(26)
+    }
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        self.0 = mix_bytes(self.0, bytes);
+    }
+    #[inline]
+    fn write_u8(&mut self, n: u8) {
+        self.0 = mix(self.0, n as u64);
+    }
+    #[inline]
+    fn write_usize(&mut self, n: usize) {
+        self.0 = mix(self.0, n as u64);
+    }
+}
+
+/// A set of compiled-in names ([`Name`]) with a flag, hashed fast
+/// ([`NameHasher`]): `base::stubs_for`'s defined builtins.
+pub(crate) type NameSet = HashSet<(Name, bool), BuildHasherDefault<NameHasher>>;
 
 mod bctrans;
 mod crosscheck;
@@ -831,7 +901,15 @@ impl From<bool> for Tail {
 /// then RETURN): the instructions after it move up one, the `Ret` with
 /// them, and the old `Ret` is left unreached.
 fn fold_vis_into_ret(ins: &mut [Ins], moves: bool) {
-    let mut targets = PosSet::default();
+    // (by IR position: a `Loop`'s end can be the code's end, and the one
+    // after it one past that; only positions before the end are asked
+    // about below, so a mark past the table changes nothing)
+    let mut targets = vec![false; ins.len() + 2];
+    let mut mark = |t: usize| {
+        if let Some(m) = targets.get_mut(t) {
+            *m = true;
+        }
+    };
     for i in ins.iter() {
         match i.op {
             Op::Jmp
@@ -843,13 +921,11 @@ fn fold_vis_into_ret(ins: &mut [Ins], moves: bool) {
             | Op::BaseGuard
             | Op::TopLoop
             | Op::StartSubset
-            | Op::Resume => {
-                targets.insert(i.target());
-            }
+            | Op::Resume => mark(i.target()),
             // (a region's end, and the instruction after it)
             Op::Loop | Op::LoopResume => {
-                targets.insert(i.target());
-                targets.insert(i.target() + 1);
+                mark(i.target());
+                mark(i.target() + 1);
             }
             _ => {}
         }
@@ -861,7 +937,7 @@ fn fold_vis_into_ret(ins: &mut [Ins], moves: bool) {
             while moves && m < ins.len() && matches!(ins[m].op, Op::Move | Op::Clear | Op::ClearRange) {
                 m += 1;
             }
-            if m < ins.len() && ins[m].op == Op::Ret && ins[m].g == 0 && !(j + 1..=m).any(|k| targets.contains(&k)) {
+            if m < ins.len() && ins[m].op == Op::Ret && ins[m].g == 0 && !(j + 1..=m).any(|k| targets[k]) {
                 let g = if ins[j].g != 0 { 1 } else { 2 };
                 ins.copy_within(j + 1..=m, j);
                 ins[m - 1].g = g;
@@ -3662,4 +3738,38 @@ unsafe fn check_formals(mut ls: Sexp, nil: Sexp) -> bool {
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fold_vis_into_ret;
+    use crate::ir::{Ins, Op};
+
+    /// A jump whose target is the code's end, and a loop's region ending
+    /// there (whose "instruction after" is one past it), mark positions
+    /// past the last instruction: they are kept off the table or in its
+    /// two spare entries, never out of bounds, and the fold of a `SetVis`
+    /// into the `Ret` after it goes on as with the hashed set (whose
+    /// lookups never asked about those positions).
+    #[test]
+    fn targets_at_and_past_the_end_leave_the_fold_as_before() {
+        let jmp = |op: Op, t: usize| {
+            let mut i = Ins::new(op);
+            i.set_target(t);
+            i
+        };
+        let mut vis = Ins::new(Op::SetVis);
+        vis.g = 1;
+        let mut ins = vec![vis, Ins::new(Op::Ret), jmp(Op::Jmp, 3), jmp(Op::Loop, 3), jmp(Op::Jmp, 9)];
+        let n = ins.len();
+        // targets 3 (an instruction), 4 (one past it), 5 (the end), 9 (past)
+        ins[3].set_target(n);
+        fold_vis_into_ret(&mut ins, false);
+        assert_eq!(ins[0].op, Op::Ret, "the SetVis folded into the Ret");
+        assert_eq!(ins[0].g, 1);
+        // a target on the Ret itself keeps the SetVis
+        let mut ins = vec![vis, Ins::new(Op::Ret), jmp(Op::Jmp, 1)];
+        fold_vis_into_ret(&mut ins, false);
+        assert_eq!(ins[0].op, Op::SetVis);
+    }
 }

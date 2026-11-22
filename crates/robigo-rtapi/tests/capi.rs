@@ -805,3 +805,22 @@ fn a_package_altrep_index_matrix_is_not_implemented_yet() {
         }
     }
 }
+
+/// Byte code whose constants are a package ALTREP list translates without
+/// reading them where its instructions do not (`LDNULL; RETURN`): the
+/// translator reads a constant only where an instruction names it, never the
+/// list's length from its header (an ALTREP list's is its class's Length
+/// method). A guard against a constants-pool capacity hint, which a review
+/// found unsafe for NULL, ALTREP and long lists, and which was dropped.
+#[test]
+fn byte_code_with_altrep_constants_translates() {
+    for p in PROFILES {
+        let mut s = Session::new(p);
+        s.val("k <- .Call(\"rt_altrep_list\", list(NULL))");
+        assert_eq!(
+            s.val("f <- .Internal(bcClose(NULL, .Internal(mkCode(c(12L, 17L, 1L), k)), globalenv())); f()"),
+            Val::Null,
+            "{p:?}"
+        );
+    }
+}
