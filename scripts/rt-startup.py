@@ -25,7 +25,8 @@ row's count over its heap shifts, below).
 (VmHWM) but none of its anonymous part, and a 20 ms start is too short to
 sample /proc. Anonymous memory grows only by page faults and shrinks only by
 system calls, so the process is stopped at each system call under ptrace and
-its RssAnon read there: the largest reading is the peak, exactly (memory()).
+its anonymous memory read there from the page tables (smaps_rollup's
+`Anonymous`): the largest reading is the peak (memory() says when it is).
 Peak RSS (VmHWM) comes from other runs, stopped only at their exit: the
 system-call stops move it by up to 7%.
 The file-backed part of the RSS is the binary's and its libraries' pages,
@@ -52,6 +53,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -82,7 +84,10 @@ ANON_FLOOR_KIB = 64
 RSS_LIMIT = 5.0
 
 PTRACE_TRACEME, PTRACE_CONT, PTRACE_SYSCALL, PTRACE_SETOPTIONS = 0, 7, 24, 0x4200
-PTRACE_O_TRACESYSGOOD, PTRACE_O_TRACEEXIT, PTRACE_EVENT_EXIT = 0x1, 0x40, 6
+PTRACE_O_TRACESYSGOOD, PTRACE_O_TRACEEXEC, PTRACE_O_TRACEEXIT = 0x1, 0x10, 0x40
+PTRACE_EVENT_EXEC, PTRACE_EVENT_EXIT = 4, 6
+# a run's limit in seconds: a start that loops is killed, not waited on
+TIMEOUT = 300
 # personality(2)'s flag that turns address-space randomization off (setarch -R)
 ADDR_NO_RANDOMIZE = 0x0040000
 libc = ctypes.CDLL(None, use_errno=True)
@@ -96,31 +101,54 @@ def ptrace(req, pid, data=0):
         raise OSError(e, f"ptrace({req}): {os.strerror(e)}")
 
 
+def anon_kib(pid):
+    """The anonymous memory mapped resident now, in KiB: smaps_rollup's
+    `Anonymous`, which the kernel counts by walking the page tables. (RssAnon
+    in /proc/PID/status is a batched per-CPU counter, behind by up to a
+    batch of pages per CPU.)"""
+    with open(f"/proc/{pid}/smaps_rollup") as f:
+        for ln in f:
+            if ln.startswith("Anonymous:"):
+                return int(ln.split()[1])
+    raise SystemExit(f"rt-startup: no Anonymous line in /proc/{pid}/smaps_rollup")
+
+
 def status_kib(pid):
     """/proc/PID/status's memory lines, KiB by name."""
     out = {}
     with open(f"/proc/{pid}/status") as f:
         for ln in f:
-            m = re.match(r"^(Vm\w+|Rss\w+):\s+(\d+) kB", ln)
+            m = re.match(r"^(Vm\w+|Rss\w+):\s+(\d+) kB", ln) or re.match(r"^(Threads):\s+(\d+)$", ln)
             if m:
                 out[m.group(1)] = int(m.group(2))
     return out
 
 
-def memory(cmd, env, syscalls=True):
+def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
     """(peak anonymous KiB, peak RSS KiB, exit status, stdout) of one run of
-    `cmd` under ptrace.
+    `cmd` under ptrace; the exit status is negative for a fatal signal, as
+    subprocess's.
 
     Anonymous memory grows only by page faults and shrinks only by system
     calls (munmap, madvise, brk, mremap, exit). So with `syscalls` the child
-    is stopped at every system call (PTRACE_SYSCALL) and its RssAnon read
-    there: the largest reading is the peak. Peak RSS is VmHWM, read at the
-    exit stop (PTRACE_EVENT_EXIT, before the kernel tears the memory down);
-    take it from a run without `syscalls`, whose stops do not change which
-    file pages are faulted in (measure()). Only the thread that runs `cmd`
-    is traced: robigo-rt's and GNU R's starts start no other."""
+    is stopped at every system call (PTRACE_SYSCALL) and its anonymous
+    memory read there from the page tables (anon_kib()): the largest reading
+    is the peak. That holds for one thread with no swap:
+    - memory the kernel takes back by itself between two stops (swapping
+      out, splitting an underused huge page) makes the reading low, by what
+      it missed; perf-rt's runners have no swap;
+    - a thread the child starts is not traced, so a start with more than
+      one thread is refused.
+
+    Peak RSS is VmHWM, read at the exit stop (PTRACE_EVENT_EXIT, before the
+    kernel tears the memory down). Take it from a run without `syscalls`,
+    whose stops do not change which file pages are faulted in (measure()).
+    Signals other than ptrace's own go on to the child (a group-stop is
+    resumed: a start has no job control). A run longer than `timeout`
+    seconds is killed."""
     out = tempfile.TemporaryFile()
     pid = None
+    timer = None
     try:
         pid = os.fork()
         if pid == 0:
@@ -136,15 +164,17 @@ def memory(cmd, env, syscalls=True):
                 os.execve(cmd[0], cmd, env)
             finally:
                 os._exit(127)
-        # the stop at exec
+        # the stop at the first exec (a SIGTRAP, before the options are set)
         _, st = os.waitpid(pid, 0)
         if not os.WIFSTOPPED(st):
             code = os.waitstatus_to_exitcode(st)
             pid = None
             why = "personality(ADDR_NO_RANDOMIZE) refused" if code == 126 else f"exit status {code}"
             raise SystemExit(f"rt-startup: {cmd[0]} did not start under ptrace: {why}")
-        ptrace(PTRACE_SETOPTIONS, pid, PTRACE_O_TRACEEXIT | PTRACE_O_TRACESYSGOOD)
-        anon, hwm = 0, None
+        ptrace(PTRACE_SETOPTIONS, pid, PTRACE_O_TRACEEXIT | PTRACE_O_TRACEEXEC | PTRACE_O_TRACESYSGOOD)
+        timer = threading.Timer(timeout, lambda p=pid: os.kill(p, signal.SIGKILL))
+        timer.start()
+        anon, hwm, threads = 0, None, 1
         go = PTRACE_SYSCALL if syscalls else PTRACE_CONT
         ptrace(go, pid)
         while True:
@@ -152,31 +182,59 @@ def memory(cmd, env, syscalls=True):
             if os.WIFEXITED(st) or os.WIFSIGNALED(st):
                 pid = None
                 break
-            sig = os.WSTOPSIG(st)
+            sig, event = os.WSTOPSIG(st), st >> 16
             if sig == signal.SIGTRAP | 0x80:
                 # a system call's entry or exit
-                anon = max(anon, status_kib(pid)["RssAnon"])
-                ptrace(PTRACE_SYSCALL, pid)
-            elif sig == signal.SIGTRAP and st >> 16 == PTRACE_EVENT_EXIT:
+                anon = max(anon, anon_kib(pid))
+                ptrace(go, pid)
+            elif sig == signal.SIGTRAP and event == PTRACE_EVENT_EXIT:
                 m = status_kib(pid)
-                anon, hwm = max(anon, m["RssAnon"]), m["VmHWM"]
+                hwm, threads = m["VmHWM"], m.get("Threads", 1)
+                if syscalls:
+                    anon = max(anon, anon_kib(pid))
                 ptrace(PTRACE_CONT, pid)
+            elif sig == signal.SIGTRAP and event == PTRACE_EVENT_EXEC:
+                # a later exec: ptrace's stop, not a signal
+                ptrace(go, pid)
             else:
-                # any other signal goes on to the child
-                ptrace(go, pid, 0 if sig == signal.SIGTRAP else sig)
+                # a signal for the child (a real SIGTRAP among them): it goes on
+                ptrace(go, pid, sig)
+        if os.WIFSIGNALED(st) and os.WTERMSIG(st) == signal.SIGKILL and not timer.is_alive():
+            raise SystemExit(f"rt-startup: {' '.join(cmd)} ran over {timeout} s")
         if hwm is None:
             raise SystemExit(f"rt-startup: no exit stop for {cmd[0]}")
+        if threads != 1:
+            raise SystemExit(f"rt-startup: {cmd[0]} ran {threads} threads; the anonymous peak is measured "
+                             "for one (memory())")
         out.seek(0)
         return anon, hwm, os.waitstatus_to_exitcode(st), out.read()
     finally:
+        if timer:
+            timer.cancel()
+            timer.join()
         if pid:
-            # an exception with the child still traced: it goes, and is reaped
-            try:
-                os.kill(pid, signal.SIGKILL)
-                os.waitpid(pid, 0)
-            except OSError:
-                pass
+            reap(pid)
         out.close()
+
+
+def reap(pid):
+    """Kill the traced child `pid` and wait it out: it may stop again (its
+    exit event) before it is gone, and is resumed until it is."""
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    while True:
+        try:
+            _, st = os.waitpid(pid, 0)
+        except ChildProcessError:
+            return
+        if os.WIFEXITED(st) or os.WIFSIGNALED(st):
+            return
+        try:
+            ptrace(PTRACE_CONT, pid)
+        except OSError:
+            pass
 
 
 def instructions(cmd, env, valgrind):

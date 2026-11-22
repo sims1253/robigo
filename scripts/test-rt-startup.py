@@ -4,6 +4,7 @@ idiom-vs-r.py's count of a loop's allocator calls, which decides the heap
 shifts. Run by the perf-rt job before the bars."""
 import importlib.util
 import os
+import signal
 import sys
 import tempfile
 import unittest
@@ -86,7 +87,7 @@ class Memory(unittest.TestCase):
         a, h, status, out = su.memory([self.PY, "-c", "import sys; sys.stdout.write('x' * 2_000_000)"],
                                       dict(os.environ))
         self.assertEqual(status, 0)
-        self.assertEqual(len(out), 2_000_000)
+        self.assertEqual(out, b"x" * 2_000_000)
 
     def test_the_anonymous_peak_survives_a_free_before_exit(self):
         # 64 MB touched, then freed: at the exit stop little is left
@@ -96,11 +97,48 @@ class Memory(unittest.TestCase):
         self.assertGreaterEqual(a, 64 << 10)
         self.assertGreaterEqual(h, a)
 
-    def test_an_exit_status_comes_back_and_no_child_is_left(self):
-        _, _, status, _ = su.memory([self.PY, "-c", "import sys; sys.exit(3)"], dict(os.environ))
-        self.assertEqual(status, 3)
+    def no_child_left(self):
         with self.assertRaises(ChildProcessError):
             os.waitpid(-1, os.WNOHANG)
+
+    def test_an_exit_status_comes_back_and_no_child_is_left(self):
+        for syscalls in (True, False):
+            _, h, status, _ = su.memory([self.PY, "-c", "import sys; sys.exit(3)"], dict(os.environ), syscalls)
+            self.assertEqual(status, 3)
+            self.assertGreater(h, 0)
+            self.no_child_left()
+
+    def test_a_real_sigtrap_reaches_the_child(self):
+        # its default action ends the process: not ptrace's to swallow
+        _, _, status, _ = su.memory([self.PY, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGTRAP)"],
+                                    dict(os.environ))
+        self.assertEqual(status, -signal.SIGTRAP)
+        self.no_child_left()
+
+    def test_a_child_with_another_thread_is_refused(self):
+        prog = "import threading, time\nt = threading.Thread(target=time.sleep, args=(0.2,))\nt.start()\n" \
+               "import os\nos._exit(0)\n"
+        with self.assertRaises(SystemExit) as e:
+            su.memory([self.PY, "-c", prog], dict(os.environ))
+        self.assertIn("threads", str(e.exception))
+        self.no_child_left()
+
+    def test_a_run_over_its_time_is_killed(self):
+        with self.assertRaises(SystemExit) as e:
+            su.memory([self.PY, "-c", "import time; time.sleep(30)"], dict(os.environ), timeout=1)
+        self.assertIn("ran over", str(e.exception))
+        self.no_child_left()
+
+    def test_an_exception_while_traced_reaps_the_child(self):
+        # the reading fails at the first stop: the child must not be left behind
+        saved = su.anon_kib
+        su.anon_kib = lambda pid: (_ for _ in ()).throw(OSError("no /proc"))
+        try:
+            with self.assertRaises(OSError):
+                su.memory([self.PY, "-c", "print(1)"], dict(os.environ))
+        finally:
+            su.anon_kib = saved
+        self.no_child_left()
 
 
 class AllocatorCalls(unittest.TestCase):

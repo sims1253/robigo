@@ -41,8 +41,19 @@ read the plan first.
       its anonymous part, and a 20 ms start is too short to sample /proc.
     - Anonymous memory grows only by page faults and shrinks only by system
       calls (munmap, madvise, brk, mremap, exit). So the child is stopped at
-      every system call under ptrace (`PTRACE_SYSCALL`) and its RssAnon read
-      there; the largest reading is the peak.
+      every system call under ptrace (`PTRACE_SYSCALL`) and its anonymous
+      memory read there; the largest reading is the peak.
+    - The reading is `/proc/PID/smaps_rollup`'s `Anonymous`, which the
+      kernel counts by walking the page tables (Sol, round 2).
+      `/proc/PID/status`'s RssAnon is a batched per-CPU counter: on a
+      24-CPU 6.x kernel it can lag by up to about 192 KiB, more than the
+      gate's 64 KiB floor. On main's starts the two gave the same numbers.
+    - It holds for one thread with no swap:
+      - memory the kernel takes back by itself between two stops (swapping
+        out, splitting an underused huge page) makes it read low; perf-rt's
+        runners have no swap;
+      - a start with more than one thread is refused, since an untraced
+        thread's memory could be missed.
     - A start makes a few thousand system calls; the stops cost well under
       a second per run.
     - Two readings were tried and rejected first:
@@ -72,11 +83,14 @@ read the plan first.
   Each number is the median of `--startup-runs` runs (default 9) of its
   kind. The child fails loudly if the kernel refuses the personality;
   perf-rt's container runs with `seccomp=unconfined`.
-- **The harness's own safety** (Sol, round 1):
+- **The harness's own safety** (Sol, rounds 1 and 2):
   - the child's output goes to a temporary file, never a pipe, so a start
     that prints much cannot block before its exit;
-  - the parent's side is in `try/finally`, which kills and reaps a child
-    still traced on any exception;
+  - the parent's side is in `try/finally`. It kills a child still traced on
+    any exception and resumes it through its exit stop until it is reaped;
+  - an exec has its own event stop (`PTRACE_O_TRACEEXEC`), so a real
+    SIGTRAP is passed on to the child, as every other signal is;
+  - a run over 300 s is killed and reported;
   - a main or GNU R record without one of the three numbers is not judged.
 - **The gate against main's binary** (the foreman's decision):
   - instructions +0.5%, as the rows;
@@ -144,7 +158,12 @@ GNU R 4.6.2, the local build (`rt-startup.py --gnur`):
 - `memory()` on small programs:
   - a 2 MB output comes back whole and does not block the child;
   - 64 MB touched and freed before exit still reads as the peak;
-  - an exit status comes back and no child is left;
+  - an exit status comes back, with and without the system-call stops, and
+    no child is left;
+  - a real SIGTRAP ends the child, as its default action does;
+  - a child with a second thread is refused;
+  - a run over its time is killed;
+  - an exception while the child is traced leaves no child behind;
 - the gate's three limits at and over their edges, including the
   anonymous floor;
 - that a start main lacks, wholly or in part, is not judged;
