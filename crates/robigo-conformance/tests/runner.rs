@@ -12,12 +12,35 @@ use std::sync::OnceLock;
 
 /// The fake binaries, written once before any test spawns one: a binary
 /// written while another thread forks can fail to exec ("text file busy").
+/// A runtime that fails every case at once, and whose boot probe (the
+/// runner's record of what it does not run, ROBIGO_BOOT_VERBOSE) takes 3 s.
+fn slow_probe() -> PathBuf {
+    static P: OnceLock<PathBuf> = OnceLock::new();
+    P.get_or_init(|| {
+        use std::os::unix::fs::PermissionsExt;
+        let p = fakes().0.parent().unwrap().join("slow-probe");
+        std::fs::write(&p, "#!/bin/sh\n[ -n \"$ROBIGO_BOOT_VERBOSE\" ] && sleep 3\nexit 1\n").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    })
+    .clone()
+}
+
 fn fakes() -> &'static (PathBuf, PathBuf, PathBuf, PathBuf) {
     static FAKES: OnceLock<(PathBuf, PathBuf, PathBuf, PathBuf)> = OnceLock::new();
     FAKES.get_or_init(|| {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("robigo-conformance-fakes-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        // in cargo's target directory, so the fakes go with it (`cargo
+        // clean`), not in /tmp: a test process has no exit hook to remove
+        // them, so each run removes the ones of test processes that are gone
+        let parent = Path::new(env!("CARGO_TARGET_TMPDIR"));
+        sweep_fakes(parent);
+        // the pid for the sweep, and a time so that a reused pid never
+        // adopts (or has swept under it) another run's directory
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = parent.join(format!("{FAKES_PREFIX}{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(parent).unwrap();
+        std::fs::create_dir(&dir).unwrap();
         let write = |name: &str, body: &str| {
             let p = dir.join(name);
             std::fs::write(&p, body).unwrap();
@@ -32,6 +55,51 @@ fn fakes() -> &'static (PathBuf, PathBuf, PathBuf, PathBuf) {
         let order = write("order", "#!/bin/sh\necho \"$1\" >> \"$0.log\"\nexec cat \"$1\"\n");
         (cat, stub, slow, order)
     })
+}
+
+const FAKES_PREFIX: &str = "robigo-conformance-fakes-";
+
+/// Removes `parent`'s fakes directories whose test process no longer runs
+/// (`robigo-conformance-fakes-<pid>-<time>` with no `/proc/<pid>`; without
+/// a /proc, none).
+fn sweep_fakes(parent: &Path) {
+    if !Path::new("/proc/self").exists() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(parent) else { return };
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let Some(pid) =
+            name.to_str().and_then(|n| n.strip_prefix(FAKES_PREFIX)).map(|r| r.split('-').next().unwrap_or(""))
+        else {
+            continue;
+        };
+        if pid.parse::<u32>().is_ok() && !Path::new("/proc").join(pid).exists() {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
+#[test]
+fn a_gone_test_process_leaves_no_fakes_behind() {
+    if !Path::new("/proc/self").exists() {
+        return; // no process table: sweep_fakes removes nothing there
+    }
+    let parent = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("sweep-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&parent);
+    // pid_max is at most 2^22, so this pid never runs
+    let gone = parent.join(format!("{FAKES_PREFIX}4999999-1"));
+    let live = parent.join(format!("{FAKES_PREFIX}{}-1", std::process::id()));
+    let other = parent.join("something-else-1");
+    for d in [&gone, &live, &other] {
+        std::fs::create_dir_all(d).unwrap();
+        std::fs::write(d.join("cat"), "x").unwrap();
+    }
+    sweep_fakes(&parent);
+    assert!(!gone.exists());
+    assert!(live.exists());
+    assert!(other.exists());
+    std::fs::remove_dir_all(&parent).unwrap();
 }
 
 fn cat() -> PathBuf {
@@ -133,6 +201,7 @@ fn opts(column: &Column, bin: PathBuf) -> Options {
         jobs: 2,
         timeout: std::time::Duration::from_secs(20),
         case_timeouts: Default::default(),
+        times: None,
         env: Vec::new(),
     }
 }
@@ -318,6 +387,64 @@ fn the_cases_with_a_longer_timeout_start_first() {
     assert_eq!(first(&o), "two.R", "the workers take the last case first");
     o.case_timeouts.insert("tests/rt/smoke/one.R".into(), std::time::Duration::from_secs(30));
     assert_eq!(first(&o), "one.R");
+}
+
+/// `ROBIGO_CONF_TIMES_REPORT`: one line per case run, slowest first, with
+/// the limit it ran under and whether it passed, also when the run fails.
+#[test]
+fn the_times_report_lists_every_case_run_with_its_limit() {
+    let f = rt_tree("times");
+    f.case("tests/rt/smoke/two.R", "2\n").record("tests/rt", "tests/rt/smoke/two.R", "4.6.2", "2\n");
+    let report = f.root().join("times.tsv");
+    let mut o = opts(&RT, cat());
+    o.filter = Some("tests/rt/smoke".into());
+    o.case_timeouts.insert("tests/rt/smoke/one.R".into(), std::time::Duration::from_secs(30));
+    o.times = Some(report.clone());
+    let _ = run(f.root(), &RT, &o);
+    let text = std::fs::read_to_string(&report).unwrap();
+    let mut lines = text.lines();
+    assert_eq!(lines.next(), Some("# secs\tlimit\tstatus\tcase"));
+    let rows: Vec<Vec<&str>> = lines.map(|l| l.split('\t').collect()).collect();
+    assert_eq!(rows.len(), 2, "{text}");
+    let secs: Vec<f64> = rows.iter().map(|r| r[0].parse().unwrap()).collect();
+    assert!(secs[0] >= secs[1], "slowest first: {text}");
+    let by_case: std::collections::BTreeMap<&str, (&str, &str)> = rows.iter().map(|r| (r[3], (r[1], r[2]))).collect();
+    assert_eq!(by_case["tests/rt/smoke/one.R"].0, "30");
+    assert_eq!(by_case["tests/rt/smoke/two.R"].0, "20");
+    assert!(by_case.values().all(|(_, s)| *s == "pass" || *s == "fail"));
+    // a runtime that fails every case still writes it
+    let _ = std::fs::remove_file(&report);
+    let mut o = opts(&RT, stub());
+    o.filter = Some("tests/rt/smoke".into());
+    o.times = Some(report.clone());
+    let _ = run(f.root(), &RT, &o);
+    let text = std::fs::read_to_string(&report).unwrap();
+    assert_eq!(text.lines().filter(|l| l.ends_with(".R")).count(), 2, "{text}");
+    assert!(text.lines().skip(1).all(|l| l.split('\t').nth(2) == Some("fail")), "{text}");
+    // a report whose directory does not exist yet: it is made
+    let nested = f.root().join("not").join("yet").join("times.tsv");
+    let mut o = opts(&RT, cat());
+    o.filter = Some("tests/rt/smoke".into());
+    o.times = Some(nested.clone());
+    let _ = run(f.root(), &RT, &o);
+    assert!(nested.is_file(), "no report in a new directory");
+}
+
+/// A case's time is its own run: the boot probe the first failure starts
+/// (which the other failing cases wait for) is not counted in any case's.
+#[test]
+fn a_case_time_leaves_out_the_boot_probe() {
+    let f = rt_tree("times-probe");
+    f.case("tests/rt/smoke/two.R", "2\n").record("tests/rt", "tests/rt/smoke/two.R", "4.6.2", "2\n");
+    let report = f.root().join("times.tsv");
+    let mut o = opts(&RT, slow_probe());
+    o.filter = Some("tests/rt/smoke".into());
+    o.times = Some(report.clone());
+    let _ = run(f.root(), &RT, &o);
+    let text = std::fs::read_to_string(&report).unwrap();
+    let secs: Vec<f64> = text.lines().skip(1).map(|l| l.split('\t').next().unwrap().parse().unwrap()).collect();
+    assert_eq!(secs.len(), 2, "{text}");
+    assert!(secs.iter().all(|s| *s < 2.0), "the 3 s probe counted in a case's time: {text}");
 }
 
 /// `ROBIGO_CONF_TIMEOUTS` gives the case it names its own timeout. It names

@@ -1093,16 +1093,14 @@ pub(crate) fn live_isolates() -> std::sync::MutexGuard<'static, usize> {
 /// The guards `fork_take` holds across a fork, released by `fork_release`
 /// on both sides: only the forking thread touches them, between the two
 /// handlers.
-#[allow(clippy::type_complexity)]
-struct ForkGuards(
-    std::cell::UnsafeCell<
-        Option<(
-            std::sync::MutexGuard<'static, usize>,
-            std::sync::RwLockWriteGuard<'static, ()>,
-            crate::clib::TempDirsGuard,
-        )>,
-    >,
+type ForkHeld = (
+    std::sync::MutexGuard<'static, usize>,
+    std::sync::RwLockWriteGuard<'static, ()>,
+    (std::sync::MutexGuard<'static, ()>, libc::pid_t),
+    crate::clib::TempDirsGuard,
 );
+
+struct ForkGuards(std::cell::UnsafeCell<Option<ForkHeld>>);
 
 // SAFETY: written by a fork's `prepare` handler and read by the same fork's
 // `parent` or `child` handler, on the forking thread (the C library runs
@@ -1115,11 +1113,13 @@ unsafe impl Sync for ForkGuards {}
 static FORK_GUARDS: ForkGuards = ForkGuards(std::cell::UnsafeCell::new(None));
 
 /// The fork handlers' `prepare` for this crate's locks, in the process's
-/// order (robigo-heap's `fork.rs`): the live isolates, then the
-/// environment's lock exclusive.
+/// order (robigo-heap's `fork.rs`): the live isolates, the environment's
+/// lock exclusive, then two leaves, the time zone session's and the
+/// temporary directories' registry.
 fn fork_take() {
     let live = live_isolates();
     let env = crate::clib::env_write_lock();
+    let tz = crate::clib::tz_session_fork_take();
     // (the temporary directories' registry: taken alone everywhere else, so
     // last)
     let dirs = crate::clib::temp_dirs_lock();
@@ -1129,16 +1129,19 @@ fn fork_take() {
     // fails included: glibc does (verified on 2.44: a fork refused with
     // EAGAIN runs prepare, then parent; `fork_tests`'
     // `a_failed_fork_releases_the_locks`).
-    unsafe { *FORK_GUARDS.0.get() = Some((live, env, dirs)) };
+    unsafe { *FORK_GUARDS.0.get() = Some((live, env, tz, dirs)) };
 }
 
 /// The fork handlers' `parent` and `child` for this crate's locks: the
-/// reverse order (`ENV`, then the live isolates). In the child the forking
-/// thread is the guards' owner, so unlocking is its own.
+/// reverse order (the temporary directories' registry, the time zone
+/// session's, `ENV`, then the live isolates).
+/// In the child the forking thread is the guards' owner, so unlocking is
+/// its own.
 fn fork_release() {
     // SAFETY: as for `ForkGuards`.
-    if let Some((live, env, dirs)) = unsafe { (*FORK_GUARDS.0.get()).take() } {
+    if let Some((live, env, (tz, pid), dirs)) = unsafe { (*FORK_GUARDS.0.get()).take() } {
         drop(dirs);
+        crate::clib::tz_session_fork_release(tz, pid);
         drop(env);
         drop(live);
     }

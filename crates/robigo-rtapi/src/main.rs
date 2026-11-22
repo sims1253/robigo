@@ -15,6 +15,40 @@
 mod renviron;
 
 use robigo_rt::repl::run_session;
+
+/// The commit this binary was built from (build.rs's `ROBIGO_RT_COMMIT`), as
+/// a marker in the file that scripts/rt-builder.sh reads, so that a tree
+/// this binary builds records what built it. Nothing prints it. "unknown"
+/// when the build script that ran did not set it (checkouts sharing a
+/// target directory share its fingerprints, so an older checkout's build
+/// script can be the one cargo ran): rt-builder.sh then refuses the binary
+/// rather than record a wrong commit.
+#[used]
+static BUILD_COMMIT: [u8; 64] = build_commit(match option_env!("ROBIGO_RT_COMMIT") {
+    Some(c) => c,
+    None => "unknown",
+});
+
+/// `robigo-rt-commit:<commit>\n`, then NULs, in 64 bytes (a 40-digit
+/// commit fits; a longer value is cut).
+const fn build_commit(commit: &str) -> [u8; 64] {
+    let mut out = [0u8; 64];
+    let head = b"robigo-rt-commit:";
+    let c = commit.as_bytes();
+    let mut i = 0;
+    while i < head.len() {
+        out[i] = head[i];
+        i += 1;
+    }
+    let mut j = 0;
+    while j < c.len() && i < 63 {
+        out[i] = c[j];
+        i += 1;
+        j += 1;
+    }
+    out[i] = b'\n';
+    out
+}
 use robigo_rtcore::OwnedIsolate;
 use std::os::unix::ffi::OsStrExt;
 
@@ -370,10 +404,6 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
             eprintln!("Fatal error: you must specify '--save', '--no-save' or '--vanilla'");
             return 2;
         }
-        if !quiet {
-            eprintln!("robigo-rt: R's start-up greeting (R without --quiet) is not implemented yet");
-            return 2;
-        }
         // `-f -`: the console input is stdin
         let mut s = Vec::new();
         if let Err(e) = std::io::Read::read_to_end(&mut std::io::stdin(), &mut s) {
@@ -395,12 +425,8 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
         eprint!("{USAGE}");
         return 2;
     };
-    // setup_Rmainloop's greeting, unless R_Quiet (a FILE's open error, at
-    // the options, comes first)
-    if r_mode && !stdin && !quiet {
-        eprintln!("robigo-rt: R's start-up greeting (R without --quiet) is not implemented yet");
-        return 2;
-    }
+    // R_Quiet: --quiet, or --no-echo (which Rscript passes)
+    let r_quiet = quiet || !r_mode;
 
     // setup_Rmainloop's setlocale(<category>, "") calls and R_check_locale:
     // the isolate's locale is the environment's (the process's stays "C")
@@ -467,7 +493,7 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
                     site_file: st.site_file,
                     init_file: st.init_file,
                     restore: st.restore,
-                    quiet,
+                    quiet: r_quiet,
                 };
                 if !robigo_rt::base::after_profile(cx, home.path(), a) {
                     cx.reprintf(b"Execution halted\n");
@@ -507,6 +533,11 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
             eprintln!("robigo-rt: loading base: {e}");
             return 2;
         }
+        // INTERIM(L5): M1's loader runs no profiles; the greeting where
+        // setup_Rmainloop prints it, after base and before the session
+        if !r_quiet {
+            robigo_rt::base::print_greeting(cx);
+        }
     }
     // the setlocale failures setup_Rmainloop deferred, as warnings at its
     // end (quiet when neither LANG nor LC_ALL is set and not empty), then
@@ -520,6 +551,27 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
         if !cx.collected_warnings().is_empty() {
             cx.reprintf(b"During startup - ");
             robigo_rt::repl::print_warnings(cx);
+        }
+    }
+    // setup_Rmainloop's last step, GNU R's boot: R_init_jit_enabled (the
+    // compiler loaded when the JIT is on); M1's loader set the JIT up when
+    // the evaluator was installed
+    if boot() != Boot::M1 {
+        match robigo_rt::base::init_jit(cx) {
+            robigo_rt::base::JitStart::Done => {}
+            robigo_rt::base::JitStart::Halt => {
+                cx.reprintf(b"Execution halted\n");
+                robigo_rt::fin::run_exit_finalizers(cx);
+                robigo_rt::repl::print_warnings(cx);
+                cx.flush_console();
+                return 1;
+            }
+            robigo_rt::base::JitStart::Suicide => {
+                // R_CleanUp(SA_SUICIDE, 2, 0)
+                robigo_rt::fin::run_exit_finalizers(cx);
+                cx.flush_console();
+                return 2;
+            }
         }
     }
     // the isolate's console is the process's stdout and stderr

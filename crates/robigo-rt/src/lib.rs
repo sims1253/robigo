@@ -148,6 +148,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         forced,
         jit: std::cell::Cell::new(jit::Config::from_env()),
         compile_pkgs: std::cell::Cell::new(jit::compile_pkgs_from_env()),
+        gnu_boot: std::cell::Cell::new(false),
         jit_cache: Default::default(),
         shipped: Default::default(),
         syms,
@@ -165,6 +166,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         links: Default::default(),
         assign_fns: Default::default(),
         folds: Default::default(),
+        compile_warnings: Default::default(),
         base_src: Default::default(),
     });
     // the connection table and the lazy-load databases' cache (L1)
@@ -290,6 +292,7 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         forced: st.forced,
         jit: st.jit.clone(),
         compile_pkgs: st.compile_pkgs.clone(),
+        gnu_boot: st.gnu_boot.clone(),
         jit_cache: std::cell::RefCell::new(st.jit_cache.borrow_mut().take()),
         shipped: std::cell::RefCell::new(shipped),
         syms: st.syms,
@@ -307,6 +310,7 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         links: st.links.clone(),
         assign_fns: st.assign_fns.clone(),
         folds: st.folds.copy(cx),
+        compile_warnings: Default::default(),
         base_src: std::cell::RefCell::new(st.base_src.borrow().clone()),
     }
 }

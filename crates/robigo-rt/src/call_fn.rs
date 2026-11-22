@@ -7,10 +7,24 @@ use robigo_rtcore::{Cx, Out, RResult, Ref, Root};
 /// `call(name, ...)`: `name` evaluated to a character string, installed,
 /// and the call of it with the remaining arguments' values, their tags
 /// kept (`...` among them is evaluated as a symbol, as GNU R does).
+/// `args` is GNU R's: None for the call's own arguments, or `applyMethod`'s
+/// promise list, read through `specials::arg_call` (the messages name `call`).
 // R: coerce.c:do_call
-pub fn do_call(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub fn do_call(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     cx.scope(|cx, s| {
-        let args = s.root(cx, call.bind(cx).as_cons().map_or(cx.nil(), |c| c.cdr()));
+        // the arguments from `ac` (specials::arg_call), the messages naming `call`
+        let ac = match crate::specials::arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        let args = s.root(cx, ac.bind(cx).as_cons().map_or(cx.nil(), |c| c.cdr()));
         let Some((e0, tag, rest0)) = args.bind(cx).as_cons().map(|c| (c.car(), c.tag(), c.cdr())) else {
             return Err(cx.error_call(Some(call), "'name' is missing"));
         };

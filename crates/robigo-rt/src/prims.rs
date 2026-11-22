@@ -73,7 +73,11 @@ pub enum Inline {
 /// A special that is a function over its call: GNU R's `do_*` of a
 /// SPECIALSXP, `PRIMFUN(op)(call, op, CDR(call), rho)`; the arguments are
 /// the call's, unevaluated. `op` is the primitive object.
-pub type SpecialFn = for<'a, 'b, 'c, 'd> fn(&mut Cx, Root<'a>, Root<'b>, Root<'c>, Out<'d>) -> RResult<()>;
+/// A special that is a function over its call: GNU R's `PRIMFUN(op)(call,
+/// op, args, rho)`, `args` None for `CDR(call)` (every call but one) or
+/// `applyMethod`'s promise list, `call` then the method's `newcall`.
+pub type SpecialFn =
+    for<'a, 'b, 'c, 'd, 'e> fn(&mut Cx, Root<'a>, Root<'b>, Option<Root<'e>>, Root<'c>, Out<'d>) -> RResult<()>;
 
 #[derive(Clone, Copy)]
 pub enum Kind {
@@ -523,6 +527,11 @@ pub struct RtState {
     /// `R_compile_pkgs` (`compilePKGS`, `_R_COMPILE_PKGS_`): a logical,
     /// NA included.
     pub compile_pkgs: std::cell::Cell<i32>,
+    /// Whether R starts GNU R's way (`ROBIGO_RT_BOOT` stage0 or rdb,
+    /// [`crate::jit::at_startup`]): the compiler's namespace then comes from
+    /// base's `loadNamespace`, M1's loader making it otherwise
+    /// ([`crate::ns::load_namespace`]).
+    pub gnu_boot: std::cell::Cell<bool>,
     /// GNU R's JIT cache ([`crate::jitcache`]).
     pub jit_cache: std::cell::RefCell<crate::jitcache::Cache>,
     /// Base's shipped bindings of cmp.R's `safeBaseInternals`, by their
@@ -564,6 +573,10 @@ pub struct RtState {
     pub assign_fns: std::cell::RefCell<std::collections::HashMap<robigo_rtcore::SymId, Sexp>>,
     /// cmp.R's constant folds of the compile under way ([`crate::fold`]).
     pub folds: crate::fold::Folds,
+    /// The warnings cmp.R's R code gives in the compile under way (its
+    /// `assign` and `as.name` of a name that does not translate), raised
+    /// once the compile is over ([`crate::cenv::CompileWarnings`]).
+    pub compile_warnings: crate::cenv::CompileWarnings,
     /// INTERIM(L5): the pinned GNU R tree the wide base loader reads its
     /// definitions from on first use ([`crate::base::load`]).
     pub base_src: std::cell::RefCell<Option<std::path::PathBuf>>,

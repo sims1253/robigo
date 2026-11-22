@@ -1017,7 +1017,27 @@ fn memo_put(cx: &mut Cx, method: Root<'_>, top: Root<'_>, def: Root<'_>, rec: Re
 
 /// `do_usemethod(call, op, args, env)`: `UseMethod(generic, object)`.
 // R: objects.c:do_usemethod
-pub fn do_usemethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, _out: Out<'_>) -> RResult<()> {
+pub fn do_usemethod(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    env: Root<'_>,
+    _out: Out<'_>,
+) -> RResult<()> {
+    // (applyMethod's promise list: the call over it, run again. Kept inline
+    // here, not specials::rerun_apart: the out-of-line call shifts this
+    // function's register allocation, +6 instructions on every S3 dispatch;
+    // the recursion must pass None)
+    if args.is_some() {
+        return cx.scope(|cx, s| {
+            let ac = match crate::specials::arg_call(cx, s, call, args)? {
+                Some(a) => a,
+                None => call,
+            };
+            do_usemethod(cx, ac, _op, None, env, _out)
+        });
+    }
     cx.scope(|cx, s| {
         let arg_list = match usemethod_positional(cx, s, call) {
             Some(a) => a,
@@ -2331,7 +2351,18 @@ fn equal_s3_signature(sig: &[u8], left: &[u8], right: &[u8]) -> bool {
 /// `do_nextmethod(call, op, args, env)`: `.Internal(NextMethod(generic,
 /// object, ...))`.
 // R: objects.c:do_nextmethod
-pub fn do_nextmethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub fn do_nextmethod(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    // (applyMethod's promise list: run again on the call over it)
+    if args.is_some() {
+        return crate::specials::rerun_apart(cx, call, _op, args, env, out, do_nextmethod);
+    }
     let unbound = cx.unbound().sexp();
     cx.scope(|cx, s| {
         let me = cx.global_context().id();

@@ -822,13 +822,27 @@ pub(crate) fn match_builtin_args<'s>(
     call: Root<'_>,
     formals: &[Sexp],
 ) -> RResult<Vec<Root<'s>>> {
+    match_builtin_args_apart(cx, s, call, call, formals)
+}
+
+/// [`match_builtin_args`] with the arguments read from `ac`, a call over
+/// them (`specials::arg_call`: `applyMethod`'s promises), and the errors and
+/// warnings against `call`.
+// R: match.c:matchArgs_NR
+pub(crate) fn match_builtin_args_apart<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    call: Root<'_>,
+    ac: Root<'_>,
+    formals: &[Sexp],
+) -> RResult<Vec<Root<'s>>> {
     let nil = cx.nil().sexp();
     let missing = cx.missing_arg().sexp();
     let dots = prims::state(cx).syms.dots;
     let mut acts: Buf<Actual> = Buf::new();
     // SAFETY: the rooted call's cells, read in this interval; nothing
     // collects.
-    unsafe { expr_actuals(cx, call.bind(cx).sexp(), &mut acts) };
+    unsafe { expr_actuals(cx, ac.bind(cx).sexp(), &mut acts) };
     let mut m = Matched::new(formals.len());
     // SAFETY: the formals are symbols and the actuals' tags symbols or nil.
     if let Err(e) = unsafe { match_args(formals, acts.as_slice(), nil, dots, &mut m) } {

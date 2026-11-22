@@ -20,8 +20,11 @@
 //! - **`RETURN`** at the end of each branch of a tail `if` becomes a jump
 //!   to the code's one `Ret`, the shape the from-source compiler emits.
 //! - **A promise's code** (`MAKEPROM`'s BCODESXP) is the promise's, as
-//!   GNU R's PRCODE: the call carries its arguments' codes (`Call`'s `f`),
-//!   each translated and kept on itself; what reads the promise's
+//!   GNU R's PRCODE: the call carries its arguments' codes
+//!   ([`Op::CallCodes`]'s `f`)
+//!   untranslated, each translated at its promise's first force with that
+//!   frame's slot indices and kept on itself (`compile::bytecode_code`);
+//!   what reads the promise's
 //!   expression reads the code's first constant (`bytecodeExpr`). The
 //!   from-source compiler's promises hold their expressions, its code
 //!   cached on them.
@@ -1053,8 +1056,11 @@ impl<'g> Comp<'g> {
 
     /// The plan of the complex assignment `a` (what
     /// [`Comp::bc_assign_plan`] makes from source): its steps as their
-    /// opcodes say, each argument's code translated and kept on its
-    /// expression in the step's call.
+    /// opcodes say: an argument's inline code (`StepArg::Code`) translated
+    /// now, a code object kept on its expression ([`Tr::slice_code`]); a
+    /// promise's code (`StepArg::Prom`, `MAKEPROM`'s) kept untranslated in
+    /// the plan (`S_CODES`), translated at its first force
+    /// (`compile::bytecode_code`).
     ///
     /// # Safety
     /// `t`'s constants are live.
@@ -1116,10 +1122,8 @@ impl<'g> Comp<'g> {
                 codes.push(nil);
                 match *arg {
                     StepArg::Code(from, to) if e.typ() == LANGSXP => self.slice_code(t, from, to, e)?,
-                    StepArg::Prom(code) if code.typ() == BCODESXP => {
-                        self.promise_code(code)?;
-                        *codes.last_mut().unwrap() = code;
-                    }
+                    // (translated at its first force, as a call's)
+                    StepArg::Prom(code) if code.typ() == BCODESXP => *codes.last_mut().unwrap() = code,
                     _ => {}
                 }
                 cell = cell.cdr();
@@ -2196,8 +2200,9 @@ impl<'g> Comp<'g> {
     /// `CALL` of `GETFUN`'s function: the generic call of `call`
     /// ([`Comp::generic_call`]'s shape), with its arguments' promise codes
     /// (`MAKEPROM`'s BCODESXPs, by argument: [`Op::CallCodes`]'s `f`),
-    /// each translated and kept on itself. Pass 1 (`planning`) translates
-    /// none.
+    /// kept untranslated: each is translated at its promise's first force
+    /// (`compile::bytecode_code`). Pass 1 (`planning`), whose code and pool
+    /// are discarded, makes no vector of them.
     ///
     /// # Safety
     /// `call` is a live call constant of the byte code.
@@ -2225,12 +2230,10 @@ impl<'g> Comp<'g> {
                     return Err(Need::Fail);
                 }
                 codes.push(match a.kind {
-                    PKind::Prom(code) if code.typ() == BCODESXP => {
-                        if !planning {
-                            self.promise_code(code)?;
-                        }
-                        code
-                    }
+                    // the promise holds MAKEPROM's BCODESXP; its code is
+                    // translated at its first force (compile::bytecode_code),
+                    // as GNU R's bcEval runs it only then
+                    PKind::Prom(code) if code.typ() == BCODESXP => code,
                     _ => nil,
                 });
                 cell = cell.cdr();
@@ -2275,42 +2278,6 @@ impl<'g> Comp<'g> {
             unsafe { v.set_elt(j, c) };
         }
         Ok(Some(v))
-    }
-
-    /// The code of a promise the byte code makes (`MAKEPROM`'s BCODESXP),
-    /// translated with the code it runs in (its compile environment, its
-    /// frame's slot indices: `Comp::arg_codes`) and kept on the BCODESXP
-    /// itself ([`crate::code::cache_on`]), which the promise holds:
-    /// forcing it runs that ([`crate::compile::bytecode_code`]).
-    ///
-    /// # Safety
-    /// `code` is a live BCODESXP.
-    unsafe fn promise_code(&mut self, code: Sexp) -> Result<(), Need> {
-        let cenv = self.bc.take().expect("robigo: byte code outside the Bc profile");
-        let mut sub = Comp::new(self.cx, self.st, Profile::Bc, Some(cenv));
-        let r = sub.alloc();
-        // SAFETY: the caller's contract.
-        let res = unsafe { sub.translate(code, r) };
-        let res = res.map(|()| {
-            let mut i = Ins::new(Op::Ret);
-            i.b = r;
-            sub.emit(i);
-            sub.finish()
-        });
-        self.bc = sub.bc.take();
-        if res.is_err() && sub.bc_untranslated.is_some() {
-            self.bc_untranslated = sub.bc_untranslated.take();
-        }
-        let b = res?;
-        // SAFETY: as above; the source, the code's first constant, is live.
-        unsafe {
-            let source = robigo_rtcore::bytecode_expr(code, self.nil());
-            let built = crate::code::build(self.cx, &super::verified(b), source, None)?;
-            crate::code::cache_on(code, built);
-            self.arg_codes.push(built);
-            self.arg_codes.append(&mut sub.arg_codes);
-        }
-        Ok(())
     }
 
     /// `CALLBUILTIN`: the builtin `prim` on the frame's argument window.

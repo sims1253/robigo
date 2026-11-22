@@ -351,3 +351,26 @@ fn a_librarys_initializers_and_finalizers_hold_env() {
     s.val(&format!("dyn.unload({})", lit(&so)));
     joined(t, "destructor");
 }
+
+/// The support objects' cleanup (tests/common's `remove_stale_objects`): a
+/// directory another test has just made for its object, still empty, is not
+/// stale and stays (CI's cold runs lost such a directory to a parallel test's
+/// cleanup, and the compiler then had nowhere to write, #955); an empty one
+/// whose own mtime is over a day old, left by a crashed run, goes. (Here, in
+/// one test binary, not in every one that declares `mod common`.)
+#[test]
+fn the_cleanup_keeps_a_new_empty_support_directory_and_removes_an_old_one() {
+    let base = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("cleanup-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let fresh = base.join("capi_test-fresh-0");
+    let old = base.join("capi_test-old-0");
+    std::fs::create_dir_all(&fresh).unwrap();
+    std::fs::create_dir_all(&old).unwrap();
+    let two_days = std::time::Duration::from_secs(2 * 24 * 60 * 60);
+    std::fs::File::open(&old).unwrap().set_modified(std::time::SystemTime::now() - two_days).unwrap();
+    let keep = base.join("capi_test-keep-0").join("keep.so");
+    remove_stale_objects(&base, &keep);
+    assert!(fresh.is_dir(), "the cleanup removed a directory made a moment ago");
+    assert!(!old.exists(), "the cleanup kept an empty directory over a day old");
+    let _ = std::fs::remove_dir_all(&base);
+}

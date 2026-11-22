@@ -86,9 +86,14 @@ pub fn do_tailcall<const TAILCALL: bool>(
     cx: &mut Cx,
     call: Root<'_>,
     _op: Root<'_>,
+    args: Option<Root<'_>>,
     rho: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
+    // (applyMethod's promise list: run again on the call over it)
+    if args.is_some() {
+        return crate::specials::rerun_apart(cx, call, _op, args, rho, out, do_tailcall::<TAILCALL>);
+    }
     cx.scope(|cx, s| {
         let missing = cx.missing_arg().sexp();
         let (expr, env) = if !TAILCALL {
