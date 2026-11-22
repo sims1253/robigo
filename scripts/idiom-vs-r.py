@@ -250,24 +250,29 @@ def follows_heap(row, allocs):
 
 def allocator_calls(cg):
     """Calls of ALLOCATOR's functions in the callgrind file `cg`, recursive
-    ones too (callgrind names them `free'2`)."""
+    ones too (callgrind names them `free'2`; with --compress-mangled=yes a
+    name can itself be a reference with a suffix, `(7)'2`)."""
     names, cfn, n = {}, None, 0
+
+    def resolve(name):
+        # "(7)'2": name 7 with the suffix
+        m = re.fullmatch(r"\((\d+)\)('\d+)?", name)
+        return names.get(m.group(1), name) + (m.group(2) or "") if m else name
+
     # (as perf.py's cache_counters: a compressed name can hold a locale's
     # bytes from a path)
     with open(cg, errors="replace") as f:
         for ln in f:
-            if ln.startswith("cfn="):
-                m = re.match(r"cfn=\((\d+)\)(?: (.*))?", ln)
+            if ln.startswith(("cfn=", "fn=")):
+                m = re.match(r"c?fn=\((\d+)\)(?: (.*))?", ln)
                 if m:
                     if m.group(2):
-                        names[m.group(1)] = m.group(2).strip()
-                    cfn = names.get(m.group(1))
+                        names[m.group(1)] = resolve(m.group(2).strip())
+                    name = names.get(m.group(1))
                 else:
-                    cfn = ln[4:].strip()
-            elif ln.startswith("fn="):
-                m = re.match(r"fn=\((\d+)\) (.*)", ln)
-                if m:
-                    names[m.group(1)] = m.group(2).strip()
+                    name = resolve(ln.split("=", 1)[1].strip())
+                if ln.startswith("cfn="):
+                    cfn = name
             elif ln.startswith("calls=") and cfn and re.sub(r"'\d+$", "", cfn) in ALLOCATOR:
                 n += int(ln[6:].split()[0])
     return n

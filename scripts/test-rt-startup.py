@@ -288,6 +288,12 @@ calls=5 0
 cfn=(8) __libc_malloc
 calls=1 0
 1 1
+cfn=(9) (3)'3
+calls=2 0
+1 2
+cfn=(9)
+calls=4 0
+1 4
 """
 
     def test_which_rows_are_measured_over_the_shifts(self):
@@ -308,8 +314,10 @@ calls=1 0
             f.write(self.CG)
         try:
             # malloc 3 + 4 (named once, then by number), free 2, a recursive
-            # free'2 5, __libc_malloc 1; not freelist_push or strlen
-            self.assertEqual(iv.allocator_calls(f.name), 15)
+            # free'2 5, __libc_malloc 1, and free'3 written as a reference
+            # with a suffix (--compress-mangled=yes) 2 + 4; not freelist_push
+            # or strlen
+            self.assertEqual(iv.allocator_calls(f.name), 21)
         finally:
             os.unlink(f.name)
 
