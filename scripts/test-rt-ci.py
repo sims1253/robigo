@@ -306,6 +306,7 @@ class RtCi(unittest.TestCase):
         # the plain report's floor is one comparison; the rdb one's is set
         self.assertEqual(rt.BC_FLOORS.get(rt.BC_REPORT, 1), 1)
         self.assertGreater(rt.BC_FLOORS[rt.BC_REPORT_RDB], 46000)
+        self.assertLessEqual(rt.BC_FLOORS[rt.BC_REPORT_RDB], 97485)   # the count on b0c49e869
 
     def test_a_step_whose_report_fails_is_timed_as_failed(self):
         # the command passed, the crosscheck report did not (it compared
@@ -504,6 +505,119 @@ class RtCi(unittest.TestCase):
         others = [t for t, e, c in steps if "ROBIGO_CONF_JOBS" in e and not (rt.CONFORMANCE in c and "--exact" in c)]
         self.assertEqual(others, [])
 
+    # The runner's KNOWN_FEATURES, and those of them the environment decides
+    # (crates/robigo-conformance/src/lib.rs, identity_features; this mirrors
+    # them: keep the two in step). r-home-tools and bytecode-fidelity depend
+    # on the build, not the environment, so a step neither keeps nor turns
+    # them off.
+    KNOWN = {"bytecode-fidelity", "collection-schedule", "default-vsize", "inplace-identity", "promise-identity",
+             "r-home-tools", "volume"}
+    BY_ENVIRONMENT = {"collection-schedule", "default-vsize", "inplace-identity", "promise-identity", "volume"}
+
+    @staticmethod
+    def kept_features(env):
+        on = lambda name: env.get(name) == "1"
+        kept = set()
+        if not on("ROBIGO_NO_INPLACE"):
+            kept.add("inplace-identity")
+        if not on("ROBIGO_MATERIALIZE"):
+            kept.add("promise-identity")
+        if not on("ROBIGO_GCTORTURE") and not on("ROBIGO_RETRY_TORTURE"):
+            kept |= {"volume", "collection-schedule"}
+        if "R_VSIZE" not in env and "R_MAX_VSIZE" not in env:
+            kept.add("default-vsize")
+        return kept
+
+    def list_name_problems(self, plans, root):
+        """For every step that names cases in ROBIGO_CONF_TIMEOUTS, each name
+        the runner refuses at its start ("names X, which is no case's id ...
+        of an enabled case"): not exactly a case id (a `*.R` under tests/rt
+        or tests/r, as the runner discovers them, named from the repository
+        root), or a case whose .requires names a feature the step's
+        environment turns off. And one more than the runner's start checks:
+        a tests/r case without its passing-rt marker, which the runner
+        accepts but never runs in CI, so the step's timeout for it would
+        apply to nothing."""
+        ids = {str(p.relative_to(root)) for suite in ("tests/rt", "tests/r") for p in (root / suite).rglob("*.R")
+               if p.is_file()}
+        problems = []
+        for title, env, _ in plans:
+            if "ROBIGO_CONF_TIMEOUTS" not in env:
+                continue
+            kept = self.kept_features(env)
+            # (parsed as the runner's parse_case_timeouts: blank items
+            # skipped, names trimmed)
+            for item in env["ROBIGO_CONF_TIMEOUTS"].split(","):
+                if not item.strip():
+                    continue
+                case = item.rsplit("=", 1)[0].strip()
+                path = root / case
+                if case not in ids:
+                    problems.append(f"{title}: {case}: no case has this id")
+                    continue
+                if case.startswith("tests/r/"):
+                    marker = root / "tests/r/passing-rt" / (case[len("tests/r/"):] + ".pass")
+                    if not marker.is_file():
+                        problems.append(f"{title}: {case}: not ratcheted for robigo-rt ({marker.relative_to(root)})")
+                req = path.with_suffix(".requires")
+                need = set(req.read_text().split()) if req.is_file() else set()
+                unknown = sorted(need - self.KNOWN)
+                if unknown:
+                    problems.append(f"{title}: {case}: requires {', '.join(unknown)}, which the runner does not know")
+                off = sorted((need & self.BY_ENVIRONMENT) - kept)
+                if off:
+                    problems.append(f"{title}: {case}: requires {', '.join(off)}, which this step turns off")
+        return problems
+
+    def test_every_case_a_step_names_is_one_it_runs(self):
+        # (#961's lists named shared-body.R and lazy-promise-code.R, which
+        # #966 made `volume`: the gctorture shard's runner refused to start,
+        # ten minutes into its build. This finds it in seconds.)
+        crates = ["robigo-heap", "robigo-rt", "robigo-rtapi", "robigo-rtcore"]
+        plans = rt.steps(crates) + rt.full_move_steps()
+        for shard in rt.SHARDS:
+            plans += rt.shard_steps(crates, shard)
+        self.assertEqual(self.list_name_problems(plans, HERE.parent), [])
+
+    def test_a_named_case_its_step_turns_off_is_found(self):
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        for case, requires in (("tests/rt/jit/big.R", "volume"), ("tests/rt/jit/ok.R", None),
+                               ("tests/r/memory/unmarked.R", None), ("tests/rt/dynload/tools.R", "r-home-tools"),
+                               ("tests/rt/jit/odd.R", "no-such-feature")):
+            (root / case).parent.mkdir(parents=True, exist_ok=True)
+            (root / case).write_text("1\n")
+            if requires:
+                (root / case).with_suffix(".requires").write_text(requires + "\n")
+        plans = [("conformance under gctorture (E3)", {"ROBIGO_GCTORTURE": "1", "ROBIGO_CONF_TIMEOUTS":
+                  "tests/rt/jit/big.R=600,tests/rt/jit/ok.R=600,tests/r/memory/unmarked.R=600,tests/rt/gone.R=600"},
+                  ["cargo"]),
+                 ("conformance (plain)", {"ROBIGO_CONF_TIMEOUTS": "tests/rt/jit/big.R=600"}, ["cargo"])]
+        problems = self.list_name_problems(plans, root)
+        self.assertEqual(len(problems), 3, problems)
+        self.assertIn("conformance under gctorture (E3): tests/rt/jit/big.R: requires volume, which this step turns off",
+                      problems)
+        self.assertTrue(any("unmarked.R: not ratcheted" in p for p in problems), problems)
+        self.assertTrue(any("tests/rt/gone.R: no case has this id" in p for p in problems), problems)
+        # a build-dependent requirement is not the step's to turn off; an
+        # unknown one the runner itself refuses
+        build = [("conformance under gctorture (E3)", {"ROBIGO_GCTORTURE": "1", "ROBIGO_CONF_TIMEOUTS":
+                  "tests/rt/dynload/tools.R=600,tests/rt/jit/odd.R=600"}, ["cargo"])]
+        self.assertEqual(self.list_name_problems(build, root),
+                         ["conformance under gctorture (E3): tests/rt/jit/odd.R: requires no-such-feature, "
+                          "which the runner does not know"])
+        # not ids, though the files exist; and an empty list names nothing
+        (root / "tests/rt/R-4.6.2").mkdir(parents=True)
+        (root / "tests/rt/R-4.6.2/ok.Rout").write_text("1\n")
+        odd = [("step", {"ROBIGO_CONF_TIMEOUTS": "./tests/rt/jit/ok.R=600,tests/rt/R-4.6.2/ok.Rout=600"}, ["cargo"]),
+               ("empty", {"ROBIGO_CONF_TIMEOUTS": rt.case_timeouts({})}, ["cargo"]),
+               ("spaced", {"ROBIGO_CONF_TIMEOUTS": " tests/rt/jit/ok.R =600, "}, ["cargo"])]
+        self.assertEqual(sorted(self.list_name_problems(odd, root)),
+                         ["step: ./tests/rt/jit/ok.R: no case has this id",
+                          "step: tests/rt/R-4.6.2/ok.Rout: no case has this id"])
+
     def test_the_moving_conformance_step_is_young_and_the_full_run_nightly(self):
         # H8: the job's GC_MOVE + gctorture conformance step moves the young
         # objects, with YOUNG_MOVE_SLOW's longer timeouts and no other step's;
@@ -559,6 +673,37 @@ class RtCi(unittest.TestCase):
             os.unlink(f.name)
         self.assertEqual(rt.pin_report_hits(f.name + ".missing"), [])
 
+    def test_a_crosscheck_report_with_merged_records_fails(self):
+        # two processes' appends interleaved: a record, then another's, then
+        # both newlines; the merged line counts once by its first word, so
+        # the count fell under the floor on a 24-core box with no error
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        good = "same: f: at 0: translated A; from source A\n"
+        clean = os.path.join(tmp.name, "clean.txt")
+        with open(clean, "w") as f:
+            f.write(good * 3 + "skipped: { x }: the from-source compile would force a binding (y)\n"
+                    + "same: g(\"same: inside a string\")\n"
+                    + "same: h(\"notsame: a kind's name after a letter\")\n")
+        errors, counts = rt.bc_report_check(clean, 5)
+        self.assertEqual((errors, counts["compared"]), ([], 5))
+        merged = os.path.join(tmp.name, "merged.txt")
+        with open(merged, "w") as f:
+            f.write(good + "same: f: at 1: translated B; from source Bsame: g: at 0: translated C; from source C\n\n"
+                    + "skipped: { y }: force (z)expected (a loop's shape (x)): h: at 2: translated D; from source D\n\n")
+        errors, counts = rt.bc_report_check(merged, 1)
+        self.assertEqual(counts["compared"], 2)       # what a merge does to the count
+        self.assertIn("2 empty line(s)", errors[0])
+        self.assertEqual(sum(e.startswith("two records in one line: ") for e in errors), 2, errors)
+        # a record a case could not write: its marker fails the report,
+        # whatever the count
+        open(clean + ".lost", "w").close()
+        errors, counts = rt.bc_report_check(clean, 5)
+        self.assertEqual(counts["compared"], 5)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("could not write a record", errors[0])
+
     def test_the_crosscheck_report_passes_only_with_every_difference_classed(self):
         import tempfile
 
@@ -597,6 +742,54 @@ class RtCi(unittest.TestCase):
         self.assertNotIn("robigo-cli", crates)
         self.assertEqual(rt.leaks(m, crates), [])
 
+
+def rust_src_snippets(root):
+    """The places where the crates' compile-fail expectations (trybuild's
+    tests/**/*.stderr) quote the standard library's source. rustc prints a
+    location in std (`--> $RUST/core/src/marker.rs`, or `::: $RUST/...`)
+    either way, but the source lines under it (the `|` gutter and the code)
+    only where the rust-src component is installed; an expectation blessed
+    there fails on CI's minimal toolchain (#954: robigo-rtcore's
+    env_writer_not_sync.stderr, CI run 45063956014)."""
+    import re
+    location = re.compile(r"^\s*(-->|:::)\s+\$RUST/")
+    out = []
+    for path in sorted(root.glob("crates/*/tests/**/*.stderr")):
+        lines = path.read_text(errors="replace").splitlines()
+        for n, line in enumerate(lines, 1):
+            if location.match(line) and n < len(lines) and lines[n].lstrip().startswith("|"):
+                out.append(f"{path.relative_to(root)}:{n}: {line.strip()} (and the source under it)")
+    return out
+
+
+class CompileFailExpectations(unittest.TestCase):
+    def test_no_expectation_depends_on_rust_src(self):
+        found = rust_src_snippets(HERE.parent)
+        self.assertEqual(found, [], "a compile-fail expectation quotes the standard library's source under a "
+                         "$RUST/ location, which rustc shows only with the rust-src component: CI's toolchain has "
+                         "none, so the test fails there. Keep the location line and drop the `|` lines under it "
+                         "(or re-bless without rust-src: `rustup component remove rust-src`, then "
+                         "TRYBUILD=overwrite):\n  " + "\n  ".join(found))
+
+    def test_a_quoted_std_source_is_found_and_a_bare_location_is_not(self):
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        ui = root / "crates/x/tests/ui"
+        ui.mkdir(parents=True)
+        # what B's machine wrote (#954), and what CI prints
+        (ui / "with-rust-src.stderr").write_text(
+            "note: required because it appears within the type `PhantomData<*const ()>`\n"
+            " --> $RUST/core/src/marker.rs\n  |\n  | pub struct PhantomData<T: PointeeSized>;\n"
+            "  |            ^^^^^^^^^^^\nnote: next\n")
+        (ui / "without.stderr").write_text(
+            "note: required because it appears within the type `PhantomData<*const ()>`\n"
+            " --> $RUST/core/src/marker.rs\nnote: required because it appears within the type `X`\n"
+            " --> src/clib.rs\n  |\n  | struct X {\n")
+        self.assertEqual(rust_src_snippets(root),
+                         ["crates/x/tests/ui/with-rust-src.stderr:2: --> $RUST/core/src/marker.rs "
+                          "(and the source under it)"])
 
 if __name__ == "__main__":
     unittest.main()

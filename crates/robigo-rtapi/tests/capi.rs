@@ -295,6 +295,38 @@ fn the_attribute_setters_read_a_package_altrep_length() {
             ("x <- c(1, 2); class(x) <- z", "a package ALTREP class attribute is not implemented yet"),
             ("m <- matrix(1:4, 2); dimnames(m) <- zl", "a package ALTREP list as dimnames is not implemented yet"),
             ("x <- 1:3; attr(x, \"tsp\") <- zr", "a package ALTREP 'tsp' attribute is not implemented yet"),
+            (
+                "d <- list(1:2); attr(d, \"row.names\") <- .Call(\"rt_altrep_real\", c(NA, -2))",
+                "row names from a package ALTREP double vector is not implemented yet",
+            ),
+            // a shared one is copied first (its Duplicate method)
+            ("y <- z; names(y) <- c(\"a\", \"b\")", "'duplicate' of an ALTREP object is not implemented yet"),
+            // the length GNU R reads, not 1
+            ("x <- 1; names(x) <- z", "'names' attribute [2] must be the same length as the vector [1]"),
+            (
+                "y <- .Call(\"rt_altrep_str\", c(\"ff\", \"10\")); dim(y) <- 3L",
+                "dims [product 3] do not match the length of object [2]",
+            ),
+            ("x <- 1:2; attr(x, \"tsp\") <- zi", "'tsp' attribute must be numeric of length three"),
+        ] {
+            let m = s.err(src);
+            assert!(m.contains(want), "{p:?} {src}: {m}");
+        }
+    }
+}
+
+/// datetime.c's builtins read a package ALTREP input (`x`, `tz`, `format`,
+/// a component, the names, the `tzone` attribute) where GNU R runs its
+/// class's methods: robigo says it cannot, at that point in GNU R's order
+/// of checks; a numeric one GNU R's type check refuses first.
+#[test]
+fn the_datetime_builtins_refuse_a_package_altrep_input() {
+    for p in PROFILES {
+        let mut s = Session::new(p);
+        s.cx().set_no_inplace(false);
+        s.val("zi <- .Call(\"rt_altrep_int\", 5:6); zr <- .Call(\"rt_altrep_real\", c(1, 2, 1))");
+        s.val("lt0 <- .Internal(as.POSIXlt(0, \"UTC\"))");
+        for (src, want) in [
             // datetime.c's XLENGTH(x) after the time zone's checks
             (".Internal(as.POSIXlt(zr, \"UTC\"))", "as.POSIXlt() of a package ALTREP vector is not implemented yet"),
             (
@@ -334,18 +366,27 @@ fn the_attribute_setters_read_a_package_altrep_length() {
                 "a \"POSIXlt\" list whose 'tzone' is a package ALTREP vector is not implemented yet",
             ),
             (
-                "d <- list(1:2); attr(d, \"row.names\") <- .Call(\"rt_altrep_real\", c(NA, -2))",
-                "row names from a package ALTREP double vector is not implemented yet",
+                ".Internal(as.POSIXct(.Call(\"rt_altrep_list\", unclass(lt0)), \"UTC\"))",
+                "a package ALTREP \"POSIXlt\" list is not implemented yet",
             ),
-            // a shared one is copied first (its Duplicate method)
-            ("y <- z; names(y) <- c(\"a\", \"b\")", "'duplicate' of an ALTREP object is not implemented yet"),
-            // the length GNU R reads, not 1
-            ("x <- 1; names(x) <- z", "'names' attribute [2] must be the same length as the vector [1]"),
             (
-                "y <- .Call(\"rt_altrep_str\", c(\"ff\", \"10\")); dim(y) <- 3L",
-                "dims [product 3] do not match the length of object [2]",
+                "lt <- unclass(lt0); names(lt) <- .Call(\"rt_altrep_str\", names(lt)); .Internal(as.POSIXct(lt, \"UTC\"))",
+                "a \"POSIXlt\" list whose names are a package ALTREP vector is not implemented yet",
             ),
-            ("x <- 1:2; attr(x, \"tsp\") <- zi", "'tsp' attribute must be numeric of length three"),
+            (
+                "x <- \"2000-01-01\"; names(x) <- .Call(\"rt_altrep_str\", \"a\"); \
+                 .Internal(strptime(x, c(\"%Y-%m-%d\", \"%Y\"), \"UTC\"))",
+                "recycling package ALTREP names is not implemented yet",
+            ),
+            (
+                ".Internal(format.POSIXlt(lt0, .Call(\"rt_altrep_str\", \"%Y\"), FALSE, 0L))",
+                "format.POSIXlt() of a package ALTREP 'format' is not implemented yet",
+            ),
+            (
+                "lt <- lt0; y <- lt$year; names(y) <- .Call(\"rt_altrep_str\", \"a\"); lt$year <- y; \
+                 .Internal(format.POSIXlt(lt, \"%Y\", FALSE, 0L))",
+                "format.POSIXlt() of year names that are a package ALTREP vector is not implemented yet",
+            ),
         ] {
             let m = s.err(src);
             assert!(m.contains(want), "{p:?} {src}: {m}");
