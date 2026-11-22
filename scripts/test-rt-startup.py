@@ -136,6 +136,19 @@ class Memory(unittest.TestCase):
                 su.memory([self.PY, "-c", prog], dict(os.environ))
             self.no_child_left()
 
+    def test_a_clone_that_is_a_process_is_killed_too(self):
+        # clone() without CLONE_THREAD and with an exit signal other than
+        # SIGCHLD: a traced process of its own, which waits forever
+        prog = ("import ctypes, signal\nlibc = ctypes.CDLL(None, use_errno=True)\n"
+                "stack = ctypes.create_string_buffer(1 << 16)\n"
+                "CB = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p)\n"
+                "f = CB(lambda _: libc.pause())\n"
+                "top = ctypes.c_void_p(ctypes.addressof(stack) + len(stack))\n"
+                "libc.clone(f, top, signal.SIGUSR1, None)\nlibc.pause()\n")
+        with self.assertRaises(SystemExit):
+            su.memory([self.PY, "-c", prog], dict(os.environ), timeout=20)
+        self.no_child_left()
+
     def test_a_run_over_its_time_is_killed(self):
         with self.assertRaises(SystemExit) as e:
             su.memory([self.PY, "-c", "import time; time.sleep(30)"], dict(os.environ), timeout=1)

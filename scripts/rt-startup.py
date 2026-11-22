@@ -218,11 +218,12 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
                 anon = max(anon, anon_kib(pid))
                 ptrace(go, pid)
             elif sig == signal.SIGTRAP and event == PTRACE_EVENT_CLONE:
-                # a second thread, refused as it is made: its memory would not
-                # be seen (the new thread, traced too, is reaped with the child)
+                # a second thread (or a process clone() made without
+                # CLONE_THREAD), refused as it is made: its memory would not be
+                # seen (the new one, traced too, is reaped with the child)
                 threads.append(event_msg(pid))
-                raise SystemExit(f"rt-startup: {cmd[0]} started a thread; the anonymous peak is measured "
-                                 "for one (memory())")
+                raise SystemExit(f"rt-startup: {cmd[0]} started a thread or cloned a process; the anonymous "
+                                 "peak is measured for one thread (memory())")
             elif sig == signal.SIGTRAP and event == PTRACE_EVENT_EXIT:
                 hwm = status_kib(pid)["VmHWM"]
                 if syscalls:
@@ -258,15 +259,17 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
 
 def reap(pid, threads=()):
     """Kill the traced child `pid` and wait it and its traced `threads` out.
-    The kill comes first, so that no thread can run on to make another; then
-    each is resumed, since one may sit in a stop already consumed (a reading
+    The kills come first, to every one (a clone without CLONE_THREAD is a
+    process of its own, which the leader's kill does not reach), so that
+    none can run on to make another; then each is resumed, since one may sit in a stop already consumed (a reading
     that failed at its exit stop, where the SIGKILL is dropped and only a
     resume lets the exit finish); each may stop again (its exit event)
     before it is gone, and is resumed until it is."""
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+    for t in (pid, *threads):
+        try:
+            os.kill(t, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
     for t in (pid, *threads):
         try:
             ptrace(PTRACE_CONT, t)
