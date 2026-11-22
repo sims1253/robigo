@@ -63,14 +63,27 @@
 //! assert_eq!(c.0, 3);
 //! ```
 //!
-//! but not on an enum:
+//! but not on an enum (which has the method, so only the rule refuses it),
+//! nor with a value that is no method name:
 //!
 //! ```compile_fail
-//! use robigo_heap::Trace;
+//! use robigo_heap::{Trace, Visitor};
 //! #[derive(Trace)]
 //! #[trace(freeze = "freeze_roots")]
 //! enum Exit {
 //!     Value(robigo_heap::Sexp),
+//! }
+//! impl Exit {
+//!     fn freeze_roots<V: Visitor + ?Sized>(&mut self, _v: &mut V) {}
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! use robigo_heap::Trace;
+//! #[derive(Trace)]
+//! #[trace(freeze = "bad-name")]
+//! struct Roots {
+//!     base: robigo_heap::Sexp,
 //! }
 //! ```
 //!

@@ -126,7 +126,9 @@ fn freeze_method(input: &DeriveInput) -> syn::Result<Option<Ident>> {
             if method.is_some() {
                 return Err(syn::Error::new(m.span(), "one freeze method"));
             }
-            method = Some(Ident::new(&m.value(), m.span()));
+            // (a value that is no identifier is a diagnostic at the
+            // attribute, not a panic in the derive: Sol r11 S16)
+            method = Some(m.parse::<Ident>()?);
             Ok(())
         })?;
         if items == 0 {
