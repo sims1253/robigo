@@ -1060,6 +1060,10 @@ pub fn subset3_dflt(cx: &mut Cx, x: Root<'_>, input: Root<'_>, call: Root<'_>, o
             // pairlist above, gives none)
             let c = input.bind(cx).as_char().expect("robigo: '$' takes a CHARSXP name");
             if c.is_ascii() {
+                // (install's checks: an empty name, one past 10000 bytes)
+                if let Err(m) = crate::text::check_install_name(&inp) {
+                    return Err(cx.error(&m));
+                }
                 return env_value(cx, x, &inp, out);
             }
             let (name, w) = match crate::text::install_tr_name(crate::coerce::text(c), cx.locale()) {

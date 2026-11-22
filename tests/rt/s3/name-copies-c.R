@@ -30,3 +30,7 @@ for (nm in list(long, u, l, "ab", substr(long, 1L, 66L))) {
     show(eval(call("$", quote(lst), as.name(nm))))
     show(eval(call("$", quote(e), nm)))
 }
+# install's checks on an environment's name (installTrChar)
+show(do.call("$", list(e, "")))
+show(do.call("$", list(e, strrep("a", 10001L))))
+show(do.call("$", list(e, strrep("a", 10000L))))
