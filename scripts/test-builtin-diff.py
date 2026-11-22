@@ -114,40 +114,57 @@ class Classes(unittest.TestCase):
         self.assertEqual(bd.classify(o, r, {}, {}, 1), "mismatch")
 
     def test_a_big_value_is_compared_by_its_digest(self):
-        # driver.R records a value over A4_BIG_BYTES as its summary and
-        # writes the value to <id>.big<k>.rds; seal_big replaces that by
-        # its sha256, and the comparison takes both
+        # driver.R records a value over A4_BIG_BYTES as its summary, writes
+        # the value to <id>.big<k>.rds and marks the summary <id>.big<k>.want;
+        # seal_big replaces the value by its sha256, and the comparison
+        # needs the same marks on both sides, each with its digest
         go, rt = (os.path.join(self.d, x) for x in ("o", "r"))
-        for d, value in ((go, b"one gigabyte"), (rt, b"one gigabyte")):
+        for d in (go, rt):
             os.makedirs(d)
             with open(os.path.join(d, "000951.rds"), "wb") as f:
-                f.write(b"a4_big summary: character, 100000")
+                f.write(b"summary: character, 100000, and an ordinary string a4_big")
             with open(os.path.join(d, "000951.big1.rds"), "wb") as f:
-                f.write(value)
+                f.write(b"one gigabyte")
+            open(os.path.join(d, "000951.big1.want"), "w").close()
         bd.seal_big(go)
         bd.seal_big(rt)
-        self.assertEqual(sorted(os.listdir(go)), ["000951.big1.sha256", "000951.rds"])
+        self.assertEqual(sorted(os.listdir(go)), ["000951.big1.sha256", "000951.big1.want", "000951.rds"])
         o, r = os.path.join(go, "000951.rds"), os.path.join(rt, "000951.rds")
-        self.assertEqual(bd.big_digests(o), bd.big_digests(r))
-        self.assertEqual(bd.classify(o, r, {}, {}, 951), "pass")
+
+        def cls():
+            bd._NAMES.clear()           # (the files change between the checks)
+            return bd.classify(o, r, {}, {}, 951)
+        self.assertEqual(cls(), "pass")
         # the same summary, another value past its first and last elements
         with open(os.path.join(rt, "000951.big1.sha256"), "w") as f:
             f.write("0" * 64 + "\n")
-        self.assertEqual(bd.classify(o, r, {}, {}, 951), "mismatch")
+        self.assertEqual(cls(), "mismatch")
+        bd._NAMES.clear()
         with unittest.mock.patch.object(bd, "render", return_value={}):
             field = bd.diff_fields([(951, o, r)])[951][0]
         self.assertEqual(field, "digest")
-        # a big value on one side only
+        # the digest missing on one side, then on both
         os.remove(os.path.join(rt, "000951.big1.sha256"))
-        self.assertEqual(bd.classify(o, r, {}, {}, 951), "mismatch")
-        # and on neither (a summary always has its digest: missing on both
-        # sides never passes)
+        self.assertEqual(cls(), "mismatch")
         os.remove(os.path.join(go, "000951.big1.sha256"))
-        self.assertEqual(bd.classify(o, r, {}, {}, 951), "mismatch")
-        # and a case's digests never mix with another case's
+        self.assertEqual(cls(), "mismatch")
+        # a summary for k = 1 with only a k = 2 digest on both sides
+        for d in (go, rt):
+            with open(os.path.join(d, "000951.big2.sha256"), "w") as f:
+                f.write("1" * 64 + "\n")
+        self.assertEqual(cls(), "mismatch")
+        # and a case's marks and digests never mix with another case's
         with open(os.path.join(go, "000095.rds"), "wb") as f:
             f.write(b"x")
-        self.assertEqual(bd.big_digests(os.path.join(go, "000095.rds")), [])
+        bd._NAMES.clear()
+        self.assertEqual(bd.big_digests(os.path.join(go, "000095.rds")), (frozenset(), {}))
+        # a record that merely holds the string "a4_big" needs no digest
+        for d in (go, rt):
+            with open(os.path.join(d, "000096.rds"), "wb") as f:
+                f.write(b"a4_big")
+        bd._NAMES.clear()
+        self.assertEqual(bd.classify(os.path.join(go, "000096.rds"), os.path.join(rt, "000096.rds"), {}, {}, 96),
+                         "pass")
 
     def test_tree_lists_files_dirs_and_links(self):
         with tempfile.TemporaryDirectory() as d:

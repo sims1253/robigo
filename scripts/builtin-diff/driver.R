@@ -21,7 +21,8 @@
 ## when they are small), and the whole value goes to `<id>.big<k>.rds`
 ## (saveRDS version 2: plain vectors, never an ALTREP or compact form, so
 ## the same bytes on both runtimes), which the harness replaces by its
-## sha256 at once. A value over A4_BIG_MAX_BYTES, or one the runtime cannot
+## sha256 at once; `<id>.big<k>.want` says the summary is there, so its
+## digest is required on both sides. A value over A4_BIG_MAX_BYTES, or one the runtime cannot
 ## write that way, stays in the record. One case
 ## (`[<-`(a4cls, 1:1e5, long): 100,000 copies of a 10,000-byte string,
 ## shared in memory, each written out by serialize) recorded 1 GB. Each case's printed output follows a marker line on stdout,
@@ -94,7 +95,7 @@ local({
         s <- 0
         for (x in attributes(v)) s <- s + a4size(x)
         if (is.character(v)) return(s + sum(nchar(v, type = "bytes", keepNA = FALSE)) + 8 * length(v))
-        if (is.list(v)) { for (x in v) s <- s + 8 + a4size(x); return(s) }
+        if (identical(typeof(v), "list")) { for (x in v) s <- s + 8 + a4size(x); return(s) }
         if (is.atomic(v)) return(s + length(v) * switch(typeof(v), logical = , integer = 4, double = 8,
                                                          complex = 16, raw = 1, 0))
         s
@@ -106,7 +107,8 @@ local({
     a4plain <- function(v) {
         for (x in attributes(v)) if (!a4plain(x)) return(FALSE)
         if (is.null(v) || is.atomic(v)) return(TRUE)
-        if (is.list(v)) { for (x in v) if (!a4plain(x)) return(FALSE); return(TRUE) }
+        ## (a list, not a pairlist: is.list() takes both)
+        if (identical(typeof(v), "list")) { for (x in v) if (!a4plain(x)) return(FALSE); return(TRUE) }
         FALSE
     }
     ## v, or for a plain value over A4_BIG_BYTES (and not over
@@ -124,13 +126,18 @@ local({
             if (file.exists(side)) file.remove(side)
             return(v)
         }
-        n <- length(v); h <- min(n, 3L)
-        ## the first and last elements, of a vector or a list, unless they
-        ## are big themselves
-        ends <- h > 0L && (is.atomic(v) || is.list(v))
+        ## the first and last elements, of a vector or a list, by its own
+        ## length (length() dispatches: a POSIXlt of 100 times has 11
+        ## elements), unless they are big themselves
+        n <- if (is.object(v)) length(unclass(v)) else length(v)
+        h <- min(n, 3L)
+        ends <- h > 0L && (is.atomic(v) || identical(typeof(v), "list"))
         head <- if (ends) .subset(v, seq_len(h))
         tail <- if (ends) .subset(v, (n - h + 1L):n)
         if (ends && !isTRUE(a4size(head) + a4size(tail) <= A4_ENDS_BYTES)) head <- tail <- NULL
+        ## the harness's sign that this summary has a digest to compare: a
+        ## summary whose digest is missing on either side never passes
+        saveRDS(TRUE, file.path(out, sprintf("%06d.big%d.want", id, k)), version = 3L, compress = FALSE)
         list(a4_big = k, type = typeof(v), length = n, attributes = names(attributes(v)), head = head, tail = tail)
     }
 

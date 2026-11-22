@@ -427,42 +427,57 @@ def seal_big(out):
         with open(p[:-4] + ".sha256", "w") as f:
             f.write(h.hexdigest() + "\n")
         os.remove(p)
+    _NAMES.pop(out, None)
+
+
+def _names(d):
+    """A records directory's file names, listed once per run: the records
+    are written before anything compares them (seal_big runs first)."""
+    try:
+        return _NAMES[d]
+    except KeyError:
+        try:
+            _NAMES[d] = frozenset(os.listdir(d))
+        except FileNotFoundError:
+            _NAMES[d] = frozenset()
+        return _NAMES[d]
+
+
+_NAMES = {}
 
 
 def big_digests(rds):
-    """The digests of a record's big values (seal_big), by their k. Only a
-    record holding a summary (its uncompressed bytes name `a4_big`) has
-    any, so the directory is listed for those few records only."""
-    try:
-        with open(rds, "rb") as f:
-            if BIG_MARK not in f.read():
-                return []
-    except FileNotFoundError:
-        return []
+    """A record's big values, by their k: (the k's the driver wrote a
+    summary for (`<id>.big<k>.want`), {k: the digest seal_big wrote})."""
     d, base = os.path.split(rds)
     stem = base[:-4]
-    out = []
-    for n in sorted(x for x in os.listdir(d) if x.startswith(stem + ".big") and x.endswith(".sha256")):
-        with open(os.path.join(d, n)) as f:
-            out.append((n[len(stem):], f.read().strip()))
-    return out
-
-
-# the name a big value's summary carries in a record (driver.R, a4big)
-BIG_MARK = b"a4_big"
+    names = _names(d)
+    want, dig = set(), {}
+    for n in names:
+        m = re.fullmatch(re.escape(stem) + r"\.big(\d+)\.(want|sha256)", n)
+        if not m:
+            continue
+        if m.group(2) == "want":
+            want.add(int(m.group(1)))
+        else:
+            with open(os.path.join(d, n)) as f:
+                dig[int(m.group(1))] = f.read().strip()
+    return frozenset(want), dig
 
 
 def same_record(a, b):
     """Two cases' records alike: their bytes, their big values' digests
-    (each summary's digest there on both sides: a missing one never
-    passes), what they printed and the files they made."""
+    (each summary the driver marked, `.want`, with its digest on both
+    sides: a missing one never passes), what they printed and the files
+    they made."""
     with open(a, "rb") as f1, open(b, "rb") as f2:
         ab = f1.read()
         if ab != f2.read():
             return False
-    da, db = big_digests(a), big_digests(b)
-    want = ab.count(BIG_MARK)
-    if len(da) != want or len(db) != want:
+    (wa, da), (wb, db) = big_digests(a), big_digests(b)
+    # the same summaries on both sides, each with its digest there (one
+    # missing on either side, or both, never passes), and the same digests
+    if wa != wb or set(da) != wa or set(db) != wb:
         return False
     return da == db and printed(a) == printed(b) and made(a) == made(b)
 
