@@ -607,15 +607,19 @@ OWN_STEPS = ("debug-assertions", "release-crate-tests")
 # timeout (scripts/test-rt-ci.py pins the three relations). When a warning
 # fires, rebalance or remeasure: the dates say how old each measurement is.
 BUDGETS = {  # shard: (budget, measured minutes, where measured)
-    "modes": (9, 7.41, "2026-11-21, run 44927530340 (#952): 6.49, the two rdb-boot steps' estimated 0.5, and "
-              "#959's estimated 0.42 (its freeze check at every collection in the crates' gctorture step: "
-              "about 1.27x of that step's 0.45, H's measurement; and its two freeze-on conformance steps, "
-              "about the plain conformance's 0.15 each)"),
+    # a slow-runner figure: run 45072863916 (#959, 2026-11-22) took about
+    # 1.25x #952's on the steps both ran (the crates' tests 1.86 against
+    # 1.59 min, GC_MOVE 1.18 against 0.88)
+    "modes": (11, 9.15, "2026-11-22, run 45072863916 (#959, a slow runner): 8.27 to its failed quarantine step, "
+              "less #959's M1 freeze-on conformance step's 0.22 (moved to gctorture; its rdb twin, 0.27, stays "
+              "with the database tree), plus the steps after it at #952's 1.1; #959's freeze check at every "
+              "collection makes the crates' gctorture step 0.81 against main's 0.45 (1.8x in CI)"),
     # the plain gctorture conformance moves into modes if GCTORTURE_FIRST
     # does not bring this back near 15 minutes
-    "gctorture": (27, 21.87, "2026-11-21, run 44927530340 (#952): 20.62 before GCTORTURE_FIRST, and #959's "
+    "gctorture": (27, 22.09, "2026-11-21, run 44927530340 (#952): 20.62 before GCTORTURE_FIRST, and #959's "
                   "estimated 1.25 (its freeze check at every 16th collection: about 1.3x of the plain gctorture "
-                  "conformance's 4.15, H's measurement)"),
+                  "conformance's 4.15, H's measurement) and its M1 freeze-on conformance step's 0.22 "
+                  "(run 45072863916)"),
     "feature-builds": (12, 9.87, "2026-11-21, run 44927530340 (#952)"),
     "builtin-diff": (9, 7.42, "2026-11-21, run 44927530340 (#952)"),
     "debug-assertions": (5, 3.47, "2026-11-21, run 44927530340 (#952): 3.07, and the tree's estimated 0.4"),
@@ -695,6 +699,12 @@ def shard_of(title):
     if title.startswith("the R_HOME tree"):
         return None
     if title.startswith("conformance under gctorture") or title.startswith("conformance under ROBIGO_GC_MOVE"):
+        return "gctorture"
+    # the boot heap's freeze on under M1's loader, its check off: with E3's
+    # freeze check, in the freeze's shard (modes was at its budget: the
+    # foreman, 2026-11-22). Its rdb twin stays in modes, where base's
+    # database tree is built
+    if title == "conformance with the boot heap's freeze on (ROBIGO_GC_FREEZE=1)":
         return "gctorture"
     if title.startswith("builtin differential"):
         return "builtin-diff"

@@ -64,7 +64,8 @@ class RtCi(unittest.TestCase):
                          "modes")
         self.assertEqual(where["ROBIGO_MATERIALIZE=1 (every argument slot materialized)"], "modes")
         self.assertEqual([t for t, s in where.items() if s == "gctorture"],
-                         ["conformance under gctorture (E3)",
+                         ["conformance with the boot heap's freeze on (ROBIGO_GC_FREEZE=1)",
+                          "conformance under gctorture (E3)",
                           f"conformance under ROBIGO_GC_MOVE={rt.GC_MOVE_YOUNG} with gctorture (E3)"])
         self.assertEqual([t for t, s in where.items() if s == "builtin-diff"],
                          ["builtin differential and its planted divergences (A4, scripts/builtin-diff.py ci)"])
