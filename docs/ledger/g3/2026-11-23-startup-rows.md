@@ -170,9 +170,13 @@ GNU R 4.6.2, the local build (`rt-startup.py --gnur`):
   slower malloc path.
 - **The rule now:** a row whose loop calls the C library's allocator
   (`malloc`, `calloc`, `realloc`, `free` calls in the 2N run minus the N
-  run, read from its k = 0 callgrind files) is measured over the heap shifts
-  and reports the median, as an `address_sensitive` row always was. The
-  JSON records each row's `allocator_calls`.
+  run, read from its k = 0 callgrind files) at least 0.1 times per
+  iteration is measured over the heap shifts and reports the median, as an
+  `address_sensitive` row always was (`idiom-vs-r.py`'s `follows_heap`).
+  - The floor keeps out a call now and then, such as a buffer's amortized
+    growth, which cannot move a per-iteration count the way a call every
+    iteration does.
+  - The JSON records each row's `allocator_calls`.
 - **Checked:**
   - s3 at the harness's own path on the dense-tables binary: shift 0 is
     16,364.0, the other four 16,355.6–16,355.8. The median, 16,355.7, equals
@@ -182,7 +186,17 @@ GNU R 4.6.2, the local build (`rt-startup.py --gnur`):
   marked before. perf-rt took 2 min 49 s on #974; the PR reports the new
   time.
 - **The cure for s3 itself** is in code: its loop's three allocations
-  (S1's #975). The rule covers the rows whose loops still allocate.
+  (S1's #975). The rule covers the rows whose loops still allocate. Before
+  and after, at the harness's own path, each binary from its own trees:
+
+  | s3 | allocator calls per iteration | instructions per iteration |
+  |---|---:|---:|
+  | #974's binary, rdb | 6.0 | 16,559 alone; median over the shifts 16,355.7 |
+  | main b84740012 (#975 in), interim | 0.0005 | 16,103.6, the shifts within 0.6 |
+  | main b84740012 (#975 in), rdb | 0.0005 | 16,174.0, the shifts within 8 |
+
+  After #975, s3's loop calls the allocator once per 2,000 iterations, under
+  the floor, so it is one measurement again.
 
 ## Tests
 

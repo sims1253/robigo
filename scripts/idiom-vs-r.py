@@ -235,6 +235,18 @@ def load_rows(path, rx=None):
 
 # the C library's allocator: a loop that calls it follows the initial heap
 ALLOCATOR = frozenset(("malloc", "calloc", "realloc", "free"))
+# calls per iteration from which a loop counts as calling it: a call now and
+# then (a buffer's amortized growth: s3 after #975 made one per 2,000
+# iterations) cannot move a per-iteration count as one every iteration does
+ALLOCATOR_FLOOR = 0.1
+
+
+def follows_heap(row, allocs):
+    """Whether a row's count can follow the initial heap, so that --shifts
+    measures it once per shift: marked `address_sensitive`, or its loop
+    calls the allocator (`allocs`: calls per iteration by side) at least
+    ALLOCATOR_FLOOR times per iteration."""
+    return bool(row.get("address_sensitive")) or any(v >= ALLOCATOR_FLOOR for v in allocs.values())
 
 
 def allocator_calls(cg):
@@ -282,9 +294,10 @@ def cmd_rows(a, m):
       strings were allocated (GNU R's and robigo-rt's string hash is an
       address hash, unique.c:cshash);
     - a row whose loop calls the C library's allocator (ALLOCATOR, counted
-      in its first measurement): malloc's paths follow the heap's initial
-      state, which the binary's layout and the script's path length move
-      (#974's s3, docs/ledger/g3/2026-11-23-startup-rows.md)."""
+      in its first measurement, at least ALLOCATOR_FLOOR times per
+      iteration): malloc's paths follow the heap's initial state, which the
+      binary's layout and the script's path length move (#974's s3,
+      docs/ledger/g3/2026-11-23-startup-rows.md). follows_heap() decides."""
     both = not a.no_r and not a.no_robigo
     cols = ["row", "group"]
     if not a.no_robigo:
@@ -311,7 +324,7 @@ def cmd_rows(a, m):
             gs.append((g if a.cycles else (g, None)) if g is not None else (None, None))
         one(0)
         # the other shifts, for a row whose count can follow the initial heap
-        shift = a.shifts and (d.get("address_sensitive") or any(v > 0 for v in allocs.values()))
+        shift = a.shifts and follows_heap(d, allocs)
         ks = [0] + [k for k in a.shifts if k != 0] if shift else [0]
         for k in ks[1:]:
             one(k)

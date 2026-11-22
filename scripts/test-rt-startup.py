@@ -284,6 +284,17 @@ calls=9 0
 1 9
 """
 
+    def test_which_rows_are_measured_over_the_shifts(self):
+        self.assertTrue(iv.follows_heap({"address_sensitive": True}, {}))
+        # #974's s3: three malloc/free pairs per iteration
+        self.assertTrue(iv.follows_heap({}, {"robigo": 6.0}))
+        # either side's loop is enough
+        self.assertTrue(iv.follows_heap({}, {"robigo": 0.0, "gnur": 2.0}))
+        # s3 after #975: one call per 2,000 iterations, and plain's none
+        self.assertFalse(iv.follows_heap({}, {"robigo": 0.0005}))
+        self.assertFalse(iv.follows_heap({}, {"robigo": 0.0}))
+        self.assertTrue(iv.follows_heap({}, {"robigo": iv.ALLOCATOR_FLOOR}))
+
     def test_counts_the_allocator_by_compressed_name(self):
         with tempfile.NamedTemporaryFile("w", suffix=".cg", delete=False) as f:
             f.write(self.CG)
