@@ -132,6 +132,36 @@ pub(crate) struct EnvState {
     building_base: Cell<u32>,
 }
 
+impl EnvState {
+    /// The global environment, raw: the freeze leaves it out.
+    pub(crate) fn global_raw(&self) -> Sexp {
+        self.global
+    }
+
+    /// The base environment, raw.
+    pub(crate) fn base_raw(&self) -> Sexp {
+        self.base
+    }
+
+    /// The empty environment, raw.
+    pub(crate) fn empty_raw(&self) -> Sexp {
+        self.empty
+    }
+
+    /// The freeze roots this state holds (robigo-heap's `freeze.rs`): the
+    /// fixed environments, the namespace registry, and each symbol's base
+    /// value and `.Internal`. Not a symbol's global cache, which can point
+    /// at a binding cell of the global environment (Sol S2), and not the
+    /// session's state: the global environment, the pending forces, the
+    /// call residues, the frame pool.
+    pub(crate) fn trace_freeze_roots<V: robigo_heap::Visitor + ?Sized>(&mut self, v: &mut V) {
+        for x in [&mut self.base, &mut self.empty, &mut self.base_ns, &mut self.ns_registry] {
+            v.edge(x);
+        }
+        self.cells.get_mut().trace_freeze_values(v);
+    }
+}
+
 const INIT: &str = "robigo: the isolate's environments";
 
 impl EnvState {
@@ -258,6 +288,12 @@ impl EnvState {
     unsafe fn set_internal(&self, s: Sexp, x: Sexp) {
         // SAFETY: as in `cell_mut`.
         unsafe { (*self.cells.get()).set_internal(sym::id_of(s), x) }
+    }
+
+    /// Drop the frame pool's frames (the boot heap's lazy freeze's
+    /// boundary: [`super::recycle::FramePool::clear_pool`]).
+    pub(crate) fn clear_frame_pool(&self) {
+        self.pool.clear_pool();
     }
 
     /// Every object this state roots directly ([`Cx::for_each_root`]): the

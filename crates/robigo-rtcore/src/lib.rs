@@ -244,6 +244,7 @@ mod handle;
 mod hooks;
 mod isolate;
 mod limits;
+mod namebuf;
 mod native;
 mod outcome;
 mod ppacct;
@@ -258,6 +259,8 @@ mod collect;
 mod edit;
 #[cfg(all(test, not(miri)))]
 mod fork_tests;
+#[cfg(all(test, not(miri)))]
+mod freeze_tests;
 
 pub use capi::{
     CGlobals, CParseState, PARSE_CONTEXT_SIZE, PARSE_ERROR_SIZE, PP_REDZONE, PPSTACK_SIZE, R_MB_CUR_MAX, mbcslocale,
@@ -287,6 +290,7 @@ pub use isolate::{
     live_isolate_count,
 };
 pub use limits::{CStackInfo, EXPR_SO, EXPR_SO_MSG, EvalDepth, NODE_SO, NODE_SO_MSG, note_sigint};
+pub use namebuf::NameBuf;
 pub use native::{Landing, NATIVE_MAX_ARGS, Native6, enter_export, enter_leaf, enter_leaf_mut};
 pub use outcome::{Built, Diag};
 pub use ppacct::PpSave;
