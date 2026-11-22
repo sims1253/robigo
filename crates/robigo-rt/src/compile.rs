@@ -108,8 +108,19 @@ pub(crate) type PosMap<K, V> = HashMap<K, V, BuildHasherDefault<PosHasher>>;
 /// A compiled-in name (names.c's table, a builtin's `PrimDef::name`): a
 /// `&'static str` of the binary, never a string a program supplies, so a
 /// fast hash that is not collision-resistant serves it ([`NameSet`]).
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Name(pub &'static str);
+
+impl std::hash::Hash for Name {
+    // (the bytes in one write, the length folded in first, not `str`'s
+    // write and its 0xff terminator: one multiply fewer per name; equal
+    // names hash equal, which is all a set needs)
+    #[inline]
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        h.write_usize(self.0.len());
+        h.write(self.0.as_bytes());
+    }
+}
 
 /// The hasher of a [`NameSet`]: [`PosHasher`]'s multiply over the name's
 /// bytes, eight per multiply.
@@ -127,6 +138,10 @@ impl std::hash::Hasher for NameHasher {
     }
     #[inline]
     fn write_u8(&mut self, n: u8) {
+        self.0 = mix(self.0, n as u64);
+    }
+    #[inline]
+    fn write_usize(&mut self, n: usize) {
         self.0 = mix(self.0, n as u64);
     }
 }
