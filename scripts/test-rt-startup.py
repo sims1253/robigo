@@ -66,6 +66,11 @@ class Verdict(unittest.TestCase):
         self.assertEqual(su.verdict({"interim": start(10**12, 10**9, 10**9)}, {"interim": {"instr": 1}}), [])
         self.assertEqual(len(su.table([{"name": "interim"}], {"interim": start(1, 2, 3)}, {"interim": {"instr": 1}})), 3)
 
+    def test_a_start_s_cache_hits_are_read_from_its_stats_line(self):
+        self.assertEqual(su.cache_hits("x\ntranslation cache: hit 430, no stub 2, no database 0\n"), 430)
+        self.assertEqual(su.cache_hits("translation cache: hit 0, no stub 435\n"), 0)
+        self.assertIsNone(su.cache_hits("no such line\n"))
+
     def test_a_bars_files_starts_are_checked_before_measuring(self):
         ok = [{"name": "interim", "gnur": "jit"}, {"name": "rdb-nojit", "gnur": "nojit"}]
         self.assertEqual(su.spec_errors(ok), [])

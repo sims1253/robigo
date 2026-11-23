@@ -48,8 +48,9 @@
 #   layout). GNU R's start named `gnur` (rt-startup.py's GNUR_STARTS) is
 #   shown beside it, report only: the distance to L5's condition, "at or
 #   below GNU R's startup" (docs/ledger/g3/2026-11-23-startup-rows.md).
-#   rt-startup.py reserves `rdb-pkgs` and `rdb-cache` for L5's default
-#   packages and C1's translation cache.
+#   The rdb starts run as they ship, with the translation cache (#979);
+#   `rdb-nocache` guards the uncached path, the translator's cost.
+#   rt-startup.py reserves `rdb-pkgs` for L5's default packages.
 # Every row and program here is also compared with main's binary of the
 # merge's base, measured on the same runner: more than the threshold slower
 # fails the gate.
@@ -261,3 +262,7 @@ gnur = "jit"
 [[startup]]
 name = "rdb-nojit"
 gnur = "nojit"
+
+[[startup]]
+name = "rdb-nocache"
+gnur = "jit"

@@ -212,6 +212,16 @@ impl Cx {
         unsafe { self.iso().core() }.fail_alloc_at(on as u64)
     }
 
+    /// Under [`Cx::retry_torture`], refuse the next allocation once, where
+    /// the caller is (a window a test must see stopped for a retry, such as
+    /// robigo-rt's translation-cache verification); nothing otherwise.
+    pub fn torture_refuse_next(&self) {
+        #[cfg(feature = "retry-torture")]
+        if self.retry_torture() {
+            self.refuse_next_alloc(true);
+        }
+    }
+
     /// [`Cx::retry_torture`] for one attempt: the next allocation is
     /// refused while the guard lives, and the knob is off once it drops,
     /// after an attempt that panicked too.
