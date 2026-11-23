@@ -1,0 +1,7 @@
+assign(v, 1, envir = vars)
+[1] "unable to translate '<U+4E2D>' to native encoding"
+assign(v, 1, envir = vars)
+[1] "unable to translate '<U+4E2D>' to native encoding"
+as.name(getAssignedVar(e, cntxt))
+[1] "unable to translate '<U+4E2D>' to native encoding"
+[1] 0

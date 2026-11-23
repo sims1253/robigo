@@ -96,6 +96,24 @@ fn the_directories_are_the_tree_s() {
     assert_eq!(homes(&[("R_DOC_DIR", "/d"), ("R_SHARE_DIR", ""), ("R_INCLUDE_DIR", "/i")]), own);
 }
 
+/// `ROBIGO_RT_BOOT=m1` names M1's loader, the boot when it is unset (so a
+/// harness can name it for a binary of either default): the same start.
+#[test]
+fn m1_names_the_unset_boot() {
+    let expr = "cat(loadedNamespaces(), exists('.Library.site', envir = globalenv()), '\\n')";
+    let run = |env: &[(&str, &str)]| {
+        let o = front_end(env).args(["-e", expr]).output().expect("running robigo-rt");
+        (
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+            o.status.code(),
+        )
+    };
+    let unset = run(&[]);
+    assert_eq!(unset.2, Some(0), "{unset:?}");
+    assert_eq!(run(&[("ROBIGO_RT_BOOT", "m1")]), unset);
+}
+
 /// Stage 0 reads base's source under robigo-rt's own tree: with none in
 /// the default place (no install's, and a checkout, `ROBIGO_RT_CHECKOUT`,
 /// whose tree is not made), it fails at start-up with GNU R's script's
@@ -152,4 +170,32 @@ fn a_panic_after_quit_s_context_reset_aborts_with_stderr_unwritable() {
     let out = cmd.output().expect("running robigo-rt");
     assert_eq!(out.status.signal(), Some(libc::SIGABRT), "{:?}", out.status);
     assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+}
+
+/// `ROBIGO_TORTURE_AFTER_START=1`, the test hook that holds torture until
+/// the start is over: refused (exit 2) with no torture mode to hold, and
+/// gctorture read as the heap reads it (atoi: `1suffix` is a gap of 1), so
+/// the check agrees with what the heap will do.
+#[test]
+fn the_torture_hold_needs_a_mode_and_reads_gctorture_as_the_heap_does() {
+    let modes = ["R_GCTORTURE", "R_GCTORTURE_WAIT", "ROBIGO_GCTORTURE", "ROBIGO_GC_MOVE", "ROBIGO_RETRY_TORTURE"];
+    let run = |env: &[(&str, &str)]| {
+        let mut cmd = front_end(env);
+        for m in modes {
+            if !env.iter().any(|(k, _)| *k == m) {
+                cmd.env_remove(m);
+            }
+        }
+        cmd.args(["--vanilla", "-e", "cat(gctorture(), \"\\n\")"]).output().unwrap()
+    };
+    let refused = run(&[("ROBIGO_TORTURE_AFTER_START", "1")]);
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("no torture mode is set"));
+    // held through the start, armed for the script: gctorture is on there
+    let held = run(&[("ROBIGO_TORTURE_AFTER_START", "1"), ("R_GCTORTURE", "1suffix")]);
+    assert!(held.status.success(), "{}", String::from_utf8_lossy(&held.stderr));
+    assert_eq!(String::from_utf8_lossy(&held.stdout).trim(), "TRUE");
+    // and a value the heap reads as off is no mode
+    let off = run(&[("ROBIGO_TORTURE_AFTER_START", "1"), ("R_GCTORTURE", "0x5")]);
+    assert_eq!(off.status.code(), Some(2));
 }

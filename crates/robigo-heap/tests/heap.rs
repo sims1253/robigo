@@ -8,7 +8,7 @@
 use robigo_heap::layout::{self, header, node, vector};
 use robigo_heap::types::*;
 use robigo_heap::{
-    AllocError, Core, GC_DUE, HeapReport, LARGE, NeedGc, POISON_TYPE, PinReportTo, Safepoint, ScanSegment, Sexp,
+    AllocError, Core, GC_DUE, HeapReport, LARGE, NeedGc, POISON_TYPE, Peaks, PinReportTo, Safepoint, ScanSegment, Sexp,
     StatsMode, Trace, Visitor, flags, gp,
 };
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -941,6 +941,67 @@ fn statistics_count_allocations_by_type_and_collections_by_kind() {
     assert!(heap >= 800_032, "{time}");
     assert_eq!(per_mib, (total as u128 * (1 << 20) / heap as u128) as u64, "{time}");
     c.set_stats_mode(StatsMode::Off);
+}
+
+/// `ROBIGO_GC_STATS`'s peak line: the same program gives the same figures,
+/// one more live object moves the peak by exactly its bytes, a collection
+/// that frees it does not lower the peak, and the report prints the line.
+#[test]
+fn statistics_report_the_exact_peak_of_bytes_in_use() {
+    /// A fixed program: small and large vectors, nodes, two collections
+    /// that free half of what it made; `extra` keeps one more vector of
+    /// four doubles live into the second. Its peaks, and the extra's bytes.
+    fn run(extra: bool) -> (Peaks, u64, String) {
+        let mut c = core();
+        c.set_torture(false);
+        c.set_stats_mode(StatsMode::Report);
+        let nil = c.nil();
+        let mut roots: Vec<Sexp> = Vec::new();
+        let mut bytes = 0;
+        for round in 0..2 {
+            for i in 0..2000 {
+                let x = c.alloc_vector(INTSXP, i % 40).unwrap();
+                let n = node(&mut c, x, nil);
+                if i % 2 == round {
+                    roots.push(n);
+                }
+            }
+            roots.push(c.alloc_vector(REALSXP, LARGE / 8 + round).unwrap());
+            if round == 1 {
+                // the peak is at the second collection's start
+                let before = c.stats.by_type[REALSXP as usize].1;
+                if extra {
+                    roots.push(c.alloc_vector(REALSXP, 4).unwrap());
+                }
+                bytes = c.stats.by_type[REALSXP as usize].1 - before;
+            }
+            gc(&mut c, &mut roots);
+        }
+        let p = c.peaks();
+        // freeing it all lowers nothing
+        roots.clear();
+        gc(&mut c, &mut roots);
+        assert_eq!(c.peaks(), p, "a collection that frees objects lowers no peak");
+        let r = c.stats_report();
+        c.set_stats_mode(StatsMode::Off);
+        assert_eq!(c.peaks(), Peaks::default(), "no peaks without statistics");
+        (p, bytes, r)
+    }
+    let (a, _, r) = run(false);
+    let (b, _, _) = run(false);
+    assert_eq!(a, b, "the same program, the same peaks");
+    assert_eq!(a.in_use, a.objects + a.block_overhead);
+    assert!(a.large >= 2 * LARGE as u64 && a.chunks_mapped >= a.in_use - a.objects + a.large, "{a:?}");
+    let line = format!(
+        "robigo gc: peak bytes in use {} (objects {}, block overhead {}, large {}); peak chunk bytes mapped {}",
+        a.in_use, a.objects, a.block_overhead, a.large, a.chunks_mapped
+    );
+    assert!(r.lines().any(|l| l == line), "{r}");
+    let (x, bytes, _) = run(true);
+    assert_eq!(bytes, 64, "four doubles after a vector header");
+    assert_eq!(x.objects, a.objects + bytes, "{x:?} against {a:?}");
+    assert_eq!(x.in_use, a.in_use + bytes, "{x:?} against {a:?}");
+    assert_eq!((x.block_overhead, x.large, x.chunks_mapped), (a.block_overhead, a.large, a.chunks_mapped));
 }
 
 // ---- limits, alloc_rooted, NeedGc ------------------------------------------
@@ -2576,6 +2637,78 @@ fn moving_core() -> Box<Core> {
     c
 }
 
+/// `ROBIGO_TORTURE_AFTER_START=1`'s hold under the moving collector: before
+/// the arming a collection moves nothing (the object keeps its address, and
+/// its torture is off), after it the same collection moves it, and the old
+/// copy reads poison.
+#[test]
+fn moves_and_torture_held_until_armed() {
+    let mut c = moving_core();
+    c.set_torture(true);
+    c.hold_torture_until_armed();
+    assert!(!c.torture(), "gctorture is held");
+    let x = int_vec(&mut c, &[1, 2, 3]);
+    let mut roots = vec![x];
+    gc(&mut c, &mut roots);
+    assert_eq!(roots[0], x, "nothing moves before the arming");
+    unsafe { assert_eq!(ints(roots[0]), &[1, 2, 3]) };
+    c.arm_after_start();
+    assert!(c.torture(), "gctorture is armed");
+    let stale = std::hint::black_box(roots[0]);
+    gc(&mut c, &mut roots);
+    assert_ne!(roots[0], stale, "after the arming the object moves");
+    unsafe {
+        assert_eq!(ints(roots[0]), &[1, 2, 3]);
+        assert_eq!(stale.typ(), POISON_TYPE, "the old copy reads poison");
+    }
+    // (armed twice: nothing more happens)
+    c.arm_after_start();
+    assert!(c.torture());
+}
+
+/// A hold of the moves alone (gctorture off at the hold) leaves gctorture
+/// to what the start does: a `gctorture(TRUE)` in the start stays on at the
+/// arming, and one it turns off stays off.
+#[test]
+fn a_hold_of_the_moves_alone_leaves_gctorture_to_the_start() {
+    let mut c = moving_core();
+    assert!(!c.torture());
+    c.hold_torture_until_armed();
+    c.set_torture(true);
+    c.arm_after_start();
+    assert!(c.torture(), "the start's gctorture(TRUE) survives the arming");
+    let mut c = moving_core();
+    c.hold_torture_until_armed();
+    c.arm_after_start();
+    assert!(!c.torture(), "and none appears from the hold");
+}
+
+/// A gctorture the hold keeps gives way to a setting the start makes
+/// itself: `gctorture(FALSE)` stays off at the arming, another gap stays.
+#[test]
+fn a_held_gctorture_gives_way_to_the_starts_own_setting() {
+    let mut c = moving_core();
+    c.set_torture(true);
+    c.hold_torture_until_armed();
+    c.set_torture(false);
+    c.arm_after_start();
+    assert!(!c.torture(), "the start's gctorture(FALSE) is not undone at the arming");
+    let mut c = moving_core();
+    c.set_torture(true);
+    c.hold_torture_until_armed();
+    c.gc_torture(5, 0);
+    c.arm_after_start();
+    assert_eq!(c.torture_counters(), (5, 5), "the start's own gap stays");
+    // gctorture(NA) sets nothing (a negative gap): the hold stays
+    let mut c = moving_core();
+    c.set_torture(true);
+    c.hold_torture_until_armed();
+    c.gc_torture(-1, 0);
+    assert!(!c.torture(), "still held");
+    c.arm_after_start();
+    assert!(c.torture(), "an NA gap does not drop the hold");
+}
+
 /// The element `i` of a VECSXP or STRSXP.
 unsafe fn elt(x: Sexp, i: usize) -> Sexp {
     unsafe { *(x.std_data() as *const Sexp).add(i) }
@@ -2761,6 +2894,29 @@ fn a_stale_young_local_reads_poison_at_every_young_collection() {
         }
     }
     assert_eq!(c.young_collections(), 5);
+}
+
+/// Under young:N, the hold moves nothing and counts no collection: after
+/// the arming the first N-1 collections are young-only and the N-th full.
+#[test]
+fn young_n_counts_from_the_arming() {
+    let every = 4;
+    let mut c = young_core(every);
+    c.hold_torture_until_armed();
+    let x = int_vec(&mut c, &[1, 2, 3]);
+    let mut roots = vec![x];
+    for _ in 0..3 {
+        gc(&mut c, &mut roots);
+    }
+    assert_eq!(roots[0], x, "nothing moves before the arming");
+    assert_eq!(c.young_collections(), 0, "and no collection counts");
+    c.arm_after_start();
+    for k in 1..every {
+        gc(&mut c, &mut roots);
+        assert_eq!(c.young_collections(), k as u64, "collection {k} after the arming is young-only");
+    }
+    gc(&mut c, &mut roots);
+    assert_eq!(c.young_collections(), (every - 1) as u64, "the {every}-th is full");
 }
 
 /// An object a collection moved is old: the young collections leave it

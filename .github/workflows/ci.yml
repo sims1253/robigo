@@ -122,21 +122,10 @@ jobs:
         with:
           key: lint
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Format
-        run: cargo fmt --check
-      - name: Clippy
-        run: scripts/lint.sh
-      - name: Corpus, oracle, Sexp-check and wall-time tooling
-        run: |
-          python3 scripts/test_corpus.py
-          python3 scripts/test-oracle-diff.py
-          python3 scripts/test-check-sexp-safety.py
-          python3 scripts/test-wall13.py
-          python3 scripts/test-pgo-build.py
-      - name: Target pruning
-        run: python3 scripts/test-prune-target.py
-      - name: Temporary directories (scripts/scratch.py and its tools)
-        run: python3 scripts/test-scratch.py
+      # every check of this job is in the script, which delegates run before
+      # pushing: the two cannot drift (scripts/test-rt-ci.py checks it)
+      - name: The lint job's checks (scripts/lint-job.sh)
+        run: scripts/lint-job.sh
 
   miri:
     # (after select only for its `stacked`: a stacked pull request skips it)
@@ -1518,7 +1507,14 @@ jobs:
       - name: Starts
         if: success() || failure()
         run: |
+          # the suite without the binary (M1Name skips), as before; then
+          # M1Name alone, in a process of its own, with the binary under test
+          # and its trees: its check that ROBIGO_RT_BOOT=m1 is the interim
+          # start, until the default-boot flip (its real measurements never
+          # share a process with the other tests)
           python3 scripts/test-rt-startup.py
+          RT_STARTUP_TEST_BIN=dist/robigo-rt RT_STARTUP_TEST_TREES=dist/rt-trees.tar \
+            python3 scripts/test-rt-startup.py M1Name
           main_flag=()
           if [ -f dist/robigo-rt-main ]; then
             main_flag=(--main dist/robigo-rt-main --main-trees dist/rt-trees-main.tar)

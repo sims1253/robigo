@@ -406,6 +406,59 @@ fn torture_from_env() -> (i32, i32) {
     (if wait > 0 { wait } else { gap }, gap)
 }
 
+/// `ROBIGO_TORTURE_AFTER_START`: a test hook, not a GNU R setting. `1`
+/// asks the embedder that arms it (robigo-rt's front end: where it arms
+/// `ROBIGO_FAIL_ALLOC_AT`) to hold the environment's gctorture
+/// (`R_GCTORTURE`, `ROBIGO_GCTORTURE`) and `ROBIGO_GC_MOVE`'s moves through
+/// the start ([`Core::hold_torture_until_armed`], then
+/// [`Core::arm_after_start`]), so a torture run does not torture every
+/// case's start. The heap never reads it itself: an embedder that would not
+/// arm must not hold. Unset (the default) is GNU R's: InitMemory reads the
+/// torture settings, and the whole start runs under them.
+///
+/// # Panics
+/// On a value other than unset, empty, `0` or `1`.
+pub fn torture_after_start_from_env() -> bool {
+    match std::env::var("ROBIGO_TORTURE_AFTER_START").as_deref() {
+        Ok("1") => true,
+        Ok("0") | Ok("") | Err(_) => false,
+        Ok(other) => panic!("robigo: ROBIGO_TORTURE_AFTER_START={other:?} is neither \"0\" nor \"1\""),
+    }
+}
+
+/// Whether the environment turns gctorture on, read as the heap reads it
+/// at its creation (InitMemory's init_gctorture: `R_GCTORTURE`, else
+/// `ROBIGO_GCTORTURE`, a positive gap after atoi).
+pub fn gctorture_from_env() -> bool {
+    torture_from_env().1 > 0
+}
+
+/// The heap's logical peaks under `ROBIGO_GC_STATS`, in bytes: what the
+/// heap's own bookkeeping says, never where the kernel or the allocator put
+/// anything, so the same allocation sequence gives the same figures.
+///
+/// Bytes in use are the objects allocated and not swept (the last sweep's
+/// live bytes, slot classes and large chunks, plus what was allocated since,
+/// requests rounded to 16) and the claimed blocks' headers. Objects are
+/// freed only by a collection's sweep, and chunks are acquired only by
+/// allocation and released only by a collection, so between two
+/// collections both grow: sampled at each collection's start and at the
+/// report, the maxima are the peaks, not an approximation of them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Peaks {
+    /// Bytes in use at their peak: `objects + block_overhead`.
+    pub in_use: u64,
+    /// At that peak: the objects' bytes. A large object counts its chunk
+    /// once a sweep has seen it, and its request (rounded to 16) before.
+    pub objects: u64,
+    /// At that peak: the claimed blocks' headers (`heap::DATA_OFF` each).
+    pub block_overhead: u64,
+    /// At that peak: the bytes of the large objects' chunks.
+    pub large: u64,
+    /// The chunks mapped, small and large, at their own peak.
+    pub chunks_mapped: u64,
+}
+
 /// One heap and its tables. Single-threaded, like R's values.
 pub struct Core {
     heap: Heap,
@@ -448,6 +501,10 @@ pub struct Core {
     own_poll: AtomicU32,
     /// `ROBIGO_GC_STATS`, read when the core is made
     stats_mode: StatsMode,
+    /// `ROBIGO_GC_STATS`'s logical peaks ([`Core::peaks`]), sampled where
+    /// they can be at their highest: at each collection's start, before
+    /// anything is freed, and when the stats are reported.
+    peaks: Peaks,
     /// the bounds of the thread the core is bound to (the evaluator's)
     stack_top: usize,
     stack_lo: usize,
@@ -521,6 +578,15 @@ pub struct Core {
     /// `ROBIGO_GC_MOVE` (`mover.rs`): collections move what they may and
     /// poison the old copies.
     gc_move: bool,
+    /// Under `gc_move`: collections may move. Off from the core's creation
+    /// to [`Core::arm_after_start`] under `ROBIGO_TORTURE_AFTER_START=1`:
+    /// the mode's bookkeeping (what C was handed, no freeze) runs from the
+    /// creation, only the moves wait, and the young:N count starts at the
+    /// arming (every object made before it is young then).
+    moves_armed: bool,
+    /// The environment's torture counters `(wait, gap)`, held until
+    /// [`Core::arm_after_start`] under `ROBIGO_TORTURE_AFTER_START=1`.
+    torture_held: Option<(i32, i32)>,
     /// `ROBIGO_GC_MOVE=young:N`'s state (`mover.rs`), boxed: the debug
     /// collector's, kept out of the core's own layout.
     young: Box<mover::Young>,
@@ -1000,6 +1066,7 @@ impl Core {
             poll: None,
             own_poll: AtomicU32::new(0),
             stats_mode: StatsMode::from_env(),
+            peaks: Peaks::default(),
             stack_top,
             stack_lo,
             open: OpenSegment { top: 0, routine: 0 },
@@ -1028,6 +1095,8 @@ impl Core {
             gcstarttimes: [0.0; 5],
             call65_plain: std::env::var_os("ROBIGO_CALL65_PLAIN").is_some_and(|v| v == "1"),
             gc_move: mover::policy_from_env().is_some(),
+            moves_armed: true,
+            torture_held: None,
             young: Box::new(mover::Young::new(mover::policy_from_env().unwrap_or(0))),
             quarantine: Vec::new(),
             diag: diag::Diag::from_env(),
@@ -1076,7 +1145,9 @@ impl Core {
             }
             c.count(bytes, cells);
         }
-        // like InitMemory: once the constants exist
+        // like InitMemory: once the constants exist. (ROBIGO_TORTURE_AFTER_START
+        // is not read here: the embedder that arms the hold decides it,
+        // Core::hold_torture_until_armed; every other one never holds)
         (c.force_wait, c.force_gap) = torture_from_env();
         c.retrigger();
         c
@@ -2499,6 +2570,41 @@ impl Core {
         self.gc_torture(on as i32, 0);
     }
 
+    /// Whether a hold ([`Core::hold_torture_until_armed`]) is waiting for its
+    /// arming.
+    pub fn torture_held(&self) -> bool {
+        !self.moves_armed
+    }
+
+    /// Hold the torture set now (gctorture's counters, `ROBIGO_GC_MOVE`'s
+    /// moves) until [`Core::arm_after_start`]: what
+    /// `ROBIGO_TORTURE_AFTER_START=1` does when the core is made. The
+    /// moving mode's bookkeeping goes on; only its moves wait.
+    pub fn hold_torture_until_armed(&mut self) {
+        // (only a gctorture that is on is held: with moves alone held, a
+        // gctorture(TRUE) the start itself calls is not undone at the
+        // arming; and one held gives way to any setting the start makes,
+        // [`Core::gc_torture`])
+        if self.force_wait > 0 {
+            self.torture_held = Some((self.force_wait, self.force_gap));
+            (self.force_wait, self.force_gap) = (0, 0);
+        }
+        self.moves_armed = false;
+        self.retrigger();
+    }
+
+    /// The torture `ROBIGO_TORTURE_AFTER_START=1` held from the core's
+    /// creation, armed: the environment's gctorture counters, and
+    /// `ROBIGO_GC_MOVE`'s moves. Without the variable, nothing changes
+    /// (both have been on since the creation).
+    pub fn arm_after_start(&mut self) {
+        self.moves_armed = true;
+        if let Some((wait, gap)) = self.torture_held.take() {
+            (self.force_wait, self.force_gap) = (wait, gap);
+            self.retrigger();
+        }
+    }
+
     /// Start E9's injection knob (`ROBIGO_FAIL_ALLOC_AT`), if the
     /// environment set it: allocations are counted from here, and the
     /// `n`th one is refused once. The embedder arms it where the program
@@ -2534,7 +2640,12 @@ impl Core {
     /// safepoint serves it.
     // R: memory.c:R_gc_torture (without PROTECTCHECK: no inhibit_release)
     pub fn gc_torture(&mut self, gap: i32, wait: i32) {
+        // (during ROBIGO_TORTURE_AFTER_START's hold, a setting the start
+        // makes itself, gctorture(FALSE) or another gap, is the start's:
+        // the held counters give way and the arming does not override it;
+        // a negative gap, NA's, sets nothing and keeps them)
         if gap >= 0 {
+            self.torture_held = None;
             self.force_wait = gap;
             self.force_gap = gap;
         }
@@ -3023,6 +3134,9 @@ impl Core {
         // R: memory.c:R_gc_internal
         self.sizes.n_maxused = self.sizes.n_maxused.max(self.sizes.nodes_in_use);
         self.sizes.v_maxused = self.sizes.v_maxused.max(self.sizes.valloc);
+        if self.stats_mode != StatsMode::Off {
+            self.peaks = self.peaks_now();
+        }
         let t0 = self.begin_collection();
         // SAFETY: nothing was freed since the last sweep, so the heap's own
         // lists contain objects whose fields are objects (the rooting
@@ -3083,7 +3197,7 @@ impl Core {
                 self.mark_heap_roots();
                 roots.trace(&mut Mark(self));
                 self.mark_rest();
-                if self.gc_move {
+                if self.gc_move && self.moves_armed {
                     let moved = self.evacuate();
                     Self::forward_roots(roots);
                     self.forward_heap();
@@ -3696,6 +3810,35 @@ impl Core {
         self.stats_mode
     }
 
+    /// `ROBIGO_GC_STATS`'s logical peaks so far, this moment included
+    /// ([`Peaks`]). All zero with the stats off: nothing is sampled then.
+    pub fn peaks(&self) -> Peaks {
+        if self.stats_mode == StatsMode::Off { Peaks::default() } else { self.peaks_now() }
+    }
+
+    /// The stored peaks raised by this moment's figures.
+    fn peaks_now(&self) -> Peaks {
+        let (mut large, mut mapped, mut claimed) = (0u64, 0u64, 0u64);
+        for c in &self.heap.chunks {
+            let size = (c.end - c.base) as u64;
+            mapped += size;
+            if c.large {
+                large += size;
+            } else {
+                claimed += c.claimed as u64;
+            }
+        }
+        let objects = self.stats.live_bytes + self.alloc_since_gc as u64;
+        let block_overhead = claimed * crate::heap::DATA_OFF as u64;
+        let mut p = self.peaks;
+        if objects + block_overhead > p.in_use {
+            (p.in_use, p.objects, p.block_overhead, p.large) =
+                (objects + block_overhead, objects, block_overhead, large);
+        }
+        p.chunks_mapped = p.chunks_mapped.max(mapped);
+        p
+    }
+
     /// Change it: the allocation counts by type start from here.
     pub fn set_stats_mode(&mut self, mode: StatsMode) {
         self.stats_mode = mode;
@@ -3771,6 +3914,14 @@ impl Core {
         if st.pin_hits > 0 {
             let _ = writeln!(r, "robigo gc: pin report hits {}", st.pin_hits);
         }
+        // the logical peaks (`Peaks`): deterministic for an allocation
+        // sequence; a reported figure (the startup gate's memory is massif's)
+        let pk = self.peaks_now();
+        let _ = writeln!(
+            r,
+            "robigo gc: peak bytes in use {} (objects {}, block overhead {}, large {}); peak chunk bytes mapped {}",
+            pk.in_use, pk.objects, pk.block_overhead, pk.large, pk.chunks_mapped
+        );
         let _ = writeln!(
             r,
             "robigo gc: allocated {} objects, {} bytes",

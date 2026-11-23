@@ -212,7 +212,9 @@ impl Core {
     /// counts the moving collections. Not while the pin report watches: its
     /// scan is the full collection's.
     pub(super) fn young_collection(&mut self) -> bool {
-        if !self.gc_move {
+        // (before the moves are armed nothing moves, and no collection
+        // counts towards young:N's full ones)
+        if !self.gc_move || !self.moves_armed {
             return false;
         }
         let y = &mut *self.young;
