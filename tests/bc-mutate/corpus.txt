@@ -62,3 +62,8 @@
 300058 1 panic
 300059 2 SIGSEGV
 300014 4 hang
+# Found by later runs on #976 layer 1's work in progress: a mutated STEPFOR
+# jumping elsewhere, run on another stack (the VM panicked on a register,
+# vm.rs:217) until a back-edge's target kept the stack it was translated with.
+100027 12 panic
+400059 14 panic

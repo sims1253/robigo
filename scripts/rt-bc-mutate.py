@@ -128,7 +128,10 @@ def main():
     ap.add_argument("--corpus-only", action="store_true")
     ap.add_argument("--processes", type=int, default=24, help="random starts after the corpus")
     ap.add_argument("--batch", type=int, default=100, help="mutations per random start")
-    ap.add_argument("--seed", type=int, default=1, help="random start p's seed is SEED * 100000 + p")
+    ap.add_argument("--seed", default="1",
+                    help="random start p's seed is SEED * 100000 + p; 'auto': from GITHUB_RUN_ID, else today's "
+                         "date (a search, the nightly's: printed first, so a failure can be replayed)")
+    ap.add_argument("--failures-out", help="write each failing random start as a corpus line (seed, mutation, what)")
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--limit", type=int, default=LIMIT)
     ap.add_argument("--report-only", action="store_true", help="report failures without failing")
@@ -138,6 +141,14 @@ def main():
     if sha != GEN_SHA256:
         sys.exit(f"rt-bc-mutate: tests/bc-mutate/gen.R changed (sha256 {sha}): its corpus names mutations of the "
                  "old generator; find the corpus again with the new one and update GEN_SHA256")
+    if a.seed == "auto":
+        import time
+        src = os.environ.get("GITHUB_RUN_ID") or time.strftime("%Y%m%d")
+        # (a start's seed, SEED * 100000 + p, stays an R integer)
+        a.seed = int(src) % 20000
+        print(f"rt-bc-mutate: seed {a.seed} (from {'GITHUB_RUN_ID' if os.environ.get('GITHUB_RUN_ID') else 'the date'} {src})")
+    else:
+        a.seed = int(a.seed)
     rt = os.path.abspath(a.robigo_rt)
     # the binary measured, named in the report (the commit its build.rs
     # embedded, and its sha256: an edit not committed shows only there)
@@ -165,6 +176,16 @@ def main():
           + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
     for n, o, d in bad[:int(os.environ.get("BCM_SHOW", "10"))]:
         print(f"  {n}: {o}, {d}")
+    if a.failures_out and bad:
+        # a random start's failure as tests/bc-mutate/corpus.txt has them:
+        # its seed, the mutation it was at, what happened
+        with open(a.failures_out, "a") as f:
+            for n, o, d in bad:
+                parts = n.split()
+                if parts[0] == "random":
+                    k = d.split(":", 1)[0].removeprefix("mutation ").strip() if d.startswith("mutation ") else "?"
+                    f.write(f"{parts[1]} {k} {o.replace(' ', '-')}\n")
+        print(f"rt-bc-mutate: failures written to {a.failures_out}")
     return 1 if bad and not a.report_only else 0
 
 
