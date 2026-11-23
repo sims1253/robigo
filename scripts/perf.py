@@ -913,6 +913,22 @@ def rt_verdict(spec, instr, rss, main=None):
     return failures, notes, table
 
 
+def rt_unchecked_notes(colls):
+    """Notes for a binary whose rows came back without collection counts
+    (`colls`: {"new"/"main": {row: [n, 2n]}}, None for a binary that makes
+    no ROBIGO_GC_STATS report, today's robigo): its rows were measured
+    without the check that their windows hold no collection. idiom-vs-r.py
+    warns on its stderr, which rt-bars does not show."""
+    notes = []
+    for tag, rows in colls.items():
+        unchecked = sorted(r for r, c in rows.items() if c is None or c[0] is None)
+        if unchecked:
+            notes.append(f"{tag}'s binary reports no collections: {len(unchecked)} row(s) measured without the "
+                         f"check that their windows hold none ({', '.join(unchecked[:5])}"
+                         f"{', ...' if len(unchecked) > 5 else ''})")
+    return notes
+
+
 def rt_collection_notes(collects, new, main):
     """Warnings for the rows marked `collects` (`collects`: their names)
     whose collections at N and 2N (`new`, `main`: {row: [n, 2n]}) differ
@@ -1001,6 +1017,7 @@ def cmd_rt_bars(a):
     with open(RT_ROWS, "rb") as f:
         collects = [r["name"] for r in tomllib.load(f)["row"] if r.get("collects") and r["name"] in rows]
     notes += rt_collection_notes(collects, colls["new"], colls["main"])
+    notes += rt_unchecked_notes(colls)
     print("### robigo-rt's M1 bars (scripts/perf.py rt-bars)\n")
     print(f"CPU: {model}, signature {sig}.")
     for label, ident in idents.items():

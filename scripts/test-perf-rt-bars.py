@@ -661,6 +661,16 @@ class RowCollections(unittest.TestCase):
         self.assertIn("`jit-safe`: robigo-rt collects 8→16 times at N→2N, main 8→15", notes[0])
         self.assertEqual(perf.rt_collection_notes(["jit-safe"], {"jit-safe": [8, 16]}, {}), [])
 
+    def test_a_binary_without_the_report_is_noted_in_rt_bars(self):
+        # idiom-vs-r.py warns on stderr, which rt-bars does not print: the
+        # unchecked rows become a note of rt-bars' own
+        notes = perf.rt_unchecked_notes({"new": {"plain": [0, 0], "s3": [0, 0]},
+                                         "main": {"plain": [None, None], "s3": [None, None]}})
+        self.assertEqual(len(notes), 1)
+        self.assertIn("main's binary reports no collections: 2 row(s) measured without the check", notes[0])
+        self.assertIn("plain, s3", notes[0])
+        self.assertEqual(perf.rt_unchecked_notes({"new": {"plain": [0, 0]}, "main": {}}), [])
+
     def test_rt_instr_collects_each_rows_counts(self):
         def fake_run(cmd, **kw):
             Path(cmd[cmd.index("--json") + 1]).write_text(json.dumps({"rows": {"jit-safe": {
