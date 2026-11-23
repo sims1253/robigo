@@ -824,7 +824,7 @@ def main(argv):
     elif os.environ.get("ROBIGO_CONF_SLOTS_DIR"):
         # the caller's, absolute: the runner resolves it from its package's
         # directory, this from the caller's
-        os.environ["ROBIGO_CONF_SLOTS_DIR"] = os.path.abspath(os.environ["ROBIGO_CONF_SLOTS_DIR"])
+        os.environ["ROBIGO_CONF_SLOTS_DIR"] = conf_slots.absolute(os.environ["ROBIGO_CONF_SLOTS_DIR"])
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--list", action="store_true", help="print the rt crates and stop")
     ap.add_argument("--check", action="store_true", help="check the premise and stop")

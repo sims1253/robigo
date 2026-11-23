@@ -35,7 +35,7 @@ def default_dir(env=None):
         return None
     base = env.get("XDG_RUNTIME_DIR")
     if base and os.path.isdir(base):
-        d = os.path.join(base, "robigo-conf-slots")
+        d = absolute(os.path.join(base, "robigo-conf-slots"))
     else:
         # fixed, not TMPDIR's: every run of this user must find the same pool
         d = f"/tmp/robigo-conf-slots-{os.getuid()}"
@@ -44,6 +44,12 @@ def default_dir(env=None):
         print(f"::warning::no conformance slot pool ({problem})")
         return None
     return d
+
+
+def absolute(d):
+    """`d` from the working directory, its components kept (abspath's `..`
+    collapse could name another directory than a symlink leads to)."""
+    return d if os.path.isabs(d) else os.path.join(os.getcwd(), d)
 
 
 def private_dir(d):
@@ -88,10 +94,11 @@ def from_env(env=None):
             n = 0
         if n <= 0:
             raise PoolError(f"ROBIGO_CONF_SLOTS={s!r} is not a positive number")
+    d = absolute(d)
     problem = private_dir(d)
     if problem:
         raise PoolError(f"ROBIGO_CONF_SLOTS_DIR {problem}")
-    return Pool(os.path.abspath(d), n)
+    return Pool(d, n)
 
 
 class Pool:
