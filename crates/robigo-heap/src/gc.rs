@@ -407,12 +407,14 @@ fn torture_from_env() -> (i32, i32) {
 }
 
 /// `ROBIGO_TORTURE_AFTER_START`: a test hook, not a GNU R setting. `1`
-/// holds the environment's gctorture (`R_GCTORTURE`, `ROBIGO_GCTORTURE`)
-/// and `ROBIGO_GC_MOVE`'s moves until the embedder arms them where the
-/// program under test starts ([`Core::arm_after_start`]; robigo-rt: where
-/// it arms `ROBIGO_FAIL_ALLOC_AT`), so a torture run does not torture
-/// every case's start. Unset (the default) is GNU R's: InitMemory reads
-/// the torture settings, and the whole start runs under them.
+/// asks the embedder that arms it (robigo-rt's front end: where it arms
+/// `ROBIGO_FAIL_ALLOC_AT`) to hold the environment's gctorture
+/// (`R_GCTORTURE`, `ROBIGO_GCTORTURE`) and `ROBIGO_GC_MOVE`'s moves through
+/// the start ([`Core::hold_torture_until_armed`], then
+/// [`Core::arm_after_start`]), so a torture run does not torture every
+/// case's start. The heap never reads it itself: an embedder that would not
+/// arm must not hold. Unset (the default) is GNU R's: InitMemory reads the
+/// torture settings, and the whole start runs under them.
 ///
 /// # Panics
 /// On a value other than unset, empty, `0` or `1`.
@@ -1058,11 +1060,10 @@ impl Core {
             }
             c.count(bytes, cells);
         }
-        // like InitMemory: once the constants exist
+        // like InitMemory: once the constants exist. (ROBIGO_TORTURE_AFTER_START
+        // is not read here: the embedder that arms the hold decides it,
+        // Core::hold_torture_until_armed; every other one never holds)
         (c.force_wait, c.force_gap) = torture_from_env();
-        if torture_after_start_from_env() {
-            c.hold_torture_until_armed();
-        }
         c.retrigger();
         c
     }
@@ -2456,6 +2457,12 @@ impl Core {
     /// moves) until [`Core::arm_after_start`]: what
     /// `ROBIGO_TORTURE_AFTER_START=1` does when the core is made. The
     /// moving mode's bookkeeping goes on; only its moves wait.
+    /// Whether a hold ([`Core::hold_torture_until_armed`]) is waiting for its
+    /// arming.
+    pub fn torture_held(&self) -> bool {
+        !self.moves_armed
+    }
+
     pub fn hold_torture_until_armed(&mut self) {
         // (only a gctorture that is on is held: with moves alone held, a
         // gctorture(TRUE) the start itself calls is not undone at the

@@ -449,7 +449,7 @@ class Tools(unittest.TestCase):
                 return {{}}
             with mock.patch.object(bd, "oracle_dir", lambda *a: d), mock.patch.object(bd, "read_cases", lambda d: []), \\
                     mock.patch.object(bd, "run_batch", batch):
-                bd.run_rt(SimpleNamespace(data=d, seed=0, rsrc="x", boot="interim"), SimpleNamespace(isolated=False), "off", "rt", [])
+                bd.run_rt(SimpleNamespace(data=d, seed=0, rsrc="x", boot=bd.DEFAULT_BOOT), SimpleNamespace(isolated=False), "off", "rt", [])
             """)
 
     def perf(self, call):

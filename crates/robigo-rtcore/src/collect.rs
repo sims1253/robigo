@@ -195,6 +195,20 @@ impl Cx {
         unsafe { self.iso().core() }.set_max_vsize(bytes)
     }
 
+    /// Hold the torture set now through the start (robigo-heap's
+    /// `Core::hold_torture_until_armed`): only the embedder that will call
+    /// [`Cx::arm_torture_after_start`] holds, before the start allocates.
+    pub fn hold_torture_until_armed(&mut self) {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.hold_torture_until_armed()
+    }
+
+    /// Whether a hold waits for its arming.
+    pub fn torture_held(&self) -> bool {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.torture_held()
+    }
+
     /// Arm the torture `ROBIGO_TORTURE_AFTER_START=1` held through the
     /// start (robigo-heap's `Core::arm_after_start`): call it where the
     /// program under test starts, beside [`Cx::arm_fail_alloc`].

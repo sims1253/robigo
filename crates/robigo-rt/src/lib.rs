@@ -149,10 +149,12 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         Ok("0") | Ok("") | Err(_) => false,
         Ok(other) => panic!("robigo: ROBIGO_RETRY_TORTURE={other:?} is neither \"0\" nor \"1\""),
     };
-    // (refused without its feature, and with ROBIGO_FAIL_ALLOC_AT); under
-    // ROBIGO_TORTURE_AFTER_START=1 armed where the program under test
-    // starts ([`arm_torture_after_start`])
-    let after_start = robigo_heap::torture_after_start_from_env();
+    // (refused without its feature, and with ROBIGO_FAIL_ALLOC_AT); held
+    // with the heap's torture when the embedder holds it (robigo-rt's front
+    // end under ROBIGO_TORTURE_AFTER_START=1), armed where the program under
+    // test starts ([`arm_torture_after_start`]): never held by an embedder
+    // that does not arm
+    let after_start = cx.torture_held();
     if retry_torture && after_start {
         // held, but refused now as it would be (no feature, or
         // ROBIGO_FAIL_ALLOC_AT too): its setter's checks, then off until
