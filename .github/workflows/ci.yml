@@ -1518,7 +1518,9 @@ jobs:
       - name: Starts
         if: success() || failure()
         run: |
-          python3 scripts/test-rt-startup.py
+          # (with the binary under test: M1Name's check that ROBIGO_RT_BOOT=m1
+          # is the interim start, until the default-boot flip)
+          RT_STARTUP_TEST_BIN=dist/robigo-rt RT_STARTUP_TEST_TREES=dist/rt-trees.tar python3 scripts/test-rt-startup.py
           main_flag=()
           if [ -f dist/robigo-rt-main ]; then
             main_flag=(--main dist/robigo-rt-main --main-trees dist/rt-trees-main.tar)
