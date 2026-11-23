@@ -72,7 +72,11 @@ if (!inputs_only) {
 # traced): conditions/promise-setup-*.R pin where byte code's force of a
 # promise meets the limit (S1, #986); conditions/trycatch-depth-*.R where a
 # handler's work meets it after a caught overflow (S1, #964).
-untraceable <- c("conditions:promise-setup-missok", "conditions:promise-setup-missok-errors",
+# bytecode/cmpfun-node-stack.R's subject is a depth: where cmp.R, run as R
+# code, overflows GNU R's byte-code node stack (1,477 nested calls compile,
+# 1,478 do not; C1, #976), which the tracer's recording bodies move.
+untraceable <- c("bytecode:cmpfun-node-stack",
+                 "conditions:promise-setup-missok", "conditions:promise-setup-missok-errors",
                  "conditions:promise-setup-overflow", "conditions:promise-setup-overflow-volume",
                  "conditions:trycatch-depth-caught", "conditions:trycatch-depth-cond",
                  "conditions:trycatch-depth-handler")

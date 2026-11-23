@@ -557,10 +557,11 @@ def steps(crates):
         # bcClose) ends as R code ends: no signal, no panic, and a start
         # still running at the limit stops at SIGINT. The corpus (the
         # mutations that crashed before) replayed, then a fixed random batch.
-        # A fixed seed makes this a regression test, not a search: the
-        # search (--seed auto, a new seed each run, its failures written out
-        # for the corpus) is the nightly's, so a PR never fails on a seed its
-        # own log cannot reproduce
+        # A fixed seed makes this a regression test, not a search, so a PR
+        # never fails on a seed its own log cannot reproduce. The search
+        # (--seed auto, a new seed each run, its failures written out for
+        # the corpus with --failures-out) is run by hand today; no workflow
+        # runs it yet (the nightly's wiring is A1's third runner PR)
         ("hostile byte code through the translator (scripts/rt-bc-mutate.py, #976)", {},
          ["python3", "scripts/rt-bc-mutate.py", "--robigo-rt", rt_binary(), "--processes", "24", "--batch", "100",
           "--seed", "1", "--limit", "10"]),
