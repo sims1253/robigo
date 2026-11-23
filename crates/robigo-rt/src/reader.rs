@@ -240,7 +240,9 @@ pub fn lower_all_src(
 /// test before it makes an alias).
 fn filename_is(cx: &mut Cx, f: Root<'_>, name: &[u8]) -> bool {
     cx.scope(|cx, s| {
-        let Ok(sym) = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"filename")?.into()))) else { return false };
+        let Ok(sym) = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"filename")?.into()))) else {
+            return false;
+        };
         let Ok(v) = s.capture(cx, |cx, o| cx.find_var_in_frame3(f, sym, true, o)) else { return false };
         v.bind(cx).as_vector::<Char<'_>>().is_some_and(|c| c.len() > 0 && c.get(0).bytes() == name)
     })

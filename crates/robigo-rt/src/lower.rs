@@ -77,7 +77,14 @@ impl SrcCtx<'_> {
     /// # Safety
     /// `x` and `refs` are live objects of this heap.
     // R: gram.y:attachSrcrefs
-    pub(crate) unsafe fn attach(&self, cx: &Cx, x: Sexp, refs: Sexp, last: crate::srcref::Pos, at: usize) -> Result<(), NeedGc> {
+    pub(crate) unsafe fn attach(
+        &self,
+        cx: &Cx,
+        x: Sexp,
+        refs: Sexp,
+        last: crate::srcref::Pos,
+        at: usize,
+    ) -> Result<(), NeedGc> {
         // SAFETY: the caller's contract; fresh objects of this heap.
         unsafe {
             let file = self.file_at(at);
