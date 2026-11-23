@@ -496,6 +496,26 @@ class RtCi(unittest.TestCase):
                       "its tests built (--no-run)", da)
         self.assertEqual(sum("built" in t for t, _e, c in plans["release-crate-tests"] if "--no-run" in c), 1)
 
+    def test_the_end_to_end_crosscheck_test_clears_every_modes_variables(self):
+        # robigo-rtapi's a_lost_crosscheck_record_fails_the_run runs a case
+        # as the plain binary does, inside whatever crate-test step runs it:
+        # each variable such a step sets is in its MODE_VARS, or is one that
+        # does not change the case (the runner's own, the crosscheck's, the
+        # tree's)
+        import re
+        src = (HERE.parent / "crates" / "robigo-rtapi" / "tests" / "conformance.rs").read_text()
+        block = re.search(r"const MODE_VARS: &\[&str\] = &\[(.*?)\];", src, re.S).group(1)
+        cleared = set(re.findall(r'"([A-Z_0-9]+)"', block))
+        harmless = {"ROBIGO_RT_HOME_DB", "ROBIGO_TRANSLATION_CACHE", "RUSTFLAGS", "CARGO_TARGET_DIR"}
+        crates = ["robigo-rt", "robigo-rtapi", "robigo-rtcore"]
+        for shard in rt.SHARDS:
+            for title, env, cmd in rt.shard_steps(crates, shard):
+                if rt.crate_test_threads(cmd):
+                    for k in env:
+                        if k.startswith("ROBIGO_CONF_") or k.startswith("ROBIGO_BC_CROSSCHECK") or k in harmless:
+                            continue
+                        self.assertIn(k, cleared, f"{shard}: {title}: {k} is not in MODE_VARS")
+
     def test_a_crosscheck_that_compares_fewer_than_its_floor_fails(self):
         # the rdb boot's report: a boot that stopped loading the compiler's
         # namespace compares about half as many closures, without any error

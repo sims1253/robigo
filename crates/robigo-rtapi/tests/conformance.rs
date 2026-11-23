@@ -73,6 +73,33 @@ fn has_rt_home_tools(bin: &Path) -> bool {
     out.stdout == b"TRUE"
 }
 
+/// The verification modes' variables (scripts/rt-ci.py's steps), which a
+/// test that runs one case as the plain binary does clears for it
+/// (scripts/test-rt-ci.py checks that every variable a crate-test step sets
+/// is here or is known not to change the binary's behaviour).
+const MODE_VARS: &[&str] = &[
+    "R_GCTORTURE",
+    "R_GCTORTURE_WAIT",
+    "ROBIGO_GCTORTURE",
+    "ROBIGO_GC_MOVE",
+    "ROBIGO_TORTURE_AFTER_START",
+    "ROBIGO_RETRY_TORTURE",
+    "ROBIGO_REQUIRE_RETRY_TORTURE",
+    "ROBIGO_RT_BOOT",
+    "ROBIGO_FAIL_ALLOC_AT",
+    "ROBIGO_NO_INPLACE",
+    "ROBIGO_MATERIALIZE",
+    "ROBIGO_FRAME_QUARANTINE",
+    "ROBIGO_POISON_DEAD",
+    "ROBIGO_GC_STATS",
+    "ROBIGO_GC_PIN_REPORT",
+    "ROBIGO_GC_FREEZE",
+    "ROBIGO_GC_FREEZE_CHECK",
+    "ROBIGO_GC_FREEZE_CHECK_REPORT",
+    "R_VSIZE",
+    "R_MAX_VSIZE",
+];
+
 /// The lost-record rule end to end: robigo-rt's crosscheck (its
 /// `RECORD_LOST` line) and the runner (its `UNWRITTEN_REPORT`) are two
 /// crates' strings; here the real binary loses a record (its report's
@@ -101,10 +128,23 @@ fn a_lost_crosscheck_record_fails_the_run() {
     o.filter = Some("tests/rt/lost".into());
     o.slots = None;
     o.times = None;
+    // the case runs as the plain binary does, whatever mode the step that
+    // runs this test is in (rt-ci runs the crates' tests under gctorture,
+    // the moving collector, ...: under them the case would time out, and a
+    // timeout is no lost record)
+    for k in MODE_VARS {
+        o.env.push((k.into(), None));
+    }
     o.env.push(("R_ENABLE_JIT".into(), Some("0".into())));
     o.env.push(("ROBIGO_BC_CROSSCHECK".into(), Some("1".into())));
     o.env.push(("ROBIGO_BC_CROSSCHECK_REPORT".into(), Some(not_a_dir.join("report").into())));
-    let err = conf::run(&dir, &conf::RT, &o).expect_err("a lost crosscheck record fails the run");
+    let err = match conf::run(&dir, &conf::RT, &o) {
+        Err(e) => e,
+        Ok(r) => panic!(
+            "the run did not fail on a lost record: {:?}",
+            r.outcomes.iter().map(|c| &c.diff).collect::<Vec<_>>()
+        ),
+    };
     let _ = std::fs::remove_dir_all(&dir);
     assert!(err.contains("lost a record of the byte-code crosscheck"), "{err}");
     assert!(err.contains(&format!("{id}: robigo: bc crosscheck: record lost: cannot write the report")), "{err}");
