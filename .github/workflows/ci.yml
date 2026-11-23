@@ -1496,8 +1496,11 @@ jobs:
           if [ -f dist/robigo-rt-main ]; then
             main_flag=(--main dist/robigo-rt-main)
           fi
-          # (rt-bars' --boot: the rows' boot for both binaries, M1's interim
-          # loader until the default-boot flip)
+          # (rt-bars' --boot: the rows' boot for both binaries. Still m1, M1's
+          # interim loader, though rdb is the default since L5's flip:
+          # rt-bars cannot yet point each binary at its own packed trees, as
+          # rt-starts does with --trees; X's harness PR does, and moves this
+          # to rdb. The starts judge rdb meanwhile; docs/verification.md)
           python3 scripts/perf.py rt-bars --robigo-rt dist/robigo-rt "${main_flag[@]}" --gnur rt-gnur.json \
             --boot m1 --cycles --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
       # The starts ([[startup]]): an invocation of their own, with its own
