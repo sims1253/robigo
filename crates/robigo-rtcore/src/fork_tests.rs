@@ -821,6 +821,9 @@ fn a_child_forked_inside_its_threads_session_keeps_it() {
 /// removed only by the process that made it).
 #[test]
 fn a_forked_childs_end_leaves_the_parents_temp_dir() {
+    if !isolated("a_forked_childs_end_leaves_the_parents_temp_dir", 120) {
+        return;
+    }
     let _one = one_at_a_time();
     let _dog = watchdog("a forked child's temp dir", 60);
     let mut iso = OwnedIsolate::new();
