@@ -510,9 +510,10 @@ impl<'a> Lexer<'a> {
                 }
                 Tok::Sym(name)
             }
-            'r' | 'R' if matches!(self.peek_char_at(1), Some('"') | Some('\'')) && self.raw_string_ahead() => {
-                Tok::Str(self.raw_string(start)?)
-            }
+            // a raw string at any `r"` or `r'`: a delimiter that is not one
+            // of `([{|` is raw_string's invalidRawLiteral
+            // R: gram.y:token (`if (c == 'r' || c == 'R')`), RawStringValue
+            'r' | 'R' if matches!(self.peek_char_at(1), Some('"') | Some('\'')) => Tok::Str(self.raw_string(start)?),
             c if is_ident_start(c) => self.ident()?,
             // The pipe placeholder: always, even before identifier
             // characters (gram.y: `if (c == '_') return Placeholder(c);`).
@@ -524,15 +525,6 @@ impl<'a> Lexer<'a> {
             _ => self.operator(start)?,
         };
         Ok(Token { tok, span: Span::new(start, self.pos) })
-    }
-
-    fn raw_string_ahead(&self) -> bool {
-        // r"---( ... )---": after the quote, optional dashes then an opener.
-        let mut i = self.pos + 2;
-        while self.byte_at(i) == b'-' {
-            i += 1;
-        }
-        matches!(self.byte_at(i), b'(' | b'[' | b'{' | b'|')
     }
 
     fn raw_string(&mut self, start: usize) -> Result<StrTok<'a>, ParseError> {
