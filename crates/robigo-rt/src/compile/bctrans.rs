@@ -951,21 +951,24 @@ impl<'g> Comp<'g> {
         // against the one the instruction was translated with, as it does
         // for a forward jump (#976: a mutated STEPFOR jumping elsewhere ran
         // the loop's step on another stack)
-        let mut back = vec![false; n];
+        // (only GOTO's and STEPFOR's labels go back: check.rs refuses any
+        // other, so their label operand is the whole search, and nothing is
+        // allocated per instruction). The targets' indices, ascending, and
+        // a cursor the walk below advances: code without a loop allocates
+        // nothing
+        let mut back = Vec::new();
         for (k, i) in dec.iter().enumerate() {
-            if !live[k] {
-                continue;
-            }
-            let next = dec.get(k + 1).map(|n| n.at);
-            // SAFETY: the caller's contract: the byte code's constants.
-            for p in unsafe { successors(i, next, consts)? } {
-                if p <= i.at
-                    && let Some(j) = t.ix.get(p)
-                {
-                    back[j] = true;
-                }
+            if live[k]
+                && matches!(i.op, GOTO | STEPFOR)
+                && let Ok(p) = usize::try_from(i.a[0])
+                && p <= i.at
+                && let Some(j) = t.ix.get(p)
+            {
+                back.push(j);
             }
         }
+        back.sort_unstable();
+        let mut back_at = 0;
         // `dst` is the code's value (the first register)
         self.free_to(dst);
         let mut fell = true;
@@ -1020,7 +1023,14 @@ impl<'g> Comp<'g> {
                     t.open = open;
                     t.pending = None;
                 }
-                (None, true) if back[k] => {
+                (None, true)
+                    if {
+                        while back.get(back_at).is_some_and(|&j| j < k) {
+                            back_at += 1;
+                        }
+                        back.get(back_at) == Some(&k)
+                    } =>
+                {
                     t.at[k].label = Some((t.stack.clone(), self.next, t.open.clone()));
                 }
                 (None, true) => {}
