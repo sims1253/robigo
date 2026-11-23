@@ -25,6 +25,10 @@ fn front_end<V: AsRef<std::ffi::OsStr>>(env: &[(&str, V)]) -> Command {
     ] {
         cmd.env_remove(v);
     }
+    // M1's loader (INTERIM(L5)): these cases test the front end's
+    // environment, which every boot sets the same, and M1's reads no tree
+    // (the default boot needs base's database tree)
+    cmd.env("ROBIGO_RT_BOOT", "m1");
     // the pin report to stderr (`1`); to a file it stays, as rt-ci's check
     // (cli.rs's `run`)
     if std::env::var_os("ROBIGO_GC_PIN_REPORT").is_some_and(|v| v == "1") {
@@ -118,6 +122,29 @@ fn stage0_says_a_missing_tree_is_missing() {
             "robigo-rt: R_HOME ('{}') not found: no installed tree (<prefix>/lib/robigo) has library/base/R/base, \
              and the checkout's is not made (scripts/rt-home.sh)\n",
             dir.join(".robigo/rt-home").display()
+        )
+    );
+}
+
+/// The default boot (ROBIGO_RT_BOOT unset or empty: base from its
+/// database) without a tree says so at start-up as stage 0 does, naming
+/// the database tree's script.
+#[test]
+fn the_default_boot_says_a_missing_tree_is_missing() {
+    let dir = std::env::temp_dir().join(format!("robigo-rt-no-db-home-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut cmd = front_end(&[("ROBIGO_RT_CHECKOUT", dir.as_os_str())]);
+    cmd.env_remove("ROBIGO_RT_BOOT");
+    let out = cmd.args(["-e", "1"]).output().expect("running robigo-rt");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!(
+            "robigo-rt: R_HOME ('{}') not found: no installed tree (<prefix>/lib/robigo) has library/base/R/base, \
+             and the checkout's is not made (scripts/rt-home-db.sh)\n",
+            dir.join(".robigo/rt-home-db").display()
         )
     );
 }

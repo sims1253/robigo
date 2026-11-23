@@ -52,22 +52,28 @@ fn rt_conformance() {
     // /usr/lib/R and its tools.so, built for GNU R's objects, are never
     // loaded; this process's environment is left alone)
     // the cases that load tools' native code from the binary's R_HOME tree
-    // run where scripts/rt-home.sh built it (CI's rt job does)
+    // run where scripts/rt-home.sh built it (CI's rt job does), and under
+    // the default boot from scripts/rt-home-db.sh's tree, which copies it
     if has_rt_home_tools(&o.bin) {
         o.features.push("r-home-tools");
     }
     conf::run(&root, &conf::RT, &o).unwrap_or_else(|e| panic!("{e}"));
 }
 
-/// Whether `bin`'s `R.home()` is the tree scripts/rt-home.sh made (its
-/// stamp, `.rt-home`) and has tools' native code, run as the cases are
-/// (with no inherited R_HOME). An installed GNU R's
+/// Whether `bin`'s `R.home()` is a tree robigo-rt's scripts made
+/// (scripts/rt-home.sh's stamp, `.rt-home`, or scripts/rt-home-db.sh's,
+/// `.rt-home-db`, as the boot the cases run under finds it) and has tools'
+/// native code, run as the cases are (with no inherited R_HOME). An installed GNU R's
 /// R_HOME (the test job's `R_HOME=/usr/lib/R`) has a tools.so too, but one
 /// built for GNU R's objects, which robigo-rt must not load.
 fn has_rt_home_tools(bin: &Path) -> bool {
     let out = std::process::Command::new(bin)
         .env_remove("R_HOME")
-        .args(["-e", "cat(all(file.exists(file.path(R.home(), c('.rt-home', 'library/tools/libs/tools.so')))))"])
+        .args([
+            "-e",
+            "h <- R.home(); cat(any(file.exists(file.path(h, c('.rt-home', '.rt-home-db')))) && \
+             file.exists(file.path(h, 'library/tools/libs/tools.so')))",
+        ])
         .output()
         .unwrap_or_else(|e| panic!("running {}: {e}", bin.display()));
     out.stdout == b"TRUE"

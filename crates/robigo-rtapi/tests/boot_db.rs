@@ -297,8 +297,8 @@ fn a_user_profile_s_errors_end_it_as_in_gnu_r() {
     assert_eq!((caught.0.as_str(), caught.1.as_str(), caught.2), ("one\nscript ran\n", caught_err.as_str(), Some(0)));
 }
 
-/// An unknown `ROBIGO_RT_BOOT` (a typo) is an error, not M1's loader by
-/// default; empty is unset.
+/// An unknown `ROBIGO_RT_BOOT` (a typo) is an error, not the default boot;
+/// empty is unset.
 #[test]
 fn an_unknown_boot_is_an_error() {
     let o = Command::new(env!("CARGO_BIN_EXE_robigo-rt"))
@@ -309,7 +309,12 @@ fn an_unknown_boot_is_an_error() {
         .unwrap();
     assert_eq!(
         (String::from_utf8_lossy(&o.stdout).as_ref(), String::from_utf8_lossy(&o.stderr).as_ref(), o.status.code()),
-        ("", "robigo-rt: ROBIGO_RT_BOOT is 'rbd': it is 'stage0', 'rdb' or unset (M1's loader)\n", Some(2))
+        (
+            "",
+            "robigo-rt: ROBIGO_RT_BOOT is 'rbd': it is 'rdb' (the default, also when unset), 'stage0' or 'm1' (M1's \
+             loader)\n",
+            Some(2)
+        )
     );
 }
 

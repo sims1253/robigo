@@ -1129,9 +1129,9 @@ def main():
     p.add_argument("--out", help="this run's numbers (default .robigo/perf/rt-bars.json)")
     p.add_argument("--gnur", help="GNU R's side, measured on this machine by `rt-gnur` (default: the bars file's)")
     p.add_argument("--cycles", action="store_true", help="also estimated cycles (PINNED_CACHE), reported only")
-    p.add_argument("--boot", choices=sorted(rt_startup().BOOTS), default="m1",
-                   help="robigo-rt's boot for the rows, both binaries (default m1, M1's interim loader, until "
-                        "the default-boot flip)")
+    p.add_argument("--boot", choices=sorted(rt_startup().BOOTS), default="rdb",
+                   help="robigo-rt's boot for the rows, both binaries (default rdb, the binary's default; m1: "
+                        "M1's interim loader)")
     p = sub.add_parser("rt-starts", help="robigo-rt's starts ([[startup]] of the bars file) against main's")
     p.add_argument("--robigo-rt", required=True, help="the robigo-rt binary")
     p.add_argument("--main", help="main's robigo-rt (the merge's base), measured beside it")

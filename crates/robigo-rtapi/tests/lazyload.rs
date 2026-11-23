@@ -102,7 +102,8 @@ fn oracle_databases_lazy_load() {
             .env_remove("ROBIGO_GC_PIN_REPORT")
             .env_remove("ROBIGO_FRAME_QUARANTINE")
             .env_remove("ROBIGO_FAIL_ALLOC_AT")
-            .env_remove("ROBIGO_RT_BOOT")
+            // M1's loader (INTERIM(L5)): this oracle run reads no tree
+            .env("ROBIGO_RT_BOOT", "m1")
             .output()
             .unwrap_or_else(|e| panic!("running robigo-rt: {e}"));
         let out = String::from_utf8_lossy(&o.stdout).into_owned();
