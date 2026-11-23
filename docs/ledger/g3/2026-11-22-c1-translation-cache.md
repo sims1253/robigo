@@ -60,6 +60,22 @@ measured with and without its cache. Main 24f3fd36a has the dense tables
   `scripts/fuzz.py` against the old runtime's binary, not cargo-fuzz
   targets, so a job for this target is A1's to add.
 
+- **CI's startup rows (#978):** `rdb-jit` and `rdb-nojit` are the default
+  starts, so with this PR they run with the cache. Against main's binary
+  they show about −11% and −7% instructions, which passes, because the
+  limits are upper bounds. Bar 5 is judged on `rdb-jit` against GNU R's
+  JIT-on start in the same CI run, not on local numbers: on the runner, GNU
+  R counts 84.14M and robigo-rt's uncached start 95.67M. The reserved
+  `rdb-cache` became `rdb-nocache` (JIT on, `ROBIGO_TRANSLATION_CACHE=0`),
+  which guards the translator's own cost like for like with main, whose
+  binary ignores the variable.
+- **Anonymous peak** (scripts/rt-startup.py, 5 runs, on the merged head;
+  limit max(1%, 64 KiB) against main):
+  - JIT on: 7,012 KiB with the cache, 6,948 KiB without, +64 KiB (0.92%);
+  - JIT off: 4,700 KiB against 4,684 KiB, +16 KiB.
+  The difference is the materialized code objects and the 32 KB read
+  chunks. JIT on is within the limit by 5 KiB.
+
 ### The design (the page the foreman approved, with its five amendments)
 
 **Where it lives.** Beside R_HOME, never inside it: `<R_HOME>-cache/<pkg>.rtc`.

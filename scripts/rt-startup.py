@@ -80,10 +80,13 @@ STARTS = {
     "interim": {},
     "rdb-jit": {"ROBIGO_RT_BOOT": "rdb"},
     "rdb-nojit": {"ROBIGO_RT_BOOT": "rdb", "R_ENABLE_JIT": "0"},
-    # reserved for L5: default packages loaded, the translation cache on
-    # (defined when they can run)
+    # (the rdb starts above are the defaults, with the translation cache
+    # beside rt-home-db; this one guards the uncached path, the
+    # translator's own cost, like for like with main: a binary without the
+    # cache ignores the variable, and the row is its rdb-jit start)
+    "rdb-nocache": {"ROBIGO_RT_BOOT": "rdb", "ROBIGO_TRANSLATION_CACHE": "0"},
+    # reserved for L5: default packages loaded (defined when it can run)
     "rdb-pkgs": None,
-    "rdb-cache": None,
 }
 GNUR_STARTS = {"jit": {}, "nojit": {"R_ENABLE_JIT": "0"}}
 BASE = {"R_DEFAULT_PACKAGES": "NULL", "LANGUAGE": "en", "LC_ALL": "C.UTF-8", "TZ": "UTC",
