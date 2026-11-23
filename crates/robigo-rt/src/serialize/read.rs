@@ -114,7 +114,10 @@ enum Conv {
     Open(Codeset, Codeset),
 }
 
-pub(super) struct Reader<'h, 'r> {
+/// `V`: a verbose load's reader (`loadFromConn2(verbose = TRUE)`), which
+/// prints what it reads; the plain reader (`V = false`) has none of that
+/// code in its loops.
+pub(super) struct Reader<'h, 'r, const V: bool> {
     pub inp: InStream,
     refs: Root<'r>,
     nrefs: usize,
@@ -160,13 +163,14 @@ fn decode_version(packed: i32) -> (i32, i32, i32) {
 /// `R_Unserialize(stream)`: the object, written to `out`.
 // R: serialize.c:R_Unserialize
 pub(super) fn unserialize(cx: &mut Cx, inp: InStream, hook: Option<Root<'_>>, out: Out<'_>) -> RResult<()> {
-    unserialize_at(cx, inp, hook, 0, out)
+    unserialize_at::<false>(cx, inp, hook, 0, out)
 }
 
 /// [`unserialize`] with `R_InitReadItemDepth = R_ReadItemDepth =
-/// init_depth` (`loadFromConn2`'s `-verbose`).
+/// init_depth` (`loadFromConn2`'s `-verbose`; `V` when that is below 0, the
+/// reader that prints).
 // R: serialize.c:R_Unserialize, saveload.c:do_loadFromConn2
-pub(super) fn unserialize_at(
+pub(super) fn unserialize_at<const V: bool>(
     cx: &mut Cx,
     inp: InStream,
     hook: Option<Root<'_>>,
@@ -177,7 +181,7 @@ pub(super) fn unserialize_at(
         let refs = s.out(cx);
         let refs_root = refs.root();
         cx.build(refs, |cx| Ok(cx.alloc_vector::<Ref<'_>>(INITIAL_REFREAD_TABLE_SIZE)?.finish().into()))?;
-        let mut rd = Reader {
+        let mut rd: Reader<'_, '_, V> = Reader {
             inp,
             refs: refs_root,
             nrefs: 0,
@@ -319,11 +323,34 @@ fn in_format(cx: &mut Cx, inp: &mut InStream) -> RResult<()> {
     Ok(())
 }
 
-impl<'r> Reader<'_, 'r> {
+impl<'r, const V: bool> Reader<'_, 'r, V> {
     /// `Rprintf("%*s", 2 * (R_ReadItemDepth - R_InitReadItemDepth), "")`.
     fn indent(&self, cx: &mut Cx) {
         let n = (2 * (self.depth - self.init_depth)).max(0) as usize;
         cx.rprintf(" ".repeat(n).as_bytes());
+    }
+
+    /// `load(verbose = TRUE)`'s line for a pairlist tag: the indent, then
+    /// `PrintValue(TAG(s))`. (Out of line and cold: only a verbose load
+    /// reaches it, and the reader's loops stay as they were.)
+    #[cold]
+    #[inline(never)]
+    fn trace_tag(&self, cx: &mut Cx, tag: Sexp) -> RResult<()> {
+        self.indent(cx);
+        cx.scope(|cx, s| {
+            // SAFETY: the tag of the cell the caller holds rooted.
+            let tag = s.root(cx, unsafe { r(cx, tag) });
+            let g = s.root(cx, cx.global_env());
+            crate::print::print_value_env(cx, tag, g)
+        })
+    }
+
+    /// `load(verbose = TRUE)`'s line for a list's element `i`: `[i + 1]`.
+    #[cold]
+    #[inline(never)]
+    fn trace_index(&self, cx: &mut Cx, i: usize) {
+        self.indent(cx);
+        cx.rprintf(format!("[{}]\n", i + 1).as_bytes());
     }
 
     fn in_format(&mut self, cx: &mut Cx) -> RResult<()> {
@@ -635,20 +662,13 @@ impl<'r> Reader<'_, 'r> {
                     // SAFETY: as above.
                     unsafe {
                         last.bind(cx).sexp().set_tag(tag);
-                        if self.depth == self.init_depth + 1 && tag.typ() == SYMSXP {
+                        if self.depth == if V { self.init_depth + 1 } else { 1 } && tag.typ() == SYMSXP {
                             self.lastname = tag.sym_name_bytes().to_vec();
                             set_lastname = true;
                         }
                     }
-                    if self.depth <= 0 {
-                        // Rprintf("%*s", 2 * (depth - init), ""); PrintValue(TAG(s))
-                        self.indent(cx);
-                        cx.scope(|cx, s| {
-                            // SAFETY: the tag of the rooted cell.
-                            let tag = s.root(cx, unsafe { r(cx, tag) });
-                            let g = s.root(cx, cx.global_env());
-                            crate::print::print_value_env(cx, tag, g)
-                        })?;
+                    if V && self.depth <= 0 {
+                        self.trace_tag(cx, tag)?;
                     }
                 }
                 let car = self.read_item(cx)?;
@@ -982,7 +1002,7 @@ impl<'r> Reader<'_, 'r> {
                 x.set_object(objf);
                 x.set_gp(levs);
             }
-            if self.depth > self.init_depth {
+            if self.depth > if V { self.init_depth } else { 0 } {
                 cx.materialize(v)?;
             }
             Ok(v.bind(cx).sexp())
@@ -1126,10 +1146,11 @@ impl<'r> Reader<'_, 'r> {
                     // SAFETY: fresh (its elements R_NilValue or "").
                     let x = s.root(cx, unsafe { r(cx, v) });
                     self.depth += 1;
+                    // (the depth is the same at each element: read_item puts it back)
+                    let trace = V && t != STRSXP && self.depth <= 0;
                     for i in 0..len {
-                        if t != STRSXP && self.depth <= 0 {
-                            self.indent(cx);
-                            cx.rprintf(format!("[{}]\n", i + 1).as_bytes());
+                        if trace {
+                            self.trace_index(cx, i);
                         }
                         let e = self.read_item(cx)?;
                         if t == STRSXP {

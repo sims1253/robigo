@@ -142,7 +142,11 @@ fn load_from_conn2(cx: &mut Cx, args: Args<'_>, _env: Root<'_>, out: Out<'_>, in
         cx.scope(|cx, s| {
             let o = s.out(cx);
             let ans = o.root();
-            read::unserialize_at(cx, st, None, -verbose, o)?;
+            if verbose == 0 {
+                read::unserialize_at::<false>(cx, st, None, 0, o)?;
+            } else {
+                read::unserialize_at::<true>(cx, st, None, -verbose, o)?;
+            }
             restore_to_env(cx, ans, args.root(1), out)
         })
     })();
