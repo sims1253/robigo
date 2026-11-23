@@ -158,16 +158,20 @@ impl<'s> Loop<'s> {
         let fcall = match kept_call(cx, s, which, x, fun, isym, rho) {
             Some(c) => c,
             None => {
-                let fcall = s.capture(cx, |cx, o| {
+                let tmp = s.capture(cx, |cx, o| {
                     cx.build(o, |cx| {
                         let b2 = cx.install(b"[[")?;
+                        cx.lang3(b2.into(), x.bind(cx), isym.bind(cx))
+                    })
+                })?;
+                let fcall = s.capture(cx, |cx, o| {
+                    cx.build(o, |cx| {
                         let dots = cx.sym(RSym::Dots);
-                        let tmp = cx.lang3(b2.into(), x.bind(cx), isym.bind(cx))?;
-                        cx.lang3(fun.bind(cx), tmp, dots.into())
+                        cx.lang3(fun.bind(cx), tmp.bind(cx), dots.into())
                     })
                 })?;
                 if let Some(clo) = base_closure(cx, s, which, rho)? {
-                    keep_call(cx, s, which, fcall, clo);
+                    keep_call(cx, which, fcall, tmp, clo);
                 }
                 fcall
             }
@@ -205,14 +209,18 @@ fn base_closure<'s>(cx: &mut Cx, s: Scope<'s>, which: Which, rho: Root<'_>) -> R
 
 /// `fcall` kept as `which`'s [`BaseCalls`] call for the closure `clo`
 /// (replacing one kept before: another closure's, or one whose shape was
-/// changed), made not mutable with its `X[[i]]`.
-fn keep_call(cx: &mut Cx, s: Scope<'_>, which: Which, fcall: Root<'_>, clo: Root<'_>) {
+/// changed), made not mutable with `tmp`, the `X[[i]]` [`Loop::new`] built
+/// into it.
+fn keep_call(cx: &mut Cx, which: Which, fcall: Root<'_>, tmp: Root<'_>, clo: Root<'_>) {
+    debug_assert!(
+        fcall.bind(cx).as_cons().and_then(|c| c.cdr().as_cons()).map(|c| c.car()) == Some(tmp.bind(cx)),
+        "robigo: keep_call's X[[i]] is not the call's first argument"
+    );
     if cx.ext::<BaseCalls>().is_none() {
         cx.set_ext(BaseCalls::default());
     }
     // MARK_NOT_MUTABLE(R_fcall), and its X[[i]]: no R writer changes the
     // call for the next invocation
-    let tmp = s.root(cx, fcall.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().car());
     cx.mark_not_mutable(fcall);
     cx.mark_not_mutable(tmp);
     let (g, gc) = (cx.global(fcall.bind(cx)), cx.global(clo.bind(cx)));
