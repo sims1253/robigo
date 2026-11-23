@@ -220,7 +220,7 @@ DEFAULT_BOOT = "interim"
 
 def boot_env(boot):
     """The environment that selects `boot` in robigo-rt."""
-    return {"ROBIGO_RT_BOOT": "" if boot == "interim" else boot}
+    return {"ROBIGO_RT_BOOT": "m1" if boot == "interim" else boot}
 
 
 # The machine-wide slot pool every driver process takes a slot of (the

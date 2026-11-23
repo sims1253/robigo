@@ -100,22 +100,20 @@ fn the_directories_are_the_tree_s() {
     assert_eq!(homes(&[("R_DOC_DIR", "/d"), ("R_SHARE_DIR", ""), ("R_INCLUDE_DIR", "/i")]), own);
 }
 
-/// `ROBIGO_RT_BOOT=m1` names M1's loader, the boot when it is unset (so a
-/// harness can name it for a binary of either default): the same start.
+/// `ROBIGO_RT_BOOT=m1` boots M1's loader (INTERIM(L5)), which reads no
+/// tree and loads no compiler at the start: GNU R's boot, the default,
+/// loads the compiler when the JIT is on (R_init_jit_enabled), so
+/// `loadedNamespaces()` tells the two apart.
 #[test]
-fn m1_names_the_unset_boot() {
-    let expr = "cat(loadedNamespaces(), exists('.Library.site', envir = globalenv()), '\\n')";
-    let run = |env: &[(&str, &str)]| {
-        let o = front_end(env).args(["-e", expr]).output().expect("running robigo-rt");
-        (
-            String::from_utf8_lossy(&o.stdout).into_owned(),
-            String::from_utf8_lossy(&o.stderr).into_owned(),
-            o.status.code(),
-        )
-    };
-    let unset = run(&[]);
-    assert_eq!(unset.2, Some(0), "{unset:?}");
-    assert_eq!(run(&[("ROBIGO_RT_BOOT", "m1")]), unset);
+fn m1_boots_m1s_loader() {
+    let o = front_end(&[("ROBIGO_RT_BOOT", "m1"), ("R_ENABLE_JIT", "3")])
+        .args(["-e", "cat(loadedNamespaces(), '\\n')"])
+        .output()
+        .expect("running robigo-rt");
+    assert_eq!(
+        (String::from_utf8_lossy(&o.stdout).as_ref(), String::from_utf8_lossy(&o.stderr).as_ref(), o.status.code()),
+        ("base \n", "", Some(0))
+    );
 }
 
 /// Stage 0 reads base's source under robigo-rt's own tree: with none in

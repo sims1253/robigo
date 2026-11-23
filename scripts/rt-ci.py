@@ -418,8 +418,8 @@ START_COMPILER = 'stopifnot("compiler" %in% loadedNamespaces()); '
 
 def start_torture_step(boot):
     """The step that runs START_SCRIPT under `boot` (ROBIGO_RT_BOOT's value,
-    "" for M1's loader) with the start tortured."""
-    name = {"": "M1's loader", "rdb": "the rdb boot"}[boot]
+    "m1" for M1's loader, INTERIM(L5)) with the start tortured."""
+    name = {"m1": "M1's loader", "rdb": "the rdb boot"}[boot]
     return (f"the start tortured: {name} under ROBIGO_GC_MOVE=1 and gctorture from the heap's creation",
             # (set outright: an inherited hold or R_GCTORTURE=0 would take
             # the start's torture away)
@@ -570,7 +570,7 @@ def steps(crates):
         # names the source tree, the script and the binary) and those tests
         # run instead of skipping on a fresh checkout (TREE_RUNS)
         db_tree(rt_binary()),
-        start_torture_step(""),
+        start_torture_step("m1"),
         start_torture_step("rdb"),
         ("the crates' tests (quick profile)", TREE_RUNS, [*crate, *pkgs, *skip]),
         ("boot from base's database (ROBIGO_RT_BOOT=rdb)", {"ROBIGO_RT_HOME_DB": "1"},

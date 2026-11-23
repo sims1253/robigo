@@ -527,7 +527,7 @@ class RtCi(unittest.TestCase):
                     self.assertEqual(env.get("ROBIGO_GC_FREEZE"), "0", title)
         self.assertGreaterEqual(seen, 5)
         starts = [(t, e, c) for t, e, c in rt.steps(crates) if t.startswith("the start tortured")]
-        self.assertEqual(sorted(e["ROBIGO_RT_BOOT"] for _t, e, _c in starts), ["", "rdb"])
+        self.assertEqual(sorted(e["ROBIGO_RT_BOOT"] for _t, e, _c in starts), ["m1", "rdb"])
         for title, env, cmd in starts:
             self.assertEqual(env["ROBIGO_TORTURE_AFTER_START"], "0", title)
             self.assertEqual((env["R_GCTORTURE"], env["R_GCTORTURE_WAIT"], env["ROBIGO_GCTORTURE"], env["ROBIGO_GC_MOVE"]),
@@ -538,7 +538,7 @@ class RtCi(unittest.TestCase):
         # the rdb one after base's database tree is written
         titles = [t for t, _e, _c in rt.steps(crates)]
         tree = next(i for i, t in enumerate(titles) if t.startswith("base's database tree"))
-        self.assertGreater(titles.index(starts[1][0] if starts[1][1]["ROBIGO_RT_BOOT"] else starts[0][0]), tree)
+        self.assertGreater(titles.index(next(t for t, e, _c in starts if e["ROBIGO_RT_BOOT"] == "rdb")), tree)
 
     def test_each_shards_crate_tests_are_built_in_a_step_of_their_own(self):
         # a crate-test step's time is its tests' alone: its build (the same
@@ -624,8 +624,11 @@ class RtCi(unittest.TestCase):
                     continue
                 if "scripts/builtin-diff.py" in cmd:
                     binary[target] = "plain"       # (it builds the release binary first)
-                runs = release and "--no-run" not in cmd or any(x in cmd for x in binary_scripts)
-                if not runs or env.get("ROBIGO_RT_BOOT", "rdb") != "rdb":
+                # (or the binary run outright: the start-torture steps)
+                runs = (release and "--no-run" not in cmd or any(x in cmd for x in binary_scripts)
+                        or cmd[:1] == [rt.rt_binary(target or None)])
+                # (unset or empty is rdb, the default)
+                if not runs or env.get("ROBIGO_RT_BOOT", "rdb") not in ("", "rdb"):
                     continue
                 checked += 1
                 self.assertIsNotNone(tree.get(target), f"{name}: {title}: no tree before it")
