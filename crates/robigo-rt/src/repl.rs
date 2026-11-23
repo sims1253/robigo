@@ -366,7 +366,7 @@ pub(crate) fn parse_error_at_top_after(
     msg: &str,
 ) {
     if e.style == robigo_syntax::ErrorStyle::Condition {
-        raise_at_top_after(cx, warnings, |cx| crate::parse_cond::signal(cx, src, e))
+        raise_at_top_after(cx, warnings, |cx| crate::parse_cond::signal(cx, src, e, crate::parse_cond::NO_SRCFILE))
     } else {
         error_at_top_after(cx, warnings, msg)
     }

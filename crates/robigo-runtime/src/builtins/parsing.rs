@@ -119,9 +119,9 @@ pub fn error_expr_value(e: &robigo_syntax::ErrorExpr) -> Value {
     use robigo_syntax::{Const, ErrorExpr};
     match e {
         ErrorExpr::Atom(c) => const_to_value(c),
-        ErrorExpr::String(s) => const_to_value(&Const::Str(s.as_deref())),
+        ErrorExpr::String(s, mark) => const_to_value(&ErrorExpr::string_const(s, *mark)),
         ErrorExpr::Symbol(s) => Value::Sym(Sym::new(s)),
-        ErrorExpr::Call(fun, args) => Value::lang(
+        ErrorExpr::Call(fun, args, _) => Value::lang(
             error_expr_value(fun),
             args.iter()
                 .map(|(name, value)| {

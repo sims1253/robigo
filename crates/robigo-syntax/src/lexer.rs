@@ -541,8 +541,20 @@ impl<'a> Lexer<'a> {
             b'{' => b'}',
             b'|' => b'|',
             _ => {
+                let delim = self.pos;
                 self.pos += 1; // the offending delimiter is consumed
-                return Err(self.lex_err("invalidRawLiteral", "malformed raw string literal"));
+                let mut e = self.lex_err("invalidRawLiteral", "malformed raw string literal");
+                // raiseLexError's position is xxlineno/xxcolno after the
+                // delimiter was read: a newline starts the next line at
+                // column 0, a tab advances to the next multiple of 8; past
+                // the end, the lexer's virtual newline
+                // R: gram.y:RawStringValue, raiseLexError, xxgetc
+                e.fixed_line_col = Some(if delim < self.bytes.len() {
+                    self.source.r_line_col(delim + 1)
+                } else {
+                    (self.source.r_line_col(self.bytes.len()).0 + 1, 0)
+                });
+                return Err(e);
             }
         };
         self.pos += 1;

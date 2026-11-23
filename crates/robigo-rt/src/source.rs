@@ -276,9 +276,16 @@ fn parse_text(
         Ok(())
     };
     // R_Parse stops after the n-th expression: what follows is not parsed
+    // (how far the lexer had read at an error: an action's lookahead)
+    let mut frontier = None;
     let parsed = robigo_syntax::parser::Parser::new(&arena, source).and_then(|mut p| {
-        let exprs = p.program_n(if num < 0 { usize::MAX } else { num as usize })?;
-        Ok((exprs, p.consumed_end()))
+        match p.program_n(if num < 0 { usize::MAX } else { num as usize }) {
+            Ok(exprs) => Ok((exprs, p.consumed_end())),
+            Err(e) => {
+                frontier = Some(p.error_frontier(&e));
+                Err(e)
+            }
+        }
     });
     let (exprs, end) = match parsed {
         Ok(r) => r,
@@ -288,11 +295,13 @@ fn parse_text(
                 let end = e.end.max(e.offset);
                 *consumed = end + read_ahead(src, e.offset.min(end), end);
             }
-            signal(cx, if e.incomplete { usize::MAX } else { e.offset })?;
+            signal(cx, if e.incomplete { usize::MAX } else { frontier.unwrap_or(e.offset) })?;
             return Err(match e.style {
                 robigo_syntax::ErrorStyle::Grammar => cx.error(&robigo_syntax::format_parse_error(source, srcname, &e)),
                 robigo_syntax::ErrorStyle::RError => cx.error(&e.message),
-                robigo_syntax::ErrorStyle::Condition => crate::parse_cond::signal(cx, source, &e),
+                robigo_syntax::ErrorStyle::Condition => {
+                    crate::parse_cond::signal(cx, source, &e, crate::parse_cond::NO_SRCFILE)
+                }
             });
         }
     };

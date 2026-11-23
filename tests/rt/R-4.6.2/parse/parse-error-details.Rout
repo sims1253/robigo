@@ -1,0 +1,12 @@
+[1] "simpleError"
+[1] "simpleError"
+[1] "simpleError"
+[1] "unknown"
+[1] "unknown"
+[1] "UTF-8"
+[1] 2 0
+[1] "malformed raw string literal (<input>:2:0)"
+[1] 1 8
+[1] FALSE
+[1] "language"
+f("_")
