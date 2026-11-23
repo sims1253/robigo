@@ -527,6 +527,8 @@ pub unsafe fn get_var_keepmiss(
     bc: bool,
 ) -> RResult<()> {
     let subclass = if bc { "getvarError" } else { "evalError" };
+    // (a value, an unboxed scalar or a forced slot: the read forces nothing)
+    let mut plain = false;
     if !dd && sym != prims::state(cx).syms.dots {
         // SAFETY: an immortal symbol and the rooted environment.
         match unsafe { cx.var_lookup_raw(sym, act.rho()) } {
@@ -557,8 +559,13 @@ pub unsafe fn get_var_keepmiss(
                     cx.find_var(sr, act.root(crate::ir::R_ENV), o)
                 })?;
             }
+            RawBinding::Value(_) | RawBinding::Scalar(_) | RawBinding::Forced(_) => plain = true,
             _ => {}
         }
+    }
+    if plain {
+        // SAFETY: the caller's contract: a live symbol.
+        return unsafe { symbol_value_as(cx, sym, act.root(crate::ir::R_ENV), act.out(a), subclass) };
     }
     if dd {
         forced_as_getvar(cx, |cx| dd_value(cx, sym, act.root(crate::ir::R_ENV), act.out(a), subclass))

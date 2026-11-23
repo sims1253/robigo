@@ -70,8 +70,11 @@ if (!inputs_only) {
 # a promise is forced, against a lowered options(expressions), and the
 # tracer's recording bodies change that depth (GNU R prints differently
 # traced): conditions/promise-setup-missok*.R pin GETVAR_MISSOK's force at
-# the limit (S1, #986).
-untraceable <- c("conditions:promise-setup-missok", "conditions:promise-setup-missok-errors")
+# the limit, and promise-setup-overflow-volume.R compiles its closures with
+# cmpfun under the trace (its small twin, unserialized byte code, is traced)
+# (S1, #986).
+untraceable <- c("conditions:promise-setup-missok", "conditions:promise-setup-missok-errors",
+                 "conditions:promise-setup-overflow-volume")
 for (area in c("bytecode", "conditions", "env", "ns", "parse", "regex", "s3", "serialize", "sort")) {
   for (f in sort(Sys.glob(file.path(root, "tests", "rt", area, "*.R")), method = "radix")) {
     name <- sub("[.]R$", "", basename(f))
