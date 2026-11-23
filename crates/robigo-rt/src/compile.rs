@@ -1062,8 +1062,14 @@ pub fn set_packages_from_source(on: bool) {
 /// environment's top environment is a namespace (base's included). Under
 /// the rdb boot packages' code is byte code already, and a closure of
 /// source made in a namespace at run time is compiled as GNU R compiles it.
-/// INTERIM(L5): under M1's loader, such a closure made at run time reads
-/// no compilerOptions (tests/rt/jit/compile-options-namespace-source.R).
+/// INTERIM(L5), and gone with M1's loader: under it, such a closure made
+/// at run time reads no compilerOptions and makes no findFunDef check of a
+/// call it does not inline ([`Cenv::checks_calls`];
+/// tests/rt/jit/compile-options-namespace-source.R,
+/// compile-fundef-namespace.R). The exemption is needed there: M1 binds
+/// base's source lazily, and its closures compile while a promise of base
+/// is being forced (lapply's compile at boot met `match.fun`'s, which GNU
+/// R's installed base never has).
 fn package_code(cx: &Cx, op: Root<'_>) -> bool {
     if !PACKAGES_FROM_SOURCE.load(std::sync::atomic::Ordering::Relaxed) {
         return false;
