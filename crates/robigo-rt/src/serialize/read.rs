@@ -119,8 +119,12 @@ pub(super) struct Reader<'h, 'r> {
     refs: Root<'r>,
     nrefs: usize,
     hook: Option<Root<'h>>,
-    /// `R_ReadItemDepth` (`R_InitReadItemDepth` is 0).
+    /// `R_ReadItemDepth`.
     depth: i32,
+    /// `R_InitReadItemDepth`: 0, or `-verbose` for `loadFromConn2`, whose
+    /// reader prints the tags and list positions it reads while the
+    /// depth is at most 0.
+    init_depth: i32,
     lastname: Vec<u8>,
     native: Vec<u8>,
     nat2nat: Conv,
@@ -156,6 +160,19 @@ fn decode_version(packed: i32) -> (i32, i32, i32) {
 /// `R_Unserialize(stream)`: the object, written to `out`.
 // R: serialize.c:R_Unserialize
 pub(super) fn unserialize(cx: &mut Cx, inp: InStream, hook: Option<Root<'_>>, out: Out<'_>) -> RResult<()> {
+    unserialize_at(cx, inp, hook, 0, out)
+}
+
+/// [`unserialize`] with `R_InitReadItemDepth = R_ReadItemDepth =
+/// init_depth` (`loadFromConn2`'s `-verbose`).
+// R: serialize.c:R_Unserialize, saveload.c:do_loadFromConn2
+pub(super) fn unserialize_at(
+    cx: &mut Cx,
+    inp: InStream,
+    hook: Option<Root<'_>>,
+    init_depth: i32,
+    out: Out<'_>,
+) -> RResult<()> {
     cx.scope(|cx, s| {
         let refs = s.out(cx);
         let refs_root = refs.root();
@@ -165,7 +182,8 @@ pub(super) fn unserialize(cx: &mut Cx, inp: InStream, hook: Option<Root<'_>>, ou
             refs: refs_root,
             nrefs: 0,
             hook,
-            depth: 0,
+            depth: init_depth,
+            init_depth,
             lastname: b"<unknown>".to_vec(),
             native: Vec::new(),
             nat2nat: Conv::Unopened,
@@ -302,6 +320,12 @@ fn in_format(cx: &mut Cx, inp: &mut InStream) -> RResult<()> {
 }
 
 impl<'r> Reader<'_, 'r> {
+    /// `Rprintf("%*s", 2 * (R_ReadItemDepth - R_InitReadItemDepth), "")`.
+    fn indent(&self, cx: &mut Cx) {
+        let n = (2 * (self.depth - self.init_depth)).max(0) as usize;
+        cx.rprintf(" ".repeat(n).as_bytes());
+    }
+
     fn in_format(&mut self, cx: &mut Cx) -> RResult<()> {
         in_format(cx, &mut self.inp)
     }
@@ -611,10 +635,20 @@ impl<'r> Reader<'_, 'r> {
                     // SAFETY: as above.
                     unsafe {
                         last.bind(cx).sexp().set_tag(tag);
-                        if self.depth == 1 && tag.typ() == SYMSXP {
+                        if self.depth == self.init_depth + 1 && tag.typ() == SYMSXP {
                             self.lastname = tag.sym_name_bytes().to_vec();
                             set_lastname = true;
                         }
+                    }
+                    if self.depth <= 0 {
+                        // Rprintf("%*s", 2 * (depth - init), ""); PrintValue(TAG(s))
+                        self.indent(cx);
+                        cx.scope(|cx, s| {
+                            // SAFETY: the tag of the rooted cell.
+                            let tag = s.root(cx, unsafe { r(cx, tag) });
+                            let g = s.root(cx, cx.global_env());
+                            crate::print::print_value_env(cx, tag, g)
+                        })?;
                     }
                 }
                 let car = self.read_item(cx)?;
@@ -948,7 +982,7 @@ impl<'r> Reader<'_, 'r> {
                 x.set_object(objf);
                 x.set_gp(levs);
             }
-            if self.depth > 0 {
+            if self.depth > self.init_depth {
                 cx.materialize(v)?;
             }
             Ok(v.bind(cx).sexp())
@@ -1093,6 +1127,10 @@ impl<'r> Reader<'_, 'r> {
                     let x = s.root(cx, unsafe { r(cx, v) });
                     self.depth += 1;
                     for i in 0..len {
+                        if t != STRSXP && self.depth <= 0 {
+                            self.indent(cx);
+                            cx.rprintf(format!("[{}]\n", i + 1).as_bytes());
+                        }
                         let e = self.read_item(cx)?;
                         if t == STRSXP {
                             self.set_string_elt(cx, x, i, e)?;

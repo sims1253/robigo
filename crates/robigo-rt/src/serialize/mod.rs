@@ -186,7 +186,7 @@ fn raw_vector(cx: &mut Cx, bytes: &[u8], out: Out<'_>) -> RResult<()> {
 
 /// `R_InitConnOutPStream`'s checks, then `R_Serialize` to connection `n`.
 // R: serialize.c:R_InitConnOutPStream, CheckOutConn
-fn serialize_to_conn(
+pub(super) fn serialize_to_conn(
     cx: &mut Cx,
     n: i32,
     object: Root<'_>,

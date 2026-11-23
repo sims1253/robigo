@@ -1623,6 +1623,19 @@ pub fn write_all(cx: &mut Cx, n: i32, buf: &[u8], msg: &str) -> RResult<()> {
     r.map_err(|m| cx.error(&m))
 }
 
+/// `Rconn_printf(con, ...)`'s write of `buf`, its result not looked at:
+/// a write the system fails raises nothing (robigo-rt's own refusals do).
+pub fn write_ignoring_os_errors(cx: &mut Cx, n: i32, buf: &[u8]) -> RResult<()> {
+    let refused = with_conn(cx, n, |c| match conn_write(c, buf) {
+        Err(e) if e.raw_os_error().is_none() => Some(e.to_string()),
+        _ => None,
+    })?;
+    match refused {
+        Some(m) => Err(cx.error(&m)),
+        None => Ok(()),
+    }
+}
+
 /// Run an open `f` on connection `n`, after the warnings `R_ExpandFileName`
 /// gives in it (GNU R gives them inside the open, before it opens the file,
 /// so before the open's own warning, which is the caller's).
@@ -1769,6 +1782,71 @@ fn publish(cx: &mut Cx, ncon: usize, mut con: Conn, class: &str, out: Out<'_>) -
 }
 
 // ---- the builtins -------------------------------------------------------------
+
+/// `getAllConnections()`: the numbers of the slots that hold a connection.
+// R: connections.c:do_getallconnections
+pub fn do_getallconnections(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "getAllConnections", 0, true)?;
+    let ids: Vec<i32> =
+        table(cx).slots.borrow().iter().enumerate().filter(|(_, c)| c.is_some()).map(|(i, _)| i as i32).collect();
+    cx.build(out, |cx| Ok(cx.alloc_copy(&ids)?.finish().into()))
+}
+
+/// `getConnection(what)`: connection `what`'s object, its class
+/// `c(class, "connection")`, with its `conn_id` beyond the standard three.
+// R: connections.c:do_getconnection
+pub fn do_getconnection(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "getConnection", 1, true)?;
+    let what = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(0))?;
+    if what == i32::MIN {
+        return Err(cx.error("there is no connection NA"));
+    }
+    let found = if (0..NCONNECTIONS as i32).contains(&what) {
+        table(cx).slots.borrow()[what as usize]
+            .as_ref()
+            .map(|c| (c.class, c.ex_ptr.as_ref().map(|g| g.bind(cx).sexp())))
+    } else {
+        None
+    };
+    let Some((class, ptr)) = found else {
+        return Err(cx.error(&format!("there is no connection {what}")));
+    };
+    cx.scope(|cx, s| {
+        let ptr = ptr.filter(|_| what > 2).map(|p| {
+            // SAFETY: the connection's conn_id pointer, kept by its global.
+            #[allow(unsafe_code)]
+            let r = unsafe { Ref::from_sexp(p, cx) };
+            s.root(cx, r)
+        });
+        cx.build(out, |cx| {
+            let mut v = cx.alloc_copy(&[what])?;
+            let mut cl = cx.alloc_vector::<Char<'_>>(2)?;
+            cl.set(0, cx.mk_char(class.as_bytes(), Encoding::Native)?);
+            cl.set(1, cx.mk_char(b"connection", Encoding::Native)?);
+            let mut a = Attrs::new();
+            a.set_class(cx.sym(RSym::Class), Some(cl.finish().into()));
+            if let Some(p) = ptr {
+                a.install(Attr { tag: cx.install(b"conn_id")?, value: p.bind(cx) });
+            }
+            a.apply(cx, &mut v)?;
+            Ok(v.finish().into())
+        })
+    })
+}
+
+/// `sink.number(type)`: `R_SinkNumber` (output) or `R_ErrorCon`
+/// (messages). robigo-rt has no `sink()` yet, so these keep their starting
+/// values, 0 and 2 (`InitConnections`).
+// R: connections.c:do_sinknumber
+pub fn do_sinknumber(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "sink.number", 1, true)?;
+    let errcon = robigo_rtbuiltins::util::as_logical_n(cx, args.get(cx, 0)).0;
+    if errcon == i32::MIN {
+        return Err(cx.error("invalid 'type' argument"));
+    }
+    let v = if errcon != 0 { 0 } else { 2 };
+    cx.build(out, |cx| Ok(cx.alloc_copy(&[v])?.finish().into()))
+}
 
 fn string_arg<'g>(x: Ref<'g>) -> Option<Vec<u8>> {
     match x.view() {
@@ -2200,19 +2278,12 @@ pub fn do_writelines(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
                 buf.extend_from_slice(&sep);
             }
         }
-        // Rconn_printf's result is not looked at: a write the system fails
-        // raises nothing (robigo-rt's own refusals do)
+        // Rconn_printf's result is not looked at
         match n {
             1 => cx.rprintf(&buf),
             2 => cx.reprintf(&buf),
             _ => {
-                let refused = with_conn(cx, n, |c| match conn_write(c, &buf) {
-                    Err(e) if e.raw_os_error().is_none() => Some(e.to_string()),
-                    _ => None,
-                })?;
-                if let Some(m) = refused {
-                    return Err(cx.error(&m));
-                }
+                write_ignoring_os_errors(cx, n, &buf)?;
             }
         }
         Ok(())

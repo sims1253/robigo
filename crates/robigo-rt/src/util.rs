@@ -227,6 +227,40 @@ pub fn do_normalizepath(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<
 // R: util.c:do_getwd, intern_getwd (Unix)
 pub fn do_getwd(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::prims::check_arity(cx, call, args.len(), "getwd", 0, true)?;
+    intern_getwd(cx, out)
+}
+
+/// `.Internal(setwd(dir))`: the working directory changed to `dir`
+/// (expanded); the one before, as `getwd()` gives it.
+// R: util.c:do_setwd (Unix)
+pub fn do_setwd(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "setwd", 1, true)?;
+    // isValidString: a character vector of at least one element
+    let s = args.get(cx, 0);
+    let Some(v) = s.as_vector::<Char<'_>>().filter(|v| !v.is_empty()) else {
+        return Err(cx.error("character argument expected"));
+    };
+    if v.get(0) == cx.na_string() {
+        return Err(cx.error("missing value is invalid"));
+    }
+    // the current directory to return
+    intern_getwd(cx, out)?;
+    let name = {
+        let c = args.get(cx, 0).as_vector::<Char<'_>>().unwrap().get(0);
+        robigo_rtbuiltins::text::to_native_fp(robigo_rtbuiltins::coerce::text(c), cx.locale()).map(|b| b.into_owned())
+    };
+    let name = name.map_err(|m| cx.error(&m))?;
+    let path = crate::connections::r_expand_file_name(cx, &name)?;
+    let path = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&path);
+    if std::env::set_current_dir(path).is_err() {
+        return Err(cx.error("cannot change working directory"));
+    }
+    Ok(())
+}
+
+/// `intern_getwd()`: the working directory, or R_NilValue.
+// R: util.c:intern_getwd (Unix)
+fn intern_getwd(cx: &mut Cx, out: Out<'_>) -> RResult<()> {
     match std::env::current_dir() {
         // getcwd(buf, R_PATH_MAX): a longer path fails
         Ok(d) if std::os::unix::ffi::OsStrExt::as_bytes(d.as_os_str()).len() < R_PATH_MAX => {

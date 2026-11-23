@@ -1,0 +1,227 @@
+[1] 369
+[1] "RDX3"
+[1] "x" "y" "z"
+[1] TRUE
+[1] 331
+RDA3
+A
+3
+263682
+197888
+5
+UTF-8
+1026
+1
+262153
+1
+x
+526
+2
+1.5
+NA
+1026
+1
+262153
+5
+names
+16
+2
+262153
+1
+a
+262153
+1
+b
+254
+1026
+1
+262153
+1
+y
+531
+2
+16
+1
+262153
+1
+q
+238
+2
+1
+262153
+14
+compact_intseq
+2
+1
+262153
+4
+base
+2
+13
+1
+13
+254
+14
+3
+3
+1
+1
+254
+1026
+767
+16
+2
+262153
+1
+p
+262153
+1
+r
+254
+1026
+1
+262153
+1
+z
+6
+1
+262153
+1
+g
+2
+1
+262153
+1
+h
+254
+254
+
+[1] "x" "y" "z"
+[1] TRUE
+[1] 270
+[1] "RDX2"
+[1] "x" "y" "z"
+[1] TRUE
+[1] 254
+RDA2
+A
+2
+263682
+131840
+1026
+1
+262153
+1
+x
+526
+2
+1.5
+NA
+1026
+1
+262153
+5
+names
+16
+2
+262153
+1
+a
+262153
+1
+b
+254
+1026
+1
+262153
+1
+y
+531
+2
+16
+1
+262153
+1
+q
+13
+3
+1
+2
+3
+1026
+767
+16
+2
+262153
+1
+p
+262153
+1
+r
+254
+1026
+1
+262153
+1
+z
+6
+1
+262153
+1
+g
+2
+1
+262153
+1
+h
+254
+254
+
+[1] "x" "y" "z"
+[1] TRUE
+[1] FALSE
+[1] "y" "x"
+$p
+[1] "q"
+
+$r
+[1] 1 2 3
+
+[1] TRUE
+[1] "x"
+  a   b 
+1.5  NA 
+[1] "lazy"
+forced
+[1] "double"
+forced
+[1] "lazy"
+[1] 42
+Loading objects:
+  x
+  y
+  z
+[1] "x" "y" "z"
+Loading objects:
+  nested
+    [1]
+    [2]
+[1] "object ‘nosuch’ not found"
+[1] "first argument must be a character vector"
+[1] "cannot save to connections in version 1 format"
+[1] "invalid 'version' argument"
+[1] "invalid 'version' argument"
+[1] "invalid 'environment' argument"
+[1] "invalid 'eval.promises' argument"
+[1] "NA in coercion to boolean"
+saveToConn("x", con, NA, NULL, globalenv(), TRUE)
+[1] "version 4 not supported"
+[1] "use of NULL environment is defunct"
+[1] "cannot save XDR format to a text-mode connection"
+[1] "can only save to a binary connection"
+[1] "no error"
+[1] "x"
+  a   b 
+1.5  NA 
+[1] "connection not open for writing"
+[1] "bad file argument"
