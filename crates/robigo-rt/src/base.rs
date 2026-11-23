@@ -963,7 +963,9 @@ pub fn stage0(cx: &mut Cx, home: &Path) -> Result<Stage0, String> {
     let internals: Vec<&'static str> = robigo_rtbuiltins::names::INTERNALS.iter().map(|p| p.0).collect();
     st.stubs = stubs_for(cx, &prims, &internals);
     init_graphics(cx).map_err(|e| format!("binding .Device: {e}"))?;
-    repl_file(cx, &home.join("library/base/R/base"), &mut st)?;
+    // (base's lazy-load frame is recorded while this file runs, and only
+    // then: robigo-rtcore's Cx::note_lazy_load_frame)
+    cx.while_reading_base_file(|cx| repl_file(cx, &home.join("library/base/R/base"), &mut st))?;
     // R_LoadProfile(R_OpenSysInitFile(), baseNSenv): the system profile,
     // in the base namespace, the same way (setup_Rmainloop's next steps,
     // the locks, .OptRequireMethods, the site and user profiles, .First.sys

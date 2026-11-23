@@ -533,15 +533,33 @@ impl Global {
 
 /// The global table: entries with free ones reused. A free entry is null
 /// (a null edge, which a collection skips).
-#[derive(Default, Trace)]
+#[derive(Trace)]
 pub(crate) struct Globals {
     slots: Vec<Sexp>,
     free: Vec<u32>,
+    /// The slots filled at the heap's frozen epoch `young_epoch`
+    /// (`Core::frozen_epoch`), a bit each: released, they need no note.
+    #[trace(skip = "bits, no objects")]
+    young: Vec<u64>,
+    #[trace(skip = "an epoch")]
+    young_epoch: u64,
+}
+
+/// The slots a start fills (3,220 at the interim boot's peak, 2,986 under
+/// rdb with the JIT on, 2,904 with it off; 2026-11-23): reserved at once,
+/// so that the table never grows by realloc during the start.
+const GLOBALS_AT_START: usize = 4096;
+
+impl Default for Globals {
+    fn default() -> Globals {
+        Globals { slots: Vec::with_capacity(GLOBALS_AT_START), free: Vec::new(), young: Vec::new(), young_epoch: 0 }
+    }
 }
 
 impl Globals {
-    pub(crate) fn add(&mut self, x: Sexp) -> u32 {
-        match self.free.pop() {
+    /// Fill a slot with `x` at the heap's frozen epoch `epoch`.
+    pub(crate) fn add(&mut self, x: Sexp, epoch: u64) -> u32 {
+        let i = match self.free.pop() {
             Some(i) => {
                 self.slots[i as usize] = x;
                 i
@@ -551,20 +569,53 @@ impl Globals {
                 self.slots.push(x);
                 i
             }
+        };
+        // (before the first decision nothing is frozen, so no release can
+        // need a note: nothing to track, and with the freeze off the epoch
+        // stays 0)
+        if epoch != 0 {
+            self.mark_young(i, epoch);
         }
+        i
+    }
+
+    /// Slot `i` filled at epoch `epoch` (not 0).
+    #[cold]
+    #[inline(never)]
+    fn mark_young(&mut self, i: u32, epoch: u64) {
+        // a decision since the last fill: every slot is old now
+        if epoch != self.young_epoch {
+            self.young.iter_mut().for_each(|w| *w = 0);
+            self.young_epoch = epoch;
+        }
+        let (w, bit) = (i as usize / 64, 1u64 << (i % 64));
+        if w >= self.young.len() {
+            self.young.resize(w + 1, 0);
+        }
+        self.young[w] |= bit;
     }
     pub(crate) fn get(&self, i: u32) -> Sexp {
         let x = self.slots[i as usize];
         assert!(!x.is_null(), "robigo: a released global");
         x
     }
-    pub(crate) fn remove(&mut self, i: u32) {
+    /// Release slot `i` at the heap's frozen epoch `epoch`.
+    pub(crate) fn remove(&mut self, i: u32, epoch: u64) {
         let x = &mut self.slots[i as usize];
         assert!(!x.is_null(), "robigo: a global released twice");
         // a freeze root (the boot heap's freeze): a frozen value released
-        // leaves the frozen graph
-        // SAFETY: a global's value is live until it is released.
-        unsafe { robigo_heap::note_overwritten(*x) };
+        // leaves the frozen graph, unless no decision of the frozen set saw
+        // this slot (filled since the last one: `Core::frozen_epoch`; the
+        // first JIT compile's temporary handle on a frozen builtin)
+        let (w, bit) = (i as usize / 64, 1u64 << (i % 64));
+        let young = epoch == self.young_epoch && self.young.get(w).is_some_and(|b| b & bit != 0);
+        if let Some(b) = self.young.get_mut(w) {
+            *b &= !bit;
+        }
+        if !young {
+            // SAFETY: a global's value is live until it is released.
+            unsafe { robigo_heap::note_overwritten(*x) };
+        }
         *x = Sexp::NULL;
         self.free.push(i);
     }

@@ -79,6 +79,188 @@ impl Visitor for Edges<'_> {
     }
 }
 
+/// Phase 1 of the freezing collection ([`Core::freeze_from`]): the visitor
+/// that decides each object when an edge first shows it.
+struct FreezeMark<'a, E: Fn(Sexp) -> bool> {
+    core: &'a mut Core,
+    exclude: &'a E,
+    boot: Option<&'a HashSet<usize, BuildFx>>,
+    /// The frozen objects, in the order frozen.
+    frozen: Vec<Sexp>,
+    /// The small stopped objects, whose mark bits phase 1 sets.
+    stopped: Vec<Sexp>,
+    /// The large stopped objects.
+    stopped_large: HashSet<usize, BuildFx>,
+    /// The object whose fields are shown, or null for a root.
+    parent: Sexp,
+}
+
+impl<E: Fn(Sexp) -> bool> FreezeMark<'_, E> {
+    /// Stop at `x` (it stays ordinary): its bit set; false if it was
+    /// already stopped.
+    ///
+    /// # Safety
+    /// `x` is a live object of this heap that is not immortal.
+    #[inline]
+    unsafe fn stop(&mut self, x: Sexp) -> bool {
+        // SAFETY: the caller's contract.
+        unsafe {
+            let small = (*self.core.heap.block_of(x.0)).magic == 0x524f4249474f4241;
+            let new = self.core.reach(x, &mut self.stopped_large);
+            if new && small {
+                self.stopped.push(x);
+            }
+            new
+        }
+    }
+}
+
+impl<E: Fn(Sexp) -> bool> FreezeMark<'_, E> {
+    /// The kinds that are never frozen, and `exclude`.
+    ///
+    /// # Safety
+    /// `x` is a live object.
+    #[inline(always)]
+    unsafe fn never(&self, x: Sexp) -> bool {
+        // SAFETY: the caller's contract.
+        unsafe {
+            x.flags() & flags::EXTDATA != 0
+                || x.typ() == WEAKREFSXP
+                || x.extra() & crate::extra::SEEN_BY_C != 0
+                // replaced soon after the boot (C1's translation-cache
+                // stub): left ordinary, so its replacement overwrites no
+                // frozen value (the bit means this on a RAWSXP only)
+                || (x.typ() == RAWSXP && x.extra() & crate::extra::vector::NO_FREEZE != 0)
+                || (self.exclude)(x)
+        }
+    }
+
+    /// Freeze `x`: immortal, `FROZEN` and its first store logged (one flag
+    /// store: `make_immortal_raw`'s, with the block already read), the
+    /// shared count, on the frozen list (which is also the walk's queue).
+    ///
+    /// # Safety
+    /// `x` is a live object of this heap that is not immortal; `b` is its
+    /// block if it is a small one, else null.
+    #[inline(always)]
+    unsafe fn freeze(&mut self, x: Sexp, b: *mut Block) {
+        // SAFETY: the caller's contract.
+        unsafe {
+            x.set_flag_raw(flags::IMMORTAL | flags::BARRIER | flags::FROZEN, true);
+            if x.typ() == CHARSXP {
+                if x.gp() & gp::charsxp::CACHED != 0 {
+                    self.core.immortal_chars += 1;
+                }
+            } else {
+                x.set_refcnt(FROZEN_REFCNT);
+            }
+            if !b.is_null() {
+                (*b).immortals += 1;
+            }
+            self.frozen.push(x);
+        }
+    }
+
+    /// A stopped child of the object being traced: that object, if it is
+    /// not a root, is a root from now on.
+    ///
+    /// # Safety
+    /// As for [`Core::remember`].
+    #[inline(always)]
+    unsafe fn log_parent(&mut self) {
+        if !self.parent.is_null() {
+            // SAFETY: the caller's contract.
+            unsafe { self.core.remember(self.parent) }
+        }
+    }
+}
+
+impl<E: Fn(Sexp) -> bool> Visitor for FreezeMark<'_, E> {
+    #[inline]
+    fn edge(&mut self, edge: &mut Sexp) {
+        let x = *edge;
+        // SAFETY: `freeze_from`'s: every edge shown is null or live, so its
+        // block (or large chunk) header is readable, and a granule index
+        // from a live object's address is in its bitmap.
+        unsafe {
+            if x.is_null() || x.flags() & flags::IMMORTAL != 0 {
+                return;
+            }
+            let b = self.core.heap.block_of(x.0);
+            if (*b).magic == 0x524f4249474f4241 {
+                // one read of the block decides: stopped already, before the
+                // boundary, never frozen
+                let g = (x.0 as usize - Block::data_ptr(b) as usize) / GRANULE;
+                let (w, bit) = (g >> 6, 1u64 << (g & 63));
+                if (*b).marks[w] & bit != 0 {
+                    self.log_parent();
+                    return;
+                }
+                let late = self.boot.is_some() && ((*b).boot == 0 || g >= (*b).boot_bump as usize);
+                if late || self.never(x) {
+                    (*b).marks[w] |= bit;
+                    self.stopped.push(x);
+                    self.log_parent();
+                    return;
+                }
+                self.freeze(x, b);
+                // a promise the freeze roots show directly
+                if self.parent.is_null() {
+                    self.core.count_pin_promise(x);
+                }
+            } else {
+                // a large object (rare): its stopped mark in a set
+                if self.stopped_large.contains(&(b as usize)) {
+                    self.log_parent();
+                    return;
+                }
+                if self.boot.is_some_and(|l| !l.contains(&(b as usize))) || self.never(x) {
+                    self.stopped_large.insert(b as usize);
+                    self.log_parent();
+                    return;
+                }
+                self.freeze(x, std::ptr::null_mut());
+            }
+        }
+    }
+}
+
+/// The frozen-reachability pass's walk ([`Core::frozen_pass`]): each edge
+/// decided when it is shown. A frozen target not reached yet is reached
+/// (its mark bit, a large one's base in `large`) and queued on `kept`; an
+/// ordinary one (neither frozen nor immortal) makes the object being
+/// traced one to log.
+struct PassWalk<'a> {
+    core: &'a mut Core,
+    large: &'a mut HashSet<usize, BuildFx>,
+    /// The reached frozen objects, in the order reached: the walk's queue.
+    kept: Vec<Sexp>,
+    /// The object being traced points to an ordinary object.
+    ordinary: bool,
+}
+
+impl Visitor for PassWalk<'_> {
+    #[inline]
+    fn edge(&mut self, edge: &mut Sexp) {
+        let x = *edge;
+        // SAFETY: `frozen_pass`'s: every edge the roots show, and every
+        // field of a live object, is null or live.
+        unsafe {
+            if x.is_null() {
+                return;
+            }
+            let f = x.flags();
+            if f & flags::FROZEN != 0 {
+                if self.core.reach(x, self.large) {
+                    self.kept.push(x);
+                }
+            } else if f & flags::IMMORTAL == 0 {
+                self.ordinary = true;
+            }
+        }
+    }
+}
+
 /// The boot boundary's state, between [`Core::freeze_boundary`] and the
 /// lazy freeze.
 pub(super) struct BootBoundary {
@@ -119,8 +301,10 @@ impl Core {
     /// # Panics
     /// Once the boot boundary is drawn or anything is frozen.
     pub fn set_freeze_enabled(&mut self, on: bool) {
+        // (a freeze that froze nothing still drew its boundary: Sol step 2
+        // r4 S17)
         assert!(
-            self.boot_boundary.is_none() && self.frozen.is_empty(),
+            !self.boundary_drawn() && self.frozen.is_empty(),
             "robigo: the freeze is switched before the boot boundary"
         );
         if on && !self.freeze_on {
@@ -138,12 +322,70 @@ impl Core {
     /// before this boundary, the kinds that are never frozen and `exclude`
     /// left out (an address compared, nothing read: any address may be
     /// given). Nothing when the freeze is off or has run.
-    pub fn freeze_boundary(&mut self, exclude: usize) {
-        if !self.freeze_enabled() || self.boot_boundary.is_some() || !self.frozen.is_empty() {
-            return;
+    ///
+    /// `pins` are the embedder's lazy-load frames (base's, step 2's (b)):
+    /// environments base's promises are to be evaluated in. Each is counted
+    /// with the frozen promises whose PRENV it is (phase 1, every pass), and
+    /// a frozen promise's PRENV cleared over it takes no note until the last
+    /// (`gc::store_slow`), when it is unpinned with a note. A pin roots
+    /// nothing: the frame lives while something reaches it, as in GNU R (Sol
+    /// step 2 r4 S15). A weak key among them is left out (its death is
+    /// observable), and one that becomes a weak key later is unpinned
+    /// ([`Core::request_unfreeze`]). Installed only with the boundary: a
+    /// refused call changes nothing (Sol step 2 r1 S3). Returns whether the
+    /// boundary was drawn.
+    ///
+    /// # Safety
+    /// Each of `pins` is a live object of this heap.
+    pub unsafe fn freeze_boundary(&mut self, exclude: usize, pins: &[Sexp]) -> bool {
+        // (once: a freeze that froze nothing, or a pass that thawed
+        // everything, does not reopen it, Sol step 2 r2 S9)
+        if !self.freeze_enabled() || self.boundary_drawn() || !self.frozen.is_empty() || self.collecting {
+            return false;
         }
+        // SAFETY: registered weak references: element 0 is the key.
+        let keys: HashSet<usize, BuildFx> =
+            self.weak_refs.iter().map(|&w| unsafe { Self::weak_field(w, 0) }.addr()).collect();
+        let mut kept: Vec<(Sexp, u32)> = Vec::new();
+        for &p in pins {
+            if !p.is_null() && !keys.contains(&p.addr()) && !kept.iter().any(|k| k.0 == p) {
+                kept.push((p, 0));
+            }
+        }
+        // SAFETY: outside a collection, nothing else borrows the list (the
+        // barrier reads it only while a store runs on this thread).
+        unsafe { *self.remembered.2.get() = kept };
         let (large, lists) = self.heap.mark_boot_blocks();
         self.boot_boundary = Some(Box::new(BootBoundary { exclude, large: large.into_iter().collect(), lists }));
+        true
+    }
+
+    /// Whether the boot boundary was drawn (its freeze pending or done): the
+    /// embedder's boot is over for the freeze. (The eager [`Core::freeze`]
+    /// draws none.)
+    pub fn boundary_drawn(&self) -> bool {
+        self.boot_boundary.is_some() || self.boundary_done
+    }
+
+    /// Count frozen promise `x`, one the freeze roots show directly, against
+    /// the pinned frame that is its PRENV (phase 1, the pass: the pins'
+    /// counts are rebuilt by each walk; Sol step 2 r5 S18).
+    ///
+    /// # Safety
+    /// `x` is a live frozen object; outside marking.
+    #[inline]
+    unsafe fn count_pin_promise(&self, x: Sexp) {
+        // SAFETY: the caller's contract; the list is not borrowed elsewhere.
+        unsafe {
+            let pins = &mut *self.remembered.2.get();
+            if pins.is_empty() || x.typ() != PROMSXP || x.promise_tag() != 0 {
+                return;
+            }
+            let env = x.tag();
+            if let Some(p) = pins.iter_mut().find(|p| p.0 == env) {
+                p.1 += 1;
+            }
+        }
     }
 
     /// The lazy freeze, at the start of the first collection after the
@@ -156,6 +398,7 @@ impl Core {
     /// As for [`Core::collect`]: every edge `roots` shows is null or live.
     pub(super) unsafe fn freeze_at_boundary<R: Trace + ?Sized>(&mut self, roots: &mut R) {
         let Some(b) = self.boot_boundary.take() else { return };
+        self.boundary_done = true;
         let exclude = b.exclude;
         // SAFETY: the caller's contract; the freeze roots are a part of the roots.
         unsafe { self.freeze_from(&mut FreezeView(roots), |x| x.addr() == exclude, Some(&b.large)) };
@@ -167,6 +410,7 @@ impl Core {
     ///
     /// # Safety
     /// `x` is a live object of this heap, at the boundary.
+    #[cfg(test)]
     unsafe fn is_boot_object(&self, x: Sexp, large: &HashSet<usize, BuildFx>) -> bool {
         let b = self.heap.block_of(x.0);
         // SAFETY: the caller's contract: `x`'s block (or large chunk) header
@@ -186,9 +430,19 @@ impl Core {
         self.frozen_passes
     }
 
+    /// The frozen set's decisions so far: the freeze and each pass. A freeze
+    /// root added at epoch `e` and released while the epoch is still `e`
+    /// needs no note ([`note_overwritten`]): no decision saw it, so none
+    /// depended on it, and an edge cut since that decision was noted itself
+    /// (the step 2 bar's (a); rtcore's `Globals`).
+    pub fn frozen_epoch(&self) -> u64 {
+        self.frozen_epoch
+    }
+
     /// How many objects the freeze made immortal and are still frozen.
     pub fn frozen_count(&self) -> usize {
-        self.frozen.len()
+        // (a pinned object waits on the list for the next collection)
+        self.frozen.len() - self.stale_frozen
     }
 
     /// The bytes the frozen objects take: their slots' class sizes, and a
@@ -198,6 +452,8 @@ impl Core {
             self.heap.chunks.iter().filter(|c| c.large).map(|c| (c.base, c.end - c.base)).collect();
         self.frozen
             .iter()
+            // SAFETY: the list's members are live.
+            .filter(|f| unsafe { f.flags() } & flags::FROZEN != 0)
             .map(|f| {
                 let b = self.heap.block_of(f.0);
                 // SAFETY: a frozen object is live: its block (or large
@@ -219,8 +475,15 @@ impl Core {
     /// Every edge `roots` shows is null or a live object of this heap, as
     /// for [`Core::collect`]; nothing else runs on the heap meanwhile.
     pub unsafe fn freeze<R: Trace + ?Sized>(&mut self, roots: &mut R, exclude: impl Fn(Sexp) -> bool) -> usize {
+        assert!(!self.poisoned, "robigo: this heap was left halfway by a panic: it can only be dropped");
+        // a panic out of the walk (a root set's trace) leaves headers
+        // flagged and a partial frozen list: the heap is poisoned until it
+        // ends, as a collection's marking leaves it (Sol step 2 r1 S1)
+        self.poisoned = true;
         // SAFETY: the caller's contract.
-        unsafe { self.freeze_from(roots, exclude, None) }
+        let n = unsafe { self.freeze_from(roots, exclude, None) };
+        self.poisoned = false;
+        n
     }
 
     /// [`Core::freeze`], and with `boot` the lazy freeze's rule: only the
@@ -238,60 +501,56 @@ impl Core {
         if !self.freeze_enabled() || !self.frozen.is_empty() {
             return 0;
         }
-        let mut work = Vec::new();
-        roots.trace(&mut Edges(&mut work));
-        // the keys of weak references: their death is observable
-        let mut keys: HashSet<usize, BuildFx> = HashSet::default();
-        for &w in &self.weak_refs {
-            // SAFETY: a registered weak reference: element 0 is its key.
-            keys.insert(unsafe { Self::weak_field(w, 0) }.addr());
-        }
-        let mut stopped: HashSet<usize, BuildFx> = HashSet::default();
-        let mut frozen = Vec::new();
-        let mut kids = Vec::new();
-        while let Some(x) = work.pop() {
-            // SAFETY: the caller's contract: `x` is null or live.
-            unsafe {
-                if x.is_null() || x.flags() & flags::IMMORTAL != 0 || stopped.contains(&x.addr()) {
-                    continue;
-                }
-                let observable = keys.contains(&x.addr()) || x.flags() & flags::EXTDATA != 0;
-                let never = observable
-                    || x.typ() == WEAKREFSXP
-                    || x.extra() & crate::extra::SEEN_BY_C != 0
-                    // replaced soon after the boot (C1's translation-cache
-                    // stub): left ordinary, so its replacement overwrites no
-                    // frozen value (the bit means this on a RAWSXP only)
-                    || (x.typ() == RAWSXP && x.extra() & crate::extra::vector::NO_FREEZE != 0)
-                    || exclude(x)
-                    || boot.is_some_and(|l| !self.is_boot_object(x, l));
-                if never {
-                    stopped.insert(x.addr());
-                    continue;
-                }
-                self.make_immortal_raw(x);
-                x.set_flag_raw(flags::FROZEN, true);
-                if x.typ() != CHARSXP {
-                    x.set_refcnt(FROZEN_REFCNT);
-                }
-                frozen.push(x);
-                kids.clear();
-                x.trace_fields(&mut Edges(&mut kids));
-                work.extend_from_slice(&kids);
-            }
-        }
-        // (unsorted: membership is the header's FROZEN bit)
-        self.frozen = frozen;
-        // a frozen object with an ordinary child is a root from now on (the
-        // global environment's referrers, a weak reference's, C's objects')
-        for i in 0..self.frozen.len() {
-            let f = self.frozen[i];
-            // SAFETY: frozen objects are live; their fields are null or live.
-            unsafe {
-                if self.has_ordinary_child(f, &mut kids) {
-                    self.remember(f);
+        // Phase 1 of the freezing collection (step 2, the fold: the
+        // ordinary marking is phase 2, unchanged). Each object is decided
+        // when an edge first shows it: frozen at once (immortal, so phase 2
+        // stops at it), or stopped (a kind never frozen, an object after the
+        // boundary, `exclude`). A frozen parent that shows a stopped child is
+        // logged then, so no second trace of the frozen set decides the log
+        // (#984's 4.8M). The visited set of the stopped objects is the mark
+        // bitmap (a large one's in a set), cleared below before phase 2.
+        //
+        // SAFETY: the caller's contract: every edge the roots show is null
+        // or live, so are the fields of a live object; the bitmaps are clear
+        // (the sweep clears them; a pass clears its own bits).
+        unsafe {
+            let mut fz = FreezeMark {
+                core: self,
+                exclude: &exclude,
+                boot,
+                frozen: Vec::new(),
+                stopped: Vec::new(),
+                stopped_large: HashSet::default(),
+                parent: Sexp::NULL,
+            };
+            // the keys of weak references are stopped first: their death is
+            // observable
+            for i in 0..fz.core.weak_refs.len() {
+                let k = Self::weak_field(fz.core.weak_refs[i], 0);
+                if !k.is_null() && k.flags() & flags::IMMORTAL == 0 {
+                    fz.stop(k);
                 }
             }
+            roots.trace(&mut fz);
+            // the frozen list is the walk's queue: each frozen object's
+            // fields once, in the order frozen
+            let mut i = 0;
+            while i < fz.frozen.len() {
+                let x = fz.frozen[i];
+                fz.parent = x;
+                x.trace_fields(&mut fz);
+                i += 1;
+            }
+            let FreezeMark { frozen, stopped, .. } = fz;
+            for x in stopped {
+                self.unreach(x);
+            }
+            // a frame no counted promise uses, or that stayed ordinary (a
+            // stopped one, say), is no pin (Sol step 2 r5 S19)
+            (*self.remembered.2.get()).retain(|p| p.1 != 0 && p.0.flags() & flags::FROZEN != 0);
+            // (unsorted: membership is the header's FROZEN bit)
+            self.frozen = frozen;
+            self.frozen_epoch += 1;
         }
         // A weak key or an external-data vector stays ordinary (the walk
         // stopped at it), and a frozen referrer of one is logged above. Its
@@ -305,19 +564,6 @@ impl Core {
         self.frozen.len()
     }
 
-    /// Whether `f` points to an object that is not immortal.
-    ///
-    /// # Safety
-    /// `f` is a live object; its fields are null or live.
-    unsafe fn has_ordinary_child(&self, f: Sexp, kids: &mut Vec<Sexp>) -> bool {
-        kids.clear();
-        // SAFETY: the caller's contract.
-        unsafe {
-            f.trace_fields(&mut Edges(kids));
-            kids.iter().any(|k| k.flags() & flags::IMMORTAL == 0)
-        }
-    }
-
     /// Log `x` in the remembered set (a root at every collection), once: the
     /// store barrier's slow path without a store. For an immortal object
     /// whose fields may change without a barrier (C's writable `DATAPTR` of
@@ -325,8 +571,9 @@ impl Core {
     /// or not immortal.
     ///
     /// # Safety
-    /// `x` is a live object of this heap, on its thread, outside a
-    /// collection.
+    /// `x` is a live object of this heap, on its thread, and the log is not
+    /// borrowed elsewhere: outside a collection, or inside one before marking
+    /// reads the log (the freeze's phase 1, the frozen-reachability pass).
     pub unsafe fn remember(&mut self, x: Sexp) {
         // SAFETY: the caller's contract (`barrier_only`'s).
         unsafe {
@@ -375,6 +622,17 @@ impl Core {
     /// # Safety
     /// `x` is null or a live object of this heap (`register_weak_ref`'s key).
     pub(super) unsafe fn request_unfreeze(&mut self, x: Sexp) {
+        // a pinned lazy-load frame keyed by a weak reference is unpinned: its
+        // death is observable now, so only the graph decides it (Sol step 2
+        // r1 S2), frozen or not yet (a key registered between the boundary
+        // and the freeze, r2 S7). Unpinned, it is an edge the frozen graph
+        // may lose. (No pin, the usual case: an empty list's test.)
+        // SAFETY: outside a collection, the list is not borrowed elsewhere.
+        let pins = unsafe { &mut *self.remembered.2.get() };
+        if !pins.is_empty() && pins.iter().any(|p| p.0 == x) {
+            pins.retain(|p| p.0 != x);
+            self.remembered.note(Remembered::DIRTY);
+        }
         // an ordinary key pays one header test (Sol S7)
         // SAFETY: the caller's contract.
         if x.is_null() || unsafe { x.flags() } & flags::IMMORTAL == 0 {
@@ -422,6 +680,12 @@ impl Core {
     /// As for [`Core::collect`]: every edge `roots` shows is null or live;
     /// outside marking.
     pub(super) unsafe fn frozen_pass<R: Trace + ?Sized>(&mut self, roots: &mut R) {
+        // pinned objects leave the frozen list (they are immortal for good)
+        if self.stale_frozen != 0 {
+            // SAFETY: the list's members are live.
+            self.frozen.retain(|f| unsafe { f.flags() } & flags::FROZEN != 0);
+            self.stale_frozen = 0;
+        }
         let notes = self.remembered.1.get();
         if self.frozen.is_empty() {
             self.pending_unfreeze.clear();
@@ -468,38 +732,45 @@ impl Core {
                 // consumed (Sol r1 S5, r2 S5)
                 return;
             }
+            // the pins' counts are this walk's
+            for p in (*self.remembered.2.get()).iter_mut() {
+                p.1 = 0;
+            }
             self.remembered.1.set(0);
             self.frozen_passes += 1;
+            self.frozen_epoch += 1;
             for x in std::mem::take(&mut self.pending_unfreeze) {
                 if self.is_frozen(x) {
                     self.make_mortal(x);
                 }
             }
             // the walk does not follow a queued object: it was made ordinary
-            // above, so the roots' edges to it are ordinary ones
-            let mut kept = Vec::with_capacity(self.frozen.len());
-            let mut kids = Vec::new();
-            while let Some(x) = work.pop() {
-                if x.is_null() || !self.is_frozen(x) || !self.reach(x, &mut large) {
-                    continue;
-                }
-                kept.push(x);
-                kids.clear();
-                x.trace_fields(&mut Edges(&mut kids));
-                // a reached object's frozen children are reached too, so
-                // whether it points to an ordinary object is known here
-                let mut ordinary = false;
-                for &k in &kids {
-                    if k.flags() & flags::FROZEN != 0 {
-                        work.push(k);
-                    } else if k.flags() & flags::IMMORTAL == 0 {
-                        ordinary = true;
-                    }
-                }
-                if ordinary {
-                    self.remember(x);
+            // above, so the roots' edges to it are ordinary ones. Each edge
+            // is decided as it is shown (step 2's direct visitor: no edge
+            // list), and the reached list is the walk's queue
+            let mut pw =
+                PassWalk { core: self, large: &mut large, kept: Vec::with_capacity(work.len()), ordinary: false };
+            for x in work {
+                let n = pw.kept.len();
+                pw.edge(&mut { x });
+                // a promise the freeze roots show directly
+                if pw.kept.len() > n {
+                    pw.core.count_pin_promise(x);
                 }
             }
+            let mut i = 0;
+            while i < pw.kept.len() {
+                let x = pw.kept[i];
+                pw.ordinary = false;
+                x.trace_fields(&mut pw);
+                // a reached object's frozen children are reached too, so
+                // whether it points to an ordinary object is known here
+                if pw.ordinary {
+                    pw.core.remember(x);
+                }
+                i += 1;
+            }
+            let kept = pw.kept;
             for f in std::mem::take(&mut self.frozen) {
                 if self.is_frozen(f) && !self.reached(f, &large) {
                     self.make_mortal(f);
@@ -511,6 +782,9 @@ impl Core {
                 self.unreach(f);
             }
             self.frozen = kept;
+            // a frame no counted promise uses, or thawed above (nothing reached
+            // it: as GNU R frees it), is no pin from now on (Sol step 2 r5 S19)
+            (*self.remembered.2.get()).retain(|p| p.1 != 0 && p.0.flags() & flags::FROZEN != 0);
             // an object made ordinary leaves the log (it is traced if it is
             // reachable, and must die if it is not); the other immortal
             // objects' entries stay
@@ -603,12 +877,14 @@ impl Core {
         }
     }
 
-    /// Mark frozen `x` reached by the pass's walk; false if it was already.
-    /// A small object's mark bit (not its block's count: see
-    /// [`Core::frozen_pass`]), a large one's base in `large`.
+    /// Mark `x` reached by the pass's walk (or stopped by the freeze's phase
+    /// 1); false if it was already. A small object's mark bit (not its
+    /// block's count: see [`Core::frozen_pass`]), a large one's base in
+    /// `large`. The caller clears the bits before marking.
     ///
     /// # Safety
-    /// `x` is a live frozen object, before this collection's marking.
+    /// `x` is a live object of this heap (frozen for the pass; not immortal
+    /// for phase 1), before this collection's marking.
     unsafe fn reach(&self, x: Sexp, large: &mut HashSet<usize, BuildFx>) -> bool {
         let b = self.heap.block_of(x.0);
         // SAFETY: the caller's contract: `x`'s block (or chunk) is readable,
@@ -716,6 +992,7 @@ impl Core {
     pub(super) unsafe fn independent_reach<R: Trace + ?Sized>(&self, roots: &mut R) -> Vec<Sexp> {
         let mut work = Vec::new();
         roots.trace(&mut Edges(&mut work));
+
         work.extend_from_slice(&self.precious);
         work.extend_from_slice(&self.weak_refs);
         // SAFETY: outside marking, the log is not borrowed elsewhere.
@@ -759,6 +1036,9 @@ impl Core {
     ///
     /// # Safety
     /// During a collection, after marking and before the sweep.
+    // (out of line: inlined, it moved `mark_rest`'s code, step 2's
+    // identity measure)
+    #[inline(never)]
     pub(super) unsafe fn check_frozen_marked(&self) {
         let mut kids = Vec::new();
         for &f in &self.frozen {
@@ -853,7 +1133,7 @@ mod tests {
         // SAFETY: fresh objects of this heap; nothing collects.
         unsafe {
             let x = c.alloc_node(LISTSXP, nil, nil, nil).unwrap();
-            c.freeze_boundary(nil.addr());
+            c.freeze_boundary(nil.addr(), &[]);
             assert!(c.boot_boundary.is_none(), "no boundary drawn");
             assert_eq!((*c.heap.block_of(x.0)).boot, 0, "no block marked");
         }
@@ -874,7 +1154,7 @@ mod tests {
         unsafe {
             let before = c.alloc_node(LISTSXP, nil, nil, nil).unwrap();
             let big = c.alloc_vector(REALSXP, 100_000).unwrap();
-            c.freeze_boundary(nil.addr());
+            c.freeze_boundary(nil.addr(), &[]);
             let b = c.boot_boundary.take().unwrap();
             let after = c.alloc_node(LISTSXP, nil, nil, nil).unwrap();
             let big_after = c.alloc_vector(REALSXP, 100_000).unwrap();
@@ -907,7 +1187,7 @@ mod tests {
             let leaf = c.alloc_vector(INTSXP, 3).unwrap();
             let cell = c.alloc_node(LISTSXP, leaf, nil, nil).unwrap();
             let head = c.alloc_node(LISTSXP, cell, nil, nil).unwrap();
-            c.freeze_boundary(nil.addr());
+            c.freeze_boundary(nil.addr(), &[]);
             assert_eq!(c.frozen_count(), 0, "nothing frozen at the boundary");
             // the session stores a later object under the freeze roots
             let later = c.alloc_vector(REALSXP, 1_000).unwrap();
@@ -928,6 +1208,140 @@ mod tests {
             c.collect(&mut roots);
             c.check_frozen();
             assert!(c.is_frozen(head));
+        }
+    }
+
+    /// Sol step 2 r2 S9: a boundary whose freeze froze nothing is not
+    /// drawn again, and its pins stay; S6: no mover starts after it.
+    #[test]
+    #[cfg(not(miri))]
+    fn the_boundary_is_drawn_once_and_no_mover_starts_after_it() {
+        let mut c = Core::new();
+        c.set_freeze_enabled(true);
+        if !c.freeze_enabled() {
+            return;
+        }
+        let nil = c.nil();
+        // SAFETY: fresh objects of this heap, rooted by `roots`.
+        unsafe {
+            let pin = c.alloc_node(LISTSXP, nil, nil, nil).unwrap();
+            // the pin is the excluded object: nothing is frozen
+            assert!(c.freeze_boundary(pin.addr(), &[pin]));
+            let mut roots = WithFreeze { all: vec![pin], freeze: pin };
+            c.collect(&mut roots);
+            assert_eq!(c.frozen_count(), 0, "nothing froze");
+            let pins = (*c.remembered.2.get()).clone();
+            assert!(!c.freeze_boundary(nil.addr(), &[nil]), "refused: the boundary was drawn");
+            assert_eq!(*c.remembered.2.get(), pins, "and the pins are as they were");
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.set_gc_move_young(2)));
+            assert!(r.is_err(), "no mover after the boundary");
+        }
+    }
+
+    /// Sol step 2 r3 S13: an eager freeze that froze nothing draws no
+    /// boundary, so a mover may still start (as on main).
+    #[test]
+    fn an_empty_eager_freeze_leaves_the_mover_free() {
+        let mut c = Core::new();
+        c.set_freeze_enabled(true);
+        if !c.freeze_enabled() {
+            return;
+        }
+        let nil = c.nil();
+        // SAFETY: the heap's own immortal nil; nothing collects.
+        unsafe {
+            let mut roots = WithFreeze { all: vec![nil], freeze: nil };
+            assert_eq!(c.freeze(&mut roots, |_| false), 0);
+            assert!(!c.boundary_drawn());
+            c.set_gc_move_young(2);
+        }
+    }
+
+    /// A root set whose walk panics after it showed an edge (Sol step 2 r1
+    /// S1).
+    struct PanicAfter(Sexp);
+    impl Trace for PanicAfter {
+        fn trace<V: Visitor + ?Sized>(&mut self, v: &mut V) {
+            v.edge(&mut self.0);
+            panic!("a root walk that panics");
+        }
+        fn trace_freeze<V: Visitor + ?Sized>(&mut self, v: &mut V) -> bool {
+            self.trace(v);
+            true
+        }
+    }
+
+    /// Sol step 2 r1 S1: a panic out of the eager freeze's walk (after it
+    /// flagged an object) leaves the heap poisoned, so it is never
+    /// collected with a half-frozen graph. Under Miri as well.
+    #[test]
+    fn a_panic_in_the_eager_freeze_poisons_the_heap() {
+        let mut c = Core::new();
+        c.set_freeze_enabled(true);
+        if !c.freeze_enabled() {
+            return;
+        }
+        let nil = c.nil();
+        // SAFETY: a fresh object of this heap; nothing collects.
+        unsafe {
+            let x = c.alloc_node(LISTSXP, nil, nil, nil).unwrap();
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                c.freeze(&mut PanicAfter(x), |_| false);
+            }));
+            assert!(r.is_err());
+            assert!(c.poisoned, "poisoned: the walk flagged objects it never finished");
+        }
+    }
+
+    /// Sol step 2 r1 S1: the same out of the lazy freeze, inside its
+    /// collection: poisoned before the freeze begins, so the next
+    /// collection refuses.
+    #[test]
+    #[cfg(not(miri))]
+    fn a_panic_in_the_lazy_freeze_poisons_the_heap() {
+        let mut c = Core::new();
+        c.set_freeze_enabled(true);
+        if !c.freeze_enabled() {
+            return;
+        }
+        let nil = c.nil();
+        // SAFETY: a fresh object of this heap, rooted by the roots below.
+        unsafe {
+            let x = c.alloc_node(LISTSXP, nil, nil, nil).unwrap();
+            c.freeze_boundary(nil.addr(), &[]);
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                c.collect(&mut PanicAfter(x));
+            }));
+            assert!(r.is_err());
+            assert!(c.poisoned, "poisoned before the freeze ran");
+        }
+    }
+
+    /// Sol step 2 r1 S4: a pinned leaf leaves the frozen count at once and
+    /// the frozen list at the next collection, with no pass.
+    #[test]
+    #[cfg(not(miri))]
+    fn a_pinned_leaf_leaves_the_frozen_list_without_a_pass() {
+        let mut c = Core::new();
+        c.set_freeze_enabled(true);
+        if !c.freeze_enabled() {
+            return;
+        }
+        let nil = c.nil();
+        // SAFETY: fresh objects of this heap, rooted by `roots`.
+        unsafe {
+            let leaf = c.alloc_vector(INTSXP, 1).unwrap();
+            let head = c.alloc_node(LISTSXP, leaf, nil, nil).unwrap();
+            let mut roots = WithFreeze { all: vec![head], freeze: head };
+            c.freeze(&mut roots, |_| false);
+            let n = c.frozen_count();
+            c.make_immortal(leaf);
+            assert_eq!(c.frozen_count(), n - 1, "the pinned leaf is not counted");
+            let passes = c.frozen_passes();
+            c.collect(&mut roots);
+            assert_eq!(c.frozen_passes(), passes, "no pass");
+            assert_eq!(c.frozen.len(), n - 1, "and it left the list");
+            c.check_frozen_reach(&mut roots);
         }
     }
 
@@ -1233,6 +1647,9 @@ mod tests {
             c.freeze(&mut roots, |_| false);
             c.make_immortal(leaf);
             assert!(!c.is_frozen(leaf) && leaf.flags() & flags::IMMORTAL != 0, "pinned");
+            // a pinned object without a frozen child leaves no frozen edge
+            // behind: no note (step 2; one with one is dirty, below)
+            assert_eq!(c.remembered.1.get() & Remembered::DIRTY, 0, "pinning a leaf is not dirty");
             cut_car(head, nil);
             c.frozen_pass(&mut roots);
             assert!(leaf.flags() & flags::IMMORTAL != 0, "a pinned object is never thawed");

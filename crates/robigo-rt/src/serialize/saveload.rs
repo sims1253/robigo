@@ -64,6 +64,14 @@ pub fn do_makelazy(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
             cx.define_var(name, prom, aenv)
         })?;
     }
+    // base's own lazy-load frame: pinned at the boot boundary
+    // (robigo-heap's freeze.rs, step 2's (b)). Only from base's loader: it
+    // bound names into base before base is locked (a profile cannot: it
+    // runs after the locks, and a call binding nothing pins nothing, Sol
+    // step 2 r2 S8)
+    if n > 0 && !cx.environment_is_locked(aenv)? {
+        cx.note_lazy_load_frame(eenv, aenv);
+    }
     out.set(cx, cx.nil());
     Ok(())
 }

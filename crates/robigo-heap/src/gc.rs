@@ -544,6 +544,16 @@ pub struct Core {
     path_snapshot: Option<Vec<usize>>,
     /// How many frozen-reachability passes ran (`ROBIGO_GC_STATS`).
     frozen_passes: u64,
+    /// How many times the frozen set was decided (the freeze, each pass):
+    /// a freeze root added since the last decision needs no note when it
+    /// goes ([`Core::frozen_epoch`]).
+    frozen_epoch: u64,
+    /// Pinned objects still on the frozen list (`pin_frozen`), dropped
+    /// from it at the next collection.
+    stale_frozen: usize,
+    /// The lazy freeze ran at its boundary (`freeze_at_boundary`): the
+    /// boundary is drawn once (`Core::boundary_drawn`).
+    boundary_done: bool,
     /// `ROBIGO_GC_FREEZE_CHECK=N`: the freeze's invariant checked at every
     /// N-th collection (1: every one; 0: never). The check traces the whole
     /// heap twice, so under gctorture a period keeps a run's cost near a
@@ -598,7 +608,7 @@ pub(crate) unsafe fn store_slow(x: Sexp, slot: *mut Sexp, v: Sexp) {
     // null or live.
     unsafe {
         if x.flags() & flags::FROZEN != 0 {
-            note_overwritten(*slot);
+            note_overwritten_in(x, slot, v);
         }
         if x.flags() & flags::BARRIER != 0 {
             barrier_slow(x);
@@ -606,6 +616,50 @@ pub(crate) unsafe fn store_slow(x: Sexp, slot: *mut Sexp, v: Sexp) {
             shared_store();
         }
         x.store_counted(slot, v);
+    }
+}
+
+/// [`note_overwritten`] for a store of `v` into frozen `x` at `slot`. A
+/// frozen promise's PRENV cleared over a pinned lazy-load frame (forcing one
+/// of base's promises, step 2's (b)) takes no note while another counted
+/// promise uses the frame: a counted promise is one the freeze roots show
+/// directly (a base binding's value), so it reaches the frame by a path
+/// that does not go through the frame (Sol step 2 r5 S18), and removing it
+/// from those roots is noted itself. The frame's count drops, and the last
+/// counted promise's clear unpins it with a note, so the next pass decides
+/// the frame as GNU R's collector would once every promise using it was
+/// forced (Sol step 2 r4 S15). Writing the frame back is no clear (r5 S20).
+/// The count is a lower bound between walks: an uncounted promise (one the
+/// frame binds itself) clearing its PRENV takes one as well, which can only
+/// bring the pass early, never miss it (r6 S21).
+///
+/// # Safety
+/// As for [`store_slow`]; `x` is frozen.
+#[inline]
+unsafe fn note_overwritten_in(x: Sexp, slot: *mut Sexp, v: Sexp) {
+    // SAFETY: the caller's contract; a frozen object is in a block or large
+    // chunk of its heap, whose header names its remembered set, which no
+    // one else borrows outside a collection.
+    unsafe {
+        let old = *slot;
+        if old.is_null() || old.flags() & flags::FROZEN == 0 || old == v {
+            return;
+        }
+        let r = &*remembered_of(old.0);
+        let pins = &mut *r.2.get();
+        if !pins.is_empty()
+            && x.typ() == PROMSXP
+            && x.promise_tag() == 0
+            && std::ptr::eq(slot.cast::<usize>(), x.word(crate::layout::promise::OFF_ENV))
+            && let Some(i) = pins.iter().position(|p| p.0 == old)
+        {
+            pins[i].1 = pins[i].1.saturating_sub(1);
+            if pins[i].1 != 0 {
+                return;
+            }
+            pins.swap_remove(i);
+        }
+        r.note(Remembered::DIRTY);
     }
 }
 
@@ -651,7 +705,8 @@ pub(crate) unsafe fn log_once(x: Sexp) {
 #[inline]
 pub unsafe fn note_overwritten(old: Sexp) {
     // SAFETY: the caller's contract; a frozen object is in a block or large
-    // chunk of its heap, whose header names its remembered set.
+    // chunk of its heap, whose header names its remembered set, which no
+    // one else borrows outside a collection.
     unsafe {
         if !old.is_null() && old.flags() & flags::FROZEN != 0 {
             (*remembered_of(old.0)).note(Remembered::DIRTY);
@@ -985,6 +1040,9 @@ impl Core {
             pending_unfreeze: Vec::new(),
             path_snapshot: None,
             frozen_passes: 0,
+            frozen_epoch: 0,
+            stale_frozen: 0,
+            boundary_done: false,
             freeze_check: if freeze_on { freeze_check_from_env() } else { 0 },
             freeze_check_count: 0,
             freeze_checking: false,
@@ -992,7 +1050,7 @@ impl Core {
             weak_refs: Vec::new(),
             finalizers_pending: false,
             releases: Vec::new(),
-            remembered: Box::new(Remembered(Default::default(), Default::default())),
+            remembered: Box::new(Remembered(Default::default(), Default::default(), Default::default())),
         });
         // every block and large chunk header points at the log, before the
         // first allocation makes one
@@ -1038,20 +1096,13 @@ impl Core {
     /// the store barrier ([`Sexp::store`]), which makes `x` a root. An object flagged
     /// without this function is missing from its block's count, and the
     /// sweep miscounts.
+    #[inline]
     pub unsafe fn make_immortal(&mut self, x: Sexp) {
         // SAFETY: as for `make_immortal_raw`; `x`'s fields are null or live.
         unsafe {
             if x.has_flag(flags::IMMORTAL) {
-                // a frozen object asked to be immortal for good (a symbol's
-                // PRINTNAME made of a frozen CHARSXP: Sol r1 S1): pinned, so
-                // that no frozen-reachability pass thaws it. It stays on the
-                // frozen list until the next pass drops it there. Pinned, it
-                // leaves the frozen graph, so its frozen children may lose
-                // their last frozen edge: a dirty note (Sol r2 S8)
                 if x.has_flag(flags::FROZEN) {
-                    x.set_flag_raw(flags::FROZEN, false);
-                    self.remembered.note(Remembered::DIRTY);
-                    self.log_if_frozen_child(x);
+                    self.pin_frozen(x);
                 }
                 return;
             }
@@ -1065,6 +1116,33 @@ impl Core {
         }
     }
 
+    /// A frozen object asked to be immortal for good (a symbol's PRINTNAME
+    /// made of a frozen CHARSXP: Sol r1 S1): pinned, so that no
+    /// frozen-reachability pass thaws it. It stays on the frozen list until
+    /// the next pass drops it there. Pinned, it leaves the frozen graph, so
+    /// its frozen children may lose their last frozen edge: a dirty note
+    /// (Sol r2 S8), only if it has one (a CHARSXP has none: the first
+    /// symbols installed from frozen names ran a pass, step 2). Out of line:
+    /// `make_immortal` stays the flag store it was (#984's start).
+    ///
+    /// # Safety
+    /// As for [`Core::make_immortal`]; `x` is frozen.
+    #[cold]
+    #[inline(never)]
+    unsafe fn pin_frozen(&mut self, x: Sexp) {
+        // SAFETY: the caller's contract.
+        unsafe {
+            x.set_flag_raw(flags::FROZEN, false);
+            // (it leaves the frozen list at the next collection: Sol step 2
+            // r1 S4)
+            self.stale_frozen += 1;
+            if self.has_frozen_child(x) {
+                self.remembered.note(Remembered::DIRTY);
+                self.log_if_frozen_child(x);
+            }
+        }
+    }
+
     /// An immortal object that is not frozen and holds a frozen one is a
     /// root from now on (the remembered set): a frozen-reachability pass may
     /// thaw that child, and ordinary marking traces an immortal object's
@@ -1072,11 +1150,25 @@ impl Core {
     ///
     /// # Safety
     /// `x` is live; its fields are null or live.
+    #[inline(never)]
     unsafe fn log_if_frozen_child(&mut self, x: Sexp) {
         // SAFETY: the caller's contract.
         unsafe {
-            if x.typ() == CHARSXP || x.flags() & flags::BARRIER == 0 {
-                return;
+            if x.flags() & flags::BARRIER != 0 && self.has_frozen_child(x) {
+                barrier_slow(x);
+            }
+        }
+    }
+
+    /// Whether `x` points to a frozen object (a CHARSXP points to nothing).
+    ///
+    /// # Safety
+    /// `x` is live; its fields are null or live.
+    unsafe fn has_frozen_child(&self, x: Sexp) -> bool {
+        // SAFETY: the caller's contract.
+        unsafe {
+            if x.typ() == CHARSXP {
+                return false;
             }
             struct AnyFrozen(bool);
             impl Visitor for AnyFrozen {
@@ -1087,9 +1179,7 @@ impl Core {
             }
             let mut v = AnyFrozen(false);
             x.trace_fields(&mut v);
-            if v.0 {
-                barrier_slow(x);
-            }
+            v.0
         }
     }
 
@@ -2949,10 +3039,12 @@ impl Core {
             // never collected again
             // the lazy freeze (`freeze.rs`): the first collection after the
             // boot boundary freezes, before anything is marked
+            // (poisoned first: a panic inside the freeze leaves headers
+            // flagged and a partial frozen list, Sol step 2 r1 S1)
+            self.poisoned = true;
             if self.boot_boundary.is_some() {
                 self.freeze_at_boundary(roots);
             }
-            self.poisoned = true;
             // the frozen-reachability pass (`freeze.rs`) before anything is
             // marked: what the frozen graph no longer reaches thaws
             self.frozen_pass(roots);
@@ -3663,7 +3755,7 @@ impl Core {
             let _ = writeln!(
                 r,
                 "robigo gc: the boot heap's freeze (ROBIGO_GC_FREEZE): {} objects frozen, {} bytes, {} frozen-reachability passes{state}",
-                self.frozen.len(),
+                self.frozen_count(),
                 self.frozen_bytes(),
                 self.frozen_passes
             );
