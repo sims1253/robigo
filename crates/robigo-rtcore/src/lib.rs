@@ -238,6 +238,7 @@ mod console;
 mod context;
 mod env;
 mod exit;
+mod fill;
 mod frames;
 mod fresh;
 mod handle;
@@ -302,6 +303,7 @@ pub use limits::{
 };
 pub use namebuf::NameBuf;
 pub use native::{Landing, NATIVE_MAX_ARGS, Native6, enter_export, enter_leaf, enter_leaf_mut};
+pub use fill::{Fill, FillPass};
 pub use outcome::{Built, Diag};
 pub use ppacct::PpSave;
 pub use records::{FILL_ALIGN, FILL_SIZE, Reserved};
