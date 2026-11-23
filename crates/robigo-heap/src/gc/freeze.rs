@@ -1151,8 +1151,11 @@ pub(super) const FULL_CHECK_TALLY: &str = "robigo: ROBIGO_GC_FREEZE_CHECK: full 
 pub(super) fn note_full_check(n: u64) {
     if let Some(path) = std::env::var_os("ROBIGO_GC_FREEZE_CHECK_REPORT").filter(|p| !p.is_empty()) {
         use std::io::Write;
+        // one write of the whole line: appends from the slice's processes
+        // running at once interleave whole lines only
+        let line = format!("{FULL_CHECK_TALLY}{n} in process {}\n", std::process::id());
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-            let _ = writeln!(f, "{FULL_CHECK_TALLY}{n} in process {}", std::process::id());
+            let _ = f.write_all(line.as_bytes());
         }
     }
 }
@@ -1163,8 +1166,9 @@ pub(super) fn note_full_check(n: u64) {
 fn check_failed(msg: String) -> ! {
     if let Some(path) = std::env::var_os("ROBIGO_GC_FREEZE_CHECK_REPORT").filter(|p| !p.is_empty()) {
         use std::io::Write;
+        // (one write of the whole line, as `note_full_check`'s)
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-            let _ = writeln!(f, "{msg}");
+            let _ = f.write_all(format!("{msg}\n").as_bytes());
         }
     }
     panic!("{msg}")
