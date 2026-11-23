@@ -1,0 +1,20 @@
+# A function made inside a function: its srcref comes with the closure
+# (MAKECLOSURE's constant list(formals, body, srcref), eval.c), from the
+# compiled outer function too (compiler::cmpfun, the JIT).
+e <- parse(text = "outer <- function() { g <- function(x) {\n  # inner comment\n  x + 1\n}\n g }", keep.source = TRUE)
+eval(e[[1]])
+for (i in 1:5) inner <- outer()
+print(names(attributes(inner)))
+print(as.integer(unclass(attr(inner, "srcref"))))
+cat(deparse(inner, control = "useSource"), sep = "\n")
+f <- eval(parse(text = "function(a) {\n  g <- function(y) y + a  # inner\n  g\n}", keep.source = TRUE)[[1]])
+for (k in 1:3) g <- f(k)
+h <- compiler::cmpfun(f)
+g2 <- h(2)
+cat(deparse(g2, control = "useSource"), sep = "\n"); print(g2(1))
+print(identical(attr(g2, "srcref"), attr(g, "srcref")))
+print(as.integer(unclass(attr(g2, "srcref"))))
+print(identical(attr(attr(g2, "srcref"), "srcfile"), attr(attr(f, "srcref"), "srcfile")))
+f0 <- eval(parse(text = "function(a) {\n  g <- function(y) y + a  # inner\n  g\n}", keep.source = FALSE)[[1]])
+g0 <- compiler::cmpfun(f0)(1)
+print(attributes(g0)); cat(deparse(g0, control = "useSource"), sep = "\n")

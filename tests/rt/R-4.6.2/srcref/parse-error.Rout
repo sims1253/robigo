@@ -1,0 +1,25 @@
+simpleError | <text>:2:6: unexpected input
+1: x <- 1
+2: y <- 1e
+        ^ | 
+unrecognizedEscape | '\q' is an unrecognized escape in character string (<text>:1:8) | <text> 1 8 
+unrecognizedEscape | '\q' is an unrecognized escape in character string (FILE:2:8) | TRUE 2 8 
+simpleError | 2:7: unexpected input
+1: a <- 1
+2:  b <- 0x
+         ^ | 
+unrecognizedEscape | '\q' is an unrecognized escape in character string (<input>:1:8) | <input> 1 8 
+invalidRawLiteral | malformed raw string literal (<text>:1:3) | <text> 1 3 
+simpleError | <text>:2:6: unexpected input
+1: x <- 1
+2: y <- 1e
+        ^ | 
+unrecognizedEscape | '\q' is an unrecognized escape in character string (<input>:1:8) | <input> 1 8 
+unrecognizedEscape | '\q' is an unrecognized escape in character string (<input>:2:8) | FALSE 2 8 
+simpleError | 2:7: unexpected input
+1: a <- 1
+2:  b <- 0x
+         ^ | 
+unrecognizedEscape | '\q' is an unrecognized escape in character string (<input>:1:8) | <input> 1 8 
+invalidRawLiteral | malformed raw string literal (<input>:1:3) | <input> 1 3 
+unrecognizedEscape | '\q' is an unrecognized escape in character string (<text>:3:8) | <text> 3 8 
