@@ -78,21 +78,27 @@ R's 84,143,909 on the same runner.
 
 **The interim start, +80,848 instructions (+0.52%), though the interim
 boot never reads the cache.**
-- **The cause:** the PR grew `RtState` by 248 bytes, its writer's
-  capture held inline, from 824 to 1,072 bytes. A start makes five, and
-  glibc then rounds them to another chunk class. The start's calls are the
-  same, 2,271 `realloc` and 2,896 `malloc` with the same callers on both
-  binaries (callgrind), but glibc's paths in them cost +12k and +15k more:
-  the same work, priced by the allocator's layout.
+- **What moved it:** the PR grew `RtState` by 248 bytes, its writer's
+  capture held inline (824 to 1,072 bytes). A start boxes five. The calls
+  stay the same: 2,271 `realloc` and 2,896 `malloc`, with the same callers
+  on both binaries (callgrind). Their cost in glibc changes, +12k and +15k:
+  the same work, priced by the heap's layout.
 - **Found with:** an `LD_PRELOAD` shim that logs every allocation's size,
-  diffed between the two starts. Their first difference was this
-  allocation.
-- **The fix:** `RtState::tcache` is one word, a `OnceCell` of a box that
-  only the writer and a verification make. Measured from trees at one path,
-  the interim start is then 5,963 instructions below main's. The only
-  per-function difference left is `Verified::new` moving its check into
-  `code::check` (−1.6k). The rest moves with the tree's path: the same
-  binary measures 15,442k or 15,465k from two trees.
+  diffed between the two starts. Their first difference was this box.
+- **The mechanism** (H, on #984's same row, from CI's binaries): a start's
+  count is bimodal, in steps of about 80k, and the heap's layout picks the
+  step; R_HOME's path length alone moves it. Across a step the difference
+  is +60k in `memcpy` and +10k in `_int_malloc`, under `realloc` from
+  `Wide::parse`'s growing tables (base.rs: 1,193 names and a HashMap
+  grown by doubling). Each reallocation extends in place or copies,
+  depending on what lies above it. `RtState`'s size is one lever on that
+  layout, not a size-class cliff. #984 sizes those tables up front.
+- **What this PR does:** `RtState::tcache` is one word, a `OnceCell` of a
+  box that only the writer and a verification make. `RtState::base_src`
+  becomes a `OnceCell<PathBuf>`, 8 bytes smaller, set once by the boot's
+  load, so `RtState` keeps main's size with the cache's word. Without that,
+  on main 17a3d68ca the one word alone gave the interim start +0.68%
+  (15,372,768 against 15,268,258).
 
 **`rdb-jit`'s anonymous peak, +176 KiB against a limit of +68.** It was
 the header and entry table read whole, about 62 KiB, and the kept read

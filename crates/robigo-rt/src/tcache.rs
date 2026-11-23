@@ -796,10 +796,10 @@ struct Writer {
 
 /// The cache's per-isolate state (`RtState::tcache`): one word, empty until
 /// the writer or a verification first needs it (only the tree's build and
-/// `ROBIGO_TRANSLATION_CACHE=verify` do). `RtState` keeps its allocation
-/// size: an inline writer made it 248 bytes larger, and the allocator's
-/// changed paths cost every start 0.2-0.5% of its instructions, the interim
-/// boot's too, which never reads the cache (#979's first CI run).
+/// `ROBIGO_TRANSLATION_CACHE=verify` do). An inline writer made `RtState`
+/// 248 bytes larger for every start, which moved the heap's layout and with
+/// it the interim start's count (#979's first CI run; the ledger's "A
+/// start's count follows the heap's layout").
 #[derive(Default)]
 pub struct State(std::cell::OnceCell<Box<Inner>>);
 

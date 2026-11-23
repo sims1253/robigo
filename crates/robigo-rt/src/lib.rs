@@ -322,7 +322,7 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         folds: st.folds.copy(cx),
         compile_warnings: Default::default(),
         tcache: Default::default(),
-        base_src: std::cell::RefCell::new(st.base_src.borrow().clone()),
+        base_src: st.base_src.clone(),
     }
 }
 
