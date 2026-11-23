@@ -236,6 +236,21 @@ trees):
 Against the same pair's anonymous peak, +56 KiB on rdb-nocache in CI's
 image, the logical figure's floor is the code's real allocations.
 
+The baselines on main a0440322a (after #1004's pre-sizing), first shift,
+this machine:
+
+| start | t-gmax | anonymous peak (report only) |
+|---|---:|---:|
+| interim | 3,444,091 B | 1,817 KiB |
+| rdb-jit | 9,823,037 B | 6,831 KiB |
+| rdb-nojit | 7,566,885 B | 4,562 KiB |
+| rdb-nocache | 9,925,874 B | 6,970 KiB |
+| GNU R 4.6.2, JIT on | 14,580,868 B | 10,148 KiB |
+| GNU R 4.6.2, JIT off | 11,295,325 B | 6,898 KiB |
+
+A second run: interim the same to the byte, rdb-nocache 8 bytes less
+(9,925,866 B), against the 16 KiB floor of the limit.
+
 How to read the figure:
 - **A realloc counts at its new size,** not old and new together:
   growing 8 MiB to 16 MiB reads 16 MiB, measured. So a PR that pre-sizes a
