@@ -925,12 +925,16 @@ fn a_crosscheck_report_that_cannot_be_written_fails_the_run_ratcheted_or_not() {
     // filtered to a case with no marker: a plain failure would not fail the run
     o.filter = Some("tests/rt/smoke".into());
     let err = run(f.root(), &RT, &o).expect_err("an unwritten crosscheck report fails the run");
-    assert!(err.contains("could not write the byte-code crosscheck's report"), "{err}");
-    assert!(err.contains("tests/rt/smoke/one.R"), "{err}");
+    assert!(err.contains("lost a record of the byte-code crosscheck"), "{err}");
+    // each case with the line it printed: the paths and why
+    assert!(
+        err.contains("tests/rt/smoke/one.R: robigo: bc crosscheck: record lost: cannot write the report /x"),
+        "{err}"
+    );
     // the same case without the line, or with `.lost` made (rt-ci's check
     // of that file fails the step): a reported failure, not a failed run
     let r = run(f.root(), &RT, &opts_filtered(cat(), "tests/rt/smoke")).unwrap();
-    assert!(r.outcomes.iter().all(|c| !c.report_unwritten));
+    assert!(r.outcomes.iter().all(|c| c.report_unwritten.is_none()));
     let lost_made = f.root().join("lost-made-fake");
     std::fs::write(
         &lost_made,
@@ -939,7 +943,7 @@ fn a_crosscheck_report_that_cannot_be_written_fails_the_run_ratcheted_or_not() {
     .unwrap();
     std::fs::set_permissions(&lost_made, std::fs::Permissions::from_mode(0o755)).unwrap();
     let r = run(f.root(), &RT, &opts_filtered(lost_made, "tests/rt/smoke")).unwrap();
-    assert!(r.outcomes.iter().all(|c| !c.report_unwritten));
+    assert!(r.outcomes.iter().all(|c| c.report_unwritten.is_none()));
 }
 
 fn opts_filtered(bin: PathBuf, filter: &str) -> Options {

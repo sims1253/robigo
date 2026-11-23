@@ -746,14 +746,16 @@ pub struct Outcome {
     pub stderr_ok: bool,
     pub status_ok: bool,
     pub diff: String,
-    /// The case's stderr says the byte-code crosscheck could not write its
-    /// report ([`UNWRITTEN_REPORT`]): the run fails, ratcheted or not.
-    pub report_unwritten: bool,
+    /// The case's stderr line that says the byte-code crosscheck lost a
+    /// record ([`UNWRITTEN_REPORT`], with its paths and errors): the run
+    /// fails, ratcheted or not.
+    pub report_unwritten: Option<String>,
 }
 
 /// What robigo-rt's crosscheck prints when it can write neither its report
 /// nor `<report>.lost` (crates/robigo-rt/src/compile/crosscheck.rs,
-/// `report`; with `.lost` made, rt-ci's report check fails on that file
+/// `RECORD_LOST`, the same string: robigo-rtapi's tests/conformance.rs runs
+/// the two together; with `.lost` made, rt-ci's report check fails on that file
 /// instead). For a ratcheted case the stderr diff already fails the run;
 /// for an unratcheted one the record would otherwise be lost silently.
 pub const UNWRITTEN_REPORT: &[u8] = b"robigo: bc crosscheck: record lost:";
@@ -1030,7 +1032,7 @@ fn check(
                     stderr_ok: false,
                     status_ok: false,
                     diff,
-                    report_unwritten: false,
+                    report_unwritten: None,
                 },
                 None,
             );
@@ -1069,7 +1071,8 @@ fn check(
         // probed once, by the first case that fails
         diff.push_str(record.get_or_init(|| boot_record(column, o)));
     }
-    let report_unwritten = err.windows(UNWRITTEN_REPORT.len()).any(|w| w == UNWRITTEN_REPORT);
+    let report_unwritten =
+        String::from_utf8_lossy(&err).lines().find(|l| l.as_bytes().starts_with(UNWRITTEN_REPORT)).map(str::to_owned);
     (Outcome { id, unrecorded: None, stdout_ok, stderr_ok, status_ok, diff, report_unwritten }, Some(ran))
 }
 
@@ -1269,13 +1272,13 @@ pub fn run(root: &Path, column: &Column, o: &Options) -> Result<Report, String> 
     if outcomes.is_empty() {
         eprintln!("(no {} case selected: the filter matches only cases it has not ratcheted)", column.runtime);
     }
-    let unwritten: Vec<&str> = outcomes.iter().filter(|r| r.report_unwritten).map(|r| r.id.as_str()).collect();
+    let unwritten: Vec<String> =
+        outcomes.iter().filter_map(|r| r.report_unwritten.as_ref().map(|l| format!("  {}: {l}", r.id))).collect();
     if !unwritten.is_empty() {
         return Err(format!(
-            "{} case(s) could not write the byte-code crosscheck's report, ratcheted or not (their stderr: \"{}\"): {}",
+            "{} case(s) lost a record of the byte-code crosscheck, ratcheted or not:\n{}",
             unwritten.len(),
-            String::from_utf8_lossy(UNWRITTEN_REPORT),
-            unwritten.join(", ")
+            unwritten.join("\n")
         ));
     }
     if !gated && !outcomes.is_empty() && compared == 0 {

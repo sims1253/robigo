@@ -72,3 +72,41 @@ fn has_rt_home_tools(bin: &Path) -> bool {
         .unwrap_or_else(|e| panic!("running {}: {e}", bin.display()));
     out.stdout == b"TRUE"
 }
+
+/// The lost-record rule end to end: robigo-rt's crosscheck (its
+/// `RECORD_LOST` line) and the runner (its `UNWRITTEN_REPORT`) are two
+/// crates' strings; here the real binary loses a record (its report's
+/// directory is a file: neither the report nor `.lost` can be made, as root
+/// too) and the real runner fails the run on that case, though no marker
+/// holds it, with the binary's own line.
+#[test]
+fn a_lost_crosscheck_record_fails_the_run() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("lost-record-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let id = "tests/rt/lost/compiled.R";
+    let script = dir.join(id);
+    std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+    // one closure with byte code: the crosscheck has one record to write
+    std::fs::write(&script, "f <- compiler::cmpfun(function(x) x + 1)\ncat(f(1), \"\\n\")\n").unwrap();
+    let base = conf::expected_base(&dir, "tests/rt", &script, conf::RT.gated);
+    std::fs::create_dir_all(base.parent().unwrap()).unwrap();
+    let sha = conf::sha256_hex(&std::fs::read(&script).unwrap());
+    for (ext, body) in [("Rout", "2 \n".to_string()), ("Rerr", String::new()), ("Rstatus", "0\n".into()), ("Rsha", sha)]
+    {
+        std::fs::write(format!("{}.{ext}", base.display()), body).unwrap();
+    }
+    let not_a_dir = dir.join("a-file");
+    std::fs::write(&not_a_dir, "").unwrap();
+    let mut o = conf::Options::from_env(&conf::RT, rt_bin()).unwrap_or_else(|e| panic!("{e}"));
+    o.filter = Some("tests/rt/lost".into());
+    o.slots = None;
+    o.times = None;
+    o.env.push(("R_ENABLE_JIT".into(), Some("0".into())));
+    o.env.push(("ROBIGO_BC_CROSSCHECK".into(), Some("1".into())));
+    o.env.push(("ROBIGO_BC_CROSSCHECK_REPORT".into(), Some(not_a_dir.join("report").into())));
+    let err = conf::run(&dir, &conf::RT, &o).expect_err("a lost crosscheck record fails the run");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(err.contains("lost a record of the byte-code crosscheck"), "{err}");
+    assert!(err.contains(&format!("{id}: robigo: bc crosscheck: record lost: cannot write the report")), "{err}");
+    assert!(err.contains("Not a directory"), "the binary's own reason: {err}");
+}
