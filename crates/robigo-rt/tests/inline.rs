@@ -128,6 +128,41 @@ fn debugged_closures_are_not_inlined() {
 }
 
 #[test]
+fn and2nd_or2nd_keep_the_first_operand_inline_as_the_vm_does() {
+    // byte code from `mkCode` (#976, #1003's seed 7 case): OR2ND and AND2ND
+    // with no OR1ST or AND1ST before them, and below them an integer, 5L,
+    // that ADD computed: an unboxed integer, as the second operand (LT or
+    // GT's) is an unboxed logical, which an inline run takes. bcEval
+    // (eval.c's AND2ND/OR2ND) writes the second operand over the first only
+    // where it decides (`||`: not FALSE; `&&`: FALSE or NA): `or2` (3 < 0)
+    // and `and2` (3 > 0) keep the 5L, `or2t` and `and2f` give TRUE and
+    // FALSE. The inline run must leave what the VM leaves.
+    // LDCONST 0, LDCONST 1, ADD 2, LDCONST 1, LDCONST 3, LT/GT 4,
+    // OR2ND/AND2ND 5, RETURN
+    let mut r = Session::jit();
+    r.val(
+        r#"
+mk <- function(op, rel) .Internal(bcClose(NULL, .Internal(mkCode(
+  c(12L, 16L, 0L, 16L, 1L, 44L, 2L, 16L, 1L, 16L, 3L, rel, 4L, op, 5L, 1L),
+  list(2L, 3L, quote(2L + 3L), 0L, quote(3L > 0L), quote(a || b)))), globalenv()))
+or2 <- mk(91L, 53L)
+and2 <- mk(89L, 56L)
+or2t <- mk(91L, 56L)
+and2f <- mk(89L, 53L)
+h <- function(n) { s <- 0L; for (i in 1:n) s <- s + or2() + and2() + or2t() + and2f(); s }
+"#,
+    );
+    for _ in 0..3 {
+        r.val("h(2)");
+    }
+    let (on, off, runs) = both(&mut r, "h(4)");
+    assert_eq!(on, off);
+    // each iteration: 5 + 5 + TRUE + FALSE
+    assert_eq!(on.result.map(|(v, _)| v), Ok(Val::Int(vec![44])));
+    assert!(runs >= 16, "the four closures run inline: {runs}");
+}
+
+#[test]
 fn the_depth_limit_falls_where_real_calls_put_it() {
     let mut r = Session::jit();
     r.val("d <- function(n) if (n == 0) 0 else d(n - 1) + 1; h <- function(n) d(n)");
