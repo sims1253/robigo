@@ -1,0 +1,14 @@
+direct:             187 
+symbol:             186 
+e$p:                185 
+e[["p"]]:           185 
+get("p"):           184 
+get0("p"):          184 
+mget("p"):          183 
+as.list(f):         182 
+eapply(f, I):       183 
+UseMethod (fresh):  184 
+UseMethod (forced): 184 
+[1] "evaluation nested too deeply: infinite recursion / options(expressions=)?"
+[1] 42
+restart warnings: 1 

@@ -1,0 +1,3 @@
+Warning message:
+In quit("ask", 1) :
+  save="ask" in non-interactive use: command-line default will be used

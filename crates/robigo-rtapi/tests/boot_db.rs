@@ -57,12 +57,41 @@ fn tree_made() -> bool {
 /// robigo-rt booted from the tree with `args` and the extra environment
 /// `env`: (stdout, stderr, status).
 fn boot(args: &[&std::ffi::OsStr], env: &[(&str, &std::ffi::OsStr)]) -> (String, String, Option<i32>) {
+    boot_bin_reading(std::path::Path::new(env!("CARGO_BIN_EXE_robigo-rt")), args, env, None)
+}
+
+/// [`boot`] with `stdin` as the console's input (None: no stdin).
+fn boot_reading(
+    args: &[&std::ffi::OsStr],
+    env: &[(&str, &std::ffi::OsStr)],
+    stdin: Option<&[u8]>,
+) -> (String, String, Option<i32>) {
+    boot_bin_reading(std::path::Path::new(env!("CARGO_BIN_EXE_robigo-rt")), args, env, stdin)
+}
+
+/// [`boot`] with the robigo-rt at `bin` (its R_HOME the install layout's:
+/// `lib/robigo` beside its `bin`).
+fn boot_bin(
+    bin: &std::path::Path,
+    args: &[&std::ffi::OsStr],
+    env: &[(&str, &std::ffi::OsStr)],
+) -> (String, String, Option<i32>) {
+    boot_bin_reading(bin, args, env, None)
+}
+
+/// [`boot_bin`] with `stdin` as the console's input (None: no stdin).
+fn boot_bin_reading(
+    bin: &std::path::Path,
+    args: &[&std::ffi::OsStr],
+    env: &[(&str, &std::ffi::OsStr)],
+    stdin: Option<&[u8]>,
+) -> (String, String, Option<i32>) {
     // one directory per run (the tests run in parallel)
     static RUN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let home = std::env::temp_dir().join(format!("robigo-boot-db-home-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
-    let o = Command::new(env!("CARGO_BIN_EXE_robigo-rt"))
+    let mut o = Command::new(bin)
         .args(args)
         .current_dir(&home)
         // a private cwd and HOME: no caller's .Renviron or .Rprofile
@@ -104,8 +133,22 @@ fn boot(args: &[&std::ffi::OsStr], env: &[(&str, &std::ffi::OsStr)]) -> (String,
         .env_remove("ROBIGO_BOOT_VERBOSE")
         // the test's own, last (over the removals above)
         .envs(env.iter().copied())
-        .output()
+        .stdin(if stdin.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .unwrap_or_else(|e| panic!("running robigo-rt: {e}"));
+    if let Some(bytes) = stdin {
+        // (all of it, then the end: the console reads it as it goes; a run
+        // that halts first, as a script at a start-up error does, may close
+        // the pipe before the write lands: cli.rs's `run` allows that too)
+        let mut w = o.stdin.take().unwrap();
+        match std::io::Write::write_all(&mut w, bytes) {
+            Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => panic!("writing robigo-rt's stdin: {e}"),
+            _ => {}
+        }
+    }
+    let o = o.wait_with_output().unwrap_or_else(|e| panic!("running robigo-rt: {e}"));
     let _ = std::fs::remove_dir_all(&home);
     (String::from_utf8_lossy(&o.stdout).into_owned(), String::from_utf8_lossy(&o.stderr).into_owned(), o.status.code())
 }
@@ -327,5 +370,124 @@ fn a_named_profile_that_does_not_open_is_no_profile() {
         &["--no-save".as_ref(), "--no-restore".as_ref(), "--no-echo".as_ref(), "-e".as_ref(), "cat('ran\\n')".as_ref()],
         &[("R_PROFILE", missing), ("R_PROFILE_USER", missing)],
     );
+    assert_eq!((out.as_str(), err.as_str(), status), ("ran\n", PROFILE_STOPS, Some(0)));
+}
+
+/// R_Interactive, set before base and the profiles (Rf_initialize_R), makes
+/// every start-up step's error go on, as GNU R 4.6.2 does (recorded on the
+/// oracle, `R --no-readline --interactive --no-save --quiet < input`):
+/// setup_Rmainloop runs each step under its own `SETJMP(R_Toplevel.cjmpbuf)`
+/// whose `check_session_exit` halts only `if (! R_Interactive)` (main.c:331).
+/// The site profile's and the user profile's rest is not read, `.First`'s
+/// error is reported, and the console reads its input. The same files halt
+/// a script at the site profile's error.
+#[test]
+fn start_up_errors_go_on_to_the_interactive_prompt() {
+    if !tree_made() {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("robigo-boot-db-interactive-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let site = dir.join("site.R");
+    std::fs::write(&site, "cat(\"site one\\n\")\nstop(\"site boom\")\ncat(\"site rest\\n\")\n").unwrap();
+    let user = dir.join("user.R");
+    std::fs::write(
+        &user,
+        "cat(\"user one\\n\")\n.First <- function() { cat(\"first\\n\"); stop(\"first boom\") }\n\
+         stop(\"user boom\")\ncat(\"user rest\\n\")\n",
+    )
+    .unwrap();
+    let env = [("R_PROFILE", site.as_os_str()), ("R_PROFILE_USER", user.as_os_str()), ("R_ENVIRON_USER", "".as_ref())];
+    let input = b"cat(\"console\\n\")\n1 + 1\n";
+    let interactive = boot_reading(
+        &["--no-readline".as_ref(), "--interactive".as_ref(), "--no-save".as_ref(), "--quiet".as_ref()],
+        &env,
+        Some(input),
+    );
+    let script = boot_reading(&["--no-save".as_ref(), "--quiet".as_ref()], &env, Some(input));
+    let _ = std::fs::remove_dir_all(&dir);
+    // INTERIM(keep.source): the system profile's options(keep.source =
+    // interactive()) is refused (no source references yet); GNU R's stderr
+    // does not have this error, and its keep.source is TRUE
+    let want_err =
+        format!("{INTERACTIVE_PROFILE_STOPS}Error: site boom\nError: user boom\nError in .First() : first boom\n");
+    assert_eq!(
+        (interactive.0.as_str(), interactive.1.as_str(), interactive.2),
+        ("site one\nuser one\nfirst\n> console\n> [1] 2\n> \n", want_err.as_str(), Some(0))
+    );
+    let halted = format!("{PROFILE_STOPS}Error: site boom\nExecution halted\n");
+    assert_eq!((script.0.as_str(), script.1.as_str(), script.2), ("site one\n", halted.as_str(), Some(1)));
+}
+
+/// What the system profile's interactive start stops at in robigo-rt and
+/// GNU R does not (INTERIM(keep.source)).
+const INTERACTIVE_PROFILE_STOPS: &str =
+    "Error in options(...) : \n  robigo: options(keep.source = TRUE) (source references) is not implemented yet\n";
+
+#[test]
+fn a_broken_compiler_database_ends_the_start_as_in_gnu_r() {
+    if !tree_made() {
+        return;
+    }
+    // R_init_jit_enabled's loadCompilerNamespace fails: check_session_exit
+    // halts R, or with options(error) lets it go on to R_Suicide("unable to
+    // initialize the JIT") (main.c:1205-1214, eval.c:1415); GNU R 4.6.2's
+    // output with its compiler's .rdb and .rdx removed (an emptied .rdb is
+    // not a case: GNU R's readRawFromFile then copies the record from past
+    // its zero-length cache, serialize.c:3146, and inflates what it read)
+    let tree = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.robigo/rt-home-db");
+    static RUN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    // (the install layout robigo-rt finds its R_HOME by: DIR/bin/robigo-rt,
+    // DIR/lib/robigo, a copy of the tree; an R_HOME in the environment is
+    // ignored, as GNU R's is)
+    let copy = |what: &str| {
+        let n = RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("robigo-boot-db-{what}-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::create_dir_all(dir.join("lib")).unwrap();
+        std::fs::copy(env!("CARGO_BIN_EXE_robigo-rt"), dir.join("bin/robigo-rt")).unwrap();
+        let ok = Command::new("cp").arg("-a").arg(&tree).arg(dir.join("lib/robigo")).status().unwrap().success();
+        assert!(ok, "copying {}", tree.display());
+        dir
+    };
+    let ran: &[&std::ffi::OsStr] =
+        &["--vanilla".as_ref(), "--no-echo".as_ref(), "-e".as_ref(), "cat('ran\\n')".as_ref()];
+    // (removed when the test ends, an assertion's panic included)
+    struct Gone(std::path::PathBuf);
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let dir = copy("removed");
+    let _gone = Gone(dir.clone());
+    let bin = dir.join("bin/robigo-rt");
+    let home = std::fs::canonicalize(dir.join("lib/robigo")).unwrap();
+    std::fs::remove_file(home.join("library/compiler/R/compiler.rdb")).unwrap();
+    std::fs::remove_file(home.join("library/compiler/R/compiler.rdx")).unwrap();
+    let errors = format!(
+        "Error in gzfile(file, \"rb\") : cannot open the connection\nIn addition: Warning message:\n\
+         In gzfile(file, \"rb\") :\n  cannot open compressed file '{}/library/compiler/R/compiler.rdx', probable reason 'No such file or directory'\n\
+         Error: unable to load R code in package ‘compiler’\n",
+        home.display()
+    );
+    // check_session_exit halts R
+    let (out, err, status) = boot_bin(&bin, ran, &[]);
+    assert_eq!((out.as_str(), err, status), ("", format!("{errors}Execution halted\n"), Some(1)));
+    // with options(error) it lets R go on, to R_Suicide
+    let prof = dir.join("prof.R");
+    std::fs::write(&prof, "options(error = function() NULL)\n").unwrap();
+    let (out, err, status) = boot_bin(
+        &bin,
+        &["--no-save".as_ref(), "--no-restore".as_ref(), "--no-echo".as_ref(), "-e".as_ref(), "cat('ran\\n')".as_ref()],
+        &[("R_PROFILE_USER", prof.as_os_str())],
+    );
+    assert_eq!(
+        (out.as_str(), err, status),
+        ("", format!("{errors}Fatal error: unable to initialize the JIT\n\n"), Some(2))
+    );
+    // the JIT off: no compiler at the start
+    let (out, err, status) = boot_bin(&bin, ran, &[("R_ENABLE_JIT", "0".as_ref())]);
     assert_eq!((out.as_str(), err.as_str(), status), ("ran\n", PROFILE_STOPS, Some(0)));
 }

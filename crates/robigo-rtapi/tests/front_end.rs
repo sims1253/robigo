@@ -121,3 +121,35 @@ fn stage0_says_a_missing_tree_is_missing() {
         )
     );
 }
+
+#[test]
+fn a_panic_after_quit_s_context_reset_aborts_without_returning() {
+    use std::os::unix::process::ExitStatusExt;
+    // quit()'s R_CleanUp after R_dot_Last's context reset runs under a
+    // guard: a panic there (ROBIGO_PANIC_AFTER_RESET=1 makes one) ends the
+    // process with abort, never unwinding into the frames the reset
+    // abandoned: f()'s on.exit does not run
+    let mut cmd = front_end(&[("ROBIGO_PANIC_AFTER_RESET", "1")]);
+    cmd.args(["-e", "f <- function() { on.exit(cat('on.exit\\n')); quit('no', 3) }; f()"]);
+    let out = cmd.output().expect("running robigo-rt");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.signal(), Some(libc::SIGABRT), "{:?} {err}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    assert!(err.contains("robigo: a panic after quit()'s context reset: aborting"), "{err}");
+}
+
+// (/dev/full is Linux's: the workspace's macOS runs, platforms.yml, would
+// not have it; robigo-heap's tests gate their Linux-only checks the same way)
+#[cfg(target_os = "linux")]
+#[test]
+fn a_panic_after_quit_s_context_reset_aborts_with_stderr_unwritable() {
+    use std::os::unix::process::ExitStatusExt;
+    // the same with stderr on /dev/full: the guard's own report cannot be
+    // written, and still nothing unwinds (f()'s on.exit writes to stdout)
+    let mut cmd = front_end(&[("ROBIGO_PANIC_AFTER_RESET", "1")]);
+    cmd.args(["-e", "f <- function() { on.exit(cat('on.exit\\n')); quit('no', 3) }; f()"]);
+    cmd.stderr(std::fs::File::options().write(true).open("/dev/full").expect("opening /dev/full"));
+    let out = cmd.output().expect("running robigo-rt");
+    assert_eq!(out.status.signal(), Some(libc::SIGABRT), "{:?}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+}

@@ -927,7 +927,8 @@ pub fn env_value_sym(cx: &mut Cx, env: Root<'_>, sym: Root<'_>, out: Out<'_>) ->
         if val == cx.unbound() {
             out.set(cx, cx.nil());
         } else if val.sexptype() == PROMSXP {
-            cx.force(vr, out)?;
+            // R: y = eval(y, R_GlobalEnv)
+            cx.eval_promise(vr, out)?;
         } else {
             out.set(cx, val);
         }

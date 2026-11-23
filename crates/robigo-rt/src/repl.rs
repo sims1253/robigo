@@ -30,6 +30,113 @@ const WARN_LENGTH: usize = 1000;
 /// fills at most all but one byte.
 const CONSOLE_BUFFER_SIZE: usize = 4096;
 
+/// Where the console reads: a FILE's or `-e`'s text, held whole, or the
+/// process's stdin, read a line at a time as `fgets` reads it, so that the
+/// session runs (and its prompts show) before the input ends.
+pub enum Input<'a> {
+    Bytes(&'a [u8]),
+    Stdin(StdinBuf),
+}
+
+/// The console's own buffer over fd 0 (stdio's `stdin`, which `fgets`
+/// reads), so that the interactive wait knows whether input is already
+/// buffered before it waits.
+#[derive(Default)]
+pub struct StdinBuf {
+    buf: Vec<u8>,
+    pos: usize,
+    eof: bool,
+}
+
+impl StdinBuf {
+    pub fn new() -> StdinBuf {
+        StdinBuf::default()
+    }
+
+    fn buffered(&self) -> bool {
+        self.pos < self.buf.len()
+    }
+
+    /// More bytes from fd 0 (a signal's interruption retried); false at the
+    /// end or on an error (stdio's EOF and error flags).
+    fn refill(&mut self) -> bool {
+        if self.eof {
+            return false;
+        }
+        let mut b = [0u8; 4096];
+        loop {
+            match robigo_rtcore::clib::read_fd(0, &mut b) {
+                Ok(0) => {
+                    self.eof = true;
+                    return false;
+                }
+                Ok(n) => {
+                    self.buf.drain(..self.pos);
+                    self.pos = 0;
+                    self.buf.extend_from_slice(&b[..n]);
+                    return true;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => {
+                    self.eof = true;
+                    return false;
+                }
+            }
+        }
+    }
+}
+
+impl Input<'_> {
+    /// `fgets(buf, len, stdin)`'s bytes: through the next newline, at most
+    /// `len - 1`; None at the end of the input (or a read error, as
+    /// `fgets`'s NULL).
+    fn fgets(&mut self, len: usize) -> Option<Vec<u8>> {
+        match self {
+            Input::Bytes(b) => {
+                if b.is_empty() {
+                    return None;
+                }
+                let n = match b.iter().take(len - 1).position(|&c| c == b'\n') {
+                    Some(i) => i + 1,
+                    None => b.len().min(len - 1),
+                };
+                let (read, rest) = b.split_at(n);
+                *b = rest;
+                Some(read.to_vec())
+            }
+            Input::Stdin(r) => {
+                let mut line = Vec::new();
+                loop {
+                    if !r.buffered() && !r.refill() {
+                        break;
+                    }
+                    let avail = &r.buf[r.pos..];
+                    let room = len - 1 - line.len();
+                    let take = match avail.iter().take(room).position(|&c| c == b'\n') {
+                        Some(i) => i + 1,
+                        None => avail.len().min(room),
+                    };
+                    line.extend_from_slice(&avail[..take]);
+                    r.pos += take;
+                    if line.ends_with(b"\n") || line.len() == len - 1 {
+                        break;
+                    }
+                }
+                (!line.is_empty()).then_some(line)
+            }
+        }
+    }
+}
+
+/// What a console read gives: a line, the end of the input, or a user
+/// interrupt while it waited, after which the console starts a new
+/// statement at a new prompt (its jump landed at the top level).
+enum Read {
+    Line(Vec<u8>),
+    End,
+    Reset,
+}
+
 /// Run `src` as R runs console input that is not interactive: true when it
 /// ran to the end, false when an error ended it (the error written
 /// already; the caller writes "Execution halted" and exits with status 1).
@@ -37,7 +144,7 @@ const CONSOLE_BUFFER_SIZE: usize = 4096;
 /// = )` changes it), each line read is written after its prompt (`R -f
 /// FILE`). The end of the input is the caller's (`end_Rmainloop`).
 // R: main.c:R_ReplConsole, Rf_ReplIteration; unix/sys-std.c:Rstd_ReadConsole
-pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
+pub fn run_console(cx: &mut Cx, input: &mut Input<'_>) -> bool {
     // setup_Rmainloop: `.Last.value` is NULL before the first statement
     let ok = cx.scope(|cx, s| {
         let nil = s.root(cx, cx.nil());
@@ -62,12 +169,19 @@ pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
     // prompt the next read shows (1: a new statement, 2: inside one)
     let mut incomplete = false;
     let mut prompt_type = 1;
-    let mut input = src;
     // Rf_ReplIteration: the next line is read once the last is used up
     loop {
-        let line = match read_console(cx, &mut input, prompt_type) {
-            Ok(Some(line)) => line,
-            Ok(None) => break,
+        let line = match read_console(cx, input, prompt_type) {
+            Ok(Read::Line(line)) => line,
+            Ok(Read::End) => break,
+            Ok(Read::Reset) => {
+                // run_Rmainloop's longjmp target: R_ReplConsole again, its
+                // state reset
+                iob.clear();
+                incomplete = false;
+                prompt_type = 1;
+                continue;
+            }
             Err(err) => {
                 // (reported where it was raised)
                 cx.resolve_exit(err, None);
@@ -188,8 +302,8 @@ pub fn run_console(cx: &mut Cx, src: &[u8]) -> bool {
 /// `end_Rmainloop` runs again. As in GNU R, a `.Last` that always fails
 /// then never ends.
 // R: main.c:run_Rmainloop, end_Rmainloop, R_CleanUp (unix/sys-std.c)
-pub fn run_session(cx: &mut Cx, src: &[u8]) -> bool {
-    if !run_console(cx, src) {
+pub fn run_session(cx: &mut Cx, input: &mut Input<'_>) -> bool {
+    if !run_console(cx, input) {
         return false;
     }
     loop {
@@ -212,7 +326,7 @@ pub fn run_session(cx: &mut Cx, src: &[u8]) -> bool {
 /// error reported).
 // R: main.c:R_ReplConsole, unix/sys-std.c:Rstd_ReadConsole
 fn console_at_end(cx: &mut Cx) -> bool {
-    match read_console(cx, &mut &b""[..], 1) {
+    match read_console(cx, &mut Input::Bytes(b""), 1) {
         Ok(_) => true,
         Err(err) => {
             // (reported where it was raised)
@@ -254,9 +368,13 @@ pub(crate) fn error_at_top_after(cx: &mut Cx, warnings: &[String], msg: &str) {
 /// goes on (true) when `options(error)` is set or
 /// `options(catch.script.errors)` is TRUE; otherwise it halts (false: the
 /// caller writes "Execution halted" and quits with status 1, running no
-/// `.Last`). R_Interactive is FALSE.
+/// `.Last`). An interactive session always goes on.
 // R: main.c:check_session_exit
 pub(crate) fn check_session_exit(cx: &mut Cx) -> bool {
+    // (R_Interactive: the session goes on at the prompt)
+    if robigo_rtbuiltins::sysutils::interactive(cx) {
+        return true;
+    }
     cx.scope(|cx, s| {
         let go_on = (|| {
             let error = robigo_rtbuiltins::options::get_option(cx, s, b"error")?;
@@ -288,23 +406,40 @@ pub(crate) fn check_session_exit(cx: &mut Cx) -> bool {
 /// GNU R writes both with `fputs` to the process's `stdout`, past any
 /// `sink()`; here that is the console's output, which robigo-rt has no
 /// `sink()` for yet.
+///
+/// When R is interactive, it is `Rstd_ReadConsole`'s path without readline
+/// (`--no-readline`; robigo-rt has no readline): the prompt written and
+/// flushed (unless `R_NoEcho`), then the line `fgets` reads, as it is.
 // R: unix/sys-std.c:Rstd_ReadConsole
-fn read_console(cx: &mut Cx, input: &mut &[u8], prompt_type: i32) -> RResult<Option<Vec<u8>>> {
-    let echo = !cx.no_echo();
-    if echo {
+fn read_console(cx: &mut Cx, input: &mut Input<'_>, prompt_type: i32) -> RResult<Read> {
+    let interactive = robigo_rtbuiltins::sysutils::interactive(cx);
+    // the prompt unless R_NoEcho (R_PromptString's ""); interactive,
+    // without readline, the line is not written back (the terminal shows
+    // what is typed)
+    let echo = !interactive && !cx.no_echo();
+    if !cx.no_echo() {
         let prompt = prompt_string(cx, prompt_type)?;
         cx.rprintf(&prompt);
-    }
-    if input.is_empty() {
-        return Ok(None);
+        // fflush(stdout): the prompt shows before the read waits
+        cx.flush_console();
     }
     let len = CONSOLE_BUFFER_SIZE;
-    let n = match input.iter().take(len - 1).position(|&b| b == b'\n') {
-        Some(i) => i + 1,
-        None => input.len().min(len - 1),
-    };
-    let (read, rest) = input.split_at(n);
-    *input = rest;
+    // interactive: the wait for input takes a user interrupt (sys-std.c's
+    // R_checkActivityEx with handleInterrupt)
+    if interactive
+        && let Input::Stdin(r) = input
+        && !r.buffered()
+        && !r.eof
+        && r_wait(cx)
+    {
+        return Ok(Read::Reset);
+    }
+    let Some(read) = input.fgets(len) else { return Ok(Read::End) };
+    if interactive {
+        // Rf_ReplIteration takes the buffer up to its first NUL
+        let ll = read.iter().position(|&b| b == 0).unwrap_or(read.len());
+        return Ok(Read::Line(read[..ll].to_vec()));
+    }
     // feof: fgets stopped at the end of the input, not at a newline or the
     // end of the buffer
     let eof = !read.ends_with(b"\n") && read.len() < len - 1;
@@ -322,7 +457,37 @@ fn read_console(cx: &mut Cx, input: &mut &[u8], prompt_type: i32) -> RResult<Opt
     if echo {
         cx.rprintf(&buf);
     }
-    Ok(Some(buf))
+    Ok(Read::Line(buf))
+}
+
+/// The interactive console's wait for stdin: true when a user interrupt
+/// came while it waited, taken (`onintrNoResume`) and landed at the top
+/// level; false when input (or its end) is there to read.
+// R: unix/sys-std.c:Rstd_ReadConsole, R_checkActivityEx, handleInterrupt
+fn r_wait(cx: &mut Cx) -> bool {
+    // (a SIGINT noted before the wait, or during it; the check and the
+    // wait leave no gap between them)
+    match robigo_rtcore::clib::wait_readable_or(0, || cx.take_user_interrupt()) {
+        Ok(robigo_rtcore::clib::Ready::Interrupt) => {
+            interrupt_at_top(cx);
+            true
+        }
+        // (a read error: fgets's NULL, the end, follows)
+        Ok(robigo_rtcore::clib::Ready::Input) | Err(_) => false,
+    }
+}
+
+/// `onintrNoResume()` at the top level: its jump lands on a REPL top-level
+/// record, as [`error_at_top`]'s.
+fn interrupt_at_top(cx: &mut Cx) {
+    cx.scope(|cx, s| {
+        let g = s.root(cx, cx.global_env());
+        let base = s.root(cx, cx.base_env());
+        let landed = cx
+            .repl_toplevel(g, base, |cx| Err(crate::conditions::onintr_no_resume(cx)))
+            .expect("robigo: an exit that passed the top level");
+        debug_assert!(!landed, "robigo: an interrupt that returned");
+    })
 }
 
 /// `R_PromptString(0, prompt_type)` with echo: `getOption("prompt")` for a
@@ -483,6 +648,256 @@ pub fn error_text(cx: &Cx, e: &RError) -> String {
         buf.push('\n');
     }
     buf
+}
+
+/// `.Internal(quit(save, status, runLast))`: `R_CleanUp(save, status,
+/// runLast)`, then the process ends, from inside the call (GNU R's `exit`:
+/// no `on.exit` or `finally` runs, the console is flushed; robigo-rt's file
+/// connections write through, so nothing else is left in a buffer).
+///
+/// The save action: `"default"` and non-interactive `"ask"` are the command
+/// line's `SaveAction`, which in robigo-rt is always `SA_NOSAVE` (it refuses
+/// `--save`, and R without a console needs `--no-save` or `--vanilla`, or
+/// implies them); `"yes"` saves the image as `R_SaveGlobalEnv` does, after
+/// `.Last`: `sys.save.image(".RData")` (the image is dirty by then in GNU
+/// R: the start removed `.Library.site` from the global environment).
+/// With `runLast`, the context is cut back to the session's base record
+/// first (`R_dot_Last`'s `R_GlobalContext = &R_Toplevel`): `.Last`,
+/// `.Last.sys` and the save then see no frame of quit()'s callers
+/// (`sys.calls()`), and an exiting handler around quit() finds "no function
+/// to return from"; an error lands on the top level, where
+/// `check_session_exit` halts R, or GNU R goes back to the main loop (and,
+/// `.Last` failing again at the end, never ends), which robigo-rt refuses
+/// (and halts). Without it the save runs in quit()'s context, its error
+/// quit()'s. No browser context can be active (robigo
+/// has no `browser`), so "cannot quit from browser" cannot arise; there is
+/// no session temporary directory to remove and no device to close.
+// R: main.c:do_quit, R_dot_Last; unix/sys-std.c:Rstd_CleanUp;
+// saveload.c:R_SaveGlobalEnvToFile
+pub fn do_quit(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: Root<'_>,
+    _out: robigo_rtcore::Out<'_>,
+) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "quit", 3, true)?;
+    let save = args.get(cx, 0);
+    if save.sexptype() != STRSXP {
+        return Err(cx.error("one of \"yes\", \"no\", \"ask\" or \"default\" expected."));
+    }
+    let Some(tmp) =
+        save.as_vector::<robigo_rtcore::Char<'_>>().filter(|v| !v.is_empty()).map(|v| v.get(0).bytes().to_vec())
+    else {
+        // STRING_ELT's bounds check
+        return Err(cx.error("attempt access index 0/0 in STRING_ELT"));
+    };
+    let save = match &tmp[..] {
+        b"ask" => {
+            // (R_Interactive is FALSE)
+            cx.warning("save=\"ask\" in non-interactive use: command-line default will be used")?;
+            SaveAction::Ask
+        }
+        b"no" => SaveAction::NoSave,
+        b"yes" => SaveAction::Save,
+        b"default" => SaveAction::Default,
+        _ => return Err(cx.error("unrecognized value of 'save'")),
+    };
+    let mut status = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(1))?;
+    if status == i32::MIN {
+        cx.warning("invalid 'status', 0 assumed")?;
+        status = 0;
+    }
+    let mut run_last = robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 2));
+    if run_last == i32::MIN {
+        cx.warning("invalid 'runLast', FALSE assumed")?;
+        run_last = 0;
+    }
+    match clean_up(cx, save, status, run_last != 0)? {}
+}
+
+/// `SA_TYPE` (Startup.h): what R does with the workspace as it ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaveAction {
+    /// The command line's (`SaveAction`).
+    Default,
+    NoSave,
+    Save,
+    /// Ask on the console (the command line's without one).
+    Ask,
+    /// R_Suicide's: nothing, no warnings.
+    Suicide,
+}
+
+/// The command line's `SaveAction`, which `SA_DEFAULT` means at the end:
+/// set by the front end (`--save`, `--no-save`, `--vanilla`, a FILE),
+/// SA_NOSAVE until it does. A layer state of its own, not an `RtState`
+/// field (a new field there moves the VM's reads).
+struct SessionSave(std::cell::Cell<SaveAction>);
+
+/// Set the command line's `SaveAction` (R_SetParams' `Rp->SaveAction`).
+pub fn set_save_action(cx: &mut Cx, save: SaveAction) {
+    match cx.ext::<SessionSave>() {
+        Some(s) => s.0.set(save),
+        None => cx.set_ext(SessionSave(std::cell::Cell::new(save))),
+    }
+}
+
+fn session_save(cx: &Cx) -> SaveAction {
+    cx.ext::<SessionSave>().map_or(SaveAction::NoSave, |s| s.0.get())
+}
+
+/// `R_CleanUp(save, status, runLast)` (Rstd_CleanUp): every way R ends goes
+/// through it (quit(), the session's end, check_session_exit's halt,
+/// R_Suicide). The save action resolved (`SA_DEFAULT`: the command line's;
+/// `SA_SAVEASK` without a console: the command line's, the question being
+/// the interactive console's, which robigo-rt does not have yet); then,
+/// with `run_last`, R_dot_Last's cut of the context back to the top level,
+/// `.Last` and `.Last.sys`, and the image saved there (SA_SAVE: the image
+/// is always dirty by then, as in GNU R, whose start removed
+/// `.Library.site` from the global environment); without it the image
+/// saved in the caller's context, so that an error in the save is the
+/// caller's (quit()'s, catchable): the only way this returns. Then the
+/// exit finalizers, (R_CleanTempDir: B's), the warnings unless SA_SUICIDE,
+/// the console flushed, and the process ended with `status` (no unwinding:
+/// GNU R's `exit`). An error in `.Last` or the save at the top level is
+/// check_session_exit's: R halts (status 1), or GNU R goes back to the
+/// main loop (and, `.Last` failing again at the end, never ends), which
+/// robigo-rt refuses and halts.
+// R: unix/sys-std.c:Rstd_CleanUp, main.c:R_dot_Last, saveload.c:R_SaveGlobalEnv
+#[allow(unsafe_code)] // R_dot_Last's context reset (Cx::reset_to_session)
+pub fn clean_up(cx: &mut Cx, save: SaveAction, status: i32, run_last: bool) -> RResult<std::convert::Infallible> {
+    let mut sa = if save == SaveAction::Default { session_save(cx) } else { save };
+    if sa == SaveAction::Ask {
+        // (no console to ask on: the command line's; were that SA_SAVEASK
+        // too, which R without a console does not allow, no save)
+        sa = match session_save(cx) {
+            SaveAction::Ask | SaveAction::Default => SaveAction::NoSave,
+            s => s,
+        };
+    }
+    let yes = sa == SaveAction::Save;
+    if !run_last || sa == SaveAction::Suicide {
+        if yes {
+            save_global_env(cx)?;
+        }
+        exit(cx, status, sa == SaveAction::Suicide)
+    }
+    // R_dot_Last: the top level the context from here on. Nothing below may
+    // come back into a frame the reset abandons, so it all runs under one
+    // guard: its normal end is `exit`; an R error lands on a top-level
+    // record pushed on the base (dot_last's, at_top's), and from there
+    // check_session_exit's halt is `exit` too; a panic is caught at the
+    // guard and ends the process with `abort`, before it could unwind
+    // into the abandoned frames (do_quit's caller and up).
+    // SAFETY: no record above the session's base is used again: every
+    // way out of the guard below ends the process (exit or abort), and the
+    // guard is entered right after the reset.
+    unsafe { cx.reset_to_session() };
+    let guarded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| after_reset(cx, yes, status)));
+    match guarded {
+        Ok(never) => match never {},
+        Err(_) => {
+            // (the panic's message was printed by the hook; this line's
+            // write cannot panic, as eprintln! would on a stderr it cannot
+            // write: nothing between here and abort may unwind)
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(b"robigo: a panic after quit()'s context reset: aborting\n");
+            std::process::abort()
+        }
+    }
+}
+
+/// `R_CleanUp` after R_dot_Last's context reset ([`clean_up`]): `.Last`,
+/// `.Last.sys` and the save at the top level, then `exit`. Never returns;
+/// its caller catches a panic.
+fn after_reset(cx: &mut Cx, yes: bool, status: i32) -> std::convert::Infallible {
+    // ROBIGO_PANIC_AFTER_RESET=1: a panic here, for the guard's test
+    // (tests/boot_db.rs has none to make; read only on this path)
+    if std::env::var_os("ROBIGO_PANIC_AFTER_RESET").is_some_and(|v| v == "1") {
+        panic!("robigo: ROBIGO_PANIC_AFTER_RESET");
+    }
+    let ok = dot_last(cx) && (!yes || at_top(cx, save_global_env));
+    if !ok {
+        // the error landed on the top level: check_session_exit
+        if check_session_exit(cx) {
+            error_at_top(
+                cx,
+                "robigo: going back to the main loop after an error in quit()'s .Last or save is not implemented yet",
+            );
+        }
+        // check_session_exit's R_CleanUp(SA_NOSAVE, 1, 0)
+        cx.reprintf(b"Execution halted\n");
+        exit(cx, 1, false);
+    }
+    exit(cx, status, false)
+}
+
+/// `f` at a REPL top-level record: false when an error ended it (reported
+/// where it was raised).
+fn at_top(cx: &mut Cx, f: fn(&mut Cx) -> RResult<()>) -> bool {
+    cx.scope(|cx, s| {
+        let g = s.root(cx, cx.global_env());
+        let base = s.root(cx, cx.base_env());
+        cx.repl_toplevel(g, base, f).expect("robigo: an exit that passed the top level")
+    })
+}
+
+/// `R_SaveGlobalEnvToFile(".RData")`: `sys.save.image(".RData")` evaluated
+/// in the global environment when the global environment finds it (base
+/// defines it); without it robigo-rt says so (GNU R's `R_SaveToFileV`).
+// R: saveload.c:R_SaveGlobalEnvToFile
+fn save_global_env(cx: &mut Cx) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let g = s.root(cx, cx.global_env());
+        let f = s.out(cx);
+        let fr = f.root();
+        let call = s.out(cx);
+        let callr = call.root();
+        let o = s.out(cx);
+        let sym = cx.install_rooted(s, b"sys.save.image")?;
+        cx.find_var(sym, g, f)?;
+        if fr.bind(cx).sexp() == cx.unbound().sexp() {
+            return Err(cx.error(
+                "robigo: saving the workspace without base's sys.save.image (R_SaveToFileV) is not implemented yet",
+            ));
+        }
+        cx.build(call, |cx| {
+            let name = cx.mk_string(b".RData", robigo_rtcore::Encoding::Native)?;
+            let nil = cx.nil();
+            let args = cx.lcons(name, nil)?;
+            cx.lcons(sym.bind(cx), args)
+        })?;
+        crate::eval(cx, callr, g, o)
+    })
+}
+
+/// The end of `Rstd_CleanUp` after its save action: the exit finalizers,
+/// the deferred warnings (`.Last`'s, `quit`'s own), the console flushed,
+/// then `exit(status)`.
+// R: unix/sys-std.c:Rstd_CleanUp
+fn exit(cx: &mut Cx, status: i32, suicide: bool) -> ! {
+    clean_up_tail(cx, suicide);
+    // (the isolate is not dropped: robigo's ROBIGO_GC_STATS report, which
+    // the heap prints when it is, printed here, last, as it would be)
+    if let Some(r) = cx.gc_stats_report() {
+        eprint!("{r}");
+    }
+    std::process::exit(status)
+}
+
+/// What `Rstd_CleanUp` does after its save action ([`clean_up`]): the
+/// exit finalizers, then (`R_CleanTempDir`: robigo-rt has no session
+/// temporary directory yet, B's tempdir() port adds it here), then the
+/// deferred warnings unless it is R_Suicide's (SA_SUICIDE), then the
+/// console flushed. The caller ends the process with its status.
+// R: unix/sys-std.c:Rstd_CleanUp
+fn clean_up_tail(cx: &mut Cx, suicide: bool) {
+    crate::fin::run_exit_finalizers(cx);
+    if !suicide {
+        print_warnings(cx);
+    }
+    cx.flush_console();
 }
 
 /// `PrintWarnings()`: the deferred warnings, then the list cleared
