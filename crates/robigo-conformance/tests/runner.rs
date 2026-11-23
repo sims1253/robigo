@@ -904,3 +904,34 @@ fn a_slot_held_by_the_python_tools_is_held_for_the_runner() {
     assert!(r.outcomes.iter().all(|c| c.passed()));
     let _ = std::fs::remove_dir_all(&pool);
 }
+
+/// A case whose crosscheck could write neither its report nor
+/// `<report>.lost` says so only on its stderr: the run fails on it, even for
+/// a case the ratchet does not hold (whose failures otherwise only report).
+#[test]
+fn a_crosscheck_report_that_cannot_be_written_fails_the_run_ratcheted_or_not() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = rt_tree("crosscheck-unwritten");
+    let fake = f.root().join("unwritten-fake");
+    std::fs::write(
+        &fake,
+        "#!/bin/sh\necho 'robigo: bc crosscheck: cannot write the report /x: Permission denied' >&2\nexec cat \"$1\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut o = opts(&RT, fake);
+    // filtered to a case with no marker: a plain failure would not fail the run
+    o.filter = Some("tests/rt/smoke".into());
+    let err = run(f.root(), &RT, &o).expect_err("an unwritten crosscheck report fails the run");
+    assert!(err.contains("could not write the byte-code crosscheck's report"), "{err}");
+    assert!(err.contains("tests/rt/smoke/one.R"), "{err}");
+    // the same case without the line: a reported failure, not a failed run
+    let r = run(f.root(), &RT, &opts_filtered(cat(), "tests/rt/smoke")).unwrap();
+    assert!(r.outcomes.iter().all(|c| !c.report_unwritten));
+}
+
+fn opts_filtered(bin: PathBuf, filter: &str) -> Options {
+    let mut o = opts(&RT, bin);
+    o.filter = Some(filter.into());
+    o
+}
