@@ -151,3 +151,50 @@ Measured on this PR's head (4112b9af4) against main b0c49e869, `--vanilla -e 1`,
   - Under the interim loader, the +20k is glibc's `realloc` (Vec growth) copying more: the same 2,276 calls, but about 16k more instructions in the copy beneath it. Whether `realloc` grows in place depends on the malloc arena's layout, which the branch's slightly different allocations shift.
   - A first version of the lazy freeze handed the heap its roots through a wrapper type (`GcRoots`); that cost 55–152k instructions of codegen. `Roots` now carries its freeze roots itself (`#[trace(freeze = "trace_freeze_roots")]`, a form the derive gained for this).
 - **Peak RSS:** the anonymous memory, the heap and every other data, is unchanged within noise. The peak's growth is file-backed: the binary's code pages a start touches. `.text` is 45.8 KB larger (the freeze and its check, compiled in with the switch off), which moves code across pages and readahead windows. On main alone that varies by about 0.3 MB from run to run.
+
+### Note of 2026-11-24: the check in two groups, and E3's full checks (g3/h-check-cost)
+
+**Why the check changed:** c-stack-overflow.R under E3 (S1's profile, quoted): "c-stack-overflow.R under E3 (gctorture, freeze, check at 16), main 96764d7fd: 670.8 G instructions for four C stack overflows at 2,975 lapply levels each, 110k forced collections. The split is work 0.1%, forced collections 71.8%, freeze check 28.0% (rdb boot: 50.3% and 49.6%). Each overflow costs collections (~9 per level) × trace cost (~200 ns per level of live frames), quadratic in depth. GNU R 4.6.2 under gctorture(TRUE) runs the script in 144 s at 1,751 levels and is ~8x slower per level; robigo-rt's case runs long only because it goes 1.7x deeper. B: the kept lapply call (#999) takes the case from 78.4 to 47.9 s locally (−39%), i.e. the compile per recursion level." (S1)
+
+The comparison with the independent trace traced every root, the stack's included, with a hash set at every checked collection; I2 and I3 kept hash sets of the 42k frozen objects under rdb.
+
+**The check is now two groups** (`ROBIGO_GC_FREEZE_CHECK=N[,M]`, M default 1, so every existing use keeps every part at every check):
+- **The direct loop**, at every N-th collection: every frozen object's ordinary children are marked after marking. Its defect, a missed barrier, is transient: the next sweep frees the child, so the rate is the chance of catching a one-off miss. It stays at 16 in E3.
+- **The full check, the persistent-state parts**, at the first collection with a frozen set (the freezing collection, checked whatever the period) and then at every M-th checked collection:
+  - I2 (every frozen object reachable from the freeze roots): its defect, a missed note, lasts until the next pass, and passes are rare (0 in steady state, 0.006 per collection in the conformance). **The one exception:** a pass that runs between the bad write and the next full check thaws the evidence.
+  - I3 (FROZEN set exactly on the frozen list): a stray FROZEN bit is never removed; a duplicate lasts until the next pass.
+  - the comparison with the independent trace: its defect, a child marked but never traced, is systematic, so a run needs it at all, not often. Its cost grows with the live set.
+- **E3 runs `16,16`**: the direct loop at every 16th collection, a full check at each process's freezing collection and every 16th check after (every 256th collection). It keeps all four parts. rt-ci counts the full checks (a tally line per full check in the report) and fails the step if there were none.
+- I2 and I3 keep their sets in the pass's mark bits, which are clear between pass steps; the check clears every bit it sets. The I2 walk and the direct loop visit edges directly, without collecting them in vectors.
+
+**Measured on c-stack-overflow.R**, `perf stat -e instructions:u`, E3's exact environment, before = main 6a6a923de, after = this change; rdb with a tree from scripts/rt-home-db.sh (42,422 frozen), m1 the default boot (5,205):
+
+| boot | build | check | G instructions | the check's G | its share |
+|---|---|---|---:|---:|---:|
+| m1 | before | none | 483.0 | | |
+| m1 | before | 16 | 670.3 | 187.3 | 27.9% |
+| m1 | after | 16,16 | 500.6 | 17.6 | 3.5% |
+| rdb | before | none | 453.0 | | |
+| rdb | before | 16 | 897.4 | 444.4 | 49.5% |
+| rdb | after | 16,16 | 493.0 | 40.0 | 8.1% |
+
+- One comparison costs 39.5M instructions under rdb and 23.7M under m1 at this case's depth. The direct loop costs about 2.5M per check under rdb. It is O(frozen) by nature: only reading every frozen object's fields finds a write that bypassed the barrier.
+- **The foreman's target** of under 5% under rdb was dropped. It stood in for the flip's criterion on this case (at most 800 G under rdb), which 493 G meets. A list of frozen objects with pointer fields was not built: it would be a second list to keep in step with the frozen one.
+
+**Mutations:**
+- A remembered-set entry removed: the direct loop names it at a checked collection that is not a full one.
+- A stray FROZEN bit, and a frozen edge cut without a note, planted after a process's first full check: I3 and I2 name them at the next full check, 16 checks later, and none of the 15 before. These three are kept tests.
+- **Marked, not traced** (a temporary source mutation: a logged object's ordinary children marked and never pushed): named by the full check and at period 1, and not by the direct loop.
+  - Under rdb in E3's configuration, the freezing collection's full check names it.
+  - Under m1 the log holds no such child at the freeze. The defect appears after a later store, and the process fails first with a wrong result (37 of 40 random rt cases fail, none named). E3 fails on it without naming it.
+
+**What the lower rate can miss (Sol's R3 on the check-cost PR).** A full check sees only what is still there when it runs:
+- **A marking defect on a short-lived graph.** A frozen holder's ordinary child is marked and its grandchild is missed (marked, not traced). The direct loop passes at every 16th collection, because the child is marked. If the program drops the graph before it reads the grandchild, the output can still match, and the next full check finds nothing.
+- **A stray FROZEN bit on an ordinary object that dies.** The sweep removes it with the object before the next full check. The kept test plants its stray where it stays reachable until then.
+- **An unreached frozen object** whose evidence a pass thaws before the next full check (above).
+
+The every-collection runs see all three at the collection where they happen: the crates' tests under gctorture (rt-ci's "gctorture (collect at every allocation) and the GC stats check" step, `ROBIGO_GC_FREEZE_CHECK=1`, in every PR's run), boot_db's steady-state test, and the nightly's `--freeze-check` over the whole slice.
+
+**The forced first check moves the period's phase.** The first collection with a frozen set is checked whatever the count, and it restarts the count. The later checks therefore fall every N collections after the freeze, not on multiples of N from the start, even with N alone.
+
+**So E3 does not name every marking defect.** It fails on this one under m1 (37 of 40 random rt cases, none named by the check). Detection is the step's job; naming the defect takes a rerun at period 1. **An E3 failure with an unexplained error under the freeze is rerun with `ROBIGO_GC_FREEZE_CHECK=1` before anything else** (docs/verification.md). There is no "first K checks" rule. Under rdb, the default after L's flip, the freezing collection's full check names it.
