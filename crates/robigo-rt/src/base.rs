@@ -173,7 +173,9 @@ pub struct Wide {
     pub substs: Vec<(&'static str, &'static str)>,
     pub primitives: Vec<&'static str>,
     pub internals: Vec<&'static str>,
-    by_name: std::collections::HashMap<&'static str, usize>,
+    /// `names`' index by name (fixed-seed hashing: the keys are this
+    /// binary's own, and a start's instructions do not vary run to run).
+    by_name: std::collections::HashMap<&'static str, usize, robigo_heap::BuildFx>,
 }
 
 impl Wide {
@@ -200,7 +202,7 @@ impl Wide {
             substs: Vec::with_capacity(substs),
             primitives: Vec::with_capacity(primitives),
             internals: Vec::with_capacity(internals),
-            by_name: std::collections::HashMap::with_capacity(names),
+            by_name: std::collections::HashMap::with_capacity_and_hasher(names, Default::default()),
         };
         let mut after: Vec<(&'static str, Form)> = Vec::with_capacity(after);
         let num = |s: &str, i: usize| s.parse::<usize>().map_err(|_| format!("line {}: not a number: {s:?}", i + 1));
