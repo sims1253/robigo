@@ -190,7 +190,7 @@ fn attempt_rounds(
             // binding forced, a function context reached), as cmp.R folds
             // before it gets there
             Ok(_) | Err(Need::Fail | Need::Force(_)) if !reqs.is_empty() => {
-                round.resolve(cx, reqs)?;
+                round.resolve(cx, crate::fold::batch(reqs))?;
                 retried = None;
             }
             Ok(code) => return Ok(Some(code)),

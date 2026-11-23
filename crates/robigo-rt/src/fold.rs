@@ -57,6 +57,36 @@ pub(crate) struct FoldReq {
     pub(crate) args: Vec<(FoldArg, Sexp)>,
 }
 
+/// The requests a round evaluates of those a try made (in the order the
+/// try met them, a nest's inner calls before it). All of them when
+/// evaluating them can do nothing seen: every constant argument without
+/// attributes (base's function on plain constants; the helper takes a
+/// warning or an error the call gives, [`HELPER`]). Otherwise only the
+/// first nest (the first request no later one names, and the requests
+/// before it): a constant with attributes may dispatch to a method that
+/// does something, and the try compiled past the first unknown fold on a
+/// guess (an `if` whose branch it skipped), so the next try, the first
+/// fold's value known, compiles that branch, and what it forces or reads,
+/// before the later folds, as cmp.R's one pass does.
+pub(crate) fn batch(mut reqs: Vec<FoldReq>) -> Vec<FoldReq> {
+    // SAFETY: the requests' objects are live (the try that made them just
+    // ended); a constant's attribute word is read.
+    let plain = |r: &FoldReq| {
+        r.args.iter().all(|(a, _)| match *a {
+            FoldArg::Value(v) => unsafe { v.attrib_raw().typ() == NILSXP },
+            FoldArg::Req(_) => true,
+        })
+    };
+    if reqs.iter().all(plain) {
+        return reqs;
+    }
+    let named =
+        |i: usize| reqs[i + 1..].iter().any(|r| r.args.iter().any(|(a, _)| matches!(*a, FoldArg::Req(j) if j == i)));
+    let first = (0..reqs.len()).find(|&i| !named(i)).unwrap_or(reqs.len().saturating_sub(1));
+    reqs.truncate(first + 1);
+    reqs
+}
+
 /// A fold call's argument: a constant, or the value of an earlier request
 /// of the same try (its index), which the round folds first.
 #[derive(Clone, Copy, Debug)]
