@@ -37,3 +37,24 @@ lapply(1:3, identity)
 vapply(1:3, function(v) v + 0.5, 0)
 sapply(1:3, function(v) v * 2)
 sapply(list(a = 1, b = 2), f)
+# a closure of the base namespace with a `[[` of its own: its own call
+invisible(lapply(1:2, identity))
+my3 <- function(X, FUN, ...) {
+  `[[` <- function(x, i) -i
+  .Internal(lapply(X, FUN))
+}
+environment(my3) <- environment(lapply)
+unlist(my3(11:13, identity))
+unlist(lapply(11:13, identity))
+invisible(vapply(1:2, identity, 0L))
+my4 <- function(X, FUN, FUN.VALUE, ..., USE.NAMES = TRUE) {
+  `[[` <- function(x, i) -i
+  .Internal(vapply(X, FUN, FUN.VALUE, USE.NAMES))
+}
+environment(my4) <- environment(vapply)
+my4(11:13, identity, 0L)
+vapply(11:13, identity, 0L)
+# what FUN sees of its call
+lapply(1:2, function(v) substitute(v))
+lapply(1, function(v, ...) match.call())
+lapply(1, function(v) deparse(sys.function()))

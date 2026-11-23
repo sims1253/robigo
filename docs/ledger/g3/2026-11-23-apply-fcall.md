@@ -11,22 +11,35 @@
     `lapply(1:10, f)`, as X measured.
   - Now each isolate keeps one such call for base's lapply and one for
     vapply, rooted as globals in `BaseCalls`, so the compile happens once.
-- Which calls are kept: only those evaluated in a frame of a closure of the
-  base namespace (base's own `lapply` and `vapply`).
+- Which calls are kept: a call is kept with the closure it was made for,
+  only when that closure is base's own `lapply` or `vapply` (the base
+  namespace's binding, a lazy-load promise's value). It is reused only in a
+  call of that same closure.
   - Under the `Bc` profile (`ROBIGO_RT_PROFILE`), the code compiled on the
-    call takes cmp.R's decisions from that environment, and they are the
-    same there for every invocation.
-  - Any other `.Internal(lapply(...))` builds its call afresh, as before
-    (tests/rt/apply/lapply-kept-call.R: another closure's `Y`/`G`, and a
-    frame that rebinds `[[`).
-- **A deliberate difference from GNU R:** `sys.call()` inside FUN returns
-  the same call object in every invocation, where GNU R returns a new one
-  each time.
+    call takes cmp.R's decisions from the closure's frame and body, a local
+    `[[` for one. Those decisions are the same in every call of base's
+    closure, and need not be the same in any other.
+  - Sol's case: a closure of the base namespace with its own `[[` reused
+    base's compiled `X[[i]]` and returned `11 12 13` where GNU R gives
+    `-1 -2 -3`. It now builds its own call. The case is in
+    tests/rt/apply/lapply-kept-call.R and passes under the `bc`, `eval` and
+    default profiles.
+  - Before each reuse the call's whole shape (`fun(x[[i]], ...)`, every
+    cell) is checked again, and a call that no longer has it is replaced.
+    C code can write into the `X[[i]]` it reaches through `sys.call()`, as
+    GNU R allows (a raw `SETCADDR`); GNU R's next invocation would not see
+    that, and robigo-rt's does not either.
+  - Any other `.Internal(lapply(...))` builds its call afresh, as before.
+- **A deliberate difference from GNU R:** `sys.call()` inside FUN copies the
+  call's spine (`shallow_duplicate`), so its outer cells are new each time,
+  but the `X[[i]]` inside it is the same object in every invocation. In GNU
+  R it is a new one each time.
   - The two are equal in value, so `identical()` cannot tell them apart.
   - The kept call and its `X[[i]]` are not mutable (`MARK_NOT_MUTABLE`), so
-    a change to a retrieved call copies it first and the next invocation's
-    call is intact. The case modifies `sys.call()`'s result (`[[<-` on the
-    call and on its `X[[i]]`), then calls lapply again.
+    R code's change to a retrieved call copies it first, and the next
+    invocation's call is intact. The case modifies `sys.call()`'s result
+    (`[[<-` on the call and on its `X[[i]]`), then calls lapply again.
+  - `substitute(v)`, `match.call()` and `sys.function()` in FUN are GNU R's.
   - A nested lapply (lapply inside FUN inside lapply) evaluates the same
     call recursively; each invocation has its own `i`.
 - mapply is left building its call each time. The call holds FUN's value,
@@ -39,11 +52,11 @@
 
   | row | main | this branch | GNU R 4.6.2 | ratio after |
   |---|---:|---:|---:|---:|
-  | lapply | 109,343 | 103,758 | 59,244 | 1.75x |
-  | vapply | 114,332 | 108,682 | 60,904 | 1.78x |
-  | sapply | 201,432 | 187,252 | 126,541 | 1.48x |
+  | lapply | 109,343 | 103,802 | 59,244 | 1.75x |
+  | vapply | 114,332 | 108,728 | 60,904 | 1.79x |
+  | sapply | 201,432 | 187,093 | 126,541 | 1.48x |
   | mapply | 294,776 | 295,291 | 167,064 | 1.77x |
-  | Map | 244,112 | 243,498 | 123,536 | 1.97x |
+  | Map | 244,112 | 243,497 | 123,536 | 1.97x |
 
   Compiles per invocation (calls of `code::build`, N against 2N): lapply,
   vapply and sapply go from 1 to 0; mapply stays at 4.

@@ -53,49 +53,82 @@ enum Which {
 /// the code on it (`X[[i]]`'s, when its promise is forced), so a fresh
 /// call cost every invocation one compile (docs/ledger/g3/
 /// 2026-11-23-apply-fcall.md). The kept call is not mutable
-/// (MARK_NOT_MUTABLE, its `X[[i]]` too): R code sees it only through
-/// `sys.call()`, and a change to what that returns copies it first.
+/// (MARK_NOT_MUTABLE, its `X[[i]]` too): `sys.call()` copies its spine,
+/// and R code's change to the `X[[i]]` it shares copies that first.
 ///
-/// Kept only for a call evaluated in a frame of a closure of the base
-/// namespace (base's own `lapply`/`vapply`, which name `X` and `FUN`): the
-/// code compiled on it under the `Bc` profile (`ROBIGO_RT_PROFILE`) takes
-/// cmp.R's decisions from that environment, the same for every invocation
-/// there. Any other `.Internal(lapply(...))` builds its call afresh, as
-/// before.
+/// Kept, with the closure it was made for, only when that closure is base's
+/// own `lapply` (or `vapply`), and reused only in a call of that same
+/// closure: under the `Bc` profile (`ROBIGO_RT_PROFILE`) the code compiled
+/// on the call takes cmp.R's decisions (a local `[[`, for one) from the
+/// closure's frame and body, which are the same in every call of it and no
+/// other. Before each reuse the call's whole shape is checked again (C code
+/// can write into a call it gets from `sys.call()`, as GNU R allows), and a
+/// call that no longer has it is replaced. Any other `.Internal(lapply())`
+/// builds its call afresh, as before.
 #[derive(Default)]
 struct BaseCalls {
-    lapply: std::cell::RefCell<Option<robigo_rtcore::Global>>,
-    vapply: std::cell::RefCell<Option<robigo_rtcore::Global>>,
+    lapply: std::cell::RefCell<Option<(robigo_rtcore::Global, robigo_rtcore::Global)>>,
+    vapply: std::cell::RefCell<Option<(robigo_rtcore::Global, robigo_rtcore::Global)>>,
 }
 
-/// [`BaseCalls`]' call for `which`, if one is kept and is `fun(x[[i]],
-/// ...)` and `rho` a frame of a base namespace closure: rooted in `s`.
+impl BaseCalls {
+    fn slot(&self, which: Which) -> &std::cell::RefCell<Option<(robigo_rtcore::Global, robigo_rtcore::Global)>> {
+        match which {
+            Which::Lapply => &self.lapply,
+            Which::Vapply => &self.vapply,
+        }
+    }
+}
+
+/// The closure of the innermost function context: the one whose frame the
+/// builtin's `rho` is (`.Internal` is a special and pushes no context).
+fn calling_closure(cx: &Cx) -> Option<Ref<'_>> {
+    let mut c = Some(cx.global_context());
+    while let Some(r) = c {
+        if r.callflag() & robigo_rtcore::ctxt::FUNCTION != 0 {
+            return Some(r.callfun());
+        }
+        c = r.next();
+    }
+    None
+}
+
+/// Whether `c` is still the call `fun(x[[i]], ...)`, every cell of it.
+fn has_shape(cx: &Cx, c: Ref<'_>, fun: Ref<'_>, x: Ref<'_>, isym: Ref<'_>) -> bool {
+    let nil = cx.nil();
+    let Some(fc) = c.as_cons() else { return false };
+    let Some(a1) = fc.cdr().as_cons() else { return false };
+    let Some(a2) = a1.cdr().as_cons() else { return false };
+    let Some(tmp) = a1.car().as_cons() else { return false };
+    let Some(t1) = tmp.cdr().as_cons() else { return false };
+    let Some(t2) = t1.cdr().as_cons() else { return false };
+    c.sexptype() == LANGSXP
+        && a1.car().sexptype() == LANGSXP
+        && fc.car() == fun
+        && a2.car() == cx.sym(RSym::Dots).into()
+        && a2.cdr() == nil
+        && tmp.car() == cx.sym(RSym::Bracket2).into()
+        && t1.car() == x
+        && t2.car() == isym
+        && t2.cdr() == nil
+}
+
+/// [`BaseCalls`]' call for `which`, if one is kept for the calling closure
+/// and still has its shape: rooted in `s`.
 fn kept_call<'s>(
     cx: &mut Cx,
     s: Scope<'s>,
     which: Which,
     x: Root<'_>,
     fun: Root<'_>,
-    rho: Root<'_>,
+    isym: Root<'_>,
 ) -> Option<Root<'s>> {
     let st = cx.ext::<BaseCalls>()?;
-    let slot = match which {
-        Which::Lapply => st.lapply.borrow(),
-        Which::Vapply => st.vapply.borrow(),
-    };
-    let c = slot.as_ref()?.bind(cx);
-    let fc = c.as_cons()?;
-    let tmp = fc.cdr().as_cons()?.car().as_cons()?;
-    let same = fc.car() == fun.bind(cx) && tmp.cdr().as_cons()?.car() == x.bind(cx);
-    (same && in_base_closure(cx, rho)).then(|| s.root(cx, c))
-}
-
-/// Whether `rho` is the frame of a closure of the base namespace.
-fn in_base_closure(cx: &Cx, rho: Root<'_>) -> bool {
-    match rho.bind(cx).view() {
-        View::Env(e) => e.enclos() == cx.base_namespace(),
-        _ => false,
-    }
+    let slot = st.slot(which).borrow();
+    let (call, clo) = slot.as_ref()?;
+    let (c, clo) = (call.bind(cx), clo.bind(cx));
+    let ok = calling_closure(cx) == Some(clo) && has_shape(cx, c, fun.bind(cx), x.bind(cx), isym.bind(cx));
+    ok.then(|| s.root(cx, c))
 }
 
 impl<'s> Loop<'s> {
@@ -109,7 +142,7 @@ impl<'s> Loop<'s> {
         pp: i32,
     ) -> RResult<Loop<'s>> {
         let isym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"i")?.into())))?;
-        let fcall = match kept_call(cx, s, which, x, fun, rho) {
+        let fcall = match kept_call(cx, s, which, x, fun, isym) {
             Some(c) => c,
             None => {
                 let fcall = s.capture(cx, |cx, o| {
@@ -120,8 +153,8 @@ impl<'s> Loop<'s> {
                         cx.lang3(fun.bind(cx), tmp, dots.into())
                     })
                 })?;
-                if in_base_closure(cx, rho) {
-                    keep_call(cx, s, which, fcall);
+                if let Some(clo) = base_closure(cx, s, which)? {
+                    keep_call(cx, s, which, fcall, clo);
                 }
                 fcall
             }
@@ -136,32 +169,44 @@ impl<'s> Loop<'s> {
     }
 }
 
-/// `fcall` kept as `which`'s [`BaseCalls`] call, unless one is kept already
-/// (another shape: that one stays), made not mutable with its `X[[i]]`.
-fn keep_call(cx: &mut Cx, s: Scope<'_>, which: Which, fcall: Root<'_>) {
+/// The calling closure, rooted in `s`, if it is base's own `lapply` (or
+/// `vapply`): the value bound to that name in the base namespace's frame
+/// (a lazy-load promise's value).
+fn base_closure<'s>(cx: &mut Cx, s: Scope<'s>, which: Which) -> RResult<Option<Root<'s>>> {
+    let Some(clo) = calling_closure(cx).map(|c| s.root(cx, c)) else { return Ok(None) };
+    let name: &[u8] = match which {
+        Which::Lapply => b"lapply",
+        Which::Vapply => b"vapply",
+    };
+    let sym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(name)?.into())))?;
+    let ns = s.root(cx, cx.base_namespace());
+    let bound = s.capture(cx, |cx, o| cx.find_var_in_frame3(ns, sym, true, o))?;
+    // (a lazy-loaded binding is the promise; its value once forced, which
+    // the closure that is running has been)
+    let f = match bound.bind(cx).view() {
+        View::Promise(p) if !p.is_unboxed() => p.value(),
+        _ => bound.bind(cx),
+    };
+    Ok((f == clo.bind(cx)).then_some(clo))
+}
+
+/// `fcall` kept as `which`'s [`BaseCalls`] call for the closure `clo`
+/// (replacing one kept before: another closure's, or one whose shape was
+/// changed), made not mutable with its `X[[i]]`.
+fn keep_call(cx: &mut Cx, s: Scope<'_>, which: Which, fcall: Root<'_>, clo: Root<'_>) {
     if cx.ext::<BaseCalls>().is_none() {
         cx.set_ext(BaseCalls::default());
     }
-    let taken = {
-        let st = cx.ext::<BaseCalls>().unwrap();
-        match which {
-            Which::Lapply => st.lapply.borrow().is_some(),
-            Which::Vapply => st.vapply.borrow().is_some(),
-        }
-    };
-    if taken {
-        return;
-    }
-    // MARK_NOT_MUTABLE(R_fcall), and its X[[i]]: no writer changes the
+    // MARK_NOT_MUTABLE(R_fcall), and its X[[i]]: no R writer changes the
     // call for the next invocation
     let tmp = s.root(cx, fcall.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().car());
     cx.mark_not_mutable(fcall);
     cx.mark_not_mutable(tmp);
-    let g = cx.global(fcall.bind(cx));
-    let st = cx.ext::<BaseCalls>().unwrap();
-    match which {
-        Which::Lapply => *st.lapply.borrow_mut() = Some(g),
-        Which::Vapply => *st.vapply.borrow_mut() = Some(g),
+    let (g, gc) = (cx.global(fcall.bind(cx)), cx.global(clo.bind(cx)));
+    let old = cx.ext::<BaseCalls>().unwrap().slot(which).borrow_mut().replace((g, gc));
+    if let Some((a, b)) = old {
+        cx.release_global(a);
+        cx.release_global(b);
     }
 }
 
