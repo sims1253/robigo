@@ -7,6 +7,7 @@ import os
 import signal
 import sys
 import tempfile
+import threading
 import unittest
 import unittest.mock
 from types import SimpleNamespace
@@ -187,6 +188,13 @@ class M1Name(unittest.TestCase):
     the same 15 layouts, within #995's measured floor (0.073% instructions,
     14 KiB anonymous peak). Skipped once M1_BOOT is "m1" (the flip): unset
     is then the rdb boot."""
+
+    def tearDown(self):
+        # the measurement's pools and timers end with it: a thread left
+        # alive here would make the next test's fork a fork of a
+        # multi-threaded process
+        others = [t.name for t in threading.enumerate() if t is not threading.main_thread()]
+        self.assertEqual(others, [], "threads left alive after M1Name")
 
     def test_the_interim_start_is_the_same_under_m1(self):
         bin_ = os.environ["RT_STARTUP_TEST_BIN"]
