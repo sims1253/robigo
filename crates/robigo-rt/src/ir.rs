@@ -68,7 +68,7 @@ pub const F_NAMES: u8 = 32;
 pub const SPECIAL_INTERNAL: u16 = u16::MAX - 1;
 
 /// Declare [`Op`] and [`Op::ALL`] from one list of its operations, so
-/// the table [`Op::from_u8`] decodes by cannot miss one (#979's bot).
+/// [`Op::from_u8`]'s decode table cannot miss one (#979's bot).
 macro_rules! operations {
     ($(#[$m:meta])* pub enum Op { $($(#[$vm:meta])* $v:ident,)* }) => {
         $(#[$m])*

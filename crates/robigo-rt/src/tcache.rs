@@ -814,6 +814,12 @@ struct Writer {
     verified: Option<Result<Entry, &'static str>>,
 }
 
+impl Writer {
+    fn new() -> Writer {
+        Writer { entries: Vec::new(), args: Vec::new(), skipped: HashMap::new(), verified: None }
+    }
+}
+
 /// The cache's per-isolate state (`RtState::tcache`): one word, empty until
 /// the writer or a verification first needs it (only the tree's build and
 /// `ROBIGO_TRANSLATION_CACHE=verify` do). An inline writer made `RtState`
@@ -929,12 +935,7 @@ pub(crate) unsafe fn writer_begin(cx: &Cx, bc: Sexp) -> bool {
     {
         let w = &state(cx).writer;
         let mut w = w.borrow_mut();
-        let w = w.get_or_insert_with(|| Writer {
-            entries: Vec::new(),
-            args: Vec::new(),
-            skipped: HashMap::new(),
-            verified: None,
-        });
+        let w = w.get_or_insert_with(Writer::new);
         w.args.clear();
     }
     true
@@ -942,12 +943,17 @@ pub(crate) unsafe fn writer_begin(cx: &Cx, bc: Sexp) -> bool {
 
 /// The writer's pass skipped something for `why`: counted with the
 /// writer's other reasons (`translation cache: not written (...)`).
+/// The writer is made here if no translation has begun yet (the pass's
+/// first namespace may fail to list), so no skip goes uncounted.
 pub(crate) fn skip(cx: &Cx, why: &'static str) {
-    if let Some(s) = peek(cx)
-        && let Some(w) = s.writer.borrow_mut().as_mut()
-    {
-        *w.skipped.entry(why).or_insert(0) += 1;
+    if writing() {
+        skip_in(&state(cx).writer, why);
     }
+}
+
+/// [`skip`] on the writer's cell.
+fn skip_in(writer: &RefCell<Option<Writer>>, why: &'static str) {
+    *writer.borrow_mut().get_or_insert_with(Writer::new).skipped.entry(why).or_insert(0) += 1;
 }
 
 /// The translation under way was abandoned (an attempt that returned a
@@ -1295,5 +1301,16 @@ mod tests {
         let before = super::mismatches();
         super::refused(&crate::code::Malformed { at: 3, why: "an operand out of range" });
         assert_eq!(super::mismatches(), before + 1);
+    }
+
+    // a skip before any translation has begun (no writer yet) is counted:
+    // the writer is made for it, and write_files reports it
+    #[test]
+    fn a_skip_before_the_first_translation_is_counted() {
+        let w = std::cell::RefCell::new(None);
+        super::skip_in(&w, "a namespace whose frame could not be listed");
+        super::skip_in(&w, "a namespace whose frame could not be listed");
+        let w = w.borrow();
+        assert_eq!(w.as_ref().unwrap().skipped.get("a namespace whose frame could not be listed"), Some(&2));
     }
 }
