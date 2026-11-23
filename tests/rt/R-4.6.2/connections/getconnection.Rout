@@ -1,0 +1,26 @@
+[1] 0 1 2
+[1] 0
+A connection with                      
+description "stdout"  
+class       "terminal"
+mode        "w"       
+text        "text"    
+opened      "opened"  
+can read    "no"      
+can write   "yes"     
+[1] "terminal"   "connection"
+[1] 0 1 2 3
+[1] "file"       "connection"
+[1] TRUE
+[1] "x"
+[1] "there is no connection 4"
+[1] "there is no connection NA"
+[1] "there is no connection -1"
+[1] "there is no connection 200"
+[1] "there is no connection NA"
+[1] 0
+[1] 2
+[1] "invalid 'type' argument"
+[1] 0 1 2 3 4
+[1] 0 1 2
+[1] "invalid connection"

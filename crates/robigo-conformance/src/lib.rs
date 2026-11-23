@@ -746,7 +746,19 @@ pub struct Outcome {
     pub stderr_ok: bool,
     pub status_ok: bool,
     pub diff: String,
+    /// The case's stderr line that says the byte-code crosscheck lost a
+    /// record ([`UNWRITTEN_REPORT`], with its paths and errors): the run
+    /// fails, ratcheted or not.
+    pub report_unwritten: Option<String>,
 }
+
+/// What robigo-rt's crosscheck prints when it can write neither its report
+/// nor `<report>.lost` (crates/robigo-rt/src/compile/crosscheck.rs,
+/// `RECORD_LOST`, the same string: robigo-rtapi's tests/conformance.rs runs
+/// the two together; with `.lost` made, rt-ci's report check fails on that file
+/// instead). For a ratcheted case the stderr diff already fails the run;
+/// for an unratcheted one the record would otherwise be lost silently.
+pub const UNWRITTEN_REPORT: &[u8] = b"robigo: bc crosscheck: record lost:";
 
 impl Outcome {
     pub fn passed(&self) -> bool {
@@ -961,6 +973,9 @@ fn boot_record(column: &Column, o: &Options) -> String {
     std::fs::write(&script, "invisible(NULL)\n").unwrap_or_else(|e| panic!("write {}: {e}", script.display()));
     let mut cmd = case_command(o, &script);
     cmd.env(var, "1");
+    // (no byte-code crosscheck: the probe is no case, and its records would
+    // land in the report the cases' are counted from, unchecked)
+    cmd.env_remove("ROBIGO_BC_CROSSCHECK").env_remove("ROBIGO_BC_CROSSCHECK_REPORT");
     let (_, err, _, timed_out, _) = run_command(cmd, o, o.timeout);
     let _ = std::fs::remove_dir_all(&dir);
     if timed_out {
@@ -1010,7 +1025,15 @@ fn check(
         Err(why) => {
             let diff = format!("    {why} for GNU R {}\n", o.version);
             return (
-                Outcome { id, unrecorded: Some(why), stdout_ok: false, stderr_ok: false, status_ok: false, diff },
+                Outcome {
+                    id,
+                    unrecorded: Some(why),
+                    stdout_ok: false,
+                    stderr_ok: false,
+                    status_ok: false,
+                    diff,
+                    report_unwritten: None,
+                },
                 None,
             );
         }
@@ -1048,7 +1071,9 @@ fn check(
         // probed once, by the first case that fails
         diff.push_str(record.get_or_init(|| boot_record(column, o)));
     }
-    (Outcome { id, unrecorded: None, stdout_ok, stderr_ok, status_ok, diff }, Some(ran))
+    let report_unwritten =
+        String::from_utf8_lossy(&err).lines().find(|l| l.as_bytes().starts_with(UNWRITTEN_REPORT)).map(str::to_owned);
+    (Outcome { id, unrecorded: None, stdout_ok, stderr_ok, status_ok, diff, report_unwritten }, Some(ran))
 }
 
 /// What a run found.
@@ -1247,6 +1272,15 @@ pub fn run(root: &Path, column: &Column, o: &Options) -> Result<Report, String> 
     if outcomes.is_empty() {
         eprintln!("(no {} case selected: the filter matches only cases it has not ratcheted)", column.runtime);
     }
+    let unwritten: Vec<String> =
+        outcomes.iter().filter_map(|r| r.report_unwritten.as_ref().map(|l| format!("  {}: {l}", r.id))).collect();
+    if !unwritten.is_empty() {
+        return Err(format!(
+            "{} case(s) lost a record of the byte-code crosscheck, ratcheted or not:\n{}",
+            unwritten.len(),
+            unwritten.join("\n")
+        ));
+    }
     if !gated && !outcomes.is_empty() && compared == 0 {
         return Err(format!(
             "none of the {} selected case(s) has a usable recording for GNU R {}: this run compared nothing",
@@ -1415,6 +1449,42 @@ mod boot_record_tests {
         assert_eq!(envs[OsStr::new("TZ")], Some("Europe/Berlin".into()));
         assert_eq!(envs[OsStr::new("R_DEFAULT_PACKAGES")], Some("NULL".into()));
         assert!(std::env::var_os("ROBIGO_CONF_TEST_SET").is_none());
+    }
+
+    /// The boot probe is no case: it runs without the byte-code crosscheck,
+    /// whose records would land in the report the cases' are counted from.
+    #[cfg(unix)]
+    #[test]
+    fn the_boot_probe_runs_without_the_crosscheck() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = super::scratch_dir("probe-env");
+        let bin = dir.join("says");
+        std::fs::write(&bin, "#!/bin/sh\necho \"crosscheck=${ROBIGO_BC_CROSSCHECK:-off} report=${ROBIGO_BC_CROSSCHECK_REPORT:-none}\" >&2\n")
+            .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let o = Options {
+            bin,
+            version: RT.gated.to_string(),
+            filter: None,
+            diff: false,
+            update: false,
+            sweep: false,
+            features: Vec::new(),
+            results: None,
+            jobs: 1,
+            timeout: Duration::from_secs(10),
+            case_timeouts: BTreeMap::new(),
+            times: None,
+            slots: None,
+            // (as a crosscheck step's environment gives every case)
+            env: vec![
+                ("ROBIGO_BC_CROSSCHECK".into(), Some("1".into())),
+                ("ROBIGO_BC_CROSSCHECK_REPORT".into(), Some("/tmp/report".into())),
+            ],
+        };
+        let r = boot_record(&RT, &o);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(r.contains("crosscheck=off report=none"), "{r}");
     }
 
     /// A binary that hangs at startup: the probe is killed at the case
