@@ -285,6 +285,7 @@ pub use env::{
     SetVarTarget, SlotInit, bytecode_expr,
 };
 pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
+pub use fill::{Fill, FillPass};
 pub use frames::{Frame, WalkError};
 pub use fresh::{DDVAL, EMBEDDED_NUL, FreshVec, Unique, dd_val, is_dd_name};
 pub use handle::{
@@ -303,7 +304,6 @@ pub use limits::{
 };
 pub use namebuf::NameBuf;
 pub use native::{Landing, NATIVE_MAX_ARGS, Native6, enter_export, enter_leaf, enter_leaf_mut};
-pub use fill::{Fill, FillPass};
 pub use outcome::{Built, Diag};
 pub use ppacct::PpSave;
 pub use records::{FILL_ALIGN, FILL_SIZE, Reserved};
