@@ -28,6 +28,7 @@ closure %in% match.R
 closure %||% utils.R
 closure ..getNamespace namespace.R
 closure .Date dates.R
+closure .POSIXct datetime.R
 closure .deparseOpts New-Internal.R
 closure .doSortWrap sort.R
 closure .getNamespace namespace.R
@@ -116,8 +117,10 @@ closure exists get.R
 closure factor factor.R
 closure file connections.R
 closure file.exists files.R
+closure file.info files.R
 closure file.path files.R
 closure file.remove files.R
+closure file.size files.R
 closure find.package library.R
 closure findRestart conditions.R
 closure force eval.R
@@ -232,7 +235,9 @@ closure rev rev.R
 closure rev.default rev.R
 closure rm rm.R
 closure rowSums colSums.R
+closure sQuote character.R
 closure sapply sapply.R
+closure save load.R
 closure saveRDS serialize.R
 closure search New-Internal.R
 closure seq seq.R
@@ -260,6 +265,7 @@ closure strrep character.R
 closure strsplit grep.R
 closure structure structure.R
 closure sub grep.R
+closure substr character.R
 closure summary summary.R
 closure summary.connection connections.R
 closure suppressWarnings conditions.R
@@ -476,6 +482,7 @@ internal eval
 internal exists
 internal file
 internal file.exists
+internal file.info
 internal file.path
 internal file.remove
 internal forcedBindingExpression
@@ -564,6 +571,7 @@ internal rep_len
 internal returnValue
 internal rowSums
 internal save.to.file
+internal saveToConn
 internal search
 internal serialize
 internal serializeInfoFromConn
@@ -581,6 +589,7 @@ internal stop
 internal strrep
 internal strsplit
 internal sub
+internal substr
 internal summary.connection
 internal sys.call
 internal sys.frame
