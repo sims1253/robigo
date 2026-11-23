@@ -1,0 +1,27 @@
+Error: compilation failed -  (converted from warning) unable to translate '<U+4E2D>' to native encoding at assign(v, 1, envir = vars) 
+FALSE -> Error in f1() : 
+  (converted from warning) unable to translate '<U+4E2D>' to native encoding
+TRUE -> Error in f2() : 
+  (converted from warning) unable to translate '<U+4E2D>' to native encoding
+Error: compilation failed -  (converted from warning) unable to translate '<U+4E2D>' to native encoding at assign(v, 1, envir = vars) 
+FALSE again -> Error in f3() : 
+  (converted from warning) unable to translate '<U+4E2D>' to native encoding
+classed TRUE -> Error in f4() : 
+  (converted from warning) unable to translate '<U+4E2D>' to native encoding
+classed FALSE, a ! method -> Error in f5() : 
+  (converted from warning) unable to translate '<U+4E2D>' to native encoding
+1L -> Error in f6() : 
+  (converted from warning) unable to translate '<U+4E2D>' to native encoding
+NA -> Error in if (!compilerOptions$suppressAll) cat(paste(gettext("Error: compilation failed - "),  : 
+  missing value where TRUE/FALSE needed
+JIT level after: 0 
+"yes" -> Error in !compilerOptions$suppressAll : invalid argument type
+JIT level after: 0 
+c(TRUE, FALSE) -> Error in if (!compilerOptions$suppressAll) cat(paste(gettext("Error: compilation failed - "),  : 
+  the condition has length > 1
+JIT level after: 0 
+logical(0) -> Error in if (!compilerOptions$suppressAll) cat(paste(gettext("Error: compilation failed - "),  : 
+  argument is of length zero
+JIT level after: 0 
+removed -> Error in !compilerOptions$suppressAll : invalid argument type
+JIT level after: 0 

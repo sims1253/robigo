@@ -6,6 +6,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 import tempfile
 import importlib.util
 from pathlib import Path
@@ -139,6 +140,15 @@ class VersionTests(unittest.TestCase):
 class RtRuntimeTests(unittest.TestCase):
     """robigo-rt's column (`run --runtime rt`): its own pin's recordings and
     its own ratchet, never the old runtime's."""
+
+    def setUp(self):
+        # (the fake binary has no tree to make: robigo_rt_path's
+        # rt_trees.ensure, scripts/test-rt-ci.py's test of its own, stays out)
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import rt_trees
+        p = patch.object(rt_trees, "ensure", lambda *a, **k: None)
+        p.start()
+        self.addCleanup(p.stop)
 
     def run_rt(self, **kw):
         args = dict(name="fixture", profile=None, update=False, r_version=None, robigo=__file__, filter=None,

@@ -9,7 +9,7 @@
 //! values, as `.Platform`'s are (robigo-rt has no installation of its own).
 //!
 //! Options robigo-rt does not honor yet ([`UNHONORED`]: `verbose` and
-//! the partial-match warnings) cannot be set: GNU R's checks of the value
+//! `warnPartialMatchDollar`) cannot be set: GNU R's checks of the value
 //! run, then "not implemented yet". `width`, `digits`, `max.print` and
 //! `deparse.cutoff` are read where GNU R reads them (robigo-rt's
 //! `PrintInit`).
@@ -288,7 +288,15 @@ pub fn do_get_option(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
 /// (docs/ledger/g3/2026-11-23-h-frozen-pass.md).
 // R: options.c:SetOption
 fn set_option<'g>(cx: &'g Cx, l: Ref<'g>, name: &[u8], value: Option<Ref<'g>>) -> Result<(Ref<'g>, Ref<'g>), NeedGc> {
-    let mut items: Vec<(Sym<'g>, Ref<'g>)> = Vec::new();
+    // sized once: the list's length, and one more for a new option (grown
+    // from empty it reallocated as the start set its ~60 options)
+    let mut len = 0;
+    let mut c = l.as_cons();
+    while let Some(cell) = c {
+        len += 1;
+        c = cell.cdr().as_cons();
+    }
+    let mut items: Vec<(Sym<'g>, Ref<'g>)> = Vec::with_capacity(len + 1);
     let mut c = l.as_cons();
     while let Some(cell) = c {
         items.push((cell.tag().as_sym().expect("robigo: a tagged option"), cell.car()));
@@ -353,7 +361,7 @@ const MANDATORY: &[&str] = &[
 /// Options GNU R reads (or mirrors in C state) where robigo-rt does not
 /// yet: setting one would be accepted without effect, so it is refused
 /// (after GNU R's own checks of the value).
-const UNHONORED: &[&str] = &["verbose", "warnPartialMatchDollar", "warnPartialMatchAttr"];
+const UNHONORED: &[&str] = &["verbose", "warnPartialMatchDollar"];
 
 /// `.Internal(options(...))`: the sorted list with no arguments; else, per
 /// argument, a query (an unnamed string) or an assignment (`name =
@@ -688,17 +696,18 @@ fn check_option<'s>(
             }
             s.root(cx, argi.bind(cx))
         }
-        b"catch.script.errors"
-        | b"warnPartialMatchDollar"
-        | b"warnPartialMatchAttr"
-        | b"browserNLdisabled"
-        | b"CBoundsCheck" => {
+        b"catch.script.errors" | b"warnPartialMatchDollar" | b"browserNLdisabled" | b"CBoundsCheck" => {
             tf(cx)?;
             s.root(cx, argi.bind(cx))
         }
         b"warnPartialMatchArgs" => {
             let on = tf(cx)?;
             cx.set_warn_partial_match_args(on);
+            s.root(cx, argi.bind(cx))
+        }
+        b"warnPartialMatchAttr" => {
+            let on = tf(cx)?;
+            cx.set_warn_partial_match_attr(on);
             s.root(cx, argi.bind(cx))
         }
         b"showNCalls" => {

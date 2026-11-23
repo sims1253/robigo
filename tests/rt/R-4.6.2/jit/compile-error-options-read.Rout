@@ -1,0 +1,5 @@
+active read
+active read
+Error: compilation failed -  (converted from warning) unable to translate '<U+4E2D>' to native encoding at assign(v, 1, envir = vars) 
+Error in f() : 
+  (converted from warning) unable to translate '<U+4E2D>' to native encoding

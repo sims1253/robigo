@@ -27,6 +27,7 @@ def meta(*pkgs):
 # (every ROBIGO_CONF_* variable, and these)
 CALLER_ENV = ("GITHUB_ACTIONS", "XDG_RUNTIME_DIR", "RT_CI_MIN_FREE_GB")
 CPUS = 8
+BRANCH_CHANGES = rt.branch_changes
 
 
 class RtCi(unittest.TestCase):
@@ -52,6 +53,11 @@ class RtCi(unittest.TestCase):
         cpus = mock.patch.object(os, "cpu_count", return_value=CPUS)
         cpus.start()
         self.addCleanup(cpus.stop)
+        # main() looks at this checkout's own branch for base-subset's
+        # inputs: no test may depend on what the branch under test changes
+        changes = mock.patch.object(rt, "branch_changes", return_value=[])
+        changes.start()
+        self.addCleanup(changes.stop)
 
     def test_the_cache_mutation_starts_are_memory_capped(self):
         # every robigo-rt start of scripts/rt-tcache-mutate.py goes through
@@ -91,9 +97,14 @@ class RtCi(unittest.TestCase):
             for t in titles:
                 seen.setdefault(t, []).append(shard)
         self.assertEqual(sorted(seen), sorted(everything))
+        shared = (rt.RELEASE_BUILD_TITLE, rt.db_tree("")[0])
         for t, shards in seen.items():
             if rt.shard_of(t) is None:
                 self.assertEqual(shards, [s for s in rt.SHARDS if s not in rt.OWN_STEPS], t)
+            elif t in shared:
+                # the release build and its tree: in modes and each shard
+                # that runs the binary at the default boot
+                self.assertEqual(shards, [s for s in rt.SHARDS if s == "modes" or s in rt.TREE_SHARDS], t)
             else:
                 self.assertEqual(shards, [rt.shard_of(t)], t)
         # where each long step goes (the split's point): the crates' tests
@@ -115,8 +126,9 @@ class RtCi(unittest.TestCase):
         self.assertEqual([t for t, s in where.items() if s == "builtin-diff"],
                          ["builtin differential and its planted divergences (A4, scripts/builtin-diff.py ci)"])
         self.assertEqual([t for t, s in where.items() if s == "feature-builds"],
-                         ["conformance under ROBIGO_RETRY_TORTURE=1 (E9: every build's retry runs once)",
+                         ["ROBIGO_RETRY_TORTURE's build (with poison-dead), built (cargo test --release --no-run)",
                           "base's database tree for ROBIGO_RETRY_TORTURE's build (scripts/rt-home-db.sh)",
+                          "conformance under ROBIGO_RETRY_TORTURE=1 (E9: every build's retry runs once)",
                           "a translation-cache verification under ROBIGO_RETRY_TORTURE=1 compares nothing for a "
                           "retry (tests/boot_db.rs)",
                           "ROBIGO_POISON_DEAD=1 (dead slots poisoned), robigo-rt's tests and the planted early clear",
@@ -255,6 +267,31 @@ class RtCi(unittest.TestCase):
         self.assertIn("  503.0 s of  600 s  pass  tests/rt/jit/serialize-write.R", report)
         self.assertIn("no case over", rt.slow_cases_report("y", os.path.join(os.path.dirname(path), "none.tsv")))
 
+    def test_the_case_times_report_lists_a_case_with_an_allowance_under_half_of_it(self):
+        # a case given longer than the step's limit shows its time against
+        # its allowance even when it is under half of it; without the step's
+        # limit, the report is the over-half one alone
+        import tempfile
+        path = os.path.join(tempfile.mkdtemp(), "t.tsv")
+        with open(path, "w") as f:
+            f.write("# secs\tlimit\tstatus\tcase\n"
+                    "332.9\t780\tpass\ttests/r/conditions/c-stack-overflow.R\n"
+                    "200.0\t600\tpass\ttests/rt/a.R\n")
+        report = rt.slow_cases_report("conformance under gctorture (E3)", path, 600)
+        self.assertIn("no case over 50% of its limit", report)
+        self.assertIn("the cases with an allowance above the step's 600 s:", report)
+        self.assertIn("  332.9 s of  780 s  pass  tests/r/conditions/c-stack-overflow.R", report)
+        self.assertNotIn("tests/rt/a.R", report)
+        self.assertNotIn("c-stack-overflow", rt.slow_cases_report("x", path))
+        # over half of its allowance: listed once, with the over-half cases
+        with open(path, "a") as f:
+            f.write("700.0\t780\tpass\ttests/r/b.R\n")
+        report = rt.slow_cases_report("x", path, 600)
+        self.assertEqual(report.count("tests/r/b.R"), 1)
+        self.assertIn("1 case(s) over 50%", report)
+        self.assertEqual(rt.step_timeout({"ROBIGO_CONF_TIMEOUT": "600"}), 600)
+        self.assertEqual(rt.step_timeout({}), 20)
+
     def test_every_conformance_step_writes_its_case_times_and_lists_them_even_when_it_fails(self):
         # the runner's ROBIGO_CONF_TIMES_REPORT, a file per step, for every
         # conformance step rt-ci runs (the shards', the nightly's): not for
@@ -284,8 +321,8 @@ class RtCi(unittest.TestCase):
         self.assertIn("1 case(s) over 50% of their limit", out.getvalue())
         self.assertIn("tests/rt/x.R", out.getvalue())
         # the nightly's full-move step is a conformance step like the others
-        for _, _, cmd in rt.full_move_steps():
-            self.assertTrue(rt.CONFORMANCE in cmd and "--exact" in cmd)
+        # (its last: the tree and the build come first)
+        self.assertTrue(rt.CONFORMANCE in rt.full_move_steps()[-1][2] and "--exact" in rt.full_move_steps()[-1][2])
 
     def test_the_free_space_floor_measures_a_path_that_does_not_exist_yet_at_its_ancestor(self):
         # cargo's target directory does not exist on a fresh checkout (CI's
@@ -470,6 +507,35 @@ class RtCi(unittest.TestCase):
                         and not (rt.CONFORMANCE in cmd and "--exact" in cmd):
                     self.assertTrue(rt.crate_test_threads(cmd), f"{shard}: {title}: {cmd}")
 
+    def test_the_torture_steps_torture_the_cases_and_one_step_per_boot_the_start(self):
+        # every conformance step under a torture mode holds it through the
+        # start (ROBIGO_TORTURE_AFTER_START=1); the start keeps one step per
+        # boot under the moving collector and gctorture from the creation
+        crates = ["robigo-rt", "robigo-rtapi", "robigo-rtcore"]
+        plans = rt.steps(crates) + rt.full_move_steps() + rt.freeze_check_steps()
+        torture = ("ROBIGO_GCTORTURE", "ROBIGO_GC_MOVE", "ROBIGO_RETRY_TORTURE")
+        seen = 0
+        for title, env, cmd in plans:
+            if rt.CONFORMANCE in cmd and "--exact" in cmd and any(k in env for k in torture):
+                seen += 1
+                self.assertEqual(env.get("ROBIGO_TORTURE_AFTER_START"), "1", title)
+                if "ROBIGO_GC_MOVE" in env:
+                    self.assertEqual(env.get("ROBIGO_GC_FREEZE"), "0", title)
+        self.assertGreaterEqual(seen, 5)
+        starts = [(t, e, c) for t, e, c in rt.steps(crates) if t.startswith("the start tortured")]
+        self.assertEqual(sorted(e["ROBIGO_RT_BOOT"] for _t, e, _c in starts), ["", "rdb"])
+        for title, env, cmd in starts:
+            self.assertEqual(env["ROBIGO_TORTURE_AFTER_START"], "0", title)
+            self.assertEqual((env["R_GCTORTURE"], env["R_GCTORTURE_WAIT"], env["ROBIGO_GCTORTURE"], env["ROBIGO_GC_MOVE"]),
+                             ("1", "1", "1", "1"), title)
+            # (the freeze is off under any move mode; said, as every GC_MOVE step says it)
+            self.assertEqual(env["ROBIGO_GC_FREEZE"], "0", title)
+            self.assertEqual(cmd[0], rt.rt_binary())
+        # the rdb one after base's database tree is written
+        titles = [t for t, _e, _c in rt.steps(crates)]
+        tree = next(i for i, t in enumerate(titles) if t.startswith("base's database tree"))
+        self.assertGreater(titles.index(starts[1][0] if starts[1][1]["ROBIGO_RT_BOOT"] else starts[0][0]), tree)
+
     def test_each_shards_crate_tests_are_built_in_a_step_of_their_own(self):
         # a crate-test step's time is its tests' alone: its build (the same
         # command with --no-run, the same RUSTFLAGS and target) comes first,
@@ -515,6 +581,308 @@ class RtCi(unittest.TestCase):
                         if k.startswith("ROBIGO_CONF_") or k.startswith("ROBIGO_BC_CROSSCHECK") or k in harmless:
                             continue
                         self.assertIn(k, cleared, f"{shard}: {title}: {k} is not in MODE_VARS")
+
+    def test_every_step_that_can_boot_rdb_has_its_binarys_tree_before_it(self):
+        # base's database tree is written by one binary (rt-home-db.sh's
+        # stamp names it); a step that runs the release binary with no boot
+        # set (rdb once it is the default) or ROBIGO_RT_BOOT=rdb needs the
+        # tree that same build wrote, earlier in its own plan, under either
+        # default. Walked in order: a release build replaces the binary (in
+        # its target), a tree step records the binary it saw
+        crates = ["robigo-rt", "robigo-rtapi", "robigo-rtcore"]
+        plans = {shard: rt.shard_steps(crates, shard) for shard in rt.SHARDS}
+        plans["local"] = rt.builds_first(rt.steps(crates))
+        plans["full-move"] = rt.full_move_steps()
+        plans["freeze-check"] = rt.freeze_check_steps()
+        binary_scripts = ("scripts/rt-stress.sh", "scripts/rt-overshoot.py", "scripts/rt-fail-alloc.py",
+                          "scripts/rt-tcache-mutate.py", "scripts/builtin-diff.py")
+
+        def build_of(cmd):
+            # (a release cargo command's build: its features, or plain)
+            return cmd[cmd.index("--features") + 1] if "--features" in cmd else "plain"
+
+        checked = 0
+        for name, plan in plans.items():
+            binary, tree = {}, {}
+            for title, env, cmd in plan:
+                target = env.get("CARGO_TARGET_DIR", "")
+                # (any release cargo test of robigo-rtapi builds the binary and
+                # may run it: the conformance, boot_db, the crates' tests that
+                # spawn it, a --no-run build)
+                release = cmd[:2] == ["cargo", "test"] and "--release" in cmd and "robigo-rtapi" in cmd
+                if release:
+                    binary[target] = build_of(cmd)
+                if cmd[:1] == ["scripts/rt-home-db.sh"]:
+                    # the tree is the named binary's: the release one of this target
+                    exe = cmd[cmd.index("--robigo-rt") + 1]
+                    self.assertEqual(exe, rt.rt_binary(target or None), f"{name}: {title}: another binary")
+                    tree[target] = binary.get(target)
+                    continue
+                if "scripts/builtin-diff.py" in cmd:
+                    binary[target] = "plain"       # (it builds the release binary first)
+                runs = release and "--no-run" not in cmd or any(x in cmd for x in binary_scripts)
+                if not runs or env.get("ROBIGO_RT_BOOT", "rdb") != "rdb":
+                    continue
+                checked += 1
+                self.assertIsNotNone(tree.get(target), f"{name}: {title}: no tree before it")
+                self.assertEqual(tree[target], binary.get(target),
+                                 f"{name}: {title}: the tree was written by another build")
+        self.assertGreater(checked, 20)
+
+    # Every file that runs a robigo-rt binary, and how that binary gets base's
+    # database tree written by itself (a binary naming no boot boots rdb once
+    # it is the default). A file that starts running one fails the test below
+    # until it is listed here with its way.
+    TREE_CALLERS = {
+        "scripts/rt-ci.py": "its plans: each binary's tree before its steps (the walk test above)",
+        "scripts/builtin-diff.py": "run/show: rt_trees.ensure (ci: rt-ci's builtin-diff shard wrote it); the "
+                                   "planted binary boots the plain one's tree; both with ROBIGO_TRANSLATION_CACHE=0",
+        "scripts/corpus.py": "rt_trees.ensure in robigo_rt_path; CI's rt-corpora unpacks perf-rt-build's trees",
+        "scripts/wall13.py": "rt_trees.ensure before the first run (local only)",
+        "scripts/rt-build-gaps.py": "rt_trees.ensure before its probes (local only)",
+        "scripts/rt-startup.py": "make_trees / --pack-trees / --trees-from: perf's rows and starts boot its trees",
+        "scripts/perf.py": "rt-startup's trees (rt-starts --trees, rt-bars' make_trees)",
+        "scripts/rt_trees.py": "is the way",
+        "scripts/rt-home-db.sh": "writes the tree (boots stage0 itself)",
+        "scripts/rt-base-build.sh": "names its boot (ROBIGO_RT_BOOT=stage0)",
+        "scripts/rt-rdb-compare.sh": "reads trees, runs no binary at a default boot",
+        "scripts/pgo-build.sh": "L's flip branch makes its training run's tree",
+        "scripts/rt-stress.sh": "rt-ci's step after the tree; by hand, the checkout's tree",
+        "scripts/rt-overshoot.py": "rt-ci's step after the tree; by hand, the checkout's tree",
+        "scripts/rt-fail-alloc.py": "rt-ci's step after the tree; by hand, the checkout's tree",
+        "scripts/rt-tcache-mutate.py": "rt-ci's step after the tree; by hand, the checkout's tree",
+        ".github/workflows/ci.yml": "rt-ci's shards; rt-corpora unpacks dist/rt-trees.tar; perf-rt boots "
+                                   "--trees dist/rt-trees.tar",
+    }
+
+    def test_every_robigo_rt_caller_says_how_its_binary_gets_its_tree(self):
+        import re
+        pat = re.compile(r"--robigo-rt\b|release/robigo-rt|ROBIGO_RT_BIN|dist/robigo-rt|CARGO_BIN_EXE_robigo-rt")
+        root = HERE.parent
+        found = set()
+        for p in list(root.glob("scripts/*.py")) + list(root.glob("scripts/*.sh")) + list(root.glob(".github/workflows/*.yml")):
+            rel = str(p.relative_to(root))
+            if re.match(r"scripts/test[-_]", rel):
+                continue
+            if pat.search(p.read_text(errors="replace")):
+                found.add(rel)
+        self.assertEqual(sorted(found - set(self.TREE_CALLERS)), [], "a robigo-rt caller with no tree listed")
+        self.assertEqual(sorted(set(self.TREE_CALLERS) - found), [], "a listed caller that no longer runs one")
+        # rt-corpora's binary comes with its trees, unpacked before any run
+        yml = (root / ".github" / "workflows" / "ci.yml").read_text()
+        job = re.search(r"\n  rt-corpora:\n(.*?)\n  [a-z0-9-]+:\n", yml, re.S).group(1)
+        self.assertLess(job.index("tar -xf dist/rt-trees.tar"), job.index("corpus.py run"))
+
+    def test_rt_trees_makes_the_tree_only_when_it_is_not_this_binarys_whole_tree(self):
+        import importlib.util, shutil, subprocess, tempfile
+        from unittest import mock
+        spec_ = importlib.util.spec_from_file_location("rt_trees", HERE / "rt_trees.py")
+        tr = importlib.util.module_from_spec(spec_)
+        spec_.loader.exec_module(tr)
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        os.makedirs(os.path.join(d, "scripts"))
+        for n in ("rt-home.sh", "rt-home-db.sh"):
+            open(os.path.join(d, "scripts", n), "w").write(n)
+        b = os.path.join(d, "robigo-rt")
+        open(b, "wb").write(b"binary")
+        db = os.path.join(d, ".robigo", "rt-home-db")
+        files = [os.path.join(db, "library", "base", "R", "base.rdb"),
+                 os.path.join(db, "library", "base", "R", "base.rdx"),
+                 os.path.join(db, "library", "base", "R", "base"),
+                 os.path.join(db, "library", "compiler", "R", "compiler.rdb"),
+                 os.path.join(db, "library", "compiler", "R", "compiler.rdx"),
+                 os.path.join(d, ".robigo", "rt-home-db-cache", "base.rtc"),
+                 os.path.join(d, ".robigo", "rt-home-db-cache", "compiler.rtc")]
+        def make_whole():
+            for f in files:
+                os.makedirs(os.path.dirname(f), exist_ok=True)
+                open(f, "w").write("x")
+            home = ["R-4.6.2-x", tr.script_hash(d, "rt-home.sh"), "natives"]
+            os.makedirs(os.path.join(d, ".robigo", "rt-home"), exist_ok=True)
+            open(os.path.join(d, ".robigo", "rt-home", ".rt-home"), "w").write(" ".join(home) + "\n")
+            open(os.path.join(db, ".rt-home-db"), "w").write(
+                " ".join(home + [tr.script_hash(d, "rt-home-db.sh"), tr.binary_hash(b)]) + "\n")
+        ran = []
+        def fake(cmd, **k):
+            ran.append(cmd[0])
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        with mock.patch.object(tr.subprocess, "run", fake), mock.patch.dict(os.environ, {"ROBIGO_RT_CHECKOUT": "/else"}):
+            tr.ensure(b, d)            # no tree: both scripts
+            self.assertEqual(ran, ["scripts/rt-home.sh", "scripts/rt-home-db.sh"])
+            # and the binary's children boot from this checkout, not an inherited one
+            self.assertEqual(os.environ["ROBIGO_RT_CHECKOUT"], os.path.abspath(d))
+            make_whole()
+            ran.clear()
+            tr.ensure(b, d)            # this binary's whole tree: nothing
+            self.assertEqual(ran, [])
+            open(b, "wb").write(b"another")
+            tr.ensure(b, d)            # another binary's: made again
+            self.assertEqual(ran, ["scripts/rt-home.sh", "scripts/rt-home-db.sh"])
+            open(b, "wb").write(b"binary")
+            make_whole()
+            for gone in files[:5]:    # a database, an index, the loader: each sends the scripts to decide
+                make_whole()
+                os.remove(gone)
+                ran.clear()
+                tr.ensure(b, d)
+                self.assertEqual(ran, ["scripts/rt-home.sh", "scripts/rt-home-db.sh"], gone)
+            make_whole()
+            open(os.path.join(d, "scripts", "rt-home-db.sh"), "w").write("changed")
+            ran.clear()
+            tr.ensure(b, d)            # the recipe changed: made again
+            self.assertEqual(ran, ["scripts/rt-home.sh", "scripts/rt-home-db.sh"])
+            # stale stamps and no binary: not fresh (no traceback), and the
+            # scripts say what is missing (rt-home-db.sh's "no robigo-rt at")
+            make_whole()
+            open(os.path.join(d, "scripts", "rt-home.sh"), "w").write("changed too")
+            os.remove(b)
+            self.assertFalse(tr.fresh(b, d))
+            ran.clear()
+            tr.ensure(b, d)
+            self.assertEqual(ran, ["scripts/rt-home.sh", "scripts/rt-home-db.sh"])
+
+    def test_base_subsets_check_is_owed_when_a_branch_changes_its_inputs(self):
+        owed = rt.base_subset_owed
+        for path in ("tests/rt/env/large-frames.R", "tests/rt/a.R", "benchmarks/rt/calls-rows.toml",
+                     "scripts/base-subset.sh", "scripts/base-subset-trace.R", "crates/robigo-rt/proto/base-wide.txt",
+                     "scripts/r-src.sh", "scripts/base-wide.R", "benchmarks/suite/calls.R",
+                     "tests/rt/capi/support/eval.c", "tests/rt/R-4.6.2/capi/eval.Rstatus", "tests/rt/R-4.7.0/capi/eval.Rstatus", "scripts/oracle-run.sh",
+                     "scripts/perf.py", "scripts/oracle-versions"):
+            self.assertEqual(owed(["docs/x.md", path]), path)
+        for path in ("tests/rt/env/large-frames.Rout", "tests/r/basics/a.R", "benchmarks/rt/other.toml",
+                     "crates/robigo-rt/proto/other.txt", "crates/robigo-rt/src/base-subset.rs", "scripts/rt-ci.py"):
+            self.assertIsNone(owed([path]), path)
+        self.assertIsNone(owed([]))
+        # git cannot say: owed
+        self.assertIn("cannot compare", owed(None))
+
+    def test_branch_changes_see_commits_edits_and_new_files(self):
+        import subprocess, shutil, tempfile
+        from unittest import mock
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        # (the caller's git config stays out: signing, hooks, templates)
+        genv = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        def git(*a):
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+                            "-c", "core.hooksPath=" + os.devnull, *a], cwd=d, check=True, capture_output=True, env=genv)
+        git("init", "-q", "-b", "main")
+        for f in ("kept", "edited"):
+            open(os.path.join(d, f), "w").write("1\n")
+        git("add", "kept", "edited")
+        git("commit", "-q", "-m", "base")
+        git("branch", "base")
+        open(os.path.join(d, "committed"), "w").write("1\n")
+        git("add", "committed")
+        git("commit", "-q", "-m", "change")
+        open(os.path.join(d, "edited"), "w").write("2\n")
+        open(os.path.join(d, "untracked"), "w").write("1\n")
+        isolated = mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
+                                                "GIT_CONFIG_NOSYSTEM": "1"})
+        isolated.start()
+        self.addCleanup(isolated.stop)
+        self.assertEqual(BRANCH_CHANGES(d, "base"), ["committed", "edited", "untracked"])
+        self.assertIsNone(BRANCH_CHANGES(d, "no-such-branch"))
+        # a staged change the worktree undoes is still a change (the commit
+        # pushed will carry it)
+        open(os.path.join(d, "kept"), "w").write("2\n")
+        git("add", "kept")
+        open(os.path.join(d, "kept"), "w").write("1\n")
+        self.assertIn("kept", BRANCH_CHANGES(d, "base"))
+        # a name that is not UTF-8
+        bad = os.fsdecode(b"caf\xe9.R")
+        open(os.path.join(os.fsencode(d), b"caf\xe9.R"), "w").close()
+        self.assertIn(bad, BRANCH_CHANGES(d, "base"))
+        # no git at all: git cannot say
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"PATH": ""}):
+            self.assertIsNone(BRANCH_CHANGES(d, "base"))
+
+    def test_a_local_run_adds_base_subsets_check_or_stops_with_the_cure(self):
+        import contextlib, io
+        from unittest import mock
+        def main(owed, problem, argv=()):
+            out = io.StringIO()
+            # main's premise mocked: no `cargo metadata` run, whatever the workspace
+            with mock.patch.object(rt, "metadata", return_value={"target_directory": "/x", "packages": []}), \
+                    mock.patch.object(rt, "rt_crates", return_value=["robigo-rt"]), \
+                    mock.patch.object(rt, "leaks", return_value=[]), \
+                    mock.patch.object(rt, "branch_changes", return_value=[]), \
+                    mock.patch.object(rt, "base_subset_owed", return_value=owed), \
+                    mock.patch.object(rt, "oracle_problem", return_value=problem), \
+                    mock.patch.object(rt, "run_steps", return_value=0) as run, \
+                    mock.patch.dict(os.environ, {"RT_CI_MIN_FREE_GB": "0"}), contextlib.redirect_stdout(out):
+                status = rt.main(list(argv))
+            plan = run.call_args[0][0] if run.called else None
+            return status, plan, out.getvalue()
+        status, plan, _ = main(None, None)
+        self.assertEqual(status, 0)
+        self.assertNotIn(rt.BASE_SUBSET_STEP, plan)
+        status, plan, _ = main("tests/rt/a.R", None)
+        self.assertEqual(plan[-1], rt.BASE_SUBSET_STEP)
+        # no oracle: the run fails at its start (never a warning), naming the cure
+        status, plan, out = main("tests/rt/a.R", "there is no robigo-oracle:4.6.2 image; scripts/build-oracle.sh --pull 4.6.2")
+        self.assertEqual((status, plan), (2, None))
+        self.assertIn("tests/rt/a.R", out)
+        self.assertIn("scripts/build-oracle.sh --pull 4.6.2", out)
+        # CI's shards never run it (CI has its own base-subset job)
+        status, plan, _ = main("tests/rt/a.R", "missing", ["--shard", "modes"])
+        self.assertEqual(status, 0)
+        self.assertNotIn(rt.BASE_SUBSET_STEP, plan)
+
+    def test_the_oracle_cure_names_the_pull(self):
+        from unittest import mock
+        import subprocess
+        def fake(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 1, "", "")
+        with mock.patch.object(rt.subprocess, "run", fake):
+            problem = rt.oracle_problem()
+        self.assertIn("robigo-oracle:4.6.2", problem)
+        self.assertIn("scripts/build-oracle.sh --pull 4.6.2", problem)
+        self.assertIn("scripts/build-oracle.sh --image 4.6.2", problem)
+        with mock.patch.object(rt.subprocess, "run", side_effect=FileNotFoundError):
+            self.assertIn("no docker", rt.oracle_problem())
+        # the version, image and cure follow the checkout's rt pin
+        with mock.patch.object(rt, "rt_pin", return_value="4.7.0"), mock.patch.object(rt.subprocess, "run", fake):
+            problem = rt.oracle_problem()
+        for want in ("robigo-oracle:4.7.0", "GNU R 4.7.0", "--pull 4.7.0", "oracle_4_7_0=", "--image 4.7.0"):
+            self.assertIn(want, problem)
+        def r470(cmd, **kw):
+            # (docker is not asked: a matching Rscript is enough)
+            self.assertEqual(cmd[0], "Rscript", "docker was consulted though Rscript matched")
+            return subprocess.CompletedProcess(cmd, 0, "4.7.0", "")
+        with mock.patch.object(rt, "rt_pin", return_value="4.7.0"), mock.patch.object(rt.subprocess, "run", r470):
+            self.assertIsNone(rt.oracle_problem())
+        # the pin read from a checkout's scripts/oracle-versions
+        import tempfile, shutil
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        os.makedirs(os.path.join(d, "scripts"))
+        with open(os.path.join(d, "scripts", "oracle-versions"), "w") as f:
+            f.write("# pins\ngated=4.5.0\nrt=9.8.7\n")
+        self.assertEqual(rt.rt_pin(d), "9.8.7")
+
+    def test_the_lint_job_runs_lint_job_sh_and_nothing_else(self):
+        # the workflow's lint job and scripts/lint-job.sh, which delegates
+        # run before pushing, are one list: the job's only command is the
+        # script, and the script runs fmt, lint.sh and every test suite the
+        # job ran
+        import re
+        yml = (HERE.parent / ".github" / "workflows" / "ci.yml").read_text()
+        job = re.search(r"\n  lint:\n(.*?)\n  [a-z0-9-]+:\n", yml, re.S).group(1)
+        runs = re.findall(r"^\s+run: (.*)$", job, re.M)
+        self.assertEqual(runs, ["scripts/lint-job.sh"])
+        self.assertNotIn("run: |", job)
+        script = (HERE / "lint-job.sh").read_text()
+        checks = re.search(r"CHECKS=\((.*?)\n\)", script, re.S).group(1)
+        listed = re.findall(r'"([^"]+)"', checks)
+        self.assertEqual(listed[:2], ["cargo fmt --check", "scripts/lint.sh"])
+        # every script suite is a test file that exists
+        for c in listed[2:]:
+            self.assertRegex(c, r"^python3 scripts/test[-_][\w-]+\.py$")
+            self.assertTrue((HERE.parent / c.split()[1]).exists(), c)
+        self.assertTrue(os.access(HERE / "lint-job.sh", os.X_OK))
 
     def test_a_crosscheck_that_compares_fewer_than_its_floor_fails(self):
         # the rdb boot's report: a boot that stopped loading the compiler's
@@ -607,10 +975,13 @@ class RtCi(unittest.TestCase):
         self.assertEqual(tests[0]["ROBIGO_GC_FREEZE_CHECK"], "1")
         self.assertEqual(tests[0]["ROBIGO_GC_FREEZE"], "1")
         night = rt.freeze_check_steps()
-        self.assertEqual(len(night), 2)
-        # the R_HOME tree first: the tools cases skip without it (Sol r7 S13)
+        self.assertEqual(len(night), 4)
+        # the R_HOME tree first: the tools cases skip without it (Sol r7 S13);
+        # then the binary and base's database tree it writes
         self.assertEqual(night[0][2], ["scripts/rt-home.sh"])
-        _, env, cmd = night[1]
+        self.assertEqual(night[1], rt.release_build())
+        self.assertEqual(night[2], rt.db_tree(rt.rt_binary()))
+        _, env, cmd = night[3]
         self.assertEqual((env["ROBIGO_GC_FREEZE_CHECK"], env["ROBIGO_GCTORTURE"], env["ROBIGO_GC_FREEZE"]), ("1", "1", "1"))
         # a failed check fails the step, whatever the case's output (S14)
         self.assertEqual(env["ROBIGO_GC_FREEZE_CHECK_REPORT"], rt.FREEZE_REPORT)
@@ -752,14 +1123,17 @@ class RtCi(unittest.TestCase):
         # ROBIGO_POISON_DEAD on robigo-rt's tests and the conformance
         steps = rt.steps(["robigo-rt", "robigo-rtcore"])
         featured = [i for i, (_, _, cmd) in enumerate(steps) if "--features" in cmd]
-        # the feature builds come last: retry torture's conformance, the
-        # database tree its build's binary writes (no flag of its own: the
-        # step before built that binary), the cache's verification under the
-        # knob (#979), then the poison-dead steps
+        # the feature builds come last: the build (its binary replaces the
+        # release one), the database tree that binary writes (no flag of its
+        # own), retry torture's conformance, the cache's verification under
+        # the knob (#979), then the poison-dead steps: the tree before any
+        # step that runs the binary
         n = len(steps)
-        self.assertEqual(featured, [n - 5, n - 3, n - 2, n - 1], "the feature builds come last")
-        self.assertEqual(steps[n - 4][2][:3], ["scripts/rt-home-db.sh", "--robigo-rt", rt.rt_binary()])
-        self.assertIn("boot_db", steps[featured[1]][2])
+        self.assertEqual(featured, [n - 6, n - 4, n - 3, n - 2, n - 1], "the feature builds come last")
+        self.assertIn("--no-run", steps[n - 6][2])
+        self.assertEqual(steps[n - 5][2][:3], ["scripts/rt-home-db.sh", "--robigo-rt", rt.rt_binary()])
+        self.assertIn("boot_db", steps[featured[2]][2])
+        featured = featured[1:]
         for i in featured:
             cmd = steps[i][2]
             self.assertEqual(cmd[cmd.index("--features") + 1], rt.CHECK_FEATURES)
@@ -917,8 +1291,17 @@ class RtCi(unittest.TestCase):
         self.assertEqual(sorted(named), sorted(["conformance under gctorture (E3)",
                                                 f"conformance under ROBIGO_GC_MOVE={rt.GC_MOVE_YOUNG} with gctorture (E3)"]))
         first = dict(item.rsplit("=", 1) for item in plain[0]["ROBIGO_CONF_TIMEOUTS"].split(","))
-        self.assertEqual(first, {c: str(s) for c, s in rt.GCTORTURE_FIRST.items()})
-        self.assertTrue(all(int(s) == int(plain[0]["ROBIGO_CONF_TIMEOUT"]) for s in first.values()))
+        self.assertEqual(first, {c: str(s) for c, s in {**rt.GCTORTURE_FIRST, **rt.GCTORTURE_SLOW}.items()})
+        # GCTORTURE_SLOW's get longer (c-stack-overflow.R's interim 780 s);
+        # every other case keeps the step's 600 s
+        self.assertEqual(first["tests/r/conditions/c-stack-overflow.R"], "780")
+        self.assertEqual(first["tests/rt/jit/serialize-write.R"], "600")
+        for case, secs in first.items():
+            self.assertTrue((HERE.parent / case).is_file(), case)
+            if case in rt.GCTORTURE_SLOW:
+                self.assertGreater(int(secs), int(plain[0]["ROBIGO_CONF_TIMEOUT"]), case)
+            else:
+                self.assertEqual(int(secs), int(plain[0]["ROBIGO_CONF_TIMEOUT"]), case)
         young = dict(item.rsplit("=", 1) for item in moving[0]["ROBIGO_CONF_TIMEOUTS"].split(","))
         self.assertEqual(set(young), set(rt.YOUNG_MOVE_SLOW) | set(rt.GCTORTURE_FIRST) | set(rt.YOUNG_MOVE_FIRST))
         for case, secs in young.items():
@@ -933,8 +1316,10 @@ class RtCi(unittest.TestCase):
         self.assertEqual(moving[0]["ROBIGO_CONF_TIMEOUT"], "600")
         self.assertTrue(rt.GC_MOVE_YOUNG.startswith("young:") and int(rt.GC_MOVE_YOUNG[6:]) >= 1)
         full = rt.full_move_steps()
-        self.assertEqual(len(full), 1)
-        _, env, cmd = full[0]
+        self.assertEqual([c for _t, _e, c in full[:3]],
+                         [["scripts/rt-home.sh"], rt.release_build()[2], rt.db_tree(rt.rt_binary())[2]])
+        self.assertEqual(len(full), 4)
+        _, env, cmd = full[3]
         self.assertEqual((env["ROBIGO_GC_MOVE"], env["ROBIGO_GCTORTURE"]), ("1", "1"))
         self.assertIn(rt.CONFORMANCE, cmd)
         named = dict(item.rsplit("=", 1) for item in env["ROBIGO_CONF_TIMEOUTS"].split(","))
@@ -1073,6 +1458,37 @@ class CompileFailExpectations(unittest.TestCase):
         self.assertEqual(rust_src_snippets(root),
                          ["crates/x/tests/ui/with-rust-src.stderr:2: --> $RUST/core/src/marker.rs "
                           "(and the source under it)"])
+
+class BuildOraclePull(unittest.TestCase):
+    """scripts/build-oracle.sh --pull: a failed pull names the ref, the
+    login for an auth error, and the local build (docker faked on PATH)."""
+
+    def run_pull(self, docker_stderr):
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            fake = Path(d, "docker")
+            fake.write_text("#!/bin/sh\n[ \"$1\" = pull ] || exit 3\n"
+                            f"echo '{docker_stderr}' >&2\nexit 1\n")
+            fake.chmod(0o755)
+            env = dict(os.environ, PATH=f"{d}:{os.environ['PATH']}", HOME=d)
+            return subprocess.run([str(HERE / "build-oracle.sh"), "--pull", "4.6.2"], env=env,
+                                  capture_output=True, text=True)
+
+    def test_auth_error_says_login_and_fallback(self):
+        p = self.run_pull("Error response from daemon: Head \"https://ghcr.io/v2/x\": unauthorized")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("unauthorized", p.stderr)  # docker's own error is kept
+        self.assertRegex(p.stderr, r"docker pull ghcr\.io/\S+:oracle-4\.6\.2-\S+ failed")
+        self.assertIn("docker login ghcr.io", p.stderr)
+        self.assertIn("scripts/build-oracle.sh --image 4.6.2", p.stderr)
+
+    def test_other_error_gives_fallback_without_login(self):
+        p = self.run_pull("Error response from daemon: manifest unknown")
+        self.assertEqual(p.returncode, 1)
+        self.assertNotIn("docker login", p.stderr)
+        self.assertIn("scripts/build-oracle.sh --image 4.6.2", p.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -70,9 +70,12 @@ if (!inputs_only) {
 # a promise is forced, against a lowered options(expressions), and the
 # tracer's recording bodies change that depth (GNU R prints differently
 # traced): conditions/promise-setup-*.R pin where byte code's force of a
-# promise meets the limit (S1, #986).
+# promise meets the limit (S1, #986); conditions/trycatch-depth-*.R where a
+# handler's work meets it after a caught overflow (S1, #964).
 untraceable <- c("conditions:promise-setup-missok", "conditions:promise-setup-missok-errors",
-                 "conditions:promise-setup-overflow", "conditions:promise-setup-overflow-volume")
+                 "conditions:promise-setup-overflow", "conditions:promise-setup-overflow-volume",
+                 "conditions:trycatch-depth-caught", "conditions:trycatch-depth-cond",
+                 "conditions:trycatch-depth-handler")
 for (area in c("bytecode", "conditions", "env", "ns", "parse", "regex", "s3", "serialize", "sort")) {
   for (f in sort(Sys.glob(file.path(root, "tests", "rt", area, "*.R")), method = "radix")) {
     name <- sub("[.]R$", "", basename(f))

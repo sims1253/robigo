@@ -201,18 +201,20 @@ enum Boot {
     Rdb,
 }
 
-/// `ROBIGO_RT_BOOT`'s boot; unset or empty is M1's loader, any other
-/// value than `stage0` or `rdb` an error (a typo must not boot M1's
-/// loader silently).
+/// `ROBIGO_RT_BOOT`'s boot; unset or empty is M1's loader, which `m1`
+/// names too (so a harness can name it for a binary of either default:
+/// L5's default-boot flip makes unset mean `rdb`), any other value than
+/// `stage0` or `rdb` an error (a typo must not boot M1's loader silently).
 fn boot_checked() -> Result<Boot, String> {
     match std::env::var_os("ROBIGO_RT_BOOT") {
         None => Ok(Boot::M1),
-        Some(v) if v.is_empty() => Ok(Boot::M1),
+        Some(v) if v.is_empty() || v == "m1" => Ok(Boot::M1),
         Some(v) if v == "stage0" => Ok(Boot::Stage0),
         Some(v) if v == "rdb" => Ok(Boot::Rdb),
-        Some(v) => {
-            Err(format!("ROBIGO_RT_BOOT is '{}': it is 'stage0', 'rdb' or unset (M1's loader)", v.to_string_lossy()))
-        }
+        Some(v) => Err(format!(
+            "ROBIGO_RT_BOOT is '{}': it is 'stage0', 'rdb' or 'm1' (M1's loader, also when unset)",
+            v.to_string_lossy()
+        )),
     }
 }
 
@@ -484,6 +486,12 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
         );
         return 2;
     };
+    // the torture settings as the heap made below reads them, after every
+    // Renviron (a test hook with nothing to hold would silently do nothing)
+    if let Err(m) = robigo_rt::torture_after_start_check() {
+        eprintln!("robigo-rt: {m}");
+        return 2;
+    }
     let mut iso = OwnedIsolate::new();
     // The process environment is this isolate's to write (Sys.setenv,
     // Sys.unsetenv), as it is GNU R's.
@@ -503,6 +511,13 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     #[allow(unsafe_code)]
     iso.grant_env_writes(unsafe { robigo_rtcore::clib::EnvWrites::assume() });
     let cx = iso.cx();
+    // ROBIGO_TORTURE_AFTER_START=1 (refused above with no mode to hold): this
+    // front end holds the heap's torture through the start, before anything
+    // of the start allocates, and arms it where ROBIGO_FAIL_ALLOC_AT is armed
+    // (the one that holds is the one that arms: no other embedder holds)
+    if robigo_heap::torture_after_start_from_env() {
+        cx.hold_torture_until_armed();
+    }
     cx.set_locale(robigo_rtcore::Locale { utf8, collate_c: env_loc.collate_c });
     cx.set_locale_names(env_loc.names);
     // R_NoEcho before InitOptions, whose `echo` is its negation
@@ -617,8 +632,10 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     // ROBIGO_GC_MOVE's modes
     cx.freeze_boot_heap();
     // the isolate's console is the process's stdout and stderr
-    // E9's ROBIGO_FAIL_ALLOC_AT counts the script's allocations, not base's
+    // E9's ROBIGO_FAIL_ALLOC_AT counts the script's allocations, not base's;
+    // ROBIGO_TORTURE_AFTER_START=1's torture starts here too
     cx.arm_fail_alloc();
+    robigo_rt::arm_torture_after_start(cx);
     install_sigint();
     // end_Rmainloop's R_CleanUp(SA_DEFAULT, 0, 1) runs .Last; after an
     // error, check_session_exit's R_CleanUp(SA_NOSAVE, 1, 0) does not
