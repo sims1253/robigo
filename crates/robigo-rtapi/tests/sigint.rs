@@ -147,9 +147,28 @@ fn sigint_is_gnu_rs_user_interrupt() {
 /// continuation prompt, then `2` and `x <- 5; x`.
 #[test]
 fn an_interrupt_at_the_interactive_prompt_starts_a_new_statement() {
+    let want = ("> + > [1] 2\n> [1] 5\n> \n", "\n", Some(0));
+    // GNU R's transcript under M1's loader, which runs no profile (the
+    // console's test, ratcheted)
+    let (out, err, status) = interrupt_session("m1");
+    assert_eq!((out.as_str(), err.as_str(), status), want);
+    // INTERIM(srcref): under the default boot the system profile's
+    // options(keep.source = interactive()) is refused first, once (as
+    // tests/cli.rs's SRCREF cases); when source references exist this fails
+    // and the run above takes the default boot
+    let (out, err, status) = interrupt_session("");
+    let refusal =
+        "Error in options(...) : \n  robigo: options(keep.source = TRUE) (source references) is not implemented yet\n";
+    assert_eq!((out.as_str(), err.as_str(), status), (want.0, format!("{refusal}{}", want.1).as_str(), want.2));
+}
+
+/// [`an_interrupt_at_the_interactive_prompt_starts_a_new_statement`]'s
+/// session under `boot` (ROBIGO_RT_BOOT): (stdout, stderr, status).
+fn interrupt_session(boot: &str) -> (String, String, Option<i32>) {
     use std::io::Write;
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
     cmd.args(["--no-readline", "--interactive", "--no-save", "--quiet"])
+        .env("ROBIGO_RT_BOOT", boot)
         .env("LANGUAGE", "en")
         .env("LC_ALL", "C.UTF-8")
         .env("TZ", "UTC")
@@ -234,8 +253,5 @@ fn an_interrupt_at_the_interactive_prompt_starts_a_new_statement() {
         .copied()
         .collect();
     let out = out.lock().unwrap().clone();
-    assert_eq!(
-        (String::from_utf8_lossy(&out).as_ref(), String::from_utf8_lossy(&err).as_ref(), status.code()),
-        ("> + > [1] 2\n> [1] 5\n> \n", "\n", Some(0))
-    );
+    (String::from_utf8_lossy(&out).into_owned(), String::from_utf8_lossy(&err).into_owned(), status.code())
 }
