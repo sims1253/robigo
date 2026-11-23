@@ -2,8 +2,8 @@
 # collections between elements (Cx::fill_strings): long enough to collect
 # inside one call under gctorture, with each kind of element, and the
 # attributes the callers keep or drop (as.character and as.vector clear
-# them; storage.mode<-, names<-, dimnames<- go through coerceVector, which
-# keeps them). The values are GNU R's.
+# them; storage.mode<- and names<- go through coerceVector, which keeps
+# them; dimnames<- clears each component's). The values are GNU R's.
 x <- as.character((1:2000) / 3)
 length(x); x[c(1, 2, 1999, 2000)]; sum(nchar(x))
 as.character(c(TRUE, NA, FALSE)); as.character(c(1L, NA, -3L))
@@ -22,3 +22,15 @@ m <- matrix(1:4, 2)
 dimnames(m) <- list(1:2, c(1.5, 2.5))
 dimnames(m)
 as.character(integer(0)); as.vector(numeric(0), "character")
+# the other callers of coerceVector to character, long enough to collect
+# inside the call: storage.mode<- (attributes kept), dimnames<- (each
+# component's attributes cleared); and vapply's widening of a result
+# (logical to double: it never makes character), through coerceVector too
+w <- structure((1:2000) / 7, names = paste0("n", 1:2000), tag = "t")
+storage.mode(w) <- "character"
+w[c(1, 2000)]; names(w)[2000]; attr(w, "tag")
+mm <- matrix(0, 2000, 1)
+dimnames(mm) <- list(structure((1:2000) / 9, extra = "x"), "c")
+rownames(mm)[c(1, 2000)]; attributes(rownames(mm))
+vv <- vapply(c(TRUE, NA, FALSE), function(x) x, 1)
+vv; typeof(vv)

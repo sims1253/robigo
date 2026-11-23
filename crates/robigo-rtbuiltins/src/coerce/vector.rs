@@ -584,10 +584,22 @@ pub fn as_character_factor<'g>(cx: &'g Cx, x: Ref<'g>) -> Result<Result<Ref<'g>,
 /// atomic vector's strings ([`to_strings_fills`]) are made with collections
 /// between elements ([`atomic_to_strings`]).
 pub fn coerce_vector(cx: &mut Cx, v: Root<'_>, ty: u8, out: Out<'_>) -> RResult<()> {
-    if ty == STRSXP && to_strings_fills(v.bind(cx)) {
-        return atomic_to_strings(cx, v, true, out);
+    coerce_vector_with(cx, v, ty, true, out)
+}
+
+/// [`coerce_vector`] with `coerce`'s `keep_attrs` (false: the result of an
+/// atomic coercion has no attributes copied).
+pub fn coerce_vector_with(cx: &mut Cx, v: Root<'_>, ty: u8, keep_attrs: bool, out: Out<'_>) -> RResult<()> {
+    let r = v.bind(cx);
+    // the same type: `v` itself, no warnings (as `coerce` returns it)
+    if r.sexptype() == ty {
+        out.set(cx, r);
+        return Ok(());
     }
-    let w = cx.build_with(out, |cx| coerce(cx, v.bind(cx), ty, true))?;
+    if ty == STRSXP && to_strings_fills(r) {
+        return atomic_to_strings(cx, v, keep_attrs, out);
+    }
+    let w = cx.build_with(out, |cx| coerce(cx, v.bind(cx), ty, keep_attrs))?;
     w.signal(cx)
 }
 

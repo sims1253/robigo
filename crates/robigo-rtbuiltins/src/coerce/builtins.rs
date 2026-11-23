@@ -4,7 +4,7 @@
 //! `.Internal(is.vector(x, mode))`, `is.na`, `is.nan`, `is.finite`,
 //! `is.infinite`, `anyNA` and `storage.mode<-`.
 
-use super::vector::{Warns, atomic_to_strings, coerce, to_strings_fills};
+use super::vector::{Warns, atomic_to_strings, coerce, coerce_vector, to_strings_fills};
 use crate::attrib::{self, Attrs};
 use crate::registry;
 use crate::util::check1arg;
@@ -681,8 +681,7 @@ pub fn do_storage_mode(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'
     }
     // coerceVector then SHALLOW_DUPLICATE_ATTRIB(ans, obj): an atomic
     // coercion keeps every attribute already
-    let w = cx.build_with(out, |cx| coerce(cx, obj.bind(cx), ty, true))?;
-    w.signal(cx)
+    coerce_vector(cx, obj, ty, out)
 }
 
 /// `.Internal(do.call(what, args, envir))`: the call of `what` (a function,

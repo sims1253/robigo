@@ -12,7 +12,7 @@
 //! `remove_attrib`, `set_tag`, ...), which keep the barrier and the counts.
 
 use super::{dims, get_value, has_attrib, inherits, is_array, is_vector};
-use crate::coerce::vector::{NA_INTEGER, as_character_factor, as_real, coerce, coerce_vector};
+use crate::coerce::vector::{NA_INTEGER, as_character_factor, as_real, coerce, coerce_vector, coerce_vector_with};
 use crate::coerce::{dispatch_or_eval, xlength, xlength_mut};
 use crate::util::{is_numeric, is_vector_atomic, not_yet, type_to_char};
 use robigo_rtcore::RSym;
@@ -353,8 +353,7 @@ fn as_char_simpl<'s>(cx: &mut Cx, s: Scope<'s>, v: Root<'_>) -> RResult<Root<'s>
     }
     let o = s.out(cx);
     let r = o.root();
-    let w = cx.build_with(o, |cx| coerce(cx, v.bind(cx), STRSXP, false))?;
-    w.signal(cx)?;
+    coerce_vector_with(cx, v, STRSXP, false, o)?;
     // SET_ATTRIB(this2, R_NilValue); SET_OBJECT(this2, 0): a fresh result
     if has_attrib(r.bind(cx)) || r.bind(cx).is_object() {
         let nil = s.root(cx, cx.nil());
