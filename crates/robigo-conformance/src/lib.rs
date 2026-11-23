@@ -32,6 +32,18 @@
 //!                               test binaries; scripts/rt-ci.py's
 //!                               conformance steps run alone and use
 //!                               every CPU)
+//!   ROBIGO_CONF_SLOTS_DIR=dir   a machine-wide pool of case slots shared by
+//!                               every run that names the same directory
+//!                               (scripts/rt-ci.py sets it for local runs:
+//!                               several checkouts' gates at once): a case
+//!                               takes a slot, a lock on one of
+//!                               `dir/slot-<i>`, before its process starts
+//!                               and holds it until the process ends, and its
+//!                               time limit counts from its start, not from
+//!                               the wait. Off when unset (CI: one run per
+//!                               runner)
+//!   ROBIGO_CONF_SLOTS=n         the pool's size (default: the machine's
+//!                               parallelism)
 //!   ROBIGO_CONF_TIMEOUT=secs    how long one case may run (default 20: a
 //!                               collector mode, gctorture or the moving
 //!                               collector, needs longer)
@@ -434,6 +446,9 @@ pub struct Options {
     pub case_timeouts: BTreeMap<String, Duration>,
     /// Where to write each case's wall time (`ROBIGO_CONF_TIMES_REPORT`).
     pub times: Option<PathBuf>,
+    /// The machine-wide pool of case slots (`ROBIGO_CONF_SLOTS_DIR`, sized
+    /// `ROBIGO_CONF_SLOTS`): its directory and size, or none.
+    pub slots: Option<(PathBuf, usize)>,
     /// Changes to each case's environment, after [`command`]'s: a variable
     /// set (`Some`) or removed (`None`). The runner's own environment is
     /// left alone, so a test sets these instead of `std::env::set_var`.
@@ -500,6 +515,7 @@ impl Options {
             timeout,
             case_timeouts,
             times: std::env::var_os("ROBIGO_CONF_TIMES_REPORT").filter(|p| !p.is_empty()).map(PathBuf::from),
+            slots: slots_from_env()?,
             env: column.case_env(),
         })
     }
@@ -750,9 +766,66 @@ fn case_command(o: &Options, script: &Path) -> Command {
     cmd
 }
 
+/// A slot of the machine-wide pool (`ROBIGO_CONF_SLOTS_DIR`): held while a
+/// case's process runs, released when dropped (or by the kernel when this
+/// process ends: the lock is the open file's).
+struct Slot(#[allow(dead_code)] Option<std::fs::File>);
+
+/// `ROBIGO_CONF_SLOTS_DIR` and `ROBIGO_CONF_SLOTS`: the pool's directory
+/// and size (default: the machine's parallelism), or none.
+fn slots_from_env() -> Result<Option<(PathBuf, usize)>, String> {
+    let Some(dir) = std::env::var_os("ROBIGO_CONF_SLOTS_DIR").filter(|d| !d.is_empty()) else { return Ok(None) };
+    let n = match std::env::var("ROBIGO_CONF_SLOTS") {
+        Err(_) => std::thread::available_parallelism().map_or(2, |n| n.get()),
+        Ok(s) => match s.trim().parse::<usize>() {
+            Ok(n) if n > 0 => n,
+            _ => return Err(format!("ROBIGO_CONF_SLOTS={s:?} is not a positive number")),
+        },
+    };
+    let dir = PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("ROBIGO_CONF_SLOTS_DIR {}: {e}", dir.display()))?;
+    Ok(Some((dir, n)))
+}
+
+/// A free slot of the pool, waiting for one; none without a pool. The
+/// first slot tried differs by process and thread, so that runs starting
+/// together do not all queue on slot 0.
+fn take_slot(pool: &Option<(PathBuf, usize)>) -> Slot {
+    let Some((dir, n)) = pool else { return Slot(None) };
+    std::fs::create_dir_all(dir).unwrap_or_else(|e| panic!("ROBIGO_CONF_SLOTS_DIR {}: {e}", dir.display()));
+    let start = (std::process::id() as usize).wrapping_mul(31).wrapping_add(thread_index()) % n;
+    loop {
+        for j in 0..*n {
+            let path = dir.join(format!("slot-{}", (start + j) % n));
+            let f = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&path)
+                .unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+            if f.try_lock().is_ok() {
+                return Slot(Some(f));
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A small number that differs between this process's threads.
+fn thread_index() -> usize {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    std::thread::current().id().hash(&mut h);
+    h.finish() as usize
+}
+
 /// Run `cmd` (of the binary `bin`), killed after `timeout`: (stdout,
-/// stderr, exit status, timed out).
-fn run_command(mut cmd: Command, bin: &Path, timeout: Duration) -> (Vec<u8>, Vec<u8>, i32, bool) {
+/// stderr, exit status, timed out, how long it ran). With a slot pool
+/// (`ROBIGO_CONF_SLOTS_DIR`) it first waits for a slot, and its time and
+/// its limit count from its start: the wait is not the case's.
+fn run_command(mut cmd: Command, o: &Options, timeout: Duration) -> (Vec<u8>, Vec<u8>, i32, bool, Duration) {
+    let bin = &o.bin;
+    let _slot = take_slot(&o.slots);
     let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -783,7 +856,8 @@ fn run_command(mut cmd: Command, bin: &Path, timeout: Duration) -> (Vec<u8>, Vec
         }
         std::thread::sleep(Duration::from_millis(5));
     };
-    (t_out.join().unwrap(), t_err.join().unwrap(), status, timed_out)
+    let ran = start.elapsed();
+    (t_out.join().unwrap(), t_err.join().unwrap(), status, timed_out, ran)
 }
 
 fn first_diff(expected: &str, got: &str, runtime: &str) -> String {
@@ -819,7 +893,7 @@ fn boot_record(column: &Column, o: &Options) -> String {
     std::fs::write(&script, "invisible(NULL)\n").unwrap_or_else(|e| panic!("write {}: {e}", script.display()));
     let mut cmd = case_command(o, &script);
     cmd.env(var, "1");
-    let (_, err, _, timed_out) = run_command(cmd, &o.bin, o.timeout);
+    let (_, err, _, timed_out, _) = run_command(cmd, o, o.timeout);
     let _ = std::fs::remove_dir_all(&dir);
     if timed_out {
         return format!(
@@ -874,11 +948,10 @@ fn check(
         }
     };
     let timeout = o.case_timeouts.get(&id).copied().unwrap_or(o.timeout);
-    // the case's own run, timed alone: the boot probe below (the first
-    // failure's, which other failing cases wait for) is not its time
-    let start = Instant::now();
-    let (out, err, status, timed_out) = run_command(case_command(o, script), &o.bin, timeout);
-    let ran = start.elapsed();
+    // the case's own run, timed alone: neither the wait for a slot nor the
+    // boot probe below (the first failure's, which other failing cases wait
+    // for) is its time
+    let (out, err, status, timed_out, ran) = run_command(case_command(o, script), o, timeout);
     let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
     let mut diff = String::new();
     if timed_out {
@@ -1299,6 +1372,7 @@ mod boot_record_tests {
             timeout: Duration::from_secs(1),
             case_timeouts: BTreeMap::new(),
             times: None,
+            slots: None,
             env: Vec::new(),
         };
         let t = Instant::now();

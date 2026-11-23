@@ -202,6 +202,7 @@ fn opts(column: &Column, bin: PathBuf) -> Options {
         timeout: std::time::Duration::from_secs(20),
         case_timeouts: Default::default(),
         times: None,
+        slots: None,
         env: Vec::new(),
     }
 }
@@ -445,6 +446,53 @@ fn a_case_time_leaves_out_the_boot_probe() {
     let secs: Vec<f64> = text.lines().skip(1).map(|l| l.split('\t').next().unwrap().parse().unwrap()).collect();
     assert_eq!(secs.len(), 2, "{text}");
     assert!(secs.iter().all(|s| *s < 2.0), "the 3 s probe counted in a case's time: {text}");
+}
+
+/// The machine-wide slot pool (`ROBIGO_CONF_SLOTS_DIR`): two runs at once,
+/// two cases of 1 s each, share one slot, so the four cases run one after
+/// the other; each case's time (and its limit, 1.5 s here) counts from its
+/// own start, so none times out waiting and none reports the wait.
+#[test]
+fn runs_sharing_a_slot_pool_take_turns_and_count_their_own_time() {
+    let pool = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("slots-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&pool);
+    let trees: Vec<Fixture> = (0..2)
+        .map(|k| {
+            let f = rt_tree(&format!("slots-{k}"));
+            f.case("tests/rt/smoke/two.R", "2\n").record("tests/rt", "tests/rt/smoke/two.R", "4.6.2", "2\n");
+            f
+        })
+        .collect();
+    let t0 = std::time::Instant::now();
+    let reports: Vec<(robigo_conformance::Report, String)> = std::thread::scope(|s| {
+        let runs: Vec<_> = trees
+            .iter()
+            .map(|f| {
+                let pool = pool.clone();
+                s.spawn(move || {
+                    let report = f.root().join("times.tsv");
+                    let mut o = opts(&RT, slow());
+                    o.filter = Some("tests/rt/smoke".into());
+                    o.jobs = 2;
+                    o.timeout = std::time::Duration::from_millis(1500);
+                    o.slots = Some((pool, 1));
+                    o.times = Some(report.clone());
+                    let r = run(f.root(), &RT, &o).unwrap();
+                    (r, std::fs::read_to_string(&report).unwrap())
+                })
+            })
+            .collect();
+        runs.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let wall = t0.elapsed();
+    assert!(wall >= std::time::Duration::from_secs(4), "four 1 s cases on one slot took {wall:?}");
+    for (r, times) in &reports {
+        assert!(r.outcomes.iter().all(|c| c.passed()), "{:?}", r.outcomes.iter().map(|c| &c.diff).collect::<Vec<_>>());
+        let secs: Vec<f64> = times.lines().skip(1).map(|l| l.split('\t').next().unwrap().parse().unwrap()).collect();
+        assert_eq!(secs.len(), 2, "{times}");
+        assert!(secs.iter().all(|s| *s < 1.4), "a case's time holds the wait for its slot: {times}");
+    }
+    let _ = std::fs::remove_dir_all(&pool);
 }
 
 /// `ROBIGO_CONF_TIMEOUTS` gives the case it names its own timeout. It names

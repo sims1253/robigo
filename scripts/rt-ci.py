@@ -741,6 +741,23 @@ def timings_report(done, shard=None):
     return "\n".join(lines)
 
 
+def conf_slots_dir(env=None):
+    """The machine-wide pool of conformance case slots a local run shares
+    with every other local rt-ci run of this user (robigo-conformance's
+    ROBIGO_CONF_SLOTS_DIR: a case takes a slot before it starts, its time
+    limit counting from its start): several checkouts' gates at once took
+    the box to load 45-66 on 24 CPUs, and cases ran into their limits
+    (2026-11-23). The caller's own ROBIGO_CONF_SLOTS_DIR wins (empty: no
+    pool); CI has none (one run per runner). None: leave it as it is."""
+    env = os.environ if env is None else env
+    if "ROBIGO_CONF_SLOTS_DIR" in env or env.get("GITHUB_ACTIONS") == "true":
+        return None
+    base = env.get("XDG_RUNTIME_DIR")
+    if base and os.path.isdir(base):
+        return os.path.join(base, "robigo-conf-slots")
+    return os.path.join(tempfile.gettempdir(), f"robigo-conf-slots-{os.getuid()}")
+
+
 def metadata():
     p = subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"],
                        cwd=ROOT, stdout=subprocess.PIPE, text=True, check=True)
@@ -752,6 +769,9 @@ def main(argv):
     # GNU R, /usr/lib/R) it ignores with GNU R's warning on stdout, which
     # every compared output would then carry: none for what this runs
     os.environ.pop("R_HOME", None)
+    slots = conf_slots_dir()
+    if slots is not None:
+        os.environ["ROBIGO_CONF_SLOTS_DIR"] = slots
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--list", action="store_true", help="print the rt crates and stop")
     ap.add_argument("--check", action="store_true", help="check the premise and stop")

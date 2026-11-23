@@ -292,6 +292,19 @@ class RtCi(unittest.TestCase):
                 self.assertEqual(rt.main([]), 0)
             run.assert_called_once()
 
+    def test_a_local_run_shares_the_machine_wide_slot_pool(self):
+        import tempfile
+        d = tempfile.mkdtemp()
+        self.addCleanup(os.rmdir, d)
+        self.assertEqual(rt.conf_slots_dir({"XDG_RUNTIME_DIR": d}), os.path.join(d, "robigo-conf-slots"))
+        self.assertEqual(rt.conf_slots_dir({}), os.path.join(tempfile.gettempdir(), f"robigo-conf-slots-{os.getuid()}"))
+        # the same directory for every checkout's run: the pool is the user's
+        self.assertEqual(rt.conf_slots_dir({"XDG_RUNTIME_DIR": d}), rt.conf_slots_dir({"XDG_RUNTIME_DIR": d}))
+        # CI has none; the caller's own setting (empty: none) wins
+        self.assertIsNone(rt.conf_slots_dir({"GITHUB_ACTIONS": "true", "XDG_RUNTIME_DIR": d}))
+        self.assertIsNone(rt.conf_slots_dir({"ROBIGO_CONF_SLOTS_DIR": ""}))
+        self.assertIsNone(rt.conf_slots_dir({"ROBIGO_CONF_SLOTS_DIR": "/x"}))
+
     def test_a_crosscheck_that_compares_fewer_than_its_floor_fails(self):
         # the rdb boot's report: a boot that stopped loading the compiler's
         # namespace compares about half as many closures, without any error
