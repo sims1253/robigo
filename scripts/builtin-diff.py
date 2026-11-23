@@ -693,8 +693,13 @@ def diff_fields(pairs):
     for i, o, x in pairs:
         with open(o, "rb") as f1, open(x, "rb") as f2:
             if f1.read() == f2.read():
-                if big_digests(o) != big_digests(x):
-                    out[i] = ("digest", str(big_digests(o))[:150], str(big_digests(x))[:150])
+                bo, bx = big_digests(o), big_digests(x)
+                # (a mark without its digest, or a digest without its mark,
+                # on either side: what same_record refused)
+                gaps = [f"missing {sorted(w - set(d))}, unexpected {sorted(set(d) - w)}" for w, d in (bo, bx)]
+                if bo != bx or any(w != set(d) for w, d in (bo, bx)):
+                    out[i] = ("digest", f"{sorted(bo[1].items())} ({gaps[0]})"[:150],
+                              f"{sorted(bx[1].items())} ({gaps[1]})"[:150])
                 elif printed(o) != printed(x):
                     out[i] = ("stdout", repr(printed(o)[:150]), repr(printed(x)[:150]))
                 else:

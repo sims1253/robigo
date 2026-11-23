@@ -153,6 +153,11 @@ class Classes(unittest.TestCase):
             with open(os.path.join(d, "000951.big2.sha256"), "w") as f:
                 f.write("1" * 64 + "\n")
         self.assertEqual(cls(), "mismatch")
+        bd._INDEX.clear()
+        with unittest.mock.patch.object(bd, "render", return_value={}):
+            field, gnur, rt_ = bd.diff_fields([(951, o, r)])[951]
+        self.assertEqual(field, "digest")
+        self.assertIn("missing [1], unexpected [2]", gnur)
         # and a case's marks and digests never mix with another case's
         with open(os.path.join(go, "000095.rds"), "wb") as f:
             f.write(b"x")
