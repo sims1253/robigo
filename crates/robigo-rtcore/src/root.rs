@@ -532,11 +532,26 @@ impl Global {
 }
 
 /// The global table: entries with free ones reused. A free entry is null
-/// (a null edge, which a collection skips).
-#[derive(Default, Trace)]
+/// (a null edge, which a collection skips). Roots, but not the boot heap's
+/// freeze roots (step 2): what only a global holds is never frozen, so
+/// releasing one removes no edge the frozen graph depends on and takes no
+/// note (S3 dispatch's method memo replaces its entries' globals as it
+/// runs, a pass each, before).
+#[derive(Trace)]
 pub(crate) struct Globals {
     slots: Vec<Sexp>,
     free: Vec<u32>,
+}
+
+/// The slots a start fills (3,220 at the interim boot's peak, 2,986 under
+/// rdb with the JIT on, 2,904 with it off; 2026-11-23): reserved at once,
+/// so that the table never grows by realloc during the start.
+const GLOBALS_AT_START: usize = 4096;
+
+impl Default for Globals {
+    fn default() -> Globals {
+        Globals { slots: Vec::with_capacity(GLOBALS_AT_START), free: Vec::new() }
+    }
 }
 
 impl Globals {
@@ -561,10 +576,6 @@ impl Globals {
     pub(crate) fn remove(&mut self, i: u32) {
         let x = &mut self.slots[i as usize];
         assert!(!x.is_null(), "robigo: a global released twice");
-        // a freeze root (the boot heap's freeze): a frozen value released
-        // leaves the frozen graph
-        // SAFETY: a global's value is live until it is released.
-        unsafe { robigo_heap::note_overwritten(*x) };
         *x = Sexp::NULL;
         self.free.push(i);
     }
