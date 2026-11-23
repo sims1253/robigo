@@ -71,6 +71,9 @@ pub struct Folds {
     helper: RefCell<Option<Global>>,
     /// Folds being evaluated (nested compiles).
     busy: Cell<u32>,
+    /// The try under way may ask for no more folds: its compile has had
+    /// [`MAX_ROUNDS`] of them ([`Round::begin`]).
+    closed: Cell<bool>,
 }
 
 impl Folds {
@@ -90,7 +93,7 @@ impl Folds {
     /// would evaluate it again without end: such compiles fold nothing
     /// (GNU R evaluates that call as the AST).
     pub fn may_request(&self, forced: bool) -> bool {
-        !forced || self.busy.get() == 0
+        !self.closed.get() && (!forced || self.busy.get() == 0)
     }
 
     /// How many times the try under way has asked for a fold.
@@ -119,7 +122,17 @@ impl Folds {
 #[derive(Default)]
 pub struct Round {
     known: Vec<(Global, Option<Global>)>,
+    /// The rounds of folds evaluated for this compile so far.
+    rounds: u32,
 }
+
+/// The rounds of folds a compile evaluates at most. Each round folds the
+/// calls whose arguments the last one folded, so a nest of fold calls
+/// `n` deep takes `n` rounds, each a whole compile: a 900-deep `1 + (1 +
+/// ...)` took two minutes (#976). Past the limit the try asks for no more,
+/// and the calls not folded yet compile as calls: the same values, less
+/// folded than cmp.R's code. Real code folds in a round or two.
+pub const MAX_ROUNDS: u32 = 32;
 
 impl Round {
     /// Put the values known into view for a try; no request yet.
@@ -129,6 +142,7 @@ impl Round {
             self.known.iter().map(|(c, v)| (c.bind(cx).sexp(), v.as_ref().map(|v| v.bind(cx).sexp()))).collect();
         f.pending.borrow_mut().clear();
         f.asked.set(0);
+        f.closed.set(self.rounds >= MAX_ROUNDS);
     }
 
     /// The end of a try: the view gone (a nested compile sets its own), the
@@ -137,6 +151,7 @@ impl Round {
     pub(crate) fn end(cx: &Cx) -> Vec<FoldReq> {
         let f = &prims::state(cx).folds;
         f.view.borrow_mut().clear();
+        f.closed.set(false);
         std::mem::take(&mut *f.pending.borrow_mut())
     }
 
@@ -145,6 +160,7 @@ impl Round {
     /// `R_Visible` is kept. An exit no handler of the fold takes (a
     /// restart, an interrupt) propagates.
     pub(crate) fn resolve(&mut self, cx: &mut Cx, reqs: Vec<FoldReq>) -> RResult<()> {
+        self.rounds += 1;
         // SAFETY: the requests' objects are live: the try that found them
         // (in the source, a cached value) just ended and nothing has
         // allocated since. Rooting them allocates nothing.

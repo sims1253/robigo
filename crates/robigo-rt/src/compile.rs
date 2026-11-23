@@ -1740,6 +1740,21 @@ impl<'g> Comp<'g> {
     /// `e` is live.
     // R: cmp.R:constantFold, constantFoldCall, constantFoldSym, getFoldFun
     unsafe fn constant_fold(&self, e: Sexp) -> Result<Option<Sexp>, Need> {
+        // SAFETY: the caller's contract.
+        unsafe { self.constant_fold_at(e, 0) }
+    }
+
+    /// [`Comp::constant_fold`] of `e`, `depth` calls into the fold: past
+    /// [`DEFER_DEPTH`] it stops, as cmp.R's recursive `constantFold` stops
+    /// on such depths (a compiler error: the code is left uncompiled), so
+    /// the walk stays within the stack.
+    ///
+    /// # Safety
+    /// `e` is live.
+    unsafe fn constant_fold_at(&self, e: Sexp, depth: u16) -> Result<Option<Sexp>, Need> {
+        if depth >= DEFER_DEPTH {
+            return Err(Need::Fail);
+        }
         let (cx, st) = (self.cx, self.st);
         let Some(cenv) = &self.bc else { return Ok(None) };
         // SAFETY: the caller's contract; symbols of `cx`'s isolate.
@@ -1766,7 +1781,7 @@ impl<'g> Comp<'g> {
                         if a == missing {
                             return Ok(None);
                         }
-                        let Some(v) = self.constant_fold(a)? else { return Ok(None) };
+                        let Some(v) = self.constant_fold_at(a, depth + 1)? else { return Ok(None) };
                         args.push((v, tag));
                     }
                     // (every argument passed checkConst: their modes are
