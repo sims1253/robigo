@@ -527,7 +527,8 @@ class RtCi(unittest.TestCase):
         for path in ("tests/rt/env/large-frames.R", "tests/rt/a.R", "benchmarks/rt/calls-rows.toml",
                      "scripts/base-subset.sh", "scripts/base-subset-trace.R", "crates/robigo-rt/proto/base-wide.txt",
                      "scripts/r-src.sh", "scripts/base-wide.R", "benchmarks/suite/calls.R",
-                     "tests/rt/capi/support/eval.c", "tests/rt/R-4.6.2/capi/eval.Rstatus", "scripts/oracle-run.sh"):
+                     "tests/rt/capi/support/eval.c", "tests/rt/R-4.6.2/capi/eval.Rstatus", "scripts/oracle-run.sh",
+                     "scripts/perf.py", "scripts/oracle-versions"):
             self.assertEqual(owed(["docs/x.md", path]), path)
         for path in ("tests/rt/env/large-frames.Rout", "tests/r/basics/a.R", "benchmarks/rt/other.toml",
                      "crates/robigo-rt/proto/other.txt", "crates/robigo-rt/src/base-subset.rs", "scripts/rt-ci.py"):

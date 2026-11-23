@@ -92,14 +92,17 @@ class Module(unittest.TestCase):
                 # them leaves a child no one ends, and the exit is the 30 s forced one)
                 self.assertLess(time.monotonic() - since, 60, f"the child never had {children} children")
                 time.sleep(0.02)
+            time.sleep(delay)
+            t0 = time.monotonic()
+            p.send_signal(signal.SIGTERM)
+            rc = p.wait(timeout=60)
         except BaseException:
-            os.killpg(p.pid, signal.SIGKILL)
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass    # (the group already gone)
             p.wait()
             raise
-        time.sleep(delay)
-        t0 = time.monotonic()
-        p.send_signal(signal.SIGTERM)
-        rc = p.wait(timeout=60)
         return rc, time.monotonic() - t0, lines[0], lines[1]
 
     def children(self, pid):

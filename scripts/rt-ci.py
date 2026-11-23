@@ -905,6 +905,8 @@ BASE_SUBSET_INPUTS = (
     "scripts/base-wide.R",
     "scripts/oracle-run.sh",
     "scripts/oracle-pins.sh",
+    "scripts/oracle-versions",             # the oracle's pin
+    "scripts/perf.py",                     # rows_with_setups, which makes the d2s/e7 row scripts
     "crates/robigo-rt/proto/base-*.txt",
     "scripts/r-src.sh",
 )

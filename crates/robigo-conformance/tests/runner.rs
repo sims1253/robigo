@@ -85,11 +85,17 @@ fn sweep_fakes(parent: &Path) {
     }
 }
 
-/// The newest modification time of `p` and everything under it.
+/// The newest modification time of `p` and everything under it, not
+/// following symbolic links; what cannot be read counts as written now (a
+/// fixture whose age is unknown stays).
 fn newest(p: &Path) -> std::time::SystemTime {
-    let mut t = std::fs::symlink_metadata(p).and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::now());
-    if let Ok(entries) = std::fs::read_dir(p) {
-        for e in entries.flatten() {
+    let now = std::time::SystemTime::now();
+    let Ok(m) = std::fs::symlink_metadata(p) else { return now };
+    let mut t = m.modified().unwrap_or(now);
+    if m.is_dir() {
+        let Ok(entries) = std::fs::read_dir(p) else { return now };
+        for e in entries {
+            let Ok(e) = e else { return now };
             t = t.max(newest(&e.path()));
         }
     }
