@@ -1694,6 +1694,21 @@ class FuzzCi(unittest.TestCase):
             changed = self.f.changed_paths("base")
         self.assertEqual(changed, ["fuzz/seeds/parse/café.R"])
         self.assertEqual(sorted(self.f.plan(changed)), ["parse"])
+        # a name that is not UTF-8 at all: it still owes its target, and the
+        # plan still writes its output (the summary shows the byte escaped)
+        open(os.path.join(os.fsencode(d), b"fuzz/seeds/parse/caf\xe9.R"), "w").close()
+        git("add", ".")
+        git("commit", "-q", "-m", "latin1")
+        out = os.path.join(d, "out")
+        summ = os.path.join(d, "summary")
+        import contextlib, io
+        buf = io.StringIO()
+        with mock.patch.object(self.f, "ROOT", d), contextlib.redirect_stdout(buf), \
+                mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+                                             "GITHUB_OUTPUT": out, "GITHUB_STEP_SUMMARY": summ}):
+            self.assertEqual(self.f.main(["plan", "--base", "base", "--github-output"]), 0)
+        self.assertEqual(open(out).read(), "targets=parse\n")
+        self.assertIn("caf\\xe9.R", open(summ).read())
 
     def tracked(self):
         import subprocess

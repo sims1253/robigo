@@ -97,6 +97,12 @@ def changed_paths(base):
     return sorted({os.fsdecode(x) for x in p.stdout.split(b"\0") if x})
 
 
+def shown(path):
+    """A path as text to print: the filesystem's bytes, a byte that is not
+    UTF-8 as `\\xNN` (matching uses the path itself, os.fsdecode's)."""
+    return os.fsencode(path).decode("utf-8", "backslashreplace")
+
+
 def summary(lines):
     """Print `lines`, and add them to the job's step summary in CI."""
     text = "\n".join(lines)
@@ -167,8 +173,8 @@ def main(argv=None):
         lines = ["fuzz targets this branch owes (their inputs changed):"]
         for t in targets():
             if t in owed:
-                shown = owed[t][:5] + ([f"... {len(owed[t]) - 5} more"] if len(owed[t]) > 5 else [])
-                lines.append(f"  {t}: runs ({', '.join(shown)})")
+                paths = [shown(p) for p in owed[t][:5]] + ([f"... {len(owed[t]) - 5} more"] if len(owed[t]) > 5 else [])
+                lines.append(f"  {t}: runs ({', '.join(paths)})")
             else:
                 lines.append(f"  {t}: skipped (no change under {', '.join(FILTERS.get(t, []) + own(t))} "
                              "or the files every target depends on)")
