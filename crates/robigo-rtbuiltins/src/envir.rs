@@ -186,7 +186,8 @@ fn find_var1_mode(
                 if vl.bind(cx).sexptype() == PROMSXP {
                     p.replace_with(cx, |cx| Ok(vl.bind(cx)))?;
                     let o = vl.reset(cx);
-                    cx.force(p, o)?;
+                    // R: vl = eval(vl, rho)
+                    cx.eval_promise(p, o)?;
                 }
                 let v = vl.bind(cx);
                 if mode_class(v.sexptype()) == want && (want != OBJSXP || v.is_s4() == mode.s4) {
@@ -306,10 +307,10 @@ pub fn do_get<const CODE: u8>(
     })
 }
 
-/// `GET_VALUE`: a promise is forced (`eval(rval, genv)`).
+/// `GET_VALUE`: a promise is evaluated (`eval(rval, genv)`).
 fn get_value(cx: &mut Cx, rval: Root<'_>, out: Out<'_>) -> RResult<()> {
     if rval.bind(cx).sexptype() == PROMSXP {
-        return cx.force(rval, out);
+        return cx.eval_promise(rval, out);
     }
     out.set(cx, rval.bind(cx));
     Ok(())
@@ -453,7 +454,8 @@ fn gfind<'s>(
     if rval.bind(cx).sexptype() == PROMSXP {
         let p = s.root(cx, rval.bind(cx));
         let o = rval.reset(cx);
-        cx.force(p, o)?;
+        // R: rval = eval(rval, env)
+        cx.eval_promise(p, o)?;
     }
     Ok(rval)
 }
@@ -613,7 +615,8 @@ pub fn do_env2list(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
                 if v.bind(cx).sexptype() == PROMSXP {
                     let p = t.root(cx, v.bind(cx));
                     let o = v.reset(cx);
-                    cx.force(p, o)?;
+                    // R: FrameValues's value = eval(value, R_GlobalEnv)
+                    cx.eval_promise(p, o)?;
                 }
                 cx.owned_list(ans)?.set(i, v);
                 Ok(())
@@ -1397,7 +1400,8 @@ pub fn do_eapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
                 if v.bind(cx).sexptype() == PROMSXP {
                     let p = t.root(cx, v.bind(cx));
                     let o = v.reset(cx);
-                    cx.force(p, o)?;
+                    // R: FrameValues's value = eval(value, R_GlobalEnv)
+                    cx.eval_promise(p, o)?;
                 }
                 cx.owned_list(tmp2)?.set(i, v);
                 Ok(())
