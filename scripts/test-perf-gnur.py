@@ -248,5 +248,41 @@ class Inputs(unittest.TestCase):
         self.assertEqual([k for k in keys if "gnur" in k], ["${{ steps.gnur.outputs.key }}"] * 2)
 
 
+class ReExports(unittest.TestCase):
+    """perf.py re-exports what moved to perf_suite.py: the scripts that call
+    `perf.<name>` keep working, and a later cleanup cannot drop one of
+    those names silently."""
+
+    def test_every_moved_name_resolves_on_perf_as_the_same_object(self):
+        import re
+        spec_ = importlib.util.spec_from_file_location("perf", HERE / "perf.py")
+        perf = importlib.util.module_from_spec(spec_)
+        spec_.loader.exec_module(perf)
+        suite = sys.modules["perf_suite"]
+        src = (HERE / "perf_suite.py").read_text()
+        # (ROOT is each module's own: the same path, not a re-export)
+        public = [n for n in re.findall(r"^(?:def ([a-z]\w*)|([A-Z][A-Z_]*) =)", src, re.M) for n in n
+                  if n and n != "ROOT"]
+        self.assertGreaterEqual(len(public), 15)
+        for n in public:
+            self.assertIs(getattr(perf, n, None), getattr(suite, n), n)
+
+    def test_every_perf_call_in_the_scripts_resolves(self):
+        import re
+        spec_ = importlib.util.spec_from_file_location("perf", HERE / "perf.py")
+        perf = importlib.util.module_from_spec(spec_)
+        spec_.loader.exec_module(perf)
+        missing = []
+        for f in sorted(HERE.glob("*.py")):
+            text = f.read_text(errors="replace")
+            # (the module itself: a local variable of that name is not it)
+            if not re.search(r"^\s*import perf\b|spec_from_file_location\(\"perf\"", text, re.M):
+                continue
+            for n in set(re.findall(r"\bperf\.([A-Za-z_]\w*)\(", text)):
+                if not hasattr(perf, n):
+                    missing.append(f"{f.name}: perf.{n}")
+        self.assertEqual(missing, [])
+
+
 if __name__ == "__main__":
     unittest.main()
