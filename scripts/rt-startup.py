@@ -70,6 +70,7 @@ wherever their trees are unpacked, and its count is the mean of the 15
 import argparse
 import concurrent.futures
 import ctypes
+import errno
 import json
 import os
 import re
@@ -179,11 +180,15 @@ def event_msg(pid):
 
 
 def tgid(tid):
-    """The thread group (process) that thread `tid` belongs to."""
-    with open(f"/proc/{tid}/status") as f:
-        for ln in f:
-            if ln.startswith("Tgid:"):
-                return int(ln.split()[1])
+    """The thread group (process) that thread `tid` belongs to, or None when
+    it is already gone (no /proc entry: reaped)."""
+    try:
+        with open(f"/proc/{tid}/status") as f:
+            for ln in f:
+                if ln.startswith("Tgid:"):
+                    return int(ln.split()[1])
+    except (FileNotFoundError, ProcessLookupError):
+        return None
     raise SystemExit(f"rt-startup: no Tgid for {tid}")
 
 
@@ -191,6 +196,17 @@ def ptrace(req, pid, data=0):
     if libc.ptrace(req, pid, None, ctypes.c_void_p(data)) == -1:
         e = ctypes.get_errno()
         raise OSError(e, f"ptrace({req}): {os.strerror(e)}")
+
+
+def resume(req, tid, sig=0):
+    """ptrace(req, tid, sig) restarting a stop memory()'s loop gathered.
+    ESRCH there is a tracee killed while its stop waited in the round: a
+    SIGKILL ends any ptrace stop (another thread's exit_group, or the start's
+    process group killed at its exit stop), and its exit is reported next."""
+    if libc.ptrace(req, tid, None, ctypes.c_void_p(sig)) == -1:
+        e = ctypes.get_errno()
+        if e != errno.ESRCH:
+            raise OSError(e, f"ptrace({req}): {os.strerror(e)}")
 
 
 def anon_kib(pid):
@@ -263,6 +279,11 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
     threads = []
     # the threads whose first stop has been resumed
     started = set()
+    # stops no event has named yet (a new thread's or process's first stop,
+    # kept for its event), the processes the start made whose first stop is
+    # still to come (detached when it comes), and the stops of a round not
+    # yet served: all consumed from waitpid, so reap() resumes them itself
+    early, newborn, pending = {}, set(), []
     # the timer's state, under its lock: whether it fired, whether the run is
     # over (then it sends nothing)
     clock = {"lock": threading.Lock(), "fired": False, "over": False}
@@ -313,23 +334,75 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
         # the traced threads (the leader's own pid apart) and the processes
         # the start made, as their events name them; a stop of a thread or
         # process no event has named yet waits in `early` for its event
-        children, early = [], {}
+        children = []
         # the start's own process group (setpgid in the child): events of
         # its threads and the processes it makes, never another measurement's
         # (measure() and probes run several at once in one process)
         group = pid
         ptrace(go, pid)
+        # every stop pending at one moment, gathered before any of them is
+        # resumed: waitpid returns the first waitable tracee in the kernel's
+        # list, so threads that stop again at once (system calls in a loop,
+        # a lock's timed waits) would be served forever while a thread later
+        # in the list starves, and if it holds what they wait for, the start
+        # never ends (strace gathers its stops the same way). Each round
+        # serves every thread stopped at its start.
+        # the leader's exit status, once it is reaped: the loop goes on until
+        # no tracee of the group is left, so a process the start made, killed
+        # at the leader's exit stop, is not left parked at its own
+        leader = None
         while True:
-            t, st = os.waitpid(-group, WALL)
+            if not pending:
+                try:
+                    pending.append(os.waitpid(-group, WALL))
+                except ChildProcessError:
+                    break
+                while True:
+                    try:
+                        w = os.waitpid(-group, WALL | os.WNOHANG)
+                    except ChildProcessError:
+                        break
+                    if w[0] == 0:
+                        break
+                    pending.append(w)
+            t, st = pending.pop(0)
             if t == pid and (os.WIFEXITED(st) or os.WIFSIGNALED(st)):
-                pid = None
-                break
+                pid, leader = None, st
+                continue
             if os.WIFEXITED(st) or os.WIFSIGNALED(st):
-                # a thread that ended (or a detached child we still saw)
+                # a thread or a process of the start's that ended
                 if t in threads:
                     threads.remove(t)
+                newborn.discard(t)
+                early.pop(t, None)
                 continue
             sig, event = os.WSTOPSIG(st), st >> 16
+            if clock["fired"]:
+                # the run is over, the leader killed: every stop goes on to
+                # its exit, whatever the bookkeeping says, and so do the
+                # stops consumed before the timer fired and kept for an
+                # event that may never come (`early`)
+                if t == pid and event == PTRACE_EVENT_EXIT:
+                    kill_group(pid)
+                for k in list(early):
+                    resume(PTRACE_CONT, k)
+                early.clear()
+                resume(PTRACE_CONT, t)
+                continue
+            if t in newborn:
+                # a process the start made, at its first stop: detached
+                newborn.discard(t)
+                resume(PTRACE_DETACH, t)
+                continue
+            if event == PTRACE_EVENT_EXIT and t != pid and t not in threads:
+                # the exit stop of a tracee no event has named (a thread
+                # whose clone event a SIGKILL suppressed, Sol's case): kept
+                # in `early` it would never be resumed, and no SIGKILL ends
+                # an exit stop, so the leader's exit would wait for good
+                newborn.discard(t)
+                early.pop(t, None)
+                resume(PTRACE_CONT, t)
+                continue
             if t != pid and t not in threads:
                 # a new thread's or process's first stop before its event
                 early[t] = sig
@@ -339,25 +412,45 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
                 # that thread, which shares the memory (the leader may have
                 # ended, a zombie whose /proc no longer maps it)
                 anon = max(anon, thread_anon_kib(t))
-                ptrace(go, t)
+                resume(go, t)
             elif sig == signal.SIGTRAP and event in (PTRACE_EVENT_CLONE, PTRACE_EVENT_FORK, PTRACE_EVENT_VFORK):
-                new = event_msg(t)
-                if event == PTRACE_EVENT_CLONE and tgid(new) == pid:
+                try:
+                    new = event_msg(t)
+                except OSError as e:
+                    # the event's own thread killed since its stop was
+                    # gathered (an exit_group, Sol's r3 case): its message is
+                    # gone with it
+                    if e.errno != errno.ESRCH:
+                        raise
+                    new = 0
+                group_of = tgid(new) if new else None
+                if group_of is None:
+                    # the new task is already gone, or unknown (an exit_group
+                    # racing the clone: the event's message is 0 then, its
+                    # /proc entry reaped, or the event's thread killed):
+                    # nothing to register, and a stop it left for this event
+                    # is released. A new task this leaves unnamed is dying
+                    # with its group: its stops are kept in `early` and its
+                    # exit stop resumed as any unnamed tracee's
+                    if new and early.pop(new, None) is not None:
+                        resume(PTRACE_CONT, new)
+                elif event == PTRACE_EVENT_CLONE and group_of == pid:
                     threads.append(new)
                     # its first stop (a SIGSTOP) resumed, not delivered
                     if early.pop(new, None) is not None:
                         started.add(new)
-                        ptrace(go, new)
+                        resume(go, new)
                 else:
-                    # a process of its own: detached at its first stop
+                    # a process of its own: detached at its first stop,
+                    # kept already (`early`) or still to come, through this
+                    # loop. Never a wait for it alone: the loop's wait on
+                    # the group is the only one, which the timeout ends
                     children.append(new)
                     if early.pop(new, None) is not None:
-                        ptrace(PTRACE_DETACH, new)
+                        resume(PTRACE_DETACH, new)
                     else:
-                        _, cst = os.waitpid(new, WALL)
-                        if os.WIFSTOPPED(cst):
-                            ptrace(PTRACE_DETACH, new)
-                ptrace(go, t)
+                        newborn.add(new)
+                resume(go, t)
             elif sig == signal.SIGTRAP and event == PTRACE_EVENT_EXIT:
                 if t == pid:
                     hwm = status_kib(pid)["VmHWM"]
@@ -365,15 +458,15 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
                     kill_group(pid)
                 if syscalls:
                     anon = max(anon, thread_anon_kib(t))
-                ptrace(PTRACE_CONT, t)
+                resume(PTRACE_CONT, t)
             elif sig == signal.SIGTRAP and event == PTRACE_EVENT_EXEC:
                 # a later exec: ptrace's stop, not a signal (an exec by
                 # another thread makes it the leader, keeping the pid)
-                ptrace(go, t)
+                resume(go, t)
             elif sig == signal.SIGSTOP and t in threads and event == 0 and t not in started:
                 # a new thread's first stop: resumed, not delivered
                 started.add(t)
-                ptrace(go, t)
+                resume(go, t)
             else:
                 # a signal for the child (a real SIGTRAP among them): it goes
                 # on. A stop signal delivered so group-stops the child, which
@@ -381,16 +474,16 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
                 # signal again resumes it, because a restart's signal is
                 # ignored in any stop but a signal's delivery (ptrace(2),
                 # "Signal injection and suppression")
-                ptrace(go, t, sig)
+                resume(go, t, sig)
         with clock["lock"]:
             clock["over"] = True
             fired = clock["fired"]
         if fired:
             raise SystemExit(f"rt-startup: {' '.join(cmd)} ran over {timeout} s")
-        if hwm is None:
+        if hwm is None or leader is None:
             raise SystemExit(f"rt-startup: no exit stop for {cmd[0]}")
         out.seek(0)
-        return anon, hwm, os.waitstatus_to_exitcode(st), out.read(), len(children)
+        return anon, hwm, os.waitstatus_to_exitcode(leader), out.read(), len(children)
     finally:
         with clock["lock"]:
             clock["over"] = True
@@ -398,7 +491,7 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
             timer.cancel()
             timer.join()
         if pid:
-            reap(pid, threads)
+            reap(pid, [*threads, *early, *newborn, *(w[0] for w in pending)])
         if pidfd is not None:
             os.close(pidfd)
         out.close()
@@ -438,33 +531,34 @@ def kill_group(pid):
             time.sleep(0.005)
 
 
-def reap(pid, threads=()):
-    """Kill the traced child `pid` and wait it and its traced `threads` out.
-    The kills come first, to every one (a clone without CLONE_THREAD is a
-    process of its own, which the leader's kill does not reach), so that
-    none can run on to make another; then each is resumed, since one may sit in a stop already consumed (a reading
-    that failed at its exit stop, where the SIGKILL is dropped and only a
-    resume lets the exit finish); each may stop again (its exit event)
-    before it is gone, and is resumed until it is."""
+def reap(pid, consumed=()):
+    """Kill the traced child `pid` and every process of its group, and wait
+    every tracee of the group out. The kills come first, to every one (a
+    clone without CLONE_THREAD is a process of its own, which the leader's
+    kill does not reach), so that none can run on to make another. Then the
+    tracees whose stop memory() already consumed (`consumed`: gathered in a
+    round, kept for an event, a process before its first stop) are resumed,
+    since no wait reports that stop again: a SIGKILL ends any ptrace stop
+    but the exit event's, where only a resume lets the exit finish. Then
+    the group is waited on until no tracee is left, each one resumed at
+    each stop: every tracee, whether memory() registered it or not (a
+    thread whose clone event was never handled, Sol's case)."""
     kill_group(pid)
-    for t in (pid, *threads):
-        try:
-            os.kill(t, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-    for t in (pid, *threads):
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    for t in (pid, *consumed):
         try:
             ptrace(PTRACE_CONT, t)
         except OSError:
             pass
-    for t in (*threads, pid):
-        while True:
-            try:
-                _, st = os.waitpid(t, WALL)
-            except ChildProcessError:
-                break
-            if os.WIFEXITED(st) or os.WIFSIGNALED(st):
-                break
+    while True:
+        try:
+            t, st = os.waitpid(-pid, WALL)
+        except ChildProcessError:
+            break
+        if os.WIFSTOPPED(st):
             try:
                 ptrace(PTRACE_CONT, t)
             except OSError:
@@ -889,7 +983,7 @@ def table(entries, new, main=None, gnur=None):
     [[startup]] (name, and the GNU R start it is shown beside). Judged:
     instructions, the malloc peak, peak RSS. Reported: the anonymous peak,
     robigo-heap's own peak in use ("-" where a binary does not report it)."""
-    lines = ["| start | instructions | main | change | malloc peak KiB | main | change | anon KiB (reported) | main "
+    lines = ["| start | instructions | main | change | malloc peak KiB | main | change (B) | anon KiB (reported) | main "
              "| peak RSS KiB | main | change | heap in use KiB (reported) | main | GNU R instructions | malloc KiB "
              "| anon KiB | peak RSS KiB |",
              "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
