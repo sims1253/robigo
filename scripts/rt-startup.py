@@ -180,11 +180,15 @@ def event_msg(pid):
 
 
 def tgid(tid):
-    """The thread group (process) that thread `tid` belongs to."""
-    with open(f"/proc/{tid}/status") as f:
-        for ln in f:
-            if ln.startswith("Tgid:"):
-                return int(ln.split()[1])
+    """The thread group (process) that thread `tid` belongs to, or None when
+    it is already gone (no /proc entry: reaped)."""
+    try:
+        with open(f"/proc/{tid}/status") as f:
+            for ln in f:
+                if ln.startswith("Tgid:"):
+                    return int(ln.split()[1])
+    except (FileNotFoundError, ProcessLookupError):
+        return None
     raise SystemExit(f"rt-startup: no Tgid for {tid}")
 
 
@@ -375,17 +379,29 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
             sig, event = os.WSTOPSIG(st), st >> 16
             if clock["fired"]:
                 # the run is over, the leader killed: every stop goes on to
-                # its exit, whatever the bookkeeping says (a thread whose
-                # clone event the SIGKILL suppressed would otherwise wait in
-                # `early` for good, and the leader's exit with it)
+                # its exit, whatever the bookkeeping says, and so do the
+                # stops consumed before the timer fired and kept for an
+                # event that may never come (`early`)
                 if t == pid and event == PTRACE_EVENT_EXIT:
                     kill_group(pid)
+                for k in list(early):
+                    resume(PTRACE_CONT, k)
+                early.clear()
                 resume(PTRACE_CONT, t)
                 continue
             if t in newborn:
                 # a process the start made, at its first stop: detached
                 newborn.discard(t)
                 resume(PTRACE_DETACH, t)
+                continue
+            if event == PTRACE_EVENT_EXIT and t != pid and t not in threads:
+                # the exit stop of a tracee no event has named (a thread
+                # whose clone event a SIGKILL suppressed, Sol's case): kept
+                # in `early` it would never be resumed, and no SIGKILL ends
+                # an exit stop, so the leader's exit would wait for good
+                newborn.discard(t)
+                early.pop(t, None)
+                resume(PTRACE_CONT, t)
                 continue
             if t != pid and t not in threads:
                 # a new thread's or process's first stop before its event
@@ -399,7 +415,15 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
                 resume(go, t)
             elif sig == signal.SIGTRAP and event in (PTRACE_EVENT_CLONE, PTRACE_EVENT_FORK, PTRACE_EVENT_VFORK):
                 new = event_msg(t)
-                if event == PTRACE_EVENT_CLONE and tgid(new) == pid:
+                group_of = tgid(new) if new else None
+                if group_of is None:
+                    # the new task is already gone (an exit_group racing the
+                    # clone: the event's message is 0 then, or its /proc
+                    # entry reaped): nothing to register, and a stop it left
+                    # for this event is released
+                    if new and early.pop(new, None) is not None:
+                        resume(PTRACE_CONT, new)
+                elif event == PTRACE_EVENT_CLONE and group_of == pid:
                     threads.append(new)
                     # its first stop (a SIGSTOP) resumed, not delivered
                     if early.pop(new, None) is not None:

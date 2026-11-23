@@ -546,9 +546,12 @@ class Memory(unittest.TestCase):
         # the timeout ends every wait memory() makes: a process the start
         # made (waited for through the group, never alone), threads, and the
         # leader parked at its exit stop once killed
-        prog = ("import subprocess, threading, time, os\n"
-                "subprocess.Popen(['sleep', '60', 'rt-startup-test-child'])\n"
-                "if os.fork() == 0:\n    time.sleep(60)\n    os._exit(0)\n"
+        # (each child names the marker in its argv, which group_left() reads;
+        # sleep(1) refuses it as an interval, so a Python sleeper)
+        sleeper = "[sys.executable, '-c', 'import time; time.sleep(60)', 'rt-startup-test-child']"
+        prog = ("import subprocess, threading, time, os, sys\n"
+                f"subprocess.Popen({sleeper})\n"
+                f"if os.fork() == 0:\n    os.execv(sys.executable, {sleeper})\n"
                 "[threading.Thread(target=time.sleep, args=(60,)).start() for _ in range(4)]\n"
                 "time.sleep(60)\n")
         for syscalls in (True, False):
@@ -596,6 +599,66 @@ class Memory(unittest.TestCase):
             box, secs = self.bounded(lambda: su.memory([self.PY, "-c", prog], dict(os.environ), timeout=5), 30)
         self.assertIsInstance(box.get("error"), RuntimeError, box)
         self.no_child_left()
+
+    @unittest.skipUnless(shutil.which("cc"), "no cc")
+    def test_a_thread_made_as_the_leader_exits_does_not_hold_the_exit(self):
+        # Sol's case: workers create threads while main exits. The SIGKILL
+        # of exit_group can suppress a clone event, so a new thread's exit
+        # stop comes from a tracee no event named: kept for its event it was
+        # never resumed, and the leader's exit waited past any timeout. And
+        # a clone event can name a task already gone (its message 0), which
+        # failed reading /proc/0. Four makers hit both within a few runs
+        c = ("#include <pthread.h>\n#include <unistd.h>\n"
+             "static void *idle(void *_) { return 0; }\n"
+             "static void *maker(void *_) { for (;;) { pthread_t t; if (!pthread_create(&t, 0, idle, 0))"
+             " pthread_detach(t); } }\n"
+             "int main(void) { for (int i = 0; i < 4; i++) { pthread_t m; pthread_create(&m, 0, maker, 0); }"
+             " usleep(200); _exit(0); }\n")
+        with tempfile.TemporaryDirectory() as d:
+            src, exe = os.path.join(d, "maker.c"), os.path.join(d, "maker")
+            with open(src, "w") as f:
+                f.write(c)
+            subprocess.run(["cc", "-O2", "-pthread", "-o", exe, src], check=True)
+            for i in range(10):
+                box, secs = self.bounded(lambda: su.memory([exe], dict(os.environ), True, timeout=5), 30)
+                self.assertNotIn("error", box, f"run {i}: {box.get('error')!r}")
+                self.assertEqual(box["value"][2], 0)
+                self.no_child_left()
+
+    def test_once_the_timer_fires_the_stops_kept_for_an_event_are_resumed(self):
+        # a stop consumed before the timer fired and kept for an event that
+        # never comes (`early`): the run's end resumes it. The kept stop is
+        # scripted (a tracee id nothing uses; its resume meets ESRCH), the
+        # rest of the run is real
+        ghost = 4_000_000
+        script = [(ghost, (signal.SIGSTOP << 8) | 0x7F)]
+        real = os.waitpid
+        resumed = []
+        real_resume = su.resume
+
+        def wait(pid, options):
+            if pid < 0 and not options & os.WNOHANG and script:
+                return script.pop(0)
+            return real(pid, options)
+
+        def spy(req, tid, sig=0):
+            resumed.append(tid)
+            return real_resume(req, tid, sig)
+        with unittest.mock.patch.object(su.os, "waitpid", wait), unittest.mock.patch.object(su, "resume", spy):
+            box, _ = self.bounded(lambda: su.memory([self.PY, "-c", "import time; time.sleep(60)"],
+                                                    dict(os.environ), False, timeout=1), 30)
+        self.assertIsInstance(box.get("error"), SystemExit, box)
+        self.assertIn("ran over 1 s", str(box["error"]))
+        self.assertIn(ghost, resumed)
+        self.no_child_left()
+
+    def test_a_gone_task_has_no_thread_group(self):
+        # a clone event can name a task an exit_group already took (its
+        # message 0, or a tid whose /proc entry is reaped): no group, so
+        # memory() registers nothing for it (the race above hits it rarely)
+        self.assertIsNone(su.tgid(0))
+        self.assertIsNone(su.tgid(4_000_002))
+        self.assertEqual(su.tgid(os.getpid()), os.getpid())
 
     def test_a_resume_ignores_esrch_only(self):
         # ESRCH on restarting a gathered stop: the tracee was SIGKILLed while
