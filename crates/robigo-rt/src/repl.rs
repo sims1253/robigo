@@ -252,7 +252,7 @@ pub fn run_console(cx: &mut Cx, input: &mut Input<'_>) -> bool {
                     // call at the top level, after the warnings of the
                     // tokens lexed up to the error ("In addition:")
                     let msg = parse_error_message(source, &e);
-                    error_at_top_after(cx, &warnings, &msg);
+                    parse_error_at_top_after(cx, &warnings, source, &e, &msg);
                     false
                 }
                 robigo_syntax::ConsoleStatus::Ok(exprs, warnings) => {
@@ -351,13 +351,37 @@ pub(crate) fn error_at_top(cx: &mut Cx, msg: &str) {
 /// [`error_at_top`] after the lexer's `warnings`, raised at the top level
 /// first ([`parse_warnings`]), so that the error report prints them.
 pub(crate) fn error_at_top_after(cx: &mut Cx, warnings: &[String], msg: &str) {
+    raise_at_top_after(cx, warnings, |cx| cx.error_call(None, msg))
+}
+
+/// A parse error of `src` at the top level after the lexer's `warnings`:
+/// gram.y's classed condition for a raiseParseError/raiseLexError
+/// ([`crate::parse_cond::signal`]), else the error `msg` (parseError()'s).
+// R: gram.y:raiseParseError, raiseLexError; source.c:parseError
+pub(crate) fn parse_error_at_top_after(
+    cx: &mut Cx,
+    warnings: &[String],
+    src: robigo_syntax::Source<'_>,
+    e: &robigo_syntax::ParseError,
+    msg: &str,
+) {
+    if e.style == robigo_syntax::ErrorStyle::Condition {
+        raise_at_top_after(cx, warnings, |cx| crate::parse_cond::signal(cx, src, e))
+    } else {
+        error_at_top_after(cx, warnings, msg)
+    }
+}
+
+/// The error `raise` makes, at the top level after the lexer's `warnings`
+/// ([`error_at_top_after`]).
+fn raise_at_top_after(cx: &mut Cx, warnings: &[String], raise: impl FnOnce(&mut Cx) -> RError) {
     cx.scope(|cx, s| {
         let g = s.root(cx, cx.global_env());
         let base = s.root(cx, cx.base_env());
         let landed = cx
             .repl_toplevel(g, base, |cx| {
                 warnings.iter().try_for_each(|w| cx.warning(w))?;
-                Err(cx.error_call(None, msg))
+                Err(raise(cx))
             })
             .expect("robigo: an exit that passed the top level");
         debug_assert!(!landed, "robigo: an error that returned");
@@ -530,10 +554,7 @@ fn parse_warnings(cx: &mut Cx, warnings: &[String]) -> bool {
 pub(crate) fn parse_error_message(src: robigo_syntax::Source<'_>, e: &robigo_syntax::ParseError) -> String {
     use robigo_syntax::ErrorStyle;
     match e.style {
-        ErrorStyle::Condition => match e.call {
-            None => robigo_syntax::condition_message(src, robigo_syntax::CONSOLE_SRCNAME, e),
-            Some(_) => "robigo: a parse error condition with a call is not implemented yet".into(),
-        },
+        ErrorStyle::Condition => robigo_syntax::condition_message(src, robigo_syntax::CONSOLE_SRCNAME, e),
         ErrorStyle::RError => e.message.clone(),
         ErrorStyle::Grammar => {
             let lines = robigo_syntax::parse_context(src.raw(), e.end);

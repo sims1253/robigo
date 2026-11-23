@@ -9,7 +9,7 @@
 //! connection that was already open (the rest would stay unread).
 
 use robigo_heap::types::*;
-use robigo_rtcore::{Args, Char, Cx, Out, RResult, Root, View};
+use robigo_rtcore::{Args, Char, Cx, Out, RResult, Ref, Root, View};
 
 /// `getParseFilename`: the srcfile's name when it is a string (an
 /// environment's `filename` belongs to source references, not here).
@@ -179,6 +179,76 @@ fn read_ahead(src: &[u8], start: usize, end: usize) -> usize {
     extends as usize
 }
 
+/// `.Internal(str2lang(s))`: the one expression the string `s` parses to.
+// R: coerce.c:do_str2lang (op 0)
+pub fn do_str2lang(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "str2lang", 1, true)?;
+    str2lang(cx, call, args.root(0), true, out)
+}
+
+/// `.Internal(str2expression(text))`: the expression vector `text` parses
+/// to.
+// R: coerce.c:do_str2lang (op 1)
+pub fn do_str2expression(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "str2expression", 1, true)?;
+    str2lang(cx, call, args.root(0), false, out)
+}
+
+/// `do_str2lang`: `R_ParseVector(args, -1, &status, "<text>")` of the
+/// character vector `text` (each element a line), its parse errors those
+/// of `parse(text = )` against the closure's call (gram.y's conditions
+/// signalled from inside the parse); `to_lang`: str2lang's one expression.
+/// The encoding is known (UTF-8 in a UTF-8 session) only when every
+/// non-ASCII element's is (do_parse's rule).
+// R: coerce.c:do_str2lang
+fn str2lang(cx: &mut Cx, call: Root<'_>, text: Root<'_>, to_lang: bool, out: Out<'_>) -> RResult<()> {
+    if text.bind(cx).sexptype() != STRSXP {
+        return Err(cx.error_call(Some(call), "argument must be character"));
+    }
+    let n = text.bind(cx).len().unwrap_or(0);
+    if to_lang && n != 1 {
+        return Err(cx.error_call(Some(call), "argument must be a character string"));
+    }
+    if !to_lang && n == 0 {
+        return cx.build(out, |cx| Ok(cx.alloc_expression(0)?.finish().into()));
+    }
+    let mut all_known = true;
+    // R_TextBufferInit: every element translated, followed by a newline
+    let mut src = Vec::new();
+    {
+        let v = text.bind(cx).as_vector::<Char<'_>>().unwrap();
+        for i in 0..v.len() {
+            let c = v.get(i);
+            if all_known && c.enc() == robigo_rtcore::Encoding::Native && !c.is_ascii() {
+                all_known = false;
+            }
+            match robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(c), cx.locale()) {
+                Ok(b) => src.extend_from_slice(&b),
+                Err(_) => return Err(cx.error("translating strings with \"bytes\" encoding is not allowed")),
+            }
+            src.push(b'\n');
+        }
+    }
+    let known = all_known && cx.locale().utf8;
+    cx.scope(|cx, s| {
+        let o = s.out(cx);
+        let res = o.root();
+        parse_text(cx, &src, known, -1, "<text>", &mut 0, o)?;
+        let ans = res.bind(cx);
+        if !to_lang {
+            out.set(cx, ans);
+            return Ok(());
+        }
+        let k = ans.len().unwrap_or(0);
+        if k != 1 {
+            return Err(cx.error_call(Some(call), &format!("parsing result not of length one, but {k}")));
+        }
+        let e = ans.as_vector::<Ref<'_>>().unwrap().get(0);
+        out.set(cx, e);
+        Ok(())
+    })
+}
+
 /// `R_ParseVector`'s parse of `src` with `parseError`'s messages;
 /// `consumed` is set to the end of what R_Parse reads: the n-th
 /// expression's terminator, the offending token, or all of `src`.
@@ -222,9 +292,7 @@ fn parse_text(
             return Err(match e.style {
                 robigo_syntax::ErrorStyle::Grammar => cx.error(&robigo_syntax::format_parse_error(source, srcname, &e)),
                 robigo_syntax::ErrorStyle::RError => cx.error(&e.message),
-                robigo_syntax::ErrorStyle::Condition => {
-                    cx.error("robigo: parse errors GNU R raises as parseError conditions are not implemented yet")
-                }
+                robigo_syntax::ErrorStyle::Condition => crate::parse_cond::signal(cx, source, &e),
             });
         }
     };

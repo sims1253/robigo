@@ -281,6 +281,8 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("environmentName", crate::ns::do_envir_name, Inline::None, 11, 1),
     // source.c, connections.c (L2)
     builtin("parse", crate::source::do_parse, Inline::None, 11, 6),
+    builtin("str2lang", crate::source::do_str2lang, Inline::None, 11, 1),
+    builtin("str2expression", crate::source::do_str2expression, Inline::None, 11, 1),
     builtin("stdin", crate::builtin::do_stdin, Inline::None, 11, 0),
     builtin("writeLines", crate::connections::do_writelines, Inline::None, 111, 4),
     builtin("readLines", crate::connections::readers::do_readlines, Inline::None, 11, 6),

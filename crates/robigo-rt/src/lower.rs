@@ -98,7 +98,7 @@ pub fn lower_known(cx: &Cx, e: &Expr<'_>, known: bool) -> Result<Sexp, NeedGc> {
 }
 
 /// A parsed constant.
-fn constant(cx: &Cx, c: Const<'_>, known: bool) -> Result<Sexp, NeedGc> {
+pub(crate) fn constant(cx: &Cx, c: Const<'_>, known: bool) -> Result<Sexp, NeedGc> {
     const NA_INT: i32 = i32::MIN;
     Ok(match c {
         Const::Null => cx.nil().sexp(),

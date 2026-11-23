@@ -96,6 +96,11 @@ pub fn parse_bytes(cx: &mut Cx, src: &[u8], n: i32, out: Out<'_>) -> RResult<(Pa
                 );
             }
             check_non_ascii_locale(cx, src)?;
+            // raiseParseError/raiseLexError signal from inside the parse
+            if e.style == robigo_syntax::ErrorStyle::Condition {
+                signal(cx, e.offset)?;
+                return Err(crate::parse_cond::signal(cx, source, &e));
+            }
             let (line, col) = robigo_syntax::error_line_col(source, &e);
             let status = if e.incomplete { ParseStatus::Incomplete } else { ParseStatus::Error };
             signal(cx, if e.incomplete { usize::MAX } else { e.offset })?;
