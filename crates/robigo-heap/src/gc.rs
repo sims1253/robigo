@@ -544,10 +544,6 @@ pub struct Core {
     path_snapshot: Option<Vec<usize>>,
     /// How many frozen-reachability passes ran (`ROBIGO_GC_STATS`).
     frozen_passes: u64,
-    /// How many times the frozen set was decided (the freeze, each pass):
-    /// a freeze root added since the last decision needs no note when it
-    /// goes ([`Core::frozen_epoch`]).
-    frozen_epoch: u64,
     /// Pinned objects still on the frozen list (`pin_frozen`), dropped
     /// from it at the next collection.
     stale_frozen: usize,
@@ -1041,7 +1037,6 @@ impl Core {
             pending_unfreeze: Vec::new(),
             path_snapshot: None,
             frozen_passes: 0,
-            frozen_epoch: 0,
             stale_frozen: 0,
             boundary_done: false,
             freeze_check: if freeze_on { freeze_check_from_env() } else { 0 },

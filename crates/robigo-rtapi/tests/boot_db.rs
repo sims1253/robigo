@@ -740,3 +740,92 @@ fn a_broken_compiler_database_ends_the_start_as_in_gnu_r() {
     let (out, err, status) = boot_bin(&bin, ran, &[("R_ENABLE_JIT", "0".as_ref())]);
     assert_eq!((out.as_str(), err.as_str(), status), ("ran\n", PROFILE_STOPS, Some(0)));
 }
+
+/// The boot heap's freeze in steady state (step 2, the foreman's clause):
+/// once a workload has run once, running it again collects without a
+/// frozen-reachability pass. Each shape runs a warm-up and then 0 or 5 more
+/// rounds, a collection after each; the passes (`ROBIGO_GC_STATS`) must be
+/// the same, so a write that notes in a loop fails here and names its
+/// shape. Dispatch cycles 400 generics through S3's method memo (256
+/// entries), which replaced its entries' globals at every call: before
+/// globals stopped being freeze roots, a pass at every collection.
+#[test]
+fn no_frozen_reachability_pass_in_steady_state() {
+    if !tree_made() {
+        return;
+    }
+    const SHAPES: &[(&str, &str, &str, u32)] = &[
+        (
+            "dispatch",
+            "for (k in 1:400) { assign(paste0(\"gen\", k), eval(bquote(function(x) UseMethod(.(paste0(\"gen\", k)))))); assign(paste0(\"gen\", k, \".default\"), function(x) 1L) }\ngens <- mget(paste0(\"gen\", 1:400))\nobj <- structure(list(), class = \"thing\")",
+            "s <- 0L; for (f in gens) s <- s + f(obj)",
+            3,
+        ),
+        (
+            "conditions",
+            "safe <- function(x) tryCatch(if (x > 0) x else stop(\"neg\"), error = function(e) 0)\nw <- function(x) withCallingHandlers(if (x > 0) warning(\"w\") else x, warning = function(w) invokeRestart(\"muffleWarning\"))",
+            "s <- safe(i %% 2L - 0.5); t <- w(i %% 2L)",
+            2000,
+        ),
+        (
+            "apply",
+            "x <- 1:50; f <- function(v) v * 2",
+            "a <- lapply(x, f); b <- vapply(x, f, numeric(1)); c <- mapply(function(p, q) p + q, x, x); d <- Map(f, x)",
+            200,
+        ),
+        (
+            "environments",
+            "mk <- function(i) { e <- new.env(); assign('v', i, envir = e); local({ z <- v + 1 }, envir = e); e }",
+            "e <- mk(i); g <- get('v', envir = e); h <- function() g; k <- h()",
+            3000,
+        ),
+        (
+            "jit",
+            "",
+            "f <- eval(parse(text = sprintf('function(x) { y <- x + %d; for (j in 1:3) y <- y + j; y }', i))); s <- f(1) + f(2) + f(3)",
+            300,
+        ),
+    ];
+    let dir = std::env::temp_dir().join(format!("robigo-freeze-steady-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let passes = |file: &std::path::Path, jit: &str| -> u64 {
+        let (out, err, status) = boot(
+            &[
+                std::ffi::OsStr::new("--vanilla"),
+                std::ffi::OsStr::new("--quiet"),
+                std::ffi::OsStr::new("--no-echo"),
+                std::ffi::OsStr::new("-f"),
+                file.as_os_str(),
+            ],
+            &[("ROBIGO_GC_FREEZE", "1".as_ref()), ("ROBIGO_GC_STATS", "1".as_ref()), ("R_ENABLE_JIT", jit.as_ref())],
+        );
+        assert!(status == Some(0) && out.contains("ok"), "{}: {out}\n{err}", file.display());
+        let line = err
+            .lines()
+            .find(|l| l.contains("frozen-reachability passes"))
+            .unwrap_or_else(|| panic!("no freeze report: {err}"));
+        let n = line.split(", ").find(|p| p.ends_with("frozen-reachability passes")).and_then(|p| p.split(' ').next());
+        n.and_then(|n| n.parse().ok()).unwrap_or_else(|| panic!("unreadable: {line}"))
+    };
+    for &(shape, setup, body, n) in SHAPES {
+        let file = |rounds: u32| {
+            let f = dir.join(format!("{shape}-{rounds}.R"));
+            std::fs::write(
+                &f,
+                format!("{setup}\ng <- function() {{ for (i in 1:{n}) {{ {body} }}; NULL }}\ninvisible(gc())\ng()\ninvisible(gc())\nfor (.r in seq_len({rounds})) {{ g(); invisible(gc()) }}\ncat('ok\\n')\n"),
+            )
+            .unwrap();
+            f
+        };
+        for jit in ["3", "0"] {
+            let (warm, steady) = (passes(&file(0), jit), passes(&file(5), jit));
+            assert_eq!(
+                steady,
+                warm,
+                "{shape} (R_ENABLE_JIT={jit}): {} frozen-reachability passes in 5 steady rounds",
+                steady - warm
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

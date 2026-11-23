@@ -431,15 +431,6 @@ impl Core {
         self.frozen_passes
     }
 
-    /// The frozen set's decisions so far: the freeze and each pass. A freeze
-    /// root added at epoch `e` and released while the epoch is still `e`
-    /// needs no note ([`note_overwritten`]): no decision saw it, so none
-    /// depended on it, and an edge cut since that decision was noted itself
-    /// (the step 2 bar's (a); rtcore's `Globals`).
-    pub fn frozen_epoch(&self) -> u64 {
-        self.frozen_epoch
-    }
-
     /// How many objects the freeze made immortal and are still frozen.
     pub fn frozen_count(&self) -> usize {
         // (a pinned object waits on the list for the next collection)
@@ -551,7 +542,6 @@ impl Core {
             (*self.remembered.2.get()).retain(|p| p.1 != 0 && p.0.flags() & flags::FROZEN != 0);
             // (unsorted: membership is the header's FROZEN bit)
             self.frozen = frozen;
-            self.frozen_epoch += 1;
         }
         // A weak key or an external-data vector stays ordinary (the walk
         // stopped at it), and a frozen referrer of one is logged above. Its
@@ -739,7 +729,6 @@ impl Core {
             }
             self.remembered.1.set(0);
             self.frozen_passes += 1;
-            self.frozen_epoch += 1;
             for x in std::mem::take(&mut self.pending_unfreeze) {
                 if self.is_frozen(x) {
                     self.make_mortal(x);

@@ -198,8 +198,8 @@ impl Cx {
     /// the front end once, at the end of the boot. Only the boot's blocks
     /// are marked here; the first collection after it freezes every boot
     /// object reachable from the freeze roots (the base environment and
-    /// namespace, the symbols' cells, the namespace registry, the
-    /// `Globals`, the C API's constants), the global environment and its
+    /// namespace, the symbols' cells, the namespace registry, the C API's
+    /// constants, the search path; not `Globals`), the global environment and its
     /// frame left out. Nothing when the freeze is off (`ROBIGO_GC_FREEZE=0`) or
     /// under the moving collector's modes.
     pub fn freeze_boot_heap(&mut self) {

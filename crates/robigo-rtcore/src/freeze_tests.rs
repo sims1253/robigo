@@ -347,14 +347,14 @@ fn a_retired_argument_of_a_frozen_frame_thaws() {
     .unwrap();
 }
 
-/// The step 2 bar's (a): a global filled since the last decision of the
-/// frozen set (the freeze, a pass) is released without a note, so no pass
-/// runs (the first JIT compile's temporary handle on a frozen builtin); one
-/// filled before it is noted when released, and the next collection runs a
-/// pass that thaws what only it held.
+/// Step 2's Globals (superseding the bar's (a)): globals are roots but not
+/// freeze roots. What only a global holds is never frozen; a frozen object
+/// a global also holds, its freeze-root path cut (a noted write), thaws at
+/// the next pass and lives on through the global; releasing a global takes
+/// no note whatever it holds, so no pass runs.
 #[test]
 #[cfg(not(miri))]
-fn a_global_filled_since_the_last_decision_is_released_without_a_note() {
+fn globals_are_roots_but_not_freeze_roots() {
     let mut iso = OwnedIsolate::new();
     let cx = iso.cx();
     if !freeze_on(cx) {
@@ -362,25 +362,34 @@ fn a_global_filled_since_the_last_decision_is_released_without_a_note() {
     }
     cx.scope(|cx, s| {
         let base = s.root(cx, cx.base_env());
-        // bound in base: frozen, and stays reachable from base
+        // bound in base and held by a global: frozen (through base)
         let kept = s.root(cx, cx.alloc_copy(&[1.0]).unwrap().finish());
         let ksym = cx.install_rooted(s, b"freeze_test_kept")?;
         cx.define_var(ksym, kept, base)?;
-        // held only by a global filled before the freeze: frozen through it
-        let held = cx.alloc_copy(&[2.0]).unwrap().finish();
-        let old = cx.global(held);
+        let both = cx.global(kept.bind(cx));
+        // held only by a global: never frozen
+        let only = cx.alloc_copy(&[2.0]).unwrap().finish();
+        let g = cx.global(only);
         freeze_now(cx);
         assert!(cx.is_frozen(kept.bind(cx)));
-        // filled after the freeze, released: no note, no pass
-        let young = cx.global(kept.bind(cx));
-        cx.release_global(young);
+        assert!(!cx.is_frozen(g.bind(cx)), "what only a global holds is not frozen");
+        // releasing a global over a frozen value: no note, no pass
+        let tmp = cx.global(kept.bind(cx));
+        cx.release_global(tmp);
         let before = cx.frozen_passes();
         cx.collect();
-        assert_eq!(cx.frozen_passes(), before, "a global no decision saw needs no note");
-        // filled before the freeze, released: noted, one pass
-        cx.release_global(old);
+        assert_eq!(cx.frozen_passes(), before, "a global's release takes no note");
+        // base's binding goes (noted): the pass thaws `kept`, the global keeps it
+        let nil = s.root(cx, cx.nil());
+        cx.define_var(ksym, nil, base)?;
+        let o = kept.reset(cx);
+        o.set(cx, cx.nil());
         cx.collect();
-        assert_eq!(cx.frozen_passes(), before + 1, "a global the freeze saw is noted");
+        assert_eq!(cx.frozen_passes(), before + 1);
+        assert!(!cx.is_frozen(both.bind(cx)), "thawed: only the global reaches it");
+        assert_eq!(both.bind(cx).as_vector::<f64>().unwrap().get(0), 1.0, "and alive");
+        cx.release_global(both);
+        cx.release_global(g);
         cx.check_frozen();
         Ok::<(), crate::RError>(())
     })
