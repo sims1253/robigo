@@ -849,8 +849,7 @@ fn jump_to_top_ex(
         return e;
     }
     // only an interactive session, options(error) or
-    // options(catch.script.errors) save the traceback (R_Interactive is
-    // FALSE)
+    // options(catch.script.errors) save the traceback
     let catch_script_errors = cx.scope(|cx, s| {
         get_option1(cx, s, b"catch.script.errors")
             .map(|c| {
@@ -860,7 +859,7 @@ fn jump_to_top_ex(
             })
             .unwrap_or(false)
     });
-    if (have_handler || catch_script_errors)
+    if (have_handler || catch_script_errors || robigo_rtbuiltins::sysutils::interactive(cx))
         && traceback
         && state(cx).in_error.get() < 2
         && state(cx).in_error.get() == old_in_error
@@ -1980,6 +1979,26 @@ pub fn onintr_hook(cx: &mut Cx) -> RResult<()> {
     })?;
     cx.reprintf(b"\n");
     Err(jump_to_top_ex(cx, true, try_user_error, true, true, false, None))
+}
+
+/// `onintrNoResume()` (`onintrEx(FALSE)`), the console read's interrupt
+/// (sys-std.c's `handleInterrupt`): the `interrupt` condition signalled with
+/// no `resume` restart, then the console's newline and the jump to the top
+/// level, as [`onintr_hook`]'s.
+// R: errors.c:onintrEx, unix/sys-std.c:handleInterrupt
+pub fn onintr_no_resume(cx: &mut Cx) -> RError {
+    if let Err(e) = signal_interrupt(cx) {
+        return e;
+    }
+    let try_user_error = match cx.scope(|cx, s| -> RResult<bool> {
+        let h = get_option1(cx, s, b"interrupt")?;
+        Ok(h.bind(cx).sexptype() == NILSXP)
+    }) {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    cx.reprintf(b"\n");
+    jump_to_top_ex(cx, true, try_user_error, true, true, false, None)
 }
 
 /// `signalInterrupt()`: the handlers for `interrupt` or `condition`,

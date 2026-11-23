@@ -475,6 +475,44 @@ impl Cx {
         })
     }
 
+    /// Whether the promise GNU R's binding in slot `index` of the slot
+    /// frame `frame` would hold is unevaluated (`PRVALUE(s) ==
+    /// R_UnboundValue`): a delayed slot, or a slot materialized into a
+    /// promise not yet evaluated. (GetObject evaluates only such a promise.)
+    /// For the slot kinds an argument of the generic's own frame has:
+    /// delayed, forced, a value (a materialized promise), an unboxed
+    /// scalar. An alias (a method's argument, which reads its generic's
+    /// slot) is false: GetObject reads the generic's frame, whose slot is
+    /// never an alias.
+    ///
+    /// # Safety
+    /// `frame` is a live slot frame of this isolate and `index` is below
+    /// its capacity (the checks [`Cx::force_arg`] makes, debug-asserted
+    /// here: this runs on every S3 dispatch of an argument slot).
+    #[inline]
+    pub unsafe fn arg_unevaluated(&self, frame: Root<'_>, index: usize) -> bool {
+        let f = frame.bind(self).sexp();
+        #[cfg(debug_assertions)]
+        self.iso().check_owns(f);
+        debug_assert!(
+            // SAFETY: a rooted environment.
+            unsafe { f.typ() == ENVSXP && layout::is_slots(f) },
+            "robigo: arg_unevaluated on a non-slot frame"
+        );
+        // SAFETY: as above.
+        debug_assert!(index < unsafe { layout::capacity(f) }, "robigo: arg_unevaluated past the frame's slots");
+        let s = SlotRef { owner: f, index };
+        // SAFETY: the caller's contract: a slot of a live slot frame; a
+        // value slot's `val` is live.
+        unsafe {
+            match s.kind() {
+                DELAYED => true,
+                VALUE => s.val().typ() == PROMSXP && !is_evaluated(self.iso(), s.val()),
+                _ => false,
+            }
+        }
+    }
+
     /// `forcePromise` of the promise GNU R's binding in slot `index` of the
     /// slot frame `frame` would hold, in place (docs/g3.md §6.3, "first
     /// read"): a delayed slot's expression is evaluated in its environment

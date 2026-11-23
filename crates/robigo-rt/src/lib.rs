@@ -190,6 +190,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     h.apply = call::apply_hook;
     h.force_and_call = apply::force_and_call;
     h.force = eval::force;
+    h.eval_promise = eval::eval_promise;
     h.force_arg = eval::force_arg_eval;
     h.early_force = early::early_force;
     h.eval_args = specials::eval_args_hook;

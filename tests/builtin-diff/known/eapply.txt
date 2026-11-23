@@ -1,19 +1,5 @@
-# builtin-diff known failures: eapply, seed 0, key aef80d8f578eefa94873f355
-# eapply: 348 / 366 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
-59
-74
-104
-108
-138
-182
-205
-222
-240
-241
-244
-247
-313
-334
+# builtin-diff known failures: eapply, seed 0, key 9d2b0233904566d130842ab2
+# eapply: 362 / 366 (not-implemented 0, crash 0, timeout 1, resource 0 excluded, oracle-crash 0 excluded)
 341
 345
 346
