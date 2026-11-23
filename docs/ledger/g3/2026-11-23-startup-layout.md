@@ -206,13 +206,20 @@ bytes in use.
 ## The memory clause: a logical peak (2026-11-23, later)
 
 The anonymous-peak tripwire above is replaced. Memory is now judged as
-**the peak of malloc'd bytes**: valgrind's massif, its peak snapshot's
-useful heap (`--peak-inaccuracy=0.0`), bytes as the program requested them.
-No page, alignment or placement enters it.
+**the peak of malloc'd bytes**: valgrind's DHAT, its t-gmax, the global
+maximum of live bytes as the program requested them. Valgrind tracks it
+exactly at every allocation and free. No page, alignment or placement
+enters it.
 
+- **Why DHAT, not massif.** Sol's review found that massif's marked peak
+  snapshot maximises useful bytes *plus* the allocator's overhead, and its
+  snapshots are thinned, so it can miss the useful maximum. A real case:
+  512 KiB freed, then 40,000 one-byte blocks and 2 MiB live at once.
+  Massif's parser read 2,126,430 bytes, while another of its snapshots held
+  2,610,718. DHAT reads exactly 2 MiB + 40,000, and that case is a test.
 - **robigo-heap's chunks are inside the figure:** its 1 MiB chunks come
   from Rust's allocator (`std::alloc::alloc`, 64 KiB aligned), so they are
-  malloc requests that massif counts. Adding robigo-heap's own chunk count
+  malloc requests that DHAT counts. Adding robigo-heap's own chunk count
   to it would count them twice.
 - **The limit:** +max(0.5%, 16 KiB) against main's binary, one run per start
   at the first layout shift. Instructions and peak RSS are unchanged. The
@@ -221,31 +228,30 @@ No page, alignment or placement enters it.
 On #991's runner binaries (PR f3cc6cee0, main e4a9fab22, each on its own
 trees):
 
-| start | peak over the 15 shifts | PR − main, at every shift | repeated, one shift | s/run |
-|---|---|---|---|---|
-| rdb-nocache | 9,947,143–9,947,919 B | +2 bytes | identical, 3 runs | 2.2 |
-| interim | 3,456,959–3,457,831 B | 0 bytes | | 1.0 |
+| start | t-gmax, first shift | PR − main | three runs, one shift | another shift (k = 7) | s/run |
+|---|---:|---:|---|---:|---:|
+| interim | 3,456,959 B | 0 bytes | identical | 3,457,390 B | 1.5 |
+| rdb-nocache | 9,947,143 B | +2 bytes | identical | 9,947,525 B | 3–4 |
 
 Against the same pair's anonymous peak, +56 KiB on rdb-nocache in CI's
 image, the logical figure's floor is the code's real allocations.
 
 How to read the figure:
-- **A pre-sized table shows as a memory gain, correctly.** Valgrind's
-  realloc always copies, so while a buffer grows, the old and the new one
-  count together for a moment. That is the same on both sides and
-  deterministic: the requested-bytes view.
-- **Why one fixed shift:** the figure moves across the 15 shifts only by
-  the home path's own strings, about 800 bytes over paths 35–133
-  characters long. One shift, the same for both binaries, is enough, and
-  it keeps the cost to one run.
+- **A realloc counts at its new size,** not old and new together:
+  growing 8 MiB to 16 MiB reads 16 MiB, measured. So a PR that pre-sizes a
+  table shows its effect on the peak only where the old and new sizes
+  differ in what is live at t-gmax. Sol corrected an earlier claim here.
+- **Why one fixed shift:** the figure moves across the shifts only by the
+  home path's own strings, a few hundred bytes over paths 35–133 characters
+  long. One shift, the same for both binaries, is enough, and it keeps the
+  cost to one run.
 - **GNU R's malloc peak** (its allocator goes through malloc too) is
-  reported beside it: 14.6 MB with the JIT, 11.3 MB without.
+  reported beside it.
 - **robigo-heap's own peak line,** once a binary prints it under
   `ROBIGO_GC_STATS=1`: `robigo gc: peak bytes in use N (objects A, block
   overhead B, large L); peak chunk bytes mapped M`. N is reported beside
-  the clause, finer-grained than the chunk-sized steps in massif's figure.
+  the clause, finer-grained than the chunk-sized steps in DHAT's figure.
   A binary without the line shows "-".
-- **The cost:** one massif run (1–2 s) and one stats run per start per
-  binary: about +20 s for the four starts of two binaries, and +6 s for GNU
-  R's two.
-
+- **The cost:** one DHAT run (1.5–4 s) and one stats run per start per
+  binary: about +25 s for the four starts of two binaries, and a few
+  seconds for GNU R's two.

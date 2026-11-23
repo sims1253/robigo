@@ -1050,8 +1050,8 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
         - instructions are the mean over them, in a fixed environment (`scripts/rt-startup.py`,
           `docs/ledger/g3/2026-11-23-startup-layout.md`);
         - against main: instructions +0.5%; memory as the peak of malloc'd
-          bytes (massif's peak useful heap, robigo-heap's chunks included,
-          one run at the first shift) +max(0.5%, 16 KiB); peak RSS +5%.
+          bytes (DHAT's t-gmax, exact; robigo-heap's chunks included; one
+          run at the first shift) +max(0.5%, 16 KiB); peak RSS +5%.
           The anonymous peak (physical pages, which glibc's placement moves
           by tens of KiB) and robigo-heap's own peak in use are reported
           only.

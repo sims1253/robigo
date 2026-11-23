@@ -3,6 +3,7 @@
 idiom-vs-r.py's count of a loop's allocator calls, which decides the heap
 shifts. Run by the perf-rt job before the bars."""
 import importlib.util
+import json
 import os
 import shutil
 import signal
@@ -158,7 +159,7 @@ class Layout(unittest.TestCase):
             return None
         with tempfile.TemporaryDirectory() as home, \
                 unittest.mock.patch.object(su, "instructions", instr), unittest.mock.patch.object(su, "memory", memory), \
-                unittest.mock.patch.object(su, "massif_peak", massif), unittest.mock.patch.object(su, "gc_peak", gc):
+                unittest.mock.patch.object(su, "malloc_peak", massif), unittest.mock.patch.object(su, "gc_peak", gc):
             v = su.measure(["bin"], {}, 3, "valgrind", "HOME_VAR", home)
         # memory as allocation: one massif run and one stats run at the first shift
         n0, pad0 = su.LAYOUT_SHIFTS[0]
@@ -247,18 +248,14 @@ class ReallocsRun(unittest.TestCase):
 
 
 class LogicalPeak(unittest.TestCase):
-    """The memory clause's figures: massif's peak useful heap, and
-    robigo-heap's own peak line where a binary prints it."""
+    """The memory clause's figures: DHAT's t-gmax, and robigo-heap's own
+    peak line where a binary prints it."""
 
-    MASSIF = ("desc: --peak-inaccuracy=0.0\nsnapshot=0\nmem_heap_B=0\nheap_tree=empty\n"
-              "snapshot=1\nmem_heap_B=5000\nheap_tree=peak\nsnapshot=2\nmem_heap_B=4000\nheap_tree=empty\n")
-
-    def test_massif_peak_reads_the_peak_snapshot(self):
-        self.assertEqual(su.massif_peak_of(self.MASSIF), 5000)
-        # no snapshot marked peak: the largest
-        self.assertEqual(su.massif_peak_of(self.MASSIF.replace("heap_tree=peak", "heap_tree=empty")), 5000)
+    def test_the_malloc_peak_sums_the_program_points_at_t_gmax(self):
+        doc = {"dhatFileVersion": 2, "mode": "heap", "pps": [{"gb": 5000, "tb": 9}, {"gb": 1200}, {"tb": 3}]}
+        self.assertEqual(su.malloc_peak_of(json.dumps(doc)), 6200)
         with self.assertRaises(SystemExit):
-            su.massif_peak_of("desc: x\n")
+            su.malloc_peak_of("{}")
 
     def test_robigo_heaps_peak_line_is_read_where_it_is_printed(self):
         line = ("robigo gc: collections 0 (entry 0)\n"
@@ -272,20 +269,37 @@ class LogicalPeak(unittest.TestCase):
         row = su.table([{"name": "interim"}], {"interim": v}, {"interim": dict(v, gc_peak=su.gc_peak_of(line))})[2]
         self.assertIn("| - | 120.6 |", row)
 
-    def massif(self, prog):
-        return su.massif_peak([sys.executable, "-c", prog], dict(su.FIXED_ENV, PYTHONHASHSEED="0",
+    def peak(self, prog):
+        return su.malloc_peak([sys.executable, "-c", prog], dict(su.FIXED_ENV, PYTHONHASHSEED="0",
                                                                  PYTHONMALLOC="malloc"), "valgrind")
+
+    @unittest.skipUnless(shutil.which("valgrind") and shutil.which("cc"), "no valgrind or cc")
+    def test_the_peak_is_the_exact_maximum_of_live_requested_bytes(self):
+        # Sol's case against massif's peak snapshot (which weighs the
+        # allocator's overhead): 512 KiB freed, then 40,000 one-byte blocks
+        # and 2 MiB live at once. Exactly 2 MiB + 40,000 bytes
+        src = ("#include <stdlib.h>\n#include <string.h>\nint main(void) {\n"
+               "char *a = malloc(512 << 10); memset(a, 1, 512 << 10); free(a);\n"
+               "static char *p[40000]; for (int i = 0; i < 40000; i++) p[i] = malloc(1);\n"
+               "char *b = malloc(2 << 20); memset(b, 1, 2 << 20); return p[0] != 0 && b != 0 ? 0 : 1; }\n")
+        with tempfile.TemporaryDirectory() as d:
+            c, exe = os.path.join(d, "t.c"), os.path.join(d, "t")
+            with open(c, "w") as f:
+                f.write(src)
+            import subprocess
+            subprocess.run(["cc", "-O0", "-o", exe, c], check=True)
+            self.assertEqual(su.malloc_peak([exe], dict(su.FIXED_ENV), "valgrind"), (2 << 20) + 40000)
 
     @unittest.skipUnless(shutil.which("valgrind"), "no valgrind")
     def test_one_binary_reads_the_same_bytes_every_run(self):
         prog = "b = bytearray(3 << 20)\nc = [bytes(100) for _ in range(1000)]\n"
-        self.assertEqual(len({self.massif(prog) for _ in range(3)}), 1)
+        self.assertEqual(len({self.peak(prog) for _ in range(3)}), 1)
 
     @unittest.skipUnless(shutil.which("valgrind"), "no valgrind")
     def test_a_retained_allocation_fails_the_clause_by_its_size(self):
         base = "b = bytearray(4 << 20)\n"
         more = base + "keep = bytearray(256 << 10)\n"
-        a, b = self.massif(base), self.massif(more)
+        a, b = self.peak(base), self.peak(more)
         self.assertGreaterEqual(b - a, 256 << 10)
         self.assertLess(b - a, (256 << 10) + 4096)
         main = {"interim": start(1, 1, 1, a)}

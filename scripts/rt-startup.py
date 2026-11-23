@@ -29,9 +29,9 @@ records GNU R's beside them, report-only.
 Each start has these numbers, the first three judged against main's:
 - `instr`: callgrind's total instructions of the whole process, the mean
   over the layout shifts (below);
-- `heap_bytes`: the peak of malloc'd bytes, massif's peak useful heap
-  (robigo-heap's chunks included), one run at the first shift: exact and
-  repeatable, no page or placement in it (massif_peak());
+- `heap_bytes`: the peak of malloc'd bytes, DHAT's t-gmax (robigo-heap's
+  chunks included), one run at the first shift: exact and repeatable, no
+  page or placement in it (malloc_peak());
 - `rss_kib`: total peak RSS, `VmHWM`, in KiB, the median of `runs` runs at
   the home itself;
 - reported only: `anon_kib`, peak anonymous memory in KiB (see below), the
@@ -136,8 +136,8 @@ LAYOUT_SHIFTS = tuple(zip(LAYOUT_LENGTHS, TOP_PADS))
 ANON_STAT = statistics.fmean
 
 # the gate against main's binary (perf.py rt-starts), in percent: instructions
-# as the rows' THRESHOLD; memory as the peak of malloc'd bytes, massif's
-# peak useful heap (bytes requested, robigo-heap's chunks among them: Rust's
+# as the rows' THRESHOLD; memory as the peak of malloc'd bytes, DHAT's
+# t-gmax (bytes requested, robigo-heap's chunks among them: Rust's
 # allocator takes them from malloc), exact and repeatable for a given
 # allocation sequence, +max(HEAP_LIMIT%, HEAP_FLOOR_BYTES); total peak RSS
 # loosely, since its file-backed part follows code layout. The anonymous
@@ -551,7 +551,7 @@ def measure(cmd, env, runs, valgrind, var, home):
     # are held to the same one), and robigo-heap's own peak where the
     # binary reports it
     first = shifted(LAYOUT_SHIFTS[0][0])
-    heap = massif_peak(cmd, first, valgrind)
+    heap = malloc_peak(cmd, first, valgrind)
     gc = gc_peak(cmd, first)
     return {"instr": statistics.fmean(shifts.values()), "instr_shifts": shifts,
             "anon_kib": ANON_STAT(anon_shifts.values()), "anon_shifts": anon_shifts,
@@ -559,45 +559,34 @@ def measure(cmd, env, runs, valgrind, var, home):
             "heap_bytes": heap, "gc_peak": gc}
 
 
-def massif_peak(cmd, env, valgrind):
-    """massif's peak useful-heap bytes of one run of `cmd`: the most malloc'd
-    bytes live at once, as requested (no page, alignment or placement
-    enters). Valgrind's realloc always copies, so a growing buffer counts
-    old and new together for a moment: the requested-bytes view, the same
-    for every binary."""
-    with tempfile.TemporaryDirectory(prefix="rt-massif-") as d:
-        out = os.path.join(d, "massif.out")
-        full = [valgrind, "--tool=massif", "--peak-inaccuracy=0.0", "--detailed-freq=1000000",
-                "--max-snapshots=1000", f"--massif-out-file={out}"] + cmd
+def malloc_peak(cmd, env, valgrind):
+    """The most malloc'd bytes live at once in one run of `cmd`, as
+    requested: DHAT's t-gmax, which valgrind tracks exactly at every
+    allocation and free (no snapshot thinning, unlike massif, whose peak
+    also weighs the allocator's overhead). No page, alignment or placement
+    enters it. A realloc counts at its new size."""
+    with tempfile.TemporaryDirectory(prefix="rt-dhat-") as d:
+        out = os.path.join(d, "dhat.json")
+        full = [valgrind, "--tool=dhat", f"--dhat-out-file={out}"] + cmd
         try:
             p = subprocess.run(full, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
                                timeout=CALLGRIND_TIMEOUT)
         except subprocess.TimeoutExpired:
-            raise SystemExit(f"rt-startup: {' '.join(cmd)} ran over {CALLGRIND_TIMEOUT} s under massif")
+            raise SystemExit(f"rt-startup: {' '.join(cmd)} ran over {CALLGRIND_TIMEOUT} s under DHAT")
         if p.returncode:
-            raise SystemExit(f"rt-startup: {' '.join(cmd)} under massif exited {p.returncode}:\n{p.stderr[-2000:]}")
+            raise SystemExit(f"rt-startup: {' '.join(cmd)} under DHAT exited {p.returncode}:\n{p.stderr[-2000:]}")
         with open(out, errors="replace") as f:
-            return massif_peak_of(f.read())
+            return malloc_peak_of(f.read())
 
 
-def massif_peak_of(text):
-    """The peak snapshot's mem_heap_B in a massif output file's text (the
-    largest snapshot's, if none is marked peak)."""
-    snaps, cur = [], None
-    for ln in text.splitlines():
-        m = re.match(r"(snapshot|mem_heap_B|heap_tree)=(\S+)", ln)
-        if not m:
-            continue
-        if m.group(1) == "snapshot":
-            cur = {}
-            snaps.append(cur)
-        elif cur is not None:
-            cur[m.group(1)] = m.group(2)
-    heaps = [s for s in snaps if "mem_heap_B" in s]
-    if not heaps:
-        raise SystemExit("rt-startup: no snapshot in massif's output")
-    peak = [s for s in heaps if s.get("heap_tree") == "peak"]
-    return int((peak[0] if peak else max(heaps, key=lambda s: int(s["mem_heap_B"])))["mem_heap_B"])
+def malloc_peak_of(text):
+    """t-gmax's bytes in a DHAT output file's text: the sum over its program
+    points of the bytes each had live at t-gmax ("gb")."""
+    try:
+        doc = json.loads(text)
+        return sum(int(pp.get("gb", 0)) for pp in doc["pps"])
+    except (ValueError, KeyError, TypeError):
+        raise SystemExit("rt-startup: DHAT's output has no program points")
 
 
 # robigo-heap's own peak (ROBIGO_GC_STATS=1): bytes in use (objects, block

@@ -780,7 +780,7 @@ class EveryRunNamesItsBoot(unittest.TestCase):
             envs.append(env)
             return None
         with tempfile.TemporaryDirectory() as home, patch.object(su, "instructions", instr), \
-                patch.object(su, "memory", memory), patch.object(su, "massif_peak", massif), \
+                patch.object(su, "memory", memory), patch.object(su, "malloc_peak", massif), \
                 patch.object(su, "gc_peak", gc):
             su.run("bin", None, home, 1, trees=False)
         self.assertGreater(len(envs), 0)
