@@ -1,0 +1,5 @@
+Error in f("_") : 
+  pipe placeholder can only be used as a named argument (<input>:1:6)
+Error: '\q' is an unrecognized escape in character string (<input>:1:3)
+Error: repeated formal argument 'a' (<input>:1:18)
+Error in "_" + 1 : invalid use of pipe placeholder (<input>:1:0)

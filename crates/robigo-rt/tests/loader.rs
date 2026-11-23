@@ -256,6 +256,25 @@ fn r_parse_vector_statuses() {
     assert_eq!(out, 42.0);
 }
 
+/// gram.y's classed parse errors are signalled from inside the parse, as
+/// raiseParseError/raiseLexError signal them: R_ParseVector's caller gets
+/// the error, not a status.
+#[test]
+fn r_parse_vector_signals_parse_error_conditions() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    robigo_rt::install(cx);
+    for src in ["function(a, a) 1", "1 |> f(_)", "\"\\q\""] {
+        let r = cx.scope(|cx, s| {
+            let o = s.out(cx);
+            parse_bytes(cx, src.as_bytes(), -1, o).map(|r| r.0)
+        });
+        assert!(r.is_err(), "{src}: {r:?}");
+    }
+    // a grammar error is still a status
+    assert_eq!(strings(cx, &["x y"], -1).0, ParseStatus::Error);
+}
+
 /// The lexer's warnings of the tokens R_Parse reads: none past the n-th
 /// expression, and those before a syntax error.
 #[test]

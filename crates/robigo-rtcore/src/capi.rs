@@ -54,7 +54,9 @@ pub struct CGlobals {
     pub(crate) symbols: [Sexp; SYMBOLS],
     pub(crate) ppstack: *mut Cell<Sexp>,
     pub(crate) pptop: Cell<c_int>,
-    pub(crate) ppsize: c_int,
+    /// `R_PPStackSize`: [`PPSTACK_SIZE`], the red zone added while an
+    /// overflow's handlers run ([`Cx::open_pp_red_zone`])
+    pub(crate) ppsize: Cell<c_int>,
     pub(crate) vstack: Cell<Sexp>,
     pub(crate) gc_move: Cell<c_int>,
     /// GNU R's parser globals (Defn.h's `R_ParseError`,
@@ -361,7 +363,7 @@ impl CApi {
                 symbols,
                 ppstack: std::ptr::null_mut(),
                 pptop: Cell::new(0),
-                ppsize: PPSTACK_SIZE as c_int,
+                ppsize: Cell::new(PPSTACK_SIZE as c_int),
                 vstack: Cell::new(nil),
                 gc_move: Cell::new(0),
                 parse_error: Cell::new(0),
@@ -516,7 +518,24 @@ impl Cx {
     /// `R_PPStackSize`.
     #[inline(always)]
     pub fn pp_size(&self) -> i32 {
-        self.cglobals().ppsize
+        self.cglobals().ppsize.get()
+    }
+
+    /// `R_RealPPStackSize`: `R_PPStackSize` with the red zone, the
+    /// stack's storage.
+    #[inline(always)]
+    pub fn pp_real_size(&self) -> i32 {
+        (PPSTACK_SIZE + PP_REDZONE) as i32
+    }
+
+    /// Open the protect stack's red zone: `R_PPStackSize` set to
+    /// [`Cx::pp_real_size`], for a protect stack overflow's handlers
+    /// (`R_signal_protect_error`; the context it runs in restores the
+    /// size, `reset_pp_stack`).
+    #[inline(always)]
+    pub fn open_pp_red_zone(&mut self) {
+        let real = self.pp_real_size();
+        self.cglobals().ppsize.set(real);
     }
 
     /// Set `R_PPStackTop` (a native call's balance restored, an exit's

@@ -33,6 +33,8 @@
 
 #![allow(unsafe_code)]
 
+mod check;
+
 use super::{Comp, Tail};
 use crate::bcassign as ba;
 use crate::cenv::{Cenv, Need};
@@ -258,22 +260,41 @@ fn returns_after(code: &[BcIns], mut j: usize) -> bool {
 }
 
 /// Decode the portable code `code` (the version word first) into
-/// instructions, or the position of what is not one.
-fn decode(code: &[i32]) -> Result<Vec<BcIns>, usize> {
-    let mut out = Vec::new();
+/// instructions, each checked by `check` as it is made: the instructions,
+/// or why one is not.
+fn decode(code: &[i32], check: Option<&check::Checker>) -> Result<Vec<BcIns>, Undecoded> {
+    // (cmp.R's instructions average more than one operand: half the words
+    // is room for all, so the vector does not grow)
+    let mut out = Vec::with_capacity(code.len() / 2);
     let mut at = 1;
     while at < code.len() {
         let op = code[at];
-        let Some(n) = robigo_rtbuiltins::bytecode::argc(op) else { return Err(at) };
+        let Some(n) = robigo_rtbuiltins::bytecode::argc(op) else { return Err(Undecoded::At(at)) };
         if at + n >= code.len() {
-            return Err(at);
+            return Err(Undecoded::At(at));
         }
         let mut a = [0; 4];
         a[..n].copy_from_slice(&code[at + 1..at + 1 + n]);
-        out.push(BcIns { at, op: op as u8, a });
+        let i = BcIns { at, op: op as u8, a };
+        // the operands, as each instruction is decoded, before anything
+        // reads them (#976)
+        if let Some(c) = check {
+            // SAFETY: the checker's constants are live (its maker's
+            // contract).
+            unsafe { c.ins(&i) }.map_err(Undecoded::Operand)?;
+        }
+        out.push(i);
         at += 1 + n;
     }
     Ok(out)
+}
+
+/// Why [`decode`] stopped.
+enum Undecoded {
+    /// The instruction at this position is unknown or cut short.
+    At(usize),
+    /// An operand the check refuses ([`check::Checker`]).
+    Operand(String),
 }
 
 /// Where a stack entry's computation begins: the instructions (one per
@@ -293,11 +314,13 @@ fn union(into: &mut Starts, from: &[usize]) {
     }
 }
 
-/// The two passes, or two paths to one label, disagree about the stack: a
-/// translator bug (a debug build stops; a release build refuses the code).
+/// The two passes, or two paths to one label, disagree about the stack:
+/// byte code GNU R's compiler does not make (hostile or damaged code can
+/// reach it, so it is refused, never a panic), or a translator bug. GNU R's
+/// own code never gets here: the rdb crosscheck reports a malformed
+/// closure as an error, so a translator bug still fails CI.
 fn mismatch() -> Need {
-    debug_assert!(false, "robigo: the byte-code translation lost track of GNU R's stack");
-    Need::Fail
+    Need::Malformed
 }
 
 /// A call's frame on GNU R's stack: what the function is, and its
@@ -534,8 +557,12 @@ impl Tr {
     /// # Safety
     /// The code's constants are live.
     unsafe fn expr_at(&self, cx: &Cx, at: usize) -> Option<Sexp> {
-        // SAFETY: the caller's contract: a VECSXP of live constants.
+        // SAFETY: the caller's contract: live constants, read as a VECSXP's
+        // only when they are one (mkCode takes any)
         unsafe {
+            if self.consts.typ() != VECSXP {
+                return None;
+            }
             let n = self.consts.std_len() as usize;
             let p = self.consts.std_data() as *const Sexp;
             let index = (0..n).rev().map(|j| *p.add(j)).find(|&x| {
@@ -741,12 +768,24 @@ unsafe fn successors(i: &BcIns, next: Option<usize>, consts: Sexp) -> Result<Vec
     Ok(s)
 }
 
-/// The instructions control reaches from the first.
+/// What control reaches from the first instruction ([`reachable`]).
+struct Reach {
+    /// Each instruction: reached.
+    live: Vec<bool>,
+    /// The instructions a reached jump goes back to (a loop's head, a for
+    /// body), ascending, each once: none in code without a loop, which then
+    /// allocates nothing.
+    back: Vec<usize>,
+}
+
+/// The instructions control reaches from the first, and the targets of
+/// the jumps among them that go back.
 ///
 /// # Safety
 /// `consts` are the code's live constants.
-unsafe fn reachable(dec: &[BcIns], index: &PosIndex, consts: Sexp) -> Result<Vec<bool>, Need> {
+unsafe fn reachable(dec: &[BcIns], index: &PosIndex, consts: Sexp) -> Result<Reach, Need> {
     let mut live = vec![false; dec.len()];
+    let mut back = Vec::new();
     let mut todo = vec![0usize];
     while let Some(k) = todo.pop() {
         if k >= dec.len() || live[k] {
@@ -757,12 +796,19 @@ unsafe fn reachable(dec: &[BcIns], index: &PosIndex, consts: Sexp) -> Result<Vec
         // SAFETY: the caller's contract.
         for p in unsafe { successors(&dec[k], next, consts)? } {
             match index.get(p) {
-                Some(j) => todo.push(j),
+                Some(j) => {
+                    if p <= dec[k].at {
+                        back.push(j);
+                    }
+                    todo.push(j);
+                }
                 None => return Err(Need::Fail),
             }
         }
     }
-    Ok(live)
+    back.sort_unstable();
+    back.dedup();
+    Ok(Reach { live, back })
 }
 
 impl<'g> Comp<'g> {
@@ -782,13 +828,34 @@ impl<'g> Comp<'g> {
         let (code, consts) = unsafe {
             let c = bc.car();
             if c.typ() != INTSXP {
-                return Err(Need::Fail);
+                return self.malformed("its code is not an integer vector".to_owned());
             }
             (std::slice::from_raw_parts(c.std_data() as *const i32, c.std_len() as usize).to_vec(), bc.cdr())
         };
-        let Ok(dec) = decode(&code) else { return Err(Need::Fail) };
+        // SAFETY: as above: the byte code's constants, live while it is.
+        let checker = unsafe { check::Checker::new(consts, code.len()) };
+        let dec = match decode(&code, Some(&checker)) {
+            Ok(d) => d,
+            Err(Undecoded::Operand(what)) => return self.malformed(what),
+            Err(Undecoded::At(at)) => {
+                let what = match code.get(at) {
+                    Some(&op) if robigo_rtbuiltins::bytecode::argc(op).is_none() => {
+                        format!("an unknown instruction code {op} at position {at}")
+                    }
+                    _ => format!("an instruction cut short at position {at}"),
+                };
+                return self.malformed(what);
+            }
+        };
         // SAFETY: as above.
-        unsafe { self.translate_ins(&dec, consts, dst) }
+        unsafe { self.translate_ins(&dec, consts, dst)? };
+        // (byte code GNU R ran, past the IR's 16-bit operands: not
+        // translated, which says so when it runs)
+        if let Some(what) = self.too_large.take() {
+            self.bc_untranslated = Some(format!("byte code of {what}"));
+            return Err(Need::Fail);
+        }
+        Ok(())
     }
 
     /// Translate the instructions `dec` (a code's, or an argument's slice
@@ -800,7 +867,7 @@ impl<'g> Comp<'g> {
     unsafe fn translate_ins(&mut self, dec: &[BcIns], consts: Sexp, dst: Reg) -> Result<(), Need> {
         let ix = PosIndex::of(dec);
         // SAFETY: the caller's contract.
-        let live = unsafe { reachable(dec, &ix, consts)? };
+        let reach = unsafe { reachable(dec, &ix, consts)? };
         debug_assert_eq!(dst, R_FIRST);
         let mut p = Comp::new(self.cx, self.st, Profile::Bc, Some(Cenv::for_translation()));
         // (the constants pool grows as constants are used, not sized from
@@ -808,7 +875,7 @@ impl<'g> Comp<'g> {
         // of a long list's)
         let r = p.alloc();
         // SAFETY: the caller's contract.
-        let plan = match unsafe { p.pass(dec, &live, consts, ix, None, r) } {
+        let plan = match unsafe { p.pass(dec, &reach, consts, ix, None, r) } {
             Ok(t) => t.plan(),
             Err(e) => {
                 self.bc_untranslated = p.bc_untranslated.take();
@@ -816,7 +883,7 @@ impl<'g> Comp<'g> {
             }
         };
         // SAFETY: as above.
-        unsafe { self.pass(dec, &live, consts, PosIndex::default(), Some(plan), dst) }.map(drop)
+        unsafe { self.pass(dec, &reach, consts, PosIndex::default(), Some(plan), dst) }.map(drop)
     }
 
     /// The code of instructions `from..to` of `t`'s code (an argument's,
@@ -838,22 +905,35 @@ impl<'g> Comp<'g> {
         let r = sub.alloc();
         // SAFETY: the caller's contract.
         let res = unsafe { sub.translate_ins(&dec, t.consts, r) };
-        let res = res.map(|()| {
+        let res = res.and_then(|()| {
+            if let Some(what) = sub.too_large.take() {
+                sub.bc_untranslated = Some(format!("byte code of {what}"));
+                return Err(Need::Fail);
+            }
             let mut i = Ins::new(Op::Ret);
             i.b = r;
             sub.emit(i);
-            sub.finish()
+            Ok(sub.finish())
         });
         self.bc = sub.bc.take();
         if res.is_err() && sub.bc_untranslated.is_some() {
             self.bc_untranslated = sub.bc_untranslated.take();
         }
         let b = res?;
+        // (an argument's code the verifier refuses: malformed byte code,
+        // never a panic: #976)
+        let v = match sub.verify(b) {
+            Ok(v) => v,
+            Err(m) => {
+                self.bc_untranslated = Some(format!("an argument's translation fails the verifier ({})", m.why));
+                return Err(Need::Malformed);
+            }
+        };
         // SAFETY: as above.
         unsafe {
             // (the translation cache's writer keeps it with the translation)
-            crate::tcache::writer_arg(self.cx, arg, &b);
-            let built = sub.build(b, arg, None)?;
+            crate::tcache::writer_arg(self.cx, arg, v.built());
+            let built = sub.build_verified(v, arg, None)?;
             crate::code::cache_on(arg, built);
             self.arg_codes.push(built);
             self.arg_codes.append(&mut sub.arg_codes);
@@ -869,7 +949,7 @@ impl<'g> Comp<'g> {
     unsafe fn pass(
         &mut self,
         dec: &[BcIns],
-        live: &[bool],
+        reach: &Reach,
         consts: Sexp,
         ix: PosIndex,
         mut plan: Option<Plan>,
@@ -901,6 +981,19 @@ impl<'g> Comp<'g> {
             assigning: Vec::new(),
             skip_to: None,
         };
+        // the instructions a jump reaches backwards (a loop's head, a for
+        // body): reached first by falling in, their stack is kept as their
+        // label, so the back-edge's `meet` checks the stack it brings
+        // against the one the instruction was translated with, as it does
+        // for a forward jump (#976: a mutated STEPFOR jumping elsewhere ran
+        // the loop's step on another stack)
+        // ([`reachable`] found them, as it walked the reached jumps: in
+        // ascending order, with a cursor the walk below advances)
+        let (live, back) = (&reach.live, &reach.back);
+        // the first target not yet passed (usize::MAX: none left), so an
+        // instruction that is not one costs a compare
+        let mut back_at = 0;
+        let mut next_back = back.first().copied().unwrap_or(usize::MAX);
         // `dst` is the code's value (the first register)
         self.free_to(dst);
         let mut fell = true;
@@ -954,6 +1047,17 @@ impl<'g> Comp<'g> {
                     self.next = next;
                     t.open = open;
                     t.pending = None;
+                }
+                (None, true)
+                    if k >= next_back && {
+                        while next_back < k {
+                            back_at += 1;
+                            next_back = back.get(back_at).copied().unwrap_or(usize::MAX);
+                        }
+                        next_back == k
+                    } =>
+                {
+                    t.at[k].label = Some((t.stack.clone(), self.next, t.open.clone()));
                 }
                 (None, true) => {}
                 // the target of a back-edge yet to come (a loop body after
@@ -2154,6 +2258,13 @@ impl<'g> Comp<'g> {
     /// An opcode the translation does not know: the translation stops,
     /// and the code raises "robigo: ... is not implemented yet" when it
     /// runs ([`Comp::untranslated`]'s message, AGENTS rule 6).
+    /// Refuse malformed byte code ([`Need::Malformed`]): the code raises
+    /// "robigo: malformed byte code: `what`" when it runs.
+    fn malformed(&mut self, what: String) -> Result<(), Need> {
+        self.bc_untranslated = Some(what);
+        Err(Need::Malformed)
+    }
+
     fn untranslated(&mut self, i: BcIns, what: &str) -> Result<(), Need> {
         let name = robigo_rtbuiltins::bytecode::OPCODES.get(i.op as usize).map_or("?", |o| o.0);
         self.bc_untranslated = Some(format!("{what} ({name})"));
@@ -2412,11 +2523,11 @@ mod tests {
         // version, GOTO 3 (the RETURN), RETURN: translatable
         let ok = [12, GOTO as i32, 3, RETURN as i32];
         for (code, fails) in [(&to_end, true), (&to_operand, true), (&ok, false)] {
-            let dec = decode(code).unwrap();
+            let dec = decode(code, None).ok().unwrap();
             let ix = PosIndex::of(&dec);
             assert_eq!(ix.get(4), None);
             // SAFETY: GOTO and RETURN read no constant.
-            let r = unsafe { reachable(&dec, &ix, robigo_heap::Sexp::NULL) };
+            let r = unsafe { reachable(&dec, &ix, robigo_heap::Sexp::NULL) }.map(|r| r.live);
             assert_eq!(r.is_err(), fails, "{code:?}");
             if let Err(e) = r {
                 assert!(matches!(e, crate::compile::Need::Fail), "{code:?}");
