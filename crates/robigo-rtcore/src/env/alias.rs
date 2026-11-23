@@ -117,9 +117,26 @@ pub(super) unsafe fn unalias(iso: &Isolate, s: SlotRef) {
         // (ASSIGNMENT_PENDING is a cell's: a complex assignment makes the
         // binding cell-backed, which resolves the alias first)
         debug_assert!(!s.has(META_PENDING), "robigo: an assignment pending on an alias");
+        note_alias_cut(s);
         s.clear_raw_val();
         s.clear_raw_aux();
         s.set_key(s.sym(), VALUE);
+    }
+}
+
+/// An alias slot's frame word cleared raw: in a frozen frame, the target
+/// frame it held is noted, as a barriered store over it would be (the boot
+/// heap's freeze: Sol r3 S12).
+///
+/// # Safety
+/// `s` is a live slot of kind [`ALIAS`].
+unsafe fn note_alias_cut(s: SlotRef) {
+    // SAFETY: the caller's contract: an alias's value word is its target's
+    // frame, a live object.
+    unsafe {
+        if s.owner.flags() & robigo_heap::flags::FROZEN != 0 {
+            robigo_heap::note_overwritten(s.val());
+        }
     }
 }
 
@@ -188,6 +205,7 @@ pub(super) unsafe fn resolve(iso: &Isolate, t: SlotRef, p: Sexp) {
             let s = SlotRef { owner: m, index: i as usize };
             debug_assert_eq!(s.kind(), ALIAS, "robigo: an alias entry of a slot that is no alias");
             debug_assert_eq!(target(s), t, "robigo: an alias entry of another target");
+            note_alias_cut(s);
             s.clear_raw_val();
             s.clear_raw_aux();
             s.set_key(s.sym(), VALUE);
