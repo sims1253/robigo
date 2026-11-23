@@ -591,7 +591,9 @@ pub struct Core {
     /// loop (every frozen object's ordinary children marked), whose defect,
     /// a missed barrier, is transient (the next sweep frees the child).
     /// Under gctorture the period keeps a run's cost near a plain one's, as
-    /// `ROBIGO_GC_MOVE=young:N`'s does.
+    /// `ROBIGO_GC_MOVE=young:N`'s does. The first collection with a frozen
+    /// set is checked whatever the count and restarts it, so the later
+    /// checks fall every N collections after it (with N alone too).
     freeze_check: u32,
     /// `M` (default 1): the persistent-state parts, a "full check", at the
     /// first collection with a frozen set (checked whatever the period: the
@@ -610,6 +612,8 @@ pub struct Core {
     freeze_checks: u64,
     freeze_checks_frozen: u64,
     freeze_full_checks: u64,
+    /// This collection's check is a full one (counted after its comparison).
+    freeze_full_now: bool,
     /// Whether this collection is checked.
     freeze_checking: bool,
     /// Under `freeze_check`, the ordinary objects the independent trace
@@ -1119,6 +1123,7 @@ impl Core {
             freeze_checks: 0,
             freeze_checks_frozen: 0,
             freeze_full_checks: 0,
+            freeze_full_now: false,
             freeze_checking: false,
             freeze_reach: Vec::new(),
             weak_refs: Vec::new(),
@@ -3167,6 +3172,7 @@ impl Core {
             // (this collection's snapshot only: r4 S10)
             self.freeze_reach.clear();
             self.freeze_checking = false;
+            self.freeze_full_now = false;
             // (with the freeze on, an empty frozen list is checked too: a stray
             // FROZEN bit is an I3 failure, Sol r1 S6)
             let mut due = false;
@@ -3201,8 +3207,9 @@ impl Core {
                     // (d)), after the pass step, and the independent trace
                     // (the bar's (c)) for the comparison after marking
                     if self.freeze_checks_frozen.is_multiple_of(self.freeze_full as u64) {
-                        self.freeze_full_checks += 1;
-                        freeze::note_full_check(self.freeze_full_checks);
+                        // (counted, and its tally written, once its last
+                        // part, the comparison after marking, has run)
+                        self.freeze_full_now = true;
                         self.check_frozen_reach(roots);
                         self.freeze_reach = self.independent_reach(roots);
                     }
@@ -3325,6 +3332,10 @@ impl Core {
             // references and C segments can mark what it missed (Sol r2 S5)
             if self.freeze_checking && !Y {
                 self.check_frozen_marked();
+                if std::mem::take(&mut self.freeze_full_now) {
+                    self.freeze_full_checks += 1;
+                    freeze::note_full_check(self.freeze_full_checks);
+                }
             }
             // docs/g3.md §3, "What a collection marks" (L8): precise roots
             // (above), weak references and finalizers decided on them alone,

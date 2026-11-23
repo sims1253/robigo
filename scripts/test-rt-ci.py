@@ -922,6 +922,12 @@ class RtCi(unittest.TestCase):
         with mock.patch.object(rt.subprocess, "run", side_effect=tally):
             self.assertEqual(rt.run_steps([("e3", {"ROBIGO_GC_FREEZE_CHECK_REPORT": report}, ["true"])], done), 0)
         self.assertEqual(rt.freeze_report(report), ([], 3, 2))
+        # a torn or truncated tally is no full check: it is a failure line
+        with open(report, "w") as f:
+            f.write(f"{rt.FULL_CHECK_TALLY}\n{rt.FULL_CHECK_TALLY}3 in process \n")
+            f.write(f"{rt.FULL_CHECK_TALLY}1{rt.FULL_CHECK_TALLY} in process 7\n{rt.FULL_CHECK_TALLY}2 in process 9\n")
+        failures, full, processes = rt.freeze_report(report)
+        self.assertEqual((len(failures), full, processes), (3, 1, 1))
 
     def test_a_step_whose_freeze_check_ran_no_full_check_fails(self):
         # a full-check rate no process reached is the silent failure: a step

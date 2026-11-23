@@ -882,30 +882,32 @@ impl Core {
                 i += 1;
             }
             let reached = walk.reached;
-            if with_roots {
-                for &f in &self.frozen {
-                    if f.flags() & flags::FROZEN != 0 && !self.reached(f, &large) {
-                        check_failed(format!(
-                            "robigo: ROBIGO_GC_FREEZE_CHECK: frozen {:#x} (type {}) is unreachable from the freeze roots, and no dirty event was noted since the last frozen-reachability pass",
-                            f.addr(),
-                            f.typ()
-                        ));
-                    }
-                }
-            }
+            // the first unreached frozen entry, by its place in the list (the
+            // order the old check reported in: each entry's own checks, then
+            // the next entry's)
+            let unreached = if with_roots {
+                self.frozen.iter().position(|&f| f.flags() & flags::FROZEN != 0 && !self.reached(f, &large))
+            } else {
+                None
+            };
             for &x in &reached {
                 self.unreach(x);
             }
             large.clear();
-            // I3: the bits are "on the frozen list"
+            // I3: the bits are "on the frozen list". The first failure is
+            // kept and reported once every bit the check set is clear again,
+            // so a caller that catches the panic finds the bitmaps as the
+            // pass leaves them (Sol's R5 on the check-cost PR)
+            let mut failure = None;
             let mut listed = Vec::with_capacity(self.frozen.len());
-            for &f in &self.frozen {
+            for (i, &f) in self.frozen.iter().enumerate() {
                 if f.flags() & flags::IMMORTAL == 0 {
-                    check_failed(format!(
+                    failure = Some(format!(
                         "robigo: ROBIGO_GC_FREEZE_CHECK: {:#x} (type {}) is on the frozen list but not IMMORTAL",
                         f.addr(),
                         f.typ()
                     ));
+                    break;
                 }
                 // (a pinned object, IMMORTAL without FROZEN, waits on the list
                 // for the next pass to drop it: Sol r1 S1)
@@ -913,27 +915,42 @@ impl Core {
                     continue;
                 }
                 if !self.reach(f, &mut large) {
-                    check_failed(format!(
+                    failure = Some(format!(
                         "robigo: ROBIGO_GC_FREEZE_CHECK: {:#x} (type {}) is on the frozen list twice",
                         f.addr(),
                         f.typ()
                     ));
+                    break;
                 }
                 listed.push(f);
-            }
-            let mut stray = None;
-            self.for_each_live_object(|p| {
-                if stray.is_none() && *p.add(header::OFF_FLAGS) & flags::FROZEN != 0 && !self.reached(Sexp(p), &large) {
-                    stray = Some(p as usize);
+                if unreached == Some(i) {
+                    failure = Some(format!(
+                        "robigo: ROBIGO_GC_FREEZE_CHECK: frozen {:#x} (type {}) is unreachable from the freeze roots, and no dirty event was noted since the last frozen-reachability pass",
+                        f.addr(),
+                        f.typ()
+                    ));
+                    break;
                 }
-            });
+            }
+            if failure.is_none() {
+                let mut stray = None;
+                self.for_each_live_object(|p| {
+                    if stray.is_none()
+                        && *p.add(header::OFF_FLAGS) & flags::FROZEN != 0
+                        && !self.reached(Sexp(p), &large)
+                    {
+                        stray = Some(p as usize);
+                    }
+                });
+                failure = stray.map(|p| {
+                    format!("robigo: ROBIGO_GC_FREEZE_CHECK: {p:#x} has FROZEN but is not on the frozen list")
+                });
+            }
             for &f in &listed {
                 self.unreach(f);
             }
-            if let Some(p) = stray {
-                check_failed(format!(
-                    "robigo: ROBIGO_GC_FREEZE_CHECK: {p:#x} has FROZEN but is not on the frozen list"
-                ));
+            if let Some(msg) = failure {
+                check_failed(msg);
             }
         }
     }
@@ -1152,7 +1169,9 @@ pub(super) fn note_full_check(n: u64) {
     if let Some(path) = std::env::var_os("ROBIGO_GC_FREEZE_CHECK_REPORT").filter(|p| !p.is_empty()) {
         use std::io::Write;
         // one write of the whole line: appends from the slice's processes
-        // running at once interleave whole lines only
+        // running at once interleave whole lines only (a regular file's
+        // O_APPEND write is short only on an error, and a record torn by
+        // one reads as a failure line in rt-ci, which fails the step)
         let line = format!("{FULL_CHECK_TALLY}{n} in process {}\n", std::process::id());
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
             let _ = f.write_all(line.as_bytes());
@@ -1492,8 +1511,10 @@ mod tests {
                 let l1 = c.alloc_vector(INTSXP, 1).unwrap();
                 let l2 = c.alloc_vector(INTSXP, 2).unwrap();
                 let big = c.alloc_vector(REALSXP, 100_000).unwrap();
-                let a = c.alloc_node(LISTSXP, l1, big, nil).unwrap();
-                let b = c.alloc_node(LISTSXP, l2, nil, nil).unwrap();
+                // `big` (a large object: its bit is a set of the check's own)
+                // stays frozen through the first check
+                let a = c.alloc_node(LISTSXP, l1, nil, nil).unwrap();
+                let b = c.alloc_node(LISTSXP, l2, big, nil).unwrap();
                 let head = c.alloc_node(LISTSXP, a, b, nil).unwrap();
                 let all = [head, a, b, l1, l2, big];
                 let mut roots = WithFreeze { all: vec![head], freeze: head };
@@ -1524,10 +1545,43 @@ mod tests {
         let Some(without) = run(false) else { return };
         assert_eq!(
             without,
-            (vec![true, false, true, false, true, false], vec![true, false, false, false, false, false], 2),
+            (vec![true, false, true, false, true, true], vec![true, false, false, false, false, false], 2),
             "each pass thaws what its cut left unreached"
         );
         assert_eq!(run(true), Some(without));
+    }
+
+    /// A failing check reports once the bits it set are clear again (Sol's
+    /// R5 on the check-cost PR): a caller that catches the panic finds the
+    /// bitmaps as the pass leaves them.
+    #[test]
+    #[cfg(not(miri))]
+    fn a_failing_check_leaves_no_bit_set() {
+        let mut c = Core::new();
+        c.set_freeze_enabled(true);
+        if !c.freeze_enabled() {
+            return;
+        }
+        let nil = c.nil();
+        // SAFETY: fresh objects of this heap; nothing collects; the barrier
+        // is bypassed on purpose.
+        unsafe {
+            let l1 = c.alloc_vector(INTSXP, 1).unwrap();
+            let l2 = c.alloc_vector(INTSXP, 2).unwrap();
+            let b = c.alloc_node(LISTSXP, l2, nil, nil).unwrap();
+            let head = c.alloc_node(LISTSXP, l1, b, nil).unwrap();
+            let mut roots = WithFreeze { all: vec![head], freeze: head };
+            c.freeze(&mut roots, |_| false);
+            // l1 cut off without a note, after b and l2 on the list
+            *(head.as_ptr().add(crate::layout::node::OFF_CAR) as *mut Sexp) = nil;
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.check_frozen_reach(&mut roots)));
+            let msg = r.unwrap_err().downcast_ref::<String>().cloned().unwrap_or_default();
+            assert!(msg.contains("is unreachable from the freeze roots"), "{msg}");
+            let none = HashSet::default();
+            for x in [head, b, l1, l2] {
+                assert!(!c.reached(x, &none), "a bit left set");
+            }
+        }
     }
 
     /// The check at a period (`ROBIGO_GC_FREEZE_CHECK=16,16`) names a frozen

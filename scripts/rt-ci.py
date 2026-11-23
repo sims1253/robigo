@@ -1216,6 +1216,9 @@ def free_space_problem(paths, min_gb):
 # and the comparison with the independent trace); every other line of the
 # report is a failure
 FULL_CHECK_TALLY = "robigo: ROBIGO_GC_FREEZE_CHECK: full check "
+# the whole record: anything else, a torn or truncated tally too, is a
+# failure line (Sol's R4 on the check-cost PR)
+FULL_CHECK_RECORD = re.compile(re.escape(FULL_CHECK_TALLY) + r"([1-9][0-9]*) in process ([1-9][0-9]*)")
 
 
 def freeze_report(path):
@@ -1229,9 +1232,10 @@ def freeze_report(path):
             line = line.rstrip("\n")
             if not line.strip():
                 continue
-            if line.startswith(FULL_CHECK_TALLY):
+            m = FULL_CHECK_RECORD.fullmatch(line)
+            if m:
                 full += 1
-                processes.add(line.rsplit(" ", 1)[-1])
+                processes.add(m.group(2))
             else:
                 failures.append(line)
     return failures, full, len(processes)

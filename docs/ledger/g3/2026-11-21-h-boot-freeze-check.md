@@ -188,4 +188,13 @@ The comparison with the independent trace traced every root, the stack's include
   - Under rdb in E3's configuration, the freezing collection's full check names it.
   - Under m1 the log holds no such child at the freeze. The defect appears after a later store, and the process fails first with a wrong result (37 of 40 random rt cases fail, none named). E3 fails on it without naming it.
 
+**What the lower rate can miss (Sol's R3 on the check-cost PR).** A full check sees only what is still there when it runs:
+- **A marking defect on a short-lived graph.** A frozen holder's ordinary child is marked and its grandchild is missed (marked, not traced). The direct loop passes at every 16th collection, because the child is marked. If the program drops the graph before it reads the grandchild, the output can still match, and the next full check finds nothing.
+- **A stray FROZEN bit on an ordinary object that dies.** The sweep removes it with the object before the next full check. The kept test plants its stray where it stays reachable until then.
+- **An unreached frozen object** whose evidence a pass thaws before the next full check (above).
+
+The every-collection runs see all three at the collection where they happen: the crates' tests under gctorture (rt-ci's "gctorture (collect at every allocation) and the GC stats check" step, `ROBIGO_GC_FREEZE_CHECK=1`, in every PR's run), boot_db's steady-state test, and the nightly's `--freeze-check` over the whole slice.
+
+**The forced first check moves the period's phase.** The first collection with a frozen set is checked whatever the count, and it restarts the count. The later checks therefore fall every N collections after the freeze, not on multiples of N from the start, even with N alone.
+
 **So E3 does not name every marking defect.** It fails on this one under m1 (37 of 40 random rt cases, none named by the check). Detection is the step's job; naming the defect takes a rerun at period 1. **An E3 failure with an unexplained error under the freeze is rerun with `ROBIGO_GC_FREEZE_CHECK=1` before anything else** (docs/verification.md). There is no "first K checks" rule. Under rdb, the default after L's flip, the freezing collection's full check names it.
