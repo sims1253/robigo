@@ -287,3 +287,13 @@ A first measurement by `/proc` from inside R, against main 0007ddf33 with the ch
 - the full `scripts/rt-ci.py`: exit 0, every step, 62.1 min, the rdb crosscheck comparing 98,890;
 - `--shard debug-assertions`: exit 0, 7.6 min;
 - Miri on robigo-heap (`layout::`, `heap::bitmap_tests`, `heap::medium_tests`, `arena::`, `gc::freeze`: 29 tests) and robigo-rtcore: clean.
+
+### A start's count follows the heap's layout (CI on 4f420c6e5, 2026-11-23)
+
+perf-rt failed the interim start at +0.54% (15,470,137 against main's 15,386,628) with the freeze off. Measured in CI's oracle image on CI's own two binaries, each start's count is bimodal in the length of its R_HOME path: over lengths 8 to 78, main's ranges over 15,305k to 15,391k and this PR's over 15,329k to 15,428k, each with steps of about 80k at different lengths. CI's paths put this PR on its upper step and main on its lower. Off both steps, the PR was +24k (+0.16%): `make_immortal`'s new frozen-child check, which traced the fields of every symbol a start installs.
+
+The step was in neither the freeze nor the size of a long-lived struct: it was `Wide::parse` (`robigo-rt/src/base.rs`, main's code). Its 1,193 names (about 85 KB) and their `HashMap` grew by doubling, so whether each realloc extended in place or copied depended on what the heap held above it, and the paths' lengths moved that. Main's interim start moved by −92,793 between dc256de9f and dff5cef65 the same way, and C1's #979 by +80,848: the same kind of step, from something else growing.
+
+The fix allocates each of the wide base's tables once, at sizes a unit test checks against `proto/base-wide.txt` (`WIDE_SIZES`). It also skips the frozen-child check while nothing is frozen. On the host, over R_HOME lengths 143 to 213, main is 15,385k to 15,450k, this PR before the fix was 15,277k to 15,473k, and after the fix it is 14,738k to 14,901k (−3.3% to −4.4%). The `HashMap`'s SipHash rehashes were about 280k of that, and the copies about 250k.
+
+**For the next person:** a start's instruction count can step by about 80k (0.5% of the interim start) when anything changes what the heap holds before a large table grows by doubling: a path's length, the environment's size, or a long-lived struct's size class. `rt-startup.py`'s environment shifts do not move R_HOME's path, so they do not show it. Allocate start-time tables at their final size, and when a start moves by about 80k, look first at reallocs and memcpy (`callgrind_annotate --inclusive=yes`, then the deepest function carrying the step).

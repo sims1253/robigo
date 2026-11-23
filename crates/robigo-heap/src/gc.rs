@@ -1056,7 +1056,12 @@ impl Core {
                 return;
             }
             self.make_immortal_raw(x);
-            self.log_if_frozen_child(x);
+            // (no frozen object, no frozen child: every FROZEN object is on
+            // the frozen list, I3. With the freeze off this is the whole
+            // cost: a start makes every symbol immortal, #984)
+            if !self.frozen.is_empty() {
+                self.log_if_frozen_child(x);
+            }
         }
     }
 

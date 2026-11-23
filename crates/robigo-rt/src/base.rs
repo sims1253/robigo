@@ -115,6 +115,13 @@ impl Bound {
 /// INTERIM(L5): the wide base, as generated.
 const WIDE: &str = include_str!("../proto/base-wide.txt");
 
+/// `Wide::parse`'s table sizes for [`WIDE`], by its lines' first words:
+/// [names (`def`, `block`, `unrun`: an upper bound, since a `seq` line
+/// extends the name before it), `skip`, `boot`, `c`, `subst`, `primitive`,
+/// `internal`, `after`]. A test checks them against the text: regenerating
+/// it updates them.
+const WIDE_SIZES: [usize; 8] = [1193, 4, 3, 7, 1, 210, 556, 109];
+
 /// A top-level form of a file under the tarball's `src/library`
 /// (`base/R/zzz.R`, `profile/Common.R`): its bytes `[start, end)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -178,18 +185,25 @@ impl Wide {
     }
 
     fn parse(text: &'static str) -> Result<Wide, String> {
+        // Each table is allocated once at its final size (WIDE_SIZES: the
+        // one text parsed is WIDE).
+        // Grown by doubling instead, `names` (about 85 KB) is copied by
+        // whichever of its reallocs cannot extend in place, and which those
+        // are follows the heap's layout at start: the environment's and the
+        // R_HOME path's lengths moved a start by ~80k instructions (#984).
+        let [names, skips, boot, from_c, substs, primitives, internals, after] = WIDE_SIZES;
         let mut w = Wide {
-            names: Vec::new(),
-            skips: Vec::new(),
-            boot: Vec::new(),
-            from_c: Vec::new(),
-            substs: Vec::new(),
-            primitives: Vec::new(),
-            internals: Vec::new(),
-            by_name: std::collections::HashMap::new(),
+            names: Vec::with_capacity(names),
+            skips: Vec::with_capacity(skips),
+            boot: Vec::with_capacity(boot),
+            from_c: Vec::with_capacity(from_c),
+            substs: Vec::with_capacity(substs),
+            primitives: Vec::with_capacity(primitives),
+            internals: Vec::with_capacity(internals),
+            by_name: std::collections::HashMap::with_capacity(names),
         };
+        let mut after: Vec<(&'static str, Form)> = Vec::with_capacity(after);
         let num = |s: &str, i: usize| s.parse::<usize>().map_err(|_| format!("line {}: not a number: {s:?}", i + 1));
-        let mut after: Vec<(&'static str, Form)> = Vec::new();
         for (i, line) in text.lines().enumerate() {
             if line.starts_with('#') || line.is_empty() {
                 continue;
@@ -850,6 +864,40 @@ mod tests {
             String::from_utf8(r).unwrap(),
             "a <- \"/usr/bin/which\"; b <- \"@W@\"\nc <- \"/usr/bin/which\"\nnone\n/usr/bin/which"
         );
+    }
+
+    /// The wide base's tables are allocated once and never reallocated: a
+    /// realloc chain made a start's count follow the heap's layout (#984).
+    #[test]
+    fn the_wide_base_tables_fit_their_compile_time_sizes() {
+        let w = Wide::get();
+        let tables = [
+            (w.names.len(), w.names.capacity()),
+            (w.skips.len(), w.skips.capacity()),
+            (w.boot.len(), w.boot.capacity()),
+            (w.from_c.len(), w.from_c.capacity()),
+            (w.substs.len(), w.substs.capacity()),
+            (w.primitives.len(), w.primitives.capacity()),
+            (w.internals.len(), w.internals.capacity()),
+        ];
+        for (i, (len, cap)) in tables.into_iter().enumerate() {
+            assert!(len <= WIDE_SIZES[i] && cap == WIDE_SIZES[i].max(len), "table {i}: {len} of {cap}");
+        }
+        let count =
+            |kinds: &[&str]| WIDE.lines().filter(|l| kinds.contains(&l.split(' ').next().unwrap_or(""))).count();
+        let counted = [
+            count(&["def", "block", "unrun"]),
+            count(&["skip"]),
+            count(&["boot"]),
+            count(&["c"]),
+            count(&["subst"]),
+            count(&["primitive"]),
+            count(&["internal"]),
+            count(&["after"]),
+        ];
+        assert_eq!(WIDE_SIZES, counted, "proto/base-wide.txt changed: set WIDE_SIZES to its counts");
+        // the upper bound is tight but for the `seq` lines
+        assert!(WIDE_SIZES[0] - w.names.len() <= 8, "{} names, {} reserved", w.names.len(), WIDE_SIZES[0]);
     }
 
     #[test]
