@@ -618,10 +618,19 @@ class RtCi(unittest.TestCase):
         for want in ("robigo-oracle:4.7.0", "GNU R 4.7.0", "--pull 4.7.0", "oracle_4_7_0=", "--image 4.7.0"):
             self.assertIn(want, problem)
         def r470(cmd, **kw):
-            return subprocess.CompletedProcess(cmd, 0, "4.7.0" if cmd[0] == "Rscript" else "", "")
+            # (docker is not asked: a matching Rscript is enough)
+            self.assertEqual(cmd[0], "Rscript", "docker was consulted though Rscript matched")
+            return subprocess.CompletedProcess(cmd, 0, "4.7.0", "")
         with mock.patch.object(rt, "rt_pin", return_value="4.7.0"), mock.patch.object(rt.subprocess, "run", r470):
             self.assertIsNone(rt.oracle_problem())
-        self.assertEqual(rt.rt_pin(), "4.6.2")
+        # the pin read from a checkout's scripts/oracle-versions
+        import tempfile, shutil
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        os.makedirs(os.path.join(d, "scripts"))
+        with open(os.path.join(d, "scripts", "oracle-versions"), "w") as f:
+            f.write("# pins\ngated=4.5.0\nrt=9.8.7\n")
+        self.assertEqual(rt.rt_pin(d), "9.8.7")
 
     def test_the_lint_job_runs_lint_job_sh_and_nothing_else(self):
         # the workflow's lint job and scripts/lint-job.sh, which delegates
