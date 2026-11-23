@@ -79,7 +79,8 @@ def from_env(env=None):
         return None
     s = env.get("ROBIGO_CONF_SLOTS")
     if s is None:
-        n = os.cpu_count() or 2
+        # (the CPUs this process may run on, as Rust's available_parallelism)
+        n = len(os.sched_getaffinity(0)) or 2
     else:
         try:
             n = int(s.strip())
@@ -90,7 +91,7 @@ def from_env(env=None):
     problem = private_dir(d)
     if problem:
         raise PoolError(f"ROBIGO_CONF_SLOTS_DIR {problem}")
-    return Pool(d, n)
+    return Pool(os.path.abspath(d), n)
 
 
 class Pool:

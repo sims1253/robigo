@@ -482,7 +482,7 @@ class SlotPool(unittest.TestCase):
         self.assertEqual((pool.dir, pool.n), (mine, 3))
         # otherwise the user's machine-wide one, as rt-ci.py's
         pool = bd.slot_pool({"XDG_RUNTIME_DIR": d})
-        self.assertEqual((pool.dir, pool.n), (os.path.join(d, "robigo-conf-slots"), os.cpu_count()))
+        self.assertEqual((pool.dir, pool.n), (os.path.join(d, "robigo-conf-slots"), len(os.sched_getaffinity(0))))
         # a pool that cannot be used stops the run
         os.chmod(mine, 0o755)
         with self.assertRaises(SystemExit) as e:

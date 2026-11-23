@@ -244,17 +244,23 @@ def one_run(cmd, e, cwd, out, start, ncases, timeout):
     # its start until it has ended, and its first case's clock starts once
     # the slot is taken: the wait for one is no case's time
     with (POOL.take(who=f"builtin-diff's driver from case {start}") if POOL else contextlib.nullcontext()):
-        p = subprocess.Popen(cmd, env=e, cwd=cwd, stdout=sout, stderr=err, preexec_fn=cap)
         nxt, since = start, time.monotonic()
+        p = subprocess.Popen(cmd, env=e, cwd=cwd, stdout=sout, stderr=err, preexec_fn=cap)
         timed_out = False
-        while p.poll() is None:
-            time.sleep(0.05)
-            while nxt <= ncases and have(nxt):
-                nxt, since = nxt + 1, time.monotonic()
-            if time.monotonic() - since > timeout:
+        try:
+            while p.poll() is None:
+                time.sleep(0.05)
+                while nxt <= ncases and have(nxt):
+                    nxt, since = nxt + 1, time.monotonic()
+                if time.monotonic() - since > timeout:
+                    p.kill()
+                    p.wait()
+                    timed_out = True
+        finally:
+            # (an interrupt: the driver ends before its slot is given back)
+            if p.poll() is None:
                 p.kill()
                 p.wait()
-                timed_out = True
     while nxt <= ncases and have(nxt):
         nxt += 1
     sout.close()
@@ -642,6 +648,7 @@ def ensure_oracle(a, rows):
     cmd = ["docker", "run", "--rm", "--network", "none", "--memory", f"{a.jobs * 2 + 1}g",
            "--security-opt", "seccomp=unconfined", "-u", f"{os.getuid()}:{os.getgid()}",
            "-v", f"{ROOT}:{ROOT}:ro", "-v", f"{src}:{src}:ro", "-v", f"{a.data}:{a.data}", "-e", "HOME=/tmp",
+           "-e", "ROBIGO_CONF_SLOTS_DIR=",
            "-e", f"ROBIGO_BUILTIN_DIFF_ORACLE={IMAGE}",
            IMAGE, "python3", os.path.join(ROOT, "scripts", "builtin-diff.py"), "oracle",
            "--data", a.data, "--seed", str(a.seed), "--jobs", str(a.jobs), "--r-src", src, *missing]
@@ -1127,7 +1134,9 @@ def main(argv):
     a = ap.parse_args(argv)
     if hasattr(a, "data"):
         a.data = os.path.abspath(a.data)
-    if a.cmd not in ("check-rows", "key"):
+    # (`oracle` runs GNU R's side in its container, unpooled: the
+    # container's own /tmp would be a pool of its own)
+    if a.cmd not in ("check-rows", "key", "oracle"):
         global POOL
         POOL = slot_pool()
     return {"run": cmd_run, "show": cmd_show, "plant": cmd_plant, "check-rows": cmd_check_rows,

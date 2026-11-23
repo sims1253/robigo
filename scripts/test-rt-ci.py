@@ -367,9 +367,6 @@ class RtCi(unittest.TestCase):
         self.assertEqual(run(conf, pool), (conf, d, 0))
         build = ["cargo", "test", "--release", "--locked", "--no-run"]
         self.assertEqual(run(build, pool), (build, d, 0))
-        # a step with its own thread count keeps it
-        own = [*crate, "--test-threads=1"]
-        self.assertEqual(run(own, pool), (own, d, 0))
 
     def test_every_crate_test_step_is_one_the_pool_bounds(self):
         # every cargo test step that runs tests other than the conformance

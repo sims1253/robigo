@@ -804,8 +804,7 @@ def crate_test_threads(cmd):
     crate-test steps at once, or one beside another run's conformance cases,
     stacked to twice the box."""
     return (cmd[:2] == ["cargo", "test"] and "--" in cmd and "--no-run" not in cmd
-            and not (CONFORMANCE in cmd and "--exact" in cmd)
-            and not any(x.startswith("--test-threads") for x in cmd))
+            and not (CONFORMANCE in cmd and "--exact" in cmd))
 
 
 def metadata():
@@ -822,6 +821,10 @@ def main(argv):
     slots = conf_slots_dir()
     if slots is not None:
         os.environ["ROBIGO_CONF_SLOTS_DIR"] = slots
+    elif os.environ.get("ROBIGO_CONF_SLOTS_DIR"):
+        # the caller's, absolute: the runner resolves it from its package's
+        # directory, this from the caller's
+        os.environ["ROBIGO_CONF_SLOTS_DIR"] = os.path.abspath(os.environ["ROBIGO_CONF_SLOTS_DIR"])
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--list", action="store_true", help="print the rt crates and stop")
     ap.add_argument("--check", action="store_true", help="check the premise and stop")
