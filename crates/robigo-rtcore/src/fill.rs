@@ -69,9 +69,32 @@
 //!   from allocation on, so the collector traces a valid vector at every
 //!   serve.
 //! - (d) After a serve, each element is stored with `set_elt`, through the
-//!   barrier and the counts (the vector may be old by then); before the
-//!   first serve the vector is fresh, unpublished, and filled as
-//!   [`FreshVec::set`] fills one.
+//!   barrier and the counts (the vector may be old by then). The first pass
+//!   stores as [`FreshVec::set`] does, without the barrier, which is right
+//!   for every collector (H): the barrier's slow path matters only for an
+//!   object with BARRIER or FROZEN set, and a vector the builtin allocates
+//!   has neither (born after the boot boundary, never immortal); no
+//!   collection runs during a pass, so within the first pass it cannot be
+//!   marked, moved, frozen or logged. Rooting decides reachability, not the
+//!   barrier. The one condition is the reference counts: each element is
+//!   counted, and there is no old value to drop ("" is immortal), as
+//!   `FreshVec::set` does.
+//!
+//! A builtin's loop must end its pass at `put`'s stop: a `put` after the
+//! stop panics in debug builds. Going on is not unsound, but the collection
+//! waits for the pass to end, which E4's overshoot bound shows, and under
+//! `ROBIGO_GC_STATS=check` a `&Cx` request of `LARGE` bytes or more made
+//! while a collection is due panics where it is made, a misleading failure.
+//!
+//! Which converted builtin owes its own collecting case (H): the type-level
+//! rule and the `compile_fail` test below cover the views, and
+//! `tests/rt/strings/paste-collect.R`, under gctorture and the young-moving
+//! collector, covers this module's serve and re-read. A builtin whose loop
+//! only makes CHARSXPs from views (`mk_char` of a buffer it fills) rides on
+//! that case. One whose loop does more owes a case of its own, long enough
+//! to collect inside one call: anything else that allocates (sprintf's and
+//! format's formatting buffers, coerce's list paths) or a refusal-retry
+//! path of its own.
 
 #![allow(unsafe_code)]
 
@@ -107,6 +130,14 @@ pub struct Fill<'a> {
     /// one, or returns before a stop with elements unmade, panics.
     #[cfg(debug_assertions)]
     expect: usize,
+    /// (debug builds) `put` has said stop: another `put` this pass panics.
+    /// Not for correctness (each later `put` sets the resume point again,
+    /// so nothing is skipped or made twice): for the collection the loop
+    /// delays, which E4's overshoot bound would show, and for
+    /// `ROBIGO_GC_STATS=check`'s panic at a `&Cx` request of `LARGE` bytes or
+    /// more made while it is due, which would fail CI misleadingly.
+    #[cfg(debug_assertions)]
+    stopped: bool,
 }
 
 enum Into<'a> {
@@ -134,6 +165,7 @@ impl<'a> Fill<'a> {
     pub fn put(&mut self, i: usize, c: Result<Char<'a>, NeedGc>) -> Result<bool, NeedGc> {
         #[cfg(debug_assertions)]
         {
+            assert!(!self.stopped, "robigo: Fill::put after the stop: the pass did not end at the stop");
             assert_eq!(i, self.expect, "robigo: Fill::put of element {i}, expected {}", self.expect);
             self.expect += 1;
         }
@@ -155,6 +187,10 @@ impl<'a> Fill<'a> {
         }
         if self.poll.load(Ordering::Relaxed) != 0 && i + 1 < self.n {
             self.next = i + 1;
+            #[cfg(debug_assertions)]
+            {
+                self.stopped = true;
+            }
             return Ok(true);
         }
         Ok(false)
@@ -208,6 +244,8 @@ impl Cx {
                 cx,
                 #[cfg(debug_assertions)]
                 expect: 0,
+                #[cfg(debug_assertions)]
+                stopped: false,
             };
             let pass = f(cx, &mut fill);
             fill.check_done(&pass);
@@ -267,6 +305,8 @@ impl Cx {
                     cx,
                     #[cfg(debug_assertions)]
                     expect: start,
+                    #[cfg(debug_assertions)]
+                    stopped: false,
                 };
                 let pass = f(cx, &mut fill);
                 fill.check_done(&pass);
