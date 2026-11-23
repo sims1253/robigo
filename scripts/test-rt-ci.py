@@ -1215,5 +1215,36 @@ class CompileFailExpectations(unittest.TestCase):
                          ["crates/x/tests/ui/with-rust-src.stderr:2: --> $RUST/core/src/marker.rs "
                           "(and the source under it)"])
 
+class BuildOraclePull(unittest.TestCase):
+    """scripts/build-oracle.sh --pull: a failed pull names the ref, the
+    login for an auth error, and the local build (docker faked on PATH)."""
+
+    def run_pull(self, docker_stderr):
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            fake = Path(d, "docker")
+            fake.write_text("#!/bin/sh\n[ \"$1\" = pull ] || exit 3\n"
+                            f"echo '{docker_stderr}' >&2\nexit 1\n")
+            fake.chmod(0o755)
+            env = dict(os.environ, PATH=f"{d}:{os.environ['PATH']}", HOME=d)
+            return subprocess.run([str(HERE / "build-oracle.sh"), "--pull", "4.6.2"], env=env,
+                                  capture_output=True, text=True)
+
+    def test_auth_error_says_login_and_fallback(self):
+        p = self.run_pull("Error response from daemon: Head \"https://ghcr.io/v2/x\": unauthorized")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("unauthorized", p.stderr)  # docker's own error is kept
+        self.assertRegex(p.stderr, r"docker pull ghcr\.io/\S+:oracle-4\.6\.2-\S+ failed")
+        self.assertIn("docker login ghcr.io", p.stderr)
+        self.assertIn("scripts/build-oracle.sh --image 4.6.2", p.stderr)
+
+    def test_other_error_gives_fallback_without_login(self):
+        p = self.run_pull("Error response from daemon: manifest unknown")
+        self.assertEqual(p.returncode, 1)
+        self.assertNotIn("docker login", p.stderr)
+        self.assertIn("scripts/build-oracle.sh --image 4.6.2", p.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
