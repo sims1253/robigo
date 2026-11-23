@@ -312,6 +312,24 @@ GCTORTURE_FIRST = {
 }
 
 
+# The cases that need longer than the plain gctorture step's 600 s, and how
+# long they get (the runner starts them first, as GCTORTURE_FIRST's).
+# Interim: remove or lower each when B's cure for it lands.
+GCTORTURE_SLOW = {
+    # Deep recursion through lapply, a collection at every allocation: on
+    # main, 315.5-332.9 s on normal runners (runs 45106626186, 45108072544,
+    # 45163092712), 454.3 s on a slow one (45104024474), and killed at 600 s
+    # twice on 2026-11-23 (45153365818 at 66c1b0206, 45163005843 for #1004),
+    # where the runner was ~1.4x slow on ordinary steps and the case >=1.8x.
+    # 780 s is the most the gctorture shard's budget (26 min) holds: the
+    # case starts first, so the step takes about its time, and the shard's
+    # other steps took 12.26 min on the slow runner (9.38 on a normal one,
+    # about 13 on a kill-class one): 26 - 13 = 13 min, about 780 s. B owes
+    # the cure (fewer overflow repetitions, or a smaller case)
+    "tests/r/conditions/c-stack-overflow.R": 780,
+}
+
+
 def case_timeouts(slow):
     """ROBIGO_CONF_TIMEOUTS's value for `slow` (case -> seconds)."""
     return ",".join(f"{c}={secs}" for c, secs in sorted(slow.items()))
@@ -568,7 +586,7 @@ def steps(crates):
         # against 97 s without it, past the case timeout; about 1.3x at 16)
         ("conformance under gctorture (E3)",
          {"ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "16", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
-          **slow, "ROBIGO_CONF_TIMEOUTS": case_timeouts(GCTORTURE_FIRST)}, conformance),
+          **slow, "ROBIGO_CONF_TIMEOUTS": case_timeouts({**GCTORTURE_FIRST, **GCTORTURE_SLOW})}, conformance),
         # every argument a PROMSXP at call entry (GNU R's representation,
         # through the same binding-kind transitions): docs/g3.md §16's
         # ROBIGO_MATERIALIZE=1. Every rt crate, as the steps above: cargo
@@ -1008,6 +1026,12 @@ TIMES_DIR = os.environ.get("RT_CI_TIMES_DIR") or os.path.join(tempfile.gettempdi
 SLOW_FRACTION = 0.5
 
 
+def step_timeout(env):
+    """A conformance step's limit for a case not named in
+    ROBIGO_CONF_TIMEOUTS: its ROBIGO_CONF_TIMEOUT, or the runner's 20 s."""
+    return int(env.get("ROBIGO_CONF_TIMEOUT") or 20)
+
+
 def times_file(index, title):
     """The times report of a plan's `index`-th step, titled `title`: the index
     keeps two steps whose titles differ only in punctuation apart."""
@@ -1015,26 +1039,36 @@ def times_file(index, title):
     return os.path.join(TIMES_DIR, f"{index:02d}-{slug}.tsv")
 
 
-def slow_cases(path, fraction=SLOW_FRACTION):
+def slow_cases(path, fraction=SLOW_FRACTION, default=None):
     """A times report's cases over `fraction` of their limit, slowest first:
-    (secs, limit, status, case)."""
+    (secs, limit, status, case); with the step's `default` limit, also each
+    case given longer than it (a named allowance), whatever its time."""
     try:
         with open(path) as f:
             lines = [line.rstrip("\n").split("\t") for line in f if line.strip() and not line.startswith("#")]
     except FileNotFoundError:
         return []
     rows = [(float(s), int(lim), status, case) for s, lim, status, case in lines]
-    return [r for r in rows if r[0] > fraction * r[1]]
+    return [r for r in rows if r[0] > fraction * r[1] or (default is not None and r[1] > default)]
 
 
-def slow_cases_report(title, path):
-    """The end of a conformance step's log: its cases over half their limit."""
-    rows = slow_cases(path)
-    if not rows:
+def slow_cases_report(title, path, default=None):
+    """The end of a conformance step's log: its cases over half their limit,
+    and (with the step's `default` limit) each case with an allowance above
+    it, so an allowance's case keeps showing its time against it."""
+    over = slow_cases(path)
+    allowed = [r for r in slow_cases(path, default=default) if r not in over]
+    if not over and not allowed:
         return f"rt: case times: {title}: no case over {SLOW_FRACTION:.0%} of its limit ({path})"
-    lines = [f"rt: case times: {title}: {len(rows)} case(s) over {SLOW_FRACTION:.0%} of their limit "
-             f"(name each with an allowance and its time, or make it smaller; {path}):"]
-    lines += [f"  {s:7.1f} s of {lim:4d} s  {status}  {case}" for s, lim, status, case in rows]
+    if over:
+        lines = [f"rt: case times: {title}: {len(over)} case(s) over {SLOW_FRACTION:.0%} of their limit "
+                 f"(name each with an allowance and its time, or make it smaller; {path}):"]
+    else:
+        lines = [f"rt: case times: {title}: no case over {SLOW_FRACTION:.0%} of its limit ({path})"]
+    lines += [f"  {s:7.1f} s of {lim:4d} s  {status}  {case}" for s, lim, status, case in over]
+    if allowed:
+        lines.append(f"rt: case times: {title}: the cases with an allowance above the step's {default} s:")
+        lines += [f"  {s:7.1f} s of {lim:4d} s  {status}  {case}" for s, lim, status, case in allowed]
     return "\n".join(lines)
 
 
@@ -1130,7 +1164,7 @@ def run_steps(plan, done):
         print("::endgroup::", flush=True)
         if times:
             # (also when the step failed: a timeout is when the times matter)
-            print(slow_cases_report(title, times), flush=True)
+            print(slow_cases_report(title, times, step_timeout({**os.environ, **env})), flush=True)
         if r.returncode != 0:
             print(f"::error::rt: {title} failed")
             return r.returncode

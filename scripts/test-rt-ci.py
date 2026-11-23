@@ -261,6 +261,31 @@ class RtCi(unittest.TestCase):
         self.assertIn("  503.0 s of  600 s  pass  tests/rt/jit/serialize-write.R", report)
         self.assertIn("no case over", rt.slow_cases_report("y", os.path.join(os.path.dirname(path), "none.tsv")))
 
+    def test_the_case_times_report_lists_a_case_with_an_allowance_under_half_of_it(self):
+        # a case given longer than the step's limit shows its time against
+        # its allowance even when it is under half of it; without the step's
+        # limit, the report is the over-half one alone
+        import tempfile
+        path = os.path.join(tempfile.mkdtemp(), "t.tsv")
+        with open(path, "w") as f:
+            f.write("# secs\tlimit\tstatus\tcase\n"
+                    "332.9\t780\tpass\ttests/r/conditions/c-stack-overflow.R\n"
+                    "200.0\t600\tpass\ttests/rt/a.R\n")
+        report = rt.slow_cases_report("conformance under gctorture (E3)", path, 600)
+        self.assertIn("no case over 50% of its limit", report)
+        self.assertIn("the cases with an allowance above the step's 600 s:", report)
+        self.assertIn("  332.9 s of  780 s  pass  tests/r/conditions/c-stack-overflow.R", report)
+        self.assertNotIn("tests/rt/a.R", report)
+        self.assertNotIn("c-stack-overflow", rt.slow_cases_report("x", path))
+        # over half of its allowance: listed once, with the over-half cases
+        with open(path, "a") as f:
+            f.write("700.0\t780\tpass\ttests/r/b.R\n")
+        report = rt.slow_cases_report("x", path, 600)
+        self.assertEqual(report.count("tests/r/b.R"), 1)
+        self.assertIn("1 case(s) over 50%", report)
+        self.assertEqual(rt.step_timeout({"ROBIGO_CONF_TIMEOUT": "600"}), 600)
+        self.assertEqual(rt.step_timeout({}), 20)
+
     def test_every_conformance_step_writes_its_case_times_and_lists_them_even_when_it_fails(self):
         # the runner's ROBIGO_CONF_TIMES_REPORT, a file per step, for every
         # conformance step rt-ci runs (the shards', the nightly's): not for
@@ -1081,8 +1106,17 @@ class RtCi(unittest.TestCase):
         self.assertEqual(sorted(named), sorted(["conformance under gctorture (E3)",
                                                 f"conformance under ROBIGO_GC_MOVE={rt.GC_MOVE_YOUNG} with gctorture (E3)"]))
         first = dict(item.rsplit("=", 1) for item in plain[0]["ROBIGO_CONF_TIMEOUTS"].split(","))
-        self.assertEqual(first, {c: str(s) for c, s in rt.GCTORTURE_FIRST.items()})
-        self.assertTrue(all(int(s) == int(plain[0]["ROBIGO_CONF_TIMEOUT"]) for s in first.values()))
+        self.assertEqual(first, {c: str(s) for c, s in {**rt.GCTORTURE_FIRST, **rt.GCTORTURE_SLOW}.items()})
+        # GCTORTURE_SLOW's get longer (c-stack-overflow.R's interim 780 s);
+        # every other case keeps the step's 600 s
+        self.assertEqual(first["tests/r/conditions/c-stack-overflow.R"], "780")
+        self.assertEqual(first["tests/rt/jit/serialize-write.R"], "600")
+        for case, secs in first.items():
+            self.assertTrue((HERE.parent / case).is_file(), case)
+            if case in rt.GCTORTURE_SLOW:
+                self.assertGreater(int(secs), int(plain[0]["ROBIGO_CONF_TIMEOUT"]), case)
+            else:
+                self.assertEqual(int(secs), int(plain[0]["ROBIGO_CONF_TIMEOUT"]), case)
         young = dict(item.rsplit("=", 1) for item in moving[0]["ROBIGO_CONF_TIMEOUTS"].split(","))
         self.assertEqual(set(young), set(rt.YOUNG_MOVE_SLOW) | set(rt.GCTORTURE_FIRST) | set(rt.YOUNG_MOVE_FIRST))
         for case, secs in young.items():
