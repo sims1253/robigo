@@ -628,6 +628,26 @@ class SlotPool(unittest.TestCase):
 
 
 class Known(unittest.TestCase):
+    def test_a_known_failure_that_gets_worse_is_reported(self):
+        known = {1: "not-implemented", 2: "mismatch", 3: "timeout", 4: "crash", 5: "mismatch"}
+        now = {1: "timeout", 2: "mismatch", 3: "not-implemented", 4: "crash", 5: "pass", 6: "crash"}
+        # worse: not-implemented -> timeout; the same, better, fixed or
+        # unlisted are not
+        self.assertEqual(bd.worse_than_known(now, known), [(1, "not-implemented", "timeout")])
+        self.assertEqual(bd.worse_than_known({2: "crash"}, {2: "mismatch"}), [(2, "mismatch", "crash")])
+        # a list from before classes (ids alone) checks nothing
+        self.assertEqual(bd.worse_than_known(now, {}), [])
+        with tempfile.TemporaryDirectory() as d:
+            old = bd.KNOWN
+            bd.KNOWN = d
+            try:
+                with open(bd.known_path("old"), "w") as f:
+                    f.write("# builtin-diff known failures: old, seed 0, key abc\n# old: 1 / 2\n7\n8 timeout\n")
+                self.assertEqual(bd.read_known("old", "abc"), {7, 8})
+                self.assertEqual(bd.read_known_classes("old"), {8: "timeout"})
+            finally:
+                bd.KNOWN = old
+
     def test_a_list_for_another_key_is_refused(self):
         with tempfile.TemporaryDirectory() as d:
             old = bd.KNOWN
@@ -636,6 +656,8 @@ class Known(unittest.TestCase):
                 r = {"res": {1: "pass", 2: "mismatch", 3: "crash"}}
                 bd.write_known("x", "abc", r, [2, 3])
                 self.assertEqual(bd.read_known("x", "abc"), {2, 3})
+                # each id with its class
+                self.assertEqual(bd.read_known_classes("x"), {2: r["res"][2], 3: r["res"][3]})
                 with self.assertRaises(SystemExit) as e:
                     bd.read_known("x", "def")
                 self.assertIn("builtin-diff:", str(e.exception))

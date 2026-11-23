@@ -821,8 +821,37 @@ def write_known(variant, key, r, fails):
     with open(known_path(variant), "w") as f:
         f.write(f"# builtin-diff known failures: {variant}, seed 0, key {key}\n")
         f.write(f"# {score_line(variant, c)}\n")
+        # each id with its class: a known failure that gets worse is a new
+        # failure (worse_than_known)
         for i in sorted(fails):
-            f.write(f"{i}\n")
+            f.write(f"{i} {r['res'][i]}\n")
+
+
+# A known failure's class, best to worst: a case robigo-rt refuses outright
+# is the least harm; one that runs and differs, one that does not end, one
+# that kills the process are each worse (a known list's case that moves down
+# this order has regressed though its id stays listed)
+CLASS_RANK = {"not-implemented": 0, "mismatch": 1, "timeout": 2, "crash": 3}
+
+
+def read_known_classes(variant):
+    """The classes a known list records, {id: class}; an id written before
+    the lists held classes has none (and no check)."""
+    out = {}
+    p = known_path(variant)
+    if os.path.exists(p):
+        with open(p) as f:
+            for line in f:
+                parts = line.split()
+                if parts and not line.startswith("#") and len(parts) > 1:
+                    out[int(parts[0])] = parts[1]
+    return out
+
+
+def worse_than_known(res, classes):
+    """The known failures whose class got worse: [(id, known class, now)]."""
+    return [(i, was, res[i]) for i, was in sorted(classes.items())
+            if res.get(i) in CLASS_RANK and was in CLASS_RANK and CLASS_RANK[res[i]] > CLASS_RANK[was]]
 
 
 def counts(res):
@@ -949,6 +978,12 @@ def cmd_run(a):
             new = fails
         if new:
             status = 1
+        if known is not None:
+            worse = worse_than_known(r["res"], read_known_classes(variant))
+            for i, was, now in worse:
+                print(f"  WORSE #{i}: known as {was}, now {now}")
+            if worse:
+                status = 1
         if getattr(a, "reuse", None) is not None and r["row"].name in PLANT_ROWS and r["jit"] == "off":
             a.reuse[r["row"].name] = r    # the plant check's runs on this binary (ci)
         elif not a.keep:
