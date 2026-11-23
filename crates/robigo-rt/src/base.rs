@@ -353,7 +353,8 @@ pub fn load(cx: &mut Cx, dir: &Path) -> Result<Loaded, String> {
         }
     }
     // (set once, by the boot's load)
-    let _ = crate::prims::state(cx).base_src.set(lib.clone());
+    let first = crate::prims::state(cx).base_src.set(lib.clone()).is_ok();
+    debug_assert!(first, "robigo: base's sources set twice in one isolate");
     let fetch = fetch_internal(cx);
     for n in &wide.names {
         bind_wide(cx, n.name, &fetch).map_err(|e| format!("binding '{}': {e}", n.name))?;

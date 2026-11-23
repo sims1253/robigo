@@ -388,13 +388,16 @@ pub(crate) enum Outcome {
     NoEntry,
     Undecodable,
     Unresolved,
-    Unverified,
     Verified,
     Mismatch,
     StaleRecord,
     /// A verification's fresh translation stopped with a `Need` (its attempt
     /// runs again, and verifies then): nothing was compared.
     VerifyRetried,
+    /// An entry that passed every check of the file and the typed check,
+    /// refused by the verifier: the writer, the format's round trip or the
+    /// verifier disagree. A miss, and reported ([`refused`]).
+    Refused,
 }
 
 const OUTCOMES: [&str; 11] = [
@@ -404,11 +407,11 @@ const OUTCOMES: [&str; 11] = [
     "no entry",
     "undecodable",
     "unresolved or mistyped",
-    "unverified",
     "verified",
     "differing",
     "stale record",
     "verify retried",
+    "refused by the verifier",
 ];
 
 static COUNTS: [std::sync::atomic::AtomicUsize; 11] = [const { std::sync::atomic::AtomicUsize::new(0) }; 11];
@@ -419,9 +422,26 @@ pub fn verifying_all() -> bool {
     std::env::var_os("ROBIGO_TRANSLATION_CACHE").is_some_and(|v| v == "verify")
 }
 
-/// How many verified hits differed from a fresh translation.
+/// How many verified hits differed from a fresh translation, or were
+/// refused by the verifier: what fails the tree's verify step.
 pub fn mismatches() -> usize {
-    COUNTS[Outcome::Mismatch as usize].load(std::sync::atomic::Ordering::Relaxed)
+    [Outcome::Mismatch, Outcome::Refused]
+        .iter()
+        .map(|&o| COUNTS[o as usize].load(std::sync::atomic::Ordering::Relaxed))
+        .sum()
+}
+
+/// A hit's code (or one of its argument codes) the verifier refuses
+/// (`why`): a miss, counted, and reported as `verify_end` reports a
+/// difference (a crosscheck finding; on stderr under
+/// `ROBIGO_TRANSLATION_CACHE=verify`), so the tree's verify step fails on it.
+pub(crate) fn refused(why: &crate::code::Malformed) {
+    count(Outcome::Refused);
+    let what = format!("a cached translation the verifier refuses ({why})");
+    crate::compile::crosscheck::report(&format!("unexpected: translation cache: {what}"));
+    if std::env::var_os("ROBIGO_TRANSLATION_CACHE").is_some_and(|v| v == "verify") {
+        eprintln!("translation cache: {what}");
+    }
 }
 
 /// Count a lookup's outcome.
@@ -920,6 +940,16 @@ pub(crate) unsafe fn writer_begin(cx: &Cx, bc: Sexp) -> bool {
     true
 }
 
+/// The writer's pass skipped something for `why`: counted with the
+/// writer's other reasons (`translation cache: not written (...)`).
+pub(crate) fn skip(cx: &Cx, why: &'static str) {
+    if let Some(s) = peek(cx)
+        && let Some(w) = s.writer.borrow_mut().as_mut()
+    {
+        *w.skipped.entry(why).or_insert(0) += 1;
+    }
+}
+
 /// The translation under way was abandoned (an attempt that returned a
 /// `Need`): forget its argument codes, so no Sexp stays in the capture
 /// across the collection that may follow.
@@ -1253,4 +1283,17 @@ pub fn write_files(cx: &Cx) -> bool {
         }
     }
     ok
+}
+
+#[cfg(test)]
+mod tests {
+    // a hit the verifier refuses counts as a mismatch: the tree's verify
+    // step (scripts/rt-home-db.sh, `mismatches() == 0`) fails on it, where
+    // an uncounted miss would let the cache shrink unseen (#979's bot)
+    #[test]
+    fn a_refused_hit_fails_the_verify_step() {
+        let before = super::mismatches();
+        super::refused(&crate::code::Malformed { at: 3, why: "an operand out of range" });
+        assert_eq!(super::mismatches(), before + 1);
+    }
 }

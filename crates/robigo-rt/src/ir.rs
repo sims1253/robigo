@@ -67,6 +67,23 @@ pub const F_NAMES: u8 = 32;
 /// inner call's expressions, unevaluated (names.c's eval column Z = 0).
 pub const SPECIAL_INTERNAL: u16 = u16::MAX - 1;
 
+/// Declare [`Op`] and [`Op::ALL`] from one list of its operations, so
+/// the table [`Op::from_u8`] decodes by cannot miss one (#979's bot).
+macro_rules! operations {
+    ($(#[$m:meta])* pub enum Op { $($(#[$vm:meta])* $v:ident,)* }) => {
+        $(#[$m])*
+        pub enum Op {
+            $($(#[$vm])* $v,)*
+        }
+
+        impl Op {
+            /// Every operation, in discriminant order: [`Op::from_u8`]'s table.
+            pub const ALL: [Op; [$(Op::$v),*].len()] = [$(Op::$v),*];
+        }
+    };
+}
+
+operations! {
 /// The operations. Operand fields of [`Ins`]: `a` is the destination (or
 /// the source of a store), `b` and `c` operands, `e`, `f` constant-pool
 /// indices; a jump target is `(f, g)` as one `u32` ([`Ins::target`]).
@@ -307,6 +324,7 @@ pub enum Op {
     /// L5; docs/ledger/g3/2026-11-17-v4-2-promise-code.md).
     CallCodes,
 }
+}
 
 /// [`Op::Math1`]'s kinds past `math1funs`' indices.
 pub const MATH_SQRT: u16 = 100;
@@ -332,66 +350,6 @@ pub enum Effect {
 }
 
 impl Op {
-    /// Every operation, in discriminant order: [`Op::from_u8`]'s table.
-    pub const ALL: [Op; 56] = [
-        Op::LdConst,
-        Op::LdScalar,
-        Op::GetVar,
-        Op::GetDdVar,
-        Op::SetVar,
-        Op::SetVar2,
-        Op::Jmp,
-        Op::BrFalse,
-        Op::Guard,
-        Op::GetFun,
-        Op::Call,
-        Op::CallBuiltin,
-        Op::Arith,
-        Op::Arith1,
-        Op::Relop,
-        Op::Not,
-        Op::Logic,
-        Op::AndOr1,
-        Op::AndOr2,
-        Op::MkClosure,
-        Op::Quote,
-        Op::Missing,
-        Op::Internal,
-        Op::Return,
-        Op::Ret,
-        Op::Loop,
-        Op::LoopEnd,
-        Op::ForPrep,
-        Op::ForStep,
-        Op::BackJmp,
-        Op::BreakJump,
-        Op::Clear,
-        Op::ClearRange,
-        Op::Move,
-        Op::SetVis,
-        Op::Nop,
-        Op::EvalConst,
-        Op::ErrorCall,
-        Op::ForDone,
-        Op::SpecialFn,
-        Op::ComplexAssign,
-        Op::BaseGuard,
-        Op::BcAssign,
-        Op::Switch,
-        Op::StartSubset,
-        Op::DfltSubset,
-        Op::Dollar,
-        Op::GetVarMissOk,
-        Op::TopLoop,
-        Op::PpCheck,
-        Op::PpRestore,
-        Op::PpSave,
-        Op::Resume,
-        Op::LoopResume,
-        Op::Math1,
-        Op::CallCodes,
-    ];
-
     /// The operation whose discriminant is `x`, or None: how an
     /// instruction read from outside the process (the translation cache,
     /// `crate::tcache`) is decoded, never by reinterpreting its bytes.
