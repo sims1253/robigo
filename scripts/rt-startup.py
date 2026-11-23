@@ -872,6 +872,40 @@ def make_trees(binary, checkout, home):
             raise SystemExit(f"rt-startup: {' '.join(cmd)} failed:\n{(p.stdout + p.stderr)[-3000:]}")
 
 
+# the tree each boot reads (ROBIGO_RT_CHECKOUT's .robigo): M1's interim
+# loader sources base from rt-home, the rdb boot loads rt-home-db's database
+BOOT_TREES = {M1_BOOT: os.path.join(".robigo", "rt-home"), "rdb": os.path.join(".robigo", "rt-home-db")}
+
+
+def trees_home(binary, trees=False, checkout=ROOT):
+    """The home `binary` boots from (its ROBIGO_RT_CHECKOUT): `trees` True
+    builds its trees from the checkout's sources (build_trees), a path
+    unpacks them from that tarball (unpack_trees), both into a scratch home;
+    False is the checkout itself, its own .robigo trees as they are. One
+    function for every measurement that runs robigo-rt (rt-starts, and
+    rt-bars' rows and peak RSS)."""
+    if isinstance(trees, str):
+        home = new_home()
+        unpack_trees(trees, home)
+        return home
+    if trees:
+        return build_trees(binary, checkout)
+    return checkout
+
+
+def tree_error(label, binary, home, boot):
+    """Why `binary` (named `label`) cannot boot `boot` (ROBIGO_RT_BOOT's
+    value) from `home`, or None: the boot's tree is missing there, and the
+    binary would exit 2 at its first run, minutes into a measurement."""
+    t = BOOT_TREES.get(boot)
+    if t is None:
+        return f"{label} ({binary}): no tree is known for the boot {boot!r} (BOOT_TREES)"
+    if not os.path.isdir(os.path.join(home, t)):
+        return (f"{label} ({binary}): no {t} in {home}, which its boot {boot!r} reads: give its trees "
+                "(perf-rt-build packs them: --trees / --main-trees), or build them locally (the default)")
+    return None
+
+
 def run(binary, starts=None, checkout=ROOT, runs=9, trees=False, valgrind=None):
     """robigo-rt's starts (`starts`, default every defined one) of `binary`:
     {start: measure()'s numbers}. `trees` True builds `binary`'s trees from
@@ -882,13 +916,7 @@ def run(binary, starts=None, checkout=ROOT, runs=9, trees=False, valgrind=None):
     for n in names:
         if STARTS.get(n) is None:
             raise SystemExit(f"rt-startup: no start '{n}' (defined: {', '.join(defined())})")
-    if isinstance(trees, str):
-        home = new_home()
-        unpack_trees(trees, home)
-    elif trees:
-        home = build_trees(binary, checkout)
-    else:
-        home = checkout
+    home = trees_home(binary, trees, checkout)
     env0 = clean_env()
     cmd = [os.path.abspath(binary), "--vanilla", "-e", "1"]
     cached = os.path.isdir(os.path.join(home, ".robigo", "rt-home-db-cache"))
