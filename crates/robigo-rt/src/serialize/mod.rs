@@ -223,7 +223,9 @@ pub(super) fn serialize_to_conn(
 }
 
 /// The connection stream's write: on a text-mode connection
-/// `Rconn_printf`, its result not looked at; else `con->write`, checked.
+/// `Rconn_printf` (OutBytesConn does not look at its result; its own
+/// error on a failed write is the connection layer's, see
+/// `connections::write_ignoring_os_errors`); else `con->write`, checked.
 // R: serialize.c:OutCharConn, OutBytesConn
 fn write_conn(cx: &mut Cx, n: i32, text: bool, buf: &[u8]) -> RResult<()> {
     if text {
