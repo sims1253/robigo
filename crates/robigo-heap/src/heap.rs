@@ -134,8 +134,16 @@ pub const REMEMBERED_OFF: usize = 48;
 /// own): the slow path finds it through the block header. Its second word
 /// holds the boot heap's freeze's two notes ([`Remembered::DIRTY`],
 /// [`Remembered::PATH_WRITTEN`]), which the frozen-reachability pass reads
-/// at the next collection (`gc/freeze.rs`).
-pub struct Remembered(pub std::cell::UnsafeCell<Vec<crate::Sexp>>, pub std::cell::Cell<u8>);
+/// at the next collection (`gc/freeze.rs`). Its third, the pinned
+/// lazy-load frames (the embedder's, given at the boot boundary:
+/// `Core::freeze_boundary`), each with the number of frozen promises whose
+/// PRENV it is: a frozen promise's PRENV cleared over one of them needs no
+/// note until the last (`gc::store_slow`).
+pub struct Remembered(
+    pub std::cell::UnsafeCell<Vec<crate::Sexp>>,
+    pub std::cell::Cell<u8>,
+    pub std::cell::UnsafeCell<Vec<(crate::Sexp, u32)>>,
+);
 
 impl Remembered {
     /// An edge into a frozen object left the frozen graph (a frozen value
