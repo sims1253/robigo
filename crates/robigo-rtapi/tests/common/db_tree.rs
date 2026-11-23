@@ -66,6 +66,13 @@ pub fn command_for(bin: &Path) -> Command {
     for v in USER_VARS {
         cmd.env_remove(v);
     }
+    // GNU R's sources (M1's loader reads them, base.rs's source_dir) stay
+    // where the caller's HOME has them, which the private HOME would hide
+    if std::env::var_os("ROBIGO_RSRC").is_none() && std::env::var_os("ROBIGO_RESEARCH_CACHE").is_none() {
+        if let Some(h) = std::env::var_os("HOME") {
+            cmd.env("ROBIGO_RESEARCH_CACHE", Path::new(&h).join(".cache/robigo-research"));
+        }
+    }
     cmd
 }
 
