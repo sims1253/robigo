@@ -653,23 +653,15 @@ OWN_STEPS = ("debug-assertions", "release-crate-tests")
 # timeout (scripts/test-rt-ci.py pins the three relations). When a warning
 # fires, rebalance or remeasure: the dates say how old each measurement is.
 BUDGETS = {  # shard: (budget, measured minutes, where measured)
-    # a slow-runner figure: run 45072863916 (#959, 2026-11-22) took about
-    # 1.25x #952's on the steps both ran (the crates' tests 1.86 against
-    # 1.59 min, GC_MOVE 1.18 against 0.88)
-    "modes": (11, 9.15, "2026-11-22, run 45072863916 (#959, a slow runner): 8.27 to its failed quarantine step, "
-              "less #959's M1 freeze-on conformance step's 0.22 (moved to gctorture; its rdb twin, 0.27, stays "
-              "with the database tree), plus the steps after it at #952's 1.1; #959's freeze check at every "
-              "collection makes the crates' gctorture step 0.81 against main's 0.45 (1.8x in CI)"),
-    # the plain gctorture conformance moves into modes if GCTORTURE_FIRST
-    # does not bring this back near 15 minutes
-    "gctorture": (27, 22.09, "2026-11-21, run 44927530340 (#952): 20.62 before GCTORTURE_FIRST, and #959's "
-                  "estimated 1.25 (its freeze check at every 16th collection: about 1.3x of the plain gctorture "
-                  "conformance's 4.15, H's measurement) and its M1 freeze-on conformance step's 0.22 "
-                  "(run 45072863916)"),
-    "feature-builds": (12, 9.87, "2026-11-21, run 44927530340 (#952)"),
-    "builtin-diff": (9, 7.42, "2026-11-21, run 44927530340 (#952)"),
-    "debug-assertions": (5, 3.47, "2026-11-21, run 44927530340 (#952): 3.07, and the tree's estimated 0.4"),
-    "release-crate-tests": (12, 9.82, "2026-11-21, main's run 44931071167: 9.42, and the tree's estimated 0.4"),
+    # each the slowest of main's three runs of 2026-11-23 (45104024474,
+    # 45106626186, 45108072544), with the steps GCTORTURE_MOVED took from
+    # modes (1.09 min in 45108072544) moved to gctorture
+    "modes": (11, 8.58, "2026-11-23, run 45106626186: 9.67, less GCTORTURE_MOVED's 1.09 (run 45108072544)"),
+    "gctorture": (28, 22.62, "2026-11-23, run 45104024474: 21.53, and GCTORTURE_MOVED's 1.09 (run 45108072544)"),
+    "feature-builds": (16, 13.30, "2026-11-23, run 45104024474 (11.01 and 12.66 in the other two)"),
+    "builtin-diff": (12, 9.34, "2026-11-23, run 45106626186 (8.01 and 7.49 in the other two)"),
+    "debug-assertions": (5, 3.85, "2026-11-23, run 45108072544 (2.58 and 2.94 in the other two)"),
+    "release-crate-tests": (17, 14.03, "2026-11-23, run 45104024474 (10.26 and 10.19 in the other two)"),
 }
 # A job's timeout is twice its budget, but no less than this: a build from a
 # cold cache (a Cargo.lock change, an evicted entry) takes up to about 12
@@ -740,6 +732,23 @@ def release_crate_tests_steps(crates):
     ])
 
 
+# Steps that need only the release binary (no database tree, no quick
+# build), run in gctorture, which builds that binary for its own
+# conformance and had room: modes took 7.32-9.67 min of its 11 in main's
+# runs of 2026-11-23 (45104024474, 45106626186, 45108072544), gctorture
+# 15.24-21.53 of 27; these eight took 1.09 min of modes' (45108072544).
+GCTORTURE_MOVED = (
+    "conformance under ROBIGO_NO_INPLACE=1 (every in-place write copies)",
+    "conformance under ROBIGO_MATERIALIZE=1 (every argument slot materialized)",
+    "ROBIGO_FRAME_QUARANTINE=1, conformance",
+    "the stress script, 3 runs per profile (E3, scripts/rt-stress.sh)",
+    "overshoot on every slice (E4, scripts/rt-overshoot.py)",
+    "conformance under a small vector limit (E9)",
+    "conformance under ROBIGO_BC_CROSSCHECK=1 (translated byte code against the from-source compiler's)",
+    "injected allocation failures (E9, scripts/rt-fail-alloc.py)",
+)
+
+
 def shard_of(title):
     """The shard a step of `steps` runs in, or None for every shard."""
     if title.startswith("the R_HOME tree"):
@@ -750,7 +759,7 @@ def shard_of(title):
     # freeze check, in the freeze's shard (modes was at its budget: the
     # foreman, 2026-11-22). Its rdb twin stays in modes, where base's
     # database tree is built
-    if title == "conformance with the boot heap's freeze on (ROBIGO_GC_FREEZE=1)":
+    if title == "conformance with the boot heap's freeze on (ROBIGO_GC_FREEZE=1)" or title in GCTORTURE_MOVED:
         return "gctorture"
     if title.startswith("builtin differential"):
         return "builtin-diff"
@@ -825,12 +834,14 @@ def conf_slots_dir(env=None):
 
 # A crate-test step runs at least this many test threads, however few slots
 # were free: up to 3 threads over its slots per run cost 24 CPUs'
-# conformance cases nothing measurable, and a step's long tests (the
-# gctorture modes') are not left to one thread. (Measured 2026-11-23 on the
-# debug-assertions step, built beforehand: 0.53/0.71 min at one thread,
-# 0.56/0.59 at four, at load 24-32; its 3.0 min in #989's gate was its build
-# under load.) It never waits for more slots: a step that waits on several
-# at once is the shape that starves under load.
+# conformance cases nothing measurable, and the gctorture modes' long tests
+# are not left to one thread. Measured 2026-11-23, built beforehand,
+# alternating: ROBIGO_GC_MOVE's crate step (the longest gctorture one) took
+# 1.72/1.86 min at one thread and 1.57/1.21 at four (load 16-34); the
+# debug-assertions step 0.53/0.71 and 0.56/0.59 (its 3.0 min in #989's gate
+# was its build under load, now builds_first's own step). It never waits
+# for more slots: a step that waits on several at once is the shape that
+# starves under load.
 CRATE_TEST_MIN_THREADS = 4
 
 

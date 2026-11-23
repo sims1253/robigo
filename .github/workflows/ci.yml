@@ -385,7 +385,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 54
+    timeout-minutes: 56
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
@@ -479,7 +479,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 24
+    timeout-minutes: 34
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
@@ -512,7 +512,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 24
+    timeout-minutes: 32
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
@@ -556,7 +556,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 20
+    timeout-minutes: 24
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
