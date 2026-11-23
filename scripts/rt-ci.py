@@ -772,20 +772,32 @@ def builds_first(plan):
     (#989's gate: debug-assertions' crate tests took 3.0 min, nearly all of
     it that build under load). The run's line still holds the doctests'
     compilation and, in a local run, its wait for a slot. A build the plan
-    already has before the run (release-crate-tests') is not made twice;
-    one that comes only after it does not count."""
+    already has before the run (release-crate-tests') is not made twice,
+    and one it has only after the run moves ahead of it."""
     def key(env, cmd):
         return (tuple(cmd[:cmd.index("--")] if "--" in cmd else [x for x in cmd if x != "--no-run"]),
                 tuple((k, env.get(k)) for k in BUILD_ENV))
-    built = set()
-    out = []
-    for t, e, c in plan:
-        if c[:2] == ["cargo", "test"] and "--no-run" in c:
+    def is_build(c):
+        return c[:2] == ["cargo", "test"] and "--no-run" in c
+    later = {}
+    for i, (_t, e, c) in enumerate(plan):
+        if is_build(c):
+            later.setdefault(key(e, c), i)
+    built, moved, out = set(), set(), []
+    for i, (t, e, c) in enumerate(plan):
+        if i in moved:
+            continue
+        if is_build(c):
             built.add(key(e, c))
         elif crate_test_threads(c) and key(e, c) not in built:
-            built.add(key(e, c))
-            out.append((f"{t}: its tests built (--no-run)", {k: e[k] for k in BUILD_ENV if k in e},
-                        [*c[:c.index("--")], "--no-run"]))
+            k = key(e, c)
+            built.add(k)
+            if k in later:
+                moved.add(later[k])
+                out.append(plan[later[k]])
+            else:
+                out.append((f"{t}: its tests built (--no-run)", {x: e[x] for x in BUILD_ENV if x in e},
+                            [*c[:c.index("--")], "--no-run"]))
         out.append((t, e, c))
     return out
 

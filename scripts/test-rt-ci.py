@@ -45,6 +45,10 @@ class RtCi(unittest.TestCase):
         fallback = mock.patch.object(rt.conf_slots, "FALLBACK_ROOT", tmp)
         fallback.start()
         self.addCleanup(fallback.stop)
+        # (and the steps' times under it: RT_CI_TIMES_DIR was read at import)
+        times = mock.patch.object(rt, "TIMES_DIR", os.path.join(tmp, "times"))
+        times.start()
+        self.addCleanup(times.stop)
         cpus = mock.patch.object(os, "cpu_count", return_value=CPUS)
         cpus.start()
         self.addCleanup(cpus.stop)
@@ -465,10 +469,10 @@ class RtCi(unittest.TestCase):
                     self.assertIn(want, built, f"{name}: {title}")
             self.assertEqual(len(built), len({repr(b) for b in built}), f"{name}: a build made twice")
             self.assertEqual(rt.builds_first(plan), plan, name)
-        # a matching build that comes only after the run does not count
+        # a matching build that comes only after the run moves ahead of it
         crate = ["cargo", "test", "-p", "x", "--", "--skip", rt.CONFORMANCE]
         late = rt.builds_first([("run", {}, crate), ("late build", {}, ["cargo", "test", "-p", "x", "--no-run"])])
-        self.assertEqual([t for t, _e, _c in late], ["run: its tests built (--no-run)", "run", "late build"])
+        self.assertEqual([t for t, _e, _c in late], ["late build", "run"])
         da = [t for t, _e, _c in plans["debug-assertions"]]
         self.assertIn("the crates' tests with debug assertions (-C debug-assertions=on, quick profile): "
                       "its tests built (--no-run)", da)
