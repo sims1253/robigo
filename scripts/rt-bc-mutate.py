@@ -46,6 +46,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GEN = os.path.join(ROOT, "tests", "bc-mutate", "gen.R")
@@ -101,12 +102,17 @@ def check_cap(rt, checkout, home):
                  f"{p.stderr.decode(errors='replace')[-300:]}")
 
 
-def start(rt, checkout, home, limit, script=GEN, **extra):
+def start(rt, checkout, home, limit, script=GEN, ready=None, **extra):
     """One start of the generator: (outcome, detail). Outcomes: "done",
     "R error", "interrupted" (at the limit, ended by SIGINT), or a failure:
-    "signal N", "panic", "exit N", "not interruptible"."""
+    "signal N", "panic", "exit N", "not interruptible". `ready` (the
+    tests' fake children): a file the child makes when it is ready for the
+    interrupt; the limit counts from then."""
     p = subprocess.Popen(capped([rt, "--vanilla", script]), cwd=home, env=env_for(checkout, home, **extra),
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if ready:
+        while not os.path.exists(ready) and p.poll() is None:
+            time.sleep(0.01)
     try:
         out, err = p.communicate(timeout=limit)
     except subprocess.TimeoutExpired:
@@ -117,6 +123,13 @@ def start(rt, checkout, home, limit, script=GEN, **extra):
             p.kill()
             out, err = p.communicate()
             return "not interruptible", last_mutation(err)
+        # robigo-rt installs its SIGINT handler at the end of its start, as
+        # GNU R's setup_Rmainloop does: a start the limit reaches before its
+        # first mutation (a boot slowed by load or gctorture) ends by the
+        # signal's default action, which is not a finding. After the first
+        # mutation the handler is in, and such an end is one.
+        if p.returncode == -signal.SIGINT and last_mutation(err) == "before any mutation":
+            return (f"{os.path.basename(script)} past the limit" if script in FIXED_OK else "interrupted"), ""
         # ended by the interrupt as R code ends (the error it raises: exit 1,
         # "Execution halted"), or failed while it unwound
         failed = ended(p, err)

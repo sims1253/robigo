@@ -21,17 +21,34 @@ class RtBcMutate(unittest.TestCase):
         self.dir = tempfile.TemporaryDirectory(prefix="test-rt-bc-mutate-")
         self.addCleanup(self.dir.cleanup)
 
+    # the fakes' prelude: BCM_TEST_DELAY seconds of a slow start first (a
+    # loaded machine), and ready(), which a fake calls once its SIGINT
+    # disposition is in place, so the harness's limit counts from there
+    PRELUDE = textwrap.dedent("""\
+        #!/usr/bin/env python3
+        import os, signal, sys, time
+        time.sleep(float(os.environ.get("BCM_TEST_DELAY", "0")))
+        def ready():
+            open(os.environ["BCM_TEST_READY"], "w").close()
+        """)
+
     def fake(self, body):
         """A fake robigo-rt: a Python script that runs `body` (its
         arguments are the harness's, ignored)."""
         p = os.path.join(self.dir.name, "fake-rt")
         with open(p, "w") as f:
-            f.write("#!/usr/bin/env python3\nimport signal, sys, time\n" + textwrap.dedent(body))
+            f.write(self.PRELUDE + textwrap.dedent(body))
         os.chmod(p, os.stat(p).st_mode | stat.S_IXUSR)
         return p
 
     def start(self, body, limit=1):
-        return bcm.start(self.fake(body), HERE, self.dir.name, limit)
+        """`body` started as the harness starts robigo-rt; a body that calls
+        ready() has the limit counted from then."""
+        ready = os.path.join(self.dir.name, "ready")
+        if os.path.exists(ready):
+            os.remove(ready)
+        return bcm.start(self.fake(body), HERE, self.dir.name, limit,
+                         ready=ready if "ready()" in body else None, BCM_TEST_READY=ready)
 
     def test_an_interrupt_ended_as_r_code_ends_passes(self):
         # R's error at the interrupt: "Execution halted", exit 1
@@ -39,6 +56,7 @@ class RtBcMutate(unittest.TestCase):
             def stop(*_):
                 sys.stderr.write("mutation 3\\n\\nExecution halted\\n"); sys.exit(1)
             signal.signal(signal.SIGINT, stop)
+            ready()
             time.sleep(30)
         """)
         self.assertEqual(out, ("interrupted", ""))
@@ -49,6 +67,7 @@ class RtBcMutate(unittest.TestCase):
                 sys.stderr.write("mutation 7\\nthread 'main' panicked at crates/robigo-rt/src/vm.rs:1:1:\\n")
                 sys.exit(1)  # (exit 1: the panic is told by stderr alone)
             signal.signal(signal.SIGINT, stop)
+            ready()
             time.sleep(30)
         """)
         self.assertEqual(out[0], "panic")
@@ -60,6 +79,7 @@ class RtBcMutate(unittest.TestCase):
             def stop(*_):
                 signal.signal(signal.SIGSEGV, signal.SIG_DFL); os.kill(os.getpid(), signal.SIGSEGV)
             signal.signal(signal.SIGINT, stop)
+            ready()
             time.sleep(30)
         """)
         self.assertEqual(out[0], f"signal {int(__import__('signal').SIGSEGV)}")
@@ -69,6 +89,7 @@ class RtBcMutate(unittest.TestCase):
             def stop(*_):
                 sys.exit(3)
             signal.signal(signal.SIGINT, stop)
+            ready()
             time.sleep(30)
         """)
         self.assertEqual(out[0], "exit 3")
@@ -76,14 +97,37 @@ class RtBcMutate(unittest.TestCase):
     def test_a_start_the_interrupt_does_not_end_fails(self):
         out = self.start("""
             signal.signal(signal.SIGINT, signal.SIG_IGN)
+            ready()
             time.sleep(30)
         """)
         self.assertEqual(out[0], "not interruptible")
 
+    def test_a_start_the_interrupt_ends_before_its_first_mutation_passes(self):
+        # robigo-rt's handler is installed at the end of its start: a boot
+        # the limit reaches ends by SIGINT's default action, no finding
+        out = self.start("""
+            signal.signal(signal.SIGINT, signal.SIG_DFL)
+            ready()
+            time.sleep(30)
+        """)
+        self.assertEqual(out, ("interrupted", ""))
+
+    def test_a_default_end_by_the_interrupt_after_a_mutation_fails(self):
+        out = self.start("""
+            sys.stderr.write("mutation 2\\n"); sys.stderr.flush()
+            signal.signal(signal.SIGINT, signal.SIG_DFL)
+            ready()
+            time.sleep(30)
+        """)
+        self.assertEqual(out[0], f"signal {int(__import__('signal').SIGINT)}")
+        self.assertTrue(out[1].startswith("mutation 2"), out)
+
     def test_the_normal_path_judges_as_before(self):
-        self.assertEqual(self.start("print('done')"), ("done", ""))
-        self.assertEqual(self.start("sys.exit(1)"), ("R error", ""))
-        self.assertEqual(self.start("sys.stderr.write(\"thread 'main' panicked at x\\n\"); sys.exit(101)")[0], "panic")
+        # (no interrupt wanted: a limit no start reaches, however slow)
+        self.assertEqual(self.start("print('done')", limit=60), ("done", ""))
+        self.assertEqual(self.start("sys.exit(1)", limit=60), ("R error", ""))
+        self.assertEqual(self.start("sys.stderr.write(\"thread 'main' panicked at x\\n\"); sys.exit(101)",
+                                    limit=60)[0], "panic")
 
     def test_the_cap_is_set_by_the_wrapper(self):
         import subprocess

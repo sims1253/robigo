@@ -884,6 +884,13 @@ class RtCi(unittest.TestCase):
             self.assertRegex(c, r"^python3 scripts/test[-_][\w-]+\.py$")
             self.assertTrue((HERE.parent / c.split()[1]).exists(), c)
         self.assertTrue(os.access(HERE / "lint-job.sh", os.X_OK))
+        # docs/verification.md's lint entry names every suite the script
+        # runs, and no other (it went stale once: #1024's bot, round 1)
+        doc = (HERE.parent / "docs" / "verification.md").read_text()
+        entry = re.search(r"2\. \*\*lint:\*\*.*?script suites \((.*?)\)\.", doc, re.S).group(1)
+        named = [n.strip() for n in entry.split(",")]
+        self.assertEqual(sorted(named), sorted(c.split()[1].removeprefix("scripts/").removesuffix(".py")
+                                               for c in listed[2:]))
 
     def test_a_crosscheck_that_compares_fewer_than_its_floor_fails(self):
         # the rdb boot's report: a boot that stopped loading the compiler's

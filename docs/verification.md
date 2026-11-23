@@ -857,10 +857,11 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
 2. **lint:** `scripts/lint-job.sh`, the job's only command: `cargo fmt
    --check`, `scripts/lint.sh` (clippy and the Sexp rule), and the tooling's
    script suites (test_corpus, test-oracle-diff, test-check-sexp-safety,
-   test-wall13, test-pgo-build, test-prune-target, test-scratch).
+   test-wall13, test-pgo-build, test-prune-target, test-scratch,
+   test-rt-bc-mutate).
    **Before pushing, run `scripts/lint-job.sh`**: a green run is a green lint
    job. `scripts/test-rt-ci.py` checks that the workflow runs the script and
-   nothing else.
+   nothing else, and that this list names every suite the script runs.
    **miri:** `RString` and the `Rc` alias writes (§ Unsafe code).
    **bytecode-fidelity:** bytecode metadata and GNU bytecode fixtures. These
    jobs do not depend on the release binary and still run when a pull request
