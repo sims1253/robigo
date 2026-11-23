@@ -651,7 +651,7 @@ def cmd_recheck(a):
 ADDRESS_SHIFTS = (0, 300, 1000, 3000, 5000)
 
 
-def rt_instr(binary, rows, jobs, outdir, tag, cycles=False, ranges=None, boot=None):
+def rt_instr(binary, rows, jobs, outdir, tag, cycles=False, ranges=None, colls=None, boot=None):
     """Instructions per iteration of `rows` (names of
     benchmarks/rt/calls-rows.toml rows), as the M1 bars measure them:
     scripts/idiom-vs-r.py --rows, callgrind N against 2N; robigo-rt's
@@ -662,7 +662,9 @@ def rt_instr(binary, rows, jobs, outdir, tag, cycles=False, ranges=None, boot=No
     reports the median over ADDRESS_SHIFTS. `boot`: robigo-rt's
     ROBIGO_RT_BOOT value, named for every run (rt-startup.py's BOOTS), so no
     row depends on a binary's default. `ranges` (a dict) gets its
-    {row: (lowest, highest)} count over them."""
+    {row: (lowest, highest)} count over them. `colls` (a dict) gets each
+    row's collections at N and 2N, [n, 2n] (idiom-vs-r.py refuses a row
+    whose window holds one unless it is marked `collects`)."""
     long = [r for r in ("fib", "binarytrees") if r in rows]
     order = long + [r for r in rows if r not in long]
     n = max(1, min(jobs, len(order)))
@@ -690,6 +692,9 @@ def rt_instr(binary, rows, jobs, outdir, tag, cycles=False, ranges=None, boot=No
         for got in ex.map(one, range(n)):
             instr.update({name: v[f"{who}_instr"] for name, v in got.items()})
             cyc.update({name: v[f"{who}_est_cycles"] for name, v in got.items()})
+            if colls is not None:
+                colls.update({name: v["collections"][who] for name, v in got.items()
+                              if who in v.get("collections", {})})
             if ranges is not None:
                 for name, v in got.items():
                     if "shifts" in v:
@@ -908,6 +913,20 @@ def rt_verdict(spec, instr, rss, main=None):
     return failures, notes, table
 
 
+def rt_collection_notes(collects, new, main):
+    """Warnings for the rows marked `collects` (`collects`: their names)
+    whose collections at N and 2N (`new`, `main`: {row: [n, 2n]}) differ
+    between the binaries: then the row's difference against main holds a
+    collection, not only the row's own work. Never a failure."""
+    notes = []
+    for row in collects:
+        n, m = new.get(row), main.get(row)
+        if n is not None and m is not None and list(n) != list(m):
+            notes.append(f"`{row}`: robigo-rt collects {n[0]}→{n[1]} times at N→2N, main {m[0]}→{m[1]}: the "
+                         "row's change against main holds a collection's cost, not only its own work")
+    return notes
+
+
 def cmd_rt_bars(a):
     # every robigo-rt run names its boot (--boot): one this checkout's
     # rt-startup.py does not know is refused, never replaced by another
@@ -950,9 +969,10 @@ def cmd_rt_bars(a):
     work = scratch_dir("rt-bars-")
 
     ranges = {"new": {}, "main": {}}
+    colls = {"new": {}, "main": {}}
 
     def measure(binary, tag):
-        got = rt_instr(binary, rows, a.jobs, work, tag, cycles=a.cycles, ranges=ranges[tag],
+        got = rt_instr(binary, rows, a.jobs, work, tag, cycles=a.cycles, ranges=ranges[tag], colls=colls[tag],
                        boot=rt_startup().BOOTS[a.boot])
         instr, cyc = got if a.cycles else (got, None)
         return instr, cyc, rt_rss(binary, files, a.runs, work, tag, boot=rt_startup().BOOTS[a.boot])
@@ -976,8 +996,11 @@ def cmd_rt_bars(a):
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with open(out, "w") as f:
         json.dump({"instr": instr, "rss": rss, "cycles": cycles, "main": main, "cpu": model, "cpu_signature": sig,
-                   "shift_ranges": ranges, "binaries": idents}, f, indent=1, sort_keys=True)
+                   "shift_ranges": ranges, "collections": colls, "binaries": idents}, f, indent=1, sort_keys=True)
     failures, notes, table = rt_verdict(spec, instr, rss, main)
+    with open(RT_ROWS, "rb") as f:
+        collects = [r["name"] for r in tomllib.load(f)["row"] if r.get("collects") and r["name"] in rows]
+    notes += rt_collection_notes(collects, colls["new"], colls["main"])
     print("### robigo-rt's M1 bars (scripts/perf.py rt-bars)\n")
     print(f"CPU: {model}, signature {sig}.")
     for label, ident in idents.items():
@@ -1011,6 +1034,13 @@ def cmd_rt_bars(a):
         for row, (lo, hi) in sorted(ranges["new"].items()):
             m = ranges["main"].get(row)
             print(f"- {row}: {lo:,.1f}–{hi:,.1f}" + (f"; main {m[0]:,.1f}–{m[1]:,.1f}" if m else ""))
+    if collects:
+        print("\nRows that collect by design (`collects = true`): robigo-rt's collections at N→2N, so that a "
+              "change in them is seen:")
+        for row in collects:
+            n, m = colls["new"].get(row), colls["main"].get(row)
+            show = lambda v: "-" if v is None else f"{v[0]}→{v[1]}"  # noqa: E731
+            print(f"- {row}: {show(n)}" + (f"; main {show(m)}" if main else ""))
     print("\n| program | peak RSS KiB | main | bars |")
     print("|---|---:|---:|---|")
     for r in spec["rss"]:

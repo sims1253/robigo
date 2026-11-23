@@ -402,9 +402,12 @@ class AddressShifts(unittest.TestCase):
             class Fake:
                 robigo, robigo_identity, robigo_env, r_bin, valgrind = "rt", None, {}, "R", "valgrind"
 
-                def robigo_iter(self, setup, body, n, tag):
+                def robigo_iter(self, setup, body, n, tag, env=None):
                     seen.append(setup)
                     return 1000.0 + 10 * setup.count("seq_len") * (len(seen) % 3)
+
+                def robigo_collections(self, setup, body, k, env=None):
+                    return 0
 
             out = Path(tmp, "out.json")
             a = SimpleNamespace(rows=str(rows), filter=None, no_r=True, no_robigo=False, cycles=False,
@@ -509,6 +512,174 @@ class Boot(unittest.TestCase):
         robigo, gnur = cmds
         self.assertEqual(robigo[robigo.index("--robigo-env") + 1], "ROBIGO_RT_BOOT=rdb")
         self.assertNotIn("--robigo-env", gnur)
+class RowCollections(unittest.TestCase):
+    """A row's window holds no collection (idiom-vs-r.py's check before
+    measuring; docs/ledger/g3/2026-11-23-row-collections.md)."""
+
+    ROWS = ('[[row]]\nname = "{name}"\ngroup = "g"\nsetup = "s <- 1"\nbody = "x"\nn = 10\n{extra}')
+
+    class Fake:
+        robigo, robigo_identity, r_bin, valgrind = "rt", None, "R", "valgrind"
+
+        def __init__(self, robigo=(0, 0), gnur=(0, 0), shifted=None):
+            self.robigo_env, self.gnur_env = {}, {}
+            self.counts = {"robigo": robigo, "gnur": gnur}
+            self.shifted = shifted
+            self.envs = []
+            self.measured = []
+
+        def pick(self, side, setup, k):
+            c = self.shifted if self.shifted and setup != "s <- 1" else self.counts[side]
+            return c[0] if k == 10 else c[1]
+
+        def robigo_collections(self, setup, body, k, env=None):
+            self.envs.append(("robigo-count", env))
+            return self.pick("robigo", setup, k)
+
+        def gnur_collections(self, setup, body, k, env=None):
+            self.envs.append(("gnur-count", env))
+            return self.pick("gnur", setup, k)
+
+        def robigo_iter(self, setup, body, n, tag, env=None):
+            self.envs.append(("robigo", env))
+            self.measured.append("robigo")
+            return 1000.0
+
+        def gnur_iter(self, setup, body, n, tag, env=None):
+            self.envs.append(("gnur", env))
+            self.measured.append("gnur")
+            return 2000.0
+
+    def rows(self, fake, extra="", name="r", no_r=True, shifts=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = Path(tmp, "rows.toml")
+            rows.write_text(self.ROWS.format(name=name, extra=extra))
+            out = Path(tmp, "out.json")
+            a = SimpleNamespace(rows=str(rows), filter=None, no_r=no_r, no_robigo=False, cycles=False,
+                                shifts=shifts, json=str(out))
+            with redirect_stdout(io.StringIO()) as so:
+                ivr.cmd_rows(a, fake)
+            return json.loads(out.read_text())["rows"], so.getvalue()
+
+    def refused(self, fake, extra="", shifts=None):
+        with self.assertRaises(SystemExit) as cm:
+            self.rows(fake, extra, shifts=shifts)
+        return str(cm.exception.code)
+
+    def test_a_collection_inside_the_window_refuses_the_row_before_measuring(self):
+        fake = self.Fake(robigo=(0, 1))
+        with patch.dict(os.environ, {"ROBIGO_RT_BOOT": "rdb"}):
+            msg = self.refused(fake)
+        self.assertIn("row `r`: robigo-rt collected 0 times at N = 10 and 1 at 2N (boot rdb; the default heap)", msg)
+        self.assertIn("`heap` table", msg)
+        self.assertIn("`collects = true`", msg)
+        self.assertEqual(fake.measured, [])
+
+    def test_equal_counts_that_are_not_zero_refuse_the_row_too(self):
+        msg = self.refused(self.Fake(robigo=(2, 2)))
+        self.assertIn("collected 2 times at N = 10 and 2 at 2N", msg)
+
+    def test_every_refused_row_is_named_at_once(self):
+        fake = self.Fake(robigo=(0, 1))
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = Path(tmp, "rows.toml")
+            rows.write_text(self.ROWS.format(name="a", extra="") + self.ROWS.format(name="b", extra=""))
+            a = SimpleNamespace(rows=str(rows), filter=None, no_r=True, no_robigo=False, cycles=False,
+                                shifts=None, json=None)
+            with self.assertRaises(SystemExit) as cm, redirect_stdout(io.StringIO()):
+                ivr.cmd_rows(a, fake)
+        msg = str(cm.exception.code)
+        self.assertIn("row `a`", msg)
+        self.assertIn("row `b`", msg)
+
+    def test_a_row_marked_collects_is_measured_and_its_counts_reported(self):
+        doc, table = self.rows(self.Fake(robigo=(5, 9), gnur=(21, 42)), "collects = true\n", no_r=False)
+        self.assertEqual(doc["r"]["collections"], {"robigo": [5, 9], "gnur": [21, 42]})
+        self.assertTrue(doc["r"]["collects"])
+        self.assertIn("robigo 5→9; GNU R 21→42 (collects)", table)
+
+    def test_gnur_collecting_inside_the_window_is_reported_not_refused(self):
+        doc, table = self.rows(self.Fake(gnur=(0, 1)), no_r=False)
+        self.assertEqual(doc["r"]["collections"], {"robigo": [0, 0], "gnur": [0, 1]})
+        self.assertIn("robigo 0→0; GNU R 0→1", table)
+
+    def test_a_rows_heap_sizes_both_sides_counts_and_measurements(self):
+        fake = self.Fake()
+        doc, _ = self.rows(fake, 'heap = { R_VSIZE = "256M" }\n', no_r=False)
+        self.assertEqual({side for side, _ in fake.envs}, {"robigo-count", "gnur-count", "robigo", "gnur"})
+        self.assertTrue(all(env == {"R_VSIZE": "256M"} for _, env in fake.envs))
+        self.assertEqual(doc["r"]["heap"], {"R_VSIZE": "256M"})
+
+    def test_a_heap_shift_that_moves_a_collection_into_the_window_refuses_the_row(self):
+        # (an address-sensitive row, measured over shifts: k = 0 is clean)
+        msg = self.refused(self.Fake(shifted=(0, 1)), "address_sensitive = true\n", shifts=[0, 300])
+        self.assertIn("collected 0 times at N = 10 and 1 at 2N", msg)
+        self.assertIn("(heap shift k = 300)", msg)
+
+    def test_a_binary_without_a_collection_report_is_measured_unchecked(self):
+        fake = self.Fake(robigo=(None, None))
+        with patch("sys.stderr", new_callable=io.StringIO) as err:
+            doc, table = self.rows(fake)
+        self.assertIn("reports no collections", err.getvalue())
+        self.assertIn("robigo -", table)
+        self.assertEqual(fake.measured, ["robigo"])
+
+    def test_bad_collects_and_heap_fields_are_refused(self):
+        self.assertEqual(ivr.row_errors({"name": "r", "collects": True, "heap": {"R_NSIZE": "2000000"}}), [])
+        self.assertIn("`collects` is true or false", ivr.row_errors({"name": "r", "collects": "yes"})[0])
+        self.assertIn("may set only R_VSIZE, R_NSIZE", ivr.row_errors({"name": "r", "heap": {"R_MAX_VSIZE": "1G"}})[0])
+        self.assertIn("a size string", ivr.row_errors({"name": "r", "heap": {"R_VSIZE": 256}})[0])
+        with self.assertRaises(SystemExit) as cm:
+            self.rows(self.Fake(), 'heap = { R_MAX_VSIZE = "1G" }\n')
+        self.assertIn("`heap` sets R_MAX_VSIZE", str(cm.exception.code))
+
+    def test_gnur_counts_its_gcinfo_reports(self):
+        stderr = ("Garbage collection 1 = 1+0+0 (level 0) ... \n13.3 Mbytes of cons cells used (51%)\n"
+                  "Garbage collection 2 = 2+0+0 (level 0) ... \n")
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(ivr.subprocess, "run", return_value=SimpleNamespace(returncode=0, stderr=stderr)) as run:
+            m = SimpleNamespace(tmp=tmp, r_bin="R", gnur_run_env=lambda env: {"R_HOME": "h", **(env or {})})
+            self.assertEqual(ivr.Meter.gnur_collections(m, "s <- 1", "x", 10, {"R_VSIZE": "1G"}), 2)
+            script = run.call_args[0][0][-1]
+            self.assertTrue(Path(script).read_text().startswith("invisible(gcinfo(TRUE))\ns <- 1\n"))
+            self.assertEqual(run.call_args[1]["env"]["R_VSIZE"], "1G")
+
+    def test_robigo_counts_its_heaps_report(self):
+        stderr = "robigo gc: collections 3 (entry 0, loop 3, return 0)\nrobigo gc: allocated 9 objects, 9 bytes\n"
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(ivr.subprocess, "run", return_value=SimpleNamespace(returncode=0, stderr=stderr)) as run:
+            m = SimpleNamespace(robigo="rt", robigo_env={"ROBIGO_COMPILE": "1"},
+                                r_script=lambda setup, body, k: os.path.join(tmp, "s.R"))
+            self.assertEqual(ivr.Meter.robigo_collections(m, "s <- 1", "x", 10, {"R_VSIZE": "1G"}), 3)
+            env = run.call_args[1]["env"]
+            self.assertEqual((env["ROBIGO_GC_STATS"], env["R_VSIZE"]), ("1", "1G"))
+
+    def test_main_and_the_pr_collecting_differently_warns_and_never_fails(self):
+        notes = perf.rt_collection_notes(["jit-safe", "jit-tag"], {"jit-safe": [8, 16], "jit-tag": [5, 10]},
+                                         {"jit-safe": [8, 15], "jit-tag": [5, 10]})
+        self.assertEqual(len(notes), 1)
+        self.assertIn("`jit-safe`: robigo-rt collects 8→16 times at N→2N, main 8→15", notes[0])
+        self.assertEqual(perf.rt_collection_notes(["jit-safe"], {"jit-safe": [8, 16]}, {}), [])
+
+    def test_rt_instr_collects_each_rows_counts(self):
+        def fake_run(cmd, **kw):
+            Path(cmd[cmd.index("--json") + 1]).write_text(json.dumps({"rows": {"jit-safe": {
+                "robigo_instr": 1.0, "robigo_est_cycles": None,
+                "collections": {"robigo": [8, 16]}}}}))
+            return SimpleNamespace(returncode=0, stderr="")
+        colls = {}
+        with tempfile.TemporaryDirectory() as tmp, patch.object(perf.subprocess, "run", side_effect=fake_run):
+            perf.rt_instr("rt", ["jit-safe"], 1, tmp, "new", colls=colls)
+        self.assertEqual(colls, {"jit-safe": [8, 16]})
+
+    def test_the_committed_rows_mark_the_jit_rows_and_size_guard_vec_arith(self):
+        import tomllib
+        with open(perf.RT_ROWS, "rb") as f:
+            rows = tomllib.load(f)["row"]
+        self.assertEqual(sorted(r["name"] for r in rows if r.get("collects")),
+                         sorted(r["name"] for r in rows if r.get("group") == "jit"))
+        self.assertEqual({r["name"]: r["heap"] for r in rows if "heap" in r}, {"guard-vec-arith": {"R_VSIZE": "256M"}})
+        self.assertEqual([e for r in rows for e in ivr.row_errors(r)], [])
 
 
 class EveryRunNamesItsBoot(unittest.TestCase):
