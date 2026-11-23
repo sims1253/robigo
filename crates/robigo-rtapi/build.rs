@@ -8,6 +8,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=ROBIGO_WORKTREE");
     println!("cargo:rerun-if-changed=src/api.c");
     println!("cargo:rerun-if-changed=../robigo-rtcore/include/robigo_capi.h");
+    println!("cargo:rerun-if-changed=../robigo-rtcore/include/Defn.h");
     // No unwind tables, as the heap's shim: nothing may unwind through C
     // frames of the API.
     // robigo_layout.h, which robigo-heap's build writes (its `links`)
