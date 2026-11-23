@@ -332,6 +332,7 @@ fn x_i_guards(cx: &Cx, call: Root<'_>, rho: Root<'_>, x: Root<'_>, ind: Root<'_>
                 // a forced promise reads as its value
                 // SAFETY: a live object read from a live frame.
                 if unsafe { v.typ() } == PROMSXP {
+                    // SAFETY: as above; read within this `&Cx` interval.
                     match unsafe { Ref::from_sexp(v, cx) }.view() {
                         robigo_rtcore::View::Promise(pr) if !pr.is_unboxed() && pr.value() != cx.unbound() => {
                             Some(pr.value().sexp())

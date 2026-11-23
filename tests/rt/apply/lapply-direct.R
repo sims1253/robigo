@@ -44,7 +44,7 @@ options(expressions = 500)
 r <- tryCatch(g(1), error = function(e) conditionMessage(e))
 r
 d
-options(expressions = 5000)
+options(expressions = 1500)
 d <- 0
 r <- tryCatch(g(1), error = function(e) conditionMessage(e))
 r
