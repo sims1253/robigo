@@ -31,9 +31,10 @@ fn eval<'s>(cx: &mut Cx, s: Scope<'s>, e: Root<'_>, rho: Root<'_>) -> RResult<Ro
     Ok(r)
 }
 
-/// `R_getVarEx(sym, rho, inherits, ifnotfound)`, and `R_getVar` over it
-/// (`ifnotfound` None: R_UnboundValue, then its error). The checks'
-/// messages name `R_getVarEx` (its `__func__`) for both, as GNU R's do.
+/// `R_getVarEx(sym, rho, inherits, ifnotfound)` (`ifnotfound` Some: what
+/// C passed, which may be a C NULL, returned as it is), and `R_getVar` over
+/// it (None: R_UnboundValue, then its error). The checks' messages name
+/// `R_getVarEx` (its `__func__`) for both, as GNU R's do.
 // R: envir.c:R_getVarEx, R_getVar
 fn get_var_ex(
     cx: &mut Cx,
@@ -41,7 +42,7 @@ fn get_var_ex(
     sym: Root<'_>,
     rho: Root<'_>,
     inherits: bool,
-    ifnotfound: Option<Root<'_>>,
+    ifnotfound: Option<Option<Root<'_>>>,
 ) -> RResult<Sexp> {
     if sym.bind(cx).sexptype() != SYMSXP {
         return Err(cx.error("first argument to 'R_getVarEx' must be a symbol"));
@@ -65,7 +66,7 @@ fn get_var_ex(
     }
     if v == cx.unbound().sexp() {
         return match ifnotfound {
-            Some(x) => Ok(x.bind(cx).sexp()),
+            Some(x) => Ok(x.map_or(Sexp::NULL, |x| x.bind(cx).sexp())),
             None => {
                 let name = String::from_utf8_lossy(&name_bytes(cx, sym).unwrap_or_default()).into_owned();
                 Err(cx.error(&format!("object '{name}' not found")))
@@ -77,7 +78,8 @@ fn get_var_ex(
         let p = s.root(cx, val.bind(cx));
         let o = s.out(cx);
         let r = o.root();
-        cx.eval_promise(p, o)?;
+        // (GNU R's PROTECT(val) around its eval)
+        cx.with_pp_excess(1, |cx| cx.eval_promise(p, o))?;
         return Ok(r.bind(cx).sexp());
     }
     Ok(v)
@@ -337,7 +339,7 @@ entry! {
     /// `ifnotfound` when it is unbound; a missing argument is the
     /// `getVarExError` reported against `rho`'s lexical call.
     // R: envir.c:R_getVarEx
-    [4] fn R_getVarEx(sym: Sexp, rho: Sexp, inherits: c_int, ifnotfound: Sexp) -> Sexp => |cx, s| {
+    [4] fn R_getVarEx(sym: Sexp, rho: Sexp, inherits: c_int, ifnotfound: OrNull) -> Sexp => |cx, s| {
         get_var_ex(cx, s, sym, rho, inherits != 0, Some(ifnotfound))
     }
 

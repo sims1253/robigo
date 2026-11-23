@@ -529,8 +529,8 @@ impl Cx {
     }
 
     /// Set `R_PPStackSize`: the red zone opened for a protect stack
-    /// overflow's handlers, and the size restored after
-    /// (`R_signal_protect_error`, `reset_pp_stack`). At most
+    /// overflow's handlers (`R_signal_protect_error`; the context it runs
+    /// in restores the size, `reset_pp_stack`). At most
     /// [`Cx::pp_real_size`].
     #[inline(always)]
     pub fn set_pp_size(&mut self, size: i32) {

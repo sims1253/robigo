@@ -32,6 +32,7 @@
 #include <string.h>
 #include <robigo_capi.h>
 #include <robigo_layout.h>
+#include <Defn.h> /* robigo-rtcore's: RCNTXT, CTXT_CCODE */
 
 /* GNU R's types, unless this file is being checked against GNU R's own
  * headers (crates/robigo-rtapi/tests/capi.rs compiles it with robigo's
@@ -141,6 +142,7 @@ __attribute__((noreturn)) void robigo_rtapi_extptr_error(const char *fun, SEXP x
 /* the protect stack: overflow, unprotect below its bottom, a bad reprotect
  * index */
 __attribute__((noreturn)) void robigo_rtapi_protect_error(void);
+void Rf_begincontext(RCNTXT *, int, SEXP, SEXP, SEXP, SEXP, SEXP);
 __attribute__((noreturn)) void robigo_rtapi_unprotect_error(void);
 __attribute__((noreturn)) void robigo_rtapi_reprotect_error(PROTECT_INDEX i);
 /* a "not implemented yet" error for an accessor's case robigo lacks */
@@ -693,11 +695,34 @@ SEXP R_WeakRefValue(SEXP w)
 
 /* ---- the protect stack ---------------------------------------------- */
 
+/* R: memory.c:reset_pp_stack */
+static void reset_pp_stack(void *data)
+{
+    int *poldpps = data;
+    robigo_cg->R_PPStackSize = *poldpps;
+}
+
+/* R: memory.c:R_signal_protect_error: the overflow's condition signalled
+ * from a CTXT_CCODE context whose cend restores R_PPStackSize, which the
+ * signal may raise to open the red zone (robigo_rtapi_protect_error): the
+ * cend runs as the exit leaves this context, before any cend above it. */
+__attribute__((noreturn)) static void R_signal_protect_error(void)
+{
+    RCNTXT cntxt;
+    int oldpps = robigo_cg->R_PPStackSize;
+
+    Rf_begincontext(&cntxt, CTXT_CCODE, R_NilValue, robigo_cg->R_BaseEnv, robigo_cg->R_BaseEnv,
+                    R_NilValue, R_NilValue);
+    cntxt.cend = &reset_pp_stack;
+    cntxt.cenddata = &oldpps;
+    robigo_rtapi_protect_error();
+}
+
 SEXP Rf_protect(SEXP s)
 {
     struct robigo_cglobals *g = robigo_cg;
     if (g->R_PPStackTop >= g->R_PPStackSize)
-        robigo_rtapi_protect_error();
+        R_signal_protect_error();
     g->R_PPStack[g->R_PPStackTop++] = s;
     return s;
 }

@@ -14,3 +14,41 @@ SEXP rt_protect_n(SEXP n)
     UNPROTECT(k);
     return ScalarInteger(k);
 }
+
+/* R_PPStackSize: GNU R's LibExtern global; robigo's is the isolate's */
+#ifdef ROBIGO_CAPI_H_
+#define PP_SIZE (robigo_cg->R_PPStackSize)
+#else
+extern int R_PPStackSize;
+#define PP_SIZE R_PPStackSize
+#endif
+
+SEXP rt_pp_size(void)
+{
+    return ScalarInteger(PP_SIZE);
+}
+
+typedef struct {
+    SEXP expr, rho;
+} eval_data;
+
+static SEXP eval_body(void *data)
+{
+    eval_data *d = data;
+    return eval(d->expr, d->rho);
+}
+
+static void report_size(void *data)
+{
+    (void) data;
+    Rprintf("the cleanup sees R_PPStackSize %d\n", PP_SIZE);
+}
+
+/* expr evaluated with a cleanup that reports R_PPStackSize: an exit out
+ * of an overflow's calling handler passes the overflow's context first,
+ * which restores the size */
+SEXP rt_size_in_cleanup(SEXP expr, SEXP rho)
+{
+    eval_data d = { expr, rho };
+    return R_ExecWithCleanup(eval_body, &d, report_size, NULL);
+}

@@ -13,5 +13,11 @@ calling handler 2
 [1] "protect(): protection stack overflow"
 in the red zone: 500 
 [1] "caught"
+[1] 50000
+the cleanup sees R_PPStackSize 50000
+[1] "from the handler"
+the cleanup sees R_PPStackSize 50000
+outer restart
+[1] 50000
 [1] 1000
 still going
