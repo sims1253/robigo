@@ -617,8 +617,10 @@ def steps(crates):
         # made), then the boot test that verifies a start under the knob
         ("base's database tree for ROBIGO_RETRY_TORTURE's build (scripts/rt-home-db.sh)", {},
          ["scripts/rt-home-db.sh", "--robigo-rt", rt_binary()]),
+        # (TREE_RUNS: a missing or stale tree fails, not skips; and the test
+        # fails, not skips, if the build has no retry-torture)
         ("a translation-cache verification under ROBIGO_RETRY_TORTURE=1 compares nothing for a retry "
-         "(tests/boot_db.rs)", {},
+         "(tests/boot_db.rs)", {**TREE_RUNS, "ROBIGO_REQUIRE_RETRY_TORTURE": "1"},
          [*test, "-p", "robigo-rtapi", "--features", CHECK_FEATURES, "--test", "boot_db", "--",
           "--exact", "a_verification_stopped_for_a_retry_compares_nothing"]),
         # C1-PZ (docs/g3.md §16): a dead slot (a register's last use, D9's

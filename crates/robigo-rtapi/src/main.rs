@@ -628,7 +628,18 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     // its verify pass: every closure's cached translation compared with a
     // fresh one (each hit verified); any difference fails the run
     if ok && robigo_rt::verifying_translation_cache() {
-        ok = robigo_rt::compile::translate_for_cache(cx).is_ok() && robigo_rt::translation_cache_mismatches() == 0;
+        // (a writer's own run never reads the cache, so its verify pass
+        // would find every body already translated by the write pass and
+        // compare nothing: the combination is refused, not faked)
+        if robigo_rt::writing_translation_cache() {
+            cx.reprintf(
+                b"robigo: ROBIGO_TRANSLATION_CACHE_WRITE and ROBIGO_TRANSLATION_CACHE=verify together verify nothing: \
+                  write the cache, then verify it in a run of its own\n",
+            );
+            ok = false;
+        } else {
+            ok = robigo_rt::compile::translate_for_cache(cx).is_ok() && robigo_rt::translation_cache_mismatches() == 0;
+        }
     }
     // (the translation cache's counts, under ROBIGO_TRANSLATION_CACHE_STATS:
     // before the exits below, which do not return)

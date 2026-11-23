@@ -66,7 +66,10 @@ exec 8> "$src_tree.lock"
 flock -s 8
 rsrc=$(scripts/r-src.sh)
 stamp="$(cat "$src_tree/.rt-home") $(sha256sum "$0" | cut -c1-16) $(sha256sum "$bin" | cut -c1-16)"
-if [ -f "$out/.rt-home-db" ] && [ "$(cat "$out/.rt-home-db")" = "$stamp" ]; then
+# (fresh only with its translation cache beside it: a tree whose cache was
+# lost, by hand or between the two moves below, is built again)
+if [ -f "$out/.rt-home-db" ] && [ "$(cat "$out/.rt-home-db")" = "$stamp" ] &&
+   [ -s "$out-cache/base.rtc" ] && [ -s "$out-cache/compiler.rtc" ]; then
   echo "$out"
   exit 0
 fi
@@ -103,8 +106,11 @@ mkdir -p "$tmp/home"
 rexe() {
   local boot=$1
   shift
-  env -u R_HOME -u R_LIBS -u R_LIBS_USER -u R_LIBS_SITE HOME="$tmp/home" \
-    ROBIGO_RT_BOOT="$boot" "$@" "$tmp/bin/robigo-rt" --vanilla --no-echo > /dev/null
+  # (the translation cache's controls too: a caller's would make every
+  # step's session a writer; the two cache steps set their own after)
+  env -u R_HOME -u R_LIBS -u R_LIBS_USER -u R_LIBS_SITE \
+    -u ROBIGO_TRANSLATION_CACHE -u ROBIGO_TRANSLATION_CACHE_WRITE -u ROBIGO_TRANSLATION_CACHE_STATS \
+    HOME="$tmp/home" ROBIGO_RT_BOOT="$boot" "$@" "$tmp/bin/robigo-rt" --vanilla --no-echo > /dev/null
 }
 # R: src/library/translations/Makefile.in all (its mkdesc runs no R: the
 # Makefile sets no R_EXE): the message catalogues (inst/*) and the

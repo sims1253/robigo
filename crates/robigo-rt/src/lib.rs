@@ -85,6 +85,9 @@ mod tailcall;
 mod tcache;
 /// The translation cache's writer: its files, written at the end of the
 /// session that translated for it (`ROBIGO_TRANSLATION_CACHE_WRITE`).
+/// Where a translation-cache file's build ID begins (its header's
+/// layout): what a test damages to make a file another build's.
+pub use tcache::format::BUILD_ID_AT as TRANSLATION_CACHE_BUILD_ID_AT;
 pub use tcache::{
     fuzz_decode as translation_cache_fuzz_decode, mismatches as translation_cache_mismatches,
     report as report_translation_cache, verifying_all as verifying_translation_cache,

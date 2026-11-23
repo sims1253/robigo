@@ -27,6 +27,9 @@ pub const MAGIC: [u8; 4] = *b"RTC1";
 pub const VERSION: u32 = 3;
 /// The most bytes of a build ID kept (GNU's are 20).
 pub const BUILD_ID_MAX: usize = 32;
+/// Where a file's build ID begins: after the magic (4 bytes), the version
+/// (4) and the ID's length (1) (`encode_file`).
+pub const BUILD_ID_AT: usize = MAGIC.len() + 4 + 1;
 /// The most bytes of a tree stamp.
 pub const STAMP_MAX: usize = 4096;
 /// The bytes of one entry-table row: the key, where the data is, and its

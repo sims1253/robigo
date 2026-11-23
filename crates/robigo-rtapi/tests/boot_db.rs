@@ -381,10 +381,12 @@ fn a_named_profile_that_does_not_open_is_no_profile() {
 /// binary's translation cache for it, as scripts/rt-home-db.sh writes one
 /// (the binary under test need not be the one that built the tree, whose
 /// cache would be another build's).
-fn cached_tree(what: &str) -> std::path::PathBuf {
+fn cached_tree(what: &str) -> Scratch {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let tmp = std::env::temp_dir().join(format!("robigo-{what}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
+    // (removed when it drops: an assert's unwind below or in the test too)
+    let tmp = Scratch(tmp);
     std::fs::create_dir_all(tmp.join(".robigo")).unwrap();
     let st =
         Command::new("cp").arg("-a").arg(root.join(".robigo/rt-home-db")).arg(tmp.join(".robigo/rt-home-db")).status();
@@ -392,6 +394,23 @@ fn cached_tree(what: &str) -> std::path::PathBuf {
     std::fs::create_dir_all(tmp.join(".robigo/rt-home-db-cache")).unwrap();
     write_cache(&tmp);
     tmp
+}
+
+/// A scratch tree (a full copy of the database tree and its cache) that
+/// removes itself when dropped, on every exit path of a test.
+struct Scratch(std::path::PathBuf);
+
+impl std::ops::Deref for Scratch {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 /// This binary's writer run on the tree copy `tmp` (its `-cache` directory
@@ -433,10 +452,30 @@ fn the_writer_replaces_a_cache_file_by_rename() {
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .filter(|n| !n.ends_with(".rtc"))
         .collect();
-    let _ = std::fs::remove_dir_all(&tmp);
     assert_ne!(after.ino(), ino, "base.rtc was written in place, not replaced");
     assert_eq!(kept, before, "the old file's bytes changed under an open handle");
     assert!(leftovers.is_empty(), "the writer left {leftovers:?}");
+}
+
+/// The writer and the verify pass in one run would verify nothing (the
+/// write pass translates every body first): the combination is refused,
+/// with a message, not passed.
+#[test]
+fn writing_and_verifying_the_cache_in_one_run_is_refused() {
+    if !tree_made() {
+        return;
+    }
+    let tmp = cached_tree("tcache-write-verify");
+    let (_, err, st) = boot(
+        &[std::ffi::OsStr::new("--vanilla"), std::ffi::OsStr::new("-e"), std::ffi::OsStr::new("1")],
+        &[
+            ("ROBIGO_RT_CHECKOUT", tmp.as_os_str()),
+            ("ROBIGO_TRANSLATION_CACHE_WRITE", std::ffi::OsStr::new("1")),
+            ("ROBIGO_TRANSLATION_CACHE", std::ffi::OsStr::new("verify")),
+        ],
+    );
+    assert_ne!(st, Some(0), "{err}");
+    assert!(err.contains("together verify nothing"), "{err}");
 }
 
 /// A verification whose fresh translation stops with a retryable `Need`
@@ -452,11 +491,21 @@ fn a_verification_stopped_for_a_retry_compares_nothing() {
     if !tree_made() {
         return;
     }
-    let (_, err, _) = boot(
+    let (_, err, st) = boot(
         &[std::ffi::OsStr::new("--vanilla"), std::ffi::OsStr::new("-e"), std::ffi::OsStr::new("1")],
         &[("ROBIGO_RETRY_TORTURE", std::ffi::OsStr::new("1"))],
     );
-    if err.contains("needs robigo-rtcore built with its retry-torture feature") {
+    // the knob's refusal (a build without the feature) is the only skip;
+    // any other failure of the probe is loud, and rt-ci's step, which runs
+    // the feature build, sets ROBIGO_REQUIRE_RETRY_TORTURE so that a
+    // refusal fails there too
+    let refused = st != Some(0) && err.contains("needs robigo-rtcore built with its retry-torture feature");
+    assert!(refused || st == Some(0), "the probe failed: {st:?} {err}");
+    if refused {
+        assert!(
+            std::env::var_os("ROBIGO_REQUIRE_RETRY_TORTURE").is_none(),
+            "ROBIGO_REQUIRE_RETRY_TORTURE is set, but this build has no retry-torture: {err}"
+        );
         return;
     }
     let tmp = cached_tree("tcache-verify-retry");
@@ -480,7 +529,6 @@ fn a_verification_stopped_for_a_retry_compares_nothing() {
             ("ROBIGO_RETRY_TORTURE", std::ffi::OsStr::new("1")),
         ],
     );
-    let _ = std::fs::remove_dir_all(&tmp);
     assert_eq!((out.as_str(), st), ("55 \n", Some(0)), "{err}");
     let line = err.lines().find(|l| l.starts_with("translation cache: hit ")).unwrap_or_else(|| panic!("{err}"));
     // ("name N" fields, comma-separated: "verified" is not "unverified")
@@ -540,7 +588,7 @@ fn a_start_falls_back_silently_without_a_valid_translation_cache() {
     for f in ["base.rtc", "compiler.rtc"] {
         let p = mine.join(f);
         let mut b = std::fs::read(&p).unwrap();
-        b[9] ^= 0xff;
+        b[robigo_rt::TRANSLATION_CACHE_BUILD_ID_AT] ^= 0xff;
         std::fs::write(&p, b).unwrap();
     }
     let (out, err, st) = run();
@@ -572,7 +620,6 @@ fn a_start_falls_back_silently_without_a_valid_translation_cache() {
     std::fs::remove_dir_all(&mine).unwrap();
     let (out, err, st) = run();
     assert_eq!((out.as_str(), st, hits(&err)), ("55 \n", Some(0), 0), "absent: {err}");
-    let _ = std::fs::remove_dir_all(&tmp);
 }
 
 /// R_Interactive, set before base and the profiles (Rf_initialize_R), makes

@@ -365,6 +365,28 @@ def measure(cmd, env, runs, valgrind):
             "anon_runs": anon, "rss_runs": rss}
 
 
+def cache_hits(stderr):
+    """The hits of a start's translation-cache stats line
+    (ROBIGO_TRANSLATION_CACHE_STATS=1), or None if it printed none."""
+    for line in reversed(stderr.splitlines()):
+        if line.startswith("translation cache: hit "):
+            return int(line[len("translation cache: hit "):].split(",", 1)[0])
+    return None
+
+
+def require_cache_used(name, cmd, env):
+    """A start whose tree has a translation cache beside it (and does not
+    turn it off) must use it: a cache lost or never rebuilt leaves the start
+    correct but uncached, which no comparison with main's (uncached) binary
+    would show."""
+    p = subprocess.run(cmd, env=dict(env, ROBIGO_TRANSLATION_CACHE_STATS="1"), stdout=subprocess.DEVNULL,
+                       stderr=subprocess.PIPE, text=True, timeout=TIMEOUT)
+    hits = cache_hits(p.stderr)
+    if not hits:
+        raise SystemExit(f"rt-startup: start {name} has a translation cache beside its tree and used none of it "
+                         f"({'no stats line' if hits is None else 'hit 0'}): {p.stderr[-300:]}")
+
+
 def defined():
     return [n for n, e in STARTS.items() if e is not None]
 
@@ -478,10 +500,15 @@ def run(binary, starts=None, checkout=ROOT, runs=9, trees=False, valgrind=None):
     else:
         home = checkout
     env0 = clean_env()
-    return {n: measure([os.path.abspath(binary), "--vanilla", "-e", "1"],
-                       dict(env0, ROBIGO_RT_CHECKOUT=os.path.abspath(home), **STARTS[n]), runs,
-                       valgrind or os.environ.get("VALGRIND", "valgrind"))
-            for n in names}
+    cmd = [os.path.abspath(binary), "--vanilla", "-e", "1"]
+    cached = os.path.isdir(os.path.join(home, ".robigo", "rt-home-db-cache"))
+    out = {}
+    for n in names:
+        env = dict(env0, ROBIGO_RT_CHECKOUT=os.path.abspath(home), **STARTS[n])
+        if cached and env.get("ROBIGO_RT_BOOT") == "rdb" and env.get("ROBIGO_TRANSLATION_CACHE") != "0":
+            require_cache_used(n, cmd, env)
+        out[n] = measure(cmd, env, runs, valgrind or os.environ.get("VALGRIND", "valgrind"))
+    return out
 
 
 def run_gnur(runs=9, valgrind=None):

@@ -357,6 +357,20 @@ established what each operation reads unchecked:
   with `GC_MOVE=1`, each start's 435 hits materialize. The verify pass under
   gctorture with `young:16` verifies all 1,731 entries, none differing.
 
+### A cache that goes missing
+
+A tree whose cache is lost still starts correctly, only uncached. No
+comparison with main's binary shows it, because main's starts are uncached
+too. Now:
+- **`scripts/rt-home-db.sh`** treats a tree as fresh only with both `.rtc`
+  files beside it, so a lost cache is built again. It also unsets the cache
+  controls for every build step but the two that set their own.
+- **`scripts/rt-startup.py`** (perf-rt's startup rows) fails a start whose
+  tree has a cache beside it and that used none of it. A rdb start not
+  turned off runs once with `ROBIGO_TRANSLATION_CACHE_STATS=1` first, and
+  `hit 0` is an error.
+- **By hand:** the stats line's hit count shows the same thing.
+
 ### Not yet, or not at all
 
 - **A forged entry** carries no guarantee at all. An entry rebuilt with a
