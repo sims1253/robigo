@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -363,6 +364,28 @@ class LogicalPeak(unittest.TestCase):
 class Memory(unittest.TestCase):
     """memory() on small programs: its readings, and that it cannot hang."""
     PY = sys.executable
+
+    @unittest.skipUnless(shutil.which("cc"), "no cc")
+    def test_no_thread_starves_behind_threads_that_stop_again_at_once(self):
+        # sixteen threads in a loop of system calls, each stopping again as
+        # soon as it is resumed, and an older thread that must run once to
+        # end them. Served one waitpid at a time the older one starved: the
+        # run never ended (perf-rt on #1006, 20 sleeping Python threads, once;
+        # here it timed out 5 runs of 5). Every stop of a round is served now
+        c = ("#include <pthread.h>\n#include <unistd.h>\n#include <sys/syscall.h>\n"
+             "static volatile int done;\n"
+             "static void *older(void *_) { usleep(50000); done = 1; return 0; }\n"
+             "static void *newer(void *_) { while (!done) syscall(SYS_getppid); return 0; }\n"
+             "int main(void) {\n    pthread_t a, b[16];\n    pthread_create(&a, 0, older, 0);\n"
+             "    for (int i = 0; i < 16; i++) pthread_create(&b[i], 0, newer, 0);\n"
+             "    pthread_join(a, 0);\n    for (int i = 0; i < 16; i++) pthread_join(b[i], 0);\n    return 0;\n}\n")
+        with tempfile.TemporaryDirectory() as d:
+            src, exe = os.path.join(d, "starve.c"), os.path.join(d, "starve")
+            with open(src, "w") as f:
+                f.write(c)
+            subprocess.run(["cc", "-O2", "-pthread", "-o", exe, src], check=True)
+            _, _, status, _, kids = su.memory([exe], dict(os.environ), True, timeout=10)
+        self.assertEqual((status, kids), (0, 0))
 
     def test_a_large_output_does_not_block_the_child(self):
         # far more than a pipe's buffer, printed before the exit stop

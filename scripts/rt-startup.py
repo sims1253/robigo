@@ -70,6 +70,7 @@ wherever their trees are unpacked, and its count is the mean of the 15
 import argparse
 import concurrent.futures
 import ctypes
+import errno
 import json
 import os
 import re
@@ -191,6 +192,17 @@ def ptrace(req, pid, data=0):
     if libc.ptrace(req, pid, None, ctypes.c_void_p(data)) == -1:
         e = ctypes.get_errno()
         raise OSError(e, f"ptrace({req}): {os.strerror(e)}")
+
+
+def resume(req, tid, sig=0):
+    """ptrace(req, tid, sig) restarting a stop memory()'s loop gathered.
+    ESRCH there is a tracee killed while its stop waited in the round: a
+    SIGKILL ends any ptrace stop (another thread's exit_group, or the start's
+    process group killed at its exit stop), and its exit is reported next."""
+    if libc.ptrace(req, tid, None, ctypes.c_void_p(sig)) == -1:
+        e = ctypes.get_errno()
+        if e != errno.ESRCH:
+            raise OSError(e, f"ptrace({req}): {os.strerror(e)}")
 
 
 def anon_kib(pid):
@@ -319,8 +331,26 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
         # (measure() and probes run several at once in one process)
         group = pid
         ptrace(go, pid)
+        # every stop pending at one moment, gathered before any of them is
+        # resumed: waitpid returns the first waitable tracee in the kernel's
+        # list, so threads that stop again at once (system calls in a loop,
+        # a lock's timed waits) would be served forever while a thread later
+        # in the list starves, and if it holds what they wait for, the start
+        # never ends (strace gathers its stops the same way). Each round
+        # serves every thread stopped at its start.
+        pending = []
         while True:
-            t, st = os.waitpid(-group, WALL)
+            if not pending:
+                pending.append(os.waitpid(-group, WALL))
+                while True:
+                    try:
+                        w = os.waitpid(-group, WALL | os.WNOHANG)
+                    except ChildProcessError:
+                        break
+                    if w[0] == 0:
+                        break
+                    pending.append(w)
+            t, st = pending.pop(0)
             if t == pid and (os.WIFEXITED(st) or os.WIFSIGNALED(st)):
                 pid = None
                 break
@@ -339,7 +369,7 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
                 # that thread, which shares the memory (the leader may have
                 # ended, a zombie whose /proc no longer maps it)
                 anon = max(anon, thread_anon_kib(t))
-                ptrace(go, t)
+                resume(go, t)
             elif sig == signal.SIGTRAP and event in (PTRACE_EVENT_CLONE, PTRACE_EVENT_FORK, PTRACE_EVENT_VFORK):
                 new = event_msg(t)
                 if event == PTRACE_EVENT_CLONE and tgid(new) == pid:
@@ -347,17 +377,25 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
                     # its first stop (a SIGSTOP) resumed, not delivered
                     if early.pop(new, None) is not None:
                         started.add(new)
-                        ptrace(go, new)
+                        resume(go, new)
                 else:
-                    # a process of its own: detached at its first stop
+                    # a process of its own: detached at its first stop,
+                    # which an earlier round may have kept (`early`), this
+                    # round may hold (`pending`: waiting for it again would
+                    # block for good), or is still to come
                     children.append(new)
+                    mine = [w for w in pending if w[0] == new]
                     if early.pop(new, None) is not None:
                         ptrace(PTRACE_DETACH, new)
+                    elif mine:
+                        pending.remove(mine[0])
+                        if os.WIFSTOPPED(mine[0][1]):
+                            ptrace(PTRACE_DETACH, new)
                     else:
                         _, cst = os.waitpid(new, WALL)
                         if os.WIFSTOPPED(cst):
                             ptrace(PTRACE_DETACH, new)
-                ptrace(go, t)
+                resume(go, t)
             elif sig == signal.SIGTRAP and event == PTRACE_EVENT_EXIT:
                 if t == pid:
                     hwm = status_kib(pid)["VmHWM"]
@@ -365,15 +403,15 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
                     kill_group(pid)
                 if syscalls:
                     anon = max(anon, thread_anon_kib(t))
-                ptrace(PTRACE_CONT, t)
+                resume(PTRACE_CONT, t)
             elif sig == signal.SIGTRAP and event == PTRACE_EVENT_EXEC:
                 # a later exec: ptrace's stop, not a signal (an exec by
                 # another thread makes it the leader, keeping the pid)
-                ptrace(go, t)
+                resume(go, t)
             elif sig == signal.SIGSTOP and t in threads and event == 0 and t not in started:
                 # a new thread's first stop: resumed, not delivered
                 started.add(t)
-                ptrace(go, t)
+                resume(go, t)
             else:
                 # a signal for the child (a real SIGTRAP among them): it goes
                 # on. A stop signal delivered so group-stops the child, which
@@ -381,7 +419,7 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
                 # signal again resumes it, because a restart's signal is
                 # ignored in any stop but a signal's delivery (ptrace(2),
                 # "Signal injection and suppression")
-                ptrace(go, t, sig)
+                resume(go, t, sig)
         with clock["lock"]:
             clock["over"] = True
             fired = clock["fired"]
@@ -889,7 +927,7 @@ def table(entries, new, main=None, gnur=None):
     [[startup]] (name, and the GNU R start it is shown beside). Judged:
     instructions, the malloc peak, peak RSS. Reported: the anonymous peak,
     robigo-heap's own peak in use ("-" where a binary does not report it)."""
-    lines = ["| start | instructions | main | change | malloc peak KiB | main | change | anon KiB (reported) | main "
+    lines = ["| start | instructions | main | change | malloc peak KiB | main | change (B) | anon KiB (reported) | main "
              "| peak RSS KiB | main | change | heap in use KiB (reported) | main | GNU R instructions | malloc KiB "
              "| anon KiB | peak RSS KiB |",
              "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
