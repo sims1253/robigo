@@ -972,8 +972,12 @@ pub(crate) struct Bufs {
 /// so it holds no `Sexp` (nothing in it is a root across a collection),
 /// and keeps at most [`SCRATCH_CAP`] elements' capacity per buffer: an
 /// unusually large compile's buffers are freed, not kept.
+///
+/// One word in [`RtState`]: the pool is allocated at the isolate's first
+/// compile (a long-lived per-isolate struct that grows moves allocations
+/// into other size classes).
 #[derive(Default)]
-pub(crate) struct Scratch(std::cell::RefCell<Vec<Bufs>>);
+pub(crate) struct Scratch(std::cell::OnceCell<Box<std::cell::RefCell<Vec<Bufs>>>>);
 
 /// The spare sets [`Scratch`] keeps: the depth of nested compiles that
 /// reuse buffers (a deeper one allocates its own, as before).
@@ -984,8 +988,12 @@ const SCRATCH_SETS: usize = 4;
 const SCRATCH_CAP: usize = 2048;
 
 impl Scratch {
+    fn sets(&self) -> &std::cell::RefCell<Vec<Bufs>> {
+        self.0.get_or_init(Default::default)
+    }
+
     fn take(&self) -> Bufs {
-        let b = self.0.borrow_mut().pop().unwrap_or_default();
+        let b = self.sets().borrow_mut().pop().unwrap_or_default();
         debug_assert!(
             b.ins.is_empty()
                 && b.consts.is_empty()
@@ -1016,7 +1024,7 @@ impl Scratch {
         if b.pool.capacity() > SCRATCH_CAP {
             b.pool = PosMap::default();
         }
-        let mut sets = self.0.borrow_mut();
+        let mut sets = self.sets().borrow_mut();
         if sets.len() < SCRATCH_SETS {
             sets.push(b);
         }
@@ -3865,6 +3873,12 @@ mod tests {
     use super::fold_vis_into_ret;
     use crate::ir::{Ins, Op};
 
+    /// The pool is one word of the isolate's state (allocated on first use).
+    #[test]
+    fn the_spare_buffers_are_one_word_of_state() {
+        assert_eq!(size_of::<super::Scratch>(), size_of::<usize>());
+    }
+
     /// A compile's buffers go back to the isolate's spares cleared (no
     /// entry survives into the next compile, or across a collection), a
     /// buffer past `SCRATCH_CAP` is freed rather than kept, and at most
@@ -3887,7 +3901,7 @@ mod tests {
         for _ in 0..SCRATCH_SETS + 2 {
             s.give(Bufs::default());
         }
-        assert_eq!(s.0.borrow().len(), SCRATCH_SETS);
+        assert_eq!(s.sets().borrow().len(), SCRATCH_SETS);
     }
 
     /// A jump whose target is the code's end, and a loop's region ending
