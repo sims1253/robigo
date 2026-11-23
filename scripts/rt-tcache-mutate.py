@@ -186,6 +186,41 @@ def swap_runs(runs, rng, tmp, home, env, cmd):
     return 1 if bad or stale_runs == 0 else 0
 
 
+def refused_entry(tmp, home, env, cmd, ref):
+    """One entry made to pass every check of the file but the verifier's
+    (its register count 0, its keyed checksum fixed up): an ordinary start
+    must give the same output with nothing on stderr, and the stats must
+    count the refusal (tcache::refused: a miss, reported only where hits
+    are compared). The entry is the one a start reads first (the writer
+    lays a start's own first); the file is put back after."""
+    cache = os.path.join(tmp, ".robigo", "rt-home-db-cache", "base.rtc")
+    with open(cache, "rb") as f:
+        data = f.read()
+    r, at, n = min(rows(data), key=lambda row: row[1])
+    b = bytearray(data)
+    # the entry's data: its source (8 bytes), then its register count (u16)
+    b[at + 8:at + 10] = (0).to_bytes(2, "little")
+    b[r + 28:r + 36] = checksum(bytes(b[r:r + 20]) + bytes(b[at:at + n])).to_bytes(8, "little")
+    try:
+        with open(cache, "wb") as f:
+            f.write(bytes(b))
+        p = start(cmd, home, env)
+        if p.returncode != 0 or p.stdout != ref.stdout or p.stderr:
+            print(f"rt-tcache-mutate: a refused entry: exit {p.returncode}, stderr {p.stderr.decode(errors='replace')[-300:]!r}")
+            return 1
+        stats = start(cmd, home, dict(env, ROBIGO_TRANSLATION_CACHE_STATS="1")).stderr.decode(errors="replace")
+        line = [l for l in stats.splitlines() if l.startswith("translation cache: hit ")]
+        refused = [f for f in line[-1].split(", ") if f.startswith("refused by the verifier ")] if line else []
+        if not refused or refused[0].endswith(" 0"):
+            print(f"rt-tcache-mutate: the refused entry was not counted: {line[-1] if line else stats[-300:]}")
+            return 1
+        print(f"rt-tcache-mutate: an entry the verifier refuses: same output, nothing on stderr, counted ({refused[0]})")
+        return 0
+    finally:
+        with open(cache, "wb") as f:
+            f.write(data)
+
+
 def damage_runs(a, pkg, rng, tmp, home, env, cmd, ref):
     """--runs starts, each with `pkg`'s cache file damaged at random
     (--rehash: forged); the file is put back after. 0 when every start ended
@@ -280,7 +315,9 @@ def main():
                      f"binary: scripts/rt-home-db.sh): {hit[-1] if hit else stats[-300:]}")
         if a.swap:
             return swap_runs(a.runs, rng, tmp, home, env, cmd)
-        status = 0
+        status = refused_entry(tmp, home, env, cmd, ref)
+        if status:
+            return status
         for pkg in pkgs:
             status |= damage_runs(a, pkg, rng, tmp, home, env, cmd, ref)
             if status:
