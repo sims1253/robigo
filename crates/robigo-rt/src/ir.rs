@@ -438,7 +438,11 @@ pub struct Header {
     /// With an `inline` verdict of yes: the closure's formals (the first
     /// slots of its shape; locals follow).
     pub inline_formals: u8,
-    pub _pad: [u8; 1],
+    /// 1 when the code is one variable read and its return, nothing else:
+    /// `[GetVar a=R_FIRST, Ret b=R_FIRST]` of the `Bc` profile, a byte-code
+    /// promise of a plain symbol. [`crate::eval`]'s single-read path runs
+    /// it with no activation ([`crate::code::single_read`]).
+    pub single_read: u8,
     /// Registers of an activation, the fixed ones included.
     pub nregs: u32,
     /// Instructions after the header.

@@ -3,10 +3,13 @@
 idiom-vs-r.py's count of a loop's allocator calls, which decides the heap
 shifts. Run by the perf-rt job before the bars."""
 import importlib.util
+import json
 import os
+import shutil
 import signal
 import sys
 import tempfile
+import threading
 import unittest
 import unittest.mock
 from types import SimpleNamespace
@@ -25,12 +28,13 @@ su = load("rt_startup", "rt-startup.py")
 iv = load("idiom_vs_r", "idiom-vs-r.py")
 
 
-def start(instr, anon, rss):
-    return {"instr": instr, "anon_kib": anon, "rss_kib": rss}
+def start(instr, anon, rss, heap=None):
+    return {"instr": instr, "anon_kib": anon, "rss_kib": rss, "heap_bytes": heap}
 
 
 class Verdict(unittest.TestCase):
-    MAIN = {"interim": start(15_000_000, 1_500, 9_800), "rdb-jit": start(95_000_000, 6_800, 15_600)}
+    MAIN = {"interim": start(15_000_000, 1_500, 9_800, 3_456_959),
+            "rdb-jit": start(95_000_000, 6_800, 15_600, 9_947_143)}
 
     def fails(self, new):
         return su.verdict(new, self.MAIN)
@@ -45,15 +49,20 @@ class Verdict(unittest.TestCase):
         self.assertEqual(len(f), 1)
         self.assertIn("instructions", f[0])
 
-    def test_anonymous_memory_has_a_floor(self):
-        # 1% of 1,500 KiB is 15 KiB: the 64 KiB floor holds
-        self.assertEqual(self.fails({"interim": start(15_000_000, 1_564, 9_800)}), [])
-        f = self.fails({"interim": start(15_000_000, 1_565, 9_800)})
+    def test_the_malloc_peak_is_judged_and_the_anonymous_peak_only_reported(self):
+        # 0.5% of 3,456,959 bytes is 17,285: above the 16 KiB floor
+        self.assertEqual(self.fails({"interim": start(15_000_000, 1_500, 9_800, 3_456_959 + 17_284)}), [])
+        f = self.fails({"interim": start(15_000_000, 1_500, 9_800, 3_456_959 + 17_285)})
         self.assertEqual(len(f), 1)
-        self.assertIn("anonymous", f[0])
-        # above the floor, 1%: 6,800 KiB allows 68 KiB
-        self.assertEqual(self.fails({"rdb-jit": start(95_000_000, 6_868, 15_600)}), [])
-        self.assertEqual(len(self.fails({"rdb-jit": start(95_000_000, 6_869, 15_600)})), 1)
+        self.assertIn("peak malloc'd bytes", f[0])
+        # a small start: the 16 KiB floor holds
+        self.assertEqual(su.heap_limit_bytes(1_000_000), 16 << 10)
+        # #991's pair differed by 2 bytes: far inside
+        self.assertEqual(self.fails({"rdb-jit": start(95_000_000, 6_800, 15_600, 9_947_145)}), [])
+        # the anonymous peak fails nothing, even 1 MiB over
+        self.assertEqual(self.fails({"rdb-jit": start(95_000_000, 6_800 + 1024, 15_600, 9_947_143)}), [])
+        # a side without the figure (an older binary) is not judged on it
+        self.assertEqual(self.fails({"rdb-jit": start(95_000_000, 6_800, 15_600, None)}), [])
 
     def test_peak_rss_is_loose(self):
         self.assertEqual(self.fails({"interim": start(15_000_000, 1_500, 9_800 * 1.05)}), [])
@@ -142,9 +151,23 @@ class Layout(unittest.TestCase):
             seen["memory"].append((syscalls, env["HOME_VAR"], env.get("GLIBC_TUNABLES")))
             return (100 + len(env["HOME_VAR"]) if syscalls else 0), 5000, 0, b"", 0
 
+        def dhat(cmd, env, valgrind):
+            seen["dhat"] = env
+            return 4242
+
+        def gc(cmd, env):
+            seen["gc"] = env
+            return None
         with tempfile.TemporaryDirectory() as home, \
-                unittest.mock.patch.object(su, "instructions", instr), unittest.mock.patch.object(su, "memory", memory):
+                unittest.mock.patch.object(su, "instructions", instr), unittest.mock.patch.object(su, "memory", memory), \
+                unittest.mock.patch.object(su, "malloc_peak", dhat), unittest.mock.patch.object(su, "gc_peak", gc):
             v = su.measure(["bin"], {}, 3, "valgrind", "HOME_VAR", home)
+        # memory as allocation: one DHAT run and one stats run at the first shift
+        n0, pad0 = su.LAYOUT_SHIFTS[0]
+        for k in ("dhat", "gc"):
+            self.assertEqual((len(seen[k]["HOME_VAR"]), seen[k]["GLIBC_TUNABLES"]),
+                             (n0, f"glibc.malloc.top_pad={pad0}"))
+        self.assertEqual((v["heap_bytes"], v["gc_peak"]), (4242, None))
         pads = dict(su.LAYOUT_SHIFTS)
         self.assertEqual(sorted(len(h) for h, _ in seen["instr"]), list(su.LAYOUT_LENGTHS))
         for h, t in seen["instr"]:
@@ -176,6 +199,34 @@ class Boots(unittest.TestCase):
         rows = su.table([{"name": "interim"}, {"name": "rdb-jit"}], {"interim": v, "rdb-jit": v})
         self.assertTrue(rows[2].startswith("| interim |"))
         self.assertTrue(rows[3].startswith("| rdb-jit (default) |"))
+
+
+@unittest.skipUnless(os.environ.get("RT_STARTUP_TEST_BIN") and su.M1_BOOT == "",
+                     "a binary in RT_STARTUP_TEST_BIN (perf-rt's Starts step gives it), whose unset boot is M1's")
+class M1Name(unittest.TestCase):
+    """`ROBIGO_RT_BOOT=m1` names the boot an unset value is until L5's flip
+    (main.rs), so that the flip's one-line change of M1_BOOT to "m1" moves
+    nothing: the interim start under each, on the binary under test, over
+    the same 15 layouts, within #995's measured floor (0.073% instructions,
+    14 KiB anonymous peak). Skipped once M1_BOOT is "m1" (the flip): unset
+    is then the rdb boot."""
+
+    def tearDown(self):
+        # the measurement's pools and timers end with it: a thread left
+        # alive here would make the next test's fork a fork of a
+        # multi-threaded process
+        others = [t.name for t in threading.enumerate() if t is not threading.main_thread()]
+        self.assertEqual(others, [], "threads left alive after M1Name")
+
+    def test_the_interim_start_is_the_same_under_m1(self):
+        bin_ = os.environ["RT_STARTUP_TEST_BIN"]
+        trees = os.environ.get("RT_STARTUP_TEST_TREES") or False
+        starts = dict(su.STARTS, **{"interim-m1": {"ROBIGO_RT_BOOT": "m1"}})
+        with unittest.mock.patch.object(su, "STARTS", starts):
+            got = su.run(bin_, starts=["interim", "interim-m1"], trees=trees, runs=1)
+        a, b = got["interim"], got["interim-m1"]
+        self.assertLessEqual(abs(b["instr"] / a["instr"] - 1) * 100, 0.073, (a["instr"], b["instr"]))
+        self.assertLessEqual(abs(b["anon_kib"] - a["anon_kib"]), 14, (a["anon_kib"], b["anon_kib"]))
 
 
 class Reallocs(unittest.TestCase):
@@ -223,6 +274,90 @@ class ReallocsRun(unittest.TestCase):
                 with self.assertRaises(SystemExit) as cm:
                     su.reallocs("bin", ["interim"], home, False, "valgrind")
                 self.assertIn("no total", str(cm.exception))
+
+
+class LogicalPeak(unittest.TestCase):
+    """The memory clause's figures: DHAT's t-gmax, and robigo-heap's own
+    peak line where a binary prints it."""
+
+    def test_a_stats_run_that_fails_is_refused_not_read_as_no_line(self):
+        # a binary failing only under ROBIGO_GC_STATS=1 must not print "-",
+        # the same as one that does not report the line (#1009's bot)
+        crash = [sys.executable, "-c", "import os, sys\nsys.exit(3 if os.environ.get('ROBIGO_GC_STATS') else 0)"]
+        with self.assertRaises(SystemExit) as cm:
+            su.gc_peak(crash, dict(os.environ))
+        self.assertIn("under ROBIGO_GC_STATS=1 exited 3", str(cm.exception))
+        quiet = [sys.executable, "-c", "pass"]
+        self.assertIsNone(su.gc_peak(quiet, dict(os.environ)))
+
+    def test_the_malloc_peak_sums_the_program_points_at_t_gmax(self):
+        doc = {"dhatFileVersion": 2, "mode": "heap", "pps": [{"gb": 5000, "tb": 9}, {"gb": 1200}, {"gb": 0}]}
+        self.assertEqual(su.malloc_peak_of(json.dumps(doc)), 6200)
+
+    def test_malformed_dhat_output_is_refused_never_read_as_zero(self):
+        # Sol: each of these passed the clause as 0 before
+        good = {"dhatFileVersion": 2, "mode": "heap", "pps": [{"gb": 5000}]}
+        for bad in ("not json", "[]", "{}",
+                    json.dumps(dict(good, pps=[{}])),
+                    json.dumps(dict(good, pps=[{"gb": -1}])),
+                    json.dumps(dict(good, pps=[{"gb": 1.5}])),
+                    json.dumps(dict(good, pps=[{"gb": True}])),
+                    json.dumps(dict(good, pps=[])),
+                    json.dumps(dict(good, mode="copy")),
+                    json.dumps(dict(good, dhatFileVersion=1))):
+            with self.assertRaises(SystemExit, msg=bad):
+                su.malloc_peak_of(bad)
+
+    def test_robigo_heaps_peak_line_is_read_where_it_is_printed(self):
+        line = ("robigo gc: collections 0 (entry 0)\n"
+                "robigo gc: peak bytes in use 123456 (objects 100000, block overhead 20000, large 3456); "
+                "peak chunk bytes mapped 2097152\n")
+        self.assertEqual(su.gc_peak_of(line), {"in_use": 123456, "objects": 100000, "overhead": 20000,
+                                               "large": 3456, "chunks": 2097152})
+        # main's binary before H's line: not reported, never None-valued counts
+        self.assertIsNone(su.gc_peak_of("robigo gc: collections 0 (entry 0)\n"))
+        v = {"instr": 1.0, "anon_kib": 1.0, "rss_kib": 1.0, "heap_bytes": 2048, "gc_peak": None}
+        row = su.table([{"name": "interim"}], {"interim": v}, {"interim": dict(v, gc_peak=su.gc_peak_of(line))})[2]
+        self.assertIn("| - | 120.6 |", row)
+
+    def peak(self, prog):
+        return su.malloc_peak([sys.executable, "-c", prog], dict(su.FIXED_ENV, PYTHONHASHSEED="0",
+                                                                 PYTHONMALLOC="malloc"), "valgrind")
+
+    @unittest.skipUnless(shutil.which("valgrind") and shutil.which("cc"), "no valgrind or cc")
+    def test_the_peak_is_the_exact_maximum_of_live_requested_bytes(self):
+        # Sol's case against massif's peak snapshot (which weighs the
+        # allocator's overhead): 512 KiB freed, then 40,000 one-byte blocks
+        # and 2 MiB live at once. Exactly 2 MiB + 40,000 bytes
+        src = ("#include <stdlib.h>\n#include <string.h>\nint main(void) {\n"
+               "char *a = malloc(512 << 10); memset(a, 1, 512 << 10); free(a);\n"
+               "static char *p[40000]; for (int i = 0; i < 40000; i++) p[i] = malloc(1);\n"
+               "char *b = malloc(2 << 20); memset(b, 1, 2 << 20); return p[0] != 0 && b != 0 ? 0 : 1; }\n")
+        with tempfile.TemporaryDirectory() as d:
+            c, exe = os.path.join(d, "t.c"), os.path.join(d, "t")
+            with open(c, "w") as f:
+                f.write(src)
+            import subprocess
+            subprocess.run(["cc", "-O0", "-o", exe, c], check=True)
+            self.assertEqual(su.malloc_peak([exe], dict(su.FIXED_ENV), "valgrind"), (2 << 20) + 40000)
+
+    @unittest.skipUnless(shutil.which("valgrind"), "no valgrind")
+    def test_one_binary_reads_the_same_bytes_every_run(self):
+        prog = "b = bytearray(3 << 20)\nc = [bytes(100) for _ in range(1000)]\n"
+        self.assertEqual(len({self.peak(prog) for _ in range(3)}), 1)
+
+    @unittest.skipUnless(shutil.which("valgrind"), "no valgrind")
+    def test_a_retained_allocation_fails_the_clause_by_its_size(self):
+        base = "b = bytearray(4 << 20)\n"
+        more = base + "keep = bytearray(256 << 10)\n"
+        a, b = self.peak(base), self.peak(more)
+        self.assertGreaterEqual(b - a, 256 << 10)
+        self.assertLess(b - a, (256 << 10) + 4096)
+        main = {"interim": start(1, 1, 1, a)}
+        self.assertEqual(su.verdict({"interim": start(1, 1, 1, a)}, main), [])
+        f = su.verdict({"interim": start(1, 1, 1, b)}, main)
+        self.assertEqual(len(f), 1)
+        self.assertIn(f"{b - a:+,}", f[0])
 
 
 class Memory(unittest.TestCase):

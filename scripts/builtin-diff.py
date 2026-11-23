@@ -53,6 +53,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 from scratch import keep as keep_dir, remove as remove_dir, scratch_dir  # noqa: E402
 import conf_slots  # noqa: E402
+import rt_trees  # noqa: E402
 
 HERE = os.path.join(ROOT, "scripts", "builtin-diff")
 GEN, DRIVER, RENDER = (os.path.join(HERE, f) for f in ("gen.R", "driver.R", "render.R"))
@@ -206,6 +207,20 @@ def cap():
 
 class Unusable(Exception):
     pass
+
+
+# robigo-rt's boot, which the harness always sets (ROBIGO_RT_BOOT), so that
+# no list depends on a binary's default: "interim" is M1's loader (the variable
+# empty), "stage0" base from source, "rdb" base from base.rdb. The known
+# lists are made under DEFAULT_BOOT; the default-boot flip changes it in
+# the same commit as the lists it regenerates.
+BOOTS = ("interim", "stage0", "rdb")
+DEFAULT_BOOT = "interim"
+
+
+def boot_env(boot):
+    """The environment that selects `boot` in robigo-rt."""
+    return {"ROBIGO_RT_BOOT": "" if boot == "interim" else boot}
 
 
 # The machine-wide slot pool every driver process takes a slot of (the
@@ -400,7 +415,8 @@ def lock_row(lock, path, first=5.0, every=60.0, step=0.2):
 def run_cases(cmd, env, batch, out, ncases, root, rsrc, timeout):
     """run_isolated's cases, in `root`, which its caller holds."""
     lost = {}
-    base = {k: env[k] for k in (*ENV, "R_ENABLE_JIT", "A4_LABEL") if k in env}
+    base = {k: env[k] for k in (*ENV, "R_ENABLE_JIT", "A4_LABEL", "ROBIGO_TRANSLATION_CACHE", "ROBIGO_RT_CHECKOUT",
+                                "ROBIGO_RT_BOOT") if k in env}
     for i in range(1, ncases + 1):
         remove_tree(root)
         cwd, home, tmp = (os.path.join(root, x) for x in ("case", "home", "tmp"))
@@ -676,6 +692,18 @@ def classify(o, r, lost_o, lost_r, i):
     return "mismatch"
 
 
+def rt_env(a, **extra):
+    """The environment of every robigo-rt run here, the compared runs and
+    --timing's start alike, with `extra` over it: the caller's without
+    R_HOME, and the translation cache off for every binary, the plain and
+    the planted one alike (they start the same way whichever wrote the
+    tree's .rtc; the diff is about builtins, not starts), and the boot named
+    (boot_env)."""
+    env = {k: v for k, v in os.environ.items() if k != "R_HOME"}
+    env.update(ENV, A4_LABEL="robigo-rt", ROBIGO_RSRC=a.rsrc, ROBIGO_TRANSLATION_CACHE="0", **boot_env(a.boot), **extra)
+    return env
+
+
 def run_rt(a, row, jit, rt_bin, prefix):
     d = oracle_dir(a.data, row, a.seed, jit)
     cases = read_cases(d)
@@ -683,8 +711,7 @@ def run_rt(a, row, jit, rt_bin, prefix):
         lost_o = {int(k): v for k, v in json.load(f)["lost"].items()}
     scratch = scratch_dir("a4-rt-")
     out = os.path.join(scratch, "records")
-    env = {k: v for k, v in os.environ.items() if k != "R_HOME"}
-    env.update(ENV, R_ENABLE_JIT=JIT[jit], A4_LABEL="robigo-rt", ROBIGO_RSRC=a.rsrc)
+    env = rt_env(a, R_ENABLE_JIT=JIT[jit])
     work = os.path.join(scratch, "cwd")
     os.makedirs(work)
     t0 = time.monotonic()
@@ -856,6 +883,9 @@ def report(r, known, show):
 
 
 def cmd_run(a):
+    if a.boot != DEFAULT_BOOT and (a.regen_known or a.update):
+        sys.exit(f"builtin-diff: the known lists are {DEFAULT_BOOT}'s (DEFAULT_BOOT): --boot {a.boot} cannot "
+                 "rewrite them (the default-boot flip changes DEFAULT_BOOT in the commit that regenerates them)")
     doc, _ = load_rows()
     nc, reg = names_c(r_source()), registry()
     names = a.only or sorted(doc)
@@ -867,6 +897,7 @@ def cmd_run(a):
     ensure_oracle(a, rows)
     timed("GNU R's side (cache misses only)", t0)
     rt_bin = a.robigo_rt or default_rt()
+    rt_trees.ensure(rt_bin)    # (its database tree, for the rdb boot)
     a.rsrc = r_source()
     prefix = ["unshare", "-rn"] if unshare_works() else []
     jobs = [(r, j) for r in rows for j in r.jits]
@@ -875,9 +906,8 @@ def cmd_run(a):
         t0 = time.monotonic()
         d = oracle_dir(a.data, rows[0], a.seed, rows[0].jits[0])
         with tempfile.TemporaryDirectory() as tmp:
-            env = {k: v for k, v in os.environ.items() if k != "R_HOME"}
-            env.update(ENV, R_ENABLE_JIT="0", A4_LABEL="robigo-rt", ROBIGO_RSRC=a.rsrc, A4_BATCH=os.path.join(d, "batch.rds"),
-                       A4_OUT=tmp, A4_FROM="999999", HOME=tmp, TMPDIR=tmp)
+            env = rt_env(a, R_ENABLE_JIT="0", A4_BATCH=os.path.join(d, "batch.rds"), A4_OUT=tmp, A4_FROM="999999",
+                         HOME=tmp, TMPDIR=tmp)
             subprocess.run([rt_bin, "--vanilla", DRIVER], env=env, cwd=tmp, preexec_fn=cap)
         print(f"timing: robigo-rt's start with {rows[0].name}'s batch: {time.monotonic() - t0:.2f} s")
     t_all = time.monotonic()
@@ -893,10 +923,13 @@ def cmd_run(a):
     for r in results:
         variant = r["row"].variant(r["jit"])
         key = r["row"].key(a.seed, r["jit"])
-        known = read_known(variant, key) if a.seed == 0 and not a.regen_known else None
+        # (the known lists are DEFAULT_BOOT's: under another boot every
+        # failure is reported, none is known, and no list is written)
+        lists = a.seed == 0 and a.boot == DEFAULT_BOOT
+        known = read_known(variant, key) if lists and not a.regen_known else None
         new, fails = report(r, known, a.show)
         rel = os.path.relpath(known_path(variant), ROOT)
-        if a.seed == 0 and (a.regen_known or (a.update and known is None)):
+        if lists and (a.regen_known or (a.update and known is None)):
             # a new row starts with the failures it has (or a builtin-diff: PR rewrites them)
             write_known(variant, key, r, fails)
             print(f"  wrote {rel} ({len(fails)} failures)")
@@ -908,8 +941,8 @@ def cmd_run(a):
             # the ratchet only shrinks: fixed cases leave, new ones never enter
             write_known(variant, key, r, known & set(fails))
             print(f"  {rel}: {len(known - set(fails))} fixed, removed")
-        if a.seed != 0:
-            new = fails     # no known list applies to another seed
+        if a.seed != 0 or not lists:
+            new = fails     # no known list applies to another seed, or another boot
         elif known is None:
             print(f"  no {rel}: a new row's list is written by --update")
             new = fails
@@ -936,8 +969,23 @@ def cmd_run(a):
     return status
 
 
+def cargo_target():
+    """cargo's target directory for this checkout, as rt-ci.py resolves it
+    (CARGO_TARGET_DIR, the configs' build.target-dir, else ROOT/target): the
+    tree rt-ci wrote and the binary here must be the same build's."""
+    try:
+        p = subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"],
+                           cwd=ROOT, stdout=subprocess.PIPE, text=True)
+    except FileNotFoundError:
+        sys.exit("builtin-diff: no cargo on PATH: cannot find the target directory "
+                 "(put cargo on PATH, or name the binary: --robigo-rt BIN)")
+    if p.returncode != 0:
+        sys.exit("builtin-diff: cargo metadata failed: cannot find the target directory")
+    return json.loads(p.stdout)["target_directory"]
+
+
 def default_rt():
-    p = os.path.join(os.environ.get("CARGO_TARGET_DIR", os.path.join(ROOT, "target")), "release", "robigo-rt")
+    p = os.path.join(cargo_target(), "release", "robigo-rt")
     if not os.path.exists(p):
         sys.exit(f"builtin-diff: no robigo-rt at {p} (cargo build --release -p robigo-rtapi --bin robigo-rt, "
                  "or --robigo-rt BIN)")
@@ -951,6 +999,7 @@ def cmd_show(a):
     jit = "on" if a.jit else "off"
     ensure_oracle(a, [row])
     rt_bin = a.robigo_rt or default_rt()
+    rt_trees.ensure(rt_bin)
     a.rsrc = r_source()
     r = run_rt(a, row, jit, rt_bin, ["unshare", "-rn"] if unshare_works() else [])
     kind, call = {i: (k, c) for i, k, c in r["cases"]}[a.id]
@@ -991,6 +1040,9 @@ def cmd_plant(a):
     ensure_oracle(a, rows)
     prefix = ["unshare", "-rn"] if unshare_works() else []
     base_rt = a.robigo_rt or default_rt()
+    # (the plain binary's tree, which the planted one boots too: the cases
+    # name no boot, rdb once it is the default; ci's run made it already)
+    rt_trees.ensure(base_rt)
     a.rsrc = r_source()
     ok = True
     try:
@@ -1078,7 +1130,7 @@ PLANT_FEATURE = "robigo-rtbuiltins/diff-plant"
 def cmd_ci(a):
     """rt-ci.py's step: every row against the release binary the steps before
     built, then the plant check with a build of robigo-rt with the plants."""
-    target = os.environ.get("CARGO_TARGET_DIR", os.path.join(ROOT, "target"))
+    target = cargo_target()
     work = os.path.join(ROOT, ".robigo", "builtin-diff")
     os.makedirs(work, exist_ok=True)
     rel = os.path.join(target, "release", "robigo-rt")
@@ -1110,6 +1162,8 @@ def main(argv):
         p.add_argument("--jobs", type=int, default=4)
         p.add_argument("--robigo-rt", help="the robigo-rt binary (default: the release build)")
         p.add_argument("--no-docker", action="store_true", help="fail instead of making GNU R's side")
+        p.add_argument("--boot", choices=BOOTS, default=DEFAULT_BOOT,
+                       help=f"robigo-rt's boot, set explicitly for every case (default {DEFAULT_BOOT})")
     p = sub.add_parser("run")
     common(p)
     p.add_argument("--only", action="append", help="this builtin's row (repeatable)")

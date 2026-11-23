@@ -1386,9 +1386,9 @@ pub(crate) fn unused_message(
 }
 
 /// Signal `matchArgs`' partial-match warnings for `partial` (the option is
-/// on): "partial argument match of '%s' to '%s'" against the call, in the
-/// order `matchArgs` signals them.
-// R: match.c:277-279, errors.c:R_makePartialMatchWarningCondition
+/// on): the `partialMatchWarning` of each (supplied tag, formal) against
+/// the call, in the order `matchArgs` signals them.
+// R: match.c:277-283, errors.c:R_makePartialMatchWarningCondition
 fn partial_warnings(
     cx: &mut Cx,
     call: Root<'_>,
@@ -1397,13 +1397,12 @@ fn partial_warnings(
     ftags: &[Sexp],
 ) -> RResult<()> {
     for &(a, f) in partial {
-        // (tags are symbols: immortal)
         // SAFETY: the tags are symbols: immortal.
-        let tag = unsafe { crate::eval::sym_name(cx, acts[a as usize].tag) };
-        // SAFETY: the tags are symbols: immortal.
-        let formal = unsafe { crate::eval::sym_name(cx, ftags[f as usize]) };
-        let msg = format!("partial argument match of '{tag}' to '{formal}'");
-        cx.warning_call(Some(call), &msg)?;
+        let (tag, formal) = unsafe {
+            let name = |y: Sexp| Ref::from_sexp(y, cx).as_sym().unwrap().name_bytes().to_vec();
+            (name(acts[a as usize].tag), name(ftags[f as usize]))
+        };
+        cx.partial_match_warning(Some(call), &tag, &formal)?;
     }
     Ok(())
 }

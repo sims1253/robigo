@@ -1,0 +1,17 @@
+[1] 2
+[1] "partialMatchWarning" "warning"             "condition"          
+abc
+abcdef
+attr(x, "abc")
+[1] 2
+[1] "partialMatchWarning" "warning"             "condition"          
+nam
+names
+attr(y, "nam")
+[1] "a"
+NULL
+NULL
+[1] "attempt to use zero-length variable name"
+[1] "attempt to use zero-length variable name"
+[1] TRUE
+[1] 2

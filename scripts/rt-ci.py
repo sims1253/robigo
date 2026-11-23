@@ -312,6 +312,30 @@ GCTORTURE_FIRST = {
 }
 
 
+# The cases that need longer than the plain gctorture step's 600 s, and how
+# long they get (the runner starts them first, as GCTORTURE_FIRST's).
+# Interim: remove or lower each when its cure lands.
+GCTORTURE_SLOW = {
+    # Deep recursion through lapply, a collection at every allocation: on
+    # main, 315.5-332.9 s on normal runners (runs 45106626186, 45108072544,
+    # 45163092712), 454.3 s on a slow one (45104024474), and killed at 600 s
+    # twice on 2026-11-23 (45153365818 at 66c1b0206, 45163005843 for #1004),
+    # where the runner was ~1.4x slow on ordinary steps and the case >=1.8x.
+    # 780 s is the most the gctorture shard's budget (26 min) holds: the
+    # case starts first, so the step takes about its time, and the shard's
+    # other steps took 12.26 min on the slow runner (9.38 on a normal one,
+    # about 13 on a kill-class one): 26 - 13 = 13 min, about 780 s.
+    # By runner image (131 jobs, 2026-11-21 to 11-23): ubuntu24/20261116.133
+    # 311-342 s, no kill; .376 302-600 s, both kills (its passed runs on
+    # the slowest hosts 554-589 s). #959 put the freeze's check at every
+    # 16th collection on this step, which costs this case 1.37x (244 s ->
+    # 335 s on .133, the case-times artifacts): the deepest stack in the
+    # slice, so the largest root set to trace. Remove or lower it when S1's
+    # smaller case or H's cheaper check lands, whichever is first
+    "tests/r/conditions/c-stack-overflow.R": 780,
+}
+
+
 def case_timeouts(slow):
     """ROBIGO_CONF_TIMEOUTS's value for `slow` (case -> seconds)."""
     return ",".join(f"{c}={secs}" for c, secs in sorted(slow.items()))
@@ -336,6 +360,20 @@ CRATE_TEST = ["cargo", "test", "--profile", "quick", "--locked"]
 TREE_RUNS = {"ROBIGO_RT_HOME_DB": "1"}
 
 
+# The step that builds the release binary (with the conformance test), whose
+# tree the next step writes. Every step that can run the rdb boot (no
+# ROBIGO_RT_BOOT, once rdb is the default, or ROBIGO_RT_BOOT=rdb) needs base's
+# database tree written by its own binary before it, so these two run in
+# every shard of `steps` whose steps do (TREE_SHARDS), not only in modes:
+# about 0.2-0.45 min for the tree; the build is one the shard made anyway.
+RELEASE_BUILD_TITLE = "the release binary and the conformance, built (cargo test --release --no-run)"
+
+
+def release_build():
+    return (RELEASE_BUILD_TITLE, {},
+            ["cargo", "test", "--release", "--locked", "-p", "robigo-rtapi", "--test", "conformance", "--no-run"])
+
+
 def db_tree(binary, env=None):
     """The step that writes base's database tree with `binary`, the release
     robigo-rt its shard built first (rt_binary; scripts/rt-home-db.sh is
@@ -352,6 +390,42 @@ def conformance_command():
 # (a case under a collector mode runs many times longer than the runner's
 # default 20 s allow)
 SLOW = {"ROBIGO_CONF_TIMEOUT": "600"}
+
+# The torture modes' conformance steps torture each case, not its start:
+# the runtime holds them until the start is over (robigo-heap's
+# ROBIGO_TORTURE_AFTER_START, a test hook; GNU R itself tortures the start,
+# init_gctorture in InitMemory). The start keeps its own steps, one per boot
+# (START_TORTURE), under the moving collector and gctorture from the start.
+AFTER_START = {"ROBIGO_TORTURE_AFTER_START": "1"}
+
+# The start itself, tortured: under the moving collector and gctorture from
+# the heap's creation (no ROBIGO_TORTURE_AFTER_START), each boot runs this,
+# whose start is the point (stage 0 or the rdb loader and its lazy-load
+# fetches, the system profile, the compiler's load when the JIT is on): an
+# unrooted object anywhere in it is moved under its holder and read as
+# poison. The JIT is on (R_ENABLE_JIT=3, set, not the default's), so the
+# compiler's namespace loads in the start; the script then fetches a few of
+# base's lazy-loaded bindings and runs a loop the JIT compiles. (A package
+# load, library(stats), waits for the tree to have one.)
+START_SCRIPT = ('invisible(lapply(c("paste", "format", "sprintf", "regmatches", "Reduce", "tryCatch"), '
+                'function(f) get(f, baseenv()))); '
+                'f <- function(n) { s <- 0; for (i in seq_len(n)) s <- s + i; s }; '
+                'stopifnot(f(10) == 55, f(20) == 210); cat("started\\n")')
+# (GNU R's boot, rdb's, loads the compiler's namespace in the start when the
+# JIT is on, main.c R_init_jit_enabled; M1's loader sets the JIT up without it)
+START_COMPILER = 'stopifnot("compiler" %in% loadedNamespaces()); '
+
+
+def start_torture_step(boot):
+    """The step that runs START_SCRIPT under `boot` (ROBIGO_RT_BOOT's value,
+    "" for M1's loader) with the start tortured."""
+    name = {"": "M1's loader", "rdb": "the rdb boot"}[boot]
+    return (f"the start tortured: {name} under ROBIGO_GC_MOVE=1 and gctorture from the heap's creation",
+            # (set outright: an inherited hold or R_GCTORTURE=0 would take
+            # the start's torture away)
+            {"ROBIGO_RT_BOOT": boot, "R_GCTORTURE": "1", "R_GCTORTURE_WAIT": "1", "ROBIGO_GCTORTURE": "1",
+             "ROBIGO_GC_MOVE": "1", **FREEZE_OFF, "ROBIGO_TORTURE_AFTER_START": "0", "R_ENABLE_JIT": "3"},
+            [rt_binary(), "--vanilla", "-e", (START_COMPILER if boot == "rdb" else "") + START_SCRIPT])
 
 
 # TEMPORARY (2026-11-23): two cases given 60 s in the conformance steps
@@ -413,8 +487,12 @@ def full_move_steps():
     gctorture, every collection moving everything it may."""
     full_slow = case_timeouts(FULL_MOVE_SLOW)
     return every_cpu([
+        ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", {}, ["scripts/rt-home.sh"]),
+        release_build(),
+        db_tree(rt_binary()),
         ("conformance under ROBIGO_GC_MOVE=1 with gctorture (every collection moves everything)",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **FREEZE_OFF, **SLOW, "ROBIGO_CONF_TIMEOUTS": full_slow},
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **FREEZE_OFF, **AFTER_START, **SLOW,
+          "ROBIGO_CONF_TIMEOUTS": full_slow},
          conformance_command()),
     ])
 
@@ -445,9 +523,11 @@ def freeze_check_steps():
     return every_cpu([
         # (the tools cases need the tree: without it they skip, Sol r7 S13)
         ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", {}, ["scripts/rt-home.sh"]),
+        release_build(),
+        db_tree(rt_binary()),
         ("conformance under gctorture, the freeze checked at every collection",
          {"ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "1", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
-          **SLOW, "ROBIGO_CONF_TIMEOUTS": case_timeouts(FREEZE_CHECK_SLOW)},
+          **AFTER_START, **SLOW, "ROBIGO_CONF_TIMEOUTS": case_timeouts(FREEZE_CHECK_SLOW)},
          conformance_command()),
     ])
 
@@ -481,8 +561,7 @@ def steps(crates):
         # the release binary users get, which the steps below run (base's
         # database tree, boot_db, the scripts): built as the conformance step
         # builds it (its features), since the crates' tests build quick
-        ("the release binary and the conformance, built (cargo test --release --no-run)", {},
-         [*test, "-p", "robigo-rtapi", "--test", "conformance", "--no-run"]),
+        release_build(),
         # robigo-rt's default boot (L5, GNU R's: base from base's database):
         # the database, written by this robigo-rt booted from base's source,
         # then base booted from it (crates/robigo-rtapi/tests/boot_db.rs). Before every
@@ -491,6 +570,8 @@ def steps(crates):
         # names the source tree, the script and the binary) and those tests
         # run instead of skipping on a fresh checkout (TREE_RUNS)
         db_tree(rt_binary()),
+        start_torture_step(""),
+        start_torture_step("rdb"),
         ("the crates' tests (quick profile)", TREE_RUNS, [*crate, *pkgs, *skip]),
         ("boot from base's database (ROBIGO_RT_BOOT=rdb)", {"ROBIGO_RT_HOME_DB": "1"},
          [*test, "-p", "robigo-rtapi", "--test", "boot_db", *skip]),
@@ -550,7 +631,7 @@ def steps(crates):
         # against 97 s without it, past the case timeout; about 1.3x at 16)
         ("conformance under gctorture (E3)",
          {"ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "16", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
-          **slow, "ROBIGO_CONF_TIMEOUTS": case_timeouts(GCTORTURE_FIRST)}, conformance),
+          **AFTER_START, **slow, "ROBIGO_CONF_TIMEOUTS": case_timeouts({**GCTORTURE_FIRST, **GCTORTURE_SLOW})}, conformance),
         # every argument a PROMSXP at call entry (GNU R's representation,
         # through the same binding-kind transitions): docs/g3.md §16's
         # ROBIGO_MATERIALIZE=1. Every rt crate, as the steps above: cargo
@@ -566,7 +647,7 @@ def steps(crates):
         # H8: the young objects at each collection, everything at every N-th;
         # the nightly runs it with every collection moving everything
         (f"conformance under ROBIGO_GC_MOVE={GC_MOVE_YOUNG} with gctorture (E3)",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": GC_MOVE_YOUNG, **FREEZE_OFF, **slow,
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": GC_MOVE_YOUNG, **FREEZE_OFF, **AFTER_START, **slow,
           "ROBIGO_CONF_TIMEOUTS": case_timeouts({**GCTORTURE_FIRST, **YOUNG_MOVE_FIRST, **YOUNG_MOVE_SLOW})}, conformance),
         # D5's frame recycling (docs/g3.md §16): every frame that would be recycled
         # is poisoned and held back instead, so a frame that escaped without
@@ -612,18 +693,22 @@ def steps(crates):
         # poison-dead steps after it: every step above tests the binary users
         # get (cargo keeps both builds). With ROBIGO_GC_MOVE=1 as well it takes
         # about 20 minutes, so that run is by hand (g3.md §16).
+        # this build's binary (it replaces the release one) and base's
+        # database tree written by it, before any step runs it: at an rdb
+        # default every one of them boots from that tree
+        ("ROBIGO_RETRY_TORTURE's build (with poison-dead), built (cargo test --release --no-run)", {},
+         [*test, "-p", "robigo-rtapi", "--features", CHECK_FEATURES, "--test", "conformance", "--no-run"]),
+        ("base's database tree for ROBIGO_RETRY_TORTURE's build (scripts/rt-home-db.sh)", {},
+         ["scripts/rt-home-db.sh", "--robigo-rt", rt_binary()]),
         ("conformance under ROBIGO_RETRY_TORTURE=1 (E9: every build's retry runs once)",
-         {"ROBIGO_RETRY_TORTURE": "1", **slow},
+         {"ROBIGO_RETRY_TORTURE": "1", **AFTER_START, **slow},
          [*test, "-p", "robigo-rtapi", "--features", CHECK_FEATURES, "--test", "conformance", "--",
           "--exact", CONFORMANCE, "--nocapture"]),
         # C1 (#979, the bot's round 2): a translation-cache verification whose
         # fresh translation stops for a retry compares nothing. Under
         # ROBIGO_RETRY_TORTURE every fresh translation of a verification
-        # stops once inside it, so the case is certain, not lucky: base's
-        # database tree written by this build (whose binary the step above
-        # made), then the boot test that verifies a start under the knob
-        ("base's database tree for ROBIGO_RETRY_TORTURE's build (scripts/rt-home-db.sh)", {},
-         ["scripts/rt-home-db.sh", "--robigo-rt", rt_binary()]),
+        # stops once inside it, so the case is certain, not lucky: the boot
+        # test that verifies a start under the knob, on the tree above
         # (TREE_RUNS: a missing or stale tree fails, not skips; and the test
         # fails, not skips, if the build has no retry-torture)
         ("a translation-cache verification under ROBIGO_RETRY_TORTURE=1 compares nothing for a retry "
@@ -797,7 +882,14 @@ def shard_steps(crates, shard):
         return builds_first(debug_assertions_steps(crates))
     if shard == "release-crate-tests":
         return builds_first(release_crate_tests_steps(crates))
-    return builds_first([s for s in steps(crates) if shard_of(s[0]) in (None, shard)])
+    shared = (RELEASE_BUILD_TITLE, db_tree("")[0])
+    return builds_first([s for s in steps(crates)
+                         if shard_of(s[0]) in (None, shard) or (s[0] in shared and shard in TREE_SHARDS)])
+
+
+# The shards of `steps` besides modes (where they are) that run the release
+# binary at the default boot: each builds it and writes its tree first
+TREE_SHARDS = ("gctorture", "builtin-diff")
 
 
 # the environment that decides what cargo builds (the modes' variables are
@@ -893,6 +985,112 @@ def crate_test_threads(cmd):
             and not (CONFORMANCE in cmd and "--exact" in cmd))
 
 
+# CI's base-subset job (scripts/base-subset.sh --check, in the oracle image)
+# checks that the base subset still traces from the tree's inputs. A local
+# run (no --shard) runs it too when the branch changes one of those inputs
+# against its merge base with origin/main (about 7 min, on those branches
+# only), so the push does not find out first.
+BASE_SUBSET_INPUTS = (
+    "tests/rt/**/*.R",
+    "tests/rt/R-*/**/*.Rstatus",          # the traced cases' recorded status (the rt pin's)
+    "tests/rt/capi/support/*.c",           # the C API cases' package code
+    "benchmarks/rt/calls-rows.toml",
+    "benchmarks/suite/calls.R",
+    "benchmarks/suite/fib.R",
+    "benchmarks/suite/binarytrees.R",
+    "scripts/base-subset*",
+    "scripts/base-wide.R",
+    "scripts/oracle-run.sh",
+    "scripts/oracle-pins.sh",
+    "scripts/oracle-versions",             # the oracle's pin
+    "scripts/perf.py",                     # rows_with_setups, which makes the d2s/e7 row scripts
+    "crates/robigo-rt/proto/base-*.txt",
+    "scripts/r-src.sh",
+)
+BASE_SUBSET_STEP = ("base subset, its inputs changed on this branch (scripts/base-subset.sh --check)", {},
+                    ["scripts/base-subset.sh", "--check"])
+
+
+def rt_pin(root=ROOT):
+    """robigo-rt's GNU R version, scripts/oracle-versions' `rt=` line (as
+    base-subset.sh and ci-image.sh read it)."""
+    with open(os.path.join(root, "scripts", "oracle-versions")) as f:
+        for line in f:
+            if line.startswith("rt="):
+                return line.split("=", 1)[1].strip()
+    raise SystemExit("rt-ci: scripts/oracle-versions has no rt= line")
+
+
+def branch_changes(root=ROOT, base="origin/main"):
+    """The paths this checkout changes against its merge base with `base`:
+    its commits, the staged and the unstaged edits, each on its own (a later
+    edit that undoes a staged or committed one leaves the path changed for
+    the commit that will be pushed), and untracked files. None when git
+    cannot say (no git, no `base`): the caller then owes every check."""
+    def git(*args):
+        try:
+            p = subprocess.run(["git", *args], cwd=root, capture_output=True)
+        except OSError:
+            return None
+        return p.stdout if p.returncode == 0 else None
+    mb = git("merge-base", "HEAD", base)
+    if mb is None:
+        return None
+    mb = os.fsdecode(mb).strip()
+    lists = [git("diff", "--name-only", "-z", "--no-renames", mb, "HEAD"),
+             git("diff", "--name-only", "-z", "--no-renames", "--cached"),
+             git("diff", "--name-only", "-z", "--no-renames"),
+             git("ls-files", "--others", "--exclude-standard", "-z")]
+    if any(x is None for x in lists):
+        return None
+    # (paths as the filesystem's bytes allow: a non-UTF-8 name decodes too)
+    return sorted({os.fsdecode(p) for x in lists for p in x.split(b"\0") if p})
+
+
+# base_subset_owed's reason when git cannot say what the branch changes (a
+# shallow clone, no origin/main): the check is owed, without a changed input
+GIT_CANNOT_COMPARE = "git cannot compare this checkout with origin/main"
+
+
+def base_subset_owed(changed):
+    """Why base-subset's check is owed (the first changed input, or
+    GIT_CANNOT_COMPARE), or None."""
+    if changed is None:
+        return GIT_CANNOT_COMPARE
+    pats = [ci_select.glob_re(p) for p in BASE_SUBSET_INPUTS]
+    for path in changed:
+        if any(r.match(path) for r in pats):
+            return path
+    return None
+
+
+def oracle_problem():
+    """None when scripts/base-subset.sh can run GNU R at the rt pin (its
+    Rscript on PATH, or docker's robigo-oracle:<pin>), else what is missing
+    and the cure."""
+    rt = rt_pin()
+    image = f"robigo-oracle:{rt}"
+    # (from the checkout, as base-subset.sh runs it, and --vanilla: a
+    # caller's .Rprofile must not answer for the R that will run)
+    try:
+        p = subprocess.run(["Rscript", "--vanilla", "-e", "cat(format(getRversion()))"], cwd=ROOT,
+                           capture_output=True, text=True)
+        if p.returncode == 0 and p.stdout.strip() == rt:
+            return None
+    except OSError:    # (missing, or there but not executable: no usable Rscript)
+        pass
+    try:
+        if subprocess.run(["docker", "image", "inspect", image], capture_output=True).returncode == 0:
+            return None
+    except OSError:
+        return (f"there is no docker for {image} (and no GNU R {rt} Rscript on PATH): "
+                "install docker, or run on a machine with it")
+    ref = "oracle_" + rt.replace(".", "_")
+    return (f"there is no {image} image (and no GNU R {rt} Rscript on PATH). The cure, two minutes: "
+            f"scripts/build-oracle.sh --pull {rt} (docker pull of CI's image, the {ref}= line of "
+            f"scripts/ci-image.sh refs, tagged {image}); or build it: scripts/build-oracle.sh --image {rt}")
+
+
 def metadata():
     p = subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"],
                        cwd=ROOT, stdout=subprocess.PIPE, text=True, check=True)
@@ -904,6 +1102,10 @@ def main(argv):
     # GNU R, /usr/lib/R) it ignores with GNU R's warning on stdout, which
     # every compared output would then carry: none for what this runs
     os.environ.pop("R_HOME", None)
+    # and its trees are this checkout's: every plan writes base's database
+    # tree here, so an inherited ROBIGO_RT_CHECKOUT must not send a step's
+    # binary to another checkout's
+    os.environ["ROBIGO_RT_CHECKOUT"] = ROOT
     slots = conf_slots_dir()
     if slots is not None:
         os.environ["ROBIGO_CONF_SLOTS_DIR"] = slots
@@ -958,6 +1160,16 @@ def main(argv):
             print(f"::error::{problem}")
             return 2
     plan = (full_move_steps() if a.full_move else freeze_check_steps() if a.freeze_check else shard_steps(crates, a.shard) if a.shard else builds_first(steps(crates)))
+    if not (a.full_move or a.freeze_check or a.shard):
+        owed = base_subset_owed(branch_changes())
+        if owed:
+            problem = oracle_problem()
+            if problem:
+                why = (f"this branch changes base-subset's inputs ({owed})" if owed != GIT_CANNOT_COMPARE
+                       else f"{GIT_CANNOT_COMPARE}, so it is owed whatever the branch changes")
+                print(f"::error::rt-ci: base-subset's check is owed ({why}), and {problem}")
+                return 2
+            plan = [*plan, BASE_SUBSET_STEP]
     done = []
     try:
         return run_steps(plan, done)
@@ -976,6 +1188,12 @@ TIMES_DIR = os.environ.get("RT_CI_TIMES_DIR") or os.path.join(tempfile.gettempdi
 SLOW_FRACTION = 0.5
 
 
+def step_timeout(env):
+    """A conformance step's limit for a case not named in
+    ROBIGO_CONF_TIMEOUTS: its ROBIGO_CONF_TIMEOUT, or the runner's 20 s."""
+    return int(env.get("ROBIGO_CONF_TIMEOUT") or 20)
+
+
 def times_file(index, title):
     """The times report of a plan's `index`-th step, titled `title`: the index
     keeps two steps whose titles differ only in punctuation apart."""
@@ -983,26 +1201,36 @@ def times_file(index, title):
     return os.path.join(TIMES_DIR, f"{index:02d}-{slug}.tsv")
 
 
-def slow_cases(path, fraction=SLOW_FRACTION):
+def slow_cases(path, fraction=SLOW_FRACTION, default=None):
     """A times report's cases over `fraction` of their limit, slowest first:
-    (secs, limit, status, case)."""
+    (secs, limit, status, case); with the step's `default` limit, also each
+    case given longer than it (a named allowance), whatever its time."""
     try:
         with open(path) as f:
             lines = [line.rstrip("\n").split("\t") for line in f if line.strip() and not line.startswith("#")]
     except FileNotFoundError:
         return []
     rows = [(float(s), int(lim), status, case) for s, lim, status, case in lines]
-    return [r for r in rows if r[0] > fraction * r[1]]
+    return [r for r in rows if r[0] > fraction * r[1] or (default is not None and r[1] > default)]
 
 
-def slow_cases_report(title, path):
-    """The end of a conformance step's log: its cases over half their limit."""
-    rows = slow_cases(path)
-    if not rows:
+def slow_cases_report(title, path, default=None):
+    """The end of a conformance step's log: its cases over half their limit,
+    and (with the step's `default` limit) each case with an allowance above
+    it, so an allowance's case keeps showing its time against it."""
+    over = slow_cases(path)
+    allowed = [r for r in slow_cases(path, default=default) if r not in over]
+    if not over and not allowed:
         return f"rt: case times: {title}: no case over {SLOW_FRACTION:.0%} of its limit ({path})"
-    lines = [f"rt: case times: {title}: {len(rows)} case(s) over {SLOW_FRACTION:.0%} of their limit "
-             f"(name each with an allowance and its time, or make it smaller; {path}):"]
-    lines += [f"  {s:7.1f} s of {lim:4d} s  {status}  {case}" for s, lim, status, case in rows]
+    if over:
+        lines = [f"rt: case times: {title}: {len(over)} case(s) over {SLOW_FRACTION:.0%} of their limit "
+                 f"(name each with an allowance and its time, or make it smaller; {path}):"]
+    else:
+        lines = [f"rt: case times: {title}: no case over {SLOW_FRACTION:.0%} of its limit ({path})"]
+    lines += [f"  {s:7.1f} s of {lim:4d} s  {status}  {case}" for s, lim, status, case in over]
+    if allowed:
+        lines.append(f"rt: case times: {title}: the cases with an allowance above the step's {default} s:")
+        lines += [f"  {s:7.1f} s of {lim:4d} s  {status}  {case}" for s, lim, status, case in allowed]
     return "\n".join(lines)
 
 
@@ -1098,7 +1326,7 @@ def run_steps(plan, done):
         print("::endgroup::", flush=True)
         if times:
             # (also when the step failed: a timeout is when the times matter)
-            print(slow_cases_report(title, times), flush=True)
+            print(slow_cases_report(title, times, step_timeout({**os.environ, **env})), flush=True)
         if r.returncode != 0:
             print(f"::error::rt: {title} failed")
             return r.returncode
