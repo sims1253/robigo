@@ -105,7 +105,7 @@ fn a_methods_frame_outlives_its_generics_poisoned_frame() {
     // checks each walked block's count against its objects' cells
     // (robigo-heap's `Block::cells`)
     for _ in 0..1000 {
-        drop(cx.alloc_copy(&[1.0, 2.0, 3.0]).unwrap().finish());
+        let _ = cx.alloc_copy(&[1.0, 2.0, 3.0]).unwrap().finish();
     }
     cx.collect();
     cx.collect();
