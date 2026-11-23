@@ -88,8 +88,8 @@ pub(crate) fn value<'s>(
 /// force made it (a translation cache's stub is none) and it is early-pure.
 /// The cheap refusals first, before any variable is read: no translation,
 /// or code [`crate::code::early_pure`] does not mark (translated base code
-/// passes such arguments on every call: lapply paid +0.25% reading them to
-/// no end), then the arm's own conditions ([`bytecode_runs`]).
+/// passes such arguments on every call); the arm's own conditions
+/// ([`bytecode_runs`]) only for a value the run found.
 #[inline(never)]
 fn bytecode_value(cx: &Cx, expr: Root<'_>, rho: Root<'_>) -> Option<Slot> {
     let e = expr.bind(cx).sexp();
@@ -98,12 +98,34 @@ fn bytecode_value(cx: &Cx, expr: Root<'_>, rho: Root<'_>) -> Option<Slot> {
     // object: None).
     let c = unsafe { crate::code::cached(cx, e.aux(), Profile::Bc) }?;
     // SAFETY: a live code object.
-    if !unsafe { crate::code::early_pure(c) } || !bytecode_runs(cx, expr) {
+    if !unsafe { crate::code::early_pure(c) } {
         return None;
     }
     // SAFETY: the code is live, the environment rooted, and nothing
     // collects before the run ends.
-    unsafe { run(cx, c, rho.bind(cx).sexp()) }
+    let x = unsafe { run(cx, c, rho.bind(cx).sexp()) }?;
+    // (the arm's own conditions last: they matter only for a value, and a
+    // run declines at its first read of a formal not yet forced, base's
+    // commonest argument: lapply +0.25% with them first)
+    bytecode_runs(cx, expr).then_some(x)
+}
+
+/// Whether the byte code `expr`'s early value, just declined
+/// ([`bytecode_value`]), is declined for good at its call site: its
+/// translation exists and either is not early-pure, or its run declined (a
+/// read of a variable not plainly bound: translated base code passes its
+/// formals on, unforced, on every call). Not when there is no translation
+/// yet (an earlier force makes it: the next call may take the value) or
+/// the arm's own conditions refused (they change with the session).
+#[cold]
+#[inline(never)]
+pub(crate) fn declined_for_good(cx: &Cx, expr: Root<'_>) -> bool {
+    // SAFETY: as in bytecode_value.
+    let Some(c) = (unsafe { crate::code::cached(cx, expr.bind(cx).sexp().aux(), Profile::Bc) }) else {
+        return false;
+    };
+    // SAFETY: a live code object.
+    !unsafe { crate::code::early_pure(c) } || bytecode_runs(cx, expr)
 }
 
 /// Whether eval.rs's BCODESXP arm would run the byte code `expr` (and so
