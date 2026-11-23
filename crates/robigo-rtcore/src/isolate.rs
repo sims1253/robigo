@@ -153,7 +153,11 @@ pub struct Isolate {
 /// environments, base bindings and the global cache) and the deferred
 /// warnings. Only [`Cx::need_gc`] takes `&mut` of it, for the collection it
 /// hands it to; everything else reads it through the accessors below.
+// (the freeze roots, [`Roots::trace_freeze_roots`], are a part of these: the
+// boot heap's lazy freeze walks them inside the first collection after the
+// boot boundary, robigo-heap's `freeze.rs`)
 #[derive(Trace)]
+#[trace(freeze = "trace_freeze_roots")]
 pub(crate) struct Roots {
     stack: ValueStack,
     globals: Globals,
@@ -164,6 +168,45 @@ pub(crate) struct Roots {
     /// the C API's globals: the protect stack, R_alloc's stack, the
     /// constants and symbols C reads (`capi.rs`)
     capi: crate::capi::CApi,
+}
+
+impl Roots {
+    /// The freeze roots (`Cx::freeze_boot_heap`): the environments' state,
+    /// the `Globals` and the C API's globals; not the value stack, the
+    /// contexts, the pending exits or the warnings, which are the session's.
+    /// The search path's environments reach the visitor as copies: an
+    /// edge it writes back is not stored (a debug assertion refuses one),
+    /// so the visitor must only read, as the freeze's does.
+    pub(crate) fn trace_freeze_roots<V: robigo_heap::Visitor + ?Sized>(&mut self, v: &mut V) {
+        use robigo_heap::Trace;
+        self.envs.trace_freeze_roots(v);
+        self.globals.trace(v);
+        self.capi.trace_freeze_constants(v);
+        // the search path's environments after the global one (amendment 4:
+        // the attached packages a start with default packages loaded)
+        let base = self.envs.base_raw();
+        let mut e = self.envs.global_raw();
+        // (a rewired chain may cycle: each environment once, Sol r3 S9; the
+        // global environment itself is seen from the start, so a chain led
+        // back to it, `parent.env(globalenv()) <- e` with e's parent the
+        // global one in a profile, never offers it as a root)
+        let mut seen = std::collections::HashSet::from([e.addr()]);
+        loop {
+            // SAFETY: the global environment and its enclosures are live
+            // environments of this isolate (the search path's chain ends at
+            // base, then the empty environment).
+            e = unsafe { robigo_heap::env::enclos(e) };
+            if e.is_null() || e == base || e == self.envs.empty_raw() || !seen.insert(e.addr()) {
+                break;
+            }
+            // the visitor gets a copy: the chain is walked, never rewritten
+            // (the freeze's visitor reads; a moving one would be refused,
+            // the freeze being off under ROBIGO_GC_MOVE)
+            let mut x = e;
+            v.edge(&mut x);
+            debug_assert_eq!(x, e, "robigo: the freeze roots' search-path walk does not take a moved edge");
+        }
+    }
 }
 
 /// What a frame (a scope, a native call, a callback) restores when it ends,
@@ -227,7 +270,8 @@ impl Isolate {
     }
 
     /// The context chain and its globals. Every field is a `Cell` (as the
-    /// value stack's), so shared references may coexist.
+    /// value stack's), the detached segments' list a `RefCell` borrowed only
+    /// for a push or a copy, so shared references may coexist.
     #[inline(always)]
     pub(crate) fn contexts(&self) -> &Contexts {
         // SAFETY: as in `stack`.

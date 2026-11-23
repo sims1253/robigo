@@ -13,6 +13,7 @@
     scripts/rt-ci.py --list     # the rt crates, one per line
     scripts/rt-ci.py --check    # the premise check alone
     scripts/rt-ci.py --full-move  # the nightly's run: every collection moves everything
+    scripts/rt-ci.py --freeze-check  # the nightly's run: gctorture, the freeze checked at every collection
 
 The rt crates are the workspace members under the `rt` rule of
 scripts/ci-selection.toml, so the selection and this job cannot drift apart.
@@ -113,22 +114,42 @@ CONFORMANCE = "rt_conformance"
 PIN_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-pin-report-{os.getpid()}.txt")
 
 
+# the boot heap's freeze, off by default (robigo-heap's freeze.rs): on in
+# its checked steps and in its own conformance steps
+FREEZE_ON = {"ROBIGO_GC_FREEZE": "1"}
+
+
+# where the freeze's check writes a failure (appended to by every process):
+# a step with a line in it fails, whatever the case's own output (an
+# unratcheted case's panic would otherwise pass: Sol r7 S14)
+FREEZE_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-freeze-check-{os.getpid()}.txt")
+
+
 # where the byte-code crosscheck step writes (V3: one line per translated
 # closure whose code differs from the from-source compiler's)
 BC_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-bc-crosscheck-{os.getpid()}.txt")
 # the same under the rdb boot (base's closures from base.rdb, so many more)
 BC_REPORT_RDB = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-bc-crosscheck-rdb-{os.getpid()}.txt")
 # The fewest closures each crosscheck report must compare. Under the rdb
-# boot base.rdb's closures and, since #942, the compiler namespace's: 95,302
-# compared on main ec22e65ba merged with #961 (A1, 2026-11-21; about 46k
-# before #942, so a boot that stops loading the compiler's namespace falls
-# below the floor). The plain crosscheck compares 191 (the cases' own
-# closures): any comparison at all is its floor.
-BC_FLOORS = {BC_REPORT_RDB: 90000}
+# boot base.rdb's closures and, since #942, the compiler namespace's: 97,485
+# on main b0c49e869, the same with 24 conformance jobs and with 1, so the
+# count is fixed for a given tree. The floor catches lost coverage (a boot
+# that stops loading the compiler's namespace compares about half), not
+# noise. Counts recorded before the report's records were written whole
+# (95,302 on #961, CI's 93,591) were low by merged lines. The plain
+# crosscheck compares 191 (the cases' own closures): any comparison at all
+# is its floor.
+BC_FLOORS = {BC_REPORT_RDB: 96000}
 
 # the kinds of line the crosscheck writes (crates/robigo-rt/src/compile/crosscheck.rs),
 # each the line's first word, then ":" (or a class in parentheses, then ":")
 BC_KINDS = ("same", "expected", "unexpected", "untranslated", "skipped")
+# a record's start straight after other text (no space or quote before it):
+# where a second record begins in a merged line ("...; from source Bsame:
+# ..."), not a kind's name inside an R string in a deparsed body. Every
+# merge also leaves an empty line, which bc_report_check counts: that is the
+# complete check; this one only names the suspect lines once it fired
+BC_SECOND_RECORD = re.compile(r"[^\s\"'`](?:same|unexpected|untranslated|skipped|expected \(.+?\)): ")
 
 
 def bc_report_check(path, floor=1):
@@ -138,13 +159,35 @@ def bc_report_check(path, floor=1):
     fewer than `floor` closures compared (BC_FLOORS): every closure compared
     has its line (same, expected or unexpected), so a step that compares
     fewer than it should, or has no report at all, is a broken setup, never
-    a pass."""
+    a pass. And a report that lost or merged records:
+    - the conformance's parallel cases append to one file; a record written
+      in two parts let another process's land between them, giving one line
+      with two records and an empty line. crosscheck.rs now writes each
+      record whole under the file's lock, and each empty line is an error
+      (once there is one, the lines where a second record starts are named);
+    - a record that could not be written leaves `<path>.lost` (crosscheck.rs
+      makes it when the write fails), which is an error whatever case lost it:
+      a case without a ratchet marker fails without failing the run.
+    So neither can lower the count silently."""
+    errors = []
+    if os.path.exists(path + ".lost"):
+        errors.append(f"the crosscheck could not write a record to {path} ({path}.lost): the report is incomplete")
     try:
         with open(path) as f:
-            lines = [line.rstrip("\n") for line in f if line.strip()]
+            raw = [line.rstrip("\n") for line in f]
     except FileNotFoundError:
-        lines = []
-    errors = []
+        raw = []
+    empty = sum(1 for x in raw if not x.strip())
+    if empty:
+        errors.append(f"{empty} empty line(s) in the crosscheck report {path}: records were merged")
+    # (only where empty lines show a merge: a clean record's closure may
+    # hold a kind's name, "notsame: ...", which the pattern would match)
+    merged = [x for x in raw if empty and x.strip() and not x.startswith("    ") and BC_SECOND_RECORD.search(x)]
+    for x in merged[:5]:
+        errors.append(f"two records in one line: {x[:300]}")
+    if len(merged) > 5:
+        errors.append(f"... and {len(merged) - 5} more line(s) holding two records")
+    lines = [x for x in raw if x.strip()]
     counts = {}
     compared = 0
     for x in lines:
@@ -325,6 +368,39 @@ def full_move_steps():
     ])
 
 
+# The cases that need longer than the slow modes' 600 s in the nightly's
+# every-collection freeze check (`--freeze-check`), and how long they get:
+# there every allocation traces the heap three times (the collection, the
+# check's independent trace, its comparison). Measured under gctorture at
+# ROBIGO_GC_FREEZE_CHECK=1 on the 24-CPU workstation, the seven at once
+# (load 35-40, 2026-11-21; jit.R alone: 536 s), each given about twice that:
+FREEZE_CHECK_SLOW = {
+    "tests/r/jit/loop-closed-form-super.R": 1500,  # 719 s
+    "tests/rt/bytecode/jit.R": 2400,  # 1,150 s
+    "tests/rt/capi/closure-mutation.R": 2400,  # 1,160 s
+    "tests/r/conditions/c-stack-overflow.R": 2800,  # 1,387 s
+    "tests/rt/jit/active-binding-read.R": 2900,  # 1,431 s
+    "tests/rt/jit/serialize-write.R": 3600,  # 1,795 s
+    "tests/r/memory/finalizers-self-ref-envs.R": 4400,  # 2,180 s
+}
+
+
+def freeze_check_steps():
+    """The nightly's every-collection freeze check (`--freeze-check`): the
+    conformance slice under gctorture with the freeze's invariant checked at
+    every collection. CI's E3 step checks every 16th (the ledger's amendment
+    to #948 (c), docs/ledger/g3/2026-11-21-h-boot-freeze-check.md); this run
+    keeps the every-collection check, moved, not lost."""
+    return every_cpu([
+        # (the tools cases need the tree: without it they skip, Sol r7 S13)
+        ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", {}, ["scripts/rt-home.sh"]),
+        ("conformance under gctorture, the freeze checked at every collection",
+         {"ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "1", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
+          **SLOW, "ROBIGO_CONF_TIMEOUTS": case_timeouts(FREEZE_CHECK_SLOW)},
+         conformance_command()),
+    ])
+
+
 # The cargo features that compile ROBIGO_RETRY_TORTURE and ROBIGO_POISON_DEAD
 # in (robigo-rtcore's and robigo-rt's Cargo.toml): only the last steps build
 # with them, all with both, so that they share one build.
@@ -378,6 +454,12 @@ def steps(crates):
          {"ROBIGO_RT_BOOT": "rdb", "ROBIGO_BC_CROSSCHECK": "1", "ROBIGO_BC_CROSSCHECK_REPORT": BC_REPORT_RDB},
          conformance),
         ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {}, conformance),
+        # the boot heap's freeze as users turn it on (ROBIGO_GC_FREEZE=1, off
+        # by default until the frozen-reachability pass: the ledger's
+        # 2026-11-21-h-boot-freeze-check.md), under each boot, its check off
+        ("conformance with the boot heap's freeze on (ROBIGO_GC_FREEZE=1)", FREEZE_ON, conformance),
+        ("conformance under the rdb boot with the boot heap's freeze on (ROBIGO_RT_BOOT=rdb, ROBIGO_GC_FREEZE=1)",
+         {"ROBIGO_RT_BOOT": "rdb", **FREEZE_ON}, conformance),
         # docs/g3.md §15.3 E5: the same cases and recordings under each
         # observation mode, but those whose `.requires` names the identity
         # the mode gives up (robigo-conformance's KNOWN_FEATURES)
@@ -392,11 +474,19 @@ def steps(crates):
         # with a collection due almost always, the check makes any &Cx
         # request of LARGE bytes or more panic where it is made: such a
         # request goes through cx.alloc_rooted (docs/g3.md §3 item 3)
+        # the boot heap's freeze (robigo-heap's freeze.rs): its invariant
+        # checked at every collection here, where every allocation collects
+        # (the move modes below leave the freeze off)
         ("gctorture (collect at every allocation) and the GC stats check",
-         {**TREE_RUNS, **{"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check"}}, [*crate, *pkgs, *skip]),
-        # docs/g3.md §15.3 E3: the rt slice under the collector modes
+         {**TREE_RUNS, **{"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "1"}},
+         [*crate, *pkgs, *skip]),
+        # docs/g3.md §15.3 E3: the rt slice under the collector modes. The
+        # freeze's check at every 16th collection: at every one it traces
+        # the heap twice per allocation (tests/rt/bytecode/jit.R: 536 s
+        # against 97 s without it, past the case timeout; about 1.3x at 16)
         ("conformance under gctorture (E3)",
-         {"ROBIGO_GCTORTURE": "1", **slow, "ROBIGO_CONF_TIMEOUTS": case_timeouts(GCTORTURE_FIRST)}, conformance),
+         {"ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "16", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
+          **slow, "ROBIGO_CONF_TIMEOUTS": case_timeouts(GCTORTURE_FIRST)}, conformance),
         # every argument a PROMSXP at call entry (GNU R's representation,
         # through the same binding-kind transitions): docs/g3.md §16's
         # ROBIGO_MATERIALIZE=1. Every rt crate, as the steps above: cargo
@@ -517,12 +607,19 @@ OWN_STEPS = ("debug-assertions", "release-crate-tests")
 # timeout (scripts/test-rt-ci.py pins the three relations). When a warning
 # fires, rebalance or remeasure: the dates say how old each measurement is.
 BUDGETS = {  # shard: (budget, measured minutes, where measured)
-    "modes": (9, 6.99, "2026-11-21, run 44927530340 (#952): 6.49, and the two rdb-boot steps' estimated 0.5"),
+    # a slow-runner figure: run 45072863916 (#959, 2026-11-22) took about
+    # 1.25x #952's on the steps both ran (the crates' tests 1.86 against
+    # 1.59 min, GC_MOVE 1.18 against 0.88)
+    "modes": (11, 9.15, "2026-11-22, run 45072863916 (#959, a slow runner): 8.27 to its failed quarantine step, "
+              "less #959's M1 freeze-on conformance step's 0.22 (moved to gctorture; its rdb twin, 0.27, stays "
+              "with the database tree), plus the steps after it at #952's 1.1; #959's freeze check at every "
+              "collection makes the crates' gctorture step 0.81 against main's 0.45 (1.8x in CI)"),
     # the plain gctorture conformance moves into modes if GCTORTURE_FIRST
     # does not bring this back near 15 minutes
-    "gctorture": (27, 21.87, "2026-11-21, run 44927530340 (#952): 20.62 before GCTORTURE_FIRST, and #959's "
+    "gctorture": (27, 22.09, "2026-11-21, run 44927530340 (#952): 20.62 before GCTORTURE_FIRST, and #959's "
                   "estimated 1.25 (its freeze check at every 16th collection: about 1.3x of the plain gctorture "
-                  "conformance's 4.15, H's measurement)"),
+                  "conformance's 4.15, H's measurement) and its M1 freeze-on conformance step's 0.22 "
+                  "(run 45072863916)"),
     "feature-builds": (12, 9.87, "2026-11-21, run 44927530340 (#952)"),
     "builtin-diff": (9, 7.42, "2026-11-21, run 44927530340 (#952)"),
     "debug-assertions": (5, 3.47, "2026-11-21, run 44927530340 (#952): 3.07, and the tree's estimated 0.4"),
@@ -603,6 +700,12 @@ def shard_of(title):
         return None
     if title.startswith("conformance under gctorture") or title.startswith("conformance under ROBIGO_GC_MOVE"):
         return "gctorture"
+    # the boot heap's freeze on under M1's loader, its check off: with E3's
+    # freeze check, in the freeze's shard (modes was at its budget: the
+    # foreman, 2026-11-22). Its rdb twin stays in modes, where base's
+    # database tree is built
+    if title == "conformance with the boot heap's freeze on (ROBIGO_GC_FREEZE=1)":
+        return "gctorture"
     if title.startswith("builtin differential"):
         return "builtin-diff"
     if "RETRY_TORTURE" in title or "POISON_DEAD" in title:
@@ -654,11 +757,16 @@ def main(argv):
     ap.add_argument("--check", action="store_true", help="check the premise and stop")
     ap.add_argument("--full-move", action="store_true",
                     help="only the conformance slice with every collection moving everything (the nightly's run)")
+    ap.add_argument("--freeze-check", action="store_true",
+                    help="only the conformance slice under gctorture with the freeze checked at every collection "
+                         "(the nightly's run)")
     ap.add_argument("--shard", choices=SHARDS, help="only this CI job's steps (default: every step)")
     a = ap.parse_args(argv)
     if a.full_move and a.shard:
         # (--full-move is the nightly's one step; a shard would be ignored)
         ap.error("--full-move and --shard select different steps: give one")
+    if a.freeze_check and (a.shard or a.full_move):
+        ap.error("--freeze-check, --full-move and --shard select different steps: give one")
 
     meta = metadata()
     crates = rt_crates(meta, rt_patterns(ci_select.load()))
@@ -690,7 +798,7 @@ def main(argv):
             # (workflow commands on stdout: Actions annotates only those)
             print(f"::error::{problem}")
             return 2
-    plan = full_move_steps() if a.full_move else shard_steps(crates, a.shard) if a.shard else steps(crates)
+    plan = (full_move_steps() if a.full_move else freeze_check_steps() if a.freeze_check else shard_steps(crates, a.shard) if a.shard else steps(crates))
     done = []
     try:
         return run_steps(plan, done)
@@ -791,8 +899,12 @@ def run_steps(plan, done):
         if report and os.path.exists(report):
             os.remove(report)
         bc = env.get("ROBIGO_BC_CROSSCHECK_REPORT")
-        if bc and os.path.exists(bc):
-            os.remove(bc)
+        for stale in (bc, bc and bc + ".lost"):
+            if stale and os.path.exists(stale):
+                os.remove(stale)
+        freeze = env.get("ROBIGO_GC_FREEZE_CHECK_REPORT")
+        if freeze and os.path.exists(freeze):
+            os.remove(freeze)
         times = None
         if CONFORMANCE in cmd and "--exact" in cmd:
             times = times_file(index, title)
@@ -811,6 +923,15 @@ def run_steps(plan, done):
         if r.returncode != 0:
             print(f"::error::rt: {title} failed")
             return r.returncode
+        if freeze and os.path.exists(freeze):
+            with open(freeze) as f:
+                lines = [l.rstrip("\n") for l in f if l.strip()]
+            for line in lines:
+                print(f"::error::rt: {line}")
+            if lines:
+                print(f"::error::rt: {title}: the freeze's check failed {len(lines)} time(s)")
+                done[-1] = (title, done[-1][1], False)
+                return 1
         if report:
             hits = pin_report_hits(report)
             for line in hits:

@@ -1,0 +1,4 @@
+Error in invokeRestart("myR") : 
+  no function to return from, jumping to top level
+Calls: .Last -> invokeRestart
+Execution halted

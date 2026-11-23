@@ -1,0 +1,7 @@
+[1] TRUE
+NULL
+[1] TRUE
+after gc
+NULL
+end
+base finalized at exit
