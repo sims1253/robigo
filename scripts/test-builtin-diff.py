@@ -612,5 +612,27 @@ class Known(unittest.TestCase):
                 bd.KNOWN = old
 
 
+class RtRuns(unittest.TestCase):
+    def test_every_robigo_rt_run_starts_with_the_cache_off(self):
+        # the compared runs and --timing's start: one environment, so the
+        # start timed is a compared run's (no warm .rtc beside cache-off runs)
+        a = unittest.mock.Mock(rsrc="/src")
+        with unittest.mock.patch.dict(os.environ, {"R_HOME": "/usr/lib/R", "ROBIGO_TRANSLATION_CACHE": "1"}):
+            env = bd.rt_env(a, R_ENABLE_JIT="3")
+        self.assertNotIn("R_HOME", env)
+        self.assertEqual((env["ROBIGO_TRANSLATION_CACHE"], env["R_ENABLE_JIT"], env["ROBIGO_RSRC"]), ("0", "3", "/src"))
+        src = open(os.path.join(HERE, "builtin-diff.py")).read()
+        self.assertEqual(src.count("= rt_env(a, "), 2)  # run_rt and --timing's start
+
+    def test_no_cargo_says_what_to_do(self):
+        def missing(*a, **k):
+            raise FileNotFoundError(2, "No such file or directory", "cargo")
+        with unittest.mock.patch.object(bd.subprocess, "run", missing):
+            with self.assertRaises(SystemExit) as e:
+                bd.cargo_target()
+        self.assertIn("no cargo on PATH", str(e.exception.code))
+        self.assertIn("--robigo-rt BIN", str(e.exception.code))
+
+
 if __name__ == "__main__":
     unittest.main()

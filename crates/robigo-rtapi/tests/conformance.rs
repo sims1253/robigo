@@ -53,7 +53,7 @@ fn rt_conformance() {
     // loaded; this process's environment is left alone)
     // the cases that load tools' native code from the binary's R_HOME tree
     // run where scripts/rt-home.sh built it (CI's rt job does)
-    if has_rt_home_tools(&o.bin) {
+    if has_rt_home_tools(&o.bin).unwrap_or_else(|e| panic!("{e}")) {
         o.features.push("r-home-tools");
     }
     conf::run(&root, &conf::RT, &o).unwrap_or_else(|e| panic!("{e}"));
@@ -64,8 +64,11 @@ fn rt_conformance() {
 /// for the rdb boot's copy) and has tools' native code, run as the cases are
 /// (with no inherited R_HOME). An installed GNU R's
 /// R_HOME (the test job's `R_HOME=/usr/lib/R`) has a tools.so too, but one
-/// built for GNU R's objects, which robigo-rt must not load.
-fn has_rt_home_tools(bin: &Path) -> bool {
+/// built for GNU R's objects, which robigo-rt must not load. `Ok(false)` (the
+/// r-home-tools cases skip) only when the probe ran and said so, or when the
+/// binary has no tree at all (its own message; every case then fails on
+/// it); any other failure of the probe is an error, not a skip.
+fn has_rt_home_tools(bin: &Path) -> Result<bool, String> {
     let out = std::process::Command::new(bin)
         .env_remove("R_HOME")
         .args([
@@ -74,8 +77,46 @@ fn has_rt_home_tools(bin: &Path) -> bool {
              file.exists(file.path(h, 'library/tools/libs/tools.so')))",
         ])
         .output()
-        .unwrap_or_else(|e| panic!("running {}: {e}", bin.display()));
-    out.stdout == b"TRUE"
+        .map_err(|e| format!("running {}: {e}", bin.display()))?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    match (out.status.success(), out.stdout.as_slice()) {
+        (true, b"TRUE") => Ok(true),
+        (true, b"FALSE") => Ok(false),
+        // (robigo-rtapi's main.rs, missing_tree)
+        (false, _) if stderr.contains("not found: no installed tree") => Ok(false),
+        _ => Err(format!(
+            "the r-home-tools probe failed: {} -e ... exited with {}, stdout {:?}; stderr:\n{stderr}",
+            bin.display(),
+            out.status,
+            String::from_utf8_lossy(&out.stdout)
+        )),
+    }
+}
+
+/// The probe's verdicts, with fake binaries: what it printed when it ran,
+/// a skip for a binary with no tree, and an error (not a skip) for any
+/// other failure.
+#[test]
+fn the_r_home_tools_probe_fails_on_a_failing_probe() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("robigo-rt-probe-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let fake = |name: &str, body: &str| {
+        let p = dir.join(name);
+        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    };
+    assert_eq!(has_rt_home_tools(&fake("yes", "printf TRUE")), Ok(true));
+    assert_eq!(has_rt_home_tools(&fake("no", "printf FALSE")), Ok(false));
+    let none = fake("none", "echo \"R_HOME ('/x/.robigo/rt-home') not found: no installed tree ...\" >&2; exit 1");
+    assert_eq!(has_rt_home_tools(&none), Ok(false));
+    let e = has_rt_home_tools(&fake("parse", "echo 'Error: unexpected symbol' >&2; exit 1")).unwrap_err();
+    assert!(e.contains("the r-home-tools probe failed") && e.contains("unexpected symbol"), "{e}");
+    // a clean exit that printed neither answer is a failure too
+    assert!(has_rt_home_tools(&fake("odd", "printf 'WARNING: x\\nTRUE'")).is_err());
+    assert!(has_rt_home_tools(&dir.join("missing")).is_err());
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 /// The verification modes' variables (scripts/rt-ci.py's steps), which a

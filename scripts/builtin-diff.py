@@ -678,6 +678,17 @@ def classify(o, r, lost_o, lost_r, i):
     return "mismatch"
 
 
+def rt_env(a, **extra):
+    """The environment of every robigo-rt run here, the compared runs and
+    --timing's start alike, with `extra` over it: the caller's without
+    R_HOME, and the translation cache off for every binary, the plain and
+    the planted one alike (they start the same way whichever wrote the
+    tree's .rtc; the diff is about builtins, not starts)."""
+    env = {k: v for k, v in os.environ.items() if k != "R_HOME"}
+    env.update(ENV, A4_LABEL="robigo-rt", ROBIGO_RSRC=a.rsrc, ROBIGO_TRANSLATION_CACHE="0", **extra)
+    return env
+
+
 def run_rt(a, row, jit, rt_bin, prefix):
     d = oracle_dir(a.data, row, a.seed, jit)
     cases = read_cases(d)
@@ -685,11 +696,7 @@ def run_rt(a, row, jit, rt_bin, prefix):
         lost_o = {int(k): v for k, v in json.load(f)["lost"].items()}
     scratch = scratch_dir("a4-rt-")
     out = os.path.join(scratch, "records")
-    env = {k: v for k, v in os.environ.items() if k != "R_HOME"}
-    # (the translation cache off for every binary, the plain and the planted
-    # one alike: they start the same way whichever wrote the tree's .rtc;
-    # the diff is about builtins, not starts)
-    env.update(ENV, R_ENABLE_JIT=JIT[jit], A4_LABEL="robigo-rt", ROBIGO_RSRC=a.rsrc, ROBIGO_TRANSLATION_CACHE="0")
+    env = rt_env(a, R_ENABLE_JIT=JIT[jit])
     work = os.path.join(scratch, "cwd")
     os.makedirs(work)
     t0 = time.monotonic()
@@ -881,9 +888,8 @@ def cmd_run(a):
         t0 = time.monotonic()
         d = oracle_dir(a.data, rows[0], a.seed, rows[0].jits[0])
         with tempfile.TemporaryDirectory() as tmp:
-            env = {k: v for k, v in os.environ.items() if k != "R_HOME"}
-            env.update(ENV, R_ENABLE_JIT="0", A4_LABEL="robigo-rt", ROBIGO_RSRC=a.rsrc, A4_BATCH=os.path.join(d, "batch.rds"),
-                       A4_OUT=tmp, A4_FROM="999999", HOME=tmp, TMPDIR=tmp)
+            env = rt_env(a, R_ENABLE_JIT="0", A4_BATCH=os.path.join(d, "batch.rds"), A4_OUT=tmp, A4_FROM="999999",
+                         HOME=tmp, TMPDIR=tmp)
             subprocess.run([rt_bin, "--vanilla", DRIVER], env=env, cwd=tmp, preexec_fn=cap)
         print(f"timing: robigo-rt's start with {rows[0].name}'s batch: {time.monotonic() - t0:.2f} s")
     t_all = time.monotonic()
@@ -946,8 +952,12 @@ def cargo_target():
     """cargo's target directory for this checkout, as rt-ci.py resolves it
     (CARGO_TARGET_DIR, the configs' build.target-dir, else ROOT/target): the
     tree rt-ci wrote and the binary here must be the same build's."""
-    p = subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"],
-                       cwd=ROOT, stdout=subprocess.PIPE, text=True)
+    try:
+        p = subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"],
+                           cwd=ROOT, stdout=subprocess.PIPE, text=True)
+    except FileNotFoundError:
+        sys.exit("builtin-diff: no cargo on PATH: cannot find the target directory "
+                 "(put cargo on PATH, or name the binary: --robigo-rt BIN)")
     if p.returncode != 0:
         sys.exit("builtin-diff: cargo metadata failed: cannot find the target directory")
     return json.loads(p.stdout)["target_directory"]

@@ -314,7 +314,7 @@ GCTORTURE_FIRST = {
 
 # The cases that need longer than the plain gctorture step's 600 s, and how
 # long they get (the runner starts them first, as GCTORTURE_FIRST's).
-# Interim: remove or lower each when B's cure for it lands.
+# Interim: remove or lower each when its cure lands.
 GCTORTURE_SLOW = {
     # Deep recursion through lapply, a collection at every allocation: on
     # main, 315.5-332.9 s on normal runners (runs 45106626186, 45108072544,
@@ -324,8 +324,9 @@ GCTORTURE_SLOW = {
     # 780 s is the most the gctorture shard's budget (26 min) holds: the
     # case starts first, so the step takes about its time, and the shard's
     # other steps took 12.26 min on the slow runner (9.38 on a normal one,
-    # about 13 on a kill-class one): 26 - 13 = 13 min, about 780 s. B owes
-    # the cure (fewer overflow repetitions, or a smaller case)
+    # about 13 on a kill-class one): 26 - 13 = 13 min, about 780 s. Remove
+    # or lower it when S1's cure lands (S1 owns the case's profile and cure:
+    # fewer overflow repetitions, or a smaller case)
     "tests/r/conditions/c-stack-overflow.R": 780,
 }
 

@@ -44,12 +44,14 @@ def fresh(binary, root=ROOT):
             words = f.read().split()
         with open(os.path.join(root, ".robigo", "rt-home", ".rt-home")) as f:
             home = f.read().split()
+        if len(words) != 5 or words[:3] != home:
+            return False
+        # (a missing binary or script is not fresh: the scripts then say
+        # what is missing, rt-home-db.sh's "no robigo-rt at ...")
+        if (words[1], words[3], words[4]) != (script_hash(root, "rt-home.sh"), script_hash(root, "rt-home-db.sh"),
+                                              binary_hash(binary)):
+            return False
     except OSError:
-        return False
-    if len(words) != 5 or words[:3] != home:
-        return False
-    if (words[1], words[3], words[4]) != (script_hash(root, "rt-home.sh"), script_hash(root, "rt-home-db.sh"),
-                                          binary_hash(binary)):
         return False
     need = [os.path.join(db, "library", "base", "R", f) for f in ("base", "base.rdb", "base.rdx")] + \
         [os.path.join(db, "library", "compiler", "R", f) for f in ("compiler.rdb", "compiler.rdx")] + [

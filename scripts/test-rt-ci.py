@@ -697,6 +697,15 @@ class RtCi(unittest.TestCase):
             ran.clear()
             tr.ensure(b, d)            # the recipe changed: made again
             self.assertEqual(ran, ["scripts/rt-home.sh", "scripts/rt-home-db.sh"])
+            # stale stamps and no binary: not fresh (no traceback), and the
+            # scripts say what is missing (rt-home-db.sh's "no robigo-rt at")
+            make_whole()
+            open(os.path.join(d, "scripts", "rt-home.sh"), "w").write("changed too")
+            os.remove(b)
+            self.assertFalse(tr.fresh(b, d))
+            ran.clear()
+            tr.ensure(b, d)
+            self.assertEqual(ran, ["scripts/rt-home.sh", "scripts/rt-home-db.sh"])
 
 
     def test_a_crosscheck_that_compares_fewer_than_its_floor_fails(self):
