@@ -76,7 +76,8 @@ pub fn fprec(x: f64, digits: f64) -> f64 {
     if x == 0.0 {
         return x;
     }
-    let mut dig = c_round(digits) as i32;
+    // C's (int): INT_MIN out of range (cvttsd2si), so huge digits give 1
+    let mut dig = c_int_cast(c_round(digits));
     if dig > MAX_DIGITS {
         return x;
     } else if dig < 1 {
@@ -89,7 +90,7 @@ pub fn fprec(x: f64, digits: f64) -> f64 {
         x = -x;
     }
     let l10 = x.log10();
-    let mut e10 = (dig as f64 - 1.0 - l10.floor()) as i32;
+    let mut e10 = dig - 1 - c_int_cast(l10.floor());
     if l10.abs() < (MAX10E - 2) as f64 {
         let mut p10 = 1.0;
         if e10 > MAX10E {
@@ -104,7 +105,8 @@ pub fn fprec(x: f64, digits: f64) -> f64 {
             sgn * (nearbyint(x / pow10) * pow10)
         }
     } else {
-        let do_round = MAX10E as f64 - l10 >= r_pow_di(10.0, -dig);
+        // log10(DBL_MAX), not max10e: e.g. signif(1.09e308, 2)
+        let do_round = f64::MAX.log10() - l10 >= r_pow_di(10.0, -dig);
         let e2 = dig + (if e10 > 0 { 1 } else { -1 }) * MAX_DIGITS;
         let p10 = r_pow_di(10.0, e2);
         x *= p10;

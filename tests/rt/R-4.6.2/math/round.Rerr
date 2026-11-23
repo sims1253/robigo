@@ -1,0 +1,2 @@
+Warning message:
+In round(1.26, dig = 1) : partial argument match of 'dig' to 'digits'
