@@ -54,13 +54,13 @@
 //! The moving collector's modes (`ROBIGO_GC_MOVE`) leave the freeze off,
 //! so that they still move the whole heap.
 //!
-//! INTERIM(H): **frozen garbage stays a root.** A logged frozen object
-//! whose last reference is cut (a detached environment attached at the
-//! freeze, its hash table logged) keeps its ordinary children as of its
-//! death for the rest of the session, and they are never finalized
-//! (tests/rt/memory/freeze-garbage-detach.R differs from GNU R). The owner
-//! is the frozen-reachability pass, H's next PR
-//! (docs/ledger/g3/2026-11-21-h-boot-freeze-check.md).
+//! **Frozen garbage thaws:** the frozen-reachability pass
+//! ([`Core::frozen_pass`], docs/ledger/g3/2026-11-23-h-frozen-pass.md), at
+//! the next collection after an edge into a frozen object left the frozen
+//! graph (a dirty note), walks from the freeze roots through frozen objects
+//! and makes ordinary what it does not reach, so a detached environment
+//! attached at the freeze dies as in GNU R
+//! (tests/rt/memory/freeze-garbage-detach.R).
 
 use super::*;
 use std::collections::HashSet;
