@@ -1305,6 +1305,12 @@ pub fn run(root: &Path, column: &Column, o: &Options) -> Result<Report, String> 
             eprintln!("  {}", p);
         }
     }
+    // the count, every run, also in a CI job's step summary: cases that pass
+    // without a marker are coverage the ratchet does not hold (S1 found 156
+    // on main, 2026-11-23); a count, not a failure
+    let line = unratcheted_line(column, report.new_passes.len(), o.filter.is_some());
+    eprintln!("{line}");
+    append_step_summary(std::env::var_os("GITHUB_STEP_SUMMARY").filter(|p| !p.is_empty()).as_deref(), &line);
     if o.update {
         // Only add markers: no existing file is rewritten, so a filtered
         // run can ratchet the cases it ran, and two branches never touch
@@ -1423,6 +1429,28 @@ pub fn sha256_hex(data: &[u8]) -> String {
     h.iter().map(|x| format!("{x:08x}")).collect()
 }
 
+/// The run's count of cases that pass and carry no ratchet marker: one
+/// line, for the log and a CI job's step summary.
+fn unratcheted_line(column: &Column, n: usize, filtered: bool) -> String {
+    format!(
+        "conformance ({}): {n} case(s) pass without a ratchet marker{} (ROBIGO_CONF_UPDATE=1 adds them)",
+        column.runtime,
+        if filtered { ", in the filtered cases" } else { "" }
+    )
+}
+
+/// Append `line` to the step summary file `path` (GitHub's
+/// `GITHUB_STEP_SUMMARY`), if there is one; a failure to write is reported,
+/// not fatal: the summary is a convenience.
+fn append_step_summary(path: Option<&std::ffi::OsStr>, line: &str) {
+    let Some(path) = path else { return };
+    use std::io::Write;
+    let r = std::fs::OpenOptions::new().append(true).create(true).open(path).and_then(|mut f| writeln!(f, "{line}"));
+    if let Err(e) = r {
+        eprintln!("GITHUB_STEP_SUMMARY: writing {}: {e}", std::path::Path::new(path).display());
+    }
+}
+
 #[cfg(test)]
 mod boot_record_tests {
     use super::{Options, RT, boot_record, case_command, parse_case_timeouts};
@@ -1430,6 +1458,27 @@ mod boot_record_tests {
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
+
+    /// The unratcheted count's line, and its step summary: appended (two
+    /// conformance steps in one job each add theirs), and nothing without a
+    /// summary file.
+    #[test]
+    fn the_unratcheted_count_goes_to_the_step_summary() {
+        let line = super::unratcheted_line(&RT, 3, false);
+        assert!(line.contains("3 case(s) pass without a ratchet marker"), "{line}");
+        assert!(
+            super::unratcheted_line(&RT, 0, true)
+                .contains("0 case(s) pass without a ratchet marker, in the filtered cases")
+        );
+        let dir = std::env::temp_dir().join(format!("robigo-conf-summary-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("summary");
+        super::append_step_summary(Some(path.as_os_str()), "a");
+        super::append_step_summary(Some(path.as_os_str()), &line);
+        super::append_step_summary(None, "never");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), format!("a\n{line}\n"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn case_timeouts_parse_and_refuse_what_is_malformed() {
