@@ -67,3 +67,8 @@
 # vm.rs:217) until a back-edge's target kept the stack it was translated with.
 100027 12 panic
 400059 14 panic
+# found by seed 7 (2026-11-23, on #1003 merged with main 5d961809e): an ADD
+# made OR2ND, with no OR1ST: the VM's AndOr2 read its first operand as
+# AndOr1's logical and panicked (vm.rs:820); main segfaulted. AND2ND/OR2ND
+# now read the first operand only as bcEval does: never.
+700001 47 panic
