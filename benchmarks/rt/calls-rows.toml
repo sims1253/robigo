@@ -714,3 +714,14 @@ area.default <- function(s) 0
 sq <- structure(list(side = 2), class = "sq")
 safe <- function(x) tryCatch(if (x > 0) x else stop("neg"), error = function(err) 0)
 '''
+
+[[row]]
+name = "lapply"
+group = "calls"
+note = "lapply(x, f): base's lapply over ten elements, a small closure each; report-only (no bar or guard cites it). Each lapply call builds its FUN(X[[i]], ...) afresh and compiles it at its first evaluation (eval::expr_code): about 5.5k of the row's instructions (X, 2026-11-23)"
+setup = '''
+x <- 1:10
+f <- function(v) v + 1
+'''
+body = 'r <- lapply(x, f)'
+n = 2000
