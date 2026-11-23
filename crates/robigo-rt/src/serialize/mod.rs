@@ -204,8 +204,10 @@ pub(super) fn serialize_to_conn(
     if f.text && !matches!(fmt, Format::Ascii | Format::AsciiHex) {
         return Err(cx.error("only ascii format can be written to text mode connections"));
     }
-    let bytes = write::serialize(cx, object, OutStream::new(fmt, version), hook)?;
-    connections::write_all(cx, n, &bytes, "error writing to connection")
+    // (GNU R streams: what was written before an error stays written)
+    let (bytes, r) = write::serialize_partial(cx, object, OutStream::new(fmt, version), hook);
+    connections::write_all(cx, n, &bytes, "error writing to connection")?;
+    r
 }
 
 /// `R_InitConnInPStream`'s checks: the stream over connection `n`.

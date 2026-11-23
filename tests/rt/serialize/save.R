@@ -34,6 +34,24 @@ e <- new.env(); print(load(f, envir = e))
 print(typeof(.Internal(get("lazy", e, "any", FALSE))))
 save(lazy, file = f, envir = src)
 e <- new.env(); print(load(f, envir = e)); print(e$lazy)
+# an active binding is looked up twice (do_saveToConn's two R_findVar);
+# the second value is saved
+n <- 0
+makeActiveBinding("ab", function() { n <<- n + 1; n }, src)
+save(ab, file = f, envir = src)
+print(n)
+e <- new.env(); print(load(f, envir = e)); print(e$ab)
+# a version whose digit is a NUL: the magic number's C string ends before
+# it, then R_Serialize refuses the version
+con <- file(f, "wb")
+print(msg(.Internal(saveToConn("x", con, FALSE, 208L, globalenv(), TRUE))))
+close(con)
+print(file.size(f))
+# (serialize() to a connection streams too: the format line, then the refusal)
+con <- file(f, "wb")
+print(msg(serialize(1, con, version = 4L)))
+close(con)
+print(file.size(f))
 # load(verbose = TRUE)
 save(x, y, z, file = f, compress = FALSE)
 print(load(f, envir = new.env(), verbose = TRUE))

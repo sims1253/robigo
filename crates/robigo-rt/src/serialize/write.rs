@@ -97,6 +97,21 @@ pub(super) struct Writer<'h> {
 /// `R_Serialize(s, stream)`: the header and the object, into `out`.
 // R: serialize.c:R_Serialize
 pub(super) fn serialize(cx: &mut Cx, s: Root<'_>, out: OutStream, hook: Option<Root<'_>>) -> RResult<Vec<u8>> {
+    let (bytes, r) = serialize_partial(cx, s, out, hook);
+    r.map(|()| bytes)
+}
+
+/// [`serialize`], and on an error the bytes its walk wrote before it:
+/// what GNU R's `R_Serialize`, which streams, has written to the
+/// connection by then (the walk that raised the error is the last, so its
+/// prefix is GNU R's).
+// R: serialize.c:R_Serialize
+pub(super) fn serialize_partial(
+    cx: &mut Cx,
+    s: Root<'_>,
+    out: OutStream,
+    hook: Option<Root<'_>>,
+) -> (Vec<u8>, RResult<()>) {
     let mut w = Writer {
         out,
         refs: HashMap::new(),
@@ -132,7 +147,7 @@ pub(super) fn serialize(cx: &mut Cx, s: Root<'_>, out: OutStream, hook: Option<R
     for g in w.effects.drain(..) {
         cx.release_global(g);
     }
-    r.map(|()| w.out.buf)
+    (w.out.buf, r)
 }
 
 impl Writer<'_> {

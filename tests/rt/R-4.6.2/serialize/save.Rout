@@ -197,6 +197,13 @@ forced
 forced
 [1] "lazy"
 [1] 42
+[1] 2
+[1] "ab"
+[1] 2
+[1] "version 208 not supported"
+[1] 5
+[1] "version 4 not supported"
+[1] 2
 Loading objects:
   x
   y

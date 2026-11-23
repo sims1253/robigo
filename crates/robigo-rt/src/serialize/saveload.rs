@@ -205,12 +205,14 @@ pub fn do_save_to_conn(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'
             (b'X', Format::Xdr)
         };
         // (a version above 3 writes its magic number, then R_Serialize refuses it)
+        // magic[3] = (char)('0' + version): a NUL there ends the C string
         let magic = [b'R', b'D', magic, b'0'.wrapping_add(version as u8), b'\n'];
+        let magic = &magic[..magic.iter().position(|&b| b == 0).unwrap_or(5)];
         if f.text {
             // Rconn_printf(con, "%s", magic): its result not looked at
-            connections::write_ignoring_os_errors(cx, n, &magic)?;
+            connections::write_ignoring_os_errors(cx, n, magic)?;
         } else {
-            connections::write_all(cx, n, &magic, "error writing to connection")?;
+            connections::write_all(cx, n, magic, "error writing to connection")?;
         }
         cx.scope(|cx, s| {
             let len = list.bind(cx).len().unwrap_or(0);
@@ -230,6 +232,12 @@ pub fn do_save_to_conn(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'
                     let tag = robigo_rtbuiltins::text::install_tr_char(cx, s, list, j)?;
                     let cell = s.root(cx, t.bind(cx));
                     cx.set_tag(cell, tag);
+                    // SETCAR(t, R_findVar(TAG(t), source)), then the lookup
+                    // again (an active binding runs twice)
+                    let fo = s.out(cx);
+                    let first = fo.root();
+                    cx.find_var(tag, source, fo)?;
+                    cx.set_car(cell, first);
                     let vo = s.out(cx);
                     let v = vo.root();
                     cx.find_var(tag, source, vo)?;
@@ -419,11 +427,13 @@ pub fn do_savefile(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
         (false, true) => (b"RDX2\n", Format::Xdr),
         (false, false) => (b"RDX3\n", Format::Xdr),
     };
-    let bytes = write::serialize(cx, args.root(0), super::stream::OutStream::new(fmt, version), None)?;
+    // (R_SaveToFileV streams: what was written before an error stays written)
+    let (bytes, r) = write::serialize_partial(cx, args.root(0), super::stream::OutStream::new(fmt, version), None);
     use std::io::Write;
     if fp.write_all(magic).and_then(|_| fp.write_all(&bytes)).is_err() {
         return Err(cx.error("write failed"));
     }
+    r?;
     out.set(cx, cx.nil());
     Ok(())
 }
