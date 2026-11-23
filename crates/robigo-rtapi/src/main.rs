@@ -484,6 +484,12 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
         );
         return 2;
     };
+    // the torture settings as the heap made below reads them, after every
+    // Renviron (a test hook with nothing to hold would silently do nothing)
+    if let Err(m) = robigo_rt::torture_after_start_check() {
+        eprintln!("robigo-rt: {m}");
+        return 2;
+    }
     let mut iso = OwnedIsolate::new();
     // The process environment is this isolate's to write (Sys.setenv,
     // Sys.unsetenv), as it is GNU R's.
@@ -616,8 +622,10 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     // ROBIGO_GC_MOVE's modes
     cx.freeze_boot_heap();
     // the isolate's console is the process's stdout and stderr
-    // E9's ROBIGO_FAIL_ALLOC_AT counts the script's allocations, not base's
+    // E9's ROBIGO_FAIL_ALLOC_AT counts the script's allocations, not base's;
+    // ROBIGO_TORTURE_AFTER_START=1's torture starts here too
     cx.arm_fail_alloc();
+    robigo_rt::arm_torture_after_start(cx);
     install_sigint();
     // end_Rmainloop's R_CleanUp(SA_DEFAULT, 0, 1) runs .Last; after an
     // error, check_session_exit's R_CleanUp(SA_NOSAVE, 1, 0) does not

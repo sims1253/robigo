@@ -2576,6 +2576,52 @@ fn moving_core() -> Box<Core> {
     c
 }
 
+/// `ROBIGO_TORTURE_AFTER_START=1`'s hold under the moving collector: before
+/// the arming a collection moves nothing (the object keeps its address, and
+/// its torture is off), after it the same collection moves it, and the old
+/// copy reads poison.
+#[test]
+fn moves_and_torture_held_until_armed() {
+    let mut c = moving_core();
+    c.set_torture(true);
+    c.hold_torture_until_armed();
+    assert!(!c.torture(), "gctorture is held");
+    let x = int_vec(&mut c, &[1, 2, 3]);
+    let mut roots = vec![x];
+    gc(&mut c, &mut roots);
+    assert_eq!(roots[0], x, "nothing moves before the arming");
+    unsafe { assert_eq!(ints(roots[0]), &[1, 2, 3]) };
+    c.arm_after_start();
+    assert!(c.torture(), "gctorture is armed");
+    let stale = std::hint::black_box(roots[0]);
+    gc(&mut c, &mut roots);
+    assert_ne!(roots[0], stale, "after the arming the object moves");
+    unsafe {
+        assert_eq!(ints(roots[0]), &[1, 2, 3]);
+        assert_eq!(stale.typ(), POISON_TYPE, "the old copy reads poison");
+    }
+    // (armed twice: nothing more happens)
+    c.arm_after_start();
+    assert!(c.torture());
+}
+
+/// A hold of the moves alone (gctorture off at the hold) leaves gctorture
+/// to what the start does: a `gctorture(TRUE)` in the start stays on at the
+/// arming, and one it turns off stays off.
+#[test]
+fn a_hold_of_the_moves_alone_leaves_gctorture_to_the_start() {
+    let mut c = moving_core();
+    assert!(!c.torture());
+    c.hold_torture_until_armed();
+    c.set_torture(true);
+    c.arm_after_start();
+    assert!(c.torture(), "the start's gctorture(TRUE) survives the arming");
+    let mut c = moving_core();
+    c.hold_torture_until_armed();
+    c.arm_after_start();
+    assert!(!c.torture(), "and none appears from the hold");
+}
+
 /// The element `i` of a VECSXP or STRSXP.
 unsafe fn elt(x: Sexp, i: usize) -> Sexp {
     unsafe { *(x.std_data() as *const Sexp).add(i) }

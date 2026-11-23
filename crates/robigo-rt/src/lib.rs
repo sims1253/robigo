@@ -149,8 +149,19 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         Ok("0") | Ok("") | Err(_) => false,
         Ok(other) => panic!("robigo: ROBIGO_RETRY_TORTURE={other:?} is neither \"0\" nor \"1\""),
     };
-    // (refused without its feature, and with ROBIGO_FAIL_ALLOC_AT)
-    cx.set_retry_torture(retry_torture);
+    // (refused without its feature, and with ROBIGO_FAIL_ALLOC_AT); under
+    // ROBIGO_TORTURE_AFTER_START=1 armed where the program under test
+    // starts ([`arm_torture_after_start`])
+    let after_start = robigo_heap::torture_after_start_from_env();
+    if retry_torture && after_start {
+        // held, but refused now as it would be (no feature, or
+        // ROBIGO_FAIL_ALLOC_AT too): its setter's checks, then off until
+        // arm_torture_after_start
+        cx.set_retry_torture(true);
+        cx.set_retry_torture(false);
+    } else {
+        cx.set_retry_torture(retry_torture);
+    }
     let cond = conditions::CondState::new(cx);
     let defs = prims::base_defs();
     let (objs, names) = prims::make_prims(cx, &defs, 0);
@@ -168,6 +179,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         names,
         by_sym,
         running_finalizers: std::cell::Cell::new(false),
+        retry_held: std::cell::Cell::new(retry_torture && after_start),
         materialize: std::cell::Cell::new(materialize),
         inline: std::cell::Cell::new(!no_inline),
         inline_runs: std::cell::Cell::new(0),
@@ -319,6 +331,7 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         names: st.names.clone(),
         by_sym: st.by_sym.clone(),
         running_finalizers: std::cell::Cell::new(st.running_finalizers.get()),
+        retry_held: std::cell::Cell::new(st.retry_held.get()),
         materialize: std::cell::Cell::new(st.materialize.get()),
         inline: std::cell::Cell::new(st.inline.get()),
         inline_runs: std::cell::Cell::new(st.inline_runs.get()),
@@ -338,3 +351,39 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
 // rebuilds the crate when another worktree built it last in a shared
 // target directory.
 const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
+
+/// `ROBIGO_TORTURE_AFTER_START=1` (a test hook, not a GNU R setting: see
+/// robigo-heap's `torture_after_start_from_env`) with no torture mode to
+/// hold is a mistake that would do nothing silently: the error, or `Ok`.
+/// The modes: gctorture (`R_GCTORTURE`, `ROBIGO_GCTORTURE`, a positive gap),
+/// `ROBIGO_GC_MOVE`, `ROBIGO_RETRY_TORTURE=1`.
+pub fn torture_after_start_check() -> Result<(), String> {
+    if !robigo_heap::torture_after_start_from_env() {
+        return Ok(());
+    }
+    let set = |n: &str| std::env::var(n).is_ok_and(|v| !v.is_empty() && v != "0");
+    // (gctorture as the heap will read it, not a parse of our own)
+    if robigo_heap::gctorture_from_env()
+        || set("ROBIGO_GC_MOVE")
+        || std::env::var("ROBIGO_RETRY_TORTURE").is_ok_and(|v| v == "1")
+    {
+        Ok(())
+    } else {
+        Err("ROBIGO_TORTURE_AFTER_START=1 holds torture until the start is over, but no torture mode is set \
+             (R_GCTORTURE or ROBIGO_GCTORTURE, ROBIGO_GC_MOVE, ROBIGO_RETRY_TORTURE=1)"
+            .into())
+    }
+}
+
+/// Arm what `ROBIGO_TORTURE_AFTER_START=1` held through the start: the
+/// heap's gctorture and moves, and `ROBIGO_RETRY_TORTURE`, as they were
+/// decided when the heap was made and robigo-rt installed (the environment
+/// is not read again: a profile or `.First` may have changed it). The
+/// embedder calls it where the program under test starts (robigo-rt:
+/// beside `Cx::arm_fail_alloc`); with nothing held it changes nothing.
+pub fn arm_torture_after_start(cx: &mut Cx) {
+    if prims::state(cx).retry_held.replace(false) {
+        cx.set_retry_torture(true);
+    }
+    cx.arm_torture_after_start();
+}

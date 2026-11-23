@@ -195,6 +195,14 @@ impl Cx {
         unsafe { self.iso().core() }.set_max_vsize(bytes)
     }
 
+    /// Arm the torture `ROBIGO_TORTURE_AFTER_START=1` held through the
+    /// start (robigo-heap's `Core::arm_after_start`): call it where the
+    /// program under test starts, beside [`Cx::arm_fail_alloc`].
+    pub fn arm_torture_after_start(&mut self) {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.arm_after_start()
+    }
+
     /// Start E9's allocation-failure knob (`ROBIGO_FAIL_ALLOC_AT=n`) if
     /// the environment set it: from here the `n`th allocation is refused
     /// once, and every refusal takes the retry path of the code that made it

@@ -552,6 +552,11 @@ pub struct RtState {
     /// `RunFinalizers`' guard ("Prevent this function from running again
     /// when already in progress").
     pub running_finalizers: std::cell::Cell<bool>,
+    /// `ROBIGO_RETRY_TORTURE=1` held through the start by
+    /// `ROBIGO_TORTURE_AFTER_START=1`, both read at install (a profile's
+    /// `Sys.setenv` changes neither): [`crate::arm_torture_after_start`]
+    /// turns it on.
+    pub retry_held: std::cell::Cell<bool>,
     /// `ROBIGO_MATERIALIZE=1` (docs/g3.md §16): every argument slot is
     /// made the PROMSXP GNU R binds, at call entry.
     pub materialize: std::cell::Cell<bool>,
