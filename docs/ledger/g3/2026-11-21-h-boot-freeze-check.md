@@ -187,3 +187,5 @@ The comparison with the independent trace traced every root, the stack's include
 - **Marked, not traced** (a temporary source mutation: a logged object's ordinary children marked and never pushed): named by the full check and at period 1, and not by the direct loop.
   - Under rdb in E3's configuration, the freezing collection's full check names it.
   - Under m1 the log holds no such child at the freeze. The defect appears after a later store, and the process fails first with a wrong result (37 of 40 random rt cases fail, none named). E3 fails on it without naming it.
+
+**So E3 does not name every marking defect.** It fails on this one under m1 (37 of 40 random rt cases, none named by the check). Detection is the step's job; naming the defect takes a rerun at period 1. **An E3 failure with an unexplained error under the freeze is rerun with `ROBIGO_GC_FREEZE_CHECK=1` before anything else** (docs/verification.md). There is no "first K checks" rule. Under rdb, the default after L's flip, the freezing collection's full check names it.
