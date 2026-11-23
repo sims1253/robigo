@@ -74,3 +74,31 @@
 - What is left of lapply's 44.5k extra instructions per call: forcing the
   `X[[i]]` promise (+22k), the closure call through `force_and_call`'s
   general path (+15.8k), and the loop (+3.3k). These are the next steps.
+- **The audit (X, on #999):** the difference above is visible only by
+  object address: tracemem()'s or `.Internal(inspect())`'s. Everything else
+  is the same on both sides, against GNU R 4.6.2's source:
+  - `sys.call()` is `shallow_duplicate(cptr->call)` (context.c:467), a new
+    top spine sharing the inner `X[[i]]`, in GNU R too;
+  - a condition's call from `stop()` is `cptr->call` itself (errors.c:1337);
+  - GNU R marks `R_fcall` not mutable (apply.c:61); robigo-rt marks its
+    `X[[i]]` too;
+  - `identical()` on captured calls, `[[<-` and `attr<-` on a captured call
+    (both duplicate first, on both sides), `match.call`, `sys.function`,
+    `substitute`, and a promise kept across iterations all agree.
+  - X also checked that `vm::run` is byte-identical (0x7a65, 0 lines
+    differ), that the call path's frame sizes are unchanged, and that
+    `do_lapply` grows from 2,708 to 2,717 bytes.
+- **A captured call evaluated elsewhere** (a pre-existing question, true of
+  the per-invocation call too): `eval()` of a call taken from `sys.call()`
+  in another closure's frame reuses the code compiled on its `X[[i]]`.
+  - Under the `Eval` profile, which is the default for `eval` of a call,
+    that code takes no decision from the frame it was compiled in. Its
+    lookups of `X`, `i` and `[[` are dynamic.
+  - Under the `Bc` profile, its slot indices carry the shape of lapply's
+    frame, and the VM checks every slot access against the frame's own
+    shape, taking the slow path when they differ. Its cmp.R decisions (a
+    local `[[`) were taken for lapply's frame, as `ROBIGO_RT_PROFILE=bc`
+    already compiles any call it evaluates.
+  - tests/rt/apply/lapply-direct.R evaluates a captured call in two other
+    closures, one with its own `[[`, and matches GNU R under the default
+    profile.

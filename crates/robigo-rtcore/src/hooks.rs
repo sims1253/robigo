@@ -45,6 +45,13 @@ pub type EvalFn = for<'a, 'b, 'c> fn(&mut Cx, Root<'a>, Root<'b>, Out<'c>) -> RR
 /// forced before a closure's body runs; the result written to `out`.
 pub type ForceAndCallFn = for<'a, 'b, 'c> fn(&mut Cx, Root<'a>, i32, Root<'b>, Out<'c>) -> RResult<()>;
 
+/// `R_forceAndCall(call, 1, env)` of base's lapply/vapply call
+/// `FUN(X[[i]], ...)`, with `X`'s evaluated vector and the index vector
+/// `i` binds: the runtime may give `X[[i]]`'s promise its value directly
+/// when nothing the general force does can be observed.
+pub type ForceAndCallIndexedFn =
+    for<'a, 'b, 'c, 'd, 'e> fn(&mut Cx, Root<'a>, Root<'b>, Root<'c>, Root<'d>, Out<'e>) -> RResult<()>;
+
 /// Call the function `fun` with the arguments in `args` (values, or
 /// promises the callee forces), reporting `call` (`sys.call()`, error
 /// messages) from the caller's environment `env`; the result written to
@@ -206,6 +213,9 @@ pub struct Hooks {
     /// and `vapply`'s `FUN(X[[i]], ...)`, `mapply`'s) and for
     /// `forceAndCall`. Defaults to an error, as `eval`'s does.
     pub force_and_call: ForceAndCallFn,
+    /// [`ForceAndCallIndexedFn`]; defaults to the general
+    /// [`Hooks::force_and_call`].
+    pub force_and_call_indexed: ForceAndCallIndexedFn,
     pub apply: ApplyFn,
     pub dispatch: DispatchFn,
     pub force: ForceFn,
@@ -236,6 +246,7 @@ impl Default for Hooks {
             eval: no_eval,
             eval_bytecode: no_eval,
             force_and_call: |cx, _, _, _, _| Err(not_yet(cx, "'forceAndCall'")),
+            force_and_call_indexed: |cx, call, env, _, _, out| cx.force_and_call(call, 1, env, out),
             apply: no_apply,
             dispatch: no_dispatch,
             force: no_force,
@@ -364,6 +375,21 @@ impl Cx {
     #[inline]
     pub fn force_and_call(&mut self, call: Root<'_>, n: i32, env: Root<'_>, out: Out<'_>) -> RResult<()> {
         (self.iso().hooks.get().force_and_call)(self, call, n, env, out)
+    }
+
+    /// lapply's `R_forceAndCall(call, 1, env)` through the hook
+    /// ([`Hooks::force_and_call_indexed`]): `x` the evaluated `X`, `ind` the
+    /// vector `i` binds.
+    #[inline]
+    pub fn force_and_call_indexed(
+        &mut self,
+        call: Root<'_>,
+        env: Root<'_>,
+        x: Root<'_>,
+        ind: Root<'_>,
+        out: Out<'_>,
+    ) -> RResult<()> {
+        (self.iso().hooks.get().force_and_call_indexed)(self, call, env, x, ind, out)
     }
 
     /// A special's arguments evaluated for its default method, as GNU R's

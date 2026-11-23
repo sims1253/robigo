@@ -32,6 +32,10 @@ struct Loop<'s> {
     ind: Root<'s>,
     loc: Root<'s>,
     rho: Root<'s>,
+    /// `X`'s evaluated vector when the call is base's kept one
+    /// ([`BaseCalls`]): its `X[[i]]` may then be forced directly
+    /// ([`Cx::force_and_call_indexed`]).
+    xx: Option<Root<'s>>,
     /// The builtin's protections when it calls `R_forceAndCall`, for the
     /// protect stack's account (robigo_rtcore's ppacct).
     pp: i32,
@@ -150,11 +154,13 @@ impl<'s> Loop<'s> {
         s: Scope<'s>,
         which: Which,
         x: Root<'_>,
+        xx: Root<'s>,
         fun: Root<'_>,
         rho: Root<'_>,
         pp: i32,
     ) -> RResult<Loop<'s>> {
         let isym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"i")?.into())))?;
+        let mut kept = true;
         let fcall = match kept_call(cx, s, which, x, fun, isym, rho) {
             Some(c) => c,
             None => {
@@ -166,8 +172,9 @@ impl<'s> Loop<'s> {
                         cx.lang3(fun.bind(cx), tmp, dots.into())
                     })
                 })?;
-                if let Some(clo) = base_closure(cx, s, which, rho)? {
-                    keep_call(cx, s, which, fcall, clo);
+                match base_closure(cx, s, which, rho)? {
+                    Some(clo) => keep_call(cx, s, which, fcall, clo),
+                    None => kept = false,
                 }
                 fcall
             }
@@ -178,7 +185,7 @@ impl<'s> Loop<'s> {
         let loc = s.out(cx);
         let locr = loc.root();
         cx.find_var_loc_in_frame(rho, isym, loc)?;
-        Ok(Loop { fcall, isym, ind, loc: locr, rho, pp })
+        Ok(Loop { fcall, isym, ind, loc: locr, rho, xx: kept.then_some(xx), pp })
     }
 }
 
@@ -231,7 +238,10 @@ impl<'s> Loop<'s> {
         // `i`'s binding must see the write: GNU R's bare `INTEGER(ind)[0]`
         cx.owned_mut::<i32>(self.ind)?.as_mut_slice()[0] = (i + 1) as i32;
         // (under the builtin's own protections: robigo_rtcore's ppacct)
-        cx.with_pp_excess(self.pp, |cx| cx.force_and_call(self.fcall, 1, self.rho, out))?;
+        cx.with_pp_excess(self.pp, |cx| match self.xx {
+            Some(xx) => cx.force_and_call_indexed(self.fcall, self.rho, xx, self.ind, out),
+            None => cx.force_and_call(self.fcall, 1, self.rho, out),
+        })?;
         cx.scope(|cx, s| {
             let cur = s.capture(cx, |cx, o| cx.var_loc_value(self.loc, o))?;
             if cur.bind(cx) != self.ind.bind(cx) || cx.shared(self.ind.bind(cx)) {
@@ -280,7 +290,7 @@ pub fn do_lapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
         })?;
         // PROTECT(XX), PROTECT(ans), PROTECT(tmp), PROTECT(R_fcall),
         // PROTECT_WITH_INDEX(ind), PROTECT_WITH_INDEX(loc.cell)
-        let lp = Loop::new(cx, s, Which::Lapply, x, fun, rho, 6)?;
+        let lp = Loop::new(cx, s, Which::Lapply, x, xx, fun, rho, 6)?;
         for i in 0..n {
             cx.scope(|cx, t| {
                 let r = t.capture(cx, |cx, o| lp.call(cx, i, o))?;
@@ -362,7 +372,7 @@ pub fn do_vapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
         // PROTECT(X), PROTECT(XX), PROTECT(value), PROTECT(ans), with
         // names PROTECT(names) and PROTECT_WITH_INDEX(rowNames), then
         // PROTECT(ind), PROTECT(tmp), PROTECT(R_fcall)
-        let lp = Loop::new(cx, s, Which::Vapply, x, fun_sym, rho, 7 + 2 * use_names as i32)?;
+        let lp = Loop::new(cx, s, Which::Vapply, x, xx, fun_sym, rho, 7 + 2 * use_names as i32)?;
         // each value goes into `ans` as FUN returns it: its data copied, its
         // elements linked (SET_STRING_ELT, SET_VECTOR_ELT), so a later call
         // of FUN that writes a value an earlier one returned writes an
