@@ -705,7 +705,7 @@ fn match_round_gen_args<'s>(
 ) -> RResult<Args<'s>> {
     let n = args.len();
     let x_sym = |cx: &Cx, i: usize| args.name(cx, i).is_some_and(|t| t.name_bytes() == b"x");
-    if n >= 1 && n <= 2 && args.name(cx, 0).is_none() && !(n == 2 && x_sym(cx, 1)) {
+    if (1..=2).contains(&n) && args.name(cx, 0).is_none() && !(n == 2 && x_sym(cx, 1)) {
         return Ok(reargs(cx, s, args, &(0..n).map(Some).collect::<Vec<_>>(), true));
     }
     let m = crate::util::match_args(cx, call, &["x", "..."], args)?;
