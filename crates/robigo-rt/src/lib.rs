@@ -66,6 +66,7 @@ pub mod jit;
 pub mod jitcache;
 pub mod links;
 pub mod lower;
+pub(crate) mod srcref;
 pub mod memory;
 mod missing;
 mod ns;
