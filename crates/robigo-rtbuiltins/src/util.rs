@@ -352,8 +352,8 @@ pub fn match_args(
                     return Err(cx.error_call(Some(call), &msg));
                 }
                 if cx.warn_partial_match_args() {
-                    let msg = format!("partial argument match of '{}' to '{f}'", String::from_utf8_lossy(t));
-                    cx.warning_call(Some(call), &msg)?;
+                    // R: match.c:277-283 (R_makePartialMatchWarningCondition)
+                    cx.partial_match_warning(Some(call), t, f.as_bytes())?;
                 }
                 actual[fi] = Some(i);
                 used[i] = 1;
@@ -409,8 +409,8 @@ pub fn match_args(
 
 /// GNU R's `check1arg(args, call, formal)`: the first argument, if named,
 /// must be a prefix of `formal`; a partial match warns under
-/// `options(warnPartialMatchArgs)` ("partial argument match of '%s' to
-/// '%s'", against `call`).
+/// `options(warnPartialMatchArgs)` (the `partialMatchWarning`, against
+/// `call`).
 // R: util.c:Rf_check1arg, errors.c:R_makePartialMatchWarningCondition
 pub fn check1arg(
     cx: &mut Cx,
@@ -425,8 +425,8 @@ pub fn check1arg(
         return Err(cx.error_call(Some(call), &msg));
     }
     if cx.warn_partial_match_args() && !supplied.is_empty() && supplied.len() < formal.len() {
-        let msg = format!("partial argument match of '{supplied}' to '{formal}'");
-        cx.warning_call(Some(call), &msg)?;
+        let tag = tag.name_bytes().to_vec();
+        cx.partial_match_warning(Some(call), &tag, formal.as_bytes())?;
     }
     Ok(())
 }

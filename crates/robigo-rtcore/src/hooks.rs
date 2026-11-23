@@ -125,6 +125,28 @@ pub struct ErrorCond<'a> {
 /// [`ErrorFn`]'s does.
 pub type ErrorCondFn = for<'a, 'b> fn(&mut Cx, Option<Root<'a>>, &ErrorCond<'b>) -> RError;
 
+/// A classed warning condition as GNU R's `R_makeWarningCondition` makes it
+/// (errors.c:R_vmakeWarningCondition): the list `(message, call,
+/// fields...)` of class `c(subclass, class, "warning", "condition")`, or
+/// `c(class, "warning", "condition")` without a subclass. The warning
+/// half of [`ErrorCond`].
+#[derive(Clone, Copy, Debug)]
+pub struct WarningCond<'a> {
+    pub class: &'static str,
+    pub subclass: Option<&'static str>,
+    /// The message in the native encoding's bytes, verbatim (cut at a NUL
+    /// and at `BUFSIZE`, as `Rvsnprintf_mbcs` into `emsg_buf` does).
+    pub msg: &'a [u8],
+    /// The fields after `message` and `call`, in order
+    /// (`R_setConditionField`).
+    pub fields: &'a [(&'static str, Root<'a>)],
+}
+
+/// Signal the classed warning `cond` with the call `call` (None: GNU R's
+/// `R_NilValue`): `R_makeWarningCondition` then `R_signalWarningCondition`,
+/// base's `warning(cond)`.
+pub type WarningCondFn = for<'a, 'b> fn(&mut Cx, Option<Root<'a>>, &WarningCond<'b>) -> RResult<()>;
+
 /// Take a user interrupt (`onintr`): signal the `interrupt` condition,
 /// then jump to the top level; `Ok` when a handler invoked the `resume`
 /// restart and evaluation goes on.
@@ -220,6 +242,7 @@ pub struct Hooks {
     pub warning: WarningFn,
     pub error: ErrorFn,
     pub error_condition: ErrorCondFn,
+    pub warning_condition: WarningCondFn,
     pub interrupt: InterruptFn,
     pub exit_value: ExitValueFn,
     pub deparse: DeparseFn,
@@ -250,6 +273,8 @@ impl Default for Hooks {
             error: |cx, call, msg| cx.record_error_call(call, msg),
             // (no condition system: the message, as `errorcall`'s default)
             error_condition: |cx, call, c| cx.record_error_call(call, c.msg),
+            // (no condition system: the message, as `warningcall`'s)
+            warning_condition: |cx, call, c| (cx.iso().hooks.get().warning)(cx, call, c.msg),
             // (no condition system: straight to the top level)
             interrupt: |cx| Err(cx.interrupt_exit()),
             exit_value: |_, _| {},
@@ -431,6 +456,39 @@ impl Cx {
     #[inline]
     pub fn warning_call(&mut self, call: Option<Root<'_>>, msg: &str) -> RResult<()> {
         (self.iso().hooks.get().warning)(self, call, msg.as_bytes())
+    }
+
+    /// Signal the classed warning `cond` with the call `call` (`None`:
+    /// `R_NilValue`): GNU R's `R_makeWarningCondition(call, ...)` with its
+    /// fields, signalled by `R_signalWarningCondition` (base's
+    /// `warning(cond)`), through the isolate's hook
+    /// ([`crate::Hooks::warning_condition`]).
+    // R: errors.c:R_makeWarningCondition, R_signalWarningCondition
+    pub fn warning_condition_call(&mut self, call: Option<Root<'_>>, cond: &crate::WarningCond<'_>) -> RResult<()> {
+        let hook = self.iso().hooks.get().warning_condition;
+        hook(self, call, cond)
+    }
+
+    /// GNU R's `R_makePartialMatchWarningCondition(call, argument, formal)`
+    /// signalled by `R_signalWarningCondition`: the `partialMatchWarning`
+    /// "partial argument match of '%s' to '%s'" with the fields `argument`
+    /// and `formal` (symbols, `argument` the supplied tag). Every partial
+    /// match GNU R warns of goes through it: `matchArgs`, `check1arg`,
+    /// `attr()`.
+    // R: errors.c:R_makePartialMatchWarningCondition
+    pub fn partial_match_warning(&mut self, call: Option<Root<'_>>, argument: &[u8], formal: &[u8]) -> RResult<()> {
+        let mut msg = b"partial argument match of '".to_vec();
+        msg.extend_from_slice(argument);
+        msg.extend_from_slice(b"' to '");
+        msg.extend_from_slice(formal);
+        msg.push(b'\'');
+        self.scope(|cx, s| {
+            let a = cx.install_rooted(s, argument)?;
+            let f = cx.install_rooted(s, formal)?;
+            let fields = [("argument", a), ("formal", f)];
+            let cond = crate::WarningCond { class: "partialMatchWarning", subclass: None, msg: &msg, fields: &fields };
+            cx.warning_condition_call(call, &cond)
+        })
     }
 
     /// [`Cx::warning_call`] of a message in the native encoding's bytes

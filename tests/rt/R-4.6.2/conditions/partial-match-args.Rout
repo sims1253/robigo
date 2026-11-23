@@ -1,0 +1,33 @@
+[1] "partialMatchWarning" "warning"             "condition"          
+a
+abc
+f(a = 1)
+[1] "message"  "call"     "argument" "formal"  
+[1] "withCallingHandlers" "warning"             "withRestarts"       
+[4] "withOneRestart"      "doWithOneRestart"    "function (w) "      
+[1] 1
+[1] "partialMatchWarning" "warning"             "condition"          
+ab
+abc
+g.default(1, ab = 3)
+[1] "message"  "call"     "argument" "formal"  
+[1] "withCallingHandlers" "g"                   "warning"            
+[4] "withRestarts"        "withOneRestart"      "doWithOneRestart"   
+[7] "function (w) "      
+[1] 3
+[1] "partialMatchWarning" "warning"             "condition"          
+length
+length.out
+seq_len(length = 2)
+[1] "message"  "call"     "argument" "formal"  
+[1] "withCallingHandlers" "warning"             "withRestarts"       
+[4] "withOneRestart"      "doWithOneRestart"    "function (w) "      
+[1] 1 2
+[1] "partialMatchWarning" "warning"             "condition"          
+na
+name
+call(na = "sum")
+[1] "message"  "call"     "argument" "formal"  
+[1] "withCallingHandlers" "warning"             "withRestarts"       
+[4] "withOneRestart"      "doWithOneRestart"    "function (w) "      
+sum()

@@ -129,6 +129,8 @@ pub struct Isolate {
     pub(crate) env_writes: std::cell::OnceCell<crate::clib::EnvWrites>,
     /// GNU R's `R_warn_partial_match_args` (`options(warnPartialMatchArgs)`).
     pub(crate) warn_partial_match_args: Cell<bool>,
+    /// GNU R's `R_warn_partial_match_attr` (`options(warnPartialMatchAttr)`).
+    pub(crate) warn_partial_match_attr: Cell<bool>,
     /// `ROBIGO_NO_INPLACE=1` (docs/g3.md §16): every in-place write copies.
     pub(crate) no_inplace: Cell<bool>,
     /// `ROBIGO_RETRY_TORTURE=1` ([`Cx::retry_torture`]).
@@ -707,6 +709,18 @@ impl Cx {
     /// Set `R_warn_partial_match_args` (`options()` does).
     pub fn set_warn_partial_match_args(&mut self, on: bool) {
         self.iso().warn_partial_match_args.set(on);
+    }
+
+    /// GNU R's `R_warn_partial_match_attr`: `attr()` warns of a partial
+    /// match of the attribute's name (`options(warnPartialMatchAttr = TRUE)`).
+    #[inline(always)]
+    pub fn warn_partial_match_attr(&self) -> bool {
+        self.iso().warn_partial_match_attr.get()
+    }
+
+    /// Set `R_warn_partial_match_attr` (`options()` does).
+    pub fn set_warn_partial_match_attr(&mut self, on: bool) {
+        self.iso().warn_partial_match_attr.set(on);
     }
 
     /// `ROBIGO_NO_INPLACE=1` (docs/g3.md §16): every write that would
@@ -1299,6 +1313,7 @@ impl OwnedIsolate {
             temp_dir: Default::default(),
             env_writes: std::cell::OnceCell::new(),
             warn_partial_match_args: Cell::new(false),
+            warn_partial_match_attr: Cell::new(false),
             no_inplace: Cell::new(false),
             retry_torture: Cell::new(false),
             code: CodeStamps::default(),

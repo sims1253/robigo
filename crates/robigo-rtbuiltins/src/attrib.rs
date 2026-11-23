@@ -386,8 +386,13 @@ pub fn do_attr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
             tag = Some(b"names".to_vec());
             mt = M::Full;
         } else if mt == M::None && !exact {
-            // (options(warnPartialMatchAttr) is FALSE)
-            return cx.build(out, |cx| Ok(get_attrib(cx, x.bind(cx), b"names")?.unwrap_or(cx.nil())));
+            // the names, read before the warning (attrib.c:1550)
+            let t = out.root();
+            cx.build(out, |cx| Ok(get_attrib(cx, x.bind(cx), b"names")?.unwrap_or(cx.nil())))?;
+            if t.bind(cx).sexp() != cx.nil().sexp() && cx.warn_partial_match_attr() {
+                cx.partial_match_warning(Some(call), &str, b"names")?;
+            }
+            return Ok(());
         } else if mt == M::Partial && tag.as_deref() != Some(b"names") && names(x.bind(cx)).is_some() {
             out.set(cx, cx.nil());
             return Ok(());
@@ -398,6 +403,9 @@ pub fn do_attr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
         return Ok(());
     }
     let tag = tag.unwrap();
+    if mt == M::Partial && cx.warn_partial_match_attr() {
+        cx.partial_match_warning(Some(call), &str, &tag)?;
+    }
     cx.build(out, |cx| Ok(get_attrib(cx, x.bind(cx), &tag)?.unwrap_or(cx.nil())))
 }
 
