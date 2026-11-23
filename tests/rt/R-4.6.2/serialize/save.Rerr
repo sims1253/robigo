@@ -1,0 +1,5 @@
+Warning messages:
+1: In readChar(con, file.size(file), useBytes = TRUE) :
+  truncating string with embedded nuls
+2: In readChar(con, file.size(file), useBytes = TRUE) :
+  truncating string with embedded nuls
