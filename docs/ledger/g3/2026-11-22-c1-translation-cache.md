@@ -188,8 +188,20 @@ established what each operation reads unchecked:
   against 52,104, churn 85,956 against 85,744. Entries are read by `pread`
   in 32 KB chunks, a start's own laid out together by the writer: 8 reads
   per start, about 60 KB of header and table resident.
-- **The boot freeze (H):** the freeze check (`ROBIGO_GC_FREEZE=1
-  ROBIGO_GC_FREEZE_CHECK=1`) runs once #959 merges: still to do. A stub is a RAWSXP marked
+- **The boot freeze (H):** on the head with #959 merged, the rdb boot's
+  conformance with the cache ran under the freeze's check. With
+  `ROBIGO_GC_FREEZE=1 ROBIGO_GC_FREEZE_CHECK=1` it ran three times; with
+  gctorture and `ROBIGO_GC_FREEZE_CHECK=16` once. The check never failed:
+  every report was empty. A start under the freeze takes 430 hits.
+  The only failures were cases timing out at a load of 55-65:
+  - `stress/finalizer-depths.R` took 25 s under the every-collection check
+    against the runner's 20 s, both with the cache and with
+    `ROBIGO_TRANSLATION_CACHE=0`;
+  - under gctorture, `lang/tailcall-frames.R` and
+    `memory/finalizers-self-ref-envs.R` hit the 600 s limit. The latter is
+    one of the nightly freeze check's slow cases, which get 4,400 s there.
+
+  A stub is a RAWSXP marked
   `extra::vector::NO_FREEZE` (`robigo-heap` layout/defs.rs). The freeze
   leaves it ordinary, so its replacement, through `set_aux`, the barrier,
   writes over no frozen object. This half is here; H's pass PR adds the
