@@ -108,22 +108,28 @@ entry! {
     /// `con->read(ptr, size, nitems, con)`.
     [4] fn robigo_rtapi_conn_read(ptr: *mut c_void, size: usize, nitems: usize, con: *mut RconnC) -> usize => |cx, _s| {
         let n = size.saturating_mul(nitems);
-        if n == 0 {
-            return Ok(0);
-        }
-        // SAFETY: C's contract: room for nitems items of size bytes.
-        let buf = unsafe { std::slice::from_raw_parts_mut(ptr.cast::<u8>(), n) };
+        // (an empty request still goes to the method: file_read moves to the
+        // read position first, which writes pending output)
+        let buf: &mut [u8] = if n == 0 {
+            &mut []
+        } else {
+            // SAFETY: C's contract: room for nitems items of size bytes.
+            unsafe { std::slice::from_raw_parts_mut(ptr.cast::<u8>(), n) }
+        };
         robigo_rt::connections::c_read(cx, buf, size, con)
     }
 
     /// `con->write(ptr, size, nitems, con)`.
     [4] fn robigo_rtapi_conn_write(ptr: *const c_void, size: usize, nitems: usize, con: *mut RconnC) -> usize => |cx, _s| {
         let n = size.saturating_mul(nitems);
-        if n == 0 {
-            return Ok(0);
-        }
-        // SAFETY: C's contract: nitems items of size bytes.
-        let buf = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), n) };
+        // (an empty request still goes to the method, as file_write's
+        // move to the write position does)
+        let buf: &[u8] = if n == 0 {
+            &[]
+        } else {
+            // SAFETY: C's contract: nitems items of size bytes.
+            unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), n) }
+        };
         robigo_rt::connections::c_write(cx, buf, size, con)
     }
 }

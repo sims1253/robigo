@@ -1,0 +1,16 @@
+warning: close.connection(con) Problem closing connection:  No space left on device 
+[1] -1
+[1] "writeLines(strrep(\"x\", 5000), con): Error writing to connection:  No space left on device"
+NULL
+[1] 0
+[1] "writeLines(rep(strrep(\"y\", 2000), 5), con): Error writing to connection:  No space left on device"
+[1] 0
+NULL
+warning: close.connection(con) Problem closing connection:  No space left on device 
+[1] -1
+NULL
+warning: close.connection(con) Problem closing connection:  No space left on device 
+[1] -1
+[1] "serialize((1:1000)/3, con): error writing to connection"
+[1] 0
+done
