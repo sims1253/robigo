@@ -178,15 +178,30 @@ fn attempt_rounds(
     let mut retried = None;
     loop {
         round.begin(cx);
+        // (a try meets the function contexts from the first, and only its
+        // own stop counts)
+        let w = &prims::state(cx).compile_warnings;
+        w.set_contexts(options::Contexts { at: 0, stop: false, ..w.contexts() });
         let r = f(cx);
         let reqs = crate::fold::Round::end(cx);
         match r {
-            // a fold may drop the code that failed (`if (FALSE)`)
-            Ok(_) | Err(Need::Fail) if !reqs.is_empty() => {
+            // a fold may drop the code that failed (`if (FALSE)`); its
+            // value comes before what the try did past it on a guess (a
+            // binding forced, a function context reached), as cmp.R folds
+            // before it gets there
+            Ok(_) | Err(Need::Fail | Need::Force(_)) if !reqs.is_empty() => {
                 round.resolve(cx, reqs)?;
                 retried = None;
             }
             Ok(code) => return Ok(Some(code)),
+            // a function context whose compilerOptions reads are to be
+            // made (options::context): made now, the folds kept
+            Err(Need::Fail) if prims::state(cx).compile_warnings.contexts().stop => {
+                options::read(cx)?;
+                let w = &prims::state(cx).compile_warnings;
+                let c = w.contexts();
+                w.set_contexts(options::Contexts { stop: false, done: c.done + 1, ..c });
+            }
             // (a translation handles its own malformed byte code: none
             // gets here; a compile from source never is malformed)
             Err(Need::Fail | Need::Malformed) => return Ok(None),
@@ -372,11 +387,8 @@ fn compile_closure_attempts(cx: &mut Cx, op: Root<'_>, installed: bool, entry: &
     let code = loop {
         let code = attempt(cx, |cx| {
             let f = op.bind(cx).sexp();
-            // (a retried attempt gives cmp.R's warnings again, and meets
-            // the function contexts again from the first)
-            let w = &prims::state(cx).compile_warnings;
-            w.clear();
-            w.set_contexts(options::Contexts { at: 0, ..w.contexts() });
+            // (a retried attempt gives cmp.R's warnings again)
+            prims::state(cx).compile_warnings.clear();
             // SAFETY: a rooted closure (and cache entry); nothing collects in
             // this interval.
             unsafe {
@@ -409,9 +421,6 @@ fn compile_closure_attempts(cx: &mut Cx, op: Root<'_>, installed: bool, entry: &
         if matches!(code, Ok(None)) && !prelude.raised && prims::state(cx).compile_warnings.prelude() > 0 {
             cenv::raise_prelude(cx)?;
             prelude.raised = true;
-            continue;
-        }
-        if read_context(cx)? {
             continue;
         }
         if notes {
@@ -991,11 +1000,8 @@ fn compile_loop_attempts(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, entry: &Ent
     let code = loop {
         let code = attempt(cx, |cx| {
             let (e, env) = (call.bind(cx).sexp(), rho.bind(cx).sexp());
-            // (a retried attempt gives cmp.R's warnings again, and meets
-            // the function contexts again from the first)
-            let w = &prims::state(cx).compile_warnings;
-            w.clear();
-            w.set_contexts(options::Contexts { at: 0, ..w.contexts() });
+            // (a retried attempt gives cmp.R's warnings again)
+            prims::state(cx).compile_warnings.clear();
             // SAFETY: rooted objects; nothing collects in this interval.
             unsafe {
                 let mut cenv = Cenv::of_env(cx, env, false)?;
@@ -1006,9 +1012,12 @@ fn compile_loop_attempts(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, entry: &Ent
                     None => return Err(Need::Fail),
                 };
                 cenv.add_top_vars(locals);
-                // compile's mayCallBrowser (the loop then runs uncompiled),
-                // then the code's generation, where cmp.R's notes could begin
-                if entry.notes && !cenv::may_call_browser(cx, st, &cenv, e)? {
+                // compile's mayCallBrowser: the loop runs uncompiled
+                if cenv::may_call_browser(cx, st, &cenv, e)? {
+                    return Err(Need::Fail);
+                }
+                // the code's generation, where cmp.R's notes could begin
+                if entry.notes {
                     notes = true;
                     return Err(Need::Fail);
                 }
@@ -1022,9 +1031,6 @@ fn compile_loop_attempts(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, entry: &Ent
             prelude.raised = true;
             continue;
         }
-        if read_context(cx)? {
-            continue;
-        }
         if notes {
             return Err(options::notes_not_implemented(cx));
         }
@@ -1034,21 +1040,6 @@ fn compile_loop_attempts(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, entry: &Ent
         Ok(c) => raise_compile_warnings(cx, c),
         e => e,
     }
-}
-
-/// After an attempt: when it stopped at a function context whose
-/// compilerOptions reads are to be made ([`options::Contexts::stop`]), they
-/// are made now and counted, and the compile goes on with another attempt
-/// (true).
-fn read_context(cx: &mut Cx) -> RResult<bool> {
-    let c = prims::state(cx).compile_warnings.contexts();
-    if !c.stop {
-        return Ok(false);
-    }
-    options::read(cx)?;
-    let w = &prims::state(cx).compile_warnings;
-    w.set_contexts(options::Contexts { stop: false, done: c.done + 1, ..w.contexts() });
-    Ok(true)
 }
 
 /// Whether closure `op` is a package's code: its environment's top

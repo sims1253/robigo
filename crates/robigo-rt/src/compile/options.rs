@@ -31,7 +31,10 @@ use robigo_heap::types::*;
 use robigo_rtcore::{Cx, RError, RResult, Ref, Root, Scope, View};
 
 /// A compile's function contexts and their compilerOptions reads, across
-/// its attempts (each starts with `at` 0): which contexts read already.
+/// its tries (each starts with `at` 0 and no stop, [`attempt`]'s rounds):
+/// which contexts read already.
+///
+/// [`attempt`]: super::attempt
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Contexts {
     /// The compile reads compilerOptions (its entry read them).
@@ -41,15 +44,19 @@ pub(crate) struct Contexts {
     pub done: usize,
     /// The contexts this attempt met.
     pub at: usize,
-    /// The attempt stopped at a context whose reads are to be made: the
-    /// caller reads ([`read`]), counts it done, and compiles again.
+    /// The try stopped at a context whose reads are to be made: the
+    /// attempt reads ([`read`]), counts it done, and tries again, its folds
+    /// kept.
     pub stop: bool,
 }
 
 /// A function context's reads, after its funEnv (make.functionContext's
 /// make.toplevelContext): skipped when nothing reading does can be seen
-/// ([`plain`]), else the attempt stops for its caller to make them
-/// ([`Contexts::stop`], [`Need::Fail`]).
+/// ([`plain`]), else the try stops for the attempt to make them
+/// ([`Contexts::stop`], [`Need::Fail`]). A try that compiles past folds
+/// not known yet ([`crate::fold::Folds::has_pending`]) is a guess: it
+/// counts no context done, and its stop waits for the folds (the attempt
+/// evaluates them first, as cmp.R folds before it reaches what follows).
 ///
 /// # Safety
 /// No collection in this interval (a compile's attempt).
@@ -66,7 +73,9 @@ pub(crate) unsafe fn context(cx: &Cx, st: &RtState) -> Result<(), Need> {
         return Ok(());
     }
     if plain(cx)? {
-        c.done = here + 1;
+        if !st.folds.has_pending() {
+            c.done = here + 1;
+        }
         w.set_contexts(c);
         return Ok(());
     }

@@ -102,6 +102,13 @@ impl Folds {
         !forced || self.busy.get() == 0
     }
 
+    /// Whether the try under way met calls whose folds are not known yet:
+    /// it compiles past them on a guess, and the next try, with their
+    /// values, may compile otherwise.
+    pub(crate) fn has_pending(&self) -> bool {
+        !self.pending.borrow().is_empty()
+    }
+
     /// How many times the try under way has asked for a fold.
     pub fn requests(&self) -> usize {
         self.asked.get()
