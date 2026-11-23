@@ -541,7 +541,7 @@ pub struct Core {
     pending_unfreeze: Vec<Sexp>,
     /// The frozen environments on the search path at the last pass (or the
     /// freeze), by address: the deferred search-path test's snapshot.
-    path_snapshot: Vec<usize>,
+    path_snapshot: Option<Vec<usize>>,
     /// How many frozen-reachability passes ran (`ROBIGO_GC_STATS`).
     frozen_passes: u64,
     /// `ROBIGO_GC_FREEZE_CHECK=N`: the freeze's invariant checked at every
@@ -983,7 +983,7 @@ impl Core {
             boot_boundary: None,
             frozen: Vec::new(),
             pending_unfreeze: Vec::new(),
-            path_snapshot: Vec::new(),
+            path_snapshot: None,
             frozen_passes: 0,
             freeze_check: if freeze_on { freeze_check_from_env() } else { 0 },
             freeze_check_count: 0,

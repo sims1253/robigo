@@ -392,11 +392,14 @@ impl Core {
     ///
     /// # Safety
     /// Every edge `roots` shows is null or live.
-    unsafe fn search_path_frozen<R: Trace + ?Sized>(&self, roots: &mut R) -> Vec<usize> {
+    unsafe fn search_path_frozen<R: Trace + ?Sized>(&self, roots: &mut R) -> Option<Vec<usize>> {
         let mut envs = Vec::new();
-        roots.trace_search_path(&mut Edges(&mut envs));
+        if !roots.trace_search_path(&mut Edges(&mut envs)) {
+            // no search path to compare with: unknown (Sol r3 S11)
+            return None;
+        }
         // SAFETY: the caller's contract.
-        envs.into_iter().filter(|e| unsafe { self.is_frozen(*e) }).map(|e| e.addr()).collect()
+        Some(envs.into_iter().filter(|e| unsafe { self.is_frozen(*e) }).map(|e| e.addr()).collect())
     }
 
     /// The frozen-reachability pass (docs/ledger/g3/ the pass's bar), at a
@@ -438,12 +441,13 @@ impl Core {
             // SAFETY: the caller's contract.
             let now: Vec<usize> =
                 envs.into_iter().filter(|e| unsafe { self.is_frozen(*e) }).map(|e| e.addr()).collect();
-            dirty |= self.path_snapshot.iter().any(|a| !now.contains(a));
+            // (no snapshot known: any write of the path counts, Sol r3 S11)
+            dirty |= self.path_snapshot.as_ref().is_none_or(|old| old.iter().any(|a| !now.contains(a)));
             snapshot = Some(now);
         }
         if !dirty {
             if let Some(now) = snapshot {
-                self.path_snapshot = now;
+                self.path_snapshot = Some(now);
             }
             self.remembered.1.set(notes & !Remembered::PATH_WRITTEN);
             return;
@@ -511,7 +515,11 @@ impl Core {
             // reachable, and must die if it is not); the other immortal
             // objects' entries stay
             (*self.remembered.0.get()).retain(|l| l.flags() & flags::IMMORTAL != 0);
-            self.path_snapshot = self.search_path_frozen(roots);
+            // (a root set without the search path keeps the old snapshot: a
+            // stale one can only call a later write a loss, Sol r3 S11)
+            if let Some(now) = self.search_path_frozen(roots) {
+                self.path_snapshot = Some(now);
+            }
         }
     }
 
@@ -532,7 +540,13 @@ impl Core {
     /// shows is null or live.
     pub(super) unsafe fn check_frozen_reach<R: Trace + ?Sized>(&self, roots: &mut R) {
         let mut work = Vec::new();
-        let with_roots = roots.trace_freeze(&mut Edges(&mut work));
+        // I2 holds only once the pass step has decided: a pass that deferred
+        // (its roots could not decide) leaves its notes and queue for a
+        // later collection, and a frozen object may be unreachable meanwhile
+        // (Sol r3 S10)
+        let decided = self.remembered.1.get() & (Remembered::DIRTY | Remembered::PATH_WRITTEN) == 0
+            && self.pending_unfreeze.is_empty();
+        let with_roots = roots.trace_freeze(&mut Edges(&mut work)) && decided;
         let mut reached: HashSet<usize, BuildFx> = HashSet::default();
         let mut kids = Vec::new();
         // SAFETY: the caller's contract; frozen objects are live.
@@ -1365,6 +1379,35 @@ mod tests {
             assert!(!c.is_frozen(leaf), "its child, no longer frozen-reachable, thawed");
             assert!(container.flags() & flags::IMMORTAL != 0, "the pinned container stays immortal");
             c.check_frozen_reach(&mut roots);
+        }
+    }
+
+    /// A path write with roots that show no search path defers the pass,
+    /// and the check does not count the deferred cut as missing (Sol r3
+    /// S10); with no snapshot known, the next path write is a loss, so the
+    /// pass runs (Sol r3 S11).
+    #[test]
+    fn a_deferred_pass_is_not_a_check_failure_and_an_unknown_snapshot_counts_a_path_write() {
+        let mut c = Core::new();
+        c.set_freeze_enabled(true);
+        if !c.freeze_enabled() {
+            return;
+        }
+        let nil = c.nil();
+        // SAFETY: fresh objects of this heap; nothing collects.
+        unsafe {
+            let leaf = c.alloc_vector(INTSXP, 1).unwrap();
+            let head = c.alloc_node(LISTSXP, leaf, nil, nil).unwrap();
+            // freeze roots, no search path: the snapshot is unknown
+            let mut roots = WithFreeze { all: vec![head], freeze: head };
+            c.freeze(&mut roots, |_| false);
+            assert!(c.path_snapshot.is_none(), "no search path: no snapshot");
+            c.remembered.note(Remembered::PATH_WRITTEN);
+            cut_car(head, nil);
+            c.frozen_pass(&mut roots);
+            assert!(c.is_frozen(leaf), "deferred: the roots cannot compare the search path");
+            c.check_frozen_reach(&mut roots);
+            assert_ne!(c.remembered.1.get() & Remembered::DIRTY, 0, "the notes wait");
         }
     }
 }
