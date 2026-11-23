@@ -294,6 +294,11 @@ impl Sexp {
         debug_assert!(matches!(t, REALSXP | INTSXP | LGLSXP));
         // SAFETY: the caller's contract.
         unsafe {
+            // a boxed value replaced in a frozen promise leaves the frozen
+            // graph (Sol r1 S4): PRVALUE untagged is an object or unbound
+            if self.flags() & flags::FROZEN != 0 && self.promise_tag() == 0 {
+                crate::gc::note_overwritten(self.sexp_at(promise::OFF_VALUE));
+            }
             self.set_promise_bits(bits);
             self.set_promise_tag(t);
         }
@@ -420,7 +425,14 @@ impl Sexp {
     #[inline(always)]
     pub unsafe fn set_std_len(self, n: isize) {
         // SAFETY: the caller's contract puts a length at `vector::OFF_LEN`.
-        unsafe { *(self.word(vector::OFF_LEN) as *mut isize) = n }
+        unsafe {
+            // a frozen vector shortened drops its tail from tracing: a
+            // possible frozen edge gone (Sol r1 S4)
+            if self.flags() & flags::FROZEN != 0 && n < self.std_len() {
+                (*crate::heap::remembered_of(self.0)).note(crate::heap::Remembered::DIRTY);
+            }
+            *(self.word(vector::OFF_LEN) as *mut isize) = n
+        }
     }
     /// GNU R's TRUELENGTH.
     ///
