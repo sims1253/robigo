@@ -275,6 +275,11 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
     threads = []
     # the threads whose first stop has been resumed
     started = set()
+    # stops no event has named yet (a new thread's or process's first stop,
+    # kept for its event), the processes the start made whose first stop is
+    # still to come (detached when it comes), and the stops of a round not
+    # yet served: all consumed from waitpid, so reap() resumes them itself
+    early, newborn, pending = {}, set(), []
     # the timer's state, under its lock: whether it fired, whether the run is
     # over (then it sends nothing)
     clock = {"lock": threading.Lock(), "fired": False, "over": False}
@@ -325,7 +330,7 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
         # the traced threads (the leader's own pid apart) and the processes
         # the start made, as their events name them; a stop of a thread or
         # process no event has named yet waits in `early` for its event
-        children, early = [], {}
+        children = []
         # the start's own process group (setpgid in the child): events of
         # its threads and the processes it makes, never another measurement's
         # (measure() and probes run several at once in one process)
@@ -338,10 +343,16 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
         # in the list starves, and if it holds what they wait for, the start
         # never ends (strace gathers its stops the same way). Each round
         # serves every thread stopped at its start.
-        pending = []
+        # the leader's exit status, once it is reaped: the loop goes on until
+        # no tracee of the group is left, so a process the start made, killed
+        # at the leader's exit stop, is not left parked at its own
+        leader = None
         while True:
             if not pending:
-                pending.append(os.waitpid(-group, WALL))
+                try:
+                    pending.append(os.waitpid(-group, WALL))
+                except ChildProcessError:
+                    break
                 while True:
                     try:
                         w = os.waitpid(-group, WALL | os.WNOHANG)
@@ -352,14 +363,30 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
                     pending.append(w)
             t, st = pending.pop(0)
             if t == pid and (os.WIFEXITED(st) or os.WIFSIGNALED(st)):
-                pid = None
-                break
+                pid, leader = None, st
+                continue
             if os.WIFEXITED(st) or os.WIFSIGNALED(st):
-                # a thread that ended (or a detached child we still saw)
+                # a thread or a process of the start's that ended
                 if t in threads:
                     threads.remove(t)
+                newborn.discard(t)
+                early.pop(t, None)
                 continue
             sig, event = os.WSTOPSIG(st), st >> 16
+            if clock["fired"]:
+                # the run is over, the leader killed: every stop goes on to
+                # its exit, whatever the bookkeeping says (a thread whose
+                # clone event the SIGKILL suppressed would otherwise wait in
+                # `early` for good, and the leader's exit with it)
+                if t == pid and event == PTRACE_EVENT_EXIT:
+                    kill_group(pid)
+                resume(PTRACE_CONT, t)
+                continue
+            if t in newborn:
+                # a process the start made, at its first stop: detached
+                newborn.discard(t)
+                resume(PTRACE_DETACH, t)
+                continue
             if t != pid and t not in threads:
                 # a new thread's or process's first stop before its event
                 early[t] = sig
@@ -380,21 +407,14 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
                         resume(go, new)
                 else:
                     # a process of its own: detached at its first stop,
-                    # which an earlier round may have kept (`early`), this
-                    # round may hold (`pending`: waiting for it again would
-                    # block for good), or is still to come
+                    # kept already (`early`) or still to come, through this
+                    # loop. Never a wait for it alone: the loop's wait on
+                    # the group is the only one, which the timeout ends
                     children.append(new)
-                    mine = [w for w in pending if w[0] == new]
                     if early.pop(new, None) is not None:
-                        ptrace(PTRACE_DETACH, new)
-                    elif mine:
-                        pending.remove(mine[0])
-                        if os.WIFSTOPPED(mine[0][1]):
-                            ptrace(PTRACE_DETACH, new)
+                        resume(PTRACE_DETACH, new)
                     else:
-                        _, cst = os.waitpid(new, WALL)
-                        if os.WIFSTOPPED(cst):
-                            ptrace(PTRACE_DETACH, new)
+                        newborn.add(new)
                 resume(go, t)
             elif sig == signal.SIGTRAP and event == PTRACE_EVENT_EXIT:
                 if t == pid:
@@ -425,10 +445,10 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
             fired = clock["fired"]
         if fired:
             raise SystemExit(f"rt-startup: {' '.join(cmd)} ran over {timeout} s")
-        if hwm is None:
+        if hwm is None or leader is None:
             raise SystemExit(f"rt-startup: no exit stop for {cmd[0]}")
         out.seek(0)
-        return anon, hwm, os.waitstatus_to_exitcode(st), out.read(), len(children)
+        return anon, hwm, os.waitstatus_to_exitcode(leader), out.read(), len(children)
     finally:
         with clock["lock"]:
             clock["over"] = True
@@ -436,7 +456,7 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
             timer.cancel()
             timer.join()
         if pid:
-            reap(pid, threads)
+            reap(pid, [*threads, *early, *newborn, *(w[0] for w in pending)])
         if pidfd is not None:
             os.close(pidfd)
         out.close()
@@ -476,33 +496,34 @@ def kill_group(pid):
             time.sleep(0.005)
 
 
-def reap(pid, threads=()):
-    """Kill the traced child `pid` and wait it and its traced `threads` out.
-    The kills come first, to every one (a clone without CLONE_THREAD is a
-    process of its own, which the leader's kill does not reach), so that
-    none can run on to make another; then each is resumed, since one may sit in a stop already consumed (a reading
-    that failed at its exit stop, where the SIGKILL is dropped and only a
-    resume lets the exit finish); each may stop again (its exit event)
-    before it is gone, and is resumed until it is."""
+def reap(pid, consumed=()):
+    """Kill the traced child `pid` and every process of its group, and wait
+    every tracee of the group out. The kills come first, to every one (a
+    clone without CLONE_THREAD is a process of its own, which the leader's
+    kill does not reach), so that none can run on to make another. Then the
+    tracees whose stop memory() already consumed (`consumed`: gathered in a
+    round, kept for an event, a process before its first stop) are resumed,
+    since no wait reports that stop again: a SIGKILL ends any ptrace stop
+    but the exit event's, where only a resume lets the exit finish. Then
+    the group is waited on until no tracee is left, each one resumed at
+    each stop: every tracee, whether memory() registered it or not (a
+    thread whose clone event was never handled, Sol's case)."""
     kill_group(pid)
-    for t in (pid, *threads):
-        try:
-            os.kill(t, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-    for t in (pid, *threads):
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    for t in (pid, *consumed):
         try:
             ptrace(PTRACE_CONT, t)
         except OSError:
             pass
-    for t in (*threads, pid):
-        while True:
-            try:
-                _, st = os.waitpid(t, WALL)
-            except ChildProcessError:
-                break
-            if os.WIFEXITED(st) or os.WIFSIGNALED(st):
-                break
+    while True:
+        try:
+            t, st = os.waitpid(-pid, WALL)
+        except ChildProcessError:
+            break
+        if os.WIFSTOPPED(st):
             try:
                 ptrace(PTRACE_CONT, t)
             except OSError:
