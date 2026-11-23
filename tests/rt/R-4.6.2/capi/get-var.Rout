@@ -1,0 +1,31 @@
+[1] 2
+[1] 1
+[1] "not here"
+NULL
+[1] "simpleError" "error"       "condition"  
+[1] "object 'x' not found"
+gv(quote(x), e, FALSE)
+[1] "simpleError" "error"       "condition"  
+[1] "object 'nosuch' not found"
+gv(quote(nosuch), e)
+forced
+[1] 42
+[1] 42
+[1] "simpleError" "error"       "condition"  
+[1] "first argument to 'R_getVarEx' must be a symbol"
+gv("y", e)
+[1] "simpleError" "error"       "condition"  
+[1] "second argument to 'R_getVarEx' must be an environment"
+gv(quote(y), list(y = 1))
+[1] "simpleError" "error"       "condition"  
+[1] "first argument to 'R_getVarEx' must be a symbol"
+gve(1, e)
+[1] "getVarExError"   "missingArgError" "error"           "condition"      
+[1] "argument \"a\" is missing, with no default"
+f()
+[1] "getVarExError"   "missingArgError" "error"           "condition"      
+[1] "argument \"a\" is missing, with no default"
+g()
+getVarExError caught
+missingArgError caught
+[1] 3

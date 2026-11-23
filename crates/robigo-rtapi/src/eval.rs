@@ -31,6 +31,58 @@ fn eval<'s>(cx: &mut Cx, s: Scope<'s>, e: Root<'_>, rho: Root<'_>) -> RResult<Ro
     Ok(r)
 }
 
+/// `R_getVarEx(sym, rho, inherits, ifnotfound)`, and `R_getVar` over it
+/// (`ifnotfound` None: R_UnboundValue, then its error). The checks'
+/// messages name `R_getVarEx` (its `__func__`) for both, as GNU R's do.
+// R: envir.c:R_getVarEx, R_getVar
+fn get_var_ex(
+    cx: &mut Cx,
+    s: Scope<'_>,
+    sym: Root<'_>,
+    rho: Root<'_>,
+    inherits: bool,
+    ifnotfound: Option<Root<'_>>,
+) -> RResult<Sexp> {
+    if sym.bind(cx).sexptype() != SYMSXP {
+        return Err(cx.error("first argument to 'R_getVarEx' must be a symbol"));
+    }
+    if rho.bind(cx).sexptype() != ENVSXP {
+        return Err(cx.error("second argument to 'R_getVarEx' must be an environment"));
+    }
+    let o = s.out(cx);
+    let val = o.root();
+    if inherits {
+        cx.find_var(sym, rho, o)?;
+    } else {
+        cx.find_var_in_frame3(rho, sym, true, o)?;
+    }
+    let v = val.bind(cx).sexp();
+    if v == cx.missing_arg().sexp() {
+        // R_MissingArgError_c(EncodeChar(PRINTNAME(sym)), getLexicalCall(rho), "getVarExError")
+        let name = String::from_utf8_lossy(&name_bytes(cx, sym).unwrap_or_default()).into_owned();
+        let call = s.root(cx, cx.lexical_context(rho.bind(cx)).call());
+        return Err(cx.missing_arg_error(&name, Some(call), "getVarExError"));
+    }
+    if v == cx.unbound().sexp() {
+        return match ifnotfound {
+            Some(x) => Ok(x.bind(cx).sexp()),
+            None => {
+                let name = String::from_utf8_lossy(&name_bytes(cx, sym).unwrap_or_default()).into_owned();
+                Err(cx.error(&format!("object '{name}' not found")))
+            }
+        };
+    }
+    if val.bind(cx).sexptype() == PROMSXP {
+        // (C code's eval of the promise: GNU R's eval(val, rho))
+        let p = s.root(cx, val.bind(cx));
+        let o = s.out(cx);
+        let r = o.root();
+        cx.eval_promise(p, o)?;
+        return Ok(r.bind(cx).sexp());
+    }
+    Ok(v)
+}
+
 /// `R_tryEval(e, env, ErrorOccurred)`: `e` evaluated in a top-level
 /// context; an error is reported there (GNU R's default handler, before
 /// the jump) and gives NULL with `*err` set.
@@ -278,6 +330,22 @@ entry! {
         let r = o.root();
         cx.find_var(sym, rho, o)?;
         Ok(r.bind(cx).sexp())
+    }
+
+    /// `R_getVarEx(sym, rho, inherits, ifnotfound)`: `sym`'s value in
+    /// `rho` (and its enclosures with `inherits`), a promise forced,
+    /// `ifnotfound` when it is unbound; a missing argument is the
+    /// `getVarExError` reported against `rho`'s lexical call.
+    // R: envir.c:R_getVarEx
+    [4] fn R_getVarEx(sym: Sexp, rho: Sexp, inherits: c_int, ifnotfound: Sexp) -> Sexp => |cx, s| {
+        get_var_ex(cx, s, sym, rho, inherits != 0, Some(ifnotfound))
+    }
+
+    /// `R_getVar(sym, rho, inherits)`: [`R_getVarEx`]'s value, "object
+    /// '%s' not found" when it is unbound.
+    // R: envir.c:R_getVar
+    [3] fn R_getVar(sym: Sexp, rho: Sexp, inherits: c_int) -> Sexp => |cx, s| {
+        get_var_ex(cx, s, sym, rho, inherits != 0, None)
     }
 
     /// `R_NewHashedEnv(enclos, size)`: a hashed environment (`size` the

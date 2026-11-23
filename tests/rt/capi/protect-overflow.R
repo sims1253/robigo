@@ -1,0 +1,29 @@
+# PROTECT past R_PPStackSize (memory.c:R_signal_protect_error): the
+# condition is a protectStackOverflowError and a stackOverflowError, with
+# GNU R's message and a NULL call; its calling handlers run (the red zone
+# opened for them), and once the error has left, the stack's size is back:
+# a second overflow is caught again, with its handlers run again, and the
+# session goes on.
+dyn.load(paste0(Sys.getenv("RT_CAPI_LIBS"), "/protect_overflow.so"))
+over <- function() .Call("rt_protect_n", 60000L)
+.Call("rt_protect_n", 1000L)
+show <- function(e) {
+  print(class(e))
+  print(conditionMessage(e))
+  print(conditionCall(e))
+}
+show(tryCatch(over(), protectStackOverflowError = function(e) e))
+show(tryCatch(over(), stackOverflowError = function(e) e))
+for (i in 1:2) {
+  r <- tryCatch(
+    withCallingHandlers(over(), protectStackOverflowError = function(e) cat("calling handler", i, "\n")),
+    error = function(e) conditionMessage(e))
+  print(r)
+}
+# a calling handler may protect in the red zone
+r <- tryCatch(
+  withCallingHandlers(over(), error = function(e) cat("in the red zone:", .Call("rt_protect_n", 500L), "\n")),
+  error = function(e) "caught")
+print(r)
+.Call("rt_protect_n", 1000L)
+cat("still going\n")

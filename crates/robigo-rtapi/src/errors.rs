@@ -112,12 +112,23 @@ entry! {
         Err(cx.error(&format!("{fun}: argument of type {t} is not an external pointer")))
     }
 
-    /// `PROTECT` past `R_PPStackSize`: GNU R's `R_signal_protect_error`
-    /// signals a preallocated `protectStackOverflowError` condition inside
-    /// the red zone, which needs the condition system's classes.
-    // R: memory.c:R_signal_protect_error
+    /// `PROTECT` past `R_PPStackSize`: the `protectStackOverflowError`
+    /// condition (NULL call). With the red zone still closed it is opened
+    /// and the condition's calling handlers run; once it is open they are
+    /// skipped (they might overflow again). The size is restored as the
+    /// signal's exit leaves (GNU R's context end, `reset_pp_stack`).
+    // R: memory.c:R_signal_protect_error, reset_pp_stack
     [0] fn robigo_rtapi_protect_error() -> () => |cx, _s| {
-        Err(not_yet(cx, "R_signal_protect_error (a protect stack overflow's condition)"))
+        let oldpps = cx.pp_size();
+        let cond = if oldpps < cx.pp_real_size() {
+            cx.set_pp_size(cx.pp_real_size());
+            robigo_rtcore::PROT_SO
+        } else {
+            robigo_rtcore::ErrorCond { exit_only: true, ..robigo_rtcore::PROT_SO }
+        };
+        let e = cx.error_condition_call(None, &cond);
+        cx.set_pp_size(oldpps);
+        Err(e)
     }
 
     /// `UNPROTECT(n)` of more than the stack holds.

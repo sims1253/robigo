@@ -1,0 +1,17 @@
+[1] 1000
+[1] "protectStackOverflowError" "stackOverflowError"       
+[3] "error"                     "condition"                
+[1] "protect(): protection stack overflow"
+NULL
+[1] "protectStackOverflowError" "stackOverflowError"       
+[3] "error"                     "condition"                
+[1] "protect(): protection stack overflow"
+NULL
+calling handler 1 
+[1] "protect(): protection stack overflow"
+calling handler 2 
+[1] "protect(): protection stack overflow"
+in the red zone: 500 
+[1] "caught"
+[1] 1000
+still going
