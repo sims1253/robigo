@@ -240,8 +240,7 @@ fn keep_call(cx: &mut Cx, which: Which, fcall: Root<'_>, tmp: Root<'_>, clo: Roo
 
 impl<'s> Loop<'s> {
     /// Element `i`'s value (`R_forceAndCall(R_fcall, 1, rho)`), written to
-    /// `out`; then `i`'s vector made fresh again if the callee captured or
-    /// replaced it.
+    /// `out`.
     fn call(&self, cx: &mut Cx, i: usize, out: Out<'_>) -> RResult<()> {
         // `i`'s binding must see the write: GNU R's bare `INTEGER(ind)[0]`,
         // in place even when R code shares `ind` (an active `i` whose setter
@@ -251,7 +250,15 @@ impl<'s> Loop<'s> {
         cx.with_pp_excess(self.pp, |cx| match self.xx {
             Some(xx) => cx.force_and_call_indexed(self.fcall, self.rho, xx, self.ind, out),
             None => cx.force_and_call(self.fcall, 1, self.rho, out),
-        })?;
+        })
+    }
+
+    /// lapply's check after an element's value is stored (`SET_VECTOR_ELT`
+    /// first, so a value that is `ind` itself shares it): `i`'s vector made
+    /// fresh again if the callee captured or replaced it. vapply has no such
+    /// check (apply.c: its index is written in place throughout).
+    // R: apply.c:do_lapply
+    fn fix_index(&self, cx: &mut Cx) -> RResult<()> {
         // R: ind != R_GetVarLocValue(loc) || MAYBE_SHARED(ind), in that
         // order (the binding is read first: an active one's function runs,
         // and may change what shares `ind`); a plain binding cell compared
@@ -321,7 +328,7 @@ pub fn do_lapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
             cx.scope(|cx, t| {
                 let r = t.capture(cx, |cx, o| lp.call(cx, i, o))?;
                 cx.owned_list(ans)?.set(i, r);
-                Ok(())
+                lp.fix_index(cx)
             })?;
         }
         out.set(cx, ans.bind(cx));

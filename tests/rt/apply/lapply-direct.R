@@ -95,6 +95,17 @@ fa(1:3, identity)
 reads
 set
 kept_i
+# FUN returning lapply's index vector itself: the stored value shares it,
+# so the next element's index is a new vector (Sol's case); vapply has no
+# such check, its index written in place throughout
+fi <- function(X, FUN, ...) {
+  FUN <- function(x) i
+  .Internal(lapply(X, FUN))
+}
+unlist(fi(1:3))
+kv <- list()
+vapply(1:3, function(v) { kv[[v]] <<- get("i", envir = parent.frame()); 0 }, 0)
+unlist(kv)
 # lapply's index vector: captured by FUN (it must be fresh for the next
 # element), rebound, or made an active binding in lapply's frame
 kept <- list()
