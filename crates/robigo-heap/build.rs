@@ -76,9 +76,13 @@ fn check_sources() {
 /// is unset, and a build after another checkout's reuses that checkout's
 /// robigo-heap and its header without any check failing (both sides of
 /// robigo-rtapi's layout check come from the other checkout): measured,
-/// docs/ledger/g3/2026-11-23-shared-target-builds.md. Set
-/// in the shell for another checkout, cargo's `[env]` does not override
-/// it, with the same result. Either refuses the build. The lowest rt
+/// docs/ledger/g3/2026-11-23-shared-target-builds.md. Refused, as is a
+/// value naming another checkout (set by hand for a build outside the
+/// checkout; inside, the config's `force` overrides what the shell
+/// exports). What no build script can refuse: a value set by hand,
+/// outside the checkouts, left the same from one checkout's build to
+/// another's. Nothing cargo sees changes then, so this script does not run
+/// at all (the ledger has the case). The lowest rt
 /// crate with a build script, so every rt build and `cargo test -p
 /// robigo-heap` passes through here.
 fn check_worktree() {
@@ -97,9 +101,7 @@ fn check_worktree() {
              Cures: {cures}."
         ),
         Some(w) if canon(std::path::Path::new(&w)) != canon(&root) => panic!(
-            "robigo-heap: ROBIGO_WORKTREE is {:?}, another checkout than this one ({}): cargo's [env] does not \
-             override a variable set in the environment, so it names the wrong checkout. Cures: unset it and \
-             {cures}.",
+            "robigo-heap: ROBIGO_WORKTREE is {:?}, another checkout than this one ({}). Cures: {cures}.",
             w,
             canon(&root).display()
         ),
