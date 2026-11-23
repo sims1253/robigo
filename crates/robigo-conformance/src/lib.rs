@@ -803,8 +803,16 @@ fn slots_from_env() -> Result<Option<(PathBuf, usize)>, String> {
         },
     };
     let dir = PathBuf::from(dir);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("ROBIGO_CONF_SLOTS_DIR {}: {e}", dir.display()))?;
+    private_dir(&dir).map_err(|e| format!("ROBIGO_CONF_SLOTS_DIR {}: {e}", dir.display()))?;
     Ok(Some((dir, n)))
+}
+
+/// `dir` made private (0700) if missing: another user able to write in a
+/// pool's directory could replace a slot file (scripts/rt-ci.py refuses a
+/// pool that is not private).
+fn private_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)
 }
 
 /// A free slot of the pool, waiting for one; none without a pool. The
@@ -812,7 +820,7 @@ fn slots_from_env() -> Result<Option<(PathBuf, usize)>, String> {
 /// together do not all queue on slot 0.
 fn take_slot(pool: &Option<(PathBuf, usize)>) -> Slot {
     let Some((dir, n)) = pool else { return Slot(None) };
-    std::fs::create_dir_all(dir).unwrap_or_else(|e| panic!("ROBIGO_CONF_SLOTS_DIR {}: {e}", dir.display()));
+    private_dir(dir).unwrap_or_else(|e| panic!("ROBIGO_CONF_SLOTS_DIR {}: {e}", dir.display()));
     let start = (std::process::id() as usize).wrapping_mul(31).wrapping_add(thread_index()) % n;
     loop {
         for j in 0..*n {
