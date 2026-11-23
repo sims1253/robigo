@@ -91,8 +91,9 @@ pub fn rt_command() -> Command {
 /// tree's stamp says it is fresh, and rt-home-db.sh holds its lock while it
 /// writes, so test binaries that start at once wait for one build. The
 /// script runs without the torture and mode variables a step may set for
-/// its tests (`ROBIGO_*` but `ROBIGO_RESEARCH_CACHE`, `R_GCTORTURE*`): the
-/// tree is built as the scripts build it. A failure panics with the
+/// its tests (`ROBIGO_*` but `ROBIGO_RESEARCH_CACHE`, `R_GCTORTURE*`) and
+/// without the user's [`USER_VARS`]: the tree is built as the scripts build
+/// it. A failure panics with the
 /// script's stderr and the command to run; no test skips or runs on another
 /// boot instead.
 pub fn ensure_db_tree(bin: &Path) -> PathBuf {
@@ -117,6 +118,12 @@ fn make(bin: &Path) -> Result<PathBuf, String> {
         if (k.starts_with("ROBIGO_") && k != "ROBIGO_RESEARCH_CACHE") || k.starts_with("R_GCTORTURE") {
             cmd.env_remove(&*k);
         }
+    }
+    // nor the user's start-up settings (R_KEEP_PKG_SOURCE=yes, say, would
+    // have the compiler's database built from sources it cannot keep):
+    // HOME stays, where rt-home.sh finds GNU R's sources and cargo its own
+    for v in USER_VARS {
+        cmd.env_remove(v);
     }
     let o = cmd.output().map_err(|e| format!("running {script}: {e}"))?;
     if !o.status.success() {
