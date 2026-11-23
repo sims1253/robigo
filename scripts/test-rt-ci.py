@@ -683,6 +683,8 @@ class RtCi(unittest.TestCase):
         "scripts/perf.py": "rt-startup's trees (rt-starts --trees, rt-bars' make_trees)",
         "scripts/rt_trees.py": "is the way",
         "scripts/rt-home-db.sh": "writes the tree (boots stage0 itself)",
+        "scripts/rt-test-tree.sh": "writes a test binary's own tree (rt-home-db.sh into .robigo/test-trees/<key>, "
+                                   "never the checkout's): tests/common/db_tree.rs and CI's test job",
         "scripts/rt-base-build.sh": "names its boot (ROBIGO_RT_BOOT=stage0)",
         "scripts/rt-rdb-compare.sh": "reads trees, runs no binary at a default boot",
         "scripts/pgo-build.sh": "L's flip branch makes its training run's tree",
