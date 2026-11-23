@@ -331,6 +331,20 @@ CRATE_TEST = ["cargo", "test", "--profile", "quick", "--locked"]
 TREE_RUNS = {"ROBIGO_RT_HOME_DB": "1"}
 
 
+# The step that builds the release binary (with the conformance test), whose
+# tree the next step writes. Every step that can run the rdb boot (no
+# ROBIGO_RT_BOOT, once rdb is the default, or ROBIGO_RT_BOOT=rdb) needs base's
+# database tree written by its own binary before it, so these two run in
+# every shard of `steps` whose steps do (TREE_SHARDS), not only in modes:
+# about 0.2-0.45 min for the tree; the build is one the shard made anyway.
+RELEASE_BUILD_TITLE = "the release binary and the conformance, built (cargo test --release --no-run)"
+
+
+def release_build():
+    return (RELEASE_BUILD_TITLE, {},
+            ["cargo", "test", "--release", "--locked", "-p", "robigo-rtapi", "--test", "conformance", "--no-run"])
+
+
 def db_tree(binary, env=None):
     """The step that writes base's database tree with `binary`, the release
     robigo-rt its shard built first (rt_binary; scripts/rt-home-db.sh is
@@ -408,6 +422,9 @@ def full_move_steps():
     gctorture, every collection moving everything it may."""
     full_slow = case_timeouts(FULL_MOVE_SLOW)
     return every_cpu([
+        ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", {}, ["scripts/rt-home.sh"]),
+        release_build(),
+        db_tree(rt_binary()),
         ("conformance under ROBIGO_GC_MOVE=1 with gctorture (every collection moves everything)",
          {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **SLOW, "ROBIGO_CONF_TIMEOUTS": full_slow},
          conformance_command()),
@@ -440,6 +457,8 @@ def freeze_check_steps():
     return every_cpu([
         # (the tools cases need the tree: without it they skip, Sol r7 S13)
         ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", {}, ["scripts/rt-home.sh"]),
+        release_build(),
+        db_tree(rt_binary()),
         ("conformance under gctorture, the freeze checked at every collection",
          {"ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "1", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
           **SLOW, "ROBIGO_CONF_TIMEOUTS": case_timeouts(FREEZE_CHECK_SLOW)},
@@ -476,8 +495,7 @@ def steps(crates):
         # the release binary users get, which the steps below run (base's
         # database tree, boot_db, the scripts): built as the conformance step
         # builds it (its features), since the crates' tests build quick
-        ("the release binary and the conformance, built (cargo test --release --no-run)", {},
-         [*test, "-p", "robigo-rtapi", "--test", "conformance", "--no-run"]),
+        release_build(),
         # L5's boot beside M1's loader (ROBIGO_RT_BOOT=rdb): base's database,
         # written by this robigo-rt booted from base's source, then base
         # booted from it (crates/robigo-rtapi/tests/boot_db.rs). Before every
@@ -607,6 +625,13 @@ def steps(crates):
         # poison-dead steps after it: every step above tests the binary users
         # get (cargo keeps both builds). With ROBIGO_GC_MOVE=1 as well it takes
         # about 20 minutes, so that run is by hand (g3.md §16).
+        # this build's binary (it replaces the release one) and base's
+        # database tree written by it, before any step runs it: at an rdb
+        # default every one of them boots from that tree
+        ("ROBIGO_RETRY_TORTURE's build (with poison-dead), built (cargo test --release --no-run)", {},
+         [*test, "-p", "robigo-rtapi", "--features", CHECK_FEATURES, "--test", "conformance", "--no-run"]),
+        ("base's database tree for ROBIGO_RETRY_TORTURE's build (scripts/rt-home-db.sh)", {},
+         ["scripts/rt-home-db.sh", "--robigo-rt", rt_binary()]),
         ("conformance under ROBIGO_RETRY_TORTURE=1 (E9: every build's retry runs once)",
          {"ROBIGO_RETRY_TORTURE": "1", **slow},
          [*test, "-p", "robigo-rtapi", "--features", CHECK_FEATURES, "--test", "conformance", "--",
@@ -614,11 +639,8 @@ def steps(crates):
         # C1 (#979, the bot's round 2): a translation-cache verification whose
         # fresh translation stops for a retry compares nothing. Under
         # ROBIGO_RETRY_TORTURE every fresh translation of a verification
-        # stops once inside it, so the case is certain, not lucky: base's
-        # database tree written by this build (whose binary the step above
-        # made), then the boot test that verifies a start under the knob
-        ("base's database tree for ROBIGO_RETRY_TORTURE's build (scripts/rt-home-db.sh)", {},
-         ["scripts/rt-home-db.sh", "--robigo-rt", rt_binary()]),
+        # stops once inside it, so the case is certain, not lucky: the boot
+        # test that verifies a start under the knob, on the tree above
         # (TREE_RUNS: a missing or stale tree fails, not skips; and the test
         # fails, not skips, if the build has no retry-torture)
         ("a translation-cache verification under ROBIGO_RETRY_TORTURE=1 compares nothing for a retry "
@@ -792,7 +814,14 @@ def shard_steps(crates, shard):
         return builds_first(debug_assertions_steps(crates))
     if shard == "release-crate-tests":
         return builds_first(release_crate_tests_steps(crates))
-    return builds_first([s for s in steps(crates) if shard_of(s[0]) in (None, shard)])
+    shared = (RELEASE_BUILD_TITLE, db_tree("")[0])
+    return builds_first([s for s in steps(crates)
+                         if shard_of(s[0]) in (None, shard) or (s[0] in shared and shard in TREE_SHARDS)])
+
+
+# The shards of `steps` besides modes (where they are) that run the release
+# binary at the default boot: each builds it and writes its tree first
+TREE_SHARDS = ("gctorture", "builtin-diff")
 
 
 # the environment that decides what cargo builds (the modes' variables are

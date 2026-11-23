@@ -400,7 +400,7 @@ def lock_row(lock, path, first=5.0, every=60.0, step=0.2):
 def run_cases(cmd, env, batch, out, ncases, root, rsrc, timeout):
     """run_isolated's cases, in `root`, which its caller holds."""
     lost = {}
-    base = {k: env[k] for k in (*ENV, "R_ENABLE_JIT", "A4_LABEL") if k in env}
+    base = {k: env[k] for k in (*ENV, "R_ENABLE_JIT", "A4_LABEL", "ROBIGO_TRANSLATION_CACHE") if k in env}
     for i in range(1, ncases + 1):
         remove_tree(root)
         cwd, home, tmp = (os.path.join(root, x) for x in ("case", "home", "tmp"))
@@ -684,7 +684,10 @@ def run_rt(a, row, jit, rt_bin, prefix):
     scratch = scratch_dir("a4-rt-")
     out = os.path.join(scratch, "records")
     env = {k: v for k, v in os.environ.items() if k != "R_HOME"}
-    env.update(ENV, R_ENABLE_JIT=JIT[jit], A4_LABEL="robigo-rt", ROBIGO_RSRC=a.rsrc)
+    # (the translation cache off for every binary, the plain and the planted
+    # one alike: they start the same way whichever wrote the tree's .rtc;
+    # the diff is about builtins, not starts)
+    env.update(ENV, R_ENABLE_JIT=JIT[jit], A4_LABEL="robigo-rt", ROBIGO_RSRC=a.rsrc, ROBIGO_TRANSLATION_CACHE="0")
     work = os.path.join(scratch, "cwd")
     os.makedirs(work)
     t0 = time.monotonic()

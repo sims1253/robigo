@@ -91,9 +91,14 @@ class RtCi(unittest.TestCase):
             for t in titles:
                 seen.setdefault(t, []).append(shard)
         self.assertEqual(sorted(seen), sorted(everything))
+        shared = (rt.RELEASE_BUILD_TITLE, rt.db_tree("")[0])
         for t, shards in seen.items():
             if rt.shard_of(t) is None:
                 self.assertEqual(shards, [s for s in rt.SHARDS if s not in rt.OWN_STEPS], t)
+            elif t in shared:
+                # the release build and its tree: in modes and each shard
+                # that runs the binary at the default boot
+                self.assertEqual(shards, [s for s in rt.SHARDS if s == "modes" or s in rt.TREE_SHARDS], t)
             else:
                 self.assertEqual(shards, [rt.shard_of(t)], t)
         # where each long step goes (the split's point): the crates' tests
@@ -115,8 +120,9 @@ class RtCi(unittest.TestCase):
         self.assertEqual([t for t, s in where.items() if s == "builtin-diff"],
                          ["builtin differential and its planted divergences (A4, scripts/builtin-diff.py ci)"])
         self.assertEqual([t for t, s in where.items() if s == "feature-builds"],
-                         ["conformance under ROBIGO_RETRY_TORTURE=1 (E9: every build's retry runs once)",
+                         ["ROBIGO_RETRY_TORTURE's build (with poison-dead), built (cargo test --release --no-run)",
                           "base's database tree for ROBIGO_RETRY_TORTURE's build (scripts/rt-home-db.sh)",
+                          "conformance under ROBIGO_RETRY_TORTURE=1 (E9: every build's retry runs once)",
                           "a translation-cache verification under ROBIGO_RETRY_TORTURE=1 compares nothing for a "
                           "retry (tests/boot_db.rs)",
                           "ROBIGO_POISON_DEAD=1 (dead slots poisoned), robigo-rt's tests and the planted early clear",
@@ -284,8 +290,8 @@ class RtCi(unittest.TestCase):
         self.assertIn("1 case(s) over 50% of their limit", out.getvalue())
         self.assertIn("tests/rt/x.R", out.getvalue())
         # the nightly's full-move step is a conformance step like the others
-        for _, _, cmd in rt.full_move_steps():
-            self.assertTrue(rt.CONFORMANCE in cmd and "--exact" in cmd)
+        # (its last: the tree and the build come first)
+        self.assertTrue(rt.CONFORMANCE in rt.full_move_steps()[-1][2] and "--exact" in rt.full_move_steps()[-1][2])
 
     def test_the_free_space_floor_measures_a_path_that_does_not_exist_yet_at_its_ancestor(self):
         # cargo's target directory does not exist on a fresh checkout (CI's
@@ -516,6 +522,48 @@ class RtCi(unittest.TestCase):
                             continue
                         self.assertIn(k, cleared, f"{shard}: {title}: {k} is not in MODE_VARS")
 
+    def test_every_step_that_can_boot_rdb_has_its_binarys_tree_before_it(self):
+        # base's database tree is written by one binary (rt-home-db.sh's
+        # stamp names it); a step that runs the release binary with no boot
+        # set (rdb once it is the default) or ROBIGO_RT_BOOT=rdb needs the
+        # tree that same build wrote, earlier in its own plan, under either
+        # default. Walked in order: a release build replaces the binary (in
+        # its target), a tree step records the binary it saw
+        crates = ["robigo-rt", "robigo-rtapi", "robigo-rtcore"]
+        plans = {shard: rt.shard_steps(crates, shard) for shard in rt.SHARDS}
+        plans["local"] = rt.builds_first(rt.steps(crates))
+        plans["full-move"] = rt.full_move_steps()
+        plans["freeze-check"] = rt.freeze_check_steps()
+        binary_scripts = ("scripts/rt-stress.sh", "scripts/rt-overshoot.py", "scripts/rt-fail-alloc.py",
+                          "scripts/rt-tcache-mutate.py", "scripts/builtin-diff.py")
+
+        def build_of(cmd):
+            # (a release cargo command's build: its features, or plain)
+            return cmd[cmd.index("--features") + 1] if "--features" in cmd else "plain"
+
+        checked = 0
+        for name, plan in plans.items():
+            binary, tree = {}, {}
+            for title, env, cmd in plan:
+                target = env.get("CARGO_TARGET_DIR", "")
+                release = cmd[:2] == ["cargo", "test"] and "--release" in cmd and "-p" in cmd \
+                    and "robigo-rtapi" in cmd and ("--no-run" in cmd or rt.CONFORMANCE in cmd or "boot_db" in cmd)
+                if release:
+                    binary[target] = build_of(cmd)
+                if cmd[:1] == ["scripts/rt-home-db.sh"]:
+                    tree[target] = binary.get(target)
+                    continue
+                if "scripts/builtin-diff.py" in cmd:
+                    binary[target] = "plain"       # (it builds the release binary first)
+                runs = release and "--no-run" not in cmd or any(x in cmd for x in binary_scripts)
+                if not runs or env.get("ROBIGO_RT_BOOT", "rdb") != "rdb":
+                    continue
+                checked += 1
+                self.assertIsNotNone(tree.get(target), f"{name}: {title}: no tree before it")
+                self.assertEqual(tree[target], binary.get(target),
+                                 f"{name}: {title}: the tree was written by another build")
+        self.assertGreater(checked, 20)
+
     def test_a_crosscheck_that_compares_fewer_than_its_floor_fails(self):
         # the rdb boot's report: a boot that stopped loading the compiler's
         # namespace compares about half as many closures, without any error
@@ -600,10 +648,13 @@ class RtCi(unittest.TestCase):
         self.assertEqual(tests[0]["ROBIGO_GC_FREEZE_CHECK"], "1")
         self.assertEqual(tests[0]["ROBIGO_GC_FREEZE"], "1")
         night = rt.freeze_check_steps()
-        self.assertEqual(len(night), 2)
-        # the R_HOME tree first: the tools cases skip without it (Sol r7 S13)
+        self.assertEqual(len(night), 4)
+        # the R_HOME tree first: the tools cases skip without it (Sol r7 S13);
+        # then the binary and base's database tree it writes
         self.assertEqual(night[0][2], ["scripts/rt-home.sh"])
-        _, env, cmd = night[1]
+        self.assertEqual(night[1], rt.release_build())
+        self.assertEqual(night[2], rt.db_tree(rt.rt_binary()))
+        _, env, cmd = night[3]
         self.assertEqual((env["ROBIGO_GC_FREEZE_CHECK"], env["ROBIGO_GCTORTURE"], env["ROBIGO_GC_FREEZE"]), ("1", "1", "1"))
         # a failed check fails the step, whatever the case's output (S14)
         self.assertEqual(env["ROBIGO_GC_FREEZE_CHECK_REPORT"], rt.FREEZE_REPORT)
@@ -745,14 +796,17 @@ class RtCi(unittest.TestCase):
         # ROBIGO_POISON_DEAD on robigo-rt's tests and the conformance
         steps = rt.steps(["robigo-rt", "robigo-rtcore"])
         featured = [i for i, (_, _, cmd) in enumerate(steps) if "--features" in cmd]
-        # the feature builds come last: retry torture's conformance, the
-        # database tree its build's binary writes (no flag of its own: the
-        # step before built that binary), the cache's verification under the
-        # knob (#979), then the poison-dead steps
+        # the feature builds come last: the build (its binary replaces the
+        # release one), the database tree that binary writes (no flag of its
+        # own), retry torture's conformance, the cache's verification under
+        # the knob (#979), then the poison-dead steps: the tree before any
+        # step that runs the binary
         n = len(steps)
-        self.assertEqual(featured, [n - 5, n - 3, n - 2, n - 1], "the feature builds come last")
-        self.assertEqual(steps[n - 4][2][:3], ["scripts/rt-home-db.sh", "--robigo-rt", rt.rt_binary()])
-        self.assertIn("boot_db", steps[featured[1]][2])
+        self.assertEqual(featured, [n - 6, n - 4, n - 3, n - 2, n - 1], "the feature builds come last")
+        self.assertIn("--no-run", steps[n - 6][2])
+        self.assertEqual(steps[n - 5][2][:3], ["scripts/rt-home-db.sh", "--robigo-rt", rt.rt_binary()])
+        self.assertIn("boot_db", steps[featured[2]][2])
+        featured = featured[1:]
         for i in featured:
             cmd = steps[i][2]
             self.assertEqual(cmd[cmd.index("--features") + 1], rt.CHECK_FEATURES)
@@ -926,8 +980,10 @@ class RtCi(unittest.TestCase):
         self.assertEqual(moving[0]["ROBIGO_CONF_TIMEOUT"], "600")
         self.assertTrue(rt.GC_MOVE_YOUNG.startswith("young:") and int(rt.GC_MOVE_YOUNG[6:]) >= 1)
         full = rt.full_move_steps()
-        self.assertEqual(len(full), 1)
-        _, env, cmd = full[0]
+        self.assertEqual([c for _t, _e, c in full[:3]],
+                         [["scripts/rt-home.sh"], rt.release_build()[2], rt.db_tree(rt.rt_binary())[2]])
+        self.assertEqual(len(full), 4)
+        _, env, cmd = full[3]
         self.assertEqual((env["ROBIGO_GC_MOVE"], env["ROBIGO_GCTORTURE"]), ("1", "1"))
         self.assertIn(rt.CONFORMANCE, cmd)
         named = dict(item.rsplit("=", 1) for item in env["ROBIGO_CONF_TIMEOUTS"].split(","))

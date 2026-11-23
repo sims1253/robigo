@@ -312,6 +312,46 @@ class Batches(unittest.TestCase):
             self.assertEqual([x[0] for x in files], [".", f"made-{i}"])
             self.assertEqual(files[1][3], len("clean"))
 
+    def test_every_binary_starts_with_the_translation_cache_off(self):
+        # the plain and the planted binary start alike whichever build wrote
+        # the tree's .rtc (another build's is a silent miss, robigo-rtapi's
+        # boot_db test of a stale build ID): run_rt turns the cache off for
+        # every binary, in a batch row and in an External row's clean
+        # environment (the case's own process sees it)
+        import types
+        seen = {}
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        with open(os.path.join(d, "done"), "w") as f:
+            f.write('{"lost": {}}')
+        drv = os.path.join(d, "fake.py")
+        with open(drv, "w") as f:
+            f.write("import os, sys\nout = os.environ['A4_OUT']\nos.makedirs(out, exist_ok=True)\n"
+                    "open(os.path.join(out, 'started'), 'w').close()\n"
+                    "open(os.path.join(out, 'cache'), 'w').write(os.environ.get('ROBIGO_TRANSLATION_CACHE', 'unset'))\n")
+        def batch(cmd, env, batch, out, n, scratch, **k):
+            seen["batch"] = env.get("ROBIGO_TRANSLATION_CACHE")
+            return {}
+        def isolated(cmd, env, batch, out, n, key, **k):
+            real_isolated([sys.executable, drv], env, batch, out, 1, "test-tcache")
+            with open(os.path.join(out, "cache")) as f:
+                seen["isolated"] = f.read()
+            return {}
+        real_isolated = bd.run_isolated
+        a = types.SimpleNamespace(data=d, seed=0, rsrc="x")
+        for iso in (False, True):
+            row = types.SimpleNamespace(isolated=iso, key=lambda seed, j: "k")
+            with unittest.mock.patch.object(bd, "oracle_dir", return_value=d), \
+                    unittest.mock.patch.object(bd, "read_cases", return_value=[]), \
+                    unittest.mock.patch.object(bd, "run_batch", batch), \
+                    unittest.mock.patch.object(bd, "run_isolated", isolated), \
+                    unittest.mock.patch.object(bd, "seal_big", lambda out: None):
+                r = bd.run_rt(a, row, "off", "rt", [])
+            remove = r.get("scratch")
+            if remove:
+                shutil.rmtree(remove, ignore_errors=True)
+        self.assertEqual(seen, {"batch": "0", "isolated": "0"})
+
     def test_two_runs_of_one_external_row_at_once_both_pass(self):
         # as two checkouts' `ci` runs on one machine: the row's case
         # directory is one path for both (case_root), and neither run may
