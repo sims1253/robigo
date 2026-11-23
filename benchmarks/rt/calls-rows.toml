@@ -745,10 +745,54 @@ safe <- function(x) tryCatch(if (x > 0) x else stop("neg"), error = function(err
 [[row]]
 name = "lapply"
 group = "calls"
-note = "lapply(x, f): base's lapply over ten elements, a small closure each; report-only (no bar or guard cites it). Each lapply call builds its FUN(X[[i]], ...) afresh and compiles it at its first evaluation (eval::expr_code): about 5.5k of the row's instructions (X, 2026-11-23)"
+note = "lapply(x, f): base's lapply over ten elements, a small closure each; report-only (no bar or guard cites it). Each lapply call built its FUN(X[[i]], ...) afresh and compiled it at its first evaluation (eval::expr_code): about 5.5k of the row's instructions (X, 2026-11-23); base's lapply now keeps one such call per isolate (B, docs/ledger/g3/2026-11-23-apply-fcall.md)"
 setup = '''
 x <- 1:10
 f <- function(v) v + 1
 '''
 body = 'r <- lapply(x, f)'
 n = 2000
+
+[[row]]
+name = "vapply"
+group = "calls"
+note = "vapply(x, f, 0): lapply's row through vapply's own kept call; report-only"
+setup = '''
+x <- 1:10
+f <- function(v) v + 1
+'''
+body = 'r <- vapply(x, f, 0)'
+n = 2000
+
+[[row]]
+name = "sapply"
+group = "calls"
+note = "sapply(x, f): lapply's row and simplify2array; report-only"
+setup = '''
+x <- 1:10
+f <- function(v) v + 1
+'''
+body = 'r <- sapply(x, f)'
+n = 2000
+
+[[row]]
+name = "mapply"
+group = "calls"
+note = "mapply(f, x, x): one call built per invocation (it holds FUN, MoreArgs and the names), two [[ compiles per argument; report-only"
+setup = '''
+x <- 1:10
+f <- function(a, b) a + b
+'''
+body = 'r <- mapply(f, x, x)'
+n = 1000
+
+[[row]]
+name = "Map"
+group = "calls"
+note = "Map(f, x, x): R code over mapply; report-only"
+setup = '''
+x <- 1:10
+f <- function(a, b) a + b
+'''
+body = 'r <- Map(f, x, x)'
+n = 1000
