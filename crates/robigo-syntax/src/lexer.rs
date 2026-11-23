@@ -1170,6 +1170,7 @@ impl<'a> Lexer<'a> {
                         // (one byte of the character is read: the position
                         // is the character's, the read stops after its byte)
                         if at < self.pos {
+                            err.offset = at;
                             err.end = at + 1;
                         }
                         return Err(err);

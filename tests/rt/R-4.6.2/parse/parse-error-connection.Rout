@@ -39,3 +39,5 @@ y `\u1234`;TAIL              "unicodeInBackticks" | "1234`;TAIL"
 [1]  1 15
 [1] "invalid \\U{xxxxxxxx} sequence (<input>:1:15)"
 [1] 1 9
+[1]  1 15
+"invalidUnicode" | a9 22 3b 54 41 49 4c 
