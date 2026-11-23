@@ -300,9 +300,8 @@ fn force_x_i(
     // R: subset.c:do_subset2 (the special's default, as specials.rs calls
     // it), at the depth GNU R runs it: eval(p) and eval(X[[i]]) active, so
     // a calling handler of an error signalled there (an allocation that
-    // fails) sees GNU R's depth. (Through lapply that needs an `X` whose
-    // expansion fails yet that lapply's `as.list` let through: one with
-    // only names, which cannot be allocated in the first place.)
+    // fails, e.g. expanding an unserialized compact sequence with names
+    // under a lowered mem.maxVSize) sees GNU R's depth
     let depth = cx.eval_depth();
     cx.set_eval_depth(depth + 2);
     let r = cx
