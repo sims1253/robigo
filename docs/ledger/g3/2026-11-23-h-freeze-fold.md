@@ -39,27 +39,33 @@ A probe build (removed again) logged every dirty note's call site, every collect
 - Two steps test the heap without it: `conformance with the boot heap's freeze off (ROBIGO_GC_FREEZE=0)`, in the gctorture shard, and its rdb twin in modes.
 - The moving collector's steps turn it off explicitly: `ROBIGO_GC_MOVE=1` with gctorture (the crates' tests), `ROBIGO_GC_MOVE=young:N` (E3), and the nightly's full move. `scripts/test-rt-ci.py` checks that every step with `ROBIGO_GC_MOVE` sets `ROBIGO_GC_FREEZE=0`.
 
-### Measured (callgrind, the PR's head against main 0f2a40371 with the freeze off)
+### Measured (callgrind, the PR's head against main with the freeze off)
+
+The head is b48d7ec3d onwards: globals not freeze roots, the translation cache (#979) merged. The starts are by the startup gate's own harness (#995's rt-startup.py: the mean over 15 layouts, home path length paired with glibc's top_pad, a fixed environment), the head against main e4a9fab22, each binary booting the trees its own build wrote, the cache included. The collections are against main 92d933c4b.
 
 **Amended (e), freeze on:**
 
-| clause | interim | rdb, JIT on | rdb, JIT off |
-|---|---|---|---|
-| startup instructions, mean over 15 R_HOME lengths (within 1%) | −1.14% | −0.03% | +0.08% |
-| startup anonymous memory, mean over 15 lengths (within 1%) | −0.49% | +0.28% | +0.17% |
-| per collection after the first, young0.R (at most 2.70M) | 2.09M | 2.26M | 2.07M |
-| the first collection (at most 2× main's) | 1.38M / 0.79M: 1.76× | 8.68M / 5.07M: 1.71× | 4.50M / 2.79M: 1.62× |
+| clause | interim | rdb, JIT on, cache | rdb, JIT off | rdb, no cache |
+|---|---|---|---|---|
+| startup instructions (within 0.5%, the gate) | −0.67% | +0.01% | −0.00% | −0.11% |
+| startup anonymous peak (within 64 KiB, the gate) | −9 KiB (−0.47%) | −38 KiB (−0.56%) | +19 KiB (+0.42%) | −35 KiB (−0.50%) |
+| per collection after the first, young0.R (at most 2.70M) | 2.09M | 2.34M | 2.07M | 2.38M |
+| per collection after the first, S3-heavy (400 generics; at most 2.70M) | 2.62M | 2.37M | 2.39M | 2.34M |
+| the first collection (at most 2× main's) | 1.35M / 0.78M: 1.74× | 8.40M / 5.09M: 1.65× | 4.45M / 2.78M: 1.60× | 8.49M / 5.07M: 1.67× |
 
-young0.R and young.R run no frozen-reachability pass under any boot (step 1: one under each rdb boot).
+No run took a frozen-reachability pass. The cache hits 433 times in each binary's rdb start with the JIT on.
 
-The two workloads (Sol step 2 r3 S14): **young0.R** is young.R with an `invisible(gc())` first, so its first of 6 collections is the freezing one. Its per-collection figure is (the collector's total − the first collection) / 5, the first collection measured alone by firstgc.R (`invisible(gc())`). **young.R**, 5 collections, its first the freezing one, gives the collector totals below. Each figure is callgrind's inclusive `Core::collect_needing` over the whole run.
+**The S3-heavy row's headroom:** under the interim boot it is 2.62M against the clause's 2.70M, 97% of it: the closest any clause comes. Its extra 0.53M over young0.R is the script's own live data (400 generics, 400 default methods, the list that holds them, the method memo's entries), marked at every collection whatever the freeze does: main shows the same +0.53M (2.99M against 2.46M). Whoever next changes dispatch's memo or the interim boot's frozen set has about 80k per collection to spare there; under rdb the row is 2.37M.
 
-**Beside amended (e)** (Sol step 2 r2 S10):
-- **Startup peak RSS (`VmHWM`, at most +5%)**, the mean over the 15 lengths: freeze on −0.83%, +0.17% and +0.12%; off −0.83%, +0.23% and +0.14%.
-- **young.R's collector total beside main's** (5 collections; 12.38M, 29.25M, 19.07M): freeze on 11.52M (−6.9%), 19.61M (−33.0%), 14.47M (−24.1%); off 12.37M (−0.07%), 29.25M (+0.00%), 19.05M (−0.10%).
-- **rt-bars** (freeze on, against main 0f2a40371; `perf.py rt-bars` in a gate slot): 0 failures, all 28 rows within −0.07% to +0.17%. The three programs' peak RSS: binarytrees 26,504 KiB against 26,996; listgrow 46,752 against 46,768; churn 80,440 against 80,528. Its one-path starts: interim −1.72%, rdb with the JIT on +0.04%, off −0.47% (an earlier build read +0.52% there: the path effect below).
+**The Globals reserve** (4,096 slots, 32 KiB): touched only as slots fill (the start's peak is 3,220), and main's table reaches the same capacity by doubling. The anonymous peak above is lower under rdb with the JIT on (−38 KiB), the row CI's one-layout reading put at +128 KiB on 632ae6a9d.
 
-**The freeze off:**
+**Beside amended (e)** (Sol step 2 r2 S10; Opus r7 R1, re-taken on b48d7ec3d):
+- **Startup peak RSS (`VmHWM`, at most +5%)**, the gate's: −0.77%, +0.07%, +0.00%, +0.77%.
+- **young.R's collector total beside main's** (5 collections; 12.35M, 29.26M, 19.10M, 29.23M): freeze on 11.40M (−7.7%), 19.65M (−32.8%), 14.48M (−24.2%), 19.55M (−33.1%); off within ±0.11%.
+- **rt-bars** (freeze on, against main 92d933c4b; `perf.py rt-bars` in a gate slot): 0 failures, all 28 rows within −0.06% to +0.16%. The three programs' peak RSS: binarytrees 26,636 KiB against 26,728; listgrow 46,376 against 47,040; churn 80,276 against 80,624.
+- **Under gctorture** (A1's measurement, rdb): `tests/r/lang/tailcall-frames.R` takes 928.6 s with the freeze off and 56.5 s with #984's lazy freeze. On b48d7ec3d it runs 3 frozen-reachability passes against the lazy freeze's 37 (1,109,987 collections each). Side by side here, two runs each at load 30, it takes 41.6 s against the lazy freeze's 40.8 s: per collection on a short gctorture script it executes fewer instructions (1.428M against 1.433M) with no more simulated cache misses, so the remaining 2% of wall time is not instructions and its cause is not found. `tests/r/memory/finalizers-self-ref-envs.R`: more than 1,800 s with the freeze off, 122 s with it on. The steady-state clause's sixth shape is this workload (deep frames under gctorture).
+
+**The freeze off** (an earlier build of the fold, against main 0f2a40371; on b48d7ec3d young.R's collector with the freeze off is within ±0.11% of main's, above):
 - startup instructions, mean over the 15 lengths: −1.13%, −0.07% and +0.10%; anonymous memory −0.47%, +0.42% and +0.25%;
 - young0.R's collector (6 collections): −0.28%, −0.05% and −0.09%. Per collection after the first: 2.458M against 2.464M, 5.584M against 5.588M, and 3.644M against 3.648M. (An earlier build read the interim +0.22%: the difference was in `prune_chars`'s `calloc` and the sweep's `memset`s, the same calls in the same number, which cost what the heap's layout gives them.)
 - **the mark loop:** `Core::trace` is the same 0xedd bytes as main's, its normalised disassembly the same but for one PC-relative constant (a panic location). `mark_rest` is smaller than main's: the freeze check's mark-time walk (`check_frozen_marked`, run only under `ROBIGO_GC_FREEZE_CHECK`) is out of line.
