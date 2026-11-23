@@ -838,6 +838,9 @@ def reallocs(binary, starts, checkout, trees, valgrind, top=5):
     """Print each start's top `top` growth reallocs (growth_reallocs()), as
     shares of the start's instructions, at the first layout shift."""
     names = starts or defined()
+    for n in names:
+        if STARTS.get(n) is None:
+            raise SystemExit(f"rt-startup: no start '{n}' (defined: {', '.join(defined())})")
     home = new_home() if isinstance(trees, str) else (build_trees(binary, checkout) if trees else checkout)
     if isinstance(trees, str):
         unpack_trees(trees, home)
@@ -848,11 +851,22 @@ def reallocs(binary, starts, checkout, trees, valgrind, top=5):
                    GLIBC_TUNABLES=f"glibc.malloc.top_pad={pad}")
         with tempfile.TemporaryDirectory(prefix="rt-reallocs-") as d:
             cg = os.path.join(d, "cg.out")
-            p = subprocess.run([valgrind, "--tool=callgrind", "--separate-callers=3", f"--callgrind-out-file={cg}",
-                                os.path.abspath(binary), "--vanilla", "-e", "1"], env=env, capture_output=True, text=True)
+            cmd = [valgrind, "--tool=callgrind", "--separate-callers=3", f"--callgrind-out-file={cg}",
+                   os.path.abspath(binary), "--vanilla", "-e", "1"]
+            try:
+                p = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=CALLGRIND_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                raise SystemExit(f"rt-startup: {' '.join(cmd)} ran over {CALLGRIND_TIMEOUT} s under callgrind")
             if p.returncode:
                 raise SystemExit(f"rt-startup: the {n} start under callgrind exited {p.returncode}:\n{p.stderr[-2000:]}")
-            total = next(int(ln.split()[1]) for ln in open(cg, errors="replace") if ln.startswith(("summary:", "totals:")))
+            total = None
+            with open(cg, errors="replace") as f:
+                for ln in f:
+                    if ln.startswith(("summary:", "totals:")):
+                        total = int(ln.split()[1])
+                        break
+            if total is None:
+                raise SystemExit(f"rt-startup: no total in callgrind's output of the {n} start")
             print(f"{n}: {total:,} instructions; growth reallocs (realloc's inclusive cost, by the function that grew):")
             for who, k in growth_reallocs(cg, top):
                 print(f"  {k:>12,} ({k / total:.2%})  {who}")

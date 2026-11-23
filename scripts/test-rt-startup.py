@@ -196,6 +196,35 @@ class Reallocs(unittest.TestCase):
         self.assertEqual(got, [("robigo_rt::define_builtins", 224458), ("<robigo_rt::compile::Comp>::emit", 150000)])
 
 
+class ReallocsRun(unittest.TestCase):
+    """rt-startup.py --reallocs: its starts are checked as run()'s, and its
+    callgrind runs are bounded and read as instructions()'."""
+
+    def test_an_unknown_or_reserved_start_is_refused(self):
+        for name in ("nope", "rdb-pkgs"):
+            with self.assertRaises(SystemExit) as cm:
+                su.reallocs("bin", [name], ".", False, "valgrind")
+            self.assertIn(f"no start '{name}'", str(cm.exception))
+
+    def test_a_run_over_its_time_and_a_file_without_totals_say_so(self):
+        import subprocess as sp
+        with tempfile.TemporaryDirectory() as home:
+            with unittest.mock.patch.object(su.subprocess, "run", side_effect=sp.TimeoutExpired("valgrind", 1)):
+                with self.assertRaises(SystemExit) as cm:
+                    su.reallocs("bin", ["interim"], home, False, "valgrind")
+                self.assertIn("ran over", str(cm.exception))
+
+            def no_totals(cmd, **kw):
+                out = next(a.split("=", 1)[1] for a in cmd if a.startswith("--callgrind-out-file="))
+                with open(out, "w") as f:
+                    f.write("version: 1\n")
+                return SimpleNamespace(returncode=0, stderr="")
+            with unittest.mock.patch.object(su.subprocess, "run", side_effect=no_totals):
+                with self.assertRaises(SystemExit) as cm:
+                    su.reallocs("bin", ["interim"], home, False, "valgrind")
+                self.assertIn("no total", str(cm.exception))
+
+
 class Memory(unittest.TestCase):
     """memory() on small programs: its readings, and that it cannot hang."""
     PY = sys.executable

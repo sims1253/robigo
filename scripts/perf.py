@@ -49,6 +49,7 @@ reported and never failed on (docs/ledger/g3/2026-11-16-cycles-study.md).
 """
 import argparse
 import concurrent.futures
+import functools
 import glob
 import hashlib
 import json
@@ -108,9 +109,11 @@ PINNED_CACHE = "--I1=32768,8,64 --D1=32768,8,64 --LL=33554432,16,64"
 RT_BARS = os.path.join(ROOT, "benchmarks", "rt", "m1-bars.toml")
 
 
+@functools.cache
 def rt_startup():
     """scripts/rt-startup.py as a module (its name is not an identifier):
-    the starts' measurement and gate, perf.py rt-bars' [[startup]]."""
+    the starts' measurement and gate (rt-starts), and the boots (BOOTS).
+    Loaded once per process."""
     import importlib.util
     spec = importlib.util.spec_from_file_location("rt_startup", os.path.join(ROOT, "scripts", "rt-startup.py"))
     mod = importlib.util.module_from_spec(spec)
@@ -698,15 +701,18 @@ def rt_instr(binary, rows, jobs, outdir, tag, cycles=False, ranges=None, boot=No
     return (instr, cyc) if cycles else instr
 
 
-def rt_rss(binary, files, runs, outdir, tag):
+def rt_rss(binary, files, runs, outdir, tag, boot=None):
     """Peak RSS of each program in KiB, scripts/rss.py's median of `runs`:
-    robigo-rt's (`binary`), or GNU R's (`binary` None). A bars file may
-    name no program (jit-bars.toml): then there is nothing to run, and
-    rss.py refuses a call without files."""
+    robigo-rt's (`binary`), or GNU R's (`binary` None). `boot`: robigo-rt's
+    ROBIGO_RT_BOOT value, as rt_instr's, so the RSS rows run under the boot
+    the instruction rows do. A bars file may name no program (jit-bars.toml):
+    then there is nothing to run, and rss.py refuses a call without files."""
     if not files:
         return {}
     out = os.path.join(outdir, f"{tag}-rss.json")
     side = ["--robigo", binary, "--no-r"] if binary else ["--no-robigo"]
+    if binary and boot is not None:
+        side += ["--robigo-env", f"ROBIGO_RT_BOOT={boot}"]
     cmd = [sys.executable, os.path.join(ROOT, "scripts", "rss.py"), "--runs", str(runs), *side,
            "--json", out, *files]
     p = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT)
@@ -903,6 +909,12 @@ def rt_verdict(spec, instr, rss, main=None):
 
 
 def cmd_rt_bars(a):
+    # every robigo-rt run names its boot (--boot): one this checkout's
+    # rt-startup.py does not know is refused, never replaced by another
+    boots = rt_startup().BOOTS
+    if a.boot not in boots:
+        print(f"rt-bars: --boot {a.boot!r} is not a boot of scripts/rt-startup.py (BOOTS: {', '.join(sorted(boots))})")
+        return 1
     with open(a.bars, "rb") as f:
         spec = tomllib.load(f)
     pin = pins().get("rt")
@@ -943,7 +955,7 @@ def cmd_rt_bars(a):
         got = rt_instr(binary, rows, a.jobs, work, tag, cycles=a.cycles, ranges=ranges[tag],
                        boot=rt_startup().BOOTS[a.boot])
         instr, cyc = got if a.cycles else (got, None)
-        return instr, cyc, rt_rss(binary, files, a.runs, work, tag)
+        return instr, cyc, rt_rss(binary, files, a.runs, work, tag, boot=rt_startup().BOOTS[a.boot])
 
     # which binaries these are: printed in the header and kept in the JSON.
     # main's is another commit by design, so only robigo-rt is checked

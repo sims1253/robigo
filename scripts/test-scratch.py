@@ -465,7 +465,7 @@ class Tools(unittest.TestCase):
                 if FAIL:
                     raise RuntimeError("callgrind died")
                 return ({{"plain": 500.0}}, {{"plain": 400.0}}) if k.get("cycles") else {{"plain": 500.0}}
-            with mock.patch.object(perf, "rt_instr", instr), mock.patch.object(perf, "rt_rss", lambda *a: {{"p.R": 1}}), \\
+            with mock.patch.object(perf, "rt_instr", instr), mock.patch.object(perf, "rt_rss", lambda *a, **k: {{"p.R": 1}}), \\
                     mock.patch.object(perf, "binary_identity", lambda *_: {{}}), \\
                     mock.patch.object(perf, "report_identity", lambda *_, **__: None), \\
                     mock.patch.object(perf, "gnur_version", lambda: "4.6.2"), \\
