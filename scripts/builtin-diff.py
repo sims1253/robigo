@@ -213,10 +213,10 @@ class Unusable(Exception):
 # no list depends on a binary's default: "interim" is M1's loader
 # (ROBIGO_RT_BOOT=m1), "stage0" base from source, "rdb" base from base.rdb
 # (also the binary's default since L5's flip). The known
-# lists are made under DEFAULT_BOOT; the default-boot flip changes it in
-# the same commit as the lists it regenerates.
+# lists are made under DEFAULT_BOOT; the default-boot flip changed it to
+# "rdb" in the same commit as the lists it regenerated.
 BOOTS = ("interim", "stage0", "rdb")
-DEFAULT_BOOT = "interim"
+DEFAULT_BOOT = "rdb"
 
 
 def boot_env(boot):
