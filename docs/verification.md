@@ -935,7 +935,17 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    criteria (`docs/g3.md` §15.3): the conformance again under gctorture and
    under the moving collector (E3, `ROBIGO_CONF_TIMEOUT` lets a case run
    longer there; a case whose `.requires` names `volume` is left out, for a
-   smaller one that covers its paths). Those steps, and the retry torture's,
+   smaller one that covers its paths; under gctorture the boot heap's
+   freeze is checked with `ROBIGO_GC_FREEZE_CHECK=16,16`: the direct loop
+   at every 16th collection, a full check, I2, I3 and the comparison with
+   the independent trace, at each process's freezing collection and every
+   16th check after, the step failing if none ran; the check names a
+   marking defect only at a full check, so an E3 failure with an
+   unexplained error under the freeze is rerun with
+   `ROBIGO_GC_FREEZE_CHECK=1` before anything else: a child marked but not
+   traced, planted under the interim boot, failed 37 of 40 cases there and
+   the check named none, docs/ledger/g3/2026-11-21-h-boot-freeze-check.md's
+   note of 2026-11-24). Those steps, and the retry torture's,
    torture each case but not its start: `ROBIGO_TORTURE_AFTER_START=1` holds
    gctorture, `ROBIGO_GC_MOVE`'s moves and `ROBIGO_RETRY_TORTURE` until the
    start is over. That variable is a test hook, not a GNU R setting: GNU R

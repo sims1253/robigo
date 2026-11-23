@@ -330,8 +330,15 @@ GCTORTURE_SLOW = {
     # the slowest hosts 554-589 s). #959 put the freeze's check at every
     # 16th collection on this step, which costs this case 1.37x (244 s ->
     # 335 s on .133, the case-times artifacts): the deepest stack in the
-    # slice, so the largest root set to trace. Remove or lower it when S1's
-    # smaller case or H's cheaper check lands, whichever is first
+    # slice, so the largest root set to trace. H's cheaper check (#1015:
+    # the direct loop at every 16th collection, the full check at every
+    # 256th) takes the case under E3's environment from 670.3 to 500.6 G
+    # instructions under the interim boot and from 897.4 to 493.0 G under
+    # rdb (`perf stat` instructions on main 6a6a923de, before #999), and
+    # #999 (the kept lapply call) cut the case's own work by about 39%
+    # locally; at CI's ~2 G instructions a second that is well under 600 s.
+    # Lowering or removing this allowance is A1's, on the next CI readings
+    # of the case with both in
     "tests/r/conditions/c-stack-overflow.R": 780,
 }
 
@@ -628,9 +635,17 @@ def steps(crates):
         # docs/g3.md §15.3 E3: the rt slice under the collector modes. The
         # freeze's check at every 16th collection: at every one it traces
         # the heap twice per allocation (tests/rt/bytecode/jit.R: 536 s
-        # against 97 s without it, past the case timeout; about 1.3x at 16)
+        # against 97 s without it, past the case timeout). Its comparison
+        # with the independent trace, whose cost grows with the stack
+        # (c-stack-overflow.R 1.37x at every check), and I2 and I3: the
+        # persistent-state parts, a full check at each process's freezing
+        # collection (checked whatever the period: a marking defect is
+        # caught where it first runs) and every 16th check after, so every
+        # case gets one; the direct loop, whose
+        # defect is transient, at every check (the 2026-11-21 check ledger's
+        # note of 2026-11-24); the step fails if no full check ran (run_steps)
         ("conformance under gctorture (E3)",
-         {"ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "16", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
+         {"ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "16,16", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
           **AFTER_START, **slow, "ROBIGO_CONF_TIMEOUTS": case_timeouts({**GCTORTURE_FIRST, **GCTORTURE_SLOW})}, conformance),
         # every argument a PROMSXP at call entry (GNU R's representation,
         # through the same binding-kind transitions): docs/g3.md §16's
@@ -1278,6 +1293,35 @@ def free_space_problem(paths, min_gb):
     return None
 
 
+# robigo-heap's freeze.rs FULL_CHECK_TALLY: a line per full check (I2, I3
+# and the comparison with the independent trace); every other line of the
+# report is a failure
+FULL_CHECK_TALLY = "robigo: ROBIGO_GC_FREEZE_CHECK: full check "
+# the whole record, its newline included: anything else, a torn or
+# truncated tally too, is a failure line (Sol's R4 on the check-cost PR)
+FULL_CHECK_RECORD = re.compile(re.escape(FULL_CHECK_TALLY) + r"([1-9][0-9]*) in process ([1-9][0-9]*)\n")
+
+
+def freeze_report(path):
+    """ROBIGO_GC_FREEZE_CHECK_REPORT's failures, its full checks, and the
+    processes that ran one (a missing report: none of either)."""
+    if not os.path.exists(path):
+        return [], 0, 0
+    failures, full, processes = [], 0, set()
+    with open(path) as f:
+        for record in f:
+            line = record.rstrip("\n")
+            if not line.strip():
+                continue
+            m = FULL_CHECK_RECORD.fullmatch(record)
+            if m:
+                full += 1
+                processes.add(m.group(2))
+            else:
+                failures.append(line)
+    return failures, full, len(processes)
+
+
 def run_steps(plan, done):
     """Run `plan`'s steps in order, recording (title, seconds, ok) in `done`;
     stop at the first that fails."""
@@ -1330,13 +1374,17 @@ def run_steps(plan, done):
         if r.returncode != 0:
             print(f"::error::rt: {title} failed")
             return r.returncode
-        if freeze and os.path.exists(freeze):
-            with open(freeze) as f:
-                lines = [l.rstrip("\n") for l in f if l.strip()]
-            for line in lines:
+        if freeze:
+            failures, full, processes = freeze_report(freeze)
+            for line in failures:
                 print(f"::error::rt: {line}")
-            if lines:
-                print(f"::error::rt: {title}: the freeze's check failed {len(lines)} time(s)")
+            if failures:
+                print(f"::error::rt: {title}: the freeze's check failed {len(failures)} time(s)")
+                done[-1] = (title, done[-1][1], False)
+                return 1
+            print(f"rt: {title}: the freeze's check: {full} full check(s) (I2, I3, the comparison) in {processes} process(es)")
+            if full == 0:
+                print(f"::error::rt: {title}: the freeze's check ran no full check (I2, I3, the comparison)")
                 done[-1] = (title, done[-1][1], False)
                 return 1
         if report:

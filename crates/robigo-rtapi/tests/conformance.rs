@@ -67,9 +67,13 @@ fn rt_conformance() {
 /// built for GNU R's objects, which robigo-rt must not load. `Ok(false)` (the
 /// r-home-tools cases skip) only when the probe ran and said so, or when the
 /// binary has no tree at all (its own message; every case then fails on
-/// it); any other failure of the probe is an error, not a skip.
+/// it); any other failure of the probe is an error, not a skip. It runs
+/// under the cases' boot (`ROBIGO_RT_BOOT` picks the tree) but writes no
+/// freeze check report: the probe is no case, and a full-check tally of its
+/// own would count for the step's cases (Sol's R1 on the check-cost PR).
 fn has_rt_home_tools(bin: &Path) -> Result<bool, String> {
     let out = std::process::Command::new(bin)
+        .env_remove("ROBIGO_GC_FREEZE_CHECK_REPORT")
         .env_remove("R_HOME")
         .args([
             "-e",
