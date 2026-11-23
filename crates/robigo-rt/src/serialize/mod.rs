@@ -215,11 +215,22 @@ pub(super) fn serialize_to_conn(
             Format::Binary => b"B\n",
             Format::Xdr | Format::Any => b"X\n",
         };
-        connections::write_all(cx, n, line, "error writing to connection")?;
+        write_conn(cx, n, f.text, line)?;
         return Err(cx.error(&format!("version {version} not supported")));
     }
     let bytes = write::serialize(cx, object, OutStream::new(fmt, version), hook)?;
-    connections::write_all(cx, n, &bytes, "error writing to connection")
+    write_conn(cx, n, f.text, &bytes)
+}
+
+/// The connection stream's write: on a text-mode connection
+/// `Rconn_printf`, its result not looked at; else `con->write`, checked.
+// R: serialize.c:OutCharConn, OutBytesConn
+fn write_conn(cx: &mut Cx, n: i32, text: bool, buf: &[u8]) -> RResult<()> {
+    if text {
+        connections::write_ignoring_os_errors(cx, n, buf)
+    } else {
+        connections::write_all(cx, n, buf, "error writing to connection")
+    }
 }
 
 /// `R_InitConnInPStream`'s checks: the stream over connection `n`.
