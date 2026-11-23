@@ -571,8 +571,131 @@ fn goto_exiting_handler(cx: &mut Cx, cond: Root<'_>, call: Option<Root<'_>>, ent
                 r.set_elt(2, handler);
             }
         }
-        cx.find_context(ctxt::FUNCTION, rho, Some(result))
+        // (try_cmpfun's entry: its record is native, not a function's)
+        let mask = if handler == cx.unbound().sexp() { ctxt::CCODE } else { ctxt::FUNCTION };
+        cx.find_context(mask, rho, Some(result))
     })
+}
+
+/// cmp.R's `tryCmpfun(f)` and `tryCompile(e)` around a JIT compile, `body`:
+/// `tryCatch(cmpfun(f), error = function(e) { notifyCompilerError(paste(
+/// e$message, "at", deparse(e$call))); f })`, made here because robigo's
+/// compiler is Rust. An exiting handler for class `"error"` is the
+/// innermost while `body` runs, so an error inside the compile (an R error
+/// of code it runs: a promise it forces, a warning made an error, a
+/// handler's `stop()`, the evaluation depth) ends the compile and nothing
+/// outside sees it. Then the compiler's message is given (silent under
+/// `compilerOptions$suppressAll`, the default) and the result is None: the
+/// closure or loop runs uncompiled. Other exits pass: interrupts,
+/// restarts, another condition's exiting handler, `return`s.
+///
+/// The entry is `mkHandlerEntry("error", R_GlobalEnv, <unbound>, target,
+/// result, FALSE)`: `goto_exiting_handler` sends an entry whose handler is
+/// R_UnboundValue to a `CTXT_CCODE` record whose `cloenv` is `target`, the
+/// one this function makes (GNU R's goes to `doTryCatch`'s frame). The
+/// record has the innermost record's call, so `error()` and `warning()`
+/// report what they report without it.
+///
+/// INTERIM(V4 step 3): when cmp.R's own code compiles, its `tryCmpfun`
+/// runs and this function goes, with its one call per compile entry
+/// (compile.rs) and the CCODE case above.
+// R: cmp.R:tryCmpfun, tryCompile; conditions.R:tryCatch, tryCatchOne
+pub(crate) fn try_cmpfun(
+    cx: &mut Cx,
+    body: impl FnOnce(&mut Cx) -> RResult<Option<robigo_heap::Sexp>>,
+) -> RResult<Option<robigo_heap::Sexp>> {
+    cx.scope(|cx, s| {
+        let o = s.out(cx);
+        let target = o.root();
+        cx.build(o, |cx| cx.new_env(cx.empty_env(), false, 0))?;
+        let o = s.out(cx);
+        let result = o.root();
+        cx.build(o, |cx| {
+            let mut r = cx.alloc_vector::<Ref<'_>>(RESULT_SIZE)?;
+            r.set(RESULT_SIZE - 1, state(cx).handler_result_token.bind(cx));
+            Ok(r.finish().into())
+        })?;
+        let call = s.root(cx, cx.global_context().call());
+        let base = s.root(cx, cx.base_env());
+        let r = cx.with_context(ctxt::CCODE, call, target, base, None, |cx, _| {
+            let o = s.out(cx);
+            let stack = o.root();
+            cx.build(o, |cx| {
+                let mut e = cx.alloc_vector::<Ref<'_>>(5)?;
+                e.set(0, cx.mk_char(b"error", Encoding::Native)?.as_ref());
+                e.set(1, cx.global_env());
+                e.set(2, cx.unbound());
+                e.set(3, target.bind(cx));
+                e.set(4, result.bind(cx));
+                // (gp 0: an exiting handler)
+                cx.cons(e.finish().as_ref(), cx.handler_stack())
+            })?;
+            cx.set_handler_stack(stack);
+            body(cx)
+        });
+        match r {
+            Ok(code) => Ok(code),
+            Err(robigo_rtcore::Left::Exit(e)) => Err(e),
+            Err(robigo_rtcore::Left::Landed(_)) => {
+                notify_compiler_error(cx, s, result)?;
+                Ok(None)
+            }
+        }
+    })
+}
+
+/// tryCmpfun's handler after the jump: `tryCatchOne`'s condition from the
+/// result vector, then `notifyCompilerError(paste(e$message, "at",
+/// deparse(e$call)))` in the compiler's namespace. Nothing runs when the
+/// compiler is not loaded (robigo's JIT compiles without it; GNU R's loads
+/// it at boot, its options the defaults) or `compilerOptions$suppressAll`
+/// is a plain TRUE, the common case: no R code at all after a failed
+/// compile, as GNU R's handler forces nothing then but the option.
+// R: cmp.R:tryCmpfun, notifyCompilerError; conditions.R:tryCatchOne
+fn notify_compiler_error(cx: &mut Cx, s: Scope<'_>, result: Root<'_>) -> RResult<()> {
+    let pkg = sym(cx, s, b"compiler")?;
+    let opts = sym(cx, s, b"compilerOptions")?;
+    let all = sym(cx, s, b"suppressAll")?;
+    let frame_value = |cx: &Cx, env: Ref<'_>, y: Root<'_>| -> Option<robigo_heap::Sexp> {
+        let (Some(env), Some(y)) = (crate::dispatch::env_ref(env), y.bind(cx).as_sym()) else { return None };
+        match cx.frame_binding(env, y) {
+            robigo_rtcore::Lookup::Bound(b) => match b.get(cx) {
+                robigo_rtcore::BindingValue::Value(v) => Some(v.sexp()),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+    let Some(ns) = frame_value(cx, cx.namespace_registry(), pkg) else { return Ok(()) };
+    // SAFETY: a namespace the registry holds; its frame's values are live.
+    let ns = s.root(cx, unsafe { Ref::from_sexp(ns, cx) });
+    let suppressed = frame_value(cx, ns.bind(cx), opts)
+        // SAFETY: as above.
+        .and_then(|o| frame_value(cx, unsafe { Ref::from_sexp(o, cx) }, all))
+        // SAFETY: as above.
+        .map(|v| unsafe { Ref::from_sexp(v, cx) })
+        .is_some_and(|v| {
+            v.as_vector::<robigo_rtcore::Lgl>()
+                .is_some_and(|l| l.len() == 1 && l.get(0).0 != 0 && l.get(0).0 != robigo_rtcore::Lgl::NA.0)
+        });
+    if suppressed {
+        return Ok(());
+    }
+    const NOTIFY: &str = "{
+        cond <- value[[1L]]
+        if (is.null(cond)) cond <- simpleError(.Internal(geterrmessage()), value[[2L]])
+        else if (is.character(cond)) cond <- simpleError(cond, value[[2L]])
+        notifyCompilerError(paste(cond$message, \"at\", deparse(cond$call)))
+    }";
+    let exprs = s.capture(cx, |cx, o| crate::lower::parse(cx, NOTIFY, o))?;
+    let e = s.root(cx, exprs.bind(cx).as_vector::<Ref<'_>>().unwrap().get(0));
+    let o = s.out(cx);
+    let env = o.root();
+    cx.build(o, |cx| cx.new_env(ns.bind(cx), false, 1))?;
+    let value = sym(cx, s, b"value")?;
+    cx.define_var(value, result, env)?;
+    let o = s.out(cx);
+    crate::eval(cx, e, env, o)
 }
 
 /// `R_FixupExitingHandlerResult(result)`: before `on.exit` code runs while

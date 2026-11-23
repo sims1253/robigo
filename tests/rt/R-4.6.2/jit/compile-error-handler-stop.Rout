@@ -1,0 +1,6 @@
+[1] "Error in (function (w)  : from the handler\n"
+attr(,"class")
+[1] "try-error"
+attr(,"condition")
+<simpleError in (function (w) {    n <<- n + 1L    if (n == 1L)         stop("from the handler")})(structure(list(message = "unable to translate '<U+4E2D>' to native encoding",     call = assign(v, 1, envir = vars)), class = c("simpleWarning", "warning", "condition"))): from the handler>
+[1] 1
