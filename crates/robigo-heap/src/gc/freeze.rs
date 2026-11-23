@@ -269,7 +269,7 @@ impl Core {
                     stopped.insert(x.addr());
                     continue;
                 }
-                self.make_immortal(x);
+                self.make_immortal_raw(x);
                 x.set_flag_raw(flags::FROZEN, true);
                 if x.typ() != CHARSXP {
                     x.set_refcnt(FROZEN_REFCNT);
@@ -419,22 +419,35 @@ impl Core {
     /// As for [`Core::collect`]: every edge `roots` shows is null or live;
     /// outside marking.
     pub(super) unsafe fn frozen_pass<R: Trace + ?Sized>(&mut self, roots: &mut R) {
-        let notes = self.remembered.1.replace(0);
+        let notes = self.remembered.1.get();
         if self.frozen.is_empty() {
             self.pending_unfreeze.clear();
+            self.remembered.1.set(0);
             return;
         }
+        // (a root set without freeze roots, or without the search path,
+        // cannot decide: it leaves every note, the snapshot and the queue to
+        // a collection that can: Sol r2 S5)
         let mut dirty = notes & Remembered::DIRTY != 0 || !self.pending_unfreeze.is_empty();
+        let mut snapshot = None;
         if notes & Remembered::PATH_WRITTEN != 0 {
+            let mut envs = Vec::new();
+            if !roots.trace_search_path(&mut Edges(&mut envs)) {
+                return;
+            }
             // SAFETY: the caller's contract.
-            let now = unsafe { self.search_path_frozen(roots) };
+            let now: Vec<usize> =
+                envs.into_iter().filter(|e| unsafe { self.is_frozen(*e) }).map(|e| e.addr()).collect();
             dirty |= self.path_snapshot.iter().any(|a| !now.contains(a));
-            self.path_snapshot = now;
+            snapshot = Some(now);
         }
         if !dirty {
+            if let Some(now) = snapshot {
+                self.path_snapshot = now;
+            }
+            self.remembered.1.set(notes & !Remembered::PATH_WRITTEN);
             return;
         }
-        self.frozen_passes += 1;
         // SAFETY: the caller's contract: frozen objects and every edge the
         // roots show are live; outside marking, the log is not borrowed.
         unsafe {
@@ -447,9 +460,12 @@ impl Core {
             let mut work = Vec::new();
             if !roots.trace_freeze(&mut Edges(&mut work)) {
                 // a root set that shows no freeze roots cannot say what the
-                // frozen graph reaches: nothing is thawed (Sol r1 S5)
+                // frozen graph reaches: nothing is thawed, and nothing is
+                // consumed (Sol r1 S5, r2 S5)
                 return;
             }
+            self.remembered.1.set(0);
+            self.frozen_passes += 1;
             for x in std::mem::take(&mut self.pending_unfreeze) {
                 if self.is_frozen(x) {
                     self.make_mortal(x);
@@ -1263,6 +1279,92 @@ mod tests {
                 }
             });
             assert_eq!(old, 0, "no object keeps the mover's OLD");
+        }
+    }
+
+    /// A collection whose roots show no freeze roots consumes nothing: the
+    /// dirty note survives it, and the next collection with freeze roots
+    /// runs the pass (Sol r2 S5).
+    #[test]
+    fn a_pass_without_freeze_roots_leaves_the_dirty_note() {
+        let mut c = Core::new();
+        c.set_freeze_enabled(true);
+        if !c.freeze_enabled() {
+            return;
+        }
+        let nil = c.nil();
+        // SAFETY: fresh objects of this heap; nothing collects.
+        unsafe {
+            let leaf = c.alloc_vector(INTSXP, 1).unwrap();
+            let head = c.alloc_node(LISTSXP, leaf, nil, nil).unwrap();
+            let mut roots = WithFreeze { all: vec![head], freeze: head };
+            c.freeze(&mut roots, |_| false);
+            cut_car(head, nil);
+            let passes = c.frozen_passes();
+            c.frozen_pass(&mut One(head));
+            assert_eq!(c.frozen_passes(), passes, "no freeze roots: no pass");
+            assert_ne!(c.remembered.1.get() & Remembered::DIRTY, 0, "and the note survives");
+            c.frozen_pass(&mut roots);
+            assert_eq!(c.frozen_passes(), passes + 1);
+            assert!(!c.is_frozen(leaf), "the cut-off object thawed at the next pass that could decide");
+            c.check_frozen_reach(&mut roots);
+        }
+    }
+
+    /// An object made immortal while it holds a frozen one is logged, so
+    /// that once a pass thaws that child, ordinary marking still traces it
+    /// through the holder (Sol r2 S8).
+    #[test]
+    fn a_new_immortal_holder_of_a_frozen_object_is_logged() {
+        let mut c = Core::new();
+        c.set_freeze_enabled(true);
+        if !c.freeze_enabled() {
+            return;
+        }
+        let nil = c.nil();
+        // SAFETY: fresh objects of this heap; nothing collects.
+        unsafe {
+            let leaf = c.alloc_vector(INTSXP, 1).unwrap();
+            let head = c.alloc_node(LISTSXP, leaf, nil, nil).unwrap();
+            let mut roots = WithFreeze { all: vec![head], freeze: head };
+            c.freeze(&mut roots, |_| false);
+            let holder = c.alloc_node(LISTSXP, leaf, nil, nil).unwrap();
+            c.make_immortal(holder);
+            assert!((*c.remembered.0.get()).contains(&holder), "logged: it holds a frozen object");
+            cut_car(head, nil);
+            c.frozen_pass(&mut roots);
+            assert!(!c.is_frozen(leaf), "the child thawed");
+            assert!((*c.remembered.0.get()).contains(&holder), "and its immortal holder stays logged: a root");
+        }
+    }
+
+    /// Pinning a frozen container (made immortal for good) takes it out of
+    /// the frozen graph: a dirty note, and it is logged, so that a pass that
+    /// thaws its child leaves the child traced through it (Sol r2 S8).
+    #[test]
+    fn pinning_a_frozen_container_is_dirty_and_logs_it() {
+        let mut c = Core::new();
+        c.set_freeze_enabled(true);
+        if !c.freeze_enabled() {
+            return;
+        }
+        let nil = c.nil();
+        // SAFETY: fresh objects of this heap; nothing collects.
+        unsafe {
+            let leaf = c.alloc_vector(INTSXP, 1).unwrap();
+            let container = c.alloc_node(LISTSXP, leaf, nil, nil).unwrap();
+            let head = c.alloc_node(LISTSXP, container, nil, nil).unwrap();
+            let mut roots = WithFreeze { all: vec![head], freeze: head };
+            c.freeze(&mut roots, |_| false);
+            assert_eq!(c.remembered.1.get(), 0);
+            c.make_immortal(container);
+            assert!(!c.is_frozen(container), "pinned");
+            assert_ne!(c.remembered.1.get() & Remembered::DIRTY, 0, "pinning is a dirty event");
+            assert!((*c.remembered.0.get()).contains(&container), "and the pinned container is logged");
+            c.frozen_pass(&mut roots);
+            assert!(!c.is_frozen(leaf), "its child, no longer frozen-reachable, thawed");
+            assert!(container.flags() & flags::IMMORTAL != 0, "the pinned container stays immortal");
+            c.check_frozen_reach(&mut roots);
         }
     }
 }

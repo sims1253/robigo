@@ -1039,18 +1039,66 @@ impl Core {
     /// without this function is missing from its block's count, and the
     /// sweep miscounts.
     pub unsafe fn make_immortal(&mut self, x: Sexp) {
-        // SAFETY: `x` is live, so its header can be read and written. Its
-        // block's address is in a chunk, and a large chunk's first word
-        // (cleared when allocated) cannot equal the magic number.
+        // SAFETY: as for `make_immortal_raw`; `x`'s fields are null or live.
         unsafe {
             if x.has_flag(flags::IMMORTAL) {
                 // a frozen object asked to be immortal for good (a symbol's
                 // PRINTNAME made of a frozen CHARSXP: Sol r1 S1): pinned, so
                 // that no frozen-reachability pass thaws it. It stays on the
-                // frozen list until the next pass drops it there.
+                // frozen list until the next pass drops it there. Pinned, it
+                // leaves the frozen graph, so its frozen children may lose
+                // their last frozen edge: a dirty note (Sol r2 S8)
                 if x.has_flag(flags::FROZEN) {
                     x.set_flag_raw(flags::FROZEN, false);
+                    self.remembered.note(Remembered::DIRTY);
+                    self.log_if_frozen_child(x);
                 }
+                return;
+            }
+            self.make_immortal_raw(x);
+            self.log_if_frozen_child(x);
+        }
+    }
+
+    /// An immortal object that is not frozen and holds a frozen one is a
+    /// root from now on (the remembered set): a frozen-reachability pass may
+    /// thaw that child, and ordinary marking traces an immortal object's
+    /// fields only when it is logged (Sol r2 S8).
+    ///
+    /// # Safety
+    /// `x` is live; its fields are null or live.
+    unsafe fn log_if_frozen_child(&mut self, x: Sexp) {
+        // SAFETY: the caller's contract.
+        unsafe {
+            if x.typ() == CHARSXP || x.flags() & flags::BARRIER == 0 {
+                return;
+            }
+            struct AnyFrozen(bool);
+            impl Visitor for AnyFrozen {
+                fn edge(&mut self, e: &mut Sexp) {
+                    // SAFETY: a field of a live object is null or live.
+                    self.0 |= !e.is_null() && unsafe { e.flags() } & flags::FROZEN != 0;
+                }
+            }
+            let mut v = AnyFrozen(false);
+            x.trace_fields(&mut v);
+            if v.0 {
+                barrier_slow(x);
+            }
+        }
+    }
+
+    /// [`Core::make_immortal`] without the frozen-child check: the boot
+    /// heap's freeze, whose walk logs what it freezes itself.
+    ///
+    /// # Safety
+    /// As for [`Core::make_immortal`].
+    pub(crate) unsafe fn make_immortal_raw(&mut self, x: Sexp) {
+        // SAFETY: `x` is live, so its header can be read and written. Its
+        // block's address is in a chunk, and a large chunk's first word
+        // (cleared when allocated) cannot equal the magic number.
+        unsafe {
+            if x.has_flag(flags::IMMORTAL) {
                 return;
             }
             // the first store into it is logged (`barrier_slow`)
@@ -2909,7 +2957,9 @@ impl Core {
             // (with the freeze on, an empty frozen list is checked too: a stray
             // FROZEN bit is an I3 failure, Sol r1 S6)
             let mut due = false;
-            if self.freeze_check != 0 && (!self.frozen.is_empty() || self.freeze_on) {
+            // (`freeze_enabled`, not `freeze_on`: under the mover's modes its
+            // OLD bit is FROZEN's, Sol r2 S6)
+            if self.freeze_check != 0 && (!self.frozen.is_empty() || self.freeze_enabled()) {
                 self.freeze_check_count += 1;
                 if self.freeze_check_count >= self.freeze_check {
                     self.freeze_check_count = 0;

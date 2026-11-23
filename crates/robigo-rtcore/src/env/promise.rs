@@ -1270,7 +1270,13 @@ pub(crate) unsafe fn retire_arg(iso: &Isolate, s: SlotRef) {
             (s.val(), Sexp::NULL)
         };
         // the slot's words, cleared with their counts kept (nothing
-        // collects before the caller stores over them)
+        // collects before the caller stores over them). Cleared raw, so in
+        // a frozen frame each cleared object is noted, as a barriered store
+        // over it would be (the boot heap's freeze: Sol r2 S9)
+        if f.flags() & robigo_heap::flags::FROZEN != 0 {
+            robigo_heap::note_overwritten(val);
+            robigo_heap::note_overwritten(expr);
+        }
         s.clear_raw_val();
         s.clear_raw_aux();
         // the promise's environment, counted once per promise in GNU R

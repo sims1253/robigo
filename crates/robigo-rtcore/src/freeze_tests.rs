@@ -304,3 +304,45 @@ fn a_detached_frozen_environment_thaws_and_one_still_attached_does_not() {
     })
     .unwrap();
 }
+
+/// A forced argument of a frozen closure frame, rebound: the slot's words
+/// are cleared raw (`retire_arg`), so the cleared expression and value are
+/// noted, and the next collection's pass thaws them (Sol r2 S9). Under the
+/// check, I2 would report them otherwise.
+#[test]
+#[cfg(not(miri))]
+fn a_retired_argument_of_a_frozen_frame_thaws() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    if !freeze_on(cx) {
+        return;
+    }
+    cx.scope(|cx, s| {
+        let base = s.root(cx, cx.base_env());
+        let x = cx.install(b"freeze_test_arg").unwrap();
+        let sh = s.root(cx, cx.new_shape(&[x]).expect("room"));
+        let expr = s.root(cx, cx.alloc_copy(&[1.0]).unwrap().finish());
+        let value = s.root(cx, cx.alloc_copy(&[2.0]).unwrap().finish());
+        let o = s.out(cx);
+        let frame = o.root();
+        cx.new_closure_frame(sh, base, base, &[crate::SlotInit::Forced { expr, value }], o)?;
+        let fsym = cx.install_rooted(s, b"freeze_test_frame")?;
+        cx.define_var(fsym, frame, base)?;
+        freeze_now(cx);
+        assert!(cx.is_frozen(frame.bind(cx)) && cx.is_frozen(value.bind(cx)) && cx.is_frozen(expr.bind(cx)));
+        // the argument rebound in the frozen frame
+        let xsym = cx.install_rooted(s, b"freeze_test_arg")?;
+        let nil = s.root(cx, cx.nil());
+        cx.define_var(xsym, nil, frame)?;
+        let o = value.reset(cx);
+        o.set(cx, cx.nil());
+        let o = expr.reset(cx);
+        o.set(cx, cx.nil());
+        let before = cx.frozen_passes();
+        cx.collect();
+        assert_eq!(cx.frozen_passes(), before + 1, "the cleared argument words were noted");
+        cx.check_frozen();
+        Ok::<(), crate::RError>(())
+    })
+    .unwrap();
+}
