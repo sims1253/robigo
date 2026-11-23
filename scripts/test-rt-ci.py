@@ -86,19 +86,10 @@ class RtCi(unittest.TestCase):
         self.assertEqual(where["ROBIGO_GC_MOVE (move every movable object at every collection), with gctorture"],
                          "modes")
         self.assertEqual(where["ROBIGO_MATERIALIZE=1 (every argument slot materialized)"], "modes")
-        self.assertEqual([t for t, s in where.items() if s == "gctorture" and t not in rt.GCTORTURE_MOVED],
+        self.assertEqual([t for t, s in where.items() if s == "gctorture"],
                          ["conformance with the boot heap's freeze on (ROBIGO_GC_FREEZE=1)",
                           "conformance under gctorture (E3)",
                           f"conformance under ROBIGO_GC_MOVE={rt.GC_MOVE_YOUNG} with gctorture (E3)"])
-        # the steps moved there need only the release binary: no database
-        # tree (ROBIGO_RT_BOOT=rdb, ROBIGO_RT_HOME_DB) and no quick build
-        plan = {t: (e, c) for t, e, c in rt.steps(crates)}
-        for t in rt.GCTORTURE_MOVED:
-            self.assertEqual(where[t], "gctorture", t)
-            e, c = plan[t]
-            self.assertNotIn("ROBIGO_RT_BOOT", e, t)
-            self.assertNotIn("ROBIGO_RT_HOME_DB", e, t)
-            self.assertNotIn("quick", c, t)
         self.assertEqual([t for t, s in where.items() if s == "builtin-diff"],
                          ["builtin differential and its planted divergences (A4, scripts/builtin-diff.py ci)"])
         self.assertEqual([t for t, s in where.items() if s == "feature-builds"],
