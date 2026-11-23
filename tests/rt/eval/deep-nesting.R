@@ -6,6 +6,12 @@
 d <- 1
 for (i in 1:900) d <- call("+", 1, d)
 print(eval(d))
+# a closure's body of 900 fold calls: the JIT's compile folds it to one
+# constant in one round, as cmp.R does (it took 900 rounds, two minutes)
+g <- function() NULL
+body(g) <- d
+print(g())
+print(g())
 d <- 1
 for (i in 1:20000) d <- call("+", 1, d)
 print(tryCatch(eval(d), error = function(e) conditionMessage(e)))

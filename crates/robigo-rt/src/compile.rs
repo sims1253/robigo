@@ -1242,6 +1242,24 @@ struct Comp<'g> {
 /// such depths ("node stack overflow"): the code is left uncompiled.
 const DEFER_DEPTH: u16 = 1000;
 
+/// The nesting depth the `Bc` profile compiles and folds to: GNU R 4.6.2's
+/// cmp.R compiles a nest of 1,477 fold calls (`1 + (1 + ...)`, to one
+/// constant) and stops from 1,478 with "node stack overflow" (its
+/// recursion on the byte-code interpreter's node stack; measured on the
+/// oracle, #976), which leaves the code uncompiled.
+const CMP_DEPTH: u16 = 1477;
+
+/// What a constant fold of an expression found in the try under way.
+enum Folded {
+    /// It folds to this constant.
+    Value(Sexp),
+    /// It is a fold call whose value is asked for (the request's index):
+    /// known after the round.
+    Pending(usize),
+    /// It does not fold.
+    No,
+}
+
 /// Give code `code` and the argument codes compiled with it (`arg_codes`)
 /// their slot indices ([`crate::code::set_index_shape`]): with `shape`,
 /// that frame shape's for all of them (a promise's code, translated for
@@ -1625,7 +1643,7 @@ impl<'g> Comp<'g> {
     unsafe fn expr(&mut self, e: Sexp, dst: Reg, d: u16, tail: Tail) -> Result<(), Need> {
         // SAFETY: the caller's contract.
         let t = unsafe { e.typ() };
-        if d >= DEFER_DEPTH && t == LANGSXP {
+        if t == LANGSXP && d >= if self.bc.is_some() { CMP_DEPTH } else { DEFER_DEPTH } {
             if self.bc.is_some() {
                 // R: cmp.R's recursion fails on such depths (a compiler
                 // error): GNU R leaves the code uncompiled
@@ -1741,63 +1759,71 @@ impl<'g> Comp<'g> {
     // R: cmp.R:constantFold, constantFoldCall, constantFoldSym, getFoldFun
     unsafe fn constant_fold(&self, e: Sexp) -> Result<Option<Sexp>, Need> {
         // SAFETY: the caller's contract.
-        unsafe { self.constant_fold_at(e, 0) }
+        Ok(match unsafe { self.constant_fold_at(e, 0)? } {
+            Folded::Value(v) => Some(v),
+            Folded::Pending(_) | Folded::No => None,
+        })
     }
 
-    /// [`Comp::constant_fold`] of `e`, `depth` calls into the fold: past
-    /// [`DEFER_DEPTH`] it stops, as cmp.R's recursive `constantFold` stops
-    /// on such depths (a compiler error: the code is left uncompiled), so
-    /// the walk stays within the stack.
+    /// [`Comp::constant_fold`] of `e`, `depth` calls into the fold. A fold
+    /// call whose arguments fold or are themselves asked for is asked for
+    /// with them ([`Folded::Pending`]), so one round folds a whole nest
+    /// bottom-up, as cmp.R's recursive `constantFold` does in one pass. Past
+    /// [`CMP_DEPTH`] it stops, as cmp.R stops there (a compiler error: the
+    /// code is left uncompiled), and the walk stays within the stack.
     ///
     /// # Safety
     /// `e` is live.
-    unsafe fn constant_fold_at(&self, e: Sexp, depth: u16) -> Result<Option<Sexp>, Need> {
-        if depth >= DEFER_DEPTH {
+    unsafe fn constant_fold_at(&self, e: Sexp, depth: u16) -> Result<Folded, Need> {
+        use Folded::*;
+        if depth >= CMP_DEPTH {
             return Err(Need::Fail);
         }
         let (cx, st) = (self.cx, self.st);
-        let Some(cenv) = &self.bc else { return Ok(None) };
+        let Some(cenv) = &self.bc else { return Ok(No) };
         // SAFETY: the caller's contract; symbols of `cx`'s isolate.
         unsafe {
             match e.typ() {
                 SYMSXP => {
                     if !cenv::is_const_name(cx, e) || !cenv.is_base_var(cx, st, e)? {
-                        return Ok(None);
+                        return Ok(No);
                     }
-                    Ok(cenv::base_value(cx, e)?.filter(|&v| cenv::check_const(cx, v)))
+                    Ok(cenv::base_value(cx, e)?.filter(|&v| cenv::check_const(cx, v)).map_or(No, Value))
                 }
                 LANGSXP => {
                     let fun = e.car();
                     if fun.typ() != SYMSXP || !cenv::is_fold_fun(cx, fun) || !cenv.is_base_var(cx, st, fun)? {
-                        return Ok(None);
+                        return Ok(No);
                     }
-                    let Some(ffun) = cenv::base_value(cx, fun)? else { return Ok(None) };
+                    let Some(ffun) = cenv::base_value(cx, fun)? else { return Ok(No) };
                     if !matches!(ffun.typ(), CLOSXP | BUILTINSXP | SPECIALSXP) {
-                        return Ok(None);
+                        return Ok(No);
                     }
                     let missing = cx.missing_arg().sexp();
                     let mut args = Vec::new();
                     for (a, tag) in cenv::elements(cx, e, true) {
                         if a == missing {
-                            return Ok(None);
+                            return Ok(No);
                         }
-                        let Some(v) = self.constant_fold_at(a, depth + 1)? else { return Ok(None) };
-                        args.push((v, tag));
+                        let arg = match self.constant_fold_at(a, depth + 1)? {
+                            Value(v) => crate::fold::FoldArg::Value(v),
+                            Pending(j) => crate::fold::FoldArg::Req(j),
+                            No => return Ok(No),
+                        };
+                        args.push((arg, tag));
                     }
-                    // (every argument passed checkConst: their modes are
-                    // constModes)
+                    // (every argument passed checkConst, or will before
+                    // this call is evaluated: their modes are constModes)
                     match st.folds.lookup(e) {
-                        Some(v) => Ok(v),
-                        None => {
-                            if st.folds.may_request(st.forced.is_some()) {
-                                st.folds.request(crate::fold::FoldReq { call: e, fun: ffun, args });
-                            }
-                            Ok(None)
+                        Some(v) => Ok(v.map_or(No, Value)),
+                        None if st.folds.may_request(st.forced.is_some()) => {
+                            Ok(Pending(st.folds.request(crate::fold::FoldReq { call: e, fun: ffun, args })))
                         }
+                        None => Ok(No),
                     }
                 }
                 PROMSXP | BCODESXP => Err(Need::Fail),
-                _ => Ok(cenv::check_const(cx, e).then_some(e)),
+                _ => Ok(if cenv::check_const(cx, e) { Value(e) } else { No }),
             }
         }
     }
