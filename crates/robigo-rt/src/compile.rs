@@ -299,12 +299,11 @@ unsafe fn source_body(cx: &Cx, f: Sexp) -> Sexp {
 /// compiled with cmp.R's decisions for its environment as it is now;
 /// `installed`: base's installed byte code (base's shipped definitions).
 /// None when cmp.R returns the closure uncompiled (it may call
-/// `browser()`, a compiler error).
-// R: cmp.R:cmpfun, make.functionContext, funEnv
+/// `browser()`, a compiler error) and when an error ends the compile
+/// (tryCmpfun's handler, [`crate::conditions::try_cmpfun`]; not around
+/// a translation of GNU R's byte code, which cmp.R does not make).
+// R: cmp.R:cmpfun, tryCmpfun, make.functionContext, funEnv
 pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> RResult<Option<Sexp>> {
-    // (the crosscheck's finding of the last attempt: an attempt a fold
-    // retries compared code without the fold's value)
-    let mut check = None;
     // A byte-code body's translation is kept on the BCODESXP, and every
     // closure `function` makes from it shares it, as GNU R's MKCLOSURE
     // shares the body. It depends on the byte code, its constant pool and
@@ -328,6 +327,22 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
             return Ok(Some(c));
         }
     }
+    // SAFETY: a rooted closure.
+    let translated = installed || unsafe { op.bind(cx).sexp().cdr().typ() == BCODESXP };
+    if translated {
+        // GNU R's byte code, which GNU R runs as it is: no cmp.R, no
+        // tryCmpfun (an error of the translation is robigo's, and shows)
+        return compile_closure_body(cx, op, installed);
+    }
+    crate::conditions::try_cmpfun(cx, |cx| compile_closure_body(cx, op, installed))
+}
+
+/// [`compile_closure_bc`] past its kept translation: `op`'s body
+/// translated or compiled, then cmp.R's warnings.
+fn compile_closure_body(cx: &mut Cx, op: Root<'_>, installed: bool) -> RResult<Option<Sexp>> {
+    // (the crosscheck's finding of the last attempt: an attempt a fold
+    // retries compared code without the fold's value)
+    let mut check = None;
     // (findLocals' warnings raised, and the compile made again after them)
     let mut prelude = Prelude::default();
     let code = loop {
@@ -908,6 +923,11 @@ unsafe fn function_context(
 /// fails (`tryCompile` returns the call; it runs uncompiled).
 // R: eval.c:R_compileExpr; cmp.R:compile
 pub fn compile_top_loop(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RResult<Option<Sexp>> {
+    crate::conditions::try_cmpfun(cx, |cx| compile_loop(cx, call, rho))
+}
+
+/// [`compile_top_loop`] inside its `tryCompile`.
+fn compile_loop(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RResult<Option<Sexp>> {
     let mut prelude = Prelude::default();
     let code = loop {
         let code = attempt(cx, |cx| {
@@ -996,18 +1016,17 @@ impl Prelude {
 /// with its code `code` rooted across them (a warning runs R code: a
 /// handler, `options(warn = 2)`'s error): the code, read again after them.
 ///
-/// INTERIM(C1), until V4 step 3 (cmp.R's own code compiling), or #964's
-/// handler for the first:
-/// - an error among them (a warning `options(warn = 2)` makes one, a
-///   handler's `stop()`) is an error inside cmp.R, which GNU R's
-///   `tryCmpfun` takes with its own handler, the innermost: the compile
-///   fails, the closure runs uncompiled (NOJIT) and raises its own error.
-///   Here the error leaves the compile, reported with cmp.R's call
-///   (`tests/rt/jit/translate-warning-warn2.R`, not ratcheted);
-/// - no R frame is on the stack while they run, where GNU R's has the
-///   called function's and cmp.R's (`tryCmpfun` ... `addVar`, `assign`):
-///   a handler's `sys.calls()` and an error's traceback differ
-///   (`tests/rt/jit/translate-warning-frames.R`, not ratcheted).
+/// An error among them (a warning `options(warn = 2)` makes one, a
+/// handler's `stop()`) is an error inside cmp.R, which `tryCmpfun` takes
+/// ([`crate::conditions::try_cmpfun`]): the compile fails, the closure
+/// runs uncompiled (NOJIT) and raises its own error
+/// (`tests/rt/jit/translate-warning-warn2.R`).
+///
+/// INTERIM(C1), until V4 step 3 (cmp.R's own code compiling): no R frame
+/// is on the stack while they run, where GNU R's has the called
+/// function's and cmp.R's (`tryCmpfun` ... `addVar`, `assign`): a
+/// handler's `sys.calls()` and an error's traceback differ
+/// (`tests/rt/jit/translate-warning-frames.R`, not ratcheted).
 // R: cmp.R:tryCmpfun, tryCompile
 fn raise_compile_warnings(cx: &mut Cx, code: Option<Sexp>) -> RResult<Option<Sexp>> {
     if prims::state(cx).compile_warnings.is_empty() {

@@ -1,7 +1,10 @@
 // The robigo executable exports GNU R's C API (robigo-capi) to the shared
 // objects it loads, and nothing else (docs/core.md §6).
 fn main() {
-    let list = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../robigo-capi/exports.list");
+    // (the package's directory now, not `env!` at the script's compile: a
+    // compiled build script is reused across checkouts sharing a target)
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("robigo-cli: cargo sets CARGO_MANIFEST_DIR");
+    let list = std::path::Path::new(&manifest).join("../robigo-capi/exports.list");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed={}", list.display());
     println!("cargo:rerun-if-env-changed=ROBIGO_RELEASE");

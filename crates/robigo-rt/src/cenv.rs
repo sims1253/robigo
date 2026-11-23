@@ -1634,7 +1634,9 @@ pub fn raise_prelude(cx: &mut Cx) -> robigo_rtcore::RResult<()> {
 /// The warnings `ws` given, each `warningcall` of its cmp.R call, with the
 /// JIT off as during GNU R's compile (`R_execClosure`'s and
 /// `R_compileAndExecute`'s `R_jit_enabled = 0`): a handler they run sees
-/// level 0 and compiles nothing.
+/// level 0 and compiles nothing. Restored when they return; an exit
+/// leaves the level as it is (GNU R restores it after `R_cmpfun`, which a
+/// longjmp skips).
 // R: eval.c:R_execClosure (R_CheckJIT), R_compileAndExecute
 fn raise_warnings(cx: &mut Cx, ws: Vec<(CompileWarning, String)>) -> robigo_rtcore::RResult<()> {
     if ws.is_empty() {
@@ -1643,9 +1645,11 @@ fn raise_warnings(cx: &mut Cx, ws: Vec<(CompileWarning, String)>) -> robigo_rtco
     let jit = &crate::prims::state(cx).jit;
     let saved = jit.get();
     jit.set(crate::jit::Config { level: 0, ..saved });
-    let r = raise_each(cx, ws);
+    raise_each(cx, ws)?;
+    // (an exit leaves the level as it is then: GNU R's longjmp skips the
+    // restore, so a handler's enableJIT() stands)
     crate::prims::state(cx).jit.set(saved);
-    r
+    Ok(())
 }
 
 fn raise_each(cx: &mut Cx, ws: Vec<(CompileWarning, String)>) -> robigo_rtcore::RResult<()> {
