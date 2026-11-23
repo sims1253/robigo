@@ -28,3 +28,14 @@ function(a, a "\U{110000}";TAIL "invalidUnicode" | "\";TAIL"
 f("" = 1 "\U{110000}";TAIL   "invalidUnicode" | "\";TAIL" 
 y `\u1234`;TAIL              "unicodeInBackticks" | "1234`;TAIL" 
 1 |> f(_) `\u1234`;TAIL      "unicodeInBackticks" | "1234`;TAIL" 
+"unrecognizedEscape" | 22 3b 54 41 49 4c 
+"unrecognizedEscape" | 22 3b 54 41 49 4c 
+"badHex" | a9 22 3b 54 41 49 4c 
+"nulNotAllowed" | a9 22 3b 54 41 49 4c 
+"invalidUnicode" | 22 3b 54 41 49 4c 
+"invalidUnicode" | 7d 22 3b 54 41 49 4c 
+"invalidUnicode" | a9 7d 22 3b 54 41 49 4c 
+"invalidUnicode" | 22 3b 54 41 49 4c 
+[1]  1 15
+[1] "invalid \\U{xxxxxxxx} sequence (<input>:1:15)"
+[1] 1 9

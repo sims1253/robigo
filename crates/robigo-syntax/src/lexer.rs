@@ -394,11 +394,12 @@ impl<'a> Lexer<'a> {
         ParseError::condition(subclass, message, at, self.pos.max(at + 1).max(self.rejected), None)
     }
 
-    /// The character at `pos`, which an escape's digit loop rejects (it is
-    /// read and pushed back: [`Lexer::rejected`]).
+    /// The character at `pos`, which an escape's digit loop rejects (its
+    /// first byte is read and pushed back: [`Lexer::rejected`]; `xxgetc`
+    /// reads a byte).
     fn reject_next(&mut self) {
-        if let Some(c) = self.peek_char() {
-            self.rejected = self.pos + c.len_utf8();
+        if self.peek_char().is_some() {
+            self.rejected = self.pos + 1;
         }
     }
 
@@ -1149,13 +1150,29 @@ impl<'a> Lexer<'a> {
                 }
                 if braced {
                     if self.peek_char() != Some('}') {
-                        if e == 'u' {
+                        // GNU R reads the byte that is not `}` (xxgetc, not
+                        // pushed back): it is consumed, and the error's
+                        // position is after it
+                        // R: gram.y:StringValue (`if (c != '}')`)
+                        let at = self.pos;
+                        if let Some(c) = self.peek_char() {
+                            self.pos += c.len_utf8();
+                        }
+                        let msg = if e == 'u' {
                             // GNU R formats this with an uninitialized
                             // `(line %d)` argument; the value is not
                             // reproducible. Report the deterministic part.
-                            return Err(self.lex_err("invalidUnicode", "invalid \\u{xxxx} sequence"));
+                            "invalid \\u{xxxx} sequence"
+                        } else {
+                            "invalid \\U{xxxxxxxx} sequence"
+                        };
+                        let mut err = self.lex_err("invalidUnicode", msg);
+                        // (one byte of the character is read: the position
+                        // is the character's, the read stops after its byte)
+                        if at < self.pos {
+                            err.end = at + 1;
                         }
-                        return Err(self.lex_err("invalidUnicode", "invalid \\U{xxxxxxxx} sequence"));
+                        return Err(err);
                     }
                     self.pos += 1;
                 }

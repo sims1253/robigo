@@ -53,6 +53,9 @@ pub struct Parser<'a> {
     /// Whether the token stream holds a pipe placeholder at all; if not,
     /// `checkForPlaceholder`'s tree walk is skipped.
     saw_placeholder: bool,
+    /// The invalid token that ended the tokens, read when the parser was
+    /// made: parsing can consume it (`bump` replaces a token).
+    lex_error: Option<LexError>,
     pub warnings: Vec<LexWarning>,
     /// Console mode ([`parse_console`]). GNU R's REPL first parses a statement
     /// with `GenerateCode = 0`. Its actions build no values, so the checks
@@ -170,6 +173,7 @@ pub fn parse_console<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) -> Consol
         Err(e) => return ConsoleStatus::Error(e, Vec::new()),
     };
     let mut p = Parser {
+        lex_error: lex_error_of(&toks),
         src: src.text,
         source: src,
         arena,
@@ -296,6 +300,19 @@ pub fn parse_conn_statement<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) ->
     }
 }
 
+/// The invalid token that ended `toks`, if one did. A lexical error ends
+/// the tokens (before the end of input). For a `raiseLexError` reading
+/// stopped where it was raised, inside its token; any other invalid token
+/// has read the character it rejected.
+fn lex_error_of(toks: &[Token<'_>]) -> Option<LexError> {
+    match toks.len().checked_sub(2).map(|k| &toks[k]) {
+        Some(Token { tok: Tok::Invalid(le), span }) => {
+            Some(LexError { at: span.start as usize, raised: (le.style == ErrorStyle::Condition).then_some(le.end) })
+        }
+        _ => None,
+    }
+}
+
 /// The invalid token that ended a chunk's tokens: where it starts, and for
 /// a `raiseLexError` where reading stopped.
 #[derive(Clone, Copy)]
@@ -411,6 +428,7 @@ impl<'a> Parser<'a> {
         let Lexed { toks, warnings, eof_line_col, .. } = Lexer::new(src).lex()?;
         let saw_placeholder = toks.iter().any(|t| matches!(t.tok, Tok::Placeholder));
         Ok(Parser {
+            lex_error: lex_error_of(&toks),
             src: src.text,
             source: src,
             arena,
@@ -629,16 +647,7 @@ impl<'a> Parser<'a> {
     /// The invalid token that ended the tokens, if one did: where it starts,
     /// and for a `raiseLexError` where reading stopped.
     fn lex_error(&self) -> Option<LexError> {
-        // A lexical error ends the tokens (before the end of input). For a
-        // `raiseLexError` reading stopped where it was raised, inside its
-        // token; any other invalid token has read the character it rejected.
-        match self.toks.len().checked_sub(2).map(|k| &self.toks[k]) {
-            Some(Token { tok: Tok::Invalid(le), span }) => Some(LexError {
-                at: span.start as usize,
-                raised: (le.style == ErrorStyle::Condition).then_some(le.end),
-            }),
-            _ => None,
-        }
+        self.lex_error
     }
 
     /// For an error a grammar action raised (it has a frontier: the
