@@ -407,6 +407,11 @@ fn compile_closure_attempts(cx: &mut Cx, op: Root<'_>, installed: bool, entry: &
                     notes = true;
                     return Err(Need::Fail);
                 }
+                // a declining compile that would not inline: nothing past
+                // here is seen (no literal's function context)
+                if entry.decline && !entry.inlines {
+                    return Err(Need::Fail);
+                }
                 let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
                 let mut b = c.root(body)?;
                 c.add_unit_locals(&mut b);
@@ -1018,6 +1023,10 @@ fn compile_loop_attempts(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, entry: &Ent
                     notes = true;
                     return Err(Need::Fail);
                 }
+                // (a declining compile that would not inline, as above)
+                if entry.decline && !entry.inlines {
+                    return Err(Need::Fail);
+                }
                 let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
                 let b = c.root(e)?;
                 Ok(c.build(b, e, None)?)
@@ -1039,9 +1048,28 @@ fn compile_loop_attempts(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, entry: &Ent
     }
 }
 
-/// Whether closure `op` is a package's code: its environment's top
-/// environment is a namespace (base's included).
+/// Whether the boot binds packages' code from their source (M1's loader,
+/// stage 0: INTERIM(L5)), where GNU R's installed packages are byte code
+/// ([`set_packages_from_source`]).
+static PACKAGES_FROM_SOURCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The boot binds packages' code from source (the front end says so before
+/// it boots): [`package_code`]'s exemption applies.
+pub fn set_packages_from_source(on: bool) {
+    PACKAGES_FROM_SOURCE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether closure `op` is a package's code that GNU R would hold compiled:
+/// under a boot that binds packages from source, a closure whose
+/// environment's top environment is a namespace (base's included). Under
+/// the rdb boot packages' code is byte code already, and a closure of
+/// source made in a namespace at run time is compiled as GNU R compiles it.
+/// INTERIM(L5): under M1's loader, such a closure made at run time reads
+/// no compilerOptions (tests/rt/jit/compile-options-namespace-source.R).
 fn package_code(cx: &Cx, op: Root<'_>) -> bool {
+    if !PACKAGES_FROM_SOURCE.load(std::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
     // SAFETY: a rooted closure: its environment is live.
     let env = unsafe { Ref::from_sexp(op.bind(cx).sexp().tag(), cx) };
     let top = crate::dispatch::topenv(cx, None, env);
@@ -1062,13 +1090,13 @@ fn package_code(cx: &Cx, op: Root<'_>) -> bool {
 ///   closure runs uncompiled, as cmp.R's failure path leaves it (counted,
 ///   [`crate::jit::report`]).
 fn entry_options(cx: &mut Cx, source: bool) -> RResult<Entry> {
-    let off = Entry { reads: false, notes: false, decline: false };
+    let off = Entry { reads: false, notes: false, decline: false, inlines: true };
     if !source {
         return Ok(off);
     }
     crate::jit::count(crate::jit::Count::SourceCompile);
     let Some(read) = options::read(cx)? else { return Ok(off) };
-    Ok(Entry { reads: true, notes: !read.suppress_all, decline: !read.optimize_2 })
+    Ok(Entry { reads: true, notes: !read.suppress_all, decline: !read.optimize_2, inlines: read.inlines })
 }
 
 /// What a compile's entry decided ([`entry_options`]).
@@ -1081,6 +1109,11 @@ struct Entry {
     notes: bool,
     /// `optimize` other than 2: the compile's code is not used.
     decline: bool,
+    /// `optimize > 0` (getInlineInfo's test): cmp.R's code generation
+    /// inlines, a `function` literal's handler and its function context
+    /// included. A declining compile without it stops before the code's
+    /// generation, where cmp.R at levels 0 reads no literal's options.
+    inlines: bool,
 }
 
 impl Entry {
@@ -1089,6 +1122,11 @@ impl Entry {
     fn end(&self, code: RResult<Option<Sexp>>) -> RResult<Option<Sexp>> {
         match code {
             Ok(Some(_)) if self.decline => {
+                crate::jit::count(crate::jit::Count::DeclinedOptimize);
+                Ok(None)
+            }
+            // (stopped before the code's generation, [`Entry::inlines`])
+            Ok(None) if self.decline && !self.inlines => {
                 crate::jit::count(crate::jit::Count::DeclinedOptimize);
                 Ok(None)
             }
@@ -3223,10 +3261,6 @@ impl<'g> Comp<'g> {
     /// # Safety
     /// As for [`Comp::expr`].
     unsafe fn generic_call(&mut self, e: Sexp, dst: Reg, d: u16, tick: bool) -> Result<(), Need> {
-        if self.bc.is_some() {
-            // SAFETY: the caller's contract.
-            unsafe { self.promise_codes(e)? };
-        }
         // SAFETY: the caller's contract.
         let f = unsafe { e.car() };
         let rf = self.alloc();
@@ -3252,6 +3286,14 @@ impl<'g> Comp<'g> {
             // R: eval.c:eval, `op = eval(CAR(e), rho)`
             // SAFETY: as above.
             unsafe { self.expr(f, rf, d + 1, Tail::No)? };
+        }
+        // the arguments' promise codes after the function's code, in
+        // cmp.R's order (cmpCallExprFun: `cmp(fun, ...)`, then
+        // cmpCallArgs), which what compiling either does can show (a
+        // binding forced, compilerOptions read)
+        if self.bc.is_some() {
+            // SAFETY: the caller's contract.
+            unsafe { self.promise_codes(e)? };
         }
         let mut i = Ins::new(Op::Call);
         i.a = dst;

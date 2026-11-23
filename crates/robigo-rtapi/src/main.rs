@@ -60,6 +60,10 @@ fn main() {
     match boot_checked() {
         Ok(b) => {
             let _ = BOOT.set(b);
+            // M1's loader and stage 0 bind packages' code from source,
+            // where GNU R's installed packages are byte code (the JIT's
+            // compilerOptions reads skip it, INTERIM(L5))
+            robigo_rt::compile::set_packages_from_source(b != Boot::Rdb);
         }
         Err(m) => {
             eprintln!("robigo-rt: {m}");

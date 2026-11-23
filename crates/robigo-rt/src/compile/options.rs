@@ -115,13 +115,14 @@ fn plain(cx: &Cx) -> Result<bool, Need> {
 /// The four reads, as one evaluation in an environment whose parent is the
 /// compiler's namespace: each read is `get(name, compilerOptions)`, the
 /// call getCompilerOption makes, so an error names that call as GNU R's
-/// does. Its value: `list(optimize, suppressAll)`.
+/// does. `optimize` and `suppressAll` are left in the environment, where
+/// [`read`] takes them (no R function of the session builds the result).
 const READS: &str = "{
     name <- \"optimize\"; optimize <- get(name, compilerOptions)
     name <- \"suppressAll\"; suppressAll <- get(name, compilerOptions)
     name <- \"suppressNoSuperAssignVar\"; get(name, compilerOptions)
     name <- \"suppressUndefined\"; get(name, compilerOptions)
-    list(optimize, suppressAll)
+    NULL
 }";
 
 /// What the entry's reads decide.
@@ -129,6 +130,10 @@ const READS: &str = "{
 pub(crate) struct Read {
     /// `optimize` is 2 (a number equal to 2, as cmp.R's comparisons take it).
     pub optimize_2: bool,
+    /// `optimize > 0`, getInlineInfo's test (cmp.R:1343): the compile
+    /// inlines, a `function` literal's handler included (its function
+    /// context, and so its reads).
+    pub inlines: bool,
     /// `identical(suppressAll, TRUE)`, cmp.R's `suppressAll(cntxt)`
     /// (cmp.R:2844): only then does no note print.
     pub suppress_all: bool,
@@ -167,12 +172,46 @@ pub(crate) fn read(cx: &mut Cx) -> RResult<Option<Read>> {
         let env = o.root();
         cx.build(o, |cx| cx.new_env(ns.bind(cx), false, 2))?;
         let o = s.out(cx);
-        let v = o.root();
         crate::eval(cx, e, env, o)?;
-        let v = v.bind(cx);
-        let list = v.as_vector::<Ref<'_>>().unwrap();
-        Ok(Some(Read { optimize_2: is_two(list.get(0)), suppress_all: is_true(list.get(1)) }))
+        let opt = local(cx, s, env, b"optimize")?;
+        let all = local(cx, s, env, b"suppressAll")?;
+        let (opt, all) = (opt.map(|r| r.bind(cx)), all.map(|r| r.bind(cx)));
+        Ok(Some(Read {
+            optimize_2: opt.is_some_and(is_two),
+            inlines: opt.is_some_and(positive),
+            suppress_all: all.is_some_and(is_true),
+        }))
     })
+}
+
+/// The value bound to `name` in the frame of `env` (the reads' own), if
+/// one is (a plain value: the reads assign it).
+fn local<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>, name: &[u8]) -> RResult<Option<Root<'s>>> {
+    let sym = cx.install_rooted(s, name)?;
+    let v = {
+        let (Some(e), Some(y)) = (crate::dispatch::env_ref(env.bind(cx)), sym.bind(cx).as_sym()) else {
+            return Ok(None);
+        };
+        match cx.frame_binding(e, y) {
+            robigo_rtcore::Lookup::Bound(b) => match b.get(cx) {
+                robigo_rtcore::BindingValue::Value(v) => Some(v.sexp()),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+    // SAFETY: a value bound in a rooted environment.
+    Ok(v.map(|v| s.root(cx, unsafe { Ref::from_sexp(v, cx) })))
+}
+
+/// `optimize > 0` as getInlineInfo takes it: a number above 0 (NA, or no
+/// number, is no inlining here: cmp.R's `if` would fail on it).
+fn positive(x: Ref<'_>) -> bool {
+    match x.view() {
+        View::Real(v) => v.len() == 1 && v.get(0) > 0.0,
+        View::Int(v) => v.len() == 1 && v.get(0) > 0 && v.get(0) != i32::MIN,
+        _ => false,
+    }
 }
 
 /// `optimize` equal to 2: a length-one number, as cmp.R's `optimize >= 2`
