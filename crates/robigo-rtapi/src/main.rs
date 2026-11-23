@@ -534,10 +534,7 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
                 };
                 if !robigo_rt::base::after_profile(cx, home.path(), a) {
                     cx.reprintf(b"Execution halted\n");
-                    robigo_rt::fin::run_exit_finalizers(cx);
-                    robigo_rt::repl::print_warnings(cx);
-                    cx.flush_console();
-                    return 1;
+                    halt(cx);
                 }
                 let st = boot_st;
                 if std::env::var_os("ROBIGO_BOOT_VERBOSE").is_some() {
@@ -598,17 +595,9 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
             robigo_rt::base::JitStart::Done => {}
             robigo_rt::base::JitStart::Halt => {
                 cx.reprintf(b"Execution halted\n");
-                robigo_rt::fin::run_exit_finalizers(cx);
-                robigo_rt::repl::print_warnings(cx);
-                cx.flush_console();
-                return 1;
+                halt(cx);
             }
-            robigo_rt::base::JitStart::Suicide => {
-                // R_CleanUp(SA_SUICIDE, 2, 0)
-                robigo_rt::fin::run_exit_finalizers(cx);
-                cx.flush_console();
-                return 2;
-            }
+            robigo_rt::base::JitStart::Suicide => suicide(cx),
         }
     }
     // the boot is over (setup_Rmainloop's last step, R_init_jit_enabled, ran
@@ -634,13 +623,20 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     if !ok {
         // R: main.c:check_session_exit
         cx.reprintf(b"Execution halted\n");
+        halt(cx);
     }
-    // R_CleanUp: the exit finalizers, then the warnings .Last left
-    // R: unix/sys-std.c:Rstd_CleanUp
-    robigo_rt::fin::run_exit_finalizers(cx);
-    robigo_rt::repl::print_warnings(cx);
-    cx.flush_console();
-    if ok { 0 } else { 1 }
+    // end_Rmainloop's R_CleanUp(SA_DEFAULT, 0, 1): .Last ran in run_session;
+    // the save action, the exit finalizers, the warnings .Last left
+    match robigo_rt::repl::clean_up(cx, robigo_rt::repl::SaveAction::Default, 0, false) {
+        Ok(never) => match never {},
+        Err(e) => {
+            // (an error saving the image, reported where it was raised:
+            // check_session_exit's halt)
+            cx.resolve_exit(e, None);
+            cx.reprintf(b"Execution halted\n");
+            halt(cx)
+        }
+    }
 }
 
 /// GNU R's `handleInterrupt` (main.c), the SIGINT handler:
@@ -679,6 +675,26 @@ fn io_reason(e: &std::io::Error) -> String {
 // rebuilds the crate when another worktree built it last in a shared
 // target directory.
 const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
+
+/// check_session_exit's `R_CleanUp(SA_NOSAVE, 1, 0)`, its "Execution
+/// halted" written: the exit finalizers, the warnings, status 1.
+// R: main.c:check_session_exit
+fn halt(cx: &mut robigo_rtcore::Cx) -> ! {
+    match robigo_rt::repl::clean_up(cx, robigo_rt::repl::SaveAction::NoSave, 1, false) {
+        Ok(never) => match never {},
+        Err(_) => unreachable!("robigo: SA_NOSAVE saves nothing"),
+    }
+}
+
+/// R_Suicide's `R_CleanUp(SA_SUICIDE, 2, 0)`, its message written: the exit
+/// finalizers, no warnings, status 2.
+// R: unix/sys-std.c:Rstd_Suicide
+fn suicide(cx: &mut robigo_rtcore::Cx) -> ! {
+    match robigo_rt::repl::clean_up(cx, robigo_rt::repl::SaveAction::Suicide, 2, false) {
+        Ok(never) => match never {},
+        Err(_) => unreachable!("robigo: SA_SUICIDE saves nothing"),
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -1,0 +1,9 @@
+[[1]]
+f()
+
+[[2]]
+quit("yes", 4, FALSE)
+
+[[3]]
+sys.save.image(".RData")
+

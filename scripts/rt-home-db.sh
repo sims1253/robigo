@@ -22,6 +22,9 @@
 # The tree is rebuilt when the source tree, this script or the binary
 # changes (the stamp holds the three).
 #   scripts/rt-home-db.sh --robigo-rt BIN [DIR]   # default .robigo/rt-home-db
+# RT_HOME_TREE names scripts/rt-home.sh's tree to copy (default its own,
+# .robigo/rt-home): a tool that builds both trees outside the checkout
+# (scripts/rt-startup.py) passes the one it built.
 # BIN is required (never a default target's binary, which another build may
 # have written): the tree records what built it in .rt-home-db-builder
 # (scripts/rt-builder.sh: path, sha256, build ID, commit), which
@@ -46,7 +49,7 @@ done
 [ -n "$out" ] || out=/
 # not scripts/rt-home.sh's tree, which this one is copied from (and whose
 # lock rt-home.sh takes below: the same file would deadlock)
-if [ "$(realpath -m "$out")" = "$(realpath -m .robigo/rt-home)" ]; then
+if [ "$(realpath -m "$out")" = "$(realpath -m "${RT_HOME_TREE:-.robigo/rt-home}")" ]; then
   echo "rt-home-db.sh: $out is scripts/rt-home.sh's tree, the source of this one" >&2
   exit 2
 fi
@@ -56,7 +59,7 @@ fi
 mkdir -p "$(dirname "$out")"
 exec 9> "$out.lock"
 flock 9
-src_tree=$(scripts/rt-home.sh)
+src_tree=$(scripts/rt-home.sh ${RT_HOME_TREE:+"$RT_HOME_TREE"})
 # the source tree held while it is read (its stamp, the copy below): a
 # shared lock on rt-home.sh's, which a rebuild of it takes exclusively
 exec 8> "$src_tree.lock"

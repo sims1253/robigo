@@ -20,8 +20,9 @@
 //! says what type it holds ([`Reserved::fill`], checked to fit).
 //!
 //! Records are traced through the chain (`nextcontext` from
-//! `R_GlobalContext`), never through this storage: a slot that holds no
-//! record on the chain holds nothing a collection must see. Nothing relates
+//! `R_GlobalContext`, and from the records `Cx::reset_to_session` cut off
+//! it), never through this storage: a slot that holds no such record holds
+//! nothing a collection must see. Nothing relates
 //! a record's address to the C stack (GNU R's `R_CStackStart` arithmetic
 //! compares locals only; the X9-1a ledger entry lists the grep).
 //!
