@@ -10,9 +10,11 @@
 //! all the time (each test is a thread): a fork while one of them holds
 //! std's thread-start lock (`thread_info::set_current_info`) leaves the
 //! child a lock no thread of it releases, and the child's first thread
-//! start hangs there. No fork handler of ours can cover std's locks, so the
-//! forking process must have no threads but the ones a test starts itself,
-//! each started before the fork and not ending during it. The timeout is
+//! start hangs there. No fork handler of ours can cover std's locks, so a
+//! test whose child starts threads forks while its process has no other
+//! thread starting or ending (libtest's runs the one test, started before
+//! it); a test's own holder threads may end during its fork only when its
+//! child starts none. The timeout is
 //! the outer process's: it kills the test's process group (the test, and
 //! any child it forked) and reports it, so the forking process starts no
 //! watchdog thread either.
@@ -115,38 +117,75 @@ pub(crate) fn isolated(name: &str, secs: u64) -> bool {
         .stderr(err)
         .spawn()
         .expect("the fork test's process");
+    let pid = child.id() as i32;
+    // the leader's end observed without reaping it (waitid's WNOWAIT): its
+    // zombie keeps the group's id, so nothing below can reach a group that
+    // reused it
     let until = Instant::now() + Duration::from_secs(secs);
-    let status = loop {
-        match child.try_wait().expect("the fork test's status") {
-            Some(st) => break Some(st),
-            None if Instant::now() >= until => break None,
-            None => std::thread::sleep(Duration::from_millis(10)),
+    let ended = loop {
+        // SAFETY: a zeroed siginfo is a valid out-argument; P_PID of our
+        // own child, not reaped (WNOWAIT).
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let r = unsafe {
+            libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT | libc::WNOHANG)
+        };
+        // SAFETY: waitid filled `info` when it returned 0.
+        if r == 0 && unsafe { info.si_pid() } == pid {
+            break true;
         }
+        if r != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            panic!("{full}: waitid: {}", std::io::Error::last_os_error());
+        }
+        if Instant::now() >= until {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
     };
-    let pgid = child.id() as i32;
-    if status.is_none() {
-        // SAFETY: the process group this test started (the test and any
-        // child it forked).
-        unsafe { libc::kill(-pgid, libc::SIGKILL) };
-        let _ = child.wait();
+    // the group's other members (the test's children it left behind),
+    // killed, as is the leader if it did not end; only then the leader
+    // reaped and the outcome reported
+    let others = group_members(pid);
+    if !ended || !others.is_empty() {
+        // SAFETY: our own process group, its id held by the unreaped leader.
+        unsafe { libc::kill(-pid, libc::SIGKILL) };
     }
+    let status = child.wait().expect("the fork test's status");
     let text = std::fs::read_to_string(&log).unwrap_or_default();
     let _ = std::fs::remove_file(&log);
-    match status {
-        None => panic!("{full}: no end in {secs} s (a fork or a child's thread start hung); its output:\n{text}"),
-        Some(st) if !st.success() => panic!("{full} failed in its own process ({st}); its output:\n{text}"),
-        // (libtest's summary for the one test run)
-        Some(_) if !text.contains("1 passed") => panic!("{full}: its own process ran no such test:\n{text}"),
-        Some(_) => {}
+    if !ended {
+        panic!("{full}: no end in {secs} s (a fork or a child's thread start hung); its output:\n{text}");
     }
-    // no child of the test left behind (each test reaps its own)
-    // SAFETY: a probe of the group; signal 0 sends nothing.
-    if unsafe { libc::kill(-pgid, 0) } == 0 {
-        // SAFETY: as above.
-        unsafe { libc::kill(-pgid, libc::SIGKILL) };
-        panic!("{full}: a process of its group outlived it");
+    if !status.success() {
+        panic!("{full} failed in its own process ({status}); its output:\n{text}");
+    }
+    // (libtest's summary for the one test run: an exact name that matched
+    // nothing says "0 passed")
+    if !text.contains("test result: ok. 1 passed") {
+        panic!("{full}: its own process ran no such test:\n{text}");
+    }
+    if !others.is_empty() {
+        panic!("{full}: processes {others:?} of its group outlived it");
     }
     false
+}
+
+/// The processes of process group `pgid` other than `pgid` itself, from
+/// `/proc/<pid>/stat` (its 5th field).
+fn group_members(pgid: i32) -> Vec<i32> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+        let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<i32>().ok()) else { continue };
+        if pid == pgid {
+            continue;
+        }
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else { continue };
+        // after the command's closing parenthesis: state, ppid, pgrp
+        let fields: Vec<&str> = stat.rsplit_once(')').map_or("", |(_, r)| r).split_whitespace().collect();
+        if fields.get(2).and_then(|g| g.parse::<i32>().ok()) == Some(pgid) {
+            out.push(pid);
+        }
+    }
+    out
 }
 
 /// Abort the whole test process if `done` is not set within `secs`: a fork
