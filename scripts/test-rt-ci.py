@@ -1707,8 +1707,9 @@ class FuzzCi(unittest.TestCase):
                 mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
                                              "GITHUB_OUTPUT": out, "GITHUB_STEP_SUMMARY": summ}):
             self.assertEqual(self.f.main(["plan", "--base", "base", "--github-output"]), 0)
-        self.assertEqual(open(out).read(), "targets=parse\n")
-        self.assertIn("caf\\xe9.R", open(summ).read())
+        from pathlib import Path
+        self.assertEqual(Path(out).read_text(), "targets=parse\n")
+        self.assertIn("caf\\xe9.R", Path(summ).read_text())
 
     def tracked(self):
         import subprocess
