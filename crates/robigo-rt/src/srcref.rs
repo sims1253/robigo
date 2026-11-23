@@ -91,6 +91,18 @@ impl Positions {
             if c == b'\t' {
                 s.col = (s.col + 7) & !7;
             }
+            // StringValue and RawStringValue (strings, backquoted names,
+            // raw strings) read a multibyte character's lead byte, decode
+            // it with mbcs_get_next, which reads the following bytes and
+            // pushes them back, then add `ParseState.xxbyteno += clen-1`
+            // and read those bytes again through xxgetc: inside a string,
+            // each continuation byte counts twice in the byte position
+            // (not in the column). GNU R 4.6.2 records `s <- "éé"` as
+            // ending at byte 13.
+            // R: gram.y:StringValue, RawStringValue, mbcs_get_next
+            if known_utf8 && c >= 0xC0 && in_string(i) {
+                s.byte += utf8_len(c) - 1;
+            }
             after.push(s);
             // SkipComment: `maybeLine = (ParseState.xxcolno == 1)` once the
             // `#` is read; then "line", a number and an optional "file"
@@ -131,6 +143,19 @@ impl Positions {
     // R: gram.y:attachSrcrefs
     pub(crate) fn whole(last: Pos) -> [i32; 8] {
         [1, 0, last.line, last.byte, 0, last.col, 1, last.parsed]
+    }
+}
+
+/// The length of the UTF-8 sequence that lead byte `c` starts (utf8clen).
+// R: util.c:utf8clen
+fn utf8_len(c: u8) -> i32 {
+    match c {
+        0xC0..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF7 => 4,
+        0xF8..=0xFB => 5,
+        0xFC..=0xFD => 6,
+        _ => 1,
     }
 }
 
@@ -242,6 +267,21 @@ mod tests {
         assert_eq!(p.fields(c, c + 5), [41, 1, 41, 6, 1, 6, 4, 4]);
         assert_eq!(Positions::whole(p.end()), [1, 0, 42, 0, 0, 0, 1, 5]);
         assert_eq!(p.aliases, vec![Alias { from: b, filename: b"other.R".to_vec() }]);
+    }
+
+    /// A multibyte character inside a string counts its continuation
+    /// bytes twice in the byte position, as gram.y's StringValue does
+    /// (recorded: `s <- "éé"; t <- 1` gives 1 1 1 13 1 9 1 1 and
+    /// 1 16 1 21 12 17 1 1).
+    #[test]
+    fn a_multibyte_character_in_a_string_counts_its_bytes_twice() {
+        let src = "s <- \"\u{e9}\u{e9}\"; t <- 1\n";
+        let open = src.find('"').unwrap();
+        let close = src.rfind('"').unwrap();
+        let p = Positions::new(src.as_bytes(), true, |i| i >= open && i <= close);
+        assert_eq!(p.fields(0, close), [1, 1, 1, 13, 1, 9, 1, 1]);
+        let t = src.find("t <-").unwrap();
+        assert_eq!(p.fields(t, t + 5), [1, 16, 1, 21, 12, 17, 1, 1]);
     }
 
     /// A `#` inside a string, or not first on its line, is no directive.
