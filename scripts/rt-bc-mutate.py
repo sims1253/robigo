@@ -26,11 +26,16 @@ each is replayed as it was found, mutations 1 to the number in one start
 such as a translation kept on a constant both codes share, is part of the
 case).
 
-One start runs tests/bc-mutate/pool.R under gctorture, with POOL_LIMIT: it
-stops compiles midway (malformed byte code, the compile's depth bound) and
-then compiles correct code, which must give its values. A compile's buffers
-come from the isolate's pool (#988), so an aborted compile that gave them
-back with an object in them shows there.
+Fixed scripts (FIXED) run once each, with FIXED_LIMIT, and must print
+their "ok" line:
+- tests/bc-mutate/pool.R, under gctorture: it stops compiles midway
+  (malformed byte code, the compile's depth bound) and then compiles
+  correct code, which must give its values. A compile's buffers come from
+  the isolate's pool (#988), so an aborted compile that gave them back with
+  an object in them shows there.
+- tests/bc-mutate/or2nd-inline.R: AND2ND/OR2ND with no AND1ST/OR1ST and an
+  integer below, called directly and from a compiled caller's loop (an
+  inline run), with GNU R 4.6.2's values.
 """
 import argparse
 import concurrent.futures
@@ -45,9 +50,19 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GEN = os.path.join(ROOT, "tests", "bc-mutate", "gen.R")
 CORPUS = os.path.join(ROOT, "tests", "bc-mutate", "corpus.txt")
-# compiles stopped midway (malformed byte code, the depth bound) and then
-# correct ones, under gctorture: the compile buffers' pool given back clean
-POOL = os.path.join(ROOT, "tests", "bc-mutate", "pool.R")
+# the fixed scripts: (title, script, environment, the line it prints when
+# it passes)
+FIXED = [
+    # compiles stopped midway (malformed byte code, the depth bound) and
+    # then correct ones, under gctorture: the compile buffers' pool given
+    # back clean
+    ("compile buffers after aborted compiles, under gctorture (tests/bc-mutate/pool.R)",
+     os.path.join(ROOT, "tests", "bc-mutate", "pool.R"), {"ROBIGO_GCTORTURE": "1"}, b"pool ok"),
+    # the VM and the inline run keep AND2ND/OR2ND's first operand as bcEval
+    ("AND2ND/OR2ND's first operand, run directly and inline (tests/bc-mutate/or2nd-inline.R)",
+     os.path.join(ROOT, "tests", "bc-mutate", "or2nd-inline.R"), {}, b"or2nd ok"),
+]
+FIXED_OK = {script: ok for _, script, _, ok in FIXED}
 # the generator the corpus was found with: its entries name mutations of
 # this file, so a change to it needs the corpus found again
 GEN_SHA256 = "22dd95c23959f53435903e06596251c43170e4c27b5d3564689e80c1acfc5a2f"
@@ -56,7 +71,7 @@ MEM_CAP = 2 << 30
 # how long a start may run before the SIGINT, and how soon it must then end
 LIMIT = 30
 GRACE = 3
-POOL_LIMIT = 120
+FIXED_LIMIT = 120
 
 
 def cap_memory():
@@ -92,7 +107,7 @@ def start(rt, checkout, home, limit, script=GEN, **extra):
         try:
             out, err = p.communicate(timeout=GRACE)
             # (pool.R must finish: a well-formed program, not a mutation)
-            return ("pool.R past the limit" if script == POOL else "interrupted"), ""
+            return (f"{os.path.basename(script)} past the limit" if script in FIXED_OK else "interrupted"), ""
         except subprocess.TimeoutExpired:
             p.kill()
             out, err = p.communicate()
@@ -101,9 +116,9 @@ def start(rt, checkout, home, limit, script=GEN, **extra):
         return "panic", last_mutation(err) + ": " + tail(err, 400)
     if p.returncode < 0:
         return f"signal {-p.returncode}", last_mutation(err) + ": " + tail(err, 300)
-    if p.returncode == 0 and (b"pool ok" if script == POOL else b"done") in out:
+    if p.returncode == 0 and FIXED_OK.get(script, b"done") in out:
         return "done", ""
-    if p.returncode == 1 and script != POOL:
+    if p.returncode == 1 and script not in FIXED_OK:
         return "R error", ""
     return f"exit {p.returncode}", last_mutation(err) + ": " + tail(err, 300)
 
@@ -169,8 +184,7 @@ def main():
         sys.exit(f"rt-bc-mutate: {p.stderr.strip()}")
     who = dict(l.split(": ", 1) for l in p.stdout.splitlines() if ": " in l)
     print(f"rt-bc-mutate: robigo-rt at commit {who.get('commit', '?')}, sha256 {who.get('sha256', '?')[:16]}, {rt}")
-    runs = [("compile buffers after aborted compiles, under gctorture (tests/bc-mutate/pool.R)",
-             {"script": POOL, "ROBIGO_GCTORTURE": "1"})]
+    runs = [(title, {"script": script, **env}) for title, script, env, _ in FIXED]
     for seed, k, was in corpus():
         runs.append((f"corpus {seed} {k} ({was})", {"BCM_SEED": str(seed), "BCM_BATCH": str(k)}))
     if not a.corpus_only:
@@ -181,14 +195,14 @@ def main():
         check_cap(rt, a.checkout, home)
         with concurrent.futures.ThreadPoolExecutor(a.jobs) as ex:
             results = list(ex.map(lambda r: (r[0], *start(rt, a.checkout, home,
-                                                          POOL_LIMIT if r[1].get("script") == POOL else a.limit,
+                                                          FIXED_LIMIT if r[1].get("script") in FIXED_OK else a.limit,
                                                           **r[1])), runs))
     counts = {}
     for _, outcome, _ in results:
         counts[outcome] = counts.get(outcome, 0) + 1
     bad = [(n, o, d) for n, o, d in results if o not in OK]
-    print(f"rt-bc-mutate: {len(results)} starts ({len(runs) - 1 - (0 if a.corpus_only else a.processes)} from the "
-          "corpus, 1 of pool.R): "
+    print(f"rt-bc-mutate: {len(results)} starts ({len(runs) - len(FIXED) - (0 if a.corpus_only else a.processes)} "
+          f"from the corpus, {len(FIXED)} fixed): "
           + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
     for n, o, d in bad[:int(os.environ.get("BCM_SHOW", "10"))]:
         print(f"  {n}: {o}, {d}")
