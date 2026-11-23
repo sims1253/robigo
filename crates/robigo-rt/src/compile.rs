@@ -539,7 +539,12 @@ pub fn translation_gaps(cx: &mut Cx, f: Root<'_>) -> RResult<Vec<String>> {
                 // the byte code it holds: MAKEPROM's, and the functions it
                 // makes (MAKECLOSURE's list(formals, body, ...)), whose
                 // own byte code a promise's may hold in turn
+                // (`mkCode` takes any constants: only a list holds any;
+                // a translation refused as malformed may have another)
                 let consts = bc.cdr();
+                if consts.typ() != VECSXP {
+                    continue;
+                }
                 let p = consts.std_data() as *const Sexp;
                 for j in 0..consts.std_len() as usize {
                     let k = *p.add(j);

@@ -814,6 +814,46 @@ scripts/counters.py check -v   # every fixture in the ast, vm and jit tiers
 - Performance: CI compares every pull request with `main`'s instruction
   counts for the commit it is built on (the benchmarks its paths select).
 
+### `.requires` tags: what each case needs and why
+
+A `.requires` file holds only tags; the harness splits it on whitespace and
+rejects an unknown token, so it cannot hold a reason. The reasons are here,
+one row per tagged case. A case is tagged only when its recording depends on
+what the mode gives up, never because it fails there (a case that gives a
+different value under a mode whose change is unobservable is a finding).
+The tags with no table yet (`volume`, `default-vsize`, `promise-identity`,
+`bytecode-fidelity`, `r-home-tools`) are described by
+`robigo_conformance::KNOWN_FEATURES`.
+
+**`inplace-identity`**: the recording depends on GNU R writing an object in
+place. The case is not run under `ROBIGO_NO_INPLACE=1`; the old runtime,
+which has no such mode, always runs it.
+
+| case | why the recording needs in-place writes |
+|---|---|
+| tests/r/conditions/replacement-rebind-in-handler.R | `class<-` writes the target in place before the handler sees it (0023e17f2) |
+| tests/r/conditions/replacement-warning-binding.R | `class<-`/`storage.mode<-` clear the class of the target's own value before the coercion warns, so the handler prints it declassed; when the target is shared, applydefine's `evalseq` → `EnsureLocal` first rebinds it to a duplicate, which is then written in place (#1026) |
+| tests/r/lang/replacement-chain-root.R | the inner `$<-` of `a[[i]]$c <- v` updates `a[["b"]]` in place, so the index, evaluated again for the outer setter, reads the new value; with the inner list shared GNU R prints the old one (#1026) |
+| tests/rt/assign/link-walk.R | a builtin's arguments hold no link while it runs, so a pending value is written in place (eval.c's node stack, INCLNK_stack_commit) |
+| tests/rt/assign/link-walk-eval-call.R | `eval` of a call that rewrites itself: the call, referenced only by its binding, is written in place and `{` evaluates the new element |
+| tests/rt/assign/link-walk-subset.R | `[[`'s default runs a calling handler that writes the list it reads; the write is made in place and `[[` reads it |
+| tests/rt/capi/inplace-identity.R | a native observer compares the object bound before and after each write (`rt_assign_copies`) |
+| tests/rt/capi/dispatch-inplace.R | the same observer on a method's write to an argument only the generic's promise references |
+| tests/rt/capi/link-lifetime.R | the same observer on when stack links end (STARTASSIGN, INCLNKSTK) |
+
+**`collection-schedule`**: the recording depends on where collections
+happen. The case is not run under gctorture (`ROBIGO_GCTORTURE=1`, a
+collection at every allocation) or retry torture
+(`ROBIGO_RETRY_TORTURE=1`, one at every build); the old runtime, which has
+neither, always runs it.
+
+| case | why the recording depends on collections |
+|---|---|
+| tests/rt/memory/gcinfo-on.R | collections between the two `gcinfo` calls report on stderr |
+| tests/rt/alloc/near-vector-limit.R | which limit error ends the requests depends on GNU R's collection schedule: a collection moves AdjustHeapSize's heap growth (also `volume`, `default-vsize`) |
+| tests/r/cli/exit-warnings.R | an unreferenced environment's exit finalizer warns at exit after `.Last()`; a collection before exit runs it earlier, so its warning comes first (GNU R 4.6.2 under `gctorture(TRUE)` prints that order too) |
+| tests/r/memory/gctorture.R | `gctorture()` returns the previous torture state, which the mode itself has turned on |
+
 ## Unsafe code
 
 `docs/architecture.md` has the rules; the compiler and clippy enforce them
@@ -858,10 +898,11 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
 2. **lint:** `scripts/lint-job.sh`, the job's only command: `cargo fmt
    --check`, `scripts/lint.sh` (clippy and the Sexp rule), and the tooling's
    script suites (test_corpus, test-oracle-diff, test-check-sexp-safety,
-   test-wall13, test-pgo-build, test-prune-target, test-scratch).
+   test-wall13, test-pgo-build, test-prune-target, test-scratch,
+   test-rt-bc-mutate).
    **Before pushing, run `scripts/lint-job.sh`**: a green run is a green lint
    job. `scripts/test-rt-ci.py` checks that the workflow runs the script and
-   nothing else.
+   nothing else, and that this list names every suite the script runs.
    **miri:** `RString` and the `Rc` alias writes (§ Unsafe code).
    **bytecode-fidelity:** bytecode metadata and GNU bytecode fixtures. These
    jobs do not depend on the release binary and still run when a pull request
