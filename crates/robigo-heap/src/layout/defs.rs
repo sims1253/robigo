@@ -604,7 +604,7 @@ pub mod extra {
         const _: () = assert!(super::super::disjoint(&[super::TYPE_BLIND as u64, CALL_LIVE as u64, ESCAPED as u64]));
     }
 
-    /// A vector. Free: 0, 3, 5, 6, 8-12, 14, 15.
+    /// A vector. Free: 0, 5, 6, 8-12, 14, 15.
     pub mod vector {
         /// GNU R's RTRACE (`sxpinfo.trace`): `tracemem` is on.
         pub const TRACE: u16 = 1 << 1;
@@ -615,11 +615,21 @@ pub mod extra {
         /// Bit 2 is free on main and in all four X3 layout cells (a code
         /// object takes bit 8, the h24 cells bit 0): H, 2026-11-17.
         pub const OWN_ALTREP: u16 = 1 << 2;
-        const _: () = assert!(super::super::disjoint(&[super::TYPE_BLIND as u64, TRACE as u64, OWN_ALTREP as u64]));
+        /// The boot heap's freeze leaves this object ordinary (robigo-heap's
+        /// `gc/freeze.rs`): set on a RAWSXP that is replaced soon after the
+        /// boot, so that its replacement writes over no frozen object. C1's
+        /// translation-cache stub sets it. The freeze tests it on RAWSXPs only.
+        pub const NO_FREEZE: u16 = 1 << 3;
+        const _: () = assert!(super::super::disjoint(&[
+            super::TYPE_BLIND as u64,
+            TRACE as u64,
+            OWN_ALTREP as u64,
+            NO_FREEZE as u64
+        ]));
     }
 
     /// A code object (robigo-rt's `code.rs`: a VECSXP), which has the
-    /// vector bits too. Free: 0, 3, 5, 6, 9-12, 14, 15.
+    /// vector bits too. Free: 0, 5, 6, 9-12, 14, 15.
     pub mod code {
         /// The code object holds weak cache words (inline caches that
         /// name an object without keeping it alive: docs/g3.md §6.1, the
@@ -631,6 +641,7 @@ pub mod extra {
             super::TYPE_BLIND as u64,
             super::vector::TRACE as u64,
             super::vector::OWN_ALTREP as u64,
+            super::vector::NO_FREEZE as u64,
             WEAK_CACHE as u64
         ]));
     }

@@ -254,6 +254,10 @@ impl Core {
                 let never = observable
                     || x.typ() == WEAKREFSXP
                     || x.extra() & crate::extra::SEEN_BY_C != 0
+                    // replaced soon after the boot (C1's translation-cache
+                    // stub): left ordinary, so its replacement overwrites no
+                    // frozen value (the bit means this on a RAWSXP only)
+                    || (x.typ() == RAWSXP && x.extra() & crate::extra::vector::NO_FREEZE != 0)
                     || exclude(x)
                     || boot.is_some_and(|l| !self.is_boot_object(x, l));
                 if never {
@@ -1058,6 +1062,35 @@ mod tests {
             // the barrier bypassed: no note
             *(head.as_ptr().add(crate::layout::node::OFF_CAR) as *mut Sexp) = nil;
             c.check_frozen_reach(&mut roots);
+        }
+    }
+
+    /// A RAWSXP marked `NO_FREEZE` (C1's translation-cache stub) stays
+    /// ordinary, and its frozen holder is logged; replacing it is no dirty
+    /// event (an ordinary value overwritten). Another RAWSXP is frozen.
+    #[test]
+    fn a_no_freeze_raw_vector_stays_ordinary_and_its_replacement_is_not_dirty() {
+        let mut c = Core::new();
+        c.set_freeze_enabled(true);
+        if !c.freeze_enabled() {
+            return;
+        }
+        let nil = c.nil();
+        // SAFETY: fresh objects of this heap; nothing collects.
+        unsafe {
+            let stub = c.alloc_vector(RAWSXP, 16).unwrap();
+            stub.set_extra(stub.extra() | crate::extra::vector::NO_FREEZE);
+            let plain = c.alloc_vector(RAWSXP, 16).unwrap();
+            let holder = c.alloc_node(LISTSXP, stub, nil, nil).unwrap();
+            let head = c.alloc_node(LISTSXP, plain, holder, nil).unwrap();
+            c.freeze(&mut One(head), |_| false);
+            assert!(!c.is_frozen(stub) && stub.flags() & flags::IMMORTAL == 0, "the marked stub stays ordinary");
+            assert!(c.is_frozen(plain), "an unmarked RAWSXP is frozen");
+            assert!(c.is_frozen(holder) && (*c.remembered.0.get()).contains(&holder), "its holder is logged");
+            let code = c.alloc_vector(VECSXP, 1).unwrap();
+            holder.store(holder.as_ptr().add(crate::layout::node::OFF_CAR) as *mut Sexp, code);
+            assert_eq!(c.remembered.1.get() & Remembered::DIRTY, 0, "the stub's replacement is not dirty");
+            c.check_frozen();
         }
     }
 }
