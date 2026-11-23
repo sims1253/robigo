@@ -366,21 +366,21 @@ impl Heap {
     /// small object needs (GNU R's refused page, `GetNewPage`). A refused
     /// large chunk aborts: large requests go through `try_alloc_large`.
     #[inline(always)]
-    pub fn alloc(&mut self, size: usize) -> *mut u8 {
+    pub fn alloc(&mut self, size: usize, cells: usize) -> *mut u8 {
         debug_assert!(size >= GRANULE);
         if size > MAX_MEDIUM {
             return self.alloc_large(size);
         }
-        match self.alloc_fast(size) {
+        match self.alloc_fast(size, cells) {
             Some(p) => p.as_ptr(),
-            None => self.alloc_small(size),
+            None => self.alloc_small(size, cells),
         }
     }
 
     /// [`Heap::alloc`] where a refusal cannot be answered (the debug
     /// mover's copies, during a collection): it aborts.
-    pub fn alloc_or_abort(&mut self, size: usize) -> *mut u8 {
-        let p = self.alloc(size);
+    pub fn alloc_or_abort(&mut self, size: usize, cells: usize) -> *mut u8 {
+        let p = self.alloc(size, cells);
         if p.is_null() {
             handle_alloc_error(Layout::from_size_align(CHUNK_BYTES, BLOCK).unwrap());
         }
@@ -391,7 +391,7 @@ impl Heap {
     /// no call: the current block's free list, then its bump region; none
     /// when neither has a slot.
     #[inline(always)]
-    pub fn alloc_fast(&mut self, size: usize) -> Option<std::ptr::NonNull<u8>> {
+    pub fn alloc_fast(&mut self, size: usize, cells: usize) -> Option<std::ptr::NonNull<u8>> {
         debug_assert!((GRANULE..=MAX_MEDIUM).contains(&size));
         let ci = class_index(size);
         // the fast path, inlined into the callers: the current block's
@@ -409,6 +409,7 @@ impl Heap {
                 b.freelist = unsafe { *(p.as_ptr().add(header::OFF_LINK) as *mut *mut u8) };
                 b.start_set((p.as_ptr() as usize - Block::data_ptr(cur) as usize) / GRANULE);
                 b.live_objects += 1;
+                b.cells += cells as u32;
                 return Some(p);
             }
             let g = (SIZES[ci] / GRANULE) as u32;
@@ -421,6 +422,7 @@ impl Heap {
                 b.start_set(b.bump_next as usize);
                 b.bump_next += g;
                 b.live_objects += 1;
+                b.cells += cells as u32;
                 return Some(p);
             }
         }
@@ -429,7 +431,7 @@ impl Heap {
 
     #[cold]
     #[inline(never)]
-    fn alloc_small(&mut self, size: usize) -> *mut u8 {
+    fn alloc_small(&mut self, size: usize, cells: usize) -> *mut u8 {
         let ci = class_index(size);
         // every slot of a class is carved at the class size: free-list
         // slots are reused for any request of the class, so a slot cut
@@ -452,6 +454,7 @@ impl Heap {
                     // resolve) the new object
                     b.start_set((p as usize - Block::data_ptr(cur) as usize) / GRANULE);
                     b.live_objects += 1;
+                    b.cells += cells as u32;
                     return p;
                 }
                 if b.bump_next + g <= b.granules {
@@ -460,6 +463,7 @@ impl Heap {
                     b.start_set(b.bump_next as usize);
                     b.bump_next += g;
                     b.live_objects += 1;
+                    b.cells += cells as u32;
                     return p;
                 }
                 cs.cur = std::ptr::null_mut();
@@ -756,9 +760,9 @@ mod tests {
             for &a in &sizes {
                 for &b in &sizes {
                     let mut h = Heap::new();
-                    let p = h.alloc(a);
-                    let q = h.alloc(a);
-                    let r = h.alloc(a);
+                    let p = h.alloc(a, 0);
+                    let q = h.alloc(a, 0);
+                    let r = h.alloc(a, 0);
                     // SAFETY: `q`, `r` and the reused slots have `a` or `b`
                     // bytes, the point of the test, and each slot is freed once.
                     unsafe {
@@ -767,10 +771,10 @@ mod tests {
                         h.free_small(p);
                         h.free_small(r);
                         // the most recently freed slot comes back first
-                        let s = h.alloc(b);
+                        let s = h.alloc(b, 0);
                         assert_eq!(s, r, "class {ci}: reuse");
                         std::ptr::write_bytes(s, 0xEF, b);
-                        let s2 = h.alloc(b);
+                        let s2 = h.alloc(b, 0);
                         assert_eq!(s2, p);
                         std::ptr::write_bytes(s2, 0x11, b);
                         let qs = std::slice::from_raw_parts(q, a);
@@ -799,8 +803,8 @@ mod medium_tests {
         assert_eq!(class_index(MAX_MEDIUM), SIZES.len() - 1);
         // a 1000-double vector (8032 bytes) shares a block with 7 others
         let mut h = Heap::new();
-        let a = h.alloc(8032);
-        let b = h.alloc(8032);
+        let a = h.alloc(8032, 0);
+        let b = h.alloc(8032, 0);
         assert_eq!(a as usize & !(BLOCK - 1), b as usize & !(BLOCK - 1));
         assert_eq!(h.reserved, CHUNK_BYTES);
     }
@@ -836,7 +840,7 @@ mod bitmap_tests {
     fn start_bits_mark_objects_and_resolve_interior_words() {
         let mut h = Heap::new();
         let size = 3 * GRANULE;
-        let objs: Vec<*mut u8> = (0..70).map(|_| h.alloc(size)).collect();
+        let objs: Vec<*mut u8> = (0..70).map(|_| h.alloc(size, 0)).collect();
         let b = h.block_of(objs[0]);
         for &p in &objs {
             assert_eq!(h.block_of(p), b, "one block");

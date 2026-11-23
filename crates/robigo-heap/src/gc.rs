@@ -62,20 +62,6 @@ fn not_a_vector_type(t: u8) -> ! {
     panic!("robigo: SEXPTYPE {t} is not a vector type")
 }
 
-/// Count a small object's vector cells, as its allocation counts them into
-/// the vector heap's use, in its block ([`Block::cells`]): the sweep takes a
-/// block's dead cells from this and its survivors' (`Core::sweep`).
-///
-/// # Safety
-/// `p` is a small object's slot in a block of this heap.
-#[inline(always)]
-unsafe fn charge_block(p: *mut u8, cells: usize) {
-    let b = (p as usize & !(BLOCK - 1)) as *mut Block;
-    // SAFETY: the caller's contract: a block's header is initialized; a
-    // block's cells are at most its bytes over 8 (a VECREC), far below u32.
-    unsafe { (*b).cells += cells as u32 };
-}
-
 /// A vector's allocation: its bytes (header included, rounded to 16) and
 /// GNU R's count of its data in VECRECs, or None past the address space.
 fn vector_size(t: u8, n: usize) -> Option<(usize, usize)> {
@@ -1683,15 +1669,13 @@ impl Core {
             self.poll_slow(t, n, size, cells)?;
         }
         let size = size.max(GRANULE);
-        let p = self.heap.alloc(size);
+        // (its block counts the cells: `Block::cells`)
+        let p = self.heap.alloc(size, cells);
         if p.is_null() {
             return Err(self.refused_chunk(t, n));
         }
-        // SAFETY: `p` is fresh, with at least 16 bytes, in a block.
-        let x = unsafe {
-            charge_block(p, cells);
-            self.init_header(p, t)
-        };
+        // SAFETY: `p` is fresh, with at least 16 bytes.
+        let x = unsafe { self.init_header(p, t) };
         self.count(size, cells);
         Ok(x)
     }
@@ -1862,7 +1846,7 @@ impl Core {
             // SAFETY: the caller's contract.
             return unsafe { self.alloc_node_slow(t, car, cdr, tag) };
         }
-        let Some(p) = self.heap.alloc_fast(size) else {
+        let Some(p) = self.heap.alloc_fast(size, 0) else {
             // SAFETY: the caller's contract.
             return unsafe { self.alloc_node_slow(t, car, cdr, tag) };
         };
@@ -2085,13 +2069,13 @@ impl Core {
         // Within the limits here: below the trigger, or checked after the
         // collection (or, with collections inhibited, the vector limit, as
         // GNU R's postponed collection checks).
-        let mut p = self.alloc_raw(bytes);
+        let mut p = self.alloc_raw(bytes, cells);
         if p.is_none() && !collected && self.gc_inhibit == 0 {
             // R: memory.c:allocVector3, a refused malloc: collect
             // (R_gc_no_finalizers) and try once more
             // SAFETY: the caller's contract.
             unsafe { self.collect_needing(cells, Safepoint::Rooted, roots) };
-            p = self.alloc_raw(bytes);
+            p = self.alloc_raw(bytes, cells);
         }
         let Some(p) = p else {
             // (a small object's page, mem_err_malloc; a large one, allocVector3's)
@@ -2102,11 +2086,8 @@ impl Core {
             });
         };
         // SAFETY: `p` is fresh, of `bytes` (at least 16) bytes for `n`
-        // elements of `t`; a small one is in a block.
+        // elements of `t`.
         let x = unsafe {
-            if bytes <= MAX_MEDIUM {
-                charge_block(p, cells);
-            }
             let x = self.init_header(p, t);
             self.init_vector(x, t, n);
             x
@@ -2118,9 +2099,10 @@ impl Core {
     /// Memory for an object of `size` bytes (at least 16), past the
     /// poll-only path's tests: None if the system refuses a large one.
     #[inline]
-    fn alloc_raw(&mut self, size: usize) -> Option<*mut u8> {
+    fn alloc_raw(&mut self, size: usize, cells: usize) -> Option<*mut u8> {
         if size <= MAX_MEDIUM {
-            let p = self.heap.alloc(size.max(GRANULE));
+            // (a small one's block counts the cells: `Block::cells`)
+            let p = self.heap.alloc(size.max(GRANULE), cells);
             (!p.is_null()).then_some(p)
         } else {
             self.heap.try_alloc_large(size)

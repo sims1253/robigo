@@ -367,9 +367,9 @@ impl Core {
             let b = (p.0 as usize & !(BLOCK - 1)) as *mut Block;
             let q = if (*b).magic == 0x524f4249474f4241 {
                 let size = SIZES[(*b).class as usize];
-                let q = self.heap.alloc_or_abort(size);
+                let cells = self.copy_cells(p.0);
+                let q = self.heap.alloc_or_abort(size, cells);
                 std::ptr::copy_nonoverlapping(p.0, q, size);
-                self.charge_copy(q);
                 self.mark_copy(q);
                 self.young.moved.small.push(p.0);
                 q
@@ -515,10 +515,10 @@ impl Core {
             unsafe {
                 let b = (p as usize & !(BLOCK - 1)) as *mut Block;
                 let size = SIZES[(*b).class as usize];
-                let q = self.heap.alloc_or_abort(size);
+                let cells = self.copy_cells(p);
+                let q = self.heap.alloc_or_abort(size, cells);
                 std::ptr::copy_nonoverlapping(p, q, size);
                 *q.add(header::OFF_FLAGS) |= OLD;
-                self.charge_copy(q);
                 self.mark_copy(q);
                 forward_to(p, q);
             }
@@ -546,21 +546,19 @@ impl Core {
         moved
     }
 
-    /// A small copy's vector cells, in its new block ([`Block::cells`]) and
-    /// in the vector heap's use: the old copy's block loses them at the
-    /// sweep that frees it (its survivors no longer include it), so the use
-    /// is unchanged, as a copy is the object and not an allocation.
+    /// A small object's vector cells, for its copy's new block
+    /// ([`Block::cells`], charged by the allocation) and the vector heap's
+    /// use: the old copy's block loses them at the sweep that frees it (its
+    /// survivors no longer include it), so the use is unchanged, as a copy
+    /// is the object and not an allocation.
     ///
     /// # Safety
-    /// `q` is a fresh small copy of a live object, its header and length
-    /// words copied.
-    unsafe fn charge_copy(&mut self, q: *mut u8) {
+    /// `p` is a live small object.
+    unsafe fn copy_cells(&mut self, p: *mut u8) -> usize {
         // SAFETY: the caller's contract.
-        unsafe {
-            let cells = crate::heapsize::object_cells(Sexp(q));
-            charge_block(q, cells);
-            self.sizes.valloc += cells;
-        }
+        let cells = unsafe { crate::heapsize::object_cells(Sexp(p)) };
+        self.sizes.valloc += cells;
+        cells
     }
 
     /// Whether the marked object `p` may move.
