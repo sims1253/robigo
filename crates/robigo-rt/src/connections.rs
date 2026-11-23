@@ -563,7 +563,8 @@ fn file_open(c: &mut Conn) -> OpenResult {
         Ok(f) => f,
         Err(e) => return Err(format!("cannot open file '{shown}': {}", strerror(&e))),
     };
-    if fp.fd().metadata().is_ok_and(|m| m.is_dir()) {
+    // isDir: fstat's S_ISDIR
+    if stdio::SysFile::stat(fp.fd()).is_ok_and(|m| m.is_dir) {
         return Err(format!("cannot open file '{shown}': it is a directory"));
     }
     let mode = c.mode();
@@ -579,7 +580,7 @@ fn file_open(c: &mut Conn) -> OpenResult {
     c.set_text(!(mlen >= 2 && m[mlen - 1] == b'b'));
     // set_buffer: a text connection read from a regular file is buffered
     // (shouldBuffer: fstat's S_ISREG)
-    if c.canread() && c.text() && fp.fd().metadata().is_ok_and(|md| md.is_file()) {
+    if c.canread() && c.text() && stdio::SysFile::stat(fp.fd()).is_ok_and(|m| m.is_reg) {
         buff_init(c);
     }
     let wpos = if c.canwrite() { fp.ftello() } else { 0 };
@@ -736,7 +737,7 @@ fn close_conn(c: &mut Conn) -> Option<String> {
                 fp.clear_errno();
                 c.c.status = fp.fclose();
                 if c.c.status < 0 {
-                    err = Some(match fp.errno {
+                    err = Some(match robigo_rtcore::clib::errno() {
                         0 => "Problem closing connection".to_string(),
                         e => format!("Problem closing connection:  {}", errno_text(e)),
                     });
@@ -1740,12 +1741,17 @@ fn rconn_printf(c: &mut Conn, parts: &[&[u8]]) -> Result<(), String> {
         // (con->outconv: dummy_vfprintf's re-encoding)
         return Err("robigo: re-encoding a connection is not implemented yet".into());
     }
+    // errno = 0, then con->vfprintf: file_vfprintf's move to the write
+    // position is inside the call, and its errno is the message's
+    robigo_rtcore::clib::set_errno(0);
     let (res, errno) = match &mut c.imp {
         Imp::File(f) => {
+            if let Some(fp) = f.fp.as_mut() {
+                fp.clear_errno();
+            }
             let Some(fp) = f.to_write() else { return Err("not open".into()) };
-            fp.clear_errno();
             let res = fp.vfprintf(parts);
-            (res, fp.errno)
+            (res, robigo_rtcore::clib::errno())
         }
         _ => match conn_write(c, &parts.concat()) {
             Ok(_) => (0, 0),

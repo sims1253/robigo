@@ -104,7 +104,13 @@ impl SysFile for Fake {
         Ok(to)
     }
     fn stat(&self) -> io::Result<Stat> {
-        Ok(Stat { is_reg: !self.chr_tty, is_chr: self.chr_tty, blksize: self.blksize, size: self.data.len() as u64 })
+        Ok(Stat {
+            is_reg: !self.chr_tty,
+            is_chr: self.chr_tty,
+            is_dir: false,
+            blksize: self.blksize,
+            size: self.data.len() as u64,
+        })
     }
     fn isatty(&self) -> bool {
         self.chr_tty

@@ -1846,6 +1846,36 @@ pub fn set_errno(e: i32) {
     unsafe { *libc::__errno_location() = e }
 }
 
+/// What `fstat(2)` says of an open file (glibc's `_IO_file_stat`, which
+/// GNU R's `isDir` and `shouldBuffer` call too): Rust's `File::metadata`
+/// is `statx`, with probes and a fallback of its own.
+pub struct FileStat {
+    pub is_reg: bool,
+    pub is_chr: bool,
+    pub is_dir: bool,
+    pub blksize: u64,
+    pub size: u64,
+}
+
+/// `fstat(fd)` of `f`'s descriptor.
+pub fn fstat(f: &std::fs::File) -> std::io::Result<FileStat> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: a zeroed `struct stat` is valid; fstat writes it for an open
+    // descriptor, which `f` holds for the call.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(f.as_raw_fd(), &mut st) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let fmt = st.st_mode & libc::S_IFMT;
+    Ok(FileStat {
+        is_reg: fmt == libc::S_IFREG,
+        is_chr: fmt == libc::S_IFCHR,
+        is_dir: fmt == libc::S_IFDIR,
+        blksize: st.st_blksize as u64,
+        size: st.st_size as u64,
+    })
+}
+
 /// `close(fd)` of `f`'s descriptor, with its result: a dropped `File`
 /// closes without one (glibc's `fclose` returns `close`'s failure,
 /// libio/fileops.c `_IO_new_file_close_it`).

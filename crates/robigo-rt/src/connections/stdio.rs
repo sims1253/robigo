@@ -46,6 +46,7 @@ pub(crate) enum Whence {
 pub(crate) struct Stat {
     pub is_reg: bool,
     pub is_chr: bool,
+    pub is_dir: bool,
     pub blksize: u64,
     pub size: u64,
 }
@@ -72,20 +73,18 @@ impl SysFile for std::fs::File {
     }
     fn seek(&mut self, off: i64, whence: Whence) -> io::Result<i64> {
         let to = match whence {
-            Whence::Set => match u64::try_from(off) {
-                Ok(o) => SeekFrom::Start(o),
-                // lseek's EINVAL for a negative offset
-                Err(_) => return Err(io::Error::from_raw_os_error(EINVAL)),
-            },
+            // (std gives lseek the offset's bits: a negative one reaches it
+            // as _IO_file_seek passes it, for the system to refuse or not)
+            Whence::Set => SeekFrom::Start(off as u64),
             Whence::Cur => SeekFrom::Current(off),
             Whence::End => SeekFrom::End(off),
         };
         io::Seek::seek(self, to).map(|p| p as i64)
     }
+    // glibc: libio/fileops.c:_IO_file_stat
     fn stat(&self) -> io::Result<Stat> {
-        use std::os::unix::fs::{FileTypeExt, MetadataExt};
-        let m = self.metadata()?;
-        Ok(Stat { is_reg: m.is_file(), is_chr: m.file_type().is_char_device(), blksize: m.blksize(), size: m.size() })
+        let m = robigo_rtcore::clib::fstat(self)?;
+        Ok(Stat { is_reg: m.is_reg, is_chr: m.is_chr, is_dir: m.is_dir, blksize: m.blksize, size: m.size })
     }
     fn isatty(&self) -> bool {
         io::IsTerminal::is_terminal(self)
