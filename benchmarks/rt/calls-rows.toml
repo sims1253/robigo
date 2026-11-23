@@ -62,9 +62,9 @@
 #          (at 40, the extra N compiles catch 0 or 1 of robigo-rt's full
 #          collections, ±0.65M per compile: X's profile). GNU R's
 #          side only until V4 step 3 lands: robigo-rt cannot load the
-#          compiler namespace yet, and idiom-vs-r.py stops at a row that
-#          fails, so measure them with --no-robigo, or keep them out of a
-#          run under both (--filter) until then.
+#          compiler namespace yet, and idiom-vs-r.py refuses a row that
+#          fails (below), so measure them with --no-robigo, or keep them
+#          out of a run under both (--filter) until then.
 #
 # No collection in a row's window: idiom-vs-r.py runs each row at N and 2N
 # first, without callgrind, and refuses it unless robigo-rt collects 0 times
@@ -73,11 +73,17 @@
 # live heap, into the row's per-iteration figure (guard-vec-arith was +1.20%
 # under the rdb boot for that alone). An allocating row sizes its heap with
 # `heap = { R_VSIZE = "...", R_NSIZE = "..." }`, applied to both sides' runs
-# (GNU R reads the same variables, startup.c:R_SizeFromEnv); a row whose work
+# (GNU R reads the same variables, startup.c:R_SizeFromEnv). A row whose work
 # collects by design is marked `collects = true` (the jit rows: a compile
-# allocates), and perf.py rt-bars prints its counts for both binaries and
-# warns when they differ. GNU R's counts are reported beside robigo-rt's,
-# not enforced.
+# allocates): the mark waives the refusal (idiom-vs-r.py's collection_error
+# passes the row whatever it counts), so such a row's counts are only
+# reported: perf.py rt-bars prints them for both binaries and warns when
+# they differ. GNU R's counts are reported beside robigo-rt's, not enforced.
+#
+# No failing row: the same runs refuse a row whose script exits non-zero or
+# prints an R error on either side, by name, before anything is measured,
+# `collects = true` or not (source5k on robigo-rt today: base's source()
+# calls utils::localeToCharset(), and robigo-rt's library has no utils).
 #
 # `address_sensitive = true` marks a row whose count follows where its strings
 # were allocated: GNU R's string hash, and robigo-rt's port of it, hashes a

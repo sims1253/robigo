@@ -89,7 +89,14 @@ per iteration against robigo-rt's −577.
 
 Each row of calls-rows.toml at N and 2N, main 0007ddf33.
 - **robigo-rt**, under the source boot, rdb, and rdb with the JIT off:
-  every row collects 0 → 0, except:
+  every row but source5k collects 0 → 0, except the ones below. source5k
+  is not a measured row on robigo-rt: its script stops at an error under
+  all three boots (`Error: package ‘utils’ does not have a namespace`:
+  base's `source()` calls `utils::localeToCharset()`, and robigo-rt's
+  library has no utils; checked on main 5d961809e). The census read the
+  heap report, which a failed run still prints as 0 collections, without
+  checking the exit; `--rows` now refuses such a row by name. The table
+  below does not include source5k.
   - guard-vec-arith: 0 → 1 under all three;
   - fib: 0 → 1 under rdb with the JIT off only;
   - the seven jit rows: 2–8 → 4–16. Under rdb, four of them do one more

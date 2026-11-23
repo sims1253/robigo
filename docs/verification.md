@@ -1071,6 +1071,10 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
         of both sides with `heap = { R_VSIZE = "..." }`. GNU R's counts
         are reported beside robigo-rt's, not enforced
         (`docs/ledger/g3/2026-11-23-row-collections.md`).
+      - **No failing row:** the same runs refuse a row whose script exits
+        non-zero or prints an R error (a line starting `Error`) on either
+        side, by name, before anything is measured, `collects = true` or
+        not.
       - **The binaries:** `rt-bars`, `idiom-vs-r.py` and `rss.py` name every
         binary they measure, in the report and the JSON: its sha256, GNU
         build ID and modification time, and the checkout's `git describe`
