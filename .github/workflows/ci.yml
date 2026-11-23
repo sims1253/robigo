@@ -1227,12 +1227,31 @@ jobs:
           sig=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import perf; print(perf.cpu_signature()[1])')
           pkgs=$(dpkg-query -W -f '${Package}=${Version} ' libc6 valgrind 2> /dev/null || true)
           image=$(printf '%s' "$IMAGE" | sha256sum | cut -c1-16)
-          echo "key=perf-gnur-1-$image-$sig-$(printf '%s' "$pkgs" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          # the files the records depend on, as perf.py lists them (its
+          # suites' programs, the suite list, the known failures, the two
+          # scripts): not benchmarks/rt/, robigo-rt's rows, which this job
+          # does not read. Until 2026-11-24 the key hashed all of
+          # benchmarks/, and every rt row change dropped it (perf-gnur-1)
+          # (a file that cannot be read ends the step: no key from a partial hash)
+          inputs=$(python3 scripts/perf.py gnur-inputs | while read -r f; do printf '%s\0' "$f"; sha256sum < "$f" || exit 1; done | sha256sum | cut -c1-16)
+          echo "key=perf-gnur-2-$image-$sig-$(printf '%s' "$pkgs" | sha256sum | cut -c1-16)-$inputs" >> "$GITHUB_OUTPUT"
+          echo "sig=$sig" >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@v6
+        id: gnur-cache
         if: github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
         with:
           path: gnur.json
-          key: ${{ steps.gnur.outputs.key }}-${{ hashFiles('benchmarks/**', 'scripts/perf.py') }}
+          key: ${{ steps.gnur.outputs.key }}
+      # (the spread of CPU signatures shows here, run by run: a pull request
+      # hits only a signature main's runs have saved)
+      - name: The CPU signature and GNU R's records
+        if: github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
+        env:
+          SIG: ${{ steps.gnur.outputs.sig }}
+          HIT: ${{ steps.gnur-cache.outputs.cache-hit }}
+        run: |
+          if [ "$HIT" = true ]; then got="cached (main's)"; else got="not cached: measured here"; fi
+          echo "perf: CPU signature $SIG; GNU R's records $got" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Measure the base (HEAD^1)
         if: github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
         env:
@@ -1316,7 +1335,7 @@ jobs:
         if: github.ref == 'refs/heads/main' && steps.select.outputs.run == 'true'
         with:
           path: gnur.json
-          key: ${{ steps.gnur.outputs.key }}-${{ hashFiles('benchmarks/**', 'scripts/perf.py') }}
+          key: ${{ steps.gnur.outputs.key }}
       - uses: actions/upload-artifact@v7
         if: always() && github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
         with:
