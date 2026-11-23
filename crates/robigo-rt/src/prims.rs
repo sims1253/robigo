@@ -589,6 +589,17 @@ pub struct RtState {
     pub base_src: std::cell::RefCell<Option<std::path::PathBuf>>,
 }
 
+/// How [`BySym::set`] enters a definition whose symbol already has one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Policy {
+    /// The later definition replaces the earlier (the base table's own
+    /// duplicates, as a map built in order keeps the last).
+    Replace,
+    /// As `Replace`, but an `.Internal` never hides a primitive of the same
+    /// name (a later table's internals, `define_builtins`).
+    InternalKeeps,
+}
+
 /// `PRIMOFFSET` by symbol: a table indexed by the symbol's id (dense per
 /// heap; the primitives' names are among the first symbols made), so a
 /// lookup is a bounds check and a load, with no hashing and no dependence
@@ -617,14 +628,15 @@ impl BySym {
         }
     }
 
-    /// Enter `off` for the symbol whose id is `id`: replacing what is
-    /// there when `replace`, else only where there is nothing.
-    pub fn set(&mut self, id: u32, off: usize, replace: bool) {
+    /// Enter `off` for the symbol whose id is `id`, as `policy` says for
+    /// a definition that is an `.Internal` (`internal`) or not.
+    pub fn set(&mut self, id: u32, off: usize, policy: Policy, internal: bool) {
         let i = id as usize;
         if self.0.len() <= i {
             self.0.resize(i + 1, NO_PRIM);
         }
-        if replace || self.0[i] == NO_PRIM {
+        let keep = policy == Policy::InternalKeeps && internal && self.0[i] != NO_PRIM;
+        if !keep {
             self.0[i] = u32::try_from(off).expect("robigo: a primitive offset past u32");
         }
     }
@@ -699,7 +711,7 @@ pub(crate) fn make_prims(
     defs: &[PrimDef],
     first: usize,
     by_sym: &mut BySym,
-    internal_keeps: bool,
+    policy: Policy,
 ) -> (Vec<Global>, Vec<Sexp>) {
     let mut objs = Vec::with_capacity(defs.len());
     let mut names = Vec::with_capacity(defs.len());
@@ -743,10 +755,9 @@ pub(crate) fn make_prims(
                 cx.set_symvalue(sr, v);
             });
         }
-        // the compiler's lookup by symbol; with `internal_keeps` an
-        // `.Internal` never hides a primitive of the same name
+        // the compiler's lookup by symbol
         // SAFETY: an immortal symbol of this heap.
-        unsafe { by_sym.set(sym.sym_id(), first + i, !(internal_keeps && d.internal())) };
+        unsafe { by_sym.set(sym.sym_id(), first + i, policy, d.internal()) };
         objs.push(g);
         names.push(sym);
     }

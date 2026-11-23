@@ -144,7 +144,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     let defs = prims::base_defs();
     // (a later name for the same symbol replaces the earlier)
     let mut by_sym = prims::BySym::default();
-    let (objs, names) = prims::make_prims(cx, &defs, 0, &mut by_sym, false);
+    let (objs, names) = prims::make_prims(cx, &defs, 0, &mut by_sym, prims::Policy::Replace);
     cx.set_ext(prims::RtState {
         forced,
         jit: std::cell::Cell::new(jit::Config::from_env()),
@@ -269,7 +269,7 @@ pub fn define_builtins(cx: &mut Cx, defs: &[prims::PrimDef]) {
     }
     let first = prims::state(cx).defs.len();
     let mut by_sym = prims::state(cx).by_sym.clone();
-    let (objs, names) = prims::make_prims(cx, defs, first, &mut by_sym, true);
+    let (objs, names) = prims::make_prims(cx, defs, first, &mut by_sym, prims::Policy::InternalKeeps);
     // the state is replaced whole: `ext` hands out shared references only
     let mut st = take_state(cx);
     st.by_sym = by_sym;
@@ -295,7 +295,8 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         defs: st.defs.clone(),
         objs,
         names: st.names.clone(),
-        by_sym: st.by_sym.clone(),
+        // (define_builtins, the only caller, puts its own updated table here)
+        by_sym: Default::default(),
         running_finalizers: std::cell::Cell::new(st.running_finalizers.get()),
         materialize: std::cell::Cell::new(st.materialize.get()),
         inline: std::cell::Cell::new(st.inline.get()),
