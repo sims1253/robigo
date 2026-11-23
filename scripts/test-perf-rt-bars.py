@@ -772,8 +772,16 @@ class EveryRunNamesItsBoot(unittest.TestCase):
         def memory(cmd, env, syscalls):
             envs.append(env)
             return 100, 5000, 0, b"", 0
+        def massif(cmd, env, valgrind):
+            envs.append(env)
+            return 1
+
+        def gc(cmd, env):
+            envs.append(env)
+            return None
         with tempfile.TemporaryDirectory() as home, patch.object(su, "instructions", instr), \
-                patch.object(su, "memory", memory):
+                patch.object(su, "memory", memory), patch.object(su, "massif_peak", massif), \
+                patch.object(su, "gc_peak", gc):
             su.run("bin", None, home, 1, trees=False)
         self.assertGreater(len(envs), 0)
         self.assertTrue(all("ROBIGO_RT_BOOT" in e for e in envs))

@@ -26,14 +26,19 @@ perf.py rt-starts gates robigo-rt's starts against main's binary (the
 [[startup]] entries of benchmarks/rt/m1-bars.toml), and perf.py rt-gnur
 records GNU R's beside them, report-only.
 
-Each start has three numbers:
-- `instr`: callgrind's total instructions of the whole process;
-- `anon_kib`: peak anonymous memory, in KiB (RssAnon, see below);
-- `rss_kib`: total peak RSS, `VmHWM`, in KiB.
-
-Instructions and the anonymous peak are the mean over the layout shifts
-(below), one run at each; peak RSS the median of `runs` runs at the home
-itself.
+Each start has these numbers, the first three judged against main's:
+- `instr`: callgrind's total instructions of the whole process, the mean
+  over the layout shifts (below);
+- `heap_bytes`: the peak of malloc'd bytes, massif's peak useful heap
+  (robigo-heap's chunks included), one run at the first shift: exact and
+  repeatable, no page or placement in it (massif_peak());
+- `rss_kib`: total peak RSS, `VmHWM`, in KiB, the median of `runs` runs at
+  the home itself;
+- reported only: `anon_kib`, peak anonymous memory in KiB (see below), the
+  mean over the shifts: physical pages, which glibc's placement of the
+  runtime's allocations moves by tens of KiB between binaries doing the
+  same work; and `gc_peak`, robigo-heap's own peak in use, where the
+  binary prints it (gc_peak()).
 
 **Anonymous memory.** Linux keeps a high-water mark of the whole RSS
 (VmHWM) but none of its anonymous part, and a 20 ms start is too short to
@@ -131,20 +136,17 @@ LAYOUT_SHIFTS = tuple(zip(LAYOUT_LENGTHS, TOP_PADS))
 ANON_STAT = statistics.fmean
 
 # the gate against main's binary (perf.py rt-starts), in percent: instructions
-# as the rows' THRESHOLD; total peak RSS loosely, since its file-backed part
-# follows code layout. The anonymous peak is a coarse tripwire for gross
-# regressions only, +max(2%, 128 KiB): it counts physical pages, and glibc's
-# placement of the runtime's own allocations moves them by tens of KiB
-# between two binaries doing the same work, which no layout shift averages
-# away (#991's runner binaries in CI's image: PR - main +3 / -3 / +15 / +56
-# KiB on interim / rdb-jit / rdb-nojit / rdb-nocache, the image's own pages
-# 180 KiB in both, the difference all [heap] and anonymous mmaps;
-# docs/ledger/g3/2026-11-23-startup-layout.md). To be replaced by a logical
-# peak (malloc'd bytes and robigo-heap's bytes in use), which no placement
-# enters.
+# as the rows' THRESHOLD; memory as the peak of malloc'd bytes, massif's
+# peak useful heap (bytes requested, robigo-heap's chunks among them: Rust's
+# allocator takes them from malloc), exact and repeatable for a given
+# allocation sequence, +max(HEAP_LIMIT%, HEAP_FLOOR_BYTES); total peak RSS
+# loosely, since its file-backed part follows code layout. The anonymous
+# peak (physical pages, which glibc's placement moves by tens of KiB between
+# binaries doing the same work) is reported, not judged
+# (docs/ledger/g3/2026-11-23-startup-layout.md)
 INSTR_LIMIT = 0.5
-ANON_LIMIT = 2.0
-ANON_FLOOR_KIB = 128
+HEAP_LIMIT = 0.5
+HEAP_FLOOR_BYTES = 16 << 10
 RSS_LIMIT = 5.0
 
 PTRACE_TRACEME, PTRACE_CONT, PTRACE_DETACH, PTRACE_SYSCALL = 0, 7, 17, 24
@@ -544,9 +546,84 @@ def measure(cmd, env, runs, valgrind, var, home):
     # stopped only at exit, at the home itself (memory())
     anon_shifts = {str(n): run(shifted(n), True) for n in homes}
     rss = [run(dict(env, **{var: os.path.abspath(home)}), False) for _ in range(runs)]
+    # memory as allocation: one run at the first shift (the figure moves
+    # across shifts only by the home path's own strings, so both binaries
+    # are held to the same one), and robigo-heap's own peak where the
+    # binary reports it
+    first = shifted(LAYOUT_SHIFTS[0][0])
+    heap = massif_peak(cmd, first, valgrind)
+    gc = gc_peak(cmd, first)
     return {"instr": statistics.fmean(shifts.values()), "instr_shifts": shifts,
             "anon_kib": ANON_STAT(anon_shifts.values()), "anon_shifts": anon_shifts,
-            "rss_kib": statistics.median(rss), "rss_runs": rss, "children": children}
+            "rss_kib": statistics.median(rss), "rss_runs": rss, "children": children,
+            "heap_bytes": heap, "gc_peak": gc}
+
+
+def massif_peak(cmd, env, valgrind):
+    """massif's peak useful-heap bytes of one run of `cmd`: the most malloc'd
+    bytes live at once, as requested (no page, alignment or placement
+    enters). Valgrind's realloc always copies, so a growing buffer counts
+    old and new together for a moment: the requested-bytes view, the same
+    for every binary."""
+    with tempfile.TemporaryDirectory(prefix="rt-massif-") as d:
+        out = os.path.join(d, "massif.out")
+        full = [valgrind, "--tool=massif", "--peak-inaccuracy=0.0", "--detailed-freq=1000000",
+                "--max-snapshots=1000", f"--massif-out-file={out}"] + cmd
+        try:
+            p = subprocess.run(full, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                               timeout=CALLGRIND_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            raise SystemExit(f"rt-startup: {' '.join(cmd)} ran over {CALLGRIND_TIMEOUT} s under massif")
+        if p.returncode:
+            raise SystemExit(f"rt-startup: {' '.join(cmd)} under massif exited {p.returncode}:\n{p.stderr[-2000:]}")
+        with open(out, errors="replace") as f:
+            return massif_peak_of(f.read())
+
+
+def massif_peak_of(text):
+    """The peak snapshot's mem_heap_B in a massif output file's text (the
+    largest snapshot's, if none is marked peak)."""
+    snaps, cur = [], None
+    for ln in text.splitlines():
+        m = re.match(r"(snapshot|mem_heap_B|heap_tree)=(\S+)", ln)
+        if not m:
+            continue
+        if m.group(1) == "snapshot":
+            cur = {}
+            snaps.append(cur)
+        elif cur is not None:
+            cur[m.group(1)] = m.group(2)
+    heaps = [s for s in snaps if "mem_heap_B" in s]
+    if not heaps:
+        raise SystemExit("rt-startup: no snapshot in massif's output")
+    peak = [s for s in heaps if s.get("heap_tree") == "peak"]
+    return int((peak[0] if peak else max(heaps, key=lambda s: int(s["mem_heap_B"])))["mem_heap_B"])
+
+
+# robigo-heap's own peak (ROBIGO_GC_STATS=1): bytes in use (objects, block
+# overhead, large) and chunk bytes mapped, logical and exact
+GC_PEAK = re.compile(r"^robigo gc: peak bytes in use (\d+) \(objects (\d+), block overhead (\d+), large (\d+)\); "
+                     r"peak chunk bytes mapped (\d+)$", re.M)
+
+
+def gc_peak_of(stderr):
+    """{"in_use", "objects", "overhead", "large", "chunks"} from robigo-heap's
+    peak line, or None when the binary does not print it."""
+    m = GC_PEAK.search(stderr)
+    if not m:
+        return None
+    return dict(zip(("in_use", "objects", "overhead", "large", "chunks"), map(int, m.groups())))
+
+
+def gc_peak(cmd, env):
+    """gc_peak_of() of one plain run of `cmd` under ROBIGO_GC_STATS=1 (GNU R
+    ignores the variable, and prints no such line)."""
+    try:
+        p = subprocess.run(cmd, env=dict(env, ROBIGO_GC_STATS="1"), stdout=subprocess.DEVNULL,
+                           stderr=subprocess.PIPE, text=True, timeout=TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise SystemExit(f"rt-startup: {' '.join(cmd)} ran over {TIMEOUT} s")
+    return gc_peak_of(p.stderr)
 
 
 def cache_hits(stderr):
@@ -762,8 +839,8 @@ def clean_env():
     return {**FIXED_ENV, **BASE, "ROBIGO_RSRC": _fixed["rsrc"]}
 
 
-def anon_limit_kib(main_kib):
-    return max(main_kib * ANON_LIMIT / 100, ANON_FLOOR_KIB)
+def heap_limit_bytes(main_bytes):
+    return max(main_bytes * HEAP_LIMIT / 100, HEAP_FLOOR_BYTES)
 
 
 def verdict(new, main):
@@ -778,11 +855,12 @@ def verdict(new, main):
         if v["instr"] > m["instr"] * (1 + INSTR_LIMIT / 100):
             fails.append(f"start {n}: {v['instr']:,.0f} instructions, {pct(v['instr'], m['instr']):+.2f}% against "
                          f"main's {m['instr']:,.0f} (limit +{INSTR_LIMIT}%)")
-        lim = anon_limit_kib(m["anon_kib"])
-        if v["anon_kib"] > m["anon_kib"] + lim:
-            fails.append(f"start {n}: peak anonymous memory {v['anon_kib']:,.0f} KiB, "
-                         f"{v['anon_kib'] - m['anon_kib']:+,.0f} KiB against main's {m['anon_kib']:,.0f} "
-                         f"(limit +{lim:,.0f} KiB: {ANON_LIMIT}%, at least {ANON_FLOOR_KIB} KiB)")
+        if v.get("heap_bytes") is not None and m.get("heap_bytes") is not None:
+            lim = heap_limit_bytes(m["heap_bytes"])
+            if v["heap_bytes"] > m["heap_bytes"] + lim:
+                fails.append(f"start {n}: peak malloc'd bytes {v['heap_bytes']:,}, "
+                             f"{v['heap_bytes'] - m['heap_bytes']:+,} against main's {m['heap_bytes']:,} "
+                             f"(limit +{lim:,.0f}: {HEAP_LIMIT}%, at least {HEAP_FLOOR_BYTES:,} bytes)")
         if v["rss_kib"] > m["rss_kib"] * (1 + RSS_LIMIT / 100):
             fails.append(f"start {n}: peak RSS {v['rss_kib']:,.0f} KiB, {pct(v['rss_kib'], m['rss_kib']):+.2f}% "
                          f"against main's {m['rss_kib']:,.0f} (limit +{RSS_LIMIT}%)")
@@ -795,10 +873,15 @@ def pct(a, b):
 
 def table(entries, new, main=None, gnur=None):
     """The startup table, markdown lines: `entries` the bars file's
-    [[startup]] (name, and the GNU R start it is shown beside)."""
-    lines = ["| start | instructions | main | change | anon KiB | main | change | peak RSS KiB | main | change "
-             "| GNU R instructions | anon KiB | peak RSS KiB |",
-             "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    [[startup]] (name, and the GNU R start it is shown beside). Judged:
+    instructions, the malloc peak, peak RSS. Reported: the anonymous peak,
+    robigo-heap's own peak in use ("-" where a binary does not report it)."""
+    lines = ["| start | instructions | main | change | malloc peak KiB | main | change | anon KiB (reported) | main "
+             "| peak RSS KiB | main | change | heap in use KiB (reported) | main | GNU R instructions | malloc KiB "
+             "| anon KiB | peak RSS KiB |",
+             "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    kib = lambda b: "-" if b is None else f"{b / 1024:,.1f}"  # noqa: E731
+    in_use = lambda v: kib((v.get("gc_peak") or {}).get("in_use"))  # noqa: E731
     for e in entries:
         n = e["name"]
         v = new[n]
@@ -810,14 +893,18 @@ def table(entries, new, main=None, gnur=None):
             g = None
         # (the default start: the default boot's, the row bar 5 is judged on)
         cells = [f"{n} (default)" if n == DEFAULT_START else n, f"{v['instr']:,.0f}"]
-        for k in ("instr", "anon_kib", "rss_kib"):
-            if k != "instr":
-                cells.append(f"{v[k]:,.0f}")
-            cells += [f"{m[k]:,.0f}", f"{pct(v[k], m[k]):+.2f}%"] if m else ["", ""]
-        cells += [f"{g['instr']:,.0f} ({e['gnur']})", f"{g['anon_kib']:,.0f}", f"{g['rss_kib']:,.0f}"] if g \
-            else ["", "", ""]
+        cells += [f"{m['instr']:,.0f}", f"{pct(v['instr'], m['instr']):+.2f}%"] if m else ["", ""]
+        hv, hm = v.get("heap_bytes"), (m or {}).get("heap_bytes")
+        cells += [kib(hv), kib(hm) if m else "", f"{hv - hm:+,} B" if hv is not None and hm is not None else ""]
+        cells += [f"{v['anon_kib']:,.0f}", f"{m['anon_kib']:,.0f}" if m else ""]
+        cells += [f"{v['rss_kib']:,.0f}"] + ([f"{m['rss_kib']:,.0f}", f"{pct(v['rss_kib'], m['rss_kib']):+.2f}%"]
+                                             if m else ["", ""])
+        cells += [in_use(v), in_use(m) if m else ""]
+        cells += [f"{g['instr']:,.0f} ({e['gnur']})", kib(g.get("heap_bytes")), f"{g['anon_kib']:,.0f}",
+                  f"{g['rss_kib']:,.0f}"] if g else ["", "", "", ""]
         lines.append("| " + " | ".join(cells) + " |")
     return lines
+
 
 
 def growth_reallocs(cg, top=5):
@@ -922,7 +1009,7 @@ def main():
         res = run_gnur(a.runs, a.valgrind)
     for n, v in res.items():
         print(f"{n}: {v['instr']:,.0f} instructions (shifts {', '.join(f'{x:,}' for x in v['instr_shifts'].values())}), "
-              f"anon {v['anon_kib']:,.0f} KiB, peak RSS {v['rss_kib']:,.0f} KiB"
+              f"malloc peak {v['heap_bytes']:,} B, anon {v['anon_kib']:,.0f} KiB, peak RSS {v['rss_kib']:,.0f} KiB"
               + (f", {v['children']} process(es) started" if v.get("children") else ""))
     if a.json:
         with open(a.json, "w") as f:

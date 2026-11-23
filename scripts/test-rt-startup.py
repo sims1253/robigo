@@ -4,6 +4,7 @@ idiom-vs-r.py's count of a loop's allocator calls, which decides the heap
 shifts. Run by the perf-rt job before the bars."""
 import importlib.util
 import os
+import shutil
 import signal
 import sys
 import tempfile
@@ -25,12 +26,13 @@ su = load("rt_startup", "rt-startup.py")
 iv = load("idiom_vs_r", "idiom-vs-r.py")
 
 
-def start(instr, anon, rss):
-    return {"instr": instr, "anon_kib": anon, "rss_kib": rss}
+def start(instr, anon, rss, heap=None):
+    return {"instr": instr, "anon_kib": anon, "rss_kib": rss, "heap_bytes": heap}
 
 
 class Verdict(unittest.TestCase):
-    MAIN = {"interim": start(15_000_000, 1_500, 9_800), "rdb-jit": start(95_000_000, 6_800, 15_600)}
+    MAIN = {"interim": start(15_000_000, 1_500, 9_800, 3_456_959),
+            "rdb-jit": start(95_000_000, 6_800, 15_600, 9_947_143)}
 
     def fails(self, new):
         return su.verdict(new, self.MAIN)
@@ -45,19 +47,20 @@ class Verdict(unittest.TestCase):
         self.assertEqual(len(f), 1)
         self.assertIn("instructions", f[0])
 
-    def test_anonymous_memory_is_a_coarse_tripwire(self):
-        # 2% of 1,500 KiB is 30 KiB: the 128 KiB floor holds
-        self.assertEqual(self.fails({"interim": start(15_000_000, 1_628, 9_800)}), [])
-        f = self.fails({"interim": start(15_000_000, 1_629, 9_800)})
+    def test_the_malloc_peak_is_judged_and_the_anonymous_peak_only_reported(self):
+        # 0.5% of 3,456,959 bytes is 17,285: above the 16 KiB floor
+        self.assertEqual(self.fails({"interim": start(15_000_000, 1_500, 9_800, 3_456_959 + 17_284)}), [])
+        f = self.fails({"interim": start(15_000_000, 1_500, 9_800, 3_456_959 + 17_285)})
         self.assertEqual(len(f), 1)
-        self.assertIn("anonymous", f[0])
-        # above the floor, 2%: 6,800 KiB allows 136 KiB
-        self.assertEqual(self.fails({"rdb-jit": start(95_000_000, 6_936, 15_600)}), [])
-        self.assertEqual(len(self.fails({"rdb-jit": start(95_000_000, 6_937, 15_600)})), 1)
-        # the placement band measured on #991's runner binaries in CI's image
-        # (+56 KiB on rdb-nocache's 6,939, no code cost) passes
-        self.assertEqual((su.ANON_LIMIT, su.ANON_FLOOR_KIB), (2.0, 128))
-        self.assertLess(56, su.anon_limit_kib(6_939))
+        self.assertIn("peak malloc'd bytes", f[0])
+        # a small start: the 16 KiB floor holds
+        self.assertEqual(su.heap_limit_bytes(1_000_000), 16 << 10)
+        # #991's pair differed by 2 bytes: far inside
+        self.assertEqual(self.fails({"rdb-jit": start(95_000_000, 6_800, 15_600, 9_947_145)}), [])
+        # the anonymous peak fails nothing, even 1 MiB over
+        self.assertEqual(self.fails({"rdb-jit": start(95_000_000, 6_800 + 1024, 15_600, 9_947_143)}), [])
+        # a side without the figure (an older binary) is not judged on it
+        self.assertEqual(self.fails({"rdb-jit": start(95_000_000, 6_800, 15_600, None)}), [])
 
     def test_peak_rss_is_loose(self):
         self.assertEqual(self.fails({"interim": start(15_000_000, 1_500, 9_800 * 1.05)}), [])
@@ -146,9 +149,23 @@ class Layout(unittest.TestCase):
             seen["memory"].append((syscalls, env["HOME_VAR"], env.get("GLIBC_TUNABLES")))
             return (100 + len(env["HOME_VAR"]) if syscalls else 0), 5000, 0, b"", 0
 
+        def massif(cmd, env, valgrind):
+            seen["massif"] = env
+            return 4242
+
+        def gc(cmd, env):
+            seen["gc"] = env
+            return None
         with tempfile.TemporaryDirectory() as home, \
-                unittest.mock.patch.object(su, "instructions", instr), unittest.mock.patch.object(su, "memory", memory):
+                unittest.mock.patch.object(su, "instructions", instr), unittest.mock.patch.object(su, "memory", memory), \
+                unittest.mock.patch.object(su, "massif_peak", massif), unittest.mock.patch.object(su, "gc_peak", gc):
             v = su.measure(["bin"], {}, 3, "valgrind", "HOME_VAR", home)
+        # memory as allocation: one massif run and one stats run at the first shift
+        n0, pad0 = su.LAYOUT_SHIFTS[0]
+        for k in ("massif", "gc"):
+            self.assertEqual((len(seen[k]["HOME_VAR"]), seen[k]["GLIBC_TUNABLES"]),
+                             (n0, f"glibc.malloc.top_pad={pad0}"))
+        self.assertEqual((v["heap_bytes"], v["gc_peak"]), (4242, None))
         pads = dict(su.LAYOUT_SHIFTS)
         self.assertEqual(sorted(len(h) for h, _ in seen["instr"]), list(su.LAYOUT_LENGTHS))
         for h, t in seen["instr"]:
@@ -227,6 +244,55 @@ class ReallocsRun(unittest.TestCase):
                 with self.assertRaises(SystemExit) as cm:
                     su.reallocs("bin", ["interim"], home, False, "valgrind")
                 self.assertIn("no total", str(cm.exception))
+
+
+class LogicalPeak(unittest.TestCase):
+    """The memory clause's figures: massif's peak useful heap, and
+    robigo-heap's own peak line where a binary prints it."""
+
+    MASSIF = ("desc: --peak-inaccuracy=0.0\nsnapshot=0\nmem_heap_B=0\nheap_tree=empty\n"
+              "snapshot=1\nmem_heap_B=5000\nheap_tree=peak\nsnapshot=2\nmem_heap_B=4000\nheap_tree=empty\n")
+
+    def test_massif_peak_reads_the_peak_snapshot(self):
+        self.assertEqual(su.massif_peak_of(self.MASSIF), 5000)
+        # no snapshot marked peak: the largest
+        self.assertEqual(su.massif_peak_of(self.MASSIF.replace("heap_tree=peak", "heap_tree=empty")), 5000)
+        with self.assertRaises(SystemExit):
+            su.massif_peak_of("desc: x\n")
+
+    def test_robigo_heaps_peak_line_is_read_where_it_is_printed(self):
+        line = ("robigo gc: collections 0 (entry 0)\n"
+                "robigo gc: peak bytes in use 123456 (objects 100000, block overhead 20000, large 3456); "
+                "peak chunk bytes mapped 2097152\n")
+        self.assertEqual(su.gc_peak_of(line), {"in_use": 123456, "objects": 100000, "overhead": 20000,
+                                               "large": 3456, "chunks": 2097152})
+        # main's binary before H's line: not reported, never None-valued counts
+        self.assertIsNone(su.gc_peak_of("robigo gc: collections 0 (entry 0)\n"))
+        v = {"instr": 1.0, "anon_kib": 1.0, "rss_kib": 1.0, "heap_bytes": 2048, "gc_peak": None}
+        row = su.table([{"name": "interim"}], {"interim": v}, {"interim": dict(v, gc_peak=su.gc_peak_of(line))})[2]
+        self.assertIn("| - | 120.6 |", row)
+
+    def massif(self, prog):
+        return su.massif_peak([sys.executable, "-c", prog], dict(su.FIXED_ENV, PYTHONHASHSEED="0",
+                                                                 PYTHONMALLOC="malloc"), "valgrind")
+
+    @unittest.skipUnless(shutil.which("valgrind"), "no valgrind")
+    def test_one_binary_reads_the_same_bytes_every_run(self):
+        prog = "b = bytearray(3 << 20)\nc = [bytes(100) for _ in range(1000)]\n"
+        self.assertEqual(len({self.massif(prog) for _ in range(3)}), 1)
+
+    @unittest.skipUnless(shutil.which("valgrind"), "no valgrind")
+    def test_a_retained_allocation_fails_the_clause_by_its_size(self):
+        base = "b = bytearray(4 << 20)\n"
+        more = base + "keep = bytearray(256 << 10)\n"
+        a, b = self.massif(base), self.massif(more)
+        self.assertGreaterEqual(b - a, 256 << 10)
+        self.assertLess(b - a, (256 << 10) + 4096)
+        main = {"interim": start(1, 1, 1, a)}
+        self.assertEqual(su.verdict({"interim": start(1, 1, 1, a)}, main), [])
+        f = su.verdict({"interim": start(1, 1, 1, b)}, main)
+        self.assertEqual(len(f), 1)
+        self.assertIn(f"{b - a:+,}", f[0])
 
 
 class Memory(unittest.TestCase):

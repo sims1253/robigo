@@ -203,3 +203,49 @@ to be replaced by a logical peak that no placement enters: the peak of
 malloc'd bytes, from a tool that counts requests, and robigo-heap's own
 bytes in use.
 
+## The memory clause: a logical peak (2026-11-23, later)
+
+The anonymous-peak tripwire above is replaced. Memory is now judged as
+**the peak of malloc'd bytes**: valgrind's massif, its peak snapshot's
+useful heap (`--peak-inaccuracy=0.0`), bytes as the program requested them.
+No page, alignment or placement enters it.
+
+- **robigo-heap's chunks are inside the figure:** its 1 MiB chunks come
+  from Rust's allocator (`std::alloc::alloc`, 64 KiB aligned), so they are
+  malloc requests that massif counts. Adding robigo-heap's own chunk count
+  to it would count them twice.
+- **The limit:** +max(0.5%, 16 KiB) against main's binary, one run per start
+  at the first layout shift. Instructions and peak RSS are unchanged. The
+  anonymous peak (physical pages) is reported, and fails nothing.
+
+On #991's runner binaries (PR f3cc6cee0, main e4a9fab22, each on its own
+trees):
+
+| start | peak over the 15 shifts | PR − main, at every shift | repeated, one shift | s/run |
+|---|---|---|---|---|
+| rdb-nocache | 9,947,143–9,947,919 B | +2 bytes | identical, 3 runs | 2.2 |
+| interim | 3,456,959–3,457,831 B | 0 bytes | | 1.0 |
+
+Against the same pair's anonymous peak, +56 KiB on rdb-nocache in CI's
+image, the logical figure's floor is the code's real allocations.
+
+How to read the figure:
+- **A pre-sized table shows as a memory gain, correctly.** Valgrind's
+  realloc always copies, so while a buffer grows, the old and the new one
+  count together for a moment. That is the same on both sides and
+  deterministic: the requested-bytes view.
+- **Why one fixed shift:** the figure moves across the 15 shifts only by
+  the home path's own strings, about 800 bytes over paths 35–133
+  characters long. One shift, the same for both binaries, is enough, and
+  it keeps the cost to one run.
+- **GNU R's malloc peak** (its allocator goes through malloc too) is
+  reported beside it: 14.6 MB with the JIT, 11.3 MB without.
+- **robigo-heap's own peak line,** once a binary prints it under
+  `ROBIGO_GC_STATS=1`: `robigo gc: peak bytes in use N (objects A, block
+  overhead B, large L); peak chunk bytes mapped M`. N is reported beside
+  the clause, finer-grained than the chunk-sized steps in massif's figure.
+  A binary without the line shows "-".
+- **The cost:** one massif run (1–2 s) and one stats run per start per
+  binary: about +20 s for the four starts of two binaries, and +6 s for GNU
+  R's two.
+
