@@ -436,40 +436,52 @@ impl Core {
                     self.make_mortal(x);
                 }
             }
+            // The walk's reached set is the mark bitmap: a small object's
+            // bit, set without its block's count (`is_marked` answers true
+            // for an immortal object without reading it, the sweep clears
+            // every bitmap, and an object thawed below was never reached,
+            // so it carries no bit into marking); a large object's in a set.
+            let mut large: HashSet<usize, BuildFx> = HashSet::default();
             let mut work = Vec::new();
             roots.trace_freeze(&mut Edges(&mut work));
-            let mut reached: HashSet<usize, BuildFx> = HashSet::default();
-            reached.reserve(self.frozen.len());
+            let mut kept = Vec::with_capacity(self.frozen.len());
             let mut kids = Vec::new();
             while let Some(x) = work.pop() {
-                if x.is_null() || !self.is_frozen(x) || !reached.insert(x.addr()) {
+                if x.is_null() || !self.is_frozen(x) || !self.reach(x, &mut large) {
                     continue;
                 }
+                kept.push(x);
                 kids.clear();
                 x.trace_fields(&mut Edges(&mut kids));
-                work.extend_from_slice(&kids);
+                // a reached object's frozen children are reached too, so
+                // whether it points to an ordinary object is known here
+                let mut ordinary = false;
+                for &k in &kids {
+                    if k.flags() & flags::FROZEN != 0 {
+                        work.push(k);
+                    } else if k.flags() & flags::IMMORTAL == 0 {
+                        ordinary = true;
+                    }
+                }
+                if ordinary {
+                    self.remember(x);
+                }
             }
-            let mut kept = Vec::with_capacity(reached.len());
             for f in std::mem::take(&mut self.frozen) {
-                if !self.is_frozen(f) {
-                    // (made ordinary above, from the queue)
-                } else if reached.contains(&f.addr()) {
-                    kept.push(f);
-                } else {
+                if self.is_frozen(f) && !self.reached(f, &large) {
                     self.make_mortal(f);
                 }
+            }
+            // the walk's bits go: the pass leaves the bitmaps as it found
+            // them, whether or not a sweep follows
+            for &f in &kept {
+                self.unreach(f);
             }
             self.frozen = kept;
             // an object made ordinary leaves the log (it is traced if it is
             // reachable, and must die if it is not); the other immortal
             // objects' entries stay
             (*self.remembered.0.get()).retain(|l| l.flags() & flags::IMMORTAL != 0);
-            for i in 0..self.frozen.len() {
-                let f = self.frozen[i];
-                if f.flags() & flags::BARRIER != 0 && self.has_ordinary_child(f, &mut kids) {
-                    self.remember(f);
-                }
-            }
             self.path_snapshot = self.search_path_frozen(roots);
         }
     }
@@ -533,6 +545,61 @@ impl Core {
                     "robigo: ROBIGO_GC_FREEZE_CHECK: {marked} live objects have FROZEN, the frozen list has {}",
                     self.frozen.len()
                 ));
+            }
+        }
+    }
+
+    /// Mark frozen `x` reached by the pass's walk; false if it was already.
+    /// A small object's mark bit (not its block's count: see
+    /// [`Core::frozen_pass`]), a large one's base in `large`.
+    ///
+    /// # Safety
+    /// `x` is a live frozen object, before this collection's marking.
+    unsafe fn reach(&self, x: Sexp, large: &mut HashSet<usize, BuildFx>) -> bool {
+        let b = self.heap.block_of(x.0);
+        // SAFETY: the caller's contract: `x`'s block (or chunk) is readable,
+        // and a granule index from a live object's address is in range.
+        unsafe {
+            if (*b).magic == 0x524f4249474f4241 {
+                let g = (x.0 as usize - Block::data_ptr(b) as usize) / GRANULE;
+                let (w, bit) = (g >> 6, 1u64 << (g & 63));
+                let was = (*b).marks[w] & bit != 0;
+                (*b).marks[w] |= bit;
+                !was
+            } else {
+                large.insert(b as usize)
+            }
+        }
+    }
+
+    /// Clear the walk's mark bit of a small reached object ([`Core::reach`]).
+    ///
+    /// # Safety
+    /// As for [`Core::reach`].
+    unsafe fn unreach(&self, x: Sexp) {
+        let b = self.heap.block_of(x.0);
+        // SAFETY: as for `reach`.
+        unsafe {
+            if (*b).magic == 0x524f4249474f4241 {
+                let g = (x.0 as usize - Block::data_ptr(b) as usize) / GRANULE;
+                (*b).marks[g >> 6] &= !(1u64 << (g & 63));
+            }
+        }
+    }
+
+    /// Whether frozen `x` was reached by the pass's walk ([`Core::reach`]).
+    ///
+    /// # Safety
+    /// As for [`Core::reach`].
+    unsafe fn reached(&self, x: Sexp, large: &HashSet<usize, BuildFx>) -> bool {
+        let b = self.heap.block_of(x.0);
+        // SAFETY: as for `reach`.
+        unsafe {
+            if (*b).magic == 0x524f4249474f4241 {
+                let g = (x.0 as usize - Block::data_ptr(b) as usize) / GRANULE;
+                (*b).marks[g >> 6] & (1u64 << (g & 63)) != 0
+            } else {
+                large.contains(&(b as usize))
             }
         }
     }
