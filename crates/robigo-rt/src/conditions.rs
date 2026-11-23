@@ -571,8 +571,150 @@ fn goto_exiting_handler(cx: &mut Cx, cond: Root<'_>, call: Option<Root<'_>>, ent
                 r.set_elt(2, handler);
             }
         }
-        cx.find_context(ctxt::FUNCTION, rho, Some(result))
+        // (try_cmpfun's entry: its record is native, not a function's)
+        let mask = if handler == cx.unbound().sexp() { ctxt::CCODE } else { ctxt::FUNCTION };
+        cx.find_context(mask, rho, Some(result))
     })
+}
+
+/// cmp.R's `tryCmpfun(f)` and `tryCompile(e)` around a JIT compile, `body`:
+/// `tryCatch(cmpfun(f), error = function(e) { notifyCompilerError(paste(
+/// e$message, "at", deparse(e$call))); f })`, made here because robigo's
+/// compiler is Rust. An exiting handler for class `"error"` is the
+/// innermost while `body` runs, so an error inside the compile (an R error
+/// of code it runs: a promise it forces, a warning made an error, a
+/// handler's `stop()`, the evaluation depth) ends the compile and nothing
+/// outside sees it. Then the compiler's message is given (silent under
+/// `compilerOptions$suppressAll`, the default) and the result is None: the
+/// closure or loop runs uncompiled. Other exits pass: interrupts,
+/// restarts, another condition's exiting handler, `return`s.
+///
+/// The entry is `mkHandlerEntry("error", R_GlobalEnv, <unbound>, target,
+/// result, FALSE)`: `goto_exiting_handler` sends an entry whose handler is
+/// R_UnboundValue to a `CTXT_CCODE` record whose `cloenv` is `target`, the
+/// one this function makes (GNU R's goes to `doTryCatch`'s frame). The
+/// record has the innermost record's call, so `error()` and `warning()`
+/// report what they report without it.
+///
+/// The JIT is off while the compile and the handler run, and the level is
+/// restored only when they return: an exit that leaves them (a handler's
+/// error, a jump to another condition's exiting handler, an interrupt)
+/// leaves the level as it is then, 0 unless code they ran changed it, as
+/// GNU R's callers set `R_jit_enabled = 0` around `R_cmpfun` and restore
+/// it after the call, which a longjmp skips.
+///
+/// R code that runs inside the compile (a promise it forces, a warning's
+/// handler, the compiler's message) sees no R frame of the compile:
+/// `sys.call()`, `sys.function()`, `parent.frame()` and `sys.calls()`
+/// there see the frames outside the compiled call's (the record is
+/// CTXT_CCODE, which they skip, and its fresh `cloenv` is no frame of
+/// theirs), where GNU R's see `tryCmpfun`, `tryCatch`, `tryCatchList`,
+/// `tryCatchOne`, `doTryCatch` and cmp.R's own frames below the called
+/// function's; a traceback of an error that leaves the compile differs
+/// the same way (`tests/rt/jit/compile-error-frames.R`, not ratcheted).
+/// The record's call is the innermost record's, so `error()` and
+/// `warning()` report the call they report without it; cmp.R's warnings
+/// carry cmp.R's own calls ([`crate::cenv::raise_compile_warnings`]), as
+/// in GNU R.
+///
+/// INTERIM(V4 step 3): when cmp.R's own code compiles, its `tryCmpfun`
+/// runs and this function goes, with its one call per compile entry
+/// (compile.rs) and the CCODE case above.
+// R: cmp.R:tryCmpfun, tryCompile; conditions.R:tryCatch, tryCatchOne
+pub(crate) fn try_cmpfun(
+    cx: &mut Cx,
+    body: impl FnOnce(&mut Cx) -> RResult<Option<robigo_heap::Sexp>>,
+) -> RResult<Option<robigo_heap::Sexp>> {
+    cx.scope(|cx, s| {
+        let o = s.out(cx);
+        let target = o.root();
+        cx.build(o, |cx| cx.new_env(cx.empty_env(), false, 0))?;
+        let o = s.out(cx);
+        let result = o.root();
+        cx.build(o, |cx| {
+            let mut r = cx.alloc_vector::<Ref<'_>>(RESULT_SIZE)?;
+            r.set(RESULT_SIZE - 1, state(cx).handler_result_token.bind(cx));
+            Ok(r.finish().into())
+        })?;
+        let call = s.root(cx, cx.global_context().call());
+        let base = s.root(cx, cx.base_env());
+        // the JIT off for the compile and its handler (R_execClosure's and
+        // R_compileAndExecute's `R_jit_enabled = 0`), restored only when
+        // the compile returns: an exit that leaves it leaves the JIT off,
+        // as GNU R's longjmp skips the restore
+        let jit = &crate::prims::state(cx).jit;
+        let saved = jit.get();
+        jit.set(crate::jit::Config { level: 0, ..saved });
+        let r = cx.with_context(ctxt::CCODE, call, target, base, None, |cx, _| {
+            let o = s.out(cx);
+            let stack = o.root();
+            cx.build(o, |cx| {
+                let mut e = cx.alloc_vector::<Ref<'_>>(5)?;
+                e.set(0, cx.mk_char(b"error", Encoding::Native)?.as_ref());
+                e.set(1, cx.global_env());
+                e.set(2, cx.unbound());
+                e.set(3, target.bind(cx));
+                e.set(4, result.bind(cx));
+                // (gp 0: an exiting handler)
+                cx.cons(e.finish().as_ref(), cx.handler_stack())
+            })?;
+            cx.set_handler_stack(stack);
+            body(cx)
+        });
+        let code = match r {
+            Ok(code) => code,
+            Err(robigo_rtcore::Left::Exit(e)) => return Err(e),
+            Err(robigo_rtcore::Left::Landed(_)) => {
+                notify_compiler_error(cx, s, result)?;
+                None
+            }
+        };
+        crate::prims::state(cx).jit.set(saved);
+        Ok(code)
+    })
+}
+
+/// tryCmpfun's handler after the jump: `tryCatchOne`'s condition from the
+/// result vector, then the handler, `function(e) notifyCompilerError(
+/// paste(e$message, "at", deparse(e$call)))`, called with it in the
+/// compiler's namespace: always, as GNU R's does, so that the option is
+/// read as cmp.R reads it then (`compilerOptions$suppressAll`, which `!`
+/// and `if` take, their errors included) and a `notifyCompilerError` that
+/// was replaced or traced runs. It runs only after a failed compile.
+/// Nothing runs when the compiler is not loaded: INTERIM(L5), the source
+/// boot's JIT compiles without it, where GNU R's loads it at boot.
+// R: cmp.R:tryCmpfun, notifyCompilerError; conditions.R:tryCatchOne
+fn notify_compiler_error(cx: &mut Cx, s: Scope<'_>, result: Root<'_>) -> RResult<()> {
+    let pkg = sym(cx, s, b"compiler")?;
+    let ns = {
+        let (Some(reg), Some(y)) = (crate::dispatch::env_ref(cx.namespace_registry()), pkg.bind(cx).as_sym()) else {
+            return Ok(());
+        };
+        match cx.frame_binding(reg, y) {
+            robigo_rtcore::Lookup::Bound(b) => match b.get(cx) {
+                robigo_rtcore::BindingValue::Value(v) => v.sexp(),
+                _ => return Ok(()),
+            },
+            _ => return Ok(()),
+        }
+    };
+    // SAFETY: a namespace the registry holds.
+    let ns = s.root(cx, unsafe { Ref::from_sexp(ns, cx) });
+    const NOTIFY: &str = "{
+        cond <- value[[1L]]
+        if (is.null(cond)) cond <- simpleError(.Internal(geterrmessage()), value[[2L]])
+        else if (is.character(cond)) cond <- simpleError(cond, value[[2L]])
+        (function(e) notifyCompilerError(paste(e$message, \"at\", deparse(e$call))))(cond)
+    }";
+    let exprs = s.capture(cx, |cx, o| crate::lower::parse(cx, NOTIFY, o))?;
+    let e = s.root(cx, exprs.bind(cx).as_vector::<Ref<'_>>().unwrap().get(0));
+    let o = s.out(cx);
+    let env = o.root();
+    cx.build(o, |cx| cx.new_env(ns.bind(cx), false, 1))?;
+    let value = sym(cx, s, b"value")?;
+    cx.define_var(value, result, env)?;
+    let o = s.out(cx);
+    crate::eval(cx, e, env, o)
 }
 
 /// `R_FixupExitingHandlerResult(result)`: before `on.exit` code runs while
