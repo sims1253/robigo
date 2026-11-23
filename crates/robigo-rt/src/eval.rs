@@ -507,7 +507,9 @@ pub unsafe fn get_var_missok(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sex
 /// only there); below the limit the read is `get_var`'s. A copy of
 /// `get_var`'s body, out of line: `get_var` and `get_var_missok` are
 /// inlined into `vm::run`, which stays as it is (the arm calls this
-/// instead of `get_var`, with the same arguments). The `..N` and symbol
+/// instead of `get_var`, with the same arguments).
+/// (A duplicate of `get_var`'s body: an edit there is made here too,
+/// until X's step 1b folds the two.) The `..N` and symbol
 /// paths force deeper inside: at the limit those reads run with byte code
 /// inactive as a whole (`tests/rt/conditions/promise-setup-missok-errors.R`:
 /// their errors' calls are GNU R's).
@@ -516,7 +518,14 @@ pub unsafe fn get_var_missok(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sex
 /// As [`get_var`].
 // R: eval.c:getvar
 #[inline(never)]
-pub unsafe fn get_var_keepmiss(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: bool, bc: bool) -> RResult<()> {
+pub unsafe fn get_var_keepmiss(
+    cx: &mut Cx,
+    act: &Act,
+    a: crate::ir::Reg,
+    sym: Sexp,
+    dd: bool,
+    bc: bool,
+) -> RResult<()> {
     let subclass = if bc { "getvarError" } else { "evalError" };
     if !dd && sym != prims::state(cx).syms.dots {
         // SAFETY: an immortal symbol and the rooted environment.
@@ -575,6 +584,9 @@ fn forced_as_getvar<T>(cx: &mut Cx, f: impl FnOnce(&mut Cx) -> T) -> T {
 
 /// `eval(sym, rho)` into register `a` (`..N` when `dd`), the slow path:
 /// active bindings, promises to force, GNU R's errors.
+///
+/// [`get_var_keepmiss`] duplicates this body for GETVAR_MISSOK's reads (an
+/// edit here is made there too, until X's step 1b folds the two).
 ///
 /// # Safety
 /// `sym` is a live symbol of `cx`'s isolate.
