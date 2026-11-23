@@ -142,6 +142,26 @@ fn stage0_says_a_missing_tree_is_missing() {
     );
 }
 
+/// `--help` answers without a tree, under every boot, as R's script
+/// answers it in its argument loop before it checks R_HOME: the usage on
+/// stdout, nothing on stderr, status 0.
+#[test]
+fn help_needs_no_tree() {
+    let dir = std::env::temp_dir().join(format!("robigo-rt-no-tree-help-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for boot in ["", "stage0", "m1"] {
+        let out = front_end(&[("ROBIGO_RT_CHECKOUT", dir.as_os_str()), ("ROBIGO_RT_BOOT", boot.as_ref())])
+            .arg("--help")
+            .output()
+            .expect("running robigo-rt");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.starts_with("Usage: robigo-rt "), "{boot:?}: {stdout:?}");
+        assert_eq!((String::from_utf8_lossy(&out.stderr).as_ref(), out.status.code()), ("", Some(0)), "{boot:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The default boot (ROBIGO_RT_BOOT unset or empty: base from its
 /// database) without a tree says so at start-up as stage 0 does, naming
 /// the database tree's script.

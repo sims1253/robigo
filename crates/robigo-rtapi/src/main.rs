@@ -252,13 +252,48 @@ fn missing_tree(home: &RHome, boot: Boot) -> Option<String> {
              and the checkout's is not made ({})",
             p.display(),
             if boot == Boot::Rdb {
-                let exe = std::env::current_exe().map(|e| e.display().to_string()).unwrap_or_else(|_| "BIN".into());
+                // (a path the shell reads back as one word; BIN for one that is
+                // not text)
+                let exe = std::env::current_exe()
+                    .ok()
+                    .and_then(|e| e.to_str().map(shell_word))
+                    .unwrap_or_else(|| "BIN".into());
                 format!("scripts/rt-home-db.sh --robigo-rt {exe}")
             } else {
                 "scripts/rt-home.sh".to_string()
             }
         )),
     }
+}
+
+/// `s` as one word for a POSIX shell: as it is when every byte is one the
+/// shell leaves alone, else single-quoted (a `'` as `'\''`).
+fn shell_word(s: &str) -> String {
+    let plain = !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"/._-+,:@%=".contains(&b));
+    if plain { s.to_string() } else { format!("'{}'", s.replace('\'', "'\\''")) }
+}
+
+/// Whether R's script would print its usage for `args`: its argument loop
+/// (which stops at an empty argument or `--args`, and lets `-g`/`--gui` and
+/// `-d`/`--debugger` take the next one unless it starts with `-`) meets
+/// `-h` or `--help`, before it checks R_HOME and before R itself runs.
+// R: scripts/R.sh.in ("Argument loop")
+fn help_asked(args: &[std::ffi::OsString]) -> bool {
+    let mut i = 0;
+    while let Some(a) = args.get(i).map(|a| a.as_bytes()) {
+        match a {
+            b"" | b"--args" => return false,
+            b"-h" | b"--help" => return true,
+            b"-g" | b"--gui" | b"-d" | b"--debugger" => {
+                if args.get(i + 1).is_some_and(|n| !n.as_bytes().is_empty() && n.as_bytes()[0] != b'-') {
+                    i += 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
 }
 
 /// The front end over `args`, with `home` the `R_HOME` that
@@ -294,8 +329,13 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     // Rf_initialize_R's system Renviron, before the options are read
     // (INTERIM(L5): GNU R's boot only; M1's loader gives the options their
     // values itself)
-    // (the tree first, as GNU R's script checks R_HOME before anything
-    // reads it: a missing tree is that error alone, not the Renviron's too)
+    // R.sh.in's argument loop answers -h/--help before it checks R_HOME;
+    // then the tree, before anything reads it (a missing tree is that error
+    // alone, not the Renviron's too)
+    if help_asked(&args) {
+        print!("{USAGE}");
+        return 0;
+    }
     if boot() != Boot::M1 {
         if let Some(e) = missing_tree(home, boot()) {
             eprintln!("robigo-rt: {e}");
@@ -762,6 +802,28 @@ mod tests {
     /// The unmade checkout's message (no installed tree either), which an
     /// integration test cannot reach: it depends on the machine's trees.
     #[test]
+    fn help_is_asked_as_r_s_script_reads_it() {
+        let a = |v: &[&str]| v.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
+        assert!(help_asked(&a(&["--help"])));
+        assert!(help_asked(&a(&["--vanilla", "-h"])));
+        // (R.sh.in gives -e no argument: its loop reaches the --help)
+        assert!(help_asked(&a(&["-e", "--help"])));
+        assert!(!help_asked(&a(&["--args", "--help"])));
+        assert!(!help_asked(&a(&["", "--help"])));
+        // -d and -g take a following word only when it does not start with -
+        assert!(help_asked(&a(&["-d", "-h"])));
+        assert!(!help_asked(&a(&["-d", "gdb"])));
+        assert!(!help_asked(&a(&["-e", "1"])));
+    }
+
+    #[test]
+    fn a_shell_word_is_one_word() {
+        assert_eq!(shell_word("/home/u/.cache/release/robigo-rt"), "/home/u/.cache/release/robigo-rt");
+        assert_eq!(shell_word("/tmp/a b/robigo-rt"), "'/tmp/a b/robigo-rt'");
+        assert_eq!(shell_word("/tmp/it's/robigo-rt"), "'/tmp/it'\\''s/robigo-rt'");
+    }
+
+    #[test]
     fn a_missing_default_tree_says_how_to_make_it() {
         let h = std::path::PathBuf::from("/nonexistent/robigo/.robigo/rt-home");
         assert_eq!(
@@ -775,7 +837,7 @@ mod tests {
         assert!(
             missing_tree(&RHome::MissingDefault(h.clone()), Boot::Rdb)
                 .unwrap()
-                .ends_with(&format!("(scripts/rt-home-db.sh --robigo-rt {})", exe.display()))
+                .ends_with(&format!("(scripts/rt-home-db.sh --robigo-rt {})", shell_word(exe.to_str().unwrap())))
         );
         assert_eq!(missing_tree(&RHome::Given(h), Boot::Rdb), None);
     }
