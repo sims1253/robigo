@@ -354,7 +354,7 @@ impl Core {
             "robigo: the freeze is switched before the boot boundary"
         );
         if on && !self.freeze_on {
-            (self.freeze_check, self.freeze_compare) = freeze_check_from_env();
+            (self.freeze_check, self.freeze_full) = freeze_check_from_env();
         }
         self.freeze_on = on;
     }
@@ -1141,18 +1141,18 @@ fn frozen_panic(f: Sexp, k: Sexp, what: &str) -> ! {
 }
 
 /// The prefix of `ROBIGO_GC_FREEZE_CHECK_REPORT`'s tally lines, one per
-/// comparison with the independent trace (rt-ci counts them and fails a
-/// step that ran none); every other line is a failure.
-pub(super) const COMPARISON_TALLY: &str = "robigo: ROBIGO_GC_FREEZE_CHECK: comparison ";
+/// full check (rt-ci counts them and fails a step that ran none); every
+/// other line is a failure.
+pub(super) const FULL_CHECK_TALLY: &str = "robigo: ROBIGO_GC_FREEZE_CHECK: full check ";
 
-/// One comparison with the independent trace about to run: a tally line
-/// in `ROBIGO_GC_FREEZE_CHECK_REPORT` (written as it runs, so a process
-/// that ends however it ends has counted its own).
-pub(super) fn note_comparison(n: u64) {
+/// A full check about to run (`Core::freeze_full`): a tally line in
+/// `ROBIGO_GC_FREEZE_CHECK_REPORT`, written as it runs, so a process that
+/// ends however it ends has counted its own.
+pub(super) fn note_full_check(n: u64) {
     if let Some(path) = std::env::var_os("ROBIGO_GC_FREEZE_CHECK_REPORT").filter(|p| !p.is_empty()) {
         use std::io::Write;
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-            let _ = writeln!(f, "{COMPARISON_TALLY}{n} in process {}", std::process::id());
+            let _ = writeln!(f, "{FULL_CHECK_TALLY}{n} in process {}", std::process::id());
         }
     }
 }
@@ -1526,9 +1526,10 @@ mod tests {
         assert_eq!(run(true), Some(without));
     }
 
-    /// The check at a period (`ROBIGO_GC_FREEZE_CHECK=16`) still names a
-    /// frozen object whose ordinary child is not in the remembered set: the
-    /// direct loop after marking (`check_frozen_marked`).
+    /// The check at a period (`ROBIGO_GC_FREEZE_CHECK=16,16`) names a frozen
+    /// object whose ordinary child is not in the remembered set at a checked
+    /// collection that is not a full one: the direct loop after marking
+    /// (`check_frozen_marked`), whose defect is transient.
     #[test]
     #[cfg(not(miri))]
     #[should_panic(expected = "unmarked after marking")]
@@ -1549,17 +1550,19 @@ mod tests {
             head.store(head.as_ptr().add(crate::layout::node::OFF_CDR) as *mut Sexp, young);
             // the entry lost (a store that bypassed the barrier)
             (*c.remembered.0.get()).retain(|&l| l != head);
-            (c.freeze_check, c.freeze_check_count) = (16, 15);
+            // the next collection is checked, and not a full check
+            (c.freeze_check, c.freeze_full, c.freeze_check_count, c.freeze_checks_frozen) = (16, 16, 15, 1);
             c.collect(&mut roots);
         }
     }
 
-    /// `ROBIGO_GC_FREEZE_CHECK=N,M`: the comparison with the independent
-    /// trace at the first checked collection with a frozen set, then at
-    /// every M-th; the checks before the freeze do not count.
+    /// `ROBIGO_GC_FREEZE_CHECK=N,M`: the full check (I2, I3 and the
+    /// comparison with the independent trace) at the first checked
+    /// collection with a frozen set, then at every M-th; the checks before
+    /// the freeze do not count.
     #[test]
     #[cfg(not(miri))]
-    fn the_comparison_runs_at_the_first_check_and_every_mth_after() {
+    fn the_full_check_runs_at_the_first_check_and_every_mth_after() {
         assert_eq!(crate::gc::parse_freeze_check("16"), Some((16, 1)));
         assert_eq!(crate::gc::parse_freeze_check("16,16"), Some((16, 16)));
         for bad in ["16,0", "16,", ",16", "x", "16,x", "-1"] {
@@ -1570,7 +1573,7 @@ mod tests {
         if !c.freeze_enabled() {
             return;
         }
-        (c.freeze_check, c.freeze_compare) = (1, 3);
+        (c.freeze_check, c.freeze_full) = (1, 3);
         let nil = c.nil();
         // SAFETY: fresh objects of this heap, rooted by `roots`.
         unsafe {
@@ -1579,19 +1582,96 @@ mod tests {
             let mut roots = WithFreeze { all: vec![head], freeze: head };
             // checked, no frozen set yet: no comparison, and not counted
             c.collect(&mut roots);
-            assert_eq!((c.freeze_checks, c.freeze_checks_frozen, c.freeze_comparisons), (1, 0, 0));
+            assert_eq!((c.freeze_checks, c.freeze_checks_frozen, c.freeze_full_checks), (1, 0, 0));
             c.freeze(&mut roots, |_| false);
             let mut ran = Vec::new();
             for _ in 0..7 {
-                let n = c.freeze_comparisons;
+                let n = c.freeze_full_checks;
                 c.collect(&mut roots);
-                ran.push(c.freeze_comparisons > n);
+                ran.push(c.freeze_full_checks > n);
             }
             assert_eq!(ran, [true, false, false, true, false, false, true]);
             assert!(c.stats_report().contains(
-                "robigo gc: the freeze's check (ROBIGO_GC_FREEZE_CHECK=1,3): 8 checked collections (7 with a frozen set: the direct loop, I2 and I3), 3 comparisons with the independent trace"
+                "robigo gc: the freeze's check (ROBIGO_GC_FREEZE_CHECK=1,3): 8 checked collections, 7 with a frozen set (the direct loop), 3 full checks (I2, I3 and the comparison with the independent trace)"
             ));
         }
+    }
+
+    /// Under `ROBIGO_GC_FREEZE_CHECK=16,16`, `collect` until the next full
+    /// check has run (`plant` changes the heap after the first one): the
+    /// checked collections it took, or the panic's message.
+    unsafe fn checks_until_full(plant: impl FnOnce(&mut Core, Sexp, Sexp)) -> Result<u64, String> {
+        let mut c = Core::new();
+        c.set_freeze_enabled(true);
+        if !c.freeze_enabled() {
+            return Err("a moving mode: the freeze is off".into());
+        }
+        let nil = c.nil();
+        // SAFETY: fresh objects of this heap, rooted by `roots`.
+        unsafe {
+            let leaf = c.alloc_vector(INTSXP, 1).unwrap();
+            let head = c.alloc_node(LISTSXP, leaf, nil, nil).unwrap();
+            let mut roots = WithFreeze { all: vec![head], freeze: head };
+            c.freeze(&mut roots, |_| false);
+            (c.freeze_check, c.freeze_full) = (16, 16);
+            while c.freeze_full_checks == 0 {
+                c.collect(&mut roots);
+            }
+            plant(&mut c, head, leaf);
+            let (full, checks) = (c.freeze_full_checks, c.freeze_checks);
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                while c.freeze_full_checks == full {
+                    c.collect(&mut roots);
+                }
+            }));
+            r.map(|()| c.freeze_checks - checks).map_err(|e| {
+                let checks = c.freeze_checks - checks;
+                let msg = e.downcast_ref::<String>().cloned().unwrap_or_default();
+                format!("after {checks} checks: {msg}")
+            })
+        }
+    }
+
+    /// A stray FROZEN bit planted after a process's first full check is
+    /// named by I3 at the next full check, the 16th checked collection after
+    /// it, and by none of the 15 before (the persistent-state parts' rate).
+    #[test]
+    #[cfg(not(miri))]
+    fn a_stray_frozen_bit_is_named_at_the_next_full_check() {
+        // SAFETY: the stray is a fresh object of this heap, rooted by the
+        // log (its frozen holder's field) until the check panics.
+        let r = unsafe {
+            checks_until_full(|c, head, _| {
+                let stray = c.alloc_vector(INTSXP, 1).unwrap();
+                head.store(head.as_ptr().add(crate::layout::node::OFF_CDR) as *mut Sexp, stray);
+                stray.set_flag_raw(flags::FROZEN, true);
+            })
+        };
+        if r.as_ref().is_err_and(|e| e.contains("the freeze is off")) {
+            return;
+        }
+        let e = r.unwrap_err();
+        assert!(e.starts_with("after 16 checks: ") && e.contains("has FROZEN but is not on the frozen list"), "{e}");
+    }
+
+    /// A frozen edge cut without a note after a process's first full check
+    /// is named by I2 at the next full check.
+    #[test]
+    #[cfg(not(miri))]
+    fn a_frozen_edge_cut_without_a_note_is_named_at_the_next_full_check() {
+        // SAFETY: `head` and `nil` are live; the barrier is bypassed on
+        // purpose.
+        let r = unsafe {
+            checks_until_full(|c, head, _| {
+                let nil = c.nil();
+                *(head.as_ptr().add(crate::layout::node::OFF_CAR) as *mut Sexp) = nil;
+            })
+        };
+        if r.as_ref().is_err_and(|e| e.contains("the freeze is off")) {
+            return;
+        }
+        let e = r.unwrap_err();
+        assert!(e.starts_with("after 16 checks: ") && e.contains("is unreachable from the freeze roots"), "{e}");
     }
 
     /// The check at a period still names a FROZEN bit off the frozen list

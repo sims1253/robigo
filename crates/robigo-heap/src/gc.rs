@@ -551,25 +551,28 @@ pub struct Core {
     /// boundary is drawn once (`Core::boundary_drawn`).
     boundary_done: bool,
     /// `ROBIGO_GC_FREEZE_CHECK=N[,M]`: the freeze's invariant checked at
-    /// every N-th collection (1: every one; 0: never). Under gctorture the
-    /// period keeps a run's cost near a plain one's, as
+    /// every N-th collection (1: every one; 0: never): there, the direct
+    /// loop (every frozen object's ordinary children marked), whose defect,
+    /// a missed barrier, is transient (the next sweep frees the child).
+    /// Under gctorture the period keeps a run's cost near a plain one's, as
     /// `ROBIGO_GC_MOVE=young:N`'s does.
     freeze_check: u32,
-    /// `M` (default 1): the independent trace and its comparison (the
-    /// bar's (c)) at the first checked collection with a frozen set and
-    /// then at every M-th. Its cost grows with the live set, the stack's
-    /// depth included, where the other parts cost O(frozen) and one heap
-    /// scan; the defects only it sees (a child marked but never traced) are
-    /// systematic, so a run needs it at all, not often, and every process
-    /// gets one (the 2026-11-21 check ledger's note of 2026-11-24).
-    freeze_compare: u32,
+    /// `M` (default 1): the persistent-state parts, a "full check", at the
+    /// first checked collection with a frozen set and then at every M-th:
+    /// I2 and I3 (`check_frozen_reach`), whose defects stay until the next
+    /// pass or for good, and the independent trace's comparison (the bar's
+    /// (c)), whose defect (a child marked but never traced) is systematic
+    /// and whose cost grows with the live set, the stack's depth included.
+    /// Every process gets one (the 2026-11-21 check ledger's note of
+    /// 2026-11-24).
+    freeze_full: u32,
     /// Collections since the last checked one.
     freeze_check_count: u32,
     /// Checked collections, and those with a frozen set; of them, the
-    /// ones that ran the comparison (`ROBIGO_GC_STATS`'s freeze line).
+    /// full checks (`ROBIGO_GC_STATS`'s freeze line).
     freeze_checks: u64,
     freeze_checks_frozen: u64,
-    freeze_comparisons: u64,
+    freeze_full_checks: u64,
     /// Whether this collection is checked.
     freeze_checking: bool,
     /// Under `freeze_check`, the ordinary objects the independent trace
@@ -974,17 +977,18 @@ fn freeze_from_env() -> bool {
 }
 
 /// `ROBIGO_GC_FREEZE_CHECK`'s rates (read only with the freeze on): unset
-/// or empty is 0 (off); `N` checks every N-th collection, with the
-/// comparison at each; `N,M` runs the comparison at the first checked
-/// collection with a frozen set and every M-th after. Anything else is
-/// refused, so a typo never turns the check off unseen.
+/// or empty is 0 (off); `N` checks every N-th collection, each a full
+/// check; `N,M` runs the full check (the persistent-state parts) at the
+/// first checked collection with a frozen set and every M-th after, the
+/// direct loop at each. Anything else is refused, so a typo never turns
+/// the check off unseen.
 fn freeze_check_from_env() -> (u32, u32) {
     match std::env::var("ROBIGO_GC_FREEZE_CHECK") {
         Err(std::env::VarError::NotPresent) => (0, 1),
         Ok(v) if v.is_empty() => (0, 1),
         Ok(v) => parse_freeze_check(&v).unwrap_or_else(|| {
             panic!(
-                "robigo: ROBIGO_GC_FREEZE_CHECK must be a collection period (1: every collection), optionally followed by ,M (the comparison at every M-th check, M >= 1), not {v:?}"
+                "robigo: ROBIGO_GC_FREEZE_CHECK must be a collection period (1: every collection), optionally followed by ,M (a full check at every M-th check, M >= 1), not {v:?}"
             )
         }),
         Err(e) => panic!("robigo: ROBIGO_GC_FREEZE_CHECK: {e}"),
@@ -1071,11 +1075,11 @@ impl Core {
             stale_frozen: 0,
             boundary_done: false,
             freeze_check: if freeze_on { freeze_check_from_env().0 } else { 0 },
-            freeze_compare: if freeze_on { freeze_check_from_env().1 } else { 1 },
+            freeze_full: if freeze_on { freeze_check_from_env().1 } else { 1 },
             freeze_check_count: 0,
             freeze_checks: 0,
             freeze_checks_frozen: 0,
-            freeze_comparisons: 0,
+            freeze_full_checks: 0,
             freeze_checking: false,
             freeze_reach: Vec::new(),
             weak_refs: Vec::new(),
@@ -3095,18 +3099,23 @@ impl Core {
                 }
             }
             if due {
-                // I2 and I3 (the pass's bar, (d)): after the pass step
-                self.check_frozen_reach(roots);
                 self.freeze_checks += 1;
-                if !self.frozen.is_empty() {
+                if self.frozen.is_empty() {
+                    // before the freeze: I3 alone (no FROZEN bit anywhere)
+                    self.check_frozen_reach(roots);
+                } else {
+                    // the direct loop after marking, at every checked
+                    // collection (its defect is transient)
                     self.freeze_checking = true;
-                    // the independent trace (the bar's (c)) traces every
-                    // root, the stack's included, with a hash set: at the
-                    // first checked collection with a frozen set, then every
-                    // `freeze_compare`-th (`freeze_compare`'s doc)
-                    if self.freeze_checks_frozen.is_multiple_of(self.freeze_compare as u64) {
-                        self.freeze_comparisons += 1;
-                        freeze::note_comparison(self.freeze_comparisons);
+                    // the persistent-state parts at the first checked
+                    // collection with a frozen set, then every
+                    // `freeze_full`-th (its doc): I2 and I3 (the pass's bar,
+                    // (d)), after the pass step, and the independent trace
+                    // (the bar's (c)) for the comparison after marking
+                    if self.freeze_checks_frozen.is_multiple_of(self.freeze_full as u64) {
+                        self.freeze_full_checks += 1;
+                        freeze::note_full_check(self.freeze_full_checks);
+                        self.check_frozen_reach(roots);
                         self.freeze_reach = self.independent_reach(roots);
                     }
                     self.freeze_checks_frozen += 1;
@@ -3803,12 +3812,12 @@ impl Core {
             if self.freeze_check != 0 {
                 let _ = writeln!(
                     r,
-                    "robigo gc: the freeze's check (ROBIGO_GC_FREEZE_CHECK={},{}): {} checked collections ({} with a frozen set: the direct loop, I2 and I3), {} comparisons with the independent trace",
+                    "robigo gc: the freeze's check (ROBIGO_GC_FREEZE_CHECK={},{}): {} checked collections, {} with a frozen set (the direct loop), {} full checks (I2, I3 and the comparison with the independent trace)",
                     self.freeze_check,
-                    self.freeze_compare,
+                    self.freeze_full,
                     self.freeze_checks,
                     self.freeze_checks_frozen,
-                    self.freeze_comparisons
+                    self.freeze_full_checks
                 );
             }
         }

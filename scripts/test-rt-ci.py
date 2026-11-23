@@ -595,8 +595,8 @@ class RtCi(unittest.TestCase):
         self.assertIn("--full-move and --shard select different steps", err.getvalue())
 
     def test_the_freeze_check_runs_at_every_collection_in_the_nightly_only(self):
-        # CI's E3 checks every 16th collection, comparing with the
-        # independent trace at the first check and every 16th after; the
+        # CI's E3 checks every 16th collection, with a full check (I2, I3,
+        # the comparison) at the first check and every 16th after; the
         # nightly's --freeze-check every one, its slow cases named and given
         # longer (the ledger's amendment to #948 (c), and its note of
         # 2026-11-24)
@@ -735,19 +735,19 @@ class RtCi(unittest.TestCase):
         self.assertEqual(r, 1)
         self.assertEqual([(t, ok_) for t, _, ok_ in done], [("e3", False)])
         # a report left from an earlier run is removed first; the tally lines
-        # are comparisons, not failures
+        # are full checks, not failures
         def tally(cmd, **kw):
             with open(report, "a") as f:
-                f.write(f"{rt.COMPARISON_TALLY}1 in process 11\n{rt.COMPARISON_TALLY}2 in process 11\n")
-                f.write(f"{rt.COMPARISON_TALLY}1 in process 12\n")
+                f.write(f"{rt.FULL_CHECK_TALLY}1 in process 11\n{rt.FULL_CHECK_TALLY}2 in process 11\n")
+                f.write(f"{rt.FULL_CHECK_TALLY}1 in process 12\n")
             return mock.Mock(returncode=0)
         done = []
         with mock.patch.object(rt.subprocess, "run", side_effect=tally):
             self.assertEqual(rt.run_steps([("e3", {"ROBIGO_GC_FREEZE_CHECK_REPORT": report}, ["true"])], done), 0)
         self.assertEqual(rt.freeze_report(report), ([], 3, 2))
 
-    def test_a_step_whose_freeze_check_compared_nothing_fails(self):
-        # a comparison rate no process reached is the silent failure: a step
+    def test_a_step_whose_freeze_check_ran_no_full_check_fails(self):
+        # a full-check rate no process reached is the silent failure: a step
         # with the check's report and no tally line fails
         from unittest import mock
         import tempfile

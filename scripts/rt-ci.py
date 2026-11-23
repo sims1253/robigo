@@ -549,10 +549,11 @@ def steps(crates):
         # the heap twice per allocation (tests/rt/bytecode/jit.R: 536 s
         # against 97 s without it, past the case timeout). Its comparison
         # with the independent trace, whose cost grows with the stack
-        # (c-stack-overflow.R 1.37x at every check), at each process's first
-        # check and every 16th after: its defects are systematic, so every
-        # case gets one (the 2026-11-21 check ledger's note of 2026-11-24);
-        # the step fails if none ran (run_steps)
+        # (c-stack-overflow.R 1.37x at every check), and I2 and I3: the
+        # persistent-state parts, a full check at each process's first check
+        # and every 16th after, so every case gets one; the direct loop, whose
+        # defect is transient, at every check (the 2026-11-21 check ledger's
+        # note of 2026-11-24); the step fails if no full check ran (run_steps)
         ("conformance under gctorture (E3)",
          {"ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "16,16", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
           **slow, "ROBIGO_CONF_TIMEOUTS": case_timeouts(GCTORTURE_FIRST)}, conformance),
@@ -1054,28 +1055,29 @@ def free_space_problem(paths, min_gb):
     return None
 
 
-# robigo-heap's freeze.rs COMPARISON_TALLY: a line per comparison with the
-# independent trace; every other line of the report is a failure
-COMPARISON_TALLY = "robigo: ROBIGO_GC_FREEZE_CHECK: comparison "
+# robigo-heap's freeze.rs FULL_CHECK_TALLY: a line per full check (I2, I3
+# and the comparison with the independent trace); every other line of the
+# report is a failure
+FULL_CHECK_TALLY = "robigo: ROBIGO_GC_FREEZE_CHECK: full check "
 
 
 def freeze_report(path):
-    """ROBIGO_GC_FREEZE_CHECK_REPORT's failures, its comparisons, and the
+    """ROBIGO_GC_FREEZE_CHECK_REPORT's failures, its full checks, and the
     processes that ran one (a missing report: none of either)."""
     if not os.path.exists(path):
         return [], 0, 0
-    failures, comparisons, processes = [], 0, set()
+    failures, full, processes = [], 0, set()
     with open(path) as f:
         for line in f:
             line = line.rstrip("\n")
             if not line.strip():
                 continue
-            if line.startswith(COMPARISON_TALLY):
-                comparisons += 1
+            if line.startswith(FULL_CHECK_TALLY):
+                full += 1
                 processes.add(line.rsplit(" ", 1)[-1])
             else:
                 failures.append(line)
-    return failures, comparisons, len(processes)
+    return failures, full, len(processes)
 
 
 def run_steps(plan, done):
@@ -1131,16 +1133,16 @@ def run_steps(plan, done):
             print(f"::error::rt: {title} failed")
             return r.returncode
         if freeze:
-            failures, comparisons, processes = freeze_report(freeze)
+            failures, full, processes = freeze_report(freeze)
             for line in failures:
                 print(f"::error::rt: {line}")
             if failures:
                 print(f"::error::rt: {title}: the freeze's check failed {len(failures)} time(s)")
                 done[-1] = (title, done[-1][1], False)
                 return 1
-            print(f"rt: {title}: {comparisons} comparison(s) with the independent trace in {processes} process(es)")
-            if comparisons == 0:
-                print(f"::error::rt: {title}: the freeze's check ran no comparison with the independent trace")
+            print(f"rt: {title}: the freeze's check: {full} full check(s) (I2, I3, the comparison) in {processes} process(es)")
+            if full == 0:
+                print(f"::error::rt: {title}: the freeze's check ran no full check (I2, I3, the comparison)")
                 done[-1] = (title, done[-1][1], False)
                 return 1
         if report:
