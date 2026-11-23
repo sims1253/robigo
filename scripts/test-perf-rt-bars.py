@@ -60,6 +60,21 @@ class Bars(unittest.TestCase):
         self.assertEqual(status, {"plain": "ok", "s3": "not met yet", "fib": "not met yet",
                                   "paste": "accepted up to 2.0x"})
 
+    def test_a_peak_rss_close_under_its_cap_is_warned_not_failed(self):
+        # today's cap 40,000 KiB: 5% is 2,000 KiB of room
+        for kib, warned in ((37_900, False), (38_001, True), (39_999, True)):
+            failures, notes, _ = verdict(rss={"p.R": kib})
+            self.assertEqual(failures, [], kib)
+            self.assertEqual(any("`p.R`: peak RSS" in n and "under today's cap of 40,000" in n for n in notes),
+                             warned, (kib, notes))
+        _, notes, _ = verdict(rss={"p.R": 38_840})
+        self.assertIn("`p.R`: peak RSS 38,840 KiB is 2.9% under today's cap of 40,000 (warned under 5%)", notes[0])
+        # above the cap it fails, and is not also warned of
+        failures, notes, _ = verdict(rss={"p.R": 40_001})
+        self.assertEqual(len(failures), 1)
+        self.assertEqual([n for n in notes if "peak RSS" in n], [])
+        self.assertAlmostEqual(perf.rss_margin(52_644, 54_220), 2.9067, places=3)
+
     def test_a_met_bar_that_breaks_fails(self):
         failures, _, _ = verdict(instr={**OK, "plain": 601.0})
         self.assertEqual(len(failures), 1)

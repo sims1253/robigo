@@ -120,6 +120,9 @@ THRESHOLD = 0.5
 # Peak RSS is not exact (ru_maxrss moves by a few pages from run to run):
 # `rt-bars`' threshold for it, in percent.
 RSS_THRESHOLD = 2.0
+# a peak-RSS row this close under a cap (percent of the cap) is warned of,
+# never failed: the next change that grows it would fail the bar
+RSS_MARGIN_WARN = 5.0
 RT_ROWS = os.path.join(ROOT, "benchmarks", "rt", "calls-rows.toml")
 # The cache model estimated cycles are counted under. Callgrind otherwise
 # takes the host's cache sizes, and a direct-mapped last level, so the same
@@ -766,6 +769,11 @@ def rt_guard_errors(spec, row_names):
     return errors
 
 
+def rss_margin(kib, cap):
+    """How far `kib` is under `cap`, in percent of the cap (negative above it)."""
+    return (cap - kib) / cap * 100
+
+
 def rt_verdict(spec, instr, rss, main=None):
     """The rt-bars gate's findings: (failures, notes, table). `spec` is
     benchmarks/rt/m1-bars.toml; `instr` and `rss` this binary's numbers;
@@ -814,6 +822,10 @@ def rt_verdict(spec, instr, rss, main=None):
             ref = spec[against]["rss"][f]
             if rss[f] > ref:
                 failures.append(f"`{f}`: peak RSS {rss[f]:,} KiB, above {against}'s {ref:,}")
+            elif rss_margin(rss[f], ref) < RSS_MARGIN_WARN:
+                notes.append(f"`{f}`: peak RSS {rss[f]:,} KiB is {rss_margin(rss[f], ref):.1f}% under {against}'s "
+                             f"cap of {ref:,} (warned under {RSS_MARGIN_WARN:g}%): the next change that grows it "
+                             "fails the bar")
         m = main["rss"][f] if main else None
         if m and pct(rss[f], m) > RSS_THRESHOLD:
             failures.append(f"`{f}`: peak RSS {pct(rss[f], m):+.1f}% against main ({m:,} -> {rss[f]:,} KiB)")
@@ -995,7 +1007,8 @@ def cmd_rt_bars(a):
     for r in spec["rss"]:
         f = r["program"]
         m = main["rss"][f] if main else None
-        refs = ", ".join(f"{ag} {spec[ag]['rss'][f]:,}" for ag in r["against"])
+        refs = ", ".join(f"{ag} {spec[ag]['rss'][f]:,} ({rss_margin(rss[f], spec[ag]['rss'][f]):+.1f}% margin)"
+                         for ag in r["against"])
         print(f"| {f} | {rss[f]:,} | {f'{m:,}' if m else ''} | ≤ {refs} |")
     print("\n(A bar in parentheses is not met yet: only regressions against main fail it, and an accepted "
           "regression's ceiling. A guard row has no bar: only regressions against main fail it.)")
