@@ -335,7 +335,7 @@ class RtCi(unittest.TestCase):
         def fake_run(cmd, cwd=None, env=None):
             # the slots a step holds while it runs, as another run sees them
             busy = 0
-            for i in range(4):
+            for i in range(8):
                 with open(os.path.join(d, f"slot-{i}"), "a") as f:
                     try:
                         fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -351,14 +351,23 @@ class RtCi(unittest.TestCase):
                 self.assertEqual(rt.run_steps([("step", {}, cmd)], []), 0)
             return seen[0]
 
-        pool = {"ROBIGO_CONF_SLOTS_DIR": d, "ROBIGO_CONF_SLOTS": "4"}
+        pool = {"ROBIGO_CONF_SLOTS_DIR": d, "ROBIGO_CONF_SLOTS": "8"}
         # a quiet pool: every slot, as many threads; its tests get no pool
-        self.assertEqual(run(crate, pool), ([*crate, "--test-threads=4"], "", 4))
-        # another run holds one slot: the step takes the other three
+        self.assertEqual(run(crate, pool), ([*crate, "--test-threads=8"], "", 8))
+        # another run holds one slot: the step takes the other seven
         other = open(os.path.join(d, "slot-1"), "a")
         fcntl.flock(other, fcntl.LOCK_EX)
-        self.assertEqual(run(crate, pool), ([*crate, "--test-threads=3"], "", 4))
+        self.assertEqual(run(crate, pool), ([*crate, "--test-threads=7"], "", 8))
         other.close()
+        # a busy pool: one slot free, still CRATE_TEST_MIN_THREADS threads,
+        # without waiting for more slots
+        self.assertEqual(rt.CRATE_TEST_MIN_THREADS, 4)
+        others = [open(os.path.join(d, f"slot-{i}"), "a") for i in range(7)]
+        for f in others:
+            fcntl.flock(f, fcntl.LOCK_EX)
+        self.assertEqual(run(crate, pool), ([*crate, "--test-threads=4"], "", 8))
+        for f in others:
+            f.close()
         # no pool (CI, or the caller's empty one): the command as it was
         self.assertEqual(run(crate, {"ROBIGO_CONF_SLOTS_DIR": ""}), (crate, "", 0))
         # the conformance steps take a slot per case in the runner, and a

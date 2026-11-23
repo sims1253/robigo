@@ -797,6 +797,15 @@ def conf_slots_dir(env=None):
     return conf_slots.default_dir(env)
 
 
+# A crate-test step runs at least this many test threads, however few slots
+# were free: at one thread the crates' tests cost a gate minutes (the
+# debug-assertions shard's ran 3.0 min at one thread, 110% of its budget,
+# 2026-11-23), where up to 3 threads over its slots per run cost 24 CPUs'
+# conformance cases nothing measurable. It never waits for more slots: a
+# step that waits on several at once is the shape that starves under load.
+CRATE_TEST_MIN_THREADS = 4
+
+
 def crate_test_threads(cmd):
     """Whether `cmd` is a run of the crates' own tests (a cargo test that
     runs tests, other than a conformance step), which take their threads
@@ -987,9 +996,9 @@ def run_steps(plan, done):
             env = {**env, "ROBIGO_CONF_TIMES_REPORT": times}
         print(f"::group::{title}", flush=True)
         t0 = time.monotonic()
-        # as many threads as slots: one it waits for, then whatever else
-        # of the pool is free (all of it on a quiet box), held until the
-        # step ends. The tests get no pool of their own: the step's slots
+        # as many threads as slots, CRATE_TEST_MIN_THREADS at least: one it
+        # waits for, then whatever else of the pool is free (all of it on a
+        # quiet box), held until the step ends. The tests get no pool of their own: the step's slots
         # count their threads already, and a test waiting for a slot its
         # own step holds would wait forever
         try:
@@ -1002,8 +1011,9 @@ def run_steps(plan, done):
             return 2
         if held:
             with held:
-                print(f"rt-ci: {held.count} of {pool.n} slots, --test-threads={held.count}", flush=True)
-                r = subprocess.run([*cmd, f"--test-threads={held.count}"], cwd=ROOT,
+                threads = max(held.count, CRATE_TEST_MIN_THREADS)
+                print(f"rt-ci: {held.count} of {pool.n} slots, --test-threads={threads}", flush=True)
+                r = subprocess.run([*cmd, f"--test-threads={threads}"], cwd=ROOT,
                                    env={**os.environ, **env, "ROBIGO_CONF_SLOTS_DIR": ""})
         else:
             r = subprocess.run(cmd, cwd=ROOT, env={**os.environ, **env})
