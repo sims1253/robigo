@@ -494,7 +494,21 @@ def steps(crates):
         # plain and with the byte-code crosscheck, each failing as its M1
         # step does (a ratcheted case that fails; an unexpected or
         # untranslated closure). Not yet the default anywhere (L's list)
+        # The tree has its translation cache (C1, crates/robigo-rt/src/tcache.rs,
+        # beside it: rt-home-db.sh), so these steps run with it; the crosscheck
+        # step compares every cached translation with a fresh one too. The
+        # same cases with the cache off must pass as well: the cache changes
+        # nothing a case sees
         ("conformance under the rdb boot (ROBIGO_RT_BOOT=rdb)", {"ROBIGO_RT_BOOT": "rdb"}, conformance),
+        ("conformance under the rdb boot without the translation cache (ROBIGO_TRANSLATION_CACHE=0)",
+         {"ROBIGO_RT_BOOT": "rdb", "ROBIGO_TRANSLATION_CACHE": "0"}, conformance),
+        # the cache as damaged input: a corrupted file's entries are misses,
+        # every start ends as a start does (no signal, no panic, no hang); and
+        # a database changed under its stamp (two records swapped) makes its
+        # entries stale-record misses, never other code
+        ("the translation cache as damaged input (scripts/rt-tcache-mutate.py)", {},
+         ["python3", "scripts/rt-tcache-mutate.py", "--robigo-rt", rt_binary(), "--pkg", "base", "--pkg", "compiler",
+          "--runs", "300", "--seed", "1", "--swap-runs", "40"]),
         ("conformance under the rdb boot with ROBIGO_BC_CROSSCHECK=1 (base.rdb's closures against the "
          "from-source compiler's)",
          {"ROBIGO_RT_BOOT": "rdb", "ROBIGO_BC_CROSSCHECK": "1", "ROBIGO_BC_CROSSCHECK_REPORT": BC_REPORT_RDB},
@@ -597,6 +611,20 @@ def steps(crates):
          {"ROBIGO_RETRY_TORTURE": "1", **slow},
          [*test, "-p", "robigo-rtapi", "--features", CHECK_FEATURES, "--test", "conformance", "--",
           "--exact", CONFORMANCE, "--nocapture"]),
+        # C1 (#979, the bot's round 2): a translation-cache verification whose
+        # fresh translation stops for a retry compares nothing. Under
+        # ROBIGO_RETRY_TORTURE every fresh translation of a verification
+        # stops once inside it, so the case is certain, not lucky: base's
+        # database tree written by this build (whose binary the step above
+        # made), then the boot test that verifies a start under the knob
+        ("base's database tree for ROBIGO_RETRY_TORTURE's build (scripts/rt-home-db.sh)", {},
+         ["scripts/rt-home-db.sh", "--robigo-rt", rt_binary()]),
+        # (TREE_RUNS: a missing or stale tree fails, not skips; and the test
+        # fails, not skips, if the build has no retry-torture)
+        ("a translation-cache verification under ROBIGO_RETRY_TORTURE=1 compares nothing for a retry "
+         "(tests/boot_db.rs)", {**TREE_RUNS, "ROBIGO_REQUIRE_RETRY_TORTURE": "1"},
+         [*test, "-p", "robigo-rtapi", "--features", CHECK_FEATURES, "--test", "boot_db", "--",
+          "--exact", "a_verification_stopped_for_a_retry_compares_nothing"]),
         # C1-PZ (docs/g3.md §16): a dead slot (a register's last use, D9's
         # clears; the slots a scope's restore frees) holds a poison naming
         # where it died, and a read of it panics: robigo-rt's tests, with
@@ -653,20 +681,26 @@ OWN_STEPS = ("debug-assertions", "release-crate-tests")
 # timeout (scripts/test-rt-ci.py pins the three relations). When a warning
 # fires, rebalance or remeasure: the dates say how old each measurement is.
 BUDGETS = {  # shard: (budget, measured minutes, where measured)
-    # a slow-runner figure: run 45072863916 (#959, 2026-11-22) took about
+    # a slow-runner basis: run 45072863916 (#959, 2026-11-22) took about
     # 1.25x #952's on the steps both ran (the crates' tests 1.86 against
-    # 1.59 min, GC_MOVE 1.18 against 0.88)
-    "modes": (11, 9.15, "2026-11-22, run 45072863916 (#959, a slow runner): 8.27 to its failed quarantine step, "
+    # 1.59 min, GC_MOVE 1.18 against 0.88); #979's two steps, timed locally
+    # (C1, 2026-11-23), are scaled to it by 1.6, that run's conformance
+    # steps against the same local run's (1.34 against 0.84 min, the five
+    # both ran)
+    "modes": (13, 10.05, "2026-11-22, run 45072863916 (#959, a slow runner): 8.27 to its failed quarantine step, "
               "less #959's M1 freeze-on conformance step's 0.22 (moved to gctorture; its rdb twin, 0.27, stays "
               "with the database tree), plus the steps after it at #952's 1.1; #959's freeze check at every "
-              "collection makes the crates' gctorture step 0.81 against main's 0.45 (1.8x in CI)"),
+              "collection makes the crates' gctorture step 0.81 against main's 0.45 (1.8x in CI); and #979's "
+              "rdb boot's conformance without the translation cache, 0.29 (0.18 locally), and the cache's "
+              "damaged-input step, 0.61 (0.38 locally)"),
     # the plain gctorture conformance moves into modes if GCTORTURE_FIRST
     # does not bring this back near 15 minutes
     "gctorture": (27, 22.09, "2026-11-21, run 44927530340 (#952): 20.62 before GCTORTURE_FIRST, and #959's "
                   "estimated 1.25 (its freeze check at every 16th collection: about 1.3x of the plain gctorture "
                   "conformance's 4.15, H's measurement) and its M1 freeze-on conformance step's 0.22 "
                   "(run 45072863916)"),
-    "feature-builds": (12, 9.87, "2026-11-21, run 44927530340 (#952)"),
+    "feature-builds": (13, 10.47, "2026-11-21, run 44927530340 (#952): 9.87, and #979's tree for the "
+                       "retry-torture build and its verification test, estimated 0.6 (0.3 and 0.05 minutes here)"),
     "builtin-diff": (9, 7.42, "2026-11-21, run 44927530340 (#952)"),
     "debug-assertions": (5, 3.47, "2026-11-21, run 44927530340 (#952): 3.07, and the tree's estimated 0.4"),
     "release-crate-tests": (12, 9.82, "2026-11-21, main's run 44931071167: 9.42, and the tree's estimated 0.4"),

@@ -82,6 +82,17 @@ pub mod serialize;
 pub mod source;
 mod specials;
 mod tailcall;
+mod tcache;
+/// The translation cache's writer: its files, written at the end of the
+/// session that translated for it (`ROBIGO_TRANSLATION_CACHE_WRITE`).
+/// Where a translation-cache file's build ID begins (its header's
+/// layout): what a test damages to make a file another build's.
+pub use tcache::format::BUILD_ID_AT as TRANSLATION_CACHE_BUILD_ID_AT;
+pub use tcache::{
+    fuzz_decode as translation_cache_fuzz_decode, mismatches as translation_cache_mismatches,
+    report as report_translation_cache, verifying_all as verifying_translation_cache,
+    write_files as write_translation_cache, writing as writing_translation_cache,
+};
 mod util;
 pub mod vm;
 
@@ -167,6 +178,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         assign_fns: Default::default(),
         folds: Default::default(),
         compile_warnings: Default::default(),
+        tcache: Default::default(),
         base_src: Default::default(),
     });
     // the connection table and the lazy-load databases' cache (L1)
@@ -317,7 +329,8 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         assign_fns: st.assign_fns.clone(),
         folds: st.folds.copy(cx),
         compile_warnings: Default::default(),
-        base_src: std::cell::RefCell::new(st.base_src.borrow().clone()),
+        tcache: Default::default(),
+        base_src: st.base_src.clone(),
     }
 }
 
