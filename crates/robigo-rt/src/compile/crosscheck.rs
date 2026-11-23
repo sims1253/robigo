@@ -105,7 +105,8 @@ fn kinds(op: Op) -> ([K; 6], bool) {
         Op::Arith1 | Op::Not => ([W, R, X, C, C, I], false),
         Op::AndOr1 => ([W, R, I, C, X, X], true),
         Op::AndOr2 => ([W, R, I, C, X, X], false),
-        // b: the srcref constant (compared: NULL for rdb's closures)
+        // b: the srcref constant, compared (cmp.R and the compile both
+        // take the `function` call's fourth element; 0 when it is NULL)
         Op::MkClosure => ([W, C, C0, C, C, I], false),
         Op::Missing => ([W, X, X, C, C, X], false),
         Op::Return | Op::PpCheck => ([X, R, X, C0, X, X], false),

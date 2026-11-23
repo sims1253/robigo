@@ -1631,19 +1631,26 @@ impl<'g> Comp<'g> {
             }
             MAKECLOSURE => {
                 let fb = k(i.a[0]);
+                let nil = self.nil();
                 // SAFETY: MAKECLOSURE's constant: list(formals, body, srcref?)
-                let (formals, body) = unsafe {
+                let (formals, body, srcref) = unsafe {
                     if fb.typ() != VECSXP || fb.std_len() < 2 {
                         return Err(Need::Fail);
                     }
                     let p = fb.std_data() as *const Sexp;
-                    (*p, *p.add(1))
+                    // R: eval.c:bcEval MAKECLOSURE: "if (LENGTH(fb) > 2)", any
+                    // non-NULL third element becomes the closure's "srcref"
+                    // attribute, the object itself (setAttrib does not check it)
+                    (*p, *p.add(1), if fb.std_len() > 2 { *p.add(2) } else { nil })
                 };
                 let r = self.push(t);
                 let mut m = Ins::new(Op::MkClosure);
                 m.a = r;
                 m.e = self.k(formals);
                 m.f = self.k(body);
+                if srcref != nil {
+                    m.b = self.k(srcref);
+                }
                 if tail {
                     m.fl |= F_VIS;
                 }
