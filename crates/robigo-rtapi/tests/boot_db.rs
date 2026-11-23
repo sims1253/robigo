@@ -386,7 +386,8 @@ fn cached_tree(what: &str) -> std::path::PathBuf {
     let tmp = std::env::temp_dir().join(format!("robigo-{what}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(tmp.join(".robigo")).unwrap();
-    let st = Command::new("cp").arg("-a").arg(root.join(".robigo/rt-home-db")).arg(tmp.join(".robigo/rt-home-db")).status();
+    let st =
+        Command::new("cp").arg("-a").arg(root.join(".robigo/rt-home-db")).arg(tmp.join(".robigo/rt-home-db")).status();
     assert!(st.unwrap().success(), "copying the tree");
     std::fs::create_dir_all(tmp.join(".robigo/rt-home-db-cache")).unwrap();
     write_cache(&tmp);
@@ -460,7 +461,11 @@ fn a_verification_stopped_for_a_retry_compares_nothing() {
     }
     let tmp = cached_tree("tcache-verify-retry");
     let (out, err, st) = boot(
-        &[std::ffi::OsStr::new("--vanilla"), std::ffi::OsStr::new("-e"), std::ffi::OsStr::new("cat(sum(1:10), \"\\n\")")],
+        &[
+            std::ffi::OsStr::new("--vanilla"),
+            std::ffi::OsStr::new("-e"),
+            std::ffi::OsStr::new("cat(sum(1:10), \"\\n\")"),
+        ],
         &[
             ("ROBIGO_RT_CHECKOUT", tmp.as_os_str()),
             ("ROBIGO_TRANSLATION_CACHE", std::ffi::OsStr::new("verify")),
