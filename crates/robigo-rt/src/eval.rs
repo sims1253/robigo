@@ -148,7 +148,7 @@ fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, promise: b
     }
     // C's `eval` runs it with byte code inactive (`R_BCIntActive = 0`,
     // saved and restored); byte code's own promise code keeps its flag
-    let bc_saved = if profile == Profile::Bc { None } else { Some(cx.bc_inactive()) };
+    let bc_saved = if profile == Profile::Bc { None } else { Some(cx.bc_deactivate()) };
     // one level deeper, no protection more (robigo_rtcore's ppacct)
     let r = cx.with_pp_excess(-1, |cx| match t {
         // (a symbol is immortal)
@@ -479,8 +479,10 @@ pub unsafe fn keepmiss_missing(cx: &mut Cx, sym: Sexp, rho: Root<'_>) -> RResult
     unsafe { crate::missing::r_is_missing(cx, sym, rho.bind(cx).sexp()) }
 }
 
-/// GETVAR_MISSOK (DDVAL_MISSOK for a `..N` symbol): [`get_var`], but a
-/// missing argument is R_MissingArg ([`keepmiss_missing`]).
+/// GETVAR_MISSOK (DDVAL_MISSOK for a `..N` symbol): a missing argument is
+/// R_MissingArg ([`keepmiss_missing`]); any other read is
+/// [`get_var_keepmiss`]'s, `get_var`'s with a force past the depth limit
+/// run with byte code inactive (`getvar`'s `forcePromise`).
 ///
 /// # Safety
 /// `sym` is a live symbol of `cx`'s isolate.
@@ -496,11 +498,112 @@ pub unsafe fn get_var_missok(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sex
     // SAFETY: a live symbol; gp is a header field.
     let dd = unsafe { sym.gp() } & robigo_rtcore::DDVAL != 0;
     // SAFETY: the caller's contract: a live symbol.
-    unsafe { get_var(cx, act, a, sym, dd, bc) }
+    unsafe { get_var_keepmiss(cx, act, a, sym, dd, bc) }
+}
+
+/// GETVAR_MISSOK's read past `keepmiss_missing`: [`get_var`] read through
+/// `getvar`, not bcEval's inlined force (DO_GETVAR's fast path excludes
+/// `keepmiss`), so a promise it forces is forced as `forcePromise` does.
+/// Where the force's depth step would overflow, the force runs with byte
+/// code inactive ([`Cx::force_arg`]'s inlined-force check reads the flag
+/// only there); below the limit the read is `get_var`'s. A copy of
+/// `get_var`'s body, out of line: `get_var` and `get_var_missok` are
+/// inlined into `vm::run`, which stays as it is (the arm calls this
+/// instead of `get_var`, with the same arguments).
+/// (A duplicate of `get_var`'s body: an edit there is made here too,
+/// until the fold that makes them one, docs/ledger/g3/2026-11-23-eval-promise.md, "The
+/// duplicated get_var body and its end".) The `..N` and symbol
+/// paths force deeper inside: at the limit those reads run with byte code
+/// inactive as a whole (`tests/rt/conditions/promise-setup-missok-errors.R`:
+/// their errors' calls are GNU R's).
+///
+/// # Safety
+/// As [`get_var`].
+// R: eval.c:getvar
+#[inline(never)]
+pub unsafe fn get_var_keepmiss(
+    cx: &mut Cx,
+    act: &Act,
+    a: crate::ir::Reg,
+    sym: Sexp,
+    dd: bool,
+    bc: bool,
+) -> RResult<()> {
+    let subclass = if bc { "getvarError" } else { "evalError" };
+    // (a value, an unboxed scalar or a forced slot: the read forces nothing)
+    let mut plain = false;
+    if !dd && sym != prims::state(cx).syms.dots {
+        // SAFETY: an immortal symbol and the rooted environment.
+        match unsafe { cx.var_lookup_raw(sym, act.rho()) } {
+            RawBinding::Thunk(loc) => {
+                // SAFETY: the frame holding the slot, reachable from the
+                // rooted environment; the scratch register keeps it.
+                let f = unsafe { act.scratch(crate::ir::R_SCRATCH, loc.frame()) };
+                let r = forced_as_getvar(cx, |cx| cx.force_arg(f, loc.index(), act.out(a)));
+                act.kill(crate::ir::R_SCRATCH, u32::MAX);
+                return r;
+            }
+            // SAFETY: a live binding value.
+            RawBinding::Value(v) if unsafe { v.typ() } == PROMSXP => {
+                // SAFETY: the promise is bound in a rooted frame; the
+                // scratch register keeps it for the force.
+                let p = unsafe { act.scratch(crate::ir::R_SCRATCH, v) };
+                let r = forced_as_getvar(cx, |cx| force(cx, p, act.out(a)));
+                act.kill(crate::ir::R_SCRATCH, u32::MAX);
+                return r;
+            }
+            // (get_var's double read of an active binding)
+            // R: eval.c:DO_GETVAR (INLINE_GETVAR), eval.c:getvar
+            RawBinding::Active(_) if bc => {
+                cx.scope(|cx, s| {
+                    // SAFETY: an immortal symbol.
+                    let sr = s.root(cx, unsafe { Ref::from_sexp(sym, cx) });
+                    let o = s.out(cx);
+                    cx.find_var(sr, act.root(crate::ir::R_ENV), o)
+                })?;
+            }
+            RawBinding::Value(_) | RawBinding::Scalar(_) | RawBinding::Forced(_) => plain = true,
+            _ => {}
+        }
+    }
+    if plain {
+        // SAFETY: the caller's contract: a live symbol.
+        return unsafe { symbol_value_as(cx, sym, act.root(crate::ir::R_ENV), act.out(a), subclass) };
+    }
+    if dd {
+        forced_as_getvar(cx, |cx| dd_value(cx, sym, act.root(crate::ir::R_ENV), act.out(a), subclass))
+    } else {
+        // SAFETY: the caller's contract: a live symbol.
+        forced_as_getvar(cx, |cx| unsafe { symbol_value_as(cx, sym, act.root(crate::ir::R_ENV), act.out(a), subclass) })
+    }
+}
+
+/// `f`, a read that may force a promise: with byte code inactive where the
+/// force's depth step would overflow (`getvar`'s `forcePromise`, not the
+/// inlined force's PRSEEN order), else as it is.
+///
+/// Its depth test must be the same as robigo-rtcore's private
+/// `Cx::inline_force_due` (env/promise.rs) without the flag: both ask
+/// whether this force's depth step overflows, `eval_depth >= expressions`.
+/// An edit of one is made in the other, until the fold passes the read's
+/// kind into the force and this compare goes ({L}).
+#[inline(always)]
+fn forced_as_getvar<T>(cx: &mut Cx, f: impl FnOnce(&mut Cx) -> T) -> T {
+    if cx.eval_depth() >= cx.expressions() {
+        let saved = cx.bc_deactivate();
+        let r = f(cx);
+        cx.bc_restore(saved);
+        return r;
+    }
+    f(cx)
 }
 
 /// `eval(sym, rho)` into register `a` (`..N` when `dd`), the slow path:
 /// active bindings, promises to force, GNU R's errors.
+///
+/// [`get_var_keepmiss`] duplicates this body for GETVAR_MISSOK's reads (an
+/// edit here is made there too, until the fold that makes them one:
+/// docs/ledger/g3/2026-11-23-eval-promise.md, "The duplicated get_var body and its end").
 ///
 /// # Safety
 /// `sym` is a live symbol of `cx`'s isolate.
@@ -738,7 +841,7 @@ pub fn eval_promise(cx: &mut Cx, p: Root<'_>, out: Out<'_>) -> RResult<()> {
     tick(cx)?;
     let depthsave = cx.eval_depth();
     cx.eval_depth_at(depthsave + 1)?;
-    let bc = cx.bc_inactive();
+    let bc = cx.bc_deactivate();
     // (one level deeper, no protection more: robigo_rtcore's ppacct)
     let r = cx.with_pp_excess(-1, |cx| cx.force_promise(p, out));
     cx.bc_restore(bc);
@@ -780,7 +883,7 @@ fn force_arg_eval_counted(cx: &mut Cx, frame: Root<'_>, index: usize, out: Out<'
     cx.eval_depth_at(depthsave + 1)?;
     // (one level deeper, no protection more: robigo_rtcore's ppacct;
     // byte code inactive, as `eval` runs it)
-    let bc = cx.bc_inactive();
+    let bc = cx.bc_deactivate();
     let r = cx.with_pp_excess(-1, |cx| cx.force_arg(frame, index, out));
     cx.bc_restore(bc);
     cx.set_eval_depth(depthsave);

@@ -65,9 +65,6 @@ not `force`.
   `-volume` twin compiles with cmpfun; the small one unserializes GNU R's
   compiled closures (about 1 s under gctorture).
 - INTERIM(S1), recorded, not ratcheted:
-  - tests/rt/eval/promise-eval-depth-interim.R: the same retry at depths 10-12,
-    where GNU R leaves the promise byte code's inlined force was setting up
-    PRSEEN 1 (eval.c:setup_bcframe_prom). Closes with item A.
   - tests/rt/jit/base-guard-symbol-value.R: SymbolValue's step (above). Closes
     with X's vm.rs.
   - tests/rt/deparse/base-promise-op.R: deparse2buff's eval of a promise in the
@@ -83,3 +80,39 @@ force_arg_eval 52 (its frame, R_Visible, the count, the depth step,
 R_CheckStack, the flag, ppacct's 6, the call), get_object +16 (GetObject's
 unevaluated test, a slot-kind decode), eval_in +6 (the flag). GNU R pays the
 same work there; CI's gate is 0.5%.
+
+## Item A on top (setup_bcframe_prom's PRSEEN 1)
+
+force_arg and force_promise (rtcore promise.rs) take bcEval's inlined
+GETVAR/DDVAL force's order when byte code is active (bc_active, which this
+PR's eval_in and eval_promise clear for C's eval) and the depth step would
+overflow: an unforced promise of byte code at PRSEEN 0 is left PRSEEN 1, not
+pending. The check is a depth compare on the common path; the rest is cold.
+promise-eval-depth-interim.R became promise-eval-depth-retry.R (passing).
+GETVAR_MISSOK reads (getvar, not the inlined force: DO_GETVAR's fast path
+excludes keepmiss) clear bc_active around their read (eval.rs
+get_var_keepmiss, out of line, so vm::run is unchanged); case
+tests/rt/conditions/promise-setup-missok.R (Sol's).
+
+## The duplicated get_var body and its end
+
+`get_var_keepmiss` (crates/robigo-rt/src/eval.rs) is a copy of `get_var`'s
+body for GETVAR_MISSOK's reads, with each force wrapped in
+`forced_as_getvar`: past the depth limit the force runs with byte code
+inactive, as GNU R's `getvar` reaches `forcePromise` there (DO_GETVAR's
+inlined force excludes `keepmiss`). It is a copy, out of line, because
+`get_var` and `get_var_missok` are inlined into `vm::run`: a wrapper, a
+private copy and a restructured tail each changed `vm::run`'s code (its
+argument passing, a non-tail call per read), and the out-of-line `pub` copy
+leaves it identical (the PR's objdump check). An edit of either body is made
+in the other.
+
+`forced_as_getvar`'s `eval_depth >= expressions` and robigo-rtcore's private
+`Cx::inline_force_due` (env/promise.rs) are the same depth test, kept in
+lockstep by hand; a shared predicate would touch rtcore and the code
+`vm::run` was verified with.
+
+The end: X's fold makes the two one body, generic over a const (two
+instances, one source), and tries passing the read's kind into the force,
+so that the separate depth compare, and with it the guard rows' +0.36%,
+goes away.
