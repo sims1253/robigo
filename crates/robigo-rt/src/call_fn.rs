@@ -40,12 +40,8 @@ pub fn do_call(
             Some(b) => Some(!b.is_empty() && b.len() < 4),
         };
         if partial == Some(true) && cx.warn_partial_match_args() {
-            let supplied = tag
-                .bind(cx)
-                .as_sym()
-                .map_or_else(String::new, |t| String::from_utf8_lossy(t.name_bytes()).into_owned());
-            let msg = format!("partial argument match of '{supplied}' to 'name'");
-            cx.warning_call(Some(call), &msg)?;
+            let supplied = tag.bind(cx).as_sym().map_or_else(Vec::new, |t| t.name_bytes().to_vec());
+            cx.partial_match_warning(Some(call), &supplied, b"name")?;
         }
         let rfun = s.out(cx).root();
         let o = rfun.reset(cx);

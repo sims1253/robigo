@@ -208,6 +208,20 @@ class Unusable(Exception):
     pass
 
 
+# robigo-rt's boot, which the harness always sets (ROBIGO_RT_BOOT), so that
+# no list depends on a binary's default: "interim" is M1's loader (the variable
+# empty), "stage0" base from source, "rdb" base from base.rdb. The known
+# lists are made under DEFAULT_BOOT; the default-boot flip changes it in
+# the same commit as the lists it regenerates.
+BOOTS = ("interim", "stage0", "rdb")
+DEFAULT_BOOT = "interim"
+
+
+def boot_env(boot):
+    """The environment that selects `boot` in robigo-rt."""
+    return {"ROBIGO_RT_BOOT": "" if boot == "interim" else boot}
+
+
 # The machine-wide slot pool every driver process takes a slot of (the
 # conformance runner's, ROBIGO_CONF_SLOTS_DIR; set by main, None: no pool)
 POOL = None
@@ -400,7 +414,7 @@ def lock_row(lock, path, first=5.0, every=60.0, step=0.2):
 def run_cases(cmd, env, batch, out, ncases, root, rsrc, timeout):
     """run_isolated's cases, in `root`, which its caller holds."""
     lost = {}
-    base = {k: env[k] for k in (*ENV, "R_ENABLE_JIT", "A4_LABEL") if k in env}
+    base = {k: env[k] for k in (*ENV, "R_ENABLE_JIT", "A4_LABEL", "ROBIGO_RT_BOOT") if k in env}
     for i in range(1, ncases + 1):
         remove_tree(root)
         cwd, home, tmp = (os.path.join(root, x) for x in ("case", "home", "tmp"))
@@ -684,7 +698,7 @@ def run_rt(a, row, jit, rt_bin, prefix):
     scratch = scratch_dir("a4-rt-")
     out = os.path.join(scratch, "records")
     env = {k: v for k, v in os.environ.items() if k != "R_HOME"}
-    env.update(ENV, R_ENABLE_JIT=JIT[jit], A4_LABEL="robigo-rt", ROBIGO_RSRC=a.rsrc)
+    env.update(ENV, R_ENABLE_JIT=JIT[jit], A4_LABEL="robigo-rt", ROBIGO_RSRC=a.rsrc, **boot_env(a.boot))
     work = os.path.join(scratch, "cwd")
     os.makedirs(work)
     t0 = time.monotonic()
@@ -856,6 +870,9 @@ def report(r, known, show):
 
 
 def cmd_run(a):
+    if a.boot != DEFAULT_BOOT and (a.regen_known or a.update):
+        sys.exit(f"builtin-diff: the known lists are {DEFAULT_BOOT}'s (DEFAULT_BOOT): --boot {a.boot} cannot "
+                 "rewrite them (the default-boot flip changes DEFAULT_BOOT in the commit that regenerates them)")
     doc, _ = load_rows()
     nc, reg = names_c(r_source()), registry()
     names = a.only or sorted(doc)
@@ -876,7 +893,8 @@ def cmd_run(a):
         d = oracle_dir(a.data, rows[0], a.seed, rows[0].jits[0])
         with tempfile.TemporaryDirectory() as tmp:
             env = {k: v for k, v in os.environ.items() if k != "R_HOME"}
-            env.update(ENV, R_ENABLE_JIT="0", A4_LABEL="robigo-rt", ROBIGO_RSRC=a.rsrc, A4_BATCH=os.path.join(d, "batch.rds"),
+            env.update(ENV, R_ENABLE_JIT="0", A4_LABEL="robigo-rt", ROBIGO_RSRC=a.rsrc, **boot_env(a.boot),
+                       A4_BATCH=os.path.join(d, "batch.rds"),
                        A4_OUT=tmp, A4_FROM="999999", HOME=tmp, TMPDIR=tmp)
             subprocess.run([rt_bin, "--vanilla", DRIVER], env=env, cwd=tmp, preexec_fn=cap)
         print(f"timing: robigo-rt's start with {rows[0].name}'s batch: {time.monotonic() - t0:.2f} s")
@@ -893,10 +911,13 @@ def cmd_run(a):
     for r in results:
         variant = r["row"].variant(r["jit"])
         key = r["row"].key(a.seed, r["jit"])
-        known = read_known(variant, key) if a.seed == 0 and not a.regen_known else None
+        # (the known lists are DEFAULT_BOOT's: under another boot every
+        # failure is reported, none is known, and no list is written)
+        lists = a.seed == 0 and a.boot == DEFAULT_BOOT
+        known = read_known(variant, key) if lists and not a.regen_known else None
         new, fails = report(r, known, a.show)
         rel = os.path.relpath(known_path(variant), ROOT)
-        if a.seed == 0 and (a.regen_known or (a.update and known is None)):
+        if lists and (a.regen_known or (a.update and known is None)):
             # a new row starts with the failures it has (or a builtin-diff: PR rewrites them)
             write_known(variant, key, r, fails)
             print(f"  wrote {rel} ({len(fails)} failures)")
@@ -908,8 +929,8 @@ def cmd_run(a):
             # the ratchet only shrinks: fixed cases leave, new ones never enter
             write_known(variant, key, r, known & set(fails))
             print(f"  {rel}: {len(known - set(fails))} fixed, removed")
-        if a.seed != 0:
-            new = fails     # no known list applies to another seed
+        if a.seed != 0 or not lists:
+            new = fails     # no known list applies to another seed, or another boot
         elif known is None:
             print(f"  no {rel}: a new row's list is written by --update")
             new = fails
@@ -1110,6 +1131,8 @@ def main(argv):
         p.add_argument("--jobs", type=int, default=4)
         p.add_argument("--robigo-rt", help="the robigo-rt binary (default: the release build)")
         p.add_argument("--no-docker", action="store_true", help="fail instead of making GNU R's side")
+        p.add_argument("--boot", choices=BOOTS, default=DEFAULT_BOOT,
+                       help=f"robigo-rt's boot, set explicitly for every case (default {DEFAULT_BOOT})")
     p = sub.add_parser("run")
     common(p)
     p.add_argument("--only", action="append", help="this builtin's row (repeatable)")
