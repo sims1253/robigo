@@ -880,6 +880,9 @@ fn save_global_env(cx: &mut Cx) -> RResult<()> {
 // R: unix/sys-std.c:Rstd_CleanUp
 fn exit(cx: &mut Cx, status: i32, suicide: bool) -> ! {
     clean_up_tail(cx, suicide);
+    // exit's flush of the C library's streams: the file connections left
+    // open write what their buffers hold
+    crate::connections::flush_at_exit(cx);
     // (the isolate is not dropped: robigo's ROBIGO_GC_STATS report, which
     // the heap prints when it is, printed here, last, as it would be)
     if let Some(r) = cx.gc_stats_report() {

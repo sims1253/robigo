@@ -344,7 +344,14 @@ impl Write for ConnWriter {
         // SAFETY: as for `ConnReader`.
         #[allow(unsafe_code)]
         let c = unsafe { &mut *self.0 };
-        conn_write(c, buf)
+        // gzcon_write's one `icon->write` per block: a short count is the
+        // write error, not a request to write the rest (a file's short count
+        // is a flush that failed and dropped the buffer)
+        let n = conn_write(c, buf)?;
+        if n < buf.len() {
+            return Err(std::io::Error::other("write error on 'gzcon' connection"));
+        }
+        Ok(n)
     }
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
@@ -1094,6 +1101,20 @@ pub fn c_write(cx: &mut Cx, buf: &[u8], size: usize, con: *mut RconnC) -> RResul
     with_c(cx, con, |c| conn_write(c, buf).map(|n| n.checked_div(size).unwrap_or(0)).map_err(|e| e.to_string()))
 }
 
+/// What the process's `exit` does for the isolate's file connections left
+/// open: each stream's buffered output written, failures ignored (glibc's
+/// `_IO_cleanup`, after the `atexit` handlers; GNU R does not close them).
+// glibc: libio/genops.c:_IO_cleanup
+pub fn flush_at_exit(cx: &Cx) {
+    for c in table(cx).slots.borrow_mut().iter_mut().flatten() {
+        if let Imp::File(f) = &mut c.imp
+            && let Some(fp) = f.fp.as_mut()
+        {
+            fp.flush_at_exit();
+        }
+    }
+}
+
 /// `con->fflush(con)`.
 pub fn c_fflush(cx: &mut Cx, con: *mut RconnC) -> RResult<c_int> {
     match with_c(cx, con, |c| Ok(conn_fflush(c)))? {
@@ -1733,37 +1754,6 @@ fn rconn_printf(c: &mut Conn, parts: &[&[u8]]) -> Result<(), String> {
     Ok(())
 }
 
-/// [`rconn_printf`] of each of `buf`'s pieces (each ends at an `ends`
-/// entry), in order, up to the first that fails. A file's strings that fit
-/// in its buffer's room together are copied there at once: one at a time,
-/// `vfprintf` would copy each and flush none of them.
-fn rconn_printf_each(c: &mut Conn, buf: &[u8], ends: &[usize]) -> Result<(), String> {
-    let mut start = 0;
-    let mut i = 0;
-    while i < ends.len() {
-        if !c.reencode
-            && let Imp::File(f) = &mut c.imp
-            && let Some(fp) = f.to_write()
-        {
-            let room = fp.room();
-            let mut j = i;
-            while j < ends.len() && ends[j] - start <= room {
-                j += 1;
-            }
-            if j > i {
-                fp.put(&buf[start..ends[j - 1]]);
-                start = ends[j - 1];
-                i = j;
-                continue;
-            }
-        }
-        rconn_printf(c, &[&buf[start..ends[i]]])?;
-        start = ends[i];
-        i += 1;
-    }
-    Ok(())
-}
-
 /// [`rconn_printf`] on connection `n`, its error raised.
 pub fn printf_write(cx: &mut Cx, n: i32, buf: &[u8]) -> RResult<()> {
     let r = with_conn(cx, n, |c| rconn_printf(c, &[buf]))?;
@@ -2374,17 +2364,17 @@ pub fn do_writelines(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
         return Err(cx.error("invalid 'useBytes' argument"));
     }
     // translateChar0 (CHAR for a "bytes" string) or CHAR
-    let bytes_of = |cx: &Cx, c: Char<'_>| -> Vec<u8> {
+    fn bytes_of<'a>(cx: &Cx, c: Char<'a>, use_bytes: bool) -> std::borrow::Cow<'a, [u8]> {
         if c == cx.na_string() {
-            return b"NA".to_vec();
+            return std::borrow::Cow::Borrowed(b"NA");
         }
-        if use_bytes != 0 {
-            return c.bytes().to_vec();
+        if use_bytes {
+            return std::borrow::Cow::Borrowed(c.bytes());
         }
         robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(c), cx.locale())
-            .map(|b| b.into_owned())
-            .unwrap_or_else(|_| c.bytes().to_vec())
-    };
+            .unwrap_or(std::borrow::Cow::Borrowed(c.bytes()))
+    }
+    let use_bytes = use_bytes != 0;
     let wasopen = flags(cx, n)?.isopen;
     if !wasopen && !open_with_mode(cx, n, "wt")? {
         return Err(cx.error("cannot open the connection"));
@@ -2396,10 +2386,7 @@ pub fn do_writelines(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
         let altrep = |cx: &mut Cx| {
             robigo_rtbuiltins::util::not_yet(cx, Some(call), "writeLines() of a package ALTREP character vector")
         };
-        // every string and `sep`, and where each such pair ends
-        let mut buf = Vec::new();
-        let mut ends = Vec::new();
-        {
+        let sep: Vec<u8> = {
             let Some(sep) = args.get(cx, 2).as_vector::<Char<'_>>() else { return Err(altrep(cx)) };
             // STRING_ELT(sep, 0) of an empty vector is R_NilValue, which
             // translateChar0 refuses (CHAR of it, with useBytes, reads past
@@ -2407,24 +2394,42 @@ pub fn do_writelines(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
             if sep.is_empty() {
                 return Err(cx.error("'Rf_translateChar0' must be called on a CHARSXP, but got 'NULL'"));
             }
-            let sep = bytes_of(cx, sep.get(0));
-            let Some(text) = args.get(cx, 0).as_vector::<Char<'_>>() else { return Err(altrep(cx)) };
-            for i in 0..text.len() {
-                buf.extend_from_slice(&bytes_of(cx, text.get(i)));
-                buf.extend_from_slice(&sep);
-                ends.push(buf.len());
-            }
+            bytes_of(cx, sep.get(0), use_bytes).into_owned()
+        };
+        if args.get(cx, 0).as_vector::<Char<'_>>().is_none() {
+            return Err(altrep(cx));
         }
-        match n {
-            1 => cx.rprintf(&buf),
-            2 => cx.reprintf(&buf),
-            _ => {
-                // Rconn_printf(con, "%s%s", ...) for each string: the first
-                // that fails raises its error, the rest are not written
-                let r = with_conn(cx, n, |c| rconn_printf_each(c, &buf, &ends))?;
-                r.map_err(|m: String| cx.error(&m))?;
+        if n == 1 || n == 2 {
+            let mut buf = Vec::new();
+            {
+                let text = args.get(cx, 0).as_vector::<Char<'_>>().expect("checked");
+                for i in 0..text.len() {
+                    buf.extend_from_slice(&bytes_of(cx, text.get(i), use_bytes));
+                    buf.extend_from_slice(&sep);
+                }
             }
+            if n == 1 {
+                cx.rprintf(&buf)
+            } else {
+                cx.reprintf(&buf)
+            }
+            return Ok(());
         }
+        // Rconn_printf(con, "%s%s", ...) for each string as it is
+        // translated: the first that fails raises its error, the rest are
+        // not written
+        let r: Result<(), String> = {
+            let cx: &Cx = cx;
+            let text = args.get(cx, 0).as_vector::<Char<'_>>().expect("checked");
+            let mut slots = table(cx).slots.borrow_mut();
+            match usize::try_from(n).ok().and_then(|i| slots.get_mut(i)).and_then(|s| s.as_deref_mut()) {
+                None => Err("invalid connection".to_string()),
+                Some(c) => {
+                    (0..text.len()).try_for_each(|i| rconn_printf(c, &[&bytes_of(cx, text.get(i), use_bytes), &sep]))
+                }
+            }
+        };
+        r.map_err(|m| cx.error(&m))?;
         Ok(())
     })();
     if !wasopen {

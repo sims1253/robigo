@@ -298,13 +298,8 @@ impl<F: SysFile> Stream<F> {
         let mut to_do = n;
         let mut failed = None;
         while to_do > 0 {
+            // (only a failure stops: a write of nothing is tried again)
             match fd.write(&bytes[n - to_do..]) {
-                Ok(0) => {
-                    // write(2) writes something for a non-empty request;
-                    // a writer that does not is treated as failing
-                    failed = Some(io::Error::from_raw_os_error(EIO));
-                    break;
-                }
                 Ok(count) => to_do -= count,
                 Err(e) => {
                     failed = Some(e);
@@ -700,7 +695,7 @@ impl<F: SysFile> Stream<F> {
 
     /// The room the buffer has left for writing: output up to this long
     /// that `vfprintf` writes is only copied into the buffer ([`Self::put`]).
-    pub(crate) fn room(&self) -> usize {
+    fn room(&self) -> usize {
         self.write_end.saturating_sub(self.write_ptr)
     }
 
@@ -708,7 +703,7 @@ impl<F: SysFile> Stream<F> {
     /// bytes copied into the buffer, no flush (a fill to the end leaves it
     /// full, for the next write to flush). `vfprintf`'s checks are the
     /// caller's: the stream is writing (it has room).
-    pub(crate) fn put(&mut self, b: &[u8]) {
+    fn put(&mut self, b: &[u8]) {
         debug_assert!(b.len() <= self.room());
         self.buf[self.write_ptr..self.write_ptr + b.len()].copy_from_slice(b);
         self.write_ptr += b.len();
@@ -916,6 +911,16 @@ impl<F: SysFile> Stream<F> {
         self.err_seen = false;
     }
 
+    /// What `exit` does for each open stream: the buffered output written,
+    /// a failure ignored (the descriptor stays open, for the system to
+    /// close).
+    // glibc: libio/genops.c:_IO_cleanup, _IO_flush_all
+    pub(crate) fn flush_at_exit(&mut self) {
+        if self.fd.is_some() && self.write_ptr > self.write_base {
+            self.overflow(None);
+        }
+    }
+
     /// `fclose(fp)`: the buffered output written, the descriptor closed.
     /// 0, or `EOF` when either failed (`errno` the last failure's).
     // glibc: libio/iofclose.c:_IO_new_fclose,
@@ -938,6 +943,14 @@ impl<F: SysFile> Stream<F> {
         self.setp(0, 0);
         self.offset = POS_BAD;
         if close_status != 0 { close_status } else { write_status }
+    }
+}
+
+/// A stream dropped open (its isolate's connections dropped without
+/// closing them) writes what it holds, as the process's exit would.
+impl<F: SysFile> Drop for Stream<F> {
+    fn drop(&mut self) {
+        self.flush_at_exit();
     }
 }
 

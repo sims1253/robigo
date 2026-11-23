@@ -26,6 +26,8 @@ struct Fake {
     fail_until: usize,
     /// At most this many bytes per write(2) (a short write).
     max_write: usize,
+    /// The first this many write(2) calls write nothing.
+    zero_writes: usize,
     close_errno: Option<i32>,
     log: std::rc::Rc<std::cell::RefCell<Log>>,
 }
@@ -42,6 +44,7 @@ impl Fake {
             fail_write: None,
             fail_until: usize::MAX,
             max_write: usize::MAX,
+            zero_writes: 0,
             close_errno: None,
             log: Default::default(),
         }
@@ -68,6 +71,11 @@ impl SysFile for Fake {
         {
             self.log.borrow_mut().writes.push(Vec::new());
             return Err(io::Error::from_raw_os_error(ENOSPC));
+        }
+        if self.zero_writes > 0 {
+            self.zero_writes -= 1;
+            self.log.borrow_mut().writes.push(Vec::new());
+            return Ok(0);
         }
         if self.append {
             self.pos = self.data.len();
@@ -382,4 +390,43 @@ fn fseeko_flushes_pending_output_and_a_failed_flush_is_eof() {
     s.fwrite(b"kept");
     assert_eq!(s.fseeko(0, Whence::Set), 0);
     assert_eq!(log.borrow().writes, vec![Vec::new(), b"kept".to_vec()]);
+}
+
+#[test]
+fn a_write_of_nothing_is_tried_again() {
+    let mut f = Fake::new(4096);
+    f.zero_writes = 2;
+    let (mut s, log) = open(f, "w");
+    s.fwrite(b"abc");
+    assert_eq!(s.fflush(), 0);
+    assert!(!s.err_seen);
+    assert_eq!(log.borrow().writes, vec![Vec::new(), Vec::new(), b"abc".to_vec()]);
+}
+
+#[test]
+fn exit_and_drop_write_what_the_buffer_holds() {
+    let (mut s, log) = open(Fake::new(4096), "w");
+    s.fwrite(b"pending");
+    s.flush_at_exit();
+    assert_eq!(log.borrow().writes, vec![b"pending".to_vec()]);
+    // nothing left: no second write
+    s.flush_at_exit();
+    assert_eq!(lens(&log), [7]);
+    let (mut s, log) = open(Fake::new(4096), "w");
+    s.vfprintf(&[b"dropped open\n"]);
+    drop(s);
+    assert_eq!(log.borrow().writes, vec![b"dropped open\n".to_vec()]);
+    // a closed stream's drop writes nothing more
+    let (mut s, log) = open(Fake::new(4096), "w");
+    s.fwrite(b"x");
+    assert_eq!(s.fclose(), 0);
+    drop(s);
+    assert_eq!(lens(&log), [1]);
+    // a failure at exit is ignored
+    let mut f = Fake::new(4096);
+    f.fail_write = Some(1);
+    let (mut s, _) = open(f, "w");
+    s.fwrite(b"x");
+    s.flush_at_exit();
+    assert!(s.err_seen);
 }
