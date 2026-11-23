@@ -211,7 +211,7 @@ class Meter:
                            env={**os.environ, **perf.BASE_ENV, "R_DEFAULT_PACKAGES": "NULL",
                                 **self.robigo_env, **(env or {}), "ROBIGO_GC_STATS": "1"})
         if e := row_failure("robigo-rt", p):
-            raise RowFailed(e)
+            raise RowFailed("robigo", e)
         m = re.search(r"^robigo gc: collections (\d+)", p.stderr, re.M)
         return int(m.group(1)) if m else None
 
@@ -227,7 +227,7 @@ class Meter:
         p = subprocess.run([self.r_bin, "--vanilla", "--no-echo", "-f", script], capture_output=True, text=True,
                            env={**os.environ, **perf.BASE_ENV, "R_DEFAULT_PACKAGES": "NULL", **self.gnur_run_env(env)})
         if e := row_failure("GNU R", p):
-            raise RowFailed(e)
+            raise RowFailed("gnur", e)
         return len(re.findall(r"^Garbage collection \d+ ", p.stderr, re.M))
 
     def alloc_counts(self, script):
@@ -263,8 +263,13 @@ class Meter:
 
 
 class RowFailed(Exception):
-    """A row's script failed on one side: the side, the exit status and
-    the R error's first lines (row_failure)."""
+    """A row's script failed on one side ("robigo" or "gnur", `side`): the
+    message names the exit status and the R error's first lines
+    (row_failure)."""
+
+    def __init__(self, side, message):
+        super().__init__(message)
+        self.side = side
 
 
 def row_failure(who, p):
@@ -461,7 +466,7 @@ def cmd_rows(a, m):
             if not a.no_r:
                 c["gnur"] = [m.gnur_collections(d["setup"], d["body"], k, heap) for k in (d["n"], 2 * d["n"])]
         except RowFailed as e:
-            where = f" ({boot_of({**renv, **heap})})" if str(e).startswith("robigo-rt") else ""
+            where = f" ({boot_of({**renv, **heap})})" if e.side == "robigo" else ""
             errors.append(f"row `{d['name']}`: {e}{where}: the script must run clean on both sides to be measured")
             continue
         if "robigo" in c:

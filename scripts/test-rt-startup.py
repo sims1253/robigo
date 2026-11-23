@@ -150,8 +150,8 @@ class Layout(unittest.TestCase):
             seen["memory"].append((syscalls, env["HOME_VAR"], env.get("GLIBC_TUNABLES")))
             return (100 + len(env["HOME_VAR"]) if syscalls else 0), 5000, 0, b"", 0
 
-        def massif(cmd, env, valgrind):
-            seen["massif"] = env
+        def dhat(cmd, env, valgrind):
+            seen["dhat"] = env
             return 4242
 
         def gc(cmd, env):
@@ -159,11 +159,11 @@ class Layout(unittest.TestCase):
             return None
         with tempfile.TemporaryDirectory() as home, \
                 unittest.mock.patch.object(su, "instructions", instr), unittest.mock.patch.object(su, "memory", memory), \
-                unittest.mock.patch.object(su, "malloc_peak", massif), unittest.mock.patch.object(su, "gc_peak", gc):
+                unittest.mock.patch.object(su, "malloc_peak", dhat), unittest.mock.patch.object(su, "gc_peak", gc):
             v = su.measure(["bin"], {}, 3, "valgrind", "HOME_VAR", home)
-        # memory as allocation: one massif run and one stats run at the first shift
+        # memory as allocation: one DHAT run and one stats run at the first shift
         n0, pad0 = su.LAYOUT_SHIFTS[0]
-        for k in ("massif", "gc"):
+        for k in ("dhat", "gc"):
             self.assertEqual((len(seen[k]["HOME_VAR"]), seen[k]["GLIBC_TUNABLES"]),
                              (n0, f"glibc.malloc.top_pad={pad0}"))
         self.assertEqual((v["heap_bytes"], v["gc_peak"]), (4242, None))
@@ -250,6 +250,16 @@ class ReallocsRun(unittest.TestCase):
 class LogicalPeak(unittest.TestCase):
     """The memory clause's figures: DHAT's t-gmax, and robigo-heap's own
     peak line where a binary prints it."""
+
+    def test_a_stats_run_that_fails_is_refused_not_read_as_no_line(self):
+        # a binary failing only under ROBIGO_GC_STATS=1 must not print "-",
+        # the same as one that does not report the line (#1009's bot)
+        crash = [sys.executable, "-c", "import os, sys\nsys.exit(3 if os.environ.get('ROBIGO_GC_STATS') else 0)"]
+        with self.assertRaises(SystemExit) as cm:
+            su.gc_peak(crash, dict(os.environ))
+        self.assertIn("under ROBIGO_GC_STATS=1 exited 3", str(cm.exception))
+        quiet = [sys.executable, "-c", "pass"]
+        self.assertIsNone(su.gc_peak(quiet, dict(os.environ)))
 
     def test_the_malloc_peak_sums_the_program_points_at_t_gmax(self):
         doc = {"dhatFileVersion": 2, "mode": "heap", "pps": [{"gb": 5000, "tb": 9}, {"gb": 1200}, {"gb": 0}]}

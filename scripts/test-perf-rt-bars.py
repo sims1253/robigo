@@ -534,7 +534,7 @@ class RowCollections(unittest.TestCase):
 
         def pick(self, side, setup, k):
             if side in self.fails:
-                raise ivr.RowFailed(self.fails[side])
+                raise ivr.RowFailed(side, self.fails[side])
             c = self.shifted if self.shifted and setup != "s <- 1" else self.counts[side]
             return c[0] if k == 10 else c[1]
 
@@ -626,7 +626,7 @@ class RowCollections(unittest.TestCase):
         class Shifty(self.Fake):
             def pick(self, side, setup, k):
                 if setup != "s <- 1":
-                    raise ivr.RowFailed("robigo-rt exits 1: Error: shifted")
+                    raise ivr.RowFailed("robigo", "robigo-rt exits 1: Error: shifted")
                 return 0
         msg = self.refused(Shifty(), "address_sensitive = true\n", shifts=[0, 300])
         self.assertIn("row `r`: robigo-rt exits 1: Error: shifted (heap shift k = 300)", msg)
@@ -654,11 +654,22 @@ class RowCollections(unittest.TestCase):
             with self.assertRaises(ivr.RowFailed) as cm:
                 ivr.Meter.robigo_collections(m, "s <- 1", "source(src)", 4)
         self.assertEqual(str(cm.exception), "robigo-rt exits 1: Error: package ‘utils’ does not have a namespace")
+        self.assertEqual(cm.exception.side, "robigo")
         with tempfile.TemporaryDirectory() as tmp, \
                 patch.object(ivr.subprocess, "run", return_value=SimpleNamespace(returncode=1, stderr="Error: e\n")):
             m = SimpleNamespace(tmp=tmp, r_bin="R", gnur_run_env=lambda env: {})
-            with self.assertRaises(ivr.RowFailed):
+            with self.assertRaises(ivr.RowFailed) as cm:
                 ivr.Meter.gnur_collections(m, "s <- 1", "x", 4)
+        self.assertEqual(cm.exception.side, "gnur")
+
+    def test_the_boot_hint_follows_the_failing_side_not_the_messages_wording(self):
+        for side, hinted in (("robigo", True), ("gnur", False)):
+            with self.subTest(side=side), patch.dict(os.environ, {"ROBIGO_RT_BOOT": "rdb"}):
+                with self.assertRaises(SystemExit) as cm:
+                    self.rows(self.Fake(fails={side: "crashed"}), no_r=False)
+                msg = str(cm.exception.code)
+                self.assertIn("row `r`: crashed", msg)
+                self.assertEqual("(boot rdb)" in msg, hinted)
 
     def test_a_row_marked_collects_is_measured_and_its_counts_reported(self):
         doc, table = self.rows(self.Fake(robigo=(5, 9), gnur=(21, 42)), "collects = true\n", no_r=False)

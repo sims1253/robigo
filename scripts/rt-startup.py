@@ -509,9 +509,12 @@ def layout_homes(home):
 
 def measure(cmd, env, runs, valgrind, var, home):
     """One start's numbers: {"instr", "instr_shifts", "anon_kib",
-    "anon_shifts", "rss_kib", "rss_runs", "children"}, booting from `home` through the
-    environment variable `var` (`children`: the processes one run started,
-    GNU R's temporary directory's `rm` among them)."""
+    "anon_shifts", "rss_kib", "rss_runs", "children", "heap_bytes",
+    "gc_peak"}, booting from `home` through the environment variable `var`
+    (`children`: the processes one run started, GNU R's temporary
+    directory's `rm` among them; `heap_bytes`: malloc_peak(), DHAT's t-gmax;
+    `gc_peak`: gc_peak(), robigo-heap's peak line, None for a binary that
+    does not print it)."""
     homes = layout_homes(home)
 
     def shifted(n):
@@ -622,12 +625,17 @@ def gc_peak_of(stderr):
 
 def gc_peak(cmd, env):
     """gc_peak_of() of one plain run of `cmd` under ROBIGO_GC_STATS=1 (GNU R
-    ignores the variable, and prints no such line)."""
+    ignores the variable, and prints no such line). A run that fails is
+    refused, as malloc_peak()'s is: read as None it would print "-", the
+    same as a binary that does not report the line."""
     try:
         p = subprocess.run(cmd, env=dict(env, ROBIGO_GC_STATS="1"), stdout=subprocess.DEVNULL,
                            stderr=subprocess.PIPE, text=True, timeout=TIMEOUT)
     except subprocess.TimeoutExpired:
         raise SystemExit(f"rt-startup: {' '.join(cmd)} ran over {TIMEOUT} s")
+    if p.returncode:
+        raise SystemExit(f"rt-startup: {' '.join(cmd)} under ROBIGO_GC_STATS=1 exited {p.returncode}:\n"
+                         f"{p.stderr[-2000:]}")
     return gc_peak_of(p.stderr)
 
 
@@ -909,7 +917,6 @@ def table(entries, new, main=None, gnur=None):
                   f"{g['rss_kib']:,.0f}"] if g else ["", "", "", ""]
         lines.append("| " + " | ".join(cells) + " |")
     return lines
-
 
 
 def growth_reallocs(cg, top=5):
