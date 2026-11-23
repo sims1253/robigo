@@ -47,7 +47,7 @@ enum K {
 use K::*;
 
 /// The operands of opcode `op`, as many as it has.
-fn operands(op: u8) -> &'static [K] {
+const fn operands(op: u8) -> &'static [K] {
     match op {
         GOTO | STEPFOR => &[Label],
         BRIFNOT | STARTSUBSET | STARTSUBASSIGN | STARTC | STARTSUBSET2 | STARTSUBASSIGN2 | AND1ST | OR1ST
@@ -73,6 +73,18 @@ fn operands(op: u8) -> &'static [K] {
         _ => &[],
     }
 }
+
+/// [`operands`] by opcode, made when this is compiled: the check reads a
+/// table, not a match, per instruction.
+const OPERANDS: [&[K]; 256] = {
+    let mut t: [&[K]; 256] = [&[]; 256];
+    let mut op = 0;
+    while op < 256 {
+        t[op] = operands(op as u8);
+        op += 1;
+    }
+    t
+};
 
 /// The longest argument list a call constant may have: the matcher's
 /// limit (`args.rs`'s `NO`), past which a walk of a cyclic list stops.
@@ -171,7 +183,7 @@ pub(super) unsafe fn check(dec: &[BcIns], consts: Sexp, code_len: usize) -> Resu
         let pool = if list { consts.std_data() as *const Sexp } else { std::ptr::null() };
         let name = |op: u8| robigo_rtbuiltins::bytecode::OPCODES.get(op as usize).map_or("?", |o| o.0);
         for i in dec {
-            for (j, &k) in operands(i.op).iter().enumerate() {
+            for (j, &k) in OPERANDS[i.op as usize].iter().enumerate() {
                 let v = i.a[j];
                 match k {
                     Label if v < 0 || v as usize > code_len => {

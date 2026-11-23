@@ -139,6 +139,13 @@ def main():
         sys.exit(f"rt-bc-mutate: tests/bc-mutate/gen.R changed (sha256 {sha}): its corpus names mutations of the "
                  "old generator; find the corpus again with the new one and update GEN_SHA256")
     rt = os.path.abspath(a.robigo_rt)
+    # the binary measured, named in the report (the commit its build.rs
+    # embedded, and its sha256: an edit not committed shows only there)
+    p = subprocess.run([os.path.join(ROOT, "scripts", "rt-builder.sh"), rt], capture_output=True, text=True)
+    if p.returncode != 0:
+        sys.exit(f"rt-bc-mutate: {p.stderr.strip()}")
+    who = dict(l.split(": ", 1) for l in p.stdout.splitlines() if ": " in l)
+    print(f"rt-bc-mutate: robigo-rt at commit {who.get('commit', '?')}, sha256 {who.get('sha256', '?')[:16]}, {rt}")
     runs = []
     for seed, k, was in corpus():
         runs.append((f"corpus {seed} {k} ({was})", {"BCM_SEED": str(seed), "BCM_BATCH": str(k)}))
