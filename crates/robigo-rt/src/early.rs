@@ -69,15 +69,11 @@ pub(crate) fn value<'s>(
             }
         }
         // `eval` of byte code (eval.rs's BCODESXP arm): its translation,
-        // unless that arm would evaluate the source instead (the Eval
-        // profile forced, byte code disabled, a version bcEval does not run)
+        // unless that arm would evaluate the source instead. Its own arm, so
+        // that a call's arm is the one it was (merged, the arm's type test
+        // cost +0.1% on binarytrees; `run` is inlined into both)
         BCODESXP => {
-            let st = crate::prims::state(cx);
-            if !st.early_bytecode.get()
-                || st.forced == Some(Profile::Eval)
-                || st.jit.get().disable_bytecode
-                || !robigo_rtbuiltins::bytecode::version_ok(expr.bind(cx))
-            {
+            if !bytecode_runs(cx, expr) {
                 return Ok(None);
             }
             // SAFETY: the rooted byte code's 4th word is R_NilValue, its
@@ -96,6 +92,21 @@ pub(crate) fn value<'s>(
     // SAFETY: an object of this isolate (fresh, or a binding's value),
     // rooted at once.
     Ok(Some(s.root(cx, unsafe { Ref::from_sexp(x, cx) })))
+}
+
+/// Whether eval.rs's BCODESXP arm would run the byte code `expr` (and so
+/// whether its early value is the one a force would make): not when the
+/// `Eval` profile is forced, byte code disabled, or its version is not one
+/// bcEval runs (the arm evaluates the source then); nor with early byte
+/// code turned off ([`crate::set_early_bytecode`], for tests). Out of line:
+/// `value`'s common case is a symbol or a call.
+#[inline(never)]
+fn bytecode_runs(cx: &Cx, expr: Root<'_>) -> bool {
+    let st = crate::prims::state(cx);
+    st.early_bytecode.get()
+        && st.forced != Some(Profile::Eval)
+        && !st.jit.get().disable_bytecode
+        && robigo_rtbuiltins::bytecode::version_ok(expr.bind(cx))
 }
 
 /// A variable's value read without running code: bound to a value (not
@@ -199,6 +210,9 @@ pub fn poison_deaths(regs: &mut [Slot], i: &Ins, at: usize) {
 /// # Safety
 /// `code` is a live code object and `rho` a live environment; nothing may
 /// collect while this runs (it does not allocate).
+// (inlined into both of `value`'s arms: called from two places it was not,
+// +0.49% on binarytrees, step 1a)
+#[inline(always)]
 unsafe fn run(cx: &Cx, code: Sexp, rho: Sexp) -> Option<Slot> {
     // SAFETY: the caller's contract.
     let v = unsafe { View::of(code) };
@@ -300,10 +314,15 @@ unsafe fn run(cx: &Cx, code: Sexp, rho: Sexp) -> Option<Slot> {
 /// would pass `R_Expressions`.
 // R: eval.c:eval, eval.c:bcEval (the entry's BC_CHECK_SIGINT)
 pub fn early_force(cx: &mut Cx, bytecode: bool, kind: u8) -> bool {
-    if kind == BCODESXP {
-        return bytecode && early_force_bc(cx);
+    // a call's argument takes one type test, as before byte-code objects
+    // came here (rtcore's caller tested for a call itself then): the
+    // byte-code test only off the call's path
+    let call = kind == LANGSXP;
+    if !call && kind == BCODESXP {
+        // (a tail call to a cold function: the common path keeps no frame)
+        return early_force_bc(cx, bytecode);
     }
-    early_force_ast(cx, bytecode, kind == LANGSXP)
+    early_force_ast(cx, bytecode, call)
 }
 
 /// [`early_force`] for a symbol (`call` false) or a call: one count each,
@@ -311,7 +330,8 @@ pub fn early_force(cx: &mut Cx, bytecode: bool, kind: u8) -> bool {
 /// whose arguments are never byte-code objects (a translated call's
 /// `CallCodes` does not reach `inline::site`): the byte-code case kept out
 /// of it, as an extra compare there cost 7 instructions a call (step 1a).
-#[inline(always)]
+/// (No inline attribute, as the one function before it had none: forcing
+/// it inline shifted the inliner's own inlining, +0.1% on binarytrees.)
 pub(crate) fn early_force_ast(cx: &mut Cx, bytecode: bool, call: bool) -> bool {
     // (only compiled code's arguments are computed early: their promises
     // hold byte code, evaluated under the `Bc` profile)
@@ -334,9 +354,10 @@ pub(crate) fn early_force_ast(cx: &mut Cx, bytecode: bool, call: bool) -> bool {
 /// [`early_force`] for a byte-code object (a translated call's promise
 /// code, byte code's slot): `eval`'s count and then `bcEval`'s entry poll
 /// count, both made or neither.
+#[cold]
 #[inline(never)]
-fn early_force_bc(cx: &mut Cx) -> bool {
-    if cx.eval_depth() + 1 > cx.expressions() {
+fn early_force_bc(cx: &mut Cx, bytecode: bool) -> bool {
+    if !bytecode || cx.eval_depth() + 1 > cx.expressions() {
         return false;
     }
     let (e, b) = (cx.evalcount().get() + 1, cx.bc_evalcount().get() + 1);
