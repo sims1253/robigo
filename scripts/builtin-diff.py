@@ -53,6 +53,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 from scratch import keep as keep_dir, remove as remove_dir, scratch_dir  # noqa: E402
 import conf_slots  # noqa: E402
+import rt_trees  # noqa: E402
 
 HERE = os.path.join(ROOT, "scripts", "builtin-diff")
 GEN, DRIVER, RENDER = (os.path.join(HERE, f) for f in ("gen.R", "driver.R", "render.R"))
@@ -400,7 +401,8 @@ def lock_row(lock, path, first=5.0, every=60.0, step=0.2):
 def run_cases(cmd, env, batch, out, ncases, root, rsrc, timeout):
     """run_isolated's cases, in `root`, which its caller holds."""
     lost = {}
-    base = {k: env[k] for k in (*ENV, "R_ENABLE_JIT", "A4_LABEL", "ROBIGO_TRANSLATION_CACHE") if k in env}
+    base = {k: env[k] for k in (*ENV, "R_ENABLE_JIT", "A4_LABEL", "ROBIGO_TRANSLATION_CACHE", "ROBIGO_RT_CHECKOUT")
+            if k in env}
     for i in range(1, ncases + 1):
         remove_tree(root)
         cwd, home, tmp = (os.path.join(root, x) for x in ("case", "home", "tmp"))
@@ -870,6 +872,7 @@ def cmd_run(a):
     ensure_oracle(a, rows)
     timed("GNU R's side (cache misses only)", t0)
     rt_bin = a.robigo_rt or default_rt()
+    rt_trees.ensure(rt_bin)    # (its tree: the cases name no boot, rdb once it is the default)
     a.rsrc = r_source()
     prefix = ["unshare", "-rn"] if unshare_works() else []
     jobs = [(r, j) for r in rows for j in r.jits]
@@ -965,6 +968,7 @@ def cmd_show(a):
     jit = "on" if a.jit else "off"
     ensure_oracle(a, [row])
     rt_bin = a.robigo_rt or default_rt()
+    rt_trees.ensure(rt_bin)
     a.rsrc = r_source()
     r = run_rt(a, row, jit, rt_bin, ["unshare", "-rn"] if unshare_works() else [])
     kind, call = {i: (k, c) for i, k, c in r["cases"]}[a.id]

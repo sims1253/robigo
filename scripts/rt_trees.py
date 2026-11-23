@@ -17,17 +17,6 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def stamp_binary(root=ROOT):
-    """The binary's hash the checkout's tree was written by (the stamp's
-    last word), or None without a tree."""
-    try:
-        with open(os.path.join(root, ".robigo", "rt-home-db", ".rt-home-db")) as f:
-            words = f.read().split()
-    except OSError:
-        return None
-    return words[-1] if words else None
-
-
 def binary_hash(binary):
     """rt-home-db.sh's hash of a binary: sha256, its first 16 digits."""
     h = hashlib.sha256()
@@ -37,15 +26,54 @@ def binary_hash(binary):
     return h.hexdigest()[:16]
 
 
+def script_hash(root, name):
+    """The hash rt-home.sh / rt-home-db.sh put in a stamp for themselves."""
+    return binary_hash(os.path.join(root, "scripts", name))
+
+
+def fresh(binary, root=ROOT):
+    """Whether the checkout's trees are `binary`'s and whole, as far as can
+    be told without a build: the database stamp's script hashes and binary
+    hash match (`<src> <rt-home.sh> <natives> <rt-home-db.sh> <binary>`), the
+    R_HOME tree's stamp is the one it was made from, and the files a start
+    needs exist (the two databases, the two translation caches). (The
+    natives' hash needs robigo-heap's build: rt-home.sh checks that one.)"""
+    db = os.path.join(root, ".robigo", "rt-home-db")
+    try:
+        with open(os.path.join(db, ".rt-home-db")) as f:
+            words = f.read().split()
+        with open(os.path.join(root, ".robigo", "rt-home", ".rt-home")) as f:
+            home = f.read().split()
+    except OSError:
+        return False
+    if len(words) != 5 or words[:3] != home:
+        return False
+    if (words[1], words[3], words[4]) != (script_hash(root, "rt-home.sh"), script_hash(root, "rt-home-db.sh"),
+                                          binary_hash(binary)):
+        return False
+    need = [os.path.join(db, "library", "base", "R", "base.rdb"),
+            os.path.join(db, "library", "compiler", "R", "compiler.rdb"),
+            os.path.join(root, ".robigo", "rt-home-db-cache", "base.rtc"),
+            os.path.join(root, ".robigo", "rt-home-db-cache", "compiler.rtc")]
+    return all(os.path.isfile(p) and os.path.getsize(p) > 0 for p in need)
+
+
 def ensure(binary, root=ROOT):
     """Make the checkout's R_HOME tree and base's database tree for
-    `binary` unless they are already its (exits on a failure)."""
-    cache = os.path.join(root, ".robigo", "rt-home-db-cache")
-    fresh = stamp_binary(root) == binary_hash(binary) and all(
-        os.path.getsize(os.path.join(cache, f)) > 0 if os.path.exists(os.path.join(cache, f)) else False
-        for f in ("base.rtc", "compiler.rtc"))
-    if fresh:
+    `binary` unless they are already its and whole (exits on a failure),
+    and point this process's robigo-rt children at that checkout
+    (ROBIGO_RT_CHECKOUT): a binary built in another worktree, or an inherited
+    ROBIGO_RT_CHECKOUT, would boot from another tree than the one made here."""
+    root = os.path.abspath(root)
+    os.environ["ROBIGO_RT_CHECKOUT"] = root
+    if fresh(binary, root):
         return
+    # (rt-home-db.sh's own check reads the stamp and the caches only: a tree
+    # that lost a database would pass it, so its stamp goes first)
+    try:
+        os.remove(os.path.join(root, ".robigo", "rt-home-db", ".rt-home-db"))
+    except FileNotFoundError:
+        pass
     for cmd in (["scripts/rt-home.sh"], ["scripts/rt-home-db.sh", "--robigo-rt", os.path.abspath(binary)]):
         p = subprocess.run(cmd, cwd=root, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         if p.returncode:

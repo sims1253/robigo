@@ -575,8 +575,8 @@ class RtCi(unittest.TestCase):
     # until it is listed here with its way.
     TREE_CALLERS = {
         "scripts/rt-ci.py": "its plans: each binary's tree before its steps (the walk test above)",
-        "scripts/builtin-diff.py": "rt-ci's builtin-diff shard writes the tree first; both binaries start with "
-                                   "ROBIGO_TRANSLATION_CACHE=0 (another build's .rtc is a miss)",
+        "scripts/builtin-diff.py": "run/show: rt_trees.ensure (ci: rt-ci's builtin-diff shard wrote it); the "
+                                   "planted binary boots the plain one's tree; both with ROBIGO_TRANSLATION_CACHE=0",
         "scripts/corpus.py": "rt_trees.ensure in robigo_rt_path; CI's rt-corpora unpacks perf-rt-build's trees",
         "scripts/wall13.py": "rt_trees.ensure before the first run (local only)",
         "scripts/rt-build-gaps.py": "rt_trees.ensure before its probes (local only)",
@@ -613,7 +613,7 @@ class RtCi(unittest.TestCase):
         job = re.search(r"\n  rt-corpora:\n(.*?)\n  [a-z0-9-]+:\n", yml, re.S).group(1)
         self.assertLess(job.index("tar -xf dist/rt-trees.tar"), job.index("corpus.py run"))
 
-    def test_rt_trees_makes_the_tree_only_when_it_is_another_binarys(self):
+    def test_rt_trees_makes_the_tree_only_when_it_is_not_this_binarys_whole_tree(self):
         import importlib.util, shutil, subprocess, tempfile
         from unittest import mock
         spec_ = importlib.util.spec_from_file_location("rt_trees", HERE / "rt_trees.py")
@@ -621,27 +621,54 @@ class RtCi(unittest.TestCase):
         spec_.loader.exec_module(tr)
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        os.makedirs(os.path.join(d, "scripts"))
+        for n in ("rt-home.sh", "rt-home-db.sh"):
+            open(os.path.join(d, "scripts", n), "w").write(n)
         b = os.path.join(d, "robigo-rt")
         open(b, "wb").write(b"binary")
+        db = os.path.join(d, ".robigo", "rt-home-db")
+        files = [os.path.join(db, "library", "base", "R", "base.rdb"),
+                 os.path.join(db, "library", "compiler", "R", "compiler.rdb"),
+                 os.path.join(d, ".robigo", "rt-home-db-cache", "base.rtc"),
+                 os.path.join(d, ".robigo", "rt-home-db-cache", "compiler.rtc")]
+        def make_whole():
+            for f in files:
+                os.makedirs(os.path.dirname(f), exist_ok=True)
+                open(f, "w").write("x")
+            home = ["R-4.6.2-x", tr.script_hash(d, "rt-home.sh"), "natives"]
+            os.makedirs(os.path.join(d, ".robigo", "rt-home"), exist_ok=True)
+            open(os.path.join(d, ".robigo", "rt-home", ".rt-home"), "w").write(" ".join(home) + "\n")
+            open(os.path.join(db, ".rt-home-db"), "w").write(
+                " ".join(home + [tr.script_hash(d, "rt-home-db.sh"), tr.binary_hash(b)]) + "\n")
         ran = []
         def fake(cmd, **k):
             ran.append(cmd[0])
             return subprocess.CompletedProcess(cmd, 0, "", "")
-        with mock.patch.object(tr.subprocess, "run", fake):
+        with mock.patch.object(tr.subprocess, "run", fake), mock.patch.dict(os.environ, {"ROBIGO_RT_CHECKOUT": "/else"}):
             tr.ensure(b, d)            # no tree: both scripts
             self.assertEqual(ran, ["scripts/rt-home.sh", "scripts/rt-home-db.sh"])
-            os.makedirs(os.path.join(d, ".robigo", "rt-home-db"))
-            os.makedirs(os.path.join(d, ".robigo", "rt-home-db-cache"))
-            for f in ("base.rtc", "compiler.rtc"):
-                open(os.path.join(d, ".robigo", "rt-home-db-cache", f), "w").write("x")
-            with open(os.path.join(d, ".robigo", "rt-home-db", ".rt-home-db"), "w") as f:
-                f.write("R-4.6.2-x 0123 4567 " + tr.binary_hash(b) + "\n")
+            # and the binary's children boot from this checkout, not an inherited one
+            self.assertEqual(os.environ["ROBIGO_RT_CHECKOUT"], os.path.abspath(d))
+            make_whole()
             ran.clear()
-            tr.ensure(b, d)            # this binary's, with its cache: nothing
+            tr.ensure(b, d)            # this binary's whole tree: nothing
             self.assertEqual(ran, [])
             open(b, "wb").write(b"another")
             tr.ensure(b, d)            # another binary's: made again
             self.assertEqual(ran, ["scripts/rt-home.sh", "scripts/rt-home-db.sh"])
+            open(b, "wb").write(b"binary")
+            make_whole()
+            os.remove(files[0])
+            ran.clear()
+            tr.ensure(b, d)            # a database gone: made again, its stamp dropped first
+            self.assertEqual(ran, ["scripts/rt-home.sh", "scripts/rt-home-db.sh"])
+            self.assertFalse(os.path.exists(os.path.join(db, ".rt-home-db")))
+            make_whole()
+            open(os.path.join(d, "scripts", "rt-home-db.sh"), "w").write("changed")
+            ran.clear()
+            tr.ensure(b, d)            # the recipe changed: made again
+            self.assertEqual(ran, ["scripts/rt-home.sh", "scripts/rt-home-db.sh"])
+
 
     def test_a_crosscheck_that_compares_fewer_than_its_floor_fails(self):
         # the rdb boot's report: a boot that stopped loading the compiler's
