@@ -347,14 +347,58 @@ def conformance_command():
 SLOW = {"ROBIGO_CONF_TIMEOUT": "600"}
 
 
+# TEMPORARY (2026-11-23): two cases given 60 s in the conformance steps
+# that run at the runner's default 20 s, because each failed local gates
+# three times tonight on a box at load 46-66 (24 CPUs):
+#   tests/rt/env/large-frames.R       6.7-7.3 s alone under the rdb boot (E),
+#                                     20.0 s at load ~26; 5.6-6.3 s on CI
+#   tests/rt/stress/finalizer-depths.R 12.1-15.6 s on a loaded box, 25 s once
+# To be re-decided from the first quiet measurement with the machine-wide
+# slot pool (ROBIGO_CONF_SLOTS_DIR), which starts a case's clock when it
+# takes its slot: dropped then if both sit well under 10 s.
+DEFAULT_STEP_SLOW = {
+    "tests/rt/env/large-frames.R": 60,
+    "tests/rt/stress/finalizer-depths.R": 60,
+}
+
+
 def every_cpu(steps):
     """The steps, with the conformance runner given a case per CPU in each
     conformance step: those run one test alone (`--exact`), so the cases may
     use every CPU (the runner's default, 2, is for a cargo test that shares
     the machine with other test binaries). The runner starts the cases named
-    in ROBIGO_CONF_TIMEOUTS first."""
+    in ROBIGO_CONF_TIMEOUTS first. And each conformance step at the default
+    timeout (no ROBIGO_CONF_TIMEOUT) gets DEFAULT_STEP_SLOW's allowances."""
     jobs = str(os.cpu_count() or 2)
-    return [(t, {**e, "ROBIGO_CONF_JOBS": jobs} if CONFORMANCE in c and "--exact" in c else e, c) for t, e, c in steps]
+    out = []
+    for t, e, c in steps:
+        if CONFORMANCE in c and "--exact" in c:
+            e = {**e, "ROBIGO_CONF_JOBS": jobs}
+            # (the effective environment: the step's over the caller's, as
+            # run_steps runs it. A global timeout, the step's or the
+            # caller's, means no default-timeout allowances; the case lists
+            # merge, the defaults first, then the caller's, then the step's)
+            # (present, even empty, is set: the runner reads it so)
+            if "ROBIGO_CONF_TIMEOUT" not in e and "ROBIGO_CONF_TIMEOUT" not in os.environ:
+                def named(v):
+                    out = {}
+                    for i in v.split(","):
+                        if not i.strip():
+                            continue
+                        k, _, s = i.rpartition("=")
+                        if not k.strip() or not s.strip().isdigit():
+                            # (the runner's own message for it)
+                            raise SystemExit(f"rt-ci: ROBIGO_CONF_TIMEOUTS: {i!r} is not CASE=SECS")
+                        if k.strip() in out:
+                            # (the runner refuses one list naming a case twice)
+                            raise SystemExit(f"rt-ci: ROBIGO_CONF_TIMEOUTS names {k.strip()!r} twice")
+                        out[k.strip()] = int(s)
+                    return out
+                e["ROBIGO_CONF_TIMEOUTS"] = case_timeouts({**DEFAULT_STEP_SLOW,
+                                                           **named(os.environ.get("ROBIGO_CONF_TIMEOUTS", "")),
+                                                           **named(e.get("ROBIGO_CONF_TIMEOUTS", ""))})
+        out.append((t, e, c))
+    return out
 
 
 def full_move_steps():
@@ -741,6 +785,43 @@ def timings_report(done, shard=None):
     return "\n".join(lines)
 
 
+def conf_slots_dir(env=None):
+    """The machine-wide pool of conformance case slots a local run shares
+    with every other local rt-ci run of this user (robigo-conformance's
+    ROBIGO_CONF_SLOTS_DIR: a case takes a slot before it starts, its time
+    limit counting from its start): several checkouts' gates at once took
+    the box to load 45-66 on 24 CPUs, and cases ran into their limits
+    (2026-11-23). The caller's own ROBIGO_CONF_SLOTS_DIR wins (empty: no
+    pool); CI has none (one run per runner). None: leave it as it is."""
+    env = os.environ if env is None else env
+    if "ROBIGO_CONF_SLOTS_DIR" in env or env.get("GITHUB_ACTIONS") == "true":
+        return None
+    base = env.get("XDG_RUNTIME_DIR")
+    if base and os.path.isdir(base):
+        d = os.path.join(base, "robigo-conf-slots")
+    else:
+        # fixed, not TMPDIR's: every run of this user must find the same pool
+        d = f"/tmp/robigo-conf-slots-{os.getuid()}"
+    try:
+        try:
+            os.makedirs(d, mode=0o700, exist_ok=True)
+        except FileExistsError:
+            pass            # (a file or a link there: lstat and the check below say what)
+        st = os.lstat(d)
+    except OSError as e:
+        print(f"::warning::rt-ci: no conformance slot pool ({d}: {e})")
+        return None
+    import stat as st_
+    # this user's directory, and private: another user able to write there
+    # could replace a slot file, and two runs would lock two files for one
+    # slot
+    if not st_.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
+        print(f"::warning::rt-ci: no conformance slot pool ({d} is not a private directory of this user's: "
+              f"mode {oct(st_.S_IMODE(st.st_mode))})")
+        return None
+    return d
+
+
 def metadata():
     p = subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"],
                        cwd=ROOT, stdout=subprocess.PIPE, text=True, check=True)
@@ -752,6 +833,9 @@ def main(argv):
     # GNU R, /usr/lib/R) it ignores with GNU R's warning on stdout, which
     # every compared output would then carry: none for what this runs
     os.environ.pop("R_HOME", None)
+    slots = conf_slots_dir()
+    if slots is not None:
+        os.environ["ROBIGO_CONF_SLOTS_DIR"] = slots
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--list", action="store_true", help="print the rt crates and stop")
     ap.add_argument("--check", action="store_true", help="check the premise and stop")
