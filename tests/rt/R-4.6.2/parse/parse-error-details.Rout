@@ -18,5 +18,10 @@ placeholderNotNamed pipe placeholder can only be used as a named argument (<inpu
 simpleError attempt to use zero-length variable name 
 simpleError attempt to use zero-length variable name 
 unrecognizedEscape '\q' is an unrecognized escape in character string (<input>:1:12) 
-simpleError attempt to use zero-length variable name 
-[1] " \"\\q\"" "x <- 2"  
+"simpleError" | "TAIL" 
+"badHex" | ";TAIL" 
+"nulNotAllowed" | ";TAIL" 
+"placeholderNotNamed" | ";TAIL" 
+"simpleError" | " \"\\q\"" 
+"placeholderNotNamed" | " 2;TAIL" 
+"repeatedFormal" | " 1;TAIL" 

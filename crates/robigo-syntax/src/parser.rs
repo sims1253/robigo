@@ -268,6 +268,7 @@ pub fn parse_conn_statement<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) ->
         Ok(p) => p,
         Err(e) => return ConnStatus::Error { read_to: e.end },
     };
+    let lex_error = p.lex_error();
     match p.toks[p.pos].tok {
         Tok::Newline => return ConnStatus::Null,
         // Nothing but the start of a character the input cuts short, or a
@@ -278,7 +279,7 @@ pub fn parse_conn_statement<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) ->
     let e = match p.expr(0) {
         Ok(e) => e,
         Err(e) if e.incomplete => return ConnStatus::More,
-        Err(e) => return ConnStatus::Error { read_to: p.error_read_to(&e) },
+        Err(e) => return ConnStatus::Error { read_to: p.read_to(&e, lex_error) },
     };
     let t = p.toks[p.pos].clone();
     match t.tok {
@@ -290,7 +291,7 @@ pub fn parse_conn_statement<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) ->
         Tok::Eof => ConnStatus::More,
         _ => match p.unexpected(&t) {
             e if e.incomplete => ConnStatus::More,
-            e => ConnStatus::Error { read_to: p.error_read_to(&e) },
+            e => ConnStatus::Error { read_to: p.read_to(&e, lex_error) },
         },
     }
 }
@@ -373,12 +374,17 @@ impl<'a> Parser<'a> {
         let (start, end) = (t.span.start as usize, t.span.end as usize);
         let tok = &raw[start..end];
         let la = if lex_error.is_some_and(|le| le.at == start) { invalid_lookahead(tok) } else { lookahead(tok) };
-        let lexed = match la {
+        let mut lexed = match la {
             _ if end >= raw.len() => end,
             Lookahead::None => end,
             Lookahead::Byte => end + 1,
             Lookahead::Char => (end + crate::utf8clen(raw[end])).min(raw.len()),
         };
+        // an invalid token has read the whole character it rejected
+        // (`mbcs_get_next`), not its first byte
+        if lex_error.is_some_and(|le| le.at == start) && start < raw.len() {
+            lexed = lexed.max((start + crate::utf8clen(raw[start])).min(raw.len()));
+        }
         lexed.max(e.end)
     }
 
@@ -620,21 +626,29 @@ impl<'a> Parser<'a> {
         self.program_n(usize::MAX)
     }
 
-    /// Where GNU R's lexer had stopped reading when `e` was raised
-    /// ([`Parser::read_to`]): the bytes after it stay unread on a
-    /// connection (`R_ParseConn`'s `con_getc`).
-    pub fn error_read_to(&self, e: &ParseError) -> usize {
+    /// The invalid token that ended the tokens, if one did: where it starts,
+    /// and for a `raiseLexError` where reading stopped.
+    fn lex_error(&self) -> Option<LexError> {
         // A lexical error ends the tokens (before the end of input). For a
         // `raiseLexError` reading stopped where it was raised, inside its
         // token; any other invalid token has read the character it rejected.
-        let lex_error = match self.toks.len().checked_sub(2).map(|k| &self.toks[k]) {
+        match self.toks.len().checked_sub(2).map(|k| &self.toks[k]) {
             Some(Token { tok: Tok::Invalid(le), span }) => Some(LexError {
                 at: span.start as usize,
                 raised: (le.style == ErrorStyle::Condition).then_some(le.end),
             }),
             _ => None,
-        };
-        self.read_to(e, lex_error)
+        }
+    }
+
+    /// For an error a grammar action raised (it has a frontier: the
+    /// lookahead the action reduced with), where GNU R's lexer had stopped
+    /// reading ([`Parser::read_to`]): the bytes after it stay unread on a
+    /// connection (`R_ParseConn`'s `con_getc`). None for the lexer's and
+    /// the grammar's own errors, whose read position the caller has from
+    /// the error's span.
+    pub fn action_error_read_to(&self, e: &ParseError) -> Option<usize> {
+        self.trial_frontier.map(|_| self.read_to(e, self.lex_error()))
     }
 
     /// The start of the last token GNU R's lexer had read when `e` was

@@ -282,7 +282,7 @@ fn parse_text(
         match p.program_n(if num < 0 { usize::MAX } else { num as usize }) {
             Ok(exprs) => Ok((exprs, p.consumed_end())),
             Err(e) => {
-                frontier = Some((p.error_frontier(&e), p.error_read_to(&e)));
+                frontier = Some((p.error_frontier(&e), p.action_error_read_to(&e)));
                 Err(e)
             }
         }
@@ -293,11 +293,12 @@ fn parse_text(
             crate::reader::check_non_ascii_locale(cx, src)?;
             if !e.incomplete {
                 *consumed = match frontier {
-                    // where the lexer stopped: the last token it read and
-                    // what it looked at past it
-                    Some((_, read_to)) => read_to,
-                    // (the lexer itself failed: no parser)
-                    None => {
+                    // an action's error: where the lexer stopped, through
+                    // the lookahead the action reduced with
+                    Some((_, Some(read_to))) => read_to,
+                    // the lexer's or the grammar's: the error token and
+                    // what the lexer looked at past it
+                    _ => {
                         let end = e.end.max(e.offset);
                         end + read_ahead(src, e.offset.min(end), end)
                     }

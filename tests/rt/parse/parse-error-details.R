@@ -33,11 +33,20 @@ m('1 |> f(_)\n"\\q"')
 m('""() "\\q"')
 m('""()\n"\\q"')
 m('f("" = 1 "\\q")')
-# an open connection: what parse(n = 1) leaves unread after the error
-f <- tempfile()
-writeLines(c('""() "\\q"', "x <- 2"), f)
-con <- file(f, "r")
-m2 <- function() tryCatch(parse(con, n = 1), error = function(e) cat(class(e)[1], conditionMessage(e), "\n"))
-m2()
-print(readLines(con))
-close(con)
+# an open connection: what parse(n = 1) leaves unread after the error,
+# where GNU R's lexer stopped (an action's lookahead read whole, a
+# multibyte one included; a lexer error's rejected character consumed)
+rem <- function(txt) {
+  f <- tempfile(); writeLines(txt, f, useBytes = TRUE)
+  con <- file(f, "r")
+  r <- tryCatch(parse(con, n = 1), error = function(e) class(e)[1])
+  cat(deparse(r), "|", deparse(readLines(con)), "\n")
+  close(con)
+}
+rem("0x;TAIL")
+rem('y "\\x";TAIL')
+rem('y "\\0";TAIL')
+rem("1 |> f(_) \U0001F642;TAIL")
+rem('""() "\\q"')
+rem("1 |> f(_) + 2;TAIL")
+rem("function(a, a) 1;TAIL")
