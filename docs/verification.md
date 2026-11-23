@@ -898,7 +898,8 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    robigo-rt driver process each hold a slot from before they start until they end,
    and their time limits count from then, so a wait for a slot is never a
    case's time. A crate-test step takes one slot, then whatever else is
-   free, and runs with that many `--test-threads`. Not pooled: builtin-diff's
+   free, and runs with that many `--test-threads`, but never fewer than 4
+   (rt-ci.py's `CRATE_TEST_MIN_THREADS`; it does not wait for more slots). Not pooled: builtin-diff's
    GNU R side (in its container), perf.py,
    base-subset.sh, corpus.py, and cargo tests run by hand. Together
    they run every step: rt-ci.py checks that no other
