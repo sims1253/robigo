@@ -141,6 +141,9 @@ time on a shared target directory (`~/.cache/cargo-target`, set by the
 checkouts' parent `.cargo/config.toml`): one build at a time
 (`scripts/build.sh` takes a lock), build only the crates you need
 (`cargo test -p robigo-numerics`), run corpora with `--filter`, and leave
-the full runs to CI. `cargo fmt` before committing and `scripts/lint.sh`
-before pushing (CI checks both; `git config core.hooksPath .githooks` makes
-the push do it). Lints that a C port should ignore are allowed in `Cargo.toml`.
+the full runs to CI. `cargo fmt` before committing. **Before pushing:
+`scripts/lint-job.sh`**, which is CI's whole `lint` job: fmt, `scripts/lint.sh`
+(clippy), and the script suites the job runs. `scripts/lint.sh` alone does not
+run those suites, so it is not a green lint job. `git config core.hooksPath
+.githooks` makes the push run it. Lints that a C port should ignore are
+allowed in `Cargo.toml`.

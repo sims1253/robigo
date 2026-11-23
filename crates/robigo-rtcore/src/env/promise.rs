@@ -540,28 +540,37 @@ impl Cx {
     // R: eval.c:DO_GETVAR, eval.c:setup_bcframe_prom
     #[inline(always)]
     fn inline_force_due(&self) -> bool {
-        self.eval_depth() >= self.expressions() && self.iso().contexts().bc_active.get()
+        self.force_depth_overflows() && self.iso().contexts().bc_active.get()
     }
 
-    /// The overflow of bcEval's inlined force of a slot: `None` when the
-    /// slot is not one bcEval forces in place (then `force_arg` forces it
-    /// as `getvar` does).
+    /// Whether a force's depth step here would overflow the evaluation
+    /// depth limit (`eval_depth >= expressions`): the one test the
+    /// inlined-force overflow above and robigo-rt's GETVAR_MISSOK reads
+    /// (`eval::forced_as`) both make.
+    #[inline(always)]
+    pub fn force_depth_overflows(&self) -> bool {
+        self.eval_depth() >= self.expressions()
+    }
+
+    /// The overflow of bcEval's inlined force of a delayed slot: `None` when
+    /// the slot is not one bcEval forces in place (then `force_arg` forces
+    /// it as `getvar` does). Only a delayed slot reaches it: `force_arg`
+    /// hands a value slot's promise to `force_promise`, which makes its own
+    /// check ([`Cx::inline_promise_overflow`]).
     ///
     /// # Safety
-    /// `s` is a slot of a live slot frame of this isolate.
+    /// `s` is a delayed slot of a live slot frame of this isolate.
     #[cold]
     #[inline(never)]
     unsafe fn inline_force_overflow(&mut self, s: SlotRef) -> Option<RError> {
         // SAFETY: the caller's contract.
         unsafe {
-            match s.kind() {
-                DELAYED if s.prseen() == 0 && s.has(layout::META_BYTECODE) => {
-                    set_prseen(s, PRSEEN_EVALUATING);
-                    Some(self.inline_depth_overflow())
-                }
-                VALUE if s.val().typ() == PROMSXP => self.inline_promise_overflow(s.val()),
-                _ => None,
+            debug_assert_eq!(s.kind(), DELAYED);
+            if s.prseen() == 0 && s.has(layout::META_BYTECODE) {
+                set_prseen(s, PRSEEN_EVALUATING);
+                return Some(self.inline_depth_overflow());
             }
+            None
         }
     }
 

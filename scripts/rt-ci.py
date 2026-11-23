@@ -353,6 +353,42 @@ def conformance_command():
 # default 20 s allow)
 SLOW = {"ROBIGO_CONF_TIMEOUT": "600"}
 
+# The torture modes' conformance steps torture each case, not its start:
+# the runtime holds them until the start is over (robigo-heap's
+# ROBIGO_TORTURE_AFTER_START, a test hook; GNU R itself tortures the start,
+# init_gctorture in InitMemory). The start keeps its own steps, one per boot
+# (START_TORTURE), under the moving collector and gctorture from the start.
+AFTER_START = {"ROBIGO_TORTURE_AFTER_START": "1"}
+
+# The start itself, tortured: under the moving collector and gctorture from
+# the heap's creation (no ROBIGO_TORTURE_AFTER_START), each boot runs this,
+# whose start is the point (stage 0 or the rdb loader and its lazy-load
+# fetches, the system profile, the compiler's load when the JIT is on): an
+# unrooted object anywhere in it is moved under its holder and read as
+# poison. The JIT is on (R_ENABLE_JIT=3, set, not the default's), so the
+# compiler's namespace loads in the start; the script then fetches a few of
+# base's lazy-loaded bindings and runs a loop the JIT compiles. (A package
+# load, library(stats), waits for the tree to have one.)
+START_SCRIPT = ('invisible(lapply(c("paste", "format", "sprintf", "regmatches", "Reduce", "tryCatch"), '
+                'function(f) get(f, baseenv()))); '
+                'f <- function(n) { s <- 0; for (i in seq_len(n)) s <- s + i; s }; '
+                'stopifnot(f(10) == 55, f(20) == 210); cat("started\\n")')
+# (GNU R's boot, rdb's, loads the compiler's namespace in the start when the
+# JIT is on, main.c R_init_jit_enabled; M1's loader sets the JIT up without it)
+START_COMPILER = 'stopifnot("compiler" %in% loadedNamespaces()); '
+
+
+def start_torture_step(boot):
+    """The step that runs START_SCRIPT under `boot` (ROBIGO_RT_BOOT's value,
+    "" for M1's loader) with the start tortured."""
+    name = {"": "M1's loader", "rdb": "the rdb boot"}[boot]
+    return (f"the start tortured: {name} under ROBIGO_GC_MOVE=1 and gctorture from the heap's creation",
+            # (set outright: an inherited hold or R_GCTORTURE=0 would take
+            # the start's torture away)
+            {"ROBIGO_RT_BOOT": boot, "R_GCTORTURE": "1", "R_GCTORTURE_WAIT": "1", "ROBIGO_GCTORTURE": "1",
+             "ROBIGO_GC_MOVE": "1", **FREEZE_OFF, "ROBIGO_TORTURE_AFTER_START": "0", "R_ENABLE_JIT": "3"},
+            [rt_binary(), "--vanilla", "-e", (START_COMPILER if boot == "rdb" else "") + START_SCRIPT])
+
 
 # TEMPORARY (2026-11-23): two cases given 60 s in the conformance steps
 # that run at the runner's default 20 s, because each failed local gates
@@ -414,7 +450,8 @@ def full_move_steps():
     full_slow = case_timeouts(FULL_MOVE_SLOW)
     return every_cpu([
         ("conformance under ROBIGO_GC_MOVE=1 with gctorture (every collection moves everything)",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **FREEZE_OFF, **SLOW, "ROBIGO_CONF_TIMEOUTS": full_slow},
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **FREEZE_OFF, **AFTER_START, **SLOW,
+          "ROBIGO_CONF_TIMEOUTS": full_slow},
          conformance_command()),
     ])
 
@@ -447,7 +484,7 @@ def freeze_check_steps():
         ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", {}, ["scripts/rt-home.sh"]),
         ("conformance under gctorture, the freeze checked at every collection",
          {"ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "1", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
-          **SLOW, "ROBIGO_CONF_TIMEOUTS": case_timeouts(FREEZE_CHECK_SLOW)},
+          **AFTER_START, **SLOW, "ROBIGO_CONF_TIMEOUTS": case_timeouts(FREEZE_CHECK_SLOW)},
          conformance_command()),
     ])
 
@@ -491,6 +528,8 @@ def steps(crates):
         # names the source tree, the script and the binary) and those tests
         # run instead of skipping on a fresh checkout (TREE_RUNS)
         db_tree(rt_binary()),
+        start_torture_step(""),
+        start_torture_step("rdb"),
         ("the crates' tests (quick profile)", TREE_RUNS, [*crate, *pkgs, *skip]),
         ("boot from base's database (ROBIGO_RT_BOOT=rdb)", {"ROBIGO_RT_HOME_DB": "1"},
          [*test, "-p", "robigo-rtapi", "--test", "boot_db", *skip]),
@@ -561,7 +600,7 @@ def steps(crates):
         # against 97 s without it, past the case timeout; about 1.3x at 16)
         ("conformance under gctorture (E3)",
          {"ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "16", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
-          **slow, "ROBIGO_CONF_TIMEOUTS": case_timeouts(GCTORTURE_FIRST)}, conformance),
+          **AFTER_START, **slow, "ROBIGO_CONF_TIMEOUTS": case_timeouts(GCTORTURE_FIRST)}, conformance),
         # every argument a PROMSXP at call entry (GNU R's representation,
         # through the same binding-kind transitions): docs/g3.md §16's
         # ROBIGO_MATERIALIZE=1. Every rt crate, as the steps above: cargo
@@ -577,7 +616,7 @@ def steps(crates):
         # H8: the young objects at each collection, everything at every N-th;
         # the nightly runs it with every collection moving everything
         (f"conformance under ROBIGO_GC_MOVE={GC_MOVE_YOUNG} with gctorture (E3)",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": GC_MOVE_YOUNG, **FREEZE_OFF, **slow,
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": GC_MOVE_YOUNG, **FREEZE_OFF, **AFTER_START, **slow,
           "ROBIGO_CONF_TIMEOUTS": case_timeouts({**GCTORTURE_FIRST, **YOUNG_MOVE_FIRST, **YOUNG_MOVE_SLOW})}, conformance),
         # D5's frame recycling (docs/g3.md §16): every frame that would be recycled
         # is poisoned and held back instead, so a frame that escaped without
@@ -623,7 +662,7 @@ def steps(crates):
         # get (cargo keeps both builds). With ROBIGO_GC_MOVE=1 as well it takes
         # about 20 minutes, so that run is by hand (g3.md §16).
         ("conformance under ROBIGO_RETRY_TORTURE=1 (E9: every build's retry runs once)",
-         {"ROBIGO_RETRY_TORTURE": "1", **slow},
+         {"ROBIGO_RETRY_TORTURE": "1", **AFTER_START, **slow},
          [*test, "-p", "robigo-rtapi", "--features", CHECK_FEATURES, "--test", "conformance", "--",
           "--exact", CONFORMANCE, "--nocapture"]),
         # C1 (#979, the bot's round 2): a translation-cache verification whose
@@ -903,6 +942,112 @@ def crate_test_threads(cmd):
             and not (CONFORMANCE in cmd and "--exact" in cmd))
 
 
+# CI's base-subset job (scripts/base-subset.sh --check, in the oracle image)
+# checks that the base subset still traces from the tree's inputs. A local
+# run (no --shard) runs it too when the branch changes one of those inputs
+# against its merge base with origin/main (about 7 min, on those branches
+# only), so the push does not find out first.
+BASE_SUBSET_INPUTS = (
+    "tests/rt/**/*.R",
+    "tests/rt/R-*/**/*.Rstatus",          # the traced cases' recorded status (the rt pin's)
+    "tests/rt/capi/support/*.c",           # the C API cases' package code
+    "benchmarks/rt/calls-rows.toml",
+    "benchmarks/suite/calls.R",
+    "benchmarks/suite/fib.R",
+    "benchmarks/suite/binarytrees.R",
+    "scripts/base-subset*",
+    "scripts/base-wide.R",
+    "scripts/oracle-run.sh",
+    "scripts/oracle-pins.sh",
+    "scripts/oracle-versions",             # the oracle's pin
+    "scripts/perf.py",                     # rows_with_setups, which makes the d2s/e7 row scripts
+    "crates/robigo-rt/proto/base-*.txt",
+    "scripts/r-src.sh",
+)
+BASE_SUBSET_STEP = ("base subset, its inputs changed on this branch (scripts/base-subset.sh --check)", {},
+                    ["scripts/base-subset.sh", "--check"])
+
+
+def rt_pin(root=ROOT):
+    """robigo-rt's GNU R version, scripts/oracle-versions' `rt=` line (as
+    base-subset.sh and ci-image.sh read it)."""
+    with open(os.path.join(root, "scripts", "oracle-versions")) as f:
+        for line in f:
+            if line.startswith("rt="):
+                return line.split("=", 1)[1].strip()
+    raise SystemExit("rt-ci: scripts/oracle-versions has no rt= line")
+
+
+def branch_changes(root=ROOT, base="origin/main"):
+    """The paths this checkout changes against its merge base with `base`:
+    its commits, the staged and the unstaged edits, each on its own (a later
+    edit that undoes a staged or committed one leaves the path changed for
+    the commit that will be pushed), and untracked files. None when git
+    cannot say (no git, no `base`): the caller then owes every check."""
+    def git(*args):
+        try:
+            p = subprocess.run(["git", *args], cwd=root, capture_output=True)
+        except OSError:
+            return None
+        return p.stdout if p.returncode == 0 else None
+    mb = git("merge-base", "HEAD", base)
+    if mb is None:
+        return None
+    mb = os.fsdecode(mb).strip()
+    lists = [git("diff", "--name-only", "-z", "--no-renames", mb, "HEAD"),
+             git("diff", "--name-only", "-z", "--no-renames", "--cached"),
+             git("diff", "--name-only", "-z", "--no-renames"),
+             git("ls-files", "--others", "--exclude-standard", "-z")]
+    if any(x is None for x in lists):
+        return None
+    # (paths as the filesystem's bytes allow: a non-UTF-8 name decodes too)
+    return sorted({os.fsdecode(p) for x in lists for p in x.split(b"\0") if p})
+
+
+# base_subset_owed's reason when git cannot say what the branch changes (a
+# shallow clone, no origin/main): the check is owed, without a changed input
+GIT_CANNOT_COMPARE = "git cannot compare this checkout with origin/main"
+
+
+def base_subset_owed(changed):
+    """Why base-subset's check is owed (the first changed input, or
+    GIT_CANNOT_COMPARE), or None."""
+    if changed is None:
+        return GIT_CANNOT_COMPARE
+    pats = [ci_select.glob_re(p) for p in BASE_SUBSET_INPUTS]
+    for path in changed:
+        if any(r.match(path) for r in pats):
+            return path
+    return None
+
+
+def oracle_problem():
+    """None when scripts/base-subset.sh can run GNU R at the rt pin (its
+    Rscript on PATH, or docker's robigo-oracle:<pin>), else what is missing
+    and the cure."""
+    rt = rt_pin()
+    image = f"robigo-oracle:{rt}"
+    # (from the checkout, as base-subset.sh runs it, and --vanilla: a
+    # caller's .Rprofile must not answer for the R that will run)
+    try:
+        p = subprocess.run(["Rscript", "--vanilla", "-e", "cat(format(getRversion()))"], cwd=ROOT,
+                           capture_output=True, text=True)
+        if p.returncode == 0 and p.stdout.strip() == rt:
+            return None
+    except OSError:    # (missing, or there but not executable: no usable Rscript)
+        pass
+    try:
+        if subprocess.run(["docker", "image", "inspect", image], capture_output=True).returncode == 0:
+            return None
+    except OSError:
+        return (f"there is no docker for {image} (and no GNU R {rt} Rscript on PATH): "
+                "install docker, or run on a machine with it")
+    ref = "oracle_" + rt.replace(".", "_")
+    return (f"there is no {image} image (and no GNU R {rt} Rscript on PATH). The cure, two minutes: "
+            f"scripts/build-oracle.sh --pull {rt} (docker pull of CI's image, the {ref}= line of "
+            f"scripts/ci-image.sh refs, tagged {image}); or build it: scripts/build-oracle.sh --image {rt}")
+
+
 def metadata():
     p = subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"],
                        cwd=ROOT, stdout=subprocess.PIPE, text=True, check=True)
@@ -968,6 +1113,16 @@ def main(argv):
             print(f"::error::{problem}")
             return 2
     plan = (full_move_steps() if a.full_move else freeze_check_steps() if a.freeze_check else shard_steps(crates, a.shard) if a.shard else builds_first(steps(crates)))
+    if not (a.full_move or a.freeze_check or a.shard):
+        owed = base_subset_owed(branch_changes())
+        if owed:
+            problem = oracle_problem()
+            if problem:
+                why = (f"this branch changes base-subset's inputs ({owed})" if owed != GIT_CANNOT_COMPARE
+                       else f"{GIT_CANNOT_COMPARE}, so it is owed whatever the branch changes")
+                print(f"::error::rt-ci: base-subset's check is owed ({why}), and {problem}")
+                return 2
+            plan = [*plan, BASE_SUBSET_STEP]
     done = []
     try:
         return run_steps(plan, done)

@@ -134,6 +134,7 @@ pub(crate) fn install_hooks(cx: &mut Cx) {
     let mut h = cx.hooks();
     h.error = error_hook;
     h.error_condition = error_condition_hook;
+    h.warning_condition = warning_condition_hook;
     h.interrupt = onintr_hook;
     h.warning = warning_hook;
     h.exit_value = fixup_exiting_handler_result;
@@ -378,7 +379,8 @@ pub fn error_condition_hook(cx: &mut Cx, call: Option<Root<'_>>, c: &robigo_rtco
     let msg = trunc(robigo_rtcore::c_str_bytes(c.msg), BUFSIZE - 1).to_vec();
     let preset = matches!(c.subclass, Some("expressionStackOverflowError" | "nodeStackOverflowError"));
     cx.scope(|cx, s| {
-        let cond = match make_error_condition(cx, s, if preset { None } else { call }, c, &msg) {
+        let call = if preset { None } else { call };
+        let cond = match make_condition(cx, s, call, CondBase::Error, c.class, c.subclass, c.fields, &msg) {
             Ok(cond) => cond,
             Err(e) => return e,
         };
@@ -391,31 +393,82 @@ pub fn error_condition_hook(cx: &mut Cx, call: Option<Root<'_>>, c: &robigo_rtco
     })
 }
 
-/// `R_vmakeErrorCondition(call, class, subclass, nextra, msg)` and
-/// `R_setConditionField` of each of `c`'s fields: the list `(message,
-/// call, fields...)`, named, of class `c(subclass, class, "error",
-/// "condition")`.
-// R: errors.c:R_vmakeErrorCondition, R_setConditionField
-fn make_error_condition<'s>(
+/// The isolate's classed-warning hook: GNU R's `R_makeWarningCondition(
+/// call, class, subclass, nextra, msg)` with its fields set, then
+/// `R_signalWarningCondition(cond)`: base's `warning(cond)` evaluated in a
+/// new environment enclosed by the base namespace, `R_Visible` kept: the
+/// condition goes through `warning()`'s R code, as GNU R's does.
+// R: errors.c:R_vmakeWarningCondition, R_signalWarningCondition
+pub fn warning_condition_hook(cx: &mut Cx, call: Option<Root<'_>>, c: &robigo_rtcore::WarningCond<'_>) -> RResult<()> {
+    // Rvsnprintf_mbcs(emsg_buf, BUFSIZE, ...)
+    let msg = trunc(robigo_rtcore::c_str_bytes(c.msg), BUFSIZE - 1).to_vec();
+    cx.scope(|cx, s| {
+        let cond = make_condition(cx, s, call, CondBase::Warning, c.class, c.subclass, c.fields, &msg)?;
+        let cond_sym = sym(cx, s, b"cond")?;
+        let warning_sym = sym(cx, s, b"warning")?;
+        let o = s.out(cx);
+        let expr = o.root();
+        cx.build(o, |cx| {
+            let a = cx.cons(cond_sym.bind(cx), cx.nil())?;
+            cx.lcons(warning_sym.bind(cx), a)
+        })?;
+        let ns = s.root(cx, cx.base_namespace());
+        let o = s.out(cx);
+        let env = o.root();
+        cx.build(o, |cx| cx.new_env(ns.bind(cx), false, 0))?;
+        cx.define_var(cond_sym, cond, env)?;
+        eval_keep_vis(cx, expr, env)
+    })
+}
+
+/// The base class of a condition [`make_condition`] builds: GNU R's two
+/// builders, `R_vmakeErrorCondition`'s "error" and
+/// `R_vmakeWarningCondition`'s "warning".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CondBase {
+    Error,
+    Warning,
+}
+
+impl CondBase {
+    /// The class after the condition's own, before "condition".
+    fn class(self) -> &'static str {
+        match self {
+            CondBase::Error => "error",
+            CondBase::Warning => "warning",
+        }
+    }
+}
+
+/// `R_vmakeErrorCondition` / `R_vmakeWarningCondition(call, class,
+/// subclass, nextra, msg)` (by `base`) and
+/// `R_setConditionField` of each of `fields`: the list `(message, call,
+/// fields...)`, named, of class `c(subclass, class, base, "condition")`.
+// R: errors.c:R_vmakeErrorCondition, R_vmakeWarningCondition, R_setConditionField
+#[allow(clippy::too_many_arguments)]
+fn make_condition<'s>(
     cx: &mut Cx,
     s: Scope<'s>,
     call: Option<Root<'_>>,
-    c: &robigo_rtcore::ErrorCond<'_>,
+    base: CondBase,
+    class: &str,
+    subclass: Option<&str>,
+    fields: &[(&'static str, Root<'_>)],
     msg: &[u8],
 ) -> RResult<Root<'s>> {
     let o = s.out(cx);
     let r = o.root();
     cx.build(o, |cx| {
-        let n = 2 + c.fields.len();
+        let n = 2 + fields.len();
         let m = cx.mk_string(msg, Encoding::Native)?;
         let mut names = cx.alloc_vector::<Char<'_>>(n)?;
         names.set(0, cx.mk_char(b"message", Encoding::Native)?);
         names.set(1, cx.mk_char(b"call", Encoding::Native)?);
-        for (i, (nm, _)) in c.fields.iter().enumerate() {
+        for (i, (nm, _)) in fields.iter().enumerate() {
             names.set(2 + i, cx.mk_char(nm.as_bytes(), Encoding::Native)?);
         }
         let names = names.finish();
-        let classes: Vec<&str> = c.subclass.into_iter().chain([c.class, "error", "condition"]).collect();
+        let classes: Vec<&str> = subclass.into_iter().chain([class, base.class(), "condition"]).collect();
         let mut klass = cx.alloc_vector::<Char<'_>>(classes.len())?;
         for (i, k) in classes.iter().enumerate() {
             klass.set(i, cx.mk_char(k.as_bytes(), Encoding::Native)?);
@@ -424,7 +477,7 @@ fn make_error_condition<'s>(
         let mut l = cx.alloc_vector::<Ref<'_>>(n)?;
         l.set(0, m);
         l.set(1, call.map_or(cx.nil(), |c| c.bind(cx)));
-        for (i, (_, v)) in c.fields.iter().enumerate() {
+        for (i, (_, v)) in fields.iter().enumerate() {
             l.set(2 + i, v.bind(cx));
         }
         // setAttrib(cond, R_NamesSymbol, names), then the class

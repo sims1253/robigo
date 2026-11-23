@@ -364,7 +364,7 @@ pub unsafe fn build(cx: &Cx, v: &Verified, source: Sexp, formals: Option<Sexp>) 
         profile: b.profile,
         inline: 0,
         inline_formals: 0,
-        _pad: [0; 1],
+        single_read: is_single_read(b) as u8,
         nregs: b.nregs as u32,
         nins: b.ins.len() as u32,
         max_depth: b.max_depth as u32,
@@ -521,6 +521,37 @@ pub unsafe fn reshape(cx: &Cx, code: Sexp, formals: Sexp) -> Result<Sexp, NeedGc
             c.set_elt(i, v);
         }
         Ok(c)
+    }
+}
+
+/// Whether verified code is one variable read and its return:
+/// `[GetVar a=R_FIRST, Ret b=R_FIRST]` of the `Bc` profile, the read's only
+/// flag `F_VIS` and the return's none, its visibility untouched (`g` 0).
+/// The translation of a byte-code promise of a plain symbol.
+fn is_single_read(b: &Built) -> bool {
+    use crate::ir::{F_VIS, Op, R_FIRST};
+    matches!(&b.ins[..], [r, t]
+        if b.profile == Profile::Bc
+            && r.op == Op::GetVar && r.a == R_FIRST && r.fl & !F_VIS == 0
+            && t.op == Op::Ret && t.b == R_FIRST && t.fl == 0 && t.g == 0)
+}
+
+/// The read of a live code object marked [`Header::single_read`]: its one
+/// instruction, or None for any other code. Read from the header directly,
+/// not through [`View`] (`vm::run` reads that, and stays as it is).
+///
+/// # Safety
+/// `code` is a live code object ([`build`]).
+#[inline]
+pub unsafe fn single_read(code: Sexp) -> Option<Ins> {
+    // SAFETY: the caller's contract: element 0 is the blob, its header
+    // written by `build`, its first instruction after it.
+    unsafe {
+        let blob = *(code.inline_data() as *const Sexp);
+        let p = blob.inline_data();
+        let hdr = &*(p as *const Header);
+        debug_assert_eq!(hdr.magic, MAGIC);
+        (hdr.single_read == 1).then(|| *(p.add(INS_OFFSET) as *const Ins))
     }
 }
 

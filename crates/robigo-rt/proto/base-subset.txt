@@ -270,6 +270,7 @@ closure summary summary.R
 closure summary.connection connections.R
 closure suppressWarnings conditions.R
 closure sys.call sys.R
+closure sys.calls sys.R
 closure sys.frame sys.R
 closure sys.function sys.R
 closure sys.nframe sys.R
@@ -355,6 +356,7 @@ primitive baseenv
 primitive break
 primitive browser
 primitive c
+primitive call
 primitive class
 primitive class<-
 primitive cumsum
@@ -592,6 +594,7 @@ internal sub
 internal substr
 internal summary.connection
 internal sys.call
+internal sys.calls
 internal sys.frame
 internal sys.function
 internal sys.nframe

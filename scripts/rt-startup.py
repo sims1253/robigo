@@ -131,12 +131,20 @@ LAYOUT_SHIFTS = tuple(zip(LAYOUT_LENGTHS, TOP_PADS))
 ANON_STAT = statistics.fmean
 
 # the gate against main's binary (perf.py rt-starts), in percent: instructions
-# as the rows' THRESHOLD; the anonymous peak at least ANON_FLOOR_KIB, five
-# pages being 1% of a 2 MB start (H's interim measurements); total peak RSS
-# loosely, since its file-backed part follows code layout
+# as the rows' THRESHOLD; total peak RSS loosely, since its file-backed part
+# follows code layout. The anonymous peak is a coarse tripwire for gross
+# regressions only, +max(2%, 128 KiB): it counts physical pages, and glibc's
+# placement of the runtime's own allocations moves them by tens of KiB
+# between two binaries doing the same work, which no layout shift averages
+# away (#991's runner binaries in CI's image: PR - main +3 / -3 / +15 / +56
+# KiB on interim / rdb-jit / rdb-nojit / rdb-nocache, the image's own pages
+# 180 KiB in both, the difference all [heap] and anonymous mmaps;
+# docs/ledger/g3/2026-11-23-startup-layout.md). To be replaced by a logical
+# peak (malloc'd bytes and robigo-heap's bytes in use), which no placement
+# enters.
 INSTR_LIMIT = 0.5
-ANON_LIMIT = 1.0
-ANON_FLOOR_KIB = 64
+ANON_LIMIT = 2.0
+ANON_FLOOR_KIB = 128
 RSS_LIMIT = 5.0
 
 PTRACE_TRACEME, PTRACE_CONT, PTRACE_DETACH, PTRACE_SYSCALL = 0, 7, 17, 24
