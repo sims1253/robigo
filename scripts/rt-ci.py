@@ -374,9 +374,16 @@ def every_cpu(steps):
     for t, e, c in steps:
         if CONFORMANCE in c and "--exact" in c:
             e = {**e, "ROBIGO_CONF_JOBS": jobs}
-            if "ROBIGO_CONF_TIMEOUT" not in e:
-                named = dict(item.rsplit("=", 1) for item in e.get("ROBIGO_CONF_TIMEOUTS", "").split(",") if item)
-                e["ROBIGO_CONF_TIMEOUTS"] = case_timeouts({**DEFAULT_STEP_SLOW, **{k: int(v) for k, v in named.items()}})
+            # (the effective environment: the step's over the caller's, as
+            # run_steps runs it. A global timeout, the step's or the
+            # caller's, means no default-timeout allowances; the case lists
+            # merge, the defaults first, then the caller's, then the step's)
+            if "ROBIGO_CONF_TIMEOUT" not in e and not os.environ.get("ROBIGO_CONF_TIMEOUT"):
+                def named(v):
+                    return {k.strip(): int(s) for k, s in (i.rsplit("=", 1) for i in v.split(",") if i.strip())}
+                e["ROBIGO_CONF_TIMEOUTS"] = case_timeouts({**DEFAULT_STEP_SLOW,
+                                                           **named(os.environ.get("ROBIGO_CONF_TIMEOUTS", "")),
+                                                           **named(e.get("ROBIGO_CONF_TIMEOUTS", ""))})
         out.append((t, e, c))
     return out
 
@@ -778,8 +785,20 @@ def conf_slots_dir(env=None):
         return None
     base = env.get("XDG_RUNTIME_DIR")
     if base and os.path.isdir(base):
-        return os.path.join(base, "robigo-conf-slots")
-    return os.path.join(tempfile.gettempdir(), f"robigo-conf-slots-{os.getuid()}")
+        d = os.path.join(base, "robigo-conf-slots")
+    else:
+        # fixed, not TMPDIR's: every run of this user must find the same pool
+        d = f"/tmp/robigo-conf-slots-{os.getuid()}"
+    try:
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        st = os.lstat(d)
+    except OSError as e:
+        print(f"::warning::rt-ci: no conformance slot pool ({d}: {e})")
+        return None
+    if not os.path.isdir(d) or os.path.islink(d) or st.st_uid != os.getuid():
+        print(f"::warning::rt-ci: no conformance slot pool ({d} is not a directory of this user's)")
+        return None
+    return d
 
 
 def metadata():

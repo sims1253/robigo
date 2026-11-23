@@ -448,6 +448,40 @@ fn a_case_time_leaves_out_the_boot_probe() {
     assert!(secs.iter().all(|s| *s < 2.0), "the 3 s probe counted in a case's time: {text}");
 }
 
+/// A case's slot goes with its process, not with its output pipes: a
+/// descendant that keeps stdout open (a background `sleep`) must not hold
+/// the slot, or one slot would serialize on it (or deadlock on a nested
+/// run). Two cases, one slot, each leaving a 3 s `sleep` on its stdout:
+/// about 3 s in all, not 6.
+#[test]
+fn a_cases_slot_is_released_when_its_process_ends() {
+    use std::os::unix::fs::PermissionsExt;
+    let pool = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("slots-pipe-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&pool);
+    let f = Fixture::new("slot-pipe");
+    for c in ["one", "two"] {
+        f.case(&format!("tests/rt/smoke/{c}.R"), "x\n").record(
+            "tests/rt",
+            &format!("tests/rt/smoke/{c}.R"),
+            "4.6.2",
+            "1\n",
+        );
+    }
+    let fake = f.root().join("lingering-fake");
+    std::fs::write(&fake, "#!/bin/sh\necho 1\nsleep 3 &\n").unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut o = opts(&RT, fake);
+    o.filter = Some("tests/rt/smoke".into());
+    o.jobs = 2;
+    o.slots = Some((pool.clone(), 1));
+    let t0 = std::time::Instant::now();
+    let r = run(f.root(), &RT, &o).unwrap();
+    let wall = t0.elapsed();
+    assert_eq!(r.outcomes.len(), 2);
+    assert!(wall < std::time::Duration::from_millis(5500), "the slot waited for the pipes: {wall:?}");
+    let _ = std::fs::remove_dir_all(&pool);
+}
+
 /// A case starts with SIGINT at its default whatever the runner inherited:
 /// a runner under an ignored SIGINT (a background shell's `cmd &`) once
 /// passed SIG_IGN on, and a case that raises one failed (interrupt.R).
@@ -455,6 +489,9 @@ fn a_case_time_leaves_out_the_boot_probe() {
 #[allow(unsafe_code)]
 fn a_case_starts_with_sigint_at_its_default() {
     use std::os::unix::fs::PermissionsExt;
+    if !Path::new("/proc/self/status").exists() {
+        return; // the fake reads SigIgn there
+    }
     let f = Fixture::new("sigint");
     f.case("tests/rt/smoke/sig.R", "x\n").record("tests/rt", "tests/rt/smoke/sig.R", "4.6.2", "0\n");
     // a runtime that prints whether SIGINT is ignored in it (SigIgn's bit 2)

@@ -296,9 +296,11 @@ class RtCi(unittest.TestCase):
     def test_a_local_run_shares_the_machine_wide_slot_pool(self):
         import tempfile
         d = tempfile.mkdtemp()
-        self.addCleanup(os.rmdir, d)
+        import shutil
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
         self.assertEqual(rt.conf_slots_dir({"XDG_RUNTIME_DIR": d}), os.path.join(d, "robigo-conf-slots"))
-        self.assertEqual(rt.conf_slots_dir({}), os.path.join(tempfile.gettempdir(), f"robigo-conf-slots-{os.getuid()}"))
+        self.assertEqual(rt.conf_slots_dir({}), f"/tmp/robigo-conf-slots-{os.getuid()}")
+        self.assertEqual(rt.conf_slots_dir({"TMPDIR": d}), f"/tmp/robigo-conf-slots-{os.getuid()}")
         # the same directory for every checkout's run: the pool is the user's
         self.assertEqual(rt.conf_slots_dir({"XDG_RUNTIME_DIR": d}), rt.conf_slots_dir({"XDG_RUNTIME_DIR": d}))
         # CI has none; the caller's own setting (empty: none) wins
@@ -437,6 +439,18 @@ class RtCi(unittest.TestCase):
                 self.assertEqual(named, {c: str(s) for c, s in rt.DEFAULT_STEP_SLOW.items()}, title)
         self.assertGreater(seen, 5)
         self.assertTrue(all(s == 60 for s in rt.DEFAULT_STEP_SLOW.values()))
+        # the caller's environment counts: its global timeout means none, its
+        # case list is kept (and the step's wins over both)
+        from unittest import mock
+        conf = [s for s in rt.steps(crates) if rt.CONFORMANCE in s[2] and "--exact" in s[2]
+                and "ROBIGO_CONF_TIMEOUT" not in s[1]][0]
+        with mock.patch.dict(os.environ, {"ROBIGO_CONF_TIMEOUT": "180"}):
+            self.assertNotIn("ROBIGO_CONF_TIMEOUTS", rt.every_cpu([(conf[0], {}, conf[2])])[0][1])
+        with mock.patch.dict(os.environ, {"ROBIGO_CONF_TIMEOUTS": "tests/rt/a.R=90,tests/rt/env/large-frames.R=120"}):
+            env = rt.every_cpu([(conf[0], {}, conf[2])])[0][1]
+        got = dict(i.rsplit("=", 1) for i in env["ROBIGO_CONF_TIMEOUTS"].split(","))
+        self.assertEqual(got, {"tests/rt/a.R": "90", "tests/rt/env/large-frames.R": "120",
+                               "tests/rt/stress/finalizer-depths.R": "60"})
 
     def test_conformance_runs_alone_in_its_own_steps(self):
         steps = rt.steps(["robigo-rt", "robigo-rtcore"])

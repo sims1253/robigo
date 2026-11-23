@@ -823,8 +823,13 @@ fn take_slot(pool: &Option<(PathBuf, usize)>) -> Slot {
                 .write(true)
                 .open(&path)
                 .unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
-            if f.try_lock().is_ok() {
-                return Slot(Some(f));
+            match f.try_lock() {
+                Ok(()) => return Slot(Some(f)),
+                // another case holds it: try the next
+                Err(std::fs::TryLockError::WouldBlock) => {}
+                // a filesystem that does not lock would make every worker
+                // wait forever, before any case's timeout starts
+                Err(std::fs::TryLockError::Error(e)) => panic!("lock {}: {e}", path.display()),
             }
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -845,7 +850,11 @@ fn thread_index() -> usize {
 /// its limit count from its start: the wait is not the case's.
 fn run_command(mut cmd: Command, o: &Options, timeout: Duration) -> (Vec<u8>, Vec<u8>, i32, bool, Duration) {
     let bin = &o.bin;
-    let _slot = take_slot(&o.slots);
+    let slot = take_slot(&o.slots);
+    // the case's clock from the moment it may run: the slot taken, before
+    // the spawn (a loaded machine may run the child before this thread
+    // gets back from spawning it and its readers)
+    let start = Instant::now();
     let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -863,7 +872,6 @@ fn run_command(mut cmd: Command, o: &Options, timeout: Duration) -> (Vec<u8>, Ve
         let _ = err.read_to_end(&mut s);
         s
     });
-    let start = Instant::now();
     let mut timed_out = false;
     let status = loop {
         if let Some(st) = child.try_wait().unwrap() {
@@ -871,12 +879,18 @@ fn run_command(mut cmd: Command, o: &Options, timeout: Duration) -> (Vec<u8>, Ve
         }
         if start.elapsed() > timeout {
             let _ = child.kill();
+            // reaped, so the process is gone before its slot is
+            let _ = child.wait();
             timed_out = true;
             break -1;
         }
         std::thread::sleep(Duration::from_millis(5));
     };
     let ran = start.elapsed();
+    // the slot goes with the case's process, not with its pipes: a
+    // descendant that keeps one open must not hold a slot (the readers
+    // below wait for it)
+    drop(slot);
     (t_out.join().unwrap(), t_err.join().unwrap(), status, timed_out, ran)
 }
 
