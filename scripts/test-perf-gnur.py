@@ -272,7 +272,11 @@ class Inputs(unittest.TestCase):
         self.assertIn("perf-gnur-3-", job)
         # the fallback is the prefix without the inputs (the digests make it safe)
         self.assertIn("restore-keys: ${{ steps.gnur.outputs.prefix }}", job)
-        self.assertIn('echo "key=$prefix$inputs"', job)
+        self.assertIn('echo "key=$prefix$inputs-$code"', job)
+        self.assertIn("perf.gnur_code_digest()", job)
+        # one environment for every step (the code digest covers it)
+        self.assertIn("    env:\n      VALGRIND: valgrind\n", job)
+        self.assertNotIn("export VALGRIND", job)
         self.assertNotIn("hashFiles('benchmarks/**'", job)
         # the restore and the save use the one key, which holds the inputs' hash
         keys = re.findall(r"key: (\$\{\{[^}]*\}\})", job)

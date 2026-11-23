@@ -1522,5 +1522,42 @@ class BuildOraclePull(unittest.TestCase):
         self.assertIn("scripts/build-oracle.sh --image 4.6.2", p.stderr)
 
 
+class CiImageEnsure(unittest.TestCase):
+    """scripts/ci-image.sh ensure: only a tag the registry says it lacks is
+    built and pushed; another failure (an auth or network error) stops,
+    since a rebuild would push over a tag that exists with other packages,
+    and caches key on the tag. docker faked on PATH."""
+
+    def ensure(self, inspect_err):
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d, "calls")
+            fake = Path(d, "docker")
+            fake.write_text("#!/bin/sh\n"
+                            f"echo \"$*\" >> {log}\n"
+                            "case \"$1 $2\" in\n"
+                            f"  'manifest inspect') echo '{inspect_err}' >&2; exit 1 ;;\n"
+                            "esac\n"
+                            "exit 0\n")
+            fake.chmod(0o755)
+            env = dict(os.environ, PATH=f"{d}:{os.environ['PATH']}")
+            p = subprocess.run([str(HERE / "ci-image.sh"), "ensure"], env=env, capture_output=True, text=True)
+            calls = log.read_text().splitlines() if log.exists() else []
+            return p, calls
+
+    def test_a_missing_tag_is_built_and_pushed(self):
+        p, calls = self.ensure("manifest unknown")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertTrue(any(c.startswith("build ") for c in calls), calls)
+        self.assertTrue(any(c.startswith("push ") for c in calls), calls)
+
+    def test_a_registry_error_builds_nothing(self):
+        p, calls = self.ensure("unauthorized: authentication required")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("cannot tell whether", p.stderr)
+        self.assertFalse([c for c in calls if c.startswith(("build ", "push "))], calls)
+
+
 if __name__ == "__main__":
     unittest.main()

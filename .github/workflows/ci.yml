@@ -1178,6 +1178,10 @@ jobs:
     # the base and the candidate, each a filtered run (all of them on main),
     # and on a cache miss GNU R too
     timeout-minutes: 90
+    # (for every step: GNU R's records' code digest covers the measuring
+    # environment, so the measurement, extract and fill must see one)
+    env:
+      VALGRIND: valgrind
     steps:
       - uses: actions/checkout@v7
         with:
@@ -1239,9 +1243,13 @@ jobs:
           # and packages, and fill reuses a record of it only if the
           # record's program and code digests match (scripts/perf-gnur.py)
           prefix="perf-gnur-3-$image-$sig-$(printf '%s' "$pkgs" | sha256sum | cut -c1-16)-"
+          # and the measuring code's digest (cmd_run, the environment): a
+          # change there alone must give main a new entry to save, or pull
+          # requests keep restoring records fill then measures again
+          code=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import perf; print(perf.gnur_code_digest())')
           {
             echo "prefix=$prefix"
-            echo "key=$prefix$inputs"
+            echo "key=$prefix$inputs-$code"
             echo "sig=$sig"
           } >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@v6
@@ -1273,7 +1281,6 @@ jobs:
           echo "baseline: $(cat base/BASELINE), built from the merge's base and measured on this runner" | tee -a "$GITHUB_STEP_SUMMARY"
           export ROBIGO_NATIVES="$PWD/base/natives"
           export ROBIGO_RDBFLAT=""
-          export VALGRIND=valgrind
           filter_flag=()
           if [ -n "$PERF_FILTER" ]; then filter_flag=(--filter "$PERF_FILTER"); fi
           # every selected benchmark gets a GNU R record first: the cache's
@@ -1290,7 +1297,6 @@ jobs:
         run: |
           export ROBIGO_NATIVES="$PWD/dist/natives"
           export ROBIGO_RDBFLAT=""
-          export VALGRIND=valgrind
           filter_flag=()
           if [ -n "$PERF_FILTER" ]; then filter_flag=(--filter "$PERF_FILTER"); fi
           if [ "${{ github.ref }}" = "refs/heads/main" ]; then
@@ -1311,7 +1317,6 @@ jobs:
         if: github.ref == 'refs/heads/main'
         run: |
           export ROBIGO_NATIVES="$PWD/dist/natives"
-          export VALGRIND=valgrind
           python3 scripts/perf-paired.py --diagnostic-only --robigo dist/robigo --rdbflat dist/rdbflat | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Compare with main
         if: github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
