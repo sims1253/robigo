@@ -69,6 +69,7 @@ import shutil
 import tarfile
 import tempfile
 import threading
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -103,9 +104,11 @@ ANON_LIMIT = 1.0
 ANON_FLOOR_KIB = 64
 RSS_LIMIT = 5.0
 
-PTRACE_TRACEME, PTRACE_CONT, PTRACE_SYSCALL, PTRACE_SETOPTIONS, PTRACE_GETEVENTMSG = 0, 7, 24, 0x4200, 0x4201
-PTRACE_O_TRACESYSGOOD, PTRACE_O_TRACECLONE, PTRACE_O_TRACEEXEC, PTRACE_O_TRACEEXIT = 0x1, 0x8, 0x10, 0x40
-PTRACE_EVENT_CLONE, PTRACE_EVENT_EXEC, PTRACE_EVENT_EXIT = 3, 4, 6
+PTRACE_TRACEME, PTRACE_CONT, PTRACE_DETACH, PTRACE_SYSCALL = 0, 7, 17, 24
+PTRACE_SETOPTIONS, PTRACE_GETEVENTMSG = 0x4200, 0x4201
+PTRACE_O_TRACESYSGOOD, PTRACE_O_TRACEFORK, PTRACE_O_TRACEVFORK = 0x1, 0x2, 0x4
+PTRACE_O_TRACECLONE, PTRACE_O_TRACEEXEC, PTRACE_O_TRACEEXIT = 0x8, 0x10, 0x40
+PTRACE_EVENT_FORK, PTRACE_EVENT_VFORK, PTRACE_EVENT_CLONE, PTRACE_EVENT_EXEC, PTRACE_EVENT_EXIT = 1, 2, 3, 4, 6
 # waitpid's flag for a traced thread as well as a process
 WALL = 0x40000000
 # a run's limit in seconds: a start that loops is killed, not waited on.
@@ -130,6 +133,15 @@ def event_msg(pid):
     return msg.value
 
 
+def tgid(tid):
+    """The thread group (process) that thread `tid` belongs to."""
+    with open(f"/proc/{tid}/status") as f:
+        for ln in f:
+            if ln.startswith("Tgid:"):
+                return int(ln.split()[1])
+    raise SystemExit(f"rt-startup: no Tgid for {tid}")
+
+
 def ptrace(req, pid, data=0):
     if libc.ptrace(req, pid, None, ctypes.c_void_p(data)) == -1:
         e = ctypes.get_errno()
@@ -148,6 +160,15 @@ def anon_kib(pid):
     raise SystemExit(f"rt-startup: no Anonymous line in /proc/{pid}/smaps_rollup")
 
 
+def thread_anon_kib(tid):
+    """anon_kib() read through thread `tid`, which is stopped: 0 when its
+    memory is already gone (a thread past its exit, the process's last)."""
+    try:
+        return anon_kib(tid)
+    except (ProcessLookupError, FileNotFoundError):
+        return 0
+
+
 def status_kib(pid):
     """/proc/PID/status's memory lines, KiB by name."""
     out = {}
@@ -160,20 +181,28 @@ def status_kib(pid):
 
 
 def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
-    """(peak anonymous KiB, peak RSS KiB, exit status, stdout) of one run of
-    `cmd` under ptrace; the exit status is negative for a fatal signal, as
-    subprocess's.
+    """(peak anonymous KiB, peak RSS KiB, exit status, stdout, children) of
+    one run of `cmd` under ptrace; the exit status is negative for a fatal
+    signal, as subprocess's, and `children` the processes it started.
 
     Anonymous memory grows only by page faults and shrinks only by system
     calls (munmap, madvise, brk, mremap, exit). So with `syscalls` the child
     is stopped at every system call (PTRACE_SYSCALL) and its anonymous
     memory read there from the page tables (anon_kib()): the largest reading
-    is the peak. That holds for one thread with no swap:
-    - memory the kernel takes back by itself between two stops (swapping
-      out, splitting an underused huge page) makes the reading low, by what
-      it missed; perf-rt's runners have no swap;
-    - a thread the child starts would not be seen, so a start that starts
-      one is refused at the thread's creation (PTRACE_O_TRACECLONE).
+    is the peak. That holds with no swap: memory the kernel takes back by
+    itself between two stops (swapping out, splitting an underused huge
+    page) makes the reading low, by what it missed; perf-rt's runners have
+    no swap.
+    - **Threads** share the process's memory, which smaps_rollup counts for
+      all of them, but each frees through its own system calls: so every
+      thread is traced (PTRACE_O_TRACECLONE attaches it) and stopped at its
+      system calls too, and the reading is taken at any thread's stop.
+    - **Processes it starts** (fork, vfork, posix_spawn, or a clone without
+      CLONE_THREAD; GNU R's exit runs `sh -c 'rm -Rf' R_TempDir` through
+      posix_spawn) have memory of their own, not the start's: each is
+      detached as it is made and counted. They run in the start's process
+      group, which is killed at the start's exit stop, so none outlives the
+      measurement.
 
     Peak RSS is VmHWM, read at the exit stop (PTRACE_EVENT_EXIT, before the
     kernel tears the memory down). Take it from a run without `syscalls`,
@@ -187,6 +216,8 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
     pidfd = None
     timer = None
     threads = []
+    # the threads whose first stop has been resumed
+    started = set()
     # the timer's state, under its lock: whether it fired, whether the run is
     # over (then it sends nothing)
     clock = {"lock": threading.Lock(), "fired": False, "over": False}
@@ -209,6 +240,8 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
                 os.dup2(out.fileno(), 1)
                 fd = os.open(os.devnull, os.O_WRONLY)
                 os.dup2(fd, 2)
+                # a process group of its own: its children are killed with it
+                os.setpgid(0, 0)
                 ptrace(PTRACE_TRACEME, 0)
                 # one layout for every run: with randomized addresses the pages
                 # a start touches, and so its peak RSS, vary by run
@@ -226,37 +259,72 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
             why = "personality(ADDR_NO_RANDOMIZE) refused" if code == 126 else f"exit status {code}"
             raise SystemExit(f"rt-startup: {cmd[0]} did not start under ptrace: {why}")
         ptrace(PTRACE_SETOPTIONS, pid,
-               PTRACE_O_TRACEEXIT | PTRACE_O_TRACEEXEC | PTRACE_O_TRACECLONE | PTRACE_O_TRACESYSGOOD)
+               PTRACE_O_TRACEEXIT | PTRACE_O_TRACEEXEC | PTRACE_O_TRACECLONE | PTRACE_O_TRACEFORK
+               | PTRACE_O_TRACEVFORK | PTRACE_O_TRACESYSGOOD)
         timer = threading.Timer(timeout, expire)
         timer.start()
         anon, hwm = 0, None
         go = PTRACE_SYSCALL if syscalls else PTRACE_CONT
+        # the traced threads (the leader's own pid apart) and the processes
+        # the start made, as their events name them; a stop of a thread or
+        # process no event has named yet waits in `early` for its event
+        children, early = [], {}
         ptrace(go, pid)
         while True:
-            _, st = os.waitpid(pid, 0)
-            if os.WIFEXITED(st) or os.WIFSIGNALED(st):
+            t, st = os.waitpid(-1, WALL)
+            if t == pid and (os.WIFEXITED(st) or os.WIFSIGNALED(st)):
                 pid = None
                 break
+            if os.WIFEXITED(st) or os.WIFSIGNALED(st):
+                # a thread that ended (or a detached child we still saw)
+                if t in threads:
+                    threads.remove(t)
+                continue
             sig, event = os.WSTOPSIG(st), st >> 16
+            if t != pid and t not in threads:
+                # a new thread's or process's first stop before its event
+                early[t] = sig
+                continue
             if sig == signal.SIGTRAP | 0x80:
-                # a system call's entry or exit
-                anon = max(anon, anon_kib(pid))
-                ptrace(go, pid)
-            elif sig == signal.SIGTRAP and event == PTRACE_EVENT_CLONE:
-                # a second thread (or a process clone() made without
-                # CLONE_THREAD), refused as it is made: its memory would not be
-                # seen (the new one, traced too, is reaped with the child)
-                threads.append(event_msg(pid))
-                raise SystemExit(f"rt-startup: {cmd[0]} started a thread or cloned a process; the anonymous "
-                                 "peak is measured for one thread (memory())")
+                # a system call's entry or exit, of any thread: read through
+                # that thread, which shares the memory (the leader may have
+                # ended, a zombie whose /proc no longer maps it)
+                anon = max(anon, thread_anon_kib(t))
+                ptrace(go, t)
+            elif sig == signal.SIGTRAP and event in (PTRACE_EVENT_CLONE, PTRACE_EVENT_FORK, PTRACE_EVENT_VFORK):
+                new = event_msg(t)
+                if event == PTRACE_EVENT_CLONE and tgid(new) == pid:
+                    threads.append(new)
+                    # its first stop (a SIGSTOP) resumed, not delivered
+                    if early.pop(new, None) is not None:
+                        started.add(new)
+                        ptrace(go, new)
+                else:
+                    # a process of its own: detached at its first stop
+                    children.append(new)
+                    if early.pop(new, None) is not None:
+                        ptrace(PTRACE_DETACH, new)
+                    else:
+                        _, cst = os.waitpid(new, WALL)
+                        if os.WIFSTOPPED(cst):
+                            ptrace(PTRACE_DETACH, new)
+                ptrace(go, t)
             elif sig == signal.SIGTRAP and event == PTRACE_EVENT_EXIT:
-                hwm = status_kib(pid)["VmHWM"]
+                if t == pid:
+                    hwm = status_kib(pid)["VmHWM"]
+                    # the processes it started, which outlive it otherwise
+                    kill_group(pid)
                 if syscalls:
-                    anon = max(anon, anon_kib(pid))
-                ptrace(PTRACE_CONT, pid)
+                    anon = max(anon, thread_anon_kib(t))
+                ptrace(PTRACE_CONT, t)
             elif sig == signal.SIGTRAP and event == PTRACE_EVENT_EXEC:
-                # a later exec: ptrace's stop, not a signal
-                ptrace(go, pid)
+                # a later exec: ptrace's stop, not a signal (an exec by
+                # another thread makes it the leader, keeping the pid)
+                ptrace(go, t)
+            elif sig == signal.SIGSTOP and t in threads and event == 0 and t not in started:
+                # a new thread's first stop: resumed, not delivered
+                started.add(t)
+                ptrace(go, t)
             else:
                 # a signal for the child (a real SIGTRAP among them): it goes
                 # on. A stop signal delivered so group-stops the child, which
@@ -264,7 +332,7 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
                 # signal again resumes it, because a restart's signal is
                 # ignored in any stop but a signal's delivery (ptrace(2),
                 # "Signal injection and suppression")
-                ptrace(go, pid, sig)
+                ptrace(go, t, sig)
         with clock["lock"]:
             clock["over"] = True
             fired = clock["fired"]
@@ -273,7 +341,7 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
         if hwm is None:
             raise SystemExit(f"rt-startup: no exit stop for {cmd[0]}")
         out.seek(0)
-        return anon, hwm, os.waitstatus_to_exitcode(st), out.read()
+        return anon, hwm, os.waitstatus_to_exitcode(st), out.read(), len(children)
     finally:
         with clock["lock"]:
             clock["over"] = True
@@ -287,6 +355,40 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
         out.close()
 
 
+def kill_group(pid):
+    """SIGKILL to every process in `pid`'s process group but `pid` itself:
+    the processes the start made (memory() gave it a group of its own). Read
+    while `pid` is not reaped, so the group's id is still its own."""
+    killed = []
+    for d in os.listdir("/proc"):
+        if not d.isdigit() or int(d) == pid:
+            continue
+        try:
+            with open(f"/proc/{d}/stat") as f:
+                # pgrp is the 5th field, after the parenthesized name
+                pgrp = int(f.read().rsplit(")", 1)[1].split()[2])
+        except (OSError, IndexError, ValueError):
+            continue
+        if pgrp == pid:
+            try:
+                os.kill(int(d), signal.SIGKILL)
+                killed.append(int(d))
+            except ProcessLookupError:
+                pass
+    # (each one dies when next scheduled: waited for, briefly, so that none
+    # is still running when the measurement returns)
+    deadline = time.monotonic() + 2
+    for k in killed:
+        while time.monotonic() < deadline:
+            try:
+                with open(f"/proc/{k}/stat") as f:
+                    if f.read().rsplit(")", 1)[1].split()[0] in ("Z", "X"):
+                        break
+            except OSError:
+                break
+            time.sleep(0.005)
+
+
 def reap(pid, threads=()):
     """Kill the traced child `pid` and wait it and its traced `threads` out.
     The kills come first, to every one (a clone without CLONE_THREAD is a
@@ -295,6 +397,7 @@ def reap(pid, threads=()):
     that failed at its exit stop, where the SIGKILL is dropped and only a
     resume lets the exit finish); each may stop again (its exit event)
     before it is gone, and is resumed until it is."""
+    kill_group(pid)
     for t in (pid, *threads):
         try:
             os.kill(t, signal.SIGKILL)
@@ -340,7 +443,8 @@ def instructions(cmd, env, valgrind):
 
 def measure(cmd, env, runs, valgrind):
     """One start's numbers: {"instr", "instr_shifts", "anon_kib", "rss_kib",
-    "anon_runs", "rss_runs"}."""
+    "anon_runs", "rss_runs", "children"} (`children`: the processes one run
+    started, GNU R's temporary directory's `rm` among them)."""
     def one(k):
         return str(k), instructions(cmd, dict(env, ROBIGO_STARTUP_PAD="x" * k) if k else env, valgrind)
 
@@ -348,11 +452,12 @@ def measure(cmd, env, runs, valgrind):
         shifts = dict(ex.map(one, ENV_SHIFTS))
     anon, rss = [], []
     want = None
+    children = 0
     # the anonymous peak from runs stopped at each system call, peak RSS from
     # runs stopped only at exit (memory())
     for syscalls in (True, False):
         for _ in range(runs):
-            a, h, status, out = memory(cmd, env, syscalls)
+            a, h, status, out, children = memory(cmd, env, syscalls)
             if status != 0:
                 raise SystemExit(f"rt-startup: {' '.join(cmd)} exited {status}")
             if want is None:
@@ -362,7 +467,7 @@ def measure(cmd, env, runs, valgrind):
             (anon if syscalls else rss).append(a if syscalls else h)
     return {"instr": statistics.median(shifts.values()), "instr_shifts": shifts,
             "anon_kib": statistics.median(anon), "rss_kib": statistics.median(rss),
-            "anon_runs": anon, "rss_runs": rss}
+            "anon_runs": anon, "rss_runs": rss, "children": children}
 
 
 def cache_hits(stderr):
@@ -389,6 +494,28 @@ def require_cache_used(name, cmd, env):
 
 def defined():
     return [n for n, e in STARTS.items() if e is not None]
+
+
+def spec_errors(entries):
+    """What is wrong with a bars file's [[startup]] entries (`entries`), as
+    messages: a name that is not a defined start (a reserved one included),
+    a GNU R start that is not one of GNUR_STARTS, a name given twice. perf.py
+    rt-bars checks them before it measures anything."""
+    errs, seen = [], set()
+    for i, e in enumerate(entries):
+        n, g = e.get("name"), e.get("gnur")
+        if n is None:
+            errs.append(f"[[startup]] #{i + 1} has no name")
+        elif STARTS.get(n) is None:
+            what = "reserved, not defined yet" if n in STARTS else "no such start"
+            errs.append(f"[[startup]] {n!r}: {what} (defined: {', '.join(defined())})")
+        elif n in seen:
+            errs.append(f"[[startup]] {n!r} is given twice")
+        else:
+            seen.add(n)
+        if g is not None and g not in GNUR_STARTS:
+            errs.append(f"[[startup]] {n!r}: gnur {g!r} is no GNU R start ({', '.join(GNUR_STARTS)})")
+    return errs
 
 
 def in_ci():
@@ -624,7 +751,8 @@ def main():
         res = run_gnur(a.runs, a.valgrind)
     for n, v in res.items():
         print(f"{n}: {v['instr']:,.0f} instructions (shifts {', '.join(f'{x:,}' for x in v['instr_shifts'].values())}), "
-              f"anon {v['anon_kib']:,.0f} KiB, peak RSS {v['rss_kib']:,.0f} KiB")
+              f"anon {v['anon_kib']:,.0f} KiB, peak RSS {v['rss_kib']:,.0f} KiB"
+              + (f", {v['children']} process(es) started" if v.get("children") else ""))
     if a.json:
         with open(a.json, "w") as f:
             json.dump(res, f, indent=1, sort_keys=True)
