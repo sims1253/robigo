@@ -958,6 +958,11 @@ impl<'g> CtxRef<'g> {
         crate::env::recycle::mark_escaped(x);
         self.obj(x)
     }
+    /// Whether the record's environment is `env`: a comparison, which reads
+    /// no frame as a value (no escape mark, unlike [`CtxRef::cloenv`]).
+    pub fn cloenv_is(self, env: Ref<'_>) -> bool {
+        self.rec.cloenv() == env.sexp()
+    }
     /// The caller's environment, as a value (marked escaped, as
     /// [`RecordRef::cloenv`]).
     pub fn sysparent(self) -> Ref<'g> {

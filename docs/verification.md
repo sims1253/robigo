@@ -854,7 +854,13 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    unreadable diff runs everything. `scripts/test-ci-select.py` checks the mapping.
    It also makes sure the CI image for this tree exists (below) and hands
    its references to the other jobs.
-2. **lint:** `cargo fmt --check` and `scripts/lint.sh`.
+2. **lint:** `scripts/lint-job.sh`, the job's only command: `cargo fmt
+   --check`, `scripts/lint.sh` (clippy and the Sexp rule), and the tooling's
+   script suites (test_corpus, test-oracle-diff, test-check-sexp-safety,
+   test-wall13, test-pgo-build, test-prune-target, test-scratch).
+   **Before pushing, run `scripts/lint-job.sh`**: a green run is a green lint
+   job. `scripts/test-rt-ci.py` checks that the workflow runs the script and
+   nothing else.
    **miri:** `RString` and the `Rc` alias writes (§ Unsafe code).
    **bytecode-fidelity:** bytecode metadata and GNU bytecode fixtures. These
    jobs do not depend on the release binary and still run when a pull request
@@ -939,7 +945,15 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    `ROBIGO_GC_FREEZE_CHECK=1` before anything else: a child marked but not
    traced, planted under the interim boot, failed 37 of 40 cases there and
    the check named none, docs/ledger/g3/2026-11-21-h-boot-freeze-check.md's
-   note of 2026-11-24), `scripts/rt-stress.sh` (E3: the stress script in fresh
+   note of 2026-11-24). Those steps, and the retry torture's,
+   torture each case but not its start: `ROBIGO_TORTURE_AFTER_START=1` holds
+   gctorture, `ROBIGO_GC_MOVE`'s moves and `ROBIGO_RETRY_TORTURE` until the
+   start is over. That variable is a test hook, not a GNU R setting: GNU R
+   reads `R_GCTORTURE` in InitMemory and tortures its whole start, and
+   robigo-rt refuses the variable at its start when no torture mode is set.
+   The start keeps two steps of its own, M1's loader and the rdb boot, each
+   under `ROBIGO_GC_MOVE=1` and gctorture from the heap's creation. Then
+   `scripts/rt-stress.sh` (E3: the stress script in fresh
    processes; the ledger's runs take 30 per profile),
    `scripts/rt-overshoot.py` (E4: every slice's overshoot against max(32
    MiB, 10% of the live heap)), the conformance under a small vector limit
@@ -1061,7 +1075,9 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
           them, in a fixed environment (`scripts/rt-startup.py`,
           `docs/ledger/g3/2026-11-23-startup-layout.md`);
         - against main: instructions +0.5%, anonymous memory
-          +max(1%, 64 KiB), peak RSS +5%.
+          +max(2%, 128 KiB) (a coarse tripwire for gross regressions:
+          physical pages follow glibc's placement by tens of KiB; to be
+          replaced by a logical peak), peak RSS +5%.
 
         Tables built at a start are pre-sized; a start that steps by ~80k
         instructions is realloc/memcpy until shown otherwise.

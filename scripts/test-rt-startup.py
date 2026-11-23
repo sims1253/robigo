@@ -7,6 +7,7 @@ import os
 import signal
 import sys
 import tempfile
+import threading
 import unittest
 import unittest.mock
 from types import SimpleNamespace
@@ -45,15 +46,19 @@ class Verdict(unittest.TestCase):
         self.assertEqual(len(f), 1)
         self.assertIn("instructions", f[0])
 
-    def test_anonymous_memory_has_a_floor(self):
-        # 1% of 1,500 KiB is 15 KiB: the 64 KiB floor holds
-        self.assertEqual(self.fails({"interim": start(15_000_000, 1_564, 9_800)}), [])
-        f = self.fails({"interim": start(15_000_000, 1_565, 9_800)})
+    def test_anonymous_memory_is_a_coarse_tripwire(self):
+        # 2% of 1,500 KiB is 30 KiB: the 128 KiB floor holds
+        self.assertEqual(self.fails({"interim": start(15_000_000, 1_628, 9_800)}), [])
+        f = self.fails({"interim": start(15_000_000, 1_629, 9_800)})
         self.assertEqual(len(f), 1)
         self.assertIn("anonymous", f[0])
-        # above the floor, 1%: 6,800 KiB allows 68 KiB
-        self.assertEqual(self.fails({"rdb-jit": start(95_000_000, 6_868, 15_600)}), [])
-        self.assertEqual(len(self.fails({"rdb-jit": start(95_000_000, 6_869, 15_600)})), 1)
+        # above the floor, 2%: 6,800 KiB allows 136 KiB
+        self.assertEqual(self.fails({"rdb-jit": start(95_000_000, 6_936, 15_600)}), [])
+        self.assertEqual(len(self.fails({"rdb-jit": start(95_000_000, 6_937, 15_600)})), 1)
+        # the placement band measured on #991's runner binaries in CI's image
+        # (+56 KiB on rdb-nocache's 6,939, no code cost) passes
+        self.assertEqual((su.ANON_LIMIT, su.ANON_FLOOR_KIB), (2.0, 128))
+        self.assertLess(56, su.anon_limit_kib(6_939))
 
     def test_peak_rss_is_loose(self):
         self.assertEqual(self.fails({"interim": start(15_000_000, 1_500, 9_800 * 1.05)}), [])
@@ -176,6 +181,34 @@ class Boots(unittest.TestCase):
         rows = su.table([{"name": "interim"}, {"name": "rdb-jit"}], {"interim": v, "rdb-jit": v})
         self.assertTrue(rows[2].startswith("| interim |"))
         self.assertTrue(rows[3].startswith("| rdb-jit (default) |"))
+
+
+@unittest.skipUnless(os.environ.get("RT_STARTUP_TEST_BIN") and su.M1_BOOT == "",
+                     "a binary in RT_STARTUP_TEST_BIN (perf-rt's Starts step gives it), whose unset boot is M1's")
+class M1Name(unittest.TestCase):
+    """`ROBIGO_RT_BOOT=m1` names the boot an unset value is until L5's flip
+    (main.rs), so that the flip's one-line change of M1_BOOT to "m1" moves
+    nothing: the interim start under each, on the binary under test, over
+    the same 15 layouts, within #995's measured floor (0.073% instructions,
+    14 KiB anonymous peak). Skipped once M1_BOOT is "m1" (the flip): unset
+    is then the rdb boot."""
+
+    def tearDown(self):
+        # the measurement's pools and timers end with it: a thread left
+        # alive here would make the next test's fork a fork of a
+        # multi-threaded process
+        others = [t.name for t in threading.enumerate() if t is not threading.main_thread()]
+        self.assertEqual(others, [], "threads left alive after M1Name")
+
+    def test_the_interim_start_is_the_same_under_m1(self):
+        bin_ = os.environ["RT_STARTUP_TEST_BIN"]
+        trees = os.environ.get("RT_STARTUP_TEST_TREES") or False
+        starts = dict(su.STARTS, **{"interim-m1": {"ROBIGO_RT_BOOT": "m1"}})
+        with unittest.mock.patch.object(su, "STARTS", starts):
+            got = su.run(bin_, starts=["interim", "interim-m1"], trees=trees, runs=1)
+        a, b = got["interim"], got["interim-m1"]
+        self.assertLessEqual(abs(b["instr"] / a["instr"] - 1) * 100, 0.073, (a["instr"], b["instr"]))
+        self.assertLessEqual(abs(b["anon_kib"] - a["anon_kib"]), 14, (a["anon_kib"], b["anon_kib"]))
 
 
 class Reallocs(unittest.TestCase):

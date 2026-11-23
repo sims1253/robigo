@@ -164,3 +164,42 @@ The gate runs its memory runs one at a time, and CI never met it; a probe
 running them side by side did. memory() now waits on its start's own
 process group only, which the start has to itself (setpgid), with a test
 of four runs side by side.
+
+## The anonymous peak on the runner: a coarse tripwire (2026-11-23, later)
+
+Under the 15 shifts, two unrelated PRs' binaries (#991's, which formats one
+error line, and #994's) read the same anonymous peaks against main
+e4a9fab22's, to the KiB: +5 / −2 / +19 / +40 on interim / rdb-jit /
+rdb-nojit / rdb-nocache. #993 against main 370b96aa0 read 0 / +9 / −23 /
+−9. The limit was +max(1%, 64 KiB).
+
+#991's runner binaries (CI's perf-rt-bins), measured inside CI's image
+(robigo-oracle:4.6.2, glibc 2.41), the 15 shifts, each on its own trees:
+
+| start | PR − main, in CI's image | on the runner | locally, glibc 2.44 |
+|---|---:|---:|---:|
+| interim | +3 | +5 | |
+| rdb-jit | −3 | −2 | |
+| rdb-nojit | +15 | +19 | +13 |
+| rdb-nocache | +56 | +40 | +8 |
+
+- **It is glibc 2.41's malloc, not the runner or the trees:** a binary on
+  the other's trees reads the same for rdb-nocache, and pinning
+  `glibc.malloc.mmap_threshold` changes nothing.
+- **Split by mapping at the peak's reading:**
+  - the binary's own pages (relocated RELRO, `.got`, `.data`, `.bss`) are
+    180 KiB in both binaries, every start, every layout;
+  - robigo-heap's 1 MiB chunk regions are identical to the KiB;
+  - the whole difference is glibc's `[heap]` and its anonymous mmaps for
+    large allocations: the runtime's own Rust allocations. At one layout
+    the PR's binary reads 44 KiB *less*, all of it `[heap]`.
+- **Why no layout lever helps:** physical pages at the peak follow malloc's
+  history: the order and sizes of what the runtime mallocs and frees, which
+  any code change perturbs. The shifts move where the heap lies, not that.
+
+So the anonymous-peak limit is now **+max(2%, 128 KiB)**, a coarse tripwire
+for gross regressions only. Instructions and peak RSS are unchanged. It is
+to be replaced by a logical peak that no placement enters: the peak of
+malloc'd bytes, from a tool that counts requests, and robigo-heap's own
+bytes in use.
+
