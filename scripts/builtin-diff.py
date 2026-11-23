@@ -35,6 +35,7 @@ and a scratch directory as working, home and temporary directory.
 """
 import argparse
 import concurrent.futures
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -51,6 +52,7 @@ import tomllib
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 from scratch import keep as keep_dir, remove as remove_dir, scratch_dir  # noqa: E402
+import conf_slots  # noqa: E402
 
 HERE = os.path.join(ROOT, "scripts", "builtin-diff")
 GEN, DRIVER, RENDER = (os.path.join(HERE, f) for f in ("gen.R", "driver.R", "render.R"))
@@ -206,6 +208,25 @@ class Unusable(Exception):
     pass
 
 
+# The machine-wide slot pool every driver process takes a slot of (the
+# conformance runner's, ROBIGO_CONF_SLOTS_DIR; set by main, None: no pool)
+POOL = None
+
+
+def slot_pool(env=None):
+    """The pool this run shares, by rt-ci.py's rule (conf_slots.default_dir:
+    the caller's ROBIGO_CONF_SLOTS_DIR wins, empty means none, CI has none);
+    None without one. Exits on a pool that cannot be used."""
+    env = dict(os.environ if env is None else env)
+    d = conf_slots.default_dir(env)
+    if d is not None:
+        env["ROBIGO_CONF_SLOTS_DIR"] = d
+    try:
+        return conf_slots.from_env(env)
+    except conf_slots.PoolError as e:
+        sys.exit(f"builtin-diff: {e}")
+
+
 def one_run(cmd, e, cwd, out, start, ncases, timeout):
     """One driver process from case `start` on: the next case without a
     record, whether it was killed for a hang, its stderr and exit status.
@@ -217,19 +238,30 @@ def one_run(cmd, e, cwd, out, start, ncases, timeout):
     started = os.path.join(out, "started")
     if os.path.exists(started):
         os.remove(started)
-    err = tempfile.TemporaryFile()
-    sout = open(os.path.join(out, f"stdout.{start}"), "wb")
-    p = subprocess.Popen(cmd, env=e, cwd=cwd, stdout=sout, stderr=err, preexec_fn=cap)
-    nxt, since = start, time.monotonic()
-    timed_out = False
-    while p.poll() is None:
-        time.sleep(0.05)
-        while nxt <= ncases and have(nxt):
-            nxt, since = nxt + 1, time.monotonic()
-        if time.monotonic() - since > timeout:
-            p.kill()
-            p.wait()
-            timed_out = True
+    # the process holds a slot of the machine-wide pool (POOL) from before
+    # its start until it has ended, and its first case's clock starts once
+    # the slot is taken: the wait for one is no case's time. (The slot
+    # first: a take that fails has opened nothing.)
+    with (POOL.take(who=f"builtin-diff's driver from case {start}") if POOL else contextlib.nullcontext()):
+        err = tempfile.TemporaryFile()
+        sout = open(os.path.join(out, f"stdout.{start}"), "wb")
+        nxt, since = start, time.monotonic()
+        p = subprocess.Popen(cmd, env=e, cwd=cwd, stdout=sout, stderr=err, preexec_fn=cap)
+        timed_out = False
+        try:
+            while p.poll() is None:
+                time.sleep(0.05)
+                while nxt <= ncases and have(nxt):
+                    nxt, since = nxt + 1, time.monotonic()
+                if time.monotonic() - since > timeout:
+                    p.kill()
+                    p.wait()
+                    timed_out = True
+        finally:
+            # (an interrupt: the driver ends before its slot is given back)
+            if p.poll() is None:
+                p.kill()
+                p.wait()
     while nxt <= ncases and have(nxt):
         nxt += 1
     sout.close()
@@ -617,6 +649,7 @@ def ensure_oracle(a, rows):
     cmd = ["docker", "run", "--rm", "--network", "none", "--memory", f"{a.jobs * 2 + 1}g",
            "--security-opt", "seccomp=unconfined", "-u", f"{os.getuid()}:{os.getgid()}",
            "-v", f"{ROOT}:{ROOT}:ro", "-v", f"{src}:{src}:ro", "-v", f"{a.data}:{a.data}", "-e", "HOME=/tmp",
+           "-e", "ROBIGO_CONF_SLOTS_DIR=",
            "-e", f"ROBIGO_BUILTIN_DIFF_ORACLE={IMAGE}",
            IMAGE, "python3", os.path.join(ROOT, "scripts", "builtin-diff.py"), "oracle",
            "--data", a.data, "--seed", str(a.seed), "--jobs", str(a.jobs), "--r-src", src, *missing]
@@ -852,7 +885,9 @@ def cmd_run(a):
     try:
         with concurrent.futures.ThreadPoolExecutor(a.jobs) as ex:
             results = list(ex.map(lambda rj: run_rt(a, rj[0], rj[1], rt_bin, prefix), jobs))
-    except Unusable as e:
+    except (Unusable, conf_slots.PoolError) as e:
+        # (a pool that stops working mid-run ends it as cleanly as one that
+        # cannot be used at the start)
         print(f"builtin-diff: {e}", file=sys.stderr)
         return 3
     for r in results:
@@ -987,7 +1022,9 @@ def cmd_plant(a):
             ok &= good
             for r in (base, plant):
                 remove_dir(r["scratch"])
-    except Unusable as e:
+    except (Unusable, conf_slots.PoolError) as e:
+        # (a pool that stops working mid-run ends it as cleanly as one that
+        # cannot be used at the start)
         print(f"builtin-diff: {e}", file=sys.stderr)
         return 3
     return 0 if ok else 1
@@ -1102,6 +1139,11 @@ def main(argv):
     a = ap.parse_args(argv)
     if hasattr(a, "data"):
         a.data = os.path.abspath(a.data)
+    # (`oracle` runs GNU R's side in its container, unpooled: the
+    # container's own /tmp would be a pool of its own)
+    if a.cmd not in ("check-rows", "key", "oracle"):
+        global POOL
+        POOL = slot_pool()
     return {"run": cmd_run, "show": cmd_show, "plant": cmd_plant, "check-rows": cmd_check_rows,
             "oracle": cmd_oracle, "key": cmd_key, "ci": cmd_ci}[a.cmd](a)
 
