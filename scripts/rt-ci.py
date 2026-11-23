@@ -378,9 +378,19 @@ def every_cpu(steps):
             # run_steps runs it. A global timeout, the step's or the
             # caller's, means no default-timeout allowances; the case lists
             # merge, the defaults first, then the caller's, then the step's)
-            if "ROBIGO_CONF_TIMEOUT" not in e and not os.environ.get("ROBIGO_CONF_TIMEOUT"):
+            # (present, even empty, is set: the runner reads it so)
+            if "ROBIGO_CONF_TIMEOUT" not in e and "ROBIGO_CONF_TIMEOUT" not in os.environ:
                 def named(v):
-                    return {k.strip(): int(s) for k, s in (i.rsplit("=", 1) for i in v.split(",") if i.strip())}
+                    out = {}
+                    for i in v.split(","):
+                        if not i.strip():
+                            continue
+                        k, s = i.rsplit("=", 1)
+                        if k.strip() in out:
+                            # (the runner refuses one list naming a case twice)
+                            raise SystemExit(f"rt-ci: ROBIGO_CONF_TIMEOUTS names {k.strip()!r} twice")
+                        out[k.strip()] = int(s)
+                    return out
                 e["ROBIGO_CONF_TIMEOUTS"] = case_timeouts({**DEFAULT_STEP_SLOW,
                                                            **named(os.environ.get("ROBIGO_CONF_TIMEOUTS", "")),
                                                            **named(e.get("ROBIGO_CONF_TIMEOUTS", ""))})
@@ -795,8 +805,13 @@ def conf_slots_dir(env=None):
     except OSError as e:
         print(f"::warning::rt-ci: no conformance slot pool ({d}: {e})")
         return None
-    if not os.path.isdir(d) or os.path.islink(d) or st.st_uid != os.getuid():
-        print(f"::warning::rt-ci: no conformance slot pool ({d} is not a directory of this user's)")
+    import stat as st_
+    # this user's directory, and private: another user able to write there
+    # could replace a slot file, and two runs would lock two files for one
+    # slot
+    if not st_.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
+        print(f"::warning::rt-ci: no conformance slot pool ({d} is not a private directory of this user's: "
+              f"mode {oct(st_.S_IMODE(st.st_mode))})")
         return None
     return d
 

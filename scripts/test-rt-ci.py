@@ -307,6 +307,13 @@ class RtCi(unittest.TestCase):
         self.assertIsNone(rt.conf_slots_dir({"GITHUB_ACTIONS": "true", "XDG_RUNTIME_DIR": d}))
         self.assertIsNone(rt.conf_slots_dir({"ROBIGO_CONF_SLOTS_DIR": ""}))
         self.assertIsNone(rt.conf_slots_dir({"ROBIGO_CONF_SLOTS_DIR": "/x"}))
+        # an existing pool that others could write in is not used
+        import contextlib, io
+        os.chmod(os.path.join(d, "robigo-conf-slots"), 0o777)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertIsNone(rt.conf_slots_dir({"XDG_RUNTIME_DIR": d}))
+        self.assertIn("not a private directory", out.getvalue())
 
     def test_a_crosscheck_that_compares_fewer_than_its_floor_fails(self):
         # the rdb boot's report: a boot that stopped loading the compiler's
@@ -444,8 +451,12 @@ class RtCi(unittest.TestCase):
         from unittest import mock
         conf = [s for s in rt.steps(crates) if rt.CONFORMANCE in s[2] and "--exact" in s[2]
                 and "ROBIGO_CONF_TIMEOUT" not in s[1]][0]
-        with mock.patch.dict(os.environ, {"ROBIGO_CONF_TIMEOUT": "180"}):
-            self.assertNotIn("ROBIGO_CONF_TIMEOUTS", rt.every_cpu([(conf[0], {}, conf[2])])[0][1])
+        for v in ("180", ""):    # (present, even empty, is set)
+            with mock.patch.dict(os.environ, {"ROBIGO_CONF_TIMEOUT": v}):
+                self.assertNotIn("ROBIGO_CONF_TIMEOUTS", rt.every_cpu([(conf[0], {}, conf[2])])[0][1])
+        with mock.patch.dict(os.environ, {"ROBIGO_CONF_TIMEOUTS": "tests/rt/a.R=90,tests/rt/a.R=91"}), \
+                self.assertRaisesRegex(SystemExit, "names 'tests/rt/a.R' twice"):
+            rt.every_cpu([(conf[0], {}, conf[2])])
         with mock.patch.dict(os.environ, {"ROBIGO_CONF_TIMEOUTS": "tests/rt/a.R=90,tests/rt/env/large-frames.R=120"}):
             env = rt.every_cpu([(conf[0], {}, conf[2])])[0][1]
         got = dict(i.rsplit("=", 1) for i in env["ROBIGO_CONF_TIMEOUTS"].split(","))
