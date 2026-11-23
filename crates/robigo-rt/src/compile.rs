@@ -342,10 +342,12 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
 /// translated or compiled, then cmp.R's warnings.
 fn compile_closure_body(cx: &mut Cx, op: Root<'_>, installed: bool) -> RResult<Option<Sexp>> {
     // cmpfun's make.toplevelContext: compilerOptions read at the entry of a
-    // compile from source (a closure of byte code is GNU R's compiled
-    // already, and base's installed code is not cmpfun's)
+    // compile from source. Not for code GNU R holds compiled already: a
+    // closure of byte code, base's installed code, and a package's code (a
+    // closure whose top environment is a namespace: GNU R installs packages
+    // byte-compiled, where the M1 loader binds their source)
     // SAFETY: a rooted closure.
-    let source = !installed && unsafe { op.bind(cx).sexp().cdr().typ() } != BCODESXP;
+    let source = !installed && unsafe { op.bind(cx).sexp().cdr().typ() } != BCODESXP && !package_code(cx, op);
     let entry = entry_options(cx, source)?;
     // (the crosscheck's finding of the last attempt: an attempt a fold
     // retries compared code without the fold's value)
@@ -983,6 +985,15 @@ fn compile_loop(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RResult<Option<Se
         e => e,
     };
     entry.end(cx, code)
+}
+
+/// Whether closure `op` is a package's code: its environment's top
+/// environment is a namespace (base's included).
+fn package_code(cx: &Cx, op: Root<'_>) -> bool {
+    // SAFETY: a rooted closure: its environment is live.
+    let env = unsafe { Ref::from_sexp(op.bind(cx).sexp().tag(), cx) };
+    let top = crate::dispatch::topenv(cx, None, env);
+    crate::dispatch::is_namespace_env(cx, top)
 }
 
 /// A compile's entry: cmp.R's make.toplevelContext reads compilerOptions
