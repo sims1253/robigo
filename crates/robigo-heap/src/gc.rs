@@ -406,6 +406,32 @@ fn torture_from_env() -> (i32, i32) {
     (if wait > 0 { wait } else { gap }, gap)
 }
 
+/// The heap's logical peaks under `ROBIGO_GC_STATS`, in bytes: what the
+/// heap's own bookkeeping says, never where the kernel or the allocator put
+/// anything, so the same allocation sequence gives the same figures.
+///
+/// Bytes in use are the objects allocated and not swept (the last sweep's
+/// live bytes, slot classes and large chunks, plus what was allocated since,
+/// requests rounded to 16) and the claimed blocks' headers. Objects are
+/// freed only by a collection's sweep, and chunks are acquired only by
+/// allocation and released only by a collection, so between two
+/// collections both grow: sampled at each collection's start and at the
+/// report, the maxima are the peaks, not an approximation of them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Peaks {
+    /// Bytes in use at their peak: `objects + block_overhead`.
+    pub in_use: u64,
+    /// At that peak: the objects' bytes. A large object counts its chunk
+    /// once a sweep has seen it, and its request (rounded to 16) before.
+    pub objects: u64,
+    /// At that peak: the claimed blocks' headers (`heap::DATA_OFF` each).
+    pub block_overhead: u64,
+    /// At that peak: the bytes of the large objects' chunks.
+    pub large: u64,
+    /// The chunks mapped, small and large, at their own peak.
+    pub chunks_mapped: u64,
+}
+
 /// One heap and its tables. Single-threaded, like R's values.
 pub struct Core {
     heap: Heap,
@@ -448,6 +474,10 @@ pub struct Core {
     own_poll: AtomicU32,
     /// `ROBIGO_GC_STATS`, read when the core is made
     stats_mode: StatsMode,
+    /// `ROBIGO_GC_STATS`'s logical peaks ([`Core::peaks`]), sampled where
+    /// they can be at their highest: at each collection's start, before
+    /// anything is freed, and when the stats are reported.
+    peaks: Peaks,
     /// the bounds of the thread the core is bound to (the evaluator's)
     stack_top: usize,
     stack_lo: usize,
@@ -1000,6 +1030,7 @@ impl Core {
             poll: None,
             own_poll: AtomicU32::new(0),
             stats_mode: StatsMode::from_env(),
+            peaks: Peaks::default(),
             stack_top,
             stack_lo,
             open: OpenSegment { top: 0, routine: 0 },
@@ -3023,6 +3054,9 @@ impl Core {
         // R: memory.c:R_gc_internal
         self.sizes.n_maxused = self.sizes.n_maxused.max(self.sizes.nodes_in_use);
         self.sizes.v_maxused = self.sizes.v_maxused.max(self.sizes.valloc);
+        if self.stats_mode != StatsMode::Off {
+            self.peaks = self.peaks_now();
+        }
         let t0 = self.begin_collection();
         // SAFETY: nothing was freed since the last sweep, so the heap's own
         // lists contain objects whose fields are objects (the rooting
@@ -3696,6 +3730,35 @@ impl Core {
         self.stats_mode
     }
 
+    /// `ROBIGO_GC_STATS`'s logical peaks so far, this moment included
+    /// ([`Peaks`]). All zero with the stats off: nothing is sampled then.
+    pub fn peaks(&self) -> Peaks {
+        if self.stats_mode == StatsMode::Off { Peaks::default() } else { self.peaks_now() }
+    }
+
+    /// The stored peaks raised by this moment's figures.
+    fn peaks_now(&self) -> Peaks {
+        let (mut large, mut mapped, mut claimed) = (0u64, 0u64, 0u64);
+        for c in &self.heap.chunks {
+            let size = (c.end - c.base) as u64;
+            mapped += size;
+            if c.large {
+                large += size;
+            } else {
+                claimed += c.claimed as u64;
+            }
+        }
+        let objects = self.stats.live_bytes + self.alloc_since_gc as u64;
+        let block_overhead = claimed * crate::heap::DATA_OFF as u64;
+        let mut p = self.peaks;
+        if objects + block_overhead > p.in_use {
+            (p.in_use, p.objects, p.block_overhead, p.large) =
+                (objects + block_overhead, objects, block_overhead, large);
+        }
+        p.chunks_mapped = p.chunks_mapped.max(mapped);
+        p
+    }
+
     /// Change it: the allocation counts by type start from here.
     pub fn set_stats_mode(&mut self, mode: StatsMode) {
         self.stats_mode = mode;
@@ -3771,6 +3834,14 @@ impl Core {
         if st.pin_hits > 0 {
             let _ = writeln!(r, "robigo gc: pin report hits {}", st.pin_hits);
         }
+        // the logical peaks (`Peaks`): deterministic for an allocation
+        // sequence; a reported figure (the startup gate's memory is massif's)
+        let pk = self.peaks_now();
+        let _ = writeln!(
+            r,
+            "robigo gc: peak bytes in use {} (objects {}, block overhead {}, large {}); peak chunk bytes mapped {}",
+            pk.in_use, pk.objects, pk.block_overhead, pk.large, pk.chunks_mapped
+        );
         let _ = writeln!(
             r,
             "robigo gc: allocated {} objects, {} bytes",
