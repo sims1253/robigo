@@ -300,6 +300,19 @@ unsafe fn run(cx: &Cx, code: Sexp, rho: Sexp) -> Option<Slot> {
 /// would pass `R_Expressions`.
 // R: eval.c:eval, eval.c:bcEval (the entry's BC_CHECK_SIGINT)
 pub fn early_force(cx: &mut Cx, bytecode: bool, kind: u8) -> bool {
+    if kind == BCODESXP {
+        return bytecode && early_force_bc(cx);
+    }
+    early_force_ast(cx, bytecode, kind == LANGSXP)
+}
+
+/// [`early_force`] for a symbol (`call` false) or a call: one count each,
+/// `eval`'s or `bcEval`'s entry poll's. Inlined into the inliner's `enter`,
+/// whose arguments are never byte-code objects (a translated call's
+/// `CallCodes` does not reach `inline::site`): the byte-code case kept out
+/// of it, as an extra compare there cost 7 instructions a call (step 1a).
+#[inline(always)]
+pub(crate) fn early_force_ast(cx: &mut Cx, bytecode: bool, call: bool) -> bool {
     // (only compiled code's arguments are computed early: their promises
     // hold byte code, evaluated under the `Bc` profile)
     if !bytecode {
@@ -308,22 +321,30 @@ pub fn early_force(cx: &mut Cx, bytecode: bool, kind: u8) -> bool {
     if cx.eval_depth() + 1 > cx.expressions() {
         return false;
     }
-    let (eval_count, bc_count) = match kind {
-        LANGSXP => (false, true),
-        BCODESXP => (true, true),
-        _ => (true, false),
-    };
-    let e = cx.evalcount().get() + 1;
-    let b = cx.bc_evalcount().get() + 1;
-    if (eval_count && e > 1000) || (bc_count && b > 1023) {
+    let count = if call { cx.bc_evalcount() } else { cx.evalcount() };
+    let n = count.get() + 1;
+    if n > if call { 1023 } else { 1000 } {
         return false;
     }
-    if eval_count {
-        cx.evalcount().set(e);
+    count.set(n);
+    cx.set_visible(true);
+    true
+}
+
+/// [`early_force`] for a byte-code object (a translated call's promise
+/// code, byte code's slot): `eval`'s count and then `bcEval`'s entry poll
+/// count, both made or neither.
+#[inline(never)]
+fn early_force_bc(cx: &mut Cx) -> bool {
+    if cx.eval_depth() + 1 > cx.expressions() {
+        return false;
     }
-    if bc_count {
-        cx.bc_evalcount().set(b);
+    let (e, b) = (cx.evalcount().get() + 1, cx.bc_evalcount().get() + 1);
+    if e > 1000 || b > 1023 {
+        return false;
     }
+    cx.evalcount().set(e);
+    cx.bc_evalcount().set(b);
     cx.set_visible(true);
     true
 }
