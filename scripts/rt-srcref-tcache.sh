@@ -57,11 +57,15 @@ for mode in 1 0 verify; do
   hits=$(sed -n 's/.*hit \([0-9]*\),.*/\1/p' <<< "$stats")
   differing=$(sed -n 's/.*differing \([0-9]*\),.*/\1/p' <<< "$stats")
   verified=$(sed -n 's/.*verified \([0-9]*\),.*/\1/p' <<< "$stats")
+  # (the stats line's last field, no comma after it)
+  refused=$(sed -n 's/.*refused by the verifier \([0-9]*\)$/\1/p' <<< "$stats")
   case $mode in
     1) [ "${hits:-0}" -gt 0 ] || { echo "rt-srcref-tcache.sh: no cache hits" >&2; fail=1; } ;;
     0) [ "${hits:-1}" -eq 0 ] || { echo "rt-srcref-tcache.sh: hits with the cache off" >&2; fail=1; } ;;
-    verify) [ "${verified:-0}" -gt 0 ] && [ "${differing:-1}" -eq 0 ] ||
-      { echo "rt-srcref-tcache.sh: verify mode verified ${verified:-?}, differing ${differing:-?}" >&2; fail=1; } ;;
+    # what the runtime's own verify step fails on (tcache.rs's mismatches():
+    # the hits that differ and the ones the verifier refuses)
+    verify) [ "${verified:-0}" -gt 0 ] && [ "${differing:-1}" -eq 0 ] && [ "${refused:-1}" -eq 0 ] ||
+      { echo "rt-srcref-tcache.sh: verify mode verified ${verified:-?}, differing ${differing:-?}, refused ${refused:-?}" >&2; fail=1; } ;;
   esac
 done
 exit $fail
