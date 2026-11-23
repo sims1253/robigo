@@ -76,10 +76,18 @@ case "${1:-refs}" in
   ensure)
     missing=()
     for t in "${targets[@]}"; do
-      if docker manifest inspect "$(ref "$t")" > /dev/null 2>&1; then
+      # only a tag the registry says it lacks is built: another failure (a
+      # registry or network error) must not rebuild and push over a tag that
+      # exists, with today's Debian packages (caches key on the tag)
+      if err=$(docker manifest inspect "$(ref "$t")" 2>&1 > /dev/null); then
         echo "have $(ref "$t")" >&2
-      else
+      # (the registry's own MANIFEST_UNKNOWN only: docker's "no such
+      # manifest" also stands for an unauthorized or unexpected answer)
+      elif printf '%s' "$err" | grep -qi 'manifest unknown'; then
         missing+=("$t")
+      else
+        echo "error: cannot tell whether $(ref "$t") exists: $err" >&2
+        exit 1
       fi
     done
     if [ "${#missing[@]}" -gt 0 ]; then
