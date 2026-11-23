@@ -8,6 +8,7 @@ import signal
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -93,6 +94,66 @@ class Verdict(unittest.TestCase):
                          {"interim": start(1, 2, 3)}, {"jit": start(4, 5, 6)})
         self.assertEqual(len(lines), 3)
         self.assertIn("(jit)", lines[2])
+
+
+class Layout(unittest.TestCase):
+    """The layout shifts (docs/ledger/g3/2026-11-23-startup-layout.md): a
+    start's instructions and anonymous peak follow the heap's layout, so
+    both are taken over the same set of layouts, the same for every binary."""
+
+    def test_the_shifts_are_fixed(self):
+        self.assertEqual(su.LAYOUT_LENGTHS, tuple(range(35, 134, 7)))
+        self.assertEqual(su.TOP_PADS, tuple(131072 + 4096 * k for k in range(15)))
+        self.assertEqual(su.LAYOUT_SHIFTS, tuple(zip(su.LAYOUT_LENGTHS, su.TOP_PADS)))
+
+    def test_every_binary_gets_the_same_lengths_wherever_its_trees_are(self):
+        # main's trees and the PR's are unpacked in different directories:
+        # the homes the starts boot from have the same absolute lengths, and
+        # each leads to its own trees
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory(prefix="x" * 40) as b:
+            ha, hb = su.layout_homes(a), su.layout_homes(b)
+            self.assertEqual(list(ha), list(su.LAYOUT_LENGTHS))
+            for n in su.LAYOUT_LENGTHS:
+                self.assertEqual((len(ha[n]), len(hb[n])), (n, n))
+                self.assertEqual(os.path.realpath(ha[n]), os.path.realpath(a))
+                self.assertEqual(os.path.realpath(hb[n]), os.path.realpath(b))
+
+    def test_the_environment_is_fixed(self):
+        # nothing of the caller's: L's 104 KiB step flipped between two
+        # binaries at a few bytes of environment
+        before = su.clean_env()
+        with unittest.mock.patch.dict(os.environ, {"PADPADPAD": "x" * 4000, "R_HOME": "/elsewhere",
+                                                   "ROBIGO_RT_BOOT": "rdb"}):
+            after = su.clean_env()
+        self.assertEqual(before, after)
+        self.assertEqual(set(after) - set(su.BASE), {"PATH", "HOME", "ROBIGO_RSRC"})
+        # the sources' link: a fixed-length path, whatever the sources' own
+        self.assertEqual(len(after["ROBIGO_RSRC"]), len("/tmp/rs-") + 12 + len("/rsrc"))
+
+    def test_measure_boots_each_shift_and_takes_its_figures(self):
+        seen = {"instr": [], "memory": []}
+
+        def instr(cmd, env, valgrind):
+            seen["instr"].append((env["HOME_VAR"], env["GLIBC_TUNABLES"]))
+            return 1000 + len(env["HOME_VAR"])
+
+        def memory(cmd, env, syscalls):
+            seen["memory"].append((syscalls, env["HOME_VAR"], env.get("GLIBC_TUNABLES")))
+            return (100 + len(env["HOME_VAR"]) if syscalls else 0), 5000, 0, b"", 0
+
+        with tempfile.TemporaryDirectory() as home, \
+                unittest.mock.patch.object(su, "instructions", instr), unittest.mock.patch.object(su, "memory", memory):
+            v = su.measure(["bin"], {}, 3, "valgrind", "HOME_VAR", home)
+        pads = dict(su.LAYOUT_SHIFTS)
+        self.assertEqual(sorted(len(h) for h, _ in seen["instr"]), list(su.LAYOUT_LENGTHS))
+        for h, t in seen["instr"]:
+            self.assertEqual(t, f"glibc.malloc.top_pad={pads[len(h)]}")
+        self.assertEqual(v["instr"], 1000 + sum(su.LAYOUT_LENGTHS) / 15)
+        # the anonymous peak at every shift, peak RSS at the home itself
+        anon = [m for m in seen["memory"] if m[0]]
+        self.assertEqual(sorted(len(h) for _, h, _ in anon), list(su.LAYOUT_LENGTHS))
+        self.assertEqual(v["anon_kib"], su.ANON_STAT([100 + n for n in su.LAYOUT_LENGTHS]))
+        self.assertEqual([m for m in seen["memory"] if not m[0]], [(False, os.path.abspath(home), None)] * 3)
 
 
 class Memory(unittest.TestCase):
@@ -202,6 +263,29 @@ class Memory(unittest.TestCase):
                 self.assertGreater(a if syscalls else h, 0)
                 self.no_child_left()
                 self.assertEqual(self.group_left(), [], prog)
+
+    def test_runs_side_by_side_do_not_take_each_others_events(self):
+        # memory() waits only on its own start's process group: several at
+        # once in one process (threads) each finish with their own numbers
+        import concurrent.futures
+        prog = "b = bytearray({n} << 20)\nfor i in range(0, len(b), 4096): b[i] = 1\n"
+        with concurrent.futures.ThreadPoolExecutor(4) as ex:
+            got = list(ex.map(lambda n: su.memory([self.PY, "-c", prog.format(n=n)], dict(os.environ), True, 60),
+                              (8, 16, 24, 32)))
+        for n, (a, _, status, _, _) in zip((8, 16, 24, 32), got):
+            self.assertEqual(status, 0)
+            self.assertGreaterEqual(a, n << 10)
+        self.no_child_left()
+
+    def test_one_layout_gives_one_anonymous_peak(self):
+        # the repeated-invocation check: memory() is exact for a layout, so
+        # one program under one environment reads the same peak every run
+        # (L's 104 KiB flips came from the environment's size between
+        # binaries, not from runs; docs/ledger/g3/2026-11-23-startup-layout.md)
+        prog = "b = bytearray(24 << 20)\nfor i in range(0, len(b), 4096): b[i] = 1\n"
+        env = dict(su.FIXED_ENV, PYTHONHASHSEED="0")
+        peaks = {su.memory([self.PY, "-c", prog], env, True)[0] for _ in range(5)}
+        self.assertEqual(len(peaks), 1, peaks)
 
     def test_a_run_over_its_time_is_killed(self):
         with self.assertRaises(SystemExit) as e:

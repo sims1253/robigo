@@ -1018,8 +1018,10 @@ def cmd_rt_bars(a):
     if su:
         g = gnur_doc.get("startup") if gnur_doc else None
         print("\nStarts (`--vanilla -e 1`, R_DEFAULT_PACKAGES=NULL; scripts/rt-startup.py): callgrind's total "
-              f"instructions, the median over environment shifts; peak anonymous memory and peak RSS, the median of "
-              f"{runs} runs with address randomization off. Against main: instructions +{su.INSTR_LIMIT}%, "
+              f"instructions and peak anonymous memory, the mean over {len(su.LAYOUT_SHIFTS)} layout shifts (the "
+              f"home's path {su.LAYOUT_LENGTHS[0]}-{su.LAYOUT_LENGTHS[-1]} characters long with glibc malloc's top_pad, "
+              f"the same for both binaries); peak RSS, the median of {runs} runs; a fixed environment, address "
+              f"randomization off. Against main: instructions +{su.INSTR_LIMIT}%, "
               f"anonymous memory +{su.ANON_LIMIT}% (at least {su.ANON_FLOOR_KIB} KiB), peak RSS +{su.RSS_LIMIT}%. "
               + ("GNU R's beside them, measured on this runner, report only." if g else "GNU R's not measured here.")
               + "\n")
