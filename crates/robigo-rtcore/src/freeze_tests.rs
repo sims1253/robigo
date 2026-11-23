@@ -240,3 +240,53 @@ fn a_frame_pooled_before_the_boundary_is_not_reused_after_it() {
     })
     .unwrap();
 }
+
+/// The deferred search-path test (the pass's bar, (b)): an environment
+/// attached before the freeze is frozen; attaching and detaching an
+/// ordinary one in front of it keeps it on the search path, so it stays
+/// frozen; detaching it takes it off, and the next collection's pass thaws
+/// it. The test and the freeze roots walk the search path with one function
+/// (`Roots::trace_search_path`).
+#[test]
+#[cfg(not(miri))]
+fn a_detached_frozen_environment_thaws_and_one_still_attached_does_not() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    if !freeze_on(cx) {
+        return;
+    }
+    cx.scope(|cx, s| {
+        let global = s.root(cx, cx.global_env());
+        // attach `f` behind the global environment, as attach() does
+        // SAFETY: the global environment is live, and so is its ENCLOS.
+        let old = s.root(cx, unsafe { crate::Ref::from_sexp(robigo_heap::env::enclos(global.bind(cx).sexp()), cx) });
+        let o = s.out(cx);
+        let f = o.root();
+        cx.build(o, |cx| cx.new_env(old.bind(cx), true, 0))?;
+        cx.set_enclos(global, f);
+        freeze_now(cx);
+        assert!(cx.is_frozen(f.bind(cx)), "an attached environment is a freeze root");
+        // an ordinary environment attached in front of it and detached,
+        // attach()'s and detach()'s order of writes, several times
+        for _ in 0..3 {
+            let o = s.out(cx);
+            let u = o.root();
+            cx.build(o, |cx| cx.new_env(cx.base_env(), true, 0))?;
+            cx.set_enclos(global, u);
+            cx.set_enclos(u, f);
+            cx.collect();
+            assert!(cx.is_frozen(f.bind(cx)), "still on the search path behind an attached one: still frozen");
+            cx.set_enclos(global, f);
+            cx.collect();
+            assert!(cx.is_frozen(f.bind(cx)), "and after it is detached");
+        }
+        cx.check_frozen();
+        // `f` detached: off the search path, thawed by the next pass
+        cx.set_enclos(global, old);
+        cx.collect();
+        assert!(!cx.is_frozen(f.bind(cx)), "a detached frozen environment thaws");
+        cx.check_frozen();
+        Ok::<(), crate::RError>(())
+    })
+    .unwrap();
+}
