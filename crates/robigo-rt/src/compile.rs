@@ -667,14 +667,19 @@ unsafe fn translate_uncached_in(cx: &Cx, bc: Sexp, formals: Option<Sexp>, index:
         let st = prims::state(cx);
         let mut c = Comp::new(cx, st, Profile::Bc, Some(Cenv::for_translation()));
         let r = c.alloc();
-        let res = c.translate(bc, r);
-        let b = match res {
-            Ok(()) => {
-                let mut i = Ins::new(Op::Ret);
-                i.b = r;
-                c.emit(i);
-                c.finish()
-            }
+        let res = c.translate(bc, r).and_then(|()| {
+            let mut i = Ins::new(Op::Ret);
+            i.b = r;
+            c.emit(i);
+            // (what the checks before it let through and the verifier
+            // refuses is malformed byte code too, never a panic: #976)
+            crate::code::Verified::new(c.finish()).map_err(|m| {
+                c.bc_untranslated = Some(format!("its translation fails the verifier ({})", m.why));
+                Need::Malformed
+            })
+        });
+        let v = match res {
+            Ok(v) => v,
             Err(e @ (Need::Fail | Need::Malformed)) => {
                 let malformed = e == Need::Malformed;
                 let what = c.bc_untranslated.take().unwrap_or_else(|| {
@@ -692,15 +697,15 @@ unsafe fn translate_uncached_in(cx: &Cx, bc: Sexp, formals: Option<Sexp>, index:
                 let mut i = Ins::new(Op::Ret);
                 i.b = r;
                 c.emit(i);
-                c.finish()
+                verified(c.finish())
             }
             Err(e) => return Err(e),
         };
         let expr = robigo_rtbuiltins::bytecode::expr(cx, Ref::from_sexp(bc, cx)).sexp();
         if writing {
-            crate::tcache::writer_end(cx, bc, index, &b);
+            crate::tcache::writer_end(cx, bc, index, v.built());
         }
-        let code = crate::code::build(cx, &verified(b), expr, formals)?;
+        let code = crate::code::build(cx, &v, expr, formals)?;
         index_codes(cx, code, &c.arg_codes, index);
         Ok(code)
     }
@@ -1039,6 +1044,18 @@ pub(crate) fn compile_special_with(
                 Kind::Special(s) => c.special(s, call, args.unwrap_or_else(|| call.cdr()), dst, 0, Tail::Yes)?,
                 Kind::Builtin(..) | Kind::Fn(_) => unreachable!("robigo: only a language special is compiled"),
             }
+            if let Some(what) = c.too_large.take() {
+                // (a special's arguments past the IR's operands: an error
+                // that says so, made afresh)
+                let mut c = Comp::new(cx, st, Profile::Eval, None);
+                let dst = c.alloc();
+                let nil = c.nil();
+                c.unimplemented(nil, what)?;
+                let mut i = Ins::new(Op::Ret);
+                i.b = dst;
+                c.emit(i);
+                return Ok(crate::code::build(cx, &verified(c.finish()), call, None)?);
+            }
             let mut i = Ins::new(Op::Ret);
             i.b = dst;
             c.emit(i);
@@ -1209,7 +1226,21 @@ struct Comp<'g> {
     /// branch) sets it as the tail does.
     cut_assign: Option<Sexp>,
     live_stmt: Option<Sexp>,
+    /// What of the code is past the IR's 16-bit operands (its constants,
+    /// its registers, a `switch`'s alternatives), once something is: the
+    /// counters stop at a valid placeholder so the compile ends, and
+    /// [`Comp::root`] makes the code an error that says so (AGENTS rule 6;
+    /// GNU R compiles such code) instead of a panic. #976.
+    too_large: Option<&'static str>,
 }
+
+/// The nesting depth past which the `Eval` profile compiles no deeper and
+/// evaluates the rest when it runs (`Op::EvalConst`): the compiler's
+/// recursion stays within the stack, and the run's own depth count raises
+/// GNU R's "evaluation nested too deeply" where GNU R does (its
+/// `options(expressions)`, 5000 by default). Under `Bc`, cmp.R stops on
+/// such depths ("node stack overflow"): the code is left uncompiled.
+const DEFER_DEPTH: u16 = 1000;
 
 /// Give code `code` and the argument codes compiled with it (`arg_codes`)
 /// their slot indices ([`crate::code::set_index_shape`]): with `shape`,
@@ -1287,6 +1318,7 @@ impl<'g> Comp<'g> {
             bc_untranslated: None,
             cut_assign: None,
             live_stmt: None,
+            too_large: None,
         }
     }
 
@@ -1312,6 +1344,32 @@ impl<'g> Comp<'g> {
         let r = self.alloc();
         // SAFETY: the caller's contract.
         unsafe { self.expr(expr, r, 1, Tail::Yes)? };
+        if let Some(what) = self.too_large.take() {
+            if self.bc.is_some() {
+                // (cmp.R's code cannot hold it either: GNU R's is uncompiled)
+                return Err(Need::Fail);
+            }
+            // the code is an error that says so, made afresh
+            self.ins.clear();
+            self.consts.clear();
+            self.pool = PosMap::default();
+            self.locals.clear();
+            self.ppk.clear();
+            self.loops.clear();
+            self.arg_codes.clear();
+            self.sites = 0;
+            self.pp = 0;
+            self.next = R_FIRST;
+            self.max = R_FIRST;
+            self.max_depth = 0;
+            let r = self.alloc();
+            let nil = self.nil();
+            self.unimplemented(nil, what)?;
+            let mut i = Ins::new(Op::Ret);
+            i.b = r;
+            self.emit(i);
+            return Ok(self.finish());
+        }
         let mut i = Ins::new(Op::Ret);
         i.b = r;
         self.emit(i);
@@ -1345,7 +1403,13 @@ impl<'g> Comp<'g> {
 
     fn alloc(&mut self) -> Reg {
         let r = self.next;
-        self.next = self.next.checked_add(1).expect("robigo: an expression too deep to compile");
+        let Some(next) = self.next.checked_add(1) else {
+            // (past the registers an operand can name: the root makes the
+            // code an error; until then a register that exists)
+            self.too_large.get_or_insert("an expression of more than 65535 registers");
+            return R_FIRST;
+        };
+        self.next = next;
         self.max = self.max.max(self.next);
         r
     }
@@ -1369,7 +1433,12 @@ impl<'g> Comp<'g> {
         if let Some(&i) = self.pool.get(&(x.as_ptr() as usize)) {
             return i;
         }
-        let i = u16::try_from(FIRST_CONST + self.consts.len()).expect("robigo: too many constants in one code object");
+        let Ok(i) = u16::try_from(FIRST_CONST + self.consts.len()) else {
+            // (past the pool an operand can index: the root makes the code
+            // an error; until then a constant that exists)
+            self.too_large.get_or_insert("a code object of more than 65535 constants");
+            return FIRST_CONST as u16;
+        };
         self.consts.push(x);
         self.pool.insert(x.as_ptr() as usize, i);
         i
@@ -1556,6 +1625,22 @@ impl<'g> Comp<'g> {
     unsafe fn expr(&mut self, e: Sexp, dst: Reg, d: u16, tail: Tail) -> Result<(), Need> {
         // SAFETY: the caller's contract.
         let t = unsafe { e.typ() };
+        if d >= DEFER_DEPTH && t == LANGSXP {
+            if self.bc.is_some() {
+                // R: cmp.R's recursion fails on such depths (a compiler
+                // error): GNU R leaves the code uncompiled
+                return Err(Need::Fail);
+            }
+            // the rest evaluated when it runs, at this depth (`eval`
+            // counts on from `d`, and raises GNU R's error past the limit)
+            let mut i = Ins::new(Op::EvalConst);
+            i.a = dst;
+            i.e = self.k(e);
+            i.d = d;
+            self.max_depth = self.max_depth.max(d);
+            self.emit(i);
+            return Ok(());
+        }
         if self.bc.is_some()
             && matches!(t, SYMSXP | LANGSXP)
             // SAFETY: as above.
@@ -2102,7 +2187,10 @@ impl<'g> Comp<'g> {
         sw.b = r;
         sw.e = self.k(e);
         sw.c = self.k(names);
-        sw.f = u16::try_from(labels.len()).expect("robigo: a 'switch' with too many alternatives");
+        sw.f = u16::try_from(labels.len()).unwrap_or_else(|_| {
+            self.too_large.get_or_insert("a 'switch' of more than 65535 alternatives");
+            0
+        });
         self.emit(sw);
         self.free_to(r);
         let tabs = self.pc();

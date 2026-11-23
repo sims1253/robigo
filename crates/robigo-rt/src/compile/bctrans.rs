@@ -538,8 +538,12 @@ impl Tr {
     /// # Safety
     /// The code's constants are live.
     unsafe fn expr_at(&self, cx: &Cx, at: usize) -> Option<Sexp> {
-        // SAFETY: the caller's contract: a VECSXP of live constants.
+        // SAFETY: the caller's contract: live constants, read as a VECSXP's
+        // only when they are one (mkCode takes any)
         unsafe {
+            if self.consts.typ() != VECSXP {
+                return None;
+            }
             let n = self.consts.std_len() as usize;
             let p = self.consts.std_data() as *const Sexp;
             let index = (0..n).rev().map(|j| *p.add(j)).find(|&x| {
@@ -808,7 +812,14 @@ impl<'g> Comp<'g> {
             return self.malformed(what);
         }
         // SAFETY: as above.
-        unsafe { self.translate_ins(&dec, consts, dst) }
+        unsafe { self.translate_ins(&dec, consts, dst)? };
+        // (byte code GNU R ran, past the IR's 16-bit operands: not
+        // translated, which says so when it runs)
+        if let Some(what) = self.too_large.take() {
+            self.bc_untranslated = Some(format!("byte code of {what}"));
+            return Err(Need::Fail);
+        }
+        Ok(())
     }
 
     /// Translate the instructions `dec` (a code's, or an argument's slice
@@ -858,22 +869,35 @@ impl<'g> Comp<'g> {
         let r = sub.alloc();
         // SAFETY: the caller's contract.
         let res = unsafe { sub.translate_ins(&dec, t.consts, r) };
-        let res = res.map(|()| {
+        let res = res.and_then(|()| {
+            if let Some(what) = sub.too_large.take() {
+                sub.bc_untranslated = Some(format!("byte code of {what}"));
+                return Err(Need::Fail);
+            }
             let mut i = Ins::new(Op::Ret);
             i.b = r;
             sub.emit(i);
-            sub.finish()
+            Ok(sub.finish())
         });
         self.bc = sub.bc.take();
         if res.is_err() && sub.bc_untranslated.is_some() {
             self.bc_untranslated = sub.bc_untranslated.take();
         }
         let b = res?;
+        // (an argument's code the verifier refuses: malformed byte code,
+        // never a panic: #976)
+        let v = match crate::code::Verified::new(b) {
+            Ok(v) => v,
+            Err(m) => {
+                self.bc_untranslated = Some(format!("an argument's translation fails the verifier ({})", m.why));
+                return Err(Need::Malformed);
+            }
+        };
         // SAFETY: as above.
         unsafe {
             // (the translation cache's writer keeps it with the translation)
-            crate::tcache::writer_arg(self.cx, arg, &b);
-            let built = crate::code::build(self.cx, &super::verified(b), arg, None)?;
+            crate::tcache::writer_arg(self.cx, arg, v.built());
+            let built = crate::code::build(self.cx, &v, arg, None)?;
             crate::code::cache_on(arg, built);
             self.arg_codes.push(built);
             self.arg_codes.append(&mut sub.arg_codes);

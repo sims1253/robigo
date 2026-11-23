@@ -163,11 +163,12 @@ pub(super) unsafe fn check(dec: &[BcIns], consts: Sexp, code_len: usize) -> Resu
     // SAFETY: the caller's contract; the pool's elements are read within
     // its length.
     unsafe {
-        if consts.typ() != VECSXP || consts.std_len() == 0 {
-            return Err("its constants are not a list with its expression first".to_owned());
-        }
-        let n = consts.std_len() as usize;
-        let pool = consts.std_data() as *const Sexp;
+        // (any constants, mkCode's: code whose operands read none runs with
+        // them as in GNU R, its NULL included; a constant operand needs a
+        // list to index)
+        let list = consts.typ() == VECSXP;
+        let n = if list { consts.std_len() as usize } else { 0 };
+        let pool = if list { consts.std_data() as *const Sexp } else { std::ptr::null() };
         let name = |op: u8| robigo_rtbuiltins::bytecode::OPCODES.get(op as usize).map_or("?", |o| o.0);
         for i in dec {
             for (j, &k) in operands(i.op).iter().enumerate() {
@@ -176,14 +177,32 @@ pub(super) unsafe fn check(dec: &[BcIns], consts: Sexp, code_len: usize) -> Resu
                     Label if v < 0 || v as usize > code_len => {
                         return Err(format!("{}'s label {v} is outside the code", name(i.op)));
                     }
+                    // cmp.R's labels go forward but for GOTO's (a loop's
+                    // back edge, which the translation polls at) and
+                    // STEPFOR's (the body's start): a jump back from any
+                    // other would loop where no poll is
+                    Label if (v as usize) <= i.at && !matches!(i.op, GOTO | STEPFOR) => {
+                        return Err(format!("{}'s label {v} is not after it", name(i.op)));
+                    }
                     Count if v < 0 => return Err(format!("{}'s count {v} is negative", name(i.op))),
                     Label | Count | Int => {}
+                    _ if !list => {
+                        return Err(format!("{}'s constant {v} is read from constants that are not a list", name(i.op)));
+                    }
                     _ if v < 0 || v as usize >= n => {
                         return Err(format!("{}'s constant {v} is outside its {n} constants", name(i.op)));
                     }
                     _ => {
-                        if let Some(want) = misfit(*pool.add(v as usize), k) {
+                        let x = *pool.add(v as usize);
+                        if let Some(want) = misfit(x, k) {
                             return Err(format!("{}'s constant {v} is not {want}", name(i.op)));
+                        }
+                        // a switch's jumps go forward, as cmp.R's do
+                        if k == Offsets && x.typ() == INTSXP {
+                            let o = std::slice::from_raw_parts(x.std_data() as *const i32, x.std_len() as usize);
+                            if o.iter().any(|&p| p < 0 || p as usize <= i.at || p as usize > code_len) {
+                                return Err(format!("{}'s jump table {v} jumps back or out of the code", name(i.op)));
+                            }
                         }
                     }
                 }
