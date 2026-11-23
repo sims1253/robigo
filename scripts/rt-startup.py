@@ -22,7 +22,7 @@ developer's tree nor an rt-ci in the same checkout sees one rebuilt.
 - --trees-from TAR unpacks such a tarball (into a scratch directory) first.
 - with neither, the starts boot from the checkout's own .robigo trees.
 
-perf.py rt-bars gates robigo-rt's starts against main's binary (the
+perf.py rt-starts gates robigo-rt's starts against main's binary (the
 [[startup]] entries of benchmarks/rt/m1-bars.toml), and perf.py rt-gnur
 records GNU R's beside them, report-only.
 
@@ -130,7 +130,7 @@ LAYOUT_SHIFTS = tuple(zip(LAYOUT_LENGTHS, TOP_PADS))
 # (docs/ledger/g3/2026-11-23-startup-layout.md)
 ANON_STAT = statistics.fmean
 
-# the gate against main's binary (perf.py rt-bars), in percent: instructions
+# the gate against main's binary (perf.py rt-starts), in percent: instructions
 # as the rows' THRESHOLD; the anonymous peak at least ANON_FLOOR_KIB, five
 # pages being 1% of a 2 MB start (H's interim measurements); total peak RSS
 # loosely, since its file-backed part follows code layout
@@ -800,7 +800,8 @@ def table(entries, new, main=None, gnur=None):
             m = None
         if g and any(k not in g for k in ("instr", "anon_kib", "rss_kib")):
             g = None
-        cells = [n, f"{v['instr']:,.0f}"]
+        # (the default start: the default boot's, the row bar 5 is judged on)
+        cells = [f"{n} (default)" if n == DEFAULT_START else n, f"{v['instr']:,.0f}"]
         for k in ("instr", "anon_kib", "rss_kib"):
             if k != "instr":
                 cells.append(f"{v[k]:,.0f}")
@@ -809,6 +810,66 @@ def table(entries, new, main=None, gnur=None):
             else ["", "", ""]
         lines.append("| " + " | ".join(cells) + " |")
     return lines
+
+
+def growth_reallocs(cg, top=5):
+    """[(callee, instructions)]: realloc's inclusive cost in the callgrind
+    file `cg` (made with --separate-callers=3) by the function that grew
+    the buffer, the first caller outside the allocator and RawVec's growth,
+    heaviest first. Each realloc either extends in place or copies, by what
+    lies above it: a start's layout-dependent cost
+    (docs/ledger/g3/2026-11-23-startup-layout.md)."""
+    p = subprocess.run(["callgrind_annotate", "--inclusive=yes", "--threshold=100", "--auto=no", cg],
+                       capture_output=True, text=True, check=True)
+    grew = {}
+    for ln in p.stdout.splitlines():
+        m = re.match(r"\s*([\d,]+) \([ \d.]+%\)\s+(?:\S*:)?(?:__libc_)?realloc'(.*)$", ln)
+        if not m:
+            continue
+        frames = [f for f in m.group(2).split(" [")[0].split("'") if f]
+        # (the frames past the allocator's own and RawVec's growth path)
+        who = next((f for f in frames if not re.search(r"RawVec|finish_grow|do_reserve|grow_one|^0x|^\?\?\?", f)),
+                   frames[-1] if frames else "?")
+        grew[who] = grew.get(who, 0) + int(m.group(1).replace(",", ""))
+    return sorted(grew.items(), key=lambda kv: -kv[1])[:top]
+
+
+def reallocs(binary, starts, checkout, trees, valgrind, top=5):
+    """Print each start's top `top` growth reallocs (growth_reallocs()), as
+    shares of the start's instructions, at the first layout shift."""
+    names = starts or defined()
+    for n in names:
+        if STARTS.get(n) is None:
+            raise SystemExit(f"rt-startup: no start '{n}' (defined: {', '.join(defined())})")
+    home = new_home() if isinstance(trees, str) else (build_trees(binary, checkout) if trees else checkout)
+    if isinstance(trees, str):
+        unpack_trees(trees, home)
+    homes = layout_homes(home)
+    n0, pad = LAYOUT_SHIFTS[0]
+    for n in names:
+        env = dict(clean_env(), **STARTS[n], ROBIGO_RT_CHECKOUT=homes[n0],
+                   GLIBC_TUNABLES=f"glibc.malloc.top_pad={pad}")
+        with tempfile.TemporaryDirectory(prefix="rt-reallocs-") as d:
+            cg = os.path.join(d, "cg.out")
+            cmd = [valgrind, "--tool=callgrind", "--separate-callers=3", f"--callgrind-out-file={cg}",
+                   os.path.abspath(binary), "--vanilla", "-e", "1"]
+            try:
+                p = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=CALLGRIND_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                raise SystemExit(f"rt-startup: {' '.join(cmd)} ran over {CALLGRIND_TIMEOUT} s under callgrind")
+            if p.returncode:
+                raise SystemExit(f"rt-startup: the {n} start under callgrind exited {p.returncode}:\n{p.stderr[-2000:]}")
+            total = None
+            with open(cg, errors="replace") as f:
+                for ln in f:
+                    if ln.startswith(("summary:", "totals:")):
+                        total = int(ln.split()[1])
+                        break
+            if total is None:
+                raise SystemExit(f"rt-startup: no total in callgrind's output of the {n} start")
+            print(f"{n}: {total:,} instructions; growth reallocs (realloc's inclusive cost, by the function that grew):")
+            for who, k in growth_reallocs(cg, top):
+                print(f"  {k:>12,} ({k / total:.2%})  {who}")
 
 
 def main():
@@ -830,7 +891,16 @@ def main():
     ap.add_argument("--runs", type=int, default=9, help="memory runs per start (default 9)")
     ap.add_argument("--valgrind", default=os.environ.get("VALGRIND", "valgrind"))
     ap.add_argument("--json", help="write the numbers here")
+    ap.add_argument("--reallocs", action="store_true",
+                    help="with --robigo-rt: no measurement; each start's top growth reallocs under callgrind "
+                         "(the functions to pre-size), as shares of the start")
     a = ap.parse_args()
+    if a.reallocs:
+        if not a.robigo_rt:
+            raise SystemExit("rt-startup: --reallocs needs --robigo-rt")
+        reallocs(a.robigo_rt, a.starts.split(",") if a.starts else None, a.checkout, a.trees_from or a.trees,
+                 a.valgrind)
+        return 0
     if a.pack_trees:
         if not a.robigo_rt:
             raise SystemExit("rt-startup: --pack-trees needs --robigo-rt")

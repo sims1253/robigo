@@ -8,8 +8,8 @@
 
 use crate::OwnedIsolate;
 
-/// The freeze on for this isolate (`ROBIGO_GC_FREEZE` is off by default),
-/// unless a moving mode leaves it off.
+/// The freeze on for this isolate (the default, but `ROBIGO_GC_FREEZE=0`
+/// may have turned it off), unless a moving mode leaves it off.
 fn freeze_on(cx: &mut crate::Cx) -> bool {
     cx.set_freeze_enabled(true);
     cx.freeze_enabled()
@@ -341,6 +341,366 @@ fn a_retired_argument_of_a_frozen_frame_thaws() {
         let before = cx.frozen_passes();
         cx.collect();
         assert_eq!(cx.frozen_passes(), before + 1, "the cleared argument words were noted");
+        cx.check_frozen();
+        Ok::<(), crate::RError>(())
+    })
+    .unwrap();
+}
+
+/// Step 2's Globals (superseding the bar's (a)): globals are roots but not
+/// freeze roots. What only a global holds is never frozen; a frozen object
+/// a global also holds, its freeze-root path cut (a noted write), thaws at
+/// the next pass and lives on through the global; releasing a global takes
+/// no note whatever it holds, so no pass runs.
+#[test]
+#[cfg(not(miri))]
+fn globals_are_roots_but_not_freeze_roots() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    if !freeze_on(cx) {
+        return;
+    }
+    cx.scope(|cx, s| {
+        let base = s.root(cx, cx.base_env());
+        // bound in base and held by a global: frozen (through base)
+        let kept = s.root(cx, cx.alloc_copy(&[1.0]).unwrap().finish());
+        let ksym = cx.install_rooted(s, b"freeze_test_kept")?;
+        cx.define_var(ksym, kept, base)?;
+        let both = cx.global(kept.bind(cx));
+        // held only by a global: never frozen
+        let only = cx.alloc_copy(&[2.0]).unwrap().finish();
+        let g = cx.global(only);
+        freeze_now(cx);
+        assert!(cx.is_frozen(kept.bind(cx)));
+        assert!(!cx.is_frozen(g.bind(cx)), "what only a global holds is not frozen");
+        // releasing a global over a frozen value: no note, no pass
+        let tmp = cx.global(kept.bind(cx));
+        cx.release_global(tmp);
+        let before = cx.frozen_passes();
+        cx.collect();
+        assert_eq!(cx.frozen_passes(), before, "a global's release takes no note");
+        // base's binding goes (noted): the pass thaws `kept`, the global keeps it
+        let nil = s.root(cx, cx.nil());
+        cx.define_var(ksym, nil, base)?;
+        let o = kept.reset(cx);
+        o.set(cx, cx.nil());
+        cx.collect();
+        assert_eq!(cx.frozen_passes(), before + 1);
+        assert!(!cx.is_frozen(both.bind(cx)), "thawed: only the global reaches it");
+        assert_eq!(both.bind(cx).as_vector::<f64>().unwrap().get(0), 1.0, "and alive");
+        // a finalizer on it: once the global goes, it dies (an ordinary
+        // object, no frozen referrer keeps it)
+        let nilx = cx.nil().sexp();
+        // SAFETY: a live object of this isolate (the global holds it) as the key.
+        unsafe { cx.new_weak_ref_raw(both.bind(cx).sexp(), nilx, cx.base_env().sexp(), false) }.expect("room");
+        cx.collect();
+        assert!(!cx.finalizers_pending(), "the global keeps the thawed object alive");
+        cx.release_global(both);
+        cx.release_global(g);
+        cx.collect();
+        assert!(cx.finalizers_pending(), "released, the thawed object died");
+        cx.check_frozen();
+        Ok::<(), crate::RError>(())
+    })
+    .unwrap();
+}
+
+/// The step 2 bar's (b): the environment base's promises are to be
+/// evaluated in (under the rdb boot, `..lazyLoad`'s frame) is a pinned
+/// frame from the boot boundary, so forcing one of its promises, which
+/// clears the promise's PRENV over that frozen environment, needs no pass
+/// while another promise still uses it. The last one's clear is noted, and
+/// the next pass lets the frame and what only it holds die, as in GNU R:
+/// a finalizer on an environment the frame binds becomes ready (Sol step 2
+/// r4 S15).
+#[test]
+#[cfg(not(miri))]
+fn a_lazy_load_frame_is_exempt_until_its_last_promise_is_forced() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    if !freeze_on(cx) {
+        return;
+    }
+    cx.scope(|cx, s| {
+        let base = s.root(cx, cx.base_env());
+        let o = s.out(cx);
+        let lazy = o.root();
+        cx.build(o, |cx| cx.new_env(cx.base_env(), true, 0))?;
+        // an environment only the frame holds, with a finalizer later
+        let o = s.out(cx);
+        let child = o.root();
+        cx.build(o, |cx| cx.new_env(cx.base_env(), true, 0))?;
+        let csym = cx.install_rooted(s, b"freeze_test_child")?;
+        cx.define_var(csym, child, lazy)?;
+        let expr = s.root(cx, cx.alloc_copy(&[3.0]).unwrap().finish());
+        let p = s.root(cx, cx.mk_promise(expr.bind(cx), lazy.bind(cx)).expect("room"));
+        let q = s.root(cx, cx.mk_promise(expr.bind(cx), lazy.bind(cx)).expect("room"));
+        let psym = cx.install_rooted(s, b"freeze_test_lazy")?;
+        let qsym = cx.install_rooted(s, b"freeze_test_lazy_q")?;
+        cx.define_var(psym, p, base)?;
+        cx.define_var(qsym, q, base)?;
+        // what `makeLazy(vars, vals, expr, lazy, baseenv())` records while
+        // base's file is read
+        cx.while_reading_base_file(|cx| {
+            cx.note_lazy_load_frame(lazy, base);
+        });
+        freeze_now(cx);
+        assert!(cx.is_frozen(lazy.bind(cx)) && cx.is_frozen(p.bind(cx)) && cx.is_frozen(child.bind(cx)));
+        // a finalizer on the child: ordinary at the next collection
+        let nil = cx.nil().sexp();
+        // SAFETY: a rooted environment of this isolate as the key.
+        unsafe { cx.new_weak_ref_raw(child.bind(cx).sexp(), nil, cx.base_env().sexp(), false) }.expect("room");
+        cx.collect();
+        let o = child.reset(cx);
+        o.set(cx, cx.nil());
+        let before = cx.frozen_passes();
+        // what forcing it does to PRENV (`force_promise`: SET_PRENV(R_NilValue),
+        // through the store barrier); rtcore has no evaluator to force it
+        // SAFETY: a rooted promise of this isolate, and its nil.
+        unsafe { p.bind(cx).sexp().set_tag(cx.nil().sexp()) };
+        cx.collect();
+        assert_eq!(cx.frozen_passes(), before, "another promise still uses the frame: no pass");
+        assert!(!cx.finalizers_pending(), "the frame still holds the child");
+        // the last promise forced
+        // SAFETY: as above.
+        unsafe { q.bind(cx).sexp().set_tag(cx.nil().sexp()) };
+        let o = lazy.reset(cx);
+        o.set(cx, cx.nil());
+        cx.collect();
+        assert_eq!(cx.frozen_passes(), before + 1, "the last promise's clear is noted");
+        cx.collect();
+        assert!(cx.finalizers_pending(), "the frame died, and the child with it");
+        cx.check_frozen();
+        Ok::<(), crate::RError>(())
+    })
+    .unwrap();
+}
+
+/// Sol step 2 r1 S2, S3: only `makeLazy`'s frame for base is pinned (another
+/// assign environment's is not); a second boundary call keeps the pins; a
+/// weak reference keyed on a pinned environment unpins it, so its next
+/// PRENV clear is noted again and a pass decides it.
+#[test]
+#[cfg(not(miri))]
+fn only_base_lazy_load_frames_are_pinned_and_a_weak_key_unpins_one() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    if !freeze_on(cx) {
+        return;
+    }
+    cx.scope(|cx, s| {
+        let base = s.root(cx, cx.base_env());
+        fn mk<'s>(
+            cx: &mut crate::Cx,
+            s: crate::Scope<'s>,
+            name: &[u8],
+        ) -> Result<(crate::Root<'s>, crate::Root<'s>), crate::RError> {
+            let o = s.out(cx);
+            let env = o.root();
+            cx.build(o, |cx| cx.new_env(cx.base_env(), true, 0))?;
+            let expr = s.root(cx, cx.alloc_copy(&[3.0]).unwrap().finish());
+            let p = s.root(cx, cx.mk_promise(expr.bind(cx), env.bind(cx)).expect("room"));
+            let sym = cx.install_rooted(s, name)?;
+            let base = s.root(cx, cx.base_env());
+            cx.define_var(sym, p, base)?;
+            Ok((env, p))
+        }
+        let (lazy, p) = mk(cx, s, b"freeze_test_lazy2")?;
+        // a second promise on the frame: the first one's clear is exempt
+        let expr2 = s.root(cx, cx.alloc_copy(&[4.0]).unwrap().finish());
+        let p2 = s.root(cx, cx.mk_promise(expr2.bind(cx), lazy.bind(cx)).expect("room"));
+        let p2sym = cx.install_rooted(s, b"freeze_test_lazy2b")?;
+        cx.define_var(p2sym, p2, base)?;
+        let (other, q) = mk(cx, s, b"freeze_test_other")?;
+        let elsewhere = s.root(cx, cx.global_env());
+        let (late, r) = mk(cx, s, b"freeze_test_late")?;
+        cx.while_reading_base_file(|cx| {
+            cx.note_lazy_load_frame(other, elsewhere);
+            cx.note_lazy_load_frame(lazy, base);
+        });
+        // base's file no longer read (the system profile's makeLazy): not
+        // pinned (Sol step 2 r3 S12)
+        cx.note_lazy_load_frame(late, base);
+        freeze_now(cx);
+        // a second boundary call is refused and changes nothing (S3)
+        cx.freeze_boot_heap();
+        let before = cx.frozen_passes();
+        // SAFETY: rooted promises of this isolate, and its nil.
+        unsafe { p.bind(cx).sexp().set_tag(cx.nil().sexp()) };
+        cx.collect();
+        assert_eq!(cx.frozen_passes(), before, "the base lazy-load frame stays pinned");
+        // SAFETY: as above.
+        unsafe { q.bind(cx).sexp().set_tag(cx.nil().sexp()) };
+        cx.collect();
+        assert_eq!(cx.frozen_passes(), before + 1, "another assign environment's frame is not pinned (S2)");
+        let before = cx.frozen_passes();
+        // SAFETY: as above.
+        unsafe { r.bind(cx).sexp().set_tag(cx.nil().sexp()) };
+        cx.collect();
+        assert_eq!(cx.frozen_passes(), before + 1, "a frame noted outside base's file is not pinned (S12)");
+        // a weak reference keyed on the pinned frame unpins it (S2)
+        let nil = cx.nil().sexp();
+        // SAFETY: a rooted environment of this isolate as the key.
+        unsafe { cx.new_weak_ref_raw(lazy.bind(cx).sexp(), nil, cx.base_env().sexp(), false) }.expect("room");
+        cx.collect();
+        assert!(!cx.is_frozen(lazy.bind(cx)), "keyed by a weak reference: unpinned and thawed");
+        cx.check_frozen();
+        Ok::<(), crate::RError>(())
+    })
+    .unwrap();
+}
+
+/// Sol step 2 r2 S7: a weak reference keyed on a pinned lazy-load frame
+/// between the boot boundary and the freeze unpins it (the frame is still
+/// ordinary then), so once its last reference goes it dies and its
+/// finalizer is ready.
+#[test]
+#[cfg(not(miri))]
+fn a_weak_key_registered_before_the_freeze_unpins_a_lazy_load_frame() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    if !freeze_on(cx) {
+        return;
+    }
+    cx.scope(|cx, s| {
+        let base = s.root(cx, cx.base_env());
+        let o = s.out(cx);
+        let lazy = o.root();
+        cx.build(o, |cx| cx.new_env(cx.base_env(), true, 0))?;
+        let expr = s.root(cx, cx.alloc_copy(&[3.0]).unwrap().finish());
+        let p = s.root(cx, cx.mk_promise(expr.bind(cx), lazy.bind(cx)).expect("room"));
+        let psym = cx.install_rooted(s, b"freeze_test_lazy3")?;
+        cx.define_var(psym, p, base)?;
+        cx.while_reading_base_file(|cx| {
+            cx.note_lazy_load_frame(lazy, base);
+        });
+        cx.freeze_boot_heap();
+        // keyed before the first collection: the frame is ordinary yet
+        let nil = cx.nil().sexp();
+        // SAFETY: a rooted environment of this isolate as the key.
+        unsafe { cx.new_weak_ref_raw(lazy.bind(cx).sexp(), nil, cx.base_env().sexp(), false) }.expect("room");
+        cx.collect();
+        assert!(!cx.is_frozen(lazy.bind(cx)), "a weak key is never frozen");
+        // its last references gone: the promise's binding and our roots
+        let nilr = s.root(cx, cx.nil());
+        cx.define_var(psym, nilr, base)?;
+        let o = p.reset(cx);
+        o.set(cx, cx.nil());
+        let o = lazy.reset(cx);
+        o.set(cx, cx.nil());
+        cx.collect();
+        assert!(cx.finalizers_pending(), "unpinned, the frame died and its finalizer is ready");
+        cx.check_frozen();
+        Ok::<(), crate::RError>(())
+    })
+    .unwrap();
+}
+
+/// Sol step 2 r5 S18: only the promises base binds count for a lazy-load
+/// frame's exemption. A promise the frame binds itself (a cycle) does not,
+/// so clearing base's one promise's PRENV is noted, and the next pass lets
+/// the frame, its own promise and the child it holds die.
+#[test]
+#[cfg(not(miri))]
+fn a_promise_the_frame_binds_does_not_count_for_its_exemption() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    if !freeze_on(cx) {
+        return;
+    }
+    cx.scope(|cx, s| {
+        let base = s.root(cx, cx.base_env());
+        let o = s.out(cx);
+        let lazy = o.root();
+        cx.build(o, |cx| cx.new_env(cx.base_env(), true, 0))?;
+        let o = s.out(cx);
+        let child = o.root();
+        cx.build(o, |cx| cx.new_env(cx.base_env(), true, 0))?;
+        let csym = cx.install_rooted(s, b"freeze_test_child2")?;
+        cx.define_var(csym, child, lazy)?;
+        let expr = s.root(cx, cx.alloc_copy(&[3.0]).unwrap().finish());
+        let p = s.root(cx, cx.mk_promise(expr.bind(cx), lazy.bind(cx)).expect("room"));
+        let q = s.root(cx, cx.mk_promise(expr.bind(cx), lazy.bind(cx)).expect("room"));
+        let psym = cx.install_rooted(s, b"freeze_test_cycle_p")?;
+        let qsym = cx.install_rooted(s, b"freeze_test_cycle_q")?;
+        cx.define_var(psym, p, base)?;
+        // q in the frame itself: the frame and q form a cycle
+        cx.define_var(qsym, q, lazy)?;
+        cx.while_reading_base_file(|cx| {
+            cx.note_lazy_load_frame(lazy, base);
+        });
+        freeze_now(cx);
+        assert!(cx.is_frozen(lazy.bind(cx)) && cx.is_frozen(q.bind(cx)));
+        let nil = cx.nil().sexp();
+        // SAFETY: a rooted environment of this isolate as the key.
+        unsafe { cx.new_weak_ref_raw(child.bind(cx).sexp(), nil, cx.base_env().sexp(), false) }.expect("room");
+        cx.collect();
+        for r in [child, lazy, q] {
+            let o = r.reset(cx);
+            o.set(cx, cx.nil());
+        }
+        let before = cx.frozen_passes();
+        // SAFETY: a rooted promise of this isolate, and its nil.
+        unsafe { p.bind(cx).sexp().set_tag(cx.nil().sexp()) };
+        cx.collect();
+        assert_eq!(cx.frozen_passes(), before + 1, "base's only counted promise cleared: noted");
+        cx.collect();
+        assert!(cx.finalizers_pending(), "the frame, its own promise and the child died");
+        cx.check_frozen();
+        Ok::<(), crate::RError>(())
+    })
+    .unwrap();
+}
+
+/// Sol step 2 r6 S22: the cycle of S18 with no pass between the freeze and
+/// the clear, so only phase 1's count decides: the child is a weak key
+/// before the freeze (never frozen; the frame is logged), and clearing
+/// base's one promise must be noted at once.
+#[test]
+#[cfg(not(miri))]
+fn phase_one_does_not_count_a_promise_the_frame_binds() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    if !freeze_on(cx) {
+        return;
+    }
+    cx.scope(|cx, s| {
+        let base = s.root(cx, cx.base_env());
+        let o = s.out(cx);
+        let lazy = o.root();
+        cx.build(o, |cx| cx.new_env(cx.base_env(), true, 0))?;
+        let o = s.out(cx);
+        let child = o.root();
+        cx.build(o, |cx| cx.new_env(cx.base_env(), true, 0))?;
+        let csym = cx.install_rooted(s, b"freeze_test_child3")?;
+        cx.define_var(csym, child, lazy)?;
+        let nil = cx.nil().sexp();
+        // SAFETY: a rooted environment of this isolate as the key.
+        unsafe { cx.new_weak_ref_raw(child.bind(cx).sexp(), nil, cx.base_env().sexp(), false) }.expect("room");
+        let expr = s.root(cx, cx.alloc_copy(&[3.0]).unwrap().finish());
+        let p = s.root(cx, cx.mk_promise(expr.bind(cx), lazy.bind(cx)).expect("room"));
+        let q = s.root(cx, cx.mk_promise(expr.bind(cx), lazy.bind(cx)).expect("room"));
+        let psym = cx.install_rooted(s, b"freeze_test_cycle3_p")?;
+        let qsym = cx.install_rooted(s, b"freeze_test_cycle3_q")?;
+        cx.define_var(psym, p, base)?;
+        cx.define_var(qsym, q, lazy)?;
+        cx.while_reading_base_file(|cx| {
+            cx.note_lazy_load_frame(lazy, base);
+        });
+        let before = cx.frozen_passes();
+        freeze_now(cx);
+        assert!(cx.is_frozen(lazy.bind(cx)) && cx.is_frozen(q.bind(cx)) && !cx.is_frozen(child.bind(cx)));
+        assert_eq!(cx.frozen_passes(), before, "no pass yet: phase 1's count stands");
+        for r in [child, lazy, q] {
+            let o = r.reset(cx);
+            o.set(cx, cx.nil());
+        }
+        // SAFETY: a rooted promise of this isolate, and its nil.
+        unsafe { p.bind(cx).sexp().set_tag(cx.nil().sexp()) };
+        cx.collect();
+        assert_eq!(cx.frozen_passes(), before + 1, "phase 1 counted base's promise only: the clear is noted");
+        cx.collect();
+        assert!(cx.finalizers_pending(), "the cycle died, and the child with it");
         cx.check_frozen();
         Ok::<(), crate::RError>(())
     })

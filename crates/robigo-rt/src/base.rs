@@ -173,7 +173,9 @@ pub struct Wide {
     pub substs: Vec<(&'static str, &'static str)>,
     pub primitives: Vec<&'static str>,
     pub internals: Vec<&'static str>,
-    by_name: std::collections::HashMap<&'static str, usize>,
+    /// `names`' index by name (fixed-seed hashing: the keys are this
+    /// binary's own, and a start's instructions do not vary run to run).
+    by_name: std::collections::HashMap<&'static str, usize, robigo_heap::BuildFx>,
 }
 
 impl Wide {
@@ -200,7 +202,7 @@ impl Wide {
             substs: Vec::with_capacity(substs),
             primitives: Vec::with_capacity(primitives),
             internals: Vec::with_capacity(internals),
-            by_name: std::collections::HashMap::with_capacity(names),
+            by_name: std::collections::HashMap::with_capacity_and_hasher(names, Default::default()),
         };
         let mut after: Vec<(&'static str, Form)> = Vec::with_capacity(after);
         let num = |s: &str, i: usize| s.parse::<usize>().map_err(|_| format!("line {}: not a number: {s:?}", i + 1));
@@ -965,7 +967,9 @@ pub fn stage0(cx: &mut Cx, home: &Path) -> Result<Stage0, String> {
     let internals: Vec<&'static str> = robigo_rtbuiltins::names::INTERNALS.iter().map(|p| p.0).collect();
     st.stubs = stubs_for(cx, &prims, &internals);
     init_graphics(cx).map_err(|e| format!("binding .Device: {e}"))?;
-    repl_file(cx, &home.join("library/base/R/base"), &mut st)?;
+    // (base's lazy-load frame is recorded while this file runs, and only
+    // then: robigo-rtcore's Cx::note_lazy_load_frame)
+    cx.while_reading_base_file(|cx| repl_file(cx, &home.join("library/base/R/base"), &mut st))?;
     // R_LoadProfile(R_OpenSysInitFile(), baseNSenv): the system profile,
     // in the base namespace, the same way (setup_Rmainloop's next steps,
     // the locks, .OptRequireMethods, the site and user profiles, .First.sys

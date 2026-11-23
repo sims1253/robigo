@@ -166,8 +166,9 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     }
     let cond = conditions::CondState::new(cx);
     let defs = prims::base_defs();
-    let (objs, names) = prims::make_prims(cx, &defs, 0);
-    let by_sym = names.iter().enumerate().map(|(i, s)| (s.as_ptr() as usize, i)).collect();
+    // (a later name for the same symbol replaces the earlier)
+    let mut by_sym = prims::BySym::default();
+    let (objs, names) = prims::make_prims(cx, &defs, 0, &mut by_sym, prims::Policy::Replace);
     cx.set_ext(prims::RtState {
         forced,
         jit: std::cell::Cell::new(jit::Config::from_env()),
@@ -191,6 +192,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         links: Default::default(),
         assign_fns: Default::default(),
         folds: Default::default(),
+        scratch: Default::default(),
         compile_warnings: Default::default(),
         tcache: Default::default(),
         base_src: Default::default(),
@@ -297,20 +299,13 @@ pub fn define_builtins(cx: &mut Cx, defs: &[prims::PrimDef]) {
         return;
     }
     let first = prims::state(cx).defs.len();
-    let (objs, names) = prims::make_prims(cx, defs, first);
+    let mut by_sym = prims::state(cx).by_sym.clone();
+    let (objs, names) = prims::make_prims(cx, defs, first, &mut by_sym, prims::Policy::InternalKeeps);
     // the state is replaced whole: `ext` hands out shared references only
     let mut st = take_state(cx);
+    st.by_sym = by_sym;
     st.defs.extend_from_slice(defs);
     st.objs.extend(objs);
-    for (i, n) in names.iter().enumerate() {
-        // the compiler's lookup is by symbol: an `.Internal` never hides a
-        // primitive of the same name
-        if defs[i].internal() {
-            st.by_sym.entry(n.as_ptr() as usize).or_insert(first + i);
-        } else {
-            st.by_sym.insert(n.as_ptr() as usize, first + i);
-        }
-    }
     st.names.extend(names);
     cx.set_ext(st);
 }
@@ -331,7 +326,8 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         defs: st.defs.clone(),
         objs,
         names: st.names.clone(),
-        by_sym: st.by_sym.clone(),
+        // (define_builtins, the only caller, puts its own updated table here)
+        by_sym: Default::default(),
         running_finalizers: std::cell::Cell::new(st.running_finalizers.get()),
         retry_held: std::cell::Cell::new(st.retry_held.get()),
         materialize: std::cell::Cell::new(st.materialize.get()),
@@ -343,6 +339,8 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         links: st.links.clone(),
         assign_fns: st.assign_fns.clone(),
         folds: st.folds.copy(cx),
+        // (the spare buffers stay behind: the new state starts with none)
+        scratch: Default::default(),
         compile_warnings: Default::default(),
         tcache: Default::default(),
         base_src: st.base_src.clone(),

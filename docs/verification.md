@@ -1049,6 +1049,25 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
         binaries, and GNU R's side, get the same shifts. The 0.5% rule
         applies to the median, and the report gives the range over the
         shifts (`docs/ledger/g3/2026-11-17-address-rows.md`).
+      - **The starts** (`[[startup]]` in `m1-bars.toml`, `perf.py rt-starts`, a
+        step of its own in perf-rt with its own JSON):
+        - each robigo-rt start (interim, rdb-jit, the default, and the
+          others), with its boot named for both binaries, is measured at 15
+          heap layouts: a home path 35 to 133 characters long, with glibc
+          malloc's `top_pad`, the same for both binaries;
+        - instructions and the peak anonymous memory are the mean over
+          them, in a fixed environment (`scripts/rt-startup.py`,
+          `docs/ledger/g3/2026-11-23-startup-layout.md`);
+        - against main: instructions +0.5%, anonymous memory
+          +max(1%, 64 KiB), peak RSS +5%.
+
+        Tables built at a start are pre-sized; a start that steps by ~80k
+        instructions is realloc/memcpy until shown otherwise.
+        `scripts/rt-startup.py --robigo-rt BIN --trees --reallocs [--starts
+        interim,rdb-jit]` lists each start's top growth reallocs (callgrind
+        `--separate-callers`, realloc's inclusive cost by the function that
+        grew the buffer, as a share of the start): the functions to
+        pre-size.
       - **The binaries:** `rt-bars`, `idiom-vs-r.py` and `rss.py` name every
         binary they measure, in the report and the JSON: its sha256, GNU
         build ID and modification time, and the checkout's `git describe`
