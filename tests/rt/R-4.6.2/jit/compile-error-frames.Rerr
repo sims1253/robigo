@@ -1,0 +1,3 @@
+Error in (function (w)  : from the handler
+Calls: withCallingHandlers ... lapply -> FUN -> lapply -> findLocals1 -> addVar -> assign
+Execution halted

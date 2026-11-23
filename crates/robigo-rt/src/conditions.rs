@@ -596,6 +596,25 @@ fn goto_exiting_handler(cx: &mut Cx, cond: Root<'_>, call: Option<Root<'_>>, ent
 /// record has the innermost record's call, so `error()` and `warning()`
 /// report what they report without it.
 ///
+/// The JIT is off while the compile and the handler run, and stays off
+/// when an exit leaves them (a handler's error, a jump to another
+/// condition's exiting handler, an interrupt), as GNU R's callers set
+/// `R_jit_enabled = 0` around `R_cmpfun` and restore it only on return.
+///
+/// R code that runs inside the compile (a promise it forces, a warning's
+/// handler, the compiler's message) sees no R frame of the compile:
+/// `sys.call()`, `sys.function()`, `parent.frame()` and `sys.calls()`
+/// there see the frames outside the compiled call's (the record is
+/// CTXT_CCODE, which they skip, and its fresh `cloenv` is no frame of
+/// theirs), where GNU R's see `tryCmpfun`, `tryCatch`, `tryCatchList`,
+/// `tryCatchOne`, `doTryCatch` and cmp.R's own frames below the called
+/// function's; a traceback of an error that leaves the compile differs
+/// the same way (`tests/rt/jit/compile-error-frames.R`, not ratcheted).
+/// The record's call is the innermost record's, so `error()` and
+/// `warning()` report the call they report without it; cmp.R's warnings
+/// carry cmp.R's own calls ([`crate::cenv::raise_compile_warnings`]), as
+/// in GNU R.
+///
 /// INTERIM(V4 step 3): when cmp.R's own code compiles, its `tryCmpfun`
 /// runs and this function goes, with its one call per compile entry
 /// (compile.rs) and the CCODE case above.
@@ -617,6 +636,13 @@ pub(crate) fn try_cmpfun(
         })?;
         let call = s.root(cx, cx.global_context().call());
         let base = s.root(cx, cx.base_env());
+        // the JIT off for the compile and its handler (R_execClosure's and
+        // R_compileAndExecute's `R_jit_enabled = 0`), restored only when
+        // the compile returns: an exit that leaves it leaves the JIT off,
+        // as GNU R's longjmp skips the restore
+        let jit = &crate::prims::state(cx).jit;
+        let saved = jit.get();
+        jit.set(crate::jit::Config { level: 0, ..saved });
         let r = cx.with_context(ctxt::CCODE, call, target, base, None, |cx, _| {
             let o = s.out(cx);
             let stack = o.root();
@@ -633,14 +659,16 @@ pub(crate) fn try_cmpfun(
             cx.set_handler_stack(stack);
             body(cx)
         });
-        match r {
-            Ok(code) => Ok(code),
-            Err(robigo_rtcore::Left::Exit(e)) => Err(e),
+        let code = match r {
+            Ok(code) => code,
+            Err(robigo_rtcore::Left::Exit(e)) => return Err(e),
             Err(robigo_rtcore::Left::Landed(_)) => {
                 notify_compiler_error(cx, s, result)?;
-                Ok(None)
+                None
             }
-        }
+        };
+        crate::prims::state(cx).jit.set(saved);
+        Ok(code)
     })
 }
 
@@ -649,8 +677,13 @@ pub(crate) fn try_cmpfun(
 /// deparse(e$call)))` in the compiler's namespace. Nothing runs when the
 /// compiler is not loaded (robigo's JIT compiles without it; GNU R's loads
 /// it at boot, its options the defaults) or `compilerOptions$suppressAll`
-/// is a plain TRUE, the common case: no R code at all after a failed
-/// compile, as GNU R's handler forces nothing then but the option.
+/// is a plain TRUE as it is bound now (a logical TRUE of length one,
+/// without a class, in an unclassed `compilerOptions`), the common case:
+/// no R code at all after a failed compile, as GNU R's handler forces
+/// nothing then but the option. Any other binding (a promise, an active
+/// binding, a value `!` or `if` rejects or dispatches on, the binding
+/// gone) runs cmp.R's code, which reads it as GNU R does, its errors
+/// included.
 // R: cmp.R:tryCmpfun, notifyCompilerError; conditions.R:tryCatchOne
 fn notify_compiler_error(cx: &mut Cx, s: Scope<'_>, result: Root<'_>) -> RResult<()> {
     let pkg = sym(cx, s, b"compiler")?;
@@ -669,14 +702,18 @@ fn notify_compiler_error(cx: &mut Cx, s: Scope<'_>, result: Root<'_>) -> RResult
     let Some(ns) = frame_value(cx, cx.namespace_registry(), pkg) else { return Ok(()) };
     // SAFETY: a namespace the registry holds; its frame's values are live.
     let ns = s.root(cx, unsafe { Ref::from_sexp(ns, cx) });
+    // (a classed compilerOptions: `$` dispatches; R code reads it)
     let suppressed = frame_value(cx, ns.bind(cx), opts)
+        // SAFETY: as above.
+        .filter(|&o| unsafe { !Ref::from_sexp(o, cx).is_object() })
         // SAFETY: as above.
         .and_then(|o| frame_value(cx, unsafe { Ref::from_sexp(o, cx) }, all))
         // SAFETY: as above.
         .map(|v| unsafe { Ref::from_sexp(v, cx) })
         .is_some_and(|v| {
-            v.as_vector::<robigo_rtcore::Lgl>()
-                .is_some_and(|l| l.len() == 1 && l.get(0).0 != 0 && l.get(0).0 != robigo_rtcore::Lgl::NA.0)
+            !v.is_object()
+                && v.as_vector::<robigo_rtcore::Lgl>()
+                    .is_some_and(|l| l.len() == 1 && l.get(0).0 != 0 && l.get(0).0 != robigo_rtcore::Lgl::NA.0)
         });
     if suppressed {
         return Ok(());
