@@ -101,8 +101,9 @@ ANON_FLOOR_KIB = 64
 RSS_LIMIT = 5.0
 
 PTRACE_TRACEME, PTRACE_CONT, PTRACE_SYSCALL, PTRACE_SETOPTIONS, PTRACE_GETEVENTMSG = 0, 7, 24, 0x4200, 0x4201
-PTRACE_O_TRACESYSGOOD, PTRACE_O_TRACECLONE, PTRACE_O_TRACEEXEC, PTRACE_O_TRACEEXIT = 0x1, 0x8, 0x10, 0x40
-PTRACE_EVENT_CLONE, PTRACE_EVENT_EXEC, PTRACE_EVENT_EXIT = 3, 4, 6
+PTRACE_O_TRACESYSGOOD, PTRACE_O_TRACEFORK, PTRACE_O_TRACEVFORK = 0x1, 0x2, 0x4
+PTRACE_O_TRACECLONE, PTRACE_O_TRACEEXEC, PTRACE_O_TRACEEXIT = 0x8, 0x10, 0x40
+PTRACE_EVENT_FORK, PTRACE_EVENT_VFORK, PTRACE_EVENT_CLONE, PTRACE_EVENT_EXEC, PTRACE_EVENT_EXIT = 1, 2, 3, 4, 6
 # waitpid's flag for a traced thread as well as a process
 WALL = 0x40000000
 # a run's limit in seconds: a start that loops is killed, not waited on.
@@ -223,7 +224,8 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
             why = "personality(ADDR_NO_RANDOMIZE) refused" if code == 126 else f"exit status {code}"
             raise SystemExit(f"rt-startup: {cmd[0]} did not start under ptrace: {why}")
         ptrace(PTRACE_SETOPTIONS, pid,
-               PTRACE_O_TRACEEXIT | PTRACE_O_TRACEEXEC | PTRACE_O_TRACECLONE | PTRACE_O_TRACESYSGOOD)
+               PTRACE_O_TRACEEXIT | PTRACE_O_TRACEEXEC | PTRACE_O_TRACECLONE | PTRACE_O_TRACEFORK
+               | PTRACE_O_TRACEVFORK | PTRACE_O_TRACESYSGOOD)
         timer = threading.Timer(timeout, expire)
         timer.start()
         anon, hwm = 0, None
@@ -239,12 +241,13 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
                 # a system call's entry or exit
                 anon = max(anon, anon_kib(pid))
                 ptrace(go, pid)
-            elif sig == signal.SIGTRAP and event == PTRACE_EVENT_CLONE:
-                # a second thread (or a process clone() made without
-                # CLONE_THREAD), refused as it is made: its memory would not be
-                # seen (the new one, traced too, is reaped with the child)
+            elif sig == signal.SIGTRAP and event in (PTRACE_EVENT_CLONE, PTRACE_EVENT_FORK, PTRACE_EVENT_VFORK):
+                # a second thread, a process clone() made without
+                # CLONE_THREAD, or one fork() or vfork() made: refused as it is
+                # made, since its memory would not be seen (the new one, traced
+                # too, is killed and reaped with the child)
                 threads.append(event_msg(pid))
-                raise SystemExit(f"rt-startup: {cmd[0]} started a thread or cloned a process; the anonymous "
+                raise SystemExit(f"rt-startup: {cmd[0]} started a thread or another process; the anonymous "
                                  "peak is measured for one thread (memory())")
             elif sig == signal.SIGTRAP and event == PTRACE_EVENT_EXIT:
                 hwm = status_kib(pid)["VmHWM"]
@@ -316,12 +319,30 @@ def reap(pid, threads=()):
                 pass
 
 
-def instructions(cmd, env, valgrind):
-    """callgrind's total instructions of one run of `cmd`."""
+def order_coverage(binary, cg):
+    """The share of the code `binary` ran in the callgrind file `cg`
+    (--dump-instr=yes) that robigo-rt's link order file names
+    (scripts/rt-order.py coverage): report-only, so that the file going
+    stale shows. None without the file."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("rt_order", os.path.join(HERE, "rt-order.py"))
+    ro = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ro)
+    if not os.path.isfile(ro.ORDER):
+        return None
+    return ro.coverage(binary, cg, ro.ORDER)
+
+
+def instructions(cmd, env, valgrind, coverage=False):
+    """callgrind's total instructions of one run of `cmd`; with `coverage`,
+    (total, the link order file's coverage of the code it ran): the run then
+    records each instruction's address (--dump-instr=yes), which counts the
+    same."""
     with tempfile.TemporaryDirectory(prefix="rt-startup-") as d:
         out = os.path.join(d, "cg")
+        dump = ["--dump-instr=yes", "--compress-pos=no"] if coverage else []
         try:
-            p = subprocess.run([valgrind, "--tool=callgrind", f"--callgrind-out-file={out}", *cmd], env=env,
+            p = subprocess.run([valgrind, "--tool=callgrind", *dump, f"--callgrind-out-file={out}", *cmd], env=env,
                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
                                timeout=CALLGRIND_TIMEOUT)
         except subprocess.TimeoutExpired:
@@ -331,18 +352,24 @@ def instructions(cmd, env, valgrind):
         with open(out, errors="replace") as f:
             for ln in f:
                 if ln.startswith("summary:") or ln.startswith("totals:"):
-                    return int(ln.split()[1])
+                    total = int(ln.split()[1])
+                    return (total, order_coverage(cmd[0], out)) if coverage else total
     raise SystemExit(f"rt-startup: no total in callgrind's output of {' '.join(cmd)}")
 
 
-def measure(cmd, env, runs, valgrind):
+def measure(cmd, env, runs, valgrind, coverage=False):
     """One start's numbers: {"instr", "instr_shifts", "anon_kib", "rss_kib",
-    "anon_runs", "rss_runs"}."""
+    "anon_runs", "rss_runs"}, and with `coverage` "order_coverage" (from the
+    unshifted run)."""
     def one(k):
-        return str(k), instructions(cmd, dict(env, ROBIGO_STARTUP_PAD="x" * k) if k else env, valgrind)
+        return str(k), instructions(cmd, dict(env, ROBIGO_STARTUP_PAD="x" * k) if k else env, valgrind,
+                                    coverage and k == 0)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(ENV_SHIFTS)) as ex:
         shifts = dict(ex.map(one, ENV_SHIFTS))
+    cov = None
+    if coverage:
+        shifts["0"], cov = shifts["0"]
     anon, rss = [], []
     want = None
     # the anonymous peak from runs stopped at each system call, peak RSS from
@@ -357,13 +384,38 @@ def measure(cmd, env, runs, valgrind):
             elif out != want:
                 raise SystemExit(f"rt-startup: {' '.join(cmd)} printed differently between runs")
             (anon if syscalls else rss).append(a if syscalls else h)
-    return {"instr": statistics.median(shifts.values()), "instr_shifts": shifts,
-            "anon_kib": statistics.median(anon), "rss_kib": statistics.median(rss),
-            "anon_runs": anon, "rss_runs": rss}
+    res = {"instr": statistics.median(shifts.values()), "instr_shifts": shifts,
+           "anon_kib": statistics.median(anon), "rss_kib": statistics.median(rss),
+           "anon_runs": anon, "rss_runs": rss}
+    if coverage:
+        res["order_coverage"] = cov
+    return res
 
 
 def defined():
     return [n for n, e in STARTS.items() if e is not None]
+
+
+def spec_errors(entries):
+    """What is wrong with a bars file's [[startup]] entries (`entries`), as
+    messages: a name that is not a defined start (a reserved one included),
+    a GNU R start that is not one of GNUR_STARTS, a name given twice. perf.py
+    rt-bars checks them before it measures anything."""
+    errs, seen = [], set()
+    for i, e in enumerate(entries):
+        n, g = e.get("name"), e.get("gnur")
+        if n is None:
+            errs.append(f"[[startup]] #{i + 1} has no name")
+        elif STARTS.get(n) is None:
+            what = "reserved, not defined yet" if n in STARTS else "no such start"
+            errs.append(f"[[startup]] {n!r}: {what} (defined: {', '.join(defined())})")
+        elif n in seen:
+            errs.append(f"[[startup]] {n!r} is given twice")
+        else:
+            seen.add(n)
+        if g is not None and g not in GNUR_STARTS:
+            errs.append(f"[[startup]] {n!r}: gnur {g!r} is no GNU R start ({', '.join(GNUR_STARTS)})")
+    return errs
 
 
 def in_ci():
@@ -475,9 +527,10 @@ def run(binary, starts=None, checkout=ROOT, runs=9, trees=False, valgrind=None):
     else:
         home = checkout
     env0 = clean_env()
+    # (robigo-rt's starts report the link order file's coverage: GNU R's do not)
     return {n: measure([os.path.abspath(binary), "--vanilla", "-e", "1"],
                        dict(env0, ROBIGO_RT_CHECKOUT=os.path.abspath(home), **STARTS[n]), runs,
-                       valgrind or os.environ.get("VALGRIND", "valgrind"))
+                       valgrind or os.environ.get("VALGRIND", "valgrind"), coverage=True)
             for n in names}
 
 
@@ -539,8 +592,8 @@ def table(entries, new, main=None, gnur=None):
     """The startup table, markdown lines: `entries` the bars file's
     [[startup]] (name, and the GNU R start it is shown beside)."""
     lines = ["| start | instructions | main | change | anon KiB | main | change | peak RSS KiB | main | change "
-             "| GNU R instructions | anon KiB | peak RSS KiB |",
-             "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+             "| GNU R instructions | anon KiB | peak RSS KiB | order file covers |",
+             "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for e in entries:
         n = e["name"]
         v = new[n]
@@ -557,6 +610,10 @@ def table(entries, new, main=None, gnur=None):
             cells += [f"{m[k]:,.0f}", f"{pct(v[k], m[k]):+.2f}%"] if m else ["", ""]
         cells += [f"{g['instr']:,.0f} ({e['gnur']})", f"{g['anon_kib']:,.0f}", f"{g['rss_kib']:,.0f}"] if g \
             else ["", "", ""]
+        # (report-only: the share of the code the start ran that the link
+        # order file names; it drops as the file goes stale)
+        c = v.get("order_coverage")
+        cells.append(f"{c:.1%}" if c is not None else "")
         lines.append("| " + " | ".join(cells) + " |")
     return lines
 
