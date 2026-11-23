@@ -4,6 +4,9 @@
 use std::path::Path;
 use std::process::Command;
 
+#[path = "common/db_tree.rs"]
+mod db_tree;
+
 /// `robigo-rt` with the environment `env` adds to one without `R_HOME`, the
 /// three directories, or the runtime's own controls that change what it
 /// writes or how it starts: rt-ci runs the tests under those, and they are
@@ -11,7 +14,7 @@ use std::process::Command;
 /// `ROBIGO_GC_STATS` and `ROBIGO_RT_BOOT`, filtering the `robigo gc: `
 /// report lines, so that its cases hold under the inherited modes.)
 fn front_end<V: AsRef<std::ffi::OsStr>>(env: &[(&str, V)]) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
+    let mut cmd = db_tree::rt_command();
     for v in [
         "R_HOME",
         "R_SHARE_DIR",
@@ -21,7 +24,6 @@ fn front_end<V: AsRef<std::ffi::OsStr>>(env: &[(&str, V)]) -> Command {
         "ROBIGO_GC_STATS",
         "ROBIGO_BOOT_VERBOSE",
         "ROBIGO_RT_BOOT",
-        "ROBIGO_RT_CHECKOUT",
     ] {
         cmd.env_remove(v);
     }

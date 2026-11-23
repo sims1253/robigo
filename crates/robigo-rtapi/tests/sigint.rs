@@ -12,9 +12,12 @@
 use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+#[path = "common/db_tree.rs"]
+mod db_tree;
 
 /// (name, script, markers to interrupt at, stdout, stderr, status).
 type Case = (&'static str, &'static str, usize, &'static [u8], &'static [u8], i32);
@@ -41,13 +44,12 @@ fn run(name: &str, script: &str, markers: usize) -> (Vec<u8>, Vec<u8>, i32) {
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join(format!("{name}.R"));
     std::fs::write(&file, script).unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
+    let mut cmd = db_tree::rt_command();
     cmd.arg(&file).env("LANGUAGE", "en").env("LC_ALL", "C.UTF-8").env("TZ", "UTC");
     // (an inherited R_HOME, GNU R's, robigo-rt ignores with a warning on
     // stdout)
     cmd.env("R_DEFAULT_PACKAGES", "NULL")
         .env_remove("R_HOME")
-        .env_remove("ROBIGO_RT_CHECKOUT")
         .env_remove("ROBIGO_FAIL_ALLOC_AT")
         .env_remove("ROBIGO_BOOT_VERBOSE");
     // the pin report to stderr (`1`); to a file it stays, as rt-ci's check
@@ -157,8 +159,7 @@ fn an_interrupt_at_the_interactive_prompt_starts_a_new_statement() {
     // tests/cli.rs's SRCREF cases); when source references exist this fails
     // and the run above takes the default boot
     let (out, err, status) = interrupt_session("");
-    let refusal =
-        "Error in options(...) : \n  robigo: options(keep.source = TRUE) (source references) is not implemented yet\n";
+    let refusal = db_tree::SRCREF_LINE;
     assert_eq!((out.as_str(), err.as_str(), status), (want.0, format!("{refusal}{}", want.1).as_str(), want.2));
 }
 
@@ -166,7 +167,7 @@ fn an_interrupt_at_the_interactive_prompt_starts_a_new_statement() {
 /// session under `boot` (ROBIGO_RT_BOOT): (stdout, stderr, status).
 fn interrupt_session(boot: &str) -> (String, String, Option<i32>) {
     use std::io::Write;
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
+    let mut cmd = db_tree::rt_command();
     cmd.args(["--no-readline", "--interactive", "--no-save", "--quiet"])
         .env("ROBIGO_RT_BOOT", boot)
         .env("LANGUAGE", "en")
@@ -174,7 +175,6 @@ fn interrupt_session(boot: &str) -> (String, String, Option<i32>) {
         .env("TZ", "UTC")
         .env("R_DEFAULT_PACKAGES", "NULL")
         .env_remove("R_HOME")
-        .env_remove("ROBIGO_RT_CHECKOUT")
         .env_remove("ROBIGO_FAIL_ALLOC_AT")
         .env_remove("ROBIGO_BOOT_VERBOSE");
     if std::env::var_os("ROBIGO_GC_PIN_REPORT").is_some_and(|v| v == "1") {

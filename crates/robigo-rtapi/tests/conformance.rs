@@ -22,6 +22,9 @@
 use robigo_conformance as conf;
 use std::path::{Path, PathBuf};
 
+#[path = "common/db_tree.rs"]
+mod db_tree;
+
 // Rebuild when another checkout built this test last (.cargo/config.toml):
 // the repository root below is compiled in.
 const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
@@ -45,6 +48,10 @@ fn rt_conformance() {
         .unwrap_or_else(|e| panic!("running scripts/rt-capi-build.sh: {e}"));
     assert!(st.success(), "scripts/rt-capi-build.sh {}: {st}", libs.display());
     let mut o = conf::Options::from_env(&conf::RT, rt_bin()).unwrap_or_else(|e| panic!("{e}"));
+    // (the binary's own database tree, never the checkout's: its cases boot
+    // rdb, the default)
+    let checkout = db_tree::ensure_db_tree(&o.bin);
+    o.env.push(("ROBIGO_RT_CHECKOUT".into(), Some(checkout.clone().into())));
     o.env.push(("RT_CAPI_LIBS".into(), Some(libs.into())));
     // (robigo-rt's R_HOME is its own tree, which its front end finds when
     // the environment names none: the RT column drops an inherited one from
@@ -53,7 +60,7 @@ fn rt_conformance() {
     // loaded; this process's environment is left alone)
     // the cases that load tools' native code from the binary's R_HOME tree
     // run where scripts/rt-home.sh built it (CI's rt job does)
-    if has_rt_home_tools(&o.bin).unwrap_or_else(|e| panic!("{e}")) {
+    if has_rt_home_tools(&o.bin, &checkout).unwrap_or_else(|e| panic!("{e}")) {
         o.features.push("r-home-tools");
     }
     conf::run(&root, &conf::RT, &o).unwrap_or_else(|e| panic!("{e}"));
@@ -71,8 +78,9 @@ fn rt_conformance() {
 /// under the cases' boot (`ROBIGO_RT_BOOT` picks the tree) but writes no
 /// freeze check report: the probe is no case, and a full-check tally of its
 /// own would count for the step's cases (Sol's R1 on the check-cost PR).
-fn has_rt_home_tools(bin: &Path) -> Result<bool, String> {
+fn has_rt_home_tools(bin: &Path, checkout: &Path) -> Result<bool, String> {
     let out = std::process::Command::new(bin)
+        .env("ROBIGO_RT_CHECKOUT", checkout)
         .env_remove("ROBIGO_GC_FREEZE_CHECK_REPORT")
         .env_remove("R_HOME")
         .args([
@@ -111,15 +119,17 @@ fn the_r_home_tools_probe_fails_on_a_failing_probe() {
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
         p
     };
-    assert_eq!(has_rt_home_tools(&fake("yes", "printf TRUE")), Ok(true));
-    assert_eq!(has_rt_home_tools(&fake("no", "printf FALSE")), Ok(false));
+    // (the fakes read no tree)
+    let no_checkout = Path::new("/nonexistent");
+    assert_eq!(has_rt_home_tools(&fake("yes", "printf TRUE"), no_checkout), Ok(true));
+    assert_eq!(has_rt_home_tools(&fake("no", "printf FALSE"), no_checkout), Ok(false));
     let none = fake("none", "echo \"R_HOME ('/x/.robigo/rt-home') not found: no installed tree ...\" >&2; exit 1");
-    assert_eq!(has_rt_home_tools(&none), Ok(false));
-    let e = has_rt_home_tools(&fake("parse", "echo 'Error: unexpected symbol' >&2; exit 1")).unwrap_err();
+    assert_eq!(has_rt_home_tools(&none, no_checkout), Ok(false));
+    let e = has_rt_home_tools(&fake("parse", "echo 'Error: unexpected symbol' >&2; exit 1"), no_checkout).unwrap_err();
     assert!(e.contains("the r-home-tools probe failed") && e.contains("unexpected symbol"), "{e}");
     // a clean exit that printed neither answer is a failure too
-    assert!(has_rt_home_tools(&fake("odd", "printf 'WARNING: x\\nTRUE'")).is_err());
-    assert!(has_rt_home_tools(&dir.join("missing")).is_err());
+    assert!(has_rt_home_tools(&fake("odd", "printf 'WARNING: x\\nTRUE'"), no_checkout).is_err());
+    assert!(has_rt_home_tools(&dir.join("missing"), no_checkout).is_err());
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -175,6 +185,10 @@ fn a_lost_crosscheck_record_fails_the_run() {
     let not_a_dir = dir.join("a-file");
     std::fs::write(&not_a_dir, "").unwrap();
     let mut o = conf::Options::from_env(&conf::RT, rt_bin()).unwrap_or_else(|e| panic!("{e}"));
+    // (the binary's own database tree, never the checkout's: its cases boot
+    // rdb, the default)
+    let checkout = db_tree::ensure_db_tree(&o.bin);
+    o.env.push(("ROBIGO_RT_CHECKOUT".into(), Some(checkout.clone().into())));
     o.filter = Some("tests/rt/lost".into());
     o.slots = None;
     o.times = None;

@@ -828,6 +828,17 @@ jobs:
         with:
           path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
           key: r-4.6.2-tarball
+      # robigo-rt boots rdb by default, from a database tree written for one
+      # binary: the binary `cargo test --workspace` spawns (built by the same
+      # command, so with the workspace's features), then its test tree
+      # (scripts/rt-test-tree.sh: its own, never the checkout's). The tests'
+      # helper (ensure_db_tree, crates/robigo-rtapi/tests/common/db_tree.rs)
+      # runs the same script and finds it fresh; without this step it would
+      # build it itself.
+      - name: base's database tree for the tests' robigo-rt (scripts/rt-test-tree.sh)
+        run: |
+          cargo test --locked --profile quick --workspace --no-run
+          scripts/rt-test-tree.sh --profile quick
       - name: Unit tests, parser oracle, conformance (all tiers)
         # The conformance results go to the progress page with the corpora
         # (scripts/history.py records the open gaps from them).
@@ -1546,14 +1557,7 @@ jobs:
       - name: Starts
         if: success() || failure()
         run: |
-          # the suite without the binary (M1Name skips), as before; then
-          # M1Name alone, in a process of its own, with the binary under test
-          # and its trees: its check that ROBIGO_RT_BOOT=m1 is the interim
-          # start, until the default-boot flip (its real measurements never
-          # share a process with the other tests)
           python3 scripts/test-rt-startup.py
-          RT_STARTUP_TEST_BIN=dist/robigo-rt RT_STARTUP_TEST_TREES=dist/rt-trees.tar \
-            python3 scripts/test-rt-startup.py M1Name
           main_flag=()
           if [ -f dist/robigo-rt-main ]; then
             main_flag=(--main dist/robigo-rt-main --main-trees dist/rt-trees-main.tar)

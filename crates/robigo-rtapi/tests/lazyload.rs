@@ -34,7 +34,8 @@
 //! variable the test says so and passes; with it set and a file missing, it
 //! fails.
 
-use std::process::Command;
+#[path = "common/db_tree.rs"]
+mod db_tree;
 
 /// The packages and how many variables their oracle databases hold.
 // GNU R 4.6.2's (the oracle image's) counts, on purpose: a tripwire that
@@ -87,7 +88,8 @@ fn oracle_databases_lazy_load() {
     let mut failures = Vec::new();
     for (pkg, count) in PACKAGES {
         let file = lib.join(pkg).join("R").join(pkg);
-        let o = Command::new(env!("CARGO_BIN_EXE_robigo-rt"))
+        // (the default boot, from the binary's database tree)
+        let o = db_tree::rt_command()
             .args(["--vanilla", "-e", SCRIPT])
             .env("RT_LAZYLOAD_FILE", &file)
             .env("RT_LAZYLOAD_PKG", pkg)
@@ -102,8 +104,6 @@ fn oracle_databases_lazy_load() {
             .env_remove("ROBIGO_GC_PIN_REPORT")
             .env_remove("ROBIGO_FRAME_QUARANTINE")
             .env_remove("ROBIGO_FAIL_ALLOC_AT")
-            // M1's loader (INTERIM(L5)): this oracle run reads no tree
-            .env("ROBIGO_RT_BOOT", "m1")
             .output()
             .unwrap_or_else(|e| panic!("running robigo-rt: {e}"));
         let out = String::from_utf8_lossy(&o.stdout).into_owned();

@@ -85,6 +85,12 @@ impl RHome {
             RHome::Given(p) | RHome::MissingDefault(p) => p,
         }
     }
+
+    /// Whether the tree is there (an install's or the checkout's, with
+    /// base's files), so that a start may read it.
+    fn is_made(&self) -> bool {
+        matches!(self, RHome::Given(_))
+    }
 }
 
 /// The front end's `R_HOME` (m2m3-plan F7b): robigo-rt's own R_HOME tree,
@@ -309,7 +315,7 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     // (not read from a tree that is not there: the start stops at the
     // check below, after the options as R's script checks R_HOME after its
     // argument loop, with that error alone)
-    if boot() != Boot::M1 && missing_tree(home, boot()).is_none() {
+    if boot() != Boot::M1 && home.is_made() {
         renviron::process_system_renviron(home.path());
     }
     // Rscript's options: R's start-up options, then FILE or -e EXPR, then
