@@ -46,6 +46,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -76,6 +77,10 @@ MEM_CAP = 2 << 30
 LIMIT = 30
 GRACE = 3
 FIXED_LIMIT = 120
+# how long a test's fake child may take to make its ready file (start()'s
+# `ready`): a bound of its own, not the limit, so a slow start is not the
+# race the ready file removes, and a fake that never gets there fails
+READY_LIMIT = 60
 
 
 def capped(cmd):
@@ -107,22 +112,30 @@ def start(rt, checkout, home, limit, script=GEN, ready=None, **extra):
     "R error", "interrupted" (at the limit, ended by SIGINT), or a failure:
     "signal N", "panic", "exit N", "not interruptible". `ready` (the
     tests' fake children): a file the child makes when it is ready for the
-    interrupt; the limit counts from then."""
+    interrupt; the limit counts from then, and a child that has not made it
+    within READY_LIMIT is "never ready"."""
     p = subprocess.Popen(capped([rt, "--vanilla", script]), cwd=home, env=env_for(checkout, home, **extra),
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    io = Drained(p)
     if ready:
+        deadline = time.monotonic() + READY_LIMIT
         while not os.path.exists(ready) and p.poll() is None:
+            if time.monotonic() > deadline:
+                p.kill()
+                _, err = io.result()
+                return "never ready", tail(err, 300)
             time.sleep(0.01)
     try:
-        out, err = p.communicate(timeout=limit)
+        io.wait(limit)
     except subprocess.TimeoutExpired:
         p.send_signal(signal.SIGINT)
         try:
-            out, err = p.communicate(timeout=GRACE)
+            io.wait(GRACE)
         except subprocess.TimeoutExpired:
             p.kill()
-            out, err = p.communicate()
+            _, err = io.result()
             return "not interruptible", last_mutation(err)
+        out, err = io.result()
         # robigo-rt installs its SIGINT handler at the end of its start, as
         # GNU R's setup_Rmainloop does: a start the limit reaches before its
         # first mutation (a boot slowed by load or gctorture) ends by the
@@ -137,6 +150,7 @@ def start(rt, checkout, home, limit, script=GEN, ready=None, **extra):
             return failed
         # (a fixed script must finish: a well-formed program, not a mutation)
         return (f"{os.path.basename(script)} past the limit" if script in FIXED_OK else "interrupted"), ""
+    out, err = io.result()
     failed = ended(p, err)
     if failed:
         return failed
@@ -145,6 +159,36 @@ def start(rt, checkout, home, limit, script=GEN, ready=None, **extra):
     if p.returncode == 1 and script not in FIXED_OK:
         return "R error", ""
     return f"exit {p.returncode}", last_mutation(err) + ": " + tail(err, 300)
+
+
+class Drained:
+    """A child's stdout and stderr, read to the end by a thread each from
+    its start, so it never waits on a full pipe, whatever the caller waits
+    for meanwhile (communicate() reads only while it runs)."""
+
+    def __init__(self, p):
+        self.p = p
+        self.bufs = [bytearray(), bytearray()]
+        self.threads = [threading.Thread(target=self._read, args=(f, b), daemon=True)
+                        for f, b in zip((p.stdout, p.stderr), self.bufs)]
+        for t in self.threads:
+            t.start()
+
+    @staticmethod
+    def _read(f, buf):
+        for chunk in iter(lambda: f.read1(65536), b""):
+            buf += chunk
+
+    def wait(self, timeout):
+        """The child's end within `timeout` seconds (TimeoutExpired else)."""
+        self.p.wait(timeout=timeout)
+
+    def result(self):
+        """(stdout, stderr), once the child has ended."""
+        self.p.wait()
+        for t in self.threads:
+            t.join()
+        return bytes(self.bufs[0]), bytes(self.bufs[1])
 
 
 def ended(p, err):
@@ -176,8 +220,9 @@ OK = ("done", "R error", "interrupted")
 def failure_lines(bad):
     """The random starts' failures in `bad` as tests/bc-mutate/corpus.txt's
     lines (seed, mutation, what, and "pool" for a start with BCM_POOL),
-    which corpus() reads back: only those whose mutation is known. A start that failed before its first mutation
-    (or said no number) has none to replay, and is left to the log."""
+    which corpus() reads back: only those whose mutation is known. A start
+    that failed before its first mutation (or said no number) has none to
+    replay, and is left to the log."""
     out = []
     for n, o, d in bad:
         parts = n.split()

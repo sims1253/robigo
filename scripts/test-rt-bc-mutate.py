@@ -8,6 +8,7 @@ import os
 import stat
 import tempfile
 import textwrap
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -41,14 +42,43 @@ class RtBcMutate(unittest.TestCase):
         os.chmod(p, os.stat(p).st_mode | stat.S_IXUSR)
         return p
 
-    def start(self, body, limit=1):
+    def start(self, body, limit=1, wait_ready=None):
         """`body` started as the harness starts robigo-rt; a body that calls
-        ready() has the limit counted from then."""
+        ready() (or `wait_ready`) has the limit counted from then."""
         ready = os.path.join(self.dir.name, "ready")
         if os.path.exists(ready):
             os.remove(ready)
+        if wait_ready is None:
+            wait_ready = "ready()" in body
         return bcm.start(self.fake(body), HERE, self.dir.name, limit,
-                         ready=ready if "ready()" in body else None, BCM_TEST_READY=ready)
+                         ready=ready if wait_ready else None, BCM_TEST_READY=ready)
+
+    def test_a_child_that_never_gets_ready_fails_within_the_bound(self):
+        saved = bcm.READY_LIMIT
+        # (2 s past the fakes' simulated slow start, when one is set)
+        bcm.READY_LIMIT = 2 + float(os.environ.get("BCM_TEST_DELAY", "0"))
+        self.addCleanup(setattr, bcm, "READY_LIMIT", saved)
+        t = time.monotonic()
+        out = self.start("""
+            sys.stderr.write("stuck before ready\\n"); sys.stderr.flush()
+            time.sleep(60)
+        """, wait_ready=True)
+        self.assertEqual(out, ("never ready", "stuck before ready"))
+        self.assertLess(time.monotonic() - t, 30)
+
+    def test_a_child_that_writes_a_lot_before_ready_does_not_hang(self):
+        # more than a pipe's buffer on each stream before ready(): read
+        # while start() waits, so the child is never blocked on a write
+        out = self.start("""
+            sys.stdout.write("x" * (1 << 20)); sys.stdout.flush()
+            sys.stderr.write("y" * (1 << 20)); sys.stderr.flush()
+            def stop(*_):
+                sys.stderr.write("mutation 1\\n\\nExecution halted\\n"); sys.exit(1)
+            signal.signal(signal.SIGINT, stop)
+            ready()
+            time.sleep(30)
+        """)
+        self.assertEqual(out, ("interrupted", ""))
 
     def test_an_interrupt_ended_as_r_code_ends_passes(self):
         # R's error at the interrupt: "Execution halted", exit 1
