@@ -14,6 +14,12 @@ exit with the bytes allocated since. The programs:
   cases robigo-rt ratchets (tests/r/passing-rt), their package C from
   scripts/rt-capi-build.sh;
 - benchmarks/suite/{calls,fib,binarytrees}.R and benchmarks/rt/mem/*.R;
+- benchmarks/rt/mem-report/*.R, report-only: each program's first line
+  says which builtin family it measures and the PR expected to cure it
+  (`# E4 report-only: FAMILY; cured by: PR`). Their overshoot is printed in
+  a table of its own and never fails the step; a program moves to
+  benchmarks/rt/mem/ when its cure lands, and that move is the cure's
+  proof;
 - every row of benchmarks/rt/calls-rows.toml, as the N loop
   scripts/idiom-vs-r.py runs (`SETUP; g <- function() { for (i in 1:N)
   { BODY }; NULL }; g()`).
@@ -37,6 +43,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 from perf import rows_with_setups  # noqa: E402
 BOUND_FLOOR = 32 << 20
+REPORT_DIR = os.path.join("benchmarks", "rt", "mem-report")
+REPORT_HEADER = re.compile(r"^# E4 report-only: (.+?); cured by: (.+)$")
 
 COLLECTIONS = re.compile(r"^robigo gc: collections (\d+)", re.M)
 OVERSHOOT = re.compile(
@@ -77,6 +85,36 @@ def ratcheted(suite):
     return sorted(out)
 
 
+def report_header(path):
+    """(family, cure) from a report-only program's first line, else None."""
+    with open(os.path.join(ROOT, path)) as f:
+        m = REPORT_HEADER.match(f.readline().rstrip("\n"))
+    return (m.group(1), m.group(2)) if m else None
+
+
+def report_only():
+    """{name: (family, cure)} of benchmarks/rt/mem-report's programs; a
+    program there without the header is an error."""
+    d = os.path.join(ROOT, REPORT_DIR)
+    out = {}
+    for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        if f.endswith(".R"):
+            p = os.path.join(REPORT_DIR, f)
+            h = report_header(p)
+            if h is None:
+                sys.exit(f"rt-overshoot: {p} has no '# E4 report-only: FAMILY; cured by: PR' first line")
+            out[p] = h
+    return out
+
+
+def verdict(res, report):
+    """The step's exit status: 1 if a gated program passed the bound or a
+    program gave no report; a report-only program never fails it."""
+    over = [r for r in res if "error" not in r and r["over"] and r["program"] not in report]
+    errors = [r for r in res if "error" in r]
+    return 1 if over or errors else 0
+
+
 def programs(tmp):
     """(name, path) of every program to run."""
     progs = [(p, p) for p in ratcheted("rt") + ratcheted("r")]
@@ -85,6 +123,7 @@ def programs(tmp):
     mem = os.path.join(ROOT, "benchmarks", "rt", "mem")
     progs += [(os.path.join("benchmarks/rt/mem", f), os.path.join("benchmarks/rt/mem", f))
               for f in sorted(os.listdir(mem)) if f.endswith(".R")]
+    progs += [(p, p) for p in report_only()]
     with open(os.path.join(ROOT, "benchmarks", "rt", "calls-rows.toml"), "rb") as f:
         rows = rows_with_setups(tomllib.load(f))
     # (the jit rows compile through the compiler namespace, which robigo-rt
@@ -142,9 +181,12 @@ def main():
         jobs = [(n, p, prof) for n, p in progs for prof in a.profiles.split(",")]
         with ThreadPoolExecutor(a.jobs) as ex:
             res = list(ex.map(lambda j: run(bin_, j[0], j[1], j[2], libs), jobs))
+    report = report_only()
     errors = [r for r in res if "error" in r]
     ok = [r for r in res if "error" not in r]
     ok.sort(key=lambda r: -r["ratio"])
+    reported = [r for r in ok if r["program"] in report]
+    ok = [r for r in ok if r["program"] not in report]
     print(f"rt-overshoot: {bin_}, {len(progs)} programs x {len(a.profiles.split(','))} profiles")
     print()
     print("| program | profile | collections | max overshoot | live after | bound | max / bound | over |")
@@ -167,10 +209,22 @@ def main():
     for r in over:
         print(f"OVER: {r['program']} ({r['profile']}): max {r['max']:,} bytes, live {r['live']:,}, "
               f"exit {r['exit_due']}")
+    if reported:
+        print()
+        print("report-only (benchmarks/rt/mem-report: never fails the step)")
+        print()
+        print("| program | profile | family | cured by | collections | max overshoot | bound | max / bound |")
+        print("|---|---|---|---|---:|---:|---:|---:|")
+        for r in reported:
+            fam, cure = report[r["program"]]
+            print(f"| {r['program']} | {r['profile']} | {fam} | {cure} | {r['collections']} | {r['max']:,} | "
+                  f"{bound(r['live']):,} | {r['ratio']:.4f} |")
+        print()
+        print(f"report-only runs: {len(reported)}; over the bound: {sum(1 for r in reported if r['over'])}")
     if a.json:
         with open(a.json, "w") as f:
             json.dump({"bin": bin_, "runs": res}, f, indent=1)
-    return 1 if over or errors else 0
+    return verdict(res, report)
 
 
 if __name__ == "__main__":

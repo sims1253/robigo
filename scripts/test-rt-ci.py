@@ -1462,6 +1462,48 @@ def rust_src_snippets(root):
     return out
 
 
+class OvershootReportOnly(unittest.TestCase):
+    """scripts/rt-overshoot.py's report-only programs (benchmarks/rt/mem-report):
+    reported, never failing the step; nothing in benchmarks/rt/mem is one."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec_ = importlib.util.spec_from_file_location("rt_overshoot", HERE / "rt-overshoot.py")
+        cls.ov = importlib.util.module_from_spec(spec_)
+        spec_.loader.exec_module(cls.ov)
+
+    def result(self, program, over):
+        return {"program": program, "profile": "eval", "exit": 0, "collections": 1, "max": 40 << 20,
+                "live": 1 << 20, "total": 40 << 20, "over": over, "exit_due": None, "ratio": 1.2}
+
+    def test_a_report_only_program_over_the_bound_never_fails_the_step(self):
+        p = "benchmarks/rt/mem-report/x.R"
+        report = {p: ("a family", "a PR")}
+        self.assertEqual(self.ov.verdict([self.result(p, 1)], report), 0)
+        # the same result for a gated program fails it, and so does a gated
+        # program's missing report beside a report-only one
+        self.assertEqual(self.ov.verdict([self.result("benchmarks/rt/mem/x.R", 1)], report), 1)
+        self.assertEqual(self.ov.verdict([self.result(p, 1), {"program": "tests/rt/a.R", "error": "timeout"}], report), 1)
+
+    def test_every_mem_report_program_names_its_family_and_cure_and_is_run(self):
+        d = Path(self.ov.ROOT) / "benchmarks" / "rt" / "mem-report"
+        files = sorted(f.name for f in d.glob("*.R"))
+        self.assertTrue(files, "benchmarks/rt/mem-report has no programs")
+        report = self.ov.report_only()
+        self.assertEqual(sorted(os.path.basename(p) for p in report), files)
+        for p, (family, cure) in report.items():
+            self.assertTrue(family.strip() and cure.strip(), p)
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            names = {n for n, _ in self.ov.programs(tmp)}
+        self.assertTrue(set(report) <= names)
+
+    def test_nothing_in_mem_is_report_only(self):
+        d = Path(self.ov.ROOT) / "benchmarks" / "rt" / "mem"
+        for f in sorted(d.glob("*.R")):
+            self.assertIsNone(self.ov.report_header(os.path.join("benchmarks", "rt", "mem", f.name)), f.name)
+
+
 class CompileFailExpectations(unittest.TestCase):
     def test_no_expectation_depends_on_rust_src(self):
         found = rust_src_snippets(HERE.parent)
