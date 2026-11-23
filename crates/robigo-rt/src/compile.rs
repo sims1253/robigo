@@ -612,9 +612,16 @@ unsafe fn translate_code(cx: &Cx, bc: Sexp, formals: Option<Sexp>, index: Option
             // compared, not trusted: a fresh translation too, the same or
             // reported (and then the fresh one runs)
             crate::tcache::verify_begin(cx);
-            let fresh = translate_uncached(cx, bc, formals, index);
+            let fresh = match translate_uncached(cx, bc, formals, index) {
+                Ok(c) => c,
+                Err(e) => {
+                    // a retryable stop (Need::Gc, Need::Force): the attempt
+                    // runs again and verifies then; this one compares nothing
+                    crate::tcache::verify_abort(cx);
+                    return Err(e);
+                }
+            };
             let same = crate::tcache::verify_end(cx, &entry);
-            let fresh = fresh?;
             return Ok(if same { code } else { fresh });
         }
         translate_uncached(cx, bc, formals, index)

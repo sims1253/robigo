@@ -153,73 +153,22 @@ fn record_checksum(data: &[u8]) -> u64 {
 
 // ---- the databases' caches -------------------------------------------------------
 
-/// One package's cache, opened.
+/// One package's cache, opened: the file, mapped (`MADV_RANDOM`: a start's
+/// lookups bring in the table's and its entries' pages as file-backed
+/// memory, alone; nothing is copied into anonymous memory).
 struct Db {
-    /// The file's header and entry table, read whole when it is opened (a
-    /// few tens of kilobytes); each entry's data is read when it is looked
-    /// up ([`Db::read`]), so a start keeps resident only what it uses.
     bytes: &'static [u8],
     header: format::Header<'static>,
-    file: std::fs::File,
-    /// The chunks read last (their file offset and bytes), at most [`CHUNKS`].
-    chunks: Mutex<Vec<(u64, Vec<u8>)>>,
 }
 
-/// The bytes the reader fetches at once, and how many such chunks it keeps:
-/// a start's entries lie together (the writer's order), so a few reads
-/// cover them, with at most `CHUNKS * CHUNK` bytes kept. Two kept chunks
-/// read as often as four (8 reads a JIT-on start, 2 JIT off) and keep
-/// 64 KiB less anonymous memory; 16 KB chunks read 13 and 4 times (C1,
-/// 2026-11-23).
-const CHUNK: usize = 32 << 10;
-const CHUNKS: usize = 2;
-
 impl Db {
-    /// Entry `i`, read from the file, checked against its checksum and
-    /// decoded; None on any failure.
+    /// Entry `i`, checked against its checksum and decoded; None on any
+    /// failure (an entry outside the file among them).
     fn read(&self, i: u32) -> Option<Entry> {
         let (k, at, len, sum) = self.header.place(self.bytes, i)?;
-        if len > 1 << 24 {
-            return None;
-        }
-        let data = self.fetch(at, len)?;
-        format::decode_checked(k, &data, sum)
-    }
-
-    /// `len` bytes at `at`: from a chunk kept, else read with the chunk
-    /// around them (an entry longer than a chunk is read alone).
-    fn fetch(&self, at: u64, len: usize) -> Option<Vec<u8>> {
-        use std::os::unix::fs::FileExt;
-        let end = at.checked_add(len as u64)?;
-        let mut chunks = self.chunks.lock().ok()?;
-        if let Some((s, b)) = chunks.iter().find(|(s, b)| *s <= at && end <= s + b.len() as u64) {
-            let o = (at - s) as usize;
-            return Some(b[o..o + len].to_vec());
-        }
-        if len > CHUNK {
-            let mut buf = vec![0u8; len];
-            self.file.read_exact_at(&mut buf, at).ok()?;
-            return Some(buf);
-        }
-        let mut buf = vec![0u8; CHUNK];
-        let mut got = 0;
-        while got < CHUNK {
-            match self.file.read_at(&mut buf[got..], at + got as u64) {
-                Ok(0) => break,
-                Ok(n) => got += n,
-                Err(_) => return None,
-            }
-        }
-        buf.truncate(got);
-        if got < len {
-            return None;
-        }
-        let out = buf[..len].to_vec();
-        if chunks.len() == CHUNKS {
-            chunks.remove(0);
-        }
-        chunks.push((at, buf));
-        Some(out)
+        let at = usize::try_from(at).ok()?;
+        let data = self.bytes.get(at..at.checked_add(len)?)?;
+        format::decode_checked(k, data, sum)
     }
 }
 
@@ -307,26 +256,15 @@ fn open(pkg: &[u8]) -> Option<&'static Db> {
     let mut name = pkg.to_vec();
     name.extend_from_slice(b".rtc");
     path.push(std::ffi::OsStr::from_bytes_owned(&name));
-    use std::io::Read;
-    let file = std::fs::File::open(&path).ok()?;
-    // the header (its stamp at most STAMP_MAX), then the table it sizes
-    let mut head = Vec::new();
-    (&file).take(64 + format::STAMP_MAX as u64).read_to_end(&mut head).ok()?;
-    let need = format::header_fields(&head)?.table_end();
-    if need > 1 << 26 {
+    let bytes = robigo_rtcore::map_file_readonly(&path)?;
+    if format::header_fields(bytes)?.table_end() > bytes.len() {
         return None;
     }
-    if head.len() < need {
-        let more = need - head.len();
-        (&file).take(more as u64).read_to_end(&mut head).ok()?;
-    }
-    head.truncate(need);
-    let bytes: &'static [u8] = Box::leak(head.into_boxed_slice());
     let header = format::header(bytes)?;
     if header.build_id != build_id()? || header.stamp != tree_stamp()?.as_slice() {
         return None;
     }
-    Some(Box::leak(Box::new(Db { bytes, header, file, chunks: Mutex::new(Vec::new()) })))
+    Some(Box::leak(Box::new(Db { bytes, header })))
 }
 
 /// The tree's stamp: R_HOME's `.rt-home-db`, its trailing newline dropped.
@@ -434,9 +372,12 @@ pub(crate) enum Outcome {
     Verified,
     Mismatch,
     StaleRecord,
+    /// A verification's fresh translation stopped with a `Need` (its attempt
+    /// runs again, and verifies then): nothing was compared.
+    VerifyRetried,
 }
 
-const OUTCOMES: [&str; 10] = [
+const OUTCOMES: [&str; 11] = [
     "hit",
     "no stub",
     "no database",
@@ -447,9 +388,10 @@ const OUTCOMES: [&str; 10] = [
     "verified",
     "differing",
     "stale record",
+    "verify retried",
 ];
 
-static COUNTS: [std::sync::atomic::AtomicUsize; 10] = [const { std::sync::atomic::AtomicUsize::new(0) }; 10];
+static COUNTS: [std::sync::atomic::AtomicUsize; 11] = [const { std::sync::atomic::AtomicUsize::new(0) }; 11];
 
 /// Whether this process verifies the whole cache
 /// (`ROBIGO_TRANSLATION_CACHE=verify`: scripts/rt-home-db.sh's pass).
@@ -832,22 +774,35 @@ struct Writer {
     verified: Option<Result<Entry, &'static str>>,
 }
 
-/// The cache's per-isolate state (`RtState::tcache`): the writer's capture,
-/// and whether a fresh translation made to verify a hit is under way.
+/// The cache's per-isolate state (`RtState::tcache`): one word, empty until
+/// the writer or a verification first needs it (only the tree's build and
+/// `ROBIGO_TRANSLATION_CACHE=verify` do). `RtState` keeps its allocation
+/// size: an inline writer made it 248 bytes larger, and the allocator's
+/// changed paths cost every start 0.2-0.5% of its instructions, the interim
+/// boot's too, which never reads the cache (#979's first CI run).
 #[derive(Default)]
-pub struct State {
+pub struct State(std::cell::OnceCell<Box<Inner>>);
+
+#[derive(Default)]
+struct Inner {
     writer: RefCell<Option<Writer>>,
     verifying: std::cell::Cell<bool>,
 }
 
-fn state(cx: &Cx) -> &State {
-    &crate::prims::state(cx).tcache
+/// The state, made on first use.
+fn state(cx: &Cx) -> &Inner {
+    crate::prims::state(cx).tcache.0.get_or_init(Default::default)
+}
+
+/// The state if it was made.
+fn peek(cx: &Cx) -> Option<&Inner> {
+    crate::prims::state(cx).tcache.0.get().map(|b| &**b)
 }
 
 /// Whether the translations are captured: the writer runs, or a hit is
 /// being verified.
 fn capturing(cx: &Cx) -> bool {
-    writing() || state(cx).verifying.get()
+    writing() || peek(cx).is_some_and(|s| s.verifying.get())
 }
 
 /// Whether every hit is verified against a fresh translation:
@@ -865,6 +820,20 @@ pub(crate) fn verify_enabled() -> bool {
 /// A fresh translation of a hit's byte code begins, to verify it.
 pub(crate) fn verify_begin(cx: &Cx) {
     state(cx).verifying.set(true);
+}
+
+/// The fresh translation begun with [`verify_begin`] stopped with a `Need`
+/// (a collection or a promise's force first; the attempt runs again, and
+/// verifies again): the verification is over with nothing compared, and no
+/// partial capture is left for the next one to compare.
+pub(crate) fn verify_abort(cx: &Cx) {
+    let s = state(cx);
+    s.verifying.set(false);
+    if let Some(w) = s.writer.borrow_mut().as_mut() {
+        w.verified = None;
+        w.args.clear();
+    }
+    count(Outcome::VerifyRetried);
 }
 
 /// The fresh translation begun with [`verify_begin`] is over: whether it
@@ -924,7 +893,9 @@ pub(crate) unsafe fn writer_begin(cx: &Cx, bc: Sexp) -> bool {
 /// `Need`): forget its argument codes, so no Sexp stays in the capture
 /// across the collection that may follow.
 pub(crate) fn writer_abort(cx: &Cx) {
-    if let Some(w) = state(cx).writer.borrow_mut().as_mut() {
+    if let Some(s) = peek(cx)
+        && let Some(w) = s.writer.borrow_mut().as_mut()
+    {
         w.args.clear();
     }
 }
