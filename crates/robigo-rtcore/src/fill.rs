@@ -48,16 +48,19 @@ use robigo_heap::{NeedGc, Safepoint, Sexp};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// What a pass of the builtin's loop ends with: done or stopped by
-/// [`Fill::put`] (`Ok(Ok(()))`; [`Fill::next`] tells which), an error to
-/// raise (the partial result is dropped), or an allocation the heap refused
-/// for element [`Fill::next`] (the fill collects and runs the loop again
-/// from that element; refused again, it is GNU R's error for the cause).
+/// [`Fill::put`] (`Ok(Ok(()))`), an error to raise (the partial result is
+/// dropped), or the allocation the heap refused for the element given to
+/// [`Fill::put`] (the fill collects and runs the loop again from that
+/// element; refused again, it is GNU R's error for the cause).
 pub type FillPass = Result<Result<(), Diag<'static>>, NeedGc>;
 
 /// Where a pass of [`Cx::fill_strings`]'s loop stores its elements.
 pub struct Fill<'a> {
     into: Into<'a>,
-    /// The first element of this pass, then the next one to make.
+    /// The first element of this pass.
+    start: usize,
+    /// Where the pass stopped, set by [`Fill::put`] when it stops it (`n`
+    /// until then: a pass that returns without a stop made them all).
     next: usize,
     n: usize,
     poll: &'a AtomicU32,
@@ -76,15 +79,21 @@ impl<'a> Fill<'a> {
     /// `start()..len`.
     #[inline(always)]
     pub fn start(&self) -> usize {
-        self.next
+        self.start
     }
 
-    /// Element `i` (the next one, `start()` first) is `c`. True: stop the
-    /// pass now and return `Ok(Ok(()))` (a collection or an interrupt is
-    /// due); the fill serves it and runs the loop again from `i + 1`.
+    /// Element `i` (each in turn from `start()`) is `c`, the CHARSXP made
+    /// for it: stored, then the poll word read. `Ok(true)`: stop the pass
+    /// now and return `Ok(Ok(()))` (a collection or an interrupt is due);
+    /// the fill serves it and runs the loop again from `i + 1`. `Err`: the
+    /// heap refused `c`'s allocation; return it (`?`), and the fill collects
+    /// and runs the loop again from `i`.
     #[inline(always)]
-    pub fn put(&mut self, i: usize, c: Char<'a>) -> bool {
-        debug_assert_eq!(i, self.next, "robigo: Fill::put out of order");
+    pub fn put(&mut self, i: usize, c: Result<Char<'a>, NeedGc>) -> Result<bool, NeedGc> {
+        let c = match c {
+            Ok(c) => c,
+            Err(e) => return Err(self.refused(i, e)),
+        };
         match &mut self.into {
             Into::Fresh(v) => v.set(i, c),
             Into::Rooted(x) => {
@@ -97,8 +106,17 @@ impl<'a> Fill<'a> {
                 unsafe { x.set_elt(i, c) };
             }
         }
-        self.next = i + 1;
-        self.poll.load(Ordering::Relaxed) != 0 && self.next < self.n
+        if self.poll.load(Ordering::Relaxed) != 0 && i + 1 < self.n {
+            self.next = i + 1;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    #[cold]
+    fn refused(&mut self, i: usize, e: NeedGc) -> NeedGc {
+        self.next = i;
+        e
     }
 }
 
@@ -123,7 +141,7 @@ impl Cx {
         let stop: Stop = self.build_with(out, |cx| {
             // (c) "" in every element until it is filled
             let v = cx.alloc_vector::<Char<'_>>(n)?;
-            let mut fill = Fill { into: Into::Fresh(v), next: 0, n, poll: &cx.iso().poll, cx };
+            let mut fill = Fill { into: Into::Fresh(v), start: 0, next: n, n, poll: &cx.iso().poll, cx };
             let pass = f(cx, &mut fill);
             let next = fill.next;
             let Into::Fresh(v) = fill.into else { unreachable!() };
@@ -133,7 +151,9 @@ impl Cx {
                 // stopped by `put`: the partial result goes to `out`
                 Ok(Ok(())) => Built::Done(v, Some((next, None))),
                 Ok(Err(d)) => Built::fail(d),
-                Err(e) => Built::Done(v, Some((next, Some(e)))),
+                // (a refusal `put` did not see, before any element: the
+                // pass again from its start)
+                Err(e) => Built::Done(v, Some((if next >= n { 0 } else { next }, Some(e)))),
             })
         })?;
         match stop {
@@ -170,9 +190,14 @@ impl Cx {
                 // (a) the result read again through its root
                 let x = res.bind(cx);
                 debug_assert!(x.sexptype() == STRSXP && x.len() == Some(n));
-                let mut fill = Fill { into: Into::Rooted(x.sexp()), next: start, n, poll: &cx.iso().poll, cx };
+                let mut fill = Fill { into: Into::Rooted(x.sexp()), start, next: n, n, poll: &cx.iso().poll, cx };
                 let pass = f(cx, &mut fill);
-                (pass, fill.next)
+                let next = match pass {
+                    // (a refusal `put` did not see: the pass again)
+                    Err(_) if fill.next >= n => start,
+                    _ => fill.next,
+                };
+                (pass, next)
             };
             if next > start {
                 refused = None;
