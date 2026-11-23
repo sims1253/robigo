@@ -314,6 +314,46 @@ class Batches(unittest.TestCase):
             self.assertEqual([x[0] for x in files], [".", f"made-{i}"])
             self.assertEqual(files[1][3], len("clean"))
 
+    def test_every_binary_starts_with_the_translation_cache_off(self):
+        # the plain and the planted binary start alike whichever build wrote
+        # the tree's .rtc (another build's is a silent miss, robigo-rtapi's
+        # boot_db test of a stale build ID): run_rt turns the cache off for
+        # every binary, in a batch row and in an External row's clean
+        # environment (the case's own process sees it)
+        import types
+        seen = {}
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        with open(os.path.join(d, "done"), "w") as f:
+            f.write('{"lost": {}}')
+        drv = os.path.join(d, "fake.py")
+        with open(drv, "w") as f:
+            f.write("import os, sys\nout = os.environ['A4_OUT']\nos.makedirs(out, exist_ok=True)\n"
+                    "open(os.path.join(out, 'started'), 'w').close()\n"
+                    "open(os.path.join(out, 'cache'), 'w').write(os.environ.get('ROBIGO_TRANSLATION_CACHE', 'unset'))\n")
+        def batch(cmd, env, batch, out, n, scratch, **k):
+            seen["batch"] = env.get("ROBIGO_TRANSLATION_CACHE")
+            return {}
+        def isolated(cmd, env, batch, out, n, key, **k):
+            real_isolated([sys.executable, drv], env, batch, out, 1, "test-tcache")
+            with open(os.path.join(out, "cache")) as f:
+                seen["isolated"] = f.read()
+            return {}
+        real_isolated = bd.run_isolated
+        a = types.SimpleNamespace(data=d, seed=0, rsrc="x", boot=bd.DEFAULT_BOOT)
+        for iso in (False, True):
+            row = types.SimpleNamespace(isolated=iso, key=lambda seed, j: "k")
+            with unittest.mock.patch.object(bd, "oracle_dir", return_value=d), \
+                    unittest.mock.patch.object(bd, "read_cases", return_value=[]), \
+                    unittest.mock.patch.object(bd, "run_batch", batch), \
+                    unittest.mock.patch.object(bd, "run_isolated", isolated), \
+                    unittest.mock.patch.object(bd, "seal_big", lambda out: None):
+                r = bd.run_rt(a, row, "off", "rt", [])
+            remove = r.get("scratch")
+            if remove:
+                shutil.rmtree(remove, ignore_errors=True)
+        self.assertEqual(seen, {"batch": "0", "isolated": "0"})
+
     def test_the_harness_always_sets_the_boot(self):
         # every boot by name, M1's loader ("interim") as the variable empty:
         # nothing depends on a binary's default
@@ -601,6 +641,29 @@ class Known(unittest.TestCase):
                 self.assertIsNone(bd.read_known("y", "abc"))
             finally:
                 bd.KNOWN = old
+
+
+class RtRuns(unittest.TestCase):
+    def test_every_robigo_rt_run_starts_with_the_cache_off(self):
+        # the compared runs and --timing's start: one environment, so the
+        # start timed is a compared run's (no warm .rtc beside cache-off runs)
+        a = unittest.mock.Mock(rsrc="/src", boot="rdb")
+        with unittest.mock.patch.dict(os.environ, {"R_HOME": "/usr/lib/R", "ROBIGO_TRANSLATION_CACHE": "1"}):
+            env = bd.rt_env(a, R_ENABLE_JIT="3")
+        self.assertNotIn("R_HOME", env)
+        self.assertEqual((env["ROBIGO_TRANSLATION_CACHE"], env["R_ENABLE_JIT"], env["ROBIGO_RSRC"], env["ROBIGO_RT_BOOT"]),
+                         ("0", "3", "/src", "rdb"))
+        src = open(os.path.join(HERE, "builtin-diff.py")).read()
+        self.assertEqual(src.count("= rt_env(a, "), 2)  # run_rt and --timing's start
+
+    def test_no_cargo_says_what_to_do(self):
+        def missing(*a, **k):
+            raise FileNotFoundError(2, "No such file or directory", "cargo")
+        with unittest.mock.patch.object(bd.subprocess, "run", missing):
+            with self.assertRaises(SystemExit) as e:
+                bd.cargo_target()
+        self.assertIn("no cargo on PATH", str(e.exception.code))
+        self.assertIn("--robigo-rt BIN", str(e.exception.code))
 
 
 if __name__ == "__main__":
