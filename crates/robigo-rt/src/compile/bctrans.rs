@@ -945,6 +945,27 @@ impl<'g> Comp<'g> {
             assigning: Vec::new(),
             skip_to: None,
         };
+        // the instructions a jump reaches backwards (a loop's head, a for
+        // body): reached first by falling in, their stack is kept as their
+        // label, so the back-edge's `meet` checks the stack it brings
+        // against the one the instruction was translated with, as it does
+        // for a forward jump (#976: a mutated STEPFOR jumping elsewhere ran
+        // the loop's step on another stack)
+        let mut back = vec![false; n];
+        for (k, i) in dec.iter().enumerate() {
+            if !live[k] {
+                continue;
+            }
+            let next = dec.get(k + 1).map(|n| n.at);
+            // SAFETY: the caller's contract: the byte code's constants.
+            for p in unsafe { successors(i, next, consts)? } {
+                if p <= i.at
+                    && let Some(j) = t.ix.get(p)
+                {
+                    back[j] = true;
+                }
+            }
+        }
         // `dst` is the code's value (the first register)
         self.free_to(dst);
         let mut fell = true;
@@ -998,6 +1019,9 @@ impl<'g> Comp<'g> {
                     self.next = next;
                     t.open = open;
                     t.pending = None;
+                }
+                (None, true) if back[k] => {
+                    t.at[k].label = Some((t.stack.clone(), self.next, t.open.clone()));
                 }
                 (None, true) => {}
                 // the target of a back-edge yet to come (a loop body after
