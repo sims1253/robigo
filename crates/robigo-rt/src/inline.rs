@@ -1384,10 +1384,11 @@ unsafe fn body_loop<const FUSED: bool>(
                             // the force, at the reading point's depth
                             cx.set_eval_depth(fr.depth + i.d as i32);
                             // SAFETY: a live expression of the caller's code.
+                            let t = unsafe { e.typ() };
                             // (never a byte-code object: CallCodes does
                             // not reach the inliner)
-                            debug_assert_ne!(unsafe { e.typ() }, BCODESXP);
-                            if !early_force_ast(cx, true, unsafe { e.typ() } == LANGSXP) {
+                            debug_assert_ne!(t, BCODESXP);
+                            if !early_force_ast(cx, true, t == LANGSXP) {
                                 return None;
                             }
                             let x = fr.caller.eval(cx, e)?;
@@ -2143,9 +2144,10 @@ unsafe fn slot_read(cx: &mut Cx, fr: &mut Frame<'_>, k: usize, sym: Sexp, d: u16
             // the force, at the reading point's depth
             cx.set_eval_depth(fr.depth + d as i32);
             // SAFETY: a live expression of the caller's code.
+            let t = unsafe { e.typ() };
             // (never a byte-code object: CallCodes does not reach the inliner)
-            debug_assert_ne!(unsafe { e.typ() }, BCODESXP);
-            if !early_force_ast(cx, true, unsafe { e.typ() } == LANGSXP) {
+            debug_assert_ne!(t, BCODESXP);
+            if !early_force_ast(cx, true, t == LANGSXP) {
                 return None;
             }
             let x = fr.caller.eval(cx, e)?;

@@ -71,6 +71,10 @@ g <- function(n) { s <- 0; for (i in 1:n) s <- s + f(i) + rd(i); s }
 #[test]
 fn a_byte_code_argument_forced_early_counts_as_the_ordinary_force() {
     let mut r = Session::jit();
+    // argument slots, where early values are made: under
+    // ROBIGO_MATERIALIZE=1 (rt-ci's step) every slot is a promise and
+    // nothing is computed early
+    robigo_rt::set_materialize(r.cx(), false);
     let cx = r.cx();
     let mut h = cx.hooks();
     let _ = REAL.set(h.early_force);
