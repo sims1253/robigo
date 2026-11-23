@@ -89,6 +89,7 @@ PR's eval_in and eval_promise clear for C's eval) and the depth step would
 overflow: an unforced promise of byte code at PRSEEN 0 is left PRSEEN 1, not
 pending. The check is a depth compare on the common path; the rest is cold.
 promise-eval-depth-interim.R became promise-eval-depth-retry.R (passing).
-Not exact: a GETVAR_MISSOK read from byte code (GNU R: getvar, forcePromise)
-whose own depth step overflows is treated as GETVAR's; three sweeps did not
-reach that edge (it needs vm.rs to tell the two reads apart).
+GETVAR_MISSOK reads (getvar, not the inlined force: DO_GETVAR's fast path
+excludes keepmiss) clear bc_active around their read (eval.rs
+get_var_keepmiss, out of line, so vm::run is unchanged); case
+tests/rt/conditions/promise-setup-missok.R (Sol's).

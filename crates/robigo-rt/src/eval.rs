@@ -496,7 +496,26 @@ pub unsafe fn get_var_missok(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sex
     // SAFETY: a live symbol; gp is a header field.
     let dd = unsafe { sym.gp() } & robigo_rtcore::DDVAL != 0;
     // SAFETY: the caller's contract: a live symbol.
-    unsafe { get_var(cx, act, a, sym, dd, bc) }
+    unsafe { get_var_keepmiss(cx, act, a, sym, dd, bc) }
+}
+
+/// GETVAR_MISSOK's read past `keepmiss_missing`: [`get_var`] through
+/// `getvar`, not bcEval's inlined force (DO_GETVAR's fast path excludes
+/// `keepmiss`), so a promise it forces is forced as `forcePromise` does:
+/// byte code is inactive for the force's PRSEEN order
+/// ([`Cx::force_arg`]'s inlined-force check reads it). Out of line:
+/// `get_var_missok` is inlined into `vm::run`.
+///
+/// # Safety
+/// As [`get_var`].
+// R: eval.c:getvar
+#[inline(never)]
+unsafe fn get_var_keepmiss(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: bool, bc: bool) -> RResult<()> {
+    let saved = cx.bc_deactivate();
+    // SAFETY: the caller's contract.
+    let r = unsafe { get_var(cx, act, a, sym, dd, bc) };
+    cx.bc_restore(saved);
+    r
 }
 
 /// `eval(sym, rho)` into register `a` (`..N` when `dd`), the slow path:
