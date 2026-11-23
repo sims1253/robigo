@@ -432,11 +432,16 @@ pub fn mismatches() -> usize {
 }
 
 /// A hit's code (or one of its argument codes) the verifier refuses
-/// (`why`): a miss, counted, and reported as `verify_end` reports a
-/// difference (a crosscheck finding; on stderr under
-/// `ROBIGO_TRANSLATION_CACHE=verify`), so the tree's verify step fails on it.
+/// (`why`): a miss, always counted (so the tree's verify step, which
+/// fails on `mismatches()`, fails on it), and reported only where hits are
+/// compared (`verify_enabled`: a crosscheck finding, and on stderr under
+/// `ROBIGO_TRANSLATION_CACHE=verify`). An ordinary start says nothing: a
+/// refused entry there is a miss like any other (#994's bot).
 pub(crate) fn refused(why: &crate::code::Malformed) {
     count(Outcome::Refused);
+    if !verify_enabled() {
+        return;
+    }
     let what = format!("a cached translation the verifier refuses ({why})");
     crate::compile::crosscheck::report(&format!("unexpected: translation cache: {what}"));
     if verifying_all() {

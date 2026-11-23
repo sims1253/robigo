@@ -53,7 +53,16 @@ const HELPER: &[u8] = b"function(f, a, cl, h) {
 pub(crate) struct FoldReq {
     pub(crate) call: Sexp,
     pub(crate) fun: Sexp,
-    pub(crate) args: Vec<(Sexp, Sexp)>,
+    /// Each argument and its tag.
+    pub(crate) args: Vec<(FoldArg, Sexp)>,
+}
+
+/// A fold call's argument: a constant, or the value of an earlier request
+/// of the same try (its index), which the round folds first.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum FoldArg {
+    Value(Sexp),
+    Req(usize),
 }
 
 /// The isolate's folding state ([`prims::RtState::folds`]).
@@ -98,13 +107,16 @@ impl Folds {
         self.asked.get()
     }
 
-    /// Ask for the value of `r.call` before the next try.
-    pub(crate) fn request(&self, r: FoldReq) {
+    /// Ask for the value of `r.call` before the next try: its request's
+    /// index (one per call), which a later request's argument may name.
+    pub(crate) fn request(&self, r: FoldReq) -> usize {
         self.asked.set(self.asked.get() + 1);
         let mut p = self.pending.borrow_mut();
-        if !p.iter().any(|q| q.call == r.call) {
-            p.push(r);
+        if let Some(i) = p.iter().position(|q| q.call == r.call) {
+            return i;
         }
+        p.push(r);
+        p.len() - 1
     }
 
     /// The helper closure, copied into a new state ([`crate::lib`]'s growth).
@@ -148,27 +160,58 @@ impl Round {
         // SAFETY: the requests' objects are live: the try that found them
         // (in the source, a cached value) just ended and nothing has
         // allocated since. Rooting them allocates nothing.
-        let rooted: Vec<(Global, Global, Vec<(Global, Global)>)> = reqs
+        let rooted: Vec<(Global, Global, Vec<(Option<Global>, Option<usize>, Global)>)> = reqs
             .iter()
             .map(|r| unsafe {
                 let g = |x: Sexp| cx.global(Ref::from_sexp(x, cx));
-                (g(r.call), g(r.fun), r.args.iter().map(|&(v, t)| (g(v), g(t))).collect())
+                let args = r
+                    .args
+                    .iter()
+                    .map(|(a, t)| match *a {
+                        FoldArg::Value(v) => (Some(g(v)), None, g(*t)),
+                        FoldArg::Req(j) => (None, Some(j), g(*t)),
+                    })
+                    .collect();
+                (g(r.call), g(r.fun), args)
             })
             .collect();
         let vis = cx.visible();
         let busy = &prims::state(cx).folds.busy;
         busy.set(busy.get() + 1);
         let mut res = Ok(());
+        // each request's value in this round, in order: an argument naming
+        // an earlier request takes its value (cmp.R folds bottom-up), and a
+        // call one of whose arguments does not fold does not fold either
+        let mut values: Vec<Option<Global>> = Vec::with_capacity(rooted.len());
         let mut it = rooted.into_iter();
         for (call, fun, args) in it.by_ref() {
-            let v = fold1(cx, &fun, &args);
+            let mut fold_args = Vec::with_capacity(args.len());
+            let mut folds = true;
+            for (v, j, t) in args {
+                let v = match (v, j) {
+                    (Some(v), _) => Some(v),
+                    (None, Some(j)) => values.get(j).and_then(|w| w.as_ref()).map(|w| cx.global(w.bind(cx))),
+                    (None, None) => None,
+                };
+                match v {
+                    Some(v) => fold_args.push((v, t)),
+                    None => {
+                        folds = false;
+                        cx.release_global(t);
+                    }
+                }
+            }
+            let v = if folds { fold1(cx, &fun, &fold_args) } else { Ok(None) };
             cx.release_global(fun);
-            for (v, t) in args {
+            for (v, t) in fold_args {
                 cx.release_global(v);
                 cx.release_global(t);
             }
             match v {
-                Ok(v) => self.known.push((call, v)),
+                Ok(v) => {
+                    values.push(v.as_ref().map(|w| cx.global(w.bind(cx))));
+                    self.known.push((call, v));
+                }
                 Err(e) => {
                     cx.release_global(call);
                     res = Err(e);
@@ -179,10 +222,15 @@ impl Round {
         for (call, fun, args) in it {
             cx.release_global(call);
             cx.release_global(fun);
-            for (v, t) in args {
-                cx.release_global(v);
+            for (v, _, t) in args {
+                if let Some(v) = v {
+                    cx.release_global(v);
+                }
                 cx.release_global(t);
             }
+        }
+        for v in values.into_iter().flatten() {
+            cx.release_global(v);
         }
         let busy = &prims::state(cx).folds.busy;
         busy.set(busy.get() - 1);

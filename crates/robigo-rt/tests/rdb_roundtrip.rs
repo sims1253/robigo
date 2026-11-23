@@ -471,6 +471,7 @@ fn oracle_base_closures_crosscheck() {
                             robigo_rt::compile::Verdict::Unexpected => "Unexpected",
                             robigo_rt::compile::Verdict::Skipped => "Skipped",
                             robigo_rt::compile::Verdict::Untranslated => "Untranslated",
+                            robigo_rt::compile::Verdict::Malformed => "Malformed",
                         };
                         *verdicts.entry(verdict.to_owned()).or_default() += 1;
                     }
@@ -485,6 +486,9 @@ fn oracle_base_closures_crosscheck() {
     assert!(closures > 1000, "{closures} closures");
     assert!(failures.is_empty(), "{failures:#?}");
     assert_eq!(n("Unexpected"), 0, "unexpected differences (the report has them): {verdicts:?}");
+    // GNU R's compiler's code is never malformed: a refusal is a
+    // translator bug (#976's checks are stricter than the code they check)
+    assert_eq!(n("Malformed"), 0, "byte code refused as malformed: {verdicts:?}");
     let compared = n("Same") + n("Expected");
     assert!(compared >= CROSSCHECK_COMPARED, "{compared} compared, fewer than {CROSSCHECK_COMPARED}: {verdicts:?}");
     for (v, most) in [("Skipped", CROSSCHECK_SKIPPED), ("Untranslated", CROSSCHECK_UNTRANSLATED)] {

@@ -602,6 +602,18 @@ def steps(crates):
         ("the translation cache as damaged input (scripts/rt-tcache-mutate.py)", {},
          ["python3", "scripts/rt-tcache-mutate.py", "--robigo-rt", rt_binary(), "--pkg", "base", "--pkg", "compiler",
           "--runs", "300", "--seed", "1", "--swap-runs", "40"]),
+        # #976: hostile byte code (mutated code vectors through mkCode and
+        # bcClose) ends as R code ends: no signal, no panic, and a start
+        # still running at the limit stops at SIGINT. The corpus (the
+        # mutations that crashed before) replayed, then a fixed random batch.
+        # A fixed seed makes this a regression test, not a search, so a PR
+        # never fails on a seed its own log cannot reproduce. The search
+        # (--seed auto, a new seed each run, its failures written out for
+        # the corpus with --failures-out) is run by hand today; no workflow
+        # runs it yet (the nightly's wiring is A1's third runner PR)
+        ("hostile byte code through the translator (scripts/rt-bc-mutate.py, #976)", {},
+         ["python3", "scripts/rt-bc-mutate.py", "--robigo-rt", rt_binary(), "--processes", "24", "--batch", "100",
+          "--seed", "1", "--limit", "10"]),
         ("conformance under the rdb boot with ROBIGO_BC_CROSSCHECK=1 (base.rdb's closures against the "
          "from-source compiler's)",
          {"ROBIGO_RT_BOOT": "rdb", "ROBIGO_BC_CROSSCHECK": "1", "ROBIGO_BC_CROSSCHECK_REPORT": BC_REPORT_RDB},
@@ -790,9 +802,9 @@ BUDGETS = {  # shard: (budget, measured minutes, where measured)
     # slow-runner estimates (its two modes steps timed locally, C1,
     # 2026-11-23, scaled by 1.6: run 45072863916's conformance steps against
     # the same local run's, 1.34 against 0.84 min)
-    "modes": (13, 10.57, "2026-11-23, run 45106626186: 9.67 (7.32 and 7.45 in the other two), and #979's rdb "
+    "modes": (14, 11.17, "2026-11-23, run 45106626186: 9.67 (7.32 and 7.45 in the other two), and #979's rdb "
               "boot's conformance without the translation cache, 0.29 (0.18 locally), and the cache's "
-              "damaged-input step, 0.61 (0.38 locally)"),
+              "damaged-input step, 0.61 (0.38 locally); and #976's hostile byte code, 0.6 (0.37 locally)"),
     "gctorture": (26, 21.53, "2026-11-23, run 45104024474, a slow runner (15.24 and 15.82 in the other two)"),
     "feature-builds": (17, 13.90, "2026-11-23, run 45104024474: 13.30 (11.01 and 12.66 in the other two), and "
                        "#979's tree for the retry-torture build and its verification test, estimated 0.6 (0.3 "
