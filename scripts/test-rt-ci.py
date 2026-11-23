@@ -109,7 +109,8 @@ class RtCi(unittest.TestCase):
                          "modes")
         self.assertEqual(where["ROBIGO_MATERIALIZE=1 (every argument slot materialized)"], "modes")
         self.assertEqual([t for t, s in where.items() if s == "gctorture"],
-                         ["conformance with the boot heap's freeze on (ROBIGO_GC_FREEZE=1)",
+                         ["conformance under M1's loader with the boot heap's freeze on (ROBIGO_RT_BOOT=m1, "
+                          "ROBIGO_GC_FREEZE=1)",
                           "conformance under gctorture (E3)",
                           f"conformance under ROBIGO_GC_MOVE={rt.GC_MOVE_YOUNG} with gctorture (E3)"])
         self.assertEqual([t for t, s in where.items() if s == "builtin-diff"],
@@ -175,8 +176,11 @@ class RtCi(unittest.TestCase):
         # cache must change nothing a case sees)
         steps = rt.steps(["robigo-rt", "robigo-rtapi"])
         titles = [t for t, _, _ in steps]
-        rdb = [i for i, (_, e, c) in enumerate(steps) if e.get("ROBIGO_RT_BOOT") == "rdb" and rt.CONFORMANCE in c
-               and "--skip" not in c]
+        # (the default boot is rdb: a step that names no boot runs it)
+        boot_keys = {"ROBIGO_RT_BOOT", "ROBIGO_CONF_JOBS", "ROBIGO_CONF_TIMEOUTS", "ROBIGO_BC_CROSSCHECK",
+                     "ROBIGO_BC_CROSSCHECK_REPORT", "ROBIGO_GC_FREEZE", "ROBIGO_TRANSLATION_CACHE"}
+        rdb = [i for i, (_, e, c) in enumerate(steps) if e.get("ROBIGO_RT_BOOT", "rdb") == "rdb"
+               and rt.CONFORMANCE in c and "--skip" not in c and set(e) <= boot_keys]
         # plain, crosschecked, with the boot heap's freeze on, and without
         # the translation cache
         self.assertEqual(len(rdb), 4)
@@ -186,8 +190,8 @@ class RtCi(unittest.TestCase):
         # (ROBIGO_CONF_TIMEOUTS: the default-timeout steps' allowances, set apart)
         self.assertEqual(sorted(sorted(k for k in steps[i][1] if k != "ROBIGO_CONF_TIMEOUTS") for i in rdb),
                          [["ROBIGO_BC_CROSSCHECK", "ROBIGO_BC_CROSSCHECK_REPORT", "ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT"],
-                          ["ROBIGO_CONF_JOBS", "ROBIGO_GC_FREEZE", "ROBIGO_RT_BOOT"],
-                          ["ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT"],
+                          ["ROBIGO_CONF_JOBS"],
+                          ["ROBIGO_CONF_JOBS", "ROBIGO_GC_FREEZE"],
                           ["ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT", "ROBIGO_TRANSLATION_CACHE"]])
         self.assertEqual(sum(steps[i][1].get("ROBIGO_TRANSLATION_CACHE") == "0" for i in rdb), 1)
 
@@ -570,8 +574,8 @@ class RtCi(unittest.TestCase):
         # conformance under each boot with it on and its check off
         on = [(e, c) for t, e, c in rt.steps(["robigo-rt"]) if e.get("ROBIGO_GC_FREEZE") == "1"
               and rt.CONFORMANCE in c and "ROBIGO_GCTORTURE" not in e]
-        boots = sorted(e.get("ROBIGO_RT_BOOT", "M1") for e, _ in on)
-        self.assertEqual(boots, ["M1", "rdb"])
+        boots = sorted(e.get("ROBIGO_RT_BOOT", "rdb") for e, _ in on)
+        self.assertEqual(boots, ["m1", "rdb"])
         self.assertTrue(all("ROBIGO_GC_FREEZE_CHECK" not in e for e, _ in on))
         # and no step that is not the freeze's turns it on
         for t, e, _ in rt.steps(["robigo-rt"]):
@@ -698,7 +702,7 @@ class RtCi(unittest.TestCase):
         cross = [e for e, _ in own if "ROBIGO_BC_CROSSCHECK" in e]
         self.assertEqual(len(cross), 2)
         # (one per boot, each with a report of its own)
-        self.assertEqual(sorted(e.get("ROBIGO_RT_BOOT", "") for e in cross), ["", "rdb"])
+        self.assertEqual(sorted(e.get("ROBIGO_RT_BOOT", "rdb") for e in cross), ["m1", "rdb"])
         self.assertEqual(len({e["ROBIGO_BC_CROSSCHECK_REPORT"] for e in cross}), 2)
         for title, _, cmd in steps:
             # (a build-only step, --no-run, runs no test at all)

@@ -478,9 +478,9 @@ def steps(crates):
         # builds it (its features), since the crates' tests build quick
         ("the release binary and the conformance, built (cargo test --release --no-run)", {},
          [*test, "-p", "robigo-rtapi", "--test", "conformance", "--no-run"]),
-        # L5's boot beside M1's loader (ROBIGO_RT_BOOT=rdb): base's database,
-        # written by this robigo-rt booted from base's source, then base
-        # booted from it (crates/robigo-rtapi/tests/boot_db.rs). Before every
+        # robigo-rt's default boot (L5, GNU R's: base from base's database):
+        # the database, written by this robigo-rt booted from base's source,
+        # then base booted from it (crates/robigo-rtapi/tests/boot_db.rs). Before every
         # step whose tests read it (robigo-rtapi's boot_db tests, in each run
         # of the crates' tests), so a stale tree is rebuilt first (its stamp
         # names the source tree, the script and the binary) and those tests
@@ -489,17 +489,17 @@ def steps(crates):
         ("the crates' tests (quick profile)", TREE_RUNS, [*crate, *pkgs, *skip]),
         ("boot from base's database (ROBIGO_RT_BOOT=rdb)", {"ROBIGO_RT_HOME_DB": "1"},
          [*test, "-p", "robigo-rtapi", "--test", "boot_db", *skip]),
-        # the boot that replaces M1's (L5, ROBIGO_RT_BOOT=rdb: base from the
-        # tree's base.rdb, as GNU R boots): the ratcheted conformance under it,
-        # plain and with the byte-code crosscheck, each failing as its M1
-        # step does (a ratcheted case that fails; an unexpected or
-        # untranslated closure). Not yet the default anywhere (L's list)
+        # the default boot (L5: base from the tree's base.rdb, as GNU R
+        # boots): the ratcheted conformance under it, plain and with the
+        # byte-code crosscheck, each failing on a ratcheted case that fails
+        # or an unexpected or untranslated closure; M1's loader keeps one
+        # step (ROBIGO_RT_BOOT=m1, INTERIM(L5) until the PR that deletes it).
         # The tree has its translation cache (C1, crates/robigo-rt/src/tcache.rs,
         # beside it: rt-home-db.sh), so these steps run with it; the crosscheck
         # step compares every cached translation with a fresh one too. The
         # same cases with the cache off must pass as well: the cache changes
         # nothing a case sees
-        ("conformance under the rdb boot (ROBIGO_RT_BOOT=rdb)", {"ROBIGO_RT_BOOT": "rdb"}, conformance),
+        ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2; the default boot, rdb)", {}, conformance),
         ("conformance under the rdb boot without the translation cache (ROBIGO_TRANSLATION_CACHE=0)",
          {"ROBIGO_RT_BOOT": "rdb", "ROBIGO_TRANSLATION_CACHE": "0"}, conformance),
         # the cache as damaged input: a corrupted file's entries are misses,
@@ -513,13 +513,13 @@ def steps(crates):
          "from-source compiler's)",
          {"ROBIGO_RT_BOOT": "rdb", "ROBIGO_BC_CROSSCHECK": "1", "ROBIGO_BC_CROSSCHECK_REPORT": BC_REPORT_RDB},
          conformance),
-        ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {}, conformance),
+        ("conformance under M1's loader (ROBIGO_RT_BOOT=m1, INTERIM(L5))", {"ROBIGO_RT_BOOT": "m1"}, conformance),
         # the boot heap's freeze as users turn it on (ROBIGO_GC_FREEZE=1, off
         # by default until the frozen-reachability pass: the ledger's
         # 2026-11-21-h-boot-freeze-check.md), under each boot, its check off
         ("conformance with the boot heap's freeze on (ROBIGO_GC_FREEZE=1)", FREEZE_ON, conformance),
-        ("conformance under the rdb boot with the boot heap's freeze on (ROBIGO_RT_BOOT=rdb, ROBIGO_GC_FREEZE=1)",
-         {"ROBIGO_RT_BOOT": "rdb", **FREEZE_ON}, conformance),
+        ("conformance under M1's loader with the boot heap's freeze on (ROBIGO_RT_BOOT=m1, ROBIGO_GC_FREEZE=1)",
+         {"ROBIGO_RT_BOOT": "m1", **FREEZE_ON}, conformance),
         # docs/g3.md §15.3 E5: the same cases and recordings under each
         # observation mode, but those whose `.requires` names the identity
         # the mode gives up (robigo-conformance's KNOWN_FEATURES)
@@ -588,8 +588,9 @@ def steps(crates):
         # compared with the from-source compiler's code of its source;
         # `main` fails the job on an unexpected difference (the expected
         # ones are the from-source port's known gaps, counted)
-        ("conformance under ROBIGO_BC_CROSSCHECK=1 (translated byte code against the from-source compiler's)",
-         {"ROBIGO_BC_CROSSCHECK": "1", "ROBIGO_BC_CROSSCHECK_REPORT": BC_REPORT}, conformance),
+        ("conformance under M1's loader with ROBIGO_BC_CROSSCHECK=1 (translated byte code against the from-source "
+         "compiler's; ROBIGO_RT_BOOT=m1, INTERIM(L5))",
+         {"ROBIGO_RT_BOOT": "m1", "ROBIGO_BC_CROSSCHECK": "1", "ROBIGO_BC_CROSSCHECK_REPORT": BC_REPORT}, conformance),
         ("injected allocation failures (E9, scripts/rt-fail-alloc.py)", {},
          ["python3", "scripts/rt-fail-alloc.py", "--points", "400"]),
         # A4 (docs/g3.md §16, ROBIGO_BUILTIN_DIFF): every row of
@@ -774,9 +775,9 @@ def shard_of(title):
         return "gctorture"
     # the boot heap's freeze on under M1's loader, its check off: with E3's
     # freeze check, in the freeze's shard (modes was at its budget: the
-    # foreman, 2026-11-22). Its rdb twin stays in modes, where base's
-    # database tree is built
-    if title == "conformance with the boot heap's freeze on (ROBIGO_GC_FREEZE=1)":
+    # foreman, 2026-11-22). Its rdb twin (the default boot's) stays in
+    # modes, where base's database tree is built
+    if title.startswith("conformance under M1's loader with the boot heap's freeze on"):
         return "gctorture"
     if title.startswith("builtin differential"):
         return "builtin-diff"

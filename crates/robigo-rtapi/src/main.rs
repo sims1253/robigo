@@ -141,8 +141,8 @@ fn default_r_home() -> RHome {
             _ => std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
         },
     };
-    // the source tree (scripts/rt-home.sh), or with ROBIGO_RT_BOOT=rdb the
-    // one with base's database (scripts/rt-home-db.sh)
+    // the tree with base's database (scripts/rt-home-db.sh), or with
+    // ROBIGO_RT_BOOT=stage0 or m1 the source tree (scripts/rt-home.sh)
     let rdb = boot() == Boot::Rdb;
     let h = checkout.join(if rdb { ".robigo/rt-home-db" } else { ".robigo/rt-home" });
     let h = std::path::absolute(&h).unwrap_or(h);
@@ -190,10 +190,11 @@ fn expand_tilde(s: &[u8]) -> Vec<u8> {
     }
 }
 
-/// How base boots (`ROBIGO_RT_BOOT`): INTERIM(L5) M1's lazy loader of the
-/// pinned sources (unset), or GNU R's boot, `R_ReplFile` of R_HOME's
-/// `library/base/R/base`: of the checkout's source tree (`stage0`), or of
-/// its tree with base's database (`rdb`). An installed tree is what it is.
+/// How base boots (`ROBIGO_RT_BOOT`): GNU R's boot, `R_ReplFile` of
+/// R_HOME's `library/base/R/base`, of the tree with base's database (`rdb`,
+/// the default) or of the checkout's source tree (`stage0`); or INTERIM(L5)
+/// M1's lazy loader of the pinned sources (`m1`), until the PR that
+/// deletes it. An installed tree is what it is.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Boot {
     M1,
@@ -201,18 +202,19 @@ enum Boot {
     Rdb,
 }
 
-/// `ROBIGO_RT_BOOT`'s boot; unset or empty is M1's loader, any other
-/// value than `stage0` or `rdb` an error (a typo must not boot M1's
-/// loader silently).
+/// `ROBIGO_RT_BOOT`'s boot; unset or empty is GNU R's from base's
+/// database (`rdb`), any other value than `rdb`, `stage0` or `m1` an error
+/// (a typo must not choose a boot silently).
 fn boot_checked() -> Result<Boot, String> {
     match std::env::var_os("ROBIGO_RT_BOOT") {
-        None => Ok(Boot::M1),
-        Some(v) if v.is_empty() => Ok(Boot::M1),
+        None => Ok(Boot::Rdb),
+        Some(v) if v.is_empty() || v == "rdb" => Ok(Boot::Rdb),
         Some(v) if v == "stage0" => Ok(Boot::Stage0),
-        Some(v) if v == "rdb" => Ok(Boot::Rdb),
-        Some(v) => {
-            Err(format!("ROBIGO_RT_BOOT is '{}': it is 'stage0', 'rdb' or unset (M1's loader)", v.to_string_lossy()))
-        }
+        Some(v) if v == "m1" => Ok(Boot::M1),
+        Some(v) => Err(format!(
+            "ROBIGO_RT_BOOT is '{}': it is 'rdb' (the default, also when unset), 'stage0' or 'm1' (M1's loader)",
+            v.to_string_lossy()
+        )),
     }
 }
 
