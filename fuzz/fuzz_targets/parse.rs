@@ -18,5 +18,5 @@ use libfuzzer_sys::fuzz_target;
 fuzz_target!(|data: &[u8]| {
     let src = String::from_utf8_lossy(data);
     let arena = robigo_syntax::Arena::new();
-    let _ = robigo_syntax::parse_program(&arena, &src);
+    let _ = robigo_syntax::parse_program(&arena, &*src);
 });
