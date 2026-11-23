@@ -25,8 +25,46 @@
 //!   read again: no `Sexp` or data pointer of it is kept across the serve
 //!   (a moving collector may have moved it).
 //! - (b) The loop is `for<'a> FnMut(&'a Cx, &mut Fill<'a>)`: the views it
-//!   makes of its inputs borrow that `&Cx`, so none outlives the pass into
-//!   the `&mut Cx` the serve takes; each pass makes them again from roots.
+//!   makes of its inputs borrow that `&Cx`, which the fill gives each pass
+//!   anew, so none can be kept from one pass to the next (the compiler
+//!   refuses it: below); each pass makes them again from roots. The serve
+//!   runs only between passes, after the loop has returned.
+//!
+//! ```
+//! # use robigo_rtcore::{Char, OwnedIsolate};
+//! # let mut iso = OwnedIsolate::new();
+//! # let cx = iso.cx();
+//! cx.scope(|cx, s| {
+//!     let out = s.out(cx);
+//!     cx.fill_strings(out, 3, |cx, fill| {
+//!         for i in fill.start()..3 {
+//!             if fill.put(i, cx.mk_char(format!("e{i}").as_bytes(), robigo_rtcore::Encoding::Native))? {
+//!                 return Ok(Ok(()));
+//!             }
+//!         }
+//!         Ok(Ok(()))
+//!     })
+//! })
+//! .unwrap();
+//! ```
+//!
+//! A view kept from one pass for the next does not compile:
+//!
+//! ```compile_fail
+//! # use robigo_rtcore::{Char, OwnedIsolate};
+//! # let mut iso = OwnedIsolate::new();
+//! # let cx = iso.cx();
+//! cx.scope(|cx, s| {
+//!     let out = s.out(cx);
+//!     let mut kept: Option<Char<'_>> = None;
+//!     cx.fill_strings(out, 1, |cx, fill| {
+//!         let c = kept.unwrap_or_else(|| cx.blank_string());
+//!         kept = Some(c);
+//!         fill.put(0, Ok(c)).map(|_| Ok(()))
+//!     })
+//! })
+//! .unwrap();
+//! ```
 //! - (c) Every element not yet filled is `""` (`R_BlankString`, immortal)
 //!   from allocation on, so the collector traces a valid vector at every
 //!   serve.
@@ -65,6 +103,10 @@ pub struct Fill<'a> {
     n: usize,
     poll: &'a AtomicU32,
     cx: &'a Cx,
+    /// (debug builds) the next element `put` expects: a loop that skips
+    /// one, or returns before a stop with elements unmade, panics.
+    #[cfg(debug_assertions)]
+    expect: usize,
 }
 
 enum Into<'a> {
@@ -90,6 +132,11 @@ impl<'a> Fill<'a> {
     /// and runs the loop again from `i`.
     #[inline(always)]
     pub fn put(&mut self, i: usize, c: Result<Char<'a>, NeedGc>) -> Result<bool, NeedGc> {
+        #[cfg(debug_assertions)]
+        {
+            assert_eq!(i, self.expect, "robigo: Fill::put of element {i}, expected {}", self.expect);
+            self.expect += 1;
+        }
         let c = match c {
             Ok(c) => c,
             Err(e) => return Err(self.refused(i, e)),
@@ -118,6 +165,17 @@ impl<'a> Fill<'a> {
         self.next = i;
         e
     }
+
+    /// (debug builds) a pass that returned `Ok(Ok(()))` without a stop made
+    /// every element.
+    #[inline(always)]
+    fn check_done(&self, pass: &FillPass) {
+        #[cfg(debug_assertions)]
+        if matches!(pass, Ok(Ok(()))) && self.next >= self.n {
+            assert_eq!(self.expect, self.n, "robigo: a fill pass returned with elements unmade");
+        }
+        let _ = pass;
+    }
 }
 
 /// Where a pass stopped: the next element to make, and the refusal that
@@ -141,8 +199,18 @@ impl Cx {
         let stop: Stop = self.build_with(out, |cx| {
             // (c) "" in every element until it is filled
             let v = cx.alloc_vector::<Char<'_>>(n)?;
-            let mut fill = Fill { into: Into::Fresh(v), start: 0, next: n, n, poll: &cx.iso().poll, cx };
+            let mut fill = Fill {
+                into: Into::Fresh(v),
+                start: 0,
+                next: n,
+                n,
+                poll: &cx.iso().poll,
+                cx,
+                #[cfg(debug_assertions)]
+                expect: 0,
+            };
             let pass = f(cx, &mut fill);
+            fill.check_done(&pass);
             let next = fill.next;
             let Into::Fresh(v) = fill.into else { unreachable!() };
             let v = v.finish().into();
@@ -190,8 +258,18 @@ impl Cx {
                 // (a) the result read again through its root
                 let x = res.bind(cx);
                 debug_assert!(x.sexptype() == STRSXP && x.len() == Some(n));
-                let mut fill = Fill { into: Into::Rooted(x.sexp()), start, next: n, n, poll: &cx.iso().poll, cx };
+                let mut fill = Fill {
+                    into: Into::Rooted(x.sexp()),
+                    start,
+                    next: n,
+                    n,
+                    poll: &cx.iso().poll,
+                    cx,
+                    #[cfg(debug_assertions)]
+                    expect: start,
+                };
                 let pass = f(cx, &mut fill);
+                fill.check_done(&pass);
                 let next = match pass {
                     // (a refusal `put` did not see: the pass again)
                     Err(_) if fill.next >= n => start,
