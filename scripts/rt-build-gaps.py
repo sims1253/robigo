@@ -73,7 +73,9 @@ def main():
     if made.returncode:
         sys.exit(f"rt-build-gaps: scripts/rt-home.sh failed (status {made.returncode}):\n{made.stderr}")
     env = {k: v for k, v in os.environ.items() if k != "R_HOME"}
-    env.update(R_DEFAULT_PACKAGES="NULL", LANGUAGE="en", LC_ALL="C.UTF-8")
+    # (stage 0, booting from that source tree, as GNU R's build runs: the
+    # default boot would need the database tree, which this does not make)
+    env.update(R_DEFAULT_PACKAGES="NULL", LANGUAGE="en", LC_ALL="C.UTF-8", ROBIGO_RT_BOOT="stage0")
     skip, crashed, missing = set(SKIP), [], []
     while True:
         script = (f"keys <- c({', '.join(rstr(k) for k in keys)})\n"
