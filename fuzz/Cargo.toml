@@ -11,10 +11,18 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 robigo-syntax = { path = "../crates/robigo-syntax" }
 robigo-runtime = { path = "../crates/robigo-runtime" }
+robigo-rt = { path = "../crates/robigo-rt" }
 
 [[bin]]
 name = "parse"
 path = "fuzz_targets/parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rtc"
+path = "fuzz_targets/rtc.rs"
 test = false
 doc = false
 bench = false

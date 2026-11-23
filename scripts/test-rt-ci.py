@@ -23,6 +23,16 @@ def meta(*pkgs):
 
 
 class RtCi(unittest.TestCase):
+    def test_the_cache_mutation_starts_are_memory_capped(self):
+        # every robigo-rt start of scripts/rt-tcache-mutate.py goes through
+        # its capped `start` (RLIMIT_AS), and the script checks at its own
+        # start that the cap is in force
+        src = (HERE / "rt-tcache-mutate.py").read_text()
+        self.assertEqual(src.count("subprocess.run("), 1)
+        self.assertIn("preexec_fn=cap_memory", src)
+        self.assertIn("resource.RLIMIT_AS", src)
+        self.assertIn("check_cap(cmd, home, env)", src)
+
     def test_crates_follow_the_selection_rule(self):
         m = meta(pkg("robigo-rt", "crates/robigo-rt"), pkg("robigo-rtcore", "crates/robigo-rtcore"),
                  pkg("robigo-heap", "crates/robigo-heap"), pkg("robigo-heap-derive", "crates/robigo-heap-derive"),
@@ -71,6 +81,9 @@ class RtCi(unittest.TestCase):
                          ["builtin differential and its planted divergences (A4, scripts/builtin-diff.py ci)"])
         self.assertEqual([t for t, s in where.items() if s == "feature-builds"],
                          ["conformance under ROBIGO_RETRY_TORTURE=1 (E9: every build's retry runs once)",
+                          "base's database tree for ROBIGO_RETRY_TORTURE's build (scripts/rt-home-db.sh)",
+                          "a translation-cache verification under ROBIGO_RETRY_TORTURE=1 compares nothing for a "
+                          "retry (tests/boot_db.rs)",
                           "ROBIGO_POISON_DEAD=1 (dead slots poisoned), robigo-rt's tests and the planted early clear",
                           "ROBIGO_POISON_DEAD=1, conformance"])
 
@@ -123,12 +136,15 @@ class RtCi(unittest.TestCase):
                 self.assertTrue(built and built[0] < tree[0], shard)
 
     def test_the_rdb_boot_runs_the_conformance_plain_and_crosschecked_after_its_tree(self):
+        # plain, crosschecked, and with the translation cache off (the tree's
+        # cache must change nothing a case sees)
         steps = rt.steps(["robigo-rt", "robigo-rtapi"])
         titles = [t for t, _, _ in steps]
         rdb = [i for i, (_, e, c) in enumerate(steps) if e.get("ROBIGO_RT_BOOT") == "rdb" and rt.CONFORMANCE in c
                and "--skip" not in c]
-        # plain, crosschecked, and with the boot heap's freeze on
-        self.assertEqual(len(rdb), 3)
+        # plain, crosschecked, with the boot heap's freeze on, and without
+        # the translation cache
+        self.assertEqual(len(rdb), 4)
         tree = titles.index("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)")
         self.assertTrue(all(tree < i for i in rdb))
         self.assertEqual({rt.shard_of(titles[i]) for i in rdb}, {"modes"})
@@ -136,7 +152,9 @@ class RtCi(unittest.TestCase):
         self.assertEqual(sorted(sorted(k for k in steps[i][1] if k != "ROBIGO_CONF_TIMEOUTS") for i in rdb),
                          [["ROBIGO_BC_CROSSCHECK", "ROBIGO_BC_CROSSCHECK_REPORT", "ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT"],
                           ["ROBIGO_CONF_JOBS", "ROBIGO_GC_FREEZE", "ROBIGO_RT_BOOT"],
-                          ["ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT"]])
+                          ["ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT"],
+                          ["ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT", "ROBIGO_TRANSLATION_CACHE"]])
+        self.assertEqual(sum(steps[i][1].get("ROBIGO_TRANSLATION_CACHE") == "0" for i in rdb), 1)
 
     def test_every_crate_test_step_builds_what_the_first_built(self):
         # cargo turns a selected crate's dev-dependency features on, so a
@@ -629,7 +647,14 @@ class RtCi(unittest.TestCase):
         # ROBIGO_POISON_DEAD on robigo-rt's tests and the conformance
         steps = rt.steps(["robigo-rt", "robigo-rtcore"])
         featured = [i for i, (_, _, cmd) in enumerate(steps) if "--features" in cmd]
-        self.assertEqual(featured, list(range(len(steps) - 3, len(steps))), "the feature builds come last")
+        # the feature builds come last: retry torture's conformance, the
+        # database tree its build's binary writes (no flag of its own: the
+        # step before built that binary), the cache's verification under the
+        # knob (#979), then the poison-dead steps
+        n = len(steps)
+        self.assertEqual(featured, [n - 5, n - 3, n - 2, n - 1], "the feature builds come last")
+        self.assertEqual(steps[n - 4][2][:3], ["scripts/rt-home-db.sh", "--robigo-rt", rt.rt_binary()])
+        self.assertIn("boot_db", steps[featured[1]][2])
         for i in featured:
             cmd = steps[i][2]
             self.assertEqual(cmd[cmd.index("--features") + 1], rt.CHECK_FEATURES)
@@ -638,9 +663,9 @@ class RtCi(unittest.TestCase):
         self.assertEqual([t for t, e, _ in steps if "ROBIGO_RETRY_TORTURE" in e], retry)
         self.assertEqual(steps[featured[0]][1].get("ROBIGO_CONF_TIMEOUT"), "600")
         poison = [t for t, e, _ in steps if e.get("ROBIGO_POISON_DEAD") == "1"]
-        self.assertEqual(poison, [steps[i][0] for i in featured[1:]])
-        self.assertIn("robigo-rt", steps[featured[1]][2])
-        self.assertIn(rt.CONFORMANCE, steps[featured[2]][2])
+        self.assertEqual(poison, [steps[i][0] for i in featured[2:]])
+        self.assertIn("robigo-rt", steps[featured[2]][2])
+        self.assertIn(rt.CONFORMANCE, steps[featured[3]][2])
         # each feature exists where the steps name it
         for f in rt.CHECK_FEATURES.split(","):
             crate, feature = f.split("/")

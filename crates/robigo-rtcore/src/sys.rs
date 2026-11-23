@@ -54,3 +54,42 @@ fn no_memory(len: usize) -> ! {
     eprintln!("robigo: cannot reserve {len} bytes for the value stack");
     std::process::abort()
 }
+
+/// `path`'s contents, mapped read-only for the rest of the process (the
+/// mapping is never released), with `MADV_RANDOM`: a page comes in when it is
+/// read, alone (no read-ahead, no fault-around), as file-backed memory the
+/// system may drop and read again, never an anonymous copy. None when the
+/// file cannot be opened or mapped (a directory), or is empty. The mapping is
+/// private, so a later write to the file by another process is not seen
+/// through a page already read; a truncation of the file under the mapping
+/// would make a read of a page past its new end fault, which the files
+/// mapped here (written once, when their tree is built, and replaced only by
+/// a new tree) never are.
+pub fn map_file_readonly(path: &std::path::Path) -> Option<&'static [u8]> {
+    use std::os::fd::AsRawFd;
+    let f = std::fs::File::open(path).ok()?;
+    let len = usize::try_from(f.metadata().ok()?.len()).ok()?;
+    if len == 0 {
+        return None;
+    }
+    // SAFETY: a new private read-only mapping of an open file, at an address
+    // of the system's choosing: nothing existing is replaced. The descriptor
+    // can be closed after (the mapping keeps the file).
+    let p = unsafe { libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_PRIVATE, f.as_raw_fd(), 0) };
+    if p == libc::MAP_FAILED {
+        return None;
+    }
+    // SAFETY: advice on the mapping just made; it changes only how its pages
+    // come in (a failure leaves the default, which reads the same bytes).
+    unsafe { libc::madvise(p, len, libc::MADV_RANDOM) };
+    // SAFETY: the mapping just made is `len` readable bytes, read-only and
+    // private, never unmapped or written by this process, so it lives for
+    // 'static. Its bytes do not change under it: the files mapped here (the
+    // translation cache's) have one writer, which replaces a file by rename
+    // and never writes or truncates one in place (robigo-rt's
+    // `tcache::replace_file`). A truncation in place by anything else is
+    // outside that contract and ends the process with SIGBUS at the next
+    // read past the new end, as truncating the executable or a shared
+    // library under a running process would.
+    Some(unsafe { std::slice::from_raw_parts(p.cast::<u8>(), len) })
+}

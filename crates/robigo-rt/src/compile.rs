@@ -151,7 +151,7 @@ impl std::hash::Hasher for NameHasher {
 pub(crate) type NameSet = HashSet<(Name, bool), BuildHasherDefault<NameHasher>>;
 
 mod bctrans;
-mod crosscheck;
+pub(crate) mod crosscheck;
 #[doc(hidden)]
 pub use crosscheck::Verdict;
 
@@ -618,6 +618,53 @@ pub(crate) fn bytecode_code(cx: &mut Cx, bc: Root<'_>, rho: Root<'_>) -> RResult
 unsafe fn translate_code(cx: &Cx, bc: Sexp, formals: Option<Sexp>, index: Option<Sexp>) -> Result<Sexp, Need> {
     // SAFETY: the caller's contract.
     unsafe {
+        // the translation cache's, when it has this byte code's (and every
+        // check passes): what the translation below makes, made from it
+        if let Some((code, entry)) = cached_translation(cx, bc, formals, index)? {
+            if !crate::tcache::verify_enabled() {
+                return Ok(code);
+            }
+            // compared, not trusted: a fresh translation too, the same or
+            // reported (and then the fresh one runs)
+            crate::tcache::verify_begin(cx);
+            let fresh = match translate_uncached(cx, bc, formals, index) {
+                Ok(c) => c,
+                Err(e) => {
+                    // a retryable stop (Need::Gc, Need::Force): the attempt
+                    // runs again and verifies then; this one compares nothing
+                    crate::tcache::verify_abort(cx);
+                    return Err(e);
+                }
+            };
+            let same = crate::tcache::verify_end(cx, &entry);
+            return Ok(if same { code } else { fresh });
+        }
+        translate_uncached(cx, bc, formals, index)
+    }
+}
+
+/// [`translate_code`] with no look at the translation cache.
+///
+/// # Safety
+/// As [`translate_code`]'s.
+unsafe fn translate_uncached(cx: &Cx, bc: Sexp, formals: Option<Sexp>, index: Option<Sexp>) -> Result<Sexp, Need> {
+    // SAFETY: the caller's contract.
+    let r = unsafe { translate_uncached_in(cx, bc, formals, index) };
+    if r.is_err() {
+        // (an abandoned attempt leaves no Sexp in the writer's capture)
+        crate::tcache::writer_abort(cx);
+    }
+    r
+}
+
+/// [`translate_uncached`]'s body.
+///
+/// # Safety
+/// As [`translate_code`]'s.
+unsafe fn translate_uncached_in(cx: &Cx, bc: Sexp, formals: Option<Sexp>, index: Option<Sexp>) -> Result<Sexp, Need> {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let writing = crate::tcache::writer_begin(cx, bc);
         let st = prims::state(cx);
         let mut c = Comp::new(cx, st, Profile::Bc, Some(Cenv::for_translation()));
         let r = c.alloc();
@@ -644,10 +691,149 @@ unsafe fn translate_code(cx: &Cx, bc: Sexp, formals: Option<Sexp>, index: Option
             Err(e) => return Err(e),
         };
         let expr = robigo_rtbuiltins::bytecode::expr(cx, Ref::from_sexp(bc, cx)).sexp();
+        if writing {
+            crate::tcache::writer_end(cx, bc, index, &b);
+        }
         let code = crate::code::build(cx, &verified(b), expr, formals)?;
         index_codes(cx, code, &c.arg_codes, index);
         Ok(code)
     }
+}
+
+/// [`translate_code`]'s result from the translation cache
+/// ([`crate::tcache::lookup`]): the code and its argument codes built from
+/// the cached translation as the translation builds its own, if every one
+/// passes [`crate::code::Verified::new`]; None on any miss.
+///
+/// # Safety
+/// As [`translate_code`]'s.
+unsafe fn cached_translation(
+    cx: &Cx,
+    bc: Sexp,
+    formals: Option<Sexp>,
+    index: Option<Sexp>,
+) -> Result<Option<(Sexp, crate::tcache::format::Entry)>, Need> {
+    // SAFETY: the caller's contract.
+    let Some(hit) = (unsafe { crate::tcache::lookup(cx, bc, index)? }) else { return Ok(None) };
+    let unverified = || {
+        crate::tcache::count(crate::tcache::Outcome::Unverified);
+        Ok(None)
+    };
+    // SAFETY: the entry is this build's translator's own, intact: its file's
+    // header carries this binary's build ID and this tree's stamp
+    // (`tcache::open`), its row's keyed checksum matched its key and data
+    // (`format::decode_checked`), and its constants passed the typed check
+    // (`tcache::typed_ok`). The trust stops there: the cache is trusted as
+    // the tree's base.rdb is, since whoever can write one can write the
+    // other, and base.rdb's R code can already run anything (`dyn.load`,
+    // `system`).
+    let Ok(main) = (unsafe { crate::code::Verified::from_cached_translation(hit.built) }) else {
+        return unverified();
+    };
+    let mut args = Vec::with_capacity(hit.args.len());
+    for (call, b) in hit.args {
+        // SAFETY: as above, an argument code of the same entry.
+        let Ok(v) = (unsafe { crate::code::Verified::from_cached_translation(b) }) else { return unverified() };
+        args.push((call, v));
+    }
+    // SAFETY: the caller's contract; the calls are the BCODESXP's constants
+    // (`tcache::lookup` resolved them, live), nothing collects meanwhile.
+    unsafe {
+        let expr = robigo_rtbuiltins::bytecode::expr(cx, Ref::from_sexp(bc, cx)).sexp();
+        let code = crate::code::build(cx, &main, expr, formals)?;
+        let mut arg_codes = Vec::with_capacity(args.len());
+        for (call, v) in &args {
+            let built = crate::code::build(cx, v, *call, None)?;
+            crate::code::cache_on(*call, built);
+            arg_codes.push(built);
+        }
+        index_codes(cx, code, &arg_codes, index);
+        crate::tcache::count(crate::tcache::Outcome::Hit);
+        Ok(Some((code, hit.entry)))
+    }
+}
+
+/// The translation cache's writer (`ROBIGO_TRANSLATION_CACHE_WRITE`,
+/// scripts/rt-home-db.sh): translate every closure of base's and the
+/// compiler's namespaces whose body is their database's byte code, and the
+/// function literals that byte code makes (a `MAKECLOSURE` constant: its
+/// formals and body), so each translation is kept ([`crate::tcache`]). The
+/// bindings were forced by the script that ran before.
+pub fn translate_for_cache(cx: &mut Cx) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let mut envs = vec![s.root(cx, cx.base_namespace())];
+        let o = s.out(cx);
+        let ns = o.root();
+        if crate::ns::find_namespace(cx, b"compiler", o).is_ok() {
+            envs.push(ns);
+        }
+        for env in envs {
+            let names: Vec<Sexp> = match env.bind(cx).view() {
+                robigo_rtcore::View::Env(e) => {
+                    cx.frame_bindings(e, true).unwrap_or_default().into_iter().map(|(y, _)| y.as_ref().sexp()).collect()
+                }
+                _ => continue,
+            };
+            for y in names {
+                // SAFETY: a symbol, immortal.
+                let y = s.root(cx, unsafe { Ref::from_sexp(y, cx) });
+                let o = s.out(cx);
+                let v = o.root();
+                if cx.eval(y, env, o).is_err() {
+                    continue;
+                }
+                let f = v.bind(cx).sexp();
+                // SAFETY: a rooted object; a closure's body and formals.
+                let (body, formals) = unsafe {
+                    if f.typ() != CLOSXP || f.cdr().typ() != BCODESXP {
+                        continue;
+                    }
+                    (f.cdr(), f.car())
+                };
+                // the closure's body, then each function literal its byte
+                // code makes, depth first
+                // (each queued pair rooted as it is queued: a translation's
+                // attempt may collect and move the ones still waiting)
+                // SAFETY: reachable from the rooted closure, rooted at once.
+                let first = unsafe { (s.root(cx, Ref::from_sexp(body, cx)), s.root(cx, Ref::from_sexp(formals, cx))) };
+                let mut todo = vec![first];
+                while let Some((bcr, fmr)) = todo.pop() {
+                    // SAFETY: a rooted BCODESXP: its 4th word is R_NilValue,
+                    // a stub or a code object.
+                    if unsafe { crate::code::cached(cx, bcr.bind(cx).sexp().aux(), Profile::Bc) }.is_none() {
+                        let code = attempt(cx, |cx| {
+                            // SAFETY: rooted, read in this attempt.
+                            unsafe { translate_code(cx, bcr.bind(cx).sexp(), Some(fmr.bind(cx).sexp()), None) }
+                        })?;
+                        if let Some(c) = code {
+                            // SAFETY: the rooted BCODESXP and its fresh code.
+                            unsafe { crate::code::cache_on(bcr.bind(cx).sexp(), c) };
+                        }
+                    }
+                    // the function literals in its constants, each rooted as
+                    // it is found (nothing collects while they are found)
+                    // SAFETY: the rooted BCODESXP's constants, a VECSXP;
+                    // each element tested before its words are read.
+                    unsafe {
+                        let pool = bcr.bind(cx).sexp().cdr();
+                        if pool.typ() != VECSXP {
+                            continue;
+                        }
+                        for i in 0..pool.std_len() as usize {
+                            let k = *(pool.std_data() as *const Sexp).add(i);
+                            if k.typ() == VECSXP && k.std_len() >= 2 {
+                                let (kf, kb) = (*(k.std_data() as *const Sexp), *(k.std_data() as *const Sexp).add(1));
+                                if matches!(kf.typ(), LISTSXP | NILSXP) && kb.typ() == BCODESXP {
+                                    todo.push((s.root(cx, Ref::from_sexp(kb, cx)), s.root(cx, Ref::from_sexp(kf, cx))));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    })
 }
 
 /// `make.functionContext(cntxt, forms, body)` on `cenv`: a frame of the
