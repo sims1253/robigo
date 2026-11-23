@@ -36,7 +36,8 @@
 ## The driver uses only: readRDS, saveRDS, tryCatch, withCallingHandlers,
 ## withVisible, eval, as.call, as.name, new.env, assign, get0, ls, rm,
 ## serialize, unserialize, identical, RNGkind, set.seed, sprintf, Sys.getenv, stop;
-## for a big value nchar(type = "bytes"), typeof, attributes, .subset. The self-test checks them
+## for a big value nchar(type = "bytes"), typeof, attributes, .subset,
+## unclass, is.object, file.exists. The self-test checks them
 ## first; a runtime that fails it gets "driver unusable on <label>: <what>"
 ## and no records, never a wrong comparison.
 local({
@@ -75,9 +76,15 @@ local({
         f <- eval(as.call(list(as.name("function"), NULL, quote(.Internal(nchar(a1, "chars", FALSE, NA))))), e)
         identical(f(), 1L)
     })
-    check("nchar(type = \"bytes\")/.subset", {
-        identical(nchar(c("ab", "\u00e9", NA), type = "bytes", keepNA = FALSE), c(2L, 2L, 2L)) &&
-            identical(.subset(structure(1:4, class = "a4x"), 2:3), 2:3)
+    ## (no vector of length 3: the planted divergences, robigo-rtbuiltins'
+    ## diff-plant, change results of length 3, and the driver must stay
+    ## usable on the plant build)
+    check("nchar(type = \"bytes\")/.subset/unclass/is.object/file.exists", {
+        identical(nchar(c("ab", "\u00e9", NA, ""), type = "bytes", keepNA = FALSE), c(2L, 2L, 2L, 0L)) &&
+            identical(.subset(structure(1:4, class = "a4x"), 2:3), 2:3) &&
+            identical(unclass(structure(1:4, class = "a4x")), 1:4) &&
+            is.object(structure(1, class = "a4x")) && !is.object(1) &&
+            file.exists(batch_path) && !file.exists(file.path(out, "a4-not-there"))
     })
     check("readRDS of the batch", { b <- readRDS(batch_path); is.list(b$cases) })
     b <- readRDS(batch_path)
@@ -218,11 +225,12 @@ local({
         cat("\001A4 ", c$id, "\001\n", sep = "")
         rec <- run1(c)
         if (is.null(rec$setup_error) && is.null(rec$driver_error)) {
-            rec$value <- a4big(rec$value, c$id, 1L)
+            ## (["value"] <- list(): a NULL value stays in the record)
+            rec["value"] <- list(a4big(rec$value, c$id, 1L))
             k <- 1L
             for (n in names(rec$env)) if (!isTRUE(rec$env[[n]]$unchanged)) {
                 k <- k + 1L
-                rec$env[[n]]$value <- a4big(rec$env[[n]]$value, c$id, k)
+                rec$env[[n]]["value"] <- list(a4big(rec$env[[n]]$value, c$id, k))
             }
         }
         f <- file.path(out, sprintf("%06d.rds", c$id))

@@ -698,8 +698,10 @@ def diff_fields(pairs):
                 # on either side: what same_record refused)
                 gaps = [f"missing {sorted(w - set(d))}, unexpected {sorted(set(d) - w)}" for w, d in (bo, bx)]
                 if bo != bx or any(w != set(d) for w, d in (bo, bx)):
-                    out[i] = ("digest", f"{sorted(bo[1].items())} ({gaps[0]})"[:150],
-                              f"{sorted(bx[1].items())} ({gaps[1]})"[:150])
+                    # (each digest's first 12 hex digits: enough to tell
+                    # them apart in a report line)
+                    short = lambda d: {k: v[:12] for k, v in sorted(d.items())}
+                    out[i] = ("digest", f"{short(bo[1])} ({gaps[0]})"[:150], f"{short(bx[1])} ({gaps[1]})"[:150])
                 elif printed(o) != printed(x):
                     out[i] = ("stdout", repr(printed(o)[:150]), repr(printed(x)[:150]))
                 else:
