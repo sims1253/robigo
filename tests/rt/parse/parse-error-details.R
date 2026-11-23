@@ -5,7 +5,7 @@
 # delimiter (a newline: the next line at column 0; a tab: column 8); a
 # lexer error in the lookahead a failing action read fires first (in yylex,
 # before the action), one after a reduction that needs no lookahead does
-# not.
+# not (a call's `)`: xxfuncall reduces without one).
 old <- options(warn = 2)
 print(tryCatch(parse(text = "1 |> f(1.1L, _)"), error = function(e) class(e)[1]))
 print(tryCatch(str2lang("1 |> f(1.1L, _)"), error = function(e) class(e)[1]))
@@ -30,3 +30,14 @@ m('x => y "\\q"')
 m('function(a,a "\\q")')
 m('function(a,a) "\\q"')
 m('1 |> f(_)\n"\\q"')
+m('""() "\\q"')
+m('""()\n"\\q"')
+m('f("" = 1 "\\q")')
+# an open connection: what parse(n = 1) leaves unread after the error
+f <- tempfile()
+writeLines(c('""() "\\q"', "x <- 2"), f)
+con <- file(f, "r")
+m2 <- function() tryCatch(parse(con, n = 1), error = function(e) cat(class(e)[1], conditionMessage(e), "\n"))
+m2()
+print(readLines(con))
+close(con)

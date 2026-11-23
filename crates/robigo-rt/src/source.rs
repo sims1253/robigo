@@ -282,7 +282,7 @@ fn parse_text(
         match p.program_n(if num < 0 { usize::MAX } else { num as usize }) {
             Ok(exprs) => Ok((exprs, p.consumed_end())),
             Err(e) => {
-                frontier = Some(p.error_frontier(&e));
+                frontier = Some((p.error_frontier(&e), p.error_read_to(&e)));
                 Err(e)
             }
         }
@@ -292,10 +292,18 @@ fn parse_text(
         Err(e) => {
             crate::reader::check_non_ascii_locale(cx, src)?;
             if !e.incomplete {
-                let end = e.end.max(e.offset);
-                *consumed = end + read_ahead(src, e.offset.min(end), end);
+                *consumed = match frontier {
+                    // where the lexer stopped: the last token it read and
+                    // what it looked at past it
+                    Some((_, read_to)) => read_to,
+                    // (the lexer itself failed: no parser)
+                    None => {
+                        let end = e.end.max(e.offset);
+                        end + read_ahead(src, e.offset.min(end), end)
+                    }
+                };
             }
-            signal(cx, if e.incomplete { usize::MAX } else { frontier.unwrap_or(e.offset) })?;
+            signal(cx, if e.incomplete { usize::MAX } else { frontier.map_or(e.offset, |f| f.0) })?;
             return Err(match e.style {
                 robigo_syntax::ErrorStyle::Grammar => cx.error(&robigo_syntax::format_parse_error(source, srcname, &e)),
                 robigo_syntax::ErrorStyle::RError => cx.error(&e.message),
