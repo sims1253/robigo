@@ -10,3 +10,8 @@
 [1] FALSE
 [1] "language"
 f("_")
+unrecognizedEscape '\q' is an unrecognized escape in character string (<input>:1:13) 
+unrecognizedEscape '\q' is an unrecognized escape in character string (<input>:1:10) 
+unrecognizedEscape '\q' is an unrecognized escape in character string (<input>:1:16) 
+repeatedFormal repeated formal argument 'a' (<input>:1:12) 
+placeholderNotNamed pipe placeholder can only be used as a named argument (<input>:1:6) 

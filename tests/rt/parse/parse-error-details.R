@@ -2,7 +2,10 @@
 # failing action's lookahead come before the condition (under warn = 2 the
 # first wins); the call keeps its strings' encodings and the native pipe's
 # LANGSXP argument cell; a malformed raw literal's position is after its
-# delimiter (a newline: the next line at column 0; a tab: column 8).
+# delimiter (a newline: the next line at column 0; a tab: column 8); a
+# lexer error in the lookahead a failing action read fires first (in yylex,
+# before the action), one after a reduction that needs no lookahead does
+# not.
 old <- options(warn = 2)
 print(tryCatch(parse(text = "1 |> f(1.1L, _)"), error = function(e) class(e)[1]))
 print(tryCatch(str2lang("1 |> f(1.1L, _)"), error = function(e) class(e)[1]))
@@ -21,3 +24,9 @@ print(c(e$lineno, e$colno))
 e <- tryCatch(parse(text = "_ |> f()"), error = identity)
 print(identical(serialize(e$call, NULL, version = 2), serialize(quote(f("_")), NULL, version = 2)))
 print(typeof(e$call)); print(e$call)
+m <- function(t) tryCatch(parse(text = t), error = function(e) cat(class(e)[1], conditionMessage(e), "\n"))
+m('1 |> f(_) "\\q"')
+m('x => y "\\q"')
+m('function(a,a "\\q")')
+m('function(a,a) "\\q"')
+m('1 |> f(_)\n"\\q"')

@@ -116,7 +116,7 @@ pub fn parse_condition<'a>(
 
 pub fn error_expr_value(e: &robigo_syntax::ErrorExpr) -> Value {
     use crate::lang::const_to_value;
-    use robigo_syntax::{Const, ErrorExpr};
+    use robigo_syntax::ErrorExpr;
     match e {
         ErrorExpr::Atom(c) => const_to_value(c),
         ErrorExpr::String(s, mark) => const_to_value(&ErrorExpr::string_const(s, *mark)),

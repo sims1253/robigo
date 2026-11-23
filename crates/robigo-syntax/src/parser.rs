@@ -446,6 +446,9 @@ impl<'a> Parser<'a> {
     /// first one until the statement's syntax is known to be good (see
     /// [`Parser::defer_codegen`]).
     fn codegen(&mut self, e: ParseError, frontier: usize) -> Result<(), ParseError> {
+        if let Some(le) = self.lookahead_lex_condition() {
+            return Err(le);
+        }
         if !self.defer_codegen {
             // [`parse_conn_statement`]'s lexing frontier (`read_to`)
             self.trial_frontier = Some(frontier);
@@ -453,6 +456,27 @@ impl<'a> Parser<'a> {
         }
         self.codegen_err.get_or_insert((e, frontier));
         Ok(())
+    }
+
+    /// The lexer's condition in the lookahead token, if it holds one: GNU
+    /// R reads the lookahead before an action that needs it runs, and a
+    /// `raiseLexError` in it fires inside `yylex`, before the action can
+    /// raise its own (`1 |> f(_) "\q"` is unrecognizedEscape). A reduction
+    /// whose lookahead is a good token is unaffected.
+    // R: gram.y:yylex, raiseLexError
+    fn lookahead_lex_condition(&self) -> Option<ParseError> {
+        // (looked at, not moved to: newlines are skipped in parentheses,
+        // as `lookahead_start` does)
+        let mut i = self.pos;
+        if self.cur_ctx() == Ctx::Paren {
+            while matches!(self.toks[i].tok, Tok::Newline) {
+                i += 1;
+            }
+        }
+        match &self.toks[i].tok {
+            Tok::Invalid(le) if le.style == ErrorStyle::Condition => Some((**le).clone()),
+            _ => None,
+        }
     }
 
     fn cur_ctx(&self) -> Ctx {
@@ -765,6 +789,9 @@ impl<'a> Parser<'a> {
                     // gated, so the trial parse raises it once the
                     // lookahead after the RHS is lexed.
                     if !pipebind_enabled() {
+                        if let Some(le) = self.lookahead_lex_condition() {
+                            return Err(le);
+                        }
                         self.trial_frontier = Some(self.lookahead_start());
                         return Err(ParseError::condition(
                             "pipebindDisabled",
