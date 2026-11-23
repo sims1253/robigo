@@ -72,3 +72,13 @@
 # AndOr1's logical and panicked (vm.rs:820); main segfaulted. AND2ND/OR2ND
 # now read the first operand only as bcEval does: never.
 700001 47 panic
+# BCM_POOL (#976 layer 1b): the constants slot made no list. Found by seed 11
+# (2026-11-23) on main 8296b0884, before #1003: each crashed it only with the
+# pool mutation (alone, without it, the start ran clean), a SIGSEGV reading a
+# non-list as the constants' list. One of each kind: the code's own constants
+# made an integer vector, a string, NULL; a MAKECLOSURE constant's body's
+# made an integer vector. #1003's translation refuses them all.
+1100001 2 signal-11 pool
+1100017 5 signal-11 pool
+1100025 3 signal-11 pool
+1100023 6 signal-11 pool
