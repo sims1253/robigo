@@ -90,8 +90,8 @@ impl Cx {
         self.flush_gc_report();
     }
 
-    /// Whether the boot heap's freeze runs here: `ROBIGO_GC_FREEZE=1`, and
-    /// not under ROBIGO_GC_MOVE's modes.
+    /// Whether the boot heap's freeze runs here: on unless
+    /// `ROBIGO_GC_FREEZE=0`, and not under ROBIGO_GC_MOVE's modes.
     pub fn freeze_enabled(&self) -> bool {
         // SAFETY: one read of the core.
         unsafe { self.iso().core() }.freeze_enabled()
@@ -194,13 +194,13 @@ impl Cx {
 
     /// The boot heap's freeze (robigo-heap's `freeze.rs`,
     /// docs/ledger/g3/2026-11-21-h-boot-freeze-bar.md and its amendments),
-    /// when `ROBIGO_GC_FREEZE=1` turns it on: the boot boundary, drawn by
+    /// on unless `ROBIGO_GC_FREEZE=0`: the boot boundary, drawn by
     /// the front end once, at the end of the boot. Only the boot's blocks
     /// are marked here; the first collection after it freezes every boot
     /// object reachable from the freeze roots (the base environment and
     /// namespace, the symbols' cells, the namespace registry, the
     /// `Globals`, the C API's constants), the global environment and its
-    /// frame left out. Nothing when the freeze is off (the default) or
+    /// frame left out. Nothing when the freeze is off (`ROBIGO_GC_FREEZE=0`) or
     /// under the moving collector's modes.
     pub fn freeze_boot_heap(&mut self) {
         let iso = self.iso();

@@ -529,8 +529,8 @@ pub struct Core {
     quarantine: Vec<crate::heap::Chunk>,
     /// `ROBIGO_GC_PIN_REPORT`, `ROBIGO_GC_STRONG_DLL` (`diag.rs`)
     diag: Option<Box<diag::Diag>>,
-    /// `ROBIGO_GC_FREEZE=1` (or [`Core::set_freeze_enabled`]): the boot
-    /// heap's freeze runs. Off by default: then nothing of it runs.
+    /// `ROBIGO_GC_FREEZE` (or [`Core::set_freeze_enabled`]): the boot heap's
+    /// freeze runs. On by default; off (`0`), nothing of it runs.
     freeze_on: bool,
     /// The boot boundary, between [`Core::freeze_boundary`] and the lazy
     /// freeze inside the next collection (`freeze.rs`).
@@ -951,13 +951,14 @@ fn spill_callee_saved(buf: &mut [usize; 12]) {
 /// is empty and unlimited but for `R_MAX_VSIZE`, whose minimum fits them).
 const CONSTANTS: &str = "robigo: cannot allocate R's constants";
 
-/// `ROBIGO_GC_FREEZE`: the boot heap's freeze (`gc/freeze.rs`), off by
-/// default (unset, empty or `0`), on with `1`. Anything else is refused.
+/// `ROBIGO_GC_FREEZE`: the boot heap's freeze (`gc/freeze.rs`), on by
+/// default (unset, empty or `1`; step 2, docs/ledger/g3/2026-11-23-h-freeze-fold.md),
+/// off with `0`. Anything else is refused.
 fn freeze_from_env() -> bool {
     match std::env::var("ROBIGO_GC_FREEZE") {
-        Err(std::env::VarError::NotPresent) => false,
-        Ok(v) if v.is_empty() || v == "0" => false,
-        Ok(v) if v == "1" => true,
+        Err(std::env::VarError::NotPresent) => true,
+        Ok(v) if v.is_empty() || v == "1" => true,
+        Ok(v) if v == "0" => false,
         Ok(v) => panic!("robigo: ROBIGO_GC_FREEZE is 1 (the boot heap's freeze on) or 0, not {v:?}"),
         Err(e) => panic!("robigo: ROBIGO_GC_FREEZE: {e}"),
     }

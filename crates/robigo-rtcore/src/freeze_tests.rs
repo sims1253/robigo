@@ -8,8 +8,8 @@
 
 use crate::OwnedIsolate;
 
-/// The freeze on for this isolate (`ROBIGO_GC_FREEZE` is off by default),
-/// unless a moving mode leaves it off.
+/// The freeze on for this isolate (the default, but `ROBIGO_GC_FREEZE=0`
+/// may have turned it off), unless a moving mode leaves it off.
 fn freeze_on(cx: &mut crate::Cx) -> bool {
     cx.set_freeze_enabled(true);
     cx.freeze_enabled()

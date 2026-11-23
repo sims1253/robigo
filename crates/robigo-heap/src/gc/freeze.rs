@@ -1,9 +1,10 @@
 //! The boot heap's freeze (docs/ledger/g3/2026-11-21-h-boot-freeze-bar.md
 //! and its amendment, 2026-11-21-h-boot-freeze-check.md).
 //!
-//! **Off by default:** `ROBIGO_GC_FREEZE=1` turns it on
-//! ([`Core::freeze_enabled`]), until the frozen-reachability pass lands and
-//! the default flips. Off, none of it runs.
+//! **On by default** since the fold (step 2,
+//! docs/ledger/g3/2026-11-23-h-freeze-fold.md): `ROBIGO_GC_FREEZE=0` turns
+//! it off ([`Core::freeze_enabled`]), and the moving collector's modes leave
+//! it off. Off, none of it runs.
 //!
 //! **Lazy:** the embedder draws the boot boundary at the end of its boot
 //! ([`Core::freeze_boundary`]): a flag, and the blocks in use marked, no
@@ -287,8 +288,8 @@ impl<R: Trace + ?Sized> Trace for FreezeView<'_, R> {
 }
 
 impl Core {
-    /// Whether the freeze runs in this heap: `ROBIGO_GC_FREEZE=1` (off by
-    /// default), and not under the moving collector's modes, which the heap
+    /// Whether the freeze runs in this heap: `ROBIGO_GC_FREEZE` unset or `1`
+    /// (`0` turns it off), and not under the moving collector's modes, which the heap
     /// selected when it was made or by its setters (both set `gc_move`).
     pub fn freeze_enabled(&self) -> bool {
         self.freeze_on && !self.gc_move
@@ -1120,14 +1121,16 @@ mod tests {
         }
     }
 
-    /// The freeze is off unless `ROBIGO_GC_FREEZE=1` says otherwise: off,
-    /// the boundary marks nothing and no collection freezes.
+    /// The freeze is on unless `ROBIGO_GC_FREEZE=0` (or a moving mode)
+    /// says otherwise (step 2); off, the boundary marks nothing and no
+    /// collection freezes.
     #[test]
-    fn the_freeze_is_off_by_default() {
+    fn the_freeze_is_on_by_default_and_off_draws_no_boundary() {
         let mut c = Core::new();
-        if std::env::var_os("ROBIGO_GC_FREEZE").is_some() {
-            c.set_freeze_enabled(false);
+        if std::env::var_os("ROBIGO_GC_FREEZE").is_none() && std::env::var_os("ROBIGO_GC_MOVE").is_none() {
+            assert!(c.freeze_enabled(), "on by default");
         }
+        c.set_freeze_enabled(false);
         assert!(!c.freeze_enabled());
         let nil = c.nil();
         // SAFETY: fresh objects of this heap; nothing collects.
