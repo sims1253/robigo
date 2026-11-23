@@ -1553,6 +1553,12 @@ class CiImageEnsure(unittest.TestCase):
         self.assertTrue(any(c.startswith("push ") for c in calls), calls)
 
     def test_a_registry_error_builds_nothing(self):
+        # (docker's "no such manifest" also stands for an unauthorized or
+        # unexpected answer: not proof the tag is missing)
+        for err in ("unauthorized: authentication required", "no such manifest: ghcr.io/x:y"):
+            p, calls = self.ensure(err)
+            self.assertNotEqual(p.returncode, 0, err)
+            self.assertFalse([c for c in calls if c.startswith(("build ", "push "))], (err, calls))
         p, calls = self.ensure("unauthorized: authentication required")
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("cannot tell whether", p.stderr)

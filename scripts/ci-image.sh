@@ -81,7 +81,9 @@ case "${1:-refs}" in
       # exists, with today's Debian packages (caches key on the tag)
       if err=$(docker manifest inspect "$(ref "$t")" 2>&1 > /dev/null); then
         echo "have $(ref "$t")" >&2
-      elif printf '%s' "$err" | grep -qiE 'manifest unknown|no such manifest'; then
+      # (the registry's own MANIFEST_UNKNOWN only: docker's "no such
+      # manifest" also stands for an unauthorized or unexpected answer)
+      elif printf '%s' "$err" | grep -qi 'manifest unknown'; then
         missing+=("$t")
       else
         echo "error: cannot tell whether $(ref "$t") exists: $err" >&2
