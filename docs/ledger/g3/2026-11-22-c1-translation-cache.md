@@ -75,6 +75,24 @@ measured with and without its cache. Main 24f3fd36a has the dense tables
   - JIT off: 4,700 KiB against 4,684 KiB, +16 KiB.
   The difference is the materialized code objects and the 32 KB read
   chunks. JIT on is within the limit by 5 KiB.
+- **The kept chunks** (after #979's head b876d8750, scripts/rt-startup.py
+  --trees, one binary and its own fresh trees per setting, 5 runs; reads by
+  strace on one start):
+
+  | chunks kept × size | rdb-jit instr | rdb-jit anon | rdb-nojit instr | rdb-nojit anon | reads JIT on / off |
+  |---|---:|---:|---:|---:|---:|
+  | 4 × 32 KB (#979) | 82.09M | 6,988 KiB | 46.78M | 4,708 KiB | 8 / 2 |
+  | **2 × 32 KB** (now) | 82.09M | 6,924 KiB | 46.78M | 4,708 KiB | 8 / 2 |
+  | 1 × 32 KB | 82.12M | 6,924 KiB | 46.78M | 4,684 KiB | 8 / 2 |
+  | 4 × 16 KB | 82.08M | 6,924 KiB | 46.81M | 4,704 KiB | 13 / 4 |
+
+  Two kept chunks read as often as four and keep 64 KiB less with the JIT
+  on: the writer lays a start's entries in translation order, so two
+  chunks cover the window a start reads. The anonymous peak also moves by
+  about ±24 KiB with the tree's path (7,012 KiB in this checkout's tree
+  and 6,988 KiB in rt-startup's scratch tree, one binary). CI's gate
+  compares both binaries from trees at one path on one runner and does
+  not see that, but a local measurement does.
 
 ### The design (the page the foreman approved, with its five amendments)
 

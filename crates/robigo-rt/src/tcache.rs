@@ -167,9 +167,12 @@ struct Db {
 
 /// The bytes the reader fetches at once, and how many such chunks it keeps:
 /// a start's entries lie together (the writer's order), so a few reads
-/// cover them, with at most `CHUNKS * CHUNK` bytes kept.
+/// cover them, with at most `CHUNKS * CHUNK` bytes kept. Two kept chunks
+/// read as often as four (8 reads a JIT-on start, 2 JIT off) and keep
+/// 64 KiB less anonymous memory; 16 KB chunks read 13 and 4 times (C1,
+/// 2026-11-23).
 const CHUNK: usize = 32 << 10;
-const CHUNKS: usize = 4;
+const CHUNKS: usize = 2;
 
 impl Db {
     /// Entry `i`, read from the file, checked against its checksum and
