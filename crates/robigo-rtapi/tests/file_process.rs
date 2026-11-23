@@ -11,7 +11,11 @@
 //!   ulimit -f 8; Rscript --vanilla -' < script`.
 //! - Exit: a connection left open has its buffer written when the process
 //!   exits (glibc's `_IO_cleanup`), at the script's end, at `q()` and after
-//!   an error. GNU R 4.6.2 leaves "hello\n" in the file in each.
+//!   an error. GNU R 4.6.2 leaves "hello\n" in the file in each. The
+//!   streams are flushed the newest opened first (glibc's list of streams):
+//!   two appenders to one file leave the second's line first, unless the
+//!   first was closed and opened again; a `gzcon`'s file is flushed too
+//!   (its gzip header, written at open).
 
 use std::process::Command;
 
@@ -91,6 +95,55 @@ fn a_connection_left_open_is_written_at_exit() {
         assert_eq!(String::from_utf8_lossy(&r.stdout), "written\n", "{end}");
         assert_eq!(r.status.code(), Some(status), "{end}: {}", String::from_utf8_lossy(&r.stderr));
         assert_eq!(std::fs::read(&out).unwrap(), b"hello\n", "{end}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `robigo-rt FILE` for `src` written to `dir/name.R`: (stdout, status).
+fn run_script(dir: &std::path::Path, name: &str, src: &str) -> (String, Option<i32>) {
+    let script = dir.join(format!("{name}.R"));
+    std::fs::write(&script, src).unwrap();
+    let r = Command::new(env!("CARGO_BIN_EXE_robigo-rt"))
+        .arg(&script)
+        .env("LANGUAGE", "en")
+        .env("LC_ALL", "C.UTF-8")
+        .env("TZ", "UTC")
+        .env("R_DEFAULT_PACKAGES", "NULL")
+        .env_remove("R_HOME")
+        .output()
+        .expect("run robigo-rt");
+    (String::from_utf8_lossy(&r.stdout).into_owned(), r.status.code())
+}
+
+#[test]
+fn exit_flushes_the_newest_stream_first_and_a_gzcon_file() {
+    let dir = std::env::temp_dir().join(format!("robigo-file-exit-order-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = |n: &str| dir.join(format!("out-{n}")).display().to_string();
+    // (name, script, what GNU R 4.6.2 leaves in the file)
+    let cases: [(&str, String, &[u8]); 3] = [
+        (
+            "two",
+            format!(
+                "a <- file(\"{0}\", \"a\"); b <- file(\"{0}\", \"a\")\nwriteLines(\"A\", a); writeLines(\"B\", b)\n",
+                out("two")
+            ),
+            b"B\nA\n",
+        ),
+        (
+            "reopen",
+            format!(
+                "a <- file(\"{0}\", \"a\"); b <- file(\"{0}\", \"a\")\nclose(a); a <- file(\"{0}\", \"a\")\nwriteLines(\"A\", a); writeLines(\"B\", b)\n",
+                out("reopen")
+            ),
+            b"A\nB\n",
+        ),
+        ("gz", format!("con <- gzcon(file(\"{}\", \"wb\"))\n", out("gz")), &[0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3]),
+    ];
+    for (name, src, want) in cases {
+        let (stdout, status) = run_script(&dir, name, &src);
+        assert_eq!((stdout.as_str(), status), ("", Some(0)), "{name}");
+        assert_eq!(std::fs::read(out(name)).unwrap(), want, "{name}");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

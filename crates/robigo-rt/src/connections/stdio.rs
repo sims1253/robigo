@@ -102,8 +102,14 @@ const EINVAL: i32 = 22;
 const ESPIPE: i32 = 29;
 const EOVERFLOW: i32 = 75;
 
+/// The streams opened so far in the process: [`Stream::opened`]'s order
+/// (glibc's `_IO_list_all`, which `_IO_link_in` prepends each new stream to).
+static OPENED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// A buffered stream (glibc's `FILE` for a file opened by `fopen`).
 pub(crate) struct Stream<F: SysFile> {
+    /// When it was opened, in the process's order of opening.
+    opened: u64,
     /// `_fileno`; None once closed.
     fd: Option<F>,
     /// `_IO_buf_base` .. `_IO_buf_end`: empty until allocated.
@@ -163,6 +169,7 @@ impl<F: SysFile> Stream<F> {
             }
         }
         let mut s = Stream {
+            opened: OPENED.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             fd: Some(fd),
             buf: Vec::new(),
             read_base: 0,
@@ -909,6 +916,12 @@ impl<F: SysFile> Stream<F> {
     pub(crate) fn clearerr(&mut self) {
         self.eof_seen = false;
         self.err_seen = false;
+    }
+
+    /// Its place in the order of opening: `exit` flushes the newest first.
+    // glibc: libio/genops.c:_IO_link_in, _IO_flush_all
+    pub(crate) fn opened(&self) -> u64 {
+        self.opened
     }
 
     /// What `exit` does for each open stream: the buffered output written,

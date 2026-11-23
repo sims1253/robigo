@@ -1104,14 +1104,25 @@ pub fn c_write(cx: &mut Cx, buf: &[u8], size: usize, con: *mut RconnC) -> RResul
 /// What the process's `exit` does for the isolate's file connections left
 /// open: each stream's buffered output written, failures ignored (glibc's
 /// `_IO_cleanup`, after the `atexit` handlers; GNU R does not close them).
-// glibc: libio/genops.c:_IO_cleanup
+/// glibc walks its list of streams, the newest opened first, and reaches a
+/// file a `gzcon` wraps as any other.
+// glibc: libio/genops.c:_IO_cleanup, _IO_flush_all
 pub fn flush_at_exit(cx: &Cx) {
-    for c in table(cx).slots.borrow_mut().iter_mut().flatten() {
-        if let Imp::File(f) = &mut c.imp
-            && let Some(fp) = f.fp.as_mut()
-        {
-            fp.flush_at_exit();
+    fn streams<'a>(c: &'a mut Conn, out: &mut Vec<&'a mut stdio::Stream<File>>) {
+        match &mut c.imp {
+            Imp::File(f) => out.extend(f.fp.as_mut()),
+            Imp::Gzcon(g) => streams(&mut g.inner, out),
+            Imp::Std | Imp::Text(_) | Imp::Gz(_) => {}
         }
+    }
+    let mut slots = table(cx).slots.borrow_mut();
+    let mut open = Vec::new();
+    for c in slots.iter_mut().flatten() {
+        streams(c, &mut open);
+    }
+    open.sort_by_key(|s| std::cmp::Reverse(s.opened()));
+    for s in open {
+        s.flush_at_exit();
     }
 }
 
