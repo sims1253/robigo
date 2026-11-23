@@ -823,7 +823,7 @@ pub fn do_return_value(
 /// `list(value =, visible =)` with `R_Visible` as that evaluation left it.
 // R: eval.c:do_withVisible
 /// `args` is GNU R's: None for the call's own arguments, or `applyMethod`'s
-/// promise list (run again on the call over it, [`crate::specials::rerun_apart`]).
+/// promise list (run again on the call over it, `specials::rerun_apart`).
 pub fn do_with_visible(
     cx: &mut Cx,
     call: Root<'_>,
