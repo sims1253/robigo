@@ -479,8 +479,10 @@ pub unsafe fn keepmiss_missing(cx: &mut Cx, sym: Sexp, rho: Root<'_>) -> RResult
     unsafe { crate::missing::r_is_missing(cx, sym, rho.bind(cx).sexp()) }
 }
 
-/// GETVAR_MISSOK (DDVAL_MISSOK for a `..N` symbol): [`get_var`], but a
-/// missing argument is R_MissingArg ([`keepmiss_missing`]).
+/// GETVAR_MISSOK (DDVAL_MISSOK for a `..N` symbol): a missing argument is
+/// R_MissingArg ([`keepmiss_missing`]); any other read is
+/// [`get_var_keepmiss`]'s, `get_var`'s with a force past the depth limit
+/// run with byte code inactive (`getvar`'s `forcePromise`).
 ///
 /// # Safety
 /// `sym` is a live symbol of `cx`'s isolate.
@@ -509,7 +511,8 @@ pub unsafe fn get_var_missok(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sex
 /// inlined into `vm::run`, which stays as it is (the arm calls this
 /// instead of `get_var`, with the same arguments).
 /// (A duplicate of `get_var`'s body: an edit there is made here too,
-/// until X's step 1b folds the two.) The `..N` and symbol
+/// until the fold that makes them one, docs/ledger/g3/2026-11-23-eval-promise.md, "The
+/// duplicated get_var body and its end".) The `..N` and symbol
 /// paths force deeper inside: at the limit those reads run with byte code
 /// inactive as a whole (`tests/rt/conditions/promise-setup-missok-errors.R`:
 /// their errors' calls are GNU R's).
@@ -578,6 +581,12 @@ pub unsafe fn get_var_keepmiss(
 /// `f`, a read that may force a promise: with byte code inactive where the
 /// force's depth step would overflow (`getvar`'s `forcePromise`, not the
 /// inlined force's PRSEEN order), else as it is.
+///
+/// Its depth test must be the same as robigo-rtcore's private
+/// `Cx::inline_force_due` (env/promise.rs) without the flag: both ask
+/// whether this force's depth step overflows, `eval_depth >= expressions`.
+/// An edit of one is made in the other, until the fold passes the read's
+/// kind into the force and this compare goes ({L}).
 #[inline(always)]
 fn forced_as_getvar<T>(cx: &mut Cx, f: impl FnOnce(&mut Cx) -> T) -> T {
     if cx.eval_depth() >= cx.expressions() {
@@ -593,7 +602,8 @@ fn forced_as_getvar<T>(cx: &mut Cx, f: impl FnOnce(&mut Cx) -> T) -> T {
 /// active bindings, promises to force, GNU R's errors.
 ///
 /// [`get_var_keepmiss`] duplicates this body for GETVAR_MISSOK's reads (an
-/// edit here is made there too, until X's step 1b folds the two).
+/// edit here is made there too, until the fold that makes them one:
+/// docs/ledger/g3/2026-11-23-eval-promise.md, "The duplicated get_var body and its end").
 ///
 /// # Safety
 /// `sym` is a live symbol of `cx`'s isolate.

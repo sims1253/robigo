@@ -533,6 +533,10 @@ impl Cx {
     /// warning. Taken while byte code is active (`R_BCIntActive`); the AST
     /// interpreter's `eval` goes through `forcePromise`. The check is
     /// on the overflow's side only: the common path pays the depth compare.
+    /// Its depth test must be the same as robigo-rt's `forced_as_getvar`
+    /// (eval.rs), which asks the same question for GETVAR_MISSOK's reads:
+    /// an edit of one is made in the other, until the fold of
+    /// docs/ledger/g3/2026-11-23-eval-promise.md removes that compare.
     // R: eval.c:DO_GETVAR, eval.c:setup_bcframe_prom
     #[inline(always)]
     fn inline_force_due(&self) -> bool {
