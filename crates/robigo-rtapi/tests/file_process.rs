@@ -19,6 +19,24 @@
 
 use std::process::Command;
 
+/// A per-test directory under the temporary one, removed when the guard
+/// drops, so a failed assertion does not leave it behind.
+struct TempDir(std::path::PathBuf);
+
+impl TempDir {
+    fn new(name: &str) -> TempDir {
+        let dir = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        TempDir(dir)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 const LIMIT_SCRIPT: &str = r#"f <- tempfile()
 con <- file(f, "a")
 writeLines(strrep("a", 5000), con)
@@ -46,10 +64,15 @@ const GNU_R: &str = r#"[1] 4096
 [1] "after"
 "#;
 
+// (Linux's: `ulimit -f` counts 1024-byte blocks in Linux's bash and 512-byte
+// ones on macOS, so the recorded sizes are Linux's; it also needs bash and a
+// SIGXFSZ ignore that the child inherits. The workspace's macOS runs,
+// platforms.yml, skip it, as front_end.rs's /dev/full test is skipped.)
+#[cfg(target_os = "linux")]
 #[test]
 fn a_write_after_a_failed_flush_succeeds_and_the_dropped_bytes_are_gone() {
-    let dir = std::env::temp_dir().join(format!("robigo-file-limit-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = TempDir::new("robigo-file-limit");
+    let dir = &tmp.0;
     let script = dir.join("fsize.R");
     std::fs::write(&script, LIMIT_SCRIPT).unwrap();
     // the limit is the shell's, inherited by robigo-rt; robigo-rt's own
@@ -65,15 +88,14 @@ fn a_write_after_a_failed_flush_succeeds_and_the_dropped_bytes_are_gone() {
         .env_remove("R_HOME")
         .output()
         .expect("run robigo-rt under bash");
-    let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(String::from_utf8_lossy(&out.stdout), GNU_R, "stderr: {}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(out.status.code(), Some(0));
 }
 
 #[test]
 fn a_connection_left_open_is_written_at_exit() {
-    let dir = std::env::temp_dir().join(format!("robigo-file-exit-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = TempDir::new("robigo-file-exit");
+    let dir = &tmp.0;
     // (how the script ends, its status)
     for (end, tail, status) in [("end", "", 0), ("quit", "q(status = 3)", 3), ("error", "stop(\"boom\")", 1)] {
         let out = dir.join(format!("out-{end}"));
@@ -96,7 +118,6 @@ fn a_connection_left_open_is_written_at_exit() {
         assert_eq!(r.status.code(), Some(status), "{end}: {}", String::from_utf8_lossy(&r.stderr));
         assert_eq!(std::fs::read(&out).unwrap(), b"hello\n", "{end}");
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `robigo-rt FILE` for `src` written to `dir/name.R`: (stdout, status).
@@ -117,8 +138,8 @@ fn run_script(dir: &std::path::Path, name: &str, src: &str) -> (String, Option<i
 
 #[test]
 fn exit_flushes_the_newest_stream_first_and_a_gzcon_file() {
-    let dir = std::env::temp_dir().join(format!("robigo-file-exit-order-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = TempDir::new("robigo-file-exit-order");
+    let dir = &tmp.0;
     let out = |n: &str| dir.join(format!("out-{n}")).display().to_string();
     // (name, script, what GNU R 4.6.2 leaves in the file)
     let cases: [(&str, String, &[u8]); 3] = [
@@ -141,9 +162,8 @@ fn exit_flushes_the_newest_stream_first_and_a_gzcon_file() {
         ("gz", format!("con <- gzcon(file(\"{}\", \"wb\"))\n", out("gz")), &[0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3]),
     ];
     for (name, src, want) in cases {
-        let (stdout, status) = run_script(&dir, name, &src);
+        let (stdout, status) = run_script(dir, name, &src);
         assert_eq!((stdout.as_str(), status), ("", Some(0)), "{name}");
         assert_eq!(std::fs::read(out(name)).unwrap(), want, "{name}");
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }

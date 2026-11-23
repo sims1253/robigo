@@ -56,6 +56,7 @@ SEXP rt_conn_read(SEXP sconn, SEXP n)
 SEXP rt_conn_write(SEXP sconn, SEXP x)
 {
     Rconnection con = R_GetConnection(sconn);
+    if (TYPEOF(x) != RAWSXP) error("x must be a raw vector");
     errno = 0;
     size_t r = con->write(RAW(x), 1, (size_t) XLENGTH(x), con);
     int e = errno;
