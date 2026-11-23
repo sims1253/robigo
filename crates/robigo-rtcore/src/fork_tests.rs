@@ -3,6 +3,19 @@
 //! still start an isolate, write the environment (`Sys.setenv`'s writer)
 //! and intern a new symbol. Without the handlers the child inherits the
 //! lock held by a thread it does not have, and blocks forever.
+//!
+//! **Each test runs in a process of its own** ([`isolated`]): the test
+//! binary run again for that test alone. A fork copies every lock of the
+//! process, std's own included, and libtest's other threads start and end
+//! all the time (each test is a thread): a fork while one of them holds
+//! std's thread-start lock (`thread_info::set_current_info`) leaves the
+//! child a lock no thread of it releases, and the child's first thread
+//! start hangs there. No fork handler of ours can cover std's locks, so the
+//! forking process must have no threads but the ones a test starts itself,
+//! each started before the fork and not ending during it. The timeout is
+//! the outer process's: it kills the test's process group (the test, and
+//! any child it forked) and reports it, so the forking process starts no
+//! watchdog thread either.
 
 #![allow(unsafe_code)]
 
@@ -74,6 +87,68 @@ fn hung_child_report(pid: i32, steps_rd: i32) -> String {
     )
 }
 
+/// The environment variable that names the one fork test a process runs
+/// ([`isolated`]).
+const ISOLATED: &str = "ROBIGO_FORK_TEST_ALONE";
+
+/// Whether the caller, fork test `name`, runs here: in the process
+/// [`isolated`] started for it (true), or, in any other, after that process
+/// ran it (false; the outer test then has nothing left to do): the test
+/// binary again with `--exact fork_tests::<name> --test-threads=1`, in a
+/// process group of its own, killed with its children after `secs`. Its
+/// output is reported when it fails, hangs or does not run the test.
+pub(crate) fn isolated(name: &str, secs: u64) -> bool {
+    if std::env::var_os(ISOLATED).is_some_and(|v| v == name) {
+        return true;
+    }
+    use std::os::unix::process::CommandExt;
+    let full = format!("fork_tests::{name}");
+    let log = std::env::temp_dir().join(format!("robigo-fork-test-{}-{name}.log", std::process::id()));
+    let out = std::fs::File::create(&log).expect("the fork test's log");
+    let err = out.try_clone().expect("the fork test's log");
+    let mut child = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+        .args(["--exact", &full, "--test-threads=1", "--nocapture"])
+        .env(ISOLATED, name)
+        .process_group(0)
+        .stdin(std::process::Stdio::null())
+        .stdout(out)
+        .stderr(err)
+        .spawn()
+        .expect("the fork test's process");
+    let until = Instant::now() + Duration::from_secs(secs);
+    let status = loop {
+        match child.try_wait().expect("the fork test's status") {
+            Some(st) => break Some(st),
+            None if Instant::now() >= until => break None,
+            None => std::thread::sleep(Duration::from_millis(10)),
+        }
+    };
+    let pgid = child.id() as i32;
+    if status.is_none() {
+        // SAFETY: the process group this test started (the test and any
+        // child it forked).
+        unsafe { libc::kill(-pgid, libc::SIGKILL) };
+        let _ = child.wait();
+    }
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    let _ = std::fs::remove_file(&log);
+    match status {
+        None => panic!("{full}: no end in {secs} s (a fork or a child's thread start hung); its output:\n{text}"),
+        Some(st) if !st.success() => panic!("{full} failed in its own process ({st}); its output:\n{text}"),
+        // (libtest's summary for the one test run)
+        Some(_) if !text.contains("1 passed") => panic!("{full}: its own process ran no such test:\n{text}"),
+        Some(_) => {}
+    }
+    // no child of the test left behind (each test reaps its own)
+    // SAFETY: a probe of the group; signal 0 sends nothing.
+    if unsafe { libc::kill(-pgid, 0) } == 0 {
+        // SAFETY: as above.
+        unsafe { libc::kill(-pgid, libc::SIGKILL) };
+        panic!("{full}: a process of its group outlived it");
+    }
+    false
+}
+
 /// Abort the whole test process if `done` is not set within `secs`: a fork
 /// that never returns (a `prepare` handler stuck on a lock) hangs before any
 /// deadline of the caller's could run.
@@ -81,6 +156,11 @@ fn hung_child_report(pid: i32, steps_rd: i32) -> String {
 /// (rather than hangs) ends with its own panic, not an abort later on.
 pub(crate) fn watchdog(what: &'static str, secs: u64) -> Watchdog {
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    if std::env::var_os(ISOLATED).is_some() {
+        // (a fork test's own process: the outer one times it, and a thread
+        // started here could hold std's thread-start lock at the fork)
+        return Watchdog(done);
+    }
     let d = std::sync::Arc::clone(&done);
     std::thread::spawn(move || {
         let until = Instant::now() + Duration::from_secs(secs);
@@ -231,11 +311,17 @@ fn fork_while_held<G: 'static>(what: &'static str, hold: fn() -> G) {
 
 #[test]
 fn a_child_forked_while_the_live_isolate_lock_is_held_starts_an_isolate() {
+    if !isolated("a_child_forked_while_the_live_isolate_lock_is_held_starts_an_isolate", 120) {
+        return;
+    }
     fork_while_held("LIVE_ISOLATES", crate::isolate::live_isolates);
 }
 
 #[test]
 fn a_child_forked_while_the_environment_lock_is_held_writes_it() {
+    if !isolated("a_child_forked_while_the_environment_lock_is_held_writes_it", 120) {
+        return;
+    }
     fork_while_held("ENV", crate::clib::env_write_lock);
 }
 
@@ -244,6 +330,9 @@ fn a_child_forked_while_the_environment_lock_is_held_writes_it() {
 /// conversion's. In a child: the test writes the environment.
 #[test]
 fn a_panic_in_a_time_zone_conversion_puts_tz_back() {
+    if !isolated("a_panic_in_a_time_zone_conversion_puts_tz_back", 120) {
+        return;
+    }
     let _one = one_at_a_time();
     let _dog = watchdog("a panic in with_tz", 60);
     // SAFETY: the child (one thread) runs the code below and ends with
@@ -410,6 +499,9 @@ fn two_isolates_in_a_child(
 /// first's reset, and each converts in its own zone and sees its names.
 #[test]
 fn two_isolates_converting_in_two_zones_at_once_each_keep_theirs() {
+    if !isolated("two_isolates_converting_in_two_zones_at_once_each_keep_theirs", 120) {
+        return;
+    }
     two_isolates_in_a_child(
         "two time zone sessions",
         |cx, inside, berlin_done| {
@@ -435,6 +527,9 @@ fn two_isolates_converting_in_two_zones_at_once_each_keep_theirs() {
 /// it waits for the reset, and converts in UTC.
 #[test]
 fn a_conversion_during_another_isolates_session_is_in_the_process_zone() {
+    if !isolated("a_conversion_during_another_isolates_session_is_in_the_process_zone", 120) {
+        return;
+    }
     two_isolates_in_a_child(
         "a conversion during a time zone session",
         |_, _, _| match crate::clib::localtime(0).map(|t| t.hour) {
@@ -450,6 +545,9 @@ fn a_conversion_during_another_isolates_session_is_in_the_process_zone() {
 /// and is not undone by it.
 #[test]
 fn a_tz_write_during_another_isolates_session_waits_for_its_reset() {
+    if !isolated("a_tz_write_during_another_isolates_session_waits_for_its_reset", 120) {
+        return;
+    }
     two_isolates_in_a_child(
         "a TZ write during a time zone session",
         |cx, _, _| match crate::clib::env_writer(cx) {
@@ -465,6 +563,9 @@ fn a_tz_write_during_another_isolates_session_waits_for_its_reset() {
 /// lock nests, and each reset puts back the zone of the one outside.
 #[test]
 fn a_session_in_a_session_puts_back_the_outer_zone() {
+    if !isolated("a_session_in_a_session_puts_back_the_outer_zone", 120) {
+        return;
+    }
     let _one = one_at_a_time();
     let _dog = watchdog("nested time zone sessions", 60);
     // SAFETY: the child ends with `_exit`.
@@ -518,6 +619,9 @@ fn a_session_in_a_session_puts_back_the_outer_zone() {
 /// forever, and converts in the process's zone.
 #[test]
 fn a_child_forked_during_another_threads_session_converts() {
+    if !isolated("a_child_forked_during_another_threads_session_converts", 120) {
+        return;
+    }
     let _one = one_at_a_time();
     let _dog = watchdog("a fork during a time zone session", 120);
     // SAFETY: the child runs the thread below and ends with `_exit`.
@@ -604,6 +708,9 @@ fn a_child_forked_during_another_threads_session_converts() {
 /// writes the environment without waiting for itself.
 #[test]
 fn a_child_forked_inside_its_threads_session_keeps_it() {
+    if !isolated("a_child_forked_inside_its_threads_session_keeps_it", 120) {
+        return;
+    }
     let _one = one_at_a_time();
     let _dog = watchdog("a fork inside a time zone session", 120);
     // SAFETY: the child ends with `_exit`.
@@ -663,11 +770,17 @@ fn a_child_forked_inside_its_threads_session_keeps_it() {
 
 #[test]
 fn a_child_forked_while_the_environment_lock_is_read_writes_it() {
+    if !isolated("a_child_forked_while_the_environment_lock_is_read_writes_it", 120) {
+        return;
+    }
     fork_while_held("ENV shared", crate::clib::env_read_for_test);
 }
 
 #[test]
 fn a_child_forked_while_the_symbol_arena_is_locked_interns() {
+    if !isolated("a_child_forked_while_the_symbol_arena_is_locked_interns", 120) {
+        return;
+    }
     // SAFETY: the holder thread interns nothing while it holds the lock and
     // drops the guard on its own thread.
     fork_while_held("the arena", || unsafe { robigo_heap::hold_arena_lock_for_test() });
@@ -680,6 +793,9 @@ fn a_child_forked_while_the_symbol_arena_is_locked_interns() {
 /// then must still start an isolate, write the environment and intern.
 #[test]
 fn a_failed_fork_releases_the_locks() {
+    if !isolated("a_failed_fork_releases_the_locks", 120) {
+        return;
+    }
     let _one = one_at_a_time();
     drop(OwnedIsolate::new());
     let _dog = watchdog("a failed fork", 60);
@@ -734,6 +850,9 @@ fn a_failed_fork_releases_the_locks() {
 /// its console, which takes it (#894's `rt` failure on CI).
 #[test]
 fn a_child_forked_while_stdout_is_locked_tears_its_isolate_down() {
+    if !isolated("a_child_forked_while_stdout_is_locked_tears_its_isolate_down", 120) {
+        return;
+    }
     // the holder takes no robigo lock while it holds it
     #[allow(clippy::disallowed_methods)]
     fork_while_held("stdout", || std::io::stdout().lock());
@@ -743,6 +862,9 @@ fn a_child_forked_while_stdout_is_locked_tears_its_isolate_down() {
 /// message.
 #[test]
 fn a_child_forked_while_stderr_is_locked_tears_its_isolate_down() {
+    if !isolated("a_child_forked_while_stderr_is_locked_tears_its_isolate_down", 120) {
+        return;
+    }
     // the holder takes no robigo lock while it holds it
     #[allow(clippy::disallowed_methods)]
     fork_while_held("stderr", || std::io::stderr().lock());
@@ -756,6 +878,9 @@ fn a_child_forked_while_stderr_is_locked_tears_its_isolate_down() {
 /// negative control) leaves the child waiting for ever.
 #[test]
 fn a_fork_during_a_lazy_initializer_waits_for_it() {
+    if !isolated("a_fork_during_a_lazy_initializer_waits_for_it", 120) {
+        return;
+    }
     static CELL: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     let _one = one_at_a_time();
     let _dog = watchdog("a lazy initializer", 60);

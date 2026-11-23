@@ -270,6 +270,48 @@ fn the_runtime_keeps_its_state_in_the_isolate() {
     assert!(marked.len() <= 1, "more than one isolate thread-local (L6 allows one):\n{}", marked.join("\n"));
 }
 
+/// The calls that start a thread, in `src`'s code outside its test module
+/// (the first `#[cfg(test)]` that a `mod` follows, which the files keep
+/// last), as `label:line` lines.
+fn thread_starts(label: &str, src: &str) -> Vec<String> {
+    let code = blank_non_code(src, false);
+    let end = code
+        .match_indices("#[cfg(test)]")
+        .find(|(i, m)| code[i + m.len()..].trim_start().starts_with("mod "))
+        .map_or(code.len(), |(i, _)| i);
+    let code = &code[..end];
+    let line_of = |off: usize| code[..off].bytes().filter(|&c| c == b'\n').count() + 1;
+    let mut out = Vec::new();
+    for pat in ["thread::spawn", "thread::Builder", "thread::scope", "pthread_create"] {
+        for (i, _) in code.match_indices(pat) {
+            out.push(format!("{label}:{}: `{pat}`", line_of(i)));
+        }
+    }
+    out
+}
+
+/// A forked child must start no thread (robigo-heap's `fork.rs`, "A forked
+/// child never starts a thread"): std's thread-start lock may be held at
+/// the fork by another thread of the parent. So the rt crates start none
+/// outside their tests (the fork tests' own file is test code).
+#[test]
+fn the_runtime_starts_no_threads() {
+    let mut bad = Vec::new();
+    for f in rt_crate_sources().iter().flat_map(|(_, f)| f) {
+        if f.ends_with("fork_tests.rs") {
+            continue;
+        }
+        let src = fs::read_to_string(f).unwrap_or_else(|e| panic!("{}: {e}", f.display()));
+        bad.extend(thread_starts(&f.display().to_string(), &src));
+    }
+    assert!(bad.is_empty(), "a thread started by the runtime (robigo-heap fork.rs):\n{}", bad.join("\n"));
+    // the scan finds what it rejects, and not in a test module
+    let rejected = concat!("fn f() { std::thread::", "spawn(|| ()); }\n");
+    assert_eq!(thread_starts("x", rejected).len(), 1);
+    let tested = concat!("fn f() {}\n#[cfg(test)]\nmod tests { fn g() { std::thread::", "spawn(|| ()); } }\n");
+    assert!(thread_starts("x", tested).is_empty());
+}
+
 #[test]
 fn the_scan_finds_what_it_rejects() {
     let tl = concat!("thread", "_local!");
