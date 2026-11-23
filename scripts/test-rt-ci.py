@@ -527,7 +527,7 @@ class RtCi(unittest.TestCase):
         for path in ("tests/rt/env/large-frames.R", "tests/rt/a.R", "benchmarks/rt/calls-rows.toml",
                      "scripts/base-subset.sh", "scripts/base-subset-trace.R", "crates/robigo-rt/proto/base-wide.txt",
                      "scripts/r-src.sh", "scripts/base-wide.R", "benchmarks/suite/calls.R",
-                     "tests/rt/capi/support/eval.c", "tests/rt/R-4.6.2/capi/eval.Rstatus", "scripts/oracle-run.sh",
+                     "tests/rt/capi/support/eval.c", "tests/rt/R-4.6.2/capi/eval.Rstatus", "tests/rt/R-4.7.0/capi/eval.Rstatus", "scripts/oracle-run.sh",
                      "scripts/perf.py", "scripts/oracle-versions"):
             self.assertEqual(owed(["docs/x.md", path]), path)
         for path in ("tests/rt/env/large-frames.Rout", "tests/r/basics/a.R", "benchmarks/rt/other.toml",
@@ -612,6 +612,16 @@ class RtCi(unittest.TestCase):
         self.assertIn("scripts/build-oracle.sh --image 4.6.2", problem)
         with mock.patch.object(rt.subprocess, "run", side_effect=FileNotFoundError):
             self.assertIn("no docker", rt.oracle_problem())
+        # the version, image and cure follow the checkout's rt pin
+        with mock.patch.object(rt, "rt_pin", return_value="4.7.0"), mock.patch.object(rt.subprocess, "run", fake):
+            problem = rt.oracle_problem()
+        for want in ("robigo-oracle:4.7.0", "GNU R 4.7.0", "--pull 4.7.0", "oracle_4_7_0=", "--image 4.7.0"):
+            self.assertIn(want, problem)
+        def r470(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 0, "4.7.0" if cmd[0] == "Rscript" else "", "")
+        with mock.patch.object(rt, "rt_pin", return_value="4.7.0"), mock.patch.object(rt.subprocess, "run", r470):
+            self.assertIsNone(rt.oracle_problem())
+        self.assertEqual(rt.rt_pin(), "4.6.2")
 
     def test_the_lint_job_runs_lint_job_sh_and_nothing_else(self):
         # the workflow's lint job and scripts/lint-job.sh, which delegates

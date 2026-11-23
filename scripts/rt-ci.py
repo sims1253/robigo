@@ -895,7 +895,7 @@ def crate_test_threads(cmd):
 # only), so the push does not find out first.
 BASE_SUBSET_INPUTS = (
     "tests/rt/**/*.R",
-    "tests/rt/R-4.6.2/**/*.Rstatus",      # the traced cases' recorded status
+    "tests/rt/R-*/**/*.Rstatus",          # the traced cases' recorded status (the rt pin's)
     "tests/rt/capi/support/*.c",           # the C API cases' package code
     "benchmarks/rt/calls-rows.toml",
     "benchmarks/suite/calls.R",
@@ -912,7 +912,16 @@ BASE_SUBSET_INPUTS = (
 )
 BASE_SUBSET_STEP = ("base subset, its inputs changed on this branch (scripts/base-subset.sh --check)", {},
                     ["scripts/base-subset.sh", "--check"])
-ORACLE_IMAGE = "robigo-oracle:4.6.2"
+
+
+def rt_pin(root=ROOT):
+    """robigo-rt's GNU R version, scripts/oracle-versions' `rt=` line (as
+    base-subset.sh and ci-image.sh read it)."""
+    with open(os.path.join(root, "scripts", "oracle-versions")) as f:
+        for line in f:
+            if line.startswith("rt="):
+                return line.split("=", 1)[1].strip()
+    raise SystemExit("rt-ci: scripts/oracle-versions has no rt= line")
 
 
 def branch_changes(root=ROOT, base="origin/main"):
@@ -954,26 +963,30 @@ def base_subset_owed(changed):
 
 
 def oracle_problem():
-    """None when scripts/base-subset.sh can run GNU R 4.6.2 (its Rscript on
-    PATH, or docker's ORACLE_IMAGE), else what is missing and the cure."""
+    """None when scripts/base-subset.sh can run GNU R at the rt pin (its
+    Rscript on PATH, or docker's robigo-oracle:<pin>), else what is missing
+    and the cure."""
+    rt = rt_pin()
+    image = f"robigo-oracle:{rt}"
     # (from the checkout, as base-subset.sh runs it, and --vanilla: a
     # caller's .Rprofile must not answer for the R that will run)
     try:
         p = subprocess.run(["Rscript", "--vanilla", "-e", "cat(format(getRversion()))"], cwd=ROOT,
                            capture_output=True, text=True)
-        if p.returncode == 0 and p.stdout.strip() == "4.6.2":
+        if p.returncode == 0 and p.stdout.strip() == rt:
             return None
     except FileNotFoundError:
         pass
     try:
-        if subprocess.run(["docker", "image", "inspect", ORACLE_IMAGE], capture_output=True).returncode == 0:
+        if subprocess.run(["docker", "image", "inspect", image], capture_output=True).returncode == 0:
             return None
     except FileNotFoundError:
-        return (f"there is no docker for {ORACLE_IMAGE} (and no GNU R 4.6.2 Rscript on PATH): "
+        return (f"there is no docker for {image} (and no GNU R {rt} Rscript on PATH): "
                 "install docker, or run on a machine with it")
-    return (f"there is no {ORACLE_IMAGE} image (and no GNU R 4.6.2 Rscript on PATH). The cure, two minutes: "
-            "scripts/build-oracle.sh --pull 4.6.2 (docker pull of CI's image, the oracle_4_6_2= line of "
-            f"scripts/ci-image.sh refs, tagged {ORACLE_IMAGE}); or build it: scripts/build-oracle.sh --image 4.6.2")
+    ref = "oracle_" + rt.replace(".", "_")
+    return (f"there is no {image} image (and no GNU R {rt} Rscript on PATH). The cure, two minutes: "
+            f"scripts/build-oracle.sh --pull {rt} (docker pull of CI's image, the {ref}= line of "
+            f"scripts/ci-image.sh refs, tagged {image}); or build it: scripts/build-oracle.sh --image {rt}")
 
 
 def metadata():
