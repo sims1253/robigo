@@ -130,6 +130,14 @@ pub(crate) struct EnvState {
     /// the binding locks (never adding one)
     #[trace(skip = "a counter")]
     building_base: Cell<u32>,
+    /// The environments `makeLazy` gave base's promises before the boot
+    /// boundary ([`EnvState::note_lazy_frame`]): roots until the boundary
+    /// hands them to the heap as its pinned frames.
+    lazy_frames: UnsafeCell<Vec<Sexp>>,
+    /// Base's own file (`library/base/R/base`) is being read
+    /// ([`Cx::while_reading_base_file`]): only its `makeLazy` records a frame.
+    #[trace(skip = "a flag")]
+    reading_base_file: Cell<bool>,
 }
 
 impl EnvState {
@@ -159,6 +167,48 @@ impl EnvState {
             v.edge(x);
         }
         self.cells.get_mut().trace_freeze_values(v);
+    }
+
+    /// The base namespace (immortal, never frozen).
+    pub(crate) fn base_ns_raw(&self) -> Sexp {
+        self.base_ns
+    }
+
+    /// Whether base's own file is being read.
+    pub(crate) fn reading_base_file(&self) -> bool {
+        self.reading_base_file.get()
+    }
+
+    /// Base's own file starts or stops being read.
+    pub(crate) fn set_reading_base_file(&self, on: bool) {
+        self.reading_base_file.set(on);
+    }
+
+    /// Record `env`, the environment `makeLazy` gave base's promises (the
+    /// rdb boot's `..lazyLoad` frame, baseloader.R:78), until the boot
+    /// boundary hands it to the heap as a pinned frame
+    /// ([`EnvState::lazy_frames`]): a counted exemption that roots nothing
+    /// (a forced promise's PRENV clear over it takes no note while another
+    /// of base's promises still uses it; robigo-heap's
+    /// `Core::freeze_boundary`, step 2's (b)).
+    pub(crate) fn note_lazy_frame(&self, env: Sexp) {
+        // SAFETY: between R calls; nothing else borrows the list.
+        let frames = unsafe { &mut *self.lazy_frames.get() };
+        if !frames.contains(&env) {
+            frames.push(env);
+        }
+    }
+
+    /// The recorded lazy-load frames, for the boot boundary.
+    pub(crate) fn lazy_frames(&self) -> Vec<Sexp> {
+        // SAFETY: as in `note_lazy_frame`.
+        unsafe { (*self.lazy_frames.get()).clone() }
+    }
+
+    /// The boundary took the frames: the heap keeps them from now on.
+    pub(crate) fn clear_lazy_frames(&self) {
+        // SAFETY: as in `note_lazy_frame`.
+        unsafe { (*self.lazy_frames.get()).clear() }
     }
 }
 
@@ -216,6 +266,8 @@ impl EnvState {
                 pool: recycle::FramePool::default(),
                 search_epoch: Cell::new(0),
                 building_base: Cell::new(0),
+                lazy_frames: UnsafeCell::new(Vec::new()),
+                reading_base_file: Cell::new(false),
                 dirty_image: Cell::new(false),
             }
         }

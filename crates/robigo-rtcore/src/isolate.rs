@@ -172,15 +172,15 @@ pub(crate) struct Roots {
 
 impl Roots {
     /// The freeze roots (`Cx::freeze_boot_heap`): the environments' state,
-    /// the `Globals` and the C API's globals; not the value stack, the
-    /// contexts, the pending exits or the warnings, which are the session's.
+    /// the C API's constants and the search path; not the `Globals` (roots
+    /// only: what only they hold is never frozen, so releasing one takes no
+    /// note, step 2), the value stack, the contexts, the pending exits or
+    /// the warnings, which are the session's.
     /// The search path's environments reach the visitor as copies: an
     /// edge it writes back is not stored (a debug assertion refuses one),
     /// so the visitor must only read, as the freeze's does.
     pub(crate) fn trace_freeze_roots<V: robigo_heap::Visitor + ?Sized>(&mut self, v: &mut V) {
-        use robigo_heap::Trace;
         self.envs.trace_freeze_roots(v);
-        self.globals.trace(v);
         self.capi.trace_freeze_constants(v);
         self.trace_search_path(v);
     }
