@@ -122,6 +122,12 @@ impl Verified {
         Ok(Verified(b))
     }
 
+    /// The code, its buffers back to the caller (a compile reuses them,
+    /// [`crate::compile`]'s scratch).
+    pub fn into_built(self) -> Built {
+        self.0
+    }
+
     /// Check `b`, code read back from the translation cache
     /// (`crate::tcache`), as [`Verified::new`] checks code.
     ///
