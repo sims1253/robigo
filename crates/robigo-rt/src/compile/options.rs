@@ -17,9 +17,13 @@
 //! starts again past that context ([`Contexts`]): the reads come between
 //! what the compile does before them and after, as in cmp.R.
 //!
-//! robigo-rt's compiler implements `optimize = 2` with every note
-//! suppressed, the defaults. With another `optimize` it declines, and the
-//! closure runs uncompiled, as cmp.R's failure path leaves it; with
+//! `optimize` decides one thing in cmp.R: what getInlineInfo inlines
+//! (cmp.R:1341, [`Level`]), and so what the compile looks up and forces,
+//! which the compile environment ports ([`crate::cenv::Cenv::set_level`]).
+//! robigo-rt's compiler implements level 2 with every note suppressed, the
+//! defaults. At another level the compile runs as cmp.R's at that level
+//! and then declines, and the closure runs uncompiled, as cmp.R's failure
+//! path leaves it; with
 //! `suppressAll` not `identical(TRUE)`, where cmp.R's notes may print, the
 //! compile raises an error saying the notes are not implemented
 //! ([`notes_not_implemented`]), which tryCmpfun's handler reports.
@@ -45,9 +49,14 @@ pub(crate) struct Contexts {
     /// The contexts this attempt met.
     pub at: usize,
     /// The try stopped at a context whose reads are to be made: the
-    /// attempt reads ([`read`]), counts it done, and tries again, its folds
-    /// kept.
+    /// attempt raises the compile's warnings given before it, reads
+    /// ([`read`]), counts it done, and tries again, its folds kept.
     pub stop: bool,
+    /// How many of the compile's warnings are raised already (before a
+    /// context's reads, as GNU R gives a function literal's funEnv
+    /// warnings before them): the later tries give them again, and they
+    /// are not raised again ([`crate::cenv::raise_compile_warnings`]).
+    pub warned: usize,
 }
 
 /// A function context's reads, after its funEnv (make.functionContext's
@@ -125,15 +134,33 @@ const READS: &str = "{
     NULL
 }";
 
+/// What getInlineInfo's tests of the entry's `optimize` give (cmp.R:1343,
+/// 1364): `optimize > 0`, `optimize >= 3`, `optimize >= 2`, each in an
+/// `if` through `&&` or `||`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Level {
+    /// `optimize > 0` is false: nothing inlines, every call is a call
+    /// (`isBaseVar` is false: no fold, findLocals shadows all of its
+    /// initial functions).
+    Zero,
+    /// Inlines what a namespace frame binds; nothing found in the global
+    /// frames.
+    One,
+    /// Also the language functions found in the global frames (and the
+    /// guarded base functions): the default, what robigo-rt compiles.
+    Two,
+    /// Every base function found in the global frames, unguarded.
+    Three,
+    /// A test is an error (`optimize` NA, or of a length other than one,
+    /// or none that compares): the compile fails at its first
+    /// getInlineInfo, silently with notes suppressed (tryCmpfun's).
+    Invalid,
+}
+
 /// What the entry's reads decide.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Read {
-    /// `optimize` is 2 (a number equal to 2, as cmp.R's comparisons take it).
-    pub optimize_2: bool,
-    /// `optimize > 0`, getInlineInfo's test (cmp.R:1343): the compile
-    /// inlines, a `function` literal's handler included (its function
-    /// context, and so its reads).
-    pub inlines: bool,
+    pub level: Level,
     /// `identical(suppressAll, TRUE)`, cmp.R's `suppressAll(cntxt)`
     /// (cmp.R:2844): only then does no note print.
     pub suppress_all: bool,
@@ -175,12 +202,76 @@ pub(crate) fn read(cx: &mut Cx) -> RResult<Option<Read>> {
         crate::eval(cx, e, env, o)?;
         let opt = local(cx, s, env, b"optimize")?;
         let all = local(cx, s, env, b"suppressAll")?;
-        let (opt, all) = (opt.map(|r| r.bind(cx)), all.map(|r| r.bind(cx)));
-        Ok(Some(Read {
-            optimize_2: opt.is_some_and(is_two),
-            inlines: opt.is_some_and(positive),
-            suppress_all: all.is_some_and(is_true),
-        }))
+        let suppress_all = all.is_some_and(|r| is_true(r.bind(cx)));
+        let plain = opt.as_ref().map(|r| plain_level(r.bind(cx)));
+        let level = match plain {
+            // (bound by the reads, which made it: never)
+            None => Level::Invalid,
+            Some(Some(l)) => l,
+            Some(None) => level_in_r(cx, s, env)?,
+        };
+        Ok(Some(Read { level, suppress_all }))
+    })
+}
+
+/// getInlineInfo's tests of `optimize` as R makes them, for a value
+/// [`plain_level`] leaves (a string compares as one, another type is an
+/// error), evaluated where the reads bound it. Its error is the tests'
+/// ([`Level::Invalid`]). An object's `Ops` method runs here, once per test,
+/// where cmp.R runs it at each getInlineInfo: a recorded difference.
+const LEVEL: &str = "tryCatch(if (optimize > 0 && TRUE) {
+    if (optimize >= 3 || FALSE) 3L else if (optimize >= 2 && TRUE) 2L else 1L
+} else 0L, error = function(e) NA_integer_)";
+
+fn level_in_r<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>) -> RResult<Level> {
+    let exprs = s.capture(cx, |cx, o| crate::lower::parse(cx, LEVEL, o))?;
+    let e = s.root(cx, exprs.bind(cx).as_vector::<Ref<'_>>().unwrap().get(0));
+    let o = s.out(cx);
+    let r = o.root();
+    crate::eval(cx, e, env, o)?;
+    Ok(match r.bind(cx).view() {
+        View::Int(v) if v.len() == 1 => match v.get(0) {
+            0 => Level::Zero,
+            1 => Level::One,
+            2 => Level::Two,
+            3 => Level::Three,
+            _ => Level::Invalid,
+        },
+        _ => Level::Invalid,
+    })
+}
+
+/// getInlineInfo's tests of an attribute-free number or logical (TRUE is
+/// 1), made here: NA (NaN), or a length other than one, is `if`'s or
+/// `&&`'s error. None for any other value ([`level_in_r`]).
+fn plain_level(x: Ref<'_>) -> Option<Level> {
+    // SAFETY: a live object; its attribute word is read.
+    if unsafe { x.sexp().attrib_raw().typ() } != NILSXP {
+        return None;
+    }
+    let v = match x.view() {
+        View::Real(v) if v.len() == 1 => v.get(0),
+        View::Int(v) if v.len() == 1 => match v.get(0) {
+            i32::MIN => f64::NAN,
+            i => i as f64,
+        },
+        View::Lgl(v) if v.len() == 1 => match v.get(0).0 {
+            i32::MIN => f64::NAN,
+            i => i as f64,
+        },
+        View::Real(_) | View::Int(_) | View::Lgl(_) => return Some(Level::Invalid),
+        _ => return None,
+    };
+    Some(if v.is_nan() {
+        Level::Invalid
+    } else if v >= 3.0 {
+        Level::Three
+    } else if v >= 2.0 {
+        Level::Two
+    } else if v > 0.0 {
+        Level::One
+    } else {
+        Level::Zero
     })
 }
 
@@ -202,26 +293,6 @@ fn local<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>, name: &[u8]) -> RResult<O
     };
     // SAFETY: a value bound in a rooted environment.
     Ok(v.map(|v| s.root(cx, unsafe { Ref::from_sexp(v, cx) })))
-}
-
-/// `optimize > 0` as getInlineInfo takes it: a number above 0 (NA, or no
-/// number, is no inlining here: cmp.R's `if` would fail on it).
-fn positive(x: Ref<'_>) -> bool {
-    match x.view() {
-        View::Real(v) => v.len() == 1 && v.get(0) > 0.0,
-        View::Int(v) => v.len() == 1 && v.get(0) > 0 && v.get(0) != i32::MIN,
-        _ => false,
-    }
-}
-
-/// `optimize` equal to 2: a length-one number, as cmp.R's `optimize >= 2`
-/// and `optimize >= 3` read it at level 2.
-fn is_two(x: Ref<'_>) -> bool {
-    match x.view() {
-        View::Real(v) => v.len() == 1 && v.get(0) == 2.0,
-        View::Int(v) => v.len() == 1 && v.get(0) == 2,
-        _ => false,
-    }
 }
 
 /// `identical(x, TRUE)`: a logical vector of length one, TRUE, without

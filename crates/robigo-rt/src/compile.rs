@@ -194,6 +194,7 @@ fn attempt_rounds(
             // a function context whose compilerOptions reads are to be
             // made (options::context): made now, the folds kept
             Err(Need::Fail) if prims::state(cx).compile_warnings.contexts().stop => {
+                cenv::raise_before_reads(cx)?;
                 options::read(cx)?;
                 let w = &prims::state(cx).compile_warnings;
                 let c = w.contexts();
@@ -398,6 +399,9 @@ fn compile_closure_attempts(cx: &mut Cx, op: Root<'_>, installed: bool, entry: &
                 }
                 let (formals, body) = (f.car(), source_body(cx, f));
                 let mut cenv = Cenv::of_env(cx, f.tag(), installed)?;
+                if entry.source {
+                    cenv.run_time(entry.level);
+                }
                 let st = prims::state(cx);
                 if !function_context(cx, st, &mut cenv, formals, body, Some(&mut prelude))? {
                     return Err(Need::Fail);
@@ -405,11 +409,6 @@ fn compile_closure_attempts(cx: &mut Cx, op: Root<'_>, installed: bool, entry: &
                 // the code's generation, where cmp.R's notes could begin
                 if entry.notes {
                     notes = true;
-                    return Err(Need::Fail);
-                }
-                // a declining compile that would not inline: nothing past
-                // here is seen (no literal's function context)
-                if entry.decline && !entry.inlines {
                     return Err(Need::Fail);
                 }
                 let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
@@ -1007,6 +1006,9 @@ fn compile_loop_attempts(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, entry: &Ent
             // SAFETY: rooted objects; nothing collects in this interval.
             unsafe {
                 let mut cenv = Cenv::of_env(cx, env, false)?;
+                if entry.source {
+                    cenv.run_time(entry.level);
+                }
                 let st = prims::state(cx);
                 let locals = match prelude.found(cx, st, &cenv, &[e])? {
                     Some(l) => l,
@@ -1021,10 +1023,6 @@ fn compile_loop_attempts(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, entry: &Ent
                 // the code's generation, where cmp.R's notes could begin
                 if entry.notes {
                     notes = true;
-                    return Err(Need::Fail);
-                }
-                // (a declining compile that would not inline, as above)
-                if entry.decline && !entry.inlines {
                     return Err(Need::Fail);
                 }
                 let mut c = Comp::new(cx, st, Profile::Bc, Some(cenv));
@@ -1085,48 +1083,48 @@ fn package_code(cx: &Cx, op: Root<'_>) -> bool {
 /// - where cmp.R's notes may print (`suppressAll` not `identical(TRUE)`),
 ///   the compile fails there ([`options::notes_not_implemented`]), which
 ///   tryCmpfun's handler takes;
-/// - with `optimize` other than 2, which robigo-rt's compiler does not
-///   implement, the compile declines at its end ([`Entry::end`]): the
-///   closure runs uncompiled, as cmp.R's failure path leaves it (counted,
-///   [`crate::jit::report`]).
+/// - `optimize` is what getInlineInfo answers in the compile
+///   ([`options::Level`], [`Cenv::set_level`]), so the compile looks up
+///   and forces what cmp.R's at that level does; at a level other than 2,
+///   whose code robigo-rt's compiler does not make, it declines at its end
+///   ([`Entry::end`]): the closure runs uncompiled, as cmp.R's failure path
+///   leaves it (counted, [`crate::jit::report`]).
 fn entry_options(cx: &mut Cx, source: bool) -> RResult<Entry> {
-    let off = Entry { reads: false, notes: false, decline: false, inlines: true };
+    let off = Entry { source, reads: false, notes: false, level: options::Level::Two };
     if !source {
         return Ok(off);
     }
     crate::jit::count(crate::jit::Count::SourceCompile);
     let Some(read) = options::read(cx)? else { return Ok(off) };
-    Ok(Entry { reads: true, notes: !read.suppress_all, decline: !read.optimize_2, inlines: read.inlines })
+    Ok(Entry { source, reads: true, notes: !read.suppress_all, level: read.level })
 }
 
 /// What a compile's entry decided ([`entry_options`]).
 struct Entry {
+    /// A compile GNU R makes at run time ([`Cenv::run_time`]).
+    source: bool,
     /// The compile reads compilerOptions: its function contexts read them
     /// again ([`options::context`]).
     reads: bool,
     /// `suppressAll` not `identical(TRUE)`: the compile fails where its
     /// code's generation begins ([`options::notes_not_implemented`]).
     notes: bool,
-    /// `optimize` other than 2: the compile's code is not used.
-    decline: bool,
-    /// `optimize > 0` (getInlineInfo's test): cmp.R's code generation
-    /// inlines, a `function` literal's handler and its function context
-    /// included. A declining compile without it stops before the code's
-    /// generation, where cmp.R at levels 0 reads no literal's options.
-    inlines: bool,
+    /// `optimize` as getInlineInfo tests it: at a level other than 2 the
+    /// compile's code is not used.
+    level: options::Level,
 }
 
 impl Entry {
     /// The compile's result `code` as the entry's decision leaves it: none
-    /// when it declines.
+    /// when it declines (an invalid level's compile fails at its first
+    /// getInlineInfo, counted too).
     fn end(&self, code: RResult<Option<Sexp>>) -> RResult<Option<Sexp>> {
         match code {
-            Ok(Some(_)) if self.decline => {
+            Ok(Some(_)) if self.level != options::Level::Two => {
                 crate::jit::count(crate::jit::Count::DeclinedOptimize);
                 Ok(None)
             }
-            // (stopped before the code's generation, [`Entry::inlines`])
-            Ok(None) if self.decline && !self.inlines => {
+            Ok(None) if self.level == options::Level::Invalid => {
                 crate::jit::count(crate::jit::Count::DeclinedOptimize);
                 Ok(None)
             }
@@ -2309,12 +2307,12 @@ impl<'g> Comp<'g> {
         };
         let Some(info) = info else {
             // SAFETY: as above.
-            return unsafe { self.generic_call(e, dst, d, true) };
+            return unsafe { self.uninlined_call(e, dst, d) };
         };
         // SAFETY: as above.
         let Some(h) = (unsafe { self.handler(f, e)? }) else {
             // SAFETY: as above.
-            return unsafe { self.generic_call(e, dst, d, true) };
+            return unsafe { self.uninlined_call(e, dst, d) };
         };
         let guard = info.guard.then(|| {
             let mut g = Ins::new(Op::BaseGuard);
@@ -2376,6 +2374,28 @@ impl<'g> Comp<'g> {
             self.patch(j, end);
         }
         Ok(())
+    }
+
+    /// A call `bc_call` does not inline (`tryInline` false): cmpCall's
+    /// `findFunDef` for a function named by a symbol that is no local
+    /// variable (its notes' check, made whether or not they print: a lazy
+    /// binding of the name is forced, [`Cenv::fun_def`]) in a compile GNU R
+    /// makes at run time ([`Cenv::checks_calls`]), then the generic call.
+    ///
+    /// # Safety
+    /// As for [`Comp::expr`].
+    // R: cmp.R:cmpCall, findFunDef
+    unsafe fn uninlined_call(&mut self, e: Sexp, dst: Reg, d: u16) -> Result<(), Need> {
+        // SAFETY: the caller's contract: a live call; the compile
+        // environment's frames are live.
+        unsafe {
+            let f = e.car();
+            let cenv = self.bc.as_ref().unwrap();
+            if f.typ() == SYMSXP && cenv.checks_calls() {
+                cenv.fun_def(self.cx, self.st, f)?;
+            }
+            self.generic_call(e, dst, d, true)
+        }
     }
 
     /// cmp.R's inline handler for the base function `f` of call `e`

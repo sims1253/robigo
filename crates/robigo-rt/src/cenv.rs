@@ -163,6 +163,12 @@ pub struct Cenv<'g> {
     /// The code is base's installed byte code: compiled when base was
     /// built, with base's shipped definitions ([`Cenv::fun_def`]).
     installed: bool,
+    /// The compile's `optimize` as getInlineInfo tests it
+    /// ([`Cenv::run_time`]).
+    level: crate::compile::options::Level,
+    /// The compile is one GNU R makes at run time ([`Cenv::run_time`]):
+    /// cmpCall's findFunDef check of a call it does not inline is made.
+    run_time: bool,
     _cx: std::marker::PhantomData<&'g Cx>,
 }
 
@@ -176,6 +182,8 @@ impl<'g> Cenv<'g> {
             top_extra: Vec::new(),
             chain: Vec::new(),
             installed: false,
+            level: crate::compile::options::Level::Two,
+            run_time: false,
             _cx: std::marker::PhantomData,
         }
     }
@@ -236,7 +244,34 @@ impl<'g> Cenv<'g> {
                 e = robigo_heap::env::enclos(e);
             }
         }
-        Ok(Cenv { units: Vec::new(), top_extra: Vec::new(), chain, installed, _cx: std::marker::PhantomData })
+        Ok(Cenv {
+            units: Vec::new(),
+            top_extra: Vec::new(),
+            chain,
+            installed,
+            level: crate::compile::options::Level::Two,
+            run_time: false,
+            _cx: std::marker::PhantomData,
+        })
+    }
+
+    /// The compile is one GNU R makes at run time (a closure's or a loop's
+    /// from source, not code GNU R holds compiled: base's and packages',
+    /// compiled when they were built, with every binding in place), at the
+    /// entry's `optimize` ([`crate::compile::options`]; level 2 otherwise):
+    /// what getInlineInfo, and so `isBaseVar`, answers ([`Cenv::info`]);
+    /// and cmpCall's check of a call it does not inline is made
+    /// ([`Cenv::checks_calls`]).
+    pub(crate) fn run_time(&mut self, level: crate::compile::options::Level) {
+        self.level = level;
+        self.run_time = true;
+    }
+
+    /// Whether cmpCall's `findFunDef` check of a call it does not inline is
+    /// made ([`Cenv::run_time`]): what it does can be seen (a lazy binding
+    /// forced) only in a compile GNU R makes at run time.
+    pub(crate) fn checks_calls(&self) -> bool {
+        self.run_time
     }
 
     /// The compiler environment of a promise's code that compiled code
@@ -391,8 +426,15 @@ impl<'g> Cenv<'g> {
     ///
     /// # Safety
     /// As for [`Cenv::find`].
-    // R: cmp.R:getInlineInfo (optimize = 2), packFrameName, nsName, findHomeNS
+    // R: cmp.R:getInlineInfo, packFrameName, nsName, findHomeNS
     unsafe fn info(&self, cx: &Cx, st: &RtState, sym: Sexp, guard_ok: bool) -> Result<Option<Info>, Need> {
+        use crate::compile::options::Level;
+        match self.level {
+            // (`if (optimize > 0 && ...)`'s error)
+            Level::Invalid => return Err(Need::Fail),
+            Level::Zero => return Ok(None),
+            Level::One | Level::Two | Level::Three => {}
+        }
         if sym == st.syms.standard_generic {
             return Ok(None);
         }
@@ -427,7 +469,7 @@ impl<'g> Cenv<'g> {
                 // SAFETY: a live environment of the chain.
                 let package = unsafe { pack_frame_name(cx, frame) };
                 // SAFETY: a symbol.
-                if unsafe { is_language_fun(cx, sym) } {
+                if self.level == Level::Three || (self.level == Level::Two && unsafe { is_language_fun(cx, sym) }) {
                     Some(Info { frame, package, guard: false })
                 } else if guard_ok {
                     // `packFrameName(frame) == "base"` in `&&`: NA or not
@@ -445,11 +487,14 @@ impl<'g> Cenv<'g> {
         })
     }
 
-    /// `findFunDef(fun, cntxt)` for a base function `inline_info` inlines:
-    /// its definition (a closure, a primitive), or None when the binding
-    /// is no function. Installed code takes base's shipped definition (the
-    /// one GNU R compiled it with when base was built). A lazy binding not
-    /// yet forced is [`Need::Force`].
+    /// `findFunDef(fun, cntxt)`, for a base function `inline_info` inlines
+    /// and for a call cmpCall does not inline (its check of the call): the
+    /// definition (a closure, a primitive), or None when the binding is no
+    /// function or a local variable's. Installed code takes base's shipped
+    /// definition (the one GNU R compiled it with when base was built). A
+    /// lazy binding not yet forced is [`Need::Force`]; one being evaluated
+    /// is `get()`'s error, which fails the compile ([`Need::Fail`]).
+    /// INTERIM(C1): an active binding is not run (`get()` would run it).
     ///
     /// # Safety
     /// As for [`Cenv::find`].
@@ -485,6 +530,11 @@ impl<'g> Cenv<'g> {
                 }
                 let pv = raw.car();
                 if pv == cx.unbound().sexp() {
+                    // (being evaluated: `get()`'s "promise already under
+                    // evaluation" error, which fails the compile)
+                    if raw.gp() & robigo_heap::gp::promise::PRSEEN_EVALUATING != 0 {
+                        return Err(Need::Fail);
+                    }
                     return Err(Need::Force(raw));
                 }
                 pv
@@ -1630,7 +1680,25 @@ impl CompileWarnings {
 /// that function's call.
 // R: cmp.R:addVar, cmpAssign
 pub fn raise_compile_warnings(cx: &mut Cx) -> robigo_rtcore::RResult<()> {
-    let ws = crate::prims::state(cx).compile_warnings.take();
+    let w = &crate::prims::state(cx).compile_warnings;
+    let mut ws = w.take();
+    // (those raised before a function context's reads)
+    ws.drain(..w.contexts().warned.min(ws.len()));
+    raise_warnings(cx, ws)
+}
+
+/// Raise the warnings this try gave that are not raised yet, before a
+/// function context's compilerOptions reads ([`crate::compile::options`]):
+/// GNU R gives a function literal's funEnv warnings, and those before
+/// them, before its make.toplevelContext reads. They stay in the list,
+/// which the next try gives again; [`Contexts::warned`] counts them.
+///
+/// [`Contexts::warned`]: crate::compile::options::Contexts::warned
+pub(crate) fn raise_before_reads(cx: &mut Cx) -> robigo_rtcore::RResult<()> {
+    let w = &crate::prims::state(cx).compile_warnings;
+    let c = w.contexts();
+    let ws: Vec<_> = w.0.borrow().iter().skip(c.warned).cloned().collect();
+    w.set_contexts(crate::compile::options::Contexts { warned: c.warned + ws.len(), ..c });
     raise_warnings(cx, ws)
 }
 

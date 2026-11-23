@@ -2,3 +2,8 @@ read
 read
 [1] 7
 [1] 7
+read TRUE
+read TRUE
+read TRUE
+[1] 8
+[1] 8
