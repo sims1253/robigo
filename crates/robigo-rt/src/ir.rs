@@ -332,6 +332,77 @@ pub enum Effect {
 }
 
 impl Op {
+    /// Every operation, in discriminant order: [`Op::from_u8`]'s table.
+    pub const ALL: [Op; 56] = [
+        Op::LdConst,
+        Op::LdScalar,
+        Op::GetVar,
+        Op::GetDdVar,
+        Op::SetVar,
+        Op::SetVar2,
+        Op::Jmp,
+        Op::BrFalse,
+        Op::Guard,
+        Op::GetFun,
+        Op::Call,
+        Op::CallBuiltin,
+        Op::Arith,
+        Op::Arith1,
+        Op::Relop,
+        Op::Not,
+        Op::Logic,
+        Op::AndOr1,
+        Op::AndOr2,
+        Op::MkClosure,
+        Op::Quote,
+        Op::Missing,
+        Op::Internal,
+        Op::Return,
+        Op::Ret,
+        Op::Loop,
+        Op::LoopEnd,
+        Op::ForPrep,
+        Op::ForStep,
+        Op::BackJmp,
+        Op::BreakJump,
+        Op::Clear,
+        Op::ClearRange,
+        Op::Move,
+        Op::SetVis,
+        Op::Nop,
+        Op::EvalConst,
+        Op::ErrorCall,
+        Op::ForDone,
+        Op::SpecialFn,
+        Op::ComplexAssign,
+        Op::BaseGuard,
+        Op::BcAssign,
+        Op::Switch,
+        Op::StartSubset,
+        Op::DfltSubset,
+        Op::Dollar,
+        Op::GetVarMissOk,
+        Op::TopLoop,
+        Op::PpCheck,
+        Op::PpRestore,
+        Op::PpSave,
+        Op::Resume,
+        Op::LoopResume,
+        Op::Math1,
+        Op::CallCodes,
+    ];
+
+    /// The operation whose discriminant is `x`, or None: how an
+    /// instruction read from outside the process (the translation cache,
+    /// `crate::tcache`) is decoded, never by reinterpreting its bytes.
+    pub const fn from_u8(x: u8) -> Option<Op> {
+        // (from ALL, so a new operation is decodable exactly when it is
+        // listed there, under its own number: the test checks the order)
+        if (x as usize) < Op::ALL.len() { Some(Op::ALL[x as usize]) } else { None }
+    }
+}
+
+impl Op {
     /// The operation's effect class (docs/g3.md §9.2).
     pub const fn effect(self) -> Effect {
         match self {
@@ -433,3 +504,20 @@ const _: () = assert!(size_of::<Header>() == 32 && size_of::<Header>() <= INS_OF
 
 /// The instructions start at this byte offset of the blob (16-aligned).
 pub const INS_OFFSET: usize = 32;
+
+#[cfg(test)]
+mod op_tests {
+    use super::Op;
+
+    // Op::from_u8 decodes every discriminant, in order, and nothing past
+    // the last
+    #[test]
+    fn from_u8_round_trips() {
+        for (i, &op) in Op::ALL.iter().enumerate() {
+            assert_eq!(op as u8 as usize, i);
+            assert_eq!(Op::from_u8(i as u8), Some(op));
+        }
+        assert_eq!(Op::from_u8(Op::ALL.len() as u8), None);
+        assert_eq!(Op::from_u8(u8::MAX), None);
+    }
+}

@@ -253,6 +253,14 @@ mod records;
 mod root;
 mod sym;
 mod sys;
+#[cfg(not(miri))]
+pub use sys::map_file_readonly;
+/// Under Miri, which cannot map files: the file read whole, kept.
+#[cfg(miri)]
+pub fn map_file_readonly(path: &std::path::Path) -> Option<&'static [u8]> {
+    let b = std::fs::read(path).ok()?;
+    (!b.is_empty()).then(|| &*Box::leak(b.into_boxed_slice()))
+}
 mod vstack;
 // R1b: collection points and in-place writes
 mod collect;
