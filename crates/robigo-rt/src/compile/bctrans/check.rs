@@ -60,9 +60,9 @@ const fn operands(op: u8) -> &'static [K] {
         | ENDASSIGN | GETVAR_MISSOK | DDVAL_MISSOK | SETVAR2 | STARTASSIGN2 | ENDASSIGN2 => &[Sym],
         SETTAG => &[Tag],
         CALL | CALLBUILTIN | CALLSPECIAL | UMINUS | UPLUS | ADD | SUB | MUL | DIV | EXPT | SQRT | EXP | EQ | NE
-        | LT | LE | GE | GT | AND | OR | NOT | VECSUBSET | MATSUBSET | VECSUBASSIGN | MATSUBASSIGN | AND2ND
-        | OR2ND | GETTER_CALL | VECSUBSET2 | MATSUBSET2 | VECSUBASSIGN2 | MATSUBASSIGN2 | LOG | LOGBASE | COLON
-        | SEQALONG | SEQLEN => &[Call],
+        | LT | LE | GE | GT | AND | OR | NOT | VECSUBSET | MATSUBSET | VECSUBASSIGN | MATSUBASSIGN | AND2ND | OR2ND
+        | GETTER_CALL | VECSUBSET2 | MATSUBSET2 | VECSUBASSIGN2 | MATSUBASSIGN2 | LOG | LOGBASE | COLON | SEQALONG
+        | SEQLEN => &[Call],
         MAKECLOSURE => &[Closure],
         DOLLAR | DOLLARGETS => &[Call, Sym],
         SETTER_CALL => &[Call, Any],
@@ -199,7 +199,10 @@ pub(super) unsafe fn check(dec: &[BcIns], consts: Sexp, code_len: usize) -> Resu
                     Count if v < 0 => return Err(format!("{}'s count {v} is negative", name(i.op))),
                     Label | Count | Int => {}
                     _ if !list => {
-                        return Err(format!("{}'s constant {v} is read from constants that are not a list", name(i.op)));
+                        return Err(format!(
+                            "{}'s constant {v} is read from constants that are not a list",
+                            name(i.op)
+                        ));
                     }
                     _ if v < 0 || v as usize >= n => {
                         return Err(format!("{}'s constant {v} is outside its {n} constants", name(i.op)));
