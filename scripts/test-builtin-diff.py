@@ -495,20 +495,27 @@ class SlotPool(unittest.TestCase):
     def test_a_slot_held_by_flock_1_is_held_for_the_pool(self):
         # the other side of the pool: the Rust runner's File::try_lock is
         # flock(2) (std's sys/fs/unix.rs on Linux), as flock(1) is, and as
-        # the foreman's gate-slot.sh is; a slot one holds, the other waits for
+        # the foreman's gate-slot.sh is; a slot one holds, the other waits for.
+        # The holder lets go when its stdin ends: the order is the proof
         if not shutil.which("flock"):
             self.skipTest("no flock(1)")
         pool = self.pool()
         slot = os.path.join(pool.dir, "slot-0")
-        holder = subprocess.Popen(["flock", "-x", slot, "sh", "-c", "echo held; sleep 2"], stdout=subprocess.PIPE,
-                                  text=True)
+        holder = subprocess.Popen(["flock", "-x", slot, "sh", "-c", "echo held; cat > /dev/null"],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         self.addCleanup(holder.wait)
+        self.addCleanup(lambda: holder.stdin.closed or holder.stdin.close())
         self.assertEqual(holder.stdout.readline().strip(), "held")
-        t0 = time.monotonic()
-        with pool.take() as held:
-            waited = time.monotonic() - t0
-            self.assertEqual(held.count, 1)
-        self.assertGreater(waited, 1.0, "Pool.take did not wait for flock(1)'s slot")
+        took = threading.Event()
+        def take():
+            with pool.take():
+                took.set()
+        t = threading.Thread(target=take)
+        t.start()
+        self.assertFalse(took.wait(2.0), "Pool.take did not wait for flock(1)'s slot")
+        holder.stdin.close()
+        self.assertTrue(took.wait(60), "Pool.take did not get the slot once flock(1) let go")
+        t.join()
 
     def test_a_take_that_fails_mid_run_ends_the_run_cleanly(self):
         # a pool that stops working while builtin-diff runs is its PoolError,

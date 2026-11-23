@@ -75,18 +75,25 @@ class PoolError(Exception):
 
 
 def from_env(env=None):
-    """The pool ROBIGO_CONF_SLOTS_DIR names, of ROBIGO_CONF_SLOTS slots
-    (default: one per CPU), as the conformance runner reads them; None when
-    it is unset or empty. A pool that cannot be used is a PoolError: a tool
-    told to share the machine must not run without it."""
+    """The pool ROBIGO_CONF_SLOTS_DIR names, of ROBIGO_CONF_SLOTS slots;
+    None when it is unset or empty. Without ROBIGO_CONF_SLOTS the count is
+    the CPUs this process may run on, which is not always the conformance
+    runner's (Rust's available_parallelism also honours a cgroup CPU quota):
+    set ROBIGO_CONF_SLOTS to keep the two equal in a quota-limited container.
+    A pool that cannot be used is a PoolError: a tool told to share the
+    machine must not run without it."""
     env = os.environ if env is None else env
     d = env.get("ROBIGO_CONF_SLOTS_DIR")
     if not d:
         return None
     s = env.get("ROBIGO_CONF_SLOTS")
     if s is None:
-        # (the CPUs this process may run on, as Rust's available_parallelism)
-        n = len(os.sched_getaffinity(0)) or 2
+        # (the CPUs this process may run on: the affinity mask where the
+        # platform has one, else the machine's count)
+        try:
+            n = len(os.sched_getaffinity(0)) or 2
+        except AttributeError:
+            n = os.cpu_count() or 2
     else:
         try:
             n = int(s.strip())
