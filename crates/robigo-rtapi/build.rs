@@ -45,6 +45,45 @@ fn main() {
             "cargo:warning=robigo-rtapi: no flag to export the C API from executables on this target; packages will not load"
         ),
     }
+    order_file();
+}
+
+/// The link order of robigo-rt's functions (`rt-starts.order`,
+/// scripts/rt-order.py): the functions a start runs, hottest first, which
+/// the linker packs at the front of `.text`, so a start faults in about
+/// 2 MB of the executable instead of nearly all of its 4.7 MB
+/// (docs/ledger/g3/2026-11-23-order-file.md). For the `robigo-rt` binary
+/// only, and only where the link is LLD's, which takes the file: the
+/// x86_64-unknown-linux-gnu target, whose default linker rustc's own LLD
+/// is, when nothing names another linker (a `linker` of the target in
+/// cargo's configuration, which cargo passes here as RUSTC_LINKER, or a
+/// linker flag among the rustflags). Elsewhere the binary links unordered,
+/// which is only slower to start; ROBIGO_NO_ORDER_FILE=1 asks for that too.
+fn order_file() {
+    println!("cargo:rerun-if-changed=rt-starts.order");
+    println!("cargo:rerun-if-env-changed=ROBIGO_NO_ORDER_FILE");
+    println!("cargo:rerun-if-env-changed=RUSTC_LINKER");
+    if std::env::var_os("ROBIGO_NO_ORDER_FILE").is_some_and(|v| v == "1") {
+        return;
+    }
+    let target = std::env::var("TARGET").unwrap_or_default();
+    // (cargo's rustflags, unit-separated: one naming a linker, `-fuse-ld`,
+    // or LLD's off-switch means the link may not be rustc's LLD)
+    let flags = std::env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default();
+    let other_linker = std::env::var_os("RUSTC_LINKER").is_some()
+        || flags.split('\u{1f}').any(|f| f.contains("linker") || f.contains("fuse-ld"));
+    if target != "x86_64-unknown-linux-gnu" || other_linker {
+        println!(
+            "cargo:warning=robigo-rtapi: robigo-rt links without its order file (target {target}{}): it starts slower, nothing else changes",
+            if other_linker { ", another linker configured" } else { "" }
+        );
+        return;
+    }
+    let order = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("rt-starts.order");
+    println!("cargo:rustc-link-arg-bin=robigo-rt=-Wl,--symbol-ordering-file={}", order.display());
+    // (a name the binary no longer has is skipped: scripts/rt-order.py check
+    // counts them)
+    println!("cargo:rustc-link-arg-bin=robigo-rt=-Wl,--no-warn-symbol-ordering");
 }
 
 /// `ROBIGO_RT_COMMIT`: the commit checked out when the binary was built,
