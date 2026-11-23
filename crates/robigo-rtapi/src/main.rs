@@ -273,29 +273,6 @@ fn shell_word(s: &str) -> String {
     if plain { s.to_string() } else { format!("'{}'", s.replace('\'', "'\\''")) }
 }
 
-/// Whether R's script would print its usage for `args`: its argument loop
-/// (which stops at an empty argument or `--args`, and lets `-g`/`--gui` and
-/// `-d`/`--debugger` take the next one unless it starts with `-`) meets
-/// `-h` or `--help`, before it checks R_HOME and before R itself runs.
-// R: scripts/R.sh.in ("Argument loop")
-fn help_asked(args: &[std::ffi::OsString]) -> bool {
-    let mut i = 0;
-    while let Some(a) = args.get(i).map(|a| a.as_bytes()) {
-        match a {
-            b"" | b"--args" => return false,
-            b"-h" | b"--help" => return true,
-            b"-g" | b"--gui" | b"-d" | b"--debugger" => {
-                if args.get(i + 1).is_some_and(|n| !n.as_bytes().is_empty() && n.as_bytes()[0] != b'-') {
-                    i += 1;
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    false
-}
-
 /// The front end over `args`, with `home` the `R_HOME` that
 /// [`init_r_home`] has put in the environment.
 /// Whether `b` is one of R_common_command_line's options that robigo-rt
@@ -329,18 +306,10 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     // Rf_initialize_R's system Renviron, before the options are read
     // (INTERIM(L5): GNU R's boot only; M1's loader gives the options their
     // values itself)
-    // R.sh.in's argument loop answers -h/--help before it checks R_HOME;
-    // then the tree, before anything reads it (a missing tree is that error
-    // alone, not the Renviron's too)
-    if help_asked(&args) {
-        print!("{USAGE}");
-        return 0;
-    }
-    if boot() != Boot::M1 {
-        if let Some(e) = missing_tree(home, boot()) {
-            eprintln!("robigo-rt: {e}");
-            return 2;
-        }
+    // (not read from a tree that is not there: the start stops at the
+    // check below, after the options as R's script checks R_HOME after its
+    // argument loop, with that error alone)
+    if boot() != Boot::M1 && missing_tree(home, boot()).is_none() {
         renviron::process_system_renviron(home.path());
     }
     // Rscript's options: R's start-up options, then FILE or -e EXPR, then
@@ -590,6 +559,10 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     // source tree's, ROBIGO_RT_BOOT=stage0, or baseloader.R's ..lazyLoad
     // from base.rdb, ROBIGO_RT_BOOT=rdb) beside M1's loader until L5's bar
     if boot() != Boot::M1 {
+        if let Some(e) = missing_tree(home, boot()) {
+            eprintln!("robigo-rt: {e}");
+            return 2;
+        }
         match robigo_rt::base::stage0(cx, home.path()) {
             Ok(boot_st) => {
                 // setup_Rmainloop after the system profile: .OptRequireMethods,
@@ -801,21 +774,6 @@ mod tests {
 
     /// The unmade checkout's message (no installed tree either), which an
     /// integration test cannot reach: it depends on the machine's trees.
-    #[test]
-    fn help_is_asked_as_r_s_script_reads_it() {
-        let a = |v: &[&str]| v.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
-        assert!(help_asked(&a(&["--help"])));
-        assert!(help_asked(&a(&["--vanilla", "-h"])));
-        // (R.sh.in gives -e no argument: its loop reaches the --help)
-        assert!(help_asked(&a(&["-e", "--help"])));
-        assert!(!help_asked(&a(&["--args", "--help"])));
-        assert!(!help_asked(&a(&["", "--help"])));
-        // -d and -g take a following word only when it does not start with -
-        assert!(help_asked(&a(&["-d", "-h"])));
-        assert!(!help_asked(&a(&["-d", "gdb"])));
-        assert!(!help_asked(&a(&["-e", "1"])));
-    }
-
     #[test]
     fn a_shell_word_is_one_word() {
         assert_eq!(shell_word("/home/u/.cache/release/robigo-rt"), "/home/u/.cache/release/robigo-rt");
