@@ -1173,6 +1173,16 @@ impl<'a> Lexer<'a> {
                             err.offset = at;
                             err.end = at + 1;
                         }
+                        // the position after the rejected byte was read, as
+                        // xxgetc leaves it: a tab advances to the next
+                        // multiple of 8, a newline starts the next line at
+                        // column 0; past the end, the virtual newline
+                        // R: gram.y:xxgetc
+                        err.fixed_line_col = Some(if at < self.bytes.len() {
+                            self.source.r_line_col(at + 1)
+                        } else {
+                            (self.source.r_line_col(self.bytes.len()).0 + 1, 0)
+                        });
                         return Err(err);
                     }
                     self.pos += 1;

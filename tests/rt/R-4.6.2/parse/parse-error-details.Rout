@@ -25,3 +25,8 @@ unrecognizedEscape '\q' is an unrecognized escape in character string (<input>:1
 "simpleError" | " \"\\q\"" 
 "placeholderNotNamed" | " 2;TAIL" 
 "repeatedFormal" | " 1;TAIL" 
+invalidUnicode 1 16 invalid \U{xxxxxxxx} sequence (<input>:1:16) 
+invalidUnicode 2 0 invalid \U{xxxxxxxx} sequence (<input>:2:0) 
+invalidUnicode 2 0 invalid \U{xxxxxxxx} sequence (<input>:2:0) 
+invalidUnicode 1 15 invalid \U{xxxxxxxx} sequence (<input>:1:15) 
+invalidUnicode 1 15 invalid \U{xxxxxxxx} sequence (<input>:1:15) 

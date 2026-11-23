@@ -50,3 +50,12 @@ rem("1 |> f(_) \U0001F642;TAIL")
 rem('""() "\\q"')
 rem("1 |> f(_) + 2;TAIL")
 rem("function(a, a) 1;TAIL")
+# a \U{...} whose closing brace is missing: the position after the byte
+# read in its place (a tab to column 16, a newline or the end to 2:0)
+bs <- "\\"; e <- intToUtf8(233); tab <- "\t"; nl <- "\n"
+p <- function(t) { x <- tryCatch(parse(text = t), error = identity); cat(class(x)[1], x$lineno, x$colno, conditionMessage(x), "\n") }
+p(paste0('y "', bs, 'U{12345678', tab, '";TAIL'))
+p(paste0('y "', bs, 'U{12345678', nl, '";TAIL'))
+p(paste0('y "', bs, 'U{12345678'))
+p(paste0('y "', bs, 'U{12345678', e, '";TAIL'))
+p(paste0('y "', bs, 'U{12345678g";TAIL'))
