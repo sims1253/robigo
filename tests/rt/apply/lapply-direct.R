@@ -64,3 +64,13 @@ k <- function(FUN, X, i, ...) {
   eval(cl)
 }
 k(identity, 1:3, 3L)
+# a compact sequence with attributes, and one long enough to cross the
+# evaluation count's polls many times
+y <- 1:3
+attr(y, "foo") <- "bar"
+lapply(y, identity)
+names(y) <- c("a", "b", "c")
+lapply(y, function(v) v * 2L)
+s <- 0
+invisible(lapply(seq_len(3000L), function(v) s <<- s + v))
+s

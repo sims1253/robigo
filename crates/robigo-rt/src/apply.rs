@@ -224,7 +224,9 @@ fn force_and_call_with(
 
 /// The levels below the caller the general force of `X[[i]]`'s promise
 /// reaches: `eval` of the promise, of `X[[i]]`, and of `[[`'s argument `X`
-/// (or `i`), each `INCREMENT_EVAL_DEPTH`.
+/// (or `i`), each `INCREMENT_EVAL_DEPTH` (S1 checked them against eval.c
+/// and subset.c). The guard asks one level more, a margin: at exactly the
+/// limit the general path runs, and is exact there.
 const X_I_DEPTH: i32 = 3;
 
 /// C stack a general force of `X[[i]]` may use, at least: below this
@@ -240,15 +242,26 @@ const X_I_STACK: usize = 256 * 1024;
 /// frame is made: `eval(p)` → `forcePromise` → `eval(X[[i]])` →
 /// `do_subset2` → `R_DispatchOrEvalSP`, which evaluates `X` and `i` and
 /// dispatches on nothing for an unclassed `X` → `do_subset2_dflt`. Four
-/// `eval`s: their evaluation-count ticks are taken here (an interrupt or a
-/// finalizer runs at GNU R's points); their depth and C stack checks cannot
-/// fail (headroom checked first, else the general path, which raises where
-/// GNU R does). The guards, read after the ticks (a finalizer may run R
-/// code): `p` is the call's own unforced `X[[i]]` in `rho`, `X` in `rho` is
-/// still `x` with no class, `i` still `ind`, and `[[` from `rho` is base's
-/// primitive. The value is `do_subset2_dflt`'s own; the promise is left as
-/// `forcePromise` leaves it (PRVALUE, PRSEEN 0, PRENV R_NilValue; PRCODE the
-/// call's `X[[i]]`, which `substitute` and `sys.call()` show).
+/// `eval`s, so four evaluation-count ticks.
+///
+/// Taken only when none of that can be seen, all decided before anything
+/// is done (otherwise the general path, untouched):
+/// - none of the four ticks polls (`evalcount + 4 <= 1000`): no interrupt
+///   check or finalizer could run between the reads GNU R makes, so the
+///   ticks are the count alone, added at once;
+/// - no safepoint work is pending (the general force serves it at its
+///   entry: a collection, then the finalizers it makes pending, run at
+///   GNU R's next poll);
+/// - the depth and C stack checks of the four `eval`s cannot fail
+///   (headroom first; the general path raises where GNU R does);
+/// - the guards: `p` is the call's own unforced `X[[i]]` in `rho`, `X` in
+///   `rho` is still `x` with no class, `i` still `ind`, and `[[` from `rho`
+///   is base's primitive.
+///
+/// The value is `do_subset2_dflt`'s own, after the special's
+/// `materialize_subset_args`; the promise is left as `forcePromise` leaves
+/// it (PRVALUE, PRSEEN 0, PRENV R_NilValue; PRCODE the call's `X[[i]]`,
+/// which `substitute` and `sys.call()` show).
 // R: eval.c:R_forceAndCall, forcePromise, eval; subset.c:do_subset2
 #[allow(clippy::too_many_arguments)]
 fn force_x_i(
@@ -268,26 +281,24 @@ fn force_x_i(
             robigo_rtcore::View::Promise(pr) => pr.code() == tmp && pr.env() == rho.bind(cx),
             _ => false,
         };
-    if !plain || cx.eval_depth() + X_I_DEPTH + 1 > cx.expressions() || !cx.c_stack_headroom(X_I_STACK) {
+    if !plain
+        || cx.eval_depth() + X_I_DEPTH + 1 > cx.expressions()
+        || !cx.c_stack_headroom(X_I_STACK)
+        || cx.safepoint_pending()
+        // (`eval::tick` polls when the count passes 1000)
+        || cx.evalcount().get() + 4 > 1000
+        || !x_i_guards(cx, call, rho, x, ind)
+    {
         return Ok(false);
     }
-    // the four evaluations' ticks
-    let before = cx.evalcount().get();
-    let mut polled = false;
-    for _ in 0..4 {
-        polled |= crate::eval::tick(cx)?;
-    }
-    if !x_i_guards(cx, call, rho, x, ind) {
-        if !polled {
-            // (nothing ran: the general path ticks them itself)
-            cx.evalcount().set(before);
-        }
-        return Ok(false);
-    }
+    // the four evaluations' ticks, none of which polls
+    cx.evalcount().set(cx.evalcount().get() + 4);
     let tmp = s.root(cx, call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().car());
     let v = s.out(cx);
     let vr = v.root();
     let args = s.args(cx, &[x.bind(cx), ind.bind(cx)], None);
+    // R: subset.c:do_subset2 (the special's default, as specials.rs calls it)
+    cx.materialize_subset_args(args)?;
     robigo_rtbuiltins::subset::do_subset2_dflt(cx, tmp, args, rho, v)?;
     cx.set_promise_forced(p, vr);
     Ok(true)
