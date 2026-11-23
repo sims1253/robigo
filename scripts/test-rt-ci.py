@@ -60,7 +60,7 @@ class RtCi(unittest.TestCase):
         # CI's three rt jobs run the shards; together they are every step,
         # each in one shard (the R_HOME tree, seconds, in all of them)
         crates = ["robigo-rt", "robigo-rtcore"]
-        everything = [s[0] for s in rt.steps(crates)]
+        everything = [s[0] for s in rt.builds_first(rt.steps(crates))]
         seen = {}
         for shard in [s for s in rt.SHARDS if s not in rt.OWN_STEPS]:
             titles = [s[0] for s in rt.shard_steps(crates, shard)]
@@ -76,7 +76,12 @@ class RtCi(unittest.TestCase):
                 self.assertEqual(shards, [rt.shard_of(t)], t)
         # where each long step goes (the split's point): the crates' tests
         # where the crates' test build is, the long conformance runs apart
-        where = {t: rt.shard_of(t) for t in everything}
+        # (each build step goes where its tests run: the lists below name
+        # the runs)
+        for t in everything:
+            if t.endswith(": its tests built (--no-run)"):
+                self.assertEqual(rt.shard_of(t), rt.shard_of(t.removesuffix(": its tests built (--no-run)")), t)
+        where = {t: rt.shard_of(t) for t in everything if not t.endswith(": its tests built (--no-run)")}
         self.assertEqual(where["the crates' tests (quick profile)"], "modes")
         self.assertEqual(where["ROBIGO_GC_MOVE (move every movable object at every collection), with gctorture"],
                          "modes")
@@ -434,6 +439,28 @@ class RtCi(unittest.TestCase):
                 if cmd[:2] == ["cargo", "test"] and "--no-run" not in cmd \
                         and not (rt.CONFORMANCE in cmd and "--exact" in cmd):
                     self.assertTrue(rt.crate_test_threads(cmd), f"{shard}: {title}: {cmd}")
+
+    def test_each_shards_crate_tests_are_built_in_a_step_of_their_own(self):
+        # a crate-test step's time is its tests' alone: its build (the same
+        # command with --no-run, the same RUSTFLAGS and target) comes first,
+        # once per build, and a plan's own build is not made twice
+        crates = ["robigo-rt", "robigo-rtapi", "robigo-rtcore"]
+        plans = {shard: rt.shard_steps(crates, shard) for shard in rt.SHARDS}
+        plans["local"] = rt.builds_first(rt.steps(crates))
+        for name, plan in plans.items():
+            built = []
+            for title, env, cmd in plan:
+                if cmd[:2] == ["cargo", "test"] and "--no-run" in cmd:
+                    built.append((cmd[:cmd.index("--no-run")], {k: env.get(k) for k in rt.BUILD_ENV}))
+                elif rt.crate_test_threads(cmd):
+                    want = (cmd[:cmd.index("--")], {k: env.get(k) for k in rt.BUILD_ENV})
+                    self.assertIn(want, built, f"{name}: {title}")
+            self.assertEqual(len(built), len({repr(b) for b in built}), f"{name}: a build made twice")
+            self.assertEqual(rt.builds_first(plan), plan, name)
+        da = [t for t, _e, _c in plans["debug-assertions"]]
+        self.assertIn("the crates' tests with debug assertions (-C debug-assertions=on, quick profile): "
+                      "its tests built (--no-run)", da)
+        self.assertEqual(sum("built" in t for t, _e, c in plans["release-crate-tests"] if "--no-run" in c), 1)
 
     def test_a_crosscheck_that_compares_fewer_than_its_floor_fails(self):
         # the rdb boot's report: a boot that stopped loading the compiler's

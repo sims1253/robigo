@@ -763,10 +763,36 @@ def shard_steps(crates, shard):
     """The steps of one shard, in `steps`' order (debug-assertions and
     release-crate-tests: their own, which `steps` does not have)."""
     if shard == "debug-assertions":
-        return debug_assertions_steps(crates)
+        return builds_first(debug_assertions_steps(crates))
     if shard == "release-crate-tests":
-        return release_crate_tests_steps(crates)
-    return [s for s in steps(crates) if shard_of(s[0]) in (None, shard)]
+        return builds_first(release_crate_tests_steps(crates))
+    return builds_first([s for s in steps(crates) if shard_of(s[0]) in (None, shard)])
+
+
+# the environment that decides what cargo builds (the modes' variables are
+# read by the tests at run time, not by the build)
+BUILD_ENV = ("RUSTFLAGS", "CARGO_TARGET_DIR")
+
+
+def builds_first(plan):
+    """`plan` with each crate-test build in a step of its own (`--no-run`,
+    the same command and build environment) before the first step that runs
+    it: a crate-test step's time is then its tests' alone, and the build's
+    is its own line in the times (#989's gate: debug-assertions' crate
+    tests took 3.0 min, nearly all of it their build under load). A build a
+    plan already has (release-crate-tests') is not made twice."""
+    def key(env, cmd):
+        return (tuple(cmd[:cmd.index("--")] if "--" in cmd else [x for x in cmd if x != "--no-run"]),
+                tuple((k, env.get(k)) for k in BUILD_ENV))
+    built = {key(e, c) for _t, e, c in plan if c[:2] == ["cargo", "test"] and "--no-run" in c}
+    out = []
+    for t, e, c in plan:
+        if crate_test_threads(c) and key(e, c) not in built:
+            built.add(key(e, c))
+            out.append((f"{t}: its tests built (--no-run)", {k: e[k] for k in BUILD_ENV if k in e},
+                        [*c[:c.index("--")], "--no-run"]))
+        out.append((t, e, c))
+    return out
 
 
 def timings_report(done, shard=None):
@@ -882,7 +908,7 @@ def main(argv):
             # (workflow commands on stdout: Actions annotates only those)
             print(f"::error::{problem}")
             return 2
-    plan = (full_move_steps() if a.full_move else freeze_check_steps() if a.freeze_check else shard_steps(crates, a.shard) if a.shard else steps(crates))
+    plan = (full_move_steps() if a.full_move else freeze_check_steps() if a.freeze_check else shard_steps(crates, a.shard) if a.shard else builds_first(steps(crates)))
     done = []
     try:
         return run_steps(plan, done)
