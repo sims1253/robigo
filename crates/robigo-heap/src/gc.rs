@@ -2570,16 +2570,16 @@ impl Core {
         self.gc_torture(on as i32, 0);
     }
 
-    /// Hold the torture set now (gctorture's counters, `ROBIGO_GC_MOVE`'s
-    /// moves) until [`Core::arm_after_start`]: what
-    /// `ROBIGO_TORTURE_AFTER_START=1` does when the core is made. The
-    /// moving mode's bookkeeping goes on; only its moves wait.
     /// Whether a hold ([`Core::hold_torture_until_armed`]) is waiting for its
     /// arming.
     pub fn torture_held(&self) -> bool {
         !self.moves_armed
     }
 
+    /// Hold the torture set now (gctorture's counters, `ROBIGO_GC_MOVE`'s
+    /// moves) until [`Core::arm_after_start`]: what
+    /// `ROBIGO_TORTURE_AFTER_START=1` does when the core is made. The
+    /// moving mode's bookkeeping goes on; only its moves wait.
     pub fn hold_torture_until_armed(&mut self) {
         // (only a gctorture that is on is held: with moves alone held, a
         // gctorture(TRUE) the start itself calls is not undone at the
