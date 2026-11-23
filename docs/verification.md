@@ -360,6 +360,18 @@ GNU R 4.6.2 sources at start-up, so running it (and this test) needs
 `scripts/r-src.sh` to have extracted them, or `ROBIGO_RSRC` pointing at
 that tree.
 
+**As root, as CI runs it.** CI's jobs run the tests as root, where file
+modes stop nothing: a directory of mode 500 is still writable, so a case
+that relies on a permission failing passes locally and fails there (B's
+`tests/rt/files/tempdir.R`, 2026-11-23). `unshare -r` runs a command as
+root in a user namespace of its own, with root's file semantics and no
+privilege on the host, and the build and the test binaries work under it
+unchanged:
+
+```sh
+ROBIGO_CONF_FILTER=tests/rt/files unshare -r cargo test --release -p robigo-rtapi --test conformance -- --nocapture
+```
+
 **What changed between versions.** `scripts/oracle-diff.py` lists the
 cases whose recorded output differs between two versions (default 4.5.0
 → 4.6.2), compared the way each harness compares (conformance byte for
