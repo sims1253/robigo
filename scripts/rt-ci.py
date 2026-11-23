@@ -798,11 +798,13 @@ def conf_slots_dir(env=None):
 
 
 # A crate-test step runs at least this many test threads, however few slots
-# were free: at one thread the crates' tests cost a gate minutes (the
-# debug-assertions shard's ran 3.0 min at one thread, 110% of its budget,
-# 2026-11-23), where up to 3 threads over its slots per run cost 24 CPUs'
-# conformance cases nothing measurable. It never waits for more slots: a
-# step that waits on several at once is the shape that starves under load.
+# were free: up to 3 threads over its slots per run cost 24 CPUs'
+# conformance cases nothing measurable, and a step's long tests (the
+# gctorture modes') are not left to one thread. (Measured 2026-11-23 on the
+# debug-assertions step, built beforehand: 0.53/0.71 min at one thread,
+# 0.56/0.59 at four, at load 24-32; its 3.0 min in #989's gate was its build
+# under load.) It never waits for more slots: a step that waits on several
+# at once is the shape that starves under load.
 CRATE_TEST_MIN_THREADS = 4
 
 
