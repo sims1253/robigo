@@ -104,6 +104,11 @@ class Classes(unittest.TestCase):
         self.assertEqual(bd.classify(o, printed, {}, {}, 1), "mismatch")
         self.assertEqual(bd.classify(o, other, {}, {}, 1), "mismatch")
         self.assertEqual(bd.classify(o, ny, {}, {}, 1), "not-implemented")
+        # the text in GNU R's record too (a value holding it: base's
+        # .NotYetImplemented source) is a mismatch, not robigo's refusal
+        o_ny = self.f("o3.rds", b"value is not implemented yet 1")
+        r_ny = self.f("r5.rds", b"value is not implemented yet 2")
+        self.assertEqual(bd.classify(o_ny, r_ny, {}, {}, 1), "mismatch")
         self.assertEqual(bd.classify(res, other, {}, {}, 1), "resource")
         self.assertEqual(bd.classify(res, gone, {}, {1: "crash"}, 1), "resource")
         self.assertEqual(bd.classify(gone, same, {1: "crash"}, {}, 1), "oracle-crash")
@@ -637,6 +642,10 @@ class Known(unittest.TestCase):
         self.assertEqual(bd.worse_than_known({2: "crash"}, {2: "mismatch"}), [(2, "mismatch", "crash")])
         # a list from before classes (ids alone) checks nothing
         self.assertEqual(bd.worse_than_known(now, {}), [])
+        # better but still failing: timeout -> not-implemented (a note);
+        # fixed (pass) and unchanged are not
+        self.assertEqual(bd.better_than_known(now, known), [(3, "timeout", "not-implemented")])
+        self.assertEqual(bd.better_than_known(now, {}), [])
         with tempfile.TemporaryDirectory() as d:
             old = bd.KNOWN
             bd.KNOWN = d

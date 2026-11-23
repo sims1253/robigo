@@ -688,7 +688,10 @@ def classify(o, r, lost_o, lost_r, i):
     rb = open(r, "rb").read()
     if same_record(o, r):
         return "pass"
-    if NOT_YET in rb:
+    # (robigo-rt's own refusal: GNU R's record holding the text too is a
+    # value that contains it, base's .NotYetImplemented source listed by
+    # env2list(baseenv()), not a refusal)
+    if NOT_YET in rb and NOT_YET not in ob:
         return "not-implemented"
     return "mismatch"
 
@@ -854,6 +857,14 @@ def worse_than_known(res, classes):
             if res.get(i) in CLASS_RANK and was in CLASS_RANK and CLASS_RANK[res[i]] > CLASS_RANK[was]]
 
 
+def better_than_known(res, classes):
+    """The known failures whose class got better but still fail: [(id,
+    known class, now)], a note that the list is due for regeneration (a
+    fixed case is the ratchet's own `fixed`)."""
+    return [(i, was, res[i]) for i, was in sorted(classes.items())
+            if res.get(i) in CLASS_RANK and was in CLASS_RANK and CLASS_RANK[res[i]] < CLASS_RANK[was]]
+
+
 def counts(res):
     c = {k: 0 for k in ("pass", *FAILS, *EXCLUDED)}
     for v in res.values():
@@ -979,11 +990,14 @@ def cmd_run(a):
         if new:
             status = 1
         if known is not None:
-            worse = worse_than_known(r["res"], read_known_classes(variant))
+            classes = read_known_classes(variant)
+            worse = worse_than_known(r["res"], classes)
             for i, was, now in worse:
                 print(f"  WORSE #{i}: known as {was}, now {now}")
             if worse:
                 status = 1
+            for i, was, now in better_than_known(r["res"], classes):
+                print(f"  better #{i}: known as {was}, now {now} (a note: regenerate the list, --regen-known)")
         if getattr(a, "reuse", None) is not None and r["row"].name in PLANT_ROWS and r["jit"] == "off":
             a.reuse[r["row"].name] = r    # the plant check's runs on this binary (ci)
         elif not a.keep:
