@@ -270,7 +270,9 @@ impl<'s> Loop<'s> {
             };
             if differs || cx.shared(self.ind.bind(cx)) {
                 // ind has been captured or removed by FUN: fix it up
-                let fresh = s.capture(cx, |cx, o| cx.build_scalar(o, 0i32))?;
+                // REPROTECT(ind = duplicate(ind)): the current index, which
+                // an active `i`'s setter receives from defineVar
+                let fresh = s.capture(cx, |cx, o| cx.duplicate(self.ind, o))?;
                 self.ind.replace_from(cx, fresh);
                 cx.define_var(self.isym, self.ind, self.rho)?;
                 let loc = s.capture(cx, |cx, o| cx.find_var_loc_in_frame(self.rho, self.isym, o).map(|_| ()))?;

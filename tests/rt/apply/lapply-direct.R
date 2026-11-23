@@ -83,12 +83,18 @@ fa <- function(X, FUN, ...) {
     if (missing(value)) {
       reads <<- reads + 1L
       kept_i
-    } else kept_i <<- value
+    } else {
+      if (!is.null(kept_i)) set <<- c(set, value)
+      kept_i <<- value
+    }
   }, environment())
   .Internal(lapply(X, FUN))
 }
+set <- integer(0)
 fa(1:3, identity)
 reads
+set
+kept_i
 # lapply's index vector: captured by FUN (it must be fresh for the next
 # element), rebound, or made an active binding in lapply's frame
 kept <- list()
