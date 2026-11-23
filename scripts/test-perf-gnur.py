@@ -130,6 +130,12 @@ class Inputs(unittest.TestCase):
         self.assertIn("benchmarks/mine/b.R", got)
         self.assertNotIn("benchmarks/mine/notes.txt", got)
         self.assertEqual(got, sorted(got))
+        # the known failures are optional: absent, not listed (the key's loop
+        # fails on a listed file it cannot read)
+        self.assertNotIn("benchmarks/gnur-known-failures.txt", got)
+        open(os.path.join(d, "benchmarks", "gnur-known-failures.txt"), "w").close()
+        with mock.patch.object(perf, "ROOT", d):
+            self.assertIn("benchmarks/gnur-known-failures.txt", perf.gnur_inputs(c))
 
     def test_the_job_keys_its_cache_by_those_files(self):
         import re

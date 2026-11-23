@@ -1232,7 +1232,8 @@ jobs:
           # scripts): not benchmarks/rt/, robigo-rt's rows, which this job
           # does not read. Until 2026-11-24 the key hashed all of
           # benchmarks/, and every rt row change dropped it (perf-gnur-1)
-          inputs=$(python3 scripts/perf.py gnur-inputs | while read -r f; do printf '%s\0' "$f"; sha256sum < "$f"; done | sha256sum | cut -c1-16)
+          # (a file that cannot be read ends the step: no key from a partial hash)
+          inputs=$(python3 scripts/perf.py gnur-inputs | while read -r f; do printf '%s\0' "$f"; sha256sum < "$f" || exit 1; done | sha256sum | cut -c1-16)
           echo "key=perf-gnur-2-$image-$sig-$(printf '%s' "$pkgs" | sha256sum | cut -c1-16)-$inputs" >> "$GITHUB_OUTPUT"
           echo "sig=$sig" >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@v6

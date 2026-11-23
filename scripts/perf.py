@@ -178,8 +178,11 @@ def gnur_inputs(c=None):
     (scripts/perf-gnur.py; a change to robigo-rt's rows does not drop it)."""
     c = c or conf()
     out = [os.path.join(ROOT, "benchmarks", "benchmarks.toml"),
-           os.path.join(ROOT, "benchmarks", "gnur-known-failures.txt"),
            os.path.join(ROOT, "scripts", "perf.py"), os.path.join(ROOT, "scripts", "perf-gnur.py")]
+    # (optional: perf-gnur.py reads none as no known failure)
+    known = os.path.join(ROOT, "benchmarks", "gnur-known-failures.txt")
+    if os.path.exists(known):
+        out.append(known)
     for sname, s in c["suites"].items():
         if "dir" in s:
             out += suite_files(sname, s)
