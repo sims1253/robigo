@@ -466,6 +466,11 @@ pub struct Core {
     /// panic out of a collection (`tests::death`).
     #[cfg(test)]
     panic_at: tests::PanicAt,
+    /// The sweep's small blocks by how it settled them: skipped (nothing
+    /// died), walked with survivors, walked to empty (the tests'
+    /// `Block::cells` coverage).
+    #[cfg(test)]
+    sweep_kinds: [u64; 3],
     mark_stack: Vec<Sexp>,
     /// the collection's number: large objects are marked by storing it in
     /// their chunk's header (no clearing between collections)
@@ -1101,6 +1106,8 @@ impl Core {
             poisoned: false,
             #[cfg(test)]
             panic_at: tests::PanicAt::default(),
+            #[cfg(test)]
+            sweep_kinds: [0; 3],
             due: false,
             due_at: 0,
             poll: None,
@@ -1759,7 +1766,7 @@ impl Core {
         if self.sizes.over_trigger(cells) {
             self.poll_slow(t, n, bytes, cells)?;
         }
-        let p = self.heap.try_alloc_large(bytes).ok_or(NeedGc::new(t, n))?;
+        let p = self.heap.try_alloc_large(bytes, cells).ok_or(NeedGc::new(t, n))?;
         // SAFETY: `p` is fresh, with `bytes` bytes.
         let x = unsafe { self.init_header(p, t) };
         self.count(bytes, cells);
@@ -2105,7 +2112,7 @@ impl Core {
             let p = self.heap.alloc(size.max(GRANULE), cells);
             (!p.is_null()).then_some(p)
         } else {
-            self.heap.try_alloc_large(size)
+            self.heap.try_alloc_large(size, cells)
         }
     }
 
@@ -3572,26 +3579,47 @@ impl Core {
         self.chars = chars;
     }
 
-    /// Queue the release callback of a dead object; a `large` one's vector
-    /// cells leave the vector heap's use here (a small one's with its
-    /// block's, [`Block::cells`]).
+    /// Give back a live object's charge to the vector heap's use before its
+    /// `object_cells` drops to 0 while it lives, so that the sweep's count
+    /// stays its objects' cells (the invariant of [`Block::cells`]): the
+    /// frame quarantine's poisoned frames, held as roots and no longer
+    /// environments. A small object's block, or a large one's chunk, keeps
+    /// the rest.
+    ///
+    /// # Safety
+    /// `x` is a live object of this heap, its header and length words as
+    /// its allocation left them.
+    pub unsafe fn uncharge_cells(&mut self, x: Sexp) {
+        // SAFETY: the caller's contract; a block's or large chunk's header
+        // is at its address rounded down to a block.
+        unsafe {
+            let cells = crate::heapsize::object_cells(x);
+            let b = (x.0 as usize & !(BLOCK - 1)) as *mut Block;
+            if (*b).magic == 0x524f4249474f4241 {
+                debug_assert!((*b).cells as usize >= cells, "robigo: an uncharged object's block has fewer cells");
+                (*b).cells -= cells.min((*b).cells as usize) as u32;
+            } else {
+                let c = crate::heap::large_cells(b as usize);
+                debug_assert!(*c as usize >= cells, "robigo: an uncharged large object has fewer cells");
+                *c -= (cells as u64).min(*c);
+            }
+            self.sizes.valloc = self.sizes.valloc.saturating_sub(cells);
+        }
+    }
+
+    /// Queue the release callback of a dead object. (Its vector cells leave
+    /// the vector heap's use with its block's or large chunk's charge, in
+    /// the sweep: [`Block::cells`], `heap::large_cells`.)
     ///
     /// # Safety
     /// `p` must be an object not yet overwritten by the sweep.
     #[inline]
-    unsafe fn on_death(&mut self, p: *mut u8, large: bool) {
+    unsafe fn on_death(&mut self, p: *mut u8) {
         #[cfg(test)]
         tests::death(self, false);
         // SAFETY: the flags are in the header; EXTDATA means the object was
         // made by `alloc_extdata`, and the sweep has not reused its slot.
         unsafe {
-            // R: memory.c:ReleaseLargeFreeVectors (R_LargeVallocSize -=
-            // getVecSizeInVEC(s)). Small vectors are counted by class there,
-            // when they are allocated: here by their block (`Block::cells`),
-            // which the sweep settles once per block
-            if large {
-                self.sizes.valloc = self.sizes.valloc.saturating_sub(crate::heapsize::object_cells(Sexp(p)));
-            }
             if *p.add(header::OFF_FLAGS) & flags::EXTDATA != 0
                 && let Some(call) = take_extdata_release(p)
             {
@@ -3615,6 +3643,10 @@ impl Core {
         let mut dead_small_chunks: Vec<(usize, usize, usize)> = Vec::new();
         let chunks = self.heap.chunks.clone();
         let epoch = self.epoch;
+        // a moving collection leaves its old copies poisoned (no type, no
+        // length) among the dead: their cells are read from the charge, as
+        // the block's count less its survivors'
+        let moved = self.gc_move && self.moves_armed;
         for (idx, c) in chunks.iter().enumerate() {
             if c.large {
                 let obj = (c.base + DATA_OFF) as *mut u8;
@@ -3626,8 +3658,19 @@ impl Core {
                     live_bytes += (c.end - c.base) as u64;
                     live_objects += 1;
                 } else {
+                    // R: memory.c:ReleaseLargeFreeVectors (R_LargeVallocSize
+                    // -= the vector's size): the charge its allocation made,
+                    // which its chunk's header holds (`large_cells`)
                     // SAFETY: as above, and this object is not read again.
-                    unsafe { self.on_death(obj, true) };
+                    unsafe {
+                        let charged = *crate::heap::large_cells(c.base) as usize;
+                        debug_assert!(
+                            self.sizes.valloc >= charged,
+                            "robigo: a large object's cells exceed the vector heap's use"
+                        );
+                        self.sizes.valloc = self.sizes.valloc.saturating_sub(charged);
+                        self.on_death(obj);
+                    }
                     dead_chunks.push(idx);
                 }
                 continue;
@@ -3650,6 +3693,10 @@ impl Core {
                     }
                     if (*b).live_objects > 0 && (*b).marked + (*b).immortals == (*b).live_objects {
                         // nothing died here: skip the bitmap walk
+                        #[cfg(test)]
+                        {
+                            self.sweep_kinds[0] += 1;
+                        }
                         live_bytes += (*b).live_objects as u64 * SIZES[(*b).class as usize] as u64;
                         live_objects += (*b).live_objects as u64;
                         (*b).marked = 0;
@@ -3674,10 +3721,17 @@ impl Core {
                     // flagless, their release calls taken
                     let mut new_starts = [0u64; START_WORDS];
                     let mut live: u32 = 0;
-                    // the survivors' cells: the dead ones' are the block's
-                    // count less these (the survivors are few where many
-                    // died, and a dead object is not read for its length)
-                    let mut live_cells: usize = 0;
+                    // the dead objects' cells leave the vector heap's use: the
+                    // block's count (`Block::cells`) less its survivors', or
+                    // the dead ones' summed, whichever side is smaller (the
+                    // mark counted the survivors: a block of long-lived boot
+                    // objects with a few dead ones reads only those); debug
+                    // builds sum both, to check the count (but after a move,
+                    // whose old copies are poison: `moved`)
+                    let survivors = (*b).marked + (*b).immortals;
+                    let count_dead = !moved && (*b).live_objects.saturating_sub(survivors) <= survivors;
+                    let check = cfg!(debug_assertions) && !moved;
+                    let (mut live_cells, mut dead_cells) = (0usize, 0usize);
                     let csize = SIZES[(*b).class as usize] as u64;
                     for w in 0..START_WORDS {
                         let mut s = (*b).starts[w];
@@ -3688,10 +3742,17 @@ impl Core {
                             if marks[w] & (1u64 << (g & 63)) != 0 || f & flags::IMMORTAL != 0 {
                                 live += 1;
                                 live_bytes += csize;
-                                live_cells += crate::heapsize::object_cells(Sexp(p));
+                                if !count_dead || check {
+                                    live_cells += crate::heapsize::object_cells(Sexp(p));
+                                }
                                 new_starts[w] |= 1u64 << (g & 63);
                             } else {
-                                self.on_death(p, false);
+                                // (its header is read before the free list's
+                                // writes below)
+                                if count_dead || check {
+                                    dead_cells += crate::heapsize::object_cells(Sexp(p));
+                                }
+                                self.on_death(p);
                                 if self.force_gap > 0 {
                                     // poison: a use after free reads garbage
                                     // types and pointers, and fails loudly
@@ -3710,13 +3771,25 @@ impl Core {
                     (*b).starts = new_starts;
                     (*b).marked = 0;
                     (*b).live_objects = live;
-                    // the dead objects' cells leave the vector heap's use:
-                    // the block's count less its survivors' (exact while an
-                    // object's cells stay those its allocation counted:
-                    // `Block::cells`; a length C changed since is settled
-                    // here, for the survivors too)
-                    self.sizes.valloc = (self.sizes.valloc + live_cells).saturating_sub((*b).cells as usize);
-                    (*b).cells = live_cells as u32;
+                    let charged = (*b).cells as usize;
+                    if check {
+                        assert_eq!(
+                            live_cells + dead_cells,
+                            charged,
+                            "robigo: a block's cells (Block::cells) are not its objects' (an object's cells changed while it lived)"
+                        );
+                    }
+                    let dead = if count_dead { dead_cells } else { charged.saturating_sub(live_cells) };
+                    debug_assert!(
+                        self.sizes.valloc >= dead,
+                        "robigo: a block's dead cells exceed the vector heap's use"
+                    );
+                    self.sizes.valloc = self.sizes.valloc.saturating_sub(dead);
+                    (*b).cells = (charged - dead.min(charged)) as u32;
+                    #[cfg(test)]
+                    {
+                        self.sweep_kinds[if live == 0 { 2 } else { 1 }] += 1;
+                    }
                     live_objects += live as u64;
                     if live == 0 {
                         if (*b).owner == OWNER_EMPTY {
@@ -4407,36 +4480,123 @@ mod tests {
     }
 
     /// The vector heap's use (`valloc`) after any collection is the cells
-    /// of the live objects, recounted one by one: the sweep's per-block
-    /// count (`Block::cells`) gives the number the old per-dead-object
-    /// recount gave, for blocks that die whole, die in part or survive
-    /// whole, for large objects, and under both moving collectors.
+    /// of the live objects, recounted one by one, and every block's count
+    /// (`Block::cells`) and large chunk's charge is its objects' (so errors
+    /// cannot cancel between blocks): for blocks that survive whole, die in
+    /// part or die whole (each seen), large objects, the allocation paths
+    /// that charge cells (vectors, `alloc_rooted`, CHARSXPs, slot frames,
+    /// external data), a frozen boot heap, and both moving collectors; and
+    /// `uncharge_cells` keeps it so for a live object whose cells drop.
     #[cfg(not(miri))]
     #[test]
     fn the_vector_heaps_use_is_the_live_objects_cells_after_every_collection() {
-        fn live_cells(c: &Core) -> usize {
-            let mut n = 0;
-            // SAFETY: outside a collection, every object found is live.
-            c.for_each_live_object(|p| n += unsafe { crate::heapsize::object_cells(Sexp(p)) });
-            n
+        /// Every block's and large chunk's charge against its objects'
+        /// cells (`skip`: an object whose cells were given back), and the
+        /// heap's: `valloc` less the charges outside the heap (`base`).
+        fn check(c: &Core, base: usize, skip: Sexp, what: &str) {
+            let mut total = 0;
+            for ch in &c.heap.chunks {
+                // SAFETY: outside a collection: a chunk's headers and the
+                // objects their start bits show are live.
+                unsafe {
+                    if ch.large {
+                        let x = Sexp((ch.base + DATA_OFF) as *mut u8);
+                        let n = if x == skip { 0 } else { crate::heapsize::object_cells(x) };
+                        assert_eq!(*crate::heap::large_cells(ch.base) as usize, n, "{what}: a large chunk's charge");
+                        total += n;
+                        continue;
+                    }
+                    for bi in 0..ch.claimed as usize {
+                        let b = (ch.base + bi * BLOCK) as *mut Block;
+                        let mut n = 0;
+                        for w in 0..START_WORDS {
+                            let mut s = (*b).starts[w];
+                            while s != 0 {
+                                let g = w * 64 + s.trailing_zeros() as usize;
+                                let x = Sexp(Block::data_ptr(b).add(g * GRANULE));
+                                if x != skip {
+                                    n += crate::heapsize::object_cells(x);
+                                }
+                                s &= s - 1;
+                            }
+                        }
+                        assert_eq!((*b).cells as usize, n, "{what}: block {bi} of a chunk");
+                        total += n;
+                    }
+                }
+            }
+            assert_eq!(c.sizes.valloc - base, total, "{what}: the vector heap's use");
         }
-        for mode in 0..3 {
+        /// The test's roots; the boot objects (the first `boot`) are also
+        /// its freeze roots.
+        struct R {
+            roots: Vec<Sexp>,
+            held: Vec<Sexp>,
+            boot: usize,
+        }
+        impl Trace for R {
+            fn trace<V: Visitor + ?Sized>(&mut self, v: &mut V) {
+                for x in self.roots.iter_mut().chain(self.held.iter_mut()) {
+                    v.edge(x);
+                }
+            }
+            fn trace_freeze<V: Visitor + ?Sized>(&mut self, v: &mut V) -> bool {
+                for x in &mut self.roots[..self.boot] {
+                    v.edge(x);
+                }
+                true
+            }
+        }
+        for mode in 0..4 {
             let mut c = Core::new();
-            c.set_freeze_enabled(false);
+            c.set_freeze_enabled(mode == 3);
             // SAFETY: switched before anything is allocated.
             unsafe {
                 match mode {
-                    0 => c.set_gc_move(false),
                     1 => c.set_gc_move(true),
-                    _ => c.set_gc_move_young(3),
+                    2 => c.set_gc_move_young(3),
+                    _ => c.set_gc_move(false),
                 }
             }
             c.set_torture(false);
-            let mut roots: Vec<Sexp> = Vec::new();
-            let base = c.sizes.valloc - live_cells(&c);
+            let nil = c.nil();
+            // the heap's own charges outside its chunks (the process's
+            // shared constants)
+            let mut base = c.sizes.valloc;
+            for ch in &c.heap.chunks {
+                // SAFETY: as in `check`.
+                unsafe {
+                    if ch.large {
+                        base -= *crate::heap::large_cells(ch.base) as usize;
+                    } else {
+                        for bi in 0..ch.claimed as usize {
+                            base -= (*((ch.base + bi * BLOCK) as *mut Block)).cells as usize;
+                        }
+                    }
+                }
+            }
+            let mut r = R { roots: Vec::new(), held: Vec::new(), boot: 0 };
+            // a boot heap of vectors, strings and frames, frozen at the
+            // first collection after the boundary (mode 3)
+            for i in 0..400usize {
+                r.roots.push(c.alloc_vector(REALSXP, i % 9).unwrap());
+                r.roots.push(c.mk_char(format!("boot{i}").as_bytes(), 0).unwrap());
+                // SAFETY: a fresh frame of this heap.
+                r.roots.push(unsafe { c.alloc_slot_frame(i % 5, nil) }.unwrap());
+            }
+            let boot = r.roots.len();
+            r.boot = boot;
+            if mode == 3 {
+                // SAFETY: nothing excluded, no pins.
+                unsafe { c.freeze_boundary(nil.addr(), &[]) };
+            }
             for round in 0..6 {
+                // a block that survives whole: all of these are kept
+                for _ in 0..600 {
+                    r.held.push(c.alloc_vector(INTSXP, 3).unwrap());
+                }
                 // vectors of many types and lengths (small, medium, large),
-                // nodes between them; every third kept, the rest garbage
+                // nodes, strings and frames between them; every third kept
                 for i in 0..3000usize {
                     let t = [REALSXP, INTSXP, LGLSXP, RAWSXP, STRSXP, VECSXP, CPLXSXP][i % 7];
                     let n = match i % 11 {
@@ -4448,31 +4608,69 @@ mod tests {
                         5 if i % 97 == 5 => 20_000,
                         _ => i % 17,
                     };
-                    let x = c.alloc_vector(t, n).unwrap();
-                    let nil = c.nil();
+                    let x = match i % 13 {
+                        // SAFETY: `roots` holds every object kept.
+                        0 => unsafe { c.alloc_rooted(t, n, &mut r) }.unwrap(),
+                        // SAFETY: a fresh frame of this heap.
+                        1 => unsafe { c.alloc_slot_frame(n % 7, nil) }.unwrap(),
+                        2 => c.mk_char(format!("s{round}-{i}").as_bytes(), 0).unwrap(),
+                        // SAFETY: a fresh node whose payload is static.
+                        3 => unsafe {
+                            c.alloc_extdata(
+                                REALSXP,
+                                std::ptr::NonNull::<f64>::dangling().as_ptr() as *mut u8,
+                                0,
+                                0,
+                                None,
+                            )
+                        }
+                        .unwrap(),
+                        _ => c.alloc_vector(t, n).unwrap(),
+                    };
                     // SAFETY: fresh objects of this heap.
                     let y = unsafe { c.alloc_node(LISTSXP, nil, nil, nil) }.unwrap();
                     if (i + round) % 3 == 0 {
-                        roots.push(x);
+                        r.roots.push(x);
                     }
                     if i % 5 == 0 {
-                        roots.push(y);
+                        r.roots.push(y);
                     }
                 }
-                // SAFETY: `roots` holds every object kept (the vectors'
-                // elements are nil or unset, nothing points elsewhere).
-                unsafe { c.collect(&mut roots) };
-                assert_eq!(c.sizes.valloc - base, live_cells(&c), "mode {mode}, round {round}");
-                // half the survivors die at the next collection: blocks
-                // that die in part, and whole ones
-                let keep = roots.len() / 2;
-                roots.truncate(keep);
+                // SAFETY: `roots` and `held` hold every object kept (the
+                // vectors' elements are nil or unset).
+                unsafe { c.collect(&mut r) };
+                check(&c, base, nil, &format!("mode {mode}, round {round}"));
+                assert_eq!(mode == 3, c.frozen_count() > 0, "mode {mode}: frozen {}", c.frozen_count());
+                // half the session's survivors die at the next collection:
+                // blocks that die in part, and whole ones
+                let keep = boot + (r.roots.len() - boot) / 2;
+                r.roots.truncate(keep);
             }
-            roots.clear();
-            // SAFETY: nothing is kept.
-            unsafe { c.collect(&mut roots) };
-            assert_eq!(c.sizes.valloc - base, live_cells(&c), "mode {mode}, all dead");
-            assert_eq!(c.sizes.valloc, base, "mode {mode}: only the boot objects' cells are left");
+            // a live object whose cells drop: given back first
+            // (a session frame: a boot one is frozen in mode 3)
+            // SAFETY: a fresh slot frame of this heap, rooted by `r`.
+            let f = unsafe { c.alloc_slot_frame(3, nil) }.unwrap();
+            r.held.push(f);
+            // SAFETY: a live slot frame of this heap, as allocated.
+            unsafe {
+                c.uncharge_cells(f);
+                f.set_flag_raw(flags::SLOTS, false);
+                c.collect(&mut r);
+            }
+            check(&c, base, nil, &format!("mode {mode}, after an uncharge"));
+            r.roots.truncate(boot);
+            r.held.clear();
+            // SAFETY: `r` holds every object kept.
+            unsafe { c.collect(&mut r) };
+            check(&c, base, nil, &format!("mode {mode}, the session's objects dead"));
+            if mode != 1 {
+                // (the full mover moves every block's survivors out)
+                assert!(
+                    c.sweep_kinds.iter().all(|&k| k > 0),
+                    "mode {mode}: every kind of block settled: {:?}",
+                    c.sweep_kinds
+                );
+            }
         }
     }
 

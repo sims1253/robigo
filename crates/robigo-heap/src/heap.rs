@@ -106,12 +106,20 @@ pub struct Block {
     /// below it was allocated before the boundary (the free list is set
     /// aside meanwhile, so a later one is carved above it).
     pub boot_bump: u32,
-    /// The vector cells (`heapsize::vec_cells`, GNU R's VECREC units) of
-    /// the objects in this block, as their allocations counted them into
-    /// the vector heap's use (`valloc`): GNU R counts a small vector by its
-    /// class when it is allocated, and so does this, so the sweep takes a
-    /// block's dead cells as this less its survivors' instead of
-    /// recounting every dead object ([`crate::gc::Core`]'s sweep).
+    /// The vector cells (`heapsize::object_cells`, GNU R's VECREC units)
+    /// charged to the vector heap's use (`valloc`) for the objects in this
+    /// block and not yet given back: added by the allocation of each (the
+    /// heap's slot paths take them), settled by the sweep once per block
+    /// (`Core::sweep`) instead of once per dead object.
+    ///
+    /// **The invariant it rests on:** an object's `object_cells` is the
+    /// same from its allocation to its death. robigo-rt keeps it: a vector
+    /// shortened in place is GROWABLE with its capacity as truelength
+    /// (rtcore's `fresh.rs`), grows only within it (`edit.rs`), and a hashed
+    /// table's truelength is on a vector that is not GROWABLE; the one
+    /// object whose cells drop while it lives, a frame the frame quarantine
+    /// poisons, gives them back first ([`crate::gc::Core::uncharge_cells`]).
+    /// Debug builds check it at each walked block (`Core::sweep`).
     pub cells: u32,
     /// one bit per granule: this granule starts an object.
     pub starts: [u64; START_WORDS],
@@ -132,6 +140,21 @@ const _: () = assert!(std::mem::offset_of!(Block, remembered) == REMEMBERED_OFF)
 /// Where a block's or a large chunk's header keeps its heap's remembered
 /// set: the object's address rounded down to [`BLOCK`], plus this.
 pub const REMEMBERED_OFF: usize = 48;
+
+/// Where a large chunk's header keeps its object's charge to the vector
+/// heap's use (a `u64`): a block's `boot_bump` and `cells` there, which a
+/// large chunk does not use.
+pub const LARGE_CELLS_OFF: usize = 56;
+const _: () = assert!(std::mem::offset_of!(Block, boot_bump) == LARGE_CELLS_OFF);
+const _: () = assert!(std::mem::offset_of!(Block, cells) == LARGE_CELLS_OFF + 4);
+
+/// The charge of the large object whose chunk starts at `base`.
+///
+/// # Safety
+/// `base` is a large chunk's base.
+pub unsafe fn large_cells(base: usize) -> *mut u64 {
+    (base + LARGE_CELLS_OFF) as *mut u64
+}
 
 /// The objects a store made the collector trace on every collection (the
 /// store barrier's log): today the immortal objects something was stored
@@ -365,11 +388,13 @@ impl Heap {
     /// `size` bytes for an object; null if the system refuses the chunk a
     /// small object needs (GNU R's refused page, `GetNewPage`). A refused
     /// large chunk aborts: large requests go through `try_alloc_large`.
+    /// `cells` is the object's charge to the vector heap's use, counted in
+    /// its block ([`Block::cells`]) or its large chunk ([`large_cells`]).
     #[inline(always)]
     pub fn alloc(&mut self, size: usize, cells: usize) -> *mut u8 {
         debug_assert!(size >= GRANULE);
         if size > MAX_MEDIUM {
-            return self.alloc_large(size);
+            return self.alloc_large(size, cells);
         }
         match self.alloc_fast(size, cells) {
             Some(p) => p.as_ptr(),
@@ -568,12 +593,14 @@ impl Heap {
         }
     }
 
-    fn alloc_large(&mut self, size: usize) -> *mut u8 {
-        self.try_alloc_large(size).unwrap_or_else(|| handle_alloc_error(Layout::new::<u8>()))
+    fn alloc_large(&mut self, size: usize, cells: usize) -> *mut u8 {
+        self.try_alloc_large(size, cells).unwrap_or_else(|| handle_alloc_error(Layout::new::<u8>()))
     }
 
-    /// A large object, or None if the system has no memory for it.
-    pub fn try_alloc_large(&mut self, size: usize) -> Option<*mut u8> {
+    /// A large object, or None if the system has no memory for it; `cells`
+    /// is its charge to the vector heap's use, kept in its chunk's header
+    /// ([`large_cells`]) and given back whole at its death.
+    pub fn try_alloc_large(&mut self, size: usize, cells: usize) -> Option<*mut u8> {
         // object header + payload live after a pseudo block header area
         let total_payload = size.checked_add(DATA_OFF)?;
         let (base, _) = self.try_new_chunk(true, total_payload)?;
@@ -587,16 +614,18 @@ impl Heap {
             *(base as *mut u64) = 0;
             *(base as *mut u64).add(1) = 0;
             *((base + REMEMBERED_OFF) as *mut *mut Remembered) = self.remembered;
+            *((base + LARGE_CELLS_OFF) as *mut u64) = cells as u64;
         }
         Some((base + DATA_OFF) as *mut u8)
     }
 
-    /// Immediate free of a small object.
+    /// Immediate free of a small object (the heap's own tests: it gives
+    /// back no cells, [`Block::cells`]).
     ///
     /// # Safety
     /// `p` must be a live small object of this heap, freed once, with no
     /// reference to it left: it goes straight on the free list.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub unsafe fn free_small(&mut self, p: *mut u8) {
         let b = (p as usize & !(BLOCK - 1)) as *mut Block;
         // SAFETY: the caller's contract: `p` is in a block with a class.

@@ -367,7 +367,7 @@ impl Core {
             let b = (p.0 as usize & !(BLOCK - 1)) as *mut Block;
             let q = if (*b).magic == 0x524f4249474f4241 {
                 let size = SIZES[(*b).class as usize];
-                let cells = self.copy_cells(p.0);
+                let cells = self.charge_copy(p.0);
                 let q = self.heap.alloc_or_abort(size, cells);
                 std::ptr::copy_nonoverlapping(p.0, q, size);
                 self.mark_copy(q);
@@ -377,7 +377,8 @@ impl Core {
                 let base = b as usize;
                 let c = *self.heap.chunks.iter().find(|c| c.base == base)?;
                 let size = c.end - base - DATA_OFF;
-                let q = self.heap.try_alloc_large(size)?;
+                // (its charge goes with it: the old chunk is retired, not swept)
+                let q = self.heap.try_alloc_large(size, *crate::heap::large_cells(base) as usize)?;
                 std::ptr::copy_nonoverlapping(p.0, q, size);
                 *((q as usize - DATA_OFF) as *mut u64).add(1) = self.epoch;
                 self.young.moved.large.push(base);
@@ -515,7 +516,7 @@ impl Core {
             unsafe {
                 let b = (p as usize & !(BLOCK - 1)) as *mut Block;
                 let size = SIZES[(*b).class as usize];
-                let cells = self.copy_cells(p);
+                let cells = self.charge_copy(p);
                 let q = self.heap.alloc_or_abort(size, cells);
                 std::ptr::copy_nonoverlapping(p, q, size);
                 *q.add(header::OFF_FLAGS) |= OLD;
@@ -530,7 +531,10 @@ impl Core {
             let p = (base + DATA_OFF) as *mut u8;
             let size = c.end - base - DATA_OFF;
             // (a refused copy stays where it is: a debug collector degrades)
-            let Some(q) = self.heap.try_alloc_large(size) else { continue };
+            // (its charge goes with it: the old chunk is retired, not swept)
+            // SAFETY: `base` is a large chunk's.
+            let charged = unsafe { *crate::heap::large_cells(base) } as usize;
+            let Some(q) = self.heap.try_alloc_large(size, charged) else { continue };
             // SAFETY: both are large objects' payloads of `size` bytes in
             // different chunks; the copy's chunk header gets this
             // collection's mark.
@@ -546,15 +550,15 @@ impl Core {
         moved
     }
 
-    /// A small object's vector cells, for its copy's new block
-    /// ([`Block::cells`], charged by the allocation) and the vector heap's
-    /// use: the old copy's block loses them at the sweep that frees it (its
-    /// survivors no longer include it), so the use is unchanged, as a copy
+    /// Charge a small object's copy: its vector cells, returned for the
+    /// copy's allocation to count in its new block ([`Block::cells`]), and
+    /// added to the vector heap's use here. The old copy's block gives them
+    /// back at the sweep that frees it, so the use is unchanged, as a copy
     /// is the object and not an allocation.
     ///
     /// # Safety
     /// `p` is a live small object.
-    unsafe fn copy_cells(&mut self, p: *mut u8) -> usize {
+    unsafe fn charge_copy(&mut self, p: *mut u8) -> usize {
         // SAFETY: the caller's contract.
         let cells = unsafe { crate::heapsize::object_cells(Sexp(p)) };
         self.sizes.valloc += cells;
