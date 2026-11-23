@@ -13,8 +13,9 @@
     vapply, rooted as globals in `BaseCalls`, so the compile happens once.
 - Which calls are kept: a call is kept with the closure it was made for,
   only when that closure is base's own `lapply` or `vapply` (the base
-  namespace's binding, a lazy-load promise's value). It is reused only in a
-  call of that same closure.
+  namespace's binding, a lazy-load promise's value), and the builtin runs in
+  that closure's own frame (the innermost function context's environment
+  is `rho`). It is reused only under the same two conditions.
   - Under the `Bc` profile (`ROBIGO_RT_PROFILE`), the code compiled on the
     call takes cmp.R's decisions from the closure's frame and body, a local
     `[[` for one. Those decisions are the same in every call of base's
@@ -24,12 +25,19 @@
     `-1 -2 -3`. It now builds its own call. The case is in
     tests/rt/apply/lapply-kept-call.R and passes under the `bc`, `eval` and
     default profiles.
-  - Before each reuse the call's whole shape (`fun(x[[i]], ...)`, every
-    cell) is checked again, and a call that no longer has it is replaced.
-    C code can write into the `X[[i]]` it reaches through `sys.call()`, as
-    GNU R allows (a raw `SETCADDR`); GNU R's next invocation would not see
-    that, and robigo-rt's does not either.
-  - Any other `.Internal(lapply(...))` builds its call afresh, as before.
+  - Sol's second case: `.Internal(vapply())` evaluated in a promise of an
+    argument, so `rho` is another closure's frame (with its own `[[`) while
+    the innermost context is base's vapply. It builds its own call
+    (tests/rt/capi/lapply-call-mutation.R, the probes).
+  - Before each reuse the call's shape is checked again: `fun(x[[i]], ...)`
+    with every cell's car, cdr and type, and no tag or attribute on any
+    cell. A call that no longer has it is replaced. C code can write into
+    the `X[[i]]` it reaches through `sys.call()`, as GNU R allows; GNU R's
+    next invocation would not see that, and robigo-rt's does not either.
+    tests/rt/capi/lapply-call-mutation.R covers an index set by `SETCADDR`,
+    a tag set by `SET_TAG` and an attribute set by `setAttrib`.
+  - Every other `.Internal(lapply())` or `.Internal(vapply())` builds its
+    call afresh, as before.
 - **A deliberate difference from GNU R:** `sys.call()` inside FUN copies the
   call's spine (`shallow_duplicate`), so its outer cells are new each time,
   but the `X[[i]]` inside it is the same object in every invocation. In GNU

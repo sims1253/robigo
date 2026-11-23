@@ -80,20 +80,25 @@ impl BaseCalls {
     }
 }
 
-/// The closure of the innermost function context: the one whose frame the
-/// builtin's `rho` is (`.Internal` is a special and pushes no context).
-fn calling_closure(cx: &Cx) -> Option<Ref<'_>> {
+/// The closure of the innermost function context, if that context's frame
+/// is `rho`: the closure whose body runs the builtin (`.Internal` is a
+/// special and pushes no context). Another `rho` (the builtin evaluated in
+/// a promise of a call's argument, or by `eval`) is no closure's here.
+fn calling_closure<'g>(cx: &'g Cx, rho: Root<'_>) -> Option<Ref<'g>> {
     let mut c = Some(cx.global_context());
     while let Some(r) = c {
         if r.callflag() & robigo_rtcore::ctxt::FUNCTION != 0 {
-            return Some(r.callfun());
+            return r.cloenv_is(rho.bind(cx)).then(|| r.callfun());
         }
         c = r.next();
     }
     None
 }
 
-/// Whether `c` is still the call `fun(x[[i]], ...)`, every cell of it.
+/// Whether `c` is still the call `fun(x[[i]], ...)` as [`Loop::new`] builds
+/// it, every cell of it: its heads and arguments, the cells' types, no tag
+/// and no attribute anywhere (what a C caller could have set through
+/// `sys.call()`).
 fn has_shape(cx: &Cx, c: Ref<'_>, fun: Ref<'_>, x: Ref<'_>, isym: Ref<'_>) -> bool {
     let nil = cx.nil();
     let Some(fc) = c.as_cons() else { return false };
@@ -102,8 +107,15 @@ fn has_shape(cx: &Cx, c: Ref<'_>, fun: Ref<'_>, x: Ref<'_>, isym: Ref<'_>) -> bo
     let Some(tmp) = a1.car().as_cons() else { return false };
     let Some(t1) = tmp.cdr().as_cons() else { return false };
     let Some(t2) = t1.cdr().as_cons() else { return false };
-    c.sexptype() == LANGSXP
-        && a1.car().sexptype() == LANGSXP
+    let plain = |r: Ref<'_>, cell: robigo_rtcore::Cons<'_>, typ| {
+        r.sexptype() == typ && cell.tag() == nil && r.attrib().is_none_or(|a| a == nil)
+    };
+    plain(c, fc, LANGSXP)
+        && plain(fc.cdr(), a1, LISTSXP)
+        && plain(a1.cdr(), a2, LISTSXP)
+        && plain(a1.car(), tmp, LANGSXP)
+        && plain(tmp.cdr(), t1, LISTSXP)
+        && plain(t1.cdr(), t2, LISTSXP)
         && fc.car() == fun
         && a2.car() == cx.sym(RSym::Dots).into()
         && a2.cdr() == nil
@@ -122,12 +134,13 @@ fn kept_call<'s>(
     x: Root<'_>,
     fun: Root<'_>,
     isym: Root<'_>,
+    rho: Root<'_>,
 ) -> Option<Root<'s>> {
     let st = cx.ext::<BaseCalls>()?;
     let slot = st.slot(which).borrow();
     let (call, clo) = slot.as_ref()?;
     let (c, clo) = (call.bind(cx), clo.bind(cx));
-    let ok = calling_closure(cx) == Some(clo) && has_shape(cx, c, fun.bind(cx), x.bind(cx), isym.bind(cx));
+    let ok = calling_closure(cx, rho) == Some(clo) && has_shape(cx, c, fun.bind(cx), x.bind(cx), isym.bind(cx));
     ok.then(|| s.root(cx, c))
 }
 
@@ -142,7 +155,7 @@ impl<'s> Loop<'s> {
         pp: i32,
     ) -> RResult<Loop<'s>> {
         let isym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"i")?.into())))?;
-        let fcall = match kept_call(cx, s, which, x, fun, isym) {
+        let fcall = match kept_call(cx, s, which, x, fun, isym, rho) {
             Some(c) => c,
             None => {
                 let fcall = s.capture(cx, |cx, o| {
@@ -153,7 +166,7 @@ impl<'s> Loop<'s> {
                         cx.lang3(fun.bind(cx), tmp, dots.into())
                     })
                 })?;
-                if let Some(clo) = base_closure(cx, s, which)? {
+                if let Some(clo) = base_closure(cx, s, which, rho)? {
                     keep_call(cx, s, which, fcall, clo);
                 }
                 fcall
@@ -172,8 +185,8 @@ impl<'s> Loop<'s> {
 /// The calling closure, rooted in `s`, if it is base's own `lapply` (or
 /// `vapply`): the value bound to that name in the base namespace's frame
 /// (a lazy-load promise's value).
-fn base_closure<'s>(cx: &mut Cx, s: Scope<'s>, which: Which) -> RResult<Option<Root<'s>>> {
-    let Some(clo) = calling_closure(cx).map(|c| s.root(cx, c)) else { return Ok(None) };
+fn base_closure<'s>(cx: &mut Cx, s: Scope<'s>, which: Which, rho: Root<'_>) -> RResult<Option<Root<'s>>> {
+    let Some(clo) = calling_closure(cx, rho).map(|c| s.root(cx, c)) else { return Ok(None) };
     let name: &[u8] = match which {
         Which::Lapply => b"lapply",
         Which::Vapply => b"vapply",
