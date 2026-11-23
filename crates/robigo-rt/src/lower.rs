@@ -50,6 +50,8 @@ pub fn lower_known(cx: &Cx, e: &Expr<'_>, known: bool) -> Result<Sexp, NeedGc> {
 /// effect at each point (`#line` directives switch it), and the class
 /// vector "srcref". All live objects, rooted by the caller.
 pub(crate) struct SrcCtx<'p> {
+    /// The text the parse read.
+    pub src: &'p [u8],
     pub pos: &'p crate::srcref::Positions,
     /// The parse's srcfile, then each `#line` alias from its offset on.
     pub files: Vec<(usize, Sexp)>,
@@ -156,9 +158,13 @@ pub(crate) fn lower_in<S: Src>(cx: &Cx, e: &Expr<'_>, known: bool, sr: S) -> Res
             let f = lower_in(cx, fun, known, sr)?;
             // SAFETY: as above.
             let call = unsafe { cx.alloc_node_raw(LANGSXP, f, list, nil)? };
-            // a `{` keeps a srcref for itself and each statement
+            // a `{` keeps a srcref for itself and each statement (the
+            // brace's syntax: a call of `` `{` `` written as one is a
+            // funcall, xxfuncall, and keeps none)
             // R: gram.y:xxexprlist, xxexprlist0, xxexprlist1, xxexprlist2
-            if let (Some(sr), Expr::Call { fun: Expr::Sym("{", _), span, .. }) = (sr.ctx(), e) {
+            if let (Some(sr), Expr::Call { fun: Expr::Sym("{", _), span, .. }) = (sr.ctx(), e)
+                && sr.src.get(span.start as usize) == Some(&b'{')
+            {
                 let n = args.len();
                 // SAFETY: fresh objects of this heap; nothing collects.
                 unsafe {

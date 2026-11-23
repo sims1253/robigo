@@ -280,7 +280,7 @@ fn parse_text(
             let m = if srcfile.is_some() { crate::reader::string_bytes(&l.toks, src) } else { Vec::new() };
             (l.warnings, m)
         }
-        Err(_) => (Vec::new(), Vec::new()),
+        Err(_) => (Vec::new(), vec![false; if srcfile.is_some() { src.len() } else { 0 }]),
     };
     let signal = |cx: &mut Cx, upto: usize| -> RResult<()> {
         for w in warnings.iter().filter(|w| (w.at as usize) <= upto) {
@@ -334,7 +334,13 @@ fn parse_text(
     *consumed = if num < 0 { src.len() } else { end };
     signal(cx, if num < 0 { usize::MAX } else { end.saturating_sub(1) })?;
     match srcfile {
-        Some(f) => crate::reader::lower_all_src(cx, src, &exprs, known_utf8, f, &in_string, out),
+        // what the parse read, no further: R_Parse stops after the n-th
+        // expression, so its wholeSrcref ends there and a later `#line` is
+        // unread
+        Some(f) => {
+            let read = &src[..*consumed];
+            crate::reader::lower_all_src(cx, read, &exprs, known_utf8, f, &in_string[..read.len()], out)
+        }
         None => crate::reader::lower_all(cx, &exprs, known_utf8, out),
     }
 }

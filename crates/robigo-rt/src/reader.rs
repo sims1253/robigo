@@ -161,6 +161,7 @@ pub fn lower_all_src(
         let files = src_files(cx, s, &pos, srcfile, known)?;
         cx.build(out, |cx| {
             let ctx = crate::lower::SrcCtx {
+                src,
                 pos: &pos,
                 files: files.iter().map(|(at, f)| (*at, f.bind(cx).sexp())).collect(),
                 class: class.bind(cx).sexp(),
@@ -348,6 +349,7 @@ pub fn lower_console(cx: &mut Cx, src: &[u8], e: &robigo_syntax::Expr<'_>, out: 
         let x = s.capture(cx, |cx, o| {
             cx.build(o, |cx| {
                 let ctx = crate::lower::SrcCtx {
+                    src,
                     pos: &pos,
                     files: files.iter().map(|(at, f)| (*at, f.bind(cx).sexp())).collect(),
                     class: class.bind(cx).sexp(),
