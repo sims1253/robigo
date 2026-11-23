@@ -393,6 +393,8 @@ fn globals_are_roots_but_not_freeze_roots() {
         let nilx = cx.nil().sexp();
         // SAFETY: a live object of this isolate (the global holds it) as the key.
         unsafe { cx.new_weak_ref_raw(both.bind(cx).sexp(), nilx, cx.base_env().sexp(), false) }.expect("room");
+        cx.collect();
+        assert!(!cx.finalizers_pending(), "the global keeps the thawed object alive");
         cx.release_global(both);
         cx.release_global(g);
         cx.collect();
