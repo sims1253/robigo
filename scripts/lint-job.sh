@@ -24,6 +24,7 @@ CHECKS=(
   "python3 scripts/test-pgo-build.py"
   "python3 scripts/test-prune-target.py"
   "python3 scripts/test-scratch.py"
+  "python3 scripts/test-rt-bc-mutate.py"
 )
 
 failed=()
