@@ -1,0 +1,25 @@
+[1] 1000
+[1] "rt_protect_n: 'n' must be a count (a non-negative integer)"
+[1] "rt_protect_n: 'n' must be a count (a non-negative integer)"
+[1] "protectStackOverflowError" "stackOverflowError"       
+[3] "error"                     "condition"                
+[1] "protect(): protection stack overflow"
+NULL
+[1] "protectStackOverflowError" "stackOverflowError"       
+[3] "error"                     "condition"                
+[1] "protect(): protection stack overflow"
+NULL
+calling handler 1 
+[1] "protect(): protection stack overflow"
+calling handler 2 
+[1] "protect(): protection stack overflow"
+in the red zone: 500 
+[1] "caught"
+[1] 50000
+the cleanup sees R_PPStackSize 50000
+[1] "from the handler"
+the cleanup sees R_PPStackSize 50000
+outer restart
+[1] 50000
+[1] 1000
+still going

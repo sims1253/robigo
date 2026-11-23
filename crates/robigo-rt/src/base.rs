@@ -1256,7 +1256,7 @@ fn load_profile(cx: &mut Cx, bytes: &[u8]) -> bool {
     let mut p = match robigo_syntax::parser::Parser::new(&arena, source) {
         Ok(p) => p,
         Err(e) => {
-            crate::repl::error_at_top(cx, &message(&e, 0));
+            crate::repl::parse_error_at_top_after(cx, &[], source, &e, &message(&e, 0));
             return crate::repl::check_session_exit(cx);
         }
     };
@@ -1277,7 +1277,7 @@ fn load_profile(cx: &mut Cx, bytes: &[u8]) -> bool {
                 // the warnings of the tokens lexed by then (the raise
                 // site's frontier, as the console's parse counts them)
                 let frontier = p.error_frontier(&e) + 1;
-                crate::repl::error_at_top_after(cx, &between(start, frontier), &message(&e, start));
+                crate::repl::parse_error_at_top_after(cx, &between(start, frontier), source, &e, &message(&e, start));
                 return crate::repl::check_session_exit(cx);
             }
         };

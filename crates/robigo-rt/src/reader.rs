@@ -86,7 +86,11 @@ pub fn parse_bytes(cx: &mut Cx, src: &[u8], n: i32, out: Out<'_>) -> RResult<(Pa
         }
         Ok(())
     };
-    let exprs = match robigo_syntax::parse_program(&arena, source) {
+    // (how far the lexer had read at an error: an action's lookahead)
+    let mut frontier = None;
+    let parsed = robigo_syntax::parser::Parser::new(&arena, source)
+        .and_then(|mut p| p.program().inspect_err(|e| frontier = Some(p.error_frontier(e))));
+    let exprs = match parsed {
         Ok(r) => r,
         Err(e) => {
             if n >= 0 {
@@ -97,9 +101,14 @@ pub fn parse_bytes(cx: &mut Cx, src: &[u8], n: i32, out: Out<'_>) -> RResult<(Pa
                 );
             }
             check_non_ascii_locale(cx, src)?;
+            // raiseParseError/raiseLexError signal from inside the parse
+            if e.style == robigo_syntax::ErrorStyle::Condition {
+                signal(cx, frontier.unwrap_or(e.offset))?;
+                return Err(crate::parse_cond::signal(cx, source, &e, crate::parse_cond::NO_SRCFILE));
+            }
             let (line, col) = robigo_syntax::error_line_col(source, &e);
             let status = if e.incomplete { ParseStatus::Incomplete } else { ParseStatus::Error };
-            signal(cx, if e.incomplete { usize::MAX } else { e.offset })?;
+            signal(cx, if e.incomplete { usize::MAX } else { frontier.unwrap_or(e.offset) })?;
             out.set(cx, cx.nil());
             return Ok((status, Some(ParseFailure { line, col, message: e.message })));
         }

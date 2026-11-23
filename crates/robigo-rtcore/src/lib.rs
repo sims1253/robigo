@@ -297,7 +297,9 @@ pub use isolate::{
     Capability, CodeSource, Cx, Isolate, Locale, Options, OwnedIsolate, Reentry, ReportOptions, enter_raw,
     live_isolate_count,
 };
-pub use limits::{CStackInfo, EXPR_SO, EXPR_SO_MSG, EvalDepth, NODE_SO, NODE_SO_MSG, note_sigint};
+pub use limits::{
+    CStackInfo, EXPR_SO, EXPR_SO_MSG, EvalDepth, NODE_SO, NODE_SO_MSG, PROT_SO, PROT_SO_MSG, note_sigint,
+};
 pub use namebuf::NameBuf;
 pub use native::{Landing, NATIVE_MAX_ARGS, Native6, enter_export, enter_leaf, enter_leaf_mut};
 pub use outcome::{Built, Diag};

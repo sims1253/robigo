@@ -70,6 +70,7 @@ pub mod memory;
 mod missing;
 mod ns;
 pub mod ops;
+pub mod parse_cond;
 pub mod platform;
 pub mod prims;
 pub mod print;

@@ -148,6 +148,7 @@ closure identity funprog.R
 closure ifelse ifelse.R
 closure infoRDS serialize.R
 closure inherits New-Internal.R
+closure intToUtf8 raw.R
 closure integer vector.R
 closure invokeRestart conditions.R
 closure is.data.frame dataframe.R
@@ -222,6 +223,7 @@ closure rank rank.R
 closure raw raw.R
 closure rawToChar raw.R
 closure readChar connections.R
+closure readLines connections.R
 closure readRDS serialize.R
 closure reg.finalizer New-Internal.R
 closure regexec grep.R
@@ -261,6 +263,8 @@ closure stdin connections.R
 closure stdout connections.R
 closure stop stop.R
 closure stopifnot stop.R
+closure str2expression parse.R
+closure str2lang parse.R
 closure strrep character.R
 closure strsplit grep.R
 closure structure structure.R
@@ -276,6 +280,8 @@ closure sys.function sys.R
 closure sys.nframe sys.R
 closure sys.parent sys.R
 closure sys.source source.R
+closure tempdir temp.R
+closure tempfile temp.R
 closure topenv namespace.R
 closure traceback traceback.R
 closure try New-Internal.R
@@ -511,6 +517,7 @@ internal gzfile
 internal identical
 internal importIntoEnv
 internal inherits
+internal intToUtf8
 internal internalsID
 internal is.builtin.internal
 internal is.unsorted
@@ -563,6 +570,7 @@ internal radixsort
 internal rank
 internal rawToChar
 internal readChar
+internal readLines
 internal reg.finalizer
 internal regexec
 internal regexpr
@@ -588,6 +596,8 @@ internal stderr
 internal stdin
 internal stdout
 internal stop
+internal str2expression
+internal str2lang
 internal strrep
 internal strsplit
 internal sub
@@ -599,6 +609,8 @@ internal sys.frame
 internal sys.function
 internal sys.nframe
 internal sys.parent
+internal tempdir
+internal tempfile
 internal topenv
 internal traceback
 internal typeof

@@ -48,6 +48,20 @@ pub const EXPR_SO: crate::ErrorCond<'static> = crate::ErrorCond {
     exit_only: false,
 };
 
+/// GNU R's message for its protect stack (errors.c, `PROT_SO_MSG`).
+pub const PROT_SO_MSG: &str = "protect(): protection stack overflow";
+
+/// `R_protectStackOverflowError` (errors.c:R_InitConditions): what a
+/// `PROTECT` past `R_PPStackSize` signals (`R_signal_protect_error`), with
+/// a NULL call.
+pub const PROT_SO: crate::ErrorCond<'static> = crate::ErrorCond {
+    class: "stackOverflowError",
+    subclass: Some("protectStackOverflowError"),
+    msg: PROT_SO_MSG.as_bytes(),
+    fields: &[],
+    exit_only: false,
+};
+
 /// `R_nodeStackOverflowError` (errors.c:R_InitConditions): what an R entry
 /// signals when robigo's value stack, GNU R's node stack, is full.
 pub const NODE_SO: crate::ErrorCond<'static> = crate::ErrorCond {
