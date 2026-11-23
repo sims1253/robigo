@@ -550,8 +550,10 @@ def steps(crates):
         # against 97 s without it, past the case timeout). Its comparison
         # with the independent trace, whose cost grows with the stack
         # (c-stack-overflow.R 1.37x at every check), and I2 and I3: the
-        # persistent-state parts, a full check at each process's first check
-        # and every 16th after, so every case gets one; the direct loop, whose
+        # persistent-state parts, a full check at each process's freezing
+        # collection (checked whatever the period: a marking defect is
+        # caught where it first runs) and every 16th check after, so every
+        # case gets one; the direct loop, whose
         # defect is transient, at every check (the 2026-11-21 check ledger's
         # note of 2026-11-24); the step fails if no full check ran (run_steps)
         ("conformance under gctorture (E3)",

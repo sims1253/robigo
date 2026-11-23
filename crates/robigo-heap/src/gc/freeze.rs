@@ -1557,9 +1557,9 @@ mod tests {
     }
 
     /// `ROBIGO_GC_FREEZE_CHECK=N,M`: the full check (I2, I3 and the
-    /// comparison with the independent trace) at the first checked
-    /// collection with a frozen set, then at every M-th; the checks before
-    /// the freeze do not count.
+    /// comparison with the independent trace) at the first collection with
+    /// a frozen set, then at every M-th checked one; the checks before the
+    /// freeze do not count.
     #[test]
     #[cfg(not(miri))]
     fn the_full_check_runs_at_the_first_check_and_every_mth_after() {
@@ -1594,6 +1594,39 @@ mod tests {
             assert!(c.stats_report().contains(
                 "robigo gc: the freeze's check (ROBIGO_GC_FREEZE_CHECK=1,3): 8 checked collections, 7 with a frozen set (the direct loop), 3 full checks (I2, I3 and the comparison with the independent trace)"
             ));
+        }
+    }
+
+    /// The lazy freeze's collection is checked in full whatever the period
+    /// (`ROBIGO_GC_FREEZE_CHECK=16,16`): a marking defect is caught where it
+    /// first runs, before unchecked collections free what it missed.
+    #[test]
+    #[cfg(not(miri))]
+    fn the_freezing_collection_is_a_full_check() {
+        let mut c = Core::new();
+        c.set_freeze_enabled(true);
+        if !c.freeze_enabled() {
+            return;
+        }
+        let nil = c.nil();
+        // SAFETY: fresh objects of this heap, rooted by `roots`.
+        unsafe {
+            let leaf = c.alloc_vector(INTSXP, 1).unwrap();
+            let head = c.alloc_node(LISTSXP, leaf, nil, nil).unwrap();
+            (c.freeze_check, c.freeze_full) = (16, 16);
+            let mut roots = WithFreeze { all: vec![head], freeze: head };
+            c.collect(&mut roots);
+            assert_eq!((c.freeze_checks, c.freeze_full_checks), (0, 0), "the first of 16 collections: unchecked");
+            c.freeze_boundary(nil.addr(), &[]);
+            c.collect(&mut roots);
+            assert!(c.is_frozen(head), "this collection froze");
+            assert_eq!((c.freeze_checks, c.freeze_full_checks), (1, 1), "and was checked in full");
+            for _ in 0..15 {
+                c.collect(&mut roots);
+            }
+            assert_eq!((c.freeze_checks, c.freeze_full_checks), (1, 1), "then every 16th collection");
+            c.collect(&mut roots);
+            assert_eq!((c.freeze_checks, c.freeze_full_checks), (2, 1), "a direct loop only");
         }
     }
 

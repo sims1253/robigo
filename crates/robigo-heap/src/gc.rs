@@ -558,7 +558,8 @@ pub struct Core {
     /// `ROBIGO_GC_MOVE=young:N`'s does.
     freeze_check: u32,
     /// `M` (default 1): the persistent-state parts, a "full check", at the
-    /// first checked collection with a frozen set and then at every M-th:
+    /// first collection with a frozen set (checked whatever the period: the
+    /// freezing collection) and then at every M-th checked collection:
     /// I2 and I3 (`check_frozen_reach`), whose defects stay until the next
     /// pass or for good, and the independent trace's comparison (the bar's
     /// (c)), whose defect (a child marked but never traced) is systematic
@@ -979,7 +980,7 @@ fn freeze_from_env() -> bool {
 /// `ROBIGO_GC_FREEZE_CHECK`'s rates (read only with the freeze on): unset
 /// or empty is 0 (off); `N` checks every N-th collection, each a full
 /// check; `N,M` runs the full check (the persistent-state parts) at the
-/// first checked collection with a frozen set and every M-th after, the
+/// first collection with a frozen set and every M-th check after, the
 /// direct loop at each. Anything else is refused, so a typo never turns
 /// the check off unseen.
 fn freeze_check_from_env() -> (u32, u32) {
@@ -3093,7 +3094,14 @@ impl Core {
             // OLD bit is FROZEN's, Sol r2 S6)
             if self.freeze_check != 0 && (!self.frozen.is_empty() || self.freeze_enabled()) {
                 self.freeze_check_count += 1;
-                if self.freeze_check_count >= self.freeze_check {
+                // the first collection with a frozen set (the freezing one,
+                // under the lazy freeze) is checked whatever the period, and
+                // it is a full check: a marking defect is caught where it
+                // first runs, before unchecked collections free what it
+                // missed and the process fails some other way
+                if self.freeze_check_count >= self.freeze_check
+                    || (!self.frozen.is_empty() && self.freeze_checks_frozen == 0)
+                {
                     self.freeze_check_count = 0;
                     due = true;
                 }
@@ -3107,9 +3115,9 @@ impl Core {
                     // the direct loop after marking, at every checked
                     // collection (its defect is transient)
                     self.freeze_checking = true;
-                    // the persistent-state parts at the first checked
-                    // collection with a frozen set, then every
-                    // `freeze_full`-th (its doc): I2 and I3 (the pass's bar,
+                    // the persistent-state parts at the first collection
+                    // with a frozen set, then every `freeze_full`-th
+                    // checked one (its doc): I2 and I3 (the pass's bar,
                     // (d)), after the pass step, and the independent trace
                     // (the bar's (c)) for the comparison after marking
                     if self.freeze_checks_frozen.is_multiple_of(self.freeze_full as u64) {
