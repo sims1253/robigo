@@ -188,11 +188,19 @@ fn the_default_boot_says_a_missing_tree_is_missing() {
                 "robigo-rt: R_HOME ('{}') not found: no installed tree (<prefix>/lib/robigo) has library/base/R/base, \
                  and the checkout's is not made (scripts/rt-home-db.sh --robigo-rt {})\n",
                 dir.join(".robigo/rt-home-db").display(),
-                env!("CARGO_BIN_EXE_robigo-rt")
+                shell_word(env!("CARGO_BIN_EXE_robigo-rt"))
             ),
             Some(2)
         )
     );
+}
+
+/// main.rs's `shell_word`, which the message uses for the binary's path:
+/// as it is when every byte is one the shell leaves alone, else
+/// single-quoted.
+fn shell_word(s: &str) -> String {
+    let plain = !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"/._-+,:@%=".contains(&b));
+    if plain { s.to_string() } else { format!("'{}'", s.replace('\'', "'\\''")) }
 }
 
 #[test]
