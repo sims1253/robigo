@@ -1025,6 +1025,9 @@ class RtCi(unittest.TestCase):
         self.assertEqual(night[2], rt.db_tree(rt.rt_binary()))
         _, env, cmd = night[3]
         self.assertEqual((env["ROBIGO_GC_FREEZE_CHECK"], env["ROBIGO_GCTORTURE"], env["ROBIGO_GC_FREEZE"]), ("1", "1", "1"))
+        # (under M1's loader, INTERIM(L5), as the nightly ran before the flip)
+        self.assertEqual(env.get("ROBIGO_RT_BOOT"), "m1")
+        self.assertIn("ROBIGO_RT_BOOT=m1", night[3][0])
         # a failed check fails the step, whatever the case's output (S14)
         self.assertEqual(env["ROBIGO_GC_FREEZE_CHECK_REPORT"], rt.FREEZE_REPORT)
         self.assertEqual(e3[0]["ROBIGO_GC_FREEZE_CHECK_REPORT"], rt.FREEZE_REPORT)
@@ -1397,6 +1400,10 @@ class RtCi(unittest.TestCase):
         self.assertEqual(len(full), 4)
         _, env, cmd = full[3]
         self.assertEqual((env["ROBIGO_GC_MOVE"], env["ROBIGO_GCTORTURE"]), ("1", "1"))
+        # the nightly's modes under M1's loader, INTERIM(L5), as before the
+        # flip (the foreman's ruling): under rdb 18 cases time out
+        self.assertEqual(env.get("ROBIGO_RT_BOOT"), "m1")
+        self.assertIn("ROBIGO_RT_BOOT=m1", full[3][0])
         self.assertIn(rt.CONFORMANCE, cmd)
         named = dict(item.rsplit("=", 1) for item in env["ROBIGO_CONF_TIMEOUTS"].split(","))
         self.assertEqual(set(named), set(rt.FULL_MOVE_SLOW))

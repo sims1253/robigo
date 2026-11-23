@@ -999,52 +999,95 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    The artifact keeps the full diffs and the two transcripts. The modes of
    `docs/g3.md` §16 add steps here.
 
-   **Two steps under M1's loader, INTERIM(L5).** H's statement:
+   **Steps under M1's loader, INTERIM(L5).** Three things run under
+   `ROBIGO_RT_BOOT=m1` rather than the default rdb boot. Each must pass
+   there, and each blocks the deletion of M1's loader
+   (`docs/ledger/g3/2026-11-23-l5-flip.md`).
 
-   > The young:16 step (ROBIGO_GC_MOVE=young:16 with gctorture, the freeze
-   > off) runs under M1's loader, not the default rdb boot. Under rdb the
-   > unfrozen boot heap (42k objects: base and the compiler) is marked at
-   > every collection, five cases exceed their allowances, and its cost
-   > scales with the boot heap, not with N. So per PR, boot objects are
-   > moved under M1's boot only; under rdb they are moved only by the
-   > nightly's `--full-move` conformance. When M1's loader is deleted, this
-   > step needs one of: young:16 with the freeze on after the heap work
-   > that lets the mover and the frozen set compose (giving up per-PR moves
-   > of boot objects), or young collections that skip old objects (the
-   > sticky-mark design, parked in the collector-cost page).
+   - **The young:16 step** (`ROBIGO_GC_MOVE=young:16` with gctorture, the
+     freeze off). H's statement:
 
-   The measurements, on the flip's gate binary (a4e44f022) at load 22-45:
-   - **The step under rdb:** five cases timed out.
-     `tests/r/memory/finalizers-self-ref-envs.R` ran its full 1,200 s.
-     `tests/r/memory/auto-cycles.R`, `tests/r/lang/tailcall-frames.R`,
-     `tests/r/lang/exec-tail-frames.R` and
-     `tests/r/jit/loop-closed-form-super.R` each ran 600 s of 600 s.
-   - **`tailcall-frames.R` alone, in the step's exact environment:** under
-     m1 the whole run is 882.7 G `instructions:u` (about 2 minutes, its
-     output GNU R's). Under rdb it passed 3,803.1 G in 1,215 s without
-     printing its first line, and was stopped there.
+     > The young:16 step (ROBIGO_GC_MOVE=young:16 with gctorture, the freeze
+     > off) runs under M1's loader, not the default rdb boot. Under rdb the
+     > unfrozen boot heap (42k objects: base and the compiler) is marked at
+     > every collection, five cases exceed their allowances, and its cost
+     > scales with the boot heap, not with N. So per PR, boot objects are
+     > moved under M1's boot only; under rdb, boot objects are moved only
+     > during the start, by the per-PR start-torture step (the rdb boot
+     > under ROBIGO_GC_MOVE=1 and gctorture from the heap's creation);
+     > after the start nothing moves them, per PR or nightly, until the
+     > nightly gains an rdb full-move step over the cases that fit. When
+     > M1's loader is deleted, this step needs one of: young:16 with the
+     > freeze on after the heap work that lets the mover and the frozen set
+     > compose (giving up per-PR moves of boot objects), or young
+     > collections that skip old objects (the sticky-mark design, parked in
+     > the collector-cost page).
 
-   E4 (`scripts/rt-overshoot.py`) runs every program under the default boot,
-   but those its `BOOTS` names, each with the boot and the reason, printed
-   with the step's table. Only `benchmarks/rt/mem/strings1e6.R`
-   (`x <- paste0("u", 1:1000000)`) is named. It runs under `m1` and must
-   pass there.
+     The measurements, on the flip's gate binary (a4e44f022) at load 22-45:
+     - Under rdb, five cases timed out.
+       `tests/r/memory/finalizers-self-ref-envs.R` ran its full 1,200 s.
+       `tests/r/memory/auto-cycles.R`, `tests/r/lang/tailcall-frames.R`,
+       `tests/r/lang/exec-tail-frames.R` and
+       `tests/r/jit/loop-closed-form-super.R` each ran 600 s of 600 s.
+     - `tailcall-frames.R` alone, in the step's exact environment: under
+       m1 the whole run is 882.7 G `instructions:u` (about 2 minutes, its
+       output GNU R's). Under rdb it passed 3,803.1 G in 1,215 s without
+       printing its first line, and was stopped there.
 
-   Under both boots it has one collection, at paste0's return. By then rdb
-   has allocated 51,826 more objects, the boot heap. So the node trigger
-   falls about 52k CHARSXPs earlier inside paste0's loop. paste0 has no
-   safepoint until it returns, so what it allocates after the trigger is
-   overshoot. GNU R collects inside the loop, because its allocVector
-   collects anywhere.
+   - **E4's `benchmarks/rt/mem/strings1e6.R`.** E4
+     (`scripts/rt-overshoot.py`) runs every program under the default boot,
+     but those its `BOOTS` names, each with the boot and the reason,
+     printed with the step's table. Only this program
+     (`x <- paste0("u", 1:1000000)`) is named.
 
-   | boot | max overshoot | bound |
-   |---|---:|---:|
-   | m1 | 31,631,328 bytes | 33,554,432 |
-   | rdb, eval | 34,116,528 bytes | 33,554,432 |
-   | rdb, bc | 34,046,544 bytes | 33,554,432 |
+     Under both boots it has one collection, at paste0's return. By then
+     rdb has allocated 51,826 more objects, the boot heap. So the node
+     trigger falls about 52k CHARSXPs earlier inside paste0's loop. paste0
+     has no safepoint until it returns, so what it allocates after the
+     trigger is overshoot. GNU R collects inside the loop, because its
+     allocVector collects anywhere.
 
-   The entry goes when paste0's string loop collects. The program must then
-   pass under rdb.
+     | boot | max overshoot | bound |
+     |---|---:|---:|
+     | m1 | 31,631,328 bytes | 33,554,432 |
+     | rdb, eval | 34,116,528 bytes | 33,554,432 |
+     | rdb, bc | 34,046,544 bytes | 33,554,432 |
+
+     The entry goes when paste0's string loop collects. The program must
+     then pass under rdb.
+
+   - **The nightly's two modes**, `--full-move` and `--freeze-check`, as
+     before the flip. `scripts/rt-ci.py --full-move` under rdb, on the
+     flip's branch (e7e91b767, load 28-38), ran 29.4 minutes in all.
+     765 of 794 cases passed. 18 ratcheted cases timed out, none with a
+     wrong output:
+     - `tests/r/memory/finalizers-self-ref-envs.R` at its 1,200 s
+       allowance;
+     - 17 at 600 s:
+       - `tests/r/basics/frame-self-cycles.R`
+       - `tests/r/conditions/c-stack-overflow.R`
+       - `tests/r/conditions/eval-depth-limit.R`
+       - `tests/r/jit/loop-closed-form-super.R`
+       - `tests/r/jit/loop-vectors.R`
+       - `tests/r/jit/native-closures-lists.R`
+       - `tests/r/jit/native-closures-setindex.R`
+       - `tests/r/jit/native-closures-state.R`
+       - `tests/r/jit/nested-arith-args.R`
+       - `tests/r/lang/exec-tail-frames.R`
+       - `tests/r/lang/tailcall-frames.R`
+       - `tests/r/memory/auto-cycles.R`
+       - `tests/rt/jit/serialize-write.R`
+       - `tests/rt/memory/freeze-phase1-parent.R`
+       - `tests/rt/rng/rngkind.R`
+       - `tests/rt/rng/set-seed.R`
+       - `tests/rt/stress/finalizer-depths.R`
+
+     The cause is the young:16 step's: every collection moves a live heap
+     that holds base and the compiler. `--freeze-check` under rdb was not
+     measured. A1's runner PR 3 adds an rdb `--full-move` step over the
+     cases that pass, with a named skip list and its reason, and
+     `--freeze-check` under rdb over what fits.
+
 3. **build:** release build, base-package natives, the binary the heavy
    jobs use; the ratchet markers, the parse-corpus ratchet and the builtin
    coverage baseline (`scripts/builtin-coverage.py --check`) are checked

@@ -497,8 +497,14 @@ def full_move_steps():
         ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", {}, ["scripts/rt-home.sh"]),
         release_build(),
         db_tree(rt_binary()),
-        ("conformance under ROBIGO_GC_MOVE=1 with gctorture (every collection moves everything)",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **FREEZE_OFF, **AFTER_START, **SLOW,
+        # Under M1's loader, INTERIM(L5), as the young:16 step: under rdb
+        # every collection moves a live heap that holds base and the
+        # compiler, and 18 ratcheted cases timed out (docs/verification.md,
+        # "Steps under M1's loader"); an rdb step over the cases that fit is
+        # A1's (runner PR 3)
+        ("conformance under ROBIGO_GC_MOVE=1 with gctorture (every collection moves everything), "
+         "M1's loader (ROBIGO_RT_BOOT=m1)",
+         {"ROBIGO_RT_BOOT": "m1", "ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **FREEZE_OFF, **AFTER_START, **SLOW,
           "ROBIGO_CONF_TIMEOUTS": full_slow},
          conformance_command()),
     ])
@@ -532,8 +538,11 @@ def freeze_check_steps():
         ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", {}, ["scripts/rt-home.sh"]),
         release_build(),
         db_tree(rt_binary()),
-        ("conformance under gctorture, the freeze checked at every collection",
-         {"ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "1", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
+        # (under M1's loader, INTERIM(L5), as the nightly ran before the
+        # flip: the check at every collection over rdb's 42k frozen objects
+        # is A1's to measure and add, runner PR 3)
+        ("conformance under gctorture, the freeze checked at every collection, M1's loader (ROBIGO_RT_BOOT=m1)",
+         {"ROBIGO_RT_BOOT": "m1", "ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "1", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
           **AFTER_START, **SLOW, "ROBIGO_CONF_TIMEOUTS": case_timeouts(FREEZE_CHECK_SLOW)},
          conformance_command()),
     ])
