@@ -5,6 +5,8 @@ job's cache depend on (scripts/perf-gnur.py). perf.py re-exports every
 name, so `perf.<name>` stays the API; robigo-rt's rows and starts are
 perf.py's own."""
 
+import hashlib
+import json
 import os
 import re
 import subprocess
@@ -70,12 +72,14 @@ def gnur_inputs(c=None):
     """The files GNU R's records in the `perf` job depend on, relative to the
     checkout, sorted: the suites' list (an external suite's pinned commit and
     parameters are in it), every directory suite's programs (`suite_files`,
-    the listing `programs` runs), the known failures, and the scripts that
-    measure and keep them. The job's cache key hashes these and nothing else
-    (scripts/perf-gnur.py; a change to robigo-rt's rows does not drop it)."""
+    the listing `programs` runs), the known failures, and the code that
+    measures and keeps them (CODE_FILES). The job's cache key hashes these and nothing else
+    (scripts/perf-gnur.py; a change to robigo-rt's rows, or to perf.py,
+    does not drop it); each record also carries its program's and the
+    code's digest (program_digests, code_digest), so a record restored
+    from another key is reused only if both match."""
     c = c or conf()
-    out = [os.path.join(ROOT, "benchmarks", "benchmarks.toml"),
-           os.path.join(ROOT, "scripts", "perf.py"), os.path.join(ROOT, "scripts", "perf-gnur.py")]
+    out = [os.path.join(ROOT, "benchmarks", "benchmarks.toml")] + [os.path.join(ROOT, f) for f in CODE_FILES]
     # (optional: perf-gnur.py reads none as no known failure)
     known = os.path.join(ROOT, "benchmarks", "gnur-known-failures.txt")
     if os.path.exists(known):
@@ -84,6 +88,53 @@ def gnur_inputs(c=None):
         if "dir" in s:
             out += suite_files(sname, s)
     return sorted(os.path.relpath(p, ROOT) for p in out)
+
+# The code a GNU R record's numbers come from: this module (the programs,
+# the command, the callgrind run) and perf-gnur.py (which records it keeps).
+# Not perf.py: its robigo-rt side changes often and measures none of these.
+CODE_FILES = ["scripts/perf_suite.py", "scripts/perf-gnur.py"]
+
+
+def code_digest():
+    """The digest of CODE_FILES: a record measured by other code is not
+    reused."""
+    h = hashlib.sha256()
+    for f in CODE_FILES:
+        with open(os.path.join(ROOT, f), "rb") as fh:
+            h.update(f.encode() + b"\0" + hashlib.sha256(fh.read()).digest())
+    return h.hexdigest()[:16]
+
+
+def program_digests(c=None):
+    """{name: digest} of every program, from what decides its run: its name,
+    its package set and its script as run. A directory suite's program is
+    its file's text; an external suite's is the pinned commit (which fixes
+    its files), its entry (directory, file, work directory, parameter) and
+    DRIVER, the text that sources it."""
+    c = c or conf()
+    out = {}
+    for sname, s in c["suites"].items():
+        pk = s.get("default_packages", "utils,stats")
+        if "dir" in s:
+            for path in suite_files(sname, s):
+                with open(path, "rb") as f:
+                    body = f.read()
+                out[f"{sname}/{os.path.basename(path)[:-2]}"] = _digest(["dir", pk, body])
+        else:
+            for b in s["benchmarks"]:
+                entry = json.dumps(b, sort_keys=True).encode()
+                out[f"{sname}/{b['name']}"] = _digest(["repo", pk, s["repo"].encode(), s["commit"].encode(), entry,
+                                                       DRIVER.encode()])
+    return out
+
+
+def _digest(parts):
+    h = hashlib.sha256()
+    for x in parts:
+        x = x.encode() if isinstance(x, str) else x
+        h.update(len(x).to_bytes(8, "little") + x)
+    return h.hexdigest()[:16]
+
 
 def r_home():
     return subprocess.run(["R", "RHOME"], capture_output=True, text=True, check=True).stdout.strip()

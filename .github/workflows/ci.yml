@@ -1227,21 +1227,30 @@ jobs:
           sig=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import perf; print(perf.cpu_signature()[1])')
           pkgs=$(dpkg-query -W -f '${Package}=${Version} ' libc6 valgrind 2> /dev/null || true)
           image=$(printf '%s' "$IMAGE" | sha256sum | cut -c1-16)
-          # the files the records depend on, as perf.py lists them (its
-          # suites' programs, the suite list, the known failures, the two
-          # scripts): not benchmarks/rt/, robigo-rt's rows, which this job
-          # does not read. Until 2026-11-24 the key hashed all of
-          # benchmarks/, and every rt row change dropped it (perf-gnur-1)
+          # the files the records depend on, as perf_suite.py lists them (its
+          # suites' programs, the suite list, the known failures, the
+          # measuring code): not benchmarks/rt/ or perf.py, robigo-rt's
+          # side, which this job does not measure (perf-gnur-1 hashed all of
+          # benchmarks/ and perf.py; perf-gnur-2 still perf.py)
           # (a file that cannot be read ends the step: no key from a partial hash)
           inputs=$(python3 scripts/perf.py gnur-inputs | while read -r f; do printf '%s\0' "$f"; sha256sum < "$f" || exit 1; done | sha256sum | cut -c1-16)
-          echo "key=perf-gnur-2-$image-$sig-$(printf '%s' "$pkgs" | sha256sum | cut -c1-16)-$inputs" >> "$GITHUB_OUTPUT"
-          echo "sig=$sig" >> "$GITHUB_OUTPUT"
+          # the prefix, without the inputs: a pull request whose exact key
+          # is missing restores the newest set of its image, CPU signature
+          # and packages, and fill reuses a record of it only if the
+          # record's program and code digests match (scripts/perf-gnur.py)
+          prefix="perf-gnur-3-$image-$sig-$(printf '%s' "$pkgs" | sha256sum | cut -c1-16)-"
+          {
+            echo "prefix=$prefix"
+            echo "key=$prefix$inputs"
+            echo "sig=$sig"
+          } >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@v6
         id: gnur-cache
         if: github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
         with:
           path: gnur.json
           key: ${{ steps.gnur.outputs.key }}
+          restore-keys: ${{ steps.gnur.outputs.prefix }}
       # (the spread of CPU signatures shows here, run by run: a pull request
       # hits only a signature main's runs have saved)
       - name: The CPU signature and GNU R's records
@@ -1249,8 +1258,11 @@ jobs:
         env:
           SIG: ${{ steps.gnur.outputs.sig }}
           HIT: ${{ steps.gnur-cache.outputs.cache-hit }}
+          MATCHED: ${{ steps.gnur-cache.outputs.cache-matched-key }}
         run: |
-          if [ "$HIT" = true ]; then got="cached (main's)"; else got="not cached: measured here"; fi
+          if [ "$HIT" = true ]; then got="cached (main's, this key)"
+          elif [ -n "$MATCHED" ]; then got="restored from an older key (${MATCHED##*-}): each record checked by its digests"
+          else got="not cached: measured here"; fi
           echo "perf: CPU signature $SIG; GNU R's records $got" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Measure the base (HEAD^1)
         if: github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
