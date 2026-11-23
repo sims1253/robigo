@@ -1263,7 +1263,7 @@ fn get_object(cx: &mut Cx, cptr: ContextId, out: Out<'_>) -> RResult<()> {
                 let o = res.reset(cx);
                 // R: if (PRVALUE(s) == R_UnboundValue) s = eval(s, R_BaseEnv)
                 if cx.arg_unevaluated(f, index) {
-                    cx.force_arg_eval(f, index, o)?;
+                    crate::eval::force_arg_eval(cx, f, index, o)?;
                 } else {
                     cx.force_arg(f, index, o)?;
                 }

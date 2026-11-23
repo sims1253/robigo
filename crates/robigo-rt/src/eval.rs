@@ -753,7 +753,29 @@ pub fn eval_promise(cx: &mut Cx, p: Root<'_>, out: Out<'_>) -> RResult<()> {
 // R: eval.c:eval (PROMSXP)
 pub fn force_arg_eval(cx: &mut Cx, frame: Root<'_>, index: usize, out: Out<'_>) -> RResult<()> {
     cx.set_visible(true);
-    tick(cx)?;
+    // (the poll, rare, continues in a function of its own: the common
+    // path then keeps nothing alive across a call but the force)
+    let c = cx.evalcount().get() + 1;
+    if c > 1000 {
+        return force_arg_eval_polled(cx, frame, index, out);
+    }
+    cx.evalcount().set(c);
+    force_arg_eval_counted(cx, frame, index, out)
+}
+
+/// [`force_arg_eval`] after a count past 1000: eval's poll, then the rest.
+#[cold]
+#[inline(never)]
+fn force_arg_eval_polled(cx: &mut Cx, frame: Root<'_>, index: usize, out: Out<'_>) -> RResult<()> {
+    poll(cx)?;
+    cx.evalcount().set(0);
+    force_arg_eval_counted(cx, frame, index, out)
+}
+
+/// [`force_arg_eval`] past its evaluation count: one level deeper (with
+/// `R_CheckStack`), byte code inactive, the slot forced.
+#[inline(always)]
+fn force_arg_eval_counted(cx: &mut Cx, frame: Root<'_>, index: usize, out: Out<'_>) -> RResult<()> {
     let depthsave = cx.eval_depth();
     cx.eval_depth_at(depthsave + 1)?;
     // (one level deeper, no protection more: robigo_rtcore's ppacct;
