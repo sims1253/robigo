@@ -768,17 +768,21 @@ BUILD_ENV = ("RUSTFLAGS", "CARGO_TARGET_DIR")
 def builds_first(plan):
     """`plan` with each crate-test build in a step of its own (`--no-run`,
     the same command and build environment) before the first step that runs
-    it: a crate-test step's time is then its tests' alone, and the build's
-    is its own line in the times (#989's gate: debug-assertions' crate
-    tests took 3.0 min, nearly all of it their build under load). A build a
-    plan already has (release-crate-tests') is not made twice."""
+    it: the build of the test binaries is then its own line in the times
+    (#989's gate: debug-assertions' crate tests took 3.0 min, nearly all of
+    it that build under load). The run's line still holds the doctests'
+    compilation and, in a local run, its wait for a slot. A build the plan
+    already has before the run (release-crate-tests') is not made twice;
+    one that comes only after it does not count."""
     def key(env, cmd):
         return (tuple(cmd[:cmd.index("--")] if "--" in cmd else [x for x in cmd if x != "--no-run"]),
                 tuple((k, env.get(k)) for k in BUILD_ENV))
-    built = {key(e, c) for _t, e, c in plan if c[:2] == ["cargo", "test"] and "--no-run" in c}
+    built = set()
     out = []
     for t, e, c in plan:
-        if crate_test_threads(c) and key(e, c) not in built:
+        if c[:2] == ["cargo", "test"] and "--no-run" in c:
+            built.add(key(e, c))
+        elif crate_test_threads(c) and key(e, c) not in built:
             built.add(key(e, c))
             out.append((f"{t}: its tests built (--no-run)", {k: e[k] for k in BUILD_ENV if k in e},
                         [*c[:c.index("--")], "--no-run"]))

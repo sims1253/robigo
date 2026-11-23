@@ -661,26 +661,27 @@ fn a_cases_clock_starts_when_it_takes_its_slot() {
     qo.timeout = std::time::Duration::from_secs(2);
     qo.slots = Some((pool.clone(), 1));
     qo.times = Some(report.clone());
-    let (asked, quick_result) = std::thread::scope(|s| {
-        let h = s.spawn(|| run(slow.root(), &RT, &so).unwrap());
-        // the slow case holds the slot once it has stamped its start (a
-        // bound, so that a slow run that never starts fails here, saying
-        // what it saw, instead of hanging the test binary)
-        let since = std::time::Instant::now();
-        while !std::fs::read_to_string(&log).is_ok_and(|t| t.contains(" start ")) {
-            assert!(
-                since.elapsed() < std::time::Duration::from_secs(60),
-                "the slow case did not stamp its start in 60 s; its log: {:?}; the slow run finished: {}",
-                std::fs::read_to_string(&log).ok(),
-                h.is_finished()
-            );
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        let asked = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
-        let q = run(quick.root(), &RT, &qo).unwrap();
-        assert!(h.join().unwrap().outcomes.iter().all(|c| c.passed()));
-        (asked, q)
-    });
+    // (an owned thread, not a scoped one: a slow run stuck before its start
+    // must not keep the bound below from failing the test, as a scope's
+    // join at the unwind would)
+    let slow_root = slow.root().to_path_buf();
+    let h = std::thread::spawn(move || run(&slow_root, &RT, &so).unwrap());
+    // the slow case holds the slot once it has stamped its start (a bound,
+    // so that a slow run that never starts fails here, saying what it saw,
+    // instead of hanging the test binary)
+    let since = std::time::Instant::now();
+    while !std::fs::read_to_string(&log).is_ok_and(|t| t.contains(" start ")) {
+        assert!(
+            since.elapsed() < std::time::Duration::from_secs(60),
+            "the slow case did not stamp its start in 60 s; its log: {:?}; the slow run finished: {}",
+            std::fs::read_to_string(&log).ok(),
+            h.is_finished()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let asked = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+    let quick_result = run(quick.root(), &RT, &qo).unwrap();
+    assert!(h.join().unwrap().outcomes.iter().all(|c| c.passed()));
     assert!(
         quick_result.outcomes.iter().all(|c| c.passed()),
         "the wait counted: {:?}",
@@ -915,7 +916,8 @@ fn a_crosscheck_report_that_cannot_be_written_fails_the_run_ratcheted_or_not() {
     let fake = f.root().join("unwritten-fake");
     std::fs::write(
         &fake,
-        "#!/bin/sh\necho 'robigo: bc crosscheck: cannot write the report /x: Permission denied' >&2\nexec cat \"$1\"\n",
+        "#!/bin/sh\necho 'robigo: bc crosscheck: record lost: cannot write the report /x (Permission denied) nor \
+         /x.lost (Permission denied)' >&2\nexec cat \"$1\"\n",
     )
     .unwrap();
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -925,8 +927,18 @@ fn a_crosscheck_report_that_cannot_be_written_fails_the_run_ratcheted_or_not() {
     let err = run(f.root(), &RT, &o).expect_err("an unwritten crosscheck report fails the run");
     assert!(err.contains("could not write the byte-code crosscheck's report"), "{err}");
     assert!(err.contains("tests/rt/smoke/one.R"), "{err}");
-    // the same case without the line: a reported failure, not a failed run
+    // the same case without the line, or with `.lost` made (rt-ci's check
+    // of that file fails the step): a reported failure, not a failed run
     let r = run(f.root(), &RT, &opts_filtered(cat(), "tests/rt/smoke")).unwrap();
+    assert!(r.outcomes.iter().all(|c| !c.report_unwritten));
+    let lost_made = f.root().join("lost-made-fake");
+    std::fs::write(
+        &lost_made,
+        "#!/bin/sh\necho 'robigo: bc crosscheck: cannot write the report /x: Permission denied' >&2\nexec cat \"$1\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&lost_made, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let r = run(f.root(), &RT, &opts_filtered(lost_made, "tests/rt/smoke")).unwrap();
     assert!(r.outcomes.iter().all(|c| !c.report_unwritten));
 }
 

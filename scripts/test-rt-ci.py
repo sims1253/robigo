@@ -24,8 +24,8 @@ def meta(*pkgs):
 
 # The caller's settings that change what rt-ci.py plans and where its pool
 # is: no test may see them, and every test sees the same CPU count
-CALLER_ENV = ("ROBIGO_CONF_TIMEOUT", "ROBIGO_CONF_TIMEOUTS", "ROBIGO_CONF_SLOTS_DIR", "ROBIGO_CONF_SLOTS",
-              "ROBIGO_CONF_JOBS", "GITHUB_ACTIONS", "XDG_RUNTIME_DIR", "RT_CI_MIN_FREE_GB")
+# (every ROBIGO_CONF_* variable, and these)
+CALLER_ENV = ("GITHUB_ACTIONS", "XDG_RUNTIME_DIR", "RT_CI_MIN_FREE_GB")
 CPUS = 8
 
 
@@ -35,8 +35,16 @@ class RtCi(unittest.TestCase):
         env = mock.patch.dict(os.environ)
         env.start()
         self.addCleanup(env.stop)
-        for k in CALLER_ENV:
-            os.environ.pop(k, None)
+        for k in [k for k in os.environ if k in CALLER_ENV or k.startswith("ROBIGO_CONF_")]:
+            os.environ.pop(k)
+        # the pool's fallback under a directory of the test's own: no test
+        # makes the user's real /tmp pool (main() sets one up)
+        import shutil, tempfile
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        fallback = mock.patch.object(rt.conf_slots, "FALLBACK_ROOT", tmp)
+        fallback.start()
+        self.addCleanup(fallback.stop)
         cpus = mock.patch.object(os, "cpu_count", return_value=CPUS)
         cpus.start()
         self.addCleanup(cpus.stop)
@@ -457,6 +465,10 @@ class RtCi(unittest.TestCase):
                     self.assertIn(want, built, f"{name}: {title}")
             self.assertEqual(len(built), len({repr(b) for b in built}), f"{name}: a build made twice")
             self.assertEqual(rt.builds_first(plan), plan, name)
+        # a matching build that comes only after the run does not count
+        crate = ["cargo", "test", "-p", "x", "--", "--skip", rt.CONFORMANCE]
+        late = rt.builds_first([("run", {}, crate), ("late build", {}, ["cargo", "test", "-p", "x", "--no-run"])])
+        self.assertEqual([t for t, _e, _c in late], ["run: its tests built (--no-run)", "run", "late build"])
         da = [t for t, _e, _c in plans["debug-assertions"]]
         self.assertIn("the crates' tests with debug assertions (-C debug-assertions=on, quick profile): "
                       "its tests built (--no-run)", da)

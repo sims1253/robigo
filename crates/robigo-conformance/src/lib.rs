@@ -753,9 +753,10 @@ pub struct Outcome {
 
 /// What robigo-rt's crosscheck prints when it can write neither its report
 /// nor `<report>.lost` (crates/robigo-rt/src/compile/crosscheck.rs,
-/// `report`). For a ratcheted case the stderr diff already fails the run;
+/// `report`; with `.lost` made, rt-ci's report check fails on that file
+/// instead). For a ratcheted case the stderr diff already fails the run;
 /// for an unratcheted one the record would otherwise be lost silently.
-pub const UNWRITTEN_REPORT: &[u8] = b"robigo: bc crosscheck: cannot write the report";
+pub const UNWRITTEN_REPORT: &[u8] = b"robigo: bc crosscheck: record lost:";
 
 impl Outcome {
     pub fn passed(&self) -> bool {
