@@ -1060,6 +1060,14 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
         `--separate-callers`, realloc's inclusive cost by the function that
         grew the buffer, as a share of the start): the functions to
         pre-size.
+      - **No collection in a row's window:** every row runs once at N and
+        once at 2N before it is measured, and robigo-rt must collect 0
+        times in both. A row whose work collects by design is marked
+        `collects = true` (the jit rows), and `rt-bars` warns when such a
+        row's counts differ from main's. An allocating row sizes the heap
+        of both sides with `heap = { R_VSIZE = "..." }`. GNU R's counts
+        are reported beside robigo-rt's, not enforced
+        (`docs/ledger/g3/2026-11-23-row-collections.md`).
       - **The binaries:** `rt-bars`, `idiom-vs-r.py` and `rss.py` name every
         binary they measure, in the report and the JSON: its sha256, GNU
         build ID and modification time, and the checkout's `git describe`
