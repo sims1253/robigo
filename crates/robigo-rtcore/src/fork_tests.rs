@@ -123,9 +123,10 @@ pub(crate) fn isolated(name: &str, secs: u64) -> bool {
     // reused it
     let until = Instant::now() + Duration::from_secs(secs);
     let ended = loop {
-        // SAFETY: a zeroed siginfo is a valid out-argument; P_PID of our
-        // own child, not reaped (WNOWAIT).
+        // SAFETY: a zeroed siginfo is plain data, valid as an out-argument.
         let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: P_PID of our own child, not reaped (WNOWAIT); `info` a
+        // live out-argument.
         let r = unsafe {
             libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT | libc::WNOHANG)
         };
