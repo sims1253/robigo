@@ -448,6 +448,32 @@ fn a_case_time_leaves_out_the_boot_probe() {
     assert!(secs.iter().all(|s| *s < 2.0), "the 3 s probe counted in a case's time: {text}");
 }
 
+/// A case starts with SIGINT at its default whatever the runner inherited:
+/// a runner under an ignored SIGINT (a background shell's `cmd &`) once
+/// passed SIG_IGN on, and a case that raises one failed (interrupt.R).
+#[test]
+#[allow(unsafe_code)]
+fn a_case_starts_with_sigint_at_its_default() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new("sigint");
+    f.case("tests/rt/smoke/sig.R", "x\n").record("tests/rt", "tests/rt/smoke/sig.R", "4.6.2", "0\n");
+    // a runtime that prints whether SIGINT is ignored in it (SigIgn's bit 2)
+    let fake = f.root().join("sigint-fake");
+    std::fs::write(&fake, "#!/bin/sh\nv=$(sed -n 's/^SigIgn:[[:space:]]*//p' /proc/$$/status)\necho $(( 0x$v & 2 ))\n")
+        .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut o = opts(&RT, fake);
+    o.filter = Some("tests/rt/smoke/sig.R".into());
+    // SAFETY: signal() only changes this process's disposition, restored
+    // below; the other tests' cases go through the same reset.
+    let old = unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) };
+    let r = run(f.root(), &RT, &o);
+    // SAFETY: as above.
+    unsafe { libc::signal(libc::SIGINT, old) };
+    let r = r.unwrap();
+    assert!(r.outcomes[0].passed(), "the case saw SIGINT ignored: {}", r.outcomes[0].diff);
+}
+
 /// The machine-wide slot pool (`ROBIGO_CONF_SLOTS_DIR`): two runs at once,
 /// two cases of 1 s each, share one slot, so the four cases run one after
 /// the other; each case's time (and its limit, 1.5 s here) counts from its

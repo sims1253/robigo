@@ -763,7 +763,27 @@ fn case_command(o: &Options, script: &Path) -> Command {
             None => cmd.env_remove(k),
         };
     }
+    default_sigint(&mut cmd);
     cmd
+}
+
+/// The case starts with SIGINT at its default, as GNU R's recordings were
+/// made: a runner started from a background shell (`cmd &`, which ignores
+/// SIGINT for what it runs) would pass SIG_IGN on, and robigo-rt keeps an
+/// ignored SIGINT ignored as GNU R does (main.c:setup_Rmainloop), so a
+/// case that raises one (tests/rt/capi/interrupt.R) failed in every such
+/// run and passed in the foreground.
+#[allow(unsafe_code)]
+fn default_sigint(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: the closure runs in the child between fork and exec and calls
+    // only signal(), which is async-signal-safe; it touches no other state.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+            Ok(())
+        });
+    }
 }
 
 /// A slot of the machine-wide pool (`ROBIGO_CONF_SLOTS_DIR`): held while a

@@ -132,7 +132,8 @@ class RtCi(unittest.TestCase):
         tree = titles.index("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)")
         self.assertTrue(all(tree < i for i in rdb))
         self.assertEqual({rt.shard_of(titles[i]) for i in rdb}, {"modes"})
-        self.assertEqual(sorted(sorted(steps[i][1]) for i in rdb),
+        # (ROBIGO_CONF_TIMEOUTS: the default-timeout steps' allowances, set apart)
+        self.assertEqual(sorted(sorted(k for k in steps[i][1] if k != "ROBIGO_CONF_TIMEOUTS") for i in rdb),
                          [["ROBIGO_BC_CROSSCHECK", "ROBIGO_BC_CROSSCHECK_REPORT", "ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT"],
                           ["ROBIGO_CONF_JOBS", "ROBIGO_GC_FREEZE", "ROBIGO_RT_BOOT"],
                           ["ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT"]])
@@ -416,10 +417,33 @@ class RtCi(unittest.TestCase):
         self.assertIn("FAILED  c", lines[3])
         self.assertIn("11.50 min  in all", lines[4])
 
+    def test_the_default_timeout_steps_give_the_two_slow_cases_their_allowance(self):
+        # temporary (DEFAULT_STEP_SLOW): every conformance step at the
+        # runner's 20 s names them, at 60 s; a step with its own timeout
+        # (a collector mode's 600 s) does not
+        crates = ["robigo-heap", "robigo-rt", "robigo-rtapi", "robigo-rtcore"]
+        plans = rt.steps(crates) + rt.full_move_steps()
+        for shard in rt.SHARDS:
+            plans += rt.shard_steps(crates, shard)
+        seen = 0
+        for title, env, cmd in plans:
+            if rt.CONFORMANCE not in cmd or "--exact" not in cmd:
+                continue
+            named = dict(i.rsplit("=", 1) for i in env.get("ROBIGO_CONF_TIMEOUTS", "").split(",") if i)
+            if "ROBIGO_CONF_TIMEOUT" in env:
+                self.assertFalse(set(rt.DEFAULT_STEP_SLOW) & set(named), title)
+            else:
+                seen += 1
+                self.assertEqual(named, {c: str(s) for c, s in rt.DEFAULT_STEP_SLOW.items()}, title)
+        self.assertGreater(seen, 5)
+        self.assertTrue(all(s == 60 for s in rt.DEFAULT_STEP_SLOW.values()))
+
     def test_conformance_runs_alone_in_its_own_steps(self):
         steps = rt.steps(["robigo-rt", "robigo-rtcore"])
-        # (a step's mode is its environment but the runner's job count)
-        own = [({k: v for k, v in env.items() if k != "ROBIGO_CONF_JOBS"}, cmd) for _, env, cmd in steps
+        # (a step's mode is its environment but the runner's job count and
+        # the case allowances every default-timeout step names)
+        own = [({k: v for k, v in env.items() if k not in ("ROBIGO_CONF_JOBS", "ROBIGO_CONF_TIMEOUTS")}, cmd)
+               for _, env, cmd in steps
                if rt.CONFORMANCE in cmd and "--skip" not in cmd]
         # once plain, once under each observation mode, then only under a
         # collector mode or the byte-code crosscheck (V3: every translated
@@ -644,7 +668,8 @@ class RtCi(unittest.TestCase):
         # (and the plain gctorture step, which names GCTORTURE_FIRST at its
         # own limit: started first, not given longer)
         plain = [e for t, e, c in steps if t == "conformance under gctorture (E3)"]
-        named = [t for t, e, _ in steps if "ROBIGO_CONF_TIMEOUTS" in e]
+        # (every default-timeout step names DEFAULT_STEP_SLOW: set apart)
+        named = [t for t, e, _ in steps if "ROBIGO_CONF_TIMEOUTS" in e and "ROBIGO_CONF_TIMEOUT" in e]
         self.assertEqual(sorted(named), sorted(["conformance under gctorture (E3)",
                                                 f"conformance under ROBIGO_GC_MOVE={rt.GC_MOVE_YOUNG} with gctorture (E3)"]))
         first = dict(item.rsplit("=", 1) for item in plain[0]["ROBIGO_CONF_TIMEOUTS"].split(","))

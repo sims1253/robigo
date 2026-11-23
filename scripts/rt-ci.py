@@ -347,14 +347,38 @@ def conformance_command():
 SLOW = {"ROBIGO_CONF_TIMEOUT": "600"}
 
 
+# TEMPORARY (2026-11-23): two cases given 60 s in the conformance steps
+# that run at the runner's default 20 s, because each failed local gates
+# three times tonight on a box at load 46-66 (24 CPUs):
+#   tests/rt/env/large-frames.R       6.7-7.3 s alone under the rdb boot (E),
+#                                     20.0 s at load ~26; 5.6-6.3 s on CI
+#   tests/rt/stress/finalizer-depths.R 12.1-15.6 s on a loaded box, 25 s once
+# To be re-decided from the first quiet measurement with the machine-wide
+# slot pool (ROBIGO_CONF_SLOTS_DIR), which starts a case's clock when it
+# takes its slot: dropped then if both sit well under 10 s.
+DEFAULT_STEP_SLOW = {
+    "tests/rt/env/large-frames.R": 60,
+    "tests/rt/stress/finalizer-depths.R": 60,
+}
+
+
 def every_cpu(steps):
     """The steps, with the conformance runner given a case per CPU in each
     conformance step: those run one test alone (`--exact`), so the cases may
     use every CPU (the runner's default, 2, is for a cargo test that shares
     the machine with other test binaries). The runner starts the cases named
-    in ROBIGO_CONF_TIMEOUTS first."""
+    in ROBIGO_CONF_TIMEOUTS first. And each conformance step at the default
+    timeout (no ROBIGO_CONF_TIMEOUT) gets DEFAULT_STEP_SLOW's allowances."""
     jobs = str(os.cpu_count() or 2)
-    return [(t, {**e, "ROBIGO_CONF_JOBS": jobs} if CONFORMANCE in c and "--exact" in c else e, c) for t, e, c in steps]
+    out = []
+    for t, e, c in steps:
+        if CONFORMANCE in c and "--exact" in c:
+            e = {**e, "ROBIGO_CONF_JOBS": jobs}
+            if "ROBIGO_CONF_TIMEOUT" not in e:
+                named = dict(item.rsplit("=", 1) for item in e.get("ROBIGO_CONF_TIMEOUTS", "").split(",") if item)
+                e["ROBIGO_CONF_TIMEOUTS"] = case_timeouts({**DEFAULT_STEP_SLOW, **{k: int(v) for k, v in named.items()}})
+        out.append((t, e, c))
+    return out
 
 
 def full_move_steps():
