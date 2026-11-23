@@ -646,6 +646,25 @@ class Known(unittest.TestCase):
         # fixed (pass) and unchanged are not
         self.assertEqual(bd.better_than_known(now, known), [(3, "timeout", "not-implemented")])
         self.assertEqual(bd.better_than_known(now, {}), [])
+
+    def test_update_keeps_the_lists_classes(self):
+        # --update prunes the fixed ids and keeps the others' classes as the
+        # list had them: a case that got worse in the same run does not
+        # become its own baseline; an id with no class keeps none
+        import types
+        with tempfile.TemporaryDirectory() as d:
+            old = bd.KNOWN
+            bd.KNOWN = d
+            try:
+                r = {"res": {1: "crash", 2: "mismatch", 3: "pass"}}
+                bd.write_known("v", "k", r, {1, 2}, {1: "mismatch"})
+                with open(bd.known_path("v")) as f:
+                    body = [l for l in f.read().splitlines() if not l.startswith("#")]
+                self.assertEqual(body, ["1 mismatch", "2"])
+                self.assertEqual(bd.read_known_classes("v"), {1: "mismatch"})
+                self.assertEqual(bd.worse_than_known(r["res"], bd.read_known_classes("v")), [(1, "mismatch", "crash")])
+            finally:
+                bd.KNOWN = old
         with tempfile.TemporaryDirectory() as d:
             old = bd.KNOWN
             bd.KNOWN = d

@@ -1656,6 +1656,11 @@ class FuzzCi(unittest.TestCase):
         self.assertEqual(sorted(plan(["crates/robigo-syntax/src/parser.rs", "docs/x.md"])), ["parse"])
         self.assertEqual(sorted(plan(["crates/robigo-rt/src/tcache/format.rs"])), ["rtc"])
         self.assertEqual(sorted(plan(["crates/robigo-runtime/src/serialize.rs"])), ["rds"])
+        # the code the harnesses call directly
+        self.assertEqual(sorted(plan(["crates/robigo-rt/src/ir.rs"])), ["rtc"])
+        self.assertEqual(sorted(plan(["crates/robigo-rt/src/tcache.rs"])), ["rtc"])
+        self.assertEqual(sorted(plan(["crates/robigo-runtime/src/value.rs"])), ["rds"])
+        self.assertEqual(sorted(plan(["crates/robigo-runtime/src/memory.rs"])), ["rds"])
         self.assertEqual(sorted(plan(["fuzz/seeds/rds/x.rds", "fuzz/fuzz_targets/parse.rs"])), ["parse", "rds"])
         # what every target depends on owes all of them, with the path as the reason
         for p in ("Cargo.lock", "rust-toolchain.toml", "fuzz/Cargo.toml", ".github/workflows/ci.yml",
@@ -1673,10 +1678,18 @@ class FuzzCi(unittest.TestCase):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
         os.makedirs(os.path.join(d, "seeds", "rtc"))
+        # a failure seen before: libFuzzer rewrites its hash-named file
+        os.makedirs(os.path.join(d, "artifacts", "rtc"))
+        crash = os.path.join(d, "artifacts", "rtc", "crash-abc")
+        open(crash, "w").close()
+        os.utime(crash, (0, 0))
+        open(os.path.join(d, "artifacts", "rtc", "crash-old"), "w").close()
+        os.utime(os.path.join(d, "artifacts", "rtc", "crash-old"), (0, 0))
+        calls = []
         def fake(*args):
+            calls.append(args)
             if args[0] == "run" and "-max_total_time=5" in args:
-                os.makedirs(os.path.join(d, "artifacts", "rtc"), exist_ok=True)
-                open(os.path.join(d, "artifacts", "rtc", "crash-abc"), "w").close()
+                open(crash, "w").close()
                 return 77
             return 0
         out = io.StringIO()
@@ -1688,7 +1701,38 @@ class FuzzCi(unittest.TestCase):
         self.assertIn("fuzz rtc (replay): ok", text)
         self.assertIn("fuzz rtc (5 s): FAILED", text)
         rel = os.path.join(os.path.basename(d), "artifacts", "rtc", "crash-abc")
-        self.assertIn(f"cargo +{self.f.TOOLCHAIN} fuzz run -O rtc {rel}", text)
+        self.assertIn(f"cargo +{self.f.TOOLCHAIN} fuzz run -O rtc {rel} -- -timeout={self.f.INPUT_TIMEOUT}", text)
+        self.assertNotIn("crash-old", text)
+        # both phases bound one input's time
+        runs = [c for c in calls if c[0] == "run"]
+        self.assertEqual(len(runs), 2)
+        self.assertTrue(all(f"-timeout={self.f.INPUT_TIMEOUT}" in c for c in runs))
+
+
+class BcMutateFailures(unittest.TestCase):
+    def test_every_failure_is_written_and_only_known_mutations_as_corpus_lines(self):
+        spec_ = importlib.util.spec_from_file_location("rt_bc_mutate", HERE / "rt-bc-mutate.py")
+        m = importlib.util.module_from_spec(spec_)
+        spec_.loader.exec_module(m)
+        bad = [("random 300014 x100", "signal 11", "mutation 4: SIGSEGV"),
+               ("random 300015 x100", "panic", "before any mutation\nthread main panicked"),
+               ("corpus 1 2 (x)", "abort", "mutation 2: abort"),
+               ("compile buffers (tests/bc-mutate/pool.R)", "no ok line", "")]
+        lines = m.failure_lines(bad)
+        self.assertEqual(len(lines), 4)
+        self.assertEqual(lines[0], "300014 4 signal-11")
+        self.assertTrue(all(l.startswith("# ") and "\n" not in l for l in lines[1:]), lines)
+        # what the corpus reader keeps: the pasteable line alone
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+            f.write("\n".join(lines) + "\n")
+        self.addCleanup(os.remove, f.name)
+        old = m.CORPUS
+        m.CORPUS = f.name
+        try:
+            self.assertEqual(m.corpus(), [(300014, 4, "signal-11")])
+        finally:
+            m.CORPUS = old
 
 
 if __name__ == "__main__":

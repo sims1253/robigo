@@ -818,7 +818,11 @@ def read_known(variant, key):
     return ids
 
 
-def write_known(variant, key, r, fails):
+def write_known(variant, key, r, fails, classes=None):
+    """Write `variant`'s known list: `fails` with this run's classes, or
+    with `classes` (the list's own, kept when --update only prunes it: a
+    case that got worse must not become its own baseline; an id the list
+    had with no class keeps none)."""
     os.makedirs(KNOWN, exist_ok=True)
     c = counts(r["res"])
     with open(known_path(variant), "w") as f:
@@ -827,7 +831,8 @@ def write_known(variant, key, r, fails):
         # each id with its class: a known failure that gets worse is a new
         # failure (worse_than_known)
         for i in sorted(fails):
-            f.write(f"{i} {r['res'][i]}\n")
+            cls = r["res"][i] if classes is None else classes.get(i)
+            f.write(f"{i} {cls}\n" if cls else f"{i}\n")
 
 
 # A known failure's class, best to worst: a case robigo-rt refuses outright
@@ -978,9 +983,12 @@ def cmd_run(a):
                 keep_dir(r["scratch"])
                 print(f"  robigo-rt's records: {r['rt']}")
             continue
+        # (the list's classes as they were, before --update prunes it)
+        classes = read_known_classes(variant) if known is not None else {}
         if a.update and known is not None and known - set(fails):
-            # the ratchet only shrinks: fixed cases leave, new ones never enter
-            write_known(variant, key, r, known & set(fails))
+            # the ratchet only shrinks: fixed cases leave, new ones never
+            # enter, and the cases kept keep their classes
+            write_known(variant, key, r, known & set(fails), classes)
             print(f"  {rel}: {len(known - set(fails))} fixed, removed")
         if a.seed != 0 or not lists:
             new = fails     # no known list applies to another seed, or another boot
@@ -990,7 +998,6 @@ def cmd_run(a):
         if new:
             status = 1
         if known is not None:
-            classes = read_known_classes(variant)
             worse = worse_than_known(r["res"], classes)
             for i, was, now in worse:
                 print(f"  WORSE #{i}: known as {was}, now {now}")

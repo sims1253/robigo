@@ -145,7 +145,12 @@ class RtBcMutate(unittest.TestCase):
             ("corpus 100027 12 (panic)", "panic", "mutation 12: x"),
         ]
         lines = bcm.failure_lines(bad)
-        self.assertEqual(lines, ["700001 47 panic", "700003 12 not-interruptible pool"])
+        # (every failure: the replayable ones as corpus lines, the others as
+        # comments, which corpus() skips)
+        self.assertEqual(lines, ["700001 47 panic",
+                                 "# random 700002 x100: signal 11, before any mutation: Segmentation fault",
+                                 "700003 12 not-interruptible pool",
+                                 "# corpus 100027 12 (panic): panic, mutation 12: x"])
         path = os.path.join(self.dir.name, "corpus.txt")
         with open(path, "w") as f:
             f.write("# a comment\n" + "\n".join(lines) + "\n")

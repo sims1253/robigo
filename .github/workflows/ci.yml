@@ -162,7 +162,7 @@ jobs:
       # run checks that they compile (~1 min, no sanitizer build): nothing
       # else builds them, and one had stopped compiling unnoticed. A pull
       # request then builds, replays and fuzzes (60 s) the targets whose
-      # inputs it changes; a push to main replays every seed corpus. The
+      # inputs it changes; any other run (a push to main) replays every seed corpus. The
       # nightly fuzzes each for 15 minutes.
       - name: The fuzz targets compile (cargo check)
         run: python3 scripts/fuzz-ci.py check
@@ -173,7 +173,7 @@ jobs:
             python3 scripts/fuzz-ci.py plan --base HEAD^1 --github-output
           else
             echo "targets=all" >> "$GITHUB_OUTPUT"
-            echo "fuzz targets: a push to main replays every seed corpus" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "fuzz targets: a ${{ github.event_name }} run (not a pull request) replays every seed corpus" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
       - name: cargo-fuzz
         if: ${{ steps.fuzz-plan.outputs.targets != '' }}

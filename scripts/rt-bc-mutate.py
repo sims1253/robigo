@@ -174,18 +174,21 @@ OK = ("done", "R error", "interrupted")
 
 
 def failure_lines(bad):
-    """The random starts' failures in `bad` as tests/bc-mutate/corpus.txt's
-    lines (seed, mutation, what, and "pool" for a start with BCM_POOL),
-    which corpus() reads back: only those whose mutation is known. A start that failed before its first mutation
-    (or said no number) has none to replay, and is left to the log."""
+    """--failures-out's lines for the failing starts `bad` ([(title,
+    outcome, detail)]), one per failure: a random start's whose mutation is
+    known as tests/bc-mutate/corpus.txt has them (seed, mutation, what, and
+    "pool" for a start with BCM_POOL), which corpus() reads back; any other
+    (a fixed script, a corpus entry, a start that failed before its first
+    mutation or said no number) as a comment line, which corpus() skips, so
+    the file holds every failure the run saw."""
     out = []
     for n, o, d in bad:
         parts = n.split()
-        if parts[0] != "random" or not d.startswith("mutation "):
-            continue
-        k = d.split(":", 1)[0].removeprefix("mutation ").strip()
-        if k.isdigit():
+        k = d.split(":", 1)[0].removeprefix("mutation ").strip() if d.startswith("mutation ") else ""
+        if parts[0] == "random" and k.isdigit():
             out.append(f"{parts[1]} {k} {o.replace(' ', '-')}" + (" pool" if "pool" in parts[2:] else ""))
+        else:
+            out.append("# " + f"{n}: {o}, {d}".replace("\n", " "))
     return out
 
 
@@ -271,8 +274,6 @@ def main():
     for n, o, d in bad[:int(os.environ.get("BCM_SHOW", "10"))]:
         print(f"  {n}: {o}, {d}")
     if a.failures_out and bad:
-        # a random start's failure as tests/bc-mutate/corpus.txt has them:
-        # its seed, the mutation it was at, what happened
         with open(a.failures_out, "a") as f:
             for line in failure_lines(bad):
                 f.write(line + "\n")

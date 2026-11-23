@@ -20,20 +20,27 @@ import glob
 import os
 import subprocess
 import sys
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FUZZ = os.path.join(ROOT, "fuzz")
 # The nightly the fuzz crate builds with (cargo-fuzz needs -Zsanitizer); the
 # miri job pins the same one
 TOOLCHAIN = "nightly-2026-11-02"
+# libFuzzer's limit for one input, in both phases (its default, 1200 s, is
+# longer than a job may wait: -max_total_time is checked between inputs)
+INPUT_TIMEOUT = 60
 
 # Each target's inputs, by path prefix: a change under one of them is one
 # that can change what the target finds (its harness and seeds are its own:
 # OWN)
 FILTERS = {
     "parse": ["crates/robigo-syntax/"],
-    "rds": ["crates/robigo-runtime/src/serialize"],
-    "rtc": ["crates/robigo-rt/src/tcache", "fuzz/rtc_seeds.py"],
+    # (unserialize, and the value, memory and symbol code it builds with)
+    "rds": ["crates/robigo-runtime/src/serialize", "crates/robigo-runtime/src/value.rs",
+            "crates/robigo-runtime/src/memory.rs", "crates/robigo-runtime/src/sym.rs"],
+    # (tcache.rs's fuzz_decode, the format, and the instruction set it decodes)
+    "rtc": ["crates/robigo-rt/src/tcache", "crates/robigo-rt/src/ir.rs", "fuzz/rtc_seeds.py"],
 }
 # ...and what every target depends on: the fuzz crate's manifest, the
 # dependencies and the compiler, and the step itself
@@ -109,14 +116,18 @@ def run(names, seconds):
         steps = [("replay", ["-runs=0"])]
         if seconds > 0:
             steps.append((f"{seconds} s", [f"-max_total_time={seconds}"]))
+        timeout = f"-timeout={INPUT_TIMEOUT}"
         for what, opts in steps:
-            before = set(glob.glob(os.path.join(FUZZ, "artifacts", t, "*")))
-            if cargo_fuzz("run", "-O", t, *dirs, "--", *opts):
-                found = sorted(set(glob.glob(os.path.join(FUZZ, "artifacts", t, "*"))) - before)
+            t0 = time.time()
+            if cargo_fuzz("run", "-O", t, *dirs, "--", timeout, *opts):
+                # (by time, not by name: libFuzzer names an input by its
+                # hash, so a failure seen before rewrites the same file)
+                found = sorted(p for p in glob.glob(os.path.join(FUZZ, "artifacts", t, "*"))
+                               if os.path.getmtime(p) >= t0 - 1)
                 lines = [f"fuzz {t} ({what}): FAILED"]
                 for p in found:
                     rel = os.path.relpath(p, ROOT)
-                    lines.append(f"  input {rel}; repeat it: cargo +{TOOLCHAIN} fuzz run -O {t} {rel}")
+                    lines.append(f"  input {rel}; repeat it: cargo +{TOOLCHAIN} fuzz run -O {t} {rel} -- {timeout}")
                 if not found:
                     lines.append("  (no input saved: see the log above)")
                 summary(lines)
