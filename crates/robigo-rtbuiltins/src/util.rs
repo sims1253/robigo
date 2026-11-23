@@ -425,8 +425,8 @@ pub fn check1arg(
         return Err(cx.error_call(Some(call), &msg));
     }
     if cx.warn_partial_match_args() && !supplied.is_empty() && supplied.len() < formal.len() {
-        let tag = tag.name_bytes().to_vec();
-        cx.partial_match_warning(Some(call), &tag, formal.as_bytes())?;
+        let supplied_tag = tag.name_bytes().to_vec();
+        cx.partial_match_warning(Some(call), &supplied_tag, formal.as_bytes())?;
     }
     Ok(())
 }

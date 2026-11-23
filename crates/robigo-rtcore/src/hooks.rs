@@ -134,8 +134,10 @@ pub type ErrorCondFn = for<'a, 'b> fn(&mut Cx, Option<Root<'a>>, &ErrorCond<'b>)
 pub struct WarningCond<'a> {
     pub class: &'static str,
     pub subclass: Option<&'static str>,
-    /// The message in the native encoding's bytes, verbatim (cut at a NUL
-    /// and at `BUFSIZE`, as `Rvsnprintf_mbcs` into `emsg_buf` does).
+    /// The message in the native encoding's bytes, verbatim (the hook cuts
+    /// it at a NUL and at `BUFSIZE`, as `Rvsnprintf_mbcs` into `emsg_buf`
+    /// does: robigo-rt's; the default, with no condition system, cuts it
+    /// at a NUL only, as its warning hook does).
     pub msg: &'a [u8],
     /// The fields after `message` and `call`, in order
     /// (`R_setConditionField`).
@@ -464,7 +466,7 @@ impl Cx {
     /// `warning(cond)`), through the isolate's hook
     /// ([`crate::Hooks::warning_condition`]).
     // R: errors.c:R_makeWarningCondition, R_signalWarningCondition
-    pub fn warning_condition_call(&mut self, call: Option<Root<'_>>, cond: &crate::WarningCond<'_>) -> RResult<()> {
+    pub fn warning_condition_call(&mut self, call: Option<Root<'_>>, cond: &WarningCond<'_>) -> RResult<()> {
         let hook = self.iso().hooks.get().warning_condition;
         hook(self, call, cond)
     }
@@ -486,7 +488,7 @@ impl Cx {
             let a = cx.install_rooted(s, argument)?;
             let f = cx.install_rooted(s, formal)?;
             let fields = [("argument", a), ("formal", f)];
-            let cond = crate::WarningCond { class: "partialMatchWarning", subclass: None, msg: &msg, fields: &fields };
+            let cond = WarningCond { class: "partialMatchWarning", subclass: None, msg: &msg, fields: &fields };
             cx.warning_condition_call(call, &cond)
         })
     }

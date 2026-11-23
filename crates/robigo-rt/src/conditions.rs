@@ -380,7 +380,7 @@ pub fn error_condition_hook(cx: &mut Cx, call: Option<Root<'_>>, c: &robigo_rtco
     let preset = matches!(c.subclass, Some("expressionStackOverflowError" | "nodeStackOverflowError"));
     cx.scope(|cx, s| {
         let call = if preset { None } else { call };
-        let cond = match make_condition(cx, s, call, "error", c.class, c.subclass, c.fields, &msg) {
+        let cond = match make_condition(cx, s, call, CondBase::Error, c.class, c.subclass, c.fields, &msg) {
             Ok(cond) => cond,
             Err(e) => return e,
         };
@@ -403,7 +403,7 @@ pub fn warning_condition_hook(cx: &mut Cx, call: Option<Root<'_>>, c: &robigo_rt
     // Rvsnprintf_mbcs(emsg_buf, BUFSIZE, ...)
     let msg = trunc(robigo_rtcore::c_str_bytes(c.msg), BUFSIZE - 1).to_vec();
     cx.scope(|cx, s| {
-        let cond = make_condition(cx, s, call, "warning", c.class, c.subclass, c.fields, &msg)?;
+        let cond = make_condition(cx, s, call, CondBase::Warning, c.class, c.subclass, c.fields, &msg)?;
         let cond_sym = sym(cx, s, b"cond")?;
         let warning_sym = sym(cx, s, b"warning")?;
         let o = s.out(cx);
@@ -421,8 +421,27 @@ pub fn warning_condition_hook(cx: &mut Cx, call: Option<Root<'_>>, c: &robigo_rt
     })
 }
 
+/// The base class of a condition [`make_condition`] builds: GNU R's two
+/// builders, `R_vmakeErrorCondition`'s "error" and
+/// `R_vmakeWarningCondition`'s "warning".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CondBase {
+    Error,
+    Warning,
+}
+
+impl CondBase {
+    /// The class after the condition's own, before "condition".
+    fn class(self) -> &'static str {
+        match self {
+            CondBase::Error => "error",
+            CondBase::Warning => "warning",
+        }
+    }
+}
+
 /// `R_vmakeErrorCondition` / `R_vmakeWarningCondition(call, class,
-/// subclass, nextra, msg)` (`base` "error" or "warning") and
+/// subclass, nextra, msg)` (by `base`) and
 /// `R_setConditionField` of each of `fields`: the list `(message, call,
 /// fields...)`, named, of class `c(subclass, class, base, "condition")`.
 // R: errors.c:R_vmakeErrorCondition, R_vmakeWarningCondition, R_setConditionField
@@ -431,7 +450,7 @@ fn make_condition<'s>(
     cx: &mut Cx,
     s: Scope<'s>,
     call: Option<Root<'_>>,
-    base: &str,
+    base: CondBase,
     class: &str,
     subclass: Option<&str>,
     fields: &[(&'static str, Root<'_>)],
@@ -449,7 +468,7 @@ fn make_condition<'s>(
             names.set(2 + i, cx.mk_char(nm.as_bytes(), Encoding::Native)?);
         }
         let names = names.finish();
-        let classes: Vec<&str> = subclass.into_iter().chain([class, base, "condition"]).collect();
+        let classes: Vec<&str> = subclass.into_iter().chain([class, base.class(), "condition"]).collect();
         let mut klass = cx.alloc_vector::<Char<'_>>(classes.len())?;
         for (i, k) in classes.iter().enumerate() {
             klass.set(i, cx.mk_char(k.as_bytes(), Encoding::Native)?);

@@ -389,7 +389,7 @@ pub fn do_attr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
             // the names, read before the warning (attrib.c:1550)
             let t = out.root();
             cx.build(out, |cx| Ok(get_attrib(cx, x.bind(cx), b"names")?.unwrap_or(cx.nil())))?;
-            if t.bind(cx).sexp() != cx.nil().sexp() && cx.warn_partial_match_attr() {
+            if t.bind(cx) != cx.nil() && cx.warn_partial_match_attr() {
                 partial_attr_warning(cx, call, &str, b"names")?;
             }
             return Ok(());
