@@ -581,12 +581,28 @@ def malloc_peak(cmd, env, valgrind):
 
 def malloc_peak_of(text):
     """t-gmax's bytes in a DHAT output file's text: the sum over its program
-    points of the bytes each had live at t-gmax ("gb")."""
+    points of the bytes each had live at t-gmax ("gb"). Only DHAT's file
+    version 2 in heap mode, every point with a non-negative integer "gb", is
+    read: anything else is refused, never read as zero (a figure of 0 would
+    pass any limit)."""
     try:
         doc = json.loads(text)
-        return sum(int(pp.get("gb", 0)) for pp in doc["pps"])
-    except (ValueError, KeyError, TypeError):
+    except ValueError:
+        raise SystemExit("rt-startup: DHAT's output is not JSON")
+    if not isinstance(doc, dict) or doc.get("dhatFileVersion") != 2 or doc.get("mode") != "heap":
+        raise SystemExit("rt-startup: DHAT's output is not a version-2 heap profile "
+                         f"(dhatFileVersion {doc.get('dhatFileVersion') if isinstance(doc, dict) else None!r}, "
+                         f"mode {doc.get('mode') if isinstance(doc, dict) else None!r})")
+    pps = doc.get("pps")
+    if not isinstance(pps, list) or not pps:
         raise SystemExit("rt-startup: DHAT's output has no program points")
+    total = 0
+    for pp in pps:
+        gb = pp.get("gb") if isinstance(pp, dict) else None
+        if type(gb) is not int or gb < 0:
+            raise SystemExit(f"rt-startup: a DHAT program point without a non-negative integer \"gb\": {pp!r:.200}")
+        total += gb
+    return total
 
 
 # robigo-heap's own peak (ROBIGO_GC_STATS=1): bytes in use (objects, block

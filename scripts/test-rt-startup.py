@@ -252,10 +252,22 @@ class LogicalPeak(unittest.TestCase):
     peak line where a binary prints it."""
 
     def test_the_malloc_peak_sums_the_program_points_at_t_gmax(self):
-        doc = {"dhatFileVersion": 2, "mode": "heap", "pps": [{"gb": 5000, "tb": 9}, {"gb": 1200}, {"tb": 3}]}
+        doc = {"dhatFileVersion": 2, "mode": "heap", "pps": [{"gb": 5000, "tb": 9}, {"gb": 1200}, {"gb": 0}]}
         self.assertEqual(su.malloc_peak_of(json.dumps(doc)), 6200)
-        with self.assertRaises(SystemExit):
-            su.malloc_peak_of("{}")
+
+    def test_malformed_dhat_output_is_refused_never_read_as_zero(self):
+        # Sol: each of these passed the clause as 0 before
+        good = {"dhatFileVersion": 2, "mode": "heap", "pps": [{"gb": 5000}]}
+        for bad in ("not json", "[]", "{}",
+                    json.dumps(dict(good, pps=[{}])),
+                    json.dumps(dict(good, pps=[{"gb": -1}])),
+                    json.dumps(dict(good, pps=[{"gb": 1.5}])),
+                    json.dumps(dict(good, pps=[{"gb": True}])),
+                    json.dumps(dict(good, pps=[])),
+                    json.dumps(dict(good, mode="copy")),
+                    json.dumps(dict(good, dhatFileVersion=1))):
+            with self.assertRaises(SystemExit, msg=bad):
+                su.malloc_peak_of(bad)
 
     def test_robigo_heaps_peak_line_is_read_where_it_is_printed(self):
         line = ("robigo gc: collections 0 (entry 0)\n"
