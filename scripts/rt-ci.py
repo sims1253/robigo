@@ -950,11 +950,16 @@ def branch_changes(root=ROOT, base="origin/main"):
     return sorted({os.fsdecode(p) for x in lists for p in x.split(b"\0") if p})
 
 
+# base_subset_owed's reason when git cannot say what the branch changes (a
+# shallow clone, no origin/main): the check is owed, without a changed input
+GIT_CANNOT_COMPARE = "git cannot compare this checkout with origin/main"
+
+
 def base_subset_owed(changed):
-    """Why base-subset's check is owed (the first changed input, or that git
-    could not say), or None."""
+    """Why base-subset's check is owed (the first changed input, or
+    GIT_CANNOT_COMPARE), or None."""
     if changed is None:
-        return "git cannot compare this checkout with origin/main"
+        return GIT_CANNOT_COMPARE
     pats = [ci_select.glob_re(p) for p in BASE_SUBSET_INPUTS]
     for path in changed:
         if any(r.match(path) for r in pats):
@@ -975,12 +980,12 @@ def oracle_problem():
                            capture_output=True, text=True)
         if p.returncode == 0 and p.stdout.strip() == rt:
             return None
-    except FileNotFoundError:
+    except OSError:    # (missing, or there but not executable: no usable Rscript)
         pass
     try:
         if subprocess.run(["docker", "image", "inspect", image], capture_output=True).returncode == 0:
             return None
-    except FileNotFoundError:
+    except OSError:
         return (f"there is no docker for {image} (and no GNU R {rt} Rscript on PATH): "
                 "install docker, or run on a machine with it")
     ref = "oracle_" + rt.replace(".", "_")
@@ -1059,8 +1064,9 @@ def main(argv):
         if owed:
             problem = oracle_problem()
             if problem:
-                print(f"::error::rt-ci: this branch changes base-subset's inputs ({owed}), so its check is owed, "
-                      f"and {problem}")
+                why = (f"this branch changes base-subset's inputs ({owed})" if owed != GIT_CANNOT_COMPARE
+                       else f"{GIT_CANNOT_COMPARE}, so it is owed whatever the branch changes")
+                print(f"::error::rt-ci: base-subset's check is owed ({why}), and {problem}")
                 return 2
             plan = [*plan, BASE_SUBSET_STEP]
     done = []

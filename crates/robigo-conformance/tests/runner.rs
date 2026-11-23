@@ -76,10 +76,15 @@ fn sweep_fakes(parent: &Path) {
         else {
             continue;
         };
-        // (the newest write anywhere in it, not the directory's own mtime:
-        // a write to an existing file, order.log, leaves that unchanged)
-        let ours_and_old = e.metadata().is_ok_and(|m| m.uid() == me.uid()) && newest(&e.path()) < day_ago;
-        if pid.parse::<u32>().is_ok() && !Path::new("/proc").join(pid).exists() && ours_and_old {
+        // the cheap checks first: a live pid keeps the directory with no
+        // stat and no walk; then this user's, and the newest write anywhere
+        // in it (not the directory's own mtime: a write to an existing file,
+        // order.log, leaves that unchanged)
+        if pid.parse::<u32>().is_ok()
+            && !Path::new("/proc").join(pid).exists()
+            && e.metadata().is_ok_and(|m| m.uid() == me.uid())
+            && newest(&e.path()) < day_ago
+        {
             let _ = std::fs::remove_dir_all(e.path());
         }
     }

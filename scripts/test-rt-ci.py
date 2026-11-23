@@ -539,11 +539,14 @@ class RtCi(unittest.TestCase):
 
     def test_branch_changes_see_commits_edits_and_new_files(self):
         import subprocess, shutil, tempfile
+        from unittest import mock
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        # (the caller's git config stays out: signing, hooks, templates)
+        genv = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull, GIT_CONFIG_NOSYSTEM="1")
         def git(*a):
-            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=d, check=True,
-                           capture_output=True)
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+                            "-c", "core.hooksPath=" + os.devnull, *a], cwd=d, check=True, capture_output=True, env=genv)
         git("init", "-q", "-b", "main")
         for f in ("kept", "edited"):
             open(os.path.join(d, f), "w").write("1\n")
@@ -555,6 +558,10 @@ class RtCi(unittest.TestCase):
         git("commit", "-q", "-m", "change")
         open(os.path.join(d, "edited"), "w").write("2\n")
         open(os.path.join(d, "untracked"), "w").write("1\n")
+        isolated = mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
+                                                "GIT_CONFIG_NOSYSTEM": "1"})
+        isolated.start()
+        self.addCleanup(isolated.stop)
         self.assertEqual(BRANCH_CHANGES(d, "base"), ["committed", "edited", "untracked"])
         self.assertIsNone(BRANCH_CHANGES(d, "no-such-branch"))
         # a staged change the worktree undoes is still a change (the commit
@@ -577,7 +584,11 @@ class RtCi(unittest.TestCase):
         from unittest import mock
         def main(owed, problem, argv=()):
             out = io.StringIO()
-            with mock.patch.object(rt, "branch_changes", return_value=[]), \
+            # main's premise mocked: no `cargo metadata` run, whatever the workspace
+            with mock.patch.object(rt, "metadata", return_value={"target_directory": "/x", "packages": []}), \
+                    mock.patch.object(rt, "rt_crates", return_value=["robigo-rt"]), \
+                    mock.patch.object(rt, "leaks", return_value=[]), \
+                    mock.patch.object(rt, "branch_changes", return_value=[]), \
                     mock.patch.object(rt, "base_subset_owed", return_value=owed), \
                     mock.patch.object(rt, "oracle_problem", return_value=problem), \
                     mock.patch.object(rt, "run_steps", return_value=0) as run, \

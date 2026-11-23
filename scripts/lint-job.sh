@@ -10,7 +10,9 @@
 # is one of the checks: clippy and the Sexp rule. The script suites below are
 # the job's other steps, which lint.sh alone does not run.)
 set -uo pipefail
-cd "$(dirname "$0")/.."
+# (no -e: every check runs after another fails; the cd must not, or the
+# checks would run in the caller's directory and certify another tree)
+cd "$(dirname "$0")/.." || exit 2
 
 CHECKS=(
   "cargo fmt --check"
