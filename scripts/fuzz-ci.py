@@ -36,9 +36,11 @@ INPUT_TIMEOUT = 60
 # OWN)
 FILTERS = {
     "parse": ["crates/robigo-syntax/"],
-    # (unserialize, and the value, memory and symbol code it builds with)
-    "rds": ["crates/robigo-runtime/src/serialize", "crates/robigo-runtime/src/value.rs",
-            "crates/robigo-runtime/src/memory.rs", "crates/robigo-runtime/src/sym.rs"],
+    # (unserialize, the interpreter the harness makes for every input, and
+    # the value, memory, symbol and environment code the decoder builds with)
+    "rds": ["crates/robigo-runtime/src/serialize", "crates/robigo-runtime/src/interp.rs",
+            "crates/robigo-runtime/src/value.rs", "crates/robigo-runtime/src/memory.rs",
+            "crates/robigo-runtime/src/sym.rs", "crates/robigo-runtime/src/env.rs"],
     # (tcache.rs's fuzz_decode, the format, and the instruction set it decodes)
     "rtc": ["crates/robigo-rt/src/tcache", "crates/robigo-rt/src/ir.rs", "fuzz/rtc_seeds.py"],
 }
@@ -83,8 +85,16 @@ def changed_paths(base):
     mb = git("merge-base", "HEAD", base)
     if mb is None:
         return None
-    out = git("diff", "--name-only", "--no-renames", mb.strip(), "HEAD")
-    return None if out is None else sorted(x for x in out.splitlines() if x)
+    # (NUL-separated bytes: a name git would quote, non-ASCII or with a
+    # control character, still meets the prefixes)
+    try:
+        p = subprocess.run(["git", "diff", "--name-only", "-z", "--no-renames", mb.strip(), "HEAD"], cwd=ROOT,
+                           capture_output=True)
+    except OSError:
+        return None
+    if p.returncode != 0:
+        return None
+    return sorted({os.fsdecode(x) for x in p.stdout.split(b"\0") if x})
 
 
 def summary(lines):

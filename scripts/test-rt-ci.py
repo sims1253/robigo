@@ -1647,6 +1647,54 @@ class FuzzCi(unittest.TestCase):
             for prefix in self.f.FILTERS[t]:
                 self.assertTrue(any(p.startswith(prefix) for p in self.tracked()), f"{t}: {prefix} names nothing")
 
+    def test_each_harness_s_imported_modules_are_in_its_filter(self):
+        # the modules a harness names (`robigo_<crate>::<module>`) are code
+        # it runs directly: a change there must owe the target (a refactor
+        # that moves the code a harness calls fails here, not silently)
+        import re
+        root = HERE.parent
+        for t in self.f.targets():
+            src = (root / "fuzz" / "fuzz_targets" / f"{t}.rs").read_text()
+            covered = self.f.FILTERS[t] + self.f.own(t)
+            for crate, item in re.findall(r"\brobigo_(\w+)::(\w+)", src):
+                base = root / "crates" / f"robigo-{crate.replace('_', '-')}" / "src"
+                rel = f"crates/robigo-{crate.replace('_', '-')}/src/"
+                if (base / f"{item}.rs").is_file() or (base / item).is_dir():
+                    path = rel + (f"{item}.rs" if (base / f"{item}.rs").is_file() else f"{item}/")
+                else:
+                    # an item at the crate's root (a function, a re-export):
+                    # something of the crate must be in the filter
+                    path = None
+                if path:
+                    self.assertTrue(any(path.startswith(c) for c in covered), f"{t}: {path} not in its filter")
+                else:
+                    self.assertTrue(any(c.startswith(rel) or rel.startswith(c) for c in covered),
+                                    f"{t}: nothing of {rel} in its filter")
+
+    def test_changed_paths_reads_names_git_would_quote(self):
+        import subprocess, shutil, tempfile
+        from unittest import mock
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        genv = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        def git(*a):
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+                            "-c", "core.hooksPath=" + os.devnull, *a], cwd=d, check=True, capture_output=True, env=genv)
+        git("init", "-q", "-b", "main")
+        open(os.path.join(d, "a"), "w").close()
+        git("add", "a")
+        git("commit", "-q", "-m", "base")
+        git("branch", "base")
+        os.makedirs(os.path.join(d, "fuzz", "seeds", "parse"))
+        open(os.path.join(d, "fuzz", "seeds", "parse", "café.R"), "w").close()
+        git("add", ".")
+        git("commit", "-q", "-m", "seed")
+        with mock.patch.object(self.f, "ROOT", d), mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": os.devnull,
+                                                                                 "GIT_CONFIG_NOSYSTEM": "1"}):
+            changed = self.f.changed_paths("base")
+        self.assertEqual(changed, ["fuzz/seeds/parse/café.R"])
+        self.assertEqual(sorted(self.f.plan(changed)), ["parse"])
+
     def tracked(self):
         import subprocess
         return subprocess.run(["git", "ls-files"], cwd=HERE.parent, capture_output=True, text=True).stdout.splitlines()
@@ -1661,6 +1709,8 @@ class FuzzCi(unittest.TestCase):
         self.assertEqual(sorted(plan(["crates/robigo-rt/src/tcache.rs"])), ["rtc"])
         self.assertEqual(sorted(plan(["crates/robigo-runtime/src/value.rs"])), ["rds"])
         self.assertEqual(sorted(plan(["crates/robigo-runtime/src/memory.rs"])), ["rds"])
+        self.assertEqual(sorted(plan(["crates/robigo-runtime/src/interp.rs"])), ["rds"])
+        self.assertEqual(sorted(plan(["crates/robigo-runtime/src/env.rs"])), ["rds"])
         self.assertEqual(sorted(plan(["fuzz/seeds/rds/x.rds", "fuzz/fuzz_targets/parse.rs"])), ["parse", "rds"])
         # what every target depends on owes all of them, with the path as the reason
         for p in ("Cargo.lock", "rust-toolchain.toml", "fuzz/Cargo.toml", ".github/workflows/ci.yml",
