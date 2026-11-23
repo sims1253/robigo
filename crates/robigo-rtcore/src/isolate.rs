@@ -325,8 +325,11 @@ impl Isolate {
     // its table growth inlined there costs them registers)
     #[inline(never)]
     pub(crate) fn global_add(&self, x: Sexp) -> u32 {
-        // SAFETY: the borrow ends with this call, which calls nothing of ours.
-        unsafe { (*self.roots.get()).globals.add(x) }
+        // SAFETY: each borrow ends with its call, which calls nothing of ours.
+        unsafe {
+            let epoch = self.core().frozen_epoch();
+            (*self.roots.get()).globals.add(x, epoch)
+        }
     }
     pub(crate) fn global_get(&self, idx: u32) -> Sexp {
         // SAFETY: as in `global_add`.
@@ -334,7 +337,10 @@ impl Isolate {
     }
     pub(crate) fn global_remove(&self, idx: u32) {
         // SAFETY: as in `global_add`.
-        unsafe { (*self.roots.get()).globals.remove(idx) }
+        unsafe {
+            let epoch = self.core().frozen_epoch();
+            (*self.roots.get()).globals.remove(idx, epoch)
+        }
     }
     /// The global table's `i`th entry (None: free), of `global_slots()`.
     pub(crate) fn global_slot(&self, i: usize) -> Option<Sexp> {

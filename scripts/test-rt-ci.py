@@ -74,7 +74,7 @@ class RtCi(unittest.TestCase):
                          "modes")
         self.assertEqual(where["ROBIGO_MATERIALIZE=1 (every argument slot materialized)"], "modes")
         self.assertEqual([t for t, s in where.items() if s == "gctorture"],
-                         ["conformance with the boot heap's freeze on (ROBIGO_GC_FREEZE=1)",
+                         ["conformance with the boot heap's freeze off (ROBIGO_GC_FREEZE=0)",
                           "conformance under gctorture (E3)",
                           f"conformance under ROBIGO_GC_MOVE={rt.GC_MOVE_YOUNG} with gctorture (E3)"])
         self.assertEqual([t for t, s in where.items() if s == "builtin-diff"],
@@ -142,7 +142,7 @@ class RtCi(unittest.TestCase):
         titles = [t for t, _, _ in steps]
         rdb = [i for i, (_, e, c) in enumerate(steps) if e.get("ROBIGO_RT_BOOT") == "rdb" and rt.CONFORMANCE in c
                and "--skip" not in c]
-        # plain, crosschecked, with the boot heap's freeze on, and without
+        # plain, crosschecked, with the boot heap's freeze off, and without
         # the translation cache
         self.assertEqual(len(rdb), 4)
         tree = titles.index("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)")
@@ -390,18 +390,24 @@ class RtCi(unittest.TestCase):
         self.assertIn(rt.CONFORMANCE, built[1][1])
         self.assertNotIn("debug assertions", " ".join(t for t, _, _ in rt.steps(["robigo-rt"])))
 
-    def test_the_freeze_on_is_tested_under_each_boot(self):
-        # the freeze is off by default; the mode users turn on is the
-        # conformance under each boot with it on and its check off
-        on = [(e, c) for t, e, c in rt.steps(["robigo-rt"]) if e.get("ROBIGO_GC_FREEZE") == "1"
-              and rt.CONFORMANCE in c and "ROBIGO_GCTORTURE" not in e]
-        boots = sorted(e.get("ROBIGO_RT_BOOT", "M1") for e, _ in on)
+    def test_the_freeze_off_is_tested_under_each_boot(self):
+        # the freeze is on by default (step 2); the heap without it is the
+        # conformance under each boot with it off
+        off = [(e, c) for t, e, c in rt.steps(["robigo-rt"]) if e.get("ROBIGO_GC_FREEZE") == "0"
+               and rt.CONFORMANCE in c and "ROBIGO_GCTORTURE" not in e]
+        boots = sorted(e.get("ROBIGO_RT_BOOT", "M1") for e, _ in off)
         self.assertEqual(boots, ["M1", "rdb"])
-        self.assertTrue(all("ROBIGO_GC_FREEZE_CHECK" not in e for e, _ in on))
-        # and no step that is not the freeze's turns it on
+        # every step of the moving collector turns it off explicitly, and no
+        # step but those and the freeze-off ones does
+        for t, e, _ in [*rt.steps(["robigo-rt"]), *rt.full_move_steps()]:
+            if "ROBIGO_GC_MOVE" in e:
+                self.assertEqual(e.get("ROBIGO_GC_FREEZE"), "0", t)
+            elif e.get("ROBIGO_GC_FREEZE") == "0":
+                self.assertIn("freeze off", t)
+        # a step that names the freeze on is the check's
         for t, e, _ in rt.steps(["robigo-rt"]):
             if e.get("ROBIGO_GC_FREEZE") == "1":
-                self.assertTrue("freeze" in t or "FREEZE" in t or "E3" in t or t.startswith("gctorture (collect"), t)
+                self.assertIn("ROBIGO_GC_FREEZE_CHECK", e, t)
 
     def test_full_move_and_shard_are_refused_together(self):
         # --full-move runs the nightly's one step: with --shard as well the
@@ -419,7 +425,8 @@ class RtCi(unittest.TestCase):
         # amendment to #948 (c))
         e3 = [e for t, e, _ in rt.steps(["robigo-rt"]) if t == "conformance under gctorture (E3)"]
         self.assertEqual(e3[0]["ROBIGO_GC_FREEZE_CHECK"], "16")
-        # the check runs on the freeze, which is off by default
+        # the check runs on the freeze (on by default; named, so the step
+        # does not depend on the default)
         self.assertEqual(e3[0]["ROBIGO_GC_FREEZE"], "1")
         tests = [e for t, e, _ in rt.steps(["robigo-rt"]) if t.startswith("gctorture (collect at every allocation)")]
         self.assertEqual(tests[0]["ROBIGO_GC_FREEZE_CHECK"], "1")
