@@ -512,6 +512,8 @@ class Boot(unittest.TestCase):
         robigo, gnur = cmds
         self.assertEqual(robigo[robigo.index("--robigo-env") + 1], "ROBIGO_RT_BOOT=rdb")
         self.assertNotIn("--robigo-env", gnur)
+
+
 class RowCollections(unittest.TestCase):
     """A row's window holds no collection (idiom-vs-r.py's check before
     measuring; docs/ledger/g3/2026-11-23-row-collections.md)."""
@@ -621,6 +623,7 @@ class RowCollections(unittest.TestCase):
         with patch("sys.stderr", new_callable=io.StringIO) as err:
             doc, table = self.rows(fake)
         self.assertIn("reports no collections", err.getvalue())
+        self.assertEqual(doc["r"]["collections"], {"robigo": [None, None]})
         self.assertIn("robigo -", table)
         self.assertEqual(fake.measured, ["robigo"])
 
