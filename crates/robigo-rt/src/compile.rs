@@ -980,12 +980,17 @@ pub(crate) struct Bufs {
 pub(crate) struct Scratch(std::cell::OnceCell<Box<std::cell::RefCell<Vec<Bufs>>>>);
 
 /// The spare sets [`Scratch`] keeps: the depth of nested compiles that
-/// reuse buffers (a deeper one allocates its own, as before).
+/// reuse buffers (a deeper one allocates its own, as before). Compiles
+/// nest 4 deep in nearly every conformance case, 5 in a fifth of them and
+/// rarely deeper; fewer sets lose the start's gain (2 sets: 2.14M of the
+/// rdb-jit start's 2.23M, 1 set: 0.75M).
 const SCRATCH_SETS: usize = 4;
 
-/// The capacity, in elements, a spare buffer keeps (2048 instructions are
-/// 32 KiB).
-const SCRATCH_CAP: usize = 2048;
+/// The capacity, in elements, a spare buffer keeps (256 instructions are
+/// 4 KiB). Measured against 512, 1,024 and 2,048: the same instructions on
+/// the run-once rows, the jit per-compile rows and the rdb-jit start, for
+/// 18,640 bytes kept at the end of that start against 121,680 at 2,048.
+const SCRATCH_CAP: usize = 256;
 
 impl Scratch {
     fn sets(&self) -> &std::cell::RefCell<Vec<Bufs>> {
