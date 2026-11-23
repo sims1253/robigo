@@ -2522,8 +2522,6 @@ impl Core {
         // a negative gap, NA's, sets nothing and keeps them)
         if gap >= 0 {
             self.torture_held = None;
-        }
-        if gap >= 0 {
             self.force_wait = gap;
             self.force_gap = gap;
         }
