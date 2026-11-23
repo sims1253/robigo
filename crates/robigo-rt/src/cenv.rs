@@ -48,7 +48,16 @@ pub enum Need {
     /// promise is reachable from a binding or a root.
     Force(Sexp),
     /// cmp.R would stop with an error: GNU R leaves the code uncompiled.
+    /// From the byte-code translation: byte code it does not translate
+    /// (yet), which raises "not implemented yet" when it runs.
     Fail,
+    /// The byte code is not what GNU R's compiler makes, and reading it as
+    /// such would misread it (an operand out of its range, a constant of
+    /// another kind, a stack the code's own jumps disagree about): the code
+    /// raises "robigo: malformed byte code: ..." when it runs (#976). Only
+    /// the byte-code translation stops so; the compiler's own
+    /// `bc_untranslated` says why.
+    Malformed,
 }
 
 impl From<NeedGc> for Need {

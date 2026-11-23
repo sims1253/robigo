@@ -37,6 +37,9 @@ pub enum Verdict {
     Skipped,
     /// The translation cannot follow the byte code.
     Untranslated,
+    /// The translation refuses the byte code as malformed: never so for
+    /// GNU R's compiler's code, so the report's line is an error.
+    Malformed,
 }
 
 /// A closure's verdict and its line of the report.

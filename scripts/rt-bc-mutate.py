@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Hostile byte code through robigo-rt (issue #976): every start must end as
+R code ends, whatever the byte code it is handed.
+
+tests/bc-mutate/gen.R mutates the code vectors of compiler::cmpfun'd
+closures, makes them closures again (.Internal(mkCode), .Internal(bcClose))
+and calls them. robigo-rt runs it under the rdb boot. A start passes when it
+ends by exit status 0 or 1 (done, or an R error), or when it is still running
+at the limit (a mutation can make a well-formed endless loop) and a SIGINT
+then ends it within GRACE seconds, as an R loop's poll does. It fails on a
+signal, a Rust panic or abort, or a start that SIGINT does not end (a loop of
+robigo-rt's own that never polls: a translator, verifier or VM loop).
+
+Every start runs under an address-space cap (RLIMIT_AS, set here, not left
+to the caller), checked in force before the first: hostile byte code once
+made robigo-rt allocate 0.8 GB a second (corpus entry 300014 4), and the
+machine is shared.
+
+    scripts/rt-bc-mutate.py --robigo-rt BIN                  # the corpus, then the random runs
+    scripts/rt-bc-mutate.py --robigo-rt BIN --corpus-only
+    scripts/rt-bc-mutate.py --robigo-rt BIN --processes 60 --batch 100 --seed 3 --report-only
+
+The corpus (tests/bc-mutate/corpus.txt) names mutations by seed and number:
+each is replayed as it was found, mutations 1 to the number in one start
+(alone, none of them crashes: what an earlier mutation's run left behind,
+such as a translation kept on a constant both codes share, is part of the
+case).
+"""
+import argparse
+import concurrent.futures
+import hashlib
+import os
+import resource
+import signal
+import subprocess
+import sys
+import tempfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+GEN = os.path.join(ROOT, "tests", "bc-mutate", "gen.R")
+CORPUS = os.path.join(ROOT, "tests", "bc-mutate", "corpus.txt")
+# the generator the corpus was found with: its entries name mutations of
+# this file, so a change to it needs the corpus found again
+GEN_SHA256 = "22dd95c23959f53435903e06596251c43170e4c27b5d3564689e80c1acfc5a2f"
+
+MEM_CAP = 2 << 30
+# how long a start may run before the SIGINT, and how soon it must then end
+LIMIT = 30
+GRACE = 3
+
+
+def cap_memory():
+    resource.setrlimit(resource.RLIMIT_AS, (MEM_CAP, MEM_CAP))
+
+
+def env_for(checkout, home, **extra):
+    env = dict(os.environ, ROBIGO_RT_BOOT="rdb", R_DEFAULT_PACKAGES="NULL", ROBIGO_RT_CHECKOUT=checkout,
+               HOME=home, LANGUAGE="en", LC_ALL="C.UTF-8", **extra)
+    env.pop("R_HOME", None)
+    return env
+
+
+def check_cap(rt, checkout, home):
+    """Fail unless the cap is in force: an allocation past it is an R error."""
+    p = subprocess.run([rt, "--vanilla", "-e", f"x <- numeric({2 * MEM_CAP // 8})"], cwd=home,
+                       env=env_for(checkout, home), capture_output=True, timeout=120, preexec_fn=cap_memory)
+    if p.returncode != 1 or b"cannot allocate" not in p.stderr:
+        sys.exit(f"rt-bc-mutate: the memory cap is not in force (exit {p.returncode}): "
+                 f"{p.stderr.decode(errors='replace')[-300:]}")
+
+
+def start(rt, checkout, home, limit, **extra):
+    """One start of the generator: (outcome, detail). Outcomes: "done",
+    "R error", "interrupted" (at the limit, ended by SIGINT), or a failure:
+    "signal N", "panic", "exit N", "not interruptible"."""
+    p = subprocess.Popen([rt, "--vanilla", GEN], cwd=home, env=env_for(checkout, home, **extra),
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=cap_memory)
+    try:
+        out, err = p.communicate(timeout=limit)
+    except subprocess.TimeoutExpired:
+        p.send_signal(signal.SIGINT)
+        try:
+            out, err = p.communicate(timeout=GRACE)
+            return "interrupted", ""
+        except subprocess.TimeoutExpired:
+            p.kill()
+            out, err = p.communicate()
+            return "not interruptible", last_mutation(err)
+    if b"panicked at" in err or p.returncode == 101:
+        return "panic", last_mutation(err) + ": " + tail(err, 400)
+    if p.returncode < 0:
+        return f"signal {-p.returncode}", last_mutation(err) + ": " + tail(err, 300)
+    if p.returncode == 0 and b"done" in out:
+        return "done", ""
+    if p.returncode == 1:
+        return "R error", ""
+    return f"exit {p.returncode}", last_mutation(err) + ": " + tail(err, 300)
+
+
+def last_mutation(err):
+    m = [l for l in err.decode(errors="replace").splitlines() if l.startswith("mutation ")]
+    return m[-1] if m else "before any mutation"
+
+
+def tail(err, n):
+    """`err`'s end without the generator's "mutation K" lines."""
+    lines = [l for l in err.decode(errors="replace").splitlines() if l.strip() and not l.startswith("mutation ")]
+    return " | ".join(lines)[-n:]
+
+
+OK = ("done", "R error", "interrupted")
+
+
+def corpus():
+    out = []
+    with open(CORPUS) as f:
+        for line in f:
+            line = line.split("#", 1)[0].split()
+            if line:
+                out.append((int(line[0]), int(line[1]), line[2] if len(line) > 2 else ""))
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--robigo-rt", required=True)
+    ap.add_argument("--checkout", default=ROOT, help="the checkout whose .robigo trees robigo-rt boots from")
+    ap.add_argument("--corpus-only", action="store_true")
+    ap.add_argument("--processes", type=int, default=24, help="random starts after the corpus")
+    ap.add_argument("--batch", type=int, default=100, help="mutations per random start")
+    ap.add_argument("--seed", type=int, default=1, help="random start p's seed is SEED * 100000 + p")
+    ap.add_argument("--jobs", type=int, default=4)
+    ap.add_argument("--limit", type=int, default=LIMIT)
+    ap.add_argument("--report-only", action="store_true", help="report failures without failing")
+    a = ap.parse_args()
+    with open(GEN, "rb") as f:
+        sha = hashlib.sha256(f.read()).hexdigest()
+    if sha != GEN_SHA256:
+        sys.exit(f"rt-bc-mutate: tests/bc-mutate/gen.R changed (sha256 {sha}): its corpus names mutations of the "
+                 "old generator; find the corpus again with the new one and update GEN_SHA256")
+    rt = os.path.abspath(a.robigo_rt)
+    runs = []
+    for seed, k, was in corpus():
+        runs.append((f"corpus {seed} {k} ({was})", {"BCM_SEED": str(seed), "BCM_BATCH": str(k)}))
+    if not a.corpus_only:
+        for p in range(a.processes):
+            s = a.seed * 100000 + p
+            runs.append((f"random {s} x{a.batch}", {"BCM_SEED": str(s), "BCM_BATCH": str(a.batch)}))
+    with tempfile.TemporaryDirectory(prefix="rt-bc-mutate-") as home:
+        check_cap(rt, a.checkout, home)
+        with concurrent.futures.ThreadPoolExecutor(a.jobs) as ex:
+            results = list(ex.map(lambda r: (r[0], *start(rt, a.checkout, home, a.limit, **r[1])), runs))
+    counts = {}
+    for _, outcome, _ in results:
+        counts[outcome] = counts.get(outcome, 0) + 1
+    bad = [(n, o, d) for n, o, d in results if o not in OK]
+    print(f"rt-bc-mutate: {len(results)} starts ({len(runs) - (0 if a.corpus_only else a.processes)} from the corpus): "
+          + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
+    for n, o, d in bad[:int(os.environ.get("BCM_SHOW", "10"))]:
+        print(f"  {n}: {o}, {d}")
+    return 1 if bad and not a.report_only else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

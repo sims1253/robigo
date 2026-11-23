@@ -33,6 +33,8 @@
 
 #![allow(unsafe_code)]
 
+mod check;
+
 use super::{Comp, Tail};
 use crate::bcassign as ba;
 use crate::cenv::{Cenv, Need};
@@ -293,11 +295,13 @@ fn union(into: &mut Starts, from: &[usize]) {
     }
 }
 
-/// The two passes, or two paths to one label, disagree about the stack: a
-/// translator bug (a debug build stops; a release build refuses the code).
+/// The two passes, or two paths to one label, disagree about the stack:
+/// byte code GNU R's compiler does not make (hostile or damaged code can
+/// reach it, so it is refused, never a panic), or a translator bug. GNU R's
+/// own code never gets here: the rdb crosscheck reports a malformed
+/// closure as an error, so a translator bug still fails CI.
 fn mismatch() -> Need {
-    debug_assert!(false, "robigo: the byte-code translation lost track of GNU R's stack");
-    Need::Fail
+    Need::Malformed
 }
 
 /// A call's frame on GNU R's stack: what the function is, and its
@@ -782,11 +786,27 @@ impl<'g> Comp<'g> {
         let (code, consts) = unsafe {
             let c = bc.car();
             if c.typ() != INTSXP {
-                return Err(Need::Fail);
+                return self.malformed("its code is not an integer vector".to_owned());
             }
             (std::slice::from_raw_parts(c.std_data() as *const i32, c.std_len() as usize).to_vec(), bc.cdr())
         };
-        let Ok(dec) = decode(&code) else { return Err(Need::Fail) };
+        let dec = match decode(&code) {
+            Ok(d) => d,
+            Err(at) => {
+                let what = match code.get(at) {
+                    Some(&op) if robigo_rtbuiltins::bytecode::argc(op).is_none() => {
+                        format!("an unknown instruction code {op} at position {at}")
+                    }
+                    _ => format!("an instruction cut short at position {at}"),
+                };
+                return self.malformed(what);
+            }
+        };
+        // the operands, before anything reads them (#976)
+        // SAFETY: as above: the byte code's constants.
+        if let Err(what) = unsafe { check::check(&dec, consts, code.len()) } {
+            return self.malformed(what);
+        }
         // SAFETY: as above.
         unsafe { self.translate_ins(&dec, consts, dst) }
     }
@@ -2153,6 +2173,13 @@ impl<'g> Comp<'g> {
     /// An opcode the translation does not know: the translation stops,
     /// and the code raises "robigo: ... is not implemented yet" when it
     /// runs ([`Comp::untranslated`]'s message, AGENTS rule 6).
+    /// Refuse malformed byte code ([`Need::Malformed`]): the code raises
+    /// "robigo: malformed byte code: `what`" when it runs.
+    fn malformed(&mut self, what: String) -> Result<(), Need> {
+        self.bc_untranslated = Some(what);
+        Err(Need::Malformed)
+    }
+
     fn untranslated(&mut self, i: BcIns, what: &str) -> Result<(), Need> {
         let name = robigo_rtbuiltins::bytecode::OPCODES.get(i.op as usize).map_or("?", |o| o.0);
         self.bc_untranslated = Some(format!("{what} ({name})"));

@@ -186,7 +186,9 @@ fn attempt_rounds(
                 retried = None;
             }
             Ok(code) => return Ok(Some(code)),
-            Err(Need::Fail) => return Ok(None),
+            // (a translation handles its own malformed byte code: none
+            // gets here; a compile from source never is malformed)
+            Err(Need::Fail | Need::Malformed) => return Ok(None),
             Err(Need::Force(p)) => {
                 let vis = cx.visible();
                 cx.scope(|cx, s| {
@@ -466,6 +468,10 @@ unsafe fn crosscheck_closure_in(cx: &Cx, f: Sexp, installed: bool) -> Result<cro
                     c.bc_untranslated.take().unwrap_or_else(|| "byte code the translation cannot follow".to_owned());
                 Ok(Finding::new(Verdict::Untranslated, format!("untranslated: {what}: {why}")))
             }
+            Err(Need::Malformed) => {
+                let why = c.bc_untranslated.take().unwrap_or_else(|| MALFORMED_STACK.to_owned());
+                Ok(Finding::new(Verdict::Malformed, format!("malformed byte code: {what}: {why}")))
+            }
             Err(e) => Err(e),
         }
     }
@@ -509,6 +515,10 @@ pub fn translation_gaps(cx: &mut Cx, f: Root<'_>) -> RResult<Vec<String>> {
                             .take()
                             .unwrap_or_else(|| "byte code the translation cannot follow".to_owned()),
                     ),
+                    Err(Need::Malformed) => gaps.push(format!(
+                        "malformed byte code: {}",
+                        c.bc_untranslated.take().unwrap_or_else(|| MALFORMED_STACK.to_owned())
+                    )),
                     Err(e) => return Err(e),
                 }
                 // the byte code it holds: MAKEPROM's, and the functions it
@@ -628,6 +638,10 @@ unsafe fn translate_code(cx: &Cx, bc: Sexp, formals: Option<Sexp>, index: Option
     }
 }
 
+/// Why malformed byte code was refused when the translation says no more:
+/// its stack (`bctrans::mismatch`).
+const MALFORMED_STACK: &str = "a stack its own instructions disagree about";
+
 /// [`translate_code`] with no look at the translation cache.
 ///
 /// # Safety
@@ -661,13 +675,20 @@ unsafe fn translate_uncached_in(cx: &Cx, bc: Sexp, formals: Option<Sexp>, index:
                 c.emit(i);
                 c.finish()
             }
-            Err(Need::Fail) => {
-                let what =
-                    c.bc_untranslated.take().unwrap_or_else(|| "byte code the translation cannot follow".to_owned());
+            Err(e @ (Need::Fail | Need::Malformed)) => {
+                let malformed = e == Need::Malformed;
+                let what = c.bc_untranslated.take().unwrap_or_else(|| {
+                    if malformed { MALFORMED_STACK } else { "byte code the translation cannot follow" }.to_owned()
+                });
                 let mut c = Comp::new(cx, st, Profile::Bc, Some(Cenv::for_translation()));
                 let r = c.alloc();
                 let nil = c.nil();
-                c.unimplemented(nil, &format!("translating {what}"))?;
+                if malformed {
+                    // (not "not implemented": no translation of it will come)
+                    c.error_op(nil, &format!("robigo: malformed byte code: {what}"), false)?;
+                } else {
+                    c.unimplemented(nil, &format!("translating {what}"))?;
+                }
                 let mut i = Ins::new(Op::Ret);
                 i.b = r;
                 c.emit(i);
