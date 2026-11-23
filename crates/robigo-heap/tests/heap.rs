@@ -2622,6 +2622,32 @@ fn a_hold_of_the_moves_alone_leaves_gctorture_to_the_start() {
     assert!(!c.torture(), "and none appears from the hold");
 }
 
+/// A gctorture the hold keeps gives way to a setting the start makes
+/// itself: `gctorture(FALSE)` stays off at the arming, another gap stays.
+#[test]
+fn a_held_gctorture_gives_way_to_the_starts_own_setting() {
+    let mut c = moving_core();
+    c.set_torture(true);
+    c.hold_torture_until_armed();
+    c.set_torture(false);
+    c.arm_after_start();
+    assert!(!c.torture(), "the start's gctorture(FALSE) is not undone at the arming");
+    let mut c = moving_core();
+    c.set_torture(true);
+    c.hold_torture_until_armed();
+    c.gc_torture(5, 0);
+    c.arm_after_start();
+    assert_eq!(c.torture_counters(), (5, 5), "the start's own gap stays");
+    // gctorture(NA) sets nothing (a negative gap): the hold stays
+    let mut c = moving_core();
+    c.set_torture(true);
+    c.hold_torture_until_armed();
+    c.gc_torture(-1, 0);
+    assert!(!c.torture(), "still held");
+    c.arm_after_start();
+    assert!(c.torture(), "an NA gap does not drop the hold");
+}
+
 /// The element `i` of a VECSXP or STRSXP.
 unsafe fn elt(x: Sexp, i: usize) -> Sexp {
     unsafe { *(x.std_data() as *const Sexp).add(i) }
@@ -2807,6 +2833,29 @@ fn a_stale_young_local_reads_poison_at_every_young_collection() {
         }
     }
     assert_eq!(c.young_collections(), 5);
+}
+
+/// Under young:N, the hold moves nothing and counts no collection: after
+/// the arming the first N-1 collections are young-only and the N-th full.
+#[test]
+fn young_n_counts_from_the_arming() {
+    let every = 4;
+    let mut c = young_core(every);
+    c.hold_torture_until_armed();
+    let x = int_vec(&mut c, &[1, 2, 3]);
+    let mut roots = vec![x];
+    for _ in 0..3 {
+        gc(&mut c, &mut roots);
+    }
+    assert_eq!(roots[0], x, "nothing moves before the arming");
+    assert_eq!(c.young_collections(), 0, "and no collection counts");
+    c.arm_after_start();
+    for k in 1..every {
+        gc(&mut c, &mut roots);
+        assert_eq!(c.young_collections(), k as u64, "collection {k} after the arming is young-only");
+    }
+    gc(&mut c, &mut roots);
+    assert_eq!(c.young_collections(), (every - 1) as u64, "the {every}-th is full");
 }
 
 /// An object a collection moved is old: the young collections leave it

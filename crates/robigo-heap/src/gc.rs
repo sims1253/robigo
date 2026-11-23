@@ -2458,7 +2458,9 @@ impl Core {
     /// moving mode's bookkeeping goes on; only its moves wait.
     pub fn hold_torture_until_armed(&mut self) {
         // (only a gctorture that is on is held: with moves alone held, a
-        // gctorture(TRUE) the start itself calls is not undone at the arming)
+        // gctorture(TRUE) the start itself calls is not undone at the
+        // arming; and one held gives way to any setting the start makes,
+        // [`Core::gc_torture`])
         if self.force_wait > 0 {
             self.torture_held = Some((self.force_wait, self.force_gap));
             (self.force_wait, self.force_gap) = (0, 0);
@@ -2514,6 +2516,13 @@ impl Core {
     /// safepoint serves it.
     // R: memory.c:R_gc_torture (without PROTECTCHECK: no inhibit_release)
     pub fn gc_torture(&mut self, gap: i32, wait: i32) {
+        // (during ROBIGO_TORTURE_AFTER_START's hold, a setting the start
+        // makes itself, gctorture(FALSE) or another gap, is the start's:
+        // the held counters give way and the arming does not override it;
+        // a negative gap, NA's, sets nothing and keeps them)
+        if gap >= 0 {
+            self.torture_held = None;
+        }
         if gap >= 0 {
             self.force_wait = gap;
             self.force_gap = gap;

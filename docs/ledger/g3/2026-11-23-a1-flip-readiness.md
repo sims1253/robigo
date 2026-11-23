@@ -78,3 +78,17 @@ boot.
 - My first form of mutation 2 used an explicit `cx.collect()`, which broke
   even the plain run: a forced collection ignores the start's GC-inhibited
   stretches. A safepoint collects only when one is due.
+
+**The heap's rules for the hold** (H's review of #998):
+- `ROBIGO_GC_MOVE`'s bookkeeping runs from the heap's creation, and only its
+  moves wait: `SEEN_BY_C` is marked in `hand_to_c`, and the freeze stays off
+  under any move mode.
+- The young:N count starts at the arming.
+- gctorture's counters are held only if gctorture is on at the hold.
+- A held gctorture gives way to any setting the start makes itself, whether
+  `gctorture(FALSE)` or another gap. An NA gap sets nothing and keeps the
+  hold.
+
+**H's note, unchanged by this PR.** Under young:N the OLD bit is FROZEN's
+bit. So a store into an OLD object goes through `store_slow` and may note
+DIRTY. That is harmless, because the frozen list is empty under the mover.
