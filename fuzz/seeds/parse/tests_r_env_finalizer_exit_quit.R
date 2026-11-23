@@ -1,0 +1,6 @@
+e <- new.env()
+reg.finalizer(e, function(e) cat("quit finalizer\n"), onexit = TRUE)
+f <- new.env()
+reg.finalizer(f, function(f) cat("plain\n"))
+cat("body\n")
+q(status = 3)

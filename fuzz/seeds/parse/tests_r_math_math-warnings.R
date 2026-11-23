@@ -1,0 +1,11 @@
+# warnings raised by the math functions and nmath
+gamma(c(-1, 2))
+beta(-1, 2)
+choose(5, 2.5)
+lchoose(5, 1.5)
+f <- function(k) choose(10, k)
+f(c(2.4, 3))
+digamma(c(0, 1))
+psigamma(1, 101)
+atan2(1, 1:3)
+atan2(c(a = 0, b = -1), -1)

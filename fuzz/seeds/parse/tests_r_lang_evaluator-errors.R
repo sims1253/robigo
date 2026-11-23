@@ -1,0 +1,13 @@
+probe <- function(expr) tryCatch(expr, error = function(e) {
+    print(conditionMessage(e))
+    print(conditionCall(e))
+})
+probe(eval(quote(absent_lhs[1] <- 2)))
+e <- new.env()
+lockEnvironment(e)
+probe(assign("x", 1, e))
+print(.Internal(getconst(list(1, quote(a), NULL), 2)))
+print(.Internal(getconst(list(1), 0)))
+probe(.Internal(getconst(1, 1)))
+probe(.Internal(getconst(list(1), -1)))
+probe(.Internal(getconst(list(1), 2)))

@@ -1,0 +1,10 @@
+# atan2(): real (math2) and complex (complex.c z_atan2) arguments
+print(atan2(c(1, -1, 0, 0, -0.5), c(1, 1, 0, -1, -2)), digits = 15)
+atan2(c(a = 1, b = -1), 1)
+atan2(1, c(Inf, -Inf, NaN))
+atan2(numeric(0), 1)
+print(atan2(1+1i, 1), digits = 17)
+print(atan2(c(1+2i, -3-1i, 0, 2i), c(1, -2+1i, 0+0i, 0)), digits = 17)
+print(atan2(1, -1+0i), digits = 17)
+atan2(NA_complex_, 1)
+print(atan2(1e300+1e300i, 1e-300+1i), digits = 17)

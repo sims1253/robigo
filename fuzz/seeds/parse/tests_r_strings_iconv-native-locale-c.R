@@ -1,0 +1,15 @@
+# iconv's "" is the native encoding: ASCII in the C locale, not UTF-8.
+invisible(Sys.setlocale("LC_CTYPE", "C"))
+u <- "café"
+print(iconv(u, "UTF-8", ""))
+print(iconv(u, "UTF-8", "", sub = "byte"))
+print(iconv(u, "UTF-8", "", sub = "?"))
+print(iconv("abc", "", "UTF-8"))
+v <- iconv(u, "", "UTF-8")
+print(Encoding(v))
+print(charToRaw(v))
+r <- iconv(u, "UTF-8", "", toRaw = TRUE)
+print(r)
+l <- iconv(u, "latin1", "", sub = "Unicode")
+print(l)
+print(Encoding(iconv("abc", "UTF-8", "", mark = TRUE)))

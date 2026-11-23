@@ -1,0 +1,13 @@
+# Matrix products must be bit-identical to GNU R (reference BLAS dgemm order)
+set.seed(1)
+a <- matrix(sin(1:600) * 1e3, 20); b <- matrix(cos(1:900) / 7, 30)
+p <- a %*% b
+cat(sprintf("%.17g", c(sum(p), p[1, 1], p[20, 30], p[7, 13])), "\n")
+q <- tcrossprod(a, matrix(cos(1:300), 10))
+cat(sprintf("%.17g", c(sum(q), q[3, 4])), "\n")
+r <- crossprod(b)
+cat(sprintf("%.17g", c(sum(r), r[2, 5])), "\n")
+m <- matrix(sin(1:250000), 500); p2 <- m %*% t(m)
+cat(sprintf("%.17g", c(sum(p2), p2[123, 456])), "\n")
+x <- a; x[3, 4] <- NA; cat(sum(is.na(x %*% b)), "\n")
+x[3, 4] <- Inf; y <- x %*% b; cat(sprintf("%.17g", y[1, 1]), sum(is.infinite(y)), sum(is.nan(y)), "\n")

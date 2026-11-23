@@ -1,0 +1,6 @@
+# Knuth-TAOCP (1997) is seeded by base R's .TAOCP1997init()
+.Internal(set.seed(1L, 4L, NULL, NULL))
+.Internal(runif(5, 0, 1))
+.Internal(set.seed(123L, 4L, NULL, NULL))
+print(.Internal(runif(3, 0, 1)), digits = 15)
+.Internal(sample(50, 5, FALSE, NULL))

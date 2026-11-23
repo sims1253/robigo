@@ -1,0 +1,12 @@
+library(stats)
+x <- c(0.5, 1.2, 1.8, 2.5, 3.1, 3.9, 4.4, 5.2, 5.9, 6.5)
+y <- c(0, 0, 0, 1, 0, 1, 1, 1, 1, 1)
+fit <- glm(y ~ x, family = binomial)
+fit
+summary(fit)
+sprintf("%.15g", coef(fit))
+predict(fit, data.frame(x = 3), type = "response")
+cnt <- c(2, 3, 6, 7, 8, 9, 10, 12, 15, 20)
+summary(glm(cnt ~ x, family = poisson))
+anova(glm(cnt ~ x, family = poisson), test = "Chisq")
+glm(cnt ~ x, family = gaussian)
