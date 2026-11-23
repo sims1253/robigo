@@ -93,5 +93,61 @@ class Gnur(unittest.TestCase):
         self.assertEqual(pg.fill(g, "a/x", lambda names: {}), 0)  # ...unless they are not selected
 
 
+class Inputs(unittest.TestCase):
+    """The perf job's GNU R records are cached by a hash of the files they
+    depend on (perf.py gnur-inputs), derived from the suites, not listed by
+    hand."""
+
+    def setUp(self):
+        spec_ = importlib.util.spec_from_file_location("perf", HERE / "perf.py")
+        self.perf = importlib.util.module_from_spec(spec_)
+        spec_.loader.exec_module(self.perf)
+
+    def test_every_program_the_job_runs_is_in_the_key_and_rt_rows_are_not(self):
+        perf = self.perf
+        inputs = set(perf.gnur_inputs())
+        c = perf.conf()
+        for sname, s in c["suites"].items():
+            if "dir" in s:
+                for path in perf.suite_files(sname, s):
+                    self.assertIn(os.path.relpath(path, perf.ROOT), inputs)
+        # (the known failures are optional: test_a_program_added_later_is_in_the_key)
+        for f in ("benchmarks/benchmarks.toml", "scripts/perf.py", "scripts/perf-gnur.py"):
+            self.assertIn(f, inputs)
+        self.assertFalse([p for p in inputs if p.startswith("benchmarks/rt/")], "robigo-rt's rows are not this job's")
+
+    def test_a_program_added_later_is_in_the_key(self):
+        perf = self.perf
+        d = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, d, ignore_errors=True)
+        os.makedirs(os.path.join(d, "benchmarks", "mine"))
+        for f in ("a.R", "b.R", "notes.txt"):
+            open(os.path.join(d, "benchmarks", "mine", f), "w").close()
+        c = {"suites": {"mine": {"dir": "benchmarks/mine"}, "ext": {"repo": "x", "commit": "y", "benchmarks": []}}}
+        with mock.patch.object(perf, "ROOT", d):
+            got = perf.gnur_inputs(c)
+        self.assertIn("benchmarks/mine/a.R", got)
+        self.assertIn("benchmarks/mine/b.R", got)
+        self.assertNotIn("benchmarks/mine/notes.txt", got)
+        self.assertEqual(got, sorted(got))
+        # the known failures are optional: absent, not listed (the key's loop
+        # fails on a listed file it cannot read)
+        self.assertNotIn("benchmarks/gnur-known-failures.txt", got)
+        open(os.path.join(d, "benchmarks", "gnur-known-failures.txt"), "w").close()
+        with mock.patch.object(perf, "ROOT", d):
+            self.assertIn("benchmarks/gnur-known-failures.txt", perf.gnur_inputs(c))
+
+    def test_the_job_keys_its_cache_by_those_files(self):
+        import re
+        yml = (HERE.parent / ".github" / "workflows" / "ci.yml").read_text()
+        job = re.search(r"\n  perf:\n(.*?)\n  [a-z0-9-]+:\n", yml, re.S).group(1)
+        self.assertIn("python3 scripts/perf.py gnur-inputs", job)
+        self.assertIn("perf-gnur-2-", job)
+        self.assertNotIn("hashFiles('benchmarks/**'", job)
+        # the restore and the save use the one key, which holds the inputs' hash
+        keys = re.findall(r"key: (\$\{\{[^}]*\}\})", job)
+        self.assertEqual([k for k in keys if "gnur" in k], ["${{ steps.gnur.outputs.key }}"] * 2)
+
+
 if __name__ == "__main__":
     unittest.main()
