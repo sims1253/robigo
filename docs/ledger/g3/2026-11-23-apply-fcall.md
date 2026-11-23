@@ -15,7 +15,10 @@
   only when that closure is base's own `lapply` or `vapply` (the base
   namespace's binding, a lazy-load promise's value), and the builtin runs in
   that closure's own frame (the innermost function context's environment
-  is `rho`). It is reused only under the same two conditions.
+  is `rho`). It is reused only in a call of that same closure object, run
+  in its own frame (base's binding is not looked up again: a closure kept
+  after its binding was replaced still has the frame and body its code was
+  compiled for).
   - Under the `Bc` profile (`ROBIGO_RT_PROFILE`), the code compiled on the
     call takes cmp.R's decisions from the closure's frame and body, a local
     `[[` for one. Those decisions are the same in every call of base's
