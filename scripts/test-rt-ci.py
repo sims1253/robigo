@@ -81,6 +81,9 @@ class RtCi(unittest.TestCase):
                          ["builtin differential and its planted divergences (A4, scripts/builtin-diff.py ci)"])
         self.assertEqual([t for t, s in where.items() if s == "feature-builds"],
                          ["conformance under ROBIGO_RETRY_TORTURE=1 (E9: every build's retry runs once)",
+                          "base's database tree for ROBIGO_RETRY_TORTURE's build (scripts/rt-home-db.sh)",
+                          "a translation-cache verification under ROBIGO_RETRY_TORTURE=1 compares nothing for a "
+                          "retry (tests/boot_db.rs)",
                           "ROBIGO_POISON_DEAD=1 (dead slots poisoned), robigo-rt's tests and the planted early clear",
                           "ROBIGO_POISON_DEAD=1, conformance"])
 
@@ -493,7 +496,14 @@ class RtCi(unittest.TestCase):
         # ROBIGO_POISON_DEAD on robigo-rt's tests and the conformance
         steps = rt.steps(["robigo-rt", "robigo-rtcore"])
         featured = [i for i, (_, _, cmd) in enumerate(steps) if "--features" in cmd]
-        self.assertEqual(featured, list(range(len(steps) - 3, len(steps))), "the feature builds come last")
+        # the feature builds come last: retry torture's conformance, the
+        # database tree its build's binary writes (no flag of its own: the
+        # step before built that binary), the cache's verification under the
+        # knob (#979), then the poison-dead steps
+        n = len(steps)
+        self.assertEqual(featured, [n - 5, n - 3, n - 2, n - 1], "the feature builds come last")
+        self.assertEqual(steps[n - 4][2][:3], ["scripts/rt-home-db.sh", "--robigo-rt", rt.rt_binary()])
+        self.assertIn("boot_db", steps[featured[1]][2])
         for i in featured:
             cmd = steps[i][2]
             self.assertEqual(cmd[cmd.index("--features") + 1], rt.CHECK_FEATURES)
@@ -502,9 +512,9 @@ class RtCi(unittest.TestCase):
         self.assertEqual([t for t, e, _ in steps if "ROBIGO_RETRY_TORTURE" in e], retry)
         self.assertEqual(steps[featured[0]][1].get("ROBIGO_CONF_TIMEOUT"), "600")
         poison = [t for t, e, _ in steps if e.get("ROBIGO_POISON_DEAD") == "1"]
-        self.assertEqual(poison, [steps[i][0] for i in featured[1:]])
-        self.assertIn("robigo-rt", steps[featured[1]][2])
-        self.assertIn(rt.CONFORMANCE, steps[featured[2]][2])
+        self.assertEqual(poison, [steps[i][0] for i in featured[2:]])
+        self.assertIn("robigo-rt", steps[featured[2]][2])
+        self.assertIn(rt.CONFORMANCE, steps[featured[3]][2])
         # each feature exists where the steps name it
         for f in rt.CHECK_FEATURES.split(","):
             crate, feature = f.split("/")

@@ -8,7 +8,7 @@ starts robigo-rt from the copied tree (ROBIGO_RT_CHECKOUT, which points the
 binary at a checkout's whole tree: the cache is read only beside R_HOME). Every start must end as a start ends: by exit
 status 0 or 1 (an R error), never by a signal or a Rust panic. Damage, which
 breaks an entry's keyed checksum, makes that entry a miss: it is translated as
-with no cache. A start that does not end in two minutes counts as failed
+with no cache. A start that does not end in START_LIMIT (30 s) counts as failed
 too. --rehash fixes the checksum after damaging an entry, which is forgery,
 not damage: a forged entry carries no safety guarantee (the cache is trusted
 as the tree's base.rdb is; issue #976 is the verifier work that would add
@@ -16,7 +16,7 @@ one). So in that mode a crash or a panic is reported, not a failure of the
 cache's contract. The script's own output is the count of starts by
 outcome.
 
-    scripts/rt-tcache-mutate.py --robigo-rt BIN [--runs N] [--seed S] [--pkg base]
+    scripts/rt-tcache-mutate.py --robigo-rt BIN [--runs N] [--seed S] [--pkg base [--pkg compiler]] [--swap-runs N]
 """
 
 import argparse
@@ -36,6 +36,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 300014 grew by 0.8 GB a second) then ends in an R allocation error, not
 # in the shared machine's OOM killer. robigo-rt starts in well under 1 GB.
 MEM_CAP = 2 << 30
+# A start's limit: a start takes a fraction of a second, so one past this is
+# a hang. In the damage modes the first hang ends the run with its report,
+# so the script reports well before rt-ci's job could be stopped (the step
+# has no limit of its own below the job's).
+START_LIMIT = 30
 
 
 def cap_memory():
@@ -45,7 +50,7 @@ def cap_memory():
 def start(cmd, home, env):
     """One robigo-rt start under the memory cap, its output captured; a
     start that does not end in two minutes raises TimeoutExpired."""
-    return subprocess.run(cmd, cwd=home, env=env, capture_output=True, timeout=120, preexec_fn=cap_memory)
+    return subprocess.run(cmd, cwd=home, env=env, capture_output=True, timeout=START_LIMIT, preexec_fn=cap_memory)
 
 
 def check_cap(cmd, home, env):
@@ -132,7 +137,7 @@ def mutate_rehashed(data, table, rng):
     return bytes(b), kind + " rehashed"
 
 
-def swap_runs(a, rng, tmp, home, env, cmd):
+def swap_runs(runs, rng, tmp, home, env, cmd):
     """--swap: swap two records of equal stored length that both have
     entries, start, and require the start to see stale records (a miss for
     each entry of the swapped records) and to end as a start ends."""
@@ -152,7 +157,7 @@ def swap_runs(a, rng, tmp, home, env, cmd):
         sys.exit("rt-tcache-mutate: no two keyed records of equal length to swap")
     orig = open(rdb, "rb").read()
     stale_runs, bad = 0, []
-    for k in range(a.runs):
+    for k in range(runs):
         x, y, n = rng.choice(pairs)
         b = bytearray(orig)
         b[x:x + n], b[y:y + n] = orig[y:y + n], orig[x:x + n]
@@ -160,8 +165,8 @@ def swap_runs(a, rng, tmp, home, env, cmd):
         try:
             p = start(cmd, home, dict(env, ROBIGO_TRANSLATION_CACHE_STATS="1"))
         except subprocess.TimeoutExpired:
-            bad.append((k, "a hang"))
-            continue
+            bad.append((k, f"a hang ({START_LIMIT} s)"))
+            break
         err = p.stderr.decode(errors="replace")
         if p.returncode < 0 or p.returncode > 1 or "panicked" in err:
             bad.append((k, f"exit {p.returncode}: {err[-300:]}"))
@@ -169,7 +174,7 @@ def swap_runs(a, rng, tmp, home, env, cmd):
         if line and " stale record 0" not in line[-1]:
             stale_runs += 1
     open(rdb, "wb").write(orig)
-    print(f"rt-tcache-mutate: {a.runs} starts with two records of base.rdb swapped ({len(pairs)} pairs to choose "
+    print(f"rt-tcache-mutate: {runs} starts with two records of base.rdb swapped ({len(pairs)} pairs to choose "
           f"from): {stale_runs} saw stale records, crashed {len(bad)}")
     for k, why in bad[:5]:
         print(f"  run {k}: {why}")
@@ -178,36 +183,79 @@ def swap_runs(a, rng, tmp, home, env, cmd):
     return 1 if bad or stale_runs == 0 else 0
 
 
+def damage_runs(a, pkg, rng, tmp, home, env, cmd, ref):
+    """--runs starts, each with `pkg`'s cache file damaged at random
+    (--rehash: forged); the file is put back after. 0 when every start ended
+    as a start ends (always, for forgery, which only reports)."""
+    cache = os.path.join(tmp, ".robigo", "rt-home-db-cache", f"{pkg}.rtc")
+    with open(cache, "rb") as f:
+        data = f.read()
+    table = rows(data)
+    # the Python mirror of format.rs's checksum, checked against the real
+    # cache (not an assert: `python -O` would drop it)
+    if not all(checksum(data[r:r + 20] + data[at:at + n]) == int.from_bytes(data[r + 28:r + 36], "little")
+               for r, at, n in table[:50]):
+        sys.exit("rt-tcache-mutate: the checksum does not match format.rs's")
+    outcomes = {"same": 0, "other output": 0, "R error": 0, "hang": 0}
+    bad = []
+    try:
+        for n in range(a.runs):
+            m, kind = mutate_rehashed(data, table, rng) if a.rehash else mutate(data, rng)
+            with open(cache, "wb") as f:
+                f.write(m)
+            try:
+                p = start(cmd, home, env)
+            except subprocess.TimeoutExpired:
+                if a.rehash:
+                    outcomes["hang"] += 1
+                    continue
+                # (the first hang ends the run: its report now)
+                bad.append((n, kind, f"a hang ({START_LIMIT} s)", ""))
+                break
+            err = p.stderr.decode(errors="replace")
+            if p.returncode < 0 or p.returncode > 1 or "panicked" in err:
+                bad.append((n, kind, p.returncode, err[-600:]))
+            elif p.returncode == 1:
+                outcomes["R error"] += 1
+            elif p.stdout == ref.stdout:
+                outcomes["same"] += 1
+            else:
+                outcomes["other output"] += 1
+    finally:
+        with open(cache, "wb") as f:
+            f.write(data)
+    print(f"rt-tcache-mutate: {a.runs} corrupted {pkg}.rtc (seed {a.seed}): "
+          + ", ".join(f"{k} {v}" for k, v in outcomes.items()) + f", crashed {len(bad)}")
+    for n, kind, rc, err in bad[:5]:
+        print(f"  run {n} ({kind}): exit {rc}\n{err}")
+    # forgery (--rehash) has no guarantee to fail: its crashes are reported
+    return 1 if bad and not a.rehash else 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--robigo-rt", required=True)
-    ap.add_argument("--pkg", default="base")
-    ap.add_argument("--runs", type=int, default=200)
+    ap.add_argument("--pkg", action="append", help="the package whose cache is damaged (again for more; default base)")
+    ap.add_argument("--runs", type=int, default=200, help="damaged starts per package")
     ap.add_argument("--seed", type=int, default=1)
-    ap.add_argument("--swap", action="store_true",
-                    help="leave the cache as it is and swap two records of the same stored length in the copy's "
-                         "base.rdb (each key position then holds another, well-formed function): every entry "
-                         "for them must miss as a stale record, never run")
+    ap.add_argument("--swap-runs", type=int, default=0,
+                    help="then this many starts with two records of the same stored length swapped in the copy's "
+                         "base.rdb, the cache as it is (each key position then holds another, well-formed "
+                         "function): every entry for them must miss as a stale record, never run")
+    ap.add_argument("--swap", action="store_true", help="only the swapped starts (--runs of them), no damage")
     ap.add_argument("--rehash", action="store_true",
                     help="damage one entry and fix its checksum: forgery, not damage. A forged entry has no "
                          "safety guarantee (the cache is trusted as base.rdb is, issue #976), so this mode "
                          "reports crashes, panics and hangs without failing")
     a = ap.parse_args()
+    pkgs = a.pkg or ["base"]
     tree = os.path.join(ROOT, ".robigo", "rt-home-db")
-    src = os.path.join(tree + "-cache", f"{a.pkg}.rtc")
-    with open(src, "rb") as f:
-        data = f.read()
     rng = random.Random(a.seed)
-    table = rows(data)
-    assert all(checksum(data[r:r + 20] + data[at:at + n]) == int.from_bytes(data[r + 28:r + 36], "little")
-               for r, at, n in table[:50]), \
-        "rt-tcache-mutate: the checksum does not match format.rs's"
     env = dict(os.environ, ROBIGO_RT_BOOT="rdb", R_DEFAULT_PACKAGES="NULL")
     env.pop("R_HOME", None)
     with tempfile.TemporaryDirectory(prefix="rt-tcache-mutate-") as tmp:
         shutil.copytree(tree, os.path.join(tmp, ".robigo", "rt-home-db"), symlinks=True)
-        cache = os.path.join(tmp, ".robigo", "rt-home-db-cache")
-        shutil.copytree(tree + "-cache", cache)
+        shutil.copytree(tree + "-cache", os.path.join(tmp, ".robigo", "rt-home-db-cache"))
         home = os.path.join(tmp, "home")
         os.mkdir(home)
         env["ROBIGO_RT_CHECKOUT"] = tmp
@@ -227,37 +275,16 @@ def main():
         if not hit or hit[-1].startswith("translation cache: hit 0,"):
             sys.exit(f"rt-tcache-mutate: the unmutated start does not use the cache (rebuild the tree with this "
                      f"binary: scripts/rt-home-db.sh): {hit[-1] if hit else stats[-300:]}")
-        outcomes = {"same": 0, "other output": 0, "R error": 0, "hang": 0}
         if a.swap:
-            return swap_runs(a, rng, tmp, home, env, cmd)
-        bad = []
-        for n in range(a.runs):
-            m, kind = mutate_rehashed(data, table, rng) if a.rehash else mutate(data, rng)
-            with open(os.path.join(cache, f"{a.pkg}.rtc"), "wb") as f:
-                f.write(m)
-            try:
-                p = start(cmd, home, env)
-            except subprocess.TimeoutExpired:
-                if a.rehash:
-                    outcomes["hang"] += 1
-                else:
-                    bad.append((n, kind, "a hang (120 s)", ""))
-                continue
-            err = p.stderr.decode(errors="replace")
-            if p.returncode < 0 or p.returncode > 1 or "panicked" in err:
-                bad.append((n, kind, p.returncode, err[-600:]))
-            elif p.returncode == 1:
-                outcomes["R error"] += 1
-            elif p.stdout == ref.stdout:
-                outcomes["same"] += 1
-            else:
-                outcomes["other output"] += 1
-        print(f"rt-tcache-mutate: {a.runs} corrupted {a.pkg}.rtc (seed {a.seed}): "
-              + ", ".join(f"{k} {v}" for k, v in outcomes.items()) + f", crashed {len(bad)}")
-        for n, kind, rc, err in bad[:5]:
-            print(f"  run {n} ({kind}): exit {rc}\n{err}")
-        # forgery (--rehash) has no guarantee to fail: its crashes are reported
-        return 1 if bad and not a.rehash else 0
+            return swap_runs(a.runs, rng, tmp, home, env, cmd)
+        status = 0
+        for pkg in pkgs:
+            status |= damage_runs(a, pkg, rng, tmp, home, env, cmd, ref)
+            if status:
+                return status
+        if a.swap_runs:
+            status |= swap_runs(a.swap_runs, rng, tmp, home, env, cmd)
+        return status
 
 
 if __name__ == "__main__":

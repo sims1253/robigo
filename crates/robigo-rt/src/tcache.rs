@@ -256,6 +256,9 @@ fn open(pkg: &[u8]) -> Option<&'static Db> {
     let mut name = pkg.to_vec();
     name.extend_from_slice(b".rtc");
     path.push(std::ffi::OsStr::from_bytes_owned(&name));
+    // (mapped, not read: the bytes still pass every check an entry has,
+    // its keyed checksum and its decode; an empty or unmappable file is a
+    // miss, and so is one shorter than its header says)
     let bytes = robigo_rtcore::map_file_readonly(&path)?;
     if format::header_fields(bytes)?.table_end() > bytes.len() {
         return None;
@@ -265,6 +268,23 @@ fn open(pkg: &[u8]) -> Option<&'static Db> {
         return None;
     }
     Some(Box::leak(Box::new(Db { bytes, header })))
+}
+
+/// Write `bytes` as the file `path`, replacing it by rename: into a new
+/// file beside it (created, never an existing one opened), then moved over
+/// `path`. A cache file is never written or truncated in place, so a
+/// process that maps the old one keeps reading its bytes ([`open`]'s map).
+fn replace_file(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".{}.new", std::process::id()));
+    let tmp = PathBuf::from(tmp);
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+    let r = f.write_all(bytes).and_then(|()| f.sync_all()).and_then(|()| std::fs::rename(&tmp, path));
+    if r.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    r
 }
 
 /// The tree's stamp: R_HOME's `.rt-home-db`, its trailing newline dropped.
@@ -787,6 +807,9 @@ pub struct State(std::cell::OnceCell<Box<Inner>>);
 struct Inner {
     writer: RefCell<Option<Writer>>,
     verifying: std::cell::Cell<bool>,
+    /// Under `ROBIGO_RETRY_TORTURE`: this verification's fresh translation
+    /// was made to stop once ([`verify_begin`]); its retry runs whole.
+    torture_stopped: std::cell::Cell<bool>,
 }
 
 /// The state, made on first use.
@@ -819,7 +842,14 @@ pub(crate) fn verify_enabled() -> bool {
 
 /// A fresh translation of a hit's byte code begins, to verify it.
 pub(crate) fn verify_begin(cx: &Cx) {
-    state(cx).verifying.set(true);
+    let s = state(cx);
+    s.verifying.set(true);
+    // under ROBIGO_RETRY_TORTURE, the fresh translation's first allocation
+    // refused, once per verification: a stop for a retry inside it is then
+    // certain (tests/boot_db.rs), and its retry verifies
+    if !s.torture_stopped.replace(true) {
+        cx.torture_refuse_next();
+    }
 }
 
 /// The fresh translation begun with [`verify_begin`] stopped with a `Need`
@@ -841,6 +871,7 @@ pub(crate) fn verify_abort(cx: &Cx) {
 /// crosscheck finding, and on stderr under `ROBIGO_TRANSLATION_CACHE=verify`).
 pub(crate) fn verify_end(cx: &Cx, cached: &Entry) -> bool {
     state(cx).verifying.set(false);
+    state(cx).torture_stopped.set(false);
     let fresh = state(cx).writer.borrow_mut().as_mut().and_then(|w| w.verified.take());
     let same = matches!(&fresh, Some(Ok(e)) if e == cached);
     count(if same { Outcome::Verified } else { Outcome::Mismatch });
@@ -1208,7 +1239,7 @@ pub fn write_files(cx: &Cx) -> bool {
             let mut name = pkg.clone();
             name.extend_from_slice(b".rtc");
             p.push(std::ffi::OsStr::from_bytes_owned(&name));
-            if let Err(e) = std::fs::write(&p, &file) {
+            if let Err(e) = replace_file(&p, &file) {
                 eprintln!("robigo: the translation cache: writing {}: {e}", p.display());
                 ok = false;
             } else {

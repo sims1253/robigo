@@ -608,10 +608,11 @@ pub mod extra {
         /// Bit 2 is free on main and in all four X3 layout cells (a code
         /// object takes bit 8, the h24 cells bit 0): H, 2026-11-17.
         pub const OWN_ALTREP: u16 = 1 << 2;
-        /// The boot heap's freeze leaves this object ordinary (robigo-heap's
-        /// `gc/freeze.rs`): set on a RAWSXP that is replaced soon after the
-        /// boot, so that its replacement writes over no frozen object. C1's
-        /// translation-cache stub sets it. The freeze tests it on RAWSXPs only.
+        /// Keep this object out of the boot heap's freeze: set on a RAWSXP
+        /// that is replaced soon after the boot, so that its replacement
+        /// writes over no frozen object. C1's translation-cache stub sets it;
+        /// the freeze's walk reads it (robigo-heap's `gc/freeze.rs`, from H's
+        /// pass PR). The freeze tests it on RAWSXPs only.
         pub const NO_FREEZE: u16 = 1 << 3;
         const _: () = assert!(super::super::disjoint(&[
             super::TYPE_BLIND as u64,

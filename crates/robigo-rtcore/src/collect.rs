@@ -75,6 +75,16 @@ impl Cx {
         Ok(())
     }
 
+    /// `ROBIGO_GC_STATS`'s report as the heap prints it when it is dropped
+    /// (None while the mode is off), for an end of the process that drops
+    /// nothing: `quit()` ends R from inside the call, as GNU R's `exit`
+    /// does, and its caller prints this last.
+    pub fn gc_stats_report(&self) -> Option<String> {
+        // SAFETY: one read of the core, which calls nothing of ours.
+        let core = unsafe { self.iso().core() };
+        (core.stats_mode() != robigo_heap::StatsMode::Off).then(|| core.stats_report())
+    }
+
     /// Print the reports of the collections that just ran (`gcinfo(TRUE)`),
     /// as GNU R's `REprintf` does during them.
     #[inline]
@@ -200,6 +210,16 @@ impl Cx {
     fn refuse_next_alloc(&self, on: bool) {
         // SAFETY: one call into the core, which calls nothing of ours.
         unsafe { self.iso().core() }.fail_alloc_at(on as u64)
+    }
+
+    /// Under [`Cx::retry_torture`], refuse the next allocation once, where
+    /// the caller is (a window a test must see stopped for a retry, such as
+    /// robigo-rt's translation-cache verification); nothing otherwise.
+    pub fn torture_refuse_next(&self) {
+        #[cfg(feature = "retry-torture")]
+        if self.retry_torture() {
+            self.refuse_next_alloc(true);
+        }
     }
 
     /// [`Cx::retry_torture`] for one attempt: the next allocation is

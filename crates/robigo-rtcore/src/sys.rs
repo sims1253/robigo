@@ -82,7 +82,14 @@ pub fn map_file_readonly(path: &std::path::Path) -> Option<&'static [u8]> {
     // SAFETY: advice on the mapping just made; it changes only how its pages
     // come in (a failure leaves the default, which reads the same bytes).
     unsafe { libc::madvise(p, len, libc::MADV_RANDOM) };
-    // SAFETY: the mapping just made is `len` readable bytes, never unmapped
-    // or written, so it lives, unchanged by this process, for 'static.
+    // SAFETY: the mapping just made is `len` readable bytes, read-only and
+    // private, never unmapped or written by this process, so it lives for
+    // 'static. Its bytes do not change under it: the files mapped here (the
+    // translation cache's) have one writer, which replaces a file by rename
+    // and never writes or truncates one in place (robigo-rt's
+    // `tcache::replace_file`). A truncation in place by anything else is
+    // outside that contract and ends the process with SIGBUS at the next
+    // read past the new end, as truncating the executable or a shared
+    // library under a running process would.
     Some(unsafe { std::slice::from_raw_parts(p.cast::<u8>(), len) })
 }

@@ -32,11 +32,11 @@ measured with and without its cache. Main 24f3fd36a has the dense tables
   tables, it was 95.24M → 81.31M.
 - **Wall time** was taken with `hyperfine`, 100 runs each, at a load of
   22–23 on the 24-CPU box.
-- **Reads:** the first reader read each entry with its own `pread`, about
-  429 a start. On this WSL2 kernel those took 3.1 ms of system time, which
-  ate most of the wall-time gain. Entries are now laid out in translation
-  order and read in 32 KB chunks: 8 reads a start, and system time is
-  unchanged by the cache.
+- **Reads:** the file is mapped with `MADV_RANDOM` (below, "The start
+  rows in CI"). Before that, entries were read: first each with its own
+  `pread`, about 429 a start, which took 3.1 ms of system time on this
+  WSL2 kernel; then in 32 KB chunks laid out in translation order, 8 reads
+  a start.
 - **Hits:** all 429 translations of that start hit
   (`ROBIGO_TRANSLATION_CACHE_STATS=1`).
 - **Equality with fresh translations:** the verify pass on the merged head
@@ -69,30 +69,86 @@ measured with and without its cache. Main 24f3fd36a has the dense tables
   `rdb-cache` became `rdb-nocache` (JIT on, `ROBIGO_TRANSLATION_CACHE=0`),
   which guards the translator's own cost like for like with main, whose
   binary ignores the variable.
-- **Anonymous peak** (scripts/rt-startup.py, 5 runs, on the merged head;
-  limit max(1%, 64 KiB) against main):
-  - JIT on: 7,012 KiB with the cache, 6,948 KiB without, +64 KiB (0.92%);
-  - JIT off: 4,700 KiB against 4,684 KiB, +16 KiB.
-  The difference is the materialized code objects and the 32 KB read
-  chunks. JIT on is within the limit by 5 KiB.
-- **The kept chunks** (after #979's head b876d8750, scripts/rt-startup.py
-  --trees, one binary and its own fresh trees per setting, 5 runs; reads by
-  strace on one start):
 
-  | chunks kept × size | rdb-jit instr | rdb-jit anon | rdb-nojit instr | rdb-nojit anon | reads JIT on / off |
-  |---|---:|---:|---:|---:|---:|
-  | 4 × 32 KB (#979) | 82.09M | 6,988 KiB | 46.78M | 4,708 KiB | 8 / 2 |
-  | **2 × 32 KB** (now) | 82.09M | 6,924 KiB | 46.78M | 4,708 KiB | 8 / 2 |
-  | 1 × 32 KB | 82.12M | 6,924 KiB | 46.78M | 4,684 KiB | 8 / 2 |
-  | 4 × 16 KB | 82.08M | 6,924 KiB | 46.81M | 4,704 KiB | 13 / 4 |
+### The start rows in CI, and what changed for them
 
-  Two kept chunks read as often as four and keep 64 KiB less with the JIT
-  on: the writer lays a start's entries in translation order, so two
-  chunks cover the window a start reads. The anonymous peak also moves by
-  about ±24 KiB with the tree's path (7,012 KiB in this checkout's tree
-  and 6,988 KiB in rt-startup's scratch tree, one binary). CI's gate
-  compares both binaries from trees at one path on one runner and does
-  not see that, but a local measurement does.
+The first CI run of the startup gate (#978) on this PR's b876d8750 failed
+two rows. Bar 5 held there: `rdb-jit` 84,070,737 instructions against GNU
+R's 84,143,909 on the same runner.
+
+**The interim start, +80,848 instructions (+0.52%), though the interim
+boot never reads the cache.**
+- **The cause:** the PR grew `RtState` by 248 bytes, its writer's
+  capture held inline, from 824 to 1,072 bytes. A start makes five, and
+  glibc then rounds them to another chunk class. The start's calls are the
+  same, 2,271 `realloc` and 2,896 `malloc` with the same callers on both
+  binaries (callgrind), but glibc's paths in them cost +12k and +15k more:
+  the same work, priced by the allocator's layout.
+- **Found with:** an `LD_PRELOAD` shim that logs every allocation's size,
+  diffed between the two starts. Their first difference was this
+  allocation.
+- **The fix:** `RtState::tcache` is one word, a `OnceCell` of a box that
+  only the writer and a verification make. Measured from trees at one path,
+  the interim start is then 5,963 instructions below main's. The only
+  per-function difference left is `Verified::new` moving its check into
+  `code::check` (−1.6k). The rest moves with the tree's path: the same
+  binary measures 15,442k or 15,465k from two trees.
+
+**`rdb-jit`'s anonymous peak, +176 KiB against a limit of +68.** It was
+the header and entry table read whole, about 62 KiB, and the kept read
+chunks, 128 KiB. The file is now mapped read-only with `MADV_RANDOM`: a
+page comes in when it is read, alone, as file-backed memory, with no
+anonymous copy at all. Measured with scripts/rt-startup.py, each binary
+from its own packed trees:
+
+| | main dc256de9f | chunks: 2 × 32 KB kept | mapped (`MADV_RANDOM`) |
+|---|---:|---:|---:|
+| rdb-jit instructions | 92.59M | 82.17M | **81.72M** |
+| rdb-jit anonymous peak | 6,840 KiB | 6,916 KiB (+76) | **6,788 KiB (−52)** |
+| rdb-jit peak RSS | 15,388 KiB | 15,468 KiB | 15,848 KiB (+3.0%) |
+| rdb-jit minor faults | 2,114 | 1,930 | 1,891 |
+| rdb-nojit instructions | 50.21M | 46.81M | **46.68M** |
+| rdb-nojit anonymous peak | 4,660 KiB | 4,680 KiB | **4,620 KiB (−40)** |
+| rdb-nojit peak RSS | 13,176 KiB | 13,356 KiB | 13,532 KiB (+2.7%) |
+| rdb-nojit minor faults | 1,332 | 1,314 | 1,291 |
+
+- **What the mapping gives:** the anonymous peak is below main's, because
+  a hit's code costs less than a translation's working memory. The file's
+  pages are in peak RSS instead, which the gate limits at +5% for the
+  startup rows, as file-backed memory. It saves 0.45M instructions over
+  the chunks, the copies out of them.
+- **The kept chunks before the mapping** (one binary and its own trees per
+  setting; reads by strace): 4 × 32 KB, 6,988 KiB, 8 reads JIT on and 2
+  off; 2 × 32 KB, 6,924 KiB, the same reads; 1 × 32 KB, 6,924 KiB, the
+  same reads, 0.03M more instructions; 4 × 16 KB, 6,924 KiB, 13 and 4
+  reads.
+- **What the mapping costs:** a cache file truncated in place while a
+  process maps it would make a read past its new end fault (SIGBUS),
+  where a `pread` would have been a miss. The tree's files are never
+  written in place. `scripts/rt-home-db.sh` builds a new tree and moves it
+  into place, so a running process keeps the old file.
+  `scripts/rt-tcache-mutate.py` rewrites the copy's cache only between
+  starts.
+- **Path dependence:** the anonymous peak moves by about ±24 KiB with the
+  tree's path, from one binary (7,012 KiB in this checkout's tree, 6,988
+  KiB in rt-startup's scratch tree). CI's gate compares both binaries from
+  trees at one path on one runner, so it does not see that, but a local
+  measurement does.
+
+**The verify protocol** (the bot's round 2): a verification's fresh
+translation that stopped with a retryable `Need` (`Gc`, `Force`) was still
+compared. Its capture was empty, so it counted as "differing", and the
+attempt then ran again and verified again. Now `tcache::verify_abort`
+resets the state, compares nothing, and counts the stop ("verify retried"
+in the stats). `tests/boot_db.rs`'s
+`a_verification_stopped_for_a_retry_compares_nothing` makes such a stop
+certain: under `ROBIGO_RETRY_TORTURE` every fresh translation of a
+verification stops once inside it. rt-ci's feature-builds shard runs it,
+with base's tree written by that build first. "1,731 entries, 0
+differing" held before only because no stop fell inside a verification
+in those runs: 25 starts with one refused allocation each
+(`ROBIGO_FAIL_ALLOC_AT`, spread over the 309k a verify start makes) put
+none inside one.
 
 ### The design (the page the foreman approved, with its five amendments)
 
@@ -219,9 +275,8 @@ established what each operation reads unchecked:
   and no message: every lookup is a miss.
 - **Peak RSS** (scripts/rss.py, three runs, rdb boot): binarytrees 28,332
   KiB with the cache against 28,264 for the base binary, listgrow 52,140
-  against 52,104, churn 85,956 against 85,744. Entries are read by `pread`
-  in 32 KB chunks, a start's own laid out together by the writer: 8 reads
-  per start, about 60 KB of header and table resident.
+  against 52,104, churn 85,956 against 85,744, with the entries read in
+  32 KB chunks then (the mapped file's numbers are above).
 - **The boot freeze (H):** on the head with #959 merged, the rdb boot's
   conformance with the cache ran under the freeze's check. With
   `ROBIGO_GC_FREEZE=1 ROBIGO_GC_FREEZE_CHECK=1` it ran three times; with

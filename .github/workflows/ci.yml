@@ -512,7 +512,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 24
+    timeout-minutes: 26
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup

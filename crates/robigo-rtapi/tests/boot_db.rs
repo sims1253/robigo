@@ -57,12 +57,22 @@ fn tree_made() -> bool {
 /// robigo-rt booted from the tree with `args` and the extra environment
 /// `env`: (stdout, stderr, status).
 fn boot(args: &[&std::ffi::OsStr], env: &[(&str, &std::ffi::OsStr)]) -> (String, String, Option<i32>) {
+    boot_bin(std::path::Path::new(env!("CARGO_BIN_EXE_robigo-rt")), args, env)
+}
+
+/// [`boot`] with the robigo-rt at `bin` (its R_HOME the install layout's:
+/// `lib/robigo` beside its `bin`).
+fn boot_bin(
+    bin: &std::path::Path,
+    args: &[&std::ffi::OsStr],
+    env: &[(&str, &std::ffi::OsStr)],
+) -> (String, String, Option<i32>) {
     // one directory per run (the tests run in parallel)
     static RUN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let home = std::env::temp_dir().join(format!("robigo-boot-db-home-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
-    let o = Command::new(env!("CARGO_BIN_EXE_robigo-rt"))
+    let o = Command::new(bin)
         .args(args)
         .current_dir(&home)
         // a private cwd and HOME: no caller's .Renviron or .Rprofile
@@ -334,6 +344,109 @@ fn a_named_profile_that_does_not_open_is_no_profile() {
     assert_eq!((out.as_str(), err.as_str(), status), ("ran\n", PROFILE_STOPS, Some(0)));
 }
 
+/// A copy of the tree in a scratch checkout named for `what`, with this
+/// binary's translation cache for it, as scripts/rt-home-db.sh writes one
+/// (the binary under test need not be the one that built the tree, whose
+/// cache would be another build's).
+fn cached_tree(what: &str) -> std::path::PathBuf {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let tmp = std::env::temp_dir().join(format!("robigo-{what}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(tmp.join(".robigo")).unwrap();
+    let st = Command::new("cp").arg("-a").arg(root.join(".robigo/rt-home-db")).arg(tmp.join(".robigo/rt-home-db")).status();
+    assert!(st.unwrap().success(), "copying the tree");
+    std::fs::create_dir_all(tmp.join(".robigo/rt-home-db-cache")).unwrap();
+    write_cache(&tmp);
+    tmp
+}
+
+/// This binary's writer run on the tree copy `tmp` (its `-cache` directory
+/// there).
+fn write_cache(tmp: &std::path::Path) {
+    let mine = tmp.join(".robigo/rt-home-db-cache");
+    let force = "for (p in c('base', 'compiler')) { ns <- asNamespace(p); for (n in ls(ns, all.names = TRUE)) \
+                 tryCatch(get(n, envir = ns), error = function(e) NULL) }";
+    let (_, err, st) = boot(
+        &[std::ffi::OsStr::new("--vanilla"), std::ffi::OsStr::new("-e"), std::ffi::OsStr::new(force)],
+        &[("ROBIGO_RT_CHECKOUT", tmp.as_os_str()), ("ROBIGO_TRANSLATION_CACHE_WRITE", std::ffi::OsStr::new("1"))],
+    );
+    assert_eq!(st, Some(0), "the writer: {err}");
+    assert!(mine.join("base.rtc").is_file() && mine.join("compiler.rtc").is_file(), "the writer wrote no files: {err}");
+}
+
+/// The writer replaces a cache file by rename, never writing an existing
+/// one in place: a process that maps the old file (the reader does) keeps
+/// its bytes, which a write or truncation in place would change under it
+/// (or end it with SIGBUS).
+#[test]
+fn the_writer_replaces_a_cache_file_by_rename() {
+    use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
+    if !tree_made() {
+        return;
+    }
+    let tmp = cached_tree("tcache-rename");
+    let path = tmp.join(".robigo/rt-home-db-cache/base.rtc");
+    let mut old = std::fs::File::open(&path).unwrap();
+    let ino = old.metadata().unwrap().ino();
+    let before = std::fs::read(&path).unwrap();
+    write_cache(&tmp);
+    let after = std::fs::metadata(&path).unwrap();
+    let mut kept = Vec::new();
+    old.read_to_end(&mut kept).unwrap();
+    let leftovers: Vec<_> = std::fs::read_dir(tmp.join(".robigo/rt-home-db-cache"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| !n.ends_with(".rtc"))
+        .collect();
+    let _ = std::fs::remove_dir_all(&tmp);
+    assert_ne!(after.ino(), ino, "base.rtc was written in place, not replaced");
+    assert_eq!(kept, before, "the old file's bytes changed under an open handle");
+    assert!(leftovers.is_empty(), "the writer left {leftovers:?}");
+}
+
+/// A verification whose fresh translation stops with a retryable `Need`
+/// compares nothing and leaves nothing for the next one: the attempt runs
+/// again and verifies then. Under ROBIGO_RETRY_TORTURE (the retry-torture
+/// build: rt-ci's feature-builds shard runs this test there) every
+/// attempt's first allocation is refused, so every fresh translation of a
+/// verification stops once inside the verification: none may count as
+/// differing. In a build without the feature the binary refuses the knob,
+/// and the test has nothing to run.
+#[test]
+fn a_verification_stopped_for_a_retry_compares_nothing() {
+    if !tree_made() {
+        return;
+    }
+    let (_, err, _) = boot(
+        &[std::ffi::OsStr::new("--vanilla"), std::ffi::OsStr::new("-e"), std::ffi::OsStr::new("1")],
+        &[("ROBIGO_RETRY_TORTURE", std::ffi::OsStr::new("1"))],
+    );
+    if err.contains("needs robigo-rtcore built with its retry-torture feature") {
+        return;
+    }
+    let tmp = cached_tree("tcache-verify-retry");
+    let (out, err, st) = boot(
+        &[std::ffi::OsStr::new("--vanilla"), std::ffi::OsStr::new("-e"), std::ffi::OsStr::new("cat(sum(1:10), \"\\n\")")],
+        &[
+            ("ROBIGO_RT_CHECKOUT", tmp.as_os_str()),
+            ("ROBIGO_TRANSLATION_CACHE", std::ffi::OsStr::new("verify")),
+            ("ROBIGO_TRANSLATION_CACHE_STATS", std::ffi::OsStr::new("1")),
+            ("ROBIGO_RETRY_TORTURE", std::ffi::OsStr::new("1")),
+        ],
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
+    assert_eq!((out.as_str(), st), ("55 \n", Some(0)), "{err}");
+    let line = err.lines().find(|l| l.starts_with("translation cache: hit ")).unwrap_or_else(|| panic!("{err}"));
+    let count = |what: &str| -> usize {
+        let at = line.find(what).unwrap_or_else(|| panic!("no '{what}' in {line}")) + what.len();
+        line[at..].trim_start().split(|c: char| !c.is_ascii_digit()).next().unwrap().parse().unwrap()
+    };
+    assert!(count("verify retried") > 0, "no verification stopped for a retry: {line}");
+    assert!(count("verified") > 0, "nothing verified: {line}");
+    assert_eq!(count("differing"), 0, "{line}");
+}
+
 /// The translation cache beside the tree (C1, crates/robigo-rt/src/tcache.rs):
 /// a copy of the tree gets its cache from this binary's writer (the binary
 /// under test need not be the one that built the tree, whose cache would be
@@ -346,26 +459,12 @@ fn a_start_falls_back_silently_without_a_valid_translation_cache() {
     if !tree_made() {
         return;
     }
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let tmp = std::env::temp_dir().join(format!("robigo-tcache-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(tmp.join(".robigo")).unwrap();
+    let tmp = cached_tree("tcache");
+    let mine = tmp.join(".robigo/rt-home-db-cache");
     let cp = |from: &std::path::Path, to: &std::path::Path| {
         let st = Command::new("cp").arg("-a").arg(from).arg(to).status().unwrap();
         assert!(st.success(), "cp -a {} {}", from.display(), to.display());
     };
-    cp(&root.join(".robigo/rt-home-db"), &tmp.join(".robigo/rt-home-db"));
-    let mine = tmp.join(".robigo/rt-home-db-cache");
-    // this binary's cache for the copy, as scripts/rt-home-db.sh writes one
-    std::fs::create_dir_all(&mine).unwrap();
-    let force = "for (p in c('base', 'compiler')) { ns <- asNamespace(p); for (n in ls(ns, all.names = TRUE)) \
-                 tryCatch(get(n, envir = ns), error = function(e) NULL) }";
-    let (_, err, st) = boot(
-        &[std::ffi::OsStr::new("--vanilla"), std::ffi::OsStr::new("-e"), std::ffi::OsStr::new(force)],
-        &[("ROBIGO_RT_CHECKOUT", tmp.as_os_str()), ("ROBIGO_TRANSLATION_CACHE_WRITE", std::ffi::OsStr::new("1"))],
-    );
-    assert_eq!(st, Some(0), "the writer: {err}");
-    assert!(mine.join("base.rtc").is_file() && mine.join("compiler.rtc").is_file(), "the writer wrote no files: {err}");
     let cache = tmp.join("cache-written");
     cp(&mine, &cache);
     let run = || {
@@ -425,4 +524,72 @@ fn a_start_falls_back_silently_without_a_valid_translation_cache() {
     let (out, err, st) = run();
     assert_eq!((out.as_str(), st, hits(&err)), ("55 \n", Some(0), 0), "absent: {err}");
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn a_broken_compiler_database_ends_the_start_as_in_gnu_r() {
+    if !tree_made() {
+        return;
+    }
+    // R_init_jit_enabled's loadCompilerNamespace fails: check_session_exit
+    // halts R, or with options(error) lets it go on to R_Suicide("unable to
+    // initialize the JIT") (main.c:1205-1214, eval.c:1415); GNU R 4.6.2's
+    // output with its compiler's .rdb and .rdx removed (an emptied .rdb is
+    // not a case: GNU R's readRawFromFile then copies the record from past
+    // its zero-length cache, serialize.c:3146, and inflates what it read)
+    let tree = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.robigo/rt-home-db");
+    static RUN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    // (the install layout robigo-rt finds its R_HOME by: DIR/bin/robigo-rt,
+    // DIR/lib/robigo, a copy of the tree; an R_HOME in the environment is
+    // ignored, as GNU R's is)
+    let copy = |what: &str| {
+        let n = RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("robigo-boot-db-{what}-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::create_dir_all(dir.join("lib")).unwrap();
+        std::fs::copy(env!("CARGO_BIN_EXE_robigo-rt"), dir.join("bin/robigo-rt")).unwrap();
+        let ok = Command::new("cp").arg("-a").arg(&tree).arg(dir.join("lib/robigo")).status().unwrap().success();
+        assert!(ok, "copying {}", tree.display());
+        dir
+    };
+    let ran: &[&std::ffi::OsStr] =
+        &["--vanilla".as_ref(), "--no-echo".as_ref(), "-e".as_ref(), "cat('ran\\n')".as_ref()];
+    // (removed when the test ends, an assertion's panic included)
+    struct Gone(std::path::PathBuf);
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let dir = copy("removed");
+    let _gone = Gone(dir.clone());
+    let bin = dir.join("bin/robigo-rt");
+    let home = std::fs::canonicalize(dir.join("lib/robigo")).unwrap();
+    std::fs::remove_file(home.join("library/compiler/R/compiler.rdb")).unwrap();
+    std::fs::remove_file(home.join("library/compiler/R/compiler.rdx")).unwrap();
+    let errors = format!(
+        "Error in gzfile(file, \"rb\") : cannot open the connection\nIn addition: Warning message:\n\
+         In gzfile(file, \"rb\") :\n  cannot open compressed file '{}/library/compiler/R/compiler.rdx', probable reason 'No such file or directory'\n\
+         Error: unable to load R code in package ‘compiler’\n",
+        home.display()
+    );
+    // check_session_exit halts R
+    let (out, err, status) = boot_bin(&bin, ran, &[]);
+    assert_eq!((out.as_str(), err, status), ("", format!("{errors}Execution halted\n"), Some(1)));
+    // with options(error) it lets R go on, to R_Suicide
+    let prof = dir.join("prof.R");
+    std::fs::write(&prof, "options(error = function() NULL)\n").unwrap();
+    let (out, err, status) = boot_bin(
+        &bin,
+        &["--no-save".as_ref(), "--no-restore".as_ref(), "--no-echo".as_ref(), "-e".as_ref(), "cat('ran\\n')".as_ref()],
+        &[("R_PROFILE_USER", prof.as_os_str())],
+    );
+    assert_eq!(
+        (out.as_str(), err, status),
+        ("", format!("{errors}Fatal error: unable to initialize the JIT\n\n"), Some(2))
+    );
+    // the JIT off: no compiler at the start
+    let (out, err, status) = boot_bin(&bin, ran, &[("R_ENABLE_JIT", "0".as_ref())]);
+    assert_eq!((out.as_str(), err.as_str(), status), ("ran\n", PROFILE_STOPS, Some(0)));
 }
