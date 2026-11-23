@@ -31,8 +31,9 @@ Each start has three numbers:
 - `anon_kib`: peak anonymous memory, in KiB (RssAnon, see below);
 - `rss_kib`: total peak RSS, `VmHWM`, in KiB.
 
-Each is the median over `runs` runs (instructions: over ENV_SHIFTS, as a
-row's count over its heap shifts, below).
+Instructions and the anonymous peak are the mean over the layout shifts
+(below), one run at each; peak RSS the median of `runs` runs at the home
+itself.
 
 **Anonymous memory.** Linux keeps a high-water mark of the whole RSS
 (VmHWM) but none of its anonymous part, and a 20 ms start is too short to
@@ -49,11 +50,17 @@ reported but gated loosely. Address randomization is off for the measured
 process (personality(ADDR_NO_RANDOMIZE), as setarch -R): with it on, the
 pages a start touches vary by run.
 
-**Environment shifts.** A start's instruction count can follow the
-process's initial heap and stack, which the environment's size moves, as
-the s3 row followed its script path's length (#974). Each start is
-measured under ENV_SHIFTS, padding variables of these lengths, and the
-median is the count.
+**Layout shifts.** A start's instruction count follows the heap's layout,
+which the length of its home's path moves: the path's strings are allocated
+early, and every table grown by realloc later either extends in place or
+is copied, by what lies above it (H, 2026-11-23: steps of ~80k on the
+interim start, at lengths that differ per binary). One start's count spans
+0.7-1.15% of the start over path lengths 35-139, more than the gate's
+limit, so a single path decided the verdict by placement. So each start
+boots from LAYOUT_LENGTHS homes: symlinks to its trees whose absolute paths
+are exactly those lengths (layout_homes()), the same for both binaries
+wherever their trees are unpacked, and its count is the mean of the 15
+(docs/ledger/g3/2026-11-23-startup-layout.md).
 """
 import argparse
 import concurrent.futures
@@ -76,9 +83,18 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 from scratch import scratch_dir  # noqa: E402
 
+# ROBIGO_RT_BOOT's value for M1's interim loader. Today it is the binary's
+# default (unset or empty); L's default-boot flip makes rdb the default and
+# this "m1", here only. Every start and every row names its boot, so no
+# measurement depends on a binary's default, and the gate never compares two
+# boots (BOOTS: rt-bars' --boot)
+M1_BOOT = ""
+BOOTS = {"m1": M1_BOOT, "rdb": "rdb"}
+# the start bar 5 is judged on, and the default boot's
+DEFAULT_START = "rdb-jit"
 # a start by name: the environment it runs with, over BASE
 STARTS = {
-    "interim": {},
+    "interim": {"ROBIGO_RT_BOOT": M1_BOOT},
     "rdb-jit": {"ROBIGO_RT_BOOT": "rdb"},
     "rdb-nojit": {"ROBIGO_RT_BOOT": "rdb", "R_ENABLE_JIT": "0"},
     # (the rdb starts above are the defaults, with the translation cache
@@ -92,8 +108,27 @@ STARTS = {
 GNUR_STARTS = {"jit": {}, "nojit": {"R_ENABLE_JIT": "0"}}
 BASE = {"R_DEFAULT_PACKAGES": "NULL", "LANGUAGE": "en", "LC_ALL": "C.UTF-8", "TZ": "UTC",
         "R_ENVIRON_USER": "", "R_PROFILE_USER": ""}
-# the padding variable's lengths of the environment shifts
-ENV_SHIFTS = (0, 100, 1000)
+# the layout shifts: the absolute lengths of the home a start boots from
+# (ROBIGO_RT_CHECKOUT for robigo-rt, R_HOME for GNU R), 15 lengths 7 apart.
+# Spread over a span this wide, the mean of a no-op change against main
+# stayed within ±0.2% (docs/ledger/g3/2026-11-23-startup-layout.md)
+LAYOUT_LENGTHS = tuple(range(35, 35 + 7 * 15, 7))
+# with each length, glibc malloc's top_pad (the extra each heap extension
+# takes), from its default, 128 KiB, by a page: the home's length moves
+# where the early allocations fall, top_pad where the heap's top lies, and a
+# binary's own size moves its heap's start, which the length alone does not
+# cancel (a no-op build, 4 KiB more data: interim -0.67% over the lengths
+# alone, -0.07% over the pairs)
+TOP_PADS = tuple(131072 + 4096 * k for k in range(15))
+LAYOUT_SHIFTS = tuple(zip(LAYOUT_LENGTHS, TOP_PADS))
+
+# the anonymous peak's figure over the layout shifts (measure()). A layout's
+# peak is exact (the same run after run), but layouts differ by pages: over
+# the 15 shifts a start's readings spread over 64-230 KiB in 4 KiB steps.
+# Between a binary and a no-op build of it, the minimum moved by up to
+# 72 KiB and the median by up to 60, the mean by at most 14
+# (docs/ledger/g3/2026-11-23-startup-layout.md)
+ANON_STAT = statistics.fmean
 
 # the gate against main's binary (perf.py rt-bars), in percent: instructions
 # as the rows' THRESHOLD; the anonymous peak at least ANON_FLOOR_KIB, five
@@ -269,9 +304,13 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
         # the start made, as their events name them; a stop of a thread or
         # process no event has named yet waits in `early` for its event
         children, early = [], {}
+        # the start's own process group (setpgid in the child): events of
+        # its threads and the processes it makes, never another measurement's
+        # (measure() and probes run several at once in one process)
+        group = pid
         ptrace(go, pid)
         while True:
-            t, st = os.waitpid(-1, WALL)
+            t, st = os.waitpid(-group, WALL)
             if t == pid and (os.WIFEXITED(st) or os.WIFSIGNALED(st)):
                 pid = None
                 break
@@ -441,33 +480,65 @@ def instructions(cmd, env, valgrind):
     raise SystemExit(f"rt-startup: no total in callgrind's output of {' '.join(cmd)}")
 
 
-def measure(cmd, env, runs, valgrind):
-    """One start's numbers: {"instr", "instr_shifts", "anon_kib", "rss_kib",
-    "anon_runs", "rss_runs", "children"} (`children`: the processes one run
-    started, GNU R's temporary directory's `rm` among them)."""
-    def one(k):
-        return str(k), instructions(cmd, dict(env, ROBIGO_STARTUP_PAD="x" * k) if k else env, valgrind)
+def layout_homes(home):
+    """{length: path}: a symlink to `home` for each of LAYOUT_LENGTHS, whose
+    absolute path is exactly that long, in a scratch directory of its own
+    under /tmp (a fixed-length name: `/tmp/rs-` and 12 hex digits), so every
+    binary gets the same lengths whatever directory its trees are in."""
+    base = scratch_dir("rs-", dir="/tmp")
+    out = {}
+    for n in LAYOUT_LENGTHS:
+        pad = n - len(base) - 1
+        if pad < 1:
+            raise SystemExit(f"rt-startup: {base} is too long for a home of {n} characters")
+        link = os.path.join(base, "p" * pad)
+        os.symlink(os.path.abspath(home), link)
+        out[n] = link
+    return out
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(ENV_SHIFTS)) as ex:
-        shifts = dict(ex.map(one, ENV_SHIFTS))
-    anon, rss = [], []
+
+def measure(cmd, env, runs, valgrind, var, home):
+    """One start's numbers: {"instr", "instr_shifts", "anon_kib",
+    "anon_shifts", "rss_kib", "rss_runs", "children"}, booting from `home` through the
+    environment variable `var` (`children`: the processes one run started,
+    GNU R's temporary directory's `rm` among them)."""
+    homes = layout_homes(home)
+
+    def shifted(n):
+        """`env` under layout shift `n` (a home length): that home, and its
+        top_pad."""
+        pad = dict(LAYOUT_SHIFTS)[n]
+        return dict(env, **{var: homes[n]}, GLIBC_TUNABLES=f"glibc.malloc.top_pad={pad}")
+
+    def one(n):
+        return str(n), instructions(cmd, shifted(n), valgrind)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(homes), os.cpu_count() or 1)) as ex:
+        shifts = dict(ex.map(one, homes))
     want = None
     children = 0
-    # the anonymous peak from runs stopped at each system call, peak RSS from
-    # runs stopped only at exit (memory())
-    for syscalls in (True, False):
-        for _ in range(runs):
-            a, h, status, out, children = memory(cmd, env, syscalls)
-            if status != 0:
-                raise SystemExit(f"rt-startup: {' '.join(cmd)} exited {status}")
-            if want is None:
-                want = out
-            elif out != want:
-                raise SystemExit(f"rt-startup: {' '.join(cmd)} printed differently between runs")
-            (anon if syscalls else rss).append(a if syscalls else h)
-    return {"instr": statistics.median(shifts.values()), "instr_shifts": shifts,
-            "anon_kib": statistics.median(anon), "rss_kib": statistics.median(rss),
-            "anon_runs": anon, "rss_runs": rss, "children": children}
+
+    def run(e, syscalls):
+        nonlocal want, children
+        a, h, status, out, children = memory(cmd, e, syscalls)
+        if status != 0:
+            raise SystemExit(f"rt-startup: {' '.join(cmd)} exited {status}")
+        if want is None:
+            want = out
+        elif out != want:
+            raise SystemExit(f"rt-startup: {' '.join(cmd)} printed differently between runs")
+        return a if syscalls else h
+
+    # the anonymous peak from runs stopped at each system call, one at each
+    # layout shift, as the instructions: a start's peak follows its layout
+    # (L: a 104 KiB step between two binaries at a few bytes of difference),
+    # and is the same at one layout run after run. Peak RSS from runs
+    # stopped only at exit, at the home itself (memory())
+    anon_shifts = {str(n): run(shifted(n), True) for n in homes}
+    rss = [run(dict(env, **{var: os.path.abspath(home)}), False) for _ in range(runs)]
+    return {"instr": statistics.fmean(shifts.values()), "instr_shifts": shifts,
+            "anon_kib": ANON_STAT(anon_shifts.values()), "anon_shifts": anon_shifts,
+            "rss_kib": statistics.median(rss), "rss_runs": rss, "children": children}
 
 
 def cache_hits(stderr):
@@ -631,10 +702,11 @@ def run(binary, starts=None, checkout=ROOT, runs=9, trees=False, valgrind=None):
     cached = os.path.isdir(os.path.join(home, ".robigo", "rt-home-db-cache"))
     out = {}
     for n in names:
-        env = dict(env0, ROBIGO_RT_CHECKOUT=os.path.abspath(home), **STARTS[n])
+        env = dict(env0, **STARTS[n])
         if cached and env.get("ROBIGO_RT_BOOT") == "rdb" and env.get("ROBIGO_TRANSLATION_CACHE") != "0":
-            require_cache_used(n, cmd, env)
-        out[n] = measure(cmd, env, runs, valgrind or os.environ.get("VALGRIND", "valgrind"))
+            require_cache_used(n, cmd, dict(env, ROBIGO_RT_CHECKOUT=os.path.abspath(home)))
+        out[n] = measure(cmd, env, runs, valgrind or os.environ.get("VALGRIND", "valgrind"), "ROBIGO_RT_CHECKOUT",
+                         home)
     return out
 
 
@@ -647,18 +719,39 @@ def run_gnur(runs=9, valgrind=None):
         raise SystemExit(f"rt-startup: no GNU R at {exe} (set RSCRIPT_BIN to its exec/R and R_HOME_DIR)")
     res = {}
     for n, extra in GNUR_STARTS.items():
-        env = dict(clean_env(), R_HOME=home, **extra)
+        env = dict(clean_env(), **extra)
         lib = os.path.join(home, "lib")
         env["LD_LIBRARY_PATH"] = lib + (":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
         res[n] = measure([exe, "--vanilla", "--no-echo", "-e", "1"], env, runs,
-                         valgrind or os.environ.get("VALGRIND", "valgrind"))
+                         valgrind or os.environ.get("VALGRIND", "valgrind"), "R_HOME", home)
     return res
 
 
+# the fixed part of every measured run's environment: nothing of the
+# caller's. The environment's size moves the initial stack and the heap's
+# layout, and with them the anonymous peak (L: a 104 KiB step flipping
+# between two binaries at a few bytes of environment), so a delegate's shell
+# and the runner must hand a start the same one
+FIXED_ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/tmp"}
+
+
+_fixed = {}
+
+
 def clean_env():
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("R_", "ROBIGO_"))}
-    env.update(BASE)
-    return env
+    """A measured run's environment: FIXED_ENV and BASE, nothing else but
+    ROBIGO_RSRC, the pinned GNU R sources the interim boot loads base's R
+    code from (scripts/r-src.sh's tree). That is reached through a symlink
+    whose path has a fixed length (a scratch directory under /tmp), so
+    wherever the sources are, the environment is the same size."""
+    if "rsrc" not in _fixed:
+        real = os.environ.get("ROBIGO_RSRC") or subprocess.run(
+            [os.path.join(ROOT, "scripts", "r-src.sh")], cwd=ROOT, capture_output=True, text=True,
+            check=True).stdout.strip()
+        link = os.path.join(scratch_dir("rs-", dir="/tmp"), "rsrc")
+        os.symlink(os.path.abspath(real), link)
+        _fixed["rsrc"] = link
+    return {**FIXED_ENV, **BASE, "ROBIGO_RSRC": _fixed["rsrc"]}
 
 
 def anon_limit_kib(main_kib):
