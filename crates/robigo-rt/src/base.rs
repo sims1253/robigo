@@ -115,6 +115,36 @@ impl Bound {
 /// INTERIM(L5): the wide base, as generated.
 const WIDE: &str = include_str!("../proto/base-wide.txt");
 
+/// The number of lines of `text` that start with `kind` and a space,
+/// counted when the crate is compiled: the capacity [`Wide::parse`] gives
+/// each list up front, so that its growth does not reallocate (and copy,
+/// as the heap's layout decides) at every start.
+const fn lines_of(text: &str, kind: &str) -> usize {
+    let (t, k) = (text.as_bytes(), kind.as_bytes());
+    let (mut n, mut i) = (0, 0);
+    while i < t.len() {
+        // `i` is the start of a line
+        let mut j = 0;
+        while j < k.len() && i + j < t.len() && t[i + j] == k[j] {
+            j += 1;
+        }
+        if j == k.len() && i + j < t.len() && t[i + j] == b' ' {
+            n += 1;
+        }
+        while i < t.len() && t[i] != b'\n' {
+            i += 1;
+        }
+        i += 1;
+    }
+    n
+}
+
+/// [`lines_of`] `WIDE`: an upper bound on its names (a `seq` line extends
+/// the name before it), its primitives and its internals.
+const WIDE_NAMES: usize = lines_of(WIDE, "def") + lines_of(WIDE, "block") + lines_of(WIDE, "unrun");
+const WIDE_PRIMITIVES: usize = lines_of(WIDE, "primitive");
+const WIDE_INTERNALS: usize = lines_of(WIDE, "internal");
+
 /// A top-level form of a file under the tarball's `src/library`
 /// (`base/R/zzz.R`, `profile/Common.R`): its bytes `[start, end)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -178,14 +208,15 @@ impl Wide {
     }
 
     fn parse(text: &'static str) -> Result<Wide, String> {
+        // (`text` is WIDE, its only caller's)
         let mut w = Wide {
-            names: Vec::new(),
+            names: Vec::with_capacity(WIDE_NAMES),
             skips: Vec::new(),
             boot: Vec::new(),
             from_c: Vec::new(),
             substs: Vec::new(),
-            primitives: Vec::new(),
-            internals: Vec::new(),
+            primitives: Vec::with_capacity(WIDE_PRIMITIVES),
+            internals: Vec::with_capacity(WIDE_INTERNALS),
             by_name: std::collections::HashMap::new(),
         };
         let num = |s: &str, i: usize| s.parse::<usize>().map_err(|_| format!("line {}: not a number: {s:?}", i + 1));
