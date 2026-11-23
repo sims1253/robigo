@@ -848,3 +848,50 @@ fn sha256_matches_sha256sum() {
     let long = vec![b'a'; 1_000];
     assert_eq!(sha256_hex(&long), "41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3");
 }
+
+/// The pool is one pool across implementations: a slot the Python tools
+/// hold (scripts/conf_slots.py, `fcntl.flock`) is held for the runner too
+/// (std's `File::try_lock` is `flock(2)` on Linux), so a one-slot run
+/// waits for it.
+#[test]
+fn a_slot_held_by_the_python_tools_is_held_for_the_runner() {
+    let pool = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("slots-cross-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&pool);
+    std::fs::create_dir_all(&pool).unwrap();
+    std::fs::set_permissions(&pool, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts");
+    // the holder holds the only slot until its stdin ends: the test, not a
+    // clock, says when it lets go
+    let mut holder = std::process::Command::new("python3")
+        .arg("-c")
+        .arg(
+            "import sys; sys.path.insert(0, sys.argv[1]); import conf_slots\n\
+             h = conf_slots.Pool(sys.argv[2], 1).take()\n\
+             print('held', flush=True); sys.stdin.read()",
+        )
+        .arg(&scripts)
+        .arg(&pool)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("python3 runs scripts/conf_slots.py");
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(holder.stdout.take().unwrap()), &mut line).unwrap();
+    assert_eq!(line.trim(), "held");
+    let f = rt_tree("slots-cross");
+    let mut o = opts(&RT, cat());
+    o.filter = Some("tests/rt/smoke".into());
+    o.slots = Some((pool.clone(), 1));
+    let root = f.root().to_path_buf();
+    let h = std::thread::spawn(move || run(&root, &RT, &o).unwrap());
+    // the order is the proof: while Python holds the slot the run does not
+    // finish (a case alone takes milliseconds)
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    let finished_while_held = h.is_finished();
+    drop(holder.stdin.take());
+    assert!(holder.wait().unwrap().success());
+    let r = h.join().unwrap();
+    assert!(!finished_while_held, "the run finished while Python held the only slot");
+    assert!(r.outcomes.iter().all(|c| c.passed()));
+    let _ = std::fs::remove_dir_all(&pool);
+}

@@ -69,6 +69,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _spec = importlib.util.spec_from_file_location("ci_select", os.path.join(ROOT, "scripts", "ci-select.py"))
 ci_select = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ci_select)
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+import conf_slots  # noqa: E402
 
 
 def rt_patterns(rules):
@@ -492,7 +494,21 @@ def steps(crates):
         # plain and with the byte-code crosscheck, each failing as its M1
         # step does (a ratcheted case that fails; an unexpected or
         # untranslated closure). Not yet the default anywhere (L's list)
+        # The tree has its translation cache (C1, crates/robigo-rt/src/tcache.rs,
+        # beside it: rt-home-db.sh), so these steps run with it; the crosscheck
+        # step compares every cached translation with a fresh one too. The
+        # same cases with the cache off must pass as well: the cache changes
+        # nothing a case sees
         ("conformance under the rdb boot (ROBIGO_RT_BOOT=rdb)", {"ROBIGO_RT_BOOT": "rdb"}, conformance),
+        ("conformance under the rdb boot without the translation cache (ROBIGO_TRANSLATION_CACHE=0)",
+         {"ROBIGO_RT_BOOT": "rdb", "ROBIGO_TRANSLATION_CACHE": "0"}, conformance),
+        # the cache as damaged input: a corrupted file's entries are misses,
+        # every start ends as a start does (no signal, no panic, no hang); and
+        # a database changed under its stamp (two records swapped) makes its
+        # entries stale-record misses, never other code
+        ("the translation cache as damaged input (scripts/rt-tcache-mutate.py)", {},
+         ["python3", "scripts/rt-tcache-mutate.py", "--robigo-rt", rt_binary(), "--pkg", "base", "--pkg", "compiler",
+          "--runs", "300", "--seed", "1", "--swap-runs", "40"]),
         ("conformance under the rdb boot with ROBIGO_BC_CROSSCHECK=1 (base.rdb's closures against the "
          "from-source compiler's)",
          {"ROBIGO_RT_BOOT": "rdb", "ROBIGO_BC_CROSSCHECK": "1", "ROBIGO_BC_CROSSCHECK_REPORT": BC_REPORT_RDB},
@@ -595,6 +611,20 @@ def steps(crates):
          {"ROBIGO_RETRY_TORTURE": "1", **slow},
          [*test, "-p", "robigo-rtapi", "--features", CHECK_FEATURES, "--test", "conformance", "--",
           "--exact", CONFORMANCE, "--nocapture"]),
+        # C1 (#979, the bot's round 2): a translation-cache verification whose
+        # fresh translation stops for a retry compares nothing. Under
+        # ROBIGO_RETRY_TORTURE every fresh translation of a verification
+        # stops once inside it, so the case is certain, not lucky: base's
+        # database tree written by this build (whose binary the step above
+        # made), then the boot test that verifies a start under the knob
+        ("base's database tree for ROBIGO_RETRY_TORTURE's build (scripts/rt-home-db.sh)", {},
+         ["scripts/rt-home-db.sh", "--robigo-rt", rt_binary()]),
+        # (TREE_RUNS: a missing or stale tree fails, not skips; and the test
+        # fails, not skips, if the build has no retry-torture)
+        ("a translation-cache verification under ROBIGO_RETRY_TORTURE=1 compares nothing for a retry "
+         "(tests/boot_db.rs)", {**TREE_RUNS, "ROBIGO_REQUIRE_RETRY_TORTURE": "1"},
+         [*test, "-p", "robigo-rtapi", "--features", CHECK_FEATURES, "--test", "boot_db", "--",
+          "--exact", "a_verification_stopped_for_a_retry_compares_nothing"]),
         # C1-PZ (docs/g3.md §16): a dead slot (a register's last use, D9's
         # clears; the slots a scope's restore frees) holds a poison naming
         # where it died, and a read of it panics: robigo-rt's tests, with
@@ -651,20 +681,26 @@ OWN_STEPS = ("debug-assertions", "release-crate-tests")
 # timeout (scripts/test-rt-ci.py pins the three relations). When a warning
 # fires, rebalance or remeasure: the dates say how old each measurement is.
 BUDGETS = {  # shard: (budget, measured minutes, where measured)
-    # a slow-runner figure: run 45072863916 (#959, 2026-11-22) took about
+    # a slow-runner basis: run 45072863916 (#959, 2026-11-22) took about
     # 1.25x #952's on the steps both ran (the crates' tests 1.86 against
-    # 1.59 min, GC_MOVE 1.18 against 0.88)
-    "modes": (11, 9.15, "2026-11-22, run 45072863916 (#959, a slow runner): 8.27 to its failed quarantine step, "
+    # 1.59 min, GC_MOVE 1.18 against 0.88); #979's two steps, timed locally
+    # (C1, 2026-11-23), are scaled to it by 1.6, that run's conformance
+    # steps against the same local run's (1.34 against 0.84 min, the five
+    # both ran)
+    "modes": (13, 10.05, "2026-11-22, run 45072863916 (#959, a slow runner): 8.27 to its failed quarantine step, "
               "less #959's M1 freeze-on conformance step's 0.22 (moved to gctorture; its rdb twin, 0.27, stays "
               "with the database tree), plus the steps after it at #952's 1.1; #959's freeze check at every "
-              "collection makes the crates' gctorture step 0.81 against main's 0.45 (1.8x in CI)"),
+              "collection makes the crates' gctorture step 0.81 against main's 0.45 (1.8x in CI); and #979's "
+              "rdb boot's conformance without the translation cache, 0.29 (0.18 locally), and the cache's "
+              "damaged-input step, 0.61 (0.38 locally)"),
     # the plain gctorture conformance moves into modes if GCTORTURE_FIRST
     # does not bring this back near 15 minutes
     "gctorture": (27, 22.09, "2026-11-21, run 44927530340 (#952): 20.62 before GCTORTURE_FIRST, and #959's "
                   "estimated 1.25 (its freeze check at every 16th collection: about 1.3x of the plain gctorture "
                   "conformance's 4.15, H's measurement) and its M1 freeze-on conformance step's 0.22 "
                   "(run 45072863916)"),
-    "feature-builds": (12, 9.87, "2026-11-21, run 44927530340 (#952)"),
+    "feature-builds": (13, 10.47, "2026-11-21, run 44927530340 (#952): 9.87, and #979's tree for the "
+                       "retry-torture build and its verification test, estimated 0.6 (0.3 and 0.05 minutes here)"),
     "builtin-diff": (9, 7.42, "2026-11-21, run 44927530340 (#952)"),
     "debug-assertions": (5, 3.47, "2026-11-21, run 44927530340 (#952): 3.07, and the tree's estimated 0.4"),
     "release-crate-tests": (12, 9.82, "2026-11-21, main's run 44931071167: 9.42, and the tree's estimated 0.4"),
@@ -789,37 +825,20 @@ def conf_slots_dir(env=None):
     """The machine-wide pool of conformance case slots a local run shares
     with every other local rt-ci run of this user (robigo-conformance's
     ROBIGO_CONF_SLOTS_DIR: a case takes a slot before it starts, its time
-    limit counting from its start): several checkouts' gates at once took
-    the box to load 45-66 on 24 CPUs, and cases ran into their limits
-    (2026-11-23). The caller's own ROBIGO_CONF_SLOTS_DIR wins (empty: no
-    pool); CI has none (one run per runner). None: leave it as it is."""
-    env = os.environ if env is None else env
-    if "ROBIGO_CONF_SLOTS_DIR" in env or env.get("GITHUB_ACTIONS") == "true":
-        return None
-    base = env.get("XDG_RUNTIME_DIR")
-    if base and os.path.isdir(base):
-        d = os.path.join(base, "robigo-conf-slots")
-    else:
-        # fixed, not TMPDIR's: every run of this user must find the same pool
-        d = f"/tmp/robigo-conf-slots-{os.getuid()}"
-    try:
-        try:
-            os.makedirs(d, mode=0o700, exist_ok=True)
-        except FileExistsError:
-            pass            # (a file or a link there: lstat and the check below say what)
-        st = os.lstat(d)
-    except OSError as e:
-        print(f"::warning::rt-ci: no conformance slot pool ({d}: {e})")
-        return None
-    import stat as st_
-    # this user's directory, and private: another user able to write there
-    # could replace a slot file, and two runs would lock two files for one
-    # slot
-    if not st_.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
-        print(f"::warning::rt-ci: no conformance slot pool ({d} is not a private directory of this user's: "
-              f"mode {oct(st_.S_IMODE(st.st_mode))})")
-        return None
-    return d
+    limit counting from its start). The rule is conf_slots.default_dir's:
+    the caller's own ROBIGO_CONF_SLOTS_DIR wins (empty: no pool), CI has
+    none. None: leave it as it is."""
+    return conf_slots.default_dir(env)
+
+
+def crate_test_threads(cmd):
+    """Whether `cmd` is a run of the crates' own tests (a cargo test that
+    runs tests, other than a conformance step), which take their threads
+    from the slot pool: libtest runs one thread per CPU, and two local runs'
+    crate-test steps at once, or one beside another run's conformance cases,
+    stacked to twice the box."""
+    return (cmd[:2] == ["cargo", "test"] and "--" in cmd and "--no-run" not in cmd
+            and not (CONFORMANCE in cmd and "--exact" in cmd))
 
 
 def metadata():
@@ -836,6 +855,10 @@ def main(argv):
     slots = conf_slots_dir()
     if slots is not None:
         os.environ["ROBIGO_CONF_SLOTS_DIR"] = slots
+    elif os.environ.get("ROBIGO_CONF_SLOTS_DIR"):
+        # the caller's, absolute: the runner resolves it from its package's
+        # directory, this from the caller's
+        os.environ["ROBIGO_CONF_SLOTS_DIR"] = conf_slots.absolute(os.environ["ROBIGO_CONF_SLOTS_DIR"])
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--list", action="store_true", help="print the rt crates and stop")
     ap.add_argument("--check", action="store_true", help="check the premise and stop")
@@ -998,7 +1021,26 @@ def run_steps(plan, done):
             env = {**env, "ROBIGO_CONF_TIMES_REPORT": times}
         print(f"::group::{title}", flush=True)
         t0 = time.monotonic()
-        r = subprocess.run(cmd, cwd=ROOT, env={**os.environ, **env})
+        # as many threads as slots: one it waits for, then whatever else
+        # of the pool is free (all of it on a quiet box), held until the
+        # step ends. The tests get no pool of their own: the step's slots
+        # count their threads already, and a test waiting for a slot its
+        # own step holds would wait forever
+        try:
+            pool = conf_slots.from_env({**os.environ, **env}) if crate_test_threads(cmd) else None
+            held = pool.take(pool.n, who=f"rt-ci's step '{title}'") if pool else None
+        except conf_slots.PoolError as e:
+            print(f"::error::rt: {title}: {e}")
+            print("::endgroup::", flush=True)
+            done.append((title, 0.0, False))
+            return 2
+        if held:
+            with held:
+                print(f"rt-ci: {held.count} of {pool.n} slots, --test-threads={held.count}", flush=True)
+                r = subprocess.run([*cmd, f"--test-threads={held.count}"], cwd=ROOT,
+                                   env={**os.environ, **env, "ROBIGO_CONF_SLOTS_DIR": ""})
+        else:
+            r = subprocess.run(cmd, cwd=ROOT, env={**os.environ, **env})
         done.append((title, time.monotonic() - t0, r.returncode == 0))
         print("::endgroup::", flush=True)
         if times:

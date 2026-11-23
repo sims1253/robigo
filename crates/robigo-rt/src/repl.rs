@@ -759,7 +759,7 @@ fn session_save(cx: &Cx) -> SaveAction {
 /// without it the image
 /// saved in the caller's context, so that an error in the save is the
 /// caller's (quit()'s, catchable): the only way this returns. Then the
-/// exit finalizers, (R_CleanTempDir: B's), the warnings unless SA_SUICIDE,
+/// exit finalizers, R_CleanTempDir, the warnings unless SA_SUICIDE,
 /// the console flushed, and the process ended with `status` (no unwinding:
 /// GNU R's `exit`). An error in `.Last` or the save at the top level is
 /// check_session_exit's: R halts (status 1), or GNU R goes back to the
@@ -889,13 +889,14 @@ fn exit(cx: &mut Cx, status: i32, suicide: bool) -> ! {
 }
 
 /// What `Rstd_CleanUp` does after its save action ([`clean_up`]): the
-/// exit finalizers, then (`R_CleanTempDir`: robigo-rt has no session
-/// temporary directory yet, B's tempdir() port adds it here), then the
+/// exit finalizers, then `R_CleanTempDir` (the session's temporary directory), then the
 /// deferred warnings unless it is R_Suicide's (SA_SUICIDE), then the
 /// console flushed. The caller ends the process with its status.
 // R: unix/sys-std.c:Rstd_CleanUp
 fn clean_up_tail(cx: &mut Cx, suicide: bool) {
     crate::fin::run_exit_finalizers(cx);
+    // R_CleanTempDir: the session's temporary directory removed
+    robigo_rtbuiltins::sysutils::clean_temp_dir(cx);
     if !suicide {
         print_warnings(cx);
     }

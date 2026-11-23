@@ -132,6 +132,10 @@ pub(super) struct Reader<'h, 'r, const V: bool> {
     native: Vec<u8>,
     nat2nat: Conv,
     nat2utf8: Conv,
+    /// The translation cache's key context, for a record of one of the
+    /// tree's own lazy-load databases (`crate::tcache`): each BCODESXP made
+    /// is numbered, and marked when the cache has its translation.
+    tkey: Option<crate::tcache::RecordKey>,
 }
 
 fn unpack(flags: i32) -> (i32, u16, bool, bool, bool) {
@@ -163,17 +167,32 @@ fn decode_version(packed: i32) -> (i32, i32, i32) {
 /// `R_Unserialize(stream)`: the object, written to `out`.
 // R: serialize.c:R_Unserialize
 pub(super) fn unserialize(cx: &mut Cx, inp: InStream, hook: Option<Root<'_>>, out: Out<'_>) -> RResult<()> {
-    unserialize_at::<false>(cx, inp, hook, 0, out)
+    unserialize_at::<false>(cx, inp, hook, None, 0, out)
 }
 
-/// [`unserialize`] with `R_InitReadItemDepth = R_ReadItemDepth =
-/// init_depth` (`loadFromConn2`'s `-verbose`; `V` when that is below 0, the
-/// reader that prints).
+/// [`unserialize`] of a lazy-load database's record, with the translation
+/// cache's key context for it (`tkey`, `crate::tcache::record_key`). The
+/// context is this reader's alone: anything a hook unserializes is read
+/// with none.
+pub(super) fn unserialize_keyed(
+    cx: &mut Cx,
+    inp: InStream,
+    hook: Option<Root<'_>>,
+    tkey: Option<crate::tcache::RecordKey>,
+    out: Out<'_>,
+) -> RResult<()> {
+    unserialize_at::<false>(cx, inp, hook, tkey, 0, out)
+}
+
+/// The reader's entry: [`unserialize_keyed`] with `R_InitReadItemDepth =
+/// R_ReadItemDepth = init_depth` (`loadFromConn2`'s `-verbose`; `V` when
+/// that is below 0, the reader that prints).
 // R: serialize.c:R_Unserialize, saveload.c:do_loadFromConn2
 pub(super) fn unserialize_at<const V: bool>(
     cx: &mut Cx,
     inp: InStream,
     hook: Option<Root<'_>>,
+    tkey: Option<crate::tcache::RecordKey>,
     init_depth: i32,
     out: Out<'_>,
 ) -> RResult<()> {
@@ -192,6 +211,7 @@ pub(super) fn unserialize_at<const V: bool>(
             native: Vec::new(),
             nat2nat: Conv::Unopened,
             nat2utf8: Conv::Unopened,
+            tkey,
         };
         rd.in_format(cx)?;
         let version = rd.int(cx)?;
@@ -1240,6 +1260,25 @@ impl<'r, const V: bool> Reader<'_, 'r, V> {
             let b = cx.retry_alloc(|cx| unsafe { cx.alloc_node_raw(BCODESXP, nil, nil, nil) })?;
             // SAFETY: fresh.
             let bc = s.root(cx, unsafe { r(cx, b) });
+            // the translation cache's mark, in the order BCODESXPs are made
+            if let Some(stub) = self.tkey.as_mut().and_then(|k| k.next_stub()) {
+                let bytes = stub.bytes();
+                let raw = cx.retry_alloc(|cx| {
+                    let v = cx.alloc_vector_raw(RAWSXP, crate::tcache::STUB_BYTES)?;
+                    // SAFETY: a fresh RAWSXP of that many bytes; its extra
+                    // word is robigo's own: the boot's freeze leaves the
+                    // stub ordinary (it is replaced at the first call), H's
+                    // half of the pairing in gc/freeze.rs.
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), v.std_data(), bytes.len());
+                        v.set_extra(v.extra() | robigo_heap::extra::vector::NO_FREEZE);
+                    }
+                    Ok(v)
+                })?;
+                // SAFETY: the rooted cell; its 4th word is robigo-rt's, traced,
+                // and stored with the barrier.
+                unsafe { bc.bind(cx).sexp().set_aux(raw) };
+            }
             let bytes = self.read_deeper(cx)?;
             // SAFETY: just read.
             let bytes = s.root(cx, unsafe { r(cx, bytes) });
