@@ -122,6 +122,22 @@ impl Verified {
         Ok(Verified(b))
     }
 
+    /// [`Verified::new`], giving `b` back on a refusal: a compile that
+    /// refuses its own code returns the buffers to its scratch
+    /// (`crate::compile`'s pool) as a built code does.
+    pub fn try_new(b: Built) -> Result<Verified, (Malformed, Built)> {
+        match check(&b) {
+            Ok(()) => Ok(Verified(b)),
+            Err(m) => Err((m, b)),
+        }
+    }
+
+    /// The code, its buffers back to the caller (a compile reuses them,
+    /// [`crate::compile`]'s scratch).
+    pub fn into_built(self) -> Built {
+        self.0
+    }
+
     /// Check `b`, code read back from the translation cache
     /// (`crate::tcache`), as [`Verified::new`] checks code.
     ///

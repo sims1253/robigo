@@ -886,7 +886,7 @@ impl<'g> Comp<'g> {
         let b = res?;
         // (an argument's code the verifier refuses: malformed byte code,
         // never a panic: #976)
-        let v = match crate::code::Verified::new(b) {
+        let v = match sub.verify(b) {
             Ok(v) => v,
             Err(m) => {
                 self.bc_untranslated = Some(format!("an argument's translation fails the verifier ({})", m.why));
@@ -897,7 +897,7 @@ impl<'g> Comp<'g> {
         unsafe {
             // (the translation cache's writer keeps it with the translation)
             crate::tcache::writer_arg(self.cx, arg, v.built());
-            let built = crate::code::build(self.cx, &v, arg, None)?;
+            let built = sub.build_verified(v, arg, None)?;
             crate::code::cache_on(arg, built);
             self.arg_codes.push(built);
             self.arg_codes.append(&mut sub.arg_codes);
@@ -1342,7 +1342,8 @@ impl<'g> Comp<'g> {
     /// The primitive named by symbol `sym` (a builtin or special of the
     /// table), its `PRIMOFFSET`.
     fn prim_of(&self, sym: Sexp) -> Option<usize> {
-        self.st.by_sym.get(&(sym.as_ptr() as usize)).copied()
+        // SAFETY: `sym` is a live object of the byte code's pool.
+        unsafe { self.st.by_sym.get(sym) }
     }
 
     /// Translate one instruction.
