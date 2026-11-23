@@ -1625,5 +1625,69 @@ class CiImageEnsure(unittest.TestCase):
         self.assertFalse([c for c in calls if c.startswith(("build ", "push "))], calls)
 
 
+class FuzzCi(unittest.TestCase):
+    """scripts/fuzz-ci.py: which cargo-fuzz targets a branch owes, and what a
+    failing run leaves behind."""
+
+    def setUp(self):
+        spec_ = importlib.util.spec_from_file_location("fuzz_ci", HERE / "fuzz-ci.py")
+        self.f = importlib.util.module_from_spec(spec_)
+        spec_.loader.exec_module(self.f)
+
+    def test_every_target_has_its_filter_and_seeds(self):
+        # a new target in fuzz/fuzz_targets without a filter (or seeds) fails here
+        ts = self.f.targets()
+        self.assertGreaterEqual(len(ts), 3)
+        self.assertEqual(sorted(self.f.FILTERS), ts)
+        for t in ts:
+            self.assertTrue((HERE.parent / "fuzz" / "seeds" / t).is_dir(), t)
+            self.assertTrue(any((HERE.parent / "fuzz" / "seeds" / t).iterdir()), t)
+            for prefix in self.f.FILTERS[t]:
+                self.assertTrue(any(p.startswith(prefix) for p in self.tracked()), f"{t}: {prefix} names nothing")
+
+    def tracked(self):
+        import subprocess
+        return subprocess.run(["git", "ls-files"], cwd=HERE.parent, capture_output=True, text=True).stdout.splitlines()
+
+    def test_a_branch_owes_the_targets_whose_inputs_it_changes(self):
+        plan = self.f.plan
+        self.assertEqual(sorted(plan(["crates/robigo-syntax/src/parser.rs", "docs/x.md"])), ["parse"])
+        self.assertEqual(sorted(plan(["crates/robigo-rt/src/tcache/format.rs"])), ["rtc"])
+        self.assertEqual(sorted(plan(["crates/robigo-runtime/src/serialize.rs"])), ["rds"])
+        self.assertEqual(sorted(plan(["fuzz/seeds/rds/x.rds", "fuzz/fuzz_targets/parse.rs"])), ["parse", "rds"])
+        # what every target depends on owes all of them, with the path as the reason
+        for p in ("Cargo.lock", "rust-toolchain.toml", "fuzz/Cargo.toml", ".github/workflows/ci.yml",
+                  "scripts/fuzz-ci.py"):
+            owed = plan([p])
+            self.assertEqual(sorted(owed), self.f.targets(), p)
+            self.assertEqual(owed["parse"], [p])
+        self.assertEqual(plan(["crates/robigo-rt/src/eval.rs", "tests/r/a.R"]), {})
+        # git cannot say: every target
+        self.assertEqual(sorted(plan(None)), self.f.targets())
+
+    def test_a_failing_run_names_its_input_and_the_command_that_repeats_it(self):
+        import contextlib, io, tempfile, shutil
+        from unittest import mock
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        os.makedirs(os.path.join(d, "seeds", "rtc"))
+        def fake(*args):
+            if args[0] == "run" and "-max_total_time=5" in args:
+                os.makedirs(os.path.join(d, "artifacts", "rtc"), exist_ok=True)
+                open(os.path.join(d, "artifacts", "rtc", "crash-abc"), "w").close()
+                return 77
+            return 0
+        out = io.StringIO()
+        with mock.patch.object(self.f, "FUZZ", d), mock.patch.object(self.f, "ROOT", os.path.dirname(d)), \
+                mock.patch.object(self.f, "cargo_fuzz", fake), mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": ""}), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(self.f.run(["rtc"], 5), 1)
+        text = out.getvalue()
+        self.assertIn("fuzz rtc (replay): ok", text)
+        self.assertIn("fuzz rtc (5 s): FAILED", text)
+        rel = os.path.join(os.path.basename(d), "artifacts", "rtc", "crash-abc")
+        self.assertIn(f"cargo +{self.f.TOOLCHAIN} fuzz run -O rtc {rel}", text)
+
+
 if __name__ == "__main__":
     unittest.main()
