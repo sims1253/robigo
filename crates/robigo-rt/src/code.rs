@@ -209,7 +209,7 @@ fn check(b: &Built) -> Result<(), Malformed> {
             Op::Arith1 | Op::Not => reg(i.a) && reg(i.b) && k(i.e) && k(i.f),
             Op::AndOr1 => reg(i.a) && reg(i.b) && k(i.e) && tgt(i.target()),
             Op::AndOr2 => reg(i.a) && reg(i.b) && k(i.e),
-            Op::MkClosure => reg(i.a) && k(i.e) && k(i.f) && (i.c == 0 || k(i.c)),
+            Op::MkClosure => reg(i.a) && k(i.e) && k(i.f) && (i.c == 0 || k(i.c)) && (i.b == 0 || k(i.b)),
             Op::Missing => reg(i.a) && k(i.e) && k(i.f),
             Op::Return | Op::Ret => reg(i.b),
             Op::PpCheck => reg(i.b) && k(i.e),
