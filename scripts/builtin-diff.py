@@ -210,8 +210,9 @@ class Unusable(Exception):
 
 
 # robigo-rt's boot, which the harness always sets (ROBIGO_RT_BOOT), so that
-# no list depends on a binary's default: "interim" is M1's loader (the variable
-# empty), "stage0" base from source, "rdb" base from base.rdb. The known
+# no list depends on a binary's default: "interim" is M1's loader
+# (ROBIGO_RT_BOOT=m1), "stage0" base from source, "rdb" base from base.rdb
+# (also the binary's default since L5's flip). The known
 # lists are made under DEFAULT_BOOT; the default-boot flip changes it in
 # the same commit as the lists it regenerates.
 BOOTS = ("interim", "stage0", "rdb")
