@@ -496,21 +496,32 @@ pub unsafe fn get_var_missok(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sex
     // SAFETY: a live symbol; gp is a header field.
     let dd = unsafe { sym.gp() } & robigo_rtcore::DDVAL != 0;
     // SAFETY: the caller's contract: a live symbol.
-    unsafe { get_var_keepmiss(cx, act, a, sym, dd, bc) }
+    if cx.eval_depth() >= cx.expressions() {
+        // SAFETY: the caller's contract.
+        return unsafe { get_var_keepmiss_at_limit(cx, act, a, sym, dd, bc) };
+    }
+    // SAFETY: the caller's contract: a live symbol.
+    unsafe { get_var(cx, act, a, sym, dd, bc) }
 }
 
-/// GETVAR_MISSOK's read past `keepmiss_missing`: [`get_var`] through
-/// `getvar`, not bcEval's inlined force (DO_GETVAR's fast path excludes
-/// `keepmiss`), so a promise it forces is forced as `forcePromise` does:
-/// byte code is inactive for the force's PRSEEN order
-/// ([`Cx::force_arg`]'s inlined-force check reads it). Out of line:
-/// `get_var_missok` is inlined into `vm::run`.
+/// GETVAR_MISSOK's read past `keepmiss_missing`, at the depth limit: the
+/// read through `getvar`, not bcEval's inlined force (DO_GETVAR's fast
+/// path excludes `keepmiss`), so a promise it forces is forced as
+/// `forcePromise` does: byte code inactive for the force's PRSEEN order
+/// ([`Cx::force_arg`]'s inlined-force check reads it only at the limit).
 ///
 /// # Safety
 /// As [`get_var`].
-// R: eval.c:getvar
+#[cold]
 #[inline(never)]
-unsafe fn get_var_keepmiss(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: bool, bc: bool) -> RResult<()> {
+unsafe fn get_var_keepmiss_at_limit(
+    cx: &mut Cx,
+    act: &Act,
+    a: crate::ir::Reg,
+    sym: Sexp,
+    dd: bool,
+    bc: bool,
+) -> RResult<()> {
     let saved = cx.bc_deactivate();
     // SAFETY: the caller's contract.
     let r = unsafe { get_var(cx, act, a, sym, dd, bc) };
