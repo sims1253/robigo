@@ -74,6 +74,21 @@ lapply(y, function(v) v * 2L)
 s <- 0
 invisible(lapply(seq_len(3000L), function(v) s <<- s + v))
 s
+# an active `i` installed before .Internal(lapply()): its getter runs at
+# every element's check, before the sharing test (Sol's case)
+reads <- 0L
+kept_i <- NULL
+fa <- function(X, FUN, ...) {
+  makeActiveBinding("i", function(value) {
+    if (missing(value)) {
+      reads <<- reads + 1L
+      kept_i
+    } else kept_i <<- value
+  }, environment())
+  .Internal(lapply(X, FUN))
+}
+fa(1:3, identity)
+reads
 # lapply's index vector: captured by FUN (it must be fresh for the next
 # element), rebound, or made an active binding in lapply's frame
 kept <- list()

@@ -243,32 +243,32 @@ impl<'s> Loop<'s> {
     /// `out`; then `i`'s vector made fresh again if the callee captured or
     /// replaced it.
     fn call(&self, cx: &mut Cx, i: usize, out: Out<'_>) -> RResult<()> {
-        // `i`'s binding must see the write: GNU R's bare `INTEGER(ind)[0]`
-        cx.owned_mut::<i32>(self.ind)?.as_mut_slice()[0] = (i + 1) as i32;
+        // `i`'s binding must see the write: GNU R's bare `INTEGER(ind)[0]`,
+        // in place even when R code shares `ind` (an active `i` whose setter
+        // kept it): the write shows through every reference, as in GNU R
+        cx.set_plain_shared(self.ind, 0, (i + 1) as i32)?;
         // (under the builtin's own protections: robigo_rtcore's ppacct)
         cx.with_pp_excess(self.pp, |cx| match self.xx {
             Some(xx) => cx.force_and_call_indexed(self.fcall, self.rho, xx, self.ind, out),
             None => cx.force_and_call(self.fcall, 1, self.rho, out),
         })?;
-        // R: MAYBE_REFERENCED(ind) || ind != R_GetVarLocValue(loc), in that
-        // order (a referenced `ind` reads no binding, so runs no active
-        // binding's function); a plain binding cell compared in place,
-        // anything else read in full
-        let shared = cx.shared(self.ind.bind(cx));
+        // R: ind != R_GetVarLocValue(loc) || MAYBE_SHARED(ind), in that
+        // order (the binding is read first: an active one's function runs,
+        // and may change what shares `ind`); a plain binding cell compared
+        // in place, anything else read in full
         let held = cx.var_loc_holds(self.loc, self.ind.bind(cx));
-        if !shared && held == Some(true) {
+        if held == Some(true) && !cx.shared(self.ind.bind(cx)) {
             return Ok(());
         }
         cx.scope(|cx, s| {
-            let fresh_needed = shared
-                || match held {
-                    Some(b) => !b,
-                    None => {
-                        let cur = s.capture(cx, |cx, o| cx.var_loc_value(self.loc, o))?;
-                        cur.bind(cx) != self.ind.bind(cx)
-                    }
-                };
-            if fresh_needed {
+            let differs = match held {
+                Some(b) => !b,
+                None => {
+                    let cur = s.capture(cx, |cx, o| cx.var_loc_value(self.loc, o))?;
+                    cur.bind(cx) != self.ind.bind(cx)
+                }
+            };
+            if differs || cx.shared(self.ind.bind(cx)) {
                 // ind has been captured or removed by FUN: fix it up
                 let fresh = s.capture(cx, |cx, o| cx.build_scalar(o, 0i32))?;
                 self.ind.replace_from(cx, fresh);
