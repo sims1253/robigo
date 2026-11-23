@@ -45,15 +45,19 @@ class Verdict(unittest.TestCase):
         self.assertEqual(len(f), 1)
         self.assertIn("instructions", f[0])
 
-    def test_anonymous_memory_has_a_floor(self):
-        # 1% of 1,500 KiB is 15 KiB: the 64 KiB floor holds
-        self.assertEqual(self.fails({"interim": start(15_000_000, 1_564, 9_800)}), [])
-        f = self.fails({"interim": start(15_000_000, 1_565, 9_800)})
+    def test_anonymous_memory_is_a_coarse_tripwire(self):
+        # 2% of 1,500 KiB is 30 KiB: the 128 KiB floor holds
+        self.assertEqual(self.fails({"interim": start(15_000_000, 1_628, 9_800)}), [])
+        f = self.fails({"interim": start(15_000_000, 1_629, 9_800)})
         self.assertEqual(len(f), 1)
         self.assertIn("anonymous", f[0])
-        # above the floor, 1%: 6,800 KiB allows 68 KiB
-        self.assertEqual(self.fails({"rdb-jit": start(95_000_000, 6_868, 15_600)}), [])
-        self.assertEqual(len(self.fails({"rdb-jit": start(95_000_000, 6_869, 15_600)})), 1)
+        # above the floor, 2%: 6,800 KiB allows 136 KiB
+        self.assertEqual(self.fails({"rdb-jit": start(95_000_000, 6_936, 15_600)}), [])
+        self.assertEqual(len(self.fails({"rdb-jit": start(95_000_000, 6_937, 15_600)})), 1)
+        # the placement band measured on #991's runner binaries in CI's image
+        # (+56 KiB on rdb-nocache's 6,939, no code cost) passes
+        self.assertEqual((su.ANON_LIMIT, su.ANON_FLOOR_KIB), (2.0, 128))
+        self.assertLess(56, su.anon_limit_kib(6_939))
 
     def test_peak_rss_is_loose(self):
         self.assertEqual(self.fails({"interim": start(15_000_000, 1_500, 9_800 * 1.05)}), [])
