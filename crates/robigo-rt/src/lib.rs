@@ -288,7 +288,7 @@ pub fn define_builtins(cx: &mut Cx, defs: &[prims::PrimDef]) {
     let mut by_sym = prims::state(cx).by_sym.clone();
     let (objs, names) = prims::make_prims(cx, defs, first, &mut by_sym, prims::Policy::InternalKeeps);
     // the state is replaced whole: `ext` hands out shared references only
-    let mut st = take_state(cx);
+    let mut st = take_state(cx, defs.len());
     st.by_sym = by_sym;
     st.defs.extend_from_slice(defs);
     st.objs.extend(objs);
@@ -296,10 +296,17 @@ pub fn define_builtins(cx: &mut Cx, defs: &[prims::PrimDef]) {
     cx.set_ext(st);
 }
 
-/// The state, moved out of the isolate (to grow it).
-fn take_state(cx: &mut Cx) -> prims::RtState {
+/// The state, moved out of the isolate (to grow it), its primitive tables
+/// with room for `more` entries (one allocation each, no growth when the
+/// caller extends them).
+fn take_state(cx: &mut Cx, more: usize) -> prims::RtState {
     let st = prims::state(cx);
-    let objs = st.objs.iter().map(|g| cx.global(g.bind(cx))).collect();
+    let mut objs = Vec::with_capacity(st.objs.len() + more);
+    objs.extend(st.objs.iter().map(|g| cx.global(g.bind(cx))));
+    let mut defs = Vec::with_capacity(st.defs.len() + more);
+    defs.extend_from_slice(&st.defs);
+    let mut names = Vec::with_capacity(st.names.len() + more);
+    names.extend_from_slice(&st.names);
     let shipped = st.shipped.borrow().iter().map(|g| g.as_ref().map(|g| cx.global(g.bind(cx)))).collect();
     prims::RtState {
         forced: st.forced,
@@ -309,9 +316,9 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         jit_cache: std::cell::RefCell::new(st.jit_cache.borrow_mut().take()),
         shipped: std::cell::RefCell::new(shipped),
         syms: st.syms,
-        defs: st.defs.clone(),
+        defs,
         objs,
-        names: st.names.clone(),
+        names,
         // (define_builtins, the only caller, puts its own updated table here)
         by_sym: Default::default(),
         running_finalizers: std::cell::Cell::new(st.running_finalizers.get()),
