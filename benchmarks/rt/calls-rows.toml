@@ -44,6 +44,11 @@
 #          only (no bar cites them): what X9 (frames, argument matching), X7
 #          (D11) and S3x-d measure against
 #          (docs/ledger/g3/2026-11-17-s3x-d-trycatch-gap.md).
+#   datetime
+#          date-time conversions in a time zone (a TZ session each call:
+#          set_tz, one conversion per element, reset_tz), reported only
+#          (no bar cites them): strptime's and as.POSIXct's per-element
+#          paths (docs/ledger/g3/2026-11-22-datetime-rows.md).
 #   jit    V4's JIT-cost bar (docs/ledger/g3/2026-11-17-v4-4-jit-cost.md):
 #          one JIT compile of a closure of benchmarks/suite/calls.R that GNU
 #          R's JIT compiles running it, as R_cmpfun1 makes it
@@ -695,6 +700,28 @@ setup_ref = "calls"
 body = 'if (typeof(.Internal(bodyCode(compiler:::tryCmpfun(safe)))) != "bytecode") stop("tryCmpfun left safe uncompiled")'
 n = 400
 
+# --- date-time conversions in a time zone: reported, no bar --------------
+
+[[row]]
+name = "datetime-zone-strptime"
+group = "datetime"
+note = "strptime of 1e5 strings in Europe/Berlin: R_strptime, mktime and the zone name per element"
+setup = '''
+x <- rep("2024-07-01 12:34:56", 1e5)
+'''
+body = 'invisible(.Internal(strptime(x, "%Y-%m-%d %H:%M:%S", "Europe/Berlin")))'
+n = 2
+
+[[row]]
+name = "datetime-zone-asposixct"
+group = "datetime"
+note = "as.POSIXct of a 1e5-element POSIXlt in Europe/Berlin: one mktime per element"
+setup = '''
+lt <- .Internal(as.POSIXlt(seq(0, by = 3600, length.out = 1e5), "Europe/Berlin"))
+'''
+body = 'invisible(.Internal(as.POSIXct(lt, "Europe/Berlin")))'
+n = 2
+
 # The setups rows share (`setup_ref`): calls.R's definitions.
 [setups]
 calls = '''
@@ -714,3 +741,14 @@ area.default <- function(s) 0
 sq <- structure(list(side = 2), class = "sq")
 safe <- function(x) tryCatch(if (x > 0) x else stop("neg"), error = function(err) 0)
 '''
+
+[[row]]
+name = "lapply"
+group = "calls"
+note = "lapply(x, f): base's lapply over ten elements, a small closure each; report-only (no bar or guard cites it). Each lapply call builds its FUN(X[[i]], ...) afresh and compiles it at its first evaluation (eval::expr_code): about 5.5k of the row's instructions (X, 2026-11-23)"
+setup = '''
+x <- 1:10
+f <- function(v) v + 1
+'''
+body = 'r <- lapply(x, f)'
+n = 2000

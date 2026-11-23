@@ -9,6 +9,9 @@
     scripts/perf.py recheck BASE.json NEW.json [--robigo BIN]   # compare, re-measuring what is slower
     scripts/perf.py report FILE.json [--markdown]
     scripts/perf.py rt-bars --robigo-rt BIN [--main BIN] [--gnur FILE] [--cycles] [--out FILE]  # the M1 bars
+        (its starts, [[startup]], rebuild this checkout's .robigo/rt-home* trees for each binary in turn
+        unless --trees/--main-trees give them, leaving main's: not beside an rt-ci in the same checkout;
+        --no-startup skips them)
     scripts/perf.py rt-gnur --out FILE    # GNU R's side of the bars, measured on this machine
 
 Suites are listed in benchmarks/benchmarks.toml. Every program runs in the
@@ -102,6 +105,16 @@ RT_ROWS = os.path.join(ROOT, "benchmarks", "rt", "calls-rows.toml")
 # (docs/ledger/g3/2026-11-16-cycles-study.md, "Cycles depend on the host").
 PINNED_CACHE = "--I1=32768,8,64 --D1=32768,8,64 --LL=33554432,16,64"
 RT_BARS = os.path.join(ROOT, "benchmarks", "rt", "m1-bars.toml")
+
+
+def rt_startup():
+    """scripts/rt-startup.py as a module (its name is not an identifier):
+    the starts' measurement and gate, perf.py rt-bars' [[startup]]."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("rt_startup", os.path.join(ROOT, "scripts", "rt-startup.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 DRIVER = """setwd({dir!r})
 source({file!r})
@@ -752,10 +765,12 @@ def cmd_rt_gnur(a):
     version = gnur_version()
     instr, cycles = rt_instr(None, rows, a.jobs, work, "gnur", cycles=True)
     rss = rt_rss(None, files, a.runs, work, "gnur")
+    # GNU R's starts, shown beside robigo-rt's (report-only)
+    startup = rt_startup().run_gnur(valgrind=valgrind_path()) if spec.get("startup") else {}
     model, sig = cpu_signature()
     doc = {"version": version, "cpu": model, "cpu_signature": sig, "cache_model": PINNED_CACHE,
            "valgrind": subprocess.run([valgrind_path(), "--version"], capture_output=True, text=True).stdout.strip(),
-           "instr": instr, "cycles": cycles, "rss": rss}
+           "instr": instr, "cycles": cycles, "rss": rss, "startup": startup}
     with open(a.out, "w") as f:
         json.dump(doc, f, indent=1, sort_keys=True)
     print(f"GNU R {version} on {model} (signature {sig}): {len(instr)} rows, {len(rss)} programs -> {a.out}")
@@ -900,9 +915,11 @@ def cmd_rt_bars(a):
         return 1
     model, sig = cpu_signature()
     gnur_source = f"{spec['gnur']['source']} (measured on another machine)"
+    gnur_doc = None
     if a.gnur:
         with open(a.gnur) as f:
             doc = json.load(f)
+        gnur_doc = doc
         errors = rt_gnur_errors(doc, pin, sig)
         if errors:
             for e in errors:
@@ -935,12 +952,27 @@ def cmd_rt_bars(a):
     if a.main:
         mi, mc, mr = measure(a.main, "main")
         main = {"instr": mi, "rss": mr, "cycles": mc}
+    # the starts ([[startup]], scripts/rt-startup.py): each binary from the
+    # trees its own build writes, so one after the other in this checkout
+    starts = [e["name"] for e in spec.get("startup", [])] if not getattr(a, "no_startup", False) else []
+    su = rt_startup() if starts else None
+    runs = getattr(a, "startup_runs", 9)
+    # (the trees packed by perf-rt-build in CI, --trees and --main-trees; built
+    # here otherwise, which rt-startup.py refuses in CI)
+    t_new = getattr(a, "trees", None) or True
+    t_main = getattr(a, "main_trees", None) or True
+    s_new = su.run(a.robigo_rt, starts, ROOT, runs, trees=t_new, valgrind=valgrind_path()) if su else {}
+    s_main = su.run(a.main, starts, ROOT, runs, trees=t_main, valgrind=valgrind_path()) \
+        if su and a.main else {}
     out = a.out or os.path.join(STATE, "perf", "rt-bars.json")
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with open(out, "w") as f:
         json.dump({"instr": instr, "rss": rss, "cycles": cycles, "main": main, "cpu": model, "cpu_signature": sig,
-                   "shift_ranges": ranges, "binaries": idents}, f, indent=1, sort_keys=True)
+                   "shift_ranges": ranges, "binaries": idents,
+                   "startup": {"new": s_new, "main": s_main or None}}, f, indent=1, sort_keys=True)
     failures, notes, table = rt_verdict(spec, instr, rss, main)
+    if su:
+        failures += su.verdict(s_new, s_main)
     print("### robigo-rt's M1 bars (scripts/perf.py rt-bars)\n")
     print(f"CPU: {model}, signature {sig}.")
     for label, ident in idents.items():
@@ -981,6 +1013,16 @@ def cmd_rt_bars(a):
         m = main["rss"][f] if main else None
         refs = ", ".join(f"{ag} {spec[ag]['rss'][f]:,}" for ag in r["against"])
         print(f"| {f} | {rss[f]:,} | {f'{m:,}' if m else ''} | ≤ {refs} |")
+    if su:
+        g = gnur_doc.get("startup") if gnur_doc else None
+        print("\nStarts (`--vanilla -e 1`, R_DEFAULT_PACKAGES=NULL; scripts/rt-startup.py): callgrind's total "
+              f"instructions, the median over environment shifts; peak anonymous memory and peak RSS, the median of "
+              f"{runs} runs with address randomization off. Against main: instructions +{su.INSTR_LIMIT}%, "
+              f"anonymous memory +{su.ANON_LIMIT}% (at least {su.ANON_FLOOR_KIB} KiB), peak RSS +{su.RSS_LIMIT}%. "
+              + ("GNU R's beside them, measured on this runner, report only." if g else "GNU R's not measured here.")
+              + "\n")
+        for ln in su.table(spec["startup"], s_new, s_main, g):
+            print(ln)
     print("\n(A bar in parentheses is not met yet: only regressions against main fail it, and an accepted "
           "regression's ceiling. A guard row has no bar: only regressions against main fail it.)")
     for n in notes:
@@ -1039,6 +1081,12 @@ def main():
     p.add_argument("--out", help="this run's numbers (default .robigo/perf/rt-bars.json)")
     p.add_argument("--gnur", help="GNU R's side, measured on this machine by `rt-gnur` (default: the bars file's)")
     p.add_argument("--cycles", action="store_true", help="also estimated cycles (PINNED_CACHE), reported only")
+    p.add_argument("--startup-runs", type=int, default=9, help="the starts' memory runs per start (default 9)")
+    p.add_argument("--trees", help="the R_HOME trees robigo-rt's build wrote, a tarball (rt-startup.py "
+                                   "--pack-trees); built here when not given (not in CI)")
+    p.add_argument("--main-trees", help="the same for main's binary")
+    p.add_argument("--no-startup", action="store_true",
+                   help="skip the starts (they rebuild the checkout's .robigo/rt-home-db per binary)")
     p = sub.add_parser("rt-gnur", help="GNU R's side of the M1 bars, measured on this machine")
     p.add_argument("--bars", default=RT_BARS)
     p.add_argument("--jobs", type=int, default=os.cpu_count())

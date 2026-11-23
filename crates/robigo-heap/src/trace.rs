@@ -33,9 +33,63 @@
 //! }
 //! ```
 //!
-//! An annotation that would do nothing does not compile either: `#[trace(...)]`
-//! on the type or on an enum variant (it belongs on fields), and an empty
-//! `#[trace]` or `#[trace()]`:
+//! One form goes on a struct: `#[trace(freeze = "method")]`, the embedder's
+//! freeze roots ([`Trace::trace_freeze`] calls the method):
+//!
+//! ```
+//! use robigo_heap::{Sexp, Trace, Visitor};
+//! #[derive(Trace)]
+//! #[trace(freeze = "freeze_roots")]
+//! struct Roots {
+//!     base: Sexp,
+//!     session: Sexp,
+//! }
+//! impl Roots {
+//!     fn freeze_roots<V: Visitor + ?Sized>(&mut self, v: &mut V) {
+//!         v.edge(&mut self.base);
+//!     }
+//! }
+//! struct Count(usize);
+//! impl Visitor for Count {
+//!     fn edge(&mut self, _: &mut Sexp) {
+//!         self.0 += 1;
+//!     }
+//! }
+//! let mut r = Roots { base: Sexp::NULL, session: Sexp::NULL };
+//! let mut c = Count(0);
+//! assert!(r.trace_freeze(&mut c));
+//! assert_eq!(c.0, 1);
+//! r.trace(&mut c);
+//! assert_eq!(c.0, 3);
+//! ```
+//!
+//! but not on an enum (which has the method, so only the rule refuses it),
+//! nor with a value that is no method name:
+//!
+//! ```compile_fail
+//! use robigo_heap::{Trace, Visitor};
+//! #[derive(Trace)]
+//! #[trace(freeze = "freeze_roots")]
+//! enum Exit {
+//!     Value(robigo_heap::Sexp),
+//! }
+//! impl Exit {
+//!     fn freeze_roots<V: Visitor + ?Sized>(&mut self, _v: &mut V) {}
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! use robigo_heap::Trace;
+//! #[derive(Trace)]
+//! #[trace(freeze = "bad-name")]
+//! struct Roots {
+//!     base: robigo_heap::Sexp,
+//! }
+//! ```
+//!
+//! An annotation that would do nothing does not compile either: any other
+//! `#[trace(...)]` on the type, one on an enum variant (it belongs on
+//! fields), and an empty `#[trace]` or `#[trace()]`:
 //!
 //! ```compile_fail
 //! use robigo_heap::Trace;
@@ -137,6 +191,14 @@ pub trait Visitor {
 /// root set cannot allocate or collect while it is traced.
 pub trait Trace {
     fn trace<V: Visitor + ?Sized>(&mut self, v: &mut V);
+    /// The embedder's freeze roots, a part of [`Trace::trace`]'s (the boot
+    /// heap's lazy freeze, `gc/freeze.rs`, walks from them inside the first
+    /// collection after the boot boundary). Whether there are any: a root
+    /// set without them (every one but the embedder's, by default) shows
+    /// nothing, and the freeze then freezes nothing.
+    fn trace_freeze<V: Visitor + ?Sized>(&mut self, _v: &mut V) -> bool {
+        false
+    }
 }
 
 impl Trace for Sexp {

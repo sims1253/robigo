@@ -391,27 +391,73 @@ impl CApi {
     }
 }
 
-/// The block's objects, the live protect-stack slots and `R_VStack`.
-impl Trace for CApi {
-    fn trace<V: Visitor + ?Sized>(&mut self, v: &mut V) {
-        let g = &mut self.g;
+impl CApi {
+    /// The C API's constants, symbols and logicals: the freeze roots of the
+    /// C API (robigo-rtcore's `trace_freeze_roots`), and the first part of
+    /// its `Trace`. One list for both, and the block's fields are named
+    /// exhaustively: a field added to `CGlobals` does not compile until it
+    /// is traced here or said not to be an object. Not the protect stack
+    /// or `R_VStack`, which are the session's (Sol S2): `Trace` adds those.
+    pub(crate) fn trace_freeze_constants<V: Visitor + ?Sized>(&mut self, v: &mut V) {
+        // (the session's protect stack: `Trace for CApi`)
+        let CApi { g, stack: _, logicals } = self;
+        let CGlobals {
+            nil,
+            global_env,
+            empty_env,
+            base_env,
+            base_namespace,
+            unbound,
+            missing_arg,
+            na_string,
+            blank_string,
+            blank_scalar_string,
+            symbols,
+            // the session's (`Trace for CApi`): the protect stack, R_VStack
+            ppstack: _,
+            pptop: _,
+            ppsize: _,
+            vstack: _,
+            // not objects
+            gc_move: _,
+            parse_error: _,
+            parse_context_last: _,
+            parse_context_line: _,
+            parse_error_msg: _,
+            parse_context: _,
+            mbcslocale: _,
+            mb_cur_max: _,
+            isolate: _,
+        } = g;
         for x in [
-            &mut g.nil,
-            &mut g.global_env,
-            &mut g.empty_env,
-            &mut g.base_env,
-            &mut g.base_namespace,
-            &mut g.unbound,
-            &mut g.missing_arg,
-            &mut g.na_string,
-            &mut g.blank_string,
-            &mut g.blank_scalar_string,
+            nil,
+            global_env,
+            empty_env,
+            base_env,
+            base_namespace,
+            unbound,
+            missing_arg,
+            na_string,
+            blank_string,
+            blank_scalar_string,
         ] {
             v.edge(x);
         }
-        for s in g.symbols.iter_mut() {
+        for s in symbols.iter_mut() {
             v.edge(s);
         }
+        for l in logicals.iter_mut() {
+            v.edge(l);
+        }
+    }
+}
+
+/// The block's objects (the freeze's constants list), the live
+/// protect-stack slots and `R_VStack`.
+impl Trace for CApi {
+    fn trace<V: Visitor + ?Sized>(&mut self, v: &mut V) {
+        self.trace_freeze_constants(v);
+        let g = &mut self.g;
         let top = (g.pptop.get().max(0) as usize).min(self.stack.len());
         for c in &self.stack[..top] {
             let mut x = c.get();
@@ -421,9 +467,6 @@ impl Trace for CApi {
         let mut x = g.vstack.get();
         v.edge(&mut x);
         g.vstack.set(x);
-        for x in self.logicals.iter_mut() {
-            v.edge(x);
-        }
     }
 }
 
