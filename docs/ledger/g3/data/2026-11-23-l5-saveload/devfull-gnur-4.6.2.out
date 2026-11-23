@@ -1,0 +1,37 @@
+[1] "no error"
+[1] "warning: Problem closing connection:  No space left on device"
+[1] "no error"
+[1] "warning: Problem closing connection:  No space left on device"
+[1] "no error"
+[1] "warning: Problem closing connection:  No space left on device"
+[1] "Error writing to connection:  No space left on device"
+[1] "no error"
+[1] "Error writing to connection:  No space left on device"
+[1] "no error"
+[1] "Error writing to connection:  No space left on device"
+[1] "no error"
+[1] "Error writing to connection:  No space left on device"
+[1] "no error"
+[1] "Error writing to connection:  No space left on device"
+[1] "no error"
+[1] "Error writing to connection:  No space left on device"
+[1] "no error"
+Warning messages:
+1: In file("/dev/full", "w") :
+  'raw = FALSE' but '/dev/full' is not a regular file
+2: In file("/dev/full", "w") :
+  'raw = FALSE' but '/dev/full' is not a regular file
+3: In file("/dev/full", "w") :
+  'raw = FALSE' but '/dev/full' is not a regular file
+4: In file("/dev/full", "w") :
+  'raw = FALSE' but '/dev/full' is not a regular file
+5: In file("/dev/full", "w") :
+  'raw = FALSE' but '/dev/full' is not a regular file
+6: In file("/dev/full", "w") :
+  'raw = FALSE' but '/dev/full' is not a regular file
+7: In file("/dev/full", "w") :
+  'raw = FALSE' but '/dev/full' is not a regular file
+8: In file("/dev/full", "w") :
+  'raw = FALSE' but '/dev/full' is not a regular file
+9: In file("/dev/full", "w") :
+  'raw = FALSE' but '/dev/full' is not a regular file
