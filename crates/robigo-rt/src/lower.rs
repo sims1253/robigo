@@ -54,6 +54,9 @@ pub(crate) struct SrcCtx<'p> {
     /// The parse's srcfile, then each `#line` alias from its offset on.
     pub files: Vec<(usize, Sexp)>,
     pub class: Sexp,
+    /// Whether a srcref was attached: a `function`'s or a `{`'s (gram.y's
+    /// `didAttach`, which the console's srcfile waits on).
+    pub attached: std::cell::Cell<bool>,
 }
 
 impl SrcCtx<'_> {
@@ -85,6 +88,7 @@ impl SrcCtx<'_> {
         last: crate::srcref::Pos,
         at: usize,
     ) -> Result<(), NeedGc> {
+        self.attached.set(true);
         // SAFETY: the caller's contract; fresh objects of this heap.
         unsafe {
             let file = self.file_at(at);
@@ -171,7 +175,10 @@ pub(crate) fn lower_in(cx: &Cx, e: &Expr<'_>, known: bool, sr: Option<&SrcCtx<'_
             // its 4th element: the function's srcref, or NULL
             // R: gram.y:xxdefun
             let srcref = match (sr, e) {
-                (Some(sr), Expr::Function { span, .. }) => sr.srcref(cx, *span)?,
+                (Some(sr), Expr::Function { span, .. }) => {
+                    sr.attached.set(true);
+                    sr.srcref(cx, *span)?
+                }
                 _ => nil,
             };
             // SAFETY: as above.

@@ -11,9 +11,16 @@
 use robigo_heap::types::*;
 use robigo_rtcore::{Args, Char, Cx, Out, RResult, Ref, Root, View};
 
-/// `getParseFilename`: the srcfile's name when it is a string (an
-/// environment's `filename` belongs to source references, not here).
-fn parse_filename(cx: &Cx, srcfile: Root<'_>) -> String {
+/// `getParseFilename`: the srcfile's name, a string's first element or an
+/// environment's `filename` (keep.source = TRUE: srcfilecopy's), "" when
+/// there is none. (A `#line` directive's file is not taken here yet.)
+// R: source.c:getParseFilename
+fn parse_filename(cx: &mut Cx, srcfile: Root<'_>) -> String {
+    if srcfile.bind(cx).sexptype() == ENVSXP {
+        // its `filename`, found as R_findVar finds it
+        return crate::reader::srcfile_filename(cx, srcfile)
+            .map_or_else(String::new, |n| String::from_utf8_lossy(&n).into_owned());
+    }
     match srcfile.bind(cx).view() {
         View::Str(v) if !v.is_empty() => String::from_utf8_lossy(v.get(0).bytes()).into_owned(),
         _ => String::new(),
@@ -233,7 +240,7 @@ fn str2lang(cx: &mut Cx, call: Root<'_>, text: Root<'_>, to_lang: bool, out: Out
     cx.scope(|cx, s| {
         let o = s.out(cx);
         let res = o.root();
-        parse_text(cx, &src, known, -1, "<text>", &mut 0, o)?;
+        parse_text(cx, &src, known, -1, "<text>", None, &mut 0, o)?;
         let ans = res.bind(cx);
         if !to_lang {
             out.set(cx, ans);
@@ -266,9 +273,14 @@ fn parse_text(
     let text = robigo_syntax::lexable(src);
     let source = robigo_syntax::Source::new(&text, src).known_to_be_utf8(known_utf8);
     let arena = robigo_syntax::Arena::new();
-    let warnings = match robigo_syntax::lexer::Lexer::new(source).lex() {
-        Ok(l) => l.warnings,
-        Err(_) => Vec::new(),
+    let (warnings, in_string) = match robigo_syntax::lexer::Lexer::new(source).lex() {
+        // the string bytes only for source references (their positions and
+        // the error's srcfile)
+        Ok(l) => {
+            let m = if srcfile.is_some() { crate::reader::string_bytes(&l.toks, src) } else { Vec::new() };
+            (l.warnings, m)
+        }
+        Err(_) => (Vec::new(), Vec::new()),
     };
     let signal = |cx: &mut Cx, upto: usize| -> RResult<()> {
         for w in warnings.iter().filter(|w| (w.at as usize) <= upto) {
@@ -311,7 +323,8 @@ fn parse_text(
                 robigo_syntax::ErrorStyle::Grammar => cx.error(&robigo_syntax::format_parse_error(source, srcname, &e)),
                 robigo_syntax::ErrorStyle::RError => cx.error(&e.message),
                 robigo_syntax::ErrorStyle::Condition => {
-                    crate::parse_cond::signal(cx, source, &e, crate::parse_cond::NO_SRCFILE)
+                    let f = crate::reader::error_filename(cx, src, known_utf8, srcfile, &in_string, e.offset);
+                    crate::parse_cond::signal(cx, source, &e, &String::from_utf8_lossy(&f))
                 }
             });
         }
@@ -321,7 +334,7 @@ fn parse_text(
     *consumed = if num < 0 { src.len() } else { end };
     signal(cx, if num < 0 { usize::MAX } else { end.saturating_sub(1) })?;
     match srcfile {
-        Some(f) => crate::reader::lower_all_src(cx, src, &exprs, known_utf8, f, out),
+        Some(f) => crate::reader::lower_all_src(cx, src, &exprs, known_utf8, f, &in_string, out),
         None => crate::reader::lower_all(cx, &exprs, known_utf8, out),
     }
 }
