@@ -1,14 +1,15 @@
 //! arithmetic.c's mathematical functions: `do_math1`'s rows (`floor`,
 //! `ceiling`, `sqrt`, `sign`, `exp` ... `tanpi`, with `math1` and
 //! `math1_ari`), `trunc` (`do_trunc`), `abs` (`do_abs`), and `log`, `log2`
-//! and `log10` (`do_log`, `do_log1arg`, with `math2`). All are "Math"
-//! group generics.
+//! and `log10` (`do_log`, `do_log1arg`, with `math2`), `round` and
+//! `signif` (`do_Math2`, with `math2` and complex.c's `complex_math2`). All
+//! are "Math" group generics.
 
 use crate::attrib::Attrs;
 use crate::registry::Builtin;
 use crate::util::{is_numeric, not_yet};
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Args, Built, Cx, Diag, Dispatched, Generic, Out, RResult, Ref, Root, View};
+use robigo_rtcore::{Args, Built, Cx, Diag, Dispatched, Generic, Out, RResult, Rcomplex, Ref, Root, View};
 
 const NONNUM: &str = "non-numeric argument to mathematical function";
 
@@ -617,4 +618,263 @@ pub fn do_abs(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: O
             }
         }
     })
+}
+
+const ROUND: Generic = Generic::group("Math", "round");
+const SIGNIF: Generic = Generic::group("Math", "signif");
+
+/// `round(x, digits = 0, ...)` (`SIGNIF` false, code 10001) and
+/// `signif(x, digits = 6)` (code 10004) on their evaluated arguments,
+/// missing ones kept (robigo-rt's special evaluates them, as `do_Math2`
+/// does): `signif` matches `(x, digits)` and supplies the default digits
+/// before the "Math" group dispatch; `round` matches `(x, ...)`, so that a
+/// method (`round.POSIXt`) sees its other arguments, and `(x, digits)` only
+/// for the default method. The dispatch's call is `LCONS(CAR(call),
+/// args)`: the method sees the matched values.
+// R: arithmetic.c:do_Math2
+pub fn do_math2_special<const IS_SIGNIF: bool>(
+    cx: &mut Cx,
+    call: Root<'_>,
+    args: Args<'_>,
+    env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let dflt_digits = if IS_SIGNIF { 6.0 } else { 0.0 };
+        let args = if IS_SIGNIF {
+            match_math2_dflt_args(cx, s, call, args, dflt_digits)?
+        } else {
+            match_round_gen_args(cx, s, call, args)?
+        };
+        let n = args.len();
+        let obj = (n > 0 && args.get(cx, 0).is_object()) || (n > 1 && args.get(cx, 1).is_object());
+        let out = if obj {
+            // DispatchGroup("Math", call2, op, args, env, &res); it
+            // returns at once unless the first or second argument is an
+            // object, so call2 is made only then
+            let call2 = s.capture(cx, |cx, o| {
+                cx.build(o, |cx| {
+                    let mut l = cx.nil();
+                    for i in (0..n).rev() {
+                        l = match args.name(cx, i) {
+                            Some(t) => cx.cons_tagged(args.get(cx, i), l, t)?,
+                            None => cx.cons(args.get(cx, i), l)?,
+                        };
+                    }
+                    let head = call.bind(cx).as_cons().map_or(cx.nil(), |c| c.car());
+                    cx.lcons(head, l)
+                })
+            })?;
+            let g = if IS_SIGNIF { &SIGNIF } else { &ROUND };
+            match cx.try_dispatch(g, call2, args, env, out)? {
+                Dispatched::Default(out) => out,
+                _ => return Ok(()),
+            }
+        } else {
+            out
+        };
+        let args = if IS_SIGNIF { args } else { match_math2_dflt_args(cx, s, call, args, dflt_digits)? };
+        if args.get(cx, 0) == cx.missing_arg() {
+            return Err(cx.missing_arg_error("x", Some(call), "MathMissingError"));
+        }
+        let Some(len) = crate::builtin::length_mut(cx, args.root(1))? else {
+            return Err(not_yet(cx, Some(call), "round()/signif() with an environment 'digits' robigo cannot list"));
+        };
+        if len == 0 {
+            return Err(cx.error_call(Some(call), "invalid second argument of length 0"));
+        }
+        // do_math2: complex_math2 for a complex x, else Math2(args, f)
+        if args.get(cx, 0).sexptype() == CPLXSXP {
+            return complex_math2(cx, args.root(0), args.root(1), IS_SIGNIF, out);
+        }
+        let f = if IS_SIGNIF { robigo_numerics::fround::fprec } else { robigo_numerics::fround::fround };
+        math2(cx, call, args.root(0), args.root(1), f, out)
+    })
+}
+
+/// The arguments as `(x, ...)`: `x`'s (the missing argument for none)
+/// first, untagged, then those `...` took, with their tags; the supplied
+/// ones as they are for one or two arguments, the first untagged and the
+/// second not tagged `x`.
+// R: arithmetic.c:match_round_gen_args
+fn match_round_gen_args<'s>(
+    cx: &mut Cx,
+    s: robigo_rtcore::Scope<'s>,
+    call: Root<'_>,
+    args: Args<'_>,
+) -> RResult<Args<'s>> {
+    let n = args.len();
+    let x_sym = |cx: &Cx, i: usize| args.name(cx, i).is_some_and(|t| t.name_bytes() == b"x");
+    if n >= 1 && n <= 2 && args.name(cx, 0).is_none() && !(n == 2 && x_sym(cx, 1)) {
+        return Ok(reargs(cx, s, args, &(0..n).map(Some).collect::<Vec<_>>(), true));
+    }
+    let m = crate::util::match_args(cx, call, &["x", "..."], args)?;
+    let mut pick = vec![m.formals[0]];
+    pick.extend(m.dots.iter().map(|&i| Some(i)));
+    Ok(reargs(cx, s, args, &pick, false))
+}
+
+/// The arguments as `(x, digits)`, untagged, `digits` the default
+/// `dflt_digits` when missing: by position for none, one untagged or two
+/// untagged, else `matchArgs_NR`'s.
+// R: arithmetic.c:match_Math2_dflt_args
+fn match_math2_dflt_args<'s>(
+    cx: &mut Cx,
+    s: robigo_rtcore::Scope<'s>,
+    call: Root<'_>,
+    args: Args<'_>,
+    dflt_digits: f64,
+) -> RResult<Args<'s>> {
+    let n = args.len();
+    let untagged = |cx: &Cx, i: usize| args.name(cx, i).is_none();
+    let pick: Vec<Option<usize>> = if n == 0 {
+        vec![None, None]
+    } else if n == 1 && untagged(cx, 0) {
+        vec![Some(0), None]
+    } else if n == 2 && untagged(cx, 0) && untagged(cx, 1) {
+        vec![Some(0), Some(1)]
+    } else {
+        crate::util::match_args(cx, call, &["x", "digits"], args)?.formals
+    };
+    let missing = cx.missing_arg();
+    // if (CADR(args) == R_MissingArg) SETCADR(args, ScalarReal(dflt_digits))
+    let digits = match pick[1] {
+        Some(i) if args.get(cx, i) != missing => args.root(i),
+        _ => s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_copy(&[dflt_digits])?.finish().into())))?,
+    };
+    let x = match pick[0] {
+        Some(i) => args.get(cx, i),
+        None => cx.missing_arg(),
+    };
+    Ok(s.args(cx, &[x, digits.bind(cx)], None))
+}
+
+/// A window of `args`' picks (None: the missing argument), with their tags
+/// when `tags` (else the first untagged and the rest tagged).
+fn reargs<'s>(cx: &Cx, s: robigo_rtcore::Scope<'s>, args: Args<'_>, pick: &[Option<usize>], tags: bool) -> Args<'s> {
+    let missing = cx.missing_arg();
+    let values: Vec<Ref<'_>> = pick.iter().map(|p| p.map_or(missing, |i| args.get(cx, i))).collect();
+    let names: Vec<_> = pick
+        .iter()
+        .enumerate()
+        .map(|(k, p)| if !tags && k == 0 { None } else { p.and_then(|i| args.name(cx, i)) })
+        .collect();
+    s.args(cx, &values, Some(&names))
+}
+
+/// `complex_math2` for `round` (`z_rround`) and `signif` (`z_prec`): both
+/// coerced to complex, recycled to the longer; NA where both parts of
+/// both are NA; "NaNs produced in function" when a NaN comes of no NaN.
+/// The longer's attributes are kept (the first's on a tie); none when
+/// either is empty.
+// R: complex.c:complex_math2
+fn complex_math2(cx: &mut Cx, x: Root<'_>, digits: Root<'_>, is_signif: bool, out: Out<'_>) -> RResult<()> {
+    if x.bind(cx).is_package_altrep() || digits.bind(cx).is_package_altrep() {
+        return Err(not_yet(cx, None, "a math function of a package ALTREP vector"));
+    }
+    cx.scope(|cx, s| {
+        let sa = s.capture(cx, |cx, o| crate::coerce::vector::coerce_vector(cx, x, CPLXSXP, o))?;
+        let sb = s.capture(cx, |cx, o| crate::coerce::vector::coerce_vector(cx, digits, CPLXSXP, o))?;
+        let naflag = cx.build_with(out, |cx| {
+            let (av, bv) = (sa.bind(cx), sb.bind(cx));
+            let (Some(a), Some(b)) = (cplx_slice(av), cplx_slice(bv)) else {
+                unreachable!("coerceVector(, CPLXSXP) is complex");
+            };
+            let (na, nb) = (a.len(), b.len());
+            if na == 0 || nb == 0 {
+                return Ok(
+                    Built::done(cx.alloc_with::<Rcomplex>(0, |_| Rcomplex { r: 0.0, i: 0.0 })?.finish()).with(false)
+                );
+            }
+            let n = na.max(nb);
+            let mut attrs = Attrs::new();
+            if n == na {
+                attrs.copy_all(av);
+            } else if n == nb {
+                attrs.copy_all(bv);
+            }
+            let (a, b) = (a.to_vec(), b.to_vec());
+            let isna = robigo_text::is_na;
+            let mut naflag = false;
+            let mut r = cx.alloc_with(n, |i| {
+                let (ai, bi) = (a[i % na], b[i % nb]);
+                if isna(ai.r) && isna(ai.i) && isna(bi.r) && isna(bi.i) {
+                    Rcomplex { r: robigo_text::NA_REAL, i: robigo_text::NA_REAL }
+                } else {
+                    let y = if is_signif { z_prec_r(ai, bi.r) } else { z_rround(ai, bi) };
+                    if (y.r.is_nan() || y.i.is_nan())
+                        && !(ai.r.is_nan() || ai.i.is_nan() || bi.r.is_nan() || bi.i.is_nan())
+                    {
+                        naflag = true;
+                    }
+                    y
+                }
+            })?;
+            attrs.apply(cx, &mut r)?;
+            Ok(Built::done(r.finish()).with(naflag))
+        })?;
+        if naflag {
+            let name = if is_signif { "signif" } else { "round" };
+            cx.warning(&format!("NaNs produced in function \"{name}\""))?;
+        }
+        Ok(())
+    })
+}
+
+fn cplx_slice<'g>(x: Ref<'g>) -> Option<&'g [Rcomplex]> {
+    match x.view() {
+        View::Cplx(v) => v.as_slice(),
+        _ => None,
+    }
+}
+
+// R: complex.c:z_rround
+fn z_rround(x: Rcomplex, p: Rcomplex) -> Rcomplex {
+    use robigo_numerics::fround::fround;
+    Rcomplex { r: fround(x.r, p.r), i: fround(x.i, p.r) }
+}
+
+/// `signif(x, digits)` of a complex number: both parts to the digits of
+/// the larger finite one's magnitude.
+// R: complex.c:z_prec_r
+fn z_prec_r(x: Rcomplex, digits: f64) -> Rcomplex {
+    use robigo_numerics::fround::fround;
+    const MAX_DIGITS: i32 = 22;
+    let mut r = x;
+    let (m1, m2) = (x.r.abs(), x.i.abs());
+    let mut m = 0.0;
+    if m1.is_finite() {
+        m = m1;
+    }
+    if m2.is_finite() && m2 > m {
+        m = m2;
+    }
+    if m == 0.0 {
+        return r;
+    }
+    if !digits.is_finite() {
+        if digits > 0.0 {
+            return r;
+        }
+        return Rcomplex { r: 0.0, i: 0.0 };
+    }
+    let mut dig = (digits + 0.5).floor() as i32;
+    if dig > MAX_DIGITS {
+        return r;
+    } else if dig < 1 {
+        dig = 1;
+    }
+    let mag = m.log10().floor() as i32;
+    dig = dig - mag - 1;
+    if dig > 306 {
+        let pow10 = 1.0e4;
+        let d = (dig - 4) as f64;
+        r.r = fround(pow10 * x.r, d) / pow10;
+        r.i = fround(pow10 * x.i, d) / pow10;
+    } else {
+        let d = dig as f64;
+        r.r = fround(x.r, d);
+        r.i = fround(x.i, d);
+    }
+    r
 }
