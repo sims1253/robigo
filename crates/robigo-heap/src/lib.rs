@@ -37,6 +37,12 @@
 //! (attributes, coercion, environments, evaluation) live in the rt crates
 //! that use it.
 
+// The checkout this crate is built from (.cargo/config.toml): cargo then
+// rebuilds the crate when another worktree built it last in a shared
+// target directory (its layout TABLE is what robigo-rtapi checks api.c's
+// against).
+const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
+
 mod arena;
 pub mod chars;
 mod fork;
