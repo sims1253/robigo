@@ -921,23 +921,35 @@ def rt_unchecked_notes(colls):
     warns on its stderr, which rt-bars does not show."""
     notes = []
     for tag, rows in colls.items():
-        unchecked = sorted(r for r, c in rows.items() if c is None or c[0] is None)
-        if unchecked:
-            notes.append(f"{tag}'s binary reports no collections: {len(unchecked)} row(s) measured without the "
-                         f"check that their windows hold none ({', '.join(unchecked[:5])}"
-                         f"{', ...' if len(unchecked) > 5 else ''})")
+        rs = sorted(r for r, c in rows.items() if unchecked(c))
+        if rs:
+            notes.append(f"{tag}'s binary reports no collections: {len(rs)} row(s) measured without the "
+                         f"check that their windows hold none ({', '.join(rs[:5])}"
+                         f"{', ...' if len(rs) > 5 else ''})")
     return notes
+
+
+def unchecked(c):
+    """Whether a row's collection counts `c` ([n, 2n]) are missing: no entry,
+    or a binary that makes no ROBIGO_GC_STATS report ([None, None])."""
+    return c is None or c[0] is None
+
+
+def fmt_colls(c):
+    """A row's collections at N and 2N as `n→2n`, or `-` without counts."""
+    return "-" if unchecked(c) else f"{c[0]}→{c[1]}"
 
 
 def rt_collection_notes(collects, new, main):
     """Warnings for the rows marked `collects` (`collects`: their names)
     whose collections at N and 2N (`new`, `main`: {row: [n, 2n]}) differ
     between the binaries: then the row's difference against main holds a
-    collection, not only the row's own work. Never a failure."""
+    collection, not only the row's own work. Never a failure. A side
+    without counts (unchecked()) is rt_unchecked_notes' to report."""
     notes = []
     for row in collects:
         n, m = new.get(row), main.get(row)
-        if n is not None and m is not None and list(n) != list(m):
+        if not unchecked(n) and not unchecked(m) and list(n) != list(m):
             notes.append(f"`{row}`: robigo-rt collects {n[0]}→{n[1]} times at N→2N, main {m[0]}→{m[1]}: the "
                          "row's change against main holds a collection's cost, not only its own work")
     return notes
@@ -1056,8 +1068,7 @@ def cmd_rt_bars(a):
               "change in them is seen:")
         for row in collects:
             n, m = colls["new"].get(row), colls["main"].get(row)
-            show = lambda v: "-" if v is None else f"{v[0]}→{v[1]}"  # noqa: E731
-            print(f"- {row}: {show(n)}" + (f"; main {show(m)}" if main else ""))
+            print(f"- {row}: {fmt_colls(n)}" + (f"; main {fmt_colls(m)}" if main else ""))
     print("\n| program | peak RSS KiB | main | bars |")
     print("|---|---:|---:|---|")
     for r in spec["rss"]:

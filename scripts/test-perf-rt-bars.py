@@ -674,6 +674,29 @@ class RowCollections(unittest.TestCase):
         self.assertIn("plain, s3", notes[0])
         self.assertEqual(perf.rt_unchecked_notes({"new": {"plain": [0, 0]}, "main": {}}), [])
 
+    def test_a_side_without_counts_is_neither_compared_nor_shown_as_counts(self):
+        # main's merge-base without the report: rt_unchecked_notes says so,
+        # and the collects rows are not compared against None
+        self.assertEqual(perf.rt_collection_notes(["jit-safe"], {"jit-safe": [8, 16]},
+                                                  {"jit-safe": [None, None]}), [])
+        self.assertEqual(perf.rt_collection_notes(["jit-safe"], {"jit-safe": [None, None]},
+                                                  {"jit-safe": [8, 16]}), [])
+        self.assertEqual([perf.fmt_colls(c) for c in ([8, 16], [None, None], None)], ["8→16", "-", "-"])
+
+    def test_gnur_reports_its_collections_where_it_is_scanned(self):
+        # one real run of GNU R (skipped where none is installed): its
+        # gcinfo(TRUE) reports go to stderr (memory.c's REprintf), where
+        # gnur_collections reads them; a future R moving them shows here
+        r_bin = os.environ.get("RSCRIPT_BIN", "/usr/lib/R/bin/exec/R")
+        if not os.path.exists(r_bin):
+            self.skipTest(f"no GNU R at {r_bin}")
+        m = ivr.Meter(need_robigo=False, identify=False)
+        try:
+            n = m.gnur_collections("", "v <- numeric(1e5)", 400)
+        finally:
+            m.close()
+        self.assertGreater(n, 0)
+
     def test_rt_instr_collects_each_rows_counts(self):
         def fake_run(cmd, **kw):
             Path(cmd[cmd.index("--json") + 1]).write_text(json.dumps({"rows": {"jit-safe": {
