@@ -971,6 +971,9 @@ fn boot_record(column: &Column, o: &Options) -> String {
     std::fs::write(&script, "invisible(NULL)\n").unwrap_or_else(|e| panic!("write {}: {e}", script.display()));
     let mut cmd = case_command(o, &script);
     cmd.env(var, "1");
+    // (no byte-code crosscheck: the probe is no case, and its records would
+    // land in the report the cases' are counted from, unchecked)
+    cmd.env_remove("ROBIGO_BC_CROSSCHECK").env_remove("ROBIGO_BC_CROSSCHECK_REPORT");
     let (_, err, _, timed_out, _) = run_command(cmd, o, o.timeout);
     let _ = std::fs::remove_dir_all(&dir);
     if timed_out {
@@ -1443,6 +1446,42 @@ mod boot_record_tests {
         assert_eq!(envs[OsStr::new("TZ")], Some("Europe/Berlin".into()));
         assert_eq!(envs[OsStr::new("R_DEFAULT_PACKAGES")], Some("NULL".into()));
         assert!(std::env::var_os("ROBIGO_CONF_TEST_SET").is_none());
+    }
+
+    /// The boot probe is no case: it runs without the byte-code crosscheck,
+    /// whose records would land in the report the cases' are counted from.
+    #[cfg(unix)]
+    #[test]
+    fn the_boot_probe_runs_without_the_crosscheck() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = super::scratch_dir("probe-env");
+        let bin = dir.join("says");
+        std::fs::write(&bin, "#!/bin/sh\necho \"crosscheck=${ROBIGO_BC_CROSSCHECK:-off} report=${ROBIGO_BC_CROSSCHECK_REPORT:-none}\" >&2\n")
+            .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let o = Options {
+            bin,
+            version: RT.gated.to_string(),
+            filter: None,
+            diff: false,
+            update: false,
+            sweep: false,
+            features: Vec::new(),
+            results: None,
+            jobs: 1,
+            timeout: Duration::from_secs(10),
+            case_timeouts: BTreeMap::new(),
+            times: None,
+            slots: None,
+            // (as a crosscheck step's environment gives every case)
+            env: vec![
+                ("ROBIGO_BC_CROSSCHECK".into(), Some("1".into())),
+                ("ROBIGO_BC_CROSSCHECK_REPORT".into(), Some("/tmp/report".into())),
+            ],
+        };
+        let r = boot_record(&RT, &o);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(r.contains("crosscheck=off report=none"), "{r}");
     }
 
     /// A binary that hangs at startup: the probe is killed at the case
