@@ -9,6 +9,7 @@
 #![allow(unsafe_code)]
 
 use crate::isolate::Cx;
+use crate::root::Root;
 use robigo_heap::{NeedGc, Sexp, gp, types};
 use std::cell::Cell;
 
@@ -89,8 +90,8 @@ impl Cx {
         self.flush_gc_report();
     }
 
-    /// Whether the boot heap's freeze runs here: `ROBIGO_GC_FREEZE=1`, and
-    /// not under ROBIGO_GC_MOVE's modes.
+    /// Whether the boot heap's freeze runs here: on unless
+    /// `ROBIGO_GC_FREEZE=0`, and not under ROBIGO_GC_MOVE's modes.
     pub fn freeze_enabled(&self) -> bool {
         // SAFETY: one read of the core.
         unsafe { self.iso().core() }.freeze_enabled()
@@ -146,15 +147,60 @@ impl Cx {
         unsafe { self.iso().core().exposed_to_c(x) }
     }
 
+    /// `makeLazy(..., eenv, aenv)` bound base's promises: with `aenv` base
+    /// (its environment or namespace), while base's own file is read
+    /// ([`Cx::while_reading_base_file`]: the rdb boot's `..lazyLoad`, not the
+    /// system profile, Sol step 2 r3 S12), before the boot boundary, `eenv`
+    /// (`..lazyLoad`'s frame, baseloader.R:78) becomes a pinned frame at the
+    /// boundary (step 2's (b)): forcing one of its promises, which clears
+    /// the promise's PRENV, takes no dirty note until the last, after which
+    /// the frame lives as long as something reaches it, as in GNU R. The pin
+    /// roots nothing (robigo-heap's `Core::freeze_boundary`). Nothing
+    /// otherwise, or with the freeze off.
+    pub fn note_lazy_load_frame(&mut self, eenv: Root<'_>, aenv: Root<'_>) {
+        let iso = self.iso();
+        let (e, a) = (eenv.bind(self).sexp(), aenv.bind(self).sexp());
+        let envs = iso.envs();
+        // SAFETY: one read of the core.
+        let open = unsafe { iso.core() }.freeze_enabled() && !unsafe { iso.core() }.boundary_drawn();
+        if open
+            && envs.reading_base_file()
+            && (a == envs.base_raw() || a == envs.base_ns_raw())
+            && e != envs.base_raw()
+            && e != envs.base_ns_raw()
+        {
+            envs.note_lazy_frame(e);
+        }
+    }
+
+    /// Run `f` while base's own file (`library/base/R/base`, GNU R's
+    /// `R_ReplFile` of it) is read: the window in which `makeLazy` records
+    /// base's lazy-load frame ([`Cx::note_lazy_load_frame`]). The window
+    /// closes however `f` ends, a panic included, back to what it was (Sol
+    /// step 2 r4 S16).
+    pub fn while_reading_base_file<R>(&mut self, f: impl FnOnce(&mut Cx) -> R) -> R {
+        struct Restore(std::ptr::NonNull<crate::isolate::Isolate>, bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                // SAFETY: the isolate outlives the call that made this guard.
+                unsafe { self.0.as_ref() }.envs().set_reading_base_file(self.1);
+            }
+        }
+        let envs = self.iso().envs();
+        let _restore = Restore(self.iso_ptr(), envs.reading_base_file());
+        envs.set_reading_base_file(true);
+        f(self)
+    }
+
     /// The boot heap's freeze (robigo-heap's `freeze.rs`,
     /// docs/ledger/g3/2026-11-21-h-boot-freeze-bar.md and its amendments),
-    /// when `ROBIGO_GC_FREEZE=1` turns it on: the boot boundary, drawn by
+    /// on unless `ROBIGO_GC_FREEZE=0`: the boot boundary, drawn by
     /// the front end once, at the end of the boot. Only the boot's blocks
     /// are marked here; the first collection after it freezes every boot
     /// object reachable from the freeze roots (the base environment and
-    /// namespace, the symbols' cells, the namespace registry, the
-    /// `Globals`, the C API's constants), the global environment and its
-    /// frame left out. Nothing when the freeze is off (the default) or
+    /// namespace, the symbols' cells, the namespace registry, the C API's
+    /// constants, the search path; not `Globals`), the global environment and its
+    /// frame left out. Nothing when the freeze is off (`ROBIGO_GC_FREEZE=0`) or
     /// under the moving collector's modes.
     pub fn freeze_boot_heap(&mut self) {
         let iso = self.iso();
@@ -167,8 +213,15 @@ impl Cx {
         // is emptied, as a collection empties it
         iso.envs().clear_frame_pool();
         let global = iso.envs().global_raw();
-        // SAFETY: one call on the core, no collection: it marks blocks.
-        unsafe { iso.core() }.freeze_boundary(global.addr());
+        // base's lazy-load frames, pinned with the boundary
+        // (and only with it: a refused call keeps everything, Sol step 2 r1
+        // S3)
+        let pins = iso.envs().lazy_frames();
+        // SAFETY: one call on the core, no collection: it marks blocks and
+        // sets a list; the frames are live (the list is a root).
+        if unsafe { iso.core().freeze_boundary(global.addr(), &pins) } {
+            iso.envs().clear_lazy_frames();
+        }
     }
 
     /// Move every movable object at every collection from now on, or stop

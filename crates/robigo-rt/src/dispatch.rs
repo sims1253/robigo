@@ -3184,8 +3184,9 @@ fn primitive_named<'g>(cx: &'g Cx, name: &str) -> Ref<'g> {
         return st.objs[off].bind(cx);
     }
     let Ok(sym) = cx.install(name.as_bytes()) else { return cx.nil() };
-    match st.by_sym.get(&(sym.as_ref().sexp().as_ptr() as usize)) {
-        Some(&off) => {
+    // SAFETY: an installed symbol.
+    match unsafe { st.by_sym.get(sym.as_ref().sexp()) } {
+        Some(off) => {
             st.cond.prim_names.borrow_mut().push((name.to_owned(), off));
             st.objs[off].bind(cx)
         }

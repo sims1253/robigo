@@ -28,9 +28,13 @@
 #   d10    D10's string rows (docs/ledger/g3/2026-11-17-d10-bar.md).
 #   d2s    D2s's dynamic-definition microbench: a callee frame gains a name
 #          its closure's body does not define (docs/ledger/g3.md, D2s bar).
-#   layout, envs, growth, cold, d0
-#          the M2/M3 decisions' rows (D8 and D13; D2u; D12; D11; D0's
-#          pilot), docs/ledger/g3/2026-11-17-m2m3-bars.md.
+#   layout, envs, growth, d0
+#          the M2/M3 decisions' rows (D8 and D13; D2u; D12; D0's pilot),
+#          docs/ledger/g3/2026-11-17-m2m3-bars.md.
+#   cold   run-once code: D11's rows (runonce, source5k; the m2m3 ledger
+#          above), and the report-only rows a call made afresh and
+#          compiled at its first evaluation costs (toplevel-lines, do-call,
+#          eval-parse, map), docs/ledger/g3/2026-11-23-compile-census.md.
 #   guard  common VM paths no bar's row reaches, held by the perf-rt gate to
 #          the 0.5% rule against main only (m1-bars.toml's [[guard]]): `[`
 #          and `[<-` of a double vector, and `[` of a matrix, by scalar
@@ -475,6 +479,48 @@ writeLines(sprintf("x%d <- %d + 1", 1:5000, 1:5000), src)
 '''
 body = 'source(src)'
 n = 4
+
+# Run-once code (the compile census, docs/ledger/g3/2026-11-23-compile-census.md):
+# each iteration evaluates a call made afresh, which robigo-rt compiles at
+# its first evaluation (eval::expr_code) and GNU R evaluates as an AST.
+# Report-only: no bar or guard cites them. Their first numbers, robigo-rt's
+# and GNU R 4.6.2's, are in that ledger entry.
+
+[[row]]
+name = "toplevel-lines"
+group = "cold"
+note = "a top-level assignment as the REPL reads one: parsed and evaluated once (the parse included), as R_ReplFile does each line of a script"
+setup = ""
+body = 'eval(parse(text = "x1 <- 1 + 1"))'
+n = 1000
+
+[[row]]
+name = "do-call"
+group = "cold"
+note = "do.call(f, list(i, 1)): do_docall builds the call of its values and evaluates it"
+setup = '''
+f <- function(a, b) a + b
+'''
+body = 'do.call(f, list(i, 1))'
+n = 1000
+
+[[row]]
+name = "eval-parse"
+group = "cold"
+note = "eval(parse(text = \"i + 1\")): a freshly parsed call, evaluated once"
+setup = ""
+body = 'eval(parse(text = "i + 1"))'
+n = 500
+
+[[row]]
+name = "map"
+group = "cold"
+note = "Map(f, 1:5, 1:5): mapply's FUN call and its dots[[j]][[i]] arguments, built per call (until the apply family reuses one call object per call, B's change in progress, each Map call compiles them afresh)"
+setup = '''
+f <- function(x, y) x + y
+'''
+body = 'r <- Map(f, 1:5, 1:5)'
+n = 500
 
 [[row]]
 name = "d0-attr"
