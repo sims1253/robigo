@@ -1244,9 +1244,12 @@ const DEFER_DEPTH: u16 = 1000;
 
 /// The nesting depth the `Bc` profile compiles and folds to: GNU R 4.6.2's
 /// cmp.R compiles a nest of 1,477 fold calls (`1 + (1 + ...)`, to one
-/// constant) and stops from 1,478 with "node stack overflow" (its
-/// recursion on the byte-code interpreter's node stack; measured on the
-/// oracle, #976), which leaves the code uncompiled.
+/// constant) and stops from 1,478 with "node stack overflow", which leaves
+/// the code uncompiled (#976). It is a bisected property of that build: its
+/// node stack (`R_BCNODESTACKSIZE`) over what one level of cmp.R's
+/// recursion pushes. Derive it again, do not trust it, when the oracle
+/// changes: `scripts/oracle-run.sh 4.6.2 Rscript --vanilla
+/// scripts/oracle-cmp-depth.R`.
 const CMP_DEPTH: u16 = 1477;
 
 /// What a constant fold of an expression found in the try under way.
