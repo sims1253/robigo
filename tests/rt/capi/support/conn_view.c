@@ -4,6 +4,7 @@
 #include <R.h>
 #include <Rinternals.h>
 #include <R_ext/Connections.h>
+#include <errno.h>
 
 #if R_CONNECTIONS_VERSION != 1
 #error "this code expects R_CONNECTIONS_VERSION 1"
@@ -31,4 +32,35 @@ SEXP rt_conn_mark_closed(SEXP sconn)
     Rconnection con = R_GetConnection(sconn);
     con->isopen = FALSE;
     return R_NilValue;
+}
+
+/* con->read(buf, 1, n, con) with errno cleared first: the items read and
+ * the errno the call left */
+SEXP rt_conn_read(SEXP sconn, SEXP n)
+{
+    Rconnection con = R_GetConnection(sconn);
+    unsigned char buf[16];
+    int k = asInteger(n);
+    if (k < 0 || k > 16) error("n out of range");
+    errno = 0;
+    size_t r = con->read(buf, 1, (size_t) k, con);
+    int e = errno;
+    SEXP ans = allocVector(INTSXP, 2);
+    INTEGER(ans)[0] = (int) r;
+    INTEGER(ans)[1] = e;
+    return ans;
+}
+
+/* con->write(RAW(x), 1, length(x), con) with errno cleared first: the
+ * items written and the errno the call left */
+SEXP rt_conn_write(SEXP sconn, SEXP x)
+{
+    Rconnection con = R_GetConnection(sconn);
+    errno = 0;
+    size_t r = con->write(RAW(x), 1, (size_t) XLENGTH(x), con);
+    int e = errno;
+    SEXP ans = allocVector(INTSXP, 2);
+    INTEGER(ans)[0] = (int) r;
+    INTEGER(ans)[1] = e;
+    return ans;
 }

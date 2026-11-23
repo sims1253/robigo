@@ -733,7 +733,7 @@ fn close_conn(c: &mut Conn) -> Option<String> {
             if c.c.isopen != 0
                 && let Some(mut fp) = f.fp.take()
             {
-                fp.errno = 0;
+                fp.clear_errno();
                 c.c.status = fp.fclose();
                 if c.c.status < 0 {
                     err = Some(match fp.errno {
@@ -1743,7 +1743,7 @@ fn rconn_printf(c: &mut Conn, parts: &[&[u8]]) -> Result<(), String> {
     let (res, errno) = match &mut c.imp {
         Imp::File(f) => {
             let Some(fp) = f.to_write() else { return Err("not open".into()) };
-            fp.errno = 0;
+            fp.clear_errno();
             let res = fp.vfprintf(parts);
             (res, fp.errno)
         }

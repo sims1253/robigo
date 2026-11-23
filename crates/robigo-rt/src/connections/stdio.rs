@@ -220,7 +220,20 @@ impl<F: SysFile> Stream<F> {
 
     fn set_errno(&mut self, e: &io::Error) {
         // a fake's error without a code is an I/O error
-        self.errno = e.raw_os_error().unwrap_or(EIO);
+        self.put_errno(e.raw_os_error().unwrap_or(EIO));
+    }
+
+    /// `errno = e`: the stream's, and the C library's, for C code that
+    /// reads it after a connection method (glibc sets the thread's).
+    fn put_errno(&mut self, e: i32) {
+        self.errno = e;
+        robigo_rtcore::clib::set_errno(e);
+    }
+
+    /// `errno = 0` before a call whose errno the caller reads (GNU R's
+    /// `Rconn_printf`, `checkClose`).
+    pub(crate) fn clear_errno(&mut self) {
+        self.put_errno(0);
     }
 
     // glibc: libio/libioP.h:_IO_setg
@@ -363,7 +376,7 @@ impl<F: SysFile> Stream<F> {
     fn overflow(&mut self, ch: Option<u8>) -> i32 {
         if self.no_writes {
             self.err_seen = true;
-            self.errno = EBADF;
+            self.put_errno(EBADF);
             return EOF;
         }
         // If currently reading or no buffer allocated.
@@ -431,7 +444,7 @@ impl<F: SysFile> Stream<F> {
         }
         if self.no_reads {
             self.err_seen = true;
-            self.errno = EBADF;
+            self.put_errno(EBADF);
             return None;
         }
         if self.read_ptr < self.read_end {
@@ -681,7 +694,7 @@ impl<F: SysFile> Stream<F> {
         // ARGCHECK
         if self.no_writes {
             self.err_seen = true;
-            self.errno = EBADF;
+            self.put_errno(EBADF);
             return -1;
         }
         let total: usize = parts.iter().map(|p| p.len()).sum();
@@ -747,8 +760,8 @@ impl<F: SysFile> Stream<F> {
     pub(crate) fn ftello(&mut self) -> i64 {
         let pos = self.do_ftell();
         if pos == POS_BAD {
-            if self.errno == 0 {
-                self.errno = EIO;
+            if robigo_rtcore::clib::errno() == 0 {
+                self.put_errno(EIO);
             }
             return -1;
         }
@@ -787,7 +800,7 @@ impl<F: SysFile> Stream<F> {
         }
         let result = result + offset;
         if result < 0 {
-            self.errno = EINVAL;
+            self.put_errno(EINVAL);
             return EOF as i64;
         }
         result
@@ -830,7 +843,7 @@ impl<F: SysFile> Stream<F> {
                     // file_ptr().
                     offset += self.offset;
                     if offset < 0 {
-                        self.errno = EINVAL;
+                        self.put_errno(EINVAL);
                         return POS_BAD;
                     }
                     dir = Whence::Set;
@@ -1103,7 +1116,7 @@ impl PrintfBuf {
         match i32::try_from(total) {
             Ok(n) => n,
             Err(_) => {
-                fp.errno = EOVERFLOW;
+                fp.put_errno(EOVERFLOW);
                 -1
             }
         }

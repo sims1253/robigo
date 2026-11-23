@@ -1831,6 +1831,21 @@ pub fn is_writeable_dir(path: Option<&[u8]>) -> bool {
     unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
 }
 
+/// The C library's `errno` (the thread's).
+pub fn errno() -> i32 {
+    // SAFETY: __errno_location gives the calling thread's errno, valid for
+    // the thread's life.
+    unsafe { *libc::__errno_location() }
+}
+
+/// Set the C library's `errno` (the thread's): what a C function robigo
+/// ports leaves there, for C code that reads it after calling back into
+/// robigo (glibc's stdio, connections/stdio.rs).
+pub fn set_errno(e: i32) {
+    // SAFETY: as for `errno`.
+    unsafe { *libc::__errno_location() = e }
+}
+
 /// `close(fd)` of `f`'s descriptor, with its result: a dropped `File`
 /// closes without one (glibc's `fclose` returns `close`'s failure,
 /// libio/fileops.c `_IO_new_file_close_it`).
