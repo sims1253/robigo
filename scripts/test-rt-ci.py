@@ -314,6 +314,14 @@ class RtCi(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             self.assertIsNone(rt.conf_slots_dir({"XDG_RUNTIME_DIR": d}))
         self.assertIn("not a private directory", out.getvalue())
+        # a regular file where the pool would be: refused with its mode, too
+        f = os.path.join(d, "f")
+        os.makedirs(f)
+        open(os.path.join(f, "robigo-conf-slots"), "w").close()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertIsNone(rt.conf_slots_dir({"XDG_RUNTIME_DIR": f}))
+        self.assertIn("not a private directory", out.getvalue())
 
     def test_a_crosscheck_that_compares_fewer_than_its_floor_fails(self):
         # the rdb boot's report: a boot that stopped loading the compiler's

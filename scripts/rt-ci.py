@@ -800,7 +800,10 @@ def conf_slots_dir(env=None):
         # fixed, not TMPDIR's: every run of this user must find the same pool
         d = f"/tmp/robigo-conf-slots-{os.getuid()}"
     try:
-        os.makedirs(d, mode=0o700, exist_ok=True)
+        try:
+            os.makedirs(d, mode=0o700, exist_ok=True)
+        except FileExistsError:
+            pass            # (a file or a link there: lstat and the check below say what)
         st = os.lstat(d)
     except OSError as e:
         print(f"::warning::rt-ci: no conformance slot pool ({d}: {e})")
