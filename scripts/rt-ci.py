@@ -547,9 +547,14 @@ def steps(crates):
         # docs/g3.md §15.3 E3: the rt slice under the collector modes. The
         # freeze's check at every 16th collection: at every one it traces
         # the heap twice per allocation (tests/rt/bytecode/jit.R: 536 s
-        # against 97 s without it, past the case timeout; about 1.3x at 16)
+        # against 97 s without it, past the case timeout). Its comparison
+        # with the independent trace, whose cost grows with the stack
+        # (c-stack-overflow.R 1.37x at every check), at each process's first
+        # check and every 16th after: its defects are systematic, so every
+        # case gets one (the 2026-11-21 check ledger's note of 2026-11-24);
+        # the step fails if none ran (run_steps)
         ("conformance under gctorture (E3)",
-         {"ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "16", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
+         {"ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "16,16", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
           **slow, "ROBIGO_CONF_TIMEOUTS": case_timeouts(GCTORTURE_FIRST)}, conformance),
         # every argument a PROMSXP at call entry (GNU R's representation,
         # through the same binding-kind transitions): docs/g3.md §16's
@@ -1049,6 +1054,30 @@ def free_space_problem(paths, min_gb):
     return None
 
 
+# robigo-heap's freeze.rs COMPARISON_TALLY: a line per comparison with the
+# independent trace; every other line of the report is a failure
+COMPARISON_TALLY = "robigo: ROBIGO_GC_FREEZE_CHECK: comparison "
+
+
+def freeze_report(path):
+    """ROBIGO_GC_FREEZE_CHECK_REPORT's failures, its comparisons, and the
+    processes that ran one (a missing report: none of either)."""
+    if not os.path.exists(path):
+        return [], 0, 0
+    failures, comparisons, processes = [], 0, set()
+    with open(path) as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if not line.strip():
+                continue
+            if line.startswith(COMPARISON_TALLY):
+                comparisons += 1
+                processes.add(line.rsplit(" ", 1)[-1])
+            else:
+                failures.append(line)
+    return failures, comparisons, len(processes)
+
+
 def run_steps(plan, done):
     """Run `plan`'s steps in order, recording (title, seconds, ok) in `done`;
     stop at the first that fails."""
@@ -1101,13 +1130,17 @@ def run_steps(plan, done):
         if r.returncode != 0:
             print(f"::error::rt: {title} failed")
             return r.returncode
-        if freeze and os.path.exists(freeze):
-            with open(freeze) as f:
-                lines = [l.rstrip("\n") for l in f if l.strip()]
-            for line in lines:
+        if freeze:
+            failures, comparisons, processes = freeze_report(freeze)
+            for line in failures:
                 print(f"::error::rt: {line}")
-            if lines:
-                print(f"::error::rt: {title}: the freeze's check failed {len(lines)} time(s)")
+            if failures:
+                print(f"::error::rt: {title}: the freeze's check failed {len(failures)} time(s)")
+                done[-1] = (title, done[-1][1], False)
+                return 1
+            print(f"rt: {title}: {comparisons} comparison(s) with the independent trace in {processes} process(es)")
+            if comparisons == 0:
+                print(f"::error::rt: {title}: the freeze's check ran no comparison with the independent trace")
                 done[-1] = (title, done[-1][1], False)
                 return 1
         if report:
