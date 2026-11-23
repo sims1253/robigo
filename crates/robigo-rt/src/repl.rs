@@ -753,9 +753,10 @@ fn session_save(cx: &Cx) -> SaveAction {
 /// `SA_SAVEASK` without a console: the command line's, the question being
 /// the interactive console's, which robigo-rt does not have yet); then,
 /// with `run_last`, R_dot_Last's cut of the context back to the top level,
-/// `.Last` and `.Last.sys`, and the image saved there (SA_SAVE: the image
-/// is always dirty by then, as in GNU R, whose start removed
-/// `.Library.site` from the global environment); without it the image
+/// `.Last` and `.Last.sys`, and the image saved there (SA_SAVE, when
+/// `R_DirtyImage`: the global environment was assigned to or removed
+/// from, which GNU R's start always does: it removes `.Library.site`);
+/// without it the image
 /// saved in the caller's context, so that an error in the save is the
 /// caller's (quit()'s, catchable): the only way this returns. Then the
 /// exit finalizers, R_CleanTempDir, the warnings unless SA_SUICIDE,
@@ -778,7 +779,7 @@ pub fn clean_up(cx: &mut Cx, save: SaveAction, status: i32, run_last: bool) -> R
     }
     let yes = sa == SaveAction::Save;
     if !run_last || sa == SaveAction::Suicide {
-        if yes {
+        if yes && cx.dirty_image() {
             save_global_env(cx)?;
         }
         exit(cx, status, sa == SaveAction::Suicide)
@@ -817,7 +818,8 @@ fn after_reset(cx: &mut Cx, yes: bool, status: i32) -> std::convert::Infallible 
     if std::env::var_os("ROBIGO_PANIC_AFTER_RESET").is_some_and(|v| v == "1") {
         panic!("robigo: ROBIGO_PANIC_AFTER_RESET");
     }
-    let ok = dot_last(cx) && (!yes || at_top(cx, save_global_env));
+    // (R_DirtyImage read after .Last, which may assign)
+    let ok = dot_last(cx) && (!yes || !cx.dirty_image() || at_top(cx, save_global_env));
     if !ok {
         // the error landed on the top level: check_session_exit
         if check_session_exit(cx) {

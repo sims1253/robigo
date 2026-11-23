@@ -1,0 +1,23 @@
+[1] FALSE
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] FALSE  TRUE
+[1]  TRUE FALSE
+[1] TRUE
+[1] "warning: cannot rename file 'nosuch' to 'f5', reason 'No such file or directory'"
+[1] FALSE  TRUE
+logical(0)
+[1] "'from' and 'to' are of different lengths"
+[1] "invalid 'from' argument"
+[1] "invalid 'to' argument"
+[1] "warning: cannot rename file 'f6' to 'nodir/f7', reason 'No such file or directory'"
+[1] TRUE
+[1] TRUE
+[1] TRUE
+[1] "cannot change working directory"
+[1] "missing value is invalid"
+[1] "character argument expected"
+[1] "character argument expected"
+[1] "character argument expected"
+[1] TRUE
