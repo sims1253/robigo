@@ -53,9 +53,16 @@ modification time.
   - **Unset:** cargo reads `.cargo/config.toml` from its working
     directory, so a cargo run outside the checkout (`--manifest-path`)
     does not set the variable.
-  - **Another checkout's:** cargo's `[env]` does not override a variable
-    already in the environment, so a shell that exported one checkout's
-    value would pass it to every checkout.
+  - **Another checkout's:** set by hand for a build outside the checkout.
+    Inside one, `.cargo/config.toml` sets the variable with `force = true`.
+    Without `force`, cargo's `[env]` does not override a value already in
+    the environment, so a shell that exported one checkout's value passed
+    it to every checkout (Sol's case below).
+- **What no build script can refuse:** a value set by hand, outside the
+  checkouts, and left the same from one checkout's build to another's.
+  Nothing cargo sees changes, so no build script runs at all. Measured
+  below: the binary is the second checkout's crates over the first's heap.
+  The cure is the message's first one, run cargo inside the checkout.
 - **No in-repo caller is affected:** none runs cargo outside a checkout.
   - CI's jobs run inside the checkout, and the container jobs inside its
     mount.
@@ -90,14 +97,25 @@ and header, which agree with each other. The binary was A's crates over B's
 heap, and it passed every check. That is why an unset variable is now an
 error.
 
-**After the fix** (0152f304e):
+**Sol's case, before `force`** (0152f304e): `ROBIGO_WORKTREE` exported
+for A, A built inside A, then B, back-dated, built inside B. B kept A's
+value, nothing changed for cargo, and B reused A's robigo-heap and header
+without the check running (Sol reproduced it on copies of the heap crate).
+
+**After the fix** (96cbf3e3d, `force = true`). Whose heap a binary holds is
+read from the binary itself: B's layout table has a name A's has not, and
+the table's names are strings in the executable. A binary that runs and
+passes `check_layout` can still be the other checkout's heap, when both
+sides of the check come from it.
 
 | run | result |
 |---|---|
-| inside each checkout: A, B, A, B back-dated | four binaries, each running and naming its own commit |
+| inside each checkout: A, B, A, B back-dated | four binaries, each its own heap, running and naming its own commit |
+| A's value exported; A inside A, then B back-dated inside B (Sol's case) | both binaries their own heap |
 | outside, the variable unset | refused at the first build, with the message |
-| outside, the variable set by hand: A, B, A, B back-dated | four binaries, each running and naming its own commit |
-| inside B, A's value exported | refused, naming both checkouts |
+| outside, the variable set by hand to each checkout: A, B, A, B back-dated | four binaries, each its own heap |
+| outside, A's value set by hand for both A's build and B's | B's binary holds A's heap: the case no build script can refuse |
+| inside B, A's value exported (0152f304e, before `force`) | refused, naming both checkouts |
 | `cargo test -p robigo-heap` outside | refused |
 
 The commit marker named the right commit in every run, before the fix too.
