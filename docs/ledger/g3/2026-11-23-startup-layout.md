@@ -8,7 +8,11 @@ alone, with no cost in the PR:
   +112 KiB;
 - #988: rdb-jit's anonymous peak +80 KiB, part of it real;
 - #992: rdb-jit's anonymous peak +128 KiB against a +68 KiB limit, where H's
-  mean over 15 path lengths was about +19 KiB.
+  mean over 15 path lengths was about +19 KiB;
+- #991, A1's runner PR, whose only runtime change formats one error line:
+  rdb-nocache's anonymous peak +136 KiB against a +68 KiB limit, with every
+  instruction row within ±0.03%. That is the cleanest evidence: no cost at
+  all, and the Check failed.
 
 **The standing rule:** tables built at a start are pre-sized. A start
 whose count steps by ~80k instructions is realloc/memcpy until shown
@@ -37,7 +41,17 @@ What still grows by realloc at a start, after #984 (callgrind with
 - rdb-jit, the compiler's tables: `Comp::emit` 437k, `Comp::pass` 308k,
   `Comp::translate` 281k, `Comp::k` 231k, `bctrans::merge` 132k.
 
-The foreman routed each one to its owner.
+The foreman routed each one to its owner. An owner reruns the list with
+`scripts/rt-startup.py --robigo-rt BIN --trees --reallocs` (each start
+under callgrind with `--separate-callers=3`, at the first layout shift:
+realloc's inclusive cost by the function that grew the buffer, the top
+five, as shares of the start). On main 92d933c4b:
+- interim (14.66M): Wide's initialisation (a `Vec<&str>` collected from
+  `split`, 224k, 1.53%; the OnceLock's own, 216k, 1.47%),
+  `Cenv::find_locals` 116k, `define_builtins` 106k, `Path::_join` 80k;
+- rdb-jit (81.42M): `Comp::emit` 162k, the translation cache's
+  `tcache::format::entry` 149k, `set_option` 90k, `define_builtins` 85k,
+  `Comp::k` 44k.
 
 ## The shifts
 
