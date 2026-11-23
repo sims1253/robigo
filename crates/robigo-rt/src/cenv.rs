@@ -1553,10 +1553,13 @@ pub enum CompileWarning {
     /// `cmpAssign`'s `as.name(getAssignedVar(e, cntxt))`, for an
     /// assignment to a string.
     AsName,
-    /// No warning: a function context's reads of compilerOptions
-    /// (`make.functionContext`'s `make.toplevelContext(nenv)`, after the
-    /// function's funEnv), made where the compile is when its warnings are
-    /// raised ([`crate::compile::options`]).
+    /// No warning: a function literal's function context reads
+    /// compilerOptions (`make.functionContext`'s `make.toplevelContext(nenv)`,
+    /// after the literal's funEnv), made in order with the warnings when
+    /// they are raised ([`crate::compile::options`]). INTERIM(C1), as for
+    /// the warnings given later in the compile: GNU R reads them during the
+    /// code's generation, so a binding the generation forces before the
+    /// literal comes before them there, after them here.
     OptionReads,
 }
 
@@ -1572,7 +1575,6 @@ pub struct CompileWarnings(
     std::cell::RefCell<Vec<(CompileWarning, String)>>,
     std::cell::Cell<usize>,
     std::cell::Cell<bool>,
-    std::cell::Cell<bool>,
 );
 
 impl CompileWarnings {
@@ -1583,20 +1585,15 @@ impl CompileWarnings {
 
     /// Whether the compile under way reads compilerOptions: the JIT's
     /// compile from source with the compiler loaded (its entry's reads
-    /// made, [`crate::compile::options::read`]).
+    /// made, [`crate::compile::options::read`]). The compile sets it for
+    /// its run and puts the outer compile's setting back after it.
     pub fn set_reads_options(&self, on: bool) {
         self.2.set(on);
     }
 
-    /// The compile is to fail where its code's generation begins, as cmp.R's
-    /// notes could ([`crate::compile::options::notes_not_implemented`]).
-    pub fn set_notes_pending(&self, on: bool) {
-        self.3.set(on);
-    }
-
-    /// Whether that failure is still to come; it comes now (cleared).
-    pub fn take_notes_pending(&self) -> bool {
-        self.3.replace(false)
+    /// The setting [`CompileWarnings::set_reads_options`] made.
+    pub fn reads_options(&self) -> bool {
+        self.2.get()
     }
 
     /// A function context's compilerOptions reads, where the compile is
@@ -1693,10 +1690,6 @@ fn raise_each(cx: &mut Cx, ws: Vec<(CompileWarning, String)>) -> robigo_rtcore::
         if at == CompileWarning::OptionReads {
             // (the values are the parent context's: only reading matters)
             crate::compile::options::read(cx)?;
-            // (the code's generation, where cmp.R's notes could begin)
-            if crate::prims::state(cx).compile_warnings.take_notes_pending() {
-                return Err(crate::compile::options::notes_not_implemented(cx));
-            }
             continue;
         }
         let call = cx.retry_alloc(|cx| {

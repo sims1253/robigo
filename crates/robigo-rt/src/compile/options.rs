@@ -65,31 +65,15 @@ fn compiler_namespace<'s>(cx: &mut Cx, s: Scope<'s>) -> RResult<Option<Root<'s>>
     Ok(Some(s.root(cx, unsafe { Ref::from_sexp(ns, cx) })))
 }
 
-/// The four reads of a top-level or function context, with the JIT off as
-/// during GNU R's compile: what the entry's decide, or None when the
-/// compiler is not loaded (INTERIM(L5): the source boot's JIT compiles
-/// without it, and nothing is read, as in tryCmpfun's handler).
+/// The four reads of a top-level or function context: what the entry's
+/// decide, or None when the compiler is not loaded (INTERIM(L5): the source
+/// boot's JIT compiles without it, and nothing is read, as in tryCmpfun's
+/// handler). They run as the compile's own R code does, with the JIT off
+/// (tryCmpfun's, [`crate::conditions::try_cmpfun`]).
 pub(crate) fn read(cx: &mut Cx) -> RResult<Option<Read>> {
     cx.scope(|cx, s| {
         let Some(ns) = compiler_namespace(cx, s)? else { return Ok(None) };
-        let jit = &crate::prims::state(cx).jit;
-        let saved = jit.get();
-        jit.set(crate::jit::Config { level: 0, ..saved });
-        let r = reads(cx, s, ns);
-        // (an error leaves the level as it is then, as GNU R's longjmp
-        // skips the restore after R_cmpfun)
-        if r.is_ok() {
-            crate::prims::state(cx).jit.set(saved);
-        }
-        r.map(Some)
-    })
-}
-
-/// [`read`]'s evaluation of [`READS`] under the namespace `ns`.
-fn reads(cx: &mut Cx, s: Scope<'_>, ns: Root<'_>) -> RResult<Read> {
-    {
-        let exprs = s.capture(cx, |cx, o| crate::lower::parse(cx, READS, o))?;
-        let e = s.root(cx, exprs.bind(cx).as_vector::<Ref<'_>>().unwrap().get(0));
+        let e = crate::conditions::option_reads(cx, s, READS)?;
         let o = s.out(cx);
         let env = o.root();
         cx.build(o, |cx| cx.new_env(ns.bind(cx), false, 2))?;
@@ -98,8 +82,8 @@ fn reads(cx: &mut Cx, s: Scope<'_>, ns: Root<'_>) -> RResult<Read> {
         crate::eval(cx, e, env, o)?;
         let v = v.bind(cx);
         let list = v.as_vector::<Ref<'_>>().unwrap();
-        Ok(Read { optimize_2: is_two(list.get(0)), suppress_all: is_true(list.get(1)) })
-    }
+        Ok(Some(Read { optimize_2: is_two(list.get(0)), suppress_all: is_true(list.get(1)) }))
+    })
 }
 
 /// `optimize` equal to 2: a length-one number, as cmp.R's `optimize >= 2`

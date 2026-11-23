@@ -349,11 +349,25 @@ fn compile_closure_body(cx: &mut Cx, op: Root<'_>, installed: bool) -> RResult<O
     // SAFETY: a rooted closure.
     let source = !installed && unsafe { op.bind(cx).sexp().cdr().typ() } != BCODESXP && !package_code(cx, op);
     let entry = entry_options(cx, source)?;
+    // (the compile's nested function literals queue their reads while it
+    // runs; the outer compile's setting back on every exit)
+    let w = &prims::state(cx).compile_warnings;
+    let outer = w.reads_options();
+    w.set_reads_options(entry.reads);
+    let code = compile_closure_attempts(cx, op, installed, &entry);
+    prims::state(cx).compile_warnings.set_reads_options(outer);
+    entry.end(code)
+}
+
+/// [`compile_closure_body`]'s compile: its attempts, cmp.R's warnings,
+/// and the code kept on its byte code.
+fn compile_closure_attempts(cx: &mut Cx, op: Root<'_>, installed: bool, entry: &Entry) -> RResult<Option<Sexp>> {
     // (the crosscheck's finding of the last attempt: an attempt a fold
     // retries compared code without the fold's value)
     let mut check = None;
-    // (findLocals' warnings raised, and the compile made again after them)
-    let mut prelude = Prelude::default();
+    // (findLocals' warnings raised, and the compile made again after them;
+    // the function context's reads and the notes' failure where they come)
+    let mut prelude = Prelude { stop: entry.reads || entry.notes, ..Prelude::default() };
     let code = loop {
         let code = attempt(cx, |cx| {
             let f = op.bind(cx).sexp();
@@ -388,6 +402,18 @@ fn compile_closure_body(cx: &mut Cx, op: Root<'_>, installed: bool) -> RResult<O
             prelude.raised = true;
             continue;
         }
+        if prelude.stopped {
+            // after the function's funEnv: make.functionContext's reads,
+            // then the code's generation, where cmp.R's notes could begin
+            prelude.stopped = false;
+            if entry.reads {
+                options::read(cx)?;
+            }
+            if entry.notes {
+                return Err(options::notes_not_implemented(cx));
+            }
+            continue;
+        }
         break code;
     };
     if let Some(c) = check {
@@ -399,7 +425,6 @@ fn compile_closure_body(cx: &mut Cx, op: Root<'_>, installed: bool) -> RResult<O
         Ok(c) => Ok(raise_compile_warnings(cx, c)?),
         e => e,
     };
-    let code = entry.end(cx, code);
     if let Ok(Some(c)) = code {
         let f = op.bind(cx).sexp();
         // SAFETY: a rooted closure and its fresh code object.
@@ -920,6 +945,9 @@ unsafe fn function_context(
         cenv.push_unit(forms.iter().map(|f| f.1).collect());
         let mut elist: Vec<Sexp> = forms.iter().map(|f| f.0).collect();
         elist.push(body);
+        // (a closure's own function context reads where its caller stops,
+        // [`Prelude::stop`]; a function literal's are queued)
+        let literal = prelude.is_none();
         let locals = match prelude {
             Some(p) => match p.found(cx, st, cenv, &elist)? {
                 Some(l) => l,
@@ -930,7 +958,9 @@ unsafe fn function_context(
         };
         cenv.add_unit_vars(&locals);
         // make.functionContext's compilerOptions reads, after its funEnv
-        st.compile_warnings.function_context();
+        if literal {
+            st.compile_warnings.function_context();
+        }
         Ok(!cenv::may_call_browser(cx, st, cenv, body)?)
     }
 }
@@ -947,7 +977,18 @@ pub fn compile_top_loop(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RResult<O
 fn compile_loop(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RResult<Option<Sexp>> {
     // compile's make.toplevelContext (no function context: a loop's)
     let entry = entry_options(cx, true)?;
-    let mut prelude = Prelude::default();
+    let w = &prims::state(cx).compile_warnings;
+    let outer = w.reads_options();
+    w.set_reads_options(entry.reads);
+    let code = compile_loop_attempts(cx, call, rho, &entry);
+    prims::state(cx).compile_warnings.set_reads_options(outer);
+    entry.end(code)
+}
+
+/// [`compile_loop`]'s compile: its attempts and cmp.R's warnings.
+fn compile_loop_attempts(cx: &mut Cx, call: Root<'_>, rho: Root<'_>, entry: &Entry) -> RResult<Option<Sexp>> {
+    // (the notes' failure where they could begin: after findLocals)
+    let mut prelude = Prelude { stop: entry.notes, ..Prelude::default() };
     let code = loop {
         let code = attempt(cx, |cx| {
             let (e, env) = (call.bind(cx).sexp(), rho.bind(cx).sexp());
@@ -973,18 +1014,16 @@ fn compile_loop(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RResult<Option<Se
             prelude.raised = true;
             continue;
         }
+        if prelude.stopped {
+            // the code's generation, where cmp.R's notes could begin
+            return Err(options::notes_not_implemented(cx));
+        }
         break code;
     };
-    // (a loop's code generation follows its findLocals: where the notes
-    // could begin)
-    if matches!(code, Ok(Some(_))) && prims::state(cx).compile_warnings.take_notes_pending() {
-        return Err(options::notes_not_implemented(cx));
-    }
-    let code = match code {
+    match code {
         Ok(c) => raise_compile_warnings(cx, c),
         e => e,
-    };
-    entry.end(cx, code)
+    }
 }
 
 /// Whether closure `op` is a package's code: its environment's top
@@ -1010,22 +1049,24 @@ fn package_code(cx: &Cx, op: Root<'_>) -> bool {
 ///   closure runs uncompiled, as cmp.R's failure path leaves it (counted,
 ///   [`crate::jit::report`]).
 fn entry_options(cx: &mut Cx, source: bool) -> RResult<Entry> {
-    let w = &prims::state(cx).compile_warnings;
-    w.set_reads_options(false);
-    w.set_notes_pending(false);
+    let off = Entry { reads: false, notes: false, decline: false };
     if !source {
-        return Ok(Entry { decline: false });
+        return Ok(off);
     }
     crate::jit::count(crate::jit::Count::SourceCompile);
-    let Some(read) = options::read(cx)? else { return Ok(Entry { decline: false }) };
-    let w = &prims::state(cx).compile_warnings;
-    w.set_reads_options(true);
-    w.set_notes_pending(!read.suppress_all);
-    Ok(Entry { decline: !read.optimize_2 })
+    let Some(read) = options::read(cx)? else { return Ok(off) };
+    Ok(Entry { reads: true, notes: !read.suppress_all, decline: !read.optimize_2 })
 }
 
 /// What a compile's entry decided ([`entry_options`]).
 struct Entry {
+    /// The compile reads compilerOptions: its function contexts read them
+    /// again (the closure's own after its funEnv, its function literals'
+    /// queued, [`cenv::CompileWarnings::function_context`]).
+    reads: bool,
+    /// `suppressAll` not `identical(TRUE)`: the compile fails where its
+    /// code's generation begins ([`options::notes_not_implemented`]).
+    notes: bool,
     /// `optimize` other than 2: the compile's code is not used.
     decline: bool,
 }
@@ -1033,10 +1074,7 @@ struct Entry {
 impl Entry {
     /// The compile's result `code` as the entry's decision leaves it: none
     /// when it declines.
-    fn end(&self, cx: &mut Cx, code: RResult<Option<Sexp>>) -> RResult<Option<Sexp>> {
-        let w = &prims::state(cx).compile_warnings;
-        w.set_reads_options(false);
-        w.set_notes_pending(false);
+    fn end(&self, code: RResult<Option<Sexp>>) -> RResult<Option<Sexp>> {
         match code {
             Ok(Some(_)) if self.decline => {
                 crate::jit::count(crate::jit::Count::DeclinedOptimize);
@@ -1063,10 +1101,19 @@ impl Entry {
 /// it can (`tests/rt/jit/translate-warning-asname.R`, not ratcheted).
 #[derive(Default)]
 struct Prelude {
-    /// Whether the warnings were raised (the compile made again).
+    /// Whether the warnings were raised (the compile made again), or the
+    /// attempt stopped after findLocals: the locals are kept.
     raised: bool,
     /// The locals findLocals found (symbols, which are never collected).
     locals: Vec<Sexp>,
+    /// Stop the attempt once after findLocals (and its warnings), for what
+    /// GNU R's compile does there before the code's generation: the
+    /// function context's compilerOptions reads, the notes' failure
+    /// ([`Entry`]). The caller acts on [`Prelude::stopped`] and compiles
+    /// again.
+    stop: bool,
+    /// The attempt stopped there.
+    stopped: bool,
 }
 
 impl Prelude {
@@ -1082,14 +1129,23 @@ impl Prelude {
         cenv: &Cenv<'_>,
         elist: &[Sexp],
     ) -> Result<Option<Vec<Sexp>>, Need> {
-        if self.raised {
-            return Ok(Some(self.locals.clone()));
-        }
-        // SAFETY: the caller's contract.
-        let locals = unsafe { cenv.find_locals(cx, st, elist)? };
-        let w = &st.compile_warnings;
-        w.mark_prelude();
-        if w.prelude() > 0 {
+        let locals = if self.raised {
+            self.locals.clone()
+        } else {
+            // SAFETY: the caller's contract.
+            let locals = unsafe { cenv.find_locals(cx, st, elist)? };
+            let w = &st.compile_warnings;
+            w.mark_prelude();
+            if w.prelude() > 0 {
+                self.locals = locals;
+                return Ok(None);
+            }
+            locals
+        };
+        if self.stop {
+            self.stop = false;
+            self.stopped = true;
+            self.raised = true;
             self.locals = locals;
             return Ok(None);
         }

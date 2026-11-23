@@ -96,6 +96,9 @@ pub struct CondState {
     /// C-level tryCatch calls back through, made on first use
     /// (`R_PreserveObject`).
     c_callbacks: RefCell<[Option<Global>; 2]>,
+    /// The JIT's compilerOptions reads (`compile::options`), parsed at
+    /// their first use.
+    option_reads: RefCell<Option<Global>>,
 }
 
 impl CondState {
@@ -123,6 +126,7 @@ impl CondState {
             method_plans: RefCell::new(Default::default()),
             forward_locals: Cell::new(-1),
             c_callbacks: RefCell::new([None, None]),
+            option_reads: RefCell::new(None),
         }
     }
 }
@@ -143,6 +147,19 @@ pub(crate) fn install_hooks(cx: &mut Cx) {
 }
 
 /// The isolate's condition state.
+/// The expression `src` (the JIT's compilerOptions reads, which never
+/// change), parsed at its first use and kept: a fresh root of it.
+pub(crate) fn option_reads<'s>(cx: &mut Cx, s: Scope<'s>, src: &str) -> RResult<Root<'s>> {
+    if let Some(g) = state(cx).option_reads.borrow().as_ref() {
+        return Ok(s.root(cx, g.bind(cx)));
+    }
+    let exprs = s.capture(cx, |cx, o| crate::lower::parse(cx, src, o))?;
+    let e = s.root(cx, exprs.bind(cx).as_vector::<Ref<'_>>().unwrap().get(0));
+    let g = cx.global(e.bind(cx));
+    *state(cx).option_reads.borrow_mut() = Some(g);
+    Ok(e)
+}
+
 pub fn state(cx: &Cx) -> &CondState {
     &prims::state(cx).cond
 }
