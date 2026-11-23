@@ -125,8 +125,8 @@ impl FramePool {
     }
 
     /// Offer the frame `f` of a call that returned `v` (null: no value).
-    /// `core` is the heap's, for the quarantine's poisoned frames: they give
-    /// back their cells first (`Core::uncharge_cells`).
+    /// `core` is the heap's, for the quarantine's poisoned frames: their
+    /// cells move with the poisoning (`Core::recharge`).
     ///
     /// # Safety
     /// `f` is a live environment and `v` null or a live object, of the heap
@@ -156,12 +156,14 @@ impl FramePool {
             if self.quarantine_mode {
                 // poisoned: neither a slot frame nor a hashed one (its
                 // HASHTAB word, the shape's, is R_NilValue), so `kind`
-                // panics on it; held back as a root. Its cells first leave
-                // the vector heap's use: without SLOTS it is no frame, and
-                // counts none (robigo-heap's `Block::cells` invariant)
-                core.uncharge_cells(f);
-                layout::set(f, OFF_SHAPE, nil);
-                f.set_flag(flags::SLOTS, false);
+                // panics on it; held back as a root. Without SLOTS it is no
+                // frame and counts no cells: the change goes through the
+                // heap, which moves its charge (robigo-heap's `Block::cells`
+                // invariant)
+                core.recharge(f, |f| {
+                    layout::set(f, OFF_SHAPE, nil);
+                    f.set_flag(flags::SLOTS, false);
+                });
                 (*self.quarantine.get()).push(f);
                 return;
             }

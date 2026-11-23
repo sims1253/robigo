@@ -109,17 +109,22 @@ pub struct Block {
     /// The vector cells (`heapsize::object_cells`, GNU R's VECREC units)
     /// charged to the vector heap's use (`valloc`) for the objects in this
     /// block and not yet given back: added by the allocation of each (the
-    /// heap's slot paths take them), settled by the sweep once per block
-    /// (`Core::sweep`) instead of once per dead object.
+    /// heap's slot paths take them), and settled by the sweep once per
+    /// walked block (`Core::sweep`), from whichever side is smaller: the
+    /// dead objects' cells, or this less the survivors'.
     ///
-    /// **The invariant it rests on:** an object's `object_cells` is the
-    /// same from its allocation to its death. robigo-rt keeps it: a vector
-    /// shortened in place is GROWABLE with its capacity as truelength
-    /// (rtcore's `fresh.rs`), grows only within it (`edit.rs`), and a hashed
-    /// table's truelength is on a vector that is not GROWABLE; the one
-    /// object whose cells drop while it lives, a frame the frame quarantine
-    /// poisons, gives them back first ([`crate::gc::Core::uncharge_cells`]).
-    /// Debug builds check it at each walked block (`Core::sweep`).
+    /// **The invariant it rests on:** a live object's `object_cells` is its
+    /// charge. A change in place that may alter it goes through
+    /// [`crate::gc::Core::recharge`], which moves the charge with it: the
+    /// frame quarantine's poisoned frames (rtcore's `recycle.rs`) and
+    /// unserialize's levels (`Cx::set_levels`). Every other change robigo-rt
+    /// makes keeps it: a vector shortened in place is GROWABLE with its
+    /// capacity as truelength (rtcore's `fresh.rs`) and grows only within it
+    /// (`edit.rs`); a hashed table's truelength never exceeds its length;
+    /// `set_typ` retypes nodes. robigo-rtapi exports none of the C API's
+    /// SETLENGTH, SET_TRUELENGTH, SET_GROWABLE_BIT or SET_TYPEOF: one that
+    /// does goes through `recharge` too. Debug builds check the invariant
+    /// at each walked block (`Core::sweep`).
     pub cells: u32,
     /// one bit per granule: this granule starts an object.
     pub starts: [u64; START_WORDS],

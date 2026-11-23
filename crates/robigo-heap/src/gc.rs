@@ -3579,31 +3579,43 @@ impl Core {
         self.chars = chars;
     }
 
-    /// Give back a live object's charge to the vector heap's use before its
-    /// `object_cells` drops to 0 while it lives, so that the sweep's count
-    /// stays its objects' cells (the invariant of [`Block::cells`]): the
-    /// frame quarantine's poisoned frames, held as roots and no longer
-    /// environments. A small object's block, or a large one's chunk, keeps
-    /// the rest.
+    /// Change a live object in place (`change`) where the change may alter
+    /// its vector cells (`heapsize::object_cells`), keeping its charge to
+    /// the vector heap's use exact: the cells before and after are read
+    /// around the change, and the difference moves in its block's count
+    /// ([`Block::cells`]) or its large chunk's charge, and in `valloc`. The
+    /// one way a live object's cells may change (the invariant of
+    /// `Block::cells`): the frame quarantine's poisoned frames, which lose
+    /// SLOTS (rtcore's `recycle.rs`), and the heap's own tests.
     ///
     /// # Safety
-    /// `x` is a live object of this heap, its header and length words as
-    /// its allocation left them.
-    pub unsafe fn uncharge_cells(&mut self, x: Sexp) {
+    /// `x` is a live object of this heap whose charge is its `object_cells`
+    /// (as every live object's is), and `change` leaves it an object whose
+    /// `object_cells` can be read.
+    pub unsafe fn recharge(&mut self, x: Sexp, change: impl FnOnce(Sexp)) {
         // SAFETY: the caller's contract; a block's or large chunk's header
         // is at its address rounded down to a block.
         unsafe {
-            let cells = crate::heapsize::object_cells(x);
+            let before = crate::heapsize::object_cells(x);
+            change(x);
+            let after = crate::heapsize::object_cells(x);
+            if before == after {
+                return;
+            }
             let b = (x.0 as usize & !(BLOCK - 1)) as *mut Block;
             if (*b).magic == 0x524f4249474f4241 {
-                debug_assert!((*b).cells as usize >= cells, "robigo: an uncharged object's block has fewer cells");
-                (*b).cells -= cells.min((*b).cells as usize) as u32;
+                debug_assert!((*b).cells as usize >= before, "robigo: a recharged object's block has fewer cells");
+                (*b).cells = ((*b).cells as usize - before.min((*b).cells as usize) + after) as u32;
             } else {
                 let c = crate::heap::large_cells(b as usize);
-                debug_assert!(*c as usize >= cells, "robigo: an uncharged large object has fewer cells");
-                *c -= (cells as u64).min(*c);
+                debug_assert!(*c as usize == before, "robigo: a recharged large object's charge is not its cells");
+                *c = after as u64;
             }
-            self.sizes.valloc = self.sizes.valloc.saturating_sub(cells);
+            debug_assert!(
+                self.sizes.valloc >= before,
+                "robigo: a recharged object's cells exceed the vector heap's use"
+            );
+            self.sizes.valloc = self.sizes.valloc.saturating_sub(before) + after;
         }
     }
 
@@ -3730,7 +3742,11 @@ impl Core {
                     // whose old copies are poison: `moved`)
                     let survivors = (*b).marked + (*b).immortals;
                     let count_dead = !moved && (*b).live_objects.saturating_sub(survivors) <= survivors;
-                    let check = cfg!(debug_assertions) && !moved;
+                    // (a block of nodes only has no cells to settle; debug
+                    // builds sum both sides of every walked block, after a
+                    // move the dead that are not old copies, as a bound)
+                    let check = cfg!(debug_assertions);
+                    let sum = (*b).cells != 0 || check;
                     let (mut live_cells, mut dead_cells) = (0usize, 0usize);
                     let csize = SIZES[(*b).class as usize] as u64;
                     for w in 0..START_WORDS {
@@ -3742,14 +3758,14 @@ impl Core {
                             if marks[w] & (1u64 << (g & 63)) != 0 || f & flags::IMMORTAL != 0 {
                                 live += 1;
                                 live_bytes += csize;
-                                if !count_dead || check {
+                                if sum && (!count_dead || check) {
                                     live_cells += crate::heapsize::object_cells(Sexp(p));
                                 }
                                 new_starts[w] |= 1u64 << (g & 63);
                             } else {
                                 // (its header is read before the free list's
                                 // writes below)
-                                if count_dead || check {
+                                if sum && (count_dead || check) && *p.add(header::OFF_TYPE) != POISON_TYPE {
                                     dead_cells += crate::heapsize::object_cells(Sexp(p));
                                 }
                                 self.on_death(p);
@@ -3772,11 +3788,18 @@ impl Core {
                     (*b).marked = 0;
                     (*b).live_objects = live;
                     let charged = (*b).cells as usize;
-                    if check {
+                    if check && !moved {
                         assert_eq!(
                             live_cells + dead_cells,
                             charged,
                             "robigo: a block's cells (Block::cells) are not its objects' (an object's cells changed while it lived)"
+                        );
+                    } else if check {
+                        // (the old copies' cells are in the charge, not in
+                        // a poisoned header)
+                        assert!(
+                            live_cells + dead_cells <= charged,
+                            "robigo: a block's cells (Block::cells) are fewer than its objects' after a move"
                         );
                     }
                     let dead = if count_dead { dead_cells } else { charged.saturating_sub(live_cells) };
@@ -4486,14 +4509,14 @@ mod tests {
     /// part or die whole (each seen), large objects, the allocation paths
     /// that charge cells (vectors, `alloc_rooted`, CHARSXPs, slot frames,
     /// external data), a frozen boot heap, and both moving collectors; and
-    /// `uncharge_cells` keeps it so for a live object whose cells drop.
+    /// `recharge` keeps it so for live objects whose cells change.
     #[cfg(not(miri))]
     #[test]
     fn the_vector_heaps_use_is_the_live_objects_cells_after_every_collection() {
         /// Every block's and large chunk's charge against its objects'
-        /// cells (`skip`: an object whose cells were given back), and the
-        /// heap's: `valloc` less the charges outside the heap (`base`).
-        fn check(c: &Core, base: usize, skip: Sexp, what: &str) {
+        /// cells, and the heap's: `valloc` less the charges outside the heap
+        /// (`base`).
+        fn check(c: &Core, base: usize, what: &str) {
             let mut total = 0;
             for ch in &c.heap.chunks {
                 // SAFETY: outside a collection: a chunk's headers and the
@@ -4501,7 +4524,7 @@ mod tests {
                 unsafe {
                     if ch.large {
                         let x = Sexp((ch.base + DATA_OFF) as *mut u8);
-                        let n = if x == skip { 0 } else { crate::heapsize::object_cells(x) };
+                        let n = crate::heapsize::object_cells(x);
                         assert_eq!(*crate::heap::large_cells(ch.base) as usize, n, "{what}: a large chunk's charge");
                         total += n;
                         continue;
@@ -4514,9 +4537,7 @@ mod tests {
                             while s != 0 {
                                 let g = w * 64 + s.trailing_zeros() as usize;
                                 let x = Sexp(Block::data_ptr(b).add(g * GRANULE));
-                                if x != skip {
-                                    n += crate::heapsize::object_cells(x);
-                                }
+                                n += crate::heapsize::object_cells(x);
                                 s &= s - 1;
                             }
                         }
@@ -4639,30 +4660,33 @@ mod tests {
                 // SAFETY: `roots` and `held` hold every object kept (the
                 // vectors' elements are nil or unset).
                 unsafe { c.collect(&mut r) };
-                check(&c, base, nil, &format!("mode {mode}, round {round}"));
+                check(&c, base, &format!("mode {mode}, round {round}"));
                 assert_eq!(mode == 3, c.frozen_count() > 0, "mode {mode}: frozen {}", c.frozen_count());
                 // half the session's survivors die at the next collection:
                 // blocks that die in part, and whole ones
                 let keep = boot + (r.roots.len() - boot) / 2;
                 r.roots.truncate(keep);
             }
-            // a live object whose cells drop: given back first
-            // (a session frame: a boot one is frozen in mode 3)
-            // SAFETY: a fresh slot frame of this heap, rooted by `r`.
-            let f = unsafe { c.alloc_slot_frame(3, nil) }.unwrap();
+            // live objects whose cells change in place, through `recharge`:
+            // a frame that loses SLOTS (the quarantine's), and a vector
+            // shortened without GROWABLE (a session's: a boot one is frozen
+            // in mode 3)
+            // SAFETY: fresh objects of this heap, rooted by `r`.
+            let (f, v) = unsafe { (c.alloc_slot_frame(3, nil).unwrap(), c.alloc_vector(REALSXP, 40).unwrap()) };
             r.held.push(f);
-            // SAFETY: a live slot frame of this heap, as allocated.
+            r.held.push(v);
+            // SAFETY: live objects of this heap, as allocated.
             unsafe {
-                c.uncharge_cells(f);
-                f.set_flag_raw(flags::SLOTS, false);
+                c.recharge(f, |f| f.set_flag_raw(flags::SLOTS, false));
+                c.recharge(v, |v| v.set_std_len(3));
                 c.collect(&mut r);
             }
-            check(&c, base, nil, &format!("mode {mode}, after an uncharge"));
+            check(&c, base, &format!("mode {mode}, after a recharge"));
             r.roots.truncate(boot);
             r.held.clear();
             // SAFETY: `r` holds every object kept.
             unsafe { c.collect(&mut r) };
-            check(&c, base, nil, &format!("mode {mode}, the session's objects dead"));
+            check(&c, base, &format!("mode {mode}, the session's objects dead"));
             if mode != 1 {
                 // (the full mover moves every block's survivors out)
                 assert!(
