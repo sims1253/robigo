@@ -596,10 +596,12 @@ fn goto_exiting_handler(cx: &mut Cx, cond: Root<'_>, call: Option<Root<'_>>, ent
 /// record has the innermost record's call, so `error()` and `warning()`
 /// report what they report without it.
 ///
-/// The JIT is off while the compile and the handler run, and stays off
-/// when an exit leaves them (a handler's error, a jump to another
-/// condition's exiting handler, an interrupt), as GNU R's callers set
-/// `R_jit_enabled = 0` around `R_cmpfun` and restore it only on return.
+/// The JIT is off while the compile and the handler run, and the level is
+/// restored only when they return: an exit that leaves them (a handler's
+/// error, a jump to another condition's exiting handler, an interrupt)
+/// leaves the level as it is then, 0 unless code they ran changed it, as
+/// GNU R's callers set `R_jit_enabled = 0` around `R_cmpfun` and restore
+/// it after the call, which a longjmp skips.
 ///
 /// R code that runs inside the compile (a promise it forces, a warning's
 /// handler, the compiler's message) sees no R frame of the compile:
@@ -673,56 +675,36 @@ pub(crate) fn try_cmpfun(
 }
 
 /// tryCmpfun's handler after the jump: `tryCatchOne`'s condition from the
-/// result vector, then `notifyCompilerError(paste(e$message, "at",
-/// deparse(e$call)))` in the compiler's namespace. Nothing runs when the
-/// compiler is not loaded (robigo's JIT compiles without it; GNU R's loads
-/// it at boot, its options the defaults) or `compilerOptions$suppressAll`
-/// is a plain TRUE as it is bound now (a logical TRUE of length one,
-/// without a class, in an unclassed `compilerOptions`), the common case:
-/// no R code at all after a failed compile, as GNU R's handler forces
-/// nothing then but the option. Any other binding (a promise, an active
-/// binding, a value `!` or `if` rejects or dispatches on, the binding
-/// gone) runs cmp.R's code, which reads it as GNU R does, its errors
-/// included.
+/// result vector, then the handler, `function(e) notifyCompilerError(
+/// paste(e$message, "at", deparse(e$call)))`, called with it in the
+/// compiler's namespace: always, as GNU R's does, so that the option is
+/// read as cmp.R reads it then (`compilerOptions$suppressAll`, which `!`
+/// and `if` take, their errors included) and a `notifyCompilerError` that
+/// was replaced or traced runs. It runs only after a failed compile.
+/// Nothing runs when the compiler is not loaded: INTERIM(L5), the source
+/// boot's JIT compiles without it, where GNU R's loads it at boot.
 // R: cmp.R:tryCmpfun, notifyCompilerError; conditions.R:tryCatchOne
 fn notify_compiler_error(cx: &mut Cx, s: Scope<'_>, result: Root<'_>) -> RResult<()> {
     let pkg = sym(cx, s, b"compiler")?;
-    let opts = sym(cx, s, b"compilerOptions")?;
-    let all = sym(cx, s, b"suppressAll")?;
-    let frame_value = |cx: &Cx, env: Ref<'_>, y: Root<'_>| -> Option<robigo_heap::Sexp> {
-        let (Some(env), Some(y)) = (crate::dispatch::env_ref(env), y.bind(cx).as_sym()) else { return None };
-        match cx.frame_binding(env, y) {
+    let ns = {
+        let (Some(reg), Some(y)) = (crate::dispatch::env_ref(cx.namespace_registry()), pkg.bind(cx).as_sym()) else {
+            return Ok(());
+        };
+        match cx.frame_binding(reg, y) {
             robigo_rtcore::Lookup::Bound(b) => match b.get(cx) {
-                robigo_rtcore::BindingValue::Value(v) => Some(v.sexp()),
-                _ => None,
+                robigo_rtcore::BindingValue::Value(v) => v.sexp(),
+                _ => return Ok(()),
             },
-            _ => None,
+            _ => return Ok(()),
         }
     };
-    let Some(ns) = frame_value(cx, cx.namespace_registry(), pkg) else { return Ok(()) };
-    // SAFETY: a namespace the registry holds; its frame's values are live.
+    // SAFETY: a namespace the registry holds.
     let ns = s.root(cx, unsafe { Ref::from_sexp(ns, cx) });
-    // (a classed compilerOptions: `$` dispatches; R code reads it)
-    let suppressed = frame_value(cx, ns.bind(cx), opts)
-        // SAFETY: as above.
-        .filter(|&o| unsafe { !Ref::from_sexp(o, cx).is_object() })
-        // SAFETY: as above.
-        .and_then(|o| frame_value(cx, unsafe { Ref::from_sexp(o, cx) }, all))
-        // SAFETY: as above.
-        .map(|v| unsafe { Ref::from_sexp(v, cx) })
-        .is_some_and(|v| {
-            !v.is_object()
-                && v.as_vector::<robigo_rtcore::Lgl>()
-                    .is_some_and(|l| l.len() == 1 && l.get(0).0 != 0 && l.get(0).0 != robigo_rtcore::Lgl::NA.0)
-        });
-    if suppressed {
-        return Ok(());
-    }
     const NOTIFY: &str = "{
         cond <- value[[1L]]
         if (is.null(cond)) cond <- simpleError(.Internal(geterrmessage()), value[[2L]])
         else if (is.character(cond)) cond <- simpleError(cond, value[[2L]])
-        notifyCompilerError(paste(cond$message, \"at\", deparse(cond$call)))
+        (function(e) notifyCompilerError(paste(e$message, \"at\", deparse(e$call))))(cond)
     }";
     let exprs = s.capture(cx, |cx, o| crate::lower::parse(cx, NOTIFY, o))?;
     let e = s.root(cx, exprs.bind(cx).as_vector::<Ref<'_>>().unwrap().get(0));
