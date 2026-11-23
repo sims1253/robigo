@@ -22,7 +22,7 @@ pub mod parser;
 pub use lexer::is_valid_name;
 
 pub use arena::Arena;
-pub use ast::{Arg, ConditionValue, Const, ErrorExpr, ErrorStyle, Expr, Formal, ParseError, Span};
+pub use ast::{Arg, ConditionValue, Const, ErrorExpr, ErrorStyle, Expr, Formal, ParseError, Span, StrMark};
 pub use parser::{
     ConnStatus, ConsoleStatus, parse_conn_statement, parse_console, parse_program, parse_program_with_warnings,
 };
@@ -63,6 +63,11 @@ impl<'a> Source<'a> {
     /// continuation bytes as columns too.
     pub fn known_to_be_utf8(self, known: bool) -> Self {
         Source { known_to_be_utf8: known, ..self }
+    }
+
+    /// Whether this parse is known to be UTF-8 ([`Source::known_to_be_utf8`]).
+    pub fn is_known_utf8(&self) -> bool {
+        self.known_to_be_utf8
     }
 
     /// The source byte at `i`, when `text` has [`INVALID_BYTE`] there in

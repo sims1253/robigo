@@ -279,7 +279,8 @@ exports! {
     (entry 2), true => Rf_eval Rf_nthcdr Rf_getAttrib Rf_coerceVector Rf_findVar R_NewHashedEnv;
     (entry 1), true => Rf_asBool;
     (leaf), false => Rf_isInteger;
-    (entry 3), true => R_tryEval R_NewEnv Rf_defineVar Rf_setAttrib;
+    (entry 3), true => R_tryEval R_NewEnv Rf_defineVar Rf_setAttrib R_getVar;
+    (entry 4), true => R_getVarEx;
     (entry 4), true => R_ParseVector;
     (entry 1), true => Rf_GetOption1 Rf_asInteger Rf_asLogical Rf_asReal robigo_rtapi_length_slow;
     // context.c

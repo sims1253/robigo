@@ -1,0 +1,133 @@
+badHex/parseError/error/condition 
+  message: "'\\x' used without hex digits in character string (<input>:1:3)"
+  call: NULL
+  value: NULL
+  filename: "<input>"
+  lineno: 1L
+  colno: 3L
+badUnicodeHex/parseError/error/condition 
+  message: "'\\u' used without hex digits in character string (<input>:1:4)"
+  call: NULL
+  value: NULL
+  filename: "<input>"
+  lineno: 1L
+  colno: 4L
+invalidOctal/parseError/error/condition 
+  message: "\\400 exceeds maximum allowed octal value \\377 (<input>:1:5)"
+  call: NULL
+  value: 256L
+  filename: "<input>"
+  lineno: 1L
+  colno: 5L
+invalidRawLiteral/parseError/error/condition 
+  message: "malformed raw string literal (<input>:1:3)"
+  call: NULL
+  value: NULL
+  filename: "<input>"
+  lineno: 1L
+  colno: 3L
+invalidUnicode/parseError/error/condition 
+  message: "invalid \\U{xxxxxxxx} value 110000 (<input>:1:11)"
+  call: NULL
+  value: 1114112L
+  filename: "<input>"
+  lineno: 1L
+  colno: 11L
+mixedEscapes/parseError/error/condition 
+  message: "mixing Unicode and octal/hex escapes in a string is not allowed (<input>:1:12)"
+  call: NULL
+  value: NULL
+  filename: "<input>"
+  lineno: 1L
+  colno: 12L
+nulNotAllowed/parseError/error/condition 
+  message: "nul character not allowed (<input>:1:3)"
+  call: NULL
+  value: NULL
+  filename: "<input>"
+  lineno: 1L
+  colno: 3L
+unrecognizedEscape/parseError/error/condition 
+  message: "'\\q' is an unrecognized escape in character string (<input>:1:3)"
+  call: NULL
+  value: "q"
+  filename: "<input>"
+  lineno: 1L
+  colno: 3L
+unicodeInBackticks/parseError/error/condition 
+  message: "\\uxxxx sequences not supported inside backticks (<input>:1:3)"
+  call: NULL
+  value: NULL
+  filename: "<input>"
+  lineno: 1L
+  colno: 3L
+placeholderInRHSFn/parseError/error/condition 
+  message: "pipe placeholder cannot be used in the RHS function (<input>:1:6)"
+  call: NULL
+  value: NULL
+  filename: "<input>"
+  lineno: 1L
+  colno: 6L
+placeholderNotNamed/parseError/error/condition 
+  message: "pipe placeholder can only be used as a named argument (<input>:1:6)"
+  call: f("_")
+  value: NULL
+  filename: "<input>"
+  lineno: 1L
+  colno: 6L
+RHSnotFnCall/parseError/error/condition 
+  message: "The pipe operator requires a function call as RHS (<input>:1:6)"
+  call: f
+  value: NULL
+  filename: "<input>"
+  lineno: 1L
+  colno: 6L
+tooManyPlaceholders/parseError/error/condition 
+  message: "pipe placeholder may only appear once (<input>:1:6)"
+  call: f(x = "_", y = "_")
+  value: NULL
+  filename: "<input>"
+  lineno: 1L
+  colno: 6L
+unsupportedInPipe/parseError/error/condition 
+  message: "function 'function' not supported in RHS call of a pipe (<input>:1:6)"
+  call: function(x) x
+  value: "function"
+  filename: "<input>"
+  lineno: 1L
+  colno: 6L
+pipebindDisabled/parseError/error/condition 
+  message: "'=>' is disabled; set '_R_USE_PIPEBIND_' envvar to a true value to enable it (<input>:1:3)"
+  call: NULL
+  value: NULL
+  filename: "<input>"
+  lineno: 1L
+  colno: 3L
+invalidPlaceholder/parseError/error/condition 
+  message: "invalid use of pipe placeholder (<input>:1:0)"
+  call: "_" + 1
+  value: NULL
+  filename: "<input>"
+  lineno: 1L
+  colno: 0L
+repeatedFormal/parseError/error/condition 
+  message: "repeated formal argument 'a' (<input>:1:13)"
+  call: NULL
+  value: "a"
+  filename: "<input>"
+  lineno: 1L
+  colno: 13L
+invalidMBCS/parseError/error/condition 
+  message: "invalid multibyte character in parser (<input>:1:9)"
+  call: NULL
+  value: NULL
+  filename: "<input>"
+  lineno: 1L
+  colno: 9L
+unrecognizedEscape/parseError/error/condition 
+  message: "'\\q' is an unrecognized escape in character string (<input>:2:14)"
+  call: NULL
+  value: "q"
+  filename: "<input>"
+  lineno: 2L
+  colno: 14L

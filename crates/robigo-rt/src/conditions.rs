@@ -370,14 +370,17 @@ pub fn error_hook(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RError {
 /// condition's classes, the handler stack restored after them, then the
 /// default handling of its message.
 ///
-/// GNU R makes the expression and node stack overflows' conditions once
+/// GNU R makes the expression, node and protect stack overflows' conditions once
 /// (`R_InitConditions`, with a NULL call); one is made here per signal,
 /// with the same value.
 // R: errors.c:R_signalErrorConditionEx, R_vmakeErrorCondition
 pub fn error_condition_hook(cx: &mut Cx, call: Option<Root<'_>>, c: &robigo_rtcore::ErrorCond<'_>) -> RError {
     // Rvsnprintf_mbcs(emsg_buf, BUFSIZE, ...)
     let msg = trunc(robigo_rtcore::c_str_bytes(c.msg), BUFSIZE - 1).to_vec();
-    let preset = matches!(c.subclass, Some("expressionStackOverflowError" | "nodeStackOverflowError"));
+    let preset = matches!(
+        c.subclass,
+        Some("expressionStackOverflowError" | "nodeStackOverflowError" | "protectStackOverflowError")
+    );
     cx.scope(|cx, s| {
         let call = if preset { None } else { call };
         let cond = match make_condition(cx, s, call, CondBase::Error, c.class, c.subclass, c.fields, &msg) {

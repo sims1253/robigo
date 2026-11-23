@@ -247,20 +247,44 @@ impl std::error::Error for ParseError {}
 
 use std::fmt;
 
+/// How the parser marked a string constant of an [`ErrorExpr`]: as
+/// [`Const::Str`] (no declared encoding: the lowering decides from the
+/// parse's `known_to_be_utf8`), [`Const::StrNative`] or [`Const::StrUtf8`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StrMark {
+    Unmarked,
+    Native,
+    Utf8,
+}
+
 /// Owned expression retained only when a parser condition outlives its arena.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ErrorExpr {
     Atom(Const<'static>),
-    String(Option<Vec<u8>>),
+    /// A string constant (None: NA) and its mark.
+    String(Option<Vec<u8>>, StrMark),
     Symbol(String),
-    Call(Box<ErrorExpr>, Vec<(Option<String>, Option<ErrorExpr>)>),
+    /// A call; `pipe`: the native pipe's, whose first argument cell is a
+    /// LANGSXP (gram.y's xxpipe), as [`Expr::Call`]'s `pipe`.
+    Call(Box<ErrorExpr>, Vec<(Option<String>, Option<ErrorExpr>)>, bool),
     Function(Vec<(String, Option<ErrorExpr>)>, Box<ErrorExpr>),
 }
 impl ErrorExpr {
+    /// The [`Const`] a [`ErrorExpr::String`] stands for, its mark kept.
+    pub fn string_const(bytes: &Option<Vec<u8>>, mark: StrMark) -> Const<'_> {
+        match (bytes.as_deref(), mark) {
+            (None, _) => Const::Str(None),
+            (Some(b), StrMark::Unmarked) => Const::Str(Some(b)),
+            (Some(b), StrMark::Native) => Const::StrNative(b),
+            (Some(b), StrMark::Utf8) => Const::StrUtf8(b),
+        }
+    }
+
     pub fn from_expr(e: &Expr<'_>) -> Self {
         match e {
-            Expr::Const(Const::Str(s), _) => Self::String(s.map(|s| s.to_vec())),
-            Expr::Const(Const::StrNative(s) | Const::StrUtf8(s), _) => Self::String(Some(s.to_vec())),
+            Expr::Const(Const::Str(s), _) => Self::String(s.map(|s| s.to_vec()), StrMark::Unmarked),
+            Expr::Const(Const::StrNative(s), _) => Self::String(Some(s.to_vec()), StrMark::Native),
+            Expr::Const(Const::StrUtf8(s), _) => Self::String(Some(s.to_vec()), StrMark::Utf8),
             Expr::Const(c, _) => Self::Atom(match *c {
                 Const::Null => Const::Null,
                 Const::Lgl(x) => Const::Lgl(x),
@@ -272,10 +296,11 @@ impl ErrorExpr {
                 Const::Str(_) | Const::StrNative(_) | Const::StrUtf8(_) => unreachable!(),
             }),
             Expr::Sym(s, _) => Self::Symbol(s.to_string()),
-            Expr::Placeholder(_) => Self::String(Some(b"_".to_vec())),
-            Expr::Call { fun, args, .. } => Self::Call(
+            Expr::Placeholder(_) => Self::String(Some(b"_".to_vec()), StrMark::Unmarked),
+            Expr::Call { fun, args, pipe, .. } => Self::Call(
                 Box::new(Self::from_expr(fun)),
                 args.iter().map(|a| (a.name.map(str::to_string), a.value.as_ref().map(Self::from_expr))).collect(),
+                *pipe,
             ),
             Expr::Function { formals, body, .. } => Self::Function(
                 formals.iter().map(|f| (f.name.to_string(), f.default.as_ref().map(Self::from_expr))).collect(),

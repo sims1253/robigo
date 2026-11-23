@@ -42,6 +42,16 @@ SEXP capi_parse(void) {
     return ans;
 }
 
+// R_ParseVector's status for `text`; gram.y's classed parse errors
+// (raiseParseError, raiseLexError) are signalled from inside R_Parse and
+// never return to this caller.
+SEXP capi_parse_status(SEXP text) {
+    ParseStatus status;
+    PROTECT(R_ParseVector(text, -1, &status, R_NilValue));
+    UNPROTECT(1);
+    return ScalarInteger(status);
+}
+
 // GetOption1 reads an option without evaluation.
 SEXP capi_option(void) {
     return GetOption1(install("digits"));
