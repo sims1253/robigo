@@ -466,7 +466,18 @@ def add_passing(name, ids, runtime="robigo"):
 
 def robigo_rt_path(arg):
     """robigo-rt: `--robigo`, else $ROBIGO_RT_BIN, else the release build in
-    cargo's target directory (as scripts/rt-overshoot.py finds it)."""
+    cargo's target directory (as scripts/rt-overshoot.py finds it), with
+    base's database tree written by that binary (scripts/rt_trees.py: the
+    cases name no boot, which boots rdb once it is the default)."""
+    p = _robigo_rt_binary(arg)
+    if os.path.exists(p):
+        sys.path.insert(0, os.path.join(ROOT, "scripts"))
+        import rt_trees
+        rt_trees.ensure(p, ROOT)
+    return p
+
+
+def _robigo_rt_binary(arg):
     if arg:
         return os.path.abspath(arg)
     if os.environ.get("ROBIGO_RT_BIN"):
