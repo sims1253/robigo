@@ -116,9 +116,14 @@ CONFORMANCE = "rt_conformance"
 PIN_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-pin-report-{os.getpid()}.txt")
 
 
-# the boot heap's freeze, off by default (robigo-heap's freeze.rs): on in
-# its checked steps and in its own conformance steps
+# the boot heap's freeze (robigo-heap's freeze.rs), named on in its checked
+# steps so that they do not depend on the default
 FREEZE_ON = {"ROBIGO_GC_FREEZE": "1"}
+# and off: on by default since the fold (step 2, the ledger's
+# 2026-11-23-h-freeze-fold.md), so the steps that test the heap without it
+# say so, and the moving collector's steps, which leave it off anyway,
+# turn it off explicitly
+FREEZE_OFF = {"ROBIGO_GC_FREEZE": "0"}
 
 
 # where the freeze's check writes a failure (appended to by every process):
@@ -409,7 +414,7 @@ def full_move_steps():
     full_slow = case_timeouts(FULL_MOVE_SLOW)
     return every_cpu([
         ("conformance under ROBIGO_GC_MOVE=1 with gctorture (every collection moves everything)",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **SLOW, "ROBIGO_CONF_TIMEOUTS": full_slow},
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **FREEZE_OFF, **SLOW, "ROBIGO_CONF_TIMEOUTS": full_slow},
          conformance_command()),
     ])
 
@@ -525,12 +530,11 @@ def steps(crates):
          {"ROBIGO_RT_BOOT": "rdb", "ROBIGO_BC_CROSSCHECK": "1", "ROBIGO_BC_CROSSCHECK_REPORT": BC_REPORT_RDB},
          conformance),
         ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {}, conformance),
-        # the boot heap's freeze as users turn it on (ROBIGO_GC_FREEZE=1, off
-        # by default until the frozen-reachability pass: the ledger's
-        # 2026-11-21-h-boot-freeze-check.md), under each boot, its check off
-        ("conformance with the boot heap's freeze on (ROBIGO_GC_FREEZE=1)", FREEZE_ON, conformance),
-        ("conformance under the rdb boot with the boot heap's freeze on (ROBIGO_RT_BOOT=rdb, ROBIGO_GC_FREEZE=1)",
-         {"ROBIGO_RT_BOOT": "rdb", **FREEZE_ON}, conformance),
+        # the boot heap's freeze is on by default (the steps above run with
+        # it, its check off); the heap without it, under each boot
+        ("conformance with the boot heap's freeze off (ROBIGO_GC_FREEZE=0)", FREEZE_OFF, conformance),
+        ("conformance under the rdb boot with the boot heap's freeze off (ROBIGO_RT_BOOT=rdb, ROBIGO_GC_FREEZE=0)",
+         {"ROBIGO_RT_BOOT": "rdb", **FREEZE_OFF}, conformance),
         # docs/g3.md §15.3 E5: the same cases and recordings under each
         # observation mode, but those whose `.requires` names the identity
         # the mode gives up (robigo-conformance's KNOWN_FEATURES)
@@ -569,11 +573,11 @@ def steps(crates):
         # docs/g3.md §16 (H3): the debug moving collector, at every
         # collection gctorture makes due
         ("ROBIGO_GC_MOVE (move every movable object at every collection), with gctorture",
-         {**TREE_RUNS, **{"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1"}}, [*crate, *pkgs, *skip]),
+         {**TREE_RUNS, **{"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **FREEZE_OFF}}, [*crate, *pkgs, *skip]),
         # H8: the young objects at each collection, everything at every N-th;
         # the nightly runs it with every collection moving everything
         (f"conformance under ROBIGO_GC_MOVE={GC_MOVE_YOUNG} with gctorture (E3)",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": GC_MOVE_YOUNG, **slow,
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": GC_MOVE_YOUNG, **FREEZE_OFF, **slow,
           "ROBIGO_CONF_TIMEOUTS": case_timeouts({**GCTORTURE_FIRST, **YOUNG_MOVE_FIRST, **YOUNG_MOVE_SLOW})}, conformance),
         # D5's frame recycling (docs/g3.md §16): every frame that would be recycled
         # is poisoned and held back instead, so a frame that escaped without
@@ -783,11 +787,11 @@ def shard_of(title):
         return None
     if title.startswith("conformance under gctorture") or title.startswith("conformance under ROBIGO_GC_MOVE"):
         return "gctorture"
-    # the boot heap's freeze on under M1's loader, its check off: with E3's
-    # freeze check, in the freeze's shard (modes was at its budget: the
-    # foreman, 2026-11-22). Its rdb twin stays in modes, where base's
-    # database tree is built
-    if title == "conformance with the boot heap's freeze on (ROBIGO_GC_FREEZE=1)":
+    # the boot heap's freeze off under M1's loader: with E3's freeze check,
+    # in the freeze's shard (modes was at its budget: the foreman,
+    # 2026-11-22). Its rdb twin stays in modes, where base's database tree
+    # is built
+    if title == "conformance with the boot heap's freeze off (ROBIGO_GC_FREEZE=0)":
         return "gctorture"
     if title.startswith("builtin differential"):
         return "builtin-diff"
