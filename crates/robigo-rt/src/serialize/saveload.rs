@@ -209,8 +209,8 @@ pub fn do_save_to_conn(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'
         let magic = [b'R', b'D', magic, b'0'.wrapping_add(version as u8), b'\n'];
         let magic = &magic[..magic.iter().position(|&b| b == 0).unwrap_or(5)];
         if f.text {
-            // Rconn_printf(con, "%s", magic): its result not looked at
-            connections::write_ignoring_os_errors(cx, n, magic)?;
+            // Rconn_printf(con, "%s", magic)
+            connections::printf_write(cx, n, magic)?;
         } else {
             connections::write_all(cx, n, magic, "error writing to connection")?;
         }

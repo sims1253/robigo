@@ -223,13 +223,12 @@ pub(super) fn serialize_to_conn(
 }
 
 /// The connection stream's write: on a text-mode connection
-/// `Rconn_printf` (OutBytesConn does not look at its result; its own
-/// error on a failed write is the connection layer's, see
-/// `connections::write_ignoring_os_errors`); else `con->write`, checked.
+/// `Rconn_printf` (`connections::printf_write`), else `con->write`,
+/// checked.
 // R: serialize.c:OutCharConn, OutBytesConn
 fn write_conn(cx: &mut Cx, n: i32, text: bool, buf: &[u8]) -> RResult<()> {
     if text {
-        connections::write_ignoring_os_errors(cx, n, buf)
+        connections::printf_write(cx, n, buf)
     } else {
         connections::write_all(cx, n, buf, "error writing to connection")
     }

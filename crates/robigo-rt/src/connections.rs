@@ -1623,21 +1623,35 @@ pub fn write_all(cx: &mut Cx, n: i32, buf: &[u8], msg: &str) -> RResult<()> {
     r.map_err(|m| cx.error(&m))
 }
 
-/// `Rconn_printf(con, ...)`'s write of `buf`. GNU R's raises "Error
-/// writing to connection:  <strerror>" when the connection's `vfprintf`
-/// fails, which for a file is when stdio flushes its buffer inside the
-/// call (a full disk: a write that fills the 4 KiB buffer); a write that
-/// stays in the buffer succeeds, and `close()` warns. robigo-rt's file
-/// connection has no stdio buffer, so it cannot say which writes GNU R's
-/// would fail: a write the system fails raises nothing here, and `close()`
-/// does not warn (INTERIM: the connection layer's stdio buffer). robigo-
-/// rt's own refusals (an encoding, a connection that cannot write) raise.
-pub fn write_ignoring_os_errors(cx: &mut Cx, n: i32, buf: &[u8]) -> RResult<()> {
+/// `Rconn_printf(con, ...)`'s write of `buf` as `writeLines` uses it: a
+/// write the system fails raises nothing (robigo-rt's own refusals do).
+fn write_ignoring_os_errors(cx: &mut Cx, n: i32, buf: &[u8]) -> RResult<()> {
     let refused = with_conn(cx, n, |c| match conn_write(c, buf) {
         Err(e) if e.raw_os_error().is_none() => Some(e.to_string()),
         _ => None,
     })?;
     match refused {
+        Some(m) => Err(cx.error(&m)),
+        None => Ok(()),
+    }
+}
+
+/// `Rconn_printf(con, ...)`'s write of `buf` as the serialize streams use
+/// it: a write the system fails is `Rconn_printf`'s error, "Error writing
+/// to connection:  <strerror>". GNU R's raises it when stdio flushes its
+/// buffer inside the call (in the probed environment, a 4 KiB buffer: a
+/// write that fills it); a write that stays in the buffer succeeds there,
+/// and `close()` warns. robigo-rt's file connection has no stdio buffer,
+/// so here every failed write raises (INTERIM: the connection layer's
+/// stdio buffer).
+// R: connections.c:Rconn_printf
+pub fn printf_write(cx: &mut Cx, n: i32, buf: &[u8]) -> RResult<()> {
+    let r = with_conn(cx, n, |c| match conn_write(c, buf) {
+        Ok(_) => None,
+        Err(e) if e.raw_os_error().is_none() => Some(e.to_string()),
+        Err(e) => Some(format!("Error writing to connection:  {}", strerror(&e))),
+    })?;
+    match r {
         Some(m) => Err(cx.error(&m)),
         None => Ok(()),
     }
