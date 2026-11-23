@@ -832,20 +832,7 @@ impl<'g> State<'g> {
                     && let Some(sr) = robigo_rtbuiltins::attrib::get_value(s, b"srcref")
                     && sr.sexptype() != NILSXP
                 {
-                    let key = sr.sexp().as_ptr() as usize;
-                    let Some((_, lines)) = self.sources.iter().find(|(k, _)| *k == key) else {
-                        if !self.forcing {
-                            return Err("robigo: deparse of a function from its srcref is not implemented yet".into());
-                        }
-                        return Err(Stop::Source(self.cx.global(sr)));
-                    };
-                    let n = lines.len();
-                    for (i, l) in lines.iter().enumerate() {
-                        self.print(l);
-                        if i + 1 < n {
-                            self.writeline();
-                        }
-                    }
+                    self.src2buff1(sr)?;
                     if attr >= AttrType::StrucAttr {
                         self.attr2(s, attr == AttrType::StrucAttr)?;
                     }
@@ -1606,6 +1593,45 @@ impl<'g> State<'g> {
         out.push(b')');
     }
 
+    /// `src2buff1(srcref, d)`: the srcref's text, `as.character(srcref)`
+    /// evaluated in base, line by line. That is R code: the deparse stops
+    /// for it ([`Stop::Source`]) and the forcing caller evaluates it and
+    /// deparses again with the text.
+    // R: deparse.c:src2buff1
+    fn src2buff1(&mut self, sr: Ref<'g>) -> DResult {
+        let key = sr.sexp().as_ptr() as usize;
+        let Some((_, lines)) = self.sources.iter().find(|(k, _)| *k == key) else {
+            if !self.forcing {
+                return Err("robigo: deparse from a srcref outside print and deparse is not implemented yet".into());
+            }
+            return Err(Stop::Source(self.cx.global(sr)));
+        };
+        let n = lines.len();
+        for (i, l) in lines.iter().enumerate() {
+            self.print(l);
+            if i + 1 < n {
+                self.writeline();
+            }
+        }
+        Ok(())
+    }
+
+    /// `src2buff(sv, k, d)`: source element `k` of the srcref list `sv`, if
+    /// it has one (true), else nothing (false).
+    // R: deparse.c:src2buff
+    fn src2buff(&mut self, sv: Option<Ref<'g>>, k: usize) -> Result<bool, Stop> {
+        let Some(sv) = sv else { return Ok(false) };
+        let t = match sv.view() {
+            robigo_rtcore::View::List(l) if l.len() > k => l.get(k),
+            _ => return Ok(false),
+        };
+        if t.sexptype() == NILSXP {
+            return Ok(false);
+        }
+        self.src2buff1(t)?;
+        Ok(true)
+    }
+
     /// `vec2buff(v, d, do_names)`: the elements of a list or expression
     /// vector.
     // R: deparse.c:vec2buff
@@ -1614,11 +1640,12 @@ impl<'g> State<'g> {
         let mut lbreak = false;
         let n = v.len().unwrap();
         let nv = if do_names { Names::get(cx, v) } else { None };
-        if self.opts & USESOURCE != 0
-            && robigo_rtbuiltins::attrib::get_value(v, b"srcref").is_some_and(|s| s.sexptype() == VECSXP)
-        {
-            return Err("robigo: deparse from srcrefs is not implemented yet".into());
-        }
+        // with useSource, an element with a srcref is its source text
+        let sv = if self.opts & USESOURCE != 0 {
+            robigo_rtbuiltins::attrib::get_value(v, b"srcref").filter(|s| s.sexptype() == VECSXP)
+        } else {
+            None
+        };
         let elts = match v.view() {
             robigo_rtcore::View::List(l) | robigo_rtcore::View::Expr(l) => l,
             _ => unreachable!(),
@@ -1631,7 +1658,9 @@ impl<'g> State<'g> {
             if nv.is_some() {
                 self.name_eq(&nv, i)?;
             }
-            self.deparse2buff(elts.get(i))?;
+            if !self.src2buff(sv, i)? {
+                self.deparse2buff(elts.get(i))?;
+            }
         }
         if lbreak {
             self.indent -= 1;
