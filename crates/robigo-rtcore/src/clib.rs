@@ -367,6 +367,77 @@ unsafe extern "C" {
     fn getlogin_r(name: *mut libc::c_char, size: libc::size_t) -> libc::c_int;
 }
 
+/// What ended [`wait_readable_or`]'s wait.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ready {
+    /// `pending` said there is an interrupt to take.
+    Interrupt,
+    /// The file has input to read (or its end, or an error).
+    Input,
+}
+
+/// Wait until `fd` has input (or its end, or an error) to read, as
+/// `R_checkActivityEx` waits with `select` on the console, unless `pending`
+/// says there is an interrupt to take ([`Ready`]). `pending` runs with
+/// SIGINT blocked, and `ppoll` unblocks it only for the wait itself. So a
+/// SIGINT that arrives after the last check ends the wait (`EINTR`, then
+/// `pending` again) and is not left until the next input. (GNU R's handler
+/// jumps out of the `select`; ours only notes the signal, so no gap may
+/// separate the check from the wait.) An error blocking SIGINT is returned
+/// before anything waits, the thread's mask unchanged.
+pub fn wait_readable_or(fd: i32, mut pending: impl FnMut() -> bool) -> std::io::Result<Ready> {
+    // SAFETY: sigset_t is plain data (an array of words), for which all
+    // zeroes is a valid value; sigemptyset then makes `int` the empty set.
+    let mut int: libc::sigset_t = unsafe { std::mem::zeroed() };
+    // SAFETY: plain data as above; the zeroes are only a placeholder, which
+    // a successful pthread_sigmask below overwrites with the thread's mask.
+    let mut old: libc::sigset_t = unsafe { std::mem::zeroed() };
+    // SAFETY: valid sigset_t pointers; SIGINT is a valid signal number.
+    let rc = unsafe {
+        libc::sigemptyset(&mut int);
+        libc::sigaddset(&mut int, libc::SIGINT);
+        libc::pthread_sigmask(libc::SIG_BLOCK, &int, &mut old)
+    };
+    if rc != 0 {
+        // (pthread_sigmask returns the error number; `old` is not the
+        // thread's mask, so no restore is armed)
+        return Err(std::io::Error::from_raw_os_error(rc));
+    }
+    // (the mask comes back on every way out, a panic in `pending` included)
+    struct Restore(libc::sigset_t);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            // SAFETY: `self.0` is the mask pthread_sigmask returned above.
+            unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &self.0, std::ptr::null_mut()) };
+        }
+    }
+    let _restore = Restore(old);
+    loop {
+        if pending() {
+            return Ok(Ready::Interrupt);
+        }
+        let mut p = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        // SAFETY: one valid pollfd, its count 1, no timeout, and the mask
+        // from before the block (SIGINT open unless the caller blocked it).
+        let r = unsafe { libc::ppoll(&mut p, 1, std::ptr::null(), &old) };
+        if r >= 0 {
+            return Ok(Ready::Input);
+        }
+        let e = std::io::Error::last_os_error();
+        if e.kind() != std::io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
+/// `read(fd, buf, buf.len())`: the bytes read (0 at the end), or the
+/// error (`Interrupted` for a signal, which the caller may retry).
+pub fn read_fd(fd: i32, buf: &mut [u8]) -> std::io::Result<usize> {
+    // SAFETY: `buf` is valid for `buf.len()` bytes of writes.
+    let r = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+    if r < 0 { Err(std::io::Error::last_os_error()) } else { Ok(r as usize) }
+}
+
 /// The process's real user id (`getuid()`).
 pub fn uid() -> u32 {
     // SAFETY: getuid has no preconditions and cannot fail.
@@ -1797,6 +1868,48 @@ mod tests {
         // (not "free after": another test may hold it shared meanwhile)
         // the call's value comes back
         assert_eq!(super::with_env_shared(|| 7), 7);
+    }
+
+    /// `wait_readable_or` takes a pending interrupt without waiting, and
+    /// otherwise waits for input, checking again after a signal.
+    #[test]
+    #[cfg_attr(miri, ignore)] // (ppoll and the signal mask are not Miri's)
+    fn wait_readable_or_checks_before_it_waits() {
+        let mut fds = [0; 2];
+        // SAFETY: a valid array of two fds for pipe to fill.
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        // nothing to read: a pending interrupt is taken, not waited past
+        assert_eq!(super::wait_readable_or(fds[0], || true).unwrap(), super::Ready::Interrupt);
+        // input: the wait ends with it, after at least one check
+        let w = fds[1];
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            // SAFETY: `w` is the pipe's open write end; one byte from a
+            // valid buffer.
+            assert_eq!(unsafe { libc::write(w, b"x".as_ptr().cast(), 1) }, 1);
+        });
+        let mut checks = 0;
+        let ready = super::wait_readable_or(fds[0], || {
+            checks += 1;
+            false
+        });
+        assert_eq!(ready.unwrap(), super::Ready::Input);
+        assert!(checks >= 1);
+        t.join().unwrap();
+        // a panicking check: the thread's mask comes back all the same
+        let r = std::panic::catch_unwind(|| super::wait_readable_or(fds[0], || panic!("check")));
+        assert!(r.is_err());
+        // SAFETY: a sigset_t for pthread_sigmask to fill in.
+        let mut now: libc::sigset_t = unsafe { std::mem::zeroed() };
+        // SAFETY: a null new mask only reads the current one into `now`.
+        unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, std::ptr::null(), &mut now) };
+        // SAFETY: `now` was filled in above.
+        assert_eq!(unsafe { libc::sigismember(&now, libc::SIGINT) }, 0);
+        // SAFETY: both fds are open and ours.
+        unsafe {
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
     }
 
     use super::wcstod_of;

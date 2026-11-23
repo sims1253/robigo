@@ -1261,7 +1261,14 @@ fn get_object(cx: &mut Cx, cptr: ContextId, out: Out<'_>) -> RResult<()> {
                 // SAFETY: the generic's frame, live (its record roots it).
                 let f = s.root(cx, unsafe { Ref::from_sexp(frame, cx) });
                 let o = res.reset(cx);
-                cx.force_arg(f, index, o)?;
+                // R: if (PRVALUE(s) == R_UnboundValue) s = eval(s, R_BaseEnv)
+                // SAFETY: GenericArg::Slot is a formal's slot of the
+                // generic's own slot frame (generic_args), of this isolate.
+                if unsafe { cx.arg_unevaluated(f, index) } {
+                    crate::eval::force_arg_eval(cx, f, index, o)?;
+                } else {
+                    cx.force_arg(f, index, o)?;
+                }
             }
             Some(GenericArg::Obj(v)) => {
                 // SAFETY: a promargs element, live (the record roots it).

@@ -209,6 +209,11 @@ pub struct Hooks {
     pub apply: ApplyFn,
     pub dispatch: DispatchFn,
     pub force: ForceFn,
+    /// `eval(p, rho)` of a promise `p`: eval's `case PROMSXP` (the tick,
+    /// the depth step, `R_BCIntActive = 0`, `forcePromise`). Defaults to
+    /// the installed `force` (with no evaluator, a promise's eval is its
+    /// force).
+    pub eval_promise: ForceFn,
     pub force_arg: ForceArgFn,
     pub early_force: EarlyForceFn,
     pub eval_args: EvalArgsFn,
@@ -234,6 +239,9 @@ impl Default for Hooks {
             apply: no_apply,
             dispatch: no_dispatch,
             force: no_force,
+            // (no evaluator: eval of a promise is its force, the
+            // installed `force`)
+            eval_promise: |cx, p, out| (cx.iso().hooks.get().force)(cx, p, out),
             force_arg: |cx, f, i, out| cx.force_arg(f, i, out),
             // (no evaluator to count for: an early value is not taken)
             early_force: |_, _, _| false,
@@ -377,6 +385,14 @@ impl Cx {
     #[inline]
     pub fn force(&mut self, prom: Root<'_>, out: Out<'_>) -> RResult<()> {
         (self.iso().hooks.get().force)(self, prom, out)
+    }
+
+    /// `eval(p, rho)` of the promise `p` through the hook: C code's
+    /// evaluation of a promise, a level deeper than [`Cx::force`].
+    // R: eval.c:eval (PROMSXP)
+    #[inline]
+    pub fn eval_promise(&mut self, prom: Root<'_>, out: Out<'_>) -> RResult<()> {
+        (self.iso().hooks.get().eval_promise)(self, prom, out)
     }
 
     /// `eval` of an argument slot's promise through the hook

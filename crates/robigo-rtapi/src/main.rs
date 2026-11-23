@@ -255,6 +255,33 @@ fn missing_tree(home: &RHome, boot: Boot) -> Option<String> {
 
 /// The front end over `args`, with `home` the `R_HOME` that
 /// [`init_r_home`] has put in the environment.
+/// Whether `b` is one of R_common_command_line's options that robigo-rt
+/// reads (those it processes wherever they stand), or `--default-packages=`,
+/// which the R script reads before the front end runs.
+// R: CommandLineArgs.c:R_common_command_line; unix/R.sh.in
+fn common_option(b: &[u8]) -> bool {
+    matches!(
+        b,
+        b"--quiet"
+            | b"--silent"
+            | b"-q"
+            | b"--no-echo"
+            | b"--slave"
+            | b"-s"
+            | b"--save"
+            | b"--no-save"
+            | b"--vanilla"
+            | b"--no-environ"
+            | b"--no-site-file"
+            | b"--no-init-file"
+            | b"--no-restore"
+            | b"--no-restore-data"
+            | b"--restore"
+            | b"--verbose"
+            | b"--args"
+    ) || b.starts_with(b"--default-packages=")
+}
+
 fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     // Rf_initialize_R's system Renviron, before the options are read
     // (INTERIM(L5): GNU R's boot only; M1's loader gives the options their
@@ -272,6 +299,9 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     // R_Quiet and R_NoEcho (R_common_command_line), and whether the save
     // action is given (SA_NOSAVE: --vanilla, --no-save, --no-echo)
     let (mut quiet, mut no_echo, mut save_given) = (false, false, false);
+    // --interactive (force_interactive); --no-readline is robigo-rt's only
+    // console (it has no readline)
+    let mut force_interactive = false;
     // R_common_command_line's NoRenviron, LoadSiteFile, LoadInitFile and
     // RestoreAction (--vanilla is all four, with --no-save)
     let mut st = Startup { environ: true, site_file: true, init_file: true, restore: true };
@@ -279,9 +309,17 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     // the mode's, R's restore or Rscript's --no-restore, which Rscript puts
     // before the user's options)
     let mut restore: Option<bool> = None;
+    // after --interactive only R_common_command_line's options count: the
+    // unix front end's own loop stops there (`-f`, `--file=`, `-e` and a
+    // FILE after it are not seen, and R reads stdin)
+    // R: unix/system.c:Rf_initialize_R ("--interactive": force_interactive, break)
+    let mut after_interactive = false;
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         let b = a.as_encoded_bytes();
+        if after_interactive && !common_option(b) {
+            continue;
+        }
         match b {
             b"-e" => match it.next() {
                 Some(e) => exprs.push(e.as_encoded_bytes().to_vec()),
@@ -328,6 +366,8 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
             b"--no-restore" | b"--no-restore-data" => restore = Some(false),
             b"--restore" => restore = Some(true),
             b"--verbose" => {}
+            b"--interactive" => (force_interactive, after_interactive) = (true, true),
+            b"--no-readline" => {}
             _ if b.starts_with(b"--default-packages=") => {}
             // R: the rest are commandArgs()'s, whatever the mode (an
             // Rscript's FILE ends the options before it)
@@ -350,16 +390,15 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
             }
         }
     }
-    // R with neither a file nor -e (`R --vanilla --no-echo < script`, as GNU
-    // R's own build runs R_EXE): stdin is the console, as `-f -` reads it,
-    // when it is not a terminal (R_Interactive is R_isatty(0)); a terminal's
-    // interactive console is not ported, so Rscript's usage stays there
+    // R with neither a file nor -e: stdin is the console. R_Interactive is
+    // TRUE but for -f, --file and -e, then `R_Interactive && (force_interactive
+    // || R_isatty(0))`: `R --vanilla --no-echo < script`, as GNU R's own build
+    // runs R_EXE, is not interactive; a terminal, or --interactive, is (the
+    // console without readline, as `--no-readline`)
     // R: unix/system.c:Rf_initialize_R
+    let mut interactive = false;
     if exprs.is_empty() && file.is_none() && r_file.is_none() {
-        if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-            eprint!("{USAGE}");
-            return 2;
-        }
+        interactive = force_interactive || std::io::IsTerminal::is_terminal(&std::io::stdin());
         r_file = Some(None);
     }
     // R (-f, --file, stdin), not Rscript (a FILE or -e, with --no-echo)
@@ -400,18 +439,24 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
         // not: checked before anything is read (an open pipe does not hold
         // it up)
         // R: unix/system.c:Rf_initialize_R, R_Suicide
-        if !save_given {
+        if !interactive && !save_given {
             eprintln!("Fatal error: you must specify '--save', '--no-save' or '--vanilla'");
             return 2;
         }
-        // `-f -`: the console input is stdin
-        let mut s = Vec::new();
-        if let Err(e) = std::io::Read::read_to_end(&mut std::io::stdin(), &mut s) {
-            eprintln!("robigo-rt: reading stdin: {e}");
+        // INTERIM: interactive R's default SaveAction is SA_SAVEASK, whose
+        // question at the end is the session's clean-up (L's quit), not here yet
+        if interactive && !save_given {
+            eprintln!(
+                "robigo-rt: interactive R without --no-save or --vanilla (the 'Save workspace image?' question) is not implemented yet"
+            );
             return 2;
         }
-        s
-    } else if let Some(f) = file {
+        // the console input is stdin, read as the session goes (below)
+        Vec::new()
+    } else {
+        // (a start with neither -e nor a FILE reads stdin: the console
+        // branch above made it `stdin`)
+        let f = file.expect("robigo: a start with no -e and no FILE is the console's");
         match std::fs::read(&f) {
             Ok(s) => s,
             Err(e) => {
@@ -421,9 +466,6 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
                 return 2;
             }
         }
-    } else {
-        eprint!("{USAGE}");
-        return 2;
     };
     // R_Quiet: --quiet, or --no-echo (which Rscript passes)
     let r_quiet = quiet || !r_mode;
@@ -473,6 +515,8 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
         std::process::exit(2);
     }
     robigo_rt::install(cx);
+    // R_Interactive, as Rf_initialize_R left it, before base and the profiles
+    robigo_rtbuiltins::sysutils::set_interactive(cx, interactive);
     // `.Call` and `dyn.load`, before base binds its stubs
     robigo_rtapi::install(cx);
     // GNU R's boot of base (R_ReplFile of R_HOME's library/base/R/base: the
@@ -578,7 +622,11 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     // end_Rmainloop's R_CleanUp(SA_DEFAULT, 0, 1) runs .Last; after an
     // error, check_session_exit's R_CleanUp(SA_NOSAVE, 1, 0) does not
     // (end_Rmainloop's newline unless R_NoEcho, then .Last: run_session)
-    let ok = run_session(cx, &src);
+    let ok = if stdin {
+        run_session(cx, &mut robigo_rt::repl::Input::Stdin(robigo_rt::repl::StdinBuf::new()))
+    } else {
+        run_session(cx, &mut robigo_rt::repl::Input::Bytes(&src))
+    };
     if !ok {
         // R: main.c:check_session_exit
         cx.reprintf(b"Execution halted\n");
