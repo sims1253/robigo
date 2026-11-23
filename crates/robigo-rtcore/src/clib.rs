@@ -1860,9 +1860,10 @@ pub struct FileStat {
 /// `fstat(fd)` of `f`'s descriptor.
 pub fn fstat(f: &std::fs::File) -> std::io::Result<FileStat> {
     use std::os::fd::AsRawFd;
-    // SAFETY: a zeroed `struct stat` is valid; fstat writes it for an open
-    // descriptor, which `f` holds for the call.
+    // SAFETY: a zeroed `struct stat` is valid (plain integers).
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: fstat writes `st` for an open descriptor, which `f` holds for
+    // the call.
     if unsafe { libc::fstat(f.as_raw_fd(), &mut st) } != 0 {
         return Err(std::io::Error::last_os_error());
     }
