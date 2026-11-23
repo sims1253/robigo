@@ -9,9 +9,8 @@
     scripts/perf.py recheck BASE.json NEW.json [--robigo BIN]   # compare, re-measuring what is slower
     scripts/perf.py report FILE.json [--markdown]
     scripts/perf.py rt-bars --robigo-rt BIN [--main BIN] [--gnur FILE] [--cycles] [--out FILE]  # the M1 bars
-        (its starts, [[startup]], rebuild this checkout's .robigo/rt-home* trees for each binary in turn
-        unless --trees/--main-trees give them, leaving main's: not beside an rt-ci in the same checkout;
-        --no-startup skips them)
+        (its starts, [[startup]], boot each binary from R_HOME trees built afresh in a scratch directory,
+        never this checkout's .robigo, unless --trees/--main-trees give packed ones; --no-startup skips them)
     scripts/perf.py rt-gnur --out FILE    # GNU R's side of the bars, measured on this machine
 
 Suites are listed in benchmarks/benchmarks.toml. Every program runs in the
@@ -909,6 +908,9 @@ def cmd_rt_bars(a):
     errors = [e for b in spec["bar"] for e in rt_acceptance_errors(b)]
     with open(RT_ROWS, "rb") as f:
         errors += rt_guard_errors(spec, {r["name"] for r in tomllib.load(f)["row"]})
+    # (a misspelled start fails here, before minutes of measurement)
+    if spec.get("startup"):
+        errors += rt_startup().spec_errors(spec["startup"])
     if errors:
         for e in errors:
             print(f"rt-bars: {os.path.relpath(a.bars, ROOT)}: {e}")
@@ -1086,7 +1088,8 @@ def main():
                                    "--pack-trees); built here when not given (not in CI)")
     p.add_argument("--main-trees", help="the same for main's binary")
     p.add_argument("--no-startup", action="store_true",
-                   help="skip the starts (they rebuild the checkout's .robigo/rt-home-db per binary)")
+                   help="skip the starts (each binary's R_HOME trees are built in a scratch directory unless "
+                        "--trees/--main-trees give packed ones)")
     p = sub.add_parser("rt-gnur", help="GNU R's side of the M1 bars, measured on this machine")
     p.add_argument("--bars", default=RT_BARS)
     p.add_argument("--jobs", type=int, default=os.cpu_count())

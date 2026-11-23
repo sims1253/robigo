@@ -561,6 +561,10 @@ impl Globals {
     pub(crate) fn remove(&mut self, i: u32) {
         let x = &mut self.slots[i as usize];
         assert!(!x.is_null(), "robigo: a global released twice");
+        // a freeze root (the boot heap's freeze): a frozen value released
+        // leaves the frozen graph
+        // SAFETY: a global's value is live until it is released.
+        unsafe { robigo_heap::note_overwritten(*x) };
         *x = Sexp::NULL;
         self.free.push(i);
     }
