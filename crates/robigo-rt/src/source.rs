@@ -73,9 +73,9 @@ pub fn do_parse(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
                 cx.warning(&format!("argument 'encoding = \"{e}\"' will be ignored"))?;
             }
         }
-        if source.bind(cx).sexptype() == ENVSXP {
-            return Err(cx.error("robigo: parse() with source references (keep.source = TRUE) is not implemented yet"));
-        }
+        // an environment srcfile: source references (gram.y's keepSrcRefs)
+        // R: source.c:do_parse, gram.y:R_Parse
+        let srcfile = (source.bind(cx).sexptype() == ENVSXP).then_some(source);
         let srcname = parse_filename(cx, source);
         if tlen == 0 {
             if ifile < 3 {
@@ -115,7 +115,7 @@ pub fn do_parse(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
                 }
                 let num = if num == i32::MIN { -1 } else { num };
                 let mut end = read;
-                let r = parse_text(cx, &src, known_utf8, num, &srcname, &mut end, out);
+                let r = parse_text(cx, &src, known_utf8, num, &srcname, srcfile, &mut end, out);
                 if give_back && end < read && !crate::connections::unread(cx, ifile, read - end)? {
                     return Err(cx.error("robigo: parse() could not leave the rest of the connection unread"));
                 }
@@ -145,7 +145,7 @@ pub fn do_parse(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
             }
         }
         let known = if all_known { utf8 } else { known_utf8 };
-        parse_text(cx, &src, known, num, &srcname, &mut 0, out)
+        parse_text(cx, &src, known, num, &srcname, srcfile, &mut 0, out)
     })
 }
 
@@ -189,6 +189,7 @@ fn parse_text(
     known_utf8: bool,
     num: i32,
     srcname: &str,
+    srcfile: Option<Root<'_>>,
     consumed: &mut usize,
     out: Out<'_>,
 ) -> RResult<()> {
@@ -232,5 +233,8 @@ fn parse_text(
     // the lexer's warnings up to the last expression's terminator
     *consumed = if num < 0 { src.len() } else { end };
     signal(cx, if num < 0 { usize::MAX } else { end.saturating_sub(1) })?;
-    crate::reader::lower_all(cx, &exprs, known_utf8, out)
+    match srcfile {
+        Some(f) => crate::reader::lower_all_src(cx, src, &exprs, known_utf8, f, out),
+        None => crate::reader::lower_all(cx, &exprs, known_utf8, out),
+    }
 }
