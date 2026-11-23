@@ -471,6 +471,23 @@ class SlotPool(unittest.TestCase):
         lost, recs, _ = Batches.run_fake(self, 3, HANG_AT=2)
         self.assertEqual((lost, len(recs)), ({2: "timeout"}, 2))
 
+    def test_a_pool_directory_removed_mid_run_is_made_again(self):
+        # (/tmp/robigo-conf-slots-<uid> is in a place that gets cleaned)
+        pool = self.pool()
+        with pool.take() as held:
+            self.assertEqual(held.count, 1)
+        shutil.rmtree(pool.dir)
+        with pool.take() as held:
+            self.assertEqual(held.count, 1)
+        self.assertEqual(os.stat(pool.dir).st_mode & 0o777, 0o700)
+        # one that cannot be made again is the pool's error, naming it
+        shutil.rmtree(pool.dir)
+        open(pool.dir, "w").close()
+        self.addCleanup(lambda: os.path.isfile(pool.dir) and os.remove(pool.dir))
+        with self.assertRaises(conf_slots.PoolError) as e:
+            pool.take()
+        self.assertIn(pool.dir, str(e.exception))
+
     def test_the_pool_follows_rt_cis_rule(self):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)

@@ -112,6 +112,12 @@ class Pool:
         told apart from a hung case), then up to k - 1 more that are free at
         that moment, without waiting (so no holder of some ever waits for
         more: two takers cannot deadlock)."""
+        # the directory made and checked again on every take, as the Rust
+        # runner's take_slot does: a cleaned /tmp mid-run gets a new private
+        # pool directory, not a crash
+        problem = private_dir(self.dir)
+        if problem:
+            raise PoolError(f"ROBIGO_CONF_SLOTS_DIR {problem}")
         start = (os.getpid() * 31 + threading.get_ident()) % self.n
         since, said = time.monotonic(), None
         held = Held()
@@ -154,7 +160,10 @@ class Held:
                 continue
             # (not inherited: a child that outlived its parent's release
             # would otherwise keep the slot)
-            f = open(path, "a")
+            try:
+                f = open(path, "a")
+            except OSError as e:
+                raise PoolError(f"open {path}: {e}") from e
             try:
                 fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
