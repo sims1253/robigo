@@ -439,7 +439,7 @@ pub(crate) fn refused(why: &crate::code::Malformed) {
     count(Outcome::Refused);
     let what = format!("a cached translation the verifier refuses ({why})");
     crate::compile::crosscheck::report(&format!("unexpected: translation cache: {what}"));
-    if std::env::var_os("ROBIGO_TRANSLATION_CACHE").is_some_and(|v| v == "verify") {
+    if verifying_all() {
         eprintln!("translation cache: {what}");
     }
 }
@@ -803,6 +803,7 @@ unsafe fn typed_ok(b: &Built) -> bool {
 
 /// The writer's state: the entries made so far, per package, and the
 /// argument codes of the translation under way.
+#[derive(Default)]
 struct Writer {
     entries: Vec<Vec<(Key, Vec<u8>)>>,
     /// The argument codes of the translation under way: one at a time (a
@@ -812,12 +813,6 @@ struct Writer {
     skipped: HashMap<&'static str, usize>,
     /// A verification's capture: the fresh translation's entry ([`verify_end`]).
     verified: Option<Result<Entry, &'static str>>,
-}
-
-impl Writer {
-    fn new() -> Writer {
-        Writer { entries: Vec::new(), args: Vec::new(), skipped: HashMap::new(), verified: None }
-    }
 }
 
 /// The cache's per-isolate state (`RtState::tcache`): one word, empty until
@@ -860,10 +855,7 @@ fn capturing(cx: &Cx) -> bool {
 /// trusted, wherever translations are compared.
 pub(crate) fn verify_enabled() -> bool {
     static V: OnceLock<bool> = OnceLock::new();
-    *V.get_or_init(|| {
-        std::env::var_os("ROBIGO_TRANSLATION_CACHE").is_some_and(|v| v == "verify")
-            || crate::compile::crosscheck::enabled()
-    })
+    *V.get_or_init(|| verifying_all() || crate::compile::crosscheck::enabled())
 }
 
 /// A fresh translation of a hit's byte code begins, to verify it.
@@ -908,7 +900,7 @@ pub(crate) fn verify_end(cx: &Cx, cached: &Entry) -> bool {
             None => "the fresh translation was not captured".to_owned(),
         };
         crate::compile::crosscheck::report(&format!("unexpected: translation cache: {what}"));
-        if std::env::var_os("ROBIGO_TRANSLATION_CACHE").is_some_and(|v| v == "verify") {
+        if verifying_all() {
             eprintln!("translation cache: {what}");
         }
     }
@@ -935,7 +927,7 @@ pub(crate) unsafe fn writer_begin(cx: &Cx, bc: Sexp) -> bool {
     {
         let w = &state(cx).writer;
         let mut w = w.borrow_mut();
-        let w = w.get_or_insert_with(Writer::new);
+        let w = w.get_or_insert_with(Writer::default);
         w.args.clear();
     }
     true
@@ -953,7 +945,7 @@ pub(crate) fn skip(cx: &Cx, why: &'static str) {
 
 /// [`skip`] on the writer's cell.
 fn skip_in(writer: &RefCell<Option<Writer>>, why: &'static str) {
-    *writer.borrow_mut().get_or_insert_with(Writer::new).skipped.entry(why).or_insert(0) += 1;
+    *writer.borrow_mut().get_or_insert_with(Writer::default).skipped.entry(why).or_insert(0) += 1;
 }
 
 /// The translation under way was abandoned (an attempt that returned a
