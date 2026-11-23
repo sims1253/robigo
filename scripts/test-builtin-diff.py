@@ -229,6 +229,8 @@ FAKE = textwrap.dedent("""\
     # batch's readRDS can)
     time.sleep(float(os.environ.get("START_DELAY", "0")))
     open(os.path.join(out, "started"), "w").close()
+    # the boot the harness set (robigo-rt's ROBIGO_RT_BOOT)
+    open(os.path.join(out, "boot"), "w").write(os.environ.get("ROBIGO_RT_BOOT", "unset"))
     if os.environ.get("SLOT_FILE"):
         # whether the slot is held while this process runs
         import fcntl
@@ -338,7 +340,7 @@ class Batches(unittest.TestCase):
                 seen["isolated"] = f.read()
             return {}
         real_isolated = bd.run_isolated
-        a = types.SimpleNamespace(data=d, seed=0, rsrc="x")
+        a = types.SimpleNamespace(data=d, seed=0, rsrc="x", boot=bd.DEFAULT_BOOT)
         for iso in (False, True):
             row = types.SimpleNamespace(isolated=iso, key=lambda seed, j: "k")
             with unittest.mock.patch.object(bd, "oracle_dir", return_value=d), \
@@ -351,6 +353,35 @@ class Batches(unittest.TestCase):
             if remove:
                 shutil.rmtree(remove, ignore_errors=True)
         self.assertEqual(seen, {"batch": "0", "isolated": "0"})
+
+    def test_the_harness_always_sets_the_boot(self):
+        # every boot by name, M1's loader ("interim") as the variable empty:
+        # nothing depends on a binary's default
+        self.assertEqual(bd.boot_env("interim"), {"ROBIGO_RT_BOOT": ""})
+        self.assertEqual(bd.boot_env("rdb"), {"ROBIGO_RT_BOOT": "rdb"})
+        self.assertIn(bd.DEFAULT_BOOT, bd.BOOTS)
+        # an External row's cases run in an environment made from nothing:
+        # the boot is in it
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        drv = os.path.join(d, "fake.py")
+        with open(drv, "w") as f:
+            f.write(FAKE)
+        out = os.path.join(d, "out")
+        env = {**os.environ, **bd.boot_env("rdb"), "A4_LABEL": "x", "N": "1"}
+        with unittest.mock.patch.object(bd, "ENV", {**bd.ENV, "N": "1"}):
+            self.assertEqual(bd.run_isolated([sys.executable, drv], env, "batch", out, 1, "test-boot"), {})
+        with open(os.path.join(out, "boot")) as f:
+            self.assertEqual(f.read(), "rdb")
+
+    def test_another_boot_cannot_rewrite_the_known_lists(self):
+        import types
+        other = next(b for b in bd.BOOTS if b != bd.DEFAULT_BOOT)
+        for flag in ("regen_known", "update"):
+            a = types.SimpleNamespace(boot=other, regen_known=flag == "regen_known", update=flag == "update")
+            with self.assertRaises(SystemExit) as e:
+                bd.cmd_run(a)
+            self.assertIn("DEFAULT_BOOT", str(e.exception))
 
     def test_two_runs_of_one_external_row_at_once_both_pass(self):
         # as two checkouts' `ci` runs on one machine: the row's case
@@ -616,11 +647,12 @@ class RtRuns(unittest.TestCase):
     def test_every_robigo_rt_run_starts_with_the_cache_off(self):
         # the compared runs and --timing's start: one environment, so the
         # start timed is a compared run's (no warm .rtc beside cache-off runs)
-        a = unittest.mock.Mock(rsrc="/src")
+        a = unittest.mock.Mock(rsrc="/src", boot="rdb")
         with unittest.mock.patch.dict(os.environ, {"R_HOME": "/usr/lib/R", "ROBIGO_TRANSLATION_CACHE": "1"}):
             env = bd.rt_env(a, R_ENABLE_JIT="3")
         self.assertNotIn("R_HOME", env)
-        self.assertEqual((env["ROBIGO_TRANSLATION_CACHE"], env["R_ENABLE_JIT"], env["ROBIGO_RSRC"]), ("0", "3", "/src"))
+        self.assertEqual((env["ROBIGO_TRANSLATION_CACHE"], env["R_ENABLE_JIT"], env["ROBIGO_RSRC"], env["ROBIGO_RT_BOOT"]),
+                         ("0", "3", "/src", "rdb"))
         src = open(os.path.join(HERE, "builtin-diff.py")).read()
         self.assertEqual(src.count("= rt_env(a, "), 2)  # run_rt and --timing's start
 

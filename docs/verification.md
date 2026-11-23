@@ -929,7 +929,15 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    criteria (`docs/g3.md` §15.3): the conformance again under gctorture and
    under the moving collector (E3, `ROBIGO_CONF_TIMEOUT` lets a case run
    longer there; a case whose `.requires` names `volume` is left out, for a
-   smaller one that covers its paths), `scripts/rt-stress.sh` (E3: the stress script in fresh
+   smaller one that covers its paths). Those steps, and the retry torture's,
+   torture each case but not its start: `ROBIGO_TORTURE_AFTER_START=1` holds
+   gctorture, `ROBIGO_GC_MOVE`'s moves and `ROBIGO_RETRY_TORTURE` until the
+   start is over. That variable is a test hook, not a GNU R setting: GNU R
+   reads `R_GCTORTURE` in InitMemory and tortures its whole start, and
+   robigo-rt refuses the variable at its start when no torture mode is set.
+   The start keeps two steps of its own, M1's loader and the rdb boot, each
+   under `ROBIGO_GC_MOVE=1` and gctorture from the heap's creation. Then
+   `scripts/rt-stress.sh` (E3: the stress script in fresh
    processes; the ledger's runs take 30 per profile),
    `scripts/rt-overshoot.py` (E4: every slice's overshoot against max(32
    MiB, 10% of the live heap)), the conformance under a small vector limit
@@ -1051,7 +1059,9 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
           them, in a fixed environment (`scripts/rt-startup.py`,
           `docs/ledger/g3/2026-11-23-startup-layout.md`);
         - against main: instructions +0.5%, anonymous memory
-          +max(1%, 64 KiB), peak RSS +5%.
+          +max(2%, 128 KiB) (a coarse tripwire for gross regressions:
+          physical pages follow glibc's placement by tens of KiB; to be
+          replaced by a logical peak), peak RSS +5%.
 
         Tables built at a start are pre-sized; a start that steps by ~80k
         instructions is realloc/memcpy until shown otherwise.
@@ -1060,6 +1070,14 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
         `--separate-callers`, realloc's inclusive cost by the function that
         grew the buffer, as a share of the start): the functions to
         pre-size.
+      - **No collection in a row's window:** every row runs once at N and
+        once at 2N before it is measured, and robigo-rt must collect 0
+        times in both. A row whose work collects by design is marked
+        `collects = true` (the jit rows), and `rt-bars` warns when such a
+        row's counts differ from main's. An allocating row sizes the heap
+        of both sides with `heap = { R_VSIZE = "..." }`. GNU R's counts
+        are reported beside robigo-rt's, not enforced
+        (`docs/ledger/g3/2026-11-23-row-collections.md`).
       - **The binaries:** `rt-bars`, `idiom-vs-r.py` and `rss.py` name every
         binary they measure, in the report and the JSON: its sha256, GNU
         build ID and modification time, and the checkout's `git describe`

@@ -112,7 +112,16 @@ in the other.
 lockstep by hand; a shared predicate would touch rtcore and the code
 `vm::run` was verified with.
 
-The end: X's fold makes the two one body, generic over a const (two
-instances, one source), and tries passing the read's kind into the force,
-so that the separate depth compare, and with it the guard rows' +0.36%,
-goes away.
+The end, done by step 1b (docs/ledger/g3/2026-11-23-single-read.md):
+- **One body.** The two are now `get_var_in::<KEEPMISS, P>`, generic over
+  the read's kind and over where it reads (`ReadPlace`: an activation's
+  registers, or a rooted environment and an out slot). `get_var` and
+  `get_var_keepmiss` are thin out-of-line wrappers with their old
+  signatures, and `vm::run` is byte-identical.
+- **One depth test.** It is robigo-rtcore's `Cx::force_depth_overflows`,
+  which `inline_force_due` and `forced_as` both call.
+- **The kind passed into the force was not done: it does not pay.** On
+  guard-subset-dbl the MISSOK read is a plain value (it takes
+  `symbol_value_as`), so the depth compare never runs there. The guard
+  rows' +0.36% is the MISSOK path's own code (53 instructions per read in
+  `get_var_keepmiss`), not the compare.

@@ -406,6 +406,33 @@ fn torture_from_env() -> (i32, i32) {
     (if wait > 0 { wait } else { gap }, gap)
 }
 
+/// `ROBIGO_TORTURE_AFTER_START`: a test hook, not a GNU R setting. `1`
+/// asks the embedder that arms it (robigo-rt's front end: where it arms
+/// `ROBIGO_FAIL_ALLOC_AT`) to hold the environment's gctorture
+/// (`R_GCTORTURE`, `ROBIGO_GCTORTURE`) and `ROBIGO_GC_MOVE`'s moves through
+/// the start ([`Core::hold_torture_until_armed`], then
+/// [`Core::arm_after_start`]), so a torture run does not torture every
+/// case's start. The heap never reads it itself: an embedder that would not
+/// arm must not hold. Unset (the default) is GNU R's: InitMemory reads the
+/// torture settings, and the whole start runs under them.
+///
+/// # Panics
+/// On a value other than unset, empty, `0` or `1`.
+pub fn torture_after_start_from_env() -> bool {
+    match std::env::var("ROBIGO_TORTURE_AFTER_START").as_deref() {
+        Ok("1") => true,
+        Ok("0") | Ok("") | Err(_) => false,
+        Ok(other) => panic!("robigo: ROBIGO_TORTURE_AFTER_START={other:?} is neither \"0\" nor \"1\""),
+    }
+}
+
+/// Whether the environment turns gctorture on, read as the heap reads it
+/// at its creation (InitMemory's init_gctorture: `R_GCTORTURE`, else
+/// `ROBIGO_GCTORTURE`, a positive gap after atoi).
+pub fn gctorture_from_env() -> bool {
+    torture_from_env().1 > 0
+}
+
 /// One heap and its tables. Single-threaded, like R's values.
 pub struct Core {
     heap: Heap,
@@ -521,6 +548,15 @@ pub struct Core {
     /// `ROBIGO_GC_MOVE` (`mover.rs`): collections move what they may and
     /// poison the old copies.
     gc_move: bool,
+    /// Under `gc_move`: collections may move. Off from the core's creation
+    /// to [`Core::arm_after_start`] under `ROBIGO_TORTURE_AFTER_START=1`:
+    /// the mode's bookkeeping (what C was handed, no freeze) runs from the
+    /// creation, only the moves wait, and the young:N count starts at the
+    /// arming (every object made before it is young then).
+    moves_armed: bool,
+    /// The environment's torture counters `(wait, gap)`, held until
+    /// [`Core::arm_after_start`] under `ROBIGO_TORTURE_AFTER_START=1`.
+    torture_held: Option<(i32, i32)>,
     /// `ROBIGO_GC_MOVE=young:N`'s state (`mover.rs`), boxed: the debug
     /// collector's, kept out of the core's own layout.
     young: Box<mover::Young>,
@@ -1028,6 +1064,8 @@ impl Core {
             gcstarttimes: [0.0; 5],
             call65_plain: std::env::var_os("ROBIGO_CALL65_PLAIN").is_some_and(|v| v == "1"),
             gc_move: mover::policy_from_env().is_some(),
+            moves_armed: true,
+            torture_held: None,
             young: Box::new(mover::Young::new(mover::policy_from_env().unwrap_or(0))),
             quarantine: Vec::new(),
             diag: diag::Diag::from_env(),
@@ -1076,7 +1114,9 @@ impl Core {
             }
             c.count(bytes, cells);
         }
-        // like InitMemory: once the constants exist
+        // like InitMemory: once the constants exist. (ROBIGO_TORTURE_AFTER_START
+        // is not read here: the embedder that arms the hold decides it,
+        // Core::hold_torture_until_armed; every other one never holds)
         (c.force_wait, c.force_gap) = torture_from_env();
         c.retrigger();
         c
@@ -2499,6 +2539,41 @@ impl Core {
         self.gc_torture(on as i32, 0);
     }
 
+    /// Hold the torture set now (gctorture's counters, `ROBIGO_GC_MOVE`'s
+    /// moves) until [`Core::arm_after_start`]: what
+    /// `ROBIGO_TORTURE_AFTER_START=1` does when the core is made. The
+    /// moving mode's bookkeeping goes on; only its moves wait.
+    /// Whether a hold ([`Core::hold_torture_until_armed`]) is waiting for its
+    /// arming.
+    pub fn torture_held(&self) -> bool {
+        !self.moves_armed
+    }
+
+    pub fn hold_torture_until_armed(&mut self) {
+        // (only a gctorture that is on is held: with moves alone held, a
+        // gctorture(TRUE) the start itself calls is not undone at the
+        // arming; and one held gives way to any setting the start makes,
+        // [`Core::gc_torture`])
+        if self.force_wait > 0 {
+            self.torture_held = Some((self.force_wait, self.force_gap));
+            (self.force_wait, self.force_gap) = (0, 0);
+        }
+        self.moves_armed = false;
+        self.retrigger();
+    }
+
+    /// The torture `ROBIGO_TORTURE_AFTER_START=1` held from the core's
+    /// creation, armed: the environment's gctorture counters, and
+    /// `ROBIGO_GC_MOVE`'s moves. Without the variable, nothing changes
+    /// (both have been on since the creation).
+    pub fn arm_after_start(&mut self) {
+        self.moves_armed = true;
+        if let Some((wait, gap)) = self.torture_held.take() {
+            (self.force_wait, self.force_gap) = (wait, gap);
+            self.retrigger();
+        }
+    }
+
     /// Start E9's injection knob (`ROBIGO_FAIL_ALLOC_AT`), if the
     /// environment set it: allocations are counted from here, and the
     /// `n`th one is refused once. The embedder arms it where the program
@@ -2534,7 +2609,12 @@ impl Core {
     /// safepoint serves it.
     // R: memory.c:R_gc_torture (without PROTECTCHECK: no inhibit_release)
     pub fn gc_torture(&mut self, gap: i32, wait: i32) {
+        // (during ROBIGO_TORTURE_AFTER_START's hold, a setting the start
+        // makes itself, gctorture(FALSE) or another gap, is the start's:
+        // the held counters give way and the arming does not override it;
+        // a negative gap, NA's, sets nothing and keeps them)
         if gap >= 0 {
+            self.torture_held = None;
             self.force_wait = gap;
             self.force_gap = gap;
         }
@@ -3083,7 +3163,7 @@ impl Core {
                 self.mark_heap_roots();
                 roots.trace(&mut Mark(self));
                 self.mark_rest();
-                if self.gc_move {
+                if self.gc_move && self.moves_armed {
                     let moved = self.evacuate();
                     Self::forward_roots(roots);
                     self.forward_heap();

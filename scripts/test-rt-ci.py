@@ -501,6 +501,35 @@ class RtCi(unittest.TestCase):
                         and not (rt.CONFORMANCE in cmd and "--exact" in cmd):
                     self.assertTrue(rt.crate_test_threads(cmd), f"{shard}: {title}: {cmd}")
 
+    def test_the_torture_steps_torture_the_cases_and_one_step_per_boot_the_start(self):
+        # every conformance step under a torture mode holds it through the
+        # start (ROBIGO_TORTURE_AFTER_START=1); the start keeps one step per
+        # boot under the moving collector and gctorture from the creation
+        crates = ["robigo-rt", "robigo-rtapi", "robigo-rtcore"]
+        plans = rt.steps(crates) + rt.full_move_steps() + rt.freeze_check_steps()
+        torture = ("ROBIGO_GCTORTURE", "ROBIGO_GC_MOVE", "ROBIGO_RETRY_TORTURE")
+        seen = 0
+        for title, env, cmd in plans:
+            if rt.CONFORMANCE in cmd and "--exact" in cmd and any(k in env for k in torture):
+                seen += 1
+                self.assertEqual(env.get("ROBIGO_TORTURE_AFTER_START"), "1", title)
+                if "ROBIGO_GC_MOVE" in env:
+                    self.assertEqual(env.get("ROBIGO_GC_FREEZE"), "0", title)
+        self.assertGreaterEqual(seen, 5)
+        starts = [(t, e, c) for t, e, c in rt.steps(crates) if t.startswith("the start tortured")]
+        self.assertEqual(sorted(e["ROBIGO_RT_BOOT"] for _t, e, _c in starts), ["", "rdb"])
+        for title, env, cmd in starts:
+            self.assertEqual(env["ROBIGO_TORTURE_AFTER_START"], "0", title)
+            self.assertEqual((env["R_GCTORTURE"], env["R_GCTORTURE_WAIT"], env["ROBIGO_GCTORTURE"], env["ROBIGO_GC_MOVE"]),
+                             ("1", "1", "1", "1"), title)
+            # (the freeze is off under any move mode; said, as every GC_MOVE step says it)
+            self.assertEqual(env["ROBIGO_GC_FREEZE"], "0", title)
+            self.assertEqual(cmd[0], rt.rt_binary())
+        # the rdb one after base's database tree is written
+        titles = [t for t, _e, _c in rt.steps(crates)]
+        tree = next(i for i, t in enumerate(titles) if t.startswith("base's database tree"))
+        self.assertGreater(titles.index(starts[1][0] if starts[1][1]["ROBIGO_RT_BOOT"] else starts[0][0]), tree)
+
     def test_each_shards_crate_tests_are_built_in_a_step_of_their_own(self):
         # a crate-test step's time is its tests' alone: its build (the same
         # command with --no-run, the same RUSTFLAGS and target) comes first,

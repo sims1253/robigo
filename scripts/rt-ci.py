@@ -391,6 +391,42 @@ def conformance_command():
 # default 20 s allow)
 SLOW = {"ROBIGO_CONF_TIMEOUT": "600"}
 
+# The torture modes' conformance steps torture each case, not its start:
+# the runtime holds them until the start is over (robigo-heap's
+# ROBIGO_TORTURE_AFTER_START, a test hook; GNU R itself tortures the start,
+# init_gctorture in InitMemory). The start keeps its own steps, one per boot
+# (START_TORTURE), under the moving collector and gctorture from the start.
+AFTER_START = {"ROBIGO_TORTURE_AFTER_START": "1"}
+
+# The start itself, tortured: under the moving collector and gctorture from
+# the heap's creation (no ROBIGO_TORTURE_AFTER_START), each boot runs this,
+# whose start is the point (stage 0 or the rdb loader and its lazy-load
+# fetches, the system profile, the compiler's load when the JIT is on): an
+# unrooted object anywhere in it is moved under its holder and read as
+# poison. The JIT is on (R_ENABLE_JIT=3, set, not the default's), so the
+# compiler's namespace loads in the start; the script then fetches a few of
+# base's lazy-loaded bindings and runs a loop the JIT compiles. (A package
+# load, library(stats), waits for the tree to have one.)
+START_SCRIPT = ('invisible(lapply(c("paste", "format", "sprintf", "regmatches", "Reduce", "tryCatch"), '
+                'function(f) get(f, baseenv()))); '
+                'f <- function(n) { s <- 0; for (i in seq_len(n)) s <- s + i; s }; '
+                'stopifnot(f(10) == 55, f(20) == 210); cat("started\\n")')
+# (GNU R's boot, rdb's, loads the compiler's namespace in the start when the
+# JIT is on, main.c R_init_jit_enabled; M1's loader sets the JIT up without it)
+START_COMPILER = 'stopifnot("compiler" %in% loadedNamespaces()); '
+
+
+def start_torture_step(boot):
+    """The step that runs START_SCRIPT under `boot` (ROBIGO_RT_BOOT's value,
+    "" for M1's loader) with the start tortured."""
+    name = {"": "M1's loader", "rdb": "the rdb boot"}[boot]
+    return (f"the start tortured: {name} under ROBIGO_GC_MOVE=1 and gctorture from the heap's creation",
+            # (set outright: an inherited hold or R_GCTORTURE=0 would take
+            # the start's torture away)
+            {"ROBIGO_RT_BOOT": boot, "R_GCTORTURE": "1", "R_GCTORTURE_WAIT": "1", "ROBIGO_GCTORTURE": "1",
+             "ROBIGO_GC_MOVE": "1", **FREEZE_OFF, "ROBIGO_TORTURE_AFTER_START": "0", "R_ENABLE_JIT": "3"},
+            [rt_binary(), "--vanilla", "-e", (START_COMPILER if boot == "rdb" else "") + START_SCRIPT])
+
 
 # TEMPORARY (2026-11-23): two cases given 60 s in the conformance steps
 # that run at the runner's default 20 s, because each failed local gates
@@ -455,7 +491,8 @@ def full_move_steps():
         release_build(),
         db_tree(rt_binary()),
         ("conformance under ROBIGO_GC_MOVE=1 with gctorture (every collection moves everything)",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **FREEZE_OFF, **SLOW, "ROBIGO_CONF_TIMEOUTS": full_slow},
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **FREEZE_OFF, **AFTER_START, **SLOW,
+          "ROBIGO_CONF_TIMEOUTS": full_slow},
          conformance_command()),
     ])
 
@@ -490,7 +527,7 @@ def freeze_check_steps():
         db_tree(rt_binary()),
         ("conformance under gctorture, the freeze checked at every collection",
          {"ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "1", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
-          **SLOW, "ROBIGO_CONF_TIMEOUTS": case_timeouts(FREEZE_CHECK_SLOW)},
+          **AFTER_START, **SLOW, "ROBIGO_CONF_TIMEOUTS": case_timeouts(FREEZE_CHECK_SLOW)},
          conformance_command()),
     ])
 
@@ -533,6 +570,8 @@ def steps(crates):
         # names the source tree, the script and the binary) and those tests
         # run instead of skipping on a fresh checkout (TREE_RUNS)
         db_tree(rt_binary()),
+        start_torture_step(""),
+        start_torture_step("rdb"),
         ("the crates' tests (quick profile)", TREE_RUNS, [*crate, *pkgs, *skip]),
         ("boot from base's database (ROBIGO_RT_BOOT=rdb)", {"ROBIGO_RT_HOME_DB": "1"},
          [*test, "-p", "robigo-rtapi", "--test", "boot_db", *skip]),
@@ -592,7 +631,7 @@ def steps(crates):
         # against 97 s without it, past the case timeout; about 1.3x at 16)
         ("conformance under gctorture (E3)",
          {"ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "16", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
-          **slow, "ROBIGO_CONF_TIMEOUTS": case_timeouts({**GCTORTURE_FIRST, **GCTORTURE_SLOW})}, conformance),
+          **AFTER_START, **slow, "ROBIGO_CONF_TIMEOUTS": case_timeouts({**GCTORTURE_FIRST, **GCTORTURE_SLOW})}, conformance),
         # every argument a PROMSXP at call entry (GNU R's representation,
         # through the same binding-kind transitions): docs/g3.md §16's
         # ROBIGO_MATERIALIZE=1. Every rt crate, as the steps above: cargo
@@ -608,7 +647,7 @@ def steps(crates):
         # H8: the young objects at each collection, everything at every N-th;
         # the nightly runs it with every collection moving everything
         (f"conformance under ROBIGO_GC_MOVE={GC_MOVE_YOUNG} with gctorture (E3)",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": GC_MOVE_YOUNG, **FREEZE_OFF, **slow,
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": GC_MOVE_YOUNG, **FREEZE_OFF, **AFTER_START, **slow,
           "ROBIGO_CONF_TIMEOUTS": case_timeouts({**GCTORTURE_FIRST, **YOUNG_MOVE_FIRST, **YOUNG_MOVE_SLOW})}, conformance),
         # D5's frame recycling (docs/g3.md §16): every frame that would be recycled
         # is poisoned and held back instead, so a frame that escaped without
@@ -661,7 +700,7 @@ def steps(crates):
         ("base's database tree for ROBIGO_RETRY_TORTURE's build (scripts/rt-home-db.sh)", {},
          ["scripts/rt-home-db.sh", "--robigo-rt", rt_binary()]),
         ("conformance under ROBIGO_RETRY_TORTURE=1 (E9: every build's retry runs once)",
-         {"ROBIGO_RETRY_TORTURE": "1", **slow},
+         {"ROBIGO_RETRY_TORTURE": "1", **AFTER_START, **slow},
          [*test, "-p", "robigo-rtapi", "--features", CHECK_FEATURES, "--test", "conformance", "--",
           "--exact", CONFORMANCE, "--nocapture"]),
         # C1 (#979, the bot's round 2): a translation-cache verification whose
