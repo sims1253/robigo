@@ -1,10 +1,10 @@
-# paste() long enough to collect inside one call (Cx::fill_strings): under
-# gctorture, or the young-moving collector, a collection runs between two
-# elements, and each element is made again from the arguments' roots (an
+# paste() long enough to collect inside one call (Cx::fill_strings) under
+# gctorture, or the young-moving collector with it: a collection runs between
+# two elements, and each element is made again from the arguments' roots (an
 # object's as.character() value among them) into a result read again from
 # its root. The values are GNU R's.
-x <- paste0("u", 1:20000)
-length(x); x[c(1, 2, 9999, 20000)]
+x <- paste0("u", 1:2000)
+length(x); x[c(1, 2, 999, 2000)]
 sum(nchar(x)); length(unique(x))
 y <- paste("a", 1:5000, c("x", "y"), sep = "-")
 y[c(1, 2, 4999, 5000)]; sum(nchar(y))

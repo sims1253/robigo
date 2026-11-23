@@ -95,6 +95,13 @@
 //! to collect inside one call: anything else that allocates (sprintf's and
 //! format's formatting buffers, coerce's list paths) or a refusal-retry
 //! path of its own.
+//!
+//! A conversion also makes existing cases with long per-element loops
+//! collect at every element under torture, as GNU R's do: each one reports
+//! the per-case seconds of rt-ci's two torture steps (gctorture, and
+//! young:16 with it) before and after, and fixes its own outliers before
+//! it is filed, as the paste conversion did (`tests/rt/env/large-frames.R`
+//! makes its names outside torture).
 
 #![allow(unsafe_code)]
 
