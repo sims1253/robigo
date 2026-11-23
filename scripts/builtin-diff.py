@@ -939,8 +939,19 @@ def cmd_run(a):
     return status
 
 
+def cargo_target():
+    """cargo's target directory for this checkout, as rt-ci.py resolves it
+    (CARGO_TARGET_DIR, the configs' build.target-dir, else ROOT/target): the
+    tree rt-ci wrote and the binary here must be the same build's."""
+    p = subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"],
+                       cwd=ROOT, stdout=subprocess.PIPE, text=True)
+    if p.returncode != 0:
+        sys.exit("builtin-diff: cargo metadata failed: cannot find the target directory")
+    return json.loads(p.stdout)["target_directory"]
+
+
 def default_rt():
-    p = os.path.join(os.environ.get("CARGO_TARGET_DIR", os.path.join(ROOT, "target")), "release", "robigo-rt")
+    p = os.path.join(cargo_target(), "release", "robigo-rt")
     if not os.path.exists(p):
         sys.exit(f"builtin-diff: no robigo-rt at {p} (cargo build --release -p robigo-rtapi --bin robigo-rt, "
                  "or --robigo-rt BIN)")
@@ -1081,7 +1092,7 @@ PLANT_FEATURE = "robigo-rtbuiltins/diff-plant"
 def cmd_ci(a):
     """rt-ci.py's step: every row against the release binary the steps before
     built, then the plant check with a build of robigo-rt with the plants."""
-    target = os.environ.get("CARGO_TARGET_DIR", os.path.join(ROOT, "target"))
+    target = cargo_target()
     work = os.path.join(ROOT, ".robigo", "builtin-diff")
     os.makedirs(work, exist_ok=True)
     rel = os.path.join(target, "release", "robigo-rt")

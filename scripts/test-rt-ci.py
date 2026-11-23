@@ -546,11 +546,16 @@ class RtCi(unittest.TestCase):
             binary, tree = {}, {}
             for title, env, cmd in plan:
                 target = env.get("CARGO_TARGET_DIR", "")
-                release = cmd[:2] == ["cargo", "test"] and "--release" in cmd and "-p" in cmd \
-                    and "robigo-rtapi" in cmd and ("--no-run" in cmd or rt.CONFORMANCE in cmd or "boot_db" in cmd)
+                # (any release cargo test of robigo-rtapi builds the binary and
+                # may run it: the conformance, boot_db, the crates' tests that
+                # spawn it, a --no-run build)
+                release = cmd[:2] == ["cargo", "test"] and "--release" in cmd and "robigo-rtapi" in cmd
                 if release:
                     binary[target] = build_of(cmd)
                 if cmd[:1] == ["scripts/rt-home-db.sh"]:
+                    # the tree is the named binary's: the release one of this target
+                    exe = cmd[cmd.index("--robigo-rt") + 1]
+                    self.assertEqual(exe, rt.rt_binary(target or None), f"{name}: {title}: another binary")
                     tree[target] = binary.get(target)
                     continue
                 if "scripts/builtin-diff.py" in cmd:
@@ -563,6 +568,80 @@ class RtCi(unittest.TestCase):
                 self.assertEqual(tree[target], binary.get(target),
                                  f"{name}: {title}: the tree was written by another build")
         self.assertGreater(checked, 20)
+
+    # Every file that runs a robigo-rt binary, and how that binary gets base's
+    # database tree written by itself (a binary naming no boot boots rdb once
+    # it is the default). A file that starts running one fails the test below
+    # until it is listed here with its way.
+    TREE_CALLERS = {
+        "scripts/rt-ci.py": "its plans: each binary's tree before its steps (the walk test above)",
+        "scripts/builtin-diff.py": "rt-ci's builtin-diff shard writes the tree first; both binaries start with "
+                                   "ROBIGO_TRANSLATION_CACHE=0 (another build's .rtc is a miss)",
+        "scripts/corpus.py": "rt_trees.ensure in robigo_rt_path; CI's rt-corpora unpacks perf-rt-build's trees",
+        "scripts/wall13.py": "rt_trees.ensure before the first run (local only)",
+        "scripts/rt-build-gaps.py": "rt_trees.ensure before its probes (local only)",
+        "scripts/rt-startup.py": "make_trees / --pack-trees / --trees-from: perf's rows and starts boot its trees",
+        "scripts/perf.py": "rt-startup's trees (rt-starts --trees, rt-bars' make_trees)",
+        "scripts/rt_trees.py": "is the way",
+        "scripts/rt-home-db.sh": "writes the tree (boots stage0 itself)",
+        "scripts/rt-base-build.sh": "names its boot (ROBIGO_RT_BOOT=stage0)",
+        "scripts/rt-rdb-compare.sh": "reads trees, runs no binary at a default boot",
+        "scripts/pgo-build.sh": "L's flip branch makes its training run's tree",
+        "scripts/rt-stress.sh": "rt-ci's step after the tree; by hand, the checkout's tree",
+        "scripts/rt-overshoot.py": "rt-ci's step after the tree; by hand, the checkout's tree",
+        "scripts/rt-fail-alloc.py": "rt-ci's step after the tree; by hand, the checkout's tree",
+        "scripts/rt-tcache-mutate.py": "rt-ci's step after the tree; by hand, the checkout's tree",
+        ".github/workflows/ci.yml": "rt-ci's shards; rt-corpora unpacks dist/rt-trees.tar; perf-rt boots "
+                                   "--trees dist/rt-trees.tar",
+    }
+
+    def test_every_robigo_rt_caller_says_how_its_binary_gets_its_tree(self):
+        import re
+        pat = re.compile(r"--robigo-rt\b|release/robigo-rt|ROBIGO_RT_BIN|dist/robigo-rt|CARGO_BIN_EXE_robigo-rt")
+        root = HERE.parent
+        found = set()
+        for p in list(root.glob("scripts/*.py")) + list(root.glob("scripts/*.sh")) + list(root.glob(".github/workflows/*.yml")):
+            rel = str(p.relative_to(root))
+            if re.match(r"scripts/test[-_]", rel):
+                continue
+            if pat.search(p.read_text(errors="replace")):
+                found.add(rel)
+        self.assertEqual(sorted(found - set(self.TREE_CALLERS)), [], "a robigo-rt caller with no tree listed")
+        self.assertEqual(sorted(set(self.TREE_CALLERS) - found), [], "a listed caller that no longer runs one")
+        # rt-corpora's binary comes with its trees, unpacked before any run
+        yml = (root / ".github" / "workflows" / "ci.yml").read_text()
+        job = re.search(r"\n  rt-corpora:\n(.*?)\n  [a-z0-9-]+:\n", yml, re.S).group(1)
+        self.assertLess(job.index("tar -xf dist/rt-trees.tar"), job.index("corpus.py run"))
+
+    def test_rt_trees_makes_the_tree_only_when_it_is_another_binarys(self):
+        import importlib.util, shutil, subprocess, tempfile
+        from unittest import mock
+        spec_ = importlib.util.spec_from_file_location("rt_trees", HERE / "rt_trees.py")
+        tr = importlib.util.module_from_spec(spec_)
+        spec_.loader.exec_module(tr)
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        b = os.path.join(d, "robigo-rt")
+        open(b, "wb").write(b"binary")
+        ran = []
+        def fake(cmd, **k):
+            ran.append(cmd[0])
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        with mock.patch.object(tr.subprocess, "run", fake):
+            tr.ensure(b, d)            # no tree: both scripts
+            self.assertEqual(ran, ["scripts/rt-home.sh", "scripts/rt-home-db.sh"])
+            os.makedirs(os.path.join(d, ".robigo", "rt-home-db"))
+            os.makedirs(os.path.join(d, ".robigo", "rt-home-db-cache"))
+            for f in ("base.rtc", "compiler.rtc"):
+                open(os.path.join(d, ".robigo", "rt-home-db-cache", f), "w").write("x")
+            with open(os.path.join(d, ".robigo", "rt-home-db", ".rt-home-db"), "w") as f:
+                f.write("R-4.6.2-x 0123 4567 " + tr.binary_hash(b) + "\n")
+            ran.clear()
+            tr.ensure(b, d)            # this binary's, with its cache: nothing
+            self.assertEqual(ran, [])
+            open(b, "wb").write(b"another")
+            tr.ensure(b, d)            # another binary's: made again
+            self.assertEqual(ran, ["scripts/rt-home.sh", "scripts/rt-home-db.sh"])
 
     def test_a_crosscheck_that_compares_fewer_than_its_floor_fails(self):
         # the rdb boot's report: a boot that stopped loading the compiler's

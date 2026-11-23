@@ -1555,6 +1555,11 @@ jobs:
         with:
           name: perf-rt-bins
           path: dist
+      # base's database tree that dist/robigo-rt wrote (perf-rt-build packs
+      # it beside the binary): the cases name no boot, which boots rdb once
+      # it is the default; corpus.py then finds the tree fresh
+      - name: base's database tree for the binary (from perf-rt-build)
+        run: tar -xf dist/rt-trees.tar
       - name: fastr on robigo-rt
         env:
           PR: ${{ github.event.pull_request.number }}
