@@ -57,7 +57,17 @@ fn tree_made() -> bool {
 /// robigo-rt booted from the tree with `args` and the extra environment
 /// `env`: (stdout, stderr, status).
 fn boot(args: &[&std::ffi::OsStr], env: &[(&str, &std::ffi::OsStr)]) -> (String, String, Option<i32>) {
-    boot_bin_reading(std::path::Path::new(env!("CARGO_BIN_EXE_robigo-rt")), args, env, None)
+    boot_bin_reading(std::path::Path::new(env!("CARGO_BIN_EXE_robigo-rt")), args, env, &[], None)
+}
+
+/// [`boot`] with the variables `remove` removed after the rest (the
+/// boot's own `R_DEFAULT_PACKAGES=NULL` among them).
+fn boot_without(
+    args: &[&std::ffi::OsStr],
+    env: &[(&str, &std::ffi::OsStr)],
+    remove: &[&str],
+) -> (String, String, Option<i32>) {
+    boot_bin_reading(std::path::Path::new(env!("CARGO_BIN_EXE_robigo-rt")), args, env, remove, None)
 }
 
 /// [`boot`] with `stdin` as the console's input (None: no stdin).
@@ -66,7 +76,7 @@ fn boot_reading(
     env: &[(&str, &std::ffi::OsStr)],
     stdin: Option<&[u8]>,
 ) -> (String, String, Option<i32>) {
-    boot_bin_reading(std::path::Path::new(env!("CARGO_BIN_EXE_robigo-rt")), args, env, stdin)
+    boot_bin_reading(std::path::Path::new(env!("CARGO_BIN_EXE_robigo-rt")), args, env, &[], stdin)
 }
 
 /// [`boot`] with the robigo-rt at `bin` (its R_HOME the install layout's:
@@ -76,14 +86,16 @@ fn boot_bin(
     args: &[&std::ffi::OsStr],
     env: &[(&str, &std::ffi::OsStr)],
 ) -> (String, String, Option<i32>) {
-    boot_bin_reading(bin, args, env, None)
+    boot_bin_reading(bin, args, env, &[], None)
 }
 
-/// [`boot_bin`] with `stdin` as the console's input (None: no stdin).
+/// [`boot_bin`] with `stdin` as the console's input (None: no stdin), and
+/// the variables `remove` removed last.
 fn boot_bin_reading(
     bin: &std::path::Path,
     args: &[&std::ffi::OsStr],
     env: &[(&str, &std::ffi::OsStr)],
+    remove: &[&str],
     stdin: Option<&[u8]>,
 ) -> (String, String, Option<i32>) {
     // one directory per run (the tests run in parallel)
@@ -91,8 +103,8 @@ fn boot_bin_reading(
     let n = RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let home = std::env::temp_dir().join(format!("robigo-boot-db-home-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
-    let mut o = Command::new(bin)
-        .args(args)
+    let mut cmd = Command::new(bin);
+    cmd.args(args)
         .current_dir(&home)
         // a private cwd and HOME: no caller's .Renviron or .Rprofile
         .env("HOME", &home)
@@ -136,7 +148,11 @@ fn boot_bin_reading(
         .env_remove("ROBIGO_TRANSLATION_CACHE_STATS")
         .env_remove("ROBIGO_TRANSLATION_CACHE_WRITE")
         // the test's own, last (over the removals above)
-        .envs(env.iter().copied())
+        .envs(env.iter().copied());
+    for v in remove {
+        cmd.env_remove(v);
+    }
+    let mut o = cmd
         .stdin(if stdin.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -295,6 +311,54 @@ fn a_user_profile_s_errors_end_it_as_in_gnu_r() {
     assert_eq!((error.0.as_str(), error.1.as_str(), error.2), ("one\n", error_err.as_str(), Some(1)));
     let caught_err = format!("{PROFILE_STOPS}Error: boom\n");
     assert_eq!((caught.0.as_str(), caught.1.as_str(), caught.2), ("one\nscript ran\n", caught_err.as_str(), Some(0)));
+}
+
+/// The tree declares the default packages it has (scripts/rt-home-db.sh's
+/// line in etc/Renviron, R_DEFAULT_PACKAGES): none today, so a start with
+/// no R_DEFAULT_PACKAGES of its own attaches none and says nothing, and
+/// `library()` of one still fails as GNU R's does in a tree without it
+/// (find.package's short cut for the standard packages gives
+/// `.Library/stats`, which holds no installed package: recorded on 4.6.2
+/// with stats removed from the tree, in a throwaway container).
+#[test]
+fn the_default_start_attaches_the_packages_the_tree_has() {
+    if !tree_made() {
+        return;
+    }
+    let expr = "cat(length(getOption('defaultPackages')), search(), '\\n'); \
+                tryCatch(library(stats), error = function(e) cat(conditionMessage(e), '\\n'))";
+    let (out, err, status) =
+        boot_without(&["--vanilla".as_ref(), "-e".as_ref(), expr.as_ref()], &[], &["R_DEFAULT_PACKAGES"]);
+    assert_eq!(
+        (out.as_str(), err.as_str(), status),
+        (
+            "0 .GlobalEnv Autoloads package:base \n\u{2018}stats\u{2019} is not a valid installed package \n",
+            "",
+            Some(0)
+        )
+    );
+}
+
+/// A user's own R_DEFAULT_PACKAGES is kept over the tree's line: a package
+/// the tree lacks gives GNU R's warning at the end of the start (recorded
+/// on 4.6.2 with a package GNU R lacks, under C.UTF-8).
+#[test]
+fn a_user_s_default_packages_warn_as_in_gnu_r() {
+    if !tree_made() {
+        return;
+    }
+    let (out, err, status) = boot(
+        &["--vanilla".as_ref(), "-e".as_ref(), "cat('ran\\n')".as_ref()],
+        &[("R_DEFAULT_PACKAGES", "stats".as_ref())],
+    );
+    assert_eq!(
+        (out.as_str(), err.as_str(), status),
+        (
+            "ran\n",
+            "During startup - Warning message:\npackage \u{2018}stats\u{2019} in options(\"defaultPackages\") was not found \n",
+            Some(0)
+        )
+    );
 }
 
 /// An unknown `ROBIGO_RT_BOOT` (a typo) is an error, not the default boot;

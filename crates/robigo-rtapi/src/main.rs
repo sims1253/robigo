@@ -591,10 +591,12 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
         for c in &env_loc.failed {
             let _ = cx.warning(&format!("Setting {c} failed, using \"C\"\n"));
         }
-        if !cx.collected_warnings().is_empty() {
-            cx.reprintf(b"During startup - ");
-            robigo_rt::repl::print_warnings(cx);
-        }
+    }
+    // (every warning the start collected: .First.sys's for a default
+    // package not found, the profiles', the deferred ones)
+    if !cx.collected_warnings().is_empty() {
+        cx.reprintf(b"During startup - ");
+        robigo_rt::repl::print_warnings(cx);
     }
     // setup_Rmainloop's last step, GNU R's boot: R_init_jit_enabled (the
     // compiler loaded when the JIT is on); M1's loader set the JIT up when
