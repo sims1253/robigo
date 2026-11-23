@@ -31,7 +31,7 @@ use robigo_rtcore::{Cx, RResult, RawBinding, Ref, Root, Slot};
 
 /// The most registers a code object computed early may use (its
 /// registers are a local array: nothing allocates while it runs).
-const MAX_REGS: usize = 12;
+pub(crate) const MAX_REGS: usize = 12;
 
 /// The value of the argument expression `expr` (an actual of compiled
 /// code, so its promise would hold byte code) in `rho`, if computing it runs
@@ -72,16 +72,22 @@ pub(crate) fn value<'s>(
         // unless that arm would evaluate the source instead. Its own arm, so
         // that a call's arm is the one it was (merged, the arm's type test
         // cost +0.1% on binarytrees; `run` is inlined into both)
+        // (the cheap refusals first: no translation yet, or code that is not
+        // early-pure, decided once at its build, before any variable is
+        // read: translated base code passes such arguments on every call,
+        // and lapply paid +0.25% for reading them to no end)
         BCODESXP => {
-            if !bytecode_runs(cx, expr) {
-                return Ok(None);
-            }
             // SAFETY: the rooted byte code's 4th word is R_NilValue, its
             // translation's code object, or a translation cache's stub (no
-            // code object: None); the code is live, the environment rooted,
-            // and nothing collects before the run ends.
-            match unsafe { crate::code::cached(cx, e.aux(), Profile::Bc).and_then(|c| run(cx, c, rho.bind(cx).sexp())) }
-            {
+            // code object: None).
+            let Some(c) = (unsafe { crate::code::cached(cx, e.aux(), Profile::Bc) }) else { return Ok(None) };
+            // SAFETY: a live code object.
+            if !unsafe { crate::code::early_pure(c) } || !bytecode_runs(cx, expr) {
+                return Ok(None);
+            }
+            // SAFETY: the code is live, the environment rooted, and nothing
+            // collects before the run ends.
+            match unsafe { run(cx, c, rho.bind(cx).sexp()) } {
                 Some(x) => x,
                 None => return Ok(None),
             }
