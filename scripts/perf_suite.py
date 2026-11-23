@@ -95,13 +95,33 @@ def gnur_inputs(c=None):
 CODE_FILES = ["scripts/perf_suite.py", "scripts/perf-gnur.py"]
 
 
-def code_digest():
-    """The digest of CODE_FILES: a record measured by other code is not
+# The environment GNU R's numbers depend on, which run_one passes on from
+# its caller (R_ENABLE_JIT alone moves a loop's count threefold): the
+# variables of these prefixes, after BASE_ENV, are part of the measuring
+# code's digest
+MEASURE_ENV = ("R_", "LANG", "LC_", "TZ", "OMP_", "OPENBLAS_", "MKL_", "MALLOC_", "GLIBC_TUNABLES", "LD_",
+               "VALGRIND")
+
+
+def measure_env(environ=None):
+    """The measurement-relevant part of the environment run_one gives GNU R
+    (BASE_ENV over `environ`), sorted."""
+    env = dict(os.environ if environ is None else environ, **BASE_ENV)
+    return sorted((k, v) for k, v in env.items() if k.startswith(MEASURE_ENV))
+
+
+def code_digest(extra=(), environ=None):
+    """The digest of what measures a record: CODE_FILES, `extra` (the
+    caller's orchestration, perf.py's cmd_run), and the measurement's
+    environment (measure_env): a record measured otherwise is not
     reused."""
     h = hashlib.sha256()
     for f in CODE_FILES:
         with open(os.path.join(ROOT, f), "rb") as fh:
             h.update(f.encode() + b"\0" + hashlib.sha256(fh.read()).digest())
+    for x in extra:
+        h.update(b"\0extra\0" + x.encode())
+    h.update(b"\0env\0" + json.dumps(measure_env(environ)).encode())
     return h.hexdigest()[:16]
 
 

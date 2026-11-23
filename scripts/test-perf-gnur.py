@@ -42,7 +42,7 @@ class Gnur(unittest.TestCase):
         self.addCleanup(p.stop)
         # every benchmark's program digest, and the code's
         for name, fn in (("program_digests", lambda: {n: digest(n) for n in "a/x a/y a/z a/f a/t a/r".split()}),
-                         ("code_digest", lambda: CODE)):
+                         ("gnur_code_digest", lambda: CODE)):
             q = mock.patch.object(pg.perf, name, fn)
             q.start()
             self.addCleanup(q.stop)
@@ -72,8 +72,8 @@ class Gnur(unittest.TestCase):
         def measure(names):
             asked.append(list(names))
             return {n: {"gnur": OK} for n in names}
-        self.assertEqual(pg.fill(g, None, measure, known=set()), 0)
-        self.assertEqual(asked, [["a/z"]])                      # a/y's cached failure is main's: kept
+        self.assertEqual(pg.fill(g, None, measure, known={"a/y"}), 0)
+        self.assertEqual(asked, [["a/z"]])                      # a/y's cached failure is main's, a known one: kept
         self.assertEqual(pg.load(g)["a/y"], rec(FAIL, "a/y"))
 
     def test_a_fresh_failure_is_measured_once_more(self):
@@ -146,7 +146,7 @@ class Digests(unittest.TestCase):
         status, text, got = self.fill(have, changed)
         self.assertEqual((status, self.asked), (0, [["a/y"]]))
         self.assertIn("1 of 3 selected benchmark(s) re-measured (changed program 1, changed measurement code 0, "
-                      "no record 0)", text)
+                      "failure no longer known 0, no record 0)", text)
         self.assertEqual(got["a/y"]["program"], "p-new")
 
     def test_changed_measuring_code_measures_all_again(self):
@@ -163,7 +163,38 @@ class Digests(unittest.TestCase):
         status, text, got = self.fill(old)
         self.assertEqual(self.asked, [["a/x", "a/z"]])
         self.assertEqual(got["a/x"]["gnur"], OK)
-        self.assertIn("changed program 1, changed measurement code 1, no record 0", text)
+        self.assertIn("changed program 1, changed measurement code 1, failure no longer known 0, no record 0", text)
+
+    def test_a_failure_no_longer_known_is_measured_again(self):
+        # a restored set (restore-keys) keeps a failure main recorded while
+        # benchmarks/gnur-known-failures.txt named it; once the list drops
+        # it, its answer must be judged: measured again, not reused
+        have = {"a/x": rec(FAIL, "a/x"), "a/y": rec(OK, "a/y"), "a/z": rec(FAIL, "a/z")}
+        path = os.path.join(self.d, "gnur.json")
+        pg.save(path, have)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            status = pg.fill(path, None, self.measure, known={"a/z"}, digests=self.digests, code=CODE)
+        self.assertEqual((status, self.asked), (0, [["a/x"]]))
+        self.assertIn("failure no longer known 1", out.getvalue())
+        self.assertEqual(pg.load(path)["a/x"]["gnur"], OK)
+
+    def test_the_measurement_s_environment_and_orchestration_are_in_the_code_digest(self):
+        # run_one passes its caller's environment on: R_ENABLE_JIT=0 and 3
+        # give one loop 3.6 and 1.2 billion instructions
+        spec_ = importlib.util.spec_from_file_location("perf", HERE / "perf.py")
+        perf = importlib.util.module_from_spec(spec_)
+        spec_.loader.exec_module(perf)
+        base = {"PATH": "/bin", "HOME": "/h", "GITHUB_RUN_ID": "1"}
+        d = perf.gnur_code_digest(base)
+        self.assertEqual(d, perf.gnur_code_digest(dict(base, GITHUB_RUN_ID="2", HOME="/other")))
+        for k, v in (("R_ENABLE_JIT", "0"), ("OMP_NUM_THREADS", "1"), ("GLIBC_TUNABLES", "x"), ("LD_PRELOAD", "y")):
+            self.assertNotEqual(d, perf.gnur_code_digest(dict(base, **{k: v})), k)
+        # BASE_ENV wins over the caller's for what it sets
+        self.assertEqual(d, perf.gnur_code_digest(dict(base, LC_ALL="de_DE.UTF-8")))
+        # and cmd_run's source is part of it
+        import inspect
+        self.assertNotEqual(perf.code_digest([inspect.getsource(perf.cmd_run)], base), perf.code_digest([], base))
 
     def test_nothing_changed_nothing_measured_and_the_line_says_so(self):
         status, text, _ = self.fill({n: rec(OK, n) for n in self.progs})

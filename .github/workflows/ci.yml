@@ -1488,8 +1488,8 @@ jobs:
         with:
           path: rt-gnur.json
           # the measurement's inputs: the rows, the bars and their programs, the
-          # scripts, and the rival's build (gnur-stock.sh, the tarball pin in r-src.sh)
-          key: ${{ steps.cpu.outputs.key }}-${{ hashFiles('benchmarks/rt/calls-rows.toml', 'benchmarks/rt/m1-bars.toml', 'benchmarks/rt/mem/*.R', 'benchmarks/suite/binarytrees.R', 'scripts/idiom-vs-r.py', 'scripts/rss.py', 'scripts/perf.py', 'scripts/rt-startup.py', 'scripts/gnur-stock.sh', 'scripts/r-src.sh') }}
+          # scripts (perf_suite.py: BASE_ENV, valgrind_path, r_home), and the rival's build (gnur-stock.sh, the tarball pin in r-src.sh)
+          key: ${{ steps.cpu.outputs.key }}-${{ hashFiles('benchmarks/rt/calls-rows.toml', 'benchmarks/rt/m1-bars.toml', 'benchmarks/rt/mem/*.R', 'benchmarks/suite/binarytrees.R', 'scripts/idiom-vs-r.py', 'scripts/rss.py', 'scripts/perf.py', 'scripts/perf_suite.py', 'scripts/rt-startup.py', 'scripts/gnur-stock.sh', 'scripts/r-src.sh') }}
       # The rival, GNU R's literal default build in this image's toolchain, is
       # needed only to measure GNU R: it does not depend on the CPU, so it is
       # cached per image and build script.

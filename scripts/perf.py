@@ -68,11 +68,13 @@ from perf_suite import (  # noqa: E402,F401  (perf.<name> stays the API)
     CACHE,
     CODE_FILES,
     DRIVER,
+    MEASURE_ENV,
     cache_counters,
     code_digest,
     command,
     conf,
     gnur_inputs,
+    measure_env,
     program_digests,
     programs,
     r_home,
@@ -359,6 +361,13 @@ def cmd_run(a):
     with open(out, "w") as f:
         json.dump(doc, f, indent=1, sort_keys=True)
     report(doc, False)
+
+
+def gnur_code_digest(environ=None):
+    """perf_suite.code_digest with cmd_run's source: the orchestration
+    `perf.py run` measures GNU R's records with (scripts/perf-gnur.py)."""
+    import inspect
+    return code_digest([inspect.getsource(cmd_run)], environ)
 
 
 def geomean(xs):

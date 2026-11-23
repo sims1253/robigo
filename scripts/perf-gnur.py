@@ -94,23 +94,28 @@ def stamp(recs, digests=None, code=None):
     """Mark each record with what it was measured from: its program's digest
     and the measuring code's (perf_suite.program_digests, code_digest)."""
     digests = perf.program_digests() if digests is None else digests
-    code = perf.code_digest() if code is None else code
+    code = perf.gnur_code_digest() if code is None else code
     for n, r in recs.items():
         r["program"] = digests.get(n)
         r["code"] = code
     return recs
 
 
-def stale(have, want, digests, code):
+def stale(have, want, digests, code, known=frozenset()):
     """{name: why} for the wanted benchmarks whose record cannot be used:
-    none, a changed program, or changed measuring code. A record whose name
-    matches but whose digests do not (one restored from an older cache
-    entry, `restore-keys`) is measured again, never reused."""
+    none, a changed program, changed measuring code, or a failure that is no
+    longer a known one. A record whose name matches but whose digests do
+    not (one restored from an older cache entry, `restore-keys`) is
+    measured again, never reused; so is a failure benchmarks/
+    gnur-known-failures.txt no longer names, whose answer would otherwise
+    go unjudged."""
     out = {}
     for n in want:
         r = have.get(n)
         if r is None:
             out[n] = "no record"
+        elif not usable(r) and n not in known:
+            out[n] = "failure no longer known"
         elif r.get("code") != code:
             out[n] = "changed measurement code"
         elif r.get("program") != digests.get(n):
@@ -139,15 +144,17 @@ def measure(names):
 def fill(path, rx=None, measure=measure, known=None, digests=None, code=None):
     known = known_failures() if known is None else known
     digests = perf.program_digests() if digests is None else digests
-    code = perf.code_digest() if code is None else code
+    code = perf.gnur_code_digest() if code is None else code
     have = load(path)
     want = selected(rx)
-    why = stale(have, want, digests, code)
+    why = stale(have, want, digests, code, known)
     for n in why:
         have.pop(n, None)
     missing = [n for n in want if n in why]
-    counts = {k: sum(1 for v in why.values() if v == k) for k in ("changed program", "changed measurement code", "no record")}
-    summary(f"perf-gnur: {len(missing)} of {len(want)} selected benchmark(s) re-measured ("
+    counts = {k: sum(1 for v in why.values() if v == k)
+              for k in ("changed program", "changed measurement code", "failure no longer known", "no record")}
+    # (stdout: the job's step tees it into the summary)
+    print(f"perf-gnur: {len(missing)} of {len(want)} selected benchmark(s) re-measured ("
             + ", ".join(f"{k} {v}" for k, v in counts.items()) + ")")
     fresh = []
     if missing:
@@ -176,15 +183,6 @@ def fill(path, rx=None, measure=measure, known=None, digests=None, code=None):
         return 1
     print(f"perf-gnur: GNU R records for all {len(want)} selected benchmark(s)")
     return 0
-
-
-def summary(line):
-    """Print `line`, and add it to the job's step summary in CI."""
-    print(line, flush=True)
-    path = os.environ.get("GITHUB_STEP_SUMMARY")
-    if path:
-        with open(path, "a") as f:
-            f.write(line + "\n")
 
 
 def main(argv):
