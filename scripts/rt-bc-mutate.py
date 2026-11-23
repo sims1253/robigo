@@ -25,6 +25,12 @@ each is replayed as it was found, mutations 1 to the number in one start
 (alone, none of them crashes: what an earlier mutation's run left behind,
 such as a translation kept on a constant both codes share, is part of the
 case).
+
+One start runs tests/bc-mutate/pool.R under gctorture, with POOL_LIMIT: it
+stops compiles midway (malformed byte code, the compile's depth bound) and
+then compiles correct code, which must give its values. A compile's buffers
+come from the isolate's pool (#988), so an aborted compile that gave them
+back with an object in them shows there.
 """
 import argparse
 import concurrent.futures
@@ -39,6 +45,9 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GEN = os.path.join(ROOT, "tests", "bc-mutate", "gen.R")
 CORPUS = os.path.join(ROOT, "tests", "bc-mutate", "corpus.txt")
+# compiles stopped midway (malformed byte code, the depth bound) and then
+# correct ones, under gctorture: the compile buffers' pool given back clean
+POOL = os.path.join(ROOT, "tests", "bc-mutate", "pool.R")
 # the generator the corpus was found with: its entries name mutations of
 # this file, so a change to it needs the corpus found again
 GEN_SHA256 = "22dd95c23959f53435903e06596251c43170e4c27b5d3564689e80c1acfc5a2f"
@@ -47,6 +56,7 @@ MEM_CAP = 2 << 30
 # how long a start may run before the SIGINT, and how soon it must then end
 LIMIT = 30
 GRACE = 3
+POOL_LIMIT = 120
 
 
 def cap_memory():
@@ -69,11 +79,11 @@ def check_cap(rt, checkout, home):
                  f"{p.stderr.decode(errors='replace')[-300:]}")
 
 
-def start(rt, checkout, home, limit, **extra):
+def start(rt, checkout, home, limit, script=GEN, **extra):
     """One start of the generator: (outcome, detail). Outcomes: "done",
     "R error", "interrupted" (at the limit, ended by SIGINT), or a failure:
     "signal N", "panic", "exit N", "not interruptible"."""
-    p = subprocess.Popen([rt, "--vanilla", GEN], cwd=home, env=env_for(checkout, home, **extra),
+    p = subprocess.Popen([rt, "--vanilla", script], cwd=home, env=env_for(checkout, home, **extra),
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=cap_memory)
     try:
         out, err = p.communicate(timeout=limit)
@@ -81,7 +91,8 @@ def start(rt, checkout, home, limit, **extra):
         p.send_signal(signal.SIGINT)
         try:
             out, err = p.communicate(timeout=GRACE)
-            return "interrupted", ""
+            # (pool.R must finish: a well-formed program, not a mutation)
+            return ("pool.R past the limit" if script == POOL else "interrupted"), ""
         except subprocess.TimeoutExpired:
             p.kill()
             out, err = p.communicate()
@@ -90,9 +101,9 @@ def start(rt, checkout, home, limit, **extra):
         return "panic", last_mutation(err) + ": " + tail(err, 400)
     if p.returncode < 0:
         return f"signal {-p.returncode}", last_mutation(err) + ": " + tail(err, 300)
-    if p.returncode == 0 and b"done" in out:
+    if p.returncode == 0 and (b"pool ok" if script == POOL else b"done") in out:
         return "done", ""
-    if p.returncode == 1:
+    if p.returncode == 1 and script != POOL:
         return "R error", ""
     return f"exit {p.returncode}", last_mutation(err) + ": " + tail(err, 300)
 
@@ -157,7 +168,8 @@ def main():
         sys.exit(f"rt-bc-mutate: {p.stderr.strip()}")
     who = dict(l.split(": ", 1) for l in p.stdout.splitlines() if ": " in l)
     print(f"rt-bc-mutate: robigo-rt at commit {who.get('commit', '?')}, sha256 {who.get('sha256', '?')[:16]}, {rt}")
-    runs = []
+    runs = [("compile buffers after aborted compiles, under gctorture (tests/bc-mutate/pool.R)",
+             {"script": POOL, "ROBIGO_GCTORTURE": "1"})]
     for seed, k, was in corpus():
         runs.append((f"corpus {seed} {k} ({was})", {"BCM_SEED": str(seed), "BCM_BATCH": str(k)}))
     if not a.corpus_only:
@@ -167,12 +179,15 @@ def main():
     with tempfile.TemporaryDirectory(prefix="rt-bc-mutate-") as home:
         check_cap(rt, a.checkout, home)
         with concurrent.futures.ThreadPoolExecutor(a.jobs) as ex:
-            results = list(ex.map(lambda r: (r[0], *start(rt, a.checkout, home, a.limit, **r[1])), runs))
+            results = list(ex.map(lambda r: (r[0], *start(rt, a.checkout, home,
+                                                          POOL_LIMIT if r[1].get("script") == POOL else a.limit,
+                                                          **r[1])), runs))
     counts = {}
     for _, outcome, _ in results:
         counts[outcome] = counts.get(outcome, 0) + 1
     bad = [(n, o, d) for n, o, d in results if o not in OK]
-    print(f"rt-bc-mutate: {len(results)} starts ({len(runs) - (0 if a.corpus_only else a.processes)} from the corpus): "
+    print(f"rt-bc-mutate: {len(results)} starts ({len(runs) - 1 - (0 if a.corpus_only else a.processes)} from the "
+          "corpus, 1 of pool.R): "
           + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
     for n, o, d in bad[:int(os.environ.get("BCM_SHOW", "10"))]:
         print(f"  {n}: {o}, {d}")
