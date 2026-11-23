@@ -186,7 +186,7 @@ fn raw_vector(cx: &mut Cx, bytes: &[u8], out: Out<'_>) -> RResult<()> {
 
 /// `R_InitConnOutPStream`'s checks, then `R_Serialize` to connection `n`.
 // R: serialize.c:R_InitConnOutPStream, CheckOutConn
-fn serialize_to_conn(
+pub(super) fn serialize_to_conn(
     cx: &mut Cx,
     n: i32,
     object: Root<'_>,
@@ -204,8 +204,34 @@ fn serialize_to_conn(
     if f.text && !matches!(fmt, Format::Ascii | Format::AsciiHex) {
         return Err(cx.error("only ascii format can be written to text mode connections"));
     }
+    if !matches!(version, 2 | 3) && fmt != Format::Any {
+        // R_Serialize streams: OutFormat's line is written, then the
+        // version refused, before any item (or effect point). An error
+        // later in the walk leaves nothing written here, where GNU R has
+        // written the items before it: robigo-rt's writer works in memory
+        // and may start its walk over, so it has no prefix to give.
+        let line: &[u8] = match fmt {
+            Format::Ascii | Format::AsciiHex => b"A\n",
+            Format::Binary => b"B\n",
+            Format::Xdr | Format::Any => b"X\n",
+        };
+        write_conn(cx, n, f.text, line)?;
+        return Err(cx.error(&format!("version {version} not supported")));
+    }
     let bytes = write::serialize(cx, object, OutStream::new(fmt, version), hook)?;
-    connections::write_all(cx, n, &bytes, "error writing to connection")
+    write_conn(cx, n, f.text, &bytes)
+}
+
+/// The connection stream's write: on a text-mode connection
+/// `Rconn_printf` (`connections::printf_write`), else `con->write`,
+/// checked.
+// R: serialize.c:OutCharConn, OutBytesConn
+fn write_conn(cx: &mut Cx, n: i32, text: bool, buf: &[u8]) -> RResult<()> {
+    if text {
+        connections::printf_write(cx, n, buf)
+    } else {
+        connections::write_all(cx, n, buf, "error writing to connection")
+    }
 }
 
 /// `R_InitConnInPStream`'s checks: the stream over connection `n`.

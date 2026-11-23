@@ -247,11 +247,15 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("getVarsFromFrame", crate::serialize::do_get_vars_from_frame, Inline::None, 11, 3),
     builtin("makeLazy", crate::serialize::saveload::do_makelazy, Inline::None, 111, 5),
     builtin("loadFromConn2", crate::serialize::saveload::do_load_from_conn2, Inline::None, 111, 3),
+    builtin("saveToConn", crate::serialize::saveload::do_save_to_conn, Inline::None, 111, 6),
     builtin("loadInfoFromConn2", crate::serialize::saveload::do_load_info_from_conn2, Inline::None, 11, 1),
     builtin("save.to.file", crate::serialize::saveload::do_savefile, Inline::None, 11, 4),
     builtin("load.from.file", crate::serialize::saveload::do_loadfile, Inline::None, 11, 1),
     // connections.c (L1)
     builtin("close", crate::connections::do_close, Inline::None, 111, 2),
+    builtin("getAllConnections", crate::connections::do_getallconnections, Inline::None, 11, 0),
+    builtin("getConnection", crate::connections::do_getconnection, Inline::None, 11, 1),
+    builtin("sink.number", crate::connections::do_sinknumber, Inline::None, 11, 1),
     builtin("file", crate::connections::do_file, Inline::None, 11, 6),
     builtin("gzfile", crate::connections::do_gzfile::<0>, Inline::None, 11, 4),
     builtin("bzfile", crate::connections::do_gzfile::<1>, Inline::None, 11, 4),
@@ -261,6 +265,7 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("summary.connection", crate::connections::do_sumconnection, Inline::None, 11, 1),
     // platform.c, sysutils.c (L1's tests' files)
     builtin("file.remove", crate::platform::do_fileremove, Inline::None, 11, 1),
+    builtin("file.rename", crate::platform::do_filerename, Inline::None, 11, 2),
     builtin("Sys.getpid", crate::platform::do_sysgetpid, Inline::None, 11, 0),
     // envir.c's namespaces, version.c (L2)
     builtin("getNamespaceValue", crate::ns::do_get_ns_value, Inline::None, 211, 3),
@@ -300,6 +305,7 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("dir.exists", crate::platform::do_direxists, Inline::None, 11, 1),
     builtin("dir.create", crate::platform::do_dircreate, Inline::None, 111, 4),
     builtin("getwd", crate::util::do_getwd, Inline::None, 11, 0),
+    builtin("setwd", crate::util::do_setwd, Inline::None, 111, 1),
     builtin("basename", crate::util::do_basename, Inline::None, 11, 1),
     builtin("dirname", crate::util::do_dirname, Inline::None, 11, 1),
     builtin("normalizePath", crate::util::do_normalizepath, Inline::None, 11, 3),

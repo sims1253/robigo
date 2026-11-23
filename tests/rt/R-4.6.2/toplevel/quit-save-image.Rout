@@ -1,0 +1,12 @@
+NULL
+last
+saved: TRUE 
+[1] ".Last" "d"     "x"     "y"    
+[1] 1 2 3
+$a
+[1] "b"
+
+[1] TRUE
+[1] ".Last" "d"     "x"     "y"    
+[1] TRUE
+[1] TRUE

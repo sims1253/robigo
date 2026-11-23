@@ -28,9 +28,13 @@
 #   d10    D10's string rows (docs/ledger/g3/2026-11-17-d10-bar.md).
 #   d2s    D2s's dynamic-definition microbench: a callee frame gains a name
 #          its closure's body does not define (docs/ledger/g3.md, D2s bar).
-#   layout, envs, growth, cold, d0
-#          the M2/M3 decisions' rows (D8 and D13; D2u; D12; D11; D0's
-#          pilot), docs/ledger/g3/2026-11-17-m2m3-bars.md.
+#   layout, envs, growth, d0
+#          the M2/M3 decisions' rows (D8 and D13; D2u; D12; D0's pilot),
+#          docs/ledger/g3/2026-11-17-m2m3-bars.md.
+#   cold   run-once code: D11's rows (runonce, source5k; the m2m3 ledger
+#          above), and the report-only rows a call made afresh and
+#          compiled at its first evaluation costs (toplevel-lines, do-call,
+#          eval-parse, map), docs/ledger/g3/2026-11-23-compile-census.md.
 #   guard  common VM paths no bar's row reaches, held by the perf-rt gate to
 #          the 0.5% rule against main only (m1-bars.toml's [[guard]]): `[`
 #          and `[<-` of a double vector, and `[` of a matrix, by scalar

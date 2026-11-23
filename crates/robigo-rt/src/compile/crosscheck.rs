@@ -623,7 +623,28 @@ pub fn compare(cx: &Cx, what: &str, t: &Built, s: &Built) -> Finding {
 /// remainder still follows it at once. A record that cannot be written
 /// leaves `<report>.lost` (an empty file, which a full disk still allows),
 /// which rt-ci's check of the report fails on whatever case lost it, and
-/// is said on stderr.
+/// is said on stderr; when even that cannot be made, the stderr line says
+/// "record lost", which the conformance runner fails the run on.
+/// The start of the stderr line that says a record is gone: neither the
+/// report nor `<report>.lost` could be written. The conformance runner fails
+/// the run on it (robigo-conformance's `UNWRITTEN_REPORT`, the same string;
+/// robigo-rtapi's tests/conformance.rs ties the two together end to end).
+pub const RECORD_LOST: &str = "robigo: bc crosscheck: record lost:";
+
+/// [`RECORD_LOST`]'s whole line: the paths and why each write failed.
+fn record_lost_line(
+    report: &std::ffi::OsStr,
+    e: &std::io::Error,
+    lost: &std::ffi::OsStr,
+    e2: &std::io::Error,
+) -> String {
+    format!(
+        "{RECORD_LOST} cannot write the report {} ({e}) nor {} ({e2})",
+        report.to_string_lossy(),
+        lost.to_string_lossy()
+    )
+}
+
 pub fn report(line: &str) {
     match std::env::var_os("ROBIGO_BC_CROSSCHECK_REPORT") {
         Some(p) => {
@@ -639,8 +660,13 @@ pub fn report(line: &str) {
             if let Err(e) = written {
                 let mut lost = p.clone();
                 lost.push(".lost");
-                let _ = std::fs::OpenOptions::new().create(true).append(true).open(lost);
-                eprintln!("robigo: bc crosscheck: cannot write the report {}: {e}", p.to_string_lossy());
+                match std::fs::OpenOptions::new().create(true).append(true).open(&lost) {
+                    Ok(_) => eprintln!("robigo: bc crosscheck: cannot write the report {}: {e}", p.to_string_lossy()),
+                    // neither file: only this line says the record is gone,
+                    // and the conformance runner fails the run on it
+                    // (robigo-conformance's UNWRITTEN_REPORT)
+                    Err(e2) => eprintln!("{}", record_lost_line(&p, &e, &lost, &e2)),
+                }
             }
         }
         None => eprintln!("robigo: bc crosscheck: {line}"),
@@ -649,6 +675,14 @@ pub fn report(line: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_lost_record_says_so_with_the_runners_marker() {
+        let e = std::io::Error::from_raw_os_error(20);
+        let line = super::record_lost_line("/x/report".as_ref(), &e, "/x/report.lost".as_ref(), &e);
+        assert!(line.starts_with(super::RECORD_LOST), "{line}");
+        assert!(line.contains("/x/report.lost"), "{line}");
+    }
+
     use super::*;
 
     fn ins(op: Op, a: u16, b: u16, g: u16) -> Ins {

@@ -465,7 +465,7 @@ class Tools(unittest.TestCase):
                 if FAIL:
                     raise RuntimeError("callgrind died")
                 return ({{"plain": 500.0}}, {{"plain": 400.0}}) if k.get("cycles") else {{"plain": 500.0}}
-            with mock.patch.object(perf, "rt_instr", instr), mock.patch.object(perf, "rt_rss", lambda *a: {{"p.R": 1}}), \\
+            with mock.patch.object(perf, "rt_instr", instr), mock.patch.object(perf, "rt_rss", lambda *a, **k: {{"p.R": 1}}), \\
                     mock.patch.object(perf, "binary_identity", lambda *_: {{}}), \\
                     mock.patch.object(perf, "report_identity", lambda *_, **__: None), \\
                     mock.patch.object(perf, "gnur_version", lambda: "4.6.2"), \\
@@ -481,7 +481,7 @@ class Tools(unittest.TestCase):
         self.both(self.perf(
             f'b = os.path.join(tmp, "bars.toml"); open(b, "w").write({self.BARS!r} % perf.pins()["rt"]); '
             'perf.cmd_rt_bars(SimpleNamespace(bars=b, robigo_rt="rt", main=None, jobs=1, runs=1, '
-            'out=os.path.join(tmp, "o.json"), gnur=None, cycles=False))'))
+            'out=os.path.join(tmp, "o.json"), gnur=None, cycles=False, boot="m1"))'))
 
     def test_perf_rt_gnur(self):
         self.both(self.perf(

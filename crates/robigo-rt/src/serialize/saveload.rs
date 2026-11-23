@@ -132,15 +132,21 @@ fn load_from_conn2(cx: &mut Cx, args: Args<'_>, _env: Root<'_>, out: Out<'_>, in
         if info {
             return read::serialize_info(cx, st, out);
         }
-        // R_InitReadItemDepth = -verbose: a depth below 0 prints the tags read
+        // R_InitReadItemDepth = R_ReadItemDepth = -verbose: while the depth
+        // is at most 0 the reader prints the tags and list positions it reads
         let verbose = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(2))?;
-        if verbose != 0 {
-            return Err(cx.error("robigo: load(verbose = TRUE) is not implemented yet"));
+        if verbose == i32::MIN {
+            // (-NA_INTEGER overflows in GNU R's C)
+            return Err(cx.error("robigo: load(verbose = NA) is not implemented yet"));
         }
         cx.scope(|cx, s| {
             let o = s.out(cx);
             let ans = o.root();
-            read::unserialize(cx, st, None, o)?;
+            if verbose == 0 {
+                read::unserialize_at::<false>(cx, st, None, None, 0, o)?;
+            } else {
+                read::unserialize_at::<true>(cx, st, None, None, -verbose, o)?;
+            }
             restore_to_env(cx, ans, args.root(1), out)
         })
     })();
@@ -148,6 +154,124 @@ fn load_from_conn2(cx: &mut Cx, args: Args<'_>, _env: Root<'_>, out: Out<'_>, in
         connections::close_only(cx, n)?;
     }
     r
+}
+
+/// `saveToConn(list, con, ascii, version, environment, eval.promises)`:
+/// the magic number, then the pairlist of `list`'s variables, found from
+/// `environment` (promises forced with `eval.promises`), serialized to
+/// `con` (opened "wb" for the call when it is closed).
+// R: saveload.c:do_saveToConn
+pub fn do_save_to_conn(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "saveToConn", 6, true)?;
+    let list = args.root(0);
+    if list.bind(cx).sexptype() != STRSXP {
+        return Err(cx.error("first argument must be a character vector"));
+    }
+    let n = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(1))?;
+    connections::with_conn(cx, n, |_| ())?;
+    let ascii = robigo_rtbuiltins::util::as_bool2(cx, call, args.root(2))?;
+    let version = if args.get(cx, 3).sexptype() == NILSXP {
+        default_save_version()
+    } else {
+        robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(3))?
+    };
+    if version == i32::MIN || version <= 0 {
+        return Err(cx.error("invalid 'version' argument"));
+    }
+    if version < 2 {
+        return Err(cx.error(&format!("cannot save to connections in version {version} format")));
+    }
+    let source = args.root(4);
+    if !matches!(source.bind(cx).sexptype(), NILSXP | ENVSXP) {
+        return Err(cx.error("invalid 'environment' argument"));
+    }
+    let ep = robigo_rtbuiltins::util::as_logical_n(cx, args.get(cx, 5)).0;
+    if ep == i32::MIN {
+        return Err(cx.error("invalid 'eval.promises' argument"));
+    }
+    let wasopen = connections::flags(cx, n)?.isopen;
+    if !wasopen && !connections::open_with_mode(cx, n, "wb")? {
+        return Err(cx.error("cannot open the connection"));
+    }
+    // an error closes a connection this opened (the context's cend)
+    let r = (|| -> RResult<()> {
+        let f = connections::flags(cx, n)?;
+        if !f.canwrite {
+            return Err(cx.error("connection not open for writing"));
+        }
+        // (asBool2: ascii is never NA here, so never the asciihex format)
+        let (magic, fmt) = if ascii {
+            (b'A', Format::Ascii)
+        } else {
+            if f.text {
+                return Err(cx.error("cannot save XDR format to a text-mode connection"));
+            }
+            (b'X', Format::Xdr)
+        };
+        // (a version above 3 writes its magic number, then R_Serialize refuses it)
+        // magic[3] = (char)('0' + version): a NUL there ends the C string
+        let magic = [b'R', b'D', magic, b'0'.wrapping_add(version as u8), b'\n'];
+        let magic = &magic[..magic.iter().position(|&b| b == 0).unwrap_or(5)];
+        if f.text {
+            // Rconn_printf(con, "%s", magic)
+            connections::printf_write(cx, n, magic)?;
+        } else {
+            connections::write_all(cx, n, magic, "error writing to connection")?;
+        }
+        cx.scope(|cx, s| {
+            let len = list.bind(cx).len().unwrap_or(0);
+            let o = s.out(cx);
+            let head = o.root();
+            // allocList(len)
+            cx.build(o, |cx| {
+                let mut l = cx.nil();
+                for _ in 0..len {
+                    l = cx.cons(cx.nil(), l)?;
+                }
+                Ok(l)
+            })?;
+            let mut t = head;
+            for j in 0..len {
+                cx.scope(|cx, s| {
+                    let tag = robigo_rtbuiltins::text::install_tr_char(cx, s, list, j)?;
+                    let cell = s.root(cx, t.bind(cx));
+                    cx.set_tag(cell, tag);
+                    // SETCAR(t, R_findVar(TAG(t), source)), then the lookup
+                    // again (an active binding runs twice)
+                    let fo = s.out(cx);
+                    let first = fo.root();
+                    cx.find_var(tag, source, fo)?;
+                    cx.set_car(cell, first);
+                    let vo = s.out(cx);
+                    let v = vo.root();
+                    cx.find_var(tag, source, vo)?;
+                    if v.bind(cx).sexp() == cx.unbound().sexp() {
+                        // SAFETY: a rooted symbol.
+                        let name = unsafe { crate::eval::sym_name(cx, tag.bind(cx).sexp()) };
+                        return Err(cx.error(&format!("object '{name}' not found")));
+                    }
+                    if ep != 0 && v.bind(cx).sexptype() == PROMSXP {
+                        let fo = s.out(cx);
+                        let fv = fo.root();
+                        crate::eval::eval(cx, v, source, fo)?;
+                        cx.set_car(cell, fv);
+                    } else {
+                        cx.set_car(cell, v);
+                    }
+                    Ok(())
+                })?;
+                let next = t.bind(cx).as_cons().unwrap().cdr();
+                t = s.root(cx, next);
+            }
+            super::serialize_to_conn(cx, n, head, fmt, version, None)
+        })
+    })();
+    if !wasopen {
+        connections::close_only(cx, n)?;
+    }
+    r?;
+    out.set(cx, cx.nil());
+    Ok(())
 }
 
 /// `RestoreToEnv(ans, aenv)`: the elements of the named list or pairlist

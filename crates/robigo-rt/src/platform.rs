@@ -181,6 +181,72 @@ pub fn do_fileremove(
     cx.build(out, |cx| Ok(cx.alloc_copy(&ans)?.finish().into()))
 }
 
+/// `file.rename(from, to)`: `rename(2)` of each pair, TRUE where it
+/// worked; GNU R's warning for each that did not, an NA name FALSE.
+// R: platform.c:do_filerename (Unix)
+pub fn do_filerename(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: robigo_rtcore::Root<'_>,
+    out: robigo_rtcore::Out<'_>,
+) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "file.rename", 2, true)?;
+    if args.get(cx, 0).sexptype() != robigo_heap::types::STRSXP {
+        return Err(cx.error("invalid 'from' argument"));
+    }
+    if args.get(cx, 1).sexptype() != robigo_heap::types::STRSXP {
+        return Err(cx.error("invalid 'to' argument"));
+    }
+    let n = args.get(cx, 0).len().unwrap_or(0);
+    if args.get(cx, 1).len() != Some(n) {
+        return Err(cx.error("'from' and 'to' are of different lengths"));
+    }
+    // R_ExpandFileName(translateCharFP(STRING_ELT(x, i))), at most
+    // R_PATH_MAX - 2 bytes
+    let expand = |cx: &mut Cx, k: usize, i: usize, what: &str| -> RResult<Option<Vec<u8>>> {
+        let name = {
+            let c = args.get(cx, k).as_vector::<Char<'_>>().unwrap().get(i);
+            if c == cx.na_string() {
+                return Ok(None);
+            }
+            robigo_rtbuiltins::text::to_native_fp(robigo_rtbuiltins::coerce::text(c), cx.locale())
+                .map(|b| b.into_owned())
+        };
+        let name = name.map_err(|m| cx.error(&m))?;
+        let p = crate::connections::r_expand_file_name(cx, &name)?;
+        if p.len() >= R_PATH_MAX - 1 {
+            return Err(cx.error(&format!("expanded '{what}' name too long")));
+        }
+        Ok(Some(p))
+    };
+    let mut ans = Vec::with_capacity(n);
+    for i in 0..n {
+        let na = |cx: &Cx, k: usize| args.get(cx, k).as_vector::<Char<'_>>().unwrap().get(i) == cx.na_string();
+        if na(cx, 0) || na(cx, 1) {
+            ans.push(robigo_rtcore::Lgl(0));
+            continue;
+        }
+        let from = expand(cx, 0, i, "from")?.unwrap();
+        let to = expand(cx, 1, i, "to")?.unwrap();
+        let os = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes;
+        let ok = match std::fs::rename(os(&from), os(&to)) {
+            Ok(()) => true,
+            Err(e) => {
+                cx.warning(&format!(
+                    "cannot rename file '{}' to '{}', reason '{}'",
+                    String::from_utf8_lossy(&from),
+                    String::from_utf8_lossy(&to),
+                    crate::connections::strerror(&e)
+                ))?;
+                false
+            }
+        };
+        ans.push(robigo_rtcore::Lgl(ok as i32));
+    }
+    cx.build(out, |cx| Ok(cx.alloc_copy(&ans)?.finish().into()))
+}
+
 /// `Sys.getpid()`.
 // R: sysutils.c:do_sysgetpid
 pub fn do_sysgetpid(
