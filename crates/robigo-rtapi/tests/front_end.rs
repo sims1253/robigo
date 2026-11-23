@@ -138,6 +138,9 @@ fn a_panic_after_quit_s_context_reset_aborts_without_returning() {
     assert!(err.contains("robigo: a panic after quit()'s context reset: aborting"), "{err}");
 }
 
+// (/dev/full is Linux's: the workspace's macOS runs, platforms.yml, would
+// not have it; robigo-heap's tests gate their Linux-only checks the same way)
+#[cfg(target_os = "linux")]
 #[test]
 fn a_panic_after_quit_s_context_reset_aborts_with_stderr_unwritable() {
     use std::os::unix::process::ExitStatusExt;
