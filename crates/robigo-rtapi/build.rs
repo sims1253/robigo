@@ -63,7 +63,11 @@ fn commit() {
     let read = |p: &Path| std::fs::read_to_string(p).ok().map(|s| s.trim().to_string());
     let is_sha = |s: &str| s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit());
     // the checkout's root: this package's crates/robigo-rtapi, two up
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    // (the package's directory now, from cargo's environment: a compiled
+    // build script is reused across checkouts sharing a target directory,
+    // and a compile-time path would read another checkout's HEAD)
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("robigo-rtapi: cargo sets CARGO_MANIFEST_DIR");
+    let root = Path::new(&manifest).join("../..");
     // the git directory: $GIT_DIR when set (relative to the root, where
     // cargo is run from), else .git, which in a worktree is a file naming
     // it ("gitdir: X")

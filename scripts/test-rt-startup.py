@@ -66,6 +66,18 @@ class Verdict(unittest.TestCase):
         self.assertEqual(su.verdict({"interim": start(10**12, 10**9, 10**9)}, {"interim": {"instr": 1}}), [])
         self.assertEqual(len(su.table([{"name": "interim"}], {"interim": start(1, 2, 3)}, {"interim": {"instr": 1}})), 3)
 
+    def test_a_bars_files_starts_are_checked_before_measuring(self):
+        ok = [{"name": "interim", "gnur": "jit"}, {"name": "rdb-nojit", "gnur": "nojit"}]
+        self.assertEqual(su.spec_errors(ok), [])
+        bad = su.spec_errors([{"name": "rdb-jti", "gnur": "jit"}, {"name": "rdb-pkgs"},
+                              {"name": "interim", "gnur": "noJIT"}, {"name": "interim"}, {"gnur": "jit"}])
+        self.assertEqual(len(bad), 5, bad)
+        self.assertIn("no such start", bad[0])
+        self.assertIn("reserved", bad[1])
+        self.assertIn("no GNU R start", bad[2])
+        self.assertIn("twice", bad[3])
+        self.assertIn("no name", bad[4])
+
     def test_only_defined_starts_run(self):
         self.assertNotIn("rdb-pkgs", su.defined())
         with self.assertRaises(SystemExit):
@@ -84,7 +96,7 @@ class Memory(unittest.TestCase):
 
     def test_a_large_output_does_not_block_the_child(self):
         # far more than a pipe's buffer, printed before the exit stop
-        a, h, status, out = su.memory([self.PY, "-c", "import sys; sys.stdout.write('x' * 2_000_000)"],
+        a, h, status, out, _ = su.memory([self.PY, "-c", "import sys; sys.stdout.write('x' * 2_000_000)"],
                                       dict(os.environ))
         self.assertEqual(status, 0)
         self.assertEqual(out, b"x" * 2_000_000)
@@ -92,7 +104,7 @@ class Memory(unittest.TestCase):
     def test_the_anonymous_peak_survives_a_free_before_exit(self):
         # 64 MB touched, then freed: at the exit stop little is left
         prog = "b = bytearray(64 << 20)\nfor i in range(0, len(b), 4096): b[i] = 1\ndel b\n"
-        a, h, status, _ = su.memory([self.PY, "-c", prog], dict(os.environ))
+        a, h, status, _, _ = su.memory([self.PY, "-c", prog], dict(os.environ))
         self.assertEqual(status, 0)
         self.assertGreaterEqual(a, 64 << 10)
         self.assertGreaterEqual(h, a)
@@ -103,51 +115,49 @@ class Memory(unittest.TestCase):
 
     def test_an_exit_status_comes_back_and_no_child_is_left(self):
         for syscalls in (True, False):
-            _, h, status, _ = su.memory([self.PY, "-c", "import sys; sys.exit(3)"], dict(os.environ), syscalls)
+            _, h, status, _, _ = su.memory([self.PY, "-c", "import sys; sys.exit(3)"], dict(os.environ), syscalls)
             self.assertEqual(status, 3)
             self.assertGreater(h, 0)
             self.no_child_left()
 
     def test_a_real_sigtrap_reaches_the_child(self):
         # its default action ends the process: not ptrace's to swallow
-        _, _, status, _ = su.memory([self.PY, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGTRAP)"],
+        _, _, status, _, _ = su.memory([self.PY, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGTRAP)"],
                                     dict(os.environ))
         self.assertEqual(status, -signal.SIGTRAP)
         self.no_child_left()
 
-    def test_a_child_that_starts_a_thread_is_refused(self):
-        # alive at exit, or started and joined long before it
-        for prog in ("import threading, time, os\nthreading.Thread(target=time.sleep, args=(0.2,)).start()\n"
-                     "os._exit(0)\n",
-                     "import threading\nt = threading.Thread(target=lambda: bytearray(8 << 20))\nt.start()\n"
-                     "t.join()\n"):
-            with self.assertRaises(SystemExit) as e:
-                su.memory([self.PY, "-c", prog], dict(os.environ))
-            self.assertIn("thread", str(e.exception))
-            self.no_child_left()
+    def test_a_start_with_threads_is_measured_with_their_memory(self):
+        # a thread alive at exit; one that touches 32 MB and frees it before
+        # its join (the peak is in the thread's own memory, freed by its own
+        # system calls); twenty at once
+        alive = "import threading, time, os\nthreading.Thread(target=time.sleep, args=(0.2,)).start()\nos._exit(0)\n"
+        touch = ("import threading\ndef f():\n    b = bytearray(32 << 20)\n    for i in range(0, len(b), 4096): b[i] = 1\n"
+                 "    del b\nt = threading.Thread(target=f)\nt.start()\nt.join()\n")
+        many = ("import threading, time\nts = [threading.Thread(target=time.sleep, args=(0.2,)) for _ in range(20)]\n"
+                "[t.start() for t in ts]\n[t.join() for t in ts]\n")
+        for prog in (alive, touch, many):
+            for syscalls in (True, False):
+                a, h, status, _, kids = su.memory([self.PY, "-c", prog], dict(os.environ), syscalls, timeout=30)
+                self.assertEqual((status, kids), (0, 0))
+                if prog is touch and syscalls:
+                    self.assertGreaterEqual(a, 32 << 10)
+                self.no_child_left()
 
-    def test_consecutive_threads_do_not_outrun_the_cleanup(self):
-        # the refusal kills the child before it is resumed: no thread made
-        # after the first is left stopped (it would hold the exit up)
-        prog = "import threading, time\nts = [threading.Thread(target=time.sleep, args=(0.2,)) for _ in range(20)]\n" \
-               "[t.start() for t in ts]\n[t.join() for t in ts]\n"
-        for _ in range(5):
-            with self.assertRaises(SystemExit):
-                su.memory([self.PY, "-c", prog], dict(os.environ))
-            self.no_child_left()
-
-    def test_a_clone_that_is_a_process_is_killed_too(self):
+    def test_a_clone_that_is_a_process_is_detached_and_killed_at_exit(self):
         # clone() without CLONE_THREAD and with an exit signal other than
-        # SIGCHLD: a traced process of its own, which waits forever
+        # SIGCHLD: a process of its own, which waits forever; the start's exit
+        # kills it
         prog = ("import ctypes, signal\nlibc = ctypes.CDLL(None, use_errno=True)\n"
                 "stack = ctypes.create_string_buffer(1 << 16)\n"
                 "CB = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p)\n"
                 "f = CB(lambda _: libc.pause())\n"
                 "top = ctypes.c_void_p(ctypes.addressof(stack) + len(stack))\n"
-                "libc.clone(f, top, signal.SIGUSR1, None)\nlibc.pause()\n")
-        with self.assertRaises(SystemExit):
-            su.memory([self.PY, "-c", prog], dict(os.environ), timeout=20)
+                "libc.clone(f, top, signal.SIGUSR1, None)\nimport os\nos._exit(0)\n")
+        _, _, status, _, kids = su.memory([self.PY, "-c", prog], dict(os.environ), timeout=20)
+        self.assertEqual((status, kids), (0, 1))
         self.no_child_left()
+        self.assertEqual(self.group_left(), [])
 
     def test_a_stop_signal_is_resumed_not_held(self):
         # the child stops itself (SIGSTOP and a terminal's SIGTSTP): delivered,
@@ -156,9 +166,37 @@ class Memory(unittest.TestCase):
         for sig in ("SIGSTOP", "SIGTSTP"):
             prog = f"import os, signal\nos.kill(os.getpid(), signal.{sig})\nprint('after')\n"
             for syscalls in (True, False):
-                _, _, status, out = su.memory([self.PY, "-c", prog], dict(os.environ), syscalls, timeout=20)
+                _, _, status, out, _ = su.memory([self.PY, "-c", prog], dict(os.environ), syscalls, timeout=20)
                 self.assertEqual((status, out), (0, b"after\n"), (sig, syscalls))
                 self.no_child_left()
+
+    def group_left(self):
+        """Processes still in a measured start's process group: memory()
+        gives each start a group of its own, whose members name it."""
+        left = []
+        for d in os.listdir("/proc"):
+            if d.isdigit():
+                try:
+                    with open(f"/proc/{d}/cmdline", "rb") as f:
+                        if b"rt-startup-test-child" in f.read():
+                            left.append(int(d))
+                except OSError:
+                    pass
+        return left
+
+    def test_a_start_that_starts_processes_is_measured_and_they_are_killed(self):
+        # GNU R's exit: `sh -c 'rm -Rf' R_TempDir` through posix_spawn (a
+        # vfork), waited for; fork(); and a child left running at the exit,
+        # which is killed with the start's group
+        for prog, kids in (("import os\nos.posix_spawn('/bin/sh', ['sh', '-c', 'true'], os.environ)\nos.wait()\n", 1),
+                           ("import os\nif os.fork() == 0:\n    os._exit(0)\nos.wait()\n", 1),
+                           ("import subprocess\nsubprocess.Popen(['sleep', '60', 'rt-startup-test-child'])\n", 1)):
+            for syscalls in (True, False):
+                a, h, status, _, n = su.memory([self.PY, "-c", prog], dict(os.environ), syscalls, timeout=20)
+                self.assertEqual((status, n), (0, kids), prog)
+                self.assertGreater(a if syscalls else h, 0)
+                self.no_child_left()
+                self.assertEqual(self.group_left(), [], prog)
 
     def test_a_run_over_its_time_is_killed(self):
         with self.assertRaises(SystemExit) as e:

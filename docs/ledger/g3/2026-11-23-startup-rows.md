@@ -14,8 +14,11 @@ read the plan first.
   `R_DEFAULT_PACKAGES=NULL` (and the oracle locale).
   - robigo-rt's starts are `interim`, `rdb-jit` and `rdb-nojit`
     (`ROBIGO_RT_BOOT=rdb`, `R_ENABLE_JIT=0`).
-  - `rdb-pkgs` (L5's default packages) and `rdb-cache` (C1's translation
-    cache) are reserved names, refused until defined.
+  - `rdb-pkgs` (L5's default packages) is a reserved name, refused until
+    defined. The second reserved name was C1's translation cache; #979
+    defines it the other way round, as `rdb-nocache` (the cache off,
+    guarding the uncached path), with the rdb starts running as they ship,
+    with the cache.
   - `benchmarks/rt/m1-bars.toml`'s `[[startup]]` lists the starts the gate
     measures, each with the GNU R start shown beside it.
 - **The trees:** each binary boots from the R_HOME trees its own build
@@ -45,12 +48,24 @@ read the plan first.
   - checked locally: main's trees, packed in one checkout and unpacked into
     a bare directory, boot all three starts;
   - the pack takes every `.robigo/rt-home*` directory, so C1's translation
-    cache (`<R_HOME>-cache`) will travel with its tree for `rdb-cache`.
-- **A start's count follows its tree's path:** from that bare directory,
-  whose path is longer, rdb with the JIT off counted 51.34M where the
-  checkout gave 50.83M (+1.0%), JIT on +0.3%, interim +0.05%. Both binaries
-  are measured from the same checkout path, so the gate compares like with
-  like; GNU R's numbers beside them are from another path, report only.
+    cache (`<R_HOME>-cache`) travels with its tree for the rdb starts.
+- **A start's count follows its tree's path, a little.** The same binary
+  and the same trees, unpacked at a 9- and a 190-character path: rdb JIT
+  on +44k (+0.05%), JIT off +97k (+0.19%), about 240 instructions per
+  character.
+  - Carried by `sub()` over a path in base's start-up R code
+    (`tre_match`), which GNU R runs too, and by robigo-rt's lossy UTF-8
+    decoding of path bytes (`Utf8Chunks::next`, in `Conn::new` and
+    `mk_char`).
+  - An earlier line here said "+1.0% for a longer path". It came from a
+    bare-directory run that differed in more than the path and does not
+    reproduce.
+  - Both binaries are measured from the same checkout path, so the gate
+    compares like with like; GNU R's numbers beside them are from another
+    path, report only.
+  - CI's runner counts about 3% more than a local run of the same binary
+    family: the machine (its CPU and glibc's dispatch), not the path. So
+    compare robigo-rt with GNU R only within one CI run.
 - **Three numbers per start:**
   - **instructions:** callgrind's total for the whole process, the median
     over three environment shifts (a padding variable of 0, 100 and 1,000
