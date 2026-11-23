@@ -73,7 +73,8 @@ pub(crate) fn value<'s>(
         // profile forced, byte code disabled, a version bcEval does not run)
         BCODESXP => {
             let st = crate::prims::state(cx);
-            if st.forced == Some(Profile::Eval)
+            if !st.early_bytecode.get()
+                || st.forced == Some(Profile::Eval)
                 || st.jit.get().disable_bytecode
                 || !robigo_rtbuiltins::bytecode::version_ok(expr.bind(cx))
             {
