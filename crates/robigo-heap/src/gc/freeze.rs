@@ -80,6 +80,51 @@ impl Visitor for Edges<'_> {
     }
 }
 
+/// The check's I2 walk ([`Core::check_frozen_reach`]): each frozen edge
+/// reached once (its bit), queued as it is shown, as [`PassWalk`] does
+/// without logging anything.
+struct CheckWalk<'a> {
+    core: &'a Core,
+    large: &'a mut HashSet<usize, BuildFx>,
+    /// The reached frozen objects, in the order reached: the walk's queue.
+    reached: Vec<Sexp>,
+}
+
+impl Visitor for CheckWalk<'_> {
+    #[inline]
+    fn edge(&mut self, edge: &mut Sexp) {
+        let x = *edge;
+        // SAFETY: `check_frozen_reach`'s: every edge the roots show, and
+        // every field of a live object, is null or live.
+        unsafe {
+            if !x.is_null() && x.flags() & flags::FROZEN != 0 && self.core.reach(x, self.large) {
+                self.reached.push(x);
+            }
+        }
+    }
+}
+
+/// The check's direct loop ([`Core::check_frozen_marked`]): the first
+/// field of the object traced that is ordinary and unmarked.
+struct UnmarkedKid<'a> {
+    core: &'a Core,
+    found: Option<Sexp>,
+}
+
+impl Visitor for UnmarkedKid<'_> {
+    #[inline]
+    fn edge(&mut self, edge: &mut Sexp) {
+        let k = *edge;
+        // SAFETY: `check_frozen_marked`'s: a live object's fields are null
+        // or live, after marking and before the sweep.
+        unsafe {
+            if self.found.is_none() && !k.is_null() && k.flags() & flags::IMMORTAL == 0 && !self.core.is_marked(k) {
+                self.found = Some(k);
+            }
+        }
+    }
+}
+
 /// Phase 1 of the freezing collection ([`Core::freeze_from`]): the visitor
 /// that decides each object when an edge first shows it.
 struct FreezeMark<'a, E: Fn(Sexp) -> bool> {
@@ -821,21 +866,22 @@ impl Core {
             && self.pending_unfreeze.is_empty();
         let with_roots = roots.trace_freeze(&mut Edges(&mut work)) && decided;
         let mut large: HashSet<usize, BuildFx> = HashSet::default();
-        let mut kids = Vec::new();
         // SAFETY: the caller's contract; frozen objects are live, and the
         // bits are the pass's, clear between pass steps (above).
         unsafe {
-            // I2: the bits are "reached from the freeze roots"
-            let mut reached = Vec::new();
-            while let Some(x) = work.pop() {
-                if x.is_null() || !self.is_frozen(x) || !self.reach(x, &mut large) {
-                    continue;
-                }
-                reached.push(x);
-                kids.clear();
-                x.trace_fields(&mut Edges(&mut kids));
-                work.extend_from_slice(&kids);
+            // I2: the bits are "reached from the freeze roots"; the reached
+            // list is the walk's queue
+            let mut walk = CheckWalk { core: self, large: &mut large, reached: Vec::with_capacity(self.frozen.len()) };
+            for mut x in work {
+                walk.edge(&mut x);
             }
+            let mut i = 0;
+            while i < walk.reached.len() {
+                let x = walk.reached[i];
+                x.trace_fields(&mut walk);
+                i += 1;
+            }
+            let reached = walk.reached;
             if with_roots {
                 for &f in &self.frozen {
                     if f.flags() & flags::FROZEN != 0 && !self.reached(f, &large) {
@@ -1056,14 +1102,13 @@ impl Core {
     // identity measure)
     #[inline(never)]
     pub(super) unsafe fn check_frozen_marked(&self) {
-        let mut kids = Vec::new();
+        let mut v = UnmarkedKid { core: self, found: None };
         for &f in &self.frozen {
-            kids.clear();
             // SAFETY: the caller's contract.
             unsafe {
-                f.trace_fields(&mut Edges(&mut kids));
-                if let Some(k) = kids.iter().find(|k| k.flags() & flags::IMMORTAL == 0 && !self.is_marked(**k)) {
-                    frozen_panic(f, *k, "unmarked after marking");
+                f.trace_fields(&mut v);
+                if let Some(k) = v.found {
+                    frozen_panic(f, k, "unmarked after marking");
                 }
             }
         }
