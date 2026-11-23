@@ -297,9 +297,19 @@ fn force_x_i(
     let v = s.out(cx);
     let vr = v.root();
     let args = s.args(cx, &[x.bind(cx), ind.bind(cx)], None);
-    // R: subset.c:do_subset2 (the special's default, as specials.rs calls it)
-    cx.materialize_subset_args(args)?;
-    robigo_rtbuiltins::subset::do_subset2_dflt(cx, tmp, args, rho, v)?;
+    // R: subset.c:do_subset2 (the special's default, as specials.rs calls
+    // it), at the depth GNU R runs it: eval(p) and eval(X[[i]]) active, so
+    // a calling handler of an error signalled there (an allocation that
+    // fails) sees GNU R's depth. (Through lapply that needs an `X` whose
+    // expansion fails yet that lapply's `as.list` let through: one with
+    // only names, which cannot be allocated in the first place.)
+    let depth = cx.eval_depth();
+    cx.set_eval_depth(depth + 2);
+    let r = cx
+        .materialize_subset_args(args)
+        .and_then(|()| robigo_rtbuiltins::subset::do_subset2_dflt(cx, tmp, args, rho, v));
+    cx.set_eval_depth(depth);
+    r?;
     cx.set_promise_forced(p, vr);
     Ok(true)
 }
