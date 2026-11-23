@@ -32,6 +32,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 
 mod diag;
+mod freeze;
 mod mover;
 pub use diag::PinReportTo;
 pub use mover::POISON_TYPE;
@@ -528,6 +529,28 @@ pub struct Core {
     quarantine: Vec<crate::heap::Chunk>,
     /// `ROBIGO_GC_PIN_REPORT`, `ROBIGO_GC_STRONG_DLL` (`diag.rs`)
     diag: Option<Box<diag::Diag>>,
+    /// `ROBIGO_GC_FREEZE=1` (or [`Core::set_freeze_enabled`]): the boot
+    /// heap's freeze runs. Off by default: then nothing of it runs.
+    freeze_on: bool,
+    /// The boot boundary, between [`Core::freeze_boundary`] and the lazy
+    /// freeze inside the next collection (`freeze.rs`).
+    boot_boundary: Option<Box<freeze::BootBoundary>>,
+    /// The boot heap's freeze (`freeze.rs`): the frozen objects, by address.
+    frozen: Vec<Sexp>,
+    /// Frozen objects to become ordinary at the next collection.
+    pending_unfreeze: Vec<Sexp>,
+    /// `ROBIGO_GC_FREEZE_CHECK=N`: the freeze's invariant checked at every
+    /// N-th collection (1: every one; 0: never). The check traces the whole
+    /// heap twice, so under gctorture a period keeps a run's cost near a
+    /// plain one's, as `ROBIGO_GC_MOVE=young:N`'s does.
+    freeze_check: u32,
+    /// Collections since the last checked one.
+    freeze_check_count: u32,
+    /// Whether this collection is checked.
+    freeze_checking: bool,
+    /// Under `freeze_check`, the ordinary objects the independent trace
+    /// reached at this collection's start.
+    freeze_reach: Vec<Sexp>,
     /// GNU R's `R_weak_refs`: the weak references (WEAKREFSXP) not yet
     /// finalized, ready ones (`READY_TO_FINALIZE`, their key dead or the
     /// session ending) included, oldest first (`R_weak_refs` reversed).
@@ -819,6 +842,32 @@ fn spill_callee_saved(buf: &mut [usize; 12]) {
 /// is empty and unlimited but for `R_MAX_VSIZE`, whose minimum fits them).
 const CONSTANTS: &str = "robigo: cannot allocate R's constants";
 
+/// `ROBIGO_GC_FREEZE`: the boot heap's freeze (`gc/freeze.rs`), off by
+/// default (unset, empty or `0`), on with `1`. Anything else is refused.
+fn freeze_from_env() -> bool {
+    match std::env::var("ROBIGO_GC_FREEZE") {
+        Err(std::env::VarError::NotPresent) => false,
+        Ok(v) if v.is_empty() || v == "0" => false,
+        Ok(v) if v == "1" => true,
+        Ok(v) => panic!("robigo: ROBIGO_GC_FREEZE is 1 (the boot heap's freeze on) or 0, not {v:?}"),
+        Err(e) => panic!("robigo: ROBIGO_GC_FREEZE: {e}"),
+    }
+}
+
+/// `ROBIGO_GC_FREEZE_CHECK`'s period (read only with the freeze on): unset or empty is 0 (off), `N` checks
+/// every N-th collection. Anything else is refused, so a typo never turns
+/// the check off unseen.
+fn freeze_check_from_env() -> u32 {
+    match std::env::var("ROBIGO_GC_FREEZE_CHECK") {
+        Err(std::env::VarError::NotPresent) => 0,
+        Ok(v) if v.is_empty() => 0,
+        Ok(v) => v.parse().unwrap_or_else(|_| {
+            panic!("robigo: ROBIGO_GC_FREEZE_CHECK must be a collection period (1: every collection), not {v:?}")
+        }),
+        Err(e) => panic!("robigo: ROBIGO_GC_FREEZE_CHECK: {e}"),
+    }
+}
+
 impl Core {
     /// A new heap. The calling thread's stack is the one whose C segments
     /// are scanned.
@@ -826,6 +875,7 @@ impl Core {
         // the process's fork handlers, before this heap can take a lock
         crate::fork::register();
         let (stack_lo, stack_top) = thread_stack();
+        let freeze_on = freeze_from_env();
         let mut c = Box::new(Core {
             heap: Heap::new(),
             mark_stack: Vec::new(),
@@ -875,6 +925,14 @@ impl Core {
             young: Box::new(mover::Young::new(mover::policy_from_env().unwrap_or(0))),
             quarantine: Vec::new(),
             diag: diag::Diag::from_env(),
+            freeze_on,
+            boot_boundary: None,
+            frozen: Vec::new(),
+            pending_unfreeze: Vec::new(),
+            freeze_check: if freeze_on { freeze_check_from_env() } else { 0 },
+            freeze_check_count: 0,
+            freeze_checking: false,
+            freeze_reach: Vec::new(),
             weak_refs: Vec::new(),
             finalizers_pending: false,
             releases: Vec::new(),
@@ -2005,6 +2063,13 @@ impl Core {
         // newest first where its order shows (a finalizer pass,
         // [`Core::pop_finalizable_before`])
         self.weak_refs.push(w);
+        // a frozen key must be able to die (`freeze.rs`): ordinary from the
+        // next collection on
+        // SAFETY: the caller's contract: element 0 is the key.
+        unsafe {
+            let key = Self::weak_field(w, 0);
+            self.request_unfreeze(key);
+        }
     }
 
     /// The references ready for their finalizer (tests, statistics).
@@ -2766,7 +2831,25 @@ impl Core {
             // (forwarded objects, `collecting` set): poisoned until both
             // end, so an unwinding panic leaves it set and the heap is
             // never collected again
+            // the lazy freeze (`freeze.rs`): the first collection after the
+            // boot boundary freezes, before anything is marked
+            if self.boot_boundary.is_some() {
+                self.freeze_at_boundary(roots);
+            }
             self.poisoned = true;
+            // the batched unfreeze (`freeze.rs`) before anything is marked
+            self.unfreeze_pending();
+            // (this collection's snapshot only: r4 S10)
+            self.freeze_reach.clear();
+            self.freeze_checking = false;
+            if self.freeze_check != 0 && !self.frozen.is_empty() {
+                self.freeze_check_count += 1;
+                if self.freeze_check_count >= self.freeze_check {
+                    self.freeze_check_count = 0;
+                    self.freeze_checking = true;
+                    self.freeze_reach = self.independent_reach(roots);
+                }
+            }
             if self.young_collection() {
                 // ROBIGO_GC_MOVE=young:N (mover.rs): the pins first, then a
                 // marking that copies the young objects as it reaches them
@@ -2879,6 +2962,11 @@ impl Core {
         // context of matching types, on the core's thread.
         unsafe {
             self.trace_y::<Y>();
+            // ROBIGO_GC_FREEZE_CHECK: after the strong trace, before weak
+            // references and C segments can mark what it missed (Sol r2 S5)
+            if self.freeze_checking && !Y {
+                self.check_frozen_marked();
+            }
             // docs/g3.md §3, "What a collection marks" (L8): precise roots
             // (above), weak references and finalizers decided on them alone,
             // then the C segments as pins: what a C word reaches stays
@@ -3439,6 +3527,15 @@ impl Core {
                 r,
                 "robigo gc: due at exit: {pending} bytes since (live {} bytes), over max(32 MiB, 10% live) {over}",
                 st.live_bytes
+            );
+        }
+        if self.freeze_on {
+            let state = if self.boot_boundary.is_some() { ", the boundary drawn, no collection since" } else { "" };
+            let _ = writeln!(
+                r,
+                "robigo gc: the boot heap's freeze (ROBIGO_GC_FREEZE): {} objects frozen, {} bytes{state}",
+                self.frozen.len(),
+                self.frozen_bytes()
             );
         }
         let _ = writeln!(

@@ -164,6 +164,10 @@ impl Core {
     /// is on, so such an object would move under C. Turn it on before
     /// anything is handed to C.
     pub unsafe fn set_gc_move(&mut self, on: bool) {
+        assert!(
+            !on || self.frozen.is_empty(),
+            "robigo: the moving collector cannot start after the boot heap's freeze"
+        );
         self.gc_move = on;
         self.young.full_every = 0;
     }
@@ -178,6 +182,7 @@ impl Core {
     /// # Panics
     /// If `every` is 0.
     pub unsafe fn set_gc_move_young(&mut self, every: u32) {
+        assert!(self.frozen.is_empty(), "robigo: the moving collector cannot start after the boot heap's freeze");
         assert!(every >= 1, "robigo: a young moving policy needs a full collection every N >= 1");
         self.gc_move = true;
         self.young.full_every = every;

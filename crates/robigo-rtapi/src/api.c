@@ -122,6 +122,8 @@ static inline SEXP seen(SEXP x)
 
 /* the heap's barrier store into a traced field of x (cannot collect) */
 void robigo_rtapi_store(SEXP x, SEXP *slot, SEXP v);
+/* log a frozen object as a root, once (cannot collect) */
+void robigo_rtapi_remember(SEXP x);
 /* errors, with machine entries: they never return */
 __attribute__((noreturn)) void robigo_rtapi_error(const char *msg);
 __attribute__((noreturn)) void robigo_rtapi_errorcall(SEXP call, const char *msg);
@@ -299,6 +301,20 @@ void *(DATAPTR)(SEXP x)
     chkvec(x);
     if (!RB_IS_ALTREP(x) && RB_TYPE(x) == CHARSXP)
         return RB_DATA(x); /* (a CHARSXP's trailing zero byte) */
+    /* a vector of objects whose payload C now holds: C may write its
+     * elements without the barrier (robigo-heap's freeze.rs). An ordinary
+     * one is marked C's (sticky), so a later freeze leaves it out; a frozen
+     * one not yet logged is a root from now on, traced at every
+     * collection (Sol S1). Not for an empty one: C gets dataptr's
+     * (void *) 1 and can write nothing (an ALTREP's length is its class's,
+     * so it is marked whatever its header says) */
+    if ((RB_TYPE(x) == STRSXP || RB_TYPE(x) == VECSXP || RB_TYPE(x) == EXPRSXP)
+        && (RB_IS_ALTREP(x) || RB_LEN(x) != 0)) {
+        if (!(RB_FLAGS(x) & ROBIGO_FLAG_IMMORTAL))
+            RB_EXTRA(x) |= RB_SEEN_BY_C;
+        else if (RB_FLAGS(x) & ROBIGO_FLAG_BARRIER)
+            robigo_rtapi_remember(x);
+    }
     return dataptr(x);
 }
 
