@@ -63,6 +63,21 @@
 //!   robigo-rt does not spawn through it, and when an embedder does,
 //!   `prepare` waits for nothing that waits on std's lock.
 //!
+//! **A forked child never starts a thread**, and runs on the forking thread
+//! alone until it execs or exits. A fork copies std's internal locks too,
+//! and none of the handlers here can reach them: std's thread-start lock
+//! (`thread_info::set_current_info`, Rust 1.100), taken by every thread
+//! while it starts and ends, may be held at the fork by another thread of
+//! the parent, and the child's first `std::thread::spawn` then waits on it
+//! forever. The rt crates start no thread outside their tests (robigo-rt's
+//! `isolate_state.rs`, `the_runtime_starts_no_threads`), so a child of a
+//! robigo-rt process (`mcfork`'s, `system()`'s before its exec) has none to
+//! start. GNU R's `mcfork` children are single-threaded the same way (a
+//! forked R starts no thread of its own); native code a package loads may
+//! start some (OpenMP), and is not safe after a fork in GNU R either. The
+//! fork tests run each in a process of their own for the same reason
+//! (robigo-rtcore's `fork_tests.rs`, `isolated`).
+//!
 //! **std's stdin lock** is not one of them: a thread reading the console
 //! holds it for as long as the read blocks, and a fork would wait for the
 //! input. A child forked while another thread reads std's stdin must not
