@@ -858,13 +858,14 @@ fn z_prec_r(x: Rcomplex, digits: f64) -> Rcomplex {
         }
         return Rcomplex { r: 0.0, i: 0.0 };
     }
-    let mut dig = (digits + 0.5).floor() as i32;
+    // C's (int) conversions (cvttsd2si: INT_MIN out of range)
+    let mut dig = robigo_numerics::c_int_cast((digits + 0.5).floor());
     if dig > MAX_DIGITS {
         return r;
     } else if dig < 1 {
         dig = 1;
     }
-    let mag = m.log10().floor() as i32;
+    let mag = robigo_numerics::c_int_cast(m.log10().floor());
     dig = dig - mag - 1;
     if dig > 306 {
         let pow10 = 1.0e4;

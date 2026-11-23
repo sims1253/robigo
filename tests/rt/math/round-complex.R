@@ -10,3 +10,7 @@ signif(0.1+0i, -Inf)
 signif(complex(real = 1.23456e-300, imaginary = 2), 3)
 signif(complex(real = Inf, imaginary = 0.123456), 2)
 round(1.25+0i, "1")
+# z_prec_r's (int)floor(digits + 0.5) out of int range: C's INT_MIN, so 1 digit
+signif(1.234 + 5.678i, 2147483648)
+signif(1.234 + 5.678i, 1e20)
+signif(1.234 + 5.678i, -1e20)
