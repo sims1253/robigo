@@ -597,6 +597,27 @@ class RtCi(unittest.TestCase):
         with mock.patch.object(rt.subprocess, "run", side_effect=FileNotFoundError):
             self.assertIn("no docker", rt.oracle_problem())
 
+    def test_the_lint_job_runs_lint_job_sh_and_nothing_else(self):
+        # the workflow's lint job and scripts/lint-job.sh, which delegates
+        # run before pushing, are one list: the job's only command is the
+        # script, and the script runs fmt, lint.sh and every test suite the
+        # job ran
+        import re
+        yml = (HERE.parent / ".github" / "workflows" / "ci.yml").read_text()
+        job = re.search(r"\n  lint:\n(.*?)\n  [a-z0-9-]+:\n", yml, re.S).group(1)
+        runs = re.findall(r"^\s+run: (.*)$", job, re.M)
+        self.assertEqual(runs, ["scripts/lint-job.sh"])
+        self.assertNotIn("run: |", job)
+        script = (HERE / "lint-job.sh").read_text()
+        checks = re.search(r"CHECKS=\((.*?)\n\)", script, re.S).group(1)
+        listed = re.findall(r'"([^"]+)"', checks)
+        self.assertEqual(listed[:2], ["cargo fmt --check", "scripts/lint.sh"])
+        # every script suite is a test file that exists
+        for c in listed[2:]:
+            self.assertRegex(c, r"^python3 scripts/test[-_][\w-]+\.py$")
+            self.assertTrue((HERE.parent / c.split()[1]).exists(), c)
+        self.assertTrue(os.access(HERE / "lint-job.sh", os.X_OK))
+
     def test_a_crosscheck_that_compares_fewer_than_its_floor_fails(self):
         # the rdb boot's report: a boot that stopped loading the compiler's
         # namespace compares about half as many closures, without any error

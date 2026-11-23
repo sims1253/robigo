@@ -854,7 +854,13 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    unreadable diff runs everything. `scripts/test-ci-select.py` checks the mapping.
    It also makes sure the CI image for this tree exists (below) and hands
    its references to the other jobs.
-2. **lint:** `cargo fmt --check` and `scripts/lint.sh`.
+2. **lint:** `scripts/lint-job.sh`, the job's only command: `cargo fmt
+   --check`, `scripts/lint.sh` (clippy and the Sexp rule), and the tooling's
+   script suites (test_corpus, test-oracle-diff, test-check-sexp-safety,
+   test-wall13, test-pgo-build, test-prune-target, test-scratch).
+   **Before pushing, run `scripts/lint-job.sh`**: a green run is a green lint
+   job. `scripts/test-rt-ci.py` checks that the workflow runs the script and
+   nothing else.
    **miri:** `RString` and the `Rc` alias writes (§ Unsafe code).
    **bytecode-fidelity:** bytecode metadata and GNU bytecode fixtures. These
    jobs do not depend on the release binary and still run when a pull request
