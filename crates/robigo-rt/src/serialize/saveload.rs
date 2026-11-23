@@ -255,7 +255,8 @@ pub fn do_save_to_conn(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'
                     cx.find_var(tag, source, vo)?;
                     if v.bind(cx).sexp() == cx.unbound().sexp() {
                         // SAFETY: a rooted symbol.
-                        let name = unsafe { crate::eval::sym_name(cx, tag.bind(cx).sexp()) };
+                        // R: EncodeChar(PRINTNAME(TAG(t)))
+                        let name = unsafe { crate::eval::sym_name_encoded(cx, tag.bind(cx).sexp()) };
                         return Err(cx.error(&format!("object '{name}' not found")));
                     }
                     if ep != 0 && v.bind(cx).sexptype() == PROMSXP {

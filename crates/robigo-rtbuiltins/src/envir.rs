@@ -293,10 +293,12 @@ pub fn do_get<const CODE: u8>(
                 Ok(())
             }
             _ if unbound => {
-                let nm = String::from_utf8_lossy(t1.bind(cx).as_sym().unwrap().name_bytes()).into_owned();
                 let msg = if mode == Mode::ANY {
-                    format!("object '{nm}' not found")
+                    // R: EncodeChar(PRINTNAME(t1))
+                    format!("object '{}' not found", cx.encode_sym_name(t1.bind(cx).as_sym().unwrap()))
                 } else {
+                    // R: CHAR(PRINTNAME(t1)), not encoded
+                    let nm = String::from_utf8_lossy(t1.bind(cx).as_sym().unwrap().name_bytes()).into_owned();
                     let m = args.get(cx, 2).as_vector::<Char<'_>>().unwrap().get(0).bytes().to_vec();
                     format!("object '{nm}' of mode '{}' was not found", String::from_utf8_lossy(&m))
                 };
@@ -1548,7 +1550,8 @@ pub fn do_remove(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
                 })?;
             }
             if !done {
-                let nm = String::from_utf8_lossy(sym.bind(cx).as_sym().unwrap().name_bytes()).into_owned();
+                // R: warning(_("object '%s' not found"), EncodeChar(PRINTNAME(tsym)))
+                let nm = cx.encode_sym_name(sym.bind(cx).as_sym().unwrap());
                 cx.warning(&format!("object '{nm}' not found"))?;
             }
             Ok(())

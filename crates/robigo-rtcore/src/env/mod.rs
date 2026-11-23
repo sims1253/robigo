@@ -520,15 +520,25 @@ fn env_error(cx: &mut Cx, msg: &str) -> RError {
     cx.error(msg)
 }
 
-/// A symbol's name for a message (`CHAR(PRINTNAME(sym))`, or
-/// `EncodeChar` of it, which also escapes unprintable characters: the
-/// text layer's to add here).
+/// A symbol's name for a message where GNU R's C has
+/// `CHAR(PRINTNAME(sym))`: its bytes as they are ([`sym_name_encoded`]
+/// where the C has `EncodeChar(PRINTNAME(sym))`).
 ///
 /// # Safety
 /// `s` is a live symbol.
 unsafe fn sym_name(s: Sexp) -> String {
     // SAFETY: the caller's contract: PRINTNAME is a live CHARSXP.
     String::from_utf8_lossy(unsafe { s.sym_name_bytes() }).into_owned()
+}
+
+/// `EncodeChar(PRINTNAME(sym))` ([`Cx::encode_sym_name`]) for a message.
+///
+/// # Safety
+/// `s` is a live symbol of `cx`'s isolate.
+unsafe fn sym_name_encoded(cx: &Cx, s: Sexp) -> String {
+    // SAFETY: the caller's contract: a live symbol of this isolate.
+    let r = unsafe { Ref::from_sexp(s, cx) };
+    cx.encode_sym_name(r.as_sym().expect("robigo: a symbol"))
 }
 
 /// Panics unless `x` is a symbol: the GNU R entry points that do not check
@@ -2691,7 +2701,8 @@ impl Cx {
             match loc_in_frame(iso, r, s) {
                 Ok(Some(l)) => Ok(l),
                 Ok(None) => {
-                    let msg = format!("no binding for \"{}\"", sym_name(s));
+                    // R: error(_("no binding for \"%s\""), EncodeChar(PRINTNAME(sym)))
+                    let msg = format!("no binding for \"{}\"", sym_name_encoded(self, s));
                     Err(env_error(self, &msg))
                 }
                 Err(k) => Err(special_error(self, k)),
@@ -2760,11 +2771,11 @@ impl Cx {
         // SAFETY: as in `lock_binding`.
         unsafe {
             if !l.bound(iso) {
-                let msg = format!("no binding for \"{}\"", sym_name(l.symbol()));
+                let msg = format!("no binding for \"{}\"", sym_name_encoded(self, l.symbol()));
                 return Err(env_error(self, &msg));
             }
             if l.bits(iso) & ACTIVE_BINDING == 0 {
-                let msg = format!("no active binding for \"{}\"", sym_name(l.symbol()));
+                let msg = format!("no active binding for \"{}\"", sym_name_encoded(self, l.symbol()));
                 return Err(env_error(self, &msg));
             }
             out.set(self, Ref::from_sexp(l.raw(iso), self));
@@ -3100,7 +3111,8 @@ fn missing_arg_error(cx: &mut Cx, s: Sexp, call: Option<Root<'_>>) -> RError {
 #[cold]
 fn could_not_find_function(cx: &mut Cx, s: Sexp, call: Option<Root<'_>>) -> RError {
     // SAFETY: a live symbol (the callers' rooted `sym`).
-    let msg = format!("could not find function \"{}\"", unsafe { sym_name(s) });
+    // R: EncodeChar(PRINTNAME(symbol))
+    let msg = format!("could not find function \"{}\"", unsafe { sym_name_encoded(cx, s) });
     match call {
         Some(c) => cx.error_call(Some(c), &msg),
         None => env_error(cx, &msg),

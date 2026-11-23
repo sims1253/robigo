@@ -53,7 +53,10 @@ fn assign_fcn_symbol(cx: &mut Cx, fun: Sexp) -> RResult<Sexp> {
     // SAFETY: as above.
     let name = unsafe { Ref::from_sexp(fun, cx) }.as_sym().unwrap().name_bytes().to_vec();
     if name.len() + 3 > ASSIGNBUFSIZ {
-        let msg = format!("overlong name in '{}'", String::from_utf8_lossy(&name));
+        // R: error(_("overlong name in '%s'"), EncodeChar(PRINTNAME(fun)))
+        // SAFETY: as above.
+        let shown = cx.encode_sym_name(unsafe { Ref::from_sexp(fun, cx) }.as_sym().unwrap());
+        let msg = format!("overlong name in '{shown}'");
         return Err(cx.error(&msg));
     }
     let mut buf = name;
@@ -213,7 +216,9 @@ pub(crate) fn ensure_local<'s>(
         eval(cx, sym, en, vl)?;
         if vr.bind(cx) == cx.unbound() {
             // SAFETY: a rooted symbol.
-            let msg = format!("object '{}' not found", unsafe { crate::eval::sym_name(cx, sym.bind(cx).sexp()) });
+            // R: error(_("object '%s' not found"), EncodeChar(PRINTNAME(symbol)))
+            let msg =
+                format!("object '{}' not found", unsafe { crate::eval::sym_name_encoded(cx, sym.bind(cx).sexp()) });
             return Err(cx.error(&msg));
         }
         dup(cx, s, vr)?;

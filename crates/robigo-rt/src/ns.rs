@@ -122,7 +122,8 @@ fn get_var_val_in_frame(cx: &mut Cx, rho: Root<'_>, sym: Root<'_>, unbound_ok: b
     let r = out.root();
     find_in_frame(cx, rho, sym, out)?;
     if !unbound_ok && r.bind(cx).sexp() == cx.unbound().sexp() {
-        let n = String::from_utf8_lossy(sym.bind(cx).as_sym().unwrap().name_bytes()).into_owned();
+        // R: error(_("object '%s' not found"), EncodeChar(PRINTNAME(sym)))
+        let n = cx.encode_sym_name(sym.bind(cx).as_sym().unwrap());
         return Err(cx.error(&format!("object '{n}' not found")));
     }
     if r.bind(cx).sexptype() == PROMSXP {
@@ -207,12 +208,9 @@ pub fn get_ns_value(
             View::Str(v) if v.len() == 1 => v.get(0).bytes().to_vec(),
             _ => return Err(cx.error_call(call, "bad value returned by `getNamespaceName'")),
         };
-        let sym_name = name.bind(cx).as_sym().unwrap().name_bytes().to_vec();
-        let msg = format!(
-            "'{}' is not an exported object from 'namespace:{}'",
-            String::from_utf8_lossy(&sym_name),
-            String::from_utf8_lossy(&nm)
-        );
+        // R: EncodeChar(PRINTNAME(name)), CHAR(STRING_ELT(nsname, 0))
+        let sym_name = cx.encode_sym_name(name.bind(cx).as_sym().unwrap());
+        let msg = format!("'{}' is not an exported object from 'namespace:{}'", sym_name, String::from_utf8_lossy(&nm));
         Err(cx.error_call(call, &msg))
     })
 }

@@ -39,6 +39,22 @@ pub const NO_SRCFILE: &str = "<input>";
 // R: gram.y:raiseParseError, raiseLexError, getFilename; errors.c:R_makeErrorCondition, R_signalErrorCondition
 pub fn signal(cx: &mut Cx, src: Source<'_>, e: &ParseError, filename: &str) -> RError {
     debug_assert!(e.style == robigo_syntax::ErrorStyle::Condition, "robigo: a parse error that is no condition");
+    // CheckFormalArgs passes EncodeChar(PRINTNAME(_new)) as the value and
+    // the message's name, at the locale the parser cannot see
+    // R: gram.y:CheckFormalArgs
+    let encoded;
+    let e = match (&e.value, e.subclass) {
+        (ConditionValue::Str(v), "repeatedFormal") => {
+            let name = cx.encode_char(v.as_bytes(), robigo_rtcore::Encoding::Native);
+            encoded = ParseError {
+                message: format!("repeated formal argument '{name}'"),
+                value: ConditionValue::Str(name),
+                ..e.clone()
+            };
+            &encoded
+        }
+        _ => e,
+    };
     let (line, col) = robigo_syntax::error_line_col(src, e);
     let msg = robigo_syntax::condition_message(src, filename, e);
     let built = cx.scope(|cx, s| -> Result<RError, RError> {

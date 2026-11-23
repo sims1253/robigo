@@ -352,6 +352,27 @@ impl Default for Warnings {
 }
 
 impl Cx {
+    /// GNU R's `EncodeChar(c)`, `EncodeString(c, 0, 0, Rprt_adj_left)`, of
+    /// a string's bytes in encoding `enc`, through the text layer's hook:
+    /// how a message shows a name. Control characters are escaped (`\n`,
+    /// `\001`), and so, where the locale is not UTF-8, are non-ASCII bytes
+    /// (`\303\251`).
+    // R: printutils.c:EncodeChar
+    pub fn encode_char(&self, bytes: &[u8], enc: crate::Encoding) -> String {
+        let b = (self.iso().hooks.get().encode_string)(self, bytes, enc);
+        String::from_utf8_lossy(&b).into_owned()
+    }
+
+    /// `EncodeChar(PRINTNAME(sym))`: a symbol's name as GNU R's messages
+    /// show it where its C encodes it. (Where the C has
+    /// `CHAR(PRINTNAME(sym))`, a message takes the name's bytes as they
+    /// are.)
+    // R: printutils.c:EncodeChar
+    pub fn encode_sym_name(&self, sym: crate::Sym<'_>) -> String {
+        let c = sym.name(self);
+        self.encode_char(c.bytes(), c.enc())
+    }
+
     /// Install `rt`'s hooks (replacing the whole table).
     pub fn install_hooks(&mut self, hooks: Hooks) {
         self.iso().hooks.set(hooks);
