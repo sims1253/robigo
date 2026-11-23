@@ -1,2 +1,2 @@
-# builtin-diff known failures: validEnc, seed 0, key 531f4a44c2e677bfccc785e8
+# builtin-diff known failures: validEnc, seed 0, key 6a8421c93171f89969155d71
 # validEnc: 128 / 128 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)

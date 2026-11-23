@@ -1,2 +1,2 @@
-# builtin-diff known failures: enc2native, seed 0, key f0de4d257e5a952368811ccd
+# builtin-diff known failures: enc2native, seed 0, key 696c6f7cdc2a583dd5336a1f
 # enc2native: 65 / 65 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)

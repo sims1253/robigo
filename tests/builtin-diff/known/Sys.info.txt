@@ -1,4 +1,4 @@
-# builtin-diff known failures: Sys.info, seed 0, key 899afc88b82ef36bb5366ff7
+# builtin-diff known failures: Sys.info, seed 0, key 73970838c0372622437fa6bb
 # Sys.info: 5 / 7 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
 1
 2
