@@ -1507,7 +1507,14 @@ jobs:
       - name: Starts
         if: success() || failure()
         run: |
+          # the suite without the binary (M1Name skips), as before; then
+          # M1Name alone, in a process of its own, with the binary under test
+          # and its trees: its check that ROBIGO_RT_BOOT=m1 is the interim
+          # start, until the default-boot flip (its real measurements never
+          # share a process with the other tests)
           python3 scripts/test-rt-startup.py
+          RT_STARTUP_TEST_BIN=dist/robigo-rt RT_STARTUP_TEST_TREES=dist/rt-trees.tar \
+            python3 scripts/test-rt-startup.py M1Name
           main_flag=()
           if [ -f dist/robigo-rt-main ]; then
             main_flag=(--main dist/robigo-rt-main --main-trees dist/rt-trees-main.tar)

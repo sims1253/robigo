@@ -201,18 +201,20 @@ enum Boot {
     Rdb,
 }
 
-/// `ROBIGO_RT_BOOT`'s boot; unset or empty is M1's loader, any other
-/// value than `stage0` or `rdb` an error (a typo must not boot M1's
-/// loader silently).
+/// `ROBIGO_RT_BOOT`'s boot; unset or empty is M1's loader, which `m1`
+/// names too (so a harness can name it for a binary of either default:
+/// L5's default-boot flip makes unset mean `rdb`), any other value than
+/// `stage0` or `rdb` an error (a typo must not boot M1's loader silently).
 fn boot_checked() -> Result<Boot, String> {
     match std::env::var_os("ROBIGO_RT_BOOT") {
         None => Ok(Boot::M1),
-        Some(v) if v.is_empty() => Ok(Boot::M1),
+        Some(v) if v.is_empty() || v == "m1" => Ok(Boot::M1),
         Some(v) if v == "stage0" => Ok(Boot::Stage0),
         Some(v) if v == "rdb" => Ok(Boot::Rdb),
-        Some(v) => {
-            Err(format!("ROBIGO_RT_BOOT is '{}': it is 'stage0', 'rdb' or unset (M1's loader)", v.to_string_lossy()))
-        }
+        Some(v) => Err(format!(
+            "ROBIGO_RT_BOOT is '{}': it is 'stage0', 'rdb' or 'm1' (M1's loader, also when unset)",
+            v.to_string_lossy()
+        )),
     }
 }
 
