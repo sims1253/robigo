@@ -11,5 +11,7 @@ attr(y, "nam")
 [1] "a"
 NULL
 NULL
+[1] "attempt to use zero-length variable name"
+[1] "attempt to use zero-length variable name"
 [1] TRUE
 [1] 2

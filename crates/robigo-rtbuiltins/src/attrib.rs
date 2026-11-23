@@ -390,7 +390,7 @@ pub fn do_attr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
             let t = out.root();
             cx.build(out, |cx| Ok(get_attrib(cx, x.bind(cx), b"names")?.unwrap_or(cx.nil())))?;
             if t.bind(cx).sexp() != cx.nil().sexp() && cx.warn_partial_match_attr() {
-                cx.partial_match_warning(Some(call), &str, b"names")?;
+                partial_attr_warning(cx, call, &str, b"names")?;
             }
             return Ok(());
         } else if mt == M::Partial && tag.as_deref() != Some(b"names") && names(x.bind(cx)).is_some() {
@@ -404,9 +404,20 @@ pub fn do_attr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
     }
     let tag = tag.unwrap();
     if mt == M::Partial && cx.warn_partial_match_attr() {
-        cx.partial_match_warning(Some(call), &str, &tag)?;
+        partial_attr_warning(cx, call, &str, &tag)?;
     }
     cx.build(out, |cx| Ok(get_attrib(cx, x.bind(cx), &tag)?.unwrap_or(cx.nil())))
+}
+
+/// `do_attr`'s partial-match warning: `R_makePartialMatchWarningCondition(
+/// call, install(str), tag)`, `install`'s errors first (an empty or too
+/// long name, against the context's call, as `error()`).
+// R: attrib.c:do_attr (1554, 1581), names.c:installNoTrChar
+fn partial_attr_warning(cx: &mut Cx, call: Root<'_>, str: &[u8], tag: &[u8]) -> RResult<()> {
+    if let Err(m) = crate::text::check_install_name(str) {
+        return Err(cx.error(&m));
+    }
+    cx.partial_match_warning(Some(call), str, tag)
 }
 
 /// `R_data_class(obj, FALSE)`: the class attribute, or the implicit class
