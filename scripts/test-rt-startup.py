@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 import unittest.mock
+from types import SimpleNamespace
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -154,6 +155,45 @@ class Layout(unittest.TestCase):
         self.assertEqual(sorted(len(h) for _, h, _ in anon), list(su.LAYOUT_LENGTHS))
         self.assertEqual(v["anon_kib"], su.ANON_STAT([100 + n for n in su.LAYOUT_LENGTHS]))
         self.assertEqual([m for m in seen["memory"] if not m[0]], [(False, os.path.abspath(home), None)] * 3)
+
+
+class Boots(unittest.TestCase):
+    """Every start names its boot for both binaries, so no measurement
+    depends on a binary's default (L's default-boot flip changes M1_BOOT,
+    here only), and the gate never compares two boots."""
+
+    def test_every_start_names_its_boot(self):
+        for n, env in su.STARTS.items():
+            if env is not None:
+                self.assertIn("ROBIGO_RT_BOOT", env, n)
+        self.assertEqual(su.STARTS["interim"]["ROBIGO_RT_BOOT"], su.M1_BOOT)
+        self.assertEqual(set(su.BOOTS), {"m1", "rdb"})
+        self.assertEqual(su.BOOTS["m1"], su.M1_BOOT)
+
+    def test_the_default_start_is_marked(self):
+        self.assertEqual(su.DEFAULT_START, "rdb-jit")
+        v = {"instr": 1.0, "anon_kib": 1.0, "rss_kib": 1.0}
+        rows = su.table([{"name": "interim"}, {"name": "rdb-jit"}], {"interim": v, "rdb-jit": v})
+        self.assertTrue(rows[2].startswith("| interim |"))
+        self.assertTrue(rows[3].startswith("| rdb-jit (default) |"))
+
+
+class Reallocs(unittest.TestCase):
+    def test_growth_reallocs_are_charged_to_the_function_that_grew(self):
+        # callgrind_annotate's lines for a file made with --separate-callers=3:
+        # the allocator's and RawVec's own frames are passed over
+        annotate = (
+            "   224,458 ( 1.53%)  ???:realloc'<alloc::raw_vec::RawVecInner>::finish_grow'"
+            "<alloc::raw_vec::RawVecInner<_>>::reserve::do_reserve_and_handle::<alloc::alloc::Global>'"
+            "robigo_rt::define_builtins [/bin/robigo-rt]\n"
+            "   100,000 ( 0.68%)  ???:__libc_realloc'<alloc::raw_vec::RawVec<usize>>::grow_one'"
+            "<robigo_rt::compile::Comp>::emit\n"
+            "    50,000 ( 0.34%)  ???:realloc'0x00000000000bdad0'<robigo_rt::compile::Comp>::emit\n"
+            "    10,000 ( 0.07%)  ???:malloc'robigo_rt::define_builtins\n")
+        with unittest.mock.patch.object(su.subprocess, "run",
+                                        return_value=SimpleNamespace(stdout=annotate, returncode=0)):
+            got = su.growth_reallocs("cg.out")
+        self.assertEqual(got, [("robigo_rt::define_builtins", 224458), ("<robigo_rt::compile::Comp>::emit", 150000)])
 
 
 class Memory(unittest.TestCase):
