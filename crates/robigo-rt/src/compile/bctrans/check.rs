@@ -165,28 +165,54 @@ unsafe fn misfit(x: Sexp, k: K) -> Option<&'static str> {
     }
 }
 
-/// Check `dec`'s operands against the constants `consts`: why the code is
+/// The operand check of one code against its constants (`consts`), an
+/// instruction at a time, as the decoder makes them: why the code is
 /// malformed, or Ok. The labels are checked to be positions; whether one
 /// starts an instruction is the translation's index's to say.
-///
-/// # Safety
-/// `consts` is a live object (a BCODESXP's constants).
-pub(super) unsafe fn check(dec: &[BcIns], consts: Sexp, code_len: usize) -> Result<(), String> {
-    // SAFETY: the caller's contract; the pool's elements are read within
-    // its length.
-    unsafe {
-        // (any constants, mkCode's: code whose operands read none runs with
-        // them as in GNU R, its NULL included; a constant operand needs a
-        // list to index)
-        let list = consts.typ() == VECSXP;
-        let n = if list { consts.std_len() as usize } else { 0 };
-        let pool = if list { consts.std_data() as *const Sexp } else { std::ptr::null() };
-        let name = |op: u8| robigo_rtbuiltins::bytecode::OPCODES.get(op as usize).map_or("?", |o| o.0);
-        for i in dec {
+pub(super) struct Checker {
+    /// Whether the constants are a list (`mkCode` takes any: code whose
+    /// operands read none runs with them as in GNU R, its NULL included; a
+    /// constant operand needs a list to index).
+    list: bool,
+    n: usize,
+    pool: *const Sexp,
+    code_len: usize,
+}
+
+fn name(op: u8) -> &'static str {
+    robigo_rtbuiltins::bytecode::OPCODES.get(op as usize).map_or("?", |o| o.0)
+}
+
+impl Checker {
+    /// # Safety
+    /// `consts` is a live object (a BCODESXP's constants), and stays so
+    /// while the checker is used.
+    pub(super) unsafe fn new(consts: Sexp, code_len: usize) -> Checker {
+        // SAFETY: the caller's contract.
+        unsafe {
+            let list = consts.typ() == VECSXP;
+            Checker {
+                list,
+                n: if list { consts.std_len() as usize } else { 0 },
+                pool: if list { consts.std_data() as *const Sexp } else { std::ptr::null() },
+                code_len,
+            }
+        }
+    }
+
+    /// Check instruction `i`'s operands.
+    ///
+    /// # Safety
+    /// As [`Checker::new`]'s: the constants are live.
+    #[inline]
+    pub(super) unsafe fn ins(&self, i: &BcIns) -> Result<(), String> {
+        // SAFETY: the caller's contract; the pool's elements are read within
+        // its length.
+        unsafe {
             for (j, &k) in OPERANDS[i.op as usize].iter().enumerate() {
                 let v = i.a[j];
                 match k {
-                    Label if v < 0 || v as usize > code_len => {
+                    Label if v < 0 || v as usize > self.code_len => {
                         return Err(format!("{}'s label {v} is outside the code", name(i.op)));
                     }
                     // cmp.R's labels go forward but for GOTO's (a loop's
@@ -198,32 +224,32 @@ pub(super) unsafe fn check(dec: &[BcIns], consts: Sexp, code_len: usize) -> Resu
                     }
                     Count if v < 0 => return Err(format!("{}'s count {v} is negative", name(i.op))),
                     Label | Count | Int => {}
-                    _ if !list => {
+                    _ if !self.list => {
                         return Err(format!(
                             "{}'s constant {v} is read from constants that are not a list",
                             name(i.op)
                         ));
                     }
-                    _ if v < 0 || v as usize >= n => {
-                        return Err(format!("{}'s constant {v} is outside its {n} constants", name(i.op)));
+                    _ if v < 0 || v as usize >= self.n => {
+                        return Err(format!("{}'s constant {v} is outside its {} constants", name(i.op), self.n));
                     }
                     _ => {
-                        let x = *pool.add(v as usize);
+                        let x = *self.pool.add(v as usize);
                         if let Some(want) = misfit(x, k) {
                             return Err(format!("{}'s constant {v} is not {want}", name(i.op)));
                         }
                         // a switch's jumps go forward, as cmp.R's do
                         if k == Offsets && x.typ() == INTSXP {
                             let o = std::slice::from_raw_parts(x.std_data() as *const i32, x.std_len() as usize);
-                            if o.iter().any(|&p| p < 0 || p as usize <= i.at || p as usize > code_len) {
+                            if o.iter().any(|&p| p < 0 || p as usize <= i.at || p as usize > self.code_len) {
                                 return Err(format!("{}'s jump table {v} jumps back or out of the code", name(i.op)));
                             }
                         }
                     }
                 }
             }
+            Ok(())
         }
-        Ok(())
     }
 }
 
