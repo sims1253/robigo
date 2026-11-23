@@ -491,6 +491,11 @@ fn matching_follows_gnu_r() {
 #[test]
 fn partial_match_warnings_are_replayed_from_the_plan() {
     for (p, m, mut r) in sessions() {
+        // a partial match is a partialMatchWarning, signalled by base's
+        // warning(cond) (R_signalWarningCondition); these sessions load no
+        // base R code, so a warning() that reports its message stands in
+        // (found from base through the global environment)
+        r.val("warning <- function(cond) .Internal(warning(FALSE, FALSE, FALSE, cond$message))");
         r.val("f <- function(alpha, beta) alpha + beta; g <- function() f(be = 1, al = 2)");
         assert_eq!(r.val("g()"), real(3.0), "{p:?} {m}");
         assert_eq!(r.val("warnings_()"), Val::Str(vec![]));
