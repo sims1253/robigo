@@ -241,7 +241,8 @@ fn has_base_db(h: &std::path::Path) -> bool {
 /// The start-up error when robigo-rt's tree is not there, when stage 0 is
 /// to read it: GNU R's script's "R_HOME ('...') not found" (it checks its
 /// own home at start-up; robigo-rt's M1 loader reads no tree, so the check
-/// waits for what does), with the way to make the tree.
+/// waits for what does), with the command that makes the tree: for the
+/// database tree the default boot needs, with this binary named.
 // R: scripts/R.sh.in ("R_HOME may have moved, so check")
 fn missing_tree(home: &RHome, boot: Boot) -> Option<String> {
     match home {
@@ -250,7 +251,12 @@ fn missing_tree(home: &RHome, boot: Boot) -> Option<String> {
             "R_HOME ('{}') not found: no installed tree (<prefix>/lib/robigo) has library/base/R/base, \
              and the checkout's is not made ({})",
             p.display(),
-            if boot == Boot::Rdb { "scripts/rt-home-db.sh" } else { "scripts/rt-home.sh" }
+            if boot == Boot::Rdb {
+                let exe = std::env::current_exe().map(|e| e.display().to_string()).unwrap_or_else(|_| "BIN".into());
+                format!("scripts/rt-home-db.sh --robigo-rt {exe}")
+            } else {
+                "scripts/rt-home.sh".to_string()
+            }
         )),
     }
 }
@@ -288,7 +294,13 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     // Rf_initialize_R's system Renviron, before the options are read
     // (INTERIM(L5): GNU R's boot only; M1's loader gives the options their
     // values itself)
+    // (the tree first, as GNU R's script checks R_HOME before anything
+    // reads it: a missing tree is that error alone, not the Renviron's too)
     if boot() != Boot::M1 {
+        if let Some(e) = missing_tree(home, boot()) {
+            eprintln!("robigo-rt: {e}");
+            return 2;
+        }
         renviron::process_system_renviron(home.path());
     }
     // Rscript's options: R's start-up options, then FILE or -e EXPR, then
@@ -538,10 +550,6 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     // source tree's, ROBIGO_RT_BOOT=stage0, or baseloader.R's ..lazyLoad
     // from base.rdb, ROBIGO_RT_BOOT=rdb) beside M1's loader until L5's bar
     if boot() != Boot::M1 {
-        if let Some(e) = missing_tree(home, boot()) {
-            eprintln!("robigo-rt: {e}");
-            return 2;
-        }
         match robigo_rt::base::stage0(cx, home.path()) {
             Ok(boot_st) => {
                 // setup_Rmainloop after the system profile: .OptRequireMethods,
@@ -763,8 +771,11 @@ mod tests {
                  (<prefix>/lib/robigo) has library/base/R/base, and the checkout's is not made (scripts/rt-home.sh)"
             )
         );
+        let exe = std::env::current_exe().unwrap();
         assert!(
-            missing_tree(&RHome::MissingDefault(h.clone()), Boot::Rdb).unwrap().ends_with("(scripts/rt-home-db.sh)")
+            missing_tree(&RHome::MissingDefault(h.clone()), Boot::Rdb)
+                .unwrap()
+                .ends_with(&format!("(scripts/rt-home-db.sh --robigo-rt {})", exe.display()))
         );
         assert_eq!(missing_tree(&RHome::Given(h), Boot::Rdb), None);
     }

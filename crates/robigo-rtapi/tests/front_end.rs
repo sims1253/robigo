@@ -154,13 +154,23 @@ fn the_default_boot_says_a_missing_tree_is_missing() {
     cmd.env_remove("ROBIGO_RT_BOOT");
     let out = cmd.args(["-e", "1"]).output().expect("running robigo-rt");
     let _ = std::fs::remove_dir_all(&dir);
-    assert_eq!(out.status.code(), Some(2));
+    // (that error alone: nothing reads the tree's Renviron first, and the
+    // command that makes the tree names this binary)
     assert_eq!(
-        String::from_utf8_lossy(&out.stderr),
-        format!(
-            "robigo-rt: R_HOME ('{}') not found: no installed tree (<prefix>/lib/robigo) has library/base/R/base, \
-             and the checkout's is not made (scripts/rt-home-db.sh)\n",
-            dir.join(".robigo/rt-home-db").display()
+        (
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+            out.status.code()
+        ),
+        (
+            String::new(),
+            format!(
+                "robigo-rt: R_HOME ('{}') not found: no installed tree (<prefix>/lib/robigo) has library/base/R/base, \
+                 and the checkout's is not made (scripts/rt-home-db.sh --robigo-rt {})\n",
+                dir.join(".robigo/rt-home-db").display(),
+                env!("CARGO_BIN_EXE_robigo-rt")
+            ),
+            Some(2)
         )
     );
 }
