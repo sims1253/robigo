@@ -65,9 +65,6 @@ not `force`.
   `-volume` twin compiles with cmpfun; the small one unserializes GNU R's
   compiled closures (about 1 s under gctorture).
 - INTERIM(S1), recorded, not ratcheted:
-  - tests/rt/eval/promise-eval-depth-interim.R: the same retry at depths 10-12,
-    where GNU R leaves the promise byte code's inlined force was setting up
-    PRSEEN 1 (eval.c:setup_bcframe_prom). Closes with item A.
   - tests/rt/jit/base-guard-symbol-value.R: SymbolValue's step (above). Closes
     with X's vm.rs.
   - tests/rt/deparse/base-promise-op.R: deparse2buff's eval of a promise in the
@@ -83,3 +80,15 @@ force_arg_eval 52 (its frame, R_Visible, the count, the depth step,
 R_CheckStack, the flag, ppacct's 6, the call), get_object +16 (GetObject's
 unevaluated test, a slot-kind decode), eval_in +6 (the flag). GNU R pays the
 same work there; CI's gate is 0.5%.
+
+## Item A on top (setup_bcframe_prom's PRSEEN 1)
+
+force_arg and force_promise (rtcore promise.rs) take bcEval's inlined
+GETVAR/DDVAL force's order when byte code is active (bc_active, which this
+PR's eval_in and eval_promise clear for C's eval) and the depth step would
+overflow: an unforced promise of byte code at PRSEEN 0 is left PRSEEN 1, not
+pending. The check is a depth compare on the common path; the rest is cold.
+promise-eval-depth-interim.R became promise-eval-depth-retry.R (passing).
+Not exact: a GETVAR_MISSOK read from byte code (GNU R: getvar, forcePromise)
+whose own depth step overflows is treated as GETVAR's; three sweeps did not
+reach that edge (it needs vm.rs to tell the two reads apart).
