@@ -978,8 +978,12 @@ fn boot_record(column: &Column, o: &Options) -> String {
     let mut cmd = case_command(o, &script);
     cmd.env(var, "1");
     // (no byte-code crosscheck: the probe is no case, and its records would
-    // land in the report the cases' are counted from, unchecked)
-    cmd.env_remove("ROBIGO_BC_CROSSCHECK").env_remove("ROBIGO_BC_CROSSCHECK_REPORT");
+    // land in the report the cases' are counted from, unchecked; nor the
+    // freeze check's report, where its full-check tally would count for the
+    // cases, Sol's R1 on the check-cost PR)
+    cmd.env_remove("ROBIGO_BC_CROSSCHECK")
+        .env_remove("ROBIGO_BC_CROSSCHECK_REPORT")
+        .env_remove("ROBIGO_GC_FREEZE_CHECK_REPORT");
     let (_, err, _, timed_out, _) = run_command(cmd, o, o.timeout);
     let _ = std::fs::remove_dir_all(&dir);
     if timed_out {

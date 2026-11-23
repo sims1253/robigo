@@ -1162,9 +1162,10 @@ fn frozen_panic(f: Sexp, k: Sexp, what: &str) -> ! {
 /// other line is a failure.
 pub(super) const FULL_CHECK_TALLY: &str = "robigo: ROBIGO_GC_FREEZE_CHECK: full check ";
 
-/// A full check about to run (`Core::freeze_full`): a tally line in
-/// `ROBIGO_GC_FREEZE_CHECK_REPORT`, written as it runs, so a process that
-/// ends however it ends has counted its own.
+/// A full check (`Core::freeze_full`) whose last part, the comparison
+/// after marking, has returned: a tally line in
+/// `ROBIGO_GC_FREEZE_CHECK_REPORT`, written then, so a process that ends
+/// however it ends has counted the full checks it completed.
 pub(super) fn note_full_check(n: u64) {
     if let Some(path) = std::env::var_os("ROBIGO_GC_FREEZE_CHECK_REPORT").filter(|p| !p.is_empty()) {
         use std::io::Write;

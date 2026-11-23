@@ -928,6 +928,11 @@ class RtCi(unittest.TestCase):
             f.write(f"{rt.FULL_CHECK_TALLY}1{rt.FULL_CHECK_TALLY} in process 7\n{rt.FULL_CHECK_TALLY}2 in process 9\n")
         failures, full, processes = rt.freeze_report(report)
         self.assertEqual((len(failures), full, processes), (3, 1, 1))
+        # a record cut short at the file's end, its newline missing
+        with open(report, "w") as f:
+            f.write(f"{rt.FULL_CHECK_TALLY}1 in process 1234\n{rt.FULL_CHECK_TALLY}1 in process 12")
+        failures, full, processes = rt.freeze_report(report)
+        self.assertEqual((len(failures), full, processes), (1, 1, 1))
 
     def test_a_step_whose_freeze_check_ran_no_full_check_fails(self):
         # a full-check rate no process reached is the silent failure: a step

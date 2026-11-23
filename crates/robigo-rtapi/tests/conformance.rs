@@ -63,17 +63,13 @@ fn rt_conformance() {
 /// stamp, `.rt-home`) and has tools' native code, run as the cases are
 /// (with no inherited R_HOME). An installed GNU R's
 /// R_HOME (the test job's `R_HOME=/usr/lib/R`) has a tools.so too, but one
-/// built for GNU R's objects, which robigo-rt must not load. The probe is
-/// no case: the verification modes' variables are cleared for it, so it
-/// neither runs under them nor writes to their reports (a full-check tally
-/// of its own would count for the step's cases, Sol's R1 on the check-cost
-/// PR).
+/// built for GNU R's objects, which robigo-rt must not load. It runs under
+/// the cases' boot (`ROBIGO_RT_BOOT` picks the tree) but writes no freeze
+/// check report: the probe is no case, and a full-check tally of its own
+/// would count for the step's cases (Sol's R1 on the check-cost PR).
 fn has_rt_home_tools(bin: &Path) -> bool {
-    let mut probe = std::process::Command::new(bin);
-    for v in MODE_VARS {
-        probe.env_remove(v);
-    }
-    let out = probe
+    let out = std::process::Command::new(bin)
+        .env_remove("ROBIGO_GC_FREEZE_CHECK_REPORT")
         .env_remove("R_HOME")
         .args(["-e", "cat(all(file.exists(file.path(R.home(), c('.rt-home', 'library/tools/libs/tools.so')))))"])
         .output()
