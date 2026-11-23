@@ -7,7 +7,8 @@
 //! The console's statement-at-a-time parse (`R_Parse1Buffer`) is
 //! [`crate::repl`]'s; the base loader parses whole files ([`crate::base`]).
 
-use robigo_rtcore::{Char, Cx, Out, RResult, Ref, Root};
+use robigo_heap::types::{LISTSXP, VECSXP};
+use robigo_rtcore::{Char, Cx, Encoding, Out, RResult, Ref, Root};
 
 /// GNU R's `ParseStatus` (R_ext/Parse.h), with its values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,6 +127,137 @@ pub fn lower_all(cx: &mut Cx, exprs: &[robigo_syntax::Expr<'_>], known: bool, ou
         }
         Ok(v.finish().into())
     })
+}
+
+/// [`lower_all`] with source references (`keep.source = TRUE`): each
+/// expression lowered with its srcrefs (a `function`'s 4th element, each
+/// `{`'s list), and the expression vector given gram.y's attachSrcrefs
+/// attributes: "srcref" (one per expression), "srcfile" and "wholeSrcref".
+/// `src` is the text parsed; `srcfile` the srcfile environment, which a
+/// `#line N "file"` directive replaces from its next line on by a
+/// "srcfilealias" environment (gram.y's setParseFilename).
+// R: gram.y:R_Parse, attachSrcrefs, setParseFilename
+pub fn lower_all_src(
+    cx: &mut Cx,
+    src: &[u8],
+    exprs: &[robigo_syntax::Expr<'_>],
+    known: bool,
+    srcfile: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    // the bytes inside string tokens (strings, raw strings, backquoted
+    // names): StringValue's double count and no `#line` there
+    let mut in_string = vec![false; src.len()];
+    fn mark(e: &robigo_syntax::Expr<'_>, src: &[u8], m: &mut [bool]) {
+        use robigo_syntax::ast::{Const, Expr};
+        let mut span = |s: robigo_syntax::Span| {
+            for b in m.iter_mut().take(s.end as usize).skip(s.start as usize) {
+                *b = true;
+            }
+        };
+        match e {
+            Expr::Const(Const::Str(_) | Const::StrNative(_) | Const::StrUtf8(_), s) => span(*s),
+            Expr::Sym(_, s) if src.get(s.start as usize) == Some(&b'`') => span(*s),
+            Expr::Call { fun, args, .. } => {
+                mark(fun, src, m);
+                for a in args.iter() {
+                    if let Some(v) = &a.value {
+                        mark(v, src, m);
+                    }
+                }
+            }
+            Expr::Function { formals, body, .. } => {
+                for f in formals.iter() {
+                    if let Some(d) = &f.default {
+                        mark(d, src, m);
+                    }
+                }
+                mark(body, src, m);
+            }
+            _ => {}
+        }
+    }
+    for e in exprs {
+        mark(e, src, &mut in_string);
+    }
+    let pos = crate::srcref::Positions::new(src, known, cx.locale().utf8, |i| in_string[i]);
+    cx.scope(|cx, s| {
+        let class = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.mk_string(b"srcref", Encoding::Native)?.into())))?;
+        // the srcfile in effect from each offset: the parse's, then the
+        // `#line` aliases (a name equal to the current file's makes none)
+        let mut files: Vec<(usize, Root<'_>)> = vec![(0, srcfile)];
+        for a in &pos.aliases {
+            let cur = files.last().unwrap().1;
+            if filename_is(cx, cur, &a.filename) {
+                continue;
+            }
+            let env = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.new_env(cx.empty_env(), false, 0)?)))?;
+            // mkString2: a non-ASCII name of a parse known to be UTF-8 is marked so
+            let fenc = if known && !a.filename.is_ascii() { Encoding::Utf8 } else { Encoding::Native };
+            let name = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.mk_string(&a.filename, fenc)?.into())))?;
+            let fsym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"filename")?.into())))?;
+            let osym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"original")?.into())))?;
+            cx.define_var(fsym, name, env)?;
+            cx.define_var(osym, srcfile, env)?;
+            let klass = s.capture(cx, |cx, o| {
+                cx.build(o, |cx| {
+                    let mut v = cx.alloc_vector::<Char<'_>>(2)?;
+                    v.set(0, cx.mk_char(b"srcfilealias", Encoding::Native)?);
+                    v.set(1, cx.mk_char(b"srcfile", Encoding::Native)?);
+                    Ok(v.finish().into())
+                })
+            })?;
+            set_class(cx, env, klass);
+            files.push((a.from, env));
+        }
+        cx.build(out, |cx| {
+            let ctx = crate::lower::SrcCtx {
+                pos: &pos,
+                files: files.iter().map(|(at, f)| (*at, f.bind(cx).sexp())).collect(),
+                class: class.bind(cx).sexp(),
+            };
+            let mut v = cx.alloc_expression(exprs.len())?;
+            // SAFETY: fresh objects reachable from the vectors made here;
+            // nothing collects under `&Cx`.
+            #[allow(unsafe_code)]
+            unsafe {
+                let refs = cx.alloc_vector_raw(VECSXP, exprs.len())?;
+                for (i, e) in exprs.iter().enumerate() {
+                    let x = crate::lower::lower_in(cx, e, known, Some(&ctx))?;
+                    v.set(i, Ref::from_sexp(x, cx));
+                    refs.set_elt(i, ctx.srcref(cx, e.span())?);
+                }
+                let v: Ref<'_> = v.finish().into();
+                let last = src.len().saturating_sub(1);
+                ctx.attach(cx, v.sexp(), refs, pos.end(), last)?;
+                Ok(v)
+            }
+        })
+    })
+}
+
+/// Whether srcfile `f`'s `filename` is the string `name` (setParseFilename's
+/// test before it makes an alias).
+fn filename_is(cx: &mut Cx, f: Root<'_>, name: &[u8]) -> bool {
+    cx.scope(|cx, s| {
+        let Ok(sym) = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"filename")?.into()))) else { return false };
+        let Ok(v) = s.capture(cx, |cx, o| cx.find_var_in_frame3(f, sym, true, o)) else { return false };
+        v.bind(cx).as_vector::<Char<'_>>().is_some_and(|c| c.len() > 0 && c.get(0).bytes() == name)
+    })
+}
+
+/// `x`'s class attribute set to `klass` (an environment: its OBJECT bit).
+fn set_class(cx: &mut Cx, x: Root<'_>, klass: Root<'_>) {
+    // SAFETY: rooted objects of this heap; the attribute list is fresh.
+    #[allow(unsafe_code)]
+    let _ = cx.retry_alloc(|cx| unsafe {
+        let csym = cx.install(b"class")?.as_ref().sexp();
+        let a = cx.alloc_node_raw(LISTSXP, klass.bind(cx).sexp(), cx.nil().sexp(), csym)?;
+        let xs = x.bind(cx).sexp();
+        xs.set_attrib(a);
+        xs.set_object(true);
+        Ok(())
+    });
 }
 
 /// One expression lowered into `out` (the console's statement).
