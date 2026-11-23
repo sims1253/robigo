@@ -1553,6 +1553,11 @@ pub enum CompileWarning {
     /// `cmpAssign`'s `as.name(getAssignedVar(e, cntxt))`, for an
     /// assignment to a string.
     AsName,
+    /// No warning: a function context's reads of compilerOptions
+    /// (`make.functionContext`'s `make.toplevelContext(nenv)`, after the
+    /// function's funEnv), made where the compile is when its warnings are
+    /// raised ([`crate::compile::options`]).
+    OptionReads,
 }
 
 /// The warnings of the compile under way (cmp.R's [`CompileWarning`]s, in
@@ -1563,12 +1568,43 @@ pub enum CompileWarning {
 /// function's findLocals), which GNU R gives before it decides anything
 /// ([`raise_prelude`]).
 #[derive(Default)]
-pub struct CompileWarnings(std::cell::RefCell<Vec<(CompileWarning, String)>>, std::cell::Cell<usize>);
+pub struct CompileWarnings(
+    std::cell::RefCell<Vec<(CompileWarning, String)>>,
+    std::cell::Cell<usize>,
+    std::cell::Cell<bool>,
+    std::cell::Cell<bool>,
+);
 
 impl CompileWarnings {
     /// A warning given now.
     pub fn push(&self, at: CompileWarning, msg: String) {
         self.0.borrow_mut().push((at, msg));
+    }
+
+    /// Whether the compile under way reads compilerOptions: the JIT's
+    /// compile from source with the compiler loaded (its entry's reads
+    /// made, [`crate::compile::options::read`]).
+    pub fn set_reads_options(&self, on: bool) {
+        self.2.set(on);
+    }
+
+    /// The compile is to fail where its code's generation begins, as cmp.R's
+    /// notes could ([`crate::compile::options::notes_not_implemented`]).
+    pub fn set_notes_pending(&self, on: bool) {
+        self.3.set(on);
+    }
+
+    /// Whether that failure is still to come; it comes now (cleared).
+    pub fn take_notes_pending(&self) -> bool {
+        self.3.replace(false)
+    }
+
+    /// A function context's compilerOptions reads, where the compile is
+    /// now, when the compile reads them ([`CompileWarning::OptionReads`]).
+    pub fn function_context(&self) {
+        if self.2.get() {
+            self.push(CompileWarning::OptionReads, String::new());
+        }
     }
 
     /// Forget the warnings given so far (a new attempt of the compile).
@@ -1654,6 +1690,15 @@ fn raise_warnings(cx: &mut Cx, ws: Vec<(CompileWarning, String)>) -> robigo_rtco
 
 fn raise_each(cx: &mut Cx, ws: Vec<(CompileWarning, String)>) -> robigo_rtcore::RResult<()> {
     for (at, msg) in ws {
+        if at == CompileWarning::OptionReads {
+            // (the values are the parent context's: only reading matters)
+            crate::compile::options::read(cx)?;
+            // (the code's generation, where cmp.R's notes could begin)
+            if crate::prims::state(cx).compile_warnings.take_notes_pending() {
+                return Err(crate::compile::options::notes_not_implemented(cx));
+            }
+            continue;
+        }
         let call = cx.retry_alloc(|cx| {
             // SAFETY: fresh nodes and symbols; nothing collects in this
             // interval.
@@ -1687,6 +1732,7 @@ unsafe fn warning_call(cx: &Cx, at: CompileWarning) -> Result<Sexp, NeedGc> {
                 let l = cx.alloc_node_raw(LISTSXP, sym(b"v")?, l, nil)?;
                 cx.alloc_node_raw(LANGSXP, sym(b"assign")?, l, nil)
             }
+            CompileWarning::OptionReads => unreachable!("robigo: compilerOptions' reads name no call"),
             CompileWarning::AsName => {
                 let l = cx.alloc_node_raw(LISTSXP, sym(b"cntxt")?, nil, nil)?;
                 let l = cx.alloc_node_raw(LISTSXP, sym(b"e")?, l, nil)?;

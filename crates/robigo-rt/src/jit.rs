@@ -636,3 +636,36 @@ mod tests {
         assert_eq!(Config::from_vars(Some(0), None, None, None).level, 0);
     }
 }
+
+// ---- the JIT's statistics (ROBIGO_JIT_STATS=1) ----------------------------------
+
+/// What [`report`] counts.
+#[derive(Clone, Copy)]
+pub(crate) enum Count {
+    /// A compile from source began (cmpfun's or compile's entry).
+    SourceCompile,
+    /// One declined for compilerOptions' `optimize` other than 2
+    /// ([`crate::compile::options`]): the closure runs uncompiled.
+    DeclinedOptimize,
+}
+
+static COUNTS: [std::sync::atomic::AtomicU64; 2] =
+    [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
+
+/// Count `c`.
+pub(crate) fn count(c: Count) {
+    COUNTS[c as usize].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// With `ROBIGO_JIT_STATS=1`, the JIT's compiles from source on stderr.
+pub fn report() {
+    if std::env::var_os("ROBIGO_JIT_STATS").is_none_or(|v| v != "1") {
+        return;
+    }
+    let n = |c: Count| COUNTS[c as usize].load(std::sync::atomic::Ordering::Relaxed);
+    eprintln!(
+        "robigo jit: compiles from source {}, declined for compilerOptions' optimize other than 2 {}",
+        n(Count::SourceCompile),
+        n(Count::DeclinedOptimize)
+    );
+}

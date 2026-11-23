@@ -152,6 +152,7 @@ pub(crate) type NameSet = HashSet<(Name, bool), BuildHasherDefault<NameHasher>>;
 
 mod bctrans;
 pub(crate) mod crosscheck;
+pub(crate) mod options;
 #[doc(hidden)]
 pub use crosscheck::Verdict;
 
@@ -340,6 +341,12 @@ pub(crate) fn compile_closure_bc(cx: &mut Cx, op: Root<'_>, installed: bool) -> 
 /// [`compile_closure_bc`] past its kept translation: `op`'s body
 /// translated or compiled, then cmp.R's warnings.
 fn compile_closure_body(cx: &mut Cx, op: Root<'_>, installed: bool) -> RResult<Option<Sexp>> {
+    // cmpfun's make.toplevelContext: compilerOptions read at the entry of a
+    // compile from source (a closure of byte code is GNU R's compiled
+    // already, and base's installed code is not cmpfun's)
+    // SAFETY: a rooted closure.
+    let source = !installed && unsafe { op.bind(cx).sexp().cdr().typ() } != BCODESXP;
+    let entry = entry_options(cx, source)?;
     // (the crosscheck's finding of the last attempt: an attempt a fold
     // retries compared code without the fold's value)
     let mut check = None;
@@ -390,6 +397,7 @@ fn compile_closure_body(cx: &mut Cx, op: Root<'_>, installed: bool) -> RResult<O
         Ok(c) => Ok(raise_compile_warnings(cx, c)?),
         e => e,
     };
+    let code = entry.end(cx, code);
     if let Ok(Some(c)) = code {
         let f = op.bind(cx).sexp();
         // SAFETY: a rooted closure and its fresh code object.
@@ -919,6 +927,8 @@ unsafe fn function_context(
             None => cenv.find_locals(cx, st, &elist)?,
         };
         cenv.add_unit_vars(&locals);
+        // make.functionContext's compilerOptions reads, after its funEnv
+        st.compile_warnings.function_context();
         Ok(!cenv::may_call_browser(cx, st, cenv, body)?)
     }
 }
@@ -933,6 +943,8 @@ pub fn compile_top_loop(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RResult<O
 
 /// [`compile_top_loop`] inside its `tryCompile`.
 fn compile_loop(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RResult<Option<Sexp>> {
+    // compile's make.toplevelContext (no function context: a loop's)
+    let entry = entry_options(cx, true)?;
     let mut prelude = Prelude::default();
     let code = loop {
         let code = attempt(cx, |cx| {
@@ -961,9 +973,66 @@ fn compile_loop(cx: &mut Cx, call: Root<'_>, rho: Root<'_>) -> RResult<Option<Se
         }
         break code;
     };
-    match code {
+    // (a loop's code generation follows its findLocals: where the notes
+    // could begin)
+    if matches!(code, Ok(Some(_))) && prims::state(cx).compile_warnings.take_notes_pending() {
+        return Err(options::notes_not_implemented(cx));
+    }
+    let code = match code {
         Ok(c) => raise_compile_warnings(cx, c),
         e => e,
+    };
+    entry.end(cx, code)
+}
+
+/// A compile's entry: cmp.R's make.toplevelContext reads compilerOptions
+/// ([`options::read`]) when `source` (a compile from source) and the
+/// compiler is loaded, and the compile's function contexts read them again
+/// ([`cenv::CompileWarnings::function_context`]). What they decide comes
+/// where cmp.R's compile would show it, after findLocals' warnings and the
+/// function context's reads, at the code's generation:
+/// - where cmp.R's notes may print (`suppressAll` not `identical(TRUE)`),
+///   the compile fails there ([`options::notes_not_implemented`]), which
+///   tryCmpfun's handler takes;
+/// - with `optimize` other than 2, which robigo-rt's compiler does not
+///   implement, the compile declines at its end ([`Entry::end`]): the
+///   closure runs uncompiled, as cmp.R's failure path leaves it (counted,
+///   [`crate::jit::report`]).
+fn entry_options(cx: &mut Cx, source: bool) -> RResult<Entry> {
+    let w = &prims::state(cx).compile_warnings;
+    w.set_reads_options(false);
+    w.set_notes_pending(false);
+    if !source {
+        return Ok(Entry { decline: false });
+    }
+    crate::jit::count(crate::jit::Count::SourceCompile);
+    let Some(read) = options::read(cx)? else { return Ok(Entry { decline: false }) };
+    let w = &prims::state(cx).compile_warnings;
+    w.set_reads_options(true);
+    w.set_notes_pending(!read.suppress_all);
+    Ok(Entry { decline: !read.optimize_2 })
+}
+
+/// What a compile's entry decided ([`entry_options`]).
+struct Entry {
+    /// `optimize` other than 2: the compile's code is not used.
+    decline: bool,
+}
+
+impl Entry {
+    /// The compile's result `code` as the entry's decision leaves it: none
+    /// when it declines.
+    fn end(&self, cx: &mut Cx, code: RResult<Option<Sexp>>) -> RResult<Option<Sexp>> {
+        let w = &prims::state(cx).compile_warnings;
+        w.set_reads_options(false);
+        w.set_notes_pending(false);
+        match code {
+            Ok(Some(_)) if self.decline => {
+                crate::jit::count(crate::jit::Count::DeclinedOptimize);
+                Ok(None)
+            }
+            c => c,
+        }
     }
 }
 

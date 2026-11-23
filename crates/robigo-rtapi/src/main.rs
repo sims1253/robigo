@@ -669,6 +669,7 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     // (the translation cache's counts, under ROBIGO_TRANSLATION_CACHE_STATS:
     // before the exits below, which do not return)
     robigo_rt::report_translation_cache();
+    robigo_rt::report_jit();
     if !ok {
         // R: main.c:check_session_exit
         cx.reprintf(b"Execution halted\n");

@@ -1,10 +1,10 @@
-# INTERIM, until V4 step 3 (recorded, not ratcheted; #964): GNU R's cmp.R
-# reads compilerOptions in every compile (make.toplevelContext's
-# getCompilerOption("suppressAll"), cmp.R:1003, and the other options),
-# robigo-rt's Rust compiler reads none of them; only tryCmpfun's handler
-# reads suppressAll (conditions.rs, notify_compiler_error). An active
-# binding shows the reads: GNU R's two for a failed compile, robigo-rt's
-# one. Run under LC_ALL=C.
+# GNU R's cmp.R reads compilerOptions in every compile: its top-level
+# context reads optimize, suppressAll, suppressNoSuperAssignVar and
+# suppressUndefined (make.toplevelContext, cmp.R:1002), and each function
+# context again after its funEnv. robigo-rt's compile reads them at the same
+# points, as do tryCmpfun's handler's reads (#964). An active binding shows
+# the reads: for this failed compile, the entry's and the handler's (funEnv
+# fails before the function context reads). Run under LC_ALL=C.
 options(warn = 2)
 o <- compiler:::compilerOptions
 rm("suppressAll", envir = o)

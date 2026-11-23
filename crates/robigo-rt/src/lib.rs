@@ -84,6 +84,7 @@ pub mod source;
 mod specials;
 mod tailcall;
 mod tcache;
+pub use jit::report as report_jit;
 /// The translation cache's writer: its files, written at the end of the
 /// session that translated for it (`ROBIGO_TRANSLATION_CACHE_WRITE`).
 /// Where a translation-cache file's build ID begins (its header's
