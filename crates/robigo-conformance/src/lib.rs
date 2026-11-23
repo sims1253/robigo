@@ -535,8 +535,12 @@ pub fn write_times(path: &Path, times: &[(Duration, String, bool)], o: &Options)
     }
     // (made if missing, as write_results does: a lost report would read as
     // "no case over half its limit")
-    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-        let _ = std::fs::create_dir_all(dir);
+    // (its directory's error said, not only the write's "No such file")
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty())
+        && let Err(e) = std::fs::create_dir_all(dir)
+    {
+        eprintln!("ROBIGO_CONF_TIMES_REPORT: making {}: {e}", dir.display());
+        return;
     }
     if let Err(e) = std::fs::write(path, text) {
         eprintln!("ROBIGO_CONF_TIMES_REPORT: writing {}: {e}", path.display());

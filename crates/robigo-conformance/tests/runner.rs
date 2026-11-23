@@ -61,11 +61,13 @@ const FAKES_PREFIX: &str = "robigo-conformance-fakes-";
 
 /// Removes `parent`'s fakes directories whose test process no longer runs
 /// (`robigo-conformance-fakes-<pid>-<time>` with no `/proc/<pid>`; without
-/// a /proc, none).
+/// a /proc, none), and only this user's that nothing has touched for a day:
+/// an absent `/proc/<pid>` alone could be another pid namespace's or a
+/// hidepid /proc's process.
 fn sweep_fakes(parent: &Path) {
-    if !Path::new("/proc/self").exists() {
-        return;
-    }
+    use std::os::unix::fs::MetadataExt;
+    let Ok(me) = std::fs::metadata("/proc/self") else { return };
+    let day_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(24 * 3600);
     let Ok(entries) = std::fs::read_dir(parent) else { return };
     for e in entries.flatten() {
         let name = e.file_name();
@@ -74,7 +76,8 @@ fn sweep_fakes(parent: &Path) {
         else {
             continue;
         };
-        if pid.parse::<u32>().is_ok() && !Path::new("/proc").join(pid).exists() {
+        let ours_and_old = e.metadata().is_ok_and(|m| m.uid() == me.uid() && m.modified().is_ok_and(|t| t < day_ago));
+        if pid.parse::<u32>().is_ok() && !Path::new("/proc").join(pid).exists() && ours_and_old {
             let _ = std::fs::remove_dir_all(e.path());
         }
     }
@@ -85,18 +88,32 @@ fn a_gone_test_process_leaves_no_fakes_behind() {
     if !Path::new("/proc/self").exists() {
         return; // no process table: sweep_fakes removes nothing there
     }
+    // (removed however the test ends: a failed assert must not leak it)
+    struct Gone(PathBuf);
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
     let parent = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("sweep-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&parent);
+    let _guard = Gone(parent.clone());
     // pid_max is at most 2^22, so this pid never runs
     let gone = parent.join(format!("{FAKES_PREFIX}4999999-1"));
+    let fresh = parent.join(format!("{FAKES_PREFIX}4999998-1"));
     let live = parent.join(format!("{FAKES_PREFIX}{}-1", std::process::id()));
     let other = parent.join("something-else-1");
-    for d in [&gone, &live, &other] {
+    for d in [&gone, &fresh, &live, &other] {
         std::fs::create_dir_all(d).unwrap();
         std::fs::write(d.join("cat"), "x").unwrap();
     }
+    // the gone process's directory last touched two days ago; `fresh`, of
+    // another gone pid, today (it may be another namespace's, still in use)
+    let two_days_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 24 * 3600);
+    std::fs::File::open(&gone).unwrap().set_modified(two_days_ago).unwrap();
     sweep_fakes(&parent);
     assert!(!gone.exists());
+    assert!(fresh.exists(), "a directory touched today stays");
     assert!(live.exists());
     assert!(other.exists());
     std::fs::remove_dir_all(&parent).unwrap();
