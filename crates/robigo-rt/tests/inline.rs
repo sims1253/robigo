@@ -159,7 +159,8 @@ h <- function(n) { s <- 0L; for (i in 1:n) s <- s + or2() + and2() + or2t() + an
     assert_eq!(on, off);
     // each iteration: 5 + 5 + TRUE + FALSE
     assert_eq!(on.result.map(|(v, _)| v), Ok(Val::Int(vec![44])));
-    assert!(runs >= 16, "the four closures run inline: {runs}");
+    // (under gctorture a run gives up where a collection is due: fewer)
+    assert!(runs >= if gctorture() { 1 } else { 16 }, "the four closures run inline: {runs}");
 }
 
 #[test]
