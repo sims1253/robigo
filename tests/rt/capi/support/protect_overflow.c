@@ -9,6 +9,8 @@
 SEXP rt_protect_n(SEXP n)
 {
     int k = asInteger(n);
+    if (k == NA_INTEGER || k < 0)
+        error("rt_protect_n: 'n' must be a count (a non-negative integer)");
     for (int i = 0; i < k; i++)
         PROTECT(R_NilValue);
     UNPROTECT(k);

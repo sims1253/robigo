@@ -55,7 +55,7 @@ pub struct CGlobals {
     pub(crate) ppstack: *mut Cell<Sexp>,
     pub(crate) pptop: Cell<c_int>,
     /// `R_PPStackSize`: [`PPSTACK_SIZE`], the red zone added while an
-    /// overflow's handlers run ([`Cx::set_pp_size`])
+    /// overflow's handlers run ([`Cx::open_pp_red_zone`])
     pub(crate) ppsize: Cell<c_int>,
     pub(crate) vstack: Cell<Sexp>,
     pub(crate) gc_move: Cell<c_int>,
@@ -528,14 +528,14 @@ impl Cx {
         (PPSTACK_SIZE + PP_REDZONE) as i32
     }
 
-    /// Set `R_PPStackSize`: the red zone opened for a protect stack
-    /// overflow's handlers (`R_signal_protect_error`; the context it runs
-    /// in restores the size, `reset_pp_stack`). At most
-    /// [`Cx::pp_real_size`].
+    /// Open the protect stack's red zone: `R_PPStackSize` set to
+    /// [`Cx::pp_real_size`], for a protect stack overflow's handlers
+    /// (`R_signal_protect_error`; the context it runs in restores the
+    /// size, `reset_pp_stack`).
     #[inline(always)]
-    pub fn set_pp_size(&mut self, size: i32) {
-        assert!(size <= self.pp_real_size(), "R_PPStackSize past its storage");
-        self.cglobals().ppsize.set(size);
+    pub fn open_pp_red_zone(&mut self) {
+        let real = self.pp_real_size();
+        self.cglobals().ppsize.set(real);
     }
 
     /// Set `R_PPStackTop` (a native call's balance restored, an exit's

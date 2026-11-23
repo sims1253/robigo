@@ -8,6 +8,8 @@
 dyn.load(paste0(Sys.getenv("RT_CAPI_LIBS"), "/protect_overflow.so"))
 over <- function() .Call("rt_protect_n", 60000L)
 .Call("rt_protect_n", 1000L)
+# (the helper refuses a count that is not one)
+for (n in list(NA_integer_, -1L)) print(tryCatch(.Call("rt_protect_n", n), error = function(e) conditionMessage(e)))
 show <- function(e) {
   print(class(e))
   print(conditionMessage(e))

@@ -121,7 +121,7 @@ entry! {
     // R: memory.c:R_signal_protect_error
     [0] fn robigo_rtapi_protect_error() -> () => |cx, _s| {
         let cond = if cx.pp_size() < cx.pp_real_size() {
-            cx.set_pp_size(cx.pp_real_size());
+            cx.open_pp_red_zone();
             robigo_rtcore::PROT_SO
         } else {
             robigo_rtcore::ErrorCond { exit_only: true, ..robigo_rtcore::PROT_SO }
