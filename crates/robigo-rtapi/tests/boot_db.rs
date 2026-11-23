@@ -756,37 +756,46 @@ fn no_frozen_reachability_pass_in_steady_state() {
     if !tree_made() {
         return;
     }
-    const SHAPES: &[(&str, &str, &str, u32)] = &[
+    // (name, setup, body, iterations per round, gctorture: a collection at
+    // every allocation, as rt-ci's E3 steps run: deep frames there were the
+    // case the foreman named, tests/r/lang/tailcall-frames.R)
+    const SHAPES: &[(&str, &str, &str, u32, bool)] = &[
         (
             "dispatch",
             "for (k in 1:400) { assign(paste0(\"gen\", k), eval(bquote(function(x) UseMethod(.(paste0(\"gen\", k)))))); assign(paste0(\"gen\", k, \".default\"), function(x) 1L) }\ngens <- mget(paste0(\"gen\", 1:400))\nobj <- structure(list(), class = \"thing\")",
             "s <- 0L; for (f in gens) s <- s + f(obj)",
             3,
+            false,
         ),
         (
             "conditions",
             "safe <- function(x) tryCatch(if (x > 0) x else stop(\"neg\"), error = function(e) 0)\nw <- function(x) withCallingHandlers(if (x > 0) warning(\"w\") else x, warning = function(w) invokeRestart(\"muffleWarning\"))",
             "s <- safe(i %% 2L - 0.5); t <- w(i %% 2L)",
             2000,
+            false,
         ),
         (
             "apply",
             "x <- 1:50; f <- function(v) v * 2",
             "a <- lapply(x, f); b <- vapply(x, f, numeric(1)); c <- mapply(function(p, q) p + q, x, x); d <- Map(f, x)",
             200,
+            false,
         ),
         (
             "environments",
             "mk <- function(i) { e <- new.env(); assign('v', i, envir = e); local({ z <- v + 1 }, envir = e); e }",
             "e <- mk(i); g <- get('v', envir = e); h <- function() g; k <- h()",
             3000,
+            false,
         ),
         (
             "jit",
             "",
             "f <- eval(parse(text = sprintf('function(x) { y <- x + %d; for (j in 1:3) y <- y + j; y }', i))); s <- f(1) + f(2) + f(3)",
             300,
+            false,
         ),
+        ("deep frames under gctorture", "f <- function(n) if (n == 0) 0 else n + f(n - 1)", "s <- f(40)", 4, true),
     ];
     struct Dir(std::path::PathBuf);
     impl Drop for Dir {
@@ -797,7 +806,7 @@ fn no_frozen_reachability_pass_in_steady_state() {
     let dir = Dir(std::env::temp_dir().join(format!("robigo-freeze-steady-{}", std::process::id())));
     std::fs::create_dir_all(&dir.0).unwrap();
     let dir = &dir.0;
-    let passes = |file: &std::path::Path, jit: &str| -> u64 {
+    let passes = |file: &std::path::Path, jit: &str, torture: bool| -> u64 {
         let (out, err, status) = boot(
             &[
                 std::ffi::OsStr::new("--vanilla"),
@@ -814,6 +823,7 @@ fn no_frozen_reachability_pass_in_steady_state() {
                 ("ROBIGO_GC_FREEZE_CHECK", "1".as_ref()),
                 ("ROBIGO_GC_STATS", "1".as_ref()),
                 ("R_ENABLE_JIT", jit.as_ref()),
+                ("ROBIGO_GCTORTURE", if torture { "1" } else { "0" }.as_ref()),
             ],
         );
         assert!(status == Some(0) && out.contains("ok"), "{}: {out}\n{err}", file.display());
@@ -824,7 +834,7 @@ fn no_frozen_reachability_pass_in_steady_state() {
         let n = line.split(", ").find(|p| p.ends_with("frozen-reachability passes")).and_then(|p| p.split(' ').next());
         n.and_then(|n| n.parse().ok()).unwrap_or_else(|| panic!("unreadable: {line}"))
     };
-    for &(shape, setup, body, n) in SHAPES {
+    for &(shape, setup, body, n, torture) in SHAPES {
         let file = |rounds: u32| {
             let f = dir.join(format!("{shape}-{rounds}.R"));
             std::fs::write(
@@ -835,7 +845,7 @@ fn no_frozen_reachability_pass_in_steady_state() {
             f
         };
         for jit in ["3", "0"] {
-            let (warm, steady) = (passes(&file(0), jit), passes(&file(5), jit));
+            let (warm, steady) = (passes(&file(0), jit, torture), passes(&file(5), jit, torture));
             assert_eq!(
                 steady,
                 warm,
