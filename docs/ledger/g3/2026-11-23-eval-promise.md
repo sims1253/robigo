@@ -32,7 +32,9 @@ had ported that for `findFun3` only. This PR makes every ported site take it.
 | eval.c:R_forceAndCall:2450 (lapply, vapply, mapply, forceAndCall) | apply.rs force_and_call | eval hook → now eval_promise |
 | eval.c:evalList:3640, evalListKeepMissing:3730, DispatchOrEval:4144, bcEval DODOTS:8026 (`...` elements) | call.rs evallist_for, specials.rs eval_list_keep_missing / eval_args_hook, bcassign.rs dots_values | eval hook on the element: already the depth step; flag now cleared in eval_in |
 | builtin.c:do_args:222/234 | builtin.rs do_args | eval hook (already) |
-| deparse.c:deparse2buff:1428 | deparse.rs (PROMSXP case :160 eval hook; sym_prim reads base's value raw, as SYMVALUE) | already |
+| deparse.c:deparse2buff:1428 (the call's function: SYMVALUE a promise) | deparse.rs sym_prim reads base's binding raw | **INTERIM(S1)**: not ported (deparse reads with &Cx and cannot force); case tests/rt/deparse/base-promise-op.R (GNU R raises the promise's error) |
+| deparse.c (the PROMSXP case of deparse2buff) | deparse.rs:160 | eval hook (already) |
+| bind.c:do_bind:1095 (cbind/rbind's arguments after promiseArgs) | bind.rs:70 | eval hook (already) |
 | envir.c:findVar1:1471 | rtbuiltins rng.rs rng_init | eval hook (already) |
 | envir.c:R_DotsElt:1651 (...elt) | rtbuiltins envir.rs dots_elt_value | eval hook (already) |
 | envir.c:findFun3:1915 | rtcore env/mod.rs find_fun3 | force_arg_eval / eval hook (already); flag now cleared |
@@ -68,10 +70,13 @@ not `force`.
     PRSEEN 1 (eval.c:setup_bcframe_prom). Closes with item A.
   - tests/rt/jit/base-guard-symbol-value.R: SymbolValue's step (above). Closes
     with X's vm.rs.
+  - tests/rt/deparse/base-promise-op.R: deparse2buff's eval of a promise in the
+    call's function's base binding (above). Closes when deparse can force.
 
 ## Cost
 
-callgrind, instructions per iteration, against main b84740012: s3 +0.46%,
+perf-rt bars against main 0007ddf33: s3 +0.38%, 0 failures. callgrind,
+instructions per iteration, against main b84740012: s3 +0.46%,
 lapply -0.78%, trycatch +0.05%, the other rows within ±0.1%, vm::run
 identical. s3's cost is UseMethod's GetObject now taking eval's step:
 force_arg_eval 52 (its frame, R_Visible, the count, the depth step,

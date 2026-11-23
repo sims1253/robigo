@@ -479,11 +479,16 @@ impl Cx {
     /// frame `frame` would hold is unevaluated (`PRVALUE(s) ==
     /// R_UnboundValue`): a delayed slot, or a slot materialized into a
     /// promise not yet evaluated. (GetObject evaluates only such a promise.)
+    /// For the slot kinds an argument of the generic's own frame has:
+    /// delayed, forced, a value (a materialized promise), an unboxed
+    /// scalar. An alias (a method's argument, which reads its generic's
+    /// slot) is false: GetObject reads the generic's frame, whose slot is
+    /// never an alias.
     #[inline]
     pub fn arg_unevaluated(&self, frame: Root<'_>, index: usize) -> bool {
         let f = frame.bind(self).sexp();
-        // SAFETY: a rooted environment.
         debug_assert!(
+            // SAFETY: a rooted environment.
             unsafe { f.typ() == ENVSXP && layout::is_slots(f) },
             "robigo: arg_unevaluated on a non-slot frame"
         );

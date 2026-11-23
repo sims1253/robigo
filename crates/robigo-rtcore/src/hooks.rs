@@ -237,7 +237,9 @@ impl Default for Hooks {
             apply: no_apply,
             dispatch: no_dispatch,
             force: no_force,
-            eval_promise: no_force,
+            // (no evaluator: eval of a promise is its force, the
+            // installed `force`)
+            eval_promise: |cx, p, out| (cx.iso().hooks.get().force)(cx, p, out),
             force_arg: |cx, f, i, out| cx.force_arg(f, i, out),
             // (no evaluator to count for: an early value is not taken)
             early_force: |_, _, _| false,
