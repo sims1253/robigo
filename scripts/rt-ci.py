@@ -116,9 +116,14 @@ CONFORMANCE = "rt_conformance"
 PIN_REPORT = os.path.join(tempfile.gettempdir(), f"robigo-rt-ci-pin-report-{os.getpid()}.txt")
 
 
-# the boot heap's freeze, off by default (robigo-heap's freeze.rs): on in
-# its checked steps and in its own conformance steps
+# the boot heap's freeze (robigo-heap's freeze.rs), named on in its checked
+# steps so that they do not depend on the default
 FREEZE_ON = {"ROBIGO_GC_FREEZE": "1"}
+# and off: on by default since the fold (step 2, the ledger's
+# 2026-11-23-h-freeze-fold.md), so the steps that test the heap without it
+# say so, and the moving collector's steps, which leave it off anyway,
+# turn it off explicitly
+FREEZE_OFF = {"ROBIGO_GC_FREEZE": "0"}
 
 
 # where the freeze's check writes a failure (appended to by every process):
@@ -409,7 +414,7 @@ def full_move_steps():
     full_slow = case_timeouts(FULL_MOVE_SLOW)
     return every_cpu([
         ("conformance under ROBIGO_GC_MOVE=1 with gctorture (every collection moves everything)",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **SLOW, "ROBIGO_CONF_TIMEOUTS": full_slow},
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **FREEZE_OFF, **SLOW, "ROBIGO_CONF_TIMEOUTS": full_slow},
          conformance_command()),
     ])
 
@@ -514,12 +519,11 @@ def steps(crates):
          {"ROBIGO_RT_BOOT": "rdb", "ROBIGO_BC_CROSSCHECK": "1", "ROBIGO_BC_CROSSCHECK_REPORT": BC_REPORT_RDB},
          conformance),
         ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {}, conformance),
-        # the boot heap's freeze as users turn it on (ROBIGO_GC_FREEZE=1, off
-        # by default until the frozen-reachability pass: the ledger's
-        # 2026-11-21-h-boot-freeze-check.md), under each boot, its check off
-        ("conformance with the boot heap's freeze on (ROBIGO_GC_FREEZE=1)", FREEZE_ON, conformance),
-        ("conformance under the rdb boot with the boot heap's freeze on (ROBIGO_RT_BOOT=rdb, ROBIGO_GC_FREEZE=1)",
-         {"ROBIGO_RT_BOOT": "rdb", **FREEZE_ON}, conformance),
+        # the boot heap's freeze is on by default (the steps above run with
+        # it, its check off); the heap without it, under each boot
+        ("conformance with the boot heap's freeze off (ROBIGO_GC_FREEZE=0)", FREEZE_OFF, conformance),
+        ("conformance under the rdb boot with the boot heap's freeze off (ROBIGO_RT_BOOT=rdb, ROBIGO_GC_FREEZE=0)",
+         {"ROBIGO_RT_BOOT": "rdb", **FREEZE_OFF}, conformance),
         # docs/g3.md §15.3 E5: the same cases and recordings under each
         # observation mode, but those whose `.requires` names the identity
         # the mode gives up (robigo-conformance's KNOWN_FEATURES)
@@ -558,11 +562,11 @@ def steps(crates):
         # docs/g3.md §16 (H3): the debug moving collector, at every
         # collection gctorture makes due
         ("ROBIGO_GC_MOVE (move every movable object at every collection), with gctorture",
-         {**TREE_RUNS, **{"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1"}}, [*crate, *pkgs, *skip]),
+         {**TREE_RUNS, **{"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **FREEZE_OFF}}, [*crate, *pkgs, *skip]),
         # H8: the young objects at each collection, everything at every N-th;
         # the nightly runs it with every collection moving everything
         (f"conformance under ROBIGO_GC_MOVE={GC_MOVE_YOUNG} with gctorture (E3)",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": GC_MOVE_YOUNG, **slow,
+         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": GC_MOVE_YOUNG, **FREEZE_OFF, **slow,
           "ROBIGO_CONF_TIMEOUTS": case_timeouts({**GCTORTURE_FIRST, **YOUNG_MOVE_FIRST, **YOUNG_MOVE_SLOW})}, conformance),
         # D5's frame recycling (docs/g3.md §16): every frame that would be recycled
         # is poisoned and held back instead, so a frame that escaped without
@@ -681,29 +685,21 @@ OWN_STEPS = ("debug-assertions", "release-crate-tests")
 # timeout (scripts/test-rt-ci.py pins the three relations). When a warning
 # fires, rebalance or remeasure: the dates say how old each measurement is.
 BUDGETS = {  # shard: (budget, measured minutes, where measured)
-    # a slow-runner basis: run 45072863916 (#959, 2026-11-22) took about
-    # 1.25x #952's on the steps both ran (the crates' tests 1.86 against
-    # 1.59 min, GC_MOVE 1.18 against 0.88); #979's two steps, timed locally
-    # (C1, 2026-11-23), are scaled to it by 1.6, that run's conformance
-    # steps against the same local run's (1.34 against 0.84 min, the five
-    # both ran)
-    "modes": (13, 10.05, "2026-11-22, run 45072863916 (#959, a slow runner): 8.27 to its failed quarantine step, "
-              "less #959's M1 freeze-on conformance step's 0.22 (moved to gctorture; its rdb twin, 0.27, stays "
-              "with the database tree), plus the steps after it at #952's 1.1; #959's freeze check at every "
-              "collection makes the crates' gctorture step 0.81 against main's 0.45 (1.8x in CI); and #979's "
-              "rdb boot's conformance without the translation cache, 0.29 (0.18 locally), and the cache's "
+    # each the slowest of main's three runs of 2026-11-23 (45104024474,
+    # 45106626186, 45108072544), before #979; #979's steps added at C1's
+    # slow-runner estimates (its two modes steps timed locally, C1,
+    # 2026-11-23, scaled by 1.6: run 45072863916's conformance steps against
+    # the same local run's, 1.34 against 0.84 min)
+    "modes": (13, 10.57, "2026-11-23, run 45106626186: 9.67 (7.32 and 7.45 in the other two), and #979's rdb "
+              "boot's conformance without the translation cache, 0.29 (0.18 locally), and the cache's "
               "damaged-input step, 0.61 (0.38 locally)"),
-    # the plain gctorture conformance moves into modes if GCTORTURE_FIRST
-    # does not bring this back near 15 minutes
-    "gctorture": (27, 22.09, "2026-11-21, run 44927530340 (#952): 20.62 before GCTORTURE_FIRST, and #959's "
-                  "estimated 1.25 (its freeze check at every 16th collection: about 1.3x of the plain gctorture "
-                  "conformance's 4.15, H's measurement) and its M1 freeze-on conformance step's 0.22 "
-                  "(run 45072863916)"),
-    "feature-builds": (13, 10.47, "2026-11-21, run 44927530340 (#952): 9.87, and #979's tree for the "
-                       "retry-torture build and its verification test, estimated 0.6 (0.3 and 0.05 minutes here)"),
-    "builtin-diff": (9, 7.42, "2026-11-21, run 44927530340 (#952)"),
-    "debug-assertions": (5, 3.47, "2026-11-21, run 44927530340 (#952): 3.07, and the tree's estimated 0.4"),
-    "release-crate-tests": (12, 9.82, "2026-11-21, main's run 44931071167: 9.42, and the tree's estimated 0.4"),
+    "gctorture": (26, 21.53, "2026-11-23, run 45104024474, a slow runner (15.24 and 15.82 in the other two)"),
+    "feature-builds": (17, 13.90, "2026-11-23, run 45104024474: 13.30 (11.01 and 12.66 in the other two), and "
+                       "#979's tree for the retry-torture build and its verification test, estimated 0.6 (0.3 "
+                       "and 0.05 minutes locally)"),
+    "builtin-diff": (12, 9.34, "2026-11-23, run 45106626186 (8.01 and 7.49 in the other two)"),
+    "debug-assertions": (5, 3.85, "2026-11-23, run 45108072544 (2.58 and 2.94 in the other two)"),
+    "release-crate-tests": (17, 14.03, "2026-11-23, run 45104024474 (10.26 and 10.19 in the other two)"),
 }
 # A job's timeout is twice its budget, but no less than this: a build from a
 # cold cache (a Cargo.lock change, an evicted entry) takes up to about 12
@@ -780,11 +776,11 @@ def shard_of(title):
         return None
     if title.startswith("conformance under gctorture") or title.startswith("conformance under ROBIGO_GC_MOVE"):
         return "gctorture"
-    # the boot heap's freeze on under M1's loader, its check off: with E3's
-    # freeze check, in the freeze's shard (modes was at its budget: the
-    # foreman, 2026-11-22). Its rdb twin stays in modes, where base's
-    # database tree is built
-    if title == "conformance with the boot heap's freeze on (ROBIGO_GC_FREEZE=1)":
+    # the boot heap's freeze off under M1's loader: with E3's freeze check,
+    # in the freeze's shard (modes was at its budget: the foreman,
+    # 2026-11-22). Its rdb twin stays in modes, where base's database tree
+    # is built
+    if title == "conformance with the boot heap's freeze off (ROBIGO_GC_FREEZE=0)":
         return "gctorture"
     if title.startswith("builtin differential"):
         return "builtin-diff"
@@ -797,10 +793,52 @@ def shard_steps(crates, shard):
     """The steps of one shard, in `steps`' order (debug-assertions and
     release-crate-tests: their own, which `steps` does not have)."""
     if shard == "debug-assertions":
-        return debug_assertions_steps(crates)
+        return builds_first(debug_assertions_steps(crates))
     if shard == "release-crate-tests":
-        return release_crate_tests_steps(crates)
-    return [s for s in steps(crates) if shard_of(s[0]) in (None, shard)]
+        return builds_first(release_crate_tests_steps(crates))
+    return builds_first([s for s in steps(crates) if shard_of(s[0]) in (None, shard)])
+
+
+# the environment that decides what cargo builds (the modes' variables are
+# read by the tests at run time, not by the build)
+BUILD_ENV = ("RUSTFLAGS", "CARGO_TARGET_DIR")
+
+
+def builds_first(plan):
+    """`plan` with each crate-test build in a step of its own (`--no-run`,
+    the same command and build environment) before the first step that runs
+    it: the build of the test binaries is then its own line in the times
+    (#989's gate: debug-assertions' crate tests took 3.0 min, nearly all of
+    it that build under load). The run's line still holds the doctests'
+    compilation and, in a local run, its wait for a slot. A build the plan
+    already has before the run (release-crate-tests') is not made twice,
+    and one it has only after the run moves ahead of it."""
+    def key(env, cmd):
+        return (tuple(cmd[:cmd.index("--")] if "--" in cmd else [x for x in cmd if x != "--no-run"]),
+                tuple((k, env.get(k)) for k in BUILD_ENV))
+    def is_build(c):
+        return c[:2] == ["cargo", "test"] and "--no-run" in c
+    later = {}
+    for i, (_t, e, c) in enumerate(plan):
+        if is_build(c):
+            later.setdefault(key(e, c), i)
+    built, moved, out = set(), set(), []
+    for i, (t, e, c) in enumerate(plan):
+        if i in moved:
+            continue
+        if is_build(c):
+            built.add(key(e, c))
+        elif crate_test_threads(c) and key(e, c) not in built:
+            k = key(e, c)
+            built.add(k)
+            if k in later:
+                moved.add(later[k])
+                out.append(plan[later[k]])
+            else:
+                out.append((f"{t}: its tests built (--no-run)", {x: e[x] for x in BUILD_ENV if x in e},
+                            [*c[:c.index("--")], "--no-run"]))
+        out.append((t, e, c))
+    return out
 
 
 def timings_report(done, shard=None):
@@ -829,6 +867,19 @@ def conf_slots_dir(env=None):
     the caller's own ROBIGO_CONF_SLOTS_DIR wins (empty: no pool), CI has
     none. None: leave it as it is."""
     return conf_slots.default_dir(env)
+
+
+# A crate-test step runs at least this many test threads, however few slots
+# were free: up to 3 threads over its slots per run cost 24 CPUs'
+# conformance cases nothing measurable, and the gctorture modes' long tests
+# are not left to one thread. Measured 2026-11-23, built beforehand,
+# alternating: ROBIGO_GC_MOVE's crate step (the longest gctorture one) took
+# 1.72/1.86 min at one thread and 1.57/1.21 at four (load 16-34); the
+# debug-assertions step 0.53/0.71 and 0.56/0.59 (its 3.0 min in #989's gate
+# was its build under load, now builds_first's own step). It never waits
+# for more slots: a step that waits on several at once is the shape that
+# starves under load.
+CRATE_TEST_MIN_THREADS = 4
 
 
 def crate_test_threads(cmd):
@@ -905,7 +956,7 @@ def main(argv):
             # (workflow commands on stdout: Actions annotates only those)
             print(f"::error::{problem}")
             return 2
-    plan = (full_move_steps() if a.full_move else freeze_check_steps() if a.freeze_check else shard_steps(crates, a.shard) if a.shard else steps(crates))
+    plan = (full_move_steps() if a.full_move else freeze_check_steps() if a.freeze_check else shard_steps(crates, a.shard) if a.shard else builds_first(steps(crates)))
     done = []
     try:
         return run_steps(plan, done)
@@ -1021,9 +1072,9 @@ def run_steps(plan, done):
             env = {**env, "ROBIGO_CONF_TIMES_REPORT": times}
         print(f"::group::{title}", flush=True)
         t0 = time.monotonic()
-        # as many threads as slots: one it waits for, then whatever else
-        # of the pool is free (all of it on a quiet box), held until the
-        # step ends. The tests get no pool of their own: the step's slots
+        # as many threads as slots, CRATE_TEST_MIN_THREADS at least: one it
+        # waits for, then whatever else of the pool is free (all of it on a
+        # quiet box), held until the step ends. The tests get no pool of their own: the step's slots
         # count their threads already, and a test waiting for a slot its
         # own step holds would wait forever
         try:
@@ -1036,8 +1087,9 @@ def run_steps(plan, done):
             return 2
         if held:
             with held:
-                print(f"rt-ci: {held.count} of {pool.n} slots, --test-threads={held.count}", flush=True)
-                r = subprocess.run([*cmd, f"--test-threads={held.count}"], cwd=ROOT,
+                threads = max(held.count, CRATE_TEST_MIN_THREADS)
+                print(f"rt-ci: {held.count} of {pool.n} slots, --test-threads={threads}", flush=True)
+                r = subprocess.run([*cmd, f"--test-threads={threads}"], cwd=ROOT,
                                    env={**os.environ, **env, "ROBIGO_CONF_SLOTS_DIR": ""})
         else:
             r = subprocess.run(cmd, cwd=ROOT, env={**os.environ, **env})

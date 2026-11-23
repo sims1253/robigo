@@ -49,7 +49,7 @@ def cap_memory():
 
 def start(cmd, home, env):
     """One robigo-rt start under the memory cap, its output captured; a
-    start that does not end in two minutes raises TimeoutExpired."""
+    start that does not end in START_LIMIT seconds raises TimeoutExpired."""
     return subprocess.run(cmd, cwd=home, env=env, capture_output=True, timeout=START_LIMIT, preexec_fn=cap_memory)
 
 
@@ -145,6 +145,9 @@ def swap_runs(runs, rng, tmp, home, env, cmd):
     keys = start(cmd[:2] + ["-e", 'k <- readRDS(file.path(R.home(), "library/base/R/base.rdx"))$variables; '
                             'for (x in k) cat(x[1], x[2], "\\n")'],
                  home, dict(env, ROBIGO_TRANSLATION_CACHE="0"))
+    if keys.returncode != 0:
+        sys.exit(f"rt-tcache-mutate: listing base.rdb's records failed (exit {keys.returncode}): "
+                 f"{keys.stderr.decode(errors='replace')[-300:]}")
     recs = sorted({tuple(map(int, l.split())) for l in keys.stdout.decode().splitlines() if l.strip()})
     cache = open(os.path.join(tmp, ".robigo", "rt-home-db-cache", "base.rtc"), "rb").read()
     keyed = {int.from_bytes(cache[r:r + 8], "little") for r, _, _ in rows(cache)}

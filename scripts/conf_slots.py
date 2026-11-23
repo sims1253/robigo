@@ -24,6 +24,11 @@ import threading
 import time
 
 
+# where the pool is without a usable XDG_RUNTIME_DIR (fixed, not TMPDIR's:
+# every run of this user must find the same pool)
+FALLBACK_ROOT = "/tmp"
+
+
 def default_dir(env=None):
     """The machine-wide pool a local run shares with every other local run
     of this user: several checkouts' gates at once took the box to load
@@ -37,8 +42,7 @@ def default_dir(env=None):
     if base and os.path.isdir(base):
         d = absolute(os.path.join(base, "robigo-conf-slots"))
     else:
-        # fixed, not TMPDIR's: every run of this user must find the same pool
-        d = f"/tmp/robigo-conf-slots-{os.getuid()}"
+        d = os.path.join(FALLBACK_ROOT, f"robigo-conf-slots-{os.getuid()}")
     problem = private_dir(d)
     if problem:
         print(f"::warning::no conformance slot pool ({problem})")

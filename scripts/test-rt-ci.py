@@ -22,7 +22,37 @@ def meta(*pkgs):
     return {"packages": list(pkgs), "workspace_members": [p["id"] for p in pkgs]}
 
 
+# The caller's settings that change what rt-ci.py plans and where its pool
+# is: no test may see them, and every test sees the same CPU count
+# (every ROBIGO_CONF_* variable, and these)
+CALLER_ENV = ("GITHUB_ACTIONS", "XDG_RUNTIME_DIR", "RT_CI_MIN_FREE_GB")
+CPUS = 8
+
+
 class RtCi(unittest.TestCase):
+    def setUp(self):
+        from unittest import mock
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        for k in [k for k in os.environ if k in CALLER_ENV or k.startswith("ROBIGO_CONF_")]:
+            os.environ.pop(k)
+        # the pool's fallback under a directory of the test's own: no test
+        # makes the user's real /tmp pool (main() sets one up)
+        import shutil, tempfile
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        fallback = mock.patch.object(rt.conf_slots, "FALLBACK_ROOT", tmp)
+        fallback.start()
+        self.addCleanup(fallback.stop)
+        # (and the steps' times under it: RT_CI_TIMES_DIR was read at import)
+        times = mock.patch.object(rt, "TIMES_DIR", os.path.join(tmp, "times"))
+        times.start()
+        self.addCleanup(times.stop)
+        cpus = mock.patch.object(os, "cpu_count", return_value=CPUS)
+        cpus.start()
+        self.addCleanup(cpus.stop)
+
     def test_the_cache_mutation_starts_are_memory_capped(self):
         # every robigo-rt start of scripts/rt-tcache-mutate.py goes through
         # its capped `start` (RLIMIT_AS), and the script checks at its own
@@ -52,7 +82,7 @@ class RtCi(unittest.TestCase):
         # CI's three rt jobs run the shards; together they are every step,
         # each in one shard (the R_HOME tree, seconds, in all of them)
         crates = ["robigo-rt", "robigo-rtcore"]
-        everything = [s[0] for s in rt.steps(crates)]
+        everything = [s[0] for s in rt.builds_first(rt.steps(crates))]
         seen = {}
         for shard in [s for s in rt.SHARDS if s not in rt.OWN_STEPS]:
             titles = [s[0] for s in rt.shard_steps(crates, shard)]
@@ -68,13 +98,18 @@ class RtCi(unittest.TestCase):
                 self.assertEqual(shards, [rt.shard_of(t)], t)
         # where each long step goes (the split's point): the crates' tests
         # where the crates' test build is, the long conformance runs apart
-        where = {t: rt.shard_of(t) for t in everything}
+        # (each build step goes where its tests run: the lists below name
+        # the runs)
+        for t in everything:
+            if t.endswith(": its tests built (--no-run)"):
+                self.assertEqual(rt.shard_of(t), rt.shard_of(t.removesuffix(": its tests built (--no-run)")), t)
+        where = {t: rt.shard_of(t) for t in everything if not t.endswith(": its tests built (--no-run)")}
         self.assertEqual(where["the crates' tests (quick profile)"], "modes")
         self.assertEqual(where["ROBIGO_GC_MOVE (move every movable object at every collection), with gctorture"],
                          "modes")
         self.assertEqual(where["ROBIGO_MATERIALIZE=1 (every argument slot materialized)"], "modes")
         self.assertEqual([t for t, s in where.items() if s == "gctorture"],
-                         ["conformance with the boot heap's freeze on (ROBIGO_GC_FREEZE=1)",
+                         ["conformance with the boot heap's freeze off (ROBIGO_GC_FREEZE=0)",
                           "conformance under gctorture (E3)",
                           f"conformance under ROBIGO_GC_MOVE={rt.GC_MOVE_YOUNG} with gctorture (E3)"])
         self.assertEqual([t for t, s in where.items() if s == "builtin-diff"],
@@ -142,7 +177,7 @@ class RtCi(unittest.TestCase):
         titles = [t for t, _, _ in steps]
         rdb = [i for i, (_, e, c) in enumerate(steps) if e.get("ROBIGO_RT_BOOT") == "rdb" and rt.CONFORMANCE in c
                and "--skip" not in c]
-        # plain, crosschecked, with the boot heap's freeze on, and without
+        # plain, crosschecked, with the boot heap's freeze off, and without
         # the translation cache
         self.assertEqual(len(rdb), 4)
         tree = titles.index("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)")
@@ -316,9 +351,17 @@ class RtCi(unittest.TestCase):
         d = tempfile.mkdtemp()
         import shutil
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        # (the fallback under a directory of the test's own, not /tmp's)
+        from unittest import mock
+        fallback = mock.patch.object(rt.conf_slots, "FALLBACK_ROOT", os.path.join(d, "tmp"))
+        fallback.start()
+        self.addCleanup(fallback.stop)
+        os.makedirs(os.path.join(d, "tmp"))
+        mine = os.path.join(d, "tmp", f"robigo-conf-slots-{os.getuid()}")
         self.assertEqual(rt.conf_slots_dir({"XDG_RUNTIME_DIR": d}), os.path.join(d, "robigo-conf-slots"))
-        self.assertEqual(rt.conf_slots_dir({}), f"/tmp/robigo-conf-slots-{os.getuid()}")
-        self.assertEqual(rt.conf_slots_dir({"TMPDIR": d}), f"/tmp/robigo-conf-slots-{os.getuid()}")
+        self.assertEqual(rt.conf_slots_dir({}), mine)
+        self.assertEqual(rt.conf_slots_dir({"TMPDIR": d}), mine)
+        self.assertEqual(rt.conf_slots_dir({"XDG_RUNTIME_DIR": os.path.join(d, "missing")}), mine)
         # the same directory for every checkout's run: the pool is the user's
         self.assertEqual(rt.conf_slots_dir({"XDG_RUNTIME_DIR": d}), rt.conf_slots_dir({"XDG_RUNTIME_DIR": d}))
         # CI has none; the caller's own setting (empty: none) wins
@@ -353,7 +396,7 @@ class RtCi(unittest.TestCase):
         def fake_run(cmd, cwd=None, env=None):
             # the slots a step holds while it runs, as another run sees them
             busy = 0
-            for i in range(4):
+            for i in range(8):
                 with open(os.path.join(d, f"slot-{i}"), "a") as f:
                     try:
                         fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -369,14 +412,23 @@ class RtCi(unittest.TestCase):
                 self.assertEqual(rt.run_steps([("step", {}, cmd)], []), 0)
             return seen[0]
 
-        pool = {"ROBIGO_CONF_SLOTS_DIR": d, "ROBIGO_CONF_SLOTS": "4"}
+        pool = {"ROBIGO_CONF_SLOTS_DIR": d, "ROBIGO_CONF_SLOTS": "8"}
         # a quiet pool: every slot, as many threads; its tests get no pool
-        self.assertEqual(run(crate, pool), ([*crate, "--test-threads=4"], "", 4))
-        # another run holds one slot: the step takes the other three
+        self.assertEqual(run(crate, pool), ([*crate, "--test-threads=8"], "", 8))
+        # another run holds one slot: the step takes the other seven
         other = open(os.path.join(d, "slot-1"), "a")
         fcntl.flock(other, fcntl.LOCK_EX)
-        self.assertEqual(run(crate, pool), ([*crate, "--test-threads=3"], "", 4))
+        self.assertEqual(run(crate, pool), ([*crate, "--test-threads=7"], "", 8))
         other.close()
+        # a busy pool: one slot free, still CRATE_TEST_MIN_THREADS threads,
+        # without waiting for more slots
+        self.assertEqual(rt.CRATE_TEST_MIN_THREADS, 4)
+        others = [open(os.path.join(d, f"slot-{i}"), "a") for i in range(7)]
+        for f in others:
+            fcntl.flock(f, fcntl.LOCK_EX)
+        self.assertEqual(run(crate, pool), ([*crate, "--test-threads=4"], "", 8))
+        for f in others:
+            f.close()
         # no pool (CI, or the caller's empty one): the command as it was
         self.assertEqual(run(crate, {"ROBIGO_CONF_SLOTS_DIR": ""}), (crate, "", 0))
         # the conformance steps take a slot per case in the runner, and a
@@ -417,6 +469,52 @@ class RtCi(unittest.TestCase):
                 if cmd[:2] == ["cargo", "test"] and "--no-run" not in cmd \
                         and not (rt.CONFORMANCE in cmd and "--exact" in cmd):
                     self.assertTrue(rt.crate_test_threads(cmd), f"{shard}: {title}: {cmd}")
+
+    def test_each_shards_crate_tests_are_built_in_a_step_of_their_own(self):
+        # a crate-test step's time is its tests' alone: its build (the same
+        # command with --no-run, the same RUSTFLAGS and target) comes first,
+        # once per build, and a plan's own build is not made twice
+        crates = ["robigo-rt", "robigo-rtapi", "robigo-rtcore"]
+        plans = {shard: rt.shard_steps(crates, shard) for shard in rt.SHARDS}
+        plans["local"] = rt.builds_first(rt.steps(crates))
+        for name, plan in plans.items():
+            built = []
+            for title, env, cmd in plan:
+                if cmd[:2] == ["cargo", "test"] and "--no-run" in cmd:
+                    built.append((cmd[:cmd.index("--no-run")], {k: env.get(k) for k in rt.BUILD_ENV}))
+                elif rt.crate_test_threads(cmd):
+                    want = (cmd[:cmd.index("--")], {k: env.get(k) for k in rt.BUILD_ENV})
+                    self.assertIn(want, built, f"{name}: {title}")
+            self.assertEqual(len(built), len({repr(b) for b in built}), f"{name}: a build made twice")
+            self.assertEqual(rt.builds_first(plan), plan, name)
+        # a matching build that comes only after the run moves ahead of it
+        crate = ["cargo", "test", "-p", "x", "--", "--skip", rt.CONFORMANCE]
+        late = rt.builds_first([("run", {}, crate), ("late build", {}, ["cargo", "test", "-p", "x", "--no-run"])])
+        self.assertEqual([t for t, _e, _c in late], ["late build", "run"])
+        da = [t for t, _e, _c in plans["debug-assertions"]]
+        self.assertIn("the crates' tests with debug assertions (-C debug-assertions=on, quick profile): "
+                      "its tests built (--no-run)", da)
+        self.assertEqual(sum("built" in t for t, _e, c in plans["release-crate-tests"] if "--no-run" in c), 1)
+
+    def test_the_end_to_end_crosscheck_test_clears_every_modes_variables(self):
+        # robigo-rtapi's a_lost_crosscheck_record_fails_the_run runs a case
+        # as the plain binary does, inside whatever crate-test step runs it:
+        # each variable such a step sets is in its MODE_VARS, or is one that
+        # does not change the case (the runner's own, the crosscheck's, the
+        # tree's)
+        import re
+        src = (HERE.parent / "crates" / "robigo-rtapi" / "tests" / "conformance.rs").read_text()
+        block = re.search(r"const MODE_VARS: &\[&str\] = &\[(.*?)\];", src, re.S).group(1)
+        cleared = set(re.findall(r'"([A-Z_0-9]+)"', block))
+        harmless = {"ROBIGO_RT_HOME_DB", "ROBIGO_TRANSLATION_CACHE", "RUSTFLAGS", "CARGO_TARGET_DIR"}
+        crates = ["robigo-rt", "robigo-rtapi", "robigo-rtcore"]
+        for shard in rt.SHARDS:
+            for title, env, cmd in rt.shard_steps(crates, shard):
+                if rt.crate_test_threads(cmd):
+                    for k in env:
+                        if k.startswith("ROBIGO_CONF_") or k.startswith("ROBIGO_BC_CROSSCHECK") or k in harmless:
+                            continue
+                        self.assertIn(k, cleared, f"{shard}: {title}: {k} is not in MODE_VARS")
 
     def test_a_crosscheck_that_compares_fewer_than_its_floor_fails(self):
         # the rdb boot's report: a boot that stopped loading the compiler's
@@ -467,18 +565,24 @@ class RtCi(unittest.TestCase):
         self.assertIn(rt.CONFORMANCE, built[1][1])
         self.assertNotIn("debug assertions", " ".join(t for t, _, _ in rt.steps(["robigo-rt"])))
 
-    def test_the_freeze_on_is_tested_under_each_boot(self):
-        # the freeze is off by default; the mode users turn on is the
-        # conformance under each boot with it on and its check off
-        on = [(e, c) for t, e, c in rt.steps(["robigo-rt"]) if e.get("ROBIGO_GC_FREEZE") == "1"
-              and rt.CONFORMANCE in c and "ROBIGO_GCTORTURE" not in e]
-        boots = sorted(e.get("ROBIGO_RT_BOOT", "M1") for e, _ in on)
+    def test_the_freeze_off_is_tested_under_each_boot(self):
+        # the freeze is on by default (step 2); the heap without it is the
+        # conformance under each boot with it off
+        off = [(e, c) for t, e, c in rt.steps(["robigo-rt"]) if e.get("ROBIGO_GC_FREEZE") == "0"
+               and rt.CONFORMANCE in c and "ROBIGO_GCTORTURE" not in e]
+        boots = sorted(e.get("ROBIGO_RT_BOOT", "M1") for e, _ in off)
         self.assertEqual(boots, ["M1", "rdb"])
-        self.assertTrue(all("ROBIGO_GC_FREEZE_CHECK" not in e for e, _ in on))
-        # and no step that is not the freeze's turns it on
+        # every step of the moving collector turns it off explicitly, and no
+        # step but those and the freeze-off ones does
+        for t, e, _ in [*rt.steps(["robigo-rt"]), *rt.full_move_steps()]:
+            if "ROBIGO_GC_MOVE" in e:
+                self.assertEqual(e.get("ROBIGO_GC_FREEZE"), "0", t)
+            elif e.get("ROBIGO_GC_FREEZE") == "0":
+                self.assertIn("freeze off", t)
+        # a step that names the freeze on is the check's
         for t, e, _ in rt.steps(["robigo-rt"]):
             if e.get("ROBIGO_GC_FREEZE") == "1":
-                self.assertTrue("freeze" in t or "FREEZE" in t or "E3" in t or t.startswith("gctorture (collect"), t)
+                self.assertIn("ROBIGO_GC_FREEZE_CHECK", e, t)
 
     def test_full_move_and_shard_are_refused_together(self):
         # --full-move runs the nightly's one step: with --shard as well the
@@ -496,7 +600,8 @@ class RtCi(unittest.TestCase):
         # amendment to #948 (c))
         e3 = [e for t, e, _ in rt.steps(["robigo-rt"]) if t == "conformance under gctorture (E3)"]
         self.assertEqual(e3[0]["ROBIGO_GC_FREEZE_CHECK"], "16")
-        # the check runs on the freeze, which is off by default
+        # the check runs on the freeze (on by default; named, so the step
+        # does not depend on the default)
         self.assertEqual(e3[0]["ROBIGO_GC_FREEZE"], "1")
         tests = [e for t, e, _ in rt.steps(["robigo-rt"]) if t.startswith("gctorture (collect at every allocation)")]
         self.assertEqual(tests[0]["ROBIGO_GC_FREEZE_CHECK"], "1")
@@ -678,7 +783,7 @@ class RtCi(unittest.TestCase):
         conf = [(t, e) for t, e, c in steps if rt.CONFORMANCE in c and "--exact" in c]
         self.assertTrue(conf)
         for title, env in conf:
-            self.assertEqual(env.get("ROBIGO_CONF_JOBS"), str(os.cpu_count() or 2), title)
+            self.assertEqual(env.get("ROBIGO_CONF_JOBS"), str(CPUS), title)
         others = [t for t, e, c in steps if "ROBIGO_CONF_JOBS" in e and not (rt.CONFORMANCE in c and "--exact" in c)]
         self.assertEqual(others, [])
 
