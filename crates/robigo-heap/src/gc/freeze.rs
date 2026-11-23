@@ -1382,6 +1382,64 @@ mod tests {
         }
     }
 
+    /// A root set with a search path too (`trace_search_path`).
+    struct WithPath {
+        all: Vec<Sexp>,
+        freeze: Sexp,
+        path: Vec<Sexp>,
+    }
+    impl Trace for WithPath {
+        fn trace<V: Visitor + ?Sized>(&mut self, v: &mut V) {
+            for x in &mut self.all {
+                v.edge(x);
+            }
+        }
+        fn trace_freeze<V: Visitor + ?Sized>(&mut self, v: &mut V) -> bool {
+            v.edge(&mut self.freeze);
+            for x in &mut self.path {
+                v.edge(x);
+            }
+            true
+        }
+        fn trace_search_path<V: Visitor + ?Sized>(&mut self, v: &mut V) -> bool {
+            for x in &mut self.path {
+                v.edge(x);
+            }
+            true
+        }
+    }
+
+    /// With no snapshot known (the freeze's roots showed no search path), a
+    /// path write alone is a loss: the next pass whose roots show the search
+    /// path runs (Sol r4 S13: the comparison, not the cut's own note).
+    #[test]
+    fn an_unknown_snapshot_makes_a_path_write_alone_run_the_pass() {
+        let mut c = Core::new();
+        c.set_freeze_enabled(true);
+        if !c.freeze_enabled() {
+            return;
+        }
+        let nil = c.nil();
+        // SAFETY: fresh objects of this heap; nothing collects.
+        unsafe {
+            let env = c.alloc_node(ENVSXP, nil, nil, nil).unwrap();
+            let head = c.alloc_node(LISTSXP, nil, nil, nil).unwrap();
+            c.freeze(&mut WithFreeze { all: vec![head, env], freeze: head }, |_| false);
+            assert!(c.path_snapshot.is_none());
+            let mut roots = WithPath { all: vec![head, env], freeze: head, path: vec![] };
+            c.remembered.note(Remembered::PATH_WRITTEN);
+            assert_eq!(c.remembered.1.get() & Remembered::DIRTY, 0, "a path write only");
+            let passes = c.frozen_passes();
+            c.frozen_pass(&mut roots);
+            assert_eq!(c.frozen_passes(), passes + 1, "an unknown snapshot: the write counts as a loss");
+            assert!(c.path_snapshot.is_some(), "and the snapshot is known from then on");
+            // known now: a path write that loses nothing runs no pass
+            c.remembered.note(Remembered::PATH_WRITTEN);
+            c.frozen_pass(&mut roots);
+            assert_eq!(c.frozen_passes(), passes + 1);
+        }
+    }
+
     /// A path write with roots that show no search path defers the pass,
     /// and the check does not count the deferred cut as missing (Sol r3
     /// S10); with no snapshot known, the next path write is a loss, so the
