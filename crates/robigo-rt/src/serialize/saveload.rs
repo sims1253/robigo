@@ -427,13 +427,11 @@ pub fn do_savefile(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
         (false, true) => (b"RDX2\n", Format::Xdr),
         (false, false) => (b"RDX3\n", Format::Xdr),
     };
-    // (R_SaveToFileV streams: what was written before an error stays written)
-    let (bytes, r) = write::serialize_partial(cx, args.root(0), super::stream::OutStream::new(fmt, version), None);
+    let bytes = write::serialize(cx, args.root(0), super::stream::OutStream::new(fmt, version), None)?;
     use std::io::Write;
     if fp.write_all(magic).and_then(|_| fp.write_all(&bytes)).is_err() {
         return Err(cx.error("write failed"));
     }
-    r?;
     out.set(cx, cx.nil());
     Ok(())
 }
