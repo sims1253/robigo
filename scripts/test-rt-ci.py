@@ -628,7 +628,10 @@ class RtCi(unittest.TestCase):
         open(b, "wb").write(b"binary")
         db = os.path.join(d, ".robigo", "rt-home-db")
         files = [os.path.join(db, "library", "base", "R", "base.rdb"),
+                 os.path.join(db, "library", "base", "R", "base.rdx"),
+                 os.path.join(db, "library", "base", "R", "base"),
                  os.path.join(db, "library", "compiler", "R", "compiler.rdb"),
+                 os.path.join(db, "library", "compiler", "R", "compiler.rdx"),
                  os.path.join(d, ".robigo", "rt-home-db-cache", "base.rtc"),
                  os.path.join(d, ".robigo", "rt-home-db-cache", "compiler.rtc")]
         def make_whole():
@@ -658,11 +661,12 @@ class RtCi(unittest.TestCase):
             self.assertEqual(ran, ["scripts/rt-home.sh", "scripts/rt-home-db.sh"])
             open(b, "wb").write(b"binary")
             make_whole()
-            os.remove(files[0])
-            ran.clear()
-            tr.ensure(b, d)            # a database gone: made again, its stamp dropped first
-            self.assertEqual(ran, ["scripts/rt-home.sh", "scripts/rt-home-db.sh"])
-            self.assertFalse(os.path.exists(os.path.join(db, ".rt-home-db")))
+            for gone in files[:5]:    # a database, an index, the loader: each sends the scripts to decide
+                make_whole()
+                os.remove(gone)
+                ran.clear()
+                tr.ensure(b, d)
+                self.assertEqual(ran, ["scripts/rt-home.sh", "scripts/rt-home-db.sh"], gone)
             make_whole()
             open(os.path.join(d, "scripts", "rt-home-db.sh"), "w").write("changed")
             ran.clear()

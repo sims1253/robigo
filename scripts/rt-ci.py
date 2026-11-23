@@ -928,6 +928,10 @@ def main(argv):
     # GNU R, /usr/lib/R) it ignores with GNU R's warning on stdout, which
     # every compared output would then carry: none for what this runs
     os.environ.pop("R_HOME", None)
+    # and its trees are this checkout's: every plan writes base's database
+    # tree here, so an inherited ROBIGO_RT_CHECKOUT must not send a step's
+    # binary to another checkout's
+    os.environ["ROBIGO_RT_CHECKOUT"] = ROOT
     slots = conf_slots_dir()
     if slots is not None:
         os.environ["ROBIGO_CONF_SLOTS_DIR"] = slots

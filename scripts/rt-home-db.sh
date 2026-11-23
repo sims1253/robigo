@@ -68,8 +68,14 @@ rsrc=$(scripts/r-src.sh)
 stamp="$(cat "$src_tree/.rt-home") $(sha256sum "$0" | cut -c1-16) $(sha256sum "$bin" | cut -c1-16)"
 # (fresh only with its translation cache beside it: a tree whose cache was
 # lost, by hand or between the two moves below, is built again)
+# and with the files a start reads (base's loader, each database and its
+# index): a tree that lost one, by hand, is built again (checked here, under
+# the lock, not by the callers)
 if [ -f "$out/.rt-home-db" ] && [ "$(cat "$out/.rt-home-db")" = "$stamp" ] &&
-   [ -s "$out-cache/base.rtc" ] && [ -s "$out-cache/compiler.rtc" ]; then
+   [ -s "$out-cache/base.rtc" ] && [ -s "$out-cache/compiler.rtc" ] &&
+   [ -s "$out/library/base/R/base" ] && [ -s "$out/library/base/R/base.rdb" ] &&
+   [ -s "$out/library/base/R/base.rdx" ] && [ -s "$out/library/compiler/R/compiler.rdb" ] &&
+   [ -s "$out/library/compiler/R/compiler.rdx" ]; then
   echo "$out"
   exit 0
 fi

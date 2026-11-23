@@ -36,7 +36,7 @@ def fresh(binary, root=ROOT):
     be told without a build: the database stamp's script hashes and binary
     hash match (`<src> <rt-home.sh> <natives> <rt-home-db.sh> <binary>`), the
     R_HOME tree's stamp is the one it was made from, and the files a start
-    needs exist (the two databases, the two translation caches). (The
+    needs exist (base's loader, the two databases and their indexes, the two translation caches). (The
     natives' hash needs robigo-heap's build: rt-home.sh checks that one.)"""
     db = os.path.join(root, ".robigo", "rt-home-db")
     try:
@@ -51,8 +51,10 @@ def fresh(binary, root=ROOT):
     if (words[1], words[3], words[4]) != (script_hash(root, "rt-home.sh"), script_hash(root, "rt-home-db.sh"),
                                           binary_hash(binary)):
         return False
-    need = [os.path.join(db, "library", "base", "R", "base.rdb"),
-            os.path.join(db, "library", "compiler", "R", "compiler.rdb"),
+    need = [os.path.join(db, "library", "base", "R", f) for f in ("base", "base.rdb", "base.rdx")] + \
+        [os.path.join(db, "library", "compiler", "R", f) for f in ("compiler.rdb", "compiler.rdx")] + [
+            # (rt-home-db.sh's own freshness check requires the same files,
+            # under its lock: a miss here only sends the scripts to decide)
             os.path.join(root, ".robigo", "rt-home-db-cache", "base.rtc"),
             os.path.join(root, ".robigo", "rt-home-db-cache", "compiler.rtc")]
     return all(os.path.isfile(p) and os.path.getsize(p) > 0 for p in need)
@@ -68,12 +70,6 @@ def ensure(binary, root=ROOT):
     os.environ["ROBIGO_RT_CHECKOUT"] = root
     if fresh(binary, root):
         return
-    # (rt-home-db.sh's own check reads the stamp and the caches only: a tree
-    # that lost a database would pass it, so its stamp goes first)
-    try:
-        os.remove(os.path.join(root, ".robigo", "rt-home-db", ".rt-home-db"))
-    except FileNotFoundError:
-        pass
     for cmd in (["scripts/rt-home.sh"], ["scripts/rt-home-db.sh", "--robigo-rt", os.path.abspath(binary)]):
         p = subprocess.run(cmd, cwd=root, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         if p.returncode:
