@@ -30,3 +30,43 @@ invalidUnicode 2 0 invalid \U{xxxxxxxx} sequence (<input>:2:0)
 invalidUnicode 2 0 invalid \U{xxxxxxxx} sequence (<input>:2:0) 
 invalidUnicode 1 15 invalid \U{xxxxxxxx} sequence (<input>:1:15) 
 invalidUnicode 1 15 invalid \U{xxxxxxxx} sequence (<input>:1:15) 
+"\"\\\t\"" unrecognizedEscape 1 8 
+"\"\\x\t\"" badHex 1 3 
+"\"\\0\t\"" nulNotAllowed 1 3 
+"\"\\4\t\"" expression 
+"\"\\u{\t}\"" badUnicodeHex 1 4 
+"\"\\u{12\t}\"" invalidUnicode 1 8 
+"\"\\U{12345678\t\"" invalidUnicode 1 16 
+"`\\u\t`" unicodeInBackticks 1 3 
+"r\"\tabc)\"" invalidRawLiteral 1 8 
+"y \"\\\t\"" unrecognizedEscape 1 8 
+"\"\\\n\"" expression 
+"\"\\x\n\"" badHex 1 3 
+"\"\\0\n\"" nulNotAllowed 1 3 
+"\"\\4\n\"" expression 
+"\"\\u{\n}\"" badUnicodeHex 1 4 
+"\"\\u{12\n}\"" invalidUnicode 2 0 
+"\"\\U{12345678\n\"" invalidUnicode 2 0 
+"`\\u\n`" unicodeInBackticks 1 3 
+"r\"\nabc)\"" invalidRawLiteral 2 0 
+"y \"\\\n\"" simpleError 
+"\"\\é\"" unrecognizedEscape 1 3 
+"\"\\xé\"" badHex 1 3 
+"\"\\0é\"" nulNotAllowed 1 3 
+"\"\\4é\"" expression 
+"\"\\u{é}\"" badUnicodeHex 1 4 
+"\"\\u{12é}\"" invalidUnicode 1 7 
+"\"\\U{12345678é\"" invalidUnicode 1 13 
+"`\\ué`" unicodeInBackticks 1 3 
+"r\"éabc)\"" invalidRawLiteral 1 3 
+"y \"\\é\"" unrecognizedEscape 1 5 
+"\"\\g\"" unrecognizedEscape 1 3 
+"\"\\xg\"" badHex 1 3 
+"\"\\0g\"" nulNotAllowed 1 3 
+"\"\\4g\"" expression 
+"\"\\u{g}\"" badUnicodeHex 1 4 
+"\"\\u{12g}\"" invalidUnicode 1 7 
+"\"\\U{12345678g\"" invalidUnicode 1 13 
+"`\\ug`" unicodeInBackticks 1 3 
+"r\"gabc)\"" invalidRawLiteral 1 3 
+"y \"\\g\"" unrecognizedEscape 1 5 

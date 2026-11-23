@@ -391,7 +391,13 @@ impl<'a> Lexer<'a> {
         let at = self.pos.saturating_sub(1);
         // (where reading stopped: a character an escape's loop rejected
         // just now included; an earlier one lies behind `pos`)
-        ParseError::condition(subclass, message, at, self.pos.max(at + 1).max(self.rejected), None)
+        let mut e = ParseError::condition(subclass, message, at, self.pos.max(at + 1).max(self.rejected), None);
+        // raiseLexError's position is xxlineno/xxcolno after the last byte
+        // read (and not pushed back): a tab advances to the next multiple
+        // of 8, a newline starts the next line at column 0
+        // R: gram.y:raiseLexError, xxgetc, xxungetc
+        e.fixed_line_col = Some(self.source.r_line_col(self.pos));
+        e
     }
 
     /// The character at `pos`, which an escape's digit loop rejects (its

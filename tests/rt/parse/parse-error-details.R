@@ -59,3 +59,19 @@ p(paste0('y "', bs, 'U{12345678', nl, '";TAIL'))
 p(paste0('y "', bs, 'U{12345678'))
 p(paste0('y "', bs, 'U{12345678', e, '";TAIL'))
 p(paste0('y "', bs, 'U{12345678g";TAIL'))
+# every lexer condition's position is after the last byte it read (a tab
+# to the next multiple of 8, a newline to the next line at 0): each escape
+# with a tab, a newline, a multibyte and a plain character where it fails
+p2 <- function(t) { x <- tryCatch(parse(text = t), error = identity); cat(deparse(t), class(x)[1], x$lineno, x$colno, "\n") }
+for (w in c(tab, nl, e, "g")) {
+  p2(paste0('"', bs, w, '"'))
+  p2(paste0('"', bs, 'x', w, '"'))
+  p2(paste0('"', bs, '0', w, '"'))
+  p2(paste0('"', bs, '4', w, '"'))
+  p2(paste0('"', bs, 'u{', w, '}"'))
+  p2(paste0('"', bs, 'u{12', w, '}"'))
+  p2(paste0('"', bs, 'U{12345678', w, '"'))
+  p2(paste0('`', bs, 'u', w, '`'))
+  p2(paste0('r"', w, 'abc)"'))
+  p2(paste0('y "', bs, w, '"'))
+}
