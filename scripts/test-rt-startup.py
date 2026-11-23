@@ -619,9 +619,14 @@ class Memory(unittest.TestCase):
             with open(src, "w") as f:
                 f.write(c)
             subprocess.run(["cc", "-O2", "-pthread", "-o", exe, src], check=True)
-            for i in range(10):
-                box, secs = self.bounded(lambda: su.memory([exe], dict(os.environ), True, timeout=5), 30)
-                self.assertNotIn("error", box, f"run {i}: {box.get('error')!r}")
+            # (each race is rare per run: 100 runs, 50 in each mode, make
+            # a regression all but certain to show)
+            for i in range(100):
+                # with stops at system calls and without (Sol's r3: the
+                # event's own thread killed before its message is read)
+                syscalls = i % 2 == 0
+                box, secs = self.bounded(lambda: su.memory([exe], dict(os.environ), syscalls, timeout=5), 30)
+                self.assertNotIn("error", box, f"run {i} (syscalls={syscalls}): {box.get('error')!r}")
                 self.assertEqual(box["value"][2], 0)
                 self.no_child_left()
 

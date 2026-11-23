@@ -414,13 +414,24 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
                 anon = max(anon, thread_anon_kib(t))
                 resume(go, t)
             elif sig == signal.SIGTRAP and event in (PTRACE_EVENT_CLONE, PTRACE_EVENT_FORK, PTRACE_EVENT_VFORK):
-                new = event_msg(t)
+                try:
+                    new = event_msg(t)
+                except OSError as e:
+                    # the event's own thread killed since its stop was
+                    # gathered (an exit_group, Sol's r3 case): its message is
+                    # gone with it
+                    if e.errno != errno.ESRCH:
+                        raise
+                    new = 0
                 group_of = tgid(new) if new else None
                 if group_of is None:
-                    # the new task is already gone (an exit_group racing the
-                    # clone: the event's message is 0 then, or its /proc
-                    # entry reaped): nothing to register, and a stop it left
-                    # for this event is released
+                    # the new task is already gone, or unknown (an exit_group
+                    # racing the clone: the event's message is 0 then, its
+                    # /proc entry reaped, or the event's thread killed):
+                    # nothing to register, and a stop it left for this event
+                    # is released. A new task this leaves unnamed is dying
+                    # with its group: its stops are kept in `early` and its
+                    # exit stop resumed as any unnamed tracee's
                     if new and early.pop(new, None) is not None:
                         resume(PTRACE_CONT, new)
                 elif event == PTRACE_EVENT_CLONE and group_of == pid:
