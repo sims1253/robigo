@@ -130,6 +130,86 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # The cargo-fuzz targets (fuzz/fuzz_targets; scripts/fuzz-ci.py): every
+  # seed corpus replayed, then each target fuzzed for 15 minutes from it. A
+  # failure's input is the artifact, with the command that repeats it in the
+  # step summary. Pull requests only check the crate and run the targets
+  # whose inputs they change, 60 s each (ci.yml's miri job).
+  fuzz:
+    needs: check
+    if: needs.check.outputs.proceed == 'true'
+    runs-on: ubuntu-24.04
+    # three targets' builds (~10 min cold) and 3 x 15 min of fuzzing
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+      - name: The fuzz toolchain and cargo-fuzz
+        run: |
+          rustup toolchain install nightly-2026-11-02 --profile minimal
+          cargo +nightly-2026-11-02 install cargo-fuzz --locked --version 0.13.2
+      - name: Every target, replayed and fuzzed for 15 minutes
+        run: python3 scripts/fuzz-ci.py run --all --seconds 900
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Hostile byte code through robigo-rt (scripts/rt-bc-mutate.py, #976):
+  # the rt job replays the corpus and 24 random starts of a fixed seed; here
+  # a seed of its own each night (--seed auto: from the run's id, printed
+  # first) searches further. A failing start is written as a corpus line, the
+  # artifact, ready for tests/bc-mutate/corpus.txt.
+  rt-bc-mutate:
+    needs: [check, rt-image]
+    if: needs.check.outputs.proceed == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ${{ needs.rt-image.outputs.rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+      - uses: ./.github/actions/setup
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: rt
+          save-if: false
+      - uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
+      - name: robigo-rt and its trees
+        run: |
+          cargo build --release --locked -p robigo-rtapi --bin robigo-rt
+          scripts/rt-home.sh
+          scripts/rt-home-db.sh --robigo-rt "$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/robigo-rt"
+      - name: The corpus, then 200 random starts of tonight's seed
+        run: |
+          rt="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/robigo-rt"
+          python3 scripts/rt-bc-mutate.py --robigo-rt "$rt" --seed auto --processes 200 --batch 100 \
+            --jobs "$(nproc)" --failures-out "$RUNNER_TEMP/bc-mutate-failures.txt"
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: bc-mutate-failures
+          path: ${{ runner.temp }}/bc-mutate-failures.txt
+          if-no-files-found: ignore
+          retention-days: 14
+
   # the boot heap's freeze: CI's E3 checks its invariant at every 16th
   # collection (docs/ledger/g3/2026-11-21-h-boot-freeze-check.md); here at
   # every collection, the cases that need it given longer

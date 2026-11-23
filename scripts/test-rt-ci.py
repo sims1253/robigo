@@ -693,6 +693,8 @@ class RtCi(unittest.TestCase):
         "scripts/rt-fail-alloc.py": "rt-ci's step after the tree; by hand, the checkout's tree",
         "scripts/rt-tcache-mutate.py": "rt-ci's step after the tree; by hand, the checkout's tree",
         "scripts/rt-bc-mutate.py": "rt-ci's step after the tree; by hand, the checkout's tree (--checkout)",
+        ".github/workflows/nightly.yml": "rt-bc-mutate: rt-home.sh and rt-home-db.sh --robigo-rt with the binary it "
+                                         "runs, before it",
         ".github/workflows/ci.yml": "rt-ci's shards; rt-corpora unpacks dist/rt-trees.tar; perf-rt boots "
                                    "--trees dist/rt-trees.tar",
     }

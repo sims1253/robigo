@@ -218,7 +218,7 @@ def main():
     ap.add_argument("--batch", type=int, default=100, help="mutations per random start")
     ap.add_argument("--seed", default="1",
                     help="random start p's seed is SEED * 100000 + p; 'auto': from GITHUB_RUN_ID, else today's "
-                         "date (a search, run by hand until a nightly runs it: printed first, so a failure can be "
+                         "date (the nightly's search, .github/workflows/nightly.yml rt-bc-mutate: printed first, so a failure can be "
                          "replayed)")
     ap.add_argument("--failures-out", help="write each failing random start as a corpus line (seed, mutation, what)")
     ap.add_argument("--jobs", type=int, default=4)
