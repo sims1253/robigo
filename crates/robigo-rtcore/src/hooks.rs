@@ -210,7 +210,9 @@ pub struct Hooks {
     pub dispatch: DispatchFn,
     pub force: ForceFn,
     /// `eval(p, rho)` of a promise `p`: eval's `case PROMSXP` (the tick,
-    /// the depth step, `R_BCIntActive = 0`, `forcePromise`).
+    /// the depth step, `R_BCIntActive = 0`, `forcePromise`). Defaults to
+    /// the installed `force` (with no evaluator, a promise's eval is its
+    /// force).
     pub eval_promise: ForceFn,
     pub force_arg: ForceArgFn,
     pub early_force: EarlyForceFn,

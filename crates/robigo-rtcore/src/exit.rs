@@ -280,18 +280,6 @@ impl Cx {
         self.iso().contexts().bc_active.set(saved);
     }
 
-    /// Run `f` with byte code inactive: `eval`'s `R_BCIntActive = 0`,
-    /// saved and restored around it (only the flag: the current
-    /// expression is read only while byte code is active).
-    // R: eval.c:eval (bcintactivesave)
-    #[inline]
-    pub fn without_bc<R>(&mut self, f: impl FnOnce(&mut Cx) -> R) -> R {
-        let saved = self.iso().contexts().bc_active.replace(false);
-        let r = f(self);
-        self.iso().contexts().bc_active.set(saved);
-        r
-    }
-
     /// Run `f` as an activation of byte code (`bytecode`) or not: GNU R's
     /// `R_BCIntActive`, which `bcEval` sets and `eval` clears, saved and
     /// restored around it, with no current expression.

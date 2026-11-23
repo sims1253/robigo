@@ -484,9 +484,16 @@ impl Cx {
     /// scalar. An alias (a method's argument, which reads its generic's
     /// slot) is false: GetObject reads the generic's frame, whose slot is
     /// never an alias.
+    ///
+    /// # Safety
+    /// `frame` is a live slot frame of this isolate and `index` is below
+    /// its capacity (the checks [`Cx::force_arg`] makes, debug-asserted
+    /// here: this runs on every S3 dispatch of an argument slot).
     #[inline]
-    pub fn arg_unevaluated(&self, frame: Root<'_>, index: usize) -> bool {
+    pub unsafe fn arg_unevaluated(&self, frame: Root<'_>, index: usize) -> bool {
         let f = frame.bind(self).sexp();
+        #[cfg(debug_assertions)]
+        self.iso().check_owns(f);
         debug_assert!(
             // SAFETY: a rooted environment.
             unsafe { f.typ() == ENVSXP && layout::is_slots(f) },
@@ -495,7 +502,8 @@ impl Cx {
         // SAFETY: as above.
         debug_assert!(index < unsafe { layout::capacity(f) }, "robigo: arg_unevaluated past the frame's slots");
         let s = SlotRef { owner: f, index };
-        // SAFETY: a slot of a rooted frame; a value slot's `val` is live.
+        // SAFETY: the caller's contract: a slot of a live slot frame; a
+        // value slot's `val` is live.
         unsafe {
             match s.kind() {
                 DELAYED => true,
