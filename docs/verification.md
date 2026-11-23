@@ -124,6 +124,18 @@ robigo-rt's builtins with GNU R 4.6.2's on generated inputs, out of process.
   - `.Random.seed`;
   - `.a4log`: what the fixture closures were called with, in order.
 
+  A big value (the call's, or a changed binding's), one whose
+  serialization would be over 16 MiB (`A4_BIG_BYTES`) and holds no
+  reference object, is recorded as its summary: type, length, attribute
+  names, its first and last 3 elements. The value itself goes to
+  `<id>.big<k>.rds` (`saveRDS` version 2, which writes plain vectors, so
+  both runtimes write the same bytes), and the harness replaces that by its
+  sha256 at once. The driver marks each summary `<id>.big<k>.want`, and a
+  case passes only with the same marks on both sides, each with its
+  digest, and the digests equal. A value over 1 GiB (`A4_BIG_MAX_BYTES`),
+  which an expanded copy might not fit under the address-space cap, stays
+  in the record as before (`seq.int(intmax)`, compact in GNU R).
+
   The records are compared byte for byte. So is what each case printed: the
   driver writes a marker line before each case, and the harness splits
   stdout at them. A case counts as done when its `.ok` marker exists, which
