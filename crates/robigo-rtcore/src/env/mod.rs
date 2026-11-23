@@ -1514,6 +1514,28 @@ impl Cx {
         })
     }
 
+    /// GNU R's `R_GetVarLocValue(cell) == v` when reading `cell` runs no
+    /// code: Some for a binding cell holding a plain object, None for
+    /// anything else (an active binding, a frame slot), which the caller
+    /// reads with [`Cx::var_loc_value`]. No value is read as one.
+    // R: envir.c:R_GetVarLocValue
+    pub fn var_loc_holds(&self, cell: Root<'_>, v: Ref<'_>) -> Option<bool> {
+        let c = cell.bind(self);
+        if c.sexptype() != LISTSXP {
+            return None;
+        }
+        self.iso().check_owns(c.sexp());
+        let l = Loc::cell(c.sexp());
+        let iso = self.iso();
+        // SAFETY: a rooted binding cell of this isolate; its fields read.
+        unsafe {
+            if matches!(l.at(), At::FrameSlot(_)) || l.bits(iso) & ACTIVE_BINDING != 0 {
+                return None;
+            }
+            Some(l.raw(iso) == v.sexp())
+        }
+    }
+
     /// The value of a binding found under `&Cx`, written to `out`: an
     /// active binding's function is called.
     fn binding_value(&mut self, b: Option<Loc>, out: Out<'_>) -> RResult<()> {

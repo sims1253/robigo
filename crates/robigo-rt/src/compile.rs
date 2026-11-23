@@ -186,7 +186,9 @@ fn attempt_rounds(
                 retried = None;
             }
             Ok(code) => return Ok(Some(code)),
-            Err(Need::Fail) => return Ok(None),
+            // (a translation handles its own malformed byte code: none
+            // gets here; a compile from source never is malformed)
+            Err(Need::Fail | Need::Malformed) => return Ok(None),
             Err(Need::Force(p)) => {
                 let vis = cx.visible();
                 cx.scope(|cx, s| {
@@ -481,6 +483,10 @@ unsafe fn crosscheck_closure_in(cx: &Cx, f: Sexp, installed: bool) -> Result<cro
                     c.bc_untranslated.take().unwrap_or_else(|| "byte code the translation cannot follow".to_owned());
                 Ok(Finding::new(Verdict::Untranslated, format!("untranslated: {what}: {why}")))
             }
+            Err(Need::Malformed) => {
+                let why = c.bc_untranslated.take().unwrap_or_else(|| MALFORMED_STACK.to_owned());
+                Ok(Finding::new(Verdict::Malformed, format!("malformed byte code: {what}: {why}")))
+            }
             Err(e) => Err(e),
         }
     }
@@ -524,6 +530,10 @@ pub fn translation_gaps(cx: &mut Cx, f: Root<'_>) -> RResult<Vec<String>> {
                             .take()
                             .unwrap_or_else(|| "byte code the translation cannot follow".to_owned()),
                     ),
+                    Err(Need::Malformed) => gaps.push(format!(
+                        "malformed byte code: {}",
+                        c.bc_untranslated.take().unwrap_or_else(|| MALFORMED_STACK.to_owned())
+                    )),
                     Err(e) => return Err(e),
                 }
                 // the byte code it holds: MAKEPROM's, and the functions it
@@ -643,6 +653,10 @@ unsafe fn translate_code(cx: &Cx, bc: Sexp, formals: Option<Sexp>, index: Option
     }
 }
 
+/// Why malformed byte code was refused when the translation says no more:
+/// its stack (`bctrans::mismatch`).
+const MALFORMED_STACK: &str = "a stack its own instructions disagree about";
+
 /// [`translate_code`] with no look at the translation cache.
 ///
 /// # Safety
@@ -668,28 +682,42 @@ unsafe fn translate_uncached_in(cx: &Cx, bc: Sexp, formals: Option<Sexp>, index:
         let st = prims::state(cx);
         let mut c = Comp::new(cx, st, Profile::Bc, Some(Cenv::for_translation()));
         let r = c.alloc();
-        let res = c.translate(bc, r);
+        let res = c.translate(bc, r).and_then(|()| {
+            let mut i = Ins::new(Op::Ret);
+            i.b = r;
+            c.emit(i);
+            // (what the checks before it let through and the verifier
+            // refuses is malformed byte code too, never a panic: #976)
+            let b = c.finish();
+            c.verify(b).map_err(|m| {
+                c.bc_untranslated = Some(format!("its translation fails the verifier ({})", m.why));
+                Need::Malformed
+            })
+        });
         let expr = robigo_rtbuiltins::bytecode::expr(cx, Ref::from_sexp(bc, cx)).sexp();
         // (each code built by the compile that made it: its buffers go back
         // to the scratch with that compile's)
         let code = match res {
-            Ok(()) => {
-                let mut i = Ins::new(Op::Ret);
-                i.b = r;
-                c.emit(i);
-                let b = c.finish();
+            Ok(v) => {
                 if writing {
-                    crate::tcache::writer_end(cx, bc, index, &b);
+                    crate::tcache::writer_end(cx, bc, index, v.built());
                 }
-                c.build(b, expr, formals)?
+                c.build_verified(v, expr, formals)?
             }
-            Err(Need::Fail) => {
-                let what =
-                    c.bc_untranslated.take().unwrap_or_else(|| "byte code the translation cannot follow".to_owned());
+            Err(e @ (Need::Fail | Need::Malformed)) => {
+                let malformed = e == Need::Malformed;
+                let what = c.bc_untranslated.take().unwrap_or_else(|| {
+                    if malformed { MALFORMED_STACK } else { "byte code the translation cannot follow" }.to_owned()
+                });
                 let mut f = Comp::new(cx, st, Profile::Bc, Some(Cenv::for_translation()));
                 let r = f.alloc();
                 let nil = f.nil();
-                f.unimplemented(nil, &format!("translating {what}"))?;
+                if malformed {
+                    // (not "not implemented": no translation of it will come)
+                    f.error_op(nil, &format!("robigo: malformed byte code: {what}"), false)?;
+                } else {
+                    f.unimplemented(nil, &format!("translating {what}"))?;
+                }
                 let mut i = Ins::new(Op::Ret);
                 i.b = r;
                 f.emit(i);
@@ -1043,6 +1071,19 @@ pub(crate) fn compile_special_with(
                 Kind::Special(s) => c.special(s, call, args.unwrap_or_else(|| call.cdr()), dst, 0, Tail::Yes)?,
                 Kind::Builtin(..) | Kind::Fn(_) => unreachable!("robigo: only a language special is compiled"),
             }
+            if let Some(what) = c.too_large.take() {
+                // (a special's arguments past the IR's operands: an error
+                // that says so, made afresh)
+                let mut c = Comp::new(cx, st, Profile::Eval, None);
+                let dst = c.alloc();
+                let nil = c.nil();
+                c.unimplemented(nil, what)?;
+                let mut i = Ins::new(Op::Ret);
+                i.b = dst;
+                c.emit(i);
+                let b = c.finish();
+                return Ok(c.build(b, call, None)?);
+            }
             let mut i = Ins::new(Op::Ret);
             i.b = dst;
             c.emit(i);
@@ -1297,6 +1338,41 @@ struct Comp<'g> {
     /// branch) sets it as the tail does.
     cut_assign: Option<Sexp>,
     live_stmt: Option<Sexp>,
+    /// What of the code is past the IR's 16-bit operands (its constants,
+    /// its registers, a `switch`'s alternatives), once something is: the
+    /// counters stop at a valid placeholder so the compile ends, and
+    /// [`Comp::root`] makes the code an error that says so (AGENTS rule 6;
+    /// GNU R compiles such code) instead of a panic. #976.
+    too_large: Option<&'static str>,
+}
+
+/// The nesting depth past which the `Eval` profile compiles no deeper and
+/// evaluates the rest when it runs (`Op::EvalConst`): the compiler's
+/// recursion stays within the stack, and the run's own depth count raises
+/// GNU R's "evaluation nested too deeply" where GNU R does (its
+/// `options(expressions)`, 5000 by default). Under `Bc`, cmp.R stops on
+/// such depths ("node stack overflow"): the code is left uncompiled.
+const DEFER_DEPTH: u16 = 1000;
+
+/// The nesting depth the `Bc` profile compiles and folds to: GNU R 4.6.2's
+/// cmp.R compiles a nest of 1,477 fold calls (`1 + (1 + ...)`, to one
+/// constant) and stops from 1,478 with "node stack overflow", which leaves
+/// the code uncompiled (#976). It is a bisected property of that build: its
+/// node stack (`R_BCNODESTACKSIZE`) over what one level of cmp.R's
+/// recursion pushes. Derive it again, do not trust it, when the oracle
+/// changes: `scripts/oracle-run.sh 4.6.2 Rscript --vanilla
+/// scripts/oracle-cmp-depth.R`.
+const CMP_DEPTH: u16 = 1477;
+
+/// What a constant fold of an expression found in the try under way.
+enum Folded {
+    /// It folds to this constant.
+    Value(Sexp),
+    /// It is a fold call whose value is asked for (the request's index):
+    /// known after the round.
+    Pending(usize),
+    /// It does not fold.
+    No,
 }
 
 impl Drop for Comp<'_> {
@@ -1393,6 +1469,7 @@ impl<'g> Comp<'g> {
             bc_untranslated: None,
             cut_assign: None,
             live_stmt: None,
+            too_large: None,
         }
     }
 
@@ -1420,12 +1497,40 @@ impl<'g> Comp<'g> {
     /// # Safety
     /// As [`crate::code::build`]'s: `source` and `formals` are live.
     unsafe fn build(&mut self, b: Built, source: Sexp, formals: Option<Sexp>) -> Result<Sexp, robigo_heap::NeedGc> {
-        let v = verified(b);
+        // SAFETY: the caller's contract.
+        unsafe { self.build_verified(verified(b), source, formals) }
+    }
+
+    /// [`Comp::build`] of code already through the verifier
+    /// ([`Comp::verify`]).
+    ///
+    /// # Safety
+    /// As [`Comp::build`]'s.
+    unsafe fn build_verified(
+        &mut self,
+        v: crate::code::Verified,
+        source: Sexp,
+        formals: Option<Sexp>,
+    ) -> Result<Sexp, robigo_heap::NeedGc> {
         // SAFETY: the caller's contract.
         let r = unsafe { crate::code::build(self.cx, &v, source, formals) };
-        // (finish took these out of this compile: they go back cleared, to
-        // be given to the scratch when it ends)
-        let b = v.into_built();
+        self.give_back(v.into_built());
+        r
+    }
+
+    /// `b` through the verifier, a refusal an error: byte code from outside
+    /// (#976). Refused code's buffers go back to this compile as a built
+    /// code's do.
+    fn verify(&mut self, b: Built) -> Result<crate::code::Verified, crate::code::Malformed> {
+        crate::code::Verified::try_new(b).map_err(|(m, b)| {
+            self.give_back(b);
+            m
+        })
+    }
+
+    /// `b`'s buffers, which [`Comp::finish`] took out of this compile, back
+    /// to it cleared, to be given to the scratch when it ends.
+    fn give_back(&mut self, b: Built) {
         fn back<T>(slot: &mut Vec<T>, mut v: Vec<T>) {
             if v.capacity() > slot.capacity() {
                 v.clear();
@@ -1436,7 +1541,6 @@ impl<'g> Comp<'g> {
         back(&mut self.consts, b.consts);
         back(&mut self.locals, b.locals);
         back(&mut self.ppk, b.ppk);
-        r
     }
 
     /// Compile the whole expression: its value is the code object's result.
@@ -1444,6 +1548,32 @@ impl<'g> Comp<'g> {
         let r = self.alloc();
         // SAFETY: the caller's contract.
         unsafe { self.expr(expr, r, 1, Tail::Yes)? };
+        if let Some(what) = self.too_large.take() {
+            if self.bc.is_some() {
+                // (cmp.R's code cannot hold it either: GNU R's is uncompiled)
+                return Err(Need::Fail);
+            }
+            // the code is an error that says so, made afresh
+            self.ins.clear();
+            self.consts.clear();
+            self.pool = PosMap::default();
+            self.locals.clear();
+            self.ppk.clear();
+            self.loops.clear();
+            self.arg_codes.clear();
+            self.sites = 0;
+            self.pp = 0;
+            self.next = R_FIRST;
+            self.max = R_FIRST;
+            self.max_depth = 0;
+            let r = self.alloc();
+            let nil = self.nil();
+            self.unimplemented(nil, what)?;
+            let mut i = Ins::new(Op::Ret);
+            i.b = r;
+            self.emit(i);
+            return Ok(self.finish());
+        }
         let mut i = Ins::new(Op::Ret);
         i.b = r;
         self.emit(i);
@@ -1477,7 +1607,13 @@ impl<'g> Comp<'g> {
 
     fn alloc(&mut self) -> Reg {
         let r = self.next;
-        self.next = self.next.checked_add(1).expect("robigo: an expression too deep to compile");
+        let Some(next) = self.next.checked_add(1) else {
+            // (past the registers an operand can name: the root makes the
+            // code an error; until then a register that exists)
+            self.too_large.get_or_insert("an expression of more than 65535 registers");
+            return R_FIRST;
+        };
+        self.next = next;
         self.max = self.max.max(self.next);
         r
     }
@@ -1501,7 +1637,12 @@ impl<'g> Comp<'g> {
         if let Some(&i) = self.pool.get(&(x.as_ptr() as usize)) {
             return i;
         }
-        let i = u16::try_from(FIRST_CONST + self.consts.len()).expect("robigo: too many constants in one code object");
+        let Ok(i) = u16::try_from(FIRST_CONST + self.consts.len()) else {
+            // (past the pool an operand can index: the root makes the code
+            // an error; until then a constant that exists)
+            self.too_large.get_or_insert("a code object of more than 65535 constants");
+            return FIRST_CONST as u16;
+        };
         self.consts.push(x);
         self.pool.insert(x.as_ptr() as usize, i);
         i
@@ -1688,6 +1829,22 @@ impl<'g> Comp<'g> {
     unsafe fn expr(&mut self, e: Sexp, dst: Reg, d: u16, tail: Tail) -> Result<(), Need> {
         // SAFETY: the caller's contract.
         let t = unsafe { e.typ() };
+        if t == LANGSXP && d >= if self.bc.is_some() { CMP_DEPTH } else { DEFER_DEPTH } {
+            if self.bc.is_some() {
+                // R: cmp.R's recursion fails on such depths (a compiler
+                // error): GNU R leaves the code uncompiled
+                return Err(Need::Fail);
+            }
+            // the rest evaluated when it runs, at this depth (`eval`
+            // counts on from `d`, and raises GNU R's error past the limit)
+            let mut i = Ins::new(Op::EvalConst);
+            i.a = dst;
+            i.e = self.k(e);
+            i.d = d;
+            self.max_depth = self.max_depth.max(d);
+            self.emit(i);
+            return Ok(());
+        }
         if self.bc.is_some()
             && matches!(t, SYMSXP | LANGSXP)
             // SAFETY: as above.
@@ -1787,49 +1944,72 @@ impl<'g> Comp<'g> {
     /// `e` is live.
     // R: cmp.R:constantFold, constantFoldCall, constantFoldSym, getFoldFun
     unsafe fn constant_fold(&self, e: Sexp) -> Result<Option<Sexp>, Need> {
+        // SAFETY: the caller's contract.
+        Ok(match unsafe { self.constant_fold_at(e, 0)? } {
+            Folded::Value(v) => Some(v),
+            Folded::Pending(_) | Folded::No => None,
+        })
+    }
+
+    /// [`Comp::constant_fold`] of `e`, `depth` calls into the fold. A fold
+    /// call whose arguments fold or are themselves asked for is asked for
+    /// with them ([`Folded::Pending`]), so one round folds a whole nest
+    /// bottom-up, as cmp.R's recursive `constantFold` does in one pass. Past
+    /// [`CMP_DEPTH`] it stops, as cmp.R stops there (a compiler error: the
+    /// code is left uncompiled), and the walk stays within the stack.
+    ///
+    /// # Safety
+    /// `e` is live.
+    unsafe fn constant_fold_at(&self, e: Sexp, depth: u16) -> Result<Folded, Need> {
+        use Folded::*;
+        if depth >= CMP_DEPTH {
+            return Err(Need::Fail);
+        }
         let (cx, st) = (self.cx, self.st);
-        let Some(cenv) = &self.bc else { return Ok(None) };
+        let Some(cenv) = &self.bc else { return Ok(No) };
         // SAFETY: the caller's contract; symbols of `cx`'s isolate.
         unsafe {
             match e.typ() {
                 SYMSXP => {
                     if !cenv::is_const_name(cx, e) || !cenv.is_base_var(cx, st, e)? {
-                        return Ok(None);
+                        return Ok(No);
                     }
-                    Ok(cenv::base_value(cx, e)?.filter(|&v| cenv::check_const(cx, v)))
+                    Ok(cenv::base_value(cx, e)?.filter(|&v| cenv::check_const(cx, v)).map_or(No, Value))
                 }
                 LANGSXP => {
                     let fun = e.car();
                     if fun.typ() != SYMSXP || !cenv::is_fold_fun(cx, fun) || !cenv.is_base_var(cx, st, fun)? {
-                        return Ok(None);
+                        return Ok(No);
                     }
-                    let Some(ffun) = cenv::base_value(cx, fun)? else { return Ok(None) };
+                    let Some(ffun) = cenv::base_value(cx, fun)? else { return Ok(No) };
                     if !matches!(ffun.typ(), CLOSXP | BUILTINSXP | SPECIALSXP) {
-                        return Ok(None);
+                        return Ok(No);
                     }
                     let missing = cx.missing_arg().sexp();
                     let mut args = Vec::new();
                     for (a, tag) in cenv::elements(cx, e, true) {
                         if a == missing {
-                            return Ok(None);
+                            return Ok(No);
                         }
-                        let Some(v) = self.constant_fold(a)? else { return Ok(None) };
-                        args.push((v, tag));
+                        let arg = match self.constant_fold_at(a, depth + 1)? {
+                            Value(v) => crate::fold::FoldArg::Value(v),
+                            Pending(j) => crate::fold::FoldArg::Req(j),
+                            No => return Ok(No),
+                        };
+                        args.push((arg, tag));
                     }
-                    // (every argument passed checkConst: their modes are
-                    // constModes)
+                    // (every argument passed checkConst, or will before
+                    // this call is evaluated: their modes are constModes)
                     match st.folds.lookup(e) {
-                        Some(v) => Ok(v),
-                        None => {
-                            if st.folds.may_request(st.forced.is_some()) {
-                                st.folds.request(crate::fold::FoldReq { call: e, fun: ffun, args });
-                            }
-                            Ok(None)
+                        Some(v) => Ok(v.map_or(No, Value)),
+                        None if st.folds.may_request(st.forced.is_some()) => {
+                            Ok(Pending(st.folds.request(crate::fold::FoldReq { call: e, fun: ffun, args })))
                         }
+                        None => Ok(No),
                     }
                 }
                 PROMSXP | BCODESXP => Err(Need::Fail),
-                _ => Ok(cenv::check_const(cx, e).then_some(e)),
+                _ => Ok(if cenv::check_const(cx, e) { Value(e) } else { No }),
             }
         }
     }
@@ -2236,7 +2416,10 @@ impl<'g> Comp<'g> {
         sw.b = r;
         sw.e = self.k(e);
         sw.c = self.k(names);
-        sw.f = u16::try_from(labels.len()).expect("robigo: a 'switch' with too many alternatives");
+        sw.f = u16::try_from(labels.len()).unwrap_or_else(|_| {
+            self.too_large.get_or_insert("a 'switch' of more than 65535 alternatives");
+            0
+        });
         self.emit(sw);
         self.free_to(r);
         let tabs = self.pc();

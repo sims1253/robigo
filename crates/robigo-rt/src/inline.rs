@@ -1588,17 +1588,14 @@ unsafe fn body_loop<const FUSED: bool>(
                     }
                     Slot::logical(x)
                 } else {
-                    let x1 = r(i.a)?.as_int()?;
-                    // R: logic.c:do_logic2
-                    Slot::logical(if x1 != ops::NA_LOGICAL {
-                        x
-                    } else if i.c == 1 {
-                        if x == ops::NA_LOGICAL || x != 0 { ops::NA_LOGICAL } else { x }
-                    } else if x == ops::NA_LOGICAL || x == 0 {
-                        ops::NA_LOGICAL
-                    } else {
-                        x
-                    })
+                    // R: eval.c:bcEval's AND2ND/OR2ND, as the VM's arm: the
+                    // second operand's value replaces the first's where it
+                    // decides (`&&`: FALSE or NA; `||`: not FALSE), and the
+                    // first's stays otherwise, unread: what AND1ST left
+                    // there, or in byte code from elsewhere whatever is
+                    // there (#976). The store below writes it back as it was.
+                    let decides = if i.c == 1 { x == 0 || x == ops::NA_LOGICAL } else { x != 0 };
+                    if decides { Slot::logical(x) } else { r(i.a)? }
                 }
             }
             Op::Return => return r(i.b),

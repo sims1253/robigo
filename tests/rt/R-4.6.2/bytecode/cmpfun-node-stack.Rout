@@ -1,0 +1,6 @@
+1477 cmpfun: bytecode 
+1477 compile: bytecode 
+1478 cmpfun: node stack overflow 
+1478 compile: node stack overflow 
+20000 cmpfun: node stack overflow 
+20000 compile: node stack overflow 

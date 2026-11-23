@@ -815,27 +815,23 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     if decided {
                         pc = i.target();
                     }
-                    x
+                    Some(x)
                 } else {
-                    let x1 = act.get(i.a).as_int().unwrap();
-                    // R: logic.c:do_logic2
-                    if i.c == 1 {
-                        if x1 == ops::NA_LOGICAL {
-                            if x == ops::NA_LOGICAL || x != 0 { ops::NA_LOGICAL } else { x }
-                        } else {
-                            x
-                        }
-                    } else if x1 == ops::NA_LOGICAL {
-                        if x == ops::NA_LOGICAL || x == 0 { ops::NA_LOGICAL } else { x }
-                    } else {
-                        x
-                    }
+                    // R: eval.c:bcEval's AND2ND/OR2ND: the second operand's
+                    // value replaces the first's where it decides (`&&`:
+                    // FALSE or NA; `||`: not FALSE), and the first's stays
+                    // otherwise, unread: what AND1ST left there, or in
+                    // byte code from elsewhere whatever is there (#976)
+                    let decides = if i.c == 1 { x == 0 || x == ops::NA_LOGICAL } else { x != 0 };
+                    decides.then_some(x)
                 };
                 if i.op == Op::AndOr2 && i.fl & F_CLR_B != 0 {
                     act.kill(i.b, pc as u32 - 1);
                 }
-                // SAFETY: an unboxed value.
-                unsafe { act.set(i.a, Slot::logical(r)) };
+                if let Some(r) = r {
+                    // SAFETY: an unboxed value.
+                    unsafe { act.set(i.a, Slot::logical(r)) };
+                }
                 // R_Visible = TRUE whatever the flag, as bcEval's AND1ST,
                 // AND2ND, OR1ST and OR2ND set it (the AST's do_logic2 is
                 // visible too); the IR's F_VIS says where it is observed. A
