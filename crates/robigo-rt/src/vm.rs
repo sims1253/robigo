@@ -844,7 +844,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 cx.set_visible(true);
             }
             Op::MkClosure => {
-                mk_closure(cx, act, i.a, i.e, i.f, i.c, i.b, i.g == 1)?;
+                mk_closure(cx, act, i)?;
                 if i.fl & F_VIS != 0 {
                     cx.set_visible(true);
                 }
@@ -1538,7 +1538,9 @@ fn closure_srcref(cx: &mut Cx, act: &Act, a: Reg, ks: u16) -> RResult<()> {
 /// the code's constants `kf` and `kb` (read afresh on each attempt: a
 /// refused allocation collects).
 // R: dstruct.c:mkCLOSXP
-fn mk_closure(cx: &mut Cx, act: &Act, a: Reg, kf: u16, kb: u16, kc: u16, ks: u16, installed: bool) -> RResult<()> {
+fn mk_closure(cx: &mut Cx, act: &Act, i: Ins) -> RResult<()> {
+    // (the instruction whole: its fields read here, not at the call)
+    let (a, kf, kb, kc, ks, installed) = (i.a, i.e, i.f, i.c, i.b, i.g == 1);
     // SAFETY: the rooted code object's constant.
     let body = unsafe { View::of(act.obj(R_CODE)).k(kb) };
     // SAFETY: as above.
