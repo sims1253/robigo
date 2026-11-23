@@ -658,6 +658,7 @@ class RtCi(unittest.TestCase):
         "scripts/rt-overshoot.py": "rt-ci's step after the tree; by hand, the checkout's tree",
         "scripts/rt-fail-alloc.py": "rt-ci's step after the tree; by hand, the checkout's tree",
         "scripts/rt-tcache-mutate.py": "rt-ci's step after the tree; by hand, the checkout's tree",
+        "scripts/rt-bc-mutate.py": "rt-ci's step after the tree; by hand, the checkout's tree (--checkout)",
         ".github/workflows/ci.yml": "rt-ci's shards; rt-corpora unpacks dist/rt-trees.tar; perf-rt boots "
                                    "--trees dist/rt-trees.tar",
     }
