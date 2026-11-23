@@ -1,2 +1,2 @@
-# builtin-diff known failures: remove, seed 0, key 17342296b1a5d27fc6b7b7c6
+# builtin-diff known failures: remove, seed 0, key cac0b4aa2b554c38211e965a
 # remove: 409 / 409 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)

@@ -1,2 +1,2 @@
-# builtin-diff known failures: rawToChar, seed 0, key f35c5b2b1dfa6b3ed73e517b
+# builtin-diff known failures: rawToChar, seed 0, key 75c70bf080d8c70f3f2019fe
 # rawToChar: 668 / 668 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)

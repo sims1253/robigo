@@ -132,14 +132,14 @@ class Classes(unittest.TestCase):
         o, r = os.path.join(go, "000951.rds"), os.path.join(rt, "000951.rds")
 
         def cls():
-            bd._NAMES.clear()           # (the files change between the checks)
+            bd._INDEX.clear()           # (the files change between the checks)
             return bd.classify(o, r, {}, {}, 951)
         self.assertEqual(cls(), "pass")
         # the same summary, another value past its first and last elements
         with open(os.path.join(rt, "000951.big1.sha256"), "w") as f:
             f.write("0" * 64 + "\n")
         self.assertEqual(cls(), "mismatch")
-        bd._NAMES.clear()
+        bd._INDEX.clear()
         with unittest.mock.patch.object(bd, "render", return_value={}):
             field = bd.diff_fields([(951, o, r)])[951][0]
         self.assertEqual(field, "digest")
@@ -156,13 +156,13 @@ class Classes(unittest.TestCase):
         # and a case's marks and digests never mix with another case's
         with open(os.path.join(go, "000095.rds"), "wb") as f:
             f.write(b"x")
-        bd._NAMES.clear()
+        bd._INDEX.clear()
         self.assertEqual(bd.big_digests(os.path.join(go, "000095.rds")), (frozenset(), {}))
         # a record that merely holds the string "a4_big" needs no digest
         for d in (go, rt):
             with open(os.path.join(d, "000096.rds"), "wb") as f:
                 f.write(b"a4_big")
-        bd._NAMES.clear()
+        bd._INDEX.clear()
         self.assertEqual(bd.classify(os.path.join(go, "000096.rds"), os.path.join(rt, "000096.rds"), {}, {}, 96),
                          "pass")
 

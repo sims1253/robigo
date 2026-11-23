@@ -1,2 +1,2 @@
-# builtin-diff known failures: format.POSIXlt, seed 0, key c4bb85861eb7c6cc4ef9d652
+# builtin-diff known failures: format.POSIXlt, seed 0, key 4c98e50dc60982559ea5c8ff
 # format.POSIXlt: 432 / 432 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)

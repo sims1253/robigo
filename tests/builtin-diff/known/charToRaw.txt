@@ -1,2 +1,2 @@
-# builtin-diff known failures: charToRaw, seed 0, key 9445b6fd022b9118acd8519f
+# builtin-diff known failures: charToRaw, seed 0, key e424b27fcd90c5b6bcef1b51
 # charToRaw: 128 / 128 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)

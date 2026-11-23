@@ -1,4 +1,4 @@
-# builtin-diff known failures: vapply, seed 0, key 34969134577c6d3a33386c7e
+# builtin-diff known failures: vapply, seed 0, key 35a9dbc2feb6d0c61dd8d334
 # vapply: 901 / 905 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 2 excluded)
 120
 290

@@ -1,2 +1,2 @@
-# builtin-diff known failures: lapply, seed 0, key 63ef100bc78e5cd74924defe
+# builtin-diff known failures: lapply, seed 0, key d34824591fb62872708f0b0b
 # lapply: 581 / 581 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 2 excluded)

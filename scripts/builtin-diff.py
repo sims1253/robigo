@@ -427,41 +427,46 @@ def seal_big(out):
         with open(p[:-4] + ".sha256", "w") as f:
             f.write(h.hexdigest() + "\n")
         os.remove(p)
-    _NAMES.pop(out, None)
+    _INDEX.pop(out, None)
 
 
-def _names(d):
-    """A records directory's file names, listed once per run: the records
-    are written before anything compares them (seal_big runs first)."""
+def _big_index(d):
+    """A records directory's big values, indexed once per run (the records
+    are written, and sealed, before anything compares them): case stem ->
+    (the k's of its `.want` marks, {k: the `.sha256` file's path})."""
     try:
-        return _NAMES[d]
+        return _INDEX[d]
     except KeyError:
-        try:
-            _NAMES[d] = frozenset(os.listdir(d))
-        except FileNotFoundError:
-            _NAMES[d] = frozenset()
-        return _NAMES[d]
+        pass
+    idx = {}
+    try:
+        names = os.listdir(d)
+    except FileNotFoundError:
+        names = []
+    for n in names:
+        m = re.fullmatch(r"(\d{6})\.big(\d+)\.(want|sha256)", n)
+        if m:
+            want, dig = idx.setdefault(m.group(1), (set(), {}))
+            if m.group(3) == "want":
+                want.add(int(m.group(2)))
+            else:
+                dig[int(m.group(2))] = os.path.join(d, n)
+    _INDEX[d] = idx
+    return idx
 
 
-_NAMES = {}
+_INDEX = {}
 
 
 def big_digests(rds):
     """A record's big values, by their k: (the k's the driver wrote a
     summary for (`<id>.big<k>.want`), {k: the digest seal_big wrote})."""
     d, base = os.path.split(rds)
-    stem = base[:-4]
-    names = _names(d)
-    want, dig = set(), {}
-    for n in names:
-        m = re.fullmatch(re.escape(stem) + r"\.big(\d+)\.(want|sha256)", n)
-        if not m:
-            continue
-        if m.group(2) == "want":
-            want.add(int(m.group(1)))
-        else:
-            with open(os.path.join(d, n)) as f:
-                dig[int(m.group(1))] = f.read().strip()
+    want, paths = _big_index(d).get(base[:-4], (set(), {}))
+    dig = {}
+    for k, p in paths.items():
+        with open(p) as f:
+            dig[k] = f.read().strip()
     return frozenset(want), dig
 
 

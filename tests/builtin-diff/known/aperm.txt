@@ -1,2 +1,2 @@
-# builtin-diff known failures: aperm, seed 0, key a5c21905ca97d76fc5c3eae7
+# builtin-diff known failures: aperm, seed 0, key b19cf95cc542ca2906bfddf4
 # aperm: 890 / 890 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)
