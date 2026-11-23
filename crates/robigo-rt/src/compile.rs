@@ -607,29 +607,32 @@ unsafe fn translate_code(cx: &Cx, bc: Sexp, formals: Option<Sexp>, index: Option
         let mut c = Comp::new(cx, st, Profile::Bc, Some(Cenv::for_translation()));
         let r = c.alloc();
         let res = c.translate(bc, r);
-        let b = match res {
+        let expr = robigo_rtbuiltins::bytecode::expr(cx, Ref::from_sexp(bc, cx)).sexp();
+        // (each code built by the compile that made it: its buffers go back
+        // to the scratch with that compile's)
+        let code = match res {
             Ok(()) => {
                 let mut i = Ins::new(Op::Ret);
                 i.b = r;
                 c.emit(i);
-                c.finish()
+                let b = c.finish();
+                c.build(b, expr, formals)?
             }
             Err(Need::Fail) => {
                 let what =
                     c.bc_untranslated.take().unwrap_or_else(|| "byte code the translation cannot follow".to_owned());
-                let mut c = Comp::new(cx, st, Profile::Bc, Some(Cenv::for_translation()));
-                let r = c.alloc();
-                let nil = c.nil();
-                c.unimplemented(nil, &format!("translating {what}"))?;
+                let mut f = Comp::new(cx, st, Profile::Bc, Some(Cenv::for_translation()));
+                let r = f.alloc();
+                let nil = f.nil();
+                f.unimplemented(nil, &format!("translating {what}"))?;
                 let mut i = Ins::new(Op::Ret);
                 i.b = r;
-                c.emit(i);
-                c.finish()
+                f.emit(i);
+                let b = f.finish();
+                f.build(b, expr, formals)?
             }
             Err(e) => return Err(e),
         };
-        let expr = robigo_rtbuiltins::bytecode::expr(cx, Ref::from_sexp(bc, cx)).sexp();
-        let code = c.build(b, expr, formals)?;
         index_codes(cx, code, &c.arg_codes, index);
         Ok(code)
     }
