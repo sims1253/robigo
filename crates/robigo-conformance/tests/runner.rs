@@ -663,8 +663,17 @@ fn a_cases_clock_starts_when_it_takes_its_slot() {
     qo.times = Some(report.clone());
     let (asked, quick_result) = std::thread::scope(|s| {
         let h = s.spawn(|| run(slow.root(), &RT, &so).unwrap());
-        // the slow case holds the slot once it has stamped its start
+        // the slow case holds the slot once it has stamped its start (a
+        // bound, so that a slow run that never starts fails here, saying
+        // what it saw, instead of hanging the test binary)
+        let since = std::time::Instant::now();
         while !std::fs::read_to_string(&log).is_ok_and(|t| t.contains(" start ")) {
+            assert!(
+                since.elapsed() < std::time::Duration::from_secs(60),
+                "the slow case did not stamp its start in 60 s; its log: {:?}; the slow run finished: {}",
+                std::fs::read_to_string(&log).ok(),
+                h.is_finished()
+            );
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         let asked = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();

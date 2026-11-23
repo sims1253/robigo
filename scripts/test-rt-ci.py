@@ -22,7 +22,25 @@ def meta(*pkgs):
     return {"packages": list(pkgs), "workspace_members": [p["id"] for p in pkgs]}
 
 
+# The caller's settings that change what rt-ci.py plans and where its pool
+# is: no test may see them, and every test sees the same CPU count
+CALLER_ENV = ("ROBIGO_CONF_TIMEOUT", "ROBIGO_CONF_TIMEOUTS", "ROBIGO_CONF_SLOTS_DIR", "ROBIGO_CONF_SLOTS",
+              "ROBIGO_CONF_JOBS", "GITHUB_ACTIONS", "XDG_RUNTIME_DIR", "RT_CI_MIN_FREE_GB")
+CPUS = 8
+
+
 class RtCi(unittest.TestCase):
+    def setUp(self):
+        from unittest import mock
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        for k in CALLER_ENV:
+            os.environ.pop(k, None)
+        cpus = mock.patch.object(os, "cpu_count", return_value=CPUS)
+        cpus.start()
+        self.addCleanup(cpus.stop)
+
     def test_crates_follow_the_selection_rule(self):
         m = meta(pkg("robigo-rt", "crates/robigo-rt"), pkg("robigo-rtcore", "crates/robigo-rtcore"),
                  pkg("robigo-heap", "crates/robigo-heap"), pkg("robigo-heap-derive", "crates/robigo-heap-derive"),
@@ -298,9 +316,17 @@ class RtCi(unittest.TestCase):
         d = tempfile.mkdtemp()
         import shutil
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        # (the fallback under a directory of the test's own, not /tmp's)
+        from unittest import mock
+        fallback = mock.patch.object(rt.conf_slots, "FALLBACK_ROOT", os.path.join(d, "tmp"))
+        fallback.start()
+        self.addCleanup(fallback.stop)
+        os.makedirs(os.path.join(d, "tmp"))
+        mine = os.path.join(d, "tmp", f"robigo-conf-slots-{os.getuid()}")
         self.assertEqual(rt.conf_slots_dir({"XDG_RUNTIME_DIR": d}), os.path.join(d, "robigo-conf-slots"))
-        self.assertEqual(rt.conf_slots_dir({}), f"/tmp/robigo-conf-slots-{os.getuid()}")
-        self.assertEqual(rt.conf_slots_dir({"TMPDIR": d}), f"/tmp/robigo-conf-slots-{os.getuid()}")
+        self.assertEqual(rt.conf_slots_dir({}), mine)
+        self.assertEqual(rt.conf_slots_dir({"TMPDIR": d}), mine)
+        self.assertEqual(rt.conf_slots_dir({"XDG_RUNTIME_DIR": os.path.join(d, "missing")}), mine)
         # the same directory for every checkout's run: the pool is the user's
         self.assertEqual(rt.conf_slots_dir({"XDG_RUNTIME_DIR": d}), rt.conf_slots_dir({"XDG_RUNTIME_DIR": d}))
         # CI has none; the caller's own setting (empty: none) wins
@@ -662,7 +688,7 @@ class RtCi(unittest.TestCase):
         conf = [(t, e) for t, e, c in steps if rt.CONFORMANCE in c and "--exact" in c]
         self.assertTrue(conf)
         for title, env in conf:
-            self.assertEqual(env.get("ROBIGO_CONF_JOBS"), str(os.cpu_count() or 2), title)
+            self.assertEqual(env.get("ROBIGO_CONF_JOBS"), str(CPUS), title)
         others = [t for t, e, c in steps if "ROBIGO_CONF_JOBS" in e and not (rt.CONFORMANCE in c and "--exact" in c)]
         self.assertEqual(others, [])
 
