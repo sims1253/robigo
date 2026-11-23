@@ -448,9 +448,13 @@ class SlotPool(unittest.TestCase):
         self.assertEqual((lost, len(recs)), ({}, 2))
         with open(os.path.join(out, "slot")) as f:
             self.assertEqual(f.read(), "held")
-        # and gives it back when it has ended
-        with pool.take() as held:
-            self.assertEqual(held.count, 1)
+        # and gives it back when it has ended (a probe that does not wait:
+        # a leaked slot fails here at once)
+        with open(slot, "a") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                self.fail("the driver's slot is still held after it ended")
 
     def test_a_cases_clock_starts_when_its_driver_takes_its_slot(self):
         # the only slot is someone else's for 2.5 s, past the 1 s limit
@@ -487,6 +491,40 @@ class SlotPool(unittest.TestCase):
         with self.assertRaises(conf_slots.PoolError) as e:
             pool.take()
         self.assertIn(pool.dir, str(e.exception))
+
+    def test_a_slot_held_by_flock_1_is_held_for_the_pool(self):
+        # the other side of the pool: the Rust runner's File::try_lock is
+        # flock(2) (std's sys/fs/unix.rs on Linux), as flock(1) is, and as
+        # the foreman's gate-slot.sh is; a slot one holds, the other waits for
+        if not shutil.which("flock"):
+            self.skipTest("no flock(1)")
+        pool = self.pool()
+        slot = os.path.join(pool.dir, "slot-0")
+        holder = subprocess.Popen(["flock", "-x", slot, "sh", "-c", "echo held; sleep 2"], stdout=subprocess.PIPE,
+                                  text=True)
+        self.addCleanup(holder.wait)
+        self.assertEqual(holder.stdout.readline().strip(), "held")
+        t0 = time.monotonic()
+        with pool.take() as held:
+            waited = time.monotonic() - t0
+            self.assertEqual(held.count, 1)
+        self.assertGreater(waited, 1.0, "Pool.take did not wait for flock(1)'s slot")
+
+    def test_a_take_that_fails_mid_run_ends_the_run_cleanly(self):
+        # a pool that stops working while builtin-diff runs is its PoolError,
+        # caught where a driver's refusal is (no traceback)
+        pool = self.pool()
+        shutil.rmtree(pool.dir)
+        open(pool.dir, "w").close()
+        self.addCleanup(lambda: os.path.isfile(pool.dir) and os.remove(pool.dir))
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        out = os.path.join(d, "out")
+        os.makedirs(out)
+        with self.assertRaises(conf_slots.PoolError):
+            bd.one_run([sys.executable, "-c", "pass"], dict(os.environ), d, out, 1, 1, 1.0)
+        # nothing was opened for the run that could not start
+        self.assertEqual(os.listdir(out), [])
 
     def test_the_pool_follows_rt_cis_rule(self):
         d = tempfile.mkdtemp()

@@ -368,6 +368,27 @@ class RtCi(unittest.TestCase):
         build = ["cargo", "test", "--release", "--locked", "--no-run"]
         self.assertEqual(run(build, pool), (build, d, 0))
 
+    def test_a_take_that_fails_fails_the_step_cleanly(self):
+        # Pool.take checks the directory again on every take: its PoolError
+        # is the step's ::error::, with the group closed and the step's line
+        import contextlib, io, shutil, tempfile
+        from unittest import mock
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        os.chmod(d, 0o700)
+        crate = ["cargo", "test", "-p", "x", "--", "--skip", rt.CONFORMANCE]
+        done, out = [], io.StringIO()
+        def fail(*a, **k):
+            raise rt.conf_slots.PoolError("ROBIGO_CONF_SLOTS_DIR gone")
+        with mock.patch.object(rt.conf_slots.Pool, "take", fail), \
+                mock.patch.object(rt.subprocess, "run") as run, contextlib.redirect_stdout(out), \
+                mock.patch.dict(os.environ, {"ROBIGO_CONF_SLOTS_DIR": d, "ROBIGO_CONF_SLOTS": "2"}):
+            self.assertEqual(rt.run_steps([("step", {}, crate)], done), 2)
+        run.assert_not_called()
+        self.assertIn("::error::rt: step: ROBIGO_CONF_SLOTS_DIR gone", out.getvalue())
+        self.assertIn("::endgroup::", out.getvalue())
+        self.assertEqual(done, [("step", 0.0, False)])
+
     def test_every_crate_test_step_is_one_the_pool_bounds(self):
         # every cargo test step that runs tests other than the conformance
         # has a `--` for the thread count to follow (a step with none would

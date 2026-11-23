@@ -987,20 +987,21 @@ def run_steps(plan, done):
             env = {**env, "ROBIGO_CONF_TIMES_REPORT": times}
         print(f"::group::{title}", flush=True)
         t0 = time.monotonic()
+        # as many threads as slots: one it waits for, then whatever else
+        # of the pool is free (all of it on a quiet box), held until the
+        # step ends. The tests get no pool of their own: the step's slots
+        # count their threads already, and a test waiting for a slot its
+        # own step holds would wait forever
         try:
             pool = conf_slots.from_env({**os.environ, **env}) if crate_test_threads(cmd) else None
+            held = pool.take(pool.n, who=f"rt-ci's step '{title}'") if pool else None
         except conf_slots.PoolError as e:
             print(f"::error::rt: {title}: {e}")
             print("::endgroup::", flush=True)
             done.append((title, 0.0, False))
             return 2
-        if pool:
-            # as many threads as slots: one it waits for, then whatever else
-            # of the pool is free (all of it on a quiet box), held until the
-            # step ends. The tests get no pool of their own: the step's
-            # slots count their threads already, and a test waiting for a
-            # slot its own step holds would wait forever
-            with pool.take(pool.n, who=f"rt-ci's step '{title}'") as held:
+        if held:
+            with held:
                 print(f"rt-ci: {held.count} of {pool.n} slots, --test-threads={held.count}", flush=True)
                 r = subprocess.run([*cmd, f"--test-threads={held.count}"], cwd=ROOT,
                                    env={**os.environ, **env, "ROBIGO_CONF_SLOTS_DIR": ""})
