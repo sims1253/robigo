@@ -37,6 +37,19 @@
 #   "guard" group's, or another group's), measured with the bars and held
 #   only to the 0.5% rule against main: a common VM path the bars' rows do
 #   not reach. It needs no GNU R number. A guard's row is not also a bar's.
+# - [[startup]]: a start of robigo-rt, `--vanilla -e 1` with
+#   R_DEFAULT_PACKAGES=NULL (scripts/rt-startup.py's STARTS: `name`), each
+#   binary from the R_HOME trees its own build writes. Three numbers:
+#   - callgrind's total instructions, the median over environment shifts;
+#   - peak anonymous memory and peak RSS, the median of `--startup-runs`
+#     runs with address randomization off.
+#   They are held to main's binary: instructions +0.5%, anonymous memory
+#   +1% (at least 64 KiB), peak RSS +5% (its file-backed part follows code
+#   layout). GNU R's start named `gnur` (rt-startup.py's GNUR_STARTS) is
+#   shown beside it, report only: the distance to L5's condition, "at or
+#   below GNU R's startup" (docs/ledger/g3/2026-11-23-startup-rows.md).
+#   rt-startup.py reserves `rdb-pkgs` and `rdb-cache` for L5's default
+#   packages and C1's translation cache.
 # Every row and program here is also compared with main's binary of the
 # merge's base, measured on the same runner: more than the threshold slower
 # fails the gate.
@@ -236,3 +249,15 @@ row = "guard-dollar-assign" # l$a <- i on a list
 row = "guard-while" # a while loop
 [[guard]]
 row = "guard-repeat" # a repeat loop left by break
+
+[[startup]]
+name = "interim"
+gnur = "jit"
+
+[[startup]]
+name = "rdb-jit"
+gnur = "jit"
+
+[[startup]]
+name = "rdb-nojit"
+gnur = "nojit"
