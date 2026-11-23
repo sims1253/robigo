@@ -106,6 +106,12 @@ impl Cx {
         unsafe { self.iso().core() }.set_freeze_enabled(on)
     }
 
+    /// How many frozen-reachability passes ran (robigo-heap's freeze.rs).
+    pub fn frozen_passes(&self) -> u64 {
+        // SAFETY: one read of the core.
+        unsafe { self.iso().core() }.frozen_passes()
+    }
+
     /// How many objects are frozen.
     pub fn frozen_count(&self) -> usize {
         // SAFETY: one read of the core.
@@ -115,7 +121,7 @@ impl Cx {
     /// Whether `x` is one of the freeze's objects.
     pub fn is_frozen(&self, x: crate::Ref<'_>) -> bool {
         // SAFETY: one read of the core.
-        unsafe { self.iso().core() }.is_frozen_at(x.sexp().addr())
+        unsafe { self.iso().core().is_frozen(x.sexp()) }
     }
 
     /// The freeze's invariant, checked (`ROBIGO_GC_FREEZE_CHECK`'s check):
@@ -127,15 +133,17 @@ impl Cx {
         unsafe { self.iso().core().check_frozen() }
     }
 
-    /// Log `x` as a root, once (robigo-heap's `Core::remember`): a frozen
-    /// object whose fields C may write without the barrier.
+    /// C's first writable `DATAPTR` of a frozen vector of objects
+    /// (robigo-heap's `Core::exposed_to_c`): logged as a root now, and made
+    /// ordinary at the next collection, since C may write its fields
+    /// without the barrier.
     ///
     /// # Safety
     /// `x` is a live object of this isolate.
     pub unsafe fn remember_raw(&self, x: Sexp) {
         // SAFETY: the caller's contract; one call into the core, which
         // calls nothing of ours.
-        unsafe { self.iso().core().remember(x) }
+        unsafe { self.iso().core().exposed_to_c(x) }
     }
 
     /// The boot heap's freeze (robigo-heap's `freeze.rs`,

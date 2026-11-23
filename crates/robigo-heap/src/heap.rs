@@ -131,8 +131,27 @@ pub const REMEMBERED_OFF: usize = 48;
 /// store barrier's log): today the immortal objects something was stored
 /// into. A heap has one, in its own allocation, so that the barrier can
 /// append to it without a reference to the `Core` (which the API's callers
-/// own): the slow path finds it through the block header.
-pub struct Remembered(pub std::cell::UnsafeCell<Vec<crate::Sexp>>);
+/// own): the slow path finds it through the block header. Its second word
+/// holds the boot heap's freeze's two notes ([`Remembered::DIRTY`],
+/// [`Remembered::PATH_WRITTEN`]), which the frozen-reachability pass reads
+/// at the next collection (`gc/freeze.rs`).
+pub struct Remembered(pub std::cell::UnsafeCell<Vec<crate::Sexp>>, pub std::cell::Cell<u8>);
+
+impl Remembered {
+    /// An edge into a frozen object left the frozen graph (a frozen value
+    /// overwritten in a frozen object or a freeze root, or an object queued
+    /// to unfreeze): the next collection runs the frozen-reachability pass.
+    pub const DIRTY: u8 = 1;
+    /// An environment's ENCLOS was written: the next collection compares the
+    /// search path's frozen members with its last snapshot.
+    pub const PATH_WRITTEN: u8 = 2;
+
+    /// Add `note` to this heap's notes.
+    #[inline]
+    pub fn note(&self, note: u8) {
+        self.1.set(self.1.get() | note);
+    }
+}
 
 /// The remembered set of the heap that contains `p`.
 ///

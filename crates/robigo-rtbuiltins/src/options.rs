@@ -282,10 +282,10 @@ pub fn do_get_option(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
 /// The list with `name` set to `value` (`SetOption`: replaced in place,
 /// or appended), or removed for None; and the old value.
 ///
-/// INTERIM(H): a new list, not SetOption's in-place `SETCAR`, until the
-/// boot freeze's frozen-reachability pass lands: `.Options`' cells are
-/// frozen, and a removed cell written in place would keep its value alive
-/// (docs/ledger/g3/2026-11-21-h-boot-freeze-check.md).
+/// INTERIM(B): a new list, not SetOption's in-place `SETCAR`. The in-place
+/// port is unblocked: with the boot freeze's frozen-reachability pass a
+/// frozen cell written in place or removed is noted, and what it held thaws
+/// (docs/ledger/g3/2026-11-23-h-frozen-pass.md).
 // R: options.c:SetOption
 fn set_option<'g>(cx: &'g Cx, l: Ref<'g>, name: &[u8], value: Option<Ref<'g>>) -> Result<(Ref<'g>, Ref<'g>), NeedGc> {
     let mut items: Vec<(Sym<'g>, Ref<'g>)> = Vec::new();

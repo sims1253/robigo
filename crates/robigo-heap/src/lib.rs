@@ -52,7 +52,7 @@ pub mod unwind;
 
 pub use gc::{
     AllocError, BuildFx, Core, GC_DUE, GcStats, HeapReport, LARGE, NeedGc, POISON_TYPE, PinReportTo, ReleaseFn,
-    Safepoint, ScanSegment, ScanState, StatsMode, SymbolBits, overshoot_bound, set_symbol_bits,
+    Safepoint, ScanSegment, ScanState, StatsMode, SymbolBits, note_overwritten, overshoot_bound, set_symbol_bits,
 };
 pub use robigo_heap_derive::Trace;
 pub use trace::{Trace, Visitor};
@@ -268,8 +268,9 @@ impl Sexp {
         // traced fields, and the old and new values are null or live.
         unsafe {
             // the slow path does the whole store (a tail call), so the
-            // fast path keeps no registers across a call
-            if self.flags() & flags::BARRIER != 0 {
+            // fast path keeps no registers across a call: a logged
+            // object's first store, or any store into a frozen one
+            if self.flags() & (flags::BARRIER | flags::FROZEN) != 0 {
                 return gc::store_slow(self, slot, v);
             }
             self.store_counted(slot, v);
@@ -285,7 +286,7 @@ impl Sexp {
     pub unsafe fn store_uncounted(self, slot: *mut Sexp, v: Sexp) {
         // SAFETY: the caller's contract.
         unsafe {
-            if self.flags() & flags::BARRIER != 0 {
+            if self.flags() & (flags::BARRIER | flags::FROZEN) != 0 {
                 gc::barrier_only(self);
             }
             *slot = v;
@@ -386,8 +387,18 @@ pub mod env {
     /// `x` is a live core ENVSXP, `v` a live environment or R_NilValue.
     #[inline(always)]
     pub unsafe fn set_enclos(x: Sexp, v: Sexp) {
-        // SAFETY: as above; the store keeps counts and the barrier.
-        unsafe { x.store(x.field(OFF_ENCLOS), v) }
+        // SAFETY: as above; the store keeps counts and the barrier. A
+        // shared object's pseudo block names no heap's remembered set.
+        unsafe {
+            if !crate::shared::is_shared(x) {
+                // the boot heap's freeze: the next collection compares the
+                // search path's frozen members with its snapshot (a
+                // deferred test: `attach` writes the global environment's
+                // ENCLOS before the new environment's parent)
+                (*crate::heap::remembered_of(x.0)).note(crate::heap::Remembered::PATH_WRITTEN);
+            }
+            x.store(x.field(OFF_ENCLOS), v)
+        }
     }
     /// GNU R's FRAME: the bindings as a pairlist of tagged cells.
     ///

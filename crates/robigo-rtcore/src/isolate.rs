@@ -153,7 +153,7 @@ pub struct Isolate {
 // boot heap's lazy freeze walks them inside the first collection after the
 // boot boundary, robigo-heap's `freeze.rs`)
 #[derive(Trace)]
-#[trace(freeze = "trace_freeze_roots")]
+#[trace(freeze = "trace_freeze_roots", search_path = "trace_search_path")]
 pub(crate) struct Roots {
     stack: ValueStack,
     globals: Globals,
@@ -178,8 +178,15 @@ impl Roots {
         self.envs.trace_freeze_roots(v);
         self.globals.trace(v);
         self.capi.trace_freeze_constants(v);
-        // the search path's environments after the global one (amendment 4:
-        // the attached packages a start with default packages loaded)
+        self.trace_search_path(v);
+    }
+
+    /// The search path's environments after the global one (amendment 4:
+    /// the attached packages a start with default packages loaded): a part
+    /// of the freeze roots, and the walk the frozen-reachability pass's
+    /// deferred search-path test compares (`Trace::trace_search_path`).
+    /// The one walk of it, so the two cannot differ.
+    pub(crate) fn trace_search_path<V: robigo_heap::Visitor + ?Sized>(&mut self, v: &mut V) {
         let base = self.envs.base_raw();
         let mut e = self.envs.global_raw();
         // (a rewired chain may cycle: each environment once, Sol r3 S9; the

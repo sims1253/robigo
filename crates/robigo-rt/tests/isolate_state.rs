@@ -270,6 +270,95 @@ fn the_runtime_keeps_its_state_in_the_isolate() {
     assert!(marked.len() <= 1, "more than one isolate thread-local (L6 allows one):\n{}", marked.join("\n"));
 }
 
+/// The calls that start a thread in `src`'s code outside its test modules
+/// (each `#[cfg(test)] mod name { ... }`'s braces skipped, the code after
+/// it scanned again), as `label:line` lines: the paths `thread::spawn`,
+/// `thread::Builder`, `thread::scope` and `pthread_create`, and any `use`
+/// of `std::thread` that names `spawn`, `Builder` or `scope`. A text scan:
+/// an alias of a function that starts a thread under another name is not
+/// seen (review keeps those out).
+fn thread_starts(label: &str, src: &str) -> Vec<String> {
+    let mut code = blank_non_code(src, false).into_bytes();
+    // blank each test module's extent
+    let mut from = 0;
+    while let Some(i) = String::from_utf8_lossy(&code[from..]).find("#[cfg(test)]").map(|i| i + from) {
+        let rest = String::from_utf8_lossy(&code[i + 12..]).into_owned();
+        let after = rest.trim_start();
+        let skip = rest.len() - after.len();
+        if after.starts_with("mod ")
+            && let Some(open) = after.find('{')
+            && !after[..open].contains(';')
+        {
+            let start = i + 12 + skip + open;
+            let mut depth = 0usize;
+            let mut end = code.len();
+            for (k, &c) in code[start..].iter().enumerate() {
+                match c {
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = start + k + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for c in &mut code[i..end] {
+                if *c != b'\n' {
+                    *c = b' ';
+                }
+            }
+            from = end;
+        } else {
+            from = i + 12;
+        }
+    }
+    let code = String::from_utf8_lossy(&code).into_owned();
+    let line_of = |off: usize| code[..off].bytes().filter(|&c| c == b'\n').count() + 1;
+    let mut out = Vec::new();
+    for pat in ["thread::spawn", "thread::Builder", "thread::scope", "pthread_create"] {
+        for (i, _) in code.match_indices(pat) {
+            out.push(format!("{label}:{}: `{pat}`", line_of(i)));
+        }
+    }
+    for (i, _) in code.match_indices("use std::thread") {
+        let stmt = code[i..].split(';').next().unwrap_or("");
+        if ["spawn", "Builder", "scope"].iter().any(|w| stmt.contains(w)) {
+            out.push(format!("{label}:{}: `{}`", line_of(i), stmt.split_whitespace().collect::<Vec<_>>().join(" ")));
+        }
+    }
+    out
+}
+
+/// A forked child must start no thread (robigo-heap's `fork.rs`, "A forked
+/// child never starts a thread"): std's thread-start lock may be held at
+/// the fork by another thread of the parent. So the rt crates start none
+/// outside their tests (the fork tests' own file is test code).
+#[test]
+fn the_runtime_starts_no_threads() {
+    let mut bad = Vec::new();
+    for f in rt_crate_sources().iter().flat_map(|(_, f)| f) {
+        if f.ends_with("fork_tests.rs") {
+            continue;
+        }
+        let src = fs::read_to_string(f).unwrap_or_else(|e| panic!("{}: {e}", f.display()));
+        bad.extend(thread_starts(&f.display().to_string(), &src));
+    }
+    assert!(bad.is_empty(), "a thread started by the runtime (robigo-heap fork.rs):\n{}", bad.join("\n"));
+    // the scan finds what it rejects, and not in a test module
+    let rejected = concat!("fn f() { std::thread::", "spawn(|| ()); }\n");
+    assert_eq!(thread_starts("x", rejected).len(), 1);
+    let tested = concat!("fn f() {}\n#[cfg(test)]\nmod tests { fn g() { std::thread::", "spawn(|| ()); } }\n");
+    assert!(thread_starts("x", tested).is_empty());
+    // code after a test module is scanned again, imports too
+    let after = concat!("#[cfg(test)]\nmod tests { fn g() {} }\nfn h() { std::thread::", "spawn(|| ()); }\n");
+    assert_eq!(thread_starts("x", after).len(), 1);
+    let imported = concat!("use std::thread::{", "spawn, sleep};\nfn h() {}\n");
+    assert_eq!(thread_starts("x", imported).len(), 1);
+}
+
 #[test]
 fn the_scan_finds_what_it_rejects() {
     let tl = concat!("thread", "_local!");
