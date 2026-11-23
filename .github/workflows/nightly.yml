@@ -382,3 +382,39 @@ jobs:
           gh release create nightly --prerelease \
             --title "Nightly ($date)" --notes "$notes" \
             dist/robigo-*.tar.gz dist/SHA256SUMS.txt
+
+  # A nightly nobody reads is no check: when any job above fails, one
+  # tracking issue gets the run's link and the failing jobs (opened if none
+  # is open, commented on otherwise). It closes nothing. The only job with a
+  # write permission besides the release's, and that one only to issues.
+  notify:
+    needs: [check, rt-image, fuzz, rt-bc-mutate, rt-full-move, rt-freeze-check, profile, build, release]
+    if: ${{ always() && contains(needs.*.result, 'failure') && inputs.dry_run != true }}
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+    timeout-minutes: 5
+    steps:
+      - name: The tracking issue gets the failing run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NEEDS: ${{ toJSON(needs) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ needs.check.outputs.sha }}
+        run: |
+          title="nightly: failing runs (automated)"
+          failed=$(printf '%s' "$NEEDS" | jq -r 'to_entries | map(select(.value.result == "failure") | .key) | join(", ")')
+          body=$(printf '%s\n' \
+            "This comment is automated: .github/workflows/nightly.yml's notify job writes it when a nightly job fails." \
+            "" \
+            "- run: $RUN_URL" \
+            "- main at: ${SHA:-unknown}" \
+            "- failing jobs: $failed")
+          n=$(gh issue list --state open --search "in:title \"$title\"" --json number,title \
+            --jq "map(select(.title == \"$title\")) | .[0].number // empty")
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
