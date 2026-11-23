@@ -1051,6 +1051,9 @@ dependencies = [
 [[package]]
 name = "robigo-conformance"
 version = "0.0.1"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "robigo-core"
