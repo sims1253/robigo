@@ -31,18 +31,18 @@ fn eval<'s>(cx: &mut Cx, s: Scope<'s>, e: Root<'_>, rho: Root<'_>) -> RResult<Ro
     Ok(r)
 }
 
-/// `R_getVarEx(sym, rho, inherits, ifnotfound)` (`ifnotfound` Some: what
-/// C passed, which may be a C NULL, returned as it is), and `R_getVar` over
-/// it (None: R_UnboundValue, then its error). The checks' messages name
-/// `R_getVarEx` (its `__func__`) for both, as GNU R's do.
-// R: envir.c:R_getVarEx, R_getVar
+/// `R_getVarEx(sym, rho, inherits, ifnotfound)`: `ifnotfound` (what C
+/// passed, which may be a C NULL) returned as it is for an unbound `sym`.
+/// The checks' messages name `R_getVarEx` (its `__func__`), also under
+/// `R_getVar`, as GNU R's do.
+// R: envir.c:R_getVarEx
 fn get_var_ex(
     cx: &mut Cx,
     s: Scope<'_>,
     sym: Root<'_>,
     rho: Root<'_>,
     inherits: bool,
-    ifnotfound: Option<Option<Root<'_>>>,
+    ifnotfound: Option<Root<'_>>,
 ) -> RResult<Sexp> {
     if sym.bind(cx).sexptype() != SYMSXP {
         return Err(cx.error("first argument to 'R_getVarEx' must be a symbol"));
@@ -65,13 +65,7 @@ fn get_var_ex(
         return Err(cx.missing_arg_error(&name, Some(call), "getVarExError"));
     }
     if v == cx.unbound().sexp() {
-        return match ifnotfound {
-            Some(x) => Ok(x.map_or(Sexp::NULL, |x| x.bind(cx).sexp())),
-            None => {
-                let name = String::from_utf8_lossy(&name_bytes(cx, sym).unwrap_or_default()).into_owned();
-                Err(cx.error(&format!("object '{name}' not found")))
-            }
-        };
+        return Ok(ifnotfound.map_or(Sexp::NULL, |x| x.bind(cx).sexp()));
     }
     if val.bind(cx).sexptype() == PROMSXP {
         // (C code's eval of the promise: GNU R's eval(val, rho))
@@ -340,14 +334,21 @@ entry! {
     /// `getVarExError` reported against `rho`'s lexical call.
     // R: envir.c:R_getVarEx
     [4] fn R_getVarEx(sym: Sexp, rho: Sexp, inherits: c_int, ifnotfound: OrNull) -> Sexp => |cx, s| {
-        get_var_ex(cx, s, sym, rho, inherits != 0, Some(ifnotfound))
+        get_var_ex(cx, s, sym, rho, inherits != 0, ifnotfound)
     }
 
-    /// `R_getVar(sym, rho, inherits)`: [`R_getVarEx`]'s value, "object
-    /// '%s' not found" when it is unbound.
+    /// `R_getVar(sym, rho, inherits)`: [`R_getVarEx`]'s value with
+    /// R_UnboundValue as the fallback, "object '%s' not found" when that is
+    /// the value (also a promise's that gave it).
     // R: envir.c:R_getVar
     [3] fn R_getVar(sym: Sexp, rho: Sexp, inherits: c_int) -> Sexp => |cx, s| {
-        get_var_ex(cx, s, sym, rho, inherits != 0, None)
+        let unbound = s.root(cx, cx.unbound());
+        let v = get_var_ex(cx, s, sym, rho, inherits != 0, Some(unbound))?;
+        if v == cx.unbound().sexp() {
+            let name = String::from_utf8_lossy(&name_bytes(cx, sym).unwrap_or_default()).into_owned();
+            return Err(cx.error(&format!("object '{name}' not found")));
+        }
+        Ok(v)
     }
 
     /// `R_NewHashedEnv(enclos, size)`: a hashed environment (`size` the

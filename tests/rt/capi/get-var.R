@@ -3,7 +3,8 @@
 # unbound symbol R_getVar's error or R_getVarEx's ifnotfound, the type
 # checks' errors (both name R_getVarEx), and a missing argument's
 # missingArgError of subclass getVarExError, reported against the
-# environment's function call.
+# environment's function call. R_getVar's not-found check is on the
+# value after forcing, and a C NULL fallback is returned as it is.
 dyn.load(paste0(Sys.getenv("RT_CAPI_LIBS"), "/get_var.so"))
 gv <- function(sym, rho, inherits = TRUE) .Call("rt_get_var", sym, rho, inherits)
 gve <- function(sym, rho, inherits = TRUE, nf = NULL) .Call("rt_get_var_ex", sym, rho, inherits, nf)
@@ -37,3 +38,9 @@ show(g())
 tryCatch(f(), getVarExError = function(e) cat("getVarExError caught\n"))
 tryCatch(f(), missingArgError = function(e) cat("missingArgError caught\n"))
 f(3)
+# R_getVar checks the value after forcing: a promise that gives
+# R_UnboundValue is "not found"; R_getVarEx's C NULL fallback comes back
+delayedAssign("u", .Call("rt_unbound"), assign.env = e)
+show(gv(quote(u), e))
+.Call("rt_get_var_ex_null", quote(nosuch), e)
+.Call("rt_get_var_ex_null", quote(y), e)

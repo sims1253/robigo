@@ -14,3 +14,15 @@ SEXP rt_get_var_ex(SEXP sym, SEXP rho, SEXP inherits, SEXP ifnotfound)
 {
     return R_getVarEx(sym, rho, (Rboolean) asLogical(inherits), ifnotfound);
 }
+
+/* R_UnboundValue, as a native routine may return it (a promise's value) */
+SEXP rt_unbound(void)
+{
+    return R_UnboundValue;
+}
+
+/* R_getVarEx with a C NULL fallback: NULL is returned as it is */
+SEXP rt_get_var_ex_null(SEXP sym, SEXP rho)
+{
+    return ScalarLogical(R_getVarEx(sym, rho, TRUE, NULL) == NULL);
+}

@@ -40,6 +40,7 @@
  * declaration). */
 #ifndef R_INTERNALS_H_
 #define R_NilValue (robigo_cg->R_NilValue)
+#define R_BaseEnv (robigo_cg->R_BaseEnv)
 typedef ptrdiff_t R_xlen_t;
 typedef unsigned int SEXPTYPE;
 typedef int PROTECT_INDEX;
@@ -711,8 +712,7 @@ __attribute__((noreturn)) static void R_signal_protect_error(void)
     RCNTXT cntxt;
     int oldpps = robigo_cg->R_PPStackSize;
 
-    Rf_begincontext(&cntxt, CTXT_CCODE, R_NilValue, robigo_cg->R_BaseEnv, robigo_cg->R_BaseEnv,
-                    R_NilValue, R_NilValue);
+    Rf_begincontext(&cntxt, CTXT_CCODE, R_NilValue, R_BaseEnv, R_BaseEnv, R_NilValue, R_NilValue);
     cntxt.cend = &reset_pp_stack;
     cntxt.cenddata = &oldpps;
     robigo_rtapi_protect_error();
