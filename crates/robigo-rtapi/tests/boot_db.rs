@@ -750,11 +750,11 @@ fn a_broken_compiler_database_ends_the_start_as_in_gnu_r() {
 /// frozen-reachability pass. Each shape runs a warm-up and then 0 or
 /// `ROUNDS` more rounds, a collection after each; the passes
 /// (`ROBIGO_GC_STATS`) must be the same, so a write that notes in a loop
-/// fails here and names its shape. Dispatch cycles 400 generics through S3's method memo (256
-/// entries), which replaced its entries' globals at every call: before
-/// globals stopped being freeze roots, a pass at every collection. Run with
-/// the freeze's check at every collection, so that a missed note (frozen
-/// garbage no pass removes) fails here too.
+/// fails here and names its shape. Dispatch cycles 400 generics through
+/// S3's method memo (256 entries), which replaced its entries' globals at
+/// every call: before globals stopped being freeze roots, a pass at every
+/// collection. Run with the freeze's check at every collection, so that a
+/// missed note (frozen garbage no pass removes) fails here too.
 #[test]
 fn no_frozen_reachability_pass_in_steady_state() {
     if !tree_made() {
