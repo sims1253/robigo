@@ -888,7 +888,19 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    their limit, report-only: such a case is named with an allowance and its
    time, or made smaller. rt-ci.py stops at its start, exit 2, when cargo's
    target directory or TMPDIR has under 8 GB free (`RT_CI_MIN_FREE_GB`
-   overrides it; 0 turns it off). Together
+   overrides it; 0 turns it off). **Local runs share one machine-wide
+   pool of case slots** (`ROBIGO_CONF_SLOTS_DIR`, one per CPU or
+   `ROBIGO_CONF_SLOTS`; `scripts/conf_slots.py`): every local rt-ci run of
+   the user, and every builtin-diff run, uses
+   `$XDG_RUNTIME_DIR/robigo-conf-slots` (else
+   `/tmp/robigo-conf-slots-<uid>`). The caller's own value wins, empty
+   means no pool, and CI has none. A conformance case and a builtin-diff
+   robigo-rt driver process each hold a slot from before they start until they end,
+   and their time limits count from then, so a wait for a slot is never a
+   case's time. A crate-test step takes one slot, then whatever else is
+   free, and runs with that many `--test-threads`. Not pooled: builtin-diff's
+   GNU R side (in its container), perf.py,
+   base-subset.sh, corpus.py, and cargo tests run by hand. Together
    they run every step: rt-ci.py checks that no other
    workspace member depends on them (the premise of `rt` mode; it fails at
    the flip, when the rule must go), then runs their `cargo test`
