@@ -1,3 +1,9 @@
+# INTERIM(C1) (recorded, not ratcheted; #1029, cured by its PR, the compile's
+# observation record): robigo-rt's compile retries after a fold or a read
+# runs user code, and a retry re-reads what an earlier try read, where GNU
+# R's cmp.R makes one pass; a try also compiles past an `if` whose test's
+# fold is not known yet, so what follows it can come before what its branch
+# does. GNU R's order here differs from robigo-rt's, as on main.
 # A function literal behind a fold (if (1 == 1)): its compilerOptions reads
 # come before the later inlining's forced lookup, as cmp.R folds the
 # condition and compiles the literal before it gets there.

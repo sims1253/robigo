@@ -57,33 +57,6 @@ pub(crate) struct FoldReq {
     pub(crate) args: Vec<(FoldArg, Sexp)>,
 }
 
-/// The requests a round evaluates of those a try made (in the order the
-/// try met them, a nest's inner calls before it). All of them when
-/// evaluating them can do nothing seen: each a primitive (base's own, not
-/// a closure bound in its place) on constants without attributes (no
-/// method to dispatch to; the helper takes a warning or an error the call
-/// gives, [`HELPER`]). Otherwise only the first: the try compiled past the
-/// first unknown fold on a guess (an `if` whose branch it skipped), so the
-/// next try, that fold's value known, compiles that branch, and what it
-/// forces or reads, before any later fold is evaluated, as cmp.R's one
-/// pass does. (Not "the first nest": a call met twice is one request, so a
-/// later nest may name an earlier one.)
-pub(crate) fn batch(mut reqs: Vec<FoldReq>) -> Vec<FoldReq> {
-    // SAFETY: the requests' objects are live (the try that made them just
-    // ended); a type and an attribute word are read.
-    let plain = |r: &FoldReq| unsafe {
-        matches!(r.fun.typ(), BUILTINSXP | SPECIALSXP)
-            && r.args.iter().all(|(a, _)| match *a {
-                FoldArg::Value(v) => v.attrib_raw().typ() == NILSXP,
-                FoldArg::Req(_) => true,
-            })
-    };
-    if !reqs.iter().all(plain) {
-        reqs.truncate(1);
-    }
-    reqs
-}
-
 /// A fold call's argument: a constant, or the value of an earlier request
 /// of the same try (its index), which the round folds first.
 #[derive(Clone, Copy, Debug)]

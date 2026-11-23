@@ -185,12 +185,9 @@ fn attempt_rounds(
         let r = f(cx);
         let reqs = crate::fold::Round::end(cx);
         match r {
-            // a fold may drop the code that failed (`if (FALSE)`); its
-            // value comes before what the try did past it on a guess (a
-            // binding forced, a function context reached), as cmp.R folds
-            // before it gets there
-            Ok(_) | Err(Need::Fail | Need::Force(_)) if !reqs.is_empty() => {
-                round.resolve(cx, crate::fold::batch(reqs))?;
+            // a fold may drop the code that failed (`if (FALSE)`)
+            Ok(_) | Err(Need::Fail) if !reqs.is_empty() => {
+                round.resolve(cx, reqs)?;
                 retried = None;
             }
             Ok(code) => return Ok(Some(code)),
