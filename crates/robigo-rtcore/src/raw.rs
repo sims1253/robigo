@@ -106,6 +106,12 @@ impl Cx {
         unsafe { self.iso().core() }.set_freeze_enabled(on)
     }
 
+    /// How many frozen-reachability passes ran (robigo-heap's freeze.rs).
+    pub fn frozen_passes(&self) -> u64 {
+        // SAFETY: one read of the core.
+        unsafe { self.iso().core() }.frozen_passes()
+    }
+
     /// How many objects are frozen.
     pub fn frozen_count(&self) -> usize {
         // SAFETY: one read of the core.

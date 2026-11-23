@@ -267,7 +267,11 @@ fn a_detached_frozen_environment_thaws_and_one_still_attached_does_not() {
         freeze_now(cx);
         assert!(cx.is_frozen(f.bind(cx)), "an attached environment is a freeze root");
         // an ordinary environment attached in front of it and detached,
-        // attach()'s and detach()'s order of writes, several times
+        // attach()'s and detach()'s order of writes, several times: the path
+        // is written each time, and its frozen members never change, so no
+        // pass runs (Sol r1 S7)
+        cx.collect();
+        let passes = cx.frozen_passes();
         for _ in 0..3 {
             let o = s.out(cx);
             let u = o.root();
@@ -280,11 +284,21 @@ fn a_detached_frozen_environment_thaws_and_one_still_attached_does_not() {
             cx.collect();
             assert!(cx.is_frozen(f.bind(cx)), "and after it is detached");
         }
+        assert_eq!(cx.frozen_passes(), passes, "attaching and detaching in front of it ran no pass");
         cx.check_frozen();
-        // `f` detached: off the search path, thawed by the next pass
-        cx.set_enclos(global, old);
+        // `f` detached behind an ordinary environment that stays attached:
+        // the global environment is not the one written
+        let o = s.out(cx);
+        let u = o.root();
+        cx.build(o, |cx| cx.new_env(cx.base_env(), true, 0))?;
+        cx.set_enclos(global, u);
+        cx.set_enclos(u, f);
         cx.collect();
-        assert!(!cx.is_frozen(f.bind(cx)), "a detached frozen environment thaws");
+        assert!(cx.is_frozen(f.bind(cx)));
+        cx.set_enclos(u, old);
+        cx.collect();
+        assert!(!cx.is_frozen(f.bind(cx)), "a frozen environment detached behind an attached one thaws");
+        assert_eq!(cx.frozen_passes(), passes + 1, "one pass, for the one loss");
         cx.check_frozen();
         Ok::<(), crate::RError>(())
     })

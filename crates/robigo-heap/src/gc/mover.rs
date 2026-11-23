@@ -169,6 +169,14 @@ impl Core {
             !on || self.frozen.is_empty(),
             "robigo: the moving collector cannot start after the boot heap's freeze"
         );
+        if !on && self.gc_move {
+            // OLD is the bit the boot heap's freeze uses as FROZEN: a heap
+            // that stops moving keeps none of it (Sol r1 S3)
+            self.for_each_live_object(|p| {
+                // SAFETY: a live object's header is readable and writable.
+                unsafe { *p.add(header::OFF_FLAGS) &= !OLD };
+            });
+        }
         self.gc_move = on;
         self.young.full_every = 0;
     }

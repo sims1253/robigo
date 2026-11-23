@@ -1044,6 +1044,13 @@ impl Core {
         // (cleared when allocated) cannot equal the magic number.
         unsafe {
             if x.has_flag(flags::IMMORTAL) {
+                // a frozen object asked to be immortal for good (a symbol's
+                // PRINTNAME made of a frozen CHARSXP: Sol r1 S1): pinned, so
+                // that no frozen-reachability pass thaws it. It stays on the
+                // frozen list until the next pass drops it there.
+                if x.has_flag(flags::FROZEN) {
+                    x.set_flag_raw(flags::FROZEN, false);
+                }
                 return;
             }
             // the first store into it is logged (`barrier_slow`)
@@ -2899,13 +2906,21 @@ impl Core {
             // (this collection's snapshot only: r4 S10)
             self.freeze_reach.clear();
             self.freeze_checking = false;
-            if self.freeze_check != 0 && !self.frozen.is_empty() {
+            // (with the freeze on, an empty frozen list is checked too: a stray
+            // FROZEN bit is an I3 failure, Sol r1 S6)
+            let mut due = false;
+            if self.freeze_check != 0 && (!self.frozen.is_empty() || self.freeze_on) {
                 self.freeze_check_count += 1;
                 if self.freeze_check_count >= self.freeze_check {
                     self.freeze_check_count = 0;
+                    due = true;
+                }
+            }
+            if due {
+                // I2 and I3 (the pass's bar, (d)): after the pass step
+                self.check_frozen_reach(roots);
+                if !self.frozen.is_empty() {
                     self.freeze_checking = true;
-                    // I2 and I3 (the pass's bar, (d)): after the pass step
-                    self.check_frozen_reach(roots);
                     self.freeze_reach = self.independent_reach(roots);
                 }
             }

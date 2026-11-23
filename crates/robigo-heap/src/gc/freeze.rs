@@ -181,6 +181,11 @@ impl Core {
         }
     }
 
+    /// How many frozen-reachability passes ran.
+    pub fn frozen_passes(&self) -> u64 {
+        self.frozen_passes
+    }
+
     /// How many objects the freeze made immortal and are still frozen.
     pub fn frozen_count(&self) -> usize {
         self.frozen.len()
@@ -346,6 +351,8 @@ impl Core {
         unsafe {
             self.remember(x);
             if self.is_frozen(x) {
+                // C has its payload: once ordinary it must not move (Sol r1 S2)
+                x.set_extra(x.extra() | crate::extra::SEEN_BY_C);
                 self.pending_unfreeze.push(x);
             }
         }
@@ -431,11 +438,6 @@ impl Core {
         // SAFETY: the caller's contract: frozen objects and every edge the
         // roots show are live; outside marking, the log is not borrowed.
         unsafe {
-            for x in std::mem::take(&mut self.pending_unfreeze) {
-                if self.is_frozen(x) {
-                    self.make_mortal(x);
-                }
-            }
             // The walk's reached set is the mark bitmap: a small object's
             // bit, set without its block's count (`is_marked` answers true
             // for an immortal object without reading it, the sweep clears
@@ -443,7 +445,18 @@ impl Core {
             // so it carries no bit into marking); a large object's in a set.
             let mut large: HashSet<usize, BuildFx> = HashSet::default();
             let mut work = Vec::new();
-            roots.trace_freeze(&mut Edges(&mut work));
+            if !roots.trace_freeze(&mut Edges(&mut work)) {
+                // a root set that shows no freeze roots cannot say what the
+                // frozen graph reaches: nothing is thawed (Sol r1 S5)
+                return;
+            }
+            for x in std::mem::take(&mut self.pending_unfreeze) {
+                if self.is_frozen(x) {
+                    self.make_mortal(x);
+                }
+            }
+            // the walk does not follow a queued object: it was made ordinary
+            // above, so the roots' edges to it are ordinary ones
             let mut kept = Vec::with_capacity(self.frozen.len());
             let mut kids = Vec::new();
             while let Some(x) = work.pop() {
@@ -503,9 +516,7 @@ impl Core {
     /// shows is null or live.
     pub(super) unsafe fn check_frozen_reach<R: Trace + ?Sized>(&self, roots: &mut R) {
         let mut work = Vec::new();
-        if !roots.trace_freeze(&mut Edges(&mut work)) {
-            return;
-        }
+        let with_roots = roots.trace_freeze(&mut Edges(&mut work));
         let mut reached: HashSet<usize, BuildFx> = HashSet::default();
         let mut kids = Vec::new();
         // SAFETY: the caller's contract; frozen objects are live.
@@ -518,15 +529,28 @@ impl Core {
                 x.trace_fields(&mut Edges(&mut kids));
                 work.extend_from_slice(&kids);
             }
+            let mut listed: HashSet<usize, BuildFx> = HashSet::default();
             for &f in &self.frozen {
-                if f.flags() & (flags::FROZEN | flags::IMMORTAL) != flags::FROZEN | flags::IMMORTAL {
+                if f.flags() & flags::IMMORTAL == 0 {
                     check_failed(format!(
-                        "robigo: ROBIGO_GC_FREEZE_CHECK: {:#x} (type {}) is on the frozen list without FROZEN and IMMORTAL",
+                        "robigo: ROBIGO_GC_FREEZE_CHECK: {:#x} (type {}) is on the frozen list but not IMMORTAL",
                         f.addr(),
                         f.typ()
                     ));
                 }
-                if !reached.contains(&f.addr()) {
+                // (a pinned object, IMMORTAL without FROZEN, waits on the list
+                // for the next pass to drop it: Sol r1 S1)
+                if f.flags() & flags::FROZEN == 0 {
+                    continue;
+                }
+                if !listed.insert(f.addr()) {
+                    check_failed(format!(
+                        "robigo: ROBIGO_GC_FREEZE_CHECK: {:#x} (type {}) is on the frozen list twice",
+                        f.addr(),
+                        f.typ()
+                    ));
+                }
+                if with_roots && !reached.contains(&f.addr()) {
                     check_failed(format!(
                         "robigo: ROBIGO_GC_FREEZE_CHECK: frozen {:#x} (type {}) is unreachable from the freeze roots, and no dirty event was noted since the last frozen-reachability pass",
                         f.addr(),
@@ -534,16 +558,16 @@ impl Core {
                     ));
                 }
             }
-            let mut marked = 0usize;
+            let mut stray = None;
             self.for_each_live_object(|p| {
-                if *p.add(header::OFF_FLAGS) & flags::FROZEN != 0 {
-                    marked += 1;
+                if stray.is_none() && *p.add(header::OFF_FLAGS) & flags::FROZEN != 0 && !listed.contains(&(p as usize))
+                {
+                    stray = Some(p as usize);
                 }
             });
-            if marked != self.frozen.len() {
+            if let Some(p) = stray {
                 check_failed(format!(
-                    "robigo: ROBIGO_GC_FREEZE_CHECK: {marked} live objects have FROZEN, the frozen list has {}",
-                    self.frozen.len()
+                    "robigo: ROBIGO_GC_FREEZE_CHECK: {p:#x} has FROZEN but is not on the frozen list"
                 ));
             }
         }
@@ -1158,6 +1182,87 @@ mod tests {
             holder.store(holder.as_ptr().add(crate::layout::node::OFF_CAR) as *mut Sexp, code);
             assert_eq!(c.remembered.1.get() & Remembered::DIRTY, 0, "the stub's replacement is not dirty");
             c.check_frozen();
+        }
+    }
+
+    /// A frozen object made immortal for good (a symbol's PRINTNAME: Sol r1
+    /// S1) is pinned: no pass thaws it, even cut off from the freeze roots.
+    #[test]
+    fn a_frozen_object_made_immortal_is_pinned() {
+        let mut c = Core::new();
+        c.set_freeze_enabled(true);
+        if !c.freeze_enabled() {
+            return;
+        }
+        let nil = c.nil();
+        // SAFETY: fresh objects of this heap; nothing collects.
+        unsafe {
+            let leaf = c.alloc_vector(INTSXP, 1).unwrap();
+            let head = c.alloc_node(LISTSXP, leaf, nil, nil).unwrap();
+            let mut roots = WithFreeze { all: vec![head], freeze: head };
+            c.freeze(&mut roots, |_| false);
+            c.make_immortal(leaf);
+            assert!(!c.is_frozen(leaf) && leaf.flags() & flags::IMMORTAL != 0, "pinned");
+            cut_car(head, nil);
+            c.frozen_pass(&mut roots);
+            assert!(leaf.flags() & flags::IMMORTAL != 0, "a pinned object is never thawed");
+            c.check_frozen_reach(&mut roots);
+        }
+    }
+
+    /// Shortening a frozen vector notes dirty (Sol r1 S4); a pass given no
+    /// freeze roots thaws nothing (Sol r1 S5).
+    #[test]
+    fn a_shortened_frozen_vector_is_dirty_and_a_pass_without_freeze_roots_thaws_nothing() {
+        let mut c = Core::new();
+        c.set_freeze_enabled(true);
+        if !c.freeze_enabled() {
+            return;
+        }
+        let nil = c.nil();
+        // SAFETY: fresh objects of this heap; nothing collects.
+        unsafe {
+            let leaf = c.alloc_vector(INTSXP, 1).unwrap();
+            let v = c.alloc_vector(VECSXP, 2).unwrap();
+            v.set_elt(0, nil);
+            v.set_elt(1, leaf);
+            c.freeze(&mut One(v), |_| false);
+            assert!(c.is_frozen(leaf));
+            v.set_std_len(1);
+            assert_ne!(c.remembered.1.get() & Remembered::DIRTY, 0, "a frozen vector shortened");
+            c.frozen_pass(&mut One(v));
+            assert!(c.is_frozen(v) && c.is_frozen(leaf), "no freeze roots: nothing thawed");
+        }
+    }
+
+    /// The mover's OLD, the bit the freeze calls FROZEN, is cleared when the
+    /// heap stops moving (Sol r1 S3).
+    #[test]
+    #[cfg(not(miri))]
+    fn stopping_the_mover_clears_its_old_bit() {
+        let mut c = Core::new();
+        let nil = c.nil();
+        // SAFETY: fresh objects of this heap, rooted by `roots`.
+        unsafe {
+            c.set_gc_move(true);
+            let head = c.alloc_node(LISTSXP, nil, nil, nil).unwrap();
+            let mut roots = One(head);
+            c.collect(&mut roots);
+            let mut moved = 0usize;
+            c.for_each_live_object(|p| {
+                if *p.add(header::OFF_FLAGS) & flags::FROZEN != 0 {
+                    moved += 1;
+                }
+            });
+            assert!(moved > 0, "the moving collection marked its copies OLD");
+            c.set_gc_move(false);
+            let mut old = 0usize;
+            c.for_each_live_object(|p| {
+                if *p.add(header::OFF_FLAGS) & flags::FROZEN != 0 {
+                    old += 1;
+                }
+            });
+            assert_eq!(old, 0, "no object keeps the mover's OLD");
         }
     }
 }
