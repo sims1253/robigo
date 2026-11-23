@@ -649,9 +649,15 @@ def steps(crates):
         # request goes through cx.alloc_rooted (docs/g3.md §3 item 3)
         # the boot heap's freeze (robigo-heap's freeze.rs): its invariant
         # checked at every collection here, where every allocation collects
-        # (the move modes below leave the freeze off)
+        # (the move modes below leave the freeze off). The robigo-rt these
+        # tests spawn tortures each case, not its start (AFTER_START, as the
+        # torture conformance steps; the start's own torture is the two
+        # start-torture steps'): a tortured rdb start costs ~8 s, and cli.rs
+        # and alloc.rs spawn dozens. The in-process tests torture from the
+        # heap's creation (only robigo-rtapi's front end reads the variable)
         ("gctorture (collect at every allocation) and the GC stats check",
-         {**TREE_RUNS, **{"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "1"}},
+         {**TREE_RUNS, **{"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "1",
+                          **AFTER_START}},
          [*crate, *pkgs, *skip]),
         # docs/g3.md §15.3 E3: the rt slice under the collector modes. The
         # freeze's check at every 16th collection: at every one it traces
@@ -677,9 +683,13 @@ def steps(crates):
         ("ROBIGO_MATERIALIZE=1 (every argument slot materialized)",
          {**TREE_RUNS, **{"ROBIGO_MATERIALIZE": "1"}}, [*crate, *pkgs, *skip]),
         # docs/g3.md §16 (H3): the debug moving collector, at every
-        # collection gctorture makes due
+        # collection gctorture makes due; the spawned robigo-rt's from the end
+        # of its start (AFTER_START, as above): with the freeze off its heap
+        # moves whole, base and the compiler too (one rdb spawn: 374
+        # collections after the start, 15,967,295 objects moved)
         ("ROBIGO_GC_MOVE (move every movable object at every collection), with gctorture",
-         {**TREE_RUNS, **{"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **FREEZE_OFF}}, [*crate, *pkgs, *skip]),
+         {**TREE_RUNS, **{"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **FREEZE_OFF, **AFTER_START}},
+         [*crate, *pkgs, *skip]),
         # H8: the young objects at each collection, everything at every N-th;
         # the nightly runs it with every collection moving everything. Under
         # M1's loader, INTERIM(L5): with the freeze off the rdb boot's heap

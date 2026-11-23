@@ -79,8 +79,7 @@ fn rt_conformance() {
 /// freeze check report: the probe is no case, and a full-check tally of its
 /// own would count for the step's cases (Sol's R1 on the check-cost PR).
 fn has_rt_home_tools(bin: &Path, checkout: &Path) -> Result<bool, String> {
-    let out = std::process::Command::new(bin)
-        .env("ROBIGO_RT_CHECKOUT", checkout)
+    let out = db_tree::command_in(bin, checkout)
         .env_remove("ROBIGO_GC_FREEZE_CHECK_REPORT")
         .env_remove("R_HOME")
         .args([

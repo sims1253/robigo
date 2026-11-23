@@ -48,19 +48,36 @@ const USER_VARS: &[&str] = &[
 ];
 
 /// `Command::new(bin)` pointed at `bin`'s test tree ([`ensure_db_tree`]),
-/// made first if it is missing or stale, with a private `HOME` (one empty
-/// directory per test process) and none of the caller's [`USER_VARS`]. A
-/// test's own `.env(...)` after it still wins: a test of the user's files
-/// sets `HOME` or `R_PROFILE_USER` back itself.
+/// made first if it is missing or stale ([`command_in`]).
 pub fn command_for(bin: &Path) -> Command {
+    command_in(bin, &ensure_db_tree(bin))
+}
+
+/// `Command::new(bin)` pointed at the checkout-shaped directory `checkout`,
+/// with a private `HOME` (one empty directory per test binary, emptied when
+/// the process first uses it) and none of the caller's [`USER_VARS`]. A
+/// test's own `.env(...)` after it still wins: a test of the user's files
+/// sets `HOME` or `R_PROFILE_USER` back itself. [`command_for`] is the way
+/// in; this is for a caller that has its tree already (a probe given
+/// another binary).
+pub fn command_in(bin: &Path, checkout: &Path) -> Command {
     static HOME: OnceLock<PathBuf> = OnceLock::new();
     let home = HOME.get_or_init(|| {
-        let h = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("rt-test-home-{}", std::process::id()));
+        // (one per test binary, not per process: it is reused, not leaked)
+        // (cargo's `<name>-<hash>`: the name alone, which builds keep)
+        let name = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.file_stem().map(|s| s.to_string_lossy().into_owned()))
+            .map(|s| match s.rsplit_once('-') {
+                Some((n, h)) if h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit()) => n.to_string(),
+                _ => s,
+            })
+            .unwrap_or_else(|| "test".into());
+        let h = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("rt-test-home-{name}"));
         let _ = std::fs::remove_dir_all(&h);
         std::fs::create_dir_all(&h).unwrap_or_else(|e| panic!("making {}: {e}", h.display()));
         h
     });
-    let checkout = ensure_db_tree(bin);
     let mut cmd = Command::new(bin);
     cmd.env("ROBIGO_RT_CHECKOUT", checkout).env("HOME", home);
     for v in USER_VARS {
