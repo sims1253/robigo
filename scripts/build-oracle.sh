@@ -8,6 +8,8 @@
 #   export R_HOME=$(R RHOME)
 #
 #   scripts/build-oracle.sh --image VERSION  # the oracle image, and wrappers
+#   scripts/build-oracle.sh --pull VERSION   # CI's oracle image, pulled (two
+#                                            # minutes, not a build), and wrappers
 #   export PATH=~/.cache/robigo-oracle/4.6.2/bin:$PATH ROBIGO_R_VERSION=4.6.2
 #
 # The source is the tarball scripts/r-tarballs.sha256 pins, checked by hash
@@ -23,8 +25,15 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 image=false
+pull=false
 if [ "${1:-}" = --image ]; then
   image=true
+  shift
+elif [ "${1:-}" = --pull ]; then
+  # the image CI's jobs run (scripts/ci-image.sh refs), tagged
+  # robigo-oracle:VERSION: what --image builds, without the build
+  image=true
+  pull=true
   shift
 fi
 version=${1:-4.5.0}
@@ -38,8 +47,26 @@ if $image; then
     echo "error: 4.5.0's image is Debian's: docker build -t robigo-oracle:4.5.0 tests/packages" >&2
     exit 1
   fi
-  "$root/scripts/ci-image.sh" build "oracle-$version"
   ref=$("$root/scripts/ci-image.sh" refs | sed -n "s/^oracle_${version//./_}=//p")
+  [ -n "$ref" ] || { echo "error: scripts/ci-image.sh refs names no oracle_${version//./_} image" >&2; exit 1; }
+  if $pull; then
+    # (docker's own error alone does not say what to do: name the ref, the
+    # login if it is an auth error, and the local build)
+    err=$(mktemp)
+    trap 'rm -f "$err"' EXIT
+    if ! docker pull "$ref" 2> "$err"; then
+      cat "$err" >&2
+      echo "error: docker pull $ref failed" >&2
+      if grep -qiE 'unauthorized|denied|authentication required|no basic auth|login' "$err"; then
+        echo "  it looks like an auth error: docker login ghcr.io (a GitHub token with read:packages), then retry" >&2
+      fi
+      echo "  (or the image is not published for this pin, or there is no network)" >&2
+      echo "  fallback, build the image locally: scripts/build-oracle.sh --image $version" >&2
+      exit 1
+    fi
+  else
+    "$root/scripts/ci-image.sh" build "oracle-$version"
+  fi
   docker tag "$ref" "robigo-oracle:$version"
   bin=~/.cache/robigo-oracle/$version/bin
   mkdir -p "$bin"
