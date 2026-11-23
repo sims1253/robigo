@@ -69,10 +69,11 @@ class Module(unittest.TestCase):
         self.assertTrue(os.path.isdir(out[0]))
         self.assertEqual(out[1], "False")
 
-    def sigterm(self, body, first="d = scratch_dir('t-')\n", delay=0.0):
+    def sigterm(self, body, first="d = scratch_dir('t-')\n", delay=0.0, children=0):
         """Starts `body` (after `first`, which makes a directory on the main
-        thread; `body` prints a directory, a pid and READY), SIGTERMs it:
-        (exit status, seconds to exit, the directory, the pid)."""
+        thread; `body` prints a directory, a pid and READY), SIGTERMs it once
+        it has `children` children running (a pool's workers start theirs
+        after READY): (exit status, seconds to exit, the directory, the pid)."""
         env = dict(os.environ, TMPDIR=self.tmp, PYTHONPATH=str(HERE))
         code = "import subprocess, sys, time\nfrom scratch import scratch_dir\n" + first + body
         p = subprocess.Popen([sys.executable, "-c", code], env=env, stdout=subprocess.PIPE, text=True)
@@ -81,11 +82,28 @@ class Module(unittest.TestCase):
             line = p.stdout.readline()
             self.assertTrue(line, "the child exited before READY")
             lines.append(line.strip())
+        since = time.monotonic()
+        while len(self.children(p.pid)) < children:
+            # (on a loaded box the workers' spawns come late: a signal before
+            # them leaves a child no one ends, and the exit is the 30 s forced one)
+            self.assertLess(time.monotonic() - since, 60, f"the child never had {children} children")
+            time.sleep(0.02)
         time.sleep(delay)
         t0 = time.monotonic()
         p.send_signal(signal.SIGTERM)
         rc = p.wait(timeout=60)
         return rc, time.monotonic() - t0, lines[0], lines[1]
+
+    def children(self, pid):
+        """The pids of `pid`'s children, from every thread's list."""
+        out = []
+        try:
+            for t in os.listdir(f"/proc/{pid}/task"):
+                with open(f"/proc/{pid}/task/{t}/children") as f:
+                    out += f.read().split()
+        except OSError:
+            pass
+        return out
 
     def alive(self, pid):
         try:
@@ -111,7 +129,7 @@ class Module(unittest.TestCase):
         rc, secs, d, kid = self.sigterm(
             "import concurrent.futures, os\nprint(d); print(os.getpid()); print('READY', flush=True)\n"
             "with concurrent.futures.ThreadPoolExecutor(2) as ex:\n"
-            "    list(ex.map(lambda _: subprocess.run(['sleep', '300'], cwd=d), range(4)))\n")
+            "    list(ex.map(lambda _: subprocess.run(['sleep', '300'], cwd=d), range(4)))\n", children=2)
         self.assertEqual(rc, 128 + signal.SIGTERM)
         self.assertLess(secs, 15)
         self.assertFalse(os.path.exists(d))
