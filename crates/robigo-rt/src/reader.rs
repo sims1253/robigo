@@ -173,7 +173,7 @@ pub fn lower_all_src(
             unsafe {
                 let refs = cx.alloc_vector_raw(VECSXP, exprs.len())?;
                 for (i, e) in exprs.iter().enumerate() {
-                    let x = crate::lower::lower_in(cx, e, known, Some(&ctx))?;
+                    let x = crate::lower::lower_in(cx, e, known, &ctx)?;
                     v.set(i, Ref::from_sexp(x, cx));
                     refs.set_elt(i, ctx.srcref(cx, e.span())?);
                 }
@@ -353,7 +353,7 @@ pub fn lower_console(cx: &mut Cx, src: &[u8], e: &robigo_syntax::Expr<'_>, out: 
                     class: class.bind(cx).sexp(),
                     attached: std::cell::Cell::new(false),
                 };
-                let x = crate::lower::lower_in(cx, e, known, Some(&ctx))?;
+                let x = crate::lower::lower_in(cx, e, known, &ctx)?;
                 attached = ctx.attached.get();
                 // SAFETY: fresh; nothing collects under `&Cx`.
                 #[allow(unsafe_code)]

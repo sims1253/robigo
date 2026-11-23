@@ -42,7 +42,7 @@ pub fn lower(cx: &Cx, e: &Expr<'_>) -> Result<Sexp, NeedGc> {
 /// mkString2 marks a string without escapes UTF-8 when the parse is known
 /// to be UTF-8, and leaves it native otherwise).
 pub fn lower_known(cx: &Cx, e: &Expr<'_>, known: bool) -> Result<Sexp, NeedGc> {
-    lower_in(cx, e, known, None)
+    lower_in(cx, e, known, ())
 }
 
 /// What a parse with source references (`keep.source = TRUE`) attaches
@@ -104,8 +104,30 @@ impl SrcCtx<'_> {
     }
 }
 
-/// [`lower_known`] with source references when `sr` is given.
-pub(crate) fn lower_in(cx: &Cx, e: &Expr<'_>, known: bool, sr: Option<&SrcCtx<'_>>) -> Result<Sexp, NeedGc> {
+/// Where [`lower_in`] takes source references from: `()` for none, a
+/// [`SrcCtx`] for a parse that keeps them. A type, not an `Option`, so
+/// that the lowering without them is its own instance with no argument
+/// and no tests for them (keep.source = FALSE costs nothing).
+pub(crate) trait Src: Copy {
+    fn ctx(&self) -> Option<&SrcCtx<'_>>;
+}
+
+impl Src for () {
+    #[inline(always)]
+    fn ctx(&self) -> Option<&SrcCtx<'_>> {
+        None
+    }
+}
+
+impl Src for &SrcCtx<'_> {
+    #[inline(always)]
+    fn ctx(&self) -> Option<&SrcCtx<'_>> {
+        Some(self)
+    }
+}
+
+/// [`lower_known`] with source references when `sr` is a [`SrcCtx`].
+pub(crate) fn lower_in<S: Src>(cx: &Cx, e: &Expr<'_>, known: bool, sr: S) -> Result<Sexp, NeedGc> {
     let nil = cx.nil().sexp();
     Ok(match *e {
         Expr::Const(c, _) => constant(cx, c, known)?,
@@ -136,7 +158,7 @@ pub(crate) fn lower_in(cx: &Cx, e: &Expr<'_>, known: bool, sr: Option<&SrcCtx<'_
             let call = unsafe { cx.alloc_node_raw(LANGSXP, f, list, nil)? };
             // a `{` keeps a srcref for itself and each statement
             // R: gram.y:xxexprlist, xxexprlist0, xxexprlist1, xxexprlist2
-            if let (Some(sr), Expr::Call { fun: Expr::Sym("{", _), span, .. }) = (sr, e) {
+            if let (Some(sr), Expr::Call { fun: Expr::Sym("{", _), span, .. }) = (sr.ctx(), e) {
                 let n = args.len();
                 // SAFETY: fresh objects of this heap; nothing collects.
                 unsafe {
@@ -174,7 +196,7 @@ pub(crate) fn lower_in(cx: &Cx, e: &Expr<'_>, known: bool, sr: Option<&SrcCtx<'_
             let function = cx.install(b"function")?.as_ref().sexp();
             // its 4th element: the function's srcref, or NULL
             // R: gram.y:xxdefun
-            let srcref = match (sr, e) {
+            let srcref = match (sr.ctx(), e) {
                 (Some(sr), Expr::Function { span, .. }) => {
                     sr.attached.set(true);
                     sr.srcref(cx, *span)?
