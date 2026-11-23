@@ -66,6 +66,18 @@ class Verdict(unittest.TestCase):
         self.assertEqual(su.verdict({"interim": start(10**12, 10**9, 10**9)}, {"interim": {"instr": 1}}), [])
         self.assertEqual(len(su.table([{"name": "interim"}], {"interim": start(1, 2, 3)}, {"interim": {"instr": 1}})), 3)
 
+    def test_a_bars_files_starts_are_checked_before_measuring(self):
+        ok = [{"name": "interim", "gnur": "jit"}, {"name": "rdb-nojit", "gnur": "nojit"}]
+        self.assertEqual(su.spec_errors(ok), [])
+        bad = su.spec_errors([{"name": "rdb-jti", "gnur": "jit"}, {"name": "rdb-pkgs"},
+                              {"name": "interim", "gnur": "noJIT"}, {"name": "interim"}, {"gnur": "jit"}])
+        self.assertEqual(len(bad), 5, bad)
+        self.assertIn("no such start", bad[0])
+        self.assertIn("reserved", bad[1])
+        self.assertIn("no GNU R start", bad[2])
+        self.assertIn("twice", bad[3])
+        self.assertIn("no name", bad[4])
+
     def test_only_defined_starts_run(self):
         self.assertNotIn("rdb-pkgs", su.defined())
         with self.assertRaises(SystemExit):
@@ -159,6 +171,16 @@ class Memory(unittest.TestCase):
                 _, _, status, out = su.memory([self.PY, "-c", prog], dict(os.environ), syscalls, timeout=20)
                 self.assertEqual((status, out), (0, b"after\n"), (sig, syscalls))
                 self.no_child_left()
+
+    def test_a_child_that_forks_is_refused_and_nothing_is_left(self):
+        # fork(), and vfork() through posix_spawn: refused as the new process
+        # is made, which waits forever, and is killed with the child
+        for prog in ("import os, time\nif os.fork() == 0:\n    time.sleep(60)\nos._exit(0)\n",
+                     "import os, subprocess\nsubprocess.Popen(['sleep', '60'])\nos._exit(0)\n"):
+            with self.assertRaises(SystemExit) as e:
+                su.memory([self.PY, "-c", prog], dict(os.environ), timeout=20)
+            self.assertIn("another process", str(e.exception))
+            self.no_child_left()
 
     def test_a_run_over_its_time_is_killed(self):
         with self.assertRaises(SystemExit) as e:

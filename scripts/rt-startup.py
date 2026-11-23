@@ -101,8 +101,9 @@ ANON_FLOOR_KIB = 64
 RSS_LIMIT = 5.0
 
 PTRACE_TRACEME, PTRACE_CONT, PTRACE_SYSCALL, PTRACE_SETOPTIONS, PTRACE_GETEVENTMSG = 0, 7, 24, 0x4200, 0x4201
-PTRACE_O_TRACESYSGOOD, PTRACE_O_TRACECLONE, PTRACE_O_TRACEEXEC, PTRACE_O_TRACEEXIT = 0x1, 0x8, 0x10, 0x40
-PTRACE_EVENT_CLONE, PTRACE_EVENT_EXEC, PTRACE_EVENT_EXIT = 3, 4, 6
+PTRACE_O_TRACESYSGOOD, PTRACE_O_TRACEFORK, PTRACE_O_TRACEVFORK = 0x1, 0x2, 0x4
+PTRACE_O_TRACECLONE, PTRACE_O_TRACEEXEC, PTRACE_O_TRACEEXIT = 0x8, 0x10, 0x40
+PTRACE_EVENT_FORK, PTRACE_EVENT_VFORK, PTRACE_EVENT_CLONE, PTRACE_EVENT_EXEC, PTRACE_EVENT_EXIT = 1, 2, 3, 4, 6
 # waitpid's flag for a traced thread as well as a process
 WALL = 0x40000000
 # a run's limit in seconds: a start that loops is killed, not waited on.
@@ -223,7 +224,8 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
             why = "personality(ADDR_NO_RANDOMIZE) refused" if code == 126 else f"exit status {code}"
             raise SystemExit(f"rt-startup: {cmd[0]} did not start under ptrace: {why}")
         ptrace(PTRACE_SETOPTIONS, pid,
-               PTRACE_O_TRACEEXIT | PTRACE_O_TRACEEXEC | PTRACE_O_TRACECLONE | PTRACE_O_TRACESYSGOOD)
+               PTRACE_O_TRACEEXIT | PTRACE_O_TRACEEXEC | PTRACE_O_TRACECLONE | PTRACE_O_TRACEFORK
+               | PTRACE_O_TRACEVFORK | PTRACE_O_TRACESYSGOOD)
         timer = threading.Timer(timeout, expire)
         timer.start()
         anon, hwm = 0, None
@@ -239,12 +241,13 @@ def memory(cmd, env, syscalls=True, timeout=TIMEOUT):
                 # a system call's entry or exit
                 anon = max(anon, anon_kib(pid))
                 ptrace(go, pid)
-            elif sig == signal.SIGTRAP and event == PTRACE_EVENT_CLONE:
-                # a second thread (or a process clone() made without
-                # CLONE_THREAD), refused as it is made: its memory would not be
-                # seen (the new one, traced too, is reaped with the child)
+            elif sig == signal.SIGTRAP and event in (PTRACE_EVENT_CLONE, PTRACE_EVENT_FORK, PTRACE_EVENT_VFORK):
+                # a second thread, a process clone() made without
+                # CLONE_THREAD, or one fork() or vfork() made: refused as it is
+                # made, since its memory would not be seen (the new one, traced
+                # too, is killed and reaped with the child)
                 threads.append(event_msg(pid))
-                raise SystemExit(f"rt-startup: {cmd[0]} started a thread or cloned a process; the anonymous "
+                raise SystemExit(f"rt-startup: {cmd[0]} started a thread or another process; the anonymous "
                                  "peak is measured for one thread (memory())")
             elif sig == signal.SIGTRAP and event == PTRACE_EVENT_EXIT:
                 hwm = status_kib(pid)["VmHWM"]
@@ -364,6 +367,28 @@ def measure(cmd, env, runs, valgrind):
 
 def defined():
     return [n for n, e in STARTS.items() if e is not None]
+
+
+def spec_errors(entries):
+    """What is wrong with a bars file's [[startup]] entries (`entries`), as
+    messages: a name that is not a defined start (a reserved one included),
+    a GNU R start that is not one of GNUR_STARTS, a name given twice. perf.py
+    rt-bars checks them before it measures anything."""
+    errs, seen = [], set()
+    for i, e in enumerate(entries):
+        n, g = e.get("name"), e.get("gnur")
+        if n is None:
+            errs.append(f"[[startup]] #{i + 1} has no name")
+        elif STARTS.get(n) is None:
+            what = "reserved, not defined yet" if n in STARTS else "no such start"
+            errs.append(f"[[startup]] {n!r}: {what} (defined: {', '.join(defined())})")
+        elif n in seen:
+            errs.append(f"[[startup]] {n!r} is given twice")
+        else:
+            seen.add(n)
+        if g is not None and g not in GNUR_STARTS:
+            errs.append(f"[[startup]] {n!r}: gnur {g!r} is no GNU R start ({', '.join(GNUR_STARTS)})")
+    return errs
 
 
 def in_ci():
