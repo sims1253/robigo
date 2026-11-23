@@ -157,7 +157,7 @@ pub fn lower_all_src(
 ) -> RResult<()> {
     let pos = crate::srcref::Positions::new(src, known, cx.locale().utf8, |i| in_string[i]);
     cx.scope(|cx, s| {
-        let class = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.mk_string(b"srcref", Encoding::Native)?.into())))?;
+        let class = s.capture(cx, |cx, o| cx.build(o, |cx| cx.mk_string(b"srcref", Encoding::Native)))?;
         let files = src_files(cx, s, &pos, srcfile, known)?;
         cx.build(out, |cx| {
             let ctx = crate::lower::SrcCtx {
@@ -205,10 +205,10 @@ fn src_files<'s>(
         if filename_is(cx, cur, &a.filename) {
             continue;
         }
-        let env = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.new_env(cx.empty_env(), false, 0)?)))?;
+        let env = s.capture(cx, |cx, o| cx.build(o, |cx| cx.new_env(cx.empty_env(), false, 0)))?;
         // mkString2: a non-ASCII name of a parse known to be UTF-8 is marked so
         let fenc = if known && !a.filename.is_ascii() { Encoding::Utf8 } else { Encoding::Native };
-        let name = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.mk_string(&a.filename, fenc)?.into())))?;
+        let name = s.capture(cx, |cx, o| cx.build(o, |cx| cx.mk_string(&a.filename, fenc)))?;
         let fsym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"filename")?.into())))?;
         let osym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"original")?.into())))?;
         cx.define_var(fsym, name, env)?;
@@ -260,7 +260,7 @@ pub(crate) fn srcfile_filename(cx: &mut Cx, f: Root<'_>) -> Option<Vec<u8>> {
         let sym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"filename")?.into()))).ok()?;
         let v = s.capture(cx, |cx, o| cx.find_var(sym, f, o)).ok()?;
         let c = v.bind(cx).as_vector::<Char<'_>>()?;
-        (c.len() > 0).then(|| c.get(0).bytes().to_vec())
+        (!c.is_empty()).then(|| c.get(0).bytes().to_vec())
     })
 }
 
@@ -340,10 +340,10 @@ pub fn lower_console(cx: &mut Cx, src: &[u8], e: &robigo_syntax::Expr<'_>, out: 
     };
     let pos = crate::srcref::Positions::new(src, known, cx.locale().utf8, |i| in_string[i]);
     cx.scope(|cx, s| {
-        let class = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.mk_string(b"srcref", Encoding::Native)?.into())))?;
+        let class = s.capture(cx, |cx, o| cx.build(o, |cx| cx.mk_string(b"srcref", Encoding::Native)))?;
         // NewEnvironment(R_NilValue, R_NilValue, R_EmptyEnv): PS_SRCFILE and
         // PS_ORIGINAL
-        let srcfile = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.new_env(cx.empty_env(), false, 0)?)))?;
+        let srcfile = s.capture(cx, |cx, o| cx.build(o, |cx| cx.new_env(cx.empty_env(), false, 0)))?;
         let files = src_files(cx, s, &pos, srcfile, known)?;
         let mut attached = false;
         let x = s.capture(cx, |cx, o| {
@@ -364,12 +364,12 @@ pub fn lower_console(cx: &mut Cx, src: &[u8], e: &robigo_syntax::Expr<'_>, out: 
         })?;
         if attached {
             let fsym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"filename")?.into())))?;
-            let empty = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.mk_string(b"", Encoding::Native)?.into())))?;
+            let empty = s.capture(cx, |cx, o| cx.build(o, |cx| cx.mk_string(b"", Encoding::Native)))?;
             cx.define_var(fsym, empty, srcfile)?;
             let lsym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"lines")?.into())))?;
             // mkChar2: UTF-8 marked when the parse is known to be UTF-8
             let enc = if known && !src.is_ascii() { Encoding::Utf8 } else { Encoding::Native };
-            let lines = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.mk_string(src, enc)?.into())))?;
+            let lines = s.capture(cx, |cx, o| cx.build(o, |cx| cx.mk_string(src, enc)))?;
             cx.define_var(lsym, lines, srcfile)?;
             let klass = s.capture(cx, |cx, o| {
                 cx.build(o, |cx| {

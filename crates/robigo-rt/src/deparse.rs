@@ -152,10 +152,17 @@ pub fn deparse1_with_cutoff_forcing(
     opts: i32,
     nlines: i32,
 ) -> robigo_rtcore::RResult<Result<Deparsed, Fail>> {
-    // the srcrefs' texts evaluated so far: (the srcref's address, its lines)
+    // the srcrefs' texts evaluated so far: (the srcref's address, its
+    // lines), each srcref held by the Global of the same index in `held`
     let mut sources: Vec<(usize, Vec<Vec<u8>>)> = Vec::new();
     let mut held: Vec<robigo_rtcore::Global> = Vec::new();
     let r = loop {
+        // the addresses now: a collection since the text was evaluated may
+        // have moved its srcref (and put another object where it was); a
+        // run reads with &Cx, so they hold through it
+        for ((k, _), g) in sources.iter_mut().zip(&held) {
+            *k = g.bind(cx).sexp().as_ptr() as usize;
+        }
         let r = deparse_run(cx, call.bind(cx), abbrev, cutoff, backtick, opts, nlines, true, &sources);
         match r {
             Ok(d) => break Ok(Ok(d)),
@@ -163,7 +170,7 @@ pub fn deparse1_with_cutoff_forcing(
             Err(Stop::Source(g)) => {
                 // src2buff1: as.character(srcref) evaluated in base, each
                 // line written out (the srcref held until the deparse is
-                // done, so its address names it)
+                // done, so its address, read afresh each run, names it)
                 // R: deparse.c:src2buff1
                 let lines = cx.scope(|cx, s| {
                     let sr = s.root(cx, g.bind(cx));
@@ -172,7 +179,7 @@ pub fn deparse1_with_cutoff_forcing(
                         cx.build(o, |cx| {
                             let nil = cx.nil();
                             let args = cx.cons(sr.bind(cx), nil)?;
-                            Ok(cx.lcons(f.bind(cx), args)?)
+                            cx.lcons(f.bind(cx), args)
                         })
                     })?;
                     let base = s.root(cx, cx.base_env());

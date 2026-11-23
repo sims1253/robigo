@@ -88,7 +88,7 @@ impl Positions {
             } else {
                 // "We only advance the column for the 1st byte in UTF-8, so
                 // handle later bytes specially"
-                if !known_utf8 || c < 0x80 || 0xC0 <= c {
+                if !known_utf8 || !(0x80..0xC0).contains(&c) {
                     s.col += 1;
                 }
                 s.byte += 1;
