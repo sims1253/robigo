@@ -122,6 +122,8 @@ fn boot_bin_reading(
         // rt-ci runs the tests under its observation modes (scripts/rt-ci.py
         // inherits the environment): the boot under them is not this test's
         .env_remove("ROBIGO_GCTORTURE")
+        // (the hold goes with the modes it holds: alone it is refused)
+        .env_remove("ROBIGO_TORTURE_AFTER_START")
         .env_remove("ROBIGO_GC_STATS")
         .env_remove("ROBIGO_GC_MOVE")
         .env_remove("ROBIGO_GC_PIN_REPORT")
