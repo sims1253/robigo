@@ -74,3 +74,17 @@ lapply(y, function(v) v * 2L)
 s <- 0
 invisible(lapply(seq_len(3000L), function(v) s <<- s + v))
 s
+# lapply's index vector: captured by FUN (it must be fresh for the next
+# element), rebound, or made an active binding in lapply's frame
+kept <- list()
+invisible(lapply(1:3, function(v) kept[[v]] <<- get("i", envir = parent.frame())))
+unlist(kept)
+lapply(1:3, function(v) { assign("i", 7L, envir = parent.frame()); v })
+r <- lapply(1:3, function(v) {
+  if (v == 1) {
+    rm("i", envir = parent.frame())
+    makeActiveBinding("i", function(x) if (missing(x)) 5L else invisible(NULL), parent.frame())
+  }
+  v
+})
+unlist(r)

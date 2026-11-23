@@ -250,9 +250,25 @@ impl<'s> Loop<'s> {
             Some(xx) => cx.force_and_call_indexed(self.fcall, self.rho, xx, self.ind, out),
             None => cx.force_and_call(self.fcall, 1, self.rho, out),
         })?;
+        // R: MAYBE_REFERENCED(ind) || ind != R_GetVarLocValue(loc), in that
+        // order (a referenced `ind` reads no binding, so runs no active
+        // binding's function); a plain binding cell compared in place,
+        // anything else read in full
+        let shared = cx.shared(self.ind.bind(cx));
+        let held = cx.var_loc_holds(self.loc, self.ind.bind(cx));
+        if !shared && held == Some(true) {
+            return Ok(());
+        }
         cx.scope(|cx, s| {
-            let cur = s.capture(cx, |cx, o| cx.var_loc_value(self.loc, o))?;
-            if cur.bind(cx) != self.ind.bind(cx) || cx.shared(self.ind.bind(cx)) {
+            let fresh_needed = shared
+                || match held {
+                    Some(b) => !b,
+                    None => {
+                        let cur = s.capture(cx, |cx, o| cx.var_loc_value(self.loc, o))?;
+                        cur.bind(cx) != self.ind.bind(cx)
+                    }
+                };
+            if fresh_needed {
                 // ind has been captured or removed by FUN: fix it up
                 let fresh = s.capture(cx, |cx, o| cx.build_scalar(o, 0i32))?;
                 self.ind.replace_from(cx, fresh);
