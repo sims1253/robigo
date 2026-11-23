@@ -114,8 +114,11 @@ class Guards(unittest.TestCase):
                 f'[[guard]]\nrow = "{guard}"\n[[rss]]\nprogram = "p.R"\nagainst = ["gnur"]\n')
         measured = []
 
-        def instr(binary, rows, *_, **__):
+        boots = []
+
+        def instr(binary, rows, *_, **kw):
             measured.append((binary, list(rows)))
+            boots.append(kw.get("boot"))
             return {"plain": 500.0, guard: 101.0 if binary == "new-bin" else 100.0}
 
         for slower, rc in ((True, 1), (False, 0)):
@@ -124,14 +127,17 @@ class Guards(unittest.TestCase):
                 Path(tmp, "bars.toml").write_text(bars)
                 a = SimpleNamespace(bars=str(Path(tmp, "bars.toml")), robigo_rt="new-bin",
                                     main="main-bin" if slower else None, jobs=1, runs=1,
-                                    out=os.path.join(tmp, "out.json"), gnur=None, cycles=False)
+                                    out=os.path.join(tmp, "out.json"), gnur=None, cycles=False, boot="rdb")
                 buf = io.StringIO()
                 with patch.object(perf, "rt_instr", instr), \
-                        patch.object(perf, "rt_rss", lambda *_: {"p.R": 30000}), \
+                        patch.object(perf, "rt_rss", lambda *_, **__: {"p.R": 30000}), \
                         patch.object(perf, "binary_identity", lambda *_: {}), \
                         patch.object(perf, "report_identity", lambda *_, **__: None), \
                         patch.object(perf, "cpu_signature", lambda: ("cpu", "0" * 16)), redirect_stdout(buf):
                     self.assertEqual(perf.cmd_rt_bars(a), rc)
+            # every row of both binaries under the one boot named (rt-bars' --boot)
+            self.assertEqual(set(boots), {"rdb"})
+            boots.clear()
             out = buf.getvalue()
             self.assertEqual([r for _, r in measured], [["plain", guard]] * (2 if slower else 1))
             self.assertRegex(out, rf"\| {guard} \| 101\.0 \|.*\| main \| \| guard \|")
@@ -228,7 +234,7 @@ class Acceptance(unittest.TestCase):
                             '[[bar]]\nrow = "paste"\nagainst = "today"\nmax = 1.0\nmet = false\nceiling = 2.0\n'
                             '[[rss]]\nprogram = "p.R"\nagainst = []\n')
             a = SimpleNamespace(bars=str(bars), robigo_rt="/nonexistent", main=None, jobs=1, runs=1,
-                                out=os.path.join(tmp, "out.json"), gnur=None, cycles=False)
+                                out=os.path.join(tmp, "out.json"), gnur=None, cycles=False, boot="m1")
             buf = io.StringIO()
             with redirect_stdout(buf):
                 self.assertEqual(perf.cmd_rt_bars(a), 1)
@@ -288,7 +294,7 @@ class Machine(unittest.TestCase):
             g.write_text(json.dumps({"version": perf.pins()["rt"], "cpu_signature": "0000000000000000",
                                      "cpu": "elsewhere", "cache_model": perf.PINNED_CACHE, "instr": {}, "rss": {}}))
             a = SimpleNamespace(bars=perf.RT_BARS, robigo_rt="/nonexistent", main=None, jobs=1, runs=1,
-                                out=os.path.join(tmp, "out.json"), gnur=str(g), cycles=False)
+                                out=os.path.join(tmp, "out.json"), gnur=str(g), cycles=False, boot="m1")
             buf = io.StringIO()
             with redirect_stdout(buf):
                 self.assertEqual(perf.cmd_rt_bars(a), 1)
@@ -302,7 +308,7 @@ class Pin(unittest.TestCase):
             bars.write_text('[gnur]\nversion = "9.9.9"\nsource = "x"\n[gnur.instr]\n[today]\n[[bar]]\n'
                             'row = "plain"\nagainst = "gnur"\nmax = 1.0\n[[rss]]\nprogram = "p.R"\nagainst = []\n')
             a = SimpleNamespace(bars=str(bars), robigo_rt="/nonexistent", main=None, jobs=1, runs=1,
-                                out=os.path.join(tmp, "out.json"), gnur=None, cycles=False)
+                                out=os.path.join(tmp, "out.json"), gnur=None, cycles=False, boot="m1")
             buf = io.StringIO()
             with redirect_stdout(buf):
                 self.assertEqual(perf.cmd_rt_bars(a), 1)
@@ -402,7 +408,7 @@ class AddressShifts(unittest.TestCase):
 
             out = Path(tmp, "out.json")
             a = SimpleNamespace(rows=str(rows), filter=None, no_r=True, no_robigo=False, cycles=False,
-                                shifts=list(perf.ADDRESS_SHIFTS), json=str(out))
+                                shifts=list(perf.ADDRESS_SHIFTS), json=str(out), boot="m1")
             with redirect_stdout(io.StringIO()):
                 ivr.cmd_rows(a, Fake())
             doc = json.loads(out.read_text())["rows"]
@@ -438,6 +444,132 @@ class AddressShifts(unittest.TestCase):
         with open(perf.RT_ROWS, "rb") as f:
             marked = sorted(r["name"] for r in tomllib.load(f)["row"] if r.get("address_sensitive"))
         self.assertEqual(marked, ["e7-match"])
+
+
+class RtStarts(unittest.TestCase):
+    """perf.py rt-starts: the starts ([[startup]]) as an invocation of their
+    own, with their own JSON, beside rt-bars in the one perf-rt job."""
+
+    BARS = '[[startup]]\nname = "interim"\n[[startup]]\nname = "rdb-jit"\ngnur = "jit"\n'
+
+    def run_starts(self, bars, new_instr, gnur=None):
+        su = perf.rt_startup()
+        calls = []
+
+        def run(binary, starts, root, runs, trees, valgrind):
+            calls.append((binary, list(starts), trees))
+            base = {"instr": 1000.0, "anon_kib": 2000.0, "rss_kib": 9000.0}
+            return {n: dict(base, instr=new_instr if binary == "new-bin" else 1000.0) for n in starts}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "bars.toml").write_text(bars)
+            a = SimpleNamespace(bars=str(Path(tmp, "bars.toml")), robigo_rt="new-bin", main="main-bin", runs=3,
+                                trees="t-new.tar", main_trees="t-main.tar", gnur=gnur,
+                                out=os.path.join(tmp, "starts.json"))
+            buf = io.StringIO()
+            with patch.object(su, "run", run), patch.object(perf, "rt_startup", lambda: su), \
+                    patch.object(perf, "binary_identity", lambda *_: {}), \
+                    patch.object(perf, "report_identity", lambda *_, **__: None), redirect_stdout(buf):
+                rc = perf.cmd_rt_starts(a)
+            doc = json.loads(Path(a.out).read_text()) if Path(a.out).exists() else None
+        return rc, calls, doc, buf.getvalue()
+
+    def test_both_binaries_are_measured_from_their_own_trees_into_its_own_json(self):
+        rc, calls, doc, out = self.run_starts(self.BARS, 1000.0)
+        self.assertEqual(rc, 0)
+        self.assertEqual(calls, [("new-bin", ["interim", "rdb-jit"], "t-new.tar"),
+                                 ("main-bin", ["interim", "rdb-jit"], "t-main.tar")])
+        self.assertEqual(set(doc), {"new", "main", "binaries", "lengths"})
+        self.assertIn("| rdb-jit (default) |", out)
+        self.assertIn("0 failure(s)", out)
+
+    def test_a_start_over_its_limit_fails_the_invocation(self):
+        rc, _, _, out = self.run_starts(self.BARS, 1006.0)
+        self.assertEqual(rc, 1)
+        self.assertIn("FAIL", out)
+
+    def test_a_bad_startup_entry_is_refused_before_measuring(self):
+        rc, calls, _, out = self.run_starts('[[startup]]\nname = "nope"\n', 1000.0)
+        self.assertEqual((rc, calls), (1, []))
+        self.assertIn("'nope'", out)
+
+
+class Boot(unittest.TestCase):
+    def test_rt_instr_hands_the_boot_to_idiom_vs_r_for_robigo_only(self):
+        cmds = []
+
+        def fake_run(cmd, **kw):
+            cmds.append(cmd)
+            Path(cmd[cmd.index("--json") + 1]).write_text(json.dumps({"rows": {"plain": {
+                "robigo_instr": 1.0, "gnur_instr": 1.0, "robigo_est_cycles": None, "gnur_est_cycles": None}}}))
+            return SimpleNamespace(returncode=0, stderr="")
+        with tempfile.TemporaryDirectory() as tmp, patch.object(perf.subprocess, "run", side_effect=fake_run):
+            perf.rt_instr("rt", ["plain"], 1, tmp, "new", boot="rdb")
+            perf.rt_instr(None, ["plain"], 1, tmp, "gnur", boot="rdb")
+        robigo, gnur = cmds
+        self.assertEqual(robigo[robigo.index("--robigo-env") + 1], "ROBIGO_RT_BOOT=rdb")
+        self.assertNotIn("--robigo-env", gnur)
+
+
+class EveryRunNamesItsBoot(unittest.TestCase):
+    """No robigo-rt run of rt-bars or rt-starts goes without an explicit
+    ROBIGO_RT_BOOT: asserted on what is spawned, not on one function."""
+
+    def test_rt_bars_spawns_every_robigo_rt_run_with_the_boot(self):
+        bars = (f'[gnur]\nversion = "{perf.pins()["rt"]}"\nsource = "x"\n[gnur.instr]\nplain = 1000.0\n'
+                '[gnur.rss]\n"p.R" = 50000\n[[bar]]\nrow = "plain"\nagainst = "gnur"\nmax = 0.6\n'
+                '[[rss]]\nprogram = "p.R"\nagainst = ["gnur"]\n')
+        cmds = []
+
+        def fake_run(cmd, **kw):
+            cmds.append(cmd)
+            out = cmd[cmd.index("--json") + 1]
+            if "rss.py" in cmd[1]:
+                Path(out).write_text(json.dumps({"results": {"p.R": {"robigo": {"median_kib": 30000}}}}))
+            else:
+                Path(out).write_text(json.dumps({"rows": {"plain": {
+                    "robigo_instr": 500.0, "robigo_est_cycles": None, "collections": {"robigo": [0, 0]}}}}))
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "bars.toml").write_text(bars)
+            a = SimpleNamespace(bars=str(Path(tmp, "bars.toml")), robigo_rt="new-bin", main="main-bin", jobs=1, runs=1,
+                                out=os.path.join(tmp, "out.json"), gnur=None, cycles=False, boot="rdb")
+            with patch.object(perf.subprocess, "run", side_effect=fake_run), \
+                    patch.object(perf, "binary_identity", lambda *_: {}), \
+                    patch.object(perf, "report_identity", lambda *_, **__: None), \
+                    patch.object(perf, "cpu_signature", lambda: ("cpu", "0" * 16)), redirect_stdout(io.StringIO()):
+                perf.cmd_rt_bars(a)
+        robigo = [c for c in cmds if "--robigo" in c]
+        # both binaries, the rows and the RSS programs
+        self.assertEqual(sorted({c[c.index("--robigo") + 1] for c in robigo}), ["main-bin", "new-bin"])
+        self.assertEqual({"rss.py" in c[1] for c in robigo}, {True, False})
+        for c in robigo:
+            self.assertEqual(c[c.index("--robigo-env") + 1], "ROBIGO_RT_BOOT=rdb", c)
+
+    def test_an_unknown_boot_is_refused_before_anything_runs(self):
+        a = SimpleNamespace(bars="unused", robigo_rt="x", main=None, jobs=1, runs=1, out=None, gnur=None,
+                            cycles=False, boot="m2")
+        with patch.object(perf.subprocess, "run", side_effect=AssertionError("ran")), \
+                redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(perf.cmd_rt_bars(a), 1)
+        self.assertIn("--boot 'm2' is not a boot", out.getvalue())
+
+    def test_rt_starts_runs_every_start_with_its_boot(self):
+        su = perf.rt_startup()
+        envs = []
+
+        def instr(cmd, env, valgrind):
+            envs.append(env)
+            return 1000
+
+        def memory(cmd, env, syscalls):
+            envs.append(env)
+            return 100, 5000, 0, b"", 0
+        with tempfile.TemporaryDirectory() as home, patch.object(su, "instructions", instr), \
+                patch.object(su, "memory", memory):
+            su.run("bin", None, home, 1, trees=False)
+        self.assertGreater(len(envs), 0)
+        self.assertTrue(all("ROBIGO_RT_BOOT" in e for e in envs))
 
 
 class BinaryIdentity(unittest.TestCase):
