@@ -111,8 +111,8 @@ class Inputs(unittest.TestCase):
             if "dir" in s:
                 for path in perf.suite_files(sname, s):
                     self.assertIn(os.path.relpath(path, perf.ROOT), inputs)
-        for f in ("benchmarks/benchmarks.toml", "benchmarks/gnur-known-failures.txt", "scripts/perf.py",
-                  "scripts/perf-gnur.py"):
+        # (the known failures are optional: test_a_program_added_later_is_in_the_key)
+        for f in ("benchmarks/benchmarks.toml", "scripts/perf.py", "scripts/perf-gnur.py"):
             self.assertIn(f, inputs)
         self.assertFalse([p for p in inputs if p.startswith("benchmarks/rt/")], "robigo-rt's rows are not this job's")
 
