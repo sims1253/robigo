@@ -59,6 +59,7 @@ pub(crate) const IXSHAPE: usize = 6;
 const PPK: usize = 7;
 
 /// A compiled code object before it is allocated.
+#[derive(Clone)]
 pub struct Built {
     pub ins: Vec<Ins>,
     /// The pool from index [`FIRST_CONST`].
@@ -87,6 +88,17 @@ pub struct Built {
 /// its end; a `Switch`'s jump tables are there, one `Jmp` each; a call
 /// site is below `nsites` (or [`crate::ir::NO_SITE`]); an `LdScalar`
 /// constant is a plain scalar.
+///
+/// **What it does not check**, and the VM also relies on: the type of any
+/// other constant (a symbol where `GetVar` reads one, a call where `Call`
+/// walks one, ...), and the state the stateful operations keep in
+/// registers: that `for`'s state window is written only by `ForPrep` and
+/// `ForStep` and that every `ForStep` and `ForDone` comes after its
+/// `ForPrep`; the same for a subset's (`StartSubset`, `DfltSubset`) and a
+/// loop region's. Those hold because robigo-rt's own translator and
+/// compiler made the code, by construction: so [`Verified::new`] is for
+/// their code only, and code from anywhere else comes in through
+/// [`Verified::from_cached_translation`], whose caller promises the rest.
 pub struct Verified(Built);
 
 /// Why [`Verified::new`] refused code: the instruction and the check.
@@ -103,7 +115,8 @@ impl std::fmt::Display for Malformed {
 }
 
 impl Verified {
-    /// Check `b` in one pass over its instructions (#738).
+    /// Check `b`, code this process's translator or compiler just made, in
+    /// one pass over its instructions (#738).
     pub fn new(b: Built) -> Result<Verified, Malformed> {
         check(&b)?;
         Ok(Verified(b))
@@ -113,6 +126,24 @@ impl Verified {
     /// [`crate::compile`]'s scratch).
     pub fn into_built(self) -> Built {
         self.0
+    }
+
+    /// Check `b`, code read back from the translation cache
+    /// (`crate::tcache`), as [`Verified::new`] checks code.
+    ///
+    /// # Safety
+    /// `b` is code this build's translator made and wrote: an intact entry
+    /// of this binary's own cache for this tree, so that what
+    /// [`Verified::new`] does not check (the stateful operations' register
+    /// invariants, [`Verified`]) holds by construction. Its constants have
+    /// passed `tcache`'s typed check. Bytes from anywhere else (a file
+    /// another build wrote, a hand-edited entry with a checksum made to
+    /// match) carry no such promise: a forged entry can break the VM's
+    /// register invariants (a `ForStep` whose state another instruction
+    /// overwrote reads out of bounds), and this constructor does not detect it.
+    pub unsafe fn from_cached_translation(b: Built) -> Result<Verified, Malformed> {
+        check(&b)?;
+        Ok(Verified(b))
     }
 
     /// The checked code.

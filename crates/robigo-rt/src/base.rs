@@ -354,7 +354,8 @@ pub fn load(cx: &mut Cx, dir: &Path) -> Result<Loaded, String> {
             return Err(format!("{} is missing", p.display()));
         }
     }
-    *crate::prims::state(cx).base_src.borrow_mut() = Some(lib.clone());
+    // (set once, by the boot's load)
+    let _ = crate::prims::state(cx).base_src.set(lib.clone());
     let fetch = fetch_internal(cx);
     for n in &wide.names {
         bind_wide(cx, n.name, &fetch).map_err(|e| format!("binding '{}': {e}", n.name))?;
@@ -446,7 +447,7 @@ fn where_is(lib: &Path, form: Form) -> String {
 /// The bytes of `form`, read from the tree, with configure's substitutions
 /// made.
 fn form_bytes(cx: &Cx, form: Form) -> Result<Vec<u8>, String> {
-    let lib = crate::prims::state(cx).base_src.borrow().clone().ok_or("the base sources are not loaded")?;
+    let lib = crate::prims::state(cx).base_src.get().cloned().ok_or("the base sources are not loaded")?;
     form_text(&lib, form)
 }
 
@@ -593,7 +594,7 @@ fn fetch_steps(cx: &mut Cx, w: &WideName, sym: Root<'_>, base: Root<'_>, res: Ro
                 false
             }
             Def::Unrun(form) => {
-                let lib = crate::prims::state(cx).base_src.borrow().clone().unwrap_or_default();
+                let lib = crate::prims::state(cx).base_src.get().cloned().unwrap_or_default();
                 let why = wide.skipped(*form).unwrap_or("not run");
                 let m = format!(
                     "robigo: '{}' needs base's {}, which robigo-rt does not run: {why} (INTERIM(L5))",

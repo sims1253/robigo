@@ -851,6 +851,8 @@ impl<'g> Comp<'g> {
         let b = res?;
         // SAFETY: as above.
         unsafe {
+            // (the translation cache's writer keeps it with the translation)
+            crate::tcache::writer_arg(self.cx, arg, &b);
             let built = sub.build(b, arg, None)?;
             crate::code::cache_on(arg, built);
             self.arg_codes.push(built);

@@ -1,0 +1,8 @@
+argument promises, read by $ 
+[1] "evaluation nested too deeply: infinite recursion / options(expressions=)?"
+[1] "promise already under evaluation: recursive default argument reference or earlier problems?"
+restart warnings: 17 
+... promises, read by ..1 
+[1] "evaluation nested too deeply: infinite recursion / options(expressions=)?"
+[1] "promise already under evaluation: recursive default argument reference or earlier problems?"
+restart warnings: 17 
