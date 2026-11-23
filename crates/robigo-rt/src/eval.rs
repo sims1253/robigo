@@ -148,7 +148,7 @@ fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, promise: b
     }
     // C's `eval` runs it with byte code inactive (`R_BCIntActive = 0`,
     // saved and restored); byte code's own promise code keeps its flag
-    let bc_saved = if profile == Profile::Bc { None } else { Some(cx.bc_inactive()) };
+    let bc_saved = if profile == Profile::Bc { None } else { Some(cx.bc_deactivate()) };
     // one level deeper, no protection more (robigo_rtcore's ppacct)
     let r = cx.with_pp_excess(-1, |cx| match t {
         // (a symbol is immortal)
@@ -738,7 +738,7 @@ pub fn eval_promise(cx: &mut Cx, p: Root<'_>, out: Out<'_>) -> RResult<()> {
     tick(cx)?;
     let depthsave = cx.eval_depth();
     cx.eval_depth_at(depthsave + 1)?;
-    let bc = cx.bc_inactive();
+    let bc = cx.bc_deactivate();
     // (one level deeper, no protection more: robigo_rtcore's ppacct)
     let r = cx.with_pp_excess(-1, |cx| cx.force_promise(p, out));
     cx.bc_restore(bc);
@@ -780,7 +780,7 @@ fn force_arg_eval_counted(cx: &mut Cx, frame: Root<'_>, index: usize, out: Out<'
     cx.eval_depth_at(depthsave + 1)?;
     // (one level deeper, no protection more: robigo_rtcore's ppacct;
     // byte code inactive, as `eval` runs it)
-    let bc = cx.bc_inactive();
+    let bc = cx.bc_deactivate();
     let r = cx.with_pp_excess(-1, |cx| cx.force_arg(frame, index, out));
     cx.bc_restore(bc);
     cx.set_eval_depth(depthsave);

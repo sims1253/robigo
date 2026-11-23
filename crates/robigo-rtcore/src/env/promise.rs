@@ -485,6 +485,11 @@ impl Cx {
     /// slot) is false: GetObject reads the generic's frame, whose slot is
     /// never an alias.
     ///
+    /// Unlike its checked siblings ([`Cx::force_arg`], `arg_promise`,
+    /// `materialize_arg`), its checks are debug assertions: it runs on
+    /// every S3 dispatch of an argument slot, and the force that follows
+    /// it re-checks the frame and slot before anything is forced.
+    ///
     /// # Safety
     /// `frame` is a live slot frame of this isolate and `index` is below
     /// its capacity (the checks [`Cx::force_arg`] makes, debug-asserted

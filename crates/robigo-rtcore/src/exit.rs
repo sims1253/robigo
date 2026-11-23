@@ -269,11 +269,12 @@ impl Cx {
     /// `eval`'s `R_BCIntActive = 0`: byte code inactive from here, the
     /// flag it had returned for [`Cx::bc_restore`].
     #[inline(always)]
-    pub fn bc_inactive(&self) -> bool {
+    #[must_use = "the saved flag goes back to `Cx::bc_restore`, or byte code stays inactive"]
+    pub fn bc_deactivate(&self) -> bool {
         self.iso().contexts().bc_active.replace(false)
     }
 
-    /// `R_BCIntActive = bcintactivesave`: the flag [`Cx::bc_inactive`]
+    /// `R_BCIntActive = bcintactivesave`: the flag [`Cx::bc_deactivate`]
     /// returned, restored.
     #[inline(always)]
     pub fn bc_restore(&self, saved: bool) {
