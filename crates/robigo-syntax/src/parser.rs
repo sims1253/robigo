@@ -642,13 +642,16 @@ impl<'a> Parser<'a> {
     }
 
     /// For an error a grammar action raised (it has a frontier: the
-    /// lookahead the action reduced with), where GNU R's lexer had stopped
-    /// reading ([`Parser::read_to`]): the bytes after it stay unread on a
-    /// connection (`R_ParseConn`'s `con_getc`). None for the lexer's and
-    /// the grammar's own errors, whose read position the caller has from
-    /// the error's span.
-    pub fn action_error_read_to(&self, e: &ParseError) -> Option<usize> {
-        self.trial_frontier.map(|_| self.read_to(e, self.lex_error()))
+    /// lookahead the action reduced with) or a `raiseLexError`, where GNU
+    /// R's lexer had stopped reading ([`Parser::read_to`]): the bytes after
+    /// it stay unread on a connection (`R_ParseConn`'s `con_getc`). None
+    /// for the grammar's own errors, whose read position the caller has
+    /// from the error token's span.
+    pub fn error_read_to(&self, e: &ParseError) -> Option<usize> {
+        if self.trial_frontier.is_some() || e.style == ErrorStyle::Condition {
+            return Some(self.read_to(e, self.lex_error()));
+        }
+        None
     }
 
     /// The start of the last token GNU R's lexer had read when `e` was

@@ -201,6 +201,11 @@ pub struct Lexer<'a> {
     /// Where an identifier stopped because the bytes of an invalid
     /// character ran out (`SymbolValue`'s `mbcs_get_next` returned -1).
     after_ident: usize,
+    /// Just past the last character an escape's digit loop looked at and
+    /// rejected: GNU R's `xxgetc` read it before `xxungetc` pushed it back
+    /// into the lexer's buffer, so a connection has consumed it, and a
+    /// `raiseLexError` right after it has read that far (see `lex_err`).
+    rejected: usize,
     pos: usize,
     /// Warnings produced while lexing, e.g. for `1.5L`.
     pub warnings: Vec<LexWarning>,
@@ -285,6 +290,7 @@ impl<'a> Lexer<'a> {
             source,
             has_invalid,
             after_ident: usize::MAX,
+            rejected: 0,
             pos: 0,
             warnings: Vec::new(),
             eof_in_comment: false,
@@ -383,7 +389,17 @@ impl<'a> Lexer<'a> {
     /// reported with a `(<input>:<line>:<col>)` suffix.
     fn lex_err(&mut self, subclass: &'static str, message: impl Into<String>) -> ParseError {
         let at = self.pos.saturating_sub(1);
-        ParseError::condition(subclass, message, at, self.pos.max(at + 1), None)
+        // (where reading stopped: a character an escape's loop rejected
+        // just now included; an earlier one lies behind `pos`)
+        ParseError::condition(subclass, message, at, self.pos.max(at + 1).max(self.rejected), None)
+    }
+
+    /// The character at `pos`, which an escape's digit loop rejects (it is
+    /// read and pushed back: [`Lexer::rejected`]).
+    fn reject_next(&mut self) {
+        if let Some(c) = self.peek_char() {
+            self.rejected = self.pos + c.len_utf8();
+        }
     }
 
     /// Tokenize the whole source. GNU R interleaves lexing with parsing:
@@ -1048,7 +1064,10 @@ impl<'a> Lexer<'a> {
                             v = v * 8 + d.to_digit(8).unwrap();
                             self.pos += 1;
                         }
-                        _ => break,
+                        _ => {
+                            self.reject_next();
+                            break;
+                        }
                     }
                 }
                 if v == 0 {
@@ -1073,7 +1092,10 @@ impl<'a> Lexer<'a> {
                             self.pos += 1;
                             n += 1;
                         }
-                        None => break,
+                        None => {
+                            self.reject_next();
+                            break;
+                        }
                     }
                 }
                 if n == 0 {
@@ -1112,7 +1134,10 @@ impl<'a> Lexer<'a> {
                             self.pos += 1;
                             n += 1;
                         }
-                        None => break,
+                        None => {
+                            self.reject_next();
+                            break;
+                        }
                     }
                 }
                 if n == 0 {
