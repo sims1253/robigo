@@ -697,7 +697,7 @@ BUDGETS = {  # shard: (budget, measured minutes, where measured)
     # slow-runner estimates (its two modes steps timed locally, C1,
     # 2026-11-23, scaled by 1.6: run 45072863916's conformance steps against
     # the same local run's, 1.34 against 0.84 min)
-    "modes": (13, 11.17, "2026-11-23, run 45106626186: 9.67 (7.32 and 7.45 in the other two), and #979's rdb "
+    "modes": (14, 11.17, "2026-11-23, run 45106626186: 9.67 (7.32 and 7.45 in the other two), and #979's rdb "
               "boot's conformance without the translation cache, 0.29 (0.18 locally), and the cache's "
               "damaged-input step, 0.61 (0.38 locally); and #976's hostile byte code, 0.6 (0.37 locally)"),
     "gctorture": (26, 21.53, "2026-11-23, run 45104024474, a slow runner (15.24 and 15.82 in the other two)"),
