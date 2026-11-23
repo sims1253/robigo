@@ -72,7 +72,11 @@ fn normalized(p: &Path) -> std::path::PathBuf {
 #[test]
 fn r_home_defaults_to_the_checkout_s_tree() {
     let tree = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.robigo/rt-home");
-    let got = homes(&[]);
+    // the default itself: no checkout named (empty is unset), where every
+    // other spawn names its test tree's (db_tree.rs); under M1's loader the
+    // default is the build checkout's source tree, and no database tree is
+    // read
+    let got = homes(&[("ROBIGO_RT_CHECKOUT", "")]);
     assert!(Path::new(&got[0]).is_absolute(), "{got:?}");
     // compared lexically: the tree need not exist (a clean checkout)
     assert_eq!(normalized(Path::new(&got[0])), normalized(&std::path::absolute(tree).unwrap()), "{got:?}");
