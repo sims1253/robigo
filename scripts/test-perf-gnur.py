@@ -186,15 +186,43 @@ class Digests(unittest.TestCase):
         perf = importlib.util.module_from_spec(spec_)
         spec_.loader.exec_module(perf)
         base = {"PATH": "/bin", "HOME": "/h", "GITHUB_RUN_ID": "1"}
-        d = perf.gnur_code_digest(base)
-        self.assertEqual(d, perf.gnur_code_digest(dict(base, GITHUB_RUN_ID="2", HOME="/other")))
+        tools = "/usr/lib/R\nR version 4.5.0 (2025-04-11)\nvalgrind-3.24.0"
+        d = perf.gnur_code_digest(base, tools)
+        self.assertEqual(d, perf.gnur_code_digest(dict(base, GITHUB_RUN_ID="2", HOME="/other"), tools))
         for k, v in (("R_ENABLE_JIT", "0"), ("OMP_NUM_THREADS", "1"), ("GLIBC_TUNABLES", "x"), ("LD_PRELOAD", "y")):
-            self.assertNotEqual(d, perf.gnur_code_digest(dict(base, **{k: v})), k)
+            self.assertNotEqual(d, perf.gnur_code_digest(dict(base, **{k: v}), tools), k)
         # BASE_ENV wins over the caller's for what it sets
-        self.assertEqual(d, perf.gnur_code_digest(dict(base, LC_ALL="de_DE.UTF-8")))
+        self.assertEqual(d, perf.gnur_code_digest(dict(base, LC_ALL="de_DE.UTF-8"), tools))
         # and cmd_run's source is part of it
         import inspect
-        self.assertNotEqual(perf.code_digest([inspect.getsource(perf.cmd_run)], base), perf.code_digest([], base))
+        self.assertNotEqual(perf.code_digest([inspect.getsource(perf.cmd_run)], base, tools),
+                            perf.code_digest([], base, tools))
+
+    def test_the_r_and_the_valgrind_that_measure_are_in_the_code_digest(self):
+        # what makes the fallback safe on its own terms, not only through
+        # an immutable image tag: another R or valgrind is other counts
+        spec_ = importlib.util.spec_from_file_location("perf", HERE / "perf.py")
+        perf = importlib.util.module_from_spec(spec_)
+        spec_.loader.exec_module(perf)
+        env = {"PATH": "/bin"}
+        tools = "/usr/lib/R\nR version 4.5.0 (2025-04-11)\nvalgrind-3.24.0"
+        d = perf.gnur_code_digest(env, tools)
+        for other in ("/usr/lib/R\nR version 4.5.1 (2025-06-13)\nvalgrind-3.24.0",
+                      "/usr/lib/R\nR version 4.5.0 (2025-04-11)\nvalgrind-3.25.1",
+                      "/opt/R\nR version 4.5.0 (2025-04-11)\nvalgrind-3.24.0"):
+            self.assertNotEqual(d, perf.gnur_code_digest(env, other), other)
+        # the fingerprint asks the R run_one starts and the valgrind it uses
+        calls = []
+        def fake_run(cmd, **k):
+            calls.append(cmd)
+            return __import__("subprocess").CompletedProcess(cmd, 0, "v 1\nmore\n", "")
+        suite = sys.modules["perf_suite"]
+        with mock.patch.object(suite, "r_home", lambda: "/r/home"), \
+                mock.patch.object(suite, "valgrind_path", lambda: "/v/valgrind"), \
+                mock.patch.object(suite.subprocess, "run", fake_run):
+            fp = suite.tools_fingerprint()
+        self.assertEqual(fp, "/r/home\nv 1\nv 1")
+        self.assertEqual(calls, [["/r/home/bin/R", "--version"], ["/v/valgrind", "--version"]])
 
     def test_nothing_changed_nothing_measured_and_the_line_says_so(self):
         status, text, _ = self.fill({n: rec(OK, n) for n in self.progs})

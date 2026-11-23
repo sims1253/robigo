@@ -73,11 +73,13 @@ def gnur_inputs(c=None):
     checkout, sorted: the suites' list (an external suite's pinned commit and
     parameters are in it), every directory suite's programs (`suite_files`,
     the listing `programs` runs), the known failures, and the code that
-    measures and keeps them (CODE_FILES). The job's cache key hashes these and nothing else
-    (scripts/perf-gnur.py; a change to robigo-rt's rows, or to perf.py,
-    does not drop it); each record also carries its program's and the
-    code's digest (program_digests, code_digest), so a record restored
-    from another key is reused only if both match."""
+    measures and keeps them (CODE_FILES). The job's exact cache key is
+    these files' hash and the measuring code's digest (perf.py's
+    gnur_code_digest: cmd_run's source, the measuring environment, the R
+    and the valgrind that measure); so a change to robigo-rt's rows, or to
+    perf.py outside cmd_run, does not drop it. Each record also carries its
+    program's and the code's digest (program_digests, code_digest), so a
+    record restored from another key is reused only if both match."""
     c = c or conf()
     out = [os.path.join(ROOT, "benchmarks", "benchmarks.toml")] + [os.path.join(ROOT, f) for f in CODE_FILES]
     # (optional: perf-gnur.py reads none as no known failure)
@@ -88,6 +90,7 @@ def gnur_inputs(c=None):
         if "dir" in s:
             out += suite_files(sname, s)
     return sorted(os.path.relpath(p, ROOT) for p in out)
+
 
 # The code a GNU R record's numbers come from: this module (the programs,
 # the command, the callgrind run) and perf-gnur.py (which records it keeps).
@@ -110,11 +113,31 @@ def measure_env(environ=None):
     return sorted((k, v) for k, v in env.items() if k.startswith(MEASURE_ENV))
 
 
-def code_digest(extra=(), environ=None):
+def tools_fingerprint():
+    """The R and the valgrind a record is measured with: R's home, R's and
+    valgrind's version lines (run_one starts R from r_home(), and callgrind
+    is the other half of what counts). A tool that cannot be asked is named
+    so, which differs from any version."""
+    def first_line(cmd):
+        try:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as e:
+            return f"unavailable: {e}"
+        return (p.stdout or p.stderr).splitlines()[0] if (p.stdout or p.stderr) else f"exit {p.returncode}"
+    try:
+        home = r_home()
+    except (OSError, subprocess.SubprocessError) as e:
+        home = f"unavailable: {e}"
+    return "\n".join([home, first_line([os.path.join(home, "bin", "R"), "--version"]),
+                      first_line([valgrind_path(), "--version"])])
+
+
+def code_digest(extra=(), environ=None, tools=None):
     """The digest of what measures a record: CODE_FILES, `extra` (the
-    caller's orchestration, perf.py's cmd_run), and the measurement's
-    environment (measure_env): a record measured otherwise is not
-    reused."""
+    caller's orchestration, perf.py's cmd_run), the measurement's
+    environment (measure_env), and the R and valgrind that measure
+    (tools_fingerprint): a record measured otherwise is not reused."""
+    tools = tools_fingerprint() if tools is None else tools
     h = hashlib.sha256()
     for f in CODE_FILES:
         with open(os.path.join(ROOT, f), "rb") as fh:
@@ -122,6 +145,7 @@ def code_digest(extra=(), environ=None):
     for x in extra:
         h.update(b"\0extra\0" + x.encode())
     h.update(b"\0env\0" + json.dumps(measure_env(environ)).encode())
+    h.update(b"\0tools\0" + tools.encode())
     return h.hexdigest()[:16]
 
 
@@ -167,6 +191,7 @@ def command(runtime, robigo, file, instr):
         # Under valgrind run R's executable directly (Rscript would exec it).
         return [os.path.join(r_home(), "bin", "exec", "R"), "--vanilla", "--no-echo", "--no-restore", "-f", file]
     return ["Rscript", "--vanilla", file]
+
 
 def valgrind_path():
     """$VALGRIND, the private build if there is one, or the one on PATH."""

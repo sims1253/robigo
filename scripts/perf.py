@@ -62,27 +62,6 @@ import tempfile
 import time
 import tomllib
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from perf_suite import (  # noqa: E402,F401  (perf.<name> stays the API)
-    BASE_ENV,
-    CACHE,
-    CODE_FILES,
-    DRIVER,
-    MEASURE_ENV,
-    cache_counters,
-    code_digest,
-    command,
-    conf,
-    gnur_inputs,
-    measure_env,
-    program_digests,
-    programs,
-    r_home,
-    run_one,
-    suite_files,
-    suite_src,
-    valgrind_path,
-)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATE = os.path.join(ROOT, ".robigo")
@@ -112,6 +91,27 @@ def env_pair(kv):
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from corpus import pins, robigo_path  # noqa: E402
+from perf_suite import (  # noqa: E402,F401  (perf.<name> stays the API)
+    BASE_ENV,
+    CACHE,
+    CODE_FILES,
+    DRIVER,
+    MEASURE_ENV,
+    cache_counters,
+    code_digest,
+    command,
+    conf,
+    gnur_inputs,
+    measure_env,
+    program_digests,
+    programs,
+    r_home,
+    run_one,
+    suite_files,
+    suite_src,
+    tools_fingerprint,
+    valgrind_path,
+)
 from scratch import scratch_dir  # noqa: E402
 
 # The gate's threshold: a benchmark with more than this many percent more
@@ -139,6 +139,7 @@ def rt_startup():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
 
 def cmd_gnur_inputs(_):
     for p in gnur_inputs():
@@ -363,11 +364,11 @@ def cmd_run(a):
     report(doc, False)
 
 
-def gnur_code_digest(environ=None):
+def gnur_code_digest(environ=None, tools=None):
     """perf_suite.code_digest with cmd_run's source: the orchestration
     `perf.py run` measures GNU R's records with (scripts/perf-gnur.py)."""
     import inspect
-    return code_digest([inspect.getsource(cmd_run)], environ)
+    return code_digest([inspect.getsource(cmd_run)], environ, tools)
 
 
 def geomean(xs):

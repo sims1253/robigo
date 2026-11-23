@@ -155,7 +155,7 @@ def fill(path, rx=None, measure=measure, known=None, digests=None, code=None):
               for k in ("changed program", "changed measurement code", "failure no longer known", "no record")}
     # (stdout: the job's step tees it into the summary)
     print(f"perf-gnur: {len(missing)} of {len(want)} selected benchmark(s) re-measured ("
-            + ", ".join(f"{k} {v}" for k, v in counts.items()) + ")")
+          + ", ".join(f"{k} {v}" for k, v in counts.items()) + ")")
     fresh = []
     if missing:
         print(f"perf-gnur: measuring GNU R for {len(missing)} selected benchmark(s) without a usable record")
