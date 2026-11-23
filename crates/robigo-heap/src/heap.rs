@@ -106,7 +106,13 @@ pub struct Block {
     /// below it was allocated before the boundary (the free list is set
     /// aside meanwhile, so a later one is carved above it).
     pub boot_bump: u32,
-    _rsv: [u8; 4],
+    /// The vector cells (`heapsize::vec_cells`, GNU R's VECREC units) of
+    /// the objects in this block, as their allocations counted them into
+    /// the vector heap's use (`valloc`): GNU R counts a small vector by its
+    /// class when it is allocated, and so does this, so the sweep takes a
+    /// block's dead cells as this less its survivors' instead of
+    /// recounting every dead object ([`crate::gc::Core`]'s sweep).
+    pub cells: u32,
     /// one bit per granule: this granule starts an object.
     pub starts: [u64; START_WORDS],
     /// one bit per granule: the object starting here was marked by the
@@ -326,7 +332,7 @@ impl Heap {
                             immortals: 0,
                             remembered: self.remembered,
                             boot_bump: 0,
-                            _rsv: [0; 4],
+                            cells: 0,
                             starts: [0; START_WORDS],
                             marks: [0; START_WORDS],
                         },
