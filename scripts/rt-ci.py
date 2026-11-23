@@ -672,9 +672,14 @@ def steps(crates):
         ("ROBIGO_GC_MOVE (move every movable object at every collection), with gctorture",
          {**TREE_RUNS, **{"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **FREEZE_OFF}}, [*crate, *pkgs, *skip]),
         # H8: the young objects at each collection, everything at every N-th;
-        # the nightly runs it with every collection moving everything
-        (f"conformance under ROBIGO_GC_MOVE={GC_MOVE_YOUNG} with gctorture (E3)",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": GC_MOVE_YOUNG, **FREEZE_OFF, **AFTER_START, **slow,
+        # the nightly runs it with every collection moving everything. Under
+        # M1's loader, INTERIM(L5): with the freeze off the rdb boot's heap
+        # (base and the compiler, 42k objects) is marked at every collection,
+        # and five cases passed their limits (H's ruling on the flip,
+        # docs/verification.md's E3 paragraph); the freeze on would leave the
+        # boot objects unmoved, which is what the step is for
+        (f"conformance under ROBIGO_GC_MOVE={GC_MOVE_YOUNG} with gctorture, M1's loader (ROBIGO_RT_BOOT=m1, E3)",
+         {"ROBIGO_RT_BOOT": "m1", "ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": GC_MOVE_YOUNG, **FREEZE_OFF, **AFTER_START, **slow,
           "ROBIGO_CONF_TIMEOUTS": case_timeouts({**GCTORTURE_FIRST, **YOUNG_MOVE_FIRST, **YOUNG_MOVE_SLOW})}, conformance),
         # D5's frame recycling (docs/g3.md §16): every frame that would be recycled
         # is poisoned and held back instead, so a frame that escaped without

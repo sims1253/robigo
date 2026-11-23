@@ -998,6 +998,53 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
 
    The artifact keeps the full diffs and the two transcripts. The modes of
    `docs/g3.md` §16 add steps here.
+
+   **Two steps under M1's loader, INTERIM(L5).** H's statement:
+
+   > The young:16 step (ROBIGO_GC_MOVE=young:16 with gctorture, the freeze
+   > off) runs under M1's loader, not the default rdb boot. Under rdb the
+   > unfrozen boot heap (42k objects: base and the compiler) is marked at
+   > every collection, five cases exceed their allowances, and its cost
+   > scales with the boot heap, not with N. So per PR, boot objects are
+   > moved under M1's boot only; under rdb they are moved only by the
+   > nightly's `--full-move` conformance. When M1's loader is deleted, this
+   > step needs one of: young:16 with the freeze on after the heap work
+   > that lets the mover and the frozen set compose (giving up per-PR moves
+   > of boot objects), or young collections that skip old objects (the
+   > sticky-mark design, parked in the collector-cost page).
+
+   The measurements, on the flip's gate binary (a4e44f022) at load 22-45:
+   - **The step under rdb:** five cases timed out.
+     `tests/r/memory/finalizers-self-ref-envs.R` ran its full 1,200 s.
+     `tests/r/memory/auto-cycles.R`, `tests/r/lang/tailcall-frames.R`,
+     `tests/r/lang/exec-tail-frames.R` and
+     `tests/r/jit/loop-closed-form-super.R` each ran 600 s of 600 s.
+   - **`tailcall-frames.R` alone, in the step's exact environment:** under
+     m1 the whole run is 882.7 G `instructions:u` (about 2 minutes, its
+     output GNU R's). Under rdb it passed 3,803.1 G in 1,215 s without
+     printing its first line, and was stopped there.
+
+   E4 (`scripts/rt-overshoot.py`) runs every program under the default boot,
+   but those its `BOOTS` names, each with the boot and the reason, printed
+   with the step's table. Only `benchmarks/rt/mem/strings1e6.R`
+   (`x <- paste0("u", 1:1000000)`) is named. It runs under `m1` and must
+   pass there.
+
+   Under both boots it has one collection, at paste0's return. By then rdb
+   has allocated 51,826 more objects, the boot heap. So the node trigger
+   falls about 52k CHARSXPs earlier inside paste0's loop. paste0 has no
+   safepoint until it returns, so what it allocates after the trigger is
+   overshoot. GNU R collects inside the loop, because its allocVector
+   collects anywhere.
+
+   | boot | max overshoot | bound |
+   |---|---:|---:|
+   | m1 | 31,631,328 bytes | 33,554,432 |
+   | rdb, eval | 34,116,528 bytes | 33,554,432 |
+   | rdb, bc | 34,046,544 bytes | 33,554,432 |
+
+   The entry goes when paste0's string loop collects. The program must then
+   pass under rdb.
 3. **build:** release build, base-package natives, the binary the heavy
    jobs use; the ratchet markers, the parse-corpus ratchet and the builtin
    coverage baseline (`scripts/builtin-coverage.py --check`) are checked

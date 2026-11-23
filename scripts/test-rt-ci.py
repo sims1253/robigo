@@ -123,7 +123,7 @@ class RtCi(unittest.TestCase):
                          ["conformance under M1's loader with the boot heap's freeze off (ROBIGO_RT_BOOT=m1, "
                           "ROBIGO_GC_FREEZE=0)",
                           "conformance under gctorture (E3)",
-                          f"conformance under ROBIGO_GC_MOVE={rt.GC_MOVE_YOUNG} with gctorture (E3)"])
+                          f"conformance under ROBIGO_GC_MOVE={rt.GC_MOVE_YOUNG} with gctorture, M1's loader (ROBIGO_RT_BOOT=m1, E3)"])
         self.assertEqual([t for t, s in where.items() if s == "builtin-diff"],
                          ["builtin differential and its planted divergences (A4, scripts/builtin-diff.py ci)"])
         self.assertEqual([t for t, s in where.items() if s == "feature-builds"],
@@ -599,7 +599,7 @@ class RtCi(unittest.TestCase):
         plans["full-move"] = rt.full_move_steps()
         plans["freeze-check"] = rt.freeze_check_steps()
         binary_scripts = ("scripts/rt-stress.sh", "scripts/rt-overshoot.py", "scripts/rt-fail-alloc.py",
-                          "scripts/rt-tcache-mutate.py", "scripts/builtin-diff.py")
+                          "scripts/rt-tcache-mutate.py", "scripts/rt-bc-mutate.py", "scripts/builtin-diff.py")
 
         def build_of(cmd):
             # (a release cargo command's build: its features, or plain)
@@ -635,6 +635,38 @@ class RtCi(unittest.TestCase):
                 self.assertEqual(tree[target], binary.get(target),
                                  f"{name}: {title}: the tree was written by another build")
         self.assertGreater(checked, 20)
+
+    def test_only_the_overshoot_programs_named_leave_the_default_boot(self):
+        # E4 runs every program under the default boot but those
+        # rt-overshoot's BOOTS names (INTERIM(L5), the foreman's ruling on
+        # the flip): each named one is a program it runs, names a boot that
+        # is not the default, and says why; run() sets ROBIGO_RT_BOOT for
+        # those alone, and never for the others
+        import tempfile
+        from unittest import mock
+        spec = importlib.util.spec_from_file_location("rt_overshoot", HERE / "rt-overshoot.py")
+        ov = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ov)
+        self.assertEqual(set(ov.BOOTS), {"benchmarks/rt/mem/strings1e6.R"})
+        with tempfile.TemporaryDirectory() as tmp:
+            names = [n for n, _p in ov.programs(tmp)]
+        for name, (boot, why) in ov.BOOTS.items():
+            self.assertIn(name, names)
+            self.assertIn(boot, ("m1", "stage0"), name)
+            self.assertTrue(why.strip(), name)
+        seen = {}
+
+        def fake(cmd, env, **_kw):
+            seen[cmd[1]] = env.get("ROBIGO_RT_BOOT")
+            return mock.Mock(returncode=0, stderr=b"")
+        with mock.patch.dict(os.environ, {}, clear=False), mock.patch.object(ov.subprocess, "run", side_effect=fake):
+            os.environ.pop("ROBIGO_RT_BOOT", None)
+            for name in names[:3] + list(ov.BOOTS):
+                r = ov.run("/bin/robigo-rt", name, name, "eval", "/libs")
+                self.assertEqual(r["boot"], ov.BOOTS.get(name, (None, ""))[0], name)
+        for name, boot in seen.items():
+            self.assertEqual(boot, ov.BOOTS[name][0] if name in ov.BOOTS else None, name)
+        self.assertEqual(len(seen), 4)
 
     # Every file that runs a robigo-rt binary, and how that binary gets base's
     # database tree written by itself (a binary naming no boot boots rdb once
@@ -1322,13 +1354,18 @@ class RtCi(unittest.TestCase):
         moving = [e for t, e, c in steps if "ROBIGO_GC_MOVE" in e and "--exact" in c]
         self.assertEqual(len(moving), 1)
         self.assertEqual(moving[0]["ROBIGO_GC_MOVE"], rt.GC_MOVE_YOUNG)
+        # under M1's loader with the freeze off, INTERIM(L5): the rdb boot's
+        # unfrozen heap is marked at every collection (five cases over their
+        # limits), and the freeze on would leave the boot objects unmoved
+        # (H's ruling on the flip); the default boot fails this test
+        self.assertEqual((moving[0].get("ROBIGO_RT_BOOT"), moving[0]["ROBIGO_GC_FREEZE"]), ("m1", "0"))
         # (and the plain gctorture step, which names GCTORTURE_FIRST at its
         # own limit: started first, not given longer)
         plain = [e for t, e, c in steps if t == "conformance under gctorture (E3)"]
         # (every default-timeout step names DEFAULT_STEP_SLOW: set apart)
         named = [t for t, e, _ in steps if "ROBIGO_CONF_TIMEOUTS" in e and "ROBIGO_CONF_TIMEOUT" in e]
         self.assertEqual(sorted(named), sorted(["conformance under gctorture (E3)",
-                                                f"conformance under ROBIGO_GC_MOVE={rt.GC_MOVE_YOUNG} with gctorture (E3)"]))
+                                                f"conformance under ROBIGO_GC_MOVE={rt.GC_MOVE_YOUNG} with gctorture, M1's loader (ROBIGO_RT_BOOT=m1, E3)"]))
         first = dict(item.rsplit("=", 1) for item in plain[0]["ROBIGO_CONF_TIMEOUTS"].split(","))
         self.assertEqual(first, {c: str(s) for c, s in {**rt.GCTORTURE_FIRST, **rt.GCTORTURE_SLOW}.items()})
         # GCTORTURE_SLOW's get longer (c-stack-overflow.R's interim 780 s);
