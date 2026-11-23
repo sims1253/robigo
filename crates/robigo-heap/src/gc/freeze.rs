@@ -470,6 +470,69 @@ impl Core {
         }
     }
 
+    /// `ROBIGO_GC_FREEZE_CHECK`'s I2 and I3 (the pass's bar, (d)), at a
+    /// checked collection after the pass step:
+    /// - **I2:** every frozen object is reachable from the roots' freeze
+    ///   roots through frozen objects. A pass just ran, or no dirty event
+    ///   since the last one removed a frozen edge: so an unreached frozen
+    ///   object means an edge left the frozen graph without a note (a
+    ///   missing row in the bar's table (b)).
+    /// - **I3:** [`flags::FROZEN`] is set on exactly the frozen list's
+    ///   members, each of them `IMMORTAL`.
+    ///
+    /// A failure is reported as the check's others are (`check_failed`).
+    ///
+    /// # Safety
+    /// At a collection's start, after the pass step: every edge `roots`
+    /// shows is null or live.
+    pub(super) unsafe fn check_frozen_reach<R: Trace + ?Sized>(&self, roots: &mut R) {
+        let mut work = Vec::new();
+        if !roots.trace_freeze(&mut Edges(&mut work)) {
+            return;
+        }
+        let mut reached: HashSet<usize, BuildFx> = HashSet::default();
+        let mut kids = Vec::new();
+        // SAFETY: the caller's contract; frozen objects are live.
+        unsafe {
+            while let Some(x) = work.pop() {
+                if x.is_null() || !self.is_frozen(x) || !reached.insert(x.addr()) {
+                    continue;
+                }
+                kids.clear();
+                x.trace_fields(&mut Edges(&mut kids));
+                work.extend_from_slice(&kids);
+            }
+            for &f in &self.frozen {
+                if f.flags() & (flags::FROZEN | flags::IMMORTAL) != flags::FROZEN | flags::IMMORTAL {
+                    check_failed(format!(
+                        "robigo: ROBIGO_GC_FREEZE_CHECK: {:#x} (type {}) is on the frozen list without FROZEN and IMMORTAL",
+                        f.addr(),
+                        f.typ()
+                    ));
+                }
+                if !reached.contains(&f.addr()) {
+                    check_failed(format!(
+                        "robigo: ROBIGO_GC_FREEZE_CHECK: frozen {:#x} (type {}) is unreachable from the freeze roots, and no dirty event was noted since the last frozen-reachability pass",
+                        f.addr(),
+                        f.typ()
+                    ));
+                }
+            }
+            let mut marked = 0usize;
+            self.for_each_live_object(|p| {
+                if *p.add(header::OFF_FLAGS) & flags::FROZEN != 0 {
+                    marked += 1;
+                }
+            });
+            if marked != self.frozen.len() {
+                check_failed(format!(
+                    "robigo: ROBIGO_GC_FREEZE_CHECK: {marked} live objects have FROZEN, the frozen list has {}",
+                    self.frozen.len()
+                ));
+            }
+        }
+    }
+
     /// Undo [`Core::make_immortal`] for a frozen object: an ordinary object
     /// again. Its reference count stays at the frozen maximum (shared).
     /// The caller takes it out of the frozen set and the log.
@@ -970,6 +1033,31 @@ mod tests {
             assert_eq!(c.remembered.1.get() & Remembered::DIRTY, 0, "in an ordinary object: no note");
             head.store(head.as_ptr().add(crate::layout::node::OFF_CAR) as *mut Sexp, young);
             assert_ne!(c.remembered.1.get() & Remembered::DIRTY, 0, "a frozen value overwritten in a frozen object");
+        }
+    }
+
+    /// I2 catches an edge cut without a note (a write that bypasses the
+    /// barrier, as a missing row of the bar's table (b) would): the cut-off
+    /// frozen object is reported unreachable.
+    #[test]
+    #[should_panic(expected = "is unreachable from the freeze roots")]
+    fn the_check_reports_a_frozen_edge_cut_without_a_note() {
+        let mut c = Core::new();
+        c.set_freeze_enabled(true);
+        if !c.freeze_enabled() {
+            panic!("is unreachable from the freeze roots (a moving mode: the freeze is off)");
+        }
+        let nil = c.nil();
+        // SAFETY: fresh objects of this heap; nothing collects.
+        unsafe {
+            let leaf = c.alloc_vector(INTSXP, 1).unwrap();
+            let head = c.alloc_node(LISTSXP, leaf, nil, nil).unwrap();
+            let mut roots = WithFreeze { all: vec![head], freeze: head };
+            c.freeze(&mut roots, |_| false);
+            c.check_frozen_reach(&mut roots);
+            // the barrier bypassed: no note
+            *(head.as_ptr().add(crate::layout::node::OFF_CAR) as *mut Sexp) = nil;
+            c.check_frozen_reach(&mut roots);
         }
     }
 }

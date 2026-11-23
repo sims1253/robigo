@@ -2904,6 +2904,8 @@ impl Core {
                 if self.freeze_check_count >= self.freeze_check {
                     self.freeze_check_count = 0;
                     self.freeze_checking = true;
+                    // I2 and I3 (the pass's bar, (d)): after the pass step
+                    self.check_frozen_reach(roots);
                     self.freeze_reach = self.independent_reach(roots);
                 }
             }
