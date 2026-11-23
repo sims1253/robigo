@@ -285,9 +285,15 @@ impl<F: SysFile> Stream<F> {
     fn doallocate(&mut self) {
         let mut size = BUFSIZ;
         if let Ok(st) = self.fd().stat() {
-            // Possibly a tty (`local_isatty` keeps errno).
-            if st.is_chr && self.fd().isatty() {
-                self.line_buf = true;
+            // Possibly a tty: `local_isatty`, which keeps errno (isatty sets
+            // ENOTTY for a character device that is not a terminal)
+            if st.is_chr {
+                let saved = robigo_rtcore::clib::errno();
+                let tty = self.fd().isatty();
+                robigo_rtcore::clib::set_errno(saved);
+                if tty {
+                    self.line_buf = true;
+                }
             }
             if st.blksize > 0 && st.blksize < BUFSIZ as u64 {
                 size = st.blksize as usize;

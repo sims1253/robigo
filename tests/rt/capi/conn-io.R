@@ -2,7 +2,8 @@
 # connection: GNU R's file_read and file_write move between the read and
 # write positions before fread/fwrite look at the request, so an empty read
 # writes what is buffered; a read of a stream open only for writing (and a
-# write of one open only for reading) is glibc's EBADF, in C's errno.
+# write of one open only for reading) is glibc's EBADF, in C's errno, which
+# a successful write leaves as it was.
 dyn.load(paste0(Sys.getenv("RT_CAPI_LIBS"), "/conn_view.so"))
 f <- tempfile()
 con <- file(f, "w+b")
@@ -22,3 +23,8 @@ con <- file(f, "rb")
 close(con)
 file.size(f)
 invisible(file.remove(f))
+# a character device that is not a terminal: glibc's buffer allocation asks
+# isatty, and keeps errno (local_isatty)
+con <- file("/dev/null", "wb")
+.Call("rt_conn_write", con, as.raw(65))
+close(con)
