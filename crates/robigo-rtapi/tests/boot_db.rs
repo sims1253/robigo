@@ -309,7 +309,11 @@ fn an_unknown_boot_is_an_error() {
         .unwrap();
     assert_eq!(
         (String::from_utf8_lossy(&o.stdout).as_ref(), String::from_utf8_lossy(&o.stderr).as_ref(), o.status.code()),
-        ("", "robigo-rt: ROBIGO_RT_BOOT is 'rbd': it is 'stage0', 'rdb' or unset (M1's loader)\n", Some(2))
+        (
+            "",
+            "robigo-rt: ROBIGO_RT_BOOT is 'rbd': it is 'stage0', 'rdb' or 'm1' (M1's loader, also when unset)\n",
+            Some(2)
+        )
     );
 }
 

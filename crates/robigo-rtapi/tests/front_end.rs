@@ -96,6 +96,24 @@ fn the_directories_are_the_tree_s() {
     assert_eq!(homes(&[("R_DOC_DIR", "/d"), ("R_SHARE_DIR", ""), ("R_INCLUDE_DIR", "/i")]), own);
 }
 
+/// `ROBIGO_RT_BOOT=m1` names M1's loader, the boot when it is unset (so a
+/// harness can name it for a binary of either default): the same start.
+#[test]
+fn m1_names_the_unset_boot() {
+    let expr = "cat(loadedNamespaces(), exists('.Library.site', envir = globalenv()), '\\n')";
+    let run = |env: &[(&str, &str)]| {
+        let o = front_end(env).args(["-e", expr]).output().expect("running robigo-rt");
+        (
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+            o.status.code(),
+        )
+    };
+    let unset = run(&[]);
+    assert_eq!(unset.2, Some(0), "{unset:?}");
+    assert_eq!(run(&[("ROBIGO_RT_BOOT", "m1")]), unset);
+}
+
 /// Stage 0 reads base's source under robigo-rt's own tree: with none in
 /// the default place (no install's, and a checkout, `ROBIGO_RT_CHECKOUT`,
 /// whose tree is not made), it fails at start-up with GNU R's script's
