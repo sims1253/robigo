@@ -1,0 +1,18 @@
+list(.Code, list(12L, BASEGUARD.OP, 0L, 6L, CALLSPECIAL.OP, 0L, 
+    RETURN.OP), list(round(2.567, 2), structure(c(NA, 0L, 0L, 
+0L, 0L, 0L, 0L), class = "expressionsIndex")))
+list(.Code, list(12L, BASEGUARD.OP, 1L, 6L, CALLSPECIAL.OP, 1L, 
+    GETVAR.OP, 2L, ADD.OP, 0L, RETURN.OP), list(signif(123456, 
+    2) + x, signif(123456, 2), x, structure(c(NA, 1L, 1L, 1L, 
+1L, 1L, 2L, 2L, 0L, 0L, 0L), class = "expressionsIndex")))
+list(.Code, list(12L, BASEGUARD.OP, 0L, 6L, CALLSPECIAL.OP, 0L, 
+    RETURN.OP), list(round(1 + (0+2i)), structure(c(NA, 0L, 0L, 
+0L, 0L, 0L, 0L), class = "expressionsIndex")))
+list(.Code, list(12L, BASEGUARD.OP, 0L, 6L, CALLSPECIAL.OP, 0L, 
+    RETURN.OP), list(round(digits = 2), structure(c(NA, 0L, 0L, 
+0L, 0L, 0L, 0L), class = "expressionsIndex")))
+list(.Code, list(12L, BASEGUARD.OP, 0L, 6L, CALLSPECIAL.OP, 0L, 
+    RETURN.OP), list(round(x, 2), structure(c(NA, 0L, 0L, 0L, 
+0L, 0L, 0L), class = "expressionsIndex")))
+[1] 1.20 5.68
+[1] 1.5 1.5

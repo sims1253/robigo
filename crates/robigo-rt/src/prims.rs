@@ -172,6 +172,8 @@ static RT_PRIMS: &[PrimDef] = &[
     special_fn("rbind", crate::bind::do_bind::<false>, 10, -1),
     // arithmetic.c
     special_fn("log", crate::specials::do_log, 0, -1),
+    special_fn("round", crate::specials::do_math2::<false>, 0, -1),
+    special_fn("signif", crate::specials::do_math2::<true>, 0, -1),
     // objects.c (S1)
     special_fn("UseMethod", crate::dispatch::do_usemethod, 200, -1),
     special_fn("NextMethod", crate::dispatch::do_nextmethod, 210, -1),
