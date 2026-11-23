@@ -402,6 +402,38 @@ impl Cx {
     /// The value is not marked: `ENSURE_NAMEDMAX` does nothing under
     /// reference counting (`Defn.h:337-340`).
     // R: eval.c:forcePromise
+    /// Whether `p` is a promise `forcePromise` would evaluate plainly: not
+    /// evaluated, PRSEEN 0, its code not byte code.
+    pub fn promise_unforced_ast(&self, p: Ref<'_>) -> bool {
+        if p.sexptype() != PROMSXP {
+            return false;
+        }
+        let ps = p.sexp();
+        // SAFETY: a live promise (a `Ref` is live); its header fields read.
+        unsafe {
+            !is_evaluated(self.iso(), ps) && ps.gp() == 0 && ps.extra() & robigo_heap::extra::promise::BYTECODE == 0
+        }
+    }
+
+    /// The end of `forcePromise` for a value the caller computed as the
+    /// promise's code would (`SET_PRVALUE`, `SET_PRSEEN(0)`,
+    /// `SET_PRENV(R_NilValue)`): for a promise [`Cx::promise_unforced_ast`]
+    /// accepts, whose evaluation the caller has shown to be unobservable.
+    pub fn set_promise_forced(&mut self, p: Root<'_>, v: Root<'_>) {
+        let iso = self.iso();
+        let (ps, val) = (p.bind(self).sexp(), v.bind(self).sexp());
+        assert!(
+            self.promise_unforced_ast(p.bind(self)),
+            "robigo: set_promise_forced on a promise not plainly unforced"
+        );
+        // SAFETY: a rooted promise and value, as `force_promise`'s end.
+        unsafe {
+            set_prvalue(ps, val, iso.nil);
+            ps.set_gp(0);
+            ps.set_tag(iso.nil);
+        }
+    }
+
     pub fn force_promise(&mut self, p: Root<'_>, out: Out<'_>) -> RResult<()> {
         assert_eq!(p.bind(self).sexptype(), PROMSXP, "robigo: forcing a non-promise");
         // SAFETY: a rooted promise.

@@ -152,6 +152,19 @@ impl Cx {
         self.check_c_stack_extra(0)
     }
 
+    /// Whether `bytes` more of the C stack stay within `R_CStackLimit`: a
+    /// probe that signals nothing (a caller choosing a path that uses less
+    /// stack than one that checks).
+    pub fn c_stack_headroom(&self, bytes: usize) -> bool {
+        let st = self.ctxs();
+        let limit = st.cstack_limit.get();
+        if limit == usize::MAX {
+            return true;
+        }
+        let usage = c_stack_usage(st.cstack_start, st.cstack_dir);
+        isize::try_from(bytes).ok().and_then(|b| usage.checked_add(b)).is_some_and(|u| u <= limit as isize)
+    }
+
     /// `R_CheckStack2(extra)`: [`Cx::check_c_stack`] for a caller about to
     /// use `extra` more bytes.
     pub fn check_c_stack_extra(&mut self, extra: usize) -> RResult<()> {

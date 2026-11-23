@@ -7,9 +7,11 @@ import json
 import os
 import shutil
 import signal
+import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import unittest.mock
 from types import SimpleNamespace
@@ -364,6 +366,31 @@ class Memory(unittest.TestCase):
     """memory() on small programs: its readings, and that it cannot hang."""
     PY = sys.executable
 
+    @unittest.skipUnless(shutil.which("cc"), "no cc")
+    def test_no_thread_starves_behind_threads_that_stop_again_at_once(self):
+        # sixteen threads in a loop of system calls, each stopping again as
+        # soon as it is resumed, and an older thread that must run once to
+        # end them. Served one waitpid at a time the older one starved: the
+        # run never ended (perf-rt on #1006, 20 sleeping Python threads, once;
+        # here it timed out 5 runs of 5). Every stop of a round is served now
+        c = ("#include <pthread.h>\n#include <stdatomic.h>\n#include <unistd.h>\n#include <sys/syscall.h>\n"
+             "static atomic_int done;\n"
+             "static void *older(void *_) { usleep(50000); atomic_store_explicit(&done, 1, memory_order_relaxed);"
+             " return 0; }\n"
+             "static void *newer(void *_) {\n"
+             "    while (!atomic_load_explicit(&done, memory_order_relaxed)) syscall(SYS_getppid);\n"
+             "    return 0;\n}\n"
+             "int main(void) {\n    pthread_t a, b[16];\n    pthread_create(&a, 0, older, 0);\n"
+             "    for (int i = 0; i < 16; i++) pthread_create(&b[i], 0, newer, 0);\n"
+             "    pthread_join(a, 0);\n    for (int i = 0; i < 16; i++) pthread_join(b[i], 0);\n    return 0;\n}\n")
+        with tempfile.TemporaryDirectory() as d:
+            src, exe = os.path.join(d, "starve.c"), os.path.join(d, "starve")
+            with open(src, "w") as f:
+                f.write(c)
+            subprocess.run(["cc", "-O2", "-pthread", "-o", exe, src], check=True)
+            _, _, status, _, kids = su.memory([exe], dict(os.environ), True, timeout=10)
+        self.assertEqual((status, kids), (0, 0))
+
     def test_a_large_output_does_not_block_the_child(self):
         # far more than a pipe's buffer, printed before the exit stop
         a, h, status, out, _ = su.memory([self.PY, "-c", "import sys; sys.stdout.write('x' * 2_000_000)"],
@@ -496,6 +523,166 @@ class Memory(unittest.TestCase):
             su.memory([self.PY, "-c", "import time; time.sleep(30)"], dict(os.environ), timeout=1)
         self.assertIn("ran over", str(e.exception))
         self.no_child_left()
+
+    def bounded(self, f, limit):
+        """f()'s outcome (its value, or the exception it raised), from a
+        thread given `limit` seconds: a memory() that hangs fails the test
+        instead of the suite."""
+        box = {}
+
+        def run():
+            try:
+                box["value"] = f()
+            except BaseException as e:  # noqa: BLE001 - SystemExit included
+                box["error"] = e
+        th = threading.Thread(target=run, daemon=True)
+        t0 = time.monotonic()
+        th.start()
+        th.join(limit)
+        self.assertFalse(th.is_alive(), f"memory() still running after {limit} s")
+        return box, time.monotonic() - t0
+
+    def test_a_start_that_never_ends_with_processes_and_threads_ends_at_its_timeout(self):
+        # the timeout ends every wait memory() makes: a process the start
+        # made (waited for through the group, never alone), threads, and the
+        # leader parked at its exit stop once killed
+        # (each child names the marker in its argv, which group_left() reads;
+        # sleep(1) refuses it as an interval, so a Python sleeper)
+        sleeper = "[sys.executable, '-c', 'import time; time.sleep(60)', 'rt-startup-test-child']"
+        prog = ("import subprocess, threading, time, os, sys\n"
+                f"subprocess.Popen({sleeper})\n"
+                f"if os.fork() == 0:\n    os.execv(sys.executable, {sleeper})\n"
+                "[threading.Thread(target=time.sleep, args=(60,)).start() for _ in range(4)]\n"
+                "time.sleep(60)\n")
+        for syscalls in (True, False):
+            box, secs = self.bounded(lambda: su.memory([self.PY, "-c", prog], dict(os.environ), syscalls, timeout=2),
+                                     30)
+            self.assertIsInstance(box.get("error"), SystemExit, box)
+            self.assertIn("ran over 2 s", str(box["error"]))
+            self.assertLess(secs, 30)
+            self.no_child_left()
+            self.assertEqual(self.group_left(), [])
+
+    def test_every_blocking_wait_is_on_the_group(self):
+        # the only wait the timeout cannot end is one on a single tracee: past
+        # the exec stop's (before the timer starts), every blocking wait is on
+        # the start's process group
+        calls = []
+        real = os.waitpid
+
+        def spy(pid, options):
+            calls.append((pid, options))
+            return real(pid, options)
+        clone = ("import ctypes, signal\nlibc = ctypes.CDLL(None, use_errno=True)\n"
+                 "stack = ctypes.create_string_buffer(1 << 16)\n"
+                 "CB = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p)\n"
+                 "f = CB(lambda _: libc.pause())\n"
+                 "top = ctypes.c_void_p(ctypes.addressof(stack) + len(stack))\n"
+                 "libc.clone(f, top, signal.SIGUSR1, None)\nimport os\nos._exit(0)\n")
+        threads = "import threading, time\n[threading.Thread(target=time.sleep, args=(0.05,)).start() for _ in range(4)]\n"
+        forks = "import os\nif os.fork() == 0:\n    os._exit(0)\nos.wait()\n"
+        for prog in (clone, threads, forks):
+            calls.clear()
+            with unittest.mock.patch.object(su.os, "waitpid", spy):
+                su.memory([self.PY, "-c", prog], dict(os.environ), timeout=20)
+            blocking = [pid for pid, options in calls if not options & os.WNOHANG]
+            self.assertGreater(blocking[0], 0)
+            self.assertTrue(all(pid < 0 for pid in blocking[1:]), blocking)
+            self.no_child_left()
+
+    def test_an_exception_at_a_clone_event_reaps_every_tracee(self):
+        # Sol's case: the new thread never registered (its clone event's
+        # handling failed), so only a reap that waits on the whole group
+        # finds it, parked at its exit stop
+        prog = "import threading, time\n[threading.Thread(target=time.sleep, args=(0.2,)).start() for _ in range(8)]\n"
+        with unittest.mock.patch.object(su, "event_msg", side_effect=RuntimeError("no event message")):
+            box, secs = self.bounded(lambda: su.memory([self.PY, "-c", prog], dict(os.environ), timeout=5), 30)
+        self.assertIsInstance(box.get("error"), RuntimeError, box)
+        self.no_child_left()
+
+    @unittest.skipUnless(shutil.which("cc"), "no cc")
+    def test_a_thread_made_as_the_leader_exits_does_not_hold_the_exit(self):
+        # Sol's case: workers create threads while main exits. The SIGKILL
+        # of exit_group can suppress a clone event, so a new thread's exit
+        # stop comes from a tracee no event named: kept for its event it was
+        # never resumed, and the leader's exit waited past any timeout. And
+        # a clone event can name a task already gone (its message 0), which
+        # failed reading /proc/0. Four makers hit both within a few runs
+        c = ("#include <pthread.h>\n#include <unistd.h>\n"
+             "static void *idle(void *_) { return 0; }\n"
+             "static void *maker(void *_) { for (;;) { pthread_t t; if (!pthread_create(&t, 0, idle, 0))"
+             " pthread_detach(t); } }\n"
+             "int main(void) { for (int i = 0; i < 4; i++) { pthread_t m; pthread_create(&m, 0, maker, 0); }"
+             " usleep(200); _exit(0); }\n")
+        with tempfile.TemporaryDirectory() as d:
+            src, exe = os.path.join(d, "maker.c"), os.path.join(d, "maker")
+            with open(src, "w") as f:
+                f.write(c)
+            subprocess.run(["cc", "-O2", "-pthread", "-o", exe, src], check=True)
+            # (each race is rare per run: 100 runs, 50 in each mode, make
+            # a regression all but certain to show)
+            for i in range(100):
+                # with stops at system calls and without (Sol's r3: the
+                # event's own thread killed before its message is read)
+                syscalls = i % 2 == 0
+                box, secs = self.bounded(lambda: su.memory([exe], dict(os.environ), syscalls, timeout=5), 30)
+                self.assertNotIn("error", box, f"run {i} (syscalls={syscalls}): {box.get('error')!r}")
+                self.assertEqual(box["value"][2], 0)
+                self.no_child_left()
+
+    def test_once_the_timer_fires_the_stops_kept_for_an_event_are_resumed(self):
+        # a stop consumed before the timer fired and kept for an event that
+        # never comes (`early`): the run's end resumes it. The kept stop is
+        # scripted (a tracee id nothing uses; its resume meets ESRCH), the
+        # rest of the run is real
+        ghost = 4_000_000
+        script = [(ghost, (signal.SIGSTOP << 8) | 0x7F)]
+        real = os.waitpid
+        resumed = []
+        real_resume = su.resume
+
+        def wait(pid, options):
+            if pid < 0 and not options & os.WNOHANG and script:
+                return script.pop(0)
+            return real(pid, options)
+
+        def spy(req, tid, sig=0):
+            resumed.append(tid)
+            return real_resume(req, tid, sig)
+        with unittest.mock.patch.object(su.os, "waitpid", wait), unittest.mock.patch.object(su, "resume", spy):
+            box, _ = self.bounded(lambda: su.memory([self.PY, "-c", "import time; time.sleep(60)"],
+                                                    dict(os.environ), False, timeout=1), 30)
+        self.assertIsInstance(box.get("error"), SystemExit, box)
+        self.assertIn("ran over 1 s", str(box["error"]))
+        self.assertIn(ghost, resumed)
+        self.no_child_left()
+
+    def test_a_gone_task_has_no_thread_group(self):
+        # a clone event can name a task an exit_group already took (its
+        # message 0, or a tid whose /proc entry is reaped): no group, so
+        # memory() registers nothing for it (the race above hits it rarely)
+        self.assertIsNone(su.tgid(0))
+        self.assertIsNone(su.tgid(4_000_002))
+        self.assertEqual(su.tgid(os.getpid()), os.getpid())
+
+    def test_a_resume_ignores_esrch_only(self):
+        # ESRCH on restarting a gathered stop: the tracee was SIGKILLed while
+        # its stop waited in the round. Any other errno, and ESRCH from any
+        # request that is not such a restart, still raises
+        import errno
+        for err, swallowed in ((errno.ESRCH, True), (errno.EPERM, False), (errno.EIO, False), (errno.EINVAL, False)):
+            with unittest.mock.patch.object(su, "libc", SimpleNamespace(ptrace=lambda *a: -1)), \
+                    unittest.mock.patch.object(su.ctypes, "get_errno", return_value=err):
+                for req in (su.PTRACE_SYSCALL, su.PTRACE_CONT, su.PTRACE_DETACH):
+                    if swallowed:
+                        self.assertIsNone(su.resume(req, 12345))
+                    else:
+                        with self.assertRaises(OSError) as cm:
+                            su.resume(req, 12345)
+                        self.assertEqual(cm.exception.errno, err)
+                with self.assertRaises(OSError) as cm:
+                    su.ptrace(su.PTRACE_SETOPTIONS, 12345)
+                self.assertEqual(cm.exception.errno, err)
 
     def test_an_exception_while_traced_reaps_the_child(self):
         # a reading that fails at a system-call stop, and one that fails at
