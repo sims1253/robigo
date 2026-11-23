@@ -34,6 +34,16 @@ fn inputs() -> Vec<(&'static str, Vec<u8>)> {
         ("optna.R", b"options(echo = NA)\n3\n".to_vec()),
         ("last.R", b".Last <- function() cat(\"bye\\n\")\n1\n".to_vec()),
         ("stdin.R", b"1 + 1\n".to_vec()),
+        // --interactive against -f and -e, in either order
+        ("fi-file.R", b"cat(\"file\", interactive(), \"\\n\")\nstop(\"boom\")\ncat(\"after file\\n\")\n".to_vec()),
+        ("fi-stdin.R", b"cat(\"stdin\", interactive(), \"\\n\")\nstop(\"boom2\")\ncat(\"after stdin\\n\")\n".to_vec()),
+        // the interactive console (`R --no-readline --interactive`): the
+        // prompts, no echo, an error that does not end the session, warnings
+        // interactive: the line taken up to its first NUL (Rf_ReplIteration)
+        ("interactive-nul.R", b"1;\x00junk\n2\n".to_vec()),
+        // interactive: the error's traceback saved (jump_to_top_ex, R_Interactive)
+        ("interactive-tb.R", b"options(keep.source = FALSE)\nf <- function() stop(\"boom\")\nf()\ntraceback()\n".to_vec()),
+        ("interactive.R", b"1 + 1\ninteractive()\nx <- 2; x * 3\nstop(\"boom\")\nx\nf <- function(a) {\n  a + 1\n}\nf(1)\nwarning(\"careful\")\nlog(-1)\n\"after\"\n".to_vec()),
     ]
 }
 
@@ -80,6 +90,66 @@ fn cases(long_src: &[u8]) -> Vec<Case> {
             0,
         ),
         ("file-eq", vec!["--vanilla", "--quiet", "--file=echo.R"], None, ECHO.to_vec(), b"", 0),
+        (
+            "interactive-nul",
+            vec!["--no-readline", "--interactive", "--no-save", "--quiet"],
+            Some("interactive-nul.R"),
+            b"> [1] 1\n> [1] 2\n> \n".to_vec(),
+            b"",
+            0,
+        ),
+        (
+            "interactive-tb",
+            vec!["--no-readline", "--interactive", "--no-save", "--quiet"],
+            Some("interactive-tb.R"),
+            b"> > > > 2: stop(\"boom\")\n1: f()\n> \n".to_vec(),
+            b"Error in f() : boom\n",
+            0,
+        ),
+        (
+            "interactive",
+            vec!["--no-readline", "--interactive", "--no-save", "--quiet"],
+            Some("interactive.R"),
+            b"> [1] 2\n> [1] TRUE\n> [1] 6\n> > [1] 2\n> + + > [1] 2\n> > [1] NaN\n> [1] \"after\"\n> \n".to_vec(),
+            b"Error: boom\nWarning message:\ncareful \nWarning message:\nIn log(-1) : NaNs produced\n",
+            0,
+        ),
+        // --interactive ends the unix front end's own options: a -f or -e
+        // after it is not seen, and R reads stdin interactively; one before
+        // it makes R not interactive (system.c: R_Interactive && ...).
+        // R_common_command_line's options count wherever they stand.
+        (
+            "interactive-then-f",
+            vec!["--no-save", "--no-readline", "--quiet", "--interactive", "-f", "fi-file.R"],
+            Some("fi-stdin.R"),
+            b"> stdin TRUE \n> > after stdin\n> \n".to_vec(),
+            b"Error: boom2\n",
+            0,
+        ),
+        (
+            "f-then-interactive",
+            vec!["--no-save", "--no-readline", "--quiet", "-f", "fi-file.R", "--interactive"],
+            Some("fi-stdin.R"),
+            b"> cat(\"file\", interactive(), \"\\n\")\nfile FALSE \n> stop(\"boom\")\n".to_vec(),
+            b"Error: boom\nExecution halted\n",
+            1,
+        ),
+        (
+            "interactive-then-e",
+            vec!["--no-save", "--no-readline", "--quiet", "--interactive", "-e", "1"],
+            Some("fi-stdin.R"),
+            b"> stdin TRUE \n> > after stdin\n> \n".to_vec(),
+            b"Error: boom2\n",
+            0,
+        ),
+        (
+            "interactive-then-quiet",
+            vec!["--no-save", "--no-readline", "--interactive", "--quiet"],
+            Some("fi-stdin.R"),
+            b"> stdin TRUE \n> > after stdin\n> \n".to_vec(),
+            b"Error: boom2\n",
+            0,
+        ),
         (
             "file-stdin",
             vec!["--vanilla", "--quiet", "--file=-"],
@@ -164,8 +234,9 @@ fn cases(long_src: &[u8]) -> Vec<Case> {
         ),
     ];
     // R without --quiet: the greeting first (the -f file's, and stdin's),
-    // recorded on x86_64 (its Platform line)
-    if cfg!(target_arch = "x86_64") {
+    // recorded on x86_64 Linux with glibc (version.rs's platform(), and the
+    // recorded Platform line)
+    if cfg!(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64")) {
         let greet: [Case; 2] = [
             (
                 "greeting-f",
@@ -330,6 +401,62 @@ fn the_save_check_does_not_wait_for_stdin() {
         String::from_utf8_lossy(&out.stderr),
         "Fatal error: you must specify '--save', '--no-save' or '--vanilla'\n"
     );
+}
+
+/// Interactive R's default save action asks at the end ("Save workspace
+/// image? [y/n/c]: "), which is the session's clean-up and not ported yet:
+/// without --no-save (or --vanilla) robigo-rt says so and starts nothing.
+#[test]
+fn interactive_r_without_a_save_action_is_refused() {
+    let (out, err, status) = run(&std::env::temp_dir(), &["--interactive", "--quiet"], None);
+    assert_eq!((out, status), (Vec::new(), 2));
+    assert_eq!(
+        String::from_utf8_lossy(&err),
+        "robigo-rt: interactive R without --no-save or --vanilla (the 'Save workspace image?' question) is not implemented yet\n"
+    );
+}
+
+/// The console reads stdin as the session goes, a line at a time as
+/// `fgets` does: a statement's value shows while the pipe is still open
+/// (an R that read all of stdin first would wait for its end), in the
+/// interactive console and in R reading stdin as a script alike.
+#[test]
+fn the_console_answers_before_stdin_ends() {
+    use std::io::{Read, Write};
+    for args in [&["--vanilla", "--quiet"][..], &["--no-readline", "--interactive", "--vanilla", "--quiet"][..]] {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
+        cmd.args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        let mut child = cmd.spawn().expect("run robigo-rt");
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(b"1 + 1\n").unwrap();
+        stdin.flush().unwrap();
+        // read stdout until the value shows, with the pipe still open
+        let mut stdout = child.stdout.take().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut got = Vec::new();
+            let mut b = [0u8; 256];
+            while let Ok(n) = stdout.read(&mut b) {
+                if n == 0 {
+                    break;
+                }
+                got.extend_from_slice(&b[..n]);
+                if got.windows(6).any(|w| w == b"[1] 2\n") {
+                    let _ = tx.send(got);
+                    return;
+                }
+            }
+            // (the sender dropped here ends the wait at once: no value)
+        });
+        let got = rx.recv_timeout(std::time::Duration::from_secs(60));
+        drop(stdin);
+        if got.is_err() {
+            // (a console that never answered may never end either)
+            let _ = child.kill();
+        }
+        let _ = child.wait();
+        assert!(got.is_ok(), "{args:?}: no value before stdin ended");
+    }
 }
 
 /// `options(keep.source = TRUE)` would have the console keep source

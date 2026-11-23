@@ -56,8 +56,9 @@ pub(crate) fn arg_call<'s>(
 /// promises (`args` Some), its own arguments then: `f(cx, ac, op, None,
 /// rho, out)`. For the specials that read their arguments from their call
 /// and name it in their messages (`withVisible`, `forceAndCall`, `cbind`,
-/// `UseMethod`, ...): their body stays in `f`, inline as before, and this
+/// `NextMethod`, ...): their body stays in `f`, inline as before, and this
 /// cold path passes `None` for them, so the promises cannot be handed twice.
+/// (`UseMethod` keeps its own inline prologue: see `dispatch::do_usemethod`.)
 #[cold]
 #[inline(never)]
 pub(crate) fn rerun_apart(
