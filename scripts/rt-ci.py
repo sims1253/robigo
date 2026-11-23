@@ -509,6 +509,13 @@ def steps(crates):
         ("the translation cache as damaged input (scripts/rt-tcache-mutate.py)", {},
          ["python3", "scripts/rt-tcache-mutate.py", "--robigo-rt", rt_binary(), "--pkg", "base", "--pkg", "compiler",
           "--runs", "300", "--seed", "1", "--swap-runs", "40"]),
+        # #976: hostile byte code (mutated code vectors through mkCode and
+        # bcClose) ends as R code ends: no signal, no panic, and a start
+        # still running at the limit stops at SIGINT. The corpus (the
+        # mutations that crashed before) replayed, then a fixed random batch
+        ("hostile byte code through the translator (scripts/rt-bc-mutate.py, #976)", {},
+         ["python3", "scripts/rt-bc-mutate.py", "--robigo-rt", rt_binary(), "--processes", "24", "--batch", "100",
+          "--seed", "1", "--limit", "10"]),
         ("conformance under the rdb boot with ROBIGO_BC_CROSSCHECK=1 (base.rdb's closures against the "
          "from-source compiler's)",
          {"ROBIGO_RT_BOOT": "rdb", "ROBIGO_BC_CROSSCHECK": "1", "ROBIGO_BC_CROSSCHECK_REPORT": BC_REPORT_RDB},
@@ -687,12 +694,12 @@ BUDGETS = {  # shard: (budget, measured minutes, where measured)
     # (C1, 2026-11-23), are scaled to it by 1.6, that run's conformance
     # steps against the same local run's (1.34 against 0.84 min, the five
     # both ran)
-    "modes": (13, 10.05, "2026-11-22, run 45072863916 (#959, a slow runner): 8.27 to its failed quarantine step, "
+    "modes": (13, 10.65, "2026-11-22, run 45072863916 (#959, a slow runner): 8.27 to its failed quarantine step, "
               "less #959's M1 freeze-on conformance step's 0.22 (moved to gctorture; its rdb twin, 0.27, stays "
               "with the database tree), plus the steps after it at #952's 1.1; #959's freeze check at every "
               "collection makes the crates' gctorture step 0.81 against main's 0.45 (1.8x in CI); and #979's "
               "rdb boot's conformance without the translation cache, 0.29 (0.18 locally), and the cache's "
-              "damaged-input step, 0.61 (0.38 locally)"),
+              "damaged-input step, 0.61 (0.38 locally); and #976's hostile byte code, 0.6 (0.37 locally)"),
     # the plain gctorture conformance moves into modes if GCTORTURE_FIRST
     # does not bring this back near 15 minutes
     "gctorture": (27, 22.09, "2026-11-21, run 44927530340 (#952): 20.62 before GCTORTURE_FIRST, and #959's "
